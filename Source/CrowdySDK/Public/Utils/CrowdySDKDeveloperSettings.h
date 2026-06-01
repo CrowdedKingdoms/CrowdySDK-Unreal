@@ -51,10 +51,10 @@ public:
 	FString ManagementApiUrl = TEXT("https://api.dev.crowdedkingdoms.com");
 
 	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Developer|Network")
-	FString GameApiHttpUrl = TEXT("https://game.dev1.dev.cks-env.com/graphql");
+	FString GameApiHttpUrl = TEXT("");
 
 	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Developer|Network")
-	FString GameApiWsUrl = TEXT("wss://game.dev1.dev.cks-env.com/graphql");
+	FString GameApiWsUrl = TEXT("");
 
 	/** Which IP protocol stack to use when connecting the UDP socket.
 	 *  Auto tries IPv6 first and falls back to IPv4 if that fails. */
