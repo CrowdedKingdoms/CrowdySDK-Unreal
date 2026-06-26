@@ -20,20 +20,26 @@ public class CrowdySDKEditor : ModuleRules
         PrivateDependencyModuleNames.AddRange(
             new string[]
             {
+                "CrowdyNet",
+                "CrowdyReplication",
                 "UnrealEd",
                 "Slate",
                 "SlateCore",
+                "EditorWidgets",
                 "PropertyEditor",
                 "BlueprintGraph",
                 "KismetWidgets",
                 "Kismet",
                 "EditorStyle",
-                "StructUtils",
                 "KismetCompiler",
                 "GraphEditor",
                 "InputCore",
                 "AssetTools",
-                "ToolMenus"
+                "AssetRegistry",
+                "ToolMenus",
+                "Projects",
+                "CrowdyStudio",
+                "Json"
             }
         );
     }

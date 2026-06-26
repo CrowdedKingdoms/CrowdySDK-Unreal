@@ -4,18 +4,20 @@
 
 #include "CoreMinimal.h"
 #include "Core/GraphQL/Interfaces/ICrowdyQueryReceptionLayer.h"
+#include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "Core/UDP/Interfaces/ICrowdyReceptionLayer.h"
 #include "Shared/Types/Structures/Versioning/FGameVersion.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "Network/UDP/CrowdyUDPSubsystem.h"   // EUDPConnectionState
+#include "Network/UDP/CrowdyUDPSubsystem.h"  
+#include "StructUtils/InstancedStruct.h"// EUDPConnectionState
+#include "Subsystem/CrowdyAuthentication.h"
 #include "CrowdySDKSubsystem.generated.h"
 
 
-struct FInstancedStruct;
+class UCrowdyPersistenceSubsystem;
+
 // Structs
 struct FUDPAddressNotify;
-struct FRegisterResponse;
-struct FLoginResponse;
 struct FVersionInfoResponse;
 struct FGameSessionInfo;
 struct FTeleportResponse;
@@ -43,7 +45,6 @@ class UCrowdyWorkerThreadsSubsystem;
 class UCrowdyQuerySubsystem;
 class UCrowdyGameSession;
 class UVoiceChatSubsystem;
-class UEventPayloadType;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnLogin, bool, bSuccess, FString, GameToken);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnRegister, bool, bSuccess, FString, Message);
@@ -103,7 +104,16 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
 	void Logout() const;
-	
+
+	// Re-reads the management/game endpoints from UCrowdySDKDeveloperSettings and pushes
+	// them into the query subsystem. Lets a CrowdyStudio Config Sync take effect on a
+	// running PIE session without restarting it.
+	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Network")
+	void ReloadEndpointsFromSettings();
+
+
+
+
 	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
 	void SetGameSessionInfo(const FGameSessionInfo GameSessionInfo);
 	
@@ -142,7 +152,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Connection",
 		meta=(DisplayName="Start UDP Timeout Monitoring (Deprecated)",
 		      DeprecatedFunction,
-		      DeprecationMessage="Timeout monitoring is automatic. Set UDPTimeoutSeconds in Project Settings > Plugins > Crowdy SDK instead."))
+		      DeprecationMessage="Timeout monitoring is automatic. Set the UDP Timeout from the CrowdyStudio console (Project page, Connection section) instead."))
 	void StartUDPTimeoutMonitoring(const float ThresholdSeconds = 30.0f);
 
 	/**
@@ -192,19 +202,53 @@ public:
 	UFUNCTION(BlueprintCallable, Category="CrowdySDK|Subsystem")
 	void SetExpectedActorUpdateStateSize(const int32 InSize) const;
 	
-	UFUNCTION(BlueprintCallable, Category="CrowdySDK|Config")
-	void OverrideEventDataAsset(const UEventPayloadType* DataAsset);
-	
 	UFUNCTION(BlueprintCallable, Category="CrowdySDK|Replication|Actor Updates")
 	void DispatchActorUpdate(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
 	                         const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance,
 	                         const FString& InstigatorID, UPARAM(ref) const FInstancedStruct& ActorStatePayload, bool bAsync = false);
 	
-	UFUNCTION(BlueprintCallable, Category="CrowdySDK|Replication|Events")
-	void DispatchGameEvent(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
-	                       const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance,
-	                       const FGuid& InstigatorID, UPARAM(ref) FInstancedStruct& EventPayload, bool bAsync = false);
-	
+	/**
+	 * Dispatch a game event. The EventPayload pin accepts any struct type directly.
+	 * Target/TargetID address the event; Everyone broadcasts (legacy behavior).
+	 */
+	UFUNCTION(BlueprintCallable, CustomThunk, Category="CrowdySDK|Replication|Events",
+		meta=(DisplayName="Dispatch Game Event", CustomStructureParam="EventPayload", AutoCreateRefTerm="TargetID"))
+	void K2_DispatchGameEvent(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
+	                          const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance,
+	                          const FGuid& InstigatorID, const int32& EventPayload,
+	                          const ECrowdyTarget Target, const FGuid& TargetID, bool bAsync = false);
+	DECLARE_FUNCTION(execK2_DispatchGameEvent);
+
+	/**
+	 * Dispatch a game event from C++. Pass any USTRUCT directly, no FInstancedStruct wrapper needed.
+	 */
+	template<typename T>
+	void DispatchGameEvent(
+		int64 ChunkX, int64 ChunkY, int64 ChunkZ,
+		ECrowdyDecayRate DecayRate,
+		ECrowdyReplicationDistance ReplicationDistance,
+		const FGuid& InstigatorID,
+		const T& EventPayload,
+		ECrowdyTarget Target = ECrowdyTarget::Everyone,
+		const FGuid& TargetID = FGuid(),
+		bool bAsync = false)
+	{
+		DispatchGameEvent_Internal(ChunkX, ChunkY, ChunkZ, DecayRate, ReplicationDistance, InstigatorID,
+			FInstancedStruct::Make<T>(EventPayload), Target, TargetID, bAsync);
+	}
+
+	/** Shared implementation called by the template overload, the custom thunk, and the deprecated wrapper. */
+	void DispatchGameEvent_Internal(int64 ChunkX, int64 ChunkY, int64 ChunkZ,
+	                                ECrowdyDecayRate DecayRate, ECrowdyReplicationDistance ReplicationDistance,
+	                                const FGuid& InstigatorID, FInstancedStruct EventPayload,
+	                                ECrowdyTarget Target, const FGuid& TargetID, bool bAsync);
+
+	/** Actor-to-actor send (SINGLE_ACTOR_MESSAGE): same payload as a game event, but the server
+	 *  delivers it only to the client that owns TargetActorID. UUID = TargetActorID, chunk = the
+	 *  target's chunk; distance/decay are unused. */
+	void DispatchSingleActorMessage_Internal(int64 ChunkX, int64 ChunkY, int64 ChunkZ,
+	                                          const FGuid& TargetActorID, FInstancedStruct EventPayload, bool bAsync);
+
 	void RegisterReceptionLayer(ICrowdyReceptionLayer* Layer) const;
 	void RegisterQueryReceptionLayer(ICrowdyQueryReceptionLayer* LayerToRegister) const;
 	bool IsLayerRegistered(const ICrowdyReceptionLayer* Layer) const;
@@ -224,7 +268,9 @@ public:
 
 	
 private:
-	
+
+	void ApplyEndpointsFromSettings();
+
 	UPROPERTY()
 	UCrowdyWorkerThreadsSubsystem* WorkerThreadsSubsystem;
 	
@@ -240,8 +286,8 @@ private:
 	UPROPERTY()
 	UVoiceChatSubsystem* VoiceChatSubsystem;
 	
-	UPROPERTY(EditAnywhere, Category = "CrowdySDK|Config")
-	TSoftObjectPtr<UEventPayloadType> EventPayloadData;
+	UPROPERTY()
+	UCrowdyPersistenceSubsystem* PersistenceSubsystem;
 	
 	// Internal Service References
 	FVoiceChatService* VoiceChatService;
@@ -264,8 +310,20 @@ private:
 	UPROPERTY()
 	int32 ExpectedActorUpdateStateSize = 300;
 	
-	void HandleLogin(const FLoginResponse& LoginResponse) const;
-	void HandleRegister(const FRegisterResponse& RegisterResponse) const;
+	UFUNCTION()
+	void HandleAuthLogin(FCrowdyAuthResult Result);
+	
+	UFUNCTION()
+	void HandleAuthRegister(FCrowdyAuthResult Result);
+	
+	/** Called by UCrowdyAuthentication::OnLoginFailed to forward failure on OnLogin. */
+	UFUNCTION()
+	void HandleAuthLoginFailed(FString Message);
+	
+	/** Called by UCrowdyAuthentication::OnRegisterFailed to forward failure on OnRegister. */
+	UFUNCTION()
+	void HandleAuthRegisterFailed(FString Message);
+	
 	void HandleUDPAddressNotify(const FUDPAddressNotify& UDPAddressNotify); // non-const: manages ping timer
 	void HandleVersionInfoResponse(const FVersionInfoResponse& VersionInfoResponse) const;
 	void HandleTeleportPermissionResponse(const FTeleportResponse& TeleportResponse) const;

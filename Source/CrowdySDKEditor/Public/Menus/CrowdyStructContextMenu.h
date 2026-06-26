@@ -41,39 +41,18 @@ private:
 	// Populates the menu section when the context menu is opened.
 	// Uses UContentBrowserAssetContextMenuContext to access the selected assets.
 	static void PopulateMenuSection(struct FToolMenuSection& InSection);
-	static void PopulateRepSubMenu(
-		FMenuBuilder& MenuBuilder,
-		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs);
 
 	static void PopulateFlagsSubMenu(
 		FMenuBuilder& MenuBuilder,
 		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs);
 
 	// Executors — operate on the selected struct asset(s).
-	static void ExecuteStampAs(
-		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
-		FString Category);
-
-	static void ExecuteRemoveStamp(
-		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs);
-
 	static void ExecuteSetFlag(
 		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
 		FName MetaKey,
 		bool bEnabled);
 
 	// Predicates — controls whether the menu entries are enabled.
-	static bool CanStampAs(
-		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
-		FString TargetCategory);
-
-	static bool CanRemoveStamp(
-		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs);
-
-	static bool IsRepSet(
-		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
-		FString TargetCategory);
-
 	static bool IsFlagSet(
 		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
 		FName MetaKey);

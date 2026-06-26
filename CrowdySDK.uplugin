@@ -1,34 +1,27 @@
 ﻿{
 	"FileVersion": 3,
-	"Version": 1,
-	"VersionName": "1.0",
+	"Version": 2,
+	"VersionName": "2.0",
 	"FriendlyName": "CrowdySDK",
-	"Description": "",
+	"Description": "The Crowdy Unreal SDK is an Unreal Engine plugin that integrates your game with the Crowded Kingdoms platform",
 	"Category": "Other",
-	"CreatedBy": "",
+	"CreatedBy": "Crowded Kingdoms",
 	"CreatedByURL": "",
-	"DocsURL": "",
+	"DocsURL": "https://docs.crowdedkingdoms.com/unreal-sdk/intro",
 	"MarketplaceURL": "",
 	"CanContainContent": true,
 	"IsBetaVersion": false,
 	"IsExperimentalVersion": false,
 	"Installed": false,
 	"Modules": [
-		{
-			"Name": "CrowdySDK",
-			"Type": "Runtime",
-			"LoadingPhase": "Default"
-		},
-		{
-			"Name": "CKSharedTypes",
-			"Type": "Runtime",
-			"LoadingPhase": "Default"
-		},
-		{
-			"Name": "CrowdySDKEditor",
-			"Type": "Editor",
-			"LoadingPhase": "PostEngineInit"
-		}
+		{ "Name": "CKSharedTypes",      "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyNet",          "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyReplication",  "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyVoice",        "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyServices",     "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdySDK",          "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdySDKEditor",    "Type": "Editor",  "LoadingPhase": "PostEngineInit" },
+		{ "Name": "CrowdyStudio",       "Type": "Editor",  "LoadingPhase": "PostEngineInit" }
 	],
 	"Plugins": [
 		{

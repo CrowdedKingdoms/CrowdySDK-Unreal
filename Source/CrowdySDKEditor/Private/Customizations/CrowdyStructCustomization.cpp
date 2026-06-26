@@ -5,17 +5,8 @@
 #include "DetailCategoryBuilder.h"
 #include "DetailWidgetRow.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Engine/UserDefinedStruct.h"
+#include "StructUtils/UserDefinedStruct.h"
 #include "UserDefinedStructure/UserDefinedStructEditorData.h"
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Category string mirrors — kept in sync with FCrowdyStructContextMenu
-// ─────────────────────────────────────────────────────────────────────────────
-namespace CrowdyStructCustomizationConstants
-{
-	static const FString CategoryEvent       (TEXT("Event"));
-	static const FString CategoryActorUpdate (TEXT("ActorUpdate"));
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IDetailCustomization
@@ -33,11 +24,6 @@ void FCrowdyStructCustomization::CustomizeDetails(
 	UUserDefinedStruct* OwningStruct = GetOwningStruct();
 	if (!OwningStruct) return;
 
-	// Resolve current stamp state once, before adding any rows.
-	const FString CurrentCategory =
-		OwningStruct->GetMetaData(CrowdyMetaKeys::CrowdyRep);
-	const bool bHasStamp = !CurrentCategory.IsEmpty();
-
 	// ── Crowdy SDK category ──────────────────────────────────────────────────
 	//
 	// ECategoryPriority::TypeSpecific keeps us out of the way of the
@@ -50,60 +36,32 @@ void FCrowdyStructCustomization::CustomizeDetails(
 			FText::FromString(TEXT("Crowdy SDK")),
 			ECategoryPriority::TypeSpecific);
 
-	// ── Status row (always shown) ────────────────────────────────────────────
-	Category.AddCustomRow(FText::FromString(TEXT("Crowdy Status")))
+	// Formula MUST match the runtime CrowdySDK module exactly.
+	// uint16 range: 0 is reserved for "invalid", so add 1 after modulo.
+	const FString Path  = OwningStruct->GetPathName();
+	const uint32  Hash  = FCrc::MemCrc32(*Path, Path.Len() * sizeof(TCHAR));
+	const uint16  TypeID = static_cast<uint16>((Hash % 65535u) + 1u);
+
+	Category.AddCustomRow(FText::FromString(TEXT("Auto TypeID")))
 	.NameContent()
 	[
 		SNew(STextBlock)
-		.Text(FText::FromString(TEXT("Crowdy Status")))
+		.Text(FText::FromString(TEXT("Auto TypeID")))
 		.Font(DetailBuilder.GetDetailFont())
 		.ToolTipText(FText::FromString(
-			TEXT("Crowdy SDK payload tag for this struct.\n\n"
-			     "Set via right-click on the struct asset in the Content Browser:\n"
-			     "  • Stamp as Crowdy Event\n"
-			     "  • Stamp as Crowdy Actor Update\n"
-			     "  • Remove Crowdy Stamp\n\n"
-			     "This row is read-only and reflects the current stamp state.")))
+			TEXT("The TypeID assigned to this struct when it is used as a Crowdy\n"
+			     "payload (a CrowdyEvent handler parameter, a reception layer's\n"
+			     "supported event, or an executor's state struct).\n"
+			     "Derived from its asset path — stable unless the asset\n"
+			     "is moved or renamed.")))
 	]
 	.ValueContent()
 	[
 		SNew(STextBlock)
-		.Text(FText::FromString(
-			bHasStamp ? CurrentCategory : FString(TEXT("Not a Crowdy payload"))))
-		.ColorAndOpacity(bHasStamp
-			? FSlateColor(FLinearColor(0.2f, 0.9f, 0.4f))   // green when stamped
-			: FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))  // gray when not
+		.Text(FText::FromString(FString::FromInt(TypeID)))
 		.Font(DetailBuilder.GetDetailFont())
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
 	];
-
-	// ── Auto TypeID row (only when stamped) ──────────────────────────────────
-	if (bHasStamp)
-	{
-		// Formula MUST match the runtime CrowdySDK module exactly.
-		// uint16 range: 0 is reserved for "invalid", so add 1 after modulo.
-		const FString Path  = OwningStruct->GetPathName();
-		const uint32  Hash  = FCrc::MemCrc32(*Path, Path.Len() * sizeof(TCHAR));
-		const uint16  TypeID = static_cast<uint16>((Hash % 65535u) + 1u);
-
-		Category.AddCustomRow(FText::FromString(TEXT("Auto TypeID")))
-		.NameContent()
-		[
-			SNew(STextBlock)
-			.Text(FText::FromString(TEXT("Auto TypeID")))
-			.Font(DetailBuilder.GetDetailFont())
-			.ToolTipText(FText::FromString(
-				TEXT("The TypeID assigned to this struct at runtime.\n"
-				     "Derived from its asset path — stable unless the asset\n"
-				     "is moved or renamed.")))
-		]
-		.ValueContent()
-		[
-			SNew(STextBlock)
-			.Text(FText::FromString(FString::FromInt(TypeID)))
-			.Font(DetailBuilder.GetDetailFont())
-			.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-		];
-	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

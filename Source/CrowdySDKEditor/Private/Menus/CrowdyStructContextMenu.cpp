@@ -1,13 +1,15 @@
 ﻿#include "Menus/CrowdyStructContextMenu.h"
 #include "CrowdySDKEditor.h"
+#include "Menus/CrowdyStructMetaUtils.h"
 #include "ToolMenus.h"
 #include "ToolMenu.h"
 #include "ToolMenuSection.h"
 #include "ToolMenuEntry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ContentBrowserMenuContexts.h"
-#include "Engine/UserDefinedStruct.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "StructUtils/UserDefinedStruct.h"
+#include "UObject/AssetRegistryTagsContext.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -16,8 +18,7 @@ const FName FCrowdyStructContextMenu::OwnerName(TEXT("CrowdySDKEditor.StructCont
 
 namespace CrowdyRepValues
 {
-	static const FString Event       (TEXT("Event"));
-	static const FString ActorUpdate (TEXT("ActorUpdate"));
+	static const TCHAR* EnabledFlagValue = TEXT("true");
 }
 
 // Menu identifier for the UserDefinedStruct-specific context menu.
@@ -92,93 +93,12 @@ void FCrowdyStructContextMenu::PopulateMenuSection(FToolMenuSection& InSection)
 	if (Structs.IsEmpty()) return;
 
 	InSection.AddSubMenu(
-		FName(TEXT("CrowdyRepType")),
-		FText::FromString(TEXT("Crowdy Replication Type")),
-		FText::FromString(TEXT("Exclusive CrowdyRep payload type for this struct.")),
-		FNewToolMenuChoice(FNewMenuDelegate::CreateStatic(
-			&FCrowdyStructContextMenu::PopulateRepSubMenu,
-			Structs)));
-
-	InSection.AddSubMenu(
 		FName(TEXT("CrowdyMetadataFlags")),
 		FText::FromString(TEXT("Crowdy Metadata Flags")),
 		FText::FromString(TEXT("Inclusive key-only Crowdy metadata flags for this struct.")),
 		FNewToolMenuChoice(FNewMenuDelegate::CreateStatic(
 			&FCrowdyStructContextMenu::PopulateFlagsSubMenu,
 			Structs)));
-}
-
-void FCrowdyStructContextMenu::PopulateRepSubMenu(
-	FMenuBuilder& MenuBuilder,
-	TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs)
-{
-	// ── Stamp as Event ───────────────────────────────────────────────────────
-	MenuBuilder.AddMenuEntry(
-		FText::FromString(TEXT("None")),
-		FText::FromString(
-			TEXT("Removes the CrowdyRep metadata from this struct.\n"
-			     "Inclusive Crowdy metadata flags are left unchanged.")),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateStatic(
-				&FCrowdyStructContextMenu::ExecuteRemoveStamp,
-				Structs),
-			FCanExecuteAction::CreateStatic(
-				&FCrowdyStructContextMenu::CanRemoveStamp,
-				Structs),
-			FIsActionChecked::CreateStatic(
-				&FCrowdyStructContextMenu::IsRepSet,
-				Structs,
-				FString())),
-		FName(TEXT("CrowdyRemoveRep")),
-		EUserInterfaceActionType::RadioButton);
-
-	MenuBuilder.AddMenuEntry(
-		FText::FromString(TEXT("Crowdy Event")),
-		FText::FromString(
-			TEXT("Tags this struct with meta=(CrowdyRep=\"Event\").\n"
-			     "UCrowdyEventManager will dispatch instances of this struct\n"
-			     "to registered handlers at runtime.")),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateStatic(
-				&FCrowdyStructContextMenu::ExecuteStampAs,
-				Structs,
-				CrowdyRepValues::Event),
-			FCanExecuteAction::CreateStatic(
-				&FCrowdyStructContextMenu::CanStampAs,
-				Structs,
-				CrowdyRepValues::Event),
-			FIsActionChecked::CreateStatic(
-				&FCrowdyStructContextMenu::IsRepSet,
-				Structs,
-				CrowdyRepValues::Event)),
-		FName(TEXT("CrowdyStampAsEvent")),
-		EUserInterfaceActionType::RadioButton);
-
-	// ── Stamp as ActorUpdate ─────────────────────────────────────────────────
-	MenuBuilder.AddMenuEntry(
-		FText::FromString(TEXT("Crowdy Actor Update")),
-		FText::FromString(
-			TEXT("Tags this struct with meta=(CrowdyRep=\"ActorUpdate\").\n"
-			     "UCrowdyActorTracker will process instances of this struct\n"
-			     "to update tracked actor state at runtime.")),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateStatic(
-				&FCrowdyStructContextMenu::ExecuteStampAs,
-				Structs,
-				CrowdyRepValues::ActorUpdate),
-			FCanExecuteAction::CreateStatic(
-				&FCrowdyStructContextMenu::CanStampAs,
-				Structs,
-				CrowdyRepValues::ActorUpdate),
-			FIsActionChecked::CreateStatic(
-				&FCrowdyStructContextMenu::IsRepSet,
-				Structs,
-				CrowdyRepValues::ActorUpdate)),
-		FName(TEXT("CrowdyStampAsActorUpdate")),
-		EUserInterfaceActionType::RadioButton);
 }
 
 void FCrowdyStructContextMenu::PopulateFlagsSubMenu(
@@ -204,21 +124,21 @@ void FCrowdyStructContextMenu::PopulateFlagsSubMenu(
 		EUserInterfaceActionType::ToggleButton);
 
 	MenuBuilder.AddMenuEntry(
-		FText::FromString(TEXT("Crowdy Instanced")),
-		FText::FromString(TEXT("Toggles meta=(CrowdyInstanced) on this struct.")),
+		FText::FromString(TEXT("Crowdy Singleton")),
+		FText::FromString(TEXT("Toggles meta=(CrowdySingleton) on this struct. By default all persistent structs are instanced.")),
 		FSlateIcon(),
 		FUIAction(
 			FExecuteAction::CreateStatic(
 				&FCrowdyStructContextMenu::ExecuteSetFlag,
 				Structs,
-				CrowdyMetaKeys::CrowdyInstanced,
-				!IsFlagSet(Structs, CrowdyMetaKeys::CrowdyInstanced)),
+				CrowdyMetaKeys::CrowdySingleton,
+				!IsFlagSet(Structs, CrowdyMetaKeys::CrowdySingleton)),
 			FCanExecuteAction(),
 			FIsActionChecked::CreateStatic(
 				&FCrowdyStructContextMenu::IsFlagSet,
 				Structs,
-				CrowdyMetaKeys::CrowdyInstanced)),
-		FName(TEXT("CrowdyInstanced")),
+				CrowdyMetaKeys::CrowdySingleton)),
+		FName(TEXT("CrowdySingleton")),
 		EUserInterfaceActionType::ToggleButton);
 }
 
@@ -229,54 +149,6 @@ void FCrowdyStructContextMenu::PopulateFlagsSubMenu(
 // std::decay_t on bound args; the function pointer signature must match the
 // decayed type exactly.
 // ─────────────────────────────────────────────────────────────────────────────
-bool FCrowdyStructContextMenu::CanStampAs(
-	TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
-	FString TargetCategory)
-{
-	// Enable if any selected struct does NOT already have this exact category.
-	for (const TWeakObjectPtr<UUserDefinedStruct>& WeakStruct : Structs)
-	{
-		if (!WeakStruct.IsValid()) continue;
-
-		const FString Existing =
-			WeakStruct->GetMetaData(CrowdyMetaKeys::CrowdyRep);
-
-		if (Existing != TargetCategory)
-			return true;
-	}
-	return false;
-}
-
-bool FCrowdyStructContextMenu::CanRemoveStamp(
-	TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs)
-{
-	for (const TWeakObjectPtr<UUserDefinedStruct>& WeakStruct : Structs)
-	{
-		if (!WeakStruct.IsValid()) continue;
-
-		if (!WeakStruct->GetMetaData(CrowdyMetaKeys::CrowdyRep).IsEmpty()
-			|| !WeakStruct->GetMetaData(CrowdyMetaKeys::LegacyCrowdyCategory).IsEmpty())
-			return true;
-	}
-	return false;
-}
-
-bool FCrowdyStructContextMenu::IsRepSet(
-	TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
-	FString TargetCategory)
-{
-	for (const TWeakObjectPtr<UUserDefinedStruct>& WeakStruct : Structs)
-	{
-		if (!WeakStruct.IsValid()) continue;
-
-		if (WeakStruct->GetMetaData(CrowdyMetaKeys::CrowdyRep) == TargetCategory)
-		{
-			return true;
-		}
-	}
-	return false;
-}
-
 bool FCrowdyStructContextMenu::IsFlagSet(
 	TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
 	FName MetaKey)
@@ -298,43 +170,6 @@ bool FCrowdyStructContextMenu::IsFlagSet(
 // ─────────────────────────────────────────────────────────────────────────────
 // Executors
 // ─────────────────────────────────────────────────────────────────────────────
-void FCrowdyStructContextMenu::ExecuteStampAs(
-	TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
-	FString Category)
-{
-	for (TWeakObjectPtr<UUserDefinedStruct>& WeakStruct : Structs)
-	{
-		if (!WeakStruct.IsValid()) continue;
-
-		UUserDefinedStruct* Struct = WeakStruct.Get();
-		Struct->SetMetaData(CrowdyMetaKeys::CrowdyRep, *Category);
-		Struct->RemoveMetaData(CrowdyMetaKeys::LegacyCrowdyCategory);
-		Struct->MarkPackageDirty();
-
-		UE_LOG(LogCrowdyEditor, Log,
-			TEXT("[CrowdySDK] Stamped struct '%s' CrowdyRep=%s. Save to persist."),
-			*Struct->GetName(), *Category);
-	}
-}
-
-void FCrowdyStructContextMenu::ExecuteRemoveStamp(
-	TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs)
-{
-	for (TWeakObjectPtr<UUserDefinedStruct>& WeakStruct : Structs)
-	{
-		if (!WeakStruct.IsValid()) continue;
-
-		UUserDefinedStruct* Struct = WeakStruct.Get();
-		Struct->RemoveMetaData(CrowdyMetaKeys::CrowdyRep);
-		Struct->RemoveMetaData(CrowdyMetaKeys::LegacyCrowdyCategory);
-		Struct->MarkPackageDirty();
-
-		UE_LOG(LogCrowdyEditor, Log,
-			TEXT("[CrowdySDK] Removed Crowdy stamp from struct '%s'. Save to persist."),
-			*Struct->GetName());
-	}
-}
-
 void FCrowdyStructContextMenu::ExecuteSetFlag(
 	TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
 	FName MetaKey,
@@ -345,16 +180,17 @@ void FCrowdyStructContextMenu::ExecuteSetFlag(
 		if (!WeakStruct.IsValid()) continue;
 
 		UUserDefinedStruct* Struct = WeakStruct.Get();
+		Struct->Modify();
 		if (bEnabled)
 		{
-			Struct->SetMetaData(MetaKey, TEXT(""));
+			Struct->SetMetaData(MetaKey, CrowdyRepValues::EnabledFlagValue);
 		}
 		else
 		{
 			Struct->RemoveMetaData(MetaKey);
 		}
 
-		Struct->MarkPackageDirty();
+		NotifyStructMetadataChanged(Struct);
 
 		UE_LOG(LogCrowdyEditor, Log,
 			TEXT("[CrowdySDK] %s key-only metadata '%s' on struct '%s'. Save to persist."),

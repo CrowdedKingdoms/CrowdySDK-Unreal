@@ -1,81 +1,22 @@
 #include "Menus/CrowdyStructEditorToolbar.h"
 
 #include "CrowdySDKEditor.h"
-#include "Engine/UserDefinedStruct.h"
+#include "Menus/CrowdyStructMetaUtils.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "StructUtils/UserDefinedStruct.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Styling/AppStyle.h"
 #include "Toolkits/AssetEditorToolkit.h"
 #include "StructUtils/UserDefinedStruct.h"
+#include "UObject/AssetRegistryTagsContext.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Text/STextBlock.h"
 
 FDelegateHandle FCrowdyStructEditorToolbar::ToolbarExtenderHandle;
 
 namespace CrowdyStructEditorToolbar
 {
-	static const FString RepEvent(TEXT("Event"));
-	static const FString RepActorUpdate(TEXT("ActorUpdate"));
-
-	static FString GetCurrentRepValue(TWeakObjectPtr<::UUserDefinedStruct> WeakStruct)
-	{
-		return WeakStruct.IsValid()
-			? WeakStruct->GetMetaData(CrowdyMetaKeys::CrowdyRep)
-			: FString();
-	}
-
-	static FText GetCurrentRepLabel(TWeakObjectPtr<::UUserDefinedStruct> WeakStruct)
-	{
-		const FString CurrentValue = GetCurrentRepValue(WeakStruct);
-		if (CurrentValue == RepEvent)
-		{
-			return FText::FromString(TEXT("Crowdy: Event"));
-		}
-
-		if (CurrentValue == RepActorUpdate)
-		{
-			return FText::FromString(TEXT("Crowdy: Actor Update"));
-		}
-
-		return FText::FromString(TEXT("Crowdy: None"));
-	}
-
-	static bool IsRepValueSelected(
-		TWeakObjectPtr<::UUserDefinedStruct> WeakStruct,
-		FString TargetValue)
-	{
-		return GetCurrentRepValue(WeakStruct) == TargetValue;
-	}
-
-	static void SetRepValue(
-		TWeakObjectPtr<::UUserDefinedStruct> WeakStruct,
-		FString TargetValue)
-	{
-		if (!WeakStruct.IsValid()) return;
-
-		::UUserDefinedStruct* Struct = WeakStruct.Get();
-		if (TargetValue.IsEmpty())
-		{
-			Struct->RemoveMetaData(CrowdyMetaKeys::CrowdyRep);
-			Struct->RemoveMetaData(CrowdyMetaKeys::LegacyCrowdyCategory);
-
-			UE_LOG(LogCrowdyEditor, Log,
-				TEXT("[CrowdySDK] Removed Crowdy stamp from struct '%s'. Save to persist."),
-				*Struct->GetName());
-		}
-		else
-		{
-			Struct->SetMetaData(CrowdyMetaKeys::CrowdyRep, *TargetValue);
-			Struct->RemoveMetaData(CrowdyMetaKeys::LegacyCrowdyCategory);
-
-			UE_LOG(LogCrowdyEditor, Log,
-				TEXT("[CrowdySDK] Stamped struct '%s' CrowdyRep=%s. Save to persist."),
-				*Struct->GetName(),
-				*TargetValue);
-		}
-
-		Struct->MarkPackageDirty();
-	}
+	static const TCHAR* EnabledFlagValue = TEXT("true");
 
 	static ECheckBoxState GetFlagCheckState(
 		TWeakObjectPtr<::UUserDefinedStruct> WeakStruct,
@@ -95,16 +36,17 @@ namespace CrowdyStructEditorToolbar
 
 		::UUserDefinedStruct* Struct = WeakStruct.Get();
 		const bool bEnabled = NewState == ECheckBoxState::Checked;
+		Struct->Modify();
 		if (bEnabled)
 		{
-			Struct->SetMetaData(MetaKey, TEXT(""));
+			Struct->SetMetaData(MetaKey, EnabledFlagValue);
 		}
 		else
 		{
 			Struct->RemoveMetaData(MetaKey);
 		}
 
-		Struct->MarkPackageDirty();
+		NotifyStructMetadataChanged(Struct);
 
 		UE_LOG(LogCrowdyEditor, Log,
 			TEXT("[CrowdySDK] %s key-only metadata '%s' on struct '%s'. Save to persist."),
@@ -135,62 +77,6 @@ namespace CrowdyStructEditorToolbar
 			];
 	}
 
-	static void AddRepMenuEntry(
-		FMenuBuilder& MenuBuilder,
-		TWeakObjectPtr<::UUserDefinedStruct> WeakStruct,
-		const FName EntryName,
-		const FText& Label,
-		const FText& ToolTip,
-		const FString& TargetValue)
-	{
-		MenuBuilder.AddMenuEntry(
-			Label,
-			ToolTip,
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateStatic(
-					&SetRepValue,
-					WeakStruct,
-					TargetValue),
-				FCanExecuteAction(),
-				FIsActionChecked::CreateStatic(
-					&IsRepValueSelected,
-					WeakStruct,
-					TargetValue)),
-			EntryName,
-			EUserInterfaceActionType::RadioButton);
-	}
-
-	static TSharedRef<SWidget> GenerateRepMenu(TWeakObjectPtr<::UUserDefinedStruct> WeakStruct)
-	{
-		FMenuBuilder MenuBuilder(true, nullptr);
-
-		AddRepMenuEntry(
-			MenuBuilder,
-			WeakStruct,
-			FName(TEXT("CrowdyStructRepNone")),
-			FText::FromString(TEXT("None")),
-			FText::FromString(TEXT("Remove CrowdyRep metadata from this struct.")),
-			FString());
-
-		AddRepMenuEntry(
-			MenuBuilder,
-			WeakStruct,
-			FName(TEXT("CrowdyStructRepEvent")),
-			FText::FromString(TEXT("Crowdy Event")),
-			FText::FromString(TEXT("Tags this struct with meta=(CrowdyRep=\"Event\").")),
-			RepEvent);
-
-		AddRepMenuEntry(
-			MenuBuilder,
-			WeakStruct,
-			FName(TEXT("CrowdyStructRepActorUpdate")),
-			FText::FromString(TEXT("Crowdy Actor Update")),
-			FText::FromString(TEXT("Tags this struct with meta=(CrowdyRep=\"ActorUpdate\").")),
-			RepActorUpdate);
-
-		return MenuBuilder.MakeWidget();
-	}
 }
 
 void FCrowdyStructEditorToolbar::Register()
@@ -253,21 +139,6 @@ void FCrowdyStructEditorToolbar::FillToolbar(
 {
 	if (!WeakStruct.IsValid()) return;
 
-	ToolbarBuilder.AddWidget(
-		SNew(SComboButton)
-		.ContentPadding(FMargin(4.0f, 0.0f))
-		.ToolTipText(FText::FromString(TEXT("Sets the CrowdyRep metadata for this struct.")))
-		.OnGetMenuContent(FOnGetContent::CreateStatic(
-			&CrowdyStructEditorToolbar::GenerateRepMenu,
-			WeakStruct))
-		.ButtonContent()
-		[
-			SNew(STextBlock)
-			.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateStatic(
-				&CrowdyStructEditorToolbar::GetCurrentRepLabel,
-				WeakStruct)))
-		]);
-
 	ToolbarBuilder.AddWidget(CrowdyStructEditorToolbar::MakeFlagToggle(
 		WeakStruct,
 		CrowdyMetaKeys::CrowdyPersistent,
@@ -276,7 +147,7 @@ void FCrowdyStructEditorToolbar::FillToolbar(
 
 	ToolbarBuilder.AddWidget(CrowdyStructEditorToolbar::MakeFlagToggle(
 		WeakStruct,
-		CrowdyMetaKeys::CrowdyInstanced,
-		FText::FromString(TEXT("Instanced")),
-		FText::FromString(TEXT("Toggles meta=(CrowdyInstanced) on this struct."))));
+		CrowdyMetaKeys::CrowdySingleton,
+		FText::FromString(TEXT("Singleton")),
+		FText::FromString(TEXT("Toggles meta=(CrowdySingleton) on this struct. By default all persistent structs are instanced."))));
 }

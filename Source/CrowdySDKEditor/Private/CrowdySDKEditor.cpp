@@ -8,14 +8,21 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "EdGraphUtilities.h"
+#include "K2Node_CallFunction.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_FunctionEntry.h"
 #include "KismetNodes/SGraphNodeK2Event.h"
 #include "CrowdyBlueprintCompilerExtension.h"
+#include "CrowdyEditorEventMeta.h"
+#include "Baking/CrowdyRegistryBaker.h"
+#include "CrowdyStudioModule.h"
+#include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Customizations/CrowdyCustomEventCustomization.h"
-#include "Customizations/CrowdyFunctionEntryCustomization.h"
 #include "Menus/CrowdyStructEditorToolbar.h"
 #include "Menus/CrowdyStructContextMenu.h"
+#include "Replication/RPC/CrowdyRPC.h"
+#include "Subsystem/CrowdyAutoRegistry.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/SBoxPanel.h"
 
 IMPLEMENT_MODULE(FCrowdySDKEditorModule, CrowdySDKEditor)
@@ -25,136 +32,139 @@ DEFINE_LOG_CATEGORY(LogCrowdyEditor)
 namespace CrowdyMetaKeys
 {
 	const FName CrowdyEvent    (TEXT("CrowdyEvent"));
-	const FName CrowdyRep      (TEXT("CrowdyRep"));
-	const FName LegacyCrowdyCategory(TEXT("CrowdyCategory"));
-	const FName CrowdyPersistent(TEXT("CrowdyPersistent"));
-	const FName CrowdyInstanced (TEXT("CrowdyInstanced"));
+	const FName CrowdyPersistent   (TEXT("CrowdyPersistent"));
+	const FName CrowdySingleton    (TEXT("CrowdySingleton"));
+	const FName CrowdyEntity       (TEXT("CrowdyEntity"));
 }
 
 namespace
 {
-	struct FCrowdyFunctionValidationResult
+	static ECrowdyEventRecipient ResolveCrowdyRecipient(const FString& RecipientMetaValue)
 	{
-		bool bIsValid = false;
-		FString ErrorMessage;
-	};
-
-	static bool IsCrowdyPayloadPin(const UEdGraphPin* Pin)
-	{
-		if (!Pin) return false;
-		if (Pin->ParentPin) return false;
-		if (Pin->Direction != EGPD_Output) return false;
-
-		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
-		if (Schema && Schema->IsMetaPin(*Pin)) return false;
-		if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Delegate) return false;
-
-		return true;
-	}
-
-	static bool IsCrowdyCustomEvent(UK2Node_CustomEvent* CustomEvent)
-	{
-		return CustomEvent
-			&& CustomEvent->GetUserDefinedMetaData().HasMetaData(
-				CrowdyMetaKeys::CrowdyEvent);
-	}
-
-	static bool IsCrowdyFunctionEntry(const UK2Node_FunctionEntry* FunctionEntry)
-	{
-		return FunctionEntry
-			&& FunctionEntry->MetaData.HasMetaData(CrowdyMetaKeys::CrowdyEvent);
-	}
-
-	static bool IsValidCrowdyRepValue(const FString& CrowdyRepValue)
-	{
-		return CrowdyRepValue == TEXT("Event")
-			|| CrowdyRepValue == TEXT("ActorUpdate");
-	}
-
-	static FCrowdyFunctionValidationResult ValidateCrowdyEventHandler(
-		const UEdGraphNode* Node,
-		int32 FunctionFlags)
-	{
-		FCrowdyFunctionValidationResult Result;
-
-		if (!Node)
+		if (RecipientMetaValue.Equals(TEXT("OwningPlayer"), ESearchCase::IgnoreCase)
+			|| RecipientMetaValue.Equals(TEXT("Owning Player"), ESearchCase::IgnoreCase))
 		{
-			Result.ErrorMessage = TEXT("CrowdyEvent handler is invalid.");
-			return Result;
+			return ECrowdyEventRecipient::OwningClient;
 		}
 
-		if ((FunctionFlags & FUNC_Private) != 0)
+		const UEnum* EnumType = StaticEnum<ECrowdyEventRecipient>();
+		const int64 Value = EnumType ? EnumType->GetValueByNameString(RecipientMetaValue) : INDEX_NONE;
+		return Value == INDEX_NONE
+			? ECrowdyEventRecipient::SpatialMulticast
+			: static_cast<ECrowdyEventRecipient>(Value);
+	}
+
+	static FText GetCrowdyRecipientSubtitle(ECrowdyEventRecipient Recipient)
+	{
+		switch (Recipient)
 		{
-			Result.ErrorMessage =
-				TEXT("CrowdyEvent handler @@ must be public; private Blueprint handlers cannot be called externally for replication.");
-			return Result;
+		case ECrowdyEventRecipient::OwningClient:
+			return FText::FromString(TEXT("\nCrowdy Owning Client\nExecutes Locally Only"));
+		case ECrowdyEventRecipient::Host:
+			return FText::FromString(TEXT("\nCrowdy Host\nExecutes on Host"));
+		case ECrowdyEventRecipient::Multicast:
+			// Channel transport — every session-channel member, any distance, no decay.
+			return FText::FromString(TEXT("\nCrowdy Multicast\nEveryone on the Channel"));
+		case ECrowdyEventRecipient::SpatialMulticast:
+		default:
+			return FText::FromString(TEXT("\nCrowdy Spatial Multicast\nEveryone In Range"));
+		}
+	}
+
+	// Subtitle drawn under a Crowdy-marked custom event / function entry on the graph, or empty
+	// when the node has no Crowdy marking. A replicated event names who it routes to, the way
+	// Unreal tags a replicated event; a struct handler is labelled as a receiver. The leading
+	// newline drops it onto its own line beneath the node title.
+	static FText GetCrowdyNodeSubtitle(const FKismetUserDeclaredFunctionMetadata& Meta)
+	{
+		if (HasCrowdyReplicatesMeta(Meta))
+		{
+			const FString RecipientMeta = Meta.HasMetaData(FName(CrowdyRpcMetaKeys::Recipient))
+				? Meta.GetMetaData(FName(CrowdyRpcMetaKeys::Recipient))
+				: FString();
+			return GetCrowdyRecipientSubtitle(ResolveCrowdyRecipient(RecipientMeta));
 		}
 
-		if ((FunctionFlags & FUNC_Protected) != 0)
+		return FText::GetEmpty();
+	}
+
+	static FText GetCrowdyNodeSubtitle(const UFunction* Function)
+	{
+		if (!Function)
 		{
-			Result.ErrorMessage =
-				TEXT("CrowdyEvent handler @@ must be public; protected Blueprint handlers cannot be called externally for replication.");
-			return Result;
+			return FText::GetEmpty();
 		}
 
-		if ((FunctionFlags & FUNC_NetFuncFlags) != 0)
+		if (CrowdyRpcMetaKeys::HasReplicatesMeta(Function))
 		{
-			Result.ErrorMessage =
-				TEXT("CrowdyEvent handler @@ cannot also use Unreal replication. Disable Run On Server/Client/Multicast/Reliable before enabling Crowdy replication.");
-			return Result;
+			return GetCrowdyRecipientSubtitle(
+				ResolveCrowdyRecipient(Function->GetMetaData(CrowdyRpcMetaKeys::Recipient)));
 		}
 
-		int32 InputPinCount = 0;
-		const UScriptStruct* PayloadStruct = nullptr;
+		return FText::GetEmpty();
+	}
 
-		for (const UEdGraphPin* Pin : Node->Pins)
+	static FText GetCrowdySourceNodeSubtitle(const UK2Node_CallFunction* CallNode)
+	{
+		if (!CallNode || CallNode->GetFunctionName() == NAME_None)
 		{
-			if (!IsCrowdyPayloadPin(Pin)) continue;
+			return FText::GetEmpty();
+		}
 
-			++InputPinCount;
+		UBlueprint* Blueprint = CallNode->GetBlueprint();
+		if (!Blueprint)
+		{
+			return FText::GetEmpty();
+		}
 
-			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Struct)
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+		for (UEdGraph* Graph : Graphs)
+		{
+			if (!Graph)
 			{
-				PayloadStruct = Cast<UScriptStruct>(
-					Pin->PinType.PinSubCategoryObject.Get());
+				continue;
+			}
+
+			for (UEdGraphNode* GraphNode : Graph->Nodes)
+			{
+				if (const UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(GraphNode))
+				{
+					if (GetFunctionEntryName(Entry) == CallNode->GetFunctionName())
+					{
+						return GetCrowdyNodeSubtitle(Entry->MetaData);
+					}
+				}
+				else if (UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(GraphNode))
+				{
+					if (CustomEvent->CustomFunctionName == CallNode->GetFunctionName())
+					{
+						return GetCrowdyNodeSubtitle(CustomEvent->GetUserDefinedMetaData());
+					}
+				}
 			}
 		}
 
-		if (InputPinCount == 0)
+		return FText::GetEmpty();
+	}
+
+	static FText GetCrowdyCallFunctionSubtitle(const UK2Node_CallFunction* CallNode)
+	{
+		if (!CallNode)
 		{
-			Result.ErrorMessage =
-				TEXT("CrowdyEvent handler @@ must have exactly one struct parameter tagged with CrowdyRep=\"Event\" or CrowdyRep=\"ActorUpdate\".");
-			return Result;
+			return FText::GetEmpty();
 		}
 
-		if (InputPinCount > 1)
+		if (const UFunction* Function = CallNode->GetTargetFunction())
 		{
-			Result.ErrorMessage = FString::Printf(
-				TEXT("CrowdyEvent handler @@ has %d parameters; exactly one struct parameter tagged with CrowdyRep=\"Event\" or CrowdyRep=\"ActorUpdate\" is required."),
-				InputPinCount);
-			return Result;
+			const FText FunctionSubtitle = GetCrowdyNodeSubtitle(Function);
+			if (!FunctionSubtitle.IsEmpty())
+			{
+				return FunctionSubtitle;
+			}
 		}
 
-		if (!PayloadStruct)
-		{
-			Result.ErrorMessage =
-				TEXT("CrowdyEvent handler @@ parameter must be a struct tagged with CrowdyRep=\"Event\" or CrowdyRep=\"ActorUpdate\".");
-			return Result;
-		}
-
-		const FString CrowdyRepValue =
-			PayloadStruct->GetMetaData(CrowdyMetaKeys::CrowdyRep);
-
-		if (!IsValidCrowdyRepValue(CrowdyRepValue))
-		{
-			Result.ErrorMessage = FString::Printf(
-				TEXT("CrowdyEvent handler @@ parameter struct '%s' must be tagged with CrowdyRep=\"Event\" or CrowdyRep=\"ActorUpdate\"."),
-				*PayloadStruct->GetName());
-			return Result;
-		}
-
-		Result.bIsValid = true;
-		return Result;
+		return GetCrowdySourceNodeSubtitle(CallNode);
 	}
 
 	class SGraphNodeCrowdyCustomEvent : public SGraphNodeK2Event
@@ -168,6 +178,21 @@ namespace
 			GraphNode = InNode;
 			SetCursor(EMouseCursor::CardinalCross);
 			UpdateGraphNode();
+			CachedSubtitle = GetCrowdySubtitleText();
+		}
+
+		// Rebuild the node when its Crowdy subtitle changes — e.g. the recipient dropdown in the
+		// details panel — so the Crowdy execution label updates live, without waiting for a recompile.
+		virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
+		{
+			SGraphNodeK2Event::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+
+			const FText Current = GetCrowdySubtitleText();
+			if (!Current.EqualTo(CachedSubtitle))
+			{
+				CachedSubtitle = Current;
+				UpdateGraphNode();
+			}
 		}
 
 	protected:
@@ -200,19 +225,20 @@ namespace
 					.Visibility(this,
 						&SGraphNodeCrowdyCustomEvent::GetCrowdySubtitleVisibility)
 					.Text(this,
-						&SGraphNodeCrowdyCustomEvent::GetCrowdyReceiverTitle)
+						&SGraphNodeCrowdyCustomEvent::GetCrowdySubtitleText)
 				];
 		}
 
 	private:
-		FText GetCrowdyReceiverTitle() const
+		FText GetCrowdySubtitleText() const
 		{
-			return FText::FromString(TEXT("\nCrowdy Replicated Receiver"));
+			UK2Node_CustomEvent* Node = Cast<UK2Node_CustomEvent>(GraphNode);
+			return Node ? GetCrowdyNodeSubtitle(Node->GetUserDefinedMetaData()) : FText::GetEmpty();
 		}
 
-		bool IsCrowdyReplicated() const
+		bool HasCrowdySubtitle() const
 		{
-			return IsCrowdyCustomEvent(Cast<UK2Node_CustomEvent>(GraphNode));
+			return !GetCrowdySubtitleText().IsEmpty();
 		}
 
 		EVisibility GetTitleVisibility() const
@@ -229,7 +255,7 @@ namespace
 				return EVisibility::Hidden;
 			}
 
-			return IsCrowdyReplicated()
+			return HasCrowdySubtitle()
 				? EVisibility::Collapsed
 				: EVisibility::Visible;
 		}
@@ -241,23 +267,39 @@ namespace
 				return EVisibility::Collapsed;
 			}
 
-			return IsCrowdyReplicated()
+			return HasCrowdySubtitle()
 				? EVisibility::Visible
 				: EVisibility::Collapsed;
 		}
+
+		// Last subtitle shown, so Tick can detect a details-panel change and rebuild the node.
+		FText CachedSubtitle;
 	};
 
-	class SGraphNodeCrowdyFunctionEntry : public SGraphNodeK2Default
+	class SGraphNodeCrowdyCallFunction : public SGraphNodeK2Default
 	{
 	public:
-		SLATE_BEGIN_ARGS(SGraphNodeCrowdyFunctionEntry) {}
+		SLATE_BEGIN_ARGS(SGraphNodeCrowdyCallFunction) {}
 		SLATE_END_ARGS()
 
-		void Construct(const FArguments& InArgs, UK2Node_FunctionEntry* InNode)
+		void Construct(const FArguments& InArgs, UK2Node_CallFunction* InNode)
 		{
 			GraphNode = InNode;
 			SetCursor(EMouseCursor::CardinalCross);
 			UpdateGraphNode();
+			CachedSubtitle = GetCrowdySubtitleText();
+		}
+
+		virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
+		{
+			SGraphNodeK2Default::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+
+			const FText Current = GetCrowdySubtitleText();
+			if (!Current.EqualTo(CachedSubtitle))
+			{
+				CachedSubtitle = Current;
+				UpdateGraphNode();
+			}
 		}
 
 	protected:
@@ -268,13 +310,13 @@ namespace
 				SGraphNodeK2Default::CreateTitleWidget(NodeTitle);
 
 			TitleWidget->SetVisibility(MakeAttributeSP(
-				this, &SGraphNodeCrowdyFunctionEntry::GetTitleVisibility));
+				this, &SGraphNodeCrowdyCallFunction::GetTitleVisibility));
 
 			if (NodeTitle.IsValid())
 			{
 				NodeTitle->SetVisibility(MakeAttributeSP(
 					this,
-					&SGraphNodeCrowdyFunctionEntry::GetDefaultSubtitleVisibility));
+					&SGraphNodeCrowdyCallFunction::GetDefaultSubtitleVisibility));
 			}
 
 			return SNew(SVerticalBox)
@@ -288,21 +330,22 @@ namespace
 				[
 					SNew(SNodeTitle, GraphNode)
 					.Visibility(this,
-						&SGraphNodeCrowdyFunctionEntry::GetCrowdySubtitleVisibility)
+						&SGraphNodeCrowdyCallFunction::GetCrowdySubtitleVisibility)
 					.Text(this,
-						&SGraphNodeCrowdyFunctionEntry::GetCrowdyReceiverTitle)
+						&SGraphNodeCrowdyCallFunction::GetCrowdySubtitleText)
 				];
 		}
 
 	private:
-		FText GetCrowdyReceiverTitle() const
+		FText GetCrowdySubtitleText() const
 		{
-			return FText::FromString(TEXT("\nCrowdy Replicated Receiver"));
+			const UK2Node_CallFunction* Node = Cast<UK2Node_CallFunction>(GraphNode);
+			return Node ? GetCrowdyCallFunctionSubtitle(Node) : FText::GetEmpty();
 		}
 
-		bool IsCrowdyReplicated() const
+		bool HasCrowdySubtitle() const
 		{
-			return IsCrowdyFunctionEntry(Cast<UK2Node_FunctionEntry>(GraphNode));
+			return !GetCrowdySubtitleText().IsEmpty();
 		}
 
 		EVisibility GetTitleVisibility() const
@@ -319,7 +362,7 @@ namespace
 				return EVisibility::Hidden;
 			}
 
-			return IsCrowdyReplicated()
+			return HasCrowdySubtitle()
 				? EVisibility::Collapsed
 				: EVisibility::Visible;
 		}
@@ -331,10 +374,12 @@ namespace
 				return EVisibility::Collapsed;
 			}
 
-			return IsCrowdyReplicated()
+			return HasCrowdySubtitle()
 				? EVisibility::Visible
 				: EVisibility::Collapsed;
 		}
+
+		FText CachedSubtitle;
 	};
 
 	class FCrowdyGraphPanelNodeFactory : public FGraphPanelNodeFactory
@@ -342,14 +387,17 @@ namespace
 	public:
 		virtual TSharedPtr<SGraphNode> CreateNode(UEdGraphNode* Node) const override
 		{
-			if (UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node))
-			{
-				return SNew(SGraphNodeCrowdyFunctionEntry, FunctionEntry);
-			}
-
 			if (UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
 			{
 				return SNew(SGraphNodeCrowdyCustomEvent, CustomEvent);
+			}
+
+			if (UK2Node_CallFunction* CallFunction = Cast<UK2Node_CallFunction>(Node))
+			{
+				if (!GetCrowdyCallFunctionSubtitle(CallFunction).IsEmpty())
+				{
+					return SNew(SGraphNodeCrowdyCallFunction, CallFunction);
+				}
 			}
 
 			return nullptr;
@@ -367,14 +415,22 @@ void FCrowdySDKEditorModule::StartupModule()
 	RegisterGraphNodeFactory();
 	RegisterCompilerExtension();
 	RegisterBlueprintCompilerExtension();
+	UCrowdyRegistryBaker::Register();
+
+	// The Registry Inspector now lives in the CrowdyStudio console (Registry page). The deep rebuild
+	// is editor-only, so hand the console a hook into the baker rather than CrowdyStudio depending on
+	// this module. The captureless lambda is cleared in ShutdownModule so it never dangles.
+	CrowdyStudioRegistry::SetRebuildHook(
+		[](TFunction<void()> OnComplete) { UCrowdyRegistryBaker::RebuildAsync(MoveTemp(OnComplete)); });
 }
 
 void FCrowdySDKEditorModule::ShutdownModule()
 {
+	CrowdyStudioRegistry::SetRebuildHook(nullptr);
+
 	if (FPropertyEditorModule* PM =
 		FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor"))
 	{
-		PM->UnregisterCustomClassLayout("K2Node_FunctionEntry");
 		PM->UnregisterCustomClassLayout("K2Node_CustomEvent");
 	}
 
@@ -387,10 +443,10 @@ void FCrowdySDKEditorModule::ShutdownModule()
 		GraphNodeFactory.Reset();
 	}
 
-	if (GEditor && PreCompileHandle.IsValid())
+	if (GEditor && CompiledHandle.IsValid())
 	{
-		GEditor->OnBlueprintPreCompile().Remove(PreCompileHandle);
-		PreCompileHandle.Reset();
+		GEditor->OnBlueprintCompiled().Remove(CompiledHandle);
+		CompiledHandle.Reset();
 	}
 }
 
@@ -409,11 +465,6 @@ void FCrowdySDKEditorModule::RegisterFunctionEntryCustomization()
 		FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
 	PM.RegisterCustomClassLayout(
-		"K2Node_FunctionEntry",
-		FOnGetDetailCustomizationInstance::CreateStatic(
-			&FCrowdyFunctionEntryCustomization::MakeInstance));
-
-	PM.RegisterCustomClassLayout(
 		"K2Node_CustomEvent",
 		FOnGetDetailCustomizationInstance::CreateStatic(
 			&FCrowdyCustomEventCustomization::MakeInstance));
@@ -423,8 +474,8 @@ void FCrowdySDKEditorModule::RegisterCompilerExtension()
 {
 	if (!GEditor) return;
 
-	PreCompileHandle = GEditor->OnBlueprintPreCompile().AddStatic(
-		&FCrowdySDKEditorModule::OnBlueprintPreCompile);
+	CompiledHandle = GEditor->OnBlueprintCompiled().AddStatic(
+		&FCrowdySDKEditorModule::OnBlueprintCompiled);
 }
 
 void FCrowdySDKEditorModule::RegisterBlueprintCompilerExtension()
@@ -444,81 +495,51 @@ void FCrowdySDKEditorModule::RegisterGraphNodeFactory()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pre-compile hook
+// Post-compile hook
 //
-// Transfers CrowdyEvent metadata from Blueprint function/custom event nodes
-// onto the generated UFunctions (which are rebuilt on every compile).
+// A compile reinstances the Blueprint class, replacing its UFunctions and recomputing
+// signature hashes. A registry built before the compile (e.g. a running PIE session's)
+// now holds stale entries for that class, so refresh it. The cooked-build bake is handled
+// separately by the compiler extension via UCrowdyRegistryBaker::UpdateForClass.
+//
+// We refresh ONLY the classes that recompiled, not every loaded class. The previous full
+// RescanRpcFunctions() per registry walked every UClass/UFunction in the editor on each
+// compile — a multi-tens-of-ms hitch, multiplied by client count under multi-client PIE.
+// The compiler extension reports each recompiled class via NotePendingRpcRescan during the
+// batch; this drains that set once the batch (and its reinstancing) has settled.
 // ─────────────────────────────────────────────────────────────────────────────
-void FCrowdySDKEditorModule::OnBlueprintPreCompile(UBlueprint* Blueprint)
+namespace
 {
-	if (!Blueprint) return;
+	// Classes recompiled in the current Blueprint compile batch, awaiting an incremental rescan.
+	// Weak so a class torn down before the drain is simply skipped.
+	TSet<TWeakObjectPtr<UClass>> GPendingRpcRescanClasses;
+}
 
-	UClass* ClassesToStamp[] = {
-		Blueprint->SkeletonGeneratedClass,
-		Blueprint->GeneratedClass
-	};
-
-	TArray<UEdGraph*> Graphs;
-	Blueprint->GetAllGraphs(Graphs);
-
-	for (UEdGraph* Graph : Graphs)
+void FCrowdySDKEditorModule::NotePendingRpcRescan(UClass* Class)
+{
+	if (Class)
 	{
-		if (!Graph) continue;
+		GPendingRpcRescanClasses.Add(Class);
+	}
+}
 
-		for (UEdGraphNode* Node : Graph->Nodes)
+void FCrowdySDKEditorModule::OnBlueprintCompiled()
+{
+	if (GPendingRpcRescanClasses.IsEmpty()) return;
+
+	for (TObjectIterator<UCrowdyAutoRegistry> It; It; ++It)
+	{
+		UCrowdyAutoRegistry* Registry = *It;
+		if (!IsValid(Registry) || Registry->HasAnyFlags(RF_ClassDefaultObject)) continue;
+
+		for (const TWeakObjectPtr<UClass>& WeakClass : GPendingRpcRescanClasses)
 		{
-			FName FunctionName = NAME_None;
-			int32 FunctionFlags = 0;
-
-			if (UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(Node))
+			if (UClass* Class = WeakClass.Get())
 			{
-				if (!Entry->MetaData.HasMetaData(CrowdyMetaKeys::CrowdyEvent)) continue;
-
-				FunctionName = Graph->GetFName();
-				FunctionFlags = Entry->GetFunctionFlags();
-			}
-			else if (UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
-			{
-				if (!CustomEvent->GetUserDefinedMetaData().HasMetaData(
-					CrowdyMetaKeys::CrowdyEvent)) continue;
-
-				FunctionName = CustomEvent->CustomFunctionName;
-				FunctionFlags = CustomEvent->FunctionFlags;
-			}
-			else
-			{
-				continue;
-			}
-
-			const FCrowdyFunctionValidationResult ValidationResult =
-				ValidateCrowdyEventHandler(Node, FunctionFlags);
-			if (!ValidationResult.bIsValid)
-			{
-				Blueprint->Message_Error(ValidationResult.ErrorMessage, Node);
-				continue;
-			}
-
-			if (FunctionName == NAME_None)
-			{
-				Blueprint->Message_Error(
-					TEXT("CrowdyEvent handler @@ does not have a valid generated function name."),
-					Node);
-				continue;
-			}
-
-			for (UClass* Class : ClassesToStamp)
-			{
-				if (!Class) continue;
-
-				if (UFunction* Func = Class->FindFunctionByName(FunctionName))
-				{
-					Func->SetMetaData(CrowdyMetaKeys::CrowdyEvent, TEXT(""));
-
-					UE_LOG(LogCrowdyEditor, Verbose,
-						TEXT("[CrowdySDK] Stamped UFunction '%s::%s' with CrowdyEvent"),
-						*Class->GetName(), *FunctionName.ToString());
-				}
+				Registry->UpdateClassRpcFunctions(Class);
 			}
 		}
 	}
+
+	GPendingRpcRescanClasses.Reset();
 }

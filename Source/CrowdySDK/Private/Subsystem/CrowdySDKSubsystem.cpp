@@ -2,6 +2,7 @@
 
 
 #include "Subsystem/CrowdySDKSubsystem.h"
+#include "CrowdySDKLog.h"
 #include "Core/Audio/VoiceChat/VoiceChatSubsystem.h"
 #include "Core/Audio/VoiceChat/Service/FVoiceChatService.h"
 #include "Core/GraphQL/Enums/EQueryResponseType.h"
@@ -9,12 +10,12 @@
 #include "Core/GraphQL/Interfaces/ICrowdyQueryResponse.h"
 #include "Core/GraphQL/Interfaces/ICrowdyQueryTransmissionLayer.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
-#include "Data/EventPayloadType.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Internal/FCrowdyDataRegistry.h"
 #include "Messages/FPingTestMessage.h"
 #include "Messages/Actor/FActorUpdateRequestMessage.h"
 #include "Messages/GameObjects/FGameEventRequest.h"
+#include "Messages/GameObjects/FSingleActorMessage.h"
 #include "Network/GraphQL/CrowdyQuerySubsystem.h"
 #include "Network/UDP/FCrowdyTransmissionLayerUDP.h"
 #include "Serialization/FCrowdyMessageParser.h"
@@ -23,10 +24,6 @@
 #include "Utils/FMessageBufferPool.h"
 #include "Network/GraphQL/FCrowdyQueryTransmissionLayerGQL.h"
 #include "Network/UDP/CrowdyUDPSubsystem.h"
-#include "Queries/Authentication/FLoginRequest.h"
-#include "Queries/Authentication/FLoginResponse.h"
-#include "Queries/Authentication/FRegisterRequest.h"
-#include "Queries/Authentication/FRegisterResponse.h"
 #include "Queries/Data/Version/FVersionInfoRequest.h"
 #include "Queries/Data/Version/FVersionInfoResponse.h"
 #include "Queries/Permissions/FTeleportRequest.h"
@@ -37,9 +34,15 @@
 #include "Queries/Data/GameHost/FGameHostResponse.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyHostSubsystem.h"
+#include "Subsystem/CrowdyPersistenceSubsystem.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"
 #include "Utils/UEventPayloadRegistry.h"
+#include "StructUtils/InstancedStruct.h"
+#include "Subsystem/CrowdyAvatars.h"
+#include "Subsystem/CrowdyTeams.h"
+#include "Subsystem/CrowdyChannels.h"
+#include "Core/CrowdySDKBridgeSubsystem.h"
 
 void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -52,18 +55,76 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	WorkerThreadsSubsystem = Collection.InitializeDependency<UCrowdyWorkerThreadsSubsystem>();
 	QuerySubsystem         = Collection.InitializeDependency<UCrowdyQuerySubsystem>();
 	UdpSubsystem           = Collection.InitializeDependency<UCrowdyUDPSubsystem>();
+	PersistenceSubsystem   = Collection.InitializeDependency<UCrowdyPersistenceSubsystem>();
+	UCrowdyAvatars* CrowdyAvatars = Collection.InitializeDependency<UCrowdyAvatars>();
+	UCrowdyTeams* CrowdyTeams = Collection.InitializeDependency<UCrowdyTeams>();
+	UCrowdyChannels* CrowdyChannels = Collection.InitializeDependency<UCrowdyChannels>();
+	UCrowdyAuthentication* CrowdyAuth = Collection.InitializeDependency<UCrowdyAuthentication>();
+	
 	
 	
 	// Pure allocations (no world required)
 	ServiceRegistry = new FCrowdyServiceRegistry();
 	DataRegistry    = new FCrowdyDataRegistry();
-	Parser          = new FCrowdyMessageParser(ServiceRegistry, UdpSubsystem, this, GameSession);
+	Parser          = new FCrowdyMessageParser(ServiceRegistry, UdpSubsystem, [this]{ TriggerUdpHeartbeat(); }, GameSession);
 	BufferPool      = new FMessageBufferPool();
+
+	if (UCrowdySDKBridgeSubsystem* BridgeSub = GetGameInstance()->GetSubsystem<UCrowdySDKBridgeSubsystem>())
+	{
+		BridgeSub->ServiceRegistry = ServiceRegistry;
+		BridgeSub->DataRegistry    = DataRegistry;
+		BridgeSub->DispatchActorUpdateFn = [this](int64 X, int64 Y, int64 Z, ECrowdyDecayRate D, ECrowdyReplicationDistance R, const FString& ID, const FInstancedStruct& State, bool bAsync)
+		{
+			DispatchActorUpdate(X, Y, Z, D, R, ID, State, bAsync);
+		};
+		BridgeSub->DispatchGameEventFn = [this](int64 X, int64 Y, int64 Z, ECrowdyDecayRate D, ECrowdyReplicationDistance R, const FGuid& ID, FInstancedStruct Payload, ECrowdyTarget Target, const FGuid& TargetID, bool bAsync)
+		{
+			DispatchGameEvent_Internal(X, Y, Z, D, R, ID, MoveTemp(Payload), Target, TargetID, bAsync);
+		};
+		BridgeSub->DispatchSingleActorMessageFn = [this](int64 X, int64 Y, int64 Z, const FGuid& TargetActorID, FInstancedStruct Payload, bool bAsync)
+		{
+			DispatchSingleActorMessage_Internal(X, Y, Z, TargetActorID, MoveTemp(Payload), bAsync);
+		};
+		BridgeSub->PublishReliableRpcFn = [this](const FString& ChannelName, const TArray<uint8>& Payload)
+		{
+			if (UCrowdyChannels* Channels = GetGameInstance()->GetSubsystem<UCrowdyChannels>())
+				Channels->PublishReliableRpc(ChannelName, Payload);
+		};
+		BridgeSub->SendMessageFn = [this](const ICrowdyMessage& Msg)
+		{
+			SendMessage(Msg);
+		};
+		BridgeSub->ExecuteQueryFn = [this](ICrowdyQueryRequest& Req)
+		{
+			ExecuteQuery(Req);
+		};
+		BridgeSub->BroadcastHUDReadyFn = [this]()
+		{
+			OnCrowdyHUDReady.Broadcast();
+		};
+		BridgeSub->ReloadConfigFn = [this]()
+		{
+			// Live re-apply of the developer settings so an editor Config Sync reaches a running
+			// session. Endpoints feed subsequent GraphQL; AppID/UDP protocol feed subsequent ops.
+			// The current UDP socket / login keep the session they were established with.
+			ApplyEndpointsFromSettings();
+			const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+			if (Settings && IsValid(GameSession))
+			{
+				GameSession->SetAppID(Settings->AppID);
+			}
+			if (Settings && IsValid(UdpSubsystem))
+			{
+				UdpSubsystem->SetPreferredProtocol(Settings->UDPProtocol);
+			}
+			UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Reloaded developer settings into the live session."));
+		};
+	}
 
 	const UWorld* World = GetWorld();
 	if (!World || World->GetGameInstance() != GetGameInstance())
 	{
-		UE_LOG(LogTemp, Fatal, TEXT("UWorld is invalid while initializing."));
+		UE_LOG(LogCrowdySDK, Fatal, TEXT("UWorld is invalid while initializing."));
 		return;
 	}
 		
@@ -71,11 +132,12 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// Create anything that may depend on world/online/sockets
 	TransmissionLayer      = new FCrowdyTransmissionLayerUDP(GameSession);
 	QueryTransmissionLayer = new FCrowdyQueryTransmissionLayerGQL(QuerySubsystem);
-	VoiceChatService       = new FVoiceChatService(this, GameSession);
-
+	VoiceChatService       = new FVoiceChatService(ServiceRegistry, GameSession, [this](const ICrowdyMessage& Msg) { SendMessage(Msg); });
+	PersistenceSubsystem->InitialSetup(GetGameInstance()->GetSubsystem<UCrowdySDKBridgeSubsystem>(), GameSession);
+	
 	auto LogNull = [](const TCHAR* Name)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[CrowdySDK] %s is null or invalid"), Name);
+		UE_LOG(LogCrowdySDK, Error, TEXT("%s is null or invalid"), Name);
 	};
 
 	bool bFailed = false;
@@ -96,12 +158,7 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	WorkerThreadsSubsystem->InitializeWorkerThreadPool(BufferPool, Parser, ServiceRegistry, UdpSubsystem, GameSession);
 	QuerySubsystem->InitializeQuerySubsystem(DataRegistry);
 
-	const UCrowdySDKDeveloperSettings* DeveloperSettings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
-	if (DeveloperSettings)
-	{
-		QuerySubsystem->SetManagementEndpoint(DeveloperSettings->ManagementApiUrl);
-		QuerySubsystem->SetGameEndpoint(DeveloperSettings->GameApiHttpUrl);
-	}
+	ApplyEndpointsFromSettings();
 
 	RegisterQueryReceptionLayer(this);
 
@@ -114,9 +171,21 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	UdpSubsystem->OnUDPTimeout.AddDynamic(this, &UCrowdySDKSubsystem::OnUDPTimeout);
 
 	if (!TryLoadConfiguration())
-		UE_LOG(LogTemp, Error, TEXT("[CrowdySDK]: Failed to load configuration from Developer Settings."));
+		UE_LOG(LogCrowdySDK, Error, TEXT("Failed to load configuration from Developer Settings."));
 	
-	UE_LOG(LogTemp, Log, TEXT("[CrowdySDK] CrowdySDK Subsystem Initialized (PostWorldInit)"));
+	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("CrowdySDK Subsystem Initialized (PostWorldInit)"));
+	
+	CrowdyAvatars->InjectDependencies(DataRegistry, QuerySubsystem);
+	CrowdyTeams->InjectDependencies(DataRegistry, QuerySubsystem);
+	CrowdyChannels->InjectDependencies(DataRegistry, QuerySubsystem);
+	// Inbound channel notifications (type 18) flow through the service registry to this layer.
+	RegisterReceptionLayer(CrowdyChannels);
+	CrowdyAuth->InjectDependencies(DataRegistry, QuerySubsystem, GameSession);
+
+	CrowdyAuth->OnLogin.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthLogin);
+	CrowdyAuth->OnLoginFailed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthLoginFailed);
+	CrowdyAuth->OnRegister.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthRegister);
+	CrowdyAuth->OnRegisterFailed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthRegisterFailed);
 }
 
 void UCrowdySDKSubsystem::Deinitialize()
@@ -125,6 +194,20 @@ void UCrowdySDKSubsystem::Deinitialize()
 	StopHostPolling();
 
 	FWorldDelegates::OnPostWorldInitialization.RemoveAll(this);
+
+	if (UCrowdySDKBridgeSubsystem* B = GetGameInstance()->GetSubsystem<UCrowdySDKBridgeSubsystem>())
+	{
+		B->ServiceRegistry       = nullptr;
+		B->DataRegistry          = nullptr;
+		B->DispatchActorUpdateFn  = nullptr;
+		B->DispatchGameEventFn    = nullptr;
+		B->PublishReliableRpcFn   = nullptr;
+		B->SendMessageFn          = nullptr;
+		B->ExecuteQueryFn         = nullptr;
+		B->BroadcastHUDReadyFn    = nullptr;
+		B->ReloadConfigFn         = nullptr;
+	}
+
 	ServiceRegistry = nullptr;
 	Parser = nullptr;
 	TransmissionLayer = nullptr;
@@ -135,22 +218,32 @@ void UCrowdySDKSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
+void UCrowdySDKSubsystem::ApplyEndpointsFromSettings()
+{
+	const UCrowdySDKDeveloperSettings* DeveloperSettings = GetDefault<UCrowdySDKDeveloperSettings>();
+	if (DeveloperSettings && IsValid(QuerySubsystem))
+	{
+		QuerySubsystem->SetManagementEndpoint(DeveloperSettings->GetManagementApiUrl());
+		QuerySubsystem->SetGameEndpoint(DeveloperSettings->GetGameApiHttpUrl());
+	}
+}
+
+void UCrowdySDKSubsystem::ReloadEndpointsFromSettings()
+{
+	ApplyEndpointsFromSettings();
+	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Reloaded GraphQL endpoints from developer settings."));
+}
+
 void UCrowdySDKSubsystem::Login(const FString Email, const FString Password) const
 {
-	FLoginRequest LoginRequest;
-	LoginRequest.Email = Email;
-	LoginRequest.Password = Password;
-	LoginRequest.PrepareQuery();
-	ExecuteQuery(LoginRequest);
+	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+		Auth->Login(Email, Password, FOnAuthSuccess(), FOnAuthError());
 }
 
 void UCrowdySDKSubsystem::Register(const FString Email, const FString Password) const
 {
-	FRegisterRequest RegisterRequest;
-	RegisterRequest.Email = Email;
-	RegisterRequest.Password = Password;
-	RegisterRequest.PrepareQuery();
-	ExecuteQuery(RegisterRequest);
+	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+		Auth->Register(Email, Password, FOnAuthSuccess(), FOnAuthError());
 }
 
 void UCrowdySDKSubsystem::Logout() const
@@ -212,13 +305,13 @@ void UCrowdySDKSubsystem::SetGameApiUrl(const FString InHttpUrl) const
 
 void UCrowdySDKSubsystem::StartUDPTimeoutMonitoring(const float ThresholdSeconds)
 {
-	UE_LOG(LogTemp, Warning,
-		TEXT("[CrowdySDK] StartUDPTimeoutMonitoring is deprecated — timeout monitoring "
+	UE_LOG(LogCrowdySDK, Warning,
+		TEXT("StartUDPTimeoutMonitoring is deprecated — timeout monitoring "
 		     "now starts automatically after the UDP socket connects. "
 		     "Set 'UDP Timeout (seconds)' in Project Settings > Plugins > Crowdy SDK."));
 
 	// Still functional as a runtime override (e.g. dynamic threshold changes).
-	UdpSubsystem->StartTimeoutMonitoring(ThresholdSeconds);
+	//UdpSubsystem->StartTimeoutMonitoring(ThresholdSeconds);
 
 	if (!bIsRegistered)
 	{
@@ -248,7 +341,7 @@ EUDPConnectionState UCrowdySDKSubsystem::GetUDPConnectionState() const
 
 void UCrowdySDKSubsystem::StopUDPTimeoutMonitoring()
 {
-	UdpSubsystem->StopTimeoutMonitoring();
+	//UdpSubsystem->StopTimeoutMonitoring();
 	
 	if (PingMessageTimerHandle.IsValid())
 		GetWorld()->GetTimerManager().ClearTimer(PingMessageTimerHandle);
@@ -340,21 +433,8 @@ void UCrowdySDKSubsystem::DeregisterAllReceptionLayers()
 
 void UCrowdySDKSubsystem::SetExpectedActorUpdateStateSize(const int32 InSize) const
 {
-	UE_LOG(LogTemp, Log, TEXT("[CrowdySDK] Expected Actor Update State Size: %d"), InSize);
+	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Expected Actor Update State Size: %d"), InSize);
 	Parser->SetExpectedActorStateSize(InSize);
-}
-
-void UCrowdySDKSubsystem::OverrideEventDataAsset(const UEventPayloadType* DataAsset)
-{
-	if (!DataAsset)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[CrowdySDK]: PayloadTypeDataAsset is null or invalid."));
-		return;
-	}
-	
-	UEventPayloadRegistry::Get()->Reset();
-	UEventPayloadRegistry::Get()->LoadFromDataAsset(DataAsset);
-	
 }
 
 void UCrowdySDKSubsystem::DispatchActorUpdate(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
@@ -378,8 +458,8 @@ void UCrowdySDKSubsystem::DispatchActorUpdate(const int64 ChunkX, const int64 Ch
 		
 		if (!UActorUpdatePayloadRegistry::Get()->GetID(ActorStatePayload.GetScriptStruct(), StateID))
 		{
-			UE_LOG(LogTemp, Error,
-		TEXT("[CrowdySDK]: Actor Update Payload not registered. Struct=%s Path=%s"),
+			UE_LOG(LogCrowdySDK, Error,
+		TEXT("Actor Update Payload not registered. Struct=%s Path=%s"),
 		ActorStatePayload.GetScriptStruct()
 			? *ActorStatePayload.GetScriptStruct()->GetName() : TEXT("null"),
 		ActorStatePayload.GetScriptStruct()
@@ -389,7 +469,7 @@ void UCrowdySDKSubsystem::DispatchActorUpdate(const int64 ChunkX, const int64 Ch
 		
 		if (!USerializationFunctionLibrary::SerializeActorState(ActorStatePayload, ActorUpdateRequest.StateBytes))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[CrowdySDK]: Failed to serialize actor state payload."));
+			UE_LOG(LogCrowdySDK, Error, TEXT("Failed to serialize actor state payload."));
 			return;
 		}
 		
@@ -412,16 +492,15 @@ void UCrowdySDKSubsystem::DispatchActorUpdate(const int64 ChunkX, const int64 Ch
 	}
 }
 
-void UCrowdySDKSubsystem::DispatchGameEvent(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
-                                            const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance,
-                                            const FGuid& InstigatorID, UPARAM(ref) FInstancedStruct& EventPayload, const bool bAsync)
+void UCrowdySDKSubsystem::DispatchGameEvent_Internal(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
+                                                     const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance,
+                                                     const FGuid& InstigatorID, FInstancedStruct EventPayload,
+                                                     const ECrowdyTarget Target, const FGuid& TargetID, const bool bAsync)
 {
-	
 	auto BuildAndSend = [this,
 	ChunkX, ChunkY, ChunkZ,
 	DecayRate, ReplicationDistance,
-	InstigatorID,
-	
+	InstigatorID, Target, TargetID,
 	Payload = MoveTemp(EventPayload)]() mutable
 	{
 		FGameEventRequest EventRequest;
@@ -433,12 +512,14 @@ void UCrowdySDKSubsystem::DispatchGameEvent(const int64 ChunkX, const int64 Chun
 		EventRequest.DecayRate = DecayRate;
 		EventRequest.ReplicationDistance = ReplicationDistance;
 		EventRequest.UUID = InstigatorID.ToString(EGuidFormats::Digits);
+		EventRequest.Target = Target;
+		EventRequest.TargetID = TargetID;
 
 		FCrowdyTypeID EventID;
 
 		if (!UEventPayloadRegistry::Get()->GetID(Payload.GetScriptStruct(), EventID))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[CrowdySDK]: Event Payload not registered."));
+			UE_LOG(LogCrowdySDK, Error, TEXT("Event Payload not registered. %s"), *Payload.GetScriptStruct()->GetName());
 			return;
 		}
 
@@ -446,7 +527,7 @@ void UCrowdySDKSubsystem::DispatchGameEvent(const int64 ChunkX, const int64 Chun
 
 		if (!USerializationFunctionLibrary::SerializeEventState(Payload, EventRequest.StateBytes))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[CrowdySDK]: Failed to serialize event payload."));
+			UE_LOG(LogCrowdySDK, Error, TEXT("Failed to serialize event payload."));
 			return;
 		}
 
@@ -454,7 +535,7 @@ void UCrowdySDKSubsystem::DispatchGameEvent(const int64 ChunkX, const int64 Chun
 
 		SendMessage(EventRequest);
 	};
-	
+
 	if (bAsync)
 	{
 		UE::Tasks::Launch(UE_SOURCE_LOCATION, MoveTemp(BuildAndSend), LowLevelTasks::ETaskPriority::BackgroundNormal);
@@ -465,39 +546,130 @@ void UCrowdySDKSubsystem::DispatchGameEvent(const int64 ChunkX, const int64 Chun
 	}
 }
 
-void UCrowdySDKSubsystem::HandleLogin(const FLoginResponse& LoginResponse) const
+void UCrowdySDKSubsystem::DispatchSingleActorMessage_Internal(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
+                                                              const FGuid& TargetActorID, FInstancedStruct EventPayload, const bool bAsync)
 {
-	GameSession->SetUserID(LoginResponse.UserID);
-	GameSession->SetGameTokenID(LoginResponse.GameTokenID);
-	GameSession->SetGameToken(LoginResponse.GameToken);
-	QuerySubsystem->SetAuthToken(LoginResponse.GameToken);
-
-	UE_LOG(LogTemp, Log, TEXT("[CrowdySDK]: Login successful. UserID=%lld GameTokenID=%lld GameToken=%s"),
-		LoginResponse.UserID, LoginResponse.GameTokenID, *LoginResponse.GameToken);
-
-	FUDPAddressRequest UDPAddressRequest;
-	UDPAddressRequest.PrepareQuery();
-	ExecuteQuery(UDPAddressRequest);
-
-	// Host polling starts when UDP connects (HandleUDPAddressNotify success path),
-	// not at login — we need an active UDP connection to be meaningful.
-
-	UE::Tasks::Launch(UE_SOURCE_LOCATION, [this, LoginResponse]()
+	auto BuildAndSend = [this,
+	ChunkX, ChunkY, ChunkZ,
+	TargetActorID,
+	Payload = MoveTemp(EventPayload)]() mutable
 	{
-		OnLogin.Broadcast(true, LoginResponse.GameToken);
-	}, LowLevelTasks::ETaskPriority::Normal, UE::Tasks::EExtendedTaskPriority::GameThreadNormalPri);
+		FSingleActorRequest Request;
+
+		Request.AppID = GameSession->GetAppID();
+		Request.ChunkX = ChunkX;
+		Request.ChunkY = ChunkY;
+		Request.ChunkZ = ChunkZ;
+
+		// The server ignores distance/decay for a single-actor message and routes purely by the
+		// destination UUID, so the chunk only locates the target and these stay at their zero values.
+		Request.DecayRate = ECrowdyDecayRate::No_Decay;
+		Request.ReplicationDistance = ECrowdyReplicationDistance::None;
+
+		// UUID is the destination actor; the server delivers only to the client that owns it.
+		Request.UUID = TargetActorID.ToString(EGuidFormats::Digits);
+
+		FCrowdyTypeID EventID;
+		if (!UEventPayloadRegistry::Get()->GetID(Payload.GetScriptStruct(), EventID))
+		{
+			UE_LOG(LogCrowdySDK, Error, TEXT("Single-actor payload not registered. %s"),
+				*GetNameSafe(Payload.GetScriptStruct()));
+			return;
+		}
+
+		Request.EventType = static_cast<uint16>(EventID);
+
+		if (!USerializationFunctionLibrary::SerializeEventState(Payload, Request.StateBytes))
+		{
+			UE_LOG(LogCrowdySDK, Error, TEXT("Failed to serialize single-actor payload."));
+			return;
+		}
+
+		Request.StateSize = Request.StateBytes.Num();
+
+		SendMessage(Request);
+	};
+
+	if (bAsync)
+	{
+		UE::Tasks::Launch(UE_SOURCE_LOCATION, MoveTemp(BuildAndSend), LowLevelTasks::ETaskPriority::BackgroundNormal);
+	}
+	else
+	{
+		BuildAndSend();
+	}
 }
 
-void UCrowdySDKSubsystem::HandleRegister(const FRegisterResponse& RegisterResponse) const
-{
-	GameSession->SetUserID(RegisterResponse.UserID);
-	GameSession->SetGameToken(RegisterResponse.GameToken);
-	QuerySubsystem->SetAuthToken(RegisterResponse.GameToken);
 
-	UE::Tasks::Launch(UE_SOURCE_LOCATION, [this, RegisterResponse]()
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+
+DEFINE_FUNCTION(UCrowdySDKSubsystem::execK2_DispatchGameEvent)
+{
+	P_GET_PROPERTY(FInt64Property, Z_Param_ChunkX);
+	P_GET_PROPERTY(FInt64Property, Z_Param_ChunkY);
+	P_GET_PROPERTY(FInt64Property, Z_Param_ChunkZ);
+	P_GET_ENUM(ECrowdyDecayRate, Z_Param_DecayRate);
+	P_GET_ENUM(ECrowdyReplicationDistance, Z_Param_ReplicationDistance);
+	P_GET_STRUCT_REF(FGuid, Z_Param_Out_InstigatorID);
+
+	// Wildcard struct — step manually so Blueprint can wire any struct type
+	Stack.MostRecentPropertyAddress = nullptr;
+	Stack.MostRecentProperty        = nullptr;
+	Stack.StepCompiledIn<FStructProperty>(nullptr);
+	const void*      StructPtr  = Stack.MostRecentPropertyAddress;
+	FStructProperty* StructProp = CastField<FStructProperty>(Stack.MostRecentProperty);
+
+	P_GET_ENUM(ECrowdyTarget, Z_Param_Target);
+	P_GET_STRUCT_REF(FGuid, Z_Param_Out_TargetID);
+	P_GET_UBOOL(Z_Param_bAsync);
+	P_FINISH;
+
+	P_NATIVE_BEGIN;
+	if (ensureMsgf(StructProp && StructPtr, TEXT("K2_DispatchGameEvent: EventPayload is not a valid struct.")))
 	{
-		OnRegister.Broadcast(true, RegisterResponse.GameToken);
-	}, LowLevelTasks::ETaskPriority::Normal, UE::Tasks::EExtendedTaskPriority::GameThreadNormalPri);
+		FInstancedStruct EventPayload;
+		EventPayload.InitializeAs(StructProp->Struct, static_cast<const uint8*>(StructPtr));
+		P_THIS->DispatchGameEvent_Internal(
+			Z_Param_ChunkX, Z_Param_ChunkY, Z_Param_ChunkZ,
+			static_cast<ECrowdyDecayRate>(Z_Param_DecayRate),
+			static_cast<ECrowdyReplicationDistance>(Z_Param_ReplicationDistance),
+			Z_Param_Out_InstigatorID,
+			MoveTemp(EventPayload),
+			static_cast<ECrowdyTarget>(Z_Param_Target),
+			Z_Param_Out_TargetID,
+			(bool)Z_Param_bAsync);
+	}
+	P_NATIVE_END;
+}
+
+void UCrowdySDKSubsystem::HandleAuthLogin(FCrowdyAuthResult Result)
+{
+	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Login successful. UserID=%lld GameToken=%s"),
+	Result.UserID, *Result.GameToken);
+	
+	RequestUDPAccess();
+	
+	OnLogin.Broadcast(true, Result.GameToken);
+
+}
+
+void UCrowdySDKSubsystem::HandleAuthLoginFailed(FString Message)
+{
+	OnLogin.Broadcast(false, FString());
+}
+
+void UCrowdySDKSubsystem::HandleAuthRegister(FCrowdyAuthResult Result)
+{
+	OnRegister.Broadcast(true, Result.GameToken);
+
+}
+
+void UCrowdySDKSubsystem::HandleAuthRegisterFailed(FString Message)
+{
+	OnRegister.Broadcast(false, FString());
 }
 
 void UCrowdySDKSubsystem::HandleUDPAddressNotify(const FUDPAddressNotify& UDPAddressNotify)
@@ -525,7 +697,7 @@ void UCrowdySDKSubsystem::HandleUDPAddressNotify(const FUDPAddressNotify& UDPAdd
 
 	if (bSuccess)
 	{
-		// ── Auto-start timeout monitoring ──────────────────────────────────
+		// Auto-start timeout monitoring
 		// Read the threshold fresh from settings each time so editor tweaks
 		// take effect without restarting the game.
 		const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
@@ -535,7 +707,7 @@ void UCrowdySDKSubsystem::HandleUDPAddressNotify(const FUDPAddressNotify& UDPAdd
 
 		UdpSubsystem->StartTimeoutMonitoring(TimeoutSecs);
 
-		// ── Auto-start keep-alive ping ─────────────────────────────────────
+		// Auto-start keep-alive ping 
 		// SetTimer is game-thread-only; this entire function may be called
 		// from a UE::Tasks worker, so dispatch to the game thread explicitly.
 		TWeakObjectPtr<UCrowdySDKSubsystem> WeakThis(this);
@@ -559,8 +731,8 @@ void UCrowdySDKSubsystem::HandleUDPAddressNotify(const FUDPAddressNotify& UDPAdd
 			}
 		});
 
-		// Begin host polling now that UDP is live — but only if we're already
-		// logged in (UserID > 0). If this is a reconnect before login, polling
+		// Begin host polling now that UDP is live but only if we're already
+		// logged in (UserID > 0). If this is a reconnection before login, polling
 		// will be skipped here and will never start (login no longer starts it).
 		if (GameSession->GetUserID() != 0)
 			StartHostPolling();
@@ -611,7 +783,7 @@ bool UCrowdySDKSubsystem::TryLoadConfiguration()
 
 	if (!IsValid(Settings))
 	{
-		UE_LOG(LogTemp, Error, TEXT("[CrowdySDK]: Developer Settings are invalid — check Project Settings -> Plugins -> Crowdy SDK."));
+		UE_LOG(LogCrowdySDK, Error, TEXT("Developer Settings are invalid — check Project Settings -> Plugins -> Crowdy SDK."));
 		return false;
 	}
 
@@ -623,22 +795,12 @@ bool UCrowdySDKSubsystem::TryLoadConfiguration()
 	// UDPTimeoutSeconds is read directly in HandleUDPAddressNotify so that
 	// live-settings changes in the editor take effect without restarting.
 
-	if (const UEventPayloadType* DataAsset = Settings->EventPayloadDataAsset.LoadSynchronous())
-	{
-		UEventPayloadRegistry::Get()->LoadFromDataAsset(DataAsset);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[CrowdySDK]: Event Payload Data Asset is not set in Developer Settings — event replication will not function."));
-		// Non-fatal: the game can still run without event payloads configured
-	}
-
 	return true;
 }
 
 void UCrowdySDKSubsystem::OnUDPTimeout()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[CrowdySDK] UDP timed out — auto-reconnecting."));
+	UE_LOG(LogCrowdySDK, Warning, TEXT("UDP timed out — auto-reconnecting."));
 
 	// Stop polling while the connection is down; it restarts automatically
 	// once HandleUDPAddressNotify reports success again.
@@ -657,6 +819,11 @@ void UCrowdySDKSubsystem::OnUDPTimeout()
 void UCrowdySDKSubsystem::OnUDPConnectionSuccessful()
 {
 	OnUDPConnectionSuccess.Broadcast();
+
+	// The socket is up and the player is authenticated, so join the reliable-RPC channels now; any
+	// reliable sends queued before this flush once the joins complete. Idempotent across reconnects.
+	if (UCrowdyChannels* Channels = GetGameInstance()->GetSubsystem<UCrowdyChannels>())
+		Channels->BootstrapReliableRpcChannels();
 }
 
 void UCrowdySDKSubsystem::SendPingTestMessage()
@@ -678,13 +845,13 @@ void UCrowdySDKSubsystem::RegisterReceptionLayer(ICrowdyReceptionLayer* Layer) c
 {
 	if (!Layer)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[CrowdySDK] Candidate Reception Layer is null."));
+		UE_LOG(LogCrowdySDK, Error, TEXT("Candidate Reception Layer is null."));
 		return;
 	}
 
 	if (!ServiceRegistry)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[CrowdySDK] Service Registry is null."));
+		UE_LOG(LogCrowdySDK, Error, TEXT("Service Registry is null."));
 		return;
 	}
 
@@ -695,13 +862,13 @@ void UCrowdySDKSubsystem::RegisterQueryReceptionLayer(ICrowdyQueryReceptionLayer
 {
 	if (!LayerToRegister)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[CrowdySDK] Candidate Query Reception Layer is null."));
+		UE_LOG(LogCrowdySDK, Error, TEXT("Candidate Query Reception Layer is null."));
 		return;
 	}
 
 	if (!DataRegistry)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[CrowdySDK] Data Registry is null."));
+		UE_LOG(LogCrowdySDK, Error, TEXT("Data Registry is null."));
 		return;
 	}
 
@@ -728,7 +895,7 @@ void UCrowdySDKSubsystem::SendMessage(const ICrowdyMessage& Message) const
 
 void UCrowdySDKSubsystem::ExecuteQuery(ICrowdyQueryRequest& Query) const
 {
-	UE_LOG(LogTemp, Log, TEXT("[CrowdySDK]: Execute Query:%s"), *Query.GetOperationName().ToString());
+	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Execute Query:%s"), *Query.GetOperationName().ToString());
 	QueryTransmissionLayer->ExecuteQuery(Query);
 }
 
@@ -746,24 +913,14 @@ void UCrowdySDKSubsystem::OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Re
 {
 	if (!Response->IsValid())
 	{
-		UE_LOG(LogTemp, Error, TEXT("%s"), *Response->GetError())
+		UE_LOG(LogCrowdySDK, Error, TEXT("%s"), *Response->GetError())
 		UE::Tasks::Launch(UE_SOURCE_LOCATION, [this, Response]()
 		{
 			switch (Response->GetResponseType())
 			{
-			case EQueryResponseType::Register:
-				{
-					OnRegister.Broadcast(false, "");
-					break;
-				}
 			case EQueryResponseType::UDP_Info:
 				{
 					OnUDPAddressNotify.Broadcast(false, false);
-					break;
-				}
-			case EQueryResponseType::Login:
-				{
-					OnLogin.Broadcast(false, "");
 					break;
 				}
 			case EQueryResponseType::TeleportRequest:
@@ -786,18 +943,6 @@ void UCrowdySDKSubsystem::OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Re
 
 	switch (Response->GetResponseType())
 	{
-	case EQueryResponseType::Login:
-		{
-			const FLoginResponse LoginResponse = static_cast<FLoginResponse&>(*Response);
-			HandleLogin(LoginResponse);
-			break;
-		}
-	case EQueryResponseType::Register:
-		{
-			const FRegisterResponse RegisterResponse = static_cast<FRegisterResponse&>(*Response);
-			HandleRegister(RegisterResponse);
-			break;
-		}
 	case EQueryResponseType::UDP_Info:
 		{
 			const FUDPAddressNotify UDPAddressNotify = static_cast<FUDPAddressNotify&>(*Response);
@@ -833,8 +978,8 @@ void UCrowdySDKSubsystem::OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Re
 				HostSubsystem->SetHostUserID(HostResponse.HostUserId);
 				const bool bAmHost = HostSubsystem->IsHost();
 			
-				UE_LOG(LogTemp, Log,
-				TEXT("[CrowdySDK] GameHost | HostUserID=%lld | LocalUserID=%lld | IsHost=%s | ActorCount=%d | EarliestJoined=%s"),
+				UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log,
+				TEXT("GameHost | HostUserID=%lld | LocalUserID=%lld | IsHost=%s | ActorCount=%d | EarliestJoined=%s"),
 				HostResponse.HostUserId,
 				GameSession->GetUserID(),
 				bAmHost ? TEXT("YES") : TEXT("no"),
@@ -846,7 +991,7 @@ void UCrowdySDKSubsystem::OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Re
 		}
 
 	default:
-		UE_LOG(LogTemp, Warning, TEXT("[CrowdySDK] Unknown response received:%s"),
+		UE_LOG(LogCrowdySDK, Warning, TEXT("Unknown response received:%s"),
 		       *Response->GetOperationName().ToString())
 	}
 }
@@ -855,8 +1000,6 @@ TArray<EQueryResponseType> UCrowdySDKSubsystem::GetSupportedResponseType() const
 {
 	return
 	{
-		EQueryResponseType::Register,
-		EQueryResponseType::Login,
 		EQueryResponseType::UDP_Info,
 		EQueryResponseType::VersionInfo,
 		EQueryResponseType::TeleportRequest,
@@ -922,7 +1065,7 @@ void UCrowdySDKSubsystem::StartHostPolling() const
 				Interval, /*bLoop=*/true, /*FirstDelay=*/0.f); // fire immediately, then loop
 		}
 
-		UE_LOG(LogTemp, Log, TEXT("[CrowdySDK] GameHost polling started (interval=%.1fs)"), Interval);
+		UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("GameHost polling started (interval=%.1fs)"), Interval);
 	});
 }
 
@@ -933,7 +1076,7 @@ void UCrowdySDKSubsystem::StopHostPolling()
 		if (UWorld* World = GetWorld())
 			World->GetTimerManager().ClearTimer(HostPollTimerHandle);
 
-		UE_LOG(LogTemp, Log, TEXT("[CrowdySDK] GameHost polling stopped."));
+		UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("GameHost polling stopped."));
 	}
 }
 
