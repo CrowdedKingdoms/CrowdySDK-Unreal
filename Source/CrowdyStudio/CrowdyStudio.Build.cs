@@ -32,11 +32,5 @@ public class CrowdyStudio : ModuleRules
 			"CrowdyServices",
 			"CKSharedTypes"
 		});
-
-		// DPAPI (CryptProtectData / CryptUnprotectData) for the editor token vault.
-		if (Target.Platform == UnrealTargetPlatform.Win64)
-		{
-			PublicSystemLibraries.Add("Crypt32.lib");
-		}
 	}
 }

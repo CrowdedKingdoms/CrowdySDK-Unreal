@@ -66,7 +66,7 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// Pure allocations (no world required)
 	ServiceRegistry = new FCrowdyServiceRegistry();
 	DataRegistry    = new FCrowdyDataRegistry();
-	Parser          = new FCrowdyMessageParser(ServiceRegistry, UdpSubsystem, [this]{ TriggerUdpHeartbeat(); }, GameSession);
+	Parser          = new FCrowdyMessageParser(ServiceRegistry, UdpSubsystem, [this]{ TriggerUdpHeartbeat(); }, GameSession, [this]{ HandleTokenExpired(); });
 	BufferPool      = new FMessageBufferPool();
 
 	if (UCrowdySDKBridgeSubsystem* BridgeSub = GetGameInstance()->GetSubsystem<UCrowdySDKBridgeSubsystem>())
@@ -186,6 +186,8 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	CrowdyAuth->OnLoginFailed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthLoginFailed);
 	CrowdyAuth->OnRegister.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthRegister);
 	CrowdyAuth->OnRegisterFailed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthRegisterFailed);
+	CrowdyAuth->OnSessionRestored.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthSessionRestored);
+	CrowdyAuth->OnAppTokenRefreshed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAppTokenRefreshed);
 }
 
 void UCrowdySDKSubsystem::Deinitialize()
@@ -246,8 +248,43 @@ void UCrowdySDKSubsystem::Register(const FString Email, const FString Password) 
 		Auth->Register(Email, Password, FOnAuthSuccess(), FOnAuthError());
 }
 
+void UCrowdySDKSubsystem::DevLogin(const FString Email) const
+{
+	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+		Auth->DevLogin(Email, FOnAuthSuccess(), FOnAuthError());
+}
+
+void UCrowdySDKSubsystem::CompleteLoginLink(const FString Token) const
+{
+	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+		Auth->CompleteLoginLink(Token, FOnAuthSuccess(), FOnAuthError());
+}
+
+void UCrowdySDKSubsystem::BeginMagicLinkSignIn(const FString Email) const
+{
+	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+		Auth->BeginMagicLinkSignIn(Email, FOnAuthSuccess(), FOnAuthError());
+}
+
+void UCrowdySDKSubsystem::BeginSocialSignIn(const FString Provider) const
+{
+	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+		Auth->BeginSocialSignIn(Provider, FOnAuthSuccess(), FOnAuthError());
+}
+
+void UCrowdySDKSubsystem::RefreshAppToken() const
+{
+	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+		Auth->RefreshAppToken();
+}
+
 void UCrowdySDKSubsystem::Logout() const
 {
+	// Forget the durable credential too: cancel the refresh timer and delete the
+	// persisted SESSION token so the next launch does not silently restore the user.
+	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+		Auth->ClearSavedSession();
+
 	QuerySubsystem->ClearAuthToken();
 	GameSession->ClearCurrentSessionData();
 
@@ -266,9 +303,17 @@ void UCrowdySDKSubsystem::Logout() const
 void UCrowdySDKSubsystem::SetGameSessionInfo(const FGameSessionInfo GameSessionInfo)
 {
 	GameSession->SetUserID(GameSessionInfo.UserID);
-	GameSession->SetGameTokenID(GameSessionInfo.GameTokenID);
+
+	// Management plane: the identity SESSION token.
+	GameSession->SetSessionToken(GameSessionInfo.SessionToken);
+	GameSession->SetSessionGameTokenID(GameSessionInfo.SessionGameTokenID);
+	QuerySubsystem->SetSessionToken(GameSessionInfo.SessionToken);
+
+	// Gameplay plane: the app-scoped token (Game API / UDP). Kept distinct from the
+	// session token so a management credential never authorizes gameplay.
 	GameSession->SetGameToken(GameSessionInfo.GameToken);
-	QuerySubsystem->SetAuthToken(GameSessionInfo.GameToken);
+	GameSession->SetGameTokenID(GameSessionInfo.GameTokenID);
+	QuerySubsystem->SetAppToken(GameSessionInfo.GameToken);
 }
 
 void UCrowdySDKSubsystem::RequestUDPAccess() const
@@ -647,13 +692,13 @@ DEFINE_FUNCTION(UCrowdySDKSubsystem::execK2_DispatchGameEvent)
 
 void UCrowdySDKSubsystem::HandleAuthLogin(FCrowdyAuthResult Result)
 {
-	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Login successful. UserID=%lld GameToken=%s"),
-	Result.UserID, *Result.GameToken);
-	
-	RequestUDPAccess();
-	
-	OnLogin.Broadcast(true, Result.GameToken);
+	// Never log the token itself (it is a bearer credential). Auth has already minted
+	// the app token by the time this fires, so RequestUDPAccess authorizes with it.
+	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Sign-in successful. UserID=%lld"), Result.UserID);
 
+	RequestUDPAccess();
+
+	OnLogin.Broadcast(true, Result.GameToken);
 }
 
 void UCrowdySDKSubsystem::HandleAuthLoginFailed(FString Message)
@@ -663,13 +708,49 @@ void UCrowdySDKSubsystem::HandleAuthLoginFailed(FString Message)
 
 void UCrowdySDKSubsystem::HandleAuthRegister(FCrowdyAuthResult Result)
 {
-	OnRegister.Broadcast(true, Result.GameToken);
+	// Registration signs the player in and mints an app token, so it proceeds to
+	// UDP access exactly like a login.
+	RequestUDPAccess();
 
+	OnRegister.Broadcast(true, Result.GameToken);
 }
 
 void UCrowdySDKSubsystem::HandleAuthRegisterFailed(FString Message)
 {
 	OnRegister.Broadcast(false, FString());
+}
+
+void UCrowdySDKSubsystem::HandleAuthSessionRestored(FCrowdyAuthResult Result)
+{
+	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Session restored. UserID=%lld"), Result.UserID);
+
+	RequestUDPAccess();
+
+	// A restored session is a signed-in player; surface it on the same delegate.
+	OnLogin.Broadcast(true, Result.GameToken);
+}
+
+void UCrowdySDKSubsystem::HandleAppTokenRefreshed()
+{
+	// The app token rotated (proactive timer or expiry recovery). Re-assign the UDP
+	// session so the server installs the new token/gameTokenId.
+	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("App token refreshed - re-assigning UDP session."));
+	RequestUDPAccess();
+}
+
+void UCrowdySDKSubsystem::HandleTokenExpired()
+{
+	// Called from the UDP receive worker thread; marshal to the game thread before
+	// touching the auth subsystem (timers, delegates, query dispatch).
+	TWeakObjectPtr<UCrowdySDKSubsystem> WeakThis(this);
+	AsyncTask(ENamedThreads::GameThread, [WeakThis]()
+	{
+		UCrowdySDKSubsystem* Self = WeakThis.Get();
+		if (!IsValid(Self))
+			return;
+		if (UCrowdyAuthentication* Auth = Self->GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+			Auth->RecoverExpiredAppToken();
+	});
 }
 
 void UCrowdySDKSubsystem::HandleUDPAddressNotify(const FUDPAddressNotify& UDPAddressNotify)

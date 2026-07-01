@@ -16,6 +16,22 @@ enum class ECrowdyApiTarget : uint8
 };
 
 /**
+ * Which bearer token a query authenticates with.
+ *   Auto    — Session for Management queries, App for Game queries (the rule).
+ *   Session — identity session token (management-plane: mint, identities, me).
+ *   App     — app-scoped gameplay token (Game API, and refreshAppToken which is a
+ *             Management mutation but re-presents the current app token).
+ *   None    — no bearer (public sign-in mutations).
+ */
+enum class ECrowdyTokenScope : uint8
+{
+	Auto,
+	Session,
+	App,
+	None,
+};
+
+/**
  * Compile-time metadata for a single GraphQL query.
  * Every query the SDK can send has exactly one row in FCrowdyQueryDescriptor.cpp.
  */
@@ -27,6 +43,7 @@ struct FCrowdyQueryDescriptor
 	bool               bRequiresAuth  = true;
 	float              TimeoutSeconds = 10.f;
 	int32              MaxRetries     = 0;   // For automatic retry on transient failures
+	ECrowdyTokenScope  TokenScope     = ECrowdyTokenScope::Auto;  // Which bearer token to attach
 };
 
 /**
@@ -49,6 +66,9 @@ public:
 	static float              GetTimeout(EGraphQLQuery QueryID);
 	static int32              GetMaxRetries(EGraphQLQuery QueryID);
 	static EQueryResponseType GetResponseType(EGraphQLQuery QueryID);
+
+	/** Resolves Auto to Session (Management) or App (Game); returns explicit scopes as-is. */
+	static ECrowdyTokenScope  GetTokenScope(EGraphQLQuery QueryID);
 
 private:
 	static const TArray<FCrowdyQueryDescriptor>& GetAll();

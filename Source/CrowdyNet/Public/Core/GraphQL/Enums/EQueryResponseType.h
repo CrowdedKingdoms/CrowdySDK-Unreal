@@ -7,6 +7,14 @@ enum EQueryResponseType: uint8
 {
 	Login,
 	Register,
+
+	// Passwordless authentication + app-scoped tokens
+	RequestLoginLink,
+	CompleteLoginLink,
+	DevLogin,
+	MintAppToken,
+	RefreshAppToken,
+
 	UDP_Info,
 	GetChunkByDistance,
 	UpdateChunk,
@@ -77,4 +85,12 @@ enum EQueryResponseType: uint8
 	DeleteChannelRole,
 	SetChannelMemberRoles,
 	SetChannelPolicy,
+
+	// Social sign-in + identities (M2)
+	SocialLoginStart,
+	SocialLoginComplete,
+	AvailableLoginProviders,
+	MyIdentities,
+	LinkIdentity,
+	UnlinkIdentity,
 };

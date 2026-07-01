@@ -101,7 +101,31 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
 	void Register(const FString Email, const FString Password) const;
-	
+
+	/** Dev-bypass sign-in (DEV_AUTH_BYPASS only). Result arrives on OnLogin. */
+	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	void DevLogin(const FString Email) const;
+
+	/** Magic-link step 2 — complete sign-in with the one-time token. Result on OnLogin.
+	 *  Pair with UCrowdyAuthentication::RequestLoginLink (step 1). */
+	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	void CompleteLoginLink(const FString Token) const;
+
+	/** One-call magic-link sign-in: opens a loopback listener, requests the email link, and
+	 *  completes automatically when the user clicks it (dev short-circuits via devToken). Result
+	 *  on OnLogin. */
+	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	void BeginMagicLinkSignIn(const FString Email) const;
+
+	/** One-call social (OAuth) sign-in via a loopback listener + system browser. Provider comes
+	 *  from UCrowdyAuthentication::GetAvailableLoginProviders (e.g. "google"). Result on OnLogin. */
+	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	void BeginSocialSignIn(const FString Provider) const;
+
+	/** Manually rotate the app-scoped token (also happens automatically before expiry). */
+	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	void RefreshAppToken() const;
+
 	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
 	void Logout() const;
 
@@ -312,17 +336,31 @@ private:
 	
 	UFUNCTION()
 	void HandleAuthLogin(FCrowdyAuthResult Result);
-	
+
 	UFUNCTION()
 	void HandleAuthRegister(FCrowdyAuthResult Result);
-	
+
 	/** Called by UCrowdyAuthentication::OnLoginFailed to forward failure on OnLogin. */
 	UFUNCTION()
 	void HandleAuthLoginFailed(FString Message);
-	
+
 	/** Called by UCrowdyAuthentication::OnRegisterFailed to forward failure on OnRegister. */
 	UFUNCTION()
 	void HandleAuthRegisterFailed(FString Message);
+
+	/** Called by UCrowdyAuthentication::OnSessionRestored — requests UDP access with
+	 *  the re-minted app token and forwards success on OnLogin. */
+	UFUNCTION()
+	void HandleAuthSessionRestored(FCrowdyAuthResult Result);
+
+	/** Called by UCrowdyAuthentication::OnAppTokenRefreshed after a token rotation —
+	 *  re-requests UDP access so the new app token re-assigns the Buddy session. */
+	UFUNCTION()
+	void HandleAppTokenRefreshed();
+
+	/** Routed (game thread) from the UDP message parser on TOKEN_EXPIRED (error 32);
+	 *  asks Authentication to re-mint and re-assign. */
+	void HandleTokenExpired();
 	
 	void HandleUDPAddressNotify(const FUDPAddressNotify& UDPAddressNotify); // non-const: manages ping timer
 	void HandleVersionInfoResponse(const FVersionInfoResponse& VersionInfoResponse) const;

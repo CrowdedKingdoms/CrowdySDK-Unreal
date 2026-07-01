@@ -2,7 +2,7 @@
 
 #include "Auth/FCrowdyTokenVault.h"
 
-#include "Auth/FCrowdySecretFile.h"
+#include "Security/FCrowdySecretFile.h"
 #include "Misc/Paths.h"
 
 FString FCrowdyTokenVault::GetCredentialFilePath()

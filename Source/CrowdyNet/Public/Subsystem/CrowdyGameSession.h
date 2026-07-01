@@ -25,12 +25,37 @@ struct FGameSessionInfo
 	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
 	int64 AppID = 1;
 	
+	/** Identity SESSION token (management-plane). Mints/refreshes app tokens; NOT
+	 *  accepted for gameplay. Persisted (securely) across sessions. */
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
+	FString SessionToken = "";
+
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
+	int64 SessionGameTokenID = 0;
+
+	/** App-scoped GAMEPLAY token. Bearer for the Game API, HMAC key for UDP, and
+	 *  carried (as GameTokenID) in the UDP spatial message tail. Short-lived
+	 *  (~30 min); kept in memory only, never persisted. */
 	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
 	FString GameToken = "";
 	
 	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
 	int64 GameTokenID = 0;
 	
+	/** ISO-8601 expiry of the app token (from mint/refresh). Drives proactive refresh. */
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
+	FString AppTokenExpiresAt = "";
+
+	/** Per-app Game API endpoints returned by mintAppToken/refreshAppToken. */
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
+	FString GameApiUrl = "";
+
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
+	FString GameApiWsUrl = "";
+
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
+	FString LaunchUrl = "";
+
 	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
 	int64 UserID = 0;
 	
@@ -57,9 +82,16 @@ struct FGameSessionInfo
 	
 	void Reset()
 	{
-		AppID = 0;
+		// AppID is configuration (loaded from developer settings), not per-session
+		// state — keep it so a sign-in after logout can still mint for the app.
+		SessionToken = "";
+		SessionGameTokenID = 0;
 		GameToken = "";
 		GameTokenID = 0;
+		AppTokenExpiresAt = "";
+		GameApiUrl = "";
+		GameApiWsUrl = "";
+		LaunchUrl = "";
 		UserID = 0;
 		UUID = "";
 		CurrentPlayerChunkCoordinates = {0, 0, 0};
@@ -104,6 +136,44 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetGameToken(const FString InGameToken){GameSessionInfo.GameToken = InGameToken;}
+	
+	/** Identity SESSION token (management-plane). */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
+	void SetSessionToken(const FString InSessionToken){GameSessionInfo.SessionToken = InSessionToken;}
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	FString GetSessionToken() const {return GameSessionInfo.SessionToken;}
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
+	void SetSessionGameTokenID(const int64 InSessionGameTokenID){GameSessionInfo.SessionGameTokenID = InSessionGameTokenID;}
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	int64 GetSessionGameTokenID() const {return GameSessionInfo.SessionGameTokenID;}
+
+	/** App-token metadata from mintAppToken / refreshAppToken. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
+	void SetAppTokenExpiresAt(const FString InExpiresAt){GameSessionInfo.AppTokenExpiresAt = InExpiresAt;}
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	FString GetAppTokenExpiresAt() const {return GameSessionInfo.AppTokenExpiresAt;}
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
+	void SetGameApiUrl(const FString InGameApiUrl){GameSessionInfo.GameApiUrl = InGameApiUrl;}
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	FString GetGameApiUrl() const {return GameSessionInfo.GameApiUrl;}
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
+	void SetGameApiWsUrl(const FString InGameApiWsUrl){GameSessionInfo.GameApiWsUrl = InGameApiWsUrl;}
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	FString GetGameApiWsUrl() const {return GameSessionInfo.GameApiWsUrl;}
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
+	void SetLaunchUrl(const FString InLaunchUrl){GameSessionInfo.LaunchUrl = InLaunchUrl;}
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	FString GetLaunchUrl() const {return GameSessionInfo.LaunchUrl;}
 	
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetUUID(FString InUUID)

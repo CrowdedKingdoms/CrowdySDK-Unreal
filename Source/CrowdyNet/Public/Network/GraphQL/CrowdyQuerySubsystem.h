@@ -69,12 +69,21 @@ public:
 	FOnTeleportResponse OnTeleport;
 	
 	void InitializeQuerySubsystem(FCrowdyDataRegistry* InDataRegistry);
-	
-	void SetAuthToken(const FString& InAuthToken);
-	
+
+	/** Clears both token planes (session + app). Used on logout / teardown. */
 	void ClearAuthToken();
 	
 	[[nodiscard]] bool HasAuthToken() const;
+	
+	/** Identity SESSION token — bearer for Management-plane queries. */
+	void SetSessionToken(const FString& InSessionToken);
+	void ClearSessionToken();
+	[[nodiscard]] bool HasSessionToken() const;
+
+	/** App-scoped GAMEPLAY token — bearer for Game-plane queries and refreshAppToken. */
+	void SetAppToken(const FString& InAppToken);
+	void ClearAppToken();
+	[[nodiscard]] bool HasAppToken() const;
 	
 	void ExecuteQueryByID(const EGraphQLQuery QueryID, const TMap<FString, FString>& RuntimeVariables, const bool bIncludeAuthToken = true, const bool bUseNestedJson = false);
 
@@ -104,7 +113,10 @@ private:
 	FCrowdyDataRegistry* DataRegistry;
 	
 	UPROPERTY()
-	FString AuthToken;
+	FString SessionToken;
+
+	UPROPERTY()
+	FString AppToken;
 	
 	UPROPERTY()
 	FString ManagementEndpoint;

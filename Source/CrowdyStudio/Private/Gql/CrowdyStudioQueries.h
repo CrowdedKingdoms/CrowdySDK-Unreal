@@ -15,6 +15,26 @@ class FJsonObject;
 namespace CrowdyStudioGql
 {
 	FString LoginMutation();
+	// Dev-only, passwordless sign-in: returns the same AuthResponse (identity SESSION token) as login.
+	// The server throws FORBIDDEN unless it runs with DEV_AUTH_BYPASS=true.
+	FString DevLoginMutation();
+	// Mint a short-lived app-scoped GAMEPLAY token from the SESSION token (management plane, session
+	// bearer). Game API ops authorize with THIS token, not the session token (the two-token model).
+	// appId is the BigInt scalar sent as a JSON string; the response also carries the authoritative
+	// per-app game endpoints. Follows the runtime mint (CrowdyNet FMintAppTokenRequest).
+	FString MintAppTokenMutation();
+
+	// Passwordless sign-in options that all return the same AuthResponse (management-plane SESSION
+	// token) as login/devLogin, so they can mint an app token and unlock game-plane authoring. All are
+	// PUBLIC (no bearer): at sign-in time AuthToken is empty and SendManagement omits the Authorization
+	// header. Shapes mirror the runtime M2 requests (flat vars, input built inline in the body), which
+	// are proven build-green — copied from the runtime, not re-derived from the docs.
+	FString SocialLoginStartMutation();
+	FString SocialLoginCompleteMutation();
+	FString AvailableLoginProvidersQuery();
+	FString RequestLoginLinkMutation();
+	FString CompleteLoginLinkMutation();
+
 	FString MyOrganizationsQuery();
 	FString CreateOrganizationMutation();
 	FString MyAppsQuery();
@@ -94,6 +114,23 @@ namespace CrowdyStudioGql
 	// Each parser takes the full response envelope ({ data, errors }) and digs into
 	// `data` itself, returning false when the expected node is missing.
 	bool ParseLogin(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId);
+	// Mirrors ParseLogin but reads the devLogin field. Same AuthResponse shape, same out-params.
+	bool ParseDevLogin(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId);
+	// Reads the mintAppToken response: the app-scoped token plus the per-app game endpoints and the
+	// token expiry (ISO-8601). Returns false when the token is missing.
+	bool ParseAppToken(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, FString& OutGameApiUrl,
+	                   FString& OutGameApiWsUrl, FString& OutExpiresAt);
+
+	// socialLoginStart -> { authorizeUrl, state }. False when the node or authorizeUrl is missing.
+	bool ParseSocialLoginStart(const TSharedPtr<FJsonObject>& Envelope, FString& OutAuthorizeUrl, FString& OutState);
+	// socialLoginComplete / completeLoginLink both return the AuthResponse shape (token + user{userId});
+	// each reads its own field. False when the token is missing.
+	bool ParseSocialLoginComplete(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId);
+	bool ParseCompleteLoginLink(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId);
+	// requestLoginLink -> { sent, devToken }. In dev devToken is non-empty and short-circuits the email.
+	bool ParseRequestLoginLink(const TSharedPtr<FJsonObject>& Envelope, bool& OutSent, FString& OutDevToken);
+	// availableLoginProviders -> [String]: the enabled federated providers that drive the sign-in buttons.
+	void ParseProviders(const TSharedPtr<FJsonObject>& Envelope, TArray<FString>& OutProviders);
 	void ParseOrganizations(const TSharedPtr<FJsonObject>& Envelope, TArray<TSharedPtr<FStudioOrg>>& OutOrgs);
 	TSharedPtr<FStudioOrg> ParseOrganization(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName);
 	void ParseApps(const TSharedPtr<FJsonObject>& Envelope, TArray<TSharedPtr<FStudioApp>>& OutApps);

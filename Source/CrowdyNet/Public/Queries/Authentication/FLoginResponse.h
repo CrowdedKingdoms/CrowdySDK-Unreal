@@ -4,8 +4,8 @@
 struct FLoginResponse : ICrowdyQueryResponse
 {
 	FString GameToken;
-	int64 GameTokenID;
-	int64 UserID;
+	int64 GameTokenID = 0;
+	int64 UserID = 0;
 
 	virtual EQueryResponseType GetResponseType() const override
 	{

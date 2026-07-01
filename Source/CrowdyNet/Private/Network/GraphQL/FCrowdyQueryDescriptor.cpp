@@ -1,23 +1,22 @@
 #include "Network/GraphQL/FCrowdyQueryDescriptor.h"
 #include "CrowdyNetLog.h"
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Single authoritative table.  One row per query — this is the only place
+
+// Single authoritative table.  One row per query this is the only place
 // that needs editing when a new query is added to the SDK.
 //
 // Columns:
-//   QueryID              — EGraphQLQuery value (what we send)
-//   ResponseType         — EQueryResponseType value (what we expect back)
-//   ApiTarget            — Management or Game endpoint
-//   bRequiresAuth        — whether to attach the Bearer token
-//   TimeoutSeconds       — per-query HTTP timeout (replaces the old 120s blanket)
-//   MaxRetries           — automatic retries on transient failures (0 = none)
+//   QueryID EGraphQLQuery value (what we send)
+//   ResponseType EQueryResponseType value (what we expect back)
+//   ApiTarget Management or Game endpoint
+//   bRequiresAuth whether to attach the Bearer token
+//   TimeoutSeconds per-query HTTP timeout (replaces the old 120s blanket)
+//   MaxRetries automatic retries on transient failures (0 = none)
 //
 // Notes on MaxRetries:
 //   UDP_Access = 1 because the game-token sync to the tenant DB can lag on dev.
-//   The handoff doc explicitly says "if step 2 fails, log in once more" — this
+//   The handoff doc explicitly says "if step 2 fails, log in once more" this
 //   automates that. Retry fires after 1 s (see OnHttpsRequestComplete).
-// ─────────────────────────────────────────────────────────────────────────────
 
 const TArray<FCrowdyQueryDescriptor>& FCrowdyQueryDescriptors::GetAll()
 {
@@ -26,6 +25,26 @@ const TArray<FCrowdyQueryDescriptor>& FCrowdyQueryDescriptors::GetAll()
 		//  QueryID                              ResponseType                               ApiTarget                      Auth    Timeout  Retries
 		{ EGraphQLQuery::Login,                  EQueryResponseType::Login,                 ECrowdyApiTarget::Management,  false,  10.f,    0 },
 		{ EGraphQLQuery::Register,               EQueryResponseType::Register,              ECrowdyApiTarget::Management,  false,  10.f,    0 },
+
+		// Passwordless authentication + app-scoped tokens (Management endpoint).
+		// Sign-in mutations are public (None). mintAppToken uses the SESSION token
+		// (Auto -> Session). refreshAppToken re-presents the current APP token, so
+		// it is pinned to App scope even though it is a Management-plane mutation.
+		{ EGraphQLQuery::RequestLoginLink,       EQueryResponseType::RequestLoginLink,      ECrowdyApiTarget::Management,  false,  10.f,    0,  ECrowdyTokenScope::None },
+		{ EGraphQLQuery::CompleteLoginLink,      EQueryResponseType::CompleteLoginLink,     ECrowdyApiTarget::Management,  false,  10.f,    0,  ECrowdyTokenScope::None },
+		{ EGraphQLQuery::DevLogin,               EQueryResponseType::DevLogin,              ECrowdyApiTarget::Management,  false,  10.f,    0,  ECrowdyTokenScope::None },
+		{ EGraphQLQuery::MintAppToken,           EQueryResponseType::MintAppToken,          ECrowdyApiTarget::Management,  true,   10.f,    0,  ECrowdyTokenScope::Session },
+		{ EGraphQLQuery::RefreshAppToken,        EQueryResponseType::RefreshAppToken,       ECrowdyApiTarget::Management,  true,   10.f,    0,  ECrowdyTokenScope::App },
+
+		// Social sign-in + identities (M2, Management endpoint). Sign-in ops are public
+		// (None); identity management requires the SESSION token (Session scope).
+		{ EGraphQLQuery::SocialLoginStart,        EQueryResponseType::SocialLoginStart,        ECrowdyApiTarget::Management,  false,  10.f,    0,  ECrowdyTokenScope::None },
+		{ EGraphQLQuery::SocialLoginComplete,     EQueryResponseType::SocialLoginComplete,     ECrowdyApiTarget::Management,  false,  10.f,    0,  ECrowdyTokenScope::None },
+		{ EGraphQLQuery::AvailableLoginProviders, EQueryResponseType::AvailableLoginProviders, ECrowdyApiTarget::Management,  false,  10.f,    0,  ECrowdyTokenScope::None },
+		{ EGraphQLQuery::MyIdentities,            EQueryResponseType::MyIdentities,            ECrowdyApiTarget::Management,  true,   10.f,    0,  ECrowdyTokenScope::Session },
+		{ EGraphQLQuery::LinkIdentity,            EQueryResponseType::LinkIdentity,            ECrowdyApiTarget::Management,  true,   10.f,    0,  ECrowdyTokenScope::Session },
+		{ EGraphQLQuery::UnlinkIdentity,          EQueryResponseType::UnlinkIdentity,          ECrowdyApiTarget::Management,  true,   10.f,    0,  ECrowdyTokenScope::Session },
+
 		{ EGraphQLQuery::UDP_Access,             EQueryResponseType::UDP_Info,              ECrowdyApiTarget::Game,        true,    5.f,    10 },
 		{ EGraphQLQuery::GetChunkByDistance,     EQueryResponseType::GetChunkByDistance,    ECrowdyApiTarget::Game,        true,   15.f,    0 },
 		{ EGraphQLQuery::UpdateChunk,            EQueryResponseType::UpdateChunk,           ECrowdyApiTarget::Game,        true,   10.f,    0 },
@@ -137,4 +156,19 @@ EQueryResponseType FCrowdyQueryDescriptors::GetResponseType(EGraphQLQuery QueryI
 	if (const FCrowdyQueryDescriptor* Desc = Find(QueryID))
 		return Desc->ResponseType;
 	return EQueryResponseType::Error;
+}
+
+ECrowdyTokenScope FCrowdyQueryDescriptors::GetTokenScope(EGraphQLQuery QueryID)
+{
+	const FCrowdyQueryDescriptor* Desc = Find(QueryID);
+	if (!Desc)
+		return ECrowdyTokenScope::Auto;
+
+	if (Desc->TokenScope != ECrowdyTokenScope::Auto)
+		return Desc->TokenScope;
+
+	// Auto: Session token for the Management plane, App token for gameplay.
+	return Desc->ApiTarget == ECrowdyApiTarget::Management
+		? ECrowdyTokenScope::Session
+		: ECrowdyTokenScope::App;
 }

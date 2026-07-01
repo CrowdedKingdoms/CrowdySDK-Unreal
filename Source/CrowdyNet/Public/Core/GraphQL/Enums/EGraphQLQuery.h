@@ -24,6 +24,13 @@ enum class EGraphQLQuery : uint8
 	Login       UMETA(DisplayName = "Login Query"),
 	Register    UMETA(DisplayName = "Register Query"),
 
+	// Passwordless authentication + app-scoped tokens
+	RequestLoginLink  UMETA(DisplayName = "Request Login Link Mutation"),
+	CompleteLoginLink UMETA(DisplayName = "Complete Login Link Mutation"),
+	DevLogin          UMETA(DisplayName = "Dev Login Mutation"),
+	MintAppToken      UMETA(DisplayName = "Mint App Token Mutation"),
+	RefreshAppToken   UMETA(DisplayName = "Refresh App Token Mutation"),
+
 	//UDP
 	UDP_Access  UMETA(DisplayName = "UDP Access Query"),
 
@@ -108,4 +115,12 @@ enum class EGraphQLQuery : uint8
 	DeleteChannelRole     UMETA(DisplayName = "Delete Channel Role Mutation"),
 	SetChannelMemberRoles UMETA(DisplayName = "Set Channel Member Roles Mutation"),
 	SetChannelPolicy      UMETA(DisplayName = "Set Channel Policy Mutation"),
+
+	// Social sign-in + identities (M2)
+	SocialLoginStart         UMETA(DisplayName = "Social Login Start Mutation"),
+	SocialLoginComplete      UMETA(DisplayName = "Social Login Complete Mutation"),
+	AvailableLoginProviders  UMETA(DisplayName = "Available Login Providers Query"),
+	MyIdentities             UMETA(DisplayName = "My Identities Query"),
+	LinkIdentity             UMETA(DisplayName = "Link Identity Mutation"),
+	UnlinkIdentity           UMETA(DisplayName = "Unlink Identity Mutation"),
 };

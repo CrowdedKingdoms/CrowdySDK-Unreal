@@ -3,10 +3,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/DateTime.h"
 #include "Model/CrowdyStudioTypes.h"
 #include "Templates/SharedPointer.h"
+#include "Templates/UniquePtr.h"
 
 class FJsonObject;
+class FCrowdyLoopbackAuthServer;
 
 enum class ECrowdyStudioAuthScope : uint8
 {
@@ -25,6 +28,9 @@ class FCrowdyStudioController : public TSharedFromThis<FCrowdyStudioController>
 {
 public:
 	FCrowdyStudioController();
+	// Out-of-line so the TUniquePtr<FCrowdyLoopbackAuthServer> member can hold a forward-declared type
+	// (the deleter is instantiated in the .cpp, where the loopback header is included).
+	~FCrowdyStudioController();
 
 	// Restores a remembered token from the vault and validates it. Kept out of the
 	// constructor so the views can bind their delegates before anything broadcasts.
@@ -33,6 +39,21 @@ public:
 	//Sign-in
 	void SignInWithToken(const FString& OrgToken);
 	void LoginWithEmail(const FString& Email, const FString& Password);
+	// Dev-only, passwordless sign-in. Mirrors LoginWithEmail but issues the devLogin mutation; the
+	// server only honours it when running with DEV_AUTH_BYPASS (otherwise FORBIDDEN surfaces as an error).
+	void SignInWithDevLogin(const FString& Email);
+
+	// Passwordless sign-in that yields a mint-capable SESSION token, exactly like email/dev login (so
+	// unlike an org token it can mint an app token and unlock game-plane authoring). Both drive the OAuth
+	// dance in the SYSTEM browser per the native-client docs — never an embedded webview — and capture
+	// the redirect on a 127.0.0.1 loopback listener. FetchAvailableProviders lists which providers the
+	// server has enabled, so the sign-in view renders one button per provider instead of hard-coding them.
+	void FetchAvailableProviders();
+	void SignInWithSocial(const FString& Provider);
+	// Emails a one-time sign-in link whose redirect the loopback captures; in dev a devToken returned by
+	// the server short-circuits the email/browser round-trip and completes immediately.
+	void SignInWithMagicLink(const FString& Email);
+
 	void SignOut();
 
 	// Organizations 
@@ -72,9 +93,10 @@ public:
 	FString GetEffectiveManagementUrl() const;
 
 	// Teams & channels (game plane)
-	// Team/channel policy and CRUD live only on the Game API, so these post to the game
-	// endpoint with the signed-in token (sign in with email/password a game-capable token
-	// for these to authorize; an org token alone is management-scoped and will be rejected).
+	// Team/channel policy and CRUD live only on the Game API, so these post to the game endpoint
+	// bearing the app-scoped token minted for the selected app (see SendGame). A session sign-in
+	// (email/dev/magic link) can mint that token; an org token is management-scoped and cannot, so
+	// its game ops are rejected.
 	void FetchTeams();
 	void FetchTeamPolicy();
 	// MaxMembers / MaxGroupsPerUser are caps; 0 means unlimited (sent to the server as null).
@@ -210,6 +232,8 @@ public:
 	// The current bearer token — used to single-sign-on the embedded web console (injected as
 	// its localStorage auth_token). Matches the web app's session when signed in via email/password.
 	const FString& GetAuthToken() const { return AuthToken; }
+	// The enabled federated sign-in providers (availableLoginProviders), driving the social buttons.
+	const TArray<FString>& GetLoginProviders() const { return LoginProviders; }
 	bool IsBusy() const { return InFlightCount > 0; }
 	const FString& GetStatusMessage() const { return StatusMessage; }
 	bool LastStatusWasError() const { return bStatusWasError; }
@@ -218,6 +242,9 @@ public:
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnStudioStatusMessage, const FString& /*Message*/, bool /*bIsError*/);
 
 	FSimpleMulticastDelegate OnSignInStateChanged;
+	// Fired when the enabled social sign-in providers are (re)fetched, so the sign-in view rebuilds its
+	// provider buttons.
+	FSimpleMulticastDelegate OnLoginProvidersChanged;
 	FSimpleMulticastDelegate OnOrganizationsChanged;
 	FSimpleMulticastDelegate OnAppsChanged;
 	FSimpleMulticastDelegate OnEnvironmentsChanged;
@@ -258,14 +285,68 @@ private:
 	// busy count, and only calls OnSuccess once the envelope is clean (HTTP ok + no
 	// GraphQL errors). Any failure is turned into a status message for the views, then
 	// OnFailure runs if the caller needs to undo something (e.g. a bad token).
+	// bReportErrors=false suppresses the error status toast (used by the best-effort provider probe,
+	// which must degrade silently on a backend that doesn't expose availableLoginProviders); OnFailure
+	// still runs.
 	void SendManagement(const FString& Query, const TSharedPtr<FJsonObject>& Variables,
 		TFunction<void(const TSharedPtr<FJsonObject>& /*Envelope*/)> OnSuccess,
-		TFunction<void()> OnFailure = TFunction<void()>());
+		TFunction<void()> OnFailure = TFunction<void()>(), bool bReportErrors = true);
 
-	// Same contract as SendManagement, but posts to the game endpoint. Team/channel ops live
-	// only on the Game API, so the signed-in token must be game-capable to authorize them.
+	// Same contract as SendManagement, but posts to the game endpoint. Game API ops authorize with
+	// the app-scoped token (minted from the session token via mintAppToken), NOT the session token
+	// itself — the two-token model. Mints (or refreshes) that token first when it is missing or near
+	// expiry, then posts; an org-token sign-in cannot mint, so its game ops surface a clear error.
 	void SendGame(const FString& Query, const TSharedPtr<FJsonObject>& Variables,
 		TFunction<void(const TSharedPtr<FJsonObject>& /*Envelope*/)> OnSuccess);
+	// The actual game-endpoint POST, once an app token is in hand. Split out of SendGame so the
+	// async "mint then post" path can re-enter it without re-checking the token.
+	void PostGame(const FString& Query, const TSharedPtr<FJsonObject>& Variables,
+		TFunction<void(const TSharedPtr<FJsonObject>& /*Envelope*/)> OnSuccess);
+
+	// Mint the app-scoped game token for the selected app from the session token (mintAppToken,
+	// management plane). OnDone(true) once a token for the *current* app is in hand; OnDone(false) on
+	// failure (after a descriptive status). Concurrent requests fold into a single in-flight mint
+	// (no redundant mutations, no GameAppToken write race); a mint whose app no longer matches the
+	// current selection is discarded and re-issued for the new app so a waiting op still gets a token.
+	void MintAppToken(TFunction<void(bool /*bMinted*/)> OnDone);
+	// Begin one mintAppToken round-trip for SelectedAppId. Precondition: CanMintAppToken(), not already
+	// in flight, with at least one queued waiter. Its completion applies the token (if still current)
+	// and flushes the waiters via FinishMint.
+	void StartMint();
+	// Resolve one mint round-trip: clear the in-flight flag, then either re-issue for the now-current
+	// app (if MintedAppId went stale and waiters remain) or flush every queued waiter with bReady.
+	void FinishMint(int64 MintedAppId, bool bReady);
+	// Drop any app-scoped token/endpoint/expiry. Called on sign-out, app switch, and every sign-in
+	// entry so a prior identity's app token never bleeds into the next one. Does NOT touch the
+	// in-flight mint machinery (an in-flight mint resolves itself and won't apply once stale).
+	void ClearAppToken();
+	// Mint the app token (if a session sign-in allows it) and only then announce OnSelectedAppChanged,
+	// so the game-plane views load with a valid token. Used on app-select and on post-sign-in restore.
+	void AnnounceAppContext();
+	// True when the current sign-in can mint an app token: a session-scoped sign-in with an app selected.
+	bool CanMintAppToken() const;
+	// True when the app token must be (re)minted before a game op: none held, or past its early-refresh
+	// window before expiry.
+	bool NeedsAppTokenRefresh() const;
+
+	// Shared success tail for every SESSION-scoped sign-in (email, dev, social, magic-link): store the
+	// token + scope + user, persist to the vault, remember, broadcast, and pull orgs/apps/environments.
+	// One place so the four paths cannot drift.
+	void FinishSessionSignIn(const FString& Token, int64 InUserId, const FString& StatusMsg);
+
+	// Social step 2 (from the loopback-captured code) and magic-link step 2 (from the loopback token or
+	// the dev short-circuit token): exchange for the SESSION token, then FinishSessionSignIn.
+	void CompleteSocialSignIn(const FString& Provider, const FString& Code, const FString& State);
+	// StatusMsg is the message shown on success (defaults to a plain "Signed in."); the dev short-circuit
+	// passes a message explaining why it signed in without an email.
+	void CompleteMagicLink(const FString& Token, const FString& StatusMsg = FString());
+
+	// Create the loopback listener on first interactive sign-in (lazy).
+	void EnsureLoopback();
+	// True while an interactive (browser/loopback) sign-in is mid-flight: from reserving the redirect URI
+	// (bLoopbackFlowPending) until the listener is armed, then while it is live (LoopbackServer->IsActive).
+	// Serializes the single listener across the social and magic-link flows. Game-thread-only.
+	bool IsInteractiveSignInBusy() const;
 
 	void SetStatus(const FString& Message, bool bIsError);
 	void BeginRequest();
@@ -282,6 +363,29 @@ private:
 	ECrowdyStudioAuthScope AuthScope = ECrowdyStudioAuthScope::None;
 	bool bSignedIn = false;
 	int64 UserId = 0;
+
+	// Loopback HTTP listener for the social / magic-link redirect, created on first interactive sign-in.
+	// A plain TUniquePtr is fine here (the controller is not a UObject, so the UHT special-member
+	// constraint that forced TPimplPtr in the runtime auth does not apply); the out-of-line dtor
+	// instantiates the deleter where the type is complete.
+	TUniquePtr<FCrowdyLoopbackAuthServer> LoopbackServer;
+	// Covers the reserve -> arm window that LoopbackServer->IsActive() alone cannot. Game-thread-only.
+	bool bLoopbackFlowPending = false;
+	// The enabled federated providers (availableLoginProviders); empty until fetched, or if none.
+	TArray<FString> LoginProviders;
+
+	// App-scoped game token + its authoritative per-app endpoint, minted from the session token for
+	// the selected app. Game API ops bear this token (never AuthToken). Cleared on app-switch/sign-out.
+	FString GameAppToken;
+	FString GameApiUrlOverride;
+	FDateTime GameAppTokenExpiresAt;
+	bool bHaveAppTokenExpiry = false;
+
+	// Single-in-flight-mint serialization (all game-thread): waiters queued while a mint runs are
+	// flushed together when it resolves, so a burst of game ops triggers at most one mintAppToken.
+	bool bMintInFlight = false;
+	int64 MintInFlightAppId = 0;
+	TArray<TFunction<void(bool /*bReady*/)>> PendingMintWaiters;
 
 	TArray<TSharedPtr<FStudioOrg>> Organizations;
 	TArray<TSharedPtr<FStudioApp>> Apps;

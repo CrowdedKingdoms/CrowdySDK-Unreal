@@ -16,17 +16,19 @@ public:
 	FCrowdyMessageParser(FCrowdyServiceRegistry* InServiceRegistry,
 		UCrowdyUDPSubsystem* InUDPSubsystem,
 		TFunction<void()> InHeartbeatCallback,
-		UCrowdyGameSession* InGameSession);
+		UCrowdyGameSession* InGameSession,
+		TFunction<void()> InTokenExpiredCallback = nullptr);
 	~FCrowdyMessageParser() = default;
 
 	[[nodiscard]] TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> ParseMessage(const TArray<uint8>& Data);
 	void SetExpectedActorStateSize(const int32 NewSize);
 private:
-	
-	static void HandleGenericErrorMessage(const uint8 ErrorType, const uint8 SequenceNumber);
-	
+
+	void HandleGenericErrorMessage(const uint8 ErrorType, const uint8 SequenceNumber) const;
+
 	UCrowdyGameSession* GameSession;
 	TFunction<void()> HeartbeatCallback;
+	TFunction<void()> TokenExpiredCallback;
 	FCrowdyServiceRegistry* ServiceRegistry;
 	UCrowdyUDPSubsystem* UDPSubsystem;
 	int32 ExpectedActorStateSize = 300;

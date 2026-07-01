@@ -6,6 +6,17 @@
 // CrowdyQuerySubsystem.cpp no longer needs any of these includes.
 #include "Queries/Authentication/FLoginResponse.h"
 #include "Queries/Authentication/FRegisterResponse.h"
+#include "Queries/Authentication/FRequestLoginLinkResponse.h"
+#include "Queries/Authentication/FCompleteLoginLinkResponse.h"
+#include "Queries/Authentication/FDevLoginResponse.h"
+#include "Queries/Authentication/FMintAppTokenResponse.h"
+#include "Queries/Authentication/FRefreshAppTokenResponse.h"
+#include "Queries/Authentication/FSocialLoginStartResponse.h"
+#include "Queries/Authentication/FSocialLoginCompleteResponse.h"
+#include "Queries/Authentication/FAvailableLoginProvidersResponse.h"
+#include "Queries/Authentication/FMyIdentitiesResponse.h"
+#include "Queries/Authentication/FLinkIdentityResponse.h"
+#include "Queries/Authentication/FUnlinkIdentityResponse.h"
 #include "Queries/UDP/FUDPAddressNotify.h"
 #include "Queries/Data/Chunks/FGetChunkResponse.h"
 #include "Queries/Data/Chunks/FUpdateChunkResponse.h"
@@ -50,7 +61,7 @@
 
 FCrowdyResponseFactory& FCrowdyResponseFactory::Get()
 {
-	// Meyer's singleton — thread-safe construction guaranteed by C++11 and later.
+	// Meyer's singleton thread-safe construction guaranteed by C++11 and later.
 	static FCrowdyResponseFactory Instance;
 	return Instance;
 }
@@ -65,14 +76,24 @@ void FCrowdyResponseFactory::Register(EQueryResponseType ResponseType, FFactoryF
 	Factories.Add(ResponseType, MoveTemp(Factory));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RegisterAll — one line per response type.
+
+// RegisterAll one line per response type.
 // To support a new response: add the include above and one Register() call here.
-// ─────────────────────────────────────────────────────────────────────────────
 void FCrowdyResponseFactory::RegisterAll()
 {
 	Register(EQueryResponseType::Login,                      []() { return MakeShared<FLoginResponse>(); });
 	Register(EQueryResponseType::Register,                   []() { return MakeShared<FRegisterResponse>(); });
+	Register(EQueryResponseType::RequestLoginLink,           []() { return MakeShared<FRequestLoginLinkResponse>(); });
+	Register(EQueryResponseType::CompleteLoginLink,          []() { return MakeShared<FCompleteLoginLinkResponse>(); });
+	Register(EQueryResponseType::DevLogin,                   []() { return MakeShared<FDevLoginResponse>(); });
+	Register(EQueryResponseType::MintAppToken,              []() { return MakeShared<FMintAppTokenResponse>(); });
+	Register(EQueryResponseType::RefreshAppToken,           []() { return MakeShared<FRefreshAppTokenResponse>(); });
+	Register(EQueryResponseType::SocialLoginStart,          []() { return MakeShared<FSocialLoginStartResponse>(); });
+	Register(EQueryResponseType::SocialLoginComplete,       []() { return MakeShared<FSocialLoginCompleteResponse>(); });
+	Register(EQueryResponseType::AvailableLoginProviders,   []() { return MakeShared<FAvailableLoginProvidersResponse>(); });
+	Register(EQueryResponseType::MyIdentities,              []() { return MakeShared<FMyIdentitiesResponse>(); });
+	Register(EQueryResponseType::LinkIdentity,              []() { return MakeShared<FLinkIdentityResponse>(); });
+	Register(EQueryResponseType::UnlinkIdentity,            []() { return MakeShared<FUnlinkIdentityResponse>(); });
 	Register(EQueryResponseType::UDP_Info,                   []() { return MakeShared<FUDPAddressNotify>(); });
 	Register(EQueryResponseType::GetChunkByDistance,         []() { return MakeShared<FGetChunkResponse>(); });
 	Register(EQueryResponseType::UpdateChunk,                []() { return MakeShared<FUpdateChunkResponse>(); });

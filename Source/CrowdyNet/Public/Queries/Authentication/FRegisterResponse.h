@@ -5,7 +5,7 @@
 struct FRegisterResponse : ICrowdyQueryResponse
 {
 	FString GameToken;
-	int64 UserID;
+	int64 UserID = 0;
 	
 	virtual EQueryResponseType GetResponseType() const override
 	{

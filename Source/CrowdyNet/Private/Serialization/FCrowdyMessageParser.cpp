@@ -17,12 +17,14 @@
 #include "Subsystem/CrowdyGameSession.h"
 
 FCrowdyMessageParser::FCrowdyMessageParser(FCrowdyServiceRegistry* InServiceRegistry,
-                                           UCrowdyUDPSubsystem* InUDPSubsystem, TFunction<void()> InHeartbeatCallback, UCrowdyGameSession* InGameSession)
+                                           UCrowdyUDPSubsystem* InUDPSubsystem, TFunction<void()> InHeartbeatCallback, UCrowdyGameSession* InGameSession,
+                                           TFunction<void()> InTokenExpiredCallback)
 {
 	ServiceRegistry = InServiceRegistry;
 	UDPSubsystem = InUDPSubsystem;
 	HeartbeatCallback = MoveTemp(InHeartbeatCallback);
 	GameSession = InGameSession;
+	TokenExpiredCallback = MoveTemp(InTokenExpiredCallback);
 }
 
 TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::ParseMessage(const TArray<uint8>& Data)
@@ -146,7 +148,10 @@ TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::ParseMessa
 		}
 	case ECrowdyMessageType::GENERIC_ERROR_MESSAGE:
 		{
-			HandleGenericErrorMessage(Payload[1], Payload[0]);
+			if (Payload.Num() >= 2)
+			{
+				HandleGenericErrorMessage(Payload[1], Payload[0]);
+			}
 			return MakeShared<FDefaultMessage>();
 		}
 	case ECrowdyMessageType::GENERIC_SPATIAL_1:
@@ -160,8 +165,6 @@ TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::ParseMessa
 		}
 	case ECrowdyMessageType::SINGLE_ACTOR_MESSAGE:
 		{
-			// Same payload as a game event — reuse the notification's deserialize; only the
-			// opcode (and therefore GetType) differs, which is how the router tells the two apart.
 			TSharedRef<FSingleActorNotification> Message = MakeShared<FSingleActorNotification>();
 			if (!Message->Deserialize(Payload))
 			{
@@ -190,11 +193,25 @@ void FCrowdyMessageParser::SetExpectedActorStateSize(const int32 NewSize)
 	ExpectedActorStateSize = NewSize;
 }
 
-void FCrowdyMessageParser::HandleGenericErrorMessage(const uint8 ErrorType, const uint8 SequenceNumber)
+void FCrowdyMessageParser::HandleGenericErrorMessage(const uint8 ErrorType, const uint8 SequenceNumber) const
 {
+	// Server-side gameplay error code (not the legacy ECrowdyErrorCode set): the app
+	// token lapsed mid-session and Buddy dropped the session. The owner re-mints and
+	// re-assigns. See cks-docs replication-api error codes / native-clients.
+	constexpr uint8 TokenExpiredCode = 32;
+	if (ErrorType == TokenExpiredCode)
+	{
+		UE_LOG(LogCrowdyNet, Warning, TEXT("UDP TOKEN_EXPIRED (32) seq=%d - requesting app-token refresh."), SequenceNumber);
+		if (TokenExpiredCallback)
+		{
+			TokenExpiredCallback();
+		}
+		return;
+	}
+
 	const ECrowdyErrorCode ErrorCode = static_cast<ECrowdyErrorCode>(ErrorType);
 	const UEnum* EnumPtr = StaticEnum<ECrowdyErrorCode>();
 	const FString ErrorString = EnumPtr->GetDisplayNameTextByIndex(static_cast<int64>(ErrorCode)).ToString();
-	
-	UE_LOG(LogCrowdyNet, Warning, TEXT("Received error message with code %d [%s] and sequence number %d"), ErrorCode, *ErrorString ,SequenceNumber);
+
+	UE_LOG(LogCrowdyNet, Warning, TEXT("Received error message with code %d [%s] and sequence number %d"), ErrorType, *ErrorString ,SequenceNumber);
 }

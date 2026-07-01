@@ -10,15 +10,16 @@ public class CrowdyNet : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
-			"CoreUObject", // FInstancedStruct moved into CoreUObject in UE 5.8; exposed in SerializationFunctionLibrary.h's public API
+			"CoreUObject",
 			"CKSharedTypes",
 			"Json",
 			"JsonUtilities",
 			"HTTP",
+			"HTTPServer",
 			"WebSockets",
 			"Sockets",
 			"Networking",
-			"OpenSSL"       // SerializationFunctionLibrary.h includes openssl/hmac.h in its header
+			"OpenSSL"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
@@ -26,5 +27,10 @@ public class CrowdyNet : ModuleRules
 			"Engine",
 			"EngineSettings"
 		});
+		
+		if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PublicSystemLibraries.Add("Crypt32.lib");
+		}
 	}
 }

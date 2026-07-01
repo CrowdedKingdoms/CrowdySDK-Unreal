@@ -13,7 +13,7 @@
 #include "Tasks/Task.h"
 #include "Engine/World.h"
 
-// ─── Lifecycle ────────────────────────────────────────────────────────────────
+// Lifecycle
 
 void UCrowdyQuerySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -49,24 +49,49 @@ void UCrowdyQuerySubsystem::InitializeQuerySubsystem(FCrowdyDataRegistry* InData
 		StatsTimerHandle, this, &UCrowdyQuerySubsystem::UpdateStats, 1.0f, true);
 }
 
-// ─── Auth ─────────────────────────────────────────────────────────────────────
-
-void UCrowdyQuerySubsystem::SetAuthToken(const FString& InAuthToken)
-{
-	AuthToken = InAuthToken;
-}
-
+// Auth
 void UCrowdyQuerySubsystem::ClearAuthToken()
 {
-	AuthToken.Empty();
+	SessionToken.Empty();
+	AppToken.Empty();
 }
 
 bool UCrowdyQuerySubsystem::HasAuthToken() const
 {
-	return !AuthToken.IsEmpty();
+	return !SessionToken.IsEmpty() || !AppToken.IsEmpty();
 }
 
-// ─── Endpoint configuration ───────────────────────────────────────────────────
+void UCrowdyQuerySubsystem::SetSessionToken(const FString& InSessionToken)
+{
+	SessionToken = InSessionToken;
+}
+
+void UCrowdyQuerySubsystem::ClearSessionToken()
+{
+	SessionToken.Empty();
+}
+
+bool UCrowdyQuerySubsystem::HasSessionToken() const
+{
+	return !SessionToken.IsEmpty();
+}
+
+void UCrowdyQuerySubsystem::SetAppToken(const FString& InAppToken)
+{
+	AppToken = InAppToken;
+}
+
+void UCrowdyQuerySubsystem::ClearAppToken()
+{
+	AppToken.Empty();
+}
+
+bool UCrowdyQuerySubsystem::HasAppToken() const
+{
+	return !AppToken.IsEmpty();
+}
+
+// Endpoint config
 
 void UCrowdyQuerySubsystem::SetManagementEndpoint(const FString& InEndpoint)
 {
@@ -80,7 +105,7 @@ void UCrowdyQuerySubsystem::SetGameEndpoint(const FString& InEndpoint)
 	UE_CLOG(CrowdyNetTrace::Query(), LogCrowdyNet, Log, TEXT("Game Endpoint set to %s"), *InEndpoint);
 }
 
-// ─── Stats ────────────────────────────────────────────────────────────────────
+//Stats
 
 FQueryStats UCrowdyQuerySubsystem::GetQueryStats() const
 {
@@ -102,8 +127,7 @@ void UCrowdyQuerySubsystem::UpdateStats()
 	bIsReceivingData.store(false);
 }
 
-// ─── Query execution ──────────────────────────────────────────────────────────
-
+// Query Execution
 void UCrowdyQuerySubsystem::ExecuteQueryByID(const EGraphQLQuery QueryID,
                                               const TMap<FString, FString>& RuntimeVariables,
                                               const bool bIncludeAuthToken, const bool bUseNestedJson)
@@ -243,7 +267,7 @@ void UCrowdyQuerySubsystem::ExecuteQuery(EGraphQLQuery QueryID, const FString& Q
 		return;
 	}
 
-	// ── Descriptor-driven routing ────────────────────────────────────────────
+	// Descriptor-driven routing
 	// Per-query endpoint, timeout, and auth requirements all come from the
 	// descriptor table in FCrowdyQueryDescriptor.cpp. No hard-coded values here.
 
@@ -271,14 +295,42 @@ void UCrowdyQuerySubsystem::ExecuteQuery(EGraphQLQuery QueryID, const FString& Q
 			: GameEndpoint;
 	}
 
-	if (bIncludeAuthToken && HasAuthToken())
+	// Token-plane selection: Management-plane queries authenticate with the
+	// identity SESSION token; gameplay queries with the app-scoped token. The
+	// descriptor pins the scope (Auto resolves by ApiTarget; refreshAppToken is
+	// explicitly App). This is the only enforcement that keeps a session token
+	// off the Game API / UDP path.
+	if (bIncludeAuthToken)
 	{
-		Request.BearerToken = AuthToken;
+		const ECrowdyTokenScope Scope = FCrowdyQueryDescriptors::GetTokenScope(QueryID);
+
+		// Fail closed: only an explicit Session/App scope attaches a bearer. None
+		// is a public mutation; Auto (returned only when the descriptor is missing)
+		// and any unknown scope send no token rather than guessing one.
+		const FString* Bearer = nullptr;
+		switch (Scope)
+		{
+		case ECrowdyTokenScope::Session: Bearer = &SessionToken; break;
+		case ECrowdyTokenScope::App:     Bearer = &AppToken;     break;
+		case ECrowdyTokenScope::None:    break;
+		default:
+			UE_LOG(LogCrowdyNet, Warning,
+				TEXT("GraphQL: unresolved token scope for query %d; sending no bearer"),
+				static_cast<int32>(QueryID));
+			break;
+		}
+
+		if (Bearer && !Bearer->IsEmpty())
+	{
+			Request.BearerToken = *Bearer;
 	}
-	else if (bIncludeAuthToken && !HasAuthToken())
+		else if (Bearer)
 	{
-		UE_LOG(LogCrowdyNet, Warning, TEXT("GraphQL: Auth requested for query %d but no token is set"),
+			UE_LOG(LogCrowdyNet, Warning,
+				TEXT("GraphQL: %s token required for query %d but none is set"),
+				Scope == ECrowdyTokenScope::Session ? TEXT("session") : TEXT("app"),
 			static_cast<int32>(QueryID));
+	}
 	}
 
 	// The shared client owns the HTTP POST, JSON serialize, and GraphQL-error parsing.
@@ -324,11 +376,10 @@ void UCrowdyQuerySubsystem::ExecuteQuery(EGraphQLQuery QueryID, const FString& Q
 		});
 }
 
-// ─── Parse & dispatch ─────────────────────────────────────────────────────────
-//
+// Parse & dispatch
 // Previous implementation: ~240 lines of duplicated switch statements that had
 // to be kept in sync manually for every query type (both success and error paths).
-//
+
 // This implementation: descriptor lookup + factory + single ParseResponse call.
 // Adding a new query type no longer requires touching this function at all.
 

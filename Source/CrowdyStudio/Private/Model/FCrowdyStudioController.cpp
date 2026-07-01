@@ -3,11 +3,13 @@
 #include "Model/FCrowdyStudioController.h"
 
 #include "CrowdyStudioModule.h"
+#include "Auth/FCrowdyLoopbackAuthServer.h"
 #include "Auth/FCrowdyTokenVault.h"
 #include "ConfigSync/FCrowdyConfigSync.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Gql/CrowdyStudioQueries.h"
+#include "HAL/PlatformProcess.h"
 #include "Misc/DateTime.h"
 #include "Serialization/JsonSerializer.h"
 #include "Network/GraphQL/FCrowdyGraphQLClient.h"
@@ -17,6 +19,11 @@
 
 namespace
 {
+	// Loopback wait windows for the interactive (browser) sign-ins. Mirrors the runtime auth constants:
+	// magic-link waits for the user to open an emailed link; social waits on the provider consent page.
+	static constexpr double MagicLinkTimeoutSeconds = 180.0;
+	static constexpr double SocialSignInTimeoutSeconds = 300.0;
+
 	// BigInt travels as a decimal string on the wire, never a JSON number.
 	void SetBigIntField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, int64 Value)
 	{
@@ -69,6 +76,20 @@ namespace
 		return FJsonSerializer::Deserialize(Reader, OutObject) && OutObject.IsValid();
 	}
 
+	// The server's gameApiUrl (the app record and the mintAppToken response alike) is a bare host, but
+	// the Game API is served at /graphql. Append it when missing so a GraphQL POST doesn't 404. Trims a
+	// trailing slash and is idempotent; mirrors FCrowdyConfigSync::EnsureGraphqlPath.
+	FString EnsureGameApiGraphqlPath(const FString& Url)
+	{
+		FString U = Url;
+		U.RemoveFromEnd(TEXT("/"));
+		if (!U.IsEmpty() && !U.EndsWith(TEXT("/graphql")))
+		{
+			U += TEXT("/graphql");
+		}
+		return U;
+	}
+
 	// The operation name sits between the "query"/"mutation" keyword and the opening brace; enough
 	// to identify a traced call without dumping the whole body (and the body never holds the token).
 	FString DescribeQuery(const FString& Query)
@@ -116,6 +137,10 @@ FCrowdyStudioController::FCrowdyStudioController()
 {
 }
 
+// Defined here (not defaulted in the header) so TUniquePtr<FCrowdyLoopbackAuthServer> can delete a type
+// that is only forward-declared in the header — the loopback header is included in this .cpp.
+FCrowdyStudioController::~FCrowdyStudioController() = default;
+
 void FCrowdyStudioController::Initialize()
 {
 	if (const UCrowdyStudioUserSettings* User = GetUserSettings())
@@ -140,6 +165,10 @@ void FCrowdyStudioController::SignInWithToken(const FString& OrgToken)
 		SetStatus(TEXT("Enter an organization token to sign in."), true);
 		return;
 	}
+
+	// An org token is management-only and can't mint; drop any app token a prior session sign-in left
+	// so a game op can't bear it under this identity.
+	ClearAppToken();
 
 	AuthToken = OrgToken;
 	AuthScope = ECrowdyStudioAuthScope::OrgToken;
@@ -181,6 +210,7 @@ void FCrowdyStudioController::LoginWithEmail(const FString& Email, const FString
 
 	AuthToken.Empty();
 	AuthScope = ECrowdyStudioAuthScope::None;
+	ClearAppToken();
 
 	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
 	Input->SetStringField(TEXT("email"), Email);
@@ -199,22 +229,314 @@ void FCrowdyStudioController::LoginWithEmail(const FString& Email, const FString
 				SetStatus(TEXT("Login succeeded but no session token came back."), true);
 				return;
 			}
-
-			AuthToken = Token;
-			AuthScope = ECrowdyStudioAuthScope::Session;
-			UserId = SignedInUserId;
-			bSignedIn = true;
-			FCrowdyTokenVault::Save(AuthToken);
-			if (UCrowdyStudioUserSettings* User = GetUserSettings())
-			{
-				User->bRememberToken = true;
-				User->SaveConfig();
-			}
-			SetStatus(TEXT("Logged in."), false);
-			OnSignInStateChanged.Broadcast();
-			FetchMyOrganizations();
-			FetchAppsAndEnvironments();
+			FinishSessionSignIn(Token, SignedInUserId, TEXT("Logged in."));
 		});
+}
+
+void FCrowdyStudioController::SignInWithDevLogin(const FString& Email)
+{
+	if (Email.IsEmpty())
+	{
+		SetStatus(TEXT("Enter an email to use dev sign-in."), true);
+		return;
+	}
+
+	AuthToken.Empty();
+	AuthScope = ECrowdyStudioAuthScope::None;
+	ClearAppToken();
+
+	// DevLoginInput takes a single email field, wrapped in `input` (not `loginUserInput`).
+	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("email"), Email);
+
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetObjectField(TEXT("input"), Input);
+
+	SendManagement(CrowdyStudioGql::DevLoginMutation(), Variables,
+		[this](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			FString Token;
+			int64 SignedInUserId = 0;
+			if (!CrowdyStudioGql::ParseDevLogin(Envelope, Token, SignedInUserId))
+			{
+				SetStatus(TEXT("Dev sign-in succeeded but no session token came back."), true);
+				return;
+			}
+			FinishSessionSignIn(Token, SignedInUserId, TEXT("Logged in (dev)."));
+		});
+}
+
+void FCrowdyStudioController::FinishSessionSignIn(const FString& Token, int64 InUserId, const FString& StatusMsg)
+{
+	AuthToken = Token;
+	AuthScope = ECrowdyStudioAuthScope::Session;
+	UserId = InUserId;
+	bSignedIn = true;
+	FCrowdyTokenVault::Save(AuthToken);
+	if (UCrowdyStudioUserSettings* User = GetUserSettings())
+	{
+		User->bRememberToken = true;
+		User->SaveConfig();
+	}
+	SetStatus(StatusMsg, false);
+	OnSignInStateChanged.Broadcast();
+	FetchMyOrganizations();
+	FetchAppsAndEnvironments();
+}
+
+void FCrowdyStudioController::FetchAvailableProviders()
+{
+	// Best-effort, PUBLIC (AuthToken is empty at sign-in time, so SendManagement omits the bearer). A
+	// backend that predates M2 answers with a GraphQL "cannot query field" error; degrade silently
+	// (bReportErrors=false) rather than greeting a signed-out user with a scary toast — the other sign-in
+	// options still work, there are simply no social buttons.
+	SendManagement(CrowdyStudioGql::AvailableLoginProvidersQuery(), nullptr,
+		[this](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			CrowdyStudioGql::ParseProviders(Envelope, LoginProviders);
+			OnLoginProvidersChanged.Broadcast();
+		},
+		[this]()
+		{
+			// Query failed/unsupported: no providers, no buttons. Clear any stale list quietly.
+			if (LoginProviders.Num() > 0)
+			{
+				LoginProviders.Reset();
+				OnLoginProvidersChanged.Broadcast();
+			}
+		},
+		/*bReportErrors=*/ false);
+}
+
+void FCrowdyStudioController::SignInWithSocial(const FString& Provider)
+{
+	if (Provider.IsEmpty())
+	{
+		SetStatus(TEXT("Choose a sign-in provider."), true);
+		return;
+	}
+	if (IsInteractiveSignInBusy())
+	{
+		SetStatus(TEXT("A browser sign-in is already in progress. Finish it or wait for it to time out."), true);
+		return;
+	}
+
+	// Not signed in yet: drop any prior identity's tokens so nothing stale bleeds into this attempt.
+	AuthToken.Empty();
+	AuthScope = ECrowdyStudioAuthScope::None;
+	ClearAppToken();
+
+	EnsureLoopback();
+
+	// socialLoginStart needs the redirectUri now, but the CSRF state to arm the listener with only
+	// arrives in its response — so reserve the sticky loopback URI first and arm the route later.
+	const FString RedirectUri = LoopbackServer->ReserveRedirectUri();
+	if (RedirectUri.IsEmpty())
+	{
+		SetStatus(TEXT("Could not open a local sign-in port. Close other Crowdy sessions and try again."), true);
+		return;
+	}
+
+	// Cover the reserve -> arm window; once armed, LoopbackServer->IsActive() takes over the guard.
+	bLoopbackFlowPending = true;
+
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("provider"), Provider);
+	Variables->SetStringField(TEXT("redirectUri"), RedirectUri);
+
+	SendManagement(CrowdyStudioGql::SocialLoginStartMutation(), Variables,
+		[this, Provider](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			FString AuthorizeUrl, State;
+			if (!CrowdyStudioGql::ParseSocialLoginStart(Envelope, AuthorizeUrl, State))
+			{
+				bLoopbackFlowPending = false;
+				SetStatus(TEXT("Could not start social sign-in (no authorize URL returned)."), true);
+				return;
+			}
+
+			// Arm the listener bound to the server-issued state (CSRF). On the captured code, complete
+			// the social sign-in; on listener error/timeout, surface it.
+			FOnLoopbackToken OnCodeCaptured;
+			OnCodeCaptured.BindLambda([this, Provider, State](const FString& Code)
+			{
+				CompleteSocialSignIn(Provider, Code, State);
+			});
+			FOnLoopbackError OnListenerError;
+			OnListenerError.BindLambda([this](const FString& Message)
+			{
+				SetStatus(Message, true);
+			});
+
+			const FString ArmedUri = LoopbackServer.IsValid()
+				? LoopbackServer->Start(State, SocialSignInTimeoutSeconds, OnCodeCaptured, OnListenerError)
+				: FString();
+
+			// The reserve -> arm window is now closed (either armed, or Start already reported).
+			bLoopbackFlowPending = false;
+			if (ArmedUri.IsEmpty())
+			{
+				return;
+			}
+
+			// Open the provider's consent page in the SYSTEM browser (never an embedded webview — the
+			// native-client docs are explicit, and providers reject embedded webviews). Its redirect
+			// lands on the armed listener.
+			FPlatformProcess::LaunchURL(*AuthorizeUrl, nullptr, nullptr);
+			SetStatus(TEXT("Continue in your browser to finish signing in..."), false);
+		},
+		[this]()
+		{
+			// socialLoginStart failed; SendManagement already surfaced the error. Clear the guard so the
+			// user can retry.
+			bLoopbackFlowPending = false;
+		});
+}
+
+void FCrowdyStudioController::CompleteSocialSignIn(const FString& Provider, const FString& Code, const FString& State)
+{
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("provider"), Provider);
+	Variables->SetStringField(TEXT("code"), Code);
+	Variables->SetStringField(TEXT("state"), State);
+
+	SendManagement(CrowdyStudioGql::SocialLoginCompleteMutation(), Variables,
+		[this](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			FString Token;
+			int64 SignedInUserId = 0;
+			if (!CrowdyStudioGql::ParseSocialLoginComplete(Envelope, Token, SignedInUserId))
+			{
+				SetStatus(TEXT("Social sign-in completed but no session token came back."), true);
+				return;
+			}
+			FinishSessionSignIn(Token, SignedInUserId, TEXT("Signed in."));
+		});
+}
+
+void FCrowdyStudioController::SignInWithMagicLink(const FString& Email)
+{
+	if (Email.IsEmpty())
+	{
+		SetStatus(TEXT("Enter your email to get a sign-in link."), true);
+		return;
+	}
+	if (IsInteractiveSignInBusy())
+	{
+		SetStatus(TEXT("A sign-in is already in progress. Finish it or wait for it to time out."), true);
+		return;
+	}
+
+	AuthToken.Empty();
+	AuthScope = ECrowdyStudioAuthScope::None;
+	ClearAppToken();
+
+	EnsureLoopback();
+
+	// Magic-link passes an EMPTY expected state (the one-time token is itself the single-use credential;
+	// the server does not round-trip a state on this flow), so there is no reserve-then-arm split — arm
+	// the listener directly and use the returned redirectUri for requestLoginLink.
+	FOnLoopbackToken OnTokenCaptured;
+	OnTokenCaptured.BindLambda([this](const FString& Token)
+	{
+		CompleteMagicLink(Token);
+	});
+	FOnLoopbackError OnListenerError;
+	OnListenerError.BindLambda([this](const FString& Message)
+	{
+		SetStatus(Message, true);
+	});
+
+	const FString RedirectUri = LoopbackServer->Start(FString(), MagicLinkTimeoutSeconds,
+		OnTokenCaptured, OnListenerError);
+	if (RedirectUri.IsEmpty())
+	{
+		// Start already reported the failure via OnListenerError.
+		return;
+	}
+
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("email"), Email);
+	Variables->SetStringField(TEXT("redirectUri"), RedirectUri);
+
+	SendManagement(CrowdyStudioGql::RequestLoginLinkMutation(), Variables,
+		[this](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			bool bSent = false;
+			FString DevToken;
+			const bool bParsed = CrowdyStudioGql::ParseRequestLoginLink(Envelope, bSent, DevToken);
+
+			if (!DevToken.IsEmpty())
+			{
+				// Dev: no email/browser round-trip — complete immediately and drop the listener. Say why,
+				// so an instant sign-in on a dev server doesn't look like a bug.
+				if (LoopbackServer.IsValid())
+				{
+					LoopbackServer->Stop();
+				}
+				CompleteMagicLink(DevToken, TEXT("Signed in via a dev sign-in link (a dev server skips the email)."));
+				return;
+			}
+
+			if (!bParsed || !bSent)
+			{
+				// Nothing was actually sent (or a malformed 200): don't leave the listener armed for the
+				// full timeout behind a misleading "check your email", and free the interactive guard so
+				// the user can retry right away.
+				if (LoopbackServer.IsValid())
+				{
+					LoopbackServer->Stop();
+				}
+				SetStatus(TEXT("Couldn't send a sign-in link. Check the email address and try again."), true);
+				return;
+			}
+
+			// Prod: the email is on its way; the armed listener captures the link's redirect and the
+			// sign-in completes later. Nothing to do here but tell the user to check their inbox.
+			SetStatus(TEXT("Check your email for a sign-in link, then return here."), false);
+		},
+		[this]()
+		{
+			// requestLoginLink failed; drop the armed listener so it does not linger until timeout.
+			if (LoopbackServer.IsValid())
+			{
+				LoopbackServer->Stop();
+			}
+		});
+}
+
+void FCrowdyStudioController::CompleteMagicLink(const FString& Token, const FString& StatusMsg)
+{
+	const FString SuccessMsg = StatusMsg.IsEmpty() ? TEXT("Signed in.") : StatusMsg;
+
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("token"), Token);
+
+	SendManagement(CrowdyStudioGql::CompleteLoginLinkMutation(), Variables,
+		[this, SuccessMsg](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			FString SessionToken;
+			int64 SignedInUserId = 0;
+			if (!CrowdyStudioGql::ParseCompleteLoginLink(Envelope, SessionToken, SignedInUserId))
+			{
+				SetStatus(TEXT("Sign-in link completed but no session token came back."), true);
+				return;
+			}
+			FinishSessionSignIn(SessionToken, SignedInUserId, SuccessMsg);
+		});
+}
+
+void FCrowdyStudioController::EnsureLoopback()
+{
+	if (!LoopbackServer.IsValid())
+	{
+		LoopbackServer = MakeUnique<FCrowdyLoopbackAuthServer>();
+	}
+}
+
+bool FCrowdyStudioController::IsInteractiveSignInBusy() const
+{
+	return bLoopbackFlowPending || (LoopbackServer.IsValid() && LoopbackServer->IsActive());
 }
 
 void FCrowdyStudioController::SignOut()
@@ -225,6 +547,8 @@ void FCrowdyStudioController::SignOut()
 	AuthScope = ECrowdyStudioAuthScope::None;
 	bSignedIn = false;
 	UserId = 0;
+
+	ClearAppToken();
 
 	Organizations.Reset();
 	Apps.Reset();
@@ -1794,14 +2118,29 @@ void FCrowdyStudioController::SelectApp(int64 AppId)
 	}
 	PersistSelection();
 
+	// A new app invalidates the previous app's game token and endpoint; AnnounceAppContext re-mints.
+	ClearAppToken();
+
+	// Empty the game-plane lists the OnSelectedAppChanged views render, so switching apps never leaves
+	// the previous app's teams/channels on screen while the new app's token is minted — or if that mint
+	// fails (e.g. the app isn't provisioned on the game tier) and the reload is therefore suppressed.
+	Teams.Reset();
+	Channels.Reset();
+	GroupMembers.Reset();
+	GroupRoles.Reset();
+	SelectedGroupId = 0;
+	OnTeamsChanged.Broadcast();
+	OnChannelsChanged.Broadcast();
+	OnGroupDetailChanged.Broadcast();
+
 	FetchApp(AppId);
 	if (SelectedOrgId != 0)
 	{
 		FetchEnvironments(SelectedOrgId);
 	}
 
-	// Let app-scoped views (teams, channels, grid, game model) reload for the new app.
-	OnSelectedAppChanged.Broadcast();
+	// Mint the app token, then let app-scoped views (teams, channels) reload for the new app.
+	AnnounceAppContext();
 }
 
 void FCrowdyStudioController::SelectEnvironment(const FString& EnvironmentSlug)
@@ -1871,6 +2210,13 @@ FString FCrowdyStudioController::ResolveManagementUrl() const
 
 FString FCrowdyStudioController::ResolveGameUrl() const
 {
+	// The mint response carries the authoritative per-app game endpoint; prefer it over the
+	// settings-derived URL, which can be stale for the selected app (it comes from the myApps record).
+	if (!GameApiUrlOverride.IsEmpty())
+	{
+		return GameApiUrlOverride;
+	}
+
 	// The game endpoint already includes the /graphql path (unlike the management base URL).
 	if (const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>())
 	{
@@ -1880,7 +2226,7 @@ FString FCrowdyStudioController::ResolveGameUrl() const
 }
 
 void FCrowdyStudioController::SendManagement(const FString& Query, const TSharedPtr<FJsonObject>& Variables,
-	TFunction<void(const TSharedPtr<FJsonObject>&)> OnSuccess, TFunction<void()> OnFailure)
+	TFunction<void(const TSharedPtr<FJsonObject>&)> OnSuccess, TFunction<void()> OnFailure, bool bReportErrors)
 {
 	FCrowdyGqlRequest Request;
 	Request.Endpoint = ResolveManagementUrl();
@@ -1897,7 +2243,7 @@ void FCrowdyStudioController::SendManagement(const FString& Query, const TShared
 
 	TWeakPtr<FCrowdyStudioController> WeakThis = AsShared();
 	FCrowdyGraphQLClient::Send(Request,
-		[WeakThis, OnSuccess = MoveTemp(OnSuccess), OnFailure = MoveTemp(OnFailure)](FCrowdyGqlResult Result)
+		[WeakThis, OnSuccess = MoveTemp(OnSuccess), OnFailure = MoveTemp(OnFailure), bReportErrors](FCrowdyGqlResult Result)
 		{
 			TSharedPtr<FCrowdyStudioController> Self = WeakThis.Pin();
 			if (!Self.IsValid())
@@ -1916,7 +2262,10 @@ void FCrowdyStudioController::SendManagement(const FString& Query, const TShared
 			const FString Error = DescribeGqlError(Result);
 			if (!Error.IsEmpty())
 			{
-				Self->SetStatus(Error, true);
+				if (bReportErrors)
+				{
+					Self->SetStatus(Error, true);
+				}
 				if (OnFailure)
 				{
 					OnFailure();
@@ -1934,6 +2283,36 @@ void FCrowdyStudioController::SendManagement(const FString& Query, const TShared
 void FCrowdyStudioController::SendGame(const FString& Query, const TSharedPtr<FJsonObject>& Variables,
 	TFunction<void(const TSharedPtr<FJsonObject>&)> OnSuccess)
 {
+	// Game-plane ops bear the app-scoped token, not the session token. When it is in hand and fresh,
+	// post straight away; otherwise mint (or refresh) it first, then post. An org token can't mint,
+	// so its game ops fail closed with a clear message instead of being silently rejected by the server.
+	if (!NeedsAppTokenRefresh())
+	{
+		PostGame(Query, Variables, MoveTemp(OnSuccess));
+		return;
+	}
+
+	if (!CanMintAppToken())
+	{
+		SetStatus(TEXT("Game-plane actions (teams, channels, grids, game models) need a session sign-in — "
+			"sign in with email, dev, or a magic link. An organization token only covers account settings."), true);
+		return;
+	}
+
+	MintAppToken([this, Query, Variables, OnSuccess](bool bMinted)
+	{
+		if (bMinted)
+		{
+			PostGame(Query, Variables, OnSuccess);
+		}
+		// On failure MintAppToken already set a descriptive status (e.g. the app isn't provisioned on
+		// the game tier); don't post with a token the server will reject.
+	});
+}
+
+void FCrowdyStudioController::PostGame(const FString& Query, const TSharedPtr<FJsonObject>& Variables,
+	TFunction<void(const TSharedPtr<FJsonObject>&)> OnSuccess)
+{
 	const FString GameUrl = ResolveGameUrl();
 	if (GameUrl.IsEmpty())
 	{
@@ -1943,7 +2322,7 @@ void FCrowdyStudioController::SendGame(const FString& Query, const TSharedPtr<FJ
 
 	FCrowdyGqlRequest Request;
 	Request.Endpoint = GameUrl;
-	Request.BearerToken = AuthToken;
+	Request.BearerToken = GameAppToken;
 	Request.Query = Query;
 	Request.Variables = Variables;
 
@@ -1986,6 +2365,151 @@ void FCrowdyStudioController::SendGame(const FString& Query, const TSharedPtr<FJ
 		});
 }
 
+bool FCrowdyStudioController::CanMintAppToken() const
+{
+	return AuthScope == ECrowdyStudioAuthScope::Session && SelectedAppId != 0 && !AuthToken.IsEmpty();
+}
+
+bool FCrowdyStudioController::NeedsAppTokenRefresh() const
+{
+	if (GameAppToken.IsEmpty())
+	{
+		return true;
+	}
+	if (bHaveAppTokenExpiry)
+	{
+		// Refresh a touch early so an in-flight op doesn't straddle the expiry boundary.
+		return FDateTime::UtcNow() >= (GameAppTokenExpiresAt - FTimespan::FromSeconds(60));
+	}
+	return false;
+}
+
+void FCrowdyStudioController::MintAppToken(TFunction<void(bool)> OnDone)
+{
+	if (!CanMintAppToken())
+	{
+		if (OnDone)
+		{
+			OnDone(false);
+		}
+		return;
+	}
+
+	// Queue this request and kick a mint only if one isn't already running. A burst of game ops (e.g.
+	// FetchTeams + FetchTeamPolicy from one RefreshAll, both crossing the pre-expiry window) thus folds
+	// into a single mintAppToken instead of racing two writes of GameAppToken.
+	if (OnDone)
+	{
+		PendingMintWaiters.Add(MoveTemp(OnDone));
+	}
+	if (!bMintInFlight)
+	{
+		StartMint();
+	}
+}
+
+void FCrowdyStudioController::StartMint()
+{
+	bMintInFlight = true;
+	MintInFlightAppId = SelectedAppId;
+	const int64 MintForAppId = MintInFlightAppId;
+
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), MintForAppId));
+
+	SendManagement(CrowdyStudioGql::MintAppTokenMutation(), Variables,
+		[this, MintForAppId](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			FString Token, GameUrl, GameWsUrl, ExpiresAtStr;
+			const bool bParsed = CrowdyStudioGql::ParseAppToken(Envelope, Token, GameUrl, GameWsUrl, ExpiresAtStr);
+			if (bParsed && MintForAppId == SelectedAppId)
+			{
+				GameAppToken = Token;
+				if (!GameUrl.IsEmpty())
+				{
+					// The mint returns a bare host; the Game API GraphQL lives at /graphql (else 404).
+					GameApiUrlOverride = EnsureGameApiGraphqlPath(GameUrl);
+				}
+
+				FDateTime Parsed;
+				bHaveAppTokenExpiry = !ExpiresAtStr.IsEmpty() && FDateTime::ParseIso8601(*ExpiresAtStr, Parsed);
+				GameAppTokenExpiresAt = bHaveAppTokenExpiry ? Parsed : FDateTime();
+
+				FinishMint(MintForAppId, true);
+				return;
+			}
+
+			// A clean envelope that didn't parse is a real failure; a parse for an app the user has
+			// since switched away from is stale (FinishMint re-issues for the current app).
+			if (!bParsed)
+			{
+				SetStatus(TEXT("Signed in, but could not mint an app token for the Game API."), true);
+			}
+			FinishMint(MintForAppId, false);
+		},
+		[this, MintForAppId]()
+		{
+			// SendManagement already surfaced the failure (bad session token, or the app isn't
+			// provisioned on the target game tier — a server-side provisioning gap, not a client bug).
+			FinishMint(MintForAppId, false);
+		});
+}
+
+void FCrowdyStudioController::FinishMint(int64 MintedAppId, bool bReady)
+{
+	bMintInFlight = false;
+	MintInFlightAppId = 0;
+
+	// The selected app changed while this mint was in flight, so its token is for the wrong app. If a
+	// waiter still needs one and we can mint, re-issue for the now-current app and carry the waiters
+	// over; their continuation then runs against a token that actually matches the selection.
+	if (!bReady && MintedAppId != SelectedAppId && PendingMintWaiters.Num() > 0 && CanMintAppToken())
+	{
+		StartMint();
+		return;
+	}
+
+	TArray<TFunction<void(bool)>> Waiters = MoveTemp(PendingMintWaiters);
+	PendingMintWaiters.Reset();
+	for (TFunction<void(bool)>& Waiter : Waiters)
+	{
+		if (Waiter)
+		{
+			Waiter(bReady);
+		}
+	}
+}
+
+void FCrowdyStudioController::ClearAppToken()
+{
+	GameAppToken.Empty();
+	GameApiUrlOverride.Empty();
+	GameAppTokenExpiresAt = FDateTime();
+	bHaveAppTokenExpiry = false;
+}
+
+void FCrowdyStudioController::AnnounceAppContext()
+{
+	// Game-plane views (teams, channels) reload on OnSelectedAppChanged and need the app-scoped token,
+	// so mint it first and only announce once it is in hand. A session sign-in can mint; an org token
+	// cannot, so there is nothing to announce for it — those game views can't load and keep their
+	// on-screen "sign in with a session account" hint (a manual Refresh still surfaces a clear error).
+	if (!CanMintAppToken())
+	{
+		return;
+	}
+
+	MintAppToken([this](bool bMinted)
+	{
+		if (bMinted)
+		{
+			OnSelectedAppChanged.Broadcast();
+		}
+		// On mint failure the status already explains why; don't fan the game views out into a storm
+		// of fetches that would each fail the same way.
+	});
+}
+
 void FCrowdyStudioController::SetStatus(const FString& Message, bool bIsError)
 {
 	StatusMessage = Message;
@@ -2021,10 +2545,11 @@ void FCrowdyStudioController::FetchAppsAndEnvironments()
 	}
 
 	// On sign-in a remembered app is already selected (set in Initialize from saved settings), but it
-	// never went through SelectApp, so announce it here too so the team/channel views auto-load.
+	// never went through SelectApp, so mint its app token and announce it here too so the team/channel
+	// views auto-load.
 	if (SelectedAppId != 0)
 	{
-		OnSelectedAppChanged.Broadcast();
+		AnnounceAppContext();
 	}
 }
 

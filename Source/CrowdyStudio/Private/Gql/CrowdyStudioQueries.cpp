@@ -152,6 +152,28 @@ namespace
 		return nullptr;
 	}
 
+	// login / devLogin / socialLoginComplete / completeLoginLink all return the same AuthResponse shape
+	// ({ token, user { userId } }). One reader keeps the four sign-in parsers from drifting. Reads
+	// data.<OpName>.token and data.<OpName>.user.userId; false when the token is absent or empty.
+	bool ReadAuthResponse(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FString& OutToken, int64& OutUserId)
+	{
+		const TSharedPtr<FJsonObject> Node = GetDataNode(Envelope, OpName);
+		if (!Node.IsValid())
+		{
+			return false;
+		}
+		if (!Node->TryGetStringField(TEXT("token"), OutToken) || OutToken.IsEmpty())
+		{
+			return false;
+		}
+		const TSharedPtr<FJsonObject>* User = nullptr;
+		if (Node->TryGetObjectField(TEXT("user"), User) && User->IsValid())
+		{
+			OutUserId = ReadId(*User, TEXT("userId"));
+		}
+		return true;
+	}
+
 	void ReadChunkField(const TSharedPtr<FJsonObject>& Node, const TCHAR* Field, FStudioChunk& Out)
 	{
 		const TSharedPtr<FJsonObject>* ChunkNode = nullptr;
@@ -273,6 +295,103 @@ namespace CrowdyStudioGql
 			"}");
 	}
 
+	FString DevLoginMutation()
+	{
+		// The variable wrapper is `input` (DevLoginInput), not `loginUserInput`.
+		return TEXT(
+			"mutation StudioDevLogin($input: DevLoginInput!) {"
+			"  devLogin(input: $input) {"
+			"    token"
+			"    gameTokenId"
+			"    user { userId }"
+			"  }"
+			"}");
+	}
+
+	FString MintAppTokenMutation()
+	{
+		// appId is the BigInt scalar, interpolated as a JSON string into the input object. Field shape
+		// follows the runtime mint (CrowdyNet FMintAppTokenRequest) — minus launchUrl, which Studio
+		// doesn't consume — so the same server contract is exercised.
+		return TEXT(
+			"mutation StudioMintAppToken($appId: BigInt!) {"
+			"  mintAppToken(input: { appId: $appId }) {"
+			"    token"
+			"    gameTokenId"
+			"    appId"
+			"    expiresAt"
+			"    gameApiUrl"
+			"    gameApiWsUrl"
+			"  }"
+			"}");
+	}
+
+	FString SocialLoginStartMutation()
+	{
+		// Flat vars with the input built inline (the runtime FSocialLoginStartRequest shape), so the same
+		// server contract is exercised. Returns the provider consent URL and the CSRF state to arm the
+		// loopback with. PUBLIC — sent with no bearer.
+		return TEXT(
+			"mutation StudioSocialLoginStart($provider: String!, $redirectUri: String!) {"
+			"  socialLoginStart(input: { provider: $provider, redirectUri: $redirectUri }) {"
+			"    authorizeUrl"
+			"    state"
+			"  }"
+			"}");
+	}
+
+	FString SocialLoginCompleteMutation()
+	{
+		// The provider redirect's code + the round-tripped state complete sign-in and return the identity
+		// SESSION token (same AuthResponse shape as login). PUBLIC — the one-time code authorizes it.
+		return TEXT(
+			"mutation StudioSocialLoginComplete($provider: String!, $code: String!, $state: String!) {"
+			"  socialLoginComplete(input: { provider: $provider, code: $code, state: $state }) {"
+			"    token"
+			"    gameTokenId"
+			"    user { userId email }"
+			"  }"
+			"}");
+	}
+
+	FString AvailableLoginProvidersQuery()
+	{
+		// The enabled federated providers (e.g. ["google"]). PUBLIC, no args; drives the sign-in buttons
+		// so they are not hard-coded. The dev mock provider appears only under the server dev bypass.
+		return TEXT(
+			"query StudioAvailableLoginProviders {"
+			"  availableLoginProviders"
+			"}");
+	}
+
+	FString RequestLoginLinkMutation()
+	{
+		// Magic-link step 1: email a one-time link whose redirect lands on the loopback. redirectUri is a
+		// nullable String (omitted server-side when null). In dev the response carries a devToken that
+		// short-circuits the email round-trip. PUBLIC.
+		return TEXT(
+			"mutation StudioRequestLoginLink($email: String!, $redirectUri: String) {"
+			"  requestLoginLink(input: { email: $email, redirectUri: $redirectUri }) {"
+			"    sent"
+			"    devToken"
+			"  }"
+			"}");
+	}
+
+	FString CompleteLoginLinkMutation()
+	{
+		// Magic-link step 2: the one-time token from the link (or the devToken) yields the SESSION token
+		// (same AuthResponse shape as login). PUBLIC — the token authorizes it.
+		return TEXT(
+			"mutation StudioCompleteLoginLink($token: String!) {"
+			"  completeLoginLink(input: { token: $token }) {"
+			"    token"
+			"    gameTokenId"
+			"    user { userId email }"
+			"  }"
+			"}");
+	}
+
 	FString MyOrganizationsQuery()
 	{
 		return TEXT(
@@ -357,10 +476,14 @@ namespace CrowdyStudioGql
 
 	FString AppQuery()
 	{
+		// orgId must be selected: FetchApp merges this detail over the myApps list entry (*Existing =
+		// *Detail), so omitting orgId here would overwrite the good value with 0 and break the org-scoped
+		// fetches (environments) on a re-click.
 		return TEXT(
 			"query StudioApp($appId: BigInt!) {"
 			"  app(appId: $appId) {"
 			"    appId"
+			"    orgId"
 			"    name"
 			"    slug"
 			"    status"
@@ -423,6 +546,109 @@ namespace CrowdyStudioGql
 		}
 
 		return true;
+	}
+
+	bool ParseDevLogin(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId)
+	{
+		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
+		if (!Data.IsValid())
+		{
+			return false;
+		}
+
+		const TSharedPtr<FJsonObject>* DevLogin = nullptr;
+		if (!Data->TryGetObjectField(TEXT("devLogin"), DevLogin) || !DevLogin->IsValid())
+		{
+			return false;
+		}
+
+		if (!(*DevLogin)->TryGetStringField(TEXT("token"), OutToken) || OutToken.IsEmpty())
+		{
+			return false;
+		}
+
+		const TSharedPtr<FJsonObject>* User = nullptr;
+		if ((*DevLogin)->TryGetObjectField(TEXT("user"), User) && User->IsValid())
+		{
+			OutUserId = ReadId(*User, TEXT("userId"));
+		}
+
+		return true;
+	}
+
+	bool ParseAppToken(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, FString& OutGameApiUrl,
+	                   FString& OutGameApiWsUrl, FString& OutExpiresAt)
+	{
+		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
+		if (!Data.IsValid())
+		{
+			return false;
+		}
+
+		const TSharedPtr<FJsonObject>* Mint = nullptr;
+		if (!Data->TryGetObjectField(TEXT("mintAppToken"), Mint) || !Mint->IsValid())
+		{
+			return false;
+		}
+
+		if (!(*Mint)->TryGetStringField(TEXT("token"), OutToken) || OutToken.IsEmpty())
+		{
+			return false;
+		}
+
+		(*Mint)->TryGetStringField(TEXT("gameApiUrl"), OutGameApiUrl);
+		(*Mint)->TryGetStringField(TEXT("gameApiWsUrl"), OutGameApiWsUrl);
+		(*Mint)->TryGetStringField(TEXT("expiresAt"), OutExpiresAt);
+		return true;
+	}
+
+	bool ParseSocialLoginStart(const TSharedPtr<FJsonObject>& Envelope, FString& OutAuthorizeUrl, FString& OutState)
+	{
+		const TSharedPtr<FJsonObject> Node = GetDataNode(Envelope, TEXT("socialLoginStart"));
+		if (!Node.IsValid())
+		{
+			return false;
+		}
+		if (!Node->TryGetStringField(TEXT("authorizeUrl"), OutAuthorizeUrl) || OutAuthorizeUrl.IsEmpty())
+		{
+			return false;
+		}
+		Node->TryGetStringField(TEXT("state"), OutState);
+		return true;
+	}
+
+	bool ParseSocialLoginComplete(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId)
+	{
+		return ReadAuthResponse(Envelope, TEXT("socialLoginComplete"), OutToken, OutUserId);
+	}
+
+	bool ParseCompleteLoginLink(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId)
+	{
+		return ReadAuthResponse(Envelope, TEXT("completeLoginLink"), OutToken, OutUserId);
+	}
+
+	bool ParseRequestLoginLink(const TSharedPtr<FJsonObject>& Envelope, bool& OutSent, FString& OutDevToken)
+	{
+		const TSharedPtr<FJsonObject> Node = GetDataNode(Envelope, TEXT("requestLoginLink"));
+		if (!Node.IsValid())
+		{
+			return false;
+		}
+		Node->TryGetBoolField(TEXT("sent"), OutSent);
+		Node->TryGetStringField(TEXT("devToken"), OutDevToken);
+		return true;
+	}
+
+	void ParseProviders(const TSharedPtr<FJsonObject>& Envelope, TArray<FString>& OutProviders)
+	{
+		OutProviders.Reset();
+		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
+		if (!Data.IsValid())
+		{
+			return;
+		}
+		// availableLoginProviders is a [String] sitting directly under data (not a named object node).
+		ReadStringArray(Data, TEXT("availableLoginProviders"), OutProviders);
 	}
 
 	void ParseOrganizations(const TSharedPtr<FJsonObject>& Envelope, TArray<TSharedPtr<FStudioOrg>>& OutOrgs)

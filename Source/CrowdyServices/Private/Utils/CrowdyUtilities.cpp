@@ -224,8 +224,12 @@ void UCrowdyUtilities::SwitchIsCrowdyEntityPlayerControlled(UObject* WorldContex
 	// Registered in the entity registry = remote proxy of a player entity
 	if (const UCrowdyEntitySubsystem* EntitySubsystem = World->GetSubsystem<UCrowdyEntitySubsystem>())
 	{
-		if (EntitySubsystem->FindEntityID(TargetActor).IsValid())
+		const FGuid EntityID = EntitySubsystem->FindEntityID(TargetActor);
+		const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntityID);
+		if (Record && Record->Role == ECrowdyRole::RemoteProxy)
+		{
 			bIsPlayerControlled = true;
+		}
 	}
 }
 

@@ -163,7 +163,10 @@ TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 		TEXT("login"), TEXT("apps"), TEXT("server"), TEXT("config"), TEXT("users"),
 		TEXT("broadcast"), TEXT("grid"), TEXT("cube"), TEXT("inspector"), TEXT("external-link"),
 		TEXT("refresh"), TEXT("home"), TEXT("wand"), TEXT("chevron-right"), TEXT("plus"),
-		TEXT("check"), TEXT("clock"), TEXT("ck")
+		TEXT("check"), TEXT("clock"), TEXT("ck"),
+		// Sign-in options: federated provider marks (monochrome, tinted at the call site) + magic-link.
+		TEXT("google"), TEXT("github"), TEXT("discord"), TEXT("apple"), TEXT("microsoft"),
+		TEXT("key"), TEXT("mail")
 	};
 	for (const TCHAR* Name : IconNames)
 	{
