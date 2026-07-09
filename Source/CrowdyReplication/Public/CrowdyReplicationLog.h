@@ -14,10 +14,14 @@ CROWDYREPLICATION_API DECLARE_LOG_CATEGORY_EXTERN(LogCrowdyReplication, Log, All
 // matching console variable to surface that area's chatty trace lines. Warnings/errors are not gated.
 namespace CrowdyReplicationTrace
 {
-	// crowdy.entity.trace — entity registry add/remove, event routing/dispatch, entity components,
+	// crowdy.entity.trace = entity registry add/remove, event routing/dispatch, entity components,
 	// actor tracking and management.
 	CROWDYREPLICATION_API bool Entity();
 
-	// crowdy.pool.trace — actor pool subsystem and rendering backend churn (spawn/release/reuse).
+	// crowdy.pool.trace = actor pool subsystem and rendering backend churn (spawn/release/reuse).
 	CROWDYREPLICATION_API bool Pool();
+
+	// crowdy.state.trace = CrowdyState per-property replicator: owned-entity diffing, delta emission,
+	// and datagram sizes.
+	CROWDYREPLICATION_API bool State();
 }

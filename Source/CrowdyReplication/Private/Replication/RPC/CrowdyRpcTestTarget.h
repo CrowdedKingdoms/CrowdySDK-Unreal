@@ -1,10 +1,24 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
 #include "Replication/RPC/CrowdyEvent.h"
 #include "CrowdyRpcTestTarget.generated.h"
 
-class AActor;
+/**
+ * A struct that buries a container. Used only by the struct-buried-container rejection test: a
+ * container reached through a struct cannot be bounded on decode (once inside the struct's
+ * SerializeItem the untrusted element count drives an allocation), so such a parameter is rejected
+ * at registration.
+ */
+USTRUCT()
+struct FCrowdyRpcNestedContainer
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<int32> Values;
+};
 
 /**
  * Receiver used by the RPC serializer automation tests. Each receiver records what
@@ -63,7 +77,7 @@ public:
 		const TMap<FName, int32>& InMap);
 
 	// Tier 3 (containers of object references): an array of bare object pointers. The validation
-	// test confirms it registers — an array of objects is supported once the per-element codec
+	// test confirms it registers an array of objects is supported once the per-element codec
 	// exists; the actor/class array receivers below cover the actual encode/decode round-trip.
 	UFUNCTION()
 	void ObjectArray_Implementation(const TArray<UObject*>& InObjects);
@@ -94,6 +108,25 @@ public:
 	UFUNCTION()
 	void ObjectMap_Implementation(const TMap<FName, AActor*>& InMap);
 
+	// Single-container receivers whose one parameter sits right after the version byte, so a test can
+	// hand-craft a blob with a forged element count and assert a clean drop. IntSet also drives the
+	// set snapshot round-trip. NameIntMap mirrors the map arm of Containers as a single param.
+	UFUNCTION()
+	void IntSet_Implementation(const TSet<int32>& In);
+
+	UFUNCTION()
+	void NameIntMap_Implementation(const TMap<FName, int32>& In);
+
+	// Map with a struct value, so the map snapshot's value path (a struct serialized through the
+	// structured element stream) is round-trip covered directly, not just the int-valued map.
+	UFUNCTION()
+	void NameVecMap_Implementation(const TMap<FName, FVector>& In);
+
+	// A struct parameter that buries a container. Not tagged CrowdyEvent, so the live scan ignores it;
+	// the rejection test calls the signature validator on it directly (mirrors ReturnsValue/OutParam).
+	UFUNCTION()
+	void StructWithContainer_Implementation(const FCrowdyRpcNestedContainer& In);
+
 	int32 CallCount = 0;
 
 	bool GotFlag = false;
@@ -110,10 +143,61 @@ public:
 	TArray<int32> GotInts;
 	TArray<FVector> GotVecs;
 	TMap<FName, int32> GotMap;
+	TMap<FName, FVector> GotVecMap;
+	TSet<int32> GotSet;
 
 	UObject* GotObject = nullptr;
 	UClass* GotClass = nullptr;
 
 	TArray<UClass*> GotClasses;
 	TArray<AActor*> GotActors;
+};
+
+/**
+ * Subsystem RPC fixture (Subsystem Replication Phase 2): a plain UObject (NOT an actor), standing in for a
+ * host-owned subsystem participant that sends and receives RPC CrowdyEvents over the reliable channel. Each
+ * receiver records the value and bumps a call count so a test can assert it ran; a plain UObject fires
+ * ProcessEvent without a world, so the channel apply tests need no editor world.
+ */
+UCLASS()
+class UCrowdyRpcSubsystemTestTarget : public UObject
+{
+	GENERATED_BODY()
+
+public:
+
+	UFUNCTION(meta = (CrowdyEvent, CrowdyRecipient = "Multicast"))
+	void SubMulticast_Implementation(int32 InValue);
+	CROWDY_EVENT(SubMulticast)
+
+	UFUNCTION(meta = (CrowdyEvent, CrowdyRecipient = "Host"))
+	void SubHostOnly_Implementation(int32 InValue);
+	CROWDY_EVENT(SubHostOnly)
+
+	UFUNCTION(meta = (CrowdyEvent, CrowdyRecipient = "OwningClient"))
+	void SubOwnerOnly_Implementation(int32 InValue);
+	CROWDY_EVENT(SubOwnerOnly)
+
+	int32 GotValue = 0;
+	int32 CallCount = 0;
+};
+
+/**
+ * Actor RPC fixture used only by the actor-path regression test: an owner-only CrowdyEvent on an AActor, so the
+ * receive gate's actor branch (owner/host-only broadcasts dropped, targeted sends run) can be exercised. An
+ * AActor's ProcessEvent no-ops without a world, so that test spawns this into an editor world.
+ */
+UCLASS()
+class ACrowdyRpcActorTestTarget : public AActor
+{
+	GENERATED_BODY()
+
+public:
+
+	UFUNCTION(meta = (CrowdyEvent, CrowdyRecipient = "OwningClient"))
+	void ActorOwnerOnly_Implementation(int32 InValue);
+	CROWDY_EVENT(ActorOwnerOnly)
+
+	int32 GotValue = 0;
+	int32 CallCount = 0;
 };

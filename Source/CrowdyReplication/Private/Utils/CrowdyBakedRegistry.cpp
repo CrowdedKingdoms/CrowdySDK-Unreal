@@ -3,6 +3,7 @@
 #include "Utils/CrowdyBakedRegistry.h"
 #include "CrowdyReplicationLog.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
+#include "Replication/State/FCrowdyRepLayout.h" // FCrowdyRepLayout, FCrowdyRepProperty
 #include "UObject/Class.h"          // UFunction, UClass
 #include "UObject/UObjectGlobals.h"
 
@@ -70,6 +71,27 @@ void UCrowdyBakedRegistry::BuildLookups() const
 	{
 		const FCrowdyBakedRpcFunction& Entry = RpcFunctions[Index];
 		RpcFunctionLookup.Add(TPair<FSoftClassPath, FName>(Entry.ClassPath, Entry.FunctionName), Index);
+	}
+
+	// Group the flat rep-property list by owning class. The baked array is emitted sorted by
+	// (OwnerClassPath, LayoutOrder), so appending in array order keeps each class's group in
+	// LayoutOrder; sort each group defensively in case the asset was written out of order.
+	for (const FCrowdyBakedRepProperty& Prop : RepProperties)
+	{
+		RepPropertyLookup.FindOrAdd(Prop.OwnerClassPath).Add(Prop);
+	}
+	for (TPair<FSoftClassPath, TArray<FCrowdyBakedRepProperty>>& Group : RepPropertyLookup)
+	{
+		Group.Value.Sort([](const FCrowdyBakedRepProperty& A, const FCrowdyBakedRepProperty& B)
+		{
+			return A.LayoutOrder < B.LayoutOrder;
+		});
+	}
+
+	RepLayoutHashLookup.Reserve(RepLayoutHashes.Num());
+	for (const FCrowdyBakedRepLayoutHash& Entry : RepLayoutHashes)
+	{
+		RepLayoutHashLookup.Add(Entry.ClassPath, Entry.LayoutHash);
 	}
 
 	bLookupsBuilt = true;
@@ -144,4 +166,58 @@ const FCrowdyBakedRpcFunction* UCrowdyBakedRegistry::FindRpcFunction(
 	BuildLookups();
 	const int32* Index = RpcFunctionLookup.Find(TPair<FSoftClassPath, FName>(OwnerClassPath, FunctionName));
 	return Index ? &RpcFunctions[*Index] : nullptr;
+}
+
+const TArray<FCrowdyBakedRepProperty>* UCrowdyBakedRegistry::FindRepProperties(
+	const FSoftClassPath& OwnerClassPath) const
+{
+	BuildLookups();
+	return RepPropertyLookup.Find(OwnerClassPath);
+}
+
+int64 UCrowdyBakedRegistry::FindRepLayoutHash(const FSoftClassPath& OwnerClassPath) const
+{
+	BuildLookups();
+	const int64* Hash = RepLayoutHashLookup.Find(OwnerClassPath);
+	return Hash ? *Hash : 0;
+}
+
+const TArray<FCrowdyBakedRepProperty>* UCrowdyBakedRegistry::FindRepProperties(const UClass* Class)
+{
+	if (!Class) return nullptr;
+
+	const UCrowdyBakedRegistry* Registry = Get();
+	if (!Registry) return nullptr;
+
+	return Registry->FindRepProperties(FSoftClassPath(const_cast<UClass*>(Class)));
+}
+
+int64 UCrowdyBakedRegistry::FindRepLayoutHash(const UClass* Class)
+{
+	if (!Class) return 0;
+
+	const UCrowdyBakedRegistry* Registry = Get();
+	if (!Registry) return 0;
+
+	return Registry->FindRepLayoutHash(FSoftClassPath(const_cast<UClass*>(Class)));
+}
+
+void UCrowdyBakedRegistry::MakeBakedRepProperties(
+	const FCrowdyRepLayout& Layout, const FSoftClassPath& OwnerClassPath, TArray<FCrowdyBakedRepProperty>& OutProps)
+{
+	OutProps.Reserve(OutProps.Num() + Layout.Properties.Num());
+	for (int32 Index = 0; Index < Layout.Properties.Num(); ++Index)
+	{
+		const FCrowdyRepProperty& Prop = Layout.Properties[Index];
+
+		FCrowdyBakedRepProperty& Baked = OutProps.AddDefaulted_GetRef();
+		Baked.OwnerClassPath     = OwnerClassPath;
+		Baked.PropertyName       = Prop.Property ? Prop.Property->GetFName() : NAME_None;
+		Baked.PropertyID         = Prop.PropertyID;
+		Baked.bOwnerOnly         = Prop.bOwnerOnly;
+		Baked.bManualDirty       = Prop.bManualDirty;
+		Baked.bHeartbeat         = Prop.bHeartbeat;
+		Baked.OnRepFunctionName  = Prop.OnRepFunctionName;
+		Baked.LayoutOrder        = Index;
+	}
 }

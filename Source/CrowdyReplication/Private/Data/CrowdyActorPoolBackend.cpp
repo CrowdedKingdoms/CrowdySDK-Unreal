@@ -87,7 +87,7 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 		// If the entity was spawned by FinishRemoteSpawn before pool activation, destroy that orphan.
 		if (const FCrowdyEntityRecord* Orphan = EntitySubsystem->FindRecord(UUID))
 		{
-			if (AActor* OldActor = Orphan->Actor.Get())
+			if (AActor* OldActor = Orphan->GetActor())
 				OldActor->Destroy();
 			EntitySubsystem->UnregisterEntity(UUID);
 		}
@@ -107,7 +107,7 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 		FCrowdyEntityRecord Record;
 		Record.NetID = UUID;
 		Record.Role  = ECrowdyRole::RemoteProxy;
-		Record.Actor = Actor;
+		Record.Participant = Actor;
 
 		if (const FCrowdyEntityRecord* SpawnRecord = EntitySubsystem->FindRecord(UUID))
 		{

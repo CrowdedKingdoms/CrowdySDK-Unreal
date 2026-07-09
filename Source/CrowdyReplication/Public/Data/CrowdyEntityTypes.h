@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
 #include "CrowdyEntityTypes.generated.h"
 
 UENUM(BlueprintType)
@@ -32,5 +33,11 @@ struct FCrowdyEntityRecord
 	UPROPERTY()
 	uint32 ClassID = 0;
 
-	TWeakObjectPtr<AActor> Actor;
+	// Any UObject can be a replicated participant (an actor, or a non-actor UObject such as a subsystem in
+	// later phases). Non-UPROPERTY, exactly as the actor weak pointer it replaces. For an actor participant,
+	// GetActor() resolves it byte-identically.
+	TWeakObjectPtr<UObject> Participant;
+
+	AActor* GetActor() const { return Cast<AActor>(Participant.Get()); }
+	UObject* GetParticipant() const { return Participant.Get(); }
 };

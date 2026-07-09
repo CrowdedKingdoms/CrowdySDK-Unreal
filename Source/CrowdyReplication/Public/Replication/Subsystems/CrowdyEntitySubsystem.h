@@ -15,9 +15,15 @@
 class UCrowdyEntityComponent;
 class UCrowdyGameSession;
 class UCrowdySDKBridgeSubsystem;
+enum class ECrowdyOwnership : uint8;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCrowdyEntityRegistered, const FGuid&, NetID);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCrowdyEntityUnregistered, const FGuid&, NetID);
+// Fired on the entity's current authority when another client requests ownership of it. RequesterActor is the
+// requester's avatar when present on this client (else null); RequesterID is always the requesting player's id.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCrowdyOwnershipRequested, AActor*, TargetEntity, AActor*, RequesterActor, const FGuid&, RequesterID);
+// Fired on every client once an entity's ownership actually changes. NewOwnerID is invalid for a host-owned entity.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnCrowdyEntityOwnershipChanged, AActor*, TargetEntity, const FGuid&, NetID, const FGuid&, NewOwnerID, const FGuid&, PreviousOwnerID);
 
 /**
  * Authoritative FGuid based entity registry for everything SDK replicates.
@@ -61,8 +67,24 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
 	AActor* FindEntity(const FGuid& NetID) const;
 
+	// Widened lookup: returns the participant (an actor or a non-actor UObject), or nullptr. FindEntity stays
+	// actor-typed and returns nullptr for a non-actor participant (intended, back-compatible).
+	UObject* FindParticipant(const FGuid& NetID) const;
+
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
 	FGuid FindEntityID(const AActor* Actor) const;
+
+	// Widened reverse lookup for any UObject participant. The AActor* overload forwards here; it cannot be a
+	// second UFUNCTION of the same name, so this one is plain C++.
+	FGuid FindEntityID(const UObject* Participant) const;
+
+	// Enrolls any UObject as a replicated participant with a deterministic, network-stable NetID and returns it.
+	// Host participants are world singletons (class-path seed, no salt); LocalClient participants are owner-salted.
+	// Dormant in Phase 0 — no caller yet.
+	FGuid RegisterParticipant(UObject* Participant, ECrowdyOwnership Ownership);
+
+	// Removes a participant previously enrolled via RegisterParticipant. Dormant in Phase 0.
+	void UnregisterParticipant(UObject* Participant);
 
 	const FCrowdyEntityRecord* FindRecord(const FGuid& NetID) const;
 
@@ -80,6 +102,12 @@ public:
 	/** Normally seeded from the game session automatically; exposed for Blueprints that managed it manually. */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entity Subsystem")
 	void SetLocalPlayerID(const FGuid& InLocalPlayerID);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	// Injects the game session that Initialize() would normally bind, so a headless test (which never runs
+	// Initialize) can exercise the real GetHostID() read-through to UCrowdyGameSession.
+	void SetGameSessionForTest(UCrowdyGameSession* InGameSession) { GameSession = InGameSession; }
+#endif
 
 	//Networked entity lifecycle
 	/**
@@ -110,7 +138,7 @@ public:
 
 	/**
 	 * Sends a payload to the single client that owns TargetActor (a registered entity), using the
-	 * actor-to-actor transport. The server delivers it only to that owner — no spatial broadcast,
+	 * actor-to-actor transport. The server delivers it only to that owner no spatial broadcast,
 	 * no echo to the sender. The chunk is taken from TargetActor's current location.
 	 */
 	void DispatchSingleActorMessage(const AActor* TargetActor, FInstancedStruct Payload);
@@ -126,17 +154,36 @@ public:
 	/** Returns all actors whose entity record matches the given owner UUID. */
 	TArray<AActor*> GetEntitiesByOwner(const FGuid& OwnerID) const;
 
+	// Explicit ownership transfer (view plane). Re-points a registered entity's owner and re-derives its role, then
+	// broadcasts OnEntityOwnershipChanged so the state replicator re-tracks and the entity component syncs its cache
+	// and continuous channel. NewOwnerID: a valid player id makes it client-owned (Owner on that client,
+	// RemoteProxy elsewhere); an invalid (zero) id makes it host-owned (a world entity). ExpectedPreviousOwnerID,
+	// when valid, is a compare-and-swap guard: the change is dropped when the record's current owner no longer
+	// matches, so a stale or duplicate grant is a no-op. This is the client-authoritative view plane — a
+	// convention, not an enforcement boundary; cheat-sensitive ownership belongs in a Game Model.
+	void ReassignOwnership(const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& ExpectedPreviousOwnerID);
+
+	// Broadcasts OnOwnershipRequested for TargetEntity, resolving the requester's representative actor (its avatar,
+	// when present on this client) from RequesterID. Called by the entity's authority when a transfer is requested.
+	void NotifyOwnershipRequested(AActor* TargetEntity, const FGuid& RequesterID);
+
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Entity Subsystem|Events")
 	FOnCrowdyEntityRegistered OnEntityRegistered;
 
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Entity Subsystem|Events")
 	FOnCrowdyEntityUnregistered OnEntityUnregistered;
 
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Entity Subsystem|Events")
+	FOnCrowdyOwnershipRequested OnOwnershipRequested;
+
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Entity Subsystem|Events")
+	FOnCrowdyEntityOwnershipChanged OnEntityOwnershipChanged;
+
 private:
 
 	// Remote spawn whose class is still streaming in. A destroy event arriving
 	// during the load cancels the spawn. Router events targeted at the entity
-	// while it loads are dropped — senders put initial data in the spawn payload.
+	// while it loads are dropped senders put initial data in the spawn payload.
 	struct FPendingRemoteSpawn
 	{
 		FCrowdyEntitySpawnEvent SpawnEvent;
@@ -144,7 +191,7 @@ private:
 	};
 
 	TMap<FGuid, FCrowdyEntityRecord> Records;
-	TMap<TObjectKey<AActor>, FGuid> ActorToID;
+	TMap<TObjectKey<UObject>, FGuid> ParticipantToID;
 	TMap<FGuid, FPendingRemoteSpawn> PendingRemoteSpawns;
 
 	// Entity events arrive on the network thread and are dispatched on Tick
@@ -160,6 +207,10 @@ private:
 
 	UFUNCTION()
 	void OnOwnerUUIDUpdated(FString NewUUID);
+
+	// Re-derives a LocalClient participant's owner-salted deterministic identity once the local player id arrives,
+	// re-registering it under the new NetID. Never touches actor entities (their identity is set at spawn).
+	void RestampParticipantIdentity(const FGuid& OldNetID);
 
 	void HandleRemoteSpawn(const FCrowdyEntitySpawnEvent& Event);
 	void HandleRemoteDestroy(const FCrowdyEntityDestroyEvent& Event);

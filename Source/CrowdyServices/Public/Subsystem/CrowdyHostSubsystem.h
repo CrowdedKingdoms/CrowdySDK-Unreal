@@ -6,6 +6,7 @@
 #include "Subsystem/CrowdyGameSession.h"
 #include <atomic>
 #include "Subsystems/WorldSubsystem.h"
+#include "Templates/Function.h"
 #include "CrowdyHostSubsystem.generated.h"
 
 
@@ -13,6 +14,7 @@ struct FCrowdySelectIDAsHost;
 struct FInstancedStruct;
 class UCrowdyActorTracker;
 class UCrowdyGameSession;
+class UCrowdyQuerySubsystem;
 
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyHostElected, const FGuid&, HostID, const FGuid&, PreviousHostID);
@@ -69,9 +71,51 @@ public:
 	}
 	
 	bool IsReady() const;
-	
+
+	/**
+	 * Server-validated "is this actor the host" check for an arbitrary Crowdy entity.
+	 *
+	 * The Game API elects a host per USER (there is no is-host-by-actor query), so:
+	 *  - For the LOCAL player's own entity we ask amIGameHost — the authoritative,
+	 *    server-side yes/no for this client.
+	 *  - For any OTHER actor we resolve its owner userId server-side (actor(uuid)) and
+	 *    compare it to the currently elected host userId (from the gameHost poll).
+	 *
+	 * Callback fires on the game thread:
+	 *   bSuccess == false -> the answer could not be determined (unresolved entity,
+	 *                        network/GraphQL error, or no host yet). bIsHost is false.
+	 *   bSuccess == true  -> bIsHost is the authoritative answer.
+	 *
+	 * This is the server-validated sibling of UCrowdyUtilities::IsCrowdyEntityHost
+	 * (which only compares client-derived deterministic GUIDs). Call from the game thread.
+	 */
+	void CheckEntityIsHost(const AActor* Entity, TFunction<void(bool bSuccess, bool bIsHost)> Callback);
+
+	/** Called by UCrowdySDKSubsystem on the game thread when the matching response lands. */
+	void HandleAmIGameHostResponse(bool bSuccess, bool bAmHost);
+	void HandleActorOwnerResponse(bool bSuccess, const FString& Uuid, int64 UserId);
+
 private:
-	
+
+	/** Dispatch amIGameHost / actor(uuid) via the shared query subsystem and queue the callback. */
+	void RequestAmIGameHost(TFunction<void(bool bSuccess, bool bAmHost)> Callback);
+	void RequestActorOwner(const FString& Uuid, TFunction<void(bool bSuccess, int64 UserId)> Callback);
+
+	UCrowdyQuerySubsystem* ResolveQuerySubsystem() const;
+
+	// Pending server-check callbacks. Touched only on the game thread (dispatch from
+	// CheckEntityIsHost, resolution from the game-thread-marshaled Handle* forwards),
+	// so no lock is required. amIGameHost carries no correlation id (a global boolean),
+	// so it resolves FIFO; actor(uuid) echoes its uuid so it resolves by match.
+	TArray<TFunction<void(bool, bool)>> PendingAmIHostCallbacks;
+
+	struct FPendingActorOwnerCallback
+	{
+		FString Uuid;
+		TFunction<void(bool, int64)> Callback;
+	};
+	TArray<FPendingActorOwnerCallback> PendingActorOwnerCallbacks;
+
 	std::atomic<int64> HostUserID { 0 };
 	
 	/** Host identity itself lives on the game session (single store, readable

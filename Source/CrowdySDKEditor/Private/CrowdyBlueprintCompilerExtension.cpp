@@ -18,6 +18,8 @@
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Replication/RPC/CrowdyReplicatedEventLibrary.h"
+#include "Replication/State/CrowdyStateMetaKeys.h"
+#include "Replication/State/FCrowdyRepLayout.h"
 
 namespace
 {
@@ -376,6 +378,46 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 			CompilationContext.MessageLog.Warning(*FString::Printf(
 				TEXT("[CrowdySDK] Event handler '%s' %s. It will never be invoked at runtime."),
 				*Function->GetName(), *Problem));
+		}
+
+		// A CrowdyState-replicated VARIABLE whose type this plane cannot carry must hard-fail the
+		// compile, the sibling of the replicated-event checks above: discovery would otherwise omit it
+		// from the rep layout (FCrowdyStateLayoutBuilder::BuildLayout) and it would silently never
+		// replicate, the only signal being a log line. Own properties only; supers were validated when
+		// the parent compiled. The reason text comes from the same classifier discovery uses, so this
+		// error reads identically to the discovery log and the variable-details dropdown. Editor module,
+		// so WITH_METADATA is always defined and HasMetaData is direct (as the event checks above do).
+		for (TFieldIterator<FProperty> It(NewClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		{
+			FProperty* Property = *It;
+			if (!Property->HasMetaData(CrowdyStateMetaKeys::Replicate)) continue;
+
+			// Crowdy and Unreal replication are mutually exclusive on one variable. Picking Crowdy clears the
+			// native rep flags (the variable customization's ClearNativeReplication), but UE 5.8 exposes no way
+			// to disable another customization's rows, so the native Replication combo stays interactive and a
+			// user could re-enable it afterward. Fail the compile if both are set so the exclusivity holds
+			// regardless of the editor UI, the sibling of the replicated-event FUNC_NetFuncFlags error above.
+			if (Property->HasAnyPropertyFlags(CPF_Net))
+			{
+				CompilationContext.MessageLog.Error(
+					TEXT("[CrowdySDK] Crowdy Replicated variable @@ also has Unreal replication enabled; ")
+					TEXT("the two are mutually exclusive. Set the variable's Replication to None ")
+					TEXT("(Crowdy manages its replication)."),
+					Property);
+			}
+
+			const ECrowdyStatePropertySupport Support =
+				FCrowdyStateLayoutBuilder::ClassifyStateProperty(Property);
+			if (Support == ECrowdyStatePropertySupport::Supported) continue;
+
+			// @@ resolves to a clickable link to the variable: FProperty is an FField, for which the
+			// results log has a token overload, so double-clicking the error jumps to the variable.
+			CompilationContext.MessageLog.Error(
+				*FString::Printf(
+					TEXT("[CrowdySDK] Crowdy Replicated variable @@ %s. ")
+					TEXT("Change its type or clear Replication on it."),
+					*FCrowdyStateLayoutBuilder::DescribeStateSupport(Support)),
+				Property);
 		}
 
 		// Keep the cooked registry in step with the just-stamped metadata so the

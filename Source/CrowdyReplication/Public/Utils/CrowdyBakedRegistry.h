@@ -9,6 +9,7 @@
 #include "CrowdyBakedRegistry.generated.h"
 
 class UFunction;
+struct FCrowdyRepLayout;
 
 /**
  * Fixed location of the baked registry. The editor baker writes here and the
@@ -35,7 +36,7 @@ struct FCrowdyBakedRpcFunction
 {
 	GENERATED_BODY()
 
-	/** Class that declares the function (ExcludeSuper — its owner class). */
+	/** Class that declares the function (ExcludeSuper its owner class). */
 	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
 	FSoftClassPath ClassPath;
 
@@ -70,9 +71,69 @@ struct FCrowdyBakedRpcFunction
 };
 
 /**
+ * Cooked-safe identity for one meta=(CrowdyState) property in a class's rep layout.
+ *
+ * The flags and OnRep name come from meta=(...) keys that are stripped from packaged
+ * builds, so for a cooked build this bake is the only runtime source. PropertyID and
+ * LayoutOrder are pure reflection but are baked so the cooked layout matches what the
+ * live builder computes. LayoutOrder is the positional index within the owning class's
+ * layout, so the assembled layout preserves wire order.
+ */
+USTRUCT()
+struct FCrowdyBakedRepProperty
+{
+	GENERATED_BODY()
+
+	/** Class that declares the layout this property belongs to. */
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	FSoftClassPath OwnerClassPath;
+
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	FName PropertyName;
+
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	int64 PropertyID = 0;
+
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	bool bOwnerOnly = false;
+
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	bool bManualDirty = false;
+
+	// Opt-in keyframe-heartbeat membership. Comes from meta=(CrowdyHeartbeat), stripped from cooked builds,
+	// so this bake is the only runtime source there (mirrors bOwnerOnly).
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	bool bHeartbeat = false;
+
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	FName OnRepFunctionName = NAME_None;
+
+	// Positional index within the class layout; the assembled layout is ordered by this.
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	int32 LayoutOrder = 0;
+};
+
+/**
+ * Cooked-safe copy of a class's CrowdyState layout hash. Baked so a cooked layout
+ * carries the same positional-order guard the live builder produces, letting a parity
+ * test confirm the assembled layout matches.
+ */
+USTRUCT()
+struct FCrowdyBakedRepLayoutHash
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	FSoftClassPath ClassPath;
+
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	int64 LayoutHash = 0;
+};
+
+/**
  * Cooked-safe snapshot of the editor-only Crowdy metadata.
  *
- * The SDK authors event handlers, listeners and persistent structs with
+ * The SDK authors event handlers, listeners, and persistent structs with
  * meta=(...) keys. Metadata is stripped from packaged builds (WITH_METADATA==0),
  * so the editor baker (UCrowdyRegistryBaker) reads that metadata while it still
  * exists and writes it into this asset, which cooks normally. At runtime the
@@ -99,7 +160,15 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
 	TArray<FCrowdyBakedRpcFunction> RpcFunctions;
 
-	// ── Runtime query surface ────────────────────────────────────────────────
+	/** Every meta=(CrowdyState) property, one entry each, grouped per class by OwnerClassPath. */
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	TArray<FCrowdyBakedRepProperty> RepProperties;
+
+	/** The CrowdyState layout hash for every class that declares any, one entry each. */
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	TArray<FCrowdyBakedRepLayoutHash> RepLayoutHashes;
+
+	// Runtime query surface
 	// Each helper reads live metadata when WITH_METADATA is available (editor /
 	// PIE) and the baked snapshot otherwise (packaged build). Call sites stay
 	// metadata-agnostic.
@@ -120,6 +189,27 @@ public:
 	/** Asset-local variant used by FindRpcFunction and by tests. */
 	const FCrowdyBakedRpcFunction* FindRpcFunction(const FSoftClassPath& OwnerClassPath, FName FunctionName) const;
 
+	/**
+	 * Baked CrowdyState properties for a class, ordered by LayoutOrder, or null if the
+	 * class declared none. This always reads the baked asset (the live equivalent is
+	 * assembled by FCrowdyStateLayoutBuilder), so it is the cooked-build source of the layout.
+	 */
+	const TArray<FCrowdyBakedRepProperty>* FindRepProperties(const FSoftClassPath& OwnerClassPath) const;
+
+	/** Baked CrowdyState layout hash for a class, or 0 if the class declared none. */
+	int64 FindRepLayoutHash(const FSoftClassPath& OwnerClassPath) const;
+
+	/** Static convenience that reads Get(); mirrors the static FindRpcFunction(const UFunction*). */
+	static const TArray<FCrowdyBakedRepProperty>* FindRepProperties(const UClass* Class);
+	static int64 FindRepLayoutHash(const UClass* Class);
+
+	/**
+	 * Pure live->baked factory: appends one FCrowdyBakedRepProperty per layout property
+	 * (with OwnerClassPath set to OwnerClassPath and LayoutOrder = its index), never clearing
+	 * OutProps. Used by both the editor baker and the bake round-trip test.
+	 */
+	static void MakeBakedRepProperties(const FCrowdyRepLayout& Layout, const FSoftClassPath& OwnerClassPath, TArray<FCrowdyBakedRepProperty>& OutProps);
+
 	/** Loads (and caches) the asset configured in UCrowdySDKDeveloperSettings. */
 	static const UCrowdyBakedRegistry* Get();
 
@@ -136,4 +226,10 @@ private:
 
 	// (declaring class, function name) -> index into RpcFunctions.
 	mutable TMap<TPair<FSoftClassPath, FName>, int32> RpcFunctionLookup;
+
+	// OwnerClassPath -> its CrowdyState properties, grouped and kept in LayoutOrder.
+	mutable TMap<FSoftClassPath, TArray<FCrowdyBakedRepProperty>> RepPropertyLookup;
+
+	// ClassPath -> its CrowdyState layout hash.
+	mutable TMap<FSoftClassPath, int64> RepLayoutHashLookup;
 };

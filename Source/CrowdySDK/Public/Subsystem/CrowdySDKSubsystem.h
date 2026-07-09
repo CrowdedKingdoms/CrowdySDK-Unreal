@@ -106,7 +106,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
 	void DevLogin(const FString Email) const;
 
-	/** Magic-link step 2 — complete sign-in with the one-time token. Result on OnLogin.
+	/** Magic-link step 2 complete sign-in with the one-time token. Result on OnLogin.
 	 *  Pair with UCrowdyAuthentication::RequestLoginLink (step 1). */
 	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
 	void CompleteLoginLink(const FString Token) const;
@@ -159,7 +159,7 @@ public:
 	
 	/**
 	 * Returns the current UDP connection state. Poll this to drive connection
-	 * indicators in your UI — no delegates or event subscriptions required.
+	 * indicators in your UI no delegates or event subscriptions required.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "CrowdySDK|Connection",
 		meta=(DisplayName="Get UDP Connection State"))
@@ -348,12 +348,12 @@ private:
 	UFUNCTION()
 	void HandleAuthRegisterFailed(FString Message);
 
-	/** Called by UCrowdyAuthentication::OnSessionRestored — requests UDP access with
+	/** Called by UCrowdyAuthentication::OnSessionRestored requests UDP access with
 	 *  the re-minted app token and forwards success on OnLogin. */
 	UFUNCTION()
 	void HandleAuthSessionRestored(FCrowdyAuthResult Result);
 
-	/** Called by UCrowdyAuthentication::OnAppTokenRefreshed after a token rotation —
+	/** Called by UCrowdyAuthentication::OnAppTokenRefreshed after a token rotation
 	 *  re-requests UDP access so the new app token re-assigns the Buddy session. */
 	UFUNCTION()
 	void HandleAppTokenRefreshed();
@@ -368,11 +368,13 @@ private:
 	bool ValidateVoiceChatSubsystem();
 	bool TryLoadConfiguration();
 
-	/** Starts the repeating GameHost poll. Safe to call from any thread —
+	/** Starts the repeating GameHost poll. Safe to call from any thread
 	 *  dispatches the timer registration to the game thread internally. */
 	void StartHostPolling() const;
 
-	/** Cancels the GameHost poll timer. Must be called on the game thread. */
+	/** Cancels the GameHost poll timer. Must be called on the game thread. The poll rides the GameInstance timer
+	 *  manager (UWorld::GetTimerManager forwards to it for a Game/PIE world), so it survives level travel and needs
+	 *  no per-world re-arm; this teardown on GameInstance shutdown is sufficient. */
 	void StopHostPolling();
 
 	/** Fires the GameHost query (called by HostPollTimerHandle). */

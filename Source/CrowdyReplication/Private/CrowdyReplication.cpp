@@ -16,8 +16,13 @@ namespace
 	CROWDY_DEFINE_TRACE_CVAR(CVarCrowdyPoolTrace, TEXT("crowdy.pool.trace"),
 		TEXT("When non-zero, logs CrowdyReplication actor-pool activity: spawn, release, reuse, and ")
 		TEXT("rendering-backend churn. Off by default."));
+
+	CROWDY_DEFINE_TRACE_CVAR(CVarCrowdyStateTrace, TEXT("crowdy.state.trace"),
+		TEXT("When non-zero, logs CrowdyReplication CrowdyState replicator activity: owned-entity ")
+		TEXT("diffing, delta emission, and datagram sizes. Off by default."));
 }
 
 // GetValueOnAnyThread: replication and pool code can log off the game thread.
 bool CrowdyReplicationTrace::Entity() { return CVarCrowdyEntityTrace.GetValueOnAnyThread() != 0; }
 bool CrowdyReplicationTrace::Pool()   { return CVarCrowdyPoolTrace.GetValueOnAnyThread() != 0; }
+bool CrowdyReplicationTrace::State()  { return CVarCrowdyStateTrace.GetValueOnAnyThread() != 0; }

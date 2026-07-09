@@ -60,6 +60,8 @@ const TArray<FCrowdyQueryDescriptor>& FCrowdyQueryDescriptors::GetAll()
 		{ EGraphQLQuery::UpdateUserState,        EQueryResponseType::UpdateUserState,       ECrowdyApiTarget::Management,        true,   10.f,    0 },
 		{ EGraphQLQuery::GetUserState,           EQueryResponseType::GetUserState,          ECrowdyApiTarget::Management,        true,   10.f,    0 },
 		{ EGraphQLQuery::GameHost,               EQueryResponseType::GameHost,              ECrowdyApiTarget::Game,               true,   10.f,    0 },
+		{ EGraphQLQuery::AmIGameHost,            EQueryResponseType::AmIGameHost,           ECrowdyApiTarget::Game,               true,   10.f,    0 },
+		{ EGraphQLQuery::ActorOwner,             EQueryResponseType::ActorOwner,            ECrowdyApiTarget::Game,               true,   10.f,    0 },
 		{ EGraphQLQuery::PersistencePull,        EQueryResponseType::PersistencePull,       ECrowdyApiTarget::Game,               true,   15.f,    0 },
 
 		// Teams - queries

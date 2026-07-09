@@ -59,6 +59,8 @@ enum class EGraphQLQuery : uint8
 
 	// Game Host
 	GameHost		UMETA(DisplayName = "Game Host Query"),
+	AmIGameHost		UMETA(DisplayName = "Am I Game Host Query"),
+	ActorOwner		UMETA(DisplayName = "Actor Owner Query"),
 
 	// Persistence system (inline query body - no data-asset entry needed)
 	PersistencePull UMETA(DisplayName = "Persistence Pull Query"),

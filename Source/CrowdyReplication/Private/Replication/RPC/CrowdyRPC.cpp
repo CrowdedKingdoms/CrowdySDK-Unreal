@@ -23,6 +23,7 @@
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/StructuredArchive.h"
 #include "Serialization/StructuredArchiveAdapters.h"
+#include "Serialization/StructuredArchiveSlots.h" // FArray / FStream for the bounded container codecs
 #include "HAL/CriticalSection.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ScopeLock.h"
@@ -230,6 +231,22 @@ namespace
 	// this (or negative) sets the archive error and the whole call is dropped. Far above any count
 	// that fits the transport budgets, so it never rejects a legitimate array.
 	constexpr int32 CrowdyRpcMaxArrayElements = 65536;
+
+	// An FMemoryReader whose ArMaxSerializeSize is pinned to the blob length so a forged FString/FName
+	// length prefix in a parameter cannot drive an unbounded allocation. A plain FMemoryReader leaves
+	// ArMaxSerializeSize == 0, which disables the FString load path's `(MaxSerializeSize > 0) && (SaveNum
+	// > MaxSerializeSize)` self-protection: the untrusted int32 length would then call AddUninitialized()
+	// for a multi-GB allocation before the short char read is detected (remote OOM from a tiny packet).
+	// A positive cap makes the engine reject SaveNum > blob-size up front, so the call drops cleanly.
+	class FCrowdyBoundedMemoryReader : public FMemoryReader
+	{
+	public:
+		FCrowdyBoundedMemoryReader(const TArray<uint8>& InBytes, bool bIsPersistent)
+			: FMemoryReader(InBytes, bIsPersistent)
+		{
+			ArMaxSerializeSize = InBytes.Num();
+		}
+	};
 
 	// Finds an object or class by path. Find-only by default so untrusted input cannot trigger a
 	// disk load; crowdy.rpc.allowObjectLoad opts into loading an asset that is not yet resident.
@@ -445,6 +462,178 @@ namespace
 			DecodeObjectValue(ArrayProp->Inner, Helper.GetRawPtr(Index), Ar);
 		}
 	}
+
+	// True when a parameter reaches a container THROUGH a struct: a struct that transitively holds a
+	// TArray/TSet/TMap, or a container whose element/key/value is such a struct. A direct container
+	// parameter is bounded by the codecs below and is NOT flagged here; only the struct-buried form is,
+	// because once a struct's SerializeItem owns the read the nested element count cannot be bounded.
+	bool ParamBuriesContainerInStruct(const FProperty* Prop)
+	{
+		if (const FStructProperty* StructProp = CastField<FStructProperty>(Prop))
+		{
+			return FCrowdyRPC::StructTransitivelyContainsContainer(StructProp->Struct);
+		}
+		if (const FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop))
+		{
+			return ParamBuriesContainerInStruct(ArrayProp->Inner);
+		}
+		if (const FSetProperty* SetProp = CastField<FSetProperty>(Prop))
+		{
+			return ParamBuriesContainerInStruct(SetProp->ElementProp);
+		}
+		if (const FMapProperty* MapProp = CastField<FMapProperty>(Prop))
+		{
+			return ParamBuriesContainerInStruct(MapProp->KeyProp) || ParamBuriesContainerInStruct(MapProp->ValueProp);
+		}
+		return false;
+	}
+
+	// Clamps an untrusted element/pair count read from the blob against what the remaining bytes can hold,
+	// capped at CrowdyRpcMaxArrayElements. A legitimate container cannot carry more elements than the packet
+	// has bytes, so this is the natural ceiling; a forged count trips it and the caller drops the call before
+	// any allocation. Ar is the bounded reader whose TotalSize is the blob length.
+	bool IsContainerCountInRange(FArchive& Ar, int32 Count)
+	{
+		const int64 Remaining = Ar.TotalSize() - Ar.Tell();
+		return Count >= 0 && Count <= CrowdyRpcMaxArrayElements && Count <= Remaining;
+	}
+
+	// Reverses the engine's non-object array encode with the element count bounded BEFORE allocation.
+	// FArrayProperty::SerializeItem (the unchanged encode path) reads the untrusted int32 count and
+	// EmptyAndAddValues() it before the short read is caught, so a forged count drives a multi-GB
+	// allocation from a tiny packet. This mirrors that load path exactly — EnterArray reads the same count
+	// the encode wrote — but clamps it first. Object arrays go through DecodeObjectArray; an array whose
+	// element buries a container is rejected at registration, so Inner is a bounded leaf or container-free
+	// struct here.
+	void DecodeBoundedArray(FArrayProperty* ArrayProp, void* ValuePtr, FArchive& Ar)
+	{
+		FStructuredArchiveFromArchive Adapter(Ar);
+		int32 Num = 0;
+		FStructuredArchive::FArray Array = Adapter.GetSlot().EnterArray(Num);
+
+		if (!IsContainerCountInRange(Ar, Num))
+		{
+			UE_LOG(LogCrowdyRPC, Warning,
+				TEXT("DecodeBoundedArray: element count %d exceeds the %d-element cap or the remaining bytes; dropping call."),
+				Num, CrowdyRpcMaxArrayElements);
+			Ar.SetError();
+			return;
+		}
+
+		FScriptArrayHelper Helper(ArrayProp, ValuePtr);
+		Helper.EmptyAndAddValues(Num);
+		for (int32 Index = 0; Index < Num && !Ar.IsError(); ++Index)
+		{
+			ArrayProp->Inner->SerializeItem(Array.EnterElement(), Helper.GetRawPtr(Index));
+		}
+	}
+
+	// Writes a TSet as [int32 count][elements]. RPC always sends a full snapshot (never a delta against a
+	// default), so this replaces the engine's delta format, whose allocating element count sits mid-stream
+	// after a remove block and so cannot be bounded by peeking a leading count. The count is a raw int32 the
+	// decoder can clamp before allocating; the elements ride a structured stream so each serializes through
+	// its own property.
+	void EncodeSetSnapshot(const FSetProperty* SetProp, const void* ValuePtr, FArchive& Ar)
+	{
+		FScriptSetHelper Helper(SetProp, ValuePtr);
+		int32 Num = Helper.Num();
+		Ar << Num;
+
+		FStructuredArchiveFromArchive Adapter(Ar);
+		FStructuredArchive::FStream Stream = Adapter.GetSlot().EnterStream();
+		for (FScriptSetHelper::FIterator It(Helper); It; ++It)
+		{
+			SetProp->ElementProp->SerializeItem(Stream.EnterElement(), Helper.GetElementPtr(It));
+		}
+	}
+
+	// Reverses EncodeSetSnapshot with the element count bounded before any allocation. Mirrors the engine's
+	// empty-set load (EmptyElements, then per element AddDefaultValue_Invalid_NeedsRehash + SerializeItem +
+	// Rehash) but reads its own bounded count instead of the delta format's mid-stream one.
+	void DecodeSetSnapshot(FSetProperty* SetProp, void* ValuePtr, FArchive& Ar)
+	{
+		int32 Num = 0;
+		Ar << Num;
+		if (!IsContainerCountInRange(Ar, Num))
+		{
+			UE_LOG(LogCrowdyRPC, Warning,
+				TEXT("DecodeSetSnapshot: element count %d exceeds the %d-element cap or the remaining bytes; dropping call."),
+				Num, CrowdyRpcMaxArrayElements);
+			Ar.SetError();
+			return;
+		}
+
+		FScriptSetHelper Helper(SetProp, ValuePtr);
+		Helper.EmptyElements(Num);
+
+		FStructuredArchiveFromArchive Adapter(Ar);
+		FStructuredArchive::FStream Stream = Adapter.GetSlot().EnterStream();
+		for (int32 Index = 0; Index < Num; ++Index)
+		{
+			const int32 ElementIndex = Helper.AddDefaultValue_Invalid_NeedsRehash();
+			// GetElementPtr (public, checked) is safe here: the freshly-added element is a valid sparse
+			// index (only its hash is stale until Rehash), so the IsValidIndex check passes. The engine's
+			// own set load uses the private GetElementPtrWithoutCheck, which is not reachable from here.
+			SetProp->ElementProp->SerializeItem(Stream.EnterElement(), Helper.GetElementPtr(ElementIndex));
+			if (Ar.IsError())
+			{
+				return;
+			}
+		}
+		Helper.Rehash();
+	}
+
+	// Writes a TMap as [int32 pair-count][key,value pairs]. Same rationale as EncodeSetSnapshot: the engine's
+	// delta format buries the allocating pair count after a KeysToRemove block, so RPC uses an explicit
+	// leading count the decoder can clamp. Each pair is two stream elements (key then value).
+	void EncodeMapSnapshot(const FMapProperty* MapProp, const void* ValuePtr, FArchive& Ar)
+	{
+		FScriptMapHelper Helper(MapProp, ValuePtr);
+		int32 Num = Helper.Num();
+		Ar << Num;
+
+		FStructuredArchiveFromArchive Adapter(Ar);
+		FStructuredArchive::FStream Stream = Adapter.GetSlot().EnterStream();
+		for (FScriptMapHelper::FIterator It(Helper); It; ++It)
+		{
+			MapProp->KeyProp->SerializeItem(Stream.EnterElement(), Helper.GetKeyPtr(It));
+			MapProp->ValueProp->SerializeItem(Stream.EnterElement(), Helper.GetValuePtr(It));
+		}
+	}
+
+	// Reverses EncodeMapSnapshot with the pair count bounded before any allocation. Mirrors the engine's
+	// empty-map load (EmptyValues, then per pair AddDefaultValue_Invalid_NeedsRehash + key/value SerializeItem
+	// + Rehash) but reads its own bounded count.
+	void DecodeMapSnapshot(FMapProperty* MapProp, void* ValuePtr, FArchive& Ar)
+	{
+		int32 Num = 0;
+		Ar << Num;
+		if (!IsContainerCountInRange(Ar, Num))
+		{
+			UE_LOG(LogCrowdyRPC, Warning,
+				TEXT("DecodeMapSnapshot: pair count %d exceeds the %d-element cap or the remaining bytes; dropping call."),
+				Num, CrowdyRpcMaxArrayElements);
+			Ar.SetError();
+			return;
+		}
+
+		FScriptMapHelper Helper(MapProp, ValuePtr);
+		Helper.EmptyValues(Num);
+
+		FStructuredArchiveFromArchive Adapter(Ar);
+		FStructuredArchive::FStream Stream = Adapter.GetSlot().EnterStream();
+		for (int32 Index = 0; Index < Num; ++Index)
+		{
+			const int32 PairIndex = Helper.AddDefaultValue_Invalid_NeedsRehash();
+			MapProp->KeyProp->SerializeItem(Stream.EnterElement(), Helper.GetKeyPtr(PairIndex));
+			MapProp->ValueProp->SerializeItem(Stream.EnterElement(), Helper.GetValuePtr(PairIndex));
+			if (Ar.IsError())
+			{
+				return;
+			}
+		}
+		Helper.Rehash();
+	}
 }
 
 UFunction* FCrowdyRPC::ResolveFunction(UClass* Class, const TCHAR* ImplName)
@@ -561,6 +750,30 @@ bool FCrowdyRPC::IsSupportedParamType(const FProperty* Prop)
 		|| CastField<FTextProperty>(Prop) != nullptr;
 }
 
+bool FCrowdyRPC::StructTransitivelyContainsContainer(const UStruct* Struct, int32 Depth)
+{
+	if (!Struct || Depth > 8)
+	{
+		return false;
+	}
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		const FProperty* Member = *It;
+		if (CastField<FArrayProperty>(Member) || CastField<FSetProperty>(Member) || CastField<FMapProperty>(Member))
+		{
+			return true;
+		}
+		if (const FStructProperty* MemberStruct = CastField<FStructProperty>(Member))
+		{
+			if (StructTransitivelyContainsContainer(MemberStruct->Struct, Depth + 1))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 FString FCrowdyRPC::DescribeSignatureProblem(const UFunction* Fn)
 {
 	if (!Fn)
@@ -608,6 +821,21 @@ FString FCrowdyRPC::DescribeSignatureProblem(const UFunction* Fn)
 				TEXT("structs, object and class references, and arrays of any of these (sets and maps of ")
 				TEXT("objects, interfaces, and delegates are not supported)"),
 				*Prop->GetName(), *Prop->GetCPPType());
+		}
+
+		// A container reached through a struct (a struct parameter that buries a TArray/TSet/TMap, or a
+		// container whose element/key/value is such a struct) cannot be bounded on decode: once inside the
+		// struct's SerializeItem the untrusted element count drives an allocation before the short read is
+		// caught. Direct container parameters are bounded by the RPC codec, so only the buried form is
+		// rejected. Not registering it also leaves the inbound resolver without an entry, so a forged call
+		// to it drops on receipt.
+		if (ParamBuriesContainerInStruct(Prop))
+		{
+			return FString::Printf(
+				TEXT("parameter '%s' buries a container (TArray/TSet/TMap) inside a struct; a forged nested ")
+				TEXT("element count cannot be bounded on decode. Pass the container as a top-level CrowdyEvent ")
+				TEXT("parameter instead."),
+				*Prop->GetName());
 		}
 	}
 
@@ -774,8 +1002,18 @@ void FCrowdyRPC::SerializeParams(const UFunction* Fn, const void* Frame, TArray<
 		{
 			EncodeObjectArray(CastFieldChecked<FArrayProperty>(Prop), ValuePtr, Writer);
 		}
+		else if (const FSetProperty* SetProp = CastField<FSetProperty>(Prop))
+		{
+			EncodeSetSnapshot(SetProp, ValuePtr, Writer);
+		}
+		else if (const FMapProperty* MapProp = CastField<FMapProperty>(Prop))
+		{
+			EncodeMapSnapshot(MapProp, ValuePtr, Writer);
+		}
 		else
 		{
+			// Non-object arrays fall here and ride the engine's FArrayProperty::SerializeItem unchanged
+			// ([int32 count][elements]); DecodeBoundedArray reads that same layout with the count bounded.
 			FStructuredArchiveFromArchive Adapter(Writer);
 			Prop->SerializeItem(Adapter.GetSlot(), ValuePtr, nullptr);
 		}
@@ -795,7 +1033,9 @@ bool FCrowdyRPC::DeserializeParams(const UFunction* Fn, const TArray<uint8>& Blo
 		return false;
 	}
 
-	FMemoryReader Reader(Blob, /*bIsPersistent=*/true);
+	// Bounded reader: caps ArMaxSerializeSize so a forged string/name length prefix in a parameter cannot
+	// drive an unbounded allocation before the short read is detected (see FCrowdyBoundedMemoryReader).
+	FCrowdyBoundedMemoryReader Reader(Blob, /*bIsPersistent=*/true);
 
 	uint8 Version = 0;
 	Reader << Version;
@@ -830,6 +1070,19 @@ bool FCrowdyRPC::DeserializeParams(const UFunction* Fn, const TArray<uint8>& Blo
 		else if (IsObjectArray(Prop))
 		{
 			DecodeObjectArray(CastFieldChecked<FArrayProperty>(Prop), ValuePtr, Reader);
+		}
+		else if (FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop))
+		{
+			// Non-object array (object arrays are handled above): bound the element count before allocating.
+			DecodeBoundedArray(ArrayProp, ValuePtr, Reader);
+		}
+		else if (FSetProperty* SetProp = CastField<FSetProperty>(Prop))
+		{
+			DecodeSetSnapshot(SetProp, ValuePtr, Reader);
+		}
+		else if (FMapProperty* MapProp = CastField<FMapProperty>(Prop))
+		{
+			DecodeMapSnapshot(MapProp, ValuePtr, Reader);
 		}
 		else
 		{
@@ -1108,6 +1361,84 @@ void FCrowdyRPC::RouteOverChannel(UCrowdyEntitySubsystem* EntitySubsystem, const
 	EntitySubsystem->PublishReliableRpc(ChannelName, ChannelPayload);
 }
 
+FCrowdyRpcRouteDecision FCrowdyRPC::DecideRoute(ECrowdyEventRecipient Recipient, bool bNonSpatial,
+	bool bEntityValid, bool bWeOwnEntity, bool bWeAreHost)
+{
+	FCrowdyRpcRouteDecision Decision;
+
+	switch (Recipient)
+	{
+	case ECrowdyEventRecipient::OwningClient:
+		// Owner-only: run locally when we own the entity (or it is untracked, which makes us the authority).
+		// An actor delegates to the owner over the single-actor transport; a non-spatial participant has no
+		// single-actor transport, so it always announces over the channel and the receive gate keeps it to
+		// the intended owner.
+		if (bNonSpatial)
+		{
+			Decision.bRunLocally = bWeOwnEntity || !bEntityValid;
+			Decision.Route = ECrowdyRpcRoute::Channel;
+		}
+		else if (bWeOwnEntity || !bEntityValid)
+		{
+			Decision.bRunLocally = true;
+			Decision.Route = ECrowdyRpcRoute::None;
+		}
+		else
+		{
+			Decision.bRunLocally = false;
+			Decision.Route = ECrowdyRpcRoute::SingleActorToOwner;
+		}
+		break;
+
+	case ECrowdyEventRecipient::Host:
+		// Host-only: run locally when we are the host. An actor delegates to the host's avatar over the
+		// single-actor transport; a non-spatial participant announces over the channel and the receive gate
+		// keeps it to the host.
+		if (bNonSpatial)
+		{
+			Decision.bRunLocally = bWeAreHost;
+			Decision.Route = ECrowdyRpcRoute::Channel;
+		}
+		else if (bWeAreHost)
+		{
+			Decision.bRunLocally = true;
+			Decision.Route = ECrowdyRpcRoute::None;
+		}
+		else
+		{
+			Decision.bRunLocally = false;
+			Decision.Route = ECrowdyRpcRoute::SingleActorToHost;
+		}
+		break;
+
+	case ECrowdyEventRecipient::Multicast:
+		// Channel transport: run locally now and announce over the session channel to every member. Identical
+		// for an actor and a non-spatial participant.
+		Decision.bRunLocally = true;
+		Decision.Route = ECrowdyRpcRoute::Channel;
+		break;
+
+	case ECrowdyEventRecipient::SpatialMulticast:
+	default:
+		// Spatial path (also the unannotated default). A non-spatial participant has no world location, so this
+		// is hard-rejected at send; the author must set CrowdyRecipient=Multicast or Host. An actor announces to
+		// everyone in range (chunk-based, decay-thinned).
+		if (bNonSpatial)
+		{
+			Decision.bRunLocally = false;
+			Decision.Route = ECrowdyRpcRoute::Reject;
+		}
+		else
+		{
+			Decision.bRunLocally = true;
+			Decision.Route = ECrowdyRpcRoute::SpatialBroadcast;
+		}
+		break;
+	}
+
+	return Decision;
+}
+
 bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnInfo& Info,
 	FCrowdyRpcCall Call)
 {
@@ -1116,16 +1447,11 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 		return false;
 	}
 
+	// A CrowdyEvent lives on an actor/component (routed by the actor's entity identity) or on a non-actor
+	// participant enrolled via RegisterParticipant (a subsystem). ContextActor is null in the latter case.
 	AActor* ContextActor = ResolveContextActor(Obj);
-	if (!ContextActor)
-	{
-		UE_LOG(LogCrowdyRPC, Warning,
-			TEXT("SerializeAndRoute: %s::%s has no owning actor to route from; CrowdyEvents must live on an actor or one of its components."),
-			*GetNameSafe(Obj->GetClass()), *Fn->GetName());
-		return false;
-	}
 
-	UWorld* World = ContextActor->GetWorld();
+	UWorld* World = ContextActor ? ContextActor->GetWorld() : Obj->GetWorld();
 	if (!World)
 	{
 		return false;
@@ -1139,9 +1465,30 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 		return false;
 	}
 
+	// Resolve the sending identity: an actor by its context actor, a non-actor by its own enrolled NetID.
+	FGuid EntityID;
+	bool bNonSpatial = false;
+	if (ContextActor)
+	{
+		EntityID = EntitySubsystem->FindEntityID(ContextActor);
+	}
+	else
+	{
+		// A non-actor sender (a subsystem) resolves its OWN enrolled NetID.
+		EntityID = EntitySubsystem->FindEntityID(Obj);
+		if (!EntityID.IsValid())
+		{
+			UE_LOG(LogCrowdyRPC, Warning,
+				TEXT("SerializeAndRoute: %s::%s has no owning actor and is not an enrolled participant; "
+					 "CrowdyEvents must live on an actor/component or on a subsystem enrolled via RegisterParticipant."),
+				*GetNameSafe(Obj->GetClass()), *Fn->GetName());
+			return false;
+		}
+		bNonSpatial = true;
+	}
+
 	// The receiver runs the call on the entity named here, resolved from its own local registry.
-	// SenderID rides the payload because the single-actor transport carries no wire sender.
-	const FGuid EntityID = EntitySubsystem->FindEntityID(ContextActor);
+	// SenderID rides the payload because the single-actor and channel transports carry no wire sender.
 	Call.EntityID = EntityID;
 	Call.SenderID = EntitySubsystem->GetLocalPlayerID();
 
@@ -1158,54 +1505,58 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 	const bool bLoopback = IsLoopbackEnabled() && !bLoopbackDelivering;
 	const bool bReceivePathWillRun = bLoopback && EntityID.IsValid();
 
-	// Runs the implementation on this client now, unless the loopback receive path will run it.
-	const auto RunLocally = [&]()
+	const FCrowdyRpcRouteDecision Decision =
+		DecideRoute(Info.Recipient, bNonSpatial, EntityID.IsValid(), bWeOwnEntity, bWeAreHost);
+
+	if (Decision.Route == ECrowdyRpcRoute::Reject)
 	{
-		if (!bReceivePathWillRun)
-		{
-			ApplyCall(Obj, Fn, Info, Call);
-		}
-	};
+		// SpatialMulticast (also the unannotated default) has no location on a non-spatial participant. Consume
+		// the call (return true) so a Blueprint caller does NOT run the body as a local fallback  the author must
+		// pick a channel-based recipient.
+		UE_LOG(LogCrowdyRPC, Error,
+			TEXT("SerializeAndRoute: '%s' on non-spatial participant '%s' uses SpatialMulticast, which has no "
+				 "location; set CrowdyRecipient=Multicast or Host. Dropping."),
+			*Fn->GetName(), *GetNameSafe(Obj->GetClass()));
+		return true;
+	}
 
 	if (IsRpcTraceEnabled())
 	{
-		const TCHAR* ModeText =
-			Info.Recipient == ECrowdyEventRecipient::OwningClient
-				? (bWeOwnEntity ? TEXT("(owner: run local)") : TEXT("(owner: route to entity's owner)"))
-			: Info.Recipient == ECrowdyEventRecipient::Host
-				? (bWeAreHost ? TEXT("(host: run local)") : TEXT("(host: route to host)"))
-			: Info.Recipient == ECrowdyEventRecipient::Multicast
-				? TEXT("(multicast: channel)")
-				: TEXT("(multicast: spatial)");
-		UE_LOG(LogCrowdyRPC, Log, TEXT("[CrowdyRPC] send %s::%s entity=%s %s"),
-			*GetNameSafe(ContextActor->GetClass()), *Fn->GetName(), *EntityID.ToString(), ModeText);
+		UE_LOG(LogCrowdyRPC, Log,
+			TEXT("[CrowdyRPC] send %s::%s entity=%s nonSpatial=%d route=%d run=%d"),
+			*GetNameSafe(Obj->GetClass()), *Fn->GetName(), *EntityID.ToString(),
+			bNonSpatial ? 1 : 0, static_cast<int32>(Decision.Route), Decision.bRunLocally ? 1 : 0);
 	}
 
-	switch (Info.Recipient)
+	// Run the implementation on this client now, unless the loopback receive path will run it once instead.
+	if (Decision.bRunLocally && !bReceivePathWillRun)
 	{
-	case ECrowdyEventRecipient::OwningClient:
-		// Owner-only: run locally if we own the entity (or it is untracked, which makes us the
-		// authority); otherwise route a request to the owning client via the single-actor transport.
-		if (bWeOwnEntity || !EntityID.IsValid())
-		{
-			RunLocally();
-		}
-		else
-		{
-			EntitySubsystem->DispatchSingleActorMessage(ContextActor, FInstancedStruct::Make(Call));
-		}
+		ApplyCall(Obj, Fn, Info, Call);
+	}
+
+	switch (Decision.Route)
+	{
+	case ECrowdyRpcRoute::None:
 		break;
 
-	case ECrowdyEventRecipient::Host:
-		// Host-only: run locally if we are the host; otherwise route a request to the host. The host
-		// is addressed through its avatar entity (PlayerDerived NetID == the host's id), so that
-		// entity must be in range for us to read its chunk; if it is not, we drop rather than send a
-		// bad chunk.
-		if (bWeAreHost)
-		{
-			RunLocally();
-		}
-		else if (AActor* HostAvatar = EntitySubsystem->FindEntity(HostID))
+	case ECrowdyRpcRoute::SpatialBroadcast:
+		// Only reached for an actor (SpatialMulticast is never a non-spatial route), so ContextActor is non-null.
+		RouteOverWire(EntitySubsystem, ContextActor, Call, Info, ECrowdyTarget::Everyone);
+		break;
+
+	case ECrowdyRpcRoute::Channel:
+		RouteOverChannel(EntitySubsystem, Call, Fn, Info.ChannelName);
+		break;
+
+	case ECrowdyRpcRoute::SingleActorToOwner:
+		// Only reached for an actor whose owner is another client, so ContextActor is non-null.
+		EntitySubsystem->DispatchSingleActorMessage(ContextActor, FInstancedStruct::Make(Call));
+		break;
+
+	case ECrowdyRpcRoute::SingleActorToHost:
+		// The host is addressed through its avatar entity (PlayerDerived NetID == the host's id), so that entity
+		// must be in range for us to read its chunk; if it is not, we drop rather than send a bad chunk.
+		if (AActor* HostAvatar = EntitySubsystem->FindEntity(HostID))
 		{
 			EntitySubsystem->DispatchSingleActorMessage(HostAvatar, FInstancedStruct::Make(Call));
 		}
@@ -1217,20 +1568,7 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 		}
 		break;
 
-	case ECrowdyEventRecipient::Multicast:
-		// Channel transport: run locally now and announce over the event's channel (empty = the default
-		// session channel)  every member runs it regardless of distance, never decay-thinned. Our own
-		// echo is dropped on receipt.
-		RunLocally();
-		RouteOverChannel(EntitySubsystem, Call, Fn, Info.ChannelName);
-		break;
-
-	case ECrowdyEventRecipient::SpatialMulticast:
 	default:
-		// Spatial path: run locally now and announce to everyone in range (chunk-based, decay-thinned).
-		// Our own echo is dropped on receipt so the body never runs twice.
-		RunLocally();
-		RouteOverWire(EntitySubsystem, ContextActor, Call, Info, ECrowdyTarget::Everyone);
 		break;
 	}
 

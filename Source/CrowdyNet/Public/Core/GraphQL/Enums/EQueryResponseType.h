@@ -31,6 +31,8 @@ enum EQueryResponseType: uint8
 	UpdateUserState,
 	GetUserState,
 	GameHost,
+	AmIGameHost,
+	ActorOwner,
 	PersistencePull,
 
 	// Teams - queries

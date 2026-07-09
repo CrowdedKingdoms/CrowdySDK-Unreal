@@ -13,9 +13,11 @@
 // ECrowdyReplicationDistance (see Core/UDP/Enums/ECrowdyMessageType.h, included
 // above) so lower modules can reference it in RPC routing metadata.
 
+class UCrowdyEntityComponent;
+
 /**
  * Blueprint-facing surface of the Crowdy SDK.
- * Covers entity spawning/destroying, actor↔NetID resolution, event sending,
+ * Covers entity spawning/destroying, actor <--> netID resolution, event sending,
  * and session helpers.
  */
 UCLASS(BlueprintType, meta=(DisplayName="Crowdy Utility Functions"))
@@ -84,7 +86,28 @@ public:
 		      Keywords="Get Crowdy Entity Role Owner Proxy"))
 	static ECrowdyRole GetCrowdyEntityRole(UObject* WorldContextObject, const AActor* Entity);
 
-	
+	/**
+	 * True when OwnerActor is the Crowdy owner of TargetActor i.e. OwnerActor's entity
+	 * NetID equals TargetActor's owner UUID. Works across clients (both IDs are the same
+	 * network-stable GUIDs on every client). Both actors must be registered Crowdy
+	 * entities; returns false otherwise. This is Crowdy player-ownership, NOT UE's
+	 * AActor::GetOwner().
+	 */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Entities",
+		meta=(WorldContext="WorldContextObject",
+		      Keywords="Owns Owner Ownership Crowdy Entity"))
+	static bool DoesCrowdyEntityOwn(UObject* WorldContextObject, const AActor* OwnerActor, const AActor* TargetActor);
+
+	/**
+	 * Returns the UCrowdyEntityComponent that represents Actor (GAS-style). If Actor
+	 * implements ICrowdyEntityComponentProvider its result is used; otherwise, or when
+	 * that returns null, falls back to FindComponentByClass. Defaults to self.
+	 */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Entities",
+		meta=(DefaultToSelf="Actor", Keywords="Get Find Crowdy Entity Component GAS"))
+	static UCrowdyEntityComponent* GetCrowdyEntityComponent(AActor* Actor);
+
+
 	//Entity State Checks
 
 	/** Exec-flow version: routes to IsPlayerControlled or IsNotPlayerControlled. */
@@ -134,7 +157,7 @@ public:
 		ECrowdyReplicationDistance ReplicationDistance = ECrowdyReplicationDistance::Eight_Chunks);
 	DECLARE_FUNCTION(execK2_SendCrowdyEvent);
 
-	/** C++ overload — pass any USTRUCT directly. */
+	/** C++ overload pass any USTRUCT directly. */
 	template<typename T>
 	static void SendCrowdyEvent(
 		UObject* WorldContextObject,
@@ -153,11 +176,12 @@ public:
 	/** Exec-flow version: routes to HasAuthority or DoesNotHaveAuthority. */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Session",
 		meta=(WorldContext="WorldContextObject", ExpandBoolAsExecs="bHasAuthority",
-		      Keywords="Crowdy Has Authority Switch"))
+		      Keywords="Switch Crowdy Has Authority Switch", DisplayName="Switch Crowdy Has Authority"))
 	static void CrowdyHasAuthority(UObject* WorldContextObject, bool& bHasAuthority);
 
-	/** C++ overload — returns true when this client is the host. */
-	static bool CrowdyHasAuthority(const UObject* WorldContextObject);
+	/*C++ overload/Boolean Version returns true when this client is the host. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Session", meta=(WorldContext="WorldContextObject", Keywords="Crowdy Has Authority", DisplayName="Crowdy Has Authority"))
+	static bool GetCrowdyHasAuthority(const UObject* WorldContextObject);
 
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Session",
 		meta=(WorldContext="WorldContextObject",
@@ -168,6 +192,17 @@ public:
 		meta=(WorldContext="WorldContextObject",
 		      Keywords="Crowdy Get Host ID"))
 	static FGuid CrowdyGetHostID(UObject* WorldContextObject, bool& bIsValid);
+
+	/**
+	 * True when Entity is the host player's own entity i.e. Entity's NetID equals the
+	 * current host UUID. For a player pawn this means "this is the host's pawn". Works
+	 * across clients. (For "owned by the host" instead, e.g. a prop the host spawned
+	 * compare GetCrowdyEntityOwnerID against CrowdyGetHostID.)
+	 */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Session",
+		meta=(WorldContext="WorldContextObject", DefaultToSelf="Entity",
+		      Keywords="Is Host Crowdy Entity Actor"))
+	static bool IsCrowdyEntityHost(UObject* WorldContextObject, const AActor* Entity);
 
 private:
 

@@ -1,6 +1,7 @@
 #include "CrowdySDKEditor.h"
 
 #include "BlueprintCompilationManager.h"
+#include "BlueprintEditorModule.h"
 #include "PropertyEditorModule.h"
 #include "Editor.h"
 #include "Engine/Blueprint.h"
@@ -11,16 +12,23 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_FunctionEntry.h"
+#include "K2Node_Variable.h"
 #include "KismetNodes/SGraphNodeK2Event.h"
+#include "KismetNodes/SGraphNodeK2Var.h"
+#include "SNodePanel.h" // FOverlayBrushInfo
+#include "Styling/SlateBrush.h"
 #include "CrowdyBlueprintCompilerExtension.h"
 #include "CrowdyEditorEventMeta.h"
 #include "Baking/CrowdyRegistryBaker.h"
 #include "CrowdyStudioModule.h"
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Customizations/CrowdyCustomEventCustomization.h"
+#include "Customizations/CrowdyReplicatedVariableCustomization.h"
 #include "Menus/CrowdyStructEditorToolbar.h"
 #include "Menus/CrowdyStructContextMenu.h"
+#include "Pins/CrowdyStatePropertyNamePin.h"
 #include "Replication/RPC/CrowdyRPC.h"
+#include "Replication/State/CrowdyStateMetaKeys.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/SBoxPanel.h"
@@ -63,7 +71,7 @@ namespace
 		case ECrowdyEventRecipient::Host:
 			return FText::FromString(TEXT("\nCrowdy Host\nExecutes on Host"));
 		case ECrowdyEventRecipient::Multicast:
-			// Channel transport — every session-channel member, any distance, no decay.
+			// Channel transport every session-channel member, any distance, no decay.
 			return FText::FromString(TEXT("\nCrowdy Multicast\nEveryone on the Channel"));
 		case ECrowdyEventRecipient::SpatialMulticast:
 		default:
@@ -181,8 +189,8 @@ namespace
 			CachedSubtitle = GetCrowdySubtitleText();
 		}
 
-		// Rebuild the node when its Crowdy subtitle changes — e.g. the recipient dropdown in the
-		// details panel — so the Crowdy execution label updates live, without waiting for a recompile.
+		// Rebuild the node when its Crowdy subtitle changes e.g. the recipient dropdown in the
+		// details panel so the Crowdy execution label updates live, without waiting for a recompile.
 		virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
 		{
 			SGraphNodeK2Event::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
@@ -382,6 +390,74 @@ namespace
 		FText CachedSubtitle;
 	};
 
+	// True when Node is a Blueprint variable get/set node whose underlying property is CrowdyState-
+	// replicated. CrowdyState and native replication are mutually exclusive, so a Crowdy-replicated variable
+	// has its CPF_Net flag cleared (FCrowdyReplicatedVariableCustomization::ClearNativeReplication); that is
+	// exactly why the engine's own UK2Node_Variable::GetCornerIcon never lights up the replication badge for
+	// these variables, and why we supply our own overlay below. Resolves against the generated class, falling
+	// back to the skeleton, which reflects a just-stamped metadata change before a full compile. HasStateMeta
+	// is editor-only (live metadata), which is all this editor-time icon needs.
+	static bool IsCrowdyReplicatedVariableNode(const UEdGraphNode* Node)
+	{
+		const UK2Node_Variable* VariableNode = Cast<UK2Node_Variable>(Node);
+		if (!VariableNode || !VariableNode->DrawNodeAsVariable())
+		{
+			return false;
+		}
+
+		const FProperty* Property = VariableNode->GetPropertyForVariable();
+		if (!Property)
+		{
+			Property = VariableNode->GetPropertyForVariableFromSkeleton();
+		}
+		return CrowdyStateMetaKeys::HasStateMeta(Property);
+	}
+
+	// A variable get/set node widget that draws the engine's replication corner badge for a CrowdyState-
+	// replicated variable, exactly the way Unreal badges a natively-replicated variable. It is identical to
+	// the stock SGraphNodeK2Var (its base) in every other respect and only adds one overlay brush. The badge
+	// is re-evaluated each paint in GetOverlayBrushes, so it also disappears live if the variable stops being
+	// Crowdy-replicated while the widget still exists.
+	class SGraphNodeCrowdyVariable : public SGraphNodeK2Var
+	{
+	public:
+		SLATE_BEGIN_ARGS(SGraphNodeCrowdyVariable) {}
+		SLATE_END_ARGS()
+
+		void Construct(const FArguments& InArgs, UK2Node* InNode)
+		{
+			// Mirror SGraphNodeK2Var::Construct (there is no base initializer to chain to).
+			GraphNode = InNode;
+			SetCursor(EMouseCursor::CardinalCross);
+			UpdateGraphNode();
+		}
+
+		virtual void GetOverlayBrushes(
+			bool bSelected, const FVector2f& WidgetSize, TArray<FOverlayBrushInfo>& Brushes) const override
+		{
+			SGraphNodeK2Var::GetOverlayBrushes(bSelected, WidgetSize, Brushes);
+
+			if (!IsCrowdyReplicatedVariableNode(GraphNode))
+			{
+				return;
+			}
+
+			// Same brush and top-right placement the engine uses for a replicated variable's corner icon
+			// (SGraphNodeK2Base::GetOverlayBrushes). CrowdyState leaves CPF_Net clear, so the base never adds
+			// this brush itself; there is no double-draw.
+			FOverlayBrushInfo CrowdyReplicationOverlay;
+			CrowdyReplicationOverlay.Brush = GetStyleSet().GetBrush(TEXT("Graph.Replication.Replicated"));
+			if (CrowdyReplicationOverlay.Brush)
+			{
+				CrowdyReplicationOverlay.OverlayOffset.X =
+					(WidgetSize.X - (CrowdyReplicationOverlay.Brush->ImageSize.X / 2.f)) - 3.f;
+				CrowdyReplicationOverlay.OverlayOffset.Y =
+					(CrowdyReplicationOverlay.Brush->ImageSize.Y / -2.f) + 2.f;
+				Brushes.Add(CrowdyReplicationOverlay);
+			}
+		}
+	};
+
 	class FCrowdyGraphPanelNodeFactory : public FGraphPanelNodeFactory
 	{
 	public:
@@ -400,19 +476,28 @@ namespace
 				}
 			}
 
+			// Badge a CrowdyState-replicated variable's get/set nodes; leave every other variable node to the
+			// default factory (return nullptr) so we never override an unrelated variable-node customization.
+			if (IsCrowdyReplicatedVariableNode(Node))
+			{
+				return SNew(SGraphNodeCrowdyVariable, Cast<UK2Node>(Node));
+			}
+
 			return nullptr;
 		}
 	};
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+
 // Module lifecycle
-// ─────────────────────────────────────────────────────────────────────────────
+
 void FCrowdySDKEditorModule::StartupModule()
 {
 	RegisterStructContextMenu();
 	RegisterFunctionEntryCustomization();
+	RegisterVariableCustomization();
 	RegisterGraphNodeFactory();
+	RegisterGraphPinFactory();
 	RegisterCompilerExtension();
 	RegisterBlueprintCompilerExtension();
 	UCrowdyRegistryBaker::Register();
@@ -434,6 +519,17 @@ void FCrowdySDKEditorModule::ShutdownModule()
 		PM->UnregisterCustomClassLayout("K2Node_CustomEvent");
 	}
 
+	if (BlueprintVariableCustomizationHandle.IsValid())
+	{
+		if (FBlueprintEditorModule* BlueprintEditorModule =
+			FModuleManager::GetModulePtr<FBlueprintEditorModule>("Kismet"))
+		{
+			BlueprintEditorModule->UnregisterVariableCustomization(
+				FProperty::StaticClass(), BlueprintVariableCustomizationHandle);
+		}
+		BlueprintVariableCustomizationHandle.Reset();
+	}
+
 	FCrowdyStructEditorToolbar::Unregister();
 	FCrowdyStructContextMenu::Unregister();
 
@@ -443,6 +539,12 @@ void FCrowdySDKEditorModule::ShutdownModule()
 		GraphNodeFactory.Reset();
 	}
 
+	if (GraphPinFactory.IsValid())
+	{
+		FEdGraphUtilities::UnregisterVisualPinFactory(GraphPinFactory);
+		GraphPinFactory.Reset();
+	}
+
 	if (GEditor && CompiledHandle.IsValid())
 	{
 		GEditor->OnBlueprintCompiled().Remove(CompiledHandle);
@@ -450,9 +552,9 @@ void FCrowdySDKEditorModule::ShutdownModule()
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+
 // Registration helpers
-// ─────────────────────────────────────────────────────────────────────────────
+
 void FCrowdySDKEditorModule::RegisterStructContextMenu()
 {
 	FCrowdyStructContextMenu::Register();
@@ -468,6 +570,22 @@ void FCrowdySDKEditorModule::RegisterFunctionEntryCustomization()
 		"K2Node_CustomEvent",
 		FOnGetDetailCustomizationInstance::CreateStatic(
 			&FCrowdyCustomEventCustomization::MakeInstance));
+}
+
+void FCrowdySDKEditorModule::RegisterVariableCustomization()
+{
+	// The Blueprint editor lives in the "Kismet" module. It may not be loaded yet (or at all, in a
+	// commandlet), so probe rather than load-checked. FProperty::StaticClass() covers every variable type;
+	// MakeInstance itself filters to actor / actor-component Blueprints and to CrowdyState-eligible property
+	// types.
+	if (FBlueprintEditorModule* BlueprintEditorModule =
+		FModuleManager::GetModulePtr<FBlueprintEditorModule>("Kismet"))
+	{
+		BlueprintVariableCustomizationHandle = BlueprintEditorModule->RegisterVariableCustomization(
+			FProperty::StaticClass(),
+			FOnGetVariableCustomizationInstance::CreateStatic(
+				&FCrowdyReplicatedVariableCustomization::MakeInstance));
+	}
 }
 
 void FCrowdySDKEditorModule::RegisterCompilerExtension()
@@ -494,20 +612,26 @@ void FCrowdySDKEditorModule::RegisterGraphNodeFactory()
 	FEdGraphUtilities::RegisterVisualNodeFactory(GraphNodeFactory);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+void FCrowdySDKEditorModule::RegisterGraphPinFactory()
+{
+	GraphPinFactory = MakeShared<FCrowdyStatePropertyPinFactory>();
+	FEdGraphUtilities::RegisterVisualPinFactory(GraphPinFactory);
+}
+
+
 // Post-compile hook
-//
-// A compile reinstances the Blueprint class, replacing its UFunctions and recomputing
-// signature hashes. A registry built before the compile (e.g. a running PIE session's)
+
+// A compile resistances the Blueprint class, replacing its UFunctions and recomputing
+// signature hashes. A registry built before the compile (e.g. a running PIE session)
 // now holds stale entries for that class, so refresh it. The cooked-build bake is handled
 // separately by the compiler extension via UCrowdyRegistryBaker::UpdateForClass.
-//
+
 // We refresh ONLY the classes that recompiled, not every loaded class. The previous full
 // RescanRpcFunctions() per registry walked every UClass/UFunction in the editor on each
-// compile — a multi-tens-of-ms hitch, multiplied by client count under multi-client PIE.
+// compile a multi-tens-of-ms hitch, multiplied by client count under multi-client PIE.
 // The compiler extension reports each recompiled class via NotePendingRpcRescan during the
 // batch; this drains that set once the batch (and its reinstancing) has settled.
-// ─────────────────────────────────────────────────────────────────────────────
+
 namespace
 {
 	// Classes recompiled in the current Blueprint compile batch, awaiting an incremental rescan.
@@ -537,6 +661,7 @@ void FCrowdySDKEditorModule::OnBlueprintCompiled()
 			if (UClass* Class = WeakClass.Get())
 			{
 				Registry->UpdateClassRpcFunctions(Class);
+				Registry->UpdateClassRepLayout(Class);
 			}
 		}
 	}

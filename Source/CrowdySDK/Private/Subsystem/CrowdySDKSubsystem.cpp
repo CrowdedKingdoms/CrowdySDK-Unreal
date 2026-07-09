@@ -3,6 +3,9 @@
 
 #include "Subsystem/CrowdySDKSubsystem.h"
 #include "CrowdySDKLog.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
+#include "Utils/HelperFunctions.h"
 #include "Core/Audio/VoiceChat/VoiceChatSubsystem.h"
 #include "Core/Audio/VoiceChat/Service/FVoiceChatService.h"
 #include "Core/GraphQL/Enums/EQueryResponseType.h"
@@ -32,6 +35,8 @@
 #include "Queries/UDP/FUDPAddressRequest.h"
 #include "Queries/Data/GameHost/FGameHostRequest.h"
 #include "Queries/Data/GameHost/FGameHostResponse.h"
+#include "Queries/Data/GameHost/FAmIGameHostResponse.h"
+#include "Queries/Data/Actor/FActorOwnerResponse.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyHostSubsystem.h"
 #include "Subsystem/CrowdyPersistenceSubsystem.h"
@@ -163,7 +168,7 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	RegisterQueryReceptionLayer(this);
 
 	// Always register for UDP messages so the SDK can handle ping responses
-	// immediately once the socket opens — no longer lazily deferred.
+	// immediately once the socket opens no longer lazily deferred.
 	RegisterReceptionLayer(this);
 	bIsRegistered = true;
 
@@ -192,10 +197,10 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UCrowdySDKSubsystem::Deinitialize()
 {
-	// Stop all repeating timers before anything else is torn down.
+	// Stop all repeating timers before anything else is torn down. The GameHost poll rides the GameInstance timer
+	// manager (UWorld::GetTimerManager forwards to it for a Game/PIE world), so it survives level travel without a
+	// per-world re-arm; clearing it here on GameInstance teardown is enough.
 	StopHostPolling();
-
-	FWorldDelegates::OnPostWorldInitialization.RemoveAll(this);
 
 	if (UCrowdySDKBridgeSubsystem* B = GetGameInstance()->GetSubsystem<UCrowdySDKBridgeSubsystem>())
 	{
@@ -291,7 +296,7 @@ void UCrowdySDKSubsystem::Logout() const
 	UCrowdyHostSubsystem* HostSS = GetWorld()->GetSubsystem<UCrowdyHostSubsystem>();
 	HostSS->SetHostUserID(0);
 	
-	// Stop host polling — user is no longer authenticated.
+	// Stop host polling user is no longer authenticated.
 	// Cast away const: Logout() is declared const but timer management is
 	// inherently mutable state. The alternative is making Logout() non-const
 	// which would break existing Blueprint call sites.
@@ -333,7 +338,7 @@ void UCrowdySDKSubsystem::RequestVersionInfo() const
 
 void UCrowdySDKSubsystem::SetQueryEndpoint(const FString InEndpoint) const
 {
-	// Deprecated — use SetManagementApiUrl / SetGameApiUrl instead.
+	// Deprecated use SetManagementApiUrl / SetGameApiUrl instead.
 	// Routes to the Game endpoint to preserve old call-site behaviour.
 	QuerySubsystem->SetGameEndpoint(InEndpoint);
 }
@@ -660,7 +665,7 @@ DEFINE_FUNCTION(UCrowdySDKSubsystem::execK2_DispatchGameEvent)
 	P_GET_ENUM(ECrowdyReplicationDistance, Z_Param_ReplicationDistance);
 	P_GET_STRUCT_REF(FGuid, Z_Param_Out_InstigatorID);
 
-	// Wildcard struct — step manually so Blueprint can wire any struct type
+	// Wildcard struct step manually so Blueprint can wire any struct type
 	Stack.MostRecentPropertyAddress = nullptr;
 	Stack.MostRecentProperty        = nullptr;
 	Stack.StepCompiledIn<FStructProperty>(nullptr);
@@ -771,7 +776,7 @@ void UCrowdySDKSubsystem::HandleUDPAddressNotify(const FUDPAddressNotify& UDPAdd
 
 	if (!bSuccess)
 	{
-		// Socket init failed — go back to Disconnected so the UI doesn't
+		// Socket init failed go back to Disconnected so the UI doesn't
 		// show "Connecting" forever. The caller can retry via RequestUDPAccess.
 		UdpSubsystem->SetConnectionState(EUDPConnectionState::Disconnected);
 	}
@@ -871,7 +876,7 @@ bool UCrowdySDKSubsystem::TryLoadConfiguration()
 	// Apply AppID from settings to the game session (was never being applied before)
 	GameSession->SetAppID(Settings->AppID);
 
-	// Apply UDP configuration — must happen before the first InitializeUDP call.
+	// Apply UDP configuration must happen before the first InitializeUDP call.
 	UdpSubsystem->SetPreferredProtocol(Settings->UDPProtocol);
 	// UDPTimeoutSeconds is read directly in HandleUDPAddressNotify so that
 	// live-settings changes in the editor take effect without restarting.
@@ -909,8 +914,28 @@ void UCrowdySDKSubsystem::OnUDPConnectionSuccessful()
 
 void UCrowdySDKSubsystem::SendPingTestMessage()
 {
-	const FInt64Vector ChunkCoordinate = GameSession->GetPlayerCurrentChunkCoordinates();
-	
+	// The ping is a spatial self-echo: the server only relays it back to us when it is
+	// addressed to the chunk the server currently has us in. Derive that chunk live from the
+	// local player's pawn location (the same transform-derived chunk the actor-update path
+	// sends) instead of GameSession's cached CurrentPlayerChunkCoordinates, which is only
+	// refreshed from Blueprint and goes stale across a level transition — leaving the ping
+	// aimed at the previous level's chunk so no echo returns and the measured ping freezes.
+	FInt64Vector ChunkCoordinate = GameSession->GetPlayerCurrentChunkCoordinates();
+
+	const APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	APawn* LocalPawn = PC ? PC->GetPawn() : nullptr;
+	if (LocalPawn)
+	{
+		UHelperFunctions::GetChunkCoordinateAtLocation(
+			LocalPawn, LocalPawn->GetActorLocation(),
+			ChunkCoordinate.X, ChunkCoordinate.Y, ChunkCoordinate.Z);
+	}
+
+	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log,
+		TEXT("SendPingTestMessage: pawn=%s chunk=(%lld, %lld, %lld)"),
+		LocalPawn ? *LocalPawn->GetName() : TEXT("<none - using stale cache>"),
+		ChunkCoordinate.X, ChunkCoordinate.Y, ChunkCoordinate.Z);
+
 	FPingTestMessage PingTestMessage;
 	PingTestMessage.UUID = GameSession->GetUUID();
 	PingTestMessage.AppID = GameSession->GetAppID();
@@ -1014,6 +1039,18 @@ void UCrowdySDKSubsystem::OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Re
 					OnVersionInfo.Broadcast(FGameVersion(), FGameVersion());
 					break;
 				}
+			case EQueryResponseType::AmIGameHost:
+				{
+					if (UCrowdyHostSubsystem* HostSubsystem = GetWorld() ? GetWorld()->GetSubsystem<UCrowdyHostSubsystem>() : nullptr)
+						HostSubsystem->HandleAmIGameHostResponse(false, false);
+					break;
+				}
+			case EQueryResponseType::ActorOwner:
+				{
+					if (UCrowdyHostSubsystem* HostSubsystem = GetWorld() ? GetWorld()->GetSubsystem<UCrowdyHostSubsystem>() : nullptr)
+						HostSubsystem->HandleActorOwnerResponse(false, FString(), 0);
+					break;
+				}
 			default:
 				break;
 			}
@@ -1067,7 +1104,34 @@ void UCrowdySDKSubsystem::OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Re
 				HostResponse.ActorCount,
 				*HostResponse.EarliestActorJoinedAt);
 			});
-			
+
+			break;
+		}
+	case EQueryResponseType::AmIGameHost:
+		{
+			const FAmIGameHostResponse& HostResponse = static_cast<FAmIGameHostResponse&>(*Response);
+			const bool bSuccess = HostResponse.IsValid();
+			const bool bAmHost  = HostResponse.bAmHost;
+
+			AsyncTask(ENamedThreads::GameThread, [this, bSuccess, bAmHost]()
+			{
+				if (UCrowdyHostSubsystem* HostSubsystem = GetWorld() ? GetWorld()->GetSubsystem<UCrowdyHostSubsystem>() : nullptr)
+					HostSubsystem->HandleAmIGameHostResponse(bSuccess, bAmHost);
+			});
+			break;
+		}
+	case EQueryResponseType::ActorOwner:
+		{
+			const FActorOwnerResponse& ActorResponse = static_cast<FActorOwnerResponse&>(*Response);
+			const bool    bSuccess = ActorResponse.IsValid();
+			const FString Uuid     = ActorResponse.Uuid;
+			const int64   UserId   = ActorResponse.UserId;
+
+			AsyncTask(ENamedThreads::GameThread, [this, bSuccess, Uuid, UserId]()
+			{
+				if (UCrowdyHostSubsystem* HostSubsystem = GetWorld() ? GetWorld()->GetSubsystem<UCrowdyHostSubsystem>() : nullptr)
+					HostSubsystem->HandleActorOwnerResponse(bSuccess, Uuid, UserId);
+			});
 			break;
 		}
 
@@ -1085,6 +1149,8 @@ TArray<EQueryResponseType> UCrowdySDKSubsystem::GetSupportedResponseType() const
 		EQueryResponseType::VersionInfo,
 		EQueryResponseType::TeleportRequest,
 		EQueryResponseType::GameHost,
+		EQueryResponseType::AmIGameHost,
+		EQueryResponseType::ActorOwner,
 	};
 }
 

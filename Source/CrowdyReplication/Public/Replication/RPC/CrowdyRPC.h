@@ -20,12 +20,17 @@ DECLARE_LOG_CATEGORY_EXTERN(LogCrowdyRPC, Log, All);
 
 // Format version prefixed to every FCrowdyRpcCall::ParamBlob. Bump whenever the
 // on-wire parameter encoding changes so stale peers drop instead of misparsing.
-inline constexpr uint8 CrowdyRpcParamBlobVersion = 1;
+// v2: TSet/TMap parameters now ride an explicit bounded [count][elements] snapshot
+// instead of the engine's delta SerializeItem format (a forged mid-stream element
+// count in that format drove an unbounded allocation). A mixed-version peer set is
+// unsupported since every client runs one build, so any drift drops cleanly at the
+// version check below rather than risking a mis-decode of the parameters after a set/map.
+inline constexpr uint8 CrowdyRpcParamBlobVersion = 2;
 
 // A reliable RPC rides a channel message whose payload is a small reliability header
-// followed by the serialized FCrowdyRpcCall. The header is a format version plus a flags
+// followed by the serialized FCrowdyRpcCall. The header is a format version plus a flag
 // byte; the flags are reserved for a later guaranteed-delivery layer (per-message id,
-// dedup, ack) and are zero for coverage-only sends. Bump the version if the layout changes.
+// dedup, ack) and are zero for coverage-only sending. Bump the version if the layout changes.
 inline constexpr uint8 CrowdyChannelRpcVersion = 1;
 
 // Channel payloads are capped at 1024 bytes on the wire. A reliable RPC whose encoded
@@ -39,6 +44,24 @@ enum class ECrowdyObjectRefTag : uint8
 	Null = 0,    // null, or a runtime object with no portable identity
 	Entity = 1,  // a tracked entity actor, addressed by its entity FGuid
 	Path = 2,    // an asset or a class, addressed by its object path
+};
+
+// How an RPC routes after the client-authoritative ownership model is applied, plus whether the body
+// also runs locally now. Pure policy output of FCrowdyRPC::DecideRoute.
+enum class ECrowdyRpcRoute : uint8
+{
+	None,               // no network announce (the local authority runs it and does not re-announce)
+	SpatialBroadcast,   // announce to everyone in range over the spatial transport (decay-thinned)
+	Channel,            // announce over the reliable session channel
+	SingleActorToOwner, // targeted single-actor send to the entity's owner
+	SingleActorToHost,  // targeted single-actor send to the host's avatar entity
+	Reject,             // invalid config (SpatialMulticast on a non-spatial participant): drop with an error
+};
+
+struct FCrowdyRpcRouteDecision
+{
+	bool bRunLocally = false;
+	ECrowdyRpcRoute Route = ECrowdyRpcRoute::None;
 };
 
 /**
@@ -80,7 +103,7 @@ namespace CrowdyRpcMetaKeys
  * Reflection-driven core of the RPC-style CrowdyEvent system. SendChecked builds a
  * reflected parameter frame from typed C++ arguments, serializes it into an
  * FCrowdyRpcCall, and routes it over the Crowdy transport with the function's
- * per-function recipient/decay/distance. ApplyCall is the receive side: it rebuilds
+ * per-function recipient/decay/distance. ApplyCall is the receiver side: it rebuilds
  * the frame from the bytes and invokes the receiver via ProcessEvent. The
  * client-authoritative ownership model is layered onto SerializeAndRoute in a later
  * phase; the marshal/serialize/route and unmarshal/invoke halves live here.
@@ -91,7 +114,7 @@ public:
 
 	/**
 	 * Sets the per-world entity subsystem the object-reference codec resolves against, for the
-	 * duration of an encode or decode, and restores the previous value when it goes out of scope.
+	 * duration of an encoding or decode, and restores the previous value when it goes out of scope.
 	 * Object parameters are addressed by entity GUID, asset path, or class path; only the entity
 	 * form needs the subsystem. Send and receive entry points install one of these around the
 	 * marshal/unmarshal so the codec need not thread the subsystem through every call. Game-thread
@@ -151,7 +174,7 @@ public:
 	 * the receiver's exact parameter types; each argument is then materialized AS its
 	 * declared type so an int/float mismatch converts predictably instead of
 	 * bit-corrupting the frame. SendChecked routes the result over the transport;
-	 * automation can hand it to ApplyCall to exercise the receive path in-process.
+	 * automation can hand it to ApplyCall to exercise the receiver path in-process.
 	 */
 	template <typename C, typename... TParams, typename... TArgs>
 	static FCrowdyRpcCall MarshalCall(UFunction* Fn, const FCrowdyFnInfo& Info,
@@ -191,7 +214,7 @@ public:
 		return Call;
 	}
 
-	// --- Reflection helpers (defined in CrowdyRPC.cpp) ---
+	// Reflection helpers (defined in CrowdyRPC.cpp)
 
 	// Finds the receiver UFunction by name on Class (searching base classes too).
 	// Logs and returns null when missing.
@@ -215,15 +238,23 @@ public:
 	// True when a parameter type can ride the RPC serializer: a primitive (bool,
 	// integer, float, byte), an enum, a name/string/text, or a struct. Object and
 	// class references, containers, and delegates have no stable wire form and are
-	// rejected. Struct members are not inspected — a struct that itself holds an
+	// rejected. Struct members are not inspected a struct that itself holds an
 	// unsupported member still passes.
 	static bool IsSupportedParamType(const FProperty* Prop);
 
-	// Describes why a function cannot be an RPC-style CrowdyEvent, or an empty string
+	// Describes why a function cannot be an RPC-style CrowdyEvent or an empty string
 	// when its signature is valid. A valid signature is one-way (no return value, no
 	// output parameter) and carries only supported parameter types. The text names the
 	// offending parameter so it can drop straight into a compile-log message.
 	static FString DescribeSignatureProblem(const UFunction* Fn);
+
+	// True when a UStruct transitively holds a TArray/TSet/TMap member, at any struct-nesting depth.
+	// A container reached through a struct is written by the struct's own SerializeItem, which reads an
+	// untrusted element count and allocates before the short read is caught (the bounded reader's cap
+	// only guards the FString/FName path). The RPC signature validator uses this to reject a container
+	// buried inside a struct parameter, and the CrowdyState rep-layout builder shares it for the same
+	// reason. Depth-guarded against absurd nesting (a struct cannot contain itself by value).
+	static bool StructTransitivelyContainsContainer(const UStruct* Struct, int32 Depth = 0);
 
 	// Conservative lower bound on the encoded channel-payload size for a reliable RPC: the fixed
 	// header and identity plus the guaranteed bytes of fixed-width parameters. Variable-length
@@ -231,6 +262,13 @@ public:
 	// result never overstates. Registration uses it to reject a reliable RPC that can never fit
 	// the channel budget; the actual encoded size is still checked on every send.
 	static int32 EstimateMinChannelPayloadBytes(const UFunction* Fn);
+
+	// Pure ownership-model policy. bNonSpatial is true for a subsystem participant (no world location);
+	// bEntityValid/bWeOwnEntity/bWeAreHost are the local authority facts. No side effects, so every
+	// (recipient x participant-kind x authority) combination is table-testable. The actor rows (bNonSpatial
+	// false) reproduce SerializeAndRoute's shipped behavior exactly; a non-spatial SpatialMulticast is rejected.
+	static FCrowdyRpcRouteDecision DecideRoute(ECrowdyEventRecipient Recipient, bool bNonSpatial,
+		bool bEntityValid, bool bWeOwnEntity, bool bWeAreHost);
 
 	// Serializes the input parameters held in Frame into OutBlob (version byte +
 	// each input parameter in declaration order). OutParms, when supplied, is the VM's
@@ -255,7 +293,7 @@ public:
 	// for coverage-only sends. Used by the reliable Multicast send path.
 	static void EncodeChannelRpc(const FCrowdyRpcCall& Call, uint8 Flags, TArray<uint8>& OutPayload);
 
-	// Reverses EncodeChannelRpc. Returns false on a version mismatch or truncated bytes — the
+	// Reverses EncodeChannelRpc. Returns false on a version mismatch or truncated bytes the
 	// channel payload is untrusted, so a drifted or malformed peer drops cleanly here instead of
 	// misparsing. Used by the channel receive path.
 	static bool DecodeChannelRpc(const TArray<uint8>& Payload, FCrowdyRpcCall& OutCall, uint8& OutFlags);
@@ -267,13 +305,13 @@ public:
 	static FCrowdyRpcCall BuildCall(const UFunction* Fn, const FCrowdyFnInfo& Info, const void* Frame,
 		FOutParmRec* OutParms = nullptr);
 
-	// Sends an already-marshalled call to the target entity over the Crowdy transport with
+	// Sends an already-marshaled call to the target entity over the Crowdy transport with
 	// the given addressing, reusing the serialized parameter bytes (no re-serialization).
-	// Shared by the send path and by the owner's re-announce on the receive side.
+	// Shared by the sent path and by the owner's re-announcement on the receiver side.
 	static void RouteOverWire(UCrowdyEntitySubsystem* EntitySubsystem, const AActor* ContextActor,
 		const FCrowdyRpcCall& Call, const FCrowdyFnInfo& Info, ECrowdyTarget Target);
 
-	// True when the crowdy.rpc.trace console variable is set — gates the per-call
+	// True when the crowdy.rpc.trace console variable is set gates the per-call
 	// send/receive trace logging.
 	static bool IsRpcTraceEnabled();
 
@@ -283,13 +321,13 @@ public:
 	static bool IsReliableTraceEnabled();
 
 	// True when the crowdy.rpc.loopback console variable is set. In loopback mode a sent
-	// replicated event is also delivered to this client's own receive path, so the full
+	// replicated event is also delivered to this client's own receiver path, so the full
 	// serialize/resolve/dispatch round-trip can be exercised without a second client.
 	static bool IsLoopbackEnabled();
 
 	// Send-side entry for a Blueprint replicated event, invoked by the gate the compiler
 	// injects at the head of a marked event. Returns true when the call originated here and
-	// was routed over the network — the local body must then be skipped — and false when this
+	// was routed over the network the local body must then be skipped and false when this
 	// invocation is the local replay of a received call, so the body must run. ParamFrame is
 	// the event's live parameter frame (the executing function's Stack.Locals); the C++ path
 	// uses SendChecked instead and never reaches here.
@@ -325,8 +363,8 @@ private:
 
 	// Feeds an already-serialized call back into the local event router's receive path so a
 	// single client can test the full round-trip (loopback mode). bLoopbackDelivering is held
-	// for the duration so a replicated event called from the replayed body cannot start its own
-	// loopback — without that guard the receive path would feed itself endlessly.
+	// for the duration, so a replicated event called from the replayed body cannot start its own
+	// loopback without that guard the receive path would feed itself endlessly.
 	static void DeliverLoopback(UWorld* World, const FCrowdyRpcCall& Call);
 
 	// A received call is replayed by invoking the receiver through ProcessEvent, where the

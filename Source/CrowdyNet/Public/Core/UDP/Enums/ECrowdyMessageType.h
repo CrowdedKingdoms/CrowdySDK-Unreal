@@ -173,7 +173,6 @@ enum class ECrowdyDecayRate : uint8
 {
     No_Decay = 0 UMETA(DisplayName = "No Decay"),
     Exponential_Decay = 1 UMETA(DisplayName="Exponential Decay"),
-    Linear_100 = 2 UMETA(DisplayName = "Linear 100 Decay"),
     Linear_50 = 2 UMETA(DisplayName = "Linear 50 Decay"),
     Linear_25 = 3 UMETA(DisplayName= "Linear 25 Decay"),
     Linear_10 = 4 UMETA(DisplayName= "Linear 10 Decay"),

@@ -27,7 +27,7 @@
 
 FString ICrowdyPersistentOwner::GetPersistentKey_Implementation() const
 {
-	if (const UObject* Self = _getUObject())
+	if (const UObject* Self = Cast<UObject>(this))
 		return Self->GetPathName();
 	return TEXT("Unknown");
 }

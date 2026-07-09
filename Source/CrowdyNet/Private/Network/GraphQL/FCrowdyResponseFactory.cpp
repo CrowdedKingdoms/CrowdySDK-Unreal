@@ -37,6 +37,8 @@
 #include "Queries/Data/User/FGetUserStateResponse.h"
 #include "Queries/Data/User/FUpdateUserStateResponse.h"
 #include "Queries/Data/GameHost/FGameHostResponse.h"
+#include "Queries/Data/GameHost/FAmIGameHostResponse.h"
+#include "Queries/Data/Actor/FActorOwnerResponse.h"
 #include "Queries/Data/Persistence/FPersistencePullResponse.h"
 #include "Queries/Data/Teams/Responses/FMyTeamsResponse.h"
 #include "Queries/Data/Teams/Responses/FTeamResponse.h"
@@ -114,6 +116,8 @@ void FCrowdyResponseFactory::RegisterAll()
 	Register(EQueryResponseType::GetUserState,               []() { return MakeShared<FGetUserStateResponse>(); });
 	Register(EQueryResponseType::UpdateUserState,            []() { return MakeShared<FUpdateUserStateResponse>(); });
 	Register(EQueryResponseType::GameHost,                   []() { return MakeShared<FGameHostResponse>(); });
+	Register(EQueryResponseType::AmIGameHost,                []() { return MakeShared<FAmIGameHostResponse>(); });
+	Register(EQueryResponseType::ActorOwner,                 []() { return MakeShared<FActorOwnerResponse>(); });
 	Register(EQueryResponseType::PersistencePull,            []() { return MakeShared<FPersistencePullResponse>(); });
 
 	// Teams

@@ -105,6 +105,28 @@ void UCrowdyRpcTestTarget::ObjectMap_Implementation(const TMap<FName, AActor*>& 
 {
 }
 
+void UCrowdyRpcTestTarget::IntSet_Implementation(const TSet<int32>& In)
+{
+	++CallCount;
+	GotSet = In;
+}
+
+void UCrowdyRpcTestTarget::NameIntMap_Implementation(const TMap<FName, int32>& In)
+{
+	++CallCount;
+	GotMap = In;
+}
+
+void UCrowdyRpcTestTarget::NameVecMap_Implementation(const TMap<FName, FVector>& In)
+{
+	++CallCount;
+	GotVecMap = In;
+}
+
+void UCrowdyRpcTestTarget::StructWithContainer_Implementation(const FCrowdyRpcNestedContainer& In)
+{
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
@@ -584,6 +606,258 @@ bool FCrowdyRpcObjectArrayBogusCountDroppedTest::RunTest(const FString& Paramete
 		{
 			It->DestroyValue_InContainer(Frame);
 		}
+	}
+	return true;
+}
+
+// A TSet parameter round-trips through the new bounded snapshot codec (which replaced the engine's
+// delta format): members survive, a duplicate collapses, and an empty set round-trips empty. The map
+// arm of this coverage is FCrowdyRpcContainerRoundTripTest, which now also exercises the map snapshot.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcSetRoundTripTest,
+	"CrowdySDK.RPC.SetRoundTrip", CrowdyRpcTestFlags)
+bool FCrowdyRpcSetRoundTripTest::RunTest(const FString& Parameters)
+{
+	UCrowdyRpcTestTarget* Target = NewObject<UCrowdyRpcTestTarget>();
+	TestNotNull(TEXT("Target created"), Target);
+
+	UFunction* Fn = UCrowdyRpcTestTarget::StaticClass()->FindFunctionByName(TEXT("IntSet_Implementation"));
+	TestNotNull(TEXT("IntSet resolved"), Fn);
+	if (!Fn)
+	{
+		return false;
+	}
+	const FCrowdyFnInfo Info = FCrowdyRPC::BuildFnInfo(Fn);
+	TestFalse(TEXT("set signature is not POD"), Info.bParamsPOD);
+
+	const TSet<int32> Sent = { 5, 10, -15, 20 };
+	const FCrowdyRpcCall Call = FCrowdyRPC::MarshalCall(Fn, Info,
+		&UCrowdyRpcTestTarget::IntSet_Implementation, Sent);
+	FCrowdyRPC::ApplyCall(Target, Fn, Info, Call);
+
+	TestEqual(TEXT("invoked once"), Target->CallCount, 1);
+	TestEqual(TEXT("set size round-trips"), Target->GotSet.Num(), Sent.Num());
+	bool bAllPresent = true;
+	for (int32 Value : Sent)
+	{
+		bAllPresent = bAllPresent && Target->GotSet.Contains(Value);
+	}
+	TestTrue(TEXT("set members round-trip"), bAllPresent);
+
+	// An empty set round-trips as empty, not stale.
+	const TSet<int32> Empty;
+	const FCrowdyRpcCall EmptyCall = FCrowdyRPC::MarshalCall(Fn, Info,
+		&UCrowdyRpcTestTarget::IntSet_Implementation, Empty);
+	FCrowdyRPC::ApplyCall(Target, Fn, Info, EmptyCall);
+
+	TestEqual(TEXT("invoked again"), Target->CallCount, 2);
+	TestEqual(TEXT("set now empty"), Target->GotSet.Num(), 0);
+	return true;
+}
+
+// A map whose VALUE is a struct exercises the map snapshot's value path directly: each pair serializes
+// an FName key then an FVector value as consecutive structured-stream elements. The int-valued map is
+// covered by ContainerRoundTrip; this pins the struct-value byte-symmetry through the snapshot codec.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcMapStructValueRoundTripTest,
+	"CrowdySDK.RPC.MapStructValueRoundTrip", CrowdyRpcTestFlags)
+bool FCrowdyRpcMapStructValueRoundTripTest::RunTest(const FString& Parameters)
+{
+	UCrowdyRpcTestTarget* Target = NewObject<UCrowdyRpcTestTarget>();
+	TestNotNull(TEXT("Target created"), Target);
+
+	UFunction* Fn = UCrowdyRpcTestTarget::StaticClass()->FindFunctionByName(TEXT("NameVecMap_Implementation"));
+	TestNotNull(TEXT("NameVecMap resolved"), Fn);
+	if (!Fn)
+	{
+		return false;
+	}
+	const FCrowdyFnInfo Info = FCrowdyRPC::BuildFnInfo(Fn);
+
+	TMap<FName, FVector> Sent;
+	Sent.Add(FName(TEXT("A")), FVector(1.0, 2.0, 3.0));
+	Sent.Add(FName(TEXT("B")), FVector(-4.0, -5.0, -6.0));
+
+	const FCrowdyRpcCall Call = FCrowdyRPC::MarshalCall(Fn, Info,
+		&UCrowdyRpcTestTarget::NameVecMap_Implementation, Sent);
+	FCrowdyRPC::ApplyCall(Target, Fn, Info, Call);
+
+	TestEqual(TEXT("invoked once"), Target->CallCount, 1);
+	TestEqual(TEXT("map size round-trips"), Target->GotVecMap.Num(), Sent.Num());
+	bool bAllMatch = Target->GotVecMap.Num() == Sent.Num();
+	for (const TPair<FName, FVector>& Pair : Sent)
+	{
+		const FVector* Got = Target->GotVecMap.Find(Pair.Key);
+		bAllMatch = bAllMatch && Got && Got->Equals(Pair.Value);
+	}
+	TestTrue(TEXT("map key+struct-value pairs round-trip"), bAllMatch);
+	return true;
+}
+
+// A forged element count for a non-object array (TArray<int32>) must drop the whole call rather than
+// drive a huge allocation. The bounded decode reads the count and clamps it before EmptyAndAddValues,
+// so the count alone trips the guard with no element bytes present. Mirrors ObjectArrayBogusCountDropped.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcArrayBogusCountDroppedTest,
+	"CrowdySDK.RPC.ArrayBogusCountDropped", CrowdyRpcTestFlags)
+bool FCrowdyRpcArrayBogusCountDroppedTest::RunTest(const FString& Parameters)
+{
+	UFunction* Fn = UCrowdyRpcTestTarget::StaticClass()->FindFunctionByName(TEXT("SingleIntArray_Implementation"));
+	TestNotNull(TEXT("SingleIntArray resolved"), Fn);
+	if (!Fn)
+	{
+		return false;
+	}
+
+	TArray<uint8> Blob;
+	{
+		FMemoryWriter Writer(Blob, /*bIsPersistent=*/true);
+		uint8 Version = CrowdyRpcParamBlobVersion;
+		Writer << Version;
+		int32 BogusCount = MAX_int32;
+		Writer << BogusCount;
+	}
+
+	const int32 FrameSize = FMath::Max<int32>(Fn->ParmsSize, 1);
+	uint8* Frame = static_cast<uint8*>(FMemory_Alloca(FrameSize));
+	FMemory::Memzero(Frame, FrameSize);
+	for (TFieldIterator<FProperty> It(Fn); It; ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_Parm))
+		{
+			It->InitializeValue_InContainer(Frame);
+		}
+	}
+
+	// The drop emits a warning (expected here); warnings do not fail automation tests.
+	TestFalse(TEXT("forged array count dropped"), FCrowdyRPC::DeserializeParams(Fn, Blob, Frame));
+
+	for (TFieldIterator<FProperty> It(Fn); It; ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_Parm))
+		{
+			It->DestroyValue_InContainer(Frame);
+		}
+	}
+	return true;
+}
+
+// A forged element count for a TSet must drop the call. The snapshot decode reads its own leading count
+// and clamps it before EmptyElements, so the count alone trips the guard.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcSetBogusCountDroppedTest,
+	"CrowdySDK.RPC.SetBogusCountDropped", CrowdyRpcTestFlags)
+bool FCrowdyRpcSetBogusCountDroppedTest::RunTest(const FString& Parameters)
+{
+	UFunction* Fn = UCrowdyRpcTestTarget::StaticClass()->FindFunctionByName(TEXT("IntSet_Implementation"));
+	TestNotNull(TEXT("IntSet resolved"), Fn);
+	if (!Fn)
+	{
+		return false;
+	}
+
+	TArray<uint8> Blob;
+	{
+		FMemoryWriter Writer(Blob, /*bIsPersistent=*/true);
+		uint8 Version = CrowdyRpcParamBlobVersion;
+		Writer << Version;
+		int32 BogusCount = MAX_int32;
+		Writer << BogusCount;
+	}
+
+	const int32 FrameSize = FMath::Max<int32>(Fn->ParmsSize, 1);
+	uint8* Frame = static_cast<uint8*>(FMemory_Alloca(FrameSize));
+	FMemory::Memzero(Frame, FrameSize);
+	for (TFieldIterator<FProperty> It(Fn); It; ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_Parm))
+		{
+			It->InitializeValue_InContainer(Frame);
+		}
+	}
+
+	TestFalse(TEXT("forged set count dropped"), FCrowdyRPC::DeserializeParams(Fn, Blob, Frame));
+
+	for (TFieldIterator<FProperty> It(Fn); It; ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_Parm))
+		{
+			It->DestroyValue_InContainer(Frame);
+		}
+	}
+	return true;
+}
+
+// A forged pair count for a TMap must drop the call. The snapshot decode reads its own leading count
+// and clamps it before EmptyValues, so the count alone trips the guard.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcMapBogusCountDroppedTest,
+	"CrowdySDK.RPC.MapBogusCountDropped", CrowdyRpcTestFlags)
+bool FCrowdyRpcMapBogusCountDroppedTest::RunTest(const FString& Parameters)
+{
+	UFunction* Fn = UCrowdyRpcTestTarget::StaticClass()->FindFunctionByName(TEXT("NameIntMap_Implementation"));
+	TestNotNull(TEXT("NameIntMap resolved"), Fn);
+	if (!Fn)
+	{
+		return false;
+	}
+
+	TArray<uint8> Blob;
+	{
+		FMemoryWriter Writer(Blob, /*bIsPersistent=*/true);
+		uint8 Version = CrowdyRpcParamBlobVersion;
+		Writer << Version;
+		int32 BogusCount = MAX_int32;
+		Writer << BogusCount;
+	}
+
+	const int32 FrameSize = FMath::Max<int32>(Fn->ParmsSize, 1);
+	uint8* Frame = static_cast<uint8*>(FMemory_Alloca(FrameSize));
+	FMemory::Memzero(Frame, FrameSize);
+	for (TFieldIterator<FProperty> It(Fn); It; ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_Parm))
+		{
+			It->InitializeValue_InContainer(Frame);
+		}
+	}
+
+	TestFalse(TEXT("forged map count dropped"), FCrowdyRPC::DeserializeParams(Fn, Blob, Frame));
+
+	for (TFieldIterator<FProperty> It(Fn); It; ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_Parm))
+		{
+			It->DestroyValue_InContainer(Frame);
+		}
+	}
+	return true;
+}
+
+// A struct parameter that buries a container is rejected at registration (its nested element count
+// cannot be bounded on decode), while a plain struct and a direct container of leaves stay valid — the
+// rejection is narrow and does not touch the shipped direct-container support.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcStructBuriedContainerRejectedTest,
+	"CrowdySDK.RPC.StructBuriedContainerRejected", CrowdyRpcTestFlags)
+bool FCrowdyRpcStructBuriedContainerRejectedTest::RunTest(const FString& Parameters)
+{
+	UClass* Class = UCrowdyRpcTestTarget::StaticClass();
+
+	if (UFunction* Buried = Class->FindFunctionByName(TEXT("StructWithContainer_Implementation")))
+	{
+		const FString Problem = FCrowdyRPC::DescribeSignatureProblem(Buried);
+		TestFalse(TEXT("struct-buried container rejected"), Problem.IsEmpty());
+		TestTrue(TEXT("message says buries a container"), Problem.Contains(TEXT("buries a container")));
+		TestTrue(TEXT("message names the parameter"), Problem.Contains(TEXT("'In'")));
+	}
+
+	// A struct without a container (FVector/FRotator/FTransform) stays valid — no over-rejection.
+	if (UFunction* Structs = Class->FindFunctionByName(TEXT("Structs_Implementation")))
+	{
+		TestEqual(TEXT("plain structs stay valid"),
+			FCrowdyRPC::DescribeSignatureProblem(Structs), FString());
+	}
+
+	// Direct containers of leaf types stay valid — only the struct-buried form is rejected.
+	if (UFunction* Containers = Class->FindFunctionByName(TEXT("Containers_Implementation")))
+	{
+		TestEqual(TEXT("direct containers stay valid"),
+			FCrowdyRPC::DescribeSignatureProblem(Containers), FString());
 	}
 	return true;
 }

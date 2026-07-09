@@ -2,8 +2,9 @@
 
 #include "Baking/CrowdyRegistryBaker.h"
 
-#include "CrowdySDKEditor.h"                 // CrowdyMetaKeys, LogCrowdyEditor
-#include "Replication/RPC/CrowdyRPC.h"       // FCrowdyRPC::BuildFnInfo
+#include "CrowdySDKEditor.h"
+#include "Replication/RPC/CrowdyRPC.h"
+#include "Replication/State/FCrowdyRepLayout.h"
 #include "Utils/CrowdyBakedRegistry.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
@@ -84,7 +85,7 @@ namespace
 	}
 }
 
-// ─── Triggers ───────────────────────────────────────────────────────────────
+//Triggers
 
 void UCrowdyRegistryBaker::Register()
 {
@@ -135,14 +136,14 @@ void UCrowdyRegistryBaker::OnStartup()
 			FUIAction(FExecuteAction::CreateLambda([] { UCrowdyRegistryBaker::Rebuild(/*bDeep*/true); })));
 	}
 
-	// First-run convenience: a project with no asset yet gets a populated one so
-	// it exists in-editor. Loaded-scope to avoid a startup hitch — the cook hook
+	// First-run convenience: a project with no asset yet gets a populated one, so
+	// it exists in-editor. Loaded-scope to avoid a startup hitch the cook hook
 	// does the authoritative deep bake, so completeness here doesn't matter.
 	if (!ResolveAsset() && !LoadObject<UCrowdyBakedRegistry>(nullptr, CrowdyBakedRegistryPaths::ObjectPath))
 		Rebuild(/*bDeep*/false);
 }
 
-// ─── Rebuild ──────────────────────────────────────────────────────────────────
+// Rebuild
 
 void UCrowdyRegistryBaker::Rebuild(bool bDeep)
 {
@@ -154,7 +155,7 @@ void UCrowdyRegistryBaker::Rebuild(bool bDeep)
 
 void UCrowdyRegistryBaker::RebuildAsync(TFunction<void()> OnComplete)
 {
-	// No interactive editor to keep responsive (cook / commandlet) — just do the synchronous bake.
+	// No interactive editor to keep responsive (cook / commandlet) just do the synchronous bake.
 	if (IsRunningCommandlet())
 	{
 		Rebuild(/*bDeep*/ true);
@@ -165,7 +166,7 @@ void UCrowdyRegistryBaker::RebuildAsync(TFunction<void()> OnComplete)
 	if (GAsyncRebuildInFlight)
 	{
 		UE_LOG(LogCrowdyEditor, Log,
-			TEXT("[CrowdyRegistryBaker] Async rebuild already in progress — ignoring re-request."));
+			TEXT("[CrowdyRegistryBaker] Async rebuild already in progress , ignoring re-request."));
 		if (OnComplete) OnComplete();
 		return;
 	}
@@ -181,7 +182,7 @@ void UCrowdyRegistryBaker::RebuildAsync(TFunction<void()> OnComplete)
 
 	if (Paths.Num() == 0)
 	{
-		// Nothing to stream — only already-loaded objects to sweep, which is cheap; finish inline.
+		// Nothing to stream only already-loaded objects to sweep, which is cheap; finish inline.
 		FinishRebuild(MoveTemp(OnComplete));
 		return;
 	}
@@ -234,9 +235,10 @@ void UCrowdyRegistryBaker::FinishRebuild(TFunction<void()> OnComplete)
 
 	UE_LOG(LogCrowdyEditor, Log,
 		TEXT("[CrowdyRegistryBaker] Baked %d persistent + %d singleton struct(s), "
-		     "%d RPC function(s)."),
+		     "%d RPC function(s), %d rep prop(s) across %d class layout(s)."),
 		Registry->PersistentStructs.Num(), Registry->SingletonStructs.Num(),
-		Registry->RpcFunctions.Num());
+		Registry->RpcFunctions.Num(),
+		Registry->RepProperties.Num(), Registry->RepLayoutHashes.Num());
 
 	if (OnComplete) OnComplete();
 }
@@ -248,11 +250,11 @@ void UCrowdyRegistryBaker::UpdateForClass(UClass* Class)
 	// During a cook, OnModifyCook already performs the full authoritative bake.
 	// Blueprints compiled-on-load by the cooker would otherwise each call ResolveAsset
 	// here, LoadObject-ing the baked registry recursively while another package is mid-load
-	// — the engine logs deadlock-avoidance partial loads and UnexpectedLoad warnings for it.
+	// the engine logs deadlock-avoidance partial loads and UnexpectedLoad warnings for it.
 	// The per-class refresh is purely for in-editor inspection, so skip it under the cooker.
 	if (IsRunningCookCommandlet()) return;
 
-	// Don't create the asset from a compile — startup / the menu action own
+	// Don't create the asset from a compile , startup / the menu action own
 	// creation. If it doesn't exist yet, the next full bake captures this class.
 	UCrowdyBakedRegistry* Registry = ResolveAsset();
 	if (!Registry) return;
@@ -270,6 +272,20 @@ void UCrowdyRegistryBaker::UpdateForClass(UClass* Class)
 		Registry->RpcFunctions.Add(MakeBakedRpcEntry(Path, *It));
 	}
 
+	// Same evict-and-refill for this class's CrowdyState rep layout. In-memory inspection only, so
+	// like the RPC refill above we don't re-sort the arrays.
+	Registry->RepProperties.RemoveAll(
+		[&Path](const FCrowdyBakedRepProperty& Entry) { return Entry.OwnerClassPath == Path; });
+	Registry->RepLayoutHashes.RemoveAll(
+		[&Path](const FCrowdyBakedRepLayoutHash& Entry) { return Entry.ClassPath == Path; });
+
+	FCrowdyRepLayout Layout;
+	if (FCrowdyStateLayoutBuilder::BuildLayout(Class, Layout))
+	{
+		UCrowdyBakedRegistry::MakeBakedRepProperties(Layout, Path, Registry->RepProperties);
+		Registry->RepLayoutHashes.Add({ Path, Layout.LayoutHash });
+	}
+
 	// In-memory refresh only, so the asset reflects this class if someone opens it
 	// in-editor this session. We deliberately do NOT MarkPackageDirty(): the baked
 	// registry is a derived cook artifact (regenerated in full by OnModifyCook) that
@@ -277,7 +293,7 @@ void UCrowdyRegistryBaker::UpdateForClass(UClass* Class)
 	// nothing but force a needless manual save on every Blueprint compile.
 }
 
-// ─── Scanning ─────────────────────────────────────────────────────────────────
+// Scanning
 
 void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Registry)
 {
@@ -286,6 +302,8 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 	Registry->PersistentStructs.Reset();
 	Registry->SingletonStructs.Reset();
 	Registry->RpcFunctions.Reset();
+	Registry->RepProperties.Reset();
+	Registry->RepLayoutHashes.Reset();
 
 	for (TObjectIterator<UClass> It; It; ++It)
 	{
@@ -301,6 +319,22 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 		}
 	}
 
+	// CrowdyState rep layouts, a separate pass over classes so it stays independent of the RPC
+	// loop above. BuildLayout walks the whole class (IncludeSuper), so unlike the ExcludeSuper RPC
+	// scan every class is inspected here and MakeBakedRepProperties records the positional order.
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Class = *It;
+		if (IsTransientClassName(Class->GetName())) continue;
+
+		FCrowdyRepLayout Layout;
+		if (!FCrowdyStateLayoutBuilder::BuildLayout(Class, Layout)) continue;
+
+		const FSoftClassPath Path(Class);
+		UCrowdyBakedRegistry::MakeBakedRepProperties(Layout, Path, Registry->RepProperties);
+		Registry->RepLayoutHashes.Add({ Path, Layout.LayoutHash });
+	}
+
 	for (TObjectIterator<UScriptStruct> It; It; ++It)
 	{
 		UScriptStruct* Struct = *It;
@@ -314,8 +348,8 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 
 	// TObjectIterator order is not stable across runs or machines, so sort every
 	// array into a canonical order before the asset is saved/cooked. This makes the
-	// baked bytes deterministic — identical metadata always yields an identical
-	// asset — so two machines never produce a spurious binary diff, and the cooked
+	// baked bytes deterministic , identical metadata always yields an identical
+	// asset , so two machines never produce a spurious binary diff, and the cooked
 	// output is reproducible.
 	auto ByPath = [](const FSoftObjectPath& A, const FSoftObjectPath& B)
 	{
@@ -329,6 +363,19 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 		const FString BClass = B.ClassPath.ToString();
 		return AClass != BClass ? AClass < BClass : A.FunctionName.ToString() < B.FunctionName.ToString();
 	});
+
+	// Same canonical ordering for the rep arrays: group properties by class, then by their positional
+	// LayoutOrder so the baked order matches the live declaration order the codec addresses by index.
+	Registry->RepProperties.Sort([](const FCrowdyBakedRepProperty& A, const FCrowdyBakedRepProperty& B)
+	{
+		const FString AClass = A.OwnerClassPath.ToString();
+		const FString BClass = B.OwnerClassPath.ToString();
+		return AClass != BClass ? AClass < BClass : A.LayoutOrder < B.LayoutOrder;
+	});
+	Registry->RepLayoutHashes.Sort([](const FCrowdyBakedRepLayoutHash& A, const FCrowdyBakedRepLayoutHash& B)
+	{
+		return A.ClassPath.ToString() < B.ClassPath.ToString();
+	});
 }
 
 void UCrowdyRegistryBaker::GatherTaggedAssets(TArray<FAssetData>& OutAssets)
@@ -341,7 +388,7 @@ void UCrowdyRegistryBaker::GatherTaggedAssets(TArray<FAssetData>& OutAssets)
 	// CRITICAL: scope the scan to the project's own content. An unscoped scan
 	// force-loads every Blueprint in the engine + all plugins to read editor-only
 	// metadata; when this runs from the cook's ModifyCook hook, those loads are
-	// seen by the cooker as unsolicited and dragged into the build — including
+	// seen by the cooker as unsolicited and dragged into the build , including
 	// engine sample content that hard-references NeverCook editor assets
 	// (EditorCube, TargetIcon), which fails the cook. Only /Game and project-type
 	// plugins (CrowdySDK, CK*) can declare Crowdy metadata, so restrict to those.
@@ -359,8 +406,8 @@ void UCrowdyRegistryBaker::GatherTaggedAssets(TArray<FAssetData>& OutAssets)
 		// Include a plugin's content if it is the SDK, is user content (project /
 		// mod plugins are scanned anyway and cooked anyway), or depends on the SDK
 		// (a consumer plugin built on CrowdySDK, wherever it is installed). Engine
-		// and unrelated third-party plugins — where the NeverCook sample content
-		// lives — are skipped.
+		// and unrelated third-party plugins , where the NeverCook sample content
+		// lives , are skipped.
 		const EPluginType Type = Plugin->GetType();
 		const bool bIsUserContent = (Type == EPluginType::Project || Type == EPluginType::Mod);
 		const bool bIsSdk         = (Plugin->GetName() == GSdkPluginName);
@@ -414,7 +461,7 @@ UCrowdyBakedRegistry* UCrowdyRegistryBaker::ResolveOrCreateAsset()
 	{
 		// Deleting the asset in-editor strips its RF_Public/RF_Standalone flags, but our root
 		// (UCrowdyBakedRegistry::Get's AddToRoot) keeps the now-flagless object alive at its original
-		// path — so ResolveAsset hands the deleted object straight back. SavePackage then refuses to
+		// path , so ResolveAsset hands the deleted object straight back. SavePackage then refuses to
 		// write it ("does not have any of the provided object flags … saving would cause data loss"),
 		// and the rebuild silently fails to persist. Re-assert the asset flags and re-register it so a
 		// rebuild-after-delete recreates the .uasset on disk instead.

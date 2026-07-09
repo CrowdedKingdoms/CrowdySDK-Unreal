@@ -3,10 +3,13 @@
 #include "UI/SCrowdyRegistryInspector.h"
 
 #include "CrowdyStudioModule.h"
+#include "Framework/Text/TextLayout.h"
+#include "Replication/Components/CrowdyEntityComponent.h"
 #include "Style/CrowdyStudioStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateStyle.h"
 #include "Styling/StyleDefaults.h"
+#include "Subsystem/CrowdyAutoRegistry.h"
 #include "UI/CrowdyStudioWidgets.h"
 #include "Utils/CrowdyBakedRegistry.h"
 #include "Widgets/Images/SImage.h"
@@ -28,6 +31,12 @@
 
 namespace
 {
+	// Fixed column widths shared by the Table view's header and every member row, so the two fill
+	// columns (name / detail) get identical slack on every row and the whole table lines up.
+	constexpr float KindColWidth  = 64.0f;
+	constexpr float FlagsColWidth = 118.0f;
+	constexpr float IdColWidth    = 92.0f;
+
 	// Trailing token of an object/class path: the part after the last '.', or the last
 	// '/', whichever exists - e.g. "/Game/BP/BP_Door.BP_Door_C" -> "BP_Door_C".
 	FString ShortName(const FString& Path)
@@ -66,7 +75,7 @@ namespace
 			[ SNew(SImage).Image(FCrowdyStudioStyle::Get().GetBrush("Crowdy.Separator")) ];
 	}
 
-	// One "Label : value" line in an expanded function's vertical detail block.
+	// One "Label : value" line in an expanded member's vertical detail block.
 	TSharedRef<SWidget> MakeDetailRow(const FText& Label, const TSharedRef<SWidget>& Value)
 	{
 		const ISlateStyle& S = FCrowdyStudioStyle::Get();
@@ -110,11 +119,75 @@ namespace
 				.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary()))
 			];
 	}
+
+	// A regular-weight chip carrying a tooltip (for the class Ownership / Host Override defaults).
+	TSharedRef<SWidget> MakeMetaChip(const FText& Text, const FText& Tooltip)
+	{
+		return SNew(SBorder)
+			.BorderImage(FCrowdyStudioStyle::Get().GetBrush("Crowdy.Chip"))
+			.Padding(FMargin(6.0f, 1.0f))
+			[
+				SNew(STextBlock).Text(Text).ToolTipText(Tooltip)
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary()))
+			];
+	}
+
+	// A small tinted "{count} {noun}" pill used to summarise how many RPCs / rep props a class has.
+	TSharedRef<SWidget> CountPill(int32 Count, const FText& Noun, FLinearColor Strong)
+	{
+		FLinearColor Fill = Strong;
+		Fill.A = 0.16f;
+		return SNew(SBorder)
+			.BorderImage(FCrowdyStudioStyle::Get().GetBrush("Crowdy.Pill"))
+			.BorderBackgroundColor(FSlateColor(Fill))
+			.Padding(FMargin(8.0f, 2.0f))
+			[
+				SNew(STextBlock)
+				.Text(FText::Format(LOCTEXT("CountPillFmt", "{0} {1}"), FText::AsNumber(Count), Noun))
+				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+				.ColorAndOpacity(FSlateColor(Strong))
+			];
+	}
+
+	// A subtle em-dash placeholder for an empty table cell (no flags / no RepNotify). Built from the
+	// code point so the source stays ASCII-only (no BOM here, and the module is -WarningsAsErrors).
+	TSharedRef<SWidget> Dash()
+	{
+		return SNew(STextBlock)
+			.Text(FText::FromString(FString::Chr(0x2014)))
+			.TextStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Text.Subtle");
+	}
+
+	// The id chip for a class's layout hash, shown wherever a rep-bearing class is summarised.
+	TSharedRef<SWidget> LayoutHashChip(int64 LayoutHash)
+	{
+		return MakeIdChip(
+			FText::Format(LOCTEXT("LayoutHashChip", "layout {0}"), FText::FromString(FString::Printf(TEXT("%lld"), LayoutHash))),
+			FText::FromString(FString::Printf(TEXT("Layout hash 0x%016llX"), LayoutHash)));
+	}
+
+	// The Table view's fixed 5-column skeleton (kind | name | routing/notify | flags | id). Passing the
+	// same widths through both the header row and every member row is what keeps the columns aligned.
+	TSharedRef<SWidget> MakeTableRowSkeleton(const TSharedRef<SWidget>& Kind, const TSharedRef<SWidget>& Name,
+		const TSharedRef<SWidget>& Detail, const TSharedRef<SWidget>& Flags, const TSharedRef<SWidget>& Id,
+		bool bHeader = false)
+	{
+		return SNew(SBox).Padding(FMargin(2.0f, bHeader ? 1.0f : 5.0f))
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[ SNew(SBox).WidthOverride(KindColWidth).HAlign(HAlign_Left).VAlign(VAlign_Center)[ Kind ] ]
+			+ SHorizontalBox::Slot().FillWidth(0.5f).VAlign(VAlign_Center).Padding(6.0f, 0.0f)[ Name ]
+			+ SHorizontalBox::Slot().FillWidth(0.5f).VAlign(VAlign_Center).Padding(6.0f, 0.0f)[ Detail ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[ SNew(SBox).WidthOverride(FlagsColWidth).HAlign(HAlign_Right).VAlign(VAlign_Center)[ Flags ] ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
+			[ SNew(SBox).WidthOverride(IdColWidth).HAlign(HAlign_Right).VAlign(VAlign_Center)[ Id ] ]
+		];
+	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SCrowdyRegistryInspector
-// ─────────────────────────────────────────────────────────────────────────────
 void SCrowdyRegistryInspector::Construct(const FArguments& InArgs)
 {
 	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
@@ -178,7 +251,7 @@ void SCrowdyRegistryInspector::Construct(const FArguments& InArgs)
 	[
 		SNew(SVerticalBox)
 
-		// ── Title + explainer ──────────────────────────────────────────────────
+		// Title + explainer.
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
 		[ SNew(STextBlock).Text(LOCTEXT("RegistryTitle", "Registry")).TextStyle(&Style, "Crowdy.Text.Title") ]
 
@@ -186,12 +259,12 @@ void SCrowdyRegistryInspector::Construct(const FArguments& InArgs)
 		[
 			SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Body")
 			.Text(LOCTEXT("RegistryExplainer",
-				"A preview of the baked Crowdy metadata - RPC functions, their routing, and the "
-				"persistent / singleton structs - that ships in packaged builds. The editor and PIE "
-				"read live metadata, so if this looks stale, click Rebuild."))
+				"A preview of the baked Crowdy metadata that ships in packaged builds, grouped by class - "
+				"each class shows its RPC functions and its CrowdyState replicated properties together. The "
+				"editor and PIE read live metadata, so if this looks stale, click Rebuild."))
 		]
 
-		// ── Toolbar: actions + resolved-asset status ───────────────────────────
+		// Toolbar: actions + resolved-asset status.
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
 		[
 			SNew(SHorizontalBox)
@@ -237,7 +310,7 @@ void SCrowdyRegistryInspector::Construct(const FArguments& InArgs)
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
-					.Text(LOCTEXT("Rebuilding", "Rebuilding registry…"))
+					.Text(LOCTEXT("Rebuilding", "Rebuilding registry..."))
 					.TextStyle(&Style, "Crowdy.Text.Subtle")
 				]
 			]
@@ -251,50 +324,75 @@ void SCrowdyRegistryInspector::Construct(const FArguments& InArgs)
 			]
 		]
 
-		// ── Summary count pills ─────────────────────────────────────────────────
+		// Summary count pills.
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 14.0f)
 		[
 			SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)
-			[ StatPill(TAttribute<FText>::CreateLambda([this]() { return FText::Format(LOCTEXT("FnStat", "{0} functions"), FText::AsNumber(AllRpcRows.Num())); }), FCrowdyStudioStyle::GoldBright()) ]
+			[ StatPill(TAttribute<FText>::CreateLambda([this]() { return FText::Format(LOCTEXT("ClassStat", "{0} classes"), FText::AsNumber(NumClasses)); }), FCrowdyStudioStyle::GoldBright()) ]
 			+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)
-			[ StatPill(TAttribute<FText>::CreateLambda([this]() { return FText::Format(LOCTEXT("PersistStat", "{0} persistent"), FText::AsNumber(PersistentStructItems.Num())); }), FCrowdyStudioStyle::TextSecondary()) ]
+			[ StatPill(TAttribute<FText>::CreateLambda([this]() { return FText::Format(LOCTEXT("FnStat", "{0} functions"), FText::AsNumber(AllRpcRows.Num())); }), FCrowdyStudioStyle::TextSecondary()) ]
 			+ SHorizontalBox::Slot().AutoWidth()
-			[ StatPill(TAttribute<FText>::CreateLambda([this]() { return FText::Format(LOCTEXT("SingleStat", "{0} singleton"), FText::AsNumber(SingletonStructItems.Num())); }), FCrowdyStudioStyle::TextSecondary()) ]
+			[ StatPill(TAttribute<FText>::CreateLambda([this]() { return FText::Format(LOCTEXT("RepStat", "{0} rep props"), FText::AsNumber(AllRepRows.Num())); }), FCrowdyStudioStyle::TextSecondary()) ]
 		]
 
-		// ── Persistent / singleton struct cards ─────────────────────────────────
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
-		[
-			StructCard(TEXT("cube"),
-				TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SCrowdyRegistryInspector::GetPersistentTitle)),
-				PersistentStructListView, &PersistentStructItems,
-				LOCTEXT("NoPersistent", "No persistent structs."))
-		]
+		// Persistent / singleton struct cards, side by side to save vertical space.
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 14.0f)
 		[
-			StructCard(TEXT("cube"),
-				TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SCrowdyRegistryInspector::GetSingletonTitle)),
-				SingletonStructListView, &SingletonStructItems,
-				LOCTEXT("NoSingleton", "No singleton structs."))
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 5.0f, 0.0f)
+			[
+				StructCard(TEXT("cube"),
+					TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SCrowdyRegistryInspector::GetPersistentTitle)),
+					PersistentStructListView, &PersistentStructItems,
+					LOCTEXT("NoPersistent", "No persistent structs."))
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(5.0f, 0.0f, 0.0f, 0.0f)
+			[
+				StructCard(TEXT("cube"),
+					TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SCrowdyRegistryInspector::GetSingletonTitle)),
+					SingletonStructListView, &SingletonStructItems,
+					LOCTEXT("NoSingleton", "No singleton structs."))
+			]
 		]
 
-		// ── RPC search filter ────────────────────────────────────────────────────
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+		// Search filter + Cards/Table view toggle.
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
 		[
-			SAssignNew(SearchBox, SEditableTextBox)
-			.Style(&Style, "Crowdy.Input")
-			.HintText(LOCTEXT("SearchHint", "Filter RPC functions by class or function name..."))
-			.OnTextChanged(this, &SCrowdyRegistryInspector::OnSearchTextChanged)
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+			[
+				SAssignNew(SearchBox, SEditableTextBox)
+				.Style(&Style, "Crowdy.Input")
+				.HintText(LOCTEXT("SearchHint", "Filter by class, function, or property name..."))
+				.OnTextChanged(this, &SCrowdyRegistryInspector::OnSearchTextChanged)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(10.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SBox).WidthOverride(168.0f)
+				[
+					CrowdyStudioWidgets::SegmentedEnum(
+						{ TEXT("cards"), TEXT("table") },
+						{ LOCTEXT("ViewCards", "Cards"), LOCTEXT("ViewTable", "Table") },
+						TAttribute<FString>::CreateLambda([this]()
+						{
+							return ViewMode == ECrowdyRegistryViewMode::Table ? FString(TEXT("table")) : FString(TEXT("cards"));
+						}),
+						[this](const FString& Value)
+						{
+							SetViewMode(Value == TEXT("table") ? ECrowdyRegistryViewMode::Table : ECrowdyRegistryViewMode::Cards);
+						})
+				]
+			]
 		]
 
-		// ── RPC functions: one card per class (fills remaining space) ────────────
+		// The grouped metadata (fills the remaining space), rendered as cards or a table.
 		+ SVerticalBox::Slot().FillHeight(1.0f)
 		[
 			SNew(SScrollBox)
 			+ SScrollBox::Slot()
 			[
-				SAssignNew(CardContainer, SVerticalBox)
+				SAssignNew(ContentContainer, SVerticalBox)
 			]
 		]
 	];
@@ -309,7 +407,7 @@ FReply SCrowdyRegistryInspector::OnRebuildClicked()
 		return FReply::Handled();
 	}
 
-	// The rebuild streams its assets in asynchronously, so the editor no longer freezes on click —
+	// The rebuild streams its assets in asynchronously, so the editor no longer freezes on click,
 	// which also means nothing visibly happens until it finishes. Flip the in-progress flag so the
 	// toolbar spinner appears, and clear it + refresh from the completion callback (game thread), not
 	// synchronously (that would show the pre-rebuild data). Weak-pin so a panel closed mid-rebuild is
@@ -338,12 +436,22 @@ FReply SCrowdyRegistryInspector::OnRefreshClicked()
 void SCrowdyRegistryInspector::OnSearchTextChanged(const FText& NewText)
 {
 	SearchText = NewText.ToString();
-	BuildCardList();
+	RebuildContent();
+}
+
+void SCrowdyRegistryInspector::SetViewMode(ECrowdyRegistryViewMode Mode)
+{
+	if (ViewMode != Mode)
+	{
+		ViewMode = Mode;
+		RebuildContent();
+	}
 }
 
 void SCrowdyRegistryInspector::RefreshData()
 {
 	AllRpcRows.Reset();
+	AllRepRows.Reset();
 	PersistentStructItems.Reset();
 	SingletonStructItems.Reset();
 
@@ -376,6 +484,73 @@ void SCrowdyRegistryInspector::RefreshData()
 			return A->ClassPath != B->ClassPath ? A->ClassPath < B->ClassPath : A->Function < B->Function;
 		});
 
+		// CrowdyState replicated properties, mirrored from the baked arrays. Build a transient
+		// class-path -> layout-hash map so each property row can carry its class's layout hash for the
+		// card header (the baker guarantees one hash entry per class that declares any rep props).
+		TMap<FString, int64> LayoutHashByClass;
+		LayoutHashByClass.Reserve(Registry->RepLayoutHashes.Num());
+		for (const FCrowdyBakedRepLayoutHash& Hash : Registry->RepLayoutHashes)
+		{
+			LayoutHashByClass.Add(Hash.ClassPath.ToString(), Hash.LayoutHash);
+		}
+
+		// Class-level Ownership/HostOverride, resolved LIVE (never baked) from each class's default
+		// CrowdyEntityComponent - see UCrowdyAutoRegistry::ResolveDefaultEntityComponent. Cached per
+		// class path here so a class with many properties only pays one class-load/CDO-walk, not one
+		// per property row.
+		struct FClassEntityDefaults
+		{
+			bool  bChecked = false;
+			bool  bFound = false;
+			FText Ownership;
+			FText HostOverride;
+		};
+		TMap<FString, FClassEntityDefaults> EntityDefaultsByClass;
+
+		for (const FCrowdyBakedRepProperty& Prop : Registry->RepProperties)
+		{
+			const FString ClassPath = Prop.OwnerClassPath.ToString();
+
+			FClassEntityDefaults& Defaults = EntityDefaultsByClass.FindOrAdd(ClassPath);
+			if (!Defaults.bChecked)
+			{
+				Defaults.bChecked = true;
+				if (const UClass* OwnerClass = Prop.OwnerClassPath.TryLoadClass<UObject>())
+				{
+					if (const UCrowdyEntityComponent* Component = UCrowdyAutoRegistry::ResolveDefaultEntityComponent(OwnerClass))
+					{
+						Defaults.bFound = true;
+						Defaults.Ownership = EnumDisplayText(Component->GetOwnership());
+						if (Component->GetOwnership() == ECrowdyOwnership::LocalClient)
+						{
+							Defaults.HostOverride = EnumDisplayText(Component->GetHostOverridePolicy());
+						}
+					}
+				}
+			}
+
+			FCrowdyRepPropRowItemPtr Row = MakeShared<FCrowdyRepPropRowItem>();
+			Row->ClassPath    = ClassPath;
+			Row->ClassShort   = ShortName(ClassPath);
+			Row->LayoutHash   = LayoutHashByClass.FindRef(ClassPath);
+			Row->PropertyName = Prop.PropertyName.ToString();
+			Row->PropertyID   = Prop.PropertyID;
+			Row->bOwnerOnly   = Prop.bOwnerOnly;
+			Row->bManualDirty = Prop.bManualDirty;
+			Row->OnRepFunction = Prop.OnRepFunctionName.IsNone() ? FString() : Prop.OnRepFunctionName.ToString();
+			Row->LayoutOrder  = Prop.LayoutOrder;
+			Row->bHasEntityDefaults = Defaults.bFound;
+			Row->OwnershipText       = Defaults.Ownership;
+			Row->HostOverrideText    = Defaults.HostOverride;
+			AllRepRows.Add(Row);
+		}
+
+		// Tidy grouped order: declaring class, then positional layout order (matches wire order).
+		AllRepRows.Sort([](const FCrowdyRepPropRowItemPtr& A, const FCrowdyRepPropRowItemPtr& B)
+		{
+			return A->ClassPath != B->ClassPath ? A->ClassPath < B->ClassPath : A->LayoutOrder < B->LayoutOrder;
+		});
+
 		for (const FSoftObjectPath& Path : Registry->PersistentStructs)
 		{
 			PersistentStructItems.Add(MakeShared<FString>(Path.ToString()));
@@ -386,93 +561,254 @@ void SCrowdyRegistryInspector::RefreshData()
 		}
 	}
 
-	BuildCardList();
+	// Distinct classes across both member kinds, for the summary pill.
+	TSet<FString> ClassPaths;
+	for (const FCrowdyRpcRowItemPtr& Row : AllRpcRows)  { ClassPaths.Add(Row->ClassPath); }
+	for (const FCrowdyRepPropRowItemPtr& Row : AllRepRows) { ClassPaths.Add(Row->ClassPath); }
+	NumClasses = ClassPaths.Num();
+
+	RebuildContent();
 
 	if (PersistentStructListView.IsValid()) PersistentStructListView->RequestListRefresh();
 	if (SingletonStructListView.IsValid())  SingletonStructListView->RequestListRefresh();
 }
 
-void SCrowdyRegistryInspector::BuildCardList()
+TArray<FCrowdyClassGroupPtr> SCrowdyRegistryInspector::BuildFilteredGroups() const
 {
-	if (!CardContainer.IsValid())
+	const bool bHasFilter = !SearchText.IsEmpty();
+	auto Matches = [&](const FString& ClassShort, const FString& ClassPath, const FString& Member)
+	{
+		return !bHasFilter
+			|| ClassShort.Contains(SearchText)
+			|| ClassPath.Contains(SearchText)
+			|| Member.Contains(SearchText);
+	};
+
+	// Union the two sorted, flat row arrays into one group per declaring class. Both arrays are already
+	// class-contiguous and member-sorted, so appending preserves each group's internal order.
+	TMap<FString, FCrowdyClassGroupPtr> ByClass;
+
+	for (const FCrowdyRpcRowItemPtr& Row : AllRpcRows)
+	{
+		if (!Matches(Row->ClassShort, Row->ClassPath, Row->Function))
+		{
+			continue;
+		}
+		FCrowdyClassGroupPtr& Group = ByClass.FindOrAdd(Row->ClassPath);
+		if (!Group.IsValid())
+		{
+			Group = MakeShared<FCrowdyClassGroup>();
+			Group->ClassPath = Row->ClassPath;
+			Group->ClassShort = Row->ClassShort;
+		}
+		Group->Functions.Add(Row);
+	}
+
+	for (const FCrowdyRepPropRowItemPtr& Row : AllRepRows)
+	{
+		if (!Matches(Row->ClassShort, Row->ClassPath, Row->PropertyName))
+		{
+			continue;
+		}
+		FCrowdyClassGroupPtr& Group = ByClass.FindOrAdd(Row->ClassPath);
+		if (!Group.IsValid())
+		{
+			Group = MakeShared<FCrowdyClassGroup>();
+			Group->ClassPath = Row->ClassPath;
+			Group->ClassShort = Row->ClassShort;
+		}
+		Group->Props.Add(Row);
+		// Every rep row of a class carries the same class-level metadata; set it from whichever is shown.
+		Group->bHasRepProps = true;
+		Group->LayoutHash = Row->LayoutHash;
+		Group->bHasEntityDefaults = Row->bHasEntityDefaults;
+		Group->OwnershipText = Row->OwnershipText;
+		Group->HostOverrideText = Row->HostOverrideText;
+	}
+
+	TArray<FCrowdyClassGroupPtr> Groups;
+	ByClass.GenerateValueArray(Groups);
+	Groups.Sort([](const FCrowdyClassGroupPtr& A, const FCrowdyClassGroupPtr& B)
+	{
+		return A->ClassPath < B->ClassPath;
+	});
+	return Groups;
+}
+
+void SCrowdyRegistryInspector::RebuildContent()
+{
+	if (!ContentContainer.IsValid())
 	{
 		return;
 	}
 
-	CardContainer->ClearChildren();
+	ContentContainer->ClearChildren();
 
-	const bool bHasFilter = !SearchText.IsEmpty();
-	int32 ShownClasses = 0;
+	const TArray<FCrowdyClassGroupPtr> Groups = BuildFilteredGroups();
 
-	// AllRpcRows is class-sorted, so a class's functions are contiguous.
-	int32 Start = 0;
-	while (Start < AllRpcRows.Num())
+	if (Groups.Num() == 0)
 	{
-		const FString ClassPath = AllRpcRows[Start]->ClassPath;
-
-		TArray<FCrowdyRpcRowItemPtr> Matching;
-		int32 End = Start;
-		for (; End < AllRpcRows.Num() && AllRpcRows[End]->ClassPath == ClassPath; ++End)
-		{
-			const FCrowdyRpcRowItemPtr& Row = AllRpcRows[End];
-			if (!bHasFilter
-				|| Row->ClassShort.Contains(SearchText)
-				|| Row->ClassPath.Contains(SearchText)
-				|| Row->Function.Contains(SearchText))
-			{
-				Matching.Add(Row);
-			}
-		}
-
-		if (Matching.Num() > 0)
-		{
-			CardContainer->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
-			[
-				MakeClassCard(AllRpcRows[Start]->ClassShort, ClassPath, Matching)
-			];
-			++ShownClasses;
-		}
-
-		Start = End;
-	}
-
-	if (ShownClasses == 0)
-	{
-		CardContainer->AddSlot().AutoHeight().Padding(8.0f)
+		const bool bHasFilter = !SearchText.IsEmpty();
+		ContentContainer->AddSlot().AutoHeight().Padding(8.0f)
 		[
 			CrowdyStudioWidgets::EmptyState(TEXT("broadcast"),
 				bResolved
 					? (bHasFilter
-						? LOCTEXT("NoMatches", "No functions match the filter.")
-						: LOCTEXT("NoFunctions", "No RPC functions are registered.\nClick Rebuild to scan the project."))
+						? LOCTEXT("NoMatches", "Nothing matches the filter.")
+						: LOCTEXT("NoMetadata", "No Crowdy metadata is registered.\nMark a UFUNCTION meta=(CrowdyEvent) or a UPROPERTY meta=(CrowdyState), then click Rebuild."))
 					: LOCTEXT("NoAsset", "No baked registry asset found.\nClick Rebuild to create it."))
+		];
+		return;
+	}
+
+	if (ViewMode == ECrowdyRegistryViewMode::Table)
+	{
+		BuildTableInto(Groups);
+	}
+	else
+	{
+		BuildCardsInto(Groups);
+	}
+}
+
+void SCrowdyRegistryInspector::BuildCardsInto(const TArray<FCrowdyClassGroupPtr>& Groups)
+{
+	for (const FCrowdyClassGroupPtr& Group : Groups)
+	{
+		ContentContainer->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
+		[
+			MakeClassCard(Group)
 		];
 	}
 }
 
-TSharedRef<SWidget> SCrowdyRegistryInspector::MakeClassCard(
-	const FString& ClassShort, const FString& ClassPath, const TArray<FCrowdyRpcRowItemPtr>& Functions)
+void SCrowdyRegistryInspector::BuildTableInto(const TArray<FCrowdyClassGroupPtr>& Groups)
 {
-	// Build the function rows, with a thin separator between them.
-	TSharedRef<SVerticalBox> FnBox = SNew(SVerticalBox);
-	for (int32 Index = 0; Index < Functions.Num(); ++Index)
-	{
-		FnBox->AddSlot().AutoHeight()
-		[
-			MakeFunctionEntry(Functions[Index])
-		];
+	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
 
-		if (Index < Functions.Num() - 1)
+	TSharedRef<SVerticalBox> Table = SNew(SVerticalBox);
+
+	// A single column-header row; the fixed column widths line it up with every member row below.
+	Table->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 2.0f)
+	[
+		MakeTableRowSkeleton(
+			SNew(STextBlock).Text(LOCTEXT("ColType", "TYPE")).TextStyle(&Style, "Crowdy.Text.SectionLabel"),
+			SNew(STextBlock).Text(LOCTEXT("ColName", "NAME")).TextStyle(&Style, "Crowdy.Text.SectionLabel"),
+			SNew(STextBlock).Text(LOCTEXT("ColDetail", "ROUTING / NOTIFY")).TextStyle(&Style, "Crowdy.Text.SectionLabel"),
+			SNew(STextBlock).Text(LOCTEXT("ColFlags", "FLAGS")).TextStyle(&Style, "Crowdy.Text.SectionLabel"),
+			SNew(STextBlock).Text(LOCTEXT("ColId", "ID")).TextStyle(&Style, "Crowdy.Text.SectionLabel"),
+			/*bHeader*/ true)
+	];
+	Table->AddSlot().AutoHeight()[ Hairline() ];
+
+	for (const FCrowdyClassGroupPtr& Group : Groups)
+	{
+		Table->AddSlot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 4.0f)
+		[ MakeTableClassSubheader(Group) ];
+		Table->AddSlot().AutoHeight()[ Hairline() ];
+
+		// One row per member: RPC functions first, then replicated properties, hairline-separated.
+		TArray<TSharedRef<SWidget>> MemberRows;
+		for (const FCrowdyRpcRowItemPtr& Fn : Group->Functions)
 		{
-			FnBox->AddSlot().AutoHeight()[ Hairline() ];
+			MemberRows.Add(MakeTableRpcRow(Fn));
 		}
+		for (const FCrowdyRepPropRowItemPtr& Prop : Group->Props)
+		{
+			MemberRows.Add(MakeTableRepRow(Prop));
+		}
+
+		TSharedRef<SVerticalBox> Rows = SNew(SVerticalBox);
+		for (int32 Index = 0; Index < MemberRows.Num(); ++Index)
+		{
+			Rows->AddSlot().AutoHeight()[ MemberRows[Index] ];
+			if (Index < MemberRows.Num() - 1)
+			{
+				Rows->AddSlot().AutoHeight()[ Hairline() ];
+			}
+		}
+		Table->AddSlot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 0.0f)[ Rows ];
 	}
 
-	const int32 FunctionCount = Functions.Num();
-	const FText CountText = FText::Format(
-		LOCTEXT("FnCount", "{0} {1}"),
-		FText::AsNumber(FunctionCount),
-		FunctionCount == 1 ? LOCTEXT("FnWordOne", "function") : LOCTEXT("FnWordMany", "functions"));
+	ContentContainer->AddSlot().AutoHeight()
+	[
+		CrowdyStudioWidgets::Card(Table, FMargin(14.0f, 12.0f))
+	];
+}
+
+TSharedRef<SWidget> SCrowdyRegistryInspector::MakeClassCard(const FCrowdyClassGroupPtr& Group)
+{
+	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
+
+	// Header: class name + per-kind count pills (left), package path (right).
+	TSharedRef<SHorizontalBox> Header = SNew(SHorizontalBox);
+	Header->AddSlot().AutoWidth().VAlign(VAlign_Center)
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString(Group->ClassShort))
+		.ToolTipText(FText::FromString(Group->ClassPath))
+		.TextStyle(&Style, "Crowdy.Text.Heading")
+	];
+	if (Group->Functions.Num() > 0)
+	{
+		Header->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
+		[ CountPill(Group->Functions.Num(), LOCTEXT("RpcNoun", "RPC"), FCrowdyStudioStyle::GoldBright()) ];
+	}
+	if (Group->Props.Num() > 0)
+	{
+		Header->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(6.0f, 0.0f, 0.0f, 0.0f)
+		[ CountPill(Group->Props.Num(), LOCTEXT("StateNoun", "state"), FCrowdyStudioStyle::Info()) ];
+	}
+	Header->AddSlot().FillWidth(1.0f).HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString(PackageOnly(Group->ClassPath)))
+		.ToolTipText(FText::FromString(Group->ClassPath))
+		.TextStyle(&Style, "Crowdy.Text.Subtle")
+	];
+
+	// Body: class-meta strip (if any rep props), then the RPC and replicated-property subsections.
+	TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
+
+	if (Group->bHasRepProps)
+	{
+		Body->AddSlot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+		[ MakeClassMetaStrip(Group) ];
+	}
+
+	if (Group->Functions.Num() > 0)
+	{
+		Body->AddSlot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 4.0f)
+		[ CrowdyStudioWidgets::GroupLabel(LOCTEXT("RpcGroupLabel", "RPC FUNCTIONS")) ];
+
+		TSharedRef<SVerticalBox> FnBox = SNew(SVerticalBox);
+		for (int32 Index = 0; Index < Group->Functions.Num(); ++Index)
+		{
+			FnBox->AddSlot().AutoHeight()[ MakeFunctionEntry(Group->Functions[Index]) ];
+			if (Index < Group->Functions.Num() - 1)
+			{
+				FnBox->AddSlot().AutoHeight()[ Hairline() ];
+			}
+		}
+		Body->AddSlot().AutoHeight()[ FnBox ];
+	}
+
+	if (Group->Props.Num() > 0)
+	{
+		Body->AddSlot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 4.0f)
+		[ CrowdyStudioWidgets::GroupLabel(LOCTEXT("RepGroupLabel", "REPLICATED PROPERTIES")) ];
+
+		TSharedRef<SVerticalBox> PropBox = SNew(SVerticalBox);
+		for (int32 Index = 0; Index < Group->Props.Num(); ++Index)
+		{
+			PropBox->AddSlot().AutoHeight()[ MakeRepPropertyEntry(Group->Props[Index]) ];
+			if (Index < Group->Props.Num() - 1)
+			{
+				PropBox->AddSlot().AutoHeight()[ Hairline() ];
+			}
+		}
+		Body->AddSlot().AutoHeight()[ PropBox ];
+	}
 
 	return CrowdyStudioWidgets::Card(
 		SNew(SExpandableArea)
@@ -481,29 +817,40 @@ TSharedRef<SWidget> SCrowdyRegistryInspector::MakeClassCard(
 		.HeaderPadding(FMargin(2.0f, 2.0f))
 		.HeaderContent()
 		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-			[
-				SNew(STextBlock)
-				.Text(FText::FromString(ClassShort))
-				.ToolTipText(FText::FromString(ClassPath))
-				.TextStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Text.Heading")
-			]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
-			[ CrowdyStudioWidgets::Chip(CountText) ]
-			+ SHorizontalBox::Slot().FillWidth(1.0f).HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
-			[
-				SNew(STextBlock)
-				.Text(FText::FromString(PackageOnly(ClassPath)))
-				.ToolTipText(FText::FromString(ClassPath))
-				.TextStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Text.Subtle")
-			]
+			Header
 		]
 		.BodyContent()
 		[
-			SNew(SBox).Padding(FMargin(0.0f, 6.0f, 0.0f, 0.0f))[ FnBox ]
+			SNew(SBox).Padding(FMargin(0.0f, 2.0f, 0.0f, 0.0f))[ Body ]
 		],
 		FMargin(12.0f, 10.0f));
+}
+
+TSharedRef<SWidget> SCrowdyRegistryInspector::MakeClassMetaStrip(const FCrowdyClassGroupPtr& Group) const
+{
+	const FText DefaultsTip = LOCTEXT("EntityDefaultsTip",
+		"Resolved live from this class's default CrowdyEntityComponent (native CDO or Blueprint component "
+		"defaults) when this view was built - never baked, since Ownership / Host Override are "
+		"per-placed-instance settings with no single value for a class. A level-placed instance can "
+		"override either one.");
+
+	TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+	Row->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+	[ LayoutHashChip(Group->LayoutHash) ];
+
+	if (Group->bHasEntityDefaults)
+	{
+		Row->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+		[ MakeMetaChip(FText::Format(LOCTEXT("OwnershipChip", "Ownership: {0}"), Group->OwnershipText), DefaultsTip) ];
+
+		if (!Group->HostOverrideText.IsEmpty())
+		{
+			Row->AddSlot().AutoWidth().VAlign(VAlign_Center)
+			[ MakeMetaChip(FText::Format(LOCTEXT("HostOverrideChip", "Host Override: {0}"), Group->HostOverrideText), DefaultsTip) ];
+		}
+	}
+
+	return Row;
 }
 
 TSharedRef<SWidget> SCrowdyRegistryInspector::MakeFunctionEntry(const FCrowdyRpcRowItemPtr& Fn)
@@ -564,6 +911,199 @@ TSharedRef<SWidget> SCrowdyRegistryInspector::MakeFunctionEntry(const FCrowdyRpc
 				[ Details ]
 			]
 		];
+}
+
+TSharedRef<SWidget> SCrowdyRegistryInspector::MakeRepPropertyEntry(const FCrowdyRepPropRowItemPtr& Prop)
+{
+	// Collapsed header: property name on the left; OnRep name + OWNER/MANUAL badges on the right.
+	TSharedRef<SHorizontalBox> Header = SNew(SHorizontalBox);
+	Header->AddSlot().AutoWidth().VAlign(VAlign_Center)
+	[
+		SNew(STextBlock).Text(FText::FromString(Prop->PropertyName)).TextStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Text.BodyStrong")
+	];
+	Header->AddSlot().FillWidth(1.0f).HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
+	[
+		SNew(STextBlock)
+		.Text(Prop->OnRepFunction.IsEmpty() ? FText::GetEmpty() : FText::FromString(Prop->OnRepFunction))
+		.TextStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Text.Subtle")
+	];
+	if (Prop->bOwnerOnly)
+	{
+		Header->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(10.0f, 0.0f, 0.0f, 0.0f)
+		[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagOwnerOnly", "OWNER"), CrowdyStudioWidgets::EBadgeTone::Info) ];
+	}
+	if (Prop->bManualDirty)
+	{
+		Header->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(6.0f, 0.0f, 0.0f, 0.0f)
+		[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagManual", "MANUAL"), CrowdyStudioWidgets::EBadgeTone::Warning) ];
+	}
+
+	// Expanded body: details stacked vertically as "Label : value" rows, inside an inset panel.
+	TSharedRef<SVerticalBox> Details = SNew(SVerticalBox);
+	auto AddDetail = [&Details](const FText& Label, const TSharedRef<SWidget>& Value)
+	{
+		Details->AddSlot().AutoHeight().Padding(0.0f, 2.0f)
+		[ MakeDetailRow(Label, Value) ];
+	};
+
+	AddDetail(LOCTEXT("DetailPropID", "Property ID"),
+		MakeIdChip(
+			FText::FromString(FString::Printf(TEXT("%lld"), Prop->PropertyID)),
+			FText::FromString(FString::Printf(TEXT("0x%016llX"), Prop->PropertyID))));
+	AddDetail(LOCTEXT("DetailLayoutOrder", "Layout order"), MakeValueText(FText::AsNumber(Prop->LayoutOrder)));
+	AddDetail(LOCTEXT("DetailOwnerOnly", "Only to owner"), MakeBoolValue(Prop->bOwnerOnly));
+	AddDetail(LOCTEXT("DetailManual", "Manual update"), MakeBoolValue(Prop->bManualDirty));
+	AddDetail(LOCTEXT("DetailRepNotify", "RepNotify"),
+		MakeValueText(Prop->OnRepFunction.IsEmpty() ? LOCTEXT("RepNotifyNone", "None") : FText::FromString(Prop->OnRepFunction)));
+
+	return SNew(SExpandableArea)
+		.InitiallyCollapsed(true)
+		.BorderImage(FStyleDefaults::GetNoBrush())
+		.Padding(FMargin(0.0f))
+		.HeaderPadding(FMargin(2.0f, 6.0f))
+		.HeaderContent()
+		[
+			Header
+		]
+		.BodyContent()
+		[
+			SNew(SBox).Padding(FMargin(8.0f, 2.0f, 0.0f, 8.0f))
+			[
+				SNew(SBorder).BorderImage(FCrowdyStudioStyle::Get().GetBrush("Crowdy.Inset")).Padding(FMargin(12.0f, 10.0f))
+				[ Details ]
+			]
+		];
+}
+
+TSharedRef<SWidget> SCrowdyRegistryInspector::MakeTableClassSubheader(const FCrowdyClassGroupPtr& Group) const
+{
+	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
+
+	TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+	Row->AddSlot().AutoWidth().VAlign(VAlign_Center)
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString(Group->ClassShort))
+		.ToolTipText(FText::FromString(Group->ClassPath))
+		.TextStyle(&Style, "Crowdy.Text.Heading")
+	];
+	if (Group->Functions.Num() > 0)
+	{
+		Row->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
+		[ CountPill(Group->Functions.Num(), LOCTEXT("RpcNoun", "RPC"), FCrowdyStudioStyle::GoldBright()) ];
+	}
+	if (Group->Props.Num() > 0)
+	{
+		Row->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(6.0f, 0.0f, 0.0f, 0.0f)
+		[ CountPill(Group->Props.Num(), LOCTEXT("StateNoun", "state"), FCrowdyStudioStyle::Info()) ];
+	}
+
+	// Right side: the layout hash (rep-bearing classes only), then the package path.
+	TSharedRef<SHorizontalBox> Right = SNew(SHorizontalBox);
+	if (Group->bHasRepProps)
+	{
+		Right->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+		[ LayoutHashChip(Group->LayoutHash) ];
+	}
+	Right->AddSlot().AutoWidth().VAlign(VAlign_Center)
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString(PackageOnly(Group->ClassPath)))
+		.ToolTipText(FText::FromString(Group->ClassPath))
+		.TextStyle(&Style, "Crowdy.Text.Subtle")
+	];
+	Row->AddSlot().FillWidth(1.0f).HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
+	[ Right ];
+
+	return Row;
+}
+
+TSharedRef<SWidget> SCrowdyRegistryInspector::MakeTableRpcRow(const FCrowdyRpcRowItemPtr& Fn) const
+{
+	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
+
+	TSharedRef<SWidget> Kind = CrowdyStudioWidgets::Badge(LOCTEXT("KindRpc", "RPC"), CrowdyStudioWidgets::EBadgeTone::Brand);
+
+	TSharedRef<SWidget> Name = SNew(STextBlock)
+		.Text(FText::FromString(Fn->Function))
+		.ToolTipText(FText::FromString(Fn->Function))
+		.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+		.TextStyle(&Style, "Crowdy.Text.BodyStrong");
+
+	TSharedRef<SWidget> Detail = SNew(STextBlock)
+		.Text(Fn->Recipient)
+		.ToolTipText(Fn->Recipient)
+		.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+		.TextStyle(&Style, "Crowdy.Text.Subtle");
+
+	TSharedRef<SWidget> Flags = Dash();
+	if (Fn->bParamsPOD || Fn->bReplicated)
+	{
+		TSharedRef<SHorizontalBox> FlagBox = SNew(SHorizontalBox);
+		if (Fn->bParamsPOD)
+		{
+			FlagBox->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagPOD", "POD"), CrowdyStudioWidgets::EBadgeTone::Success) ];
+		}
+		if (Fn->bReplicated)
+		{
+			FlagBox->AddSlot().AutoWidth()
+			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagRepl", "REPL"), CrowdyStudioWidgets::EBadgeTone::Info) ];
+		}
+		Flags = FlagBox;
+	}
+
+	TSharedRef<SWidget> Id = MakeIdChip(
+		FText::FromString(FString::Printf(TEXT("%lld"), Fn->FunctionID)),
+		FText::FromString(FString::Printf(TEXT("0x%016llX"), Fn->FunctionID)));
+
+	return MakeTableRowSkeleton(Kind, Name, Detail, Flags, Id);
+}
+
+TSharedRef<SWidget> SCrowdyRegistryInspector::MakeTableRepRow(const FCrowdyRepPropRowItemPtr& Prop) const
+{
+	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
+
+	TSharedRef<SWidget> Kind = CrowdyStudioWidgets::Badge(LOCTEXT("KindState", "STATE"), CrowdyStudioWidgets::EBadgeTone::Info);
+
+	TSharedRef<SWidget> Name = SNew(STextBlock)
+		.Text(FText::FromString(Prop->PropertyName))
+		.ToolTipText(FText::FromString(Prop->PropertyName))
+		.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+		.TextStyle(&Style, "Crowdy.Text.BodyStrong");
+
+	TSharedRef<SWidget> Detail = Dash();
+	if (!Prop->OnRepFunction.IsEmpty())
+	{
+		Detail = SNew(STextBlock)
+			.Text(FText::FromString(Prop->OnRepFunction))
+			.ToolTipText(FText::FromString(Prop->OnRepFunction))
+			.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+			.TextStyle(&Style, "Crowdy.Text.Subtle");
+	}
+
+	TSharedRef<SWidget> Flags = Dash();
+	if (Prop->bOwnerOnly || Prop->bManualDirty)
+	{
+		TSharedRef<SHorizontalBox> FlagBox = SNew(SHorizontalBox);
+		if (Prop->bOwnerOnly)
+		{
+			FlagBox->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagOwnerOnly", "OWNER"), CrowdyStudioWidgets::EBadgeTone::Info) ];
+		}
+		if (Prop->bManualDirty)
+		{
+			FlagBox->AddSlot().AutoWidth()
+			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagManual", "MANUAL"), CrowdyStudioWidgets::EBadgeTone::Warning) ];
+		}
+		Flags = FlagBox;
+	}
+
+	TSharedRef<SWidget> Id = MakeIdChip(
+		FText::FromString(FString::Printf(TEXT("%lld"), Prop->PropertyID)),
+		FText::FromString(FString::Printf(TEXT("0x%016llX"), Prop->PropertyID)));
+
+	return MakeTableRowSkeleton(Kind, Name, Detail, Flags, Id);
 }
 
 TSharedRef<ITableRow> SCrowdyRegistryInspector::OnGenerateStructRow(

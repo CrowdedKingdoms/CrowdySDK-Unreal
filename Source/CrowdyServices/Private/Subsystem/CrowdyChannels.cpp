@@ -9,6 +9,8 @@
 #include "Messages/Channels/FChannelMessages.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Replication/RPC/FCrowdyRpcCall.h"
+#include "Replication/State/CrowdyStateCodec.h"
+#include "Replication/State/FCrowdyStateDelta.h"
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
@@ -1003,6 +1005,31 @@ void UCrowdyChannels::PublishToResolvedChannel(const FString& ChannelName, const
 
 void UCrowdyChannels::ForwardChannelRpc(const TArray<uint8>& Payload)
 {
+	// Discriminate a CrowdyState channel payload from an RPC one by the leading kind tag. A state payload
+	// leads with CrowdyChannelStateDeltaTag (0xC5); an RPC payload leads with CrowdyChannelRpcVersion (a
+	// small int, never 0xC5), so the two wire formats never collide (see CrowdyChannelStateDeltaTag). The
+	// RPC path below is unchanged.
+	if (Payload.Num() > 0 && Payload[0] == CrowdyChannelStateDeltaTag)
+	{
+		FCrowdyStateDelta Delta;
+		if (!FCrowdyStateCodec::DecodeChannelStateDelta(Payload, Delta))
+			return; // DecodeChannelStateDelta already logged why
+
+		if (FCrowdyRPC::IsReliableTraceEnabled())
+		{
+			UE_LOG(LogCrowdyServices, Log,
+				TEXT("[CrowdyChannels] reliable receive state ClassID=%lld entity=%s bytes=%d"),
+				Delta.ClassID, *Delta.EntityID.ToString(), Payload.Num());
+		}
+
+		if (UCrowdyEventRouter* Router = ResolveEventRouter())
+			Router->ReceiveChannelStateDelta(Delta);
+		else
+			UE_LOG(LogCrowdyServices, Warning,
+				TEXT("[CrowdyChannels] Reliable state delta received but no event router in the current world; dropping."));
+		return;
+	}
+
 	FCrowdyRpcCall Call;
 	uint8 Flags = 0;
 	if (!FCrowdyRPC::DecodeChannelRpc(Payload, Call, Flags))

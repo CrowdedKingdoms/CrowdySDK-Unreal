@@ -2,6 +2,7 @@
 #include "CrowdyReplicationLog.h"
 
 #include "TimerManager.h"
+#include "Core/CrowdyCategory/FCrowdyTypeIDGenerator.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
 #include "Engine/AssetManager.h"
@@ -73,7 +74,7 @@ void UCrowdyEntitySubsystem::Deinitialize()
 	PendingRemoteSpawns.Empty();
 
 	Records.Empty();
-	ActorToID.Empty();
+	ParticipantToID.Empty();
 	PendingEntityEvents.Empty();
 	Bridge = nullptr;
 
@@ -144,22 +145,22 @@ void UCrowdyEntitySubsystem::RegisterEntity(const FCrowdyEntityRecord& Record)
 
 	if (!Record.NetID.IsValid())
 	{
-		UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyEntitySubsystem]: Rejected registration with invalid NetID (Actor=%s)."),
-			*GetNameSafe(Record.Actor.Get()));
+		UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyEntitySubsystem]: Rejected registration with invalid NetID (Participant=%s)."),
+			*GetNameSafe(Record.GetParticipant()));
 		return;
 	}
 
-	// Re-registering an existing NetID replaces the record; drop the old actor mapping first.
+	// Re-registering an existing NetID replaces the record; drop the old participant mapping first.
 	if (const FCrowdyEntityRecord* Existing = Records.Find(Record.NetID))
 	{
-		if (AActor* OldActor = Existing->Actor.Get())
-			ActorToID.Remove(OldActor);
+		if (UObject* OldParticipant = Existing->GetParticipant())
+			ParticipantToID.Remove(OldParticipant);
 	}
 
 	Records.Add(Record.NetID, Record);
 
-	if (AActor* Actor = Record.Actor.Get())
-		ActorToID.Add(Actor, Record.NetID);
+	if (UObject* Participant = Record.GetParticipant())
+		ParticipantToID.Add(Participant, Record.NetID);
 
 	OnEntityRegistered.Broadcast(Record.NetID);
 }
@@ -171,8 +172,8 @@ void UCrowdyEntitySubsystem::UnregisterEntity(const FGuid& NetID)
 	const FCrowdyEntityRecord* Record = Records.Find(NetID);
 	if (!Record) return;
 
-	if (AActor* Actor = Record->Actor.Get())
-		ActorToID.Remove(Actor);
+	if (UObject* Participant = Record->GetParticipant())
+		ParticipantToID.Remove(Participant);
 
 	Records.Remove(NetID);
 
@@ -182,15 +183,27 @@ void UCrowdyEntitySubsystem::UnregisterEntity(const FGuid& NetID)
 AActor* UCrowdyEntitySubsystem::FindEntity(const FGuid& NetID) const
 {
 	const FCrowdyEntityRecord* Record = Records.Find(NetID);
-	return Record ? Record->Actor.Get() : nullptr;
+	return Record ? Record->GetActor() : nullptr;
+}
+
+UObject* UCrowdyEntitySubsystem::FindParticipant(const FGuid& NetID) const
+{
+	const FCrowdyEntityRecord* Record = Records.Find(NetID);
+	return Record ? Record->GetParticipant() : nullptr;
+}
+
+FGuid UCrowdyEntitySubsystem::FindEntityID(const UObject* Participant) const
+{
+	if (!Participant) return FGuid{};
+
+	// TObjectKey<UObject> constructs from a const UObject*, so no const_cast is needed to look up the key.
+	const FGuid* NetID = ParticipantToID.Find(Participant);
+	return NetID ? *NetID : FGuid{};
 }
 
 FGuid UCrowdyEntitySubsystem::FindEntityID(const AActor* Actor) const
 {
-	if (!Actor) return FGuid{};
-
-	const FGuid* NetID = ActorToID.Find(const_cast<AActor*>(Actor));
-	return NetID ? *NetID : FGuid{};
+	return FindEntityID(static_cast<const UObject*>(Actor));
 }
 
 const FCrowdyEntityRecord* UCrowdyEntitySubsystem::FindRecord(const FGuid& NetID) const
@@ -222,6 +235,97 @@ void UCrowdyEntitySubsystem::SetLocalPlayerID(const FGuid& InLocalPlayerID)
 void UCrowdyEntitySubsystem::OnOwnerUUIDUpdated(FString NewUUID)
 {
 	LocalPlayerID = USerializationFunctionLibrary::ToGuid(NewUUID);
+
+	// A LocalClient participant enrolled before the local player id arrived was minted with an empty owner
+	// salt; re-derive its owner-salted identity now. Actor entities carry their own identity (set at spawn,
+	// GetActor() non-null) and are never re-stamped here, guaranteeing zero behavior change for actors. Inert
+	// in Phase 0 (no participant is enrolled, so this set is always empty). Collect-then-mutate so the
+	// re-registration below does not modify Records mid-iteration.
+	TArray<FGuid> StaleParticipantIDs;
+	for (const TPair<FGuid, FCrowdyEntityRecord>& Pair : Records)
+	{
+		const FCrowdyEntityRecord& Record = Pair.Value;
+		if (Record.Role == ECrowdyRole::Owner && !Record.OwnerID.IsValid()
+			&& Record.GetActor() == nullptr && Record.GetParticipant() != nullptr)
+		{
+			StaleParticipantIDs.Add(Pair.Key);
+		}
+	}
+
+	for (const FGuid& OldNetID : StaleParticipantIDs)
+		RestampParticipantIdentity(OldNetID);
+}
+
+FGuid UCrowdyEntitySubsystem::RegisterParticipant(UObject* Participant, const ECrowdyOwnership Ownership)
+{
+	check(IsInGameThread());
+
+	if (!IsValid(Participant))
+	{
+		UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyEntitySubsystem]: RegisterParticipant called with an invalid participant."));
+		return FGuid{};
+	}
+
+	ECrowdyRole Role;
+	FGuid OwnerID;
+	UCrowdyEntityComponent::DeriveAuthority(Ownership, GetLocalPlayerID(), Role, OwnerID);
+
+	// Host: world singleton keyed by class path — every client computes the same id, no salt.
+	// LocalClient: owner-salted so two clients' same-class participants get distinct ids.
+	const FString PathName = Participant->GetClass()->GetPathName();
+	const FString Seed = (Ownership == ECrowdyOwnership::Host)
+		? PathName
+		: PathName + TEXT(":") + OwnerID.ToString();
+
+	FCrowdyEntityRecord Record;
+	Record.NetID       = UHelperFunctions::GetDeterministicID(FCrowdyTypeIDGenerator::GenerateFromString(Seed));
+	Record.OwnerID     = OwnerID;
+	Record.Role        = Role;
+	Record.ClassID     = UCrowdyClassRegistry::Get()->GetID(Participant->GetClass());
+	Record.Participant = Participant;
+	RegisterEntity(Record);
+
+	return Record.NetID;
+}
+
+void UCrowdyEntitySubsystem::UnregisterParticipant(UObject* Participant)
+{
+	check(IsInGameThread());
+
+	if (!Participant) return;
+
+	const FGuid NetID = FindEntityID(Participant);
+	if (NetID.IsValid())
+		UnregisterEntity(NetID);
+}
+
+void UCrowdyEntitySubsystem::RestampParticipantIdentity(const FGuid& OldNetID)
+{
+	const FCrowdyEntityRecord* Existing = Records.Find(OldNetID);
+	if (!Existing) return;
+
+	FCrowdyEntityRecord Record = *Existing;
+	UObject* Participant = Record.GetParticipant();
+	if (!IsValid(Participant))
+	{
+		UnregisterEntity(OldNetID);
+		return;
+	}
+
+	Record.OwnerID = LocalPlayerID;
+	const FString Seed = Participant->GetClass()->GetPathName() + TEXT(":") + Record.OwnerID.ToString();
+	const FGuid NewNetID = UHelperFunctions::GetDeterministicID(FCrowdyTypeIDGenerator::GenerateFromString(Seed));
+
+	if (NewNetID == OldNetID)
+	{
+		// Owner resolved to the same salt (already correct) — update the record in place.
+		Records.Add(OldNetID, Record);
+		return;
+	}
+
+	UnregisterEntity(OldNetID);
+	Record.NetID = NewNetID;
+	RegisterEntity(Record);
 }
 
 //Networked entity lifecycle
@@ -323,7 +427,7 @@ void UCrowdyEntitySubsystem::RegisterStaticEntity(AActor* Entity, const bool bUs
 		Record.OwnerID = LocalPlayerID;
 		Record.Role    = ECrowdyRole::Owner;
 		Record.ClassID = ClassID;
-		Record.Actor   = Entity;
+		Record.Participant = Entity;
 		RegisterEntity(Record);
 	}
 	else
@@ -422,11 +526,76 @@ TArray<AActor*> UCrowdyEntitySubsystem::GetEntitiesByOwner(const FGuid& OwnerID)
 	{
 		if (Pair.Value.OwnerID == OwnerID)
 		{
-			if (AActor* Actor = Pair.Value.Actor.Get())
+			if (AActor* Actor = Pair.Value.GetActor())
 				Result.Add(Actor);
 		}
 	}
 	return Result;
+}
+
+void UCrowdyEntitySubsystem::ReassignOwnership(const FGuid& NetID, const FGuid& NewOwnerID,
+	const FGuid& ExpectedPreviousOwnerID)
+{
+	check(IsInGameThread());
+
+	FCrowdyEntityRecord* Record = Records.Find(NetID);
+	if (!Record)
+	{
+		// Not present locally (e.g. a proxy that has not spawned yet). The router defers a grant for a not-yet-
+		// present entity, so this is a benign miss rather than a lost transfer.
+		return;
+	}
+
+	const FGuid PreviousOwnerID = Record->OwnerID;
+
+	// Compare-and-swap: a stale or duplicate grant whose expected previous owner no longer matches is dropped.
+	// Skipped when the caller passes an invalid expectation (a host-owned source has no per-client owner id).
+	if (ExpectedPreviousOwnerID.IsValid() && PreviousOwnerID != ExpectedPreviousOwnerID)
+	{
+		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyEntitySubsystem]: ReassignOwnership %s dropped — expected previous owner %s but current is %s."),
+			*NetID.ToString(), *ExpectedPreviousOwnerID.ToString(), *PreviousOwnerID.ToString());
+		return;
+	}
+
+	// Idempotent: re-applying the same owner (a duplicate grant) is a no-op.
+	if (PreviousOwnerID == NewOwnerID)
+		return;
+
+	// Re-derive the role from the new owner: a valid player id means a client owns it (Owner where we are that
+	// client, RemoteProxy elsewhere); an invalid id means it is host-owned (a world entity, no per-client owner).
+	ECrowdyRole NewRole;
+	if (NewOwnerID.IsValid())
+		NewRole = (NewOwnerID == LocalPlayerID) ? ECrowdyRole::Owner : ECrowdyRole::RemoteProxy;
+	else
+		NewRole = ECrowdyRole::HostOwned;
+
+	Record->OwnerID = NewOwnerID;
+	Record->Role    = NewRole;
+
+	// Capture the actor before broadcasting so a re-entrant handler cannot leave us reading a freed record.
+	AActor* Actor = Record->GetActor();
+
+	// Keep the entity component's cached identity in sync and let it move any Dynamic-mode continuous channel.
+	if (IsValid(Actor))
+	{
+		if (UCrowdyEntityComponent* Component = Actor->FindComponentByClass<UCrowdyEntityComponent>())
+			Component->ApplyOwnershipReassignment(NewOwnerID, NewRole);
+	}
+
+	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+		TEXT("[CrowdyEntitySubsystem]: ReassignOwnership %s: %s -> %s (role %d)."),
+		*NetID.ToString(), *PreviousOwnerID.ToString(), *NewOwnerID.ToString(), static_cast<int32>(NewRole));
+
+	OnEntityOwnershipChanged.Broadcast(Actor, NetID, NewOwnerID, PreviousOwnerID);
+}
+
+void UCrowdyEntitySubsystem::NotifyOwnershipRequested(AActor* TargetEntity, const FGuid& RequesterID)
+{
+	// A player avatar's NetID equals its player id, so FindEntity resolves the requester's avatar when it exists on
+	// this client; otherwise the actor is null and game code falls back to the always-valid RequesterID.
+	AActor* RequesterActor = FindEntity(RequesterID);
+	OnOwnershipRequested.Broadcast(TargetEntity, RequesterActor, RequesterID);
 }
 
 // Remote handlers
@@ -532,7 +701,7 @@ void UCrowdyEntitySubsystem::HandleRemoteDestroy(const FCrowdyEntityDestroyEvent
 		return;
 	}
 
-	AActor* Actor = Record->Actor.Get();
+	AActor* Actor = Record->GetActor();
 
 	float Delay = 0.f;
 	if (IsValid(Actor))

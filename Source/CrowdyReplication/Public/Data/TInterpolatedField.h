@@ -3,7 +3,6 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Containers/RingBuffer.h"
-#include "Templates/IsTriviallyDestructible.h"
 
 
 template<typename T, int32 Capacity = 32>

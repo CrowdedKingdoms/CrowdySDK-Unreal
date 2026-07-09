@@ -5,6 +5,7 @@
 #include "CrowdyServicesLog.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
+#include "Replication/Interfaces/CrowdyEntityComponentProvider.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "Subsystem/CrowdyHostSubsystem.h"
@@ -197,6 +198,53 @@ ECrowdyRole UCrowdyUtilities::GetCrowdyEntityRole(UObject* WorldContextObject, c
 	return Record ? Record->Role : ECrowdyRole::None;
 }
 
+bool UCrowdyUtilities::DoesCrowdyEntityOwn(UObject* WorldContextObject, const AActor* OwnerActor, const AActor* TargetActor)
+{
+	// OwnerActor's own identity (its NetID) is what gets stamped as OwnerID on entities it owns; a player avatar's
+	// NetID == its OwnerID == its player UUID. So the base case of "OwnerActor owns TargetActor" is OwnerActor.NetID
+	// == TargetActor.OwnerID. Both IDs are network-stable, so the result is identical on every client. A host-owned
+	// entity is the exception: it carries no per-player owner id (Guid::Zero), so the pure matcher resolves a
+	// host-owned side to the concrete host id — the host owns host-owned entities, and a host-owned entity owns
+	// what the host owns.
+	bool bOwnerValid = false;
+	const FGuid OwnerNetID = GetCrowdyEntityID(WorldContextObject, OwnerActor, bOwnerValid);
+	if (!bOwnerValid || !OwnerNetID.IsValid())
+		return false;
+
+	// May be Guid::Zero for a host-owned target — that is not a failure here; the role resolves it below.
+	bool bTargetOwnerValid = false;
+	const FGuid TargetOwnerID = GetCrowdyEntityOwnerID(WorldContextObject, TargetActor, bTargetOwnerValid);
+
+	const ECrowdyRole OwnerRole  = GetCrowdyEntityRole(WorldContextObject, OwnerActor);
+	const ECrowdyRole TargetRole = GetCrowdyEntityRole(WorldContextObject, TargetActor);
+
+	// Only resolve the host id when a host-owned side actually needs it, so the pure player-vs-player path keeps
+	// its exact prior behavior and never touches (or error-logs from) the host subsystem.
+	FGuid HostID;
+	if (OwnerRole == ECrowdyRole::HostOwned || (!TargetOwnerID.IsValid() && TargetRole == ECrowdyRole::HostOwned))
+	{
+		bool bHostValid = false;
+		HostID = CrowdyGetHostID(WorldContextObject, bHostValid);
+	}
+
+	return UCrowdyEntityComponent::DoesOwnershipMatch(OwnerRole, OwnerNetID, TargetRole, TargetOwnerID, HostID);
+}
+
+UCrowdyEntityComponent* UCrowdyUtilities::GetCrowdyEntityComponent(AActor* Actor)
+{
+	if (!IsValid(Actor))
+		return nullptr;
+
+	// Honour an explicit provider first (component on a child actor, runtime-selected, etc.).
+	if (Actor->Implements<UCrowdyEntityComponentProvider>())
+	{
+		if (UCrowdyEntityComponent* Provided = ICrowdyEntityComponentProvider::Execute_GetCrowdyEntityComponent(Actor))
+			return Provided;
+	}
+
+	return Actor->FindComponentByClass<UCrowdyEntityComponent>();
+}
+
 // Entity State Checks
 
 void UCrowdyUtilities::SwitchIsCrowdyEntityPlayerControlled(UObject* WorldContextObject,
@@ -312,7 +360,7 @@ DEFINE_FUNCTION(UCrowdyUtilities::execK2_SendCrowdyEvent)
 
 // Session
 
-bool UCrowdyUtilities::CrowdyHasAuthority(const UObject* WorldContextObject)
+bool UCrowdyUtilities::GetCrowdyHasAuthority(const UObject* WorldContextObject)
 {
 	UWorld* World = WorldContextObject ? WorldContextObject->GetWorld() : nullptr;
 	if (!World) return false;
@@ -329,7 +377,7 @@ bool UCrowdyUtilities::CrowdyHasAuthority(const UObject* WorldContextObject)
 
 void UCrowdyUtilities::CrowdyHasAuthority(UObject* WorldContextObject, bool& bHasAuthority)
 {
-	bHasAuthority = CrowdyHasAuthority(WorldContextObject);
+	bHasAuthority = GetCrowdyHasAuthority(WorldContextObject);
 }
 
 bool UCrowdyUtilities::CrowdyIsConnectedToServer(UObject* WorldContextObject)
@@ -364,4 +412,21 @@ FGuid UCrowdyUtilities::CrowdyGetHostID(UObject* WorldContextObject, bool& bIsVa
 	const FGuid HostID = HostSubsystem->GetHostID();
 	bIsValid = HostID.IsValid();
 	return HostID;
+}
+
+bool UCrowdyUtilities::IsCrowdyEntityHost(UObject* WorldContextObject, const AActor* Entity)
+{
+	// The host is a player identity (HostID). A player avatar's NetID == its player UUID, and for the host that
+	// UUID == HostID so "this actor is the host" is Entity.NetID == HostID. Cross-client stable.
+	bool bEntityValid = false;
+	const FGuid EntityNetID = GetCrowdyEntityID(WorldContextObject, Entity, bEntityValid);
+	if (!bEntityValid || !EntityNetID.IsValid())
+		return false;
+
+	bool bHostValid = false;
+	const FGuid HostID = CrowdyGetHostID(WorldContextObject, bHostValid);
+	if (!bHostValid || !HostID.IsValid())
+		return false;
+
+	return EntityNetID == HostID;
 }
