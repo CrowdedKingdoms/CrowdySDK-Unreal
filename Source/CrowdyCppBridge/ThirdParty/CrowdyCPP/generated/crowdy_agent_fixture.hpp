@@ -12,7 +12,7 @@ inline constexpr std::string_view kCanonicalAgentToolsV1 =
   "contractVersion": "crowdy.agent-tools/1",
   "crowdyJs": {
     "version": "15.4.0",
-    "commit": "89370750187592d7d3c4da99bf98334666146829"
+    "commit": "fb8acc6567e7425a94ec0f379220a7baba9032f6"
   },
   "registryDigest": "sha256:20ecf25d55beccc1cb7033095cab3774dc301cb5f3edab818e45921416b48c71",
   "tools": [

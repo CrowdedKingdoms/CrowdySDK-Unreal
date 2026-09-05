@@ -1127,7 +1127,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppVendoredVersionTest,
 	"CrowdySDK.CrowdyCpp.VendoredVersion", CrowdyCppParityTestFlags)
 bool FCrowdyCppVendoredVersionTest::RunTest(const FString& Parameters)
 {
-	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.29.0");
+	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.29.1");
+
+	// The tier decides where a client that names no origin at all dials, and it is generated per branch
+	// upstream, so it can change under a version bump without the version saying so. Pin it too.
+	static const FString ExpectedVendoredCrowdyCppTier = TEXT("dev");
 
 	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("CrowdySDK"));
 	if (!TestTrue(TEXT("the CrowdySDK plugin is found"), Plugin.IsValid()))
@@ -1147,13 +1151,23 @@ bool FCrowdyCppVendoredVersionTest::RunTest(const FString& Parameters)
 	TArray<FString> Lines;
 	VendorFileContents.ParseIntoArrayLines(Lines);
 	FString ParsedVersion;
+	FString ParsedTier;
 	for (const FString& Line : Lines)
 	{
 		const FString TrimmedLine = Line.TrimStartAndEnd();
-		if (TrimmedLine.StartsWith(TEXT("version:")))
+		if (ParsedVersion.IsEmpty() && TrimmedLine.StartsWith(TEXT("version:")))
 		{
 			ParsedVersion = TrimmedLine.Mid(8).TrimStartAndEnd();
-			break;
+		}
+		else if (ParsedTier.IsEmpty() && TrimmedLine.StartsWith(TEXT("tier:")))
+		{
+			// Recorded as "<name> (<origin>)", and only the name is pinned here.
+			ParsedTier = TrimmedLine.Mid(5).TrimStartAndEnd();
+			int32 SpaceIndex = INDEX_NONE;
+			if (ParsedTier.FindChar(TEXT(' '), SpaceIndex))
+			{
+				ParsedTier = ParsedTier.Left(SpaceIndex);
+			}
 		}
 	}
 
@@ -1164,6 +1178,12 @@ bool FCrowdyCppVendoredVersionTest::RunTest(const FString& Parameters)
 
 	TestEqual(TEXT("the vendored CrowdyCPP version matches the pinned expectation"),
 		ParsedVersion, ExpectedVendoredCrowdyCppVersion);
+
+	if (TestTrue(TEXT("VENDOR.txt has a tier: line"), !ParsedTier.IsEmpty()))
+	{
+		TestEqual(TEXT("the vendored CrowdyCPP tier matches the pinned expectation"),
+			ParsedTier, ExpectedVendoredCrowdyCppTier);
+	}
 	return true;
 }
 
