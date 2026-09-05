@@ -126,6 +126,14 @@ namespace CrowdyApplyEffectNodeShared
 			FText::FromString(SelfClass->GetName())).ToString(), Node);
 	}
 
+	bool IsCompilingOnLoad(const UEdGraphNode* Node)
+	{
+		const UBlueprint* Blueprint = Node ? FBlueprintEditorUtils::FindBlueprintForNode(Node) : nullptr;
+
+		// A node outside a Blueprint is answered false: nothing is being regenerated, so nothing needs skipping.
+		return Blueprint && Blueprint->bIsRegeneratingOnLoad;
+	}
+
 	EParameterPinAction ActionForParameterPin(FName PinName, const FCrowdyApplyEffectPinPlan& Plan,
 		bool bHasLiteralEffect)
 	{

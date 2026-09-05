@@ -75,14 +75,19 @@ public:
 	 */
 	static void LoadAllTaggedAssetsAsync(TFunction<void()> OnComplete);
 
+	/**
+	 * Sweeps every loaded class and struct into Registry, replacing whatever it held. This is the whole bake; the
+	 * rebuild paths above only decide what is resident before it runs and what happens to the asset afterwards.
+	 * Public so a test can bake into a throwaway registry and read what came out.
+	 */
+	static void PopulateFromLoadedObjects(UCrowdyBakedRegistry* Registry);
+
 private:
 	/** Loads the configured asset, or null if none is assigned/loadable. */
 	static UCrowdyBakedRegistry* ResolveAsset();
 
 	/** Loads the configured asset, creating + assigning one if none exists. */
 	static UCrowdyBakedRegistry* ResolveOrCreateAsset();
-
-	static void PopulateFromLoadedObjects(UCrowdyBakedRegistry* Registry);
 
 	// Asset-registry query for every tagged Blueprint / User Defined Struct, without loading them.
 	static void GatherTaggedAssets(TArray<FAssetData>& OutAssets);

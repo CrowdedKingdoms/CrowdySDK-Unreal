@@ -78,6 +78,15 @@ namespace CrowdyApplyEffectNodeShared
 		class FCompilerResultsLog& MessageLog);
 
 	/**
+	 * True when this compile is the loader regenerating the Blueprint rather than an author compiling it.
+	 *
+	 * A load-time compile runs inside the loader's own flush, where loading another package re-enters a compile
+	 * already in flight, so validation that has to resolve an asset must be skipped there. The author is not
+	 * reading a load-time compile's log anyway; the same checks run in full on the next real compile.
+	 */
+	CROWDYNODES_API bool IsCompilingOnLoad(const UEdGraphNode* Node);
+
+	/**
 	 * What a node should do with one of the wrapped function's input pins once the referenced effect is known.
 	 * There is deliberately no "remove" case: a function-call node whose parameter has no pin fails to compile, so a
 	 * parameter the effect does not use is hidden and put back to its own default rather than dropped. Hiding alone

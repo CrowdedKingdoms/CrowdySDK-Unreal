@@ -319,6 +319,14 @@ void UCrowdyK2Node_ApplyEffectCallBase::ValidateNodeDuringCompilation(FCompilerR
 	CrowdyApplyEffectNodeShared::ValidateSelfTargetIsContainer(
 		this, FindPin(CrowdyApplyEffectNodeShared::PN_Target, EGPD_Input), MessageLog);
 
+	// Everything below compiles the effect, which resolves its container types and can load the asset that
+	// declares one. That load is illegal while the loader is regenerating this Blueprint, because it re-enters
+	// the compile already in flight; the checks run in full on the next compile the author asks for.
+	if (CrowdyApplyEffectNodeShared::IsCompilingOnLoad(this))
+	{
+		return;
+	}
+
 	const UEdGraphPin* EffectPin = FindPin(PN_Effect, EGPD_Input);
 	if (EffectPin && EffectPin->LinkedTo.Num() > 0)
 	{

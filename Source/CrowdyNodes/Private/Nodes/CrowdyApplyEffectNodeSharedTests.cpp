@@ -4,9 +4,11 @@
 
 #include "Misc/AutomationTest.h"
 
+#include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
+#include "KismetCompiler.h"
 #include "Nodes/CrowdyApplyEffectNodePins.h"
 #include "Nodes/CrowdyApplyEffectNodeShared.h"
 #include "Nodes/CrowdyK2Node_ApplyEffectFireAndForget.h"
@@ -638,6 +640,59 @@ bool FCrowdyApplyEffectFirstCompileErrorTest::RunTest(const FString& Parameters)
 		{ ECrowdyEffectSeverity::Warning, 2, 1, TEXT("declared but never used") }
 	};
 	TestEqual(TEXT("warnings alone name nothing"), FirstCompileError(WarningsOnly), FString());
+
+	return true;
+}
+
+// The loader regenerating a Blueprint compiles it inside the loader's own flush, so anything that would load an
+// asset there re-enters a compile already in flight. IsCompilingOnLoad is what the effect validation asks before
+// it resolves an effect's container types, and a Blueprint's own flag is the only thing that separates that
+// compile from one an author asked for.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyApplyEffectCompilingOnLoadTest,
+	"CrowdySDK.Editor.ApplyEffectCompilingOnLoad", CrowdyApplyEffectCallTestFlags)
+bool FCrowdyApplyEffectCompilingOnLoadTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyApplyEffectNodeShared;
+
+	// The compiler diagnostics below are this test's stimulus, not a fault: a bare node has no function reference
+	// and no Effect, which is exactly the diagnosable state the authored-compile run has to report.
+	AddExpectedErrorPlain(TEXT("has no Effect assigned"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedErrorPlain(TEXT("Could not find a function named"), EAutomationExpectedErrorFlags::Contains, 0);
+
+	UBlueprint* Blueprint = NewObject<UBlueprint>(GetTransientPackage());
+	UEdGraph* Graph = NewObject<UEdGraph>(Blueprint);
+	UCrowdyK2Node_ApplyEffectFireAndForget* Node = NewObject<UCrowdyK2Node_ApplyEffectFireAndForget>(Graph);
+
+	Blueprint->bIsRegeneratingOnLoad = false;
+	TestFalse(TEXT("a compile the author asked for is not a load"), IsCompilingOnLoad(Node));
+
+	Blueprint->bIsRegeneratingOnLoad = true;
+	TestTrue(TEXT("the loader regenerating this Blueprint is"), IsCompilingOnLoad(Node));
+
+	// A node with no Blueprint behind it, and no node at all: neither is being regenerated, so neither needs
+	// anything skipped. Answering true there would silence validation for every node outside a Blueprint.
+	UCrowdyK2Node_ApplyEffectFireAndForget* Orphan =
+		NewObject<UCrowdyK2Node_ApplyEffectFireAndForget>(GetTransientPackage());
+	TestFalse(TEXT("a node outside a Blueprint is not compiling on load"), IsCompilingOnLoad(Orphan));
+	TestFalse(TEXT("no node is not compiling on load"), IsCompilingOnLoad(nullptr));
+
+	// The gate that matters is not the flag but what the validation does with it. This node has no Effect pin at
+	// all, which is a diagnosable state, so the same node reports it on an authored compile and stays silent while
+	// the loader regenerates the Blueprint.
+	auto CountErrors = [Node](bool bRegeneratingOnLoad, UBlueprint* Owner)
+	{
+		Owner->bIsRegeneratingOnLoad = bRegeneratingOnLoad;
+		FCompilerResultsLog MessageLog;
+		Node->ValidateNodeDuringCompilation(MessageLog);
+		return MessageLog.NumErrors;
+	};
+
+	const int32 AuthoredCompileErrors = CountErrors(false, Blueprint);
+	const int32 LoadCompileErrors = CountErrors(true, Blueprint);
+
+	TestTrue(TEXT("an authored compile reports the missing effect"), AuthoredCompileErrors > 0);
+	TestTrue(TEXT("a load-time compile reports fewer errors, because it resolves no assets"),
+		LoadCompileErrors < AuthoredCompileErrors);
 
 	return true;
 }

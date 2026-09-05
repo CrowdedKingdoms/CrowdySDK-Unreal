@@ -41,6 +41,15 @@ namespace
 
 	const TCHAR* GSdkPluginName = TEXT("CrowdySDK");
 
+	// An SDK test fixture must never reach a shipped registry, and several of them carry deliberately invalid
+	// markup that discovery reports as an error, which fails a cook that is otherwise clean. Fixtures are marked
+	// two ways - CrowdyContainerTest on a container fixture, CrowdyTestFixture on the rest - so every sweep has to
+	// ask about both or the ones marked the other way walk straight through it.
+	bool IsSdkTestOnlyClass(const UClass* Class)
+	{
+		return FCrowdyAttributeRegistry::IsTestFixture(Class) || FCrowdyAttributeRegistry::IsTestContainer(Class);
+	}
+
 	// Async (button) rebuild state: one at a time. The handle keeps the streamed assets resident
 	// until the bake runs in its completion callback.
 	bool GAsyncRebuildInFlight = false;
@@ -290,8 +299,9 @@ void UCrowdyRegistryBaker::UpdateForClass(UClass* Class)
 	Registry->RepLayoutHashes.RemoveAll(
 		[&Path](const FCrowdyBakedRepLayoutHash& Entry) { return Entry.ClassPath == Path; });
 
-	// An SDK test fixture must never reach a shipped registry, matching the IsTestContainer skip below.
-	if (!FCrowdyAttributeRegistry::IsTestFixture(Class))
+	const bool bTestOnly = IsSdkTestOnlyClass(Class);
+
+	if (!bTestOnly)
 	{
 		FCrowdyRepLayout Layout;
 		if (FCrowdyStateLayoutBuilder::BuildLayout(Class, Layout))
@@ -307,17 +317,21 @@ void UCrowdyRegistryBaker::UpdateForClass(UClass* Class)
 	Registry->ModelClasses.RemoveAll(
 		[&Path](const FCrowdyBakedModelClass& Entry) { return Entry.ClassPath == Path; });
 
+	// Asked before discovery runs, not just before the row is added: discovery reports a fixture's deliberately
+	// invalid markup as an error, and an error during a cook fails the cook.
+	if (bTestOnly)
+	{
+		return;
+	}
+
 	const TArray<FCrowdyAttributeDef> Defs = FCrowdyAttributeRegistry::DiscoverForClass(Class);
 	if (Defs.Num() > 0)
 	{
 		UCrowdyBakedRegistry::MakeBakedAttributes(Defs, Path, Registry->ModelAttributes);
 	}
 
-	// A test-only container fixture (meta=(CrowdyContainerTest)) is reflected like any container class but must
-	// never reach a shipped registry - its class path does not exist in a cooked build - so skip it here.
 	FString ContainerTypeName;
-	if (!FCrowdyAttributeRegistry::IsTestContainer(Class)
-		&& FCrowdyAttributeRegistry::GetContainerTypeName(Class, ContainerTypeName))
+	if (FCrowdyAttributeRegistry::GetContainerTypeName(Class, ContainerTypeName))
 	{
 		Registry->ModelClasses.Add(
 			{ Path, ContainerTypeName, UCrowdyBakedRegistry::ShouldPullModelOnStart(Class) });
@@ -366,6 +380,10 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 		UClass* Class = *It;
 		if (IsTransientClassName(Class->GetName())) continue;
 
+		// Skipped before discovery runs, not just before the row is added: discovery reports a fixture's
+		// deliberately invalid markup as an error, and an error during a cook fails the cook.
+		if (IsSdkTestOnlyClass(Class)) continue;
+
 		const FSoftClassPath Path(Class);
 
 		const TArray<FCrowdyAttributeDef> Defs = FCrowdyAttributeRegistry::DiscoverForClass(Class);
@@ -374,11 +392,8 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 			UCrowdyBakedRegistry::MakeBakedAttributes(Defs, Path, Registry->ModelAttributes);
 		}
 
-		// A test-only container fixture (meta=(CrowdyContainerTest)) is reflected like any container class but must
-		// never reach a shipped registry - its class path does not exist in a cooked build - so skip it here.
 		FString ContainerTypeName;
-		if (!FCrowdyAttributeRegistry::IsTestContainer(Class)
-			&& FCrowdyAttributeRegistry::GetContainerTypeName(Class, ContainerTypeName))
+		if (FCrowdyAttributeRegistry::GetContainerTypeName(Class, ContainerTypeName))
 		{
 			Registry->ModelClasses.Add(
 				{ Path, ContainerTypeName, UCrowdyBakedRegistry::ShouldPullModelOnStart(Class) });
@@ -393,8 +408,10 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 		UClass* Class = *It;
 		if (IsTransientClassName(Class->GetName())) continue;
 
-		// An SDK test fixture must never reach a shipped registry, matching the IsTestContainer skip above.
-		if (FCrowdyAttributeRegistry::IsTestFixture(Class)) continue;
+		// The same skip the Game Model pass above applies: a container fixture carries CrowdyContainerTest rather
+		// than CrowdyTestFixture, and asking only about the latter let it through to BuildLayout, which reported
+		// its deliberate plane conflict as an error.
+		if (IsSdkTestOnlyClass(Class)) continue;
 
 		FCrowdyRepLayout Layout;
 		if (!FCrowdyStateLayoutBuilder::BuildLayout(Class, Layout)) continue;

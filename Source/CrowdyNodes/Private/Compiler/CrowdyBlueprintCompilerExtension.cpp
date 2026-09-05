@@ -723,7 +723,12 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 	// produce. This is the advisory half of the pass and is the only half that gates. The dispatch gate
 	// spliced in below must keep running everywhere, uncooked game processes included, which is why it is
 	// nowhere near this.
-	if (bHasEntityComponent && CrowdyAuthoringContributions::IsCrowdRepresentationSelected())
+	//
+	// Skipped entirely while the loader is regenerating this Blueprint: answering loads the map profile assets,
+	// and a load there re-enters the compile already in flight. The warning is advisory and is raised in full on
+	// the next compile the author asks for.
+	if (bHasEntityComponent && !Blueprint->bIsRegeneratingOnLoad
+		&& CrowdyAuthoringContributions::IsCrowdRepresentationSelected())
 	{
 		for (UEdGraph* Graph : SourceGraphs)
 		{
