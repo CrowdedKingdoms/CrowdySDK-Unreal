@@ -73,9 +73,9 @@ bool FCrowdyRpcMacroMarshalsCallTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// Phase 3 changes SendChecked from a local replay into a transport send. With no
-// world (and so no entity subsystem) the send must log-and-drop, never crash and
-// never invoke the receiver locally — that is the receive side's job from Phase 4 on.
+// SendChecked routes through the transport, not a local replay. With no world
+// (and so no entity subsystem) the send must log-and-drop, never crash and
+// never invoke the receiver locally - that is the receive side's job.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcSendWithoutWorldIsSafeTest,
 	"CrowdySDK.RPC.SendWithoutWorldIsSafe", CrowdyRpcSendTestFlags)
 bool FCrowdyRpcSendWithoutWorldIsSafeTest::RunTest(const FString& Parameters)

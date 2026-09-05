@@ -6,7 +6,7 @@
 /**
  * UPROPERTY meta-keys that declare a property as CrowdyState-replicated. CrowdyState is the fast,
  * client-authoritative view plane: a marked property's changed value is diffed by its owning client
- * and shipped to peers, where it is written back onto the live actor. The discovery scan (Phase 1)
+ * and shipped to peers, where it is written back onto the live actor. The discovery scan
  * and the Blueprint variable customization must emit these exact spellings; the layout builder reads them.
  *
  * The marker is deliberately "CrowdyState", NOT "CrowdyReplicate". That obvious spelling is already
@@ -22,11 +22,11 @@ namespace CrowdyStateMetaKeys
 	inline const TCHAR* Replicate = TEXT("CrowdyState");
 
 	// Delivery scope, not secrecy: the property is delivered only to the owning client (via the
-	// targeted SINGLE_ACTOR_MESSAGE path in Phase 5), never on the spatial multicast.
+	// targeted SINGLE_ACTOR_MESSAGE path), never on the spatial multicast.
 	inline const TCHAR* OwnerOnly = TEXT("CrowdyOwnerOnly");
 
-	// Skip the per-tick Identical diff; the value is pushed only when explicitly marked dirty
-	// (Phase 5). Intended for big or expensive properties, the author does not want diffed every tick.
+	// Skip the per-tick Identical diff; the value is pushed only when explicitly marked dirty.
+	// Intended for big or expensive properties, the author does not want diffed every tick.
 	inline const TCHAR* ManualDirty = TEXT("CrowdyManualDirty");
 
 	// The metadata value is the name of a parameterless notify function invoked on the receiver

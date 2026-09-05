@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Serialization/CrowdyFrame.h"
 
 /**
  * @class FDefaultMessage
@@ -65,31 +66,17 @@ struct FDefaultMessage : ICrowdyMessage
 	}
 
 	/**
-	 * Deserializes the provided binary data and updates the object's state.
+	 * Decodes the payload from the provided frame and updates the object's state.
 	 *
-	 * This method overrides the Deserialize function in the base ICrowdyMessage interface.
-	 * It takes serialized binary data as input and processes it to update the object's state.
+	 * This method overrides the DecodePayload function in the base ICrowdyMessage interface.
+	 * It takes the frame this message arrived in and processes it to update the object's state.
 	 *
-	 * @param Data A reference to an array of bytes representing the serialized input data
-	 *             that should be deserialized.
+	 * @param Frame The frame this message arrived in.
 	 */
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
 		return false;
 	}
 
-	/**
-	 * Retrieves the size of the message in bytes.
-	 *
-	 * This implementation always returns 0, indicating that the default message
-	 * has no meaningful size.
-	 *
-	 * @return The size of the message in bytes as a 32-bit unsigned integer, which is always 0.
-	 */
-	virtual uint32 GetMessageSize() const override
-	{
-		return 0;
-	}
-	
-	
+
 };

@@ -1,5 +1,6 @@
 #include "Replication/State/FCrowdyRepLayout.h"
 
+#include "Replication/GameModel/CrowdyGameModelMetaKeys.h"
 #include "Replication/State/CrowdyStateMetaKeys.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Core/CrowdyCategory/FCrowdyTypeIDGenerator.h"
@@ -160,6 +161,21 @@ bool FCrowdyStateLayoutBuilder::BuildLayout(const UClass* Class, FCrowdyRepLayou
 		{
 			continue;
 		}
+
+#if WITH_METADATA
+		// Symmetric plane-exclusivity (the inverse of the Game Model discovery reject): a property marked BOTH
+		// CrowdyState and CrowdyModel lives in NEITHER plane until the author picks one. Dropping it here too
+		// stops a mismarked cheat-sensitive field from silently shipping on the client-authoritative view plane
+		// (the exact inverse of the two-plane invariant). The BP "Crowdy Replication" dropdown makes both
+		// impossible; this is defense-in-depth for C++ that hand-writes both keys.
+		if (Prop->HasMetaData(CrowdyGameModelMetaKeys::Model))
+		{
+			UE_LOG(LogCrowdyReplication, Error,
+				TEXT("CrowdyState: property '%s' on '%s' is marked both CrowdyState and CrowdyModel; a field lives in exactly one plane. Omitting it from the CrowdyState layout (pick one plane)."),
+				*Prop->GetName(), *Class->GetPathName());
+			continue;
+		}
+#endif
 
 		const ECrowdyStatePropertySupport Support = FCrowdyStateLayoutBuilder::ClassifyStateProperty(Prop);
 		if (Support != ECrowdyStatePropertySupport::Supported)

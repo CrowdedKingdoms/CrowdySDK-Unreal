@@ -60,6 +60,13 @@ struct FCrowdyOwnedEntityState
 	// re-resolved hash differs, the property set changed and the shadow is rebuilt before it is used.
 	int64 ShadowLayoutHash = 0;
 
+	// The participant class's wire id, resolved in InitShadow so the emit path does not ask the registry
+	// per delta. A participant never changes class, and a Live Coding reload that reinstances one drops the
+	// whole entry (HandleReloadComplete), so this cannot outlive the class it answers for. Held only when
+	// it is a real id: CROWDY_INVALID_CLASS_ID means the class's registration was refused over a clash,
+	// which ClearConflicts can undo, so the emit path re-asks rather than treating the refusal as settled.
+	uint32 ClassID = 0;
+
 	// One aligned slot per property, InitializeValue'd once in InitShadow. Sized once, never resized.
 	TArray<uint8> ShadowData;
 
@@ -70,6 +77,11 @@ struct FCrowdyOwnedEntityState
 	// (possibly-freed) layout. Owned by the UClass, so they survive a registry rescan; a structural Live
 	// Coding reload that reinstances the class is handled by HandleReloadComplete.
 	TArray<const FProperty*> ShadowProps;
+
+	// The run of bytes that stands in for each slot's property, or zero when none does. Resolved with the
+	// shadow so the per-tick diff answers with a memcmp instead of a virtual FProperty::Identical. Parallel
+	// to ShadowProps.
+	TArray<int32> ShadowCompareBytes;
 
 	// True once InitShadow has run to completion. Gates the destructor's DestroyValue pass so a never-built
 	// or moved-from state tears down safely.
@@ -114,8 +126,8 @@ struct FCrowdyOwnedEntityState
 
 /**
  * CrowdyState send plane. At the map cadence (ReplicationIntervalHz) it diffs the entities this client
- * drives against each entity's shadow buffer, encodes the changed properties via the Phase 2 codec, and
- * dispatches an FCrowdyStateDelta. Phase 5 adds authority + targeting on top of the Phase 3 spatial diff:
+ * drives against each entity's shadow buffer, encodes the changed properties via the state delta codec, and
+ * dispatches an FCrowdyStateDelta. Authority and targeting layer on top of the base spatial diff:
  *   - Owner-only properties (bOwnerOnly) are auto-diffed like spatial ones but shipped as a SECOND,
  *     targeted (single-actor) delta so only the owning client receives them; spatial properties still
  *     broadcast. Both deltas share the same LayoutHash (positional selector over the full layout).
@@ -129,8 +141,16 @@ struct FCrowdyOwnedEntityState
  *     non-owner-only property, so a late observer gets a baseline without waiting for a change. There is no
  *     relevance-gain trigger, so a peer that becomes relevant just after a keyframe (with no prior delta for
  *     the entity) may hold stale/default values for up to one full interval until the next heartbeat.
+ * A CrowdyState property's parameterless notify also fires HERE, on the client that made the change, so a
+ * notify body (UI, effects, derived state) runs on the originator as well as on every receiver. A sent delta
+ * never comes back to its sender (the receive path drops the self echo), so this is the only place the
+ * originator can fire it. The rule matches the receiving side exactly: a notify fires only where the value
+ * genuinely moved since the last send, so a keyframe re-sending an unchanged value, or a dirty mark on a
+ * value that did not move, fires nothing on either end. Each replicated slot fires at most once per tick, even
+ * when a queued host push and the diff both cover it, and an adjustment the notify body makes to its own
+ * property is folded into the shadow instead of being re-sent as a fresh change on the next tick.
  * The receive/apply side (echo-drop, foreign-non-host drop for owned entities, decode, OnRep, host-value
- * adoption) lives in UCrowdyEventRouter (Phase 4/5).
+ * adoption) lives in UCrowdyEventRouter.
  */
 UCLASS()
 class CROWDYREPLICATION_API UCrowdyStateReplicator : public UTickableWorldSubsystem
@@ -234,12 +254,47 @@ public:
 
 private:
 
+	// One parameterless notify waiting to run on the client that made the change. Collected while the send loop
+	// walks its entities and fired only once that walk is finished: a notify body is free to mark state dirty,
+	// destroy its actor, or register/unregister an entity, and none of that may mutate a container mid-walk.
+	// The reference is weak so a container destroyed by an earlier notify in the same flush is skipped rather
+	// than dereferenced. EntityID/PropertyIndex identify which replicated slot produced the entry, so the same
+	// slot is never queued twice in one tick and its shadow can be re-synchronised once the notify has run; both
+	// are left unset for an entry whose entity this client does not track.
+	struct FCrowdyPendingLocalNotify
+	{
+		TWeakObjectPtr<UObject> Container;
+		FName FunctionName;
+		FGuid EntityID;
+		int32 PropertyIndex = INDEX_NONE;
+	};
+
+	// Fires each collected notify exactly once, re-resolving every container first and calling only parameterless
+	// notifies. Game thread only (ProcessEvent requires it). The list stays intact so the caller can still read
+	// which slots fired; it is a send-loop local that no notify body can reach, so nothing can mutate it here.
+	static void FlushLocalNotifies(const TArray<FCrowdyPendingLocalNotify>& Notifies);
+
+	// True when Notifies already holds an entry for this entity and property within its first Count entries.
+	static bool HasPendingNotify(const TArray<FCrowdyPendingLocalNotify>& Notifies, int32 Count,
+		const FGuid& EntityID, int32 PropertyIndex);
+
+	// Folds a notify body's own adjustment back into the shadow, for exactly the slots that fired. A notify
+	// commonly rewrites the property it fires for (clamping, normalising, snapping to a grid); that write lands
+	// after the shadow was advanced to the value just sent, so without this it would read as a fresh change on
+	// the next tick and send + notify again, once per tick for as long as the body keeps adjusting. The same
+	// notify runs on every receiver, so each peer applies the same adjustment locally and the planes stay in
+	// step. Only slots that fired are folded, so a write to any other property remains a genuine change.
+	void ResyncShadowsAfterLocalNotifies(const TArray<FCrowdyPendingLocalNotify>& Notifies);
+
 	void ReplicationLoop();
 
 	// Drains PendingHostPushes: for each queued one-shot host push, encode the property's CURRENT live value and
 	// broadcast it (HostSourced iff we are host), with no shadow and no persistent tracking. Called first in
-	// ReplicationLoop so a push fires even when this client tracks no owned entities.
-	void DrainPendingHostPushes();
+	// ReplicationLoop so a push fires even when this client tracks no owned entities. The pushed value is read
+	// off the live local member, so the push also fires that property's notify locally; the notify is appended to
+	// the send loop's list rather than fired here, so one tick fires a slot's notify exactly once even when the
+	// entity became tracked between the mark and the drain and the diff would have reported the same change.
+	void DrainPendingHostPushes(TArray<FCrowdyPendingLocalNotify>& OutNotifies);
 
 	bool BuildOwnedState(const FGuid& EntityID, UObject* Participant, TUniquePtr<FCrowdyOwnedEntityState>& Out);
 	void InitShadow(FCrowdyOwnedEntityState& State, const FCrowdyRepLayout& Layout);

@@ -2,8 +2,6 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "Containers/Queue.h"
-#include "HAL/CriticalSection.h"
 #include "Math/MathFwd.h"
 #include "Utils/SerializationFunctionLibrary.h"
 #include <atomic>
@@ -83,7 +81,7 @@ struct FGameSessionInfo
 	void Reset()
 	{
 		// AppID is configuration (loaded from developer settings), not per-session
-		// state — keep it so a sign-in after logout can still mint for the app.
+		// state, so keep it: a sign-in after logout can still mint for the app.
 		SessionToken = "";
 		SessionGameTokenID = 0;
 		GameToken = "";
@@ -119,14 +117,6 @@ public:
 	 *  modules (CrowdyReplication) can read it without a dependency cycle. */
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session")
 	FOnHostIDUpdated OnHostIDUpdated;
-	
-	[[nodiscard]] bool EnqueueMessageToSend(TArray<uint8>&& Message);
-
-	bool DequeueMessageToSend(TArray<uint8>& OutMessage);
-
-	void EnqueueMessageToReceive(const TArray<uint8>& Message);
-	
-	[[nodiscard]] bool DequeueMessageToReceive(TArray<uint8>& OutMessage);
 	
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetAppID(const int64 InAppID) {GameSessionInfo.AppID = InAppID;}
@@ -234,8 +224,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
 	int64 GetGameTokenID() const {return GameSessionInfo.GameTokenID;}
 
-	// ──────────────────────────────────────────────────────────────────────
-
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void ClearCurrentSessionData() {GameSessionInfo.Reset();}
 	
@@ -263,12 +251,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetWasInMinigame(const bool bWasInMinigame) {GameSessionInfo.bWasInMinigame = bWasInMinigame;}
 	
-	[[nodiscard]] bool HasPendingIncomingMessages() const; 
-	
-	[[nodiscard]] bool HasPendingOutgoingMessages() const;
-	
-	FEvent* GetSendEvent() const;
-	FEvent* GetReceiveEvent() const;
 private:
 
 	UPROPERTY()
@@ -280,16 +262,4 @@ private:
 	/** Atomic so it can be written from a background response thread and read
 	 *  from the game thread (or any other thread) without a lock. */
 	std::atomic<int64> HostUserID { 0 };
-
-	TQueue<TArray<uint8>, EQueueMode::Mpsc> SendQueue;
-	TQueue<TArray<uint8>, EQueueMode::Spsc> ReceiveQueue;
-	
-	std::atomic<int32> SendCounter = 0;
-	std::atomic<int32> ReceiveCounter = 0;
-	
-	FCriticalSection SendQueueMutex;
-	FCriticalSection ReceiveQueueMutex;
-	
-	FEvent* SendEvent;
-	FEvent* ReceiveEvent;
 };

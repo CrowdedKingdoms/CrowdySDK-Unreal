@@ -8,9 +8,9 @@
  * Per-function routing and serialization metadata, resolved once per receiver
  * UFunction and cached by declaring class.
  *
- * Phase 1 populates FunctionID and bParamsPOD. The routing fields default to the
- * same values the SendCrowdyEvent API defaults to and are filled from baked
- * metadata in phase 2.
+ * FunctionID and bParamsPOD are populated from reflection. The routing fields
+ * default to the same values the SendCrowdyEvent API defaults to and are filled
+ * from baked metadata when available.
  */
 struct FCrowdyFnInfo
 {
@@ -26,6 +26,11 @@ struct FCrowdyFnInfo
 	// True when every input parameter is plain-old-data, so the parameter frame can
 	// skip InitializeStruct/DestroyStruct.
 	bool bParamsPOD = false;
+
+	// meta=(CrowdyAction): the author declares that this event's parameters describe a one-shot action.
+	// Read by receivers that hold the entity as data and so have no body to run; it changes nothing about
+	// how the call is routed or how it behaves where a real object receives it.
+	bool bIsAction = false;
 
 	// Declaring class's Crowdy id (UCrowdyClassRegistry::GetID). Bookkeeping for the editor's
 	// incremental rescan: a recompiled class's stale entries are evicted from the registry by id,

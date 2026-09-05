@@ -1,11 +1,11 @@
 #pragma once
 
 #include "Kismet/BlueprintAsyncActionBase.h"
-#include "Queries/Data/Teams/Types/FCrowdyGroup.h"
-#include "Queries/Data/Teams/Types/FCrowdyGroupMember.h"
-#include "Queries/Data/Teams/Types/FCrowdyGroupMembership.h"
-#include "Queries/Data/Teams/Types/FCrowdyGroupRole.h"
-#include "Queries/Data/Teams/Types/FCrowdyAppGroupPolicy.h"
+#include "Queries/Data/Teams/Types/FCrowdyTeam.h"
+#include "Queries/Data/Teams/Types/FCrowdyTeamMember.h"
+#include "Queries/Data/Teams/Types/FCrowdyTeamMembership.h"
+#include "Queries/Data/Teams/Types/FCrowdyTeamRole.h"
+#include "Queries/Data/Teams/Types/FCrowdyTeamPolicy.h"
 #include "Queries/Data/Teams/Types/FCrowdyTeamError.h"
 #include "CrowdyTeamsQueryActions.generated.h"
 
@@ -14,7 +14,7 @@ struct FCrowdyTeamsResult
 {
 	GENERATED_BODY()
 	UPROPERTY(BlueprintReadOnly)
-	TArray<FCrowdyGroup> Groups;
+	TArray<FCrowdyTeam> Teams;
 };
 
 USTRUCT(BlueprintType)
@@ -22,7 +22,7 @@ struct FCrowdyMyTeamsResult
 {
 	GENERATED_BODY()
 	UPROPERTY(BlueprintReadOnly)
-	TArray<FCrowdyGroupMembership> Memberships;
+	TArray<FCrowdyTeamMembership> Memberships;
 };
 
 USTRUCT(BlueprintType)
@@ -30,7 +30,7 @@ struct FCrowdyTeamMembersResult
 {
 	GENERATED_BODY()
 	UPROPERTY(BlueprintReadOnly)
-	TArray<FCrowdyGroupMember> Members;
+	TArray<FCrowdyTeamMember> Members;
 };
 
 USTRUCT(BlueprintType)
@@ -38,24 +38,24 @@ struct FCrowdyTeamRolesResult
 {
 	GENERATED_BODY()
 	UPROPERTY(BlueprintReadOnly)
-	TArray<FCrowdyGroupRole> Roles;
+	TArray<FCrowdyTeamRole> Roles;
 };
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FTeamAsyncOnSuccess, FCrowdyGroup, Group);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FTeamAsyncOnSuccess, FCrowdyTeam, Team);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FTeamsAsyncOnSuccess, FCrowdyTeamsResult, Result);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMyTeamsAsyncOnSuccess, FCrowdyMyTeamsResult, Result);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMemberAsyncOnSuccess, FCrowdyGroupMember, Member);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMemberAsyncOnSuccess, FCrowdyTeamMember, Member);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMembersAsyncOnSuccess, FCrowdyTeamMembersResult, Result);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRoleAsyncOnSuccess, FCrowdyGroupRole, Role);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRoleAsyncOnSuccess, FCrowdyTeamRole, Role);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRolesAsyncOnSuccess, FCrowdyTeamRolesResult, Result);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FPolicyAsyncOnSuccess, FCrowdyAppGroupPolicy, Policy);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FPolicyAsyncOnSuccess, FCrowdyTeamPolicy, Policy);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FVoidAsyncOnSuccess);
 
@@ -82,7 +82,7 @@ public:
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyGroupMembership> Memberships);
+	void HandleSuccess(TArray<FCrowdyTeamMembership> Memberships);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };
@@ -101,15 +101,15 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get Team")
-	static UCrowdyTeams_GetTeam* GetTeam(UObject* WorldContextObject, int64 GroupId);
+	static UCrowdyTeams_GetTeam* GetTeam(UObject* WorldContextObject, int64 TeamId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0;
+	int64 TeamId = 0;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyGroup Group);
+	void HandleSuccess(FCrowdyTeam Team);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };
@@ -135,7 +135,7 @@ public:
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyGroup> Groups);
+	void HandleSuccess(TArray<FCrowdyTeam> Teams);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };
@@ -153,15 +153,15 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get Team Members")
-	static UCrowdyTeams_GetTeamMembers* GetTeamMembers(UObject* WorldContextObject, int64 GroupId);
+	static UCrowdyTeams_GetTeamMembers* GetTeamMembers(UObject* WorldContextObject, int64 TeamId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0;
+	int64 TeamId = 0;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyGroupMember> Members);
+	void HandleSuccess(TArray<FCrowdyTeamMember> Members);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };
@@ -179,15 +179,15 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get Team Roles")
-	static UCrowdyTeams_GetTeamRoles* GetTeamRoles(UObject* WorldContextObject, int64 GroupId);
+	static UCrowdyTeams_GetTeamRoles* GetTeamRoles(UObject* WorldContextObject, int64 TeamId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0;
+	int64 TeamId = 0;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyGroupRole> Roles);
+	void HandleSuccess(TArray<FCrowdyTeamRole> Roles);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };
@@ -213,7 +213,7 @@ public:
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyAppGroupPolicy Policy);
+	void HandleSuccess(FCrowdyTeamPolicy Policy);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };
@@ -232,15 +232,15 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get Pending Join Requests")
-	static UCrowdyTeams_GetPendingJoinRequests* GetPendingJoinRequests(UObject* WorldContextObject, int64 GroupId);
+	static UCrowdyTeams_GetPendingJoinRequests* GetPendingJoinRequests(UObject* WorldContextObject, int64 TeamId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0;
+	int64 TeamId = 0;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyGroupMember> Members);
+	void HandleSuccess(TArray<FCrowdyTeamMember> Members);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };

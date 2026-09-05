@@ -25,3 +25,15 @@ namespace CrowdyReplicationTrace
 	// and datagram sizes.
 	CROWDYREPLICATION_API bool State();
 }
+
+// Fine-grained CPU trace scopes inside CrowdyState decode, off by default and readable from any thread.
+//
+// These sit INSIDE scopes that are themselves measured, and a scope costs two timestamps per message, so
+// leaving one on shifts the enclosing scope's own number. Turn it on only for the run that needs the split,
+// and say in the reading which runs carried it.
+namespace CrowdyReplicationProfile
+{
+	// crowdy.state.scopes - a scope around the CrowdyState delta decode, which otherwise has none and is
+	// therefore invisible inside Crowdy_DispatchMessage.
+	CROWDYREPLICATION_API bool StateScopes();
+}

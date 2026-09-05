@@ -109,10 +109,19 @@ public:
 	 * CrowdyState rep layout for a class, or null if the class has no CrowdyState properties. Builds it
 	 * live from reflection in the editor (WITH_METADATA) or assembled from the baked table in a cooked
 	 * build, then caches it; both paths yield an identical layout. The cache stores layouts in a
-	 * pointer-stable map, so the returned pointer stays valid across later inserts (Phase 3 caches it
+	 * pointer-stable map, so the returned pointer stays valid across later inserts (the replicator caches it
 	 * per owned entity). Negative results are never cached. Const; lazily builds and caches on first use.
 	 */
 	const FCrowdyRepLayout* FindRepLayout(const UClass* Class) const;
+
+	/**
+	 * The same lookup, additionally handing back the wire class id it had to resolve to key the cache.
+	 *
+	 * The receive path needs both and used to ask for the id a second time; taking it from here is the same
+	 * answer for the same class. Set on every return, including the ones that find no layout, so a caller
+	 * never reads it uninitialised. CROWDY_INVALID_CLASS_ID for a null class.
+	 */
+	const FCrowdyRepLayout* FindRepLayout(const UClass* Class, FCrowdyClassID& OutClassID) const;
 
 	/**
 	 * Resolves an actor class's default UCrowdyEntityComponent instance (native CDO or BP SCS component
@@ -126,6 +135,12 @@ public:
 private:
 	void InstallIDOverrideResolvers();
 	void ScanAndRegisterExecutorStateStructs();
+
+	// Loads the entity classes named in developer settings so the scan below can see them. An actor
+	// update names its class by id and carries no class path, so a class this client never loaded is one
+	// it can never resolve from the wire.
+	void PreloadConfiguredEntityClasses();
+
 	void ScanAndRegisterEntityClasses();
 	void ScanAndRegisterRpcFunctions();
 
@@ -183,7 +198,7 @@ private:
 	// CrowdyState rep layout per class, keyed by the stable, path-derived class id so an incremental
 	// rebuild evicts by id (surviving BP reinstance) without touching the stale FProperty pointers a
 	// recompile left inside the layout. The value is a TUniquePtr so the FCrowdyRepLayout is heap-stable
-	// and the const pointer FindRepLayout returns stays valid across later inserts (Phase 3 caches that
+	// and the const pointer FindRepLayout returns stays valid across later inserts (the replicator caches that
 	// pointer per owned entity). Mutable because FindRepLayout is const and lazily builds/caches.
 	mutable TMap<FCrowdyClassID, TUniquePtr<FCrowdyRepLayout>> RepLayouts;
 

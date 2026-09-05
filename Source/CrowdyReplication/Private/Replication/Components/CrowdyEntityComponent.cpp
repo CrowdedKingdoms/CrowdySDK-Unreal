@@ -1,9 +1,12 @@
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "CrowdyReplicationLog.h"
 
+#include "TimerManager.h"
+#include "Engine/GameInstance.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
-#include "Hash/CityHash.h"
+#include "Replication/GameModel/CrowdyBindingKeyProvider.h"
+#include "Replication/GameModel/CrowdyModelIdentity.h"
 #include "Replication/Subsystems/CrowdyActorManager.h"
 #include "Replication/Subsystems/CrowdyAutoReplicator.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
@@ -13,6 +16,11 @@
 #include "Utils/HelperFunctions.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"
 #include "Utils/UCrowdyClassRegistry.h"
+#include "WorldPartition/ActorInstanceGuids.h"
+
+#if WITH_DEV_AUTOMATION_TESTS
+int32 UCrowdyEntityComponent::OwnershipStepCounter = 0;
+#endif
 
 UCrowdyEntityComponent::UCrowdyEntityComponent()
 {
@@ -43,6 +51,11 @@ void UCrowdyEntityComponent::AssignPooledIdentity(const FGuid& InNetID, const FG
 	ClassID    = InClassID;
 	UUIDString = InNetID.IsValid() ? InNetID.ToString(EGuidFormats::Digits) : FString();
 	bIdentityInjected = true;
+
+	// A pooled actor is handed its identity long after BeginPlay, so this is where its ownership becomes
+	// announceable; the announcement is queued rather than sent inline so the pool finishes checking the actor
+	// out before any listener can act on it.
+	ScheduleInitialOwnershipAnnouncement();
 }
 
 void UCrowdyEntityComponent::ClearIdentity()
@@ -56,6 +69,52 @@ void UCrowdyEntityComponent::ClearIdentity()
 	ClassID    = CROWDY_INVALID_CLASS_ID;
 	UUIDString.Reset();
 	bIdentityInjected = false;
+
+	// The actor owns nothing until it is handed a new identity, so drop any queued announcement and re-arm the
+	// one-shot: the next assignment announces again.
+	bOwnershipAnnounced = false;
+	if (UWorld* World = GetWorld())
+		World->GetTimerManager().ClearTimer(InitialOwnershipTimer);
+}
+
+FGuid UCrowdyEntityComponent::ResolveActorInstanceGuid(const AActor* Actor)
+{
+	// The engine's per-placement identity: for a level-placed actor this is its ActorGuid, and for an actor
+	// inside an instanced/streamed level it composes that with the level-instance guid, so two placements of
+	// one sublevel differ and every client agrees. It is cooked into the level and survives World Partition
+	// embedding, so no SDK-side minting, salting, or ancestor walk is needed. It is editor-only data: in the
+	// editor an actor spawned at runtime is also handed a fresh guid, which is per-run and per-client, while in
+	// a packaged build it has none at all. So this answers "what is this placement's id", not "was this actor
+	// placed in the level".
+	return IsValid(Actor) ? FActorInstanceGuid::GetActorInstanceGuid(*Actor) : FGuid();
+}
+
+bool UCrowdyEntityComponent::ShouldUsePlacementGuid(bool bIsLevelPlaced, bool bHasInstanceGuid)
+{
+	return bIsLevelPlaced && bHasInstanceGuid;
+}
+
+FGuid UCrowdyEntityComponent::ComputeStableNetID(bool& bOutUsedPathFallback) const
+{
+	const AActor* Owner = GetOwner();
+
+	// The placement guid is only a shared id for an actor loaded with its level, which is the same "loaded directly
+	// from the map" test the ownership rule uses. Without that check an actor created during play would take this
+	// branch in the editor, where the engine hands every spawn a fresh guid, and the other branch in a packaged
+	// build, where it has none: two different ids for the same actor depending on how the game was built.
+	const bool bLevelPlaced = IsValid(Owner) && Owner->IsNetStartupActor();
+	const FGuid InstanceGuid = ResolveActorInstanceGuid(Owner);
+	if (ShouldUsePlacementGuid(bLevelPlaced, InstanceGuid.IsValid()))
+	{
+		bOutUsedPathFallback = false;
+		return InstanceGuid;
+	}
+
+	// Everything else derives from the actor path. For an actor placed in the level this still agrees across
+	// clients. For one created during play it does not, because there is nothing shared to derive it from; the
+	// caller warns about that case rather than pretending the id is usable.
+	bOutUsedPathFallback = true;
+	return FCrowdyModelIdentity::StableNetIDFromActorPath(IsValid(Owner) ? Owner->GetPathName() : GetPathName());
 }
 
 void UCrowdyEntityComponent::BeginPlay()
@@ -91,15 +150,37 @@ void UCrowdyEntityComponent::BeginPlay()
 		EntitySubsystem->RegisterEntity(Record);
 	}
 
+	// Identity and role are settled and the entity is registered, so this is where its ownership becomes
+	// announceable. The announcement itself is queued for the next tick, not sent here.
+	ScheduleInitialOwnershipAnnouncement();
+
+	// Only Dynamic mode runs the continuous snapshot channel, so an executor assigned on a Static entity does
+	// nothing at all. Say so, because Static hides the executor field once the mode is switched back.
+	if (Mode == ECrowdyEntityMode::Static && IsValid(StateExecutor))
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntityComponent]: '%s' has a StateExecutor assigned but its Mode is Static — the executor is unused, because a Static entity is event-only. Set Mode to Dynamic to run the continuous state channel."),
+			*GetNameSafe(CachedOwner));
+	}
+
 	if (Mode == ECrowdyEntityMode::Dynamic)
 	{
 		AutoReplicator = GetWorld()->GetSubsystem<UCrowdyAutoReplicator>();
 
+		// No executor is no longer an error. The SDK ships one that snapshots the owner's transform, so a
+		// component set to Dynamic replicates on its own and the minimum setup for a replicated actor is
+		// this component alone. Assigning an executor stays fully supported and overrides this.
+		//
+		// Only safe because class identity now travels on every update: while the receiver derived an
+		// entity's class from its state struct, one shared default struct would have made every dynamic
+		// entity in a project resolve to a single class.
 		if (!IsValid(StateExecutor))
 		{
-			UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntityComponent]: Dynamic mode on '%s' but no StateExecutor assigned — continuous replication disabled."),
+			StateExecutor = NewObject<UCrowdyDefaultActorUpdateExecutor>(this);
+
+			UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+				TEXT("[CrowdyEntityComponent]: Dynamic mode on '%s' with no StateExecutor assigned, using the SDK default, which replicates the actor's transform."),
 				*GetNameSafe(CachedOwner));
-			return;
 		}
 
 		// Blueprint executors are unknown to the startup scan; the snapshot
@@ -119,11 +200,19 @@ void UCrowdyEntityComponent::BeginPlay()
 
 		if (bAutoRegister && Role == ECrowdyRole::Owner)
 			StartReplication();
+
+		// Auto Register only starts the channel for an entity this client owns outright, so a host-owned entity
+		// leaves BeginPlay sending nothing. Say so rather than letting a configured entity go quiet.
+		if (ShouldReportHostOwnedAutoRegister(Mode, bAutoRegister, Role))
+			ReportHostOwnedAutoRegisterSkipped();
 	}
 }
 
 void UCrowdyEntityComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UWorld* World = GetWorld())
+		World->GetTimerManager().ClearTimer(InitialOwnershipTimer);
+
 	if (IsValid(AutoReplicator))
 		AutoReplicator->UnregisterReplicationComponent(this);
 
@@ -206,7 +295,7 @@ void UCrowdyEntityComponent::RequestOwnership_Implementation(FGuid RequesterID)
 		return;
 
 	// A malformed request, or one where the requester is already this entity's authority, is ignored. Only the
-	// authority runs past the gate above, so its own player id is the one to compare against — this also covers the
+	// authority runs past the gate above, so its own player id is the one to compare against. This also covers the
 	// host requesting a host-owned entity it already controls (whose OwnerID is invalid, so an OwnerID compare would
 	// miss it).
 	if (!RequesterID.IsValid() || RequesterID == EntitySubsystem->GetLocalPlayerID())
@@ -277,10 +366,68 @@ void UCrowdyEntityComponent::ApplyOwnershipReassignment(const FGuid& NewOwnerID,
 	}
 }
 
+void UCrowdyEntityComponent::BroadcastOwnershipAssigned()
+{
+	bOwnershipAnnounced = true;
+
+	const FGuid AnnouncedOwnerID = OwnerID;
+	const ECrowdyRole AnnouncedRole = Role;
+	const bool bAnnouncedLocallyOwned = IsLocallyOwned();
+
+#if WITH_DEV_AUTOMATION_TESTS
+	++OwnershipAnnouncementCount;
+	LastAnnouncedOwnerID = AnnouncedOwnerID;
+	LastAnnouncedRole = AnnouncedRole;
+	bLastAnnouncedLocallyOwned = bAnnouncedLocallyOwned;
+	LastAnnouncementStep = ++OwnershipStepCounter;
+#endif
+
+	OnCrowdyOwnershipAssigned.Broadcast(AnnouncedOwnerID, AnnouncedRole, bAnnouncedLocallyOwned);
+}
+
+void UCrowdyEntityComponent::ScheduleInitialOwnershipAnnouncement()
+{
+	if (bOwnershipAnnounced)
+		return;
+
+	UWorld* World = GetWorld();
+	if (!World)
+		return;
+
+	World->GetTimerManager().ClearTimer(InitialOwnershipTimer);
+	InitialOwnershipTimer = World->GetTimerManager().SetTimerForNextTick(
+		FTimerDelegate::CreateUObject(this, &UCrowdyEntityComponent::AnnounceInitialOwnership));
+}
+
+void UCrowdyEntityComponent::AnnounceInitialOwnership()
+{
+	// Nothing to announce for an entity that holds no identity: a pooled actor waiting in the pool had its
+	// throwaway identity cleared, and it announces when the pool hands it a real one.
+	if (bOwnershipAnnounced || !NetID.IsValid() || Role == ECrowdyRole::None)
+		return;
+
+	BroadcastOwnershipAssigned();
+}
+
 const FInstancedStruct& UCrowdyEntityComponent::GetReplicatedState() const
 {
-	if (IsValid(StateExecutor))
-		CachedState = StateExecutor->GetActorState(this);
+	if (!IsValid(StateExecutor))
+	{
+		return CachedState;
+	}
+
+	// The event thunk resolves GetActorState by name on every call before it reaches the native
+	// implementation; resolving it per executor class takes that lookup out of the replication loop.
+	const UClass* const ExecutorClass = StateExecutor->GetClass();
+	if (ResolvedStateExecutorClass.Get() != ExecutorClass)
+	{
+		ResolvedStateExecutorClass = ExecutorClass;
+		bStateExecutorAnswersNatively = CrowdyActorUpdateExecutor::AnswersStateNatively(StateExecutor);
+	}
+
+	CachedState = bStateExecutorAnswersNatively
+		? StateExecutor->GetActorState_Implementation(this)
+		: StateExecutor->GetActorState(this);
 	return CachedState;
 }
 
@@ -299,6 +446,15 @@ void UCrowdyEntityComponent::DeriveAuthority(const ECrowdyOwnership InOwnership,
 		OutRole = ECrowdyRole::Owner;
 		OutOwnerID = InLocalPlayerID;
 	}
+}
+
+ECrowdyOwnership UCrowdyEntityComponent::ResolveEffectiveOwnership(const ECrowdyOwnership InAuthoredOwnership,
+	const bool bIsLevelPlaced)
+{
+	// A level-placed world actor exists on every client before anyone joins, so it follows the ownership it was
+	// authored with. An actor spawned at runtime exists because this client spawned it, so this client owns it
+	// whatever the asset says; the clients that receive its spawn event get it as a remote proxy instead.
+	return bIsLevelPlaced ? InAuthoredOwnership : ECrowdyOwnership::LocalClient;
 }
 
 bool UCrowdyEntityComponent::DoesOwnershipMatch(const ECrowdyRole OwnerRole, const FGuid& OwnerNetID,
@@ -341,40 +497,85 @@ bool UCrowdyEntityComponent::IsLocallyOwned() const
 
 void UCrowdyEntityComponent::ResolveIdentity()
 {
-	switch (IdentityPolicy)
+	// An author-supplied binding key overrides IdentityPolicy: the object names its own cross-client identity, for
+	// an independently-spawned world object the engine cannot place-identify (see ICrowdyBindingKeyProvider). An
+	// empty key falls back to the policy below, so the interface is opt-in and inert unless it returns a value.
+	FString BindingKey;
+	if (IsValid(CachedOwner) && CachedOwner->GetClass()->ImplementsInterface(UCrowdyBindingKeyProvider::StaticClass()))
+	{
+		BindingKey = ICrowdyBindingKeyProvider::Execute_GetCrowdyBindingKey(CachedOwner);
+	}
+
+	// A binding key does not apply to a player: a player's identity is its account (PlayerDerived), and that branch
+	// also establishes the session UUID other systems key on. Ignore a key on a PlayerDerived pawn and warn, so a
+	// stray key never silently derails session identity / host election.
+	const bool bUseKey = !BindingKey.IsEmpty() && IdentityPolicy != ECrowdyIdentityPolicy::PlayerDerived;
+	if (!BindingKey.IsEmpty() && IdentityPolicy == ECrowdyIdentityPolicy::PlayerDerived)
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntityComponent]: '%s' supplies a Crowdy binding key but its IdentityPolicy is PlayerDerived - the key is ignored (a player's identity is its account). Use a non-PlayerDerived policy for a keyed world object."),
+			*GetNameSafe(CachedOwner));
+	}
+
+	// Whether the engine loaded this actor with its level. It decides both which identity an entity can share with
+	// other clients and, further down, whether authored Host ownership applies, so it is answered once here.
+	const bool bLevelPlaced = IsValid(CachedOwner) && CachedOwner->IsNetStartupActor();
+
+	if (bUseKey)
+	{
+		NetID = FCrowdyModelIdentity::NetIDFromBindingKey(BindingKey);
+	}
+	else switch (IdentityPolicy)
 	{
 	case ECrowdyIdentityPolicy::PlayerDerived:
 	{
-		UCrowdyGameSession* GameSession = GetWorld()->GetGameInstance()->GetSubsystem<UCrowdyGameSession>();
-
 		const APawn* Pawn = Cast<APawn>(CachedOwner);
-		const APlayerController* PC = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
-		const bool bIsLocalPlayer = PC && PC->IsLocalController() && PC->IsPrimaryPlayer();
+		const AController* OwningController = Pawn ? Pawn->GetController() : nullptr;
+		const APlayerController* PC = Cast<APlayerController>(OwningController);
 
-		if (IsValid(GameSession) && bIsLocalPlayer)
+		// The pawn questions are asked before the session is looked up, so an actor that could never use this
+		// policy is answered by what it is, not by whatever the session happened to be doing.
+		UWorld* World = GetWorld();
+		UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+		UCrowdyGameSession* GameSession = GameInstance ? GameInstance->GetSubsystem<UCrowdyGameSession>() : nullptr;
+
+		FCrowdyPlayerDerivedIdentityFacts Facts;
+		Facts.bIsPawn = Pawn != nullptr;
+		Facts.bHasController = OwningController != nullptr;
+		Facts.bControllerIsPlayerController = PC != nullptr;
+		Facts.bIsLocalController = PC && PC->IsLocalController();
+		Facts.bIsPrimaryPlayer = PC && PC->IsPrimaryPlayer();
+		Facts.bHasGameSession = IsValid(GameSession);
+
+		const ECrowdyPlayerDerivedIdentity Verdict = ClassifyPlayerDerivedIdentity(Facts);
+		if (Verdict == ECrowdyPlayerDerivedIdentity::Resolved)
 		{
 			NetID = UHelperFunctions::GetDeterministicID(GameSession->GetUserID());
 
 			// Establishes the session UUID other systems key on (ActorTracker,
 			// HostSubsystem, EntitySubsystem all listen to OnOwnerUUIDUpdated).
-			// Phase 7 moves this to the login flow.
 			GameSession->SetUUID(NetID.ToString(EGuidFormats::Digits));
 			break;
 		}
 
-		UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyEntityComponent]: PlayerDerived identity on '%s' but it is not the locally controlled pawn — using Random instead."),
-			*GetNameSafe(CachedOwner));
+		ReportPlayerDerivedFallback(Verdict);
 		NetID = FGuid::NewGuid();
 		break;
 	}
 	case ECrowdyIdentityPolicy::Stable:
 	{
-		// Identical on every client for the same level-placed actor; the PIE
-		// prefix is stripped, so PIE clients in one process agree too.
-		const FString StablePath = UWorld::RemovePIEPrefix(CachedOwner->GetPathName());
-		const uint64 PathHash = CityHash64(
-			reinterpret_cast<const char*>(*StablePath), StablePath.Len() * sizeof(TCHAR));
-		NetID = UHelperFunctions::GetDeterministicID(static_cast<int64>(PathHash));
+		// The engine's per-placement identity: identical on every client, distinct per placement of an instanced
+		// level, and saved into the level. It is only available to an actor loaded with that level; anything else
+		// falls back to the path hash. The two fallback cases mean very different things to an author, so they are
+		// reported separately rather than as one message.
+		bool bUsedPathFallback = false;
+		NetID = ComputeStableNetID(bUsedPathFallback);
+		UE_CLOG(bUsedPathFallback && !bLevelPlaced, LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntityComponent]: '%s' uses Stable identity but was created during play, so there is nothing every client can derive the same id from and its id will differ per client. Spawn it through Crowdy SpawnEntity, which assigns an id and announces it, or give it a Crowdy binding key."),
+			*GetNameSafe(CachedOwner));
+		UE_CLOG(bUsedPathFallback && bLevelPlaced, LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntityComponent]: '%s' was loaded with its level but has no engine instance guid - using path-derived identity, which is not stable under World Partition."),
+			*GetNameSafe(CachedOwner));
 		break;
 	}
 	case ECrowdyIdentityPolicy::Random:
@@ -383,15 +584,133 @@ void UCrowdyEntityComponent::ResolveIdentity()
 	}
 
 	const FGuid LocalID = IsValid(EntitySubsystem) ? EntitySubsystem->GetLocalPlayerID() : FGuid();
-	DeriveAuthority(Ownership, LocalID, Role, OwnerID);
 
-	// A Host-owned entity needs a deterministic NetID that every client computes identically (Stable policy);
-	// with any other policy the world entity would get a different id per client and never converge. Warn but
-	// continue the injected-identity spawn paths are unaffected (they never run ResolveIdentity).
-	if (Ownership == ECrowdyOwnership::Host && IdentityPolicy != ECrowdyIdentityPolicy::Stable)
+	// Only an actor authored into the level can be owned by the host: it is there on every client from the start.
+	// Everything else reached this point by being spawned at runtime, and belongs to the client that spawned it.
+	// The engine's "loaded directly from the map" flag is the test, answered once above. It is set for every
+	// level-placed actor, in the editor and in a packaged build alike, before play begins, so the same asset
+	// resolves to the same authority everywhere. One edge to know about: an actor that turns off Net Load On Client
+	// is not flagged, so it is classified as runtime-spawned and owned by the client it exists on.
+	const ECrowdyOwnership Effective = ResolveEffectiveOwnership(Ownership, bLevelPlaced);
+
+	UE_CLOG(Effective != Ownership, LogCrowdyReplication, Verbose,
+		TEXT("[CrowdyEntityComponent]: '%s' is owned by this client - it was spawned at runtime, so its authored Host ownership does not apply (that setting is for actors placed in the level)."),
+		*GetNameSafe(CachedOwner));
+
+	DeriveAuthority(Effective, LocalID, Role, OwnerID);
+
+	// A Host-owned entity needs a deterministic NetID that every client computes identically (Stable policy, or a
+	// binding key); with any other policy the world entity would get a different id per client and never converge.
+	// The test is on the ownership actually applied, not on the authored value: an entity that resolved to this
+	// client has a per-client owner and needs no shared id, so warning on the authored value would be noise on
+	// every runtime spawn. Warn but continue; the injected-identity spawn paths are unaffected, since they never
+	// run identity resolution at all.
+	if (Effective == ECrowdyOwnership::Host && IdentityPolicy != ECrowdyIdentityPolicy::Stable && !bUseKey)
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
 			TEXT("[CrowdyEntityComponent]: Ownership=Host on '%s' but IdentityPolicy is not Stable — world entities need a deterministic shared NetID; host authority may not converge across clients."),
 			*GetNameSafe(CachedOwner));
 	}
+}
+
+ECrowdyPlayerDerivedIdentity UCrowdyEntityComponent::ClassifyPlayerDerivedIdentity(const FCrowdyPlayerDerivedIdentityFacts& Facts)
+{
+	if (!Facts.bIsPawn)
+		return ECrowdyPlayerDerivedIdentity::NotAPawn;
+
+	if (!Facts.bHasController)
+		return ECrowdyPlayerDerivedIdentity::PawnHasNoController;
+
+	if (!Facts.bControllerIsPlayerController)
+		return ECrowdyPlayerDerivedIdentity::ControllerIsNotAPlayer;
+
+	if (!Facts.bIsLocalController)
+		return ECrowdyPlayerDerivedIdentity::ControllerIsRemote;
+
+	if (!Facts.bIsPrimaryPlayer)
+		return ECrowdyPlayerDerivedIdentity::NotThePrimaryPlayer;
+
+	if (!Facts.bHasGameSession)
+		return ECrowdyPlayerDerivedIdentity::NoGameSession;
+
+	return ECrowdyPlayerDerivedIdentity::Resolved;
+}
+
+const TCHAR* UCrowdyEntityComponent::DescribePlayerDerivedIdentity(const ECrowdyPlayerDerivedIdentity Verdict)
+{
+	switch (Verdict)
+	{
+	case ECrowdyPlayerDerivedIdentity::NotAPawn:
+		return TEXT("its owner is not a Pawn");
+	case ECrowdyPlayerDerivedIdentity::PawnHasNoController:
+		return TEXT("the pawn is not possessed by any controller yet");
+	case ECrowdyPlayerDerivedIdentity::ControllerIsNotAPlayer:
+		return TEXT("the pawn is possessed by a controller that is not a player controller");
+	case ECrowdyPlayerDerivedIdentity::ControllerIsRemote:
+		return TEXT("the pawn is controlled by another client");
+	case ECrowdyPlayerDerivedIdentity::NotThePrimaryPlayer:
+		return TEXT("the pawn belongs to a secondary local player, not the primary one");
+	case ECrowdyPlayerDerivedIdentity::NoGameSession:
+		return TEXT("this client has no Crowdy game session to read a signed-in account from");
+	default:
+		return TEXT("it resolved from the signed-in account");
+	}
+}
+
+bool UCrowdyEntityComponent::ShouldReportHostOwnedAutoRegister(const ECrowdyEntityMode InMode, const bool bInAutoRegister,
+	const ECrowdyRole InRole)
+{
+	return InMode == ECrowdyEntityMode::Dynamic && bInAutoRegister && InRole == ECrowdyRole::HostOwned;
+}
+
+const TCHAR* UCrowdyEntityComponent::DescribeHostElectionState(const bool bHostKnown, const bool bLocalClientIsHost)
+{
+	if (!bHostKnown)
+		return TEXT("this client does not know yet which client is the host");
+
+	return bLocalClientIsHost
+		? TEXT("this client is the elected host")
+		: TEXT("another client is the elected host");
+}
+
+void UCrowdyEntityComponent::ReportPlayerDerivedFallback(const ECrowdyPlayerDerivedIdentity Verdict)
+{
+	if (bPlayerDerivedFallbackReported)
+		return;
+
+	bPlayerDerivedFallbackReported = true;
+
+	const FString Message = FString::Printf(
+		TEXT("[CrowdyEntityComponent]: Identity Policy is Player Derived on '%s' but %s, so it fell back to a random id. A random id is different on every client, so nothing can address this entity across the network. Player Derived reads the signed-in account and fits only the locally controlled primary player pawn: set Identity Policy to Stable for an actor placed in the level, give the actor a Crowdy binding key, or set it to Random deliberately if no other client needs to address it."),
+		*GetNameSafe(CachedOwner), DescribePlayerDerivedIdentity(Verdict));
+
+#if WITH_DEV_AUTOMATION_TESTS
+	++PlayerDerivedFallbackReportCount;
+	LastPlayerDerivedFallbackMessage = Message;
+#endif
+
+	UE_LOG(LogCrowdyReplication, Warning, TEXT("%s"), *Message);
+}
+
+void UCrowdyEntityComponent::ReportHostOwnedAutoRegisterSkipped()
+{
+	if (bHostOwnedAutoRegisterReported)
+		return;
+
+	bHostOwnedAutoRegisterReported = true;
+
+	const FGuid HostID = IsValid(EntitySubsystem) ? EntitySubsystem->GetHostID() : FGuid();
+	const bool bHostKnown = HostID.IsValid();
+	const bool bLocalClientIsHost = bHostKnown && EntitySubsystem->GetLocalPlayerID() == HostID;
+
+	const FString Message = FString::Printf(
+		TEXT("[CrowdyEntityComponent]: '%s' is Dynamic with Auto Register on, but it is host-owned, so Auto Register did not start its state channel: Auto Register starts the channel only for an entity this client owns outright, and %s. Nothing goes out on the continuous channel for this entity until ownership is granted to a client or Start Replication is called on it. Set Ownership to Local Client if the client this actor lives on should simulate it, or call Start Replication on whichever client is the host."),
+		*GetNameSafe(GetOwner()), DescribeHostElectionState(bHostKnown, bLocalClientIsHost));
+
+#if WITH_DEV_AUTOMATION_TESTS
+	++HostOwnedAutoRegisterReportCount;
+	LastHostOwnedAutoRegisterMessage = Message;
+#endif
+
+	UE_LOG(LogCrowdyReplication, Warning, TEXT("%s"), *Message);
 }

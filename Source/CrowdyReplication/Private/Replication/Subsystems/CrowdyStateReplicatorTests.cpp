@@ -9,6 +9,7 @@
 #include "GameFramework/Actor.h"
 #include "HAL/IConsoleManager.h"
 #include "UObject/Script.h"
+#include "UObject/StrongObjectPtr.h"
 #include "Core/FCrowdyTypeID.h"
 #include "CrowdyReplicationLog.h"
 #include "Data/CrowdyEntityTypes.h"
@@ -18,52 +19,16 @@
 #include "Replication/State/FCrowdyStateDelta.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyStateReplicator.h"
+#include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
+#include "Utils/UCrowdyClassRegistry.h"
 #include "Utils/UEventPayloadRegistry.h"
 
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyStateReplicatorTestFlags =
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
-
-	// UCrowdyAutoRegistry is a UGameInstanceSubsystem (ClassWithin=UGameInstance); a transient-package
-	// NewObject trips a ClassWithin ensure, so outer it to a bare GameInstance (Phase 1 idiom).
-	UCrowdyAutoRegistry* MakeStateRegistry()
-	{
-		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-		return NewObject<UCrowdyAutoRegistry>(GameInstance);
-	}
-
-	// The replicator is a UWorldSubsystem; a plain transient-package NewObject is fine on the hook path
-	// (Initialize/Tick are never driven, so no world/GameInstance is touched).
-	UCrowdyStateReplicator* MakeReplicator(UCrowdyAutoRegistry* Registry, const FGuid& LocalPlayer)
-	{
-		UCrowdyStateReplicator* Rep = NewObject<UCrowdyStateReplicator>(GetTransientPackage());
-		Rep->SetRegistryForTest(Registry);
-		Rep->SetLocalPlayerIDForTest(LocalPlayer);
-		return Rep;
-	}
-
-	// The host-lifecycle tests need a REAL entity subsystem so FindRecord/GetLocalPlayerID resolve. It is a
-	// UWorldSubsystem too, so a transient-package NewObject is fine (Initialize is never driven; RegisterEntity
-	// only needs the game thread, which the automation runner provides).
-	UCrowdyEntitySubsystem* MakeEntitySubsystem(const FGuid& LocalPlayer)
-	{
-		UCrowdyEntitySubsystem* ES = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
-		ES->SetLocalPlayerID(LocalPlayer);
-		return ES;
-	}
-
-	// A real game session carrying an elected host, mirroring the persisted host that survives level travel.
-	// UCrowdyGameSession is a UGameInstanceSubsystem (ClassWithin=UGameInstance), so it needs a GameInstance outer.
-	UCrowdyGameSession* MakeGameSession(const FGuid& HostID)
-	{
-		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-		UCrowdyGameSession* Session = NewObject<UCrowdyGameSession>(GameInstance);
-		Session->SetHostID(HostID);
-		return Session;
-	}
 
 	// A HostOwned record for the given actor with a fresh NetID.
 	FCrowdyEntityRecord MakeHostOwnedRecord(AActor* Actor, const FGuid& NetID)
@@ -87,35 +52,6 @@ namespace
 		Rec.Participant = Actor;
 		ES->RegisterEntity(Rec);
 	}
-
-	// A minimal EDITOR world so GetOrCreateLoopbackMirror can SpawnActorDeferred/FinishSpawning a mirror (it
-	// early-returns null with no world). Same idiom as CrowdyStateApplyTests.cpp's FCrowdyStateTestWorld: an
-	// editor-type world sidesteps the project's PIE/Game-gated world subsystems (e.g. CrowdyMass asserts on
-	// teardown of a bare Game world that never initialized it) and tears down cleanly.
-	struct FCrowdyStateTestWorld
-	{
-		FEditorScriptExecutionGuard ScriptGuard;
-		UWorld* World = nullptr;
-
-		FCrowdyStateTestWorld()
-		{
-			World = UWorld::CreateWorld(EWorldType::Editor, /*bInformEngineOfWorld=*/false);
-			FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Editor);
-			Context.SetCurrentWorld(World);
-		}
-
-		~FCrowdyStateTestWorld()
-		{
-			GEngine->DestroyWorldContext(World);
-			World->DestroyWorld(/*bInformEngineOfWorld=*/false);
-		}
-
-		template <typename T>
-		T* Spawn()
-		{
-			return World->SpawnActor<T>();
-		}
-	};
 }
 
 // The fixed wire payload registers and resolves to a stable non-zero EventType, mirroring the RPC one.
@@ -194,7 +130,7 @@ bool FCrowdyStateSendOwnerGateTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the owner emitted"), Emitted.Contains(OwnerRecord.NetID));
 
 	// Sender is stamped from the local player (the live read falls back to the injected id when there is no
-	// entity subsystem) and Flags stay 0 in Phase 3.
+	// entity subsystem) and Flags stay 0 (no host-sourced stamping) here.
 	TArray<FCrowdyStateDelta> Captured;
 	Rep->DispatchHookForTests = [&Captured](const FCrowdyStateDelta& Delta, bool /*bTargeted*/)
 	{
@@ -205,7 +141,7 @@ bool FCrowdyStateSendOwnerGateTest::RunTest(const FString& Parameters)
 	if (TestEqual(TEXT("one delta after the second change"), Captured.Num(), 1))
 	{
 		TestEqual(TEXT("sender is the local player"), Captured[0].SenderID, LocalPlayer);
-		TestEqual(TEXT("flags stay 0 in Phase 3"), static_cast<int32>(Captured[0].Flags), 0);
+		TestEqual(TEXT("flags stay 0"), static_cast<int32>(Captured[0].Flags), 0);
 	}
 	return true;
 }
@@ -275,7 +211,7 @@ bool FCrowdyStateSendOnlyChangedTest::RunTest(const FString& Parameters)
 	Rep->RunReplicationLoopForTest();
 	TestEqual(TEXT("no-change tick is silent"), Captured.Num(), 0);
 
-	// Phase 5: changing an OWNER-ONLY property now emits exactly one TARGETED delta decoding to just the
+	// Changing an OWNER-ONLY property emits exactly one TARGETED delta decoding to just the
 	// owner-only index (it is auto-diffed, but delivered owner-scoped rather than on the spatial broadcast).
 	Actor->RepOwnerOnly = 100;
 	Rep->RunReplicationLoopForTest();
@@ -1517,6 +1453,200 @@ bool FCrowdyStateLoopbackMirrorSpawnTest::RunTest(const FString& Parameters)
 		TestNull(TEXT("no-component guard returns null again"), Rep->GetOrCreateLoopbackMirrorForTest(BareActor, BareID));
 		TestEqual(TEXT("still exactly one real mirror tracked"), Rep->NumLoopbackMirrorsForTest(), 1);
 	}
+
+	return true;
+}
+
+// What one CrowdyState property costs a crowd, in the unit that actually binds: messages. The receive drain
+// delivers frame rate x crowdy.net.receive.maxmessages per second, so the question a crowd asks of this plane is
+// not bytes but how many separate dispatches N entities produce. Measured here rather than reasoned about,
+// because the send loop is per entity and nothing in it batches across entities.
+//
+// Reported through the test log as well as asserted, so the numbers can be read off a run rather than inferred
+// from which assertions passed.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateCrowdMessageCostTest,
+	"CrowdySDK.State.CrowdMessageCost", CrowdyStateReplicatorTestFlags)
+bool FCrowdyStateCrowdMessageCostTest::RunTest(const FString& Parameters)
+{
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	if (!TestNotNull(TEXT("registry created"), Registry))
+	{
+		return false;
+	}
+
+	const FCrowdyRepLayout* Layout = Registry->FindRepLayout(ACrowdyStateSendTestActor::StaticClass());
+	if (!TestNotNull(TEXT("send actor has a layout"), Layout))
+	{
+		return false;
+	}
+
+	const FGuid LocalPlayer = FGuid::NewGuid();
+	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, LocalPlayer);
+
+	// Pinned at 0 while the entities register, so every seeded NextKeyframeTime lands in [interval, 2*interval)
+	// and no heartbeat can fire during the on-change measurements below.
+	Rep->SetTimeForTest(0.0);
+
+	int32 Dispatches = 0;
+	int32 BlobBytes = 0;
+	int32 Keyframes = 0;
+	Rep->DispatchHookForTests = [&Dispatches, &BlobBytes, &Keyframes](const FCrowdyStateDelta& Delta, bool /*bTargeted*/)
+	{
+		++Dispatches;
+		BlobBytes += Delta.Blob.Num();
+		if ((Delta.Flags & CrowdyStateDeltaFlags::Keyframe) != 0)
+		{
+			++Keyframes;
+		}
+	};
+
+	// A crowd, not a pair. 2000 is the premise the governing plan is written against.
+	const int32 CrowdSize = 2000;
+
+	// Strong references: 2000 objects live across several ticks, and the replicator holds only weak pointers, so
+	// a GC between ticks would silently shrink the crowd being measured into stale-entry cleanup.
+	TArray<TStrongObjectPtr<ACrowdyStateSendTestActor>> Crowd;
+	Crowd.Reserve(CrowdSize);
+	for (int32 Index = 0; Index < CrowdSize; ++Index)
+	{
+		ACrowdyStateSendTestActor* Actor = NewObject<ACrowdyStateSendTestActor>();
+		if (!Actor)
+		{
+			AddError(TEXT("failed to create a crowd member"));
+			return false;
+		}
+		Crowd.Emplace(Actor);
+		if (!Rep->RegisterOwnedEntityForTest(FGuid::NewGuid(), Actor))
+		{
+			AddError(FString::Printf(TEXT("crowd member %d was not registered as owned"), Index));
+			return false;
+		}
+	}
+	TestEqual(TEXT("the whole crowd is tracked"), Rep->NumOwnedForTest(), CrowdSize);
+
+	// Settle the first diff against the zero shadow.
+	Rep->RunReplicationLoopForTest();
+	Dispatches = 0;
+	BlobBytes = 0;
+	Keyframes = 0;
+
+	// 1. Nothing changed. The floor of the plane: an idle crowd costs nothing, which is what makes the on-change
+	// numbers below the whole cost rather than an increment on a standing rate.
+	Rep->RunReplicationLoopForTest();
+	TestEqual(TEXT("an idle crowd emits no messages"), Dispatches, 0);
+
+	// 2. One entity changes one property. This stands in for the authoring surface under consideration: a game's
+	// own enum marked CrowdyState, changing when the game changes it. The fixture's narrowest spatial leaf is an
+	// int32, so the BYTE figure below is an upper bound for a one-byte enum; the MESSAGE count is the same either
+	// way, because the send loop dispatches per entity and never per property.
+	Dispatches = 0;
+	BlobBytes = 0;
+	Crowd[0]->RepInt = 1;
+	Rep->RunReplicationLoopForTest();
+	TestEqual(TEXT("one entity changing costs exactly one message"), Dispatches, 1);
+	const int32 SingleDeltaBytes = BlobBytes;
+	UE_LOG(LogCrowdyReplication, Display,
+		TEXT("[CrowdMessageCost] one property change on one entity: %d message(s), %d blob byte(s)."),
+		Dispatches, SingleDeltaBytes);
+
+	// 3. The whole crowd changes the same one property on the same tick. The number that decides whether this
+	// plane can carry crowd state at all: one message per entity, with no coalescing anywhere in the send loop.
+	Dispatches = 0;
+	BlobBytes = 0;
+	for (const TStrongObjectPtr<ACrowdyStateSendTestActor>& Member : Crowd)
+	{
+		Member->RepInt = 2;
+	}
+	Rep->RunReplicationLoopForTest();
+	TestEqual(TEXT("N entities changing costs exactly N messages"), Dispatches, CrowdSize);
+	UE_LOG(LogCrowdyReplication, Display,
+		TEXT("[CrowdMessageCost] %d entities each changing one property: %d message(s), %d blob byte(s) total, %.1f bytes per message."),
+		CrowdSize, Dispatches, BlobBytes, Dispatches > 0 ? static_cast<double>(BlobBytes) / Dispatches : 0.0);
+
+	// 4. The heartbeat, which is the cost that does NOT need anything to change. It is opt-in per property
+	// (CrowdyHeartbeat), and this actor has exactly one such property, so an entity that never changes still
+	// emits once per interval forever. At crowd scale that is CrowdSize / interval messages a second standing.
+	Dispatches = 0;
+	BlobBytes = 0;
+	Keyframes = 0;
+	Rep->SetTimeForTest(1000.0);
+	Rep->RunReplicationLoopForTest();
+	TestEqual(TEXT("every entity emits a keyframe on its interval"), Dispatches, CrowdSize);
+	TestEqual(TEXT("every one of them is flagged as a keyframe"), Keyframes, CrowdSize);
+	UE_LOG(LogCrowdyReplication, Display,
+		TEXT("[CrowdMessageCost] heartbeat for %d entities: %d message(s), %d blob byte(s). Standing rate is CrowdSize/KeyframeInterval messages per second with no change at all."),
+		CrowdSize, Dispatches, BlobBytes);
+
+	// 5. Same crowd, heartbeat off. Proves the standing rate in 4 is a property of the opt-in marker rather than
+	// of the plane, which is what makes it an authoring decision rather than a cost to design around.
+	Rep->SetKeyframeIntervalForTest(0.0f);
+	Dispatches = 0;
+	Rep->SetTimeForTest(2000.0);
+	Rep->RunReplicationLoopForTest();
+	TestEqual(TEXT("with the heartbeat off an unchanged crowd is silent again"), Dispatches, 0);
+
+	return true;
+}
+
+// Nothing in this suite asserted the class id an emitted delta carries, and the send path now reads it from
+// a per-entity field rather than resolving it on every emit. A wrong or unset id is not a cosmetic defect:
+// the receiver's coarse class guard drops the delta, so the entity silently stops replicating. Two emits,
+// because a field resolved once and then left behind only diverges from the second one onwards.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateEmittedClassIDTest,
+	"CrowdySDK.State.EmittedDeltaCarriesTheParticipantClassID", CrowdyStateReplicatorTestFlags)
+bool FCrowdyStateEmittedClassIDTest::RunTest(const FString& Parameters)
+{
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	if (!TestNotNull(TEXT("registry created"), Registry))
+	{
+		return false;
+	}
+
+	UClass* ActorClass = ACrowdyStateSendTestActor::StaticClass();
+	if (!TestNotNull(TEXT("send actor has a layout"), Registry->FindRepLayout(ActorClass)))
+	{
+		return false;
+	}
+
+	// The expectation comes from the registry, which is the same source the receiver's guard reads. A
+	// literal would pin the hash rather than the agreement, and the agreement is what the guard tests.
+	const FCrowdyClassID Expected = UCrowdyClassRegistry::Get()->GetID(ActorClass);
+	if (!TestTrue(TEXT("the test class resolves to a real id, so an unset one cannot pass by accident"),
+		Expected != CROWDY_INVALID_CLASS_ID))
+	{
+		return false;
+	}
+
+	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, FGuid::NewGuid());
+	Rep->SetTimeForTest(0.0);
+
+	TArray<FCrowdyStateDelta> Captured;
+	Rep->DispatchHookForTests = [&Captured](const FCrowdyStateDelta& Delta, bool) { Captured.Add(Delta); };
+
+	ACrowdyStateSendTestActor* Actor = NewObject<ACrowdyStateSendTestActor>();
+	TestTrue(TEXT("owned actor registered"), Rep->RegisterOwnedEntityForTest(FGuid::NewGuid(), Actor));
+
+	Rep->RunReplicationLoopForTest();
+	Captured.Reset();
+
+	Actor->RepInt = 42;
+	Rep->RunReplicationLoopForTest();
+	if (!TestEqual(TEXT("the first change emits one delta"), Captured.Num(), 1))
+	{
+		return false;
+	}
+	TestEqual(TEXT("and it carries the participant class's registered id"),
+		Captured[0].ClassID, static_cast<int64>(Expected));
+
+	Captured.Reset();
+	Actor->RepInt = 43;
+	Rep->RunReplicationLoopForTest();
+	if (!TestEqual(TEXT("the second change emits one delta"), Captured.Num(), 1))
+	{
+		return false;
+	}
+	TestEqual(TEXT("which carries the same id, not a value that drifted after the first"),
+		Captured[0].ClassID, static_cast<int64>(Expected));
 
 	return true;
 }

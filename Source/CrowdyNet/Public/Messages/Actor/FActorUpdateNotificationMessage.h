@@ -1,7 +1,11 @@
 ﻿#pragma once
 #include "CrowdyNetLog.h"
+#include "Core/FCrowdyTypeID.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
+#include "Core/UDP/Subscription/FCrowdyPayloadKey.h"
+#include "Messages/Actor/FActorUpdateBody.h"
+#include "Serialization/CrowdyFrame.h"
 #include "Utils/SerializationFunctionLibrary.h"
 
 /**
@@ -12,15 +16,38 @@
  * information such as updated properties, timestamps, or any other data
  * necessary for consumers to process the notification.
  */
-struct FActorUpdateNotificationMessage : ICrowdyMessage
+struct FActorUpdateNotificationMessage : FActorUpdateBody
 {
-	
+
 	FGuid GUID;
-	int32 StateSize;
 	int32 ExpectedStateSize = 300;
-	TArray<uint8> StateBytes;
 	FInstancedStruct State;
-	
+
+	/**
+	 * The state octets exactly as they arrived, borrowed from the frame rather than copied out of it.
+	 *
+	 * Valid only for the duration of the delivery call this message is passed to. Read it, or decode what
+	 * you need out of it, before returning; a handler that hands work to a later frame must capture the
+	 * DECODED value, never this view or the message that carries it. The decoded State above is owned and
+	 * has no such limit.
+	 */
+	TConstArrayView<uint8> StateView;
+
+	/**
+	 * The payload type tag that leads the state blob. Kept even when no struct is registered for it,
+	 * so the message can still say what arrived instead of losing all knowledge of itself.
+	 */
+	FCrowdyTypeID PayloadTypeID = CROWDY_INVALID_TYPE_ID;
+
+	/**
+	 * The entity class the sender named. This is the message's answer to "what is this", where
+	 * PayloadTypeID above answers "what shape are these bytes"; conflating the two is what let any two
+	 * classes sharing a state struct resolve as whichever of them registered last.
+	 *
+	 * Only ever set from a frame that decoded, since the decoder refuses a frame naming no class.
+	 */
+	FCrowdyClassID PayloadClassID = CROWDY_INVALID_CLASS_ID;
+
 	/**
 	 * Retrieves the specific type of the message.
 	 *
@@ -49,29 +76,51 @@ struct FActorUpdateNotificationMessage : ICrowdyMessage
 		return "Actor Update Notification Message";
 	}
 
+	virtual FCrowdyPayloadKey GetPayloadKey() const override
+	{
+		return FCrowdyPayloadKey::ActorUpdate(PayloadTypeID);
+	}
+
+	virtual const FInstancedStruct* GetPayload() const override
+	{
+		return State.IsValid() ? &State : nullptr;
+	}
+
+	virtual TConstArrayView<uint8> GetPayloadBytes() const override
+	{
+		return StateView;
+	}
+
 	/**
-	 * Deserializes the given data into its corresponding object representation.
+	 * Decodes the given frame into its corresponding object representation.
 	 *
-	 * This method takes a serialized data input and reconstructs the original
+	 * This method takes the frame's payload and reconstructs the original
 	 * object by parsing the data and mapping it to the appropriate fields.
 	 *
-	 * @param Data The serialized data to be deserialized.
+	 * @param Frame The frame carrying the serialized data to be decoded.
 	 */
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
+		// Sits between Crowdy_DecodeFrame above it and Crowdy_ToGuid and Crowdy_DeserializeActorState
+		// below it, so subtracting those two from this leaves the envelope parse and the framing reads,
+		// neither of which can be scoped without splitting a helper that is not worth splitting yet.
+		TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_DecodePayload_ActorUpdate);
+
+		const TConstArrayView<uint8> Data = Frame.Body;
 		int32 Offset = 0;
-		
-		if (!DeserializeMetadata(Data, Offset))
+
+		ApplyEnvelope(Frame);
+		if (!ApplyEnvelopeActorId(Frame))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FActorUpdateNotificationMessage::Deserialize - Metadata deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FActorUpdateNotificationMessage::DecodePayload - the frame carries no actor id"));
 			return false;
 		}
-		
+
 		GUID = USerializationFunctionLibrary::ToGuid(UUID);
 		
 		if (!USerializationFunctionLibrary::DeserializeValue(Data, StateSize, Offset))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FActorUpdateNotificationMessage::Deserialize - StateSize deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FActorUpdateNotificationMessage::DecodePayload - StateSize deserialization failed"));
 			return false;
 		}
 		
@@ -79,53 +128,38 @@ struct FActorUpdateNotificationMessage : ICrowdyMessage
 		
 		if (StateSize <= 0)
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FActorUpdateNotificationMessage::Deserialize - StateSize is out of valid range %d expected %d."), 
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FActorUpdateNotificationMessage::DecodePayload - StateSize is out of valid range %d expected %d."),
 			StateSize, ExpectedStateSize);
 			return false;
 		}
 		
-		if (!ensureMsgf(
-			Data.Num() >= Offset + StateSize,
-			TEXT("FActorUpdateNotificationMessage::Deserialize - Buffer too small for state payload. "
-			 "Have %d bytes, need %d (offset %d + stateSize %d)."),
-		Data.Num(), Offset + StateSize, Offset, StateSize))
+		// The declared length comes off the wire, so the bound is written as a comparison against the
+		// bytes remaining. Adding it to the offset first would overflow for a large declared length and
+		// produce a negative sum that passes the check. A malformed frame is expected input here rather
+		// than a programming error, so it reports rather than ensuring.
+		if (StateSize > Data.Num() - Offset)
 		{
+			UE_LOG(LogCrowdyNet, Warning,
+				TEXT("FActorUpdateNotificationMessage::DecodePayload - declared state length %d runs past the end of a %d byte frame at offset %d."),
+				StateSize, Data.Num(), Offset);
 			return false;
 		}
 		
-		StateBytes.SetNumUninitialized(StateSize);
-		FMemory::Memcpy(StateBytes.GetData(), Data.GetData() + Offset, StateSize);
-		
-		if (!USerializationFunctionLibrary::DeserializeActorState(StateBytes, State))
+		// The bound above is what keeps this view inside the frame, so it is load-bearing rather than
+		// defensive: nothing copies the octets out, and every reader addresses them through this.
+		StateView = TConstArrayView<uint8>(Data.GetData() + Offset, StateSize);
+
+		if (!USerializationFunctionLibrary::DeserializeActorState(StateView, State, PayloadTypeID, PayloadClassID))
 			State.Reset();
 		
 		return true;
 	}
 
-	/**
-	 * Serializes the current object into a data format suitable for storage or transmission.
-	 *
-	 * This method converts the fields of the object into a serialized representation
-	 * that can be deserialized later to reconstruct the original object.
-	 *
-	 * @return A byte array representing the serialized content of the object.
-	 */
+	/** Receive-only: an actor update is sent as FActorUpdateRequestMessage, not as this. */
 	virtual TArray<uint8> Serialize() const override
 	{
 		return TArray<uint8>();
 	}
-
-	/**
-	 * Calculates and returns the total size of the message in bytes.
-	 *
-	 * This method computes the size of the message by accounting for the size
-	 * of three 64-bit integers, a fixed additional offset, and the size of the
-	 * serialized actor state data. The calculation ensures accurate representation
-	 * of the message size for serialization or network transmission.
-	 *
-	 * @return The total size of the message in bytes as a 32-bit unsigned integer.
-	 */
-	virtual uint32 GetMessageSize() const override { return sizeof(int64) * 3 + 32;}
 
 	void SetExpectedStateSize(const int32 Size) { ExpectedStateSize = Size; }
 	

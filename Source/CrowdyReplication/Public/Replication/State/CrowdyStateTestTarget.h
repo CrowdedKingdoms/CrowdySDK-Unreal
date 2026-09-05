@@ -4,6 +4,7 @@
 #include "Components/ActorComponent.h"
 #include "Engine/NetSerialization.h" // FVector_NetQuantize
 #include "GameFramework/Actor.h"
+#include "Templates/Function.h"
 #include "Replication/Executor/ActorUpdateExecutor.h"
 #include "CrowdyStateTestTarget.generated.h"
 
@@ -30,7 +31,7 @@ enum class ECrowdyStateTestEnum : uint8
  * errors, so the accepted-path tests stay clean, while each reject test whitelists exactly the one
  * error it exercises.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateTestTarget : public UObject
 {
 	GENERATED_BODY()
@@ -70,15 +71,15 @@ public:
 	UPROPERTY(meta = (CrowdyState))
 	FRotator RepRotator = FRotator::ZeroRotator;
 
-	// Delivery scope example: owner-directed rather than spatial (Phase 5).
+	// Delivery scope example: owner-directed rather than spatial.
 	UPROPERTY(meta = (CrowdyState, CrowdyOwnerOnly))
 	int32 RepOwnerOnly = 0;
 
-	// Manual-dirty example: excluded from the per-tick diff, pushed on explicit mark (Phase 5).
+	// Manual-dirty example: excluded from the per-tick diff, pushed on explicit mark.
 	UPROPERTY(meta = (CrowdyState, CrowdyManualDirty))
 	int32 RepManualDirty = 0;
 
-	// OnRep + heartbeat example: the OnRep value names a parameterless notify (Phase 4); CrowdyHeartbeat opts the
+	// OnRep + heartbeat example: the OnRep value names a parameterless notify; CrowdyHeartbeat opts the
 	// property into the keyframe heartbeat, so the discovery/layout/bake tests cover a true bHeartbeat round-trip.
 	UPROPERTY(meta = (CrowdyState, CrowdyOnRep = "OnRep_Health", CrowdyHeartbeat))
 	float RepHealth = 0.f;
@@ -96,7 +97,7 @@ public:
  * two real classes differing by one added property, not runtime mutation. Also exercises the
  * super-class inclusion  its layout is the parent's set plus RepExtra.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateTestTargetExtra : public UCrowdyStateTestTarget
 {
 	GENERATED_BODY()
@@ -111,7 +112,7 @@ public:
  * Reject fixture for the object-reference case: one accepted property and one marked object-ref
  * property. The builder must omit the object-ref (logging an error) and keep the accepted one.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateObjectRejectTarget : public UObject
 {
 	GENERATED_BODY()
@@ -129,7 +130,7 @@ public:
  * Reject fixture for the container case: one accepted property and one marked container property. The
  * builder must omit the container (logging an error) and keep the accepted one.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateContainerRejectTarget : public UObject
 {
 	GENERATED_BODY()
@@ -166,7 +167,7 @@ struct FCrowdyStateNestedContainerStruct
  * whose struct transitively contains a container. The builder must omit the struct property (logging an
  * error) and keep the accepted scalar.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateNestedContainerRejectTarget : public UObject
 {
 	GENERATED_BODY()
@@ -185,7 +186,7 @@ public:
  * must omit the array (its positional two-argument Identical would compare only element [0], silently
  * dropping changes to later elements) and keep the accepted scalar.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateStaticArrayRejectTarget : public UObject
 {
 	GENERATED_BODY()
@@ -205,7 +206,7 @@ public:
  * so a drifted peer drops instead of misparsing by position. Two real classes rather than runtime
  * mutation, mirroring the layout-hash-changes-on-add approach.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateRetypeIntTarget : public UObject
 {
 	GENERATED_BODY()
@@ -216,7 +217,7 @@ public:
 	int32 RepValue = 0;
 };
 
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateRetypeInt64Target : public UObject
 {
 	GENERATED_BODY()
@@ -230,10 +231,10 @@ public:
 /**
  * Codec round-trip fixture: one meta=(CrowdyState) property of each supported kind, with distinct types
  * so a full-keyframe round-trip exercises every value branch  numerics, bool, byte, enum, name, string,
- * plain (exact) structs, and one net-serialized (quantized) struct. New for Phase 2; deliberately NOT
- * UCrowdyStateTestTarget, whose exact property set and order the Phase 0/1 tests hard-code.
+ * plain (exact) structs, and one net-serialized (quantized) struct. Deliberately NOT
+ * UCrowdyStateTestTarget, whose exact property set and order other tests hard-code.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateCodecTarget : public UObject
 {
 	GENERATED_BODY()
@@ -285,10 +286,61 @@ public:
 };
 
 /**
+ * A net-serialized struct that writes only PART of itself, which is the ordinary shape of a hand-written
+ * NetSerialize: the second member rides the wire only while the first is positive. It exists so the decode
+ * scratch can be held to the rule that a value the sender did not carry reads as the property's default,
+ * whether or not the slot the bytes land in was used by an earlier delta.
+ */
+USTRUCT()
+struct FCrowdyStatePartialNetStruct
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 Wire = 0;
+
+	// Carried only when Wire is positive, so a delta with Wire <= 0 says nothing about it at all.
+	UPROPERTY()
+	int32 Conditional = 0;
+
+	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+
+	bool operator==(const FCrowdyStatePartialNetStruct& Other) const
+	{
+		return Wire == Other.Wire && Conditional == Other.Conditional;
+	}
+};
+
+template<>
+struct TStructOpsTypeTraits<FCrowdyStatePartialNetStruct> : public TStructOpsTypeTraitsBase2<FCrowdyStatePartialNetStruct>
+{
+	enum
+	{
+		WithNetSerializer = true,
+		WithIdenticalViaEquality = true,
+	};
+};
+
+/**
+ * Fixture carrying exactly one partially-written net-serialized property, so a test can send two deltas over
+ * one decode scratch and assert what the second one leaves behind.
+ */
+UCLASS(meta = (CrowdyTestFixture))
+class UCrowdyStatePartialNetTarget : public UObject
+{
+	GENERATED_BODY()
+
+public:
+
+	UPROPERTY(meta = (CrowdyState))
+	FCrowdyStatePartialNetStruct RepPartial;
+};
+
+/**
  * Selector fixture: 64 replicated int32 properties, so the smaller-of selector choice can be observed at
  * the extremes one dirty bit favours the index-list (mode 1), all 64 favour the bitmask (mode 0).
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateWideTarget : public UObject
 {
 	GENERATED_BODY()
@@ -362,9 +414,9 @@ public:
 };
 
 /**
- * Send fixture (Phase 3): a CrowdyState ACTOR with a spread of leaf types plus one owner-only and one
+ * Send fixture: a CrowdyState ACTOR with a spread of leaf types plus one owner-only and one
  * manual-dirty property, so the replicator tests can prove owner-only / manual-dirty are EXCLUDED from the
- * Phase 3 spatial diff. It has no entity component/executor, so its layout is never overlap-filtered. The
+ * spatial diff. It has no entity component/executor, so its layout is never overlap-filtered. The
  * diff container must be an AActor (DispatchGameEvent takes a context actor), so this is a native actor
  * NewObject-able without a world on the test's dispatch-hook path.
  *
@@ -372,7 +424,7 @@ public:
  * opt-in per property); RepManualDirty is intentionally NOT a heartbeat property, so a keyframe carries exactly
  * the four marked, non-owner-only leaves.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class ACrowdyStateSendTestActor : public AActor
 {
 	GENERATED_BODY()
@@ -402,11 +454,11 @@ public:
 };
 
 /**
- * HostOverride fixture (Phase C): a CrowdyState actor that ALSO carries a UCrowdyEntityComponent (default
+ * HostOverride fixture: a CrowdyState actor that ALSO carries a UCrowdyEntityComponent (default
  * subobject) so both the send-side check (MarkStateDirty) and the receive-side backstop can read
  * GetHostOverridePolicy() off it. A test sets Entity->HostOverride to Allow or OwnerOnly before the push.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class ACrowdyStateHostOverrideActor : public AActor
 {
 	GENERATED_BODY()
@@ -425,7 +477,7 @@ public:
  * fires. Distinct from ACrowdyStateHostOverrideActor (whose RepInt is deliberately NOT heartbeat-marked, so it
  * covers the timer-due-but-no-marked-properties case instead).
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class ACrowdyStateHeartbeatActor : public AActor
 {
 	GENERATED_BODY()
@@ -469,13 +521,13 @@ public:
 };
 
 /**
- * Overlap fixture (Phase 3): its CrowdyState 'Health' ALSO lives in the executor state struct, so the
+ * Overlap fixture: its CrowdyState 'Health' ALSO lives in the executor state struct, so the
  * overlap filter must drop Health from the layout while 'Mana' survives. The entity component and its
  * StateExecutor are set as default subobjects in the constructor so the resolver reaches
  * Entity->StateExecutor->GetStateStruct() straight off the CDO (mirroring HasEntityComponent's native-CDO
  * probe: FindComponentByClass on a native actor CDO sees a CreateDefaultSubobject component).
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class ACrowdyStateOverlapActor : public AActor
 {
 	GENERATED_BODY()
@@ -497,10 +549,10 @@ public:
 };
 
 /**
- * Apply fixture component (Phase 4): a component carrying CrowdyState leaf properties, so the receive
+ * Apply fixture component: a component carrying CrowdyState leaf properties, so the receive
  * path's container resolution (an actor whose layout owner class is a component) can be exercised.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateApplyTestComponent : public UActorComponent
 {
 	GENERATED_BODY()
@@ -525,12 +577,12 @@ class UCrowdyStateApplyOtherComponent : public UActorComponent
 };
 
 /**
- * Apply fixture actor (Phase 4): CrowdyState leaf properties plus two OnRep'd properties whose notifies
+ * Apply fixture actor: CrowdyState leaf properties plus two OnRep'd properties whose notifies
  * bump distinct plain (non-replicated) counters, so a test can assert OnRep fires exactly for the changed
  * OnRep'd property and not for the unchanged one. Two components are default subobjects so container
  * resolution has both a matching and a non-matching component to choose between.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class ACrowdyStateApplyTestActor : public AActor
 {
 	GENERATED_BODY()
@@ -577,7 +629,7 @@ public:
 };
 
 /**
- * Subsystem-replication fixture (Subsystem Phase 1): a plain UObject (NOT an actor), standing in for a
+ * Subsystem-replication fixture: a plain UObject (NOT an actor), standing in for a
  * host-owned subsystem participant. It carries CrowdyState leaf properties incl. a CrowdyManualDirty one and a
  * CrowdyOnRep + CrowdyHeartbeat one, so the enroll / non-spatial diff / channel-route / apply-OnRep tests have a
  * non-actor participant. Two of the properties (RepInt, RepNotified) are CrowdyHeartbeat-marked so the keyframe
@@ -585,7 +637,7 @@ public:
  * apply test needs no editor world. NotifiedOnRepCount is a plain (non-replicated) counter the notify bumps so a
  * test can assert the notify fired.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateSubsystemTestTarget : public UObject
 {
 	GENERATED_BODY()
@@ -615,7 +667,7 @@ public:
  * A second, distinct subsystem participant class so the deterministic-identity test can prove two different
  * classes mint two different NetIDs (a host participant's id is derived from its class path).
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateSubsystemTestTargetB : public UObject
 {
 	GENERATED_BODY()
@@ -627,10 +679,51 @@ public:
 };
 
 /**
- * OnRep-signature-reject fixture (Phase 4): its first CrowdyOnRep names a function that TAKES A PARAMETER,
+ * Re-entrancy fixture: an actor whose FIRST notify runs a hook a test can point at anything, including
+ * another state dispatch on the same router. That is the shape the receive path has to survive, because a
+ * CrowdyOnRep is a UFunction call on a game object and such a call may do whatever the game does.
+ *
+ * The three properties are deliberately ordered notify, plain, notify: the plain middle slot is what a
+ * re-entrant dispatch changes, so the two sets are distinguishable, and the trailing notify is what the outer
+ * dispatch must still reach afterwards.
+ */
+UCLASS(meta = (CrowdyTestFixture))
+class ACrowdyStateReentrantNotifyActor : public AActor
+{
+	GENERATED_BODY()
+
+public:
+
+	UPROPERTY(meta = (CrowdyState, CrowdyOnRep = "OnRep_First"))
+	int32 RepFirst = 0;
+
+	UPROPERTY(meta = (CrowdyState))
+	int32 RepSecond = 0;
+
+	UPROPERTY(meta = (CrowdyState, CrowdyOnRep = "OnRep_Third"))
+	int32 RepThird = 0;
+
+	UPROPERTY()
+	int32 FirstOnRepCount = 0;
+
+	UPROPERTY()
+	int32 ThirdOnRepCount = 0;
+
+	// Run by OnRep_First, when bound. Not a UPROPERTY: it is a test seam, never replicated or serialized.
+	TFunction<void()> NotifyHook;
+
+	UFUNCTION()
+	void OnRep_First();
+
+	UFUNCTION()
+	void OnRep_Third();
+};
+
+/**
+ * OnRep-signature-reject fixture: its first CrowdyOnRep names a function that TAKES A PARAMETER,
  * so discovery must clear that binding; the second names a valid parameterless notify, which survives.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyStateBadOnRepTarget : public UObject
 {
 	GENERATED_BODY()

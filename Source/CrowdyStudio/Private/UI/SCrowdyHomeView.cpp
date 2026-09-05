@@ -89,7 +89,7 @@ void SCrowdyHomeView::Construct(const FArguments& InArgs)
 						TAttribute<FText>::CreateLambda([this]()
 						{
 							const TSharedPtr<FStudioOrg> Org = Controller.IsValid() ? Controller->GetSelectedOrg() : nullptr;
-							return Org.IsValid() ? FText::FromString(Org->Name) : LOCTEXT("Dash", "—");
+							return Org.IsValid() ? FText::FromString(Org->Name) : LOCTEXT("Dash", "-");
 						}),
 						TAttribute<FSlateColor>::CreateLambda([this]()
 						{
@@ -117,18 +117,38 @@ void SCrowdyHomeView::Construct(const FArguments& InArgs)
 				]
 				+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(5.0f, 0.0f, 0.0f, 0.0f)
 				[
+					// Two sources answer this and only one of them needs the network. The selection comes from the
+					// fetched app list; the pinned app id comes from the project settings, which are on disk and
+					// known immediately. Reading only the selection made a perfectly synced project report "No app
+					// selected" for as long as the sign-in took, which reads as "your sync was lost" rather than as
+					// "I have not finished loading".
 					StatCard(TEXT("config"), LOCTEXT("CardSync", "PROJECT SYNC"),
 						TAttribute<FText>::CreateLambda([this]()
 						{
-							if (!Controller.IsValid() || !Controller->GetSelectedApp().IsValid()) { return LOCTEXT("SyncNoApp", "No app selected"); }
+							if (!Controller.IsValid()) { return LOCTEXT("SyncNoApp", "No app selected"); }
 							const int64 Cur = Controller->GetCurrentSettings().AppId;
+							if (!Controller->GetSelectedApp().IsValid())
+							{
+								// With no selection there is nothing to compare against, so "in sync" cannot be
+								// claimed. What the settings do say is whether this project is pinned to an app.
+								if (Controller->IsFetchingApps()) { return LOCTEXT("SyncChecking", "Checking..."); }
+								return Cur == 0 ? LOCTEXT("SyncUnconf", "Not configured")
+									: LOCTEXT("SyncConfigured", "Configured");
+							}
 							if (Cur == 0) { return LOCTEXT("SyncUnconf", "Not configured"); }
 							return (Cur == Controller->GetSelectedAppId()) ? LOCTEXT("SyncIn", "In sync") : LOCTEXT("SyncOut", "Out of sync");
 						}),
 						TAttribute<FSlateColor>::CreateLambda([this]()
 						{
-							if (!Controller.IsValid() || !Controller->GetSelectedApp().IsValid()) { return FSlateColor(FCrowdyStudioStyle::TextSubtle()); }
+							if (!Controller.IsValid()) { return FSlateColor(FCrowdyStudioStyle::TextSubtle()); }
 							const int64 Cur = Controller->GetCurrentSettings().AppId;
+							if (!Controller->GetSelectedApp().IsValid())
+							{
+								// Not a warning colour while loading: nothing is wrong yet, and colouring it like a
+								// problem is half of what made this read as a lost sync.
+								return FSlateColor(Cur == 0 && !Controller->IsFetchingApps()
+									? FCrowdyStudioStyle::Warning() : FCrowdyStudioStyle::TextSubtle());
+							}
 							if (Cur == 0) { return FSlateColor(FCrowdyStudioStyle::Warning()); }
 							return FSlateColor((Cur == Controller->GetSelectedAppId()) ? FCrowdyStudioStyle::Success() : FCrowdyStudioStyle::Warning());
 						}))

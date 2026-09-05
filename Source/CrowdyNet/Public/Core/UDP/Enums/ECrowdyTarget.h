@@ -10,7 +10,7 @@
 UENUM(BlueprintType)
 enum class ECrowdyTarget : uint8
 {
-	Everyone        = 0 UMETA(DisplayName = "Everyone"),         // legacy broadcast — default, wire-compatible intent
+	Everyone        = 0 UMETA(DisplayName = "Everyone"),         // legacy broadcast: the default, wire-compatible intent
 	Entity          = 1 UMETA(DisplayName = "Entity"),           // TargetID = entity NetID
 	Owner           = 2 UMETA(DisplayName = "Owner"),            // TargetID = player GUID; only that client dispatches
 	Host            = 3 UMETA(DisplayName = "Host"),             // only the elected host dispatches

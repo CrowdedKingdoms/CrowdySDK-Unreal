@@ -6,41 +6,19 @@
 class UUserDefinedStructEditorData;
 class IDetailLayoutBuilder;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FCrowdyStructCustomization
-//
-// Details panel customization for UUserDefinedStructEditorData.
-//
-// Registered against "UserDefinedStructEditorData" — NOT "UserDefinedStruct".
-//
-// ── Why EditorData and not the struct itself ─────────────────────────────────
-// FUserDefinedStructEditor (the window opened when a user double-clicks a
-// struct asset) builds its Details panel against the struct's EditorData
-// sub-object (UUserDefinedStructEditorData), not against the struct UObject
-// directly. Registering a customization against "UserDefinedStruct" never
-// fires inside that editor — only against the Content Browser's selection
-// inspector, which doesn't show struct fields anyway.
-//
-// Registering against "UserDefinedStructEditorData" makes the customization
-// fire in the same Details panel where the user sees the member variables,
-// which is what the user actually wants.
-//
-// ── What this adds ──────────────────────────────────────────────────────────
-// One read-only row inside a new "Crowdy SDK" category:
-//
-//   • Status   — "Not a Crowdy payload" / "Event" / "ActorUpdate"
-//   • TypeID   — auto-derived from the struct's asset path, shown only
-//                when a category is active.
-//
-// Stamp changes are done via the Content Browser right-click on the struct
-// asset (FCrowdyStructAssetActions). This customization is read-only — it
-// surfaces the state inline next to the variables, so the user can see what
-// they've stamped without leaving the struct editor.
-//
-// (Read-only avoids the need for a dropdown in a panel that already houses
-// the variable editing UI, and avoids any chance of the customization being
-// blamed for properties disappearing.)
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Details panel customization for UUserDefinedStructEditorData, adding a read-only "Crowdy SDK"
+ * category next to a user-defined struct's member variables.
+ *
+ * It is registered against "UserDefinedStructEditorData" and not against "UserDefinedStruct":
+ * the struct editor builds its Details panel from the struct's EditorData sub-object, so a
+ * customization registered against the struct itself never fires there. It would only appear in
+ * the Content Browser's selection inspector, which does not show the struct's fields at all.
+ *
+ * The row it adds shows the TypeID this struct would carry as a Crowdy payload. It is read-only:
+ * a struct is stamped from the Content Browser's right-click menu instead, and this only surfaces
+ * the resulting state where the variables are edited.
+ */
 class FCrowdyStructCustomization : public IDetailCustomization
 {
 public:

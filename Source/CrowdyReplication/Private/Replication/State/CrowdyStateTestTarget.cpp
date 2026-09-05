@@ -2,10 +2,23 @@
 
 #include "Replication/Components/CrowdyEntityComponent.h"
 
-// Phase 0 reads only the OnRep metadata value (the function name); the notify is not invoked until
-// the receive path (Phase 4). The body exists so the reflected UFUNCTION links.
+// Discovery reads only the OnRep metadata value (the function name); the notify is not invoked until
+// the receive path. The body exists so the reflected UFUNCTION links.
 void UCrowdyStateTestTarget::OnRep_Health()
 {
+}
+
+// Writes Wire always and Conditional only while Wire is positive, symmetrically on read and write, so a
+// delta carrying a non-positive Wire says nothing about Conditional at all.
+bool FCrowdyStatePartialNetStruct::NetSerialize(FArchive& Ar, UPackageMap* /*Map*/, bool& bOutSuccess)
+{
+	bOutSuccess = true;
+	Ar << Wire;
+	if (Wire > 0)
+	{
+		Ar << Conditional;
+	}
+	return true;
 }
 
 ACrowdyStateOverlapActor::ACrowdyStateOverlapActor()
@@ -14,8 +27,11 @@ ACrowdyStateOverlapActor::ACrowdyStateOverlapActor()
 	// FindComponentByClass sees the constructor-created component (as HasEntityComponent relies on), and
 	// StateExecutor carries the executor whose GetStateStruct the overlap resolver reads. Assigning
 	// StateExecutor in the constructor works regardless of the component's Mode EditCondition, which gates
-	// only editor visibility, not the C++ value.
+	// only editor visibility, not the C++ value. Dynamic mode is required rather than incidental: only a
+	// Dynamic component runs the continuous channel that writes the executor state struct, so the overlap
+	// filter this fixture exercises does nothing at all on a Static component.
 	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));
+	Entity->Mode = ECrowdyEntityMode::Dynamic;
 	Entity->StateExecutor = CreateDefaultSubobject<UCrowdyStateOverlapExecutor>(TEXT("StateExecutor"));
 }
 
@@ -51,6 +67,20 @@ void ACrowdyStateApplyTestActor::OnRep_Health()
 void ACrowdyStateApplyTestActor::OnRep_Score()
 {
 	++ScoreOnRepCount;
+}
+
+void ACrowdyStateReentrantNotifyActor::OnRep_First()
+{
+	++FirstOnRepCount;
+	if (NotifyHook)
+	{
+		NotifyHook();
+	}
+}
+
+void ACrowdyStateReentrantNotifyActor::OnRep_Third()
+{
+	++ThirdOnRepCount;
 }
 
 void UCrowdyStateSubsystemTestTarget::OnRep_Notified()

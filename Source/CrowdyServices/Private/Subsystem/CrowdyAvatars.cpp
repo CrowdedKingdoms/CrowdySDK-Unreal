@@ -1,153 +1,45 @@
 #include "Subsystem/CrowdyAvatars.h"
+#include "CrowdyServiceApiSupport.h"
+#include "CrowdyCppClient.h"
 #include "LatentActions.h"
+#include "Engine/Engine.h"
 #include "Engine/LatentActionManager.h"
-#include "Network/GraphQL/CrowdyQuerySubsystem.h"
-#include "Internal/FCrowdyDataRegistry.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
-#include "Core/GraphQL/Enums/EQueryResponseType.h"
-#include "Async/Async.h"
 #include "Misc/Base64.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/MemoryReader.h"
 #include "UObject/UnrealType.h"
-#include "Queries/Data/Avatar/FAvatarCreateResponse.h"
-#include "Queries/Data/Avatar/FAvatarNameUpdateResponse.h"
-#include "Queries/Data/Avatar/FAvatarStateUpdateResponse.h"
-#include "Queries/Data/Avatar/FAvatarDeleteResponse.h"
-#include "Queries/Data/Avatar/Responses/FMyAvatarsResponse.h"
-#include "Queries/Data/Avatar/Responses/FAvatarResponse.h"
-#include "Queries/Data/Avatar/Responses/FUserAvatarsResponse.h"
-#include "Queries/Data/Avatar/Responses/FAvatarAppStateResponse.h"
-#include "Queries/Data/Avatar/Responses/FAvatarAppStatesResponse.h"
-#include "Queries/Data/Avatar/Responses/FUpdateAvatarAppStateResponse.h"
 
+using namespace CrowdyServiceApi;
 
-namespace AvatarQueries
+namespace
 {
-	static const TCHAR* MyAvatars =
-		TEXT("query MyAvatars { myAvatars { avatarId userId name publicState privateState createdAt } }");
+	// The generated operation set these calls are looked up in, which is also what decides the endpoint each one
+	// reaches and the bearer it carries.
+	constexpr ECrowdyCppApiDomain AvatarsDomain = ECrowdyCppApiDomain::Avatars;
 
-	static const TCHAR* GetAvatar =
-		TEXT(
-			"query GetAvatar($id: BigInt!) { avatar(id: $id) { avatarId userId name publicState privateState createdAt } }");
-
-	static const TCHAR* GetUserAvatars =
-		TEXT(
-			"query GetUserAvatars($userId: BigInt!) { userAvatars(userId: $userId) { avatarId userId name publicState createdAt } }");
-
-	static const TCHAR* GetAvatarAppState =
-		TEXT(
-			"query GetAvatarAppState($appId: BigInt!, $avatarId: BigInt!) { avatarAppState(appId: $appId, avatarId: $avatarId) { appId avatarId state createdAt updatedAt } }");
-
-	static const TCHAR* GetAvatarAppStates =
-		TEXT(
-			"query GetAvatarAppStates($appId: BigInt!, $avatarIds: [BigInt!]!) { avatarAppStates(appId: $appId, avatarIds: $avatarIds) { appId avatarId state createdAt updatedAt } }");
-
-	static const TCHAR* CreateAvatar =
-		TEXT(
-			"mutation CreateAvatar($name: String!) { createAvatar(input: { name: $name }) { avatarId userId name publicState privateState createdAt } }");
-
-	static const TCHAR* UpdateAvatar =
-		TEXT(
-			"mutation UpdateAvatar($id: BigInt!, $name: String!) { updateAvatar(id: $id, input: { name: $name }) { avatarId userId name publicState privateState createdAt } }");
-
-	static const TCHAR* DeleteAvatar =
-		TEXT("mutation DeleteAvatar($id: BigInt!) { deleteAvatar(id: $id) { avatarId userId name createdAt } }");
-
-	static const TCHAR* UpdatePublicAvatarState =
-		TEXT(
-			"mutation UpdatePublicAvatarState($id: BigInt!, $publicState: String) { updateAvatarState(id: $id, input: { publicState: $publicState }) { avatarId userId name publicState privateState createdAt } }");
-
-	static const TCHAR* UpdatePrivateAvatarState =
-		TEXT(
-			"mutation UpdatePrivateAvatarState($id: BigInt!, $privateState: String) { updateAvatarState(id: $id, input: { privateState: $privateState }) { avatarId userId name publicState privateState createdAt } }");
-
-	static const TCHAR* UpdateAvatarState =
-		TEXT(
-			"mutation UpdateAvatarState($id: BigInt!, $publicState: String, $privateState: String) { updateAvatarState(id: $id, input: { publicState: $publicState, privateState: $privateState }) { avatarId userId name publicState privateState createdAt } }");
-
-	static const TCHAR* UpdateAvatarAppState =
-		TEXT(
-			"mutation UpdateAvatarAppState($appId: BigInt!, $avatarId: BigInt!, $state: String) { updateAvatarAppState(input: { appId: $appId, avatarId: $avatarId, state: $state }) { appId avatarId state createdAt updatedAt } }");
-}
-
-
-void UCrowdyAvatars::InjectDependencies(FCrowdyDataRegistry* InDataRegistry, UCrowdyQuerySubsystem* InQuerySubsystem)
-{
-	if (InDataRegistry) InDataRegistry->RegisterLayer(this);
-	QuerySubsystem = InQuerySubsystem;
+	constexpr const TCHAR* AvatarsLogName = TEXT("CrowdyAvatars");
 }
 
 void UCrowdyAvatars::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+
+	LiveSessionToken = MakeShared<uint8>(0);
 }
 
 void UCrowdyAvatars::Deinitialize()
 {
-	FScopeLock Lock(&CallbackMutex);
-	PendingCallbacks.Empty();
+	// Released first: a completion can still arrive from the client's own pump after this point, and it must not
+	// broadcast a cache change or run a Blueprint delegate while the game instance is shutting down.
+	LiveSessionToken.Reset();
+
 	Super::Deinitialize();
 }
-
-
-TArray<EQueryResponseType> UCrowdyAvatars::GetSupportedResponseType() const
-{
-	return {
-		EQueryResponseType::CreateAvatar,
-		EQueryResponseType::MyAvatars,
-		EQueryResponseType::UpdateAvatar,
-		EQueryResponseType::UpdateAvatarState,
-		EQueryResponseType::DeleteAvatar,
-		EQueryResponseType::GetAvatar,
-		EQueryResponseType::GetUserAvatars,
-		EQueryResponseType::GetAvatarAppState,
-		EQueryResponseType::GetAvatarAppStates,
-		EQueryResponseType::UpdateAvatarAppState,
-	};
-}
-
-void UCrowdyAvatars::OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Response)
-{
-	if (!Response.IsValid()) return;
-	FireCallback(Response);
-}
-
 
 int64 UCrowdyAvatars::GetAppId() const
 {
 	return GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
-}
-
-void UCrowdyAvatars::PushCallback(EQueryResponseType Type,
-                                  TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback)
-{
-	FScopeLock Lock(&CallbackMutex);
-	PendingCallbacks.FindOrAdd(Type).Add(MoveTemp(Callback));
-}
-
-void UCrowdyAvatars::FireCallback(TSharedPtr<ICrowdyQueryResponse> Response)
-{
-	TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback;
-	{
-		FScopeLock Lock(&CallbackMutex);
-		TArray<TFunction<void(TSharedPtr<ICrowdyQueryResponse>)>>* Queue =
-			PendingCallbacks.Find(Response->GetResponseType());
-		if (Queue && Queue->Num() > 0)
-		{
-			Callback = MoveTemp((*Queue)[0]);
-			Queue->RemoveAt(0, 1, EAllowShrinking::No);
-		}
-	}
-
-	if (Callback)
-	{
-		TSharedPtr<ICrowdyQueryResponse> ResponseCopy = Response;
-		AsyncTask(ENamedThreads::GameThread, [Callback = MoveTemp(Callback), ResponseCopy]()
-		{
-			Callback(ResponseCopy);
-		});
-	}
 }
 
 bool UCrowdyAvatars::GetMyAvatarById(int64 AvatarId, FCrowdyAvatar& OutAvatar) const
@@ -163,254 +55,333 @@ bool UCrowdyAvatars::GetMyAvatarById(int64 AvatarId, FCrowdyAvatar& OutAvatar) c
 	return false;
 }
 
-
 void UCrowdyAvatars::GetMyAvatars(FOnAvatarsSuccess OnSuccess, FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::MyAvatars, [this, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), AvatarsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-		{
-			const FMyAvatarsResponse& R = static_cast<FMyAvatarsResponse&>(*Resp);
-			CachedMyAvatars = R.Avatars;
-			bCachePopulated = true;
-			OnMyAvatarsCacheChanged.Broadcast(CachedMyAvatars);
-			OnSuccess.ExecuteIfBound(R.Avatars);
-		}
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyAvatarError Error = ClientUnavailableError<FCrowdyAvatarError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::MyAvatars, AvatarQueries::MyAvatars, Vars);
+	TWeakObjectPtr<UCrowdyAvatars> WeakThis(this);
+	Client->RunOp(AvatarsDomain, TEXT("MyAvatars"), MakeShared<FJsonObject>(),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyAvatar> Avatars;
+			FCrowdyAvatarError Error;
+			if (!ReadArray(Result, TEXT("myAvatars"), Avatars, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+
+			if (UCrowdyAvatars* Self = WeakThis.Get())
+			{
+				Self->CachedMyAvatars = Avatars;
+				Self->bCachePopulated = true;
+				Self->OnMyAvatarsCacheChanged.Broadcast(Self->CachedMyAvatars);
+			}
+
+			OnSuccess.ExecuteIfBound(Avatars);
+		}));
 }
 
 void UCrowdyAvatars::GetAvatar(int64 AvatarId, FOnAvatarSuccess OnSuccess, FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::GetAvatar, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), AvatarsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FAvatarResponse&>(*Resp).Avatar);
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyAvatarError Error = ClientUnavailableError<FCrowdyAvatarError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("id"), FString::Printf(TEXT("%lld"), AvatarId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::GetAvatar, AvatarQueries::GetAvatar, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("id"), BigInt(AvatarId));
+
+	Client->RunOp(AvatarsDomain, TEXT("AvatarById"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyAvatar Avatar;
+			FCrowdyAvatarError Error;
+			if (!ReadObject(Result, TEXT("avatar"), Avatar, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Avatar);
+		}));
 }
 
 void UCrowdyAvatars::GetUserAvatars(int64 UserId, FOnAvatarsSuccess OnSuccess, FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::GetUserAvatars, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), AvatarsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FUserAvatarsResponse&>(*Resp).Avatars);
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyAvatarError Error = ClientUnavailableError<FCrowdyAvatarError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("userId"), FString::Printf(TEXT("%lld"), UserId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::GetUserAvatars, AvatarQueries::GetUserAvatars, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("userId"), BigInt(UserId));
+
+	Client->RunOp(AvatarsDomain, TEXT("UserAvatars"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyAvatar> Avatars;
+			FCrowdyAvatarError Error;
+			if (!ReadArray(Result, TEXT("userAvatars"), Avatars, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Avatars);
+		}));
 }
 
 void UCrowdyAvatars::GetAvatarAppState(int64 AvatarId, FOnAppStateSuccess OnSuccess, FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::GetAvatarAppState, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), AvatarsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FAvatarAppStateResponse&>(*Resp).AppState);
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyAvatarError Error = ClientUnavailableError<FCrowdyAvatarError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	Vars->SetStringField(TEXT("avatarId"), FString::Printf(TEXT("%lld"), AvatarId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::GetAvatarAppState, AvatarQueries::GetAvatarAppState,
-	                                                Vars);
+	Client->RunOp(AvatarsDomain, TEXT("AvatarAppState"), BuildAppStateVariables(GetAppId(), AvatarId),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyAppAvatarState AppState;
+			FCrowdyAvatarError Error;
+			if (!ReadObject(Result, TEXT("avatarAppState"), AppState, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(AppState);
+		}));
 }
 
 void UCrowdyAvatars::GetAvatarAppStates(const TArray<int64>& AvatarIds, FOnAppStatesSuccess OnSuccess,
                                         FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::GetAvatarAppStates, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), AvatarsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FAvatarAppStatesResponse&>(*Resp).AppStates);
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyAvatarError Error = ClientUnavailableError<FCrowdyAvatarError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(GetAppId()));
 
-	TArray<TSharedPtr<FJsonValue>> IdsJson;
+	TArray<TSharedPtr<FJsonValue>> Ids;
 	for (int64 Id : AvatarIds)
-		IdsJson.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%lld"), Id)));
-	Vars->SetArrayField(TEXT("avatarIds"), IdsJson);
+	{
+		Ids.Add(MakeShared<FJsonValueString>(BigInt(Id)));
+	}
+	Variables->SetArrayField(TEXT("avatarIds"), Ids);
 
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::GetAvatarAppStates,
-	                                                AvatarQueries::GetAvatarAppStates, Vars);
+	Client->RunOp(AvatarsDomain, TEXT("AvatarAppStates"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyAppAvatarState> AppStates;
+			FCrowdyAvatarError Error;
+			if (!ReadArray(Result, TEXT("avatarAppStates"), AppStates, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(AppStates);
+		}));
 }
-
 
 void UCrowdyAvatars::CreateAvatar(const FString& Name, FOnAvatarSuccess OnSuccess, FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::CreateAvatar, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), AvatarsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FAvatarCreateResponse&>(*Resp).Avatar);
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyAvatarError Error = ClientUnavailableError<FCrowdyAvatarError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("name"), Name);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::CreateAvatar, AvatarQueries::CreateAvatar, Vars);
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("name"), Name);
+
+	Client->RunOp(AvatarsDomain, TEXT("CreateAvatar"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyAvatar Avatar;
+			FCrowdyAvatarError Error;
+			if (!ReadObject(Result, TEXT("createAvatar"), Avatar, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Avatar);
+		}));
 }
 
 void UCrowdyAvatars::UpdateAvatar(int64 AvatarId, const FString& Name,
                                   FOnAvatarSuccess OnSuccess, FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::UpdateAvatar, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), AvatarsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FAvatarNameUpdateResponse&>(*Resp).Avatar);
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyAvatarError Error = ClientUnavailableError<FCrowdyAvatarError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("id"), FString::Printf(TEXT("%lld"), AvatarId));
-	Vars->SetStringField(TEXT("name"), Name);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::UpdateAvatarName, AvatarQueries::UpdateAvatar, Vars);
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("name"), Name);
+
+	TSharedPtr<FJsonObject> Variables = WrapInput(Input);
+	Variables->SetStringField(TEXT("id"), BigInt(AvatarId));
+
+	Client->RunOp(AvatarsDomain, TEXT("UpdateAvatar"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyAvatar Avatar;
+			FCrowdyAvatarError Error;
+			if (!ReadObject(Result, TEXT("updateAvatar"), Avatar, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Avatar);
+		}));
 }
 
 void UCrowdyAvatars::DeleteAvatar(int64 AvatarId, FOnAvatarVoidSuccess OnSuccess, FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::DeleteAvatar, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), AvatarsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound();
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyAvatarError Error = ClientUnavailableError<FCrowdyAvatarError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("id"), FString::Printf(TEXT("%lld"), AvatarId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::DeleteAvatar, AvatarQueries::DeleteAvatar, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("id"), BigInt(AvatarId));
+
+	Client->RunOp(AvatarsDomain, TEXT("DeleteAvatar"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			// The mutation answers with the row it removed, and the caller is told nothing about it. Reading it
+			// anyway is what distinguishes a deletion from a null answer, which is the only way this operation
+			// reports "there was nothing there" without a GraphQL error.
+			FCrowdyAvatar Removed;
+			FCrowdyAvatarError Error;
+			if (!ReadObject(Result, TEXT("deleteAvatar"), Removed, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound();
+		}));
 }
 
 void UCrowdyAvatars::UpdatePublicAvatarState(int64 AvatarId, const FString& PublicState,
                                              FOnAvatarSuccess OnSuccess, FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::UpdateAvatarState, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FAvatarStateUpdateResponse&>(*Resp).Avatar);
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
-
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("id"), FString::Printf(TEXT("%lld"), AvatarId));
-	Vars->SetStringField(TEXT("publicState"), PublicState);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::UpdateAvatarState,
-	                                                AvatarQueries::UpdatePublicAvatarState, Vars);
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("publicState"), PublicState);
+	DispatchAvatarStateUpdate(AvatarId, Input, OnSuccess, OnError);
 }
 
 void UCrowdyAvatars::UpdatePrivateAvatarState(int64 AvatarId, const FString& PrivateState,
                                               FOnAvatarSuccess OnSuccess, FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::UpdateAvatarState, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FAvatarStateUpdateResponse&>(*Resp).Avatar);
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
-
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("id"), FString::Printf(TEXT("%lld"), AvatarId));
-	Vars->SetStringField(TEXT("privateState"), PrivateState);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::UpdateAvatarState,
-	                                                AvatarQueries::UpdatePrivateAvatarState, Vars);
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("privateState"), PrivateState);
+	DispatchAvatarStateUpdate(AvatarId, Input, OnSuccess, OnError);
 }
 
 void UCrowdyAvatars::UpdateAvatarState(int64 AvatarId, const FString& PublicState,
                                        const FString& PrivateState,
                                        FOnAvatarSuccess OnSuccess, FOnAvatarError OnError)
 {
-	if (!QuerySubsystem) return;
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("publicState"), PublicState);
+	Input->SetStringField(TEXT("privateState"), PrivateState);
+	DispatchAvatarStateUpdate(AvatarId, Input, OnSuccess, OnError);
+}
 
-	PushCallback(EQueryResponseType::UpdateAvatarState, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+void UCrowdyAvatars::DispatchAvatarStateUpdate(int64 AvatarId, const TSharedPtr<FJsonObject>& Input,
+                                               FOnAvatarSuccess OnSuccess, FOnAvatarError OnError)
+{
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), AvatarsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FAvatarStateUpdateResponse&>(*Resp).Avatar);
-		else
-		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyAvatarError Error = ClientUnavailableError<FCrowdyAvatarError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("id"), FString::Printf(TEXT("%lld"), AvatarId));
-	Vars->SetStringField(TEXT("publicState"), PublicState);
-	Vars->SetStringField(TEXT("privateState"), PrivateState);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::UpdateAvatarState, AvatarQueries::UpdateAvatarState,
-	                                                Vars);
+	// Which of the two state fields the input carries is the whole difference between the public-only, private-only
+	// and both-at-once entry points: a field the input omits is left as it is on the server.
+	TSharedPtr<FJsonObject> Variables = WrapInput(Input);
+	Variables->SetStringField(TEXT("id"), BigInt(AvatarId));
+
+	Client->RunOp(AvatarsDomain, TEXT("UpdateAvatarState"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyAvatar Avatar;
+			FCrowdyAvatarError Error;
+			if (!ReadObject(Result, TEXT("updateAvatarState"), Avatar, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Avatar);
+		}));
+}
+
+void UCrowdyAvatars::UpdateAvatarAppState(int64 AvatarId, const FString& State,
+                                          FOnAppStateSuccess OnSuccess, FOnAvatarError OnError)
+{
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), AvatarsLogName);
+	if (!Client)
+	{
+		const FCrowdyAvatarError Error = ClientUnavailableError<FCrowdyAvatarError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+
+	Client->RunOp(AvatarsDomain, TEXT("UpdateAvatarAppState"),
+		WrapInput(BuildAppStateVariables(GetAppId(), AvatarId, State)),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyAppAvatarState AppState;
+			FCrowdyAvatarError Error;
+			if (!ReadObject(Result, TEXT("updateAvatarAppState"), AppState, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(AppState);
+		}));
+}
+
+TSharedPtr<FJsonObject> UCrowdyAvatars::BuildAppStateVariables(int64 AppId, int64 AvatarId,
+                                                               const TOptional<FString>& State)
+{
+	TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("appId"), BigInt(AppId));
+	Object->SetStringField(TEXT("avatarId"), BigInt(AvatarId));
+	if (State.IsSet())
+	{
+		Object->SetStringField(TEXT("state"), State.GetValue());
+	}
+	return Object;
 }
 
 
@@ -439,6 +410,9 @@ namespace AvatarStateSerialization
 	{
 		if (Bytes.Num() == 0 || !Prop || !Data) return false;
 		FMemoryReader Reader(Bytes, true);
+		// Avatar state is server-stored but client-written, so these bytes are wire input. Bounding the archive
+		// stops a forged length prefix asking for an allocation far larger than the blob that declared it.
+		Reader.ArMaxSerializeSize = Bytes.Num();
 		if (const FStructProperty* SP = CastField<FStructProperty>(Prop))
 			SP->Struct->SerializeBin(Reader, Data);
 		else if (CastField<FStrProperty>(Prop))
@@ -554,6 +528,29 @@ namespace
 			Response.FinishAndTriggerIf(true, ExecutionFunction, OutputLink, CallbackTarget);
 		}
 	};
+
+	/** Report a failure into a latent result the action is already waiting on, so the node still finishes. */
+	void FailLatentResult(const TSharedRef<FAppStateLatentResult>& Result, const FCrowdyAvatarError& Error)
+	{
+		Result->bSuccess = false;
+		Result->Error = Error;
+		Result->bCompleted = true;
+	}
+
+	/**
+	 * The world a latent node registers its action in. The node's own world context is preferred over the
+	 * subsystem's, which is null outside a running game.
+	 */
+	UWorld* ResolveLatentWorld(UObject* WorldContextObject, const UCrowdyAvatars* Subsystem)
+	{
+		if (UWorld* FromContext = GEngine
+			? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull)
+			: nullptr)
+		{
+			return FromContext;
+		}
+		return Subsystem ? Subsystem->GetWorld() : nullptr;
+	}
 }
 
 DEFINE_FUNCTION(UCrowdyAvatars::execGetAvatarAppStateAs)
@@ -570,37 +567,52 @@ DEFINE_FUNCTION(UCrowdyAvatars::execGetAvatarAppStateAs)
 	FCrowdyAvatarError* ErrorAddr = reinterpret_cast<FCrowdyAvatarError*>(Stack.MostRecentPropertyAddress);
 	P_FINISH;
 	P_NATIVE_BEGIN;
-		if (!P_THIS->QuerySubsystem) return;
-		UWorld* World = P_THIS->GetWorld();
-		if (!World) return;
-		auto Result = MakeShared<FAppStateLatentResult>();
-		World->GetLatentActionManager().AddNewAction(
+		UWorld* World = ResolveLatentWorld(Z_Param_WorldContextObject, P_THIS);
+		if (!World)
+		{
+			UE_LOG(LogCrowdyServices, Warning,
+				TEXT("[%s] Get Avatar App State As has no world to run in; the node cannot continue."), AvatarsLogName);
+			return;
+		}
+
+		FLatentActionManager& LatentActions = World->GetLatentActionManager();
+		if (LatentActions.FindExistingAction<FGetAppStateLatentAction>(
+			Z_Param_LatentInfo.CallbackTarget, Z_Param_LatentInfo.UUID))
+		{
+			// Already in flight for this node. A second registration would append rather than replace, and both
+			// actions write the same output addresses, so the node would continue twice off one invocation.
+			return;
+		}
+
+		// The action is registered before anything can fail, so every path from here reaches the node's output pin
+		// rather than leaving it waiting on a request that was never issued.
+		TSharedRef<FAppStateLatentResult> Result = MakeShared<FAppStateLatentResult>();
+		LatentActions.AddNewAction(
 			Z_Param_LatentInfo.CallbackTarget, Z_Param_LatentInfo.UUID,
 			new FGetAppStateLatentAction(Z_Param_LatentInfo, Result, StateData, StateProp, bSuccessAddr, ErrorAddr));
-		P_THIS->PushCallback(EQueryResponseType::GetAvatarAppState,
-		                     [Result](TSharedPtr<ICrowdyQueryResponse> Resp)
-		                     {
-			                     AsyncTask(ENamedThreads::GameThread, [Result, Resp]()
-			                     {
-				                     if (Resp->IsValid())
-				                     {
-					                     Result->RawState = static_cast<FAvatarAppStateResponse&>(*Resp).AppState.
-						                     RawState;
-					                     Result->bSuccess = true;
-				                     }
-				                     else
-				                     {
-					                     Result->Error = FCrowdyAvatarError::FromMessage(Resp->GetError());
-					                     Result->bSuccess = false;
-				                     }
-				                     Result->bCompleted = true;
-			                     });
-		                     });
-		TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-		Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), P_THIS->GetAppId()));
-		Vars->SetStringField(TEXT("avatarId"), FString::Printf(TEXT("%lld"), Z_Param_AvatarId));
-		P_THIS->QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::GetAvatarAppState,
-		                                                        AvatarQueries::GetAvatarAppState, Vars);
+
+		FCrowdyCppClient* Client = ResolveApiClient(P_THIS->GetGameInstance(), AvatarsLogName);
+		if (!Client)
+		{
+			FailLatentResult(Result, ClientUnavailableError<FCrowdyAvatarError>());
+			return;
+		}
+
+		Client->RunOp(AvatarsDomain, TEXT("AvatarAppState"),
+			UCrowdyAvatars::BuildAppStateVariables(P_THIS->GetAppId(), Z_Param_AvatarId),
+			[Result](FCrowdyCppJsonResult Response)
+			{
+				FCrowdyAppAvatarState AppState;
+				FCrowdyAvatarError Error;
+				if (!ReadObject(Response, TEXT("avatarAppState"), AppState, Error))
+				{
+					FailLatentResult(Result, Error);
+					return;
+				}
+				Result->RawState = AppState.RawState;
+				Result->bSuccess = true;
+				Result->bCompleted = true;
+			});
 	P_NATIVE_END;
 }
 
@@ -617,58 +629,50 @@ DEFINE_FUNCTION(UCrowdyAvatars::execSetAvatarAppStateAs)
 		Stack.StepCompiledIn<FStructProperty>(nullptr);
 		FCrowdyAvatarError* ErrorAddr = reinterpret_cast<FCrowdyAvatarError*>(Stack.MostRecentPropertyAddress);
 	P_FINISH;
-	
+
 	P_NATIVE_BEGIN;
-		if (!P_THIS->QuerySubsystem) return;
-		UWorld* World = P_THIS->GetWorld();
-		if (!World) return;
+		UWorld* World = ResolveLatentWorld(Z_Param_WorldContextObject, P_THIS);
+		if (!World)
+		{
+			UE_LOG(LogCrowdyServices, Warning,
+				TEXT("[%s] Set Avatar App State As has no world to run in; the node cannot continue."), AvatarsLogName);
+			return;
+		}
+
+		FLatentActionManager& LatentActions = World->GetLatentActionManager();
+		if (LatentActions.FindExistingAction<FSetAppStateLatentAction>(
+			Z_Param_LatentInfo.CallbackTarget, Z_Param_LatentInfo.UUID))
+		{
+			return; // Already in flight for this node; see the matching guard on the read.
+		}
+
 		const FString SerializedState = AvatarStateSerialization::ToBase64(StateProp, StateData);
-		auto Result = MakeShared<FAppStateLatentResult>();
-		World->GetLatentActionManager().AddNewAction(
+
+		TSharedRef<FAppStateLatentResult> Result = MakeShared<FAppStateLatentResult>();
+		LatentActions.AddNewAction(
 			Z_Param_LatentInfo.CallbackTarget, Z_Param_LatentInfo.UUID,
 			new FSetAppStateLatentAction(Z_Param_LatentInfo, Result, bSuccessAddr, ErrorAddr));
-		P_THIS->PushCallback(EQueryResponseType::UpdateAvatarAppState,
-		                     [Result](TSharedPtr<ICrowdyQueryResponse> Resp)
-		                     {
-			                     AsyncTask(ENamedThreads::GameThread, [Result, Resp]()
-			                     {
-				                     Result->bSuccess = Resp->IsValid();
-				                     Result->Error = Resp->IsValid()
-					                                     ? FCrowdyAvatarError{}
-					                                     : FCrowdyAvatarError::FromMessage(Resp->GetError());
-				                     Result->bCompleted = true;
-			                     });
-		                     });
-		TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-		Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), P_THIS->GetAppId()));
-		Vars->SetStringField(TEXT("avatarId"), FString::Printf(TEXT("%lld"), Z_Param_AvatarId));
-		Vars->SetStringField(TEXT("state"), SerializedState);
-		P_THIS->QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::UpdateAvatarAppState,
-		                                                        AvatarQueries::UpdateAvatarAppState, Vars);
-	P_NATIVE_END;
-}
 
-
-void UCrowdyAvatars::UpdateAvatarAppState(int64 AvatarId, const FString& State,
-                                          FOnAppStateSuccess OnSuccess, FOnAvatarError OnError)
-{
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::UpdateAvatarAppState, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FUpdateAvatarAppStateResponse&>(*Resp).AppState);
-		else
+		FCrowdyCppClient* Client = ResolveApiClient(P_THIS->GetGameInstance(), AvatarsLogName);
+		if (!Client)
 		{
-			const FCrowdyAvatarError Err = FCrowdyAvatarError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
+			FailLatentResult(Result, ClientUnavailableError<FCrowdyAvatarError>());
+			return;
 		}
-	});
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	Vars->SetStringField(TEXT("avatarId"), FString::Printf(TEXT("%lld"), AvatarId));
-	Vars->SetStringField(TEXT("state"), State);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::UpdateAvatarAppState,
-	                                                AvatarQueries::UpdateAvatarAppState, Vars);
+		Client->RunOp(AvatarsDomain, TEXT("UpdateAvatarAppState"),
+			WrapInput(UCrowdyAvatars::BuildAppStateVariables(P_THIS->GetAppId(), Z_Param_AvatarId, SerializedState)),
+			[Result](FCrowdyCppJsonResult Response)
+			{
+				FCrowdyAppAvatarState AppState;
+				FCrowdyAvatarError Error;
+				if (!ReadObject(Response, TEXT("updateAvatarAppState"), AppState, Error))
+				{
+					FailLatentResult(Result, Error);
+					return;
+				}
+				Result->bSuccess = true;
+				Result->bCompleted = true;
+			});
+	P_NATIVE_END;
 }

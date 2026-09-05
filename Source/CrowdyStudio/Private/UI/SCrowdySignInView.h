@@ -25,7 +25,6 @@ public:
 
 private:
 	FReply OnLoginClicked();
-	FReply OnDevLoginClicked();
 	FReply OnMagicLinkClicked();
 	FReply OnSignInWithTokenClicked();
 
@@ -33,7 +32,7 @@ private:
 	// controller's OnLoginProvidersChanged so it stays in sync when the provider list arrives.
 	void RebuildProviders();
 	// Re-probe the providers when the backend changes (a different backend can enable different
-	// providers). Only while signed out — that's the only time the sign-in buttons are shown.
+	// providers). Only while signed out, which is the only time the sign-in buttons are shown.
 	void HandleBackendChanged();
 	TSharedRef<SWidget> MakeProviderButton(const FString& Provider);
 

@@ -30,15 +30,12 @@ void UCrowdyConnectionMonitor::InitConnectionMonitor()
 	{
 		CrowdySDK->OnUDPConnectionSuccess.AddDynamic(this, &UCrowdyConnectionMonitor::OnUdpConnectionSuccess);
 	}
-	
-	CrowdyUdp->ToggleUdpEvents(true); // Set to true
 }
 
 void UCrowdyConnectionMonitor::OnUdpTimeoutDetected()
 {
 	ReconnectState = ECrowdyReconnectState::Disconnected;
 	OnConnectionStateChanged.Broadcast(ReconnectState);
-	CrowdyUdp->ToggleUdpEvents(false); // set to false
 
 	GetWorld()->GetTimerManager().SetTimer(
 		RetryTimer,
@@ -51,16 +48,6 @@ void UCrowdyConnectionMonitor::OnUdpTimeoutDetected()
 				OnConnectionStateChanged.Broadcast(ReconnectState);
 				CrowdySDK->RequestUDPAccess();
 				AttemptIndex++;
-
-				GetWorld()->GetTimerManager().SetTimer(
-					ReconnectMessageTimer,
-					[this]()
-					{
-						CrowdyUdp->ToggleUdpEvents(true);
-					},
-					3.0f, // Time interval in seconds
-					false // Looping
-				);
 			}
 			else
 			{
@@ -79,10 +66,7 @@ void UCrowdyConnectionMonitor::OnUdpConnectionSuccess()
 {
 	ReconnectState = ECrowdyReconnectState::Connected;
 	OnConnectionStateChanged.Broadcast(ReconnectState);
-	CrowdyUdp->ToggleUdpEvents(true);
 	GetWorld()->GetTimerManager().ClearTimer(RetryTimer);
-	GetWorld()->GetTimerManager().ClearTimer(ReconnectMessageTimer);
-	CrowdySDK->StartUDPTimeoutMonitoring(10.0f);
 	IsUdpMonitoringActive = true;
 	AttemptIndex = 0;
 }

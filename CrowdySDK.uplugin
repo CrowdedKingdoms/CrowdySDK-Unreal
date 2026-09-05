@@ -1,7 +1,7 @@
 ﻿{
 	"FileVersion": 3,
 	"Version": 2,
-	"VersionName": "2.1.0",
+	"VersionName": "2.7.3",
 	"FriendlyName": "CrowdySDK",
 	"Description": "The Crowdy Unreal SDK is an Unreal Engine plugin that integrates your game with the Crowded Kingdoms platform",
 	"Category": "Other",
@@ -15,11 +15,13 @@
 	"Installed": false,
 	"Modules": [
 		{ "Name": "CKSharedTypes",      "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyCppBridge",    "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyNet",          "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyReplication",  "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyVoice",        "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyServices",     "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdySDK",          "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyNodes",        "Type": "UncookedOnly", "LoadingPhase": "Default" },
 		{ "Name": "CrowdySDKEditor",    "Type": "Editor",  "LoadingPhase": "PostEngineInit" },
 		{ "Name": "CrowdyStudio",       "Type": "Editor",  "LoadingPhase": "PostEngineInit" }
 	],

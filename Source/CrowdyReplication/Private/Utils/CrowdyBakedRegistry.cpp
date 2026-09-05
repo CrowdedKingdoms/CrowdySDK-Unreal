@@ -4,6 +4,8 @@
 #include "CrowdyReplicationLog.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Replication/State/FCrowdyRepLayout.h" // FCrowdyRepLayout, FCrowdyRepProperty
+#include "Replication/GameModel/CrowdyAttributeRegistry.h" // FCrowdyAttributeDef
+#include "Replication/GameModel/CrowdyGameModelMetaKeys.h" // CrowdyPullOnStart
 #include "UObject/Class.h"          // UFunction, UClass
 #include "UObject/UObjectGlobals.h"
 
@@ -14,6 +16,16 @@ namespace
 	// load and use cannot collect it.
 	TWeakObjectPtr<const UCrowdyBakedRegistry> GCachedRegistry;
 	bool bCacheResolved = false;
+
+#if WITH_METADATA
+	// The pull-on-start tag is an opt-out: the only value that turns the pull off is "False", so anything else a
+	// class carries (and the absence of the tag entirely) means it pulls. Compared without case sensitivity so a
+	// hand-written meta=(CrowdyPullOnStart="false") reads the same as the value the Blueprint compiler stamps.
+	bool PullOnStartValueMeansPull(const FString& Value)
+	{
+		return !Value.TrimStartAndEnd().Equals(TEXT("False"), ESearchCase::IgnoreCase);
+	}
+#endif
 }
 
 const UCrowdyBakedRegistry* UCrowdyBakedRegistry::Get()
@@ -92,6 +104,19 @@ void UCrowdyBakedRegistry::BuildLookups() const
 	for (const FCrowdyBakedRepLayoutHash& Entry : RepLayoutHashes)
 	{
 		RepLayoutHashLookup.Add(Entry.ClassPath, Entry.LayoutHash);
+	}
+
+	// Group the flat model-attribute list by owning class (order within a class is not addressed by
+	// index the way rep layout is, so no defensive re-sort is needed).
+	for (const FCrowdyBakedAttribute& Attr : ModelAttributes)
+	{
+		ModelAttributeLookup.FindOrAdd(Attr.OwnerClassPath).Add(Attr);
+	}
+
+	ModelClassLookup.Reserve(ModelClasses.Num());
+	for (const FCrowdyBakedModelClass& Entry : ModelClasses)
+	{
+		ModelClassLookup.Add(Entry.ClassPath, Entry);
 	}
 
 	bLookupsBuilt = true;
@@ -202,6 +227,97 @@ int64 UCrowdyBakedRegistry::FindRepLayoutHash(const UClass* Class)
 	return Registry->FindRepLayoutHash(FSoftClassPath(const_cast<UClass*>(Class)));
 }
 
+const TArray<FCrowdyBakedAttribute>* UCrowdyBakedRegistry::FindModelAttributes(
+	const FSoftClassPath& OwnerClassPath) const
+{
+	BuildLookups();
+	return ModelAttributeLookup.Find(OwnerClassPath);
+}
+
+const TArray<FCrowdyBakedAttribute>* UCrowdyBakedRegistry::FindModelAttributes(const UClass* Class)
+{
+	if (!Class) return nullptr;
+
+	const UCrowdyBakedRegistry* Registry = Get();
+	if (!Registry) return nullptr;
+
+	return Registry->FindModelAttributes(FSoftClassPath(const_cast<UClass*>(Class)));
+}
+
+bool UCrowdyBakedRegistry::FindContainerTypeName(const FSoftClassPath& ClassPath, FString& OutTypeName) const
+{
+	BuildLookups();
+	if (const FCrowdyBakedModelClass* Entry = ModelClassLookup.Find(ClassPath))
+	{
+		if (!Entry->ContainerTypeName.IsEmpty())
+		{
+			OutTypeName = Entry->ContainerTypeName;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UCrowdyBakedRegistry::FindContainerTypeName(const UClass* Class, FString& OutTypeName)
+{
+	if (!Class) return false;
+
+	const UCrowdyBakedRegistry* Registry = Get();
+	if (!Registry) return false;
+
+	return Registry->FindContainerTypeName(FSoftClassPath(const_cast<UClass*>(Class)), OutTypeName);
+}
+
+bool UCrowdyBakedRegistry::FindPullModelOnStart(const FSoftClassPath& ClassPath, bool& bOutPullOnStart) const
+{
+	BuildLookups();
+	if (const FCrowdyBakedModelClass* Entry = ModelClassLookup.Find(ClassPath))
+	{
+		bOutPullOnStart = Entry->bPullOnStart;
+		return true;
+	}
+	return false;
+}
+
+bool UCrowdyBakedRegistry::ShouldPullModelOnStart(const UClass* Class)
+{
+	if (!Class)
+	{
+		return true;
+	}
+
+#if WITH_METADATA
+	// Metadata lookups answer for one class, so a subclass that declares no tag of its own follows the nearest
+	// ancestor that does. The first class in the chain carrying the tag decides, which lets a subclass declare
+	// "True" to opt back in to the pull its base turned off.
+	for (const UClass* Current = Class; Current; Current = Current->GetSuperClass())
+	{
+		if (Current->HasMetaData(CrowdyGameModelMetaKeys::PullOnStart))
+		{
+			return PullOnStartValueMeansPull(Current->GetMetaData(CrowdyGameModelMetaKeys::PullOnStart));
+		}
+	}
+	return true;
+#else
+	// Cooked builds strip UCLASS metadata. The bake already resolved the chain walk above into each container
+	// class's own entry, so the nearest ancestor with an entry carries this class's answer.
+	const UCrowdyBakedRegistry* Registry = Get();
+	if (!Registry)
+	{
+		return true;
+	}
+	for (const UClass* Current = Class; Current; Current = Current->GetSuperClass())
+	{
+		bool bPullOnStart = true;
+		if (Registry->FindPullModelOnStart(FSoftClassPath(const_cast<UClass*>(Current)), bPullOnStart))
+		{
+			return bPullOnStart;
+		}
+	}
+	return true;
+#endif
+}
+
 void UCrowdyBakedRegistry::MakeBakedRepProperties(
 	const FCrowdyRepLayout& Layout, const FSoftClassPath& OwnerClassPath, TArray<FCrowdyBakedRepProperty>& OutProps)
 {
@@ -219,5 +335,23 @@ void UCrowdyBakedRegistry::MakeBakedRepProperties(
 		Baked.bHeartbeat         = Prop.bHeartbeat;
 		Baked.OnRepFunctionName  = Prop.OnRepFunctionName;
 		Baked.LayoutOrder        = Index;
+	}
+}
+
+void UCrowdyBakedRegistry::MakeBakedAttributes(
+	const TArray<FCrowdyAttributeDef>& Defs, const FSoftClassPath& OwnerClassPath, TArray<FCrowdyBakedAttribute>& OutAttrs)
+{
+	OutAttrs.Reserve(OutAttrs.Num() + Defs.Num());
+	for (const FCrowdyAttributeDef& Def : Defs)
+	{
+		FCrowdyBakedAttribute& Baked = OutAttrs.AddDefaulted_GetRef();
+		Baked.OwnerClassPath    = OwnerClassPath;
+		Baked.PropertyName      = Def.PropertyName;
+		Baked.Key               = Def.Key;
+		Baked.ValueType         = Def.ValueType;
+		Baked.bHasClamp         = Def.bHasClamp;
+		Baked.ClampMin          = Def.ClampMin;
+		Baked.ClampMax          = Def.ClampMax;
+		Baked.OnRepFunctionName = Def.OnRepFunctionName;
 	}
 }

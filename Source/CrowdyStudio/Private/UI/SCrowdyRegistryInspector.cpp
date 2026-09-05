@@ -461,7 +461,18 @@ void SCrowdyRegistryInspector::RefreshData()
 
 	if (Registry)
 	{
-		for (const FCrowdyBakedRpcFunction& Fn : Registry->RpcFunctions)
+		// Snapshot every registry array up front. Building the rep-property rows below loads owner classes
+		// (TryLoadClass / ResolveDefaultEntityComponent), and a first-time class load can trigger the baked
+		// registry to rebuild - which would mutate these arrays mid-iteration (the "Array changed during
+		// ranged-for iteration" ensure) or replace the registry object under us. Iterating copies decouples
+		// this pass from any such rebuild.
+		const TArray<FCrowdyBakedRpcFunction> RpcFunctions = Registry->RpcFunctions;
+		const TArray<FCrowdyBakedRepProperty> RepProperties = Registry->RepProperties;
+		const TArray<FCrowdyBakedRepLayoutHash> RepLayoutHashes = Registry->RepLayoutHashes;
+		const TArray<FSoftObjectPath> PersistentStructs = Registry->PersistentStructs;
+		const TArray<FSoftObjectPath> SingletonStructs = Registry->SingletonStructs;
+
+		for (const FCrowdyBakedRpcFunction& Fn : RpcFunctions)
 		{
 			const FString ClassPath = Fn.ClassPath.ToString();
 
@@ -488,8 +499,8 @@ void SCrowdyRegistryInspector::RefreshData()
 		// class-path -> layout-hash map so each property row can carry its class's layout hash for the
 		// card header (the baker guarantees one hash entry per class that declares any rep props).
 		TMap<FString, int64> LayoutHashByClass;
-		LayoutHashByClass.Reserve(Registry->RepLayoutHashes.Num());
-		for (const FCrowdyBakedRepLayoutHash& Hash : Registry->RepLayoutHashes)
+		LayoutHashByClass.Reserve(RepLayoutHashes.Num());
+		for (const FCrowdyBakedRepLayoutHash& Hash : RepLayoutHashes)
 		{
 			LayoutHashByClass.Add(Hash.ClassPath.ToString(), Hash.LayoutHash);
 		}
@@ -507,7 +518,7 @@ void SCrowdyRegistryInspector::RefreshData()
 		};
 		TMap<FString, FClassEntityDefaults> EntityDefaultsByClass;
 
-		for (const FCrowdyBakedRepProperty& Prop : Registry->RepProperties)
+		for (const FCrowdyBakedRepProperty& Prop : RepProperties)
 		{
 			const FString ClassPath = Prop.OwnerClassPath.ToString();
 
@@ -551,11 +562,11 @@ void SCrowdyRegistryInspector::RefreshData()
 			return A->ClassPath != B->ClassPath ? A->ClassPath < B->ClassPath : A->LayoutOrder < B->LayoutOrder;
 		});
 
-		for (const FSoftObjectPath& Path : Registry->PersistentStructs)
+		for (const FSoftObjectPath& Path : PersistentStructs)
 		{
 			PersistentStructItems.Add(MakeShared<FString>(Path.ToString()));
 		}
-		for (const FSoftObjectPath& Path : Registry->SingletonStructs)
+		for (const FSoftObjectPath& Path : SingletonStructs)
 		{
 			SingletonStructItems.Add(MakeShared<FString>(Path.ToString()));
 		}

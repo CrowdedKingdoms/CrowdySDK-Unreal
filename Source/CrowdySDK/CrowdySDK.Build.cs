@@ -37,7 +37,6 @@ public class CrowdySDK : ModuleRules
 				"Json",
 				"JsonUtilities",
 				"HTTP",
-				"WebSockets",
 				"ProceduralMeshComponent",
 				"UMG",
 				"GameplayTags",
@@ -56,8 +55,11 @@ public class CrowdySDK : ModuleRules
 				"Slate",
 				"SlateCore",
 				"Sockets",
-				"Networking", 
-				// ... add private dependencies that you statically link with here ...	
+				"Networking",
+				// Private everywhere: a public header may name a bridge type only as a forward declaration,
+				// and never a crowdy:: type at all.
+				"CrowdyCppBridge",
+				// ... add private dependencies that you statically link with here ...
 			}
 			);
 		

@@ -23,7 +23,7 @@ class UUserDefinedStruct;
 //
 // This identifier is the engine-generated context menu specifically for
 // UUserDefinedStruct assets. Our entries only appear when the user right-
-// clicks a struct asset — never on other asset types.
+// clicks a struct asset, never on other asset types.
 // ─────────────────────────────────────────────────────────────────────────────
 class FCrowdyStructContextMenu
 {
@@ -46,13 +46,13 @@ private:
 		FMenuBuilder& MenuBuilder,
 		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs);
 
-	// Executors — operate on the selected struct asset(s).
+	// Executors: operate on the selected struct asset(s).
 	static void ExecuteSetFlag(
 		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
 		FName MetaKey,
 		bool bEnabled);
 
-	// Predicates — controls whether the menu entries are enabled.
+	// Predicates: control whether the menu entries are enabled.
 	static bool IsFlagSet(
 		TArray<TWeakObjectPtr<UUserDefinedStruct>> Structs,
 		FName MetaKey);

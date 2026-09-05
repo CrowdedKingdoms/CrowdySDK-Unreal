@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 
 /**
- * Builds URLs into the web management console — the single source for every
+ * Builds URLs into the web management console: the single source for every
  * security-critical page the editor deliberately does NOT implement natively (members,
  * tokens, environments, billing/wallet, usage, quotas). The base URL is derived from the
  * management API URL (api.* → app.*); pages are org-scoped as /orgs/{slug}?tab={tab}.

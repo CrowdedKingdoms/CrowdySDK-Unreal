@@ -7,6 +7,8 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "K2Node_CallFunction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Pins/CrowdyModelAttributeNamePin.h"
+#include "Replication/GameModel/CrowdyModel.h"
 #include "Replication/State/CrowdyStateBlueprintLibrary.h"
 #include "Replication/State/CrowdyStateMetaKeys.h"
 #include "Replication/State/FCrowdyRepLayout.h"
@@ -21,6 +23,7 @@
 namespace
 {
 	const FName GPropertyNamePinName(TEXT("PropertyName"));
+	const FName GModelKeyPinName(TEXT("Key"));
 }
 
 void SCrowdyStatePropertyNamePin::Construct(const FArguments& InArgs, UEdGraphPin* InPin)
@@ -147,7 +150,7 @@ TSharedRef<SWidget> SCrowdyStatePropertyNamePin::BuildPickerMenu()
 		// Self resolved to a non-actor (e.g. a Component Blueprint): an AActor* Target cannot default to self
 		// here, so point the author at the fix rather than showing an empty or misleading list.
 		MenuBuilder.AddMenuEntry(
-			LOCTEXT("NonActorSelfEntry", "Wire an Actor into Target — self is not an Actor here"),
+			LOCTEXT("NonActorSelfEntry", "Wire an Actor into Target - self is not an Actor here"),
 			FText::GetEmpty(), FSlateIcon(),
 			FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })));
 		return MenuBuilder.MakeWidget();
@@ -171,7 +174,7 @@ TSharedRef<SWidget> SCrowdyStatePropertyNamePin::BuildPickerMenu()
 	MenuBuilder.BeginSection(
 		NAME_None,
 		FText::Format(
-			LOCTEXT("PropsHeader", "{0} — Manual-Dirty Properties"),
+			LOCTEXT("PropsHeader", "{0} - Manual-Dirty Properties"),
 			FText::FromString(TargetClass->GetName())));
 	for (const FName& Name : Names)
 	{
@@ -213,11 +216,7 @@ void SCrowdyStatePropertyNamePin::OnPropertySelected(FName PropertyName)
 
 TSharedPtr<SGraphPin> FCrowdyStatePropertyPinFactory::CreatePin(UEdGraphPin* InPin) const
 {
-	if (!InPin || InPin->Direction != EGPD_Input)
-	{
-		return nullptr;
-	}
-	if (InPin->PinType.PinCategory != UEdGraphSchema_K2::PC_Name || InPin->PinName != GPropertyNamePinName)
+	if (!InPin || InPin->Direction != EGPD_Input || InPin->PinType.PinCategory != UEdGraphSchema_K2::PC_Name)
 	{
 		return nullptr;
 	}
@@ -229,18 +228,32 @@ TSharedPtr<SGraphPin> FCrowdyStatePropertyPinFactory::CreatePin(UEdGraphPin* InP
 	}
 
 	const UFunction* Function = CallNode->GetTargetFunction();
-	if (!Function || Function->GetOwnerClass() != UCrowdyStateBlueprintLibrary::StaticClass())
+	if (!Function)
 	{
 		return nullptr;
 	}
 
-	static const FName MarkFunctionName = GET_FUNCTION_NAME_CHECKED(UCrowdyStateBlueprintLibrary, MarkCrowdyStateDirty);
-	if (Function->GetFName() != MarkFunctionName)
+	// The "PropertyName" pin of UCrowdyStateBlueprintLibrary::MarkCrowdyStateDirty.
+	if (InPin->PinName == GPropertyNamePinName
+		&& Function->GetOwnerClass() == UCrowdyStateBlueprintLibrary::StaticClass())
 	{
+		static const FName MarkFunctionName = GET_FUNCTION_NAME_CHECKED(UCrowdyStateBlueprintLibrary, MarkCrowdyStateDirty);
+		if (Function->GetFName() == MarkFunctionName)
+		{
+			return SNew(SCrowdyStatePropertyNamePin, InPin);
+		}
 		return nullptr;
 	}
 
-	return SNew(SCrowdyStatePropertyNamePin, InPin);
+	// The "Key" pin of a UCrowdyModel typed getter gets the attribute-key dropdown filtered to the getter's type.
+	if (InPin->PinName == GModelKeyPinName
+		&& Function->GetOwnerClass() == UCrowdyModel::StaticClass()
+		&& !SCrowdyModelAttributeNamePin::ValueTypeForGetter(Function->GetFName()).IsEmpty())
+	{
+		return SNew(SCrowdyModelAttributeNamePin, InPin);
+	}
+
+	return nullptr;
 }
 
 #undef LOCTEXT_NAMESPACE

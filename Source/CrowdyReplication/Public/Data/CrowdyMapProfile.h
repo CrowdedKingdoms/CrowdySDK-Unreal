@@ -35,6 +35,35 @@ public:
 		meta=(EditCondition="bUseAutoReplicator", ClampMin=1, ClampMax=10, DisplayName="Replication Interval (Hertz)"))
 	int32 ReplicationIntervalHz = 10;
 
+	/**
+	 * Only send an actor's state when it has actually changed, instead of restating it every interval. An actor
+	 * that has not moved still says so, with a keyframe or a heartbeat below, so nothing goes quiet; what stops is
+	 * repeating identical state. Turn off to go back to sending unconditionally.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile",
+		meta=(EditCondition="bUseAutoReplicator", DisplayName="Send Actor State Only On Change"))
+	bool bSendActorStateOnlyOnChange = true;
+
+	/**
+	 * Seconds between full re-sends of an unchanged actor's state, so an observer that arrived late or lost a
+	 * packet converges without waiting for the actor to move. Set to 0 to disable, which leaves an unchanged actor
+	 * represented only by heartbeats.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile",
+		meta=(EditCondition="bUseAutoReplicator && bSendActorStateOnlyOnChange", ClampMin="0.0",
+			DisplayName="Actor Keyframe Interval (Seconds, 0 = off)"))
+	float ActorKeyframeIntervalSeconds = 3.0f;
+
+	/**
+	 * Seconds between heartbeats for an actor that has not changed. A heartbeat carries the spatial header and no
+	 * state, so it costs a fraction of a full update and is what keeps an idle actor from being reaped. Set to 0
+	 * to disable, in which case an unchanged actor is represented only by keyframes.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile",
+		meta=(EditCondition="bUseAutoReplicator && bSendActorStateOnlyOnChange", ClampMin="0.0",
+			DisplayName="Actor Heartbeat Interval (Seconds, 0 = off)"))
+	float ActorHeartbeatIntervalSeconds = 1.0f;
+
 	/** Master switch for the CrowdyState per-property replicator on this map. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile")
 	bool bUseStateReplicator = true;

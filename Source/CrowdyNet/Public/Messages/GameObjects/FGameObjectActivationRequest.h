@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Serialization/CrowdyFrame.h"
 #include "Shared/Types/Structures/GameObjects/FGameObjectState.h"
 #include "Utils/SerializationFunctionLibrary.h"
 
@@ -140,8 +141,9 @@ struct FGameObjectActivationRequest : ICrowdyMessage
 	virtual TArray<uint8> Serialize() const override
 	{
 		TArray<uint8> Data;
-		Data.Reserve(GetMessageSize());
-		
+		Data.Reserve(sizeof(uint8) + sizeof(MapID) + sizeof(ChunkX) + sizeof(ChunkY) + sizeof(ChunkZ)
+			+ 32 + sizeof(EventType) + sizeof(StateSize) + StateBytes.Num());
+
 		Data.Add(static_cast<uint8>(GetType()) & 0xFF);
 		
 		Data.Append(USerializationFunctionLibrary::SerializeValue(MapID));
@@ -162,31 +164,18 @@ struct FGameObjectActivationRequest : ICrowdyMessage
 	}
 
 	/**
-	 * Parses and initializes the object's state using the provided binary data.
+	 * Parses and initializes the object's state using the provided frame.
 	 *
-	 * This method overrides the base class's Deserialize function and is used to
-	 * reconstruct the object's state from a serialized byte array.
+	 * This method overrides the base class's DecodePayload function and is used to
+	 * reconstruct the object's state from the frame it arrived in.
 	 *
-	 * @param Data A reference to an array of bytes representing serialized data
-	 *             that should be deserialized to initialize the object's state.
+	 * @param Frame The frame this message arrived in.
 	 */
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
-		return;
+		UE_LOG(LogCrowdyNet, Warning, TEXT("FGameObjectActivationRequest::DecodePayload called, but should not be used."));
+		return false;
 	}
 
-	/**
-	 * Retrieves the size of a given message in bytes.
-	 *
-	 * This method calculates and returns the size of a message, which can be
-	 * useful for serialization, networking, or storage purposes.
-	 *
-	 * @return The size of the message in bytes.
-	 */
-	virtual uint32 GetMessageSize() const override
-	{
-		return sizeof(MapID) + sizeof(int64)*3 + 32 + sizeof(EventType) + sizeof(State);
-	}
 
-	
 };

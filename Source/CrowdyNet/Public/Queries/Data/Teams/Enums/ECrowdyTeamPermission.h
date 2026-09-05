@@ -5,7 +5,7 @@
 UENUM(BlueprintType)
 enum class ECrowdyTeamPermission : uint8
 {
-	ManageGroup   UMETA(DisplayName = "Manage Group"),
+	ManageTeam    UMETA(DisplayName = "Manage Team"),
 	ManageMembers UMETA(DisplayName = "Manage Members"),
 	ManageRoles   UMETA(DisplayName = "Manage Roles"),
 	InviteMembers UMETA(DisplayName = "Invite Members"),

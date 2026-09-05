@@ -10,6 +10,45 @@
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/UCrowdyClassRegistry.h"
 
+namespace
+{
+	// CrowdyEventRouter retries an RPC or state delta that races its target entity's spawn
+	// event for this many ticks before giving up on that single message. A pending activation
+	// here is the same race (a position update arriving before the entity's class is known),
+	// so a stranded entry is reused as the warning bound: past this many ticks nothing later
+	// changed a message-by-message retry into a resolution, so it is worth telling a developer
+	// while still leaving the entry in place for a genuinely late spawn event to complete.
+	constexpr int32 CrowdyPendingActivationWarnTicks = 600;
+
+	// Past this many ticks a parked entry gives its slot back instead of holding it for the life of the
+	// world. Set against the two clocks that already bound a legitimate wait: the tracker
+	// drops an entity that goes quiet for ActorTimeoutThreshold (5 seconds by default), which takes the
+	// pending entry with it, so an entry still parked here is being fed by a sender that has not stopped;
+	// and the retry window for this same spawn-event race is the 600 ticks above. Six times that, so at
+	// 60 frames per second an entry is evicted only after a full minute of updates it can do nothing
+	// with, and even at 240 frames per second it still gets 15 seconds against a 2.5 second retry window.
+	constexpr int32 CrowdyPendingActivationEvictTicks = 3600;
+
+	static_assert(CrowdyPendingActivationEvictTicks > CrowdyPendingActivationWarnTicks,
+		"An entry has to be reported as stranded before it can be evicted, or the eviction is the first and only thing ever said about it.");
+
+	// Both park messages end with this, so an entry that cannot even name its own payload says why
+	// instead of printing an empty name and sending the reader after a struct that does not exist.
+	FString CrowdyDescribeParkedActivationPayload(const FInstancedStruct& InitialState)
+	{
+		const UScriptStruct* PayloadStruct = InitialState.GetScriptStruct();
+		if (!PayloadStruct)
+		{
+			return TEXT("its updates carried a state blob that decoded into no struct registered on this client, so the payload cannot be named here either. ")
+				TEXT("Register the sender's state struct in this build, or check that both sides agree on which struct the payload type id names");
+		}
+
+		return FString::Printf(
+			TEXT("its update payload struct is '%s'. Register a class for that struct with RegisterStateClass, since a remote entity built from position updates alone never sends a spawn event"),
+			*PayloadStruct->GetName());
+	}
+}
+
 void UCrowdyActorManager::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -47,7 +86,7 @@ void UCrowdyActorManager::Initialize(FSubsystemCollectionBase& Collection)
 
 	ActorTracker->OnRemoteEntityAppeared.AddDynamic(this, &UCrowdyActorManager::HandleActorSpawned);
 	ActorTracker->OnRemoteEntityTimedOut.AddDynamic(this, &UCrowdyActorManager::HandleActorDestroyed);
-	ActorTracker->OnUpdatesWorkerThread.AddUObject(this, &UCrowdyActorManager::HandleUpdateBatch);
+	ActorTracker->OnTrackedActorUpdates.AddUObject(this, &UCrowdyActorManager::HandleUpdateBatch);
 
 	// Deferred activations fire when EntitySubsystem finishes processing a spawn event.
 	EntitySubsystem->OnEntityRegistered.AddDynamic(this, &UCrowdyActorManager::OnEntityRegistered);
@@ -63,11 +102,12 @@ void UCrowdyActorManager::Deinitialize()
 	{
 		CrowdyActorTracker->OnRemoteEntityAppeared.RemoveAll(this);
 		CrowdyActorTracker->OnRemoteEntityTimedOut.RemoveAll(this);
-		CrowdyActorTracker->OnUpdatesWorkerThread.RemoveAll(this);
+		CrowdyActorTracker->OnTrackedActorUpdates.RemoveAll(this);
 	}
 
 	FCrowdyActorUpdate Discarded;
 	while (UpdateQueue.Dequeue(Discarded)) {}
+	PendingUpdates.Empty();
 
 	Slots.Empty();
 	UUIDToSlot.Empty();
@@ -103,6 +143,7 @@ void UCrowdyActorManager::Tick(float DeltaTime)
 {
 	ApplyPendingUpdates();
 	TickInterpolation();
+	TickPendingActivations();
 }
 
 void UCrowdyActorManager::RegisterStateClass(UScriptStruct* Struct, TSubclassOf<AActor> ActorClass)
@@ -128,9 +169,8 @@ void UCrowdyActorManager::SetBackend(UCrowdyRenderingBackend* NewBackend)
 	ActiveBackend = NewBackend;
 }
 
-void UCrowdyActorManager::UpdateServerTimeOffset(const int64 ServerTimestampMs)
+void UCrowdyActorManager::UpdateServerTimeOffset(const int64 ServerTimestampMs, const int64 ClientNowMs)
 {
-	const int64 ClientNowMs = (FDateTime::UtcNow() - FDateTime(1970, 1, 1)).GetTotalMilliseconds();
 	const int64 EstimatedOffset = ServerTimestampMs - ClientNowMs;
 
 	if (!bHasInitialOffset)
@@ -162,18 +202,39 @@ int64 UCrowdyActorManager::GetEstimatedServerTimeMs() const
 
 void UCrowdyActorManager::ApplyPendingUpdates()
 {
-	if (UpdateQueue.IsEmpty() || !IsValid(ActiveBackend)) return;
-
-	FCrowdyActorUpdate Update;
-	while (UpdateQueue.Dequeue(Update))
+	if (!IsValid(ActiveBackend))
 	{
-		UpdateServerTimeOffset(Update.ServerTimestamp);
+		// Still cleared, or a backend arriving later would be handed a frame of stale positions at once.
+		PendingUpdates.Reset();
+		return;
+	}
+
+	if (UpdateQueue.IsEmpty() && PendingUpdates.IsEmpty()) return;
+
+	// Sampled once for the drain rather than once per update. A drain carries a couple of thousand of them
+	// and the wall clock cannot meaningfully move across one, so the per-update read bought nothing.
+	const int64 ClientNowMs = (FDateTime::UtcNow() - FDateTime(1970, 1, 1)).GetTotalMilliseconds();
+
+	auto Apply = [this, ClientNowMs](const FCrowdyActorUpdate& Update)
+	{
+		UpdateServerTimeOffset(Update.ServerTimestamp, ClientNowMs);
 
 		const int32* SlotPtr = UUIDToSlot.Find(Update.UUID);
-		if (!SlotPtr) continue;
+		if (!SlotPtr) return;
 
-		ActiveBackend->ExtractUpdate(Update.State, Update.ServerTimestamp, *SlotPtr);
-	}
+		ActiveBackend->ExtractUpdate(Update.ResolveState(), Update.ServerTimestamp, *SlotPtr);
+	};
+
+	// The queue first: anything in it was handed over from another thread and so was gathered before
+	// whatever the game thread appended after it.
+	FCrowdyActorUpdate Queued;
+	while (UpdateQueue.Dequeue(Queued))
+		Apply(Queued);
+
+	for (const FCrowdyActorUpdate& Update : PendingUpdates)
+		Apply(Update);
+
+	PendingUpdates.Reset();
 }
 
 void UCrowdyActorManager::TickInterpolation()
@@ -212,6 +273,38 @@ int32 UCrowdyActorManager::AllocateSlot(const FGuid& UUID)
 	return SlotId;
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyActorManager::ParkActivationForTest(const FGuid& UUID)
+{
+	FPendingActivation& Pending = PendingActivations.Add(UUID);
+	Pending.SlotId = AllocateSlot(UUID);
+}
+
+void UCrowdyActorManager::ExtractUpdateForTest(const FGuid& UUID, const FInstancedStruct& State)
+{
+	const int32* SlotPtr = UUIDToSlot.Find(UUID);
+	if (!SlotPtr || !IsValid(ActiveBackend)) return;
+
+	ActiveBackend->ExtractUpdate(State, GetEstimatedServerTimeMs(), *SlotPtr);
+}
+#endif
+
+void UCrowdyActorManager::ReleaseSlot(const FGuid& UUID)
+{
+	const int32* SlotPtr = UUIDToSlot.Find(UUID);
+	if (!SlotPtr) return;
+
+	// The backend is told to clean the slot even when the instance was never activated. A slot allocated for
+	// an entity still waiting on its spawn event is already reachable from UUIDToSlot, so ApplyPendingUpdates
+	// has been feeding this slot's interpolation buffers through ExtractUpdate for as long as it waited.
+	// Freeing it without that cleanup hands those samples to whichever entity is given the slot next, which
+	// then draws at, and streaks in from, this entity's last known position.
+	if (IsValid(ActiveBackend))
+		ActiveBackend->DeactivateInstance(*SlotPtr, UUID);
+
+	FreeSlot(UUID);
+}
+
 void UCrowdyActorManager::FreeSlot(const FGuid& UUID)
 {
 	const int32* SlotPtr = UUIDToSlot.Find(UUID);
@@ -230,12 +323,11 @@ void UCrowdyActorManager::FreeSlot(const FGuid& UUID)
 
 bool UCrowdyActorManager::LoadConfig()
 {
+	// ResolveProfileForWorld reports a map that resolves nothing, once for the whole world. Repeating it
+	// here would say the same thing again for every subsystem that asks.
 	const UCrowdyMapProfile* Profile = UCrowdySDKDeveloperSettings::ResolveProfileForWorld(GetWorld());
 	if (!Profile)
-	{
-		UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyActorManager]: No map profile configured for this map."));
 		return false;
-	}
 
 	const FCrowdyActorManagementConfigStruct& Config = Profile->ActorManagement;
 
@@ -249,7 +341,19 @@ bool UCrowdyActorManager::LoadConfig()
 	}
 
 	UCrowdyRenderingBackend* Backend = NewObject<UCrowdyRenderingBackend>(this, Config.BackendClass.Get());
-	Backend->InitializeBackend(GetWorld(), Config.BackendConfig);
+
+	// A backend that cannot draw is refused rather than installed. Installing one anyway leaves every remote
+	// entity tracked, slotted and updated with nothing on screen, which is the same outcome as having no
+	// backend at all but without the map ever saying so.
+	if (!Backend->InitializeBackend(GetWorld(), Config.BackendConfig))
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyActorManager]: Backend '%s' could not initialize, so no remote entity will be drawn on this map. ")
+			TEXT("The backend logged what it needs just above this line."),
+			*GetNameSafe(Config.BackendClass.Get()));
+		return false;
+	}
+
 	SetBackend(Backend);
 
 	return true;
@@ -257,8 +361,34 @@ bool UCrowdyActorManager::LoadConfig()
 
 UClass* UCrowdyActorManager::ResolveEntityClass(const FGuid& UUID, const FInstancedStruct& State) const
 {
-	// Primary path for dynamic entities: derive class from the state struct type.
-	// This works without a spawn event — the position update carries the struct type.
+	// Primary path: the class the sender named on its own update. Shape and identity are separate facts
+	// on the wire, so this asks the message what the entity IS rather than inferring it from the shape
+	// of its bytes. That inference is what made two classes sharing one state struct resolve as
+	// whichever of them registered last, and it could never have been fixed by a better guess.
+	if (IsValid(ActorTracker))
+	{
+		const FCrowdyClassID ClassID = ActorTracker->GetClassIDForUUID(UUID);
+		if (ClassID != CROWDY_INVALID_CLASS_ID)
+		{
+			const FSoftClassPath ClassPath = UCrowdyClassRegistry::Get()->Resolve(ClassID);
+
+			if (UClass* Resolved = ClassPath.IsValid() ? ClassPath.ResolveClass() : nullptr)
+			{
+				return Resolved;
+			}
+
+			// Said out loud rather than quietly falling through to the struct map. The registry is built
+			// from loaded classes, and ResolveClass does not load one, so an entity class this observer
+			// has never loaded lands here and would otherwise sit invisible in PendingActivations with
+			// nothing naming the cause. Preloading the entity class set is what closes this.
+			UE_LOG(LogCrowdyReplication, Warning,
+				TEXT("[Crowdy SDK][ActorManager]: entity %s named class id %u, which this client cannot resolve to a loaded class. It will fall back to the state struct, which cannot tell two classes sharing one struct apart. Preload the entity class or give it a ClassIDOverride."),
+				*UUID.ToString(), ClassID);
+		}
+	}
+
+	// Compatibility fallback: derive the class from the state struct type. Correct only while a struct
+	// names exactly one class, which is the limitation the class id above removes.
 	if (const UScriptStruct* StateStruct = State.GetScriptStruct())
 	{
 		if (const TSubclassOf<AActor>* Found = StateClassMap.Find(StateStruct))
@@ -286,14 +416,14 @@ void UCrowdyActorManager::HandleActorSpawned(FGuid UUID, FInstancedStruct Initia
 	if (!IsValid(ActiveBackend)) return;
 
 	// Slot already exists: duplicate tracker broadcast or cascade from a pool actor's own
-	// auto-replication. Ignore — the entity is already active.
+	// auto-replication. Ignore it: the entity is already active.
 	if (UUIDToSlot.Contains(UUID)) return;
 
 	UClass* EntityClass = ResolveEntityClass(UUID, InitialState);
 
 	if (!EntityClass)
 	{
-		// Class not resolvable yet — defer until a spawn event registers the entity.
+		// Class not resolvable yet: defer until a spawn event registers the entity.
 		FPendingActivation& Pending = PendingActivations.Add(UUID);
 		Pending.SlotId       = AllocateSlot(UUID);
 		Pending.InitialState = MoveTemp(InitialState);
@@ -311,19 +441,83 @@ void UCrowdyActorManager::HandleActorDestroyed(FGuid UUID, int32 ActorCount)
 	// Drop any pending activation that never fired.
 	PendingActivations.Remove(UUID);
 
-	const int32* SlotPtr = UUIDToSlot.Find(UUID);
-	if (!SlotPtr) return;
-
-	if (IsValid(ActiveBackend))
-		ActiveBackend->DeactivateInstance(*SlotPtr, UUID);
-
-	FreeSlot(UUID);
+	ReleaseSlot(UUID);
 }
 
 void UCrowdyActorManager::HandleUpdateBatch(const TArray<FCrowdyActorUpdate>& Updates)
 {
+	// The tracker hands tracked updates over on the game thread, which is the thread that drains them, so
+	// they are appended straight to the pending array and cost no queue node. The queue stays for anything
+	// broadcasting from elsewhere, which is what the delegate still allows.
+	if (IsInGameThread())
+	{
+		PendingUpdates.Append(Updates);
+		return;
+	}
+
 	for (const FCrowdyActorUpdate& Update : Updates)
 		UpdateQueue.Enqueue(Update);
+}
+
+void UCrowdyActorManager::AgePendingActivations(TMap<FGuid, FPendingActivation>& Park, const int32 WarnTicks, const int32 EvictTicks, TArray<FGuid>& OutEvicted)
+{
+	if (Park.IsEmpty()) return;
+
+	// OutEvicted is appended to rather than cleared, so a caller can reuse one array across ticks.
+	// Only what this call added is removed below: a UUID left over from an earlier call may have been
+	// parked again since, and removing it a second time would throw away a live entry.
+	const int32 FirstEvictedThisTick = OutEvicted.Num();
+
+	for (TPair<FGuid, FPendingActivation>& Pair : Park)
+	{
+		FPendingActivation& Pending = Pair.Value;
+
+		// Counted for every parked entry, including one already reported as stranded, because the
+		// eviction bound is measured from when the entry was parked and not from the report.
+		Pending.TicksWaiting++;
+
+		if (Pending.TicksWaiting >= EvictTicks)
+		{
+			UE_LOG(LogCrowdyReplication, Warning,
+				TEXT("[Crowdy Actor Manager]: Entity %s waited %d ticks for a spawn event that never resolved its class, ")
+				TEXT("so the render slot it was holding has been released and its updates are ignored from here on; %s. ")
+				TEXT("It is picked up again only if it stops sending for long enough to time out and reappear."),
+				*Pair.Key.ToString(),
+				Pending.TicksWaiting,
+				*CrowdyDescribeParkedActivationPayload(Pending.InitialState));
+
+			OutEvicted.Add(Pair.Key);
+			continue;
+		}
+
+		if (Pending.bWarnedStranded) continue;
+		if (Pending.TicksWaiting < WarnTicks) continue;
+
+		Pending.bWarnedStranded = true;
+
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[Crowdy Actor Manager]: Entity %s has been waiting for a spawn event for %d ticks, still has no class ")
+			TEXT("resolved, and is holding a render slot while it waits; %s."),
+			*Pair.Key.ToString(),
+			Pending.TicksWaiting,
+			*CrowdyDescribeParkedActivationPayload(Pending.InitialState));
+	}
+
+	// Removed after the walk rather than during it, since erasing from the map being iterated is what
+	// the eviction is for and not something to risk doing mid-walk.
+	for (int32 Index = FirstEvictedThisTick; Index < OutEvicted.Num(); Index++)
+		Park.Remove(OutEvicted[Index]);
+}
+
+void UCrowdyActorManager::TickPendingActivations()
+{
+	if (PendingActivations.IsEmpty()) return;
+
+	TArray<FGuid> Evicted;
+	AgePendingActivations(PendingActivations, CrowdyPendingActivationWarnTicks, CrowdyPendingActivationEvictTicks, Evicted);
+
+	for (const FGuid& EntityID : Evicted)
+		ReleaseSlot(EntityID);
 }
 
 void UCrowdyActorManager::OnEntityRegistered(const FGuid& EntityID)
@@ -335,15 +529,15 @@ void UCrowdyActorManager::OnEntityRegistered(const FGuid& EntityID)
 	UClass* EntityClass = ResolveEntityClass(EntityID, Pending.InitialState);
 	if (!EntityClass)
 	{
-		// Class still not resolvable after the spawn event — silently drop.
-		// This can happen if the class path in the spawn event was invalid.
-		FreeSlot(EntityID);
+		// Class still not resolvable after the spawn event, which happens when the class path the
+		// spawn event carried was invalid. Give the slot back rather than parking the entry again.
+		ReleaseSlot(EntityID);
 		return;
 	}
 
 	if (!IsValid(ActiveBackend))
 	{
-		FreeSlot(EntityID);
+		ReleaseSlot(EntityID);
 		return;
 	}
 

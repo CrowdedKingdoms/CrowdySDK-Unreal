@@ -1,6 +1,7 @@
 #include "Menus/CrowdyStructEditorToolbar.h"
 
 #include "CrowdySDKEditor.h"
+#include "Replication/CrowdyMetaKeys.h"
 #include "Menus/CrowdyStructMetaUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "StructUtils/UserDefinedStruct.h"

@@ -1,5 +1,6 @@
 ﻿#include "Menus/CrowdyStructContextMenu.h"
 #include "CrowdySDKEditor.h"
+#include "Replication/CrowdyMetaKeys.h"
 #include "Menus/CrowdyStructMetaUtils.h"
 #include "ToolMenus.h"
 #include "ToolMenu.h"
@@ -61,7 +62,7 @@ void FCrowdyStructContextMenu::Register()
 
 void FCrowdyStructContextMenu::Unregister()
 {
-	// Guard against shutdown ordering — UToolMenus may already be torn down.
+	// Guard against shutdown ordering: UToolMenus may already be torn down.
 	if (UObjectInitialized() && UToolMenus::Get())
 		UToolMenus::Get()->UnregisterOwnerByName(OwnerName);
 }
@@ -70,8 +71,8 @@ void FCrowdyStructContextMenu::Unregister()
 // Dynamic menu population
 //
 // Runs every time the user opens the context menu, so we see fresh state.
-// UContentBrowserAssetContextMenuContext provides SelectedAssets — we filter
-// to UUserDefinedStruct pointers and bind them into the actions.
+// UContentBrowserAssetContextMenuContext provides SelectedAssets, which we
+// filter to UUserDefinedStruct pointers and bind into the actions.
 // ─────────────────────────────────────────────────────────────────────────────
 void FCrowdyStructContextMenu::PopulateMenuSection(FToolMenuSection& InSection)
 {

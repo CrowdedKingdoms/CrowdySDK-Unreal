@@ -3,17 +3,21 @@
 #include "CoreMinimal.h"
 #include "Replication/RPC/FCrowdyRpcCall.h"
 #include "Replication/RPC/FCrowdyFnInfo.h"
+#include "Replication/RPC/FCrowdyRpcTarget.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "UObject/Class.h"        // UFunction
 #include "UObject/UnrealType.h"   // FProperty, TFieldIterator, property flags
+#include "Templates/Function.h"
 #include "Templates/Tuple.h"
 #include "Templates/UnrealTemplate.h"
 #include <type_traits>           // std::is_convertible_v
 #include <utility>               // std::index_sequence, std::index_sequence_for
 
 class AActor;
+class ICrowdyEventSource;
 class UCrowdyEntitySubsystem;
 class UWorld;
+struct FCrowdyEventParams;
 struct FOutParmRec;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogCrowdyRPC, Log, All);
@@ -79,6 +83,16 @@ namespace CrowdyRpcMetaKeys
 	// Stored by name (not id) so the same event resolves across environments (dev/prod).
 	inline const TCHAR* Channel   = TEXT("CrowdyChannel");
 
+	// Declares that this event's parameters describe a one-shot action: an attack swing, a flinch, an
+	// emote. It says nothing about how the event behaves on a receiver holding the entity as a real
+	// object, where the author's own body runs as always. It exists for the receivers that hold the
+	// entity as DATA and have no body to run: they have no way to know that "some int the game called
+	// ActionId" means an animation, and guessing from a parameter name would be this layer deciding what
+	// a game's events mean.
+	//
+	// The SDK only carries the declaration. What is done with it belongs to whatever renders the entity.
+	inline const TCHAR* Action    = TEXT("CrowdyAction");
+
 	// Marks a Blueprint event as RPC-style ("Crowdy Replicates"): calling it routes over the
 	// transport and runs the body on every client, the same as a C++ CROWDY_EVENT. Distinguishes
 	// it from a struct-handler (which carries only CrowdyEvent) so the router does not also bind
@@ -132,6 +146,55 @@ public:
 	private:
 		UCrowdyEntitySubsystem* Previous;
 	};
+
+	/**
+	 * Marks one (object, function) invocation as the replay of a RECEIVED call, and restores whatever was
+	 * armed before when it goes out of scope.
+	 *
+	 * A Blueprint replicated event carries a dispatch gate spliced in at the top of its body, and that gate
+	 * routes the call over the network unless this scope names the exact object and function it is running
+	 * for. So anything that invokes a received call through ProcessEvent must hold one: without it every
+	 * client that received the call announces it again, from a receiver rather than from an originator.
+	 *
+	 * Scoped to the pair rather than to a flag, so a recursive call, or the same event on another entity
+	 * from inside a replayed body, still originates as it should. Game-thread only, like the rest of the
+	 * scoped serialization state here.
+	 */
+	struct CROWDYREPLICATION_API FScopedReplay
+	{
+		FScopedReplay(UObject* Object, UFunction* Function);
+		~FScopedReplay();
+
+		FScopedReplay(const FScopedReplay&) = delete;
+		FScopedReplay& operator=(const FScopedReplay&) = delete;
+
+	private:
+		UObject* PreviousObject;
+		UFunction* PreviousFunction;
+	};
+
+	/**
+	 * Whether this function is one the compiler extension should have spliced a dispatch gate into: a
+	 * Blueprint-declared event marked "Crowdy Replicates". A C++ CROWDY_EVENT is NOT one of these, because
+	 * its send goes through the macro's thunk and it never carries a gate.
+	 */
+	static bool IsBlueprintReplicatedEvent(const UFunction* Function);
+
+	/**
+	 * Whether Function's compiled bytecode actually calls the dispatch gate.
+	 *
+	 * A Blueprint replicated event that lost its gate is the worst failure this system has: calling it runs
+	 * the body locally and announces NOTHING, with no error anywhere, because the send path is simply never
+	 * entered. It looks from the outside exactly like a transport that dropped the call.
+	 *
+	 * Read from UStruct::ScriptAndPropertyObjectReferences, the list of objects a function's bytecode
+	 * references, rather than by disassembling the script: the gate is a function call, so if the gate is in
+	 * the body its UFunction is in that list.
+	 *
+	 * False for a function with no script at all, which is every native one, so ask IsBlueprintReplicatedEvent
+	 * first rather than treating this as a verdict on its own.
+	 */
+	static bool CarriesDispatchGate(const UFunction* Function);
 
 	/**
 	 * Compile-time-checked entry point. The unnamed member-function-pointer
@@ -214,19 +277,75 @@ public:
 		return Call;
 	}
 
+	/**
+	 * Sends a CrowdyEvent to an entity named by Target, with no calling instance involved.
+	 *
+	 * The ordinary send path needs a live UObject to read the entity identity and the world position
+	 * from. An entity this client holds only as rendering data has no such object, so the caller
+	 * resolves the identity, the position and the ownership from wherever that entity's state lives and
+	 * hands them in as Target. Everything after that is the ordinary send: the call is packed by the
+	 * same BuildCall and keyed by the function's DECLARING class, so it resolves against whatever
+	 * instance the receiving client holds for that entity, and it routes by the function's own
+	 * CrowdyRecipient, all four of them.
+	 *
+	 * Fn is the receiver function and Frame its parameter frame, laid out exactly as ProcessEvent
+	 * expects one: MarshalCall builds a frame from typed arguments, and a Blueprint thunk already has
+	 * one. A function that takes no parameters may pass a null frame. OutParms is the VM's out-parm
+	 * record list when Frame came from a live Blueprint frame, and null from C++.
+	 *
+	 * Where this client already holds a registration for the target entity, that record's owner, role
+	 * and (when it holds an actor) position are preferred over the matching fields of Target, so the
+	 * routing never contradicts what the rest of this client believes about the entity.
+	 *
+	 * The call goes out as this client: the local player is stamped as the sender and no sending
+	 * identity is ever read from Target. Aiming a call at an entity another client owns is what this
+	 * entry is for, not an error - the RPC plane is client-authoritative by design and the owner's own
+	 * instance is what runs the body. State that must not be forgeable belongs in a Game Model instead.
+	 *
+	 * Returns false ONLY when there was no transport to route through, so a caller that has a local body
+	 * may run it as a fallback. Every other outcome returns true, including every drop: a drop means the
+	 * send itself was invalid, and running the body here instead would be the wrong answer. Each drop is
+	 * logged with its reason, rate-limited per function where its cause can persist across frames.
+	 *
+	 * Game thread only.
+	 */
+	static bool SendToTarget(UWorld* World, const FCrowdyRpcTarget& Target, UFunction* Fn,
+		const void* Frame, FOutParmRec* OutParms = nullptr);
+
 	// Reflection helpers (defined in CrowdyRPC.cpp)
 
 	// Finds the receiver UFunction by name on Class (searching base classes too).
 	// Logs and returns null when missing.
 	static UFunction* ResolveFunction(UClass* Class, const TCHAR* ImplName);
 
-	// Builds the routing/serialization metadata for a receiver function. Phase 1
-	// fills FunctionID and bParamsPOD; routing fields keep their defaults.
+	// Builds the routing/serialization metadata for a receiver function: fills
+	// FunctionID and bParamsPOD; routing fields keep their defaults until baked
+	// metadata overrides them.
 	static FCrowdyFnInfo BuildFnInfo(UFunction* Fn);
 
-	// Cached BuildFnInfo, keyed by UFunction (rebuilt every call in editor where
-	// Live Coding can recycle UFunction addresses).
+	/**
+	 * Cached BuildFnInfo. Every send and every receive needs a function's routing info, and building it
+	 * walks the parameter list twice before reading the routing metadata, so the result is kept per
+	 * function. Entries are keyed by the function's object identity (slot plus serial number), so an
+	 * address reused after garbage collection, and the fresh functions a Blueprint recompile produces,
+	 * both miss cleanly rather than serving another function's routing.
+	 */
 	static FCrowdyFnInfo GetFnInfo(UFunction* Fn);
+
+	/**
+	 * Drops every cached FCrowdyFnInfo. Needed after reflection data is rebuilt in place, which can change
+	 * a function's parameter list (and so its signature hash) without changing the function object.
+	 */
+	static void InvalidateFnInfoCache();
+
+	// Number of functions with cached routing info. Diagnostics and tests only.
+	static int32 NumCachedFnInfo();
+
+	// Binds the reload-complete delegate that flushes the cache. Call once when the module starts.
+	static void InstallFnInfoCacheInvalidation();
+
+	// Removes that binding and flushes the cache. Call when the module shuts down.
+	static void RemoveFnInfoCacheInvalidation();
 
 	// Stable hash of the function's full signature (declaring class path + name +
 	// ordered canonical parameter types).
@@ -287,6 +406,18 @@ public:
 	// Reconstructs a parameter frame from Call and invokes Fn on Target. This is the
 	// receive path, reused by the router and by the in-process round-trip tests.
 	static void ApplyCall(UObject* Target, UFunction* Fn, const FCrowdyFnInfo& Info, const FCrowdyRpcCall& Call);
+
+	/**
+	 * Reconstructs the same parameter frame ApplyCall builds and hands it to OnDecoded as values, without
+	 * invoking anything. For a recipient that holds the call's target as data rather than as an object,
+	 * where there is no instance of the declaring class to run a body on.
+	 *
+	 * Returns false, having run nothing, when the blob does not decode against Fn's current signature
+	 * (a drifted build, or forged bytes). The frame is constructed and destroyed around OnDecoded, so
+	 * nothing it was handed may be kept past the call.
+	 */
+	static bool DecodeCall(UFunction* Fn, const FCrowdyFnInfo& Info, const FCrowdyRpcCall& Call,
+		TFunctionRef<void(const FCrowdyEventParams& Params)> OnDecoded);
 
 	// Encodes a call into a channel payload: a [version][flags] reliability header followed by the
 	// serialized FCrowdyRpcCall. Flags is reserved for the guaranteed-delivery layer and is zero
@@ -360,6 +491,49 @@ private:
 	// loudly, not truncated).
 	static void RouteOverChannel(UCrowdyEntitySubsystem* EntitySubsystem, const FCrowdyRpcCall& Call,
 		const UFunction* Fn, const FString& ChannelName);
+
+	/**
+	 * Send path for a sender with no owning actor that implements ICrowdyEventSource: the entity id, the
+	 * sending identity and the world position all come from the interface rather than from an actor.
+	 * All four recipients route. Owner-only and host-only travel by the single-actor transport, which
+	 * addresses a registered id plus a chunk rather than an actor, so a source with no actor can use it.
+	 * A position is read from the source where it has one, and only the routes that address a region
+	 * need it; one of those with no position to announce from drops, logged with its reason.
+	 *
+	 * Returns true in every case, including the drops: a caller that ran no local body must not then run
+	 * one as a fallback, since the reason for each drop is that the send was invalid, not that there was
+	 * no transport.
+	 */
+	static bool RouteFromEventSource(UObject* Obj, ICrowdyEventSource* Source, UFunction* Fn,
+		const FCrowdyFnInfo& Info, FCrowdyRpcCall Call, UCrowdyEntitySubsystem* EntitySubsystem,
+		UWorld* World);
+
+	/**
+	 * Applies the ownership model to a call already addressed to Target and dispatches it: runs the body
+	 * on this client where the model says this client also runs it, and sends over whichever transport
+	 * the recipient names. Every address comes from the target or from the host's own registration, so a
+	 * caller cannot aim a message at a chunk its destination is not standing in. Where this client holds
+	 * a record for the target, that record's owner, role and actor position are preferred over Target's.
+	 *
+	 * Call must already carry its EntityID and SenderID; this only routes.
+	 *
+	 * LocalInstance is the object to run the body on when the model says to run it here. A caller that
+	 * already holds the instance passes it. Passing null asks for the instance holding Target's identity
+	 * on this client to be looked up instead, and the lookup happens only if the body actually runs here.
+	 *
+	 * Returns false ONLY when there is no transport to route through, matching SerializeAndRoute: every
+	 * drop returns true, so a caller never runs a body as a fallback for a send that was refused rather
+	 * than unavailable. Game thread only.
+	 */
+	static bool RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubsystem,
+		const FCrowdyRpcTarget& Target, UObject* LocalInstance, UFunction* Fn,
+		const FCrowdyFnInfo& Info, const FCrowdyRpcCall& Call);
+
+	// Finds the object on this client that would receive Fn for the entity NetID names: the registered
+	// participant itself, or the component on it that carries the function's declaring class. Null when
+	// this client holds no such object, which is the normal case for an entity it only renders.
+	static UObject* ResolveLocalTargetReceiver(UCrowdyEntitySubsystem* EntitySubsystem, const FGuid& NetID,
+		const UFunction* Fn);
 
 	// Feeds an already-serialized call back into the local event router's receive path so a
 	// single client can test the full round-trip (loopback mode). bLoopbackDelivering is held

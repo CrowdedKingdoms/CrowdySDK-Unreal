@@ -11,7 +11,7 @@ class FProperty;
  * deliberately NOT a USTRUCT: it holds a raw FProperty*, which has no stable wire form and is never
  * serialized. Only PropertyID travels or bakes; the FProperty* is re-resolved by name against the
  * owning UClass wherever a layout is assembled (live in editor, or from the baked table in a cooked
- * build, Phase 1).
+ * build).
  */
 struct FCrowdyRepProperty
 {
@@ -45,9 +45,8 @@ struct FCrowdyRepProperty
  * the hash and a drifted peer drops cleanly instead of misparsing by position. PropertyID does not
  * include order, so reordering changes only the hash (the positional guard), which is intended.
  *
- * Shadow representation decision (drives Phase 3; recorded here per the Phase 0 plan).
- * The send loop diffs each owned entity's live values against a per-entity "shadow" copy of the last
- * values it sent. Two representations were weighed:
+ * Shadow representation: the send loop diffs each owned entity's live values against a per-entity
+ * "shadow" copy of the last values it sent. Two representations were weighed:
  *   A. A parallel value buffer laid out by this layout's own property slots, one slot per property
  *      initialized with FProperty::InitializeValue. Diffing is a direct FProperty::Identical(live,
  *      shadow) and the post-send update is FProperty::CopyCompleteValue, with zero per-tick decode.
@@ -58,10 +57,8 @@ struct FCrowdyRepProperty
  *      exactly the per-tick cost this fast plane exists to avoid.
  * Decision: Approach A (parallel value buffer). At the target scale (100+ owned entities diffed at up
  * to 10 Hz) B's per-tick decode dominates, while A's memory is small and its per-tick work is a
- * bounded set of Identical calls. Phase 3 implements the shadow this way and re-confirms with a
- * benchmark at a representative owned-entity count. Correctness requires only that the shadow holds
- * the last value we sent and we compare against it; the representation is otherwise an internal
- * choice of the replicator.
+ * bounded set of Identical calls. Correctness requires only that the shadow holds the last value we
+ * sent and we compare against it; the representation is otherwise an internal choice of the replicator.
  */
 /**
  * Why a CrowdyState-marked property can or cannot ride the view plane. Discovery logs the precise
@@ -105,7 +102,7 @@ struct CROWDYREPLICATION_API FCrowdyRepLayout
  * interfaces, delegates, and containers (TArray/TSet/TMap) are rejected with a clear error and
  * omitted, so a mis-annotated property drops out of the layout rather than corrupting the positional
  * wire order. This is the editor / WITH_METADATA path; cooked builds assemble an equivalent layout
- * from the baked table (Phase 1).
+ * from the baked table.
  */
 struct CROWDYREPLICATION_API FCrowdyStateLayoutBuilder
 {

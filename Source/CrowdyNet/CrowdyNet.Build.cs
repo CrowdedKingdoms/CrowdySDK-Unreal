@@ -14,12 +14,18 @@ public class CrowdyNet : ModuleRules
 			"CKSharedTypes",
 			"Json",
 			"JsonUtilities",
-			"HTTP",
 			"HTTPServer",
-			"WebSockets",
 			"Sockets",
 			"Networking",
-			"OpenSSL"
+			"OpenSSL",
+			// The vendored API client. Public because the client host and the admin host now take
+			// FCrowdyCppClientConfig in their own public headers: how a client is addressed stopped being one
+			// string and became a pair (the app's datacenter, and the shared origin to fall back on), and a struct
+			// is what makes an old two-string call fail to compile instead of quietly meaning something else.
+			//
+			// This still drags no crowdy:: type into consumers. CrowdyCppClient.h is Unreal types only; the
+			// library's own headers stay behind the pimpl, which was the point of the original split.
+			"CrowdyCppBridge"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

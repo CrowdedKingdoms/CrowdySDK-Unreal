@@ -1,0 +1,296 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Dom/JsonObject.h"
+
+/**
+ * One property write the server applied inside a gameModelInvoke transaction. Values ride as
+ * JSON-encoded strings (the *Json fields) exactly as the Game API returns them; callers JSON-parse
+ * each value string against the property's declared type.
+ */
+struct FCrowdyMutationApplied
+{
+	// The container this write landed on, which is NOT always the invoke's own container: an effect may write
+	// source.<attr> as well as self.<attr>, and each mutation names its own destination. Empty only when the
+	// server predates the field, in which case the caller must fall back to the invoke's own container.
+	FString ContainerId;
+	FString Key;
+	FString OldValueJson;
+	FString NewValueJson;
+};
+
+/**
+ * A runtime gameModelInvoke request. AppId is an int64 here but is serialized into the request as a
+ * JSON STRING the Game API types appId as a BigInt! scalar and rejects a JSON number. The request
+ * builder enforces that; do not stringify at call sites.
+ */
+struct FCrowdyInvokeRequest
+{
+	int64 AppId = 0;
+	FString FunctionName;
+	FString SelfContainerId;
+	FString SessionId;                 // empty => omitted from the request => app-global scope
+	TSharedPtr<FJsonObject> Params;    // serialized to paramsJson; null => "{}"
+};
+
+/**
+ * Why a platform-attributed invoke failure happened, mirroring the server's PlayerFaultInfo.blame. Platform is the
+ * SDK's or the infrastructure's own fault (a caller may reasonably retry the identical call); Author is the app's
+ * own authored logic or policy (an identical retry fails identically); Budget is a spent allowance (nothing is
+ * broken, but retrying will not help either). Unknown is not a fourth server value: it is what a caller sees when
+ * no fault was reported at all, so Unknown must never be treated as license to retry.
+ */
+enum class ECrowdyPlayerFaultBlame : uint8
+{
+	Unknown,
+	Platform,
+	Author,
+	Budget
+};
+
+// The server's blame vocabulary as an enum. Anything unrecognised, including an empty string, is Unknown, which is
+// the only safe reading: an unattributed failure must never be treated as a licensed retry. Declared here so the
+// in-band fault parse and the thrown-error path share one spelling of the vocabulary rather than each carrying a copy.
+CROWDYNET_API ECrowdyPlayerFaultBlame CrowdyPlayerFaultBlameFromWireString(const FString& Wire);
+
+/**
+ * The parsed outcome of a gameModelInvoke. bTransportOk and bSuccess are deliberately separate so a
+ * rolled-back invoke is never mistaken for a network failure:
+ *   - bTransportOk == false                    : the request never reached the server, the HTTP call
+ *                                                failed, or the GraphQL envelope carried errors[].
+ *                                                ErrorMessage carries the first transport/GraphQL error.
+ *   - bTransportOk == true,  bSuccess == false : the server ran the function, its logic or authority
+ *                                                check failed, the transaction was rolled back, and
+ *                                                ErrorMessage says why. NOT a network error do not
+ *                                                retry it as one.
+ *   - bTransportOk == true,  bSuccess == true  : committed; Mutations lists the applied writes.
+ *
+ * Blame and bRetryable answer a separate question from bTransportOk/bSuccess: whether the SAME call is worth
+ * trying again. Only Blame == Platform with bRetryable == true is safe to retry unchanged; Author means the
+ * identical call will fail identically, and Budget means nothing is broken but retrying spends nothing either.
+ *
+ * They arrive on two different channels and a caller should not care which. An authority denial or an evaluation
+ * failure comes back in band (bTransportOk true, bSuccess false) carrying the server's PlayerFaultInfo. The
+ * overload refusal, where writes to one hot container are refused rather than served late, is a THROWN GraphQL
+ * error instead: bTransportOk false, no Mutations, and the same attribution in errors[].extensions.
+ *
+ * bRetryable is true only where the server both said so and said whose fault it was, so an unattributed network
+ * failure reads as Unknown / false. That matters here more than on a read: an invoke may have committed before the
+ * failure was reported, so repeating one on no information can apply a write twice.
+ */
+struct FCrowdyInvokeResult
+{
+	bool bTransportOk = false;
+	bool bSuccess = false;
+	FString ReturnValueJson;
+	FString ErrorMessage;
+	TArray<FCrowdyMutationApplied> Mutations;
+	ECrowdyPlayerFaultBlame Blame = ECrowdyPlayerFaultBlame::Unknown;
+	bool bRetryable = false;
+	FString FaultCode;
+
+	// The server's own retry-after for a refusal that named one, in milliseconds. Set only on the thrown channel:
+	// PlayerFaultInfo carries no timing field, so an in-band fault never has one and its retryable:true means "try
+	// again", not "try again after N milliseconds".
+	//
+	// Only the CrowdyCPP path fills it. ParseInvokeEnvelope below cannot: it is handed the thrown channel as a flat
+	// array of message strings with the extensions already discarded, so a result from that parser reads unset for
+	// "this parser never saw it" rather than for "the server named no wait".
+	//
+	// Unset is not zero. Zero says the window has already rolled; unset says the server named no wait and the caller
+	// owes it a local backoff. Read it as a deadline from receipt rather than an interval to reuse: it is what
+	// REMAINED of a fixed window when the refusal was built, so a cached one is always too long.
+	TOptional<int64> RetryAfterMs;
+};
+
+/**
+ * One runtime session (GmSession). BigInt user ids arrive as JSON strings on the wire and are parsed to int64;
+ * bHasCurrentTurn distinguishes "no one's turn" (currentTurnUserId is null) from a real turn holder, so a
+ * caller need not assume 0 is impossible as a user id.
+ */
+struct FCrowdyGameSessionData
+{
+	FString SessionId;
+	int64   AppId = 0;
+	FString Name;
+	FString Status;
+	int64   CreatedByUserId = 0;
+	int64   CurrentTurnUserId = 0;
+	bool    bHasCurrentTurn = false;
+	FString MetadataJson;
+};
+
+/** One directed relationship edge between two containers (GmEdge). bHasWeight separates weight 0 from absent. */
+struct FCrowdyEdgeData
+{
+	FString EdgeId;
+	FString FromContainerId;
+	FString ToContainerId;
+	FString RelationshipType;
+	double  Weight = 0.0;
+	bool    bHasWeight = false;
+};
+
+/**
+ * A container-graph traversal (GmTraverseResult): the reachable container nodes (each the raw GmContainer JSON,
+ * exactly as a container listing returns) plus the edges walked. Server clamps depth to a maximum of 5.
+ */
+struct FCrowdyTraverseData
+{
+	FString RootId;
+	TArray<TSharedPtr<FJsonObject>> Nodes;
+	TArray<FCrowdyEdgeData> Edges;
+};
+
+/**
+ * Marshalling for the runtime Game Model surface of the Game API (invoke, container reads and writes,
+ * sessions and turns, the container graph). It turns typed arguments into a GraphQL variables object and
+ * turns a GraphQL response envelope into a typed result; it never makes a call, so the caller owns the
+ * transport.
+ *
+ * Every member is a pure static with no networking or world dependency, so headless tests exercise the wire
+ * contract (appId-as-string, transport-vs-logic discrimination, propertiesJson decoding) with canned JSON.
+ *
+ * Wire contract shared by every operation: appId is a BigInt! and is emitted as a JSON STRING, never a
+ * number, and so is every other BigInt id (user ids, participant lists, turn holder); nullable inputs are
+ * omitted entirely when empty. Each parser takes the envelope plus the transport's 2xx flag (bHttpOk) and
+ * the envelope's errors[] (TransportErrors); a non-2xx call or any GraphQL error fails the parse.
+ */
+class CROWDYNET_API FCrowdyGameApiCodec
+{
+public:
+	// Builds the { input: { appId, functionName, selfContainerId, sessionId?, paramsJson } } variables
+	// object for gameModelInvoke. appId is written as a JSON STRING (BigInt!); sessionId is omitted when
+	// empty (=> app-global); paramsJson is the compact-serialized Params (or "{}" when null).
+	static TSharedPtr<FJsonObject> BuildInvokeVariables(const FCrowdyInvokeRequest& Req);
+
+	// Parses a whole gameModelInvoke GraphQL envelope. See FCrowdyInvokeResult for the discrimination
+	// contract between a transport failure and a rolled-back invoke.
+	static FCrowdyInvokeResult ParseInvokeEnvelope(const TSharedPtr<FJsonObject>& Envelope,
+		bool bHttpOk, const TArray<FString>& TransportErrors);
+
+	// Parses gameModelContainerState's envelope: reads data.gameModelContainerState.propertiesJson
+	// (a JSON-encoded string) and returns it decoded into OutState. False on a missing/!2xx/malformed
+	// envelope, a null container, or unparseable propertiesJson.
+	static bool ParseContainerStateEnvelope(const TSharedPtr<FJsonObject>& Envelope,
+		bool bHttpOk, const TArray<FString>& TransportErrors, TSharedPtr<FJsonObject>& OutState);
+
+	// Parses gameModelContainers' envelope: reads data.gameModelContainers[] into OutContainers (each
+	// the raw container object incl. containerId / ownerUserId / metadataJson). False on !2xx/malformed.
+	static bool ParseContainersEnvelope(const TSharedPtr<FJsonObject>& Envelope,
+		bool bHttpOk, const TArray<FString>& TransportErrors, TArray<TSharedPtr<FJsonObject>>& OutContainers);
+
+	// Builds the { input: { appId, typeName, displayName, sessionId?, metadataJson? } } variables for
+	// gameModelCreateContainer. appId is a JSON STRING (BigInt!); sessionId and metadataJson are omitted
+	// when empty; displayName falls back to TypeName when empty (the field is non-null on the server).
+	// ownerUserId is NEVER written: the server defaults it to the authenticated caller for member/owner
+	// instantiation, so a client can never claim another user's container (fail-safe by omission).
+	static TSharedPtr<FJsonObject> BuildCreateContainerVariables(int64 AppId, const FString& TypeName,
+		const FString& DisplayName, const FString& SessionId, const FString& MetadataJson);
+
+	// Parses gameModelCreateContainer's envelope: reads data.gameModelCreateContainer.containerId (+
+	// ownerUserId). False on a missing/!2xx/malformed envelope or a null/absent container id.
+	static bool ParseCreateContainerEnvelope(const TSharedPtr<FJsonObject>& Envelope,
+		bool bHttpOk, const TArray<FString>& TransportErrors, FString& OutContainerId, int64& OutOwnerUserId);
+
+	// Builds { input: { appId, typeName, bindingKey, displayName, sessionId?, metadataJson? } } for
+	// gameModelEnsureContainer, the atomic get-or-create keyed by bindingKey within (appId, typeName,
+	// sessionId). appId is a JSON STRING (BigInt!); bindingKey and displayName are non-null on the server
+	// (displayName falls back to TypeName); sessionId and metadataJson are omitted when empty and are
+	// ignored by the server when the row already exists. ownerUserId is NEVER written: the server pins it
+	// to the caller for member/owner types and to null for admin types.
+	static TSharedPtr<FJsonObject> BuildEnsureContainerVariables(int64 AppId, const FString& TypeName,
+		const FString& BindingKey, const FString& DisplayName, const FString& SessionId, const FString& MetadataJson);
+
+	// Parses gameModelEnsureContainer's envelope: reads data.gameModelEnsureContainer.container.containerId (+
+	// ownerUserId) and .created (whether this call inserted the row). False on a missing/!2xx/malformed
+	// envelope or a null/absent container id.
+	static bool ParseEnsureContainerEnvelope(const TSharedPtr<FJsonObject>& Envelope,
+		bool bHttpOk, const TArray<FString>& TransportErrors, FString& OutContainerId, int64& OutOwnerUserId,
+		bool& OutCreated);
+
+	// Builds { appId (JSON string), typeName, bindingKey, sessionId? } top-level variables for the
+	// gameModelContainers get-by-key read: the single row ensured under BindingKey within (appId, typeName,
+	// sessionId), or none.
+	static TSharedPtr<FJsonObject> BuildReadContainerByKeyVariables(int64 AppId, const FString& TypeName,
+		const FString& SessionId, const FString& BindingKey);
+
+	// Parses the get-by-key envelope: the row of data.gameModelContainers whose bindingKey matches
+	// ExpectedBindingKey, if any (a drifted server that ignores the filter and returns unrelated rows is rejected).
+	// bOk=false on a !2xx/malformed envelope; bOk=true with OutFound=false when no matching row exists (a clean
+	// "not yet created").
+	static bool ParseReadContainerByKeyEnvelope(const TSharedPtr<FJsonObject>& Envelope,
+		bool bHttpOk, const TArray<FString>& TransportErrors, const FString& ExpectedBindingKey, bool& OutFound,
+		FString& OutContainerId, int64& OutOwnerUserId);
+
+	// Session lifecycle: create, join, set/clear the turn, list, and read one.
+
+	// participantUserIds is a JSON array of BigInt STRINGS; name/metadataJson omitted when empty.
+	static TSharedPtr<FJsonObject> BuildCreateSessionVariables(int64 AppId, const FString& Name,
+		const TArray<int64>& ParticipantUserIds, const FString& MetadataJson);
+	// role is omitted when empty (the server assigns its default role).
+	static TSharedPtr<FJsonObject> BuildJoinSessionVariables(int64 AppId, const FString& SessionId, const FString& Role);
+	// userId is a BigInt string when bHasUserId; otherwise it is written as an explicit JSON null, which clears
+	// the turn (the schema distinguishes an absent field, "unchanged", from an explicit null, "clear").
+	static TSharedPtr<FJsonObject> BuildSetSessionTurnVariables(int64 AppId, const FString& SessionId,
+		int64 UserId, bool bHasUserId);
+	// { appId (BigInt string), status? } top-level variables; status omitted when empty (any status).
+	static TSharedPtr<FJsonObject> BuildListSessionsVariables(int64 AppId, const FString& Status);
+	// { appId (BigInt string), sessionId } top-level variables.
+	static TSharedPtr<FJsonObject> BuildGetSessionVariables(int64 AppId, const FString& SessionId);
+
+	// Parses one GmSession JSON object (BigInt fields read defensively as string-or-number). Never fails; an
+	// absent field keeps its default (bHasCurrentTurn stays false when currentTurnUserId is null).
+	static FCrowdyGameSessionData ParseSessionObject(const TSharedPtr<FJsonObject>& SessionObj);
+	// Envelope parsers for the single-session ops. FieldName picks the mutation/query field to read
+	// ("gameModelCreateSession" / "gameModelSetSessionTurn" / "gameModelSession").
+	static bool ParseSessionEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, const TCHAR* FieldName, FCrowdyGameSessionData& OutSession);
+	static bool ParseSessionsEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, TArray<FCrowdyGameSessionData>& OutSessions);
+	static bool ParseJoinSessionEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, FString& OutSessionId, int64& OutUserId, FString& OutRole);
+
+	// Container graph: directed edges and traversals over them (inventories, chests, tech trees).
+
+	// weight (a JSON number) is written only when bHasWeight; metadataJson omitted when empty.
+	static TSharedPtr<FJsonObject> BuildAddEdgeVariables(int64 AppId, const FString& FromContainerId,
+		const FString& ToContainerId, const FString& RelationshipType, double Weight, bool bHasWeight,
+		const FString& MetadataJson);
+	// depth is a JSON NUMBER (Int!), not a string; clamped to [1,5].
+	static TSharedPtr<FJsonObject> BuildTraverseVariables(int64 AppId, const FString& RootId,
+		const FString& RelationshipType, int32 Depth);
+
+	static bool ParseAddEdgeEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, FCrowdyEdgeData& OutEdge);
+	static bool ParseTraverseEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, FCrowdyTraverseData& OutResult);
+	// Parses one GmEdge JSON object (weight read as an optional number).
+	static FCrowdyEdgeData ParseEdgeObject(const TSharedPtr<FJsonObject>& EdgeObj);
+
+	// Direct property write.
+	// gameModelSetProperty: a direct write to a property whose writability (owner/admin) permits the caller.
+	// ValueJson is already a JSON-encoded value string ("\"Aria\"", "42") and is passed through verbatim.
+	static TSharedPtr<FJsonObject> BuildSetPropertyVariables(int64 AppId, const FString& ContainerId,
+		const FString& Key, const FString& ValueType, const FString& ValueJson);
+
+	static bool ParseSetPropertyEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, FString& OutContainerId);
+
+	// Player-plane deletes (owner-or-admin, server-enforced). Flat-arg mutations returning Boolean!
+	// (true = deleted; false = it did not exist -- an idempotent no-op). An authorization/refusal failure arrives
+	// as a GraphQL error, so the parse fails. `deleteContainer` cascades the container's properties AND every edge
+	// connected to it; `deleteEdge` needs the source-container owner (or admin). The args are TOP-LEVEL variables
+	// (no input object).
+	// Top-level { appId (BigInt string), containerId/edgeId } variables.
+	static TSharedPtr<FJsonObject> BuildDeleteContainerVariables(int64 AppId, const FString& ContainerId);
+	static TSharedPtr<FJsonObject> BuildDeleteEdgeVariables(int64 AppId, const FString& EdgeId);
+	// Reads data.gameModelDelete*(Boolean!) into OutDeleted; false return = transport/parse failure or a GraphQL
+	// error (authorization/refusal), true = a clean transport with a boolean result.
+	static bool ParseDeleteContainerEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, bool& OutDeleted);
+	static bool ParseDeleteEdgeEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, bool& OutDeleted);
+};

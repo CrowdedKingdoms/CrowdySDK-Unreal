@@ -1,6 +1,5 @@
 ﻿#pragma once
 #include "opus.h"
-#include "Core/UDP/Interfaces/ICrowdyReceptionLayer.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
 #include "Messages/Communication/FClientAudioPacketMessageRequest.h"
 #include "Internal/FCrowdyServiceRegistry.h"
@@ -10,14 +9,14 @@ class UCrowdyGameSession;
 class UVoiceChatSubsystem;
 struct FClientAudioNotification;
 
-class CROWDYVOICE_API FVoiceChatService : public ICrowdyReceptionLayer
+class CROWDYVOICE_API FVoiceChatService
 {
-	
+
 public:
-	
+
 	FVoiceChatService(FCrowdyServiceRegistry* InRegistry, UCrowdyGameSession* InGameSession, TFunction<void(const ICrowdyMessage&)> InSendFn);
-	virtual ~FVoiceChatService() override;
-	
+	~FVoiceChatService();
+
 	void CompressAudioData(const TArray<float>& InAudioData, int32 SampleRate, int32 NumChannels);
 	bool DecompressAudioData(OpusDecoder* DecoderToUse, const TArray<uint8>& CompressedData, TArray<float>& OutAudioData, int32 SampleRate, int32 Channles);
 	void SendAudioData(const TArray<uint8>& InAudioData, int32 EncodedBytes, const int32 SampleRate, const int32 NumChannels);
@@ -25,10 +24,11 @@ public:
 	void CleanupDecoder(const FGuid& UUID);
 	void SetVoiceChatManagerReference(UVoiceChatSubsystem* InVoiceChatManager);
 	void ToggleOwnerEcho(bool bEnable);
-	virtual void OnMessageReceived(TSharedRef<ICrowdyMessage> Message) override;
-	virtual TArray<ECrowdyMessageType> GetSupportedResponseTypes() const override;
-	
+
 private:
+
+	// Inbound client audio notifications (opcode 135). Released automatically when this service is destroyed.
+	FCrowdySubscription AudioNotificationSubscription;
 	
 	// Opus Vars
 	OpusEncoder* AudioEncoder;

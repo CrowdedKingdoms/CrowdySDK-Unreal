@@ -1,0 +1,53 @@
+#pragma once
+
+// This header names CrowdyCPP types, so it includes the CrowdyCPP header
+// directly (no UE THIRD_PARTY guard, which would not be defined when this
+// private header is the first include in a bridge translation unit). http.hpp
+// pulls no UE or winsock headers, so plain inclusion is safe.
+#include "crowdy/graphql/http.hpp"
+
+#include <functional>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+// The bridge's HTTP transports for the asynchronous API path. The GraphQL client drives an injected
+// IAsyncHttpTransport, so the only thing it needs from the engine is an HTTP stack behind this interface.
+// This header is private to the bridge because it names third-party types; dependent modules never see it.
+namespace CrowdyCppTransport
+{
+	// Async transport over Unreal's FHttpModule. sendAsync starts a request and
+	// invokes the callback from OnProcessRequestComplete (already on the game
+	// thread); the GraphQL client then routes it through the client's Dispatcher
+	// so the callback lands wherever poll() is pumped.
+	std::shared_ptr<crowdy::graphql::IAsyncHttpTransport> MakeFHttpTransport();
+
+	// What a canned transport was last asked to send. Lets a test assert the
+	// endpoint a call was routed to and the bearer it would have carried, which
+	// are otherwise only observable against a live server.
+	struct FCannedRequestCapture
+	{
+		bool bHasRequest = false;
+		std::string Url;
+		std::string Authorization;
+
+		// When non-empty, each request consumes the next entry as its (status, body) instead of the
+		// transport's fixed response; requests past the end of the script get the fixed response. Lets
+		// one test drive a sequence such as a redirect followed by the retried call's answer.
+		std::vector<std::pair<int, std::string>> ScriptedResponses;
+		std::size_t NextScriptedResponse = 0;
+
+		// Runs while a request is in flight, after it was captured and before its response is
+		// delivered. A test uses it to act as a concurrent caller - for example moving the client's
+		// endpoint mid-request, the way a parallel request's datacenter redirect would.
+		std::function<void(const std::string& Url)> OnRequest;
+	};
+
+	// Test transport: every request resolves to a fixed canned response with no
+	// network I/O, running the real interpret() response path. Used to prove
+	// parity against FCrowdyGameApiCodec headlessly. When Capture is set, each
+	// request overwrites it before the canned response is returned.
+	std::shared_ptr<crowdy::graphql::IAsyncHttpTransport> MakeCannedTransport(std::string Body, int Status,
+		std::shared_ptr<FCannedRequestCapture> Capture = nullptr);
+}

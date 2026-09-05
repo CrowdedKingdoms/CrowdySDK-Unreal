@@ -8,8 +8,9 @@
 class FCrowdyStudioController;
 
 // The Dev/Prod/Custom backend picker, the custom Management API URL field, and the resulting
-// management URL. Shown on the Sign In page (so a fresh project can choose a backend before it
-// signs in) and on the Project page. Safe before sign-in: it only reads and writes local settings.
+// management URL. Shown only on the Sign In page: a session is authenticated against one management
+// plane, so switching backends is a sign-out-and-back-in operation rather than something to offer
+// mid-session. Safe before sign-in: it only reads and writes local settings.
 class SCrowdyBackendSelector : public SCompoundWidget
 {
 public:

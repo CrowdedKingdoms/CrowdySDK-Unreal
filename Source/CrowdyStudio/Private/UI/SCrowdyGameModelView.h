@@ -3,19 +3,20 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Model/CrowdyStudioTypes.h"
+#include "GameModel/CrowdyModelLedger.h" // FCrowdyModelRow
+#include "Types/SlateEnums.h"
+#include "UI/CrowdyStudioWidgets.h" // CrowdyStudioWidgets::FCrowdyTabItem
 #include "Widgets/SCompoundWidget.h"
-#include "Widgets/Input/SComboBox.h"
-#include "Widgets/Views/SListView.h"
 
+class FActiveTimerHandle;
 class FCrowdyStudioController;
-class SEditableTextBox;
-class SMultiLineEditableTextBox;
-class SVerticalBox;
+class SCrowdyModelBrowserTab;
+class SWidgetSwitcher;
 
-// Game-model pane: author the design-time schema the runtime consumes. Master/detail over container
-// types (and their properties), sandboxed functions, feature keys, tier-feature grants, the session
-// policy, and a bulk JSON seed. Game plane, so it needs a game-capable token.
+// Game Model page shell: the page title and its refresh, the schema reconcile strip, and a tab strip
+// over the model browser, the live instance browser and the advanced editors. It holds no app-scoped
+// state; each tab reads the controller and listens for itself. The one thing the shell listens for is
+// the app changing, so the page can load itself the next time it is shown.
 class SCrowdyGameModelView : public SCompoundWidget
 {
 public:
@@ -27,134 +28,66 @@ public:
 	virtual ~SCrowdyGameModelView() override;
 
 private:
+	// Page-level refresh of the schema reads every tab shares. The Live tab refreshes its own list.
 	FReply OnRefreshClicked();
-	FReply OnSaveTypeClicked();
-	FReply OnSavePropertyClicked();
-	FReply OnSaveFunctionClicked();
-	FReply OnDeleteFunctionClicked();
-	FReply OnDefineFeatureClicked();
-	FReply OnGrantTierFeatureClicked();
-	FReply OnRevokeTierFeatureClicked();
-	FReply OnSetPolicyClicked();
-	FReply OnSeedClicked();
-	FReply OnAddParamClicked();
+	FReply OnLintClicked();
 
-	// Slice 2: structured parameters editor.
-	void RebuildParamsRows();
-	TSharedRef<SWidget> MakeParamRow(TSharedPtr<FStudioFunctionParam> Param);
+	// Ask the controller for this app's schema lists, once, the next time this page is painted. Every Studio page is
+	// built up front into one switcher, so this page exists from startup whether or not anyone opens it: doing the
+	// reads on construction would load the game-model schema for a user who never comes here. An active timer only
+	// runs while its widget is being painted, and a widget in an inactive switcher slot never is, so registering one
+	// is exactly "when this page is actually on screen".
+	void ScheduleEnsureLists();
+	EActiveTimerReturnType HandleEnsureLists(double InCurrentTime, float InDeltaTime);
+	TWeakPtr<FActiveTimerHandle> EnsureListsTimerHandle;
 
-	FReply OnAddMutationClicked();
+	// The app changed, so whatever this page holds belongs to the previous one. Arm the load again rather than
+	// issuing it here: the announcement arrives whether or not this page is the one on screen.
+	void HandleAppChanged();
 
-	// Slice 3: structured mutations editor.
-	void RebuildMutationRows();
-	void RebuildTargetOptions();
-	TSharedRef<SWidget> MakeMutationRow(TSharedPtr<FStudioFunctionMutation> Mutation);
+	// A plan started, moved on, or ended. Every part of a plan is asynchronous, so without an indicator the page
+	// looks idle from the click until the report lands. Updated here, on the announcement, rather than from a bound
+	// attribute: text bindings run on every painted frame and none of this changes between them.
+	void HandleSchemaPlanProgress();
+	TSharedPtr<class SWidget> PlanProgressRow;
+	TSharedPtr<class STextBlock> PlanProgressText;
 
-	// Slice 4: guided invoke-policy builder. A flat list of requirement rows joined by one top-level
-	// connector (and/or), with an "Edit as JSON" escape hatch for nested or unrecognized policies.
-	FReply OnAddPolicyRuleClicked();
-	FReply OnTogglePolicyJsonClicked();
-	void RebuildPolicyRows();
-	TSharedRef<SWidget> MakePolicyRow(TSharedPtr<FStudioPolicyRule> Rule);
-	TSharedRef<SWidget> MakePolicyRuleField(TSharedPtr<FStudioPolicyRule> Rule);
+	// Tabs are addressed by a stored key rather than an index, so inserting or reordering a tab can
+	// never re-point a persisted value at a different one. INDEX_NONE for an unrecognized key.
+	static int32 TabIndexForKey(const FString& TabKey);
+	void OnTabSelected(const FString& TabKey);
 
-	// Slice 5: expression help. Cheat-sheet popover (operators, builtins, bound-type properties) shown
-	// from the return-expression row; the warnings panel surfaces the server's static-analysis notes.
-	TSharedRef<SWidget> MakeExpressionCheatSheet();
+	// The tab strip, rebuilt as data so the one conditional tab states its own availability and hint
+	// rather than the strip carrying a second set of parallel arrays about it.
+	TArray<CrowdyStudioWidgets::FCrowdyTabItem> MakeTabItems();
 
-	void OnTypeSelectionChanged(TSharedPtr<FStudioContainerType> Type, ESelectInfo::Type);
-	void OnFunctionSelectionChanged(TSharedPtr<FStudioFunction> Function, ESelectInfo::Type);
+	// Whether the Issues tab has anything to show. Findings, not errors: `clean` ignores warnings.
+	bool HasModelIssues() const;
+	// Every tab but Issues is always available; Issues follows the findings.
+	bool IsTabAvailable(const FString& TabKey) const;
+	// What the Issues tab says on hover, which is a different sentence for never-checked and checked-clean.
+	FText IssuesTabToolTip() const;
 
-	void HandleContainerTypesChanged();
-	void HandlePropertyDefsChanged();
-	void HandleFunctionsChanged();
-	void HandleFeaturesChanged();
-	void HandleTierFeaturesChanged();
-	void HandleAccessTiersChanged();
-	void HandleRuntimePermissionsChanged();
+	// A lint landed. Only one thing here reacts: leaving the Issues tab when it just became unavailable.
+	void HandleLintChanged();
 
-	// B3-2: live runtime container browser (read-only). Lists the runtime's instantiated containers and
-	// shows the selected one's visible property values.
-	FReply OnRefreshContainersClicked();
-	void HandleContainersChanged();
-	void HandleContainerStateChanged();
-	void OnContainerSelectionChanged(TSharedPtr<FStudioContainer> Container, ESelectInfo::Type SelectInfo);
-	TSharedRef<ITableRow> MakeContainerRow(TSharedPtr<FStudioContainer> Container, const TSharedRef<STableViewBase>& OwnerTable);
+	// The Live tab's "Show in Models" cross-link. Switches to the Models tab, then hands it the type name to
+	// open. Cross-tab navigation is the shell's job; the type name travels through the call and is not kept.
+	void OnShowModelInBrowser(const FString& TypeName);
 
-	FText GetSelectedTypeLabel() const;
-	FText GetPolicyLabel() const;
-
-	FString SelectedTypeName() const;
-
-	TSharedRef<ITableRow> MakeTypeRow(TSharedPtr<FStudioContainerType> Type, const TSharedRef<STableViewBase>& OwnerTable);
-	TSharedRef<ITableRow> MakePropertyRow(TSharedPtr<FStudioPropertyDef> Def, const TSharedRef<STableViewBase>& OwnerTable);
-	TSharedRef<ITableRow> MakeFunctionRow(TSharedPtr<FStudioFunction> Function, const TSharedRef<STableViewBase>& OwnerTable);
-	TSharedRef<ITableRow> MakeFeatureRow(TSharedPtr<FStudioAppFeature> Feature, const TSharedRef<STableViewBase>& OwnerTable);
-	TSharedRef<ITableRow> MakeTierFeatureRow(TSharedPtr<FStudioTierFeature> Grant, const TSharedRef<STableViewBase>& OwnerTable);
+	// The same, aimed at one row rather than at a model. Switching to the Models tab comes first for the same
+	// reason it always has: a collapsed switcher slot has no geometry, and a scroll issued before the switch has
+	// nothing to scroll within. An empty section key opens the model and nothing on it.
+	void ShowModelRowInBrowser(const FString& TypeName, const FString& SectionKey, const FCrowdyModelRow& Entity);
 
 	TSharedPtr<FCrowdyStudioController> Controller;
+	TSharedPtr<SWidgetSwitcher> TabSwitcher;
 
-	TSharedPtr<SListView<TSharedPtr<FStudioContainerType>>> TypeListView;
-	TSharedPtr<SListView<TSharedPtr<FStudioPropertyDef>>> PropertyListView;
-	TSharedPtr<SListView<TSharedPtr<FStudioFunction>>> FunctionListView;
-	TSharedPtr<SListView<TSharedPtr<FStudioAppFeature>>> FeatureListView;
-	TSharedPtr<SListView<TSharedPtr<FStudioTierFeature>>> TierFeatureListView;
+	// Held so the cross-tab link above can reach the Models tab directly, without routing a second delegate
+	// through the controller for what is purely a page-navigation concern.
+	TSharedPtr<SCrowdyModelBrowserTab> ModelBrowserTab;
 
-	TSharedPtr<SEditableTextBox> TypeNameBox, DisplayNameBox, TypeDescBox;
-	TSharedPtr<SEditableTextBox> PropKeyBox, PropDefaultBox, PropDescBox;
-	TSharedPtr<SEditableTextBox> FnNameBox, FnTypeBox, FnDescBox, FnReturnTypeBox, FnReturnExprBox;
-	TSharedPtr<SMultiLineEditableTextBox> FnPolicyBox;
-	TSharedPtr<SEditableTextBox> FeatureKeyBox, FeatureDescBox;
-	TSharedPtr<SEditableTextBox> TierFeatureKeyBox;
-	// Slice 6a: tier-feature grant tier picker, over the controller's read-only access-tier list.
-	TSharedPtr<SComboBox<TSharedPtr<FStudioAccessTier>>> TierComboBox;
-	TSharedPtr<FStudioAccessTier> SelectedTier;
-	TSharedPtr<SEditableTextBox> ParticipantRoleBox;
-	TSharedPtr<SMultiLineEditableTextBox> SeedBox;
-
-	// Fixed-choice fields, backed by segmented controls (their setters write these).
-	FString TypeInstantiableBy = TEXT("member");
-	FString TypeDefaultVis = TEXT("public");
-	FString PropValueType = TEXT("int");
-	FString PropVis = TEXT("public");
-	FString PropWritable = TEXT("function");
-	FString FnInvokeScope = TEXT("player");
-	FString SessionCreationPolicy = TEXT("admin");
-
-	// Slice 2: structured parameters editor working state. EditParams is the working copy; the rows
-	// edit each entry in place through its shared pointer, and it serializes via ParamsToJson on save.
-	TArray<TSharedPtr<FStudioFunctionParam>> EditParams;
-	TSharedPtr<SVerticalBox> ParamsRows;
-	TArray<TSharedPtr<FString>> ValueTypeOptions;
-
-	// Slice 3: structured mutations editor working state. EditMutations is the working copy; the
-	// rows edit it in place and MutationsToJson serializes it on save. TargetOptions is "self" plus
-	// the container types; PropertyOptions is the loaded container type's keys (combo suggestions).
-	TArray<TSharedPtr<FStudioFunctionMutation>> EditMutations;
-	TSharedPtr<SVerticalBox> MutationRows;
-	TArray<TSharedPtr<FString>> TargetOptions;
-	TArray<TSharedPtr<FString>> PropertyOptions;
-
-	// Slice 4: invoke-policy builder working state. EditPolicy is the flat requirement list (edited in
-	// place through each row's shared pointer); PolicyConnector is the top-level and/or. When a loaded
-	// policy is nested or unrecognized, bPolicyRawMode keeps the raw JSON box (FnPolicyBox) instead, and
-	// bPolicyNotRepresentable drives the "too advanced for the builder" note. The option arrays back the
-	// per-row combos: rule types (fixed), feature keys (from GetFeatures), grid keys (the 6b catalog).
-	TArray<TSharedPtr<FStudioPolicyRule>> EditPolicy;
-	TSharedPtr<SVerticalBox> PolicyRows;
-	FString PolicyConnector = TEXT("and");
-	bool bPolicyRawMode = false;
-	bool bPolicyNotRepresentable = false;
-	TArray<TSharedPtr<FString>> PolicyTypeOptions;
-	TArray<TSharedPtr<FString>> PolicyFeatureOptions;
-	TArray<TSharedPtr<FString>> PolicyGridKeyOptions;
-
-	// Slice 5: pre-joined static-analysis warnings for the selected function; empty hides the panel.
-	FString FnWarningsText;
-
-	// B3-2: live runtime container browser working state.
-	TSharedPtr<SListView<TSharedPtr<FStudioContainer>>> ContainerListView;
-	TSharedPtr<SEditableTextBox> ContainerTypeFilterBox;
-	TSharedPtr<SEditableTextBox> ContainerSessionFilterBox;
-	TSharedPtr<SMultiLineEditableTextBox> ContainerStateBox;
+	// The open tab's key, seeded from the persisted value and falling back to the first tab when that
+	// value is empty or names a tab that no longer exists.
+	FString ActiveTab;
 };

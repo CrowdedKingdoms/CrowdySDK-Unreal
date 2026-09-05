@@ -183,10 +183,7 @@ void UVoiceChatSubsystem::HandleIncomingAudio(TArray<float>&& IncomingAudioData,
 		{
 			UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("No stream found for PlayerID: %s, creating a new one."), *PlayerID.ToString());
 
-			AsyncTask(ENamedThreads::GameThread, [this, PlayerID, SampleRate]()
-			{
-				AddPlayerStream(PlayerID, SampleRate);
-			});
+			AddPlayerStream(PlayerID, SampleRate);
 			return; // Return early if we don't have a stream for this player
 		}
 
@@ -219,10 +216,7 @@ void UVoiceChatSubsystem::HandleIncomingAudio(TArray<float>&& IncomingAudioData,
 	
 
 	// For Audio-Notify icon
-	AsyncTask(ENamedThreads::GameThread, [this]
-	{
-		OnAudioNotify.Broadcast();
-	});
+	OnAudioNotify.Broadcast();
 }
 
 void UVoiceChatSubsystem::InitializeVoiceChatSubsystem(FVoiceChatService* InVoiceChatService)

@@ -1,152 +1,34 @@
 #include "Subsystem/CrowdyTeams.h"
-#include "Network/GraphQL/CrowdyQuerySubsystem.h"
-#include "Internal/FCrowdyDataRegistry.h"
+#include "CrowdyServiceApiSupport.h"
+#include "CrowdyCppClient.h"
+#include "Dom/JsonObject.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
-#include "Core/GraphQL/Enums/EQueryResponseType.h"
-#include "Async/Async.h"
-#include "Queries/Data/Teams/Responses/FMyTeamsResponse.h"
-#include "Queries/Data/Teams/Responses/FTeamResponse.h"
-#include "Queries/Data/Teams/Responses/FTeamsResponse.h"
-#include "Queries/Data/Teams/Responses/FTeamMembersResponse.h"
-#include "Queries/Data/Teams/Responses/FTeamRolesResponse.h"
-#include "Queries/Data/Teams/Responses/FTeamPolicyResponse.h"
-#include "Queries/Data/Teams/Responses/FCreateTeamResponse.h"
-#include "Queries/Data/Teams/Responses/FJoinTeamResponse.h"
-#include "Queries/Data/Teams/Responses/FRequestToJoinTeamResponse.h"
-#include "Queries/Data/Teams/Responses/FLeaveTeamResponse.h"
-#include "Queries/Data/Teams/Responses/FAddTeamMemberResponse.h"
-#include "Queries/Data/Teams/Responses/FRemoveTeamMemberResponse.h"
-#include "Queries/Data/Teams/Responses/FCreateTeamRoleResponse.h"
-#include "Queries/Data/Teams/Responses/FSetTeamMemberRolesResponse.h"
-#include "Queries/Data/Teams/Responses/FUpdateTeamRoleResponse.h"
-#include "Queries/Data/Teams/Responses/FDeleteTeamRoleResponse.h"
-#include "Queries/Data/Teams/Responses/FUpdateTeamResponse.h"
-#include "Queries/Data/Teams/Responses/FDeleteTeamResponse.h"
-#include "Queries/Data/Teams/Responses/FSetTeamPolicyResponse.h"
 
-namespace TeamQueries
+using namespace CrowdyServiceApi;
+
+namespace
 {
-	static const TCHAR* MyTeams =
-		TEXT(
-			"query MyTeams($appId: BigInt!) { myTeams(appId: $appId) { group { groupId appId groupType name description ownerUserId membershipPolicy status createdAt } roles { groupRoleId groupId roleName rank isSystem permissions createdAt } permissions joinedAt } }");
+	// The generated operation set these calls are looked up in, which is also what decides the endpoint each one
+	// reaches and the bearer it carries.
+	constexpr ECrowdyCppApiDomain TeamsDomain = ECrowdyCppApiDomain::Teams;
 
-	static const TCHAR* Team =
-		TEXT(
-			"query Team($groupId: BigInt!) { team(groupId: $groupId) { groupId appId groupType name description ownerUserId membershipPolicy status createdAt } }");
-
-	static const TCHAR* Teams =
-		TEXT(
-			"query Teams($appId: BigInt!) { teams(appId: $appId) { groupId appId groupType name description ownerUserId membershipPolicy status createdAt } }");
-
-	static const TCHAR* TeamMembers =
-		TEXT(
-			"query TeamMembers($groupId: BigInt!) { teamMembers(groupId: $groupId) { groupMemberId groupId userId status createdAt roles { groupRoleId groupId roleName rank isSystem permissions createdAt } } }");
-
-	static const TCHAR* TeamRoles =
-		TEXT(
-			"query TeamRoles($groupId: BigInt!) { teamRoles(groupId: $groupId) { groupRoleId groupId roleName rank isSystem permissions createdAt } }");
-
-	static const TCHAR* TeamPolicy =
-		TEXT(
-			"query TeamPolicy($appId: BigInt!) { teamPolicy(appId: $appId) { appId groupType creationPolicy defaultMembershipPolicy maxMembers maxGroupsPerUser } }");
-
-	static const TCHAR* CreateTeam =
-		TEXT(
-			"mutation CreateTeam($appId: BigInt!, $name: String!, $description: String, $membershipPolicy: String) { createTeam(input: { appId: $appId, name: $name, description: $description, membershipPolicy: $membershipPolicy }) { groupId appId groupType name description ownerUserId membershipPolicy status createdAt } }");
-
-	static const TCHAR* UpdateTeam =
-		TEXT(
-			"mutation UpdateTeam($groupId: BigInt!, $name: String, $description: String) { updateTeam(input: { groupId: $groupId, name: $name, description: $description }) { groupId appId groupType name description ownerUserId membershipPolicy status createdAt } }");
-
-	static const TCHAR* DeleteTeam =
-		TEXT("mutation DeleteTeam($groupId: BigInt!) { deleteTeam(groupId: $groupId) }");
-
-	static const TCHAR* JoinTeam =
-		TEXT(
-			"mutation JoinTeam($groupId: BigInt!) { joinTeam(groupId: $groupId) { groupMemberId groupId userId status createdAt roles { groupRoleId groupId roleName rank isSystem permissions createdAt } } }");
-
-	static const TCHAR* RequestToJoinTeam =
-		TEXT(
-			"mutation RequestToJoinTeam($groupId: BigInt!) { requestToJoinTeam(groupId: $groupId) { groupMemberId groupId userId status createdAt roles { groupRoleId groupId roleName rank isSystem permissions createdAt } } }");
-
-	static const TCHAR* LeaveTeam =
-		TEXT("mutation LeaveTeam($groupId: BigInt!) { leaveTeam(groupId: $groupId) }");
-
-	static const TCHAR* AddTeamMember =
-		TEXT(
-			"mutation AddTeamMember($groupId: BigInt!, $userId: BigInt!) { addTeamMember(groupId: $groupId, userId: $userId) { groupMemberId groupId userId status createdAt roles { groupRoleId groupId roleName rank isSystem permissions createdAt } } }");
-
-	static const TCHAR* RemoveTeamMember =
-		TEXT(
-			"mutation RemoveTeamMember($groupId: BigInt!, $userId: BigInt!) { removeTeamMember(groupId: $groupId, userId: $userId) }");
-
-	static const TCHAR* CreateTeamRole =
-		TEXT(
-			"mutation CreateTeamRole($groupId: BigInt!, $roleName: String!, $permissions: [String!], $rank: Int) { createTeamRole(input: { groupId: $groupId, roleName: $roleName, permissions: $permissions, rank: $rank }) { groupRoleId groupId roleName rank isSystem permissions createdAt } }");
-
-	static const TCHAR* UpdateTeamRole =
-		TEXT(
-			"mutation UpdateTeamRole($roleId: BigInt!, $roleName: String, $permissions: [String!]) { updateTeamRole(input: { roleId: $roleId, roleName: $roleName, permissions: $permissions }) { groupRoleId groupId roleName rank isSystem permissions createdAt } }");
-
-	static const TCHAR* DeleteTeamRole =
-		TEXT("mutation DeleteTeamRole($roleId: BigInt!) { deleteTeamRole(roleId: $roleId) }");
-
-	static const TCHAR* SetTeamMemberRoles =
-		TEXT(
-			"mutation SetTeamMemberRoles($groupId: BigInt!, $userId: BigInt!, $roleIds: [BigInt!]!) { setTeamMemberRoles(input: { groupId: $groupId, userId: $userId, roleIds: $roleIds }) { groupMemberId groupId userId status createdAt roles { groupRoleId groupId roleName rank isSystem permissions createdAt } } }");
-
-	static const TCHAR* SetTeamPolicy =
-		TEXT(
-			"mutation SetTeamPolicy($appId: BigInt!, $creationPolicy: String!, $defaultMembershipPolicy: String!) { setTeamPolicy(input: { appId: $appId, creationPolicy: $creationPolicy, defaultMembershipPolicy: $defaultMembershipPolicy }) { appId groupType creationPolicy defaultMembershipPolicy maxMembers maxGroupsPerUser } }");
-}
-
-void UCrowdyTeams::InjectDependencies(FCrowdyDataRegistry* InDataRegistry, UCrowdyQuerySubsystem* InQuerySubsystem)
-{
-	if (InDataRegistry) InDataRegistry->RegisterLayer(this);
-	QuerySubsystem = InQuerySubsystem;
+	constexpr const TCHAR* TeamsLogName = TEXT("CrowdyTeams");
 }
 
 void UCrowdyTeams::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+
+	LiveSessionToken = MakeShared<uint8>(0);
 }
 
 void UCrowdyTeams::Deinitialize()
 {
-	FScopeLock Lock(&CallbackMutex);
-	PendingCallbacks.Empty();
+	// Released first: a completion can still arrive from the client's own pump after this point, and it must not
+	// broadcast a cache change or run a Blueprint delegate while the game instance is shutting down.
+	LiveSessionToken.Reset();
+
 	Super::Deinitialize();
-}
-
-TArray<EQueryResponseType> UCrowdyTeams::GetSupportedResponseType() const
-{
-	return {
-		EQueryResponseType::MyTeams,
-		EQueryResponseType::Team,
-		EQueryResponseType::Teams,
-		EQueryResponseType::TeamMembers,
-		EQueryResponseType::TeamRoles,
-		EQueryResponseType::TeamPolicy,
-		EQueryResponseType::CreateTeam,
-		EQueryResponseType::JoinTeam,
-		EQueryResponseType::RequestToJoinTeam,
-		EQueryResponseType::LeaveTeam,
-		EQueryResponseType::AddTeamMember,
-		EQueryResponseType::RemoveTeamMember,
-		EQueryResponseType::CreateTeamRole,
-		EQueryResponseType::SetTeamMemberRoles,
-		EQueryResponseType::UpdateTeamRole,
-		EQueryResponseType::DeleteTeamRole,
-		EQueryResponseType::UpdateTeam,
-		EQueryResponseType::DeleteTeam,
-		EQueryResponseType::SetTeamPolicy,
-	};
-}
-
-void UCrowdyTeams::OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Response)
-{
-	if (!Response.IsValid()) return;
-	FireCallback(Response);
 }
 
 int64 UCrowdyTeams::GetAppId() const
@@ -154,502 +36,606 @@ int64 UCrowdyTeams::GetAppId() const
 	return GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
 }
 
-void UCrowdyTeams::PushCallback(EQueryResponseType Type,
-                                TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback)
-{
-	FScopeLock Lock(&CallbackMutex);
-	PendingCallbacks.FindOrAdd(Type).Add(MoveTemp(Callback));
-}
-
-void UCrowdyTeams::FireCallback(TSharedPtr<ICrowdyQueryResponse> Response)
-{
-	TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback;
-	{
-		FScopeLock Lock(&CallbackMutex);
-		TArray<TFunction<void(TSharedPtr<ICrowdyQueryResponse>)>>* Queue =
-			PendingCallbacks.Find(Response->GetResponseType());
-		if (Queue && Queue->Num() > 0)
-		{
-			Callback = MoveTemp((*Queue)[0]);
-			Queue->RemoveAt(0, 1, EAllowShrinking::No);
-		}
-	}
-
-	if (Callback)
-	{
-		TSharedPtr<ICrowdyQueryResponse> ResponseCopy = Response;
-		AsyncTask(ENamedThreads::GameThread, [Callback = MoveTemp(Callback), ResponseCopy]()
-		{
-			Callback(ResponseCopy);
-		});
-	}
-}
-
-TSharedPtr<FJsonObject> UCrowdyTeams::MakeVarsWithStringArray(
-	const TMap<FString, FString>& ScalarFields,
-	const TMap<FString, TArray<FString>>& StringArrayFields)
-{
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-
-	for (const auto& Pair : ScalarFields)
-		Vars->SetStringField(Pair.Key, Pair.Value);
-
-	for (const auto& Pair : StringArrayFields)
-	{
-		TArray<TSharedPtr<FJsonValue>> JsonArr;
-		for (const FString& S : Pair.Value)
-			JsonArr.Add(MakeShared<FJsonValueString>(S));
-		Vars->SetArrayField(Pair.Key, JsonArr);
-	}
-	return Vars;
-}
-
 void UCrowdyTeams::GetMyTeams(FOnMyTeamsSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::MyTeams, [this, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-		{
-			const FMyTeamsResponse& R = static_cast<FMyTeamsResponse&>(*Resp);
-			CachedMyTeams = R.Memberships;
-			bCachePopulated = true;
-			OnMyTeamsCacheChanged.Broadcast(CachedMyTeams);
-			OnSuccess.ExecuteIfBound(R.Memberships);
-		}
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::MyTeams, TeamQueries::MyTeams, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	Client->RunOp(TeamsDomain, TEXT("MyTeams"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyTeamMembership> Memberships;
+			FCrowdyTeamError Error;
+			if (!ReadArray(Result, TEXT("myTeams"), Memberships, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->CachedMyTeams = Memberships;
+				Self->bCachePopulated = true;
+				Self->OnMyTeamsCacheChanged.Broadcast(Self->CachedMyTeams);
+			}
+
+			OnSuccess.ExecuteIfBound(Memberships);
+		}));
 }
 
-void UCrowdyTeams::GetTeam(int64 GroupId, FOnTeamSuccess OnSuccess, FOnTeamError OnError)
+void UCrowdyTeams::GetTeam(int64 TeamId, FOnTeamSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::Team, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FTeamResponse&>(*Resp).Group);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::Team, TeamQueries::Team, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+
+	Client->RunOp(TeamsDomain, TEXT("Team"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeam Team;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("team"), Team, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Team);
+		}));
 }
 
 void UCrowdyTeams::GetTeams(FOnTeamsSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::Teams, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FTeamsResponse&>(*Resp).Groups);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::Teams, TeamQueries::Teams, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+
+	Client->RunOp(TeamsDomain, TEXT("Teams"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyTeam> Teams;
+			FCrowdyTeamError Error;
+			if (!ReadArray(Result, TEXT("teams"), Teams, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Teams);
+		}));
 }
 
-void UCrowdyTeams::GetTeamMembers(int64 GroupId, FOnTeamMembersSuccess OnSuccess, FOnTeamError OnError)
+void UCrowdyTeams::GetTeamMembers(int64 TeamId, FOnTeamMembersSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::TeamMembers, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FTeamMembersResponse&>(*Resp).Members);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::TeamMembers, TeamQueries::TeamMembers, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+
+	Client->RunOp(TeamsDomain, TEXT("TeamMembers"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyTeamMember> Members;
+			FCrowdyTeamError Error;
+			if (!ReadArray(Result, TEXT("teamMembers"), Members, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Members);
+		}));
 }
 
-void UCrowdyTeams::GetTeamRoles(int64 GroupId, FOnTeamRolesSuccess OnSuccess, FOnTeamError OnError)
+void UCrowdyTeams::GetPendingJoinRequests(int64 TeamId, FOnTeamMembersSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::TeamRoles, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FTeamRolesResponse&>(*Resp).Roles);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::TeamRoles, TeamQueries::TeamRoles, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+
+	// The server has no pending-only query, so this is the full member list filtered to the ones still awaiting a
+	// decision.
+	Client->RunOp(TeamsDomain, TEXT("TeamMembers"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyTeamMember> Members;
+			FCrowdyTeamError Error;
+			if (!ReadArray(Result, TEXT("teamMembers"), Members, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+
+			Members.RemoveAll([](const FCrowdyTeamMember& Member) { return Member.Status != TEXT("pending"); });
+			OnSuccess.ExecuteIfBound(Members);
+		}));
+}
+
+void UCrowdyTeams::GetTeamRoles(int64 TeamId, FOnTeamRolesSuccess OnSuccess, FOnTeamError OnError)
+{
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
+	{
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+
+	Client->RunOp(TeamsDomain, TEXT("TeamRoles"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyTeamRole> Roles;
+			FCrowdyTeamError Error;
+			if (!ReadArray(Result, TEXT("teamRoles"), Roles, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Roles);
+		}));
 }
 
 void UCrowdyTeams::GetTeamPolicy(FOnTeamPolicySuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::TeamPolicy, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FTeamPolicyResponse&>(*Resp).Policy);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::TeamPolicy, TeamQueries::TeamPolicy, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+
+	Client->RunOp(TeamsDomain, TEXT("TeamPolicy"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamPolicy Policy;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("teamPolicy"), Policy, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Policy);
+		}));
 }
 
 void UCrowdyTeams::CreateTeam(const FString& Name, const FString& Description,
                               ECrowdyTeamMembershipPolicy MembershipPolicy,
                               FOnTeamSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::CreateTeam, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FCreateTeamResponse&>(*Resp).Group);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	Vars->SetStringField(TEXT("name"), Name);
-	Vars->SetStringField(TEXT("description"), Description);
-	Vars->SetStringField(TEXT("membershipPolicy"), FCrowdyGroup::MembershipPolicyToString(MembershipPolicy));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::CreateTeam, TeamQueries::CreateTeam, Vars);
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+	Input->SetStringField(TEXT("name"), Name);
+	Input->SetStringField(TEXT("description"), Description);
+	Input->SetStringField(TEXT("membershipPolicy"), FCrowdyTeam::MembershipPolicyToString(MembershipPolicy));
+
+	Client->RunOp(TeamsDomain, TEXT("CreateTeam"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeam Team;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("createTeam"), Team, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Team);
+		}));
 }
 
-void UCrowdyTeams::UpdateTeam(int64 GroupId, const FString& Name, const FString& Description,
+void UCrowdyTeams::UpdateTeam(int64 TeamId, const FString& Name, const FString& Description,
                               FOnTeamSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::UpdateTeam, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FUpdateTeamResponse&>(*Resp).Group);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	Vars->SetStringField(TEXT("name"), Name);
-	Vars->SetStringField(TEXT("description"), Description);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::UpdateTeam, TeamQueries::UpdateTeam, Vars);
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("groupId"), BigInt(TeamId));
+	Input->SetStringField(TEXT("name"), Name);
+	Input->SetStringField(TEXT("description"), Description);
+
+	Client->RunOp(TeamsDomain, TEXT("UpdateTeam"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeam Team;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("updateTeam"), Team, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Team);
+		}));
 }
 
-void UCrowdyTeams::DeleteTeam(int64 GroupId, FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
+void UCrowdyTeams::DeleteTeam(int64 TeamId, FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::DeleteTeam, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid()) OnSuccess.ExecuteIfBound();
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::DeleteTeam, TeamQueries::DeleteTeam, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+
+	Client->RunOp(TeamsDomain, TEXT("DeleteTeam"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamError Error;
+			if (!ReadAcknowledgement(Result, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound();
+		}));
 }
 
-void UCrowdyTeams::JoinTeam(int64 GroupId, FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
+void UCrowdyTeams::JoinTeam(int64 TeamId, FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::JoinTeam, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FJoinTeamResponse&>(*Resp).Member);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::JoinTeam, TeamQueries::JoinTeam, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+
+	Client->RunOp(TeamsDomain, TEXT("JoinTeam"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamMember Member;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("joinTeam"), Member, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Member);
+		}));
 }
 
-void UCrowdyTeams::RequestToJoinTeam(int64 GroupId, FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
+void UCrowdyTeams::RequestToJoinTeam(int64 TeamId, FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::RequestToJoinTeam, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FRequestToJoinTeamResponse&>(*Resp).Member);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::RequestToJoinTeam, TeamQueries::RequestToJoinTeam,
-	                                                Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+
+	Client->RunOp(TeamsDomain, TEXT("RequestToJoinTeam"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamMember Member;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("requestToJoinTeam"), Member, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Member);
+		}));
 }
 
-void UCrowdyTeams::LeaveTeam(int64 GroupId, FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
+void UCrowdyTeams::LeaveTeam(int64 TeamId, FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::LeaveTeam, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid()) OnSuccess.ExecuteIfBound();
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::LeaveTeam, TeamQueries::LeaveTeam, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+
+	Client->RunOp(TeamsDomain, TEXT("LeaveTeam"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamError Error;
+			if (!ReadAcknowledgement(Result, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound();
+		}));
 }
 
-void UCrowdyTeams::AddTeamMember(int64 GroupId, int64 UserId,
+void UCrowdyTeams::AddTeamMember(int64 TeamId, int64 UserId,
                                  FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::AddTeamMember, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FAddTeamMemberResponse&>(*Resp).Member);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	Vars->SetStringField(TEXT("userId"), FString::Printf(TEXT("%lld"), UserId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::AddTeamMember, TeamQueries::AddTeamMember, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+	Variables->SetStringField(TEXT("userId"), BigInt(UserId));
+
+	Client->RunOp(TeamsDomain, TEXT("AddTeamMember"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamMember Member;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("addTeamMember"), Member, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Member);
+		}));
 }
 
-void UCrowdyTeams::RemoveTeamMember(int64 GroupId, int64 UserId,
+void UCrowdyTeams::RemoveTeamMember(int64 TeamId, int64 UserId,
                                     FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::RemoveTeamMember, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid()) OnSuccess.ExecuteIfBound();
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	Vars->SetStringField(TEXT("userId"), FString::Printf(TEXT("%lld"), UserId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::RemoveTeamMember, TeamQueries::RemoveTeamMember,
-	                                                Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+	Variables->SetStringField(TEXT("userId"), BigInt(UserId));
+
+	Client->RunOp(TeamsDomain, TEXT("RemoveTeamMember"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamError Error;
+			if (!ReadAcknowledgement(Result, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound();
+		}));
 }
 
-void UCrowdyTeams::CreateTeamRole(int64 GroupId, const FString& RoleName,
-                                  FCrowdyRolePermissions Permissions, int32 Rank,
+void UCrowdyTeams::CreateTeamRole(int64 TeamId, const FString& RoleName,
+                                  FCrowdyTeamPermissions Permissions, int32 Rank,
                                   FOnTeamRoleSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::CreateTeamRole, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FCreateTeamRoleResponse&>(*Resp).Role);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeVarsWithStringArray(
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("groupId"), BigInt(TeamId));
+	Input->SetStringField(TEXT("roleName"), RoleName);
+	Input->SetNumberField(TEXT("rank"), Rank);
+	SetPermissionKeys(Input, Permissions.ToStringArray());
+
+	Client->RunOp(TeamsDomain, TEXT("CreateTeamRole"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
-			{TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId)},
-			{TEXT("roleName"), RoleName},
-			{TEXT("rank"), FString::FromInt(Rank)}
-		},
-		{{TEXT("permissions"), Permissions.ToStringArray()}}
-	);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::CreateTeamRole, TeamQueries::CreateTeamRole, Vars);
+			FCrowdyTeamRole Role;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("createTeamRole"), Role, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Role);
+		}));
 }
 
-void UCrowdyTeams::UpdateTeamRole(int64 RoleId, const FString& RoleName,
-                                  FCrowdyRolePermissions Permissions,
+void UCrowdyTeams::UpdateTeamRole(int64 TeamRoleId, const FString& RoleName,
+                                  FCrowdyTeamPermissions Permissions,
                                   FOnTeamRoleSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::UpdateTeamRole, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FUpdateTeamRoleResponse&>(*Resp).Role);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeVarsWithStringArray(
-		{{TEXT("roleId"), FString::Printf(TEXT("%lld"), RoleId)}, {TEXT("roleName"), RoleName}},
-		{{TEXT("permissions"), Permissions.ToStringArray()}}
-	);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::UpdateTeamRole, TeamQueries::UpdateTeamRole, Vars);
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("groupRoleId"), BigInt(TeamRoleId));
+	Input->SetStringField(TEXT("roleName"), RoleName);
+	SetPermissionKeys(Input, Permissions.ToStringArray());
+
+	Client->RunOp(TeamsDomain, TEXT("UpdateTeamRole"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamRole Role;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("updateTeamRole"), Role, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Role);
+		}));
 }
 
-void UCrowdyTeams::DeleteTeamRole(int64 RoleId, FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
+void UCrowdyTeams::DeleteTeamRole(int64 TeamRoleId, FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::DeleteTeamRole, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid()) OnSuccess.ExecuteIfBound();
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("roleId"), FString::Printf(TEXT("%lld"), RoleId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::DeleteTeamRole, TeamQueries::DeleteTeamRole, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupRoleId"), BigInt(TeamRoleId));
+
+	Client->RunOp(TeamsDomain, TEXT("DeleteTeamRole"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamError Error;
+			if (!ReadAcknowledgement(Result, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound();
+		}));
 }
 
-void UCrowdyTeams::SetTeamMemberRoles(int64 GroupId, int64 UserId, const TArray<int64>& RoleIds,
+void UCrowdyTeams::SetTeamMemberRoles(int64 TeamId, int64 UserId, const TArray<int64>& RoleIds,
                                       FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::SetTeamMemberRoles, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FSetTeamMemberRolesResponse&>(*Resp).Member);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	Vars->SetStringField(TEXT("userId"), FString::Printf(TEXT("%lld"), UserId));
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("groupId"), BigInt(TeamId));
+	Input->SetStringField(TEXT("userId"), BigInt(UserId));
 
-	TArray<TSharedPtr<FJsonValue>> RoleIdsJson;
+	TArray<TSharedPtr<FJsonValue>> RoleIdValues;
 	for (int64 RoleId : RoleIds)
-		RoleIdsJson.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%lld"), RoleId)));
-	Vars->SetArrayField(TEXT("roleIds"), RoleIdsJson);
+	{
+		RoleIdValues.Add(MakeShared<FJsonValueString>(BigInt(RoleId)));
+	}
+	Input->SetArrayField(TEXT("roleIds"), RoleIdValues);
 
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::SetTeamMemberRoles, TeamQueries::SetTeamMemberRoles,
-	                                                Vars);
+	Client->RunOp(TeamsDomain, TEXT("SetTeamMemberRoles"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamMember Member;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("setTeamMemberRoles"), Member, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Member);
+		}));
 }
 
 void UCrowdyTeams::SetTeamPolicy(ECrowdyTeamCreationPolicy CreationPolicy,
                                  ECrowdyTeamMembershipPolicy DefaultMembershipPolicy,
                                  FOnTeamPolicySuccess OnSuccess, FOnTeamError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::SetTeamPolicy, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FSetTeamPolicyResponse&>(*Resp).Policy);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	auto CreationStr = [](ECrowdyTeamCreationPolicy P) -> FString
-	{
-		switch (P)
-		{
-		case ECrowdyTeamCreationPolicy::Admin: return TEXT("admin");
-		case ECrowdyTeamCreationPolicy::Member: return TEXT("member");
-		default: return TEXT("anyone");
-		}
-	};
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+	Input->SetStringField(TEXT("creationPolicy"), FCrowdyTeamPolicy::CreationPolicyToString(CreationPolicy));
+	Input->SetStringField(TEXT("defaultMembershipPolicy"),
+		FCrowdyTeam::MembershipPolicyToString(DefaultMembershipPolicy));
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	Vars->SetStringField(TEXT("creationPolicy"), CreationStr(CreationPolicy));
-	Vars->SetStringField(
-		TEXT("defaultMembershipPolicy"), FCrowdyGroup::MembershipPolicyToString(DefaultMembershipPolicy));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::SetTeamPolicy, TeamQueries::SetTeamPolicy, Vars);
+	Client->RunOp(TeamsDomain, TEXT("SetTeamPolicy"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamPolicy Policy;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("setTeamPolicy"), Policy, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Policy);
+		}));
 }
 
-bool UCrowdyTeams::IsPlayerInTeam(int64 GroupId) const
+bool UCrowdyTeams::IsPlayerInTeam(int64 TeamId) const
 {
-	for (const FCrowdyGroupMembership& M : CachedMyTeams)
-		if (M.Group.GroupId == GroupId) return true;
+	for (const FCrowdyTeamMembership& Membership : CachedMyTeams)
+	{
+		if (Membership.Team.TeamId == TeamId) return true;
+	}
 	return false;
 }
 
-bool UCrowdyTeams::GetMyTeamById(int64 GroupId, FCrowdyGroupMembership& OutMembership) const
+bool UCrowdyTeams::GetMyTeamById(int64 TeamId, FCrowdyTeamMembership& OutMembership) const
 {
-	for (const FCrowdyGroupMembership& M : CachedMyTeams)
+	for (const FCrowdyTeamMembership& Membership : CachedMyTeams)
 	{
-		if (M.Group.GroupId == GroupId)
+		if (Membership.Team.TeamId == TeamId)
 		{
-			OutMembership = M;
+			OutMembership = Membership;
 			return true;
 		}
 	}
@@ -661,40 +647,16 @@ bool UCrowdyTeams::IsInAnyTeam() const
 	return CachedMyTeams.Num() > 0;
 }
 
-bool UCrowdyTeams::GetPrimaryMembership(FCrowdyGroupMembership& OutMembership) const
+bool UCrowdyTeams::GetPrimaryMembership(FCrowdyTeamMembership& OutMembership) const
 {
 	if (CachedMyTeams.IsEmpty()) return false;
 	OutMembership = CachedMyTeams[0];
 	return true;
 }
 
-bool UCrowdyTeams::HasPermissionInTeam(int64 GroupId, ECrowdyTeamPermission Permission) const
+bool UCrowdyTeams::HasPermissionInTeam(int64 TeamId, ECrowdyTeamPermission Permission) const
 {
-	FCrowdyGroupMembership Membership;
-	if (!GetMyTeamById(GroupId, Membership)) return false;
+	FCrowdyTeamMembership Membership;
+	if (!GetMyTeamById(TeamId, Membership)) return false;
 	return Membership.HasPermission(Permission);
-}
-
-void UCrowdyTeams::GetPendingJoinRequests(int64 GroupId, FOnTeamMembersSuccess OnSuccess, FOnTeamError OnError)
-{
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::TeamMembers, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-		{
-			TArray<FCrowdyGroupMember> Members = static_cast<FTeamMembersResponse&>(*Resp).Members;
-			Members.RemoveAll([](const FCrowdyGroupMember& M) { return M.Status != TEXT("pending"); });
-			OnSuccess.ExecuteIfBound(Members);
-		}
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
-
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::TeamMembers, TeamQueries::TeamMembers, Vars);
 }

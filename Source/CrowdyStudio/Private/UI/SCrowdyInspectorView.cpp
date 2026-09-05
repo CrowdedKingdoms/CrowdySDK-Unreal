@@ -166,29 +166,29 @@ void SCrowdyInspectorView::Rebuild()
 
 	if (UCrowdyTeams* Teams = GameInstance->GetSubsystem<UCrowdyTeams>())
 	{
-		const TArray<FCrowdyGroupMembership> MyTeams = Teams->GetCachedMyTeams();
+		const TArray<FCrowdyTeamMembership> MyTeams = Teams->GetCachedMyTeams();
 		AddHeader(FText::Format(LOCTEXT("InspectorTeams", "Teams ({0})"), FText::AsNumber(MyTeams.Num())));
 		if (!Teams->HasCachedTeams())
 		{
 			AddNote(LOCTEXT("InspectorTeamsEmpty", "Cache not populated yet (the game has not fetched teams)."));
 		}
-		for (const FCrowdyGroupMembership& Membership : MyTeams)
+		for (const FCrowdyTeamMembership& Membership : MyTeams)
 		{
-			AddLine(FString::Printf(TEXT("#%lld  %s"), Membership.Group.GroupId, *Membership.Group.Name));
+			AddLine(FString::Printf(TEXT("#%lld  %s"), Membership.Team.TeamId, *Membership.Team.Name));
 		}
 	}
 
 	if (UCrowdyChannels* Channels = GameInstance->GetSubsystem<UCrowdyChannels>())
 	{
-		const TArray<FCrowdyGroupMembership> MyChannels = Channels->GetCachedMyChannels();
+		const TArray<FCrowdyChannelMembership> MyChannels = Channels->GetCachedMyChannels();
 		AddHeader(FText::Format(LOCTEXT("InspectorChannels", "Channels ({0})"), FText::AsNumber(MyChannels.Num())));
 		if (!Channels->HasCachedChannels())
 		{
 			AddNote(LOCTEXT("InspectorChannelsEmpty", "Cache not populated yet (the game has not fetched channels)."));
 		}
-		for (const FCrowdyGroupMembership& Membership : MyChannels)
+		for (const FCrowdyChannelMembership& Membership : MyChannels)
 		{
-			AddLine(FString::Printf(TEXT("#%lld  %s"), Membership.Group.GroupId, *Membership.Group.Name));
+			AddLine(FString::Printf(TEXT("#%lld  %s"), Membership.Channel.ChannelId, *Membership.Channel.Name));
 		}
 		AddLine(FString::Printf(TEXT("Reliable RPC channels ready: %s"), Channels->AreReliableChannelsReady() ? TEXT("yes") : TEXT("no")));
 		AddLine(FString::Printf(TEXT("Session channel id: %lld"), Channels->GetSessionChannelId()));

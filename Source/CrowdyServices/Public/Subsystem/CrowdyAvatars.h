@@ -3,14 +3,12 @@
 #include "CoreMinimal.h"
 #include "Engine/LatentActionManager.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "Core/GraphQL/Interfaces/ICrowdyQueryReceptionLayer.h"
 #include "Queries/Data/Avatar/Types/FCrowdyAvatar.h"
 #include "Queries/Data/Avatar/Types/FCrowdyAppAvatarState.h"
 #include "Queries/Data/Avatar/Types/FCrowdyAvatarError.h"
 #include "CrowdyAvatars.generated.h"
 
-class UCrowdyQuerySubsystem;
-class FCrowdyDataRegistry;
+class FJsonObject;
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAvatarSuccess, FCrowdyAvatar, Avatar);
 
@@ -27,18 +25,13 @@ DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnAvatarError, FCrowdyAvatarError, Error, FS
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyAvatarsCacheChanged, TArray<FCrowdyAvatar>, Avatars);
 
 UCLASS()
-class CROWDYSERVICES_API UCrowdyAvatars : public UGameInstanceSubsystem, public ICrowdyQueryReceptionLayer
+class CROWDYSERVICES_API UCrowdyAvatars : public UGameInstanceSubsystem
 {
 	GENERATED_BODY()
 
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
-
-	void InjectDependencies(FCrowdyDataRegistry* InDataRegistry, UCrowdyQuerySubsystem* InQuerySubsystem);
-
-	virtual void OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Response) override;
-	virtual TArray<EQueryResponseType> GetSupportedResponseType() const override;
 
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Avatars")
 	FOnMyAvatarsCacheChanged OnMyAvatarsCacheChanged;
@@ -93,7 +86,7 @@ public:
 	void UpdateAvatarState(int64 AvatarId, const FString& PublicState, const FString& PrivateState,
 	                       FOnAvatarSuccess OnSuccess, FOnAvatarError OnError);
 
-	/** Pass an empty string to clear. AppId from project settings. */
+	/** Replaces this app's state for the avatar. AppId comes from project settings. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Avatars|Mutations|State")
 	void UpdateAvatarAppState(int64 AvatarId, const FString& State,
 	                          FOnAppStateSuccess OnSuccess, FOnAvatarError OnError);
@@ -129,17 +122,26 @@ public:
 	DECLARE_FUNCTION(execSetAvatarAppStateAs);
 
 private:
-	UPROPERTY()
-	UCrowdyQuerySubsystem* QuerySubsystem = nullptr;
-
-	mutable FCriticalSection CallbackMutex;
-	TMap<EQueryResponseType, TArray<TFunction<void(TSharedPtr<ICrowdyQueryResponse>)>>> PendingCallbacks;
-
 	TArray<FCrowdyAvatar> CachedMyAvatars;
 	bool bCachePopulated = false;
 
+	/**
+	 * Marks this subsystem's usable lifetime. Every completion handed to the shared API client holds it weakly, so
+	 * a request still in flight at teardown lands on nothing rather than on a subsystem whose state has been
+	 * cleared.
+	 */
+	TSharedPtr<uint8> LiveSessionToken;
+
 	int64 GetAppId() const;
 
-	void PushCallback(EQueryResponseType Type, TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback);
-	void FireCallback(TSharedPtr<ICrowdyQueryResponse> Response);
+	/**
+	 * The one state mutation behind the public-only, private-only and both-at-once entry points. Input carries
+	 * whichever of the two state fields the caller is changing; a field it omits is left alone on the server.
+	 */
+	void DispatchAvatarStateUpdate(int64 AvatarId, const TSharedPtr<FJsonObject>& Input,
+	                               FOnAvatarSuccess OnSuccess, FOnAvatarError OnError);
+
+	/** The appId / avatarId pair every per-app state call is keyed by, plus the state itself for the write. */
+	static TSharedPtr<FJsonObject> BuildAppStateVariables(int64 AppId, int64 AvatarId,
+	                                                      const TOptional<FString>& State = TOptional<FString>());
 };

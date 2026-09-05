@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "CrowdyNetLog.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Serialization/CrowdyFrame.h"
 
 struct FPingTestMessage : ICrowdyMessage
 {
@@ -24,26 +25,26 @@ struct FPingTestMessage : ICrowdyMessage
 		return Data;
 	}
 	
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
+		const TConstArrayView<uint8> Data = Frame.Body;
 		int32 Offset = 0;
-		if (!DeserializeMetadata(Data, Offset))
+
+		ApplyEnvelope(Frame);
+		if (!ApplyEnvelopeActorId(Frame))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FPingTestMessage::Deserialize - Metadata deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FPingTestMessage::DecodePayload - the frame carries no actor id"));
 			return false;
 		}
-		
+
+
 		if (!USerializationFunctionLibrary::DeserializeValue(Data, SendTime, Offset))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FPingTestMessage::Deserialize - SendTime deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FPingTestMessage::DecodePayload - SendTime deserialization failed"));
 			return false;
 		}
 		ReceiveTime = FDateTime::UtcNow().GetTicks()/10000;
 		return true;
 	}
 	
-	virtual uint32 GetMessageSize() const override
-	{
-		return 0;
-	}
 };

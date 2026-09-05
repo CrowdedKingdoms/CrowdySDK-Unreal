@@ -1,14 +1,7 @@
 #include "Subsystem/AsyncActions/CrowdyTeamsWriteActions.h"
 #include "CrowdyServicesLog.h"
+#include "Subsystem/AsyncActions/CrowdyServicesActionSupport.h"
 #include "Subsystem/CrowdyTeams.h"
-
-static UCrowdyTeams* GetTeamsSubsystem(const TWeakObjectPtr<UObject>& Ctx)
-{
-	if (!Ctx.IsValid()) return nullptr;
-	UGameInstance* GI = Ctx->GetWorld() ? Ctx->GetWorld()->GetGameInstance() : nullptr;
-	return GI ? GI->GetSubsystem<UCrowdyTeams>() : nullptr;
-}
-
 
 UCrowdyTeams_CreateTeam* UCrowdyTeams_CreateTeam::CreateTeam(UObject* WorldContextObject, const FString& Name,
                                                              const FString& Description,
@@ -39,9 +32,9 @@ void UCrowdyTeams_CreateTeam::Activate()
 	Teams->CreateTeam(Name, Description, MembershipPolicy, S, E);
 }
 
-void UCrowdyTeams_CreateTeam::HandleSuccess(FCrowdyGroup Group)
+void UCrowdyTeams_CreateTeam::HandleSuccess(FCrowdyTeam Team)
 {
-	OnSuccess.Broadcast(Group);
+	OnSuccess.Broadcast(Team);
 	SetReadyToDestroy();
 }
 
@@ -53,12 +46,12 @@ void UCrowdyTeams_CreateTeam::HandleError(FCrowdyTeamError Error, FString Messag
 }
 
 
-UCrowdyTeams_UpdateTeam* UCrowdyTeams_UpdateTeam::UpdateTeam(UObject* WorldContextObject, int64 GroupId,
+UCrowdyTeams_UpdateTeam* UCrowdyTeams_UpdateTeam::UpdateTeam(UObject* WorldContextObject, int64 TeamId,
                                                              const FString& Name, const FString& Description)
 {
 	UCrowdyTeams_UpdateTeam* Action = NewObject<UCrowdyTeams_UpdateTeam>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->TeamId = TeamId;
 	Action->Name = Name;
 	Action->Description = Description;
 	Action->RegisterWithGameInstance(WorldContextObject);
@@ -78,12 +71,12 @@ void UCrowdyTeams_UpdateTeam::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_UpdateTeam::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_UpdateTeam::HandleError);
-	Teams->UpdateTeam(GroupId, Name, Description, S, E);
+	Teams->UpdateTeam(TeamId, Name, Description, S, E);
 }
 
-void UCrowdyTeams_UpdateTeam::HandleSuccess(FCrowdyGroup Group)
+void UCrowdyTeams_UpdateTeam::HandleSuccess(FCrowdyTeam Team)
 {
-	OnSuccess.Broadcast(Group);
+	OnSuccess.Broadcast(Team);
 	SetReadyToDestroy();
 }
 
@@ -95,11 +88,11 @@ void UCrowdyTeams_UpdateTeam::HandleError(FCrowdyTeamError Error, FString Messag
 }
 
 
-UCrowdyTeams_DeleteTeam* UCrowdyTeams_DeleteTeam::DeleteTeam(UObject* WorldContextObject, int64 GroupId)
+UCrowdyTeams_DeleteTeam* UCrowdyTeams_DeleteTeam::DeleteTeam(UObject* WorldContextObject, int64 TeamId)
 {
 	UCrowdyTeams_DeleteTeam* Action = NewObject<UCrowdyTeams_DeleteTeam>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->TeamId = TeamId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -117,7 +110,7 @@ void UCrowdyTeams_DeleteTeam::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_DeleteTeam::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_DeleteTeam::HandleError);
-	Teams->DeleteTeam(GroupId, S, E);
+	Teams->DeleteTeam(TeamId, S, E);
 }
 
 void UCrowdyTeams_DeleteTeam::HandleSuccess()
@@ -134,11 +127,11 @@ void UCrowdyTeams_DeleteTeam::HandleError(FCrowdyTeamError Error, FString Messag
 }
 
 
-UCrowdyTeams_JoinTeam* UCrowdyTeams_JoinTeam::JoinTeam(UObject* WorldContextObject, int64 GroupId)
+UCrowdyTeams_JoinTeam* UCrowdyTeams_JoinTeam::JoinTeam(UObject* WorldContextObject, int64 TeamId)
 {
 	UCrowdyTeams_JoinTeam* Action = NewObject<UCrowdyTeams_JoinTeam>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->TeamId = TeamId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -156,10 +149,10 @@ void UCrowdyTeams_JoinTeam::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_JoinTeam::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_JoinTeam::HandleError);
-	Teams->JoinTeam(GroupId, S, E);
+	Teams->JoinTeam(TeamId, S, E);
 }
 
-void UCrowdyTeams_JoinTeam::HandleSuccess(FCrowdyGroupMember Member)
+void UCrowdyTeams_JoinTeam::HandleSuccess(FCrowdyTeamMember Member)
 {
 	OnSuccess.Broadcast(Member);
 	SetReadyToDestroy();
@@ -174,11 +167,11 @@ void UCrowdyTeams_JoinTeam::HandleError(FCrowdyTeamError Error, FString Message)
 
 
 UCrowdyTeams_RequestToJoinTeam* UCrowdyTeams_RequestToJoinTeam::RequestToJoinTeam(
-	UObject* WorldContextObject, int64 GroupId)
+	UObject* WorldContextObject, int64 TeamId)
 {
 	UCrowdyTeams_RequestToJoinTeam* Action = NewObject<UCrowdyTeams_RequestToJoinTeam>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->TeamId = TeamId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -196,10 +189,10 @@ void UCrowdyTeams_RequestToJoinTeam::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_RequestToJoinTeam::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_RequestToJoinTeam::HandleError);
-	Teams->RequestToJoinTeam(GroupId, S, E);
+	Teams->RequestToJoinTeam(TeamId, S, E);
 }
 
-void UCrowdyTeams_RequestToJoinTeam::HandleSuccess(FCrowdyGroupMember Member)
+void UCrowdyTeams_RequestToJoinTeam::HandleSuccess(FCrowdyTeamMember Member)
 {
 	OnSuccess.Broadcast(Member);
 	SetReadyToDestroy();
@@ -213,11 +206,11 @@ void UCrowdyTeams_RequestToJoinTeam::HandleError(FCrowdyTeamError Error, FString
 }
 
 
-UCrowdyTeams_LeaveTeam* UCrowdyTeams_LeaveTeam::LeaveTeam(UObject* WorldContextObject, int64 GroupId)
+UCrowdyTeams_LeaveTeam* UCrowdyTeams_LeaveTeam::LeaveTeam(UObject* WorldContextObject, int64 TeamId)
 {
 	UCrowdyTeams_LeaveTeam* Action = NewObject<UCrowdyTeams_LeaveTeam>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->TeamId = TeamId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -235,7 +228,7 @@ void UCrowdyTeams_LeaveTeam::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_LeaveTeam::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_LeaveTeam::HandleError);
-	Teams->LeaveTeam(GroupId, S, E);
+	Teams->LeaveTeam(TeamId, S, E);
 }
 
 void UCrowdyTeams_LeaveTeam::HandleSuccess()
@@ -252,12 +245,12 @@ void UCrowdyTeams_LeaveTeam::HandleError(FCrowdyTeamError Error, FString Message
 }
 
 
-UCrowdyTeams_AddTeamMember* UCrowdyTeams_AddTeamMember::AddTeamMember(UObject* WorldContextObject, int64 GroupId,
+UCrowdyTeams_AddTeamMember* UCrowdyTeams_AddTeamMember::AddTeamMember(UObject* WorldContextObject, int64 TeamId,
                                                                       int64 UserId)
 {
 	UCrowdyTeams_AddTeamMember* Action = NewObject<UCrowdyTeams_AddTeamMember>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->TeamId = TeamId;
 	Action->UserId = UserId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
@@ -276,10 +269,10 @@ void UCrowdyTeams_AddTeamMember::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_AddTeamMember::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_AddTeamMember::HandleError);
-	Teams->AddTeamMember(GroupId, UserId, S, E);
+	Teams->AddTeamMember(TeamId, UserId, S, E);
 }
 
-void UCrowdyTeams_AddTeamMember::HandleSuccess(FCrowdyGroupMember Member)
+void UCrowdyTeams_AddTeamMember::HandleSuccess(FCrowdyTeamMember Member)
 {
 	OnSuccess.Broadcast(Member);
 	SetReadyToDestroy();
@@ -294,11 +287,11 @@ void UCrowdyTeams_AddTeamMember::HandleError(FCrowdyTeamError Error, FString Mes
 
 
 UCrowdyTeams_RemoveTeamMember* UCrowdyTeams_RemoveTeamMember::RemoveTeamMember(
-	UObject* WorldContextObject, int64 GroupId, int64 UserId)
+	UObject* WorldContextObject, int64 TeamId, int64 UserId)
 {
 	UCrowdyTeams_RemoveTeamMember* Action = NewObject<UCrowdyTeams_RemoveTeamMember>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->TeamId = TeamId;
 	Action->UserId = UserId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
@@ -317,7 +310,7 @@ void UCrowdyTeams_RemoveTeamMember::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_RemoveTeamMember::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_RemoveTeamMember::HandleError);
-	Teams->RemoveTeamMember(GroupId, UserId, S, E);
+	Teams->RemoveTeamMember(TeamId, UserId, S, E);
 }
 
 void UCrowdyTeams_RemoveTeamMember::HandleSuccess()
@@ -335,11 +328,11 @@ void UCrowdyTeams_RemoveTeamMember::HandleError(FCrowdyTeamError Error, FString 
 
 
 UCrowdyTeams_SetTeamMemberRoles* UCrowdyTeams_SetTeamMemberRoles::SetTeamMemberRoles(
-	UObject* WorldContextObject, int64 GroupId, int64 UserId, const TArray<int64>& RoleIds)
+	UObject* WorldContextObject, int64 TeamId, int64 UserId, const TArray<int64>& RoleIds)
 {
 	UCrowdyTeams_SetTeamMemberRoles* Action = NewObject<UCrowdyTeams_SetTeamMemberRoles>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->TeamId = TeamId;
 	Action->UserId = UserId;
 	Action->RoleIds = RoleIds;
 	Action->RegisterWithGameInstance(WorldContextObject);
@@ -359,10 +352,10 @@ void UCrowdyTeams_SetTeamMemberRoles::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_SetTeamMemberRoles::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_SetTeamMemberRoles::HandleError);
-	Teams->SetTeamMemberRoles(GroupId, UserId, RoleIds, S, E);
+	Teams->SetTeamMemberRoles(TeamId, UserId, RoleIds, S, E);
 }
 
-void UCrowdyTeams_SetTeamMemberRoles::HandleSuccess(FCrowdyGroupMember Member)
+void UCrowdyTeams_SetTeamMemberRoles::HandleSuccess(FCrowdyTeamMember Member)
 {
 	OnSuccess.Broadcast(Member);
 	SetReadyToDestroy();
@@ -377,11 +370,11 @@ void UCrowdyTeams_SetTeamMemberRoles::HandleError(FCrowdyTeamError Error, FStrin
 
 
 UCrowdyTeams_CreateTeamRole* UCrowdyTeams_CreateTeamRole::CreateTeamRole(
-	UObject* WorldContextObject, int64 GroupId, const FString& RoleName, FCrowdyRolePermissions Permissions, int32 Rank)
+	UObject* WorldContextObject, int64 TeamId, const FString& RoleName, FCrowdyTeamPermissions Permissions, int32 Rank)
 {
 	UCrowdyTeams_CreateTeamRole* Action = NewObject<UCrowdyTeams_CreateTeamRole>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->TeamId = TeamId;
 	Action->RoleName = RoleName;
 	Action->Permissions = Permissions;
 	Action->Rank = Rank;
@@ -402,10 +395,10 @@ void UCrowdyTeams_CreateTeamRole::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_CreateTeamRole::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_CreateTeamRole::HandleError);
-	Teams->CreateTeamRole(GroupId, RoleName, Permissions, Rank, S, E);
+	Teams->CreateTeamRole(TeamId, RoleName, Permissions, Rank, S, E);
 }
 
-void UCrowdyTeams_CreateTeamRole::HandleSuccess(FCrowdyGroupRole Role)
+void UCrowdyTeams_CreateTeamRole::HandleSuccess(FCrowdyTeamRole Role)
 {
 	OnSuccess.Broadcast(Role);
 	SetReadyToDestroy();
@@ -420,11 +413,11 @@ void UCrowdyTeams_CreateTeamRole::HandleError(FCrowdyTeamError Error, FString Me
 
 
 UCrowdyTeams_UpdateTeamRole* UCrowdyTeams_UpdateTeamRole::UpdateTeamRole(
-	UObject* WorldContextObject, int64 RoleId, const FString& RoleName, FCrowdyRolePermissions Permissions)
+	UObject* WorldContextObject, int64 TeamRoleId, const FString& RoleName, FCrowdyTeamPermissions Permissions)
 {
 	UCrowdyTeams_UpdateTeamRole* Action = NewObject<UCrowdyTeams_UpdateTeamRole>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->RoleId = RoleId;
+	Action->TeamRoleId = TeamRoleId;
 	Action->RoleName = RoleName;
 	Action->Permissions = Permissions;
 	Action->RegisterWithGameInstance(WorldContextObject);
@@ -444,10 +437,10 @@ void UCrowdyTeams_UpdateTeamRole::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_UpdateTeamRole::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_UpdateTeamRole::HandleError);
-	Teams->UpdateTeamRole(RoleId, RoleName, Permissions, S, E);
+	Teams->UpdateTeamRole(TeamRoleId, RoleName, Permissions, S, E);
 }
 
-void UCrowdyTeams_UpdateTeamRole::HandleSuccess(FCrowdyGroupRole Role)
+void UCrowdyTeams_UpdateTeamRole::HandleSuccess(FCrowdyTeamRole Role)
 {
 	OnSuccess.Broadcast(Role);
 	SetReadyToDestroy();
@@ -461,11 +454,11 @@ void UCrowdyTeams_UpdateTeamRole::HandleError(FCrowdyTeamError Error, FString Me
 }
 
 
-UCrowdyTeams_DeleteTeamRole* UCrowdyTeams_DeleteTeamRole::DeleteTeamRole(UObject* WorldContextObject, int64 RoleId)
+UCrowdyTeams_DeleteTeamRole* UCrowdyTeams_DeleteTeamRole::DeleteTeamRole(UObject* WorldContextObject, int64 TeamRoleId)
 {
 	UCrowdyTeams_DeleteTeamRole* Action = NewObject<UCrowdyTeams_DeleteTeamRole>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->RoleId = RoleId;
+	Action->TeamRoleId = TeamRoleId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -483,7 +476,7 @@ void UCrowdyTeams_DeleteTeamRole::Activate()
 	S.BindDynamic(this, &UCrowdyTeams_DeleteTeamRole::HandleSuccess);
 	FOnTeamError E;
 	E.BindDynamic(this, &UCrowdyTeams_DeleteTeamRole::HandleError);
-	Teams->DeleteTeamRole(RoleId, S, E);
+	Teams->DeleteTeamRole(TeamRoleId, S, E);
 }
 
 void UCrowdyTeams_DeleteTeamRole::HandleSuccess()
@@ -529,7 +522,7 @@ void UCrowdyTeams_SetTeamPolicy::Activate()
 	Teams->SetTeamPolicy(CreationPolicy, MembershipPolicy, S, E);
 }
 
-void UCrowdyTeams_SetTeamPolicy::HandleSuccess(FCrowdyAppGroupPolicy Policy)
+void UCrowdyTeams_SetTeamPolicy::HandleSuccess(FCrowdyTeamPolicy Policy)
 {
 	OnSuccess.Broadcast(Policy);
 	SetReadyToDestroy();

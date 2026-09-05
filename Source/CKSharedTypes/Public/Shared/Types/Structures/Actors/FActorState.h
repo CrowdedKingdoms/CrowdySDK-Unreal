@@ -49,7 +49,7 @@ struct FActorState
         return ByteArray;
     }
 
-	static FActorState DeserializeActorState(const TArray<uint8>& Payload, const int32 Offset)
+	static FActorState DeserializeActorState(const TConstArrayView<uint8> Payload, const int32 Offset)
 	{
         FActorState ActorState;
         if(Payload.Num() >= Offset + sizeof(FActorState))

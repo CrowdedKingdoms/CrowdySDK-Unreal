@@ -19,15 +19,16 @@ FString FCrowdyStudioLinks::BaseUrl()
 		}
 	}
 
-	// Otherwise derive from the management API URL — the web console lives on the same host
-	// under the app.* subdomain (holds for the shared tier and for dedicated boxes alike).
+	// Otherwise derive from the shared origin: the web console lives on the same host under the
+	// app.* subdomain (holds for the shared tier and for dedicated boxes alike). Derived from the
+	// shared origin rather than the app's own endpoint, because the console is not per-datacenter.
 	FString Url = TEXT("https://app.crowdedkingdoms.com");
 	if (const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>())
 	{
-		const FString Management = Settings->GetManagementApiUrl();
-		if (!Management.IsEmpty())
+		const FString Discovery = Settings->GetDiscoveryUrl();
+		if (!Discovery.IsEmpty())
 		{
-			Url = Management.Replace(TEXT("://api."), TEXT("://app."));
+			Url = Discovery.Replace(TEXT("://api."), TEXT("://app."));
 		}
 	}
 	Url.RemoveFromEnd(TEXT("/"));

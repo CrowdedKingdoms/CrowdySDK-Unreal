@@ -4,18 +4,29 @@
 #include "Containers/Ticker.h"
 #include "Templates/PimplPtr.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "Core/GraphQL/Interfaces/ICrowdyQueryReceptionLayer.h"
-#include "Internal/FCrowdyDataRegistry.h"
 #include "Queries/Authentication/FCrowdyUserIdentity.h"
 #include "CrowdyAuthentication.generated.h"
 
 class UCrowdySDKBridgeSubsystem;
-class UCrowdyQuerySubsystem;
 class UCrowdyGameSession;
 class UCrowdyAuthSaveGame;
+class UCrowdyCppClientSubsystem;
+class FCrowdyCppClient;
 class FCrowdyLoopbackAuthServer;
-struct FAuthResponseBase;
-struct FAppTokenResponseBase;
+
+/**
+ * The app-token fields the sign-in pipeline adopts. Reducing a mint or refresh payload to this plain struct keeps the
+ * shared tail (endpoint normalization, refresh scheduling, delegates) written once, whatever produced the token.
+ */
+struct FCrowdyAppTokenFields
+{
+	FString AppToken;
+	int64   AppGameTokenID = 0;
+	FString ExpiresAt;
+	FString GameApiUrl;
+	FString GameApiWsUrl;
+	FString LaunchUrl;
+};
 
 USTRUCT(BlueprintType)
 struct CROWDYSERVICES_API FCrowdyAuthResult
@@ -33,7 +44,7 @@ struct CROWDYSERVICES_API FCrowdyAuthResult
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAuthSuccess, FCrowdyAuthResult, Result);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAuthError, FString, Message);
-DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnLoginLinkSent, bool, bSent, FString, DevToken);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnLoginLinkSent, bool, bSent);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAuthLoginEvent, FCrowdyAuthResult, Result);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAuthLoginFailed, FString, Message);
@@ -54,7 +65,7 @@ DECLARE_DYNAMIC_DELEGATE_OneParam(FOnIdentityUnlinked, bool, bRemoved);
  *
  * Crowded Kingdoms uses a two-token model: a sign-in returns an identity SESSION
  * token (management-plane), from which a short-lived app-scoped GAMEPLAY token is
- * minted. Every sign-in method below password Login/Register, DevLogin, and the
+ * minted. Every sign-in method below password Login/Register, social, and the
  * magic-link CompleteLoginLink converges on ONE pipeline:
  *
  *   sign-in -> store SESSION token -> mintAppToken -> store APP token + adopt the
@@ -65,11 +76,11 @@ DECLARE_DYNAMIC_DELEGATE_OneParam(FOnIdentityUnlinked, bool, bRemoved);
  * is refreshed proactively (before expiry) and reactively (on UDP TOKEN_EXPIRED).
  *
  * For Blueprint, prefer the latent UCrowdyAuth_* nodes (Subsystem/AsyncActions/CrowdyAuthenticationActions.h)
- * over wiring the FOnAuthSuccess/FOnAuthError delegate params below by hand — same calls underneath,
+ * over wiring the FOnAuthSuccess/FOnAuthError delegate params below by hand: same calls underneath,
  * single node with Success/Error exec pins.
  */
 UCLASS(BlueprintType, meta=(DisplayName="Crowdy Authentication"))
-class CROWDYSERVICES_API UCrowdyAuthentication : public UGameInstanceSubsystem, public ICrowdyQueryReceptionLayer
+class CROWDYSERVICES_API UCrowdyAuthentication : public UGameInstanceSubsystem
 {
 	GENERATED_BODY()
 
@@ -77,11 +88,7 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	void InjectDependencies(FCrowdyDataRegistry* InRegistry, UCrowdyQuerySubsystem* InQuerySubsystem,
-	                        UCrowdyGameSession* InGameSession);
-
-	virtual void OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Response) override;
-	virtual TArray<EQueryResponseType> GetSupportedResponseType() const override;
+	void InjectDependencies(UCrowdyGameSession* InGameSession);
 
 	/** Fires on successful sign-in (password login, dev login, or magic-link). */
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Authentication")
@@ -131,25 +138,18 @@ public:
 	              FOnAuthSuccess OnSuccess, FOnAuthError OnError);
 
 	/**
-	 * Dev-bypass sign-in (DEV_AUTH_BYPASS server only; FORBIDDEN in production).
-	 * Returns a SESSION token for an email with no verification, then mints.
-	 */
-	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
-	void DevLogin(const FString& Email, FOnAuthSuccess OnSuccess, FOnAuthError OnError);
-
-	/**
 	 * Magic-link step 1: email a one-time sign-in link. OnLinkSent reports sent
-	 * (always true; no account enumeration) and, in dev, the devToken to pass
-	 * straight to CompleteLoginLink. RedirectUri is the native loopback the OS
-	 * hands back to; leave empty to use the server default.
+	 * (always true; no account enumeration). The token itself arrives only in the
+	 * email. RedirectUri is the native loopback the OS hands back to; leave empty
+	 * to use the server default.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
 	void RequestLoginLink(const FString& Email, const FString& RedirectUri,
 	                      FOnLoginLinkSent OnLinkSent, FOnAuthError OnError);
 
 	/**
-	 * Magic-link step 2: complete sign-in with the one-time token from the link
-	 * (or the devToken in dev). Feeds the mint pipeline.
+	 * Magic-link step 2: complete sign-in with the one-time token from the link.
+	 * Feeds the mint pipeline.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
 	void CompleteLoginLink(const FString& Token, FOnAuthSuccess OnSuccess, FOnAuthError OnError);
@@ -157,8 +157,7 @@ public:
 	/**
 	 * One-call magic-link sign-in. Opens a loopback listener on 127.0.0.1, requests the email
 	 * link with that loopback as the redirect, and completes automatically when the user clicks
-	 * the link (its redirect lands on the listener). In dev the server returns a devToken that
-	 * short-circuits the email/browser entirely. OnSuccess fires once signed in; OnError on
+	 * the link (its redirect lands on the listener). OnSuccess fires once signed in; OnError on
 	 * failure or if the user never returns (timeout). For granular control use RequestLoginLink +
 	 * CompleteLoginLink directly.
 	 */
@@ -247,30 +246,20 @@ private:
 		Register,
 		MagicLink,
 		Social,
-		DevLogin,
 		Restore,
-		Refresh,   // proactively rotate / reactive recovery no per-call delegate
+		Refresh,   // proactive rotation or reactive recovery; no per-call delegate
 	};
-
-	UPROPERTY()
-	UCrowdyQuerySubsystem* QuerySubsystem = nullptr;
 
 	UPROPERTY()
 	UCrowdyGameSession* GameSession = nullptr;
 
 	/** Loopback HTTP listener for the magic-link / social redirect, created on first use.
-	 *  TPimplPtr so a forward-declared type works as a UObject member the deleter is captured by
+	 *  TPimplPtr so a forward-declared type works as a UObject member: the deleter is captured by
 	 *  MakePimpl in the .cpp where the type is complete, so the UHT-generated special members never
 	 *  delete an incomplete type. */
 	TPimplPtr<FCrowdyLoopbackAuthServer> LoopbackServer;
 
-	mutable FCriticalSection CallbackMutex;
-	TMap<EQueryResponseType, TArray<TFunction<void(TSharedPtr<ICrowdyQueryResponse>)>>> PendingCallbacks;
-
 	FTSTicker::FDelegateHandle RefreshTickerHandle;
-
-	void PushCallback(EQueryResponseType Type, TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback);
-	void FireCallback(TSharedPtr<ICrowdyQueryResponse> Response);
 
 	/** Stage 1: store the SESSION token, persist it, and kick off the app-token mint. */
 	void BeginMintPipeline(const FString& SessionToken, int64 SessionGameTokenID, int64 UserID,
@@ -283,10 +272,83 @@ private:
 	void DispatchRefresh();
 
 	/** Stage 2: store the APP token + per-app endpoints, schedule refresh, fire success. */
-	void ApplyAppTokenAndFinish(const FAppTokenResponseBase& Token, EAuthFlow Flow, FOnAuthSuccess OnSuccess);
+	void ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& Token, EAuthFlow Flow, FOnAuthSuccess OnSuccess);
+
+	/**
+	 * The API client every authentication call is issued on. Null means there is no client host on this game instance
+	 * or the client could not be built; the call cannot proceed and the caller reports the failure.
+	 */
+	FCrowdyCppClient* ResolveAuthClient();
+
+	/**
+	 * Resolve which datacenter this app is served from, then run Continue with a client pointed at it.
+	 *
+	 * Sign-in has to happen where the app lives. The shared origin is a multivalue DNS record over every
+	 * datacenter's balancer, so a cold client's first request lands wherever DNS pointed it, and roughly half the
+	 * time that is not the datacenter hosting the app; signing in there writes the session in the wrong place and
+	 * then mints the app token across a WAN. Asking first is possible precisely because the app id is a build-time
+	 * constant, known long before any credential is.
+	 *
+	 * Resolved once per session and cached, because placement changes only when an operator moves the app. Every
+	 * failure path still runs Continue: an unresolvable placement is not a reason to refuse a sign-in, since the
+	 * server answers a misplaced request with a redirect the client follows anyway. This only makes that the
+	 * exception rather than the rule.
+	 *
+	 * OnUnavailable runs on the one path that does not reach Continue, so a caller holding something across the
+	 * resolve (the social flow reserves a loopback port before calling) can release it. Without it that reservation
+	 * would outlive the attempt and refuse every later sign-in as "already in progress".
+	 */
+	void WithAppEndpointResolved(TFunction<void(FCrowdyCppClient&)> Continue, EAuthFlow Flow, FOnAuthError OnError,
+		TFunction<void()> OnUnavailable = TFunction<void()>());
+
+	/** Whether WithAppEndpointResolved has already answered this session, successfully or not. */
+	bool bAppEndpointResolved = false;
+
+	/** The game-instance client host, or null outside a game instance. */
+	UCrowdyCppClientSubsystem* GetCppClientHost();
+
+	/** Push the tokens the pipeline currently holds onto the client host, so the next call issues under them. */
+	void PublishTokensToCppClient();
+
+	/** How many token mints or refreshes are in flight, so overlapping rotations can be debounced. */
+	int32 CppRotationsInFlight = 0;
+
+	/**
+	 * Marks this subsystem's usable lifetime: created in Initialize, released first in Deinitialize. The API client
+	 * lives in a different game-instance subsystem with its own ticker and the two are torn down in no guaranteed
+	 * order, so a completion can still arrive after this one has stopped being usable. A weak-object check does not
+	 * catch that, because the object is not collected the moment it is deinitialized.
+	 */
+	TSharedPtr<uint8> LiveSessionToken;
+
+	/**
+	 * Wrap a completion so it is dropped once this subsystem is torn down. Without it a late sign-in result would
+	 * broadcast during shutdown, and a late token refresh would re-arm the timer Deinitialize just cancelled.
+	 */
+	template <typename ResultType>
+	TFunction<void(ResultType)> GuardSession(TFunction<void(ResultType)> Body) const
+	{
+		TWeakPtr<uint8> Weak = LiveSessionToken;
+		return [Weak, Body = MoveTemp(Body)](ResultType Result)
+		{
+			if (!Weak.IsValid())
+			{
+				return;
+			}
+			Body(MoveTemp(Result));
+		};
+	}
 
 	/** Fire the failure delegate that matches Flow. */
 	void FailFlow(const FString& Message, EAuthFlow Flow, FOnAuthError OnError);
+
+	/** Social step 1 completion: arm the listener against the server's CSRF state, then open the consent page. */
+	void OnSocialLoginStarted(const FString& Provider, const FString& AuthorizeUrl, const FString& State,
+	                          FOnAuthSuccess OnSuccess, FOnAuthError OnError);
+
+	/** Link step 1 completion: the same arm-then-open as a social sign-in, ending in a link rather than a session. */
+	void OnLinkIdentityStarted(const FString& Provider, const FString& AuthorizeUrl, const FString& State,
+	                           FOnIdentityLinked OnResult, FOnAuthError OnError);
 
 	/** Social step 2: socialLoginComplete -> the shared mint pipeline (EAuthFlow::Social -> OnLogin). */
 	void CompleteSocialLogin(const FString& Provider, const FString& Code, const FString& State,
@@ -306,14 +368,38 @@ private:
 	void ScheduleProactiveRefresh(const FString& ExpiresAtIso8601);
 	void CancelProactiveRefresh();
 
-	/** True while a mint or refresh response is still pending used to debounce
+	/** Arm the one-shot app-token rotation timer, replacing whatever it was armed for. */
+	void ArmRotationTimer(double DelaySeconds);
+
+	/**
+	 * Re-arm rotation a short while after an attempt could not be made or failed. The timer is one-shot, so without
+	 * this a single failed attempt would end token rotation for the rest of the session. Bounded: once the attempts
+	 * are spent the token is left to expire and is re-minted when the server reports it expired.
+	 */
+	void ScheduleRotationRetry(const TCHAR* Reason);
+
+	/** Rotation attempts spent since the last app token was applied. */
+	int32 RotationRetriesUsed = 0;
+
+	/** True while a mint or refresh response is still pending, used to debounce
 	 *  overlapping rotations (e.g. an err-32 storm or a proactive/reactive overlap). */
 	bool IsTokenRotationInFlight() const;
 
 	void SaveSession(const FString& SessionToken, int64 SessionGameTokenID, int64 UserID) const;
 
-	/** Read the persisted session: the DPAPI-encrypted vault first, then a pre-WP4b plaintext
+	/** Read the persisted session: the DPAPI-encrypted vault first, then a legacy plaintext
 	 *  slot for one-time migration. Read-only (no writes/scrub); returns a transient save object
 	 *  or nullptr. The next SaveSession re-persists encrypted and scrubs the plaintext copy. */
 	UCrowdyAuthSaveGame* LoadVaultSave() const;
+
+	/** Full path to this instance's DPAPI-encrypted session vault. */
+	FString GetAuthVaultPath() const;
+
+	/** Legacy plaintext SaveGame slot name for one-time migration, scoped like the vault. */
+	FString GetLegacyAuthSlotName() const;
+
+	/** Discriminator appended to the vault path/slot so two in-process PIE clients never share one
+	 *  session file (both would otherwise restore the same account, conflating identity). Empty
+	 *  except under editor PIE, so standalone/packaged keep the original unsuffixed paths. */
+	FString GetInstanceSuffix() const;
 };

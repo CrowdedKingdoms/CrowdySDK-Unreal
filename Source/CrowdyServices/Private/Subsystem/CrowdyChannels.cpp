@@ -1,12 +1,12 @@
 #include "Subsystem/CrowdyChannels.h"
-#include "Network/GraphQL/CrowdyQuerySubsystem.h"
-#include "Internal/FCrowdyDataRegistry.h"
-#include "Utils/CrowdySDKDeveloperSettings.h"
-#include "Core/GraphQL/Enums/EQueryResponseType.h"
-#include "Core/CrowdySDKBridgeSubsystem.h"
-#include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "CrowdyServiceApiSupport.h"
+#include "CrowdyCppClient.h"
 #include "CrowdyServicesLog.h"
+#include "Core/CrowdySDKBridgeSubsystem.h"
+#include "Dom/JsonObject.h"
+#include "Internal/FCrowdyServiceRegistry.h"
 #include "Messages/Channels/FChannelMessages.h"
+#include "Replication/GameModel/CrowdyGameModelMetaKeys.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Replication/RPC/FCrowdyRpcCall.h"
 #include "Replication/State/CrowdyStateCodec.h"
@@ -14,11 +14,12 @@
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
-#include "Async/Async.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
-#include "Queries/Data/Channels/Responses/FChannelResponses.h"
+
+using namespace CrowdyServiceApi;
 
 namespace
 {
@@ -28,169 +29,92 @@ namespace
 	// Cap on reliable sends held while the bootstrap is in flight, so a never-ready channel can't
 	// grow the queue without bound. The newest send is dropped once the cap is hit.
 	constexpr int32 MaxPendingReliablePayloads = 64;
-}
 
-namespace ChannelQueries
-{
-	static const TCHAR* MyChannels =
-		TEXT(
-			"query MyChannels($appId: BigInt!) { myChannels(appId: $appId) { group { groupId appId groupType name description ownerUserId membershipPolicy status createdAt } roles { groupRoleId groupId roleName rank isSystem permissions createdAt } permissions joinedAt } }");
+	// Self-retries a failed bootstrap makes before giving up, and the base delay it multiplies by the attempt
+	// number. Bounded because a genuine misconfiguration (an app whose channel policy forbids member creation)
+	// fails identically every time, and hammering it helps nobody.
+	constexpr int32 MaxBootstrapRetries = 3;
+	constexpr float BootstrapRetryBaseSeconds = 2.f;
 
-	static const TCHAR* Channel =
-		TEXT(
-			"query Channel($groupId: BigInt!) { channel(groupId: $groupId) { groupId appId groupType name description ownerUserId membershipPolicy status createdAt } }");
+	// The generated operation set these calls are looked up in, which is also what decides the endpoint each one
+	// reaches and the bearer it carries.
+	constexpr ECrowdyCppApiDomain ChannelsDomain = ECrowdyCppApiDomain::Channels;
 
-	static const TCHAR* Channels =
-		TEXT(
-			"query Channels($appId: BigInt!) { channels(appId: $appId) { groupId appId groupType name description ownerUserId membershipPolicy status createdAt } }");
-
-	static const TCHAR* ChannelMembers =
-		TEXT(
-			"query ChannelMembers($groupId: BigInt!) { channelMembers(groupId: $groupId) { groupMemberId groupId userId status createdAt roles { groupRoleId groupId roleName rank isSystem permissions createdAt } } }");
-
-	static const TCHAR* ChannelRoles =
-		TEXT(
-			"query ChannelRoles($groupId: BigInt!) { channelRoles(groupId: $groupId) { groupRoleId groupId roleName rank isSystem permissions createdAt } }");
-
-	static const TCHAR* ChannelPolicy =
-		TEXT(
-			"query ChannelPolicy($appId: BigInt!) { channelPolicy(appId: $appId) { appId groupType creationPolicy defaultMembershipPolicy maxMembers maxGroupsPerUser } }");
-
-	static const TCHAR* CreateChannel =
-		TEXT(
-			"mutation CreateChannel($appId: BigInt!, $name: String!, $description: String, $membershipPolicy: String, $membersCanSend: Boolean) { createChannel(input: { appId: $appId, name: $name, description: $description, membershipPolicy: $membershipPolicy, membersCanSend: $membersCanSend }) { groupId appId groupType name description ownerUserId membershipPolicy status createdAt } }");
-
-	static const TCHAR* UpdateChannel =
-		TEXT(
-			"mutation UpdateChannel($groupId: BigInt!, $name: String, $description: String) { updateChannel(input: { groupId: $groupId, name: $name, description: $description }) { groupId appId groupType name description ownerUserId membershipPolicy status createdAt } }");
-
-	static const TCHAR* DeleteChannel =
-		TEXT("mutation DeleteChannel($groupId: BigInt!) { deleteChannel(groupId: $groupId) }");
-
-	static const TCHAR* JoinChannel =
-		TEXT(
-			"mutation JoinChannel($groupId: BigInt!) { joinChannel(groupId: $groupId) { groupMemberId groupId userId status createdAt roles { groupRoleId groupId roleName rank isSystem permissions createdAt } } }");
-
-	static const TCHAR* RequestToJoinChannel =
-		TEXT(
-			"mutation RequestToJoinChannel($groupId: BigInt!) { requestToJoinChannel(groupId: $groupId) { groupMemberId groupId userId status createdAt roles { groupRoleId groupId roleName rank isSystem permissions createdAt } } }");
-
-	static const TCHAR* LeaveChannel =
-		TEXT("mutation LeaveChannel($groupId: BigInt!) { leaveChannel(groupId: $groupId) }");
-
-	static const TCHAR* AddChannelMember =
-		TEXT(
-			"mutation AddChannelMember($groupId: BigInt!, $userId: BigInt!) { addChannelMember(groupId: $groupId, userId: $userId) { groupMemberId groupId userId status createdAt roles { groupRoleId groupId roleName rank isSystem permissions createdAt } } }");
-
-	static const TCHAR* RemoveChannelMember =
-		TEXT(
-			"mutation RemoveChannelMember($groupId: BigInt!, $userId: BigInt!) { removeChannelMember(groupId: $groupId, userId: $userId) }");
-
-	static const TCHAR* CreateChannelRole =
-		TEXT(
-			"mutation CreateChannelRole($groupId: BigInt!, $roleName: String!, $permissions: [String!], $rank: Int) { createChannelRole(input: { groupId: $groupId, roleName: $roleName, permissions: $permissions, rank: $rank }) { groupRoleId groupId roleName rank isSystem permissions createdAt } }");
-
-	static const TCHAR* UpdateChannelRole =
-		TEXT(
-			"mutation UpdateChannelRole($groupRoleId: BigInt!, $roleName: String, $permissions: [String!]) { updateChannelRole(input: { groupRoleId: $groupRoleId, roleName: $roleName, permissions: $permissions }) { groupRoleId groupId roleName rank isSystem permissions createdAt } }");
-
-	static const TCHAR* DeleteChannelRole =
-		TEXT("mutation DeleteChannelRole($groupRoleId: BigInt!) { deleteChannelRole(groupRoleId: $groupRoleId) }");
-
-	static const TCHAR* SetChannelMemberRoles =
-		TEXT(
-			"mutation SetChannelMemberRoles($groupId: BigInt!, $userId: BigInt!, $roleIds: [BigInt!]!) { setChannelMemberRoles(input: { groupId: $groupId, userId: $userId, roleIds: $roleIds }) { groupMemberId groupId userId status createdAt roles { groupRoleId groupId roleName rank isSystem permissions createdAt } } }");
-
-	static const TCHAR* SetChannelPolicy =
-		TEXT(
-			"mutation SetChannelPolicy($appId: BigInt!, $creationPolicy: String!, $defaultMembershipPolicy: String!) { setChannelPolicy(input: { appId: $appId, creationPolicy: $creationPolicy, defaultMembershipPolicy: $defaultMembershipPolicy }) { appId groupType creationPolicy defaultMembershipPolicy maxMembers maxGroupsPerUser } }");
-}
-
-void UCrowdyChannels::InjectDependencies(FCrowdyDataRegistry* InDataRegistry, UCrowdyQuerySubsystem* InQuerySubsystem)
-{
-	if (InDataRegistry) InDataRegistry->RegisterLayer(this);
-	QuerySubsystem = InQuerySubsystem;
+	constexpr const TCHAR* ChannelsLogName = TEXT("CrowdyChannels");
 }
 
 void UCrowdyChannels::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+
+	LiveSessionToken = MakeShared<uint8>(0);
+
+	// The router does not exist yet at this point in subsystem startup; EnsureChannelSubscription is
+	// called again once the UDP connection comes up, which is the earliest point any inbound message
+	// could actually arrive.
+	EnsureChannelSubscription();
 }
 
 void UCrowdyChannels::Deinitialize()
 {
-	FScopeLock Lock(&CallbackMutex);
-	PendingCallbacks.Empty();
+	// Released first: a completion can still arrive from the client's own pump after this point, and it must not
+	// advance the bootstrap chain or run a Blueprint delegate while the game instance is shutting down.
+	LiveSessionToken.Reset();
+	ChannelMessageSubscription.Release();
+
 	Super::Deinitialize();
 }
 
-TArray<EQueryResponseType> UCrowdyChannels::GetSupportedResponseType() const
+void UCrowdyChannels::EnsureChannelSubscription()
 {
-	return {
-		EQueryResponseType::MyChannels,
-		EQueryResponseType::Channel,
-		EQueryResponseType::Channels,
-		EQueryResponseType::ChannelMembers,
-		EQueryResponseType::ChannelRoles,
-		EQueryResponseType::ChannelPolicy,
-		EQueryResponseType::CreateChannel,
-		EQueryResponseType::UpdateChannel,
-		EQueryResponseType::DeleteChannel,
-		EQueryResponseType::JoinChannel,
-		EQueryResponseType::RequestToJoinChannel,
-		EQueryResponseType::LeaveChannel,
-		EQueryResponseType::AddChannelMember,
-		EQueryResponseType::RemoveChannelMember,
-		EQueryResponseType::CreateChannelRole,
-		EQueryResponseType::UpdateChannelRole,
-		EQueryResponseType::DeleteChannelRole,
-		EQueryResponseType::SetChannelMemberRoles,
-		EQueryResponseType::SetChannelPolicy,
-	};
-}
-
-void UCrowdyChannels::OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Response)
-{
-	if (!Response.IsValid()) return;
-	FireCallback(Response);
-}
-
-TArray<ECrowdyMessageType> UCrowdyChannels::GetSupportedResponseTypes() const
-{
-	// Inbound channel deliveries only — never re-subscribe to anything else (a layer that claims
-	// more would double-handle messages other layers own).
-	return {ECrowdyMessageType::CHANNEL_MESSAGE_NOTIFICATION};
-}
-
-void UCrowdyChannels::OnMessageReceived(TSharedRef<ICrowdyMessage> Message)
-{
-	if (Message->GetType() != ECrowdyMessageType::CHANNEL_MESSAGE_NOTIFICATION)
+	if (ChannelMessageSubscription.IsValid())
 		return;
 
-	const FChannelMessageNotification& Notification = static_cast<const FChannelMessageNotification&>(*Message);
+	UGameInstance* GameInstance = GetGameInstance();
+	UCrowdySDKBridgeSubsystem* Bridge = GameInstance ? GameInstance->GetSubsystem<UCrowdySDKBridgeSubsystem>() : nullptr;
+	if (!Bridge || !Bridge->ServiceRegistry)
+		return;
 
-	// May arrive on the network thread; hop to the game thread before touching Blueprint delegates.
-	const int64 ChannelId = Notification.ChannelId;
-	const FString SenderUUID = Notification.UUID;
-	const TArray<uint8> Payload = Notification.Payload;
+	FCrowdySubscriptionOptions Options;
+	Options.Role = ECrowdySubscriptionRole::Observe;
+	Options.SubscriberName = TEXT("CrowdyChannels");
 
 	TWeakObjectPtr<UCrowdyChannels> WeakThis(this);
-	AsyncTask(ENamedThreads::GameThread, [WeakThis, ChannelId, SenderUUID, Payload]()
-	{
-		UCrowdyChannels* Self = WeakThis.Get();
-		if (!Self)
-			return;
-
-		// Traffic on a reliable-RPC channel is decoded and run through the event router, not surfaced
-		// to gameplay listeners. Other channels (general app messages) still broadcast below.
-		if (Self->bRpcChannelsReady && Self->RpcChannelIds.Contains(ChannelId))
+	ChannelMessageSubscription = Bridge->ServiceRegistry->SubscribeToOpcode<FChannelMessageNotification>(
+		ECrowdyMessageType::CHANNEL_MESSAGE_NOTIFICATION, Options,
+		[WeakThis](const FChannelMessageNotification& Notification, const FCrowdyDelivery&)
 		{
-			Self->ForwardChannelRpc(Payload);
-			return;
-		}
+			if (UCrowdyChannels* Self = WeakThis.Get())
+				Self->HandleChannelMessageNotification(Notification);
+		});
+}
 
-		Self->OnChannelMessageReceived.Broadcast(ChannelId, SenderUUID, Payload);
-	});
+void UCrowdyChannels::HandleChannelMessageNotification(const FChannelMessageNotification& Notification)
+{
+	// Two Game Model notification kinds also ride the session channel, delivered to every member alongside
+	// reliable-RPC and chat traffic, and both are handled by the Game Model subsystem - not here. One is the
+	// model-changed re-pull hint ("cmc:"), the other is an effect signal ("csg:"). Skip both so neither is
+	// mis-decoded as a reliable-RPC frame (which would read bogus lengths out of the trailing text). Every
+	// subscriber to this one opcode has to ignore the others' frames, and has to recognize every encoding the
+	// Game Model decoders accept, which is why the test lives beside those decoders rather than being inlined here.
+	if (CrowdyGameModelMetaKeys::HasGameModelChannelPrefix(Notification.Payload))
+	{
+		return;
+	}
+
+	const int64 ChannelId = Notification.ChannelId;
+	const FString SenderUUID = Notification.UUID.ToString();
+	const TArray<uint8>& Payload = Notification.Payload;
+
+	// Traffic on a reliable-RPC channel is decoded and run through the event router, not surfaced
+	// to gameplay listeners. Other channels (general app messages) still broadcast below.
+	if (bRpcChannelsReady && RpcChannelIds.Contains(ChannelId))
+	{
+		ForwardChannelRpc(Payload);
+		return;
+	}
+
+	OnChannelMessageReceived.Broadcast(ChannelId, SenderUUID, Payload);
 }
 
 int64 UCrowdyChannels::GetAppId() const
@@ -198,496 +122,591 @@ int64 UCrowdyChannels::GetAppId() const
 	return GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
 }
 
-void UCrowdyChannels::PushCallback(EQueryResponseType Type,
-                                   TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback)
-{
-	FScopeLock Lock(&CallbackMutex);
-	PendingCallbacks.FindOrAdd(Type).Add(MoveTemp(Callback));
-}
-
-void UCrowdyChannels::FireCallback(TSharedPtr<ICrowdyQueryResponse> Response)
-{
-	TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback;
-	{
-		FScopeLock Lock(&CallbackMutex);
-		TArray<TFunction<void(TSharedPtr<ICrowdyQueryResponse>)>>* Queue =
-			PendingCallbacks.Find(Response->GetResponseType());
-		if (Queue && Queue->Num() > 0)
-		{
-			Callback = MoveTemp((*Queue)[0]);
-			Queue->RemoveAt(0, 1, EAllowShrinking::No);
-		}
-	}
-
-	if (Callback)
-	{
-		TSharedPtr<ICrowdyQueryResponse> ResponseCopy = Response;
-		AsyncTask(ENamedThreads::GameThread, [Callback = MoveTemp(Callback), ResponseCopy]()
-		{
-			Callback(ResponseCopy);
-		});
-	}
-}
-
-TSharedPtr<FJsonObject> UCrowdyChannels::MakeVarsWithStringArray(
-	const TMap<FString, FString>& ScalarFields,
-	const TMap<FString, TArray<FString>>& StringArrayFields)
-{
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-
-	for (const auto& Pair : ScalarFields)
-		Vars->SetStringField(Pair.Key, Pair.Value);
-
-	for (const auto& Pair : StringArrayFields)
-	{
-		TArray<TSharedPtr<FJsonValue>> JsonArr;
-		for (const FString& S : Pair.Value)
-			JsonArr.Add(MakeShared<FJsonValueString>(S));
-		Vars->SetArrayField(Pair.Key, JsonArr);
-	}
-	return Vars;
-}
-
 void UCrowdyChannels::GetMyChannels(FOnMyChannelsSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::MyChannels, [this, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-		{
-			const FMyChannelsResponse& R = static_cast<FMyChannelsResponse&>(*Resp);
-			CachedMyChannels = R.Memberships;
-			bCachePopulated = true;
-			OnMyChannelsCacheChanged.Broadcast(CachedMyChannels);
-			OnSuccess.ExecuteIfBound(CachedMyChannels);
-		}
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::MyChannels, ChannelQueries::MyChannels, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+
+	TWeakObjectPtr<UCrowdyChannels> WeakThis(this);
+	Client->RunOp(ChannelsDomain, TEXT("MyChannels"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyChannelMembership> Memberships;
+			FCrowdyChannelError Error;
+			if (!ReadArray(Result, TEXT("myChannels"), Memberships, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+
+			if (UCrowdyChannels* Self = WeakThis.Get())
+			{
+				Self->CachedMyChannels = Memberships;
+				Self->bCachePopulated = true;
+				Self->OnMyChannelsCacheChanged.Broadcast(Self->CachedMyChannels);
+			}
+
+			OnSuccess.ExecuteIfBound(Memberships);
+		}));
 }
 
-void UCrowdyChannels::GetChannel(int64 GroupId, FOnChannelSuccess OnSuccess, FOnChannelError OnError)
+void UCrowdyChannels::GetChannel(int64 ChannelId, FOnChannelSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::Channel, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FChannelResponse&>(*Resp).Group);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::Channel, ChannelQueries::Channel, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+
+	Client->RunOp(ChannelsDomain, TEXT("Channel"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannel Channel;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("channel"), Channel, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Channel);
+		}));
 }
 
 void UCrowdyChannels::GetChannels(FOnChannelsSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::Channels, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-		{
-			TArray<FCrowdyGroup> Groups = static_cast<FChannelsResponse&>(*Resp).Groups;
-			OnSuccess.ExecuteIfBound(Groups);
-		}
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::Channels, ChannelQueries::Channels, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+
+	Client->RunOp(ChannelsDomain, TEXT("Channels"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyChannel> Channels;
+			FCrowdyChannelError Error;
+			if (!ReadArray(Result, TEXT("channels"), Channels, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Channels);
+		}));
 }
 
-void UCrowdyChannels::GetChannelMembers(int64 GroupId, FOnChannelMembersSuccess OnSuccess, FOnChannelError OnError)
+void UCrowdyChannels::GetChannelMembers(int64 ChannelId, FOnChannelMembersSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::ChannelMembers, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+
+	Client->RunOp(ChannelsDomain, TEXT("ChannelMembers"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
-			TArray<FCrowdyGroupMember> Members = static_cast<FChannelMembersResponse&>(*Resp).Members;
+			TArray<FCrowdyChannelMember> Members;
+			FCrowdyChannelError Error;
+			if (!ReadArray(Result, TEXT("channelMembers"), Members, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
 			OnSuccess.ExecuteIfBound(Members);
-		}
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
-
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::ChannelMembers, ChannelQueries::ChannelMembers, Vars);
+		}));
 }
 
-void UCrowdyChannels::GetChannelRoles(int64 GroupId, FOnChannelRolesSuccess OnSuccess, FOnChannelError OnError)
+void UCrowdyChannels::GetPendingJoinRequests(int64 ChannelId, FOnChannelMembersSuccess OnSuccess,
+                                             FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::ChannelRoles, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-		{
-			TArray<FCrowdyGroupRole> Roles = static_cast<FChannelRolesResponse&>(*Resp).Roles;
-			OnSuccess.ExecuteIfBound(Roles);
-		}
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::ChannelRoles, ChannelQueries::ChannelRoles, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+
+	// The server has no pending-only query, so this is the full member list filtered to the ones still awaiting a
+	// decision.
+	Client->RunOp(ChannelsDomain, TEXT("ChannelMembers"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyChannelMember> Members;
+			FCrowdyChannelError Error;
+			if (!ReadArray(Result, TEXT("channelMembers"), Members, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+
+			Members.RemoveAll([](const FCrowdyChannelMember& Member) { return Member.Status != TEXT("pending"); });
+			OnSuccess.ExecuteIfBound(Members);
+		}));
+}
+
+void UCrowdyChannels::GetChannelRoles(int64 ChannelId, FOnChannelRolesSuccess OnSuccess, FOnChannelError OnError)
+{
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
+	{
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+
+	Client->RunOp(ChannelsDomain, TEXT("ChannelRoles"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			TArray<FCrowdyChannelRole> Roles;
+			FCrowdyChannelError Error;
+			if (!ReadArray(Result, TEXT("channelRoles"), Roles, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Roles);
+		}));
 }
 
 void UCrowdyChannels::GetChannelPolicy(FOnChannelPolicySuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::ChannelPolicy, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FChannelPolicyResponse&>(*Resp).Policy);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::ChannelPolicy, ChannelQueries::ChannelPolicy, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+
+	Client->RunOp(ChannelsDomain, TEXT("ChannelPolicy"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelPolicy Policy;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("channelPolicy"), Policy, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Policy);
+		}));
 }
 
 void UCrowdyChannels::CreateChannel(const FString& Name, const FString& Description,
-                                    ECrowdyTeamMembershipPolicy MembershipPolicy, bool bMembersCanSend,
+                                    ECrowdyChannelMembershipPolicy MembershipPolicy, bool bMembersCanSend,
                                     FOnChannelSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::CreateChannel, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FCreateChannelResponse&>(*Resp).Group);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	Vars->SetStringField(TEXT("name"), Name);
-	Vars->SetStringField(TEXT("description"), Description);
-	Vars->SetStringField(TEXT("membershipPolicy"), FCrowdyGroup::MembershipPolicyToString(MembershipPolicy));
-	Vars->SetBoolField(TEXT("membersCanSend"), bMembersCanSend);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::CreateChannel, ChannelQueries::CreateChannel, Vars);
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+	Input->SetStringField(TEXT("name"), Name);
+	Input->SetStringField(TEXT("description"), Description);
+	Input->SetStringField(TEXT("membershipPolicy"), FCrowdyChannel::MembershipPolicyToString(MembershipPolicy));
+	Input->SetBoolField(TEXT("membersCanSend"), bMembersCanSend);
+
+	Client->RunOp(ChannelsDomain, TEXT("CreateChannel"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannel Channel;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("createChannel"), Channel, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Channel);
+		}));
 }
 
-void UCrowdyChannels::UpdateChannel(int64 GroupId, const FString& Name, const FString& Description,
+void UCrowdyChannels::UpdateChannel(int64 ChannelId, const FString& Name, const FString& Description,
                                     FOnChannelSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::UpdateChannel, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FUpdateChannelResponse&>(*Resp).Group);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	Vars->SetStringField(TEXT("name"), Name);
-	Vars->SetStringField(TEXT("description"), Description);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::UpdateChannel, ChannelQueries::UpdateChannel, Vars);
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+	Input->SetStringField(TEXT("name"), Name);
+	Input->SetStringField(TEXT("description"), Description);
+
+	Client->RunOp(ChannelsDomain, TEXT("UpdateChannel"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannel Channel;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("updateChannel"), Channel, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Channel);
+		}));
 }
 
-void UCrowdyChannels::DeleteChannel(int64 GroupId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError)
+void UCrowdyChannels::DeleteChannel(int64 ChannelId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::DeleteChannel, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid()) OnSuccess.ExecuteIfBound();
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::DeleteChannel, ChannelQueries::DeleteChannel, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+
+	Client->RunOp(ChannelsDomain, TEXT("DeleteChannel"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelError Error;
+			if (!ReadAcknowledgement(Result, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound();
+		}));
 }
 
-void UCrowdyChannels::JoinChannel(int64 GroupId, FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError)
+void UCrowdyChannels::JoinChannel(int64 ChannelId, FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::JoinChannel, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FJoinChannelResponse&>(*Resp).Member);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::JoinChannel, ChannelQueries::JoinChannel, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+
+	Client->RunOp(ChannelsDomain, TEXT("JoinChannel"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelMember Member;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("joinChannel"), Member, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Member);
+		}));
 }
 
-void UCrowdyChannels::RequestToJoinChannel(int64 GroupId, FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError)
+void UCrowdyChannels::RequestToJoinChannel(int64 ChannelId, FOnChannelMemberSuccess OnSuccess,
+                                           FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::RequestToJoinChannel, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FRequestToJoinChannelResponse&>(*Resp).Member);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::RequestToJoinChannel, ChannelQueries::RequestToJoinChannel,
-	                                                Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+
+	Client->RunOp(ChannelsDomain, TEXT("RequestToJoinChannel"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelMember Member;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("requestToJoinChannel"), Member, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Member);
+		}));
 }
 
-void UCrowdyChannels::LeaveChannel(int64 GroupId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError)
+void UCrowdyChannels::LeaveChannel(int64 ChannelId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::LeaveChannel, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid()) OnSuccess.ExecuteIfBound();
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::LeaveChannel, ChannelQueries::LeaveChannel, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+
+	Client->RunOp(ChannelsDomain, TEXT("LeaveChannel"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelError Error;
+			if (!ReadAcknowledgement(Result, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound();
+		}));
 }
 
-void UCrowdyChannels::AddChannelMember(int64 GroupId, int64 UserId,
+void UCrowdyChannels::AddChannelMember(int64 ChannelId, int64 UserId,
                                        FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::AddChannelMember, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FAddChannelMemberResponse&>(*Resp).Member);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	Vars->SetStringField(TEXT("userId"), FString::Printf(TEXT("%lld"), UserId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::AddChannelMember, ChannelQueries::AddChannelMember, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+	Variables->SetStringField(TEXT("userId"), BigInt(UserId));
+
+	Client->RunOp(ChannelsDomain, TEXT("AddChannelMember"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelMember Member;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("addChannelMember"), Member, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Member);
+		}));
 }
 
-void UCrowdyChannels::RemoveChannelMember(int64 GroupId, int64 UserId,
+void UCrowdyChannels::RemoveChannelMember(int64 ChannelId, int64 UserId,
                                           FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::RemoveChannelMember, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid()) OnSuccess.ExecuteIfBound();
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	Vars->SetStringField(TEXT("userId"), FString::Printf(TEXT("%lld"), UserId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::RemoveChannelMember, ChannelQueries::RemoveChannelMember,
-	                                                Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+	Variables->SetStringField(TEXT("userId"), BigInt(UserId));
+
+	Client->RunOp(ChannelsDomain, TEXT("RemoveChannelMember"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelError Error;
+			if (!ReadAcknowledgement(Result, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound();
+		}));
 }
 
-void UCrowdyChannels::CreateChannelRole(int64 GroupId, const FString& RoleName,
-                                        FCrowdyRolePermissions Permissions, int32 Rank,
+void UCrowdyChannels::CreateChannelRole(int64 ChannelId, const FString& RoleName,
+                                        FCrowdyChannelPermissions Permissions, int32 Rank,
                                         FOnChannelRoleSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::CreateChannelRole, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FCreateChannelRoleResponse&>(*Resp).Role);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeVarsWithStringArray(
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+	Input->SetStringField(TEXT("roleName"), RoleName);
+	Input->SetNumberField(TEXT("rank"), Rank);
+	SetPermissionKeys(Input, Permissions.ToStringArray());
+
+	Client->RunOp(ChannelsDomain, TEXT("CreateChannelRole"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
-			{TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId)},
-			{TEXT("roleName"), RoleName},
-			{TEXT("rank"), FString::FromInt(Rank)}
-		},
-		{{TEXT("permissions"), Permissions.ToStringArray()}}
-	);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::CreateChannelRole, ChannelQueries::CreateChannelRole, Vars);
+			FCrowdyChannelRole Role;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("createChannelRole"), Role, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Role);
+		}));
 }
 
-void UCrowdyChannels::UpdateChannelRole(int64 GroupRoleId, const FString& RoleName,
-                                        FCrowdyRolePermissions Permissions,
+void UCrowdyChannels::UpdateChannelRole(int64 ChannelRoleId, const FString& RoleName,
+                                        FCrowdyChannelPermissions Permissions,
                                         FOnChannelRoleSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::UpdateChannelRole, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FUpdateChannelRoleResponse&>(*Resp).Role);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeVarsWithStringArray(
-		{{TEXT("groupRoleId"), FString::Printf(TEXT("%lld"), GroupRoleId)}, {TEXT("roleName"), RoleName}},
-		{{TEXT("permissions"), Permissions.ToStringArray()}}
-	);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::UpdateChannelRole, ChannelQueries::UpdateChannelRole, Vars);
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("groupRoleId"), BigInt(ChannelRoleId));
+	Input->SetStringField(TEXT("roleName"), RoleName);
+	SetPermissionKeys(Input, Permissions.ToStringArray());
+
+	Client->RunOp(ChannelsDomain, TEXT("UpdateChannelRole"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelRole Role;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("updateChannelRole"), Role, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Role);
+		}));
 }
 
-void UCrowdyChannels::DeleteChannelRole(int64 GroupRoleId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError)
+void UCrowdyChannels::DeleteChannelRole(int64 ChannelRoleId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::DeleteChannelRole, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid()) OnSuccess.ExecuteIfBound();
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupRoleId"), FString::Printf(TEXT("%lld"), GroupRoleId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::DeleteChannelRole, ChannelQueries::DeleteChannelRole, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupRoleId"), BigInt(ChannelRoleId));
+
+	Client->RunOp(ChannelsDomain, TEXT("DeleteChannelRole"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelError Error;
+			if (!ReadAcknowledgement(Result, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound();
+		}));
 }
 
-void UCrowdyChannels::SetChannelMemberRoles(int64 GroupId, int64 UserId, const TArray<int64>& RoleIds,
+void UCrowdyChannels::SetChannelMemberRoles(int64 ChannelId, int64 UserId, const TArray<int64>& RoleIds,
                                             FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::SetChannelMemberRoles, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FSetChannelMemberRolesResponse&>(*Resp).Member);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	Vars->SetStringField(TEXT("userId"), FString::Printf(TEXT("%lld"), UserId));
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+	Input->SetStringField(TEXT("userId"), BigInt(UserId));
 
-	TArray<TSharedPtr<FJsonValue>> RoleIdsJson;
+	TArray<TSharedPtr<FJsonValue>> RoleIdValues;
 	for (int64 RoleId : RoleIds)
-		RoleIdsJson.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%lld"), RoleId)));
-	Vars->SetArrayField(TEXT("roleIds"), RoleIdsJson);
+	{
+		RoleIdValues.Add(MakeShared<FJsonValueString>(BigInt(RoleId)));
+	}
+	Input->SetArrayField(TEXT("roleIds"), RoleIdValues);
 
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::SetChannelMemberRoles,
-	                                                ChannelQueries::SetChannelMemberRoles, Vars);
+	Client->RunOp(ChannelsDomain, TEXT("SetChannelMemberRoles"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelMember Member;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("setChannelMemberRoles"), Member, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Member);
+		}));
 }
 
-void UCrowdyChannels::SetChannelPolicy(ECrowdyTeamCreationPolicy CreationPolicy,
-                                       ECrowdyTeamMembershipPolicy DefaultMembershipPolicy,
+void UCrowdyChannels::SetChannelPolicy(ECrowdyChannelCreationPolicy CreationPolicy,
+                                       ECrowdyChannelMembershipPolicy DefaultMembershipPolicy,
                                        FOnChannelPolicySuccess OnSuccess, FOnChannelError OnError)
 {
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::SetChannelPolicy, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (Resp->IsValid())
-			OnSuccess.ExecuteIfBound(static_cast<FSetChannelPolicyResponse&>(*Resp).Policy);
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
 
-	auto CreationStr = [](ECrowdyTeamCreationPolicy P) -> FString
-	{
-		switch (P)
-		{
-		case ECrowdyTeamCreationPolicy::Admin: return TEXT("admin");
-		case ECrowdyTeamCreationPolicy::Member: return TEXT("member");
-		default: return TEXT("anyone");
-		}
-	};
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+	Input->SetStringField(TEXT("creationPolicy"), FCrowdyChannelPolicy::CreationPolicyToString(CreationPolicy));
+	Input->SetStringField(TEXT("defaultMembershipPolicy"),
+		FCrowdyChannel::MembershipPolicyToString(DefaultMembershipPolicy));
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	Vars->SetStringField(TEXT("creationPolicy"), CreationStr(CreationPolicy));
-	Vars->SetStringField(
-		TEXT("defaultMembershipPolicy"), FCrowdyGroup::MembershipPolicyToString(DefaultMembershipPolicy));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::SetChannelPolicy, ChannelQueries::SetChannelPolicy, Vars);
+	Client->RunOp(ChannelsDomain, TEXT("SetChannelPolicy"), WrapInput(Input),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelPolicy Policy;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("setChannelPolicy"), Policy, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Policy);
+		}));
 }
 
 void UCrowdyChannels::PublishChannelMessage(int64 ChannelId, const TArray<uint8>& Payload)
@@ -702,7 +721,7 @@ void UCrowdyChannels::PublishChannelMessage(int64 ChannelId, const TArray<uint8>
 
 	FChannelMessageRequest Request;
 	Request.ChannelId = ChannelId;
-	Request.UUID = GameSession->GetUUID();
+	Request.UUID = FCrowdyActorId::FromStringOrUnset(GameSession->GetUUID());
 	Request.Payload = Payload;
 	Request.SequenceNumber = OutgoingSequence++;
 
@@ -717,27 +736,26 @@ FString UCrowdyChannels::GetSessionChannelName() const
 
 void UCrowdyChannels::BootstrapReliableRpcChannels()
 {
+	// The UDP connection is up by the time this is called, so the router now exists even if it did not
+	// at Initialize time.
+	EnsureChannelSubscription();
+
 	if (bRpcChannelsReady || bBootstrapInFlight)
 		return;
-
-	if (!QuerySubsystem)
-	{
-		UE_LOG(LogCrowdyServices, Warning,
-			TEXT("[CrowdyChannels] Reliable RPC channel bootstrap skipped — query subsystem unavailable."));
-		return;
-	}
 
 	if (GetAppId() <= 0)
 	{
 		UE_LOG(LogCrowdyServices, Warning,
-			TEXT("[CrowdyChannels] Reliable RPC channel bootstrap skipped — AppID is not set."));
+			TEXT("[CrowdyChannels] Reliable RPC channel bootstrap skipped - AppID is not set."));
 		return;
 	}
 
 	UGameInstance* GameInstance = GetGameInstance();
 
 	// Which channels do this app's Multicast CrowdyEvents target? We must join them all (a client only
-	// receives on channels it has joined), plus the default session channel for unnamed events.
+	// receives on channels it has joined). The session channel is joined regardless of what this reports,
+	// because the Game Model plane rides it without any CrowdyEvent naming it (see BuildDesiredJoinNames);
+	// bUsesDefaultChannel therefore describes only whether reliable RPCs also route over it.
 	ReferencedChannelNames.Reset();
 	bUsesDefaultChannel = false;
 	if (GameInstance)
@@ -746,18 +764,19 @@ void UCrowdyChannels::BootstrapReliableRpcChannels()
 			AutoRegistry->CollectMulticastChannels(ReferencedChannelNames, bUsesDefaultChannel);
 	}
 
-	if (ReferencedChannelNames.Num() == 0 && !bUsesDefaultChannel)
-	{
-		// No channel-routed CrowdyEvents at all — nothing to join, trivially ready.
-		bRpcChannelsReady = true;
-		return;
-	}
+	// An external kick, so the retry budget starts over: this is a genuinely new attempt, not a continuation of a
+	// chain that already gave up.
+	BootstrapRetryCount = 0;
+	StartBootstrapAttempt();
+}
 
+void UCrowdyChannels::StartBootstrapAttempt()
+{
 	bBootstrapInFlight = true;
 
 	// Drop queued reliable sends if the whole chain hasn't completed in time, so a misconfigured
 	// channel policy can't strand them forever.
-	if (GameInstance)
+	if (UGameInstance* GameInstance = GetGameInstance())
 	{
 		GameInstance->GetTimerManager().SetTimer(
 			RpcChannelTimeoutTimer,
@@ -767,52 +786,117 @@ void UCrowdyChannels::BootstrapReliableRpcChannels()
 	}
 
 	UE_LOG(LogCrowdyServices, Log,
-		TEXT("[CrowdyChannels] Bootstrapping reliable RPC channels (%d named%s)."),
-		ReferencedChannelNames.Num(), bUsesDefaultChannel ? TEXT(" + session") : TEXT(""));
+		TEXT("[CrowdyChannels] Bootstrapping channels (%d named + the session channel%s)."),
+		ReferencedChannelNames.Num(), bUsesDefaultChannel ? TEXT(", which also carries reliable RPCs") : TEXT(""));
 	BootstrapFetchAppChannels();
+}
+
+void UCrowdyChannels::RetryRpcChannelBootstrap()
+{
+	// Another path may have succeeded or started while this retry was pending.
+	if (bRpcChannelsReady || bBootstrapInFlight || GetAppId() <= 0)
+	{
+		return;
+	}
+
+	// The channel names were collected by the kick that started this chain and do not change between attempts, so
+	// the retry re-enters at the request phase rather than re-reading the registry.
+	StartBootstrapAttempt();
+}
+
+TArray<FString> UCrowdyChannels::BuildDesiredJoinNames(const TSet<FString>& MulticastChannelNames,
+	const FString& SessionChannelName)
+{
+	TArray<FString> Names;
+	Names.Reserve(MulticastChannelNames.Num() + 1);
+	for (const FString& Name : MulticastChannelNames)
+	{
+		// A CrowdyEvent naming the session channel explicitly must not queue it twice: the second join would
+		// be a redundant round trip, and a duplicate create attempt if the channel does not exist yet.
+		if (!Name.IsEmpty() && Name != SessionChannelName)
+		{
+			Names.Add(Name);
+		}
+	}
+	Names.Sort();
+
+	// An empty name means the app id was never resolved, in which case there is no session channel to name.
+	if (!SessionChannelName.IsEmpty())
+	{
+		Names.Add(SessionChannelName);
+	}
+	return Names;
 }
 
 void UCrowdyChannels::BootstrapFetchAppChannels()
 {
-	PushCallback(EQueryResponseType::Channels,
-		[this](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		if (!Resp->IsValid())
+		AbortRpcChannelBootstrap(TEXT("no API client"));
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+
+	TWeakObjectPtr<UCrowdyChannels> WeakThis(this);
+	Client->RunOp(ChannelsDomain, TEXT("Channels"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis](FCrowdyCppJsonResult Result)
 		{
-			AbortRpcChannelBootstrap(TEXT("could not list channels"));
-			return;
-		}
+			UCrowdyChannels* Self = WeakThis.Get();
+			if (!Self)
+				return;
 
-		AppChannelNameToId.Reset();
-		for (const FCrowdyGroup& G : static_cast<FChannelsResponse&>(*Resp).Groups)
-			AppChannelNameToId.Add(G.Name, G.GroupId);
+			TArray<FCrowdyChannel> Channels;
+			FCrowdyChannelError Error;
+			if (!ReadArray(Result, TEXT("channels"), Channels, Error))
+			{
+				Self->AbortRpcChannelBootstrap(TEXT("could not list channels"));
+				return;
+			}
 
-		BootstrapFetchMyChannels();
-	});
+			Self->AppChannelNameToId.Reset();
+			for (const FCrowdyChannel& Channel : Channels)
+				Self->AppChannelNameToId.Add(Channel.Name, Channel.ChannelId);
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::Channels, ChannelQueries::Channels, Vars);
+			Self->BootstrapFetchMyChannels();
+		}));
 }
 
 void UCrowdyChannels::BootstrapFetchMyChannels()
 {
-	PushCallback(EQueryResponseType::MyChannels,
-		[this](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
 	{
-		MyChannelIds.Reset();
-		if (Resp->IsValid())
-		{
-			for (const FCrowdyGroupMembership& M : static_cast<FMyChannelsResponse&>(*Resp).Memberships)
-				MyChannelIds.Add(M.Group.GroupId);
-		}
-		// Proceed even if the membership lookup failed — the joins below just attempt anyway.
-		BootstrapPlanJoins();
-	});
+		AbortRpcChannelBootstrap(TEXT("no API client"));
+		return;
+	}
 
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::MyChannels, ChannelQueries::MyChannels, Vars);
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+
+	TWeakObjectPtr<UCrowdyChannels> WeakThis(this);
+	Client->RunOp(ChannelsDomain, TEXT("MyChannels"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis](FCrowdyCppJsonResult Result)
+		{
+			UCrowdyChannels* Self = WeakThis.Get();
+			if (!Self)
+				return;
+
+			Self->MyChannelIds.Reset();
+
+			TArray<FCrowdyChannelMembership> Memberships;
+			FCrowdyChannelError Error;
+			if (ReadArray(Result, TEXT("myChannels"), Memberships, Error))
+			{
+				for (const FCrowdyChannelMembership& Membership : Memberships)
+					Self->MyChannelIds.Add(Membership.Channel.ChannelId);
+			}
+
+			// Proceed even if the membership lookup failed - the joins below just attempt anyway.
+			Self->BootstrapPlanJoins();
+		}));
 }
 
 void UCrowdyChannels::BootstrapPlanJoins()
@@ -835,45 +919,73 @@ void UCrowdyChannels::BootstrapPlanJoins()
 		return true;
 	};
 
-	for (const FString& Name : ReferencedChannelNames)
+	const FString SessionName = GetSessionChannelName();
+	for (const FString& Name : BuildDesiredJoinNames(ReferencedChannelNames, SessionName))
 	{
-		if (!PlanChannel(Name))
+		if (PlanChannel(Name))
+		{
+			continue;
+		}
+
+		// The session channel is the only one we create ourselves, so a fresh app needs nothing authored in
+		// Studio before Game Model signals and re-pull pings arrive. A named channel is a designer's, and
+		// inventing one under a guessed name would hide the typo it usually is.
+		if (Name == SessionName)
+		{
+			bNeedCreateSessionChannel = true;
+		}
+		else
 		{
 			UE_LOG(LogCrowdyServices, Warning,
-				TEXT("[CrowdyChannels] Multicast channel '%s' was not found for this app — RPCs targeting it will drop. Create it (or fix the name) in Crowdy Studio."),
+				TEXT("[CrowdyChannels] Multicast channel '%s' was not found for this app - RPCs targeting it will drop. Create it (or fix the name) in Crowdy Studio."),
 				*Name);
 		}
 	}
-
-	// The default session channel is the only one we create if missing (member-creation policy).
-	if (bUsesDefaultChannel && !PlanChannel(GetSessionChannelName()))
-		bNeedCreateSessionChannel = true;
 
 	ProcessNextJoin();
 }
 
 void UCrowdyChannels::ProcessNextJoin()
 {
-	// One outstanding request at a time keeps the FIFO callback queue unambiguous.
+	// One outstanding request at a time. The server is asked to change membership here, so the joins stay
+	// sequential rather than fanning out.
 	if (JoinQueue.Num() > 0)
 	{
 		const TPair<int64, FString> Item = JoinQueue.Pop(EAllowShrinking::No);
 
-		PushCallback(EQueryResponseType::JoinChannel,
-			[this, Item](TSharedPtr<ICrowdyQueryResponse> Resp)
+		FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+		if (!Client)
 		{
-			if (Resp->IsValid())
-				RegisterJoinedChannel(static_cast<FJoinChannelResponse&>(*Resp).Member.GroupId, Item.Value);
-			else
-				UE_LOG(LogCrowdyServices, Warning,
-					TEXT("[CrowdyChannels] Could not join channel '%s' — RPCs targeting it will drop (its membership policy must allow it)."),
-					*Item.Value);
-			ProcessNextJoin();
-		});
+			AbortRpcChannelBootstrap(TEXT("no API client"));
+			return;
+		}
 
-		TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-		Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), Item.Key));
-		QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::JoinChannel, ChannelQueries::JoinChannel, Vars);
+		TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+		Variables->SetStringField(TEXT("groupId"), BigInt(Item.Key));
+
+		TWeakObjectPtr<UCrowdyChannels> WeakThis(this);
+		Client->RunOp(ChannelsDomain, TEXT("JoinChannel"), Variables,
+			GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Item](FCrowdyCppJsonResult Result)
+			{
+				UCrowdyChannels* Self = WeakThis.Get();
+				if (!Self)
+					return;
+
+				FCrowdyChannelMember Member;
+				FCrowdyChannelError Error;
+				if (ReadObject(Result, TEXT("joinChannel"), Member, Error))
+				{
+					Self->RegisterJoinedChannel(Member.ChannelId, Item.Value);
+				}
+				else
+				{
+					UE_LOG(LogCrowdyServices, Warning,
+						TEXT("[CrowdyChannels] Could not join channel '%s' - RPCs targeting it will drop (its membership policy must allow it). %s"),
+						*Item.Value, *Error.Message);
+				}
+
+				Self->ProcessNextJoin();
+			}));
 		return;
 	}
 
@@ -881,25 +993,44 @@ void UCrowdyChannels::ProcessNextJoin()
 	{
 		bNeedCreateSessionChannel = false;
 
-		PushCallback(EQueryResponseType::CreateChannel,
-			[this](TSharedPtr<ICrowdyQueryResponse> Resp)
+		FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+		if (!Client)
 		{
-			if (Resp->IsValid())
-				RegisterJoinedChannel(static_cast<FCreateChannelResponse&>(*Resp).Group.GroupId, GetSessionChannelName());
-			else
-				UE_LOG(LogCrowdyServices, Warning,
-					TEXT("[CrowdyChannels] Could not create the session channel — default-channel RPCs will drop (its creation policy must allow members)."));
-			ProcessNextJoin();
-		});
+			AbortRpcChannelBootstrap(TEXT("no API client"));
+			return;
+		}
 
-		TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-		Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GetAppId()));
-		Vars->SetStringField(TEXT("name"), GetSessionChannelName());
-		Vars->SetStringField(TEXT("description"), TEXT("Crowdy reliable RPC session channel"));
-		Vars->SetStringField(TEXT("membershipPolicy"),
-			FCrowdyGroup::MembershipPolicyToString(ECrowdyTeamMembershipPolicy::Open));
-		Vars->SetBoolField(TEXT("membersCanSend"), true);
-		QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::CreateChannel, ChannelQueries::CreateChannel, Vars);
+		TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+		Input->SetStringField(TEXT("appId"), BigInt(GetAppId()));
+		Input->SetStringField(TEXT("name"), GetSessionChannelName());
+		Input->SetStringField(TEXT("description"), TEXT("Crowdy reliable RPC session channel"));
+		Input->SetStringField(TEXT("membershipPolicy"),
+			FCrowdyChannel::MembershipPolicyToString(ECrowdyChannelMembershipPolicy::Open));
+		Input->SetBoolField(TEXT("membersCanSend"), true);
+
+		TWeakObjectPtr<UCrowdyChannels> WeakThis(this);
+		Client->RunOp(ChannelsDomain, TEXT("CreateChannel"), WrapInput(Input),
+			GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis](FCrowdyCppJsonResult Result)
+			{
+				UCrowdyChannels* Self = WeakThis.Get();
+				if (!Self)
+					return;
+
+				FCrowdyChannel Channel;
+				FCrowdyChannelError Error;
+				if (ReadObject(Result, TEXT("createChannel"), Channel, Error))
+				{
+					Self->RegisterJoinedChannel(Channel.ChannelId, Self->GetSessionChannelName());
+				}
+				else
+				{
+					UE_LOG(LogCrowdyServices, Warning,
+						TEXT("[CrowdyChannels] Could not create the session channel, so Game Model signals and model-changed pings will not arrive and default-channel RPCs will drop (its creation policy must allow members, or create it once in Crowdy Studio). %s"),
+						*Error.Message);
+				}
+
+				Self->ProcessNextJoin();
+			}));
 		return;
 	}
 
@@ -931,9 +1062,13 @@ void UCrowdyChannels::FinishRpcChannelBootstrap()
 {
 	bRpcChannelsReady = true;
 	bBootstrapInFlight = false;
+	BootstrapRetryCount = 0;
 
 	if (UGameInstance* GameInstance = GetGameInstance())
+	{
 		GameInstance->GetTimerManager().ClearTimer(RpcChannelTimeoutTimer);
+		GameInstance->GetTimerManager().ClearTimer(RpcChannelRetryTimer);
+	}
 
 	UE_LOG(LogCrowdyServices, Log,
 		TEXT("[CrowdyChannels] Reliable RPC channels ready (%d joined); flushing %d queued send(s)."),
@@ -948,15 +1083,36 @@ void UCrowdyChannels::AbortRpcChannelBootstrap(FString Reason)
 {
 	bBootstrapInFlight = false;
 
-	if (UGameInstance* GameInstance = GetGameInstance())
+	UGameInstance* GameInstance = GetGameInstance();
+	if (GameInstance)
 		GameInstance->GetTimerManager().ClearTimer(RpcChannelTimeoutTimer);
 
+	// Queued sends are stale by the time a whole attempt has failed, and holding them across a retry chain would
+	// let a misconfigured policy strand them for as long as the chain runs.
 	const int32 Dropped = PendingReliableSends.Num();
 	PendingReliableSends.Reset();
 
-	UE_LOG(LogCrowdyServices, Warning,
-		TEXT("[CrowdyChannels] Reliable RPC channel bootstrap failed (%s); dropped %d queued send(s). A later reconnect retries."),
-		*Reason, Dropped);
+	if (BootstrapRetryCount < MaxBootstrapRetries && GameInstance)
+	{
+		++BootstrapRetryCount;
+		const float Delay = BootstrapRetryBaseSeconds * BootstrapRetryCount;
+
+		UE_LOG(LogCrowdyServices, Warning,
+			TEXT("[CrowdyChannels] Channel bootstrap failed (%s); dropped %d queued send(s). Retrying in %.0fs (attempt %d of %d)."),
+			*Reason, Dropped, Delay, BootstrapRetryCount, MaxBootstrapRetries);
+
+		GameInstance->GetTimerManager().SetTimer(
+			RpcChannelRetryTimer,
+			FTimerDelegate::CreateUObject(this, &UCrowdyChannels::RetryRpcChannelBootstrap),
+			Delay, /*bLoop*/false);
+		return;
+	}
+
+	// Error, not Warning: nothing else will report that the whole Game Model notification path is dead, and the
+	// symptom (signals and re-pull pings simply never arriving) looks like a server problem from the game's side.
+	UE_LOG(LogCrowdyServices, Error,
+		TEXT("[CrowdyChannels] Channel bootstrap failed (%s) after %d attempt(s); dropped %d queued send(s). This client has joined no channels, so Game Model signals and model-changed pings will not arrive and channel RPCs will drop. A later reconnect retries."),
+		*Reason, BootstrapRetryCount + 1, Dropped);
 }
 
 void UCrowdyChannels::PublishReliableRpc(const FString& ChannelName, const TArray<uint8>& Payload)
@@ -970,7 +1126,7 @@ void UCrowdyChannels::PublishReliableRpc(const FString& ChannelName, const TArra
 	if (PendingReliableSends.Num() >= MaxPendingReliablePayloads)
 	{
 		UE_LOG(LogCrowdyServices, Warning,
-			TEXT("[CrowdyChannels] Reliable send dropped — %d already queued waiting for the RPC channels."),
+			TEXT("[CrowdyChannels] Reliable send dropped - %d already queued waiting for the RPC channels."),
 			PendingReliableSends.Num());
 		return;
 	}
@@ -998,7 +1154,7 @@ void UCrowdyChannels::PublishToResolvedChannel(const FString& ChannelName, const
 	else
 	{
 		UE_LOG(LogCrowdyServices, Warning,
-			TEXT("[CrowdyChannels] Reliable RPC dropped — no joined channel for '%s'."),
+			TEXT("[CrowdyChannels] Reliable RPC dropped - no joined channel for '%s'."),
 			ChannelName.IsEmpty() ? TEXT("<session>") : *ChannelName);
 	}
 }
@@ -1056,20 +1212,22 @@ UCrowdyEventRouter* UCrowdyChannels::ResolveEventRouter() const
 	return World ? World->GetSubsystem<UCrowdyEventRouter>() : nullptr;
 }
 
-bool UCrowdyChannels::IsPlayerInChannel(int64 GroupId) const
+bool UCrowdyChannels::IsPlayerInChannel(int64 ChannelId) const
 {
-	for (const FCrowdyGroupMembership& M : CachedMyChannels)
-		if (M.Group.GroupId == GroupId) return true;
+	for (const FCrowdyChannelMembership& Membership : CachedMyChannels)
+	{
+		if (Membership.Channel.ChannelId == ChannelId) return true;
+	}
 	return false;
 }
 
-bool UCrowdyChannels::GetMyChannelById(int64 GroupId, FCrowdyGroupMembership& OutMembership) const
+bool UCrowdyChannels::GetMyChannelById(int64 ChannelId, FCrowdyChannelMembership& OutMembership) const
 {
-	for (const FCrowdyGroupMembership& M : CachedMyChannels)
+	for (const FCrowdyChannelMembership& Membership : CachedMyChannels)
 	{
-		if (M.Group.GroupId == GroupId)
+		if (Membership.Channel.ChannelId == ChannelId)
 		{
-			OutMembership = M;
+			OutMembership = Membership;
 			return true;
 		}
 	}
@@ -1081,33 +1239,9 @@ bool UCrowdyChannels::IsInAnyChannel() const
 	return CachedMyChannels.Num() > 0;
 }
 
-bool UCrowdyChannels::HasPermissionInChannel(int64 GroupId, ECrowdyTeamPermission Permission) const
+bool UCrowdyChannels::HasPermissionInChannel(int64 ChannelId, ECrowdyChannelPermission Permission) const
 {
-	FCrowdyGroupMembership Membership;
-	if (!GetMyChannelById(GroupId, Membership)) return false;
+	FCrowdyChannelMembership Membership;
+	if (!GetMyChannelById(ChannelId, Membership)) return false;
 	return Membership.HasPermission(Permission);
-}
-
-void UCrowdyChannels::GetPendingJoinRequests(int64 GroupId, FOnChannelMembersSuccess OnSuccess, FOnChannelError OnError)
-{
-	if (!QuerySubsystem) return;
-
-	PushCallback(EQueryResponseType::ChannelMembers, [OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-		{
-			TArray<FCrowdyGroupMember> Members = static_cast<FChannelMembersResponse&>(*Resp).Members;
-			Members.RemoveAll([](const FCrowdyGroupMember& M) { return M.Status != TEXT("pending"); });
-			OnSuccess.ExecuteIfBound(Members);
-		}
-		else
-		{
-			const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(Resp->GetError());
-			OnError.ExecuteIfBound(Err, Err.Message);
-		}
-	});
-
-	TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("groupId"), FString::Printf(TEXT("%lld"), GroupId));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::ChannelMembers, ChannelQueries::ChannelMembers, Vars);
 }

@@ -32,7 +32,7 @@ namespace
 	}
 }
 
-// --- Palette (Crowded Kingdoms brand, adapted to the dark editor host) -----------------
+// Palette (Crowded Kingdoms brand, adapted to the dark editor host).
 // Brand: bold / minimal / premium. Kingdom Black surfaces, Pure White ink, Warm Gold earned
 // (selected nav, focus, the single key action per page), Stone Gray captions.
 FLinearColor FCrowdyStudioStyle::Panel()        { return Hex(0x0B0B0C); } // window background (near Kingdom Black)
@@ -62,7 +62,7 @@ TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 	const FVector2D Icon18(18.0, 18.0);
 	const FLinearColor Ink = Hex(0x0A0A0A); // black text on gold
 
-	// --- Surfaces ---
+	// Surfaces
 	Style->Set("Crowdy.Panel",         new FSlateColorBrush(Panel()));
 	Style->Set("Crowdy.Rail",          new FSlateColorBrush(Rail()));
 	Style->Set("Crowdy.Separator",     new FSlateColorBrush(Line()));
@@ -76,7 +76,15 @@ TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 	Style->Set("Crowdy.Nav.Active",    new FSlateRoundedBoxBrush(WithAlpha(Gold(), 0.14f), 6.0f, WithAlpha(Gold(), 0.5f), 1.0f));
 	Style->Set("Crowdy.Nav.Hover",     new FSlateRoundedBoxBrush(FLinearColor(1, 1, 1, 0.05f), 6.0f));
 
-	// --- Input ---
+	// The gutter-glyph shapes, drawn a few pixels wide beside a table row to say where that row came from. All three
+	// carry the same neutral ink on purpose: the shape is what distinguishes them, so a reader who cannot tell two
+	// colours apart reads exactly what everyone else does. The corner radius is what turns one brush into a disc and
+	// another into a square at these sizes, since a rounded box clamps its radius to half the box.
+	Style->Set("Crowdy.Glyph.Dot",     new FSlateRoundedBoxBrush(TextSecondary(), 12.0f));
+	Style->Set("Crowdy.Glyph.Ring",    new FSlateRoundedBoxBrush(FLinearColor::Transparent, 12.0f, TextSecondary(), 1.5f));
+	Style->Set("Crowdy.Glyph.Square",  new FSlateRoundedBoxBrush(TextSecondary(), 1.0f));
+
+	// Input
 	{
 		FEditableTextBoxStyle EditStyle = FAppStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox");
 		EditStyle
@@ -89,7 +97,7 @@ TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 		Style->Set("Crowdy.Input", EditStyle);
 	}
 
-	// --- Buttons ---
+	// Buttons.
 	// Brand button system: gold (Primary) is the single key action per page; everything else is a
 	// neutral solid (Secondary). Solid fills with NO outline avoid the rounded-corner halo and give a
 	// clear hierarchy. Ghost is for tertiary/toolbar actions and toggles.
@@ -125,7 +133,7 @@ TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 		FSlateRoundedBoxBrush(FLinearColor(1, 1, 1, 0.03f), 6.0f),
 		FSlateColor(TextSecondary())));
 
-	// --- List row (custom selection: gold-tinted, faint hover; flat transparent rows) ---
+	// List row (custom selection: gold-tinted, faint hover; flat transparent rows).
 	{
 		FTableRowStyle RowStyle = FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row");
 		const FSlateColorBrush Transparent(FLinearColor::Transparent);
@@ -142,7 +150,51 @@ TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 		Style->Set("Crowdy.TableRow", RowStyle);
 	}
 
-	// --- Text styles ---
+	// Splitter (the drag handle between the model list and the detail panel).
+	{
+		FSplitterStyle SplitterStyle = FAppStyle::Get().GetWidgetStyle<FSplitterStyle>("Splitter");
+		SplitterStyle
+			.SetHandleNormalBrush(FSlateColorBrush(Line()))
+			.SetHandleHighlightBrush(FSlateColorBrush(SurfaceHover()));
+		Style->Set("Crowdy.Splitter", SplitterStyle);
+	}
+
+	// Header row for the multi-column model tables.
+	{
+		FTableColumnHeaderStyle ColumnStyle = FAppStyle::Get().GetWidgetStyle<FTableColumnHeaderStyle>("TableView.Header.Column");
+		ColumnStyle
+			.SetNormalBrush(FSlateColorBrush(Surface()))
+			.SetHoveredBrush(FSlateColorBrush(SurfaceHover()));
+
+		FHeaderRowStyle HeaderRowStyle = FAppStyle::Get().GetWidgetStyle<FHeaderRowStyle>("TableView.Header");
+		HeaderRowStyle
+			.SetColumnStyle(ColumnStyle)
+			.SetLastColumnStyle(ColumnStyle)
+			.SetBackgroundBrush(FSlateColorBrush(Surface()))
+			.SetForegroundColor(TextSubtle())
+			.SetHorizontalSeparatorBrush(FSlateColorBrush(Line()))
+			.SetHorizontalSeparatorThickness(1.0f);
+		Style->Set("Crowdy.HeaderRow", HeaderRowStyle);
+	}
+
+	// Search box, built on Crowdy.Input so focus is the same gold hairline as every other field.
+	{
+		FSearchBoxStyle SearchBoxStyle = FAppStyle::Get().GetWidgetStyle<FSearchBoxStyle>("SearchBox");
+		SearchBoxStyle.SetTextBoxStyle(Style->GetWidgetStyle<FEditableTextBoxStyle>("Crowdy.Input"));
+		Style->Set("Crowdy.SearchBox", SearchBoxStyle);
+	}
+
+	// Table view background. Rows stay on the shared Crowdy.TableRow; only the backing brush is new.
+	Style->Set("Crowdy.TableView", FTableViewStyle().SetBackgroundBrush(FSlateColorBrush(Panel())));
+
+	// The two pieces SCrowdyBusyBar paints: a recessed track and the pill that sweeps along it. Neutral, like the rest
+	// of the Game Model page, because this reports activity rather than a result and so spends no colour on meaning.
+	// Plain brushes rather than an FProgressBarStyle: SProgressBar's marquee needs a repeating tile to look like it is
+	// moving, and a solid brush there paints a bar that never appears to animate at all.
+	Style->Set("Crowdy.BusyBar.Track", new FSlateRoundedBoxBrush(Hex(0x18181A), 2.0f, FVector2f(64.0f, 4.0f)));
+	Style->Set("Crowdy.BusyBar.Pill",  new FSlateRoundedBoxBrush(TextSecondary(), 2.0f, FVector2f(20.0f, 4.0f)));
+
+	// Text styles.
 	const FName Bold = "Bold";
 	const FName Reg = "Regular";
 	Style->Set("Crowdy.Text.Title",        FTextBlockStyle().SetFont(FCoreStyle::GetDefaultFontStyle(Bold, 17)).SetColorAndOpacity(TextPrimary()));
@@ -152,7 +204,7 @@ TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 	Style->Set("Crowdy.Text.Subtle",       FTextBlockStyle().SetFont(FCoreStyle::GetDefaultFontStyle(Reg, 9)).SetColorAndOpacity(TextSubtle()));
 	Style->Set("Crowdy.Text.SectionLabel", FTextBlockStyle().SetFont(FCoreStyle::GetDefaultFontStyle(Bold, 8)).SetColorAndOpacity(TextSubtle()));
 
-	// --- Icons (line-art glyphs, white; tinted per-state at the call site) ---
+	// Icons (line-art glyphs, white; tinted per-state at the call site).
 	auto SvgIcon = [&Style, &Icon18](const TCHAR* Name)
 	{
 		const FString Rel = FString::Printf(TEXT("Icons/%s"), Name);

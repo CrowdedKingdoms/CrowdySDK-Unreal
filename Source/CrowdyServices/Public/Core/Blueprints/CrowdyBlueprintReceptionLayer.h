@@ -4,12 +4,12 @@
 
 #include "CrowdyServicesLog.h"
 #include "CoreMinimal.h"
-#include "FCrowdyBPLayerBridge.h"
 #include "Messages/Blueprint/FGameEventNotificationBP.h"
 #include "Messages/Actor/FActorUpdateNotificationMessage.h"
 #include "Messages/Blueprint/FActorUpdateNotificationBP.h"
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
+#include "Core/UDP/Subscription/FCrowdySubscription.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "UObject/Object.h"
 #include "CrowdyBlueprintReceptionLayer.generated.h"
@@ -50,25 +50,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Reception Layer")
 	static UCrowdyBlueprintReceptionLayer* CreateAndRegisterLayer(UObject* WorldContextObject,
 	                                                              TSubclassOf<UCrowdyBlueprintReceptionLayer> Class);
-	
-	
-	void DispatchToBlueprint(const TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe>& Message) const;
-	
-	virtual void BeginDestroy() override;
-	
-	/* TODO: Add in QOL updates */
-	/*
-	UFUNCTION(BlueprintCallable, Category = "Crowdy")
-	void UnregisterFromRegistry()
-	{
-		if (!Bridge.IsValid()) return;
 
-		FCrowdyServiceRegistry::Get()->DeregisterReceptionLayer(Bridge.Get());
-		Bridge.Reset();
-	}
-	*/
+
+	void DispatchToBlueprint(const TSharedRef<const ICrowdyMessage, ESPMode::ThreadSafe>& Message) const;
+
+	virtual void BeginDestroy() override;
+
 private:
-	
+
 	void Initialize(UCrowdySDKBridgeSubsystem* InBridgeSub)
 	{
 		if (HasAnyFlags(RF_ClassDefaultObject))
@@ -79,16 +68,13 @@ private:
 		SDKBridge = InBridgeSub;
 	}
 
-	void RegisterLayer()
-	{
-		if (Bridge.IsValid()) return; // already registered
-		Bridge = MakeShared<FCrowdyBPLayerBridge>(this);
-		if (SDKBridge && SDKBridge->ServiceRegistry)
-			SDKBridge->ServiceRegistry->RegisterReceptionLayer(Bridge.Get());
-	}
+	// Builds one subscription per declared struct/name plus one for the unclaimed-event and
+	// unclaimed-actor-update fallbacks this layer's arrays imply. Safe to call more than once:
+	// a non-empty Subscriptions array means it already ran.
+	void RegisterLayer();
 
 	UPROPERTY()
 	UCrowdySDKBridgeSubsystem* SDKBridge;
-	
-	TSharedPtr<FCrowdyBPLayerBridge> Bridge;
+
+	TArray<FCrowdySubscription> Subscriptions;
 };

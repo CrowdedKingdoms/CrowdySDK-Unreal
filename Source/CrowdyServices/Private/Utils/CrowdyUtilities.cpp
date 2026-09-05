@@ -204,14 +204,14 @@ bool UCrowdyUtilities::DoesCrowdyEntityOwn(UObject* WorldContextObject, const AA
 	// NetID == its OwnerID == its player UUID. So the base case of "OwnerActor owns TargetActor" is OwnerActor.NetID
 	// == TargetActor.OwnerID. Both IDs are network-stable, so the result is identical on every client. A host-owned
 	// entity is the exception: it carries no per-player owner id (Guid::Zero), so the pure matcher resolves a
-	// host-owned side to the concrete host id — the host owns host-owned entities, and a host-owned entity owns
+	// host-owned side to the concrete host id: the host owns host-owned entities, and a host-owned entity owns
 	// what the host owns.
 	bool bOwnerValid = false;
 	const FGuid OwnerNetID = GetCrowdyEntityID(WorldContextObject, OwnerActor, bOwnerValid);
 	if (!bOwnerValid || !OwnerNetID.IsValid())
 		return false;
 
-	// May be Guid::Zero for a host-owned target — that is not a failure here; the role resolves it below.
+	// May be Guid::Zero for a host-owned target; that is not a failure here, the role resolves it below.
 	bool bTargetOwnerValid = false;
 	const FGuid TargetOwnerID = GetCrowdyEntityOwnerID(WorldContextObject, TargetActor, bTargetOwnerValid);
 
@@ -243,6 +243,17 @@ UCrowdyEntityComponent* UCrowdyUtilities::GetCrowdyEntityComponent(AActor* Actor
 	}
 
 	return Actor->FindComponentByClass<UCrowdyEntityComponent>();
+}
+
+bool UCrowdyUtilities::IsCrowdyEntityLocallyControlled(AActor* Entity)
+{
+	// The entity component already answers this for both ownership models - its owning client for a client-owned
+	// entity, the elected host for a host-owned world entity - so the rule lives in one place. Resolving through
+	// GetCrowdyEntityComponent keeps the ICrowdyEntityComponentProvider indirection working here too.
+	const UCrowdyEntityComponent* Component = GetCrowdyEntityComponent(Entity);
+
+	// An actor with no component, or one that never got an identity, is not locally controlled.
+	return Component && Component->GetNetID().IsValid() && Component->IsLocallyOwned();
 }
 
 // Entity State Checks
@@ -330,7 +341,7 @@ DEFINE_FUNCTION(UCrowdyUtilities::execK2_SendCrowdyEvent)
 	P_GET_OBJECT(UObject, Z_Param_WorldContextObject);
 	P_GET_OBJECT(AActor, Z_Param_TargetEntity);
 
-	// Wildcard struct — step manually so Blueprint can wire any struct type
+	// Wildcard struct: step manually so Blueprint can wire any struct type
 	Stack.MostRecentPropertyAddress = nullptr;
 	Stack.MostRecentProperty        = nullptr;
 	Stack.StepCompiledIn<FStructProperty>(nullptr);

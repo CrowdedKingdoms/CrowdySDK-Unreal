@@ -13,12 +13,13 @@
 #include "IDetailsView.h"
 #include "K2Node_Event.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Network/GraphQL/FCrowdyGraphQLClient.h"
 #include "Replication/RPC/CrowdyRPC.h"
+#include "ScopedTransaction.h"
 #include "SEnumCombo.h"
 #include "Textures/SlateIcon.h"
 #include "UObject/Class.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -33,8 +34,11 @@ namespace
 	TArray<FString> GCachedChannelNames;
 	bool GChannelsFetchInFlight = false;
 
-	// Pulls the signed-in app's channel names from the Game API and caches them for the dropdown.
-	// No-op when the app id is unset or no one is signed into Crowdy Studio (the field stays free-text).
+	// Pulls the signed-in app's channel names for the dropdown. Channels live on the Game API, which
+	// only accepts an app-scoped token so this defers to CrowdyStudio, which mints one from the
+	// session token and queries channels. (Posting the raw session token straight at the Game API, as
+	// this used to, is rejected under the two-token model and left the dropdown empty.) No-op when the
+	// app id is unset or no one is signed into Crowdy Studio (the field stays free-text).
 	void FetchChannelListIfStale()
 	{
 		if (GChannelsFetchInFlight) return;
@@ -42,37 +46,13 @@ namespace
 		const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
 		if (!Settings || Settings->AppID <= 0) return;
 
-		const FString Token = CrowdyStudioAuth::GetSignedInToken();
-		if (Token.IsEmpty()) return; // not signed in — leave the dropdown empty, the text box still works
+		if (CrowdyStudioAuth::GetSignedInToken().IsEmpty()) return; // not signed in leave the dropdown empty
 
 		GChannelsFetchInFlight = true;
-
-		FCrowdyGqlRequest Request;
-		Request.Endpoint = Settings->GetGameApiHttpUrl();
-		Request.BearerToken = Token;
-		Request.Query = TEXT("query Channels($appId: BigInt!) { channels(appId: $appId) { name } }");
-		Request.Variables = MakeShared<FJsonObject>();
-		Request.Variables->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), Settings->AppID));
-
-		FCrowdyGraphQLClient::Send(Request, [](FCrowdyGqlResult Result)
+		CrowdyStudioAuth::FetchAppChannelNames(Settings->AppID, [](const TArray<FString>& Names)
 		{
 			GChannelsFetchInFlight = false;
-			if (!Result.bSuccess || !Result.Data.IsValid()) return;
-
-			const TSharedPtr<FJsonObject>* DataObj = nullptr;
-			if (!Result.Data->TryGetObjectField(TEXT("data"), DataObj)) return;
-
-			const TArray<TSharedPtr<FJsonValue>>* ChannelsArray = nullptr;
-			if (!(*DataObj)->TryGetArrayField(TEXT("channels"), ChannelsArray)) return;
-
-			GCachedChannelNames.Reset();
-			for (const TSharedPtr<FJsonValue>& Value : *ChannelsArray)
-			{
-				const TSharedPtr<FJsonObject>* ChannelObj = nullptr;
-				FString Name;
-				if (Value->TryGetObject(ChannelObj) && (*ChannelObj)->TryGetStringField(TEXT("name"), Name) && !Name.IsEmpty())
-					GCachedChannelNames.AddUnique(Name);
-			}
+			GCachedChannelNames = Names;
 		});
 	}
 
@@ -125,7 +105,7 @@ namespace
 			return true;
 		}
 
-		// A set or map carries value-type elements only — object keys/values are out of scope.
+		// A set or map carries value-type elements only object keys/values are out of scope.
 		if (!IsReplicatableLeafCategory(Category))
 		{
 			return false;
@@ -283,9 +263,6 @@ int32 FCrowdyCustomEventCustomization::GetNodeFunctionFlags() const
 	return EditedNode.IsValid() ? EditedNode->FunctionFlags : 0;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Crowdy Replicates (RPC-style)
-// ─────────────────────────────────────────────────────────────────────────────
 void FCrowdyCustomEventCustomization::BuildReplicateCategory(
 	IDetailLayoutBuilder& DetailBuilder)
 {
@@ -334,6 +311,57 @@ void FCrowdyCustomEventCustomization::BuildReplicateCategory(
 		]
 	];
 
+	// Only where some map profile selects a backend that draws remote entities as crowd rows. Everything
+	// this row describes happens on that representation, so in a project that draws every map with actors it
+	// names a concept that does not exist there, offers pins for a handler that never runs, and its tooltip
+	// sends the reader to an animation set asset the project has no class for.
+	//
+	// Asked as this panel is built, so switching a profile's Backend Class shows or hides the row the next
+	// time a node's details are shown, with no editor restart.
+	if (CrowdyAuthoringContributions::IsCrowdRepresentationSelected())
+	{
+		Category.AddCustomRow(FText::FromString(TEXT("Is A One-Shot Action")))
+		.Visibility(MakeAttributeSP(this, &FCrowdyCustomEventCustomization::GetRoutingVisibility))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(TEXT("Is A One-Shot Action")))
+			.Font(DetailBuilder.GetDetailFont())
+			.ToolTipText(FText::FromString(
+				TEXT("Declares that this event's parameters describe a one-shot action: a swing, a flinch, an emote.\n\n"
+				     "It changes nothing where a client holds the entity as a real actor, which still runs this body.\n"
+				     "It is read by clients that draw the entity as one of a crowd, which have no actor to run a body\n"
+				     "on: those start the action with nothing registered and no extra graph to author.\n\n"
+				     "Tick it and use Add Parameters to create the pins it is read by. Action ids start at 1 and\n"
+				     "follow the animation set's Actions row order; 0 means no action.")))
+		]
+		.ValueContent()
+		[
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SCheckBox)
+				.IsChecked(this, &FCrowdyCustomEventCustomization::GetActionCheckState)
+				.OnCheckStateChanged(this, &FCrowdyCustomEventCustomization::OnActionCheckChanged)
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(6.f, 0.f, 0.f, 0.f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("Add Parameters")))
+				.ToolTipText(this, &FCrowdyCustomEventCustomization::GetAddActionParametersToolTip)
+				.Visibility(MakeAttributeSP(this, &FCrowdyCustomEventCustomization::GetAddActionParametersVisibility))
+				.OnClicked(this, &FCrowdyCustomEventCustomization::OnAddActionParametersClicked)
+			]
+		];
+	}
+
 	AddRoutingRow(Category, DetailBuilder,
 		FText::FromString(TEXT("Recipient")),
 		FText::FromString(TEXT("Which clients run the event, and over which transport. Spatial Multicast = everyone in range (chunk-based, decay-thinned); Multicast = every member of the app's session channel regardless of distance (over the channel transport, ignores chunk coordinates); Owning Client = only the target entity's owner (others request it); Host = only the elected host (others request it).")),
@@ -342,13 +370,13 @@ void FCrowdyCustomEventCustomization::BuildReplicateCategory(
 
 	AddRoutingRow(Category, DetailBuilder,
 		FText::FromString(TEXT("Decay Rate")),
-		FText::FromString(TEXT("Server-side spatial decay applied before the event reaches remote clients. Only applies to Spatial Multicast — the channel and targeted transports ignore it.")),
+		FText::FromString(TEXT("Server-side spatial decay applied before the event reaches remote clients. Only applies to Spatial Multicast. The channel and targeted transports ignore it.")),
 		FName(CrowdyRpcMetaKeys::Decay), StaticEnum<ECrowdyDecayRate>(),
 		static_cast<int32>(ECrowdyDecayRate::No_Decay), /*bSpatialOnly*/ true);
 
 	AddRoutingRow(Category, DetailBuilder,
 		FText::FromString(TEXT("Replication Distance")),
-		FText::FromString(TEXT("Maximum chunk distance the event travels from the target entity. Only applies to Spatial Multicast — the channel and targeted transports ignore it.")),
+		FText::FromString(TEXT("Maximum chunk distance the event travels from the target entity. Only applies to Spatial Multicast. The channel and targeted transports ignore it.")),
 		FName(CrowdyRpcMetaKeys::Distance), StaticEnum<ECrowdyReplicationDistance>(),
 		static_cast<int32>(ECrowdyReplicationDistance::Eight_Chunks), /*bSpatialOnly*/ true);
 
@@ -463,6 +491,12 @@ void FCrowdyCustomEventCustomization::SetReplicated(bool bReplicated)
 		Meta.RemoveMetaData(FName(CrowdyRpcMetaKeys::Recipient));
 		Meta.RemoveMetaData(FName(CrowdyRpcMetaKeys::Decay));
 		Meta.RemoveMetaData(FName(CrowdyRpcMetaKeys::Distance));
+
+		// Cleared with the rest, and not because an unreplicated event has no use for it. Every row that
+		// could show or untick this marker is hidden while the event is not replicated, so leaving it set
+		// would leave the node carrying a declaration nothing can display and nobody can withdraw, which
+		// re-arms itself the moment anyone ticks Crowdy Replicates again.
+		Meta.RemoveMetaData(FName(CrowdyRpcMetaKeys::Action));
 	}
 
 	UBlueprint* Blueprint = EditedNode->GetBlueprint();
@@ -491,6 +525,168 @@ void FCrowdyCustomEventCustomization::OnReplicateCheckChanged(ECheckBoxState New
 EVisibility FCrowdyCustomEventCustomization::GetRoutingVisibility() const
 {
 	return IsReplicated() ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+bool FCrowdyCustomEventCustomization::IsDeclaredAction() const
+{
+	if (!EditedNode.IsValid()) return false;
+	return EditedNode->GetUserDefinedMetaData().HasMetaData(FName(CrowdyRpcMetaKeys::Action));
+}
+
+void FCrowdyCustomEventCustomization::SetDeclaredAction(bool bIsAction)
+{
+	if (!EditedNode.IsValid()) return;
+
+	EditedNode->Modify();
+
+	// A valueless key, exactly as the C++ side spells it: the runtime asks whether the key is present,
+	// never what it says, so writing a value here would be a second spelling of the same declaration.
+	FKismetUserDeclaredFunctionMetadata& Meta = EditedNode->GetUserDefinedMetaData();
+	if (bIsAction)
+	{
+		Meta.SetMetaData(FName(CrowdyRpcMetaKeys::Action), FString());
+	}
+	else
+	{
+		Meta.RemoveMetaData(FName(CrowdyRpcMetaKeys::Action));
+	}
+
+	if (UBlueprint* Blueprint = EditedNode->GetBlueprint())
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	}
+}
+
+ECheckBoxState FCrowdyCustomEventCustomization::GetActionCheckState() const
+{
+	return IsDeclaredAction() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void FCrowdyCustomEventCustomization::OnActionCheckChanged(ECheckBoxState NewState)
+{
+	SetDeclaredAction(NewState == ECheckBoxState::Checked);
+}
+
+TArray<FCrowdyActionParameterSpec> FCrowdyCustomEventCustomization::GetMissingActionParameters() const
+{
+	TArray<FCrowdyActionParameterSpec> Missing;
+	if (!EditedNode.IsValid())
+	{
+		return Missing;
+	}
+
+	// Matched against the node's own pins rather than against a compiled signature, because the point of
+	// the offer is to be usable before the first compile, which is exactly when the box has just been
+	// ticked. A pin of the right name and the wrong type is deliberately NOT counted as missing: creating
+	// a second one beside it would be a silently renamed duplicate. The compile warning names the type
+	// problem instead, for each of these parameters, in language the author can act on.
+	for (const FCrowdyActionParameterSpec& Spec : CrowdyAuthoringContributions::GetActionParameters())
+	{
+		const bool bPresent = EditedNode->Pins.ContainsByPredicate([&Spec](const UEdGraphPin* Pin)
+		{
+			return Pin && Pin->Direction == EGPD_Output && Pin->PinName == Spec.Name;
+		});
+
+		if (!bPresent)
+		{
+			Missing.Add(Spec);
+		}
+	}
+
+	return Missing;
+}
+
+bool FCrowdyCustomEventCustomization::CanAddActionParameters() const
+{
+	// A custom event wired to a Bind Event node takes its signature from the delegate, and the engine
+	// refuses to edit its pins for exactly that reason (IsEditable is false while OutputDelegate is
+	// linked). CreateUserDefinedPin does no checking of its own, so without this the pins would be
+	// appended and then silently thrown away by the next reconstruct, which rebuilds them from the
+	// delegate.
+	return EditedNode.IsValid() && EditedNode->IsEditable();
+}
+
+EVisibility FCrowdyCustomEventCustomization::GetAddActionParametersVisibility() const
+{
+	// Only while there is an offer to make. An event already carrying all three has nothing to add, an
+	// unticked one has not asked for any of them, and a delegate-bound one cannot be given any.
+	return IsDeclaredAction() && CanAddActionParameters() && GetMissingActionParameters().Num() > 0
+		? EVisibility::Visible
+		: EVisibility::Collapsed;
+}
+
+FText FCrowdyCustomEventCustomization::GetAddActionParametersToolTip() const
+{
+	const TArray<FCrowdyActionParameterSpec> Missing = GetMissingActionParameters();
+	if (Missing.IsEmpty())
+	{
+		return FText::GetEmpty();
+	}
+
+	FString Names;
+	for (const FCrowdyActionParameterSpec& Spec : Missing)
+	{
+		if (!Names.IsEmpty())
+		{
+			Names += TEXT(", ");
+		}
+		Names += Spec.Name.ToString();
+	}
+
+	// Names what will be created before it is created, because this writes pins onto the author's node and
+	// the button's own label cannot say which ones are still missing.
+	return FText::FromString(FString::Printf(
+		TEXT("Adds the input pins this event is read by that it does not have yet: %s."), *Names));
+}
+
+FReply FCrowdyCustomEventCustomization::OnAddActionParametersClicked()
+{
+	const TArray<FCrowdyActionParameterSpec> Missing = GetMissingActionParameters();
+	if (!CanAddActionParameters() || Missing.IsEmpty())
+	{
+		return FReply::Handled();
+	}
+
+	FScopedTransaction Transaction(FText::FromString(TEXT("Add Crowdy Action Parameters")));
+	EditedNode->Modify();
+
+	int32 Added = 0;
+	for (const FCrowdyActionParameterSpec& Spec : Missing)
+	{
+		FEdGraphPinType PinType;
+		PinType.PinCategory = Spec.PinCategory;
+		PinType.PinSubCategory = Spec.PinSubCategory;
+
+		// bUseUniqueName false: the name IS the contract, and a pin the runtime cannot find by it would be
+		// worse than no pin at all. GetMissingActionParameters has already established there is none.
+		Added += EditedNode->CreateUserDefinedPin(Spec.Name, PinType, EGPD_Output, /*bUseUniqueName*/false)
+			!= nullptr ? 1 : 0;
+	}
+
+	if (Added == 0)
+	{
+		// Nothing was written, so there is nothing to undo. Left on the stack this would be an empty entry
+		// the author has to step past to reach the edit they actually made.
+		Transaction.Cancel();
+		return FReply::Handled();
+	}
+
+	// The same finish the engine's own Add Input flow performs. Reconstructing rebuilds this node around
+	// its new pins, and the schema call is what reconstructs the CALL sites, including the ones in other
+	// Blueprints: without it a caller in another asset keeps the old pin set and passes nothing for the
+	// parameter that was just added.
+	EditedNode->ReconstructNode();
+	if (const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>())
+	{
+		Schema->HandleParameterDefaultValueChanged(EditedNode.Get());
+	}
+
+	if (UBlueprint* Blueprint = EditedNode->GetBlueprint())
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	}
+
+	return FReply::Handled();
 }
 
 int32 FCrowdyCustomEventCustomization::GetRoutingValue(
@@ -579,6 +775,47 @@ void FCrowdyCustomEventCustomization::WriteChannelMeta(const FString& ChannelNam
 }
 
 TSharedRef<SWidget> FCrowdyCustomEventCustomization::BuildChannelPickerMenu()
+{
+	// The channel list is fetched async; kick it now (no-op if already in flight or unavailable).
+	FetchChannelListIfStale();
+
+	TSharedRef<SBox> MenuBox = SNew(SBox);
+	MenuBox->SetContent(BuildChannelPickerMenuContent());
+
+	// OnGetMenuContent builds the popup once, so a fetch that lands while it's open would never show
+	// and the user would have to close and reopen. Poll the shared fetch state and rebuild the content in
+	// place only when it changes, then stop once the fetch settles (or the menu/customization is gone).
+	TWeakPtr<SBox> WeakMenuBox = MenuBox;
+	TWeakPtr<FCrowdyCustomEventCustomization> WeakSelf =
+		StaticCastSharedRef<FCrowdyCustomEventCustomization>(AsShared());
+
+	MenuBox->RegisterActiveTimer(0.15f, FWidgetActiveTimerDelegate::CreateLambda(
+		[WeakSelf, WeakMenuBox, LastCount = GCachedChannelNames.Num(), LastInFlight = GChannelsFetchInFlight]
+		(double, float) mutable -> EActiveTimerReturnType
+		{
+			TSharedPtr<SBox> Box = WeakMenuBox.Pin();
+			TSharedPtr<FCrowdyCustomEventCustomization> Self = WeakSelf.Pin();
+			if (!Box.IsValid() || !Self.IsValid())
+			{
+				return EActiveTimerReturnType::Stop;
+			}
+
+			const int32 Count = GCachedChannelNames.Num();
+			const bool bInFlight = GChannelsFetchInFlight;
+			if (Count != LastCount || bInFlight != LastInFlight)
+			{
+				Box->SetContent(Self->BuildChannelPickerMenuContent());
+				LastCount = Count;
+				LastInFlight = bInFlight;
+			}
+
+			return bInFlight ? EActiveTimerReturnType::Continue : EActiveTimerReturnType::Stop;
+		}));
+
+	return MenuBox;
+}
+
+TSharedRef<SWidget> FCrowdyCustomEventCustomization::BuildChannelPickerMenuContent()
 {
 	FMenuBuilder MenuBuilder(/*bCloseAfterSelection*/ true, nullptr);
 

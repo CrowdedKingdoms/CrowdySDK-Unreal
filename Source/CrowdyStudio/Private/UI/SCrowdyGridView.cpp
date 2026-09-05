@@ -66,7 +66,7 @@ void SCrowdyGridView::Construct(const FArguments& InArgs)
 			.HintText(FText::FromString(Hint)).MinDesiredWidth(44.0f).SelectAllTextWhenFocused(true);
 	};
 
-	// Like AxisBox, but live-updates the viewport preview as a grid corner is typed (B2 live preview).
+	// Like AxisBox, but live-updates the viewport preview as a grid corner is typed.
 	auto CornerBox = [&Style, this](TSharedPtr<SEditableTextBox>& Member, const TCHAR* Hint) -> TSharedRef<SWidget>
 	{
 		return SAssignNew(Member, SEditableTextBox).Style(&Style, "Crowdy.Input")
@@ -93,7 +93,7 @@ void SCrowdyGridView::Construct(const FArguments& InArgs)
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
 			[ SNew(STextBlock).Text(LOCTEXT("GridHeader", "Grid")).TextStyle(&Style, "Crowdy.Text.Title") ]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
-			[ SNew(STextBlock).TextStyle(&Style, "Crowdy.Text.Subtle").Text(LOCTEXT("GridPlane", "World regions that voxel/runtime permissions scope to. Game plane — sign in with email and password.")) ]
+			[ SNew(STextBlock).TextStyle(&Style, "Crowdy.Text.Subtle").Text(LOCTEXT("GridPlane", "World regions that voxel/runtime permissions scope to. Game plane: needs a session sign-in, not an org token.")) ]
 
 			// Create grid.
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
@@ -127,7 +127,7 @@ void SCrowdyGridView::Construct(const FArguments& InArgs)
 					FMargin(16.0f, 14.0f))
 			]
 
-			// Create grid from selection (B2-1): derive the chunk corners from selected level actors.
+			// Create grid from selection: derive the chunk corners from selected level actors.
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
 			[
 				CrowdyStudioWidgets::Card(
@@ -208,7 +208,7 @@ void SCrowdyGridView::Construct(const FArguments& InArgs)
 					FMargin(16.0f, 14.0f))
 			]
 
-			// Visualize grids in the viewport (B2-2 + live preview): editor and PIE.
+			// Visualize grids in the viewport: editor and PIE.
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
 			[
 				CrowdyStudioWidgets::Card(
@@ -834,8 +834,6 @@ void SCrowdyGridView::RebuildSimulator()
 				: StaticCastSharedRef<SWidget>(SNew(STextBlock).TextStyle(&Style, "Crowdy.Text.Subtle").Text(LOCTEXT("SimNothing", "No keys from the selected tier; press Simulate after entering a user to include their grid grants.")))
 		]);
 }
-
-// ---- B2: visual grid authoring -----------------------------------------------------------------
 
 UWorld* SCrowdyGridView::FindRunningGameWorld()
 {

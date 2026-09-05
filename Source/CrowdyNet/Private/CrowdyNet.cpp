@@ -20,12 +20,17 @@ namespace
 		TEXT("sends and receives, worker-thread pool, and buffer pool churn. Off by default."));
 
 	CROWDY_DEFINE_TRACE_CVAR(CVarCrowdyQueryTrace, TEXT("crowdy.query.trace"),
-		TEXT("When non-zero, logs CrowdyNet GraphQL activity: query dispatch and responses, and ")
-		TEXT("live subscription lifecycle (start/data/error/stop). Off by default."));
+		TEXT("When non-zero, logs CrowdyNet GraphQL activity: query dispatch and responses. ")
+		TEXT("Off by default."));
 
 	CROWDY_DEFINE_TRACE_CVAR(CVarCrowdySerializeTrace, TEXT("crowdy.serialize.trace"),
 		TEXT("When non-zero, logs CrowdyNet payload serialization: message encode/decode and ")
-		TEXT("payload/class registry resolves. High frequency — off by default."));
+		TEXT("payload/class registry resolves. High frequency, so off by default."));
+
+	CROWDY_DEFINE_TRACE_CVAR(CVarCrowdySerializeScopes, TEXT("crowdy.serialize.scopes"),
+		TEXT("When non-zero, emits the fine-grained CPU trace scopes inside payload decode. Each one ")
+		TEXT("costs two timestamps per received message and is nested inside a scope that is itself ")
+		TEXT("measured, so it is off by default and a reading must say whether the run carried it."));
 }
 
 // GetValueOnAnyThread: CrowdyNet logs from the UDP listener and worker-thread pool, not just the
@@ -33,6 +38,8 @@ namespace
 bool CrowdyNetTrace::Net()       { return CVarCrowdyNetTrace.GetValueOnAnyThread() != 0; }
 bool CrowdyNetTrace::Query()     { return CVarCrowdyQueryTrace.GetValueOnAnyThread() != 0; }
 bool CrowdyNetTrace::Serialize() { return CVarCrowdySerializeTrace.GetValueOnAnyThread() != 0; }
+
+bool CrowdyNetProfile::DecodeScopes() { return CVarCrowdySerializeScopes.GetValueOnAnyThread() != 0; }
 
 #if !UE_BUILD_SHIPPING
 namespace

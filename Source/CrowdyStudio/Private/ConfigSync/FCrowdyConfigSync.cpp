@@ -36,9 +36,9 @@ namespace
 		return U;
 	}
 
-	// Keep a custom management URL a bare base (no /graphql, no trailing slash). Consumers append
+	// Keep a custom discovery URL a bare base (no /graphql, no trailing slash). Consumers append
 	// /graphql themselves, so a pasted ".../graphql" would otherwise end up doubled.
-	FString NormalizeManagementBase(const FString& Url)
+	FString NormalizeDiscoveryBase(const FString& Url)
 	{
 		FString U = Url;
 		U.RemoveFromEnd(TEXT("/"));
@@ -95,8 +95,8 @@ void FCrowdyConfigSync::ApplyAppToSettings(const FStudioApp& App)
 	Settings->TryUpdateDefaultConfigFile();
 
 	UE_LOG(LogCrowdyStudio, Log,
-		TEXT("Config Sync: AppID=%lld OrgId=%d Management=%s GameHttp=%s"),
-		Settings->AppID, Settings->OrgId, *Settings->GetManagementApiUrl(), *Settings->GetGameApiHttpUrl());
+		TEXT("Config Sync: AppID=%lld OrgId=%lld Discovery=%s GameHttp=%s"),
+		Settings->AppID, Settings->OrgId, *Settings->GetDiscoveryUrl(), *Settings->GetGameApiHttpUrl());
 }
 
 FStudioSettingsSnapshot FCrowdyConfigSync::ReadCurrentSettings()
@@ -107,7 +107,7 @@ FStudioSettingsSnapshot FCrowdyConfigSync::ReadCurrentSettings()
 	{
 		Snapshot.AppId = Settings->AppID;
 		Snapshot.OrgId = Settings->OrgId;
-		Snapshot.ManagementApiUrl = Settings->GetManagementApiUrl();
+		Snapshot.DiscoveryUrl = Settings->GetDiscoveryUrl();
 		Snapshot.GameApiHttpUrl = Settings->GetGameApiHttpUrl();
 		Snapshot.GameApiWsUrl = Settings->GetGameApiWsUrl();
 	}
@@ -120,7 +120,7 @@ FStudioSettingsSnapshot FCrowdyConfigSync::BuildProposedSettings(const FStudioAp
 	// Start from what is on disk so untouched fields read identically in the diff, then apply
 	// exactly what a sync changes: the app's identity, and (per the routing rule) the game
 	// endpoints when the app reports its own gameApiUrl. A zero id from an incomplete record never
-	// clobbers a good one. The management URL is owned by the backend selector, never by a sync.
+	// clobbers a good one. The shared origin is owned by the backend selector, never by a sync.
 	FStudioSettingsSnapshot Proposed = ReadCurrentSettings();
 
 	if (App.AppId > 0)
@@ -129,7 +129,7 @@ FStudioSettingsSnapshot FCrowdyConfigSync::BuildProposedSettings(const FStudioAp
 	}
 	if (App.OrgId > 0)
 	{
-		Proposed.OrgId = static_cast<int32>(App.OrgId);
+		Proposed.OrgId = App.OrgId;
 	}
 
 	if (!App.GameApiUrl.IsEmpty())
@@ -196,32 +196,32 @@ void FCrowdyConfigSync::SetBackendMode(const FString& Mode)
 	}
 }
 
-FString FCrowdyConfigSync::GetCustomManagementUrl()
+FString FCrowdyConfigSync::GetCustomDiscoveryUrl()
 {
 	if (const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>())
 	{
-		return Settings->ManagementApiUrl;
+		return Settings->DiscoveryUrl;
 	}
 	return FString();
 }
 
-void FCrowdyConfigSync::SetCustomManagementUrl(const FString& Url)
+void FCrowdyConfigSync::SetCustomDiscoveryUrl(const FString& Url)
 {
 	if (UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>())
 	{
-		Settings->ManagementApiUrl = NormalizeManagementBase(Url);
-		// Endpoints derive from the management URL until an app pins them.
+		Settings->DiscoveryUrl = NormalizeDiscoveryBase(Url);
+		// The game endpoints are resolved against the shared origin until an app pins them.
 		Settings->GameApiHttpUrl.Reset();
 		Settings->GameApiWsUrl.Reset();
 		Settings->TryUpdateDefaultConfigFile();
 	}
 }
 
-FString FCrowdyConfigSync::GetEffectiveManagementUrl()
+FString FCrowdyConfigSync::GetEffectiveDiscoveryUrl()
 {
 	if (const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>())
 	{
-		return Settings->GetManagementApiUrl();
+		return Settings->GetDiscoveryUrl();
 	}
 	return FString();
 }

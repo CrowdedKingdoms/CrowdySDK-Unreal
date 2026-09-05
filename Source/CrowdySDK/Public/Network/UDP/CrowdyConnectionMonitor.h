@@ -50,7 +50,6 @@ private:
 	UCrowdyUDPSubsystem* CrowdyUdp;
 	
 	FTimerHandle RetryTimer;
-	FTimerHandle ReconnectMessageTimer;
 	int32 MaxReconnectAttempts = 6;
 	int32 AttemptIndex = 0;
 	float ReconnectAttemptTimeout = 10.0f;

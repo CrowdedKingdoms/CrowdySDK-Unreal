@@ -42,22 +42,22 @@ void SCrowdyBackendSelector::Construct(const FArguments& InArgs)
 				SNew(SBox)
 				.Visibility_Lambda([this]() { return (Controller.IsValid() && Controller->GetBackendMode() == TEXT("Custom")) ? EVisibility::Visible : EVisibility::Collapsed; })
 				[
-					CrowdyStudioWidgets::Field(LOCTEXT("CustomMgmtLabel", "Management API URL"),
+					CrowdyStudioWidgets::Field(LOCTEXT("CustomDiscoveryLabel", "Discovery URL"),
 						SNew(SEditableTextBox)
 						.Style(&Style, "Crowdy.Input")
-						.HintText(LOCTEXT("CustomMgmtHint", "https://api.your-host.com"))
-						.Text(Controller.IsValid() ? FText::FromString(Controller->GetCustomManagementUrl()) : FText::GetEmpty())
-						.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type) { if (Controller.IsValid()) { Controller->SetCustomManagementUrl(NewText.ToString()); } }))
+						.HintText(LOCTEXT("CustomDiscoveryHint", "https://api.your-host.com"))
+						.Text(Controller.IsValid() ? FText::FromString(Controller->GetCustomDiscoveryUrl()) : FText::GetEmpty())
+						.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type) { if (Controller.IsValid()) { Controller->SetCustomDiscoveryUrl(NewText.ToString()); } }))
 				]
 			]
-			// The resulting management URL, read-only.
+			// The resulting shared origin, read-only.
 			+ SVerticalBox::Slot().AutoHeight()
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
-				[ SNew(STextBlock).Text(LOCTEXT("EffMgmtLabel", "Management URL")).TextStyle(&Style, "Crowdy.Text.Subtle") ]
+				[ SNew(STextBlock).Text(LOCTEXT("EffDiscoveryLabel", "Discovery URL")).TextStyle(&Style, "Crowdy.Text.Subtle") ]
 				+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
-				[ SNew(STextBlock).Font(FCoreStyle::GetDefaultFontStyle("Mono", 9)).AutoWrapText(true).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary())).Text_Lambda([this]() { return Controller.IsValid() ? FText::FromString(Controller->GetEffectiveManagementUrl()) : FText::GetEmpty(); }) ]
+				[ SNew(STextBlock).Font(FCoreStyle::GetDefaultFontStyle("Mono", 9)).AutoWrapText(true).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary())).Text_Lambda([this]() { return Controller.IsValid() ? FText::FromString(Controller->GetEffectiveDiscoveryUrl()) : FText::GetEmpty(); }) ]
 			],
 			FMargin(16.0f, 14.0f))
 	];

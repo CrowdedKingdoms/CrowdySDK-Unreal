@@ -12,7 +12,7 @@ static UCrowdyChannels* GetChannelsSubsystemW(const TWeakObjectPtr<UObject>& Ctx
 
 UCrowdyChannels_CreateChannel* UCrowdyChannels_CreateChannel::CreateChannel(
 	UObject* WorldContextObject, const FString& Name, const FString& Description,
-	ECrowdyTeamMembershipPolicy MembershipPolicy, bool bMembersCanSend)
+	ECrowdyChannelMembershipPolicy MembershipPolicy, bool bMembersCanSend)
 {
 	UCrowdyChannels_CreateChannel* Action = NewObject<UCrowdyChannels_CreateChannel>();
 	Action->WorldContextObject = WorldContextObject;
@@ -29,7 +29,7 @@ void UCrowdyChannels_CreateChannel::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -40,13 +40,13 @@ void UCrowdyChannels_CreateChannel::Activate()
 	Channels->CreateChannel(Name, Description, MembershipPolicy, bMembersCanSend, S, E);
 }
 
-void UCrowdyChannels_CreateChannel::HandleSuccess(FCrowdyGroup Channel)
+void UCrowdyChannels_CreateChannel::HandleSuccess(FCrowdyChannel Channel)
 {
 	OnSuccess.Broadcast(Channel);
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_CreateChannel::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_CreateChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -55,11 +55,11 @@ void UCrowdyChannels_CreateChannel::HandleError(FCrowdyTeamError Error, FString 
 
 
 UCrowdyChannels_UpdateChannel* UCrowdyChannels_UpdateChannel::UpdateChannel(
-	UObject* WorldContextObject, int64 GroupId, const FString& Name, const FString& Description)
+	UObject* WorldContextObject, int64 ChannelId, const FString& Name, const FString& Description)
 {
 	UCrowdyChannels_UpdateChannel* Action = NewObject<UCrowdyChannels_UpdateChannel>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->ChannelId = ChannelId;
 	Action->Name = Name;
 	Action->Description = Description;
 	Action->RegisterWithGameInstance(WorldContextObject);
@@ -71,7 +71,7 @@ void UCrowdyChannels_UpdateChannel::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -79,16 +79,16 @@ void UCrowdyChannels_UpdateChannel::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_UpdateChannel::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_UpdateChannel::HandleError);
-	Channels->UpdateChannel(GroupId, Name, Description, S, E);
+	Channels->UpdateChannel(ChannelId, Name, Description, S, E);
 }
 
-void UCrowdyChannels_UpdateChannel::HandleSuccess(FCrowdyGroup Channel)
+void UCrowdyChannels_UpdateChannel::HandleSuccess(FCrowdyChannel Channel)
 {
 	OnSuccess.Broadcast(Channel);
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_UpdateChannel::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_UpdateChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -97,11 +97,11 @@ void UCrowdyChannels_UpdateChannel::HandleError(FCrowdyTeamError Error, FString 
 
 
 UCrowdyChannels_DeleteChannel* UCrowdyChannels_DeleteChannel::DeleteChannel(
-	UObject* WorldContextObject, int64 GroupId)
+	UObject* WorldContextObject, int64 ChannelId)
 {
 	UCrowdyChannels_DeleteChannel* Action = NewObject<UCrowdyChannels_DeleteChannel>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->ChannelId = ChannelId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -111,7 +111,7 @@ void UCrowdyChannels_DeleteChannel::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -119,7 +119,7 @@ void UCrowdyChannels_DeleteChannel::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_DeleteChannel::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_DeleteChannel::HandleError);
-	Channels->DeleteChannel(GroupId, S, E);
+	Channels->DeleteChannel(ChannelId, S, E);
 }
 
 void UCrowdyChannels_DeleteChannel::HandleSuccess()
@@ -128,7 +128,7 @@ void UCrowdyChannels_DeleteChannel::HandleSuccess()
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_DeleteChannel::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_DeleteChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -136,11 +136,11 @@ void UCrowdyChannels_DeleteChannel::HandleError(FCrowdyTeamError Error, FString 
 }
 
 
-UCrowdyChannels_JoinChannel* UCrowdyChannels_JoinChannel::JoinChannel(UObject* WorldContextObject, int64 GroupId)
+UCrowdyChannels_JoinChannel* UCrowdyChannels_JoinChannel::JoinChannel(UObject* WorldContextObject, int64 ChannelId)
 {
 	UCrowdyChannels_JoinChannel* Action = NewObject<UCrowdyChannels_JoinChannel>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->ChannelId = ChannelId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -150,7 +150,7 @@ void UCrowdyChannels_JoinChannel::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -158,16 +158,16 @@ void UCrowdyChannels_JoinChannel::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_JoinChannel::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_JoinChannel::HandleError);
-	Channels->JoinChannel(GroupId, S, E);
+	Channels->JoinChannel(ChannelId, S, E);
 }
 
-void UCrowdyChannels_JoinChannel::HandleSuccess(FCrowdyGroupMember Member)
+void UCrowdyChannels_JoinChannel::HandleSuccess(FCrowdyChannelMember Member)
 {
 	OnSuccess.Broadcast(Member);
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_JoinChannel::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_JoinChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -176,11 +176,11 @@ void UCrowdyChannels_JoinChannel::HandleError(FCrowdyTeamError Error, FString Me
 
 
 UCrowdyChannels_RequestToJoinChannel* UCrowdyChannels_RequestToJoinChannel::RequestToJoinChannel(
-	UObject* WorldContextObject, int64 GroupId)
+	UObject* WorldContextObject, int64 ChannelId)
 {
 	UCrowdyChannels_RequestToJoinChannel* Action = NewObject<UCrowdyChannels_RequestToJoinChannel>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->ChannelId = ChannelId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -190,7 +190,7 @@ void UCrowdyChannels_RequestToJoinChannel::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -198,16 +198,16 @@ void UCrowdyChannels_RequestToJoinChannel::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_RequestToJoinChannel::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_RequestToJoinChannel::HandleError);
-	Channels->RequestToJoinChannel(GroupId, S, E);
+	Channels->RequestToJoinChannel(ChannelId, S, E);
 }
 
-void UCrowdyChannels_RequestToJoinChannel::HandleSuccess(FCrowdyGroupMember Member)
+void UCrowdyChannels_RequestToJoinChannel::HandleSuccess(FCrowdyChannelMember Member)
 {
 	OnSuccess.Broadcast(Member);
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_RequestToJoinChannel::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_RequestToJoinChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -215,11 +215,11 @@ void UCrowdyChannels_RequestToJoinChannel::HandleError(FCrowdyTeamError Error, F
 }
 
 
-UCrowdyChannels_LeaveChannel* UCrowdyChannels_LeaveChannel::LeaveChannel(UObject* WorldContextObject, int64 GroupId)
+UCrowdyChannels_LeaveChannel* UCrowdyChannels_LeaveChannel::LeaveChannel(UObject* WorldContextObject, int64 ChannelId)
 {
 	UCrowdyChannels_LeaveChannel* Action = NewObject<UCrowdyChannels_LeaveChannel>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->ChannelId = ChannelId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -229,7 +229,7 @@ void UCrowdyChannels_LeaveChannel::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -237,7 +237,7 @@ void UCrowdyChannels_LeaveChannel::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_LeaveChannel::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_LeaveChannel::HandleError);
-	Channels->LeaveChannel(GroupId, S, E);
+	Channels->LeaveChannel(ChannelId, S, E);
 }
 
 void UCrowdyChannels_LeaveChannel::HandleSuccess()
@@ -246,7 +246,7 @@ void UCrowdyChannels_LeaveChannel::HandleSuccess()
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_LeaveChannel::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_LeaveChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -255,11 +255,11 @@ void UCrowdyChannels_LeaveChannel::HandleError(FCrowdyTeamError Error, FString M
 
 
 UCrowdyChannels_AddChannelMember* UCrowdyChannels_AddChannelMember::AddChannelMember(
-	UObject* WorldContextObject, int64 GroupId, int64 UserId)
+	UObject* WorldContextObject, int64 ChannelId, int64 UserId)
 {
 	UCrowdyChannels_AddChannelMember* Action = NewObject<UCrowdyChannels_AddChannelMember>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->ChannelId = ChannelId;
 	Action->UserId = UserId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
@@ -270,7 +270,7 @@ void UCrowdyChannels_AddChannelMember::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -278,16 +278,16 @@ void UCrowdyChannels_AddChannelMember::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_AddChannelMember::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_AddChannelMember::HandleError);
-	Channels->AddChannelMember(GroupId, UserId, S, E);
+	Channels->AddChannelMember(ChannelId, UserId, S, E);
 }
 
-void UCrowdyChannels_AddChannelMember::HandleSuccess(FCrowdyGroupMember Member)
+void UCrowdyChannels_AddChannelMember::HandleSuccess(FCrowdyChannelMember Member)
 {
 	OnSuccess.Broadcast(Member);
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_AddChannelMember::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_AddChannelMember::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -296,11 +296,11 @@ void UCrowdyChannels_AddChannelMember::HandleError(FCrowdyTeamError Error, FStri
 
 
 UCrowdyChannels_RemoveChannelMember* UCrowdyChannels_RemoveChannelMember::RemoveChannelMember(
-	UObject* WorldContextObject, int64 GroupId, int64 UserId)
+	UObject* WorldContextObject, int64 ChannelId, int64 UserId)
 {
 	UCrowdyChannels_RemoveChannelMember* Action = NewObject<UCrowdyChannels_RemoveChannelMember>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->ChannelId = ChannelId;
 	Action->UserId = UserId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
@@ -311,7 +311,7 @@ void UCrowdyChannels_RemoveChannelMember::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -319,7 +319,7 @@ void UCrowdyChannels_RemoveChannelMember::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_RemoveChannelMember::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_RemoveChannelMember::HandleError);
-	Channels->RemoveChannelMember(GroupId, UserId, S, E);
+	Channels->RemoveChannelMember(ChannelId, UserId, S, E);
 }
 
 void UCrowdyChannels_RemoveChannelMember::HandleSuccess()
@@ -328,7 +328,7 @@ void UCrowdyChannels_RemoveChannelMember::HandleSuccess()
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_RemoveChannelMember::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_RemoveChannelMember::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -337,11 +337,11 @@ void UCrowdyChannels_RemoveChannelMember::HandleError(FCrowdyTeamError Error, FS
 
 
 UCrowdyChannels_SetChannelMemberRoles* UCrowdyChannels_SetChannelMemberRoles::SetChannelMemberRoles(
-	UObject* WorldContextObject, int64 GroupId, int64 UserId, const TArray<int64>& RoleIds)
+	UObject* WorldContextObject, int64 ChannelId, int64 UserId, const TArray<int64>& RoleIds)
 {
 	UCrowdyChannels_SetChannelMemberRoles* Action = NewObject<UCrowdyChannels_SetChannelMemberRoles>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->ChannelId = ChannelId;
 	Action->UserId = UserId;
 	Action->RoleIds = RoleIds;
 	Action->RegisterWithGameInstance(WorldContextObject);
@@ -353,7 +353,7 @@ void UCrowdyChannels_SetChannelMemberRoles::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -361,16 +361,16 @@ void UCrowdyChannels_SetChannelMemberRoles::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_SetChannelMemberRoles::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_SetChannelMemberRoles::HandleError);
-	Channels->SetChannelMemberRoles(GroupId, UserId, RoleIds, S, E);
+	Channels->SetChannelMemberRoles(ChannelId, UserId, RoleIds, S, E);
 }
 
-void UCrowdyChannels_SetChannelMemberRoles::HandleSuccess(FCrowdyGroupMember Member)
+void UCrowdyChannels_SetChannelMemberRoles::HandleSuccess(FCrowdyChannelMember Member)
 {
 	OnSuccess.Broadcast(Member);
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_SetChannelMemberRoles::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_SetChannelMemberRoles::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -379,12 +379,12 @@ void UCrowdyChannels_SetChannelMemberRoles::HandleError(FCrowdyTeamError Error, 
 
 
 UCrowdyChannels_CreateChannelRole* UCrowdyChannels_CreateChannelRole::CreateChannelRole(
-	UObject* WorldContextObject, int64 GroupId, const FString& RoleName,
-	FCrowdyRolePermissions Permissions, int32 Rank)
+	UObject* WorldContextObject, int64 ChannelId, const FString& RoleName,
+	FCrowdyChannelPermissions Permissions, int32 Rank)
 {
 	UCrowdyChannels_CreateChannelRole* Action = NewObject<UCrowdyChannels_CreateChannelRole>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->GroupId = GroupId;
+	Action->ChannelId = ChannelId;
 	Action->RoleName = RoleName;
 	Action->Permissions = Permissions;
 	Action->Rank = Rank;
@@ -397,7 +397,7 @@ void UCrowdyChannels_CreateChannelRole::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -405,16 +405,16 @@ void UCrowdyChannels_CreateChannelRole::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_CreateChannelRole::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_CreateChannelRole::HandleError);
-	Channels->CreateChannelRole(GroupId, RoleName, Permissions, Rank, S, E);
+	Channels->CreateChannelRole(ChannelId, RoleName, Permissions, Rank, S, E);
 }
 
-void UCrowdyChannels_CreateChannelRole::HandleSuccess(FCrowdyGroupRole Role)
+void UCrowdyChannels_CreateChannelRole::HandleSuccess(FCrowdyChannelRole Role)
 {
 	OnSuccess.Broadcast(Role);
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_CreateChannelRole::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_CreateChannelRole::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -423,11 +423,11 @@ void UCrowdyChannels_CreateChannelRole::HandleError(FCrowdyTeamError Error, FStr
 
 
 UCrowdyChannels_UpdateChannelRole* UCrowdyChannels_UpdateChannelRole::UpdateChannelRole(
-	UObject* WorldContextObject, int64 RoleId, const FString& RoleName, FCrowdyRolePermissions Permissions)
+	UObject* WorldContextObject, int64 ChannelRoleId, const FString& RoleName, FCrowdyChannelPermissions Permissions)
 {
 	UCrowdyChannels_UpdateChannelRole* Action = NewObject<UCrowdyChannels_UpdateChannelRole>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->RoleId = RoleId;
+	Action->ChannelRoleId = ChannelRoleId;
 	Action->RoleName = RoleName;
 	Action->Permissions = Permissions;
 	Action->RegisterWithGameInstance(WorldContextObject);
@@ -439,7 +439,7 @@ void UCrowdyChannels_UpdateChannelRole::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -447,16 +447,16 @@ void UCrowdyChannels_UpdateChannelRole::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_UpdateChannelRole::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_UpdateChannelRole::HandleError);
-	Channels->UpdateChannelRole(RoleId, RoleName, Permissions, S, E);
+	Channels->UpdateChannelRole(ChannelRoleId, RoleName, Permissions, S, E);
 }
 
-void UCrowdyChannels_UpdateChannelRole::HandleSuccess(FCrowdyGroupRole Role)
+void UCrowdyChannels_UpdateChannelRole::HandleSuccess(FCrowdyChannelRole Role)
 {
 	OnSuccess.Broadcast(Role);
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_UpdateChannelRole::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_UpdateChannelRole::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -465,11 +465,11 @@ void UCrowdyChannels_UpdateChannelRole::HandleError(FCrowdyTeamError Error, FStr
 
 
 UCrowdyChannels_DeleteChannelRole* UCrowdyChannels_DeleteChannelRole::DeleteChannelRole(
-	UObject* WorldContextObject, int64 RoleId)
+	UObject* WorldContextObject, int64 ChannelRoleId)
 {
 	UCrowdyChannels_DeleteChannelRole* Action = NewObject<UCrowdyChannels_DeleteChannelRole>();
 	Action->WorldContextObject = WorldContextObject;
-	Action->RoleId = RoleId;
+	Action->ChannelRoleId = ChannelRoleId;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -479,7 +479,7 @@ void UCrowdyChannels_DeleteChannelRole::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -487,7 +487,7 @@ void UCrowdyChannels_DeleteChannelRole::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_DeleteChannelRole::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_DeleteChannelRole::HandleError);
-	Channels->DeleteChannelRole(RoleId, S, E);
+	Channels->DeleteChannelRole(ChannelRoleId, S, E);
 }
 
 void UCrowdyChannels_DeleteChannelRole::HandleSuccess()
@@ -496,7 +496,7 @@ void UCrowdyChannels_DeleteChannelRole::HandleSuccess()
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_DeleteChannelRole::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_DeleteChannelRole::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
@@ -505,8 +505,8 @@ void UCrowdyChannels_DeleteChannelRole::HandleError(FCrowdyTeamError Error, FStr
 
 
 UCrowdyChannels_SetChannelPolicy* UCrowdyChannels_SetChannelPolicy::SetChannelPolicy(
-	UObject* WorldContextObject, ECrowdyTeamCreationPolicy CreationPolicy,
-	ECrowdyTeamMembershipPolicy DefaultMembershipPolicy)
+	UObject* WorldContextObject, ECrowdyChannelCreationPolicy CreationPolicy,
+	ECrowdyChannelMembershipPolicy DefaultMembershipPolicy)
 {
 	UCrowdyChannels_SetChannelPolicy* Action = NewObject<UCrowdyChannels_SetChannelPolicy>();
 	Action->WorldContextObject = WorldContextObject;
@@ -521,7 +521,7 @@ void UCrowdyChannels_SetChannelPolicy::Activate()
 	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
 	if (!Channels)
 	{
-		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyChannels not found"));
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
 		HandleError(Err, Err.Message);
 		return;
 	}
@@ -532,13 +532,13 @@ void UCrowdyChannels_SetChannelPolicy::Activate()
 	Channels->SetChannelPolicy(CreationPolicy, MembershipPolicy, S, E);
 }
 
-void UCrowdyChannels_SetChannelPolicy::HandleSuccess(FCrowdyAppGroupPolicy Policy)
+void UCrowdyChannels_SetChannelPolicy::HandleSuccess(FCrowdyChannelPolicy Policy)
 {
 	OnSuccess.Broadcast(Policy);
 	SetReadyToDestroy();
 }
 
-void UCrowdyChannels_SetChannelPolicy::HandleError(FCrowdyTeamError Error, FString Message)
+void UCrowdyChannels_SetChannelPolicy::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);

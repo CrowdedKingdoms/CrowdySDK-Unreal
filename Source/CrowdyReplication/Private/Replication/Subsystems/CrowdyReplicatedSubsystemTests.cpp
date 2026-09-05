@@ -1,4 +1,4 @@
-// Subsystem Replication Phase 4 (ergonomics). Exercises the enrollment helpers the ergonomic bases funnel
+// Ergonomic subsystem-replication bases. Exercises the enrollment helpers the ergonomic bases funnel
 // through (UCrowdyReplicatedSubsystemLibrary) via the injectable *Into core, so no world is needed: a
 // deterministic-identity round-trip through RegisterReplicatedSubsystemInto / UnregisterReplicatedSubsystemInto
 // and the null-guard failure paths. The world-resolving wrappers and the two UCLASS(Abstract) bases are
@@ -8,26 +8,17 @@
 
 #include "Misc/AutomationTest.h"
 // ECrowdyOwnership is only forward-declared in CrowdyEntitySubsystem.h; the complete enum lives here. Omitting
-// this is the exact Phase 2 build break (an incomplete-enum use), so include it explicitly.
+// this include causes an incomplete-enum build break, so include it explicitly.
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/State/CrowdyStateTestTarget.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyReplicatedSubsystemLibrary.h"
+#include "Replication/Subsystems/CrowdyStateTestSupport.h"
 
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyReplicatedSubsystemTestFlags =
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
-
-	// A bare entity subsystem (UWorldSubsystem, no ClassWithin) with a local player id set, so
-	// RegisterParticipant / FindEntityID / FindParticipant resolve headlessly. The ClassWithin=UGameInstance
-	// trap applies only to UGameInstanceSubsystem-derived classes, which this test does not construct.
-	UCrowdyEntitySubsystem* MakeEntitySubsystem(const FGuid& LocalPlayer)
-	{
-		UCrowdyEntitySubsystem* ES = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
-		ES->SetLocalPlayerID(LocalPlayer);
-		return ES;
-	}
 }
 
 // Enroll a host-owned participant through the library core: it mints a valid deterministic NetID and the

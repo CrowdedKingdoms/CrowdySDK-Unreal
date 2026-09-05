@@ -2,7 +2,9 @@
 
 
 #include "Subsystem/CrowdyAutoRegistry.h"
+#include "CrowdyStateHeartbeatAdvisory.h"
 #include "CrowdyReplicationLog.h"
+#include "Core/CrowdyCategory/FCrowdyIDConflict.h"
 #include "Core/CrowdyCategory/FCrowdyTypeIDGenerator.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SCS_Node.h"
@@ -10,6 +12,7 @@
 #include "GameFramework/Actor.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Executor/ActorUpdateExecutor.h"
+#include "Replication/GameModel/CrowdyAttributeRegistry.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Replication/RPC/FCrowdyRpcCall.h"
 #include "Replication/State/FCrowdyRepLayout.h"
@@ -34,6 +37,10 @@ void UCrowdyAutoRegistry::Initialize(FSubsystemCollectionBase& Collection)
 
 	InstallIDOverrideResolvers();
 
+	// Before the scan, not after: the scan can only see loaded classes, and sealing immediately follows
+	// it, so a class loaded any later never enters the registry at all.
+	PreloadConfiguredEntityClasses();
+
 	// Entity classes first, then seal: the RPC scan keys the inbound resolver by
 	// the (possibly overridden) class id, so the class registry must be final
 	// before it runs. Nothing past this point registers classes only structs,
@@ -50,6 +57,9 @@ void UCrowdyAutoRegistry::Initialize(FSubsystemCollectionBase& Collection)
 	ReloadCompleteHandle = FCoreUObjectDelegates::ReloadCompleteDelegate.AddWeakLambda(
 		this, [this](EReloadCompleteReason)
 		{
+			// Before the rescans, both of which resolve class ids: a reload may have reinstanced the very
+			// classes GetID has answers remembered for.
+			UCrowdyClassRegistry::Get()->InvalidateIDMemo();
 			ScanAndRegisterRpcFunctions();
 			ScanAndRegisterRepLayouts();
 		});
@@ -64,12 +74,16 @@ void UCrowdyAutoRegistry::RegisterLoadedPayloadTypes()
 	UEventPayloadRegistry::Get()->RegisterStructAuto(FCrowdyRpcCall::StaticStruct());
 
 	// FCrowdyStateDelta is the fixed wire payload every CrowdyState delta rides; registering it here gives
-	// it a stable EventType so the send path resolves it and (Phase 4) the router recognizes it on receipt.
+	// it a stable EventType so the send path resolves it and the router recognizes it on receipt.
 	UEventPayloadRegistry::Get()->RegisterStructAuto(FCrowdyStateDelta::StaticStruct());
 
 	ScanAndRegisterExecutorStateStructs();
 	ScanAndRegisterRpcFunctions();
 	ScanAndRegisterRepLayouts();
+
+	// Types keep registering as levels load, so this runs after every wave and
+	// lists the whole set rather than leaving one message per unlucky discovery.
+	CrowdyIDConflicts::ReportAll();
 }
 
 void UCrowdyAutoRegistry::Deinitialize()
@@ -137,6 +151,45 @@ void UCrowdyAutoRegistry::ScanAndRegisterExecutorStateStructs()
 			UActorUpdatePayloadRegistry::Get()->RegisterStructAuto(StateStruct);
 		}
 	}
+}
+
+void UCrowdyAutoRegistry::PreloadConfiguredEntityClasses()
+{
+	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+	if (!Settings || Settings->PreloadedEntityClasses.IsEmpty())
+	{
+		return;
+	}
+
+	// Synchronous on purpose, and it is the reason this list is authored rather than discovered. The
+	// registry is sealed a few lines below, so a class that arrives later is a class this client can
+	// never resolve from an update; deferring the load would trade a short startup cost for entities
+	// that are permanently invisible with nothing naming the cause.
+	int32 LoadedCount = 0;
+
+	for (const TSoftClassPtr<AActor>& SoftClass : Settings->PreloadedEntityClasses)
+	{
+		if (SoftClass.IsNull())
+		{
+			continue;
+		}
+
+		if (SoftClass.LoadSynchronous())
+		{
+			++LoadedCount;
+			continue;
+		}
+
+		// Loud, because the whole point of the entry is that this class must be resolvable, and a stale
+		// path here presents later as one kind of entity silently never appearing.
+		UE_LOG(LogCrowdyReplication, Error,
+			TEXT("[Crowdy SDK][AutoRegistry]: preloaded entity class '%s' could not be loaded, so updates naming it will not resolve on this client. Check the path in Preloaded Entity Classes."),
+			*SoftClass.ToString());
+	}
+
+	UE_CLOG(LoadedCount > 0, LogCrowdyReplication, Log,
+		TEXT("[Crowdy SDK][AutoRegistry]: preloaded %d entity class(es) so their updates resolve from the wire."),
+		LoadedCount);
 }
 
 void UCrowdyAutoRegistry::ScanAndRegisterEntityClasses()
@@ -242,6 +295,21 @@ void UCrowdyAutoRegistry::RegisterClassRpcFunctions(UClass* Class)
 			}
 		}
 
+		// A Blueprint replicated event whose compiled body lost its dispatch gate is the quietest failure in
+		// this system: calling it runs the body locally and announces nothing, entering no send code at all,
+		// so there is no drop to report and no error anywhere. From the outside it is indistinguishable from
+		// a transport that swallowed the call.
+		//
+		// Registered anyway, deliberately: the class can still RECEIVE this event, which needs only the
+		// resolver entry, and taking that away would turn a one-way event into a dead one. What is broken is
+		// the send, and this says so.
+		if (FCrowdyRPC::IsBlueprintReplicatedEvent(Function) && !FCrowdyRPC::CarriesDispatchGate(Function))
+		{
+			UE_LOG(LogCrowdyRPC, Error,
+				TEXT("[CrowdyAutoRegistry] Crowdy Replicated event '%s::%s' carries no dispatch gate in this process, so calling it runs the body locally and sends NOTHING. Receiving still works, which is why this looks like a one-way event. Recompile and save the Blueprint, and if it persists check the compile for '[CrowdySDK] Could not install the replication gate'."),
+				*ClassName, *Function->GetName());
+		}
+
 		Info.OwnerClassID = ClassID;
 		RpcFunctionInfo.Add(Function, Info);
 		RpcFunctionResolver.Add(TPair<int64, int64>(static_cast<int64>(ClassID), Info.FunctionID), Function);
@@ -328,6 +396,14 @@ void UCrowdyAutoRegistry::RegisterClassRepLayout(UClass* Class)
 	// now-invalid layout, matching the negative-not-cached rule in FindRepLayout.
 	if (!Layout.IsValid()) return;
 
+	// Judged on the finished layout, so the advisory sees exactly the properties that will replicate and
+	// reads the same flags the send path reads. Once per class per sweep, never on the per-entity path.
+	// An SDK test fixture class is registered normally but skipped here, so it never produces advisory noise.
+	if (!FCrowdyAttributeRegistry::IsTestFixture(Class))
+	{
+		CrowdyStateHeartbeatAdvisory::ReportLayout(Layout);
+	}
+
 	// Key by the stable, path-derived class id (survives BP reinstance), matching the RPC eviction path.
 	const FCrowdyClassID ClassID = UCrowdyClassRegistry::Get()->GetID(Class);
 	RepLayouts.Add(ClassID, MakeUnique<FCrowdyRepLayout>(MoveTemp(Layout)));
@@ -390,9 +466,18 @@ bool UCrowdyAutoRegistry::BuildLayoutFromBaked(const UClass* Class, const UCrowd
 
 const FCrowdyRepLayout* UCrowdyAutoRegistry::FindRepLayout(const UClass* Class) const
 {
+	FCrowdyClassID DiscardedID = CROWDY_INVALID_CLASS_ID;
+	return FindRepLayout(Class, DiscardedID);
+}
+
+const FCrowdyRepLayout* UCrowdyAutoRegistry::FindRepLayout(const UClass* Class, FCrowdyClassID& OutClassID) const
+{
+	OutClassID = CROWDY_INVALID_CLASS_ID;
 	if (!Class) return nullptr;
 
 	const FCrowdyClassID Id = UCrowdyClassRegistry::Get()->GetID(Class);
+	OutClassID = Id;
+
 	if (const TUniquePtr<FCrowdyRepLayout>* Cached = RepLayouts.Find(Id))
 	{
 		return Cached->Get();
@@ -418,6 +503,14 @@ const FCrowdyRepLayout* UCrowdyAutoRegistry::FindRepLayout(const UClass* Class) 
 	// Never cache a negative: a class with no CrowdyState properties should re-probe cheaply rather than
 	// pin an empty entry that a later bake/reload would need to invalidate.
 	if (!Built.IsValid()) return nullptr;
+
+	// The cooked path reaches a layout only through here (metadata is gone, so the eager sweep builds
+	// nothing), and the flags come from the baked table, so the advisory reads the same either way.
+	// An SDK test fixture class is registered normally but skipped here, so it never produces advisory noise.
+	if (!FCrowdyAttributeRegistry::IsTestFixture(Class))
+	{
+		CrowdyStateHeartbeatAdvisory::ReportLayout(Built);
+	}
 
 	return RepLayouts.Add(Id, MakeUnique<FCrowdyRepLayout>(MoveTemp(Built))).Get();
 }

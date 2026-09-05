@@ -134,44 +134,6 @@ void UCrowdyAuth_RestoreSession::HandleError(FString Message)
 	SetReadyToDestroy();
 }
 
-UCrowdyAuth_DevLogin* UCrowdyAuth_DevLogin::DevLogin(UObject* WorldContextObject, const FString& Email)
-{
-	UCrowdyAuth_DevLogin* Action = NewObject<UCrowdyAuth_DevLogin>();
-	Action->WorldContextObject = WorldContextObject;
-	Action->Email = Email;
-	Action->RegisterWithGameInstance(WorldContextObject);
-	return Action;
-}
-
-void UCrowdyAuth_DevLogin::Activate()
-{
-	UCrowdyAuthentication* Auth = GetAuthSubsystem(WorldContextObject);
-	if (!Auth)
-	{
-		HandleError(TEXT("UCrowdyAuthentication subsystem not found"));
-		return;
-	}
-
-	FOnAuthSuccess S;
-	S.BindDynamic(this, &UCrowdyAuth_DevLogin::HandleSuccess);
-	FOnAuthError E;
-	E.BindDynamic(this, &UCrowdyAuth_DevLogin::HandleError);
-	Auth->DevLogin(Email, S, E);
-}
-
-void UCrowdyAuth_DevLogin::HandleSuccess(FCrowdyAuthResult Result)
-{
-	OnSuccess.Broadcast(Result);
-	SetReadyToDestroy();
-}
-
-void UCrowdyAuth_DevLogin::HandleError(FString Message)
-{
-	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] Dev login failed: %s"), *Message);
-	OnError.Broadcast(Message);
-	SetReadyToDestroy();
-}
-
 UCrowdyAuth_BeginMagicLinkSignIn* UCrowdyAuth_BeginMagicLinkSignIn::BeginMagicLinkSignIn(UObject* WorldContextObject, const FString& Email)
 {
 	UCrowdyAuth_BeginMagicLinkSignIn* Action = NewObject<UCrowdyAuth_BeginMagicLinkSignIn>();

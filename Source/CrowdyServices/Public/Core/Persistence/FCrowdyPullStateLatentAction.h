@@ -19,13 +19,13 @@ class FCrowdyPullStateLatentAction : public FPendingLatentAction
 {
 public:
 
-	// ── Blueprint graph wiring ─────────────────────────────────────────────
+	// Blueprint graph wiring
 
 	FName           ExecutionFunction;
 	int32           OutputLink      = 0;
 	FWeakObjectPtr  CallbackTarget;
 
-	// ── Set during construction ────────────────────────────────────────────
+	// Set during construction
 
 	/** Struct type to deserialize into. */
 	UScriptStruct* StructType = nullptr;
@@ -38,19 +38,19 @@ public:
 	/** Written before the exec graph is resumed; drives OnSuccess/OnFailure. */
 	EPullStateResult* ResultPtr = nullptr;
 
-	/** The owner that triggered the pull — used for the auto-apply callback. */
+	/** The owner that triggered the pull: used for the auto-apply callback. */
 	TWeakObjectPtr<UObject> OwnerObject;
 
 	/** Instance key that was used to locate the voxel slot. */
 	FString InstanceKey;
 
-	// ── Set by the subsystem when the response arrives ─────────────────────
+	// Set by the subsystem when the response arrives
 
 	bool           bCompleted   = false;
 	bool           bSuccess     = false;
 	TArray<uint8>  ResultBytes;
 
-	// ── Construction ──────────────────────────────────────────────────────
+	// Construction
 
 	FCrowdyPullStateLatentAction(
 		const FLatentActionInfo& LatentInfo,
@@ -69,30 +69,34 @@ public:
 		, InstanceKey(InInstanceKey)
 	{}
 
-	// ── FPendingLatentAction ───────────────────────────────────────────────
+	// FPendingLatentAction
 
 	virtual void UpdateOperation(FLatentResponse& Response) override
 	{
 		if (!bCompleted)
 			return;
 
-		// ── Deserialize result into the Blueprint local variable ───────────
+		// Deserialize result into the Blueprint local variable
 		if (bSuccess && OutAddr && StructType && ResultBytes.Num() > 0)
 		{
 			// Initialize the destination to struct defaults before filling it.
 			StructType->InitializeStruct(OutAddr);
 
 			FMemoryReader Reader(ResultBytes, /*bIsPersistent=*/true);
+			// These bytes came back off the wire, and the tagged-property reader trusts the lengths it finds in
+			// them. Bounding the archive stops a forged length prefix asking for an allocation far larger than the
+			// blob that declared it.
+			Reader.ArMaxSerializeSize = ResultBytes.Num();
 			StructType->SerializeTaggedProperties(Reader, static_cast<uint8*>(OutAddr),
 			                                      /*DefaultsStruct=*/nullptr,
 			                                      /*Defaults=*/nullptr);
 		}
 
-		// ── Write result enum (drives exec routing) ────────────────────────
+		// Write result enum (drives exec routing)
 		if (ResultPtr)
 			*ResultPtr = bSuccess ? EPullStateResult::OnSuccess : EPullStateResult::OnFailure;
 
-		// ── Auto-apply callback ────────────────────────────────────────────
+		// Auto-apply callback
 		if (bSuccess)
 		{
 			if (UObject* Owner = OwnerObject.Get())
@@ -109,7 +113,7 @@ public:
 	}
 
 #if WITH_EDITOR
-	// FPendingLatentAction::GetDescription is editor-only — overriding it
+	// FPendingLatentAction::GetDescription is editor-only: overriding it
 	// unconditionally fails to compile in packaged builds.
 	virtual FString GetDescription() const override
 	{

@@ -10,23 +10,37 @@
 #include "Replication/Subsystems/CrowdyActorPoolSubsystem.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 
-void UCrowdyActorPoolBackend::InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config)
+bool UCrowdyActorPoolBackend::InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config)
 {
+	// A missing or mismatched config is an ordinary authoring mistake rather than a programmer error, since
+	// this backend is what a profile that never chose one lands on. It is logged rather than ensured so a
+	// packaged build says the same thing an editor build does.
 	PoolConfig = Cast<UCrowdyActorPoolBackendConfig>(Config);
-	if (!ensureMsgf(IsValid(PoolConfig), TEXT("[CrowdyActorPoolBackend]: Expected UCrowdyActorPoolBackendConfig but got a different type or null.")))
-		return;
+	if (!IsValid(PoolConfig))
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyActorPoolBackend]: Backend Config is %s, but this backend needs a CrowdyActorPoolBackendConfig ")
+			TEXT("to know what to spawn. Set Backend Config on the map profile to a Crowdy Actor Pool Backend Config asset."),
+			Config ? *FString::Printf(TEXT("a %s"), *Config->GetClass()->GetName()) : TEXT("not set"));
+		return false;
+	}
 
 	ActorPool = World->GetSubsystem<UCrowdyActorPoolSubsystem>();
 	if (!ensureMsgf(IsValid(ActorPool), TEXT("[CrowdyActorPoolBackend]: CrowdyActorPoolSubsystem not found.")))
-		return;
+		return false;
 
 	EntitySubsystem = World->GetSubsystem<UCrowdyEntitySubsystem>();
 	if (!ensureMsgf(IsValid(EntitySubsystem), TEXT("[CrowdyActorPoolBackend]: CrowdyEntitySubsystem not found.")))
-		return;
+		return false;
 
-	if (!ensureMsgf(IsValid(PoolConfig->ReplicationPolicyClass.Get()),
-		TEXT("[CrowdyActorPoolBackend]: ReplicationPolicyClass is not set in UCrowdyActorPoolBackendConfig.")))
-		return;
+	if (!IsValid(PoolConfig->ReplicationPolicyClass.Get()))
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyActorPoolBackend]: Replication Policy Class is not set on '%s', so nothing would read the ")
+			TEXT("state arriving for these entities. Set it to a CrowdyRepApplicationPolicy subclass."),
+			*GetNameSafe(PoolConfig));
+		return false;
+	}
 
 	Policy = NewObject<UCrowdyRepApplicationPolicy>(this, PoolConfig->ReplicationPolicyClass.Get());
 
@@ -47,6 +61,8 @@ void UCrowdyActorPoolBackend::InitializeBackend(UWorld* World, UCrowdyRenderingB
 		Cfg.PoolSize        = PoolSize;
 		ActorPool->RegisterPool(Cfg);
 	}
+
+	return true;
 }
 
 void UCrowdyActorPoolBackend::DeinitializeBackend()

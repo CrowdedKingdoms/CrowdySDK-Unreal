@@ -12,15 +12,13 @@
 #include "Engine/Font.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
-#include "Network/GraphQL/CrowdyQuerySubsystem.h"
 #include "Network/UDP/CrowdyUDPSubsystem.h"
 
 namespace
 {
-	// Engine-stat registry keys. The console strips the "STAT_" prefix, so these toggle as
-	// `stat crowdyudp` and `stat crowdyquery`. Both live under the "Crowdy" stat category.
+	// Engine-stat registry keys. The console strips the "STAT_" prefix, so this toggles as
+	// `stat crowdyudp`. It lives under the "Crowdy" stat category.
 	const FName UDPStatName    = TEXT("STAT_CrowdyUDP");
-	const FName QueryStatName  = TEXT("STAT_CrowdyQuery");
 	const FName CrowdyCategory = TEXT("STATCAT_Crowdy");
 
 	// Muted grey for row labels; values are drawn in their own (often state-driven) colour.
@@ -30,8 +28,8 @@ namespace
 	// Handle for our entry in the console's `stat ` auto-complete drop-down.
 	FDelegateHandle GAutoCompleteHandle;
 
-	// UConsole broadcasts this while (re)building its auto-complete list, so our commands
-	// always appear the same hook the engine uses internally. Registering the engine stat
+	// UConsole broadcasts this while (re)building its auto-complete list, so our command
+	// always appears the same hook the engine uses internally. Registering the engine stat
 	// alone does NOT add it to the drop-down; the list is sourced from here + ManualAutoCompleteList.
 	void AddCrowdyAutoCompleteEntries(TArray<FAutoCompleteCommand>& AutoCompleteList)
 	{
@@ -46,8 +44,7 @@ namespace
 			Entry.Color = CmdColor;
 		};
 
-		Add(TEXT("stat CrowdyUDP"),   TEXT("Crowdy: UDP connection, throughput, ping & message rates"));
-		Add(TEXT("stat CrowdyQuery"), TEXT("Crowdy: GraphQL query / response rates"));
+		Add(TEXT("stat CrowdyUDP"), TEXT("Crowdy: UDP connection, throughput, ping & message rates"));
 	}
 
 	// Colour ramps mirror how `stat unit` reds-out bad values.
@@ -147,48 +144,6 @@ namespace
 		return Y;
 	}
 
-	// Signature must match UEngine::FEngineStatRender.
-	int32 RenderStatCrowdyQuery(UWorld* World, FViewport* /*Viewport*/, FCanvas* Canvas,
-	                            int32 X, int32 Y, const FVector* /*ViewLocation*/, const FRotator* /*ViewRotation*/)
-	{
-		const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
-		UCrowdyQuerySubsystem* Query = GI ? GI->GetSubsystem<UCrowdyQuerySubsystem>() : nullptr;
-		if (!Query || !GEngine)
-		{
-			return Y;
-		}
-
-		const FQueryStats S = Query->GetQueryStats();
-		const UFont* Font = GEngine->GetSmallFont();
-		const int32 RowHeight = FMath::TruncToInt(Font->GetMaxCharHeight() * 1.1f);
-		const int32 ValueX = X + Font->GetStringSize(TEXT("Responses/s")) + 16;
-
-		auto DrawRow = [&](const TCHAR* Label, const FString& Value, const FColor& ValueColor)
-		{
-			Canvas->DrawShadowedString(X, Y, Label, Font, LabelColor);
-			Canvas->DrawShadowedString(ValueX, Y, *Value, Font, ValueColor);
-			Y += RowHeight;
-		};
-
-		// Header: title + active/idle indicator.
-		Canvas->DrawShadowedString(X, Y, TEXT("CROWDY QUERY (GraphQL)"), Font, FColor::White);
-		Canvas->DrawShadowedString(X + Font->GetStringSize(TEXT("CROWDY QUERY (GraphQL)  ")), Y,
-			S.bIsReceivingData ? TEXT("Active") : TEXT("Idle"),
-			Font, S.bIsReceivingData ? FColor::Green : LabelColor);
-		Y += RowHeight;
-
-		// Queries sent per second (with the matching outbound byte rate).
-		DrawRow(TEXT("Queries/s"),
-			FString::Printf(TEXT("%d   (%s)"), S.QueriesSentPerSecond, *FormatRate(S.QueryBytesSentPerSecond)),
-			FColor::Silver);
-
-		// Responses received per second (with the matching inbound byte rate).
-		DrawRow(TEXT("Responses/s"),
-			FString::Printf(TEXT("%d   (%s)"), S.ResponseReceivedPerSecond, *FormatRate(S.ResponseBytesReceivedPerSecond)),
-			FColor::Silver);
-
-		return Y;
-	}
 }
 
 namespace CrowdyNetStats
@@ -209,14 +164,7 @@ namespace CrowdyNetStats
 			UEngine::FEngineStatToggle(),
 			/*bIsRHS*/ false);
 
-		GEngine->AddEngineStat(
-			QueryStatName, CrowdyCategory,
-			FText::FromString(TEXT("Display Crowdy GraphQL query / response rates.")),
-			UEngine::FEngineStatRender::CreateStatic(&RenderStatCrowdyQuery),
-			UEngine::FEngineStatToggle(),
-			/*bIsRHS*/ false);
-
-		// Make the commands appear in the console `stat ` auto-complete drop-down.
+		// Make the command appear in the console `stat ` auto-complete drop-down.
 		if (!GAutoCompleteHandle.IsValid())
 		{
 			GAutoCompleteHandle = UConsole::RegisterConsoleAutoCompleteEntries.AddStatic(&AddCrowdyAutoCompleteEntries);
@@ -237,7 +185,6 @@ namespace CrowdyNetStats
 		}
 
 		GEngine->RemoveEngineStat(UDPStatName);
-		GEngine->RemoveEngineStat(QueryStatName);
 	}
 }
 

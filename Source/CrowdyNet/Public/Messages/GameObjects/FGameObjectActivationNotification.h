@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Serialization/CrowdyFrame.h"
 #include "Shared/Types/Structures/GameObjects/FGameObjectState.h"
 #include "Utils/SerializationFunctionLibrary.h"
 
@@ -62,7 +63,7 @@ struct FGameObjectActivationNotification : ICrowdyMessage
 	 * @remarks Typically utilized in scenarios involving event-based communication
 	 * in distributed systems or game logic to signal a particular activation event.
 	 */
-	uint16 EventType;
+	uint16 EventType = 0;
 	/**
 	 * @brief Represents the state or status of an object, process, or system.
 	 *
@@ -76,7 +77,7 @@ struct FGameObjectActivationNotification : ICrowdyMessage
 	 * Proper handling of the `State` variable ensures the system operates as intended
 	 * and provides robust control over workflows and processes.
 	 */
-	int32 StateSize;
+	int32 StateSize = 0;
 	TArray<uint8> StateBytes;
 	
 	/**
@@ -106,32 +107,36 @@ struct FGameObjectActivationNotification : ICrowdyMessage
 		return "GameObject Activation Notification";
 	}
 
-	/**
-	 * Serializes the given data structure or object into a string format.
-	 * The result can be used for storage, transmission, or further processing.
-	 *
-	 * @return A string representation of the serialized data.
-	 */
+	/** Receive-only: this notification only ever arrives from the server, so there is nothing to serialize. */
 	virtual TArray<uint8> Serialize() const override
 	{
 		return TArray<uint8>();
 	}
 
 	/**
-	 * Parses and initializes the state of the object using the provided serialized data.
-	 * This method reads the binary data and updates the member variables of the class
-	 * to reconstruct the state of the object from the serialized data.
+	 * Parses and initializes the state of the object using the provided frame.
+	 * This method reads the frame's payload and updates the member variables of the class
+	 * to reconstruct the state of the object from the frame.
 	 *
-	 * @param Data A reference to a TArray of uint8 containing the serialized data
-	 *             to be deserialized.
+	 * @param Frame The frame this message arrived in.
 	 */
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
-		if (Data.Num() <= 0)
+		const TConstArrayView<uint8> Data = Frame.Body;
+
+		// The fixed block every field ahead of the state occupies, checked once so no read below can run
+		// off the end and so the activator id is never asked for at an offset the frame does not reach.
+		constexpr int32 ActivatorIdOctets = 32;
+		constexpr int32 FixedPrefixBytes =
+			sizeof(int64) * 4 + ActivatorIdOctets + sizeof(uint16) + sizeof(int32);
+
+		if (Data.Num() < FixedPrefixBytes)
+		{
 			return false;
-		
+		}
+
 		int32 Offset = 0;
-		
+
 		USerializationFunctionLibrary::DeserializeValue(Data, MapID, Offset);
 		Offset += sizeof(MapID);
 		
@@ -150,26 +155,23 @@ struct FGameObjectActivationNotification : ICrowdyMessage
 		
 		USerializationFunctionLibrary::DeserializeValue(Data, StateSize , Offset);
 		Offset += sizeof(StateSize);
-		
-		FMemory::Memcpy(StateBytes.GetData(), Data.GetData() + Offset, StateSize);
-		
+
+		// The declared length is measured against the octets actually behind it, and the array is sized
+		// before anything is written into it: the copy used to run into an array nothing ever sized.
+		if (StateSize < 0 || StateSize > Data.Num() - Offset)
+		{
+			return false;
+		}
+
+		StateBytes.SetNumUninitialized(StateSize);
+
+		if (StateSize > 0)
+		{
+			FMemory::Memcpy(StateBytes.GetData(), Data.GetData() + Offset, StateSize);
+		}
+
 		return true;
 	}
 
-	/**
-	 * Calculates and retrieves the total size of the message in bytes.
-	 *
-	 * This method determines the size of the object by summing the sizes of its components,
-	 * including MapID, 3 int64 values (ChunkX, ChunkY, ChunkZ), a 32-character string (ActivatorUUID),
-	 * EventType, and State. It is useful for serialization or network transmission purposes.
-	 * Overrides the base class implementation to provide the specific message size.
-	 *
-	 * @return The size of the message in bytes as a 32-bit unsigned integer.
-	 */
-	virtual uint32 GetMessageSize() const override
-	{
-		return sizeof(MapID) + sizeof(int64)*3 + 32 + sizeof(EventType) + StateSize;
-	}
 
-	
 };

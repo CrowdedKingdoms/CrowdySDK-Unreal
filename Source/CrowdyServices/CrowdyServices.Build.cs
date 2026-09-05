@@ -33,6 +33,9 @@ public class CrowdyServices : ModuleRules
 			{
 				"Slate",
 				"SlateCore",
+				// Private everywhere: a public header may name a bridge type only as a forward declaration,
+				// and never a crowdy:: type at all.
+				"CrowdyCppBridge",
 			}
 		);
 	}

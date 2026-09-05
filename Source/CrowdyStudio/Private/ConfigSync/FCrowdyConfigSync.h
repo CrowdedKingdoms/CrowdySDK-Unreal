@@ -10,7 +10,7 @@
  * Writes the chosen app's identifiers and endpoints into UCrowdySDKDeveloperSettings, the object
  * the runtime already reads at startup, so connecting a game to a Crowdy app is one button instead
  * of hand-copying ids and URLs into DefaultGame.ini. It also owns the small bit of backend
- * selection (Dev/Prod/Custom) that the Project page exposes.
+ * selection (Dev/Prod/Custom) that the Sign In page exposes.
  */
 class FCrowdyConfigSync
 {
@@ -35,13 +35,13 @@ public:
 	static int32 ApplyToRunningSessions();
 
 	// Backend selector, stored as UCrowdySDKDeveloperSettings::Environment. Mode is one of "Dev",
-	// "Prod", or "Custom". Custom uses the hand-set management URL; Dev/Prod use built-in hosts.
-	// GetEffectiveManagementUrl is the URL that actually results from the current mode.
+	// "Prod", or "Custom". Custom uses the hand-set shared origin; Dev/Prod use built-in hosts.
+	// GetEffectiveDiscoveryUrl is the URL that actually results from the current mode.
 	static FString GetBackendMode();
 	static void SetBackendMode(const FString& Mode);
-	static FString GetCustomManagementUrl();
-	static void SetCustomManagementUrl(const FString& Url);
-	static FString GetEffectiveManagementUrl();
+	static FString GetCustomDiscoveryUrl();
+	static void SetCustomDiscoveryUrl(const FString& Url);
+	static FString GetEffectiveDiscoveryUrl();
 
 	// The realtime UDP connection knobs, stored on UCrowdySDKDeveloperSettings and consumed by the
 	// runtime at connect time. Surfaced on the Project page so they are edited from the console like

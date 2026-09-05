@@ -47,17 +47,17 @@ private:
 	void HandlePermissionCatalogChanged();
 	void HandleGridSelectionChanged(TSharedPtr<FStudioGrid> Grid, ESelectInfo::Type SelectInfo);
 
-	// Effective-permissions simulator (B1): pick a tier + user, preview keys on the selected grid.
+	// Effective-permissions simulator: pick a tier + user, preview keys on the selected grid.
 	void HandleTiersChanged();
 	FReply OnSimulateClicked();
 	void RebuildSimulator();
 
-	// Visual grid authoring (B2).
-	// B2-1: derive a grid from the bounds of the selected level actors (world -> chunk), confirm, create.
+	// Visual grid authoring: derive a grid from the bounds of the selected level actors (world -> chunk),
+	// confirm, create.
 	FReply OnCreateFromSelectionClicked();
 	FText GetSelectionNote() const;
 
-	// Viewport visualization (B2-2 + live preview): draw the scanned grids AND the pending grid (from
+	// Viewport visualization: draw the scanned grids AND the pending grid (from
 	// the corner fields) as debug boxes in the active world - the PIE/Game world while playing, else the
 	// editor world. Event-driven (corner edits, scans, selection, PIE start) and uses persistent lines so a
 	// non-realtime editor viewport shows them too.
@@ -124,7 +124,7 @@ private:
 	TSharedPtr<FStudioAccessTier> SimSelectedTier;
 	TSharedPtr<SBox> SimResultHost;
 
-	// B2-1: note shown beside the "create grid from selection" action.
+	// Note shown beside the "create grid from selection" action.
 	FText SelectionNote;
 	// Viewport viz: master toggle (default on) + PIE-transition hooks so it follows the active world.
 	bool bShowGridViz = true;

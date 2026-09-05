@@ -18,9 +18,9 @@ struct FAssetData;
  * reads that asset instead of the stripped metadata.
  *
  * Triggers (registered from FCrowdySDKEditorModule::StartupModule):
- *   • Tools ▸ Rebuild Crowdy Registry  — full deep rebuild + save (run before packaging)
- *   • Editor startup                   — first-run bake if the asset is missing
- *   • Blueprint compile                — incremental refresh of the compiled class
+ *   - Tools > Rebuild Crowdy Registry: full deep rebuild + save (run before packaging)
+ *   - Editor startup: first-run bake if the asset is missing
+ *   - Blueprint compile: incremental refresh of the compiled class
  */
 UCLASS()
 class UCrowdyRegistryBaker : public UObject
@@ -32,7 +32,7 @@ public:
 	 * Full rebuild of the baked asset from currently-known metadata.
 	 * @param bDeep  Load every Blueprint and User Defined Struct via the asset
 	 *               registry first, so assets never opened this session are
-	 *               captured. Heavier — used by the manual menu action.
+	 *               captured. Heavier; used by the manual menu action.
 	 */
 	static void Rebuild(bool bDeep);
 
@@ -55,6 +55,26 @@ public:
 	 */
 	static void Register();
 
+	/**
+	 * Synchronously force-loads every tagged Blueprint / User Defined Struct in project + SDK content (the
+	 * cook/deep bake path). Also used by the Game Model schema sync so a container Blueprint that was marked
+	 * but never opened this session is resident before class discovery iterates loaded classes. Heavy on a
+	 * large project (holds the game thread while it loads), so callers run it behind a slow-task dialog.
+	 */
+	static void LoadAllTaggedAssets();
+
+	/**
+	 * The same set of assets, streamed in instead of force-loaded, with OnComplete invoked on the game thread once
+	 * they are resident. This is what an interactive caller wants: the work is identical, but the editor stays usable
+	 * while it happens, where the synchronous form above holds the game thread for as long as the loads take (measured
+	 * at seconds on a real project, behind a modal dialog that could not even be cancelled).
+	 *
+	 * Falls back to the synchronous load in a commandlet/cook context, where there is no editor to keep responsive.
+	 * A re-request while one is already in flight is refused: OnComplete is still invoked, because a caller that
+	 * cannot rely on it firing has to invent its own timeout.
+	 */
+	static void LoadAllTaggedAssetsAsync(TFunction<void()> OnComplete);
+
 private:
 	/** Loads the configured asset, or null if none is assigned/loadable. */
 	static UCrowdyBakedRegistry* ResolveAsset();
@@ -67,9 +87,6 @@ private:
 	// Asset-registry query for every tagged Blueprint / User Defined Struct, without loading them.
 	static void GatherTaggedAssets(TArray<FAssetData>& OutAssets);
 
-	// Synchronously force-loads every tagged asset (the cook/deep path).
-	static void LoadAllTaggedAssets();
-
 	// Shared tail of a rebuild: sweep loaded objects into the asset, save, invalidate the cache,
 	// then invoke OnComplete. Runs on the game thread.
 	static void FinishRebuild(TFunction<void()> OnComplete);
@@ -78,7 +95,7 @@ private:
 
 	static void OnStartup();
 
-	/** Fired at the start of every cook — deep-bakes and injects the asset. */
+	/** Fired at the start of every cook: deep-bakes and injects the asset. */
 	static void OnModifyCook(TConstArrayView<const ITargetPlatform*> TargetPlatforms,
 		TArray<FName>& PackagesToCook, TArray<FName>& PackagesToNeverCook);
 };

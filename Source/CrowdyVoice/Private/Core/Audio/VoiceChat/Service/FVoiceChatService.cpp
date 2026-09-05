@@ -14,7 +14,17 @@ FVoiceChatService::FVoiceChatService(FCrowdyServiceRegistry* InRegistry, UCrowdy
 	VoiceChatManager = nullptr;
 	GameSessionSubsystem = InGameSession;
 	SendFn = MoveTemp(InSendFn);
-	if (InRegistry) InRegistry->RegisterReceptionLayer(this);
+
+	if (InRegistry)
+	{
+		AudioNotificationSubscription = InRegistry->SubscribeToOpcode<FClientAudioNotification>(
+			ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION,
+			{ ECrowdySubscriptionRole::Observe, false, TEXT("FVoiceChatService") },
+			[this](const FClientAudioNotification& ClientAudioNotification, const FCrowdyDelivery&)
+			{
+				HandleClientAudioNotification(ClientAudioNotification);
+			});
+	}
 }
 
 FVoiceChatService::~FVoiceChatService()
@@ -154,7 +164,7 @@ void FVoiceChatService::SendAudioData(const TArray<uint8>& InAudioData, int32 En
 		AccumulatedAudioPacket.ChunkX = ChunkCoordinates.X;
 		AccumulatedAudioPacket.ChunkY = ChunkCoordinates.Y;
 		AccumulatedAudioPacket.ChunkZ = ChunkCoordinates.Z;
-		AccumulatedAudioPacket.UUID = GameSessionSubsystem->GetUUID();
+		AccumulatedAudioPacket.UUID = FCrowdyActorId::FromStringOrUnset(GameSessionSubsystem->GetUUID());
 		AccumulatedAudioPacket.SampleRate = SampleRate;
 		AccumulatedAudioPacket.NumChannels = NumChannels;
 		
@@ -165,7 +175,7 @@ void FVoiceChatService::SendAudioData(const TArray<uint8>& InAudioData, int32 En
 	}
 
 	// Append audio data
-	FClientAudioFrame AudioFrame;
+	FCrowdyAudioFrame AudioFrame;
 	AudioFrame.AudioData.Append(InAudioData.GetData(), EncodedBytes);
 	AccumulatedAudioPacket.Frames.Add(MoveTemp(AudioFrame));
 	
@@ -185,10 +195,16 @@ void FVoiceChatService::HandleClientAudioNotification(const FClientAudioNotifica
 {
 	const int32 SampleRate = ClientAudioNotification.SampleRate;
 	const int32 NumChannels = ClientAudioNotification.NumChannels;
-	const FString& UUID = ClientAudioNotification.UUID;
-	FGuid Guid = USerializationFunctionLibrary::ToGuid(UUID);
-	
-	if (UUID.Equals(GameSessionSubsystem->GetUUID()))
+	const FCrowdyActorId& ActorUuid = ClientAudioNotification.UUID;
+	const FString UUID = ActorUuid.ToString();
+	FGuid Guid = USerializationFunctionLibrary::ToGuid(ActorUuid);
+
+	// An id nobody set must not match anybody. An id of the wrong length and no id at all read as the same
+	// unset value, so without this check audio that carries no id counts as our own and is dropped for as
+	// long as the local session has no id of its own.
+	const FCrowdyActorId LocalSessionId = FCrowdyActorId::FromStringOrUnset(GameSessionSubsystem->GetUUID());
+
+	if (LocalSessionId.IsSet() && ActorUuid == LocalSessionId)
 	{
 		if (!bOwnerEcho)
 		{
@@ -200,17 +216,17 @@ void FVoiceChatService::HandleClientAudioNotification(const FClientAudioNotifica
 	
 	if (!Decoder)
 	{
-		UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Failed to get or create Opus decoder for UUID %s"), *ClientAudioNotification.UUID);
+		UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Failed to get or create Opus decoder for UUID %s"), *UUID);
 		return;
 	}
 	
 	for (int32 i = 0; i < ClientAudioNotification.Frames.Num(); ++i)
 	{
-		const FClientAudioNotificationFrame& Frame = ClientAudioNotification.Frames[i];
+		const FCrowdyAudioFrame& Frame = ClientAudioNotification.Frames[i];
 		
 		if (Frame.FrameSize <= 0 || Frame.AudioData.IsEmpty())
 		{
-			UE_LOG(LogCrowdyVoice, Warning, TEXT("Empty Frame %d for UUID %s"), i, *ClientAudioNotification.UUID);
+			UE_LOG(LogCrowdyVoice, Warning, TEXT("Empty Frame %d for UUID %s"), i, *UUID);
 			continue;
 		}
 		
@@ -230,11 +246,7 @@ void FVoiceChatService::HandleClientAudioNotification(const FClientAudioNotifica
 			UE_LOG(LogCrowdyVoice, Error, TEXT("Decoding failed for UUID %s (frame %d)"), *UUID, i);
 			continue;
 		}
-		// Launch the broadcast on the game thread
-		UE::Tasks::Launch(UE_SOURCE_LOCATION, [this, DecodedData = MoveTemp(Decoded), SampleRate, NumChannels, Guid]() mutable 
-		{
-			VoiceChatManager->HandleIncomingAudio(MoveTemp(DecodedData), SampleRate, NumChannels, Guid);
-		}, LowLevelTasks::ETaskPriority::Normal, UE::Tasks::EExtendedTaskPriority::GameThreadNormalPri);
+		VoiceChatManager->HandleIncomingAudio(MoveTemp(Decoded), SampleRate, NumChannels, Guid);
 	}
 	
 }
@@ -259,26 +271,6 @@ void FVoiceChatService::SetVoiceChatManagerReference(UVoiceChatSubsystem* InVoic
 void FVoiceChatService::ToggleOwnerEcho(const bool bEnable)
 {
 	bOwnerEcho = bEnable;
-}
-
-void FVoiceChatService::OnMessageReceived(TSharedRef<ICrowdyMessage> Message)
-{
-	if (Message->GetType() != ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION)
-	{
-		//UE_LOG(LogCrowdyVoice, Error, TEXT("Received unexpected message type: %s"), *Message->GetTypeName().ToString());
-		return;
-	}
-
-	const FClientAudioNotification ClientAudioNotification = static_cast<FClientAudioNotification&>(*Message);
-	HandleClientAudioNotification(ClientAudioNotification);
-}
-
-TArray<ECrowdyMessageType> FVoiceChatService::GetSupportedResponseTypes() const
-{
-	return 
-	{
-		ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION
-	};
 }
 
 void FVoiceChatService::InitializeOpusEncoder(int32 SampleRate, int32 Channels)

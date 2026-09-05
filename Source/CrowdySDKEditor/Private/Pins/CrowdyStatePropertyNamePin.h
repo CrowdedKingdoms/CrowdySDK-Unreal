@@ -10,8 +10,8 @@ class UEdGraphPin;
 /**
  * Custom default-value widget for the "PropertyName" pin of UCrowdyStateBlueprintLibrary::MarkCrowdyStateDirty.
  * Replaces the plain text box with a dropdown of the target actor class's CrowdyState + CrowdyManualDirty
- * property names. The class is resolved from the call node's Target pin: its connected reference's class, or —
- * when Target is left unconnected (DefaultToSelf) — the Blueprint's own class. Options are recomputed each time
+ * property names. The class is resolved from the call node's Target pin: its connected reference's class, or,
+ * when Target is left unconnected (DefaultToSelf), the Blueprint's own class. Options are recomputed each time
  * the dropdown opens, so they always reflect the current Target. Editor-only; no cooked-build footprint.
  */
 class SCrowdyStatePropertyNamePin : public SGraphPin

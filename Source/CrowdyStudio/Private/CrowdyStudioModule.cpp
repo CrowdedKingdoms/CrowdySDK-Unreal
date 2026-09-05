@@ -3,7 +3,13 @@
 #include "CrowdyStudioModule.h"
 
 #include "Auth/FCrowdyTokenVault.h"
+#include "CrowdyCppClient.h"
 #include "CrowdyLog.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "GameModel/CrowdyEffectPlanCache.h"
+#include "Network/CrowdyCpp/CrowdyCppAdminClientHost.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 #if WITH_EDITOR
 #include "Framework/Application/SlateApplication.h"
@@ -40,11 +46,172 @@ FString CrowdyStudioAuth::GetSignedInToken()
 	return FCrowdyTokenVault::Load(Token) ? Token : FString();
 }
 
+void CrowdyStudioAuth::FetchAppChannelNames(int64 AppId, TFunction<void(const TArray<FString>&)> OnDone)
+{
+	auto Fail = [OnDone]()
+	{
+		if (OnDone)
+		{
+			OnDone(TArray<FString>());
+		}
+	};
+
+	if (AppId <= 0)
+	{
+		Fail();
+		return;
+	}
+
+	// The session token can mint, but the Game API rejects it directly so mint an app token from it,
+	// exactly as the console's SendGame path does, then query channels with that app token.
+	FString SessionToken;
+	if (!FCrowdyTokenVault::Load(SessionToken) || SessionToken.IsEmpty())
+	{
+		Fail();
+		return;
+	}
+
+	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+	if (!Settings)
+	{
+		Fail();
+		return;
+	}
+
+	FString DiscoveryUrl = Settings->GetDiscoveryUrl();
+	DiscoveryUrl.RemoveFromEnd(TEXT("/"));
+	DiscoveryUrl += TEXT("/graphql");
+
+	const FString SettingsGameUrl = Settings->GetGameApiHttpUrl();
+
+	// Built against the shared origin: the app's own endpoint isn't known until the mint answers, and the shared
+	// origin is what every datacenter responds to in the meantime. The host owns the client and its pending
+	// request, so it is captured into every callback below to keep it (and the request) alive until the completion
+	// it belongs to actually fires.
+	FCrowdyCppClientConfig MintConfig;
+	MintConfig.ApiUrl = DiscoveryUrl;
+	MintConfig.DiscoveryUrl = DiscoveryUrl;
+
+	TSharedPtr<FCrowdyCppAdminClientHost> MintHost =
+		FCrowdyCppAdminClientHost::Create(MintConfig, FString());
+	if (!MintHost.IsValid())
+	{
+		Fail();
+		return;
+	}
+	MintHost->GetClient()->SetManagementToken(SessionToken);
+
+	MintHost->GetClient()->MintAppToken(AppId,
+		[MintHost, AppId, SettingsGameUrl, DiscoveryUrl, OnDone](FCrowdyCppAppTokenResult MintResult)
+		{
+			auto FailInner = [OnDone]()
+			{
+				if (OnDone)
+				{
+					OnDone(TArray<FString>());
+				}
+			};
+
+			if (!MintResult.bOk || MintResult.AppToken.IsEmpty())
+			{
+				UE_LOG(LogCrowdyStudio, Warning,
+					TEXT("Channel picker: could not mint an app token for app %lld (%s) - sign in to Crowdy Studio with a session account. Channels unavailable."),
+					AppId, *MintResult.ErrorMessage);
+				FailInner();
+				return;
+			}
+
+			// The mint returns a bare host; the Game API GraphQL lives at /graphql. Fall back to the
+			// settings-derived URL (already /graphql-terminated) when the mint omits a game endpoint.
+			FString GameEndpoint = MintResult.GameApiUrl;
+			if (!GameEndpoint.IsEmpty())
+			{
+				if (!GameEndpoint.EndsWith(TEXT("/graphql")))
+				{
+					GameEndpoint.RemoveFromEnd(TEXT("/"));
+					GameEndpoint += TEXT("/graphql");
+				}
+			}
+			else
+			{
+				GameEndpoint = SettingsGameUrl;
+			}
+
+			if (GameEndpoint.IsEmpty())
+			{
+				FailInner();
+				return;
+			}
+
+			// The mint host talked to the shared origin; a fresh host carries the app's own datacenter endpoint
+			// instead of trying to rebuild the mint host mid-completion.
+			FCrowdyCppClientConfig ChannelsConfig;
+			ChannelsConfig.ApiUrl = GameEndpoint;
+			ChannelsConfig.DiscoveryUrl = MintResult.DiscoveryUrl.IsEmpty() ? DiscoveryUrl : MintResult.DiscoveryUrl;
+
+			TSharedPtr<FCrowdyCppAdminClientHost> ChannelsHost =
+				FCrowdyCppAdminClientHost::Create(ChannelsConfig, FString());
+			if (!ChannelsHost.IsValid())
+			{
+				FailInner();
+				return;
+			}
+			ChannelsHost->GetClient()->SetGameToken(MintResult.AppToken);
+
+			const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+			Variables->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), AppId));
+
+			ChannelsHost->GetClient()->RunOp(ECrowdyCppApiDomain::Channels, TEXT("Channels"), Variables,
+				[ChannelsHost, AppId, OnDone](FCrowdyCppJsonResult ChannelsResult)
+				{
+					TArray<FString> Names;
+
+					if (!ChannelsResult.bTransportOk)
+					{
+						UE_LOG(LogCrowdyStudio, Warning,
+							TEXT("Channel picker: channels query failed for app %lld (%s)."),
+							AppId, *ChannelsResult.ErrorMessage);
+						if (OnDone)
+						{
+							OnDone(Names);
+						}
+						return;
+					}
+
+					// Data is already the bare `data` object (no envelope to unwrap) under the shared transport.
+					const TArray<TSharedPtr<FJsonValue>>* ChannelsArray = nullptr;
+					if (ChannelsResult.Data.IsValid() && ChannelsResult.Data->TryGetArrayField(TEXT("channels"), ChannelsArray))
+					{
+						for (const TSharedPtr<FJsonValue>& Value : *ChannelsArray)
+						{
+							const TSharedPtr<FJsonObject>* ChannelObj = nullptr;
+							FString Name;
+							if (Value->TryGetObject(ChannelObj) && (*ChannelObj)->TryGetStringField(TEXT("name"), Name) && !Name.IsEmpty())
+							{
+								Names.AddUnique(Name);
+							}
+						}
+					}
+
+					if (OnDone)
+					{
+						OnDone(Names);
+					}
+				},
+				ECrowdyCppTokenPlane::Game);
+		});
+}
+
 namespace
 {
 	// Set by CrowdySDKEditor at startup; invoked by the console's Registry page Rebuild button.
 	// Takes an OnComplete callback because the rebuild streams assets asynchronously.
 	TFunction<void(TFunction<void()>)> GRegistryRebuildHook;
+
+	// Set by CrowdySDKEditor at startup; invoked by the schema sync before it gathers container classes so a
+	// Blueprint marked as a container but not opened this session is resident first (and thus discoverable).
+	// Asynchronous: it streams the assets and calls back, so the plan continues from the completion.
+	TFunction<void(TFunction<void()>)> GLoadContainerAssetsHook;
 }
 
 void CrowdyStudioRegistry::SetRebuildHook(TFunction<void(TFunction<void()>)> Hook) { GRegistryRebuildHook = MoveTemp(Hook); }
@@ -60,6 +227,25 @@ void CrowdyStudioRegistry::RequestRebuild(TFunction<void()> OnComplete)
 		UE_LOG(LogCrowdyStudio, Warning,
 			TEXT("Registry rebuild requested but no rebuild hook is set (CrowdySDKEditor not loaded?)."));
 		// Still fire OnComplete so the caller's view refresh isn't stranded.
+		if (OnComplete) OnComplete();
+	}
+}
+
+void CrowdyStudioRegistry::SetLoadContainerAssetsHook(TFunction<void(TFunction<void()>)> Hook) { GLoadContainerAssetsHook = MoveTemp(Hook); }
+TFunction<void(TFunction<void()>)> CrowdyStudioRegistry::GetLoadContainerAssetsHook() { return GLoadContainerAssetsHook; }
+void CrowdyStudioRegistry::RequestLoadContainerAssets(TFunction<void()> OnComplete)
+{
+	if (GLoadContainerAssetsHook)
+	{
+		GLoadContainerAssetsHook(MoveTemp(OnComplete));
+	}
+	else
+	{
+		// Graceful degradation: without the editor baker's hook the sync still works for containers already
+		// loaded (opened) this session; only never-opened ones are missed. Not an error, so this stays quiet.
+		UE_LOG(LogCrowdyStudio, Verbose,
+			TEXT("Container-asset load requested but no hook is set (CrowdySDKEditor not loaded?); syncing only loaded containers."));
+		// Still fire it, so the plan behind this call is never stranded on a missing hook.
 		if (OnComplete) OnComplete();
 	}
 }
@@ -82,6 +268,10 @@ void FCrowdyStudioModule::StartupModule()
 
 void FCrowdyStudioModule::ShutdownModule()
 {
+	// The schema plan's compile cache lives for the editor session, so it has to be emptied here or it would survive
+	// a module reload holding results compiled by code that is no longer loaded.
+	FCrowdyEffectPlanCache::Shutdown();
+
 #if WITH_EDITOR
 	UToolMenus::UnRegisterStartupCallback(this);
 
@@ -106,6 +296,7 @@ void FCrowdyStudioModule::RegisterTabSpawner()
 		->RegisterNomadTabSpawner(StudioTabId, FOnSpawnTab::CreateRaw(this, &FCrowdyStudioModule::SpawnStudioTab))
 		.SetDisplayName(LOCTEXT("StudioTabTitle", "Crowdy Studio"))
 		.SetTooltipText(LOCTEXT("StudioTabTooltip", "Crowded Kingdoms management console."))
+		.SetIcon(FSlateIcon(FCrowdyStudioStyle::StyleName(), TEXT("Crowdy.Icon.ck")))
 		.SetMenuType(ETabSpawnerMenuType::Hidden);
 }
 

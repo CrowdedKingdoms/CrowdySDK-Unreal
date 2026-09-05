@@ -6,8 +6,10 @@
 #include "Data/CrowdyMapProfile.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/RPC/CrowdyRPC.h" // CrowdyChannelPayloadMaxBytes (channel payload cap parity)
+#include "Replication/State/CrowdyBitwiseCompare.h"
 #include "Replication/State/CrowdyStateCodec.h"
 #include "Replication/State/FCrowdyRepLayout.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
@@ -23,7 +25,7 @@
 namespace
 {
 	// A single CrowdyState delta above this many blob bytes will fragment across datagrams on the transport.
-	// Advisory only in Phase 3: over-budget deltas still send correctly; the trace line flags a fat layout.
+	// Advisory only: over-budget deltas still send correctly; the trace line flags a fat layout.
 	constexpr int32 CrowdyStateSingleDatagramBudget = 1180;
 
 	// A behavior-gating CVar (not a trace flag), so it lives here beside UCrowdyStateReplicator rather than in
@@ -140,7 +142,7 @@ void UCrowdyStateReplicator::Initialize(FSubsystemCollectionBase& Collection)
 
 	// The spawn flow fires OnEntityRegistered, so binding is enough for entities created after us. A
 	// replicator created after some entities already registered would miss them; the entity subsystem
-	// exposes no cheap owned-set enumeration, so Phase 3 accepts binding-only seeding.
+	// exposes no cheap owned-set enumeration, so this accepts binding-only seeding as a known limitation.
 
 #if WITH_EDITOR
 	// A Live Coding reload rebuilds the registry's layouts and may reinstance replicated actor classes,
@@ -475,8 +477,12 @@ void UCrowdyStateReplicator::InitShadow(FCrowdyOwnedEntityState& State, const FC
 
 	const int32 Num = Layout.Properties.Num();
 	State.ShadowLayoutHash = Layout.LayoutHash;
+	State.ClassID = State.Participant.IsValid()
+		? UCrowdyClassRegistry::Get()->GetID(State.Participant->GetClass())
+		: CROWDY_INVALID_CLASS_ID;
 	State.ShadowOffsets.SetNumUninitialized(Num);
 	State.ShadowProps.SetNumUninitialized(Num);
+	State.ShadowCompareBytes.SetNumUninitialized(Num);
 
 	// Keep the manual-dirty push flags aligned to the layout. On a fresh build BuildOwnedState already sized
 	// this; on a rebuild (layout drift) re-Init clears it losing any pending marks on a layout change is
@@ -492,6 +498,7 @@ void UCrowdyStateReplicator::InitShadow(FCrowdyOwnedEntityState& State, const FC
 	{
 		const FProperty* Property = Layout.Properties[Index].Property;
 		State.ShadowProps[Index] = Property;
+		State.ShadowCompareBytes[Index] = CrowdyBitwiseCompare::ComparableBytes(Property);
 		const int32 Alignment = Property ? FMath::Max(1, Property->GetMinAlignment()) : 1;
 		const int32 Size = Property ? Property->GetSize() : 0;
 		Total = Align(Total, Alignment);
@@ -840,7 +847,117 @@ void UCrowdyStateReplicator::DestroyLoopbackMirror(const FGuid& SourceEntityID)
 	}
 }
 
-void UCrowdyStateReplicator::DrainPendingHostPushes()
+void UCrowdyStateReplicator::FlushLocalNotifies(const TArray<FCrowdyPendingLocalNotify>& Notifies)
+{
+	if (Notifies.Num() == 0)
+	{
+		return;
+	}
+
+	// ProcessEvent is game-thread only. Everything that fills this list runs from the replication tick, which is
+	// already the game thread, so this asserts the contract rather than marshalling for it.
+	ensure(IsInGameThread());
+
+	// The list is a local of the send loop and is not reachable from a notify body, so it cannot grow or shrink
+	// while it is walked even though a body is free to mark state dirty, destroy its actor, or register and
+	// unregister entities.
+	for (const FCrowdyPendingLocalNotify& Notify : Notifies)
+	{
+		// Re-resolved every iteration: an earlier notify in this same flush may have destroyed this container.
+		UObject* Container = Notify.Container.Get();
+		if (!IsValid(Container))
+		{
+			continue;
+		}
+
+		if (UFunction* Function = Container->FindFunction(Notify.FunctionName))
+		{
+			// Notify bindings are validated at discovery, so this only ever calls parameterless functions; the
+			// check is defense in depth for a baked layout whose function drifted.
+			if (Function->NumParms == 0)
+			{
+				Container->ProcessEvent(Function, nullptr);
+			}
+		}
+	}
+}
+
+bool UCrowdyStateReplicator::HasPendingNotify(const TArray<FCrowdyPendingLocalNotify>& Notifies, int32 Count,
+	const FGuid& EntityID, int32 PropertyIndex)
+{
+	const int32 Limit = FMath::Min(Count, Notifies.Num());
+	for (int32 Index = 0; Index < Limit; ++Index)
+	{
+		const FCrowdyPendingLocalNotify& Notify = Notifies[Index];
+		if (Notify.PropertyIndex == PropertyIndex && Notify.EntityID == EntityID)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void UCrowdyStateReplicator::ResyncShadowsAfterLocalNotifies(const TArray<FCrowdyPendingLocalNotify>& Notifies)
+{
+	if (Notifies.Num() == 0)
+	{
+		return;
+	}
+
+	UCrowdyAutoRegistry* Registry = AutoRegistry.Get();
+	if (!Registry)
+	{
+		return;
+	}
+
+	for (const FCrowdyPendingLocalNotify& Notify : Notifies)
+	{
+		if (Notify.PropertyIndex == INDEX_NONE)
+		{
+			continue;
+		}
+
+		// An entity a notify body unregistered, or one this client never tracked (a one-shot push over another
+		// client's entity holds no shadow at all), simply has nothing to fold.
+		TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(Notify.EntityID);
+		if (!Found || !Found->IsValid())
+		{
+			continue;
+		}
+		FCrowdyOwnedEntityState& State = **Found;
+
+		// The entity must still be the same object the notify ran on: a body is free to unregister the entity and
+		// re-register the id against something else, and folding one object's value into another's shadow would
+		// silence a change that was never sent.
+		UObject* Participant = State.Participant.Get();
+		if (!Participant || Participant != Notify.Container.Get() || !State.bShadowInitialized)
+		{
+			continue;
+		}
+
+		// Re-resolve the live layout and re-check the hash: the shadow's positional slots only line up while it
+		// matches, and a notify body is free to do anything, a registry rescan included.
+		const FCrowdyRepLayout* Layout = Registry->FindRepLayout(Participant->GetClass());
+		if (!Layout || !Layout->IsValid() || Layout->LayoutHash != State.ShadowLayoutHash
+			|| !Layout->Properties.IsValidIndex(Notify.PropertyIndex)
+			|| !State.ShadowOffsets.IsValidIndex(Notify.PropertyIndex))
+		{
+			continue;
+		}
+
+		const FProperty* Property = Layout->Properties[Notify.PropertyIndex].Property;
+		uint8* const ShadowBase = State.ShadowData.GetData();
+		if (!Property || !ShadowBase)
+		{
+			continue;
+		}
+
+		Property->CopyCompleteValue(ShadowBase + State.ShadowOffsets[Notify.PropertyIndex],
+			Property->ContainerPtrToValuePtr<void>(Participant));
+	}
+}
+
+void UCrowdyStateReplicator::DrainPendingHostPushes(TArray<FCrowdyPendingLocalNotify>& OutNotifies)
 {
 	if (PendingHostPushes.Num() == 0)
 	{
@@ -862,6 +979,12 @@ void UCrowdyStateReplicator::DrainPendingHostPushes()
 	const FGuid HostID = ResolveHostID();
 	const bool bLocalIsHost = HostID.IsValid() && SenderID.IsValid() && HostID == SenderID;
 
+	// A push is queued only for an entity this client did not track at the time of the mark, but ownership can
+	// transfer in between, so by now the entity may well be tracked. The push still emits: it is a deliberate
+	// one-shot authoritative write, and the diff would not cover it for a manual-dirty property (never
+	// auto-diffed) or for a host-owned entity (auto-diff off), so dropping it would silently lose the override.
+	// The redundant delta a plain auto-diffed property then also sends is idempotent on every receiver; only the
+	// notify is de-duplicated, which is what a notify body would otherwise observe twice.
 	for (const FCrowdyPendingHostPush& Push : PendingHostPushes)
 	{
 		// The one-shot host push targets a per-owner entity by location, so it is actor-only. A non-actor
@@ -920,25 +1043,51 @@ void UCrowdyStateReplicator::DrainPendingHostPushes()
 			ES->DispatchGameEvent(Actor, FInstancedStruct::Make(Delta), ECrowdyTarget::Everyone, Actor,
 				ECrowdyDecayRate::No_Decay, RelevanceDistance);
 		}
+
+		// The push encodes the property straight off the live local member, so by the time it is drained the local
+		// value has already moved; the notify therefore fires locally too, exactly as it will on every receiver.
+		// It is handed to the send loop rather than fired here so the diff can recognise the same slot and not
+		// queue it a second time, and so a notify body cannot append to the queue this loop is walking.
+		if (RepProp.OnRepFunctionName != NAME_None)
+		{
+			OutNotifies.Add(FCrowdyPendingLocalNotify{ Actor, RepProp.OnRepFunctionName, Push.EntityID,
+				Push.PropertyIndex });
+		}
 	}
 
+	// Cleared before the send loop fires the notifies, so a notify body that queues another push targets an empty
+	// queue and its push rides the next tick instead of being dropped by this reset.
 	PendingHostPushes.Reset();
 }
 
 void UCrowdyStateReplicator::ReplicationLoop()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_StateReplicationLoop);
+
+	// Local notifies for the slots that changed on THIS client this tick, fired once the walk below is finished.
+	// Deferred because a notify body may register or unregister an entity, which would rehash the map being
+	// iterated. The one-shot host pushes contribute to the same list so a slot both paths cover fires once.
+	TArray<FCrowdyPendingLocalNotify> PendingNotifies;
+
 	// One-shot host super-user pushes drain first: a push can exist for an entity this client does not track, so
-	// it must run even when OwnedEntities is empty (the early-out below would otherwise skip it).
-	DrainPendingHostPushes();
+	// it must run even when OwnedEntities is empty (the early-outs below would otherwise skip it).
+	DrainPendingHostPushes(PendingNotifies);
+
+	// Every notify the drain queued sits at the front of the list, so the walk only has to look that far to spot
+	// a slot it would otherwise queue twice.
+	const int32 NumHostPushNotifies = PendingNotifies.Num();
 
 	if (OwnedEntities.Num() == 0)
 	{
+		FlushLocalNotifies(PendingNotifies);
+		ResyncShadowsAfterLocalNotifies(PendingNotifies);
 		return;
 	}
 
 	UCrowdyAutoRegistry* Registry = AutoRegistry.Get();
 	if (!Registry)
 	{
+		FlushLocalNotifies(PendingNotifies);
 		return;
 	}
 
@@ -987,6 +1136,12 @@ void UCrowdyStateReplicator::ReplicationLoop()
 	// Dead entries are collected during iteration and removed afterwards so the TMap is never mutated
 	// while it is being walked.
 	TArray<FGuid, TInlineAllocator<8>> StaleKeys;
+
+	// Debug loopback only (crowdy.state.loopback): deltas already retargeted at a mirror entity, decoded through
+	// the real receive path once the walk is over. Replaying one inline would run the mirror's notify bodies
+	// mid-walk, and such a body is free to register or unregister an entity, which rehashes the map being
+	// iterated. Always empty while the CVar is off.
+	TArray<FCrowdyStateDelta> LoopbackDeltas;
 
 	for (const TPair<FGuid, TUniquePtr<FCrowdyOwnedEntityState>>& Pair : OwnedEntities)
 	{
@@ -1064,7 +1219,10 @@ void UCrowdyStateReplicator::ReplicationLoop()
 			{
 				const void* Live = RepProp.Property->ContainerPtrToValuePtr<void>(Participant);
 				const void* Shadow = ShadowBase + State.ShadowOffsets[Index];
-				bDirty = !RepProp.Property->Identical(Live, Shadow, PPF_None);
+				const int32 CompareBytes = State.ShadowCompareBytes[Index];
+				bDirty = CompareBytes > 0
+					? FMemory::Memcmp(Live, Shadow, CompareBytes) != 0
+					: !RepProp.Property->Identical(Live, Shadow, PPF_None);
 			}
 
 			if (!bDirty)
@@ -1125,7 +1283,16 @@ void UCrowdyStateReplicator::ReplicationLoop()
 		// keeps reflecting the last real send.
 		int32 SentBytes = 0;
 
-		const int64 ClassID = static_cast<int64>(UCrowdyClassRegistry::Get()->GetID(Participant->GetClass()));
+		// Positive answers only, so a class whose registration was refused over an id clash is re-asked
+		// rather than emitting CROWDY_INVALID_CLASS_ID for the rest of its life once the clash is cleared.
+		// That refusal is the only answer the sealed registry can still change, and re-asking costs a
+		// pointer-keyed lookup. Same rule FindRepLayout follows for a class with no layout.
+		if (State.ClassID == CROWDY_INVALID_CLASS_ID)
+		{
+			State.ClassID = UCrowdyClassRegistry::Get()->GetID(Participant->GetClass());
+		}
+
+		const int64 ClassID = static_cast<int64>(State.ClassID);
 
 		if (bAnySpatial)
 		{
@@ -1167,13 +1334,16 @@ void UCrowdyStateReplicator::ReplicationLoop()
 			}
 			else if (ES && Actor)
 			{
-				ES->DispatchGameEvent(Actor, FInstancedStruct::Make(Delta), ECrowdyTarget::Everyone, Actor,
-					ECrowdyDecayRate::No_Decay, RelevanceDistance);
+				// Sent from a view of Delta rather than a copy of it into an FInstancedStruct: the send is
+				// synchronous, so Delta outlives it, and the blob is not duplicated to put it on the wire.
+				ES->DispatchGameEventView(Actor, FCrowdyStateDelta::StaticStruct(), &Delta,
+					ECrowdyTarget::Everyone, Actor, ECrowdyDecayRate::No_Decay, RelevanceDistance);
 
 				// Debug loopback: also decode this delta onto a local mirror entity, so a single PIE client
 				// can watch decode/OnRep fire without a second client. Off (default) costs one CVar read;
-				// on, it feeds the exact same Delta through the real receive path retargeted at the
-				// mirror's own NetID (never this entity's real one, which the ownership gate would drop).
+				// on, it queues the exact same Delta retargeted at the mirror's own NetID (never this entity's
+				// real one, which the ownership gate would drop) for replay through the real receive path
+				// after the walk.
 				if (IsLoopbackEnabled())
 				{
 					if (AActor* Mirror = GetOrCreateLoopbackMirror(Actor, State.EntityID))
@@ -1183,10 +1353,7 @@ void UCrowdyStateReplicator::ReplicationLoop()
 							FCrowdyStateDelta MirrorDelta = Delta;
 							MirrorDelta.EntityID = MirrorComp->GetNetID();
 							MirrorDelta.SenderID = FGuid();
-							if (UCrowdyEventRouter* Router = Mirror->GetWorld()->GetSubsystem<UCrowdyEventRouter>())
-							{
-								Router->ReceiveLoopbackStateDelta(MirrorDelta);
-							}
+							LoopbackDeltas.Add(MoveTemp(MirrorDelta));
 						}
 					}
 				}
@@ -1249,8 +1416,8 @@ void UCrowdyStateReplicator::ReplicationLoop()
 				{
 					ES->DispatchSingleActorMessage(Actor, FInstancedStruct::Make(Delta));
 
-					// Debug loopback, same as the spatial path above: also decode this owner-only delta onto the
-					// local mirror so a single client can prove owner-only delivery + OnRep without a second one.
+					// Debug loopback, same as the spatial path above: queue this owner-only delta for the local
+					// mirror so a single client can prove owner-only delivery + OnRep without a second one.
 					if (IsLoopbackEnabled())
 					{
 						if (AActor* Mirror = GetOrCreateLoopbackMirror(Actor, State.EntityID))
@@ -1260,10 +1427,7 @@ void UCrowdyStateReplicator::ReplicationLoop()
 								FCrowdyStateDelta MirrorDelta = Delta;
 								MirrorDelta.EntityID = MirrorComp->GetNetID();
 								MirrorDelta.SenderID = FGuid();
-								if (UCrowdyEventRouter* Router = Mirror->GetWorld()->GetSubsystem<UCrowdyEventRouter>())
-								{
-									Router->ReceiveLoopbackStateDelta(MirrorDelta);
-								}
+								LoopbackDeltas.Add(MoveTemp(MirrorDelta));
 							}
 						}
 					}
@@ -1285,7 +1449,8 @@ void UCrowdyStateReplicator::ReplicationLoop()
 
 		// Advance the shadow to what peers now hold, and clear any manual-dirty marks we just satisfied but
 		// ONLY for the bits actually sent (spatial + owner-only + keyframe + manual), so an unsent slot's shadow
-		// and pending bit are never disturbed.
+		// and pending bit are never disturbed. The shadow still holds the previously-sent value at the top of
+		// each iteration, which is what decides whether this property's notify fires locally.
 		for (int32 Index = 0; Index < Num; ++Index)
 		{
 			if (!Sent[Index])
@@ -1295,8 +1460,25 @@ void UCrowdyStateReplicator::ReplicationLoop()
 			const FCrowdyRepProperty& RepProp = Layout.Properties[Index];
 			if (RepProp.Property)
 			{
-				RepProp.Property->CopyCompleteValue(ShadowBase + State.ShadowOffsets[Index],
-					RepProp.Property->ContainerPtrToValuePtr<void>(Participant));
+				void* const ShadowSlot = ShadowBase + State.ShadowOffsets[Index];
+				void* const LiveValue = RepProp.Property->ContainerPtrToValuePtr<void>(Participant);
+
+				// Fire the notify only where the value genuinely MOVED since the last send, which is exactly
+				// what a receiver reports as changed. A keyframe re-sending an unchanged property, and a dirty
+				// mark on a value that did not move, both still go on the wire but change nothing anywhere, so
+				// neither may fire a notify here either. A slot a one-shot push already queued this tick is
+				// skipped: ownership can transfer between the mark and the drain, leaving the entity tracked
+				// with a fresh shadow that reports the pushed value as a change, and one write must not run the
+				// notify body twice.
+				if (RepProp.OnRepFunctionName != NAME_None
+					&& !RepProp.Property->Identical(LiveValue, ShadowSlot, PPF_None)
+					&& !HasPendingNotify(PendingNotifies, NumHostPushNotifies, State.EntityID, Index))
+				{
+					PendingNotifies.Add(FCrowdyPendingLocalNotify{ Participant, RepProp.OnRepFunctionName,
+						State.EntityID, Index });
+				}
+
+				RepProp.Property->CopyCompleteValue(ShadowSlot, LiveValue);
 			}
 			if (RepProp.bManualDirty && State.PendingManualDirty.IsValidIndex(Index))
 			{
@@ -1308,6 +1490,25 @@ void UCrowdyStateReplicator::ReplicationLoop()
 	for (const FGuid& Key : StaleKeys)
 	{
 		OwnedEntities.Remove(Key);
+	}
+
+	FlushLocalNotifies(PendingNotifies);
+	ResyncShadowsAfterLocalNotifies(PendingNotifies);
+
+	// Debug loopback only: replay what was just sent onto the mirror entities, through the real receive path, now
+	// that the owned-entity walk is over and a mirror's notify body is free to register or unregister entities.
+	if (LoopbackDeltas.Num() > 0)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			if (UCrowdyEventRouter* Router = World->GetSubsystem<UCrowdyEventRouter>())
+			{
+				for (const FCrowdyStateDelta& MirrorDelta : LoopbackDeltas)
+				{
+					Router->ReceiveLoopbackStateDelta(MirrorDelta);
+				}
+			}
+		}
 	}
 }
 

@@ -107,6 +107,17 @@ public:
 		meta=(DefaultToSelf="Actor", Keywords="Get Find Crowdy Entity Component GAS"))
 	static UCrowdyEntityComponent* GetCrowdyEntityComponent(AActor* Actor);
 
+	/**
+	 * True when this client is the one that drives Entity: it owns the entity, or the entity is host-owned and
+	 * this client is the elected host. Use it to gate input, AI and any other logic that must run on exactly one
+	 * client. Returns false for an entity that is not registered, so an actor that is not a Crowdy entity is
+	 * never treated as locally controlled.
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entities",
+		meta=(DefaultToSelf="Entity",
+		      Keywords="Is Locally Controlled Owned Authority Crowdy Entity"))
+	static bool IsCrowdyEntityLocallyControlled(AActor* Entity);
+
 
 	//Entity State Checks
 

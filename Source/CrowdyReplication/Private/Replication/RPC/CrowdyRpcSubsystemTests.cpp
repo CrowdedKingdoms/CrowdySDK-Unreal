@@ -39,11 +39,12 @@ void ACrowdyRpcActorTestTarget::ActorOwnerOnly_Implementation(int32 InValue)
 #include "Replication/RPC/FCrowdyRpcCall.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyEventRouter.h"
+#include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
 
-// Subsystem RPC over the channel (Subsystem Replication Phase 2). These tests exercise a non-actor (subsystem)
+// Subsystem RPC over the channel. These tests exercise a non-actor (subsystem)
 // participant on the RPC plane: the pure DecideRoute policy table (send-side identity + recipient routing), a
 // Multicast channel round-trip onto an enrolled participant, the host-only channel gate (run only where local is
 // host), and the actor-path regression (owner/host-only broadcasts to an actor are still dropped). A plain UObject
@@ -65,53 +66,14 @@ namespace
 		return Registry;
 	}
 
-	// A bare entity subsystem (UWorldSubsystem, no ClassWithin) with a local player id set, so
-	// RegisterParticipant / FindParticipant / GetLocalPlayerID resolve headlessly.
-	UCrowdyEntitySubsystem* MakeEntitySubsystem(const FGuid& LocalPlayer)
+	FCrowdyScopedInboundEvent MakeInboundRpcEvent(const FCrowdyRpcCall& Call, bool bTargeted)
 	{
-		UCrowdyEntitySubsystem* ES = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
-		ES->SetLocalPlayerID(LocalPlayer);
-		return ES;
-	}
-
-	UCrowdyEventRouter* MakeRouter(UCrowdyAutoRegistry* Registry, UCrowdyEntitySubsystem* Entities)
-	{
-		UCrowdyEventRouter* Router = NewObject<UCrowdyEventRouter>(GetTransientPackage());
-		Router->SetAutoRegistryForTest(Registry);
-		Router->SetEntitySubsystemForTest(Entities);
-		return Router;
-	}
-
-	// A real game session carrying an elected host, so GetHostID() read-through resolves. UCrowdyGameSession is a
-	// UGameInstanceSubsystem (ClassWithin=UGameInstance), so it needs a GameInstance outer.
-	UCrowdyGameSession* MakeGameSession(const FGuid& HostID)
-	{
-		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-		UCrowdyGameSession* Session = NewObject<UCrowdyGameSession>(GameInstance);
-		Session->SetHostID(HostID);
-		return Session;
-	}
-
-	// Registers any UObject as a resolvable RemoteProxy participant so FindParticipant(EntityId) returns it (its
-	// OwnerID is a fresh non-local guid, so IsLocallyOwned is false and the owned-entity gates are bypassed).
-	void RegisterProxyParticipant(UCrowdyEntitySubsystem* Entities, const FGuid& EntityId, UObject* Participant)
-	{
-		FCrowdyEntityRecord Rec;
-		Rec.NetID = EntityId;
-		Rec.OwnerID = FGuid::NewGuid();
-		Rec.Role = ECrowdyRole::RemoteProxy;
-		Rec.Participant = Participant;
-		Entities->RegisterEntity(Rec);
-	}
-
-	FCrowdyInboundEvent MakeInboundRpcEvent(const FCrowdyRpcCall& Call, bool bTargeted)
-	{
-		FCrowdyInboundEvent Event;
-		Event.Payload = FInstancedStruct::Make(Call);
-		Event.bTargetedDelivery = bTargeted;
-		Event.SenderID = Call.SenderID;
-		Event.Target = ECrowdyTarget::Everyone;
-		return Event;
+		FCrowdyScopedInboundEvent Scoped;
+		Scoped.OwnedPayload = FInstancedStruct::Make(Call);
+		Scoped.Event.bTargetedDelivery = bTargeted;
+		Scoped.Event.SenderID = Call.SenderID;
+		Scoped.Event.Target = ECrowdyTarget::Everyone;
+		return Scoped;
 	}
 
 	// Marshals a single-int32 CrowdyEvent into a wire-ready call, then stamps the routing identity (EntityID /
@@ -134,7 +96,7 @@ namespace
 	// A worldless-friendly editor world: only the actor-path regression needs one, since an AActor's ProcessEvent
 	// no-ops without a world (a plain UObject does not). The held FEditorScriptExecutionGuard flips
 	// GAllowActorScriptExecutionInEditor so ProcessEvent runs; an editor world never creates the PIE/Game-gated
-	// Crowdy subsystems, so it tears down cleanly (mirrors the Phase 4 apply tests).
+	// Crowdy subsystems, so it tears down cleanly (mirrors the RPC apply tests).
 	struct FCrowdyRpcTestWorld
 	{
 		FEditorScriptExecutionGuard ScriptGuard;

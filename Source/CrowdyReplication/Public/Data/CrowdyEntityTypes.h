@@ -33,6 +33,12 @@ struct FCrowdyEntityRecord
 	UPROPERTY()
 	uint32 ClassID = 0;
 
+	// The entity this one is a sub-participant of, invalid for a top-level entity. A sub-participant's id is a
+	// one-way hash of the anchor's, so this is the only way back: values pulled for a component container have to
+	// be delivered to whoever holds the entity, and a holder knows the anchor id and nothing else.
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Entity")
+	FGuid AnchorNetID;
+
 	// Any UObject can be a replicated participant (an actor, or a non-actor UObject such as a subsystem in
 	// later phases). Non-UPROPERTY, exactly as the actor weak pointer it replaces. For an actor participant,
 	// GetActor() resolves it byte-identically.

@@ -20,9 +20,9 @@
 
 namespace
 {
-	// The server exposes a fake "mock" OAuth provider only when it runs with DEV_AUTH_BYPASS, so a
-	// developer can exercise the whole browser sign-in flow without a real account. It never appears on
-	// a production backend. We label and describe it clearly so it isn't mistaken for a real provider.
+	// Some backends expose a fake "mock" OAuth provider so a developer can exercise the whole browser
+	// sign-in flow without a real account. The list is read from the server, so it simply does not appear
+	// where it is not enabled. Label and describe it clearly so it isn't mistaken for a real provider.
 	bool IsMockProvider(const FString& Provider)
 	{
 		return Provider.ToLower().Contains(TEXT("mock"));
@@ -69,7 +69,7 @@ namespace
 		if (IsMockProvider(Provider))
 		{
 			return NSLOCTEXT("CrowdyStudio", "MockProviderTip",
-				"Dev-only test provider (the server is running with DEV_AUTH_BYPASS). It signs you in through the browser without a real account so you can exercise the social flow. It will not appear on a production backend.");
+				"Dev-only test provider, offered by this backend. It signs you in through the browser without a real account so you can exercise the social flow. It will not appear on a production backend.");
 		}
 		return FText::Format(NSLOCTEXT("CrowdyStudio", "ProviderTip", "Sign in with {0} in your web browser."),
 			FText::FromString(PrettyProviderName(Provider)));
@@ -152,7 +152,7 @@ void SCrowdySignInView::Construct(const FArguments& InArgs)
 			.ButtonStyle(&Style, "Crowdy.Button.Secondary")
 			.HAlign(HAlign_Center)
 			.ContentPadding(FMargin(13.0f, 8.0f))
-			.ToolTipText(LOCTEXT("MagicTip", "Enter your email above, then this emails a one-time sign-in link — no password needed. On a dev server (DEV_AUTH_BYPASS) it skips the email and signs you in instantly."))
+			.ToolTipText(LOCTEXT("MagicTip", "Enter your email above, then this emails a one-time sign-in link, no password needed. Click the link and this window signs you in."))
 			.OnClicked(this, &SCrowdySignInView::OnMagicLinkClicked)
 			[
 				SNew(SHorizontalBox)
@@ -160,29 +160,6 @@ void SCrowdySignInView::Construct(const FArguments& InArgs)
 				[ CrowdyStudioWidgets::Icon(TEXT("mail"), 16.0f, FSlateColor(FCrowdyStudioStyle::TextPrimary())) ]
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 				[ SNew(STextBlock).Text(LOCTEXT("MagicLink", "Email me a sign-in link")).Font(FCoreStyle::GetDefaultFontStyle("Bold", 10)).ColorAndOpacity(FSlateColor::UseForeground()) ]
-			]
-		]
-		// Dev sign-in: developer-only (needs the server DEV_AUTH_BYPASS), so it stays below the real
-		// options — readable, but clearly the lightest of the buttons.
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 0.0f)
-		[
-			SNew(SButton)
-			.ButtonStyle(&Style, "Crowdy.Button.Ghost")
-			.HAlign(HAlign_Center)
-			.ContentPadding(FMargin(13.0f, 7.0f))
-			.ToolTipText(LOCTEXT("DevSignInTip", "Passwordless sign-in using only the email above, with no browser step. Only works against a dev server (DEV_AUTH_BYPASS); a production server rejects it."))
-			.OnClicked(this, &SCrowdySignInView::OnDevLoginClicked)
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 9.0f, 0.0f)
-				[ CrowdyStudioWidgets::Icon(TEXT("wand"), 15.0f, FSlateColor(FCrowdyStudioStyle::TextSecondary())) ]
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("DevSignIn", "Dev sign-in (dev servers only)"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
-					.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary()))
-				]
 			]
 		]
 		// Organization token: management-only (cannot mint / author), tucked behind a toggle.
@@ -347,17 +324,6 @@ FReply SCrowdySignInView::OnMagicLinkClicked()
 	if (Controller.IsValid() && EmailBox.IsValid())
 	{
 		Controller->SignInWithMagicLink(EmailBox->GetText().ToString());
-	}
-	return FReply::Handled();
-}
-
-FReply SCrowdySignInView::OnDevLoginClicked()
-{
-	// Reuses the same email box, no password. The controller surfaces an empty-email error and any
-	// FORBIDDEN from a non-dev server through the normal status path.
-	if (Controller.IsValid() && EmailBox.IsValid())
-	{
-		Controller->SignInWithDevLogin(EmailBox->GetText().ToString());
 	}
 	return FReply::Handled();
 }

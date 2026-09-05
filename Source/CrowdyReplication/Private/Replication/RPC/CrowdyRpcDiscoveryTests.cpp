@@ -3,6 +3,7 @@
 #include "Misc/AutomationTest.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Replication/RPC/CrowdyRpcTestTarget.h"
+#include "UObject/UObjectGlobals.h" // FCoreUObjectDelegates, EReloadCompleteReason
 #include "Utils/CrowdyBakedRegistry.h"
 
 namespace
@@ -116,9 +117,9 @@ bool FCrowdyRpcBakedRoundTripTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// Phase 6 deliverable 1 + exit test: the signature validator accepts supported
-// signatures and rejects a return value, an output parameter, and an unsupported
-// parameter type, each with a readable message that names the offending parameter.
+// The signature validator accepts supported signatures and rejects a return
+// value, an output parameter, and an unsupported parameter type, each with a
+// readable message that names the offending parameter.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcSignatureValidationTest,
 	"CrowdySDK.RPC.SignatureValidation", CrowdyRpcDiscoveryTestFlags)
 bool FCrowdyRpcSignatureValidationTest::RunTest(const FString& Parameters)
@@ -130,7 +131,7 @@ bool FCrowdyRpcSignatureValidationTest::RunTest(const FString& Parameters)
 		return Class->FindFunctionByName(Name);
 	};
 
-	// Supported signatures — primitives, structs, and no-arg — must pass.
+	// Supported signatures (primitives, structs, and no-arg) must pass.
 	for (const TCHAR* Name : { TEXT("Primitives_Implementation"),
 		TEXT("Structs_Implementation"), TEXT("NoArgs_Implementation") })
 	{
@@ -235,6 +236,79 @@ bool FCrowdyRpcContainerSignatureTest::RunTest(const FString& Parameters)
 			IntArrayType, VecArrayType);
 	}
 
+	return true;
+}
+
+// Routing info is cached per function, and what the cache hands back is what a fresh build produces.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcFnInfoCacheTest,
+	"CrowdySDK.RPC.FnInfoCacheMatchesFreshBuild", CrowdyRpcDiscoveryTestFlags)
+bool FCrowdyRpcFnInfoCacheTest::RunTest(const FString& Parameters)
+{
+	UClass* Class = UCrowdyRpcTestTarget::StaticClass();
+	UFunction* Structs = Class->FindFunctionByName(TEXT("Structs_Implementation"));
+	UFunction* MacroEvent = Class->FindFunctionByName(TEXT("MacroEvent_Implementation"));
+	TestNotNull(TEXT("Structs resolved"), Structs);
+	TestNotNull(TEXT("MacroEvent resolved"), MacroEvent);
+	if (!Structs || !MacroEvent)
+	{
+		return false;
+	}
+
+	FCrowdyRPC::InvalidateFnInfoCache();
+	TestEqual(TEXT("the cache starts empty"), FCrowdyRPC::NumCachedFnInfo(), 0);
+
+	const FCrowdyFnInfo Fresh = FCrowdyRPC::BuildFnInfo(MacroEvent);
+	const FCrowdyFnInfo Cached = FCrowdyRPC::GetFnInfo(MacroEvent);
+
+	TestEqual(TEXT("cached function id"), Cached.FunctionID, Fresh.FunctionID);
+	TestEqual(TEXT("cached POD flag"), Cached.bParamsPOD, Fresh.bParamsPOD);
+	TestTrue(TEXT("cached recipient"), Cached.Recipient == Fresh.Recipient);
+	TestTrue(TEXT("cached decay"), Cached.DecayRate == Fresh.DecayRate);
+	TestTrue(TEXT("cached distance"), Cached.Distance == Fresh.Distance);
+	TestEqual(TEXT("cached channel name"), Cached.ChannelName, Fresh.ChannelName);
+
+	// One entry per function, and a repeat lookup adds none: the second call is served, not rebuilt.
+	TestEqual(TEXT("one function cached"), FCrowdyRPC::NumCachedFnInfo(), 1);
+	FCrowdyRPC::GetFnInfo(MacroEvent);
+	TestEqual(TEXT("a repeat lookup adds nothing"), FCrowdyRPC::NumCachedFnInfo(), 1);
+	FCrowdyRPC::GetFnInfo(Structs);
+	TestEqual(TEXT("a second function adds one entry"), FCrowdyRPC::NumCachedFnInfo(), 2);
+
+	FCrowdyRPC::InvalidateFnInfoCache();
+	return true;
+}
+
+// The reload-complete delegate is bound to the routing cache: a reload rebuilds reflection in place, so
+// every cached signature hash must be dropped rather than served again.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcFnInfoCacheReloadTest,
+	"CrowdySDK.RPC.FnInfoCacheReloadInvalidates", CrowdyRpcDiscoveryTestFlags)
+bool FCrowdyRpcFnInfoCacheReloadTest::RunTest(const FString& Parameters)
+{
+	UClass* Class = UCrowdyRpcTestTarget::StaticClass();
+	UFunction* Structs = Class->FindFunctionByName(TEXT("Structs_Implementation"));
+	UFunction* MacroEvent = Class->FindFunctionByName(TEXT("MacroEvent_Implementation"));
+	if (!Structs || !MacroEvent)
+	{
+		AddError(TEXT("test fixture functions did not resolve"));
+		return false;
+	}
+
+	FCrowdyRPC::InvalidateFnInfoCache();
+	FCrowdyRPC::GetFnInfo(Structs);
+	FCrowdyRPC::GetFnInfo(MacroEvent);
+	TestEqual(TEXT("two functions cached before the reload"), FCrowdyRPC::NumCachedFnInfo(), 2);
+
+	FCoreUObjectDelegates::ReloadCompleteDelegate.Broadcast(EReloadCompleteReason::None);
+
+	TestEqual(TEXT("the reload drops every cached entry"), FCrowdyRPC::NumCachedFnInfo(), 0);
+
+	// And the value rebuilt afterwards is still the right one.
+	const FCrowdyFnInfo AfterReload = FCrowdyRPC::GetFnInfo(MacroEvent);
+	const FCrowdyFnInfo Fresh = FCrowdyRPC::BuildFnInfo(MacroEvent);
+	TestEqual(TEXT("function id survives the reload"), AfterReload.FunctionID, Fresh.FunctionID);
+	TestTrue(TEXT("recipient survives the reload"), AfterReload.Recipient == Fresh.Recipient);
+
+	FCrowdyRPC::InvalidateFnInfoCache();
 	return true;
 }
 

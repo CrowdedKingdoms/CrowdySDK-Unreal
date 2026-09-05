@@ -13,12 +13,17 @@ public class CrowdyReplication : ModuleRules
 			"CoreUObject",
 			"Engine",
 			"CrowdyNet",
-			"DeveloperSettings"
+			"DeveloperSettings",
+			"Json"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"AssetRegistry"
+			"AssetRegistry",
+			// The CrowdyCPP-backed API path (Phase 1 adoption of the async client).
+			"CrowdyCppBridge",
+			// IPluginManager, used by the vendored-version drift test to locate VENDOR.txt.
+			"Projects"
 		});
 	}
 }

@@ -2,72 +2,63 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "Core/GraphQL/Interfaces/ICrowdyQueryReceptionLayer.h"
-#include "Core/UDP/Interfaces/ICrowdyReceptionLayer.h"
-#include "Queries/Data/Teams/Types/FCrowdyGroup.h"
-#include "Queries/Data/Teams/Types/FCrowdyGroupMember.h"
-#include "Queries/Data/Teams/Types/FCrowdyGroupMembership.h"
-#include "Queries/Data/Teams/Types/FCrowdyGroupRole.h"
-#include "Queries/Data/Teams/Types/FCrowdyAppGroupPolicy.h"
-#include "Queries/Data/Teams/Types/FCrowdyTeamError.h"
-#include "Queries/Data/Teams/Enums/ECrowdyTeamCreationPolicy.h"
-#include "Queries/Data/Teams/Enums/ECrowdyTeamMembershipPolicy.h"
-#include "Queries/Data/Teams/Enums/ECrowdyTeamPermission.h"
-#include "Queries/Data/Teams/Types/FCrowdyRolePermissions.h"
+#include "Core/UDP/Subscription/FCrowdySubscription.h"
+#include "Queries/Data/Channels/Enums/ECrowdyChannelCreationPolicy.h"
+#include "Queries/Data/Channels/Enums/ECrowdyChannelMembershipPolicy.h"
+#include "Queries/Data/Channels/Enums/ECrowdyChannelPermission.h"
+#include "Queries/Data/Channels/Types/FCrowdyChannel.h"
+#include "Queries/Data/Channels/Types/FCrowdyChannelError.h"
+#include "Queries/Data/Channels/Types/FCrowdyChannelMember.h"
+#include "Queries/Data/Channels/Types/FCrowdyChannelMembership.h"
+#include "Queries/Data/Channels/Types/FCrowdyChannelPermissions.h"
+#include "Queries/Data/Channels/Types/FCrowdyChannelPolicy.h"
+#include "Queries/Data/Channels/Types/FCrowdyChannelRole.h"
 #include "Engine/TimerHandle.h"
 #include "CrowdyChannels.generated.h"
 
-class UCrowdyQuerySubsystem;
-class FCrowdyDataRegistry;
 class UCrowdyEventRouter;
+struct FChannelMessageNotification;
 
-// Channels reuse the same group model and error type as teams (group_type = channel); the
-// delegate payloads are the shared FCrowdyGroup / FCrowdyGroupMember / FCrowdyGroupRole /
-// FCrowdyGroupMembership / FCrowdyAppGroupPolicy / FCrowdyTeamError.
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelSuccess, FCrowdyGroup, Channel);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelSuccess, FCrowdyChannel, Channel);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelsSuccess, TArray<FCrowdyGroup>, Channels);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelsSuccess, TArray<FCrowdyChannel>, Channels);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelMemberSuccess, FCrowdyGroupMember, Member);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelMemberSuccess, FCrowdyChannelMember, Member);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelMembersSuccess, TArray<FCrowdyGroupMember>, Members);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelMembersSuccess, TArray<FCrowdyChannelMember>, Members);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelRoleSuccess, FCrowdyGroupRole, Role);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelRoleSuccess, FCrowdyChannelRole, Role);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelRolesSuccess, TArray<FCrowdyGroupRole>, Roles);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelRolesSuccess, TArray<FCrowdyChannelRole>, Roles);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnMyChannelsSuccess, TArray<FCrowdyGroupMembership>, Memberships);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnMyChannelsSuccess, TArray<FCrowdyChannelMembership>, Memberships);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelPolicySuccess, FCrowdyAppGroupPolicy, Policy);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelPolicySuccess, FCrowdyChannelPolicy, Policy);
 
 DECLARE_DYNAMIC_DELEGATE(FOnChannelVoidSuccess);
 
-DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnChannelError, FCrowdyTeamError, Error, FString, Message);
+DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnChannelError, FCrowdyChannelError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyChannelsCacheChanged, TArray<FCrowdyGroupMembership>, Memberships);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyChannelsCacheChanged, TArray<FCrowdyChannelMembership>, Memberships);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnChannelMessageReceived, int64, ChannelId, FString, SenderUUID,
                                                const TArray<uint8>&, Payload);
 
+/**
+ * Channels: named message groups within one app, and the transport reliable RPCs ride on.
+ *
+ * Every server call here is asynchronous and answers through exactly one of its two delegates, including when the
+ * request never reaches the server. Publishing is not one of those calls: it goes out over UDP and is not
+ * acknowledged.
+ */
 UCLASS()
-class CROWDYSERVICES_API UCrowdyChannels : public UGameInstanceSubsystem, public ICrowdyQueryReceptionLayer,
-                                           public ICrowdyReceptionLayer
+class CROWDYSERVICES_API UCrowdyChannels : public UGameInstanceSubsystem
 {
 	GENERATED_BODY()
 
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
-
-	void InjectDependencies(FCrowdyDataRegistry* InDataRegistry, UCrowdyQuerySubsystem* InQuerySubsystem);
-
-	// GraphQL response plane (channel CRUD over the Game endpoint).
-	virtual void OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Response) override;
-	virtual TArray<EQueryResponseType> GetSupportedResponseType() const override;
-
-	// UDP message plane (inbound channel notifications, type 18 only).
-	virtual void OnMessageReceived(TSharedRef<ICrowdyMessage> Message) override;
-	virtual TArray<ECrowdyMessageType> GetSupportedResponseTypes() const override;
 
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Channels")
 	FOnMyChannelsCacheChanged OnMyChannelsCacheChanged;
@@ -80,103 +71,115 @@ public:
 	bool HasCachedChannels() const { return bCachePopulated; }
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Channels|Cache")
-	TArray<FCrowdyGroupMembership> GetCachedMyChannels() const { return CachedMyChannels; }
+	TArray<FCrowdyChannelMembership> GetCachedMyChannels() const { return CachedMyChannels; }
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Channels|Cache")
-	bool IsPlayerInChannel(int64 GroupId) const;
+	bool IsPlayerInChannel(int64 ChannelId) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Cache")
-	bool GetMyChannelById(int64 GroupId, FCrowdyGroupMembership& OutMembership) const;
+	bool GetMyChannelById(int64 ChannelId, FCrowdyChannelMembership& OutMembership) const;
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Channels|Cache")
 	bool IsInAnyChannel() const;
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Channels|Cache")
-	bool HasPermissionInChannel(int64 GroupId, ECrowdyTeamPermission Permission) const;
+	bool HasPermissionInChannel(int64 ChannelId, ECrowdyChannelPermission Permission) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Queries|Request")
-	void GetPendingJoinRequests(int64 GroupId, FOnChannelMembersSuccess OnSuccess, FOnChannelError OnError);
+	void GetPendingJoinRequests(int64 ChannelId, FOnChannelMembersSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Queries|Channel")
 	void GetMyChannels(FOnMyChannelsSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Queries|Channel")
-	void GetChannel(int64 GroupId, FOnChannelSuccess OnSuccess, FOnChannelError OnError);
+	void GetChannel(int64 ChannelId, FOnChannelSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Queries|Channel")
 	void GetChannels(FOnChannelsSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Queries|Members")
-	void GetChannelMembers(int64 GroupId, FOnChannelMembersSuccess OnSuccess, FOnChannelError OnError);
+	void GetChannelMembers(int64 ChannelId, FOnChannelMembersSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Queries|Roles")
-	void GetChannelRoles(int64 GroupId, FOnChannelRolesSuccess OnSuccess, FOnChannelError OnError);
+	void GetChannelRoles(int64 ChannelId, FOnChannelRolesSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Queries|Policy")
 	void GetChannelPolicy(FOnChannelPolicySuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Channel")
 	void CreateChannel(const FString& Name, const FString& Description,
-	                   ECrowdyTeamMembershipPolicy MembershipPolicy, bool bMembersCanSend,
+	                   ECrowdyChannelMembershipPolicy MembershipPolicy, bool bMembersCanSend,
 	                   FOnChannelSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Channel")
-	void UpdateChannel(int64 GroupId, const FString& Name, const FString& Description,
+	void UpdateChannel(int64 ChannelId, const FString& Name, const FString& Description,
 	                   FOnChannelSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Channel")
-	void DeleteChannel(int64 GroupId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError);
+	void DeleteChannel(int64 ChannelId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Channel")
-	void JoinChannel(int64 GroupId, FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError);
+	void JoinChannel(int64 ChannelId, FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Request")
-	void RequestToJoinChannel(int64 GroupId, FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError);
+	void RequestToJoinChannel(int64 ChannelId, FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Channel")
-	void LeaveChannel(int64 GroupId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError);
+	void LeaveChannel(int64 ChannelId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Members")
-	void AddChannelMember(int64 GroupId, int64 UserId, FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError);
+	void AddChannelMember(int64 ChannelId, int64 UserId, FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Members")
-	void RemoveChannelMember(int64 GroupId, int64 UserId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError);
+	void RemoveChannelMember(int64 ChannelId, int64 UserId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Roles")
-	void CreateChannelRole(int64 GroupId, const FString& RoleName, FCrowdyRolePermissions Permissions,
+	void CreateChannelRole(int64 ChannelId, const FString& RoleName, FCrowdyChannelPermissions Permissions,
 	                       int32 Rank, FOnChannelRoleSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Roles")
-	void UpdateChannelRole(int64 GroupRoleId, const FString& RoleName, FCrowdyRolePermissions Permissions,
+	void UpdateChannelRole(int64 ChannelRoleId, const FString& RoleName, FCrowdyChannelPermissions Permissions,
 	                       FOnChannelRoleSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Roles")
-	void DeleteChannelRole(int64 GroupRoleId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError);
+	void DeleteChannelRole(int64 ChannelRoleId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Roles")
-	void SetChannelMemberRoles(int64 GroupId, int64 UserId, const TArray<int64>& RoleIds,
+	void SetChannelMemberRoles(int64 ChannelId, int64 UserId, const TArray<int64>& RoleIds,
 	                           FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Policy")
-	void SetChannelPolicy(ECrowdyTeamCreationPolicy CreationPolicy,
-	                      ECrowdyTeamMembershipPolicy DefaultMembershipPolicy,
+	void SetChannelPolicy(ECrowdyChannelCreationPolicy CreationPolicy,
+	                      ECrowdyChannelMembershipPolicy DefaultMembershipPolicy,
 	                      FOnChannelPolicySuccess OnSuccess, FOnChannelError OnError);
 
 	// Publish a raw payload to a channel over UDP (type 17). Delivered to every active member
 	// except the sender as a type-18 notification. The caller must already be a member with the
-	// send_messages channel permission. RPC payloads ride this in Phase 3.
+	// send_messages channel permission. RPC payloads ride over this transport.
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Transport")
 	void PublishChannelMessage(int64 ChannelId, const TArray<uint8>& Payload);
-
-	// ── Reliable RPC channels ────────────────────────────────────────────────
-	// A Multicast CrowdyEvent routes over a channel (every member, any distance, never decay-thinned).
-	// On connect the SDK joins every channel any Multicast references plus the default session channel,
-	// since a client only receives on channels it has joined.
 
 	// Joins all channels referenced by Multicast CrowdyEvents (by name, resolved against the app's
 	// channel list) plus the default session channel, then flushes queued reliable sends. Idempotent
 	// and safe to call again on reconnect; the SDK calls it once the UDP connection comes up.
+	// A Multicast CrowdyEvent routes over a channel (every member, any distance, never decay-thinned),
+	// and a client only receives on channels it has joined.
 	void BootstrapReliableRpcChannels();
+
+	/**
+	 * The channel names this client must join, given the channels the app's Multicast CrowdyEvents name.
+	 *
+	 * The session channel is ALWAYS included. It carries the Game Model plane's model-changed pings and effect
+	 * signals, and it is the target of a subsystem CrowdyState delta, none of which any Multicast CrowdyEvent
+	 * declares. Deriving the set from RPC usage alone therefore leaves a project with no channel-routed events
+	 * joined to nothing, and since a client only receives on channels it has joined, every signal and every
+	 * re-pull ping is dropped with nothing logged anywhere.
+	 *
+	 * Sorted, with the session channel last, so the join order is deterministic. Pure and static so the rule is
+	 * unit-tested without a live connection.
+	 */
+	static TArray<FString> BuildDesiredJoinNames(const TSet<FString>& MulticastChannelNames,
+	                                             const FString& SessionChannelName);
 
 	// Publishes an encoded reliable RPC payload over the named channel (empty = default session
 	// channel). Sends made before the bootstrap finishes are queued and flushed when it does.
@@ -197,14 +200,21 @@ public:
 	int64 GetSessionChannelId() const { return SessionChannelId; }
 
 private:
-	UPROPERTY()
-	UCrowdyQuerySubsystem* QuerySubsystem = nullptr;
-
-	mutable FCriticalSection CallbackMutex;
-	TMap<EQueryResponseType, TArray<TFunction<void(TSharedPtr<ICrowdyQueryResponse>)>>> PendingCallbacks;
-
-	TArray<FCrowdyGroupMembership> CachedMyChannels;
+	TArray<FCrowdyChannelMembership> CachedMyChannels;
 	bool bCachePopulated = false;
+
+	// Inbound channel notifications (type 18). Subscribed lazily: the router does not exist yet when
+	// this subsystem initializes, so the first opportunity to reach it is the UDP-connect bootstrap.
+	FCrowdySubscription ChannelMessageSubscription;
+	void EnsureChannelSubscription();
+	void HandleChannelMessageNotification(const FChannelMessageNotification& Notification);
+
+	/**
+	 * Marks this subsystem's usable lifetime. Every completion handed to the shared API client holds it weakly, so
+	 * a request still in flight at teardown lands on nothing rather than on a subsystem whose state has been
+	 * cleared.
+	 */
+	TSharedPtr<uint8> LiveSessionToken;
 
 	uint8 OutgoingSequence = 0;
 
@@ -215,6 +225,13 @@ private:
 	TSet<int64> RpcChannelIds;                    // channels we receive reliable RPCs on
 	TMap<FString, int64> JoinedChannelNameToId;   // send-side name -> joined channel id
 	FTimerHandle RpcChannelTimeoutTimer;
+
+	// Self-retries spent on the current bootstrap. A failed bootstrap used to wait for a UDP reconnect or the next
+	// reliable send, and a client that only consumes Game Model signals makes neither, so one transient read failure
+	// cost it every signal for the rest of the session. Reset by a fresh external kick and by a successful bootstrap,
+	// deliberately not by a self-retry, so the budget bounds the chain rather than the session.
+	int32 BootstrapRetryCount = 0;
+	FTimerHandle RpcChannelRetryTimer;
 
 	// A reliable send queued until the bootstrap completes.
 	struct FPendingReliableSend
@@ -237,6 +254,10 @@ private:
 
 	// Bootstrap chain: list app channels -> list my memberships -> plan the joins -> join each channel
 	// sequentially (create the session channel if missing) -> ready.
+	// Arms the timeout and enters the chain. Shared by the external kick and the self-retry, which differ only in
+	// whether they reset the retry budget first.
+	void StartBootstrapAttempt();
+	void RetryRpcChannelBootstrap();
 	void BootstrapFetchAppChannels();
 	void BootstrapFetchMyChannels();
 	void BootstrapPlanJoins();
@@ -254,11 +275,4 @@ private:
 	UCrowdyEventRouter* ResolveEventRouter() const;
 
 	int64 GetAppId() const;
-
-	void PushCallback(EQueryResponseType Type, TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback);
-	void FireCallback(TSharedPtr<ICrowdyQueryResponse> Response);
-
-	static TSharedPtr<FJsonObject> MakeVarsWithStringArray(
-		const TMap<FString, FString>& ScalarFields,
-		const TMap<FString, TArray<FString>>& StringArrayFields);
 };

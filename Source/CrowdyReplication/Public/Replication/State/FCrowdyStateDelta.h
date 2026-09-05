@@ -4,8 +4,8 @@
 #include "FCrowdyStateDelta.generated.h"
 
 // Flag bits carried in FCrowdyStateDelta::Flags. Defined here (the payload's home) so the encode/send
-// path (Phase 3) and the receive/apply path (Phase 5) agree on the bit layout; only bit0/bit1 are used
-// today, the rest are reserved and must stay zero on the wire.
+// path and the receive/apply path agree on the bit layout; only bit0/bit1 are used today, the rest are
+// reserved and must stay zero on the wire.
 namespace CrowdyStateDeltaFlags
 {
 	// The blob is a full keyframe (every layout property present), not a hot delta. Set by the encoder
@@ -34,12 +34,12 @@ struct CROWDYREPLICATION_API FCrowdyStateDelta
 {
 	GENERATED_BODY()
 
-	// Owning class (UCrowdyClassRegistry id widened). Phase 3 fills it from the sending entity's class;
+	// Owning class (UCrowdyClassRegistry id widened). The sender fills it from the sending entity's class;
 	// the codec itself does not read it.
 	UPROPERTY()
 	int64 ClassID = 0;
 
-	// Target entity's network NetID. Phase 4 resolves the local actor from this; invalid until then.
+	// Target entity's network NetID. The receiver resolves the local actor from this; invalid until then.
 	UPROPERTY()
 	FGuid EntityID;
 

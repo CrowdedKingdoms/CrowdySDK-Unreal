@@ -15,10 +15,10 @@
  * The values included in this enumeration are:
  * - BAD_MESSAGE: Represents an invalid or unrecognized message.
  * - ACTOR_UPDATE_REQUEST: Client request to update actor data.
- * - ACTOR_UPDATE_RESPONSE: Server response after processing a failed actor update request.
+ * - ACTOR_UPDATE_RESPONSE: No longer sent by the server; kept as a reserved wire identifier.
  * - ACTOR_UPDATE_NOTIFICATION: Notification of actor data updates to subscribers.
  * - VOXEL_UPDATE_REQUEST: Client request to update voxel data.
- * - VOXEL_UPDATE_RESPONSE: Server response after processing a voxel update request.
+ * - VOXEL_UPDATE_RESPONSE: No longer sent by the server; kept as a reserved wire identifier.
  * - VOXEL_UPDATE_NOTIFICATION: Notification of voxel data updates to subscribers.
  * - CLIENT_AUDIO_PACKET: Packet containing client-side audio data.
  * - CLIENT_AUDIO_NOTIFICATION: Notification of audio-related events on the client.
@@ -43,14 +43,28 @@ enum class ECrowdyMessageType : uint8
     // server->client (deliver to every member except the sender).
     CHANNEL_MESSAGE_REQUEST = 17 UMETA(DisplayName = "Channel Message Request", Hidden),
     CHANNEL_MESSAGE_NOTIFICATION = 18 UMETA(DisplayName = "Channel Message Notification", Hidden),
+
+    // Says an actor is still present without restating its state. Carries the spatial header and nothing else, so
+    // it costs a fraction of an actor update and is what an idle actor sends between full ones.
+    CLIENT_ACTOR_HEARTBEAT = 26 UMETA(DisplayName = "Client Actor Heartbeat", Hidden),
     
     
     
     ACTOR_UPDATE_REQUEST = 128 UMETA(DisplayName = "Actor Update Request", Hidden),
-    ACTOR_UPDATE_RESPONSE = 129 UMETA(DisplayName = "Actor Update Response"),
+
+    // Retired. The server stopped answering an actor update and reports every failure as a generic error
+    // instead, so this opcode never arrives and nothing decodes it. The value stays reserved so the numbering
+    // behind it does not shift. Do not add handling for it.
+    ACTOR_UPDATE_RESPONSE = 129 UMETA(DisplayName = "Actor Update Response (Retired)", Hidden),
+
     ACTOR_UPDATE_NOTIFICATION = 130 UMETA(DisplayName = "Actor Update Notification"),
     VOXEL_UPDATE_REQUEST = 131 UMETA(DisplayName = "Voxel Update Request", Hidden),
-    VOXEL_UPDATE_RESPONSE = 132 UMETA(DisplayName = "Voxel Update Response"),
+
+    // Retired, on the same terms as the actor response above. This one used to carry the rejection that
+    // reverted an optimistic local voxel placement, so a rejected edit now leaves that placement standing.
+    // Reviving the revert means reading the generic error, which is a server-side conversation first.
+    VOXEL_UPDATE_RESPONSE = 132 UMETA(DisplayName = "Voxel Update Response (Retired)", Hidden),
+
     VOXEL_UPDATE_NOTIFICATION = 133 UMETA(DisplayName = "Voxel Update Notification"),
     CLIENT_AUDIO_PACKET = 134 UMETA(DisplayName = "Client Audio Packet", Hidden),
     CLIENT_AUDIO_NOTIFICATION = 135 UMETA(DisplayName = "Client Audio Notification", Hidden),
@@ -196,7 +210,7 @@ enum class ECrowdyReplicationDistance : uint8
 /**
  * Who runs a replicated CrowdyEvent, and over which transport. Spatial Multicast runs it on everyone
  * in range over the chunk-based path (decay-thinned, position-dependent). Multicast runs it on every
- * member of the session channel regardless of distance, over the channel transport — it ignores the
+ * member of the session channel regardless of distance, over the channel transport: it ignores the
  * sender's chunk coordinates. OwningClient runs it only on the target entity's owner (a non-owner
  * routes a request to that owner); Host runs it only on the elected host (a non-host routes a request
  * to the host, and the host may act on any entity it has locally, regardless of ownership).
@@ -206,7 +220,7 @@ enum class ECrowdyEventRecipient : uint8
 {
     // Everyone in range runs it, over the chunk-based spatial path (decay-thinned). The default.
     SpatialMulticast UMETA(DisplayName = "Spatial Multicast"),
-    // Every member of the session channel runs it, over the channel transport — any distance, no decay.
+    // Every member of the session channel runs it, over the channel transport: any distance, no decay.
     Multicast        UMETA(DisplayName = "Multicast"),
     // Only the client that owns the target entity runs it.
     OwningClient     UMETA(DisplayName = "Owning Client"),

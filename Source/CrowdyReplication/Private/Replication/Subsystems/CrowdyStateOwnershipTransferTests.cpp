@@ -22,7 +22,7 @@ namespace
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
 
 	// UCrowdyAutoRegistry is a UGameInstanceSubsystem (ClassWithin=UGameInstance); a transient-package NewObject
-	// trips a ClassWithin ensure, so outer it to a bare GameInstance (the shared Phase 1 idiom).
+	// trips a ClassWithin ensure, so outer it to a bare GameInstance.
 	UCrowdyAutoRegistry* MakeOwnershipRegistry()
 	{
 		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());

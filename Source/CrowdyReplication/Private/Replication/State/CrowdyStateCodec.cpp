@@ -1,9 +1,12 @@
 #include "Replication/State/CrowdyStateCodec.h"
 
+#include "Replication/CrowdyBoundedMemoryReader.h"
 #include "Replication/State/FCrowdyRepLayout.h"
 #include "Replication/State/FCrowdyStateDelta.h"
 #include "CrowdyReplicationLog.h"
 #include "HAL/UnrealMemory.h"     // FMemory (scratch value for change detection)
+#include "Memory/MemoryView.h"    // MakeMemoryView (bounded view over a quantized sub-blob)
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/StructuredArchive.h"
@@ -13,27 +16,6 @@
 
 namespace
 {
-	// An FMemoryReader whose ArMaxSerializeSize is pinned to the blob length so the engine's own
-	// length-prefixed-container guard fires. A plain FMemoryReader leaves ArMaxSerializeSize == 0, which
-	// GATES OFF the FString/FName load path's `(MaxSerializeSize > 0) && (SaveNum > MaxSerializeSize)`
-	// self-protection (FString::SerializeItem in String.cpp.inl): the untrusted int32 length prefix would
-	// then drive Str.Data.AddUninitialized() to a multi-GB allocation BEFORE the subsequent short char
-	// read is detected, turning a tiny forged packet into a remote OOM. Setting a positive cap makes the
-	// engine reject SaveNum > blob-size up front and the decode drops cleanly with no giant allocation.
-	// SetLimitSize alone is insufficient: it caps TotalSize()/Serialize but not GetMaxSerializeSize(),
-	// which is what the string path allocates against.
-	class FCrowdyBoundedMemoryReader : public FMemoryReader
-	{
-	public:
-		FCrowdyBoundedMemoryReader(const TArray<uint8>& InBytes, bool bIsPersistent)
-			: FMemoryReader(InBytes, bIsPersistent)
-		{
-			// No length prefix inside this blob can legitimately exceed the blob itself, so the blob
-			// size is the tightest correct cap.
-			ArMaxSerializeSize = InBytes.Num();
-		}
-	};
-
 	// Upper bound on the byte length of one quantized (net-serialized) value the decoder will accept
 	// from an untrusted peer. The net serializers in scope (the FVector_NetQuantize family and similar
 	// small structs) encode to a handful of bytes; a forged length past this cannot be allowed to drive
@@ -44,6 +26,11 @@ namespace
 	// keeps the high bit set past the 10th byte is malformed and must be rejected rather than shifted
 	// past the width of the value.
 	constexpr int32 CrowdyStateMaxVarUIntBytes = 10;
+
+	// How many layout slots the encoder's per-emit scratch holds without touching the heap. Sized well
+	// above the replicated classes in this project (the widest test fixture is 14) rather than tuned to
+	// them, because a class past it merely spills to the heap, which is what every emit did before.
+	constexpr int32 CrowdyStateInlineSlots = 64;
 
 	void WriteVarUInt(FArchive& Ar, uint64 Value)
 	{
@@ -104,8 +91,8 @@ namespace
 	// A property is quantized iff it is an FStructProperty whose UScriptStruct declares a native net
 	// serializer. FStructProperty::NetSerializeItem FATAL-logs the "Deprecated code path" for any struct
 	// that is NOT STRUCT_NetSerializeNative (verified in engine PropertyStruct.cpp), so encode and decode
-	// MUST gate on this identically a plain FVector/FRotator has no net serializer and rides
-	// SerializeItem, which is the correctness floor; quantization is opportunistic.
+	// MUST gate on this identically. FVector and FRotator each declare a native net serializer, so both ride
+	// this branch and quantize; a plain USTRUCT declaring none rides SerializeItem and round-trips exactly.
 	bool IsNetQuantizedProperty(const FProperty* Prop)
 	{
 		const FStructProperty* StructProp = CastField<FStructProperty>(Prop);
@@ -114,11 +101,66 @@ namespace
 			&& (StructProp->Struct->StructFlags & STRUCT_NetSerializeNative) != 0;
 	}
 
+	/**
+	 * The numeric property carrying an enum leaf's raw value, or null when the property is not an enum.
+	 *
+	 * An enum reaches the wire as its VALUE here, never as its entry name, and that is a deliberate
+	 * departure from what FProperty::SerializeItem does for these two declarations. Both
+	 * `enum class E : uint8` (an FEnumProperty) and TEnumAsByte (an FByteProperty carrying an enum) are
+	 * serialized BY NAME by the engine, and a memory archive writes an FName as a length-prefixed string:
+	 * measured, one such field costs 51 bytes against 4 for the plain byte beside it. On a plane where a
+	 * field can carry CrowdyHeartbeat, that is paid per entity per keyframe interval, and receive drain is
+	 * what bounds the population.
+	 *
+	 * The name form buys resilience to an enum's values being renumbered, which is worth nothing here: the
+	 * layout hash both peers agree on is computed from the same build's reflection, so the two ends always
+	 * share a value space. It costs something real in exchange, and it fails badly: an entry RENAMED
+	 * between builds leaves the layout hash identical, so the delta is accepted, the name lookup misses,
+	 * and the value silently becomes the enum's maximum. A value cannot miss.
+	 *
+	 * The two declarations need two different treatments, and it is not a stylistic split. An FEnumProperty
+	 * OWNS a separate underlying property, whose SerializeItem is the plain integer one, so handing the
+	 * value to it is enough. A TEnumAsByte is a single FByteProperty that carries the enum on itself: there
+	 * is no second property to defer to, and calling its own SerializeItem would take the very by-name
+	 * branch this exists to avoid. That one is written as a raw byte instead, which is byte-identical to
+	 * what a plain uint8 leaf already produces.
+	 */
+	const FNumericProperty* EnumUnderlyingProperty(const FProperty* Prop)
+	{
+		const FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop);
+		return EnumProp ? EnumProp->GetUnderlyingProperty() : nullptr;
+	}
+
+	const FByteProperty* EnumAsByteProperty(const FProperty* Prop)
+	{
+		const FByteProperty* ByteProp = CastField<FByteProperty>(Prop);
+		return (ByteProp && ByteProp->Enum) ? ByteProp : nullptr;
+	}
+
 	// Serializes one value into Writer at its current position. A net-quantized struct is framed as a
 	// length prefix plus its NetSerializeItem bytes so the bit-packed sub-encoding never disturbs the
-	// main archive's byte position; everything else rides SerializeItem, byte-identical to the RPC plane.
+	// main archive's byte position; an enum rides its raw value (see EnumUnderlyingProperty); everything
+	// else rides SerializeItem, byte-identical to the RPC plane.
 	void EncodeValue(const FProperty* Prop, void* ValuePtr, FArchive& Writer)
 	{
+		if (const FNumericProperty* Underlying = EnumUnderlyingProperty(Prop))
+		{
+			// The underlying property is addressed at the VALUE pointer, not through the container: it is
+			// owned by the enum property rather than by the struct, so its own offset is not the member's.
+			// This is the same branch FEnumProperty::SerializeItem itself falls through to when an archive
+			// is neither loading nor saving, taken deliberately rather than by accident.
+			FStructuredArchiveFromArchive Adapter(Writer);
+			Underlying->SerializeItem(Adapter.GetSlot(), ValuePtr, nullptr);
+			return;
+		}
+
+		if (const FByteProperty* EnumAsByte = EnumAsByteProperty(Prop))
+		{
+			uint8 Value = EnumAsByte->GetPropertyValue(ValuePtr);
+			Writer << Value;
+			return;
+		}
+
 		if (IsNetQuantizedProperty(Prop))
 		{
 			TArray<uint8> Sub;
@@ -144,6 +186,32 @@ namespace
 	// erred. The length is untrusted, so both bounds are checked before the scratch read.
 	bool DecodeValue(const FProperty* Prop, void* ValuePtr, FMemoryReader& Reader, const TArray<uint8>& Blob)
 	{
+		// The mirror of EncodeValue's first branch, and it must stay the first branch here too: the two
+		// decide the framing of the bytes, so a value written by one and read by the other is the whole
+		// contract. A short read leaves Reader in error and drops the delta, exactly as every other value
+		// here does. No range check is needed or wanted: every bit pattern the underlying integer can hold
+		// is a value the enum's own space either names or does not, and one it does not name is answered
+		// by the consumer rather than rejected here.
+		if (const FNumericProperty* Underlying = EnumUnderlyingProperty(Prop))
+		{
+			FStructuredArchiveFromArchive Adapter(Reader);
+			Underlying->SerializeItem(Adapter.GetSlot(), ValuePtr, nullptr);
+			return !Reader.IsError();
+		}
+
+		if (const FByteProperty* EnumAsByte = EnumAsByteProperty(Prop))
+		{
+			uint8 Value = 0;
+			Reader << Value;
+			if (Reader.IsError())
+			{
+				return false;
+			}
+
+			EnumAsByte->SetPropertyValue(ValuePtr, Value);
+			return true;
+		}
+
 		if (IsNetQuantizedProperty(Prop))
 		{
 			int32 Len = 0;
@@ -162,18 +230,15 @@ namespace
 				return false;
 			}
 
-			TArray<uint8> Scratch;
-			Scratch.SetNumUninitialized(Len);
-			if (Len > 0)
-			{
-				Reader.Serialize(Scratch.GetData(), Len);
-			}
-			if (Reader.IsError())
-			{
-				return false;
-			}
-
-			FMemoryReader SubR(Scratch, /*bIsPersistent=*/true);
+			// Read where the bytes already are. The bounds above have proven the sub-blob lies inside Blob, so a
+			// view over those bytes replaces copying them out into a second array first. ArMaxSerializeSize is
+			// pinned to the sub-length so a forged length prefix inside the sub-blob cannot reach past it
+			// either. The view carries its own position, so the outer reader is stepped over the sub-blob
+			// explicitly once the value is read.
+			const int64 SubStart = Reader.Tell();
+			FMemoryReaderView SubR(MakeMemoryView(Blob.GetData() + SubStart, static_cast<uint64>(Len)),
+				/*bIsPersistent=*/true);
+			SubR.ArMaxSerializeSize = Len;
 			Prop->NetSerializeItem(SubR, /*Map*/nullptr, ValuePtr);
 			if (SubR.IsError())
 			{
@@ -182,6 +247,8 @@ namespace
 					*Prop->GetName());
 				return false;
 			}
+
+			Reader.Seek(SubStart + Len);
 			return true;
 		}
 
@@ -189,6 +256,126 @@ namespace
 		Prop->SerializeItem(Adapter.GetSlot(), ValuePtr, nullptr);
 		return !Reader.IsError();
 	}
+}
+
+FCrowdyStateDecodeScratch::~FCrowdyStateDecodeScratch()
+{
+	Release();
+}
+
+void FCrowdyStateDecodeScratch::Release()
+{
+	// Values are destroyed through the properties snapshotted when the block was built, never through a layout
+	// that may since have been freed and rebuilt. A block whose class has gone away is ABANDONED instead: its
+	// properties belong to that class, so a reload that reinstanced it leaves them dangling and destroying
+	// through them would dereference freed memory. Leaking the values of a class that no longer exists is
+	// bounded and editor-only.
+	if (Block && OwnerClass.IsValid())
+	{
+		for (int32 Index = 0; Index < SlotProperties.Num(); ++Index)
+		{
+			if (SlotProperties[Index] && SlotOffsets[Index] != INDEX_NONE)
+			{
+				SlotProperties[Index]->DestroyValue(Block + SlotOffsets[Index]);
+			}
+		}
+	}
+
+	if (Block)
+	{
+		FMemory::Free(Block);
+		Block = nullptr;
+	}
+
+	BlockSize = 0;
+	LayoutHash = 0;
+	OwnerClass = nullptr;
+	SlotProperties.Reset();
+	SlotOffsets.Reset();
+}
+
+void FCrowdyStateDecodeScratch::EnsureForLayout(const FCrowdyRepLayout& Layout, const UClass* Owner)
+{
+	// The block is kept only while it was built for this exact live class: a class that was reinstanced or
+	// collected leaves the snapshotted properties describing nothing, and the weak handle is what sees that.
+	if (Block && Owner && OwnerClass.Get() == Owner && LayoutHash == Layout.LayoutHash)
+	{
+		return;
+	}
+
+	Release();
+
+	if (!Owner)
+	{
+		return;
+	}
+
+	// Pack the slots in layout order, each at its own value's alignment. Sized from the layout rather than from
+	// the class, so the block stays small for a layout on a wide class and is never shaped like an instance.
+	const int32 N = Layout.Properties.Num();
+	SlotProperties.SetNumZeroed(N);
+	SlotOffsets.Init(INDEX_NONE, N);
+
+	int32 Size = 0;
+	int32 MaxAlignment = 1;
+	for (int32 Index = 0; Index < N; ++Index)
+	{
+		const FProperty* Prop = Layout.Properties[Index].Property;
+		if (!Prop)
+		{
+			continue;
+		}
+
+		const int32 Alignment = FMath::Max(1, Prop->GetMinAlignment());
+		Size = Align(Size, Alignment);
+		SlotProperties[Index] = Prop;
+		SlotOffsets[Index] = Size;
+		// Static arrays (ArrayDim > 1) are rejected at discovery, so GetSize() is one value's worth.
+		Size += Prop->GetSize();
+		MaxAlignment = FMath::Max(MaxAlignment, Alignment);
+	}
+
+	if (Size <= 0)
+	{
+		Release();
+		return;
+	}
+
+	// Zeroed before anything is constructed, so the padding between slots is deterministic.
+	Block = static_cast<uint8*>(FMemory::Malloc(Size, MaxAlignment));
+	FMemory::Memzero(Block, Size);
+	BlockSize = Size;
+
+	for (int32 Index = 0; Index < N; ++Index)
+	{
+		if (SlotProperties[Index])
+		{
+			SlotProperties[Index]->InitializeValue(Block + SlotOffsets[Index]);
+		}
+	}
+
+	OwnerClass = Owner;
+	LayoutHash = Layout.LayoutHash;
+}
+
+bool FCrowdyStateDecodeScratch::DescribesLayout(const FCrowdyRepLayout& Layout) const
+{
+	return Block != nullptr && LayoutHash == Layout.LayoutHash && SlotProperties.Num() == Layout.Properties.Num();
+}
+
+void* FCrowdyStateDecodeScratch::SlotFor(int32 LayoutIndex) const
+{
+	if (!Block || !SlotOffsets.IsValidIndex(LayoutIndex) || SlotOffsets[LayoutIndex] == INDEX_NONE)
+	{
+		return nullptr;
+	}
+	return Block + SlotOffsets[LayoutIndex];
+}
+
+bool FCrowdyStateDecodeScratch::Contains(const void* Address) const
+{
+	const uint8* const Byte = static_cast<const uint8*>(Address);
+	return Block && Byte >= Block && Byte < Block + BlockSize;
 }
 
 void FCrowdyStateCodec::Encode(const FCrowdyRepLayout& Layout, const void* Container, const TBitArray<>& Dirty,
@@ -201,7 +388,9 @@ void FCrowdyStateCodec::Encode(const FCrowdyRepLayout& Layout, const void* Conta
 	// Collect the present layout indices in ascending order. A keyframe forces every slot present; a hot
 	// delta takes exactly the set Dirty bits (bounded by N, so an over-long Dirty array cannot leak a
 	// slot that does not exist in the layout).
-	TArray<int32> Present;
+	// Inline storage: this runs once per emitted delta, and a replicated class with more slots than this
+	// spills to the heap exactly as it did before rather than being refused.
+	TArray<int32, TInlineAllocator<CrowdyStateInlineSlots>> Present;
 	Present.Reserve(N);
 	for (int32 Index = 0; Index < N; ++Index)
 	{
@@ -241,7 +430,7 @@ void FCrowdyStateCodec::Encode(const FCrowdyRepLayout& Layout, const void* Conta
 	}
 	else
 	{
-		TArray<uint8> Mask;
+		TArray<uint8, TInlineAllocator<(CrowdyStateInlineSlots + 7) / 8>> Mask;
 		Mask.SetNumZeroed(BitmaskBytes);
 		for (int32 Index : Present)
 		{
@@ -269,9 +458,18 @@ void FCrowdyStateCodec::Encode(const FCrowdyRepLayout& Layout, const void* Conta
 }
 
 bool FCrowdyStateCodec::Decode(const FCrowdyRepLayout& Layout, int64 IncomingLayoutHash, const TArray<uint8>& Blob,
-	void* Container, TArray<int32>& OutChangedIndices)
+	void* Container, TArray<int32>& OutChangedIndices, TArray<int32>* OutPresentIndices,
+	FCrowdyStateDecodeScratch* Scratch)
 {
+	// Off unless crowdy.state.scopes is set. It nests inside the enclosing delivery scope, so leaving it on
+	// would add two timestamps per delta there and make two runs that carry it differently incomparable.
+	TRACE_CPUPROFILER_EVENT_SCOPE_CONDITIONAL(Crowdy_DecodeStateDelta, CrowdyReplicationProfile::StateScopes());
+
 	OutChangedIndices.Reset();
+	if (OutPresentIndices)
+	{
+		OutPresentIndices->Reset();
+	}
 
 	const int32 N = Layout.Properties.Num();
 
@@ -322,7 +520,9 @@ bool FCrowdyStateCodec::Decode(const FCrowdyRepLayout& Layout, int64 IncomingLay
 
 	// Resolve the present layout indices (ascending). Both selector paths reject anything out of range so
 	// the value loop below only ever indexes a real layout slot.
-	TArray<int32> Present;
+	// Inline storage, mirroring the encoder: this runs once per received delta, and a replicated class with
+	// more slots than this spills to the heap exactly as it did before rather than being refused.
+	TArray<int32, TInlineAllocator<CrowdyStateInlineSlots>> Present;
 	if (SelectorMode == 0)
 	{
 		const int32 BitmaskBytes = (N + 7) / 8;
@@ -332,7 +532,7 @@ bool FCrowdyStateCodec::Decode(const FCrowdyRepLayout& Layout, int64 IncomingLay
 				TEXT("CrowdyStateCodec::Decode: blob too short for a %d-byte bitmask; dropping delta."), BitmaskBytes);
 			return false;
 		}
-		TArray<uint8> Mask;
+		TArray<uint8, TInlineAllocator<(CrowdyStateInlineSlots + 7) / 8>> Mask;
 		Mask.SetNumUninitialized(BitmaskBytes);
 		if (BitmaskBytes > 0)
 		{
@@ -392,9 +592,31 @@ bool FCrowdyStateCodec::Decode(const FCrowdyRepLayout& Layout, int64 IncomingLay
 		}
 	}
 
+	// Reported before the body runs, so it describes the DELTA rather than the outcome of applying it: a caller
+	// decoding into a buffer shared between targets needs to know what arrived even for slots whose value
+	// happened to match what the previous target left behind. A mid-body failure still returns false and such a
+	// caller applies nothing, so publishing this early cannot make a dropped delta look delivered.
+	if (OutPresentIndices)
+	{
+		*OutPresentIndices = Present;
+	}
+
+	// A scratch block that lies inside the container would compare every value against itself and report
+	// nothing as changed, so it is refused here and each value falls back to its own allocation. The two are
+	// separate allocations by construction (a block is sized by the layout, never shaped like a class), so
+	// this is a guard against a caller handing over the wrong buffer rather than a case that can arise on its
+	// own.
+	// A block the caller already built for this layout is taken as it is, so a caller that prepared it does not
+	// pay the class handle resolve a second time on every delta.
+	if (Scratch && !Scratch->DescribesLayout(Layout))
+	{
+		Scratch->EnsureForLayout(Layout, Layout.OwnerClass.Get());
+	}
+	const bool bUseScratch = Scratch && Scratch->IsReady() && !Scratch->Contains(Container);
+
 	// Positional body: decode each present value in ascending index order into a scratch value, then write it
 	// onto the live container and record the slot ONLY when it actually differs from the value already there.
-	// "Changed" must mean "the value moved", not merely "present in the delta": the keyframe heartbeat (Phase 5)
+	// "Changed" must mean "the value moved", not merely "present in the delta": the keyframe heartbeat
 	// re-sends every non-owner-only property on its interval, so recording every present slot would refire that
 	// property's CrowdyOnRep on every heartbeat even when nothing moved. Matching UE RepNotify-on-change makes a
 	// heartbeat idempotent. Decoding into scratch first also leaves the live value (and any heap it owns, e.g.
@@ -410,25 +632,44 @@ bool FCrowdyStateCodec::Decode(const FCrowdyRepLayout& Layout, int64 IncomingLay
 			return false;
 		}
 
-		// Scratch value the incoming bytes decode into. Its lifetime is this iteration
-		// (Initialize -> decode -> compare/copy-on-change -> Destroy), so the live value is only touched on a
-		// real change. Static arrays (ArrayDim > 1) are rejected at discovery, so GetSize() is one value's worth.
-		void* Scratch = FMemory::Malloc(Prop->GetSize(), Prop->GetMinAlignment());
-		Prop->InitializeValue(Scratch);
+		// The scratch value the incoming bytes decode into, so the live value is only touched on a real
+		// change. It is the caller's persistent slot for this layout position when one was supplied, and
+		// otherwise a value allocated and destroyed here. Static arrays (ArrayDim > 1) are rejected at
+		// discovery, so GetSize() is one value's worth.
+		void* SlotPtr = bUseScratch ? Scratch->SlotFor(Index) : nullptr;
+		const bool bTemporarySlot = (SlotPtr == nullptr);
+		if (bTemporarySlot)
+		{
+			SlotPtr = FMemory::Malloc(Prop->GetSize(), Prop->GetMinAlignment());
+			Prop->InitializeValue(SlotPtr);
+		}
+		else
+		{
+			// A persistent slot still holds the previous delta's value, so it is returned to the property's
+			// default first. A value a decoder writes only in part is then compared against the default,
+			// exactly as a freshly constructed one always was, rather than against what the last delta left.
+			Prop->DestroyValue(SlotPtr);
+			Prop->InitializeValue(SlotPtr);
+		}
 
-		const bool bDecoded = DecodeValue(Prop, Scratch, Reader, Blob);
+		const bool bDecoded = DecodeValue(Prop, SlotPtr, Reader, Blob);
 		if (bDecoded)
 		{
 			void* LivePtr = Prop->ContainerPtrToValuePtr<void>(Container);
-			if (!Prop->Identical(Scratch, LivePtr, PPF_None))
+			if (!Prop->Identical(SlotPtr, LivePtr, PPF_None))
 			{
-				Prop->CopyCompleteValue(LivePtr, Scratch);
+				Prop->CopyCompleteValue(LivePtr, SlotPtr);
 				OutChangedIndices.Add(Index);
 			}
 		}
 
-		Prop->DestroyValue(Scratch);
-		FMemory::Free(Scratch);
+		// A persistent slot is left constructed and is destroyed with the block, which keeps exactly one live
+		// value per slot at every point, including the failure return below.
+		if (bTemporarySlot)
+		{
+			Prop->DestroyValue(SlotPtr);
+			FMemory::Free(SlotPtr);
+		}
 
 		if (!bDecoded)
 		{
@@ -484,7 +725,7 @@ bool FCrowdyStateCodec::DecodeChannelStateDelta(const TArray<uint8>& Payload, FC
 		return false;
 	}
 
-	// Bounded reader per the Phase-2 idiom (caps ArMaxSerializeSize so any FString/FName length prefix is
+	// Bounded reader (caps ArMaxSerializeSize so any FString/FName length prefix is
 	// guarded). The delta header carries no strings, so the Blob is the only untrusted-length field, and its
 	// bulk TArray<uint8> load is NOT gated by ArMaxSerializeSize on a non-net archive (verified in engine
 	// Array.h: the 16MB guard is IsNetArchive-only) hence the explicit length bound below is the load-bearing

@@ -3,9 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Replication/GameModel/Effect/CrowdyGameModelFunctionInput.h" // FCrowdyGameModelNotification
 
 // Plain editor-side records the console works with. They mirror the GraphQL response
-// shapes closely enough that swapping to Phase 2 codegen stays a field-by-field copy.
+// shapes closely enough that swapping to generated codegen stays a field-by-field copy.
 // Not UStructs nothing here is reflected, replicated, or seen by Blueprint.
 
 struct FStudioOrg
@@ -37,22 +38,13 @@ struct FStudioApp
 	FString DeploymentTarget;
 };
 
-struct FStudioEnvironment
-{
-	FString EnvironmentId;
-	FString Slug;
-	FString DisplayName;
-	FString Status;
-	FString EnvironmentClass;
-};
-
 // A read-back of the live UCrowdySDKDeveloperSettings, used by the Config view to show
 // the before/after diff without the UI reaching into the settings object directly.
 struct FStudioSettingsSnapshot
 {
 	int64 AppId = 0;
-	int32 OrgId = 0;
-	FString ManagementApiUrl;
+	int64 OrgId = 0;
+	FString DiscoveryUrl;
 	FString GameApiHttpUrl;
 	FString GameApiWsUrl;
 };
@@ -201,8 +193,63 @@ struct FStudioFunction
 	TArray<FStudioFunctionMutation> Mutations;
 	FString ReturnExpression;
 	FString InvokeScope;
+	// Whether an automation may run this function autonomously (mirrors the server GmFunction.autonomousInvocable).
+	// An effect that runs automatically lowers this true; a plain effect leaves it false.
+	bool bAutonomousInvocable = false;
 	FString InvokePolicyJson;
 	TArray<FString> Warnings;
+	// The function's declared model-driven notifications, read back verbatim. The effect front-end does not
+	// author these yet, so the schema sync READS them only to re-emit them on an upsert and thereby
+	// preserve any seed/console-authored notifications (gameModelUpsertFunction replaces the field on omission).
+	TArray<FCrowdyGameModelNotification> Notifications;
+	// The function's declared timers, read back so the diff can tell an unchanged set from a changed one. Without
+	// this read-back the desired set would compare against nothing and every plan would report drift forever.
+	TArray<FCrowdyGameModelTimer> Timers;
+};
+
+// A studio-defined automation (autonomous process / NPC): the server read-back of one gameModelUpsertAutomation,
+// used by the schema sync to diff a code-authored automation against the live one. Only the authored fields are
+// mirrored; the circuit-breaker runtime fields (circuitState, consecutiveFailures, lastError, lastRunAt, ...) are
+// not read because they are server-owned state, not part of the desired schema. Numbers that are BigInt on the wire
+// (appId, runAsUserId) are read as int64; the budget ints as int32. Enum-like fields are the raw server strings.
+struct FStudioAutomation
+{
+	FString AutomationId;   // UUID
+	FString Name;           // the upsert key
+	FString Description;
+	bool bEnabled = true;
+	FString ActionKind;
+	FString FunctionName;
+	FString TargetMode;
+	FString SelfContainerId;
+	FString TargetTypeName;
+	FString SessionId;
+	FString ParamsJson;
+	FString SelectorJson;
+	FString TriggerType;
+	FString ScheduleKind;
+	int32 IntervalMs = 0;
+	FString CronExpr;
+	int32 MaxTargets = 0;
+	int32 GasLimit = 0;
+	int32 RunTimeoutMs = 0;
+	int32 MaxRunsPerMinute = 0;
+	int32 FailureThreshold = 0;
+	int32 CooldownMs = 0;
+};
+
+// A studio-defined automation event trigger: the server read-back of one gameModelUpsertAutomationTrigger, for
+// diffing a code-authored event trigger against the live one. Keyed by (automationName, onEvent) plus its filters.
+struct FStudioAutomationTrigger
+{
+	FString TriggerId;      // UUID, when the server assigns one
+	FString AutomationName;
+	FString OnEvent;
+	FString FunctionName;
+	FString ContainerTypeName;
+	FString PropertyKey;
+	FString WriteSource;
+	int32 DebounceMs = 0;
 };
 
 // One leaf of a function's invoke policy: a single authority requirement. Type is the rule kind; only
@@ -259,6 +306,55 @@ struct FStudioGameModelPolicy
 	bool bValid = false;
 };
 
+// One gameModelLint finding. Subject is the object's own name and is unique only WITHIN a kind, since an
+// automation and a function can both be called on_join, so group on (Code, Subject).
+struct FStudioLintFinding
+{
+	FString Code;
+	FString Severity;      // "ERROR" or "WARNING", the server's vocabulary verbatim
+	FString SubjectKind;
+	FString Subject;
+	FString Message;
+	FString Remedy;        // empty when the server offered none
+	int32 Count = 0;       // how many objects this row stands for, 0 when it stands only for itself
+
+	bool IsError() const { return Severity.Equals(TEXT("ERROR"), ESearchCase::IgnoreCase); }
+};
+
+// Whether the app's game model hangs together, as gameModelLint answers it. Recomputed by the server on every
+// call, so this is one answer rather than an accumulated state; bRan says whether an answer has arrived at all.
+struct FStudioLintReport
+{
+	int64 AppId = 0;
+	int32 ErrorCount = 0;
+	int32 WarningCount = 0;
+	// True when there are no ERRORS. Warnings do not make an app unclean: most are ordinary mid-edit states, such as
+	// a seeded function calling another one written later in the same batch.
+	bool bClean = false;
+	bool bRan = false;
+	TArray<FStudioLintFinding> Findings;
+};
+
+// What an Issues surface should say about a lint report. THREE answers, because an app nobody has linted holds
+// the same empty findings list as one that came back clean, and telling them apart is the point.
+enum class ECrowdyLintTabState : uint8
+{
+	NeverRun,
+	Clean,
+	HasFindings
+};
+
+// Keyed on the FINDINGS, not on bClean: bClean ignores warnings, so gating on it would leave every warning
+// reported into the log and unreachable from the surface that exists to show it.
+inline ECrowdyLintTabState CrowdyLintTabStateFor(const FStudioLintReport& Report)
+{
+	if (!Report.bRan)
+	{
+		return ECrowdyLintTabState::NeverRun;
+	}
+	return Report.Findings.Num() > 0 ? ECrowdyLintTabState::HasFindings : ECrowdyLintTabState::Clean;
+}
+
 // A live runtime container instance (an entity the runtime has spawned), as listed by
 // gameModelContainers. Read-only; used by the Inspector-style live-state browser.
 struct FStudioContainer
@@ -268,6 +364,10 @@ struct FStudioContainer
 	FString TypeName;
 	FString DisplayName;
 	int64 OwnerUserId = 0; // 0 when unowned
+	FString MetadataJson;  // raw metadata object (may be empty); developer metadata for the container
+	// The key this container was ensured under, or empty when it was created outright. A container held by a
+	// binding key is recreated by the runtime the next time that key is ensured, so deleting one is not final.
+	FString BindingKey;
 };
 
 // A live container's visible property values (gameModelContainerState), filtered server-side to what

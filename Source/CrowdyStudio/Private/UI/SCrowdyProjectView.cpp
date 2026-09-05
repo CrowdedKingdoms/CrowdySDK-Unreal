@@ -10,9 +10,8 @@
 #include "Styling/SlateStyle.h"
 #include "Styling/StyleDefaults.h"
 #include "UI/CrowdyStudioWidgets.h"
-#include "UI/SCrowdyBackendSelector.h"
-#include "UI/SCrowdyEnvironmentsView.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/Images/SThrobber.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -107,8 +106,8 @@ void SCrowdyProjectView::Construct(const FArguments& InArgs)
 		+ SVerticalBox::Slot().AutoHeight()[ Divider() ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f)
 		[ MakeSettingRow(LOCTEXT("RowOrgId", "Org ID"),
-			[this]() { return FString::Printf(TEXT("%d"), Controller->GetCurrentSettings().OrgId); },
-			[this]() { return FString::Printf(TEXT("%d"), Controller->BuildProposedSettings().OrgId); }) ]
+			[this]() { return FString::Printf(TEXT("%lld"), Controller->GetCurrentSettings().OrgId); },
+			[this]() { return FString::Printf(TEXT("%lld"), Controller->BuildProposedSettings().OrgId); }) ]
 		+ SVerticalBox::Slot().AutoHeight()[ Divider() ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f)
 		[ MakeSettingRow(LOCTEXT("RowGameHttp", "Game API HTTP URL"),
@@ -150,11 +149,6 @@ void SCrowdyProjectView::Construct(const FArguments& InArgs)
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
 			[ SNew(STextBlock).Text(LOCTEXT("ProjectHeader", "Project")).TextStyle(&Style, "Crowdy.Text.Title") ]
 
-			// Backend: which Crowdy management plane to talk to. Also on the Sign In page, so a fresh
-			// project can choose a backend before signing in.
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
-			[ SNew(SCrowdyBackendSelector).Controller(Controller) ]
-
 			// Organization picker.
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
 			[
@@ -186,10 +180,42 @@ void SCrowdyProjectView::Construct(const FArguments& InArgs)
 							.OnSelectionChanged(this, &SCrowdyProjectView::OnAppSelected)
 							.SelectionMode(ESelectionMode::Single)
 						]
+						// Empty and loading are two different answers and only one of them is a statement about the
+						// account. Gating both on the same count told a user with apps that they had none for as
+						// long as the fetch took, and the message even suggests a fix (create one) for a problem
+						// they do not have.
 						+ SOverlay::Slot()
 						[
-							SNew(SBox).Visibility_Lambda([this]() { return (Controller.IsValid() && Controller->GetApps().Num() == 0) ? EVisibility::Visible : EVisibility::Collapsed; })
+							SNew(SBox).Visibility_Lambda([this]()
+								{
+									return (Controller.IsValid() && Controller->GetApps().Num() == 0
+										&& !Controller->IsFetchingApps()) ? EVisibility::Visible : EVisibility::Collapsed;
+								})
 							[ CrowdyStudioWidgets::EmptyState(TEXT("apps"), LOCTEXT("NoApps", "No apps yet.\nCreate one below, or sign in to load your apps.")) ]
+						]
+						+ SOverlay::Slot()
+						[
+							// Only while the list has nothing to show. A refresh over an already-populated list
+							// leaves the rows up rather than blanking them behind a spinner.
+							SNew(SBox)
+							.HAlign(HAlign_Center)
+							.VAlign(VAlign_Center)
+							.Visibility_Lambda([this]()
+								{
+									return (Controller.IsValid() && Controller->GetApps().Num() == 0
+										&& Controller->IsFetchingApps()) ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
+								})
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+								[ SNew(SCircularThrobber).Radius(9.0f) ]
+								+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+								[
+									SNew(STextBlock)
+									.Text(LOCTEXT("LoadingApps", "Loading your apps..."))
+									.TextStyle(&Style, "Crowdy.Text.Subtle")
+								]
+							]
 						],
 						FMargin(6.0f), /*bFlat*/ true)
 				]
@@ -368,39 +394,6 @@ void SCrowdyProjectView::Construct(const FArguments& InArgs)
 					]
 				]
 
-				// Game server: where this app runs. Folded in from the old Environments page and
-			// collapsed by default, since most projects just use the default server.
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
-			[
-				SNew(SExpandableArea)
-				.InitiallyCollapsed(true)
-				.OnAreaExpansionChanged_Lambda([this](bool bExpanded)
-				{
-					// Lazy-load the org's environments the first time the section opens, so the list
-					// is there without a manual Refresh. The embedded view's Refresh button still
-					// re-pulls on demand.
-					if (bExpanded && Controller.IsValid() && Controller->GetSelectedOrgId() != 0
-						&& Controller->GetEnvironments().Num() == 0)
-					{
-						Controller->FetchEnvironments(Controller->GetSelectedOrgId());
-					}
-				})
-				.HeaderContent()
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
-					[ CrowdyStudioWidgets::Icon(TEXT("server"), 15.0f, FSlateColor(FCrowdyStudioStyle::TextSecondary())) ]
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-					[ SNew(STextBlock).Text(LOCTEXT("GameServerHeader", "Game server")).TextStyle(&Style, "Crowdy.Text.BodyStrong") ]
-					+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(10.0f, 0.0f, 0.0f, 0.0f)
-					[ SNew(STextBlock).Text(LOCTEXT("GameServerHint", "Advanced. Most projects use the default server.")).TextStyle(&Style, "Crowdy.Text.Subtle") ]
-				]
-				.BodyContent()
-				[
-					SNew(SBox).Padding(FMargin(0.0f, 10.0f, 0.0f, 0.0f))
-					[ SNew(SCrowdyEnvironmentsView).Controller(Controller).Embedded(true) ]
-				]
-			]
 		]
 	];
 }

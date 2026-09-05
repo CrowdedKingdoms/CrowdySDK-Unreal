@@ -2,9 +2,9 @@
 
 #include "Kismet/BlueprintAsyncActionBase.h"
 #include "Subsystem/AsyncActions/CrowdyChannelsQueryActions.h"
-#include "Queries/Data/Teams/Enums/ECrowdyTeamMembershipPolicy.h"
-#include "Queries/Data/Teams/Enums/ECrowdyTeamCreationPolicy.h"
-#include "Queries/Data/Teams/Types/FCrowdyRolePermissions.h"
+#include "Queries/Data/Channels/Enums/ECrowdyChannelMembershipPolicy.h"
+#include "Queries/Data/Channels/Enums/ECrowdyChannelCreationPolicy.h"
+#include "Queries/Data/Channels/Types/FCrowdyChannelPermissions.h"
 #include "CrowdyChannelsWriteActions.generated.h"
 
 UCLASS()
@@ -22,7 +22,7 @@ public:
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Create Channel")
 	static UCrowdyChannels_CreateChannel* CreateChannel(UObject* WorldContextObject, const FString& Name,
 	                                                    const FString& Description,
-	                                                    ECrowdyTeamMembershipPolicy MembershipPolicy,
+	                                                    ECrowdyChannelMembershipPolicy MembershipPolicy,
 	                                                    bool bMembersCanSend);
 
 	virtual void Activate() override;
@@ -30,12 +30,12 @@ public:
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	FString Name, Description;
-	ECrowdyTeamMembershipPolicy MembershipPolicy = ECrowdyTeamMembershipPolicy::Open;
+	ECrowdyChannelMembershipPolicy MembershipPolicy = ECrowdyChannelMembershipPolicy::Open;
 	bool bMembersCanSend = true;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyGroup Channel);
+	void HandleSuccess(FCrowdyChannel Channel);
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -51,19 +51,19 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Update Channel")
-	static UCrowdyChannels_UpdateChannel* UpdateChannel(UObject* WorldContextObject, int64 GroupId,
+	static UCrowdyChannels_UpdateChannel* UpdateChannel(UObject* WorldContextObject, int64 ChannelId,
 	                                                    const FString& Name, const FString& Description);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0;
+	int64 ChannelId = 0;
 	FString Name, Description;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyGroup Channel);
+	void HandleSuccess(FCrowdyChannel Channel);
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -79,17 +79,17 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Delete Channel")
-	static UCrowdyChannels_DeleteChannel* DeleteChannel(UObject* WorldContextObject, int64 GroupId);
+	static UCrowdyChannels_DeleteChannel* DeleteChannel(UObject* WorldContextObject, int64 ChannelId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0;
+	int64 ChannelId = 0;
 	UFUNCTION()
 	void HandleSuccess();
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -105,17 +105,17 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Join Channel")
-	static UCrowdyChannels_JoinChannel* JoinChannel(UObject* WorldContextObject, int64 GroupId);
+	static UCrowdyChannels_JoinChannel* JoinChannel(UObject* WorldContextObject, int64 ChannelId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0;
+	int64 ChannelId = 0;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyGroupMember Member);
+	void HandleSuccess(FCrowdyChannelMember Member);
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -131,17 +131,17 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Request to Join Channel")
-	static UCrowdyChannels_RequestToJoinChannel* RequestToJoinChannel(UObject* WorldContextObject, int64 GroupId);
+	static UCrowdyChannels_RequestToJoinChannel* RequestToJoinChannel(UObject* WorldContextObject, int64 ChannelId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0;
+	int64 ChannelId = 0;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyGroupMember Member);
+	void HandleSuccess(FCrowdyChannelMember Member);
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -157,17 +157,17 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Leave Channel")
-	static UCrowdyChannels_LeaveChannel* LeaveChannel(UObject* WorldContextObject, int64 GroupId);
+	static UCrowdyChannels_LeaveChannel* LeaveChannel(UObject* WorldContextObject, int64 ChannelId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0;
+	int64 ChannelId = 0;
 	UFUNCTION()
 	void HandleSuccess();
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -183,17 +183,17 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Add Channel Member")
-	static UCrowdyChannels_AddChannelMember* AddChannelMember(UObject* WorldContextObject, int64 GroupId, int64 UserId);
+	static UCrowdyChannels_AddChannelMember* AddChannelMember(UObject* WorldContextObject, int64 ChannelId, int64 UserId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0, UserId = 0;
+	int64 ChannelId = 0, UserId = 0;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyGroupMember Member);
+	void HandleSuccess(FCrowdyChannelMember Member);
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -209,18 +209,18 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Remove Channel Member")
-	static UCrowdyChannels_RemoveChannelMember* RemoveChannelMember(UObject* WorldContextObject, int64 GroupId,
+	static UCrowdyChannels_RemoveChannelMember* RemoveChannelMember(UObject* WorldContextObject, int64 ChannelId,
 	                                                                int64 UserId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0, UserId = 0;
+	int64 ChannelId = 0, UserId = 0;
 	UFUNCTION()
 	void HandleSuccess();
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -236,19 +236,19 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Set Channel Member Roles")
-	static UCrowdyChannels_SetChannelMemberRoles* SetChannelMemberRoles(UObject* WorldContextObject, int64 GroupId,
+	static UCrowdyChannels_SetChannelMemberRoles* SetChannelMemberRoles(UObject* WorldContextObject, int64 ChannelId,
 	                                                                    int64 UserId, const TArray<int64>& RoleIds);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0, UserId = 0;
+	int64 ChannelId = 0, UserId = 0;
 	TArray<int64> RoleIds;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyGroupMember Member);
+	void HandleSuccess(FCrowdyChannelMember Member);
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -264,22 +264,22 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Create Channel Role")
-	static UCrowdyChannels_CreateChannelRole* CreateChannelRole(UObject* WorldContextObject, int64 GroupId,
+	static UCrowdyChannels_CreateChannelRole* CreateChannelRole(UObject* WorldContextObject, int64 ChannelId,
 	                                                            const FString& RoleName,
-	                                                            FCrowdyRolePermissions Permissions, int32 Rank);
+	                                                            FCrowdyChannelPermissions Permissions, int32 Rank);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 GroupId = 0;
+	int64 ChannelId = 0;
 	FString RoleName;
-	FCrowdyRolePermissions Permissions;
+	FCrowdyChannelPermissions Permissions;
 	int32 Rank = 0;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyGroupRole Role);
+	void HandleSuccess(FCrowdyChannelRole Role);
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -295,21 +295,21 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Update Channel Role")
-	static UCrowdyChannels_UpdateChannelRole* UpdateChannelRole(UObject* WorldContextObject, int64 RoleId,
+	static UCrowdyChannels_UpdateChannelRole* UpdateChannelRole(UObject* WorldContextObject, int64 ChannelRoleId,
 	                                                            const FString& RoleName,
-	                                                            FCrowdyRolePermissions Permissions);
+	                                                            FCrowdyChannelPermissions Permissions);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 RoleId = 0;
+	int64 ChannelRoleId = 0;
 	FString RoleName;
-	FCrowdyRolePermissions Permissions;
+	FCrowdyChannelPermissions Permissions;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyGroupRole Role);
+	void HandleSuccess(FCrowdyChannelRole Role);
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -325,17 +325,17 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Delete Channel Role")
-	static UCrowdyChannels_DeleteChannelRole* DeleteChannelRole(UObject* WorldContextObject, int64 RoleId);
+	static UCrowdyChannels_DeleteChannelRole* DeleteChannelRole(UObject* WorldContextObject, int64 ChannelRoleId);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	int64 RoleId = 0;
+	int64 ChannelRoleId = 0;
 	UFUNCTION()
 	void HandleSuccess();
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };
 
 UCLASS()
@@ -352,17 +352,17 @@ public:
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Set Channel Policy")
 	static UCrowdyChannels_SetChannelPolicy* SetChannelPolicy(UObject* WorldContextObject,
-	                                                          ECrowdyTeamCreationPolicy CreationPolicy,
-	                                                          ECrowdyTeamMembershipPolicy DefaultMembershipPolicy);
+	                                                          ECrowdyChannelCreationPolicy CreationPolicy,
+	                                                          ECrowdyChannelMembershipPolicy DefaultMembershipPolicy);
 
 	virtual void Activate() override;
 
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
-	ECrowdyTeamCreationPolicy CreationPolicy = ECrowdyTeamCreationPolicy::Anyone;
-	ECrowdyTeamMembershipPolicy MembershipPolicy = ECrowdyTeamMembershipPolicy::Open;
+	ECrowdyChannelCreationPolicy CreationPolicy = ECrowdyChannelCreationPolicy::Anyone;
+	ECrowdyChannelMembershipPolicy MembershipPolicy = ECrowdyChannelMembershipPolicy::Open;
 	UFUNCTION()
-	void HandleSuccess(FCrowdyAppGroupPolicy Policy);
+	void HandleSuccess(FCrowdyChannelPolicy Policy);
 	UFUNCTION()
-	void HandleError(FCrowdyTeamError Error, FString Message);
+	void HandleError(FCrowdyChannelError Error, FString Message);
 };

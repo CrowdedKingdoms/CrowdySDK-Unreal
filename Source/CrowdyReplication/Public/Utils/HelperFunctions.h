@@ -29,6 +29,14 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "CrowdySDK|Identifiers")
 	static FString GetNewUUID();
 	
+	// Turns Seed into a 128-bit FGuid that is the same on every client (unlike FGuid::NewGuid, which is
+	// random per call). All four words are derived from one 32-bit hash of Seed, so the real entropy is
+	// only 32 bits, not 128: birthday odds hit roughly a 1% collision chance around 77,000 ids. Do not
+	// "improve" this by widening the hash. The output is wire-visible and cross-client-stable, and
+	// FCrowdyModelIdentity::NetIDToContainerKey turns it straight into the server-persisted key a player's
+	// Game Model container is filed under; changing the derivation reshuffles every existing player's key
+	// and orphans every container already saved on the server. Collisions are handled at the point ids
+	// enter the registry (UCrowdyEntitySubsystem::RegisterEntity), not by widening this hash.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "CrowdySDK|Identifiers")
 	static FGuid GetDeterministicID(const int64 Seed);
 	

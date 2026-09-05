@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Serialization/CrowdyFrame.h"
 
 struct FTextMessageRequest : ICrowdyMessage
 {
@@ -40,14 +41,9 @@ struct FTextMessageRequest : ICrowdyMessage
 		return Data;
 	}
 	
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
 		return false;
 	}
-	
-	virtual uint32 GetMessageSize() const override
-	{
-		return sizeof(AppID) + sizeof(int64)*3 + 32 + sizeof(int32)*2 + Message.Len();
-	}
-	
+
 };

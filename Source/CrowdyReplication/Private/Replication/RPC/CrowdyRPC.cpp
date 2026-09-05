@@ -2,11 +2,16 @@
 
 #include "Core/CrowdyCategory/FCrowdyTypeIDGenerator.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
+#include "Replication/CrowdyBoundedMemoryReader.h"
+#include "Replication/RPC/FCrowdyEventParams.h"
+#include "Replication/RPC/CrowdyReplicatedEventLibrary.h"
+#include "Replication/RPC/ICrowdyEventSource.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "Utils/CrowdyBakedRegistry.h"
 #include "Utils/UCrowdyClassRegistry.h"
 #include "Components/ActorComponent.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "StructUtils/InstancedStruct.h"
@@ -14,6 +19,7 @@
 #include "UObject/UnrealType.h"
 #include "UObject/EnumProperty.h"
 #include "UObject/TextProperty.h"      // FTextProperty (not pulled in by UnrealType.h)
+#include "UObject/ObjectKey.h"         // FObjectKey (identity-stable cache key for a UFunction)
 #include "UObject/UObjectBaseUtility.h" // GetNameSafe
 #include "UObject/Stack.h"             // FOutParmRec (Blueprint frame out-parm records)
 #include "UObject/SoftObjectPath.h"    // FSoftObjectPath / FSoftClassPath
@@ -61,6 +67,30 @@ namespace
 		TEXT("arbitrary asset loads; an unresolved reference is delivered as null."),
 		ECVF_Default);
 
+	// A send-side drop repeats for as long as its cause lasts: a host that is out of range, a target this
+	// client holds no instance of. One line per entity per frame from a crowd would bury the log, and
+	// warning only once would hide a condition that comes and goes, so each function gets at most one
+	// line per interval.
+	constexpr double CrowdyRpcDropWarnIntervalSeconds = 5.0;
+
+	// True when this function's drop should be logged now. Game-thread only; every caller asserts it.
+	bool ShouldLogRpcDrop(int64 FunctionID)
+	{
+		static TMap<int64, double> LastLoggedSeconds;
+
+		const double Now = FPlatformTime::Seconds();
+		if (const double* Last = LastLoggedSeconds.Find(FunctionID))
+		{
+			if (Now - *Last < CrowdyRpcDropWarnIntervalSeconds)
+			{
+				return false;
+			}
+		}
+
+		LastLoggedSeconds.Add(FunctionID, Now);
+		return true;
+	}
+
 	// Maps a routing meta string (the enumerator name the macro stringized, e.g.
 	// "OwningClient") to its enum value. GetValueByNameString resolves both the
 	// short and the namespaced spelling; anything unrecognized keeps the default.
@@ -90,7 +120,7 @@ namespace
 
 	// Constructs only the parameter slots of a frame. A C++ UFUNCTION has nothing but
 	// parameters, but a Blueprint UFUNCTION also has reflected local variables laid out
-	// beyond ParmsSize — UFunction::InitializeStruct would touch those and overrun a frame
+	// beyond ParmsSize; UFunction::InitializeStruct would touch those and overrun a frame
 	// sized to ParmsSize, so the parameter properties (which alone fit the frame) are
 	// constructed directly. CPF_Parm covers the input, out, and return slots; locals do not
 	// carry it and are skipped.
@@ -231,22 +261,6 @@ namespace
 	// this (or negative) sets the archive error and the whole call is dropped. Far above any count
 	// that fits the transport budgets, so it never rejects a legitimate array.
 	constexpr int32 CrowdyRpcMaxArrayElements = 65536;
-
-	// An FMemoryReader whose ArMaxSerializeSize is pinned to the blob length so a forged FString/FName
-	// length prefix in a parameter cannot drive an unbounded allocation. A plain FMemoryReader leaves
-	// ArMaxSerializeSize == 0, which disables the FString load path's `(MaxSerializeSize > 0) && (SaveNum
-	// > MaxSerializeSize)` self-protection: the untrusted int32 length would then call AddUninitialized()
-	// for a multi-GB allocation before the short char read is detected (remote OOM from a tiny packet).
-	// A positive cap makes the engine reject SaveNum > blob-size up front, so the call drops cleanly.
-	class FCrowdyBoundedMemoryReader : public FMemoryReader
-	{
-	public:
-		FCrowdyBoundedMemoryReader(const TArray<uint8>& InBytes, bool bIsPersistent)
-			: FMemoryReader(InBytes, bIsPersistent)
-		{
-			ArMaxSerializeSize = InBytes.Num();
-		}
-	};
 
 	// Finds an object or class by path. Find-only by default so untrusted input cannot trigger a
 	// disk load; crowdy.rpc.allowObjectLoad opts into loading an asset that is not yet resident.
@@ -501,8 +515,8 @@ namespace
 	// Reverses the engine's non-object array encode with the element count bounded BEFORE allocation.
 	// FArrayProperty::SerializeItem (the unchanged encode path) reads the untrusted int32 count and
 	// EmptyAndAddValues() it before the short read is caught, so a forged count drives a multi-GB
-	// allocation from a tiny packet. This mirrors that load path exactly — EnterArray reads the same count
-	// the encode wrote — but clamps it first. Object arrays go through DecodeObjectArray; an array whose
+	// allocation from a tiny packet. This mirrors that load path exactly (EnterArray reads the same count
+	// the encode wrote) but clamps it first. Object arrays go through DecodeObjectArray; an array whose
 	// element buries a container is rejected at registration, so Inner is a bounded leaf or container-free
 	// struct here.
 	void DecodeBoundedArray(FArrayProperty* ArrayProp, void* ValuePtr, FArchive& Ar)
@@ -929,6 +943,7 @@ FCrowdyFnInfo FCrowdyRPC::BuildFnInfo(UFunction* Fn)
 	Info.DecayRate = ResolveMetaEnum(Fn->GetMetaData(CrowdyRpcMetaKeys::Decay), Info.DecayRate);
 	Info.Distance  = ResolveMetaEnum(Fn->GetMetaData(CrowdyRpcMetaKeys::Distance), Info.Distance);
 	Info.ChannelName = Fn->GetMetaData(CrowdyRpcMetaKeys::Channel);
+	Info.bIsAction = Fn->HasMetaData(CrowdyRpcMetaKeys::Action);
 #else
 	if (const FCrowdyBakedRpcFunction* Baked = UCrowdyBakedRegistry::FindRpcFunction(Fn))
 	{
@@ -936,31 +951,94 @@ FCrowdyFnInfo FCrowdyRPC::BuildFnInfo(UFunction* Fn)
 		Info.DecayRate = Baked->DecayRate;
 		Info.Distance  = Baked->Distance;
 		Info.ChannelName = Baked->ChannelName;
+		Info.bIsAction = Baked->bIsAction;
 	}
 #endif
 
 	return Info;
 }
 
+namespace
+{
+	// Every send and every receive asks for a function's routing info, and building it walks the whole
+	// parameter list twice (once for the signature hash, once for the plain-old-data flag) before reading
+	// four metadata keys, so it is cached per function.
+	//
+	// Keyed by FObjectKey rather than a raw UFunction pointer: an FObjectKey carries the object's serial
+	// number as well as its slot, so an address that garbage collection later hands to a different function
+	// resolves to a clean miss instead of quietly serving the previous function's routing. Recompiling a
+	// Blueprint likewise creates new function objects, which key differently and so cannot hit a stale entry.
+	//
+	// Live Coding is the one event that can rebuild a function's signature while keeping the same object, and
+	// the reload-complete delegate drops the whole cache when it does.
+	//
+	// The lock covers the map. It does not make building an entry thread-safe: with metadata stripped, the
+	// first miss reads the baked registry, which can load that asset and root it, so a first miss must happen
+	// on the game thread.
+	FCriticalSection GFnInfoCacheLock;
+	TMap<FObjectKey, FCrowdyFnInfo> GFnInfoCache;
+
+	FDelegateHandle GFnInfoReloadHandle;
+}
+
 FCrowdyFnInfo FCrowdyRPC::GetFnInfo(UFunction* Fn)
 {
-#if WITH_EDITOR
-	// Live Coding can recycle UFunction addresses, so a UFunction-keyed cache would
-	// return stale info. Rebuild every call in editor; it is only a string hash.
-	return BuildFnInfo(Fn);
-#else
-	static FCriticalSection CacheLock;
-	static TMap<UFunction*, FCrowdyFnInfo> Cache;
+	if (!Fn)
+	{
+		return BuildFnInfo(Fn);
+	}
 
-	FScopeLock Lock(&CacheLock);
-	if (const FCrowdyFnInfo* Found = Cache.Find(Fn))
+	const FObjectKey Key(Fn);
+
+	FScopeLock Lock(&GFnInfoCacheLock);
+	if (const FCrowdyFnInfo* Found = GFnInfoCache.Find(Key))
 	{
 		return *Found;
 	}
 	const FCrowdyFnInfo Built = BuildFnInfo(Fn);
-	Cache.Add(Fn, Built);
+	GFnInfoCache.Add(Key, Built);
 	return Built;
+}
+
+void FCrowdyRPC::InvalidateFnInfoCache()
+{
+	FScopeLock Lock(&GFnInfoCacheLock);
+	GFnInfoCache.Reset();
+}
+
+int32 FCrowdyRPC::NumCachedFnInfo()
+{
+	FScopeLock Lock(&GFnInfoCacheLock);
+	return GFnInfoCache.Num();
+}
+
+void FCrowdyRPC::InstallFnInfoCacheInvalidation()
+{
+#if WITH_EDITOR
+	if (GFnInfoReloadHandle.IsValid())
+	{
+		return;
+	}
+	// Live Coding rebuilds native reflection in place, so a function's parameter list (and with it the
+	// signature hash cached here) can change without the function object changing.
+	GFnInfoReloadHandle = FCoreUObjectDelegates::ReloadCompleteDelegate.AddLambda(
+		[](EReloadCompleteReason)
+		{
+			FCrowdyRPC::InvalidateFnInfoCache();
+		});
 #endif
+}
+
+void FCrowdyRPC::RemoveFnInfoCacheInvalidation()
+{
+#if WITH_EDITOR
+	if (GFnInfoReloadHandle.IsValid())
+	{
+		FCoreUObjectDelegates::ReloadCompleteDelegate.Remove(GFnInfoReloadHandle);
+		GFnInfoReloadHandle.Reset();
+	}
+#endif
+	InvalidateFnInfoCache();
 }
 
 void FCrowdyRPC::SerializeParams(const UFunction* Fn, const void* Frame, TArray<uint8>& OutBlob,
@@ -1129,9 +1207,8 @@ void FCrowdyRPC::ApplyCall(UObject* Target, UFunction* Fn, const FCrowdyFnInfo& 
 	{
 		// Arm the replay scope so the gate a Blueprint event carries runs its body for this
 		// exact invocation instead of re-dispatching it. C++ receivers have no gate and never
-		// read it; the guards restore the previous values so nested replays stay correct.
-		TGuardValue<UObject*> ReplayObjectGuard(ReplayObject, Target);
-		TGuardValue<UFunction*> ReplayFunctionGuard(ReplayFunction, Fn);
+		// read it; the scope restores the previous values so nested replays stay correct.
+		FScopedReplay ReplayScope(Target, Fn);
 		Target->ProcessEvent(Fn, Frame);
 	}
 
@@ -1139,6 +1216,41 @@ void FCrowdyRPC::ApplyCall(UObject* Target, UFunction* Fn, const FCrowdyFnInfo& 
 	{
 		DestroyParamProperties(Fn, Frame);
 	}
+}
+
+bool FCrowdyRPC::DecodeCall(UFunction* Fn, const FCrowdyFnInfo& Info, const FCrowdyRpcCall& Call,
+	TFunctionRef<void(const FCrowdyEventParams& Params)> OnDecoded)
+{
+	if (!Fn)
+	{
+		return false;
+	}
+
+	const int32 FrameSize = FMath::Max<int32>(Fn->ParmsSize, 1);
+	uint8* Frame = static_cast<uint8*>(FMemory_Alloca(FrameSize));
+	FMemory::Memzero(Frame, FrameSize);
+	if (!Info.bParamsPOD)
+	{
+		InitializeParamProperties(Fn, Frame);
+	}
+
+	// The frame is alloca'd in THIS stack frame, so it outlives OnDecoded and is gone the moment this
+	// returns. Nothing the callback was handed may be stored.
+	const bool bDecoded = DeserializeParams(Fn, Call.ParamBlob, Frame);
+	if (bDecoded)
+	{
+		FCrowdyEventParams Params;
+		Params.Function = Fn;
+		Params.Frame = Frame;
+		OnDecoded(Params);
+	}
+
+	if (!Info.bParamsPOD)
+	{
+		DestroyParamProperties(Fn, Frame);
+	}
+
+	return bDecoded;
 }
 
 void FCrowdyRPC::EncodeChannelRpc(const FCrowdyRpcCall& Call, uint8 Flags, TArray<uint8>& OutPayload)
@@ -1215,6 +1327,51 @@ FCrowdyRPC::FScopedEntityContext::FScopedEntityContext(UCrowdyEntitySubsystem* E
 FCrowdyRPC::FScopedEntityContext::~FScopedEntityContext()
 {
 	GActiveEntities = Previous;
+}
+
+bool FCrowdyRPC::IsBlueprintReplicatedEvent(const UFunction* Function)
+{
+	if (!Function || !CrowdyRpcMetaKeys::HasReplicatesMeta(Function))
+	{
+		return false;
+	}
+
+	// Declared by a Blueprint, not by C++. A native CROWDY_EVENT sends through the macro's thunk and never
+	// carries a gate, so asking whether it has one would report every C++ event in the project as broken.
+	return Cast<UBlueprintGeneratedClass>(Function->GetOuterUClass()) != nullptr;
+}
+
+bool FCrowdyRPC::CarriesDispatchGate(const UFunction* Function)
+{
+	if (!Function || Function->Script.Num() == 0)
+	{
+		return false;
+	}
+
+	const UFunction* Gate = UCrowdyReplicatedEventLibrary::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UCrowdyReplicatedEventLibrary, CrowdyDispatchReplicatedEvent));
+	if (!Gate)
+	{
+		return false;
+	}
+
+	// Every object a compiled body references is listed here, which is what a called function is. Compared
+	// against the resolved gate rather than by name, so a same-named function on another class cannot pass.
+	return Function->ScriptAndPropertyObjectReferences.Contains(Gate);
+}
+
+FCrowdyRPC::FScopedReplay::FScopedReplay(UObject* Object, UFunction* Function)
+	: PreviousObject(ReplayObject)
+	, PreviousFunction(ReplayFunction)
+{
+	ReplayObject = Object;
+	ReplayFunction = Function;
+}
+
+FCrowdyRPC::FScopedReplay::~FScopedReplay()
+{
+	ReplayObject = PreviousObject;
+	ReplayFunction = PreviousFunction;
 }
 
 bool FCrowdyRPC::DispatchOrReplayBlueprintCall(UObject* Self, UFunction* EventFn, void* ParamFrame,
@@ -1325,7 +1482,9 @@ void FCrowdyRPC::RouteOverWire(UCrowdyEntitySubsystem* EntitySubsystem, const AA
 	// FCrowdyRpcCall is an ordinary USTRUCT payload, so it rides the existing event
 	// transport unchanged  including the StateBytes fragmentation that splits an
 	// oversized ParamBlob across datagrams.
-	EntitySubsystem->DispatchGameEvent(ContextActor, FInstancedStruct::Make(Call),
+	// Sent from a view of Call rather than a copy of it into an FInstancedStruct: the send is synchronous,
+	// so Call outlives it, and the parameter blob is not duplicated to put it on the wire.
+	EntitySubsystem->DispatchGameEventView(ContextActor, FCrowdyRpcCall::StaticStruct(), &Call,
 		Target, ContextActor, Info.DecayRate, Info.Distance);
 }
 
@@ -1359,6 +1518,126 @@ void FCrowdyRPC::RouteOverChannel(UCrowdyEntitySubsystem* EntitySubsystem, const
 	}
 
 	EntitySubsystem->PublishReliableRpc(ChannelName, ChannelPayload);
+}
+
+bool FCrowdyRPC::RouteFromEventSource(UObject* Obj, ICrowdyEventSource* Source, UFunction* Fn,
+	const FCrowdyFnInfo& Info, FCrowdyRpcCall Call, UCrowdyEntitySubsystem* EntitySubsystem,
+	UWorld* World)
+{
+	const FGuid EntityID = Source->GetEventEntityID();
+	if (!EntityID.IsValid())
+	{
+		UE_LOG(LogCrowdyRPC, Warning,
+			TEXT("SerializeAndRoute: '%s' on event source '%s' has no entity id, so no receiver could resolve it. Dropping."),
+			*Fn->GetName(), *GetNameSafe(Obj->GetClass()));
+		return true;
+	}
+
+	const FGuid LocalPlayerID = EntitySubsystem->GetLocalPlayerID();
+	const FGuid HostID = EntitySubsystem->GetHostID();
+	const bool bWeAreHost = HostID.IsValid() && HostID == LocalPlayerID;
+
+	// Speak only for an entity this client is the authority for: one it owns, or a world entity while it
+	// is the host. Sending for anything else would put this client's identity on another client's entity.
+	const FGuid OwnerID = Source->GetEventOwnerID();
+	const ECrowdyRole Role = Source->GetEventRole();
+	const bool bMaySpeakForEntity = Source->IsEventLocallyOwned()
+		|| (bWeAreHost && Role == ECrowdyRole::HostOwned);
+	if (!bMaySpeakForEntity)
+	{
+		UE_LOG(LogCrowdyRPC, Warning,
+			TEXT("SerializeAndRoute: '%s' dropped - this client is not the authority for entity %s and may not send for it."),
+			*Fn->GetName(), *EntityID.ToString());
+		return true;
+	}
+
+	Call.EntityID = EntityID;
+	// The owner is who the event speaks as. A world entity has no owner, so the local player stands in:
+	// the receive path drops a broadcast that echoes back to its sender by comparing this id, and an
+	// invalid one matches nobody, which would run the body a second time here.
+	Call.SenderID = OwnerID.IsValid() ? OwnerID : LocalPlayerID;
+
+	// Owner-only and host-only both reach their single recipient over the single-actor transport. That
+	// transport addresses a registered id plus a chunk, not an actor, so a source with no actor can use
+	// it just as well.
+	if (Info.Recipient == ECrowdyEventRecipient::OwningClient
+		|| Info.Recipient == ECrowdyEventRecipient::Host)
+	{
+		FCrowdyRpcTarget Target;
+		Target.NetID = EntityID;
+		Target.OwnerID = OwnerID;
+		Target.Role = Role;
+
+		// The source's own position is carried when it has one. Only a send addressed to the region the
+		// entity itself stands in reads it, so a source that genuinely has no position right now can
+		// still be routed: a host-addressed send is addressed from where the HOST stands, and a call the
+		// model runs on this client goes nowhere at all. The one route that needs a position reports its
+		// own drop when there is none.
+		FVector SourceLocation = FVector::ZeroVector;
+		if (Source->GetEventLocation(SourceLocation))
+		{
+			Target.Location = SourceLocation;
+		}
+
+		UE_CLOG(IsRpcTraceEnabled(), LogCrowdyRPC, Log,
+			TEXT("[CrowdyRPC] send %s::%s entity=%s source=event-source route=targeted"),
+			*GetNameSafe(Obj->GetClass()), *Fn->GetName(), *EntityID.ToString());
+
+		// The source is the instance the body runs on when the model says it also runs here, exactly as
+		// on the two broadcast paths below.
+		RouteToTarget(World, EntitySubsystem, Target, Obj, Fn, Info, Call);
+		return true;
+	}
+
+	// Loopback debug mode runs the call through this client's own receive path instead of invoking it
+	// directly, so a single client exercises resolve and dispatch. Same bound as the actor path: a call
+	// issued from the replayed body is sent normally but starts no second loopback.
+	const bool bLoopback = IsLoopbackEnabled() && !bLoopbackDelivering;
+
+	if (Info.Recipient == ECrowdyEventRecipient::Multicast)
+	{
+		UE_CLOG(IsRpcTraceEnabled(), LogCrowdyRPC, Log,
+			TEXT("[CrowdyRPC] send %s::%s entity=%s source=event-source route=channel"),
+			*GetNameSafe(Obj->GetClass()), *Fn->GetName(), *EntityID.ToString());
+
+		if (!bLoopback)
+		{
+			ApplyCall(Obj, Fn, Info, Call);
+		}
+		RouteOverChannel(EntitySubsystem, Call, Fn, Info.ChannelName);
+	}
+	else
+	{
+		// Spatial Multicast, and the unannotated default. The position comes from the source itself, which
+		// reads it from the entity's own simulation state; there is no caller-supplied location to trust.
+		FVector Location = FVector::ZeroVector;
+		if (!Source->GetEventLocation(Location))
+		{
+			UE_LOG(LogCrowdyRPC, Warning,
+				TEXT("SerializeAndRoute: '%s' dropped - entity %s reports no location, and the spatial transport "
+					 "addresses by position."),
+				*Fn->GetName(), *EntityID.ToString());
+			return true;
+		}
+
+		UE_CLOG(IsRpcTraceEnabled(), LogCrowdyRPC, Log,
+			TEXT("[CrowdyRPC] send %s::%s entity=%s source=event-source route=spatial at=%s"),
+			*GetNameSafe(Obj->GetClass()), *Fn->GetName(), *EntityID.ToString(), *Location.ToCompactString());
+
+		if (!bLoopback)
+		{
+			ApplyCall(Obj, Fn, Info, Call);
+		}
+		EntitySubsystem->DispatchGameEventAt(Location, FInstancedStruct::Make(Call),
+			ECrowdyTarget::Everyone, nullptr, Info.DecayRate, Info.Distance);
+	}
+
+	if (bLoopback)
+	{
+		DeliverLoopback(World, Call);
+	}
+
+	return true;
 }
 
 FCrowdyRpcRouteDecision FCrowdyRPC::DecideRoute(ECrowdyEventRecipient Recipient, bool bNonSpatial,
@@ -1463,6 +1742,18 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 		UE_LOG(LogCrowdyRPC, Warning, TEXT("SerializeAndRoute: entity subsystem unavailable; dropping %s."),
 			*Fn->GetName());
 		return false;
+	}
+
+	// A sender with no owning actor can still carry an entity identity and a world position of its own, by
+	// implementing ICrowdyEventSource: that is how an entity simulated without an actor sends. Gated on
+	// there being no owning actor, so an actor or a component reaches exactly the code it reached before
+	// this branch existed, whether or not it also implements the interface.
+	if (!ContextActor)
+	{
+		if (ICrowdyEventSource* EventSource = Cast<ICrowdyEventSource>(Obj))
+		{
+			return RouteFromEventSource(Obj, EventSource, Fn, Info, MoveTemp(Call), EntitySubsystem, World);
+		}
 	}
 
 	// Resolve the sending identity: an actor by its context actor, a non-actor by its own enrolled NetID.
@@ -1579,3 +1870,360 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 
 	return true;
 }
+
+UObject* FCrowdyRPC::ResolveLocalTargetReceiver(UCrowdyEntitySubsystem* EntitySubsystem, const FGuid& NetID,
+	const UFunction* Fn)
+{
+	if (!EntitySubsystem || !Fn)
+	{
+		return nullptr;
+	}
+
+	UObject* Participant = EntitySubsystem->FindParticipant(NetID);
+	if (!Participant)
+	{
+		return nullptr;
+	}
+
+	// The body is declared on one class, so it runs on the object of that class the participant carries:
+	// the participant itself, or the first component on it that is one. This is the same resolution an
+	// inbound call goes through, shared here rather than restated.
+	return UCrowdyEventRouter::ResolveStateContainer(Participant, Fn->GetOwnerClass());
+}
+
+bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubsystem,
+	const FCrowdyRpcTarget& Target, UObject* LocalInstance, UFunction* Fn,
+	const FCrowdyFnInfo& Info, const FCrowdyRpcCall& Call)
+{
+	// The registry reads below, the entity context the encode installed, and a local run that reaches
+	// ProcessEvent are all game-thread only.
+	if (!ensure(IsInGameThread()))
+	{
+		return true;
+	}
+
+	if (!EntitySubsystem)
+	{
+		// No transport to route through at all, so a caller holding a body may run it as a local fallback.
+		return false;
+	}
+
+	if (!Fn || !Target.IsRoutable())
+	{
+		return true;
+	}
+
+	const FGuid LocalPlayerID = EntitySubsystem->GetLocalPlayerID();
+	const FGuid HostID = EntitySubsystem->GetHostID();
+	const bool bWeAreHost = HostID.IsValid() && HostID == LocalPlayerID;
+
+	// Where this client already holds a registration for the target, that record is the authority on who
+	// owns the entity and, where it holds an actor, on where the entity stands. What the caller resolved
+	// describes the same entity read from wherever its state lives, so preferring the record keeps the two
+	// from disagreeing about a decision the rest of this client already makes from the record.
+	FCrowdyRpcTarget Resolved = Target;
+	if (const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(Target.NetID))
+	{
+		Resolved.OwnerID = Record->OwnerID;
+		Resolved.Role = Record->Role;
+		if (const AActor* RecordActor = Record->GetActor())
+		{
+			Resolved.Location = RecordActor->GetActorLocation();
+		}
+	}
+
+	const bool bWeOwnTarget = Resolved.IsOwnedBy(LocalPlayerID);
+
+	// A target names a place in the world, so every recipient is available to it and the policy is the
+	// same table the actor path reads.
+	const FCrowdyRpcRouteDecision Decision = DecideRoute(Info.Recipient, /*bNonSpatial=*/false,
+		/*bEntityValid=*/true, bWeOwnTarget, bWeAreHost);
+
+	// Loopback debug mode delivers the call to this client's own receive path below, which runs the body
+	// once, so the immediate local run is skipped rather than running it twice. The guard keeps a call
+	// issued from a replayed body from starting a second loopback.
+	const bool bLoopback = IsLoopbackEnabled() && !bLoopbackDelivering;
+
+	if (IsRpcTraceEnabled())
+	{
+		const FString LocationText = Resolved.HasLocation()
+			? Resolved.Location.GetValue().ToCompactString()
+			: FString(TEXT("<unknown>"));
+		UE_LOG(LogCrowdyRPC, Log,
+			TEXT("[CrowdyRPC] send %s target=%s owned=%d route=%d run=%d at=%s"),
+			*Fn->GetName(), *Resolved.NetID.ToString(), bWeOwnTarget ? 1 : 0,
+			static_cast<int32>(Decision.Route), Decision.bRunLocally ? 1 : 0, *LocationText);
+	}
+
+	bool bRanLocally = false;
+	if (Decision.bRunLocally && !bLoopback)
+	{
+		// A caller that already holds the instance hands it in; otherwise the body runs on whatever object
+		// holds the target's identity on this client, which is the real actor where this client owns the
+		// target and a stand-in proxy where it does not. A target this client only renders has no such
+		// object: the function is declared on the target's own class, and a client that holds the target
+		// as an instance is what executes it.
+		UObject* Receiver = LocalInstance
+			? LocalInstance
+			: ResolveLocalTargetReceiver(EntitySubsystem, Resolved.NetID, Fn);
+		if (Receiver)
+		{
+			ApplyCall(Receiver, Fn, Info, Call);
+			bRanLocally = true;
+		}
+	}
+
+	switch (Decision.Route)
+	{
+	case ECrowdyRpcRoute::None:
+		// This client is the only one that runs the body, so there is nothing to send. Whether it actually
+		// ran is settled below.
+		break;
+
+	case ECrowdyRpcRoute::SpatialBroadcast:
+		// The spatial transport reaches everyone in range of the region the target stands in, so without a
+		// position there is no region to announce from.
+		if (!Resolved.HasLocation())
+		{
+			const bool bLogDrop = ShouldLogRpcDrop(Info.FunctionID);
+			UE_CLOG(bLogDrop, LogCrowdyRPC, Warning,
+				TEXT("[CrowdyRPC] '%s' dropped - it announces from where entity %s stands, and that position is "
+					 "not known right now."),
+				*Fn->GetName(), *Resolved.NetID.ToString());
+			break;
+		}
+		EntitySubsystem->DispatchGameEventAt(Resolved.Location.GetValue(), FInstancedStruct::Make(Call),
+			ECrowdyTarget::Everyone, nullptr, Info.DecayRate, Info.Distance);
+		break;
+
+	case ECrowdyRpcRoute::Channel:
+		RouteOverChannel(EntitySubsystem, Call, Fn, Info.ChannelName);
+		break;
+
+	case ECrowdyRpcRoute::SingleActorToOwner:
+		// The server delivers a single-actor message for an id to the client that owns that id. A world
+		// entity is owned by no client, so such a message would be addressed to nobody and vanish.
+		if (Resolved.BelongsToNoClient())
+		{
+			const bool bLogDrop = ShouldLogRpcDrop(Info.FunctionID);
+			UE_CLOG(bLogDrop, LogCrowdyRPC, Warning,
+				TEXT("[CrowdyRPC] '%s' dropped - it is owner-only and entity %s belongs to no client, so there is "
+					 "no client to deliver it to. A world entity is reached with CrowdyRecipient=Host."),
+				*Fn->GetName(), *Resolved.NetID.ToString());
+			break;
+		}
+		// Addressed to the target's OWN id, from the chunk the target stands in.
+		if (!Resolved.HasLocation())
+		{
+			const bool bLogDrop = ShouldLogRpcDrop(Info.FunctionID);
+			UE_CLOG(bLogDrop, LogCrowdyRPC, Warning,
+				TEXT("[CrowdyRPC] '%s' dropped - it is addressed to the chunk entity %s stands in, and that "
+					 "position is not known right now."),
+				*Fn->GetName(), *Resolved.NetID.ToString());
+			break;
+		}
+		EntitySubsystem->DispatchSingleActorMessageTo(Resolved.NetID, Resolved.Location.GetValue(),
+			FInstancedStruct::Make(Call));
+		break;
+
+	case ECrowdyRpcRoute::SingleActorToHost:
+	{
+		// The host is addressed by its OWN id, from the chunk the HOST stands in, never from where this
+		// call's target stands. That position comes from what this client holds for the host, which is the
+		// host's own registration; a client that holds the host only as rendering data has no position for
+		// it and cannot address the message.
+		const FCrowdyEntityRecord* HostRecord = EntitySubsystem->FindRecord(HostID);
+		const AActor* HostActor = HostRecord ? HostRecord->GetActor() : nullptr;
+		if (!HostActor)
+		{
+			const bool bLogDrop = ShouldLogRpcDrop(Info.FunctionID);
+			UE_CLOG(bLogDrop, LogCrowdyRPC, Warning,
+				TEXT("[CrowdyRPC] '%s' dropped - it is host-only, and this client holds no positioned instance of "
+					 "the host, so the chunk to address it to is unknown."),
+				*Fn->GetName());
+			break;
+		}
+		EntitySubsystem->DispatchSingleActorMessageTo(HostID, HostActor->GetActorLocation(),
+			FInstancedStruct::Make(Call));
+		break;
+	}
+
+	default:
+		// The only rejection DecideRoute produces is SpatialMulticast on a participant with no world
+		// location, and a target is never that, so nothing reaches here.
+		break;
+	}
+
+	// Nothing ran and nothing went out: the model named this client as the one that runs the body, and
+	// this client holds no instance of the target to run it on. No other client will hear about the call
+	// either, so it is a drop and is reported as one rather than passing for a quiet success.
+	if (Decision.Route == ECrowdyRpcRoute::None && !bRanLocally && !bLoopback)
+	{
+		const bool bLogDrop = ShouldLogRpcDrop(Info.FunctionID);
+		UE_CLOG(bLogDrop, LogCrowdyRPC, Warning,
+			TEXT("[CrowdyRPC] '%s' reached nobody - this client is the one that runs it for entity %s, and holds "
+				 "no instance of that entity to run it on."),
+			*Fn->GetName(), *Resolved.NetID.ToString());
+	}
+
+	if (bLoopback)
+	{
+		DeliverLoopback(World, Call);
+	}
+
+	// Every outcome above other than a missing subsystem is either a send, a local run, or a deliberate
+	// drop, and none of them is a reason for the caller to run its body as a local fallback.
+	return true;
+}
+
+bool FCrowdyRPC::SendToTarget(UWorld* World, const FCrowdyRpcTarget& Target, UFunction* Fn,
+	const void* Frame, FOutParmRec* OutParms)
+{
+	// The encode installs a process-wide entity context and the routing below reads the entity registry,
+	// both of which are game-thread only. Returning true keeps a caller from running its body off the
+	// game thread instead.
+	if (!ensure(IsInGameThread()))
+	{
+		return true;
+	}
+
+	if (!Fn)
+	{
+		return false;
+	}
+
+	if (!World)
+	{
+		// No world means no transport, so a caller holding a body may run it as a local fallback.
+		return false;
+	}
+
+	if (!Target.IsRoutable())
+	{
+		UE_LOG(LogCrowdyRPC, Warning,
+			TEXT("SendToTarget: '%s' dropped - the target names no entity, so no receiver could resolve the call."),
+			*Fn->GetName());
+		return true;
+	}
+
+	// Every input parameter is read out of the frame, so a function that takes any needs one. A function
+	// that takes none may pass null; the reflected walk still needs an address to start from, so it gets
+	// a local it never reads through.
+	uint8 EmptyFrame = 0;
+	if (!Frame && Fn->ParmsSize > 0)
+	{
+		UE_LOG(LogCrowdyRPC, Warning,
+			TEXT("SendToTarget: '%s' takes %d byte(s) of parameters but no frame was supplied; dropping."),
+			*Fn->GetName(), static_cast<int32>(Fn->ParmsSize));
+		return true;
+	}
+
+	UCrowdyEntitySubsystem* EntitySubsystem = World->GetSubsystem<UCrowdyEntitySubsystem>();
+	if (!EntitySubsystem)
+	{
+		UE_LOG(LogCrowdyRPC, Warning, TEXT("SendToTarget: entity subsystem unavailable; dropping %s."),
+			*Fn->GetName());
+		return false;
+	}
+
+	const FCrowdyFnInfo Info = GetFnInfo(Fn);
+
+	// Object-reference parameters resolve against the target's world while the call is encoded.
+	FScopedEntityContext EntityContext(EntitySubsystem);
+
+	// Keyed by the DECLARING class, as on every other send path, so the receiver resolves the same
+	// function on whatever instance it holds for this entity.
+	FCrowdyRpcCall Call = BuildCall(Fn, Info, Frame ? Frame : &EmptyFrame, OutParms);
+
+	// The receiver runs the call on the entity named here. The sender is always this client: a call aimed
+	// at another player's entity still goes out as us, never as them.
+	Call.EntityID = Target.NetID;
+	Call.SenderID = EntitySubsystem->GetLocalPlayerID();
+
+	// No instance issued this call, so there is none to run the body on; RouteToTarget looks one up only
+	// if the ownership model says the body also runs on this client.
+	return RouteToTarget(World, EntitySubsystem, Target, /*LocalInstance=*/nullptr, Fn, Info, Call);
+}
+
+#if !UE_BUILD_SHIPPING
+/**
+ * Answers, in THIS process, what a Crowdy event actually is here: whether the class and function resolve,
+ * whether the function is marked replicated, where it routes, and whether its compiled body still carries
+ * the dispatch gate.
+ *
+ * It exists because two clients running the same asset can disagree about that last one, and nothing else
+ * can see the disagreement: the send path of an ungated event is never entered, so it reports no drop and
+ * logs nothing at all. Run it in each process and compare the two lines.
+ */
+static FAutoConsoleCommand GCrowdyRpcDumpFn(
+	TEXT("crowdy.rpc.dumpfn"),
+	TEXT("Reports what a Crowdy event is in this process: resolved, replicated, its recipient, its FunctionID, and whether its compiled body carries the dispatch gate. Args: <ClassPathOrName> <FunctionName>. A Blueprint class name ends in _C."),
+	FConsoleCommandWithArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args)
+		{
+			if (Args.Num() < 2)
+			{
+				UE_LOG(LogCrowdyRPC, Warning,
+					TEXT("[CrowdyRPC] dumpfn: name a class and a function, for example crowdy.rpc.dumpfn BP_Hero_C MyEvent"));
+				return;
+			}
+
+			UClass* Class = UClass::TryFindTypeSlow<UClass>(Args[0]);
+			if (!Class)
+			{
+				Class = LoadObject<UClass>(nullptr, *Args[0]);
+			}
+
+			if (!Class)
+			{
+				UE_LOG(LogCrowdyRPC, Warning,
+					TEXT("[CrowdyRPC] dumpfn: nothing loaded for '%s'. A Blueprint class name ends in _C."), *Args[0]);
+				return;
+			}
+
+			// By name rather than through the registry, so a function the registry REFUSED still reports.
+			UFunction* Function = Class->FindFunctionByName(FName(*Args[1]));
+			if (!Function)
+			{
+				// A C++ CROWDY_EVENT's receiver is the _Implementation, which is what a caller naming the
+				// event itself would miss, so it is tried rather than left as "no such function".
+				Function = Class->FindFunctionByName(FName(*(Args[1] + TEXT("_Implementation"))));
+			}
+
+			if (!Function)
+			{
+				UE_LOG(LogCrowdyRPC, Warning,
+					TEXT("[CrowdyRPC] dumpfn: '%s' declares no function '%s' (nor its _Implementation)."),
+					*Class->GetName(), *Args[1]);
+				return;
+			}
+
+			const bool bReplicates = CrowdyRpcMetaKeys::HasReplicatesMeta(Function);
+			const bool bBlueprintEvent = FCrowdyRPC::IsBlueprintReplicatedEvent(Function);
+			const bool bGate = FCrowdyRPC::CarriesDispatchGate(Function);
+			const FCrowdyFnInfo Info = FCrowdyRPC::GetFnInfo(Function);
+			const UEnum* RecipientEnum = StaticEnum<ECrowdyEventRecipient>();
+
+			UE_LOG(LogCrowdyRPC, Display,
+				TEXT("[CrowdyRPC] dumpfn %s::%s declaredOn=%s replicates=%d blueprintEvent=%d gate=%s recipient=%s action=%d functionID=%lld"),
+				*Class->GetName(), *Function->GetName(), *GetNameSafe(Function->GetOuterUClass()),
+				bReplicates ? 1 : 0, bBlueprintEvent ? 1 : 0,
+				bBlueprintEvent ? (bGate ? TEXT("YES") : TEXT("MISSING")) : TEXT("n/a, native"),
+				RecipientEnum ? *RecipientEnum->GetNameStringByValue(static_cast<int64>(Info.Recipient)) : TEXT("?"),
+				Info.bIsAction ? 1 : 0,
+				Info.FunctionID);
+
+			// Reported in the same breath as the gate, because the two fail the same way: the event travels,
+			// the body runs, and the half that reads this flag does nothing. An event declared an action is
+			// what makes a crowd entity animate without any registration, so an event that means to be one
+			// and is not here starts nothing on a client that draws the entity as a row or a promoted actor.
+			UE_CLOG(!Info.bIsAction, LogCrowdyRPC, Display,
+				TEXT("[CrowdyRPC] dumpfn: this event is NOT an action in this process, so it starts no animation on a crowd entity. A Blueprint event carries that through its Is A One-Shot Action marker; if it is ticked in the editor and reads 0 here, this process did not get the marker."));
+
+			if (bBlueprintEvent && !bGate)
+			{
+				UE_LOG(LogCrowdyRPC, Error,
+					TEXT("[CrowdyRPC] dumpfn: this event sends NOTHING in this process. Its body runs locally and no send code is entered, so nothing else reports it."));
+			}
+		}));
+#endif

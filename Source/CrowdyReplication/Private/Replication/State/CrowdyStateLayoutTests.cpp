@@ -5,6 +5,7 @@
 #include "Misc/AutomationTest.h"
 #include "Replication/State/FCrowdyRepLayout.h"
 #include "Replication/RPC/CrowdyRPC.h"
+#include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "Core/CrowdyCategory/FCrowdyTypeIDGenerator.h"
 #include "UObject/Class.h"
 #include "UObject/UnrealType.h"
@@ -13,19 +14,6 @@ namespace
 {
 	constexpr EAutomationTestFlags CrowdyStateTestFlags =
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
-
-	const FCrowdyRepProperty* FindByName(const FCrowdyRepLayout& Layout, const TCHAR* Name)
-	{
-		const FName Wanted(Name);
-		for (const FCrowdyRepProperty& Prop : Layout.Properties)
-		{
-			if (Prop.Property && Prop.Property->GetFName() == Wanted)
-			{
-				return &Prop;
-			}
-		}
-		return nullptr;
-	}
 }
 
 // The builder collects the marked properties in reflection (declaration) order, matches the annotated

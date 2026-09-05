@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CrowdyActorPoolBackend.h"
 #include "CrowdyRenderingBackend.h"
 #include "CrowdyRenderingBackendConfig.h"
 #include "Engine/DataAsset.h"
@@ -27,8 +28,19 @@ struct FCrowdyActorManagementConfigStruct
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))
 	float ActorTimeoutThreshold = 5.0f;
 
+	/**
+	 * How many network-received actors may be tracked at once. Ids past this are not tracked at all
+	 * until an existing one times out, so the surplus simply does not appear.
+	 *
+	 * It is a bound on forged input rather than a performance setting. The set behind it used to be a
+	 * fixed-capacity open-addressed table whose lookups degraded as it filled, which is why the figure
+	 * was once conservative; it is a locked TSet now and costs the same whether it is empty or full. So
+	 * the only thing this still buys is a ceiling on how much memory a peer inventing actor ids can
+	 * make a client hold, and it should be set above the largest crowd the game intends to show rather
+	 * than near it. Locally spawned actors do not count against it.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 1))
-	int32 MaxTrackedActors = 1000;
+	int32 MaxTrackedActors = 4096;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 1))
 	int32 MaxUpdatesPerBatch = 100;
@@ -36,9 +48,19 @@ struct FCrowdyActorManagementConfigStruct
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0.001f, ClampMax = 0.1f))
 	float MaxBatchWaitTime = 0.005f;
 
-	/** The rendering backend to use for this world. Defaults to UCrowdyActorPoolBackend. */
+	/**
+	 * How remote entities are drawn on this map. The actor-pool backend it starts on spawns pooled actors of
+	 * the entity's own class; point it at another UCrowdyRenderingBackend subclass to draw them some other way.
+	 *
+	 * A profile that already names a backend keeps it: this default only fills in a profile that never chose
+	 * one, which previously left the map with no backend and no remote entities drawn at all.
+	 *
+	 * The actor-pool backend still needs Backend Config below set to a CrowdyActorPoolBackendConfig. Naming a
+	 * backend is not the same as configuring it, and a backend that cannot initialize is refused with a
+	 * warning rather than installed.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))
-	TSubclassOf<UCrowdyRenderingBackend> BackendClass;
+	TSubclassOf<UCrowdyRenderingBackend> BackendClass = UCrowdyActorPoolBackend::StaticClass();
 
 	/** Backend-specific settings. Set this to the matching config type for your chosen BackendClass. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Instanced, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))

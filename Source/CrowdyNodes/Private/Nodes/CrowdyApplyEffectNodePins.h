@@ -1,0 +1,96 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Replication/GameModel/Effect/CrowdyEffect.h"
+
+class UEdGraphPin;
+class UEdGraphSchema_K2;
+
+/**
+ * One typed input pin the smart Apply Crowdy Effect node exposes for a magnitude: the clean magnitude name (the
+ * server function's param name and the Overrides map key), a stable, collision-proof pin name, the value type
+ * that selects the pin's category and the JSON encoder, whether the magnitude has no authored value of its own
+ * (so leaving the pin empty is an error), and the default the pin is prefilled with (the raw editor form of the
+ * magnitude's default, empty for a required magnitude).
+ */
+struct FCrowdyApplyEffectPinEntry
+{
+	FString MagnitudeName;
+	FName PinName;
+	ECrowdyEffectValueType ValueType = ECrowdyEffectValueType::Int;
+	FString DefaultValue;
+	bool bRequired = false;
+
+	bool IsContainerRef() const { return ValueType == ECrowdyEffectValueType::ContainerRef; }
+};
+
+/**
+ * The pin layout the smart node builds for a given effect: one typed entry per magnitude, plus whether the Level
+ * and Source factory pins should be shown, plus the type of the value the effect answers with. Level appears only
+ * when at least one magnitude is curve-driven (Level samples the curve); Source appears only when the effect reads
+ * or writes source.<attr> (bRequiresSource). Pure data, so the layout can be computed and asserted headlessly with
+ * no live graph.
+ */
+struct FCrowdyApplyEffectPinPlan
+{
+	TArray<FCrowdyApplyEffectPinEntry> Magnitudes;
+	bool bIncludeLevel = false;
+	bool bIncludeSource = false;
+
+	// The type the effect declares it answers with. A whole-effect fact like bIncludeSource, not a per-magnitude
+	// one: it decides whether the latent node grows a single typed output pin beside its raw Return Value Json pin.
+	// Only the latent node consumes it. The nodes that lower to a plain library call must keep ignoring it, since
+	// the functions they wrap return nothing and a value pin there would be a lie.
+	ECrowdyEffectReturnType ReturnType = ECrowdyEffectReturnType::None;
+
+	// Whether the effect declares a concrete return type, and so gets a typed output pin. Deliberately keyed on the
+	// declared type alone, never on whether the effect's body authors a return: the body is edited through paths
+	// that raise no property notification, so a pin gated on it would go stale and stay stale until a reload. A
+	// declared type with no authored return is reported as a compile warning instead, where the answer is recomputed
+	// every time.
+	bool HasReturnPin() const { return ReturnType != ECrowdyEffectReturnType::None; }
+
+	// Magnitude names that appear more than once. Duplicates collapse to a single entry in Magnitudes (two pins
+	// with the same name would produce one Overrides key and silently drop a value), and the node surfaces each
+	// listed name as a compile error so the graph fails loudly rather than losing a magnitude at runtime.
+	TArray<FString> DuplicateMagnitudeNames;
+};
+
+/**
+ * Pure planning for UCrowdyK2Node_ApplyEffect. Kept free of any graph / Slate type so it is the unit-testable
+ * core of the node: given an effect asset it derives every typed magnitude pin (name, type, prefilled default,
+ * required-ness) and the Level / Source inclusion flags. The node's AllocateDefaultPins / ExpandNode consume this
+ * plan; the tests drive it directly.
+ */
+namespace CrowdyApplyEffectNodePins
+{
+	// The namespaced, stable pin name for a magnitude (prefixed so it never collides with a factory arg such as
+	// "Level" or "Source", and so ExpandNode can pick magnitude pins back out by prefix).
+	CROWDYNODES_API FName MagnitudePinName(const FString& MagnitudeName);
+
+	// True when PinName is one of the node's synthesized magnitude pins.
+	CROWDYNODES_API bool IsMagnitudePinName(FName PinName);
+
+	// Build the full pin plan for Effect. Returns an empty plan (no magnitudes, no Level/Source) when Effect is
+	// null, so the node degrades to the plain async pin set.
+	CROWDYNODES_API FCrowdyApplyEffectPinPlan BuildPinPlan(const UCrowdyEffect* Effect);
+
+	// The inclusion rule ExpandNode applies per magnitude pin: a pin contributes an Overrides entry only when the
+	// designer wired it or changed it away from its prefilled default. A pin left untouched is omitted so the
+	// server default (or a sampled curve) stays authoritative. A container_ref magnitude is an object pin with no
+	// string default at all, so it is judged on CurrentObject instead: a wired pin or a non-null literal counts as
+	// supplied. Pure so it is table-tested.
+	CROWDYNODES_API bool ShouldIncludeOverride(bool bConnected, bool bIsContainerRef, const UObject* CurrentObject,
+		const FString& CurrentDefault, const FString& PrefilledDefault);
+
+	// Seed a freshly created magnitude pin with its default. When the magnitude carries an authored default it is
+	// recorded as both the current and the autogenerated value, so an untouched pin reads as unchanged. When it has
+	// none (a required magnitude), the pin gets the type's natural default instead: an empty string is not a valid
+	// default for a numeric pin, and the editor's numeric field discards edits typed against that invalid baseline,
+	// so a required float would refuse the value the designer enters. A valid autogenerated default keeps the pin
+	// editable, and DoesDefaultValueMatchAutogenerated then distinguishes a supplied value from an untouched one.
+	CROWDYNODES_API void ApplyMagnitudeDefaultToPin(UEdGraphPin* Pin, const FCrowdyApplyEffectPinEntry& Entry,
+		const UEdGraphSchema_K2* Schema);
+}

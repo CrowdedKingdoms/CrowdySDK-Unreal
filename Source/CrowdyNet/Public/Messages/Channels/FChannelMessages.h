@@ -1,6 +1,7 @@
 #pragma once
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Serialization/CrowdyFrame.h"
 #include "Utils/SerializationFunctionLibrary.h"
 
 /**
@@ -9,8 +10,8 @@
  *
  * The frame is shorter than a spatial message and uses a different layout, so it builds its own
  * bytes instead of SerializeMetadata(). It serializes through the containsAuth flag; the
- * hmac(32) + gameTokenId(8) + seq(1) trailer is appended by FCrowdyTransmissionLayerUDP::SendBytes
- * (bRequiresAuth = true), which is exactly the trailer this message type expects.
+ * hmac(32) + gameTokenId(8) + seq(1) trailer is appended by the transport when it signs the frame,
+ * which is exactly the trailer this message type expects.
  *
  *   [17][channelId(8)][uuid(32)][payloadLen(2)][payload][containsAuth=1]
  */
@@ -32,35 +33,38 @@ struct FChannelMessageRequest : ICrowdyMessage
 	virtual TArray<uint8> Serialize() const override
 	{
 		TArray<uint8> Data;
-		Data.Add(static_cast<uint8>(GetType()));
-		Data.Append(USerializationFunctionLibrary::SerializeValue(ChannelId));
 
-		// 32 hex digits, no null terminator — same convention as the spatial UUID.
-		const FTCHARToUTF8 ConvertedUUID(*UUID);
-		Data.Append(reinterpret_cast<const uint8*>(ConvertedUUID.Get()), ConvertedUUID.Length());
+		// Sized for the whole frame before anything is written, so appending the payload cannot
+		// reallocate and re-copy what is already there. The layout is fixed and short, so this is the
+		// literal sum of it rather than a helper.
+		Data.Reserve(sizeof(uint8) + sizeof(ChannelId) + FCrowdyActorId::NumOctets
+			+ sizeof(uint16) + Payload.Num() + sizeof(uint8));
+
+		Data.Add(static_cast<uint8>(GetType()));
+		USerializationFunctionLibrary::AppendValue(Data, ChannelId);
+
+		// The sender id occupies a fixed 32 octets with no length and no terminator, same as the spatial
+		// header, so the payload length that follows it is always found at the same offset.
+		UUID.AppendTo(Data);
 
 		const uint16 PayloadLength = static_cast<uint16>(Payload.Num());
-		Data.Append(USerializationFunctionLibrary::SerializeValue(PayloadLength));
+		USerializationFunctionLibrary::AppendValue(Data, PayloadLength);
 		Data.Append(Payload);
 
-		Data.Add(static_cast<uint8>(1)); // containsAuth — always signed
+		Data.Add(static_cast<uint8>(1)); // containsAuth - always signed
 		return Data;
 	}
 
-	// Send-only message — the server delivers it as an FChannelMessageNotification.
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	// Send-only message - the server delivers it as an FChannelMessageNotification.
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
 		return false;
 	}
 
-	virtual uint32 GetMessageSize() const override
-	{
-		return sizeof(ChannelId) + 32 + sizeof(uint16) + Payload.Num() + sizeof(uint8);
-	}
 };
 
 /**
- * Server -> client delivery of a channel message. Not HMAC-signed (the payload is untrusted —
+ * Server -> client delivery of a channel message. Not HMAC-signed (the payload is untrusted -
  * validate it before acting on it). May arrive standalone or inside a MESSAGE_BUNDLE.
  *
  *   [18][channelId(8)][uuid(32)][payloadLen(2)][payload][epochMillis(8)][seq(1)]
@@ -85,49 +89,28 @@ struct FChannelMessageNotification : ICrowdyMessage
 		return {};
 	}
 
-	// Receives the datagram with the leading type byte already stripped by FCrowdyMessageParser.
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	// The channel header, the declared payload length and the optional tail have all been read off the
+	// frame already, so what is left is the payload itself.
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
-		constexpr int32 HeaderSize = sizeof(int64) + 32 + sizeof(uint16);
-		if (Data.Num() < HeaderSize)
-			return false;
+		ChannelId = Frame.Envelope.ChannelId;
+		Timestamp = Frame.Envelope.Timestamp;
+		SequenceNumber = Frame.Envelope.Sequence;
 
-		int32 Offset = 0;
+		// The sender id occupies a fixed 32 octets whatever it holds, but a server-native notification (a
+		// model-driven re-pull hint, or any automation run with no acting client) has no sender, so the
+		// region arrives empty or binary rather than as a 32-character hex string. Receivers act on
+		// ChannelId and Payload, so it is taken for what it is worth and never rejected on: a strict
+		// 32-character check once dropped every server-driven channel notification silently.
+		UUID = FCrowdyActorId::FromOctets(Frame.Envelope.Uuid);
 
-		if (!USerializationFunctionLibrary::DeserializeValue(Data, ChannelId, Offset))
-			return false;
-		Offset += sizeof(int64);
-
-		UUID = USerializationFunctionLibrary::DeserializeString(Data, Offset, 32);
-		if (UUID.Len() != 32)
-			return false;
-		Offset += 32;
-
-		uint16 PayloadLength = 0;
-		if (!USerializationFunctionLibrary::DeserializeValue(Data, PayloadLength, Offset))
-			return false;
-		Offset += sizeof(uint16);
-
-		if (Data.Num() < Offset + PayloadLength)
-			return false;
-
-		Payload.SetNumUninitialized(PayloadLength);
-		FMemory::Memcpy(Payload.GetData(), Data.GetData() + Offset, PayloadLength);
-		Offset += PayloadLength;
-
-		// Tail: server timestamp then the sender's sequence number, both optional on the wire.
-		if (Data.Num() >= Offset + static_cast<int32>(sizeof(int64)) + 1)
+		Payload.SetNumUninitialized(Frame.Body.Num());
+		if (Frame.Body.Num() > 0)
 		{
-			USerializationFunctionLibrary::DeserializeValue(Data, Timestamp, Offset);
-			Offset += sizeof(int64);
-			SequenceNumber = Data[Offset];
+			FMemory::Memcpy(Payload.GetData(), Frame.Body.GetData(), Frame.Body.Num());
 		}
 
 		return true;
 	}
 
-	virtual uint32 GetMessageSize() const override
-	{
-		return sizeof(ChannelId) + 32 + sizeof(uint16) + Payload.Num() + sizeof(int64) + sizeof(uint8);
-	}
 };

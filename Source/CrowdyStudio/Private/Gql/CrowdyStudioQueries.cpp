@@ -3,6 +3,8 @@
 #include "Gql/CrowdyStudioQueries.h"
 
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Replication/GameModel/Effect/CrowdyGameModelFunctionMarshaller.h"
 
 namespace
 {
@@ -62,16 +64,7 @@ namespace
 		{
 			Out.SplitMode = bSplitMode ? TEXT("true") : TEXT("false");
 		}
-		// App has no gameApiWsUrl — the WS endpoint comes from platformConfig.
-	}
-
-	void ReadEnvironment(const TSharedPtr<FJsonObject>& Node, FStudioEnvironment& Out)
-	{
-		Node->TryGetStringField(TEXT("id"), Out.EnvironmentId);
-		Node->TryGetStringField(TEXT("slug"), Out.Slug);
-		Node->TryGetStringField(TEXT("displayName"), Out.DisplayName);
-		Node->TryGetStringField(TEXT("status"), Out.Status);
-		Node->TryGetStringField(TEXT("environmentClass"), Out.EnvironmentClass);
+		// App has no gameApiWsUrl - the WS endpoint comes from platformConfig.
 	}
 
 	void ReadStringArray(const TSharedPtr<FJsonObject>& Node, const TCHAR* Field, TArray<FString>& Out)
@@ -152,28 +145,6 @@ namespace
 		return nullptr;
 	}
 
-	// login / devLogin / socialLoginComplete / completeLoginLink all return the same AuthResponse shape
-	// ({ token, user { userId } }). One reader keeps the four sign-in parsers from drifting. Reads
-	// data.<OpName>.token and data.<OpName>.user.userId; false when the token is absent or empty.
-	bool ReadAuthResponse(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FString& OutToken, int64& OutUserId)
-	{
-		const TSharedPtr<FJsonObject> Node = GetDataNode(Envelope, OpName);
-		if (!Node.IsValid())
-		{
-			return false;
-		}
-		if (!Node->TryGetStringField(TEXT("token"), OutToken) || OutToken.IsEmpty())
-		{
-			return false;
-		}
-		const TSharedPtr<FJsonObject>* User = nullptr;
-		if (Node->TryGetObjectField(TEXT("user"), User) && User->IsValid())
-		{
-			OutUserId = ReadId(*User, TEXT("userId"));
-		}
-		return true;
-	}
-
 	void ReadChunkField(const TSharedPtr<FJsonObject>& Node, const TCHAR* Field, FStudioChunk& Out)
 	{
 		const TSharedPtr<FJsonObject>* ChunkNode = nullptr;
@@ -227,6 +198,7 @@ namespace
 		Node->TryGetStringField(TEXT("returnType"), Out.ReturnType);
 		Node->TryGetStringField(TEXT("returnExpression"), Out.ReturnExpression);
 		Node->TryGetStringField(TEXT("invokeScope"), Out.InvokeScope);
+		Node->TryGetBoolField(TEXT("autonomousInvocable"), Out.bAutonomousInvocable);
 		Node->TryGetStringField(TEXT("invokePolicyJson"), Out.InvokePolicyJson);
 		ReadStringArray(Node, TEXT("warnings"), Out.Warnings);
 
@@ -266,6 +238,76 @@ namespace
 				}
 			}
 		}
+
+		// Read notifications verbatim so the schema sync can re-emit them on an upsert (the effect front-end does
+		// not author them yet; reading + re-emitting preserves any seed/console-authored ones). Shape matches
+		// FunctionNotificationInput: { kind, emitAs, args: [{ name, expression }] }.
+		const TArray<TSharedPtr<FJsonValue>>* Notifs = nullptr;
+		if (Node->TryGetArrayField(TEXT("notifications"), Notifs))
+		{
+			for (const TSharedPtr<FJsonValue>& Entry : *Notifs)
+			{
+				const TSharedPtr<FJsonObject>* N = nullptr;
+				if (Entry->TryGetObject(N) && N->IsValid())
+				{
+					FCrowdyGameModelNotification Notification;
+					(*N)->TryGetStringField(TEXT("kind"), Notification.Kind);
+					(*N)->TryGetStringField(TEXT("emitAs"), Notification.EmitAs);
+					const TArray<TSharedPtr<FJsonValue>>* Args = nullptr;
+					if ((*N)->TryGetArrayField(TEXT("args"), Args))
+					{
+						for (const TSharedPtr<FJsonValue>& ArgEntry : *Args)
+						{
+							const TSharedPtr<FJsonObject>* A = nullptr;
+							if (ArgEntry->TryGetObject(A) && A->IsValid())
+							{
+								FCrowdyGameModelNotificationArg Arg;
+								(*A)->TryGetStringField(TEXT("name"), Arg.Name);
+								(*A)->TryGetStringField(TEXT("expression"), Arg.Expression);
+								Notification.Args.Add(Arg);
+							}
+						}
+					}
+					Out.Notifications.Add(Notification);
+				}
+			}
+		}
+
+		// Timers, shape FunctionTimerInput: { functionName, target, delayMsExpression, dedupeKeyExpression,
+		// params: [{ name, expression }] }. Read so the schema diff can recognize an already-current set; the
+		// effect asset is their sole author, so a sync replaces rather than merges them.
+		const TArray<TSharedPtr<FJsonValue>>* TimerEntries = nullptr;
+		if (Node->TryGetArrayField(TEXT("timers"), TimerEntries))
+		{
+			for (const TSharedPtr<FJsonValue>& Entry : *TimerEntries)
+			{
+				const TSharedPtr<FJsonObject>* T = nullptr;
+				if (Entry->TryGetObject(T) && T->IsValid())
+				{
+					FCrowdyGameModelTimer Timer;
+					(*T)->TryGetStringField(TEXT("functionName"), Timer.FunctionName);
+					(*T)->TryGetStringField(TEXT("target"), Timer.Target);
+					(*T)->TryGetStringField(TEXT("delayMsExpression"), Timer.DelayMsExpression);
+					(*T)->TryGetStringField(TEXT("dedupeKeyExpression"), Timer.DedupeKeyExpression);
+					const TArray<TSharedPtr<FJsonValue>>* TimerParamEntries = nullptr;
+					if ((*T)->TryGetArrayField(TEXT("params"), TimerParamEntries))
+					{
+						for (const TSharedPtr<FJsonValue>& ParamEntry : *TimerParamEntries)
+						{
+							const TSharedPtr<FJsonObject>* P = nullptr;
+							if (ParamEntry->TryGetObject(P) && P->IsValid())
+							{
+								FCrowdyGameModelTimerParam Param;
+								(*P)->TryGetStringField(TEXT("name"), Param.Name);
+								(*P)->TryGetStringField(TEXT("expression"), Param.Expression);
+								Timer.Params.Add(Param);
+							}
+						}
+					}
+					Out.Timers.Add(Timer);
+				}
+			}
+		}
 	}
 
 	void ReadFeature(const TSharedPtr<FJsonObject>& Node, FStudioAppFeature& Out)
@@ -279,378 +321,49 @@ namespace
 		Out.TierId = ReadId(Node, TEXT("tierId"));
 		Node->TryGetStringField(TEXT("featureKey"), Out.FeatureKey);
 	}
+
+	void ReadAutomation(const TSharedPtr<FJsonObject>& Node, FStudioAutomation& Out)
+	{
+		Node->TryGetStringField(TEXT("automationId"), Out.AutomationId);
+		Node->TryGetStringField(TEXT("name"), Out.Name);
+		Node->TryGetStringField(TEXT("description"), Out.Description);
+		Node->TryGetBoolField(TEXT("enabled"), Out.bEnabled);
+		Node->TryGetStringField(TEXT("actionKind"), Out.ActionKind);
+		Node->TryGetStringField(TEXT("functionName"), Out.FunctionName);
+		Node->TryGetStringField(TEXT("targetMode"), Out.TargetMode);
+		Node->TryGetStringField(TEXT("selfContainerId"), Out.SelfContainerId);
+		Node->TryGetStringField(TEXT("targetTypeName"), Out.TargetTypeName);
+		Node->TryGetStringField(TEXT("sessionId"), Out.SessionId);
+		Node->TryGetStringField(TEXT("paramsJson"), Out.ParamsJson);
+		Node->TryGetStringField(TEXT("selectorJson"), Out.SelectorJson);
+		Node->TryGetStringField(TEXT("triggerType"), Out.TriggerType);
+		Node->TryGetStringField(TEXT("scheduleKind"), Out.ScheduleKind);
+		Node->TryGetNumberField(TEXT("intervalMs"), Out.IntervalMs);
+		Node->TryGetStringField(TEXT("cronExpr"), Out.CronExpr);
+		Node->TryGetNumberField(TEXT("maxTargets"), Out.MaxTargets);
+		Node->TryGetNumberField(TEXT("gasLimit"), Out.GasLimit);
+		Node->TryGetNumberField(TEXT("runTimeoutMs"), Out.RunTimeoutMs);
+		Node->TryGetNumberField(TEXT("maxRunsPerMinute"), Out.MaxRunsPerMinute);
+		Node->TryGetNumberField(TEXT("failureThreshold"), Out.FailureThreshold);
+		Node->TryGetNumberField(TEXT("cooldownMs"), Out.CooldownMs);
+	}
+
+	// AutomationName is left to the caller (ParseAutomationTriggers), which resolves it from the automationId the wire
+	// carries against the automations read in the same plan.
+	void ReadAutomationTrigger(const TSharedPtr<FJsonObject>& Node, FStudioAutomationTrigger& Out)
+	{
+		Node->TryGetStringField(TEXT("triggerId"), Out.TriggerId);
+		Node->TryGetStringField(TEXT("onEvent"), Out.OnEvent);
+		Node->TryGetStringField(TEXT("functionName"), Out.FunctionName);
+		Node->TryGetStringField(TEXT("containerTypeName"), Out.ContainerTypeName);
+		Node->TryGetStringField(TEXT("propertyKey"), Out.PropertyKey);
+		Node->TryGetStringField(TEXT("writeSource"), Out.WriteSource);
+		Node->TryGetNumberField(TEXT("debounceMs"), Out.DebounceMs);
+	}
 }
 
 namespace CrowdyStudioGql
 {
-	FString LoginMutation()
-	{
-		return TEXT(
-			"mutation StudioLogin($loginUserInput: LoginUserInput!) {"
-			"  login(loginUserInput: $loginUserInput) {"
-			"    token"
-			"    gameTokenId"
-			"    user { userId }"
-			"  }"
-			"}");
-	}
-
-	FString DevLoginMutation()
-	{
-		// The variable wrapper is `input` (DevLoginInput), not `loginUserInput`.
-		return TEXT(
-			"mutation StudioDevLogin($input: DevLoginInput!) {"
-			"  devLogin(input: $input) {"
-			"    token"
-			"    gameTokenId"
-			"    user { userId }"
-			"  }"
-			"}");
-	}
-
-	FString MintAppTokenMutation()
-	{
-		// appId is the BigInt scalar, interpolated as a JSON string into the input object. Field shape
-		// follows the runtime mint (CrowdyNet FMintAppTokenRequest) — minus launchUrl, which Studio
-		// doesn't consume — so the same server contract is exercised.
-		return TEXT(
-			"mutation StudioMintAppToken($appId: BigInt!) {"
-			"  mintAppToken(input: { appId: $appId }) {"
-			"    token"
-			"    gameTokenId"
-			"    appId"
-			"    expiresAt"
-			"    gameApiUrl"
-			"    gameApiWsUrl"
-			"  }"
-			"}");
-	}
-
-	FString SocialLoginStartMutation()
-	{
-		// Flat vars with the input built inline (the runtime FSocialLoginStartRequest shape), so the same
-		// server contract is exercised. Returns the provider consent URL and the CSRF state to arm the
-		// loopback with. PUBLIC — sent with no bearer.
-		return TEXT(
-			"mutation StudioSocialLoginStart($provider: String!, $redirectUri: String!) {"
-			"  socialLoginStart(input: { provider: $provider, redirectUri: $redirectUri }) {"
-			"    authorizeUrl"
-			"    state"
-			"  }"
-			"}");
-	}
-
-	FString SocialLoginCompleteMutation()
-	{
-		// The provider redirect's code + the round-tripped state complete sign-in and return the identity
-		// SESSION token (same AuthResponse shape as login). PUBLIC — the one-time code authorizes it.
-		return TEXT(
-			"mutation StudioSocialLoginComplete($provider: String!, $code: String!, $state: String!) {"
-			"  socialLoginComplete(input: { provider: $provider, code: $code, state: $state }) {"
-			"    token"
-			"    gameTokenId"
-			"    user { userId email }"
-			"  }"
-			"}");
-	}
-
-	FString AvailableLoginProvidersQuery()
-	{
-		// The enabled federated providers (e.g. ["google"]). PUBLIC, no args; drives the sign-in buttons
-		// so they are not hard-coded. The dev mock provider appears only under the server dev bypass.
-		return TEXT(
-			"query StudioAvailableLoginProviders {"
-			"  availableLoginProviders"
-			"}");
-	}
-
-	FString RequestLoginLinkMutation()
-	{
-		// Magic-link step 1: email a one-time link whose redirect lands on the loopback. redirectUri is a
-		// nullable String (omitted server-side when null). In dev the response carries a devToken that
-		// short-circuits the email round-trip. PUBLIC.
-		return TEXT(
-			"mutation StudioRequestLoginLink($email: String!, $redirectUri: String) {"
-			"  requestLoginLink(input: { email: $email, redirectUri: $redirectUri }) {"
-			"    sent"
-			"    devToken"
-			"  }"
-			"}");
-	}
-
-	FString CompleteLoginLinkMutation()
-	{
-		// Magic-link step 2: the one-time token from the link (or the devToken) yields the SESSION token
-		// (same AuthResponse shape as login). PUBLIC — the token authorizes it.
-		return TEXT(
-			"mutation StudioCompleteLoginLink($token: String!) {"
-			"  completeLoginLink(input: { token: $token }) {"
-			"    token"
-			"    gameTokenId"
-			"    user { userId email }"
-			"  }"
-			"}");
-	}
-
-	FString MyOrganizationsQuery()
-	{
-		return TEXT(
-			"query StudioMyOrganizations {"
-			"  myOrganizations {"
-			"    org { orgId name slug }"
-			"    permissions"
-			"  }"
-			"}");
-	}
-
-	FString CreateOrganizationMutation()
-	{
-		return TEXT(
-			"mutation StudioCreateOrganization($input: CreateOrganizationInput!) {"
-			"  createOrganization(input: $input) {"
-			"    orgId"
-			"    name"
-			"    slug"
-			"  }"
-			"}");
-	}
-
-	FString MyAppsQuery()
-	{
-		// No args — returns every app the signed-in token can see, across orgs, so app ids
-		// never have to be typed by hand.
-		return TEXT(
-			"query StudioMyApps {"
-			"  myApps {"
-			"    appId"
-			"    orgId"
-			"    name"
-			"    slug"
-			"    status"
-			"    visibility"
-			"    gameApiUrl"
-			"    splitMode"
-			"    deploymentTarget"
-			"  }"
-			"}");
-	}
-
-	FString CreateAppMutation()
-	{
-		return TEXT(
-			"mutation StudioCreateApp($input: CreateAppInput!) {"
-			"  createApp(input: $input) {"
-			"    appId"
-			"    name"
-			"    slug"
-			"    status"
-			"    visibility"
-			"  }"
-			"}");
-	}
-
-	FString UpdateAppMutation()
-	{
-		return TEXT(
-			"mutation StudioUpdateApp($appId: BigInt!, $input: UpdateAppInput!) {"
-			"  updateApp(appId: $appId, input: $input) {"
-			"    appId"
-			"    name"
-			"    slug"
-			"    status"
-			"    visibility"
-			"  }"
-			"}");
-	}
-
-	FString ArchiveAppMutation()
-	{
-		return TEXT(
-			"mutation StudioArchiveApp($appId: BigInt!) {"
-			"  archiveApp(appId: $appId) {"
-			"    appId"
-			"    status"
-			"  }"
-			"}");
-	}
-
-	FString AppQuery()
-	{
-		// orgId must be selected: FetchApp merges this detail over the myApps list entry (*Existing =
-		// *Detail), so omitting orgId here would overwrite the good value with 0 and break the org-scoped
-		// fetches (environments) on a re-click.
-		return TEXT(
-			"query StudioApp($appId: BigInt!) {"
-			"  app(appId: $appId) {"
-			"    appId"
-			"    orgId"
-			"    name"
-			"    slug"
-			"    status"
-			"    visibility"
-			"    gameApiUrl"
-			"    splitMode"
-			"    deploymentTarget"
-			"  }"
-			"}");
-	}
-
-	FString OrgEnvironmentsQuery()
-	{
-		return TEXT(
-			"query StudioOrgEnvironments($orgId: BigInt!) {"
-			"  orgEnvironments(orgId: $orgId) {"
-			"    id"
-			"    slug"
-			"    displayName"
-			"    status"
-			"    environmentClass"
-			"  }"
-			"}");
-	}
-
-	FString LinkAppToEnvironmentMutation()
-	{
-		return TEXT(
-			"mutation StudioLinkAppToEnvironment($input: LinkAppToEnvironmentInput!) {"
-			"  linkAppToEnvironment(input: $input) {"
-			"    appId"
-			"    gameApiUrl"
-			"  }"
-			"}");
-	}
-
-	bool ParseLogin(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId)
-	{
-		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
-		if (!Data.IsValid())
-		{
-			return false;
-		}
-
-		const TSharedPtr<FJsonObject>* Login = nullptr;
-		if (!Data->TryGetObjectField(TEXT("login"), Login) || !Login->IsValid())
-		{
-			return false;
-		}
-
-		if (!(*Login)->TryGetStringField(TEXT("token"), OutToken) || OutToken.IsEmpty())
-		{
-			return false;
-		}
-
-		const TSharedPtr<FJsonObject>* User = nullptr;
-		if ((*Login)->TryGetObjectField(TEXT("user"), User) && User->IsValid())
-		{
-			OutUserId = ReadId(*User, TEXT("userId"));
-		}
-
-		return true;
-	}
-
-	bool ParseDevLogin(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId)
-	{
-		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
-		if (!Data.IsValid())
-		{
-			return false;
-		}
-
-		const TSharedPtr<FJsonObject>* DevLogin = nullptr;
-		if (!Data->TryGetObjectField(TEXT("devLogin"), DevLogin) || !DevLogin->IsValid())
-		{
-			return false;
-		}
-
-		if (!(*DevLogin)->TryGetStringField(TEXT("token"), OutToken) || OutToken.IsEmpty())
-		{
-			return false;
-		}
-
-		const TSharedPtr<FJsonObject>* User = nullptr;
-		if ((*DevLogin)->TryGetObjectField(TEXT("user"), User) && User->IsValid())
-		{
-			OutUserId = ReadId(*User, TEXT("userId"));
-		}
-
-		return true;
-	}
-
-	bool ParseAppToken(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, FString& OutGameApiUrl,
-	                   FString& OutGameApiWsUrl, FString& OutExpiresAt)
-	{
-		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
-		if (!Data.IsValid())
-		{
-			return false;
-		}
-
-		const TSharedPtr<FJsonObject>* Mint = nullptr;
-		if (!Data->TryGetObjectField(TEXT("mintAppToken"), Mint) || !Mint->IsValid())
-		{
-			return false;
-		}
-
-		if (!(*Mint)->TryGetStringField(TEXT("token"), OutToken) || OutToken.IsEmpty())
-		{
-			return false;
-		}
-
-		(*Mint)->TryGetStringField(TEXT("gameApiUrl"), OutGameApiUrl);
-		(*Mint)->TryGetStringField(TEXT("gameApiWsUrl"), OutGameApiWsUrl);
-		(*Mint)->TryGetStringField(TEXT("expiresAt"), OutExpiresAt);
-		return true;
-	}
-
-	bool ParseSocialLoginStart(const TSharedPtr<FJsonObject>& Envelope, FString& OutAuthorizeUrl, FString& OutState)
-	{
-		const TSharedPtr<FJsonObject> Node = GetDataNode(Envelope, TEXT("socialLoginStart"));
-		if (!Node.IsValid())
-		{
-			return false;
-		}
-		if (!Node->TryGetStringField(TEXT("authorizeUrl"), OutAuthorizeUrl) || OutAuthorizeUrl.IsEmpty())
-		{
-			return false;
-		}
-		Node->TryGetStringField(TEXT("state"), OutState);
-		return true;
-	}
-
-	bool ParseSocialLoginComplete(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId)
-	{
-		return ReadAuthResponse(Envelope, TEXT("socialLoginComplete"), OutToken, OutUserId);
-	}
-
-	bool ParseCompleteLoginLink(const TSharedPtr<FJsonObject>& Envelope, FString& OutToken, int64& OutUserId)
-	{
-		return ReadAuthResponse(Envelope, TEXT("completeLoginLink"), OutToken, OutUserId);
-	}
-
-	bool ParseRequestLoginLink(const TSharedPtr<FJsonObject>& Envelope, bool& OutSent, FString& OutDevToken)
-	{
-		const TSharedPtr<FJsonObject> Node = GetDataNode(Envelope, TEXT("requestLoginLink"));
-		if (!Node.IsValid())
-		{
-			return false;
-		}
-		Node->TryGetBoolField(TEXT("sent"), OutSent);
-		Node->TryGetStringField(TEXT("devToken"), OutDevToken);
-		return true;
-	}
-
-	void ParseProviders(const TSharedPtr<FJsonObject>& Envelope, TArray<FString>& OutProviders)
-	{
-		OutProviders.Reset();
-		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
-		if (!Data.IsValid())
-		{
-			return;
-		}
-		// availableLoginProviders is a [String] sitting directly under data (not a named object node).
-		ReadStringArray(Data, TEXT("availableLoginProviders"), OutProviders);
-	}
-
 	void ParseOrganizations(const TSharedPtr<FJsonObject>& Envelope, TArray<TSharedPtr<FStudioOrg>>& OutOrgs)
 	{
 		OutOrgs.Reset();
@@ -774,241 +487,7 @@ namespace CrowdyStudioGql
 		return App;
 	}
 
-	void ParseEnvironments(const TSharedPtr<FJsonObject>& Envelope, TArray<TSharedPtr<FStudioEnvironment>>& OutEnvs)
-	{
-		OutEnvs.Reset();
-
-		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
-		if (!Data.IsValid())
-		{
-			return;
-		}
-
-		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
-		if (!Data->TryGetArrayField(TEXT("orgEnvironments"), Array))
-		{
-			return;
-		}
-
-		for (const TSharedPtr<FJsonValue>& Entry : *Array)
-		{
-			const TSharedPtr<FJsonObject>* Node = nullptr;
-			if (!Entry->TryGetObject(Node) || !Node->IsValid())
-			{
-				continue;
-			}
-
-			TSharedPtr<FStudioEnvironment> Env = MakeShared<FStudioEnvironment>();
-			ReadEnvironment(*Node, *Env);
-			OutEnvs.Add(Env);
-		}
-	}
-
-	// ── Teams & channels (game plane) ───────────────────────────────────────────────
-
-	FString TeamsQuery()
-	{
-		return TEXT(
-			"query StudioTeams($appId: BigInt!) {"
-			"  teams(appId: $appId) { groupId name description groupType membershipPolicy status }"
-			"}");
-	}
-
-	FString TeamPolicyQuery()
-	{
-		return TEXT(
-			"query StudioTeamPolicy($appId: BigInt!) {"
-			"  teamPolicy(appId: $appId) { appId groupType creationPolicy defaultMembershipPolicy maxMembers maxGroupsPerUser }"
-			"}");
-	}
-
-	FString SetTeamPolicyMutation()
-	{
-		return TEXT(
-			"mutation StudioSetTeamPolicy($appId: BigInt!, $creationPolicy: String!, $defaultMembershipPolicy: String!, $maxMembers: Int, $maxGroupsPerUser: Int) {"
-			"  setTeamPolicy(input: { appId: $appId, creationPolicy: $creationPolicy, defaultMembershipPolicy: $defaultMembershipPolicy, maxMembers: $maxMembers, maxGroupsPerUser: $maxGroupsPerUser }) {"
-			"    appId groupType creationPolicy defaultMembershipPolicy maxMembers maxGroupsPerUser"
-			"  }"
-			"}");
-	}
-
-	FString ChannelsQuery()
-	{
-		return TEXT(
-			"query StudioChannels($appId: BigInt!) {"
-			"  channels(appId: $appId) { groupId name description groupType membershipPolicy status }"
-			"}");
-	}
-
-	FString ChannelPolicyQuery()
-	{
-		return TEXT(
-			"query StudioChannelPolicy($appId: BigInt!) {"
-			"  channelPolicy(appId: $appId) { appId groupType creationPolicy defaultMembershipPolicy maxMembers maxGroupsPerUser }"
-			"}");
-	}
-
-	FString SetChannelPolicyMutation()
-	{
-		return TEXT(
-			"mutation StudioSetChannelPolicy($appId: BigInt!, $creationPolicy: String!, $defaultMembershipPolicy: String!, $maxMembers: Int, $maxGroupsPerUser: Int) {"
-			"  setChannelPolicy(input: { appId: $appId, creationPolicy: $creationPolicy, defaultMembershipPolicy: $defaultMembershipPolicy, maxMembers: $maxMembers, maxGroupsPerUser: $maxGroupsPerUser }) {"
-			"    appId groupType creationPolicy defaultMembershipPolicy maxMembers maxGroupsPerUser"
-			"  }"
-			"}");
-	}
-
-	FString CreateChannelMutation()
-	{
-		return TEXT(
-			"mutation StudioCreateChannel($appId: BigInt!, $name: String!, $description: String, $membersCanSend: Boolean, $membershipPolicy: String) {"
-			"  createChannel(input: { appId: $appId, name: $name, description: $description, membersCanSend: $membersCanSend, membershipPolicy: $membershipPolicy }) {"
-			"    groupId name description groupType membershipPolicy status"
-			"  }"
-			"}");
-	}
-
-	FString CreateTeamMutation()
-	{
-		return TEXT(
-			"mutation StudioCreateTeam($appId: BigInt!, $name: String!, $description: String, $membershipPolicy: String) {"
-			"  createTeam(input: { appId: $appId, name: $name, description: $description, membershipPolicy: $membershipPolicy }) {"
-			"    groupId name description groupType membershipPolicy status"
-			"  }"
-			"}");
-	}
-
-	FString GroupMembersQuery(bool bChannel)
-	{
-		return bChannel
-			? TEXT(
-				"query StudioChannelMembers($groupId: BigInt!) {"
-				"  channelMembers(groupId: $groupId) { groupMemberId userId status roles { groupRoleId roleName } }"
-				"}")
-			: TEXT(
-				"query StudioTeamMembers($groupId: BigInt!) {"
-				"  teamMembers(groupId: $groupId) { groupMemberId userId status roles { groupRoleId roleName } }"
-				"}");
-	}
-
-	FString GroupRolesQuery(bool bChannel)
-	{
-		return bChannel
-			? TEXT(
-				"query StudioChannelRoles($groupId: BigInt!) {"
-				"  channelRoles(groupId: $groupId) { groupRoleId roleName rank isSystem permissions }"
-				"}")
-			: TEXT(
-				"query StudioTeamRoles($groupId: BigInt!) {"
-				"  teamRoles(groupId: $groupId) { groupRoleId roleName rank isSystem permissions }"
-				"}");
-	}
-
-	FString AddGroupMemberMutation(bool bChannel)
-	{
-		return bChannel
-			? TEXT(
-				"mutation StudioAddChannelMember($groupId: BigInt!, $userId: BigInt!) {"
-				"  addChannelMember(groupId: $groupId, userId: $userId) { groupMemberId userId status }"
-				"}")
-			: TEXT(
-				"mutation StudioAddTeamMember($groupId: BigInt!, $userId: BigInt!) {"
-				"  addTeamMember(groupId: $groupId, userId: $userId) { groupMemberId userId status }"
-				"}");
-	}
-
-	FString RemoveGroupMemberMutation(bool bChannel)
-	{
-		return bChannel
-			? TEXT(
-				"mutation StudioRemoveChannelMember($groupId: BigInt!, $userId: BigInt!) {"
-				"  removeChannelMember(groupId: $groupId, userId: $userId)"
-				"}")
-			: TEXT(
-				"mutation StudioRemoveTeamMember($groupId: BigInt!, $userId: BigInt!) {"
-				"  removeTeamMember(groupId: $groupId, userId: $userId)"
-				"}");
-	}
-
-	FString SetGroupMemberRolesMutation(bool bChannel)
-	{
-		return bChannel
-			? TEXT(
-				"mutation StudioSetChannelMemberRoles($input: SetMemberRolesInput!) {"
-				"  setChannelMemberRoles(input: $input) { groupMemberId userId status roles { groupRoleId roleName } }"
-				"}")
-			: TEXT(
-				"mutation StudioSetTeamMemberRoles($input: SetMemberRolesInput!) {"
-				"  setTeamMemberRoles(input: $input) { groupMemberId userId status roles { groupRoleId roleName } }"
-				"}");
-	}
-
-	FString CreateGroupRoleMutation(bool bChannel)
-	{
-		return bChannel
-			? TEXT(
-				"mutation StudioCreateChannelRole($input: CreateGroupRoleInput!) {"
-				"  createChannelRole(input: $input) { groupRoleId roleName rank isSystem permissions }"
-				"}")
-			: TEXT(
-				"mutation StudioCreateTeamRole($input: CreateGroupRoleInput!) {"
-				"  createTeamRole(input: $input) { groupRoleId roleName rank isSystem permissions }"
-				"}");
-	}
-
-	FString UpdateGroupRoleMutation(bool bChannel)
-	{
-		return bChannel
-			? TEXT(
-				"mutation StudioUpdateChannelRole($input: UpdateGroupRoleInput!) {"
-				"  updateChannelRole(input: $input) { groupRoleId roleName rank isSystem permissions }"
-				"}")
-			: TEXT(
-				"mutation StudioUpdateTeamRole($input: UpdateGroupRoleInput!) {"
-				"  updateTeamRole(input: $input) { groupRoleId roleName rank isSystem permissions }"
-				"}");
-	}
-
-	FString DeleteGroupRoleMutation(bool bChannel)
-	{
-		return bChannel
-			? TEXT(
-				"mutation StudioDeleteChannelRole($groupRoleId: BigInt!) {"
-				"  deleteChannelRole(groupRoleId: $groupRoleId)"
-				"}")
-			: TEXT(
-				"mutation StudioDeleteTeamRole($groupRoleId: BigInt!) {"
-				"  deleteTeamRole(groupRoleId: $groupRoleId)"
-				"}");
-	}
-
-	FString DeleteGroupMutation(bool bChannel)
-	{
-		return bChannel
-			? TEXT(
-				"mutation StudioDeleteChannel($groupId: BigInt!) {"
-				"  deleteChannel(groupId: $groupId)"
-				"}")
-			: TEXT(
-				"mutation StudioDeleteTeam($groupId: BigInt!) {"
-				"  deleteTeam(groupId: $groupId)"
-				"}");
-	}
-
-	FString UpdateGroupMutation(bool bChannel)
-	{
-		return bChannel
-			? TEXT(
-				"mutation StudioUpdateChannel($input: UpdateChannelInput!) {"
-				"  updateChannel(input: $input) { groupId name description membershipPolicy }"
-				"}")
-			: TEXT(
-				"mutation StudioUpdateTeam($input: UpdateTeamInput!) {"
-				"  updateTeam(input: $input) { groupId name description membershipPolicy }"
-				"}");
-	}
-
-
+	// Teams & channels (game plane).
 	bool ParseGroupPolicy(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FStudioGroupPolicy& OutPolicy)
 	{
 		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
@@ -1144,102 +623,6 @@ namespace CrowdyStudioGql
 
 	// Spatial grid (game plane)
 
-	FString NearbyGridPermissionsQuery()
-	{
-		return TEXT(
-			"query StudioNearbyGrids($input: NearbyGridPermissionsInput!) {"
-			"  nearbyGridPermissions(input: $input) {"
-			"    appId gridId userId lowChunk { x y z } highChunk { x y z } permissionKeys"
-			"  }"
-			"}");
-	}
-
-	FString GridPermissionLimitsQuery()
-	{
-		return TEXT(
-			"query StudioGridLimits($appId: BigInt!, $gridId: BigInt!) {"
-			"  gridPermissionLimits(appId: $appId, gridId: $gridId) { appId gridId permissionKeys }"
-			"}");
-	}
-
-	FString GridGroupGrantsQuery()
-	{
-		return TEXT(
-			"query StudioGridGroupGrants($appId: BigInt!, $gridId: BigInt!, $groupId: BigInt!) {"
-			"  gridGroupGrants(appId: $appId, gridId: $gridId, groupId: $groupId) {"
-			"    appId gridId groupId groupRoleId permissionKey expiresAt"
-			"  }"
-			"}");
-	}
-
-	FString GridUserPermissionsQuery()
-	{
-		return TEXT(
-			"query StudioGridUserPerms($appId: BigInt!, $gridId: BigInt!, $userId: BigInt!) {"
-			"  gridUserPermissions(appId: $appId, gridId: $gridId, userId: $userId) { appId gridId userId permissionKeys }"
-			"}");
-	}
-
-	FString CreateGridMutation()
-	{
-		return TEXT(
-			"mutation StudioCreateGrid($input: CreateGridInput!) {"
-			"  createGrid(input: $input) {"
-			"    grid { grid_id app_id low_chunk { x y z } high_chunk { x y z } } error"
-			"  }"
-			"}");
-	}
-
-	FString GrantGridPermissionsMutation()
-	{
-		return TEXT(
-			"mutation StudioGrantGrid($input: GrantGridPermissionsInput!) {"
-			"  grantGridPermissions(input: $input) { appId gridId userId permissionKeys }"
-			"}");
-	}
-
-	FString RevokeGridPermissionsMutation()
-	{
-		return TEXT(
-			"mutation StudioRevokeGrid($input: RevokeGridPermissionsInput!) {"
-			"  revokeGridPermissions(input: $input) { appId gridId userId permissionKeys }"
-			"}");
-	}
-
-	FString SetGridPermissionLimitsMutation()
-	{
-		return TEXT(
-			"mutation StudioSetGridLimits($input: SetGridPermissionLimitsInput!) {"
-			"  setGridPermissionLimits(input: $input) { appId gridId permissionKeys }"
-			"}");
-	}
-
-	FString AssignGroupToGridMutation()
-	{
-		return TEXT(
-			"mutation StudioAssignGroupToGrid($input: AssignGroupToGridInput!) {"
-			"  assignGroupToGrid(input: $input) { appId gridId groupId groupRoleId permissionKey expiresAt }"
-			"}");
-	}
-
-	FString RevokeGroupFromGridMutation()
-	{
-		return TEXT(
-			"mutation StudioRevokeGroupFromGrid($input: RevokeGroupFromGridInput!) {"
-			"  revokeGroupFromGrid(input: $input) { appId gridId groupId groupRoleId permissionKey expiresAt }"
-			"}");
-	}
-
-	FString RuntimePermissionsQuery()
-	{
-		// PUBLIC and global: no app id, no arguments. Returns the flat list of valid permission keys
-		// ordered by bit index. Lives on the management plane even though grids are a game-plane concept.
-		return TEXT(
-			"query StudioRuntimePermissions {"
-			"  runtimePermissions"
-			"}");
-	}
-
 	void ParseNearbyGrids(const TSharedPtr<FJsonObject>& Envelope, TArray<TSharedPtr<FStudioGrid>>& OutGrids)
 	{
 		OutGrids.Reset();
@@ -1344,172 +727,20 @@ namespace CrowdyStudioGql
 
 	// Game model (game plane)
 
-	FString ContainerTypesQuery()
+	TSharedPtr<FJsonObject> BuildAutomationUpsertVariables(const FCrowdyGameModelAutomationInput& Automation, int64 AppId)
 	{
-		return TEXT(
-			"query StudioContainerTypes($appId: BigInt!) {"
-			"  gameModelContainerTypes(appId: $appId) {"
-			"    appId typeName displayName description instantiableBy defaultPropertyVisibility metadataJson"
-			"  }"
-			"}");
+		// The input object is built by the shared marshaller (also used by the editor payload preview) so there is one
+		// definition of the wire shape; this wraps it in the mutation's { input: ... } variables.
+		const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+		Variables->SetObjectField(TEXT("input"), CrowdyGameModelMarshalling::BuildAutomationUpsertInput(Automation, AppId));
+		return Variables;
 	}
 
-	FString PropertyDefsQuery()
+	TSharedPtr<FJsonObject> BuildAutomationTriggerUpsertVariables(const FCrowdyGameModelAutomationTriggerInput& Trigger, int64 AppId)
 	{
-		return TEXT(
-			"query StudioPropertyDefs($appId: BigInt!, $typeName: String!) {"
-			"  gameModelPropertyDefs(appId: $appId, typeName: $typeName) {"
-			"    containerTypeName key valueType defaultValueJson visibility writable description"
-			"  }"
-			"}");
-	}
-
-	FString FunctionsQuery()
-	{
-		return TEXT(
-			"query StudioFunctions($appId: BigInt!, $containerTypeName: String) {"
-			"  gameModelFunctions(appId: $appId, containerTypeName: $containerTypeName) {"
-			"    functionId name containerTypeName description returnType returnExpression invokeScope invokePolicyJson"
-			"    parameters { name valueType required defaultValueJson description sortOrder }"
-			"    mutations { target property expression }"
-			"    warnings"
-			"  }"
-			"}");
-	}
-
-	FString FeaturesQuery()
-	{
-		return TEXT(
-			"query StudioFeatures($appId: BigInt!) {"
-			"  gameModelFeatures(appId: $appId) { appId featureKey description }"
-			"}");
-	}
-
-	FString TierFeaturesQuery()
-	{
-		return TEXT(
-			"query StudioTierFeatures($appId: BigInt!) {"
-			"  gameModelTierFeatures(appId: $appId) { appId tierId featureKey }"
-			"}");
-	}
-
-	FString AppAccessTiersQuery()
-	{
-		return TEXT(
-			"query StudioAppAccessTiers($appId: BigInt!) {"
-			"  appAccessTiers(appId: $appId) { tierId name isFree isDefault permissionKeys status }"
-			"}");
-	}
-
-	FString GameModelPolicyQuery()
-	{
-		return TEXT(
-			"query StudioGameModelPolicy($appId: BigInt!) {"
-			"  gameModelPolicy(appId: $appId) { appId sessionCreationPolicy defaultParticipantRole }"
-			"}");
-	}
-
-	FString ContainersQuery()
-	{
-		return TEXT(
-			"query StudioGmContainers($appId: BigInt!, $typeName: String, $sessionId: String) {"
-			"  gameModelContainers(appId: $appId, typeName: $typeName, sessionId: $sessionId) {"
-			"    containerId sessionId typeName displayName ownerUserId"
-			"  }"
-			"}");
-	}
-
-	FString ContainerStateQuery()
-	{
-		return TEXT(
-			"query StudioGmContainerState($appId: BigInt!, $containerId: String!) {"
-			"  gameModelContainerState(appId: $appId, containerId: $containerId) {"
-			"    containerId typeName displayName ownerUserId propertiesJson"
-			"  }"
-			"}");
-	}
-
-	FString UpsertContainerTypeMutation()
-	{
-		return TEXT(
-			"mutation StudioUpsertContainerType($input: UpsertContainerTypeInput!) {"
-			"  gameModelUpsertContainerType(input: $input) {"
-			"    appId typeName displayName description instantiableBy defaultPropertyVisibility metadataJson"
-			"  }"
-			"}");
-	}
-
-	FString UpsertPropertyDefMutation()
-	{
-		return TEXT(
-			"mutation StudioUpsertPropertyDef($input: UpsertPropertyDefInput!) {"
-			"  gameModelUpsertPropertyDef(input: $input) {"
-			"    containerTypeName key valueType defaultValueJson visibility writable description"
-			"  }"
-			"}");
-	}
-
-	FString UpsertFunctionMutation()
-	{
-		return TEXT(
-			"mutation StudioUpsertFunction($input: UpsertFunctionInput!) {"
-			"  gameModelUpsertFunction(input: $input) {"
-			"    functionId name containerTypeName description returnType returnExpression invokeScope invokePolicyJson"
-			"    parameters { name valueType required defaultValueJson description sortOrder }"
-			"    mutations { target property expression }"
-			"    warnings"
-			"  }"
-			"}");
-	}
-
-	FString DeleteFunctionMutation()
-	{
-		return TEXT(
-			"mutation StudioDeleteFunction($appId: BigInt!, $name: String!) {"
-			"  gameModelDeleteFunction(appId: $appId, name: $name)"
-			"}");
-	}
-
-	FString DefineFeatureMutation()
-	{
-		return TEXT(
-			"mutation StudioDefineFeature($input: DefineAppFeatureInput!) {"
-			"  gameModelDefineFeature(input: $input) { appId featureKey description }"
-			"}");
-	}
-
-	FString GrantTierFeatureMutation()
-	{
-		return TEXT(
-			"mutation StudioGrantTierFeature($input: GrantTierFeatureInput!) {"
-			"  gameModelGrantTierFeature(input: $input) { appId tierId featureKey }"
-			"}");
-	}
-
-	FString RevokeTierFeatureMutation()
-	{
-		return TEXT(
-			"mutation StudioRevokeTierFeature($input: GrantTierFeatureInput!) {"
-			"  gameModelRevokeTierFeature(input: $input)"
-			"}");
-	}
-
-	FString SetGameModelPolicyMutation()
-	{
-		return TEXT(
-			"mutation StudioSetGameModelPolicy($input: SetGameModelPolicyInput!) {"
-			"  gameModelSetPolicy(input: $input) { appId sessionCreationPolicy defaultParticipantRole }"
-			"}");
-	}
-
-	FString SeedGameModelMutation()
-	{
-		return TEXT(
-			"mutation StudioSeedGameModel($input: SeedGameModelInput!) {"
-			"  gameModelSeed(input: $input) {"
-			"    containerTypesCreated propertyDefinitionsCreated functionsCreated containersCreated edgesCreated warnings"
-			"  }"
-			"}");
+		const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+		Variables->SetObjectField(TEXT("input"), CrowdyGameModelMarshalling::BuildAutomationTriggerUpsertInput(Trigger, AppId));
+		return Variables;
 	}
 
 	void ParseContainerTypes(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
@@ -1605,6 +836,80 @@ namespace CrowdyStudioGql
 		}
 		ReadFunction(Node, OutFn);
 		return true;
+	}
+
+	void ParseAutomations(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
+	                      TArray<FStudioAutomation>& OutAutomations)
+	{
+		OutAutomations.Reset();
+		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
+		if (!Data.IsValid())
+		{
+			return;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+		if (!Data->TryGetArrayField(OpName, Array))
+		{
+			return;
+		}
+
+		for (const TSharedPtr<FJsonValue>& Entry : *Array)
+		{
+			const TSharedPtr<FJsonObject>* Node = nullptr;
+			if (Entry->TryGetObject(Node) && Node->IsValid())
+			{
+				FStudioAutomation Automation;
+				ReadAutomation(*Node, Automation);
+				OutAutomations.Add(Automation);
+			}
+		}
+	}
+
+	void ParseAutomationTriggers(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
+	                             const TArray<FStudioAutomation>& AutomationsForNameLookup,
+	                             TArray<FStudioAutomationTrigger>& OutTriggers)
+	{
+		OutTriggers.Reset();
+		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
+		if (!Data.IsValid())
+		{
+			return;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+		if (!Data->TryGetArrayField(OpName, Array))
+		{
+			return;
+		}
+
+		// The trigger read-back references its automation by id; the diff keys triggers by automation name, so build
+		// an id -> name map from the automations read in the same plan (both queries hit the same pinned app).
+		TMap<FString, FString> NameById;
+		for (const FStudioAutomation& Automation : AutomationsForNameLookup)
+		{
+			if (!Automation.AutomationId.IsEmpty())
+			{
+				NameById.Add(Automation.AutomationId, Automation.Name);
+			}
+		}
+
+		for (const TSharedPtr<FJsonValue>& Entry : *Array)
+		{
+			const TSharedPtr<FJsonObject>* Node = nullptr;
+			if (Entry->TryGetObject(Node) && Node->IsValid())
+			{
+				FStudioAutomationTrigger Trigger;
+				ReadAutomationTrigger(*Node, Trigger);
+				FString AutomationId;
+				(*Node)->TryGetStringField(TEXT("automationId"), AutomationId);
+				if (const FString* FoundName = NameById.Find(AutomationId))
+				{
+					Trigger.AutomationName = *FoundName;
+				}
+				OutTriggers.Add(Trigger);
+			}
+		}
 	}
 
 	void ParseFeatures(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
@@ -1710,6 +1015,48 @@ namespace CrowdyStudioGql
 		return true;
 	}
 
+	bool ParseModelLint(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FStudioLintReport& OutReport)
+	{
+		const TSharedPtr<FJsonObject> Node = GetDataNode(Envelope, OpName);
+		if (!Node.IsValid())
+		{
+			return false;
+		}
+
+		OutReport = FStudioLintReport();
+		OutReport.AppId = ReadId(Node, TEXT("appId"));
+		Node->TryGetNumberField(TEXT("errorCount"), OutReport.ErrorCount);
+		Node->TryGetNumberField(TEXT("warningCount"), OutReport.WarningCount);
+		Node->TryGetBoolField(TEXT("clean"), OutReport.bClean);
+
+		const TArray<TSharedPtr<FJsonValue>>* Findings = nullptr;
+		if (Node->TryGetArrayField(TEXT("findings"), Findings) && Findings)
+		{
+			OutReport.Findings.Reserve(Findings->Num());
+			for (const TSharedPtr<FJsonValue>& Value : *Findings)
+			{
+				const TSharedPtr<FJsonObject>* Obj = nullptr;
+				if (!Value.IsValid() || !Value->TryGetObject(Obj) || !Obj || !Obj->IsValid())
+				{
+					continue;
+				}
+				FStudioLintFinding Finding;
+				(*Obj)->TryGetStringField(TEXT("code"), Finding.Code);
+				(*Obj)->TryGetStringField(TEXT("severity"), Finding.Severity);
+				(*Obj)->TryGetStringField(TEXT("subjectKind"), Finding.SubjectKind);
+				(*Obj)->TryGetStringField(TEXT("subject"), Finding.Subject);
+				(*Obj)->TryGetStringField(TEXT("message"), Finding.Message);
+				(*Obj)->TryGetStringField(TEXT("remedy"), Finding.Remedy);
+				(*Obj)->TryGetNumberField(TEXT("count"), Finding.Count);
+				OutReport.Findings.Add(MoveTemp(Finding));
+			}
+		}
+
+		// Set last, so a caller reading bRan is looking at a fully populated report rather than a half-filled one.
+		OutReport.bRan = true;
+		return true;
+	}
+
 	bool ParseSeedResult(const TSharedPtr<FJsonObject>& Envelope, FString& OutSummary)
 	{
 		const TSharedPtr<FJsonObject> Node = GetDataNode(Envelope, TEXT("gameModelSeed"));
@@ -1760,6 +1107,8 @@ namespace CrowdyStudioGql
 			(*Node)->TryGetStringField(TEXT("typeName"), Container->TypeName);
 			(*Node)->TryGetStringField(TEXT("displayName"), Container->DisplayName);
 			Container->OwnerUserId = ReadId(*Node, TEXT("ownerUserId"));
+			(*Node)->TryGetStringField(TEXT("metadataJson"), Container->MetadataJson);
+			(*Node)->TryGetStringField(TEXT("bindingKey"), Container->BindingKey);
 			OutContainers.Add(Container);
 		}
 	}

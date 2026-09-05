@@ -39,7 +39,7 @@ void SCrowdySetupWizard::Construct(const FArguments& InArgs)
 				[ SNew(STextBlock).Text(LOCTEXT("WizTitle", "Set up your project")).TextStyle(&Style, "Crowdy.Text.Title") ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 2.0f)
 				[ SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Body")
-					.Text(LOCTEXT("WizSubtitle", "Four steps connect this project to a Crowded Kingdoms app. Each opens the matching page.")) ]
+					.Text(LOCTEXT("WizSubtitle", "Three steps connect this project to a Crowded Kingdoms app. Each opens the matching page.")) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 16.0f)
 				[
 					SNew(STextBlock).TextStyle(&Style, "Crowdy.Text.Subtle")
@@ -50,11 +50,10 @@ void SCrowdySetupWizard::Construct(const FArguments& InArgs)
 						{
 							if (Controller->IsSignedIn()) { ++Done; }
 							if (Controller->GetSelectedApp().IsValid()) { ++Done; }
-							if (!Controller->GetSelectedEnvironmentSlug().IsEmpty()) { ++Done; }
 							if (Controller->GetSelectedApp().IsValid() && Controller->GetCurrentSettings().AppId != 0
 								&& Controller->GetCurrentSettings().AppId == Controller->GetSelectedAppId()) { ++Done; }
 						}
-						return FText::Format(LOCTEXT("WizProgress", "{0} of 4 steps complete"), FText::AsNumber(Done));
+						return FText::Format(LOCTEXT("WizProgress", "{0} of 3 steps complete"), FText::AsNumber(Done));
 					})
 				]
 
@@ -70,15 +69,9 @@ void SCrowdySetupWizard::Construct(const FArguments& InArgs)
 						[this]() { return Controller.IsValid() && Controller->GetSelectedApp().IsValid(); },
 						CrowdyStudioPages::Apps, LOCTEXT("Step2Cta", "Open Project"))
 				]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
-				[
-					MakeStep(3, LOCTEXT("Step3Title", "Link a game server"), LOCTEXT("Step3Desc", "Choose the game server (environment) the app runs on and link them (Optional if not linked), in the Project page's Game server section."),
-						[this]() { return Controller.IsValid() && !Controller->GetSelectedEnvironmentSlug().IsEmpty(); },
-						CrowdyStudioPages::Apps, LOCTEXT("Step3Cta", "Open Project"))
-				]
 				+ SVerticalBox::Slot().AutoHeight()
 				[
-					MakeStep(4, LOCTEXT("Step4Title", "Sync to project"), LOCTEXT("Step4Desc", "Review the app's identifiers and endpoints and write them into the project settings (on the Project page)."),
+					MakeStep(3, LOCTEXT("Step3Title", "Sync to project"), LOCTEXT("Step3Desc", "Review the app's identifiers and endpoints and write them into the project settings (on the Project page)."),
 						[this]() { return Controller.IsValid() && Controller->GetSelectedApp().IsValid() && Controller->GetCurrentSettings().AppId != 0
 							&& Controller->GetCurrentSettings().AppId == Controller->GetSelectedAppId(); },
 						CrowdyStudioPages::Apps, LOCTEXT("Step4Cta", "Review & Sync"))

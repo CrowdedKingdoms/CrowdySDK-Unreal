@@ -4,12 +4,7 @@
 #include "Subsystem/CrowdyWorkerThreadsSubsystem.h"
 #include "CrowdyNetLog.h"
 #include <atomic>
-#include "Internal/FCrowdyServiceRegistry.h"
-#include "Network/UDP/CrowdyUDPSubsystem.h"
-#include "Serialization/FCrowdyMessageParser.h"
-#include "Subsystem/CrowdyGameSession.h"
 #include "Threading/FWorker.h"
-#include "Utils/FMessageBufferPool.h"
 
 void UCrowdyWorkerThreadsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -18,65 +13,62 @@ void UCrowdyWorkerThreadsSubsystem::Initialize(FSubsystemCollectionBase& Collect
 
 void UCrowdyWorkerThreadsSubsystem::Deinitialize()
 {
-	bShouldRun = false;
-	bProcessMainThread = false;
-	
-	// Wake up both blocked threads so they can see bProcessMainThread == false
-	if (IsValid(GameSession))
-	{
-		if (FEvent* SE = GameSession->GetSendEvent())    SE->Trigger();
-		if (FEvent* RE = GameSession->GetReceiveEvent()) RE->Trigger();
-	}
-	
 	StopAllProcesses();
-	
-	GameSession   = nullptr;
-	UDPSubsystem  = nullptr;
-	
+
 	Super::Deinitialize();
 }
 
-void UCrowdyWorkerThreadsSubsystem::InitializeWorkerThreadPool(FMessageBufferPool* InBufferPool,
-                                                               FCrowdyMessageParser* InMessageParser,
-                                                               FCrowdyServiceRegistry* InServiceRegistry, UCrowdyUDPSubsystem* InUdpSubsystem, UCrowdyGameSession* InGameSession)
+void UCrowdyWorkerThreadsSubsystem::InitializeWorkerThreadPool()
 {
-	BufferPoolSubsystem = InBufferPool;
-	NetworkMessageParser = InMessageParser;
-	GameSession = InGameSession;
-	UDPSubsystem = InUdpSubsystem;
-	ServiceRegistry = InServiceRegistry;
-
-	if (!IsValid(GameSession) || !IsValid(UDPSubsystem) || !BufferPoolSubsystem || !NetworkMessageParser || !
-		ServiceRegistry)
-	{
-		UE_LOG(LogCrowdyNet, Error, TEXT("WorkerThreadSubsystem::Some or one of the subsystem is invalid."));
-		return;
-	}
-
 	UE_CLOG(CrowdyNetTrace::Net(), LogCrowdyNet, Log, TEXT("Worker Thread Subsystem Initialized."));
 
 	InitializeWorkerThreads();
 }
 
 
-void UCrowdyWorkerThreadsSubsystem::EnqueueTasks(const TArray<TFunction<void()>>& Tasks)
+bool UCrowdyWorkerThreadsSubsystem::EnqueueTasks(const TArray<TFunction<void()>>& Tasks)
 {
+	// There are no workers before the pool is created and none after it is stopped, and teardown order between
+	// subsystems is not fixed, so this is reachable while the rest of the game is still running.
 	if (TaskQueues.Num() == 0)
-		return;
+		return false;
 
-	static std::atomic<int32> QueueIndex{0};
+	if (Tasks.IsEmpty())
+		return false;
+
+	// Unsigned so that the round robin survives the counter wrapping. A signed counter goes negative there, and a
+	// negative index runs off the front of the queue array.
+	static std::atomic<uint32> QueueIndex{0};
 
 	for (const auto& Task : Tasks)
 	{
-		const int32 Index = QueueIndex.fetch_add(1);
-		TaskQueues[Index % TaskQueues.Num()]->Enqueue(Task);
-		TaskEvents[Index % TaskEvents.Num()]->Trigger();
+		const uint32 Index = QueueIndex.fetch_add(1);
+		const int32 Slot = static_cast<int32>(Index % static_cast<uint32>(TaskQueues.Num()));
+		TaskQueues[Slot]->Enqueue(Task);
+		TaskEvents[Slot]->Trigger();
 	}
+
+	return true;
+}
+
+int32 UCrowdyWorkerThreadsSubsystem::ComputeWorkerThreadCount(const int32 NumCores)
+{
+	return FMath::Max(1, NumCores - ReservedCoreCount);
 }
 
 void UCrowdyWorkerThreadsSubsystem::InitializeWorkerThreads()
 {
-	const int32 NumOfThreads = FPlatformMisc::NumberOfCores() - 3;
+	const int32 NumOfCores = FPlatformMisc::NumberOfCores();
+	const int32 NumOfThreads = ComputeWorkerThreadCount(NumOfCores);
+
+	if (NumOfThreads > NumOfCores - ReservedCoreCount)
+	{
+		UE_LOG(LogCrowdyNet, Warning,
+			TEXT("Only %d logical cores are available. Leaving %d for the game and render threads would size the ")
+			TEXT("worker pool to nothing, so it is running %d thread(s) instead. Work that would normally run in ")
+			TEXT("parallel is serialized on this machine."),
+			NumOfCores, ReservedCoreCount, NumOfThreads);
+	}
 
 	for (int i = 0; i < NumOfThreads; i++)
 	{
@@ -96,18 +88,10 @@ void UCrowdyWorkerThreadsSubsystem::InitializeWorkerThreads()
 
 
 	UE_CLOG(CrowdyNetTrace::Net(), LogCrowdyNet, Log, TEXT("%d Worker Threads Created"), NumOfThreads);
-
-	bShouldRun = true;
-	bProcessMainThread = true;
-
-	RunSendLoop();
-	RunReceiveLoop();
 }
 
 void UCrowdyWorkerThreadsSubsystem::StopAllProcesses()
 {
-	bProcessMainThread = false;
-
 	for (FWorker* Worker : Workers)
 	{
 		Worker->Stop();
@@ -120,6 +104,12 @@ void UCrowdyWorkerThreadsSubsystem::StopAllProcesses()
 			Thread->Kill(true);
 			delete Thread;
 		}
+	}
+
+	// Every thread has been joined above, so nothing is running inside a worker any more and they can go.
+	for (FWorker* Worker : Workers)
+	{
+		delete Worker;
 	}
 
 	// Clean up queues and events
@@ -136,94 +126,5 @@ void UCrowdyWorkerThreadsSubsystem::StopAllProcesses()
 	WorkerThreads.Empty();
 	TaskQueues.Empty();
 	TaskEvents.Empty();
-}
-
-void UCrowdyWorkerThreadsSubsystem::RunSendLoop() const
-{
-	// Use a dedicated OS thread instead of a long-lived UE::Tasks task to avoid starving the task graph
-	Async(EAsyncExecution::Thread, [this]()
-	{
-		while (bProcessMainThread)
-		{
-			FEvent* Event = GameSession ? GameSession->GetSendEvent() : nullptr;
-			if (!Event) break;
-
-			Event->Wait();
-			
-			if (!bProcessMainThread) break;
-			if (!IsValid(GameSession) || !IsValid(UDPSubsystem)) break;
-			
-			ProcessOutgoingMessages();
-		}
-	});
-}
-
-void UCrowdyWorkerThreadsSubsystem::RunReceiveLoop()
-{
-	// Use a dedicated OS thread instead of a long-lived UE::Tasks task to avoid starving the task graph
-	Async(EAsyncExecution::Thread, [this]()
-	{
-		while (bProcessMainThread)
-		{
-			FEvent* Event = GameSession ? GameSession->GetReceiveEvent() : nullptr;
-			if (!Event) break;
-
-			Event->Wait();
-
-			if (!bProcessMainThread) break;
-			if (!IsValid(GameSession)) break;
-			
-			ProcessIncomingMessages();
-		}
-	});
-}
-
-void UCrowdyWorkerThreadsSubsystem::ProcessOutgoingMessages() const
-{
-	TArray<uint8> Msg;
-	while (GameSession->DequeueMessageToSend(Msg))
-	{
-		const bool bMessageSent = UDPSubsystem->SendMessage(MoveTemp(Msg));
-		Msg.Reset();
-		if (!bMessageSent)
-		{
-			UE_CLOG(CrowdyNetTrace::Net(), LogCrowdyNet, Log, TEXT("WorkerThreadsSubsystem: Message send failure."));
-		}
-	}
-}
-
-void UCrowdyWorkerThreadsSubsystem::ProcessIncomingMessages()
-{
-	auto BatchTask = [this]()
-	{
-		for (int i = 0; i < 50; ++i)
-		{
-			TArray<uint8>* ReceiveBuffer = BufferPoolSubsystem->GetBuffer();
-			if (!ReceiveBuffer)
-				break;
-
-			// If no message, return the buffer and continue
-			if (!GameSession->DequeueMessageToReceive(*ReceiveBuffer))
-			{
-				BufferPoolSubsystem->ReleaseBuffer(ReceiveBuffer);
-				continue;
-			}
-
-			// Parse while we still own buffer
-			const TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> Message = NetworkMessageParser->ParseMessage(*ReceiveBuffer);
-
-			// Return buffer exactly once
-			BufferPoolSubsystem->ReleaseBuffer(ReceiveBuffer);
-			
-			UDPSubsystem->IncrementReceivedMessageCount();
-			
-			// Dispatch the message
-			ServiceRegistry->DispatchMessage(Message);
-		}
-	};
-
-	TArray<TFunction<void()>> Tasks;
-	Tasks.Add(BatchTask);
-	EnqueueTasks(Tasks);
 }
 

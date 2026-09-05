@@ -63,6 +63,32 @@ namespace CrowdyStudioWidgets
 	TSharedRef<SWidget> SegmentedEnum(const TArray<FString>& Values, const TArray<FText>& Labels,
 		TAttribute<FString> Current, TFunction<void(const FString&)> OnSelected);
 
+	// A row of page tabs, same call shape as SegmentedEnum: Values are the stored tab keys and
+	// Labels their display text (parallel arrays), Current returns the open tab, OnSelected fires
+	// with the clicked one. Unlike SegmentedEnum this marks the open tab with weight and a neutral
+	// underline instead of the brand gold, so it can sit on a page that already spends colour on
+	// meaning (a warning or an error state) without competing with it.
+	TSharedRef<SWidget> TabStrip(const TArray<FString>& Values, const TArray<FText>& Labels,
+		TAttribute<FString> Current, TFunction<void(const FString&)> OnSelected);
+
+	// One tab, for the overload below.
+	struct FCrowdyTabItem
+	{
+		FString Value;
+		FText Label;
+
+		// Unset means always available. An unavailable tab keeps its place, so the strip never reflows.
+		TAttribute<bool> IsEnabled;
+
+		// Shown on hover in either state, so a tab the user cannot click can say why not.
+		TAttribute<FText> ToolTip;
+	};
+
+	// The same strip, with per-tab availability. An unavailable tab is drawn in the subtle tier, takes no
+	// underline, and cannot be clicked; its tooltip is what tells the user why.
+	TSharedRef<SWidget> TabStrip(const TArray<FCrowdyTabItem>& Tabs,
+		TAttribute<FString> Current, TFunction<void(const FString&)> OnSelected);
+
 	// A centred empty-state placeholder (icon + message).
 	TSharedRef<SWidget> EmptyState(const TCHAR* Icon, const FText& Message);
 

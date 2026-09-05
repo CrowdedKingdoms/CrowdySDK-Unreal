@@ -26,7 +26,7 @@ class CROWDYREPLICATION_API UCrowdyActorPoolBackend : public UCrowdyRenderingBac
 
 public:
 
-	virtual void InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config) override;
+	virtual bool InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config) override;
 	virtual void DeinitializeBackend() override;
 
 	virtual void ActivateInstance(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& InitialState) override;

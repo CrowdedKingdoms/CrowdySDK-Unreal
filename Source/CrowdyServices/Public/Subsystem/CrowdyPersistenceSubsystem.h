@@ -3,17 +3,16 @@
 #include "CoreMinimal.h"
 #include "Engine/LatentActionManager.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "Core/GraphQL/Interfaces/ICrowdyQueryReceptionLayer.h"
-#include "Core/UDP/Interfaces/ICrowdyReceptionLayer.h"
+#include "Core/UDP/Subscription/FCrowdySubscription.h"
 #include "Core/Persistence/EPullStateResult.h"
 #include "Core/Persistence/ICrowdyPersistentOwner.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
 #include "CrowdyPersistenceSubsystem.generated.h"
 class UCrowdyGameSession;
-struct FPersistencePullResponse;
 class FCrowdyPullStateLatentAction;
+struct FVoxelUpdateNotificationMessage;
 
-// ─── Wildcard struct placeholder ──────────────────────────────────────────────
+// Wildcard struct placeholder
 // Used only as a compile-time pin-type marker for CustomThunk functions.
 // Never instantiated directly.
 USTRUCT(BlueprintInternalUseOnly)
@@ -31,9 +30,9 @@ struct CROWDYSERVICES_API FCrowdyWildcardStruct { GENERATED_BODY() };
  *   Singleton (no instance):    Vx = 0
  *
  * ── Push / Pull ───────────────────────────────────────────────────────────────
- *   Push:  UDP (FVoxelStateUpdateRequest) — fast, low-latency.
+ *   Push:  UDP (FVoxelStateUpdateRequest): fast, low-latency.
  *          If UDP is not yet connected the push is queued and flushed on connect.
- *   Pull:  GraphQL getVoxelList — reads all instances for a struct type at once.
+ *   Pull:  GraphQL getVoxelList: reads all instances for a struct type at once.
  *
  * ── Reliability ───────────────────────────────────────────────────────────────
  *   After each push the subsystem schedules a verification pull.
@@ -43,25 +42,23 @@ struct CROWDYSERVICES_API FCrowdyWildcardStruct { GENERATED_BODY() };
 UCLASS(meta=(DisplayName="Crowdy Persistence Subsystem"))
 class CROWDYSERVICES_API UCrowdyPersistenceSubsystem
 	: public UGameInstanceSubsystem
-	, public ICrowdyQueryReceptionLayer
-	, public ICrowdyReceptionLayer
 {
 	GENERATED_BODY()
 
 public:
 
-	// ── UGameInstanceSubsystem ────────────────────────────────────────────
+	// UGameInstanceSubsystem
 
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
 	void InitialSetup(UCrowdySDKBridgeSubsystem* Bridge, UCrowdyGameSession* Session);
 	
-	// ── Blueprint API — Custom thunks ─────────────────────────────────────
+	// Blueprint API: Custom thunks
 
 	/**
 	 * Push the struct's state to the server via UDP.
-	 * Subject is the actor or object whose state is being pushed — used to derive
+	 * Subject is the actor or object whose state is being pushed: used to derive
 	 * the instance key automatically. Pass nullptr for singleton types.
 	 */
 	UFUNCTION(BlueprintCallable, CustomThunk, Category="Crowdy|Persistence",
@@ -72,7 +69,7 @@ public:
 
 	/**
 	 * Fetch a struct's state from the server asynchronously.
-	 * Subject is the actor or object whose state is being fetched — used to derive
+	 * Subject is the actor or object whose state is being fetched: used to derive
 	 * the instance key automatically.
 	 * OnSuccess fires with OutState populated; OnFailure fires if the slot is
 	 * empty or a network error occurred.
@@ -86,7 +83,7 @@ public:
 	                  FCrowdyWildcardStruct& OutState, EPullStateResult& Result);
 	DECLARE_FUNCTION(execK2_PullState);
 
-	// ── C++ template API ──────────────────────────────────────────────────
+	// C++ template API
 
 	/** Push a typed struct. Subject = nullptr for singleton types. */
 	template<typename T>
@@ -107,13 +104,16 @@ public:
 				{
 					Struct->InitializeStruct(&Result);
 					FMemoryReader Reader(Bytes, true);
+					// Wire bytes: bound the archive so a forged length prefix cannot ask for an allocation far
+					// larger than the blob that declared it.
+					Reader.ArMaxSerializeSize = Bytes.Num();
 					Struct->SerializeTaggedProperties(Reader, (uint8*)&Result, nullptr, nullptr);
 				}
 				Callback(bOk, Result);
 			});
 	}
 
-	// ── State management ──────────────────────────────────────────────────
+	// State management
 
 	/**
 	 * Zero out every voxel slot written during this session.
@@ -128,24 +128,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Crowdy|Persistence")
 	void ClearAllState();
 
-	// ── ICrowdyQueryReceptionLayer (GraphQL pulls) ────────────────────────
-
-	virtual void OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Response) override;
-	virtual TArray<EQueryResponseType> GetSupportedResponseType() const override;
-
-	// ── ICrowdyReceptionLayer (UDP push confirmations) ────────────────────
-
-	/**
-	 * Called when a VOXEL_UPDATE_NOTIFICATION arrives via UDP.
-	 * If it matches a pending push verification, the push is considered
-	 * confirmed and removed from the retry queue.
-	 */
-	virtual void OnMessageReceived(TSharedRef<ICrowdyMessage> Message) override;
-	virtual TArray<ECrowdyMessageType> GetSupportedResponseTypes() const override;
-
 private:
 
-	// ── Timing constants ──────────────────────────────────────────────────
+	/**
+	 * Handles a VOXEL_UPDATE_NOTIFICATION arriving via UDP (the push-confirmation carrier).
+	 * If it matches a pending push verification, the push is considered confirmed and removed
+	 * from the retry queue.
+	 */
+	void HandleVoxelUpdateNotification(const FVoxelUpdateNotificationMessage& Notification);
+
+	// Timing constants
 
 	/** Seconds after a push before the first verification pull fires. */
 	static constexpr float PushVerifyDelaySeconds = 5.f;
@@ -153,7 +145,7 @@ private:
 	/** Maximum number of UDP retries before giving up on a push. */
 	static constexpr int32 MaxPushRetries = 3;
 
-	// ── Type registry ─────────────────────────────────────────────────────
+	// Type registry
 
 	struct FPersistenceTypeInfo
 	{
@@ -166,7 +158,7 @@ private:
 	/** Struct path → type info. Populated during Initialize(). */
 	TMap<FString, FPersistenceTypeInfo> TypeRegistry;
 
-	// ── Pending pull operations ───────────────────────────────────────────
+	// Pending pull operations
 
 	struct FPendingPullOp
 	{
@@ -182,7 +174,7 @@ private:
 	/** ChunkXs for which a getVoxelList query is already in flight. */
 	TSet<int64> InFlightPulls;
 
-	// ── Callback-based pull ops (C++ API) ─────────────────────────────────
+	// Callback-based pull ops (C++ API)
 
 	struct FCallbackPullOp
 	{
@@ -194,7 +186,7 @@ private:
 
 	TMap<int64, TArray<FCallbackPullOp>> CallbackPulls;
 
-	// ── Queued UDP pushes (drained when UDP connects) ─────────────────────
+	// Queued UDP pushes (drained when UDP connects)
 
 	struct FQueuedPush
 	{
@@ -206,7 +198,7 @@ private:
 
 	TArray<FQueuedPush> PushQueue;
 
-	// ── Push verify-retry ─────────────────────────────────────────────────
+	// Push verify-retry
 
 	struct FPendingPushVerification
 	{
@@ -216,12 +208,12 @@ private:
 		TArray<uint8>  PushedBytes;
 		UScriptStruct* StructType   = nullptr;
 		int32          RetryCount   = 0;
-		/** FPlatformTime::Seconds() at the last push attempt — for timeout detection. */
+		/** FPlatformTime::Seconds() at the last push attempt: for timeout detection. */
 		double         LastPushTime = 0.0;
 	};
 
 	/**
-	 * Key = MakeVerifyKey(ChunkX, Vx) — identifies the voxel slot being verified.
+	 * Key = MakeVerifyKey(ChunkX, Vx): identifies the voxel slot being verified.
 	 * After each push a record is added here; removed once confirmed or exhausted.
 	 */
 	TMap<int64, FPendingPushVerification> PendingVerifications;
@@ -229,17 +221,17 @@ private:
 	/** Periodic timer that fires pull queries for chunks with unconfirmed pushes. */
 	FTimerHandle VerificationTickHandle;
 
-	// ── Tracked push addresses ────────────────────────────────────────────
+	// Tracked push addresses
 
 	/**
 	 * Every voxel slot written this session, keyed by MakeVerifyKey(ChunkX, Vx).
 	 * Used by ClearAllState() to know which slots to zero out.
-	 * Populated on every DispatchUDPPush call (successful or not — clearing an
+	 * Populated on every DispatchUDPPush call (successful or not: clearing an
 	 * unwritten slot is harmless).
 	 */
 	TSet<int64> TrackedPushAddresses;
 
-	// ── Cached subsystem references ───────────────────────────────────────
+	// Cached subsystem references
 
 	UPROPERTY()
 	UCrowdySDKBridgeSubsystem* CachedBridge = nullptr;
@@ -247,7 +239,7 @@ private:
 	UPROPERTY()
 	UCrowdyGameSession* CachedSession = nullptr;
 
-	// ── Internal helpers ──────────────────────────────────────────────────
+	// Internal helpers
 
 	void ScanAndRegisterStructs();
 	void RegisterPersistentStruct(UScriptStruct* Struct);
@@ -262,7 +254,7 @@ private:
 	/** Pack ChunkX (uint16) + Vx (int16) into a single int64 map key. */
 	static int64 MakeVerifyKey(int64 ChunkX, int16 Vx);
 
-	// ── Push ──────────────────────────────────────────────────────────────
+	// Push
 
 	void InternalPushState(UScriptStruct* Struct, const void* SrcData, UObject* Subject);
 
@@ -278,21 +270,21 @@ private:
 	UFUNCTION()
 	void OnUDPConnected();
 
-	// ── Verify-retry ──────────────────────────────────────────────────────
+	// Verify-retry
 
 	/** Register a voxel slot for post-push verification and start the tick. */
 	void RegisterVerification(UScriptStruct* StructType, const TArray<uint8>& Bytes,
 	                          int64 ChunkX, int16 Vx);
 
 	/**
-	 * Periodic tick — checks elapsed time on each pending verification.
+	 * Periodic tick: checks elapsed time on each pending verification.
 	 * If PushVerifyDelaySeconds has passed without a notification, the push
 	 * is retried (up to MaxPushRetries).
 	 */
 	UFUNCTION()
 	void VerificationTick();
 
-	// ── Pull ──────────────────────────────────────────────────────────────
+	// Pull
 
 	void InternalPullState(const FLatentActionInfo& LatentInfo, UObject* Subject,
 	                       UScriptStruct* StructType, void* OutAddr,
@@ -303,5 +295,30 @@ private:
 
 	void FirePullQuery(int64 ChunkX);
 
-	void HandlePullResponse(const FPersistencePullResponse& Response);
+	/**
+	 * One chunk's worth of read-back state. A chunk that could not be read at all is reported with bRead false so
+	 * every waiting pull is failed rather than left to time out; an empty map with bRead true is a chunk that
+	 * simply has nothing stored yet.
+	 */
+	struct FPulledChunk
+	{
+		int64 ChunkX = 0;
+		bool  bRead  = false;
+		/** Vx -> raw serialized struct bytes, decoded from the voxel's base64 state. */
+		TMap<int16, TArray<uint8>> VoxelStateBytes;
+	};
+
+	void HandlePullResponse(const FPulledChunk& Chunk);
+
+	/**
+	 * Marks this subsystem's usable lifetime. Every completion handed to the shared API client holds it weakly, so
+	 * a request still in flight at teardown lands on nothing rather than on a subsystem whose state has been
+	 * cleared.
+	 */
+	TSharedPtr<uint8> LiveSessionToken;
+
+	// Inbound VOXEL_UPDATE_NOTIFICATION (push confirmation). Held for this subsystem's lifetime; releasing it in
+	// Deinitialize stops any further delivery to this subscriber, including later in the same fan-out. See
+	// FCrowdyDelivery for the threading rules.
+	FCrowdySubscription VoxelUpdateSubscription;
 };

@@ -1,51 +1,30 @@
 #include "Subsystem/CrowdyAuthentication.h"
 #include "CrowdyServicesLog.h"
+#include "CrowdyCppClient.h"
+#include "Subsystem/CrowdyAuthPayloads.h"
 #include "Subsystem/Data/CrowdyAuthSaveGame.h"
 #include "Auth/FCrowdyLoopbackAuthServer.h"
 #include "Security/FCrowdySecretFile.h"
-#include "Async/Async.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/DateTime.h"
 #include "Misc/Paths.h"
 #include "Kismet/GameplayStatics.h"
-#include "Network/GraphQL/CrowdyQuerySubsystem.h"
+#include "Engine/GameInstance.h"
+#include "Engine/EngineTypes.h"
+#include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h"
 #include "Subsystem/CrowdyGameSession.h"
-#include "Core/GraphQL/Enums/EQueryResponseType.h"
-#include "Core/GraphQL/Enums/EGraphQLQuery.h"
-#include "Queries/Authentication/FLoginResponse.h"
-#include "Queries/Authentication/FRegisterResponse.h"
-#include "Queries/Authentication/FAuthResponseBase.h"
-#include "Queries/Authentication/FAppTokenResponseBase.h"
-#include "Queries/Authentication/FRequestLoginLinkRequest.h"
-#include "Queries/Authentication/FRequestLoginLinkResponse.h"
-#include "Queries/Authentication/FCompleteLoginLinkRequest.h"
-#include "Queries/Authentication/FDevLoginRequest.h"
-#include "Queries/Authentication/FMintAppTokenRequest.h"
-#include "Queries/Authentication/FRefreshAppTokenRequest.h"
-#include "Queries/Authentication/FSocialLoginStartRequest.h"
-#include "Queries/Authentication/FSocialLoginStartResponse.h"
-#include "Queries/Authentication/FSocialLoginCompleteRequest.h"
-#include "Queries/Authentication/FSocialLoginCompleteResponse.h"
-#include "Queries/Authentication/FAvailableLoginProvidersRequest.h"
-#include "Queries/Authentication/FAvailableLoginProvidersResponse.h"
-#include "Queries/Authentication/FMyIdentitiesRequest.h"
-#include "Queries/Authentication/FMyIdentitiesResponse.h"
-#include "Queries/Authentication/FLinkIdentityRequest.h"
-#include "Queries/Authentication/FLinkIdentityResponse.h"
-#include "Queries/Authentication/FUnlinkIdentityRequest.h"
-#include "Queries/Authentication/FUnlinkIdentityResponse.h"
+#include "CrowdyServiceApiSupport.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
-// Pre-WP4b plaintext SaveGame slot. Kept only so a returning user is migrated to the encrypted
-// vault once (read it, then scrub it); nothing writes to this slot anymore.
-static const FString LegacyAuthSlot = TEXT("CrowdyAuth");
-static const int32   AuthUserIndex  = 0;
+using namespace CrowdyAuthPayloads;
 
-// DPAPI-encrypted session vault (WP4b). Holds only the long-lived, mint-capable SESSION token;
-// the short-lived app token is never written to disk.
-static FString GetAuthVaultPath()
-{
-	return FPaths::ProjectSavedDir() / TEXT("CrowdySDK/session.bin");
-}
+// Legacy plaintext SaveGame slot base name, from before sessions were DPAPI-encrypted. Kept only so
+// a returning user is migrated to the encrypted vault once (read it, then scrub it); nothing writes
+// to this slot anymore.
+static const FString LegacyAuthSlotBase = TEXT("CrowdyAuth");
+static const int32   AuthUserIndex      = 0;
 
 // How long the loopback listener waits for the user to click the magic link before giving up.
 static constexpr double MagicLinkTimeoutSeconds = 180.0;
@@ -53,232 +32,305 @@ static constexpr double MagicLinkTimeoutSeconds = 180.0;
 // OAuth consent (pick an account, review scopes) can take longer than clicking an email link.
 static constexpr double SocialSignInTimeoutSeconds = 300.0;
 
-// The mint response's gameApiUrl is a BARE HOST, but the Game API GraphQL is served at /graphql —
-// using it raw makes every Game-API POST 404. Append the path when missing (idempotent; trims a
-// trailing slash). Path-append only, no host derivation. Mirrors FCrowdyConfigSync::EnsureGraphqlPath,
-// which lives in the editor-only Studio module and so cannot be shared into the runtime.
-static FString EnsureGameApiGraphqlPath(const FString& Url)
-{
-	FString Normalized = Url;
-	Normalized.RemoveFromEnd(TEXT("/"));
-	if (!Normalized.IsEmpty() && !Normalized.EndsWith(TEXT("/graphql")))
-	{
-		Normalized += TEXT("/graphql");
-	}
-	return Normalized;
-}
-
-// Lifecycle
+// How soon a rotation that could not be made (or that failed) is attempted again, and how many such attempts are
+// spent before the token is left to expire and recovered reactively instead.
+static constexpr double RotationRetrySeconds = 30.0;
+static constexpr int32  MaxRotationRetries   = 5;
 
 void UCrowdyAuthentication::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+
+	// Marks this subsystem's usable lifetime. Every completion handed to the shared API client holds it weakly, so a
+	// request still in flight at teardown lands on nothing instead of on a subsystem whose state has been cleared.
+	LiveSessionToken = MakeShared<uint8>(0);
 }
 
 void UCrowdyAuthentication::Deinitialize()
 {
+	// Released before anything else is torn down. The client belongs to a different game-instance subsystem with its
+	// own ticker, and the order the two are deinitialized in is not guaranteed, so a completion can still arrive
+	// after this point: it must not re-arm the refresh timer this call is about to cancel, and it must not broadcast
+	// a sign-in result during shutdown.
+	LiveSessionToken.Reset();
+
 	CancelProactiveRefresh();
 
 	// Tear down the loopback listener (unbinds its route, cancels timers) on the game thread.
 	LoopbackServer.Reset();
 
-	FScopeLock Lock(&CallbackMutex);
-	PendingCallbacks.Empty();
 	Super::Deinitialize();
 }
 
-void UCrowdyAuthentication::InjectDependencies(FCrowdyDataRegistry* InRegistry,
-                                               UCrowdyQuerySubsystem* InQuerySubsystem,
-                                               UCrowdyGameSession* InGameSession)
+void UCrowdyAuthentication::InjectDependencies(UCrowdyGameSession* InGameSession)
 {
-	if (InRegistry) InRegistry->RegisterLayer(this);
-	QuerySubsystem = InQuerySubsystem;
-	GameSession    = InGameSession;
+	GameSession = InGameSession;
 }
 
-// Reception layer
-
-TArray<EQueryResponseType> UCrowdyAuthentication::GetSupportedResponseType() const
+UCrowdyCppClientSubsystem* UCrowdyAuthentication::GetCppClientHost()
 {
-	return {
-		EQueryResponseType::Login,
-		EQueryResponseType::Register,
-		EQueryResponseType::RequestLoginLink,
-		EQueryResponseType::CompleteLoginLink,
-		EQueryResponseType::DevLogin,
-		EQueryResponseType::MintAppToken,
-		EQueryResponseType::RefreshAppToken,
-		EQueryResponseType::SocialLoginStart,
-		EQueryResponseType::SocialLoginComplete,
-		EQueryResponseType::AvailableLoginProviders,
-		EQueryResponseType::MyIdentities,
-		EQueryResponseType::LinkIdentity,
-		EQueryResponseType::UnlinkIdentity,
-	};
+	// Resolved from the game instance rather than from a world, because sign-in can run before any world exists.
+	UGameInstance* GameInstance = GetGameInstance();
+	return GameInstance ? GameInstance->GetSubsystem<UCrowdyCppClientSubsystem>() : nullptr;
 }
 
-void UCrowdyAuthentication::OnResponseReceived(TSharedPtr<ICrowdyQueryResponse> Response)
+void UCrowdyAuthentication::PublishTokensToCppClient()
 {
-	if (!Response.IsValid()) return;
-	FireCallback(Response);
+	if (UCrowdyCppClientSubsystem* Host = GetCppClientHost())
+	{
+		Host->SetManagementToken(GameSession ? GameSession->GetSessionToken() : FString());
+		Host->SetGameToken(GameSession ? GameSession->GetGameToken() : FString());
+	}
 }
 
-// Sign-in entry points
-//
-// Each method dispatches its mutation and queues a callback that, on success,
-// hands the SESSION token to the one shared mint pipeline (BeginMintPipeline).
+FCrowdyCppClient* UCrowdyAuthentication::ResolveAuthClient()
+{
+	UCrowdyCppClientSubsystem* Host = GetCppClientHost();
+	if (!Host)
+	{
+		UE_LOG(LogCrowdyServices, Warning,
+			TEXT("[CrowdyAuth] No API client host on this game instance; the call cannot proceed."));
+		return nullptr;
+	}
+
+	PublishTokensToCppClient();
+
+	// The configuration comes from the developer settings rather than from the per-app URL a mint returns, which is
+	// what every other caller asks for. Asking for a different one would rebuild the shared client and cancel
+	// whatever else was in flight on it, so agreeing on one source keeps the client built exactly once. A datacenter
+	// the client moves to on its own is not a different configuration, so a redirect does not rebuild it either.
+	FCrowdyCppClient* Client = Host->GetClient(CrowdyServiceApi::ResolveClientConfig());
+	if (!Client)
+	{
+		UE_LOG(LogCrowdyServices, Warning,
+			TEXT("[CrowdyAuth] Could not construct the API client; the call cannot proceed."));
+		return nullptr;
+	}
+
+	return Client;
+}
+
+void UCrowdyAuthentication::WithAppEndpointResolved(TFunction<void(FCrowdyCppClient&)> Continue, EAuthFlow Flow,
+	FOnAuthError OnError, TFunction<void()> OnUnavailable)
+{
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		if (OnUnavailable)
+		{
+			OnUnavailable();
+		}
+		FailFlow(TEXT("Authentication client unavailable."), Flow, OnError);
+		return;
+	}
+
+	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+	const int64 AppID = Settings ? Settings->AppID : 0;
+	if (bAppEndpointResolved || AppID <= 0)
+	{
+		Continue(*Client);
+		return;
+	}
+
+	// Discovery has to be asked of the SHARED origin specifically, not of whatever endpoint is configured. The
+	// configured game URL is the previous answer to this very question: it was written by an earlier app sync, so it
+	// can be stale, and it can name a different environment than the backend now selected. Asking it where the app
+	// lives is asking the thing whose correctness is in doubt.
+	//
+	// Usually the same URL, in which case the host hands back the client it already had and nothing is rebuilt. When
+	// they differ this rebuilds once here and once more after the answer is adopted, which is affordable because it
+	// happens at the start of a sign-in, before anything else is in flight.
+	const FString DiscoveryUrl = Settings ? Settings->GetDiscoveryUrl() : FString();
+	if (!DiscoveryUrl.IsEmpty())
+	{
+		if (UCrowdyCppClientSubsystem* Host = GetCppClientHost())
+		{
+			FCrowdyCppClientConfig DiscoveryConfig;
+			DiscoveryConfig.ApiUrl = DiscoveryUrl;
+			DiscoveryConfig.DiscoveryUrl = DiscoveryUrl;
+			if (FCrowdyCppClient* OnSharedOrigin = Host->GetClient(DiscoveryConfig))
+			{
+				Client = OnSharedOrigin;
+			}
+		}
+	}
+
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	Client->ResolveAppEndpoints({LexToString(AppID)}, GuardSession<FCrowdyCppAppDiscoveryResult>(
+		[WeakThis, Continue, Flow, OnError, OnUnavailable](FCrowdyCppAppDiscoveryResult Result)
+		{
+			UCrowdyAuthentication* Self = WeakThis.Get();
+			if (!Self)
+			{
+				return;
+			}
+
+			// Marked resolved even on failure. Retrying discovery before every sign-in attempt would turn one bad
+			// lookup into a permanent extra round trip on a path a redirect already recovers.
+			Self->bAppEndpointResolved = true;
+
+			if (Result.bOk && Result.Endpoints.Num() > 0 && Result.Endpoints[0].IsPlaced())
+			{
+				const FCrowdyCppAppEndpoint& Endpoint = Result.Endpoints[0];
+				if (UCrowdySDKDeveloperSettings* Mutable = GetMutableDefault<UCrowdySDKDeveloperSettings>())
+				{
+					// Written to the settings rather than held here, because that is what every caller reads to
+					// build its client. Not persisted to config: this is where the app lives right now, and
+					// baking it into a shipped ini would outlive the next time an operator moves it.
+					Mutable->GameApiHttpUrl = EnsureGameApiGraphqlPath(Endpoint.GameApiUrl);
+					if (!Endpoint.GameApiWsUrl.IsEmpty())
+					{
+						Mutable->GameApiWsUrl = Endpoint.GameApiWsUrl;
+					}
+				}
+
+				UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
+					TEXT("[CrowdyAuth] App %s is served from datacenter '%s' at %s; signing in there."),
+					*Endpoint.AppID, *Endpoint.DatacenterCode, *Endpoint.GameApiUrl);
+			}
+			else if (!Result.bOk)
+			{
+				// Not a failure of the sign-in. The server redirects a misplaced request, so the worst case is the
+				// slow path rather than a broken one, and saying so is worth more than refusing.
+				UE_LOG(LogCrowdyServices, Warning,
+					TEXT("[CrowdyAuth] Could not resolve where this app is served (%s); signing in against the shared origin and relying on a redirect."),
+					*Result.ErrorMessage);
+			}
+
+			// Re-resolved rather than reused: adopting the endpoint above changes what the client should be, and
+			// the host rebuilds it on the next ask. The old pointer would still be aimed at the shared origin.
+			if (FCrowdyCppClient* Moved = Self->ResolveAuthClient())
+			{
+				// Give re-discovery a warm answer while the placement is known. It is read synchronously from
+				// whichever thread first notices the endpoint has died, so it cannot be looked up on demand.
+				if (const UCrowdySDKDeveloperSettings* Current = GetDefault<UCrowdySDKDeveloperSettings>())
+				{
+					Moved->SetRediscoveredEndpoint(Current->GetGameApiHttpUrl(), Current->GetGameApiWsUrl());
+				}
+				Continue(*Moved);
+			}
+			else
+			{
+				if (OnUnavailable)
+				{
+					OnUnavailable();
+				}
+				Self->FailFlow(TEXT("Authentication client unavailable."), Flow, OnError);
+			}
+		}));
+}
+
+// Each method issues its call on the API client and, on success, hands the SESSION
+// token to the one shared mint pipeline (BeginMintPipeline).
 
 void UCrowdyAuthentication::Login(const FString& Email, const FString& Password,
                                   FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
+	// This subsystem and the client host share the game instance's lifetime, so a completion cannot arrive after
+	// the subsystem is gone; the weak check covers only teardown ordering within that shutdown.
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	WithAppEndpointResolved([WeakThis, Email, Password, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
-		OnError.ExecuteIfBound(TEXT("Query subsystem unavailable"));
-		return;
-	}
-
-	PushCallback(EQueryResponseType::Login, [this, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-		{
-			const FLoginResponse& R = static_cast<FLoginResponse&>(*Resp);
-			// Under the two-token model R.token is the identity SESSION token.
-			BeginMintPipeline(R.GameToken, R.GameTokenID, R.UserID, EAuthFlow::Login, OnSuccess, OnError);
-		}
-		else
-		{
-			FailFlow(Resp->GetError(), EAuthFlow::Login, OnError);
-		}
-	});
-
-	TMap<FString, FString> Vars;
-	Vars.Add(TEXT("email"),    Email);
-	Vars.Add(TEXT("password"), Password);
-	QuerySubsystem->ExecuteQueryByID(EGraphQLQuery::Login, Vars, false, false);
+		UCrowdyAuthentication* Issuer = WeakThis.Get();
+		if (!Issuer) return;
+		Client.SignInWithPassword(Email, Password, Issuer->GuardSession<FCrowdyCppAuthResult>(
+			[WeakThis, OnSuccess, OnError](FCrowdyCppAuthResult Result)
+			{
+				UCrowdyAuthentication* Self = WeakThis.Get();
+				if (!Self) return;
+				if (Result.bOk)
+				{
+					Self->BeginMintPipeline(Result.SessionToken, Result.SessionGameTokenID, Result.UserID,
+						EAuthFlow::Login, OnSuccess, OnError);
+				}
+				else
+				{
+					Self->FailFlow(Result.ErrorMessage, EAuthFlow::Login, OnError);
+				}
+			}));
+	}, EAuthFlow::Login, OnError);
 }
 
 void UCrowdyAuthentication::Register(const FString& Email, const FString& Password,
                                      FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	WithAppEndpointResolved([WeakThis, Email, Password, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
-		OnError.ExecuteIfBound(TEXT("Query subsystem unavailable"));
-		return;
-	}
-
-	PushCallback(EQueryResponseType::Register, [this, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-		{
-			const FRegisterResponse& R = static_cast<FRegisterResponse&>(*Resp);
-			// FRegisterResponse carries no gameTokenId; 0 is a safe placeholder.
-			BeginMintPipeline(R.GameToken, 0, R.UserID, EAuthFlow::Register, OnSuccess, OnError);
-		}
-		else
-		{
-			FailFlow(Resp->GetError(), EAuthFlow::Register, OnError);
-		}
-	});
-
-	TMap<FString, FString> Vars;
-	Vars.Add(TEXT("email"),    Email);
-	Vars.Add(TEXT("password"), Password);
-	QuerySubsystem->ExecuteQueryByID(EGraphQLQuery::Register, Vars, false, false);
-}
-
-void UCrowdyAuthentication::DevLogin(const FString& Email, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
-{
-	if (!QuerySubsystem)
-	{
-		OnError.ExecuteIfBound(TEXT("Query subsystem unavailable"));
-		return;
-	}
-
-	PushCallback(EQueryResponseType::DevLogin, [this, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-		{
-			const FAuthResponseBase& R = static_cast<FAuthResponseBase&>(*Resp);
-			BeginMintPipeline(R.SessionToken, R.SessionGameTokenID, R.UserID, EAuthFlow::DevLogin, OnSuccess, OnError);
-		}
-		else
-		{
-			FailFlow(Resp->GetError(), EAuthFlow::DevLogin, OnError);
-		}
-	});
-
-	FDevLoginRequest Request;
-	Request.Email = Email;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+		UCrowdyAuthentication* Issuer = WeakThis.Get();
+		if (!Issuer) return;
+		// No gamertag is sent; the server assigns a default.
+		Client.RegisterWithPassword(Email, Password, FString(), Issuer->GuardSession<FCrowdyCppAuthResult>(
+			[WeakThis, OnSuccess, OnError](FCrowdyCppAuthResult Result)
+			{
+				UCrowdyAuthentication* Self = WeakThis.Get();
+				if (!Self) return;
+				if (Result.bOk)
+				{
+					Self->BeginMintPipeline(Result.SessionToken, Result.SessionGameTokenID, Result.UserID,
+						EAuthFlow::Register, OnSuccess, OnError);
+				}
+				else
+				{
+					Self->FailFlow(Result.ErrorMessage, EAuthFlow::Register, OnError);
+				}
+			}));
+	}, EAuthFlow::Register, OnError);
 }
 
 void UCrowdyAuthentication::RequestLoginLink(const FString& Email, const FString& RedirectUri,
                                              FOnLoginLinkSent OnLinkSent, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
+	// Resolved first like the sign-ins, because the one-time token this issues is stored where it was issued: send
+	// the link from one datacenter and redeem it against another and the redemption finds nothing.
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	WithAppEndpointResolved([WeakThis, Email, RedirectUri, OnLinkSent, OnError](FCrowdyCppClient& Client)
 	{
-		OnError.ExecuteIfBound(TEXT("Query subsystem unavailable"));
-		return;
-	}
-
-	PushCallback(EQueryResponseType::RequestLoginLink, [OnLinkSent, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-		{
-			const FRequestLoginLinkResponse& R = static_cast<FRequestLoginLinkResponse&>(*Resp);
-			OnLinkSent.ExecuteIfBound(R.bSent, R.DevToken);
-		}
-		else
-		{
-			OnError.ExecuteIfBound(Resp->GetError());
-		}
-	});
-
-	FRequestLoginLinkRequest Request;
-	Request.Email       = Email;
-	Request.RedirectUri = RedirectUri;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+		UCrowdyAuthentication* Issuer = WeakThis.Get();
+		if (!Issuer) return;
+		Client.RequestLoginLink(Email, RedirectUri, Issuer->GuardSession<FCrowdyCppJsonValueResult>(
+			[OnLinkSent, OnError](FCrowdyCppJsonValueResult Result)
+			{
+				bool bSent = false;
+				if (Result.bOk && ReadLoginLinkPayload(Result.Value, bSent))
+				{
+					OnLinkSent.ExecuteIfBound(bSent);
+				}
+				else
+				{
+					OnError.ExecuteIfBound(Result.bOk ? TEXT("Malformed requestLoginLink response") : Result.ErrorMessage);
+				}
+			}));
+	}, EAuthFlow::MagicLink, OnError);
 }
 
 void UCrowdyAuthentication::CompleteLoginLink(const FString& Token, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	WithAppEndpointResolved([WeakThis, Token, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
-		OnError.ExecuteIfBound(TEXT("Query subsystem unavailable"));
-		return;
-	}
-
-	PushCallback(EQueryResponseType::CompleteLoginLink, [this, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-		{
-			const FAuthResponseBase& R = static_cast<FAuthResponseBase&>(*Resp);
-			BeginMintPipeline(R.SessionToken, R.SessionGameTokenID, R.UserID, EAuthFlow::MagicLink, OnSuccess, OnError);
-		}
-		else
-		{
-			FailFlow(Resp->GetError(), EAuthFlow::MagicLink, OnError);
-		}
-	});
-
-	FCompleteLoginLinkRequest Request;
-	Request.Token = Token;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+		UCrowdyAuthentication* Issuer = WeakThis.Get();
+		if (!Issuer) return;
+		Client.CompleteLoginLink(Token, Issuer->GuardSession<FCrowdyCppAuthResult>(
+			[WeakThis, OnSuccess, OnError](FCrowdyCppAuthResult Result)
+			{
+				UCrowdyAuthentication* Self = WeakThis.Get();
+				if (!Self) return;
+				if (Result.bOk)
+				{
+					Self->BeginMintPipeline(Result.SessionToken, Result.SessionGameTokenID, Result.UserID,
+						EAuthFlow::MagicLink, OnSuccess, OnError);
+				}
+				else
+				{
+					Self->FailFlow(Result.ErrorMessage, EAuthFlow::MagicLink, OnError);
+				}
+			}));
+	}, EAuthFlow::MagicLink, OnError);
 }
 
 void UCrowdyAuthentication::BeginMagicLinkSignIn(const FString& Email, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
-	{
-		FailFlow(TEXT("Query subsystem unavailable"), EAuthFlow::MagicLink, OnError);
-		return;
-	}
 	if (Email.IsEmpty())
 	{
 		FailFlow(TEXT("Email is required"), EAuthFlow::MagicLink, OnError);
@@ -286,8 +338,8 @@ void UCrowdyAuthentication::BeginMagicLinkSignIn(const FString& Email, FOnAuthSu
 	}
 
 	// Reject a re-entrant call while a magic-link flow is already armed. Otherwise re-Start()ing the
-	// listener would strand the first flow's queued GraphQL callback and could mis-route its
-	// OnSuccess/OnError to the second attempt's listener.
+	// listener would strand the first flow's pending completion and could mis-route its OnSuccess/OnError
+	// to the second attempt's listener.
 	if (IsInteractiveSignInBusy())
 	{
 		FailFlow(TEXT("A sign-in is already in progress"), EAuthFlow::MagicLink, OnError);
@@ -315,7 +367,7 @@ void UCrowdyAuthentication::BeginMagicLinkSignIn(const FString& Email, FOnAuthSu
 
 	// Empty expected state: per the server contract the magic-link one-time token is itself the
 	// single-use credential and the server does not round-trip a state param on this flow. Social
-	// sign-in (M2) will pass the server-issued state here instead.
+	// sign-in will pass the server-issued state here instead.
 	const FString RedirectUri = LoopbackServer->Start(FString(), MagicLinkTimeoutSeconds,
 		OnTokenCaptured, OnListenerError);
 	if (RedirectUri.IsEmpty())
@@ -324,79 +376,66 @@ void UCrowdyAuthentication::BeginMagicLinkSignIn(const FString& Email, FOnAuthSu
 		return;
 	}
 
-	// Inline the requestLoginLink dispatch (rather than calling the public RequestLoginLink, whose
-	// dynamic delegate cannot take a lambda) so we can branch on the dev shortcut.
-	PushCallback(EQueryResponseType::RequestLoginLink,
-		[this, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	// Inline the requestLoginLink dispatch rather than calling the public RequestLoginLink, whose
+	// dynamic delegate cannot take a lambda and so cannot tear the listener down on a failure.
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
 	{
-		if (!Resp->IsValid())
-		{
-			if (LoopbackServer.IsValid()) { LoopbackServer->Stop(); }
-			FailFlow(Resp->GetError(), EAuthFlow::MagicLink, OnError);
-			return;
-		}
-
-		const FRequestLoginLinkResponse& R = static_cast<FRequestLoginLinkResponse&>(*Resp);
-
-		if (!R.DevToken.IsEmpty())
-		{
-			// Dev: no email/browser round-trip — complete immediately and drop the listener.
-			if (LoopbackServer.IsValid()) { LoopbackServer->Stop(); }
-			CompleteLoginLink(R.DevToken, OnSuccess, OnError);
-			return;
-		}
-
-		// Prod: the email is on its way. The armed listener captures the link's redirect and
-		// OnSuccess fires later from CompleteLoginLink's mint; nothing to do here but wait.
-		UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
-			TEXT("[CrowdyAuth] Magic-link email requested; awaiting loopback callback."));
-	});
-
-	FRequestLoginLinkRequest Request;
-	Request.Email       = Email;
-	Request.RedirectUri = RedirectUri;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
-}
-
-// Social sign-in + identities
-
-void UCrowdyAuthentication::GetAvailableLoginProviders(FOnLoginProvidersReceived OnResult, FOnAuthError OnError)
-{
-	if (!QuerySubsystem)
-	{
-		OnError.ExecuteIfBound(TEXT("Query subsystem unavailable"));
+		// The listener was armed a moment ago and nothing will ever call back into it, so drop it here.
+		LoopbackServer->Stop();
+		FailFlow(TEXT("Authentication client unavailable."), EAuthFlow::MagicLink, OnError);
 		return;
 	}
 
-	PushCallback(EQueryResponseType::AvailableLoginProviders,
-		[OnResult, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	Client->RequestLoginLink(Email, RedirectUri, GuardSession<FCrowdyCppJsonValueResult>(
+		[WeakThis, OnError](FCrowdyCppJsonValueResult Result)
 		{
-			const FAvailableLoginProvidersResponse& R = static_cast<FAvailableLoginProvidersResponse&>(*Resp);
-			OnResult.ExecuteIfBound(R.Providers);
-		}
-		else
-		{
-			OnError.ExecuteIfBound(Resp->GetError());
-		}
-	});
+			UCrowdyAuthentication* Self = WeakThis.Get();
+			if (!Self) return;
 
-	FAvailableLoginProvidersRequest Request;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+			bool bSent = false;
+			if (!Result.bOk || !ReadLoginLinkPayload(Result.Value, bSent))
+			{
+				if (Self->LoopbackServer.IsValid()) { Self->LoopbackServer->Stop(); }
+				Self->FailFlow(
+					Result.bOk ? TEXT("Malformed requestLoginLink response") : Result.ErrorMessage,
+					EAuthFlow::MagicLink, OnError);
+				return;
+			}
+
+			// The email is on its way. The armed listener captures the link's redirect and OnSuccess
+			// fires later from CompleteLoginLink's mint; nothing to do here but wait.
+			UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
+				TEXT("[CrowdyAuth] Magic-link email requested; awaiting loopback callback."));
+		}));
+}
+
+void UCrowdyAuthentication::GetAvailableLoginProviders(FOnLoginProvidersReceived OnResult, FOnAuthError OnError)
+{
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		OnError.ExecuteIfBound(TEXT("Authentication client unavailable."));
+		return;
+	}
+
+	Client->ListLoginProviders(GuardSession<FCrowdyCppStringListResult>(
+		[OnResult, OnError](FCrowdyCppStringListResult Result)
+		{
+			if (Result.bOk)
+			{
+				OnResult.ExecuteIfBound(Result.Values);
+			}
+			else
+			{
+				OnError.ExecuteIfBound(Result.ErrorMessage);
+			}
+		}));
 }
 
 void UCrowdyAuthentication::BeginSocialSignIn(const FString& Provider, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
-	{
-		FailFlow(TEXT("Query subsystem unavailable"), EAuthFlow::Social, OnError);
-		return;
-	}
 	if (Provider.IsEmpty())
 	{
 		FailFlow(TEXT("A provider is required"), EAuthFlow::Social, OnError);
@@ -414,7 +453,7 @@ void UCrowdyAuthentication::BeginSocialSignIn(const FString& Provider, FOnAuthSu
 	}
 
 	// socialLoginStart needs the redirectUri now, but the CSRF state to arm the listener with only
-	// arrives in its response — so reserve the sticky loopback URI first and arm the route later.
+	// arrives in its response, so reserve the sticky loopback URI first and arm the route later.
 	const FString RedirectUri = LoopbackServer->ReserveRedirectUri();
 	if (RedirectUri.IsEmpty())
 	{
@@ -425,129 +464,163 @@ void UCrowdyAuthentication::BeginSocialSignIn(const FString& Provider, FOnAuthSu
 	// Cover the reserve -> arm window; once armed, LoopbackServer->IsActive() takes over the guard.
 	bLoopbackFlowPending = true;
 
-	PushCallback(EQueryResponseType::SocialLoginStart,
-		[this, Provider, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	// Resolved before starting, for the same reason as the magic link: the CSRF state the provider round-trips is
+	// held where socialLoginStart ran, so completing against a different datacenter would find no such state.
+	//
+	// The reserved port is live from here on, so every path out of the resolve has to clear the pending flag or the
+	// next sign-in is refused as "already in progress" for the rest of the session.
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	WithAppEndpointResolved([WeakThis, Provider, RedirectUri, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
-		if (!Resp->IsValid())
+		UCrowdyAuthentication* Issuer = WeakThis.Get();
+		if (!Issuer)
 		{
-			bLoopbackFlowPending = false;
-			FailFlow(Resp->GetError(), EAuthFlow::Social, OnError);
 			return;
 		}
+		Client.SocialLoginStart(Provider, RedirectUri, Issuer->GuardSession<FCrowdyCppJsonValueResult>(
+			[WeakThis, Provider, OnSuccess, OnError](FCrowdyCppJsonValueResult Result)
+			{
+				UCrowdyAuthentication* Self = WeakThis.Get();
+				if (!Self) return;
 
-		const FSocialLoginStartResponse& R = static_cast<FSocialLoginStartResponse&>(*Resp);
-		const FString State        = R.State;
-		const FString AuthorizeUrl = R.AuthorizeUrl;
-
-		// Arm the listener bound to the server-issued state (CSRF). On the captured code, complete
-		// the social sign-in; on listener error/timeout, fail the flow.
-		FOnLoopbackToken OnCodeCaptured;
-		OnCodeCaptured.BindLambda([this, Provider, State, OnSuccess, OnError](const FString& Code)
+				FString AuthorizeUrl;
+				FString State;
+				if (!Result.bOk || !ReadSocialStartPayload(Result.Value, AuthorizeUrl, State))
+				{
+					Self->bLoopbackFlowPending = false;
+					Self->FailFlow(
+						Result.bOk ? TEXT("Malformed socialLoginStart response") : Result.ErrorMessage,
+						EAuthFlow::Social, OnError);
+					return;
+				}
+				Self->OnSocialLoginStarted(Provider, AuthorizeUrl, State, OnSuccess, OnError);
+			}));
+	}, EAuthFlow::Social, OnError,
+	[WeakThis]()
+	{
+		if (UCrowdyAuthentication* Self = WeakThis.Get())
 		{
-			CompleteSocialLogin(Provider, Code, State, OnSuccess, OnError);
-		});
-
-		FOnLoopbackError OnListenerError;
-		OnListenerError.BindLambda([this, OnError](const FString& Message)
-		{
-			FailFlow(Message, EAuthFlow::Social, OnError);
-		});
-
-		const FString ArmedUri = LoopbackServer.IsValid()
-			? LoopbackServer->Start(State, SocialSignInTimeoutSeconds, OnCodeCaptured, OnListenerError)
-			: FString();
-
-		// The reserve -> arm window is now closed (either the listener is armed, or Start reported).
-		bLoopbackFlowPending = false;
-
-		if (ArmedUri.IsEmpty())
-		{
-			return; // Start already reported the failure via OnListenerError.
+			Self->bLoopbackFlowPending = false;
 		}
+	});
+}
 
-		// Open the provider's consent page; its redirect lands on the armed listener.
-		FPlatformProcess::LaunchURL(*AuthorizeUrl, nullptr, nullptr);
+void UCrowdyAuthentication::OnSocialLoginStarted(const FString& Provider, const FString& AuthorizeUrl,
+                                                 const FString& State, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
+{
+	// Two things must hold before a listener is armed at all. The state is the CSRF material the provider round-trips
+	// and the listener treats an empty expected state as "accept any callback", so arming without one would let any
+	// other process on the machine post an authorization code of its choosing. And the authorize URL is handed to the
+	// platform's URL opener, which on some platforms is the shell, so it has to actually be a web address.
+	if (State.IsEmpty() || !IsBrowserNavigableUrl(AuthorizeUrl))
+	{
+		bLoopbackFlowPending = false;
+		FailFlow(TEXT("The sign-in provider returned an unusable authorization request."), EAuthFlow::Social, OnError);
+		return;
+	}
 
-		UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
-			TEXT("[CrowdyAuth] Social sign-in: opened provider consent; awaiting loopback callback."));
+	// Arm the listener bound to the server-issued state (CSRF). On the captured code, complete
+	// the social sign-in; on listener error/timeout, fail the flow.
+	FOnLoopbackToken OnCodeCaptured;
+	OnCodeCaptured.BindLambda([this, Provider, State, OnSuccess, OnError](const FString& Code)
+	{
+		CompleteSocialLogin(Provider, Code, State, OnSuccess, OnError);
 	});
 
-	FSocialLoginStartRequest Request;
-	Request.Provider    = Provider;
-	Request.RedirectUri = RedirectUri;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+	FOnLoopbackError OnListenerError;
+	OnListenerError.BindLambda([this, OnError](const FString& Message)
+	{
+		FailFlow(Message, EAuthFlow::Social, OnError);
+	});
+
+	// Cleared before Start, because Start reports a failure synchronously and a handler that reacts by retrying the
+	// sign-in would otherwise be refused for a flow that has already ended.
+	bLoopbackFlowPending = false;
+
+	if (!LoopbackServer.IsValid())
+	{
+		// Nothing to arm and nothing to report it, so say so here rather than ending the flow in silence.
+		FailFlow(TEXT("The local sign-in listener is unavailable."), EAuthFlow::Social, OnError);
+		return;
+	}
+
+	const FString ArmedUri = LoopbackServer->Start(State, SocialSignInTimeoutSeconds, OnCodeCaptured, OnListenerError);
+	if (ArmedUri.IsEmpty())
+	{
+		return; // Start already reported the failure via OnListenerError.
+	}
+
+	// Open the provider's consent page; its redirect lands on the armed listener.
+	FPlatformProcess::LaunchURL(*AuthorizeUrl, nullptr, nullptr);
+
+	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
+		TEXT("[CrowdyAuth] Social sign-in: opened provider consent; awaiting loopback callback."));
 }
 
 void UCrowdyAuthentication::CompleteSocialLogin(const FString& Provider, const FString& Code, const FString& State,
                                                 FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	WithAppEndpointResolved([WeakThis, Provider, Code, State, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
-		FailFlow(TEXT("Query subsystem unavailable"), EAuthFlow::Social, OnError);
-		return;
-	}
-
-	PushCallback(EQueryResponseType::SocialLoginComplete,
-		[this, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
-		{
-			// Under the two-token model this token is the identity SESSION token.
-			const FAuthResponseBase& R = static_cast<FAuthResponseBase&>(*Resp);
-			BeginMintPipeline(R.SessionToken, R.SessionGameTokenID, R.UserID, EAuthFlow::Social, OnSuccess, OnError);
-		}
-		else
-		{
-			FailFlow(Resp->GetError(), EAuthFlow::Social, OnError);
-		}
-	});
-
-	FSocialLoginCompleteRequest Request;
-	Request.Provider = Provider;
-	Request.Code     = Code;
-	Request.State    = State;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+		UCrowdyAuthentication* Issuer = WeakThis.Get();
+		if (!Issuer) return;
+		Client.SocialLoginComplete(Provider, Code, State, Issuer->GuardSession<FCrowdyCppAuthResult>(
+			[WeakThis, OnSuccess, OnError](FCrowdyCppAuthResult Result)
+			{
+				UCrowdyAuthentication* Self = WeakThis.Get();
+				if (!Self) return;
+				if (Result.bOk)
+				{
+					Self->BeginMintPipeline(Result.SessionToken, Result.SessionGameTokenID, Result.UserID,
+						EAuthFlow::Social, OnSuccess, OnError);
+				}
+				else
+				{
+					Self->FailFlow(Result.ErrorMessage, EAuthFlow::Social, OnError);
+				}
+			}));
+	}, EAuthFlow::Social, OnError);
 }
 
 void UCrowdyAuthentication::GetMyIdentities(FOnIdentitiesReceived OnResult, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
 	{
-		OnError.ExecuteIfBound(TEXT("Query subsystem unavailable"));
+		OnError.ExecuteIfBound(TEXT("Authentication client unavailable."));
 		return;
 	}
 
-	PushCallback(EQueryResponseType::MyIdentities,
-		[OnResult, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
+	const int64 SignedInUserId = GameSession ? GameSession->GetUserID() : 0;
+	Client->ListMyIdentities(GuardSession<FCrowdyCppJsonValueResult>(
+		[OnResult, OnError, SignedInUserId](FCrowdyCppJsonValueResult Result)
 		{
-			const FMyIdentitiesResponse& R = static_cast<FMyIdentitiesResponse&>(*Resp);
-			OnResult.ExecuteIfBound(R.Identities);
-		}
-		else
-		{
-			OnError.ExecuteIfBound(Resp->GetError());
-		}
-	});
+			const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+			if (!Result.bOk || !Result.Value.IsValid() || !Result.Value->TryGetArray(Array) || !Array)
+			{
+				OnError.ExecuteIfBound(Result.bOk ? TEXT("Malformed myIdentities response") : Result.ErrorMessage);
+				return;
+			}
 
-	FMyIdentitiesRequest Request;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+			TArray<FCrowdyUserIdentity> Identities;
+			Identities.Reserve(Array->Num());
+			for (const TSharedPtr<FJsonValue>& Entry : *Array)
+			{
+				// An entry that is not a usable identity is skipped rather than surfaced blank: a null element is
+				// ordinary GraphQL null-propagation, and a row with no id cannot be unlinked later anyway.
+				FCrowdyUserIdentity Identity;
+				if (ReadIdentity(Entry, SignedInUserId, Identity))
+				{
+					Identities.Add(MoveTemp(Identity));
+				}
+			}
+			OnResult.ExecuteIfBound(Identities);
+		}));
 }
 
 void UCrowdyAuthentication::BeginLinkIdentity(const FString& Provider, FOnIdentityLinked OnResult, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
-	{
-		OnError.ExecuteIfBound(TEXT("Query subsystem unavailable"));
-		return;
-	}
 	if (Provider.IsEmpty())
 	{
 		OnError.ExecuteIfBound(TEXT("A provider is required"));
@@ -579,121 +652,132 @@ void UCrowdyAuthentication::BeginLinkIdentity(const FString& Provider, FOnIdenti
 
 	bLoopbackFlowPending = true;
 
-	PushCallback(EQueryResponseType::SocialLoginStart,
-		[this, Provider, OnResult, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
 	{
-		if (!Resp->IsValid())
-		{
-			bLoopbackFlowPending = false;
-			OnError.ExecuteIfBound(Resp->GetError());
-			return;
-		}
-
-		const FSocialLoginStartResponse& R = static_cast<FSocialLoginStartResponse&>(*Resp);
-		const FString State        = R.State;
-		const FString AuthorizeUrl = R.AuthorizeUrl;
-
-		FOnLoopbackToken OnCodeCaptured;
-		OnCodeCaptured.BindLambda([this, Provider, State, OnResult, OnError](const FString& Code)
-		{
-			CompleteLinkIdentity(Provider, Code, State, OnResult, OnError);
-		});
-
-		FOnLoopbackError OnListenerError;
-		OnListenerError.BindLambda([OnError](const FString& Message)
-		{
-			OnError.ExecuteIfBound(Message);
-		});
-
-		const FString ArmedUri = LoopbackServer.IsValid()
-			? LoopbackServer->Start(State, SocialSignInTimeoutSeconds, OnCodeCaptured, OnListenerError)
-			: FString();
-
 		bLoopbackFlowPending = false;
+		OnError.ExecuteIfBound(TEXT("Authentication client unavailable."));
+		return;
+	}
 
-		if (ArmedUri.IsEmpty())
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	Client->SocialLoginStart(Provider, RedirectUri, GuardSession<FCrowdyCppJsonValueResult>(
+		[WeakThis, Provider, OnResult, OnError](FCrowdyCppJsonValueResult Result)
 		{
-			return;
-		}
+			UCrowdyAuthentication* Self = WeakThis.Get();
+			if (!Self) return;
 
-		FPlatformProcess::LaunchURL(*AuthorizeUrl, nullptr, nullptr);
+			FString AuthorizeUrl;
+			FString State;
+			if (!Result.bOk || !ReadSocialStartPayload(Result.Value, AuthorizeUrl, State))
+			{
+				Self->bLoopbackFlowPending = false;
+				OnError.ExecuteIfBound(
+					Result.bOk ? TEXT("Malformed socialLoginStart response") : Result.ErrorMessage);
+				return;
+			}
+			Self->OnLinkIdentityStarted(Provider, AuthorizeUrl, State, OnResult, OnError);
+		}));
+}
 
-		UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
-			TEXT("[CrowdyAuth] Link identity: opened provider consent; awaiting loopback callback."));
+void UCrowdyAuthentication::OnLinkIdentityStarted(const FString& Provider, const FString& AuthorizeUrl,
+                                                  const FString& State, FOnIdentityLinked OnResult,
+                                                  FOnAuthError OnError)
+{
+	// The same two preconditions as a social sign-in: without the server's CSRF state the listener would accept any
+	// callback, and the authorize URL reaches the platform's URL opener.
+	if (State.IsEmpty() || !IsBrowserNavigableUrl(AuthorizeUrl))
+	{
+		bLoopbackFlowPending = false;
+		OnError.ExecuteIfBound(TEXT("The sign-in provider returned an unusable authorization request."));
+		return;
+	}
+
+	FOnLoopbackToken OnCodeCaptured;
+	OnCodeCaptured.BindLambda([this, Provider, State, OnResult, OnError](const FString& Code)
+	{
+		CompleteLinkIdentity(Provider, Code, State, OnResult, OnError);
 	});
 
-	FSocialLoginStartRequest Request;
-	Request.Provider    = Provider;
-	Request.RedirectUri = RedirectUri;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+	FOnLoopbackError OnListenerError;
+	OnListenerError.BindLambda([OnError](const FString& Message)
+	{
+		OnError.ExecuteIfBound(Message);
+	});
+
+	bLoopbackFlowPending = false;
+
+	if (!LoopbackServer.IsValid())
+	{
+		OnError.ExecuteIfBound(TEXT("The local sign-in listener is unavailable."));
+		return;
+	}
+
+	const FString ArmedUri = LoopbackServer->Start(State, SocialSignInTimeoutSeconds, OnCodeCaptured, OnListenerError);
+	if (ArmedUri.IsEmpty())
+	{
+		return;
+	}
+
+	FPlatformProcess::LaunchURL(*AuthorizeUrl, nullptr, nullptr);
+
+	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
+		TEXT("[CrowdyAuth] Link identity: opened provider consent; awaiting loopback callback."));
 }
 
 void UCrowdyAuthentication::CompleteLinkIdentity(const FString& Provider, const FString& Code, const FString& State,
                                                  FOnIdentityLinked OnResult, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
 	{
-		OnError.ExecuteIfBound(TEXT("Query subsystem unavailable"));
+		OnError.ExecuteIfBound(TEXT("Authentication client unavailable."));
 		return;
 	}
 
-	PushCallback(EQueryResponseType::LinkIdentity,
-		[OnResult, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
-	{
-		if (Resp->IsValid())
+	const int64 SignedInUserId = GameSession ? GameSession->GetUserID() : 0;
+	Client->LinkIdentity(Provider, Code, State, GuardSession<FCrowdyCppJsonValueResult>(
+		[OnResult, OnError, SignedInUserId](FCrowdyCppJsonValueResult Result)
 		{
-			const FLinkIdentityResponse& R = static_cast<FLinkIdentityResponse&>(*Resp);
-			OnResult.ExecuteIfBound(R.Identity);
-		}
-		else
-		{
-			OnError.ExecuteIfBound(Resp->GetError());
-		}
-	});
-
-	FLinkIdentityRequest Request;
-	Request.Provider = Provider;
-	Request.Code     = Code;
-	Request.State    = State;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+			// An identity with no id reads as a linked account the caller can never unlink, so it is an error
+			// rather than a blank success.
+			FCrowdyUserIdentity Identity;
+			if (!Result.bOk || !ReadIdentity(Result.Value, SignedInUserId, Identity))
+			{
+				OnError.ExecuteIfBound(Result.bOk ? TEXT("Malformed linkIdentity response") : Result.ErrorMessage);
+				return;
+			}
+			OnResult.ExecuteIfBound(Identity);
+		}));
 }
 
 void UCrowdyAuthentication::UnlinkIdentity(const FString& IdentityId, FOnIdentityUnlinked OnResult, FOnAuthError OnError)
 {
-	if (!QuerySubsystem)
-	{
-		OnError.ExecuteIfBound(TEXT("Query subsystem unavailable"));
-		return;
-	}
 	if (IdentityId.IsEmpty())
 	{
 		OnError.ExecuteIfBound(TEXT("An identityId is required"));
 		return;
 	}
 
-	PushCallback(EQueryResponseType::UnlinkIdentity,
-		[OnResult, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
 	{
-		if (Resp->IsValid())
-		{
-			const FUnlinkIdentityResponse& R = static_cast<FUnlinkIdentityResponse&>(*Resp);
-			OnResult.ExecuteIfBound(R.bRemoved);
-		}
-		else
-		{
-			OnError.ExecuteIfBound(Resp->GetError());
-		}
-	});
+		OnError.ExecuteIfBound(TEXT("Authentication client unavailable."));
+		return;
+	}
 
-	FUnlinkIdentityRequest Request;
-	Request.IdentityId = IdentityId;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+	Client->UnlinkIdentity(IdentityId, GuardSession<FCrowdyCppBoolResult>(
+		[OnResult, OnError](FCrowdyCppBoolResult Result)
+		{
+			if (Result.bOk)
+			{
+				OnResult.ExecuteIfBound(Result.bValue);
+			}
+			else
+			{
+				OnError.ExecuteIfBound(Result.ErrorMessage);
+			}
+		}));
 }
 
 bool UCrowdyAuthentication::IsInteractiveSignInBusy() const
@@ -701,23 +785,18 @@ bool UCrowdyAuthentication::IsInteractiveSignInBusy() const
 	return bLoopbackFlowPending || (LoopbackServer.IsValid() && LoopbackServer->IsActive());
 }
 
-// Shared mint pipeline
-
 void UCrowdyAuthentication::BeginMintPipeline(const FString& SessionToken, int64 SessionGameTokenID, int64 UserID,
                                               EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
 	// Store the SESSION token on the management plane only. It is never handed to
-	// the Game API / UDP path — that is what an app-scoped token (minted below) is for.
+	// the Game API / UDP path: that is what an app-scoped token (minted below) is for.
 	if (GameSession)
 	{
 		GameSession->SetUserID(UserID);
 		GameSession->SetSessionGameTokenID(SessionGameTokenID);
 		GameSession->SetSessionToken(SessionToken);
 	}
-	if (QuerySubsystem)
-	{
-		QuerySubsystem->SetSessionToken(SessionToken);
-	}
+	PublishTokensToCppClient();
 
 	// Persist the SESSION token only (durable, mint-capable). The app token is
 	// short-lived and stays in memory.
@@ -728,8 +807,13 @@ void UCrowdyAuthentication::BeginMintPipeline(const FString& SessionToken, int64
 
 void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
-	if (!QuerySubsystem || !GameSession)
+	if (!GameSession)
 	{
+		if (Flow == EAuthFlow::Refresh)
+		{
+			// Background rotation has no caller to answer, so it re-arms itself rather than ending the chain here.
+			ScheduleRotationRetry(TEXT("no game session available"));
+		}
 		FailFlow(TEXT("SDK not initialised"), Flow, OnError);
 		return;
 	}
@@ -741,53 +825,97 @@ void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSucces
 		return;
 	}
 
-	PushCallback(EQueryResponseType::MintAppToken, [this, Flow, OnSuccess, OnError](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
 	{
-		if (Resp->IsValid())
+		if (Flow == EAuthFlow::Refresh)
 		{
-			ApplyAppTokenAndFinish(static_cast<FAppTokenResponseBase&>(*Resp), Flow, OnSuccess);
+			// Background rotation has no caller to answer, so it re-arms itself instead of ending here.
+			ScheduleRotationRetry(TEXT("no authentication client available"));
 		}
-		else
-		{
-			FailFlow(Resp->GetError(), Flow, OnError);
-		}
-	});
+		FailFlow(TEXT("Authentication client unavailable."), Flow, OnError);
+		return;
+	}
 
-	FMintAppTokenRequest Request;
-	Request.AppID = AppID;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	++CppRotationsInFlight;
+	Client->MintAppToken(AppID, GuardSession<FCrowdyCppAppTokenResult>(
+		[WeakThis, Flow, OnSuccess, OnError](FCrowdyCppAppTokenResult Result)
+		{
+			UCrowdyAuthentication* Self = WeakThis.Get();
+			if (!Self) return;
+			--Self->CppRotationsInFlight;
+			if (Result.bOk)
+			{
+				Self->ApplyAppTokenAndFinish(MakeAppTokenFields(Result), Flow, OnSuccess);
+			}
+			else
+			{
+				const bool bWasCanceled = Result.ErrorMessage == FCrowdyCppClient::CanceledErrorMessage();
+				if (Flow == EAuthFlow::Refresh)
+				{
+					Self->ScheduleRotationRetry(bWasCanceled
+						? TEXT("the app-token mint was canceled")
+						: TEXT("the app-token mint failed"));
+				}
+
+				// A cancellation means the request was abandoned (the client was rebuilt under it), which is internal
+				// bookkeeping rather than something the user did wrong, so it is reported as an interruption instead
+				// of surfacing the transport's own wording on an error pin.
+				Self->FailFlow(bWasCanceled
+					? FString(TEXT("Sign-in was interrupted. Please try again."))
+					: Result.ErrorMessage, Flow, OnError);
+			}
+		}));
 }
 
 void UCrowdyAuthentication::DispatchRefresh()
 {
-	if (!QuerySubsystem)
-		return;
-
-	PushCallback(EQueryResponseType::RefreshAppToken, [this](TSharedPtr<ICrowdyQueryResponse> Resp)
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
 	{
-		if (Resp->IsValid())
+		// Rotation is a background task with no caller to answer, and re-minting would need the same client, so the
+		// current token is left in place and the attempt is re-armed for a short while from now.
+		UE_LOG(LogCrowdyServices, Warning,
+			TEXT("[CrowdyAuth] App-token refresh skipped: no authentication client available."));
+		ScheduleRotationRetry(TEXT("no authentication client available"));
+		return;
+	}
+
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	++CppRotationsInFlight;
+	Client->RefreshAppToken(GuardSession<FCrowdyCppAppTokenResult>(
+		[WeakThis](FCrowdyCppAppTokenResult Result)
 		{
-			ApplyAppTokenAndFinish(static_cast<FAppTokenResponseBase&>(*Resp), EAuthFlow::Refresh, FOnAuthSuccess());
-		}
-		else
-		{
+			UCrowdyAuthentication* Self = WeakThis.Get();
+			if (!Self) return;
+			// Cleared before the re-mint below, so the debounce does not refuse the recovery it is asking for.
+			--Self->CppRotationsInFlight;
+			if (Result.bOk)
+			{
+				Self->ApplyAppTokenAndFinish(MakeAppTokenFields(Result), EAuthFlow::Refresh, FOnAuthSuccess());
+				return;
+			}
+
+			if (Result.ErrorMessage == FCrowdyCppClient::CanceledErrorMessage())
+			{
+				// The request was abandoned rather than refused, so the app token has not been shown to be stale
+				// and re-minting would spend a round trip to learn nothing. Rotation is re-armed instead.
+				UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
+					TEXT("[CrowdyAuth] App-token refresh was canceled; leaving the current token in place."));
+				Self->ScheduleRotationRetry(TEXT("the app-token refresh was canceled"));
+				return;
+			}
+
 			// Refresh needs a still-valid app token as bearer; if it lapsed, re-mint
 			// from the (longer-lived) session token instead.
-			UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] refreshAppToken failed (%s); re-minting from session."),
-				*Resp->GetError());
-			DispatchMint(EAuthFlow::Refresh, FOnAuthSuccess(), FOnAuthError());
-		}
-	});
-
-	FRefreshAppTokenRequest Request;
-	Request.PrepareQuery();
-	QuerySubsystem->ExecuteQueryWithBody(Request.GetQueryType(), Request.InlineQueryBody,
-		Request.RuntimeVariables, Request.bIncludeAuthToken);
+			UE_LOG(LogCrowdyServices, Warning,
+				TEXT("[CrowdyAuth] refreshAppToken failed (%s); re-minting from session."), *Result.ErrorMessage);
+			Self->DispatchMint(EAuthFlow::Refresh, FOnAuthSuccess(), FOnAuthError());
+		}));
 }
 
-void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FAppTokenResponseBase& Token, EAuthFlow Flow, FOnAuthSuccess OnSuccess)
+void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& Token, EAuthFlow Flow, FOnAuthSuccess OnSuccess)
 {
 	// The mint returns gameApiUrl as a bare host; the Game API GraphQL lives at /graphql, so
 	// normalize once and adopt that as the per-app Game endpoint (else every Game-API POST 404s).
@@ -804,16 +932,13 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FAppTokenResponseBase& 
 		GameSession->SetGameApiWsUrl(Token.GameApiWsUrl);
 		GameSession->SetLaunchUrl(Token.LaunchUrl);
 	}
-	if (QuerySubsystem)
-	{
-		QuerySubsystem->SetAppToken(Token.AppToken);
-		// Adopt the per-app Game endpoint that came with the token (per-app routing).
-		if (!GameApiGraphqlUrl.IsEmpty())
-		{
-			QuerySubsystem->SetGameEndpoint(GameApiGraphqlUrl);
-		}
-	}
+	// The rotated token has to reach the shared client too, or the next call there would still carry the old one.
+	// This is also the write-back the refresh path depends on, since that call deliberately does not install its
+	// own result.
+	PublishTokensToCppClient();
 
+	// A rotation landed, so the next one starts with a full retry budget.
+	RotationRetriesUsed = 0;
 	ScheduleProactiveRefresh(Token.ExpiresAt);
 
 	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
@@ -831,7 +956,6 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FAppTokenResponseBase& 
 	case EAuthFlow::Login:
 	case EAuthFlow::MagicLink:
 	case EAuthFlow::Social:
-	case EAuthFlow::DevLogin:
 		OnLogin.Broadcast(Result);
 		break;
 	case EAuthFlow::Register:
@@ -857,7 +981,6 @@ void UCrowdyAuthentication::FailFlow(const FString& Message, EAuthFlow Flow, FOn
 	case EAuthFlow::Login:
 	case EAuthFlow::MagicLink:
 	case EAuthFlow::Social:
-	case EAuthFlow::DevLogin:
 		OnLoginFailed.Broadcast(Message);
 		break;
 	case EAuthFlow::Register:
@@ -872,11 +995,9 @@ void UCrowdyAuthentication::FailFlow(const FString& Message, EAuthFlow Flow, FOn
 	}
 }
 
-// App-token refresh
-
 void UCrowdyAuthentication::RefreshAppToken()
 {
-	if (!QuerySubsystem || !GameSession)
+	if (!GameSession)
 		return;
 
 	if (GameSession->GetGameToken().IsEmpty() && GameSession->GetSessionToken().IsEmpty())
@@ -890,8 +1011,12 @@ void UCrowdyAuthentication::RefreshAppToken()
 
 void UCrowdyAuthentication::RecoverExpiredAppToken()
 {
-	if (!QuerySubsystem || !GameSession)
+	if (!GameSession)
+	{
+		UE_LOG(LogCrowdyServices, Warning,
+			TEXT("[CrowdyAuth] TOKEN_EXPIRED but the SDK is not initialised; the token cannot be re-minted."));
 		return;
+	}
 
 	if (GameSession->GetSessionToken().IsEmpty())
 	{
@@ -910,15 +1035,10 @@ void UCrowdyAuthentication::RecoverExpiredAppToken()
 
 bool UCrowdyAuthentication::IsTokenRotationInFlight() const
 {
-	// Callers do a check-then-dispatch; that is race-free only because every rotation
-	// trigger runs on the game thread (the FTSTicker fires there, and the err-32 path
-	// is marshaled to it in UCrowdySDKSubsystem::HandleTokenExpired). Keep it that way.
-	FScopeLock Lock(&CallbackMutex);
-	const TArray<TFunction<void(TSharedPtr<ICrowdyQueryResponse>)>>* Mint =
-		PendingCallbacks.Find(EQueryResponseType::MintAppToken);
-	const TArray<TFunction<void(TSharedPtr<ICrowdyQueryResponse>)>>* Refresh =
-		PendingCallbacks.Find(EQueryResponseType::RefreshAppToken);
-	return (Mint && Mint->Num() > 0) || (Refresh && Refresh->Num() > 0);
+	// Callers do a check-then-dispatch; that is race-free only because every rotation trigger runs on
+	// the game thread (the FTSTicker fires there, and so does the inbound message that reports an
+	// expired token). Keep it that way.
+	return CppRotationsInFlight > 0;
 }
 
 void UCrowdyAuthentication::ScheduleProactiveRefresh(const FString& ExpiresAtIso8601)
@@ -943,6 +1063,16 @@ void UCrowdyAuthentication::ScheduleProactiveRefresh(const FString& ExpiresAtIso
 	double DelaySeconds = Remaining.GetTotalSeconds() - SafetyMarginSeconds;
 	DelaySeconds = FMath::Clamp(DelaySeconds, 5.0, 24.0 * 60.0 * 60.0);
 
+	ArmRotationTimer(DelaySeconds);
+
+	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
+		TEXT("[CrowdyAuth] App-token refresh scheduled in %.0fs."), DelaySeconds);
+}
+
+void UCrowdyAuthentication::ArmRotationTimer(double DelaySeconds)
+{
+	CancelProactiveRefresh();
+
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
 	RefreshTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateLambda([WeakThis](float) -> bool
@@ -954,9 +1084,33 @@ void UCrowdyAuthentication::ScheduleProactiveRefresh(const FString& ExpiresAtIso
 			}
 			return false; // one-shot
 		}), static_cast<float>(DelaySeconds));
+}
 
-	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
-		TEXT("[CrowdyAuth] App-token refresh scheduled in %.0fs."), DelaySeconds);
+void UCrowdyAuthentication::ScheduleRotationRetry(const TCHAR* Reason)
+{
+	// Deinitialize releases this before it cancels the timer, so a completion arriving during teardown cannot arm a
+	// new one here.
+	if (!LiveSessionToken.IsValid())
+	{
+		return;
+	}
+
+	if (RotationRetriesUsed >= MaxRotationRetries)
+	{
+		// Retrying past this would keep a permanent failure invisible. The token is left to lapse; the server then
+		// reports it expired and the reactive re-mint takes over.
+		UE_LOG(LogCrowdyServices, Warning,
+			TEXT("[CrowdyAuth] App-token rotation still failing after %d attempts (%s); leaving the token to expire."),
+			RotationRetriesUsed, Reason);
+		return;
+	}
+
+	++RotationRetriesUsed;
+	ArmRotationTimer(RotationRetrySeconds);
+
+	UE_LOG(LogCrowdyServices, Warning,
+		TEXT("[CrowdyAuth] App-token rotation retry %d of %d in %.0fs (%s)."),
+		RotationRetriesUsed, MaxRotationRetries, RotationRetrySeconds, Reason);
 }
 
 void UCrowdyAuthentication::CancelProactiveRefresh()
@@ -968,12 +1122,44 @@ void UCrowdyAuthentication::CancelProactiveRefresh()
 	}
 }
 
-// Session persistence
-//
 // The SESSION token is the long-lived, mint-capable credential, so it is encrypted at rest with
 // DPAPI (per-user) rather than written to a plaintext SaveGame slot. The save object is serialized
 // to a byte blob and that blob is encrypted; the schema (UCrowdyAuthSaveGame) is unchanged so the
 // fields stay extensible.
+
+FString UCrowdyAuthentication::GetInstanceSuffix() const
+{
+	// Under editor PIE each client runs in its own GameInstance but shares ProjectSavedDir with the
+	// others, so an unsuffixed vault would be read/written by every window and all would restore the
+	// same account. PIEInstance is the per-client discriminator. Standalone/packaged (GIsEditor==false)
+	// and editor non-PIE worlds return "" so the path stays byte-identical to before this change.
+	if (GIsEditor)
+	{
+		if (const UGameInstance* GI = GetGameInstance())
+		{
+			if (const FWorldContext* Ctx = GI->GetWorldContext())
+			{
+				if (Ctx->WorldType == EWorldType::PIE)
+				{
+					return FString::Printf(TEXT(".pie%d"), Ctx->PIEInstance);
+				}
+			}
+		}
+	}
+	return FString();
+}
+
+// DPAPI-encrypted session vault. Holds only the long-lived, mint-capable SESSION token;
+// the short-lived app token is never written to disk.
+FString UCrowdyAuthentication::GetAuthVaultPath() const
+{
+	return FPaths::ProjectSavedDir() / FString::Printf(TEXT("CrowdySDK/session%s.bin"), *GetInstanceSuffix());
+}
+
+FString UCrowdyAuthentication::GetLegacyAuthSlotName() const
+{
+	return LegacyAuthSlotBase + GetInstanceSuffix();
+}
 
 UCrowdyAuthSaveGame* UCrowdyAuthentication::LoadVaultSave() const
 {
@@ -987,13 +1173,14 @@ UCrowdyAuthSaveGame* UCrowdyAuthentication::LoadVaultSave() const
 		}
 	}
 
-	// Fallback: a pre-WP4b plaintext slot, so a returning user is not forced to sign in again. The
+	// Fallback: a legacy plaintext slot, so a returning user is not forced to sign in again. The
 	// next SaveSession (the mint pipeline persists immediately) re-writes it encrypted and scrubs
 	// the plaintext copy.
-	if (UGameplayStatics::DoesSaveGameExist(LegacyAuthSlot, AuthUserIndex))
+	const FString LegacySlot = GetLegacyAuthSlotName();
+	if (UGameplayStatics::DoesSaveGameExist(LegacySlot, AuthUserIndex))
 	{
 		if (UCrowdyAuthSaveGame* Save = Cast<UCrowdyAuthSaveGame>(
-			UGameplayStatics::LoadGameFromSlot(LegacyAuthSlot, AuthUserIndex)))
+			UGameplayStatics::LoadGameFromSlot(LegacySlot, AuthUserIndex)))
 		{
 			return Save;
 		}
@@ -1024,7 +1211,7 @@ bool UCrowdyAuthentication::RestoreSession(FOnAuthSuccess OnSuccess, FOnAuthErro
 		TEXT("[CrowdyAuth] Restoring session. UserID=%lld"), Save->UserID);
 
 	// Restore re-mints a fresh app token from the persisted session token, then the
-	// SDK requests UDP access — the same path as a fresh sign-in.
+	// SDK requests UDP access, the same path as a fresh sign-in.
 	BeginMintPipeline(Save->SessionToken, Save->SessionGameTokenID, Save->UserID, EAuthFlow::Restore, OnSuccess, OnError);
 	return true;
 }
@@ -1036,9 +1223,10 @@ void UCrowdyAuthentication::ClearSavedSession()
 	FCrowdySecretFile::Delete(GetAuthVaultPath());
 
 	// Also remove any legacy plaintext slot so logout fully forgets the credential.
-	if (UGameplayStatics::DoesSaveGameExist(LegacyAuthSlot, AuthUserIndex))
+	const FString LegacySlot = GetLegacyAuthSlotName();
+	if (UGameplayStatics::DoesSaveGameExist(LegacySlot, AuthUserIndex))
 	{
-		UGameplayStatics::DeleteGameInSlot(LegacyAuthSlot, AuthUserIndex);
+		UGameplayStatics::DeleteGameInSlot(LegacySlot, AuthUserIndex);
 	}
 }
 
@@ -1053,7 +1241,7 @@ void UCrowdyAuthentication::SaveSession(const FString& SessionToken, int64 Sessi
 	Save->UserID             = UserID;
 
 	// Serialize to a blob, then DPAPI-encrypt it at rest. The SESSION token must never sit on disk
-	// in the clear — it mints app tokens and is long-lived.
+	// in the clear: it mints app tokens and is long-lived.
 	TArray<uint8> Blob;
 	const bool bSaved = UGameplayStatics::SaveGameToMemory(Save, Blob)
 		&& FCrowdySecretFile::SaveBytes(GetAuthVaultPath(), Blob);
@@ -1063,52 +1251,16 @@ void UCrowdyAuthentication::SaveSession(const FString& SessionToken, int64 Sessi
 		UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
 			TEXT("[CrowdyAuth] Saved encrypted session vault. UserID=%lld"), UserID);
 
-		// Scrub any pre-WP4b plaintext slot only once the encrypted copy is safely written, so a
+		// Scrub any legacy plaintext slot only once the encrypted copy is safely written, so a
 		// write failure never destroys the user's only persisted session.
-		if (UGameplayStatics::DoesSaveGameExist(LegacyAuthSlot, AuthUserIndex))
+		const FString LegacySlot = GetLegacyAuthSlotName();
+		if (UGameplayStatics::DoesSaveGameExist(LegacySlot, AuthUserIndex))
 		{
-			UGameplayStatics::DeleteGameInSlot(LegacyAuthSlot, AuthUserIndex);
+			UGameplayStatics::DeleteGameInSlot(LegacySlot, AuthUserIndex);
 		}
 	}
 	else
 	{
 		UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] Failed to write encrypted session vault."));
-	}
-}
-
-// Callback queue
-//
-// Responses arrive on a background thread via OnResponseReceived; each is matched
-// FIFO to the callback queued when the matching request was sent, then run on the
-// game thread.
-
-void UCrowdyAuthentication::PushCallback(EQueryResponseType Type,
-                                         TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback)
-{
-	FScopeLock Lock(&CallbackMutex);
-	PendingCallbacks.FindOrAdd(Type).Add(MoveTemp(Callback));
-}
-
-void UCrowdyAuthentication::FireCallback(TSharedPtr<ICrowdyQueryResponse> Response)
-{
-	TFunction<void(TSharedPtr<ICrowdyQueryResponse>)> Callback;
-	{
-		FScopeLock Lock(&CallbackMutex);
-		TArray<TFunction<void(TSharedPtr<ICrowdyQueryResponse>)>>* Queue =
-			PendingCallbacks.Find(Response->GetResponseType());
-		if (Queue && Queue->Num() > 0)
-		{
-			Callback = MoveTemp((*Queue)[0]);
-			Queue->RemoveAt(0, 1, EAllowShrinking::No);
-		}
-	}
-
-	if (Callback)
-	{
-		TSharedPtr<ICrowdyQueryResponse> Copy = Response;
-		AsyncTask(ENamedThreads::GameThread, [Callback = MoveTemp(Callback), Copy]()
-		{
-			Callback(Copy);
-		});
 	}
 }

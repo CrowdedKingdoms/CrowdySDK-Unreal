@@ -17,8 +17,8 @@
  * UFUNCTION: UnrealHeaderTool does not expand macros when scanning for reflected
  * declarations, so a UFUNCTION emitted from inside this macro would be invisible to
  * reflection. CROWDY_EVENT therefore generates only the (non-reflected) thunk, and
- * the routing values live on the receiver's metadata, where Phase 2 reads and bakes
- * them.
+ * the routing values live on the receiver's metadata, which is read and baked
+ * into a registry for lookup at runtime.
  *
  *   UCLASS()
  *   class AMyWeapon : public AActor

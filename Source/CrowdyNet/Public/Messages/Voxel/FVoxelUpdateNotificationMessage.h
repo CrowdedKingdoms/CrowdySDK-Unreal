@@ -2,6 +2,8 @@
 #include "CrowdyNetLog.h"
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Messages/Voxel/FVoxelUpdateBody.h"
+#include "Serialization/CrowdyFrame.h"
 #include "Utils/SerializationFunctionLibrary.h"
 
 /**
@@ -16,45 +18,8 @@
  * The notification may include information regarding what aspect of the
  * voxel data has been updated, allowing the receiving systems to act accordingly.
  */
-struct FVoxelUpdateNotificationMessage : ICrowdyMessage
+struct FVoxelUpdateNotificationMessage : FVoxelUpdateBody
 {
-	
-	
-	int16 Vx, Vy, Vz;
-	/**
-	 * @brief Represents the type of a voxel in a voxel-based system.
-	 *
-	 * This variable stores a 16-bit signed integer that identifies the specific
-	 * type or category of a voxel. Voxel types may correspond to different materials,
-	 * objects, or states within a 3D environment. The exact meaning of each voxel
-	 * type is typically determined by the application or system utilizing the voxel data.
-	 */
-	int16 VoxelType;
-	/**
-	 * @brief Represents the state of a voxel in the voxel-based system.
-	 *
-	 * This struct encapsulates various properties and attributes defining
-	 * the state of a voxel, including its version, directional properties,
-	 * rotation, override attributes, and associated game objects. It is used
-	 * to describe the configuration or modifications applied to a voxel within
-	 * the system.
-	 *
-	 * The `FVoxelState` variable is a central component in systems dealing with
-	 * voxel manipulation and update notifications.
-	 */
-	TArray<uint8> StateBytes;
-	uint16 StateSize;
-	
-	/**
-	 * @brief Indicates whether the voxel update notification message contains voxel state data.
-	 *
-	 * This variable is set to true if the data being deserialized includes voxel state information.
-	 * It is primarily used to determine whether additional state information has been provided in
-	 * the serialized message and subsequently deserialized. By default, this value is set to false
-	 * and only updated if the deserialization process detects and processes voxel state data.
-	 */
-	bool bContainsState = false;
-	
 	/**
 	 * Retrieves the type of the current object or instance.
 	 *
@@ -83,51 +48,53 @@ struct FVoxelUpdateNotificationMessage : ICrowdyMessage
 	}
 
 	/**
-	 * Deserializes the provided byte array into the member variables of this class.
+	 * Deserializes the provided frame into the member variables of this class.
 	 * The method extracts and assigns values for MapID, chunk coordinates, voxel coordinates,
 	 * voxel type, and optionally the voxel state if the data length permits.
 	 *
-	 * @param Data The serialized byte array containing the voxel update data to deserialize.
+	 * @param Frame The frame carrying the voxel update data to deserialize.
 	 */
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
+		const TConstArrayView<uint8> Data = Frame.Body;
 		const int32 DataLength = Data.Num();
-		
+
 		if (DataLength <= 0)
 			return false;
-		
+
 		int32 Offset = 0;
-		
-		if (!DeserializeMetadata(Data, Offset))
+
+		ApplyEnvelope(Frame);
+		if (!ApplyEnvelopeActorId(Frame))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::Deserialize - Metadata deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::DecodePayload - the frame carries no actor id"));
 			return false;
 		}
-		
+
 		if (!USerializationFunctionLibrary::DeserializeValue(Data, Vx, Offset))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::Deserialize - Vx deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::DecodePayload - Vx deserialization failed"));
 			 return false;
 		}
 		Offset += sizeof(int16);
 		
 		if (!USerializationFunctionLibrary::DeserializeValue(Data, Vy, Offset))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::Deserialize - Vy deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::DecodePayload - Vy deserialization failed"));
 			 return false;
 		}
 		Offset += sizeof(int16);
 		
 		if (!USerializationFunctionLibrary::DeserializeValue(Data, Vz, Offset))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::Deserialize - Vz deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::DecodePayload - Vz deserialization failed"));
 			return false;
 		}
 		Offset += sizeof(int16);
 		
 		if (!USerializationFunctionLibrary::DeserializeValue(Data, VoxelType, Offset))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::Deserialize - VoxelType deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::DecodePayload - VoxelType deserialization failed"));
 			return false;
 		}
 		
@@ -137,51 +104,53 @@ struct FVoxelUpdateNotificationMessage : ICrowdyMessage
 		{
 			if (!USerializationFunctionLibrary::DeserializeValue(Data, StateSize, Offset))
 			{
-				UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::Deserialize - StateSize deserialization failed"));
+				UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::DecodePayload - StateSize deserialization failed"));
 				return false;
 			}
 			
 			Offset += sizeof(uint16);
 			
+			// The declared length is attacker-controlled, so it has to be checked against the bytes that
+			// are actually present before it is used to size a copy. Comparing against the remainder
+			// rather than adding to the offset keeps the check itself free of overflow.
+			if (StateSize > 0 && StateSize > static_cast<uint32>(DataLength - Offset))
+			{
+				UE_LOG(LogCrowdyNet, Warning,
+					TEXT("FVoxelUpdateNotificationMessage::DecodePayload - declared state length %u runs past the end of a %d byte frame"),
+					StateSize, DataLength);
+				return false;
+			}
+
 			if (StateSize > 0 && StateSize < 5000)
 			{
 				bContainsState = true;
 				StateBytes.SetNumUninitialized(StateSize);
 				FMemory::Memcpy(StateBytes.GetData(), Data.GetData() + Offset, StateSize);
 			}
+			else if (StateSize > 0)
+			{
+				// The state fits the frame but is larger than this decoder will accept, so the update is
+				// reported with no state at all. Say so: a caller cannot otherwise tell this apart from an
+				// update that legitimately carried none, and treating one as the other overwrites live
+				// state with defaults.
+				UE_LOG(LogCrowdyNet, Warning,
+					TEXT("FVoxelUpdateNotificationMessage::DecodePayload - state of %u bytes exceeds the accepted maximum, reporting the update without it"),
+					StateSize);
+			}
 			
 			return true;
 		}
 		
-		UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::Deserialize - StateSize deserialization failed"));
+		UE_LOG(LogCrowdyNet, Warning, TEXT("FVoxelUpdateNotificationMessage::DecodePayload - StateSize deserialization failed"));
 		return false;
-		
+
 	}
 
-	/**
-	 * Serializes the provided object into a format suitable for storage or transmission,
-	 * such as a string or binary.
-	 *
-	 * @param object The object to be serialized. Must not be null.
-	 * @return A serialized representation of the input object.
-	 *         Returns null if serialization fails.
-	 */
+	/** Receive-only: a voxel update is sent as FVoxelStateUpdateRequest, not as this. */
 	virtual TArray<uint8> Serialize() const override
 	{
 		return TArray<uint8>();
 	}
 
-	/**
-	 * Retrieves the size of the message in bytes.
-	 *
-	 * This method overrides the base implementation and provides
-	 * the size of the message as a 32-bit unsigned integer.
-	 *
-	 * @return The size of the message in bytes, which is always 0 for this implementation.
-	 */
-	virtual uint32 GetMessageSize() const override
-	{
-		return 0;
-	}
 };
 

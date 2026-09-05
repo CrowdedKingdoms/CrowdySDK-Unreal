@@ -1,6 +1,8 @@
 ﻿#include "Customizations/CrowdyStructCustomization.h"
 
+#include "Core/CrowdyCategory/FCrowdyTypeIDGenerator.h"
 #include "CrowdySDKEditor.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailWidgetRow.h"
@@ -8,9 +10,23 @@
 #include "StructUtils/UserDefinedStruct.h"
 #include "UserDefinedStructure/UserDefinedStructEditorData.h"
 
-// ─────────────────────────────────────────────────────────────────────────────
-// IDetailCustomization
-// ─────────────────────────────────────────────────────────────────────────────
+namespace
+{
+	// Mirrors the resolver the registries are given at startup: an explicit entry in the project's
+	// ID overrides replaces the path-derived value, so a struct listed there goes on the wire under
+	// the ID from the list and not under its hash.
+	uint16 ResolveDisplayedStructTypeID(const UScriptStruct* Struct)
+	{
+		for (const FCrowdyIDOverride& Override : GetDefault<UCrowdySDKDeveloperSettings>()->IDOverrides)
+		{
+			if (Override.Struct.Get() == Struct)
+				return static_cast<uint16>(Override.OverrideID);
+		}
+
+		return FCrowdyTypeIDGenerator::GenerateFromStruct(Struct);
+	}
+}
+
 void FCrowdyStructCustomization::CustomizeDetails(
 	IDetailLayoutBuilder& DetailBuilder)
 {
@@ -24,8 +40,6 @@ void FCrowdyStructCustomization::CustomizeDetails(
 	UUserDefinedStruct* OwningStruct = GetOwningStruct();
 	if (!OwningStruct) return;
 
-	// ── Crowdy SDK category ──────────────────────────────────────────────────
-	//
 	// ECategoryPriority::TypeSpecific keeps us out of the way of the
 	// EditorData's existing categories (Variables, Defaults). Unedited
 	// categories remain visible per IDetailLayoutBuilder semantics, so the
@@ -36,11 +50,10 @@ void FCrowdyStructCustomization::CustomizeDetails(
 			FText::FromString(TEXT("Crowdy SDK")),
 			ECategoryPriority::TypeSpecific);
 
-	// Formula MUST match the runtime CrowdySDK module exactly.
-	// uint16 range: 0 is reserved for "invalid", so add 1 after modulo.
-	const FString Path  = OwningStruct->GetPathName();
-	const uint32  Hash  = FCrc::MemCrc32(*Path, Path.Len() * sizeof(TCHAR));
-	const uint16  TypeID = static_cast<uint16>((Hash % 65535u) + 1u);
+	// Resolved the same way registration resolves it: an entry in the project's ID overrides wins
+	// outright, and only a struct with no entry falls back to the path hash. Calling the runtime
+	// generator for that fallback rather than restating its formula keeps the two in step.
+	const uint16 TypeID = ResolveDisplayedStructTypeID(OwningStruct);
 
 	Category.AddCustomRow(FText::FromString(TEXT("Auto TypeID")))
 	.NameContent()
@@ -52,8 +65,10 @@ void FCrowdyStructCustomization::CustomizeDetails(
 			TEXT("The TypeID assigned to this struct when it is used as a Crowdy\n"
 			     "payload (a CrowdyEvent handler parameter, a reception layer's\n"
 			     "supported event, or an executor's state struct).\n"
-			     "Derived from its asset path — stable unless the asset\n"
-			     "is moved or renamed.")))
+			     "Derived from its asset path, so it is stable unless the asset is\n"
+			     "moved or renamed. An entry for this struct in the ID Collision\n"
+			     "Overrides list (Project Settings, Plugins, Crowdy SDK) replaces\n"
+			     "that derived value, and is what is shown here when present.")))
 	]
 	.ValueContent()
 	[
@@ -64,12 +79,8 @@ void FCrowdyStructCustomization::CustomizeDetails(
 	];
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Owning struct resolution
-//
-// UUserDefinedStructEditorData lives as a sub-object of the struct asset.
+// UUserDefinedStructEditorData lives as a sub-object of the struct asset, so
 // GetOuter() returns the UUserDefinedStruct that owns it.
-// ─────────────────────────────────────────────────────────────────────────────
 UUserDefinedStruct* FCrowdyStructCustomization::GetOwningStruct() const
 {
 	if (!EditedEditorData.IsValid()) return nullptr;

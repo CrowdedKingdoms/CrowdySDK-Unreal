@@ -5,30 +5,11 @@
 
 struct FGraphPanelNodeFactory;
 struct FGraphPanelPinFactory;
+class IAssetTypeActions;
 class UClass;
 
 // Module-wide log category.
 DECLARE_LOG_CATEGORY_EXTERN(LogCrowdyEditor, Log, All)
-
-// Shared FName constants.
-namespace CrowdyMetaKeys
-{
-	// Universal marker for any Crowdy function. On a "Crowdy Replicates" custom event it is
-	// stamped onto the generated UFunction during Blueprint compilation (see the compiler
-	// extension's ApplyReplicatedMeta) so TFieldIterator/the router find it.
-	extern const FName CrowdyEvent;
-
-	// Key-only UUserDefinedStruct metadata tags. These are inclusive flags
-	// and can coexist with each other.
-	extern const FName CrowdyPersistent;
-	extern const FName CrowdySingleton;
-
-	// Stamped onto the generated UClass during Blueprint compilation when the
-	// class's component list contains a UCrowdyEntityComponent. Editor-only fast
-	// path: at runtime UCrowdyAutoRegistry falls back to a construction-script /
-	// CDO component walk, which works in packaged builds.
-	extern const FName CrowdyEntity;
-}
 
 // FCrowdySDKEditorModule is the editor-only module providing:
 //   - Right-click context menu entries on UUserDefinedStruct assets in the Content Browser
@@ -53,14 +34,29 @@ private:
 	void RegisterStructContextMenu();
 	void RegisterFunctionEntryCustomization();
 
+	// Registers FCrowdyEffectCustomization with the Blueprint-agnostic PropertyEditor module so a UCrowdyEffect
+	// asset's Details panel gets the constrained picker over its structured spec. Unregistered in
+	// ShutdownModule alongside the K2Node_CustomEvent layout.
+	void RegisterEffectCustomization();
+
 	// Registers FCrowdyReplicatedVariableCustomization with the Blueprint editor ("Kismet") so a Blueprint
 	// variable's Details panel gets the "Crowdy Replication" mode dropdown (the Replicated mode stamps the
 	// CrowdyState metadata). Unregistered in ShutdownModule via BlueprintVariableCustomizationHandle.
 	void RegisterVariableCustomization();
 
 	void RegisterCompilerExtension();
-	void RegisterBlueprintCompilerExtension();
+
+	// Supplies the Blueprint compile pass (which lives in CrowdyNodes, so it also runs in an uncooked
+	// non-editor process) with the parts of its work only an editor can do: stamping the Game Model
+	// container tags from the persisted marker, and keeping the cooked registry bake and a live PIE
+	// registry in step. Cleared in ShutdownModule so the lambdas never dangle.
+	void InstallBlueprintCompileHooks();
+
 	void RegisterGraphNodeFactory();
+
+	// Registers FCrowdyEffectAssetTypeActions so a Graph-sourced UCrowdyEffect opens in the node-graph asset editor;
+	// non-graph effects still open in the default property editor. Unregistered in ShutdownModule.
+	void RegisterEffectAssetTypeActions();
 
 	// Registers FCrowdyStatePropertyPinFactory so the Property Name pin of Mark Crowdy State Dirty renders a
 	// dropdown of the target actor class's CrowdyManualDirty properties. Unregistered in ShutdownModule.
@@ -80,4 +76,8 @@ private:
 
 	// Visual pin factory for Mark Crowdy State Dirty's Property Name dropdown; unregistered in ShutdownModule.
 	TSharedPtr<FGraphPanelPinFactory> GraphPinFactory;
+
+	// Registered asset type actions for UCrowdyEffect (opens the graph editor for Graph-sourced effects);
+	// unregistered in ShutdownModule.
+	TSharedPtr<IAssetTypeActions> EffectAssetTypeActions;
 };

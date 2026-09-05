@@ -23,14 +23,18 @@ public class CrowdyStudio : ModuleRules
 			"ToolMenus",
 			"Projects",
 			"DeveloperSettings",
-			"HTTP",
+			"AssetRegistry",
+			"PropertyEditor",
 			"Json",
 			"JsonUtilities",
 			"WebBrowser",
 			"CrowdyNet",
 			"CrowdyReplication",
 			"CrowdyServices",
-			"CKSharedTypes"
+			"CKSharedTypes",
+			// Private everywhere: a public header may name a bridge type only as a forward declaration,
+			// and never a crowdy:: type at all.
+			"CrowdyCppBridge"
 		});
 	}
 }

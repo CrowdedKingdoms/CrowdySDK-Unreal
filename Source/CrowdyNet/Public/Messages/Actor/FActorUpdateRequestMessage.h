@@ -2,6 +2,8 @@
 #include "CrowdyNetLog.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
+#include "Messages/Actor/FActorUpdateBody.h"
+#include "Serialization/CrowdyFrame.h"
 #include "Shared/Types/Structures/Actors/FActorState.h"
 #include "Utils/SerializationFunctionLibrary.h"
 
@@ -22,11 +24,11 @@
  * Use this class in conjunction with systems that require actor state synchronization
  * or have mechanisms that handle update messages to apply changes to actors.
  */
-struct FActorUpdateRequestMessage : ICrowdyMessage
+struct FActorUpdateRequestMessage : FActorUpdateBody
 {
-	int32 StateSize;
-	TArray<uint8> StateBytes;
-	
+	/** The request owns the octets it sends, so the shared body's buffer is public on this side. */
+	using FActorUpdateBody::StateBytes;
+
 	/**
 	 * Retrieves the type of the message.
 	 *
@@ -50,57 +52,19 @@ struct FActorUpdateRequestMessage : ICrowdyMessage
 		return "Actor Update Request Message";
 	}
 
-	/**
-	 * Serializes the FActorUpdateRequestMessage into a byte array.
-	 *
-	 * This method converts the internal state of the FActorUpdateRequestMessage
-	 * object into a binary format suitable for transmission or storage. The serialization
-	 * process includes the message type, map ID, chunk coordinates, actor UUID, and actor state.
-	 *
-	 * @return A TArray of uint8 containing the serialized representation of the message.
-	 */
+	/** The spatial header followed by the actor update body. */
 	virtual TArray<uint8> Serialize() const override
 	{
-		TArray<uint8> Data = SerializeMetadata();
-		
-		Data.Append(USerializationFunctionLibrary::SerializeValue(StateSize));
-		Data.Append(StateBytes);
-
+		TArray<uint8> Data = SerializeMetadata(BodySize());
+		AppendBody(Data);
 		return Data;
 	}
 
-	/**
-	 * Deserializes the provided binary data into the object's properties.
-	 * This method reads data from the given byte array and updates the internal state
-	 * of the object. It is intended for use in editor mode only and logs a warning if
-	 * called during runtime.
-	 *
-	 * @param Data The binary array containing the serialized data to be deserialized.
-	 */
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	/** Send-only: an actor update arrives as FActorUpdateNotificationMessage, not as this. */
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
-		UE_LOG(LogCrowdyNet, Warning, TEXT("FActorUpdateRequestMessage::Deserialize called, but should not be used."));
+		UE_LOG(LogCrowdyNet, Warning, TEXT("FActorUpdateRequestMessage::DecodePayload called, but should not be used."));
 		return false;
 	}
 
-	/**
-	 * Calculates and retrieves the total size of the message in bytes.
-	 *
-	 * The size is computed as the sum of the following components:
-	 * - The size of the message type indicator (1 byte).
-	 * - The size of four 64-bit integers (MapID and Chunk coordinates).
-	 * - The size of the UUID for the actor (32 bytes).
-	 * - The size of the actor state (FActorState structure).
-	 *
-	 * This method is primarily used to determine the exact amount of memory
-	 * required for serialization or transmission of the message.
-	 *
-	 * @return The total size of the message in bytes as a 32-bit unsigned integer.
-	 */
-	virtual uint32 GetMessageSize() const override
-	{
-		// Message Type + 4 int64 + UUID + Actor State
-		return 1 + sizeof(int64) * 4 + 32 + sizeof(FActorState);
-	}
-	
 };

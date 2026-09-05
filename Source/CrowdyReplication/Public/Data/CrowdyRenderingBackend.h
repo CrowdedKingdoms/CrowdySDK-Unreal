@@ -22,11 +22,30 @@ class CROWDYREPLICATION_API UCrowdyRenderingBackend : public UObject
 
 public:
 
-	/** Called once after the backend object is created. Acquire subsystems and read config here. */
-	virtual void InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config) {}
+	/**
+	 * Called once after the backend object is created. Acquire subsystems and read config here.
+	 *
+	 * Return false when this backend cannot draw anything with what it was given, naming the reason and
+	 * the remedy in the log first. The caller refuses a backend that answers false rather than installing
+	 * it, so a misconfigured map says so instead of running with every entity tracked and none drawn.
+	 */
+	virtual bool InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config) { return true; }
 
 	/** Called on subsystem shutdown. Release any held references here. */
 	virtual void DeinitializeBackend() {}
+
+	/**
+	 * Whether this backend draws a remote entity as one of a crowd rather than as an actor of its own class.
+	 *
+	 * Answer true from a backend that represents entities without spawning an actor of the entity's class,
+	 * because there is then no actor for that class's Blueprint bodies to run on and an observer runs them on
+	 * a shared stand-in instead. Authoring surfaces that only mean something on that representation are shown
+	 * exactly where a map profile selects a backend answering true, so a project drawing every map with actors
+	 * is not offered options it cannot act on.
+	 *
+	 * Read off the class default object, from the profile's Backend Class, without creating a backend.
+	 */
+	virtual bool DrawsEntitiesAsCrowdRows() const { return false; }
 
 	/**
 	 * A new remote instance has become visible. Acquire whatever rendering resource

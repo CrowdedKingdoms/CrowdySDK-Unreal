@@ -15,12 +15,13 @@
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "Replication/Subsystems/CrowdyStateReplicator.h"
+#include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Utils/UCrowdyClassRegistry.h"
 #include "UObject/UnrealType.h"
 
-// Subsystem CrowdyState over the channel (Subsystem Replication Phase 1). These tests exercise a non-actor
+// Subsystem CrowdyState over the channel. These tests exercise a non-actor
 // (subsystem) participant end to end: deterministic identity, host-gated enroll -> track (non-spatial,
 // auto-diffing), channel-vs-spatial dispatch routing, the FCrowdyStateDelta channel codec, apply + OnRep onto
 // a worldless plain UObject, host promotion, and the ForwardChannelRpc discriminator.
@@ -28,77 +29,6 @@ namespace
 {
 	constexpr EAutomationTestFlags CrowdyStateSubsystemTestFlags =
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
-
-	// UCrowdyAutoRegistry is a UGameInstanceSubsystem (ClassWithin=UGameInstance); a transient-package NewObject
-	// trips a ClassWithin ensure, so outer it to a bare GameInstance (the established Phase 1 idiom).
-	UCrowdyAutoRegistry* MakeStateRegistry()
-	{
-		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-		return NewObject<UCrowdyAutoRegistry>(GameInstance);
-	}
-
-	// The replicator is a UWorldSubsystem; a plain transient-package NewObject is fine on the hook path
-	// (Initialize/Tick are never driven, so no world/GameInstance is touched).
-	UCrowdyStateReplicator* MakeReplicator(UCrowdyAutoRegistry* Registry, const FGuid& LocalPlayer)
-	{
-		UCrowdyStateReplicator* Rep = NewObject<UCrowdyStateReplicator>(GetTransientPackage());
-		Rep->SetRegistryForTest(Registry);
-		Rep->SetLocalPlayerIDForTest(LocalPlayer);
-		return Rep;
-	}
-
-	// A bare entity subsystem (UWorldSubsystem, no ClassWithin) with a local player id set, so
-	// RegisterParticipant / FindRecord / GetLocalPlayerID resolve headlessly.
-	UCrowdyEntitySubsystem* MakeEntitySubsystem(const FGuid& LocalPlayer)
-	{
-		UCrowdyEntitySubsystem* ES = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
-		ES->SetLocalPlayerID(LocalPlayer);
-		return ES;
-	}
-
-	UCrowdyEventRouter* MakeRouter(UCrowdyAutoRegistry* Registry, UCrowdyEntitySubsystem* Entities)
-	{
-		UCrowdyEventRouter* Router = NewObject<UCrowdyEventRouter>(GetTransientPackage());
-		Router->SetAutoRegistryForTest(Registry);
-		Router->SetEntitySubsystemForTest(Entities);
-		return Router;
-	}
-
-	int32 IndexOfPropertyName(const FCrowdyRepLayout& Layout, const TCHAR* Name)
-	{
-		const FName Wanted(Name);
-		for (int32 Index = 0; Index < Layout.Properties.Num(); ++Index)
-		{
-			const FProperty* Prop = Layout.Properties[Index].Property;
-			if (Prop && Prop->GetFName() == Wanted)
-			{
-				return Index;
-			}
-		}
-		return INDEX_NONE;
-	}
-
-	FCrowdyInboundEvent MakeInboundStateEvent(const FCrowdyStateDelta& Delta)
-	{
-		FCrowdyInboundEvent Event;
-		Event.Payload = FInstancedStruct::Make(Delta);
-		Event.bTargetedDelivery = false;
-		Event.SenderID = Delta.SenderID;
-		Event.Target = ECrowdyTarget::Everyone;
-		return Event;
-	}
-
-	// Registers any UObject as a resolvable RemoteProxy participant so FindParticipant(EntityId) returns it
-	// (its OwnerID is a fresh non-local guid, so IsLocallyOwned is false and the owned-entity gate is bypassed).
-	void RegisterProxyParticipant(UCrowdyEntitySubsystem* Entities, const FGuid& EntityId, UObject* Participant)
-	{
-		FCrowdyEntityRecord Rec;
-		Rec.NetID = EntityId;
-		Rec.OwnerID = FGuid::NewGuid();
-		Rec.Role = ECrowdyRole::RemoteProxy;
-		Rec.Participant = Participant;
-		Entities->RegisterEntity(Rec);
-	}
 }
 
 // A host participant's NetID is derived from its class path: two mints of the same class produce the SAME id,
@@ -118,8 +48,14 @@ bool FCrowdyStateSubsystemDeterministicIdentityTest::RunTest(const FString& Para
 	UCrowdyStateSubsystemTestTargetB* SubB = NewObject<UCrowdyStateSubsystemTestTargetB>();
 
 	const FGuid IdA1 = ES->RegisterParticipant(SubA1, ECrowdyOwnership::Host);
-	const FGuid IdA2 = ES->RegisterParticipant(SubA2, ECrowdyOwnership::Host);
 	const FGuid IdB = ES->RegisterParticipant(SubB, ECrowdyOwnership::Host);
+
+	// The second instance of class A is enrolled only after the first gives the id up. A host id is a class-path
+	// singleton, so two LIVE instances of one host class both claim it, and the registry refuses the second and
+	// answers with an invalid id rather than one that resolves to somebody else's participant. Sequencing them
+	// keeps this test measuring what it is named for, the derivation, rather than the registration.
+	ES->UnregisterParticipant(SubA1);
+	const FGuid IdA2 = ES->RegisterParticipant(SubA2, ECrowdyOwnership::Host);
 
 	TestTrue(TEXT("class A mint is valid"), IdA1.IsValid());
 	TestTrue(TEXT("class B mint is valid"), IdB.IsValid());
@@ -357,6 +293,19 @@ bool FCrowdyStateChannelStateCodecRoundTripTest::RunTest(const FString& Paramete
 			FCrowdyStateDelta Out;
 			TestFalse(TEXT("a forged Blob length drops without OOM"),
 				FCrowdyStateCodec::DecodeChannelStateDelta(EmptyPayload, Out));
+			// The refusal alone does not say the length was bounded BEFORE the array was sized: a decoder
+			// that sized first and failed on the short read afterwards refuses too, having already asked
+			// for the forged length. Out.Blob's size is what tells the two apart.
+			TestEqual(TEXT("the forged length never reached an allocation"), Out.Blob.Num(), 0);
+
+			// The same prefix as a NEGATIVE length, which is not merely oversized: it is a size no array can
+			// be given at all, so it has to be refused before the array is sized rather than clamped after.
+			TArray<uint8> NegativePayload = EmptyPayload;
+			NegativePayload[N - 1] = 0xFF;
+			FCrowdyStateDelta NegativeOut;
+			TestFalse(TEXT("a negative Blob length drops"),
+				FCrowdyStateCodec::DecodeChannelStateDelta(NegativePayload, NegativeOut));
+			TestEqual(TEXT("a negative length never reached an allocation"), NegativeOut.Blob.Num(), 0);
 		}
 	}
 
@@ -430,7 +379,7 @@ bool FCrowdyStateSubsystemApplyFiresOnRepTest::RunTest(const FString& Parameters
 // singleton via RegisterParticipant(Host) -> Role=HostOwned, OwnerID=FGuid() (unlike the RemoteProxy fixture used
 // above, whose fresh non-local owner bypasses both authority gates). So the receive path runs the HostOwned
 // else-if gate (CrowdyEventRouter DispatchStateDelta): a non-HostSourced delta MUST drop (values unchanged, no
-// OnRep), a HostSourced host correction MUST apply and fire OnRep. This is the core Phase 1 authority behavior a
+// OnRep), a HostSourced host correction MUST apply and fire OnRep. This is the core authority behavior a
 // RemoteProxy target cannot exercise.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateSubsystemHostOwnedApplyRespectsHostSourcedTest,
 	"CrowdySDK.State.SubsystemHostOwnedApplyRespectsHostSourced", CrowdyStateSubsystemTestFlags)

@@ -5,7 +5,7 @@
 
 /**
  * Actor-to-actor variants of the game-event wire messages. They are byte-for-byte identical
- * to FGameEventRequest / FGameEventNotification — same metadata, payload, and tail — and only
+ * to FGameEventRequest / FGameEventNotification, with the same metadata, payload and tail, and only
  * change the opcode to SINGLE_ACTOR_MESSAGE. The server reads that opcode and delivers the
  * message to the single client that owns the destination actor (the metadata UUID) rather than
  * broadcasting it spatially. The sender sets UUID = the target actor and the chunk to the

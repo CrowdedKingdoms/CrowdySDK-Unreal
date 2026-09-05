@@ -1,13 +1,7 @@
 #include "Subsystem/AsyncActions/CrowdyAvatarsWriteActions.h"
 #include "CrowdyServicesLog.h"
+#include "Subsystem/AsyncActions/CrowdyServicesActionSupport.h"
 #include "Subsystem/CrowdyAvatars.h"
-
-static UCrowdyAvatars* GetAvatarsSubsystem(const TWeakObjectPtr<UObject>& Ctx)
-{
-	if (!Ctx.IsValid()) return nullptr;
-	UGameInstance* GI = Ctx->GetWorld() ? Ctx->GetWorld()->GetGameInstance() : nullptr;
-	return GI ? GI->GetSubsystem<UCrowdyAvatars>() : nullptr;
-}
 
 UCrowdyAvatars_CreateAvatar* UCrowdyAvatars_CreateAvatar::CreateAvatar(UObject* WorldContextObject, const FString& Name)
 {

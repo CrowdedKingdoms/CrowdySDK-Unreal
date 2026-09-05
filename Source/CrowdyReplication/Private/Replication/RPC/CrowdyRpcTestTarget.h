@@ -154,7 +154,7 @@ public:
 };
 
 /**
- * Subsystem RPC fixture (Subsystem Replication Phase 2): a plain UObject (NOT an actor), standing in for a
+ * Subsystem RPC fixture: a plain UObject (NOT an actor), standing in for a
  * host-owned subsystem participant that sends and receives RPC CrowdyEvents over the reliable channel. Each
  * receiver records the value and bumps a call count so a test can assert it ran; a plain UObject fires
  * ProcessEvent without a world, so the channel apply tests need no editor world.

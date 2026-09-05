@@ -1,25 +1,20 @@
-﻿#include "Subsystem/CrowdyHostSubsystem.h"
+#include "Subsystem/CrowdyHostSubsystem.h"
+#include "CrowdyServiceApiSupport.h"
+#include "CrowdyCppClient.h"
 #include "CrowdyServicesLog.h"
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/HelperFunctions.h"
-#include "Network/GraphQL/CrowdyQuerySubsystem.h"
-#include "Core/GraphQL/Enums/EGraphQLQuery.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Engine/GameInstance.h"
 #include "Dom/JsonObject.h"
 
-namespace HostQueries
-{
-	// Boolean "is the authenticated caller the host". App-scoped game token (descriptor).
-	static const TCHAR* AmIGameHost =
-		TEXT("query AmIGameHost($appId: BigInt!) { amIGameHost(appId: $appId) }");
+using namespace CrowdyServiceApi;
 
-	// Resolve an actor's server-side owner userId by its 32-char wire uuid. The uuid is
-	// echoed back so the answer can be correlated to the request that asked for it.
-	static const TCHAR* ActorOwner =
-		TEXT("query ActorOwner($uuid: String!) { actor(uuid: $uuid) { uuid userId } }");
+namespace
+{
+	constexpr const TCHAR* HostLogName = TEXT("CrowdyHostSubsystem");
 }
 
 void UCrowdyHostSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -56,6 +51,13 @@ void UCrowdyHostSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UCrowdyHostSubsystem::Deinitialize()
 {
+	// The game session outlives every world, so a binding left behind here accumulates one dead entry per level
+	// travel for the rest of the session.
+	if (IsValid(GameSession))
+	{
+		GameSession->OnOwnerUUIDUpdated.RemoveDynamic(this, &UCrowdyHostSubsystem::OnOwnerPlayerIDSet);
+	}
+
 	Super::Deinitialize();
 }
 
@@ -90,15 +92,21 @@ void UCrowdyHostSubsystem::SetHostUserID(const int64 InHostUserID)
 
 	if (OldHostUserID == InHostUserID) return;
 
-	AsyncTask(ENamedThreads::GameThread, [this, InHostUserID, OldHostUserID]()
+	// This is callable from any thread and the hop to the game thread costs at least a frame, which is long enough
+	// for a level travel to destroy this world-scoped subsystem, so it is re-resolved rather than captured.
+	TWeakObjectPtr<UCrowdyHostSubsystem> WeakThis(this);
+	AsyncTask(ENamedThreads::GameThread, [WeakThis, InHostUserID, OldHostUserID]()
 	{
+		UCrowdyHostSubsystem* Self = WeakThis.Get();
+		if (!IsValid(Self)) return;
+
 		const FGuid PreviousHostID = UHelperFunctions::GetDeterministicID(OldHostUserID);
 		const FGuid HostID = UHelperFunctions::GetDeterministicID(InHostUserID);
 
-		if (IsValid(GameSession))
-			GameSession->SetHostID(HostID);
+		if (IsValid(Self->GameSession))
+			Self->GameSession->SetHostID(HostID);
 
-		OnHostElected.Broadcast(HostID, PreviousHostID);
+		Self->OnHostElected.Broadcast(HostID, PreviousHostID);
 	});
 }
 
@@ -117,15 +125,6 @@ bool UCrowdyHostSubsystem::LoadConfig() const
 {
 	const UCrowdyMapProfile* Profile = UCrowdySDKDeveloperSettings::ResolveProfileForWorld(GetWorld());
 	return Profile && Profile->bEnableNetworking;
-}
-
-// ─── Server-validated host check ──────────────────────────────────────────────
-
-UCrowdyQuerySubsystem* UCrowdyHostSubsystem::ResolveQuerySubsystem() const
-{
-	const UWorld* World = GetWorld();
-	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
-	return GameInstance ? GameInstance->GetSubsystem<UCrowdyQuerySubsystem>() : nullptr;
 }
 
 void UCrowdyHostSubsystem::CheckEntityIsHost(const AActor* Entity, TFunction<void(bool bSuccess, bool bIsHost)> Callback)
@@ -151,7 +150,7 @@ void UCrowdyHostSubsystem::CheckEntityIsHost(const AActor* Entity, TFunction<voi
 	}
 
 	// A player avatar's NetID equals its owner's deterministic user GUID, so an entity whose
-	// NetID matches the local player's id is our own avatar — the one case amIGameHost answers
+	// NetID matches the local player's id is our own avatar: the one case amIGameHost answers
 	// authoritatively for this client.
 	const FGuid LocalPlayerNetID = EntitySubsystem->GetLocalPlayerID();
 	if (EntityNetID == LocalPlayerNetID)
@@ -174,76 +173,59 @@ void UCrowdyHostSubsystem::CheckEntityIsHost(const AActor* Entity, TFunction<voi
 			return;
 		}
 
+		// A host id of zero is "nobody has been elected yet", and a subsystem that is gone cannot answer at all.
+		// Neither is the same as "this actor is not the host", and the caller has a separate branch for the
+		// undetermined case precisely so it can wait or retry rather than act on a false negative.
 		UCrowdyHostSubsystem* Self = WeakThis.Get();
 		const int64 HostUid = Self ? Self->GetHostUserID() : 0;
-		Callback(true, HostUid != 0 && OwnerUserId == HostUid);
+		Callback(HostUid != 0, OwnerUserId == HostUid);
 	});
 }
 
 void UCrowdyHostSubsystem::RequestAmIGameHost(TFunction<void(bool bSuccess, bool bAmHost)> Callback)
 {
-	UCrowdyQuerySubsystem* QuerySubsystem = ResolveQuerySubsystem();
-	if (!IsValid(QuerySubsystem) || !IsValid(GameSession))
+	const UWorld* World = GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+
+	FCrowdyCppClient* Client = ResolveApiClient(GameInstance, HostLogName);
+	if (!Client || !IsValid(GameSession))
 	{
 		Callback(false, false);
 		return;
 	}
 
-	PendingAmIHostCallbacks.Add(MoveTemp(Callback));
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(GameSession->GetAppID()));
 
-	const TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GameSession->GetAppID()));
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::AmIGameHost, HostQueries::AmIGameHost, Vars);
+	Client->RunOp(ECrowdyCppApiDomain::Host, TEXT("AmIGameHost"), Variables,
+		[Callback = MoveTemp(Callback)](FCrowdyCppJsonResult Result)
+		{
+			bool bAmHost = false;
+			const bool bSuccess = ReadAmIGameHost(Result, bAmHost);
+			Callback(bSuccess, bAmHost);
+		});
 }
 
 void UCrowdyHostSubsystem::RequestActorOwner(const FString& Uuid, TFunction<void(bool bSuccess, int64 UserId)> Callback)
 {
-	UCrowdyQuerySubsystem* QuerySubsystem = ResolveQuerySubsystem();
-	if (!IsValid(QuerySubsystem))
+	const UWorld* World = GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+
+	FCrowdyCppClient* Client = ResolveApiClient(GameInstance, HostLogName);
+	if (!Client)
 	{
 		Callback(false, 0);
 		return;
 	}
 
-	PendingActorOwnerCallbacks.Add({ Uuid, MoveTemp(Callback) });
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("uuid"), Uuid);
 
-	const TSharedPtr<FJsonObject> Vars = MakeShared<FJsonObject>();
-	Vars->SetStringField(TEXT("uuid"), Uuid);
-	QuerySubsystem->ExecuteQueryWithBodyAndJsonVars(EGraphQLQuery::ActorOwner, HostQueries::ActorOwner, Vars);
-}
-
-void UCrowdyHostSubsystem::HandleAmIGameHostResponse(bool bSuccess, bool bAmHost)
-{
-	if (PendingAmIHostCallbacks.Num() == 0) return;
-
-	TFunction<void(bool, bool)> Callback = MoveTemp(PendingAmIHostCallbacks[0]);
-	PendingAmIHostCallbacks.RemoveAt(0, 1, EAllowShrinking::No);
-	if (Callback) Callback(bSuccess, bAmHost);
-}
-
-void UCrowdyHostSubsystem::HandleActorOwnerResponse(bool bSuccess, const FString& Uuid, int64 UserId)
-{
-	if (PendingActorOwnerCallbacks.Num() == 0) return;
-
-	int32 Index;
-	if (bSuccess)
-	{
-		// A valid actor(uuid) response always echoes the uuid we asked for, so correlate by
-		// it exactly. An unmatched success (e.g. a duplicate/late response whose request was
-		// already resolved) must be dropped, never applied to a different actor's callback.
-		Index = Uuid.IsEmpty() ? INDEX_NONE : PendingActorOwnerCallbacks.IndexOfByPredicate(
-			[&Uuid](const FPendingActorOwnerCallback& Pending){ return Pending.Uuid == Uuid; });
-		if (Index == INDEX_NONE)
-			return;
-	}
-	else
-	{
-		// A failed response carries no uuid (it was marked invalid before parse), so there is
-		// nothing to correlate on — resolve the oldest pending request as the failure.
-		Index = 0;
-	}
-
-	TFunction<void(bool, int64)> Callback = MoveTemp(PendingActorOwnerCallbacks[Index].Callback);
-	PendingActorOwnerCallbacks.RemoveAt(Index, 1, EAllowShrinking::No);
-	if (Callback) Callback(bSuccess, UserId);
+	Client->RunOp(ECrowdyCppApiDomain::Actors, TEXT("Actor"), Variables,
+		[Uuid, Callback = MoveTemp(Callback)](FCrowdyCppJsonResult Result)
+		{
+			int64 OwnerUserId = 0;
+			const bool bSuccess = ReadActorOwner(Result, Uuid, OwnerUserId);
+			Callback(bSuccess, OwnerUserId);
+		});
 }

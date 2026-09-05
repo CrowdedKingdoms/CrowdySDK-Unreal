@@ -3,26 +3,29 @@
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Messages/GameObjects/FGameEventBody.h"
+#include "Serialization/CrowdyActorId.h"
+#include "Serialization/CrowdyFrame.h"
 #include "Shared/Types/Structures/Events/FBaseEventState.h"
 #include "Utils/SerializationFunctionLibrary.h"
 
 /**
  * Wire message carrying a game event payload (an FInstancedStruct) from the relay
- * server to clients; receive-only — serialization is handled elsewhere.
+ * server to clients; receive-only, since serialization is handled elsewhere.
  */
-struct FGameEventNotification : ICrowdyMessage
+struct FGameEventNotification : FGameEventBody
 {
-	uint16 EventType;
-
-	int32 StateSize;
-	TArray<uint8> StateBytes;
 	FInstancedStruct State;
 
-	// Envelope appended after the payload by FGameEventRequest. Messages from
-	// clients running pre-envelope code simply lack these bytes, so the
-	// defaults preserve legacy broadcast behavior.
-	ECrowdyTarget Target = ECrowdyTarget::Everyone;
-	FGuid TargetID;
+	/**
+	 * The payload octets exactly as they arrived, borrowed from the frame rather than copied out of it.
+	 *
+	 * Valid only for the duration of the delivery call this message is passed to. Read it, or decode what
+	 * you need out of it, before returning; a handler that hands work to a later frame must capture the
+	 * DECODED value, never this view or the message that carries it. The decoded State above is owned and
+	 * has no such limit.
+	 */
+	TConstArrayView<uint8> StateView;
 
 	virtual ECrowdyMessageType GetType() const override
 	{
@@ -34,25 +37,44 @@ struct FGameEventNotification : ICrowdyMessage
 		return "Game Event Notification";
 	}
 
-	// Receive-only message — nothing to serialize.
+	// The event type number is the routing key for every carrier of this layout: the client event,
+	// the server event and the single-actor send all inherit this and need no special case.
+	virtual FCrowdyPayloadKey GetPayloadKey() const override
+	{
+		return FCrowdyPayloadKey::Event(EventType);
+	}
+
+	virtual const FInstancedStruct* GetPayload() const override
+	{
+		return State.IsValid() ? &State : nullptr;
+	}
+
+	virtual TConstArrayView<uint8> GetPayloadBytes() const override
+	{
+		return StateView;
+	}
+
+	// Receive-only message: nothing to serialize.
 	virtual TArray<uint8> Serialize() const override
 	{
 		return TArray<uint8>();
 	}
 
-	virtual bool Deserialize(const TArray<uint8>& Data) override
+	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
+		const TConstArrayView<uint8> Data = Frame.Body;
 		int32 Offset = 0;
 
-		if (!DeserializeMetadata(Data, Offset))
+		ApplyEnvelope(Frame);
+		if (!ApplyEnvelopeActorId(Frame))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FGameEventNotification::Deserialize - Metadata deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FGameEventNotification::DecodePayload - the frame carries no actor id"));
 			return false;
 		}
 
 		if (!USerializationFunctionLibrary::DeserializeValue(Data, EventType, Offset))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FGameEventNotification::Deserialize - EventType deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FGameEventNotification::DecodePayload - EventType deserialization failed"));
 			return false;
 		}
 
@@ -60,7 +82,7 @@ struct FGameEventNotification : ICrowdyMessage
 
 		if (!USerializationFunctionLibrary::DeserializeValue(Data, StateSize, Offset))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FGameEventNotification::Deserialize - StateSize deserialization failed"));
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FGameEventNotification::DecodePayload - StateSize deserialization failed"));
 			return false;
 		}
 		Offset += sizeof(StateSize);
@@ -70,24 +92,24 @@ struct FGameEventNotification : ICrowdyMessage
 
 		if (StateSize < 0 || StateSize > MAX_STATE_SIZE || Offset + StateSize > Data.Num())
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FGameEventNotification::Deserialize - Invalid StateSize %d or Data overflow"), StateSize);
-			StateBytes.Empty();
+			UE_LOG(LogCrowdyNet, Warning, TEXT("FGameEventNotification::DecodePayload - Invalid StateSize %d or Data overflow"), StateSize);
+			StateView = TConstArrayView<uint8>();
 			return false; // safely skip deserialization
 		}
 
+		// The bound above is what keeps this view inside the frame, so it is load-bearing rather than
+		// defensive: nothing copies the octets out, and every reader addresses them through this.
+		StateView = TConstArrayView<uint8>(Data.GetData() + Offset, StateSize);
 
-		StateBytes.SetNumUninitialized(StateSize);
-		FMemory::Memcpy(StateBytes.GetData(), Data.GetData() + Offset, StateSize);
-
-		if (!USerializationFunctionLibrary::DeserializeEventState(StateBytes, State))
+		if (!USerializationFunctionLibrary::DeserializeEventState(StateView, State))
 			State.Reset();
 
 		Offset += StateSize;
 
-		// Target byte + 32-hex-digit TargetID sit between the payload and the
-		// relay-appended tail. Length-checked so pre-envelope senders still parse.
-		constexpr int32 EnvelopeSize = sizeof(uint8) + 32;
-		if (Data.Num() - TailSize - Offset >= EnvelopeSize)
+		// Target byte + a 32 octet target id sit after the payload, at the end of this message's own
+		// bytes. Length-checked so senders running pre-envelope code still parse.
+		constexpr int32 TargetBlockSize = sizeof(uint8) + FCrowdyActorId::NumOctets;
+		if (Data.Num() - Offset >= TargetBlockSize)
 		{
 			const uint8 RawTarget = Data[Offset];
 			Target = RawTarget <= static_cast<uint8>(ECrowdyTarget::AllExceptSender)
@@ -95,19 +117,15 @@ struct FGameEventNotification : ICrowdyMessage
 				: ECrowdyTarget::Everyone;
 			Offset += sizeof(uint8);
 
-			TargetID = USerializationFunctionLibrary::ToGuid(
-				USerializationFunctionLibrary::DeserializeString(Data, Offset, 32));
+			// Read as octets rather than as text. Reading the same 32 octets into a string and converting
+			// back re-encodes anything outside ASCII to a different length, so the two paths would derive
+			// two different keys from one set of bytes.
+			const FCrowdyActorId TargetOctets = FCrowdyActorId::FromOctets(
+				TConstArrayView<uint8>(Data.GetData() + Offset, FCrowdyActorId::NumOctets));
+			TargetID = USerializationFunctionLibrary::ToGuid(TargetOctets);
 		}
 
 		return true;
 	}
-
-	// Metadata (AppID + chunk coords + 32-byte UUID) + EventType + state payload
-	// + envelope (Target byte + 32-byte TargetID).
-	virtual uint32 GetMessageSize() const override
-	{
-		return sizeof(AppID) + sizeof(int64)*3 + 32 + sizeof(EventType) + StateSize + sizeof(uint8) + 32;
-	}
-
 
 };

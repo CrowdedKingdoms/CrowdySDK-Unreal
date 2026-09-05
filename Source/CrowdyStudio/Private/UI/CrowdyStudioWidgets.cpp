@@ -69,7 +69,7 @@ TSharedRef<SWidget> CrowdyStudioWidgets::BrandMark(int32 FontSize, bool bWithCro
 			.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::Gold()))
 		];
 
-	// Crown emblem dropped per brand guidance — simple two-tone text wordmark only.
+	// Crown emblem dropped per brand guidance: simple two-tone text wordmark only.
 	(void)bWithCrown;
 	return Words;
 }
@@ -237,6 +237,100 @@ TSharedRef<SWidget> CrowdyStudioWidgets::SegmentedEnum(const TArray<FString>& Va
 		[
 			Row
 		];
+}
+
+TSharedRef<SWidget> CrowdyStudioWidgets::TabStrip(const TArray<FString>& Values, const TArray<FText>& Labels,
+	TAttribute<FString> Current, TFunction<void(const FString&)> OnSelected)
+{
+	TArray<FCrowdyTabItem> Tabs;
+	Tabs.Reserve(Values.Num());
+	for (int32 Index = 0; Index < Values.Num(); ++Index)
+	{
+		FCrowdyTabItem& Item = Tabs.AddDefaulted_GetRef();
+		Item.Value = Values[Index];
+		Item.Label = Labels.IsValidIndex(Index) ? Labels[Index] : FText::FromString(Values[Index]);
+	}
+	return TabStrip(Tabs, MoveTemp(Current), MoveTemp(OnSelected));
+}
+
+TSharedRef<SWidget> CrowdyStudioWidgets::TabStrip(const TArray<FCrowdyTabItem>& Tabs,
+	TAttribute<FString> Current, TFunction<void(const FString&)> OnSelected)
+{
+	TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+
+	for (const FCrowdyTabItem& Tab : Tabs)
+	{
+		const FString Value = Tab.Value;
+		const TAttribute<bool> Enabled = Tab.IsEnabled;
+
+		// An unset TAttribute<bool> answers false, so "unset" is resolved to true rather than read directly.
+		auto IsAvailable = [Enabled]() { return !Enabled.IsSet() || Enabled.Get(); };
+
+		Row->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 18.0f, 0.0f)
+		[
+			// The tooltip hangs on the wrapper because a disabled SButton is not a dependable tooltip host.
+			SNew(SBox)
+			.ToolTipText(Tab.ToolTip)
+			[
+				SNew(SButton)
+				.ButtonStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Button.Nav")
+				.ContentPadding(FMargin(2.0f, 6.0f, 2.0f, 0.0f))
+				.IsEnabled_Lambda(IsAvailable)
+				.OnClicked_Lambda([OnSelected, Value]()
+				{
+					if (OnSelected)
+					{
+						OnSelected(Value);
+					}
+					return FReply::Handled();
+				})
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text(Tab.Label)
+						.Font_Lambda([Current, Value, IsAvailable]()
+						{
+							// An unavailable tab never takes the open weight, even if something left it selected.
+							const bool bOpen = IsAvailable() && Current.Get() == Value;
+							return FCoreStyle::GetDefaultFontStyle(bOpen ? "Bold" : "Regular", 10);
+						})
+						.ColorAndOpacity_Lambda([Current, Value, IsAvailable]()
+						{
+							// Three tiers: primary for the open tab, secondary for a closed one, subtle for one
+							// that cannot be opened.
+							if (!IsAvailable())
+							{
+								return FSlateColor(FCrowdyStudioStyle::TextSubtle());
+							}
+							return FSlateColor(Current.Get() == Value
+								? FCrowdyStudioStyle::TextPrimary() : FCrowdyStudioStyle::TextSecondary());
+						})
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+					[
+						// The open tab's underline. Crowdy.Pill is a white brush meant to be tinted, so the
+						// tint alone decides whether the underline is drawn or invisible; the slot keeps its
+						// height either way and the labels never shift as the selection moves.
+						SNew(SBox)
+						.HeightOverride(2.0f)
+						[
+							SNew(SImage)
+							.Image(FCrowdyStudioStyle::Get().GetBrush("Crowdy.Pill"))
+							.ColorAndOpacity_Lambda([Current, Value, IsAvailable]()
+							{
+								const bool bOpen = IsAvailable() && Current.Get() == Value;
+								return FSlateColor(bOpen ? FCrowdyStudioStyle::TextPrimary() : FLinearColor::Transparent);
+							})
+						]
+					]
+				]
+			]
+		];
+	}
+
+	return Row;
 }
 
 TSharedRef<SWidget> CrowdyStudioWidgets::EmptyState(const TCHAR* IconName, const FText& Message)

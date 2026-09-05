@@ -18,6 +18,7 @@
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "Replication/Subsystems/CrowdyStateReplicator.h"
+#include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Utils/UCrowdyClassRegistry.h"
@@ -27,51 +28,6 @@ namespace
 {
 	constexpr EAutomationTestFlags CrowdyStateApplyTestFlags =
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
-
-	// UCrowdyAutoRegistry is a UGameInstanceSubsystem (ClassWithin=UGameInstance); a transient-package
-	// NewObject trips a ClassWithin ensure, so outer it to a bare GameInstance (Phase 1 idiom).
-	UCrowdyAutoRegistry* MakeStateRegistry()
-	{
-		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-		return NewObject<UCrowdyAutoRegistry>(GameInstance);
-	}
-
-	// The router and entity subsystem are UWorldSubsystems (no ClassWithin); a plain transient-package
-	// NewObject is fine because the tests never drive Initialize/Tick (which would need a world), instead
-	// injecting collaborators via the test seams and driving DispatchEvent / RetryDeferredForTest directly.
-	UCrowdyEventRouter* MakeRouter(UCrowdyAutoRegistry* Registry, UCrowdyEntitySubsystem* Entities)
-	{
-		UCrowdyEventRouter* Router = NewObject<UCrowdyEventRouter>(GetTransientPackage());
-		Router->SetAutoRegistryForTest(Registry);
-		Router->SetEntitySubsystemForTest(Entities);
-		return Router;
-	}
-
-	// Layout index of the property with the given name, or INDEX_NONE.
-	int32 IndexOfPropertyName(const FCrowdyRepLayout& Layout, const TCHAR* Name)
-	{
-		const FName Wanted(Name);
-		for (int32 Index = 0; Index < Layout.Properties.Num(); ++Index)
-		{
-			const FProperty* Prop = Layout.Properties[Index].Property;
-			if (Prop && Prop->GetFName() == Wanted)
-			{
-				return Index;
-			}
-		}
-		return INDEX_NONE;
-	}
-
-	// Wraps a state delta in an inbound broadcast event, stamping a FOREIGN sender so echo-drop never fires.
-	FCrowdyInboundEvent MakeInboundStateEvent(const FCrowdyStateDelta& Delta)
-	{
-		FCrowdyInboundEvent Event;
-		Event.Payload = FInstancedStruct::Make(Delta);
-		Event.bTargetedDelivery = false;
-		Event.SenderID = Delta.SenderID;
-		Event.Target = ECrowdyTarget::Everyone;
-		return Event;
-	}
 
 	// Registers an actor as a resolvable remote-proxy entity so FindEntity(EntityId) returns it.
 	void RegisterProxyEntity(UCrowdyEntitySubsystem* Entities, const FGuid& EntityId, AActor* Actor)
@@ -95,39 +51,6 @@ namespace
 		Rec.Participant = Actor;
 		Entities->RegisterEntity(Rec);
 	}
-
-	// A minimal EDITOR world so actor OnRep notifies actually run. AActor::ProcessEvent (Actor.cpp) skips a
-	// function unless the actor has a world AND (its actors are initialized OR GAllowActorScriptExecutionInEditor
-	// is set); a worldless NewObject'd actor silently no-ops it, unlike a plain UObject. An editor-type world is
-	// deliberate: the project's game world subsystems (CrowdyMass et al.) gate ShouldCreateSubsystem to PIE/Game,
-	// so an editor world never spins them up and tears down cleanly, whereas a Game world's
-	// CrowdyMassEntitySubsystem::Deinitialize asserts on an EntityManager this bare test world never initialized.
-	// The held FEditorScriptExecutionGuard flips GAllowActorScriptExecutionInEditor for the fixture's lifetime so
-	// ProcessEvent runs; the receive path fires OnRep via ProcessEvent, so the OnRep tests spawn targets here.
-	struct FCrowdyStateTestWorld
-	{
-		FEditorScriptExecutionGuard ScriptGuard;
-		UWorld* World = nullptr;
-
-		FCrowdyStateTestWorld()
-		{
-			World = UWorld::CreateWorld(EWorldType::Editor, /*bInformEngineOfWorld=*/false);
-			FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Editor);
-			Context.SetCurrentWorld(World);
-		}
-
-		~FCrowdyStateTestWorld()
-		{
-			GEngine->DestroyWorldContext(World);
-			World->DestroyWorld(/*bInformEngineOfWorld=*/false);
-		}
-
-		template <typename T>
-		T* Spawn()
-		{
-			return World->SpawnActor<T>();
-		}
-	};
 }
 
 // End-to-end apply: a hot delta changing a subset of an actor's CrowdyState properties (RepInt, RepFloat,
@@ -572,11 +495,11 @@ bool FCrowdyStateDeferredApplyTest::RunTest(const FString& Parameters)
 	// past the defer point an unregistered entity defers first).
 	FCrowdyRpcCall Rpc;
 	Rpc.EntityID = FGuid::NewGuid();
-	FCrowdyInboundEvent RpcEvent;
-	RpcEvent.Payload = FInstancedStruct::Make(Rpc);
-	RpcEvent.bTargetedDelivery = false;
-	RpcEvent.SenderID = Rpc.SenderID;
-	RpcEvent.Target = ECrowdyTarget::Everyone;
+	FCrowdyScopedInboundEvent RpcEvent;
+	RpcEvent.OwnedPayload = FInstancedStruct::Make(Rpc);
+	RpcEvent.Event.bTargetedDelivery = false;
+	RpcEvent.Event.SenderID = Rpc.SenderID;
+	RpcEvent.Event.Target = ECrowdyTarget::Everyone;
 	Router->DispatchEvent(RpcEvent);
 	TestEqual(TEXT("rpc also deferred"), Router->NumDeferredForTest(), 2);
 
@@ -859,8 +782,8 @@ bool FCrowdyStateWorldEntityHostOnlyTest::RunTest(const FString& Parameters)
 }
 
 // Regression (2-client PIE showed OnRep re-firing on every keyframe heartbeat): a keyframe re-sending values a
-// proxy ALREADY holds is idempotent  no OnRep fires the second time. Phase 5 re-sends every non-owner-only
-// property every keyframe interval, so if apply fired OnRep for every PRESENT slot (not just the actually-changed
+// proxy ALREADY holds is idempotent  no OnRep fires the second time. Every keyframe interval re-sends every
+// non-owner-only property, so if apply fired OnRep for every PRESENT slot (not just the actually-changed
 // ones) every OnRep would re-fire every ~2s even with nothing moving. This locks apply to RepNotify-on-change.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateKeyframeNoChangeNoOnRepTest,
 	"CrowdySDK.State.KeyframeNoChangeNoOnRep", CrowdyStateApplyTestFlags)
@@ -927,6 +850,131 @@ bool FCrowdyStateKeyframeNoChangeNoOnRepTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("repeat keyframe does not re-fire OnRep_Health"), Target->HealthOnRepCount, 1);
 	TestEqual(TEXT("repeat keyframe does not re-fire OnRep_Score"), Target->ScoreOnRepCount, 1);
 
+	return true;
+}
+
+// A CrowdyOnRep is a call into game code, and game code may dispatch another state delta from inside it. The
+// outer dispatch reads its changed set twice, once to fire the notifies and again to adopt the host's values
+// into the owner's shadow, so the inner dispatch must not be able to write into it.
+//
+// What this asserts is the OUTPUT of the second read: after a host correction moves RepFirst and RepThird, the
+// owner's shadow must hold both, which shows up as the owner's next diff emitting nothing. If the inner
+// dispatch had taken the outer call's array, adoption would have run over the INNER delta's changed set (the
+// middle slot, which the outer delta never carried) and the owner would emit a revert for the two it lost.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateReentrantNotifyKeepsChangedSetTest,
+	"CrowdySDK.State.ReentrantNotifyKeepsTheOuterChangedSet", CrowdyStateApplyTestFlags)
+bool FCrowdyStateReentrantNotifyKeepsChangedSetTest::RunTest(const FString& Parameters)
+{
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	if (!TestNotNull(TEXT("registry created"), Registry))
+	{
+		return false;
+	}
+
+	UClass* ActorClass = ACrowdyStateReentrantNotifyActor::StaticClass();
+	const FCrowdyRepLayout* Layout = Registry->FindRepLayout(ActorClass);
+	if (!TestNotNull(TEXT("re-entrancy actor has a layout"), Layout))
+	{
+		return false;
+	}
+
+	const int32 FirstIndex = IndexOfPropertyName(*Layout, TEXT("RepFirst"));
+	const int32 SecondIndex = IndexOfPropertyName(*Layout, TEXT("RepSecond"));
+	const int32 ThirdIndex = IndexOfPropertyName(*Layout, TEXT("RepThird"));
+	if (!TestTrue(TEXT("all three properties are in the layout"),
+		FirstIndex != INDEX_NONE && SecondIndex != INDEX_NONE && ThirdIndex != INDEX_NONE))
+	{
+		return false;
+	}
+
+	const FGuid LocalPlayer = FGuid::NewGuid();
+	UCrowdyEntitySubsystem* Entities = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
+	Entities->SetLocalPlayerID(LocalPlayer);
+	UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
+
+	FCrowdyStateTestWorld TestWorld;
+	const int64 ClassID = static_cast<int64>(UCrowdyClassRegistry::Get()->GetID(ActorClass));
+
+	// The outer delta moves the two NOTIFIED slots and leaves the middle one alone.
+	ACrowdyStateReentrantNotifyActor* OuterSource = NewObject<ACrowdyStateReentrantNotifyActor>();
+	OuterSource->RepFirst = 11;
+	OuterSource->RepThird = 33;
+	TBitArray<> OuterDirty;
+	OuterDirty.Init(false, Layout->Properties.Num());
+	OuterDirty[FirstIndex] = true;
+	OuterDirty[ThirdIndex] = true;
+	TArray<uint8> OuterBlob;
+	FCrowdyStateCodec::Encode(*Layout, OuterSource, OuterDirty, /*bKeyframe=*/false, OuterBlob);
+
+	// The inner delta moves only the MIDDLE slot, so the two changed sets are distinguishable.
+	ACrowdyStateReentrantNotifyActor* InnerSource = NewObject<ACrowdyStateReentrantNotifyActor>();
+	InnerSource->RepSecond = 22;
+	TBitArray<> InnerDirty;
+	InnerDirty.Init(false, Layout->Properties.Num());
+	InnerDirty[SecondIndex] = true;
+	TArray<uint8> InnerBlob;
+	FCrowdyStateCodec::Encode(*Layout, InnerSource, InnerDirty, /*bKeyframe=*/false, InnerBlob);
+
+	// The outer entity is one this client owns, so the correction must be HostSourced and is adopted after the
+	// notifies. The inner entity is an ordinary proxy.
+	ACrowdyStateReentrantNotifyActor* Owned = TestWorld.Spawn<ACrowdyStateReentrantNotifyActor>();
+	ACrowdyStateReentrantNotifyActor* Proxy = TestWorld.Spawn<ACrowdyStateReentrantNotifyActor>();
+	const FGuid OwnedId = FGuid::NewGuid();
+	const FGuid ProxyId = FGuid::NewGuid();
+	RegisterParticipantAs(Entities, OwnedId, Owned, ECrowdyRole::Owner, LocalPlayer);
+	RegisterProxyParticipant(Entities, ProxyId, Proxy);
+
+	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, LocalPlayer);
+	Rep->SetTimeForTest(0.0);
+	TestTrue(TEXT("replicator tracks the owned entity"), Rep->RegisterOwnedEntityForTest(OwnedId, Owned));
+	Router->SetStateReplicatorForTest(Rep);
+
+	int32 EmitCount = 0;
+	Rep->DispatchHookForTests = [&EmitCount](const FCrowdyStateDelta& /*D*/, bool /*bT*/) { ++EmitCount; };
+
+	// One pass to establish the shadow from the entity's current (default) values.
+	Rep->RunReplicationLoopForTest();
+	EmitCount = 0;
+
+	FCrowdyStateDelta InnerDelta;
+	InnerDelta.ClassID = ClassID;
+	InnerDelta.EntityID = ProxyId;
+	InnerDelta.SenderID = FGuid::NewGuid();
+	InnerDelta.LayoutHash = Layout->LayoutHash;
+	InnerDelta.Blob = InnerBlob;
+
+	int32 ReentryCount = 0;
+	Owned->NotifyHook = [&]()
+	{
+		// Once only: the inner delta's own notify must not start the chain again.
+		if (ReentryCount++ == 0)
+		{
+			Router->DispatchEvent(MakeInboundStateEvent(InnerDelta));
+		}
+	};
+
+	FCrowdyStateDelta OuterDelta;
+	OuterDelta.ClassID = ClassID;
+	OuterDelta.EntityID = OwnedId;
+	OuterDelta.SenderID = FGuid::NewGuid();
+	OuterDelta.LayoutHash = Layout->LayoutHash;
+	OuterDelta.Flags = CrowdyStateDeltaFlags::HostSourced;
+	OuterDelta.Blob = OuterBlob;
+
+	Router->DispatchEvent(MakeInboundStateEvent(OuterDelta));
+
+	TestEqual(TEXT("the notify re-entered the receive path exactly once"), ReentryCount, 1);
+	TestEqual(TEXT("the inner delta applied to its own entity"), Proxy->RepSecond, 22);
+	TestEqual(TEXT("the outer delta applied RepFirst"), Owned->RepFirst, 11);
+	TestEqual(TEXT("the outer delta applied RepThird"), Owned->RepThird, 33);
+	TestEqual(TEXT("the outer delta left the middle slot alone"), Owned->RepSecond, 0);
+	TestEqual(TEXT("the outer dispatch still reached the trailing notify"), Owned->ThirdOnRepCount, 1);
+
+	// The load-bearing assertion: adoption ran over the OUTER delta's changed set, so the owner's next diff
+	// sees both corrected values as already sent and emits nothing.
+	Owned->NotifyHook = nullptr;
+	Rep->RunReplicationLoopForTest();
+	TestEqual(TEXT("the owner does not revert the adopted host values"), EmitCount, 0);
 	return true;
 }
 

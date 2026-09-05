@@ -5,6 +5,7 @@
 #include "Misc/AutomationTest.h"
 #include "Engine/GameInstance.h"
 #include "Replication/State/FCrowdyRepLayout.h"
+#include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Utils/CrowdyBakedRegistry.h"
 #include "UObject/Class.h"
@@ -15,29 +16,6 @@ namespace
 {
 	constexpr EAutomationTestFlags CrowdyStateDiscoveryTestFlags =
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
-
-	const FCrowdyRepProperty* FindByName(const FCrowdyRepLayout& Layout, const TCHAR* Name)
-	{
-		const FName Wanted(Name);
-		for (const FCrowdyRepProperty& Prop : Layout.Properties)
-		{
-			if (Prop.Property && Prop.Property->GetFName() == Wanted)
-			{
-				return &Prop;
-			}
-		}
-		return nullptr;
-	}
-
-	// UCrowdyAutoRegistry is a UGameInstanceSubsystem (ClassWithin=UGameInstance), so it must be outered
-	// to a UGameInstance NewObject into the transient package trips a ClassWithin ensure. A bare,
-	// uninitialized GameInstance suffices here: the rep-layout methods use only reflection and the global
-	// class/baked registries, never GetGameInstance()/GetWorld().
-	UCrowdyAutoRegistry* MakeStateRegistry()
-	{
-		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-		return NewObject<UCrowdyAutoRegistry>(GameInstance);
-	}
 }
 
 // Discovery deliverable: a fresh registry scan finds the fixture's meta=(CrowdyState) properties and
@@ -72,6 +50,9 @@ bool FCrowdyStateDiscoveryFindsAnnotatedTest::RunTest(const FString& Parameters)
 	// The sweep also covers UCrowdyStateBadOnRepTarget, whose parameter-taking OnRep is cleared with an
 	// error by ValidateOnRepSignatures; whitelist it (one line covers both the missing and non-parameterless cases).
 	AddExpectedError(TEXT("is not a valid CrowdyOnRep notify"), EAutomationExpectedErrorFlags::Contains, 0);
+	// The sweep also covers UCrowdyGameModelDiscoveryTarget, whose DualPlane property is marked both CrowdyState
+	// and CrowdyModel; the symmetric plane-exclusivity filter drops it with an error.
+	AddExpectedError(TEXT("marked both CrowdyState and CrowdyModel"), EAutomationExpectedErrorFlags::Contains, 0);
 
 	Registry->RescanRepLayouts();
 

@@ -3,11 +3,10 @@
 
 #include "TimerManager.h"
 #include "Core/CrowdyCategory/FCrowdyTypeIDGenerator.h"
+#include "Core/FCrowdyTypeID.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
-#include "Core/UDP/Interfaces/ICrowdyMessage.h"
 #include "Engine/AssetManager.h"
 #include "Internal/FCrowdyServiceRegistry.h"
-#include "Messages/GameObjects/FGameEventNotification.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
@@ -57,7 +56,23 @@ void UCrowdyEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	}
 
 	if (Bridge->ServiceRegistry)
-		Bridge->ServiceRegistry->RegisterReceptionLayer(this);
+	{
+		SubscribeToSpawnDestroy(*Bridge->ServiceRegistry);
+	}
+}
+
+void UCrowdyEntitySubsystem::SubscribeToSpawnDestroy(FCrowdyServiceRegistry& Registry)
+{
+	const FCrowdySubscriptionKey Keys[] =
+	{
+		FCrowdySubscriptionKey::EventPayload(FCrowdyEntitySpawnEvent::StaticStruct()),
+		FCrowdySubscriptionKey::EventPayload(FCrowdyEntityDestroyEvent::StaticStruct()),
+	};
+	// Handle claims both keys so the event router's fallback never sees them; exclusive because
+	// two systems both spawning an actor for one spawn event would give two actors.
+	SpawnDestroySubscription = Registry.Subscribe(Keys,
+		{ ECrowdySubscriptionRole::Handle, /*bRequiresExclusiveHandling*/ true, TEXT("CrowdyEntitySubsystem") },
+		[this](const FCrowdyDelivery& Delivery) { HandleSpawnDestroyDelivery(Delivery); });
 }
 
 void UCrowdyEntitySubsystem::Deinitialize()
@@ -75,7 +90,9 @@ void UCrowdyEntitySubsystem::Deinitialize()
 
 	Records.Empty();
 	ParticipantToID.Empty();
-	PendingEntityEvents.Empty();
+
+	// Releasing the handle stops any further delivery, so this needs no explicit registry lookup.
+	SpawnDestroySubscription.Release();
 	Bridge = nullptr;
 
 	Super::Deinitialize();
@@ -95,51 +112,30 @@ bool UCrowdyEntitySubsystem::ShouldCreateSubsystem(UObject* Outer) const
 
 //Network reception
 
-void UCrowdyEntitySubsystem::OnMessageReceived(TSharedRef<ICrowdyMessage> Message)
+void UCrowdyEntitySubsystem::HandleSpawnDestroyDelivery(const FCrowdyDelivery& Delivery)
 {
-	if (Message->GetType() != ECrowdyMessageType::CLIENT_EVENT_NOTIFICATION)
-		return;
-
-	const auto& EventMessage = static_cast<const FGameEventNotification&>(*Message);
-	const UScriptStruct* StructType = EventMessage.State.GetScriptStruct();
-
-	if (StructType != FCrowdyEntitySpawnEvent::StaticStruct()
-		&& StructType != FCrowdyEntityDestroyEvent::StaticStruct())
-		return;
-
-	PendingEntityEvents.Enqueue(EventMessage.State);
-}
-
-void UCrowdyEntitySubsystem::Tick(float DeltaTime)
-{
-	FInstancedStruct Payload;
-	while (PendingEntityEvents.Dequeue(Payload))
+	if (!Delivery.Payload)
 	{
-		const UScriptStruct* StructType = Payload.GetScriptStruct();
-
-		if (StructType == FCrowdyEntitySpawnEvent::StaticStruct())
-			HandleRemoteSpawn(Payload.Get<FCrowdyEntitySpawnEvent>());
-		else if (StructType == FCrowdyEntityDestroyEvent::StaticStruct())
-			HandleRemoteDestroy(Payload.Get<FCrowdyEntityDestroyEvent>());
+		return;
 	}
+
+	// Delivery is on the game thread, so the spawn or destroy is applied here rather than being held
+	// for a later frame: an entity exists as soon as the message that created it has been read.
+	const UScriptStruct* StructType = Delivery.Payload->GetScriptStruct();
+
+	if (StructType == FCrowdyEntitySpawnEvent::StaticStruct())
+		HandleRemoteSpawn(Delivery.Payload->Get<FCrowdyEntitySpawnEvent>());
+	else if (StructType == FCrowdyEntityDestroyEvent::StaticStruct())
+		HandleRemoteDestroy(Delivery.Payload->Get<FCrowdyEntityDestroyEvent>());
 }
 
-TArray<ECrowdyMessageType> UCrowdyEntitySubsystem::GetSupportedResponseTypes() const
-{
-	return { ECrowdyMessageType::CLIENT_EVENT_NOTIFICATION };
-}
-
-TArray<UScriptStruct*> UCrowdyEntitySubsystem::GetSupportedEvents() const
-{
-	return
-	{
-		FCrowdyEntitySpawnEvent::StaticStruct(),
-		FCrowdyEntityDestroyEvent::StaticStruct()
-	};
-}
-
-//Registry 
+//Registry
 void UCrowdyEntitySubsystem::RegisterEntity(const FCrowdyEntityRecord& Record)
+{
+	TryRegisterEntity(Record);
+}
+
+ECrowdyEntityRegistration UCrowdyEntitySubsystem::TryRegisterEntity(const FCrowdyEntityRecord& Record)
 {
 	check(IsInGameThread());
 
@@ -147,14 +143,49 @@ void UCrowdyEntitySubsystem::RegisterEntity(const FCrowdyEntityRecord& Record)
 	{
 		UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyEntitySubsystem]: Rejected registration with invalid NetID (Participant=%s)."),
 			*GetNameSafe(Record.GetParticipant()));
-		return;
+		return ECrowdyEntityRegistration::RefusedInvalidNetID;
 	}
 
 	// Re-registering an existing NetID replaces the record; drop the old participant mapping first.
 	if (const FCrowdyEntityRecord* Existing = Records.Find(Record.NetID))
 	{
-		if (UObject* OldParticipant = Existing->GetParticipant())
+		UObject* OldParticipant = Existing->GetParticipant();
+
+		// Collision guard: a caller that already tore its own record down first (a respawn's EndPlay, or the
+		// actor pool releasing a slot before reassigning it) finds no Existing entry at all, and one that is
+		// simply re-announcing the object it already owns has OldParticipant == the incoming participant; both
+		// shapes fall through untouched below. What must not fall through is a SECOND, still-alive, DIFFERENT
+		// participant claiming an id already held by a live one: NetID has only 32 real bits of entropy (see
+		// GetDeterministicID), so two unrelated registrations can land on the same id, and once this id addresses
+		// damage a silent takeover means an attack lands on the wrong player. Refuse it and name both.
+		if (IsValid(OldParticipant) && OldParticipant != Record.GetParticipant())
+		{
+			UE_LOG(LogCrowdyReplication, Error,
+				TEXT("[CrowdyEntitySubsystem]: NetID collision on %s: '%s' (owner %s) is already registered and '%s' (owner %s) derives the same id - not overwriting."),
+				*Record.NetID.ToString(), *GetNameSafe(OldParticipant), *Existing->OwnerID.ToString(),
+				*GetNameSafe(Record.GetParticipant()), *Record.OwnerID.ToString());
+			return ECrowdyEntityRegistration::RefusedIdHeldByLiveParticipant;
+		}
+
+		if (OldParticipant)
+		{
 			ParticipantToID.Remove(OldParticipant);
+		}
+		else
+		{
+			// The old participant was collected before its record was replaced, and a TObjectKey cannot be
+			// rebuilt from a dead weak pointer, so its mapping is dropped by value instead (the same reason
+			// UnregisterEntity does). Nothing is misrouted by leaving it: a TObjectKey carries the object's
+			// serial number, so a new object reusing the address never matches the dead key. What it costs is
+			// memory, one entry per replaced-while-dead participant, held for the life of the world.
+			for (auto It = ParticipantToID.CreateIterator(); It; ++It)
+			{
+				if (It.Value() == Record.NetID)
+				{
+					It.RemoveCurrent();
+				}
+			}
+		}
 	}
 
 	Records.Add(Record.NetID, Record);
@@ -163,6 +194,8 @@ void UCrowdyEntitySubsystem::RegisterEntity(const FCrowdyEntityRecord& Record)
 		ParticipantToID.Add(Participant, Record.NetID);
 
 	OnEntityRegistered.Broadcast(Record.NetID);
+
+	return ECrowdyEntityRegistration::Registered;
 }
 
 void UCrowdyEntitySubsystem::UnregisterEntity(const FGuid& NetID)
@@ -173,7 +206,23 @@ void UCrowdyEntitySubsystem::UnregisterEntity(const FGuid& NetID)
 	if (!Record) return;
 
 	if (UObject* Participant = Record->GetParticipant())
+	{
 		ParticipantToID.Remove(Participant);
+	}
+	else
+	{
+		// The participant died before its record was torn down (a component sub-participant can outlive-then-
+		// predecease its anchor's teardown cascade, and a component may already be pending-kill during EndPlay).
+		// Its TObjectKey cannot be reconstructed from a stale weak pointer, so drop any mapping to this NetID by
+		// value; otherwise the dead-object key leaks in ParticipantToID under component churn on long-lived actors.
+		for (auto It = ParticipantToID.CreateIterator(); It; ++It)
+		{
+			if (It.Value() == NetID)
+			{
+				It.RemoveCurrent();
+			}
+		}
+	}
 
 	Records.Remove(NetID);
 
@@ -211,10 +260,37 @@ const FCrowdyEntityRecord* UCrowdyEntitySubsystem::FindRecord(const FGuid& NetID
 	return Records.Find(NetID);
 }
 
+bool UCrowdyEntitySubsystem::TrySetRecordClassID(const FGuid& NetID, const uint32 ClassID)
+{
+	if (ClassID == CROWDY_INVALID_CLASS_ID)
+	{
+		return false;
+	}
+
+	FCrowdyEntityRecord* Record = Records.Find(NetID);
+	if (!Record || Record->ClassID != CROWDY_INVALID_CLASS_ID)
+	{
+		return false;
+	}
+
+	Record->ClassID = ClassID;
+	return true;
+}
+
 bool UCrowdyEntitySubsystem::IsLocallyOwned(const FGuid& NetID) const
 {
 	const FCrowdyEntityRecord* Record = Records.Find(NetID);
-	return Record && Record->OwnerID.IsValid() && Record->OwnerID == LocalPlayerID;
+	if (!Record || !Record->OwnerID.IsValid() || Record->OwnerID != LocalPlayerID)
+	{
+		return false;
+	}
+
+	// The owner id alone is not enough. A record whose role says this client only mirrors the entity, or that has
+	// no role at all, does not become locally owned because something wrote the local player's id into it: this
+	// answer decides whether this client creates and pins the server-side row bound to the entity's id, and an
+	// owner id can arrive from a decoded message while the role is only ever set by whatever registered the
+	// entity here. Both have to agree.
+	return Record->Role == ECrowdyRole::Owner;
 }
 
 FGuid UCrowdyEntitySubsystem::GetLocalPlayerID() const
@@ -238,9 +314,8 @@ void UCrowdyEntitySubsystem::OnOwnerUUIDUpdated(FString NewUUID)
 
 	// A LocalClient participant enrolled before the local player id arrived was minted with an empty owner
 	// salt; re-derive its owner-salted identity now. Actor entities carry their own identity (set at spawn,
-	// GetActor() non-null) and are never re-stamped here, guaranteeing zero behavior change for actors. Inert
-	// in Phase 0 (no participant is enrolled, so this set is always empty). Collect-then-mutate so the
-	// re-registration below does not modify Records mid-iteration.
+	// GetActor() non-null) and are never re-stamped here, guaranteeing zero behavior change for actors.
+	// Collect-then-mutate so the re-registration below does not modify Records mid-iteration.
 	TArray<FGuid> StaleParticipantIDs;
 	for (const TPair<FGuid, FCrowdyEntityRecord>& Pair : Records)
 	{
@@ -270,7 +345,7 @@ FGuid UCrowdyEntitySubsystem::RegisterParticipant(UObject* Participant, const EC
 	FGuid OwnerID;
 	UCrowdyEntityComponent::DeriveAuthority(Ownership, GetLocalPlayerID(), Role, OwnerID);
 
-	// Host: world singleton keyed by class path — every client computes the same id, no salt.
+	// Host: world singleton keyed by class path - every client computes the same id, no salt.
 	// LocalClient: owner-salted so two clients' same-class participants get distinct ids.
 	const FString PathName = Participant->GetClass()->GetPathName();
 	const FString Seed = (Ownership == ECrowdyOwnership::Host)
@@ -283,9 +358,108 @@ FGuid UCrowdyEntitySubsystem::RegisterParticipant(UObject* Participant, const EC
 	Record.Role        = Role;
 	Record.ClassID     = UCrowdyClassRegistry::Get()->GetID(Participant->GetClass());
 	Record.Participant = Participant;
-	RegisterEntity(Record);
+
+	// A refused registration means the id resolves to somebody else's live participant, so handing it back would
+	// have the caller bind its state under an id that does not answer for it. It gets no id instead, the same
+	// answer RegisterSubParticipant gives when its derived id is already taken.
+	if (TryRegisterEntity(Record) != ECrowdyEntityRegistration::Registered)
+	{
+		return FGuid{};
+	}
 
 	return Record.NetID;
+}
+
+FGuid UCrowdyEntitySubsystem::DeriveSubParticipantID(const FGuid& AnchorNetID, const UClass* SeedClass,
+	const FString& InstanceTerm)
+{
+	if (!AnchorNetID.IsValid() || !SeedClass || InstanceTerm.IsEmpty())
+	{
+		return FGuid{};
+	}
+
+	// The anchor id + the component's class path + a per-instance term. The anchor id is already network-stable (a
+	// player id, a spawn-injected id, or the engine's per-placement ActorInstanceGuid), and the class path is
+	// identical on every client. The per-instance term is the object name by default - cross-client stable ONLY for
+	// an authored component (a Blueprint variable name or a native CreateDefaultSubobject name). A runtime-added
+	// component's name is a per-process counter that diverges across clients, so an author supplies a stable binding
+	// key to name it instead; when set, it replaces the object name.
+	const FString Seed = AnchorNetID.ToString(EGuidFormats::Digits)
+		+ TEXT(":") + SeedClass->GetPathName()
+		+ TEXT(":") + InstanceTerm;
+	return UHelperFunctions::GetDeterministicID(FCrowdyTypeIDGenerator::GenerateFromString(Seed));
+}
+
+FGuid UCrowdyEntitySubsystem::RegisterSubParticipant(UObject* Participant, const FGuid& AnchorNetID, const FString& KeyOverride)
+{
+	// The default derivation: the participant IS the component, so its own class and object name are the seed
+	// terms. KeyOverride, when set, replaces the object name (see the header).
+	if (!IsValid(Participant))
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: RegisterSubParticipant called with an invalid participant or anchor."));
+		return FGuid{};
+	}
+	const FString InstanceTerm = KeyOverride.IsEmpty() ? Participant->GetName() : KeyOverride;
+	return RegisterSubParticipantAs(Participant, AnchorNetID, Participant->GetClass(), InstanceTerm);
+}
+
+FGuid UCrowdyEntitySubsystem::RegisterSubParticipantAs(UObject* Participant, const FGuid& AnchorNetID,
+	const UClass* SeedClass, const FString& InstanceTerm)
+{
+	check(IsInGameThread());
+
+	if (!IsValid(Participant) || !AnchorNetID.IsValid() || !SeedClass || InstanceTerm.IsEmpty())
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: RegisterSubParticipant called with an invalid participant or anchor."));
+		return FGuid{};
+	}
+
+	const FCrowdyEntityRecord* Anchor = Records.Find(AnchorNetID);
+	if (!Anchor)
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: RegisterSubParticipant for '%s' has no registered anchor entity %s."),
+			*GetNameSafe(Participant), *AnchorNetID.ToString());
+		return FGuid{};
+	}
+
+	const FGuid NetID = DeriveSubParticipantID(AnchorNetID, SeedClass, InstanceTerm);
+
+	// Dup-key guard: a second, DIFFERENT live participant that derives the same id is two indistinguishable
+	// concerns (one participant per concern is the rule); refuse the second and name both so the mistake is loud.
+	// Re-enrolling the same object is idempotent and falls through to a plain re-registration below.
+	if (const FCrowdyEntityRecord* Existing = Records.Find(NetID))
+	{
+		UObject* Prior = Existing->GetParticipant();
+		if (IsValid(Prior) && Prior != Participant)
+		{
+			UE_LOG(LogCrowdyReplication, Error,
+				TEXT("[CrowdyEntitySubsystem]: sub-participant key collision under anchor %s: '%s' and '%s' derive the same id %s - not enrolling the second. Give one a distinct component name or binding key."),
+				*AnchorNetID.ToString(), *GetNameSafe(Prior), *GetNameSafe(Participant), *NetID.ToString());
+			return FGuid{};
+		}
+	}
+
+	FCrowdyEntityRecord Record;
+	Record.NetID       = NetID;
+	Record.OwnerID     = Anchor->OwnerID;
+	Record.Role        = Anchor->Role;
+	// The COMPONENT's class, not the participant's. For the real component the two are the same; for a stand-in
+	// they are not, and it is this that lets the binding read the container declaration off the component class.
+	Record.ClassID     = UCrowdyClassRegistry::Get()->GetID(SeedClass);
+	Record.AnchorNetID = AnchorNetID;
+	Record.Participant = Participant;
+
+	// The dup-key guard above catches the case this can refuse, so a refusal here means something changed the
+	// registry underneath us. Report no id rather than one that answers for a different participant.
+	if (TryRegisterEntity(Record) != ECrowdyEntityRegistration::Registered)
+	{
+		return FGuid{};
+	}
+
+	return NetID;
 }
 
 void UCrowdyEntitySubsystem::UnregisterParticipant(UObject* Participant)
@@ -318,7 +492,7 @@ void UCrowdyEntitySubsystem::RestampParticipantIdentity(const FGuid& OldNetID)
 
 	if (NewNetID == OldNetID)
 	{
-		// Owner resolved to the same salt (already correct) — update the record in place.
+		// Owner resolved to the same salt (already correct) - update the record in place.
 		Records.Add(OldNetID, Record);
 		return;
 	}
@@ -450,7 +624,14 @@ void UCrowdyEntitySubsystem::DispatchGameEvent(const AActor* Context, FInstanced
 		return;
 	}
 
-	FGuid TargetID;
+	// The actor IS the position: an actor-sent event goes out from where that actor stands.
+	DispatchGameEventAt(Context->GetActorLocation(), MoveTemp(Payload), Target, TargetEntity,
+		DecayRate, ReplicationDistance);
+}
+
+bool UCrowdyEntitySubsystem::ResolveGameEventRouting(const ECrowdyTarget Target, const AActor* TargetEntity,
+	const FVector& Location, FGuid& OutTargetID, int64& OutChunkX, int64& OutChunkY, int64& OutChunkZ)
+{
 	if (Target == ECrowdyTarget::Entity || Target == ECrowdyTarget::Owner)
 	{
 		const FGuid NetID = FindEntityID(TargetEntity);
@@ -459,20 +640,76 @@ void UCrowdyEntitySubsystem::DispatchGameEvent(const AActor* Context, FInstanced
 		{
 			UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyEntitySubsystem]: DispatchGameEvent — target '%s' is not a registered entity, event dropped."),
 				*GetNameSafe(TargetEntity));
-			return;
+			return false;
 		}
 
 		// Owner routing matches against player IDs, so address the entity's owning client
-		TargetID = Target == ECrowdyTarget::Owner ? Record->OwnerID : NetID;
+		OutTargetID = Target == ECrowdyTarget::Owner ? Record->OwnerID : NetID;
 	}
 
+	UHelperFunctions::GetChunkCoordinateAtLocation(this, Location, OutChunkX, OutChunkY, OutChunkZ);
+	return true;
+}
+
+void UCrowdyEntitySubsystem::DispatchGameEventAt(const FVector& Location, FInstancedStruct&& Payload,
+	const ECrowdyTarget Target, const AActor* TargetEntity,
+	const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance)
+{
+	if (!Bridge)
+	{
+		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DispatchGameEventAt - Bridge is null."));
+		return;
+	}
+
+	FGuid TargetID;
 	int64 ChunkX, ChunkY, ChunkZ;
-	UHelperFunctions::GetChunkCoordinateAtLocation(this, Context->GetActorLocation(), ChunkX, ChunkY, ChunkZ);
+	if (!ResolveGameEventRouting(Target, TargetEntity, Location, TargetID, ChunkX, ChunkY, ChunkZ))
+	{
+		return;
+	}
 
 	if (Bridge->DispatchGameEventFn)
 		Bridge->DispatchGameEventFn(ChunkX, ChunkY, ChunkZ,
 			DecayRate, ReplicationDistance,
 			LocalPlayerID, MoveTemp(Payload), Target, TargetID, false);
+}
+
+void UCrowdyEntitySubsystem::DispatchGameEventView(const AActor* Context, const UScriptStruct* PayloadStruct,
+	const void* PayloadMemory, const ECrowdyTarget Target, const AActor* TargetEntity,
+	const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance)
+{
+	if (!Bridge || !IsValid(Context))
+	{
+		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DispatchGameEventView — Bridge or context actor is null."));
+		return;
+	}
+
+	// The actor IS the position, exactly as the owning overload reads it.
+	DispatchGameEventViewAt(Context->GetActorLocation(), PayloadStruct, PayloadMemory, Target, TargetEntity,
+		DecayRate, ReplicationDistance);
+}
+
+void UCrowdyEntitySubsystem::DispatchGameEventViewAt(const FVector& Location, const UScriptStruct* PayloadStruct,
+	const void* PayloadMemory, const ECrowdyTarget Target, const AActor* TargetEntity,
+	const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance)
+{
+	if (!Bridge)
+	{
+		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DispatchGameEventViewAt - Bridge is null."));
+		return;
+	}
+
+	FGuid TargetID;
+	int64 ChunkX, ChunkY, ChunkZ;
+	if (!ResolveGameEventRouting(Target, TargetEntity, Location, TargetID, ChunkX, ChunkY, ChunkZ))
+	{
+		return;
+	}
+
+	if (Bridge->DispatchGameEventViewFn)
+		Bridge->DispatchGameEventViewFn(ChunkX, ChunkY, ChunkZ,
+			DecayRate, ReplicationDistance,
+			LocalPlayerID, PayloadStruct, PayloadMemory, Target, TargetID);
 }
 
 void UCrowdyEntitySubsystem::DispatchSingleActorMessage(const AActor* TargetActor, FInstancedStruct Payload)
@@ -483,7 +720,7 @@ void UCrowdyEntitySubsystem::DispatchSingleActorMessage(const AActor* TargetActo
 		return;
 	}
 
-	// The destination actor must be a registered entity — that NetID is the UUID the server routes by.
+	// The destination actor must be a registered entity - that NetID is the UUID the server routes by.
 	const FGuid TargetID = FindEntityID(TargetActor);
 	if (!TargetID.IsValid())
 	{
@@ -493,11 +730,57 @@ void UCrowdyEntitySubsystem::DispatchSingleActorMessage(const AActor* TargetActo
 		return;
 	}
 
-	int64 ChunkX, ChunkY, ChunkZ;
-	UHelperFunctions::GetChunkCoordinateAtLocation(this, TargetActor->GetActorLocation(), ChunkX, ChunkY, ChunkZ);
+	// The actor IS the destination: the chunk comes from where it stands.
+	DispatchSingleActorMessageTo(TargetID, TargetActor->GetActorLocation(), MoveTemp(Payload));
+}
+
+void UCrowdyEntitySubsystem::DispatchSingleActorMessageTo(const FGuid& TargetNetID, const FVector& Location,
+	FInstancedStruct Payload)
+{
+	// The registry this reads and the transport it hands to are both game-thread only.
+	check(IsInGameThread());
+
+	if (!Bridge)
+	{
+		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DispatchSingleActorMessageTo - Bridge is null."));
+		return;
+	}
+
+	// The NetID is the UUID the server routes by; without one there is no destination.
+	if (!TargetNetID.IsValid())
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: DispatchSingleActorMessageTo - target NetID is invalid; dropping."));
+		return;
+	}
+
+	// A chunk coordinate is floor(coord / chunk size) cast to int64, which is undefined for a value that
+	// does not fit. A NaN, an infinity or an absurd magnitude would address the message to a region no
+	// receiver is in, or to whatever the undefined cast produced, so reject it here where every caller
+	// passes through rather than trusting each one to have checked.
+	if (Location.ContainsNaN() || Location.GetAbsMax() > CrowdyMaxAddressableWorldCoordinate)
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: DispatchSingleActorMessageTo - location %s is not a position a chunk can be derived from; dropping."),
+			*Location.ToString());
+		return;
+	}
+
+	// GetChunkCoordinateAtLocation leaves its outputs untouched when it cannot resolve a world, so its
+	// precondition is checked here instead of addressing a message with whatever was on the stack. The
+	// zero seeds keep that true for any future path out of it as well.
+	if (!IsValid(GetWorld()))
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: DispatchSingleActorMessageTo - no world to derive a chunk from; dropping."));
+		return;
+	}
+
+	int64 ChunkX = 0, ChunkY = 0, ChunkZ = 0;
+	UHelperFunctions::GetChunkCoordinateAtLocation(this, Location, ChunkX, ChunkY, ChunkZ);
 
 	if (Bridge->DispatchSingleActorMessageFn)
-		Bridge->DispatchSingleActorMessageFn(ChunkX, ChunkY, ChunkZ, TargetID, MoveTemp(Payload), false);
+		Bridge->DispatchSingleActorMessageFn(ChunkX, ChunkY, ChunkZ, TargetNetID, MoveTemp(Payload), false);
 }
 
 void UCrowdyEntitySubsystem::PublishReliableRpc(const FString& ChannelName, const TArray<uint8>& ChannelPayload)
@@ -583,11 +866,30 @@ void UCrowdyEntitySubsystem::ReassignOwnership(const FGuid& NetID, const FGuid& 
 			Component->ApplyOwnershipReassignment(NewOwnerID, NewRole);
 	}
 
+	// A handler is free to destroy the actor, so the pointer is re-checked rather than carried across a call.
+	if (!IsValid(Actor))
+		Actor = nullptr;
+
 	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
 		TEXT("[CrowdyEntitySubsystem]: ReassignOwnership %s: %s -> %s (role %d)."),
 		*NetID.ToString(), *PreviousOwnerID.ToString(), *NewOwnerID.ToString(), static_cast<int32>(NewRole));
 
 	OnEntityOwnershipChanged.Broadcast(Actor, NetID, NewOwnerID, PreviousOwnerID);
+
+	// The entity's own listeners are told last, after the systems that track it have re-pointed themselves at the
+	// new owner. Game code told "you own this now" typically writes and marks replicated state straight away, and
+	// that only reaches the wire once the state replicator already tracks the entity under its new owner. The
+	// actor is re-resolved because a handler above may have destroyed it.
+	if (IsValid(Actor))
+	{
+		if (UCrowdyEntityComponent* Component = Actor->FindComponentByClass<UCrowdyEntityComponent>())
+		{
+#if WITH_DEV_AUTOMATION_TESTS
+			Component->TrackersRepointedStep = ++UCrowdyEntityComponent::OwnershipStepCounter;
+#endif
+			Component->BroadcastOwnershipAssigned();
+		}
+	}
 }
 
 void UCrowdyEntitySubsystem::NotifyOwnershipRequested(AActor* TargetEntity, const FGuid& RequesterID)
@@ -602,17 +904,71 @@ void UCrowdyEntitySubsystem::NotifyOwnershipRequested(AActor* TargetEntity, cons
 
 void UCrowdyEntitySubsystem::HandleRemoteSpawn(const FCrowdyEntitySpawnEvent& Event)
 {
-	// Pool backend may have already registered this entity from position updates
-	// that arrived before the spawn event. Update metadata and return — the pool
-	// actor is already active and correctly registered.
-	if (FCrowdyEntityRecord* Existing = Records.Find(Event.EntityID))
+	if (!Event.EntityID.IsValid())
 	{
-		Existing->OwnerID = Event.OwnerID;
-		Existing->ClassID = Event.ClassID;
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: Remote spawn carries no entity id; dropping."));
 		return;
 	}
 
-	// Duplicate spawn event arrived while the class is still loading — the first one is already pending.
+	// This entity may already be registered: a rendering backend enrols one as soon as its position updates
+	// arrive, which is often before the spawn event that names its class. A spawn event is written by an ordinary
+	// peer and reaches every client, so what it may do to a record that already exists is limited to filling in
+	// what this client does not know yet. It never re-points an answer already settled here, and it never sets the
+	// role, which is decided only by whatever registered the entity on this machine.
+	if (FCrowdyEntityRecord* Existing = Records.Find(Event.EntityID))
+	{
+		// The class is a fact about the entity rather than a claim about who may act on it, so an unset one is
+		// filled in - this backfill is what the branch exists for. A class already recorded is kept: whatever
+		// registered the entity here knows what it actually put in the world.
+		if (Existing->ClassID == CROWDY_INVALID_CLASS_ID)
+		{
+			Existing->ClassID = Event.ClassID;
+		}
+
+		// An owner is filled in only when the record has none, and never with the local player's id. "This client
+		// owns it" is an answer only this client's own spawn produces; accepted from the network it would make a
+		// peer's entity read as locally owned here, and that reading is what decides whether this client creates
+		// and pins the server-side container row bound to the entity's id - a row the real owner then cannot bind,
+		// because the id is already taken by the wrong user. An owner already recorded is likewise never
+		// re-pointed: ownership moves through ReassignOwnership, which compares against the expected previous
+		// owner and re-derives the role along with it. A record whose role already says this client owns the entity
+		// is excluded even when its owner id is still empty - that is a participant enrolled before the local
+		// player id arrived, waiting for its own id, not a slot for a peer to name an owner in.
+		const bool bOwnerIsFillable = !Existing->OwnerID.IsValid() && Existing->Role != ECrowdyRole::Owner;
+		if (bOwnerIsFillable && Event.OwnerID.IsValid() && Event.OwnerID != LocalPlayerID)
+		{
+			Existing->OwnerID = Event.OwnerID;
+		}
+
+		// Whether an actor still has to be spawned is a separate question from what the record says. An actor
+		// already standing for this id is the pooled proxy this branch was written for, and spawning again would
+		// give the entity two bodies.
+		if (IsValid(Existing->GetActor()))
+		{
+			return;
+		}
+
+		// Anything this client owns or hosts keeps both its record and its representation whatever a peer claims
+		// about the id. Only a record that says "another client simulates this" can be displaced by that client.
+		if (Existing->Role != ECrowdyRole::RemoteProxy)
+		{
+			return;
+		}
+
+		// Nothing live is behind the record: it is a slot a backend is about to activate an actor into, so the
+		// backfill above is the whole of the work here and no second actor is spawned for it.
+		if (!IsValid(Existing->GetParticipant()))
+		{
+			return;
+		}
+
+		// What is left is a non-actor stand-in for a remote entity, a crowd avatar enrolled from position updates
+		// before this event landed. The entity does have a body and this event names it, so the spawn goes ahead;
+		// the stand-in gives up the id in ReleaseRemoteStandIn, once the actor is about to exist.
+	}
+
+	// Duplicate spawn event arrived while the class is still loading - the first one is already pending.
 	if (PendingRemoteSpawns.Contains(Event.EntityID))
 		return;
 
@@ -660,8 +1016,36 @@ void UCrowdyEntitySubsystem::OnRemoteSpawnClassLoaded(const FGuid EntityID, cons
 	FinishRemoteSpawn(Pending.SpawnEvent, LoadedClass);
 }
 
+void UCrowdyEntitySubsystem::ReleaseRemoteStandIn(const FGuid& NetID)
+{
+	const FCrowdyEntityRecord* Existing = Records.Find(NetID);
+	if (!Existing)
+	{
+		return;
+	}
+
+	UObject* Participant = Existing->GetParticipant();
+	if (!IsValid(Participant) || Participant->IsA<AActor>() || Existing->Role != ECrowdyRole::RemoteProxy)
+	{
+		return;
+	}
+
+	// Said out loud because it is a swap of what answers for an entity, not a detail: whatever was tracking the
+	// stand-in (a Game Model binding, a targeting lookup) is dropped here and rebuilt against the actor.
+	UE_LOG(LogCrowdyReplication, Warning,
+		TEXT("[CrowdyEntitySubsystem]: Entity %s was standing in as '%s' when its spawn event arrived; releasing the id to the spawned actor."),
+		*NetID.ToString(), *GetNameSafe(Participant));
+
+	UnregisterEntity(NetID);
+}
+
 void UCrowdyEntitySubsystem::FinishRemoteSpawn(const FCrowdyEntitySpawnEvent& Event, UClass* EntityClass)
 {
+	// A non-actor stand-in may still hold this id (see HandleRemoteSpawn). It lets go here, immediately before the
+	// actor exists, rather than when the event arrived: the entity is never left answering to nothing while a
+	// class streams in, and the actor's own registration is not refused as a collision with the stand-in.
+	ReleaseRemoteStandIn(Event.EntityID);
+
 	// Same class as the owning client identity is injected before BeginPlay,
 	// so the component registers as RemoteProxy instead of minting an ID.
 	AActor* Actor = GetWorld()->SpawnActorDeferred<AActor>(EntityClass, Event.SpawnTransform, nullptr, nullptr,
