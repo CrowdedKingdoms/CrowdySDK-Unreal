@@ -22,6 +22,19 @@ class ISessionProvider {
 
   /// Rotate the app-scoped token (refreshAppToken). Returns the new token
   /// material; the implementation must also update its GraphQL bearer.
+  ///
+  /// `current` names the replication server the client is connected to (null
+  /// when it has none). An implementation that passes it to the Game API as
+  /// `currentServer` gets the new token installed THERE and sets
+  /// `TokenInfo::authorizedOnCurrentServer`; the connection then keeps its
+  /// socket and switches tokens instead of re-placing. The default forwards to
+  /// the older no-argument form so existing providers keep compiling; they
+  /// simply never report the token as authorized, and the connection re-assigns
+  /// after every refresh as before.
+  virtual Result<TokenInfo> refreshToken(const Assignment* current) {
+    (void)current;
+    return refreshToken();
+  }
   virtual Result<TokenInfo> refreshToken() = 0;
 };
 

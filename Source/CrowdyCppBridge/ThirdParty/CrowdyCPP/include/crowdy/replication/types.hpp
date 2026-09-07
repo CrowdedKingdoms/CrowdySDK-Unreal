@@ -16,6 +16,12 @@ struct TokenInfo {
   std::string token;               ///< 64-character app-scoped token
   std::int64_t gameTokenId = 0;
   std::int64_t expiresAtEpochMs = 0;  ///< 0 = non-expiring
+  /// True when the Game API installed THIS token on the replication server the
+  /// client is already connected to (`refreshAppToken(currentServer)` answered
+  /// `authorizedServer`, ck-api v1.83.7+). A Buddy silently drops datagrams for a
+  /// token it was never told about, so when this is false after a refresh the
+  /// connection must re-assign -- which is what every refresh did before 2026-09-06.
+  bool authorizedOnCurrentServer = false;
 };
 
 /// A replication-server assignment (from the Game API's

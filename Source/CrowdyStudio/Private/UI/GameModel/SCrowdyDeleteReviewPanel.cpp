@@ -118,6 +118,30 @@ void SCrowdyDeleteReviewPanel::Construct(const FArguments& InArgs)
 					]
 				]
 			]
+
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.0f, 0.0f, 0.0f, 0.0f)
+			[
+				// The label carries the consequence, since this one offers rows the primary view refuses.
+				SNew(SBox)
+				.Visibility_Lambda([this]() { return bReviewOpen ? EVisibility::Collapsed : EVisibility::Visible; })
+				.ToolTipText_Lambda([this]() { return PurgeMarkReason; })
+				[
+					SNew(SButton)
+					.ButtonStyle(&Style, "Crowdy.Button.Secondary")
+					.ContentPadding(FMargin(10.0f, 5.0f))
+					// Not focusable, like this panel's commit button: Enter must never reach the control that marks
+					// an app's whole schema while the reader is typing in the search box beside it.
+					.IsFocusable(false)
+					.IsEnabled_Lambda([this]() { return bPurgeMarkAllowed; })
+					.OnClicked_Lambda([this]() { MarkEverythingOnServer(); return FReply::Handled(); })
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("MarkEverythingOnServer", "Mark everything (code-backed too, returns on next Sync)"))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+						.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::Danger()))
+					]
+				]
+			]
 		]
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
@@ -454,6 +478,61 @@ bool SCrowdyDeleteReviewPanel::CanMarkEverythingServerOnly(FString& OutReason) c
 
 	const FCrowdyDeleteEvidence Fresh = GatherEvidence();
 	return CrowdyGameModelDelete::CanMarkEverythingServerOnly(Fresh, OutReason);
+}
+
+void SCrowdyDeleteReviewPanel::MarkEverythingOnServer()
+{
+	SyncEditorAppScope();
+
+	if (!Controller.IsValid() || EditorAppId == 0)
+	{
+		return;
+	}
+
+	const FCrowdyDeleteEvidence Fresh = GatherEvidence();
+
+	FString Reason;
+	if (!CrowdyGameModelDelete::CanMarkEverythingOnServer(Fresh, Reason))
+	{
+		SetNotice(FText::FromString(Reason));
+		UpdateBulkMarkAffordance();
+		return;
+	}
+
+	const TArray<FCrowdyDeleteMark> Bulk = CrowdyGameModelDelete::MarkEverythingOnServer(Fresh);
+
+	int32 Added = 0;
+	for (const FCrowdyDeleteMark& Mark : Bulk)
+	{
+		if (!CrowdyGameModelDelete::ContainsMark(Marks, Mark))
+		{
+			Marks.Add(Mark);
+			++Added;
+		}
+	}
+
+	SetNotice(Added == 0
+		? LOCTEXT("PurgeMarkAddedNothing", "Everything this app holds on the server is already marked.")
+		: FText::Format(
+			LOCTEXT("PurgeMarkAdded", "Marked {0} more, code-backed entries included. Nothing has been deleted: press Review to see what this would do and what would come back."),
+			FText::AsNumber(Added)));
+
+	if (Added > 0)
+	{
+		NotifyMarksChanged();
+	}
+}
+
+bool SCrowdyDeleteReviewPanel::CanMarkEverythingOnServer(FString& OutReason) const
+{
+	if (!Controller.IsValid() || Controller->GetSelectedAppId() == 0)
+	{
+		OutReason = TEXT("Select an app first.");
+		return false;
+	}
+
+	const FCrowdyDeleteEvidence Fresh = GatherEvidence();
+	return CrowdyGameModelDelete::CanMarkEverythingOnServer(Fresh, OutReason);
 }
 
 void SCrowdyDeleteReviewPanel::OpenReview()
@@ -1003,12 +1082,32 @@ void SCrowdyDeleteReviewPanel::UpdateHeader()
 
 void SCrowdyDeleteReviewPanel::UpdateBulkMarkAffordance()
 {
+	// Gathered once. Each answer copies the app's whole type, function, automation and attribute lists, and this
+	// runs from every schema-list delegate.
+	const bool bHaveApp = Controller.IsValid() && Controller->GetSelectedAppId() != 0;
+	const FCrowdyDeleteEvidence Fresh = bHaveApp ? GatherEvidence() : FCrowdyDeleteEvidence();
+
 	FString Reason;
-	bBulkMarkAllowed = CanMarkEverythingServerOnly(Reason);
+	bBulkMarkAllowed = bHaveApp && CrowdyGameModelDelete::CanMarkEverythingServerOnly(Fresh, Reason);
+	if (!bHaveApp)
+	{
+		Reason = TEXT("Select an app first.");
+	}
 	BulkMarkReason = bBulkMarkAllowed
 		? LOCTEXT("BulkMarkAllowedTip",
 			"Mark everything this app has that the project does not declare. It marks; nothing is deleted until the sheet is confirmed.")
 		: FText::FromString(Reason);
+
+	FString PurgeReason;
+	bPurgeMarkAllowed = bHaveApp && CrowdyGameModelDelete::CanMarkEverythingOnServer(Fresh, PurgeReason);
+	if (!bHaveApp)
+	{
+		PurgeReason = TEXT("Select an app first.");
+	}
+	PurgeMarkReason = bPurgeMarkAllowed
+		? LOCTEXT("PurgeMarkAllowedTip",
+			"Mark every model, attribute, function and automation this app holds on the server, including the ones the project declares in code and the ones a Game Kit deployed. Anything code or a kit puts back returns on the next Sync, and the review says which. It marks; nothing is deleted until the sheet is confirmed.")
+		: FText::FromString(PurgeReason);
 }
 
 void SCrowdyDeleteReviewPanel::SetNotice(const FText& Message)

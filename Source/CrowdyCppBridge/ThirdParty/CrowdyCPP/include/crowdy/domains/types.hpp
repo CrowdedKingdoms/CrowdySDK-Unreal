@@ -93,6 +93,15 @@ struct AppTokenResponse {
   /// rather than retried. Null only when the server has no public URL.
   NullableString discoveryUrl;
   NullableString launchUrl;
+  /// Set only by `refreshAppToken(currentServer)`: the replication server the NEW
+  /// token was just authorized on -- the one the client is already connected to.
+  /// Empty ip4 / 0 port when the server did not (or could not) authorize there,
+  /// in which case the client must re-assign with serverWithLeastClients.
+  std::string authorizedServerIp4;
+  int authorizedServerClientPort = 0;
+  bool hasAuthorizedServer() const {
+    return !authorizedServerIp4.empty() && authorizedServerClientPort > 0;
+  }
 
   /// Checked migration helper for the native UDP int64 wire tail.
   std::optional<std::int64_t> gameTokenIdInt64() const {
@@ -109,6 +118,11 @@ struct AppTokenResponse {
     r.gameApiWsUrl = NullableString::fromJson(j["gameApiWsUrl"]);
     r.discoveryUrl = NullableString::fromJson(j["discoveryUrl"]);
     r.launchUrl = NullableString::fromJson(j["launchUrl"]);
+    const auto& srv = j["authorizedServer"];
+    if (srv.isObject()) {
+      r.authorizedServerIp4 = srv["ip4"].asString();
+      r.authorizedServerClientPort = static_cast<int>(srv["clientPort"].asInt64());
+    }
     return r;
   }
 };

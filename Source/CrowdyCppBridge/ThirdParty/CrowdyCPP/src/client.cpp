@@ -131,11 +131,21 @@ class ClientSessionProvider final : public replication::ISessionProvider {
     return assignOnce();
   }
 
-  Result<replication::TokenInfo> refreshToken() override {
+  Result<replication::TokenInfo> refreshToken() override { return refreshToken(nullptr); }
+
+  Result<replication::TokenInfo> refreshToken(const replication::Assignment* current) override {
 #ifndef CROWDY_NO_EXCEPTIONS
     try {
 #endif
-      domains::AppTokenResponse t = portal_.refresh();
+      // KEEP THE BUDDY. Naming the server the client is on lets the Game API install
+      // the NEW token there (ck-api v1.83.7); without it every 30-minute refresh was
+      // a re-placement, because a Buddy drops datagrams for a token it was never told
+      // about. `authorizedOnCurrentServer` false means "re-assign", which is what the
+      // connection did unconditionally before.
+      domains::AppTokenResponse t =
+          (current && !current->ip4.empty() && current->clientPort > 0)
+              ? portal_.refresh(current->ip4, current->clientPort)
+              : portal_.refresh();
       if (t.token.empty()) return Errc::Rejected;
       const auto gameTokenId = t.gameTokenIdInt64();
       if (!gameTokenId) return Errc::InvalidArgument;
@@ -144,6 +154,10 @@ class ClientSessionProvider final : public replication::ISessionProvider {
       info.gameTokenId = *gameTokenId;
       info.expiresAtEpochMs =
           core::parseIso8601Millis(t.expiresAt.data(), t.expiresAt.size());
+      info.authorizedOnCurrentServer =
+          current && t.hasAuthorizedServer() &&
+          t.authorizedServerIp4 == current->ip4 &&
+          t.authorizedServerClientPort == current->clientPort;
       return info;
 #ifndef CROWDY_NO_EXCEPTIONS
     } catch (const std::exception& e) {

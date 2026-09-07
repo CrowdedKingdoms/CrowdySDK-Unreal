@@ -645,6 +645,10 @@ namespace CrowdyGameModelDelete
 	// The line a finished walk leaves, naming what was deleted and what was already gone.
 	FString CompletionText(const FCrowdyDeleteOutcome& Outcome);
 
+	// The line a live-model purge leaves. It never says "N of M": the server sends no count of live models, so a
+	// purge learns how many there were by draining them and any total it named up front would be invented.
+	FString PurgeText(const FCrowdyDeleteOutcome& Outcome);
+
 	// BULK. Every server-only entity in the app as marks, which is what the old Remove Server-Only control
 	// becomes once it moves into this review: a way to mark a lot at once, in front of the same sheet and the
 	// same ladder as one row, rather than a button beside a write control.
@@ -658,6 +662,14 @@ namespace CrowdyGameModelDelete
 	// been deployed to, because only kit FUNCTIONS carry prune protection today and a bulk mark would offer
 	// the kit's own models and attributes for deletion.
 	bool CanMarkEverythingServerOnly(const FCrowdyDeleteEvidence& Evidence, FString& OutReason);
+
+	// BULK, UNCONDITIONAL. Every entity the server holds for this app, whatever declares it, so code-backed and
+	// kit-owned ones too. Each of those raises its own caution, which holds the commit button until acknowledged.
+	TArray<FCrowdyDeleteMark> MarkEverythingOnServer(const FCrowdyDeleteEvidence& Evidence);
+
+	// Whether that mark may be offered. Needs a plan so the findings can name what comes back, and the lists read.
+	// A deployed Game Kit does not refuse it, unlike the server-only mark.
+	bool CanMarkEverythingOnServer(const FCrowdyDeleteEvidence& Evidence, FString& OutReason);
 
 	// THE REFERENCE SCANS. Each is one rule, named so it can be exercised without a plan around it, and each
 	// compares server keys case-sensitively.

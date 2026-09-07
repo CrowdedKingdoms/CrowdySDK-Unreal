@@ -29,6 +29,18 @@ struct PkcePair {
   bool ok() const { return status.ok(); }
 };
 
+/// The refresh selection, with and without the current replication server.
+/// `authorizedServer` is asked for only when a server is named, so a client that
+/// talks to an older Game API (pre v1.83.7) keeps its refresh working.
+inline constexpr const char* kRefreshWithoutServer =
+    "mutation RefreshAppToken { refreshAppToken {"
+    " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl } }";
+inline constexpr const char* kRefreshWithServer =
+    "mutation RefreshAppToken($currentServer: CurrentServerInput) {"
+    " refreshAppToken(currentServer: $currentServer) {"
+    " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl"
+    " authorizedServer { ip4 clientPort } } }";
+
 class PortalAPI : public DomainBase {
  public:
   PortalAPI(std::shared_ptr<graphql::GraphQLClient> gql,
@@ -75,9 +87,23 @@ class PortalAPI : public DomainBase {
   /// validate and install GraphQL + native-UDP token material together after
   /// quiescing the old connection.
   AppTokenResponse refresh(bool install = true) const {
-    auto r = AppTokenResponse::fromJson(execUnwrap(
-        "mutation RefreshAppToken { refreshAppToken {"
-        " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl } }"));
+    auto r = AppTokenResponse::fromJson(execUnwrap(kRefreshWithoutServer));
+    if (install && !r.token.empty()) auth_->setToken(r.token);
+    return r;
+  }
+
+  /// The native form: name the replication server this client is connected to
+  /// (the ip4 + clientPort serverWithLeastClients handed it) and the Game API
+  /// authorizes the NEW token there, answering `authorizedServer` (ck-api v1.83.7).
+  /// A Buddy drops datagrams for a token it was never told about, so this is what
+  /// lets a client keep its session across a refresh; when `authorizedServer` comes
+  /// back empty the caller must re-assign as before.
+  AppTokenResponse refresh(std::string_view currentIp4, int currentClientPort,
+                           bool install = true) const {
+    graphql::JVal vars;
+    vars["currentServer"]["ip4"] = currentIp4;
+    vars["currentServer"]["clientPort"] = currentClientPort;
+    auto r = AppTokenResponse::fromJson(execUnwrap(kRefreshWithServer, vars));
     if (install && !r.token.empty()) auth_->setToken(r.token);
     return r;
   }
@@ -86,8 +112,7 @@ class PortalAPI : public DomainBase {
       std::function<void(graphql::GraphQLOutcome, AppTokenResponse)> cb,
       bool install = true) const {
     execUnwrapAsync(
-        "mutation RefreshAppToken { refreshAppToken {"
-        " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl } }",
+        kRefreshWithoutServer,
         graphql::JVal(), {},
         [auth = auth_, install, cb = std::move(cb)](
             graphql::GraphQLOutcome out) mutable {

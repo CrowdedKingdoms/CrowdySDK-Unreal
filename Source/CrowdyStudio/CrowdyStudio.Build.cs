@@ -16,6 +16,7 @@ public class CrowdyStudio : ModuleRules
 		{
 			"Engine",
 			"InputCore",
+			"ApplicationCore",
 			"Slate",
 			"SlateCore",
 			"ToolWidgets",

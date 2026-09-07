@@ -72,6 +72,20 @@ private:
 	FReply OnLoadMoreClicked();
 	FReply OnShowInModelsClicked();
 	FReply OnDeleteInstanceClicked();
+	FReply OnCopyInstanceIdClicked();
+	FReply OnDeleteAllOfModelClicked();
+	FReply OnDeleteAllInAppClicked();
+	FReply OnCancelPurgeClicked();
+
+	// Whether a purge this tab's app owns is running. Every delete control disables while one is, since the list
+	// underneath them is being emptied and a row highlighted before it started may already be gone.
+	bool IsPurgeRunning() const;
+
+	// What the last purge did, shown until the reader asks for something else. The controller's status line does
+	// not survive the purge's own re-list, which writes a plain row count over it.
+	FText PurgeOutcomeLine;
+	// The shared confirm behind both purge buttons. TypeName empty means the whole app.
+	void ConfirmAndPurge(const FString& TypeName);
 
 	// Ask for one page of live instances under the filters as they are typed right now. bAppend asks for the page
 	// after the ones already held; it is honoured only while the filters still match the ones those pages were
@@ -82,6 +96,8 @@ private:
 	void HandleContainerTypesChanged();
 	void HandleContainersChanged();
 	void HandleContainerStateChanged();
+	void HandleContainerPurgeProgress();
+	void HandleContainerPurgeFinished();
 	// The active app changed and its token was minted.
 	void HandleAppChanged();
 

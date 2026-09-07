@@ -401,11 +401,28 @@ void Connection::housekeeping() {
   }
   if (config_.refreshLeadMs > 0 && expiresAt > 0 &&
       clock_.epochMillis() >= expiresAt - config_.refreshLeadMs) {
-    auto refreshed = provider_->refreshToken();
+    Assignment current;
+    {
+      std::lock_guard lock(assignmentMutex_);
+      current = assignment_;
+    }
+    auto refreshed = provider_->refreshToken(&current);
     if (refreshed.ok()) {
       setToken(refreshed.value());
-      if (logger_.enabled(core::LogLevel::Info))
-        logger_.log(core::LogLevel::Info, "app token refreshed");
+      if (refreshed.value().authorizedOnCurrentServer) {
+        if (logger_.enabled(core::LogLevel::Info))
+          logger_.log(core::LogLevel::Info,
+                      "app token refreshed; authorized on the current server, keeping it");
+      } else {
+        // THE NEW TOKEN IS KNOWN TO NO BUDDY. A Buddy drops datagrams for a token it
+        // was never told about -- no refusal, no notification -- so keeping this
+        // socket would leave the client mute until the watchdog (opt-in) noticed.
+        // Re-assign: serverWithLeastClients installs the token on the server it picks.
+        // Before 2026-09-06 this was silently the state after EVERY refresh.
+        logger_.log(core::LogLevel::Info,
+                    "app token refreshed; not authorized on the current server, reassigning");
+        reconnectRequested_.store(true, std::memory_order_release);
+      }
     } else {
       // Push expiry forward a little so a failing refresh endpoint does not
       // busy-loop; the server will emit TOKEN_EXPIRED if it truly lapses.

@@ -111,6 +111,11 @@ public:
 	// offer the kit's own models and attributes for deletion. Asked every paint, and cheap for that reason.
 	bool CanMarkEverythingServerOnly(FString& OutReason) const;
 
+	// Mark every entity this app holds on the server, code-backed and kit-owned included. Marks; never commits.
+	void MarkEverythingOnServer();
+
+	bool CanMarkEverythingOnServer(FString& OutReason) const;
+
 	// Open the review over whatever is marked right now. This is the one place this surface reads anything: it
 	// gathers what the controller already holds, then issues the bounded live-model probe for the marked models,
 	// once for the whole set. The sheet appears when that completes.
@@ -274,6 +279,10 @@ private:
 	// plan or the marked set moves rather than while the button is painted.
 	bool bBulkMarkAllowed = false;
 	FText BulkMarkReason;
+
+	// The same pair for the unconditional mark, which is allowed in cases the server-only one refuses.
+	bool bPurgeMarkAllowed = false;
+	FText PurgeMarkReason;
 
 	TSharedPtr<SWidgetSwitcher> PageSwitcher;
 	TSharedPtr<SListView<TSharedPtr<FCrowdyDeleteMark>>> MarkListView;

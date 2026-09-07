@@ -375,6 +375,17 @@ public:
 	// finished. This is the exact remainder a second press runs, not a recomputed guess at one.
 	const TArray<FCrowdyDeleteOp>& GetDeleteRemainder() const { return DeleteRemainder; }
 
+	// Delete every live model this app holds, or every one of a single model when TypeName is set. DESTRUCTIVE and
+	// not undoable, one sequential delete at a time, stopping on the first failure. It reads its own pages rather
+	// than the Live tab's list, which is filtered, and drains until a read comes back empty or a bound is hit.
+	void PurgeContainers(const FString& TypeName, int64 ExpectedAppId);
+	// Stop after the delete in flight. What is already deleted stays deleted, and pressing again clears the rest.
+	void CancelContainerPurge();
+	bool IsContainerPurgeInFlight() const;
+	// How many deletes have settled, for a progress line. There is no total to show it against.
+	int32 GetContainerPurgeCompleted() const { return ContainerPurgeCompleted; }
+	const FCrowdyDeleteOutcome& GetLastContainerPurgeOutcome() const { return LastContainerPurgeOutcome; }
+
 	// Selection
 	void SelectOrg(int64 OrgId);
 	void SelectApp(int64 AppId);
@@ -558,6 +569,11 @@ public:
 	// op was issued: a review continues from this signal, so one that does not arrive leaves the page saying a
 	// delete is under way forever.
 	FSimpleMulticastDelegate OnDeleteCommitFinished;
+	// The same pair for a live-model purge. Progress fires after each delete settles; finished fires ONCE from every
+	// path that ends one, refusals included, EXCEPT the refusal that a purge is already running: announcing there
+	// would tell the tab that the running purge had ended.
+	FSimpleMulticastDelegate OnContainerPurgeProgress;
+	FSimpleMulticastDelegate OnContainerPurgeFinished;
 	FOnStudioStatusMessage OnStatusMessage;
 
 private:
@@ -1125,6 +1141,34 @@ private:
 	// them. The remainder starts with the op that failed, since that one did not complete.
 	FCrowdyDeleteOutcome LastDeleteOutcome;
 	TArray<FCrowdyDeleteOp> DeleteRemainder;
+
+	// How many live models one purge read pulls per page. A page is drained and then re-read, never advanced.
+	static constexpr int32 ContainerPurgePageSize = 200;
+	// The most pages one purge will drain before stopping and saying so. The drain has no total to work against,
+	// so this is its only bound that does not depend on the server running out of live models.
+	static constexpr int32 ContainerPurgeMaxPasses = 200;
+
+	void ReadContainerPurgePage();
+	void RunContainerPurgeWalk(int32 Index);
+	void HandleContainerPurgeReply(int32 Index, FString ContainerId, const TSharedPtr<FJsonObject>& Envelope);
+	// Ends a purge exactly once, clearing its state before it announces so a listener may start another.
+	void FinishContainerPurge(bool bStopped, bool bByCancel, const FString& StoppedOn);
+
+	// The purge in flight: the app it is pinned to (0 when none), the model it is scoped to (empty for the whole
+	// app), and the page it is working through. The serial numbers the purges, so a reply issued by one cannot be
+	// counted into the next after an app switch restored equality.
+	int64 ContainerPurgeAppId = 0;
+	uint64 ContainerPurgeSerial = 0;
+	FString ContainerPurgeTypeName;
+	TArray<FString> ContainerPurgePageIds;
+	int32 ContainerPurgeCompleted = 0;
+	int32 ContainerPurgeAlreadyGone = 0;
+	// Live models this page actually REMOVED. A page that removed none would be read back identically forever, so
+	// it ends the drain; counting the already-gone replies here would keep that loop running.
+	int32 ContainerPurgePageRemoved = 0;
+	int32 ContainerPurgePasses = 0;
+	bool bContainerPurgeCancelRequested = false;
+	FCrowdyDeleteOutcome LastContainerPurgeOutcome;
 	// The ops the running walk owns, held here rather than only captured by the walk because ending one has to
 	// state the remainder and name what it stopped on. It doubles as the walk's identity: a reply that arrives
 	// after its walk ended (the app was switched away and back, so the transport stopped dropping replies) finds

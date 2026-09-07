@@ -1,4 +1,4 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #pragma once
 
@@ -33,7 +33,10 @@ class UCrowdyWorkerThreadsSubsystem;
 class UCrowdyGameSession;
 class UVoiceChatSubsystem;
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnLogin, bool, bSuccess, FString, GameToken);
+// The second parameter is a human-readable message, empty on success and carrying the failure reason
+// otherwise. It must never carry a token: these are BlueprintAssignable, so anything put here can be
+// printed to the screen by a consuming project.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnLogin, bool, bSuccess, FString, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnRegister, bool, bSuccess, FString, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnLogout, bool, bSuccess);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnUDPAddressNotify, bool, bSuccess, bool, GateKeep);

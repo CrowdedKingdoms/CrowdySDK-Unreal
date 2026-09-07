@@ -4618,6 +4618,322 @@ bool FCrowdyStudioController::IsDeleteCommitInFlight() const
 	return DeleteCommitAppId != 0 && DeleteCommitAppId == SelectedAppId;
 }
 
+bool FCrowdyStudioController::IsContainerPurgeInFlight() const
+{
+	return ContainerPurgeAppId != 0 && ContainerPurgeAppId == SelectedAppId;
+}
+
+void FCrowdyStudioController::CancelContainerPurge()
+{
+	// Latched rather than acted on: a delete is in flight and stopping it here would leave the walk to run on past
+	// a purge that had already announced itself finished. Only ever set, never cleared, or a second press with
+	// nothing pinned would withdraw the first one's request.
+	if (ContainerPurgeAppId != 0)
+	{
+		bContainerPurgeCancelRequested = true;
+	}
+}
+
+void FCrowdyStudioController::PurgeContainers(const FString& TypeName, int64 ExpectedAppId)
+{
+	auto Refuse = [this](const FString& Reason)
+	{
+		// Stopped, not a clean sweep of nothing: the default outcome renders as "Deleted 0 live models. Nothing is
+		// left to read.", which is the one sentence a refusal must never produce.
+		LastContainerPurgeOutcome = FCrowdyDeleteOutcome();
+		LastContainerPurgeOutcome.bStopped = true;
+		SetStatus(Reason, true);
+		OnContainerPurgeFinished.Broadcast();
+	};
+
+	if (ContainerPurgeAppId != 0)
+	{
+		// A purge already running owns this state, and announcing a refusal would tell the tab THAT purge had ended.
+		SetStatus(TEXT("A live-model delete is already running."), true);
+		return;
+	}
+	if (SelectedAppId == 0)
+	{
+		Refuse(TEXT("Select an app first."));
+		return;
+	}
+	if (SelectedAppId != ExpectedAppId)
+	{
+		Refuse(TEXT("These live models were listed for a different app. Reload this app's live models first."));
+		return;
+	}
+
+	ContainerPurgeAppId = SelectedAppId;
+	++ContainerPurgeSerial;
+	ContainerPurgeTypeName = TypeName;
+	ContainerPurgePageIds.Reset();
+	ContainerPurgeCompleted = 0;
+	ContainerPurgeAlreadyGone = 0;
+	ContainerPurgePageRemoved = 0;
+	ContainerPurgePasses = 0;
+	bContainerPurgeCancelRequested = false;
+	LastContainerPurgeOutcome = FCrowdyDeleteOutcome();
+
+	SetStatus(TypeName.IsEmpty()
+		? FString(TEXT("Deleting every live model in this app..."))
+		: FString::Printf(TEXT("Deleting every live model of %s..."), *TypeName), false);
+
+	OnContainerPurgeProgress.Broadcast();
+	ReadContainerPurgePage();
+}
+
+void FCrowdyStudioController::ReadContainerPurgePage()
+{
+	const int64 ReadForAppId = ContainerPurgeAppId;
+	const uint64 ReadForSerial = ContainerPurgeSerial;
+
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	SetBigIntField(Variables, TEXT("appId"), ReadForAppId);
+	if (ContainerPurgeTypeName.IsEmpty())
+	{
+		Variables->SetField(TEXT("typeName"), MakeShared<FJsonValueNull>());
+	}
+	else
+	{
+		Variables->SetStringField(TEXT("typeName"), ContainerPurgeTypeName);
+	}
+	// No session filter: a purge that skipped session-owned live models would report the app cleared while they
+	// stood, and they are exactly what a model delete is then refused over.
+	Variables->SetField(TEXT("sessionId"), MakeShared<FJsonValueNull>());
+	Variables->SetNumberField(TEXT("limit"), ContainerPurgePageSize);
+	// Always offset zero. Each delete shifts the rest of the ordering down, so a window that advanced would step
+	// over exactly as many live models as it had just deleted.
+	Variables->SetNumberField(TEXT("offset"), 0);
+
+	SendGame(ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainers"), Variables,
+		[this, ReadForAppId, ReadForSerial](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			if (ContainerPurgeAppId != ReadForAppId || ContainerPurgeSerial != ReadForSerial)
+			{
+				return;
+			}
+
+			// Checked here as well as in the walk. A Stop pressed while this read was outstanding would otherwise
+			// be discarded by an empty page, which reports the run as a clean sweep the reader never let finish.
+			if (bContainerPurgeCancelRequested)
+			{
+				FinishContainerPurge(true, /*bByCancel*/ true, FString());
+				return;
+			}
+
+			TArray<TSharedPtr<FStudioContainer>> Page;
+			CrowdyStudioGql::ParseContainers(Envelope, TEXT("gameModelContainers"), Page);
+
+			TArray<FString> Kept;
+			for (const TSharedPtr<FStudioContainer>& Container : Page)
+			{
+				if (Kept.Num() >= ContainerPurgePageSize)
+				{
+					break; // the limit was asked for, never trusted: a longer reply is not licence to delete more
+				}
+				if (!Container.IsValid() || Container->ContainerId.IsEmpty())
+				{
+					continue;
+				}
+				// The type is a request argument the server may not have honoured, and the confirm named one model.
+				// Re-checking each row is what the runtime's own container read already does with bindingKey.
+				if (!ContainerPurgeTypeName.IsEmpty()
+					&& !Container->TypeName.Equals(ContainerPurgeTypeName, ESearchCase::CaseSensitive))
+				{
+					continue;
+				}
+				Kept.Add(Container->ContainerId);
+			}
+
+			// A page the server filled but this could take nothing from is not an empty app. Reporting it as one is
+			// the single answer that lets a half-drained app read as cleared.
+			if (Kept.Num() == 0 && Page.Num() > 0)
+			{
+				FinishContainerPurge(true, false, TEXT("live models this could not identify or match"));
+				return;
+			}
+
+			// Nothing came back at all, which is the only evidence a drain has that it is over.
+			if (Kept.Num() == 0)
+			{
+				FinishContainerPurge(/*bStopped*/ false, /*bByCancel*/ false, FString());
+				return;
+			}
+
+			// A page identical to the one just drained means the deletes are not sticking, whatever they answered.
+			// Container ids are opaque, and both FString::operator== and TArray equality fold case, so this is
+			// spelled out: two ids differing only in case are two live models.
+			const bool bSamePageAgain = ContainerPurgePageIds.Num() == Kept.Num()
+				&& !ContainerPurgePageIds.IsEmpty()
+				&& [&]()
+				{
+					for (int32 Index = 0; Index < Kept.Num(); ++Index)
+					{
+						if (!ContainerPurgePageIds[Index].Equals(Kept[Index], ESearchCase::CaseSensitive))
+						{
+							return false;
+						}
+					}
+					return true;
+				}();
+			if (bSamePageAgain)
+			{
+				FinishContainerPurge(true, false, TEXT("live models that came straight back"));
+				return;
+			}
+
+			// The drain is unbounded by design, so it needs one bound that is not the server's cooperation. A live
+			// app recreates binding-key containers under NEW ids as fast as this deletes them, which no comparison
+			// of one page against the last can see, and the pass count is the only thing that rises in that case.
+			if (++ContainerPurgePasses > ContainerPurgeMaxPasses)
+			{
+				FinishContainerPurge(true, false, TEXT("live models that kept arriving faster than this could clear them"));
+				return;
+			}
+
+			ContainerPurgePageIds = MoveTemp(Kept);
+			ContainerPurgePageRemoved = 0;
+			RunContainerPurgeWalk(0);
+		},
+		[this, ReadForAppId, ReadForSerial]()
+		{
+			if (ContainerPurgeAppId != ReadForAppId || ContainerPurgeSerial != ReadForSerial)
+			{
+				return;
+			}
+			// A failed read says nothing about what is left, and reporting none would be the one answer that lets a
+			// half-drained app read as cleared. bLastFailureWasCanceled is only meaningful inside this call: a
+			// client torn down here refused nothing, and blaming the server sends the reader hunting for a cause.
+			FinishContainerPurge(true, bLastFailureWasCanceled, TEXT("a read of what is left"));
+		});
+}
+
+void FCrowdyStudioController::RunContainerPurgeWalk(int32 Index)
+{
+	if (bContainerPurgeCancelRequested)
+	{
+		FinishContainerPurge(true, /*bByCancel*/ true, FString());
+		return;
+	}
+
+	if (!ContainerPurgePageIds.IsValidIndex(Index))
+	{
+		if (ContainerPurgePageRemoved == 0)
+		{
+			FinishContainerPurge(true, false, TEXT("live models the server kept listing but did not remove"));
+			return;
+		}
+		ReadContainerPurgePage();
+		return;
+	}
+
+	const int64 RunForAppId = ContainerPurgeAppId;
+	const uint64 RunForSerial = ContainerPurgeSerial;
+	const FString ContainerId = ContainerPurgePageIds[Index];
+
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	SetBigIntField(Variables, TEXT("appId"), RunForAppId);
+	Variables->SetStringField(TEXT("containerId"), ContainerId);
+
+	SendGame(ECrowdyCppApiDomain::GameModel, TEXT("GameModelDeleteContainer"), Variables,
+		[this, Index, ContainerId, RunForAppId, RunForSerial](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			if (ContainerPurgeAppId != RunForAppId || ContainerPurgeSerial != RunForSerial)
+			{
+				return;
+			}
+			HandleContainerPurgeReply(Index, ContainerId, Envelope);
+		},
+		[this, ContainerId, RunForAppId, RunForSerial]()
+		{
+			if (ContainerPurgeAppId != RunForAppId || ContainerPurgeSerial != RunForSerial)
+			{
+				return;
+			}
+			// A cancellation names no live model, because none of them refused anything.
+			FinishContainerPurge(true, bLastFailureWasCanceled,
+				bLastFailureWasCanceled ? FString() : FString::Printf(TEXT("the live model %s"), *ContainerId));
+		});
+}
+
+// ContainerId by value: the walk this ends can clear the array a caller may have taken it from.
+void FCrowdyStudioController::HandleContainerPurgeReply(int32 Index, FString ContainerId,
+	const TSharedPtr<FJsonObject>& Envelope)
+{
+	// A false reply means the live model was not there, which is an idempotent no-op and counts as success. Only a
+	// reply whose shape carries no answer at all stops the drain.
+	const ECrowdyDeleteReply Reply =
+		CrowdyGameModelDelete::ReadDeleteReply(Envelope, TEXT("gameModelDeleteContainer"));
+	if (!CrowdyGameModelDelete::IsDeleteReplySuccess(Reply))
+	{
+		FinishContainerPurge(true, false, FString::Printf(TEXT("the live model %s"), *ContainerId));
+		return;
+	}
+
+	++ContainerPurgeCompleted;
+	if (Reply == ECrowdyDeleteReply::AlreadyGone)
+	{
+		++ContainerPurgeAlreadyGone;
+	}
+	else
+	{
+		++ContainerPurgePageRemoved;
+	}
+
+	OnContainerPurgeProgress.Broadcast();
+	RunContainerPurgeWalk(Index + 1);
+}
+
+void FCrowdyStudioController::FinishContainerPurge(bool bStopped, bool bByCancel, const FString& StoppedOn)
+{
+	if (ContainerPurgeAppId == 0)
+	{
+		return; // already ended; every path that can end a purge reaches here and only the first one may
+	}
+
+	FCrowdyDeleteOutcome Outcome;
+	Outcome.AppId = ContainerPurgeAppId;
+	Outcome.Completed = ContainerPurgeCompleted;
+	Outcome.AlreadyGone = ContainerPurgeAlreadyGone;
+	// Left at zero deliberately. Nothing here ever knew how many live models the app held, and Total is the field
+	// StopText and CompletionText render as "N of M"; a purge must never reach a formatter that can say that.
+	Outcome.bStopped = bStopped;
+	Outcome.bStoppedByCancel = bByCancel;
+	Outcome.StoppedOnDescription = StoppedOn;
+
+	const int64 PurgedAppId = ContainerPurgeAppId;
+
+	ContainerPurgeAppId = 0;
+	ContainerPurgeTypeName.Reset();
+	ContainerPurgePageIds.Reset();
+	ContainerPurgeCompleted = 0;
+	ContainerPurgeAlreadyGone = 0;
+	ContainerPurgePageRemoved = 0;
+	ContainerPurgePasses = 0;
+	bContainerPurgeCancelRequested = false;
+	LastContainerPurgeOutcome = Outcome;
+
+	SetStatus(CrowdyGameModelDelete::PurgeText(Outcome), bStopped && !bByCancel);
+
+	// Only when a paged read has actually happened. With no limit recorded, ReadContainers omits it entirely and
+	// re-reads every live model in the app unpaged, which is the cost this tab's paging exists to avoid.
+	if (Outcome.Completed > 0 && SelectedAppId == PurgedAppId && LastContainerLimit > 0)
+	{
+		// Re-read exactly the window the Live tab has on screen. Keep, because a shorter answer here is the purge
+		// working rather than evidence that the list is over.
+		ReadContainers(LastContainerTypeFilter, LastContainerSessionFilter, LastContainerOffset + LastContainerLimit,
+			0, /*bAppend*/ false, EContainerPageEvidence::Keep);
+	}
+
+	if (Outcome.Completed > 0)
+	{
+		CrowdyStudioSyncService::InvalidateAllCachedStatuses();
+	}
+
+	OnContainerPurgeProgress.Broadcast();
+	OnContainerPurgeFinished.Broadcast();
+}
+
 void FCrowdyStudioController::CommitDeletePlan(const FCrowdyDeletePlan& Plan, int64 ExpectedAppId)
 {
 	// A walk already running owns the delete state. Announcing a refusal here would tell the review that THAT walk
@@ -5024,6 +5340,7 @@ void FCrowdyStudioController::ClearAppScopedState()
 	// hanging leaves the page reporting a delete that is still running.
 	FinishLiveModelCount();
 	FinishDeleteWalk(DeleteCommitCompleted, /*bWasCanceled*/ true);
+	FinishContainerPurge(/*bStopped*/ true, /*bByCancel*/ true, FString());
 
 	// Empty every list, policy and selection the OnSelectedAppChanged views render, so switching apps never leaves
 	// the previous app's teams, channels, grids or game-model schema on screen while the new app's token is minted -

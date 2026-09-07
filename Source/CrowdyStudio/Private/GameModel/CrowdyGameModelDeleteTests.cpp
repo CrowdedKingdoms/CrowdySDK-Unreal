@@ -1885,6 +1885,175 @@ bool FCrowdyDeleteBulkMarkIsRefusedOnAKitAppTest::RunTest(const FString& Paramet
 	return true;
 }
 
+// A purge learns how many live models there were by draining them, so its line must never name a total. Borrowing
+// StopText here would print "after 47 of 47 ... finish the remaining 0", which reads as a completed job.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyDeletePurgeTextNeverNamesATotalTest,
+	"CrowdySDK.CrowdyStudio.DeletePurgeTextNeverNamesATotal", CrowdyGameModelDeleteTestFlags)
+
+bool FCrowdyDeletePurgeTextNeverNamesATotalTest::RunTest(const FString& Parameters)
+{
+	FCrowdyDeleteOutcome Done;
+	Done.Completed = 47;
+	const FString DoneText = CrowdyGameModelDelete::PurgeText(Done);
+	TestTrue(TEXT("A finished purge names what it deleted"), DoneText.Contains(TEXT("47 live models")));
+	TestTrue(TEXT("And says the app is clear"), DoneText.Contains(TEXT("Nothing is left to read")));
+
+	// One is one, not "1 live models".
+	FCrowdyDeleteOutcome Single;
+	Single.Completed = 1;
+	TestTrue(TEXT("A single deletion reads as one"),
+		CrowdyGameModelDelete::PurgeText(Single).Contains(TEXT("1 live model.")));
+
+	// The already-gone half is reported separately, so the count never claims deletions that did not happen.
+	FCrowdyDeleteOutcome Mixed;
+	Mixed.Completed = 10;
+	Mixed.AlreadyGone = 3;
+	const FString MixedText = CrowdyGameModelDelete::PurgeText(Mixed);
+	TestTrue(TEXT("Only the real deletions are counted"), MixedText.Contains(TEXT("7 live models")));
+	TestTrue(TEXT("And the rest are named as already gone"), MixedText.Contains(TEXT("3 were already gone")));
+
+	FCrowdyDeleteOutcome Cancelled;
+	Cancelled.Completed = 5;
+	Cancelled.bStopped = true;
+	Cancelled.bStoppedByCancel = true;
+	const FString CancelText = CrowdyGameModelDelete::PurgeText(Cancelled);
+	// Its own sentence, not the generic stop's. A cancellation and a refusal are different events, and a reader
+	// told "stopped" with no cause goes looking for a server failure that never happened.
+	TestTrue(TEXT("A cancellation says the reader stopped it"), CancelText.Contains(TEXT("at your request")));
+	TestTrue(TEXT("And that nothing refused it"), CancelText.Contains(TEXT("Nothing refused it")));
+	TestFalse(TEXT("A cancellation never claims the app is clear"),
+		CancelText.Contains(TEXT("Nothing is left to read")));
+
+	// The generic stop must NOT borrow the cancellation's wording, or the branch above gates nothing.
+	FCrowdyDeleteOutcome PlainStop;
+	PlainStop.Completed = 5;
+	PlainStop.bStopped = true;
+	TestFalse(TEXT("A stop that was not cancelled does not claim the reader stopped it"),
+		CrowdyGameModelDelete::PurgeText(PlainStop).Contains(TEXT("at your request")));
+
+	FCrowdyDeleteOutcome Stopped;
+	Stopped.Completed = 5;
+	Stopped.bStopped = true;
+	Stopped.StoppedOnDescription = TEXT("the live model abc");
+	TestTrue(TEXT("A stop names what it stopped on"),
+		CrowdyGameModelDelete::PurgeText(Stopped).Contains(TEXT("the live model abc")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyDeleteUnconditionalMarkTakesCodeBackedTooTest,
+	"CrowdySDK.CrowdyStudio.DeleteUnconditionalMarkTakesCodeBackedToo", CrowdyGameModelDeleteTestFlags)
+
+bool FCrowdyDeleteUnconditionalMarkTakesCodeBackedTooTest::RunTest(const FString& Parameters)
+{
+	FCrowdyModelSnapshot Snapshot;
+	DeleteTestDeclareType(Snapshot, TEXT("Hero"), { TEXT("Health") });
+	DeleteTestDeclareFunction(Snapshot, TEXT("Hero"), TEXT("DealDamage"));
+	DeleteTestDeclareAutomation(Snapshot, TEXT("HeroRegen"));
+
+	FCrowdyDeleteEvidence Evidence = DeleteTestEvidence();
+	Evidence.Snapshot = MakeShared<FCrowdyModelSnapshot>(Snapshot);
+	Evidence.Types.Add(DeleteTestType(TEXT("Hero")));
+	Evidence.Types.Add(DeleteTestType(TEXT("LegacyChest")));
+	Evidence.Functions.Add(DeleteTestFunction(TEXT("Hero"), TEXT("DealDamage")));
+	Evidence.Functions.Add(DeleteTestFunction(TEXT("Hero"), TEXT("legacy_heal")));
+	Evidence.Functions.Add(DeleteTestFunction(TEXT("Hero"), TEXT("__crowdy_touch_hero")));
+	Evidence.Functions.Add(DeleteTestFunction(FString(), TEXT("floating")));
+	Evidence.Automations.Add(DeleteTestAutomation(TEXT("HeroRegen"), TEXT("Hero")));
+	Evidence.Automations.Add(DeleteTestAutomation(TEXT("legacy_tick"), TEXT("Hero")));
+	DeleteTestSetAttributes(Evidence, TEXT("Hero"), { TEXT("Health"), TEXT("LegacyMana"), TEXT("crowdy_rev") });
+
+	const TArray<FCrowdyDeleteMark> Marks = CrowdyGameModelDelete::MarkEverythingOnServer(Evidence);
+
+	auto Holds = [&Marks](const FCrowdyDeleteMark& Mark)
+	{
+		return CrowdyGameModelDelete::ContainsMark(Marks, Mark);
+	};
+
+	TestTrue(TEXT("A model the project declares is offered"),
+		Holds(CrowdyGameModelDelete::MarkModel(TEXT("Hero"), TEXT("Hero"))));
+	TestTrue(TEXT("So is an attribute it declares"),
+		Holds(CrowdyGameModelDelete::MarkAttribute(TEXT("Hero"), TEXT("Health"), TEXT("Health"))));
+	TestTrue(TEXT("So is a function an effect authors"),
+		Holds(CrowdyGameModelDelete::MarkFunction(TEXT("Hero"), TEXT("DealDamage"), TEXT("DealDamage"))));
+	TestTrue(TEXT("So is an automation an effect authors"),
+		Holds(CrowdyGameModelDelete::MarkAutomation(TEXT("HeroRegen"), TEXT("HeroRegen"))));
+	TestTrue(TEXT("And everything the server-only mark already took"),
+		Holds(CrowdyGameModelDelete::MarkModel(TEXT("LegacyChest"), TEXT("LegacyChest"))));
+
+	// Skipped even here. Nothing can classify a function with no scope, so it would arrive with no caution saying
+	// the next Sync puts it back, which is precisely what this mark's label promises the review will tell you.
+	TestFalse(TEXT("A function with no model is still not offered"),
+		Holds(CrowdyGameModelDelete::MarkFunction(FString(), TEXT("floating"), TEXT("floating"))));
+
+	// The SDK's own wiring is still nobody's design surface, and a model delete cascades it regardless.
+	TestFalse(TEXT("The revision attribute is never offered"),
+		Holds(CrowdyGameModelDelete::MarkAttribute(TEXT("Hero"), TEXT("crowdy_rev"), TEXT("crowdy_rev"))));
+	TestFalse(TEXT("Nor is the touch function"),
+		Holds(CrowdyGameModelDelete::MarkFunction(TEXT("Hero"), TEXT("__crowdy_touch_hero"), TEXT("__crowdy_touch_hero"))));
+
+	TestTrue(TEXT("It is a superset of the server-only mark"),
+		Marks.Num() > CrowdyGameModelDelete::MarkEverythingServerOnly(Evidence).Num());
+
+	// THE GATE. Taking code-backed entities raises the comes-back-on-sync caution, and one caution is what puts the
+	// ladder on Acknowledge, so the commit button stays disabled until the reader ticks the box.
+	DeleteTestSetLiveCount(Evidence, TEXT("Hero"), ECrowdyLiveCountState::Exact, 0);
+	DeleteTestSetLiveCount(Evidence, TEXT("LegacyChest"), ECrowdyLiveCountState::Exact, 0);
+	const FCrowdyDeletePlan Plan = CrowdyGameModelDelete::BuildPlan(Marks, Evidence);
+	TestEqual(TEXT("An unconditional mark demands an acknowledgement"),
+		Plan.Ladder, ECrowdyDeleteLadder::Acknowledge);
+	TestTrue(TEXT("And says what comes back"),
+		Plan.Findings.ContainsByPredicate([](const FCrowdyDeleteFinding& Finding)
+		{
+			return Finding.Kind == ECrowdyDeleteFindingKind::RecreatedByTheNextSync;
+		}));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyDeleteUnconditionalMarkIsOfferedOnAKitAppTest,
+	"CrowdySDK.CrowdyStudio.DeleteUnconditionalMarkIsOfferedOnAKitApp", CrowdyGameModelDeleteTestFlags)
+
+bool FCrowdyDeleteUnconditionalMarkIsOfferedOnAKitAppTest::RunTest(const FString& Parameters)
+{
+	FCrowdyModelSnapshot Snapshot;
+	DeleteTestDeclareType(Snapshot, TEXT("Hero"), { TEXT("Health") });
+	Snapshot.RecognizedKitTypePrefixes.Add(TEXT("CK"));
+
+	FCrowdyDeleteEvidence KitApp = DeleteTestEvidence();
+	KitApp.Snapshot = MakeShared<FCrowdyModelSnapshot>(Snapshot);
+	KitApp.Types.Add(DeleteTestType(TEXT("Hero")));
+	KitApp.Types.Add(DeleteTestType(TEXT("CKArena")));
+
+	// The server-only mark refuses a kit app because it cannot tell the kit's models from orphans. This one is not
+	// trying to: it takes them knowingly, and each one arrives carrying its own caution.
+	FString ServerOnlyReason;
+	TestFalse(TEXT("The server-only mark still refuses a kit app"),
+		CrowdyGameModelDelete::CanMarkEverythingServerOnly(KitApp, ServerOnlyReason));
+
+	FString Reason;
+	TestTrue(TEXT("The unconditional mark is offered on a kit app"),
+		CrowdyGameModelDelete::CanMarkEverythingOnServer(KitApp, Reason));
+	TestTrue(TEXT("With nothing to explain"), Reason.IsEmpty());
+	TestTrue(TEXT("And it takes the kit's own model"),
+		CrowdyGameModelDelete::ContainsMark(
+			CrowdyGameModelDelete::MarkEverythingOnServer(KitApp),
+			CrowdyGameModelDelete::MarkModel(TEXT("CKArena"), TEXT("CKArena"))));
+
+	// Still refused without a plan: the marking needs none, but the findings need one to name what comes back.
+	FCrowdyDeleteEvidence NoPlan = KitApp;
+	NoPlan.Snapshot.Reset();
+	FString NoPlanReason;
+	TestFalse(TEXT("With no plan captured the unconditional mark is refused"),
+		CrowdyGameModelDelete::CanMarkEverythingOnServer(NoPlan, NoPlanReason));
+	TestTrue(TEXT("And names the press that settles it"), NoPlanReason.Contains(TEXT("Preview changes")));
+
+	FCrowdyDeleteEvidence HalfRead = KitApp;
+	HalfRead.bAutomationsRead = false;
+	FString HalfReason;
+	TestFalse(TEXT("Half-read lists refuse it too"),
+		CrowdyGameModelDelete::CanMarkEverythingOnServer(HalfRead, HalfReason));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyDeleteWarnsWhenSomethingWillPutItBackTest,
 	"CrowdySDK.CrowdyStudio.DeleteWarnsWhenSomethingWillPutItBack", CrowdyGameModelDeleteTestFlags)
 

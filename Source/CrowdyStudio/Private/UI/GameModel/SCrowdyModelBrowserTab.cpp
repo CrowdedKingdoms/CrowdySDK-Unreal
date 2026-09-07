@@ -202,6 +202,14 @@ void SCrowdyModelBrowserTab::Construct(const FArguments& InArgs)
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(2.0f, 6.0f, 2.0f, 0.0f)
 		[
+			// What the rail is showing against what the app has. The search box and the source strip both hide rows
+			// silently, so without this a narrowed list and a short one look identical.
+			SAssignNew(ModelCountText, STextBlock)
+			.TextStyle(&Style, "Crowdy.Text.Subtle")
+		]
+
+		+ SVerticalBox::Slot().AutoHeight().Padding(2.0f, 6.0f, 2.0f, 0.0f)
+		[
 			// How old the source and status columns are. A table full of confident-looking cells does not go grey
 			// the way a stale paragraph reads as stale, so it says here, once and quietly, what moment it describes.
 			SAssignNew(FreshnessText, STextBlock)
@@ -601,6 +609,23 @@ void SCrowdyModelBrowserTab::ApplyFilter(bool bModelsRebuilt)
 	if (ModelListView.IsValid())
 	{
 		ModelListView->RequestListRefresh();
+	}
+
+	if (ModelCountText.IsValid())
+	{
+		// Silent until a read has landed. "0 models" over a read nobody made, one still out, or one that failed
+		// states as a fact about the app what is only a fact about this editor, and the placeholder below would be
+		// saying the opposite at the same time.
+		const bool bRead = Controller.IsValid()
+			&& Controller->GetFamilyLoadState(ECrowdyModelFamily::Models) == ECrowdyModelLoadState::Loaded;
+
+		// Naming both numbers only when they differ: "12 of 12 models" reads as a filter nobody applied.
+		ModelCountText->SetText(!bRead
+			? FText::GetEmpty()
+			: FilteredModels.Num() == AllModels.Num()
+				? FText::FromString(CountPhrase(AllModels.Num(), TEXT("model"), TEXT("models")))
+				: FText::FromString(FString::Printf(TEXT("%d of %s"), FilteredModels.Num(),
+					*CountPhrase(AllModels.Num(), TEXT("model"), TEXT("models")))));
 	}
 
 	UpdateListPlaceholder();

@@ -187,6 +187,7 @@ private:
 	TSharedPtr<SSearchBox> SearchBox;
 	TSharedPtr<SListView<TSharedPtr<FCrowdyModelSummary>>> ModelListView;
 	TSharedPtr<STextBlock> ModelListPlaceholderText;
+	TSharedPtr<STextBlock> ModelCountText;
 	TSharedPtr<STextBlock> FreshnessText;
 	TSharedPtr<STextBlock> MarkModelLabelText;
 	// Why the highlighted model offers no delete, said where the control would have been. A model the project

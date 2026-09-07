@@ -4,6 +4,7 @@
 
 #include "GameModel/CrowdyModelLedger.h"
 #include "GameModel/CrowdyModelLoadState.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "Misc/MessageDialog.h"
 #include "Model/FCrowdyStudioController.h"
 #include "Style/CrowdyStudioStyle.h"
@@ -99,6 +100,8 @@ void SCrowdyLiveModelsTab::Construct(const FArguments& InArgs)
 		Controller->OnContainerTypesChanged.AddSP(this, &SCrowdyLiveModelsTab::HandleContainerTypesChanged);
 		Controller->OnContainersChanged.AddSP(this, &SCrowdyLiveModelsTab::HandleContainersChanged);
 		Controller->OnContainerStateChanged.AddSP(this, &SCrowdyLiveModelsTab::HandleContainerStateChanged);
+		Controller->OnContainerPurgeProgress.AddSP(this, &SCrowdyLiveModelsTab::HandleContainerPurgeProgress);
+		Controller->OnContainerPurgeFinished.AddSP(this, &SCrowdyLiveModelsTab::HandleContainerPurgeFinished);
 	}
 
 	// The app this tab's contents belong to, as of construction. The page is built long after a remembered app was
@@ -131,6 +134,8 @@ void SCrowdyLiveModelsTab::Construct(const FArguments& InArgs)
 			.ButtonStyle(&Style, "Crowdy.Button.Secondary")
 			.ContentPadding(FMargin(13.0f, 7.0f))
 			.HAlign(HAlign_Center)
+			.ToolTipText(LOCTEXT("LiveRefreshTip", "Read the first page of live models under the filters above, replacing what is listed."))
+			.IsEnabled_Lambda([this]() { return !bReadPending && !IsPurgeRunning(); })
 			.OnClicked(FOnClicked::CreateSP(this, &SCrowdyLiveModelsTab::OnRefreshClicked))
 			[
 				SNew(STextBlock)
@@ -270,21 +275,89 @@ void SCrowdyLiveModelsTab::Construct(const FArguments& InArgs)
 			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 			[ SAssignNew(SelectionCountText, STextBlock).TextStyle(&Style, "Crowdy.Text.Subtle") ]
 
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+			[
+				// The Id column is an opaque uuid that clips, so the only way to get one out of here was to retype it.
+				SNew(SButton)
+				.ButtonStyle(&Style, "Crowdy.Button.Secondary")
+				.ContentPadding(FMargin(11.0f, 7.0f))
+				.ToolTipText(LOCTEXT("LiveCopyIdTip", "Copy the highlighted live model's id to the clipboard."))
+				.IsEnabled_Lambda([this]() { return InstanceTable.IsValid() && InstanceTable->NumSelectedRows() > 0; })
+				.OnClicked(FOnClicked::CreateSP(this, &SCrowdyLiveModelsTab::OnCopyInstanceIdClicked))
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("LiveCopyId", "Copy id"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+					.ColorAndOpacity(FSlateColor::UseForeground())
+				]
+			]
+
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 			[
 				SNew(SButton)
 				.ButtonStyle(&Style, "Crowdy.Button.Secondary")
 				.ContentPadding(FMargin(13.0f, 7.0f))
+				.ToolTipText(LOCTEXT("LiveDeleteInstanceTip", "Delete the highlighted live model from the running app. There is no undo and no soft delete."))
 				// Enabled exactly when a row is highlighted, so the button can never be armed at something the
 				// table is not showing. Counting is cheap enough to ask every paint; copying the selection out is
 				// not, so that waits until the click.
-				.IsEnabled_Lambda([this]() { return InstanceTable.IsValid() && InstanceTable->NumSelectedRows() > 0; })
+				.IsEnabled_Lambda([this]()
+					{ return !IsPurgeRunning() && InstanceTable.IsValid() && InstanceTable->NumSelectedRows() > 0; })
 				.OnClicked(FOnClicked::CreateSP(this, &SCrowdyLiveModelsTab::OnDeleteInstanceClicked))
 				[
 					SNew(STextBlock)
 					.Text(LOCTEXT("LiveDeleteInstance", "Delete live model"))
 					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
 					.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::Danger()))
+				]
+			]
+
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SButton)
+				.ButtonStyle(&Style, "Crowdy.Button.Secondary")
+				.ContentPadding(FMargin(13.0f, 7.0f))
+				.ToolTipText(LOCTEXT("LiveDeleteAllOfModelTip", "Delete every live model of the selected model, not only the ones read so far. It reads its own pages until none are left."))
+				.IsEnabled_Lambda([this]() { return !IsPurgeRunning() && !bReadPending && SelectedTypeName.IsSet(); })
+				.OnClicked(FOnClicked::CreateSP(this, &SCrowdyLiveModelsTab::OnDeleteAllOfModelClicked))
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("LiveDeleteAllOfModel", "Delete all of this model"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+					.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::Danger()))
+				]
+			]
+
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SButton)
+				.ButtonStyle(&Style, "Crowdy.Button.Secondary")
+				.ContentPadding(FMargin(13.0f, 7.0f))
+				.ToolTipText(LOCTEXT("LiveDeleteAllInAppTip", "Delete every live model in this app, of every model and every session. It reads its own pages until none are left."))
+				// Also gated on the tab's own outstanding read: the purge issues a container read of its own, and
+				// whichever landed first would be consumed as the answer to the other one's query.
+				.IsEnabled_Lambda([this]() { return !IsPurgeRunning() && !bReadPending && EditorAppId != 0; })
+				.OnClicked(FOnClicked::CreateSP(this, &SCrowdyLiveModelsTab::OnDeleteAllInAppClicked))
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("LiveDeleteAllInApp", "Delete all in app"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+					.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::Danger()))
+				]
+			]
+
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SButton)
+				.ButtonStyle(&Style, "Crowdy.Button.Secondary")
+				.ContentPadding(FMargin(13.0f, 7.0f))
+				.Visibility_Lambda([this]() { return IsPurgeRunning() ? EVisibility::Visible : EVisibility::Collapsed; })
+				.OnClicked(FOnClicked::CreateSP(this, &SCrowdyLiveModelsTab::OnCancelPurgeClicked))
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("LiveCancelPurge", "Stop"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]
 		]
@@ -360,6 +433,8 @@ SCrowdyLiveModelsTab::~SCrowdyLiveModelsTab()
 		Controller->OnContainerTypesChanged.RemoveAll(this);
 		Controller->OnContainersChanged.RemoveAll(this);
 		Controller->OnContainerStateChanged.RemoveAll(this);
+		Controller->OnContainerPurgeProgress.RemoveAll(this);
+		Controller->OnContainerPurgeFinished.RemoveAll(this);
 	}
 }
 
@@ -395,6 +470,9 @@ void SCrowdyLiveModelsTab::RequestContainers(bool bAppend)
 
 	// What the answer will describe is decided by the filters this read was issued with, not by whatever is in the
 	// boxes when it lands: the user is free to type on while it is in flight.
+	// A new read is the reader asking for something else, so the last purge's line stops standing over it.
+	PurgeOutcomeLine = FText::GetEmpty();
+
 	PendingTypeFilter = TypeFilter;
 	PendingSessionFilter = SessionFilter;
 	bPendingAppend = bAppend;
@@ -453,6 +531,104 @@ FReply SCrowdyLiveModelsTab::OnDeleteInstanceClicked()
 		Controller->DeleteContainer(Row->Name, AppId);
 	}
 	return FReply::Handled();
+}
+
+FReply SCrowdyLiveModelsTab::OnCopyInstanceIdClicked()
+{
+	const TSharedPtr<FCrowdyModelRow> Row = InstanceTable.IsValid() ? InstanceTable->GetSelectedRow() : nullptr;
+	if (Row.IsValid() && !Row->Name.IsEmpty())
+	{
+		FPlatformApplicationMisc::ClipboardCopy(*Row->Name);
+		SetInspectorLine(FText::Format(
+			LOCTEXT("LiveCopiedId", "Copied {0} to the clipboard."), FText::FromString(Row->Name)));
+	}
+	return FReply::Handled();
+}
+
+bool SCrowdyLiveModelsTab::IsPurgeRunning() const
+{
+	return Controller.IsValid() && Controller->IsContainerPurgeInFlight();
+}
+
+FReply SCrowdyLiveModelsTab::OnDeleteAllOfModelClicked()
+{
+	// Read at click time, like the single delete: a background read can drop the selection between the paint that
+	// enabled this and the click. Bailing rather than falling back to an empty name, which means the WHOLE APP.
+	if (!SelectedTypeName.IsSet())
+	{
+		return FReply::Handled();
+	}
+
+	ConfirmAndPurge(SelectedTypeName.GetValue());
+	return FReply::Handled();
+}
+
+FReply SCrowdyLiveModelsTab::OnDeleteAllInAppClicked()
+{
+	ConfirmAndPurge(FString());
+	return FReply::Handled();
+}
+
+FReply SCrowdyLiveModelsTab::OnCancelPurgeClicked()
+{
+	if (Controller.IsValid())
+	{
+		Controller->CancelContainerPurge();
+	}
+	return FReply::Handled();
+}
+
+void SCrowdyLiveModelsTab::ConfirmAndPurge(const FString& TypeName)
+{
+	if (!Controller.IsValid())
+	{
+		return;
+	}
+
+	const int64 AppId = EditorAppId != 0 ? EditorAppId : Controller->GetSelectedAppId();
+	if (AppId == 0)
+	{
+		return;
+	}
+
+	// The confirm promises no count. The server sends no total, so the only honest thing to say is that this
+	// reaches past what the table has read rather than naming a number the page never had.
+	const FText Message = TypeName.IsEmpty()
+		? FText::Format(
+			LOCTEXT("LivePurgeAppConfirm", "DELETE EVERY live model in app {0}, of every model and every session?\n\nThis is DESTRUCTIVE and cannot be undone. There is no soft delete. It is not limited to the live models listed here: it reads its own pages and keeps deleting until none are left, so it will also remove ones these filters hide. A live model held by a binding key is recreated when the runtime next ensures that key."),
+			FText::FromString(FString::Printf(TEXT("%lld"), AppId)))
+		: FText::Format(
+			LOCTEXT("LivePurgeModelConfirm", "DELETE EVERY live model of type \"{0}\" from app {1}?\n\nThis is DESTRUCTIVE and cannot be undone. There is no soft delete. It is not limited to the live models listed here: it reads its own pages and keeps deleting until none are left, so it will also remove ones these filters hide. A live model held by a binding key is recreated when the runtime next ensures that key."),
+			FText::FromString(TypeName),
+			FText::FromString(FString::Printf(TEXT("%lld"), AppId)));
+
+	if (FMessageDialog::Open(EAppMsgType::YesNo, Message) == EAppReturnType::Yes)
+	{
+		Controller->PurgeContainers(TypeName, AppId);
+	}
+}
+
+void SCrowdyLiveModelsTab::HandleContainerPurgeProgress()
+{
+	SyncEditorAppScope();
+	UpdateStatusLine();
+}
+
+void SCrowdyLiveModelsTab::HandleContainerPurgeFinished()
+{
+	SyncEditorAppScope();
+
+	// Held on the tab because the controller's own status line does not survive: the purge's re-list writes
+	// "N live container(s)." over it a moment later, taking the count and, on a stopped run, the sentence saying
+	// how to finish it. It stays until the reader asks for something else.
+	if (Controller.IsValid())
+	{
+		PurgeOutcomeLine = FText::FromString(
+			CrowdyGameModelDelete::PurgeText(Controller->GetLastContainerPurgeOutcome()));
+	}
+
+	UpdateActionBar();
+	UpdateStatusLine();
 }
 
 void SCrowdyLiveModelsTab::HandleAppChanged()
@@ -904,6 +1080,24 @@ void SCrowdyLiveModelsTab::UpdateStatusLine()
 {
 	if (!StatusLineText.IsValid())
 	{
+		return;
+	}
+
+	// A running purge outranks everything below, which all describes a list it is in the middle of emptying. The
+	// count has no total beside it because nothing ever knew one.
+	if (IsPurgeRunning())
+	{
+		StatusLineText->SetText(FText::Format(
+			LOCTEXT("LivePurgeProgress", "Deleting live models: {0} so far. Press Stop to leave the rest."),
+			FText::AsNumber(Controller->GetContainerPurgeCompleted())));
+		return;
+	}
+
+	// What the last purge did, until the reader asks for something else. It outranks the row count, which would
+	// otherwise be taken from rows the purge deleted and the re-list has not replaced yet.
+	if (!PurgeOutcomeLine.IsEmpty())
+	{
+		StatusLineText->SetText(PurgeOutcomeLine);
 		return;
 	}
 

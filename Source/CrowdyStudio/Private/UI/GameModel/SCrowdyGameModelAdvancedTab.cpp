@@ -308,7 +308,30 @@ void SCrowdyGameModelAdvancedTab::Construct(const FArguments& InArgs)
 						// The raw escape hatch, with its consequence written on it. This tab exists to offer
 						// everything the server allows; the Models tab is where a delete that would silently undo
 						// itself is refused instead.
-						+ SHorizontalBox::Slot().AutoWidth()[ Btn(LOCTEXT("DeleteFunction", "Delete on server (recreated by the next Sync)"), false, FOnClicked::CreateSP(this, &SCrowdyGameModelAdvancedTab::OnDeleteFunctionClicked)) ]
+						+ SHorizontalBox::Slot().AutoWidth()
+						[
+							// Armed only at a highlighted function. Without this the click still runs, purely to make
+							// the controller answer with a refusal nobody needed a round trip to hear.
+							// The enable sits on the button, the tooltip on the box around it. Slate truncates the
+							// hit-test path at the first disabled widget, so a tooltip on the disabled widget itself
+							// is unreachable in the one state it exists to explain.
+							SNew(SBox)
+							.ToolTipText(LOCTEXT("DeleteFunctionTip", "Delete the highlighted function from the live server. If the project still declares it, the next Sync creates it again."))
+							[
+								SNew(SButton)
+								.ButtonStyle(&Style, "Crowdy.Button.Secondary")
+								.ContentPadding(FMargin(13.0f, 7.0f))
+								.IsEnabled_Lambda([this]()
+									{ return FunctionListView.IsValid() && FunctionListView->GetNumItemsSelected() > 0; })
+								.OnClicked(FOnClicked::CreateSP(this, &SCrowdyGameModelAdvancedTab::OnDeleteFunctionClicked))
+								[
+									SNew(STextBlock)
+									.Text(LOCTEXT("DeleteFunction", "Delete on server (recreated by the next Sync)"))
+									.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+									.ColorAndOpacity(FSlateColor::UseForeground())
+								]
+							]
+						]
 					],
 					FMargin(16.0f, 14.0f))
 			]

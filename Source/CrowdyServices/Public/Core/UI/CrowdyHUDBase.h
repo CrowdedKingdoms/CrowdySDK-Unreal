@@ -28,10 +28,12 @@ protected:
 	
 	virtual void BeginPlay() override;
 	
-	UPROPERTY(Transient, EditAnywhere, BlueprintReadWrite, Category = "CrowdySDK|HUD|Widgets", meta =(DisplayName="HUD Widget Class"))
+	// Not Transient: these are authored on the HUD blueprint, and a transient property is dropped when
+	// the blueprint is saved, so the value has to be reassigned at runtime to survive.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CrowdySDK|HUD|Widgets", meta =(DisplayName="HUD Widget Class"))
 	TSubclassOf<UUserWidget> HUDWidgetClass = nullptr;
-	
-	UPROPERTY(Transient, EditAnywhere, BlueprintReadWrite, Category = "CrowdySDK|HUD|Widgets", meta =(DisplayName="Widget Set Config"))
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CrowdySDK|HUD|Widgets", meta =(DisplayName="Widget Set Config"))
 	UCrowdyWidgetSet* WidgetSetConfig = nullptr;
 	
 	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|HUD")

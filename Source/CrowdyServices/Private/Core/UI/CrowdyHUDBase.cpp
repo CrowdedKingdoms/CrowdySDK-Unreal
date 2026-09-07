@@ -10,6 +10,13 @@
 
 void ACrowdyHUDBase::ExecuteUICommand_Implementation(FGameplayTag Command, bool bHideOtherWidgetsInLayer, bool bChangeInputMode)
 {
+	if (!IsValid(WidgetSetConfig))
+	{
+		UE_LOG(LogCrowdyServices, Error, TEXT("No Widget Set Config assigned on %s, so UI command '%s' cannot be routed. Assign one on the HUD."),
+			*GetClass()->GetName(), *Command.ToString());
+		return;
+	}
+
 	if (!WidgetSetConfig->WidgetSpecMap.Contains(Command))
 	{
 		UE_LOG(LogCrowdyServices, Error, TEXT("Command not handled by this Widget Config."));
@@ -54,16 +61,23 @@ void ACrowdyHUDBase::BeginPlay()
 		return;
 	}
 	
+	if (!HUDWidgetClass)
+	{
+		UE_LOG(LogCrowdyServices, Warning, TEXT("No HUD Widget Class assigned on %s, so the Crowdy widget system is not started. Assign one on the HUD to use layers and widget sets."),
+			*GetClass()->GetName());
+		return;
+	}
+
 	CrowdyHUD = CreateWidget(PlayerController, HUDWidgetClass);
-	
-	CrowdyHUD->AddToViewport();
-	
+
 	if (!IsValid(CrowdyHUD))
 	{
 		UE_LOG(LogCrowdyServices, Error, TEXT("Failed to create Crowdy HUD."));
 		return;
 	}
-	
+
+	CrowdyHUD->AddToViewport();
+
 	UE_CLOG(CrowdyServicesTrace::Hud(), LogCrowdyServices, Log, TEXT("Created Crowdy HUD"));
 	
 	InitializeCrowdyWidgets();

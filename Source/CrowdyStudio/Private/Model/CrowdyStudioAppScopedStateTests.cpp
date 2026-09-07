@@ -165,6 +165,13 @@ bool FCrowdyStudioAppSwitchClearsGameModelStateTest::RunTest(const FString& /*Pa
 	TestTrue(TEXT("Game model policy body cleared"),
 		Controller->GetGameModelPolicy().SessionCreationPolicy.IsEmpty());
 
+	// A purge left pinned to the app being left never ends: its replies are dropped the moment the selection moves,
+	// so nothing decrements it and the Live tab keeps every delete control disabled behind a purge that is over.
+	TestEqual(TEXT("Live-model purge ended"),
+		FCrowdyStudioControllerTestAccess::GetContainerPurgeAppId(*Controller), static_cast<int64>(0));
+	TestTrue(TEXT("And it ended as a cancellation, not a server refusal"),
+		Controller->GetLastContainerPurgeOutcome().bStoppedByCancel);
+
 	return true;
 }
 

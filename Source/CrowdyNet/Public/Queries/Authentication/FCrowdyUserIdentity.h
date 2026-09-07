@@ -44,7 +44,7 @@ struct FCrowdyUserIdentity
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Authentication")
 	FString LastLoginAt;
 
-	/** Build one from a UserIdentity JSON object — the element shape shared by the
+	/** Build one from a UserIdentity JSON object: the element shape shared by the
 	 *  myIdentities query and the linkIdentity mutation. */
 	static FCrowdyUserIdentity FromJson(const TSharedPtr<FJsonObject>& Obj)
 	{

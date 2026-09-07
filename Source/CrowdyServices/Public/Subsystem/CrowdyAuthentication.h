@@ -238,6 +238,15 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Authentication")
 	bool HasSavedSession() const;
 
+	/**
+	 * True when this game instance is authenticated right now: a sign-in or a restore ran to completion and its
+	 * app-scoped token is held in memory. This is not HasSavedSession, which reports only that a credential exists on
+	 * disk: that stays true across a restart, before RestoreSession has succeeded, and after a restore that failed.
+	 * Gate a login screen on this one.
+	 */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
+	bool IsSignedIn() const;
+
 private:
 	/** Which sign-in started a mint, so the pipeline knows which delegate to fire. */
 	enum class EAuthFlow : uint8

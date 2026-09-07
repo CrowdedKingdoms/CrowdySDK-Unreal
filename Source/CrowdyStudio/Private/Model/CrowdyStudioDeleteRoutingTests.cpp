@@ -836,4 +836,82 @@ bool FCrowdyStudioDeleteWalkAdvancesPastEachReplyTest::RunTest(const FString& /*
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioContainerPurgeRefusesAcrossAppsTest,
+	"CrowdySDK.CrowdyStudio.ContainerPurgeRefusesAcrossApps", CrowdyStudioDeleteRoutingTestFlags)
+
+bool FCrowdyStudioContainerPurgeRefusesAcrossAppsTest::RunTest(const FString& /*Parameters*/)
+{
+	const TSharedRef<FCrowdyStudioController> Controller = MakeShared<FCrowdyStudioController>();
+	FCrowdyStudioControllerTestAccess::SetSelectedApp(*Controller, 100);
+
+	int32 Finished = 0;
+	Controller->OnContainerPurgeFinished.AddLambda([&Finished]() { ++Finished; });
+
+	// The Live tab passes the app its list was READ for. A purge aimed at another app's list would empty the app
+	// that happens to be selected now, and there is no undo.
+	Controller->PurgeContainers(FString(), /*ExpectedAppId*/ 200);
+
+	TestEqual(TEXT("The refusal is announced exactly once"), Finished, 1);
+	TestEqual(TEXT("Nothing was pinned"),
+		FCrowdyStudioControllerTestAccess::GetContainerPurgeAppId(*Controller), static_cast<int64>(0));
+	TestFalse(TEXT("Nothing is running"), Controller->IsContainerPurgeInFlight());
+	TestEqual(TEXT("Nothing was deleted"), Controller->GetLastContainerPurgeOutcome().Completed, 0);
+
+	return true;
+}
+
+// The drain re-reads at offset zero and deletes what comes back, so a page it cannot actually empty would be read
+// back identically forever. The guard is that a page which REMOVED nothing ends it, and an already-gone reply must
+// not count as a removal: a server that keeps listing a live model while answering "it was not there" is exactly
+// the case that loops.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioContainerPurgeStopsOnAPageItCannotEmptyTest,
+	"CrowdySDK.CrowdyStudio.ContainerPurgeStopsOnAPageItCannotEmpty", CrowdyStudioDeleteRoutingTestFlags)
+
+bool FCrowdyStudioContainerPurgeStopsOnAPageItCannotEmptyTest::RunTest(const FString& /*Parameters*/)
+{
+	const TSharedRef<FCrowdyStudioController> Controller = MakeShared<FCrowdyStudioController>();
+	FCrowdyStudioControllerTestAccess::SetSelectedApp(*Controller, 100);
+
+	int32 Finished = 0;
+	Controller->OnContainerPurgeFinished.AddLambda([&Finished]() { ++Finished; });
+
+	// One entry, because the walk advances on its own: with a longer page the next delete is issued (and, with no
+	// session sign-in, fails inside the call) before the page is ever walked to its end, and the guard lives at
+	// that end.
+	FCrowdyStudioControllerTestAccess::SeedInFlightContainerPurge(*Controller, /*AppId*/ 100, FString(),
+		{ TEXT("container-1") });
+
+	// "It was not there", against a read that had just listed it. That is the shape that repeats forever.
+	FCrowdyStudioControllerTestAccess::LandContainerPurgeReply(*Controller, 0, /*bDeleted*/ false);
+
+	const FCrowdyDeleteOutcome& Outcome = Controller->GetLastContainerPurgeOutcome();
+	TestEqual(TEXT("The purge ends exactly once"), Finished, 1);
+	TestTrue(TEXT("It stopped rather than draining forever"), Outcome.bStopped);
+	TestFalse(TEXT("And not as a cancellation"), Outcome.bStoppedByCancel);
+	TestTrue(TEXT("The stop names the page it could not empty"),
+		Outcome.StoppedOnDescription.Contains(TEXT("kept listing but did not remove")));
+	// The reply still counts as settled work, and is reported honestly as having been already gone.
+	TestEqual(TEXT("The reply counted"), Outcome.Completed, 1);
+	TestEqual(TEXT("And is reported as already gone"), Outcome.AlreadyGone, 1);
+	TestFalse(TEXT("Nothing is left running"), Controller->IsContainerPurgeInFlight());
+
+	// The discriminator: the same page with a REAL removal is progress, so the drain reads the next page instead of
+	// stopping on the guard. That read fails here, with no sign-in, so this still ends, but on the read.
+	const TSharedRef<FCrowdyStudioController> Progressing = MakeShared<FCrowdyStudioController>();
+	FCrowdyStudioControllerTestAccess::SetSelectedApp(*Progressing, 100);
+	FCrowdyStudioControllerTestAccess::SeedInFlightContainerPurge(*Progressing, /*AppId*/ 100, FString(),
+		{ TEXT("container-1") });
+	FCrowdyStudioControllerTestAccess::LandContainerPurgeReply(*Progressing, 0, /*bDeleted*/ true);
+
+	const FCrowdyDeleteOutcome& Moved = Progressing->GetLastContainerPurgeOutcome();
+	TestEqual(TEXT("A real removal counted"), Moved.Completed, 1);
+	TestEqual(TEXT("And is not reported as already gone"), Moved.AlreadyGone, 0);
+	TestFalse(TEXT("A page that removed something never stops on the guard"),
+		Moved.StoppedOnDescription.Contains(TEXT("kept listing but did not remove")));
+	TestTrue(TEXT("It went on to read what was left"),
+		Moved.StoppedOnDescription.Contains(TEXT("a read of what is left")));
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

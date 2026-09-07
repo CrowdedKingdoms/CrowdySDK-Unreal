@@ -1655,116 +1655,192 @@ FString CrowdyGameModelDelete::CompletionText(const FCrowdyDeleteOutcome& Outcom
 		Outcome.AlreadyGone == 1 ? TEXT("was") : TEXT("were"));
 }
 
-TArray<FCrowdyDeleteMark> CrowdyGameModelDelete::MarkEverythingServerOnly(const FCrowdyDeleteEvidence& Evidence)
+FString CrowdyGameModelDelete::PurgeText(const FCrowdyDeleteOutcome& Outcome)
 {
-	TArray<FCrowdyDeleteMark> Marks;
+	const int32 Deleted = FMath::Max(0, Outcome.Completed - Outcome.AlreadyGone);
+	const FString Counted = FString::Printf(TEXT("%d live model%s"), Deleted, Deleted == 1 ? TEXT("") : TEXT("s"));
+	const FString Gone = Outcome.AlreadyGone > 0
+		? FString::Printf(TEXT(", and %d %s already gone"),
+			Outcome.AlreadyGone, Outcome.AlreadyGone == 1 ? TEXT("was") : TEXT("were"))
+		: FString();
 
-	const FCrowdyModelSnapshot* Snapshot = Evidence.Snapshot.Get();
-	if (!Snapshot)
+	if (!Outcome.bStopped)
 	{
-		// Server-only is a classification, and without a plan there is none. An empty result is the honest answer.
+		return FString::Printf(TEXT("Deleted %s%s. Nothing is left to read."), *Counted, *Gone);
+	}
+
+	if (Outcome.bStoppedByCancel)
+	{
+		// A cancellation is the reader stopping it, not the server refusing anything. Saying otherwise sends them
+		// hunting for a failure that never happened.
+		return FString::Printf(
+			TEXT("Stopped at your request, after %s%s. Nothing refused it. What was deleted is gone; run it again ")
+			TEXT("to clear the rest."), *Counted, *Gone);
+	}
+
+	if (Outcome.StoppedOnDescription.IsEmpty())
+	{
+		return FString::Printf(
+			TEXT("Stopped after %s%s. What was deleted is gone; run it again to clear the rest."), *Counted, *Gone);
+	}
+
+	return FString::Printf(
+		TEXT("Stopped on %s, after %s%s. What was deleted is gone; run it again to clear the rest."),
+		*Outcome.StoppedOnDescription, *Counted, *Gone);
+}
+
+namespace
+{
+	// The walk behind both bulk marks. bServerOnlyOnly keeps only what the project does not declare.
+	TArray<FCrowdyDeleteMark> CrowdyDeleteGatherBulkMarks(
+		const FCrowdyDeleteEvidence& Evidence, bool bServerOnlyOnly)
+	{
+		TArray<FCrowdyDeleteMark> Marks;
+
+		const FCrowdyModelSnapshot* Snapshot = Evidence.Snapshot.Get();
+		if (bServerOnlyOnly && !Snapshot)
+		{
+			// Server-only is a classification, and without a plan there is none. An empty result is the honest answer.
+			return Marks;
+		}
+
+		TArray<FCrowdyDeleteMark> Models;
+		TArray<FCrowdyDeleteMark> Attributes;
+		TArray<FCrowdyDeleteMark> Functions;
+		TArray<FCrowdyDeleteMark> Automations;
+
+		for (const TSharedPtr<FStudioContainerType>& Type : Evidence.Types)
+		{
+			if (!Type.IsValid() || Type->TypeName.IsEmpty())
+			{
+				continue;
+			}
+			if (bServerOnlyOnly
+				&& CrowdyModelLedger::ClassifyModel(Snapshot, Type->TypeName).Provenance
+					!= ECrowdyModelProvenance::ServerOnly)
+			{
+				continue;
+			}
+			const FString Display = Type->DisplayName.TrimStartAndEnd();
+			Models.Add(CrowdyGameModelDelete::MarkModel(Type->TypeName, Display.IsEmpty() ? Type->TypeName : Display));
+		}
+
+		for (const FCrowdyDeleteModelAttributes& Entry : Evidence.AttributesByModel)
+		{
+			for (const TSharedPtr<FStudioPropertyDef>& Def : Entry.Attributes)
+			{
+				if (!Def.IsValid() || Def->Key.IsEmpty() || CrowdyModelLedger::IsReservedAttribute(Def->Key))
+				{
+					continue;
+				}
+
+				const FString Owner = Def->ContainerTypeName.IsEmpty() ? Entry.TypeName : Def->ContainerTypeName;
+				if (Owner.IsEmpty())
+				{
+					continue; // the mutation needs a container type name, so there is no call to make either way
+				}
+				if (bServerOnlyOnly
+					&& CrowdyModelLedger::ClassifyAttribute(Snapshot, Owner, Def->Key).Provenance
+						!= ECrowdyModelProvenance::ServerOnly)
+				{
+					continue;
+				}
+				// The key reconstructed into a name, which is what the row for the same attribute shows.
+				Attributes.Add(CrowdyGameModelDelete::MarkAttribute(
+					Owner, Def->Key, CrowdyModelVocabulary::AttributeDisplayNameFromKey(Def->Key)));
+			}
+		}
+
+		for (const TSharedPtr<FStudioFunction>& Function : Evidence.Functions)
+		{
+			if (!Function.IsValid() || Function->Name.IsEmpty()
+				|| CrowdyModelLedger::IsReservedFunction(Function->Name))
+			{
+				continue;
+			}
+			if (Function->ContainerTypeName.IsEmpty())
+			{
+				// Skipped by BOTH marks. The op would build, since the mutation takes a bare name, but nothing can
+				// classify a function with no scope: it comes back Unknown, which raises no comes-back-on-sync
+				// caution, so the unconditional mark would offer it while the review stayed silent about the one
+				// entry most likely to be restored by the next sync.
+				continue;
+			}
+			if (bServerOnlyOnly
+				&& CrowdyModelLedger::ClassifyFunction(Snapshot, Function->ContainerTypeName, Function->Name).Provenance
+					!= ECrowdyModelProvenance::ServerOnly)
+			{
+				continue;
+			}
+			Functions.Add(CrowdyGameModelDelete::MarkFunction(
+				Function->ContainerTypeName, Function->Name, Function->Name));
+		}
+
+		for (const TSharedPtr<FStudioAutomation>& Automation : Evidence.Automations)
+		{
+			if (!Automation.IsValid() || Automation->Name.IsEmpty())
+			{
+				continue;
+			}
+			if (bServerOnlyOnly
+				&& CrowdyModelLedger::ClassifyAutomation(Snapshot, Automation->Name).Provenance
+					!= ECrowdyModelProvenance::ServerOnly)
+			{
+				continue;
+			}
+			Automations.Add(CrowdyGameModelDelete::MarkAutomation(Automation->Name, Automation->Name));
+		}
+
+		auto SortMarks = [](TArray<FCrowdyDeleteMark>& ToSort)
+		{
+			ToSort.Sort([](const FCrowdyDeleteMark& A, const FCrowdyDeleteMark& B)
+			{
+				return A.IdentityKey().Compare(B.IdentityKey(), ESearchCase::CaseSensitive) < 0;
+			});
+		};
+		SortMarks(Models);
+		SortMarks(Attributes);
+		SortMarks(Functions);
+		SortMarks(Automations);
+
+		Marks.Append(Models);
+		Marks.Append(Attributes);
+		Marks.Append(Functions);
+		Marks.Append(Automations);
 		return Marks;
 	}
+}
 
-	TArray<FCrowdyDeleteMark> Models;
-	TArray<FCrowdyDeleteMark> Attributes;
-	TArray<FCrowdyDeleteMark> Functions;
-	TArray<FCrowdyDeleteMark> Automations;
+TArray<FCrowdyDeleteMark> CrowdyGameModelDelete::MarkEverythingServerOnly(const FCrowdyDeleteEvidence& Evidence)
+{
+	return CrowdyDeleteGatherBulkMarks(Evidence, /*bServerOnlyOnly*/ true);
+}
 
-	for (const TSharedPtr<FStudioContainerType>& Type : Evidence.Types)
+TArray<FCrowdyDeleteMark> CrowdyGameModelDelete::MarkEverythingOnServer(const FCrowdyDeleteEvidence& Evidence)
+{
+	return CrowdyDeleteGatherBulkMarks(Evidence, /*bServerOnlyOnly*/ false);
+}
+
+bool CrowdyGameModelDelete::CanMarkEverythingOnServer(const FCrowdyDeleteEvidence& Evidence, FString& OutReason)
+{
+	OutReason.Reset();
+
+	if (!Evidence.Snapshot.IsValid())
 	{
-		if (!Type.IsValid() || Type->TypeName.IsEmpty())
-		{
-			continue;
-		}
-		if (CrowdyModelLedger::ClassifyModel(Snapshot, Type->TypeName).Provenance
-			!= ECrowdyModelProvenance::ServerOnly)
-		{
-			continue;
-		}
-		const FString Display = Type->DisplayName.TrimStartAndEnd();
-		Models.Add(MarkModel(Type->TypeName, Display.IsEmpty() ? Type->TypeName : Display));
+		// The marking needs no classification, but the findings need one to raise the comes-back-on-sync caution.
+		OutReason = TEXT("Nothing has checked this app against the project yet, so this cannot say which of these ")
+			TEXT("the next Sync would put straight back. Press Preview changes first.");
+		return false;
 	}
 
-	for (const FCrowdyDeleteModelAttributes& Entry : Evidence.AttributesByModel)
+	if (!IsEvidenceSufficient(Evidence, OutReason))
 	{
-		for (const TSharedPtr<FStudioPropertyDef>& Def : Entry.Attributes)
-		{
-			if (!Def.IsValid() || Def->Key.IsEmpty() || CrowdyModelLedger::IsReservedAttribute(Def->Key))
-			{
-				continue;
-			}
-
-			const FString Owner = Def->ContainerTypeName.IsEmpty() ? Entry.TypeName : Def->ContainerTypeName;
-			if (Owner.IsEmpty())
-			{
-				continue; // no model to resolve the key in, so nothing here can name what would be deleted
-			}
-			if (CrowdyModelLedger::ClassifyAttribute(Snapshot, Owner, Def->Key).Provenance
-				!= ECrowdyModelProvenance::ServerOnly)
-			{
-				continue;
-			}
-			// Server-only by the classification just applied, so no class in the project declares it and there is no
-			// authored spelling to use. The key is reconstructed into a name instead, which is what the row for the
-			// same attribute shows, so the marked list and the row it came from read alike.
-			Attributes.Add(
-				MarkAttribute(Owner, Def->Key, CrowdyModelVocabulary::AttributeDisplayNameFromKey(Def->Key)));
-		}
+		// A bulk mark over half-read lists would mark less than everything while claiming to mark everything.
+		return false;
 	}
 
-	for (const TSharedPtr<FStudioFunction>& Function : Evidence.Functions)
-	{
-		if (!Function.IsValid() || Function->Name.IsEmpty()
-			|| CrowdyModelLedger::IsReservedFunction(Function->Name))
-		{
-			continue;
-		}
-		if (Function->ContainerTypeName.IsEmpty())
-		{
-			// A function whose model was never determined. Offering it here would answer the missing scope by
-			// assuming nobody owns it, which is the assumption that deletes somebody's work.
-			continue;
-		}
-		if (CrowdyModelLedger::ClassifyFunction(Snapshot, Function->ContainerTypeName, Function->Name).Provenance
-			!= ECrowdyModelProvenance::ServerOnly)
-		{
-			continue;
-		}
-		Functions.Add(MarkFunction(Function->ContainerTypeName, Function->Name, Function->Name));
-	}
-
-	for (const TSharedPtr<FStudioAutomation>& Automation : Evidence.Automations)
-	{
-		if (!Automation.IsValid() || Automation->Name.IsEmpty())
-		{
-			continue;
-		}
-		if (CrowdyModelLedger::ClassifyAutomation(Snapshot, Automation->Name).Provenance
-			!= ECrowdyModelProvenance::ServerOnly)
-		{
-			continue;
-		}
-		Automations.Add(MarkAutomation(Automation->Name, Automation->Name));
-	}
-
-	auto SortMarks = [](TArray<FCrowdyDeleteMark>& ToSort)
-	{
-		ToSort.Sort([](const FCrowdyDeleteMark& A, const FCrowdyDeleteMark& B)
-		{
-			return A.IdentityKey().Compare(B.IdentityKey(), ESearchCase::CaseSensitive) < 0;
-		});
-	};
-	SortMarks(Models);
-	SortMarks(Attributes);
-	SortMarks(Functions);
-	SortMarks(Automations);
-
-	Marks.Append(Models);
-	Marks.Append(Attributes);
-	Marks.Append(Functions);
-	Marks.Append(Automations);
-	return Marks;
+	// No kit refusal, unlike the server-only mark: a kit's entities are named by their own cautions instead.
+	return true;
 }
 
 bool CrowdyGameModelDelete::CanMarkEverythingServerOnly(const FCrowdyDeleteEvidence& Evidence, FString& OutReason)

@@ -147,6 +147,15 @@ struct FCrowdyStudioControllerTestAccess
 		// A model whose attribute read came back an error. Left behind, the new app's model of the same name would
 		// open onto the previous app's failure.
 		Controller.PropertyDefFailedTypes.Add(TEXT("Inventory"));
+
+		// A live-model purge mid-drain. Its replies are dropped once the selection moves, so nothing else could end
+		// it and the Live tab would report a delete running forever under the new app.
+		Controller.ContainerPurgeAppId = 4242;
+		Controller.ContainerPurgeTypeName = TEXT("Health");
+		Controller.ContainerPurgePageIds.Add(TEXT("container-1"));
+		Controller.ContainerPurgeCompleted = 3;
+		Controller.ContainerPurgeAlreadyGone = 1;
+		Controller.ContainerPurgePageRemoved = 2;
 	}
 
 	static void SetFamilyLoad(FCrowdyStudioController& Controller, ECrowdyModelFamily Family,
@@ -590,6 +599,44 @@ struct FCrowdyStudioControllerTestAccess
 	static bool HasDeleteWalkInFlight(const FCrowdyStudioController& Controller)
 	{
 		return Controller.DeleteWalkOps.IsValid();
+	}
+
+	// A purge part-way through one page. Nothing here can hold a reply open long enough for the public entry point
+	// to leave a purge in that state, and the page-exhausted branches only exist for a purge mid-flight.
+	static void SeedInFlightContainerPurge(FCrowdyStudioController& Controller, int64 AppId,
+		const FString& TypeName, const TArray<FString>& PageIds)
+	{
+		Controller.ContainerPurgeAppId = AppId;
+		++Controller.ContainerPurgeSerial;
+		Controller.ContainerPurgeTypeName = TypeName;
+		Controller.ContainerPurgePageIds = PageIds;
+		Controller.ContainerPurgeCompleted = 0;
+		Controller.ContainerPurgeAlreadyGone = 0;
+		Controller.ContainerPurgePageRemoved = 0;
+		Controller.bContainerPurgeCancelRequested = false;
+		Controller.LastContainerPurgeOutcome = FCrowdyDeleteOutcome();
+	}
+
+	// One live-model delete's reply, landed on the purge in flight. bDeleted false is the server saying it was not
+	// there, which is the reply the page-removed-nothing guard has to tell apart from a real removal.
+	static void LandContainerPurgeReply(FCrowdyStudioController& Controller, int32 Index, bool bDeleted)
+	{
+		if (!Controller.ContainerPurgePageIds.IsValidIndex(Index))
+		{
+			return;
+		}
+
+		const TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetBoolField(TEXT("gameModelDeleteContainer"), bDeleted);
+		const TSharedPtr<FJsonObject> Envelope = MakeShared<FJsonObject>();
+		Envelope->SetObjectField(TEXT("data"), Data);
+
+		Controller.HandleContainerPurgeReply(Index, Controller.ContainerPurgePageIds[Index], Envelope);
+	}
+
+	static int64 GetContainerPurgeAppId(const FCrowdyStudioController& Controller)
+	{
+		return Controller.ContainerPurgeAppId;
 	}
 
 	// The prune candidates a plan left behind, as if a plan had just run for this app.

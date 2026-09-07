@@ -1195,6 +1195,19 @@ bool UCrowdyAuthentication::HasSavedSession() const
 	return Save && !Save->SessionToken.IsEmpty();
 }
 
+bool UCrowdyAuthentication::IsSignedIn() const
+{
+	if (!GameSession)
+	{
+		return false;
+	}
+
+	// The app-scoped token is written only when the mint pipeline completes and is never persisted, so it is what
+	// separates a live authenticated instance from a stored credential or a sign-in that failed after its identity
+	// token was already stored.
+	return GameSession->GetUserID() != 0 && !GameSession->GetGameToken().IsEmpty();
+}
+
 bool UCrowdyAuthentication::RestoreSession(FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
 	const UCrowdyAuthSaveGame* Save = LoadVaultSave();

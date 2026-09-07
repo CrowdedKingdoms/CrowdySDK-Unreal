@@ -48,6 +48,8 @@ void SCrowdyGameModelView::Construct(const FArguments& InArgs)
 
 	TSharedRef<SWidget> RefreshButton = SNew(SButton)
 		.ButtonStyle(&Style, "Crowdy.Button.Secondary").ContentPadding(FMargin(9.0f, 5.0f))
+		.ToolTipText(LOCTEXT("GameModelRefreshTip",
+			"Re-read this app's models, attributes, functions, automations, features and policy from the server."))
 		.OnClicked(this, &SCrowdyGameModelView::OnRefreshClicked)
 		[
 			SNew(SHorizontalBox)

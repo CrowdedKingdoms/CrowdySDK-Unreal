@@ -107,6 +107,7 @@ namespace
 		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelDeletePropertyDef"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainers"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainerState"), ECrowdyCppTokenPlane::Game },
+		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelDeleteContainer"), ECrowdyCppTokenPlane::Game },
 	};
 
 	// What issuing one operation on a canned-transport test client revealed. Resolution and transport delivery are

@@ -979,12 +979,12 @@ void UCrowdySDKSubsystem::HandleAuthLogin(FCrowdyAuthResult Result)
 
 	RequestUDPAccess();
 
-	OnLogin.Broadcast(true, Result.GameToken);
+	OnLogin.Broadcast(true, FString());
 }
 
 void UCrowdySDKSubsystem::HandleAuthLoginFailed(FString Message)
 {
-	OnLogin.Broadcast(false, FString());
+	OnLogin.Broadcast(false, Message);
 }
 
 void UCrowdySDKSubsystem::HandleAuthRegister(FCrowdyAuthResult Result)
@@ -993,12 +993,12 @@ void UCrowdySDKSubsystem::HandleAuthRegister(FCrowdyAuthResult Result)
 	// UDP access exactly like a login.
 	RequestUDPAccess();
 
-	OnRegister.Broadcast(true, Result.GameToken);
+	OnRegister.Broadcast(true, FString());
 }
 
 void UCrowdySDKSubsystem::HandleAuthRegisterFailed(FString Message)
 {
-	OnRegister.Broadcast(false, FString());
+	OnRegister.Broadcast(false, Message);
 }
 
 void UCrowdySDKSubsystem::HandleAuthSessionRestored(FCrowdyAuthResult Result)
@@ -1008,7 +1008,7 @@ void UCrowdySDKSubsystem::HandleAuthSessionRestored(FCrowdyAuthResult Result)
 	RequestUDPAccess();
 
 	// A restored session is a signed-in player; surface it on the same delegate.
-	OnLogin.Broadcast(true, Result.GameToken);
+	OnLogin.Broadcast(true, FString());
 }
 
 void UCrowdySDKSubsystem::HandleAppTokenRefreshed()
