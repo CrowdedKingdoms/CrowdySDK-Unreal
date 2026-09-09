@@ -125,6 +125,30 @@ class PortalAPI : public DomainBase {
         });
   }
 
+  /// Async twin of `refresh(ip4, port)`: name the replication server so the
+  /// Game API can authorize the new token there. An empty `authorizedServer`
+  /// on a successful outcome is not a failed `GraphQLOutcome` — the caller
+  /// must re-assign, same as the blocking overload.
+  void refreshAsync(std::string_view currentIp4, int currentClientPort,
+                    std::function<void(graphql::GraphQLOutcome, AppTokenResponse)> cb,
+                    bool install = true) const {
+    graphql::JVal vars;
+    vars["currentServer"]["ip4"] = currentIp4;
+    vars["currentServer"]["clientPort"] = currentClientPort;
+    execUnwrapAsync(
+        kRefreshWithServer,
+        vars, {},
+        [auth = auth_, install, cb = std::move(cb)](
+            graphql::GraphQLOutcome out) mutable {
+          AppTokenResponse r{};
+          if (out.ok()) {
+            r = AppTokenResponse::fromJson(out.data);
+            if (install && !r.token.empty()) auth->setToken(r.token);
+          }
+          cb(std::move(out), r);
+        });
+  }
+
   /// Overworld side: mint a one-time authorization code bound to the game's
   /// PKCE challenge + redirect URI. Returns { code, redirectUri, expiresAt }.
   graphql::Json createAuthorizationCode(std::string_view appId, std::string_view codeChallenge,

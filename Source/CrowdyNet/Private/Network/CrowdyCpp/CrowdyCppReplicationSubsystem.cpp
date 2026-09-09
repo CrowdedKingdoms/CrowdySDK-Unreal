@@ -13,6 +13,7 @@
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h"
 #include "Network/CrowdyCpp/CrowdyCppInboundFrame.h"
+#include "Network/CrowdyCpp/CrowdyTokenAuthorization.h"
 #include "Network/UDP/CrowdyCppSendAdapter.h"
 #include "Network/UDP/CrowdyUDPSubsystem.h"
 #include "Network/UDP/FCrowdyUDPEndpoint.h"
@@ -116,6 +117,10 @@ namespace
 		FString Token;
 		int64 GameTokenId = 0;
 		FString ExpiresAtIso8601;
+
+		/** Where the Game API installed Token, or empty when it named nowhere. */
+		FString AuthorizedServerIp4;
+		int32 AuthorizedServerClientPort = 0;
 	};
 
 	/** Milliseconds since the epoch, or zero when the expiry is missing or unreadable. */
@@ -160,14 +165,15 @@ namespace
 	}
 
 	/** The session's current app-scoped token material. Game thread only, since it reads engine objects. */
-	void ReadTokenFromSession(const UGameInstance& Instance, FString& OutToken, int64& OutGameTokenId,
-		FString& OutExpiresAt)
+	void ReadTokenFromSession(const UGameInstance& Instance, FTokenHandoff& Out)
 	{
 		if (const UCrowdyGameSession* Session = Instance.GetSubsystem<UCrowdyGameSession>())
 		{
-			OutToken = Session->GetGameToken();
-			OutGameTokenId = Session->GetGameTokenID();
-			OutExpiresAt = Session->GetAppTokenExpiresAt();
+			Out.Token = Session->GetGameToken();
+			Out.GameTokenId = Session->GetGameTokenID();
+			Out.ExpiresAtIso8601 = Session->GetAppTokenExpiresAt();
+			Out.AuthorizedServerIp4 = Session->GetAppTokenAuthorizedServerIp4();
+			Out.AuthorizedServerClientPort = Session->GetAppTokenAuthorizedServerClientPort();
 		}
 	}
 
@@ -223,7 +229,7 @@ namespace
 				}
 
 				Client->RunOp(ECrowdyCppApiDomain::ServerStatus, TEXT("ServerWithLeastClients"),
-					MakeShared<FJsonObject>(), [Finish, ReportAppFull](FCrowdyCppJsonResult Result)
+					MakeShared<FJsonObject>(), [Finish, ReportAppFull, WeakInstance](FCrowdyCppJsonResult Result)
 					{
 						FCrowdyCppSessionAssignment Answer;
 
@@ -254,6 +260,22 @@ namespace
 						Answer.Ip4 = Endpoint.IPv4Address;
 						Answer.Ip6 = Endpoint.IPv6Address;
 						Answer.ClientPort = Endpoint.Port;
+
+						// Recorded so the auth plane can name this server when it rotates the app token, and so a
+						// rotation's answer can be compared against it. Written on every assignment rather than
+						// only the first, since a re-assignment moves the client and a stale address here would
+						// have a later refresh authorize the new token on a server nobody is on.
+						//
+						// The IPv4 address even when the connection dials IPv6: the Game API names a node by its
+						// ip4, so the other family's address would name nothing it can match.
+						if (UGameInstance* Live = WeakInstance.Get())
+						{
+							if (UCrowdyGameSession* Session = Live->GetSubsystem<UCrowdyGameSession>())
+							{
+								Session->SetReplicationServer(Endpoint.IPv4Address, Endpoint.Port);
+							}
+						}
+
 						Finish(MoveTemp(Answer));
 					});
 			});
@@ -295,7 +317,8 @@ namespace
 		const TSharedRef<FRotationState> State = MakeShared<FRotationState>();
 		State->LastOffered = OpenedWith;
 
-		return [WeakInstance, RequestRefresh, State](const FCrowdyCppShouldAbort& ShouldAbort)
+		return [WeakInstance, RequestRefresh, State](const FCrowdyCppShouldAbort& ShouldAbort,
+			const FCrowdyCppCurrentServer* Current)
 		{
 			FCrowdyCppReplicationToken Answer;
 
@@ -308,7 +331,7 @@ namespace
 			{
 				if (const UGameInstance* Instance = WeakInstance.Get())
 				{
-					ReadTokenFromSession(*Instance, Read->Token, Read->GameTokenId, Read->ExpiresAtIso8601);
+					ReadTokenFromSession(*Instance, *Read);
 
 					if (bAskForOne && RequestRefresh)
 					{
@@ -344,6 +367,14 @@ namespace
 			Answer.Token = Read->Token;
 			Answer.GameTokenId = Read->GameTokenId;
 			Answer.ExpiresAtEpochMs = ParseExpiryEpochMs(Read->ExpiresAtIso8601);
+
+			Answer.bAuthorizedOnCurrentServer = CrowdyTokenAuthorization::KeepsCurrentServer(
+				Read->AuthorizedServerIp4, Read->AuthorizedServerClientPort, Current);
+
+			UE_CLOG(!Answer.bAuthorizedOnCurrentServer && Current != nullptr, LogCrowdyNet, Verbose,
+				TEXT("A rotated app token is not authorized on the current replication server, so the connection "
+					"will re-assign."));
+
 			return Answer;
 		};
 	}
@@ -940,9 +971,20 @@ void UCrowdyCppReplicationSubsystem::ReportSendError(const FCrowdyCppSendError& 
 		ActorId.AppendChar(static_cast<TCHAR>(Octet));
 	}
 
+	// A refused capability is the one rejection with nothing else to see: the send was accepted locally, the
+	// datagram went out, and the only sign anything is wrong is this frame. Saying which capability the
+	// opcode needs is what turns it into something to act on rather than a code to look up.
+	FString Remedy;
+	if (FCrowdyCppReplication::IsUnauthorizedErrorCode(Error.ErrorCode) && !Error.bSendWasChannel
+		&& Error.SendOpcode == static_cast<uint8>(ECrowdyMessageType::CLIENT_VIDEO_PACKET))
+	{
+		Remedy = TEXT(" Video is a per-app capability the server grants, so this app does not carry it and no"
+			" video frame will reach anyone until it does.");
+	}
+
 	UE_LOG(LogCrowdyNet, Warning,
-		TEXT("The server rejected a send: code %d (%s), sequence %d, sent %lldms ago as %s for actor %s."),
-		Error.ErrorCode, *CodeName, Error.Sequence, Error.SendAgeMs, *OpcodeName, *ActorId);
+		TEXT("The server rejected a send: code %d (%s), sequence %d, sent %lldms ago as %s for actor %s.%s"),
+		Error.ErrorCode, *CodeName, Error.Sequence, Error.SendAgeMs, *OpcodeName, *ActorId, *Remedy);
 }
 
 void UCrowdyCppReplicationSubsystem::ReportNetworkStats(const FCrowdyCppReplication& Polled)

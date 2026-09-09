@@ -53,6 +53,9 @@ private:
 	FText GetCachedCountLineText() const;
 	FText GetSchemaSyncReportText() const;
 	FText GetDetailsButtonLabel() const;
+	// The Schema pill's advisory word. Two different states reach Advisory (server-only entities to review, and a
+	// plan that never read the server at all), and one fixed string would misdescribe whichever it is not.
+	FText GetSchemaAdvisoryWord() const;
 
 	TSharedPtr<FCrowdyStudioController> Controller;
 

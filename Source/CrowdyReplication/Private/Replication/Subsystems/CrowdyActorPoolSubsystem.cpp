@@ -2,6 +2,7 @@
 
 #include "Replication/Subsystems/CrowdyActorPoolSubsystem.h"
 #include "CrowdyReplicationLog.h"
+#include "Replication/Components/CrowdyEntityComponent.h"
 
 void UCrowdyActorPoolSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -62,14 +63,21 @@ void UCrowdyActorPoolSubsystem::RegisterPool(const FCrowdyPoolConfig& Config)
 	Pool.ActorClass = Config.ActorClass;
 	Pool.Policy     = NewObject<UCrowdyActorPoolPolicy>(this, PolicyClass);
 
-	FActorSpawnParameters Params;
-	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
 	Pool.Slots.Reserve(Config.PoolSize);
 	for (int32 i = 0; i < Config.PoolSize; i++)
 	{
-		AActor* Actor = GetWorld()->SpawnActor<AActor>(Config.ActorClass, FVector::ZeroVector, FRotator::ZeroRotator, Params);
+		// Deferred so the entity component can be marked dormant BEFORE BeginPlay. A pre-warmed actor that
+		// registers itself is observed synchronously by every listener, and the Game Model answers by ensuring
+		// a server container row for an actor that stands for nothing. OnActorPooled below unregisters the
+		// record, but the round trip is already sent and cannot be recalled.
+		AActor* Actor = GetWorld()->SpawnActorDeferred<AActor>(Config.ActorClass, FTransform::Identity,
+			nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 		if (!Actor) continue;
+
+		if (UCrowdyEntityComponent* Component = Actor->FindComponentByClass<UCrowdyEntityComponent>())
+			Component->MarkPooledDormant();
+
+		Actor->FinishSpawning(FTransform::Identity);
 
 		Pool.Policy->OnActorPooled(Actor);
 

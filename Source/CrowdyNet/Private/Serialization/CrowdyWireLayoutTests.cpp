@@ -66,12 +66,17 @@ bool FCrowdyWireOpcodeAgreementTest::RunTest(const FString& Parameters)
 	CheckOpcode(TEXT("VOXEL_UPDATE_NOTIFICATION"), ECrowdyMessageType::VOXEL_UPDATE_NOTIFICATION, MessageType::VoxelUpdateNotification);
 	CheckOpcode(TEXT("CLIENT_AUDIO_PACKET"), ECrowdyMessageType::CLIENT_AUDIO_PACKET, MessageType::ClientAudioPacket);
 	CheckOpcode(TEXT("CLIENT_AUDIO_NOTIFICATION"), ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION, MessageType::ClientAudioNotification);
+	CheckOpcode(TEXT("CLIENT_VIDEO_PACKET"), ECrowdyMessageType::CLIENT_VIDEO_PACKET, MessageType::ClientVideoPacket);
+	CheckOpcode(TEXT("CLIENT_VIDEO_NOTIFICATION"), ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION,
+		MessageType::ClientVideoNotification);
 	CheckOpcode(TEXT("CLIENT_TEXT_PACKET"), ECrowdyMessageType::CLIENT_TEXT_PACKET, MessageType::ClientTextPacket);
 	CheckOpcode(TEXT("CLIENT_TEXT_NOTIFICATION"), ECrowdyMessageType::CLIENT_TEXT_NOTIFICATION, MessageType::ClientTextNotification);
 	CheckOpcode(TEXT("CLIENT_EVENT_NOTIFICATION"), ECrowdyMessageType::CLIENT_EVENT_NOTIFICATION, MessageType::ClientEventNotification);
 	CheckOpcode(TEXT("SERVER_EVENT_NOTIFICATION"), ECrowdyMessageType::SERVER_EVENT_NOTIFICATION, MessageType::ServerEventNotification);
 	CheckOpcode(TEXT("GENERIC_SPATIAL_1"), ECrowdyMessageType::GENERIC_SPATIAL_1, MessageType::GenericSpatial1);
 	CheckOpcode(TEXT("SINGLE_ACTOR_MESSAGE"), ECrowdyMessageType::SINGLE_ACTOR_MESSAGE, MessageType::SingleActorMessage);
+	CheckOpcode(TEXT("ACTOR_LEFT_NOTIFICATION"), ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION,
+		MessageType::ActorLeftNotification);
 
 	// Every opcode Unreal sends through the shared spatial header must be one the shared codec also
 	// treats as long-spatial, or the two disagree about where the payload starts.
@@ -80,6 +85,9 @@ bool FCrowdyWireOpcodeAgreementTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("139 uses the long spatial layout"), isLongSpatialLayout(139));
 	TestTrue(TEXT("140 uses the long spatial layout"), isLongSpatialLayout(140));
 	TestTrue(TEXT("142 uses the long spatial layout"), isLongSpatialLayout(142));
+	TestTrue(TEXT("143 uses the long spatial layout"), isLongSpatialLayout(143));
+	TestTrue(TEXT("144 uses the long spatial layout"), isLongSpatialLayout(144));
+	TestTrue(TEXT("145 uses the long spatial layout"), isLongSpatialLayout(145));
 	TestFalse(TEXT("141 is reserved and unimplemented"), isLongSpatialLayout(141));
 
 	return true;

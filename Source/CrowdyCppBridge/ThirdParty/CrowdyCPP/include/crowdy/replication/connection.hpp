@@ -97,6 +97,20 @@ class Connection {
   Result<std::uint8_t> sendAudio(const SpatialSend& p) {
     return sendLongSpatial(wire::MessageType::ClientAudioPacket, p);
   }
+  /// One webcam video FRAGMENT (payload = header + slice from media::fragmentFrame).
+  /// Gated by `use_video_chat` at app and grid level; a refusal arrives as a
+  /// GenericError(Unauthorized) correlated by sequence. Prefer sendVideoFrame.
+  Result<std::uint8_t> sendVideo(const SpatialSend& p) {
+    return sendLongSpatial(wire::MessageType::ClientVideoPacket, p);
+  }
+  /// Fragment one encoded frame (JPEG/WebP bytes) and send every fragment as a
+  /// ClientVideoPacket; returns the number sent. Fails with InvalidArgument when
+  /// the frame needs more than media::kMaxVideoFragments (nothing is sent), with
+  /// the first send error otherwise. `frameId` is the caller's per-frame counter.
+  Result<std::size_t> sendVideoFrame(const wire::ChunkCoord& chunk, const core::ActorUuid& uuid,
+                                     Bytes frame, std::uint16_t frameId, std::uint8_t codec = 0,
+                                     std::uint8_t distance = 1,
+                                     wire::DecayRate decay = wire::DecayRate::None);
   Result<std::uint8_t> sendText(const SpatialSend& p) {
     return sendLongSpatial(wire::MessageType::ClientTextPacket, p);
   }

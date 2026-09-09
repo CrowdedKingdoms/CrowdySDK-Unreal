@@ -210,6 +210,97 @@ bool FCrowdyReconcileSummaryAppliedTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyReconcileSummaryAppliedKeepsServerOnlyTest,
+	"CrowdySDK.CrowdyStudio.ReconcileSummaryAppliedKeepsServerOnly", CrowdyReconcileSummaryTestFlags)
+
+bool FCrowdyReconcileSummaryAppliedKeepsServerOnlyTest::RunTest(const FString& Parameters)
+{
+	// A sync never deletes, so the server-only count survives the write that cleared the upserts. The summary has
+	// to carry it, or it calls an app settled while the indicator beside it is still asking for a review.
+	{
+		FCrowdySchemaSyncReport Report;
+		Report.bValid = true;
+		Report.bApplied = true;
+		Report.TypesToCreate = 4;
+		Report.ServerOnlyTypeCount = 2;
+		const FString Line = CrowdyReconcileSummary::BuildCountLine(Report);
+		TestTrue(TEXT("An applied report still reads as synced"), Line.Contains(TEXT("Synced")));
+		TestTrue(TEXT("and still names what only the server has"), Line.Contains(TEXT("2 only on server")));
+		TestFalse(TEXT("without reviving what it wrote as outstanding"), Line.Contains(TEXT("to add")));
+	}
+	// The same write with nothing left on the server says the one settled sentence and nothing else, so the
+	// segment above is a genuine fork rather than a suffix that is always appended.
+	{
+		FCrowdySchemaSyncReport Report;
+		Report.bValid = true;
+		Report.bApplied = true;
+		Report.TypesToCreate = 4;
+		TestEqual(TEXT("A clean apply says only that it is synced"),
+			CrowdyReconcileSummary::BuildCountLine(Report), FString(TEXT("Synced. Check again to confirm.")));
+	}
+	return true;
+}
+
+// Zero counts are not proof the two sides agree. A difference the wire cannot express plans no work and raises no
+// count: it exists only as a warning. The line must stop claiming a match while one is standing, and the control is
+// the same zero-count report with no warning, which still says everything matches.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyReconcileSummaryWarningsBreakTheMatchClaimTest,
+	"CrowdySDK.CrowdyStudio.ReconcileSummaryWarningsBreakTheMatchClaim", CrowdyReconcileSummaryTestFlags)
+
+bool FCrowdyReconcileSummaryWarningsBreakTheMatchClaimTest::RunTest(const FString& Parameters)
+{
+	{
+		FCrowdySchemaSyncReport Report;
+		Report.bValid = true;
+		Report.Warnings.Add(TEXT("Function 'take_damage' no longer declares any timer, but a sync cannot remove the 1 it already has on the server."));
+		const FString Line = CrowdyReconcileSummary::BuildCountLine(Report);
+		TestFalse(TEXT("A zero-count report with a warning does not claim everything matches"),
+			Line.Contains(TEXT("Everything matches")));
+		TestTrue(TEXT("and it says how many notes are waiting"), Line.Contains(TEXT("1 note(s)")));
+	}
+	// Control: the same zero counts with nothing to report keep the settled sentence, so the branch above is a
+	// genuine fork rather than a sentence that was simply deleted.
+	{
+		FCrowdySchemaSyncReport Report;
+		Report.bValid = true;
+		TestEqual(TEXT("A zero-count report with no warning still reads as everything matching"),
+			CrowdyReconcileSummary::BuildCountLine(Report), FString(TEXT("Everything matches your project.")));
+	}
+	return true;
+}
+
+// A plan that never issued a read has zero counts because nothing was compared. It must not borrow the words of a
+// comparison that came back clean, and it must say so ahead of every other zero-count wording.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyReconcileSummaryServerNotComparedTest,
+	"CrowdySDK.CrowdyStudio.ReconcileSummaryServerNotCompared", CrowdyReconcileSummaryTestFlags)
+
+bool FCrowdyReconcileSummaryServerNotComparedTest::RunTest(const FString& Parameters)
+{
+	{
+		FCrowdySchemaSyncReport Report;
+		Report.bValid = true;
+		Report.bServerNotCompared = true;
+		const FString Line = CrowdyReconcileSummary::BuildCountLine(Report);
+		TestFalse(TEXT("An uncompared plan does not claim everything matches"), Line.Contains(TEXT("Everything matches")));
+		TestTrue(TEXT("and it says the server was not read"), Line.Contains(TEXT("the server was not read")));
+	}
+	// Control: the identical report that DID compare keeps the settled sentence, so the flag is what decides it.
+	{
+		FCrowdySchemaSyncReport Report;
+		Report.bValid = true;
+		TestEqual(TEXT("A compared, clean plan still reads as everything matching"),
+			CrowdyReconcileSummary::BuildCountLine(Report), FString(TEXT("Everything matches your project.")));
+	}
+	// Control: the flag never speaks for a report nothing has computed yet.
+	{
+		FCrowdySchemaSyncReport Report;
+		Report.bServerNotCompared = true;
+		TestEqual(TEXT("An unchecked report reads as unchecked whatever the flag says"),
+			CrowdyReconcileSummary::BuildCountLine(Report), FString(TEXT("Not checked yet.")));
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyReconcileSummaryShouldOpenDetailsTest,
 	"CrowdySDK.CrowdyStudio.ReconcileSummaryShouldOpenDetails", CrowdyReconcileSummaryTestFlags)
 

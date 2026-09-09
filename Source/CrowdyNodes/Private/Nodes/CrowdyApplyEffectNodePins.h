@@ -11,9 +11,9 @@ class UEdGraphSchema_K2;
 /**
  * One typed input pin the smart Apply Crowdy Effect node exposes for a magnitude: the clean magnitude name (the
  * server function's param name and the Overrides map key), a stable, collision-proof pin name, the value type
- * that selects the pin's category and the JSON encoder, whether the magnitude has no authored value of its own
- * (so leaving the pin empty is an error), and the default the pin is prefilled with (the raw editor form of the
- * magnitude's default, empty for a required magnitude).
+ * that selects the pin's category and the JSON encoder, whether the caller must supply a value (so leaving the pin
+ * untouched is an error), and the default the pin is prefilled with (the raw editor form of the magnitude's
+ * default, empty for a required magnitude, which has none).
  */
 struct FCrowdyApplyEffectPinEntry
 {

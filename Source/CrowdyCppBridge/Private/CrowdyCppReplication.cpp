@@ -1,6 +1,7 @@
 #include "CrowdyCppReplication.h"
 
 #include "CrowdyCppBridge.h"
+#include "CrowdyCppVideo.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/PlatformTLS.h"
@@ -14,6 +15,7 @@ THIRD_PARTY_INCLUDES_START
 #include "crowdy/core/crypto.hpp"
 #include "crowdy/core/logger.hpp"
 #include "crowdy/core/uuid.hpp"
+#include "crowdy/media/video_frames.hpp"
 #include "crowdy/replication/connection.hpp"
 #include "crowdy/replication/session_provider.hpp"
 #include "crowdy/wire/codec.hpp"
@@ -94,6 +96,7 @@ namespace
 		Out.token = std::string(TCHAR_TO_UTF8(*Token.Token));
 		Out.gameTokenId = Token.GameTokenId;
 		Out.expiresAtEpochMs = Token.ExpiresAtEpochMs;
+		Out.authorizedOnCurrentServer = Token.bAuthorizedOnCurrentServer;
 		return Out;
 	}
 
@@ -168,6 +171,31 @@ namespace
 
 		crowdy::Result<crowdy::replication::TokenInfo> refreshToken() override
 		{
+			return RefreshWithCurrentServer(nullptr);
+		}
+
+		/**
+		 * The server-aware rotation. The library calls this one and names the server the connection is on, which is
+		 * what lets the answer report the replacement token as already authorized there.
+		 */
+		crowdy::Result<crowdy::replication::TokenInfo> refreshToken(
+			const crowdy::replication::Assignment* Current) override
+		{
+			if (!Current)
+			{
+				return RefreshWithCurrentServer(nullptr);
+			}
+
+			FCrowdyCppCurrentServer Server;
+			Server.Ip4 = UTF8_TO_TCHAR(Current->ip4.c_str());
+			Server.ClientPort = Current->clientPort;
+			return RefreshWithCurrentServer(&Server);
+		}
+
+	private:
+
+		crowdy::Result<crowdy::replication::TokenInfo> RefreshWithCurrentServer(const FCrowdyCppCurrentServer* Current)
+		{
 			if (IsAborting())
 			{
 				return crowdy::Errc::Closed;
@@ -182,7 +210,7 @@ namespace
 			FCrowdyCppReplicationToken Answer;
 			try
 			{
-				Answer = Refresh(MakeAbortPredicate());
+				Answer = Refresh(MakeAbortPredicate(), Current);
 			}
 			catch (const std::exception& Ex)
 			{
@@ -205,7 +233,6 @@ namespace
 			return ToLibraryToken(Answer);
 		}
 
-	private:
 		bool IsAborting() const { return Aborting.load(std::memory_order_acquire); }
 
 		FCrowdyCppShouldAbort MakeAbortPredicate() const
@@ -411,6 +438,12 @@ struct FCrowdyCppReplication::FImpl
 					Sent = Connection->sendAudio(Spatial);
 					break;
 
+				case MessageType::ClientVideoPacket:
+					// One fragment. A whole frame was split into these before it was queued, so the split is
+					// not repeated here and the library's own frame-level send is not used.
+					Sent = Connection->sendVideo(Spatial);
+					break;
+
 				case MessageType::ClientTextPacket:
 					Sent = Connection->sendText(Spatial);
 					break;
@@ -549,6 +582,47 @@ struct FCrowdyCppReplication::FImpl
 		}
 
 		SendQueue.Add(MoveTemp(Queued));
+		return true;
+	}
+
+	/**
+	 * Queue several sends as one unit: either every one is accepted or none is.
+	 *
+	 * The queue is measured against the whole batch under a single hold of the lock, which is what makes
+	 * the guarantee real. A caller that queued the same messages one at a time would get a prefix of them
+	 * accepted and the rest refused whenever the queue filled part way through.
+	 */
+	bool EnqueueSends(TArray<FCrowdyCppQueuedSend>&& Batch, FString& OutError)
+	{
+		if (Batch.IsEmpty())
+		{
+			OutError = TEXT("there is nothing to send");
+			return false;
+		}
+
+		if (!Connection || !IsLiveState(Connection->state()))
+		{
+			OutError = TEXT("the connection is not open");
+			return false;
+		}
+
+		FScopeLock Lock(&SendQueueMutex);
+
+		if (bClosed.load(std::memory_order_acquire))
+		{
+			OutError = TEXT("the connection is closed");
+			return false;
+		}
+
+		if (SendQueue.Num() + Batch.Num() > MaxQueuedSends)
+		{
+			SendsDropped.fetch_add(Batch.Num(), std::memory_order_relaxed);
+			OutError = FString::Printf(TEXT("the outbound queue has room for %d more sends, not the %d this one needs"),
+				FMath::Max(MaxQueuedSends - SendQueue.Num(), 0), Batch.Num());
+			return false;
+		}
+
+		SendQueue.Append(MoveTemp(Batch));
 		return true;
 	}
 
@@ -1031,6 +1105,7 @@ bool FCrowdyCppReplication::IsSendableSpatialOpcode(const uint8 Opcode)
 	case MessageType::ActorUpdateRequest:
 	case MessageType::VoxelUpdateRequest:
 	case MessageType::ClientAudioPacket:
+	case MessageType::ClientVideoPacket:
 	case MessageType::ClientTextPacket:
 	case MessageType::ClientEventNotification:
 	case MessageType::GenericSpatial1:
@@ -1049,12 +1124,14 @@ bool FCrowdyCppReplication::IsDeliverableSpatialOpcode(const uint8 Opcode)
 	case MessageType::ActorUpdateNotification:
 	case MessageType::VoxelUpdateNotification:
 	case MessageType::ClientAudioNotification:
+	case MessageType::ClientVideoNotification:
 	case MessageType::ClientTextNotification:
 	// A client event is replicated back out under the same opcode it was sent with, so this one is on both lists.
 	case MessageType::ClientEventNotification:
 	case MessageType::ServerEventNotification:
 	case MessageType::GenericSpatial1:
 	case MessageType::SingleActorMessage:
+	case MessageType::ActorLeftNotification:
 		return true;
 	default:
 		return false;
@@ -1077,6 +1154,11 @@ FString FCrowdyCppReplication::DescribeErrorCode(const uint8 ErrorCode)
 	case crowdy::wire::ErrorCode::TokenExpired:         return TEXT("TokenExpired");
 	default:                                            return TEXT("Unrecognised");
 	}
+}
+
+bool FCrowdyCppReplication::IsUnauthorizedErrorCode(const uint8 ErrorCode)
+{
+	return static_cast<crowdy::wire::ErrorCode>(ErrorCode) == crowdy::wire::ErrorCode::Unauthorized;
 }
 
 bool FCrowdyCppReplication::SendSpatial(const uint8 Opcode, const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
@@ -1199,6 +1281,78 @@ bool FCrowdyCppReplication::SendChannelMessage(const int64 ChannelId, const TArr
 	Queued.Payload.Append(Payload.GetData(), PayloadSize);
 
 	return Impl->EnqueueSend(MoveTemp(Queued), OutError);
+}
+
+bool FCrowdyCppReplication::SendVideoFrame(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
+	const TArrayView<const uint8> Uuid, const TArrayView<const uint8> Frame, const int32 FrameId,
+	const uint8 Codec, const uint8 Distance, const uint8 Decay, int32& OutFragmentsQueued, FString& OutError)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_SendVideoFrame);
+
+	OutFragmentsQueued = 0;
+
+	if (Impl->bClosed.load(std::memory_order_acquire) || !Impl->Connection)
+	{
+		OutError = TEXT("the connection is closed");
+		return false;
+	}
+
+	if (Uuid.Num() != static_cast<int32>(crowdy::wire::kUuidSize))
+	{
+		OutError = FString::Printf(TEXT("the actor id is %d octets, not %d"),
+			Uuid.Num(), static_cast<int32>(crowdy::wire::kUuidSize));
+		return false;
+	}
+
+	if (Codec != static_cast<uint8>(crowdy::media::VideoCodec::Jpeg)
+		&& Codec != static_cast<uint8>(crowdy::media::VideoCodec::WebP))
+	{
+		OutError = FString::Printf(TEXT("codec %u is not one the protocol assigns"), Codec);
+		return false;
+	}
+
+	// Refused rather than wrapped, because the counter is the receiver's only way to tell one frame from
+	// the next and a silently wrapped id would collide with a frame still being assembled.
+	if (FrameId < 0 || FrameId > static_cast<int32>(MAX_uint16))
+	{
+		OutError = FString::Printf(TEXT("the frame id is %d, outside the 0 to %d the header carries"),
+			FrameId, static_cast<int32>(MAX_uint16));
+		return false;
+	}
+
+	TArray<TArray<uint8>> Fragments;
+	if (!FCrowdyCppVideoAssembler::FragmentFrame(Frame, FrameId, Codec, Fragments))
+	{
+		OutError = FString::Printf(
+			TEXT("a %d octet frame is either empty or needs more than the %d fragments a frame may cross as"),
+			FMath::Max(Frame.Num(), 0), FCrowdyCppVideoAssembler::MaxFragments);
+		return false;
+	}
+
+	TArray<FCrowdyCppQueuedSend> Batch;
+	Batch.Reserve(Fragments.Num());
+	for (TArray<uint8>& Fragment : Fragments)
+	{
+		FCrowdyCppQueuedSend Queued;
+		Queued.Opcode = static_cast<uint8>(MessageType::ClientVideoPacket);
+		Queued.ChunkX = ChunkX;
+		Queued.ChunkY = ChunkY;
+		Queued.ChunkZ = ChunkZ;
+		FMemory::Memcpy(Queued.Uuid.data(), Uuid.GetData(), crowdy::wire::kUuidSize);
+		Queued.Payload = MoveTemp(Fragment);
+		Queued.Distance = Distance;
+		Queued.Decay = Decay;
+		Batch.Add(MoveTemp(Queued));
+	}
+
+	const int32 FragmentCount = Batch.Num();
+	if (!Impl->EnqueueSends(MoveTemp(Batch), OutError))
+	{
+		return false;
+	}
+
+	OutFragmentsQueued = FragmentCount;
+	return true;
 }
 
 FCrowdyCppReplicationStats FCrowdyCppReplication::GetStats() const

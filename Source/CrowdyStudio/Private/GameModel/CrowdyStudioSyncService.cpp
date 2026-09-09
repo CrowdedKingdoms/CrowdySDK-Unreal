@@ -469,14 +469,27 @@ namespace
 			}
 			else
 			{
+				// An empty delta is not the same as agreement, so the message is built from the warnings rather than
+				// asserted. The status stays Synced because no sync can clear such a warning: calling it drift would
+				// ask for a press that changes nothing, before every Play, forever. The log is what carries it to a
+				// reader, since the asset toolbar reads the status and never the message.
 				Status = ECrowdyEffectSyncStatus::Synced;
-				Message = TEXT("In sync with the server.");
+				Message = CrowdyStudioSyncService::BuildSyncedStatusMessage(Report.Warnings);
+				UE_CLOG(Report.Warnings.Num() > 0, LogCrowdyStudio, Warning, TEXT("Effect '%s': %s"),
+					Effect ? *Effect->GetName() : TEXT("?"), *Message);
 			}
 		}
 		else
 		{
 			Status = ECrowdyEffectSyncStatus::Drifted;
 			Message = FString::Printf(TEXT("Out of sync: %d change(s) to apply."), Report.UpsertCount());
+			// Real drift and a difference a sync cannot express can stand at the same time, and applying the first
+			// leaves the second exactly where it was, so the notes travel with the count rather than being dropped.
+			if (Report.Warnings.Num() > 0)
+			{
+				Message += FString::Printf(TEXT(" %d note(s): %s"),
+					Report.Warnings.Num(), *FString::Join(Report.Warnings, TEXT(" ")));
+			}
 		}
 
 		// If a sync or an edit bumped the effect's epoch while this read was in flight, its result reflects the pre-change

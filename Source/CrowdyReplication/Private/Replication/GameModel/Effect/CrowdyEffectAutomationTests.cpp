@@ -69,12 +69,23 @@ bool FCrowdyEffectAutomationEveryIntervalTest::RunTest(const FString& Parameters
 		TestEqual(TEXT("interval carried"), A.IntervalMs, 500);
 		TestTrue(TEXT("enabled defaults true"), A.bEnabled);
 
-		TestEqual(TEXT("budget MaxTargets"), A.MaxTargets, 50);
-		TestEqual(TEXT("budget GasLimit"), A.GasLimit, 100000);
-		TestEqual(TEXT("budget RunTimeoutMs"), A.RunTimeoutMs, 2000);
-		TestEqual(TEXT("budget MaxRunsPerMinute"), A.MaxRunsPerMinute, 120);
-		TestEqual(TEXT("budget FailureThreshold"), A.FailureThreshold, 5);
-		TestEqual(TEXT("budget CooldownMs"), A.CooldownMs, 30000);
+		// Read off the asset rather than spelled out. The budget defaults are tuned against the platform's own
+		// ceilings, so a literal here turns a deliberate retune into a failure that names the wrong thing. What is
+		// worth pinning is that every one of them reaches the automation input unchanged.
+		TestEqual(TEXT("budget MaxTargets"), A.MaxTargets, Effect->AutomationMaxTargets);
+		TestEqual(TEXT("budget GasLimit"), A.GasLimit, Effect->AutomationGasLimit);
+		TestEqual(TEXT("budget RunTimeoutMs"), A.RunTimeoutMs, Effect->AutomationRunTimeoutMs);
+		TestEqual(TEXT("budget MaxRunsPerMinute"), A.MaxRunsPerMinute, Effect->AutomationMaxRunsPerMinute);
+		TestEqual(TEXT("budget FailureThreshold"), A.FailureThreshold, Effect->AutomationFailureThreshold);
+		TestEqual(TEXT("budget CooldownMs"), A.CooldownMs, Effect->AutomationCooldownMs);
+
+		// The control: a budget the author changed has to travel too, or the assertions above would also pass on a
+		// lowering that ignored the asset and emitted the struct's own defaults.
+		Effect->AutomationGasLimit = 4321;
+		TOptional<FCrowdyGameModelAutomationTriggerInput> RetunedTrigger;
+		const FCrowdyGameModelAutomationInput Retuned = UCrowdyEffect::BuildAutomationInput(
+			Effect->GetAutomationAuthoring(), TEXT("tick"), TEXT("Unit"), RetunedTrigger);
+		TestEqual(TEXT("an authored gas limit travels"), Retuned.GasLimit, 4321);
 	}
 
 	TestFalse(TEXT("no event trigger for a schedule"), R.Trigger.IsSet());
@@ -353,6 +364,40 @@ bool FCrowdyEffectAutomationNoNotifyIdWhenAbsentTest::RunTest(const FString& Par
 	if (TestTrue(TEXT("type-mode automation is set"), TypeResult.Automation.IsSet()))
 	{
 		TestTrue(TEXT("type mode bakes no params"), TypeResult.Automation.GetValue().ParamsJson.IsEmpty());
+	}
+	return true;
+}
+
+// A Global-mode automation runs once app-wide, but a run still happens against one container, and the server
+// refuses an upsert naming none. The id therefore has to survive the lowering exactly as it does for Container.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectAutomationGlobalCarriesSelfTest,
+	"CrowdySDK.Replication.EffectAutomationGlobalCarriesSelf", CrowdyEffectAutomationTestFlags)
+bool FCrowdyEffectAutomationGlobalCarriesSelfTest::RunTest(const FString& Parameters)
+{
+	ExpectDiscoveryErrors(*this, 2);
+
+	UCrowdyEffect* Global = MakeAutomaticEffect();
+	Global->AutomationTargetMode = ECrowdyEffectAutomationTargetMode::Global;
+	Global->AutomationTargetContainerId = TEXT("world-container-9");
+	const FCrowdyEffectLoweringResult GlobalResult = Global->Compile();
+	if (TestTrue(TEXT("global automation is set"), GlobalResult.Automation.IsSet()))
+	{
+		TestEqual(TEXT("target mode is global"), GlobalResult.Automation.GetValue().TargetMode,
+			FString(TEXT("global")));
+		TestEqual(TEXT("global carries its self container id"),
+			GlobalResult.Automation.GetValue().SelfContainerId, FString(TEXT("world-container-9")));
+	}
+
+	// The control. A fan-out targets a type, so it must NOT pick the id up: without this, a lowering that copied the
+	// field unconditionally would pass the assertion above while changing what every Type-mode effect upserts.
+	UCrowdyEffect* TypeMode = MakeAutomaticEffect();
+	TypeMode->AutomationTargetMode = ECrowdyEffectAutomationTargetMode::Type;
+	TypeMode->AutomationTargetContainerId = TEXT("world-container-9");
+	const FCrowdyEffectLoweringResult TypeResult = TypeMode->Compile();
+	if (TestTrue(TEXT("type automation is set"), TypeResult.Automation.IsSet()))
+	{
+		TestTrue(TEXT("a fan-out names no self container"),
+			TypeResult.Automation.GetValue().SelfContainerId.IsEmpty());
 	}
 	return true;
 }

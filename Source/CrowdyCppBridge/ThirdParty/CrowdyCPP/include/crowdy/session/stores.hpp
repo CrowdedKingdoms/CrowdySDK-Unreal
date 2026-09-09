@@ -405,6 +405,18 @@ class RemoteActorLane {
     return true;
   }
 
+  /// The server said this actor is gone (ActorLeftNotification, Buddy v0.25.0):
+  /// drop it now and fire onLeave once. A no-op for a uuid this lane does not
+  /// hold. A later actorUpdate re-adds it and fires onJoin again -- a rejoin.
+  bool remove(const core::ActorUuid& uuid) {
+    auto it = actors_.find(uuid);
+    if (it == actors_.end()) return false;
+    if (onLeave_) onLeave_(it->second);
+    actors_.erase(it);
+    revision_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  }
+
   /// Drop actors not seen within staleAfterMs (fires onLeave per reaped).
   void reap(std::int64_t nowMs) {
     for (auto it = actors_.begin(); it != actors_.end();) {
@@ -492,6 +504,14 @@ class RemoteActorStore {
     if (n.uuidArray() == selfUuid_) return;
     defaultLane_.apply(n, nowMs);
     for (auto& [name, lane] : lanes_) lane.apply(n, nowMs);
+  }
+
+  /// Remove one actor from every lane holding it (fires each lane's onLeave).
+  /// Wired to actorLeft by WorldSession; public so a game can force a departure.
+  bool remove(const core::ActorUuid& uuid) {
+    bool any = defaultLane_.remove(uuid);
+    for (auto& [name, lane] : lanes_) any = lane.remove(uuid) || any;
+    return any;
   }
 
   /// Drop actors not seen within staleAfterMs across all lanes.

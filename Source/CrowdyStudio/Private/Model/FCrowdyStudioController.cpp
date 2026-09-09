@@ -3120,16 +3120,28 @@ TSharedPtr<const FCrowdyModelSnapshot> FCrowdyStudioController::GetModelSnapshot
 ECrowdyStudioReadiness FCrowdyStudioController::GetSchemaReadiness() const
 {
 	// Unknown until a plan (or apply) has produced a valid report; NotReady when a plan/apply failed (StatusNote set)
-	// or the schema drifts (pending upserts or server-only prune candidates); Ready otherwise. A just-applied report
-	// counts as in-sync (its pending upserts were written) even though its counts still show what was applied, so the
-	// strip does not flash amber right after a successful apply.
+	// or upserts are outstanding; Ready otherwise. A just-applied report counts as in-sync (its pending upserts were
+	// written) even though its counts still show what was applied, so the strip does not flash amber right after a
+	// successful apply.
+	//
+	// Server-only entities are deliberately NOT drift. A sync never deletes them, so folding them in here left the
+	// indicator amber on an empty plan with no press on this strip able to clear it, beside a report saying there
+	// was nothing to sync. They get the Advisory state instead, which the strip words as a review item.
 	if (!SchemaSyncReport.bValid || !SchemaSyncReport.StatusNote.IsEmpty())
 	{
 		return SchemaSyncReport.StatusNote.IsEmpty() ? ECrowdyStudioReadiness::Unknown : ECrowdyStudioReadiness::NotReady;
 	}
-	const bool bNoDrift = SchemaSyncReport.bApplied || SchemaSyncReport.UpsertCount() == 0;
-	const bool bInSync = bNoDrift && SchemaSyncReport.ServerOnlyCount() == 0;
-	return bInSync ? ECrowdyStudioReadiness::Ready : ECrowdyStudioReadiness::NotReady;
+	if (SchemaSyncReport.HasPendingUpserts())
+	{
+		return ECrowdyStudioReadiness::NotReady;
+	}
+	// A plan that never issued a read has zero of everything because nothing was compared. Reading that as Ready
+	// says the schema matches an app nobody asked, which can be carrying a kit deploy or a console-seeded schema.
+	if (SchemaSyncReport.bServerNotCompared)
+	{
+		return ECrowdyStudioReadiness::Advisory;
+	}
+	return SchemaSyncReport.HasServerOnlyReview() ? ECrowdyStudioReadiness::Advisory : ECrowdyStudioReadiness::Ready;
 }
 
 void FCrowdyStudioController::SetSchemaPlanPhase(int64 AppId, const FString& Phase)
@@ -3415,8 +3427,11 @@ void FCrowdyStudioController::ContinueSchemaPlanAfterEffectStream(const TSharedR
 
 	if (Run->Desired.Num() == 0 && Run->DesiredFunctions.Num() == 0)
 	{
-		// Nothing reflectable: a valid, empty plan (still surfaces any duplicate-tag / effect-compile warnings).
+		// Nothing reflectable: a valid, empty plan (still surfaces any duplicate-tag / effect-compile warnings). Its
+		// zero counts mean nothing was compared, not that the two sides agree: no read is issued below this branch,
+		// so the app may hold a kit deploy or a console-seeded schema this plan has never seen.
 		SchemaSyncReport = FCrowdySchemaSync::BuildReport(FCrowdySchemaDelta(), Run->Warnings, /*bApplied*/ false);
+		SchemaSyncReport.bServerNotCompared = true;
 		SetStatus(TEXT("No CrowdyContainer classes with Server Owned attributes and no effect assets were found."), false);
 		SetSchemaPlanPhase(Run->AppId, FString());
 		OnSchemaSyncReportChanged.Broadcast();

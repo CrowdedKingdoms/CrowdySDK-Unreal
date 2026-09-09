@@ -2,7 +2,7 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: c44743c28bfc216017905e65b49cdacabc3d352102aef76dc2d3e88358d38f86
+// schema.gql sha256: 2fc91f3383d035780ab0df48f5c429b5134af047e1808a2c7d2ac0572478fe86
 // operations sha256: aace4a3e955d5e4a1f6af1852e917079f9c09b1ede47d90a495807e9f3850a71
 
 #pragma once
@@ -13,6 +13,28 @@
 /// GraphQL enums from the published schema. Values keep their wire spelling;
 /// toString/fromString convert between the enum and the GraphQL string.
 namespace crowdy::gen {
+
+enum class AllowancePeriod {
+  HOUR,
+  DAY,
+  MONTH,
+};
+
+inline constexpr std::string_view toString(AllowancePeriod v) {
+  switch (v) {
+    case AllowancePeriod::HOUR: return "HOUR";
+    case AllowancePeriod::DAY: return "DAY";
+    case AllowancePeriod::MONTH: return "MONTH";
+  }
+  return "";
+}
+
+inline std::optional<AllowancePeriod> allowancePeriodFromString(std::string_view s) {
+  if (s == "HOUR") return AllowancePeriod::HOUR;
+  if (s == "DAY") return AllowancePeriod::DAY;
+  if (s == "MONTH") return AllowancePeriod::MONTH;
+  return std::nullopt;
+}
 
 enum class AppDeploymentTarget {
   NONE,
@@ -1212,6 +1234,8 @@ enum class PlayerFaultCode {
   BUDGET_EXCEEDED,
   RATE_LIMITED,
   QUOTA_EXHAUSTED,
+  WALLET_EMPTY,
+  SPEND_CAP_REACHED,
   TEMPORARILY_DISABLED,
   INVALID_REQUEST,
   NOT_ALLOWED,
@@ -1231,6 +1255,8 @@ inline constexpr std::string_view toString(PlayerFaultCode v) {
     case PlayerFaultCode::BUDGET_EXCEEDED: return "BUDGET_EXCEEDED";
     case PlayerFaultCode::RATE_LIMITED: return "RATE_LIMITED";
     case PlayerFaultCode::QUOTA_EXHAUSTED: return "QUOTA_EXHAUSTED";
+    case PlayerFaultCode::WALLET_EMPTY: return "WALLET_EMPTY";
+    case PlayerFaultCode::SPEND_CAP_REACHED: return "SPEND_CAP_REACHED";
     case PlayerFaultCode::TEMPORARILY_DISABLED: return "TEMPORARILY_DISABLED";
     case PlayerFaultCode::INVALID_REQUEST: return "INVALID_REQUEST";
     case PlayerFaultCode::NOT_ALLOWED: return "NOT_ALLOWED";
@@ -1251,6 +1277,8 @@ inline std::optional<PlayerFaultCode> playerFaultCodeFromString(std::string_view
   if (s == "BUDGET_EXCEEDED") return PlayerFaultCode::BUDGET_EXCEEDED;
   if (s == "RATE_LIMITED") return PlayerFaultCode::RATE_LIMITED;
   if (s == "QUOTA_EXHAUSTED") return PlayerFaultCode::QUOTA_EXHAUSTED;
+  if (s == "WALLET_EMPTY") return PlayerFaultCode::WALLET_EMPTY;
+  if (s == "SPEND_CAP_REACHED") return PlayerFaultCode::SPEND_CAP_REACHED;
   if (s == "TEMPORARILY_DISABLED") return PlayerFaultCode::TEMPORARILY_DISABLED;
   if (s == "INVALID_REQUEST") return PlayerFaultCode::INVALID_REQUEST;
   if (s == "NOT_ALLOWED") return PlayerFaultCode::NOT_ALLOWED;

@@ -26,6 +26,11 @@ struct FCrowdyAppTokenFields
 	FString GameApiUrl;
 	FString GameApiWsUrl;
 	FString LaunchUrl;
+
+	/** The replication server the Game API installed this token on. Empty on a mint and on any rotation that
+	 *  named no server, in which case a connection signing with it has to re-assign. */
+	FString AuthorizedServerIp4;
+	int32   AuthorizedServerClientPort = 0;
 };
 
 USTRUCT(BlueprintType)
@@ -389,6 +394,20 @@ private:
 
 	/** Rotation attempts spent since the last app token was applied. */
 	int32 RotationRetriesUsed = 0;
+
+	/** Server-reported refusals in a row of a rotation that named the current replication server. */
+	int32 ServerNamedRefusals = 0;
+
+	/**
+	 * Set once those refusals look like the Game API not knowing the argument, after which no later rotation
+	 * names a server.
+	 *
+	 * Naming it needs ck-api v1.83.7; an older API rejects the argument and fails the whole mutation, which
+	 * would otherwise cost a failed round trip and a re-mint on every rotation for the life of the session.
+	 * Never cleared: a tier does not get newer while a client is running, and re-trying would reintroduce the
+	 * cost it exists to avoid.
+	 */
+	bool bRefreshRejectedCurrentServer = false;
 
 	/** True while a mint or refresh response is still pending, used to debounce
 	 *  overlapping rotations (e.g. an err-32 storm or a proactive/reactive overlap). */

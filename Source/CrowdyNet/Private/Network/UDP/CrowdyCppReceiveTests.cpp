@@ -8,9 +8,12 @@
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
 #include "Engine/GameInstance.h"
 #include "Internal/FCrowdyServiceRegistry.h"
+#include "Messages/Actor/FActorLeftNotification.h"
 #include "Messages/Actor/FActorUpdateNotificationMessage.h"
 #include "Messages/Channels/FChannelMessages.h"
+#include "CrowdyCppVideo.h"
 #include "Messages/Communication/FClientAudioNotification.h"
+#include "Messages/Communication/FClientVideoNotification.h"
 #include "Messages/FPingTestMessage.h"
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Messages/GameObjects/FServerEventNotification.h"
@@ -119,6 +122,36 @@ namespace CrowdyReceiveTestSupport
 	inline void AppendTargetId(TArray<uint8>& Payload)
 	{
 		Payload.Append(reinterpret_cast<const uint8*>(CrowdyWireParity::GoldenUuid()), 32);
+	}
+
+	/**
+	 * The six octets in front of every video fragment's slice.
+	 *
+	 * Written here rather than taken from the decoder, so the test states the layout independently of the
+	 * code that reads it. The frame id is big endian, unlike every other integer on this wire.
+	 */
+	inline void AppendVideoFragmentHeader(TArray<uint8>& Payload, const uint8 Codec, const uint16 FrameId,
+		const uint8 FragmentIndex, const uint8 FragmentCount, const uint8 Version = CrowdyVideoFragment::Version)
+	{
+		Payload.Add(Version);
+		Payload.Add(Codec);
+		Payload.Add(static_cast<uint8>(FrameId >> 8));
+		Payload.Add(static_cast<uint8>(FrameId & 0xff));
+		Payload.Add(FragmentIndex);
+		Payload.Add(FragmentCount);
+	}
+
+	/** One whole fragment: the header, then a body of Size octets whose first is Fill. */
+	inline TArray<uint8> VideoFragment(const uint8 Codec, const uint16 FrameId, const uint8 FragmentIndex,
+		const uint8 FragmentCount, const int32 Size, const uint8 Fill)
+	{
+		TArray<uint8> Fragment;
+		AppendVideoFragmentHeader(Fragment, Codec, FrameId, FragmentIndex, FragmentCount);
+		for (int32 Index = 0; Index < Size; ++Index)
+		{
+			Fragment.Add(static_cast<uint8>(Fill + Index));
+		}
+		return Fragment;
 	}
 
 	inline TArray<FInboundCase> BuildInboundCases()
@@ -234,6 +267,25 @@ namespace CrowdyReceiveTestSupport
 		}
 
 		{
+			// Every header field is given a value the struct does not default to, so a decoder that read
+			// nothing would differ in all five rather than agree by coincidence. The codec is WebP because
+			// the field defaults to Unknown, and the frame id is wide enough to need both its octets.
+			FInboundCase& Case = Cases.AddDefaulted_GetRef();
+			Case.Type = ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION;
+			Case.Name = TEXT("video fragment");
+			AppendVideoFragmentHeader(Case.Payload, static_cast<uint8>(ECrowdyVideoCodec::WebP), 0x1234, 2, 5);
+			Case.Payload.Append({0xf1, 0xf2, 0xf3});
+			Case.Describe = [](const ICrowdyMessage& Message)
+			{
+				const auto& Video = static_cast<const FClientVideoNotification&>(Message);
+				return FString::Printf(TEXT("%s codec=%u raw=%u frameId=%d fragment=%d/%d body=%s guid=%s"),
+					*DescribeBase(Message), static_cast<uint8>(Video.Codec), Video.RawCodec, Video.FrameId,
+					Video.FragmentIndex, Video.FragmentCount, *DescribeBytes(Video.BodyView),
+					*Video.GUID.ToString());
+			};
+		}
+
+		{
 			// The parser has no case for a text notification, so both paths produce the default message. The assertion
 			// is that they agree on that, which is what says the seam introduced no divergence of its own.
 			FInboundCase& Case = Cases.AddDefaulted_GetRef();
@@ -257,6 +309,21 @@ namespace CrowdyReceiveTestSupport
 				const auto& Ping = static_cast<const FPingTestMessage&>(Message);
 				// ReceiveTime is stamped from the local clock at parse time, so it is deliberately not compared.
 				return FString::Printf(TEXT("%s sendTime=%lld"), *DescribeBase(Message), Ping.SendTime);
+			};
+		}
+
+		{
+			// Carries the session-released reason rather than the stale one, so the reason actually read off the
+			// frame differs from the value the message would hold if nothing decoded it.
+			FInboundCase& Case = Cases.AddDefaulted_GetRef();
+			Case.Type = ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION;
+			Case.Name = TEXT("actor left");
+			Case.Payload.Add(static_cast<uint8>(ECrowdyActorLeftReason::SessionReleased));
+			Case.Describe = [](const ICrowdyMessage& Message)
+			{
+				const auto& Left = static_cast<const FActorLeftNotification&>(Message);
+				return FString::Printf(TEXT("%s reason=%u raw=%u guid=%s"), *DescribeBase(Message),
+					static_cast<uint8>(Left.Reason), Left.RawReason, *Left.GUID.ToString());
 			};
 		}
 
@@ -1425,6 +1492,730 @@ bool FCrowdyBundleTrailingByteTest::RunTest(const FString& Parameters)
 		Parsing.MessagesReceived() - CountedBefore, static_cast<int64>(1));
 
 	Recorder.Release();
+	return true;
+}
+
+// The reason is one byte of a payload the server may omit entirely, and the protocol says every value but the
+// reserved one means a plain stale drop. So the table below is the whole of what this SDK may claim to know,
+// and reading it off a real datagram is what says the byte is taken from the payload rather than from a
+// default that happens to agree with it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyActorLeftReasonNormalizationTest,
+	"CrowdySDK.Transport.ActorLeftReasonNormalizesUnknownToStale",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyActorLeftReasonNormalizationTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+	using namespace CrowdyReceiveTestSupport;
+
+	FParserFixture Parsing;
+	if (!TestTrue(TEXT("a parser and the session it reads were created"), Parsing.Open()))
+	{
+		return false;
+	}
+
+	struct FReasonCase
+	{
+		const TCHAR* Name;
+		TArray<uint8> Payload;
+		ECrowdyActorLeftReason Expected;
+		uint8 ExpectedRaw;
+	};
+
+	const TArray<FReasonCase> Cases = {
+		{ TEXT("a stale drop"), { 0 }, ECrowdyActorLeftReason::Stale, 0 },
+		{ TEXT("a session the server ended"), { 1 }, ECrowdyActorLeftReason::SessionReleased, 1 },
+		{ TEXT("a reason no version defines"), { 2 }, ECrowdyActorLeftReason::Stale, 2 },
+		{ TEXT("the highest reason byte"), { 255 }, ECrowdyActorLeftReason::Stale, 255 },
+		{ TEXT("no payload at all"), {}, ECrowdyActorLeftReason::Stale, 0 },
+	};
+
+	for (const FReasonCase& Case : Cases)
+	{
+		const TArray<uint8> Datagram = ExpectedSpatial(ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION,
+			7, 11, -22, 33, Case.Payload, 8, 1, 1700000000123, 42);
+
+		const TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> Decoded = Parsing.Parser->ParseMessage(Datagram);
+
+		if (!TestEqual(*FString::Printf(TEXT("%s decodes as an actor left notification"), Case.Name),
+			static_cast<int32>(Decoded->GetType()),
+			static_cast<int32>(ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION)))
+		{
+			continue;
+		}
+
+		const FActorLeftNotification& Left = static_cast<const FActorLeftNotification&>(Decoded.Get());
+
+		TestEqual(*FString::Printf(TEXT("%s reads as the reason the protocol assigns it"), Case.Name),
+			static_cast<int32>(Left.Reason), static_cast<int32>(Case.Expected));
+
+		// The raw byte is what says an unrecognised reason was seen rather than replaced: two cases above
+		// normalize to Stale from different bytes, and only this tells them apart.
+		TestEqual(*FString::Printf(TEXT("%s keeps the byte exactly as it arrived"), Case.Name),
+			static_cast<int32>(Left.RawReason), static_cast<int32>(Case.ExpectedRaw));
+
+		// The envelope, from the same frame: a decoder that read the reason out of the wrong place would
+		// have taken these from the wrong place too.
+		TestEqual(*FString::Printf(TEXT("%s carries the chunk the actor was last seen in"), Case.Name),
+			Left.ChunkX, static_cast<int64>(11));
+		TestEqual(TEXT("and the rest of that chunk"), Left.ChunkY, static_cast<int64>(-22));
+		TestEqual(TEXT("and its last axis"), Left.ChunkZ, static_cast<int64>(33));
+		TestEqual(TEXT("and the server's timestamp"), Left.Timestamp, static_cast<int64>(1700000000123));
+		TestEqual(TEXT("and the sequence number"), static_cast<int32>(Left.SequenceNumber), 42);
+		TestEqual(TEXT("and the departing actor's id"), Left.UUID, FCrowdyActorId::FromOctets(GoldenUuidView()));
+		TestTrue(TEXT("which reads back as a usable key"), Left.GUID.IsValid());
+	}
+
+	// The control: the same normalization asked of the shared reader directly, so a decoder that hard-coded
+	// its answers instead of calling it would leave this pair disagreeing with the frames above.
+	TestEqual(TEXT("an empty payload reads as stale"),
+		static_cast<int32>(CrowdyActorLeftReasonFromPayload(TConstArrayView<uint8>())),
+		static_cast<int32>(ECrowdyActorLeftReason::Stale));
+
+	const uint8 SessionReleased[] = { 1 };
+	TestEqual(TEXT("byte one is the session the server ended, not a stale drop"),
+		static_cast<int32>(CrowdyActorLeftReasonFromPayload(SessionReleased)),
+		static_cast<int32>(ECrowdyActorLeftReason::SessionReleased));
+
+	// The control that keeps the line above meaning something: the wire format reserves 2 to 255 and requires
+	// an unrecognised byte to read as a plain stale drop, so a decoder that simply passed the byte through
+	// would answer with a reason this build cannot name.
+	const uint8 Reserved[] = { 2 };
+	TestEqual(TEXT("a reserved byte still reads as stale"),
+		static_cast<int32>(CrowdyActorLeftReasonFromPayload(Reserved)),
+		static_cast<int32>(ECrowdyActorLeftReason::Stale));
+
+	const uint8 FarReserved[] = { 200 };
+	TestEqual(TEXT("and so does one far up the reserved range"),
+		static_cast<int32>(CrowdyActorLeftReasonFromPayload(FarReserved)),
+		static_cast<int32>(ECrowdyActorLeftReason::Stale));
+
+	return true;
+}
+
+// Opcode 145 has to be admitted by three separate gates before a consumer can subscribe to it, and each of
+// them defaults to refusing an opcode it does not name. A miss in any one is silent: the frame simply never
+// arrives, which looks exactly like a server that never sent it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyActorLeftIsRoutableTest,
+	"CrowdySDK.Transport.ActorLeftIsDeliverableAndRoutable",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyActorLeftIsRoutableTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+	using namespace CrowdyReceiveTestSupport;
+
+	constexpr uint8 ActorLeftOpcode = static_cast<uint8>(ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION);
+	TestEqual(TEXT("the actor left opcode is the one the protocol assigns"),
+		static_cast<int32>(ActorLeftOpcode), 145);
+
+	TestTrue(TEXT("an actor left notification is deliverable"),
+		FCrowdyCppReplication::IsDeliverableSpatialOpcode(ActorLeftOpcode));
+
+	// The control on that gate: it is server-only, so admitting it inbound must not have admitted it outbound.
+	TestFalse(TEXT("but it is not something a client may send"),
+		FCrowdyCppReplication::IsSendableSpatialOpcode(ActorLeftOpcode));
+
+	// And the control on the gate itself, since a gate that answered true for everything would pass the line
+	// above without admitting anything in particular.
+	TestFalse(TEXT("a request opcode is still refused inbound"),
+		FCrowdyCppReplication::IsDeliverableSpatialOpcode(
+			static_cast<uint8>(ECrowdyMessageType::ACTOR_UPDATE_REQUEST)));
+
+	// The routing gate. A subscription to an opcode the parser never produces is reported as dead and fires
+	// nothing, so this is what makes the tracker's subscription real.
+	FParserFixture Parsing;
+	if (!TestTrue(TEXT("a parser and the session it reads were created"), Parsing.Open()))
+	{
+		return false;
+	}
+
+	int32 Received = 0;
+	ECrowdyActorLeftReason SeenReason = ECrowdyActorLeftReason::Stale;
+	FCrowdySubscription Subscription = Parsing.Registry.SubscribeToOpcode(
+		ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION,
+		{ ECrowdySubscriptionRole::Observe, false, TEXT("ActorLeftRoutingTest") },
+		[&Received, &SeenReason](const FCrowdyDelivery& Delivery)
+		{
+			++Received;
+			SeenReason = Delivery.GetAs<FActorLeftNotification>().Reason;
+		});
+
+	TArray<uint8> Payload;
+	Payload.Add(static_cast<uint8>(ECrowdyActorLeftReason::SessionReleased));
+	const TArray<uint8> Datagram = ExpectedSpatial(ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION,
+		7, 1, 2, 3, Payload, 8, 1, 1700000000456, 5);
+
+	Parsing.Registry.DispatchMessage(Parsing.Parser->ParseMessage(Datagram));
+
+	TestEqual(TEXT("a subscriber on the actor left opcode is reached"), Received, 1);
+	TestEqual(TEXT("and is handed the reason off the frame rather than the default"),
+		static_cast<int32>(SeenReason), static_cast<int32>(ECrowdyActorLeftReason::SessionReleased));
+
+	// The control on the routing: a frame this subscription does not name must not reach it, so the count
+	// above is a match rather than a subscriber that receives everything.
+	TArray<uint8> PingPayload;
+	AppendInt64(PingPayload, 1699999999999);
+	Parsing.Registry.DispatchMessage(Parsing.Parser->ParseMessage(
+		ExpectedSpatial(ECrowdyMessageType::GENERIC_SPATIAL_1, 7, 1, 2, 3, PingPayload, 8, 1, 1700000000457, 6)));
+
+	TestEqual(TEXT("and nothing else reaches it"), Received, 1);
+
+	Subscription.Release();
+	return true;
+}
+
+// Opcode 144 passes the same three gates opcode 145 does, and 143 is its outbound half. A miss in any one
+// of them is silent: the fragment simply never arrives, which looks exactly like a camera nobody turned on.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVideoIsRoutableTest,
+	"CrowdySDK.Transport.VideoIsDeliverableAndRoutable",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyVideoIsRoutableTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+	using namespace CrowdyReceiveTestSupport;
+
+	constexpr uint8 VideoNotification = static_cast<uint8>(ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION);
+	constexpr uint8 VideoPacket = static_cast<uint8>(ECrowdyMessageType::CLIENT_VIDEO_PACKET);
+
+	TestEqual(TEXT("the video notification opcode is the one the protocol assigns"),
+		static_cast<int32>(VideoNotification), 144);
+	TestEqual(TEXT("and the video packet opcode is its outbound half"), static_cast<int32>(VideoPacket), 143);
+
+	TestTrue(TEXT("a video notification is deliverable"),
+		FCrowdyCppReplication::IsDeliverableSpatialOpcode(VideoNotification));
+	TestFalse(TEXT("but a notification is not something a client may send"),
+		FCrowdyCppReplication::IsSendableSpatialOpcode(VideoNotification));
+
+	TestTrue(TEXT("a video packet is sendable"), FCrowdyCppReplication::IsSendableSpatialOpcode(VideoPacket));
+	TestFalse(TEXT("but a packet is not something the server hands back"),
+		FCrowdyCppReplication::IsDeliverableSpatialOpcode(VideoPacket));
+
+	// The controls on both gates. Without these a gate that answered true for everything would satisfy the
+	// two lines above without admitting these opcodes in particular.
+	TestFalse(TEXT("a request opcode is still refused inbound"),
+		FCrowdyCppReplication::IsDeliverableSpatialOpcode(
+			static_cast<uint8>(ECrowdyMessageType::ACTOR_UPDATE_REQUEST)));
+	TestFalse(TEXT("a server event is still refused outbound"),
+		FCrowdyCppReplication::IsSendableSpatialOpcode(
+			static_cast<uint8>(ECrowdyMessageType::SERVER_EVENT_NOTIFICATION)));
+
+	// The routing gate. A subscription to an opcode the parser never produces is reported as dead and fires
+	// nothing, so this is what makes a consumer's subscription real.
+	FParserFixture Parsing;
+	if (!TestTrue(TEXT("a parser and the session it reads were created"), Parsing.Open()))
+	{
+		return false;
+	}
+
+	int32 Received = 0;
+	int32 SeenFrameId = -1;
+	ECrowdyVideoCodec SeenCodec = ECrowdyVideoCodec::Jpeg;
+	FCrowdySubscription Subscription = Parsing.Registry.SubscribeToOpcode(
+		ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION,
+		{ ECrowdySubscriptionRole::Observe, false, TEXT("VideoRoutingTest") },
+		[&Received, &SeenFrameId, &SeenCodec](const FCrowdyDelivery& Delivery)
+		{
+			++Received;
+			SeenFrameId = Delivery.GetAs<FClientVideoNotification>().FrameId;
+			SeenCodec = Delivery.GetAs<FClientVideoNotification>().Codec;
+		});
+
+	TArray<uint8> Payload = VideoFragment(static_cast<uint8>(ECrowdyVideoCodec::WebP), 0x0501, 0, 1, 4, 0x70);
+	Parsing.Registry.DispatchMessage(Parsing.Parser->ParseMessage(
+		ExpectedSpatial(ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION, 7, 1, 2, 3, Payload, 8, 1,
+			1700000000456, 5)));
+
+	TestEqual(TEXT("a subscriber on the video opcode is reached"), Received, 1);
+	TestEqual(TEXT("and is handed the frame id off the header rather than the default"), SeenFrameId, 0x0501);
+	TestEqual(TEXT("and the codec off the header rather than the default"),
+		static_cast<int32>(SeenCodec), static_cast<int32>(ECrowdyVideoCodec::WebP));
+
+	// The control on the routing: a frame this subscription does not name must not reach it.
+	TArray<uint8> PingPayload;
+	AppendInt64(PingPayload, 1699999999999);
+	Parsing.Registry.DispatchMessage(Parsing.Parser->ParseMessage(
+		ExpectedSpatial(ECrowdyMessageType::GENERIC_SPATIAL_1, 7, 1, 2, 3, PingPayload, 8, 1, 1700000000457, 6)));
+
+	TestEqual(TEXT("and nothing else reaches it"), Received, 1);
+
+	Subscription.Release();
+	return true;
+}
+
+// The fragment header is the one part of a video frame this SDK reads, and it is described twice: once by
+// the vendored contract and once by the message decoder, which cannot include a crowdy:: header. So the
+// table below states what each field means at each offset, independently of both.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVideoFragmentHeaderTest,
+	"CrowdySDK.Transport.VideoFragmentHeaderDecodesAndRefusesWhatItMust",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyVideoFragmentHeaderTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+	using namespace CrowdyReceiveTestSupport;
+
+	FParserFixture Parsing;
+	if (!TestTrue(TEXT("a parser and the session it reads were created"), Parsing.Open()))
+	{
+		return false;
+	}
+
+	struct FHeaderCase
+	{
+		const TCHAR* Name;
+		TArray<uint8> Payload;
+		bool bDecodes = false;
+		ECrowdyVideoCodec Codec = ECrowdyVideoCodec::Jpeg;
+		int32 FrameId = 0;
+		int32 Index = 0;
+		int32 Count = 0;
+		int32 BodySize = 0;
+	};
+
+	TArray<FHeaderCase> Cases;
+
+	{
+		FHeaderCase& Case = Cases.AddDefaulted_GetRef();
+		Case.Name = TEXT("a jpeg fragment");
+		Case.Payload = VideoFragment(0, 1, 0, 1, 5, 0x10);
+		Case.bDecodes = true;
+		Case.Codec = ECrowdyVideoCodec::Jpeg;
+		Case.FrameId = 1;
+		Case.Count = 1;
+		Case.BodySize = 5;
+	}
+
+	{
+		// Both octets of the frame id are significant and they are big endian, so a reader that swapped
+		// them would report 0x3412 here rather than 0x1234.
+		FHeaderCase& Case = Cases.AddDefaulted_GetRef();
+		Case.Name = TEXT("a webp fragment late in a frame");
+		Case.Payload = VideoFragment(1, 0x1234, 15, 16, 7, 0x20);
+		Case.bDecodes = true;
+		Case.Codec = ECrowdyVideoCodec::WebP;
+		Case.FrameId = 0x1234;
+		Case.Index = 15;
+		Case.Count = 16;
+		Case.BodySize = 7;
+	}
+
+	{
+		// The forward-compatibility case: a codec byte no version assigns. It is refused rather than
+		// carried, because nothing downstream could decode the bytes behind it.
+		FHeaderCase& Case = Cases.AddDefaulted_GetRef();
+		Case.Name = TEXT("a codec no version assigns");
+		Case.Payload = VideoFragment(2, 1, 0, 1, 5, 0x30);
+	}
+
+	{
+		FHeaderCase& Case = Cases.AddDefaulted_GetRef();
+		Case.Name = TEXT("the highest codec byte");
+		Case.Payload = VideoFragment(255, 1, 0, 1, 5, 0x30);
+	}
+
+	{
+		FHeaderCase& Case = Cases.AddDefaulted_GetRef();
+		Case.Name = TEXT("a header version this build does not write");
+		Case.Payload.Reset();
+		AppendVideoFragmentHeader(Case.Payload, 0, 1, 0, 1, /*Version*/ 2);
+		Case.Payload.Append({0x40, 0x41});
+	}
+
+	{
+		FHeaderCase& Case = Cases.AddDefaulted_GetRef();
+		Case.Name = TEXT("a frame claiming more fragments than one may cross as");
+		Case.Payload = VideoFragment(0, 1, 0, CrowdyVideoFragment::MaxFragments + 1, 5, 0x50);
+	}
+
+	{
+		FHeaderCase& Case = Cases.AddDefaulted_GetRef();
+		Case.Name = TEXT("a frame of no fragments at all");
+		Case.Payload = VideoFragment(0, 1, 0, 0, 5, 0x50);
+	}
+
+	{
+		FHeaderCase& Case = Cases.AddDefaulted_GetRef();
+		Case.Name = TEXT("an index at or past the count");
+		Case.Payload = VideoFragment(0, 1, 3, 3, 5, 0x60);
+	}
+
+	{
+		FHeaderCase& Case = Cases.AddDefaulted_GetRef();
+		Case.Name = TEXT("a payload too short to hold a header");
+		Case.Payload = { CrowdyVideoFragment::Version, 0, 0, 1, 0 };
+	}
+
+	{
+		// A header and nothing behind it. The split never writes one, since a frame that divides exactly
+		// ends on a full fragment rather than an extra empty one, so this is a broken or hostile peer. It
+		// is refused because with a fragment count of one it would otherwise complete a zero octet frame
+		// and hand it to whatever decodes images.
+		FHeaderCase& Case = Cases.AddDefaulted_GetRef();
+		Case.Name = TEXT("a header with no body behind it");
+		Case.Payload = VideoFragment(0, 9, 0, 1, 0, 0);
+	}
+
+
+	for (const FHeaderCase& Case : Cases)
+	{
+		const TArray<uint8> Datagram = ExpectedSpatial(ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION,
+			7, 11, -22, 33, Case.Payload, 8, 1, 1700000000123, 42);
+
+		const TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> Decoded = Parsing.Parser->ParseMessage(Datagram);
+		const bool bDecoded = Decoded->GetType() == ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION;
+
+		if (!TestEqual(*FString::Printf(TEXT("%s is %s"), Case.Name,
+			Case.bDecodes ? TEXT("decoded") : TEXT("refused")), bDecoded, Case.bDecodes))
+		{
+			continue;
+		}
+
+		if (!Case.bDecodes)
+		{
+			continue;
+		}
+
+		const FClientVideoNotification& Video = static_cast<const FClientVideoNotification&>(Decoded.Get());
+
+		TestEqual(*FString::Printf(TEXT("%s names its codec"), Case.Name),
+			static_cast<int32>(Video.Codec), static_cast<int32>(Case.Codec));
+		TestEqual(*FString::Printf(TEXT("%s keeps the codec byte as it arrived"), Case.Name),
+			static_cast<int32>(Video.RawCodec), static_cast<int32>(Case.Codec));
+		TestEqual(*FString::Printf(TEXT("%s reads its frame id from both octets"), Case.Name),
+			Video.FrameId, Case.FrameId);
+		TestEqual(*FString::Printf(TEXT("%s reads its fragment index"), Case.Name),
+			Video.FragmentIndex, Case.Index);
+		TestEqual(*FString::Printf(TEXT("%s reads its fragment count"), Case.Name),
+			Video.FragmentCount, Case.Count);
+		TestEqual(*FString::Printf(TEXT("%s carries the body behind the header"), Case.Name),
+			Video.BodyView.Num(), Case.BodySize);
+		TestEqual(*FString::Printf(TEXT("%s carries the whole fragment for the assembler"), Case.Name),
+			Video.FragmentView.Num(), Case.BodySize + CrowdyVideoFragment::HeaderBytes);
+
+		// The envelope, from the same frame: a decoder that read the header from the wrong place would
+		// have taken these from the wrong place too.
+		TestEqual(TEXT("and the chunk the fragment was broadcast over"), Video.ChunkX, static_cast<int64>(11));
+		TestEqual(TEXT("and the rest of that chunk"), Video.ChunkY, static_cast<int64>(-22));
+		TestEqual(TEXT("and its last axis"), Video.ChunkZ, static_cast<int64>(33));
+		TestEqual(TEXT("and the server's timestamp"), Video.Timestamp, static_cast<int64>(1700000000123));
+		TestEqual(TEXT("and the sequence number"), static_cast<int32>(Video.SequenceNumber), 42);
+		TestEqual(TEXT("and the sending actor's id"), Video.UUID, FCrowdyActorId::FromOctets(GoldenUuidView()));
+		TestTrue(TEXT("which reads back as a usable key"), Video.GUID.IsValid());
+	}
+
+	// The body's upper bound, asked of the decoder directly rather than through a datagram: a payload over
+	// this size does not fit one, so routing it through the encoder would say only that the encoder refused
+	// it. What is being pinned is that the decoder measures the body at all.
+	{
+		const auto DecodeBody = [](const int32 BodySize) -> bool
+		{
+			TArray<uint8> Payload = VideoFragment(0, 9, 0, 1, BodySize, 0x90);
+
+			FCrowdyFrame Frame;
+			Frame.Opcode = static_cast<uint8>(ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION);
+			Frame.Body = Payload;
+			Frame.Envelope.Uuid = GoldenUuidView();
+			Frame.bHasEnvelope = true;
+
+			FClientVideoNotification Video;
+			return Video.DecodePayload(Frame);
+		};
+
+		TestFalse(TEXT("a body larger than one datagram carries is refused"),
+			DecodeBody(CrowdyVideoFragment::MaxBodyBytes + 1));
+
+		// The control: one octet less is the largest a fragment may carry, and it is accepted, so a decoder
+		// that refused every body would not read as measuring one.
+		TestTrue(TEXT("while exactly the largest one carries is accepted"),
+			DecodeBody(CrowdyVideoFragment::MaxBodyBytes));
+	}
+
+	// The control on the codec mapping, asked of the shared reader directly, so a decoder that hard-coded
+	// its answers would leave this disagreeing with the frames above.
+	TestEqual(TEXT("codec byte 0 is jpeg"), static_cast<int32>(CrowdyVideoCodecFromByte(0)),
+		static_cast<int32>(ECrowdyVideoCodec::Jpeg));
+	TestEqual(TEXT("codec byte 1 is webp"), static_cast<int32>(CrowdyVideoCodecFromByte(1)),
+		static_cast<int32>(ECrowdyVideoCodec::WebP));
+	TestEqual(TEXT("codec byte 2 is one no version assigns"), static_cast<int32>(CrowdyVideoCodecFromByte(2)),
+		static_cast<int32>(ECrowdyVideoCodec::Unknown));
+	TestEqual(TEXT("and so is the highest codec byte"), static_cast<int32>(CrowdyVideoCodecFromByte(255)),
+		static_cast<int32>(ECrowdyVideoCodec::Unknown));
+
+	return true;
+}
+
+// The header offsets are the one part of the contract nothing can assert at compile time: the vendored
+// reader names them as literal indices, so there is no constant for the message decoder's mirror to be
+// checked against. The test above states the layout independently, but both it and the decoder are written
+// here, so a change made consistently to the pair would drift from the other SDK unnoticed. This compares
+// the mirror against the vendored writer instead, which is a second source rather than a second opinion.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVideoFragmentOffsetsTest,
+	"CrowdySDK.Transport.VideoFragmentOffsetsMatchTheVendoredSplit",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyVideoFragmentOffsetsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+	using namespace CrowdyReceiveTestSupport;
+
+	FParserFixture Parsing;
+	if (!TestTrue(TEXT("a parser and the session it reads were created"), Parsing.Open()))
+	{
+		return false;
+	}
+
+	// Both octets of the frame id are significant and unequal, so a mirror that swapped them reads 0x0201.
+	constexpr int32 FrameId = 0x0102;
+	constexpr int32 TailBodySize = 5;
+	constexpr uint8 Codec = static_cast<uint8>(ECrowdyVideoCodec::WebP);
+
+	// Long enough to need a second fragment, so the index and the count are different numbers and a mirror
+	// that read one at the other's offset would be visible.
+	TArray<uint8> Image;
+	Image.SetNumZeroed(FCrowdyCppVideoAssembler::MaxFragmentBodyBytes + TailBodySize);
+
+	TArray<TArray<uint8>> Fragments;
+	if (!TestTrue(TEXT("the vendored split produced fragments"),
+		FCrowdyCppVideoAssembler::FragmentFrame(Image, FrameId, Codec, Fragments))
+		|| !TestEqual(TEXT("two of them"), Fragments.Num(), 2))
+	{
+		return false;
+	}
+
+	const TArray<uint8>& Tail = Fragments[1];
+	if (!TestEqual(TEXT("the second is the header and what the first did not carry"), Tail.Num(),
+		CrowdyVideoFragment::HeaderBytes + TailBodySize))
+	{
+		return false;
+	}
+
+	// Field by field, at the offset the message decoder reads each from.
+	TestEqual(TEXT("the version sits where the decoder reads it"),
+		static_cast<int32>(Tail[CrowdyVideoFragment::VersionOffset]),
+		static_cast<int32>(CrowdyVideoFragment::Version));
+	TestEqual(TEXT("and the codec where the decoder reads it"),
+		static_cast<int32>(Tail[CrowdyVideoFragment::CodecOffset]), static_cast<int32>(Codec));
+	TestEqual(TEXT("and the frame id's high octet first"),
+		static_cast<int32>(Tail[CrowdyVideoFragment::FrameIdOffset]), 0x01);
+	TestEqual(TEXT("and its low octet second"),
+		static_cast<int32>(Tail[CrowdyVideoFragment::FrameIdOffset + 1]), 0x02);
+	TestEqual(TEXT("and the fragment index where the decoder reads it"),
+		static_cast<int32>(Tail[CrowdyVideoFragment::IndexOffset]), 1);
+	TestEqual(TEXT("and the fragment count where the decoder reads it"),
+		static_cast<int32>(Tail[CrowdyVideoFragment::CountOffset]), 2);
+
+	// And through the decoder itself, so the offsets above are what it actually uses rather than what it is
+	// documented to use.
+	const auto Decode = [&Parsing](const TArray<uint8>& Fragment) -> TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe>
+	{
+		return Parsing.Parser->ParseMessage(ExpectedSpatial(ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION,
+			7, 11, -22, 33, Fragment, 8, 1, 1700000000123, 42));
+	};
+
+	const TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> DecodedTail = Decode(Tail);
+	if (!TestEqual(TEXT("the split's own fragment decodes"),
+		static_cast<int32>(DecodedTail->GetType()),
+		static_cast<int32>(ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION)))
+	{
+		return false;
+	}
+
+	const FClientVideoNotification& Tailed = static_cast<const FClientVideoNotification&>(DecodedTail.Get());
+	TestEqual(TEXT("under the frame id it was split with, both octets"), Tailed.FrameId, FrameId);
+	TestEqual(TEXT("as the fragment it is"), Tailed.FragmentIndex, 1);
+	TestEqual(TEXT("of the count it was split into"), Tailed.FragmentCount, 2);
+	TestEqual(TEXT("under the codec it was split with"), static_cast<int32>(Tailed.Codec),
+		static_cast<int32>(ECrowdyVideoCodec::WebP));
+	TestEqual(TEXT("carrying what the first fragment could not"), Tailed.BodyView.Num(), TailBodySize);
+
+	// The control: the other fragment of the same frame reads as the other fragment, so an index and a count
+	// that were both hard-coded would not satisfy the pair.
+	const TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> DecodedHead = Decode(Fragments[0]);
+	if (TestEqual(TEXT("the first fragment decodes too"), static_cast<int32>(DecodedHead->GetType()),
+		static_cast<int32>(ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION)))
+	{
+		const FClientVideoNotification& Headed =
+			static_cast<const FClientVideoNotification&>(DecodedHead.Get());
+		TestEqual(TEXT("under the same frame id"), Headed.FrameId, FrameId);
+		TestEqual(TEXT("as the fragment before it"), Headed.FragmentIndex, 0);
+		TestEqual(TEXT("filled to what one fragment carries"), Headed.BodyView.Num(),
+			FCrowdyCppVideoAssembler::MaxFragmentBodyBytes);
+	}
+
+	return true;
+}
+
+// A single notification is one slice of an image, so everything a consumer wants happens in the assembler.
+// Its rules are shared with the browser SDK byte for byte, and each of them is a way for a frame to never
+// arrive while the wire looks healthy.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVideoReassemblyTest,
+	"CrowdySDK.Transport.VideoFramesReassembleAcrossFragments",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyVideoReassemblyTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+	using namespace CrowdyReceiveTestSupport;
+
+	const TArrayView<const uint8> Sender = GoldenUuidView();
+
+	FCrowdyCppVideoAssembler Assembler;
+	FCrowdyCppAssembledVideoFrame Frame;
+
+	// Delivered out of order, because the transport gives no ordering guarantee and a reassembler that
+	// only ever concatenated in arrival order would pass an in-order test and produce a scrambled image.
+	const TArray<uint8> Second = VideoFragment(1, 77, 1, 3, 4, 0xb0);
+	const TArray<uint8> Third = VideoFragment(1, 77, 2, 3, 2, 0xc0);
+	const TArray<uint8> First = VideoFragment(1, 77, 0, 3, 3, 0xa0);
+
+	TestFalse(TEXT("one fragment of three completes nothing"), Assembler.Ingest(Sender, Second, 1000, Frame));
+	TestFalse(TEXT("nor do two"), Assembler.Ingest(Sender, Third, 1010, Frame));
+	TestEqual(TEXT("and the sender is holding a frame in the meantime"), Assembler.PendingSenders(), 1);
+
+	if (!TestTrue(TEXT("the last fragment completes the frame"), Assembler.Ingest(Sender, First, 1020, Frame)))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("the frame is the three bodies in index order"), Frame.Bytes.Num(), 3 + 4 + 2);
+	const TArray<uint8> Expected = { 0xa0, 0xa1, 0xa2, 0xb0, 0xb1, 0xb2, 0xb3, 0xc0, 0xc1 };
+	TestEqual(TEXT("and byte for byte it is what the sender split"), DescribeBytes(Frame.Bytes),
+		DescribeBytes(Expected));
+	TestEqual(TEXT("under the sender's own frame id"), Frame.FrameId, 77);
+	TestEqual(TEXT("and the codec every fragment named"), static_cast<int32>(Frame.Codec), 1);
+	TestEqual(TEXT("stamped with the clock the last fragment arrived on"), Frame.CompletedAtMs,
+		static_cast<int64>(1020));
+	TestEqual(TEXT("and addressed to the sender it came from"), Frame.SenderUuid.Num(), 32);
+	TestEqual(TEXT("nothing is left half assembled"), Assembler.PendingSenders(), 0);
+
+	// A straggler from a frame already delivered is dropped rather than starting that frame again, which
+	// is what stops a lost-and-late fragment resurrecting an image the consumer has already shown.
+	const int64 DroppedBefore = Assembler.GetDroppedFragments();
+	TestFalse(TEXT("a straggler from the completed frame completes nothing"),
+		Assembler.Ingest(Sender, First, 1030, Frame));
+	TestEqual(TEXT("and is counted as dropped"), Assembler.GetDroppedFragments(), DroppedBefore + 1);
+	TestEqual(TEXT("and starts nothing"), Assembler.PendingSenders(), 0);
+
+	// The timeout. A sender that stops halfway leaves a frame that will never complete, and only the sweep
+	// reclaims it: nothing else is going to arrive to trigger the newer-frame rule.
+	TestFalse(TEXT("a new frame starts"), Assembler.Ingest(Sender,
+		VideoFragment(0, 78, 0, 2, 3, 0xd0), 2000, Frame));
+	TestEqual(TEXT("and is held"), Assembler.PendingSenders(), 1);
+	TestEqual(TEXT("a sweep inside the timeout abandons nothing"),
+		Assembler.Prune(2000 + FCrowdyCppVideoAssembler::DefaultFrameTimeoutMs), 0);
+	TestEqual(TEXT("and the frame is still held"), Assembler.PendingSenders(), 1);
+	TestEqual(TEXT("a sweep past the timeout abandons it"),
+		Assembler.Prune(2001 + FCrowdyCppVideoAssembler::DefaultFrameTimeoutMs), 1);
+	TestEqual(TEXT("and nothing is held afterwards"), Assembler.PendingSenders(), 0);
+
+	// Forget, which is the departure path. It has to drop a partial frame that no timeout has reached yet.
+	TestFalse(TEXT("another frame starts"), Assembler.Ingest(Sender,
+		VideoFragment(0, 90, 0, 2, 3, 0xe0), 3000, Frame));
+	TestEqual(TEXT("and is held"), Assembler.PendingSenders(), 1);
+
+	const int64 AbandonedBefore = Assembler.GetAbandonedFrames();
+	Assembler.Forget(Sender);
+	TestEqual(TEXT("forgetting the sender drops it"), Assembler.PendingSenders(), 0);
+	TestEqual(TEXT("and counts it abandoned"), Assembler.GetAbandonedFrames(), AbandonedBefore + 1);
+
+	// The control on Forget: a sender id it was never given must not disturb the one it was. Without this
+	// a Forget that cleared everything would satisfy the line above.
+	TestFalse(TEXT("a third frame starts"), Assembler.Ingest(Sender,
+		VideoFragment(0, 91, 0, 2, 3, 0xf0), 4000, Frame));
+	// Asserted before the forget below, so a failure there names which of the two happened: the frame never
+	// being held, or the forget reaching a sender it was not given.
+	TestEqual(TEXT("and is held"), Assembler.PendingSenders(), 1);
+
+	// A genuinely different id. The golden uuid these tests send from is "0123456789abcdef" twice over, so an
+	// id spelled that way is the same sender and the forget below would legitimately clear it.
+	const uint8 OtherSenderOctets[32] = {
+		'f', 'e', 'd', 'c', 'b', 'a', '9', '8', '7', '6', '5', '4', '3', '2', '1', '0',
+		'f', 'e', 'd', 'c', 'b', 'a', '9', '8', '7', '6', '5', '4', '3', '2', '1', '0' };
+	const TArrayView<const uint8> OtherSender(OtherSenderOctets, 32);
+	if (!TestNotEqual(TEXT("the other sender really is a different id"),
+		DescribeBytes(TArray<uint8>(OtherSender)), DescribeBytes(TArray<uint8>(Sender))))
+	{
+		return false;
+	}
+
+	Assembler.Forget(OtherSender);
+	TestEqual(TEXT("forgetting a different sender leaves it alone"), Assembler.PendingSenders(), 1);
+
+	return true;
+}
+
+// The refusal that matters most on the send side, because it is the one whose failure mode is invisible:
+// an over-large frame that went out in part would arrive as an image that never completes, and would be
+// read months later as packet loss.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVideoFragmentationLimitTest,
+	"CrowdySDK.Transport.VideoFrameRefusesToSplitPastTheFragmentLimit",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyVideoFragmentationLimitTest::RunTest(const FString& Parameters)
+{
+	constexpr int32 MaxBody = FCrowdyCppVideoAssembler::MaxFragmentBodyBytes;
+	constexpr int32 MaxFragments = FCrowdyCppVideoAssembler::MaxFragments;
+
+	TArray<TArray<uint8>> Fragments;
+
+	TArray<uint8> Empty;
+	TestFalse(TEXT("an empty frame splits into nothing"),
+		FCrowdyCppVideoAssembler::FragmentFrame(Empty, 1, 0, Fragments));
+	TestEqual(TEXT("and writes no fragments"), Fragments.Num(), 0);
+
+	TArray<uint8> Largest;
+	Largest.SetNumZeroed(MaxBody * MaxFragments);
+	if (!TestTrue(TEXT("the largest frame that fits splits"),
+		FCrowdyCppVideoAssembler::FragmentFrame(Largest, 1, 0, Fragments)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("into exactly the fragment limit"), Fragments.Num(), MaxFragments);
+	TestEqual(TEXT("each carrying a header and a full body"), Fragments[0].Num(),
+		MaxBody + FCrowdyCppVideoAssembler::FragmentHeaderBytes);
+
+	// One octet past it, which is the boundary the refusal is stated at.
+	TArray<uint8> TooLarge;
+	TooLarge.SetNumZeroed(MaxBody * MaxFragments + 1);
+	TestFalse(TEXT("one octet more is refused"),
+		FCrowdyCppVideoAssembler::FragmentFrame(TooLarge, 1, 0, Fragments));
+	TestEqual(TEXT("and nothing at all is written for it"), Fragments.Num(), 0);
+
+	// Round trip: what the split writes is what the assembler reads, which is the only thing that says the
+	// two halves of this SDK agree about the header they share.
+	TArray<uint8> Frame;
+	for (int32 Index = 0; Index < MaxBody + 40; ++Index)
+	{
+		Frame.Add(static_cast<uint8>(Index % 251));
+	}
+
+	if (!TestTrue(TEXT("a frame over one datagram splits"),
+		FCrowdyCppVideoAssembler::FragmentFrame(Frame, 0x2222, 1, Fragments)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("into two fragments"), Fragments.Num(), 2);
+
+	FCrowdyCppVideoAssembler Assembler;
+	FCrowdyCppAssembledVideoFrame Assembled;
+	bool bCompleted = false;
+	for (const TArray<uint8>& Fragment : Fragments)
+	{
+		bCompleted = Assembler.Ingest(CrowdyReplicationTestSupport::GoldenUuidView(), Fragment, 500, Assembled);
+	}
+
+	if (!TestTrue(TEXT("and the fragments reassemble into a frame"), bCompleted))
+	{
+		return false;
+	}
+	TestEqual(TEXT("of the size that went in"), Assembled.Bytes.Num(), Frame.Num());
+	TestEqual(TEXT("byte for byte"), CrowdyReceiveTestSupport::DescribeBytes(Assembled.Bytes),
+		CrowdyReceiveTestSupport::DescribeBytes(Frame));
+	TestEqual(TEXT("under the frame id it was split with"), Assembled.FrameId, 0x2222);
+	TestEqual(TEXT("and the codec it was split with"), static_cast<int32>(Assembled.Codec), 1);
+
 	return true;
 }
 

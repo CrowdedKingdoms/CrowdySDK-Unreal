@@ -266,6 +266,16 @@ namespace
 		return true;
 	}
 
+	// The prune-candidate warning for a server property code does not declare. One place, because the per-asset plan
+	// (which never prunes) has to drop exactly the warnings whose candidates it drops, and matching them by a second
+	// copy of the sentence would silently stop matching the day either copy is reworded.
+	FString SchemaSyncUndeclaredServerPropWarning(const FString& TypeName, const FString& Key)
+	{
+		return FString::Printf(
+			TEXT("Server property '%s.%s' is not declared in code; left in place (the sync never deletes; prune it explicitly)."),
+			*TypeName, *Key);
+	}
+
 	bool NotificationHasArg(const FCrowdyGameModelNotification& N, const TCHAR* Name)
 	{
 		return N.Args.ContainsByPredicate([Name](const FCrowdyGameModelNotificationArg& A) { return A.Name == Name; });
@@ -480,15 +490,11 @@ namespace
 			}
 		}
 
-		if (Authorable.Num() == 0 && UnauthorableKinds.Num() > 0)
-		{
-			// Nothing authorable at all, so the only set this could emit is a deletion of what the server already
-			// has. Preserve it verbatim instead: a seed/console notification is never wiped, and an effect the sync
-			// cannot address does not lose the notification it already has.
-			OutNotifs = CurrentNotifs;
-			return false;
-		}
-
+		// Nothing authorable is NOT a reason to short-circuit into "keep everything". The per-kind pass below already
+		// preserves a non-SDK notification and an SDK-owned one of a kind this sync cannot express, and the
+		// empty-result branch after it catches the case where that leaves nothing to send. Keeping the whole server
+		// set here would also preserve the kinds the sync CAN author, so an effect whose carrier moved from Channel to
+		// Spatial would leave its retired channel notification broadcasting forever.
 		OutNotifs = MoveTemp(Authorable);
 		for (const FCrowdyGameModelNotification& N : CurrentNotifs)
 		{
@@ -498,6 +504,17 @@ namespace
 			{
 				OutNotifs.Add(N);
 			}
+		}
+		if (OutNotifs.Num() == 0 && CurrentNotifs.Num() > 0)
+		{
+			// An empty set cannot reach the server: the upsert omits the notifications key when the array is empty,
+			// so the server keeps what it has and a plan asking for the removal would ask for it again on every
+			// check, forever. Keep what the server has, and name what a sync cannot take away.
+			OutWarnings.Add(FString::Printf(
+				TEXT("Function '%s' no longer declares any notification, but a sync cannot remove the %d it already has on the server. Delete them on the Models tab if they are no longer wanted."),
+				*FunctionName, CurrentNotifs.Num()));
+			OutNotifs = CurrentNotifs;
+			return false;
 		}
 		return !NotificationsEqual(OutNotifs, CurrentNotifs);
 	}
@@ -1155,7 +1172,20 @@ FCrowdySchemaDelta FCrowdySchemaSync::DiffSchema(
 			}
 
 			const bool bTypeChanged = CurP->ValueType != P.ValueType;
-			const bool bDefaultChanged = !JsonValueEquals(CurP->DefaultValueJson, P.DefaultValueJson);
+			// A default that shrank to nothing cannot reach the server: the property upsert omits defaultValueJson
+			// when the value is empty, so the server keeps the default it has. Planning that removal would re-plan it
+			// on every check, forever. Suppress it as a reason to upsert, and name where it can actually be removed.
+			// A property def is keyed by (type, key), so an omitted field really is "leave the stored one alone";
+			// an omitted field inside a list the upsert replaces wholesale is a different thing entirely.
+			const bool bDefaultCleared = P.DefaultValueJson.TrimStartAndEnd().IsEmpty()
+				&& !CurP->DefaultValueJson.TrimStartAndEnd().IsEmpty();
+			if (bDefaultCleared)
+			{
+				Delta.Warnings.Add(FString::Printf(
+					TEXT("Property '%s.%s' no longer declares a default, but a sync cannot remove the '%s' the server already has. Clear it on the Models tab if it is no longer wanted."),
+					*D.TypeName, *P.Key, *CurP->DefaultValueJson));
+			}
+			const bool bDefaultChanged = !bDefaultCleared && !JsonValueEquals(CurP->DefaultValueJson, P.DefaultValueJson);
 			const bool bVisChanged = CurP->Visibility != P.Visibility;
 			const bool bWriteChanged = CurP->Writable != P.Writable;
 			if (bTypeChanged || bDefaultChanged || bVisChanged || bWriteChanged)
@@ -1202,9 +1232,7 @@ FCrowdySchemaDelta FCrowdySchemaSync::DiffSchema(
 							*D.TypeName, *P.Key));
 						continue;
 					}
-					Delta.Warnings.Add(FString::Printf(
-						TEXT("Server property '%s.%s' is not declared in code; left in place (the sync never deletes; prune it explicitly)."),
-						*D.TypeName, *P.Key));
+					Delta.Warnings.Add(SchemaSyncUndeclaredServerPropWarning(D.TypeName, P.Key));
 					Delta.ServerOnlyProps.Add({ D.TypeName, P.Key });
 				}
 			}
@@ -1618,7 +1646,18 @@ void FCrowdySchemaSync::DiffFunctions(
 		const bool bPolicyChanged = !InvokePolicyEquals(D.InvokePolicyJson, Cur->InvokePolicyJson);
 		const bool bParamsChanged = !FunctionParamsEqual(D.Parameters, Cur->Parameters);
 		const bool bMutationsChanged = !FunctionMutationsEqual(D.Mutations, Cur->Mutations);
-		const bool bTimersChanged = !FunctionTimersEqual(D.Timers, Cur->Timers);
+		// A timer set that shrank to empty cannot reach the server: the upsert omits the timers key when the array
+		// is empty, so the server keeps the timers it has. Planning that removal would re-plan it on every check,
+		// forever. The upsert carries the server's own timers so it describes the state it really leaves behind.
+		const bool bTimersCleared = D.Timers.Num() == 0 && Cur->Timers.Num() > 0;
+		if (bTimersCleared)
+		{
+			ToUpsert.Timers = Cur->Timers;
+			InOutDelta.Warnings.Add(FString::Printf(
+				TEXT("Function '%s' no longer declares any timer, but a sync cannot remove the %d it already has on the server. Delete them on the Models tab if they are no longer wanted."),
+				*D.Name, Cur->Timers.Num()));
+		}
+		const bool bTimersChanged = !bTimersCleared && !FunctionTimersEqual(D.Timers, Cur->Timers);
 
 		if (bContainerChanged || bDescChanged || bReturnTypeChanged || bReturnExprChanged
 			|| bScopeChanged || bAutonomousChanged || bPolicyChanged || bParamsChanged || bMutationsChanged
@@ -1737,7 +1776,14 @@ FCrowdySchemaSyncReport FCrowdySchemaSync::PlanForSingleEffect(
 	}
 
 	// A per-asset sync never prunes: drop any server-only entries the scoped diff surfaced (e.g. a server property on
-	// this type that code no longer declares), so the plan only ever creates or updates.
+	// this type that code no longer declares), so the plan only ever creates or updates. The warning naming each of
+	// them goes with the candidate: it offers work only the console's review can do, and on this path it would fire
+	// for every effect whose container type carries a server property code does not declare, the SDK's own
+	// collection revision counter included.
+	for (const FCrowdySchemaPropRef& Ref : OutDelta.ServerOnlyProps)
+	{
+		OutDelta.Warnings.Remove(SchemaSyncUndeclaredServerPropWarning(Ref.ContainerTypeName, Ref.Key));
+	}
 	OutDelta.ServerOnlyTypes.Reset();
 	OutDelta.ServerOnlyProps.Reset();
 	OutDelta.ServerOnlyFunctions.Reset();

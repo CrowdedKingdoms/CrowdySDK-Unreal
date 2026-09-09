@@ -305,4 +305,68 @@ bool FCrowdyApplyEffectRequiredFloatPinTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Required-ness comes off the magnitude's own flag now, so a bool is no longer exempt as a class: one marked
+// required demands a value at the call site, and an optional one still does not. A magnitude authored before the
+// flag existed keeps its old answer, which is what stops legacy graphs failing to compile.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyApplyEffectPinPlanRequiredBoolTest,
+	"CrowdySDK.Editor.ApplyEffectPinPlanRequiredBool", CrowdyApplyEffectPinTestFlags)
+bool FCrowdyApplyEffectPinPlanRequiredBoolTest::RunTest(const FString& Parameters)
+{
+	UCrowdyEffect* Effect = NewObject<UCrowdyEffect>(GetTransientPackage());
+
+	FCrowdyEffectMagnitude RequiredFlag = Mag(TEXT("must_supply"), ECrowdyEffectValueType::Bool, FString());
+	RequiredFlag.bTypeMigrated = true;
+	RequiredFlag.bRequiredMigrated = true;
+	RequiredFlag.bRequired = true;
+	Effect->Magnitudes.Add(RequiredFlag);
+
+	// The control: the same type, migrated the same way, but optional with the default a bool always carries.
+	FCrowdyEffectMagnitude OptionalFlag = Mag(TEXT("may_omit"), ECrowdyEffectValueType::Bool, TEXT("false"));
+	OptionalFlag.bTypeMigrated = true;
+	OptionalFlag.bRequiredMigrated = true;
+	Effect->Magnitudes.Add(OptionalFlag);
+
+	// A bool serialized before the flag existed: it must stay optional, or every legacy graph using one starts
+	// failing to compile.
+	Effect->Magnitudes.Add(Mag(TEXT("legacy_flag"), ECrowdyEffectValueType::Bool, FString()));
+
+	const FCrowdyApplyEffectPinPlan Plan = CrowdyApplyEffectNodePins::BuildPinPlan(Effect);
+
+	auto Find = [&Plan](const FString& Name) -> const FCrowdyApplyEffectPinEntry*
+	{
+		return Plan.Magnitudes.FindByPredicate(
+			[&Name](const FCrowdyApplyEffectPinEntry& E) { return E.MagnitudeName == Name; });
+	};
+
+	if (const FCrowdyApplyEffectPinEntry* Entry = Find(TEXT("must_supply")))
+	{
+		TestTrue(TEXT("a bool marked required is required"), Entry->bRequired);
+		TestTrue(TEXT("and shows no default on its pin"), Entry->DefaultValue.IsEmpty());
+	}
+	else
+	{
+		AddError(TEXT("must_supply entry missing"));
+	}
+
+	if (const FCrowdyApplyEffectPinEntry* Entry = Find(TEXT("may_omit")))
+	{
+		TestFalse(TEXT("an optional bool is not required"), Entry->bRequired);
+		TestEqual(TEXT("and prefills its default"), Entry->DefaultValue, FString(TEXT("false")));
+	}
+	else
+	{
+		AddError(TEXT("may_omit entry missing"));
+	}
+
+	if (const FCrowdyApplyEffectPinEntry* Entry = Find(TEXT("legacy_flag")))
+	{
+		TestFalse(TEXT("a bool authored before the flag stays optional"), Entry->bRequired);
+	}
+	else
+	{
+		AddError(TEXT("legacy_flag entry missing"));
+	}
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

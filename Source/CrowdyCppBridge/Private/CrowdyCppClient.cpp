@@ -739,6 +739,16 @@ namespace
 		Result.GameApiWsUrl = Utf8ToFString(Value.gameApiWsUrl.valueOrEmpty());
 		Result.DiscoveryUrl = Utf8ToFString(Value.discoveryUrl.valueOrEmpty());
 		Result.LaunchUrl = Utf8ToFString(Value.launchUrl.valueOrEmpty());
+
+		// Only when the reply actually names a server. A response with no authorizedServer parses into an empty
+		// address and a zero port, and copying those through unguarded would offer a caller an endpoint to compare
+		// against instead of the absence it has to treat as "re-assign".
+		if (Value.hasAuthorizedServer())
+		{
+			Result.AuthorizedServerIp4 = Utf8ToFString(Value.authorizedServerIp4);
+			Result.AuthorizedServerClientPort = Value.authorizedServerClientPort;
+		}
+
 		Result.bOk = true;
 		return Result;
 	}
@@ -2447,6 +2457,30 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RefreshAppToken(TFunction<void(FCrowdy
 			// install=false: the twin would otherwise write the replacement into the client's shared bearer, which
 			// the next per-call install overwrites anyway. Which plane the new token belongs to is the owner's call.
 			Client.portal().refreshAsync(std::move(Cb), false);
+		},
+		&MapAppTokenResponse);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::RefreshAppToken(const FString& CurrentServerIp4,
+	const int32 CurrentServerClientPort, TFunction<void(FCrowdyCppAppTokenResult)> OnDone)
+{
+	// An unnamed server is the no-server rotation, not a rotation naming nothing: the twin below would send an empty
+	// address the API has no way to match, and the reply would carry no authorizedServer for a reason the caller
+	// could not tell apart from an API too old to answer one.
+	if (CurrentServerIp4.IsEmpty() || CurrentServerClientPort <= 0)
+	{
+		return RefreshAppToken(MoveTemp(OnDone));
+	}
+
+	const std::string Ip4 = std::string(TCHAR_TO_UTF8(*CurrentServerIp4));
+
+	return RunAuthOp<FCrowdyCppAppTokenResult, crowdy::domains::AppTokenResponse>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Game) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("refreshAppToken"), MoveTemp(OnDone),
+		[Ip4, CurrentServerClientPort](crowdy::CrowdyClient& Client, FAppTokenPayloadCallback Cb)
+		{
+			// install=false for the same reason as the no-server form above.
+			Client.portal().refreshAsync(Ip4, CurrentServerClientPort, std::move(Cb), false);
 		},
 		&MapAppTokenResponse);
 }

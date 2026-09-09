@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "CrowdyCppReplication.h"
+#include "CrowdyCppVideo.h"
 #include "Engine/GameInstance.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
@@ -178,6 +179,19 @@ bool FCrowdyReplicationSendGuardsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("an actor update notification is deliverable"),
 		FCrowdyCppReplication::IsDeliverableSpatialOpcode(130));
 	TestTrue(TEXT("a server event is deliverable"), FCrowdyCppReplication::IsDeliverableSpatialOpcode(139));
+	TestTrue(TEXT("an actor left notification is deliverable"),
+		FCrowdyCppReplication::IsDeliverableSpatialOpcode(145));
+	TestFalse(TEXT("an actor left notification is not sendable"),
+		FCrowdyCppReplication::IsSendableSpatialOpcode(145));
+	// Video, which travels the opposite way to actor left: the client sends a fragment and the server fans
+	// out a notification, so each opcode has to be refused by the gate the other one passes.
+	TestTrue(TEXT("a video packet is sendable"), FCrowdyCppReplication::IsSendableSpatialOpcode(143));
+	TestFalse(TEXT("a video packet is not deliverable"),
+		FCrowdyCppReplication::IsDeliverableSpatialOpcode(143));
+	TestTrue(TEXT("a video notification is deliverable"),
+		FCrowdyCppReplication::IsDeliverableSpatialOpcode(144));
+	TestFalse(TEXT("a video notification is not sendable"),
+		FCrowdyCppReplication::IsSendableSpatialOpcode(144));
 	TestFalse(TEXT("an actor update request is not deliverable"),
 		FCrowdyCppReplication::IsDeliverableSpatialOpcode(128));
 	TestFalse(TEXT("a voxel update request is not deliverable"),
@@ -1396,6 +1410,182 @@ bool FCrowdyDrainCostSaysNothingBeforeItHasMeasuredTest::RunTest(const FString& 
 	TestTrue(TEXT("the reading says there is nothing to derive from"),
 		Described.Contains(TEXT("no inbound messages have been delivered")));
 	TestFalse(TEXT("and offers no affordable count"), Described.Contains(TEXT("affords")));
+	return true;
+}
+
+// What a video send refuses on its own. Whether the server permits video at all is not knowable from here,
+// so nothing local claims to know it: an app the server refuses gets an error frame back, and the argument
+// checks below are the only refusals a caller can be given synchronously.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVideoSendArgumentsTest,
+	"CrowdySDK.Transport.VideoSendRefusesWhatItCannotFragment",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyVideoSendArgumentsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FCrowdyCppReplicationConfig Config;
+	Config.AppId = 7;
+	Config.Token = GoodToken();
+
+	TSharedPtr<FCrowdyCppReplication> Connection =
+		FCrowdyCppReplication::Make(Config, AlwaysRefuse(), NeverRefresh());
+	if (!TestNotNull(TEXT("a valid configuration yields a connection"), Connection.Get()))
+	{
+		return false;
+	}
+
+	TArray<uint8> Frame;
+	Frame.SetNumZeroed(64);
+
+	int32 Queued = -1;
+	FString Error;
+
+	// The control on every refusal below: an otherwise valid frame is refused for the connection and for
+	// nothing else, so a send path that refused everything unconditionally would not read as enforcing them.
+	TestFalse(TEXT("a valid frame still cannot go down an unopened connection"),
+		Connection->SendVideoFrame(1, 2, 3, GoldenUuidView(), Frame, 1, 0, 1, 0, Queued, Error));
+	TestTrue(TEXT("and says that is why"), Error.Contains(TEXT("not open")));
+
+	// The opcode's other door, which nothing local gates either: it is refused for the connection alone.
+	Error.Reset();
+	TArray<uint8> RawFragment = { 1, 0, 0, 1, 0, 1, 0xaa };
+	TestFalse(TEXT("a raw fragment sent by opcode is refused for the same reason"),
+		Connection->SendSpatial(143, 1, 2, 3, GoldenUuidView(), RawFragment, 1, 0, Error));
+	TestTrue(TEXT("and says so"), Error.Contains(TEXT("not open")));
+
+	Error.Reset();
+	TestFalse(TEXT("a codec the protocol does not assign is refused"),
+		Connection->SendVideoFrame(1, 2, 3, GoldenUuidView(), Frame, 1, 2, 1, 0, Queued, Error));
+	TestTrue(TEXT("and names it"), Error.Contains(TEXT("codec 2")));
+
+	Error.Reset();
+	TestFalse(TEXT("a frame id past what the header carries is refused"),
+		Connection->SendVideoFrame(1, 2, 3, GoldenUuidView(), Frame, 65536, 0, 1, 0, Queued, Error));
+	TestTrue(TEXT("and names the range"), Error.Contains(TEXT("65535")));
+
+	Error.Reset();
+	TestFalse(TEXT("an actor id of the wrong length is refused"),
+		Connection->SendVideoFrame(1, 2, 3, TArrayView<const uint8>(Frame), Frame, 1, 0, 1, 0, Queued, Error));
+	TestTrue(TEXT("and names the length"), Error.Contains(TEXT("octets")));
+
+	// The refusal whose failure mode is silent: a frame too large to fragment must send nothing rather than
+	// a prefix that never completes at the far end.
+	TArray<uint8> TooLarge;
+	TooLarge.SetNumZeroed(FCrowdyCppVideoAssembler::MaxFragmentBodyBytes
+		* FCrowdyCppVideoAssembler::MaxFragments + 1);
+	Error.Reset();
+	Queued = -1;
+	TestFalse(TEXT("a frame past the fragment limit is refused"),
+		Connection->SendVideoFrame(1, 2, 3, GoldenUuidView(), TooLarge, 1, 0, 1, 0, Queued, Error));
+	TestTrue(TEXT("and says how many fragments a frame may cross as"), Error.Contains(TEXT("16 fragments")));
+	TestEqual(TEXT("and queues nothing at all"), Queued, 0);
+
+	// The same two refusals stated against the split itself, which is offered publicly and is where a caller
+	// that fragments a frame for itself meets them. Without these the checks could live only in the send and
+	// a direct caller would get fragments carrying a codec no receiver decodes and a truncated frame id.
+	TArray<TArray<uint8>> Fragments;
+	TestFalse(TEXT("the split refuses a codec the protocol does not assign"),
+		FCrowdyCppVideoAssembler::FragmentFrame(Frame, 1, 2, Fragments));
+	TestEqual(TEXT("and writes no fragment"), Fragments.Num(), 0);
+
+	TestFalse(TEXT("the split refuses a frame id past what the header carries"),
+		FCrowdyCppVideoAssembler::FragmentFrame(Frame, 65536, 0, Fragments));
+	TestEqual(TEXT("and writes no fragment for that either"), Fragments.Num(), 0);
+
+	TestFalse(TEXT("and refuses a negative frame id rather than casting it"),
+		FCrowdyCppVideoAssembler::FragmentFrame(Frame, -1, 0, Fragments));
+
+	// The control on all three: the same frame with arguments the protocol assigns really does split.
+	TestTrue(TEXT("but splits a frame whose codec and id the header carries"),
+		FCrowdyCppVideoAssembler::FragmentFrame(Frame, 65535, 1, Fragments));
+	TestEqual(TEXT("into the one fragment 64 octets need"), Fragments.Num(), 1);
+
+	Connection->Disconnect();
+	Connection.Reset();
+	return true;
+}
+
+// The other half of the send path: a frame really does reach the wire, as several datagrams under the video
+// packet opcode rather than one oversized one.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVideoFrameReachesTheWireTest,
+	"CrowdySDK.Transport.VideoFrameSendsEveryFragment",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyVideoFrameReachesTheWireTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FConnectedFixture Fixture;
+	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open()))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	// Long enough to need three fragments, so the split is observable rather than a single datagram that
+	// would pass whether the frame was fragmented or not.
+	TArray<uint8> Frame;
+	Frame.SetNumZeroed(FCrowdyCppVideoAssembler::MaxFragmentBodyBytes * 2 + 10);
+	constexpr int32 ExpectedFragments = 3;
+
+	int32 Queued = 0;
+	FString Error;
+	if (!TestTrue(*FString::Printf(TEXT("the frame was accepted (%s)"), *Error),
+		Fixture.Connection->SendVideoFrame(1, -2, 3, GoldenUuidView(), Frame, 0x0777,
+			static_cast<uint8>(ECrowdyVideoCodec::WebP), 8, 0, Queued, Error)))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	TestEqual(TEXT("as every fragment it splits into"), Queued, ExpectedFragments);
+
+	// Reassembled from what actually crossed the socket, which is what says the fragments carry the header
+	// the receive half reads: a split that wrote a header the assembler rejects would deliver nothing here.
+	FCrowdyCppVideoAssembler Assembler;
+	FCrowdyCppAssembledVideoFrame Assembled;
+	int32 SeenVideoDatagrams = 0;
+	bool bCompleted = false;
+
+	for (int32 Attempt = 0; Attempt < ExpectedFragments; ++Attempt)
+	{
+		const TArray<uint8> Datagram = Fixture.Server.Receive();
+		if (Datagram.Num() == 0)
+		{
+			break;
+		}
+
+		if (!TestEqual(TEXT("each datagram leads with the video packet opcode"), static_cast<int32>(Datagram[0]),
+			static_cast<int32>(ECrowdyMessageType::CLIENT_VIDEO_PACKET)))
+		{
+			continue;
+		}
+		++SeenVideoDatagrams;
+
+		// Split by the production reader rather than by offsets restated here, so the fragment handed to
+		// the assembler is the one a receiving client would see.
+		FCrowdyFrame Sent;
+		if (!TestTrue(TEXT("and splits into a frame"), FCrowdyFrame::FromMessageBytes(Datagram, Sent)
+			&& CrowdyFrameSplit::ReadSpatialEnvelope(Sent)))
+		{
+			continue;
+		}
+
+		bCompleted = Assembler.Ingest(GoldenUuidView(), Sent.Body, 100 + Attempt, Assembled);
+	}
+
+	TestEqual(TEXT("every fragment reached the wire"), SeenVideoDatagrams, ExpectedFragments);
+
+	if (TestTrue(TEXT("and the fragments reassemble into the frame that was sent"), bCompleted))
+	{
+		TestEqual(TEXT("of the size that went in"), Assembled.Bytes.Num(), Frame.Num());
+		TestEqual(TEXT("under the frame id it was sent with"), Assembled.FrameId, 0x0777);
+		TestEqual(TEXT("and the codec it was sent with"), static_cast<int32>(Assembled.Codec),
+			static_cast<int32>(ECrowdyVideoCodec::WebP));
+	}
+
+	Fixture.Shut();
 	return true;
 }
 

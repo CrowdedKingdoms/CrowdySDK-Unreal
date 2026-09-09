@@ -45,6 +45,17 @@ void WorldSession::installHandlers() {
                                 const wire::EventPayloadView& payload) {
     events_.ingest(n, payload, /*fromServer=*/true, core::systemClock().monotonicMillis());
   };
+  // Media has no store; hand it to the game (OQ5: the session used to swallow it).
+  if (config_.onAudio) handlers.audio = config_.onAudio;
+  if (config_.onVideo) handlers.video = config_.onVideo;
+  // The server's departure notice removes the actor now (onLeave fires from the
+  // store) instead of after the staleAfterMs reap, then the game is told too.
+  handlers.actorLeft = [this](const replication::SpatialNotification& n, std::uint8_t reason) {
+    const auto uuid = n.uuidArray();
+    if (uuid == uuid_) return;
+    actors_->remove(uuid);
+    if (config_.onActorLeft) config_.onActorLeft(uuid, reason);
+  };
   handlers.genericError = [this](const replication::GenericError& e) {
     const auto now = core::systemClock().monotonicMillis();
     self_->recordError(e, now);

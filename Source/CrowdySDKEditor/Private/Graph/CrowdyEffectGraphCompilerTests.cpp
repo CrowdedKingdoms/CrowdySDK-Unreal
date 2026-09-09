@@ -59,11 +59,15 @@ namespace
 		Alive.ValueType = TEXT("bool");
 		Ctx.Attributes.Add(Alive);
 
+		// Required, which is what an int with no default means on the authoring surface; an optional parameter with
+		// no default is a shape lowering refuses, so leaving the flag off would fail every case here for a reason
+		// that has nothing to do with the graph.
 		for (const TCHAR* MagName : { TEXT("power"), TEXT("a"), TEXT("b") })
 		{
 			FCrowdyEffectParamDecl Param;
 			Param.Name = MagName;
 			Param.ValueType = TEXT("int");
+			Param.bRequired = true;
 			Ctx.Magnitudes.Add(Param);
 		}
 

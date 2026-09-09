@@ -48,6 +48,14 @@ namespace
 {
 	CrowdyEffectDuplicateFunctionCheck::FSweepHook GDuplicateFunctionSweepHook;
 	CrowdyEffectFunctionCatalog::FHook GFunctionCatalogHook;
+
+	// The canonical legacy encoding applied to a magnitude. Like UCrowdyEffect::EnsureBoolDefault it reads the
+	// RESOLVED value type, so neither answers differently for a magnitude whose type flag is not folded in yet.
+	bool CrowdyEffectDeriveLegacyRequired(const FCrowdyEffectMagnitude& Magnitude)
+	{
+		return UCrowdyEffect::IsLegacyRequiredEncoding(
+			UCrowdyEffect::ResolveMagnitudeValueType(Magnitude), Magnitude.DefaultValueJson);
+	}
 }
 
 void CrowdyEffectDuplicateFunctionCheck::SetSweepHook(FSweepHook Hook)
@@ -134,6 +142,9 @@ FCrowdyGameModelAutomationInput UCrowdyEffect::BuildAutomationInput(const FCrowd
 		break;
 	case ECrowdyEffectAutomationTargetMode::Global:
 		Out.TargetMode = TEXT("global");
+		// A global run is one run against this container, not a run against nothing, so it carries the same self
+		// the Container mode does. The two differ in that a global automation is not scheduled per container.
+		Out.SelfContainerId = Authoring.TargetContainerId;
 		break;
 	case ECrowdyEffectAutomationTargetMode::Type:
 	default:
@@ -365,6 +376,36 @@ ECrowdyEffectValueType UCrowdyEffect::WireStringToValueType(const FString& Wire)
 	return ECrowdyEffectValueType::Int;
 }
 
+bool UCrowdyEffect::IsLegacyRequiredEncoding(ECrowdyEffectValueType ValueType, const FString& DefaultValueJson)
+{
+	if (ValueType == ECrowdyEffectValueType::Bool)
+	{
+		return false;
+	}
+	return DefaultValueJson.IsEmpty();
+}
+
+void UCrowdyEffect::EnsureBoolDefault(FCrowdyEffectMagnitude& Magnitude)
+{
+	if (ResolveMagnitudeValueType(Magnitude) != ECrowdyEffectValueType::Bool)
+	{
+		return;
+	}
+	if (ResolveMagnitudeRequired(Magnitude) || !Magnitude.DefaultValueJson.IsEmpty())
+	{
+		return;
+	}
+	Magnitude.DefaultValueJson = TEXT("false");
+}
+
+void UCrowdyEffect::ApplyValueTypeChangeDefaults(ECrowdyEffectValueType NewType, bool& bOutRequired,
+	FString& OutDefaultValueJson)
+{
+	const bool bIsBool = (NewType == ECrowdyEffectValueType::Bool);
+	bOutRequired = !bIsBool;
+	OutDefaultValueJson = bIsBool ? TEXT("false") : TEXT("");
+}
+
 void UCrowdyEffect::MigrateMagnitude(FCrowdyEffectMagnitude& Magnitude)
 {
 	Magnitude.Name = Magnitude.Name.TrimStartAndEnd();
@@ -375,11 +416,29 @@ void UCrowdyEffect::MigrateMagnitude(FCrowdyEffectMagnitude& Magnitude)
 	}
 	// The enum is authoritative; keep the legacy string mirrored so any stale reader still sees the right type.
 	Magnitude.ValueType = ValueTypeToWireString(Magnitude.ValueTypeEnum);
+	if (!Magnitude.bRequiredMigrated)
+	{
+		// Through the resolver rather than the legacy rule directly, so a magnitude built in code that set only
+		// bRequired keeps the answer it stated instead of having it derived away.
+		Magnitude.bRequired = ResolveMagnitudeRequired(Magnitude);
+		Magnitude.bRequiredMigrated = true;
+	}
+	EnsureBoolDefault(Magnitude);
 }
 
 ECrowdyEffectValueType UCrowdyEffect::ResolveMagnitudeValueType(const FCrowdyEffectMagnitude& Magnitude)
 {
 	return Magnitude.bTypeMigrated ? Magnitude.ValueTypeEnum : WireStringToValueType(Magnitude.ValueType);
+}
+
+bool UCrowdyEffect::ResolveMagnitudeRequired(const FCrowdyEffectMagnitude& Magnitude)
+{
+	// An explicit true is honoured whether or not the magnitude has migrated: bRequired is EditAnywhere and
+	// BlueprintReadWrite, so code and Blueprint can set it on a magnitude that has never been through load or edit,
+	// and reading only the migration flag there would discard what they said.
+	return (Magnitude.bRequiredMigrated || Magnitude.bRequired)
+		? Magnitude.bRequired
+		: CrowdyEffectDeriveLegacyRequired(Magnitude);
 }
 
 bool UCrowdyEffect::IsNumericMagnitude(const TArray<FCrowdyEffectMagnitude>& Magnitudes, const FString& Name,
@@ -665,6 +724,19 @@ EDataValidationResult UCrowdyEffect::IsDataValid(FDataValidationContext& Validat
 			break;
 		}
 		}
+
+		// Container and Global both run against one named container, and the server refuses an upsert that names
+		// none. Caught here so it is an editor error rather than a sync failure, which is where it surfaced before.
+		if (AutomationTargetMode != ECrowdyEffectAutomationTargetMode::Type
+			&& AutomationTargetContainerId.TrimStartAndEnd().IsEmpty())
+		{
+			bAutomationError = true;
+			ValidationContext.AddError(FText::FromString(FString::Printf(TEXT(
+				"Effect '%s' runs on a single container but names none, so the server will refuse it. Set Target "
+				"Container Id, or use the Type target mode to fan out over every container of the type. The id "
+				"belongs to the app it was read from, so an asset carrying one does not travel between apps."),
+				*GetName())));
+		}
 	}
 
 	// Signal names are checked here as well as at compile, because a signal-only effect has a blank body and the
@@ -803,6 +875,15 @@ void UCrowdyEffect::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 		Magnitude.Name = Magnitude.Name.TrimStartAndEnd();
 		Magnitude.bTypeMigrated = true;
 		Magnitude.ValueType = ValueTypeToWireString(Magnitude.ValueTypeEnum);
+		// Required-ness is derived from the older empty-default encoding exactly once, here as at load, so a
+		// magnitude added to a not-yet-migrated effect starts where that effect's other magnitudes already are: a
+		// freshly added one has no default and so starts required, and a code-built one with a default does not.
+		if (!Magnitude.bRequiredMigrated)
+		{
+			Magnitude.bRequired = ResolveMagnitudeRequired(Magnitude);
+			Magnitude.bRequiredMigrated = true;
+		}
+		EnsureBoolDefault(Magnitude);
 	}
 
 	// Recompute the persisted "needs a Source" flag on every edit, so the invoke path (which never compiles on the

@@ -311,6 +311,7 @@ namespace CrowdyApplyEffectNodeShared
 			GET_MEMBER_NAME_CHECKED(FCrowdyEffectMagnitude, ValueTypeEnum),
 			GET_MEMBER_NAME_CHECKED(FCrowdyEffectMagnitude, ValueType),
 			GET_MEMBER_NAME_CHECKED(FCrowdyEffectMagnitude, DefaultValueJson),
+			GET_MEMBER_NAME_CHECKED(FCrowdyEffectMagnitude, bRequired),
 			GET_MEMBER_NAME_CHECKED(FCrowdyEffectMagnitude, Curve),
 		};
 

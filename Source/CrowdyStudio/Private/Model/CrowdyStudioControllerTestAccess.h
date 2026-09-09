@@ -268,6 +268,13 @@ struct FCrowdyStudioControllerTestAccess
 		return Controller.SchemaPlanGeneration;
 	}
 
+	// The report a finished plan leaves standing, set outright. Seeding upserts cannot produce the server-only half
+	// of a report, and the readiness the setup strip paints turns on exactly that half.
+	static void SetSchemaSyncReport(FCrowdyStudioController& Controller, const FCrowdySchemaSyncReport& Report)
+	{
+		Controller.SchemaSyncReport = Report;
+	}
+
 	// The functions a plan found carrying an SDK channel model-changed notification, as FinishSchemaPlan records them
 	// off the DESIRED schema. Seeded straight in because the shape the diff emits when the channel is missing carries
 	// no trace of that notification: the only way to produce one is a live plan against a live server.

@@ -50,6 +50,16 @@ enum class MessageType : std::uint8_t {
   /// Actor-to-actor message. Long spatial layout; chunk + uuid address the
   /// DESTINATION actor; distance/decay ignored.
   SingleActorMessage = 142,
+  /// Client -> server: one webcam video FRAGMENT (Buddy v0.25.0). Audio's shape
+  /// and gate (`use_video_chat`, bit 9); the payload starts with the 6-byte
+  /// fragment header in media/video_frames.hpp and the server never reads it.
+  ClientVideoPacket = 143,
+  /// Server -> client: fan-out of a video fragment.
+  ClientVideoNotification = 144,
+  /// Server -> client only: an actor stopped being present. Emitted once over
+  /// its last chunk ~5 s after its last update, never for a mere migration.
+  /// Payload [1B reason]: 0 STALE, 1 reserved; treat others as STALE.
+  ActorLeftNotification = 145,
 };
 
 /// Error codes carried by GenericError frames.
@@ -85,10 +95,22 @@ inline constexpr bool isSpatialType(std::uint8_t t) noexcept {
 }
 
 /// True for the long HMAC spatial layout: types 128-140, SingleActorMessage
-/// (142), and the non-spatial ClientActorHeartbeat (26) which reuses it.
+/// (142), the video pair and actor-left (143-145, v0.30.0), and the
+/// non-spatial ClientActorHeartbeat (26) which reuses it.
 inline constexpr bool isLongSpatialLayout(std::uint8_t t) noexcept {
-  return (t >= 128 && t <= 140) || t == 142 ||
+  return (t >= 128 && t <= 140) || (t >= 142 && t <= 145) ||
          t == static_cast<std::uint8_t>(MessageType::ClientActorHeartbeat);
+}
+
+/// Server-only downlink opcodes a client never originates (Buddy drops them).
+inline constexpr bool isServerOnlySpatialType(std::uint8_t t) noexcept {
+  return t == 130 || t == 133 || t == 135 || t == 137 || t == 139 || t == 144 || t == 145;
+}
+
+/// The reason byte of an ActorLeftNotification payload; anything unknown is STALE (0).
+inline constexpr std::uint8_t actorLeftReason(const std::uint8_t* payload,
+                                              std::size_t payloadLen) noexcept {
+  return (payloadLen >= 1 && payload[0] == 1) ? 1 : 0;
 }
 
 // ---- Long form spatial layout offsets --------------------------------------

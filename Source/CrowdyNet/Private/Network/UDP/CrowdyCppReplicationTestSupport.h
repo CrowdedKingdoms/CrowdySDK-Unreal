@@ -62,7 +62,7 @@ namespace CrowdyReplicationTestSupport
 
 	inline FCrowdyCppRefreshToken NeverRefresh()
 	{
-		return [](const FCrowdyCppShouldAbort&)
+		return [](const FCrowdyCppShouldAbort&, const FCrowdyCppCurrentServer*)
 		{
 			FCrowdyCppReplicationToken Answer;
 			Answer.bOk = false;

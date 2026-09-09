@@ -34,14 +34,16 @@ enum class ECrowdyStudioAuthScope : uint8
 	OrgToken
 };
 
-// A three-state readiness signal for the Game Model setup strip (App / Session channel / Schema). Unknown means
-// "not determined yet" (e.g. no plan has run to resolve the session channel), so the strip can show a neutral dot
-// rather than a false red.
+// A readiness signal for the Game Model setup strip (App / Session channel / Schema). Unknown means "not determined
+// yet" (e.g. no plan has run to resolve the session channel), so the strip can show a neutral dot rather than a
+// false red. Advisory means there is something to look at that no button on the strip can change, so it is told
+// apart from NotReady rather than painted as an action the reader cannot take.
 enum class ECrowdyStudioReadiness : uint8
 {
 	Unknown,
 	NotReady,
-	Ready
+	Ready,
+	Advisory
 };
 
 /**

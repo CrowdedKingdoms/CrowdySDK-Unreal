@@ -276,9 +276,11 @@ TSharedPtr<FJsonObject> UCrowdyEffects::BuildInvokeParams(const UCrowdyEffect* E
 
 		const ECrowdyEffectValueType ValueType = UCrowdyEffect::ResolveMagnitudeValueType(Magnitude);
 
+		const bool bRequired = UCrowdyEffect::ResolveMagnitudeRequired(Magnitude);
+
 		// Resolve the value literal: an explicit Override (a JSON-encoded literal) wins; else a bound curve is
-		// sampled at Level (numeric magnitudes only, an int rounds); else the authored default. An empty result
-		// means a required magnitude with no curve was left unsupplied.
+		// sampled at Level (numeric magnitudes only, an int rounds); else the authored default, which a required
+		// magnitude does not have. Nothing resolved is an error only when the magnitude is required.
 		//
 		// The magnitude's name is taken as an FName it caches rather than built from its string here, so a repeated
 		// apply does not re-intern every parameter name it has already interned.
@@ -286,6 +288,17 @@ TSharedPtr<FJsonObject> UCrowdyEffects::BuildInvokeParams(const UCrowdyEffect* E
 		FString Value;
 		if (Override)
 		{
+			// An override is a JSON literal, and no value type spells one as the empty string, so an empty override
+			// is a caller that failed to produce a value rather than one asking for the default. The common source is
+			// a container_ref pin holding an object with no bound container: GetContainerIdFor answers with an empty
+			// id, and dropping the key there would silently retarget the effect at whatever the default names.
+			if (Override->IsEmpty())
+			{
+				OutError = FString::Printf(
+					TEXT("magnitude '%s' was given an empty override; for a container_ref this means the object passed "
+					"has no bound container"), *Magnitude.Name);
+				return nullptr;
+			}
 			Value = *Override;
 		}
 		else if (Magnitude.Curve)
@@ -321,14 +334,21 @@ TSharedPtr<FJsonObject> UCrowdyEffects::BuildInvokeParams(const UCrowdyEffect* E
 				Value = FString::SanitizeFloat(Sampled);
 			}
 		}
-		else
+		else if (!bRequired)
 		{
 			Value = Magnitude.DefaultValueJson;
 		}
 		if (Value.IsEmpty())
 		{
-			OutError = FString::Printf(TEXT("magnitude '%s' is required but no value was supplied"), *Magnitude.Name);
-			return nullptr;
+			if (bRequired)
+			{
+				OutError = FString::Printf(TEXT("magnitude '%s' is required but no value was supplied"), *Magnitude.Name);
+				return nullptr;
+			}
+			// Optional with nothing to send: omit the key rather than hand the server an empty literal that is not
+			// valid JSON for any value type. The function's own declaration has no default to fall back on either,
+			// which is why lowering refuses to compile an effect that authors this shape.
+			continue;
 		}
 
 		// A string / container_ref magnitude is ALWAYS sent as a JSON string, so a designer can type sword or a bare

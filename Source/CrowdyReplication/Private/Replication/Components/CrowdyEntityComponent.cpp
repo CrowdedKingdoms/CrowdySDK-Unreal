@@ -52,10 +52,19 @@ void UCrowdyEntityComponent::AssignPooledIdentity(const FGuid& InNetID, const FG
 	UUIDString = InNetID.IsValid() ? InNetID.ToString(EGuidFormats::Digits) : FString();
 	bIdentityInjected = true;
 
+	// The actor now stands for a real entity, so it is no longer dormant. Anything that skipped it while it sat
+	// in the pool applies to it from here.
+	bPooledDormant = false;
+
 	// A pooled actor is handed its identity long after BeginPlay, so this is where its ownership becomes
 	// announceable; the announcement is queued rather than sent inline so the pool finishes checking the actor
 	// out before any listener can act on it.
 	ScheduleInitialOwnershipAnnouncement();
+}
+
+void UCrowdyEntityComponent::MarkPooledDormant()
+{
+	bPooledDormant = true;
 }
 
 void UCrowdyEntityComponent::ClearIdentity()
@@ -123,6 +132,14 @@ void UCrowdyEntityComponent::BeginPlay()
 
 	CachedOwner = GetOwner();
 	EntitySubsystem = GetWorld()->GetSubsystem<UCrowdyEntitySubsystem>();
+
+	// An actor the pool is pre-warming stands for no entity yet, so it resolves no identity and registers
+	// nothing. Registering and unregistering afterwards is not the same thing: registration is delivered
+	// synchronously and a listener answers it by starting work a later unregister cannot recall.
+	if (bPooledDormant)
+	{
+		return;
+	}
 
 	if (!bIdentityInjected)
 		ResolveIdentity();

@@ -37,6 +37,13 @@ static constexpr double SocialSignInTimeoutSeconds = 300.0;
 static constexpr double RotationRetrySeconds = 30.0;
 static constexpr int32  MaxRotationRetries   = 5;
 
+// Consecutive server-reported refusals of a rotation that named the current replication server, past which the
+// server stops being named. Two rather than one, because the two reasons a refusal happens look identical in the
+// answer and only repetition tells them apart: a lapsed app token is refused once and is then cured by the
+// re-mint that follows, so the next rotation names the server again and succeeds, while a Game API that does not
+// know the argument refuses every attempt for as long as the client runs.
+static constexpr int32  MaxServerNamedRefusals = 2;
+
 void UCrowdyAuthentication::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -882,10 +889,22 @@ void UCrowdyAuthentication::DispatchRefresh()
 		return;
 	}
 
+	// Naming the replication server the client is on lets the Game API install the replacement token there, so the
+	// connection keeps its socket instead of re-assigning. Left empty when there is no assignment yet, and after a
+	// server has refused the argument once; the call falls back to the plain rotation in both cases.
+	FString CurrentServerIp4;
+	int32 CurrentServerClientPort = 0;
+	if (GameSession && !bRefreshRejectedCurrentServer)
+	{
+		CurrentServerIp4 = GameSession->GetReplicationServerIp4();
+		CurrentServerClientPort = GameSession->GetReplicationServerClientPort();
+	}
+	const bool bNamedCurrentServer = !CurrentServerIp4.IsEmpty() && CurrentServerClientPort > 0;
+
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
 	++CppRotationsInFlight;
-	Client->RefreshAppToken(GuardSession<FCrowdyCppAppTokenResult>(
-		[WeakThis](FCrowdyCppAppTokenResult Result)
+	Client->RefreshAppToken(CurrentServerIp4, CurrentServerClientPort, GuardSession<FCrowdyCppAppTokenResult>(
+		[WeakThis, bNamedCurrentServer](FCrowdyCppAppTokenResult Result)
 		{
 			UCrowdyAuthentication* Self = WeakThis.Get();
 			if (!Self) return;
@@ -893,6 +912,8 @@ void UCrowdyAuthentication::DispatchRefresh()
 			--Self->CppRotationsInFlight;
 			if (Result.bOk)
 			{
+				// A rotation that got through clears the refusal run, so only CONSECUTIVE refusals count.
+				Self->ServerNamedRefusals = 0;
 				Self->ApplyAppTokenAndFinish(MakeAppTokenFields(Result), EAuthFlow::Refresh, FOnAuthSuccess());
 				return;
 			}
@@ -905,6 +926,27 @@ void UCrowdyAuthentication::DispatchRefresh()
 					TEXT("[CrowdyAuth] App-token refresh was canceled; leaving the current token in place."));
 				Self->ScheduleRotationRetry(TEXT("the app-token refresh was canceled"));
 				return;
+			}
+
+			// A Game API older than ck-api v1.83.7 does not accept currentServer and refuses the whole mutation, so
+			// every later rotation would pay the same failed round trip and re-mint. Stop naming the server once
+			// that looks like what is happening.
+			//
+			// Counted only for an error the SERVER reported: a transport failure carries no code and says nothing
+			// about the argument, and giving the feature up over a dropped connection would be a permanent answer
+			// to a temporary problem.
+			if (bNamedCurrentServer && !Result.ErrorCode.IsEmpty() && !Self->bRefreshRejectedCurrentServer)
+			{
+				++Self->ServerNamedRefusals;
+				if (Self->ServerNamedRefusals >= MaxServerNamedRefusals)
+				{
+					Self->bRefreshRejectedCurrentServer = true;
+					UE_LOG(LogCrowdyServices, Warning,
+						TEXT("[CrowdyAuth] refreshAppToken was refused %d times in a row (%s) while naming the current "
+							"replication server; later rotations will not name it, and the connection will re-assign "
+							"after each one."),
+						Self->ServerNamedRefusals, *Result.ErrorCode);
+				}
 			}
 
 			// Refresh needs a still-valid app token as bearer; if it lapsed, re-mint
@@ -931,6 +973,13 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& 
 		GameSession->SetGameApiUrl(GameApiGraphqlUrl);
 		GameSession->SetGameApiWsUrl(Token.GameApiWsUrl);
 		GameSession->SetLaunchUrl(Token.LaunchUrl);
+
+		// After SetGameToken, which clears the pair: a replacement token is authorized nowhere until the answer
+		// that carried it names a server, and only a rotation that named one ever does.
+		if (!Token.AuthorizedServerIp4.IsEmpty() && Token.AuthorizedServerClientPort > 0)
+		{
+			GameSession->SetAppTokenAuthorizedServer(Token.AuthorizedServerIp4, Token.AuthorizedServerClientPort);
+		}
 	}
 	// The rotated token has to reach the shared client too, or the next call there would still carry the old one.
 	// This is also the write-back the refresh path depends on, since that call deliberately does not install its

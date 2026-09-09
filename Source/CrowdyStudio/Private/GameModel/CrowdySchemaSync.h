@@ -281,6 +281,11 @@ struct FCrowdySchemaSyncReport
 	TArray<FString> Warnings;
 	bool bApplied = false;    // false = a dry-run plan; true = the upserts were written
 	bool bValid = false;      // true once a plan has been computed
+	// True when the plan short-circuited without ever reading the server (a project that declares no container
+	// classes and no effects has nothing to diff, so no read is issued). Every count is then zero because nothing
+	// was compared, NOT because the two sides agree, and the app may still hold a kit deploy or console-seeded
+	// schema. Anything that words a zero-count report as "everything matches" has to check this first.
+	bool bServerNotCompared = false;
 	// A durable outcome banner the report panel renders above the counts: set when a plan read failed (so the
 	// panel says "re-plan" instead of silently keeping a stale plan) or when an apply stopped partway ("Applied
 	// N of M ... re-apply to finish"). Empty on a clean plan/apply. Distinct from the ephemeral status line,
@@ -289,6 +294,13 @@ struct FCrowdySchemaSyncReport
 
 	int32 UpsertCount() const { return TypesToCreate + TypesToUpdate + PropsToCreate + PropsToUpdate + FunctionsToCreate + FunctionsToUpdate + AutomationsToCreate + AutomationsToUpdate + TriggersToCreate + TriggersToUpdate; }
 	int32 ServerOnlyCount() const { return ServerOnlyTypeCount + ServerOnlyPropCount + ServerOnlyFunctionCount + ServerOnlyAutomationCount; }
+
+	// Work a sync will actually perform. An applied report keeps the counts it wrote, so it describes finished
+	// work rather than outstanding work.
+	bool HasPendingUpserts() const { return !bApplied && UpsertCount() > 0; }
+	// Entities on the server that no code declares. A sync never deletes them, so no press on the reconcile strip
+	// can reduce this count: it is something to review, never something to sync, and the two must stay separate.
+	bool HasServerOnlyReview() const { return ServerOnlyCount() > 0; }
 };
 
 /**

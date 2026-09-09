@@ -1162,4 +1162,103 @@ bool FCrowdyEffectSurfaceComplexGraphTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Required-ness is carried in the payload, not re-derived from an empty default on the way back. The other
+// round-trip tests compare one serialization against another, which a writer and a reader that both drop the
+// field satisfy, so this asserts the parsed value directly. The two magnitudes differ only in required-ness and
+// one of them keeps a default while required, which is the pair the old empty-default rule could not express.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectSurfaceCarriesRequiredTest,
+	"CrowdySDK.Effect.SurfaceCarriesRequired", CrowdySurfaceTestFlags)
+bool FCrowdyEffectSurfaceCarriesRequiredTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectAuthoredSurface Surface = MakePopulatedTextSurface();
+	Surface.Magnitudes.Reset();
+
+	FCrowdyEffectParamDecl RequiredParam;
+	RequiredParam.Name = TEXT("target");
+	RequiredParam.ValueType = TEXT("string");
+	RequiredParam.DefaultValueJson = TEXT("\"ignored\"");
+	RequiredParam.bRequired = true;
+	Surface.Magnitudes.Add(RequiredParam);
+
+	FCrowdyEffectParamDecl OptionalParam;
+	OptionalParam.Name = TEXT("amount");
+	OptionalParam.ValueType = TEXT("int");
+	OptionalParam.DefaultValueJson = TEXT("3");
+	OptionalParam.bRequired = false;
+	Surface.Magnitudes.Add(OptionalParam);
+
+	const FString Json = CrowdyEffectAuthoredSurface::ToJson(Surface);
+
+	FCrowdyEffectAuthoredSurface Parsed;
+	if (!TestTrue(TEXT("the payload parses"), CrowdyEffectAuthoredSurface::FromJson(Json, Parsed)))
+	{
+		return false;
+	}
+	if (!TestEqual(TEXT("both magnitudes survive"), Parsed.Magnitudes.Num(), 2))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("the required magnitude comes back required"), Parsed.Magnitudes[0].bRequired);
+	TestFalse(TEXT("the optional magnitude comes back optional"), Parsed.Magnitudes[1].bRequired);
+
+	// The control that makes the first assertion mean something: a required parameter keeps a non-empty default,
+	// so required-ness cannot have been re-derived from emptiness on the way back in.
+	TestEqual(TEXT("the required magnitude kept its default text"),
+		Parsed.Magnitudes[0].DefaultValueJson, FString(TEXT("\"ignored\"")));
+	return true;
+}
+
+// A payload written before required-ness existed carries no flag, and must read back exactly as the old rule
+// meant it: required when the default is empty, optional otherwise, and never required for a bool.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectSurfaceLegacyRequiredFallbackTest,
+	"CrowdySDK.Effect.SurfaceLegacyRequiredFallback", CrowdySurfaceTestFlags)
+bool FCrowdyEffectSurfaceLegacyRequiredFallbackTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectAuthoredSurface Surface = MakePopulatedTextSurface();
+	Surface.Magnitudes.Reset();
+	Surface.Magnitudes.Add({ TEXT("empty"), TEXT("int"), FString(), FString() });
+	Surface.Magnitudes.Add({ TEXT("defaulted"), TEXT("int"), TEXT("7"), FString() });
+	Surface.Magnitudes.Add({ TEXT("flag"), TEXT("bool"), FString(), FString() });
+
+	FString Json = CrowdyEffectAuthoredSurface::ToJson(Surface);
+
+	// Strip every required key, which is what a payload stamped before the field existed looks like. Only the
+	// boolean form is touched: a graph require's right-hand operand uses the same short key for an object.
+	TestTrue(TEXT("the payload carried a required key to begin with"),
+		Json.Contains(TEXT("\"r\":true")) || Json.Contains(TEXT("\"r\":false")));
+	Json = Json.Replace(TEXT("\"r\":true,"), TEXT(""));
+	Json = Json.Replace(TEXT("\"r\":false,"), TEXT(""));
+	Json = Json.Replace(TEXT(",\"r\":true"), TEXT(""));
+	Json = Json.Replace(TEXT(",\"r\":false"), TEXT(""));
+	TestFalse(TEXT("no boolean required key survives the strip"),
+		Json.Contains(TEXT("\"r\":true")) || Json.Contains(TEXT("\"r\":false")));
+
+	FCrowdyEffectAuthoredSurface Parsed;
+	if (!TestTrue(TEXT("the stripped payload still parses"), CrowdyEffectAuthoredSurface::FromJson(Json, Parsed)))
+	{
+		return false;
+	}
+	if (!TestEqual(TEXT("all three magnitudes survive"), Parsed.Magnitudes.Num(), 3))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("an empty default reads as required"), Parsed.Magnitudes[0].bRequired);
+	TestFalse(TEXT("an authored default reads as optional"), Parsed.Magnitudes[1].bRequired);
+	TestFalse(TEXT("a bool is never required by the fallback"), Parsed.Magnitudes[2].bRequired);
+
+	// The bool also comes back with the explicit false a load writes onto the asset. Without that this payload and
+	// the asset it came from describe two different schemas for one parameter.
+	TestEqual(TEXT("an optional bool is normalized to the explicit false"), Parsed.Magnitudes[2].DefaultValueJson,
+		FString(TEXT("false")));
+
+	// The controls: normalization touches the bool alone, and invents nothing for a type whose default really is
+	// absent.
+	TestTrue(TEXT("a required int keeps no default"), Parsed.Magnitudes[0].DefaultValueJson.IsEmpty());
+	TestEqual(TEXT("an authored default is left as authored"), Parsed.Magnitudes[1].DefaultValueJson,
+		FString(TEXT("7")));
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

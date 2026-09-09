@@ -140,6 +140,13 @@ struct Handlers {
   std::function<void(const SpatialNotification&)> actorUpdate;
   std::function<void(const SpatialNotification&, const wire::VoxelPayloadView&)> voxelUpdate;
   std::function<void(const SpatialNotification&)> audio;
+  /// One webcam video FRAGMENT (payload = 6-byte header + frame slice). Feed the
+  /// payload to a media::VideoFrameAssembler to get whole frames.
+  std::function<void(const SpatialNotification&)> video;
+  /// The server stopped considering an actor present (uuid = the actor, chunk =
+  /// its last chunk). Emitted once; a later actorUpdate for the uuid is a rejoin.
+  /// `reason`: 0 STALE (1 reserved).
+  std::function<void(const SpatialNotification&, std::uint8_t reason)> actorLeft;
   std::function<void(const SpatialNotification&)> text;
   std::function<void(const SpatialNotification&, const wire::EventPayloadView&)> clientEvent;
   std::function<void(const SpatialNotification&, const wire::EventPayloadView&)> serverEvent;

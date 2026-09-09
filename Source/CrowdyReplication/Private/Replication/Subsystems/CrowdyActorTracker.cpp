@@ -5,6 +5,7 @@
 #include "CrowdyReplicationLog.h"
 
 #include "HAL/Event.h"
+#include "Messages/Actor/FActorLeftNotification.h"
 #include "Messages/Actor/FActorUpdateNotificationMessage.h"
 #include "Messages/Actor/FActorUpdateRequestMessage.h"
 #include "Subsystem/CrowdyGameSession.h"
@@ -19,6 +20,11 @@
 
 namespace
 {
+	// How often the staleness sweep runs, independent of how old an entity has to be for it to act. Keeping
+	// this well below the threshold is what makes the wait for a silent entity close to the threshold rather
+	// than up to twice it, and it is cheap: one pass over the last-update times.
+	constexpr float CrowdyActorTimeoutSweepSeconds = 2.0f;
+
 	// Several frames of a full receive budget, so an ordinary hitch keeps everything and only a stall
 	// that the world tick is not answering at all reaches it.
 	TAutoConsoleVariable<int32> CVarCrowdyTrackerMaxGatheredUpdates(
@@ -85,12 +91,22 @@ void UCrowdyActorTracker::Initialize(FSubsystemCollectionBase& Collection)
 			ECrowdyPayloadCategory::ActorUpdate,
 			{ ECrowdySubscriptionRole::Observe, /*bRequiresExclusiveHandling*/ false, TEXT("CrowdyActorTracker") },
 			[this](const FCrowdyDelivery& Delivery) { HandleActorUpdateDelivery(Delivery); });
+
+		// By opcode rather than by payload: an actor left notification carries a reason byte and no payload
+		// type tag, so there is no key to route it by.
+		ActorLeftSubscription = CrowdyBridge->ServiceRegistry->SubscribeToOpcode(
+			ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION,
+			{ ECrowdySubscriptionRole::Observe, /*bRequiresExclusiveHandling*/ false, TEXT("CrowdyActorTracker") },
+			[this](const FCrowdyDelivery& Delivery) { HandleActorLeftDelivery(Delivery); });
 	}
 
-	World->GetTimerManager().SetTimer(TimeoutTimerHandle, 
-		this, 
-		&UCrowdyActorTracker::CheckTimeouts, 
-		ActorTimeoutThreshold, 
+	// The sweep runs on its own period rather than on the threshold. Driving it from the threshold made the
+	// age bound double as the poll interval, so an entity went unnoticed for anywhere between one and two
+	// thresholds; sweeping more often than the bound keeps the wait close to the bound itself.
+	World->GetTimerManager().SetTimer(TimeoutTimerHandle,
+		this,
+		&UCrowdyActorTracker::CheckTimeouts,
+		CrowdyActorTimeoutSweepSeconds,
 		true);
 	
 	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log, TEXT("[Crowdy Actor Tracker]: Initialized."));
@@ -101,6 +117,7 @@ void UCrowdyActorTracker::Deinitialize()
 	// Releasing the handle stops any further delivery to this subscriber, including later in the same fan-out, so
 	// this needs no lookup back through the bridge. See FCrowdyDelivery for the threading rules.
 	ActorUpdateSubscription.Release();
+	ActorLeftSubscription.Release();
 
 	if (const UWorld* World = GetWorld())
 		World->GetTimerManager().ClearTimer(TimeoutTimerHandle);
@@ -196,6 +213,102 @@ void UCrowdyActorTracker::HandleActorUpdateDelivery(const FCrowdyDelivery& Deliv
 	Update.ServerTimestamp = AUN.Timestamp;
 	Update.ClassID = static_cast<int64>(AUN.PayloadClassID);
 	EnqueueUpdate(MoveTemp(Update));
+}
+
+bool UCrowdyActorTracker::ForgetTrackedActor(const FGuid& UUID)
+{
+	// The last-update time is the same fact the timeout check reads, and it is written for every actor that
+	// has ever sent an update, so it is the one answer to "was this client holding this actor". The two sets
+	// below are cleared either way, but neither decides it: an actor still waiting to be spawned is in
+	// PendingSpawns and has not been counted yet.
+	bool bWasTracked = false;
+	{
+		FWriteScopeLock W(LastUpdateLock);
+		bWasTracked = LastUpdateTimes.Remove(UUID) > 0;
+	}
+
+	{
+		FWriteScopeLock W(ClassIDLock);
+		ClassIDByUUID.Remove(UUID);
+	}
+
+	if (TrackedUUIDs.IsValid())
+	{
+		TrackedUUIDs->Remove(UUID);
+	}
+
+	if (PendingSpawns.IsValid())
+	{
+		PendingSpawns->Remove(UUID);
+	}
+
+	if (bWasTracked)
+	{
+		--NumOfTrackedActors;
+	}
+
+	return bWasTracked;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyActorTracker::MarkActorTrackedForTest(const FGuid& UUID)
+{
+	// A tracker that has not been through Initialize has no sets, and Configure is the one thing that builds them
+	// outside it. Passing the current values back keeps the defaults the caller may already have chosen.
+	if (!TrackedUUIDs.IsValid() || !PendingSpawns.IsValid())
+	{
+		Configure(MaxTrackedActors, MaxUpdatesPerBatch, MaxBatchWaitTime, ActorTimeoutThreshold);
+	}
+
+	{
+		FWriteScopeLock W(LastUpdateLock);
+		LastUpdateTimes.Add(UUID, FPlatformTime::Seconds());
+	}
+
+	TrackedUUIDs->Add(UUID);
+	++NumOfTrackedActors;
+}
+#endif
+
+void UCrowdyActorTracker::HandleActorLeftDelivery(const FCrowdyDelivery& Delivery)
+{
+	// Only the actor left opcode routes here, and only this decoder produces a message under it.
+	const FActorLeftNotification& Left = Delivery.GetAs<FActorLeftNotification>();
+
+	const bool bWasTracked = ForgetTrackedActor(Left.GUID);
+
+	FCrowdyActorLeft Report;
+	Report.UUID = Left.GUID;
+	Report.Reason = Left.Reason;
+	Report.RawReason = static_cast<int32>(Left.RawReason);
+	Report.LastChunkX = Left.ChunkX;
+	Report.LastChunkY = Left.ChunkY;
+	Report.LastChunkZ = Left.ChunkZ;
+	Report.ServerTimestamp = Left.Timestamp;
+	Report.SequenceNumber = static_cast<int32>(Left.SequenceNumber);
+
+	// Arrival and outcome on one line, because they are only useful together: an announcement that arrives
+	// and is then suppressed reads exactly like one that never arrived, and the timeout check below retires
+	// an actor the same way this does, so nothing downstream can say which of the two did it.
+	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Verbose,
+		TEXT("[Crowdy Actor Tracker]: The server reported %s gone (reason %d, raw %d, sequence %d); %s."),
+		*Left.GUID.ToString(), static_cast<int32>(Left.Reason), Report.RawReason, Report.SequenceNumber,
+		bWasTracked
+			? TEXT("releasing it")
+			: TEXT("not reporting it, since this client was not tracking it"));
+
+	// Broadcast straight from here: every subscriber handler runs on the game thread, which is what lets a
+	// dynamic delegate be fired without a hop. See FCrowdyDelivery for the contract.
+	OnRemoteEntityLeftAnnounced.Broadcast(Report, NumOfTrackedActors.load());
+
+	// An actor this tracker is not holding has already been reported gone by the timeout check, or never
+	// appeared at all. Reporting it now would be the second report of one departure.
+	if (!bWasTracked)
+	{
+		return;
+	}
+
+	OnRemoteEntityLeft.Broadcast(Report, NumOfTrackedActors.load() + 1);
 }
 
 void UCrowdyActorTracker::Configure(const int32 InMaxTrackedActors, const int32 InMaxUpdatesPerBatch, const float InMaxBatchWaitTime,
@@ -709,6 +822,20 @@ void UCrowdyActorTracker::ProcessTimedOutActors(TArray<FGuid> TimedOut)
 		TrackedUUIDs->Remove(UUID);
 		PendingSpawns->Remove(UUID);
 		--NumOfTrackedActors;
+	}
+
+	// The other half of the pair above. The announcement is one unreliable datagram sent once, so losing it
+	// leaves this as the only thing that retires the actor, and the delay is the only outward difference.
+	// Read once rather than per actor: a departure sweep can carry the whole crowd.
+	if (CrowdyReplicationTrace::Entity())
+	{
+		for (const FGuid& UUID : TimedOut)
+		{
+			UE_LOG(LogCrowdyReplication, Verbose,
+				TEXT("[Crowdy Actor Tracker]: %s went %.1f s without an update; releasing it. No departure was "
+					"announced for it."),
+				*UUID.ToString(), ActorTimeoutThreshold);
+		}
 	}
 
 	const int32 Count = NumOfTrackedActors.load();

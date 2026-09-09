@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/ArrayView.h"
 #include "ECrowdyMessageType.generated.h"
 
 /**
@@ -77,7 +78,122 @@ enum class ECrowdyMessageType : uint8
     // only to the single client that owns the destination actor (the message's UUID) instead
     // of broadcasting to everyone in range.
     SINGLE_ACTOR_MESSAGE = 142 UMETA(DisplayName = "Single Actor Message", Hidden),
+
+    // Webcam video, shaped like the audio pair above. One datagram carries a single FRAGMENT of an
+    // encoded frame, never a whole one, so a consumer reassembles before it has an image. Gated by the
+    // app's use_video_chat capability, which the server enforces.
+    CLIENT_VIDEO_PACKET = 143 UMETA(DisplayName = "Client Video Packet", Hidden),
+    CLIENT_VIDEO_NOTIFICATION = 144 UMETA(DisplayName = "Client Video Notification", Hidden),
+
+    // Server->client only: the server stopped considering an actor present. Sent once over the actor's
+    // last chunk, and never for a move between chunks. A later update for the same actor is a rejoin.
+    ACTOR_LEFT_NOTIFICATION = 145 UMETA(DisplayName = "Actor Left Notification"),
 };
+
+/**
+ * How the bytes of a video frame are encoded.
+ *
+ * Jpeg and WebP are the two the protocol assigns, and a fragment naming anything else is dropped before it
+ * reaches a decoder. Unknown is therefore not a value that arrives: it is what a byte outside the assigned
+ * pair maps to when one is read in isolation, so a future codec reads as Unknown rather than as WebP. It
+ * sits well below 255 because UHT gives a uint8 enum an implicit _MAX one past the highest entry.
+ */
+UENUM(BlueprintType, meta=(DisplayName="Video Codec"))
+enum class ECrowdyVideoCodec : uint8
+{
+    Jpeg = 0 UMETA(DisplayName = "JPEG"),
+    WebP = 1 UMETA(DisplayName = "WebP"),
+    // A codec byte this build has no entry for.
+    Unknown = 254 UMETA(DisplayName = "Unknown"),
+};
+
+/**
+ * The layout of the header every video fragment leads with, and the limits a frame is split against.
+ *
+ * These mirror the shared contract both SDKs implement byte for byte. FCrowdyMessageParser holds the
+ * static assertions that tie them to the vendored constants, so a re-vendor that moved one breaks the
+ * build rather than the wire.
+ *
+ *   offset  size  field
+ *   0       1     version, always 1
+ *   1       1     codec
+ *   2       2     frame id, big endian, per sender
+ *   4       1     fragment index
+ *   5       1     fragment count, 1 to 16
+ *   6       ...   this fragment's slice of the encoded frame
+ */
+namespace CrowdyVideoFragment
+{
+    constexpr int32 HeaderBytes = 6;
+    constexpr uint8 Version = 1;
+    constexpr int32 MaxBodyBytes = 1117;
+    constexpr int32 MaxFragments = 16;
+    constexpr int32 FrameTimeoutMs = 500;
+
+    constexpr int32 VersionOffset = 0;
+    constexpr int32 CodecOffset = 1;
+    constexpr int32 FrameIdOffset = 2;
+    constexpr int32 IndexOffset = 4;
+    constexpr int32 CountOffset = 5;
+}
+
+/** The codec a fragment names, or Unknown for a byte outside the assigned pair. */
+inline ECrowdyVideoCodec CrowdyVideoCodecFromByte(const uint8 Codec)
+{
+    if (Codec == static_cast<uint8>(ECrowdyVideoCodec::Jpeg))
+    {
+        return ECrowdyVideoCodec::Jpeg;
+    }
+
+    if (Codec == static_cast<uint8>(ECrowdyVideoCodec::WebP))
+    {
+        return ECrowdyVideoCodec::WebP;
+    }
+
+    return ECrowdyVideoCodec::Unknown;
+}
+
+/**
+ * Why the server stopped considering an actor present.
+ *
+ * The wire carries a single byte, and the protocol reserves everything past the two values below with the
+ * instruction to treat them as a stale drop. There is deliberately no Unknown case: a reserved byte is not
+ * a third outcome, it is a stale drop this build cannot describe any further, and offering a case that no
+ * payload can produce would put a branch in front of a designer that can never be taken. The raw byte is
+ * kept on the decoded message for anyone who needs to tell the two apart.
+ */
+UENUM(BlueprintType, meta=(DisplayName="Actor Left Reason"))
+enum class ECrowdyActorLeftReason : uint8
+{
+    // The server heard nothing from the actor for long enough to drop it, about five seconds.
+    Stale = 0 UMETA(DisplayName = "Stale"),
+    // The server ended the actor's session, through deauthorisation or an expired token.
+    SessionReleased = 1 UMETA(DisplayName = "Session Released"),
+};
+
+/**
+ * Reads the reason out of an Actor Left payload.
+ *
+ * An absent or empty payload reads as Stale, and so does any byte the protocol has not defined: the wire
+ * format reserves 2 to 255 and requires an unrecognised value to be treated as a plain stale drop.
+ */
+inline ECrowdyActorLeftReason CrowdyActorLeftReasonFromPayload(const TConstArrayView<uint8> Payload)
+{
+    if (Payload.IsEmpty())
+    {
+        return ECrowdyActorLeftReason::Stale;
+    }
+
+    switch (Payload[0])
+    {
+    case 0:
+        return ECrowdyActorLeftReason::Stale;
+    case 1:
+        return ECrowdyActorLeftReason::SessionReleased;
+    default:
+        return ECrowdyActorLeftReason::Stale;
+    }
+}
 
 
 /**

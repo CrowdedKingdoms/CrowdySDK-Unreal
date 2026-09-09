@@ -7,16 +7,19 @@
 #include "Replication/GameModel/Kit/CrowdyKitBlueprint.h"
 #include "Replication/GameModel/Kit/CrowdyKitInventory.h"
 #include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "Replication/GameModel/CrowdyAttributeRegistry.h"
 #include "Replication/GameModel/CrowdyEffects.h"
 #include "Replication/GameModel/CrowdyGameModelMetaKeys.h"
 #include "Replication/GameModel/CrowdyGameModelTestTarget.h"
 #include "Replication/GameModel/Effect/CrowdyEffect.h"
+#include "Replication/GameModel/Effect/CrowdyEffectAuthoredSurface.h"
 #include "Replication/GameModel/Effect/CrowdyEffectLowering.h"
 #include "Replication/GameModel/Effect/CrowdyEffectParser.h"
 #include "Replication/GameModel/Effect/CrowdyEffectSpec.h"
 #include "Replication/GameModel/Effect/CrowdyEffectSpecBuilder.h"
 #include "Replication/GameModel/Effect/CrowdyEffectSpecPrinter.h"
+#include "Replication/GameModel/Effect/CrowdyGameModelFunctionMarshaller.h"
 
 namespace
 {
@@ -59,9 +62,19 @@ namespace
 		Ctx.SourceAttributes.Add(MakeAttr(TEXT("Hp"), TEXT("hp"), TEXT("int"), true, 0.0, 50.0));
 	}
 
+	// A declared parameter as the authoring surface produces one. Required-ness goes through the surface's own
+	// predicate rather than being re-spelled here, because the two are not the same rule: an empty default makes a
+	// parameter required everywhere except on a bool, whose checkbox never meant that. Pass bRequired to state it
+	// outright instead.
 	FCrowdyEffectParamDecl MakeParam(const TCHAR* Name, const TCHAR* ValueType, const TCHAR* DefaultJson = TEXT(""))
 	{
-		return FCrowdyEffectParamDecl{ Name, ValueType, DefaultJson };
+		FCrowdyEffectParamDecl Decl;
+		Decl.Name = Name;
+		Decl.ValueType = ValueType;
+		Decl.DefaultValueJson = DefaultJson;
+		Decl.bRequired = UCrowdyEffect::IsLegacyRequiredEncoding(
+			UCrowdyEffect::WireStringToValueType(Decl.ValueType), Decl.DefaultValueJson);
+		return Decl;
 	}
 
 	// Parse + lower one script against a context, merging every diagnostic into one result.
@@ -272,8 +285,13 @@ bool FCrowdyEffectCostLowersTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("expression (no clamp on mana)"), R.Function.Mutations[0].Expression,
 			FString(TEXT("self.mana - ($cost)")));
 	}
-	TestEqual(TEXT("policy is a condition leaf"), R.Function.InvokePolicyJson,
-		FString(TEXT("{\"type\":\"condition\",\"expression\":\"self.mana >= $cost\"}")));
+	// The inferred gate survives the require. A condition is checked against values the caller sends, so on its
+	// own it keeps nobody out; before this was and-ed in, one "require self.mana >= $cost" made the function
+	// callable by any account against anyone's container.
+	TestEqual(TEXT("the authored condition is added to the inferred gate, not substituted for it"),
+		R.Function.InvokePolicyJson,
+		FString(TEXT("{\"type\":\"and\",\"rules\":[{\"type\":\"owner_of_self\"},")
+			TEXT("{\"type\":\"condition\",\"expression\":\"self.mana >= $cost\"}]}")));
 	if (TestEqual(TEXT("one param"), R.Function.Parameters.Num(), 1))
 	{
 		TestEqual(TEXT("cost param"), R.Function.Parameters[0].Name, FString(TEXT("cost")));
@@ -383,6 +401,47 @@ bool FCrowdyEffectRequireStructuredVsConditionTest::RunTest(const FString& Param
 	return true;
 }
 
+// A value require must never be able to delete the inferred identity gate. This is the shape that made DealDamage
+// forgeable: two ordinary argument validations replaced owner_of_self entirely, leaving a function any account
+// could call against any container. Both directions are asserted, because either alone is satisfiable by a
+// blanket rule: a value-only require KEEPS the gate, and an authored authority leaf REPLACES it, since choosing
+// "require host" is a deliberate decision that and-ing owner_of_self onto would break.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectValueRequireKeepsIdentityGateTest,
+	"CrowdySDK.Effect.ValueRequireKeepsIdentityGate", CrowdyEffectTestFlags)
+bool FCrowdyEffectValueRequireKeepsIdentityGateTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectLoweringContext Ctx = MakeHeroContext();
+	Ctx.Magnitudes.Add(MakeParam(TEXT("damage"), TEXT("int")));
+
+	// The DealDamage shape: two value guards and nothing about the caller.
+	const FCrowdyEffectLoweringResult Guarded = LowerScript(
+		TEXT("self.hp -= $damage\nrequire self.hp > 0\nrequire $damage > 0"), Ctx);
+	TestFalse(TEXT("guarded: no errors"), Guarded.HasErrors());
+	TestTrue(TEXT("the identity gate survives two value requires"),
+		Guarded.Function.InvokePolicyJson.Contains(TEXT("\"owner_of_self\"")));
+	TestTrue(TEXT("and the authored guards survive too"),
+		Guarded.Function.InvokePolicyJson.Contains(TEXT("$damage > 0")));
+
+	// The opposite direction: an authored authority leaf is a deliberate choice and is left alone.
+	const FCrowdyEffectLoweringResult Host = LowerScript(
+		TEXT("self.hp -= $damage\nrequire host\nrequire $damage > 0"), Ctx);
+	TestFalse(TEXT("host: no errors"), Host.HasErrors());
+	TestTrue(TEXT("an authored authority leaf is kept"),
+		Host.Function.InvokePolicyJson.Contains(TEXT("\"is_host\"")));
+	TestFalse(TEXT("and owner_of_self is NOT added on top of it"),
+		Host.Function.InvokePolicyJson.Contains(TEXT("\"owner_of_self\"")));
+
+	// An or with a caller-suppliable branch does not constrain the caller, so the gate is still added: the whole
+	// point is that a caller who picks the right argument must not be able to satisfy the policy alone.
+	const FCrowdyEffectLoweringResult Or = LowerScript(
+		TEXT("self.hp -= $damage\nrequire host || $damage > 0"), Ctx);
+	TestFalse(TEXT("or: no errors"), Or.HasErrors());
+	TestTrue(TEXT("an or with a value branch still gets the identity gate"),
+		Or.Function.InvokePolicyJson.Contains(TEXT("\"owner_of_self\"")));
+
+	return true;
+}
+
 // require feature("...") lowers to a tier_feature leaf carrying the feature key.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectPolicyLeafArgsTest,
 	"CrowdySDK.Effect.PolicyLeafArgs", CrowdyEffectTestFlags)
@@ -394,8 +453,12 @@ bool FCrowdyEffectPolicyLeafArgsTest::RunTest(const FString& Parameters)
 	const FCrowdyEffectLoweringResult Feature = LowerScript(
 		TEXT("self.str += $amount\nrequire feature(\"premium_abilities\")"), Ctx);
 	TestFalse(TEXT("feature: no errors"), Feature.HasErrors());
-	TestEqual(TEXT("tier_feature leaf"), Feature.Function.InvokePolicyJson,
-		FString(TEXT("{\"type\":\"tier_feature\",\"feature\":\"premium_abilities\"}")));
+	// tier_feature gates the APP's tier, not the account calling, so the inferred gate is still added: a premium
+	// ability is not a thing every player may use on every other player's container.
+	TestEqual(TEXT("tier_feature is added to the inferred gate, because it constrains the app not the caller"),
+		Feature.Function.InvokePolicyJson,
+		FString(TEXT("{\"type\":\"and\",\"rules\":[{\"type\":\"owner_of_self\"},")
+			TEXT("{\"type\":\"tier_feature\",\"feature\":\"premium_abilities\"}]}")));
 
 	const FCrowdyEffectLoweringResult Grid = LowerScript(
 		TEXT("self.str += $amount\nrequire grid_permission(\"update_voxel_data\", 7)"), Ctx);
@@ -599,8 +662,13 @@ bool FCrowdyEffectInjectedConditionVarsTest::RunTest(const FString& Parameters)
 
 	TestFalse(TEXT("no errors"), R.HasErrors());
 	TestEqual(TEXT("no diagnostics at all (no spurious undeclared-param warning)"), R.Diagnostics.Num(), 0);
-	TestEqual(TEXT("lowers to the injected-var condition"), R.Function.InvokePolicyJson,
-		FString(TEXT("{\"type\":\"condition\",\"expression\":\"$self_owner_id == $caller_user_id\"}")));
+	// An ownership check written as a condition still reads as a condition to the lowering, so the inferred gate
+	// is added. That is stricter than what was authored and deliberately so: the author gets the gate they asked
+	// for plus the one the shape implies, and neither can be lost by writing the other.
+	TestEqual(TEXT("lowers to the injected-var condition, and-ed onto the inferred gate"),
+		R.Function.InvokePolicyJson,
+		FString(TEXT("{\"type\":\"and\",\"rules\":[{\"type\":\"owner_of_self\"},")
+			TEXT("{\"type\":\"condition\",\"expression\":\"$self_owner_id == $caller_user_id\"}]}")));
 	return true;
 }
 
@@ -746,8 +814,10 @@ bool FCrowdyEffectStructuredCostRequireTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("expression (no clamp on mana)"), R.Function.Mutations[0].Expression,
 			FString(TEXT("self.mana - ($cost)")));
 	}
-	TestEqual(TEXT("comparison require lowers to a condition leaf"), R.Function.InvokePolicyJson,
-		FString(TEXT("{\"type\":\"condition\",\"expression\":\"self.mana >= $cost\"}")));
+	TestEqual(TEXT("comparison require lowers to a condition leaf, and-ed onto the inferred gate"),
+		R.Function.InvokePolicyJson,
+		FString(TEXT("{\"type\":\"and\",\"rules\":[{\"type\":\"owner_of_self\"},")
+			TEXT("{\"type\":\"condition\",\"expression\":\"self.mana >= $cost\"}]}")));
 	return true;
 }
 
@@ -2861,6 +2931,723 @@ bool FCrowdyEffectAuthoredShapeTimerOnlyTest::RunTest(const FString& Parameters)
 	Timer.FunctionName = TEXT("Respawn");
 	Effect->Timers.Add(Timer);
 	TestTrue(TEXT("a timer is a side effect a fn: call does not get"), Effect->GetAuthoredShape().bHasMutations);
+	return true;
+}
+
+// A bool tuning parameter the designer picked from the dropdown and then left alone still lowers as an authored
+// default of false. The bool editor is a checkbox, which draws an unauthored default and a stored false
+// identically, so an empty one is a value the designer believes they authored; unnormalized it lowers as required
+// and the apply is refused, which is why ticking and unticking the box "fixes" the parameter.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectBoolMagnitudeUntouchedDefaultsToFalseTest,
+	"CrowdySDK.Effect.BoolMagnitudeUntouchedDefaultsToFalse", CrowdyEffectTestFlags)
+bool FCrowdyEffectBoolMagnitudeUntouchedDefaultsToFalseTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectMagnitude Flag;
+	Flag.Name = TEXT("flag");
+	Flag.ValueTypeEnum = ECrowdyEffectValueType::Bool;
+	Flag.bTypeMigrated = true;
+
+	UCrowdyEffect::MigrateMagnitude(Flag);
+
+	TestEqual(TEXT("an untouched bool default normalizes to false"), Flag.DefaultValueJson, FString(TEXT("false")));
+	TestEqual(TEXT("the wire type is bool, not int"), Flag.ValueType, FString(TEXT("bool")));
+
+	// An authored true survives, so the normalization cannot be a blanket overwrite of every bool default.
+	FCrowdyEffectMagnitude Authored = Flag;
+	Authored.DefaultValueJson = TEXT("true");
+	UCrowdyEffect::MigrateMagnitude(Authored);
+	TestEqual(TEXT("an authored true is not clobbered"), Authored.DefaultValueJson, FString(TEXT("true")));
+
+	// Declared exactly as the authored surface declares it: the resolved wire type, the normalized default, and the
+	// migrated required flag rather than a value the test picked.
+	FCrowdyEffectLoweringContext Ctx = MakeHeroContext();
+	Ctx.Magnitudes.Add(FCrowdyEffectParamDecl{ Flag.Name, Flag.ValueType, Flag.DefaultValueJson, Flag.Description,
+		UCrowdyEffect::ResolveMagnitudeRequired(Flag) });
+
+	const FCrowdyEffectLoweringResult R = LowerScript(TEXT("self.hp -= 1"), Ctx);
+	TestFalse(TEXT("no errors"), R.HasErrors());
+
+	const FCrowdyGameModelFunctionParam* Param = R.Function.Parameters.FindByPredicate(
+		[](const FCrowdyGameModelFunctionParam& P) { return P.Name.Equals(TEXT("flag"), ESearchCase::CaseSensitive); });
+	if (!TestNotNull(TEXT("the bool parameter lowered"), Param))
+	{
+		return true;
+	}
+	TestFalse(TEXT("a bool parameter is never required"), Param->bRequired);
+	TestEqual(TEXT("lowered wire type is bool"), Param->ValueType, FString(TEXT("bool")));
+	TestEqual(TEXT("lowered default is false"), Param->DefaultValueJson, FString(TEXT("false")));
+
+	// Key presence is the load-bearing fact: the marshaller OMITS defaultValueJson when the value is empty, so a
+	// change that never actually stored anything would still read back as "false" from an absent server field.
+	const TSharedPtr<FJsonObject> Upsert = CrowdyGameModelMarshalling::BuildFunctionUpsertInput(R.Function, 42);
+	if (!TestTrue(TEXT("upsert input built"), Upsert.IsValid()))
+	{
+		return true;
+	}
+	const TArray<TSharedPtr<FJsonValue>>* ParamsArray = nullptr;
+	if (!TestTrue(TEXT("parameters array present"), Upsert->TryGetArrayField(TEXT("parameters"), ParamsArray)))
+	{
+		return true;
+	}
+
+	bool bFoundFlag = false;
+	for (const TSharedPtr<FJsonValue>& Entry : *ParamsArray)
+	{
+		const TSharedPtr<FJsonObject>* Object = nullptr;
+		if (!Entry.IsValid() || !Entry->TryGetObject(Object))
+		{
+			continue;
+		}
+		FString Name;
+		if (!(*Object)->TryGetStringField(TEXT("name"), Name) || !Name.Equals(TEXT("flag"), ESearchCase::CaseSensitive))
+		{
+			continue;
+		}
+		bFoundFlag = true;
+		TestTrue(TEXT("defaultValueJson key reaches the wire"), (*Object)->HasField(TEXT("defaultValueJson")));
+
+		FString MarshalledDefault;
+		(*Object)->TryGetStringField(TEXT("defaultValueJson"), MarshalledDefault);
+		TestEqual(TEXT("marshalled default is false"), MarshalledDefault, FString(TEXT("false")));
+
+		bool bMarshalledRequired = true;
+		(*Object)->TryGetBoolField(TEXT("required"), bMarshalledRequired);
+		TestFalse(TEXT("marshalled as not required"), bMarshalledRequired);
+
+		FString MarshalledType;
+		(*Object)->TryGetStringField(TEXT("valueType"), MarshalledType);
+		TestEqual(TEXT("marshalled wire type is bool"), MarshalledType, FString(TEXT("bool")));
+	}
+	TestTrue(TEXT("the flag parameter reached the wire"), bFoundFlag);
+	return true;
+}
+
+// The apply path for the same untouched bool: no overrides, no curve, and it must send JSON false instead of
+// being refused as a required magnitude nobody supplied.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectBoolMagnitudeAppliesWithoutOverrideTest,
+	"CrowdySDK.Effect.BoolMagnitudeAppliesWithoutOverride", CrowdyEffectTestFlags)
+bool FCrowdyEffectBoolMagnitudeAppliesWithoutOverrideTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectMagnitude Flag;
+	Flag.Name = TEXT("flag");
+	Flag.ValueTypeEnum = ECrowdyEffectValueType::Bool;
+	Flag.bTypeMigrated = true;
+	// What PostLoad runs over every magnitude of a loaded asset.
+	UCrowdyEffect::MigrateMagnitude(Flag);
+
+	UCrowdyEffect* Effect = NewObject<UCrowdyEffect>(GetTransientPackage());
+	Effect->Magnitudes = { Flag };
+
+	FString Error;
+	const TSharedPtr<FJsonObject> Params =
+		UCrowdyEffects::BuildInvokeParams(Effect, {}, 1.0f, /*bHasSource*/ false, FString(), Error);
+
+	if (!TestNotNull(TEXT("params built with no override supplied"), Params.Get()))
+	{
+		AddError(FString::Printf(TEXT("the apply was refused: %s"), *Error));
+		return true;
+	}
+	TestTrue(TEXT("no error"), Error.IsEmpty());
+
+	bool bValue = true;
+	TestTrue(TEXT("flag is a JSON boolean"), Params->TryGetBoolField(TEXT("flag"), bValue));
+	TestFalse(TEXT("flag sends false"), bValue);
+	return true;
+}
+
+namespace
+{
+	// One parameter object out of a marshalled function upsert, so a test can assert on the KEYS the wire carries
+	// and not only on their values. Null when no parameter of that name was marshalled.
+	TSharedPtr<FJsonObject> CrowdyEffectTestsFindMarshalledParam(const TSharedPtr<FJsonObject>& Upsert,
+		const TCHAR* Name)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Params = nullptr;
+		if (!Upsert.IsValid() || !Upsert->TryGetArrayField(TEXT("parameters"), Params) || !Params)
+		{
+			return nullptr;
+		}
+		for (const TSharedPtr<FJsonValue>& Entry : *Params)
+		{
+			const TSharedPtr<FJsonObject>* Object = nullptr;
+			if (!Entry.IsValid() || !Entry->TryGetObject(Object) || !Object)
+			{
+				continue;
+			}
+			FString ParamName;
+			if ((*Object)->TryGetStringField(TEXT("name"), ParamName)
+				&& ParamName.Equals(Name, ESearchCase::CaseSensitive))
+			{
+				return *Object;
+			}
+		}
+		return nullptr;
+	}
+
+	// A magnitude as it was serialized before required-ness had a field: the value type in the legacy wire string,
+	// neither migration flag set, and required-ness spelled only by whether a default was authored.
+	FCrowdyEffectMagnitude CrowdyEffectTestsMakeLegacyMagnitude(const TCHAR* Name, const TCHAR* WireType,
+		const TCHAR* DefaultJson)
+	{
+		FCrowdyEffectMagnitude M;
+		M.Name = Name;
+		M.ValueType = WireType;
+		M.DefaultValueJson = DefaultJson;
+		return M;
+	}
+}
+
+// Required-ness used to be spelled as an empty default, which meant one field carried two independent facts. A
+// legacy magnitude derives the explicit flag once at load, and the lowering then reads the flag instead of
+// re-deriving it from the text.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectMagnitudeRequiredMigratesTest,
+	"CrowdySDK.Effect.MagnitudeRequiredMigratesFromEmptyDefault", CrowdyEffectTestFlags)
+bool FCrowdyEffectMagnitudeRequiredMigratesTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectMagnitude Legacy = CrowdyEffectTestsMakeLegacyMagnitude(TEXT("amount"), TEXT("int"), TEXT(""));
+	UCrowdyEffect::MigrateMagnitude(Legacy);
+	TestTrue(TEXT("an empty non-bool default migrates to required"), Legacy.bRequired);
+	TestTrue(TEXT("and records that the answer has been derived"), Legacy.bRequiredMigrated);
+	TestTrue(TEXT("without inventing a default for it"), Legacy.DefaultValueJson.IsEmpty());
+
+	// The control: an authored default migrates to OPTIONAL, so the derivation cannot be a blanket "required".
+	FCrowdyEffectMagnitude Defaulted = CrowdyEffectTestsMakeLegacyMagnitude(TEXT("power"), TEXT("int"), TEXT("5"));
+	UCrowdyEffect::MigrateMagnitude(Defaulted);
+	TestFalse(TEXT("an authored default migrates to optional"), Defaulted.bRequired);
+	TestEqual(TEXT("and keeps the authored default"), Defaulted.DefaultValueJson, FString(TEXT("5")));
+
+	// Both reach the wire through the authoring surface, which is what the asset's Compile() feeds the lowering.
+	UCrowdyEffect* Effect = NewObject<UCrowdyEffect>(GetTransientPackage());
+	Effect->Magnitudes = { Legacy, Defaulted };
+
+	FCrowdyEffectLoweringContext Ctx = MakeHeroContext();
+	Ctx.Magnitudes = CrowdyEffectAuthoredSurface::FromEffectSettings(*Effect).Magnitudes;
+
+	const FCrowdyEffectLoweringResult R = LowerScript(TEXT("self.str += $amount + $power"), Ctx);
+	TestFalse(TEXT("no errors"), R.HasErrors());
+
+	const FCrowdyGameModelFunctionParam* Amount = R.Function.Parameters.FindByPredicate(
+		[](const FCrowdyGameModelFunctionParam& P) { return P.Name.Equals(TEXT("amount"), ESearchCase::CaseSensitive); });
+	const FCrowdyGameModelFunctionParam* Power = R.Function.Parameters.FindByPredicate(
+		[](const FCrowdyGameModelFunctionParam& P) { return P.Name.Equals(TEXT("power"), ESearchCase::CaseSensitive); });
+	if (!TestNotNull(TEXT("the migrated magnitude lowered"), Amount)
+		|| !TestNotNull(TEXT("the defaulted magnitude lowered"), Power))
+	{
+		return true;
+	}
+	TestTrue(TEXT("it still lowers as required"), Amount->bRequired);
+	TestFalse(TEXT("and the defaulted one still does not"), Power->bRequired);
+	TestEqual(TEXT("the default survives lowering"), Power->DefaultValueJson, FString(TEXT("5")));
+	return true;
+}
+
+// The one type the old encoding could never speak for: a bool, whose checkbox draws an empty default and a stored
+// false identically. It migrates to optional with an explicit false, which is the behaviour a required-ness flag
+// must not quietly undo now that a bool CAN say it is required.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectBoolMagnitudeMigratesAsOptionalTest,
+	"CrowdySDK.Effect.BoolMagnitudeMigratesAsOptional", CrowdyEffectTestFlags)
+bool FCrowdyEffectBoolMagnitudeMigratesAsOptionalTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectMagnitude Flag = CrowdyEffectTestsMakeLegacyMagnitude(TEXT("flag"), TEXT("bool"), TEXT(""));
+	UCrowdyEffect::MigrateMagnitude(Flag);
+	TestFalse(TEXT("an empty bool default migrates to optional"), Flag.bRequired);
+	TestEqual(TEXT("with the explicit false its checkbox cannot express"), Flag.DefaultValueJson,
+		FString(TEXT("false")));
+
+	// The control: the very same empty default on a string IS required, so the exemption is the bool's alone and
+	// not a migration that answers "optional" for everything.
+	FCrowdyEffectMagnitude Text = CrowdyEffectTestsMakeLegacyMagnitude(TEXT("note"), TEXT("string"), TEXT(""));
+	UCrowdyEffect::MigrateMagnitude(Text);
+	TestTrue(TEXT("the same empty default on a string migrates to required"), Text.bRequired);
+
+	// Read back through the resolver an unmigrated magnitude goes through, so a bool built in code (never loaded,
+	// never edited) answers the same way rather than falling back to the emptiness rule.
+	const FCrowdyEffectMagnitude Unmigrated =
+		CrowdyEffectTestsMakeLegacyMagnitude(TEXT("flag"), TEXT("bool"), TEXT(""));
+	TestFalse(TEXT("an unmigrated bool resolves as optional"), UCrowdyEffect::ResolveMagnitudeRequired(Unmigrated));
+	const FCrowdyEffectMagnitude UnmigratedText =
+		CrowdyEffectTestsMakeLegacyMagnitude(TEXT("note"), TEXT("string"), TEXT(""));
+	TestTrue(TEXT("an unmigrated string with no default resolves as required"),
+		UCrowdyEffect::ResolveMagnitudeRequired(UnmigratedText));
+	return true;
+}
+
+// Migration runs on every load, so deriving the flag has to be a one-time fold, not a rule re-applied over the
+// current state: a designer who marks a defaulted parameter required must still find it required next session.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectMagnitudeRequiredMigrationIdempotentTest,
+	"CrowdySDK.Effect.MagnitudeRequiredMigrationIsIdempotent", CrowdyEffectTestFlags)
+bool FCrowdyEffectMagnitudeRequiredMigrationIdempotentTest::RunTest(const FString& Parameters)
+{
+	const TArray<FCrowdyEffectMagnitude> Legacy = {
+		CrowdyEffectTestsMakeLegacyMagnitude(TEXT("amount"), TEXT("int"), TEXT("")),
+		CrowdyEffectTestsMakeLegacyMagnitude(TEXT("power"), TEXT("int"), TEXT("5")),
+		CrowdyEffectTestsMakeLegacyMagnitude(TEXT("flag"), TEXT("bool"), TEXT("")),
+		CrowdyEffectTestsMakeLegacyMagnitude(TEXT("note"), TEXT("string"), TEXT(""))
+	};
+
+	for (const FCrowdyEffectMagnitude& Original : Legacy)
+	{
+		FCrowdyEffectMagnitude Once = Original;
+		UCrowdyEffect::MigrateMagnitude(Once);
+		FCrowdyEffectMagnitude Twice = Once;
+		UCrowdyEffect::MigrateMagnitude(Twice);
+
+		TestEqual(FString::Printf(TEXT("'%s' required is stable"), *Original.Name), Twice.bRequired, Once.bRequired);
+		TestEqual(FString::Printf(TEXT("'%s' default is stable"), *Original.Name), Twice.DefaultValueJson,
+			Once.DefaultValueJson);
+	}
+
+	// The control for the guard flag: a designer marks a defaulted parameter required after it migrated, and a
+	// later load must not re-derive "it has a default, so it is optional" over that decision.
+	FCrowdyEffectMagnitude Authored = CrowdyEffectTestsMakeLegacyMagnitude(TEXT("power"), TEXT("int"), TEXT("5"));
+	UCrowdyEffect::MigrateMagnitude(Authored);
+	Authored.bRequired = true;
+	UCrowdyEffect::MigrateMagnitude(Authored);
+	TestTrue(TEXT("a required flag set after migration survives the next load"), Authored.bRequired);
+
+	// And the same in the other direction: an empty default no longer forces required back on.
+	FCrowdyEffectMagnitude Relaxed = CrowdyEffectTestsMakeLegacyMagnitude(TEXT("amount"), TEXT("int"), TEXT(""));
+	UCrowdyEffect::MigrateMagnitude(Relaxed);
+	Relaxed.bRequired = false;
+	UCrowdyEffect::MigrateMagnitude(Relaxed);
+	TestFalse(TEXT("an optional parameter with no default stays optional"), Relaxed.bRequired);
+	return true;
+}
+
+// The case the old encoding made unauthorable: a REQUIRED bool. It lowers as required and carries no default, so
+// the marshaller omits defaultValueJson entirely rather than telling the server both at once.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectRequiredBoolIsAuthorableTest,
+	"CrowdySDK.Effect.RequiredBoolLowersWithNoDefault", CrowdyEffectTestFlags)
+bool FCrowdyEffectRequiredBoolIsAuthorableTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectMagnitude Flag;
+	Flag.Name = TEXT("flag");
+	Flag.ValueTypeEnum = ECrowdyEffectValueType::Bool;
+	Flag.bTypeMigrated = true;
+	Flag.bRequired = true;
+	Flag.bRequiredMigrated = true;
+	// A default authored before the box was ticked. It still reaches the wire: required-ness is its own field,
+	// and blanking the default here would ask the upsert to clear one the server holds, which it cannot do.
+	Flag.DefaultValueJson = TEXT("true");
+
+	// Migration leaves a required bool alone rather than normalizing a default onto it.
+	UCrowdyEffect::MigrateMagnitude(Flag);
+	TestTrue(TEXT("a required bool stays required through migration"), Flag.bRequired);
+
+	UCrowdyEffect* Effect = NewObject<UCrowdyEffect>(GetTransientPackage());
+	Effect->Magnitudes = { Flag };
+
+	FCrowdyEffectLoweringContext Ctx = MakeHeroContext();
+	Ctx.Magnitudes = CrowdyEffectAuthoredSurface::FromEffectSettings(*Effect).Magnitudes;
+
+	const FCrowdyEffectLoweringResult R = LowerScript(TEXT("self.hp -= 1"), Ctx);
+	TestFalse(TEXT("no errors"), R.HasErrors());
+
+	const FCrowdyGameModelFunctionParam* Param = R.Function.Parameters.FindByPredicate(
+		[](const FCrowdyGameModelFunctionParam& P) { return P.Name.Equals(TEXT("flag"), ESearchCase::CaseSensitive); });
+	if (!TestNotNull(TEXT("the bool parameter lowered"), Param))
+	{
+		return true;
+	}
+	TestTrue(TEXT("a bool can now say it is required"), Param->bRequired);
+
+	// Key PRESENCE is the load-bearing fact. The marshaller omits an empty defaultValueJson rather than sending a
+	// null, so a lowering that blanked the default would plan a clear the wire cannot carry: the server would keep
+	// its old value and every later plan would compute the same difference again, forever.
+	TestEqual(TEXT("the authored default still lowers"), Param->DefaultValueJson, FString(TEXT("true")));
+
+	const TSharedPtr<FJsonObject> Marshalled =
+		CrowdyEffectTestsFindMarshalledParam(CrowdyGameModelMarshalling::BuildFunctionUpsertInput(R.Function, 42),
+			TEXT("flag"));
+	if (!TestTrue(TEXT("the flag parameter reached the wire"), Marshalled.IsValid()))
+	{
+		return true;
+	}
+	TestTrue(TEXT("a required parameter still carries its default key"),
+		Marshalled->HasField(TEXT("defaultValueJson")));
+	bool bMarshalledRequired = false;
+	Marshalled->TryGetBoolField(TEXT("required"), bMarshalledRequired);
+	TestTrue(TEXT("marshalled as required"), bMarshalledRequired);
+
+	// The control, and the whole point of the pair: required-ness moves independently of the default, so the two
+	// variants differ in exactly one marshalled field and neither of them can ask for an unsendable clear.
+	FCrowdyEffectMagnitude Optional = Flag;
+	Optional.bRequired = false;
+	Effect->Magnitudes = { Optional };
+	Ctx.Magnitudes = CrowdyEffectAuthoredSurface::FromEffectSettings(*Effect).Magnitudes;
+
+	const FCrowdyEffectLoweringResult Relaxed = LowerScript(TEXT("self.hp -= 1"), Ctx);
+	const TSharedPtr<FJsonObject> RelaxedParam =
+		CrowdyEffectTestsFindMarshalledParam(
+			CrowdyGameModelMarshalling::BuildFunctionUpsertInput(Relaxed.Function, 42), TEXT("flag"));
+	if (TestTrue(TEXT("the optional flag reached the wire"), RelaxedParam.IsValid()))
+	{
+		TestTrue(TEXT("an optional bool keeps its default key"), RelaxedParam->HasField(TEXT("defaultValueJson")));
+		FString RelaxedDefault;
+		RelaxedParam->TryGetStringField(TEXT("defaultValueJson"), RelaxedDefault);
+		TestEqual(TEXT("carrying the authored value"), RelaxedDefault, FString(TEXT("true")));
+
+		bool bRelaxedRequired = true;
+		RelaxedParam->TryGetBoolField(TEXT("required"), bRelaxedRequired);
+		TestFalse(TEXT("and differing from the required variant only in the required field"), bRelaxedRequired);
+	}
+	return true;
+}
+
+// The apply-time gate reads the flag, not the text: a required parameter is demanded even when a default is still
+// stored beside it, and an optional one with no default at all is omitted rather than refused.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectApplyDemandsByRequiredFlagTest,
+	"CrowdySDK.Effect.ApplyDemandsByRequiredFlag", CrowdyEffectTestFlags)
+bool FCrowdyEffectApplyDemandsByRequiredFlagTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectMagnitude Required;
+	Required.Name = TEXT("amount");
+	Required.ValueTypeEnum = ECrowdyEffectValueType::Int;
+	Required.ValueType = TEXT("int");
+	Required.DefaultValueJson = TEXT("5");
+	Required.bRequired = true;
+	Required.bTypeMigrated = true;
+	Required.bRequiredMigrated = true;
+
+	UCrowdyEffect* Demanding = NewObject<UCrowdyEffect>(GetTransientPackage());
+	Demanding->Magnitudes = { Required };
+
+	FString Error;
+	TestNull(TEXT("a required magnitude is demanded despite the default stored beside it"),
+		UCrowdyEffects::BuildInvokeParams(Demanding, {}, 1.0f, false, FString(), Error).Get());
+	TestFalse(TEXT("with an error to show for it"), Error.IsEmpty());
+
+	// An override satisfies it, so the refusal above is about the missing value and not about the flag itself.
+	TMap<FName, FString> Overrides;
+	Overrides.Add(FName(TEXT("amount")), TEXT("42"));
+	Error.Reset();
+	const TSharedPtr<FJsonObject> Supplied =
+		UCrowdyEffects::BuildInvokeParams(Demanding, Overrides, 1.0f, false, FString(), Error);
+	if (TestNotNull(TEXT("an override supplies it"), Supplied.Get()))
+	{
+		TestEqual(TEXT("carrying the supplied value"), static_cast<int32>(Supplied->GetNumberField(TEXT("amount"))), 42);
+	}
+
+	// The control: the same magnitude with the same stored default, optional, sends that default.
+	FCrowdyEffectMagnitude Optional = Required;
+	Optional.bRequired = false;
+	UCrowdyEffect* Lenient = NewObject<UCrowdyEffect>(GetTransientPackage());
+	Lenient->Magnitudes = { Optional };
+	Error.Reset();
+	const TSharedPtr<FJsonObject> Defaulted =
+		UCrowdyEffects::BuildInvokeParams(Lenient, {}, 1.0f, false, FString(), Error);
+	if (TestNotNull(TEXT("an optional magnitude with the same default is sent"), Defaulted.Get()))
+	{
+		TestEqual(TEXT("carrying that default"), static_cast<int32>(Defaulted->GetNumberField(TEXT("amount"))), 5);
+	}
+
+	// An optional magnitude with no default is omitted (the server applies the parameter's own), while the same
+	// magnitude marked required is refused: emptiness no longer decides either answer.
+	FCrowdyEffectMagnitude Sparse;
+	Sparse.Name = TEXT("note");
+	Sparse.ValueTypeEnum = ECrowdyEffectValueType::String;
+	Sparse.ValueType = TEXT("string");
+	Sparse.bTypeMigrated = true;
+	Sparse.bRequiredMigrated = true;
+
+	UCrowdyEffect* Sparser = NewObject<UCrowdyEffect>(GetTransientPackage());
+	Sparser->Magnitudes = { Sparse };
+	Error.Reset();
+	const TSharedPtr<FJsonObject> Omitted =
+		UCrowdyEffects::BuildInvokeParams(Sparser, {}, 1.0f, false, FString(), Error);
+	if (TestNotNull(TEXT("an optional magnitude with no default is not refused"), Omitted.Get()))
+	{
+		TestFalse(TEXT("its key is omitted rather than sent empty"), Omitted->HasField(TEXT("note")));
+	}
+
+	Sparse.bRequired = true;
+	Sparser->Magnitudes = { Sparse };
+	Error.Reset();
+	TestNull(TEXT("the same magnitude marked required is refused"),
+		UCrowdyEffects::BuildInvokeParams(Sparser, {}, 1.0f, false, FString(), Error).Get());
+	TestFalse(TEXT("with an error to show for it"), Error.IsEmpty());
+	return true;
+}
+
+namespace
+{
+	// A whole marshalled upsert as text, so a comparison sees which KEYS each side wrote and not only the values of
+	// the keys both happened to write. An omitted defaultValueJson is invisible to any field-by-field check.
+	FString CrowdyEffectTestsMarshalToText(const FCrowdyGameModelFunctionInput& Fn)
+	{
+		FString Text;
+		const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Text);
+		FJsonSerializer::Serialize(CrowdyGameModelMarshalling::BuildFunctionUpsertInput(Fn, 42).ToSharedRef(), Writer);
+		return Text;
+	}
+}
+
+// The two routes one effect reaches the wire by: the asset, loaded and migrated, and the payload it stamped on
+// itself, read back without loading anything. A schema plan uses whichever is available per package, so two
+// machines planning the same project must produce the same upsert. Compared as marshalled TEXT, because the
+// divergence this pins was a missing key rather than a differing value.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectStoredPayloadMatchesAssetPathTest,
+	"CrowdySDK.Effect.StoredPayloadMarshalsLikeTheAssetPath", CrowdyEffectTestFlags)
+bool FCrowdyEffectStoredPayloadMatchesAssetPathTest::RunTest(const FString& Parameters)
+{
+	// A bool authored before required-ness had a field of its own: the legacy wire string, no default, and neither
+	// migration flag. It is the case the two routes used to answer differently for.
+	const FCrowdyEffectMagnitude Authored =
+		CrowdyEffectTestsMakeLegacyMagnitude(TEXT("flag"), TEXT("bool"), TEXT(""));
+
+	UCrowdyEffect* Effect = NewObject<UCrowdyEffect>(GetTransientPackage());
+
+	// Route one: the asset as a load leaves it.
+	FCrowdyEffectMagnitude Migrated = Authored;
+	UCrowdyEffect::MigrateMagnitude(Migrated);
+	Effect->Magnitudes = { Migrated };
+	const FCrowdyEffectAuthoredSurface FromAsset = CrowdyEffectAuthoredSurface::FromEffectSettings(*Effect);
+
+	// Route two: the payload a build that predates the required key stamped, read back with no asset in hand. Taking
+	// it off the UNMIGRATED magnitude is what makes it a genuine legacy payload rather than a copy of route one.
+	Effect->Magnitudes = { Authored };
+	FString LegacyJson = CrowdyEffectAuthoredSurface::ToJson(CrowdyEffectAuthoredSurface::FromEffectSettings(*Effect));
+	TestTrue(TEXT("the payload carried a required key to begin with"),
+		LegacyJson.Contains(TEXT("\"r\":true")) || LegacyJson.Contains(TEXT("\"r\":false")));
+	LegacyJson = LegacyJson.Replace(TEXT(",\"r\":true"), TEXT(""));
+	LegacyJson = LegacyJson.Replace(TEXT(",\"r\":false"), TEXT(""));
+	TestFalse(TEXT("no boolean required key survives the strip"),
+		LegacyJson.Contains(TEXT("\"r\":true")) || LegacyJson.Contains(TEXT("\"r\":false")));
+
+	FCrowdyEffectAuthoredSurface FromTag;
+	if (!TestTrue(TEXT("the stripped payload parses"),
+		CrowdyEffectAuthoredSurface::FromJson(LegacyJson, FromTag)))
+	{
+		return true;
+	}
+
+	const FString Body = TEXT("self.hp -= if($flag, 2, 1)");
+
+	FCrowdyEffectLoweringContext AssetCtx = MakeHeroContext();
+	AssetCtx.Magnitudes = FromAsset.Magnitudes;
+	const FCrowdyEffectLoweringResult AssetResult = LowerScript(Body, AssetCtx);
+
+	FCrowdyEffectLoweringContext TagCtx = MakeHeroContext();
+	TagCtx.Magnitudes = FromTag.Magnitudes;
+	const FCrowdyEffectLoweringResult TagResult = LowerScript(Body, TagCtx);
+
+	TestFalse(TEXT("the asset route compiles"), AssetResult.HasErrors());
+	TestFalse(TEXT("the stored-payload route compiles"), TagResult.HasErrors());
+
+	TestEqual(TEXT("both routes marshal byte-identically, key presence included"),
+		CrowdyEffectTestsMarshalToText(TagResult.Function), CrowdyEffectTestsMarshalToText(AssetResult.Function));
+
+	// The control: the equality above would also hold if BOTH routes had dropped the key, so name the value each
+	// side has to be carrying. An optional bool's checkbox cannot draw "no default", so false is the only honest one.
+	const TSharedPtr<FJsonObject> TaggedParam = CrowdyEffectTestsFindMarshalledParam(
+		CrowdyGameModelMarshalling::BuildFunctionUpsertInput(TagResult.Function, 42), TEXT("flag"));
+	if (TestTrue(TEXT("the flag parameter reached the wire"), TaggedParam.IsValid()))
+	{
+		FString TaggedDefault;
+		TestTrue(TEXT("the stored-payload route carries a default at all"),
+			TaggedParam->TryGetStringField(TEXT("defaultValueJson"), TaggedDefault));
+		TestEqual(TEXT("and it is the explicit false the asset route writes"), TaggedDefault, FString(TEXT("false")));
+	}
+
+	// A payload written before that normalization existed describes a different schema, so it must not read as this
+	// build's. That is what lets the retag command find and rewrite it: it selects on the version not matching.
+	TestFalse(TEXT("a version 1 payload is no longer current"),
+		CrowdyEffectAuthoredSurface::IsCurrentTagVersion(TEXT("1")));
+	return true;
+}
+
+// Optional means "omit it and this value is used", so with no default the declaration names no value at all, and
+// no later upsert can fix it: an empty defaultValueJson is omitted rather than sent as a clear.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectOptionalWithNoDefaultIsRefusedTest,
+	"CrowdySDK.Effect.OptionalMagnitudeWithNoDefaultIsRefused", CrowdyEffectTestFlags)
+bool FCrowdyEffectOptionalWithNoDefaultIsRefusedTest::RunTest(const FString& Parameters)
+{
+	const FString Body = TEXT("self.hp -= $amount");
+
+	FCrowdyEffectParamDecl Offending;
+	Offending.Name = TEXT("amount");
+	Offending.ValueType = TEXT("int");
+	Offending.bRequired = false;
+
+	FCrowdyEffectLoweringContext BadCtx = MakeHeroContext();
+	BadCtx.Magnitudes = { Offending };
+	const FCrowdyEffectLoweringResult Bad = LowerScript(Body, BadCtx);
+	TestTrue(TEXT("an optional magnitude with no default is refused"), Bad.HasErrors());
+
+	// Two controls, one per way out of the shape, so the error cannot be a blanket rejection of the magnitude.
+	FCrowdyEffectParamDecl Defaulted = Offending;
+	Defaulted.DefaultValueJson = TEXT("1");
+	FCrowdyEffectLoweringContext DefaultedCtx = MakeHeroContext();
+	DefaultedCtx.Magnitudes = { Defaulted };
+	TestFalse(TEXT("authoring a default resolves it"), LowerScript(Body, DefaultedCtx).HasErrors());
+
+	FCrowdyEffectParamDecl Demanded = Offending;
+	Demanded.bRequired = true;
+	FCrowdyEffectLoweringContext DemandedCtx = MakeHeroContext();
+	DemandedCtx.Magnitudes = { Demanded };
+	TestFalse(TEXT("marking it required resolves it too"), LowerScript(Body, DemandedCtx).HasErrors());
+	return true;
+}
+
+// An override is a JSON literal, and no value type spells one as the empty string. The container_ref route is how
+// this arrives in practice: a wired pin holding an object with no bound container.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectEmptyOverrideIsRefusedTest,
+	"CrowdySDK.Effect.EmptyOverrideIsRefused", CrowdyEffectTestFlags)
+bool FCrowdyEffectEmptyOverrideIsRefusedTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectMagnitude Ref;
+	Ref.Name = TEXT("ally_id");
+	Ref.ValueTypeEnum = ECrowdyEffectValueType::ContainerRef;
+	Ref.ValueType = TEXT("container_ref");
+	Ref.bTypeMigrated = true;
+	Ref.bRequired = false;
+	Ref.bRequiredMigrated = true;
+	Ref.DefaultValueJson = TEXT("\"authored-container\"");
+
+	UCrowdyEffect* Effect = NewObject<UCrowdyEffect>(GetTransientPackage());
+	Effect->Magnitudes = { Ref };
+
+	TMap<FName, FString> EmptyOverride;
+	EmptyOverride.Add(FName(TEXT("ally_id")), FString());
+
+	FString Error;
+	TestNull(TEXT("an empty override is refused rather than dropped"),
+		UCrowdyEffects::BuildInvokeParams(Effect, EmptyOverride, 1.0f, false, FString(), Error).Get());
+	TestFalse(TEXT("with an error to show for it"), Error.IsEmpty());
+
+	// The control: the same magnitude with no override at all still sends its authored default, so the refusal is
+	// about the empty value supplied and not about the parameter.
+	Error.Reset();
+	const TSharedPtr<FJsonObject> Defaulted =
+		UCrowdyEffects::BuildInvokeParams(Effect, {}, 1.0f, false, FString(), Error);
+	if (TestNotNull(TEXT("omitting the override sends the authored default"), Defaulted.Get()))
+	{
+		FString Sent;
+		Defaulted->TryGetStringField(TEXT("ally_id"), Sent);
+		TestEqual(TEXT("carrying the authored container"), Sent, FString(TEXT("authored-container")));
+	}
+
+	// And a real override still arrives, so the guard cannot be rejecting every override.
+	TMap<FName, FString> RealOverride;
+	RealOverride.Add(FName(TEXT("ally_id")), TEXT("live-container"));
+	Error.Reset();
+	const TSharedPtr<FJsonObject> Supplied =
+		UCrowdyEffects::BuildInvokeParams(Effect, RealOverride, 1.0f, false, FString(), Error);
+	if (TestNotNull(TEXT("a non-empty override is accepted"), Supplied.Get()))
+	{
+		FString Sent;
+		Supplied->TryGetStringField(TEXT("ally_id"), Sent);
+		TestEqual(TEXT("carrying the supplied container"), Sent, FString(TEXT("live-container")));
+	}
+	return true;
+}
+
+// bRequired is EditAnywhere and BlueprintReadWrite while its migration flag is hidden, so code and Blueprint set
+// the one they can see. Reading only the flag would discard what they said whenever a default was present.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectExplicitRequiredNeedsNoMigrationFlagTest,
+	"CrowdySDK.Effect.ExplicitRequiredNeedsNoMigrationFlag", CrowdyEffectTestFlags)
+bool FCrowdyEffectExplicitRequiredNeedsNoMigrationFlagTest::RunTest(const FString& Parameters)
+{
+	FCrowdyEffectMagnitude Stated;
+	Stated.Name = TEXT("amount");
+	Stated.ValueTypeEnum = ECrowdyEffectValueType::Int;
+	Stated.ValueType = TEXT("int");
+	Stated.bTypeMigrated = true;
+	Stated.DefaultValueJson = TEXT("5");
+	Stated.bRequired = true;
+	// Deliberately NOT set: this is the magnitude a caller who touched only the visible field leaves behind.
+	Stated.bRequiredMigrated = false;
+
+	TestTrue(TEXT("an explicitly required magnitude resolves as required without the migration flag"),
+		UCrowdyEffect::ResolveMagnitudeRequired(Stated));
+
+	// It survives migration rather than being derived away by the default sitting beside it.
+	FCrowdyEffectMagnitude Loaded = Stated;
+	UCrowdyEffect::MigrateMagnitude(Loaded);
+	TestTrue(TEXT("and still required once migrated"), Loaded.bRequired);
+
+	// The control: the same magnitude that never said anything derives from the legacy encoding exactly as before,
+	// so the change cannot be "everything with a default is now required".
+	FCrowdyEffectMagnitude Silent = Stated;
+	Silent.bRequired = false;
+	TestFalse(TEXT("a magnitude that states nothing and has a default is optional"),
+		UCrowdyEffect::ResolveMagnitudeRequired(Silent));
+	Silent.DefaultValueJson.Reset();
+	TestTrue(TEXT("and required once its default is gone"), UCrowdyEffect::ResolveMagnitudeRequired(Silent));
+	return true;
+}
+
+// One definition of the legacy encoding, reached from the asset and from a stored payload alike. A wire type
+// spelled with stray whitespace used to be a bool under one reader and not under the other.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectLegacyRequiredEncodingIsOneRuleTest,
+	"CrowdySDK.Effect.LegacyRequiredEncodingIsOneRule", CrowdyEffectTestFlags)
+bool FCrowdyEffectLegacyRequiredEncodingIsOneRuleTest::RunTest(const FString& Parameters)
+{
+	TestFalse(TEXT("a bool with no default is not required"), UCrowdyEffect::IsLegacyRequiredEncoding(
+		ECrowdyEffectValueType::Bool, FString()));
+	TestTrue(TEXT("an int with no default is"), UCrowdyEffect::IsLegacyRequiredEncoding(
+		ECrowdyEffectValueType::Int, FString()));
+	TestFalse(TEXT("an int with a default is not"), UCrowdyEffect::IsLegacyRequiredEncoding(
+		ECrowdyEffectValueType::Int, TEXT("5")));
+
+	// A padded wire type reaches the same answer through both readers, which is the whole point of there being one
+	// predicate: the asset path trims, and a hand-edited or older payload can carry the padding.
+	FCrowdyEffectAuthoredSurface Surface;
+	Surface.Magnitudes.Add({ TEXT("flag"), TEXT(" bool "), FString(), FString(), false });
+	FString Json = CrowdyEffectAuthoredSurface::ToJson(Surface);
+	Json = Json.Replace(TEXT(",\"r\":true"), TEXT("")).Replace(TEXT(",\"r\":false"), TEXT(""));
+
+	FCrowdyEffectAuthoredSurface Parsed;
+	if (TestTrue(TEXT("the padded payload parses"), CrowdyEffectAuthoredSurface::FromJson(Json, Parsed))
+		&& TestEqual(TEXT("its one magnitude survives"), Parsed.Magnitudes.Num(), 1))
+	{
+		TestFalse(TEXT("a padded bool is a bool to the fallback too"), Parsed.Magnitudes[0].bRequired);
+		TestEqual(TEXT("and is normalized to the explicit false"), Parsed.Magnitudes[0].DefaultValueJson,
+			FString(TEXT("false")));
+	}
+
+	// The normalizer reads the RESOLVED value type, so a magnitude that names bool only in its legacy string is
+	// normalized as well. Its sibling resolver has always done this; the two now agree.
+	FCrowdyEffectMagnitude Unmigrated = CrowdyEffectTestsMakeLegacyMagnitude(TEXT("flag"), TEXT("bool"), TEXT(""));
+	UCrowdyEffect::EnsureBoolDefault(Unmigrated);
+	TestEqual(TEXT("an unmigrated bool is normalized off its legacy type string"), Unmigrated.DefaultValueJson,
+		FString(TEXT("false")));
+
+	// The control: a required bool keeps no default, so the normalizer is not writing false over everything.
+	FCrowdyEffectMagnitude Demanded = CrowdyEffectTestsMakeLegacyMagnitude(TEXT("flag"), TEXT("bool"), TEXT(""));
+	Demanded.bRequired = true;
+	UCrowdyEffect::EnsureBoolDefault(Demanded);
+	TestTrue(TEXT("a required bool is left with no default"), Demanded.DefaultValueJson.IsEmpty());
+	return true;
+}
+
+// Changing a magnitude's value type discards its default, because the old one was canonical for the old type. The
+// pair it lands on must never be the one shape lowering refuses.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectValueTypeChangeLandsOnAValidPairTest,
+	"CrowdySDK.Effect.ValueTypeChangeLandsOnAValidPair", CrowdyEffectTestFlags)
+bool FCrowdyEffectValueTypeChangeLandsOnAValidPairTest::RunTest(const FString& Parameters)
+{
+	bool bRequired = true;
+	FString DefaultJson = TEXT("5");
+	UCrowdyEffect::ApplyValueTypeChangeDefaults(ECrowdyEffectValueType::Bool, bRequired, DefaultJson);
+	TestFalse(TEXT("picking Bool clears Required"), bRequired);
+	TestEqual(TEXT("and fills the default its checkbox cannot draw"), DefaultJson, FString(TEXT("false")));
+
+	// The reverse switch: the bool default is meaningless for the new type, so it goes, and required-ness follows it.
+	UCrowdyEffect::ApplyValueTypeChangeDefaults(ECrowdyEffectValueType::String, bRequired, DefaultJson);
+	TestTrue(TEXT("switching away from Bool makes the parameter required"), bRequired);
+	TestTrue(TEXT("with no default left over from the old type"), DefaultJson.IsEmpty());
+
+	// The property that matters across every type, stated as one loop rather than trusted from the two cases above.
+	for (const ECrowdyEffectValueType Type : { ECrowdyEffectValueType::Int, ECrowdyEffectValueType::Float,
+		ECrowdyEffectValueType::Bool, ECrowdyEffectValueType::String, ECrowdyEffectValueType::ContainerRef })
+	{
+		bool bLanded = false;
+		FString Landed;
+		UCrowdyEffect::ApplyValueTypeChangeDefaults(Type, bLanded, Landed);
+		TestFalse(FString::Printf(TEXT("'%s' never lands optional with no default"),
+			*UCrowdyEffect::ValueTypeToWireString(Type)), !bLanded && Landed.IsEmpty());
+	}
 	return true;
 }
 

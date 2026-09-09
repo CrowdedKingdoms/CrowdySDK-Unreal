@@ -55,7 +55,10 @@ struct FCrowdyEffectAuthoredSurface
 	//     existed when it was written;
 	//   - a change to what the node-graph compiler produces, since a graph effect's payload carries the compiler's
 	//     OUTPUT rather than the graph, and nothing else would notice that the two no longer agree.
-	static constexpr int32 TagVersion = 1;
+	//
+	// Version 2 normalizes an optional bool's default to "false" when the key is absent, which version 1 did not, so
+	// a version 1 payload describes a bool parameter the asset itself would describe differently.
+	static constexpr int32 TagVersion = 2;
 
 	// The name the function is authored under, with the blank-means-the-asset-name fallback already applied.
 	FString EffectiveFunctionName;

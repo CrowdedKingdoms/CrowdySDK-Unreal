@@ -237,6 +237,8 @@ bool FCrowdyFrameSplitOpcodeMappingTest::RunTest(const FString& Parameters)
 		ECrowdyMessageType::SERVER_EVENT_NOTIFICATION,
 		ECrowdyMessageType::VOXEL_UPDATE_NOTIFICATION,
 		ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION,
+		ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION,
+		ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION,
 		ECrowdyMessageType::GENERIC_SPATIAL_1,
 		ECrowdyMessageType::SINGLE_ACTOR_MESSAGE
 	};

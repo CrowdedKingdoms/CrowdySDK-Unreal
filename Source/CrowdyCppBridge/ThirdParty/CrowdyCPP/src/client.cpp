@@ -839,19 +839,24 @@ void CrowdyClient::refreshGameplayTokenAsync(
 #ifndef CROWDY_NO_EXCEPTIONS
   try {
 #endif
-    portal_->refreshAsync(
-        [auth = auth_, sharedPreparation,
-         sharedCallback](graphql::GraphQLOutcome outcome,
-                         domains::AppTokenResponse token) mutable {
-          if (!outcome.ok()) {
-            setRefreshOutcome(sharedPreparation->result, outcome);
-            (*sharedCallback)(std::move(sharedPreparation->result));
-            return;
-          }
-          (*sharedCallback)(installGameplayRefresh(
-              std::move(*sharedPreparation), auth, std::move(token)));
-        },
-        false);
+    auto onRefresh = [auth = auth_, sharedPreparation,
+                      sharedCallback](graphql::GraphQLOutcome outcome,
+                                      domains::AppTokenResponse token) mutable {
+      if (!outcome.ok()) {
+        setRefreshOutcome(sharedPreparation->result, outcome);
+        (*sharedCallback)(std::move(sharedPreparation->result));
+        return;
+      }
+      (*sharedCallback)(installGameplayRefresh(
+          std::move(*sharedPreparation), auth, std::move(token)));
+    };
+    const auto& current = sharedPreparation->snapshot.endpoint;
+    if (!current.ip4.empty() && current.clientPort > 0) {
+      portal_->refreshAsync(current.ip4, current.clientPort, std::move(onRefresh),
+                            false);
+    } else {
+      portal_->refreshAsync(std::move(onRefresh), false);
+    }
 #ifndef CROWDY_NO_EXCEPTIONS
   } catch (const std::exception& error) {
     setRefreshException(sharedPreparation->result,

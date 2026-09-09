@@ -173,6 +173,14 @@ struct FCrowdyCppAppTokenResult
 	FString DiscoveryUrl;
 
 	FString LaunchUrl;
+
+	// The replication server the Game API installed this token on, when the request named one. Empty on a mint, on
+	// a rotation that named no server, and on one the API answered without an authorizedServer: in all three the
+	// holder of this token has to re-assign before it can send. Never assume the server it was asked about.
+	FString AuthorizedServerIp4;
+	int32 AuthorizedServerClientPort = 0;
+
+	bool HasAuthorizedServer() const { return !AuthorizedServerIp4.IsEmpty() && AuthorizedServerClientPort > 0; }
 };
 
 /**
@@ -594,6 +602,13 @@ public:
 	// the session one, because the token being rotated is what authorizes its own rotation. The replacement is not
 	// installed here either, for the same reason as the mint.
 	FCrowdyCppRequestHandle RefreshAppToken(TFunction<void(FCrowdyCppAppTokenResult)> OnDone);
+
+	// The same rotation, naming the replication server this client is already connected to so the Game API can
+	// authorize the replacement token there and the connection can keep its socket. Read AuthorizedServerIp4 on the
+	// result to tell an authorized keep from an answer that still requires a re-assign; the two are not the same and
+	// only the first lets a caller stay put. Requires ck-api v1.83.7, which is why the no-server form above stays.
+	FCrowdyCppRequestHandle RefreshAppToken(const FString& CurrentServerIp4, int32 CurrentServerClientPort,
+		TFunction<void(FCrowdyCppAppTokenResult)> OnDone);
 
 	/**
 	 * appDiscovery: where the named apps are served. Carries no bearer, because a client knows its app id (a

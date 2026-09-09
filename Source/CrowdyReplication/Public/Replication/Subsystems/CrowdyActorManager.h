@@ -70,9 +70,19 @@ public:
 	// world subsystem brings up every other game world subsystem in the project, some of which assert
 	// outside a running game.
 	bool LoadConfigForTest() { return LoadConfig(); }
+
+	// The production binding, so a case about which departure releases a slot exercises the wiring the game gets
+	// rather than a copy of it made in the test. A test that bound the delegates itself would keep passing with
+	// the binding deleted from Initialize.
+	void BindToTrackerForTest(UCrowdyActorTracker* Tracker) { BindToTracker(Tracker); }
+
 	int32 AllocateSlotForTest(const FGuid& UUID) { return AllocateSlot(UUID); }
 	void ReleaseSlotForTest(const FGuid& UUID) { ReleaseSlot(UUID); }
 	void TickPendingActivationsForTest() { TickPendingActivations(); }
+
+	// So a test can tick past the eviction bound without naming a number of its own. A test that picks its own
+	// figure passes or fails on how the bound was last tuned rather than on the behaviour it is checking.
+	static int32 GetPendingActivationEvictTicksForTest();
 
 	// The real queue and the real drain, so a test sees what the backend is handed rather than what a
 	// caller passed straight to it. ExtractUpdateForTest below deliberately bypasses both, so it cannot
@@ -147,6 +157,9 @@ private:
 	void TickInterpolation();
 	void TickPendingActivations();
 
+	/** Subscribe to everything the tracker reports. The one place those delegates are bound. */
+	void BindToTracker(UCrowdyActorTracker* Tracker);
+
 	int32 AllocateSlot(const FGuid& UUID);
 
 	/**
@@ -172,6 +185,12 @@ private:
 
 	UFUNCTION()
 	void HandleActorDestroyed(FGuid UUID, int32 ActorCount);
+
+	// The server announcing a departure releases the actor exactly as a staleness timeout does. Both have to
+	// arrive here: a leave removes the entity from the map the timeout check reads, so an actor reported gone
+	// by the server would otherwise never be released by anything.
+	UFUNCTION()
+	void HandleActorLeft(const FCrowdyActorLeft& ActorLeft, int32 ActorCount);
 
 	UFUNCTION()
 	void HandleUpdateBatch(const TArray<FCrowdyActorUpdate>& Updates);

@@ -43,6 +43,16 @@ struct WorldSessionConfig {
   std::int64_t reapIntervalMs = 1000;
   /// Persist this actor uuid instead of minting a fresh one.
   std::string actorUuid;
+  /// Media the session has no store for, forwarded to the game (v0.30.0). The
+  /// session owns the connection's handlers, so without these a WorldSession
+  /// user could receive neither voice nor video. `onVideo` receives one
+  /// fragment; feed its payload to a media::VideoFrameAssembler.
+  std::function<void(const replication::SpatialNotification&)> onAudio;
+  std::function<void(const replication::SpatialNotification&)> onVideo;
+  /// The server announced a departure (Buddy v0.25.0). The session already
+  /// removed the actor from `actors()` and fired its onLeave; this is for state
+  /// the game keeps outside the store (voice/video textures, name tags).
+  std::function<void(const core::ActorUuid&, std::uint8_t reason)> onActorLeft;
 };
 
 class WorldSession {

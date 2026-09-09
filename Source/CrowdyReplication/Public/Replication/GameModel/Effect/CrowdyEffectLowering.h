@@ -20,11 +20,16 @@ struct FCrowdyEffectParamDecl
 	// "int" | "float" | "bool" | "string" | "container_ref".
 	FString ValueType;
 
-	// A JSON-encoded default; empty means the parameter is required.
+	// A JSON-encoded default. Ignored when bRequired is set: a required parameter is lowered with no default.
 	FString DefaultValueJson;
 
 	// Author-facing description, carried through to the function parameter.
 	FString Description;
+
+	// Whether a caller must supply this parameter. Stated rather than inferred from an empty default, so a
+	// parameter whose default really is an empty string can still be optional, and one with a default can still
+	// be required. Declared last so the existing brace-initialized declarations keep their meaning.
+	bool bRequired = false;
 };
 
 /**

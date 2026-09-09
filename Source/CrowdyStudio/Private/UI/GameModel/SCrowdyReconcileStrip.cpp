@@ -68,8 +68,13 @@ void SCrowdyReconcileStrip::Construct(const FArguments& InArgs)
 			[this]() { return Controller.IsValid() ? Controller->GetSessionChannelReadiness() : ECrowdyStudioReadiness::Unknown; }) ]
 
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+		// "Needs sync" is reserved for what the button beside it writes. Entities the server has and this project
+		// does not are a review item, not sync work, and they say so in their own words rather than asking for a
+		// press that would leave them exactly where they are. Two different states reach that advisory word, so it is
+		// read from the report: a plan that never issued a read has not found anything extra, it has not looked.
 		[ CrowdyGameModelWidgets::ReadinessPill(LOCTEXT("SetupSchema", "Schema"), LOCTEXT("SetupSchemaDrift", "Needs sync"),
-			[this]() { return Controller.IsValid() ? Controller->GetSchemaReadiness() : ECrowdyStudioReadiness::Unknown; }) ]
+			[this]() { return Controller.IsValid() ? Controller->GetSchemaReadiness() : ECrowdyStudioReadiness::Unknown; },
+			TAttribute<FText>::CreateSP(this, &SCrowdyReconcileStrip::GetSchemaAdvisoryWord)) ]
 
 		+ SHorizontalBox::Slot().FillWidth(1.0f)
 		[ SNew(SSpacer) ]
@@ -297,7 +302,12 @@ FText SCrowdyReconcileStrip::GetSchemaSyncReportText() const
 
 	if (Report.UpsertCount() == 0 && !Report.bApplied)
 	{
-		Text += TEXT("\nSchema matches code. Nothing to sync.");
+		// "Matches" is a claim about the server, and a warning is exactly where that claim breaks down: a difference a
+		// sync cannot express (a cleared default, a dropped timer) plans nothing and shows up only as a warning. Say
+		// there is nothing to send, and point at the warnings rather than talking over them.
+		Text += Report.Warnings.Num() > 0
+			? TEXT("\nNothing to sync. Read the warnings below before assuming the schema matches code.")
+			: TEXT("\nSchema matches code. Nothing to sync.");
 	}
 	for (const FString& Line : Report.Lines)
 	{
@@ -314,10 +324,20 @@ FText SCrowdyReconcileStrip::GetSchemaSyncReportText() const
 	if (Report.ServerOnlyCount() > 0)
 	{
 		Text += FString::Printf(
-			TEXT("\n\n%d server-only entity(s) (%d type(s), %d property(s), %d function(s)) are not declared in code. The sync never deletes them; on the Models tab, use \"Mark everything only on the server\" and review what deleting them would do first."),
-			Report.ServerOnlyCount(), Report.ServerOnlyTypeCount, Report.ServerOnlyPropCount, Report.ServerOnlyFunctionCount);
+			TEXT("\n\n%d server-only entity(s) (%d type(s), %d property(s), %d function(s), %d automation(s)) are not declared in code. The sync never deletes them; on the Models tab, use \"Mark everything only on the server\" and review what deleting them would do first."),
+			Report.ServerOnlyCount(), Report.ServerOnlyTypeCount, Report.ServerOnlyPropCount, Report.ServerOnlyFunctionCount,
+			Report.ServerOnlyAutomationCount);
 	}
 	return FText::FromString(Text);
+}
+
+FText SCrowdyReconcileStrip::GetSchemaAdvisoryWord() const
+{
+	if (Controller.IsValid() && Controller->GetSchemaSyncReport().bServerNotCompared)
+	{
+		return LOCTEXT("SetupSchemaNotCompared", "Not checked against the server");
+	}
+	return LOCTEXT("SetupSchemaServerOnly", "Extra on server, review");
 }
 
 FText SCrowdyReconcileStrip::GetDetailsButtonLabel() const

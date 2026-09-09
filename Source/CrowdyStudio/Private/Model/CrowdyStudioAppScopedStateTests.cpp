@@ -6,11 +6,13 @@
 #include "Dom/JsonObject.h"
 #include "GameModel/CrowdyApplySelection.h"
 #include "GameModel/CrowdyModelLoadState.h"
+#include "GameModel/CrowdySchemaSync.h"
 #include "Gql/CrowdyStudioQueries.h"
 #include "Model/CrowdyStudioControllerTestAccess.h"
 #include "Model/CrowdyStudioTypes.h"
 #include "Model/FCrowdyStudioController.h"
 #include "Serialization/JsonSerializer.h"
+#include "UI/GameModel/CrowdyReconcileSummary.h"
 
 namespace
 {
@@ -64,6 +66,23 @@ namespace
 			}
 		}
 		return false;
+	}
+
+	// A finished plan carrying some upserts and some entities the server has that this project does not. Built
+	// through BuildReport so the counts are the ones a real plan would print, including the server-only half,
+	// which no seeding of the pending arrays can produce.
+	FCrowdySchemaSyncReport AppStateReport(int32 ServerOnlyTypes, int32 Upserts, bool bApplied)
+	{
+		FCrowdySchemaDelta Delta;
+		for (int32 Index = 0; Index < ServerOnlyTypes; ++Index)
+		{
+			Delta.ServerOnlyTypes.Add(FString::Printf(TEXT("HandAuthored%d"), Index));
+		}
+		for (int32 Index = 0; Index < Upserts; ++Index)
+		{
+			Delta.TypeUpserts.Add(AppStateType(FString::Printf(TEXT("Knight%d"), Index)));
+		}
+		return FCrowdySchemaSync::BuildReport(Delta, {}, bApplied);
 	}
 }
 
@@ -699,6 +718,110 @@ bool FCrowdyStudioApplyPartialDoesNotReportInSyncTest::RunTest(const FString& /*
 		Controller->GetSchemaReadiness() == ECrowdyStudioReadiness::NotReady);
 	TestTrue(TEXT("and the banner says how many were left"),
 		Controller->GetSchemaSyncReport().StatusNote.Contains(TEXT("still planned")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioServerOnlyIsNotNeedsSyncTest,
+	"CrowdySDK.CrowdyStudio.ServerOnlyIsNotNeedsSync", CrowdyStudioAppScopedStateTestFlags)
+
+bool FCrowdyStudioServerOnlyIsNotNeedsSyncTest::RunTest(const FString& /*Parameters*/)
+{
+	// "Needs sync" is a call to action for the button on the same card, and a sync never deletes. Counted as
+	// drift, an app holding one hand-authored or console-seeded model read as needing a sync forever, beside a
+	// report on the same card saying there was nothing to sync.
+	const TSharedRef<FCrowdyStudioController> Controller = MakeShared<FCrowdyStudioController>();
+	FCrowdyStudioControllerTestAccess::SetSelectedAppId(*Controller, 7);
+
+	FCrowdyStudioControllerTestAccess::SetSchemaSyncReport(*Controller,
+		AppStateReport(/*ServerOnlyTypes*/ 3, /*Upserts*/ 0, /*bApplied*/ false));
+
+	TestTrue(TEXT("an empty plan with prune candidates does not ask for a sync"),
+		Controller->GetSchemaReadiness() != ECrowdyStudioReadiness::NotReady);
+	TestTrue(TEXT("it reads as something to review instead"),
+		Controller->GetSchemaReadiness() == ECrowdyStudioReadiness::Advisory);
+	TestFalse(TEXT("and the line beside the indicator does not claim a clean match"),
+		CrowdyReconcileSummary::BuildCountLine(Controller->GetSchemaSyncReport()).Contains(TEXT("Everything matches")));
+
+	// Control: an outstanding upsert IS drift, so the amber state has not been argued away wholesale.
+	FCrowdyStudioControllerTestAccess::SetSchemaSyncReport(*Controller,
+		AppStateReport(/*ServerOnlyTypes*/ 3, /*Upserts*/ 1, /*bApplied*/ false));
+	TestTrue(TEXT("an outstanding upsert still needs a sync"),
+		Controller->GetSchemaReadiness() == ECrowdyStudioReadiness::NotReady);
+
+	// Control: a plan that found nothing at all is plainly ready, so the review state is not the answer to
+	// everything either.
+	FCrowdyStudioControllerTestAccess::SetSchemaSyncReport(*Controller,
+		AppStateReport(/*ServerOnlyTypes*/ 0, /*Upserts*/ 0, /*bApplied*/ false));
+	TestTrue(TEXT("a plan that found nothing is ready"),
+		Controller->GetSchemaReadiness() == ECrowdyStudioReadiness::Ready);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioUncomparedSchemaIsNotReadyGreenTest,
+	"CrowdySDK.CrowdyStudio.UncomparedSchemaIsNotReadyGreen", CrowdyStudioAppScopedStateTestFlags)
+
+bool FCrowdyStudioUncomparedSchemaIsNotReadyGreenTest::RunTest(const FString& /*Parameters*/)
+{
+	// A project that declares no containers and no effects has nothing to diff, so the plan short-circuits without
+	// ever reading the server. Its zero counts mean nothing was compared, and reading that as Ready tells an author
+	// the schema matches an app nobody asked, which can be carrying a kit deploy or a console-seeded schema.
+	const TSharedRef<FCrowdyStudioController> Controller = MakeShared<FCrowdyStudioController>();
+	FCrowdyStudioControllerTestAccess::SetSelectedAppId(*Controller, 7);
+
+	FCrowdySchemaSyncReport Uncompared = AppStateReport(/*ServerOnlyTypes*/ 0, /*Upserts*/ 0, /*bApplied*/ false);
+	Uncompared.bServerNotCompared = true;
+	FCrowdyStudioControllerTestAccess::SetSchemaSyncReport(*Controller, Uncompared);
+
+	TestTrue(TEXT("a plan that never read the server does not read as ready"),
+		Controller->GetSchemaReadiness() != ECrowdyStudioReadiness::Ready);
+	TestTrue(TEXT("it reads as something to look at instead"),
+		Controller->GetSchemaReadiness() == ECrowdyStudioReadiness::Advisory);
+	TestFalse(TEXT("and the line beside the indicator does not claim a clean match"),
+		CrowdyReconcileSummary::BuildCountLine(Controller->GetSchemaSyncReport()).Contains(TEXT("Everything matches")));
+
+	// Control: the identical zero-count report that DID compare is plainly ready, so the flag is what decides it
+	// and the ready state has not been argued away for every empty plan.
+	FCrowdyStudioControllerTestAccess::SetSchemaSyncReport(*Controller,
+		AppStateReport(/*ServerOnlyTypes*/ 0, /*Upserts*/ 0, /*bApplied*/ false));
+	TestTrue(TEXT("a compared, empty plan is ready"),
+		Controller->GetSchemaReadiness() == ECrowdyStudioReadiness::Ready);
+	TestTrue(TEXT("and does say everything matches"),
+		CrowdyReconcileSummary::BuildCountLine(Controller->GetSchemaSyncReport()).Contains(TEXT("Everything matches")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAppliedKeepsServerOnlyReviewTest,
+	"CrowdySDK.CrowdyStudio.AppliedKeepsServerOnlyReview", CrowdyStudioAppScopedStateTestFlags)
+
+bool FCrowdyStudioAppliedKeepsServerOnlyReviewTest::RunTest(const FString& /*Parameters*/)
+{
+	// An apply writes the upserts and touches nothing server-only, so the review outlives it. The indicator and
+	// the line on the same card have to agree about that: one of them saying the app is settled while the other
+	// asks for a review is the contradiction this card shipped with.
+	const TSharedRef<FCrowdyStudioController> Controller = MakeShared<FCrowdyStudioController>();
+	FCrowdyStudioControllerTestAccess::SetSelectedAppId(*Controller, 7);
+
+	FCrowdyStudioControllerTestAccess::SetSchemaSyncReport(*Controller,
+		AppStateReport(/*ServerOnlyTypes*/ 2, /*Upserts*/ 1, /*bApplied*/ true));
+
+	TestTrue(TEXT("what the apply wrote is not still outstanding"),
+		Controller->GetSchemaReadiness() != ECrowdyStudioReadiness::NotReady);
+	TestTrue(TEXT("but the untouched server-only entities are still a review"),
+		Controller->GetSchemaReadiness() == ECrowdyStudioReadiness::Advisory);
+	TestTrue(TEXT("and the line says how many, rather than calling it settled"),
+		CrowdyReconcileSummary::BuildCountLine(Controller->GetSchemaSyncReport()).Contains(TEXT("2 only on server")));
+
+	// Control: an apply with nothing left on the server is ready, and says exactly the one settled sentence.
+	FCrowdyStudioControllerTestAccess::SetSchemaSyncReport(*Controller,
+		AppStateReport(/*ServerOnlyTypes*/ 0, /*Upserts*/ 1, /*bApplied*/ true));
+	TestTrue(TEXT("a clean apply is ready"),
+		Controller->GetSchemaReadiness() == ECrowdyStudioReadiness::Ready);
+	TestEqual(TEXT("and says so once"),
+		CrowdyReconcileSummary::BuildCountLine(Controller->GetSchemaSyncReport()),
+		FString(TEXT("Synced. Check again to confirm.")));
 
 	return true;
 }

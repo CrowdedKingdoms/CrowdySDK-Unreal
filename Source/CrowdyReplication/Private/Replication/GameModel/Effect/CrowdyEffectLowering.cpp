@@ -65,6 +65,54 @@ namespace
 		FString Expression;        // condition
 	};
 
+	// Whether a leaf constrains WHO is calling. A condition is evaluated against values the caller supplies on the
+	// invoke, so it constrains the arguments and not the caller; tier_feature constrains the app rather than the
+	// account. Neither can keep a hostile caller out.
+	bool IsAuthorityLeaf(const FString& Type)
+	{
+		return Type == TEXT("owner_of_self") || Type == TEXT("is_current_turn") || Type == TEXT("is_host")
+			|| Type == TEXT("is_participant") || Type == TEXT("is_automation")
+			|| Type == TEXT("group_permission") || Type == TEXT("grid_permission");
+	}
+
+	// Whether a policy tree constrains the caller on EVERY path through it. An "and" needs one such branch, but an
+	// "or" needs all of them: "owner or $amount > 0" is satisfied by any caller who picks the right argument, so it
+	// gates nothing. A "not" is never counted, because the negation of an identity check does not identify anyone.
+	bool PolicyConstrainsCaller(const FPolicyNode& Node)
+	{
+		if (Node.Type == TEXT("and"))
+		{
+			for (const FPolicyNode& Rule : Node.Rules)
+			{
+				if (PolicyConstrainsCaller(Rule))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+		if (Node.Type == TEXT("or"))
+		{
+			if (Node.Rules.Num() == 0)
+			{
+				return false;
+			}
+			for (const FPolicyNode& Rule : Node.Rules)
+			{
+				if (!PolicyConstrainsCaller(Rule))
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+		if (Node.Type == TEXT("not"))
+		{
+			return false;
+		}
+		return IsAuthorityLeaf(Node.Type);
+	}
+
 	FString EmitPolicyJson(const FPolicyNode& Node)
 	{
 		FString Out = TEXT("{\"type\":\"") + Node.Type + TEXT("\"");
@@ -1214,12 +1262,28 @@ namespace
 						TEXT("the magnitude '%s' is declared but never used in this effect; it is still emitted as a function parameter callers have to supply"),
 						*M.Name));
 				}
+				// Optional means "the caller may omit it, and then this value is used", so with no default there is
+				// no value and the declaration describes nothing a caller or the server can act on. It cannot be
+				// corrected by a later upsert either: an empty defaultValueJson is omitted rather than sent as a
+				// null, so the shape says "optional" over whatever default the server already holds. Nothing but a
+				// deliberate untick reaches here, since an empty default is exactly what makes a parameter required
+				// everywhere else.
+				if (!M.bRequired && M.DefaultValueJson.IsEmpty())
+				{
+					Error(0, 0, FString::Printf(
+						TEXT("the magnitude '%s' is optional but has no default value, so a caller that omits it sends "
+						"nothing at all; author a default or mark it required"), *M.Name));
+				}
 				FCrowdyGameModelFunctionParam P;
 				P.Name = M.Name;
 				P.ValueType = M.ValueType;
+				// The default is emitted whether or not the parameter is required, because required-ness is its own
+				// field and the two are independent. Blanking it here would ask the upsert to clear a default the
+				// server already holds, which the wire cannot express: an empty default is omitted rather than
+				// sent, so the server would keep its old value and every later plan would see the same difference.
 				P.DefaultValueJson = M.DefaultValueJson;
 				P.Description = M.Description;
-				P.bRequired = M.DefaultValueJson.IsEmpty();
+				P.bRequired = M.bRequired;
 				P.SortOrder = SortOrder++;
 				Fn.Parameters.Add(MoveTemp(P));
 			}
@@ -1278,29 +1342,66 @@ namespace
 				Fn.Notifications.Add(MoveTemp(Notif));
 			}
 
-			// Invoke policy: explicit requires (and-combined) override the inferred default gate. A pure internal
-			// helper has no caller to gate, so it gets no policy unless the author wrote one; inferring
-			// owner_of_self there would describe a caller that cannot exist. An internal function an automation may
-			// also run does have a caller, and is exactly the shape a trusted server-side grant takes, so it gets
-			// is_automation rather than nothing: the alternative sends an explicit null that clears whatever policy
-			// the server function already carried.
-			FPolicyNode Root;
+			// Invoke policy. A pure internal helper has no caller to gate, so it gets no policy unless the author
+			// wrote one; inferring owner_of_self there would describe a caller that cannot exist. An internal
+			// function an automation may also run does have a caller, and is exactly the shape a trusted
+			// server-side grant takes, so it gets is_automation rather than nothing: the alternative sends an
+			// explicit null that clears whatever policy the server function already carried.
+			//
+			// An authored require is ADDED TO the inferred gate, never substituted for it. Writing
+			// "require $damage > 0" is a validation of an argument, and reading it as a decision to let anyone
+			// call the function made every such effect callable by any account: the caller supplies the value the
+			// condition tests, so it keeps nobody out. The inferred gate is skipped only when the author's own
+			// policy already constrains who is calling, because choosing "require host" is a deliberate choice of
+			// a different gate and and-ing owner_of_self onto it would refuse the host it was written for.
+			FPolicyNode Authored;
 			if (RequireNodes.Num() == 1)
 			{
-				Root = RequireNodes[0];
+				Authored = RequireNodes[0];
 			}
 			else if (RequireNodes.Num() > 1)
 			{
-				Root.Type = TEXT("and");
-				Root.Rules = MoveTemp(RequireNodes);
+				Authored.Type = TEXT("and");
+				Authored.Rules = MoveTemp(RequireNodes);
 			}
-			else if (Fn.InvokeScope != TEXT("internal"))
+
+			FPolicyNode Inferred;
+			if (Fn.InvokeScope != TEXT("internal"))
 			{
-				Root.Type = bCrossEntity ? TEXT("is_participant") : TEXT("owner_of_self");
+				Inferred.Type = bCrossEntity ? TEXT("is_participant") : TEXT("owner_of_self");
 			}
 			else if (Context.bAutonomousInvocable)
 			{
-				Root.Type = TEXT("is_automation");
+				Inferred.Type = TEXT("is_automation");
+			}
+
+			FPolicyNode Root;
+			if (Authored.Type.IsEmpty())
+			{
+				Root = MoveTemp(Inferred);
+			}
+			else if (Inferred.Type.IsEmpty() || PolicyConstrainsCaller(Authored))
+			{
+				Root = MoveTemp(Authored);
+			}
+			else
+			{
+				// Spliced rather than nested: an and inside an and is the same gate, and the Studio's policy
+				// builder can only render one flat level, so nesting would push every such function into its
+				// raw-JSON fallback for no gain.
+				Root.Type = TEXT("and");
+				Root.Rules.Add(MoveTemp(Inferred));
+				if (Authored.Type == TEXT("and"))
+				{
+					for (FPolicyNode& Rule : Authored.Rules)
+					{
+						Root.Rules.Add(MoveTemp(Rule));
+					}
+				}
+				else
+				{
+					Root.Rules.Add(MoveTemp(Authored));
+				}
 			}
 			if (!Root.Type.IsEmpty())
 			{

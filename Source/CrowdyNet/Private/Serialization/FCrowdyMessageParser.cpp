@@ -4,9 +4,11 @@
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Messages/FDefaultMessage.h"
 #include "Messages/FPingTestMessage.h"
+#include "Messages/Actor/FActorLeftNotification.h"
 #include "Messages/Actor/FActorUpdateNotificationMessage.h"
 #include "Messages/Channels/FChannelMessages.h"
 #include "Messages/Communication/FClientAudioNotification.h"
+#include "Messages/Communication/FClientVideoNotification.h"
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Messages/GameObjects/FServerEventNotification.h"
 #include "Messages/GameObjects/FGameObjectActivationNotification.h"
@@ -17,6 +19,7 @@
 #include "Subsystem/CrowdyGameSession.h"
 
 THIRD_PARTY_INCLUDES_START
+#include "crowdy/media/video_frames.hpp"
 #include "crowdy/wire/codec.hpp"
 THIRD_PARTY_INCLUDES_END
 
@@ -50,6 +53,41 @@ namespace
 	static_assert(static_cast<uint8>(ECrowdyMessageType::MESSAGE_BUNDLE)
 			== static_cast<uint8>(crowdy::wire::MessageType::MessageBundle),
 		"A packed datagram is no longer the same opcode on both sides of the walk.");
+
+	// The video fragment header is described twice: once by the vendored media contract, and once by the
+	// public message header, which cannot include a crowdy:: header to read it from. A disagreement would
+	// send frames whose header the other SDK reads at the wrong offsets, so it is caught here instead.
+	static_assert(CrowdyVideoFragment::HeaderBytes
+			== static_cast<int32>(crowdy::media::kVideoFragmentHeaderBytes),
+		"A video fragment header is no longer the size the message decoder skips.");
+	static_assert(CrowdyVideoFragment::Version == crowdy::media::kVideoFragmentVersion,
+		"A video fragment no longer leads with the version the message decoder accepts.");
+	static_assert(CrowdyVideoFragment::MaxBodyBytes
+			== static_cast<int32>(crowdy::media::kMaxVideoFragmentBodyBytes),
+		"A video fragment body no longer holds the octets the split is measured against.");
+	static_assert(CrowdyVideoFragment::MaxFragments == static_cast<int32>(crowdy::media::kMaxVideoFragments),
+		"A video frame is no longer refused above the fragment count the message decoder refuses above.");
+	static_assert(CrowdyVideoFragment::FrameTimeoutMs == crowdy::media::kVideoFrameTimeoutMs,
+		"An incomplete video frame is no longer abandoned after the interval this SDK reports.");
+	static_assert(static_cast<uint8>(ECrowdyVideoCodec::Jpeg)
+			== static_cast<uint8>(crowdy::media::VideoCodec::Jpeg)
+		&& static_cast<uint8>(ECrowdyVideoCodec::WebP)
+			== static_cast<uint8>(crowdy::media::VideoCodec::WebP),
+		"A video codec no longer rides the wire value this SDK maps it to.");
+
+	// The vendored reader names its offsets as literal indices, so there is no constant to check these
+	// against. What can be checked is that they are still the six single fields the header is made of and
+	// that the body starts where they end: a re-vendor that grew the header would otherwise leave the size
+	// assertion above failing with nothing saying which field moved. Which offset holds which field is
+	// pinned against the vendored writer at runtime, in VideoFragmentOffsetsMatchTheVendoredSplit.
+	static_assert(CrowdyVideoFragment::VersionOffset == 0
+		&& CrowdyVideoFragment::CodecOffset == CrowdyVideoFragment::VersionOffset + 1
+		&& CrowdyVideoFragment::FrameIdOffset == CrowdyVideoFragment::CodecOffset + 1
+		&& CrowdyVideoFragment::IndexOffset == CrowdyVideoFragment::FrameIdOffset + 2
+		&& CrowdyVideoFragment::CountOffset == CrowdyVideoFragment::IndexOffset + 1,
+		"The video fragment header's fields no longer sit end to end from its first octet.");
+	static_assert(CrowdyVideoFragment::CountOffset + 1 == CrowdyVideoFragment::HeaderBytes,
+		"A video fragment's body no longer starts where the last header field ends.");
 }
 
 FCrowdyMessageParser::FCrowdyMessageParser(FCrowdyServiceRegistry* InServiceRegistry,
@@ -210,6 +248,24 @@ TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::DecodeFram
 	case ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION:
 		{
 			TSharedRef<FClientAudioNotification> Message = MakeShared<FClientAudioNotification>();
+			if (!Message->DecodePayload(Frame))
+			{
+				return MakeShared<FDefaultMessage>();
+			}
+			return Message;
+		}
+	case ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION:
+		{
+			TSharedRef<FClientVideoNotification> Message = MakeShared<FClientVideoNotification>();
+			if (!Message->DecodePayload(Frame))
+			{
+				return MakeShared<FDefaultMessage>();
+			}
+			return Message;
+		}
+	case ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION:
+		{
+			TSharedRef<FActorLeftNotification> Message = MakeShared<FActorLeftNotification>();
 			if (!Message->DecodePayload(Frame))
 			{
 				return MakeShared<FDefaultMessage>();

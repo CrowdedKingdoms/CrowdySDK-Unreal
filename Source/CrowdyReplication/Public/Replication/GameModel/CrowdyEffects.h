@@ -118,11 +118,13 @@ public:
 
 	// The pure marshaller: build the invoke params object from Effect's magnitudes + the source_id rule. One key
 	// per magnitude (key = Name, value = the Override for that Name, else a curve sampled at Level, else the authored
-	// DefaultValueJson). Typing is value-type aware: a string/container_ref magnitude is ALWAYS emitted as a JSON
-	// string (a bare word or a numeric-looking id is stringified, not mis-typed), while an int/float/bool magnitude
-	// must be valid JSON of its own shape or it is rejected (a non-JSON numeric is a typo, caught here). Adds
-	// source_id (a string) iff bHasSource. Returns null + OutError when the effect requires a Source but bHasSource
-	// is false, a required magnitude (empty default, no curve) has no override, a curve is bound to a non-numeric
+	// DefaultValueJson, which a Required magnitude does not have). An optional magnitude that resolves to nothing is
+	// omitted, so the server applies the parameter's own default. Typing is value-type aware: a string/container_ref
+	// magnitude is ALWAYS emitted as a JSON string (a bare word or a numeric-looking id is stringified, not
+	// mis-typed), while an int/float/bool magnitude must be valid JSON of its own shape or it is rejected (a
+	// non-JSON numeric is a typo, caught here). Adds source_id (a string) iff bHasSource. Returns null + OutError
+	// when the effect requires a Source but bHasSource
+	// is false, a Required magnitude with no curve has no override, a curve is bound to a non-numeric
 	// magnitude, a numeric/bool value is not valid JSON, or bHasSource with an empty SourceContainerId. Public +
 	// static so tests drive it with no world, no subsystem, no HTTP.
 	static TSharedPtr<FJsonObject> BuildInvokeParams(const UCrowdyEffect* Effect, const TMap<FName, FString>& Overrides,

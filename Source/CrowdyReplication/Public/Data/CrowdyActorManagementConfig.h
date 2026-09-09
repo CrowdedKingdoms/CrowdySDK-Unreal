@@ -25,8 +25,12 @@ struct FCrowdyActorManagementConfigStruct
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))
 	bool bEnableOwnerTracking = true;
 
+	// Seconds of silence before an entity is dropped on a guess. The server announces a real departure about
+	// five seconds after the last update, so this is the fallback for a departure that never arrives rather
+	// than the usual way an entity leaves. Twelve seconds matches the reaper the other Crowdy SDKs use. The
+	// sweep that enforces it runs on its own shorter period, so the actual wait stays near this value.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))
-	float ActorTimeoutThreshold = 5.0f;
+	float ActorTimeoutThreshold = 12.0f;
 
 	/**
 	 * How many network-received actors may be tracked at once. Ids past this are not tracked at all

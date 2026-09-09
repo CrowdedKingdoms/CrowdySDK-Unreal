@@ -169,6 +169,15 @@ namespace
 		return N;
 	}
 
+	// One declarative delayed invocation, in the shape an effect authors and the server echoes back.
+	FCrowdyGameModelTimer MakeSchemaSyncTimer(const FString& FunctionName, const FString& DelayMsExpression)
+	{
+		FCrowdyGameModelTimer Timer;
+		Timer.FunctionName = FunctionName;
+		Timer.DelayMsExpression = DelayMsExpression;
+		return Timer;
+	}
+
 	// A non-SDK (seed/console-authored) notification: a spatial one whose event_type is NOT the reserved 60000.
 	FCrowdyGameModelNotification MakeNonSdkNotif()
 	{
@@ -989,6 +998,121 @@ bool FCrowdyFunctionAuthorsSignalBesideSpatialTest::RunTest(const FString& Param
 	FCrowdySchemaSync::DiffFunctions(SpatialDesiredFns, SpatialCurrentFns, SpatialDelta);
 	TestEqual(TEXT("an unauthorable-only function is not churned into an upsert"),
 		SpatialDelta.FunctionUpserts.Num(), 0);
+
+	return true;
+}
+
+// A notification set that shrank to EMPTY is not drift: the upsert omits the notifications key when the array is
+// empty, so the server keeps what it has and planning the removal would plan it again on every check, forever.
+// The diff keeps the server's set, says so once, and plans nothing. The control is a shrink to a smaller but
+// non-empty set, which the wire can express and which must still be an upsert.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyFunctionClearedNotificationsIsNotDriftTest,
+	"CrowdySDK.GameModel.FunctionClearedNotificationsIsNotDrift", CrowdySchemaSyncTestFlags)
+bool FCrowdyFunctionClearedNotificationsIsNotDriftTest::RunTest(const FString& Parameters)
+{
+	const FCrowdyGameModelFunctionInput Desired = MakeDesiredFunction(); // carrier None: authors no notifications
+
+	FStudioFunction Server = MakeServerFunctionFrom(Desired);
+	Server.Notifications.Add(MakeSdkChannelNotif(/*bAddressed*/ true)); // the only one, and SDK-owned
+
+	TArray<FCrowdyGameModelFunctionInput> DesiredFns;
+	DesiredFns.Add(Desired);
+	TArray<FStudioFunction> CurrentFns;
+	CurrentFns.Add(Server);
+
+	FCrowdySchemaDelta Delta;
+	FCrowdySchemaSync::DiffFunctions(DesiredFns, CurrentFns, Delta);
+
+	TestEqual(TEXT("a removal the wire cannot express is not planned"), Delta.FunctionUpserts.Num(), 0);
+	const bool bWarned = Delta.Warnings.ContainsByPredicate([](const FString& Warning)
+		{ return Warning.Contains(TEXT("take_damage")) && Warning.Contains(TEXT("cannot remove")); });
+	TestTrue(TEXT("and the reader is told what a sync will not take away"), bWarned);
+
+	// Control: the same effect against a server that also holds a notification the sync does not own. That one
+	// survives into the upsert, so the array is not empty, the wire can express it, and it is still a real change.
+	FStudioFunction MixedServer = MakeServerFunctionFrom(Desired);
+	MixedServer.Notifications.Add(MakeSdkChannelNotif(/*bAddressed*/ true));
+	MixedServer.Notifications.Add(MakeNonSdkNotif());
+
+	TArray<FStudioFunction> MixedCurrentFns;
+	MixedCurrentFns.Add(MixedServer);
+
+	FCrowdySchemaDelta MixedDelta;
+	FCrowdySchemaSync::DiffFunctions(DesiredFns, MixedCurrentFns, MixedDelta);
+
+	if (TestEqual(TEXT("a shrink the wire CAN express is still an upsert"), MixedDelta.FunctionUpserts.Num(), 1))
+	{
+		TestEqual(TEXT("carrying exactly the notification the sync does not own"),
+			MixedDelta.FunctionUpserts[0].Function.Notifications.Num(), 1);
+	}
+
+	return true;
+}
+
+// The same rule for timers, which the upsert also omits when the array is empty. An effect that dropped its last
+// timer plans nothing and warns once; the upsert of a function that changed for another reason carries the timers
+// the server keeps, so the plan describes the state it really leaves behind. The controls are a timer that really
+// changed (still an upsert) and a function with no timers on either side (still silent).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyFunctionClearedTimersIsNotDriftTest,
+	"CrowdySDK.GameModel.FunctionClearedTimersIsNotDrift", CrowdySchemaSyncTestFlags)
+bool FCrowdyFunctionClearedTimersIsNotDriftTest::RunTest(const FString& Parameters)
+{
+	const FCrowdyGameModelFunctionInput Desired = MakeDesiredFunction(); // declares no timer
+
+	FStudioFunction Server = MakeServerFunctionFrom(Desired);
+	Server.Timers.Add(MakeSchemaSyncTimer(TEXT("take_damage"), TEXT("5000")));
+
+	TArray<FCrowdyGameModelFunctionInput> DesiredFns;
+	DesiredFns.Add(Desired);
+	TArray<FStudioFunction> CurrentFns;
+	CurrentFns.Add(Server);
+
+	FCrowdySchemaDelta Delta;
+	FCrowdySchemaSync::DiffFunctions(DesiredFns, CurrentFns, Delta);
+
+	TestEqual(TEXT("a timer removal the wire cannot express is not planned"), Delta.FunctionUpserts.Num(), 0);
+	const bool bWarned = Delta.Warnings.ContainsByPredicate([](const FString& Warning)
+		{ return Warning.Contains(TEXT("take_damage")) && Warning.Contains(TEXT("timer")); });
+	TestTrue(TEXT("and the reader is told the timer stays until it is deleted"), bWarned);
+
+	// An upsert driven by something else still has to describe the timers that will exist afterwards, which are
+	// the server's own. An empty array there would read as a removal the send does not perform.
+	FStudioFunction ChangedServer = MakeServerFunctionFrom(Desired);
+	ChangedServer.Timers.Add(MakeSchemaSyncTimer(TEXT("take_damage"), TEXT("5000")));
+	ChangedServer.Description = TEXT("an older description");
+
+	TArray<FStudioFunction> ChangedCurrentFns;
+	ChangedCurrentFns.Add(ChangedServer);
+
+	FCrowdySchemaDelta ChangedDelta;
+	FCrowdySchemaSync::DiffFunctions(DesiredFns, ChangedCurrentFns, ChangedDelta);
+
+	if (TestEqual(TEXT("the description change is still an upsert"), ChangedDelta.FunctionUpserts.Num(), 1))
+	{
+		TestEqual(TEXT("and it carries the timer the server keeps"),
+			ChangedDelta.FunctionUpserts[0].Function.Timers.Num(), 1);
+	}
+
+	// Control: a timer that genuinely changed is still drift, so the guard has not swallowed timer detection.
+	FCrowdyGameModelFunctionInput Retimed = MakeDesiredFunction();
+	Retimed.Timers.Add(MakeSchemaSyncTimer(TEXT("take_damage"), TEXT("2000")));
+
+	TArray<FCrowdyGameModelFunctionInput> RetimedDesiredFns;
+	RetimedDesiredFns.Add(Retimed);
+
+	FCrowdySchemaDelta RetimedDelta;
+	FCrowdySchemaSync::DiffFunctions(RetimedDesiredFns, CurrentFns, RetimedDelta);
+	TestEqual(TEXT("a changed delay is still an upsert"), RetimedDelta.FunctionUpserts.Num(), 1);
+
+	// Control: no timers on either side warns about nothing, so the warning is not printed on every plan.
+	FStudioFunction PlainServer = MakeServerFunctionFrom(Desired);
+	TArray<FStudioFunction> PlainCurrentFns;
+	PlainCurrentFns.Add(PlainServer);
+
+	FCrowdySchemaDelta PlainDelta;
+	FCrowdySchemaSync::DiffFunctions(DesiredFns, PlainCurrentFns, PlainDelta);
+	TestEqual(TEXT("a function with no timers on either side is silent"), PlainDelta.FunctionUpserts.Num(), 0);
+	TestEqual(TEXT("and warns about nothing"), PlainDelta.Warnings.Num(), 0);
 
 	return true;
 }
@@ -2236,6 +2360,144 @@ bool FCrowdySchemaAuthorshipReservedNameIsSkippedTest::RunTest(const FString& Pa
 		TestEqual(TEXT("it keeps its container type as its scope"),
 			Authorship[0].Scope, FString(TEXT("Combatant")));
 	}
+	return true;
+}
+
+// A kind the sync cannot author must not drag the kinds it CAN author into "keep whatever the server has". An effect
+// whose carrier moved from Channel to Spatial declares nothing authorable, and the server's retired channel
+// model-changed notification is then either dropped (when the send can express it) or named in a warning (when it
+// cannot). Preserving the whole server set instead left it broadcasting forever and said nothing.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyFunctionRetiredChannelNotificationIsNotKeptTest,
+	"CrowdySDK.GameModel.FunctionRetiredChannelNotificationIsNotKept", CrowdySchemaSyncTestFlags)
+bool FCrowdyFunctionRetiredChannelNotificationIsNotKeptTest::RunTest(const FString& Parameters)
+{
+	// The SDK's spatial model-changed notification: SDK-owned, and not authorable by this sync.
+	FCrowdyGameModelNotification SdkSpatial;
+	SdkSpatial.Kind = TEXT("spatial");
+	SdkSpatial.Args.Add(MakeNotifArg(TEXT("event_type"),
+		FString::FromInt(CrowdyGameModelMetaKeys::ModelChangedEventType)));
+
+	FCrowdyGameModelFunctionInput Desired = MakeDesiredFunction(); // carrier Spatial, no signals
+	Desired.Notifications.Add(SdkSpatial);
+
+	TArray<FCrowdyGameModelFunctionInput> DesiredFns;
+	DesiredFns.Add(Desired);
+
+	// The server still holds the channel notification the effect authored before the carrier moved, beside a
+	// seed/console one. The send can express the drop (the array is not empty), so it must be planned.
+	FStudioFunction Server = MakeServerFunctionFrom(Desired);
+	Server.Notifications.Add(MakeSdkChannelNotif(/*bAddressed*/ true));
+	Server.Notifications.Add(MakeNonSdkNotif());
+
+	TArray<FStudioFunction> CurrentFns;
+	CurrentFns.Add(Server);
+
+	FCrowdySchemaDelta Delta;
+	FCrowdySchemaSync::DiffFunctions(DesiredFns, CurrentFns, Delta);
+
+	if (TestEqual(TEXT("retiring the channel notification is a real change"), Delta.FunctionUpserts.Num(), 1))
+	{
+		const TArray<FCrowdyGameModelNotification>& Upserted = Delta.FunctionUpserts[0].Function.Notifications;
+		const bool bKeptRetiredChannel = Upserted.ContainsByPredicate(
+			[](const FCrowdyGameModelNotification& N)
+			{
+				return N.Kind == TEXT("channel") && FCrowdySchemaSync::IsSdkOwnedNotification(N);
+			});
+		TestFalse(TEXT("the retired channel notification is not preserved"), bKeptRetiredChannel);
+		TestEqual(TEXT("only the seed/console notification is left"), Upserted.Num(), 1);
+		TestEqual(TEXT("and it is the non-SDK one"), Upserted[0].Kind, FString(TEXT("spatial")));
+		TestEqual(TEXT("carrying its own event_type"), Upserted[0].Args[0].Expression, FString(TEXT("42")));
+	}
+
+	// The same effect against a server holding ONLY the retired channel notification. The send cannot express an
+	// empty set, so nothing is planned, but the reader is told rather than left with a silent green plan.
+	FStudioFunction ChannelOnlyServer = MakeServerFunctionFrom(Desired);
+	ChannelOnlyServer.Notifications.Add(MakeSdkChannelNotif(/*bAddressed*/ true));
+
+	TArray<FStudioFunction> ChannelOnlyFns;
+	ChannelOnlyFns.Add(ChannelOnlyServer);
+
+	FCrowdySchemaDelta ChannelOnlyDelta;
+	FCrowdySchemaSync::DiffFunctions(DesiredFns, ChannelOnlyFns, ChannelOnlyDelta);
+
+	TestEqual(TEXT("a removal the wire cannot express is not planned"), ChannelOnlyDelta.FunctionUpserts.Num(), 0);
+	const bool bWarned = ChannelOnlyDelta.Warnings.ContainsByPredicate([](const FString& Warning)
+		{ return Warning.Contains(TEXT("take_damage")) && Warning.Contains(TEXT("cannot remove")); });
+	TestTrue(TEXT("and the reader is told what a sync will not take away"), bWarned);
+
+	// Control: a kind the sync cannot author IS still preserved when the server holds one of that same kind, so the
+	// per-kind preservation has not been thrown out with the early return.
+	FStudioFunction SpatialServer = MakeServerFunctionFrom(Desired);
+	SpatialServer.Notifications.Add(SdkSpatial);
+
+	TArray<FStudioFunction> SpatialFns;
+	SpatialFns.Add(SpatialServer);
+
+	FCrowdySchemaDelta SpatialDelta;
+	FCrowdySchemaSync::DiffFunctions(DesiredFns, SpatialFns, SpatialDelta);
+	TestEqual(TEXT("an unauthorable notification the server already has is not churned"),
+		SpatialDelta.FunctionUpserts.Num(), 0);
+
+	return true;
+}
+
+// A property default that shrank to nothing cannot reach the server: the upsert omits defaultValueJson when it is
+// empty, so the server keeps the default it has and planning the removal re-plans it on every check, forever. The
+// controls are a default that genuinely changed (still an upsert) and a property with no default on either side
+// (silent), so the guard cannot be a blanket that swallows default detection.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPropertyClearedDefaultIsNotDriftTest,
+	"CrowdySDK.GameModel.PropertyClearedDefaultIsNotDrift", CrowdySchemaSyncTestFlags)
+bool FCrowdyPropertyClearedDefaultIsNotDriftTest::RunTest(const FString& Parameters)
+{
+	FCrowdyDesiredContainerType Desired = MakeDesiredType(TEXT("Hero"));
+	Desired.Props.Add(MakeDesiredProp(TEXT("equipped"), TEXT("container_ref"), FString())); // no default any more
+
+	TArray<FStudioContainerType> ServerTypes;
+	ServerTypes.Add(MakeServerType(TEXT("Hero")));
+	TMap<FString, TArray<FStudioPropertyDef>> ServerProps;
+	ServerProps.Add(TEXT("Hero"), {
+		MakeServerProp(TEXT("Hero"), TEXT("equipped"), TEXT("container_ref"), TEXT("\"sword\"")) });
+
+	const FCrowdySchemaDelta Delta = FCrowdySchemaSync::DiffSchema({ Desired }, ServerTypes, ServerProps);
+
+	TestEqual(TEXT("a default removal the wire cannot express is not planned"), Delta.PropUpserts.Num(), 0);
+	const bool bWarned = Delta.Warnings.ContainsByPredicate([](const FString& Warning)
+		{ return Warning.Contains(TEXT("Hero.equipped")) && Warning.Contains(TEXT("cannot remove")); });
+	TestTrue(TEXT("and the reader is told the default stays until it is cleared"), bWarned);
+
+	// Control: a default that changed to another value is expressible, so it is still an upsert.
+	{
+		FCrowdyDesiredContainerType Retyped = MakeDesiredType(TEXT("Hero"));
+		Retyped.Props.Add(MakeDesiredProp(TEXT("equipped"), TEXT("container_ref"), TEXT("\"shield\"")));
+		const FCrowdySchemaDelta ChangedDelta = FCrowdySchemaSync::DiffSchema({ Retyped }, ServerTypes, ServerProps);
+		TestEqual(TEXT("a changed default is still an upsert"), ChangedDelta.PropUpserts.Num(), 1);
+	}
+
+	// Control: the suppression only removes the CLEAR as a reason to upsert. A property that also changed type is
+	// still upserted, and still warns, so the guard cannot hide a real change behind an unsendable one.
+	{
+		TMap<FString, TArray<FStudioPropertyDef>> RetypedServerProps;
+		RetypedServerProps.Add(TEXT("Hero"), {
+			MakeServerProp(TEXT("Hero"), TEXT("equipped"), TEXT("string"), TEXT("\"sword\"")) });
+		const FCrowdySchemaDelta MixedDelta = FCrowdySchemaSync::DiffSchema({ Desired }, ServerTypes, RetypedServerProps);
+		TestEqual(TEXT("a type change beside a cleared default is still an upsert"), MixedDelta.PropUpserts.Num(), 1);
+		const bool bMixedWarned = MixedDelta.Warnings.ContainsByPredicate([](const FString& Warning)
+			{ return Warning.Contains(TEXT("Hero.equipped")) && Warning.Contains(TEXT("cannot remove")); });
+		TestTrue(TEXT("and the cleared default is still named"), bMixedWarned);
+	}
+
+	// Control: no default on either side warns about nothing, so the warning is not printed on every plan.
+	{
+		TMap<FString, TArray<FStudioPropertyDef>> BareServerProps;
+		BareServerProps.Add(TEXT("Hero"), {
+			MakeServerProp(TEXT("Hero"), TEXT("equipped"), TEXT("container_ref"), FString()) });
+		const FCrowdySchemaDelta BareDelta = FCrowdySchemaSync::DiffSchema({ Desired }, ServerTypes, BareServerProps);
+		TestEqual(TEXT("two absent defaults are not an upsert"), BareDelta.PropUpserts.Num(), 0);
+		const bool bBareWarned = BareDelta.Warnings.ContainsByPredicate([](const FString& Warning)
+			{ return Warning.Contains(TEXT("cannot remove")); });
+		TestFalse(TEXT("and nothing is warned about"), bBareWarned);
+	}
+
 	return true;
 }
 

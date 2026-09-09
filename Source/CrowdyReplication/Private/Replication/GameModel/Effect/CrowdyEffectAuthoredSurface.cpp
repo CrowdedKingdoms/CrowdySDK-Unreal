@@ -353,15 +353,16 @@ FCrowdyEffectAuthoredSurface CrowdyEffectAuthoredSurface::FromEffectSettings(con
 	Surface.Source = Effect.Source;
 	Surface.ScriptText = Effect.EffectScript;
 
-	// A magnitude's value type has a typed field and a legacy string behind it, and which one is authoritative
-	// depends on whether the magnitude has been through its migration. Resolving it here is what keeps a stored
-	// surface saying the same thing the asset does: the legacy fields never travel.
+	// A magnitude's value type and its required-ness each have a typed field and a legacy encoding behind them, and
+	// which one is authoritative depends on whether the magnitude has been through its migration. Resolving both
+	// here is what keeps a stored surface saying the same thing the asset does: the legacy fields never travel.
 	Surface.Magnitudes.Reserve(Effect.Magnitudes.Num());
 	for (const FCrowdyEffectMagnitude& Magnitude : Effect.Magnitudes)
 	{
 		Surface.Magnitudes.Add({ Magnitude.Name,
 			UCrowdyEffect::ValueTypeToWireString(UCrowdyEffect::ResolveMagnitudeValueType(Magnitude)),
-			Magnitude.DefaultValueJson, Magnitude.Description });
+			Magnitude.DefaultValueJson, Magnitude.Description,
+			UCrowdyEffect::ResolveMagnitudeRequired(Magnitude) });
 	}
 
 	Surface.Signals = Effect.Signals;
@@ -408,6 +409,7 @@ FString CrowdyEffectAuthoredSurface::ToJson(const FCrowdyEffectAuthoredSurface& 
 		Writer->WriteValue(TEXT("t"), Magnitude.ValueType);
 		Writer->WriteValue(TEXT("d"), Magnitude.DefaultValueJson);
 		Writer->WriteValue(TEXT("desc"), Magnitude.Description);
+		Writer->WriteValue(TEXT("r"), Magnitude.bRequired);
 		Writer->WriteObjectEnd();
 	}
 	Writer->WriteArrayEnd();
@@ -502,6 +504,21 @@ bool CrowdyEffectAuthoredSurface::FromJson(const FString& Json, FCrowdyEffectAut
 			Magnitude.ValueType = ReadString(*EntryObject, TEXT("t"));
 			Magnitude.DefaultValueJson = ReadString(*EntryObject, TEXT("d"));
 			Magnitude.Description = ReadString(*EntryObject, TEXT("desc"));
+			// A payload written before required-ness had a key of its own carries it in the old encoding, read here
+			// through the one definition of that rule so a value type spelled with stray whitespace cannot be a bool
+			// on the asset path and something else on this one.
+			const ECrowdyEffectValueType ValueType = UCrowdyEffect::WireStringToValueType(Magnitude.ValueType);
+			Magnitude.bRequired = ReadBool(*EntryObject, TEXT("r"),
+				UCrowdyEffect::IsLegacyRequiredEncoding(ValueType, Magnitude.DefaultValueJson));
+
+			// The same normalization the asset path applies on load. Without it one asset describes two schemas: a
+			// bool read from here would carry no default at all, while the same bool read off the loaded asset
+			// carries an explicit false, so two machines would push the function back and forth forever.
+			if (ValueType == ECrowdyEffectValueType::Bool && !Magnitude.bRequired
+				&& Magnitude.DefaultValueJson.IsEmpty())
+			{
+				Magnitude.DefaultValueJson = TEXT("false");
+			}
 			OutSurface.Magnitudes.Add(MoveTemp(Magnitude));
 		}
 	}

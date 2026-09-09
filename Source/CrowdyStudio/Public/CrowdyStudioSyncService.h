@@ -87,4 +87,18 @@ namespace CrowdyStudioSyncService
 	{
 		return StartEpoch == CurrentEpoch;
 	}
+
+	// The message for an effect whose plan produced no changes. An empty plan is not proof the two sides agree: a
+	// difference the wire cannot express (a cleared property default, a dropped timer or notification) raises no
+	// count and exists only as a warning, so declaring "in sync" while one is standing throws away the only signal
+	// the author ever gets. Pure.
+	inline FString BuildSyncedStatusMessage(const TArray<FString>& Warnings)
+	{
+		if (Warnings.Num() == 0)
+		{
+			return TEXT("In sync with the server.");
+		}
+		return FString::Printf(TEXT("Nothing left to sync, but %d thing(s) a sync cannot change: %s"),
+			Warnings.Num(), *FString::Join(Warnings, TEXT(" ")));
+	}
 }

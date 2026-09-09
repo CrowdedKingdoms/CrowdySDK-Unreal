@@ -280,8 +280,16 @@ bool FCrowdyEvictedSlotIsCleanedBeforeReuseTest::RunTest(const FString& Paramete
 
 	// Past the eviction bound. Ticking to it rather than calling the release directly keeps the case on the
 	// path the eviction actually takes.
-	for (int32 Tick = 0; Tick < 4000; Tick++)
+	// The bound is counted in ticks waited, so the entry survives one fewer than that and goes on the next.
+	const int32 Bound = UCrowdyActorManager::GetPendingActivationEvictTicksForTest();
+	for (int32 Tick = 0; Tick < Bound - 1; Tick++)
 		Manager->TickPendingActivationsForTest();
+
+	// Held right up to the bound. Without this the case would pass just as well on a bound of zero, so it is
+	// what makes the eviction wait for the bound rather than merely happen eventually.
+	TestEqual(TEXT("A parked entry is still held one tick short of the bound"), Backend->DeactivatedSlots.Num(), 0);
+
+	Manager->TickPendingActivationsForTest();
 
 	TestEqual(TEXT("The evicted slot is cleaned up exactly once"), Backend->DeactivatedSlots.Num(), 1);
 

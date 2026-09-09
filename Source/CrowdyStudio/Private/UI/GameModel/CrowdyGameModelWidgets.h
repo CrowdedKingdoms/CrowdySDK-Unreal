@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/Attribute.h"
 #include "Model/FCrowdyStudioController.h"
 #include "Style/CrowdyStudioStyle.h"
 #include "Styling/CoreStyle.h"
@@ -64,9 +65,15 @@ namespace CrowdyGameModelWidgets
 	}
 
 	// One indicator in the Game Model setup strip: a subtle label and a state word coloured by a live readiness
-	// getter (green Ready / amber the not-ready word / grey when not yet determined). Lambda-bound so it tracks the
-	// controller without any delegate wiring.
-	inline TSharedRef<SWidget> ReadinessPill(const FText& Label, const FText& NotReadyWord, TFunction<ECrowdyStudioReadiness()> Getter)
+	// getter (green Ready / amber the not-ready word / blue the advisory word / grey when not yet determined).
+	// Lambda-bound so it tracks the controller without any delegate wiring.
+	//
+	// Amber is a call to action, so it is reserved for a state a control on this strip can clear. AdvisoryWord is
+	// how an indicator says "look at this" for a state that no press here changes; a caller whose getter never
+	// returns Advisory can leave it empty. It is an attribute so an indicator that reaches Advisory for more than
+	// one reason can word each of them.
+	inline TSharedRef<SWidget> ReadinessPill(const FText& Label, const FText& NotReadyWord,
+		TFunction<ECrowdyStudioReadiness()> Getter, TAttribute<FText> AdvisoryWord = FText::GetEmpty())
 	{
 		const ISlateStyle& Style = FCrowdyStudioStyle::Get();
 		return SNew(SHorizontalBox)
@@ -76,21 +83,28 @@ namespace CrowdyGameModelWidgets
 			[
 				SNew(STextBlock)
 				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
-				.Text_Lambda([Getter, NotReadyWord]()
+				.Text_Lambda([Getter, NotReadyWord, AdvisoryWord]()
 				{
 					switch (Getter())
 					{
 					case ECrowdyStudioReadiness::Ready:    return NSLOCTEXT("CrowdyStudio", "ReadyWord", "Ready");
 					case ECrowdyStudioReadiness::NotReady: return NotReadyWord;
+					// Never falls back to "Ready": an indicator with no advisory word still has something to report.
+					case ECrowdyStudioReadiness::Advisory: return AdvisoryWord.Get().IsEmpty() ? NotReadyWord : AdvisoryWord.Get();
 					default:                               return NSLOCTEXT("CrowdyStudio", "UnknownWord", "-");
 					}
 				})
-				.ColorAndOpacity_Lambda([Getter]()
+				.ColorAndOpacity_Lambda([Getter, AdvisoryWord]()
 				{
 					switch (Getter())
 					{
 					case ECrowdyStudioReadiness::Ready:    return FSlateColor(FCrowdyStudioStyle::Success());
 					case ECrowdyStudioReadiness::NotReady: return FSlateColor(FCrowdyStudioStyle::Warning());
+					// With no advisory word the pill shows the not-ready word, so the not-ready colour goes with it:
+					// the amber word in the Info colour states two different things at once.
+					case ECrowdyStudioReadiness::Advisory: return AdvisoryWord.Get().IsEmpty()
+						? FSlateColor(FCrowdyStudioStyle::Warning())
+						: FSlateColor(FCrowdyStudioStyle::Info());
 					default:                               return FSlateColor(FCrowdyStudioStyle::TextSecondary());
 					}
 				})

@@ -43,12 +43,31 @@ namespace CrowdyReconcileSummary
 		}
 		// A report that has been written still carries the counts it wrote, so reporting them in the pending tense
 		// would advertise finished work as outstanding right next to a Schema indicator that has just gone green.
+		// The server-only half survives an apply untouched, because a sync never deletes: dropping it here would
+		// say everything is settled while the indicator beside it still asks for a review.
 		if (Counts.bWritten)
 		{
-			return TEXT("Synced. Check again to confirm.");
+			if (Counts.ServerOnly == 0)
+			{
+				return TEXT("Synced. Check again to confirm.");
+			}
+			return FString::Printf(TEXT("Synced. Check again to confirm.  ·  %d only on server"), Counts.ServerOnly);
+		}
+		// A plan that never read the server has zero counts because nothing was compared, so it must not borrow the
+		// words of a comparison that came back clean.
+		if (Report.bServerNotCompared)
+		{
+			return TEXT("Nothing in this project to check, so the server was not read.");
 		}
 		if (Counts.ToAdd == 0 && Counts.ToUpdate == 0 && Counts.ServerOnly == 0)
 		{
+			// A difference the wire cannot express (a cleared property default, a dropped timer or notification) plans
+			// no work and raises no count: it exists only as a warning. Claiming everything matches while one is
+			// standing is the falsehood the counts alone cannot see.
+			if (Report.Warnings.Num() > 0)
+			{
+				return FString::Printf(TEXT("Nothing to sync  ·  %d note(s) in Details"), Report.Warnings.Num());
+			}
 			return TEXT("Everything matches your project.");
 		}
 

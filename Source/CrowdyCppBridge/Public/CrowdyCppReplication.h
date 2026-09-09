@@ -151,6 +151,23 @@ struct FCrowdyCppReplicationToken
 
 	/** Written to the log on failure. The token itself must never be put in here. */
 	FString ErrorMessage;
+
+	/**
+	 * True when the Game API installed THIS token on the server the refresh was told the connection is using.
+	 *
+	 * A replication server silently drops datagrams signed with a token it was never given, so false is not a
+	 * degraded yes: the connection has to re-assign before it can send again, which is what every rotation did
+	 * before the Game API could answer this at all. Only ever set from an answer that named a server, never
+	 * assumed from a rotation that succeeded.
+	 */
+	bool bAuthorizedOnCurrentServer = false;
+};
+
+/** The replication server a connection is currently using, for a rotation that has to name it. */
+struct FCrowdyCppCurrentServer
+{
+	FString Ip4;
+	int32 ClientPort = 0;
 };
 
 /**
@@ -176,8 +193,13 @@ using FCrowdyCppAssignServer = TFunction<FCrowdyCppSessionAssignment(const FCrow
  * Rotate the app-scoped token. Called on the same thread and under the same two rules as the assignment callback,
  * shortly before the current token expires. The new material is installed on the connection for you; the
  * implementation is responsible for whatever else in the game holds that token.
+ *
+ * The second argument names the server the connection is on, or is null when it has none. An implementation that
+ * passes it to the Game API and sets bAuthorizedOnCurrentServer from the answer lets the connection keep its
+ * socket; one that ignores it is still correct and simply re-assigns after every rotation.
  */
-using FCrowdyCppRefreshToken = TFunction<FCrowdyCppReplicationToken(const FCrowdyCppShouldAbort&)>;
+using FCrowdyCppRefreshToken =
+	TFunction<FCrowdyCppReplicationToken(const FCrowdyCppShouldAbort&, const FCrowdyCppCurrentServer*)>;
 
 /** How the connection is configured. Fixed for the life of one connection. */
 struct FCrowdyCppReplicationConfig
@@ -248,7 +270,14 @@ struct FCrowdyCppReplicationStats
 	/** Inbound messages dropped because the queue to Poll was full. */
 	int64 RingDropped = 0;
 
-	/** Outbound messages dropped because the queue to the network thread was full, or the connection went down. */
+	/**
+	 * Outbound messages that never reached the wire: refused because the queue to the network thread was
+	 * full, discarded with the queue when the connection went down, or rejected by the library on the way out.
+	 *
+	 * Counted in messages rather than in calls, which is why a refused video frame adds every fragment it
+	 * would have crossed as rather than one. A refusal is reported to the caller as well, so a rise here that
+	 * is matched by refusals the caller saw is backpressure and not loss.
+	 */
 	int64 SendsDropped = 0;
 
 	/**
@@ -360,6 +389,29 @@ public:
 	bool SendChannelMessage(int64 ChannelId, TArrayView<const uint8> Uuid, TArrayView<const uint8> Payload,
 		FString& OutError);
 
+	/**
+	 * Split one encoded video frame into fragments and queue every one of them.
+	 *
+	 * Frame is a whole JPEG or WebP image; Codec is the wire byte for which, 0 or 1. FrameId is the
+	 * caller's own counter, one per frame and wrapping at 16 bits, and it is what a receiver reassembles
+	 * by, so two frames sharing an id from one actor are indistinguishable.
+	 *
+	 * The frame is queued as a whole or not at all. A frame that needs more than sixteen fragments, or that
+	 * does not fit the outbound queue with room for every fragment, is refused with a reason and not one
+	 * fragment is queued. OutFragmentsQueued says how many were accepted, which is zero on every refusal.
+	 *
+	 * That guarantee covers the queue and stops there. Once the fragments are on it, the network thread puts
+	 * them out one datagram at a time and gives up on the rest of the cycle when the kernel send buffer is
+	 * full, so a saturated buffer can still leave a prefix of a frame on the wire. The far end sees an image
+	 * that never completes, which is the same shape as packet loss and is what the next frame recovers from.
+	 *
+	 * Whether the server accepts video at all is not knowable here. An app the server does not permit gets an
+	 * error frame back, reported through the error handler with the opcode it was provoked by.
+	 */
+	bool SendVideoFrame(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TArrayView<const uint8> Uuid,
+		TArrayView<const uint8> Frame, int32 FrameId, uint8 Codec, uint8 Distance, uint8 Decay,
+		int32& OutFragmentsQueued, FString& OutError);
+
 	FCrowdyCppReplicationStats GetStats() const;
 
 	/** The endpoint currently in use. Reports nothing once the connection is down or has never come up. */
@@ -379,6 +431,14 @@ public:
 	 * back as "Unrecognised", since the byte is server-supplied and nothing constrains it to the known set.
 	 */
 	static FString DescribeErrorCode(uint8 ErrorCode);
+
+	/**
+	 * True for the code the server sends when the app is not permitted to do what a send asked for.
+	 *
+	 * Offered as a predicate because the code's numeric value lives in a vendored header no other module may
+	 * include, and a refusal is the only answer a client ever gets about a capability it does not hold.
+	 */
+	static bool IsUnauthorizedErrorCode(uint8 ErrorCode);
 
 	/**
 	 * How long after a send the facade will still attribute an error frame to it. The sequence number is one byte,

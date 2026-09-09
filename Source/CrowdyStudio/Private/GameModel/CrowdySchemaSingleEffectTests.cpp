@@ -281,4 +281,79 @@ bool FCrowdySingleEffectStatusEpochGuardTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// An empty delta is not proof the two sides agree: a difference the wire cannot express raises no count and exists
+// only as a warning, and the per-effect status is the last place it can reach the author. The control is the same
+// empty plan with no warning, which must still read as the plain in-sync sentence.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySingleEffectSyncedMessageCarriesWarningsTest,
+	"CrowdySDK.GameModel.SingleEffectSyncedMessageCarriesWarnings", SeTestFlags)
+bool FCrowdySingleEffectSyncedMessageCarriesWarningsTest::RunTest(const FString& Parameters)
+{
+	using CrowdyStudioSyncService::BuildSyncedStatusMessage;
+
+	{
+		TArray<FString> Warnings;
+		Warnings.Add(TEXT("Function 'take_damage' no longer declares any timer, but a sync cannot remove the 1 it already has on the server."));
+		const FString Message = BuildSyncedStatusMessage(Warnings);
+		TestFalse(TEXT("a warned effect does not report itself as plainly in sync"),
+			Message.Contains(TEXT("In sync with the server.")));
+		TestTrue(TEXT("and the warning itself survives into the message"), Message.Contains(TEXT("take_damage")));
+		TestTrue(TEXT("named as something a sync cannot change"), Message.Contains(TEXT("cannot change")));
+	}
+	// Two warnings both reach the reader, so the message is not a one-warning summary that swallows the rest.
+	{
+		TArray<FString> Warnings;
+		Warnings.Add(TEXT("first note about alpha"));
+		Warnings.Add(TEXT("second note about beta"));
+		const FString Message = BuildSyncedStatusMessage(Warnings);
+		TestTrue(TEXT("the first warning survives"), Message.Contains(TEXT("alpha")));
+		TestTrue(TEXT("the second warning survives"), Message.Contains(TEXT("beta")));
+		TestTrue(TEXT("and the count matches"), Message.Contains(TEXT("2 thing(s)")));
+	}
+	// Control: with nothing to report the message is exactly the settled sentence, so the branch above is a fork
+	// rather than a sentence that was replaced outright.
+	{
+		TestEqual(TEXT("an unwarned effect still reports itself as in sync"),
+			BuildSyncedStatusMessage(TArray<FString>()), FString(TEXT("In sync with the server.")));
+	}
+	return true;
+}
+
+// A per-asset plan never prunes, so it must not carry the prune-candidate warnings either: they offer work only the
+// console's review can do, and on this path one fires for every effect whose container type carries a server property
+// code does not declare (the SDK's own collection revision counter, for one), which would bury the warnings that
+// really do concern the effect. The control is the same inputs through the whole-project diff, which DOES warn.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySingleEffectPlanDropsPruneWarningsTest,
+	"CrowdySDK.GameModel.SingleEffectPlanDropsPruneWarnings", SeTestFlags)
+bool FCrowdySingleEffectPlanDropsPruneWarningsTest::RunTest(const FString& Parameters)
+{
+	TArray<FStudioContainerType> Types;
+	Types.Add(SeMakeServerType(TEXT("Hero")));
+	TMap<FString, TArray<FStudioPropertyDef>> Props;
+	Props.Add(TEXT("Hero"), {
+		SeMakeServerProp(TEXT("Hero"), TEXT("health"), TEXT("int"), TEXT("75")),
+		// On the server, declared by no code attribute: exactly the shape of the collection revision counter.
+		SeMakeServerProp(TEXT("Hero"), TEXT("crowdy_rev"), TEXT("int"), TEXT("0")) });
+	TArray<FStudioFunction> Functions;
+	Functions.Add(SeMakeServerFunctionFrom(SeMakeDesiredFunction()));
+
+	FCrowdySchemaDelta Delta;
+	const FCrowdySchemaSyncReport Report = FCrowdySchemaSync::PlanForSingleEffect(
+		SeMakeDesiredHeroType(), SeMakeDesiredFunction(), Types, Props, Functions, TArray<FString>(), Delta);
+
+	TestEqual(TEXT("the per-asset plan offers no prune candidate"), Delta.ServerOnlyProps.Num(), 0);
+	const bool bWarnedAboutPrune = Report.Warnings.ContainsByPredicate([](const FString& Warning)
+		{ return Warning.Contains(TEXT("crowdy_rev")) && Warning.Contains(TEXT("prune it explicitly")); });
+	TestFalse(TEXT("and does not name one it will never offer"), bWarnedAboutPrune);
+	TestTrue(TEXT("an otherwise-matching effect still reads as in sync"), Delta.IsEmpty());
+
+	// Control: the whole-project diff over the same server property still surfaces it, so the removal above is
+	// deleting a warning that is really produced rather than matching nothing.
+	FCrowdySchemaDelta ProjectDelta = FCrowdySchemaSync::DiffSchema({ SeMakeDesiredHeroType() }, Types, Props);
+	TestEqual(TEXT("the whole-project diff still offers the prune candidate"), ProjectDelta.ServerOnlyProps.Num(), 1);
+	const bool bProjectWarned = ProjectDelta.Warnings.ContainsByPredicate([](const FString& Warning)
+		{ return Warning.Contains(TEXT("crowdy_rev")) && Warning.Contains(TEXT("prune it explicitly")); });
+	TestTrue(TEXT("and still names it"), bProjectWarned);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

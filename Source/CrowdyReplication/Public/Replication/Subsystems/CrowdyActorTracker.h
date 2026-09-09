@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Core/FCrowdyTypeID.h"
+#include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Subscription/FCrowdySubscription.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -63,10 +64,52 @@ struct FCrowdyActorUpdate
 
 
 
+/**
+ * Everything the server tells a client about an actor it has stopped considering present.
+ *
+ * There is no more than this on the wire: no actor that caused it and no free text. The chunk is the last
+ * one the actor was seen in, which is where the notification was broadcast rather than where it went.
+ */
+USTRUCT(BlueprintType)
+struct FCrowdyActorLeft
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Actor Tracker")
+	FGuid UUID;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Actor Tracker")
+	ECrowdyActorLeftReason Reason = ECrowdyActorLeftReason::Stale;
+
+	// The reason byte as it arrived. Reason folds every value the protocol reserves into Stale, so this is
+	// the only way to tell a plain stale drop from a reason a later server named and this build cannot.
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Actor Tracker")
+	int32 RawReason = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Actor Tracker")
+	int64 LastChunkX = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Actor Tracker")
+	int64 LastChunkY = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Actor Tracker")
+	int64 LastChunkZ = 0;
+
+	/** When the server said it, in milliseconds since the epoch. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Actor Tracker")
+	int64 ServerTimestamp = 0;
+
+	// Widened from the wire's uint8 because UHT cannot expose that width, and this struct crosses a
+	// dynamic delegate whose marshalling would drop a plain C++ member.
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Actor Tracker")
+	int32 SequenceNumber = 0;
+};
+
 DECLARE_TS_MULTICAST_DELEGATE_OneParam(FOnTrackedActorUpdateBatch, const TArray<FCrowdyActorUpdate>&);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnActorUpdateGameThreadBatch, const TArray<FCrowdyActorUpdate>&, Updates);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnActorSpawnRequested, FGuid, UUID, FInstancedStruct, IntialState, int32, ActorCount);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnActorTimeoutRequested,FGuid, UUID, int32, ActorCount);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnActorLeftReported, const FCrowdyActorLeft&, ActorLeft, int32, ActorCount);
 
 
 
@@ -110,6 +153,27 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Actor Tracker|Events")
 	FOnActorTimeoutRequested OnRemoteEntityTimedOut;
 
+	/**
+	 * The server says a tracked actor is gone, which is a different claim from the timeout above.
+	 *
+	 * The timeout is this client noticing it has heard nothing; this is the server's own answer, and it
+	 * carries the reason. Whichever of the two reaches an actor first is the only one that reports it, so
+	 * an actor is never announced as gone twice.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Actor Tracker|Events")
+	FOnActorLeftReported OnRemoteEntityLeft;
+
+	/**
+	 * Every departure the server announces, including one for an actor this client was never holding.
+	 *
+	 * OnRemoteEntityLeft is suppressed in that case, so that one departure is never reported twice. Anything
+	 * keeping its own per-sender state under the wire id still has to release it, and this is the only signal
+	 * that reaches it: an actor whose updates never decoded, or that arrived past the tracked ceiling, would
+	 * otherwise keep that state for the life of the world. The actor count is what it is after the departure.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Actor Tracker|Events")
+	FOnActorLeftReported OnRemoteEntityLeftAnnounced;
+
 public:
 	
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Actor Tracker")
@@ -131,12 +195,44 @@ public:
 	 */
 	FCrowdyClassID GetClassIDForUUID(const FGuid& UUID) const;
 
+	/**
+	 * Take one delivered departure, and announce it.
+	 *
+	 * The subscription calls this; it is public so which of the two departure delegates fires, and for which
+	 * actor, can be driven without a socket. That is the only way to tell a tracker that suppresses a second
+	 * report of one departure from one that announces nothing at all.
+	 */
+	void HandleActorLeftDelivery(const FCrowdyDelivery& Delivery);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/**
+	 * Record an actor as being tracked, the way a completed spawn does.
+	 *
+	 * Whether this client is holding an actor decides which of the two departure delegates a leave reaches, and
+	 * the only production route to it runs through a shard consumer on the worker pool. This puts a tracker into
+	 * that state directly so a case can drive the departure that follows.
+	 */
+	void MarkActorTrackedForTest(const FGuid& UUID);
+#endif
+
 private:
 
 	// The tracker is the single, unfiltered consumer of actor updates; released on Deinitialize.
 	FCrowdySubscription ActorUpdateSubscription;
 
+	// Server-confirmed departures, on the same terms; released on Deinitialize.
+	FCrowdySubscription ActorLeftSubscription;
+
 	void HandleActorUpdateDelivery(const FCrowdyDelivery& Delivery);
+
+	/**
+	 * Drop everything this tracker knows about one actor, answering whether it was being tracked at all.
+	 *
+	 * Erasing the last-update time is what stops the timeout check reporting the same actor a second time.
+	 * Nothing is remembered about the actor afterwards, so a later update for it spawns it again, which is
+	 * what the protocol calls a rejoin.
+	 */
+	bool ForgetTrackedActor(const FGuid& UUID);
 
 	// What is already on screen, and what is on its way there. Read by every shard consumer and written by the game
 	// thread, so both are shared across threads. Whether an inbound update is an existing actor or a new one is
@@ -188,7 +284,7 @@ private:
 	int32 MaxTrackedActors = 1024;
 	int32 MaxUpdatesPerBatch = 64;
 	float MaxBatchWaitTime = 0.002f;
-	float ActorTimeoutThreshold = 5.0f;
+	float ActorTimeoutThreshold = 12.0f;
 	
 	//State
 	FGuid LocalUUID;

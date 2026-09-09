@@ -22,6 +22,8 @@ namespace CrowdyAuthPayloads
 		Fields.GameApiUrl     = Result.GameApiUrl;
 		Fields.GameApiWsUrl   = Result.GameApiWsUrl;
 		Fields.LaunchUrl      = Result.LaunchUrl;
+		Fields.AuthorizedServerIp4        = Result.AuthorizedServerIp4;
+		Fields.AuthorizedServerClientPort = Result.AuthorizedServerClientPort;
 		return Fields;
 	}
 }

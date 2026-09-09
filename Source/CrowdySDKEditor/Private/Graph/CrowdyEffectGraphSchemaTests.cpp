@@ -1149,11 +1149,14 @@ namespace
 		Attack.ValueType = TEXT("int");
 		Ctx.Attributes.Add(Attack);
 
+		// Required, which is what an int with no default means on the authoring surface; an optional parameter with
+		// no default is a shape lowering refuses outright.
 		for (const TCHAR* MagName : { TEXT("power") })
 		{
 			FCrowdyEffectParamDecl Param;
 			Param.Name = MagName;
 			Param.ValueType = TEXT("int");
+			Param.bRequired = true;
 			Ctx.Magnitudes.Add(Param);
 		}
 
@@ -1474,6 +1477,7 @@ bool FCrowdyEffectLoweringGuardedAppendRoundTripTest::RunTest(const FString&)
 	FCrowdyEffectParamDecl XParam;
 	XParam.Name = TEXT("x");
 	XParam.ValueType = TEXT("int");
+	XParam.bRequired = true;
 	Ctx.Magnitudes.Add(XParam);
 
 	const FCrowdyEffectParseResult Parsed = FCrowdyEffectParser::Parse(

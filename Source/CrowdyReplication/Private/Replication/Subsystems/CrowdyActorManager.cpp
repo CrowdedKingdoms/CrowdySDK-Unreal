@@ -22,12 +22,15 @@ namespace
 
 	// Past this many ticks a parked entry gives its slot back instead of holding it for the life of the
 	// world. Set against the two clocks that already bound a legitimate wait: the tracker
-	// drops an entity that goes quiet for ActorTimeoutThreshold (5 seconds by default), which takes the
+	// drops an entity that goes quiet for ActorTimeoutThreshold (12 seconds by default, enforced by a sweep
+	// on a shorter period so the wait stays near it rather than up to twice it), which takes the
 	// pending entry with it, so an entry still parked here is being fed by a sender that has not stopped;
-	// and the retry window for this same spawn-event race is the 600 ticks above. Six times that, so at
-	// 60 frames per second an entry is evicted only after a full minute of updates it can do nothing
-	// with, and even at 240 frames per second it still gets 15 seconds against a 2.5 second retry window.
-	constexpr int32 CrowdyPendingActivationEvictTicks = 3600;
+	// and the retry window for this same spawn-event race is the 600 ticks above. This is a tick count while
+	// the staleness bound is a wall clock, so the frame rate decides whether the premise above still holds:
+	// eviction has to stay comfortably beyond the staleness bound, or an entry can be evicted for a sender
+	// the tracker has not reaped yet and the log line says something untrue. At 240 frames per second this
+	// is 30 seconds against a bound of about 14, and at 60 it is two minutes.
+	constexpr int32 CrowdyPendingActivationEvictTicks = 7200;
 
 	static_assert(CrowdyPendingActivationEvictTicks > CrowdyPendingActivationWarnTicks,
 		"An entry has to be reported as stranded before it can be evicted, or the eviction is the first and only thing ever said about it.");
@@ -84,9 +87,7 @@ void UCrowdyActorManager::Initialize(FSubsystemCollectionBase& Collection)
 		return;
 	}
 
-	ActorTracker->OnRemoteEntityAppeared.AddDynamic(this, &UCrowdyActorManager::HandleActorSpawned);
-	ActorTracker->OnRemoteEntityTimedOut.AddDynamic(this, &UCrowdyActorManager::HandleActorDestroyed);
-	ActorTracker->OnTrackedActorUpdates.AddUObject(this, &UCrowdyActorManager::HandleUpdateBatch);
+	BindToTracker(ActorTracker);
 
 	// Deferred activations fire when EntitySubsystem finishes processing a spawn event.
 	EntitySubsystem->OnEntityRegistered.AddDynamic(this, &UCrowdyActorManager::OnEntityRegistered);
@@ -102,6 +103,7 @@ void UCrowdyActorManager::Deinitialize()
 	{
 		CrowdyActorTracker->OnRemoteEntityAppeared.RemoveAll(this);
 		CrowdyActorTracker->OnRemoteEntityTimedOut.RemoveAll(this);
+		CrowdyActorTracker->OnRemoteEntityLeft.RemoveAll(this);
 		CrowdyActorTracker->OnTrackedActorUpdates.RemoveAll(this);
 	}
 
@@ -249,6 +251,22 @@ void UCrowdyActorManager::TickInterpolation()
 		if (!Slots[i].bActive) continue;
 		ActiveBackend->ApplyInterpolation(i, RenderTime);
 	}
+}
+
+void UCrowdyActorManager::BindToTracker(UCrowdyActorTracker* Tracker)
+{
+	if (!IsValid(Tracker))
+	{
+		return;
+	}
+
+	// Both departures are bound, and that is the whole point of them being listed together: the server announcing
+	// an actor gone removes it from the map the timeout check reads, so an actor reported by one of these is never
+	// reported by the other and binding only one leaves those actors holding their slots forever.
+	Tracker->OnRemoteEntityAppeared.AddDynamic(this, &UCrowdyActorManager::HandleActorSpawned);
+	Tracker->OnRemoteEntityTimedOut.AddDynamic(this, &UCrowdyActorManager::HandleActorDestroyed);
+	Tracker->OnRemoteEntityLeft.AddDynamic(this, &UCrowdyActorManager::HandleActorLeft);
+	Tracker->OnTrackedActorUpdates.AddUObject(this, &UCrowdyActorManager::HandleUpdateBatch);
 }
 
 int32 UCrowdyActorManager::AllocateSlot(const FGuid& UUID)
@@ -442,6 +460,18 @@ void UCrowdyActorManager::HandleActorDestroyed(FGuid UUID, int32 ActorCount)
 	PendingActivations.Remove(UUID);
 
 	ReleaseSlot(UUID);
+}
+
+int32 UCrowdyActorManager::GetPendingActivationEvictTicksForTest()
+{
+	return CrowdyPendingActivationEvictTicks;
+}
+
+void UCrowdyActorManager::HandleActorLeft(const FCrowdyActorLeft& ActorLeft, int32 ActorCount)
+{
+	// A departure the server announced and one this client guessed at retire the actor the same way. The
+	// tracker reports whichever arrives first and suppresses the other, so this cannot double release.
+	HandleActorDestroyed(ActorLeft.UUID, ActorCount);
 }
 
 void UCrowdyActorManager::HandleUpdateBatch(const TArray<FCrowdyActorUpdate>& Updates)

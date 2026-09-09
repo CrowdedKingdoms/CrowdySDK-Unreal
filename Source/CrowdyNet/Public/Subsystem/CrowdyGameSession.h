@@ -44,6 +44,21 @@ struct FGameSessionInfo
 	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
 	FString AppTokenExpiresAt = "";
 
+	/** The replication server this client is currently assigned to. Empty until the first assignment succeeds. */
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
+	FString ReplicationServerIp4 = "";
+
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
+	int32 ReplicationServerClientPort = 0;
+
+	/** Where the Game API installed the GameToken above, when the rotation that produced it named a server. Empty
+	 *  means nowhere, and a connection signing with that token has to re-assign before its datagrams are accepted. */
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
+	FString AppTokenAuthorizedServerIp4 = "";
+
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
+	int32 AppTokenAuthorizedServerClientPort = 0;
+
 	/** Per-app Game API endpoints returned by mintAppToken/refreshAppToken. */
 	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Game Session")
 	FString GameApiUrl = "";
@@ -87,6 +102,10 @@ struct FGameSessionInfo
 		GameToken = "";
 		GameTokenID = 0;
 		AppTokenExpiresAt = "";
+		ReplicationServerIp4 = "";
+		ReplicationServerClientPort = 0;
+		AppTokenAuthorizedServerIp4 = "";
+		AppTokenAuthorizedServerClientPort = 0;
 		GameApiUrl = "";
 		GameApiWsUrl = "";
 		LaunchUrl = "";
@@ -124,8 +143,48 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetUserID(const int64 InUserID){GameSessionInfo.UserID = InUserID;}
 	
+	/**
+	 * Install the app-scoped gameplay token.
+	 *
+	 * A replacement token is authorized on no replication server until something says otherwise, so this clears
+	 * the authorized-server pair rather than leaving the outgoing token's. Call SetAppTokenAuthorizedServer
+	 * afterwards when the answer that carried this token named one.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
-	void SetGameToken(const FString InGameToken){GameSessionInfo.GameToken = InGameToken;}
+	void SetGameToken(const FString InGameToken)
+	{
+		GameSessionInfo.GameToken = InGameToken;
+		GameSessionInfo.AppTokenAuthorizedServerIp4 = FString();
+		GameSessionInfo.AppTokenAuthorizedServerClientPort = 0;
+	}
+
+	/** Where the Game API installed the current app token. Both halves together, since neither means anything alone. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
+	void SetAppTokenAuthorizedServer(const FString InIp4, const int32 InClientPort)
+	{
+		GameSessionInfo.AppTokenAuthorizedServerIp4 = InIp4;
+		GameSessionInfo.AppTokenAuthorizedServerClientPort = InClientPort;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	FString GetAppTokenAuthorizedServerIp4() const {return GameSessionInfo.AppTokenAuthorizedServerIp4;}
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	int32 GetAppTokenAuthorizedServerClientPort() const {return GameSessionInfo.AppTokenAuthorizedServerClientPort;}
+
+	/** The replication server this client is assigned to, recorded when an assignment succeeds. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
+	void SetReplicationServer(const FString InIp4, const int32 InClientPort)
+	{
+		GameSessionInfo.ReplicationServerIp4 = InIp4;
+		GameSessionInfo.ReplicationServerClientPort = InClientPort;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	FString GetReplicationServerIp4() const {return GameSessionInfo.ReplicationServerIp4;}
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	int32 GetReplicationServerClientPort() const {return GameSessionInfo.ReplicationServerClientPort;}
 	
 	/** Identity SESSION token (management-plane). */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")

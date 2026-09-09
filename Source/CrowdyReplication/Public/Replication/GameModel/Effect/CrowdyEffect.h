@@ -180,14 +180,22 @@ struct FCrowdyEffectMagnitude
 	UPROPERTY()
 	FString ValueType = TEXT("int");
 
-	// A JSON-encoded default value ("5", "\"text\"", "true"); leave empty to make the parameter required.
+	// Whether a caller MUST supply this parameter. Independent of the default value: this alone decides required-ness,
+	// so a parameter can be required whatever its type, and an optional one may default to an empty string.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowdy Effect")
+	bool bRequired = false;
+
+	// A JSON-encoded default value ("5", "\"text\"", "true"), used when a caller supplies none. Ignored while the
+	// parameter is Required: a required parameter is lowered and applied with no default at all, and the value is
+	// kept only so unticking Required restores what was authored.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowdy Effect")
 	FString DefaultValueJson;
 
 	// An optional curve that supplies this magnitude's value, sampled at apply time by the Level input on Apply
 	// (for example, damage that scales with level). When set it is sampled in place of DefaultValueJson; an explicit
 	// Override passed to Apply still wins. Numeric magnitudes only (int or float; an int rounds the sampled value). A
-	// magnitude with a curve is never required, since the curve always provides a value.
+	// curve always yields a value, so a curve-bound magnitude never has to be supplied by a caller even when it is
+	// marked Required.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowdy Effect")
 	TObjectPtr<UCurveFloat> Curve = nullptr;
 
@@ -199,6 +207,16 @@ struct FCrowdyEffectMagnitude
 	// before this field migrates on first load.
 	UPROPERTY()
 	bool bTypeMigrated = false;
+
+	// Set once bRequired has been derived from the older encoding, where an empty default was what made a parameter
+	// required, so a later reload does not re-derive (and clobber) a flag the designer has since changed. Defaults
+	// false so an asset serialized before bRequired existed migrates on first load.
+	//
+	// Saving this asset from a build that predates these two fields drops both, and re-loading it here then derives
+	// required-ness from the default text again. "Required with a default" has no legacy spelling, so that one
+	// combination cannot survive the round trip and comes back optional.
+	UPROPERTY()
+	bool bRequiredMigrated = false;
 
 	// This magnitude's name as an FName, for looking it up in a caller's Overrides map. Find-only: a name nothing has
 	// ever interned cannot be a key in that map either, so resolving it to None is the correct answer and the name
@@ -688,10 +706,12 @@ public:
 			EditConditionHides))
 	FString AutomationTargetTypeOverride;
 
-	// The specific container id to run on, for the Container target mode.
+	// The container the automation runs on. Both Container and Global need one: a global run is a single run
+	// against this container, not a run against nothing. It is an id rather than a name, so it belongs to the app
+	// it was read from and an asset carrying one does not survive being copied to another app.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Automation",
 		meta = (DisplayName = "Target Container Id",
-			EditCondition = "bRunAutomatically && AutomationTargetMode == ECrowdyEffectAutomationTargetMode::Container",
+			EditCondition = "bRunAutomatically && (AutomationTargetMode == ECrowdyEffectAutomationTargetMode::Container || AutomationTargetMode == ECrowdyEffectAutomationTargetMode::Global)",
 			EditConditionHides))
 	FString AutomationTargetContainerId;
 
@@ -708,12 +728,14 @@ public:
 	int32 AutomationMaxTargets = 50;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Automation|Safety",
+	// The Game API clamps this to a platform ceiling, so a higher figure is authored and then silently not used.
+	// The default is the ceiling the platform ships with; raise it only against a tier known to allow more.
 		meta = (DisplayName = "Gas Limit", ClampMin = "1", EditCondition = "bRunAutomatically", EditConditionHides))
-	int32 AutomationGasLimit = 100000;
+	int32 AutomationGasLimit = 20000;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Automation|Safety",
 		meta = (DisplayName = "Run Timeout (ms)", ClampMin = "1", EditCondition = "bRunAutomatically", EditConditionHides))
-	int32 AutomationRunTimeoutMs = 2000;
+	int32 AutomationRunTimeoutMs = 200;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Automation|Safety",
 		meta = (DisplayName = "Max Runs Per Minute", ClampMin = "1", EditCondition = "bRunAutomatically", EditConditionHides))
@@ -807,8 +829,10 @@ public:
 	static ECrowdyEffectPropertyWriteSource WireStringToWriteSource(const FString& Wire);
 
 	// Load-time normalization of one magnitude: trim the name, fold the legacy ValueType string into
-	// ValueTypeEnum once (guarded by bTypeMigrated), then mirror the string back from the enum so the two never
-	// disagree. Idempotent. Static + public so migration is unit-tested directly.
+	// ValueTypeEnum once (guarded by bTypeMigrated), mirror the string back from the enum so the two never
+	// disagree, resolve bRequired once (guarded by bRequiredMigrated, and keeping an explicitly set flag rather than
+	// deriving over it), and give an optional bool the explicit false its checkbox cannot otherwise express.
+	// Idempotent. Static + public so migration is unit-tested directly.
 	static void MigrateMagnitude(FCrowdyEffectMagnitude& Magnitude);
 
 	// Whether Name matches a tuning parameter typed int or float, filling bOutInteger for the int case. This is the
@@ -835,6 +859,30 @@ public:
 	// asset that has been loaded or edited in the editor), else the legacy wire string. This keeps a magnitude
 	// built directly in code (which sets only ValueType and never runs through load/edit) typed as authored.
 	static ECrowdyEffectValueType ResolveMagnitudeValueType(const FCrowdyEffectMagnitude& Magnitude);
+
+	// Whether a caller must supply this magnitude: the bRequired flag once the magnitude has been migrated OR has
+	// been set to true outright, else the older encoding it is derived from. An explicit true is honoured without
+	// the migration flag so that code and Blueprint setting only bRequired are not silently ignored; an explicit
+	// false cannot be, because it is indistinguishable from the field's own default value.
+	static bool ResolveMagnitudeRequired(const FCrowdyEffectMagnitude& Magnitude);
+
+	// Required-ness as the encoding that predates bRequired expressed it: an empty default meant "the caller must
+	// supply this", except on a bool, whose checkbox cannot draw an empty default and so never meant it. The ONE
+	// definition of that rule; the asset path and the stored-payload path both read it, so a value type spelled
+	// with stray whitespace cannot be a bool under one and not the other.
+	static bool IsLegacyRequiredEncoding(ECrowdyEffectValueType ValueType, const FString& DefaultValueJson);
+
+	// Gives an optional bool the explicit false its checkbox cannot otherwise express, leaving every other value
+	// type and every required magnitude untouched. Reads the resolved value type, so an unmigrated magnitude that
+	// names bool only in its legacy string is normalized too.
+	static void EnsureBoolDefault(FCrowdyEffectMagnitude& Magnitude);
+
+	// The required-ness and default a magnitude takes when the designer changes its value type, which discards the
+	// old default because it was canonical for the old type. A bool becomes optional with an explicit false, since a
+	// checkbox cannot express "no value"; every other type is left with no default and so becomes required. Never
+	// produces optional-with-no-default, which is the one shape the wire cannot describe.
+	static void ApplyValueTypeChangeDefaults(ECrowdyEffectValueType NewType, bool& bOutRequired,
+		FString& OutDefaultValueJson);
 
 	// Resolve this effect's NotificationCarrier against the project default into the pure lowering carrier Compile()
 	// feeds the lowering. Reads UCrowdySDKDeveloperSettings; safe on the game thread (CDO-backed settings).
@@ -869,8 +917,9 @@ public:
 	// there is no container type to check against.
 	TArray<FCrowdyEffectDiagnostic> DiagnoseScriptBody(const FString& Body) const;
 
-	// Migrates each magnitude's legacy value-type string into the typed enum and trims magnitude names, so an
-	// asset authored before ValueTypeEnum loads and behaves identically.
+	// Migrates each magnitude's legacy value-type string into the typed enum, derives its required flag from the
+	// older empty-default encoding, and trims magnitude names, so an asset authored before either field loads and
+	// behaves identically.
 	virtual void PostLoad() override;
 
 #if WITH_EDITOR

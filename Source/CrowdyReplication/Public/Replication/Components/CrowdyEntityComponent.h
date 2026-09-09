@@ -134,10 +134,25 @@ public:
 
 	/**
 	 * Clears identity and unregisters this component's record, returning a pooled actor
-	 * to an inert, unassigned state. Also removes the throwaway Owner record a pre-warmed
-	 * pool actor mints in BeginPlay before it is assigned a real proxy id.
+	 * to an inert, unassigned state.
 	 */
 	void ClearIdentity();
+
+	/**
+	 * Marks an actor the pool is pre-warming, and must be called BEFORE BeginPlay. A dormant component
+	 * resolves no identity and registers no entity at all, so nothing ever observes it.
+	 *
+	 * Unregistering afterwards is not equivalent and was the bug this exists to prevent: registration is
+	 * delivered synchronously, and a listener answers it by starting work that no later cleanup can recall.
+	 * A pool of 8 pre-warmed actors each carrying two Game Model containers sent 16 server container ensures
+	 * for actors that stood for nothing, and because every client derives the same ids for its pool, two
+	 * clients raced to create the same rows and each was refused on the ones the other won.
+	 */
+	void MarkPooledDormant();
+
+	// True while this component belongs to an actor the pool is holding pre-warmed. Public so a test can assert
+	// the pool marked its actors before finishing their spawn, which is the ordering the defect turned on.
+	bool IsPooledDormant() const { return bPooledDormant; }
 
 	// Continuous channel (Dynamic mode)
 
@@ -447,6 +462,10 @@ private:
 	TObjectPtr<UCrowdyEntitySubsystem> EntitySubsystem;
 
 	bool bIdentityInjected = false;
+
+	// Set by MarkPooledDormant before BeginPlay and cleared when the pool assigns a real identity. While it is
+	// set the component registers nothing, so no listener can act on an actor that stands for no entity.
+	bool bPooledDormant = false;
 
 	// True once OnCrowdyOwnershipAssigned has announced this identity, so the first announcement happens exactly
 	// once. Cleared by ClearIdentity so a pooled actor announces again when it is handed a new identity.

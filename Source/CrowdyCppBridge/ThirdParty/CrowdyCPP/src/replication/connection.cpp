@@ -1,5 +1,7 @@
 #include "crowdy/replication/connection.hpp"
 
+#include "crowdy/media/video_frames.hpp"
+
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -223,6 +225,26 @@ Result<std::uint8_t> Connection::sendClientEvent(const wire::ChunkCoord& chunk,
   p.distance = distance;
   p.decay = decay;
   return sendLongSpatial(MessageType::ClientEventNotification, p);
+}
+
+Result<std::size_t> Connection::sendVideoFrame(const wire::ChunkCoord& chunk,
+                                               const core::ActorUuid& uuid, Bytes frame,
+                                               std::uint16_t frameId, std::uint8_t codec,
+                                               std::uint8_t distance, wire::DecayRate decay) {
+  const auto fragments =
+      media::fragmentFrame(frame, frameId, static_cast<media::VideoCodec>(codec));
+  if (fragments.empty()) return Errc::InvalidArgument;  // empty, or > 16 fragments
+  for (const auto& fragment : fragments) {
+    SpatialSend p;
+    p.chunk = chunk;
+    p.uuid = uuid;
+    p.payload = Bytes(fragment.data(), fragment.size());
+    p.distance = distance;
+    p.decay = decay;
+    auto r = sendLongSpatial(MessageType::ClientVideoPacket, p);
+    if (!r.ok()) return r.error();
+  }
+  return fragments.size();
 }
 
 Result<std::uint8_t> Connection::sendSingleActorMessage(const wire::ChunkCoord& targetChunk,
@@ -589,6 +611,13 @@ std::size_t Connection::poll(std::size_t maxEvents) {
           }
           case MessageType::ClientAudioNotification:
             if (handlers.audio) handlers.audio(n);
+            break;
+          case MessageType::ClientVideoNotification:
+            if (handlers.video) handlers.video(n);
+            break;
+          case MessageType::ActorLeftNotification:
+            if (handlers.actorLeft)
+              handlers.actorLeft(n, wire::actorLeftReason(v->payload.data(), v->payload.size()));
             break;
           case MessageType::ClientTextNotification:
             if (handlers.text) handlers.text(n);

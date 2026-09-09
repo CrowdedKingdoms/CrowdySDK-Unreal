@@ -11,8 +11,8 @@ inline constexpr std::string_view kCanonicalAgentToolsV1 =
     R"crowdyjson({
   "contractVersion": "crowdy.agent-tools/1",
   "crowdyJs": {
-    "version": "15.4.2",
-    "commit": "52467275a023014d05c2b7f690de2cbea948e34a"
+    "version": "15.7.0",
+    "commit": "0f493ddc0aa4bc417b3f07cd834af0e466167801"
   },
   "registryDigest": "sha256:20ecf25d55beccc1cb7033095cab3774dc301cb5f3edab818e45921416b48c71",
   "tools": [
