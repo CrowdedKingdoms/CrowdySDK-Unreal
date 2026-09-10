@@ -828,6 +828,39 @@ TArray<FString> UCrowdyChannels::BuildDesiredJoinNames(const TSet<FString>& Mult
 	return Names;
 }
 
+UCrowdyChannels::FCrowdyChannelJoinPlan UCrowdyChannels::BuildJoinPlan(const TSet<FString>& MulticastChannelNames,
+	const FString& SessionChannelName, const TMap<FString, int64>& AppChannelIdsByName,
+	const TSet<int64>& MemberChannelIds)
+{
+	FCrowdyChannelJoinPlan Plan;
+
+	// The session channel is planned even when no Multicast CrowdyEvent names a channel, so this iterates the
+	// desired set rather than the names the RPCs referenced.
+	for (const FString& Name : BuildDesiredJoinNames(MulticastChannelNames, SessionChannelName))
+	{
+		const int64* FoundId = AppChannelIdsByName.Find(Name);
+		if (FoundId)
+		{
+			TArray<TPair<int64, FString>>& Bucket = MemberChannelIds.Contains(*FoundId) ? Plan.AlreadyJoined : Plan.ToJoin;
+			Bucket.Add(TPair<int64, FString>(*FoundId, Name));
+			continue;
+		}
+
+		// The session channel is the only one we create ourselves, so a fresh app needs nothing authored in
+		// Studio before Game Model signals and re-pull pings arrive. A named channel is a designer's, and
+		// inventing one under a guessed name would hide the typo it usually is.
+		if (Name == SessionChannelName)
+		{
+			Plan.bCreateSessionChannel = true;
+			continue;
+		}
+
+		Plan.MissingNamed.Add(Name);
+	}
+
+	return Plan;
+}
+
 void UCrowdyChannels::BootstrapFetchAppChannels()
 {
 	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
@@ -902,45 +935,28 @@ void UCrowdyChannels::BootstrapFetchMyChannels()
 void UCrowdyChannels::BootstrapPlanJoins()
 {
 	JoinQueue.Reset();
-	bNeedCreateSessionChannel = false;
 
-	// Resolve a channel name to its id: register it immediately if we're already a member, otherwise
-	// queue a join. Returns false if the channel doesn't exist for this app.
-	auto PlanChannel = [this](const FString& Name) -> bool
+	const FCrowdyChannelJoinPlan Plan = BuildJoinPlan(ReferencedChannelNames, GetSessionChannelName(),
+		AppChannelNameToId, MyChannelIds);
+
+	for (const TPair<int64, FString>& Joined : Plan.AlreadyJoined)
 	{
-		const int64* FoundId = AppChannelNameToId.Find(Name);
-		if (!FoundId)
-			return false;
-
-		if (MyChannelIds.Contains(*FoundId))
-			RegisterJoinedChannel(*FoundId, Name);
-		else
-			JoinQueue.Add(TPair<int64, FString>(*FoundId, Name));
-		return true;
-	};
-
-	const FString SessionName = GetSessionChannelName();
-	for (const FString& Name : BuildDesiredJoinNames(ReferencedChannelNames, SessionName))
-	{
-		if (PlanChannel(Name))
-		{
-			continue;
-		}
-
-		// The session channel is the only one we create ourselves, so a fresh app needs nothing authored in
-		// Studio before Game Model signals and re-pull pings arrive. A named channel is a designer's, and
-		// inventing one under a guessed name would hide the typo it usually is.
-		if (Name == SessionName)
-		{
-			bNeedCreateSessionChannel = true;
-		}
-		else
-		{
-			UE_LOG(LogCrowdyServices, Warning,
-				TEXT("[CrowdyChannels] Multicast channel '%s' was not found for this app - RPCs targeting it will drop. Create it (or fix the name) in Crowdy Studio."),
-				*Name);
-		}
+		RegisterJoinedChannel(Joined.Key, Joined.Value);
 	}
+
+	for (const TPair<int64, FString>& Pending : Plan.ToJoin)
+	{
+		JoinQueue.Add(Pending);
+	}
+
+	for (const FString& Name : Plan.MissingNamed)
+	{
+		UE_LOG(LogCrowdyServices, Warning,
+			TEXT("[CrowdyChannels] Multicast channel '%s' was not found for this app - RPCs targeting it will drop. Create it (or fix the name) in Crowdy Studio."),
+			*Name);
+	}
+
+	bNeedCreateSessionChannel = Plan.bCreateSessionChannel;
 
 	ProcessNextJoin();
 }

@@ -157,7 +157,8 @@ namespace CrowdyExpressionEditorModel
 	CROWDYSDKEDITOR_API const TArray<FString>& BuiltinNames();
 
 	// The policy keywords valid as bare identifiers in a `require` clause (owner_of_self / host / my_turn /
-	// participant / automation), matching ECrowdyEffectPolicyKeyword and what the lowering recognizes. Completion
+	// participant / automation / anyone), matching ECrowdyEffectPolicyKeyword and what the lowering recognizes.
+	// Completion
 	// offers these only inside a require statement, since they are meaningless in any other position.
 	CROWDYSDKEDITOR_API const TArray<FString>& PolicyKeywordNames();
 }

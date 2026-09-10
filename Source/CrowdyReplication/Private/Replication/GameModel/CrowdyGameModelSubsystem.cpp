@@ -1896,14 +1896,17 @@ void UCrowdyGameModelSubsystem::ListContainers(const FString& TypeName, const FS
 
 void UCrowdyGameModelSubsystem::BindEntityContainer(const FGuid& NetID, const FString& ContainerId)
 {
-	if (NetID.IsValid() && !ContainerId.IsEmpty())
-	{
-		AddContainerBinding(NetID, ContainerId);
-	}
+	AddContainerBinding(NetID, ContainerId);
 }
 
 void UCrowdyGameModelSubsystem::AddContainerBinding(const FGuid& NetID, const FString& ContainerId)
 {
+	// Refused at the writer, so no reader downstream has to answer for an empty container key.
+	if (!NetID.IsValid() || ContainerId.IsEmpty())
+	{
+		return;
+	}
+
 	// Re-binding the SAME container keeps the epoch, so an idempotent bind does not invalidate merge windows that are
 	// legitimately still open against it. Anything else is a new binding and gets a fresh epoch, which is what makes a
 	// window opened against the previous one refuse to flush onto this one.
@@ -1916,8 +1919,17 @@ void UCrowdyGameModelSubsystem::AddContainerBinding(const FGuid& NetID, const FS
 		RemoveContainerBinding(NetID);
 	}
 
+	TArray<FGuid>& Bound = ContainerIdToNetIDs.FindOrAdd(ContainerId);
+	if (Bound.Num() > 0)
+	{
+		// Reported where the ambiguity is created, not where a notification resolves it: that path runs per delivery.
+		UE_LOG(LogCrowdyGameModel, Warning,
+			TEXT("[GameModel] container %s is now bound by entity %s as well as %s; a container row is meant to have one local holder, so model changes and signals for it reach the newest binding only."),
+			*ContainerId, *NetID.ToString(), *Bound.Last().ToString());
+	}
+
 	NetIDToContainerId.Add(NetID, ContainerId);
-	ContainerIdToNetIDs.FindOrAdd(ContainerId).AddUnique(NetID);
+	Bound.AddUnique(NetID);
 	BindEpochByNetID.Add(NetID, NextBindEpoch++);
 }
 
@@ -1933,6 +1945,7 @@ void UCrowdyGameModelSubsystem::RemoveContainerBinding(const FGuid& NetID)
 
 	if (TArray<FGuid>* Bound = ContainerIdToNetIDs.Find(ContainerId))
 	{
+		// Order-preserving on purpose: FindNetIDForContainer reads this row oldest-first.
 		Bound->Remove(NetID);
 		if (Bound->Num() == 0)
 		{
@@ -1947,7 +1960,19 @@ void UCrowdyGameModelSubsystem::RemoveContainerBinding(const FGuid& NetID)
 FGuid UCrowdyGameModelSubsystem::FindNetIDForContainer(const FString& ContainerId) const
 {
 	const TArray<FGuid>* Bound = ContainerIdToNetIDs.Find(ContainerId);
-	return (Bound && Bound->Num() > 0) ? (*Bound)[0] : FGuid();
+	if (!Bound || Bound->Num() == 0)
+	{
+		return FGuid();
+	}
+	// Newest last, by bind order: the newest holder that still resolves answers, and the oldest when none does.
+	for (int32 Index = Bound->Num() - 1; Index > 0; --Index)
+	{
+		if (ResolveEntityParticipant((*Bound)[Index]))
+		{
+			return (*Bound)[Index];
+		}
+	}
+	return (*Bound)[0];
 }
 
 bool UCrowdyGameModelSubsystem::TryGetContainerId(const FGuid& NetID, FString& OutContainerId) const
@@ -3155,20 +3180,9 @@ bool UCrowdyGameModelSubsystem::TryGetContainerTypeForContainerId(const FString&
 
 bool UCrowdyGameModelSubsystem::TryGetNetIDForContainer(const FString& ContainerId, FGuid& OutNetID) const
 {
-	OutNetID.Invalidate();
-	if (ContainerId.IsEmpty())
-	{
-		return false;
-	}
-	for (const TPair<FGuid, FString>& Pair : NetIDToContainerId)
-	{
-		if (Pair.Value == ContainerId)
-		{
-			OutNetID = Pair.Key;
-			return true;
-		}
-	}
-	return false;
+	// The same resolver the model-changed and signal paths use, so no two by-id paths can pick different objects.
+	OutNetID = FindNetIDForContainer(ContainerId);
+	return OutNetID.IsValid();
 }
 
 void UCrowdyGameModelSubsystem::ApplyInvokeMutations(const FGuid& SelfNetID, const FString& SelfContainerId,
@@ -3194,14 +3208,11 @@ void UCrowdyGameModelSubsystem::ApplyInvokeMutations(const FGuid& SelfNetID, con
 	{
 		// Precedence matches HandleModelChangedByContainer: a bound participant first, then a watched free/data
 		// container. Never both, so a container that has a participant does not also fire the by-id delegate.
-		FGuid DestNetID;
-		if (Pair.Key == SelfContainerId && SelfNetID.IsValid())
+		// By id even for the invoke's own row, so a write and the signal that follows it cannot land on two objects.
+		FGuid DestNetID = FindNetIDForContainer(Pair.Key);
+		if (!DestNetID.IsValid() && Pair.Key == SelfContainerId)
 		{
-			DestNetID = SelfNetID; // the invoke's own entity, already known without a reverse lookup
-		}
-		else
-		{
-			TryGetNetIDForContainer(Pair.Key, DestNetID);
+			DestNetID = SelfNetID;
 		}
 
 		if (DestNetID.IsValid())
@@ -3565,6 +3576,35 @@ bool UCrowdyGameModelSubsystem::DecodeChannelSignal(const TArray<uint8>& Payload
 	return false;
 }
 
+namespace
+{
+	// Runs Target's parameterless OnSignal_<Name>. True when a function of that name exists at all; bOutCalled says
+	// whether it was actually run.
+	bool CallCrowdySignalHandler(UObject* Target, const FName HandlerName, const FString& SignalName, bool& bOutCalled)
+	{
+		UFunction* Handler = Target->FindFunction(HandlerName);
+		if (!Handler)
+		{
+			return false;
+		}
+
+		// Parameterless by contract, exactly like a CrowdyOnRep. The arity check is what makes a mismatch a silent
+		// no-op instead of a corrupted call frame, since the handler is found by name and nothing forces its
+		// signature at compile time.
+		if (Handler->NumParms != 0)
+		{
+			UE_LOG(LogCrowdyGameModel, Error,
+				TEXT("[GameModel] signal '%s' found '%s' on '%s', but it takes %d parameter(s); a signal handler must be parameterless, so it was not called."),
+				*SignalName, *HandlerName.ToString(), *Target->GetName(), Handler->NumParms);
+			return true;
+		}
+
+		Target->ProcessEvent(Handler, nullptr);
+		bOutCalled = true;
+		return true;
+	}
+}
+
 void UCrowdyGameModelSubsystem::DispatchSignal(const FString& SignalName, const FString& ContainerId)
 {
 	if (SignalName.IsEmpty() || ContainerId.IsEmpty())
@@ -3575,41 +3615,36 @@ void UCrowdyGameModelSubsystem::DispatchSignal(const FString& SignalName, const 
 	// Resolve the LOCAL object bound to this container, mirroring HandleModelChangedByContainer: each client may
 	// bind its own entity to a shared container, and a container nothing here is bound to still broadcasts (with a
 	// null target) so non-container listeners such as UI can react.
-	UObject* Target = nullptr;
 	const FGuid BoundNetID = FindNetIDForContainer(ContainerId);
-	if (BoundNetID.IsValid())
+	UObject* Resolved = BoundNetID.IsValid() ? ResolveEntityParticipant(BoundNetID) : nullptr;
+	if (!Resolved)
 	{
-		Target = ResolveEntityParticipant(BoundNetID);
+		OnCrowdySignal.Broadcast(SignalName, nullptr, ContainerId);
+		return;
 	}
 
-	if (Target)
+	const FName HandlerName = UCrowdyEffect::MakeSignalHandlerName(SignalName);
+	bool bCalled = false;
+	UObject* Handled = CallCrowdySignalHandler(Resolved, HandlerName, SignalName, bCalled) ? Resolved : nullptr;
+
+	// A drawn row holds its component containers in behaviour-less stand-ins, so only a stand-in re-addresses to the
+	// entity holding it; a real component that lacks the handler owns that.
+	if (!Handled && Cast<UCrowdyContainerStandIn>(Resolved))
 	{
-		const FName HandlerName = UCrowdyEffect::MakeSignalHandlerName(SignalName);
-		if (UFunction* Handler = Target->FindFunction(HandlerName))
+		UObject* Anchor = ResolveEntityParticipant(ResolveSubscriberEntityID(BoundNetID));
+		if (Anchor && CallCrowdySignalHandler(Anchor, HandlerName, SignalName, bCalled))
 		{
-			// Parameterless by contract, exactly like a CrowdyOnRep. The arity check is what makes a mismatch a
-			// silent no-op instead of a corrupted call frame, since the handler is found by name and nothing
-			// forces its signature at compile time.
-			if (Handler->NumParms == 0)
-			{
-				Target->ProcessEvent(Handler, nullptr);
-			}
-			else
-			{
-				UE_LOG(LogCrowdyGameModel, Error,
-					TEXT("[GameModel] signal '%s' found '%s' on '%s', but it takes %d parameter(s); a signal handler must be parameterless, so it was not called."),
-					*SignalName, *HandlerName.ToString(), *Target->GetName(), Handler->NumParms);
-			}
-		}
-		else
-		{
-			UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
-				TEXT("[GameModel] signal '%s' for container %s: '%s' has no '%s' to call"),
-				*SignalName, *ContainerId, *Target->GetName(), *HandlerName.ToString());
+			Handled = Anchor;
 		}
 	}
 
-	OnCrowdySignal.Broadcast(SignalName, Target, ContainerId);
+	UE_CLOG(!Handled && CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
+		TEXT("[GameModel] signal '%s' for container %s: '%s' has no '%s' to call"),
+		*SignalName, *ContainerId, *Resolved->GetName(), *HandlerName.ToString());
+
+	// Whatever ran the handler, else the object bound to the container so a listener can still tell a row with a
+	// local holder from one with none.
+	OnCrowdySignal.Broadcast(SignalName, bCalled ? Handled : Resolved, ContainerId);
 }
 
 FCrowdyModelChangeHint UCrowdyGameModelSubsystem::MakeHintFromPing(const FCrowdyModelChangedPing& Ping)

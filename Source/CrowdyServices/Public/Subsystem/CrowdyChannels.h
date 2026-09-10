@@ -181,6 +181,38 @@ public:
 	static TArray<FString> BuildDesiredJoinNames(const TSet<FString>& MulticastChannelNames,
 	                                             const FString& SessionChannelName);
 
+	// What the connect-time bootstrap must do with the channels this client needs, split by the action each one
+	// takes. Ordering matches the desired join order, so the plan is directly executable.
+	struct FCrowdyChannelJoinPlan
+	{
+		// Channels this client is already a member of: wire them up for send and receive without a round trip.
+		TArray<TPair<int64, FString>> AlreadyJoined;
+
+		// Channels that exist for the app but are not joined yet.
+		TArray<TPair<int64, FString>> ToJoin;
+
+		// Named channels that do not exist for this app, so RPCs targeting them will drop.
+		TArray<FString> MissingNamed;
+
+		// The session channel does not exist for this app and must be created before it can be joined.
+		bool bCreateSessionChannel = false;
+	};
+
+	/**
+	 * Decides, for every channel this client must join, whether it is already joined, needs a join request, needs
+	 * creating, or cannot be had at all.
+	 *
+	 * The set of channels comes from BuildDesiredJoinNames, so the session channel is planned even when no Multicast
+	 * CrowdyEvent names a channel. The session channel is also the only one created when it is missing: a named
+	 * channel belongs to a designer, and inventing one under a guessed name would hide the typo it usually is.
+	 *
+	 * Pure and static so the whole rule is unit-tested without a live connection.
+	 */
+	static FCrowdyChannelJoinPlan BuildJoinPlan(const TSet<FString>& MulticastChannelNames,
+	                                            const FString& SessionChannelName,
+	                                            const TMap<FString, int64>& AppChannelIdsByName,
+	                                            const TSet<int64>& MemberChannelIds);
+
 	// Publishes an encoded reliable RPC payload over the named channel (empty = default session
 	// channel). Sends made before the bootstrap finishes are queued and flushed when it does.
 	void PublishReliableRpc(const FString& ChannelName, const TArray<uint8>& Payload);

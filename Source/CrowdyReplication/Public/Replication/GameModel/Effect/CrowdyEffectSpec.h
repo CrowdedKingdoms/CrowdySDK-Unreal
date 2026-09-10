@@ -104,7 +104,8 @@ enum class ECrowdyEffectPolicyKeyword : uint8
 	MyTurn      UMETA(DisplayName = "It is the caller's turn (my_turn)"),
 	Host        UMETA(DisplayName = "Caller is the host (host)"),
 	Participant UMETA(DisplayName = "Caller is a participant (participant)"),
-	Automation  UMETA(DisplayName = "Caller is server automation (automation)")
+	Automation  UMETA(DisplayName = "Caller is server automation (automation)"),
+	Anyone      UMETA(DisplayName = "Anyone may call it (anyone)")
 };
 
 /**

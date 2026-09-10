@@ -579,11 +579,13 @@ public:
 	// Broadcast on the game thread when a signal arrives, after the bound container's OnSignal_<Name> handler has
 	// run. The handler is the usual way to react; this is for anything that is not the container itself, such as UI
 	// or an audio system, and it still fires when the named container is not bound locally (Target is null then).
+	// Target is whatever ran the handler, else the object bound to the container.
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "On Crowdy Signal"))
 	FCrowdySignalReceived OnCrowdySignal;
 
 	// Route one decoded signal: call OnSignal_<Name> on the locally bound container when there is one, then
-	// broadcast OnCrowdySignal. Public so a headless test can drive dispatch with no channel and no network.
+	// broadcast OnCrowdySignal. A container held by a stand-in is retried on the entity holding it, nothing else is.
+	// Public so a headless test can drive dispatch with no channel and no network.
 	void DispatchSignal(const FString& SignalName, const FString& ContainerId);
 
 	// Whether this subsystem's world is the one its game instance is currently in. The service registry is
@@ -668,6 +670,13 @@ public:
 	// classes and the class registry that would name them.
 	void RecordContainerTypeForTest(const FGuid& NetID, const FString& TypeName) { ContainerTypeByNetID.Add(NetID, TypeName); }
 	void UnbindEntityContainerForTest(const FGuid& NetID) { HandleEntityUnregistered(NetID); }
+	// How many local entities are bound to one container row, so a test can prove the multi-bind shape it set up
+	// exists (and that unbinding removed one) before asserting which of them a notification reaches.
+	int32 GetBoundNetIDCountForTest(const FString& ContainerId) const
+	{
+		const TArray<FGuid>* Bound = ContainerIdToNetIDs.Find(ContainerId);
+		return Bound ? Bound->Num() : 0;
+	}
 	// The epoch stamped on a binding right now, so a test can snapshot it the way a dispatched invoke does.
 	uint32 GetBindEpochForTest(const FGuid& NetID) const
 	{
@@ -811,6 +820,7 @@ private:
 
 	// The LOCAL entity bound to ContainerId, the reverse of TryGetContainerId. Each client binds its own entity to
 	// a shared container, so this answers only for what this client holds. False when no local entity is bound.
+	// Answers from the same index every other by-id path resolves through.
 	bool TryGetNetIDForContainer(const FString& ContainerId, FGuid& OutNetID) const;
 
 	// The world's entity subsystem: the cached EntitySubsystemForEvents when set (post-Initialize), else resolved
@@ -936,12 +946,14 @@ private:
 	// NetID -> server container id.
 	TMap<FGuid, FString> NetIDToContainerId;
 
-	// The reverse of the map above: server container id -> every local NetID bound to it. Three hot paths ask "which
-	// local entity is this container?" - an inbound model-changed notification, an inbound signal, and the delete
-	// cascade - and each used to answer by comparing container id strings against every binding in turn. That is a
-	// linear string scan on the delivery path of every notification the session produces, over a map that holds one
-	// entry per bound entity. Normally one NetID per container, but the list form is required: an id is bound
-	// per-entity and nothing stops two participants sharing one row, and the delete cascade has to clear all of them.
+	// The reverse of the map above: server container id -> every local NetID bound to it. Four hot paths ask "which
+	// local entity is this container?" - an inbound model-changed notification, an inbound signal, a confirmed
+	// invoke's cross-container writes, and the delete cascade - and each used to answer by comparing container id
+	// strings against every binding in turn. That is a linear string scan on the delivery path of every notification
+	// the session produces, over a map that holds one entry per bound entity. Normally one NetID per container, but
+	// the list form is required: an id is bound per-entity and nothing stops two participants sharing one row, and
+	// the delete cascade has to clear all of them.
+	// Kept in bind order, oldest first, which is the order FindNetIDForContainer reads it in.
 	TMap<FString, TArray<FGuid>> ContainerIdToNetIDs;
 
 	// NetID -> the container TYPE its binding was resolved as. Recorded where the binding decision is made, because
@@ -1354,7 +1366,9 @@ private:
 	void AddContainerBinding(const FGuid& NetID, const FString& ContainerId);
 	void RemoveContainerBinding(const FGuid& NetID);
 
-	// The first local NetID bound to ContainerId, or an invalid guid when nothing here is bound to it. One hash lookup.
+	// The local NetID bound to ContainerId, or an invalid guid when nothing here is bound to it: one hash lookup for
+	// the single holder a row normally has, and where two distinct local entities end up on one row (an explicit
+	// bind, or two class-derived read-only bindings) the newest that still resolves, so every by-id path agrees.
 	FGuid FindNetIDForContainer(const FString& ContainerId) const;
 
 	// Close one merge window: take the record out, then send it. Taking it out FIRST is what makes a re-entrant apply

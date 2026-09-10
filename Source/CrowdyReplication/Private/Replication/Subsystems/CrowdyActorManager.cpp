@@ -305,6 +305,11 @@ void UCrowdyActorManager::ExtractUpdateForTest(const FGuid& UUID, const FInstanc
 
 	ActiveBackend->ExtractUpdate(State, GetEstimatedServerTimeMs(), *SlotPtr);
 }
+
+int32 UCrowdyActorManager::GetPendingActivationEvictTicksForTest()
+{
+	return CrowdyPendingActivationEvictTicks;
+}
 #endif
 
 void UCrowdyActorManager::ReleaseSlot(const FGuid& UUID)
@@ -460,11 +465,6 @@ void UCrowdyActorManager::HandleActorDestroyed(FGuid UUID, int32 ActorCount)
 	PendingActivations.Remove(UUID);
 
 	ReleaseSlot(UUID);
-}
-
-int32 UCrowdyActorManager::GetPendingActivationEvictTicksForTest()
-{
-	return CrowdyPendingActivationEvictTicks;
 }
 
 void UCrowdyActorManager::HandleActorLeft(const FCrowdyActorLeft& ActorLeft, int32 ActorCount)

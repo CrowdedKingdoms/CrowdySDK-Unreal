@@ -242,7 +242,7 @@ namespace
 				}
 				FCrowdyEffectRequireSpec Require;
 				Require.Kind = ReadEnum(*EntryObject, TEXT("kind"), 2, ECrowdyEffectRequireKind::Keyword);
-				Require.Keyword = ReadEnum(*EntryObject, TEXT("kw"), 5, ECrowdyEffectPolicyKeyword::Owner);
+				Require.Keyword = ReadEnum(*EntryObject, TEXT("kw"), 6, ECrowdyEffectPolicyKeyword::Owner);
 				if (const TSharedPtr<FJsonObject>* Left = GetObjectField(*EntryObject, TEXT("l")))
 				{
 					Require.Left = ReadOperand(*Left);

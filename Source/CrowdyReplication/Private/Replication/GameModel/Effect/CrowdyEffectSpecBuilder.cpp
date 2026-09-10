@@ -65,6 +65,7 @@ namespace
 		case ECrowdyEffectPolicyKeyword::Host:        return TEXT("host");
 		case ECrowdyEffectPolicyKeyword::Participant: return TEXT("participant");
 		case ECrowdyEffectPolicyKeyword::Automation:  return TEXT("automation");
+		case ECrowdyEffectPolicyKeyword::Anyone:      return TEXT("anyone");
 		default:                                      return TEXT("owner");
 		}
 	}

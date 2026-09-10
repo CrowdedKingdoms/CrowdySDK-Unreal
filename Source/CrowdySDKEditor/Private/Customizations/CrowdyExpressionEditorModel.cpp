@@ -84,7 +84,8 @@ namespace CrowdyExpressionEditorModel
 	const TArray<FString>& PolicyKeywordNames()
 	{
 		static const TArray<FString> Policy = {
-			TEXT("owner_of_self"), TEXT("host"), TEXT("my_turn"), TEXT("participant"), TEXT("automation")
+			TEXT("owner_of_self"), TEXT("host"), TEXT("my_turn"), TEXT("participant"), TEXT("automation"),
+			TEXT("anyone")
 		};
 		return Policy;
 	}

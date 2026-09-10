@@ -1793,6 +1793,38 @@ bool FCrowdyEffectReturnFromSourceTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// The one way to author a function the inferred gate does not widen. A world object a player must write to has no
+// authority leaf it can satisfy, so without this there is no way to express "open" and the effect refuses everyone.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectRequireAnyoneTest,
+	"CrowdySDK.Effect.RequireAnyoneSuppressesTheInferredGate", CrowdyEffectTestFlags)
+bool FCrowdyEffectRequireAnyoneTest::RunTest(const FString& Parameters)
+{
+	const FCrowdyEffectLoweringContext Ctx = MakeHeroContext();
+
+	const FCrowdyEffectLoweringResult Cross = LowerScript(TEXT("require anyone\nself.hp -= source.str"), Ctx);
+	TestFalse(TEXT("no errors"), Cross.HasErrors());
+	TestEqual(TEXT("anyone lowers to the always-true condition, since the server has no such leaf"),
+		Cross.Function.InvokePolicyJson, FString(TEXT("{\"type\":\"condition\",\"expression\":\"true\"}")));
+
+	const FCrowdyEffectLoweringResult Guarded =
+		LowerScript(TEXT("require anyone\nrequire self.hp > 0\nself.hp -= source.str"), Ctx);
+	TestFalse(TEXT("no errors"), Guarded.HasErrors());
+	TestFalse(TEXT("a value guard alongside it does not bring the cross-entity gate back"),
+		Guarded.Function.InvokePolicyJson.Contains(TEXT("is_participant")));
+	TestTrue(TEXT("the value guard survives"), Guarded.Function.InvokePolicyJson.Contains(TEXT("self.hp > 0")));
+
+	const FCrowdyEffectLoweringResult SelfOnly = LowerScript(TEXT("require anyone\nself.hp -= 1"), Ctx);
+	TestFalse(TEXT("no errors"), SelfOnly.HasErrors());
+	TestFalse(TEXT("the pure-self owner gate is suppressed too"),
+		SelfOnly.Function.InvokePolicyJson.Contains(TEXT("owner_of_self")));
+
+	// The guard on the guard: the suppression is the word, not the shape. Drop it and the gate must come back.
+	const FCrowdyEffectLoweringResult Without = LowerScript(TEXT("require self.hp > 0\nself.hp -= source.str"), Ctx);
+	TestTrue(TEXT("without anyone the cross-entity gate is still inferred"),
+		Without.Function.InvokePolicyJson.Contains(TEXT("is_participant")));
+	return true;
+}
+
 // A shared formula: internal scope, no entry point of its own, and no invoke policy, since there is no player
 // route to gate.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectInternalHelperTest,

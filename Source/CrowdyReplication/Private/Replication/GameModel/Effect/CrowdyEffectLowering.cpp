@@ -110,11 +110,25 @@ namespace
 		{
 			return false;
 		}
+		if (Node.Type == TEXT("anyone"))
+		{
+			// "anyone" gates nobody, so it is not an authority leaf. It counts here because it is the author saying
+			// the function is deliberately open, which is a decision about the caller and the only way to ask for a
+			// policy the inferred gate does not widen. Reaching it by accident is what the inference exists to stop.
+			return true;
+		}
 		return IsAuthorityLeaf(Node.Type);
 	}
 
 	FString EmitPolicyJson(const FPolicyNode& Node)
 	{
+		if (Node.Type == TEXT("anyone"))
+		{
+			// The server has no "anyone" leaf and refuses a policy type it does not know, so this lowers to the
+			// always-true condition the platform documents as "any entitled player".
+			return TEXT("{\"type\":\"condition\",\"expression\":\"true\"}");
+		}
+
 		FString Out = TEXT("{\"type\":\"") + Node.Type + TEXT("\"");
 		if (Node.Type == TEXT("and") || Node.Type == TEXT("or") || Node.Type == TEXT("not"))
 		{
@@ -717,6 +731,7 @@ namespace
 			else if (K == TEXT("host") || K == TEXT("is_host")) { N.Type = TEXT("is_host"); }
 			else if (K == TEXT("participant") || K == TEXT("is_participant")) { N.Type = TEXT("is_participant"); }
 			else if (K == TEXT("automation") || K == TEXT("is_automation")) { N.Type = TEXT("is_automation"); }
+			else if (K == TEXT("anyone")) { N.Type = TEXT("anyone"); }
 			else
 			{
 				Error(E.Line, E.Col, FString::Printf(TEXT("unknown requirement '%s'"), *K));

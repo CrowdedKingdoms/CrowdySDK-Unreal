@@ -6,9 +6,19 @@
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
 #include "Replication/GameModel/CrowdyBindingKeyProvider.h"
+#include "Replication/GameModel/CrowdyContainerStandIn.h"
 #include "Replication/GameModel/CrowdyModelRef.h"
 #include "UObject/Object.h"
 #include "CrowdyGameModelTestTarget.generated.h"
+
+// One monotonic source the signal fixtures share, so dispatch ORDER is a comparison of two numbers rather than of
+// two log timestamps. Inline in this header, never a second copy in an anonymous namespace, since a unity build
+// would merge two such copies into one redefinition.
+inline int32 CrowdyNextSignalSeq()
+{
+	static int32 Next = 0;
+	return ++Next;
+}
 
 /**
  * Headless test target for the Game Model apply/OnRep path: a UObject carrying CrowdyModel attributes with
@@ -102,6 +112,39 @@ public:
 		LastAttrOldJson = OldValueJson;
 		LastAttrNewJson = NewValueJson;
 	}
+
+	// Signal handler, found by name and called with no parameters exactly as a CrowdyOnRep is. The sequence number
+	// records when it ran relative to the OnCrowdySignal broadcast.
+	int32 WaveSignalCount = 0;
+	int32 WaveSignalSeq = 0;
+
+	UFUNCTION()
+	void OnSignal_Wave()
+	{
+		++WaveSignalCount;
+		WaveSignalSeq = CrowdyNextSignalSeq();
+	}
+
+	// Spy for OnCrowdySignal, a UObject dynamic multicast, so its handler must be a UFUNCTION. The null-target flag
+	// is recorded explicitly: a TWeakObjectPtr cannot tell a broadcast that carried no target from one whose target
+	// was collected afterwards.
+	int32 SignalDelegateCount = 0;
+	FString LastSignalName;
+	TWeakObjectPtr<UObject> LastSignalTarget;
+	bool bLastSignalTargetWasNull = false;
+	FString LastSignalContainerId;
+	int32 LastSignalDelegateSeq = 0;
+
+	UFUNCTION()
+	void HandleCrowdySignal(const FString& SignalName, UObject* SignalTarget, const FString& ContainerId)
+	{
+		++SignalDelegateCount;
+		LastSignalName = SignalName;
+		LastSignalTarget = SignalTarget;
+		bLastSignalTargetWasNull = (SignalTarget == nullptr);
+		LastSignalContainerId = ContainerId;
+		LastSignalDelegateSeq = CrowdyNextSignalSeq();
+	}
 };
 
 /**
@@ -114,6 +157,25 @@ UCLASS()
 class UCrowdyGameModelTestTargetDerived : public UCrowdyGameModelTestTarget
 {
 	GENERATED_BODY()
+};
+
+/**
+ * A container stand-in whose signal handler has the wrong arity, standing in for an authoring mistake on a drawn
+ * row's component container. It is a stand-in so the re-address to its anchor is enabled, and its anchor carries a
+ * correct, identically named handler, so a dispatch that relayed past the refusal rather than stopping at it would
+ * be visible. Deliberately carries no container tag, so it never appears to the sweeps that collect container
+ * classes.
+ */
+UCLASS()
+class UCrowdyGameModelBadSignalStandIn : public UCrowdyContainerStandIn
+{
+	GENERATED_BODY()
+
+public:
+	int32 WaveSignalCount = 0;
+
+	UFUNCTION()
+	void OnSignal_Wave(int32 Unused) { (void)Unused; ++WaveSignalCount; }
 };
 
 /**
@@ -135,6 +197,22 @@ public:
 
 	UFUNCTION()
 	void OnRep_Armor() { ++ArmorOnRepCount; }
+
+	int32 WaveSignalCount = 0;
+	int32 WaveSignalSeq = 0;
+
+	UFUNCTION()
+	void OnSignal_Wave()
+	{
+		++WaveSignalCount;
+		WaveSignalSeq = CrowdyNextSignalSeq();
+	}
+
+	// Deliberately wrong arity: a signal handler cannot take parameters, so this one is found by name and refused.
+	int32 BadSignalCount = 0;
+
+	UFUNCTION()
+	void OnSignal_Bad(int32 Unused) { (void)Unused; ++BadSignalCount; }
 };
 
 /**
