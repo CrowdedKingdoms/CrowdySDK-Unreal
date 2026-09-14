@@ -512,11 +512,12 @@ struct FCrowdyCppReplication::FImpl
 			return;
 		}
 
-		// A full kernel send buffer is backpressure, not a fault. The datagram never left and the socket is healthy,
+		// A full kernel send buffer is backpressure, not a fault. The message never left and the socket is healthy,
 		// so this is neither a drop nor worth a warning: the library already counts it in sendsDeferred, and warning
-		// per datagram would turn one busy frame into a log flood. It is deliberately not retried, because a state
+		// per message would turn one busy frame into a log flood. It is deliberately not retried, because a state
 		// update is only worth sending while it is current and the next one supersedes it. Saturation is visible in
-		// FCrowdyCppReplicationStats::SendsDeferred, and the answer to it is a larger SocketSendBufferBytes.
+		// FCrowdyCppReplicationStats::SendsDeferred, and the answer to it is a larger SocketSendBufferBytes. Under
+		// bundling an accepted message has joined the pending bundle, and flushing that is the library's.
 		if (!Sent.ok() && Sent.error() == crowdy::Errc::WouldBlock)
 		{
 			return;
@@ -549,6 +550,16 @@ struct FCrowdyCppReplication::FImpl
 		for (const FCrowdyCppQueuedSend& Send : DrainBatch)
 		{
 			PerformSend(Send);
+		}
+
+		// A drain is this thread's frame boundary: everything it just handed to the library leaves now rather
+		// than at the end of the bundle window. A no-op with nothing pending or bundling off. A full kernel
+		// buffer keeps the bundle pending, and the library's pump then returns without waiting so it can retry;
+		// one window of sleep keeps that retry at the normal pass cadence instead of a spin until the buffer
+		// drains.
+		if (Connection && Connection->flushSends().code == crowdy::Errc::WouldBlock)
+		{
+			FPlatformProcess::Sleep(0.001f);
 		}
 
 		// Outside the lock, and only the pump thread reaches here. Reset keeps the array's own allocation
@@ -754,6 +765,8 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 		Library.ringCapacity = static_cast<std::size_t>(FMath::Clamp(Config.RingCapacity, 16, 65536));
 		Library.socketRecvBufferBytes = Config.SocketRecvBufferBytes;
 		Library.socketSendBufferBytes = Config.SocketSendBufferBytes;
+		Library.bundleSends = Config.bBundleSends;
+		Library.bundleWindowMs = FMath::Max(Config.BundleWindowMs, 0);
 
 		Owned.Connection = MakeUnique<crowdy::replication::Connection>(
 			std::move(Library), Owned.Provider, crowdy::core::defaultCrypto());
@@ -1379,6 +1392,8 @@ FCrowdyCppReplicationStats FCrowdyCppReplication::GetStats() const
 		Out.RingDropped = static_cast<int64>(Stats.ringDropped);
 		Out.SendsDeferred = static_cast<int64>(Stats.sendsDeferred);
 		Out.SendsFailed = static_cast<int64>(Stats.sendsFailed);
+		Out.BundlesSent = static_cast<int64>(Stats.bundlesSent);
+		Out.MessagesDropped = static_cast<int64>(Stats.messagesDropped);
 		Out.Reconnects = static_cast<int64>(Stats.reconnects);
 		Out.LastServerEpochMs = Stats.lastServerEpochMs;
 	}

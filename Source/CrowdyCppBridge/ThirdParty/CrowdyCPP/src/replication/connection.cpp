@@ -134,24 +134,31 @@ Status Connection::connect() {
 void Connection::disconnect() {
   running_.store(false, std::memory_order_release);
   if (netThread_.joinable()) netThread_.join();
+  // Whatever the last frame queued goes out before the socket does.
+  (void)flushSends();
   socket_.close();
   if (state() != ConnState::Closed) setState(ConnState::Closed);
 }
 
 // ---------------------------------------------------------------------------
 // Send path
+//
+// Every send*() encodes one complete signed message and hands it to
+// transmit(). With Config::bundleSends off that is one datagram per message,
+// as it always was. With it on, transmit() appends the message to the pending
+// MESSAGE_BUNDLE and the datagram leaves when the window passes (net thread /
+// pump()), when the next message would not fit, on flushSends(), before an
+// AndWait starts waiting, and on disconnect. A bundle of one is sent
+// unwrapped: same bytes as before, no 3-byte wrapper for nothing.
 // ---------------------------------------------------------------------------
 
-Status Connection::transmit(const std::uint8_t* data, std::size_t len) {
+Status Connection::sendDatagram(const std::uint8_t* data, std::size_t len) {
   Status st = socket_.send(Bytes(data, len));
   if (st.ok()) {
     lastSendMs_ = clock_.monotonicMillis();
     std::lock_guard lock(statsMutex_);
     ++stats_.datagramsSent;
-    // Client datagrams carry exactly one message whose opcode is byte 0.
-    ++stats_.messagesSent;
     stats_.bytesSent += len;
-    if (len > 0) ++stats_.messagesSentByType[data[0]];
     return st;
   }
   // A deferred datagram never reached the wire, so it must not advance
@@ -164,6 +171,119 @@ Status Connection::transmit(const std::uint8_t* data, std::size_t len) {
     ++stats_.sendsFailed;
   }
   return st;
+}
+
+void Connection::countMessageSent(std::uint8_t type) {
+  std::lock_guard lock(statsMutex_);
+  ++stats_.messagesSent;
+  ++stats_.messagesSentByType[type];
+}
+
+Status Connection::transmit(const std::uint8_t* data, std::size_t len) {
+  if (len == 0) return Errc::InvalidArgument;
+
+  if (!config_.bundleSends) {
+    Status st = sendDatagram(data, len);
+    if (st.ok()) countMessageSent(data[0]);
+    return st;
+  }
+
+  std::lock_guard lock(bundleMutex_);
+  const std::int64_t now = clock_.monotonicMillis();
+
+  // Too big to travel inside any bundle: send what is pending, then this one
+  // alone. (The server does the same with an oversize notification.)
+  if (len > wire::kMaxBundleMemberSize) {
+    if (!bundle_.empty()) (void)flushBundleLocked();
+    Status st = sendDatagram(data, len);
+    if (st.ok()) countMessageSent(data[0]);
+    return st;
+  }
+
+  // A window of 0 means "next pass, no waiting" for the net thread / pump();
+  // it must not mean "every send flushes its predecessor" here, or nothing
+  // sent within one frame would ever share a datagram.
+  const bool expired = config_.bundleWindowMs > 0 && bundleExpiredLocked(now);
+  if (!bundle_.empty() && (expired || !bundle_.fits(len))) {
+    Status st = flushBundleLocked();
+    // A deferred flush leaves the bundle pending. If this message still fits
+    // behind it, take it; otherwise the caller sees the same WouldBlock an
+    // unbundled send would have.
+    if (!st.ok() && !bundle_.fits(len)) return st;
+  }
+
+  const bool opening = bundle_.empty();
+  if (opening) bundleOpenedMs_ = now;
+  if (!bundle_.append(Bytes(data, len))) return Errc::InvalidArgument;  // cannot happen
+  countMessageSent(data[0]);
+
+  // The net thread may be blocked in receive for longer than the window;
+  // tell it a bundle just opened so it re-times its wait. Without wake
+  // support the thread already bounds its wait (receiveWaitMs).
+  if (opening && !config_.manualPump) (void)socket_.wake();
+  return Errc::Ok;
+}
+
+bool Connection::bundleExpiredLocked(std::int64_t nowMono) const {
+  return nowMono - bundleOpenedMs_ >= static_cast<std::int64_t>(config_.bundleWindowMs);
+}
+
+Status Connection::flushBundleLocked() {
+  if (bundle_.empty()) return Errc::Ok;
+  const Bytes datagram = bundle_.datagram();
+  const bool wrapped = bundle_.count() > 1;
+  Status st = sendDatagram(datagram.data(), datagram.size());
+  if (st.ok()) {
+    if (wrapped) {
+      std::lock_guard lock(statsMutex_);
+      ++stats_.bundlesSent;
+    }
+    bundle_.reset();
+  } else if (st.code != Errc::WouldBlock) {
+    // A genuine fault: the messages are lost (sendsFailed moved once for the
+    // datagram; messagesDropped once per member, since messagesSent already
+    // counted them when they joined). A new bundle starts clean rather than
+    // re-failing the same bytes forever.
+    {
+      std::lock_guard lock(statsMutex_);
+      stats_.messagesDropped += bundle_.count();
+    }
+    bundle_.reset();
+  }
+  // WouldBlock: keep the bundle for the next flush attempt.
+  return st;
+}
+
+void Connection::flushExpiredBundle() {
+  if (!config_.bundleSends) return;
+  std::lock_guard lock(bundleMutex_);
+  if (!bundle_.empty() && bundleExpiredLocked(clock_.monotonicMillis())) {
+    (void)flushBundleLocked();
+  }
+}
+
+Status Connection::flushSends() {
+  if (!config_.bundleSends) return Errc::Ok;
+  std::lock_guard lock(bundleMutex_);
+  return flushBundleLocked();
+}
+
+int Connection::receiveWaitMs(int maxWaitMs) {
+  if (!config_.bundleSends) return maxWaitMs;
+  std::lock_guard lock(bundleMutex_);
+  if (bundle_.empty()) {
+    // Nothing pending. If the socket cannot be woken when a bundle opens,
+    // never sleep longer than one window so the window still means something.
+    if (!socket_.canWake()) {
+      const int window = config_.bundleWindowMs > 0 ? config_.bundleWindowMs : 1;
+      return window < maxWaitMs ? window : maxWaitMs;
+    }
+    return maxWaitMs;
+  }
+  const std::int64_t remaining =
+      bundleOpenedMs_ + config_.bundleWindowMs - clock_.monotonicMillis();
+  if (remaining <= 0) return 0;
+  return remaining < maxWaitMs ? static_cast<int>(remaining) : maxWaitMs;
 }
 
 Result<std::uint8_t> Connection::sendLongSpatial(MessageType type, const SpatialSend& p) {
@@ -468,6 +588,9 @@ void Connection::housekeeping() {
       std::lock_guard lock(statsMutex_);
       ++stats_.reconnects;
     }
+    // Pending sends were signed for the server we are leaving; get them out
+    // to it before the socket goes rather than to the next server.
+    (void)flushSends();
     socket_.close();
     Status st = doAssign();
     if (st.ok()) {
@@ -481,7 +604,11 @@ void Connection::housekeeping() {
 
 void Connection::netLoop() {
   while (running_.load(std::memory_order_acquire)) {
-    receiveBatch(20);
+    // Block for inbound traffic, but no longer than a pending bundle's window
+    // has left; a send that opens a bundle wakes this receive early so the
+    // wait is re-timed from the moment the bundle opened.
+    receiveBatch(receiveWaitMs(20));
+    flushExpiredBundle();
     housekeeping();
     if (state() == ConnState::Failed) break;
   }
@@ -489,13 +616,17 @@ void Connection::netLoop() {
 
 std::size_t Connection::pump(int timeoutMs) {
   if (!config_.manualPump) return 0;
-  const std::size_t n = receiveBatch(timeoutMs);
+  const std::size_t n = receiveBatch(receiveWaitMs(timeoutMs));
+  flushExpiredBundle();
   housekeeping();
   return n;
 }
 
 Connection::WaitOutcome Connection::waitForSequence(std::uint8_t sequence,
                                                     const core::ActorUuid& uuid, int timeoutMs) {
+  // Nothing can be echoed that has not left; the wait starts with the wire
+  // caught up to the sends made so far.
+  (void)flushSends();
   pendingWait_ = PendingWait{};
   pendingWait_.active = true;
   pendingWait_.sequence = sequence;

@@ -254,6 +254,20 @@ struct CrowdyStudioProjectRevision {
   std::string savedAt;
 };
 
+/// Where a project's files are authored. Every project starts as Studio; its
+/// owner may bind a GitHub repository in hosted Studio, after which the
+/// repository is the working tree and `files` is the server's mirror of it at
+/// `github->sha`. GitHub is never required.
+enum class CrowdyStudioProjectSource { Studio, GitHub };
+
+struct CrowdyStudioProjectGitHub {
+  std::string owner;
+  std::string repo;
+  std::string branch;
+  /// Commit the mirror is at; a bound deploy pins it as `commitSha`.
+  std::optional<std::string> sha;
+};
+
 struct CrowdyStudioProject {
   std::string projectId;
   std::string appId;
@@ -269,6 +283,8 @@ struct CrowdyStudioProject {
   std::optional<std::string> archivedAt;
   int fileCount = 0;
   std::string totalBytes;
+  CrowdyStudioProjectSource source = CrowdyStudioProjectSource::Studio;
+  std::optional<CrowdyStudioProjectGitHub> github;
   std::string createdAt;
   std::string updatedAt;
 };

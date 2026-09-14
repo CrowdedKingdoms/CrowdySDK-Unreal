@@ -92,6 +92,9 @@ class GameModelAPI : public DomainBase {
   void seedAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
     studioAsync("GameModelSeed", input, std::move(cb));
   }
+  /// Input may include bindPolicyJson (who may claim a bindingKey on
+  /// ensureContainer). Omit to leave the type unbound. Authoring surface
+  /// only — do not write live Titan Assault policies from tooling.
   graphql::Json upsertContainerType(const graphql::JVal& input) const {
     return studio("GameModelUpsertContainerType", input);
   }

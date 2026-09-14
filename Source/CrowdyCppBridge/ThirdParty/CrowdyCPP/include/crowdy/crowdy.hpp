@@ -10,14 +10,6 @@
 ///   crowdy::kit                 — Game Kit (blueprints + runtime helpers)
 
 #include "crowdy/client.hpp"
-#ifndef CROWDY_NO_EXCEPTIONS
-#include "crowdy/agent/client_runtime.hpp"
-#include "crowdy/agent/controller.hpp"
-#include "crowdy/agent/native_browser_dispatcher.hpp"
-#include "crowdy/agent/native_tool_dispatcher.hpp"
-#include "crowdy/agent/registry.hpp"
-#include "crowdy/agent/transport.hpp"
-#endif
 #include "crowdy/domains/admin.hpp"
 #include "crowdy/domains/operator.hpp"
 #include "crowdy/generated/enums.hpp"
@@ -34,11 +26,9 @@
 #include "crowdy/session/world_session.hpp"
 #include "crowdy/studio/layout.hpp"
 #ifndef CROWDY_NO_EXCEPTIONS
-#include "crowdy/studio/agent_projection.hpp"
 #include "crowdy/studio/controller.hpp"
 #include "crowdy/studio/diagnostics.hpp"
 #include "crowdy/studio/editor.hpp"
-#include "crowdy/studio/host_adapter.hpp"
 #include "crowdy/studio/integration.hpp"
 #include "crowdy/studio/runtime.hpp"
 #endif

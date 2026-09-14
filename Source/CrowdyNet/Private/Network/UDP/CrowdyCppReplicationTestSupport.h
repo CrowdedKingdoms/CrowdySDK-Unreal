@@ -114,6 +114,39 @@ namespace CrowdyReplicationTestSupport
 	}
 
 	/**
+	 * The complete messages one client datagram carries: the datagram itself, or the members of a MESSAGE_BUNDLE
+	 * ([2]{[u16 LE length][message]}...). Written against the wire format rather than the library's reader so the
+	 * framing the library produces is checked by something it did not write.
+	 */
+	inline TArray<TArray<uint8>> SplitBundle(const TArray<uint8>& Datagram)
+	{
+		TArray<TArray<uint8>> Members;
+		if (Datagram.Num() == 0)
+		{
+			return Members;
+		}
+		if (Datagram[0] != static_cast<uint8>(ECrowdyMessageType::MESSAGE_BUNDLE))
+		{
+			Members.Add(Datagram);
+			return Members;
+		}
+
+		int32 Offset = 1;
+		while (Offset + 2 <= Datagram.Num())
+		{
+			const int32 Length = Datagram[Offset] | (Datagram[Offset + 1] << 8);
+			Offset += 2;
+			if (Length == 0 || Offset + Length > Datagram.Num())
+			{
+				break;
+			}
+			Members.Emplace(Datagram.GetData() + Offset, Length);
+			Offset += Length;
+		}
+		return Members;
+	}
+
+	/**
 	 * A bound local socket standing in for the replication server, so a send can be read back off the wire and
 	 * compared byte for byte, and so a frame can be pushed the other way to exercise the receive path.
 	 */
@@ -205,18 +238,21 @@ namespace CrowdyReplicationTestSupport
 		}
 
 		/**
-		 * Read datagrams until one ends in the wanted sequence number. Identifying the datagram by its own content
-		 * rather than by how many were sent before it leaves nothing to race.
+		 * Read messages until one ends in the wanted sequence number. Identifying the message by its own content
+		 * rather than by how many were sent before it leaves nothing to race, and looking inside bundles leaves
+		 * nothing to the drain boundary: which messages share a datagram depends on when the network thread ran.
 		 */
 		TArray<uint8> ReceiveWithSequence(const uint8 Sequence, const double TimeoutSeconds = DefaultWaitSeconds)
 		{
 			const double Deadline = FPlatformTime::Seconds() + TimeoutSeconds;
 			while (FPlatformTime::Seconds() < Deadline)
 			{
-				const TArray<uint8> Datagram = Receive(0.1);
-				if (Datagram.Num() > 0 && Datagram.Last() == Sequence)
+				for (const TArray<uint8>& Message : SplitBundle(Receive(0.1)))
 				{
-					return Datagram;
+					if (Message.Num() > 0 && Message.Last() == Sequence)
+					{
+						return Message;
+					}
 				}
 			}
 			return TArray<uint8>();
@@ -240,6 +276,9 @@ namespace CrowdyReplicationTestSupport
 		FLoopbackServer Server;
 		TSharedPtr<FCrowdyCppReplication> Connection;
 
+		/** The production default unless a test is about the other framing. Set before Open. */
+		bool bBundleSends = true;
+
 		/**
 		 * A test that deliberately provokes a re-assignment should pass zero for the floor, so the re-assignment
 		 * completes instead of waiting out several seconds and then reporting a failure when the test tears down.
@@ -260,6 +299,7 @@ namespace CrowdyReplicationTestSupport
 			Config.RefreshLeadMs = 0;
 			Config.WatchdogSilenceMs = 0;
 			Config.MinReassignIntervalMs = MinReassignIntervalMs;
+			Config.bBundleSends = bBundleSends;
 
 			Connection = FCrowdyCppReplication::Make(Config, AssignTo(Server.Port), NeverRefresh());
 			if (!Connection.IsValid())

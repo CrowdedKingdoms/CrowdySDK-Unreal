@@ -38,9 +38,6 @@ public class CrowdyCppBridge : ModuleRules
 		string ThirdParty = Path.Combine(ModuleDirectory, "ThirdParty", "CrowdyCPP");
 		PublicIncludePaths.Add(Path.Combine(ThirdParty, "include"));
 		PrivateIncludePaths.Add(Path.Combine(ThirdParty, "third_party", "yyjson"));
-		// Headers the library's own build generates from committed data files; the
-		// vendoring script reproduces that step (see sync-crowdycpp.ps1).
-		PrivateIncludePaths.Add(Path.Combine(ThirdParty, "generated"));
 
 		// Mirrors the library's own CROWDY_WITH_OPENSSL build. Without it the
 		// client's constructor falls back to the provider whose every primitive

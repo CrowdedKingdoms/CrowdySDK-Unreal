@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: 2fc91f3383d035780ab0df48f5c429b5134af047e1808a2c7d2ac0572478fe86
-// operations sha256: aace4a3e955d5e4a1f6af1852e917079f9c09b1ede47d90a495807e9f3850a71
+// schema.gql sha256: 8af0b37413ccd19f75dfdc6a1688970f1cd9cad5d136e9b5a7d563936608eac4
+// operations sha256: 331d7386d4472958c60e238354b662e67d46abaf0af5429a123549c38bbd0ffb
 
 #pragma once
 
@@ -1652,6 +1652,8 @@ inline constexpr std::string_view kWalletBalanceDocument = R"gql(query WalletBal
   walletBalance(orgId: $orgId) {
     walletId
     orgId
+    balanceMicrousd
+    holdsMicrousd
     balanceCents
     currency
     createdAt
@@ -1662,6 +1664,8 @@ inline constexpr std::string_view kWalletBalanceIsolatedDocument = R"gql(query W
   walletBalance(orgId: $orgId) {
     walletId
     orgId
+    balanceMicrousd
+    holdsMicrousd
     balanceCents
     currency
     createdAt
@@ -1676,6 +1680,8 @@ inline constexpr std::string_view kWalletTransactionsDocument = R"gql(query Wall
     transactionId
     walletId
     orgId
+    amountMicrousd
+    balanceAfterMicrousd
     amountCents
     balanceAfter
     transactionType
@@ -1698,6 +1704,8 @@ query WalletTransactionsConnection(
         transactionId
         walletId
         orgId
+        amountMicrousd
+        balanceAfterMicrousd
         amountCents
         balanceAfter
         transactionType
@@ -1721,6 +1729,8 @@ inline constexpr std::string_view kWalletTransactionsIsolatedDocument = R"gql(qu
     transactionId
     walletId
     orgId
+    amountMicrousd
+    balanceAfterMicrousd
     amountCents
     balanceAfter
     transactionType
@@ -1739,6 +1749,8 @@ inline constexpr std::string_view kWalletTransactionsConnectionIsolatedDocument 
         transactionId
         walletId
         orgId
+        amountMicrousd
+        balanceAfterMicrousd
         amountCents
         balanceAfter
         transactionType
@@ -3729,6 +3741,11 @@ inline constexpr std::string_view kCrowdyStudioDocument = R"gql(fragment CrowdyS
   archivedAt
   fileCount
   totalBytes
+  source
+  githubOwner
+  githubRepo
+  githubBranch
+  githubSha
   createdAt
   updatedAt
   files {
@@ -3958,6 +3975,11 @@ fragment CrowdyStudioProjectFields on CrowdyStudioProject {
   archivedAt
   fileCount
   totalBytes
+  source
+  githubOwner
+  githubRepo
+  githubBranch
+  githubSha
   createdAt
   updatedAt
   files {
@@ -3997,6 +4019,11 @@ fragment CrowdyStudioProjectFields on CrowdyStudioProject {
   archivedAt
   fileCount
   totalBytes
+  source
+  githubOwner
+  githubRepo
+  githubBranch
+  githubSha
   createdAt
   updatedAt
   files {
@@ -4036,6 +4063,11 @@ fragment CrowdyStudioProjectFields on CrowdyStudioProject {
   archivedAt
   fileCount
   totalBytes
+  source
+  githubOwner
+  githubRepo
+  githubBranch
+  githubSha
   createdAt
   updatedAt
   files {
@@ -4075,6 +4107,11 @@ fragment CrowdyStudioProjectFields on CrowdyStudioProject {
   archivedAt
   fileCount
   totalBytes
+  source
+  githubOwner
+  githubRepo
+  githubBranch
+  githubSha
   createdAt
   updatedAt
   files {
@@ -4114,6 +4151,11 @@ fragment CrowdyStudioProjectFields on CrowdyStudioProject {
   archivedAt
   fileCount
   totalBytes
+  source
+  githubOwner
+  githubRepo
+  githubBranch
+  githubSha
   createdAt
   updatedAt
   files {
@@ -4153,6 +4195,11 @@ fragment CrowdyStudioProjectFields on CrowdyStudioProject {
   archivedAt
   fileCount
   totalBytes
+  source
+  githubOwner
+  githubRepo
+  githubBranch
+  githubSha
   createdAt
   updatedAt
   files {
@@ -4294,6 +4341,11 @@ fragment CrowdyStudioProjectFields on CrowdyStudioProject {
   archivedAt
   fileCount
   totalBytes
+  source
+  githubOwner
+  githubRepo
+  githubBranch
+  githubSha
   createdAt
   updatedAt
   files {
@@ -4359,6 +4411,11 @@ fragment CrowdyStudioProjectFields on CrowdyStudioProject {
   archivedAt
   fileCount
   totalBytes
+  source
+  githubOwner
+  githubRepo
+  githubBranch
+  githubSha
   createdAt
   updatedAt
   files {
@@ -4397,1668 +4454,6 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 }  // namespace crowdyStudio
 
 namespace crowdyStudioAgent {
-
-/// crowdyStudioAgent/CrowdyStudioAgent.graphql
-inline constexpr std::string_view kCrowdyStudioAgentDocument = R"gql(fragment CrowdyAgentErrorFields on AgentError {
-  code
-  message
-  retryable
-  remediation
-  field
-  requiredScope
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-}
-
-fragment CrowdyAgentSessionFields on AgentSession {
-  contractVersion
-  sessionId
-  appId
-  projectId
-  gridId
-  mode
-  requestedModel
-  model
-  resolvedModel
-  status
-  providerDataConsent
-  registryDigest
-  providerPolicyVersion
-  appPolicyVersion
-  contextVersion
-  currentClientEpoch
-  clientEpoch
-  lastEventSeq
-  currentRun {
-    ...CrowdyAgentRunFields
-  }
-  activeLeases {
-    ...CrowdyAgentLeaseFields
-  }
-  pendingApproval {
-    ...CrowdyAgentApprovalFields
-  }
-  createdAt
-  updatedAt
-  closedAt
-}
-
-fragment CrowdyAgentBudgetFields on AgentBudget {
-  dimensions {
-    name
-    scope
-    limit
-    reserved
-    consumed
-    remaining
-    unit
-  }
-  resetAt
-  platformFunded
-  payer
-}
-
-fragment CrowdyAgentToolDescriptorFields on AgentToolDescriptor {
-  schemaVersion
-  name
-  wireName
-  version
-  summary
-  executor
-  modes
-  risk
-  riskEffects
-  riskReversible
-  scopes
-  scopeRequirementsJson
-  approvalRequired
-  approvalPolicy
-  approvalReasons
-  approvalMaxTtlSeconds
-  idempotencyClass
-  idempotencyKeyScope
-  timeoutMs
-  inputSchemaJson
-  outputSchemaJson
-  inputRedactionJson
-  outputRedactionJson
-  maxPersistedBytes
-  descriptorJson
-  descriptorDigest
-}
-
-fragment CrowdyAgentEventBaseFields on AgentEventBase {
-  protocolVersion
-  eventId
-  sessionId
-  seq
-  type
-  runId
-  version
-  createdAt
-}
-
-fragment CrowdyAgentEventFields on CrowdyStudioAgentEvent {
-  __typename
-  ...CrowdyAgentEventBaseFields
-  ... on AgentLifecycleEvent {
-    lifecycleMode: mode
-    lifecycleClientEpoch: clientEpoch
-    lifecycleReplayAfterSeq: replayAfterSeq
-    lifecycleReason: reason
-    lifecycleContextVersion: contextVersion
-  }
-  ... on AgentMessageEvent {
-    messageEventId: messageId
-    messageRole: role
-    messageContent: content
-  }
-  ... on AgentRunEvent {
-    runStatus: status
-    runCode: code
-    runReason: reason
-    runError: error {
-      ...CrowdyAgentErrorFields
-    }
-  }
-  ... on AgentToolEvent {
-    toolEventCallId: toolCallId
-    toolEventName: toolName
-    toolEventVersion: toolVersion
-    toolStatus: status
-    toolSafeSummary: safeSummary
-    toolDescriptorDigest: descriptorDigest
-    toolArgumentHash: argumentHash
-    toolExecutor: executor
-    toolContextVersion: contextVersion
-    toolClientEpoch: clientEpoch
-    toolArgumentsJson: argumentsJson
-    toolLeaseId: leaseId
-    toolApprovalGrant: approvalGrant
-    toolIdempotencyKey: idempotencyKey
-    toolResultJson: resultJson
-    toolInvocation: invocation {
-      protocolVersion
-      sessionId
-      runId
-      toolCallId
-      name
-      version
-      descriptorDigest
-      argumentsJson
-      argumentHash
-      contextVersion
-      clientEpoch
-      leaseId
-      approvalGrant
-      idempotencyKey
-      deadline
-    }
-    toolResult: result {
-      protocolVersion
-      toolCallId
-      status
-      outputJson
-      error {
-        ...CrowdyAgentErrorFields
-      }
-      observedContextVersion
-      startedAt
-      finishedAt
-    }
-    toolError: error {
-      ...CrowdyAgentErrorFields
-    }
-    toolDeadline: deadline
-  }
-  ... on AgentApprovalEvent {
-    approvalEventId: approvalId
-    approvalToolCallId: toolCallId
-    approvalArgumentHash: argumentHash
-    approvalStatus: status
-    approvalSafeSummary: safeSummary
-    approvalReasons: reasons
-    approvalExpiresAt: expiresAt
-  }
-  ... on AgentLeaseEvent {
-    leaseEventId: leaseId
-    leaseKind: kind
-    leaseStatus: status
-    leaseClientEpoch: clientEpoch
-    leaseScopes: scopes
-    leaseHolder: holder
-    leaseContextVersion: contextVersion
-    leaseControlledEntityId: controlledEntityId
-    leaseHostCapabilityRevision: hostCapabilityRevision
-    leaseExpectedProjectRevision: expectedProjectRevision
-    leaseGrantedAt: grantedAt
-    leaseExpiresAt: expiresAt
-    leaseReason: reason
-  }
-  ... on AgentCheckpointEvent {
-    checkpointEventId: checkpointId
-    checkpointProjectRevision: projectRevision
-    checkpointContentHash: contentHash
-    checkpointReason: reason
-    checkpointFiles: files {
-      target
-      path
-      contentHash
-      byteLength
-    }
-    checkpointRestoredAt: restoredAt
-  }
-  ... on AgentBudgetEvent {
-    budgetSnapshot: budget {
-      ...CrowdyAgentBudgetFields
-    }
-  }
-}
-
-query CrowdyStudioAgentSession($sessionId: String!) {
-  crowdyStudioAgentSession(sessionId: $sessionId) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-query CrowdyStudioAgentSessions($appId: BigInt!, $after: String, $first: Int) {
-  crowdyStudioAgentSessions(appId: $appId, after: $after, first: $first) {
-    edges {
-      cursor
-      node {
-        ...CrowdyAgentSessionFields
-      }
-    }
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
-    nodes {
-      ...CrowdyAgentSessionFields
-    }
-    endCursor
-    hasNextPage
-  }
-}
-
-query CrowdyStudioAgentHistory(
-  $sessionId: String!
-  $afterSeq: BigInt
-  $first: Int
-) {
-  crowdyStudioAgentHistory(
-    sessionId: $sessionId
-    afterSeq: $afterSeq
-    first: $first
-  ) {
-    edges {
-      cursor
-      node {
-        ...CrowdyAgentEventFields
-      }
-    }
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
-    events {
-      ...CrowdyAgentEventFields
-    }
-    hasMore
-  }
-}
-
-query CrowdyStudioAgentToolDescriptors($sessionId: String!) {
-  crowdyStudioAgentToolDescriptors(sessionId: $sessionId) {
-    registryDigest
-    tools {
-      ...CrowdyAgentToolDescriptorFields
-    }
-  }
-}
-
-query CrowdyStudioAgentBudget($sessionId: String!) {
-  crowdyStudioAgentBudget(sessionId: $sessionId) {
-    ...CrowdyAgentBudgetFields
-  }
-}
-
-mutation CrowdyStudioAgentCreateSession($input: CreateAgentSessionInput!) {
-  crowdyStudioAgentCreateSession(input: $input) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-mutation CrowdyStudioAgentAttachClient($input: AttachAgentClientInput!) {
-  crowdyStudioAgentAttachClient(input: $input) {
-    session {
-      ...CrowdyAgentSessionFields
-    }
-    clientEpoch
-    replayAfterSeq
-  }
-}
-
-mutation CrowdyStudioAgentSetMode($input: SetAgentModeInput!) {
-  crowdyStudioAgentSetMode(input: $input) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-mutation CrowdyStudioAgentAcknowledgeEvents(
-  $input: AcknowledgeAgentEventsInput!
-) {
-  crowdyStudioAgentAcknowledgeEvents(input: $input) {
-    throughSeq
-  }
-}
-
-mutation CrowdyStudioAgentHeartbeat($input: AgentHeartbeatInput!) {
-  crowdyStudioAgentHeartbeat(input: $input) {
-    serverTime
-    playLeaseFreshUntil
-    workspaceLeaseExpiresAt
-  }
-}
-
-mutation CrowdyStudioAgentSendMessage($input: SendAgentMessageInput!) {
-  crowdyStudioAgentSendMessage(input: $input) {
-    ...CrowdyAgentRunFields
-  }
-}
-
-mutation CrowdyStudioAgentApproveTool($input: DecideAgentToolInput!) {
-  crowdyStudioAgentApproveTool(input: $input) {
-    ...CrowdyAgentApprovalFields
-  }
-}
-
-mutation CrowdyStudioAgentRejectTool($input: DecideAgentToolInput!) {
-  crowdyStudioAgentRejectTool(input: $input) {
-    ...CrowdyAgentApprovalFields
-  }
-}
-
-mutation CrowdyStudioAgentToolResult($input: AgentToolResultInput!) {
-  crowdyStudioAgentToolResult(input: $input) {
-    toolCallId
-    toolName
-    status
-    argumentHash
-    error {
-      ...CrowdyAgentErrorFields
-    }
-    accepted
-  }
-}
-
-mutation CrowdyStudioAgentGrantLease($input: GrantAgentLeaseInput!) {
-  crowdyStudioAgentGrantLease(input: $input) {
-    ...CrowdyAgentLeaseFields
-  }
-}
-
-mutation CrowdyStudioAgentRevokeLease($input: RevokeAgentLeaseInput!) {
-  crowdyStudioAgentRevokeLease(input: $input) {
-    ...CrowdyAgentLeaseFields
-  }
-}
-
-mutation CrowdyStudioAgentPause($input: AgentSessionControlInput!) {
-  crowdyStudioAgentPause(input: $input) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-mutation CrowdyStudioAgentResume($input: AgentSessionControlInput!) {
-  crowdyStudioAgentResume(input: $input) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-mutation CrowdyStudioAgentCancelRun($input: CancelAgentRunInput!) {
-  crowdyStudioAgentCancelRun(input: $input) {
-    ...CrowdyAgentRunFields
-  }
-}
-
-mutation CrowdyStudioAgentCloseSession($input: AgentSessionControlInput!) {
-  crowdyStudioAgentCloseSession(input: $input) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-subscription CrowdyStudioAgentEvents(
-  $sessionId: String!
-  $afterSeq: BigInt!
-  $clientEpoch: BigInt!
-) {
-  crowdyStudioAgentEvents(
-    sessionId: $sessionId
-    afterSeq: $afterSeq
-    clientEpoch: $clientEpoch
-  ) {
-    ...CrowdyAgentEventFields
-  }
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentSessionIsolatedDocument = R"gql(query CrowdyStudioAgentSession($sessionId: String!) {
-  crowdyStudioAgentSession(sessionId: $sessionId) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-fragment CrowdyAgentSessionFields on AgentSession {
-  contractVersion
-  sessionId
-  appId
-  projectId
-  gridId
-  mode
-  requestedModel
-  model
-  resolvedModel
-  status
-  providerDataConsent
-  registryDigest
-  providerPolicyVersion
-  appPolicyVersion
-  contextVersion
-  currentClientEpoch
-  clientEpoch
-  lastEventSeq
-  currentRun {
-    ...CrowdyAgentRunFields
-  }
-  activeLeases {
-    ...CrowdyAgentLeaseFields
-  }
-  pendingApproval {
-    ...CrowdyAgentApprovalFields
-  }
-  createdAt
-  updatedAt
-  closedAt
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentSessionOperationName = "CrowdyStudioAgentSession";
-inline constexpr std::string_view kCrowdyStudioAgentSessionsIsolatedDocument = R"gql(query CrowdyStudioAgentSessions($appId: BigInt!, $after: String, $first: Int) {
-  crowdyStudioAgentSessions(appId: $appId, after: $after, first: $first) {
-    edges {
-      cursor
-      node {
-        ...CrowdyAgentSessionFields
-      }
-    }
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
-    nodes {
-      ...CrowdyAgentSessionFields
-    }
-    endCursor
-    hasNextPage
-  }
-}
-
-fragment CrowdyAgentSessionFields on AgentSession {
-  contractVersion
-  sessionId
-  appId
-  projectId
-  gridId
-  mode
-  requestedModel
-  model
-  resolvedModel
-  status
-  providerDataConsent
-  registryDigest
-  providerPolicyVersion
-  appPolicyVersion
-  contextVersion
-  currentClientEpoch
-  clientEpoch
-  lastEventSeq
-  currentRun {
-    ...CrowdyAgentRunFields
-  }
-  activeLeases {
-    ...CrowdyAgentLeaseFields
-  }
-  pendingApproval {
-    ...CrowdyAgentApprovalFields
-  }
-  createdAt
-  updatedAt
-  closedAt
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentSessionsOperationName = "CrowdyStudioAgentSessions";
-inline constexpr std::string_view kCrowdyStudioAgentHistoryIsolatedDocument = R"gql(query CrowdyStudioAgentHistory($sessionId: String!, $afterSeq: BigInt, $first: Int) {
-  crowdyStudioAgentHistory(
-    sessionId: $sessionId
-    afterSeq: $afterSeq
-    first: $first
-  ) {
-    edges {
-      cursor
-      node {
-        ...CrowdyAgentEventFields
-      }
-    }
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
-    events {
-      ...CrowdyAgentEventFields
-    }
-    hasMore
-  }
-}
-
-fragment CrowdyAgentEventFields on CrowdyStudioAgentEvent {
-  __typename
-  ...CrowdyAgentEventBaseFields
-  ... on AgentLifecycleEvent {
-    lifecycleMode: mode
-    lifecycleClientEpoch: clientEpoch
-    lifecycleReplayAfterSeq: replayAfterSeq
-    lifecycleReason: reason
-    lifecycleContextVersion: contextVersion
-  }
-  ... on AgentMessageEvent {
-    messageEventId: messageId
-    messageRole: role
-    messageContent: content
-  }
-  ... on AgentRunEvent {
-    runStatus: status
-    runCode: code
-    runReason: reason
-    runError: error {
-      ...CrowdyAgentErrorFields
-    }
-  }
-  ... on AgentToolEvent {
-    toolEventCallId: toolCallId
-    toolEventName: toolName
-    toolEventVersion: toolVersion
-    toolStatus: status
-    toolSafeSummary: safeSummary
-    toolDescriptorDigest: descriptorDigest
-    toolArgumentHash: argumentHash
-    toolExecutor: executor
-    toolContextVersion: contextVersion
-    toolClientEpoch: clientEpoch
-    toolArgumentsJson: argumentsJson
-    toolLeaseId: leaseId
-    toolApprovalGrant: approvalGrant
-    toolIdempotencyKey: idempotencyKey
-    toolResultJson: resultJson
-    toolInvocation: invocation {
-      protocolVersion
-      sessionId
-      runId
-      toolCallId
-      name
-      version
-      descriptorDigest
-      argumentsJson
-      argumentHash
-      contextVersion
-      clientEpoch
-      leaseId
-      approvalGrant
-      idempotencyKey
-      deadline
-    }
-    toolResult: result {
-      protocolVersion
-      toolCallId
-      status
-      outputJson
-      error {
-        ...CrowdyAgentErrorFields
-      }
-      observedContextVersion
-      startedAt
-      finishedAt
-    }
-    toolError: error {
-      ...CrowdyAgentErrorFields
-    }
-    toolDeadline: deadline
-  }
-  ... on AgentApprovalEvent {
-    approvalEventId: approvalId
-    approvalToolCallId: toolCallId
-    approvalArgumentHash: argumentHash
-    approvalStatus: status
-    approvalSafeSummary: safeSummary
-    approvalReasons: reasons
-    approvalExpiresAt: expiresAt
-  }
-  ... on AgentLeaseEvent {
-    leaseEventId: leaseId
-    leaseKind: kind
-    leaseStatus: status
-    leaseClientEpoch: clientEpoch
-    leaseScopes: scopes
-    leaseHolder: holder
-    leaseContextVersion: contextVersion
-    leaseControlledEntityId: controlledEntityId
-    leaseHostCapabilityRevision: hostCapabilityRevision
-    leaseExpectedProjectRevision: expectedProjectRevision
-    leaseGrantedAt: grantedAt
-    leaseExpiresAt: expiresAt
-    leaseReason: reason
-  }
-  ... on AgentCheckpointEvent {
-    checkpointEventId: checkpointId
-    checkpointProjectRevision: projectRevision
-    checkpointContentHash: contentHash
-    checkpointReason: reason
-    checkpointFiles: files {
-      target
-      path
-      contentHash
-      byteLength
-    }
-    checkpointRestoredAt: restoredAt
-  }
-  ... on AgentBudgetEvent {
-    budgetSnapshot: budget {
-      ...CrowdyAgentBudgetFields
-    }
-  }
-}
-
-fragment CrowdyAgentEventBaseFields on AgentEventBase {
-  protocolVersion
-  eventId
-  sessionId
-  seq
-  type
-  runId
-  version
-  createdAt
-}
-
-fragment CrowdyAgentErrorFields on AgentError {
-  code
-  message
-  retryable
-  remediation
-  field
-  requiredScope
-}
-
-fragment CrowdyAgentBudgetFields on AgentBudget {
-  dimensions {
-    name
-    scope
-    limit
-    reserved
-    consumed
-    remaining
-    unit
-  }
-  resetAt
-  platformFunded
-  payer
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentHistoryOperationName = "CrowdyStudioAgentHistory";
-inline constexpr std::string_view kCrowdyStudioAgentToolDescriptorsIsolatedDocument = R"gql(query CrowdyStudioAgentToolDescriptors($sessionId: String!) {
-  crowdyStudioAgentToolDescriptors(sessionId: $sessionId) {
-    registryDigest
-    tools {
-      ...CrowdyAgentToolDescriptorFields
-    }
-  }
-}
-
-fragment CrowdyAgentToolDescriptorFields on AgentToolDescriptor {
-  schemaVersion
-  name
-  wireName
-  version
-  summary
-  executor
-  modes
-  risk
-  riskEffects
-  riskReversible
-  scopes
-  scopeRequirementsJson
-  approvalRequired
-  approvalPolicy
-  approvalReasons
-  approvalMaxTtlSeconds
-  idempotencyClass
-  idempotencyKeyScope
-  timeoutMs
-  inputSchemaJson
-  outputSchemaJson
-  inputRedactionJson
-  outputRedactionJson
-  maxPersistedBytes
-  descriptorJson
-  descriptorDigest
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentToolDescriptorsOperationName = "CrowdyStudioAgentToolDescriptors";
-inline constexpr std::string_view kCrowdyStudioAgentBudgetIsolatedDocument = R"gql(query CrowdyStudioAgentBudget($sessionId: String!) {
-  crowdyStudioAgentBudget(sessionId: $sessionId) {
-    ...CrowdyAgentBudgetFields
-  }
-}
-
-fragment CrowdyAgentBudgetFields on AgentBudget {
-  dimensions {
-    name
-    scope
-    limit
-    reserved
-    consumed
-    remaining
-    unit
-  }
-  resetAt
-  platformFunded
-  payer
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentBudgetOperationName = "CrowdyStudioAgentBudget";
-inline constexpr std::string_view kCrowdyStudioAgentCreateSessionIsolatedDocument = R"gql(mutation CrowdyStudioAgentCreateSession($input: CreateAgentSessionInput!) {
-  crowdyStudioAgentCreateSession(input: $input) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-fragment CrowdyAgentSessionFields on AgentSession {
-  contractVersion
-  sessionId
-  appId
-  projectId
-  gridId
-  mode
-  requestedModel
-  model
-  resolvedModel
-  status
-  providerDataConsent
-  registryDigest
-  providerPolicyVersion
-  appPolicyVersion
-  contextVersion
-  currentClientEpoch
-  clientEpoch
-  lastEventSeq
-  currentRun {
-    ...CrowdyAgentRunFields
-  }
-  activeLeases {
-    ...CrowdyAgentLeaseFields
-  }
-  pendingApproval {
-    ...CrowdyAgentApprovalFields
-  }
-  createdAt
-  updatedAt
-  closedAt
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentCreateSessionOperationName = "CrowdyStudioAgentCreateSession";
-inline constexpr std::string_view kCrowdyStudioAgentAttachClientIsolatedDocument = R"gql(mutation CrowdyStudioAgentAttachClient($input: AttachAgentClientInput!) {
-  crowdyStudioAgentAttachClient(input: $input) {
-    session {
-      ...CrowdyAgentSessionFields
-    }
-    clientEpoch
-    replayAfterSeq
-  }
-}
-
-fragment CrowdyAgentSessionFields on AgentSession {
-  contractVersion
-  sessionId
-  appId
-  projectId
-  gridId
-  mode
-  requestedModel
-  model
-  resolvedModel
-  status
-  providerDataConsent
-  registryDigest
-  providerPolicyVersion
-  appPolicyVersion
-  contextVersion
-  currentClientEpoch
-  clientEpoch
-  lastEventSeq
-  currentRun {
-    ...CrowdyAgentRunFields
-  }
-  activeLeases {
-    ...CrowdyAgentLeaseFields
-  }
-  pendingApproval {
-    ...CrowdyAgentApprovalFields
-  }
-  createdAt
-  updatedAt
-  closedAt
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentAttachClientOperationName = "CrowdyStudioAgentAttachClient";
-inline constexpr std::string_view kCrowdyStudioAgentSetModeIsolatedDocument = R"gql(mutation CrowdyStudioAgentSetMode($input: SetAgentModeInput!) {
-  crowdyStudioAgentSetMode(input: $input) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-fragment CrowdyAgentSessionFields on AgentSession {
-  contractVersion
-  sessionId
-  appId
-  projectId
-  gridId
-  mode
-  requestedModel
-  model
-  resolvedModel
-  status
-  providerDataConsent
-  registryDigest
-  providerPolicyVersion
-  appPolicyVersion
-  contextVersion
-  currentClientEpoch
-  clientEpoch
-  lastEventSeq
-  currentRun {
-    ...CrowdyAgentRunFields
-  }
-  activeLeases {
-    ...CrowdyAgentLeaseFields
-  }
-  pendingApproval {
-    ...CrowdyAgentApprovalFields
-  }
-  createdAt
-  updatedAt
-  closedAt
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentSetModeOperationName = "CrowdyStudioAgentSetMode";
-inline constexpr std::string_view kCrowdyStudioAgentAcknowledgeEventsIsolatedDocument = R"gql(mutation CrowdyStudioAgentAcknowledgeEvents($input: AcknowledgeAgentEventsInput!) {
-  crowdyStudioAgentAcknowledgeEvents(input: $input) {
-    throughSeq
-  }
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentAcknowledgeEventsOperationName = "CrowdyStudioAgentAcknowledgeEvents";
-inline constexpr std::string_view kCrowdyStudioAgentHeartbeatIsolatedDocument = R"gql(mutation CrowdyStudioAgentHeartbeat($input: AgentHeartbeatInput!) {
-  crowdyStudioAgentHeartbeat(input: $input) {
-    serverTime
-    playLeaseFreshUntil
-    workspaceLeaseExpiresAt
-  }
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentHeartbeatOperationName = "CrowdyStudioAgentHeartbeat";
-inline constexpr std::string_view kCrowdyStudioAgentSendMessageIsolatedDocument = R"gql(mutation CrowdyStudioAgentSendMessage($input: SendAgentMessageInput!) {
-  crowdyStudioAgentSendMessage(input: $input) {
-    ...CrowdyAgentRunFields
-  }
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentSendMessageOperationName = "CrowdyStudioAgentSendMessage";
-inline constexpr std::string_view kCrowdyStudioAgentApproveToolIsolatedDocument = R"gql(mutation CrowdyStudioAgentApproveTool($input: DecideAgentToolInput!) {
-  crowdyStudioAgentApproveTool(input: $input) {
-    ...CrowdyAgentApprovalFields
-  }
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentApproveToolOperationName = "CrowdyStudioAgentApproveTool";
-inline constexpr std::string_view kCrowdyStudioAgentRejectToolIsolatedDocument = R"gql(mutation CrowdyStudioAgentRejectTool($input: DecideAgentToolInput!) {
-  crowdyStudioAgentRejectTool(input: $input) {
-    ...CrowdyAgentApprovalFields
-  }
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentRejectToolOperationName = "CrowdyStudioAgentRejectTool";
-inline constexpr std::string_view kCrowdyStudioAgentToolResultIsolatedDocument = R"gql(mutation CrowdyStudioAgentToolResult($input: AgentToolResultInput!) {
-  crowdyStudioAgentToolResult(input: $input) {
-    toolCallId
-    toolName
-    status
-    argumentHash
-    error {
-      ...CrowdyAgentErrorFields
-    }
-    accepted
-  }
-}
-
-fragment CrowdyAgentErrorFields on AgentError {
-  code
-  message
-  retryable
-  remediation
-  field
-  requiredScope
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentToolResultOperationName = "CrowdyStudioAgentToolResult";
-inline constexpr std::string_view kCrowdyStudioAgentGrantLeaseIsolatedDocument = R"gql(mutation CrowdyStudioAgentGrantLease($input: GrantAgentLeaseInput!) {
-  crowdyStudioAgentGrantLease(input: $input) {
-    ...CrowdyAgentLeaseFields
-  }
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentGrantLeaseOperationName = "CrowdyStudioAgentGrantLease";
-inline constexpr std::string_view kCrowdyStudioAgentRevokeLeaseIsolatedDocument = R"gql(mutation CrowdyStudioAgentRevokeLease($input: RevokeAgentLeaseInput!) {
-  crowdyStudioAgentRevokeLease(input: $input) {
-    ...CrowdyAgentLeaseFields
-  }
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentRevokeLeaseOperationName = "CrowdyStudioAgentRevokeLease";
-inline constexpr std::string_view kCrowdyStudioAgentPauseIsolatedDocument = R"gql(mutation CrowdyStudioAgentPause($input: AgentSessionControlInput!) {
-  crowdyStudioAgentPause(input: $input) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-fragment CrowdyAgentSessionFields on AgentSession {
-  contractVersion
-  sessionId
-  appId
-  projectId
-  gridId
-  mode
-  requestedModel
-  model
-  resolvedModel
-  status
-  providerDataConsent
-  registryDigest
-  providerPolicyVersion
-  appPolicyVersion
-  contextVersion
-  currentClientEpoch
-  clientEpoch
-  lastEventSeq
-  currentRun {
-    ...CrowdyAgentRunFields
-  }
-  activeLeases {
-    ...CrowdyAgentLeaseFields
-  }
-  pendingApproval {
-    ...CrowdyAgentApprovalFields
-  }
-  createdAt
-  updatedAt
-  closedAt
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentPauseOperationName = "CrowdyStudioAgentPause";
-inline constexpr std::string_view kCrowdyStudioAgentResumeIsolatedDocument = R"gql(mutation CrowdyStudioAgentResume($input: AgentSessionControlInput!) {
-  crowdyStudioAgentResume(input: $input) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-fragment CrowdyAgentSessionFields on AgentSession {
-  contractVersion
-  sessionId
-  appId
-  projectId
-  gridId
-  mode
-  requestedModel
-  model
-  resolvedModel
-  status
-  providerDataConsent
-  registryDigest
-  providerPolicyVersion
-  appPolicyVersion
-  contextVersion
-  currentClientEpoch
-  clientEpoch
-  lastEventSeq
-  currentRun {
-    ...CrowdyAgentRunFields
-  }
-  activeLeases {
-    ...CrowdyAgentLeaseFields
-  }
-  pendingApproval {
-    ...CrowdyAgentApprovalFields
-  }
-  createdAt
-  updatedAt
-  closedAt
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentResumeOperationName = "CrowdyStudioAgentResume";
-inline constexpr std::string_view kCrowdyStudioAgentCancelRunIsolatedDocument = R"gql(mutation CrowdyStudioAgentCancelRun($input: CancelAgentRunInput!) {
-  crowdyStudioAgentCancelRun(input: $input) {
-    ...CrowdyAgentRunFields
-  }
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentCancelRunOperationName = "CrowdyStudioAgentCancelRun";
-inline constexpr std::string_view kCrowdyStudioAgentCloseSessionIsolatedDocument = R"gql(mutation CrowdyStudioAgentCloseSession($input: AgentSessionControlInput!) {
-  crowdyStudioAgentCloseSession(input: $input) {
-    ...CrowdyAgentSessionFields
-  }
-}
-
-fragment CrowdyAgentSessionFields on AgentSession {
-  contractVersion
-  sessionId
-  appId
-  projectId
-  gridId
-  mode
-  requestedModel
-  model
-  resolvedModel
-  status
-  providerDataConsent
-  registryDigest
-  providerPolicyVersion
-  appPolicyVersion
-  contextVersion
-  currentClientEpoch
-  clientEpoch
-  lastEventSeq
-  currentRun {
-    ...CrowdyAgentRunFields
-  }
-  activeLeases {
-    ...CrowdyAgentLeaseFields
-  }
-  pendingApproval {
-    ...CrowdyAgentApprovalFields
-  }
-  createdAt
-  updatedAt
-  closedAt
-}
-
-fragment CrowdyAgentRunFields on AgentRun {
-  runId
-  status
-  providerRounds
-  toolCalls
-  errorCode
-  terminalReason
-  reason
-  startedAt
-  finishedAt
-  createdAt
-  cancelled
-}
-
-fragment CrowdyAgentLeaseFields on AgentLease {
-  leaseId
-  kind
-  status
-  clientEpoch
-  scopes
-  holder
-  contextVersion
-  controlledEntityId
-  hostCapabilityRevision
-  expectedProjectRevision
-  grantedAt
-  expiresAt
-  revokedReason
-}
-
-fragment CrowdyAgentApprovalFields on AgentApproval {
-  approvalId
-  toolCallId
-  argumentHash
-  status
-  safeSummary
-  clientEpoch
-  expiresAt
-  approved
-  rejected
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentCloseSessionOperationName = "CrowdyStudioAgentCloseSession";
-inline constexpr std::string_view kCrowdyStudioAgentEventsIsolatedDocument = R"gql(subscription CrowdyStudioAgentEvents($sessionId: String!, $afterSeq: BigInt!, $clientEpoch: BigInt!) {
-  crowdyStudioAgentEvents(
-    sessionId: $sessionId
-    afterSeq: $afterSeq
-    clientEpoch: $clientEpoch
-  ) {
-    ...CrowdyAgentEventFields
-  }
-}
-
-fragment CrowdyAgentEventFields on CrowdyStudioAgentEvent {
-  __typename
-  ...CrowdyAgentEventBaseFields
-  ... on AgentLifecycleEvent {
-    lifecycleMode: mode
-    lifecycleClientEpoch: clientEpoch
-    lifecycleReplayAfterSeq: replayAfterSeq
-    lifecycleReason: reason
-    lifecycleContextVersion: contextVersion
-  }
-  ... on AgentMessageEvent {
-    messageEventId: messageId
-    messageRole: role
-    messageContent: content
-  }
-  ... on AgentRunEvent {
-    runStatus: status
-    runCode: code
-    runReason: reason
-    runError: error {
-      ...CrowdyAgentErrorFields
-    }
-  }
-  ... on AgentToolEvent {
-    toolEventCallId: toolCallId
-    toolEventName: toolName
-    toolEventVersion: toolVersion
-    toolStatus: status
-    toolSafeSummary: safeSummary
-    toolDescriptorDigest: descriptorDigest
-    toolArgumentHash: argumentHash
-    toolExecutor: executor
-    toolContextVersion: contextVersion
-    toolClientEpoch: clientEpoch
-    toolArgumentsJson: argumentsJson
-    toolLeaseId: leaseId
-    toolApprovalGrant: approvalGrant
-    toolIdempotencyKey: idempotencyKey
-    toolResultJson: resultJson
-    toolInvocation: invocation {
-      protocolVersion
-      sessionId
-      runId
-      toolCallId
-      name
-      version
-      descriptorDigest
-      argumentsJson
-      argumentHash
-      contextVersion
-      clientEpoch
-      leaseId
-      approvalGrant
-      idempotencyKey
-      deadline
-    }
-    toolResult: result {
-      protocolVersion
-      toolCallId
-      status
-      outputJson
-      error {
-        ...CrowdyAgentErrorFields
-      }
-      observedContextVersion
-      startedAt
-      finishedAt
-    }
-    toolError: error {
-      ...CrowdyAgentErrorFields
-    }
-    toolDeadline: deadline
-  }
-  ... on AgentApprovalEvent {
-    approvalEventId: approvalId
-    approvalToolCallId: toolCallId
-    approvalArgumentHash: argumentHash
-    approvalStatus: status
-    approvalSafeSummary: safeSummary
-    approvalReasons: reasons
-    approvalExpiresAt: expiresAt
-  }
-  ... on AgentLeaseEvent {
-    leaseEventId: leaseId
-    leaseKind: kind
-    leaseStatus: status
-    leaseClientEpoch: clientEpoch
-    leaseScopes: scopes
-    leaseHolder: holder
-    leaseContextVersion: contextVersion
-    leaseControlledEntityId: controlledEntityId
-    leaseHostCapabilityRevision: hostCapabilityRevision
-    leaseExpectedProjectRevision: expectedProjectRevision
-    leaseGrantedAt: grantedAt
-    leaseExpiresAt: expiresAt
-    leaseReason: reason
-  }
-  ... on AgentCheckpointEvent {
-    checkpointEventId: checkpointId
-    checkpointProjectRevision: projectRevision
-    checkpointContentHash: contentHash
-    checkpointReason: reason
-    checkpointFiles: files {
-      target
-      path
-      contentHash
-      byteLength
-    }
-    checkpointRestoredAt: restoredAt
-  }
-  ... on AgentBudgetEvent {
-    budgetSnapshot: budget {
-      ...CrowdyAgentBudgetFields
-    }
-  }
-}
-
-fragment CrowdyAgentEventBaseFields on AgentEventBase {
-  protocolVersion
-  eventId
-  sessionId
-  seq
-  type
-  runId
-  version
-  createdAt
-}
-
-fragment CrowdyAgentErrorFields on AgentError {
-  code
-  message
-  retryable
-  remediation
-  field
-  requiredScope
-}
-
-fragment CrowdyAgentBudgetFields on AgentBudget {
-  dimensions {
-    name
-    scope
-    limit
-    reserved
-    consumed
-    remaining
-    unit
-  }
-  resetAt
-  platformFunded
-  payer
-})gql";
-inline constexpr std::string_view kCrowdyStudioAgentEventsOperationName = "CrowdyStudioAgentEvents";
 
 /// crowdyStudioAgent/CrowdyStudioAgentCatalog.graphql
 inline constexpr std::string_view kCrowdyStudioAgentCatalogDocument = R"gql(query CpCrowdyStudioAgentCatalog {
@@ -6889,28 +5284,91 @@ fragment CrowdyStudioAgentPolicyFields on CrowdyStudioAgentPolicy {
 })gql";
 inline constexpr std::string_view kCpSetCrowdyStudioAgentAppKillOperationName = "CpSetCrowdyStudioAgentAppKill";
 
+/// crowdyStudioAgent/CrowdyStudioModel.graphql
+inline constexpr std::string_view kCrowdyStudioModelDocument = R"gql(# The metered model endpoint's GraphQL companions. The endpoint itself is
+# REST (`GET /v1/model/models`, `POST /v1/model/chat/completions`, bearer =
+# app token) and is what the in-browser Studio agent spends tokens through;
+# these operations read what it recorded and gate whether it may run.
+
+query CrowdyStudioProviderConsent($appId: BigInt!) {
+  crowdyStudioProviderConsent(appId: $appId) {
+    appId
+    consented
+    consentedAt
+  }
+}
+
+mutation CrowdyStudioSetProviderConsent($input: SetCrowdyStudioProviderConsentInput!) {
+  crowdyStudioSetProviderConsent(input: $input) {
+    appId
+    consented
+    consentedAt
+  }
+}
+
+query CrowdyStudioModelUsage($appId: BigInt!, $limit: Int) {
+  crowdyStudioModelUsage(appId: $appId, limit: $limit) {
+    appId
+    payerKind
+    todayRequests
+    todayChargeMicrousd
+    dayLimitMicrousd
+    recent {
+      usageId
+      payerKind
+      status
+      requestedModel
+      resolvedModel
+      promptTokens
+      completionTokens
+      reasoningTokens
+      chargeMicrousd
+      occurredAt
+      client
+    }
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioProviderConsentIsolatedDocument = R"gql(query CrowdyStudioProviderConsent($appId: BigInt!) {
+  crowdyStudioProviderConsent(appId: $appId) {
+    appId
+    consented
+    consentedAt
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioProviderConsentOperationName = "CrowdyStudioProviderConsent";
+inline constexpr std::string_view kCrowdyStudioSetProviderConsentIsolatedDocument = R"gql(mutation CrowdyStudioSetProviderConsent($input: SetCrowdyStudioProviderConsentInput!) {
+  crowdyStudioSetProviderConsent(input: $input) {
+    appId
+    consented
+    consentedAt
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioSetProviderConsentOperationName = "CrowdyStudioSetProviderConsent";
+inline constexpr std::string_view kCrowdyStudioModelUsageIsolatedDocument = R"gql(query CrowdyStudioModelUsage($appId: BigInt!, $limit: Int) {
+  crowdyStudioModelUsage(appId: $appId, limit: $limit) {
+    appId
+    payerKind
+    todayRequests
+    todayChargeMicrousd
+    dayLimitMicrousd
+    recent {
+      usageId
+      payerKind
+      status
+      requestedModel
+      resolvedModel
+      promptTokens
+      completionTokens
+      reasoningTokens
+      chargeMicrousd
+      occurredAt
+      client
+    }
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioModelUsageOperationName = "CrowdyStudioModelUsage";
+
 inline constexpr std::string_view documentFor(std::string_view operationName) {
-  if (operationName == "CrowdyStudioAgentSession") return kCrowdyStudioAgentSessionIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentSessions") return kCrowdyStudioAgentSessionsIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentHistory") return kCrowdyStudioAgentHistoryIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentToolDescriptors") return kCrowdyStudioAgentToolDescriptorsIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentBudget") return kCrowdyStudioAgentBudgetIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentCreateSession") return kCrowdyStudioAgentCreateSessionIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentAttachClient") return kCrowdyStudioAgentAttachClientIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentSetMode") return kCrowdyStudioAgentSetModeIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentAcknowledgeEvents") return kCrowdyStudioAgentAcknowledgeEventsIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentHeartbeat") return kCrowdyStudioAgentHeartbeatIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentSendMessage") return kCrowdyStudioAgentSendMessageIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentApproveTool") return kCrowdyStudioAgentApproveToolIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentRejectTool") return kCrowdyStudioAgentRejectToolIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentToolResult") return kCrowdyStudioAgentToolResultIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentGrantLease") return kCrowdyStudioAgentGrantLeaseIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentRevokeLease") return kCrowdyStudioAgentRevokeLeaseIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentPause") return kCrowdyStudioAgentPauseIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentResume") return kCrowdyStudioAgentResumeIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentCancelRun") return kCrowdyStudioAgentCancelRunIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentCloseSession") return kCrowdyStudioAgentCloseSessionIsolatedDocument;
-  if (operationName == "CrowdyStudioAgentEvents") return kCrowdyStudioAgentEventsIsolatedDocument;
   if (operationName == "CpCrowdyStudioAgentCatalog") return kCpCrowdyStudioAgentCatalogIsolatedDocument;
   if (operationName == "CrowdyStudioAgentPolicy") return kCrowdyStudioAgentPolicyIsolatedDocument;
   if (operationName == "CrowdyStudioAgentEffectivePolicy") return kCrowdyStudioAgentEffectivePolicyIsolatedDocument;
@@ -6919,6 +5377,9 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CpCrowdyStudioAgentPlatformPolicy") return kCpCrowdyStudioAgentPlatformPolicyIsolatedDocument;
   if (operationName == "CpSetCrowdyStudioAgentPlatformPolicy") return kCpSetCrowdyStudioAgentPlatformPolicyIsolatedDocument;
   if (operationName == "CpSetCrowdyStudioAgentAppKill") return kCpSetCrowdyStudioAgentAppKillIsolatedDocument;
+  if (operationName == "CrowdyStudioProviderConsent") return kCrowdyStudioProviderConsentIsolatedDocument;
+  if (operationName == "CrowdyStudioSetProviderConsent") return kCrowdyStudioSetProviderConsentIsolatedDocument;
+  if (operationName == "CrowdyStudioModelUsage") return kCrowdyStudioModelUsageIsolatedDocument;
   return {};
 }
 
@@ -6982,6 +5443,23 @@ query NearbyGridPermissions($input: NearbyGridPermissionsInput!) {
       z
     }
     permissionKeys
+  }
+}
+
+query NearbyGrids($input: NearbyGridsInput!) {
+  nearbyGrids(input: $input) {
+    appId
+    gridId
+    lowChunk {
+      x
+      y
+      z
+    }
+    highChunk {
+      x
+      y
+      z
+    }
   }
 }
 
@@ -7160,6 +5638,23 @@ inline constexpr std::string_view kNearbyGridPermissionsIsolatedDocument = R"gql
   }
 })gql";
 inline constexpr std::string_view kNearbyGridPermissionsOperationName = "NearbyGridPermissions";
+inline constexpr std::string_view kNearbyGridsIsolatedDocument = R"gql(query NearbyGrids($input: NearbyGridsInput!) {
+  nearbyGrids(input: $input) {
+    appId
+    gridId
+    lowChunk {
+      x
+      y
+      z
+    }
+    highChunk {
+      x
+      y
+      z
+    }
+  }
+})gql";
+inline constexpr std::string_view kNearbyGridsOperationName = "NearbyGrids";
 inline constexpr std::string_view kGridPermissionLimitsIsolatedDocument = R"gql(query GridPermissionLimits($appId: BigInt!, $gridId: BigInt!) {
   gridPermissionLimits(appId: $appId, gridId: $gridId) {
     appId
@@ -7261,6 +5756,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "TransferGridOwnership") return kTransferGridOwnershipIsolatedDocument;
   if (operationName == "GridUserPermissions") return kGridUserPermissionsIsolatedDocument;
   if (operationName == "NearbyGridPermissions") return kNearbyGridPermissionsIsolatedDocument;
+  if (operationName == "NearbyGrids") return kNearbyGridsIsolatedDocument;
   if (operationName == "GridPermissionLimits") return kGridPermissionLimitsIsolatedDocument;
   if (operationName == "GridGroupGrants") return kGridGroupGrantsIsolatedDocument;
   if (operationName == "CreateGrid") return kCreateGridIsolatedDocument;
@@ -8909,6 +7405,7 @@ mutation GameModelUpsertContainerType($input: UpsertContainerTypeInput!) {
     description
     instantiableBy
     defaultPropertyVisibility
+    bindPolicyJson
     metadataJson
   }
 }
@@ -8989,6 +7486,7 @@ query GameModelContainerTypes($appId: BigInt!) {
     description
     instantiableBy
     defaultPropertyVisibility
+    bindPolicyJson
     metadataJson
   }
 }
@@ -9058,6 +7556,7 @@ inline constexpr std::string_view kGameModelUpsertContainerTypeIsolatedDocument 
     description
     instantiableBy
     defaultPropertyVisibility
+    bindPolicyJson
     metadataJson
   }
 })gql";
@@ -9260,6 +7759,7 @@ inline constexpr std::string_view kGameModelContainerTypesIsolatedDocument = R"g
     description
     instantiableBy
     defaultPropertyVisibility
+    bindPolicyJson
     metadataJson
   }
 })gql";
@@ -9846,56 +8346,6 @@ mutation MarketplaceIssueGridClaimInvite(
     gridId: $gridId
     inviteeUserId: $inviteeUserId
   )
-}
-
-# ---- P4b: paid modes, grid commerce, seller payouts ---------------------------
-
-mutation MarketplaceRenewAcquisition($appId: BigInt!, $acquisitionId: String!) {
-  renewPlayerCodeAcquisition(appId: $appId, acquisitionId: $acquisitionId) {
-    ...PlayerCodeAcquisitionFields
-  }
-}
-
-mutation MarketplaceTopUpAcquisition($appId: BigInt!, $acquisitionId: String!) {
-  topUpPlayerCodeAcquisition(appId: $appId, acquisitionId: $acquisitionId) {
-    ...PlayerCodeAcquisitionFields
-  }
-}
-
-mutation MarketplaceRefundAcquisition($appId: BigInt!, $acquisitionId: String!) {
-  refundPlayerCodeAcquisition(appId: $appId, acquisitionId: $acquisitionId)
-}
-
-query MarketplaceGridListings($appId: BigInt!) {
-  gridListings(appId: $appId) {
-    gridListingId
-    appId
-    kind
-    name
-    description
-    priceCents
-    conferredPermissionKeys
-    resalePolicy
-  }
-}
-
-mutation MarketplacePurchaseGrid(
-  $appId: BigInt!
-  $gridListingId: String!
-  $chunkX: Int
-  $chunkY: Int
-  $chunkZ: Int
-) {
-  purchaseGrid(
-    appId: $appId
-    gridListingId: $gridListingId
-    chunkX: $chunkX
-    chunkY: $chunkY
-    chunkZ: $chunkZ
-  ) {
-    gridId
-    ownershipAssigned
-  }
 })gql";
 inline constexpr std::string_view kMarketplaceListingsIsolatedDocument = R"gql(query MarketplaceListings($appId: BigInt!) {
   playerCodeListings(appId: $appId) {
@@ -10230,72 +8680,6 @@ inline constexpr std::string_view kMarketplaceIssueGridClaimInviteIsolatedDocume
   )
 })gql";
 inline constexpr std::string_view kMarketplaceIssueGridClaimInviteOperationName = "MarketplaceIssueGridClaimInvite";
-inline constexpr std::string_view kMarketplaceRenewAcquisitionIsolatedDocument = R"gql(mutation MarketplaceRenewAcquisition($appId: BigInt!, $acquisitionId: String!) {
-  renewPlayerCodeAcquisition(appId: $appId, acquisitionId: $acquisitionId) {
-    ...PlayerCodeAcquisitionFields
-  }
-}
-
-fragment PlayerCodeAcquisitionFields on PlayerCodeAcquisition {
-  acquisitionId
-  listingId
-  appId
-  mode
-  status
-  expiresAt
-  unitBudget
-  unitsConsumed
-  acquiredAt
-})gql";
-inline constexpr std::string_view kMarketplaceRenewAcquisitionOperationName = "MarketplaceRenewAcquisition";
-inline constexpr std::string_view kMarketplaceTopUpAcquisitionIsolatedDocument = R"gql(mutation MarketplaceTopUpAcquisition($appId: BigInt!, $acquisitionId: String!) {
-  topUpPlayerCodeAcquisition(appId: $appId, acquisitionId: $acquisitionId) {
-    ...PlayerCodeAcquisitionFields
-  }
-}
-
-fragment PlayerCodeAcquisitionFields on PlayerCodeAcquisition {
-  acquisitionId
-  listingId
-  appId
-  mode
-  status
-  expiresAt
-  unitBudget
-  unitsConsumed
-  acquiredAt
-})gql";
-inline constexpr std::string_view kMarketplaceTopUpAcquisitionOperationName = "MarketplaceTopUpAcquisition";
-inline constexpr std::string_view kMarketplaceRefundAcquisitionIsolatedDocument = R"gql(mutation MarketplaceRefundAcquisition($appId: BigInt!, $acquisitionId: String!) {
-  refundPlayerCodeAcquisition(appId: $appId, acquisitionId: $acquisitionId)
-})gql";
-inline constexpr std::string_view kMarketplaceRefundAcquisitionOperationName = "MarketplaceRefundAcquisition";
-inline constexpr std::string_view kMarketplaceGridListingsIsolatedDocument = R"gql(query MarketplaceGridListings($appId: BigInt!) {
-  gridListings(appId: $appId) {
-    gridListingId
-    appId
-    kind
-    name
-    description
-    priceCents
-    conferredPermissionKeys
-    resalePolicy
-  }
-})gql";
-inline constexpr std::string_view kMarketplaceGridListingsOperationName = "MarketplaceGridListings";
-inline constexpr std::string_view kMarketplacePurchaseGridIsolatedDocument = R"gql(mutation MarketplacePurchaseGrid($appId: BigInt!, $gridListingId: String!, $chunkX: Int, $chunkY: Int, $chunkZ: Int) {
-  purchaseGrid(
-    appId: $appId
-    gridListingId: $gridListingId
-    chunkX: $chunkX
-    chunkY: $chunkY
-    chunkZ: $chunkZ
-  ) {
-    gridId
-    ownershipAssigned
-  }
-})gql";
-inline constexpr std::string_view kMarketplacePurchaseGridOperationName = "MarketplacePurchaseGrid";
 
 /// marketplace/MarketplaceAdmin.graphql
 inline constexpr std::string_view kMarketplaceAdminDocument = R"gql(fragment PlayerCodeListingAdminFields on PlayerCodeListing {
@@ -10396,104 +8780,6 @@ mutation MarketplaceSetGridClaimPolicy(
     policy: $policy
     approverUserIds: $approverUserIds
   )
-}
-
-mutation MarketplaceSetListingPricing($input: SetListingPricingInput!) {
-  setListingPricing(input: $input)
-}
-
-mutation MarketplaceSetOrgShare($appId: BigInt!, $bps: Int!) {
-  setAppMarketplaceOrgShare(appId: $appId, bps: $bps)
-}
-
-mutation MarketplaceBeginSellerOnboarding($country: String!) {
-  beginSellerOnboarding(country: $country) {
-    status
-    onboardingUrl
-    unavailableReason
-  }
-}
-
-mutation MarketplaceCreateAccountSession($country: String!) {
-  createSellerAccountSession(country: $country) {
-    clientSecret
-    publishableKey
-    accountRef
-    onboardingComplete
-    expiresAt
-  }
-}
-
-mutation MarketplaceCreateOrgAccountSession($orgId: BigInt!, $country: String!) {
-  createOrgSellerAccountSession(orgId: $orgId, country: $country) {
-    clientSecret
-    publishableKey
-    accountRef
-    onboardingComplete
-    expiresAt
-  }
-}
-
-mutation MarketplaceBeginOrgSellerOnboarding($orgId: BigInt!, $country: String!) {
-  beginOrgSellerOnboarding(orgId: $orgId, country: $country) {
-    status
-    onboardingUrl
-    unavailableReason
-  }
-}
-
-query MarketplaceMySellerBalance {
-  mySellerPayoutBalance {
-    partyKind
-    partyRef
-    pendingCents
-    payableCents
-    reservedCents
-    onboardingStatus
-    payoutsFrozen
-  }
-}
-
-mutation MarketplaceRequestPayout {
-  requestSellerPayout
-}
-
-mutation MarketplaceSpendPayoutToWallet($amountCents: Int!) {
-  spendPayoutBalanceToWallet(amountCents: $amountCents)
-}
-
-query MarketplaceCommerceRiskQueue($appId: BigInt!) {
-  commerceRiskQueue(appId: $appId) {
-    flagId
-    appId
-    kind
-    orderId
-    subjectKind
-    subjectRef
-    detail
-    status
-    createdAt
-  }
-}
-
-mutation MarketplaceDecideRiskFlag(
-  $appId: BigInt!
-  $flagId: String!
-  $release: Boolean!
-) {
-  decideCommerceRiskFlag(appId: $appId, flagId: $flagId, release: $release)
-}
-
-mutation MarketplaceCreateGridListing($input: CreateGridListingInput!) {
-  createGridListing(input: $input) {
-    gridListingId
-    appId
-    kind
-    name
-    priceCents
-    resalePolicy
-    status
-  }
 })gql";
 inline constexpr std::string_view kMarketplaceAdmissionQueueIsolatedDocument = R"gql(query MarketplaceAdmissionQueue($appId: BigInt!) {
   appCodeAdmissionQueue(appId: $appId) {
@@ -10632,100 +8918,6 @@ inline constexpr std::string_view kMarketplaceSetGridClaimPolicyIsolatedDocument
   )
 })gql";
 inline constexpr std::string_view kMarketplaceSetGridClaimPolicyOperationName = "MarketplaceSetGridClaimPolicy";
-inline constexpr std::string_view kMarketplaceSetListingPricingIsolatedDocument = R"gql(mutation MarketplaceSetListingPricing($input: SetListingPricingInput!) {
-  setListingPricing(input: $input)
-})gql";
-inline constexpr std::string_view kMarketplaceSetListingPricingOperationName = "MarketplaceSetListingPricing";
-inline constexpr std::string_view kMarketplaceSetOrgShareIsolatedDocument = R"gql(mutation MarketplaceSetOrgShare($appId: BigInt!, $bps: Int!) {
-  setAppMarketplaceOrgShare(appId: $appId, bps: $bps)
-})gql";
-inline constexpr std::string_view kMarketplaceSetOrgShareOperationName = "MarketplaceSetOrgShare";
-inline constexpr std::string_view kMarketplaceBeginSellerOnboardingIsolatedDocument = R"gql(mutation MarketplaceBeginSellerOnboarding($country: String!) {
-  beginSellerOnboarding(country: $country) {
-    status
-    onboardingUrl
-    unavailableReason
-  }
-})gql";
-inline constexpr std::string_view kMarketplaceBeginSellerOnboardingOperationName = "MarketplaceBeginSellerOnboarding";
-inline constexpr std::string_view kMarketplaceCreateAccountSessionIsolatedDocument = R"gql(mutation MarketplaceCreateAccountSession($country: String!) {
-  createSellerAccountSession(country: $country) {
-    clientSecret
-    publishableKey
-    accountRef
-    onboardingComplete
-    expiresAt
-  }
-})gql";
-inline constexpr std::string_view kMarketplaceCreateAccountSessionOperationName = "MarketplaceCreateAccountSession";
-inline constexpr std::string_view kMarketplaceCreateOrgAccountSessionIsolatedDocument = R"gql(mutation MarketplaceCreateOrgAccountSession($orgId: BigInt!, $country: String!) {
-  createOrgSellerAccountSession(orgId: $orgId, country: $country) {
-    clientSecret
-    publishableKey
-    accountRef
-    onboardingComplete
-    expiresAt
-  }
-})gql";
-inline constexpr std::string_view kMarketplaceCreateOrgAccountSessionOperationName = "MarketplaceCreateOrgAccountSession";
-inline constexpr std::string_view kMarketplaceBeginOrgSellerOnboardingIsolatedDocument = R"gql(mutation MarketplaceBeginOrgSellerOnboarding($orgId: BigInt!, $country: String!) {
-  beginOrgSellerOnboarding(orgId: $orgId, country: $country) {
-    status
-    onboardingUrl
-    unavailableReason
-  }
-})gql";
-inline constexpr std::string_view kMarketplaceBeginOrgSellerOnboardingOperationName = "MarketplaceBeginOrgSellerOnboarding";
-inline constexpr std::string_view kMarketplaceMySellerBalanceIsolatedDocument = R"gql(query MarketplaceMySellerBalance {
-  mySellerPayoutBalance {
-    partyKind
-    partyRef
-    pendingCents
-    payableCents
-    reservedCents
-    onboardingStatus
-    payoutsFrozen
-  }
-})gql";
-inline constexpr std::string_view kMarketplaceMySellerBalanceOperationName = "MarketplaceMySellerBalance";
-inline constexpr std::string_view kMarketplaceRequestPayoutIsolatedDocument = R"gql(mutation MarketplaceRequestPayout {
-  requestSellerPayout
-})gql";
-inline constexpr std::string_view kMarketplaceRequestPayoutOperationName = "MarketplaceRequestPayout";
-inline constexpr std::string_view kMarketplaceSpendPayoutToWalletIsolatedDocument = R"gql(mutation MarketplaceSpendPayoutToWallet($amountCents: Int!) {
-  spendPayoutBalanceToWallet(amountCents: $amountCents)
-})gql";
-inline constexpr std::string_view kMarketplaceSpendPayoutToWalletOperationName = "MarketplaceSpendPayoutToWallet";
-inline constexpr std::string_view kMarketplaceCommerceRiskQueueIsolatedDocument = R"gql(query MarketplaceCommerceRiskQueue($appId: BigInt!) {
-  commerceRiskQueue(appId: $appId) {
-    flagId
-    appId
-    kind
-    orderId
-    subjectKind
-    subjectRef
-    detail
-    status
-    createdAt
-  }
-})gql";
-inline constexpr std::string_view kMarketplaceCommerceRiskQueueOperationName = "MarketplaceCommerceRiskQueue";
-inline constexpr std::string_view kMarketplaceDecideRiskFlagIsolatedDocument = R"gql(mutation MarketplaceDecideRiskFlag($appId: BigInt!, $flagId: String!, $release: Boolean!) {
-  decideCommerceRiskFlag(appId: $appId, flagId: $flagId, release: $release)
-})gql";
-inline constexpr std::string_view kMarketplaceDecideRiskFlagOperationName = "MarketplaceDecideRiskFlag";
-inline constexpr std::string_view kMarketplaceCreateGridListingIsolatedDocument = R"gql(mutation MarketplaceCreateGridListing($input: CreateGridListingInput!) {
-  createGridListing(input: $input) {
-    gridListingId
-    appId
-    kind
-    name
-    priceCents
-    resalePolicy
-    status
-  }
-})gql";
-inline constexpr std::string_view kMarketplaceCreateGridListingOperationName = "MarketplaceCreateGridListing";
 
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "MarketplaceListings") return kMarketplaceListingsIsolatedDocument;
@@ -10748,11 +8940,6 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "MarketplaceReleaseClaimedGrid") return kMarketplaceReleaseClaimedGridIsolatedDocument;
   if (operationName == "MarketplaceDecideGridClaim") return kMarketplaceDecideGridClaimIsolatedDocument;
   if (operationName == "MarketplaceIssueGridClaimInvite") return kMarketplaceIssueGridClaimInviteIsolatedDocument;
-  if (operationName == "MarketplaceRenewAcquisition") return kMarketplaceRenewAcquisitionIsolatedDocument;
-  if (operationName == "MarketplaceTopUpAcquisition") return kMarketplaceTopUpAcquisitionIsolatedDocument;
-  if (operationName == "MarketplaceRefundAcquisition") return kMarketplaceRefundAcquisitionIsolatedDocument;
-  if (operationName == "MarketplaceGridListings") return kMarketplaceGridListingsIsolatedDocument;
-  if (operationName == "MarketplacePurchaseGrid") return kMarketplacePurchaseGridIsolatedDocument;
   if (operationName == "MarketplaceAdmissionQueue") return kMarketplaceAdmissionQueueIsolatedDocument;
   if (operationName == "MarketplaceAppListings") return kMarketplaceAppListingsIsolatedDocument;
   if (operationName == "MarketplaceAppListingVersions") return kMarketplaceAppListingVersionsIsolatedDocument;
@@ -10760,18 +8947,6 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "MarketplaceTransferListing") return kMarketplaceTransferListingIsolatedDocument;
   if (operationName == "MarketplaceSetListingStatus") return kMarketplaceSetListingStatusIsolatedDocument;
   if (operationName == "MarketplaceSetGridClaimPolicy") return kMarketplaceSetGridClaimPolicyIsolatedDocument;
-  if (operationName == "MarketplaceSetListingPricing") return kMarketplaceSetListingPricingIsolatedDocument;
-  if (operationName == "MarketplaceSetOrgShare") return kMarketplaceSetOrgShareIsolatedDocument;
-  if (operationName == "MarketplaceBeginSellerOnboarding") return kMarketplaceBeginSellerOnboardingIsolatedDocument;
-  if (operationName == "MarketplaceCreateAccountSession") return kMarketplaceCreateAccountSessionIsolatedDocument;
-  if (operationName == "MarketplaceCreateOrgAccountSession") return kMarketplaceCreateOrgAccountSessionIsolatedDocument;
-  if (operationName == "MarketplaceBeginOrgSellerOnboarding") return kMarketplaceBeginOrgSellerOnboardingIsolatedDocument;
-  if (operationName == "MarketplaceMySellerBalance") return kMarketplaceMySellerBalanceIsolatedDocument;
-  if (operationName == "MarketplaceRequestPayout") return kMarketplaceRequestPayoutIsolatedDocument;
-  if (operationName == "MarketplaceSpendPayoutToWallet") return kMarketplaceSpendPayoutToWalletIsolatedDocument;
-  if (operationName == "MarketplaceCommerceRiskQueue") return kMarketplaceCommerceRiskQueueIsolatedDocument;
-  if (operationName == "MarketplaceDecideRiskFlag") return kMarketplaceDecideRiskFlagIsolatedDocument;
-  if (operationName == "MarketplaceCreateGridListing") return kMarketplaceCreateGridListingIsolatedDocument;
   return {};
 }
 
@@ -11755,6 +9930,9 @@ fragment PlayerWasmModuleVersionFields on PlayerWasmModuleVersion {
   compileStatus
   compileLog
   compiledSizeBytes
+  projectId
+  sourceRevision
+  githubCommitSha
   createdAt
 }
 
@@ -11969,6 +10147,9 @@ fragment PlayerWasmModuleVersionFields on PlayerWasmModuleVersion {
   compileStatus
   compileLog
   compiledSizeBytes
+  projectId
+  sourceRevision
+  githubCommitSha
   createdAt
 })gql";
 inline constexpr std::string_view kPlayerComputeDeployOperationName = "PlayerComputeDeploy";
@@ -12050,6 +10231,9 @@ fragment PlayerWasmModuleVersionFields on PlayerWasmModuleVersion {
   compileStatus
   compileLog
   compiledSizeBytes
+  projectId
+  sourceRevision
+  githubCommitSha
   createdAt
 })gql";
 inline constexpr std::string_view kPlayerComputeVersionsOperationName = "PlayerComputeVersions";
@@ -12430,6 +10614,8 @@ namespace playerWallet {
 inline constexpr std::string_view kPlayerWalletDocument = R"gql(fragment PlayerWalletFields on PlayerWallet {
   walletId
   userId
+  balanceMicrousd
+  holdsMicrousd
   balanceCents
   currency
   createdAt
@@ -12439,6 +10625,8 @@ fragment PlayerWalletTransactionFields on PlayerWalletTransaction {
   transactionId
   walletId
   userId
+  amountMicrousd
+  balanceAfterMicrousd
   amountCents
   balanceAfter
   transactionType
@@ -12620,12 +10808,17 @@ query AppPlayerUsage($appId: BigInt!, $hours: Int) {
     computeUnits
     automationUnits
     compileCount
+    chargedMicrousd
     chargedCents
   }
 }
 
 query AppPlayerMarkupAccrued($appId: BigInt!) {
   appPlayerMarkupAccrued(appId: $appId)
+}
+
+query AppPlayerMarkupAccruedMicrousd($appId: BigInt!) {
+  appPlayerMarkupAccruedMicrousd(appId: $appId)
 })gql";
 inline constexpr std::string_view kPlayerWalletBalanceIsolatedDocument = R"gql(query PlayerWalletBalance {
   playerWalletBalance {
@@ -12636,6 +10829,8 @@ inline constexpr std::string_view kPlayerWalletBalanceIsolatedDocument = R"gql(q
 fragment PlayerWalletFields on PlayerWallet {
   walletId
   userId
+  balanceMicrousd
+  holdsMicrousd
   balanceCents
   currency
   createdAt
@@ -12651,6 +10846,8 @@ fragment PlayerWalletTransactionFields on PlayerWalletTransaction {
   transactionId
   walletId
   userId
+  amountMicrousd
+  balanceAfterMicrousd
   amountCents
   balanceAfter
   transactionType
@@ -12850,6 +11047,7 @@ inline constexpr std::string_view kAppPlayerUsageIsolatedDocument = R"gql(query 
     computeUnits
     automationUnits
     compileCount
+    chargedMicrousd
     chargedCents
   }
 })gql";
@@ -12858,6 +11056,10 @@ inline constexpr std::string_view kAppPlayerMarkupAccruedIsolatedDocument = R"gq
   appPlayerMarkupAccrued(appId: $appId)
 })gql";
 inline constexpr std::string_view kAppPlayerMarkupAccruedOperationName = "AppPlayerMarkupAccrued";
+inline constexpr std::string_view kAppPlayerMarkupAccruedMicrousdIsolatedDocument = R"gql(query AppPlayerMarkupAccruedMicrousd($appId: BigInt!) {
+  appPlayerMarkupAccruedMicrousd(appId: $appId)
+})gql";
+inline constexpr std::string_view kAppPlayerMarkupAccruedMicrousdOperationName = "AppPlayerMarkupAccruedMicrousd";
 
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "PlayerWalletBalance") return kPlayerWalletBalanceIsolatedDocument;
@@ -12876,6 +11078,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "SetPlayerRateMarkup") return kSetPlayerRateMarkupIsolatedDocument;
   if (operationName == "AppPlayerUsage") return kAppPlayerUsageIsolatedDocument;
   if (operationName == "AppPlayerMarkupAccrued") return kAppPlayerMarkupAccruedIsolatedDocument;
+  if (operationName == "AppPlayerMarkupAccruedMicrousd") return kAppPlayerMarkupAccruedMicrousdIsolatedDocument;
   return {};
 }
 

@@ -82,6 +82,20 @@ class GameAppsAPI : public DomainBase {
     runAsync("NearbyGridPermissions", vars, std::move(cb));
   }
 
+  /// Player-safe overlapping grids (id + bounds). No permission keys and no
+  /// impersonation userId. Requires an app-scoped token (ck-api v1.93.0).
+  graphql::Json nearbyGrids(const graphql::JVal& input) const {
+    graphql::JVal vars;
+    vars["input"] = input;
+    return run("NearbyGrids", vars);
+  }
+
+  void nearbyGridsAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["input"] = input;
+    runAsync("NearbyGrids", vars, std::move(cb));
+  }
+
   graphql::Json permissionLimits(std::string_view appId, std::string_view gridId) const {
     graphql::JVal vars;
     vars["appId"] = appId;

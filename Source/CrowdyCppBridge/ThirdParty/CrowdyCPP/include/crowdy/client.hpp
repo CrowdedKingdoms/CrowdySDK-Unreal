@@ -39,12 +39,6 @@ namespace domains {
 class AdminAPI;
 class OperatorAPI;
 }  // namespace domains
-namespace agent {
-#ifndef CROWDY_NO_EXCEPTIONS
-struct CrowdyStudioAgentControllerOptions;
-class CrowdyStudioAgentControllerRuntime;
-#endif
-}  // namespace agent
 namespace studio {
 #ifndef CROWDY_NO_EXCEPTIONS
 struct CrowdyStudioIntegrationOptions;
@@ -238,18 +232,14 @@ class CrowdyClient {
   domains::CrowdyStudioAPI& crowdyStudio() { return *crowdyStudio_; }
 #endif
   domains::PlatformAPI& platform() { return *platform_; }
-  /// Durable provider-neutral Agentic Crowdy Studio runtime plus its
-  /// Management policy/usage/operator controls.
+  /// Agentic Crowdy Studio policy, sanitized usage, provider-data consent and
+  /// operator controls. The agent itself runs in the player's browser
+  /// (CrowdyJS `dsh`) against the metered `/v1/model` endpoint; this SDK does
+  /// not drive it.
   domains::CrowdyStudioAgentAPI& crowdyStudioAgent() {
     return *crowdyStudioAgent_;
   }
 #ifndef CROWDY_NO_EXCEPTIONS
-  /// Own the production typed HTTP + GraphQL-WS transports alongside the
-  /// controller, preventing dangling adapter references.
-  std::unique_ptr<agent::CrowdyStudioAgentControllerRuntime>
-  createCrowdyStudioAgentController(
-      agent::CrowdyStudioAgentControllerOptions options);
-
   /**
    * Builds an independent, lifetime-safe native Studio assembly from cloned
    * typed domain adapters sharing this client's transport/auth dispatcher.

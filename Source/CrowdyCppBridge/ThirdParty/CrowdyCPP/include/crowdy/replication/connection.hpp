@@ -21,7 +21,9 @@
 ///  - connect(): server assignment (installs the session server-side via the
 ///    Game API), socket setup, session-ready wait
 ///  - signed spatial sends + channel publish + heartbeats (zero steady-state
-///    allocation; payloads are written straight into a pooled send buffer)
+///    allocation; payloads are written straight into a pooled send buffer),
+///    packed into MESSAGE_BUNDLE datagrams over a short window by default
+///    (Config::bundleSends / bundleWindowMs; flushSends() to force)
 ///  - receive path: bundle unpack, HMAC verification, typed dispatch through
 ///    a lock-free ring to the poll() thread
 ///  - lifecycle: proactive token refresh, verified COMMAND_RECONNECT
@@ -133,6 +135,13 @@ class Connection {
   /// idle so presence never lapses.
   Result<std::uint8_t> sendHeartbeat(const wire::ChunkCoord& chunk, const core::ActorUuid& uuid);
 
+  /// Put the pending outbound bundle on the wire now instead of at the end of
+  /// Config::bundleWindowMs. Call it at the end of a frame when you want that
+  /// frame's sends out immediately. No-op when nothing is pending or when
+  /// Config::bundleSends is false. Returns the socket result of the flush:
+  /// Errc::WouldBlock keeps the bundle pending for the next attempt.
+  Status flushSends();
+
   // ----- AndWait correlation (the CrowdyJS *AndWait analog) -------------------
 
   /// Outcome of a waitForSequence.
@@ -202,12 +211,19 @@ class Connection {
   /// client. For what you are actually charged, read the usage API
   /// (admin::appUsageSummary) or the account's billing pages.
   struct Stats {
+    /// Datagrams handed to the kernel. With Config::bundleSends one datagram
+    /// may carry several messages, so this is at most messagesSent.
     std::uint64_t datagramsSent = 0;
     std::uint64_t datagramsReceived = 0;
+    /// Messages accepted for sending: with bundling on, counted when the
+    /// message joins the pending bundle; otherwise when its datagram was sent.
     std::uint64_t messagesSent = 0;
     std::uint64_t messagesReceived = 0;
     std::uint64_t bytesSent = 0;
     std::uint64_t bytesReceived = 0;
+    /// Sent datagrams that were MESSAGE_BUNDLE wrappers (two or more members).
+    /// A lone member goes out unwrapped and is not counted here.
+    std::uint64_t bundlesSent = 0;
     /// Sends the kernel could not accept because its buffer was full. The
     /// datagram was not transmitted and the socket is healthy: this counter
     /// rising means the client is outrunning the send buffer, not that sends
@@ -216,6 +232,12 @@ class Connection {
     /// Sends that failed for a genuine socket fault. Unlike sendsDeferred,
     /// this one rising is a problem.
     std::uint64_t sendsFailed = 0;
+    /// Messages that had joined a pending bundle (so messagesSent already
+    /// counted them) when the bundle's flush failed for a genuine fault. With
+    /// bundling off this stays 0: an unbundled send reports its fault to the
+    /// caller instead. sendsFailed moves once per datagram; this moves once per
+    /// message lost with it.
+    std::uint64_t messagesDropped = 0;
     std::uint64_t hmacFailures = 0;
     std::uint64_t malformed = 0;
     std::uint64_t ringDropped = 0;
@@ -271,7 +293,20 @@ class Connection {
   Credentials credentials() const;
 
   Result<std::uint8_t> sendLongSpatial(wire::MessageType type, const SpatialSend& p);
+  /// Hand one encoded message to the send path: straight to the socket when
+  /// Config::bundleSends is off, otherwise into the pending bundle (flushing
+  /// first when it is full or its window has passed).
   Status transmit(const std::uint8_t* data, std::size_t len);
+  /// One datagram to the kernel plus datagram/byte/defer/fail counters.
+  Status sendDatagram(const std::uint8_t* data, std::size_t len);
+  void countMessageSent(std::uint8_t type);
+  // Bundle helpers; the *Locked ones expect bundleMutex_ held.
+  Status flushBundleLocked();
+  bool bundleExpiredLocked(std::int64_t nowMono) const;
+  void flushExpiredBundle();
+  /// How long the net thread may block in receive before a pending bundle's
+  /// window would run out, capped at maxWaitMs.
+  int receiveWaitMs(int maxWaitMs);
   void netLoop();
   std::size_t receiveBatch(int timeoutMs);
   void handleDatagram(Bytes datagram);
@@ -328,6 +363,14 @@ class Connection {
 
   mutable std::mutex statsMutex_;
   Stats stats_;
+
+  // Pending outbound MESSAGE_BUNDLE (Config::bundleSends). Sends from any
+  // thread append under bundleMutex_; the net thread (or pump()) flushes when
+  // the window passes. bundleBuf_ must be declared before bundle_.
+  mutable std::mutex bundleMutex_;
+  std::uint8_t bundleBuf_[wire::kMaxDatagramSize];
+  wire::BundleWriter bundle_{MutableBytes(bundleBuf_, sizeof(bundleBuf_))};
+  std::int64_t bundleOpenedMs_ = 0;
 };
 
 /// Owns Connections and bridges them to a CrowdyClient (or a custom session

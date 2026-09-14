@@ -1327,9 +1327,21 @@ class CrowdyStudioController {
                       "Submitting " + name};
     notify();
     if (onEffectStart) onEffectStart();
-    const CrowdyStudioDeploySubmission submitted = runtime_.deploy(
-        {scope(), target, name, files, project.sdkVersion,
-         project.abiVersion, deployment});
+    // The server resolves the source from the project: its saved files at
+    // the current revision, or the rust at the mirror commit for a project
+    // bound to GitHub. The per-target file check above is the local sanity
+    // check that the target has anything to compile.
+    CrowdyStudioDeployTargetInput submission;
+    submission.scope = scope();
+    submission.target = target;
+    submission.moduleName = name;
+    submission.projectId = project.projectId;
+    if (project.github && project.github->sha) {
+      submission.commitSha = project.github->sha;
+    }
+    submission.deployment = deployment;
+    const CrowdyStudioDeploySubmission submitted =
+        runtime_.deploy(submission);
     checkOperation(operation);
     for (int attempt = 0; attempt < options_.compilePollLimit; ++attempt) {
       const auto versions = runtime_.versions(scope(), name);

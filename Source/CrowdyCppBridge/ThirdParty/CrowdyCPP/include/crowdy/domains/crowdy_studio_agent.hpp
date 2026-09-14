@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -11,12 +13,14 @@
 
 namespace crowdy::domains {
 
-/// Exact GraphQL surface for `crowdy.studio-agent/1`.
-///
-/// Runtime/session operations, app policy, sanitized usage, and operator
-/// controls all go to the one API origin, gated by permission. This class does
-/// not expose an arbitrary document executor, provider client, UDP authority,
-/// or tool bridge.
+/// Exact GraphQL surface for `crowdy.studio-agent/1` after the orchestrator
+/// retirement: app policy, sanitized usage, provider-data consent, the metered
+/// model usage read model, and operator controls. All go to the one API
+/// origin, gated by permission. The agent's session/run/lease/tool operations
+/// are gone from the API (the agent runs in the player's browser against the
+/// REST `/v1/model` endpoint), so this class no longer has them. It does not
+/// expose an arbitrary document executor, provider client, UDP authority, or
+/// tool bridge.
 class CrowdyStudioAgentAPI {
  public:
   CrowdyStudioAgentAPI(std::shared_ptr<graphql::GraphQLClient> api,
@@ -25,166 +29,34 @@ class CrowdyStudioAgentAPI {
 
   std::shared_ptr<graphql::Dispatcher> dispatcher() const { return dispatcher_; }
 
-  // Reads.
-  graphql::Json session(std::string_view sessionId) const {
-    return run("CrowdyStudioAgentSession", one("sessionId", sessionId));
+  // Provider-data consent and metered model usage: the GraphQL companions of
+  // the REST endpoint the in-browser agent spends tokens through.
+  graphql::Json providerConsent(std::string_view appId) const {
+    return run("CrowdyStudioProviderConsent", one("appId", appId));
   }
-  void sessionAsync(std::string_view sessionId, graphql::GraphQLCallback cb) const {
-    runAsync("CrowdyStudioAgentSession", one("sessionId", sessionId),
-              std::move(cb));
-  }
-  graphql::Json sessions(std::string_view appId,
-                         const graphql::JVal& page = graphql::JVal()) const {
-    auto vars = page;
-    vars["appId"] = appId;
-    return run("CrowdyStudioAgentSessions", vars);
-  }
-  void sessionsAsync(std::string_view appId, const graphql::JVal& page,
-                     graphql::GraphQLCallback cb) const {
-    auto vars = page;
-    vars["appId"] = appId;
-    runAsync("CrowdyStudioAgentSessions", vars, std::move(cb));
-  }
-  graphql::Json history(std::string_view sessionId, std::string_view afterSeq = "0",
-                        int first = 100) const {
-    graphql::JVal vars;
-    vars["sessionId"] = sessionId;
-    vars["afterSeq"] = afterSeq;
-    vars["first"] = std::int64_t{first};
-    return run("CrowdyStudioAgentHistory", vars);
-  }
-  void historyAsync(std::string_view sessionId, std::string_view afterSeq,
-                    int first, graphql::GraphQLCallback cb) const {
-    graphql::JVal vars;
-    vars["sessionId"] = sessionId;
-    vars["afterSeq"] = afterSeq;
-    vars["first"] = std::int64_t{first};
-    runAsync("CrowdyStudioAgentHistory", vars, std::move(cb));
-  }
-  graphql::Json toolDescriptors(std::string_view sessionId) const {
-    return run("CrowdyStudioAgentToolDescriptors",
-                one("sessionId", sessionId));
-  }
-  void toolDescriptorsAsync(std::string_view sessionId,
+  void providerConsentAsync(std::string_view appId,
                             graphql::GraphQLCallback cb) const {
-    runAsync("CrowdyStudioAgentToolDescriptors", one("sessionId", sessionId),
-              std::move(cb));
+    runAsync("CrowdyStudioProviderConsent", one("appId", appId),
+             std::move(cb));
   }
-  graphql::Json budget(std::string_view sessionId) const {
-    return run("CrowdyStudioAgentBudget", one("sessionId", sessionId));
+  graphql::Json setProviderConsent(const graphql::JVal& input) const {
+    return runInput("CrowdyStudioSetProviderConsent", input);
   }
-  void budgetAsync(std::string_view sessionId,
-                   graphql::GraphQLCallback cb) const {
-    runAsync("CrowdyStudioAgentBudget", one("sessionId", sessionId),
-              std::move(cb));
+  void setProviderConsentAsync(const graphql::JVal& input,
+                               graphql::GraphQLCallback cb) const {
+    runInputAsync("CrowdyStudioSetProviderConsent", input, std::move(cb));
   }
-
-  // Mutations. Inputs deliberately mirror the named schema inputs;
-  // authenticated authority fields are injected/validated by the server.
-  graphql::Json createSession(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentCreateSession", input);
+  graphql::Json modelUsage(std::string_view appId,
+                           std::optional<int> limit = std::nullopt) const {
+    auto vars = one("appId", appId);
+    if (limit) vars["limit"] = std::int64_t{*limit};
+    return run("CrowdyStudioModelUsage", vars);
   }
-  void createSessionAsync(const graphql::JVal& input,
-                          graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentCreateSession", input, std::move(cb));
-  }
-  graphql::Json attachClient(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentAttachClient", input);
-  }
-  void attachClientAsync(const graphql::JVal& input,
-                         graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentAttachClient", input, std::move(cb));
-  }
-  graphql::Json setMode(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentSetMode", input);
-  }
-  void setModeAsync(const graphql::JVal& input,
-                    graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentSetMode", input, std::move(cb));
-  }
-  graphql::Json acknowledgeEvents(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentAcknowledgeEvents", input);
-  }
-  void acknowledgeEventsAsync(const graphql::JVal& input,
-                              graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentAcknowledgeEvents", input, std::move(cb));
-  }
-  graphql::Json heartbeat(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentHeartbeat", input);
-  }
-  void heartbeatAsync(const graphql::JVal& input,
-                      graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentHeartbeat", input, std::move(cb));
-  }
-  graphql::Json sendMessage(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentSendMessage", input);
-  }
-  void sendMessageAsync(const graphql::JVal& input,
-                        graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentSendMessage", input, std::move(cb));
-  }
-  graphql::Json approveTool(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentApproveTool", input);
-  }
-  void approveToolAsync(const graphql::JVal& input,
-                        graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentApproveTool", input, std::move(cb));
-  }
-  graphql::Json rejectTool(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentRejectTool", input);
-  }
-  void rejectToolAsync(const graphql::JVal& input,
+  void modelUsageAsync(std::string_view appId, std::optional<int> limit,
                        graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentRejectTool", input, std::move(cb));
-  }
-  graphql::Json browserToolResult(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentToolResult", input);
-  }
-  void browserToolResultAsync(const graphql::JVal& input,
-                              graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentToolResult", input, std::move(cb));
-  }
-  graphql::Json grantLease(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentGrantLease", input);
-  }
-  void grantLeaseAsync(const graphql::JVal& input,
-                       graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentGrantLease", input, std::move(cb));
-  }
-  graphql::Json revokeLease(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentRevokeLease", input);
-  }
-  void revokeLeaseAsync(const graphql::JVal& input,
-                        graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentRevokeLease", input, std::move(cb));
-  }
-  graphql::Json pause(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentPause", input);
-  }
-  void pauseAsync(const graphql::JVal& input,
-                  graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentPause", input, std::move(cb));
-  }
-  graphql::Json resume(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentResume", input);
-  }
-  void resumeAsync(const graphql::JVal& input,
-                   graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentResume", input, std::move(cb));
-  }
-  graphql::Json cancelRun(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentCancelRun", input);
-  }
-  void cancelRunAsync(const graphql::JVal& input,
-                      graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentCancelRun", input, std::move(cb));
-  }
-  graphql::Json closeSession(const graphql::JVal& input) const {
-    return runInput("CrowdyStudioAgentCloseSession", input);
-  }
-  void closeSessionAsync(const graphql::JVal& input,
-                         graphql::GraphQLCallback cb) const {
-    runInputAsync("CrowdyStudioAgentCloseSession", input, std::move(cb));
+    auto vars = one("appId", appId);
+    if (limit) vars["limit"] = std::int64_t{*limit};
+    runAsync("CrowdyStudioModelUsage", vars, std::move(cb));
   }
 
   // App policy and sanitized usage.

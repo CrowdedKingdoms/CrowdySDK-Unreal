@@ -1,13 +1,12 @@
 CrowdyCPP vendored snapshot
-version: 0.31.0
-commit:  60b85991e5aae35511cb86f006c53fd19d5927c1
-tag:     dev/v0.31.0-2-g60b8599  (untagged: nearest tag plus distance)
+version: 0.37.0
+commit:  5d1c10f4ba4283b3c1deeea88f9a4c22b7cd1c23
+tag:     dev/v0.37.0
 tier:    dev (https://ck.dev.crowdedkingdoms.com)
 source:  C:\Users\DANY\Documents\Unreal Projects\CrowdyCPP
 Regenerate with scripts/sync-crowdycpp.ps1. Do not hand-edit vendored files.
 Bridge-supplied symbols (not vendored): defaultLogger, systemClock,
 parseIso8601Millis, opensslCrypto, defaultCrypto, makeCurlTransport.
 Not vendored: the libcurl WebSocket transport (websocket_none supplies its
-symbols instead). Everything else, including the agent, studio and player_host
+symbols instead). Everything else, including the studio and player_host
 subsystems, is compiled in.
-generated/crowdy_agent_fixture.hpp reproduces the library's own CMake codegen.

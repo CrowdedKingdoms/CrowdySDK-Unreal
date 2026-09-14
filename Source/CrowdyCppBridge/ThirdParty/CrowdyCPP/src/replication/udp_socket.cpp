@@ -7,6 +7,7 @@
 using SockLen = int;
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -14,6 +15,7 @@ using SockLen = int;
 using SockLen = socklen_t;
 #endif
 
+#include <cerrno>
 #include <cstring>
 
 #include "socket_errors.hpp"
@@ -100,10 +102,38 @@ Status UdpSocket::open(const std::string& host, int port, int recvBufferBytes,
 #endif
 
   fd_ = static_cast<long long>(fd);
+
+#ifndef _WIN32
+  // Self-pipe for wake(). Both ends non-blocking: the writer must never stall
+  // a game thread, and the reader is only ever drained after poll() said it
+  // is readable. A pipe that cannot be created is not a socket fault; wake()
+  // then reports false and the caller bounds its receive timeout instead.
+  int fds[2];
+  if (::pipe(fds) == 0) {
+    bool ok = true;
+    for (int end : fds) {
+      const int flags = ::fcntl(end, F_GETFL, 0);
+      if (flags < 0 || ::fcntl(end, F_SETFL, flags | O_NONBLOCK) < 0) ok = false;
+    }
+    if (ok) {
+      wakeFds_[0] = fds[0];
+      wakeFds_[1] = fds[1];
+    } else {
+      ::close(fds[0]);
+      ::close(fds[1]);
+    }
+  }
+#endif
   return Errc::Ok;
 }
 
 void UdpSocket::close() {
+#ifndef _WIN32
+  for (int& end : wakeFds_) {
+    if (end >= 0) ::close(end);
+    end = -1;
+  }
+#endif
   if (fd_ < 0) return;
 #ifdef _WIN32
   ::closesocket(static_cast<SOCKET>(fd_));
@@ -112,6 +142,36 @@ void UdpSocket::close() {
 #endif
   fd_ = -1;
 }
+
+bool UdpSocket::canWake() const {
+#ifdef _WIN32
+  return false;
+#else
+  return wakeFds_[1] >= 0;
+#endif
+}
+
+bool UdpSocket::wake() {
+#ifdef _WIN32
+  return false;
+#else
+  if (wakeFds_[1] < 0) return false;
+  const std::uint8_t one = 1;
+  // EAGAIN means the pipe already holds an undelivered wake, which is the
+  // same outcome; any other failure means the pipe is gone.
+  const ssize_t n = ::write(wakeFds_[1], &one, 1);
+  return n == 1 || (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+#endif
+}
+
+#ifndef _WIN32
+void UdpSocket::drainWake() {
+  if (wakeFds_[0] < 0) return;
+  std::uint8_t sink[64];
+  while (::read(wakeFds_[0], sink, sizeof(sink)) > 0) {
+  }
+}
+#endif
 
 Status UdpSocket::send(Bytes datagram) {
   if (fd_ < 0) return Errc::NotConnected;
@@ -146,10 +206,15 @@ Result<std::size_t> UdpSocket::recvBatch(std::uint8_t* slab, std::size_t slotSiz
   constexpr std::size_t kMaxBatch = 32;
   if (count > kMaxBatch) count = kMaxBatch;
 
-  pollfd pfd{static_cast<int>(fd_), POLLIN, 0};
-  const int r = ::poll(&pfd, 1, timeoutMs);
+  pollfd pfds[2] = {{static_cast<int>(fd_), POLLIN, 0}, {wakeFds_[0], POLLIN, 0}};
+  const nfds_t nfds = wakeFds_[0] >= 0 ? 2 : 1;
+  const int r = ::poll(pfds, nfds, timeoutMs);
   if (r == 0) return std::size_t{0};
   if (r < 0) return Errc::SocketError;
+  if (nfds == 2 && (pfds[1].revents & POLLIN)) drainWake();
+  // Woken with nothing on the socket: report "no datagram" now so the caller
+  // can act on whatever it was woken for.
+  if ((pfds[0].revents & POLLIN) == 0) return std::size_t{0};
 
   mmsghdr messages[kMaxBatch]{};
   iovec vectors[kMaxBatch];
@@ -203,10 +268,13 @@ Result<std::size_t> UdpSocket::recv(MutableBytes buffer, int timeoutMs) {
   }
   return static_cast<std::size_t>(n);
 #else
-  pollfd pfd{static_cast<int>(fd_), POLLIN, 0};
-  const int r = ::poll(&pfd, 1, timeoutMs);
+  pollfd pfds[2] = {{static_cast<int>(fd_), POLLIN, 0}, {wakeFds_[0], POLLIN, 0}};
+  const nfds_t nfds = wakeFds_[0] >= 0 ? 2 : 1;
+  const int r = ::poll(pfds, nfds, timeoutMs);
   if (r == 0) return std::size_t{0};
   if (r < 0) return Errc::SocketError;
+  if (nfds == 2 && (pfds[1].revents & POLLIN)) drainWake();
+  if ((pfds[0].revents & POLLIN) == 0) return std::size_t{0};
   const ssize_t n =
       ::recv(static_cast<int>(fd_), buffer.data(), buffer.size(), MSG_DONTWAIT);
   if (n < 0) {

@@ -805,6 +805,18 @@ class CrowdyStudioAPI final : public DomainBase,
     project.archivedAt = optionalString(value["archivedAt"]);
     project.fileCount = static_cast<int>(value["fileCount"].asInt64());
     project.totalBytes = scalarString(value["totalBytes"]);
+    const auto owner = optionalString(value["githubOwner"]);
+    const auto repo = optionalString(value["githubRepo"]);
+    const auto branch = optionalString(value["githubBranch"]);
+    const bool bound = value["source"].ok() &&
+                       value["source"].asString() == "GITHUB" && owner &&
+                       repo && branch;
+    project.source = bound ? studio::CrowdyStudioProjectSource::GitHub
+                           : studio::CrowdyStudioProjectSource::Studio;
+    if (bound) {
+      project.github = studio::CrowdyStudioProjectGitHub{
+          *owner, *repo, *branch, optionalString(value["githubSha"])};
+    }
     value["files"].forEach([&](const graphql::Json& file) {
       project.files.push_back(mapProjectFile(file));
     });

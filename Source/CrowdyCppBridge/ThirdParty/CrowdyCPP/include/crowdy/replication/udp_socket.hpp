@@ -44,6 +44,15 @@ class UdpSocket {
   Result<std::size_t> recvBatch(std::uint8_t* slab, std::size_t slotSize, std::size_t count,
                                 std::size_t* lengths, int timeoutMs);
 
+  /// Interrupt a recv()/recvBatch() blocked on another thread so it returns 0
+  /// (no datagram) now rather than at its timeout. Used by the send path to
+  /// tell the net thread a bundle just opened and its window is ticking.
+  /// Returns false when this platform cannot wake a blocked receive (Windows),
+  /// in which case callers bound their receive timeout instead.
+  bool wake();
+  /// True when wake() can interrupt a blocked receive on this socket.
+  bool canWake() const;
+
   /// Underlying descriptor (a SOCKET on Windows), or -1 when closed. For
   /// diagnostics and tests — reading socket options back, for instance. The
   /// socket remains owned by this object; do not close or reconfigure it.
@@ -51,6 +60,11 @@ class UdpSocket {
 
  private:
   long long fd_ = -1;
+#ifndef _WIN32
+  // Self-pipe polled alongside the socket so wake() can end a blocked poll().
+  int wakeFds_[2] = {-1, -1};
+  void drainWake();
+#endif
 };
 
 }  // namespace crowdy::replication

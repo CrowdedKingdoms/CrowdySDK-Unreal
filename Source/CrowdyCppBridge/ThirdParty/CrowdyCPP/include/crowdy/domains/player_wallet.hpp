@@ -185,6 +185,7 @@ class PlayerWalletAPI : public DomainBase {
   }
 
   /// Studio: total accrued markup income in cents (view_billing).
+  /// DEPRECATED: cents truncate; appMarkupAccruedMicrousd carries the exact amount.
   graphql::Json appMarkupAccrued(std::string_view appId) const {
     graphql::JVal vars;
     vars["appId"] = appId;
@@ -195,6 +196,19 @@ class PlayerWalletAPI : public DomainBase {
     graphql::JVal vars;
     vars["appId"] = appId;
     runAsync("AppPlayerMarkupAccrued", vars, std::move(cb));
+  }
+
+  /// Studio: total accrued markup income in micro-USD, exact (view_billing).
+  graphql::Json appMarkupAccruedMicrousd(std::string_view appId) const {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    return run("AppPlayerMarkupAccruedMicrousd", vars);
+  }
+  void appMarkupAccruedMicrousdAsync(std::string_view appId,
+                                     graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    runAsync("AppPlayerMarkupAccruedMicrousd", vars, std::move(cb));
   }
 
  private:

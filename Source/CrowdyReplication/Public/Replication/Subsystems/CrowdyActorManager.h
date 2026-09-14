@@ -36,6 +36,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Crowdy Actor Manager")
 	void SetBackend(UCrowdyRenderingBackend* NewBackend);
 
+	// The live backend, null when none initialized; a backend that refused to initialize is absent here and present in the profile.
+	UCrowdyRenderingBackend* GetActiveBackend() const { return ActiveBackend; }
+
 	void RegisterStateClass(UScriptStruct* Struct, TSubclassOf<AActor> ActorClass);
 
 	// A network update that arrived before the entity's spawn event was processed. Keyed by UUID;
@@ -96,7 +99,6 @@ public:
 	// Puts an update in through the cross-thread queue rather than the game-thread array. The drain reads
 	// the two in a fixed order and only a case that can fill both is able to pin which.
 	void EnqueueOffThreadForTest(const FCrowdyActorUpdate& Update) { UpdateQueue.Enqueue(Update); }
-	UCrowdyRenderingBackend* GetActiveBackendForTest() const { return ActiveBackend; }
 
 	// Parks an entry holding a slot, which is the state an update that arrives before its spawn event puts
 	// the manager into.

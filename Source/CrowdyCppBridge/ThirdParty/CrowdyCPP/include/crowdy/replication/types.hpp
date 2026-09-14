@@ -91,6 +91,29 @@ struct Config {
   /// entities in one frame: the send buffer is what absorbs a burst, and when
   /// it fills, sends return Errc::WouldBlock until it drains.
   int socketSendBufferBytes = 1 << 20;
+
+  /// Pack outbound messages into MESSAGE_BUNDLE datagrams (the server does the
+  /// same on the downlink). A send() call appends its signed message to the
+  /// pending bundle; the bundle goes on the wire when bundleWindowMs has passed
+  /// since it was opened, when the next message would not fit (1232 bytes / 32
+  /// members), on flushSends(), on the *AndWait sends, and on disconnect. A
+  /// lone message is sent unwrapped, so a client that sends one message per
+  /// window puts exactly the bytes it always did on the wire.
+  ///
+  /// Requires a replication server that accepts client bundles (Buddy
+  /// v0.27.0+). Set false to send every message as its own datagram, which is
+  /// what the SDK did before 0.37.0.
+  bool bundleSends = true;
+
+  /// How long a pending bundle may wait for more messages before it is
+  /// flushed. The net thread (or pump()) flushes on expiry; the sending thread
+  /// also flushes an expired bundle before appending to it. With manualPump
+  /// the effective window is bounded by how often you call pump(): call
+  /// flushSends() at the end of a frame if you need the datagram out sooner.
+  /// 0 flushes on the very next net-thread pass / pump() with no deliberate
+  /// wait, so sends made between two passes still share a datagram. Ignored
+  /// when bundleSends is false.
+  int bundleWindowMs = 1;
 };
 
 /// Parameters for a spatial send. Payload bytes are copied into the send

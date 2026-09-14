@@ -4,7 +4,6 @@
 #include <cctype>
 
 #ifndef CROWDY_NO_EXCEPTIONS
-#include "crowdy/agent/client_runtime.hpp"
 #include "crowdy/studio/integration.hpp"
 #endif
 #include "crowdy/domains/admin.hpp"
@@ -710,18 +709,6 @@ void CrowdyClient::ensureNonblockingAsyncTransport() {
 }
 
 #ifndef CROWDY_NO_EXCEPTIONS
-std::unique_ptr<agent::CrowdyStudioAgentControllerRuntime>
-CrowdyClient::createCrowdyStudioAgentController(
-    agent::CrowdyStudioAgentControllerOptions options) {
-  ensureNonblockingAsyncTransport();
-  if (!webSocketTransport_) {
-    return std::make_unique<agent::CrowdyStudioAgentControllerRuntime>(
-        *crowdyStudioAgent_, std::move(options));
-  }
-  return std::make_unique<agent::CrowdyStudioAgentControllerRuntime>(
-      *crowdyStudioAgent_, *subscriptions_, std::move(options));
-}
-
 std::unique_ptr<studio::CrowdyStudioIntegration>
 CrowdyClient::createCrowdyStudioIntegration(
     studio::CrowdyStudioIntegrationOptions options) {
@@ -758,32 +745,8 @@ CrowdyClient::createCrowdyStudioIntegration(
         return delivered;
       };
 
-  studio::CrowdyStudioAgentRuntimeFactory agentFactory;
-  if (options.agent) {
-    ensureNonblockingAsyncTransport();
-    auto agentApi =
-        std::make_shared<domains::CrowdyStudioAgentAPI>(gql_, dispatcher_);
-    auto subscriptions = subscriptions_;
-    const bool realtimeAvailable =
-        static_cast<bool>(webSocketTransport_);
-    agentFactory =
-        [agentApi = std::move(agentApi),
-         subscriptions = std::move(subscriptions),
-         realtimeAvailable](
-            agent::CrowdyStudioAgentControllerOptions agentOptions) {
-          if (!realtimeAvailable) {
-            return std::make_unique<
-                agent::CrowdyStudioAgentControllerRuntime>(
-                agentApi, std::move(agentOptions));
-          }
-          return std::make_unique<
-              agent::CrowdyStudioAgentControllerRuntime>(
-              *agentApi, *subscriptions, std::move(agentOptions));
-        };
-  }
   return studio::CrowdyStudioIntegration::create(
-      std::move(options), std::move(projectApi), std::move(runtime),
-      std::move(agentFactory));
+      std::move(options), std::move(projectApi), std::move(runtime));
 }
 #endif
 

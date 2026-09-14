@@ -81,6 +81,14 @@ namespace
 			"than the frame can afford and the count is not the lever."),
 		ECVF_Default);
 
+	/** Read when a connection opens; flipping it takes effect on the next connect, not on the live socket. */
+	TAutoConsoleVariable<int32> CVarSendBundle(
+		TEXT("crowdy.net.send.bundle"), 1,
+		TEXT("Pack the outbound replication messages of one network pass into MESSAGE_BUNDLE datagrams. Needs a "
+			"replication server of v0.27.0 or later; against an older one every bundled message is dropped together, "
+			"and 0 sends one datagram per message."),
+		ECVF_Default);
+
 	/** Inbound pressure is reported at most this often, since it arrives at packet rate when it arrives at all. */
 	constexpr double InboundPressureReportIntervalSeconds = 5.0;
 
@@ -562,6 +570,8 @@ bool UCrowdyCppReplicationSubsystem::OpenConnection(const FCrowdyCppConnectionRe
 	Config.WatchdogSilenceMs = Request.SilenceTimeoutSeconds > 0.f
 		? static_cast<int64>(Request.SilenceTimeoutSeconds * 1000.f)
 		: 0;
+
+	Config.bBundleSends = CVarSendBundle.GetValueOnGameThread() != 0;
 
 	// The game is told the app is full, and so is this subsystem, because the two act on it differently: the game
 	// surfaces it to the player, and this has to stop treating the failure that follows as something to recover from.

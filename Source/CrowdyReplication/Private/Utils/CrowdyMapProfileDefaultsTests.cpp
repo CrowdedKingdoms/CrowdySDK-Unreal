@@ -394,7 +394,7 @@ bool FCrowdyBackendThatCannotInitializeIsRefusedTest::RunTest(const FString& Par
 	UCrowdyActorManager* Manager = NewObject<UCrowdyActorManager>(Map.World);
 
 	TestFalse(TEXT("A backend that reports it cannot initialize is refused"), Manager->LoadConfigForTest());
-	TestNull(TEXT("A refused backend is not installed"), Manager->GetActiveBackendForTest());
+	TestNull(TEXT("A refused backend is not installed"), Manager->GetActiveBackend());
 
 	// The same profile with a backend that does initialize, so the refusal above is the backend's answer
 	// being read rather than anything about this fixture failing to reach the load at all.
@@ -403,7 +403,7 @@ bool FCrowdyBackendThatCannotInitializeIsRefusedTest::RunTest(const FString& Par
 	UCrowdyActorManager* SecondManager = NewObject<UCrowdyActorManager>(Map.World);
 
 	TestTrue(TEXT("A backend that initializes is accepted"), SecondManager->LoadConfigForTest());
-	TestNotNull(TEXT("An accepted backend is installed"), SecondManager->GetActiveBackendForTest());
+	TestNotNull(TEXT("An accepted backend is installed"), SecondManager->GetActiveBackend());
 
 	return true;
 }

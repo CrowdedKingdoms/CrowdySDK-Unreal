@@ -361,8 +361,94 @@ inline Status verifyCommandReconnect(const core::ICrypto& crypto, Bytes datagram
 }
 
 // ---------------------------------------------------------------------------
-// Bundle iteration
+// Bundle framing: [1B type=2]{[2B len LE][full message]}...
+//
+// The same framing in both directions. The server bundles notifications on
+// the downlink; a client may bundle its requests on the uplink. There is no
+// count field, every member is a complete signed message, and the wrapper
+// carries no auth of its own. Bundles never nest.
 // ---------------------------------------------------------------------------
+
+/// Type byte in front of the first length prefix.
+constexpr std::size_t kBundleHeaderSize = 1;
+/// uint16 little-endian length in front of every member.
+constexpr std::size_t kBundleLengthPrefix = 2;
+/// Cap on members per datagram, matching the server's reader and writer.
+constexpr std::size_t kMaxBundleMembers = 32;
+/// Largest single message that can travel inside a bundle at all.
+constexpr std::size_t kMaxBundleMemberSize =
+    kMaxDatagramSize - kBundleHeaderSize - kBundleLengthPrefix;  // 1229
+
+/// Accumulates complete messages into one MESSAGE_BUNDLE datagram in a caller-
+/// owned buffer. Mirrors forEachMessage. Typical use is the client-side send
+/// path: append() while messages arrive, then transmit datagram() and reset().
+///
+///   BundleWriter w(MutableBytes(buf, sizeof(buf)));
+///   if (!w.fits(n)) { send(w.datagram()); w.reset(); }
+///   w.append(Bytes(msg, n));
+///
+/// datagram() returns the single member unwrapped when count() == 1 (the
+/// 3-byte wrapper buys nothing for one message, and the server does the same
+/// on the downlink) and the type-2 frame otherwise.
+class BundleWriter {
+ public:
+  explicit BundleWriter(MutableBytes buffer) : buf_(buffer) { reset(); }
+
+  /// Capacity of the underlying buffer, at most kMaxDatagramSize is useful.
+  std::size_t capacity() const { return buf_.size(); }
+  std::size_t count() const { return count_; }
+  bool empty() const { return count_ == 0; }
+  /// Bytes the type-2 frame would occupy right now (header included).
+  std::size_t size() const { return offset_; }
+
+  /// True if a message of `len` bytes can be appended without exceeding the
+  /// buffer or the member cap. A zero-length message never fits.
+  bool fits(std::size_t len) const {
+    if (len == 0 || len > 0xFFFF || count_ >= kMaxBundleMembers) return false;
+    return offset_ + kBundleLengthPrefix + len <= buf_.size();
+  }
+
+  /// Append one complete message. Returns false, writing nothing, if it does
+  /// not fit (see fits()).
+  bool append(Bytes message) {
+    if (!fits(message.size())) return false;
+    le::writeU16(buf_.data() + offset_, static_cast<std::uint16_t>(message.size()));
+    std::memcpy(buf_.data() + offset_ + kBundleLengthPrefix, message.data(), message.size());
+    offset_ += kBundleLengthPrefix + message.size();
+    ++count_;
+    return true;
+  }
+
+  /// The bytes to put on the wire: empty when nothing was appended, the lone
+  /// member itself when count() == 1, the type-2 frame otherwise.
+  Bytes datagram() const {
+    if (count_ == 0) return Bytes();
+    if (count_ == 1) {
+      const std::size_t len = le::readU16(buf_.data() + kBundleHeaderSize);
+      return Bytes(buf_.data() + kBundleHeaderSize + kBundleLengthPrefix, len);
+    }
+    return Bytes(buf_.data(), offset_);
+  }
+
+  /// Opcode of the first appended member (0 when empty). Lets a caller decide
+  /// whether the lone member it is about to send unwrapped needs special
+  /// handling.
+  std::uint8_t firstType() const {
+    if (count_ == 0) return 0;
+    return buf_.data()[kBundleHeaderSize + kBundleLengthPrefix];
+  }
+
+  void reset() {
+    if (!buf_.empty()) buf_.data()[0] = static_cast<std::uint8_t>(MessageType::MessageBundle);
+    offset_ = kBundleHeaderSize;
+    count_ = 0;
+  }
+
+ private:
+  MutableBytes buf_;
+  std::size_t offset_ = kBundleHeaderSize;
+  std::size_t count_ = 0;
+};
 
 /// Invoke `fn(Bytes)` for each message in the datagram. A MESSAGE_BUNDLE
 /// ([1B type=2]{[2B len LE][msg]}...) yields each member; any other datagram

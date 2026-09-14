@@ -18,7 +18,9 @@ namespace crowdy::wire {
 /// set; non-spatial/control types are 0-127.
 enum class MessageType : std::uint8_t {
   BadMessage = 0,
-  /// Server -> client: several messages packed into one datagram.
+  /// Several complete messages packed into one datagram, either direction.
+  /// The server bundles notifications; the client bundles its requests when
+  /// Config::bundleSends is on. Framing: wire::BundleWriter / forEachMessage.
   MessageBundle = 2,
   /// Server -> client: [type][seq][errorCode] correlated by sequence number.
   GenericError = 3,

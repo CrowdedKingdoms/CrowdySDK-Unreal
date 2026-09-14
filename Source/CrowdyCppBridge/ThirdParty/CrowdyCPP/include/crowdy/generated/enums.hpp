@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: 2fc91f3383d035780ab0df48f5c429b5134af047e1808a2c7d2ac0572478fe86
-// operations sha256: aace4a3e955d5e4a1f6af1852e917079f9c09b1ede47d90a495807e9f3850a71
+// schema.gql sha256: 8af0b37413ccd19f75dfdc6a1688970f1cd9cad5d136e9b5a7d563936608eac4
+// operations sha256: 331d7386d4472958c60e238354b662e67d46abaf0af5429a123549c38bbd0ffb
 
 #pragma once
 
@@ -452,67 +452,6 @@ inline std::optional<CrowdyStudioAgentPolicyKind> crowdyStudioAgentPolicyKindFro
   return std::nullopt;
 }
 
-enum class CrowdyStudioAgentPreemptionReason {
-  HUMAN_INPUT,
-  HUMAN_EDIT,
-  HUMAN_STOP,
-  ESCAPE,
-  DEATH,
-  CONTEXT_CHANGED,
-  PERMISSION_CHANGED,
-  ADMISSION_CHANGED,
-  CONTROL_TARGET_CHANGED,
-  DISCONNECTED,
-  CLIENT_REATTACHED,
-  QUOTA_FAILURE,
-  BUDGET_FAILURE,
-  OPERATOR_KILL,
-  LEASE_EXPIRED,
-  SESSION_CLOSED,
-};
-
-inline constexpr std::string_view toString(CrowdyStudioAgentPreemptionReason v) {
-  switch (v) {
-    case CrowdyStudioAgentPreemptionReason::HUMAN_INPUT: return "HUMAN_INPUT";
-    case CrowdyStudioAgentPreemptionReason::HUMAN_EDIT: return "HUMAN_EDIT";
-    case CrowdyStudioAgentPreemptionReason::HUMAN_STOP: return "HUMAN_STOP";
-    case CrowdyStudioAgentPreemptionReason::ESCAPE: return "ESCAPE";
-    case CrowdyStudioAgentPreemptionReason::DEATH: return "DEATH";
-    case CrowdyStudioAgentPreemptionReason::CONTEXT_CHANGED: return "CONTEXT_CHANGED";
-    case CrowdyStudioAgentPreemptionReason::PERMISSION_CHANGED: return "PERMISSION_CHANGED";
-    case CrowdyStudioAgentPreemptionReason::ADMISSION_CHANGED: return "ADMISSION_CHANGED";
-    case CrowdyStudioAgentPreemptionReason::CONTROL_TARGET_CHANGED: return "CONTROL_TARGET_CHANGED";
-    case CrowdyStudioAgentPreemptionReason::DISCONNECTED: return "DISCONNECTED";
-    case CrowdyStudioAgentPreemptionReason::CLIENT_REATTACHED: return "CLIENT_REATTACHED";
-    case CrowdyStudioAgentPreemptionReason::QUOTA_FAILURE: return "QUOTA_FAILURE";
-    case CrowdyStudioAgentPreemptionReason::BUDGET_FAILURE: return "BUDGET_FAILURE";
-    case CrowdyStudioAgentPreemptionReason::OPERATOR_KILL: return "OPERATOR_KILL";
-    case CrowdyStudioAgentPreemptionReason::LEASE_EXPIRED: return "LEASE_EXPIRED";
-    case CrowdyStudioAgentPreemptionReason::SESSION_CLOSED: return "SESSION_CLOSED";
-  }
-  return "";
-}
-
-inline std::optional<CrowdyStudioAgentPreemptionReason> crowdyStudioAgentPreemptionReasonFromString(std::string_view s) {
-  if (s == "HUMAN_INPUT") return CrowdyStudioAgentPreemptionReason::HUMAN_INPUT;
-  if (s == "HUMAN_EDIT") return CrowdyStudioAgentPreemptionReason::HUMAN_EDIT;
-  if (s == "HUMAN_STOP") return CrowdyStudioAgentPreemptionReason::HUMAN_STOP;
-  if (s == "ESCAPE") return CrowdyStudioAgentPreemptionReason::ESCAPE;
-  if (s == "DEATH") return CrowdyStudioAgentPreemptionReason::DEATH;
-  if (s == "CONTEXT_CHANGED") return CrowdyStudioAgentPreemptionReason::CONTEXT_CHANGED;
-  if (s == "PERMISSION_CHANGED") return CrowdyStudioAgentPreemptionReason::PERMISSION_CHANGED;
-  if (s == "ADMISSION_CHANGED") return CrowdyStudioAgentPreemptionReason::ADMISSION_CHANGED;
-  if (s == "CONTROL_TARGET_CHANGED") return CrowdyStudioAgentPreemptionReason::CONTROL_TARGET_CHANGED;
-  if (s == "DISCONNECTED") return CrowdyStudioAgentPreemptionReason::DISCONNECTED;
-  if (s == "CLIENT_REATTACHED") return CrowdyStudioAgentPreemptionReason::CLIENT_REATTACHED;
-  if (s == "QUOTA_FAILURE") return CrowdyStudioAgentPreemptionReason::QUOTA_FAILURE;
-  if (s == "BUDGET_FAILURE") return CrowdyStudioAgentPreemptionReason::BUDGET_FAILURE;
-  if (s == "OPERATOR_KILL") return CrowdyStudioAgentPreemptionReason::OPERATOR_KILL;
-  if (s == "LEASE_EXPIRED") return CrowdyStudioAgentPreemptionReason::LEASE_EXPIRED;
-  if (s == "SESSION_CLOSED") return CrowdyStudioAgentPreemptionReason::SESSION_CLOSED;
-  return std::nullopt;
-}
-
 enum class CrowdyStudioAgentRiskClass {
   READ_ONLY,
   ROUTINE_WRITE,
@@ -783,6 +722,25 @@ inline std::optional<CrowdyStudioFileProvenance> crowdyStudioFileProvenanceFromS
   return std::nullopt;
 }
 
+enum class CrowdyStudioGitHubBindInitial {
+  PUSH_PROJECT,
+  TAKE_REPOSITORY,
+};
+
+inline constexpr std::string_view toString(CrowdyStudioGitHubBindInitial v) {
+  switch (v) {
+    case CrowdyStudioGitHubBindInitial::PUSH_PROJECT: return "PUSH_PROJECT";
+    case CrowdyStudioGitHubBindInitial::TAKE_REPOSITORY: return "TAKE_REPOSITORY";
+  }
+  return "";
+}
+
+inline std::optional<CrowdyStudioGitHubBindInitial> crowdyStudioGitHubBindInitialFromString(std::string_view s) {
+  if (s == "PUSH_PROJECT") return CrowdyStudioGitHubBindInitial::PUSH_PROJECT;
+  if (s == "TAKE_REPOSITORY") return CrowdyStudioGitHubBindInitial::TAKE_REPOSITORY;
+  return std::nullopt;
+}
+
 enum class CrowdyStudioImportSource {
   LIBRARY,
   COMMON,
@@ -824,6 +782,25 @@ inline std::optional<CrowdyStudioPairingPreference> crowdyStudioPairingPreferenc
   if (s == "INDEPENDENT") return CrowdyStudioPairingPreference::INDEPENDENT;
   if (s == "SERVER_ONLY") return CrowdyStudioPairingPreference::SERVER_ONLY;
   if (s == "CLIENT_ONLY") return CrowdyStudioPairingPreference::CLIENT_ONLY;
+  return std::nullopt;
+}
+
+enum class CrowdyStudioProjectSource {
+  STUDIO,
+  GITHUB,
+};
+
+inline constexpr std::string_view toString(CrowdyStudioProjectSource v) {
+  switch (v) {
+    case CrowdyStudioProjectSource::STUDIO: return "STUDIO";
+    case CrowdyStudioProjectSource::GITHUB: return "GITHUB";
+  }
+  return "";
+}
+
+inline std::optional<CrowdyStudioProjectSource> crowdyStudioProjectSourceFromString(std::string_view s) {
+  if (s == "STUDIO") return CrowdyStudioProjectSource::STUDIO;
+  if (s == "GITHUB") return CrowdyStudioProjectSource::GITHUB;
   return std::nullopt;
 }
 
@@ -1305,31 +1282,6 @@ inline constexpr std::string_view toString(RateScope v) {
 inline std::optional<RateScope> rateScopeFromString(std::string_view s) {
   if (s == "SHARED") return RateScope::SHARED;
   if (s == "PLAYER") return RateScope::PLAYER;
-  return std::nullopt;
-}
-
-enum class SellerOnboardingStatus {
-  NONE,
-  PENDING,
-  COMPLETE,
-  BLOCKED,
-};
-
-inline constexpr std::string_view toString(SellerOnboardingStatus v) {
-  switch (v) {
-    case SellerOnboardingStatus::NONE: return "NONE";
-    case SellerOnboardingStatus::PENDING: return "PENDING";
-    case SellerOnboardingStatus::COMPLETE: return "COMPLETE";
-    case SellerOnboardingStatus::BLOCKED: return "BLOCKED";
-  }
-  return "";
-}
-
-inline std::optional<SellerOnboardingStatus> sellerOnboardingStatusFromString(std::string_view s) {
-  if (s == "NONE") return SellerOnboardingStatus::NONE;
-  if (s == "PENDING") return SellerOnboardingStatus::PENDING;
-  if (s == "COMPLETE") return SellerOnboardingStatus::COMPLETE;
-  if (s == "BLOCKED") return SellerOnboardingStatus::BLOCKED;
   return std::nullopt;
 }
 

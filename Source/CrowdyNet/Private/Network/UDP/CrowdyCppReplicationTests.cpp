@@ -1589,4 +1589,143 @@ bool FCrowdyVideoFrameReachesTheWireTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace
+{
+	/**
+	 * Sends a burst of identical spatial messages and reads back every complete message the stand-in server
+	 * received, bundle members included, in the order they crossed the wire. Which sends share a datagram is
+	 * the network thread's decision, so the burst is read back by message count rather than datagram count.
+	 */
+	bool SendBurstAndCollect(FAutomationTestBase& Test, CrowdyReplicationTestSupport::FConnectedFixture& Fixture,
+		const int32 Count, TArray<TArray<uint8>>& OutMessages, int32& OutDatagrams, int32& OutBundles)
+	{
+		using namespace CrowdyReplicationTestSupport;
+
+		const TArray<uint8> Payload = {0xde, 0xad, 0xbe, 0xef};
+		FString Error;
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			if (!Fixture.Connection->SendSpatial(140, 1, -2, 3, GoldenUuidView(), Payload, 8,
+				static_cast<uint8>(ECrowdyDecayRate::Exponential_Decay), Error))
+			{
+				Test.AddError(FString::Printf(TEXT("send %d was refused: %s"), Index, *Error));
+				return false;
+			}
+		}
+
+		OutDatagrams = 0;
+		OutBundles = 0;
+		const double Deadline = FPlatformTime::Seconds() + DefaultWaitSeconds;
+		while (OutMessages.Num() < Count && FPlatformTime::Seconds() < Deadline)
+		{
+			const TArray<uint8> Datagram = Fixture.Server.Receive(0.1);
+			if (Datagram.Num() == 0)
+			{
+				continue;
+			}
+			++OutDatagrams;
+			OutBundles += Datagram[0] == static_cast<uint8>(ECrowdyMessageType::MESSAGE_BUNDLE) ? 1 : 0;
+			OutMessages.Append(SplitBundle(Datagram));
+		}
+
+		if (!Test.TestEqual(TEXT("every message of the burst reached the stand-in server"), OutMessages.Num(), Count))
+		{
+			return false;
+		}
+
+		// Every member is the complete signed message the encoder produced, in send order: a bundle moved the
+		// datagram boundary and nothing else.
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const TArray<uint8> Expected = ExpectedSpatial(ECrowdyMessageType::GENERIC_SPATIAL_1, 7, 1, -2, 3, Payload,
+				8, static_cast<uint8>(ECrowdyDecayRate::Exponential_Decay), 123456789, static_cast<uint8>(Index));
+			if (!Test.TestEqual(FString::Printf(TEXT("message %d is byte-identical to the lone datagram"), Index),
+				CrowdyWireParity::DescribeDifference(OutMessages[Index], Expected), FString(TEXT("identical"))))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyReplicationBurstIsBundledTest,
+	"CrowdySDK.Transport.SendsFromOneDrainShareADatagram",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyReplicationBurstIsBundledTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FConnectedFixture Fixture;
+	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open()))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	// More than one bundle can hold, so at least two datagrams leave however the drains fall. For every message
+	// to travel alone the network thread would have to drain between every pair of sends, and it passes about
+	// once a millisecond against sends microseconds apart.
+	constexpr int32 Burst = 64;
+	TArray<TArray<uint8>> Messages;
+	int32 Datagrams = 0;
+	int32 Bundles = 0;
+	if (!SendBurstAndCollect(*this, Fixture, Burst, Messages, Datagrams, Bundles))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	TestTrue(TEXT("at least one datagram was a MESSAGE_BUNDLE"), Bundles > 0);
+	TestTrue(TEXT("and fewer datagrams than messages crossed the wire"), Datagrams < Burst);
+
+	const FCrowdyCppReplicationStats Stats = Fixture.Connection->GetStats();
+	TestEqual(TEXT("the library counted every message"), Stats.MessagesSent, static_cast<int64>(Burst));
+	TestEqual(TEXT("and as many datagrams as the server saw"), Stats.DatagramsSent, static_cast<int64>(Datagrams));
+	TestEqual(TEXT("and as many bundles as the server saw"), Stats.BundlesSent, static_cast<int64>(Bundles));
+	TestEqual(TEXT("and lost nothing to a failed flush"), Stats.MessagesDropped, static_cast<int64>(0));
+
+	Fixture.Shut();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyReplicationBundlingOffTest,
+	"CrowdySDK.Transport.BundlingOffSendsOneDatagramPerMessage",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyReplicationBundlingOffTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	// The escape hatch for a replication server that predates client bundles.
+	FConnectedFixture Fixture;
+	Fixture.bBundleSends = false;
+	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open()))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	constexpr int32 Burst = 64;
+	TArray<TArray<uint8>> Messages;
+	int32 Datagrams = 0;
+	int32 Bundles = 0;
+	if (!SendBurstAndCollect(*this, Fixture, Burst, Messages, Datagrams, Bundles))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	TestEqual(TEXT("no datagram was a MESSAGE_BUNDLE"), Bundles, 0);
+	TestEqual(TEXT("and every message was its own datagram"), Datagrams, Burst);
+
+	const FCrowdyCppReplicationStats Stats = Fixture.Connection->GetStats();
+	TestEqual(TEXT("the library counted one datagram per message"), Stats.DatagramsSent, Stats.MessagesSent);
+	TestEqual(TEXT("and no bundles"), Stats.BundlesSent, static_cast<int64>(0));
+
+	Fixture.Shut();
+	return true;
+}
+
 #endif

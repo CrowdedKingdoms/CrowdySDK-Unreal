@@ -1127,7 +1127,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppVendoredVersionTest,
 	"CrowdySDK.CrowdyCpp.VendoredVersion", CrowdyCppParityTestFlags)
 bool FCrowdyCppVendoredVersionTest::RunTest(const FString& Parameters)
 {
-	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.31.0");
+	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.37.0");
 
 	// The tier decides where a client that names no origin at all dials, and it is generated per branch
 	// upstream, so it can change under a version bump without the version saying so. Pin it too.

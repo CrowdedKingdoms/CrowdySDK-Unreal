@@ -125,6 +125,13 @@ void WorldSession::tick() {
     }
 #endif
   }
+
+  // 6) A tick is a frame boundary: whatever this frame sent (presence above,
+  //    plus anything the game sent through the connection since the last
+  //    tick) leaves in one datagram now rather than at the end of the bundle
+  //    window. Matters most under manualPump, where nothing else would flush
+  //    until the next pump(). No-op when Config::bundleSends is off.
+  (void)conn_->flushSends();
 }
 
 void WorldSession::dispose() {

@@ -253,6 +253,24 @@ struct FCrowdyCppReplicationConfig
 	 * measured about 600 ms of queueing delay on top of the real round trip.
 	 */
 	int32 SocketSendBufferBytes = 128 * 1024;
+
+	/**
+	 * Pack the messages sent within one network-thread pass into MESSAGE_BUNDLE datagrams (at most 1232 bytes or
+	 * 32 members each; a lone message goes out unwrapped). Every member stays a complete, individually signed
+	 * message, so only the datagram boundary moves. Requires a replication server that unpacks client bundles
+	 * (v0.27.0 or later); against an older one every bundled message is dropped together, and false restores one
+	 * datagram per message.
+	 */
+	bool bBundleSends = true;
+
+	/**
+	 * How long the library lets a pending bundle wait for more messages. The network thread flushes after every
+	 * drain of the send queue, so a bundle only waits on this while the kernel send buffer is full; what it does
+	 * set is the pass cadence of that thread on Windows, where the library caps each receive wait at one window
+	 * because the socket cannot be woken by a send. 1 ms means queued sends leave within about a millisecond; a
+	 * larger value trades that for fewer wakeups.
+	 */
+	int32 BundleWindowMs = 1;
 };
 
 /** Cumulative counters since the connection opened. They only grow, so a rate is a difference between snapshots. */
@@ -283,13 +301,23 @@ struct FCrowdyCppReplicationStats
 	/**
 	 * Datagrams the kernel could not accept because its send buffer was full. Nothing was transmitted and the socket
 	 * is healthy, so this rising means the client is outrunning the send buffer rather than that sends are failing.
-	 * The datagram is not retried: a state update is only worth sending while it is current, and the next one
-	 * supersedes it. Raise SocketSendBufferBytes if this climbs under load.
+	 * An unbundled datagram is not retried: a state update is only worth sending while it is current, and the next
+	 * one supersedes it. A deferred bundle stays pending and is retried on the next pass, so under bundling this
+	 * counts attempts, not lost datagrams. Raise SocketSendBufferBytes if this climbs under load.
 	 */
 	int64 SendsDeferred = 0;
 
 	/** Datagrams that failed for a genuine socket fault. Unlike SendsDeferred, this rising is a problem. */
 	int64 SendsFailed = 0;
+
+	/** Sent datagrams that were MESSAGE_BUNDLE wrappers carrying two or more messages. Zero with bundling off. */
+	int64 BundlesSent = 0;
+
+	/**
+	 * Messages lost with a bundle whose flush hit a genuine socket fault. They had already been counted in
+	 * MessagesSent when they joined the bundle, so this is what subtracts them back out.
+	 */
+	int64 MessagesDropped = 0;
 
 	int64 Reconnects = 0;
 

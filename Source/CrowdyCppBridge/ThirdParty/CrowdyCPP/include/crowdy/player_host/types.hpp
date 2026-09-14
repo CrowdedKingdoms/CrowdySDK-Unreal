@@ -21,7 +21,31 @@ inline constexpr std::string_view kGameCommandResultContractV1 =
 inline constexpr std::string_view kValidatedGateContractV1 =
     "crowdy.validated-gate/1";
 
-using PreemptionReasonV1 = gen::CrowdyStudioAgentPreemptionReason;
+/**
+ * Why an agent intent was cleared. This vocabulary used to be the API's
+ * `CrowdyStudioAgentPreemptionReason` enum; the orchestrator that owned it is
+ * retired and the enum is gone from the schema, so the player-host contract
+ * carries it itself (CrowdyJS does the same in `player-host/agent-types`).
+ * The names and order are the wire strings and must not change.
+ */
+enum class PreemptionReasonV1 {
+  HUMAN_INPUT,
+  HUMAN_EDIT,
+  HUMAN_STOP,
+  ESCAPE,
+  DEATH,
+  CONTEXT_CHANGED,
+  PERMISSION_CHANGED,
+  ADMISSION_CHANGED,
+  CONTROL_TARGET_CHANGED,
+  DISCONNECTED,
+  CLIENT_REATTACHED,
+  QUOTA_FAILURE,
+  BUDGET_FAILURE,
+  OPERATOR_KILL,
+  LEASE_EXPIRED,
+  SESSION_CLOSED,
+};
 using ToolRiskV1 = gen::CrowdyStudioAgentToolRisk;
 
 inline constexpr std::array<PreemptionReasonV1, 16>
@@ -46,7 +70,34 @@ inline constexpr std::array<PreemptionReasonV1, 16>
 
 inline constexpr std::string_view preemptionReasonName(
     PreemptionReasonV1 value) noexcept {
-  return gen::toString(value);
+  switch (value) {
+    case PreemptionReasonV1::HUMAN_INPUT: return "HUMAN_INPUT";
+    case PreemptionReasonV1::HUMAN_EDIT: return "HUMAN_EDIT";
+    case PreemptionReasonV1::HUMAN_STOP: return "HUMAN_STOP";
+    case PreemptionReasonV1::ESCAPE: return "ESCAPE";
+    case PreemptionReasonV1::DEATH: return "DEATH";
+    case PreemptionReasonV1::CONTEXT_CHANGED: return "CONTEXT_CHANGED";
+    case PreemptionReasonV1::PERMISSION_CHANGED: return "PERMISSION_CHANGED";
+    case PreemptionReasonV1::ADMISSION_CHANGED: return "ADMISSION_CHANGED";
+    case PreemptionReasonV1::CONTROL_TARGET_CHANGED:
+      return "CONTROL_TARGET_CHANGED";
+    case PreemptionReasonV1::DISCONNECTED: return "DISCONNECTED";
+    case PreemptionReasonV1::CLIENT_REATTACHED: return "CLIENT_REATTACHED";
+    case PreemptionReasonV1::QUOTA_FAILURE: return "QUOTA_FAILURE";
+    case PreemptionReasonV1::BUDGET_FAILURE: return "BUDGET_FAILURE";
+    case PreemptionReasonV1::OPERATOR_KILL: return "OPERATOR_KILL";
+    case PreemptionReasonV1::LEASE_EXPIRED: return "LEASE_EXPIRED";
+    case PreemptionReasonV1::SESSION_CLOSED: return "SESSION_CLOSED";
+  }
+  return "";
+}
+
+inline constexpr std::optional<PreemptionReasonV1> preemptionReasonFromName(
+    std::string_view name) noexcept {
+  for (const auto candidate : kClosedPreemptionReasonsV1) {
+    if (preemptionReasonName(candidate) == name) return candidate;
+  }
+  return std::nullopt;
 }
 
 enum class ApprovalPolicyV1 { None, Required, Conditional };
