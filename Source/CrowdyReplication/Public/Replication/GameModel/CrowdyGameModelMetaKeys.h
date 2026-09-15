@@ -158,6 +158,13 @@ namespace CrowdyGameModelMetaKeys
 	//   - UCrowdyChannels skips it alongside cmc:, so a signal frame is never fed to the reliable-RPC decoder.
 	inline const TCHAR* SignalChannelPrefix = TEXT("csg:");
 
+	// The ASCII prefix of the cue the server sends on the app's session channel after every session change:
+	// "gms|<sessionId>|<revision>|<kind>". A cue carries no payload and changes no container state, so it must
+	// never trigger a re-pull; the game reads the revision and pulls the session snapshot when it needs the detail.
+	// '|' is outside the base64 alphabet, so the raw and base64 forms stay unambiguous exactly as for the two
+	// prefixes above, and UCrowdyChannels skips it alongside them.
+	inline const TCHAR* SessionChangedChannelPrefix = TEXT("gms|");
+
 	/**
 	 * The ASCII forms of a channel payload (opcode 18) that the receive path will inspect, in order: the raw bytes
 	 * read as ASCII, and, when those bytes are valid base64, their decoding. The server sends both shapes, and they
@@ -212,7 +219,8 @@ namespace CrowdyGameModelMetaKeys
 		for (const FString& Form : Forms)
 		{
 			if (Form.StartsWith(ModelChangedChannelPrefix, ESearchCase::CaseSensitive)
-				|| Form.StartsWith(SignalChannelPrefix, ESearchCase::CaseSensitive))
+				|| Form.StartsWith(SignalChannelPrefix, ESearchCase::CaseSensitive)
+				|| Form.StartsWith(SessionChangedChannelPrefix, ESearchCase::CaseSensitive))
 			{
 				return true;
 			}

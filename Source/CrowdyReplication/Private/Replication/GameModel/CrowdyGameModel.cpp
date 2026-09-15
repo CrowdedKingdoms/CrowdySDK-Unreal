@@ -56,6 +56,44 @@ bool UCrowdyGameModel::IsMyTurn(const UObject* WorldContext, const FCrowdyGameMo
 	return Model && Model->IsLocalUsersTurn(Session);
 }
 
+bool UCrowdyGameModel::IsSessionHost(const UObject* WorldContext, const FCrowdyGameModelSession& Session)
+{
+	const UCrowdyGameModelSubsystem* Model = ResolveModelSubsystem(WorldContext);
+	const int64 Local = Model ? Model->GetLocalUserId() : 0;
+	return Session.bHasHost && Local != 0 && Session.HostUserId == Local;
+}
+
+bool UCrowdyGameModel::IsSessionJoinable(const FCrowdyGameModelSession& Session)
+{
+	if (Session.Status != ECrowdySessionStatus::Active || Session.Admission != ECrowdySessionAdmission::Open)
+	{
+		return false;
+	}
+	return !Session.bHasMaxParticipants || Session.ParticipantCount < Session.MaxParticipants;
+}
+
+FCrowdyModelFailure UCrowdyGameModel::GetLastSessionFailure(const UObject* WorldContext)
+{
+	const UCrowdyGameModelSubsystem* Model = ResolveModelSubsystem(WorldContext);
+	return Model ? Model->GetLastFailure() : FCrowdyModelFailure();
+}
+
+void UCrowdyGameModel::WatchSession(const UObject* WorldContext, const FString& SessionId, int64 AfterRevision)
+{
+	if (UCrowdyGameModelSubsystem* Model = ResolveModelSubsystem(WorldContext))
+	{
+		Model->WatchSession(SessionId, AfterRevision);
+	}
+}
+
+void UCrowdyGameModel::UnwatchSession(const UObject* WorldContext, const FString& SessionId)
+{
+	if (UCrowdyGameModelSubsystem* Model = ResolveModelSubsystem(WorldContext))
+	{
+		Model->UnwatchSession(SessionId);
+	}
+}
+
 int32 UCrowdyGameModel::GetContainerInt(const UObject* WorldContext, const FString& ContainerId, FName Key, int32 Default)
 {
 	const UCrowdyGameModelSubsystem* Model = ResolveModelSubsystem(WorldContext);

@@ -31,6 +31,7 @@
 #ifndef CROWDY_NO_EXCEPTIONS
 #include "crowdy/domains/compute.hpp"
 #include "crowdy/domains/crowdy_studio.hpp"
+#include "crowdy/domains/crowdy_studio_github.hpp"
 #endif
 
 namespace crowdy {
@@ -230,6 +231,12 @@ class CrowdyClient {
   /// Caller-owned, app-scoped Crowdy Studio projects and reusable files.
   /// Source remains owner-private; grid affinity never grants runtime authority.
   domains::CrowdyStudioAPI& crowdyStudio() { return *crowdyStudio_; }
+  /// GitHub-backed project transport on the same session. Status / layout /
+  /// tree / file / put / delete / refresh work with an app token; connect /
+  /// repos / bind / unbind need the identity session.
+  domains::CrowdyStudioGitHubAPI& crowdyStudioGitHub() {
+    return *crowdyStudioGitHub_;
+  }
 #endif
   domains::PlatformAPI& platform() { return *platform_; }
   /// Agentic Crowdy Studio policy, sanitized usage, provider-data consent and
@@ -390,6 +397,7 @@ class CrowdyClient {
   std::unique_ptr<domains::GameAppsAPI> gameApps_;
 #ifndef CROWDY_NO_EXCEPTIONS
   std::unique_ptr<domains::CrowdyStudioAPI> crowdyStudio_;
+  std::unique_ptr<domains::CrowdyStudioGitHubAPI> crowdyStudioGitHub_;
 #endif
   std::unique_ptr<domains::PlatformAPI> platform_;
   std::unique_ptr<domains::CrowdyStudioAgentAPI> crowdyStudioAgent_;

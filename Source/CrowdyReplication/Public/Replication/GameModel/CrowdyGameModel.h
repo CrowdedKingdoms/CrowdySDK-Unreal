@@ -39,6 +39,33 @@ public:
 		DisplayName = "Is My Turn")
 	static bool IsMyTurn(const UObject* WorldContext, const FCrowdyGameModelSession& Session);
 
+	// True when Session's host is the local user. Host-only calls (admission, transfer, end) are enforced
+	// server-side; this is the client-side gate for showing them.
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext"),
+		DisplayName = "Is Session Host")
+	static bool IsSessionHost(const UObject* WorldContext, const FCrowdyGameModelSession& Session);
+
+	// True when a player who is not in Session could join it now: it is active, admission is open, and there is a
+	// free seat. The server is the judge; this only decides whether to show a Join button.
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", DisplayName = "Is Session Joinable")
+	static bool IsSessionJoinable(const FCrowdyGameModelSession& Session);
+
+	// Why the most recent session call was refused, for a Failed pin that was not wired: the enum to switch on,
+	// the server's code, and a message for a human. Error is None when the last call succeeded.
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext"),
+		DisplayName = "Get Last Session Failure")
+	static FCrowdyModelFailure GetLastSessionFailure(const UObject* WorldContext);
+
+	// Open / close a session's event stream; each event broadcasts on the subsystem's On Game Session Changed.
+	// AfterRevision -1 starts from now; a revision the caller already holds replays everything after it.
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext"),
+		DisplayName = "Watch Game Session")
+	static void WatchSession(const UObject* WorldContext, const FString& SessionId, int64 AfterRevision = -1);
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext"),
+		DisplayName = "Unwatch Game Session")
+	static void UnwatchSession(const UObject* WorldContext, const FString& SessionId);
+
 	// Typed reads of a free/data container's cached property by key. Return Default when the container is
 	// not watched, the key is not cached yet, or the cached value is a different type.
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", meta = (WorldContext = "WorldContext"),

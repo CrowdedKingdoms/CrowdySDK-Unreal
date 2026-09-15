@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: 8af0b37413ccd19f75dfdc6a1688970f1cd9cad5d136e9b5a7d563936608eac4
-// operations sha256: 331d7386d4472958c60e238354b662e67d46abaf0af5429a123549c38bbd0ffb
+// schema.gql sha256: 45e42c0686e4c5520821c8287c7e6ab0245a69d33e23e9ec7dd2aabcc10939fa
+// operations sha256: f60049098f31d65813ba729116151394ca3890e96599f572cb375c0b70db8c5f
 
 #pragma once
 
@@ -3819,6 +3819,11 @@ query CrowdyStudioProjects(
     revision
     archived
     updatedAt
+    source
+    githubOwner
+    githubRepo
+    githubBranch
+    githubSha
   }
 }
 
@@ -3949,6 +3954,11 @@ inline constexpr std::string_view kCrowdyStudioProjectsIsolatedDocument = R"gql(
     revision
     archived
     updatedAt
+    source
+    githubOwner
+    githubRepo
+    githubBranch
+    githubSha
   }
 })gql";
 inline constexpr std::string_view kCrowdyStudioProjectsOperationName = "CrowdyStudioProjects";
@@ -4433,6 +4443,251 @@ fragment CrowdyStudioProjectFields on CrowdyStudioProject {
 })gql";
 inline constexpr std::string_view kCrowdyStudioProjectCreateFromModulesOperationName = "CrowdyStudioProjectCreateFromModules";
 
+/// crowdyStudio/CrowdyStudioGitHub.graphql
+inline constexpr std::string_view kCrowdyStudioGitHubDocument = R"gql(fragment CrowdyStudioGitHubStatusFields on CrowdyStudioGitHubStatus {
+  configured
+  connected
+  accountLogin
+  accountType
+  owner
+  repo
+  branch
+  githubSha
+  installUrl
+}
+
+query CrowdyStudioGitHubStatus($appId: BigInt, $projectId: String) {
+  crowdyStudioGitHubStatus(appId: $appId, projectId: $projectId) {
+    ...CrowdyStudioGitHubStatusFields
+  }
+}
+
+mutation CrowdyStudioGitHubConnectUrl {
+  crowdyStudioGitHubConnectUrl {
+    connectUrl
+  }
+}
+
+query CrowdyStudioGitHubRepos {
+  crowdyStudioGitHubRepos {
+    owner
+    name
+    fullName
+    private
+    defaultBranch
+  }
+}
+
+mutation CrowdyStudioGitHubBind($input: BindCrowdyStudioGitHubInput!) {
+  crowdyStudioGitHubBind(input: $input) {
+    ...CrowdyStudioGitHubStatusFields
+  }
+}
+
+mutation CrowdyStudioGitHubUnbind($input: CrowdyStudioGitHubProjectInput!) {
+  crowdyStudioGitHubUnbind(input: $input) {
+    ...CrowdyStudioGitHubStatusFields
+  }
+}
+
+mutation CrowdyStudioGitHubRefresh($input: CrowdyStudioGitHubProjectInput!) {
+  crowdyStudioGitHubRefresh(input: $input) {
+    ...CrowdyStudioGitHubStatusFields
+  }
+}
+
+query CrowdyStudioGitHubLayout($input: CrowdyStudioGitHubAtCommitInput!) {
+  crowdyStudioGitHubLayout(input: $input) {
+    commitSha
+    server
+    client
+    assets
+    fromFile
+  }
+}
+
+query CrowdyStudioGitHubTree($input: CrowdyStudioGitHubAtCommitInput!) {
+  crowdyStudioGitHubTree(input: $input) {
+    commitSha
+    entries {
+      path
+      type
+      sha
+      size
+    }
+  }
+}
+
+query CrowdyStudioGitHubFile($input: CrowdyStudioGitHubFileInput!) {
+  crowdyStudioGitHubFile(input: $input) {
+    path
+    content
+    sha
+    commitSha
+  }
+}
+
+mutation CrowdyStudioGitHubPutFile($input: CrowdyStudioGitHubPutFileInput!) {
+  crowdyStudioGitHubPutFile(input: $input) {
+    path
+    content
+    sha
+    commitSha
+  }
+}
+
+mutation CrowdyStudioGitHubDeleteFile($input: CrowdyStudioGitHubDeleteFileInput!) {
+  crowdyStudioGitHubDeleteFile(input: $input) {
+    ...CrowdyStudioGitHubStatusFields
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubStatusIsolatedDocument = R"gql(query CrowdyStudioGitHubStatus($appId: BigInt, $projectId: String) {
+  crowdyStudioGitHubStatus(appId: $appId, projectId: $projectId) {
+    ...CrowdyStudioGitHubStatusFields
+  }
+}
+
+fragment CrowdyStudioGitHubStatusFields on CrowdyStudioGitHubStatus {
+  configured
+  connected
+  accountLogin
+  accountType
+  owner
+  repo
+  branch
+  githubSha
+  installUrl
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubStatusOperationName = "CrowdyStudioGitHubStatus";
+inline constexpr std::string_view kCrowdyStudioGitHubConnectUrlIsolatedDocument = R"gql(mutation CrowdyStudioGitHubConnectUrl {
+  crowdyStudioGitHubConnectUrl {
+    connectUrl
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubConnectUrlOperationName = "CrowdyStudioGitHubConnectUrl";
+inline constexpr std::string_view kCrowdyStudioGitHubReposIsolatedDocument = R"gql(query CrowdyStudioGitHubRepos {
+  crowdyStudioGitHubRepos {
+    owner
+    name
+    fullName
+    private
+    defaultBranch
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubReposOperationName = "CrowdyStudioGitHubRepos";
+inline constexpr std::string_view kCrowdyStudioGitHubBindIsolatedDocument = R"gql(mutation CrowdyStudioGitHubBind($input: BindCrowdyStudioGitHubInput!) {
+  crowdyStudioGitHubBind(input: $input) {
+    ...CrowdyStudioGitHubStatusFields
+  }
+}
+
+fragment CrowdyStudioGitHubStatusFields on CrowdyStudioGitHubStatus {
+  configured
+  connected
+  accountLogin
+  accountType
+  owner
+  repo
+  branch
+  githubSha
+  installUrl
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubBindOperationName = "CrowdyStudioGitHubBind";
+inline constexpr std::string_view kCrowdyStudioGitHubUnbindIsolatedDocument = R"gql(mutation CrowdyStudioGitHubUnbind($input: CrowdyStudioGitHubProjectInput!) {
+  crowdyStudioGitHubUnbind(input: $input) {
+    ...CrowdyStudioGitHubStatusFields
+  }
+}
+
+fragment CrowdyStudioGitHubStatusFields on CrowdyStudioGitHubStatus {
+  configured
+  connected
+  accountLogin
+  accountType
+  owner
+  repo
+  branch
+  githubSha
+  installUrl
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubUnbindOperationName = "CrowdyStudioGitHubUnbind";
+inline constexpr std::string_view kCrowdyStudioGitHubRefreshIsolatedDocument = R"gql(mutation CrowdyStudioGitHubRefresh($input: CrowdyStudioGitHubProjectInput!) {
+  crowdyStudioGitHubRefresh(input: $input) {
+    ...CrowdyStudioGitHubStatusFields
+  }
+}
+
+fragment CrowdyStudioGitHubStatusFields on CrowdyStudioGitHubStatus {
+  configured
+  connected
+  accountLogin
+  accountType
+  owner
+  repo
+  branch
+  githubSha
+  installUrl
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubRefreshOperationName = "CrowdyStudioGitHubRefresh";
+inline constexpr std::string_view kCrowdyStudioGitHubLayoutIsolatedDocument = R"gql(query CrowdyStudioGitHubLayout($input: CrowdyStudioGitHubAtCommitInput!) {
+  crowdyStudioGitHubLayout(input: $input) {
+    commitSha
+    server
+    client
+    assets
+    fromFile
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubLayoutOperationName = "CrowdyStudioGitHubLayout";
+inline constexpr std::string_view kCrowdyStudioGitHubTreeIsolatedDocument = R"gql(query CrowdyStudioGitHubTree($input: CrowdyStudioGitHubAtCommitInput!) {
+  crowdyStudioGitHubTree(input: $input) {
+    commitSha
+    entries {
+      path
+      type
+      sha
+      size
+    }
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubTreeOperationName = "CrowdyStudioGitHubTree";
+inline constexpr std::string_view kCrowdyStudioGitHubFileIsolatedDocument = R"gql(query CrowdyStudioGitHubFile($input: CrowdyStudioGitHubFileInput!) {
+  crowdyStudioGitHubFile(input: $input) {
+    path
+    content
+    sha
+    commitSha
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubFileOperationName = "CrowdyStudioGitHubFile";
+inline constexpr std::string_view kCrowdyStudioGitHubPutFileIsolatedDocument = R"gql(mutation CrowdyStudioGitHubPutFile($input: CrowdyStudioGitHubPutFileInput!) {
+  crowdyStudioGitHubPutFile(input: $input) {
+    path
+    content
+    sha
+    commitSha
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubPutFileOperationName = "CrowdyStudioGitHubPutFile";
+inline constexpr std::string_view kCrowdyStudioGitHubDeleteFileIsolatedDocument = R"gql(mutation CrowdyStudioGitHubDeleteFile($input: CrowdyStudioGitHubDeleteFileInput!) {
+  crowdyStudioGitHubDeleteFile(input: $input) {
+    ...CrowdyStudioGitHubStatusFields
+  }
+}
+
+fragment CrowdyStudioGitHubStatusFields on CrowdyStudioGitHubStatus {
+  configured
+  connected
+  accountLogin
+  accountType
+  owner
+  repo
+  branch
+  githubSha
+  installUrl
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubDeleteFileOperationName = "CrowdyStudioGitHubDeleteFile";
+
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CrowdyStudioProjects") return kCrowdyStudioProjectsIsolatedDocument;
   if (operationName == "CrowdyStudioProject") return kCrowdyStudioProjectIsolatedDocument;
@@ -4448,6 +4703,17 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CrowdyStudioProjectImportFile") return kCrowdyStudioProjectImportFileIsolatedDocument;
   if (operationName == "CrowdyStudioCommonPublish") return kCrowdyStudioCommonPublishIsolatedDocument;
   if (operationName == "CrowdyStudioProjectCreateFromModules") return kCrowdyStudioProjectCreateFromModulesIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubStatus") return kCrowdyStudioGitHubStatusIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubConnectUrl") return kCrowdyStudioGitHubConnectUrlIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubRepos") return kCrowdyStudioGitHubReposIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubBind") return kCrowdyStudioGitHubBindIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubUnbind") return kCrowdyStudioGitHubUnbindIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubRefresh") return kCrowdyStudioGitHubRefreshIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubLayout") return kCrowdyStudioGitHubLayoutIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubTree") return kCrowdyStudioGitHubTreeIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubFile") return kCrowdyStudioGitHubFileIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubPutFile") return kCrowdyStudioGitHubPutFileIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubDeleteFile") return kCrowdyStudioGitHubDeleteFileIsolatedDocument;
   return {};
 }
 
@@ -6519,6 +6785,37 @@ inline constexpr std::string_view kGameModelRuntimeDocument = R"gql(fragment GmS
   createdByUserId
   currentTurnUserId
   metadataJson
+  admission
+  maxParticipants
+  participantCount
+  hostUserId
+  hostTerm
+  revision
+  endedAt
+  endReason
+  createdAt
+  presence
+}
+
+fragment GmSessionParticipantFields on GmSessionParticipant {
+  sessionId
+  userId
+  role
+  state
+  incarnation
+  actorUuid
+  joinedAt
+  leftAt
+  leftReason
+}
+
+fragment GmSessionEventFields on GmSessionEvent {
+  appId
+  sessionId
+  revision
+  kind
+  payloadJson
+  createdAt
 }
 
 fragment GmContainerFields on GmContainer {
@@ -6561,9 +6858,31 @@ mutation GameModelCreateSession($input: CreateSessionInput!) {
 
 mutation GameModelJoinSession($input: JoinSessionInput!) {
   gameModelJoinSession(input: $input) {
-    sessionId
-    userId
-    role
+    ...GmSessionParticipantFields
+  }
+}
+
+mutation GameModelLeaveSession($input: LeaveSessionInput!) {
+  gameModelLeaveSession(input: $input) {
+    ...GmSessionParticipantFields
+  }
+}
+
+mutation GameModelSetSessionAdmission($input: SetSessionAdmissionInput!) {
+  gameModelSetSessionAdmission(input: $input) {
+    ...GmSessionFields
+  }
+}
+
+mutation GameModelTransferSessionHost($input: TransferSessionHostInput!) {
+  gameModelTransferSessionHost(input: $input) {
+    ...GmSessionFields
+  }
+}
+
+mutation GameModelEndSession($input: EndSessionInput!) {
+  gameModelEndSession(input: $input) {
+    ...GmSessionFields
   }
 }
 
@@ -6690,9 +7009,81 @@ query GameModelSession($appId: BigInt!, $sessionId: String!) {
   }
 }
 
-query GameModelSessions($appId: BigInt!, $status: String) {
-  gameModelSessions(appId: $appId, status: $status) {
+query GameModelSessions(
+  $appId: BigInt!
+  $status: String
+  $admission: String
+  $hostUserId: BigInt
+  $limit: Int
+) {
+  gameModelSessions(
+    appId: $appId
+    status: $status
+    admission: $admission
+    hostUserId: $hostUserId
+    limit: $limit
+  ) {
     ...GmSessionFields
+  }
+}
+
+query GameModelSessionSnapshot($appId: BigInt!, $sessionId: String!) {
+  gameModelSessionSnapshot(appId: $appId, sessionId: $sessionId) {
+    revision
+    session {
+      ...GmSessionFields
+    }
+    participants {
+      ...GmSessionParticipantFields
+    }
+  }
+}
+
+query GameModelSessionEvents(
+  $appId: BigInt!
+  $sessionId: String!
+  $afterRevision: String!
+  $limit: Int
+) {
+  gameModelSessionEvents(
+    appId: $appId
+    sessionId: $sessionId
+    afterRevision: $afterRevision
+    limit: $limit
+  ) {
+    ...GmSessionEventFields
+  }
+}
+
+query GameModelSessionInspect($appId: BigInt!, $sessionId: String!) {
+  gameModelSessionInspect(appId: $appId, sessionId: $sessionId) {
+    session {
+      ...GmSessionFields
+    }
+    participants {
+      presence
+      presenceFrom
+      participant {
+        ...GmSessionParticipantFields
+      }
+    }
+    recentEvents {
+      ...GmSessionEventFields
+    }
+  }
+}
+
+subscription GameModelSessionChanged(
+  $appId: BigInt!
+  $sessionId: String!
+  $afterRevision: String
+) {
+  gameModelSessionChanged(
+    appId: $appId
+    sessionId: $sessionId
+    afterRevision: $afterRevision
+  ) {
+    ...GmSessionEventFields
   }
 }
 
@@ -6902,16 +7293,132 @@ fragment GmSessionFields on GmSession {
   createdByUserId
   currentTurnUserId
   metadataJson
+  admission
+  maxParticipants
+  participantCount
+  hostUserId
+  hostTerm
+  revision
+  endedAt
+  endReason
+  createdAt
+  presence
 })gql";
 inline constexpr std::string_view kGameModelCreateSessionOperationName = "GameModelCreateSession";
 inline constexpr std::string_view kGameModelJoinSessionIsolatedDocument = R"gql(mutation GameModelJoinSession($input: JoinSessionInput!) {
   gameModelJoinSession(input: $input) {
-    sessionId
-    userId
-    role
+    ...GmSessionParticipantFields
   }
+}
+
+fragment GmSessionParticipantFields on GmSessionParticipant {
+  sessionId
+  userId
+  role
+  state
+  incarnation
+  actorUuid
+  joinedAt
+  leftAt
+  leftReason
 })gql";
 inline constexpr std::string_view kGameModelJoinSessionOperationName = "GameModelJoinSession";
+inline constexpr std::string_view kGameModelLeaveSessionIsolatedDocument = R"gql(mutation GameModelLeaveSession($input: LeaveSessionInput!) {
+  gameModelLeaveSession(input: $input) {
+    ...GmSessionParticipantFields
+  }
+}
+
+fragment GmSessionParticipantFields on GmSessionParticipant {
+  sessionId
+  userId
+  role
+  state
+  incarnation
+  actorUuid
+  joinedAt
+  leftAt
+  leftReason
+})gql";
+inline constexpr std::string_view kGameModelLeaveSessionOperationName = "GameModelLeaveSession";
+inline constexpr std::string_view kGameModelSetSessionAdmissionIsolatedDocument = R"gql(mutation GameModelSetSessionAdmission($input: SetSessionAdmissionInput!) {
+  gameModelSetSessionAdmission(input: $input) {
+    ...GmSessionFields
+  }
+}
+
+fragment GmSessionFields on GmSession {
+  sessionId
+  appId
+  name
+  status
+  createdByUserId
+  currentTurnUserId
+  metadataJson
+  admission
+  maxParticipants
+  participantCount
+  hostUserId
+  hostTerm
+  revision
+  endedAt
+  endReason
+  createdAt
+  presence
+})gql";
+inline constexpr std::string_view kGameModelSetSessionAdmissionOperationName = "GameModelSetSessionAdmission";
+inline constexpr std::string_view kGameModelTransferSessionHostIsolatedDocument = R"gql(mutation GameModelTransferSessionHost($input: TransferSessionHostInput!) {
+  gameModelTransferSessionHost(input: $input) {
+    ...GmSessionFields
+  }
+}
+
+fragment GmSessionFields on GmSession {
+  sessionId
+  appId
+  name
+  status
+  createdByUserId
+  currentTurnUserId
+  metadataJson
+  admission
+  maxParticipants
+  participantCount
+  hostUserId
+  hostTerm
+  revision
+  endedAt
+  endReason
+  createdAt
+  presence
+})gql";
+inline constexpr std::string_view kGameModelTransferSessionHostOperationName = "GameModelTransferSessionHost";
+inline constexpr std::string_view kGameModelEndSessionIsolatedDocument = R"gql(mutation GameModelEndSession($input: EndSessionInput!) {
+  gameModelEndSession(input: $input) {
+    ...GmSessionFields
+  }
+}
+
+fragment GmSessionFields on GmSession {
+  sessionId
+  appId
+  name
+  status
+  createdByUserId
+  currentTurnUserId
+  metadataJson
+  admission
+  maxParticipants
+  participantCount
+  hostUserId
+  hostTerm
+  revision
+  endedAt
+  endReason
+  createdAt
+  presence
+})gql";
+inline constexpr std::string_view kGameModelEndSessionOperationName = "GameModelEndSession";
 inline constexpr std::string_view kGameModelSetSessionTurnIsolatedDocument = R"gql(mutation GameModelSetSessionTurn($input: SetSessionTurnInput!) {
   gameModelSetSessionTurn(input: $input) {
     ...GmSessionFields
@@ -6926,6 +7433,16 @@ fragment GmSessionFields on GmSession {
   createdByUserId
   currentTurnUserId
   metadataJson
+  admission
+  maxParticipants
+  participantCount
+  hostUserId
+  hostTerm
+  revision
+  endedAt
+  endReason
+  createdAt
+  presence
 })gql";
 inline constexpr std::string_view kGameModelSetSessionTurnOperationName = "GameModelSetSessionTurn";
 inline constexpr std::string_view kGameModelCreateContainerIsolatedDocument = R"gql(mutation GameModelCreateContainer($input: CreateContainerInput!) {
@@ -7132,10 +7649,26 @@ fragment GmSessionFields on GmSession {
   createdByUserId
   currentTurnUserId
   metadataJson
+  admission
+  maxParticipants
+  participantCount
+  hostUserId
+  hostTerm
+  revision
+  endedAt
+  endReason
+  createdAt
+  presence
 })gql";
 inline constexpr std::string_view kGameModelSessionOperationName = "GameModelSession";
-inline constexpr std::string_view kGameModelSessionsIsolatedDocument = R"gql(query GameModelSessions($appId: BigInt!, $status: String) {
-  gameModelSessions(appId: $appId, status: $status) {
+inline constexpr std::string_view kGameModelSessionsIsolatedDocument = R"gql(query GameModelSessions($appId: BigInt!, $status: String, $admission: String, $hostUserId: BigInt, $limit: Int) {
+  gameModelSessions(
+    appId: $appId
+    status: $status
+    admission: $admission
+    hostUserId: $hostUserId
+    limit: $limit
+  ) {
     ...GmSessionFields
   }
 }
@@ -7148,8 +7681,160 @@ fragment GmSessionFields on GmSession {
   createdByUserId
   currentTurnUserId
   metadataJson
+  admission
+  maxParticipants
+  participantCount
+  hostUserId
+  hostTerm
+  revision
+  endedAt
+  endReason
+  createdAt
+  presence
 })gql";
 inline constexpr std::string_view kGameModelSessionsOperationName = "GameModelSessions";
+inline constexpr std::string_view kGameModelSessionSnapshotIsolatedDocument = R"gql(query GameModelSessionSnapshot($appId: BigInt!, $sessionId: String!) {
+  gameModelSessionSnapshot(appId: $appId, sessionId: $sessionId) {
+    revision
+    session {
+      ...GmSessionFields
+    }
+    participants {
+      ...GmSessionParticipantFields
+    }
+  }
+}
+
+fragment GmSessionFields on GmSession {
+  sessionId
+  appId
+  name
+  status
+  createdByUserId
+  currentTurnUserId
+  metadataJson
+  admission
+  maxParticipants
+  participantCount
+  hostUserId
+  hostTerm
+  revision
+  endedAt
+  endReason
+  createdAt
+  presence
+}
+
+fragment GmSessionParticipantFields on GmSessionParticipant {
+  sessionId
+  userId
+  role
+  state
+  incarnation
+  actorUuid
+  joinedAt
+  leftAt
+  leftReason
+})gql";
+inline constexpr std::string_view kGameModelSessionSnapshotOperationName = "GameModelSessionSnapshot";
+inline constexpr std::string_view kGameModelSessionEventsIsolatedDocument = R"gql(query GameModelSessionEvents($appId: BigInt!, $sessionId: String!, $afterRevision: String!, $limit: Int) {
+  gameModelSessionEvents(
+    appId: $appId
+    sessionId: $sessionId
+    afterRevision: $afterRevision
+    limit: $limit
+  ) {
+    ...GmSessionEventFields
+  }
+}
+
+fragment GmSessionEventFields on GmSessionEvent {
+  appId
+  sessionId
+  revision
+  kind
+  payloadJson
+  createdAt
+})gql";
+inline constexpr std::string_view kGameModelSessionEventsOperationName = "GameModelSessionEvents";
+inline constexpr std::string_view kGameModelSessionInspectIsolatedDocument = R"gql(query GameModelSessionInspect($appId: BigInt!, $sessionId: String!) {
+  gameModelSessionInspect(appId: $appId, sessionId: $sessionId) {
+    session {
+      ...GmSessionFields
+    }
+    participants {
+      presence
+      presenceFrom
+      participant {
+        ...GmSessionParticipantFields
+      }
+    }
+    recentEvents {
+      ...GmSessionEventFields
+    }
+  }
+}
+
+fragment GmSessionFields on GmSession {
+  sessionId
+  appId
+  name
+  status
+  createdByUserId
+  currentTurnUserId
+  metadataJson
+  admission
+  maxParticipants
+  participantCount
+  hostUserId
+  hostTerm
+  revision
+  endedAt
+  endReason
+  createdAt
+  presence
+}
+
+fragment GmSessionParticipantFields on GmSessionParticipant {
+  sessionId
+  userId
+  role
+  state
+  incarnation
+  actorUuid
+  joinedAt
+  leftAt
+  leftReason
+}
+
+fragment GmSessionEventFields on GmSessionEvent {
+  appId
+  sessionId
+  revision
+  kind
+  payloadJson
+  createdAt
+})gql";
+inline constexpr std::string_view kGameModelSessionInspectOperationName = "GameModelSessionInspect";
+inline constexpr std::string_view kGameModelSessionChangedIsolatedDocument = R"gql(subscription GameModelSessionChanged($appId: BigInt!, $sessionId: String!, $afterRevision: String) {
+  gameModelSessionChanged(
+    appId: $appId
+    sessionId: $sessionId
+    afterRevision: $afterRevision
+  ) {
+    ...GmSessionEventFields
+  }
+}
+
+fragment GmSessionEventFields on GmSessionEvent {
+  appId
+  sessionId
+  revision
+  kind
+  payloadJson
+  createdAt
+})gql";
+inline constexpr std::string_view kGameModelSessionChangedOperationName = "GameModelSessionChanged";
 inline constexpr std::string_view kGameModelEventsIsolatedDocument = R"gql(query GameModelEvents($appId: BigInt!, $sessionId: String, $selfContainerId: String, $functionName: String, $success: Boolean, $limit: Int, $offset: Int) {
   gameModelEvents(
     appId: $appId
@@ -7948,6 +8633,10 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CrowdyModelLint") return kCrowdyModelLintIsolatedDocument;
   if (operationName == "GameModelCreateSession") return kGameModelCreateSessionIsolatedDocument;
   if (operationName == "GameModelJoinSession") return kGameModelJoinSessionIsolatedDocument;
+  if (operationName == "GameModelLeaveSession") return kGameModelLeaveSessionIsolatedDocument;
+  if (operationName == "GameModelSetSessionAdmission") return kGameModelSetSessionAdmissionIsolatedDocument;
+  if (operationName == "GameModelTransferSessionHost") return kGameModelTransferSessionHostIsolatedDocument;
+  if (operationName == "GameModelEndSession") return kGameModelEndSessionIsolatedDocument;
   if (operationName == "GameModelSetSessionTurn") return kGameModelSetSessionTurnIsolatedDocument;
   if (operationName == "GameModelCreateContainer") return kGameModelCreateContainerIsolatedDocument;
   if (operationName == "GameModelEnsureContainer") return kGameModelEnsureContainerIsolatedDocument;
@@ -7962,6 +8651,10 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "GameModelTraverse") return kGameModelTraverseIsolatedDocument;
   if (operationName == "GameModelSession") return kGameModelSessionIsolatedDocument;
   if (operationName == "GameModelSessions") return kGameModelSessionsIsolatedDocument;
+  if (operationName == "GameModelSessionSnapshot") return kGameModelSessionSnapshotIsolatedDocument;
+  if (operationName == "GameModelSessionEvents") return kGameModelSessionEventsIsolatedDocument;
+  if (operationName == "GameModelSessionInspect") return kGameModelSessionInspectIsolatedDocument;
+  if (operationName == "GameModelSessionChanged") return kGameModelSessionChangedIsolatedDocument;
   if (operationName == "GameModelEvents") return kGameModelEventsIsolatedDocument;
   if (operationName == "GameModelEventsConnection") return kGameModelEventsConnectionIsolatedDocument;
   if (operationName == "GameModelActivePlayerCount") return kGameModelActivePlayerCountIsolatedDocument;
@@ -10089,6 +10782,7 @@ mutation PlayerComputeSetSwitch(
   $disabled: Boolean!
   $scopeRef: BigInt
   $reason: String
+  $listingRef: String
 ) {
   playerComputeSetSwitch(
     appId: $appId
@@ -10096,6 +10790,7 @@ mutation PlayerComputeSetSwitch(
     disabled: $disabled
     scopeRef: $scopeRef
     reason: $reason
+    listingRef: $listingRef
   )
 }
 
@@ -10105,6 +10800,7 @@ query PlayerComputeSwitches($appId: BigInt!) {
     appId
     scope
     scopeRef
+    listingRef
     reason
     disabledAt
   }
@@ -10326,13 +11022,14 @@ fragment PlayerWasmModuleRunFields on PlayerWasmModuleRun {
   errorMessage
 })gql";
 inline constexpr std::string_view kPlayerComputeLogsOperationName = "PlayerComputeLogs";
-inline constexpr std::string_view kPlayerComputeSetSwitchIsolatedDocument = R"gql(mutation PlayerComputeSetSwitch($appId: BigInt!, $scope: String!, $disabled: Boolean!, $scopeRef: BigInt, $reason: String) {
+inline constexpr std::string_view kPlayerComputeSetSwitchIsolatedDocument = R"gql(mutation PlayerComputeSetSwitch($appId: BigInt!, $scope: String!, $disabled: Boolean!, $scopeRef: BigInt, $reason: String, $listingRef: String) {
   playerComputeSetSwitch(
     appId: $appId
     scope: $scope
     disabled: $disabled
     scopeRef: $scopeRef
     reason: $reason
+    listingRef: $listingRef
   )
 })gql";
 inline constexpr std::string_view kPlayerComputeSetSwitchOperationName = "PlayerComputeSetSwitch";
@@ -10342,6 +11039,7 @@ inline constexpr std::string_view kPlayerComputeSwitchesIsolatedDocument = R"gql
     appId
     scope
     scopeRef
+    listingRef
     reason
     disabledAt
   }

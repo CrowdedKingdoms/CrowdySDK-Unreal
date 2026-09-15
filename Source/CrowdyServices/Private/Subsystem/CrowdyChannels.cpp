@@ -91,10 +91,11 @@ void UCrowdyChannels::EnsureChannelSubscription()
 
 void UCrowdyChannels::HandleChannelMessageNotification(const FChannelMessageNotification& Notification)
 {
-	// Two Game Model notification kinds also ride the session channel, delivered to every member alongside
-	// reliable-RPC and chat traffic, and both are handled by the Game Model subsystem - not here. One is the
-	// model-changed re-pull hint ("cmc:"), the other is an effect signal ("csg:"). Skip both so neither is
-	// mis-decoded as a reliable-RPC frame (which would read bogus lengths out of the trailing text). Every
+	// Three Game Model notification kinds also ride the session channel, delivered to every member alongside
+	// reliable-RPC and chat traffic, and all are handled by the Game Model subsystem - not here: the
+	// model-changed re-pull hint ("cmc:"), an effect signal ("csg:") and a session-changed cue ("gms|"). Skip them
+	// so none is mis-decoded as a reliable-RPC frame (which would read bogus lengths out of the trailing text), at
+	// the cost that a chat message starting with one of those prefixes is dropped from chat on every channel. Every
 	// subscriber to this one opcode has to ignore the others' frames, and has to recognize every encoding the
 	// Game Model decoders accept, which is why the test lives beside those decoders rather than being inlined here.
 	if (CrowdyGameModelMetaKeys::HasGameModelChannelPrefix(Notification.Payload))

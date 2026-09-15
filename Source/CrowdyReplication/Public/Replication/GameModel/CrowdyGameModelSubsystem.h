@@ -26,6 +26,7 @@ struct FChannelMessageNotification;
 struct FCrowdyAttributeChange;
 struct FCrowdyModelChangedPing;
 struct FCrowdyDelivery;
+struct FCrowdyCppJsonResult;
 
 // Fires on the game thread when a free/data container's cached state changes after a pull, the OnRep analogue
 // for actorless containers (inventories, quests). A UI binds this and filters by ContainerId. Actor-bound
@@ -49,6 +50,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdySignalReceived, const FStr
 // reactions still use the attribute's CrowdyOnRep; this delegate is the cross-object/UI channel.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FiveParams(FCrowdyModelAttributeChanged, UObject*, Target,
 	const FString&, ModelId, FName, Attribute, const FString&, OldValueJson, const FString&, NewValueJson);
+
+// Fires on the game thread once per session change this client hears about, from either carrier: the channel cue
+// (no payload) or a watched session's event stream (full event). Filter by SessionId; see OnSessionChanged.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyOnSessionChanged, FCrowdyGameModelSessionEvent, Event);
 
 namespace CrowdyCoalesce
 {
@@ -180,6 +185,14 @@ public:
 	// The payload is untrusted: the name is bounded and character-checked before it is ever turned into a function
 	// name, so a forged frame cannot name an arbitrary UFUNCTION to call.
 	static bool DecodeChannelSignal(const TArray<uint8>& Payload, FString& OutSignalName, FString& OutContainerId);
+
+	// Decode a session-changed cue from a CHANNEL_MESSAGE (opcode 18) payload: exactly
+	// concat(SessionChangedChannelPrefix, "<session id>|<revision>|<kind>"), in the same raw-ASCII and base64
+	// encodings the other two channel decoders accept. Returns false for anything without the prefix, an empty id,
+	// a revision that is not a non-negative integer, an empty kind or a kind over 64 characters: the payload is
+	// attacker-reachable and the kind is handed straight to Blueprints. Static + public for tests.
+	static bool DecodeChannelSessionCue(const TArray<uint8>& Payload, FString& OutSessionId, int64& OutRevision,
+		FString& OutKind);
 
 	// Self-echo drop (see RecentlySelfActed below). MarkSelfActed records ContainerId as just-invoked by this
 	// client; ConsumeSelfEcho returns true (and consumes the record) when a model-changed echo arrives for a
@@ -446,18 +459,110 @@ public:
 
 	// Session lifecycle. Each facade fills endpoint/token/appId from the session exactly like Invoke, then
 	// marshals the call through FCrowdyGameApiCodec. OnDone always runs on the game thread once; a transport/logic failure
-	// surfaces bOk=false with an empty result and a traced reason. All use a plain app-scoped token, never an
-	// admin (manage_apps) one.
+	// surfaces bOk=false with an empty result and a traced reason, and the server's refusal is recorded so
+	// GetLastModelError / GetLastModelErrorCode can be read afterwards (SESSION_FULL, SESSION_LOCKED,
+	// SESSION_HOST_TERM_STALE and the like). All use a plain app-scoped token, never an admin (manage_apps) one.
+	// Every Session Id falls back to the active session when empty (ResolveSessionId).
+	void CreateSession(const FString& Name, const TArray<int64>& ParticipantUserIds, const FString& MetadataJson,
+		const FCrowdyGameModelCreateSessionOptions& Options,
+		TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone);
+	// Create with every option left to the server default.
 	void CreateSession(const FString& Name, const TArray<int64>& ParticipantUserIds, const FString& MetadataJson,
 		TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone);
-	// Join returns success only; the server-assigned participant role is not surfaced (read it via GetSession if
-	// a UI needs it).
+	// Join delivers the participant row, whose Incarnation a later Leave must name; this subsystem remembers it (see
+	// GetRememberedSessionIncarnation). With bBindPresenceToOwnActor the local client's own Buddy actor uuid rides
+	// along, so the session's presence tracking follows that actor.
+	void JoinSession(const FString& SessionId, const FString& Role, bool bBindPresenceToOwnActor,
+		TFunction<void(bool bOk, const FCrowdyGameModelSessionParticipant& Participant)> OnDone);
+	// Success-only form for callers that do not need the row; presence is not bound to an actor.
 	void JoinSession(const FString& SessionId, const FString& Role, TFunction<void(bool bOk)> OnDone);
+	// Incarnation <= 0 means the one remembered from this subsystem's own Create/Join; with none remembered the call
+	// fails locally, because the server requires it.
+	void LeaveSession(const FString& SessionId, int32 Incarnation,
+		TFunction<void(bool bOk, const FCrowdyGameModelSessionParticipant& Participant)> OnDone);
+	// Host controls. ExpectedHostTerm > 0 is sent as given; UseKnownHostTerm (0) sends the HostTerm this subsystem
+	// last read for the session, if any, so a host that has been replaced is refused instead of applied;
+	// SkipHostTermCheck (-1) sends none.
+	static constexpr int32 UseKnownHostTerm = 0;
+	static constexpr int32 SkipHostTermCheck = -1;
+	void SetSessionAdmission(const FString& SessionId, ECrowdySessionAdmission Admission, int32 ExpectedHostTerm,
+		TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone);
+	void TransferSessionHost(const FString& SessionId, int64 ToUserId, int32 ExpectedHostTerm,
+		TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone);
+	// Reason Completed or Abandoned; anything else is sent as Completed.
+	void EndSession(const FString& SessionId, ECrowdySessionEndReason Reason, int32 ExpectedHostTerm,
+		TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone);
 	// Set (bHasUserId) or clear (!bHasUserId) whose turn it is; the returned session carries the new turn holder.
 	void SetSessionTurn(const FString& SessionId, int64 UserId, bool bHasUserId,
-		TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone);
+		TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone, int32 ExpectedHostTerm = UseKnownHostTerm);
+	// HostUserId and Limit are skipped when 0.
+	void ListSessions(ECrowdySessionStatusFilter Status, ECrowdySessionAdmissionFilter Admission, int64 HostUserId,
+		int32 Limit, TFunction<void(bool bOk, const TArray<FCrowdyGameModelSession>& Sessions)> OnDone);
+	// Word forms: Status ("active", "completed", "abandoned") and Admission ("open", "locked", "closed") are the
+	// server's words, empty for any.
+	void ListSessions(const FString& Status, const FString& Admission, int64 HostUserId, int32 Limit,
+		TFunction<void(bool bOk, const TArray<FCrowdyGameModelSession>& Sessions)> OnDone);
 	void ListSessions(const FString& Status, TFunction<void(bool bOk, const TArray<FCrowdyGameModelSession>& Sessions)> OnDone);
 	void GetSession(const FString& SessionId, TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone);
+	// The session with its participants as of one revision: the resync read after a cue or a revision gap.
+	void GetSessionSnapshot(const FString& SessionId,
+		TFunction<void(bool bOk, const FCrowdyGameModelSessionSnapshot& Snapshot)> OnDone);
+	// The change log after AfterRevision (0 for everything), at most Limit entries (<= 0 for the server default).
+	void GetSessionEvents(const FString& SessionId, int64 AfterRevision, int32 Limit,
+		TFunction<void(bool bOk, const TArray<FCrowdyGameModelSessionEvent>& Events)> OnDone);
+
+	// Maps the codec's plain session data to the Blueprint-facing structs at the facade edge. Public so a headless
+	// test can check the mapping with hand-built data.
+	static FCrowdyGameModelSession ToBpSession(const FCrowdyGameSessionData& Data);
+	static FCrowdyGameModelSessionParticipant ToBpParticipant(const FCrowdyGameSessionParticipantData& Data);
+	// Fills the typed detail fields from PayloadJson where the server sent them.
+	static FCrowdyGameModelSessionEvent ToBpSessionEvent(const FCrowdyGameSessionEventData& Data);
+	static FCrowdyGameModelSessionSnapshot ToBpSnapshot(const FCrowdyGameSessionSnapshotData& Data);
+
+	// The server's words for each enum and back; an unknown word maps to the enum's Unknown / Other member.
+	static ECrowdySessionStatus ParseSessionStatus(const FString& Word);
+	static ECrowdySessionAdmission ParseSessionAdmission(const FString& Word);
+	static const TCHAR* SessionAdmissionWord(ECrowdySessionAdmission Admission);
+	static ECrowdySessionPresence ParseSessionPresence(const FString& Word);
+	static const TCHAR* SessionPresenceWord(ECrowdySessionPresence Presence);
+	static ECrowdySessionEndReason ParseSessionEndReason(const FString& Word);
+	static ECrowdySessionParticipantState ParseParticipantState(const FString& Word);
+	static ECrowdySessionLeftReason ParseLeftReason(const FString& Word);
+	static ECrowdySessionEventKind ParseSessionEventKind(const FString& Word);
+	static ECrowdySessionError ClassifySessionError(const FString& Code);
+
+	// The incarnation a leave sends: an explicit one (> 0) wins, else the remembered one when there is one, else
+	// false. Pure + static so the precedence is headless-testable.
+	static bool ResolveLeaveIncarnation(int32 Explicit, const int32* Remembered, int32& Out);
+	// The host term a host action sends: > 0 as given, UseKnownHostTerm the remembered one (0 when none),
+	// SkipHostTermCheck nothing (0).
+	static int32 ResolveHostTerm(int32 Requested, const int32* Known);
+
+	// The incarnation this subsystem's own Create/Join recorded for a session, or 0 when it has none.
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns|Advanced", meta = (DisplayName = "Get Remembered Session Incarnation"))
+	int32 GetRememberedSessionIncarnation(const FString& SessionId) const;
+
+	// The HostTerm this subsystem last read for a session (from any call that returned it), or 0 when it has none.
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns|Advanced", meta = (DisplayName = "Get Known Session Host Term"))
+	int32 GetKnownSessionHostTerm(const FString& SessionId) const;
+
+	// The most recent refused session call as something a Blueprint can switch on, with the server's code and
+	// message. Error is None when the last call succeeded.
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Get Last Session Failure"))
+	FCrowdyModelFailure GetLastFailure() const;
+
+	// Opens a session's event stream over the WebSocket and broadcasts each event on OnSessionChanged. AfterRevision
+	// < 0 starts from now; otherwise the server replays everything after it. Watching the same id again replaces the
+	// earlier watch. Closed by UnwatchSession and on world teardown.
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Watch Game Session"))
+	void WatchSession(const FString& SessionId, int64 AfterRevision = -1);
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Unwatch Game Session"))
+	void UnwatchSession(const FString& SessionId);
+
+	// Broadcast on the game thread for every session change heard from either carrier. A channel cue carries no
+	// payload (PayloadJson empty): the game re-pulls the snapshot; a gap in Revision means pull the snapshot again.
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "On Game Session Changed"))
+	FCrowdyOnSessionChanged OnSessionChanged;
 
 	// The local player's Game Model user id (from UCrowdyGameSession), or 0 when signed out.
 	int64 GetLocalUserId() const;
@@ -485,6 +590,10 @@ public:
 	void SetLastModelError(const FString& InError);
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "Get Last Crowdy Model Error"))
 	FString GetLastModelError() const;
+	// The server's stable code for the most recent refused session call (SESSION_FULL, SESSION_LOCKED, ...), empty
+	// when the failure carried none. Branch on this, not on the human-readable error string.
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "Get Last Crowdy Model Error Code"))
+	FString GetLastModelErrorCode() const;
 
 	// Free/data containers addressed by containerId, with no actor. Create/pull/invoke/set-property, backed by a
 	// per-container cache the typed getters read and the OnDataContainerChanged delegate a UI binds to. A
@@ -942,6 +1051,37 @@ private:
 	// The most recent Game Model error the subsystem saw (or a caller set via SetLastModelError). Read via
 	// GetLastModelError. Cleared in Deinitialize. Game-thread only.
 	FString LastModelError;
+
+	// The server's stable code for the most recent refused session call, alongside the string above.
+	FString LastModelErrorCode;
+
+	// Records a failed raw result into the two last-error strings; a clean transport records nothing.
+	void RecordServerRefusal(const FCrowdyCppJsonResult& Result);
+
+	// The shared tail of every facade whose result is one session (create, turn, read, the host controls) or one
+	// participant row (join, leave): resolve the context and client, send the variables BuildVars makes for the app
+	// id, record a refusal, parse FieldName out of the reply and complete once with the mapped struct.
+	void RunSessionReturningOp(const TCHAR* OperationName, const TCHAR* FieldName,
+		TFunction<TSharedPtr<FJsonObject>(int64 AppId)> BuildVars,
+		TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone);
+	void RunParticipantReturningOp(const TCHAR* OperationName, const TCHAR* FieldName,
+		TFunction<TSharedPtr<FJsonObject>(int64 AppId)> BuildVars,
+		TFunction<void(bool bOk, const FCrowdyGameModelSessionParticipant& Participant)> OnDone);
+
+	// Session id -> the incarnation this subsystem's own Create (1) or Join (the row's) established, which a Leave
+	// must name. Cleared in Deinitialize.
+	TMap<FString, int32> SessionIncarnations;
+
+	// Session id -> the HostTerm last read for it (every parsed session row writes here), sent with host actions so
+	// a replaced host is refused. Cleared in Deinitialize.
+	TMap<FString, int32> SessionHostTerms;
+
+	// Records a session's HostTerm and, for the ordinary success path, hands it on.
+	void RememberSession(const FCrowdyGameModelSession& Session);
+
+	// Session id -> the open event-stream subscription id (WatchSession). Held as bare ids so no bridge type
+	// reaches this header; all closed in Deinitialize.
+	TMap<FString, uint64> WatchedSessionIds;
 
 	// NetID -> server container id.
 	TMap<FGuid, FString> NetIDToContainerId;

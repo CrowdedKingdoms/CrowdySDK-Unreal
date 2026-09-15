@@ -205,8 +205,9 @@ class PlayerComputeAPI : public DomainBase {
     runAsync("PlayerComputeLogs", vars, std::move(cb));
   }
 
-  /// Throw or release a kill-ladder switch at player/grid/app scope (studio,
-  /// requires manage_compute). Quota state is retained across a kill.
+  /// Throw or release a kill-ladder switch at player/grid/app/listing scope
+  /// (studio, requires manage_compute). Pass listingRef in options for
+  /// LISTING scope. Quota state is retained across a kill.
   graphql::Json setSwitch(std::string_view appId, std::string_view scope,
                           bool disabled,
                           const graphql::JVal& options = graphql::JVal()) const {

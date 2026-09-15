@@ -82,6 +82,59 @@ namespace
 		}
 		return false;
 	}
+
+	// Reads an Int response field. The wire sends a JSON number; a numeric string also reads (TryGetNumberField
+	// parses one). Returns false when the field is absent or JSON null.
+	bool ReadOptionalInt(const TSharedPtr<FJsonObject>& Obj, const TCHAR* Field, int32& OutValue)
+	{
+		return Obj.IsValid() && Obj->TryGetNumberField(Field, OutValue);
+	}
+
+	// Wraps a mutation's input object as { input: ... }, the shape every session mutation takes.
+	TSharedPtr<FJsonObject> WrapSessionInput(const TSharedPtr<FJsonObject>& Input)
+	{
+		const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+		Variables->SetObjectField(TEXT("input"), Input);
+		return Variables;
+	}
+
+	// expectedHostTerm is a nullable Int (a JSON number); omitted when the caller holds no term to assert.
+	void WriteExpectedHostTerm(const TSharedPtr<FJsonObject>& Input, int32 ExpectedHostTerm)
+	{
+		if (ExpectedHostTerm > 0)
+		{
+			Input->SetNumberField(TEXT("expectedHostTerm"), ExpectedHostTerm);
+		}
+	}
+
+	void WriteIdempotencyKey(const TSharedPtr<FJsonObject>& Input, const FString& IdempotencyKey)
+	{
+		if (!IdempotencyKey.IsEmpty())
+		{
+			Input->SetStringField(TEXT("idempotencyKey"), IdempotencyKey);
+		}
+	}
+
+	// The object under data.<FieldName>, or null on a transport failure, a GraphQL error, or a null/absent field.
+	TSharedPtr<FJsonObject> ReadDataObjectField(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, const TCHAR* FieldName)
+	{
+		if (!bHttpOk || TransportErrors.Num() > 0)
+		{
+			return nullptr;
+		}
+		const TSharedPtr<FJsonObject> Data = GetDataObject(Envelope);
+		if (!Data.IsValid())
+		{
+			return nullptr;
+		}
+		const TSharedPtr<FJsonObject>* FieldPtr = nullptr;
+		if (!Data->TryGetObjectField(FieldName, FieldPtr) || !FieldPtr)
+		{
+			return nullptr;
+		}
+		return *FieldPtr;
+	}
 }
 
 TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildInvokeVariables(const FCrowdyInvokeRequest& Req)
@@ -449,7 +502,7 @@ bool FCrowdyGameApiCodec::ParseReadContainerByKeyEnvelope(const TSharedPtr<FJson
 }
 
 TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildCreateSessionVariables(int64 AppId, const FString& Name,
-	const TArray<int64>& ParticipantUserIds, const FString& MetadataJson)
+	const TArray<int64>& ParticipantUserIds, const FString& MetadataJson, const FCrowdyCreateSessionOptions& Options)
 {
 	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
 	// appId is a BigInt! scalar it MUST be a JSON string, never a number.
@@ -474,31 +527,99 @@ TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildCreateSessionVariables(int64 A
 		}
 		Input->SetArrayField(TEXT("participantUserIds"), Ids);
 	}
-
-	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
-	Variables->SetObjectField(TEXT("input"), Input);
-	return Variables;
+	// The Int options are JSON NUMBERS; each optional is omitted at its sentinel so the server default applies.
+	if (Options.MaxParticipants > 0)
+	{
+		Input->SetNumberField(TEXT("maxParticipants"), Options.MaxParticipants);
+	}
+	if (!Options.Admission.IsEmpty())
+	{
+		Input->SetStringField(TEXT("admission"), Options.Admission);
+	}
+	// 0 is a real value here (it disables the empty-session timeout), so only a negative one is omitted.
+	if (Options.EmptyTimeoutSec >= 0)
+	{
+		Input->SetNumberField(TEXT("emptyTimeoutSec"), Options.EmptyTimeoutSec);
+	}
+	if (!Options.Presence.IsEmpty())
+	{
+		Input->SetStringField(TEXT("presence"), Options.Presence);
+	}
+	WriteIdempotencyKey(Input, Options.IdempotencyKey);
+	return WrapSessionInput(Input);
 }
 
 TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildJoinSessionVariables(int64 AppId, const FString& SessionId,
-	const FString& Role)
+	const FString& Role, const FString& ActorUuid, const FString& IdempotencyKey)
 {
 	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
 	Input->SetStringField(TEXT("appId"), LexToString(AppId));
 	Input->SetStringField(TEXT("sessionId"), SessionId);
-	// role is nullable; omit it entirely when empty (the server assigns its default role).
+	// role and actorUuid are nullable; omit each entirely when empty (the server assigns its default role).
 	if (!Role.IsEmpty())
 	{
 		Input->SetStringField(TEXT("role"), Role);
 	}
+	if (!ActorUuid.IsEmpty())
+	{
+		Input->SetStringField(TEXT("actorUuid"), ActorUuid);
+	}
+	WriteIdempotencyKey(Input, IdempotencyKey);
+	return WrapSessionInput(Input);
+}
 
-	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
-	Variables->SetObjectField(TEXT("input"), Input);
-	return Variables;
+TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildLeaveSessionVariables(int64 AppId, const FString& SessionId,
+	int32 Incarnation, const FString& IdempotencyKey)
+{
+	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("appId"), LexToString(AppId));
+	Input->SetStringField(TEXT("sessionId"), SessionId);
+	// incarnation is a required Int (a JSON number), always written.
+	Input->SetNumberField(TEXT("incarnation"), Incarnation);
+	WriteIdempotencyKey(Input, IdempotencyKey);
+	return WrapSessionInput(Input);
+}
+
+TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildSetSessionAdmissionVariables(int64 AppId, const FString& SessionId,
+	const FString& Admission, int32 ExpectedHostTerm)
+{
+	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("appId"), LexToString(AppId));
+	Input->SetStringField(TEXT("sessionId"), SessionId);
+	Input->SetStringField(TEXT("admission"), Admission);
+	WriteExpectedHostTerm(Input, ExpectedHostTerm);
+	return WrapSessionInput(Input);
+}
+
+TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildTransferSessionHostVariables(int64 AppId, const FString& SessionId,
+	int64 ToUserId, int32 ExpectedHostTerm)
+{
+	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("appId"), LexToString(AppId));
+	Input->SetStringField(TEXT("sessionId"), SessionId);
+	// toUserId is a BigInt: a JSON string, never a number.
+	Input->SetStringField(TEXT("toUserId"), LexToString(ToUserId));
+	WriteExpectedHostTerm(Input, ExpectedHostTerm);
+	return WrapSessionInput(Input);
+}
+
+TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildEndSessionVariables(int64 AppId, const FString& SessionId,
+	const FString& Reason, int32 ExpectedHostTerm)
+{
+	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("appId"), LexToString(AppId));
+	Input->SetStringField(TEXT("sessionId"), SessionId);
+	// reason is nullable; omitted when empty (the server records "completed").
+	if (!Reason.IsEmpty())
+	{
+		Input->SetStringField(TEXT("reason"), Reason);
+	}
+	WriteExpectedHostTerm(Input, ExpectedHostTerm);
+	return WrapSessionInput(Input);
 }
 
 TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildSetSessionTurnVariables(int64 AppId, const FString& SessionId,
-	int64 UserId, bool bHasUserId)
+	int64 UserId, bool bHasUserId, int32 ExpectedHostTerm)
 {
 	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
 	Input->SetStringField(TEXT("appId"), LexToString(AppId));
@@ -514,20 +635,31 @@ TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildSetSessionTurnVariables(int64 
 	{
 		Input->SetField(TEXT("userId"), MakeShared<FJsonValueNull>());
 	}
-
-	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
-	Variables->SetObjectField(TEXT("input"), Input);
-	return Variables;
+	WriteExpectedHostTerm(Input, ExpectedHostTerm);
+	return WrapSessionInput(Input);
 }
 
-TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildListSessionsVariables(int64 AppId, const FString& Status)
+TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildListSessionsVariables(int64 AppId, const FString& Status,
+	const FString& Admission, int64 HostUserId, int32 Limit)
 {
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetStringField(TEXT("appId"), LexToString(AppId));
-	// status is nullable; omit it entirely when empty (return sessions of any status).
+	// Every filter is nullable; omit each entirely when unset (status/admission empty, hostUserId 0, limit <= 0).
 	if (!Status.IsEmpty())
 	{
 		Variables->SetStringField(TEXT("status"), Status);
+	}
+	if (!Admission.IsEmpty())
+	{
+		Variables->SetStringField(TEXT("admission"), Admission);
+	}
+	if (HostUserId != 0)
+	{
+		Variables->SetStringField(TEXT("hostUserId"), LexToString(HostUserId));
+	}
+	if (Limit > 0)
+	{
+		Variables->SetNumberField(TEXT("limit"), Limit);
 	}
 	return Variables;
 }
@@ -537,6 +669,36 @@ TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildGetSessionVariables(int64 AppI
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetStringField(TEXT("appId"), LexToString(AppId));
 	Variables->SetStringField(TEXT("sessionId"), SessionId);
+	return Variables;
+}
+
+TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildSessionSnapshotVariables(int64 AppId, const FString& SessionId)
+{
+	return BuildGetSessionVariables(AppId, SessionId);
+}
+
+TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildSessionEventsVariables(int64 AppId, const FString& SessionId,
+	int64 AfterRevision, int32 Limit)
+{
+	const TSharedPtr<FJsonObject> Variables = BuildGetSessionVariables(AppId, SessionId);
+	// afterRevision is a String! on the wire (a revision compares as an integer but rides as text).
+	Variables->SetStringField(TEXT("afterRevision"), LexToString(AfterRevision));
+	if (Limit > 0)
+	{
+		Variables->SetNumberField(TEXT("limit"), Limit);
+	}
+	return Variables;
+}
+
+TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildSessionChangedVariables(int64 AppId, const FString& SessionId,
+	int64 AfterRevision, bool bHasAfterRevision)
+{
+	const TSharedPtr<FJsonObject> Variables = BuildGetSessionVariables(AppId, SessionId);
+	// afterRevision is nullable here: omitted, the stream starts at the current revision.
+	if (bHasAfterRevision)
+	{
+		Variables->SetStringField(TEXT("afterRevision"), LexToString(AfterRevision));
+	}
 	return Variables;
 }
 
@@ -555,7 +717,54 @@ FCrowdyGameSessionData FCrowdyGameApiCodec::ParseSessionObject(const TSharedPtr<
 	// bHasCurrentTurn is true only when currentTurnUserId was present AND non-null.
 	Session.bHasCurrentTurn = ReadOptionalBigInt(SessionObj, TEXT("currentTurnUserId"), Session.CurrentTurnUserId);
 	SessionObj->TryGetStringField(TEXT("metadataJson"), Session.MetadataJson);
+	SessionObj->TryGetStringField(TEXT("admission"), Session.Admission);
+	// maxParticipants and hostUserId are nullable; each bHas flag is true only for a present, non-null value.
+	Session.bHasMaxParticipants = ReadOptionalInt(SessionObj, TEXT("maxParticipants"), Session.MaxParticipants);
+	ReadOptionalInt(SessionObj, TEXT("participantCount"), Session.ParticipantCount);
+	Session.bHasHost = ReadOptionalBigInt(SessionObj, TEXT("hostUserId"), Session.HostUserId);
+	ReadOptionalInt(SessionObj, TEXT("hostTerm"), Session.HostTerm);
+	// revision rides as a decimal string; the string-first BigInt read keeps it exact.
+	ReadOptionalBigInt(SessionObj, TEXT("revision"), Session.Revision);
+	SessionObj->TryGetStringField(TEXT("endedAt"), Session.EndedAt);
+	SessionObj->TryGetStringField(TEXT("endReason"), Session.EndReason);
+	SessionObj->TryGetStringField(TEXT("createdAt"), Session.CreatedAt);
+	SessionObj->TryGetStringField(TEXT("presence"), Session.Presence);
 	return Session;
+}
+
+FCrowdyGameSessionParticipantData FCrowdyGameApiCodec::ParseSessionParticipantObject(const TSharedPtr<FJsonObject>& Obj)
+{
+	FCrowdyGameSessionParticipantData Participant;
+	if (!Obj.IsValid())
+	{
+		return Participant;
+	}
+	Obj->TryGetStringField(TEXT("sessionId"), Participant.SessionId);
+	ReadOptionalBigInt(Obj, TEXT("userId"), Participant.UserId);
+	Obj->TryGetStringField(TEXT("role"), Participant.Role);
+	Obj->TryGetStringField(TEXT("state"), Participant.State);
+	ReadOptionalInt(Obj, TEXT("incarnation"), Participant.Incarnation);
+	Obj->TryGetStringField(TEXT("actorUuid"), Participant.ActorUuid);
+	Obj->TryGetStringField(TEXT("joinedAt"), Participant.JoinedAt);
+	Obj->TryGetStringField(TEXT("leftAt"), Participant.LeftAt);
+	Obj->TryGetStringField(TEXT("leftReason"), Participant.LeftReason);
+	return Participant;
+}
+
+FCrowdyGameSessionEventData FCrowdyGameApiCodec::ParseSessionEventObject(const TSharedPtr<FJsonObject>& Obj)
+{
+	FCrowdyGameSessionEventData Event;
+	if (!Obj.IsValid())
+	{
+		return Event;
+	}
+	ReadOptionalBigInt(Obj, TEXT("appId"), Event.AppId);
+	Obj->TryGetStringField(TEXT("sessionId"), Event.SessionId);
+	ReadOptionalBigInt(Obj, TEXT("revision"), Event.Revision);
+	Obj->TryGetStringField(TEXT("kind"), Event.Kind);
+	Obj->TryGetStringField(TEXT("payloadJson"), Event.PayloadJson);
+	Obj->TryGetStringField(TEXT("createdAt"), Event.CreatedAt);
+	return Event;
 }
 
 bool FCrowdyGameApiCodec::ParseSessionEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
@@ -611,11 +820,61 @@ bool FCrowdyGameApiCodec::ParseSessionsEnvelope(const TSharedPtr<FJsonObject>& E
 }
 
 bool FCrowdyGameApiCodec::ParseJoinSessionEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
-	const TArray<FString>& TransportErrors, FString& OutSessionId, int64& OutUserId, FString& OutRole)
+	const TArray<FString>& TransportErrors, FCrowdyGameSessionParticipantData& OutParticipant)
 {
-	OutSessionId.Reset();
-	OutUserId = 0;
-	OutRole.Reset();
+	return ParseSessionParticipantEnvelope(Envelope, bHttpOk, TransportErrors, TEXT("gameModelJoinSession"), OutParticipant);
+}
+
+bool FCrowdyGameApiCodec::ParseSessionParticipantEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+	const TArray<FString>& TransportErrors, const TCHAR* FieldName, FCrowdyGameSessionParticipantData& OutParticipant)
+{
+	OutParticipant = FCrowdyGameSessionParticipantData();
+	const TSharedPtr<FJsonObject> ParticipantObj = ReadDataObjectField(Envelope, bHttpOk, TransportErrors, FieldName);
+	if (!ParticipantObj.IsValid())
+	{
+		return false;
+	}
+	OutParticipant = ParseSessionParticipantObject(ParticipantObj);
+	return true;
+}
+
+bool FCrowdyGameApiCodec::ParseSessionSnapshotEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+	const TArray<FString>& TransportErrors, FCrowdyGameSessionSnapshotData& OutSnapshot)
+{
+	OutSnapshot = FCrowdyGameSessionSnapshotData();
+	const TSharedPtr<FJsonObject> SnapshotObj =
+		ReadDataObjectField(Envelope, bHttpOk, TransportErrors, TEXT("gameModelSessionSnapshot"));
+	if (!SnapshotObj.IsValid())
+	{
+		return false;
+	}
+	ReadOptionalBigInt(SnapshotObj, TEXT("revision"), OutSnapshot.Revision);
+	const TSharedPtr<FJsonObject>* SessionPtr = nullptr;
+	if (SnapshotObj->TryGetObjectField(TEXT("session"), SessionPtr) && SessionPtr)
+	{
+		OutSnapshot.Session = ParseSessionObject(*SessionPtr);
+	}
+	const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+	if (!SnapshotObj->TryGetArrayField(TEXT("participants"), Arr) || !Arr)
+	{
+		return true;
+	}
+	OutSnapshot.Participants.Reserve(Arr->Num());
+	for (const TSharedPtr<FJsonValue>& V : *Arr)
+	{
+		const TSharedPtr<FJsonObject> Obj = V.IsValid() ? V->AsObject() : nullptr;
+		if (Obj.IsValid())
+		{
+			OutSnapshot.Participants.Add(ParseSessionParticipantObject(Obj));
+		}
+	}
+	return true;
+}
+
+bool FCrowdyGameApiCodec::ParseSessionEventsEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+	const TArray<FString>& TransportErrors, TArray<FCrowdyGameSessionEventData>& OutEvents)
+{
+	OutEvents.Reset();
 	if (!bHttpOk || TransportErrors.Num() > 0)
 	{
 		return false;
@@ -625,14 +884,20 @@ bool FCrowdyGameApiCodec::ParseJoinSessionEnvelope(const TSharedPtr<FJsonObject>
 	{
 		return false;
 	}
-	const TSharedPtr<FJsonObject>* JoinPtr = nullptr;
-	if (!Data->TryGetObjectField(TEXT("gameModelJoinSession"), JoinPtr) || !JoinPtr)
+	const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+	if (!Data->TryGetArrayField(TEXT("gameModelSessionEvents"), Arr) || !Arr)
 	{
 		return false;
 	}
-	(*JoinPtr)->TryGetStringField(TEXT("sessionId"), OutSessionId);
-	ReadOptionalBigInt(*JoinPtr, TEXT("userId"), OutUserId);
-	(*JoinPtr)->TryGetStringField(TEXT("role"), OutRole);
+	OutEvents.Reserve(Arr->Num());
+	for (const TSharedPtr<FJsonValue>& V : *Arr)
+	{
+		const TSharedPtr<FJsonObject> Obj = V.IsValid() ? V->AsObject() : nullptr;
+		if (Obj.IsValid())
+		{
+			OutEvents.Add(ParseSessionEventObject(Obj));
+		}
+	}
 	return true;
 }
 

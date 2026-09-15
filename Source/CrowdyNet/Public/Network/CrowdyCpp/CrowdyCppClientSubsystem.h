@@ -47,6 +47,10 @@ public:
 	 */
 	FCrowdyCppClient* GetClient(const FCrowdyCppClientConfig& Config);
 
+	// The live client if one has been built, else null. Never builds one: for cancelling work by id, where a
+	// client that does not exist has nothing to cancel.
+	FCrowdyCppClient* GetExistingClient() const { return Client.Get(); }
+
 	// The bearer for gameplay calls (an app-scoped token). Safe to set before the client exists.
 	void SetGameToken(const FString& Token);
 

@@ -60,6 +60,26 @@ static TAutoConsoleVariable<int32> CVarEmitFallbackPing(
 
 namespace
 {
+	// Every string logged from a server or channel payload passes through here. Newlines would let it forge log
+	// lines that look like they came from somewhere else, and an unbounded one would fill the log, so both are cut.
+	FString SanitizeForLog(const FString& Value)
+	{
+		constexpr int32 MaxLoggedChars = 512;
+
+		FString Out;
+		Out.Reserve(FMath::Min(Value.Len(), MaxLoggedChars));
+		for (const TCHAR Character : Value)
+		{
+			if (Out.Len() >= MaxLoggedChars)
+			{
+				Out += TEXT("...");
+				break;
+			}
+			Out.AppendChar(Character < TEXT(' ') || Character == TEXT('\x7f') ? TEXT('?') : Character);
+		}
+		return Out;
+	}
+
 	// How long (seconds) a container stays "recently self-invoked" for the self-echo drop. Long enough to cover a
 	// server commit + model-driven-notification round-trip, short enough that a rapid foreign change is not
 	// suppressed - and the drop is consume-once anyway, so only the first echo after a self-invoke is skipped.
@@ -267,20 +287,6 @@ namespace
 		return Envelope;
 	}
 
-	// Maps the client's plain parsed session data (CrowdyNet) to the Blueprint-facing struct at the façade edge.
-	FCrowdyGameModelSession ToBpSession(const FCrowdyGameSessionData& Data)
-	{
-		FCrowdyGameModelSession Out;
-		Out.SessionId = Data.SessionId;
-		Out.Name = Data.Name;
-		Out.Status = Data.Status;
-		Out.CreatedByUserId = Data.CreatedByUserId;
-		Out.CurrentTurnUserId = Data.CurrentTurnUserId;
-		Out.bHasCurrentTurn = Data.bHasCurrentTurn;
-		Out.MetadataJson = Data.MetadataJson;
-		return Out;
-	}
-
 	FCrowdyContainerEdge ToBpEdge(const FCrowdyEdgeData& Data)
 	{
 		FCrowdyContainerEdge Out;
@@ -388,6 +394,15 @@ void UCrowdyGameModelSubsystem::Deinitialize()
 	DebugStopWatchingContainerChanges();
 #endif
 
+	// Every session event stream this world opened closes with it, for the same reason.
+	TArray<FString> WatchedSessions;
+	WatchedSessionIds.GenerateKeyArray(WatchedSessions);
+	for (const FString& SessionId : WatchedSessions)
+	{
+		UnwatchSession(SessionId);
+	}
+	WatchedSessionIds.Empty();
+
 	// Unbind auto-bind delegates before the entity subsystem tears down (same-lifetime world subsystems, but
 	// unbind explicitly so a late broadcast never lands on a half-destroyed subsystem).
 	if (EntitySubsystemForEvents)
@@ -433,6 +448,9 @@ void UCrowdyGameModelSubsystem::Deinitialize()
 	// never inherits a stale session or error string.
 	ActiveSessionId.Reset();
 	LastModelError.Reset();
+	LastModelErrorCode.Reset();
+	SessionIncarnations.Empty();
+	SessionHostTerms.Empty();
 
 	// Drop the sink subscriber (bound to this in Initialize) explicitly on teardown.
 	OnModelChangedDelegate.Clear();
@@ -730,6 +748,26 @@ void UCrowdyGameModelSubsystem::HandleModelChangedDelivery(const FCrowdyDelivery
 					TEXT("[GameModel] CHANNEL(18) signal '%s' for container '%s' (channel %lld)"),
 					*SignalName, *SignalContainerId, Msg.ChannelId);
 				DispatchSignal(SignalName, SignalContainerId);
+				return;
+			}
+		}
+
+		// A session cue rides the same channel too, and likewise returns either way: it names a session, not a
+		// container, and changes no container state, so it must NOT fall through to a re-pull.
+		{
+			FCrowdyGameModelSessionEvent Cue;
+			if (DecodeChannelSessionCue(Msg.Payload, Cue.SessionId, Cue.Revision, Cue.KindName))
+			{
+				Cue.Kind = ParseSessionEventKind(Cue.KindName);
+				Cue.bIsCue = true;
+				UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
+					TEXT("[GameModel] CHANNEL(18) session cue: session='%s' revision=%lld kind='%s' (channel %lld)"),
+					*SanitizeForLog(Cue.SessionId), Cue.Revision, *SanitizeForLog(Cue.KindName), Msg.ChannelId);
+				const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakSelf(this);
+				if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakSelf))
+				{
+					Self->OnSessionChanged.Broadcast(Cue);
+				}
 				return;
 			}
 		}
@@ -1593,28 +1631,6 @@ void UCrowdyGameModelSubsystem::FailPendingInvokeRetries()
 }
 
 #if !UE_BUILD_SHIPPING
-namespace
-{
-	// Every string logged by the feed below comes from the server. Newlines would let it forge log lines that look
-	// like they came from somewhere else, and an unbounded one would let it write the log to disk, so both are cut.
-	FString SanitizeForLog(const FString& Value)
-	{
-		constexpr int32 MaxLoggedChars = 512;
-
-		FString Out;
-		Out.Reserve(FMath::Min(Value.Len(), MaxLoggedChars));
-		for (const TCHAR Character : Value)
-		{
-			if (Out.Len() >= MaxLoggedChars)
-			{
-				Out += TEXT("...");
-				break;
-			}
-			Out.AppendChar(Character < TEXT(' ') || Character == TEXT('\x7f') ? TEXT('?') : Character);
-		}
-		return Out;
-	}
-}
 
 void UCrowdyGameModelSubsystem::DebugWatchContainerChanges(const FString& TypeName)
 {
@@ -3576,6 +3592,72 @@ bool UCrowdyGameModelSubsystem::DecodeChannelSignal(const TArray<uint8>& Payload
 	return false;
 }
 
+bool UCrowdyGameModelSubsystem::DecodeChannelSessionCue(const TArray<uint8>& Payload, FString& OutSessionId,
+	int64& OutRevision, FString& OutKind)
+{
+	if (Payload.Num() == 0)
+	{
+		return false;
+	}
+
+	const FString Prefix = CrowdyGameModelMetaKeys::SessionChangedChannelPrefix; // "gms|"
+	constexpr int32 MaxKindChars = 64;
+	constexpr int32 MaxIdChars = 128; // a server session id is uuid-sized; anything longer is not one
+	constexpr int32 MaxRevisionDigits = 18; // fits int64 without overflow
+
+	// "gms|<session id>|<revision>|<kind>", exactly three fields. The revision is checked digit by digit rather than
+	// parsed leniently, so "12x" is a rejected frame and not revision 12.
+	auto SplitAfterPrefix = [&Prefix](const FString& Candidate, FString& OutId, int64& OutRev, FString& OutKindText) -> bool
+	{
+		if (!Candidate.StartsWith(Prefix, ESearchCase::CaseSensitive))
+		{
+			return false;
+		}
+		TArray<FString> Parts;
+		Candidate.RightChop(Prefix.Len()).ParseIntoArray(Parts, TEXT("|"), /*InCullEmpty*/ false);
+		if (Parts.Num() != 3)
+		{
+			return false;
+		}
+		FString Id = Parts[0].TrimStartAndEnd();
+		const FString Revision = Parts[1].TrimStartAndEnd();
+		FString Kind = Parts[2].TrimStartAndEnd();
+		if (Id.IsEmpty() || Id.Len() > MaxIdChars || Kind.IsEmpty() || Kind.Len() > MaxKindChars)
+		{
+			return false;
+		}
+		if (Revision.IsEmpty() || Revision.Len() > MaxRevisionDigits)
+		{
+			return false;
+		}
+		for (const TCHAR Character : Revision)
+		{
+			if (!FChar::IsDigit(Character))
+			{
+				return false;
+			}
+		}
+		OutId = MoveTemp(Id);
+		OutRev = FCString::Atoi64(*Revision);
+		OutKindText = MoveTemp(Kind);
+		return true;
+	};
+
+	// Raw ASCII and, if the payload is base64, its decoding: the same encoding set the other two decoders and the
+	// channel subsystem's skip test accept.
+	TArray<FString> Forms;
+	CrowdyGameModelMetaKeys::GameModelChannelPayloadForms(Payload, Forms);
+	for (const FString& Form : Forms)
+	{
+		if (SplitAfterPrefix(Form, OutSessionId, OutRevision, OutKind))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 namespace
 {
 	// Runs Target's parameterless OnSignal_<Name>. True when a function of that name exists at all; bOutCalled says
@@ -3729,8 +3811,206 @@ bool UCrowdyGameModelSubsystem::ConsumeSelfEcho(const FString& ContainerId)
 	return false;
 }
 
-void UCrowdyGameModelSubsystem::CreateSession(const FString& Name, const TArray<int64>& ParticipantUserIds,
-	const FString& MetadataJson, TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone)
+ECrowdySessionStatus UCrowdyGameModelSubsystem::ParseSessionStatus(const FString& Word)
+{
+	if (Word == TEXT("active")) { return ECrowdySessionStatus::Active; }
+	if (Word == TEXT("completed")) { return ECrowdySessionStatus::Completed; }
+	if (Word == TEXT("abandoned")) { return ECrowdySessionStatus::Abandoned; }
+	return ECrowdySessionStatus::Unknown;
+}
+
+ECrowdySessionAdmission UCrowdyGameModelSubsystem::ParseSessionAdmission(const FString& Word)
+{
+	if (Word == TEXT("locked")) { return ECrowdySessionAdmission::Locked; }
+	if (Word == TEXT("closed")) { return ECrowdySessionAdmission::Closed; }
+	return ECrowdySessionAdmission::Open;
+}
+
+const TCHAR* UCrowdyGameModelSubsystem::SessionAdmissionWord(ECrowdySessionAdmission Admission)
+{
+	switch (Admission)
+	{
+	case ECrowdySessionAdmission::Locked: return TEXT("locked");
+	case ECrowdySessionAdmission::Closed: return TEXT("closed");
+	default: return TEXT("open");
+	}
+}
+
+ECrowdySessionPresence UCrowdyGameModelSubsystem::ParseSessionPresence(const FString& Word)
+{
+	return Word == TEXT("none") ? ECrowdySessionPresence::None : ECrowdySessionPresence::Actor;
+}
+
+const TCHAR* UCrowdyGameModelSubsystem::SessionPresenceWord(ECrowdySessionPresence Presence)
+{
+	return Presence == ECrowdySessionPresence::None ? TEXT("none") : TEXT("actor");
+}
+
+ECrowdySessionEndReason UCrowdyGameModelSubsystem::ParseSessionEndReason(const FString& Word)
+{
+	if (Word.IsEmpty()) { return ECrowdySessionEndReason::None; }
+	if (Word == TEXT("completed")) { return ECrowdySessionEndReason::Completed; }
+	if (Word == TEXT("abandoned")) { return ECrowdySessionEndReason::Abandoned; }
+	if (Word == TEXT("empty_timeout")) { return ECrowdySessionEndReason::EmptyTimeout; }
+	return ECrowdySessionEndReason::Unknown;
+}
+
+ECrowdySessionParticipantState UCrowdyGameModelSubsystem::ParseParticipantState(const FString& Word)
+{
+	if (Word == TEXT("joined")) { return ECrowdySessionParticipantState::Joined; }
+	if (Word == TEXT("left")) { return ECrowdySessionParticipantState::Left; }
+	return ECrowdySessionParticipantState::Unknown;
+}
+
+ECrowdySessionLeftReason UCrowdyGameModelSubsystem::ParseLeftReason(const FString& Word)
+{
+	if (Word.IsEmpty()) { return ECrowdySessionLeftReason::None; }
+	if (Word == TEXT("left")) { return ECrowdySessionLeftReason::Left; }
+	if (Word == TEXT("presence_expired")) { return ECrowdySessionLeftReason::PresenceExpired; }
+	if (Word == TEXT("session_ended")) { return ECrowdySessionLeftReason::SessionEnded; }
+	if (Word == TEXT("kicked")) { return ECrowdySessionLeftReason::Kicked; }
+	return ECrowdySessionLeftReason::Unknown;
+}
+
+ECrowdySessionEventKind UCrowdyGameModelSubsystem::ParseSessionEventKind(const FString& Word)
+{
+	if (Word == TEXT("created")) { return ECrowdySessionEventKind::Created; }
+	if (Word == TEXT("participant_joined")) { return ECrowdySessionEventKind::ParticipantJoined; }
+	if (Word == TEXT("participant_rejoined")) { return ECrowdySessionEventKind::ParticipantRejoined; }
+	if (Word == TEXT("participant_left")) { return ECrowdySessionEventKind::ParticipantLeft; }
+	if (Word == TEXT("participant_expired")) { return ECrowdySessionEventKind::ParticipantExpired; }
+	if (Word == TEXT("host_changed")) { return ECrowdySessionEventKind::HostChanged; }
+	if (Word == TEXT("admission_changed")) { return ECrowdySessionEventKind::AdmissionChanged; }
+	if (Word == TEXT("turn_changed")) { return ECrowdySessionEventKind::TurnChanged; }
+	if (Word == TEXT("ended")) { return ECrowdySessionEventKind::Ended; }
+	return ECrowdySessionEventKind::Unknown;
+}
+
+ECrowdySessionError UCrowdyGameModelSubsystem::ClassifySessionError(const FString& Code)
+{
+	if (Code.IsEmpty()) { return ECrowdySessionError::None; }
+	if (Code == TEXT("UNAUTHENTICATED")) { return ECrowdySessionError::NotSignedIn; }
+	if (Code == TEXT("FORBIDDEN")) { return ECrowdySessionError::NotAllowed; }
+	if (Code == TEXT("SESSION_FULL")) { return ECrowdySessionError::Full; }
+	if (Code == TEXT("SESSION_LOCKED")) { return ECrowdySessionError::Locked; }
+	if (Code == TEXT("SESSION_CLOSED")) { return ECrowdySessionError::Closed; }
+	if (Code == TEXT("SESSION_ENDED")) { return ECrowdySessionError::Ended; }
+	if (Code == TEXT("SESSION_NOT_PARTICIPANT")) { return ECrowdySessionError::NotParticipant; }
+	if (Code == TEXT("SESSION_TARGET_NOT_PARTICIPANT")) { return ECrowdySessionError::TargetNotParticipant; }
+	if (Code == TEXT("SESSION_INCARNATION_STALE")) { return ECrowdySessionError::IncarnationStale; }
+	if (Code == TEXT("SESSION_HOST_TERM_STALE")) { return ECrowdySessionError::HostTermStale; }
+	return ECrowdySessionError::Other;
+}
+
+FCrowdyGameModelSession UCrowdyGameModelSubsystem::ToBpSession(const FCrowdyGameSessionData& Data)
+{
+	FCrowdyGameModelSession Out;
+	Out.SessionId = Data.SessionId;
+	Out.Name = Data.Name;
+	Out.Status = ParseSessionStatus(Data.Status);
+	Out.CreatedByUserId = Data.CreatedByUserId;
+	Out.CurrentTurnUserId = Data.CurrentTurnUserId;
+	Out.bHasCurrentTurn = Data.bHasCurrentTurn;
+	Out.MetadataJson = Data.MetadataJson;
+	Out.Admission = ParseSessionAdmission(Data.Admission);
+	Out.MaxParticipants = Data.MaxParticipants;
+	Out.bHasMaxParticipants = Data.bHasMaxParticipants;
+	Out.ParticipantCount = Data.ParticipantCount;
+	Out.HostUserId = Data.HostUserId;
+	Out.bHasHost = Data.bHasHost;
+	Out.HostTerm = Data.HostTerm;
+	Out.Revision = Data.Revision;
+	Out.EndedAt = Data.EndedAt;
+	Out.EndReason = ParseSessionEndReason(Data.EndReason);
+	Out.CreatedAt = Data.CreatedAt;
+	Out.Presence = ParseSessionPresence(Data.Presence);
+	return Out;
+}
+
+FCrowdyGameModelSessionParticipant UCrowdyGameModelSubsystem::ToBpParticipant(const FCrowdyGameSessionParticipantData& Data)
+{
+	FCrowdyGameModelSessionParticipant Out;
+	Out.SessionId = Data.SessionId;
+	Out.UserId = Data.UserId;
+	Out.Role = Data.Role;
+	Out.State = ParseParticipantState(Data.State);
+	Out.Incarnation = Data.Incarnation;
+	Out.ActorUuid = Data.ActorUuid;
+	Out.JoinedAt = Data.JoinedAt;
+	Out.LeftAt = Data.LeftAt;
+	Out.LeftReason = ParseLeftReason(Data.LeftReason);
+	return Out;
+}
+
+FCrowdyGameModelSessionEvent UCrowdyGameModelSubsystem::ToBpSessionEvent(const FCrowdyGameSessionEventData& Data)
+{
+	FCrowdyGameModelSessionEvent Out;
+	Out.SessionId = Data.SessionId;
+	Out.Revision = Data.Revision;
+	Out.Kind = ParseSessionEventKind(Data.Kind);
+	Out.KindName = Data.Kind;
+	Out.PayloadJson = Data.PayloadJson;
+	Out.CreatedAt = Data.CreatedAt;
+	if (Data.PayloadJson.IsEmpty())
+	{
+		return Out;
+	}
+
+	// The detail is a JSON object whose keys depend on the kind; each known key fills its typed field and the rest
+	// stays in PayloadJson. Ids are BigInt strings on the wire, read defensively as string-or-number.
+	TSharedPtr<FJsonObject> Payload;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Data.PayloadJson);
+	if (!FJsonSerializer::Deserialize(Reader, Payload) || !Payload.IsValid())
+	{
+		return Out;
+	}
+	auto ReadId = [&Payload](const TCHAR* Key, int64& Dest)
+	{
+		FString AsString;
+		double AsNumber = 0.0;
+		if (Payload->TryGetStringField(Key, AsString)) { LexFromString(Dest, *AsString); }
+		else if (Payload->TryGetNumberField(Key, AsNumber)) { Dest = static_cast<int64>(AsNumber); }
+	};
+	ReadId(TEXT("userId"), Out.UserId);
+	ReadId(TEXT("hostUserId"), Out.HostUserId);
+	ReadId(TEXT("previousHostUserId"), Out.PreviousHostUserId);
+	Payload->TryGetNumberField(TEXT("incarnation"), Out.Incarnation);
+	Payload->TryGetNumberField(TEXT("hostTerm"), Out.HostTerm);
+	FString Word;
+	if (Payload->TryGetStringField(TEXT("admission"), Word)) { Out.Admission = ParseSessionAdmission(Word); }
+	if (!Payload->TryGetStringField(TEXT("reason"), Out.ReasonName)) { Payload->TryGetStringField(TEXT("endReason"), Out.ReasonName); }
+	return Out;
+}
+
+FCrowdyGameModelSessionSnapshot UCrowdyGameModelSubsystem::ToBpSnapshot(const FCrowdyGameSessionSnapshotData& Data)
+{
+	FCrowdyGameModelSessionSnapshot Out;
+	Out.Session = ToBpSession(Data.Session);
+	Out.Participants.Reserve(Data.Participants.Num());
+	for (const FCrowdyGameSessionParticipantData& Participant : Data.Participants)
+	{
+		Out.Participants.Add(ToBpParticipant(Participant));
+	}
+	Out.Revision = Data.Revision;
+	return Out;
+}
+
+void UCrowdyGameModelSubsystem::RecordServerRefusal(const FCrowdyCppJsonResult& Result)
+{
+	if (Result.bTransportOk)
+	{
+		LastModelError.Reset();
+		LastModelErrorCode.Reset();
+		return;
+	}
+	// The code is the stable thing to branch on; the message is what a human reads, and stands in when no
+	// message came. Both always describe the same refusal.
+	LastModelError = Result.ErrorMessage.IsEmpty() ? Result.ErrorCode : Result.ErrorMessage;
+	LastModelErrorCode = Result.ErrorCode;
+}
+
+void UCrowdyGameModelSubsystem::RunSessionReturningOp(const TCHAR* OperationName, const TCHAR* FieldName,
+	TFunction<TSharedPtr<FJsonObject>(int64)> BuildVars, TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone)
 {
 	FString Endpoint, Token;
 	int64 AppId = 0;
@@ -3740,118 +4020,336 @@ void UCrowdyGameModelSubsystem::CreateSession(const FString& Name, const TArray<
 		return;
 	}
 
-	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
-		TEXT("[GameModel] CreateSession name=%s participants=%d appId=%lld"), *Name, ParticipantUserIds.Num(), AppId);
-
-	auto Complete = [OnDone = MoveTemp(OnDone)](bool bOk, FCrowdyGameSessionData Data)
+	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
+	if (!Client)
 	{
-		if (OnDone) { OnDone(bOk, ToBpSession(Data)); }
-	};
+		if (OnDone) { OnDone(false, FCrowdyGameModelSession()); }
+		return;
+	}
+
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	const FString Field = FieldName;
+	Client->RunRuntimeOp(OperationName, BuildVars(AppId),
+		[WeakThis, Field, OnDone = MoveTemp(OnDone)](FCrowdyCppJsonResult R)
+	{
+		UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis);
+		if (Self) { Self->RecordServerRefusal(R); }
+		FCrowdyGameSessionData Session;
+		const bool bOk = FCrowdyGameApiCodec::ParseSessionEnvelope(
+			WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), *Field, Session);
+		const FCrowdyGameModelSession Mapped = ToBpSession(Session);
+		if (bOk && Self) { Self->RememberSession(Mapped); }
+		if (OnDone) { OnDone(bOk, Mapped); }
+	});
+}
+
+void UCrowdyGameModelSubsystem::RunParticipantReturningOp(const TCHAR* OperationName, const TCHAR* FieldName,
+	TFunction<TSharedPtr<FJsonObject>(int64)> BuildVars,
+	TFunction<void(bool, const FCrowdyGameModelSessionParticipant&)> OnDone)
+{
+	FString Endpoint, Token;
+	int64 AppId = 0;
+	if (!ResolveApiContext(Endpoint, Token, AppId))
+	{
+		if (OnDone) { OnDone(false, FCrowdyGameModelSessionParticipant()); }
+		return;
+	}
 
 	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
 	if (!Client)
 	{
-		Complete(false, FCrowdyGameSessionData());
+		if (OnDone) { OnDone(false, FCrowdyGameModelSessionParticipant()); }
 		return;
 	}
 
-	const TSharedPtr<FJsonObject> Vars =
-		FCrowdyGameApiCodec::BuildCreateSessionVariables(AppId, Name, ParticipantUserIds, MetadataJson);
-	Client->RunRuntimeOp(TEXT("GameModelCreateSession"), Vars,
-		[Complete = MoveTemp(Complete)](FCrowdyCppJsonResult R)
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	const FString Field = FieldName;
+	Client->RunRuntimeOp(OperationName, BuildVars(AppId),
+		[WeakThis, Field, OnDone = MoveTemp(OnDone)](FCrowdyCppJsonResult R)
 	{
-		FCrowdyGameSessionData Session;
-		const bool bOk = FCrowdyGameApiCodec::ParseSessionEnvelope(
-			WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), TEXT("gameModelCreateSession"), Session);
-		Complete(bOk, MoveTemp(Session));
+		if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis)) { Self->RecordServerRefusal(R); }
+		FCrowdyGameSessionParticipantData Participant;
+		const bool bOk = FCrowdyGameApiCodec::ParseSessionParticipantEnvelope(
+			WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), *Field, Participant);
+		if (OnDone) { OnDone(bOk, ToBpParticipant(Participant)); }
 	});
+}
+
+void UCrowdyGameModelSubsystem::CreateSession(const FString& Name, const TArray<int64>& ParticipantUserIds,
+	const FString& MetadataJson, TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone)
+{
+	CreateSession(Name, ParticipantUserIds, MetadataJson, FCrowdyGameModelCreateSessionOptions(), MoveTemp(OnDone));
+}
+
+void UCrowdyGameModelSubsystem::CreateSession(const FString& Name, const TArray<int64>& ParticipantUserIds,
+	const FString& MetadataJson, const FCrowdyGameModelCreateSessionOptions& Options,
+	TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone)
+{
+	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
+		TEXT("[GameModel] CreateSession name=%s participants=%d max=%d admission=%s presence=%s emptyTimeout=%d"),
+		*Name, ParticipantUserIds.Num(), Options.MaxParticipants, SessionAdmissionWord(Options.Admission),
+		SessionPresenceWord(Options.Presence), Options.EmptyTimeoutSec);
+
+	// The server defaults (open, actor) are left unsaid on the wire so a future default change is inherited.
+	FCrowdyCreateSessionOptions WireOptions;
+	WireOptions.MaxParticipants = Options.MaxParticipants;
+	if (Options.Admission != ECrowdySessionAdmission::Open) { WireOptions.Admission = SessionAdmissionWord(Options.Admission); }
+	WireOptions.EmptyTimeoutSec = Options.EmptyTimeoutSec;
+	if (Options.Presence != ECrowdySessionPresence::Actor) { WireOptions.Presence = SessionPresenceWord(Options.Presence); }
+	WireOptions.IdempotencyKey = Options.IdempotencyKey;
+
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	RunSessionReturningOp(TEXT("GameModelCreateSession"), TEXT("gameModelCreateSession"),
+		[Name, ParticipantUserIds, MetadataJson, WireOptions](int64 AppId)
+		{
+			return FCrowdyGameApiCodec::BuildCreateSessionVariables(AppId, Name, ParticipantUserIds, MetadataJson, WireOptions);
+		},
+		[WeakThis, OnDone = MoveTemp(OnDone)](bool bOk, const FCrowdyGameModelSession& Session)
+		{
+			// The creator is the session's first participant, at incarnation 1, which its Leave must name.
+			UCrowdyGameModelSubsystem* Self = bOk ? ResolveLiveSelf(WeakThis) : nullptr;
+			if (Self)
+			{
+				Self->SessionIncarnations.Add(Session.SessionId, 1);
+			}
+			if (OnDone) { OnDone(bOk, Session); }
+		});
+}
+
+void UCrowdyGameModelSubsystem::JoinSession(const FString& SessionId, const FString& Role, bool bBindPresenceToOwnActor,
+	TFunction<void(bool, const FCrowdyGameModelSessionParticipant&)> OnDone)
+{
+	// An empty Session Id falls back to the active (default) session, so a caller who set it once can join it here.
+	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+
+	// The local client's own Buddy actor, so the session's presence tracking follows it. Without a game session or
+	// an assigned actor yet the join still goes through, only without presence.
+	FString ActorUuid;
+	if (bBindPresenceToOwnActor)
+	{
+		const UCrowdyGameSession* Session = GetGameSession();
+		ActorUuid = Session ? Session->GetUUID() : FString();
+		UE_CLOG(ActorUuid.IsEmpty() && CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
+			TEXT("[GameModel] JoinSession session=%s asked to bind presence to the local actor, but this client has no actor uuid yet; joining without presence."),
+			*ResolvedSession);
+	}
+
+	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
+		TEXT("[GameModel] JoinSession session=%s role=%s actor=%s"), *ResolvedSession,
+		Role.IsEmpty() ? TEXT("<default>") : *Role, ActorUuid.IsEmpty() ? TEXT("<none>") : *ActorUuid);
+
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	RunParticipantReturningOp(TEXT("GameModelJoinSession"), TEXT("gameModelJoinSession"),
+		[ResolvedSession, Role, ActorUuid](int64 AppId)
+		{
+			return FCrowdyGameApiCodec::BuildJoinSessionVariables(AppId, ResolvedSession, Role, ActorUuid);
+		},
+		[WeakThis, ResolvedSession, OnDone = MoveTemp(OnDone)](bool bOk, const FCrowdyGameModelSessionParticipant& Participant)
+		{
+			// Remembered under the id the caller resolved, which is the id a later Leave resolves the same way.
+			UCrowdyGameModelSubsystem* Self = bOk ? ResolveLiveSelf(WeakThis) : nullptr;
+			if (Self)
+			{
+				Self->SessionIncarnations.Add(ResolvedSession, Participant.Incarnation);
+			}
+			if (OnDone) { OnDone(bOk, Participant); }
+		});
 }
 
 void UCrowdyGameModelSubsystem::JoinSession(const FString& SessionId, const FString& Role, TFunction<void(bool)> OnDone)
 {
-	FString Endpoint, Token;
-	int64 AppId = 0;
-	if (!ResolveApiContext(Endpoint, Token, AppId))
-	{
-		if (OnDone) { OnDone(false); }
-		return;
-	}
+	JoinSession(SessionId, Role, false,
+		[OnDone = MoveTemp(OnDone)](bool bOk, const FCrowdyGameModelSessionParticipant&)
+		{
+			if (OnDone) { OnDone(bOk); }
+		});
+}
 
-	// An empty Session Id falls back to the active (default) session, so a caller who set it once can join it here.
+bool UCrowdyGameModelSubsystem::ResolveLeaveIncarnation(int32 Explicit, const int32* Remembered, int32& Out)
+{
+	if (Explicit > 0)
+	{
+		Out = Explicit;
+		return true;
+	}
+	if (Remembered && *Remembered > 0)
+	{
+		Out = *Remembered;
+		return true;
+	}
+	Out = 0;
+	return false;
+}
+
+int32 UCrowdyGameModelSubsystem::GetRememberedSessionIncarnation(const FString& SessionId) const
+{
+	const int32* Found = SessionIncarnations.Find(ResolveSessionId(SessionId, ActiveSessionId));
+	return Found ? *Found : 0;
+}
+
+void UCrowdyGameModelSubsystem::LeaveSession(const FString& SessionId, int32 Incarnation,
+	TFunction<void(bool, const FCrowdyGameModelSessionParticipant&)> OnDone)
+{
 	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
 
-	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
-		TEXT("[GameModel] JoinSession session=%s appId=%lld"), *ResolvedSession, AppId);
-
-	auto Complete = [OnDone = MoveTemp(OnDone)](bool bOk, FString /*SessionId*/, int64 /*UserId*/, FString /*Role*/)
+	int32 UseIncarnation = 0;
+	if (!ResolveLeaveIncarnation(Incarnation, SessionIncarnations.Find(ResolvedSession), UseIncarnation))
 	{
-		if (OnDone) { OnDone(bOk); }
-	};
-
-	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
-	if (!Client)
-	{
-		Complete(false, FString(), 0, FString());
+		UE_LOG(LogCrowdyGameModel, Warning,
+			TEXT("[GameModel] LeaveSession session=%s: no incarnation was given and none is remembered (this client neither created nor joined it here), and the server requires one."),
+			*ResolvedSession);
+		SetLastModelError(TEXT("LeaveSession needs the participant incarnation and none is remembered for this session"));
+		if (OnDone) { OnDone(false, FCrowdyGameModelSessionParticipant()); }
 		return;
 	}
 
-	const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildJoinSessionVariables(AppId, ResolvedSession, Role);
-	Client->RunRuntimeOp(TEXT("GameModelJoinSession"), Vars,
-		[Complete = MoveTemp(Complete)](FCrowdyCppJsonResult R)
+	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
+		TEXT("[GameModel] LeaveSession session=%s incarnation=%d"), *ResolvedSession, UseIncarnation);
+
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	RunParticipantReturningOp(TEXT("GameModelLeaveSession"), TEXT("gameModelLeaveSession"),
+		[ResolvedSession, UseIncarnation](int64 AppId)
+		{
+			return FCrowdyGameApiCodec::BuildLeaveSessionVariables(AppId, ResolvedSession, UseIncarnation);
+		},
+		[WeakThis, ResolvedSession, OnDone = MoveTemp(OnDone)](bool bOk, const FCrowdyGameModelSessionParticipant& Participant)
+		{
+			UCrowdyGameModelSubsystem* Self = bOk ? ResolveLiveSelf(WeakThis) : nullptr;
+			if (Self)
+			{
+				Self->SessionIncarnations.Remove(ResolvedSession);
+			}
+			if (OnDone) { OnDone(bOk, Participant); }
+		});
+}
+
+int32 UCrowdyGameModelSubsystem::ResolveHostTerm(int32 Requested, const int32* Known)
+{
+	if (Requested > 0)
 	{
-		FString OutSessionId;
-		int64 OutUserId = 0;
-		FString OutRole;
-		const bool bOk = FCrowdyGameApiCodec::ParseJoinSessionEnvelope(
-			WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), OutSessionId, OutUserId, OutRole);
-		Complete(bOk, MoveTemp(OutSessionId), OutUserId, MoveTemp(OutRole));
-	});
+		return Requested;
+	}
+	if (Requested == UseKnownHostTerm && Known && *Known > 0)
+	{
+		return *Known;
+	}
+	return 0;
+}
+
+int32 UCrowdyGameModelSubsystem::GetKnownSessionHostTerm(const FString& SessionId) const
+{
+	const int32* Found = SessionHostTerms.Find(ResolveSessionId(SessionId, ActiveSessionId));
+	return Found ? *Found : 0;
+}
+
+void UCrowdyGameModelSubsystem::RememberSession(const FCrowdyGameModelSession& Session)
+{
+	if (Session.SessionId.IsEmpty())
+	{
+		return;
+	}
+	SessionHostTerms.Add(Session.SessionId, Session.HostTerm);
+}
+
+void UCrowdyGameModelSubsystem::SetSessionAdmission(const FString& SessionId, ECrowdySessionAdmission Admission,
+	int32 ExpectedHostTerm, TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone)
+{
+	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+	const int32 HostTerm = ResolveHostTerm(ExpectedHostTerm, SessionHostTerms.Find(ResolvedSession));
+	const FString Word = SessionAdmissionWord(Admission);
+	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
+		TEXT("[GameModel] SetSessionAdmission session=%s admission=%s expectedHostTerm=%d"),
+		*ResolvedSession, *Word, HostTerm);
+
+	RunSessionReturningOp(TEXT("GameModelSetSessionAdmission"), TEXT("gameModelSetSessionAdmission"),
+		[ResolvedSession, Word, HostTerm](int64 AppId)
+		{
+			return FCrowdyGameApiCodec::BuildSetSessionAdmissionVariables(AppId, ResolvedSession, Word, HostTerm);
+		}, MoveTemp(OnDone));
+}
+
+void UCrowdyGameModelSubsystem::TransferSessionHost(const FString& SessionId, int64 ToUserId, int32 ExpectedHostTerm,
+	TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone)
+{
+	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+	const int32 HostTerm = ResolveHostTerm(ExpectedHostTerm, SessionHostTerms.Find(ResolvedSession));
+	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
+		TEXT("[GameModel] TransferSessionHost session=%s to=%lld expectedHostTerm=%d"),
+		*ResolvedSession, ToUserId, HostTerm);
+
+	RunSessionReturningOp(TEXT("GameModelTransferSessionHost"), TEXT("gameModelTransferSessionHost"),
+		[ResolvedSession, ToUserId, HostTerm](int64 AppId)
+		{
+			return FCrowdyGameApiCodec::BuildTransferSessionHostVariables(AppId, ResolvedSession, ToUserId, HostTerm);
+		}, MoveTemp(OnDone));
+}
+
+void UCrowdyGameModelSubsystem::EndSession(const FString& SessionId, ECrowdySessionEndReason Reason, int32 ExpectedHostTerm,
+	TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone)
+{
+	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+	const int32 HostTerm = ResolveHostTerm(ExpectedHostTerm, SessionHostTerms.Find(ResolvedSession));
+	// Completed is the server default and is left unsaid; only Abandoned needs the word.
+	const FString Word = Reason == ECrowdySessionEndReason::Abandoned ? TEXT("abandoned") : TEXT("");
+	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
+		TEXT("[GameModel] EndSession session=%s reason=%s expectedHostTerm=%d"),
+		*ResolvedSession, Word.IsEmpty() ? TEXT("completed") : *Word, HostTerm);
+
+	RunSessionReturningOp(TEXT("GameModelEndSession"), TEXT("gameModelEndSession"),
+		[ResolvedSession, Word, HostTerm](int64 AppId)
+		{
+			return FCrowdyGameApiCodec::BuildEndSessionVariables(AppId, ResolvedSession, Word, HostTerm);
+		}, MoveTemp(OnDone));
 }
 
 void UCrowdyGameModelSubsystem::SetSessionTurn(const FString& SessionId, int64 UserId, bool bHasUserId,
-	TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone)
+	TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone, int32 ExpectedHostTerm)
 {
-	FString Endpoint, Token;
-	int64 AppId = 0;
-	if (!ResolveApiContext(Endpoint, Token, AppId))
-	{
-		if (OnDone) { OnDone(false, FCrowdyGameModelSession()); }
-		return;
-	}
-
 	// An empty Session Id falls back to the active (default) session.
 	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+	const int32 HostTerm = ResolveHostTerm(ExpectedHostTerm, SessionHostTerms.Find(ResolvedSession));
 
 	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
-		TEXT("[GameModel] SetSessionTurn session=%s user=%s appId=%lld"), *ResolvedSession,
-		bHasUserId ? *LexToString(UserId) : TEXT("<clear>"), AppId);
+		TEXT("[GameModel] SetSessionTurn session=%s user=%s expectedHostTerm=%d"), *ResolvedSession,
+		bHasUserId ? *LexToString(UserId) : TEXT("<clear>"), HostTerm);
 
-	auto Complete = [OnDone = MoveTemp(OnDone)](bool bOk, FCrowdyGameSessionData Data)
-	{
-		if (OnDone) { OnDone(bOk, ToBpSession(Data)); }
-	};
+	RunSessionReturningOp(TEXT("GameModelSetSessionTurn"), TEXT("gameModelSetSessionTurn"),
+		[ResolvedSession, UserId, bHasUserId, HostTerm](int64 AppId)
+		{
+			return FCrowdyGameApiCodec::BuildSetSessionTurnVariables(AppId, ResolvedSession, UserId, bHasUserId, HostTerm);
+		}, MoveTemp(OnDone));
+}
 
-	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
-	if (!Client)
+void UCrowdyGameModelSubsystem::ListSessions(ECrowdySessionStatusFilter Status, ECrowdySessionAdmissionFilter Admission,
+	int64 HostUserId, int32 Limit, TFunction<void(bool, const TArray<FCrowdyGameModelSession>&)> OnDone)
+{
+	FString StatusWord;
+	switch (Status)
 	{
-		Complete(false, FCrowdyGameSessionData());
-		return;
+	case ECrowdySessionStatusFilter::Active: StatusWord = TEXT("active"); break;
+	case ECrowdySessionStatusFilter::Completed: StatusWord = TEXT("completed"); break;
+	case ECrowdySessionStatusFilter::Abandoned: StatusWord = TEXT("abandoned"); break;
+	default: break;
 	}
-
-	const TSharedPtr<FJsonObject> Vars =
-		FCrowdyGameApiCodec::BuildSetSessionTurnVariables(AppId, ResolvedSession, UserId, bHasUserId);
-	Client->RunRuntimeOp(TEXT("GameModelSetSessionTurn"), Vars,
-		[Complete = MoveTemp(Complete)](FCrowdyCppJsonResult R)
+	FString AdmissionWord;
+	switch (Admission)
 	{
-		FCrowdyGameSessionData Session;
-		const bool bOk = FCrowdyGameApiCodec::ParseSessionEnvelope(
-			WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), TEXT("gameModelSetSessionTurn"), Session);
-		Complete(bOk, MoveTemp(Session));
-	});
+	case ECrowdySessionAdmissionFilter::Open: AdmissionWord = TEXT("open"); break;
+	case ECrowdySessionAdmissionFilter::Locked: AdmissionWord = TEXT("locked"); break;
+	case ECrowdySessionAdmissionFilter::Closed: AdmissionWord = TEXT("closed"); break;
+	default: break;
+	}
+	ListSessions(StatusWord, AdmissionWord, HostUserId, Limit, MoveTemp(OnDone));
 }
 
 void UCrowdyGameModelSubsystem::ListSessions(const FString& Status,
 	TFunction<void(bool, const TArray<FCrowdyGameModelSession>&)> OnDone)
+{
+	ListSessions(Status, FString(), 0, 0, MoveTemp(OnDone));
+}
+
+void UCrowdyGameModelSubsystem::ListSessions(const FString& Status, const FString& Admission, int64 HostUserId,
+	int32 Limit, TFunction<void(bool, const TArray<FCrowdyGameModelSession>&)> OnDone)
 {
 	FString Endpoint, Token;
 	int64 AppId = 0;
@@ -3861,13 +4359,16 @@ void UCrowdyGameModelSubsystem::ListSessions(const FString& Status,
 		return;
 	}
 
-	auto Complete = [OnDone = MoveTemp(OnDone)](bool bOk, TArray<FCrowdyGameSessionData> Data)
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	auto Complete = [WeakThis, OnDone = MoveTemp(OnDone)](bool bOk, TArray<FCrowdyGameSessionData> Data)
 	{
+		UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis);
 		TArray<FCrowdyGameModelSession> Sessions;
 		Sessions.Reserve(Data.Num());
 		for (const FCrowdyGameSessionData& D : Data)
 		{
 			Sessions.Add(ToBpSession(D));
+			if (Self) { Self->RememberSession(Sessions.Last()); }
 		}
 		if (OnDone) { OnDone(bOk, Sessions); }
 	};
@@ -3879,10 +4380,12 @@ void UCrowdyGameModelSubsystem::ListSessions(const FString& Status,
 		return;
 	}
 
-	const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildListSessionsVariables(AppId, Status);
+	const TSharedPtr<FJsonObject> Vars =
+		FCrowdyGameApiCodec::BuildListSessionsVariables(AppId, Status, Admission, HostUserId, Limit);
 	Client->RunRuntimeOp(TEXT("GameModelSessions"), Vars,
-		[Complete = MoveTemp(Complete)](FCrowdyCppJsonResult R)
+		[WeakThis, Complete = MoveTemp(Complete)](FCrowdyCppJsonResult R)
 	{
+		if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis)) { Self->RecordServerRefusal(R); }
 		TArray<FCrowdyGameSessionData> Sessions;
 		const bool bOk = FCrowdyGameApiCodec::ParseSessionsEnvelope(
 			WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), Sessions);
@@ -3893,38 +4396,217 @@ void UCrowdyGameModelSubsystem::ListSessions(const FString& Status,
 void UCrowdyGameModelSubsystem::GetSession(const FString& SessionId,
 	TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone)
 {
+	// An empty Session Id falls back to the active (default) session.
+	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+
+	RunSessionReturningOp(TEXT("GameModelSession"), TEXT("gameModelSession"),
+		[ResolvedSession](int64 AppId)
+		{
+			return FCrowdyGameApiCodec::BuildGetSessionVariables(AppId, ResolvedSession);
+		}, MoveTemp(OnDone));
+}
+
+void UCrowdyGameModelSubsystem::GetSessionSnapshot(const FString& SessionId,
+	TFunction<void(bool, const FCrowdyGameModelSessionSnapshot&)> OnDone)
+{
 	FString Endpoint, Token;
 	int64 AppId = 0;
 	if (!ResolveApiContext(Endpoint, Token, AppId))
 	{
-		if (OnDone) { OnDone(false, FCrowdyGameModelSession()); }
+		if (OnDone) { OnDone(false, FCrowdyGameModelSessionSnapshot()); }
 		return;
 	}
 
-	// An empty Session Id falls back to the active (default) session.
 	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
-
-	auto Complete = [OnDone = MoveTemp(OnDone)](bool bOk, FCrowdyGameSessionData Data)
-	{
-		if (OnDone) { OnDone(bOk, ToBpSession(Data)); }
-	};
 
 	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
 	if (!Client)
 	{
-		Complete(false, FCrowdyGameSessionData());
+		if (OnDone) { OnDone(false, FCrowdyGameModelSessionSnapshot()); }
 		return;
 	}
 
-	const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildGetSessionVariables(AppId, ResolvedSession);
-	Client->RunRuntimeOp(TEXT("GameModelSession"), Vars,
-		[Complete = MoveTemp(Complete)](FCrowdyCppJsonResult R)
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildSessionSnapshotVariables(AppId, ResolvedSession);
+	Client->RunRuntimeOp(TEXT("GameModelSessionSnapshot"), Vars,
+		[WeakThis, OnDone = MoveTemp(OnDone)](FCrowdyCppJsonResult R)
 	{
-		FCrowdyGameSessionData Session;
-		const bool bOk = FCrowdyGameApiCodec::ParseSessionEnvelope(
-			WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), TEXT("gameModelSession"), Session);
-		Complete(bOk, MoveTemp(Session));
+		UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis);
+		if (Self) { Self->RecordServerRefusal(R); }
+		FCrowdyGameSessionSnapshotData Snapshot;
+		const bool bOk = FCrowdyGameApiCodec::ParseSessionSnapshotEnvelope(
+			WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), Snapshot);
+		const FCrowdyGameModelSessionSnapshot Mapped = ToBpSnapshot(Snapshot);
+		if (bOk && Self) { Self->RememberSession(Mapped.Session); }
+		if (OnDone) { OnDone(bOk, Mapped); }
 	});
+}
+
+void UCrowdyGameModelSubsystem::GetSessionEvents(const FString& SessionId, int64 AfterRevision, int32 Limit,
+	TFunction<void(bool, const TArray<FCrowdyGameModelSessionEvent>&)> OnDone)
+{
+	FString Endpoint, Token;
+	int64 AppId = 0;
+	if (!ResolveApiContext(Endpoint, Token, AppId))
+	{
+		if (OnDone) { OnDone(false, TArray<FCrowdyGameModelSessionEvent>()); }
+		return;
+	}
+
+	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+
+	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
+	if (!Client)
+	{
+		if (OnDone) { OnDone(false, TArray<FCrowdyGameModelSessionEvent>()); }
+		return;
+	}
+
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	const TSharedPtr<FJsonObject> Vars =
+		FCrowdyGameApiCodec::BuildSessionEventsVariables(AppId, ResolvedSession, FMath::Max<int64>(AfterRevision, 0), Limit);
+	Client->RunRuntimeOp(TEXT("GameModelSessionEvents"), Vars,
+		[WeakThis, OnDone = MoveTemp(OnDone)](FCrowdyCppJsonResult R)
+	{
+		if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis)) { Self->RecordServerRefusal(R); }
+		TArray<FCrowdyGameSessionEventData> Data;
+		const bool bOk = FCrowdyGameApiCodec::ParseSessionEventsEnvelope(
+			WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), Data);
+		TArray<FCrowdyGameModelSessionEvent> Events;
+		Events.Reserve(Data.Num());
+		for (const FCrowdyGameSessionEventData& Event : Data)
+		{
+			Events.Add(ToBpSessionEvent(Event));
+		}
+		if (OnDone) { OnDone(bOk, Events); }
+	});
+}
+
+void UCrowdyGameModelSubsystem::WatchSession(const FString& SessionId, int64 AfterRevision)
+{
+	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+	if (ResolvedSession.IsEmpty())
+	{
+		UE_LOG(LogCrowdyGameModel, Warning, TEXT("[GameModel] WatchSession: no session id was given and none is active."));
+		return;
+	}
+
+	// A second watch of the same session replaces the first, so a caller re-watching after a revision gap never
+	// ends up hearing every event twice.
+	UnwatchSession(ResolvedSession);
+
+	FString Endpoint, Token;
+	int64 AppId = 0;
+	if (!ResolveApiContext(Endpoint, Token, AppId))
+	{
+		return;
+	}
+
+	// A WebSocket subscription is not a Game Model call and does not spend the per-player allowance.
+	FCrowdyCppClient* Client = EnsureCppClientUnmetered(Endpoint, Token);
+	if (!Client)
+	{
+		return;
+	}
+
+	const TSharedPtr<FJsonObject> Variables =
+		FCrowdyGameApiCodec::BuildSessionChangedVariables(AppId, ResolvedSession, AfterRevision, AfterRevision >= 0);
+
+	// Filled in once the stream is open, so a stream that ends only forgets its own id and never a successor's.
+	const TSharedRef<uint64> OwnId = MakeShared<uint64>(0);
+	auto ForgetOwnStream = [](UCrowdyGameModelSubsystem& Self, const FString& Session, uint64 Id)
+	{
+		const uint64* Stored = Self.WatchedSessionIds.Find(Session);
+		if (Stored && *Stored == Id)
+		{
+			Self.WatchedSessionIds.Remove(Session);
+		}
+	};
+
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	FCrowdyCppSubscriptionCallbacks Callbacks;
+	Callbacks.OnNext = [WeakThis, ResolvedSession](TSharedPtr<FJsonObject> Data)
+	{
+		const TSharedPtr<FJsonObject>* Row = nullptr;
+		if (!Data.IsValid() || !Data->TryGetObjectField(TEXT("gameModelSessionChanged"), Row))
+		{
+			UE_LOG(LogCrowdyGameModel, Warning,
+				TEXT("[GameModel] session '%s' event stream delivered a push with no readable event."), *ResolvedSession);
+			return;
+		}
+		const FCrowdyGameModelSessionEvent Event = ToBpSessionEvent(FCrowdyGameApiCodec::ParseSessionEventObject(*Row));
+		UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
+			TEXT("[GameModel] session '%s' event: revision=%lld kind='%s'"), *ResolvedSession, Event.Revision,
+			*SanitizeForLog(Event.KindName));
+		if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis))
+		{
+			Self->OnSessionChanged.Broadcast(Event);
+		}
+	};
+	Callbacks.OnError = [WeakThis, ResolvedSession, OwnId, ForgetOwnStream](const FString& Message, bool bTerminal)
+	{
+		if (!bTerminal)
+		{
+			UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
+				TEXT("[GameModel] session '%s' event stream reported a recoverable failure: %s"),
+				*ResolvedSession, *SanitizeForLog(Message));
+			return;
+		}
+		UE_LOG(LogCrowdyGameModel, Warning,
+			TEXT("[GameModel] session '%s' event stream ended: %s. Watch it again to resume."),
+			*ResolvedSession, *SanitizeForLog(Message));
+		if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis))
+		{
+			ForgetOwnStream(*Self, ResolvedSession, *OwnId);
+		}
+	};
+	Callbacks.OnComplete = [WeakThis, ResolvedSession, OwnId, ForgetOwnStream]()
+	{
+		UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
+			TEXT("[GameModel] session '%s' event stream: the server ended it."), *ResolvedSession);
+		if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis))
+		{
+			ForgetOwnStream(*Self, ResolvedSession, *OwnId);
+		}
+	};
+
+	const FCrowdyCppSubscriptionHandle Handle = Client->SubscribeOperation(
+		ECrowdyCppApiDomain::GameModel, TEXT("GameModelSessionChanged"), Variables, MoveTemp(Callbacks));
+	if (!Handle.IsValid())
+	{
+		return;
+	}
+	*OwnId = Handle.Id;
+	WatchedSessionIds.Add(ResolvedSession, Handle.Id);
+
+	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
+		TEXT("[GameModel] session '%s' event stream opened (after revision %lld)"), *ResolvedSession, AfterRevision);
+}
+
+void UCrowdyGameModelSubsystem::UnwatchSession(const FString& SessionId)
+{
+	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+	uint64 SubscriptionId = 0;
+	if (!WatchedSessionIds.RemoveAndCopyValue(ResolvedSession, SubscriptionId))
+	{
+		return;
+	}
+
+	// Cancelling by id needs no token or endpoint, so a signed-out client can still close its stream. The client
+	// is resolved through the host rather than a kept pointer because it outlives this world; if none exists any
+	// more, a rebuild or teardown already ended the stream.
+	UCrowdyCppClientSubsystem* Host = UCrowdyCppClientSubsystem::Get(this);
+	FCrowdyCppClient* Client = Host ? Host->GetExistingClient() : nullptr;
+	if (!Client)
+	{
+		return;
+	}
+
+	FCrowdyCppSubscriptionHandle Handle;
+	Handle.Id = SubscriptionId;
+	Client->Unsubscribe(Handle);
+	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
+		TEXT("[GameModel] session '%s' event stream closed."), *ResolvedSession);
 }
 
 int64 UCrowdyGameModelSubsystem::GetLocalUserId() const
@@ -3990,11 +4672,30 @@ FString UCrowdyGameModelSubsystem::ResolveSessionId(const FString& Explicit, con
 void UCrowdyGameModelSubsystem::SetLastModelError(const FString& InError)
 {
 	LastModelError = InError;
+	// A locally raised error has no server code; keeping an older one would pair it with the wrong message.
+	LastModelErrorCode.Reset();
 }
 
 FString UCrowdyGameModelSubsystem::GetLastModelError() const
 {
 	return LastModelError;
+}
+
+FString UCrowdyGameModelSubsystem::GetLastModelErrorCode() const
+{
+	return LastModelErrorCode;
+}
+
+FCrowdyModelFailure UCrowdyGameModelSubsystem::GetLastFailure() const
+{
+	FCrowdyModelFailure Failure;
+	Failure.Code = LastModelErrorCode;
+	Failure.Message = LastModelError;
+	// A failure with no server code (a transport fault, a local refusal) still has a message; it reads as Other.
+	Failure.Error = LastModelErrorCode.IsEmpty()
+		? (LastModelError.IsEmpty() ? ECrowdySessionError::None : ECrowdySessionError::Other)
+		: ClassifySessionError(LastModelErrorCode);
+	return Failure;
 }
 
 void UCrowdyGameModelSubsystem::CreateDataContainer(const FString& TypeName, const FString& DisplayName,

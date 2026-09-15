@@ -676,7 +676,10 @@ bool FCrowdyCppRuntimeOpSessionParityTest::RunTest(const FString& Parameters)
 	const FString Body = TEXT(
 		"{\"data\":{\"gameModelCreateSession\":{"
 		"\"sessionId\":\"s-1\",\"appId\":\"1\",\"name\":\"Match\",\"status\":\"active\","
-		"\"createdByUserId\":\"42\",\"currentTurnUserId\":\"7\",\"metadataJson\":\"{}\"}}}");
+		"\"createdByUserId\":\"42\",\"currentTurnUserId\":\"7\",\"metadataJson\":\"{}\","
+		"\"admission\":\"open\",\"maxParticipants\":null,\"participantCount\":1,\"hostUserId\":\"42\","
+		"\"hostTerm\":2,\"revision\":\"7\",\"endedAt\":null,\"endReason\":null,"
+		"\"createdAt\":\"2026-01-01T00:00:00Z\",\"presence\":\"actor\"}}}");
 
 	const FCrowdyCppJsonResult CppResult = RunRuntimeOpViaCrowdyCpp(TEXT("GameModelCreateSession"), Body, 200);
 	if (!TestTrue(TEXT("CrowdyCPP runtime op transport-ok"), CppResult.bTransportOk))
@@ -704,6 +707,59 @@ bool FCrowdyCppRuntimeOpSessionParityTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("has-turn flag matches"), CppSession.bHasCurrentTurn, HandSession.bHasCurrentTurn);
 	TestTrue(TEXT("turn holder is present"), CppSession.bHasCurrentTurn);
 	TestEqual(TEXT("turn holder is 7"), CppSession.CurrentTurnUserId, static_cast<int64>(7));
+	// The wire revision is a STRING; the bridge's dump-and-reparse must keep it a string so it parses exactly.
+	TestEqual(TEXT("revision matches"), CppSession.Revision, HandSession.Revision);
+	TestEqual(TEXT("revision is 7"), CppSession.Revision, static_cast<int64>(7));
+	TestEqual(TEXT("hostTerm matches"), CppSession.HostTerm, HandSession.HostTerm);
+	TestEqual(TEXT("hostTerm is 2"), CppSession.HostTerm, 2);
+	TestEqual(TEXT("admission matches"), CppSession.Admission, HandSession.Admission);
+	TestEqual(TEXT("admission is open"), CppSession.Admission, FString(TEXT("open")));
+	TestEqual(TEXT("has-host flag matches"), CppSession.bHasHost, HandSession.bHasHost);
+	TestTrue(TEXT("host is present"), CppSession.bHasHost);
+	TestEqual(TEXT("has-max flag matches"), CppSession.bHasMaxParticipants, HandSession.bHasMaxParticipants);
+	TestFalse(TEXT("null maxParticipants reads as unbounded"), CppSession.bHasMaxParticipants);
+	return true;
+}
+
+// Join parity: a joinSession response is a participant row (not the session), and both paths decode the same
+// userId (a BigInt string) and incarnation (a number).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppRuntimeOpJoinSessionParityTest,
+	"CrowdySDK.CrowdyCpp.RuntimeOpJoinSessionParity", CrowdyCppParityTestFlags)
+bool FCrowdyCppRuntimeOpJoinSessionParityTest::RunTest(const FString& Parameters)
+{
+	const FString Body = TEXT(
+		"{\"data\":{\"gameModelJoinSession\":{"
+		"\"sessionId\":\"s-1\",\"userId\":\"42\",\"role\":\"player\",\"state\":\"joined\",\"incarnation\":3,"
+		"\"actorUuid\":\"0123456789abcdef0123456789abcdef\",\"joinedAt\":\"2026-01-01T00:00:00Z\","
+		"\"leftAt\":null,\"leftReason\":null}}}");
+
+	const FCrowdyCppJsonResult CppResult = RunRuntimeOpViaCrowdyCpp(TEXT("GameModelJoinSession"), Body, 200);
+	if (!TestTrue(TEXT("CrowdyCPP join transport-ok"), CppResult.bTransportOk))
+	{
+		return false;
+	}
+
+	FCrowdyGameSessionParticipantData CppParticipant;
+	const bool bCppOk = FCrowdyGameApiCodec::ParseJoinSessionEnvelope(
+		WrapData(CppResult.Data), CppResult.bTransportOk, TArray<FString>(), CppParticipant);
+
+	FCrowdyGameSessionParticipantData HandParticipant;
+	const bool bHandOk = FCrowdyGameApiCodec::ParseJoinSessionEnvelope(
+		ParseObject(Body), true, TArray<FString>(), HandParticipant);
+
+	TestTrue(TEXT("CrowdyCPP join parses"), bCppOk);
+	TestEqual(TEXT("join parse-ok matches"), bCppOk, bHandOk);
+	TestEqual(TEXT("join sessionId matches"), CppParticipant.SessionId, HandParticipant.SessionId);
+	TestEqual(TEXT("join sessionId is s-1"), CppParticipant.SessionId, FString(TEXT("s-1")));
+	TestEqual(TEXT("join userId matches"), CppParticipant.UserId, HandParticipant.UserId);
+	TestEqual(TEXT("join userId is 42"), CppParticipant.UserId, static_cast<int64>(42));
+	TestEqual(TEXT("join role matches"), CppParticipant.Role, HandParticipant.Role);
+	TestEqual(TEXT("join state matches"), CppParticipant.State, HandParticipant.State);
+	TestEqual(TEXT("join state is joined"), CppParticipant.State, FString(TEXT("joined")));
+	TestEqual(TEXT("join incarnation matches"), CppParticipant.Incarnation, HandParticipant.Incarnation);
+	TestEqual(TEXT("join incarnation is 3"), CppParticipant.Incarnation, 3);
+	TestEqual(TEXT("join actorUuid matches"), CppParticipant.ActorUuid, HandParticipant.ActorUuid);
+	TestTrue(TEXT("null leftAt reads empty"), CppParticipant.LeftAt.IsEmpty());
 	return true;
 }
 
@@ -714,8 +770,10 @@ bool FCrowdyCppRuntimeOpListSessionsParityTest::RunTest(const FString& Parameter
 {
 	const FString Body = TEXT(
 		"{\"data\":{\"gameModelSessions\":["
-		"{\"sessionId\":\"s-1\",\"status\":\"active\",\"currentTurnUserId\":null},"
-		"{\"sessionId\":\"s-2\",\"status\":\"ended\",\"currentTurnUserId\":\"9\"}]}}");
+		"{\"sessionId\":\"s-1\",\"status\":\"active\",\"currentTurnUserId\":null,\"admission\":\"open\","
+		"\"hostUserId\":null,\"hostTerm\":0,\"participantCount\":0,\"revision\":\"1\"},"
+		"{\"sessionId\":\"s-2\",\"status\":\"ended\",\"currentTurnUserId\":\"9\",\"admission\":\"closed\","
+		"\"hostUserId\":\"9\",\"hostTerm\":3,\"participantCount\":2,\"revision\":\"25\"}]}}");
 
 	const FCrowdyCppJsonResult CppResult = RunRuntimeOpViaCrowdyCpp(TEXT("GameModelSessions"), Body, 200);
 
@@ -742,6 +800,13 @@ bool FCrowdyCppRuntimeOpListSessionsParityTest::RunTest(const FString& Parameter
 		TestTrue(TEXT("second session has a turn"), CppSessions[1].bHasCurrentTurn);
 		TestEqual(TEXT("second turn holder matches"), CppSessions[1].CurrentTurnUserId, HandSessions[1].CurrentTurnUserId);
 		TestEqual(TEXT("second turn holder is 9"), CppSessions[1].CurrentTurnUserId, static_cast<int64>(9));
+		TestFalse(TEXT("first session has no host"), CppSessions[0].bHasHost);
+		TestEqual(TEXT("first revision matches"), CppSessions[0].Revision, HandSessions[0].Revision);
+		TestEqual(TEXT("first revision is 1"), CppSessions[0].Revision, static_cast<int64>(1));
+		TestEqual(TEXT("second admission matches"), CppSessions[1].Admission, HandSessions[1].Admission);
+		TestEqual(TEXT("second admission is closed"), CppSessions[1].Admission, FString(TEXT("closed")));
+		TestEqual(TEXT("second revision is 25"), CppSessions[1].Revision, static_cast<int64>(25));
+		TestEqual(TEXT("second hostTerm is 3"), CppSessions[1].HostTerm, 3);
 	}
 	return true;
 }
@@ -1127,7 +1192,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppVendoredVersionTest,
 	"CrowdySDK.CrowdyCpp.VendoredVersion", CrowdyCppParityTestFlags)
 bool FCrowdyCppVendoredVersionTest::RunTest(const FString& Parameters)
 {
-	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.37.0");
+	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.40.0");
 
 	// The tier decides where a client that names no origin at all dials, and it is generated per branch
 	// upstream, so it can change under a version bump without the version saying so. Pin it too.

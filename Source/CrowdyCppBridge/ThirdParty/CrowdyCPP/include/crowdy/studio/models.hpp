@@ -299,6 +299,10 @@ struct CrowdyStudioProjectSummary {
   std::optional<std::string> clientModuleName;
   bool archived = false;
   std::string updatedAt;
+  CrowdyStudioProjectSource source = CrowdyStudioProjectSource::Studio;
+  /// `owner/repo@branch` while bound; empty otherwise.
+  std::optional<std::string> github;
+  std::optional<std::string> githubSha;
 };
 
 struct CrowdyStudioReferenceFile {

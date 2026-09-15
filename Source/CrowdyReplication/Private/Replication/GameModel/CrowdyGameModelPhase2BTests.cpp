@@ -21,6 +21,30 @@ namespace
 		FJsonSerializer::Deserialize(Reader, Obj);
 		return Obj;
 	}
+
+	// The "input" object of a mutation's variables, or null when the wrapper is missing.
+	TSharedPtr<FJsonObject> Phase2BInput(const TSharedPtr<FJsonObject>& Vars)
+	{
+		const TSharedPtr<FJsonObject>* InputPtr = nullptr;
+		if (!Vars.IsValid() || !Vars->TryGetObjectField(TEXT("input"), InputPtr) || !InputPtr)
+		{
+			return nullptr;
+		}
+		return *InputPtr;
+	}
+
+	// The JSON type of a field as an int (EJson::None when absent), so a test asserts the wire TYPE and not just
+	// presence: TryGetStringField also accepts a number and TryGetNumberField also accepts a numeric string.
+	int32 Phase2BFieldType(const TSharedPtr<FJsonObject>& Obj, const TCHAR* Field)
+	{
+		const TSharedPtr<FJsonValue> Value = Obj.IsValid() ? Obj->TryGetField(Field) : nullptr;
+		return static_cast<int32>(Value.IsValid() ? Value->Type : EJson::None);
+	}
+
+	constexpr int32 Phase2BString = static_cast<int32>(EJson::String);
+	constexpr int32 Phase2BNumber = static_cast<int32>(EJson::Number);
+	constexpr int32 Phase2BNull = static_cast<int32>(EJson::Null);
+	constexpr int32 Phase2BAbsent = static_cast<int32>(EJson::None);
 }
 
 // The session request builders encode every BigInt id (appId, each participant, the turn holder) as a JSON
@@ -82,59 +106,284 @@ bool FCrowdyGameModelSessionBuildsRequestTest::RunTest(const FString& Parameters
 		}
 	}
 
-	// SetSessionTurn: userId written as a BigInt string when present...
+	// Default options: every optional create input vanishes, so the server applies its own defaults.
 	{
-		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildSetSessionTurnVariables(1, TEXT("s"), 90002, true);
-		const TSharedPtr<FJsonObject>* InputPtr = nullptr;
-		if (TestTrue(TEXT("input present"), Vars.IsValid() && Vars->TryGetObjectField(TEXT("input"), InputPtr) && InputPtr))
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildCreateSessionVariables(1, FString(), TArray<int64>(), FString()));
+		if (TestTrue(TEXT("input present (default options)"), Input.IsValid()))
 		{
-			const TSharedPtr<FJsonValue> UserIdValue = (*InputPtr)->TryGetField(TEXT("userId"));
-			if (TestNotNull(TEXT("userId present"), UserIdValue.Get()))
-			{
-				TestEqual(TEXT("userId is a JSON string"), static_cast<int32>(UserIdValue->Type), static_cast<int32>(EJson::String));
-				TestEqual(TEXT("userId string value"), UserIdValue->AsString(), FString(TEXT("90002")));
-			}
+			TestEqual(TEXT("maxParticipants omitted at 0"), Phase2BFieldType(Input, TEXT("maxParticipants")), Phase2BAbsent);
+			TestEqual(TEXT("admission omitted when empty"), Phase2BFieldType(Input, TEXT("admission")), Phase2BAbsent);
+			TestEqual(TEXT("emptyTimeoutSec omitted at -1"), Phase2BFieldType(Input, TEXT("emptyTimeoutSec")), Phase2BAbsent);
+			TestEqual(TEXT("presence omitted when empty"), Phase2BFieldType(Input, TEXT("presence")), Phase2BAbsent);
+			TestEqual(TEXT("idempotencyKey omitted when empty"), Phase2BFieldType(Input, TEXT("idempotencyKey")), Phase2BAbsent);
 		}
 	}
 
-	// ...and an EXPLICIT JSON null when clearing the turn (bHasUserId=false). The schema clears a turn on null,
+	// Set options: the Int inputs are JSON NUMBERS (never strings), the enums and key are strings.
+	{
+		FCrowdyCreateSessionOptions Options;
+		Options.MaxParticipants = 4;
+		Options.Admission = TEXT("locked");
+		Options.EmptyTimeoutSec = 30;
+		Options.Presence = TEXT("none");
+		Options.IdempotencyKey = TEXT("k-1");
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildCreateSessionVariables(1, FString(), TArray<int64>(), FString(), Options));
+		if (TestTrue(TEXT("input present (options set)"), Input.IsValid()))
+		{
+			TestEqual(TEXT("maxParticipants is a JSON number"), Phase2BFieldType(Input, TEXT("maxParticipants")), Phase2BNumber);
+			TestEqual(TEXT("maxParticipants value"), static_cast<int32>(Input->GetNumberField(TEXT("maxParticipants"))), 4);
+			TestEqual(TEXT("admission is a JSON string"), Phase2BFieldType(Input, TEXT("admission")), Phase2BString);
+			TestEqual(TEXT("admission value"), Input->GetStringField(TEXT("admission")), FString(TEXT("locked")));
+			TestEqual(TEXT("emptyTimeoutSec is a JSON number"), Phase2BFieldType(Input, TEXT("emptyTimeoutSec")), Phase2BNumber);
+			TestEqual(TEXT("emptyTimeoutSec value"), static_cast<int32>(Input->GetNumberField(TEXT("emptyTimeoutSec"))), 30);
+			TestEqual(TEXT("presence is a JSON string"), Phase2BFieldType(Input, TEXT("presence")), Phase2BString);
+			TestEqual(TEXT("presence value"), Input->GetStringField(TEXT("presence")), FString(TEXT("none")));
+			TestEqual(TEXT("idempotencyKey is a JSON string"), Phase2BFieldType(Input, TEXT("idempotencyKey")), Phase2BString);
+			TestEqual(TEXT("idempotencyKey value"), Input->GetStringField(TEXT("idempotencyKey")), FString(TEXT("k-1")));
+		}
+	}
+
+	// emptyTimeoutSec 0 is a real instruction (disable the timeout) and must be WRITTEN, unlike -1.
+	{
+		FCrowdyCreateSessionOptions Options;
+		Options.EmptyTimeoutSec = 0;
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildCreateSessionVariables(1, FString(), TArray<int64>(), FString(), Options));
+		if (TestTrue(TEXT("input present (timeout 0)"), Input.IsValid()))
+		{
+			TestEqual(TEXT("emptyTimeoutSec 0 is written as a number"), Phase2BFieldType(Input, TEXT("emptyTimeoutSec")), Phase2BNumber);
+			TestEqual(TEXT("emptyTimeoutSec 0 value"), static_cast<int32>(Input->GetNumberField(TEXT("emptyTimeoutSec"))), 0);
+		}
+	}
+
+	// SetSessionTurn: userId written as a BigInt string when present; expectedHostTerm omitted at 0...
+	{
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildSetSessionTurnVariables(1, TEXT("s"), 90002, true));
+		if (TestTrue(TEXT("input present"), Input.IsValid()))
+		{
+			TestEqual(TEXT("userId is a JSON string"), Phase2BFieldType(Input, TEXT("userId")), Phase2BString);
+			TestEqual(TEXT("userId string value"), Input->GetStringField(TEXT("userId")), FString(TEXT("90002")));
+			TestEqual(TEXT("expectedHostTerm omitted at 0"), Phase2BFieldType(Input, TEXT("expectedHostTerm")), Phase2BAbsent);
+		}
+	}
+
+	// ...and written as a JSON NUMBER when the caller asserts a host term.
+	{
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildSetSessionTurnVariables(1, TEXT("s"), 90002, true, 3));
+		if (TestTrue(TEXT("input present (host term)"), Input.IsValid()))
+		{
+			TestEqual(TEXT("expectedHostTerm is a JSON number"), Phase2BFieldType(Input, TEXT("expectedHostTerm")), Phase2BNumber);
+			TestEqual(TEXT("expectedHostTerm value"), static_cast<int32>(Input->GetNumberField(TEXT("expectedHostTerm"))), 3);
+		}
+	}
+
+	// Clearing the turn (bHasUserId=false) still writes an EXPLICIT JSON null. The schema clears a turn on null,
 	// NOT on an absent field, so the key must be present and null, while sessionId stays.
 	{
-		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildSetSessionTurnVariables(1, TEXT("s"), 90002, false);
-		const TSharedPtr<FJsonObject>* InputPtr = nullptr;
-		Vars->TryGetObjectField(TEXT("input"), InputPtr);
-		if (TestTrue(TEXT("input present"), InputPtr != nullptr))
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildSetSessionTurnVariables(1, TEXT("s"), 90002, false, 3));
+		if (TestTrue(TEXT("input present"), Input.IsValid()))
 		{
-			const TSharedPtr<FJsonValue> UserIdValue = (*InputPtr)->TryGetField(TEXT("userId"));
-			if (TestNotNull(TEXT("userId present when clearing"), UserIdValue.Get()))
-			{
-				TestEqual(TEXT("userId is JSON null when clearing the turn"),
-					static_cast<int32>(UserIdValue->Type), static_cast<int32>(EJson::Null));
-			}
-			FString SessionId;
-			TestTrue(TEXT("sessionId present"), (*InputPtr)->TryGetStringField(TEXT("sessionId"), SessionId));
-			TestEqual(TEXT("sessionId value"), SessionId, FString(TEXT("s")));
+			TestEqual(TEXT("userId is JSON null when clearing the turn"), Phase2BFieldType(Input, TEXT("userId")), Phase2BNull);
+			TestEqual(TEXT("sessionId is a JSON string"), Phase2BFieldType(Input, TEXT("sessionId")), Phase2BString);
+			TestEqual(TEXT("sessionId value"), Input->GetStringField(TEXT("sessionId")), FString(TEXT("s")));
+			TestEqual(TEXT("expectedHostTerm written alongside a clear"), Phase2BFieldType(Input, TEXT("expectedHostTerm")), Phase2BNumber);
 		}
 	}
 
-	// JoinSession: role omitted when empty, present when set.
+	// JoinSession: role, actorUuid and idempotencyKey omitted when empty, present as strings when set.
 	{
-		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildJoinSessionVariables(1, TEXT("s"), FString());
-		const TSharedPtr<FJsonObject>* InputPtr = nullptr;
-		Vars->TryGetObjectField(TEXT("input"), InputPtr);
-		if (TestTrue(TEXT("input present"), InputPtr != nullptr))
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildJoinSessionVariables(1, TEXT("s"), FString()));
+		if (TestTrue(TEXT("input present"), Input.IsValid()))
 		{
-			TestFalse(TEXT("role omitted when empty"), (*InputPtr)->HasField(TEXT("role")));
+			TestEqual(TEXT("role omitted when empty"), Phase2BFieldType(Input, TEXT("role")), Phase2BAbsent);
+			TestEqual(TEXT("actorUuid omitted when empty"), Phase2BFieldType(Input, TEXT("actorUuid")), Phase2BAbsent);
+			TestEqual(TEXT("idempotencyKey omitted when empty"), Phase2BFieldType(Input, TEXT("idempotencyKey")), Phase2BAbsent);
 		}
 
-		const TSharedPtr<FJsonObject> Vars2 = FCrowdyGameApiCodec::BuildJoinSessionVariables(1, TEXT("s"), TEXT("gm"));
-		const TSharedPtr<FJsonObject>* Input2Ptr = nullptr;
-		Vars2->TryGetObjectField(TEXT("input"), Input2Ptr);
-		if (TestTrue(TEXT("input present (role set)"), Input2Ptr != nullptr))
+		const FString Uuid = TEXT("0123456789abcdef0123456789abcdef");
+		const TSharedPtr<FJsonObject> Input2 = Phase2BInput(
+			FCrowdyGameApiCodec::BuildJoinSessionVariables(1, TEXT("s"), TEXT("gm"), Uuid, TEXT("k-2")));
+		if (TestTrue(TEXT("input present (role set)"), Input2.IsValid()))
 		{
-			FString Role;
-			TestTrue(TEXT("role present when set"), (*Input2Ptr)->TryGetStringField(TEXT("role"), Role));
-			TestEqual(TEXT("role value"), Role, FString(TEXT("gm")));
+			TestEqual(TEXT("role is a JSON string"), Phase2BFieldType(Input2, TEXT("role")), Phase2BString);
+			TestEqual(TEXT("role value"), Input2->GetStringField(TEXT("role")), FString(TEXT("gm")));
+			TestEqual(TEXT("actorUuid is a JSON string"), Phase2BFieldType(Input2, TEXT("actorUuid")), Phase2BString);
+			TestEqual(TEXT("actorUuid value"), Input2->GetStringField(TEXT("actorUuid")), Uuid);
+			TestEqual(TEXT("idempotencyKey value"), Input2->GetStringField(TEXT("idempotencyKey")), FString(TEXT("k-2")));
+		}
+	}
+
+	return true;
+}
+
+// The remaining session builders: leave sends incarnation as a number; admission / transfer / end are host-gated
+// mutations whose expectedHostTerm is omitted at 0 and a number otherwise (toUserId a BigInt string, reason omitted
+// when empty); list filters vanish when unset; snapshot / events / changed are flat queries with afterRevision a
+// STRING and limit a number omitted at 0.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelSessionLifecycleBuildsRequestTest,
+	"CrowdySDK.GameModel.SessionLifecycleBuildsRequest", CrowdyGameModelPhase2BTestFlags)
+bool FCrowdyGameModelSessionLifecycleBuildsRequestTest::RunTest(const FString& Parameters)
+{
+	// LeaveSession: appId a string, incarnation a JSON NUMBER, idempotencyKey omitted when empty.
+	{
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(FCrowdyGameApiCodec::BuildLeaveSessionVariables(1, TEXT("s"), 2));
+		if (TestTrue(TEXT("leave input present"), Input.IsValid()))
+		{
+			TestEqual(TEXT("leave appId is a JSON string"), Phase2BFieldType(Input, TEXT("appId")), Phase2BString);
+			TestEqual(TEXT("leave appId value"), Input->GetStringField(TEXT("appId")), FString(TEXT("1")));
+			TestEqual(TEXT("leave sessionId value"), Input->GetStringField(TEXT("sessionId")), FString(TEXT("s")));
+			TestEqual(TEXT("incarnation is a JSON number"), Phase2BFieldType(Input, TEXT("incarnation")), Phase2BNumber);
+			TestEqual(TEXT("incarnation value"), static_cast<int32>(Input->GetNumberField(TEXT("incarnation"))), 2);
+			TestEqual(TEXT("leave idempotencyKey omitted"), Phase2BFieldType(Input, TEXT("idempotencyKey")), Phase2BAbsent);
+		}
+		const TSharedPtr<FJsonObject> Input2 = Phase2BInput(
+			FCrowdyGameApiCodec::BuildLeaveSessionVariables(1, TEXT("s"), 0, TEXT("k-3")));
+		if (TestTrue(TEXT("leave input present (key)"), Input2.IsValid()))
+		{
+			// incarnation is required, so 0 is still written.
+			TestEqual(TEXT("incarnation 0 still written"), Phase2BFieldType(Input2, TEXT("incarnation")), Phase2BNumber);
+			TestEqual(TEXT("leave idempotencyKey value"), Input2->GetStringField(TEXT("idempotencyKey")), FString(TEXT("k-3")));
+		}
+	}
+
+	// SetSessionAdmission: admission a string; expectedHostTerm omitted at 0, a JSON number otherwise.
+	{
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildSetSessionAdmissionVariables(1, TEXT("s"), TEXT("locked"), 0));
+		if (TestTrue(TEXT("admission input present"), Input.IsValid()))
+		{
+			TestEqual(TEXT("admission appId is a JSON string"), Phase2BFieldType(Input, TEXT("appId")), Phase2BString);
+			TestEqual(TEXT("admission is a JSON string"), Phase2BFieldType(Input, TEXT("admission")), Phase2BString);
+			TestEqual(TEXT("admission value"), Input->GetStringField(TEXT("admission")), FString(TEXT("locked")));
+			TestEqual(TEXT("admission expectedHostTerm omitted at 0"), Phase2BFieldType(Input, TEXT("expectedHostTerm")), Phase2BAbsent);
+		}
+		const TSharedPtr<FJsonObject> Input2 = Phase2BInput(
+			FCrowdyGameApiCodec::BuildSetSessionAdmissionVariables(1, TEXT("s"), TEXT("closed"), 2));
+		if (TestTrue(TEXT("admission input present (term)"), Input2.IsValid()))
+		{
+			TestEqual(TEXT("admission expectedHostTerm is a JSON number"), Phase2BFieldType(Input2, TEXT("expectedHostTerm")), Phase2BNumber);
+			TestEqual(TEXT("admission expectedHostTerm value"), static_cast<int32>(Input2->GetNumberField(TEXT("expectedHostTerm"))), 2);
+		}
+	}
+
+	// TransferSessionHost: toUserId is a BigInt STRING, never a number.
+	{
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildTransferSessionHostVariables(1, TEXT("s"), 90003, 0));
+		if (TestTrue(TEXT("transfer input present"), Input.IsValid()))
+		{
+			TestEqual(TEXT("toUserId is a JSON string"), Phase2BFieldType(Input, TEXT("toUserId")), Phase2BString);
+			TestEqual(TEXT("toUserId value"), Input->GetStringField(TEXT("toUserId")), FString(TEXT("90003")));
+			TestEqual(TEXT("transfer expectedHostTerm omitted at 0"), Phase2BFieldType(Input, TEXT("expectedHostTerm")), Phase2BAbsent);
+		}
+		const TSharedPtr<FJsonObject> Input2 = Phase2BInput(
+			FCrowdyGameApiCodec::BuildTransferSessionHostVariables(1, TEXT("s"), 90003, 5));
+		if (TestTrue(TEXT("transfer input present (term)"), Input2.IsValid()))
+		{
+			TestEqual(TEXT("transfer expectedHostTerm is a JSON number"), Phase2BFieldType(Input2, TEXT("expectedHostTerm")), Phase2BNumber);
+			TestEqual(TEXT("transfer expectedHostTerm value"), static_cast<int32>(Input2->GetNumberField(TEXT("expectedHostTerm"))), 5);
+		}
+	}
+
+	// EndSession: reason omitted when empty, a string when set; expectedHostTerm as above.
+	{
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildEndSessionVariables(1, TEXT("s"), FString(), 0));
+		if (TestTrue(TEXT("end input present"), Input.IsValid()))
+		{
+			TestEqual(TEXT("end sessionId value"), Input->GetStringField(TEXT("sessionId")), FString(TEXT("s")));
+			TestEqual(TEXT("reason omitted when empty"), Phase2BFieldType(Input, TEXT("reason")), Phase2BAbsent);
+			TestEqual(TEXT("end expectedHostTerm omitted at 0"), Phase2BFieldType(Input, TEXT("expectedHostTerm")), Phase2BAbsent);
+		}
+		const TSharedPtr<FJsonObject> Input2 = Phase2BInput(
+			FCrowdyGameApiCodec::BuildEndSessionVariables(1, TEXT("s"), TEXT("abandoned"), 1));
+		if (TestTrue(TEXT("end input present (reason)"), Input2.IsValid()))
+		{
+			TestEqual(TEXT("reason is a JSON string"), Phase2BFieldType(Input2, TEXT("reason")), Phase2BString);
+			TestEqual(TEXT("reason value"), Input2->GetStringField(TEXT("reason")), FString(TEXT("abandoned")));
+			TestEqual(TEXT("end expectedHostTerm is a JSON number"), Phase2BFieldType(Input2, TEXT("expectedHostTerm")), Phase2BNumber);
+			TestEqual(TEXT("end expectedHostTerm value"), static_cast<int32>(Input2->GetNumberField(TEXT("expectedHostTerm"))), 1);
+		}
+	}
+
+	// ListSessions is a QUERY (flat variables): every filter omitted when unset...
+	{
+		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildListSessionsVariables(1, FString());
+		if (TestTrue(TEXT("list vars present"), Vars.IsValid()))
+		{
+			TestEqual(TEXT("list has no input wrapper"), Phase2BFieldType(Vars, TEXT("input")), Phase2BAbsent);
+			TestEqual(TEXT("list appId is a JSON string"), Phase2BFieldType(Vars, TEXT("appId")), Phase2BString);
+			TestEqual(TEXT("status omitted when empty"), Phase2BFieldType(Vars, TEXT("status")), Phase2BAbsent);
+			TestEqual(TEXT("admission filter omitted when empty"), Phase2BFieldType(Vars, TEXT("admission")), Phase2BAbsent);
+			TestEqual(TEXT("hostUserId omitted at 0"), Phase2BFieldType(Vars, TEXT("hostUserId")), Phase2BAbsent);
+			TestEqual(TEXT("limit omitted at 0"), Phase2BFieldType(Vars, TEXT("limit")), Phase2BAbsent);
+		}
+	}
+
+	// ...and each written with its wire type when set (hostUserId a BigInt string, limit a number).
+	{
+		const TSharedPtr<FJsonObject> Vars =
+			FCrowdyGameApiCodec::BuildListSessionsVariables(1, TEXT("active"), TEXT("open"), 90001, 25);
+		if (TestTrue(TEXT("list vars present (filters)"), Vars.IsValid()))
+		{
+			TestEqual(TEXT("status value"), Vars->GetStringField(TEXT("status")), FString(TEXT("active")));
+			TestEqual(TEXT("admission filter value"), Vars->GetStringField(TEXT("admission")), FString(TEXT("open")));
+			TestEqual(TEXT("hostUserId is a JSON string"), Phase2BFieldType(Vars, TEXT("hostUserId")), Phase2BString);
+			TestEqual(TEXT("hostUserId value"), Vars->GetStringField(TEXT("hostUserId")), FString(TEXT("90001")));
+			TestEqual(TEXT("limit is a JSON number"), Phase2BFieldType(Vars, TEXT("limit")), Phase2BNumber);
+			TestEqual(TEXT("limit value"), static_cast<int32>(Vars->GetNumberField(TEXT("limit"))), 25);
+		}
+	}
+
+	// SessionSnapshot: flat { appId (string), sessionId }.
+	{
+		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildSessionSnapshotVariables(1, TEXT("s"));
+		if (TestTrue(TEXT("snapshot vars present"), Vars.IsValid()))
+		{
+			TestEqual(TEXT("snapshot has no input wrapper"), Phase2BFieldType(Vars, TEXT("input")), Phase2BAbsent);
+			TestEqual(TEXT("snapshot appId is a JSON string"), Phase2BFieldType(Vars, TEXT("appId")), Phase2BString);
+			TestEqual(TEXT("snapshot appId value"), Vars->GetStringField(TEXT("appId")), FString(TEXT("1")));
+			TestEqual(TEXT("snapshot sessionId value"), Vars->GetStringField(TEXT("sessionId")), FString(TEXT("s")));
+		}
+	}
+
+	// SessionEvents: afterRevision is a STRING holding the integer (never a number); limit omitted at 0.
+	{
+		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildSessionEventsVariables(1, TEXT("s"), 0, 0);
+		if (TestTrue(TEXT("events vars present"), Vars.IsValid()))
+		{
+			TestEqual(TEXT("afterRevision is a JSON string"), Phase2BFieldType(Vars, TEXT("afterRevision")), Phase2BString);
+			TestEqual(TEXT("afterRevision value"), Vars->GetStringField(TEXT("afterRevision")), FString(TEXT("0")));
+			TestEqual(TEXT("events limit omitted at 0"), Phase2BFieldType(Vars, TEXT("limit")), Phase2BAbsent);
+		}
+		const TSharedPtr<FJsonObject> Vars2 = FCrowdyGameApiCodec::BuildSessionEventsVariables(1, TEXT("s"), 41, 100);
+		if (TestTrue(TEXT("events vars present (limit)"), Vars2.IsValid()))
+		{
+			TestEqual(TEXT("afterRevision 41 as a string"), Vars2->GetStringField(TEXT("afterRevision")), FString(TEXT("41")));
+			TestEqual(TEXT("events limit is a JSON number"), Phase2BFieldType(Vars2, TEXT("limit")), Phase2BNumber);
+			TestEqual(TEXT("events limit value"), static_cast<int32>(Vars2->GetNumberField(TEXT("limit"))), 100);
+		}
+	}
+
+	// SessionChanged (subscription): afterRevision omitted when the caller has none, a string otherwise.
+	{
+		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildSessionChangedVariables(1, TEXT("s"), 0, false);
+		if (TestTrue(TEXT("changed vars present"), Vars.IsValid()))
+		{
+			TestEqual(TEXT("changed appId is a JSON string"), Phase2BFieldType(Vars, TEXT("appId")), Phase2BString);
+			TestEqual(TEXT("changed afterRevision omitted"), Phase2BFieldType(Vars, TEXT("afterRevision")), Phase2BAbsent);
+		}
+		const TSharedPtr<FJsonObject> Vars2 = FCrowdyGameApiCodec::BuildSessionChangedVariables(1, TEXT("s"), 7, true);
+		if (TestTrue(TEXT("changed vars present (revision)"), Vars2.IsValid()))
+		{
+			TestEqual(TEXT("changed afterRevision is a JSON string"), Phase2BFieldType(Vars2, TEXT("afterRevision")), Phase2BString);
+			TestEqual(TEXT("changed afterRevision value"), Vars2->GetStringField(TEXT("afterRevision")), FString(TEXT("7")));
 		}
 	}
 
@@ -195,19 +444,199 @@ bool FCrowdyGameModelParseSessionTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	// Join returns the participant triple; userId is a BigInt string parsed to int64.
+	// The full GmSession shape: revision arrives as a STRING and parses to int64; hostTerm / participantCount /
+	// maxParticipants are numbers; hostUserId is a BigInt string; the bHas flags are set for present values.
 	{
 		const TSharedPtr<FJsonObject> Env = ParsePhase2BJson(TEXT(
-			"{\"data\":{\"gameModelJoinSession\":{\"sessionId\":\"s\",\"userId\":\"90002\",\"role\":\"player\"}}}"));
-		FString SessionId;
-		int64 UserId = 0;
-		FString Role;
-		const bool bOk = FCrowdyGameApiCodec::ParseJoinSessionEnvelope(
-			Env, true, TArray<FString>(), SessionId, UserId, Role);
+			"{\"data\":{\"gameModelSession\":{\"sessionId\":\"sess1\",\"appId\":\"1\",\"name\":\"Skirmish\","
+			"\"status\":\"ended\",\"createdByUserId\":\"90001\",\"currentTurnUserId\":null,\"metadataJson\":\"{}\","
+			"\"admission\":\"locked\",\"maxParticipants\":4,\"participantCount\":3,\"hostUserId\":\"90002\","
+			"\"hostTerm\":2,\"revision\":\"17\",\"endedAt\":\"2026-01-02T03:04:05Z\",\"endReason\":\"abandoned\","
+			"\"createdAt\":\"2026-01-01T00:00:00Z\",\"presence\":\"none\"}}}"));
+		FCrowdyGameSessionData Session;
+		const bool bOk = FCrowdyGameApiCodec::ParseSessionEnvelope(
+			Env, true, TArray<FString>(), TEXT("gameModelSession"), Session);
+		TestTrue(TEXT("full session parsed"), bOk);
+		TestEqual(TEXT("admission"), Session.Admission, FString(TEXT("locked")));
+		TestTrue(TEXT("bHasMaxParticipants when present"), Session.bHasMaxParticipants);
+		TestEqual(TEXT("maxParticipants"), Session.MaxParticipants, 4);
+		TestEqual(TEXT("participantCount"), Session.ParticipantCount, 3);
+		TestTrue(TEXT("bHasHost when present"), Session.bHasHost);
+		TestEqual(TEXT("hostUserId parsed from string"), Session.HostUserId, static_cast<int64>(90002));
+		TestEqual(TEXT("hostTerm"), Session.HostTerm, 2);
+		TestEqual(TEXT("revision parsed from string"), Session.Revision, static_cast<int64>(17));
+		TestEqual(TEXT("endedAt"), Session.EndedAt, FString(TEXT("2026-01-02T03:04:05Z")));
+		TestEqual(TEXT("endReason"), Session.EndReason, FString(TEXT("abandoned")));
+		TestEqual(TEXT("createdAt"), Session.CreatedAt, FString(TEXT("2026-01-01T00:00:00Z")));
+		TestEqual(TEXT("presence"), Session.Presence, FString(TEXT("none")));
+	}
+
+	// maxParticipants / hostUserId null (unbounded, nobody joined) leave their bHas flags false and never read as
+	// a real 0; a real 0 maxParticipants sets the flag. A numeric revision is accepted defensively.
+	{
+		const TSharedPtr<FJsonObject> Env = ParsePhase2BJson(TEXT(
+			"{\"data\":{\"gameModelSession\":{\"sessionId\":\"sess1\",\"appId\":\"1\",\"status\":\"active\","
+			"\"maxParticipants\":null,\"hostUserId\":null,\"participantCount\":0,\"hostTerm\":0,\"revision\":3,"
+			"\"endedAt\":null,\"endReason\":null}}}"));
+		FCrowdyGameSessionData Session;
+		const bool bOk = FCrowdyGameApiCodec::ParseSessionEnvelope(
+			Env, true, TArray<FString>(), TEXT("gameModelSession"), Session);
+		TestTrue(TEXT("null-field session parsed"), bOk);
+		TestFalse(TEXT("bHasMaxParticipants false when null"), Session.bHasMaxParticipants);
+		TestFalse(TEXT("bHasHost false when null"), Session.bHasHost);
+		TestEqual(TEXT("revision accepted as a number"), Session.Revision, static_cast<int64>(3));
+		TestTrue(TEXT("endedAt empty when null"), Session.EndedAt.IsEmpty());
+		TestTrue(TEXT("endReason empty when null"), Session.EndReason.IsEmpty());
+
+		const TSharedPtr<FJsonObject> ZeroEnv = ParsePhase2BJson(TEXT(
+			"{\"data\":{\"gameModelSession\":{\"sessionId\":\"sess1\",\"appId\":\"1\",\"maxParticipants\":0,"
+			"\"hostUserId\":\"0\",\"hostTerm\":\"5\"}}}"));
+		FCrowdyGameSessionData ZeroSession;
+		FCrowdyGameApiCodec::ParseSessionEnvelope(ZeroEnv, true, TArray<FString>(), TEXT("gameModelSession"), ZeroSession);
+		TestTrue(TEXT("bHasMaxParticipants true for a real 0"), ZeroSession.bHasMaxParticipants);
+		TestEqual(TEXT("maxParticipants 0"), ZeroSession.MaxParticipants, 0);
+		TestTrue(TEXT("bHasHost true for a real 0"), ZeroSession.bHasHost);
+		TestEqual(TEXT("hostTerm accepted as a string"), ZeroSession.HostTerm, 5);
+	}
+
+	// Join returns a participant row; userId is a BigInt string parsed to int64 and incarnation a number.
+	{
+		const TSharedPtr<FJsonObject> Env = ParsePhase2BJson(TEXT(
+			"{\"data\":{\"gameModelJoinSession\":{\"sessionId\":\"s\",\"userId\":\"90002\",\"role\":\"player\","
+			"\"state\":\"joined\",\"incarnation\":2,\"actorUuid\":\"0123456789abcdef0123456789abcdef\","
+			"\"joinedAt\":\"2026-01-01T00:00:00Z\",\"leftAt\":null,\"leftReason\":null}}}"));
+		FCrowdyGameSessionParticipantData Participant;
+		const bool bOk = FCrowdyGameApiCodec::ParseJoinSessionEnvelope(Env, true, TArray<FString>(), Participant);
 		TestTrue(TEXT("join parsed"), bOk);
-		TestEqual(TEXT("sessionId"), SessionId, FString(TEXT("s")));
-		TestEqual(TEXT("userId parsed from string"), UserId, static_cast<int64>(90002));
-		TestEqual(TEXT("role"), Role, FString(TEXT("player")));
+		TestEqual(TEXT("sessionId"), Participant.SessionId, FString(TEXT("s")));
+		TestEqual(TEXT("userId parsed from string"), Participant.UserId, static_cast<int64>(90002));
+		TestEqual(TEXT("role"), Participant.Role, FString(TEXT("player")));
+		TestEqual(TEXT("state"), Participant.State, FString(TEXT("joined")));
+		TestEqual(TEXT("incarnation"), Participant.Incarnation, 2);
+		TestEqual(TEXT("actorUuid"), Participant.ActorUuid, FString(TEXT("0123456789abcdef0123456789abcdef")));
+		TestEqual(TEXT("joinedAt"), Participant.JoinedAt, FString(TEXT("2026-01-01T00:00:00Z")));
+		TestTrue(TEXT("leftAt empty when null"), Participant.LeftAt.IsEmpty());
+	}
+
+	// A null join (the server returned nothing) fails the parse and leaves the participant reset.
+	{
+		const TSharedPtr<FJsonObject> Env = ParsePhase2BJson(TEXT("{\"data\":{\"gameModelJoinSession\":null}}"));
+		FCrowdyGameSessionParticipantData Participant;
+		Participant.UserId = 5;
+		const bool bOk = FCrowdyGameApiCodec::ParseJoinSessionEnvelope(Env, true, TArray<FString>(), Participant);
+		TestFalse(TEXT("null join fails"), bOk);
+		TestEqual(TEXT("participant reset on failure"), Participant.UserId, static_cast<int64>(0));
+	}
+
+	return true;
+}
+
+// The participant, event, snapshot and event-log envelopes: leave reads a participant row by field name, a
+// snapshot carries its own revision plus the session and every participant, and the event log is an ordered
+// array whose revisions (wire strings) parse to int64.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelParseSessionSnapshotAndEventsTest,
+	"CrowdySDK.GameModel.ParseSessionSnapshotAndEvents", CrowdyGameModelPhase2BTestFlags)
+bool FCrowdyGameModelParseSessionSnapshotAndEventsTest::RunTest(const FString& Parameters)
+{
+	// Leave reads the same participant shape under its own field; a left row carries leftAt / leftReason.
+	{
+		const TSharedPtr<FJsonObject> Env = ParsePhase2BJson(TEXT(
+			"{\"data\":{\"gameModelLeaveSession\":{\"sessionId\":\"s\",\"userId\":\"90002\",\"role\":\"player\","
+			"\"state\":\"left\",\"incarnation\":\"3\",\"actorUuid\":null,\"joinedAt\":\"2026-01-01T00:00:00Z\","
+			"\"leftAt\":\"2026-01-01T00:10:00Z\",\"leftReason\":\"left\"}}}"));
+		FCrowdyGameSessionParticipantData Participant;
+		const bool bOk = FCrowdyGameApiCodec::ParseSessionParticipantEnvelope(
+			Env, true, TArray<FString>(), TEXT("gameModelLeaveSession"), Participant);
+		TestTrue(TEXT("leave parsed"), bOk);
+		TestEqual(TEXT("state left"), Participant.State, FString(TEXT("left")));
+		TestEqual(TEXT("incarnation accepted as a string"), Participant.Incarnation, 3);
+		TestTrue(TEXT("actorUuid empty when null"), Participant.ActorUuid.IsEmpty());
+		TestEqual(TEXT("leftAt"), Participant.LeftAt, FString(TEXT("2026-01-01T00:10:00Z")));
+		TestEqual(TEXT("leftReason"), Participant.LeftReason, FString(TEXT("left")));
+
+		// The wrong field name is a miss, not a stale read.
+		FCrowdyGameSessionParticipantData Miss;
+		TestFalse(TEXT("other field name misses"), FCrowdyGameApiCodec::ParseSessionParticipantEnvelope(
+			Env, true, TArray<FString>(), TEXT("gameModelJoinSession"), Miss));
+	}
+
+	// A single event object: appId and revision are wire strings parsed to int64.
+	{
+		const TSharedPtr<FJsonObject> Obj = ParsePhase2BJson(TEXT(
+			"{\"appId\":\"1\",\"sessionId\":\"s\",\"revision\":\"9\",\"kind\":\"host_changed\","
+			"\"payloadJson\":\"{\\\"hostUserId\\\":\\\"90002\\\"}\",\"createdAt\":\"2026-01-01T00:00:00Z\"}"));
+		const FCrowdyGameSessionEventData Event = FCrowdyGameApiCodec::ParseSessionEventObject(Obj);
+		TestEqual(TEXT("event appId"), Event.AppId, static_cast<int64>(1));
+		TestEqual(TEXT("event sessionId"), Event.SessionId, FString(TEXT("s")));
+		TestEqual(TEXT("event revision parsed from string"), Event.Revision, static_cast<int64>(9));
+		TestEqual(TEXT("event kind"), Event.Kind, FString(TEXT("host_changed")));
+		TestEqual(TEXT("event payloadJson verbatim"), Event.PayloadJson, FString(TEXT("{\"hostUserId\":\"90002\"}")));
+		TestEqual(TEXT("event createdAt"), Event.CreatedAt, FString(TEXT("2026-01-01T00:00:00Z")));
+	}
+
+	// Snapshot: its own revision (a wire string), the session, and every participant row.
+	{
+		const TSharedPtr<FJsonObject> Env = ParsePhase2BJson(TEXT(
+			"{\"data\":{\"gameModelSessionSnapshot\":{\"revision\":\"12\","
+			"\"session\":{\"sessionId\":\"s\",\"appId\":\"1\",\"status\":\"active\",\"admission\":\"open\","
+			"\"hostUserId\":\"90001\",\"hostTerm\":1,\"participantCount\":2,\"revision\":\"12\"},"
+			"\"participants\":["
+			"{\"sessionId\":\"s\",\"userId\":\"90001\",\"role\":\"host\",\"state\":\"joined\",\"incarnation\":1},"
+			"{\"sessionId\":\"s\",\"userId\":\"90002\",\"role\":\"player\",\"state\":\"joined\",\"incarnation\":4}]}}}"));
+		FCrowdyGameSessionSnapshotData Snapshot;
+		const bool bOk = FCrowdyGameApiCodec::ParseSessionSnapshotEnvelope(Env, true, TArray<FString>(), Snapshot);
+		TestTrue(TEXT("snapshot parsed"), bOk);
+		TestEqual(TEXT("snapshot revision parsed from string"), Snapshot.Revision, static_cast<int64>(12));
+		TestEqual(TEXT("snapshot session id"), Snapshot.Session.SessionId, FString(TEXT("s")));
+		TestEqual(TEXT("snapshot session admission"), Snapshot.Session.Admission, FString(TEXT("open")));
+		TestTrue(TEXT("snapshot session has host"), Snapshot.Session.bHasHost);
+		TestEqual(TEXT("snapshot session host"), Snapshot.Session.HostUserId, static_cast<int64>(90001));
+		if (TestEqual(TEXT("two participants"), Snapshot.Participants.Num(), 2))
+		{
+			TestEqual(TEXT("participant[0] userId"), Snapshot.Participants[0].UserId, static_cast<int64>(90001));
+			TestEqual(TEXT("participant[0] role"), Snapshot.Participants[0].Role, FString(TEXT("host")));
+			TestEqual(TEXT("participant[1] userId"), Snapshot.Participants[1].UserId, static_cast<int64>(90002));
+			TestEqual(TEXT("participant[1] incarnation"), Snapshot.Participants[1].Incarnation, 4);
+		}
+	}
+
+	// A GraphQL error fails the snapshot parse and resets the output.
+	{
+		const TSharedPtr<FJsonObject> Env = ParsePhase2BJson(TEXT(
+			"{\"data\":{\"gameModelSessionSnapshot\":{\"revision\":\"12\",\"session\":{\"sessionId\":\"s\"},\"participants\":[]}}}"));
+		TArray<FString> Errors;
+		Errors.Add(TEXT("SESSION_NOT_PARTICIPANT"));
+		FCrowdyGameSessionSnapshotData Snapshot;
+		Snapshot.Revision = 99;
+		TestFalse(TEXT("errors[] fail the snapshot"), FCrowdyGameApiCodec::ParseSessionSnapshotEnvelope(Env, true, Errors, Snapshot));
+		TestEqual(TEXT("snapshot reset on failure"), Snapshot.Revision, static_cast<int64>(0));
+	}
+
+	// The event log: an ordered array, each revision parsed from its wire string.
+	{
+		const TSharedPtr<FJsonObject> Env = ParsePhase2BJson(TEXT(
+			"{\"data\":{\"gameModelSessionEvents\":["
+			"{\"appId\":\"1\",\"sessionId\":\"s\",\"revision\":\"1\",\"kind\":\"created\",\"payloadJson\":\"{}\"},"
+			"{\"appId\":\"1\",\"sessionId\":\"s\",\"revision\":\"2\",\"kind\":\"participant_joined\",\"payloadJson\":\"{}\"},"
+			"{\"appId\":\"1\",\"sessionId\":\"s\",\"revision\":\"3\",\"kind\":\"turn_changed\",\"payloadJson\":\"{}\"}]}}"));
+		TArray<FCrowdyGameSessionEventData> Events;
+		const bool bOk = FCrowdyGameApiCodec::ParseSessionEventsEnvelope(Env, true, TArray<FString>(), Events);
+		TestTrue(TEXT("events parsed"), bOk);
+		if (TestEqual(TEXT("three events"), Events.Num(), 3))
+		{
+			TestEqual(TEXT("event[0] revision"), Events[0].Revision, static_cast<int64>(1));
+			TestEqual(TEXT("event[0] kind"), Events[0].Kind, FString(TEXT("created")));
+			TestEqual(TEXT("event[2] revision"), Events[2].Revision, static_cast<int64>(3));
+			TestEqual(TEXT("event[2] kind"), Events[2].Kind, FString(TEXT("turn_changed")));
+		}
+
+		// An empty log is a clean read, not a failure; a missing field is a failure.
+		TArray<FCrowdyGameSessionEventData> Empty;
+		TestTrue(TEXT("empty log parses"), FCrowdyGameApiCodec::ParseSessionEventsEnvelope(
+			ParsePhase2BJson(TEXT("{\"data\":{\"gameModelSessionEvents\":[]}}")), true, TArray<FString>(), Empty));
+		TestEqual(TEXT("empty log has no events"), Empty.Num(), 0);
+		TestFalse(TEXT("missing field fails"), FCrowdyGameApiCodec::ParseSessionEventsEnvelope(
+			ParsePhase2BJson(TEXT("{\"data\":{}}")), true, TArray<FString>(), Empty));
 	}
 
 	return true;

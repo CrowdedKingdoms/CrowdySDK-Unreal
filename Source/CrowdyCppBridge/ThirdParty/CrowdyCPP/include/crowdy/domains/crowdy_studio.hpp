@@ -1,15 +1,20 @@
 #pragma once
 
+#include <deque>
 #include <functional>
+#include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "crowdy/domains/crowdy_studio_github.hpp"
 #include "crowdy/domains/domain_base.hpp"
 #include "crowdy/generated/operations.hpp"
+#include "crowdy/studio/github_layout.hpp"
 #include "crowdy/studio/models.hpp"
 
 namespace crowdy::domains {
@@ -18,10 +23,20 @@ namespace crowdy::domains {
 /// library files, and the app-curated common catalog. Every operation carries
 /// an app id; no method accepts an owner override, grid authority override, or
 /// raw GraphQL document.
+///
+/// A project's `source` decides how saveProject persists files: STUDIO
+/// projects go through crowdyStudioProjectSave under the project revision;
+/// GITHUB projects commit each changed file through
+/// crowdyStudioGitHubPutFile / DeleteFile under github.sha
+/// (expectedCommitSha), because their files are a server-maintained mirror
+/// of the repository and the Studio file mutations refuse them. Either way a
+/// lost race is a CrowdyStudioRevisionConflictError and the editor's
+/// "the remote moved" recovery applies. The controller never learns which.
 class CrowdyStudioAPI final : public DomainBase,
                               public studio::ICrowdyStudioProjectProvider {
  public:
-  using DomainBase::DomainBase;
+  explicit CrowdyStudioAPI(std::shared_ptr<graphql::GraphQLClient> gql)
+      : DomainBase(gql), github_(gql) {}
 
   using ProjectsCallback = std::function<void(
       graphql::GraphQLOutcome,
@@ -119,12 +134,19 @@ class CrowdyStudioAPI final : public DomainBase,
   }
 
   /// Atomic full-project save used by the controller. Only changed files are
-  /// sent, but metadata and all file changes share one revision precondition
-  /// and one transaction.
+  /// sent. A STUDIO project shares one revision precondition and one
+  /// transaction; a GITHUB project commits each changed file in turn.
   studio::CrowdyStudioProject saveProject(
       const studio::SaveCrowdyStudioProjectInput& input) override {
     if (!baselines_.contains(input.projectId)) {
       (void)getProject({input.appId, input.gridId}, input.projectId);
+    }
+    const auto baseline = baselines_.find(input.projectId);
+    if (baseline != baselines_.end() &&
+        baseline->second.source == studio::CrowdyStudioProjectSource::GitHub &&
+        baseline->second.github && baseline->second.github->sha &&
+        !baseline->second.github->sha->empty()) {
+      return saveBoundProject(baseline->second, input);
     }
     const graphql::JVal variables = oneInput(saveProjectInput(input));
     try {
@@ -132,17 +154,18 @@ class CrowdyStudioAPI final : public DomainBase,
           "CrowdyStudioProjectSave", variables,
           [](const graphql::Json& value) { return mapProject(value); }));
     } catch (const studio::CrowdyStudioRevisionConflictError& error) {
-      std::optional<studio::CrowdyStudioProject> remote;
-      try {
-        remote = getProject({input.appId, input.gridId}, input.projectId);
-      } catch (...) {
-        // The stable conflict remains actionable when the follow-up read fails.
-      }
-      throw studio::CrowdyStudioRevisionConflictError(error.what(),
-                                                       std::move(remote));
+      throw withRemote(error, input);
     }
   }
 
+  /// Non-throwing twin of saveProject. A STUDIO project posts one
+  /// CrowdyStudioProjectSave on the async transport and delivers the
+  /// callback from poll(). A GITHUB project still runs the commit loop
+  /// on the caller's thread (one HTTP round trip per changed file plus
+  /// metadata) and invokes the callback before this function returns —
+  /// the same blocking contract as saveProject. A host that picked the
+  /// Async variant to keep a frame from stalling should treat a bound
+  /// save like saveProject until that path is itself async.
   void saveProjectAsync(const studio::SaveCrowdyStudioProjectInput& input,
                         ProjectCallback callback) {
     if (!baselines_.contains(input.projectId)) {
@@ -157,6 +180,28 @@ class CrowdyStudioAPI final : public DomainBase,
             }
             saveProjectAsync(input, std::move(callback));
           });
+      return;
+    }
+    const auto baseline = baselines_.find(input.projectId);
+    if (baseline != baselines_.end() &&
+        baseline->second.source == studio::CrowdyStudioProjectSource::GitHub &&
+        baseline->second.github && baseline->second.github->sha &&
+        !baseline->second.github->sha->empty()) {
+      graphql::GraphQLOutcome outcome;
+      studio::CrowdyStudioProject project;
+      try {
+        project = saveBoundProject(baseline->second, input);
+        outcome.status = {};
+      } catch (const studio::CrowdyStudioRevisionConflictError& error) {
+        outcome.status = Errc::Rejected;
+        outcome.kind = graphql::GraphQLErrorKind::GraphQL;
+        outcome.errorMessage = error.what();
+      } catch (const std::exception& error) {
+        outcome.status = Errc::Rejected;
+        outcome.kind = graphql::GraphQLErrorKind::Protocol;
+        outcome.errorMessage = error.what();
+      }
+      callback(std::move(outcome), std::move(project));
       return;
     }
     const graphql::JVal variables = oneInput(saveProjectInput(input));
@@ -437,9 +482,13 @@ class CrowdyStudioAPI final : public DomainBase,
       const graphql::CrowdyGraphQLError& error) {
     const std::string message = error.what();
     if (error.code() == "CROWDY_STUDIO_REVISION_CONFLICT" ||
+        error.code() == "GITHUB_STALE_SHA" ||
         (error.code() == "CONFLICT" &&
          message.find("CROWDY_STUDIO_REVISION_CONFLICT") !=
-             std::string::npos)) {
+             std::string::npos) ||
+        message.find("CROWDY_STUDIO_REVISION_CONFLICT") !=
+            std::string::npos ||
+        message.find("GITHUB_STALE_SHA") != std::string::npos) {
       throw studio::CrowdyStudioRevisionConflictError(message);
     }
     if (error.code() == "IDEMPOTENCY_CONFLICT") {
@@ -448,11 +497,194 @@ class CrowdyStudioAPI final : public DomainBase,
     throw error;
   }
 
+  [[noreturn]] studio::CrowdyStudioProject withRemote(
+      const studio::CrowdyStudioRevisionConflictError& error,
+      const studio::SaveCrowdyStudioProjectInput& input) {
+    std::optional<studio::CrowdyStudioProject> remote;
+    try {
+      remote = getProject({input.appId, input.gridId}, input.projectId);
+    } catch (...) {
+      // The conflict remains actionable when the follow-up read fails.
+    }
+    throw studio::CrowdyStudioRevisionConflictError(error.what(),
+                                                     std::move(remote));
+  }
+
+  /// Persist a GITHUB project: metadata through the project save (a CAS on
+  /// the revision, no file bodies), then each changed file as its own
+  /// commit on the bound branch, each carrying the commit the previous one
+  /// produced.
+  studio::CrowdyStudioProject saveBoundProject(
+      const studio::CrowdyStudioProject& baseline,
+      const studio::SaveCrowdyStudioProjectInput& input) {
+    const std::optional<std::string> startSha =
+        baseline.github ? baseline.github->sha : std::nullopt;
+    if (!startSha || startSha->empty()) {
+      throw std::runtime_error(
+          "The bound project has no mirror commit; refresh it from GitHub "
+          "first.");
+    }
+    if (input.expectedRevisionId != baseline.revision.id) {
+      std::optional<studio::CrowdyStudioProject> remote;
+      try {
+        remote = getProject({input.appId, input.gridId}, input.projectId);
+      } catch (...) {
+      }
+      throw studio::CrowdyStudioRevisionConflictError(
+          "CROWDY_STUDIO_REVISION_CONFLICT: expected project revision " +
+              input.expectedRevisionId + "; current revision is " +
+              baseline.revision.id + ".",
+          std::move(remote));
+    }
+    try {
+      if (metadataChanged(baseline, input)) {
+        graphql::JVal body = saveProjectInput(input);
+        body["upserts"] = graphql::JVal::array({});
+        body["deletes"] = graphql::JVal::array({});
+        (void)request<studio::CrowdyStudioProject>(
+            "CrowdyStudioProjectSave", oneInput(std::move(body)),
+            [](const graphql::Json& value) { return mapProject(value); });
+      }
+      const auto delta = projectFileDelta(baseline, input);
+      std::string sha = *startSha;
+      if (!delta.upserts.empty() || !delta.deletes.empty()) {
+        const studio::CrowdyStudioGitHubLayout layout =
+            layoutAt({input.appId, input.projectId}, sha);
+        for (const auto& file : delta.upserts) {
+          const std::string path =
+              studio::normalizeCrowdyStudioPath(file.path);
+          const auto repoPath = studio::studioFileToRepoPath(
+              layout.roots(), file.target, path);
+          if (!repoPath) {
+            throw std::runtime_error(
+                "The bound repository's crowdy.json has no " +
+                std::string(studio::toString(file.target)) +
+                " directory, so " + path + " has nowhere to go.");
+          }
+          const auto written = github_.putFile({
+              input.appId,
+              input.projectId,
+              *repoPath,
+              file.content,
+              "studio: update " + *repoPath,
+              sha,
+              std::nullopt,
+          });
+          if (written.commitSha) sha = *written.commitSha;
+        }
+        for (const auto& file : delta.deletes) {
+          const auto repoPath = studio::studioFileToRepoPath(
+              layout.roots(), file.target,
+              studio::normalizeCrowdyStudioPath(file.path));
+          if (!repoPath) continue;
+          const auto status = github_.deleteFile({
+              input.appId,
+              input.projectId,
+              *repoPath,
+              "studio: delete " + *repoPath,
+              sha,
+              std::nullopt,
+          });
+          if (status.githubSha) sha = *status.githubSha;
+        }
+      }
+      return getProject({input.appId, input.gridId}, input.projectId);
+    } catch (const studio::CrowdyStudioRevisionConflictError& error) {
+      throw withRemote(error, input);
+    } catch (const graphql::CrowdyGraphQLError& error) {
+      try {
+        throwMapped(error);
+      } catch (const studio::CrowdyStudioRevisionConflictError& mapped) {
+        throw withRemote(mapped, input);
+      }
+    }
+  }
+
+  studio::CrowdyStudioGitHubLayout layoutAt(
+      const studio::CrowdyStudioGitHubProjectScope& scope,
+      const std::string& commitSha) {
+    const std::string key = scope.projectId + "@" + commitSha;
+    const auto cached = layouts_.find(key);
+    if (cached != layouts_.end()) return cached->second;
+    auto layout = github_.layout(scope, commitSha);
+    if (layouts_.size() > 64) {
+      layouts_.erase(layoutOrder_.front());
+      layoutOrder_.pop_front();
+    }
+    layouts_[key] = layout;
+    layoutOrder_.push_back(key);
+    return layout;
+  }
+
+  static bool metadataChanged(
+      const studio::CrowdyStudioProject& baseline,
+      const studio::SaveCrowdyStudioProjectInput& input) {
+    const auto& a = baseline.metadata;
+    const auto& b = input.metadata;
+    const std::string baselineGrid = baseline.gridId.value_or("");
+    if (baselineGrid != input.gridId) return true;
+    if (a.name != b.name) return true;
+    if ((a.description.value_or("")) != (b.description.value_or(""))) {
+      return true;
+    }
+    if ((a.serverModuleName.value_or("")) !=
+        (b.serverModuleName.value_or(""))) {
+      return true;
+    }
+    if ((a.clientModuleName.value_or("")) !=
+        (b.clientModuleName.value_or(""))) {
+      return true;
+    }
+    const auto before = studio::apiPairing(baseline.kind, a.pairingPreference);
+    const auto after =
+        studio::apiPairing(kindFromFiles(input.files), b.pairingPreference);
+    return before != after;
+  }
+
+  struct ProjectFileDelta {
+    std::vector<studio::CrowdyStudioProjectFile> upserts;
+    std::vector<studio::CrowdyStudioProjectFileDelete> deletes;
+  };
+
+  static ProjectFileDelta projectFileDelta(
+      const studio::CrowdyStudioProject& baseline,
+      const studio::SaveCrowdyStudioProjectInput& input) {
+    std::unordered_map<std::string, const studio::CrowdyStudioProjectFile*>
+        previous;
+    for (const auto& file : baseline.files) {
+      previous[studio::crowdyStudioFileKey(file.target, file.path)] = &file;
+    }
+    std::unordered_map<std::string, const studio::CrowdyStudioProjectFile*>
+        current;
+    ProjectFileDelta delta;
+    for (const auto& file : input.files) {
+      const std::string key =
+          studio::crowdyStudioFileKey(file.target, file.path);
+      current[key] = &file;
+      const auto before = previous.find(key);
+      if (before == previous.end() ||
+          before->second->content != file.content) {
+        delta.upserts.push_back(file);
+      }
+    }
+    for (const auto& file : baseline.files) {
+      if (!current.contains(
+              studio::crowdyStudioFileKey(file.target, file.path))) {
+        delta.deletes.push_back({file.target, file.path});
+      }
+    }
+    return delta;
+  }
+
   studio::CrowdyStudioProject remember(
       studio::CrowdyStudioProject project) {
     baselines_[project.projectId] = project;
     return project;
   }
+
+  CrowdyStudioGitHubAPI github_;
+  std::unordered_map<std::string, studio::CrowdyStudioGitHubLayout> layouts_;
+  std::deque<std::string> layoutOrder_;
 
   static graphql::JVal oneInput(graphql::JVal input) {
     graphql::JVal variables;
@@ -838,6 +1070,18 @@ class CrowdyStudioAPI final : public DomainBase,
     summary.clientModuleName = optionalString(value["clientModuleName"]);
     summary.archived = value["archived"].asBool();
     summary.updatedAt = value["updatedAt"].asString();
+    const auto owner = optionalString(value["githubOwner"]);
+    const auto repo = optionalString(value["githubRepo"]);
+    const auto branch = optionalString(value["githubBranch"]);
+    const bool bound = value["source"].ok() &&
+                       value["source"].asString() == "GITHUB" && owner &&
+                       repo && branch;
+    summary.source = bound ? studio::CrowdyStudioProjectSource::GitHub
+                           : studio::CrowdyStudioProjectSource::Studio;
+    if (bound) {
+      summary.github = *owner + "/" + *repo + "@" + *branch;
+      summary.githubSha = optionalString(value["githubSha"]);
+    }
     return summary;
   }
 

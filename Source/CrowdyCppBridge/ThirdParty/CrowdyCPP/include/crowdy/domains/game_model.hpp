@@ -73,6 +73,29 @@ struct GameModelContainerChangedCallbacks {
   std::function<void(graphql::GraphQLReconnectInfo)> reconnect;
 };
 
+/// One revision of a game-model session, as streamed by
+/// GameModelAPI::sessionChanged (gameModelSessionChanged) and read back by
+/// sessionEvents. `revision` is a decimal string and strictly increasing per
+/// session; `kind` is one of created | participant_joined |
+/// participant_rejoined | participant_left | participant_expired |
+/// host_changed | admission_changed | turn_changed | ended; `payloadJson` is a
+/// JSON object naming the subject (user id, host, admission, ...).
+struct GameModelSessionEvent {
+  std::string appId;
+  std::string sessionId;
+  std::string revision;
+  std::string kind;
+  std::string payloadJson;
+  std::string createdAt;
+};
+
+struct GameModelSessionChangedCallbacks {
+  std::function<void(GameModelSessionEvent)> next;
+  std::function<void(graphql::GraphQLSubscriptionError)> error;
+  std::function<void()> complete;
+  std::function<void(graphql::GraphQLReconnectInfo)> reconnect;
+};
+
 class GameModelAPI : public DomainBase {
  public:
   using DomainBase::DomainBase;
@@ -656,6 +679,105 @@ class GameModelAPI : public DomainBase {
       GameModelContainerChangedCallbacks callbacks) const {
     return containerChanged(appId, {}, {}, std::move(callbacks));
   }
+
+  /// Typed GraphQL-WS wrapper for the session revision stream
+  /// (gameModelSessionChanged). There is no bootstrap event: pull
+  /// sessionSnapshot first, or pass `afterRevision` to replay retained events
+  /// from there. Revisions are strictly increasing; on a gap or after a
+  /// reconnect, pull the snapshot again. The events table is the record.
+  graphql::SubscriptionHandle sessionChanged(
+      std::string_view appId, std::string_view sessionId,
+      std::string_view afterRevision,
+      GameModelSessionChangedCallbacks callbacks) const {
+    if (!subscriptions_) {
+      if (callbacks.error) {
+        graphql::GraphQLSubscriptionError error;
+        error.status = Errc::NotConnected;
+        error.kind =
+            graphql::GraphQLSubscriptionErrorKind::TransportUnavailable;
+        error.code = "WEBSOCKET_TRANSPORT_UNAVAILABLE";
+        error.message =
+            "GameModelAPI has no GraphQL subscription client";
+        callbacks.error(std::move(error));
+      }
+      return {};
+    }
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    vars["sessionId"] = sessionId;
+    if (!afterRevision.empty()) vars["afterRevision"] = afterRevision;
+    auto shared =
+        std::make_shared<GameModelSessionChangedCallbacks>(
+            std::move(callbacks));
+    graphql::GraphQLSubscriptionCallbacks graph;
+    graph.onNext =
+        [shared](graphql::GraphQLSubscriptionOutcome outcome) mutable {
+          if (!outcome.ok()) {
+            if (shared->error) {
+              graphql::GraphQLSubscriptionError error;
+              error.status = outcome.status;
+              error.kind =
+                  graphql::GraphQLSubscriptionErrorKind::GraphQL;
+              error.errors = outcome.errors;
+              error.code = outcome.errors.empty()
+                               ? "GRAPHQL_SUBSCRIPTION_ERROR"
+                               : outcome.errors.front().code;
+              error.message =
+                  outcome.errors.empty()
+                      ? "Session-change subscription failed"
+                      : outcome.errors.front().message;
+              error.terminal = true;
+              shared->error(std::move(error));
+            }
+            return;
+          }
+          const auto row = outcome.data["gameModelSessionChanged"];
+          if (!row.isObject()) {
+            if (shared->error) {
+              graphql::GraphQLSubscriptionError error;
+              error.status = Errc::Malformed;
+              error.kind =
+                  graphql::GraphQLSubscriptionErrorKind::Protocol;
+              error.code = "INVALID_SESSION_EVENT";
+              error.message =
+                  "Session-change subscription payload is malformed";
+              error.terminal = true;
+              shared->error(std::move(error));
+            }
+            return;
+          }
+          GameModelSessionEvent event;
+          event.appId = row["appId"].isString() ? row["appId"].asString()
+                                                 : row["appId"].dump();
+          event.sessionId = row["sessionId"].asString();
+          event.revision = row["revision"].isString()
+                               ? row["revision"].asString()
+                               : row["revision"].dump();
+          event.kind = row["kind"].asString();
+          event.payloadJson = row["payloadJson"].asString();
+          event.createdAt = row["createdAt"].asString();
+          if (shared->next) shared->next(std::move(event));
+        };
+    graph.onError =
+        [shared](graphql::GraphQLSubscriptionError error) mutable {
+          if (shared->error) shared->error(std::move(error));
+        };
+    graph.onComplete = [shared] {
+      if (shared->complete) shared->complete();
+    };
+    graph.onReconnect =
+        [shared](graphql::GraphQLReconnectInfo info) mutable {
+          if (shared->reconnect) shared->reconnect(std::move(info));
+        };
+    return subscriptions_->subscribe(
+        gen::gameModel::documentFor("GameModelSessionChanged"), vars,
+        "GameModelSessionChanged", std::move(graph));
+  }
+  graphql::SubscriptionHandle sessionChanged(
+      std::string_view appId, std::string_view sessionId,
+      GameModelSessionChangedCallbacks callbacks) const {
+    return sessionChanged(appId, sessionId, {}, std::move(callbacks));
+  }
   graphql::Json containerState(std::string_view appId, std::string_view containerId) const {
     graphql::JVal vars;
     vars["appId"] = appId;
@@ -696,6 +818,41 @@ class GameModelAPI : public DomainBase {
   void setSessionTurnAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
     runtimeAsync("GameModelSetSessionTurn", input, std::move(cb));
   }
+  /// Leave a session you are joined to. `input.incarnation` is REQUIRED: it is
+  /// the value joinSession returned to THIS client (a creator starts at 1), so a
+  /// superseded client can never remove the one that took over
+  /// (SESSION_INCARNATION_STALE). Leaving an already-left row is a no-op.
+  graphql::Json leaveSession(const graphql::JVal& input) const {
+    return runtime("GameModelLeaveSession", input);
+  }
+  void leaveSessionAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    runtimeAsync("GameModelLeaveSession", input, std::move(cb));
+  }
+  /// open | locked | closed. Session host or app admin; `expectedHostTerm`
+  /// refuses a stale host (SESSION_HOST_TERM_STALE).
+  graphql::Json setSessionAdmission(const graphql::JVal& input) const {
+    return runtime("GameModelSetSessionAdmission", input);
+  }
+  void setSessionAdmissionAsync(const graphql::JVal& input,
+                                graphql::GraphQLCallback cb) const {
+    runtimeAsync("GameModelSetSessionAdmission", input, std::move(cb));
+  }
+  /// Hand the host role to a joined participant (`toUserId`); increments hostTerm.
+  graphql::Json transferSessionHost(const graphql::JVal& input) const {
+    return runtime("GameModelTransferSessionHost", input);
+  }
+  void transferSessionHostAsync(const graphql::JVal& input,
+                                graphql::GraphQLCallback cb) const {
+    runtimeAsync("GameModelTransferSessionHost", input, std::move(cb));
+  }
+  /// End as completed (default) or abandoned: every joined participant is
+  /// marked left (session_ended), admission becomes closed. Host or app admin.
+  graphql::Json endSession(const graphql::JVal& input) const {
+    return runtime("GameModelEndSession", input);
+  }
+  void endSessionAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    runtimeAsync("GameModelEndSession", input, std::move(cb));
+  }
   graphql::Json session(std::string_view appId, std::string_view sessionId) const {
     graphql::JVal vars;
     vars["appId"] = appId;
@@ -710,18 +867,70 @@ class GameModelAPI : public DomainBase {
     execUnwrapAsync(gen::gameModel::documentFor("GameModelSession"), vars, "GameModelSession",
                     std::move(cb));
   }
-  graphql::Json sessions(std::string_view appId, std::string_view status = {}) const {
-    graphql::JVal vars;
-    vars["appId"] = appId;
-    if (!status.empty()) vars["status"] = status;
-    return execUnwrap(gen::gameModel::documentFor("GameModelSessions"), vars, "GameModelSessions");
+  /// List sessions, newest first. `status`: active | completed | abandoned;
+  /// `admission`: open | locked | closed (open lists joinable lobbies);
+  /// `hostUserId` narrows to one host; `limit` defaults to 200 (max 1000).
+  graphql::Json sessions(std::string_view appId, std::string_view status = {},
+                         std::string_view admission = {},
+                         std::string_view hostUserId = {}, int limit = 0) const {
+    return execUnwrap(gen::gameModel::documentFor("GameModelSessions"),
+                      sessionsVars(appId, status, admission, hostUserId, limit),
+                      "GameModelSessions");
   }
   void sessionsAsync(std::string_view appId, std::string_view status,
                      graphql::GraphQLCallback cb) const {
-    graphql::JVal vars;
-    vars["appId"] = appId;
-    if (!status.empty()) vars["status"] = status;
-    execUnwrapAsync(gen::gameModel::documentFor("GameModelSessions"), vars, "GameModelSessions",
+    execUnwrapAsync(gen::gameModel::documentFor("GameModelSessions"),
+                    sessionsVars(appId, status, {}, {}, 0), "GameModelSessions",
+                    std::move(cb));
+  }
+  void sessionsAsync(std::string_view appId, std::string_view status,
+                     std::string_view admission, std::string_view hostUserId,
+                     int limit, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::gameModel::documentFor("GameModelSessions"),
+                    sessionsVars(appId, status, admission, hostUserId, limit),
+                    "GameModelSessions", std::move(cb));
+  }
+  /// The authoritative state of one session at one revision: `revision`,
+  /// `session`, and every JOINED participant. Pull it when you subscribe, after
+  /// a reconnect, or when sessionChanged shows a revision gap; then apply only
+  /// events whose revision is above `revision`.
+  graphql::Json sessionSnapshot(std::string_view appId, std::string_view sessionId) const {
+    return execUnwrap(gen::gameModel::documentFor("GameModelSessionSnapshot"),
+                      sessionVars(appId, sessionId), "GameModelSessionSnapshot");
+  }
+  void sessionSnapshotAsync(std::string_view appId, std::string_view sessionId,
+                            graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::gameModel::documentFor("GameModelSessionSnapshot"),
+                    sessionVars(appId, sessionId), "GameModelSessionSnapshot",
+                    std::move(cb));
+  }
+  /// Events with a revision strictly greater than `afterRevision` (a decimal
+  /// string; "0" for everything retained), oldest first: the gap-fill read
+  /// behind sessionChanged. Events of ended sessions are purged after a
+  /// retention period.
+  graphql::Json sessionEvents(std::string_view appId, std::string_view sessionId,
+                              std::string_view afterRevision, int limit = 0) const {
+    return execUnwrap(gen::gameModel::documentFor("GameModelSessionEvents"),
+                      sessionEventsVars(appId, sessionId, afterRevision, limit),
+                      "GameModelSessionEvents");
+  }
+  void sessionEventsAsync(std::string_view appId, std::string_view sessionId,
+                          std::string_view afterRevision, int limit,
+                          graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::gameModel::documentFor("GameModelSessionEvents"),
+                    sessionEventsVars(appId, sessionId, afterRevision, limit),
+                    "GameModelSessionEvents", std::move(cb));
+  }
+  /// Operator view (manage_apps): the full roster including departed rows,
+  /// each joined participant's live presence verdict, the recent events.
+  graphql::Json sessionInspect(std::string_view appId, std::string_view sessionId) const {
+    return execUnwrap(gen::gameModel::documentFor("GameModelSessionInspect"),
+                      sessionVars(appId, sessionId), "GameModelSessionInspect");
+  }
+  void sessionInspectAsync(std::string_view appId, std::string_view sessionId,
+                           graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::gameModel::documentFor("GameModelSessionInspect"),
+                    sessionVars(appId, sessionId), "GameModelSessionInspect",
                     std::move(cb));
   }
   graphql::Json events(const graphql::JVal& vars) const {
@@ -1063,6 +1272,32 @@ class GameModelAPI : public DomainBase {
     graphql::JVal vars;
     vars["appId"] = appId;
     execUnwrapAsync(gen::gameModel::documentFor(op), vars, op, std::move(cb));
+  }
+  static graphql::JVal sessionVars(std::string_view appId, std::string_view sessionId) {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    vars["sessionId"] = sessionId;
+    return vars;
+  }
+  static graphql::JVal sessionsVars(std::string_view appId, std::string_view status,
+                                    std::string_view admission,
+                                    std::string_view hostUserId, int limit) {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    if (!status.empty()) vars["status"] = status;
+    if (!admission.empty()) vars["admission"] = admission;
+    if (!hostUserId.empty()) vars["hostUserId"] = hostUserId;
+    if (limit > 0) vars["limit"] = limit;
+    return vars;
+  }
+  static graphql::JVal sessionEventsVars(std::string_view appId, std::string_view sessionId,
+                                         std::string_view afterRevision, int limit) {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    vars["sessionId"] = sessionId;
+    vars["afterRevision"] = afterRevision.empty() ? std::string_view("0") : afterRevision;
+    if (limit > 0) vars["limit"] = limit;
+    return vars;
   }
   graphql::Json runtime(std::string_view op, const graphql::JVal& input) const {
     graphql::JVal vars;

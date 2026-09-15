@@ -29,6 +29,8 @@
 #include "crowdy/studio/controller.hpp"
 #include "crowdy/studio/diagnostics.hpp"
 #include "crowdy/studio/editor.hpp"
+#include "crowdy/studio/github.hpp"
+#include "crowdy/studio/github_layout.hpp"
 #include "crowdy/studio/integration.hpp"
 #include "crowdy/studio/runtime.hpp"
 #endif

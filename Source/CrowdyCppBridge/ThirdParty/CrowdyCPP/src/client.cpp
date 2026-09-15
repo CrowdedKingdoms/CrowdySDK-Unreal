@@ -473,6 +473,7 @@ CrowdyClient::CrowdyClient(ClientConfig config) : config_(std::move(config)) {
   gameApps_ = std::make_unique<domains::GameAppsAPI>(gql_);
 #ifndef CROWDY_NO_EXCEPTIONS
   crowdyStudio_ = std::make_unique<domains::CrowdyStudioAPI>(gql_);
+  crowdyStudioGitHub_ = std::make_unique<domains::CrowdyStudioGitHubAPI>(gql_);
 #endif
   crowdyStudioAgent_ =
       std::make_unique<domains::CrowdyStudioAgentAPI>(gql_, dispatcher_);
@@ -680,6 +681,7 @@ CrowdyClient& CrowdyClient::operator=(CrowdyClient&& other) noexcept {
   gameApps_ = std::move(other.gameApps_);
 #ifndef CROWDY_NO_EXCEPTIONS
   crowdyStudio_ = std::move(other.crowdyStudio_);
+  crowdyStudioGitHub_ = std::move(other.crowdyStudioGitHub_);
 #endif
   platform_ = std::move(other.platform_);
   crowdyStudioAgent_ = std::move(other.crowdyStudioAgent_);

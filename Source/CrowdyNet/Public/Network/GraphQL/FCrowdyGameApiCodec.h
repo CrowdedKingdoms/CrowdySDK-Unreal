@@ -108,7 +108,9 @@ struct FCrowdyInvokeResult
 /**
  * One runtime session (GmSession). BigInt user ids arrive as JSON strings on the wire and are parsed to int64;
  * bHasCurrentTurn distinguishes "no one's turn" (currentTurnUserId is null) from a real turn holder, so a
- * caller need not assume 0 is impossible as a user id.
+ * caller need not assume 0 is impossible as a user id. bHasMaxParticipants and bHasHost likewise separate a
+ * null (unbounded / nobody joined) from a real 0. Revision rides the wire as a decimal string and compares as
+ * an integer.
  */
 struct FCrowdyGameSessionData
 {
@@ -120,6 +122,61 @@ struct FCrowdyGameSessionData
 	int64   CurrentTurnUserId = 0;
 	bool    bHasCurrentTurn = false;
 	FString MetadataJson;
+	FString Admission;               // "open" | "locked" | "closed"
+	int32   MaxParticipants = 0;     // meaningful only when bHasMaxParticipants (null = unbounded)
+	bool    bHasMaxParticipants = false;
+	int32   ParticipantCount = 0;
+	int64   HostUserId = 0;          // meaningful only when bHasHost (null while nobody is joined)
+	bool    bHasHost = false;
+	int32   HostTerm = 0;
+	int64   Revision = 0;
+	FString EndedAt;                 // empty while active
+	FString EndReason;
+	FString CreatedAt;
+	FString Presence;                // "actor" | "none"
+};
+
+/** One session membership row (GmSessionParticipant). Incarnation increments on every re-join and gates a leave. */
+struct FCrowdyGameSessionParticipantData
+{
+	FString SessionId;
+	int64   UserId = 0;
+	FString Role;
+	FString State;                   // "joined" | "left"
+	int32   Incarnation = 0;
+	FString ActorUuid;
+	FString JoinedAt;
+	FString LeftAt;
+	FString LeftReason;
+};
+
+/** One entry of a session's ordered change log (GmSessionEvent); Revision is the log position. */
+struct FCrowdyGameSessionEventData
+{
+	int64   AppId = 0;
+	FString SessionId;
+	int64   Revision = 0;
+	FString Kind;
+	FString PayloadJson;
+	FString CreatedAt;
+};
+
+/** A session plus its participants as of Revision (GmSessionSnapshot), the resync point for the event stream. */
+struct FCrowdyGameSessionSnapshotData
+{
+	FCrowdyGameSessionData Session;
+	TArray<FCrowdyGameSessionParticipantData> Participants;
+	int64 Revision = 0;
+};
+
+/** Optional create-session inputs. Each is omitted from the request, so the server default applies, at the noted sentinel. */
+struct FCrowdyCreateSessionOptions
+{
+	int32   MaxParticipants = 0;     // <= 0 omitted (unbounded)
+	FString Admission;               // empty omitted ("open")
+	int32   EmptyTimeoutSec = -1;    // < 0 omitted (platform default); 0 disables the timeout
+	FString Presence;                // empty omitted ("actor")
+	FString IdempotencyKey;          // empty omitted
 };
 
 /** One directed relationship edge between two containers (GmEdge). bHasWeight separates weight 0 from absent. */
@@ -225,33 +282,72 @@ public:
 		bool bHttpOk, const TArray<FString>& TransportErrors, const FString& ExpectedBindingKey, bool& OutFound,
 		FString& OutContainerId, int64& OutOwnerUserId);
 
-	// Session lifecycle: create, join, set/clear the turn, list, and read one.
+	// Session lifecycle: create, join, leave, admission, host transfer, end, set/clear the turn, list, read one,
+	// snapshot, and the event log. Int inputs (maxParticipants, emptyTimeoutSec, incarnation, expectedHostTerm,
+	// limit) are JSON NUMBERS; every id is a BigInt STRING; afterRevision is a STRING holding the integer.
 
-	// participantUserIds is a JSON array of BigInt STRINGS; name/metadataJson omitted when empty.
+	// participantUserIds is a JSON array of BigInt STRINGS; name/metadataJson omitted when empty; each option
+	// is omitted at its sentinel (see FCrowdyCreateSessionOptions).
 	static TSharedPtr<FJsonObject> BuildCreateSessionVariables(int64 AppId, const FString& Name,
-		const TArray<int64>& ParticipantUserIds, const FString& MetadataJson);
-	// role is omitted when empty (the server assigns its default role).
-	static TSharedPtr<FJsonObject> BuildJoinSessionVariables(int64 AppId, const FString& SessionId, const FString& Role);
+		const TArray<int64>& ParticipantUserIds, const FString& MetadataJson,
+		const FCrowdyCreateSessionOptions& Options = FCrowdyCreateSessionOptions());
+	// role, actorUuid (the caller's own actor, 32 hex) and idempotencyKey are omitted when empty.
+	static TSharedPtr<FJsonObject> BuildJoinSessionVariables(int64 AppId, const FString& SessionId, const FString& Role,
+		const FString& ActorUuid = FString(), const FString& IdempotencyKey = FString());
+	// incarnation is required (a JSON number): the value the join returned, so a stale leave is refused.
+	static TSharedPtr<FJsonObject> BuildLeaveSessionVariables(int64 AppId, const FString& SessionId, int32 Incarnation,
+		const FString& IdempotencyKey = FString());
+	// expectedHostTerm (a JSON number) is omitted when <= 0 on each host-gated mutation below.
+	static TSharedPtr<FJsonObject> BuildSetSessionAdmissionVariables(int64 AppId, const FString& SessionId,
+		const FString& Admission, int32 ExpectedHostTerm);
+	// toUserId is a BigInt string.
+	static TSharedPtr<FJsonObject> BuildTransferSessionHostVariables(int64 AppId, const FString& SessionId,
+		int64 ToUserId, int32 ExpectedHostTerm);
+	// reason ("completed" | "abandoned") is omitted when empty.
+	static TSharedPtr<FJsonObject> BuildEndSessionVariables(int64 AppId, const FString& SessionId,
+		const FString& Reason, int32 ExpectedHostTerm);
 	// userId is a BigInt string when bHasUserId; otherwise it is written as an explicit JSON null, which clears
 	// the turn (the schema distinguishes an absent field, "unchanged", from an explicit null, "clear").
 	static TSharedPtr<FJsonObject> BuildSetSessionTurnVariables(int64 AppId, const FString& SessionId,
-		int64 UserId, bool bHasUserId);
-	// { appId (BigInt string), status? } top-level variables; status omitted when empty (any status).
-	static TSharedPtr<FJsonObject> BuildListSessionsVariables(int64 AppId, const FString& Status);
+		int64 UserId, bool bHasUserId, int32 ExpectedHostTerm = 0);
+	// { appId (BigInt string), status?, admission?, hostUserId? (BigInt string), limit? (number) } top-level
+	// variables; each filter is omitted when empty / 0.
+	static TSharedPtr<FJsonObject> BuildListSessionsVariables(int64 AppId, const FString& Status,
+		const FString& Admission = FString(), int64 HostUserId = 0, int32 Limit = 0);
 	// { appId (BigInt string), sessionId } top-level variables.
 	static TSharedPtr<FJsonObject> BuildGetSessionVariables(int64 AppId, const FString& SessionId);
+	static TSharedPtr<FJsonObject> BuildSessionSnapshotVariables(int64 AppId, const FString& SessionId);
+	// afterRevision is written as a STRING ("0" reads the whole log); limit (a number) is omitted when <= 0.
+	static TSharedPtr<FJsonObject> BuildSessionEventsVariables(int64 AppId, const FString& SessionId,
+		int64 AfterRevision, int32 Limit);
+	// Subscription variables; afterRevision (a string) is omitted when !bHasAfterRevision.
+	static TSharedPtr<FJsonObject> BuildSessionChangedVariables(int64 AppId, const FString& SessionId,
+		int64 AfterRevision, bool bHasAfterRevision);
 
-	// Parses one GmSession JSON object (BigInt fields read defensively as string-or-number). Never fails; an
-	// absent field keeps its default (bHasCurrentTurn stays false when currentTurnUserId is null).
+	// Parses one GmSession JSON object (BigInt fields read defensively as string-or-number, Int fields as
+	// number-or-string). Never fails; an absent or null field keeps its default and leaves its bHas flag false.
 	static FCrowdyGameSessionData ParseSessionObject(const TSharedPtr<FJsonObject>& SessionObj);
+	static FCrowdyGameSessionParticipantData ParseSessionParticipantObject(const TSharedPtr<FJsonObject>& Obj);
+	static FCrowdyGameSessionEventData ParseSessionEventObject(const TSharedPtr<FJsonObject>& Obj);
 	// Envelope parsers for the single-session ops. FieldName picks the mutation/query field to read
-	// ("gameModelCreateSession" / "gameModelSetSessionTurn" / "gameModelSession").
+	// ("gameModelCreateSession" / "gameModelSetSessionTurn" / "gameModelSetSessionAdmission" /
+	// "gameModelTransferSessionHost" / "gameModelEndSession" / "gameModelSession").
 	static bool ParseSessionEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
 		const TArray<FString>& TransportErrors, const TCHAR* FieldName, FCrowdyGameSessionData& OutSession);
 	static bool ParseSessionsEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
 		const TArray<FString>& TransportErrors, TArray<FCrowdyGameSessionData>& OutSessions);
+	// Reads data.gameModelJoinSession, a participant row.
 	static bool ParseJoinSessionEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
-		const TArray<FString>& TransportErrors, FString& OutSessionId, int64& OutUserId, FString& OutRole);
+		const TArray<FString>& TransportErrors, FCrowdyGameSessionParticipantData& OutParticipant);
+	// FieldName picks "gameModelJoinSession" / "gameModelLeaveSession".
+	static bool ParseSessionParticipantEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, const TCHAR* FieldName, FCrowdyGameSessionParticipantData& OutParticipant);
+	// Reads data.gameModelSessionSnapshot { revision, session, participants[] }.
+	static bool ParseSessionSnapshotEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, FCrowdyGameSessionSnapshotData& OutSnapshot);
+	// Reads data.gameModelSessionEvents[] in log order.
+	static bool ParseSessionEventsEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, TArray<FCrowdyGameSessionEventData>& OutEvents);
 
 	// Container graph: directed edges and traversals over them (inventories, chests, tech trees).
 
