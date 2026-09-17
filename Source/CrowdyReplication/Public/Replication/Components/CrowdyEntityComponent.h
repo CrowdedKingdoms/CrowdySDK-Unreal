@@ -309,6 +309,12 @@ public:
 	// the editor and with nothing at all in a packaged build, so honouring it would make the two disagree.
 	static bool ShouldUsePlacementGuid(bool bIsLevelPlaced, bool bHasInstanceGuid);
 
+	// The snapshot taken at registration wins over a live read. A cooked build releases the guid after the actor
+	// registers its components, and a live read inside a level instance then answers a valid but shared value
+	// (the level's guid combined with nothing), so the live value is only a fallback for a component that
+	// registered too late to snapshot. In an editor build both are the same value.
+	static FGuid SelectPlacementGuid(const FGuid& AtRegister, const FGuid& Live);
+
 	// The deterministic Stable-identity NetID for this actor. For an actor placed in the level this is the engine's
 	// own per-placement identity (unique per placement of an instanced/streamed level, identical on every client,
 	// saved into the level, and surviving World Partition embedding), which is exactly the distinctness the SDK
@@ -420,6 +426,7 @@ public:
 
 protected:
 
+	virtual void OnRegister() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
@@ -427,6 +434,10 @@ private:
 
 	UPROPERTY()
 	FGuid NetID;
+
+	// The owner's placement guid, taken in OnRegister. A cooked build keeps that guid only from load until the
+	// actor's PostRegisterAllComponents releases it, which is before BeginPlay, so reading it there finds nothing.
+	FGuid PlacementGuidAtRegister;
 
 	UPROPERTY()
 	FGuid OwnerID;

@@ -134,6 +134,8 @@ struct FCrowdyGameSessionData
 	FString EndReason;
 	FString CreatedAt;
 	FString Presence;                // "actor" | "none"
+	int32   SeededContainerCount = 0; // meaningful only when bHasSeededContainerCount (the create response carries it; every other read is null)
+	bool    bHasSeededContainerCount = false;
 };
 
 /** One session membership row (GmSessionParticipant). Incarnation increments on every re-join and gates a leave. */
@@ -177,6 +179,8 @@ struct FCrowdyCreateSessionOptions
 	int32   EmptyTimeoutSec = -1;    // < 0 omitted (platform default); 0 disables the timeout
 	FString Presence;                // empty omitted ("actor")
 	FString IdempotencyKey;          // empty omitted
+	TArray<FString> SeedFromAppTypeNames; // empty omitted; otherwise the new session copies every keyed app-scoped row of these types
+	FString SeedInitialState;        // "defaults" | "app"; empty omitted ("defaults"); only sent with a non-empty type list
 };
 
 /** One directed relationship edge between two containers (GmEdge). bHasWeight separates weight 0 from absent. */
@@ -281,6 +285,55 @@ public:
 	static bool ParseReadContainerByKeyEnvelope(const TSharedPtr<FJsonObject>& Envelope,
 		bool bHttpOk, const TArray<FString>& TransportErrors, const FString& ExpectedBindingKey, bool& OutFound,
 		FString& OutContainerId, int64& OutOwnerUserId);
+
+	// One row of a paged gameModelContainers list, identity only. SessionId is empty for an app-global row.
+	struct FContainerRow
+	{
+		FString ContainerId;
+		FString TypeName;
+		FString BindingKey;
+		FString SessionId;
+		int64 OwnerUserId = 0;
+	};
+
+	// The server refuses a gameModelContainers limit above this.
+	static constexpr int32 MaxContainersPerPage = 1000;
+
+	// Builds { appId, typeName, sessionId?, limit, offset } for one page of a type's rows. sessionId is omitted
+	// when empty, which the server reads as "every scope", so the caller keeps only rows whose own sessionId
+	// matches. limit is always sent and clamped to [1, MaxContainersPerPage]: an unbounded page is what makes a
+	// large type unsafe.
+	static TSharedPtr<FJsonObject> BuildListContainersByTypeVariables(int64 AppId, const FString& TypeName,
+		const FString& SessionId, int32 Limit, int32 Offset);
+
+	// Parses one page into rows; a row with no containerId or no bindingKey is dropped, and OutRawRowCount says how
+	// many the server sent before the drop, which is what decides whether the page was full. bOk=false on a
+	// !2xx/malformed envelope; bOk=true with no rows is an empty page.
+	static bool ParseContainerRowsEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+		const TArray<FString>& TransportErrors, TArray<FContainerRow>& OutRows, int32* OutRawRowCount = nullptr);
+
+	// One row of a gameModelContainerStates read: identity plus the decoded visible properties.
+	struct FContainerStateRow
+	{
+		FString ContainerId;
+		FString TypeName;
+		FString SessionId;      // empty for an app-scoped row
+		int64 OwnerUserId = 0;  // 0 when null
+		TSharedPtr<FJsonObject> State; // the decoded propertiesJson object; null when it did not parse
+	};
+
+	// The server serves at most this many ids per gameModelContainerStates call; a caller chunks a larger set.
+	static constexpr int32 MaxContainerStatesPerCall = 500;
+
+	// Builds the top-level { appId (BigInt string), containerIds: [String!]! } variables for one bulk state read.
+	// Empty ids are dropped; duplicates are passed through (the server answers each once, in input order).
+	static TSharedPtr<FJsonObject> BuildContainerStatesVariables(int64 AppId, const TArray<FString>& ContainerIds);
+
+	// Parses data.gameModelContainerStates[] into rows. Unknown or invisible ids are simply absent, so a caller
+	// matches rows back by ContainerId rather than by position. A row without a containerId is dropped; a row
+	// whose propertiesJson does not parse is kept with a null State. bOk=false on a !2xx/malformed envelope.
+	static bool ParseContainerStatesEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bTransportOk,
+		const TArray<FString>& TransportErrors, TArray<FContainerStateRow>& OutRows);
 
 	// Session lifecycle: create, join, leave, admission, host transfer, end, set/clear the turn, list, read one,
 	// snapshot, and the event log. Int inputs (maxParticipants, emptyTimeoutSec, incarnation, expectedHostTerm,

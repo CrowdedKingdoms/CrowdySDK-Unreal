@@ -54,6 +54,7 @@ struct FCrowdyDesiredContainerType
 	FString DisplayName;
 	FString InstantiableBy = TEXT("member");
 	FString DefaultVisibility = TEXT("public");
+	FString Scope = TEXT("session"); // "session" | "app"
 	TArray<FCrowdyDesiredPropertyDef> Props;
 	// The class that declared this type, as an FSoftClassPath string, so a reader can open the declaring asset or
 	// navigate to the C++ class. Empty when the type was not reflected from a class (the SDK's own reserved
@@ -352,8 +353,10 @@ public:
 	static TArray<FCrowdyDesiredContainerType> BuildDesiredSchema(const TArray<UClass*>& Classes, TArray<FString>& OutWarnings);
 
 	// Reflect one class into its desired container type + property defs. Empty TypeName when the class
-	// carries no CrowdyContainer tag (the caller skips it).
-	static FCrowdyDesiredContainerType BuildDesiredForClass(const UClass* Class);
+	// carries no CrowdyContainer tag (the caller skips it). CrowdyScope ("Session" | "App") and
+	// CrowdyInstantiableBy ("Member" | "Admin" | "Owner") are read case-insensitively; an unrecognized value falls
+	// back to the default and is reported through OutWarnings when given.
+	static FCrowdyDesiredContainerType BuildDesiredForClass(const UClass* Class, TArray<FString>* OutWarnings = nullptr);
 
 	// Serialize a scalar/string UPROPERTY's CDO value to canonical defaultValueJson text. Empty for an
 	// unsupported type (mirrors MapPropertyToValueType's supported leaves: int/float/bool/string/enum).

@@ -501,6 +501,120 @@ bool FCrowdyGameApiCodec::ParseReadContainerByKeyEnvelope(const TSharedPtr<FJson
 	return true;
 }
 
+TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildListContainersByTypeVariables(int64 AppId, const FString& TypeName,
+	const FString& SessionId, int32 Limit, int32 Offset)
+{
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), LexToString(AppId));
+	Variables->SetStringField(TEXT("typeName"), TypeName);
+	if (!SessionId.IsEmpty()) { Variables->SetStringField(TEXT("sessionId"), SessionId); }
+	Variables->SetNumberField(TEXT("limit"), FMath::Clamp(Limit, 1, MaxContainersPerPage));
+	Variables->SetNumberField(TEXT("offset"), FMath::Max(0, Offset));
+	return Variables;
+}
+
+bool FCrowdyGameApiCodec::ParseContainerRowsEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bHttpOk,
+	const TArray<FString>& TransportErrors, TArray<FContainerRow>& OutRows, int32* OutRawRowCount)
+{
+	OutRows.Reset();
+	if (OutRawRowCount) { *OutRawRowCount = 0; }
+	TArray<TSharedPtr<FJsonObject>> Containers;
+	if (!ParseContainersEnvelope(Envelope, bHttpOk, TransportErrors, Containers))
+	{
+		return false;
+	}
+	if (OutRawRowCount) { *OutRawRowCount = Containers.Num(); }
+	for (const TSharedPtr<FJsonObject>& Container : Containers)
+	{
+		if (!Container.IsValid())
+		{
+			continue;
+		}
+		FContainerRow Row;
+		if (!Container->TryGetStringField(TEXT("containerId"), Row.ContainerId) || Row.ContainerId.IsEmpty()
+			|| !Container->TryGetStringField(TEXT("bindingKey"), Row.BindingKey) || Row.BindingKey.IsEmpty())
+		{
+			continue;
+		}
+		Container->TryGetStringField(TEXT("typeName"), Row.TypeName);
+		Container->TryGetStringField(TEXT("sessionId"), Row.SessionId);
+		FString OwnerStr;
+		if (Container->TryGetStringField(TEXT("ownerUserId"), OwnerStr))
+		{
+			LexFromString(Row.OwnerUserId, *OwnerStr);
+		}
+		OutRows.Add(MoveTemp(Row));
+	}
+	return true;
+}
+
+TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildContainerStatesVariables(int64 AppId, const TArray<FString>& ContainerIds)
+{
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), LexToString(AppId));
+	TArray<TSharedPtr<FJsonValue>> Ids;
+	Ids.Reserve(ContainerIds.Num());
+	for (const FString& Id : ContainerIds)
+	{
+		if (!Id.IsEmpty())
+		{
+			Ids.Add(MakeShared<FJsonValueString>(Id));
+		}
+	}
+	Variables->SetArrayField(TEXT("containerIds"), Ids);
+	return Variables;
+}
+
+bool FCrowdyGameApiCodec::ParseContainerStatesEnvelope(const TSharedPtr<FJsonObject>& Envelope, bool bTransportOk,
+	const TArray<FString>& TransportErrors, TArray<FContainerStateRow>& OutRows)
+{
+	OutRows.Reset();
+	if (!bTransportOk || TransportErrors.Num() > 0)
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Data = GetDataObject(Envelope);
+	if (!Data.IsValid())
+	{
+		return false;
+	}
+	const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+	if (!Data->TryGetArrayField(TEXT("gameModelContainerStates"), Arr) || !Arr)
+	{
+		return false;
+	}
+	// A reply can never legitimately exceed the per-call id limit, so anything past a generous multiple is dropped.
+	constexpr int32 MaxRows = 4 * MaxContainerStatesPerCall;
+	const int32 RowCount = FMath::Min(Arr->Num(), MaxRows);
+	UE_CLOG(Arr->Num() > MaxRows, LogCrowdyNet, Warning,
+		TEXT("[CrowdyGameApi] gameModelContainerStates returned %d rows; reading only the first %d."), Arr->Num(), MaxRows);
+	OutRows.Reserve(RowCount);
+	for (int32 Index = 0; Index < RowCount; ++Index)
+	{
+		const TSharedPtr<FJsonValue>& V = (*Arr)[Index];
+		const TSharedPtr<FJsonObject> Obj = V.IsValid() ? V->AsObject() : nullptr;
+		if (!Obj.IsValid())
+		{
+			continue;
+		}
+		FContainerStateRow Row;
+		if (!Obj->TryGetStringField(TEXT("containerId"), Row.ContainerId) || Row.ContainerId.IsEmpty())
+		{
+			continue;
+		}
+		Obj->TryGetStringField(TEXT("typeName"), Row.TypeName);
+		Obj->TryGetStringField(TEXT("sessionId"), Row.SessionId);
+		ReadOptionalBigInt(Obj, TEXT("ownerUserId"), Row.OwnerUserId);
+		FString PropertiesJson;
+		if (Obj->TryGetStringField(TEXT("propertiesJson"), PropertiesJson))
+		{
+			Row.State = ParseJsonObjectString(PropertiesJson);
+		}
+		OutRows.Add(MoveTemp(Row));
+	}
+	return true;
+}
+
 TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildCreateSessionVariables(int64 AppId, const FString& Name,
 	const TArray<int64>& ParticipantUserIds, const FString& MetadataJson, const FCrowdyCreateSessionOptions& Options)
 {
@@ -546,6 +660,27 @@ TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildCreateSessionVariables(int64 A
 		Input->SetStringField(TEXT("presence"), Options.Presence);
 	}
 	WriteIdempotencyKey(Input, Options.IdempotencyKey);
+	// seedFromApp is written only for a non-empty type list; an empty initialState is omitted so the server default applies.
+	TArray<TSharedPtr<FJsonValue>> SeedTypeNames;
+	SeedTypeNames.Reserve(Options.SeedFromAppTypeNames.Num());
+	for (const FString& TypeName : Options.SeedFromAppTypeNames)
+	{
+		const FString Trimmed = TypeName.TrimStartAndEnd();
+		if (!Trimmed.IsEmpty())
+		{
+			SeedTypeNames.Add(MakeShared<FJsonValueString>(Trimmed));
+		}
+	}
+	if (SeedTypeNames.Num() > 0)
+	{
+		const TSharedPtr<FJsonObject> Seed = MakeShared<FJsonObject>();
+		Seed->SetArrayField(TEXT("typeNames"), SeedTypeNames);
+		if (!Options.SeedInitialState.IsEmpty())
+		{
+			Seed->SetStringField(TEXT("initialState"), Options.SeedInitialState);
+		}
+		Input->SetObjectField(TEXT("seedFromApp"), Seed);
+	}
 	return WrapSessionInput(Input);
 }
 
@@ -729,6 +864,8 @@ FCrowdyGameSessionData FCrowdyGameApiCodec::ParseSessionObject(const TSharedPtr<
 	SessionObj->TryGetStringField(TEXT("endReason"), Session.EndReason);
 	SessionObj->TryGetStringField(TEXT("createdAt"), Session.CreatedAt);
 	SessionObj->TryGetStringField(TEXT("presence"), Session.Presence);
+	// Only the create response carries a seeded count; every other read returns null and leaves the flag false.
+	Session.bHasSeededContainerCount = ReadOptionalInt(SessionObj, TEXT("seededContainerCount"), Session.SeededContainerCount);
 	return Session;
 }
 

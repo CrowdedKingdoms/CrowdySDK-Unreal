@@ -146,6 +146,7 @@ private:
 	// Fixed-choice fields, backed by segmented controls (their setters write these).
 	FString TypeInstantiableBy = TEXT("member");
 	FString TypeDefaultVis = TEXT("public");
+	FString TypeScope = TEXT("session");
 	FString PropValueType = TEXT("int");
 	FString PropVis = TEXT("public");
 	FString PropWritable = TEXT("function");

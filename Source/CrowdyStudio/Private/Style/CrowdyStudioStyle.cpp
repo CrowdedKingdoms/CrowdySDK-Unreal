@@ -133,6 +133,17 @@ TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 		FSlateRoundedBoxBrush(FLinearColor(1, 1, 1, 0.03f), 6.0f),
 		FSlateColor(TextSecondary())));
 
+	// The nav rail's buttons: the same looks with no padding of their own, so ContentPadding is the whole
+	// padding and a folded 42 px rail can hold an icon. The styles above add 13 px a side on top of it.
+	auto Flush = [&Style](const TCHAR* From, const TCHAR* To)
+	{
+		FButtonStyle S = Style->GetWidgetStyle<FButtonStyle>(From);
+		S.SetNormalPadding(FMargin(0.0f)).SetPressedPadding(FMargin(0.0f));
+		Style->Set(To, S);
+	};
+	Flush(TEXT("Crowdy.Button.Nav"), TEXT("Crowdy.Button.Nav.Flush"));
+	Flush(TEXT("Crowdy.Button.Secondary"), TEXT("Crowdy.Button.Secondary.Flush"));
+
 	// List row (custom selection: gold-tinted, faint hover; flat transparent rows).
 	{
 		FTableRowStyle RowStyle = FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row");
@@ -216,6 +227,8 @@ TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 		TEXT("broadcast"), TEXT("grid"), TEXT("cube"), TEXT("inspector"), TEXT("external-link"),
 		TEXT("refresh"), TEXT("home"), TEXT("wand"), TEXT("chevron-right"), TEXT("plus"),
 		TEXT("check"), TEXT("clock"), TEXT("ck"),
+		TEXT("copy"), TEXT("chevron-left"), TEXT("chevron-down"), TEXT("archive"), TEXT("edit"),
+		TEXT("search"), TEXT("x"), TEXT("sidebar"), TEXT("globe"),
 		// Sign-in options: federated provider marks (monochrome, tinted at the call site) + magic-link.
 		TEXT("google"), TEXT("github"), TEXT("discord"), TEXT("apple"), TEXT("microsoft"),
 		TEXT("key"), TEXT("mail")

@@ -145,6 +145,7 @@ void SCrowdyGameModelAdvancedTab::Construct(const FArguments& InArgs)
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)[ LabeledField(TypeDescBox, LOCTEXT("TypeDesc", "Description"), TEXT("optional")) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)[ LabeledChoice(LOCTEXT("InstantiableBy", "Instantiable by"), { TEXT("admin"), TEXT("member"), TEXT("owner") }, { LOCTEXT("InstAdmin", "Admin"), LOCTEXT("InstMember", "Member"), LOCTEXT("InstOwner", "Owner") }, TAttribute<FString>::CreateLambda([this]() { return TypeInstantiableBy; }), [this](const FString& V) { TypeInstantiableBy = V; }) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)[ LabeledChoice(LOCTEXT("DefaultVis", "Default visibility"), { TEXT("public"), TEXT("owner"), TEXT("hidden") }, { LOCTEXT("DvPublic", "Public"), LOCTEXT("DvOwner", "Owner"), LOCTEXT("DvHidden", "Hidden") }, TAttribute<FString>::CreateLambda([this]() { return TypeDefaultVis; }), [this](const FString& V) { TypeDefaultVis = V; }) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)[ LabeledChoice(LOCTEXT("TypeScope", "Scope"), { TEXT("session"), TEXT("app") }, { LOCTEXT("ScopeSession", "Session"), LOCTEXT("ScopeApp", "App") }, TAttribute<FString>::CreateLambda([this]() { return TypeScope; }), [this](const FString& V) { TypeScope = V; }) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 0.0f).HAlign(HAlign_Right)
 					[ Btn(LOCTEXT("SaveType", "Save Container Type"), false, FOnClicked::CreateSP(this, &SCrowdyGameModelAdvancedTab::OnSaveTypeClicked)) ],
 					FMargin(16.0f, 14.0f))
@@ -506,6 +507,7 @@ FReply SCrowdyGameModelAdvancedTab::OnSaveTypeClicked()
 			TypeDescBox->GetText().ToString(),
 			TypeInstantiableBy,
 			TypeDefaultVis,
+			TypeScope,
 			EditorTargetAppId());
 	}
 	return FReply::Handled();
@@ -1098,6 +1100,7 @@ void SCrowdyGameModelAdvancedTab::OnTypeSelectionChanged(TSharedPtr<FStudioConta
 	TypeDescBox->SetText(FText::FromString(Type->Description));
 	TypeInstantiableBy = Type->InstantiableBy;
 	TypeDefaultVis = Type->DefaultPropertyVisibility;
+	TypeScope = Type->Scope;
 
 	Controller->FetchPropertyDefs(Type->TypeName);
 	Controller->FetchFunctions(Type->TypeName);
@@ -1198,6 +1201,7 @@ void SCrowdyGameModelAdvancedTab::ClearAppScopedEditors()
 	ClearBox(TypeDescBox);
 	TypeInstantiableBy = TEXT("member");
 	TypeDefaultVis = TEXT("public");
+	TypeScope = TEXT("session");
 
 	// Property editor. Its target type is read back out of TypeNameBox, which is now empty.
 	ClearBox(PropKeyBox);

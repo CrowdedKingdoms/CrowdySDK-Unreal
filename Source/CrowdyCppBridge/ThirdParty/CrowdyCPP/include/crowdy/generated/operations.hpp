@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: 45e42c0686e4c5520821c8287c7e6ab0245a69d33e23e9ec7dd2aabcc10939fa
-// operations sha256: f60049098f31d65813ba729116151394ca3890e96599f572cb375c0b70db8c5f
+// schema.gql sha256: ccf86c6e087220b9c1f9f2fdcb8252fb7f6581fa9db8cd8bb43594451f81c989
+// operations sha256: 3de1666fc61e46cf5effefa06d71f3d98844d8323a7e763fb6362f56159e0b4f
 
 #pragma once
 
@@ -6795,6 +6795,7 @@ inline constexpr std::string_view kGameModelRuntimeDocument = R"gql(fragment GmS
   endReason
   createdAt
   presence
+  seededContainerCount
 }
 
 fragment GmSessionParticipantFields on GmSessionParticipant {
@@ -6967,6 +6968,18 @@ query GameModelContainers(
 
 query GameModelContainerState($appId: BigInt!, $containerId: String!) {
   gameModelContainerState(appId: $appId, containerId: $containerId) {
+    containerId
+    appId
+    sessionId
+    typeName
+    displayName
+    ownerUserId
+    propertiesJson
+  }
+}
+
+query GameModelContainerStates($appId: BigInt!, $containerIds: [String!]!) {
+  gameModelContainerStates(appId: $appId, containerIds: $containerIds) {
     containerId
     appId
     sessionId
@@ -7303,6 +7316,7 @@ fragment GmSessionFields on GmSession {
   endReason
   createdAt
   presence
+  seededContainerCount
 })gql";
 inline constexpr std::string_view kGameModelCreateSessionOperationName = "GameModelCreateSession";
 inline constexpr std::string_view kGameModelJoinSessionIsolatedDocument = R"gql(mutation GameModelJoinSession($input: JoinSessionInput!) {
@@ -7365,6 +7379,7 @@ fragment GmSessionFields on GmSession {
   endReason
   createdAt
   presence
+  seededContainerCount
 })gql";
 inline constexpr std::string_view kGameModelSetSessionAdmissionOperationName = "GameModelSetSessionAdmission";
 inline constexpr std::string_view kGameModelTransferSessionHostIsolatedDocument = R"gql(mutation GameModelTransferSessionHost($input: TransferSessionHostInput!) {
@@ -7391,6 +7406,7 @@ fragment GmSessionFields on GmSession {
   endReason
   createdAt
   presence
+  seededContainerCount
 })gql";
 inline constexpr std::string_view kGameModelTransferSessionHostOperationName = "GameModelTransferSessionHost";
 inline constexpr std::string_view kGameModelEndSessionIsolatedDocument = R"gql(mutation GameModelEndSession($input: EndSessionInput!) {
@@ -7417,6 +7433,7 @@ fragment GmSessionFields on GmSession {
   endReason
   createdAt
   presence
+  seededContainerCount
 })gql";
 inline constexpr std::string_view kGameModelEndSessionOperationName = "GameModelEndSession";
 inline constexpr std::string_view kGameModelSetSessionTurnIsolatedDocument = R"gql(mutation GameModelSetSessionTurn($input: SetSessionTurnInput!) {
@@ -7443,6 +7460,7 @@ fragment GmSessionFields on GmSession {
   endReason
   createdAt
   presence
+  seededContainerCount
 })gql";
 inline constexpr std::string_view kGameModelSetSessionTurnOperationName = "GameModelSetSessionTurn";
 inline constexpr std::string_view kGameModelCreateContainerIsolatedDocument = R"gql(mutation GameModelCreateContainer($input: CreateContainerInput!) {
@@ -7602,6 +7620,18 @@ inline constexpr std::string_view kGameModelContainerStateIsolatedDocument = R"g
   }
 })gql";
 inline constexpr std::string_view kGameModelContainerStateOperationName = "GameModelContainerState";
+inline constexpr std::string_view kGameModelContainerStatesIsolatedDocument = R"gql(query GameModelContainerStates($appId: BigInt!, $containerIds: [String!]!) {
+  gameModelContainerStates(appId: $appId, containerIds: $containerIds) {
+    containerId
+    appId
+    sessionId
+    typeName
+    displayName
+    ownerUserId
+    propertiesJson
+  }
+})gql";
+inline constexpr std::string_view kGameModelContainerStatesOperationName = "GameModelContainerStates";
 inline constexpr std::string_view kGameModelTraverseIsolatedDocument = R"gql(query GameModelTraverse($appId: BigInt!, $rootId: String!, $relationshipType: String!, $depth: Int) {
   gameModelTraverse(
     appId: $appId
@@ -7659,6 +7689,7 @@ fragment GmSessionFields on GmSession {
   endReason
   createdAt
   presence
+  seededContainerCount
 })gql";
 inline constexpr std::string_view kGameModelSessionOperationName = "GameModelSession";
 inline constexpr std::string_view kGameModelSessionsIsolatedDocument = R"gql(query GameModelSessions($appId: BigInt!, $status: String, $admission: String, $hostUserId: BigInt, $limit: Int) {
@@ -7691,6 +7722,7 @@ fragment GmSessionFields on GmSession {
   endReason
   createdAt
   presence
+  seededContainerCount
 })gql";
 inline constexpr std::string_view kGameModelSessionsOperationName = "GameModelSessions";
 inline constexpr std::string_view kGameModelSessionSnapshotIsolatedDocument = R"gql(query GameModelSessionSnapshot($appId: BigInt!, $sessionId: String!) {
@@ -7723,6 +7755,7 @@ fragment GmSessionFields on GmSession {
   endReason
   createdAt
   presence
+  seededContainerCount
 }
 
 fragment GmSessionParticipantFields on GmSessionParticipant {
@@ -7793,6 +7826,7 @@ fragment GmSessionFields on GmSession {
   endReason
   createdAt
   presence
+  seededContainerCount
 }
 
 fragment GmSessionParticipantFields on GmSessionParticipant {
@@ -8091,6 +8125,7 @@ mutation GameModelUpsertContainerType($input: UpsertContainerTypeInput!) {
     instantiableBy
     defaultPropertyVisibility
     bindPolicyJson
+    scope
     metadataJson
   }
 }
@@ -8172,6 +8207,7 @@ query GameModelContainerTypes($appId: BigInt!) {
     instantiableBy
     defaultPropertyVisibility
     bindPolicyJson
+    scope
     metadataJson
   }
 }
@@ -8242,6 +8278,7 @@ inline constexpr std::string_view kGameModelUpsertContainerTypeIsolatedDocument 
     instantiableBy
     defaultPropertyVisibility
     bindPolicyJson
+    scope
     metadataJson
   }
 })gql";
@@ -8445,6 +8482,7 @@ inline constexpr std::string_view kGameModelContainerTypesIsolatedDocument = R"g
     instantiableBy
     defaultPropertyVisibility
     bindPolicyJson
+    scope
     metadataJson
   }
 })gql";
@@ -8648,6 +8686,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "GameModelContainer") return kGameModelContainerIsolatedDocument;
   if (operationName == "GameModelContainers") return kGameModelContainersIsolatedDocument;
   if (operationName == "GameModelContainerState") return kGameModelContainerStateIsolatedDocument;
+  if (operationName == "GameModelContainerStates") return kGameModelContainerStatesIsolatedDocument;
   if (operationName == "GameModelTraverse") return kGameModelTraverseIsolatedDocument;
   if (operationName == "GameModelSession") return kGameModelSessionIsolatedDocument;
   if (operationName == "GameModelSessions") return kGameModelSessionsIsolatedDocument;

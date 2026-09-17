@@ -9,6 +9,7 @@
 #include "Core/FCrowdyTypeID.h" // CROWDY_INVALID_CLASS_ID for the recorded-class check
 #include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "Engine/GameInstance.h"
+#include "Replication/GameModel/CrowdyActiveSessionMemory.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "HAL/IConsoleManager.h"
@@ -349,6 +350,8 @@ void UCrowdyGameModelSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		return;
 	}
 	Bridge = GameInstance->GetSubsystem<UCrowdySDKBridgeSubsystem>();
+	SessionMemory = GameInstance->GetSubsystem<UCrowdyActiveSessionMemory>();
+	RestoreActiveSessionFromMemory();
 	EnsureReceptionLayerRegistered();
 
 	// Auto-bind: bring the entity subsystem up FIRST (InitializeDependency), else an entity that registers
@@ -381,6 +384,7 @@ void UCrowdyGameModelSubsystem::Deinitialize()
 	bShuttingDown = true;
 	FailPendingCoalesceWindows();
 	FailPendingInvokeRetries();
+	FailPendingManifestApplies();
 
 	// The pending-bind sweep has no caller to notify (it only re-drives binds), but it is armed on this world's timer
 	// manager, so it is cleared here with the rest.
@@ -435,6 +439,11 @@ void UCrowdyGameModelSubsystem::Deinitialize()
 	NetIDToOwnerUserId.Empty();
 	PendingModelEntities.Empty();
 	PendingBindBackoff.Empty();
+	PendingSessionByNetID.Empty();
+	BulkResolveInFlight.Empty();
+	BulkResolveGroupsInFlight.Empty();
+	BulkResolveTypeNextAttempt.Empty();
+	BulkResolveTypeFailures.Empty();
 	ResolveInFlight.Empty();
 	ClassDerivedBindings.Empty();
 	SubParticipantsByAnchor.Empty();
@@ -1867,6 +1876,140 @@ void UCrowdyGameModelSubsystem::PullContainerState(const FString& ContainerId,
 		});
 }
 
+int32 UCrowdyGameModelSubsystem::ContainerStateCallsFor(int32 IdCount)
+{
+	return FMath::DivideAndRoundUp(FMath::Max(IdCount, 0), FCrowdyGameApiCodec::MaxContainerStatesPerCall);
+}
+
+void UCrowdyGameModelSubsystem::ContainerStateChunk(const TArray<FString>& ContainerIds, int32 ChunkIndex, TArray<FString>& OutChunk)
+{
+	OutChunk.Reset();
+	const int32 First = ChunkIndex * FCrowdyGameApiCodec::MaxContainerStatesPerCall;
+	const int32 Count = FMath::Min(FCrowdyGameApiCodec::MaxContainerStatesPerCall, ContainerIds.Num() - First);
+	if (ChunkIndex < 0 || Count <= 0)
+	{
+		return;
+	}
+	OutChunk.Append(ContainerIds.GetData() + First, Count);
+}
+
+void UCrowdyGameModelSubsystem::PullContainerStateRows(const TArray<FString>& ContainerIds,
+	TFunction<void(bool, TArray<FCrowdyGameApiCodec::FContainerStateRow>)> OnDone)
+{
+	using FRows = TArray<FCrowdyGameApiCodec::FContainerStateRow>;
+	FString Endpoint;
+	FString Token;
+	int64 AppId = 0;
+	if (ContainerIds.IsEmpty() || !ResolveApiContext(Endpoint, Token, AppId))
+	{
+		if (OnDone) { OnDone(false, FRows()); }
+		return;
+	}
+	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
+	if (!Client)
+	{
+		if (OnDone) { OnDone(false, FRows()); }
+		return;
+	}
+
+	// The callback, not this subsystem, keeps the shared result and the chunk counter: every chunk is in flight at once.
+	const int32 Calls = ContainerStateCallsFor(ContainerIds.Num());
+	const TSharedRef<FRows> Rows = MakeShared<FRows>();
+	const TSharedRef<int32> Pending = MakeShared<int32>(Calls);
+	const TSharedRef<bool> AnyOk = MakeShared<bool>(false);
+	const TSharedRef<TFunction<void(bool, FRows)>> Done = MakeShared<TFunction<void(bool, FRows)>>(MoveTemp(OnDone));
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	BulkStateCallCount += Calls;
+	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
+		TEXT("[GameModel] PullContainerStates %d id(s) in %d call(s) appId=%lld"), ContainerIds.Num(), Calls, AppId);
+
+	for (int32 Chunk = 0; Chunk < Calls; ++Chunk)
+	{
+		TArray<FString> ChunkIds;
+		ContainerStateChunk(ContainerIds, Chunk, ChunkIds);
+		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildContainerStatesVariables(AppId, ChunkIds);
+		Client->RunRuntimeOp(TEXT("GameModelContainerStates"), Vars,
+			[WeakThis, Rows, Pending, AnyOk, Done, Chunk](FCrowdyCppJsonResult R)
+		{
+			FRows ChunkRows;
+			if (FCrowdyGameApiCodec::ParseContainerStatesEnvelope(WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), ChunkRows))
+			{
+				*AnyOk = true;
+			}
+			else
+			{
+				UE_LOG(LogCrowdyGameModel, Warning, TEXT("[GameModel] container states chunk %d failed: %s %s"), Chunk,
+					R.ErrorCode.IsEmpty() ? TEXT("<no code>") : *R.ErrorCode, *R.ErrorMessage);
+			}
+			if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis))
+			{
+				Self->RecordServerRefusal(R);
+				Self->BulkStateRowCount += ChunkRows.Num();
+				UE_CLOG(CrowdyGameModelTrace::GameModel() && *Pending == 1, LogCrowdyGameModel, Log,
+					TEXT("[GameModel] container states: %d call(s), %d row(s)"), Self->BulkStateCallCount, Self->BulkStateRowCount);
+			}
+			Rows->Append(MoveTemp(ChunkRows));
+			if (--(*Pending) > 0)
+			{
+				return;
+			}
+			if (*Done) { (*Done)(*AnyOk, MoveTemp(*Rows)); }
+		});
+	}
+}
+
+void UCrowdyGameModelSubsystem::PullContainerStates(const TArray<FString>& ContainerIds,
+	TFunction<void(bool, TMap<FString, TSharedPtr<FJsonObject>>)> OnDone)
+{
+	PullContainerStateRows(ContainerIds, [OnDone = MoveTemp(OnDone)](bool bOk, TArray<FCrowdyGameApiCodec::FContainerStateRow> Rows)
+	{
+		TMap<FString, TSharedPtr<FJsonObject>> States;
+		States.Reserve(Rows.Num());
+		for (FCrowdyGameApiCodec::FContainerStateRow& Row : Rows)
+		{
+			States.Add(MoveTemp(Row.ContainerId), MoveTemp(Row.State));
+		}
+		if (OnDone) { OnDone(bOk, MoveTemp(States)); }
+	});
+}
+
+void UCrowdyGameModelSubsystem::PullAndApplyContainerStates(TArray<TPair<FString, FGuid>>&& Targets)
+{
+	if (Targets.IsEmpty())
+	{
+		return;
+	}
+	if (Targets.Num() == 1)
+	{
+		HandleModelChanged(Targets[0].Value);
+		return;
+	}
+	TArray<FString> Ids;
+	Ids.Reserve(Targets.Num());
+	for (const TPair<FString, FGuid>& Target : Targets)
+	{
+		Ids.Add(Target.Key);
+	}
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	PullContainerStates(Ids, [WeakThis, Targets = MoveTemp(Targets)](bool bOk, TMap<FString, TSharedPtr<FJsonObject>> States)
+	{
+		UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis);
+		if (!bOk || !Self)
+		{
+			return;
+		}
+		for (const TPair<FString, FGuid>& Target : Targets)
+		{
+			const TSharedPtr<FJsonObject>* State = States.Find(Target.Key);
+			UObject* Participant = State && State->IsValid() ? Self->ResolveEntityParticipant(Target.Value) : nullptr;
+			if (Participant)
+			{
+				Self->ApplyStateToContainer(Target.Value, Participant, *State);
+			}
+		}
+	});
+}
+
 void UCrowdyGameModelSubsystem::ListContainers(const FString& TypeName, const FString& SessionId,
 	TFunction<void(bool, TArray<TSharedPtr<FJsonObject>>)> OnDone)
 {
@@ -1883,7 +2026,7 @@ void UCrowdyGameModelSubsystem::ListContainers(const FString& TypeName, const FS
 	}
 
 	// An empty Session Id falls back to the active (default) session so a list can be scoped without threading it.
-	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+	const FString ResolvedSession = ResolveContainerSessionId(TypeName, SessionId);
 
 	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
 		TEXT("[GameModel] ListContainers type=%s session=%s appId=%lld"), *TypeName,
@@ -1991,6 +2134,15 @@ FGuid UCrowdyGameModelSubsystem::FindNetIDForContainer(const FString& ContainerI
 	return (*Bound)[0];
 }
 
+void UCrowdyGameModelSubsystem::GetBoundContainerIds(TArray<FString>& OutContainerIds) const
+{
+	OutContainerIds.Reset(ContainerIdToNetIDs.Num());
+	for (const TPair<FString, TArray<FGuid>>& Pair : ContainerIdToNetIDs)
+	{
+		OutContainerIds.Add(Pair.Key);
+	}
+}
+
 bool UCrowdyGameModelSubsystem::TryGetContainerId(const FGuid& NetID, FString& OutContainerId) const
 {
 	if (const FString* Found = NetIDToContainerId.Find(NetID))
@@ -2036,7 +2188,7 @@ void UCrowdyGameModelSubsystem::ResolveOrCreateContainer(const FGuid& NetID, con
 
 	// An empty Session Id falls back to the active (default) session, resolved once here so the ensure and the
 	// read-by-key below agree on the same scope (the binding key is unique per app + type + session).
-	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+	const FString ResolvedSession = ResolveContainerSessionId(TypeName, SessionId);
 
 	// (1) cache hit.
 	FString Existing;
@@ -2097,28 +2249,8 @@ void UCrowdyGameModelSubsystem::ResolveOrCreateContainer(const FGuid& NetID, con
 		TFunction<void(bool, const FString&)>& Done)
 	{
 		UCrowdyGameModelSubsystem* S = ResolveLiveSelf(WeakThis);
-		if (!S)
-		{
-			if (Done) { Done(false, FString()); }
-			return;
-		}
-		S->ResolveInFlight.Remove(NetID);
-		// The entity may have unregistered during the round-trip; do not resurrect a binding for a destroyed entity
-		// (it would leak a map entry and waste every future notification's pull on it).
-		if (ContainerId.IsEmpty() || !S->ResolveEntityParticipant(NetID))
-		{
-			if (Done) { Done(false, FString()); }
-			return;
-		}
-		S->BindEntityContainer(NetID, ContainerId);
-		if (OwnerUserId > 0)
-		{
-			S->NetIDToOwnerUserId.Add(NetID, OwnerUserId);
-		}
-		S->PendingModelEntities.Remove(NetID);
-		UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
-			TEXT("[GameModel] resolved entity %s -> container %s"), *NetID.ToString(), *ContainerId);
-		if (Done) { Done(true, ContainerId); }
+		const bool bBound = S && S->BindResolvedRow(NetID, ContainerId, OwnerUserId);
+		if (Done) { Done(bBound, bBound ? ContainerId : FString()); }
 	};
 
 	if (bAuthoritative)
@@ -2128,8 +2260,9 @@ void UCrowdyGameModelSubsystem::ResolveOrCreateContainer(const FGuid& NetID, con
 		// (admin/shared types). A not-exists creation is authorized by the type's instantiableBy, so a client that
 		// may not create a shared admin-type row fails here and stays pending until an authority (or a deploy tool)
 		// ensures it.
-		auto Complete = [WeakThis, NetID, ExpectedOwnerId, BindResolved, OnDone = MoveTemp(OnDone)]
-			(bool bOk, FString ContainerId, int64 OwnerUserId, bool /*bCreated*/) mutable
+		auto Complete = [WeakThis, NetID, ExpectedOwnerId, BindResolved, BindingKey, ResolvedSession,
+			OnDone = MoveTemp(OnDone)]
+			(bool bOk, FString ContainerId, int64 OwnerUserId, bool bCreated) mutable
 		{
 			// The in-flight guard below belongs to this world and is emptied on teardown, so a completion that no
 			// longer resolves live has nothing to clear - it only has to tell the caller the resolve did not land.
@@ -2158,6 +2291,11 @@ void UCrowdyGameModelSubsystem::ResolveOrCreateContainer(const FGuid& NetID, con
 				if (OnDone) { OnDone(false, FString()); }
 				return;
 			}
+			// Whether this ensure inserted the row or found one is the only trace of who created a shared container.
+			UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
+				TEXT("[GameModel] ensure entity %s key %s session %s -> container %s (%s)"),
+				*NetID.ToString(), *BindingKey, ResolvedSession.IsEmpty() ? TEXT("<app-global>") : *ResolvedSession,
+				*ContainerId, bCreated ? TEXT("created") : TEXT("existing"));
 			BindResolved(ContainerId, OwnerUserId, OnDone);
 		};
 
@@ -2178,12 +2316,9 @@ void UCrowdyGameModelSubsystem::ResolveOrCreateContainer(const FGuid& NetID, con
 			// An ensure against a type the app never declared used to SUCCEED and bind nothing, so the only trace
 			// was the caller's generic "no container bound" line, which names a symptom and nothing about the cause.
 			// The server refuses it now and says why; say so here rather than folding it into that same warning.
-			if (CrowdyCppIsModelRefusalCode(R.ErrorCode))
+			if (UCrowdyGameModelSubsystem* S = ResolveLiveSelf(WeakThis))
 			{
-				if (UCrowdyGameModelSubsystem* S = ResolveLiveSelf(WeakThis))
-				{
-					S->ReportModelRefusalOnce(R.ErrorCode, TypeName, R.ErrorMessage);
-				}
+				S->ReportContainerRefusal(R.ErrorCode, TypeName, R.ErrorMessage);
 			}
 
 			FString OutContainerId;
@@ -2394,11 +2529,22 @@ void UCrowdyGameModelSubsystem::BindParticipantContainer(const FGuid& NetID, UOb
 	// Recorded here because this is the only place the declaring class is in hand. A holder of the entity is handed
 	// values with a container id and nothing else, and one entity can bind several containers.
 	ContainerTypeByNetID.Add(NetID, TypeName);
+	RecordContainerScope(TypeName, Class);
 
 	// ResolveOrCreateContainer ensures (locally-owned or shared entity) or reads by key (a remote per-player proxy,
 	// or any class-derived binding). Track it as pending so a not-yet-authed ensure or a proxy whose owner has not
 	// created the row yet is re-driven by RetryPendingModelEntities on the next model-changed notification.
 	PendingModelEntities.Add(NetID, TypeName);
+
+	// A shared entity's row is the same on every client, so it waits a short gather for the rest of its registration
+	// burst, then every pending entity of its type binds from one paged list. The scope is fixed here, at
+	// registration, exactly as the inline ensure fixed it, so every client lists and binds the same scope.
+	if (IsBulkResolveEnabled() && IsBulkResolveEligible(NetID))
+	{
+		PendingSessionByNetID.Add(NetID, ResolveContainerSessionId(TypeName, FString()));
+		RequestPendingModelEntitySweep(BulkResolveGatherSeconds);
+		return;
+	}
 
 	// Decided before the round-trip, from the class that declares the container, so the completion below does not
 	// need to re-resolve it. This only gates the ONE-TIME initial pull below; a later model-changed notification for
@@ -2822,7 +2968,7 @@ void UCrowdyGameModelSubsystem::HandleEntityUnregistered(const FGuid& NetID)
 	ClassDerivedBindings.Remove(NetID);
 }
 
-void UCrowdyGameModelSubsystem::RequestPendingModelEntitySweep()
+void UCrowdyGameModelSubsystem::RequestPendingModelEntitySweep(float DelaySeconds)
 {
 	if (bShuttingDown || PendingModelEntities.Num() == 0)
 	{
@@ -2837,17 +2983,20 @@ void UCrowdyGameModelSubsystem::RequestPendingModelEntitySweep()
 		return;
 	}
 
+	// A sweep already coming sooner is kept. This is the whole point: the notifications that ask for one arrive at
+	// the rate the session changes state, and each sweep is one network round trip per entity it re-drives. The
+	// remaining time is what decides it, not "is there a timer": the timer manager still reports the sweep's own
+	// timer while its callback runs, and reading that as armed left a sweep unable to re-arm for what it skipped.
 	FTimerManager& Timers = World->GetTimerManager();
-	if (Timers.IsTimerActive(PendingSweepTimer) || Timers.IsTimerPending(PendingSweepTimer))
+	const float Remaining = Timers.GetTimerRemaining(PendingSweepTimer);
+	if (Remaining > 0.f && Remaining <= DelaySeconds)
 	{
-		// A sweep is already coming. This is the whole point: the notifications that ask for one arrive at the rate
-		// the session changes state, and each sweep is one network round trip per entity it re-drives.
 		return;
 	}
 
 	Timers.SetTimer(PendingSweepTimer,
 		FTimerDelegate::CreateWeakLambda(this, [this]() { RetryPendingModelEntities(); }),
-		PendingSweepIntervalSeconds, false);
+		DelaySeconds, false);
 }
 
 void UCrowdyGameModelSubsystem::RetryPendingModelEntities()
@@ -2868,6 +3017,70 @@ void UCrowdyGameModelSubsystem::RetryPendingModelEntities()
 	}
 
 	const double Now = FApp::GetCurrentTime();
+
+	// Shared entities of one type go out as one paged list rather than one ensure each. A type whose last list
+	// failed waits out its own backoff; its entities stay pending and stay out of the per-entity loop, because an
+	// ensure per entity is exactly the storm the list exists to avoid. Anything a list misses falls through to the
+	// per-entity ensure when the list completes, never here.
+	TSet<FGuid> BulkHandled;
+	if (IsBulkResolveEnabled())
+	{
+		// Grouped by type and by the session each entity was parked under. The API context is asked for once here
+		// and quietly: before sign-in the per-entity loop below already says so, once per entity under its backoff.
+		struct FBulkGroup
+		{
+			FString TypeName;
+			FString Session;
+			TArray<FGuid> NetIDs;
+		};
+		TMap<FString, FBulkGroup> Groups;
+		for (const TPair<FGuid, FString>& Pair : Snapshot)
+		{
+			if (NetIDToContainerId.Contains(Pair.Key) || !IsBulkResolveEligible(Pair.Key))
+			{
+				continue;
+			}
+			BulkHandled.Add(Pair.Key);
+			if (BulkResolveInFlight.Contains(Pair.Key))
+			{
+				continue;
+			}
+			const FString* Parked = PendingSessionByNetID.Find(Pair.Key);
+			const FString Session = Parked ? *Parked : ResolveContainerSessionId(Pair.Value, FString());
+			FBulkGroup& Group = Groups.FindOrAdd(Pair.Value + TEXT("|") + Session);
+			Group.TypeName = Pair.Value;
+			Group.Session = Session;
+			Group.NetIDs.Add(Pair.Key);
+		}
+		FString Endpoint, Token;
+		int64 AppId = 0;
+		bool bHaveContext = false;
+		bool bContextAsked = false;
+		for (TPair<FString, FBulkGroup>& Entry : Groups)
+		{
+			const double* NextAttempt = BulkResolveTypeNextAttempt.Find(Entry.Key);
+			// A group whose list is still out, or whose last list failed recently, keeps its entities pending; a
+			// late arrival joins the next list rather than opening a second one.
+			if (BulkResolveGroupsInFlight.Contains(Entry.Key) || (NextAttempt && Now < *NextAttempt))
+			{
+				continue;
+			}
+			// Counted before the token question, so a headless test can see the grouping the sweep decided on.
+			++BulkResolveDispatchCount;
+			BulkResolveDispatchSessionByType.Add(Entry.Value.TypeName, Entry.Value.Session);
+			if (!bContextAsked)
+			{
+				bContextAsked = true;
+				bHaveContext = ResolveApiContext(Endpoint, Token, AppId);
+			}
+			if (!bHaveContext)
+			{
+				continue; // not signed in yet: the group stays pending and the next sweep asks again
+			}
+			BulkResolveType(Entry.Value.TypeName, Entry.Value.Session, Entry.Value.NetIDs, Endpoint, Token, AppId);
+		}
+	}
+
 	int32 Attempted = 0;
 	for (const TPair<FGuid, FString>& Pair : Snapshot)
 	{
@@ -2877,6 +3090,10 @@ void UCrowdyGameModelSubsystem::RetryPendingModelEntities()
 		{
 			PendingModelEntities.Remove(PendingNetID);
 			PendingBindBackoff.Remove(PendingNetID);
+			continue;
+		}
+		if (BulkHandled.Contains(PendingNetID))
+		{
 			continue;
 		}
 
@@ -2943,8 +3160,11 @@ void UCrowdyGameModelSubsystem::HandleHostChanged(const FGuid& NewHostID, const 
 	//
 	// The per-entity backoff is cleared first, because a host change is the one event that says the reason those
 	// resolves kept failing (no token, a different authority) has actually changed. Leaving it in place would make an
-	// entity that has already backed off sit out the very sweep this kick exists to run.
+	// entity that has already backed off sit out the very sweep this kick exists to run. The bulk lists' own backoff
+	// goes for the same reason.
 	PendingBindBackoff.Empty();
+	BulkResolveTypeNextAttempt.Empty();
+	BulkResolveTypeFailures.Empty();
 	RequestPendingModelEntitySweep();
 }
 
@@ -3112,6 +3332,12 @@ void UCrowdyGameModelSubsystem::ApplyMutationsToContainer(const FGuid& NetID, UO
 void UCrowdyGameModelSubsystem::SetEventRouterForTest(UCrowdyEventRouter* InRouter)
 {
 	EventRouterForTest = InRouter;
+}
+
+void UCrowdyGameModelSubsystem::AttachSessionMemoryForTest(UCrowdyActiveSessionMemory* InMemory)
+{
+	SessionMemory = InMemory;
+	RestoreActiveSessionFromMemory();
 }
 
 UCrowdyEventRouter* UCrowdyGameModelSubsystem::GetEventRouterForTest() const
@@ -3327,10 +3553,18 @@ void UCrowdyGameModelSubsystem::DrainRefreshPulls()
 	TMap<FString, FGuid> Draining = MoveTemp(PendingRefreshPulls);
 	PendingRefreshPulls.Reset();
 
+	// Each entity is read through the container it holds NOW, so a rebind mid-window pulls the right row.
+	TArray<TPair<FString, FGuid>> Targets;
+	Targets.Reserve(Draining.Num());
 	for (const TPair<FString, FGuid>& Pair : Draining)
 	{
-		HandleModelChanged(Pair.Value);
+		FString Bound;
+		if (TryGetContainerId(Pair.Value, Bound))
+		{
+			Targets.Emplace(MoveTemp(Bound), Pair.Value);
+		}
 	}
+	PullAndApplyContainerStates(MoveTemp(Targets));
 }
 
 void UCrowdyGameModelSubsystem::HandleModelChangedByContainer(const FString& ContainerId)
@@ -3846,6 +4080,16 @@ const TCHAR* UCrowdyGameModelSubsystem::SessionPresenceWord(ECrowdySessionPresen
 	return Presence == ECrowdySessionPresence::None ? TEXT("none") : TEXT("actor");
 }
 
+ECrowdySessionSeedState UCrowdyGameModelSubsystem::ParseSessionSeedState(const FString& Word)
+{
+	return Word == TEXT("app") ? ECrowdySessionSeedState::App : ECrowdySessionSeedState::Defaults;
+}
+
+const TCHAR* UCrowdyGameModelSubsystem::SessionSeedStateWord(ECrowdySessionSeedState State)
+{
+	return State == ECrowdySessionSeedState::App ? TEXT("app") : TEXT("defaults");
+}
+
 ECrowdySessionEndReason UCrowdyGameModelSubsystem::ParseSessionEndReason(const FString& Word)
 {
 	if (Word.IsEmpty()) { return ECrowdySessionEndReason::None; }
@@ -3924,6 +4168,8 @@ FCrowdyGameModelSession UCrowdyGameModelSubsystem::ToBpSession(const FCrowdyGame
 	Out.EndReason = ParseSessionEndReason(Data.EndReason);
 	Out.CreatedAt = Data.CreatedAt;
 	Out.Presence = ParseSessionPresence(Data.Presence);
+	Out.SeededContainerCount = Data.SeededContainerCount;
+	Out.bHasSeededContainerCount = Data.bHasSeededContainerCount;
 	return Out;
 }
 
@@ -4086,17 +4332,23 @@ void UCrowdyGameModelSubsystem::CreateSession(const FString& Name, const TArray<
 	TFunction<void(bool, const FCrowdyGameModelSession&)> OnDone)
 {
 	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
-		TEXT("[GameModel] CreateSession name=%s participants=%d max=%d admission=%s presence=%s emptyTimeout=%d"),
+		TEXT("[GameModel] CreateSession name=%s participants=%d max=%d admission=%s presence=%s emptyTimeout=%d seedTypes=%d seedState=%s"),
 		*Name, ParticipantUserIds.Num(), Options.MaxParticipants, SessionAdmissionWord(Options.Admission),
-		SessionPresenceWord(Options.Presence), Options.EmptyTimeoutSec);
+		SessionPresenceWord(Options.Presence), Options.EmptyTimeoutSec, Options.SeedFromAppTypeNames.Num(),
+		SessionSeedStateWord(Options.SeedInitialState));
 
-	// The server defaults (open, actor) are left unsaid on the wire so a future default change is inherited.
+	// The server defaults (open, actor, defaults) are left unsaid on the wire so a future default change is inherited.
 	FCrowdyCreateSessionOptions WireOptions;
 	WireOptions.MaxParticipants = Options.MaxParticipants;
 	if (Options.Admission != ECrowdySessionAdmission::Open) { WireOptions.Admission = SessionAdmissionWord(Options.Admission); }
 	WireOptions.EmptyTimeoutSec = Options.EmptyTimeoutSec;
 	if (Options.Presence != ECrowdySessionPresence::Actor) { WireOptions.Presence = SessionPresenceWord(Options.Presence); }
 	WireOptions.IdempotencyKey = Options.IdempotencyKey;
+	WireOptions.SeedFromAppTypeNames = Options.SeedFromAppTypeNames;
+	if (!Options.SeedFromAppTypeNames.IsEmpty() && Options.SeedInitialState != ECrowdySessionSeedState::Defaults)
+	{
+		WireOptions.SeedInitialState = SessionSeedStateWord(Options.SeedInitialState);
+	}
 
 	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
 	RunSessionReturningOp(TEXT("GameModelCreateSession"), TEXT("gameModelCreateSession"),
@@ -4112,6 +4364,8 @@ void UCrowdyGameModelSubsystem::CreateSession(const FString& Name, const TArray<
 			{
 				Self->SessionIncarnations.Add(Session.SessionId, 1);
 			}
+			UE_CLOG(CrowdyGameModelTrace::GameModel() && bOk && Session.bHasSeededContainerCount, LogCrowdyGameModel, Log,
+				TEXT("[GameModel] session %s created, seeded %d container(s)"), *Session.SessionId, Session.SeededContainerCount);
 			if (OnDone) { OnDone(bOk, Session); }
 		});
 }
@@ -4218,6 +4472,7 @@ void UCrowdyGameModelSubsystem::LeaveSession(const FString& SessionId, int32 Inc
 			if (Self)
 			{
 				Self->SessionIncarnations.Remove(ResolvedSession);
+				Self->ForgetActiveSessionIf(ResolvedSession);
 			}
 			if (OnDone) { OnDone(bOk, Participant); }
 		});
@@ -4295,11 +4550,28 @@ void UCrowdyGameModelSubsystem::EndSession(const FString& SessionId, ECrowdySess
 		TEXT("[GameModel] EndSession session=%s reason=%s expectedHostTerm=%d"),
 		*ResolvedSession, Word.IsEmpty() ? TEXT("completed") : *Word, HostTerm);
 
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
 	RunSessionReturningOp(TEXT("GameModelEndSession"), TEXT("gameModelEndSession"),
 		[ResolvedSession, Word, HostTerm](int64 AppId)
 		{
 			return FCrowdyGameApiCodec::BuildEndSessionVariables(AppId, ResolvedSession, Word, HostTerm);
-		}, MoveTemp(OnDone));
+		},
+		[WeakThis, ResolvedSession, OnDone = MoveTemp(OnDone)](bool bOk, const FCrowdyGameModelSession& Session)
+		{
+			if (UCrowdyGameModelSubsystem* Self = bOk ? ResolveLiveSelf(WeakThis) : nullptr)
+			{
+				Self->ForgetActiveSessionIf(ResolvedSession);
+			}
+			if (OnDone) { OnDone(bOk, Session); }
+		});
+}
+
+void UCrowdyGameModelSubsystem::ForgetActiveSessionIf(const FString& SessionId)
+{
+	if (!SessionId.IsEmpty() && ActiveSessionId == SessionId)
+	{
+		ClearActiveSession();
+	}
 }
 
 void UCrowdyGameModelSubsystem::SetSessionTurn(const FString& SessionId, int64 UserId, bool bHasUserId,
@@ -4624,8 +4896,24 @@ bool UCrowdyGameModelSubsystem::IsLocalUsersTurn(const FCrowdyGameModelSession& 
 void UCrowdyGameModelSubsystem::SetActiveSession(const FString& SessionId)
 {
 	ActiveSessionId = SessionId;
+	if (UCrowdyActiveSessionMemory* Memory = SessionMemory.Get())
+	{
+		Memory->SessionId = SessionId;
+	}
 	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
 		TEXT("[GameModel] active session set to %s"), SessionId.IsEmpty() ? TEXT("<app-global>") : *SessionId);
+}
+
+void UCrowdyGameModelSubsystem::RestoreActiveSessionFromMemory()
+{
+	const UCrowdyActiveSessionMemory* Memory = SessionMemory.Get();
+	if (!Memory || Memory->SessionId.IsEmpty())
+	{
+		return;
+	}
+	ActiveSessionId = Memory->SessionId;
+	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
+		TEXT("[GameModel] active session %s restored for this world from the game instance"), *ActiveSessionId);
 }
 
 FString UCrowdyGameModelSubsystem::GetActiveSession() const
@@ -4636,6 +4924,10 @@ FString UCrowdyGameModelSubsystem::GetActiveSession() const
 void UCrowdyGameModelSubsystem::ClearActiveSession()
 {
 	ActiveSessionId.Reset();
+	if (UCrowdyActiveSessionMemory* Memory = SessionMemory.Get())
+	{
+		Memory->SessionId.Reset();
+	}
 	ReportedModelRefusals.Empty();
 }
 
@@ -4667,6 +4959,84 @@ FString UCrowdyGameModelSubsystem::ResolveSessionId(const FString& Explicit, con
 		return Explicit;
 	}
 	return Active;
+}
+
+FString UCrowdyGameModelSubsystem::ResolveContainerSessionId(const FString& TypeName, const FString& SessionId) const
+{
+	if (IsContainerTypeAppScoped(TypeName))
+	{
+		return FString();
+	}
+	return ResolveSessionId(SessionId, ActiveSessionId);
+}
+
+bool UCrowdyGameModelSubsystem::IsContainerTypeAppScoped(const FString& TypeName) const
+{
+	const bool* Found = AppScopedByTypeName.Find(TypeName);
+	return Found && *Found;
+}
+
+void UCrowdyGameModelSubsystem::RecordContainerScope(const FString& TypeName, const UClass* Class)
+{
+	if (!Class)
+	{
+		return;
+	}
+	const bool bAppScoped = FCrowdyAttributeRegistry::IsContainerAppScoped(Class);
+	ContainerScopeUnresolved.Remove(TypeName);
+	if (const bool* Recorded = AppScopedByTypeName.Find(TypeName))
+	{
+		// The first class to name a type decides its scope; a later class that disagrees is a declaration bug.
+		UE_CLOG(*Recorded != bAppScoped, LogCrowdyGameModel, Warning,
+			TEXT("[GameModel] class '%s' declares container type '%s' as %s-scoped, but the type was already recorded as %s-scoped; keeping the first answer. Give every class of one type the same CrowdyScope."),
+			*Class->GetName(), *TypeName, bAppScoped ? TEXT("app") : TEXT("session"), *Recorded ? TEXT("app") : TEXT("session"));
+		return;
+	}
+	AppScopedByTypeName.Add(TypeName, bAppScoped);
+	UE_CLOG(CrowdyGameModelTrace::GameModel() && bAppScoped, LogCrowdyGameModel, Log,
+		TEXT("[GameModel] container type '%s' is app-scoped; its rows bind with no session"), *TypeName);
+}
+
+void UCrowdyGameModelSubsystem::EnsureContainerScopeKnown(const FString& TypeName)
+{
+	if (TypeName.IsEmpty() || AppScopedByTypeName.Contains(TypeName) || ContainerScopeUnresolved.Contains(TypeName))
+	{
+		return;
+	}
+	const UClass* Class = FCrowdyAttributeRegistry::FindContainerClassByTypeName(TypeName);
+	if (!Class)
+	{
+		// A type no loaded class declares reads as session-scoped; the miss is kept so the class search runs once per
+		// type, not once per row, and a class that registers later still records the real answer.
+		ContainerScopeUnresolved.Add(TypeName);
+		return;
+	}
+	RecordContainerScope(TypeName, Class);
+}
+
+void UCrowdyGameModelSubsystem::ReportContainerRefusal(const FString& Code, const FString& TypeName, const FString& Message)
+{
+	if (!Code.Equals(TEXT("CONTAINER_TYPE_APP_SCOPED"), ESearchCase::CaseSensitive))
+	{
+		if (CrowdyCppIsModelRefusalCode(Code))
+		{
+			ReportModelRefusalOnce(Code, TypeName, Message);
+		}
+		return;
+	}
+	// The server is the authority on scope: from here on this type binds app-wide, so a retry or the next create
+	// succeeds instead of repeating the refusal.
+	AppScopedByTypeName.FindOrAdd(TypeName) = true;
+	ContainerScopeUnresolved.Remove(TypeName);
+	const FString Key = Code + TEXT("|") + TypeName;
+	if (ReportedModelRefusals.Contains(Key))
+	{
+		return;
+	}
+	ReportedModelRefusals.Add(Key);
+	UE_LOG(LogCrowdyGameModel, Warning,
+		TEXT("[GameModel] type %s is app-scoped on the server; binding it app-wide from now on. Declare meta=(CrowdyScope=\"App\") on its class to avoid the first refusal."),
+		*TypeName);
 }
 
 void UCrowdyGameModelSubsystem::SetLastModelError(const FString& InError)
@@ -4709,8 +5079,10 @@ void UCrowdyGameModelSubsystem::CreateDataContainer(const FString& TypeName, con
 		return;
 	}
 
-	// An empty Session Id falls back to the active (default) session so a data container can be scoped without it.
-	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
+	// An empty Session Id falls back to the active (default) session so a data container can be scoped without it;
+	// an app-scoped type takes none, whatever was asked.
+	EnsureContainerScopeKnown(TypeName);
+	const FString ResolvedSession = ResolveContainerSessionId(TypeName, SessionId);
 
 	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
 		TEXT("[GameModel] CreateDataContainer type=%s session=%s appId=%lld"), *TypeName,
@@ -4743,8 +5115,12 @@ void UCrowdyGameModelSubsystem::CreateDataContainer(const FString& TypeName, con
 	const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildCreateContainerVariables(
 		AppId, TypeName, DisplayName, ResolvedSession, MetadataJson);
 	Client->RunRuntimeOp(TEXT("GameModelCreateContainer"), Vars,
-		[Complete = MoveTemp(Complete)](FCrowdyCppJsonResult R)
+		[WeakThis, TypeName, Complete = MoveTemp(Complete)](FCrowdyCppJsonResult R)
 	{
+		if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis))
+		{
+			Self->ReportContainerRefusal(R.ErrorCode, TypeName, R.ErrorMessage);
+		}
 		FString OutContainerId;
 		int64 OutOwnerUserId = 0;
 		const bool bOk = FCrowdyGameApiCodec::ParseCreateContainerEnvelope(
@@ -5406,46 +5782,43 @@ void UCrowdyGameModelSubsystem::GetCollectionWithState(const FString& ParentCont
 			return;
 		}
 
-		// Fan one state pull per item and join on a shared counter (every callback is game-thread). Results keep the
-		// child order; a per-item read failure yields that item with an empty StateJson rather than failing the set.
-		// PullContainerState is the raw read facade, so this neither watches nor broadcasts (a get is not a change).
-		const TSharedRef<TArray<FCrowdyCollectionItem>> Results = MakeShared<TArray<FCrowdyCollectionItem>>();
-		Results->SetNum(Items.Num());
-		const TSharedRef<int32> Pending = MakeShared<int32>(Items.Num());
-		// Tracks whether any constituent read actually succeeded, so a total read failure (every item's state
-		// pull failing) is reported as a failure rather than as success with an all-blank result set.
-		const TSharedRef<bool> AnySucceeded = MakeShared<bool>(false);
-
-		for (int32 Index = 0; Index < Items.Num(); ++Index)
+		// One bulk state read for the whole set, in child order; an item the read omitted keeps an empty StateJson, and
+		// the get fails only when no item's state landed. A pure read: nothing is watched or broadcast.
+		TArray<FCrowdyCollectionItem> Results;
+		TArray<FString> Ids;
+		Results.Reserve(Items.Num());
+		Ids.Reserve(Items.Num());
+		for (const FCrowdyContainerRef& Item : Items)
 		{
-			(*Results)[Index].ContainerId = Items[Index].ContainerId;
-			(*Results)[Index].TypeName = Items[Index].TypeName;
-
-			Self->PullContainerState(Items[Index].ContainerId,
-				[Results, Pending, AnySucceeded, Index, OnDone](bool bStateOk, TSharedPtr<FJsonObject> State)
-			{
-				if (bStateOk && State.IsValid() && Results->IsValidIndex(Index))
-				{
-					*AnySucceeded = true;
-					// Drop the SDK's reserved bookkeeping counter so it never surfaces as if it were a designer
-					// field to a UI that iterates the item's state keys (a RemoveField on an absent key is a no-op).
-					State->RemoveField(CrowdyGameModelMetaKeys::CollectionRevKey);
-					FString Json;
-					const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
-						TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Json);
-					if (FJsonSerializer::Serialize(State.ToSharedRef(), Writer))
-					{
-						(*Results)[Index].StateJson = Json;
-					}
-				}
-				// Every state read completes, so the counter always reaches zero and OnDone fires exactly once - on
-				// the last completion - whether or not the world session survived the fan-out.
-				if (--(*Pending) <= 0 && OnDone)
-				{
-					OnDone(*AnySucceeded, *Results);
-				}
-			});
+			FCrowdyCollectionItem& Result = Results.AddDefaulted_GetRef();
+			Result.ContainerId = Item.ContainerId;
+			Result.TypeName = Item.TypeName;
+			Ids.Add(Item.ContainerId);
 		}
+		Self->PullContainerStates(Ids, [Results = MoveTemp(Results), OnDone](bool bStateOk, TMap<FString, TSharedPtr<FJsonObject>> States) mutable
+		{
+			bool bAnyStateApplied = false;
+			for (FCrowdyCollectionItem& Result : Results)
+			{
+				const TSharedPtr<FJsonObject>* State = States.Find(Result.ContainerId);
+				if (!State || !State->IsValid())
+				{
+					continue;
+				}
+				// Drop the SDK's reserved bookkeeping counter so it never surfaces as if it were a designer field to a
+				// UI that iterates the item's state keys (a RemoveField on an absent key is a no-op).
+				(*State)->RemoveField(CrowdyGameModelMetaKeys::CollectionRevKey);
+				const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+					TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Result.StateJson);
+				if (!FJsonSerializer::Serialize(State->ToSharedRef(), Writer))
+				{
+					Result.StateJson.Reset();
+					continue;
+				}
+				bAnyStateApplied = true;
+			}
+			if (OnDone) { OnDone(bStateOk && bAnyStateApplied, Results); }
+		});
 	});
 }
 

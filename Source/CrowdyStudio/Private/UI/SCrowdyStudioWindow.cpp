@@ -4,6 +4,7 @@
 
 #include "Framework/Notifications/NotificationManager.h"
 #include "Model/FCrowdyStudioController.h"
+#include "Settings/CrowdyStudioUserSettings.h"
 #include "Style/CrowdyStudioStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateStyle.h"
@@ -42,6 +43,7 @@ void SCrowdyStudioWindow::Construct(const FArguments& InArgs)
 {
 	Controller = MakeShared<FCrowdyStudioController>();
 	PageFade = PageAnim.AddCurve(0.0f, 0.20f, ECurveEaseFunction::CubicOut);
+	bNavCollapsed = GetDefault<UCrowdyStudioUserSettings>()->bNavRailCollapsed;
 
 	// The single web button lands on the selected org's overview (/orgs/{slug}). Fall back to the
 	// only/first org, then to the dashboard when nothing is loaded yet. Set before BuildNavRail runs.
@@ -243,12 +245,56 @@ TSharedRef<SWidget> SCrowdyStudioWindow::BuildHeader()
 
 TSharedRef<SWidget> SCrowdyStudioWindow::BuildNavRail()
 {
-	auto GroupSlot = [](TSharedRef<SVerticalBox> Box, const FText& Label)
+	// Folded, a group reads as a hairline gap instead of its caption so the sections stay visibly separate.
+	auto GroupSlot = [this](TSharedRef<SVerticalBox> Box, const FText& Label)
 	{
-		Box->AddSlot().AutoHeight().Padding(6.0f, 13.0f, 6.0f, 5.0f)[ CrowdyStudioWidgets::GroupLabel(Label) ];
+		Box->AddSlot().AutoHeight().Padding(6.0f, 13.0f, 6.0f, 5.0f)
+		[
+			SNew(SBox)
+			.Visibility_Lambda([this]() { return bNavCollapsed ? EVisibility::Collapsed : EVisibility::Visible; })
+			[ CrowdyStudioWidgets::GroupLabel(Label) ]
+		];
+		Box->AddSlot().AutoHeight().Padding(6.0f, 8.0f, 6.0f, 6.0f)
+		[
+			SNew(SBox).HeightOverride(1.0f)
+			.Visibility_Lambda([this]() { return bNavCollapsed ? EVisibility::Visible : EVisibility::Collapsed; })
+			[ SNew(SImage).Image(FCrowdyStudioStyle::Get().GetBrush("Crowdy.Separator")).DesiredSizeOverride(FVector2D(1.0, 1.0)) ]
+		];
 	};
 
 	TSharedRef<SVerticalBox> Nav = SNew(SVerticalBox);
+
+	// Fold / unfold. Outside the scrolling list, in its own row: a spacer on the left pushes it to the right
+	// edge when the labels are showing, and a second spacer (only when folded) centres it over the icon column.
+	const TSharedRef<SWidget> FoldToggle = SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot().FillWidth(1.0f)[ SNullWidget::NullWidget ]
+		+ SHorizontalBox::Slot().AutoWidth()
+		[
+			SNew(SButton)
+			.ButtonStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Button.Nav.Flush")
+			.ContentPadding(FMargin(8.0f, 6.0f))
+			.ToolTipText_Lambda([this]() { return bNavCollapsed ? LOCTEXT("NavExpand", "Show labels") : LOCTEXT("NavCollapse", "Collapse to icons"); })
+			.OnClicked_Lambda([this]()
+			{
+				bNavCollapsed = !bNavCollapsed;
+				UCrowdyStudioUserSettings* User = GetMutableDefault<UCrowdyStudioUserSettings>();
+				User->bNavRailCollapsed = bNavCollapsed;
+				User->SaveConfig();
+				return FReply::Handled();
+			})
+			[
+				SNew(SBox).WidthOverride(16.0f).HeightOverride(16.0f)
+				[
+					SNew(SImage)
+					.Image(FCrowdyStudioStyle::IconBrush(TEXT("sidebar")))
+					.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary()))
+				]
+			]
+		]
+		+ SHorizontalBox::Slot().FillWidth(1.0f)
+		[
+			SNew(SBox).Visibility_Lambda([this]() { return bNavCollapsed ? EVisibility::Visible : EVisibility::Collapsed; })
+		];
 
 	// Guided setup first, then the overview.
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavWizard", "Setup Wizard"), TEXT("wand"), CrowdyStudioPages::Wizard, false) ];
@@ -267,17 +313,20 @@ TSharedRef<SWidget> SCrowdyStudioWindow::BuildNavRail()
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavInspector", "Inspector"), TEXT("inspector"), CrowdyStudioPages::Inspector, false) ];
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavRegistry", "Registry"), TEXT("config"), CrowdyStudioPages::Registry, false) ];
 
-	return SNew(SBox).WidthOverride(200.0f)
+	return SNew(SBox).WidthOverride_Lambda([this]() { return bNavCollapsed ? 62.0f : 200.0f; })
 	[
 		SNew(SBorder)
 		.BorderImage(FCrowdyStudioStyle::Get().GetBrush("Crowdy.Rail"))
 		.Padding(FMargin(10.0f, 12.0f))
 		[
 			SNew(SVerticalBox)
-			// Scrollable nav items so nothing is lost when the window is short.
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 6.0f)[ FoldToggle ]
+			// Scrollable nav items so nothing is lost when the window is short. No scrollbar: the folded rail has
+			// no width to spare for one, and the wheel still scrolls.
 			+ SVerticalBox::Slot().FillHeight(1.0f)
 			[
 				SNew(SScrollBox)
+				.ScrollBarVisibility(EVisibility::Collapsed)
 				+ SScrollBox::Slot()[ Nav ]
 			]
 			// Web console pinned at the bottom.
@@ -323,6 +372,8 @@ TSharedRef<SWidget> SCrowdyStudioWindow::BuildStatusBar()
 TSharedRef<SWidget> SCrowdyStudioWindow::MakeNavButton(const FText& Label, const TCHAR* IconName, int32 PageIndex, bool bRequiresSignIn)
 {
 	const FSlateBrush* IconBrush = FCrowdyStudioStyle::IconBrush(IconName);
+	auto FoldedOnly = [this]() { return bNavCollapsed ? EVisibility::Visible : EVisibility::Collapsed; };
+	auto LabelsOnly = [this]() { return bNavCollapsed ? EVisibility::Collapsed : EVisibility::Visible; };
 
 	auto Enabled = [this, bRequiresSignIn]()
 	{
@@ -355,14 +406,18 @@ TSharedRef<SWidget> SCrowdyStudioWindow::MakeNavButton(const FText& Label, const
 		.Padding(0.0f)
 		[
 			SNew(SButton)
-			.ButtonStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Button.Nav")
-			.ContentPadding(FMargin(10.0f, 7.0f))
+			.ButtonStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Button.Nav.Flush")
+			.ContentPadding(TAttribute<FMargin>::CreateLambda([this]() { return bNavCollapsed ? FMargin(11.0f, 14.0f) : FMargin(23.0f, 14.0f); }))
 			.HAlign(HAlign_Fill)
 			.IsEnabled_Lambda(Enabled)
+			.ToolTipText_Lambda([this, Label]() { return bNavCollapsed ? Label : FText::GetEmpty(); })
 			.OnClicked_Lambda([this, PageIndex]() { ShowPage(PageIndex); return FReply::Handled(); })
 			[
+				// Folded: a spacer either side centres the icon. Showing labels: the spacers collapse and the label fills.
 				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 10.0f, 0.0f)
+				+ SHorizontalBox::Slot().FillWidth(1.0f)[ SNew(SBox).Visibility_Lambda(FoldedOnly) ]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				.Padding(TAttribute<FMargin>::CreateLambda([this]() { return bNavCollapsed ? FMargin(0.0f) : FMargin(0.0f, 0.0f, 10.0f, 0.0f); }))
 				[
 					SNew(SBox).WidthOverride(18.0f).HeightOverride(18.0f)
 					[
@@ -377,7 +432,9 @@ TSharedRef<SWidget> SCrowdyStudioWindow::MakeNavButton(const FText& Label, const
 					.Text(Label)
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
 					.ColorAndOpacity_Lambda(TextTint)
+					.Visibility_Lambda(LabelsOnly)
 				]
+				+ SHorizontalBox::Slot().FillWidth(1.0f)[ SNew(SBox).Visibility_Lambda(FoldedOnly) ]
 			]
 		];
 }
@@ -385,12 +442,15 @@ TSharedRef<SWidget> SCrowdyStudioWindow::MakeNavButton(const FText& Label, const
 TSharedRef<SWidget> SCrowdyStudioWindow::MakeWebNavButton(const FText& Label, const TCHAR* IconName, TFunction<FString()> UrlGetter)
 {
 	const FSlateBrush* IconBrush = FCrowdyStudioStyle::IconBrush(IconName);
+	auto FoldedOnly = [this]() { return bNavCollapsed ? EVisibility::Visible : EVisibility::Collapsed; };
+	auto LabelsOnly = [this]() { return bNavCollapsed ? EVisibility::Collapsed : EVisibility::Visible; };
 
 	return SNew(SButton)
-		.ButtonStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Button.Secondary")
-		.ContentPadding(FMargin(10.0f, 7.0f))
+		.ButtonStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Button.Secondary.Flush")
+		.ContentPadding(TAttribute<FMargin>::CreateLambda([this]() { return bNavCollapsed ? FMargin(11.0f, 14.0f) : FMargin(23.0f, 14.0f); }))
 		.HAlign(HAlign_Fill)
 		.IsEnabled_Lambda([this]() { return Controller.IsValid() && Controller->IsSignedIn(); })
+		.ToolTipText_Lambda([this, Label]() { return bNavCollapsed ? Label : FText::GetEmpty(); })
 		.OnClicked_Lambda([this, UrlGetter]()
 		{
 			if (PageSwitcher.IsValid() && WebView.IsValid())
@@ -404,7 +464,9 @@ TSharedRef<SWidget> SCrowdyStudioWindow::MakeWebNavButton(const FText& Label, co
 		})
 		[
 			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+			+ SHorizontalBox::Slot().FillWidth(1.0f)[ SNew(SBox).Visibility_Lambda(FoldedOnly) ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			.Padding(TAttribute<FMargin>::CreateLambda([this]() { return bNavCollapsed ? FMargin(0.0f) : FMargin(0.0f, 0.0f, 8.0f, 0.0f); }))
 			[
 				SNew(SBox).WidthOverride(16.0f).HeightOverride(16.0f)
 				[
@@ -418,7 +480,9 @@ TSharedRef<SWidget> SCrowdyStudioWindow::MakeWebNavButton(const FText& Label, co
 				SNew(STextBlock).Text(Label)
 				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
 				.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary()))
+				.Visibility_Lambda(LabelsOnly)
 			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f)[ SNew(SBox).Visibility_Lambda(FoldedOnly) ]
 		];
 }
 

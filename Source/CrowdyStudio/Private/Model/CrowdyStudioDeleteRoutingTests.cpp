@@ -155,11 +155,11 @@ bool FCrowdyStudioSchemaSaveRefusesAcrossAppsTest::RunTest(const FString& /*Para
 	const TSharedRef<FCrowdyStudioController> Controller = MakeShared<FCrowdyStudioController>();
 	FCrowdyStudioControllerTestAccess::SetSelectedApp(*Controller, 200);
 
-	Controller->UpsertContainerType(TEXT("Knight"), TEXT("Knight"), FString(), FString(), FString(),
+	Controller->UpsertContainerType(TEXT("Knight"), TEXT("Knight"), FString(), FString(), FString(), FString(),
 		/*ExpectedAppId*/ 100);
 	TestTrue(TEXT("Saving a model loaded from another app is refused"),
 		Controller->GetStatusMessage().Contains(CrowdyDeleteRoutingWrongAppPhrase));
-	Controller->UpsertContainerType(TEXT("Knight"), TEXT("Knight"), FString(), FString(), FString(),
+	Controller->UpsertContainerType(TEXT("Knight"), TEXT("Knight"), FString(), FString(), FString(), FString(),
 		/*ExpectedAppId*/ 200);
 	TestFalse(TEXT("Saving a model of the selected app is not refused by the app check"),
 		Controller->GetStatusMessage().Contains(CrowdyDeleteRoutingWrongAppPhrase));

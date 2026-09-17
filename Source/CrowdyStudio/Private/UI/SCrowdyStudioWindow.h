@@ -53,6 +53,9 @@ private:
 	// Resolves the web console URL for the current org; set before the nav rail is built.
 	TFunction<FString()> WebOverviewLink;
 
+	// The rail folded to icons only. Persisted per user; the label slots collapse rather than rebuild.
+	bool bNavCollapsed = false;
+
 	int32 ActiveIndex = 0;
 	FCurveSequence PageAnim;
 	FCurveHandle PageFade;

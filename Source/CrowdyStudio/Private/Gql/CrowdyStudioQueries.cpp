@@ -58,13 +58,27 @@ namespace
 		Node->TryGetStringField(TEXT("visibility"), Out.Visibility);
 		Node->TryGetStringField(TEXT("gameApiUrl"), Out.GameApiUrl);
 		Node->TryGetStringField(TEXT("deploymentTarget"), Out.DeploymentTarget);
+		Node->TryGetStringField(TEXT("description"), Out.Description);
+		Node->TryGetStringField(TEXT("createdAt"), Out.CreatedAt);
+		Node->TryGetStringField(TEXT("updatedAt"), Out.UpdatedAt);
+		Node->TryGetStringField(TEXT("runtimeStatus"), Out.RuntimeStatus);
+		Node->TryGetStringField(TEXT("runtimeDenialReason"), Out.RuntimeDenialReason);
+		Out.ReservedUdpBytesPerSec = ReadId(Node, TEXT("reservedUdpBytesPerSec"));
+		Out.ReservedGraphqlOpsPerSec = ReadId(Node, TEXT("reservedGraphqlOpsPerSec"));
+
+		const TSharedPtr<FJsonObject>* OrgNode = nullptr;
+		if (Node->TryGetObjectField(TEXT("org"), OrgNode) && OrgNode->IsValid())
+		{
+			(*OrgNode)->TryGetStringField(TEXT("name"), Out.OrgName);
+			(*OrgNode)->TryGetStringField(TEXT("slug"), Out.OrgSlug);
+		}
 
 		bool bSplitMode = false;
 		if (Node->TryGetBoolField(TEXT("splitMode"), bSplitMode))
 		{
 			Out.SplitMode = bSplitMode ? TEXT("true") : TEXT("false");
 		}
-		// App has no gameApiWsUrl - the WS endpoint comes from platformConfig.
+		// App has no gameApiWsUrl or datacenter; both come from appDiscovery.
 	}
 
 	void ReadStringArray(const TSharedPtr<FJsonObject>& Node, const TCHAR* Field, TArray<FString>& Out)
@@ -175,6 +189,9 @@ namespace
 		Node->TryGetStringField(TEXT("description"), Out.Description);
 		Node->TryGetStringField(TEXT("instantiableBy"), Out.InstantiableBy);
 		Node->TryGetStringField(TEXT("defaultPropertyVisibility"), Out.DefaultPropertyVisibility);
+		// Absent on an older server, so the struct default (session) stands.
+		Node->TryGetStringField(TEXT("scope"), Out.Scope);
+		Node->TryGetStringField(TEXT("bindPolicyJson"), Out.BindPolicyJson);
 		Node->TryGetStringField(TEXT("metadataJson"), Out.MetadataJson);
 	}
 
@@ -485,6 +502,142 @@ namespace CrowdyStudioGql
 		TSharedPtr<FStudioApp> App = MakeShared<FStudioApp>();
 		ReadApp(*Node, *App);
 		return App;
+	}
+
+	bool ParseAppDiscovery(const TSharedPtr<FJsonObject>& Envelope, int64 AppId, FStudioApp& InOutApp)
+	{
+		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
+		if (!Data.IsValid())
+		{
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+		if (!Data->TryGetArrayField(TEXT("appDiscovery"), Array))
+		{
+			return false;
+		}
+
+		for (const TSharedPtr<FJsonValue>& Entry : *Array)
+		{
+			const TSharedPtr<FJsonObject>* Node = nullptr;
+			if (!Entry->TryGetObject(Node) || !Node->IsValid() || ReadId(*Node, TEXT("appId")) != AppId)
+			{
+				continue;
+			}
+			// A null answer clears a previously merged value: an app an operator un-placed must not keep its old code.
+			// The HTTP endpoint is deliberately NOT taken from here; the app record's own gameApiUrl is the one
+			// routing source the config sync writes, and two sources for one field would race on every refresh.
+			InOutApp.DatacenterCode.Reset();
+			InOutApp.GameApiWsUrl.Reset();
+			(*Node)->TryGetStringField(TEXT("datacenterCode"), InOutApp.DatacenterCode);
+			(*Node)->TryGetStringField(TEXT("gameApiWsUrl"), InOutApp.GameApiWsUrl);
+			return true;
+		}
+		return false;
+	}
+
+	void ParsePlaceableDatacenters(const TSharedPtr<FJsonObject>& Envelope, TArray<FStudioDatacenter>& OutDatacenters, bool& bOutPlacementEnforced)
+	{
+		OutDatacenters.Reset();
+		bOutPlacementEnforced = false;
+
+		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
+		if (!Data.IsValid())
+		{
+			return;
+		}
+
+		const TSharedPtr<FJsonObject>* Root = nullptr;
+		if (!Data->TryGetObjectField(TEXT("placeableDatacenters"), Root) || !Root->IsValid())
+		{
+			return;
+		}
+		(*Root)->TryGetBoolField(TEXT("placementEnforced"), bOutPlacementEnforced);
+
+		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+		if (!(*Root)->TryGetArrayField(TEXT("datacenters"), Array))
+		{
+			return;
+		}
+
+		for (const TSharedPtr<FJsonValue>& Entry : *Array)
+		{
+			const TSharedPtr<FJsonObject>* Node = nullptr;
+			if (!Entry->TryGetObject(Node) || !Node->IsValid())
+			{
+				continue;
+			}
+			FStudioDatacenter& Dc = OutDatacenters.AddDefaulted_GetRef();
+			(*Node)->TryGetStringField(TEXT("code"), Dc.Code);
+			(*Node)->TryGetStringField(TEXT("gameApiUrl"), Dc.GameApiUrl);
+			(*Node)->TryGetStringField(TEXT("gameApiWsUrl"), Dc.GameApiWsUrl);
+			(*Node)->TryGetBoolField(TEXT("placeable"), Dc.bPlaceable);
+			(*Node)->TryGetNumberField(TEXT("appShardCount"), Dc.AppShardCount);
+			(*Node)->TryGetStringField(TEXT("serving"), Dc.Serving);
+		}
+	}
+
+	int32 ParseFreeAppsPerOrg(const TSharedPtr<FJsonObject>& Envelope)
+	{
+		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
+		if (!Data.IsValid())
+		{
+			return 0;
+		}
+		const TSharedPtr<FJsonObject>* Node = nullptr;
+		if (!Data->TryGetObjectField(TEXT("platformConfig"), Node) || !Node->IsValid())
+		{
+			return 0;
+		}
+		int32 Free = 0;
+		(*Node)->TryGetNumberField(TEXT("freeAppsPerOrg"), Free);
+		return Free;
+	}
+
+	TSharedPtr<FJsonObject> BuildCreateAppVariables(int64 OrgId, const FString& Name, const FString& Slug,
+		const FString& Datacenter, const FString& Description)
+	{
+		const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+		Input->SetStringField(TEXT("orgId"), FString::Printf(TEXT("%lld"), OrgId));
+		Input->SetStringField(TEXT("name"), Name);
+		Input->SetStringField(TEXT("slug"), Slug);
+		Input->SetStringField(TEXT("datacenter"), Datacenter);
+		if (!Description.IsEmpty())
+		{
+			Input->SetStringField(TEXT("description"), Description);
+		}
+
+		const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+		Variables->SetObjectField(TEXT("input"), Input);
+		return Variables;
+	}
+
+	FString SlugFromName(const FString& Name)
+	{
+		FString Slug;
+		Slug.Reserve(Name.Len());
+		bool bPendingDash = false;
+		for (const TCHAR C : Name)
+		{
+			const bool bKeep = (C >= TEXT('a') && C <= TEXT('z')) || (C >= TEXT('0') && C <= TEXT('9'));
+			const bool bUpper = C >= TEXT('A') && C <= TEXT('Z');
+			if (!bKeep && !bUpper)
+			{
+				bPendingDash = !Slug.IsEmpty();
+				continue;
+			}
+			if (bPendingDash)
+			{
+				Slug.AppendChar(TEXT('-'));
+				bPendingDash = false;
+			}
+			Slug.AppendChar(bUpper ? static_cast<TCHAR>(C - TEXT('A') + TEXT('a')) : C);
+		}
+		Slug.LeftInline(128);
+		// Runs are already collapsed, so one chop keeps the cut idempotent.
+		Slug.RemoveFromEnd(TEXT("-"));
+		return Slug;
 	}
 
 	// Teams & channels (game plane).
@@ -1077,6 +1230,20 @@ namespace CrowdyStudioGql
 		return true;
 	}
 
+	bool ParseSeedContainers(const TSharedPtr<FJsonObject>& Envelope, int32& OutCreated, FString& OutIdMapJson)
+	{
+		OutCreated = 0;
+		OutIdMapJson.Reset();
+		const TSharedPtr<FJsonObject> Node = GetDataNode(Envelope, TEXT("gameModelSeed"));
+		if (!Node.IsValid())
+		{
+			return false;
+		}
+		Node->TryGetNumberField(TEXT("containersCreated"), OutCreated);
+		Node->TryGetStringField(TEXT("idMapJson"), OutIdMapJson);
+		return true;
+	}
+
 	void ParseContainers(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
 	                     TArray<TSharedPtr<FStudioContainer>>& OutContainers)
 	{
@@ -1127,5 +1294,37 @@ namespace CrowdyStudioGql
 		Node->TryGetStringField(TEXT("propertiesJson"), OutState.PropertiesJson);
 		OutState.bValid = true;
 		return true;
+	}
+
+	void ParseSessions(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, TArray<FStudioSession>& OutSessions)
+	{
+		OutSessions.Reset();
+		const TSharedPtr<FJsonObject> Data = GetData(Envelope);
+		if (!Data.IsValid())
+		{
+			return;
+		}
+		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+		if (!Data->TryGetArrayField(OpName, Array))
+		{
+			return;
+		}
+		for (const TSharedPtr<FJsonValue>& Entry : *Array)
+		{
+			const TSharedPtr<FJsonObject>* Node = nullptr;
+			if (!Entry->TryGetObject(Node) || !Node->IsValid())
+			{
+				continue;
+			}
+			// A session without an id would read as the app scope; drop it rather than offer it.
+			FStudioSession Session;
+			if (!(*Node)->TryGetStringField(TEXT("sessionId"), Session.SessionId) || Session.SessionId.IsEmpty())
+			{
+				continue;
+			}
+			(*Node)->TryGetStringField(TEXT("name"), Session.Name);
+			(*Node)->TryGetStringField(TEXT("status"), Session.Status);
+			OutSessions.Add(MoveTemp(Session));
+		}
 	}
 }

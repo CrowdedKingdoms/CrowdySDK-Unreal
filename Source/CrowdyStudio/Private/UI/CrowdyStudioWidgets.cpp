@@ -2,6 +2,7 @@
 
 #include "UI/CrowdyStudioWidgets.h"
 
+#include "HAL/PlatformApplicationMisc.h"
 #include "Style/CrowdyStudioStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateStyle.h"
@@ -132,6 +133,11 @@ TSharedRef<SWidget> CrowdyStudioWidgets::Badge(const FText& Label, EBadgeTone To
 		];
 }
 
+FLinearColor CrowdyStudioWidgets::ColorForTone(EBadgeTone Tone)
+{
+	return StrongForTone(Tone);
+}
+
 CrowdyStudioWidgets::EBadgeTone CrowdyStudioWidgets::ToneForStatus(const FString& Status)
 {
 	const FString S = Status.ToUpper();
@@ -161,6 +167,39 @@ TSharedRef<SWidget> CrowdyStudioWidgets::Chip(const FText& Text)
 			.Font(FCoreStyle::GetDefaultFontStyle("Mono", 9))
 			.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary()))
 		];
+}
+
+TSharedRef<SWidget> CrowdyStudioWidgets::CopyButton(TAttribute<FString> Value, const FText& What)
+{
+	return SNew(SButton)
+		.ButtonStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Button.Ghost")
+		.ContentPadding(FMargin(3.0f, 2.0f))
+		.ToolTipText(FText::Format(LOCTEXT("CopyTip", "Copy {0}"), What))
+		.OnClicked_Lambda([Value]()
+		{
+			FPlatformApplicationMisc::ClipboardCopy(*Value.Get());
+			return FReply::Handled();
+		})
+		[ Icon(TEXT("copy"), 13.0f, FSlateColor(FCrowdyStudioStyle::TextSecondary())) ];
+}
+
+TSharedRef<SWidget> CrowdyStudioWidgets::CopyChip(TAttribute<FString> Value, const FText& What)
+{
+	return SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+		[
+			SNew(SBorder)
+			.BorderImage(FCrowdyStudioStyle::Get().GetBrush("Crowdy.Chip"))
+			.Padding(FMargin(6.0f, 1.0f))
+			[
+				SNew(STextBlock)
+				.Text_Lambda([Value]() { return FText::FromString(Value.Get()); })
+				.Font(FCoreStyle::GetDefaultFontStyle("Mono", 9))
+				.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary()))
+			]
+		]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.0f, 0.0f, 0.0f, 0.0f)
+		[ CopyButton(Value, What) ];
 }
 
 TSharedRef<SWidget> CrowdyStudioWidgets::Field(const FText& Label, const TSharedRef<SWidget>& Input, const FText& Hint)

@@ -57,6 +57,9 @@ public:
 	void MuteVoiceChat();
 	void SetStreamTimeoutThreshold(const float InSeconds);
 
+	// True only while the capture device stream is open and delivering samples, so a start that found no device reads false.
+	bool IsCapturing() const { return bIsCapturing.load(); }
+
 protected:
 
 	virtual void Tick(float DeltaTime) override;

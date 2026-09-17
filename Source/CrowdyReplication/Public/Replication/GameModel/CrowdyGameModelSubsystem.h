@@ -9,12 +9,15 @@
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Subscription/FCrowdySubscription.h"
 #include "Network/GraphQL/FCrowdyGameApiCodec.h"
+#include "Replication/GameModel/CrowdyContainerManifestApply.h"
 #include "Replication/GameModel/CrowdyContainerStandIn.h"
 #include "Replication/GameModel/CrowdyGameModelSessionTypes.h"
 #include "Replication/GameModel/CrowdyModelNotificationSink.h"
 #include "Replication/Subsystems/ICrowdyEntitySubscriber.h"
 #include "CrowdyGameModelSubsystem.generated.h"
 
+class UCrowdyContainerManifest;
+class UCrowdyActiveSessionMemory;
 class UCrowdyEntitySubsystem;
 class UCrowdyEventRouter;
 class UCrowdyGameSession;
@@ -227,6 +230,14 @@ public:
 	static constexpr int32 InvokeBudgetWindowSeconds = 10;
 	static constexpr int32 InvokeBudgetLimitPerWindow = 120;
 
+	// One pending entity a bulk list page named: bound exactly as a single ensure's row would be.
+	struct FCrowdyBulkResolveHit
+	{
+		FGuid NetID;
+		FString ContainerId;
+		int64 OwnerUserId = 0;
+	};
+
 	// Bounds on how far the governor may stretch an authored coalesce window, and the absolute ceiling no window may
 	// pass however much of the allowance is spent. A stretched window trades latency for allowance, so the cap is what
 	// stops relief from turning into an effect that visibly lands seconds late.
@@ -353,6 +364,16 @@ public:
 	// be applied twice.
 	void Invoke(const FCrowdyInvokeRequest& Req, TFunction<void(FCrowdyInvokeResult)> OnDone);
 	void PullContainerState(const FString& ContainerId, TFunction<void(bool, TSharedPtr<FJsonObject>)> OnDone);
+	// Many containers' state in one read, chunked at MaxContainerStatesPerCall; bOk when any chunk answered, and an id
+	// the server omitted is absent from the map.
+	void PullContainerStates(const TArray<FString>& ContainerIds,
+		TFunction<void(bool bOk, TMap<FString, TSharedPtr<FJsonObject>> StatesById)> OnDone);
+	// The same read keeping every row's type, session and owner, in the order the server returned them.
+	void PullContainerStateRows(const TArray<FString>& ContainerIds,
+		TFunction<void(bool bOk, TArray<FCrowdyGameApiCodec::FContainerStateRow> Rows)> OnDone);
+	// Bulk state calls sent and rows received so far, for a diagnostic line.
+	int32 GetBulkStateCallCount() const { return BulkStateCallCount; }
+	int32 GetBulkStateRowCount() const { return BulkStateRowCount; }
 	void ListContainers(const FString& TypeName, const FString& SessionId,
 		TFunction<void(bool, TArray<TSharedPtr<FJsonObject>>)> OnDone);
 
@@ -360,6 +381,8 @@ public:
 	// automatically by ResolveOrCreateContainer below.
 	void BindEntityContainer(const FGuid& NetID, const FString& ContainerId);
 	bool TryGetContainerId(const FGuid& NetID, FString& OutContainerId) const;
+	// Every server container id this client has bound an entity to, each once, in no particular order.
+	void GetBoundContainerIds(TArray<FString>& OutContainerIds) const;
 
 	// The container TYPE a bound server container id was bound as, or false when this client has bound no entity to
 	// it. The type comes from the class declaration this client resolved at bind time and never off a payload, so a
@@ -504,6 +527,15 @@ public:
 		TFunction<void(bool bOk, const TArray<FCrowdyGameModelSession>& Sessions)> OnDone);
 	void ListSessions(const FString& Status, TFunction<void(bool bOk, const TArray<FCrowdyGameModelSession>& Sessions)> OnDone);
 	void GetSession(const FString& SessionId, TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone);
+
+	// Creates the rows a container manifest names, in SessionId (empty: the active session, else the app scope;
+	// bIgnoreActiveSession makes an empty SessionId mean the app scope outright), eight at a time, paced on the
+	// shared allowance and stopping at the first failure it cannot retry. Creation is authorised by the type's
+	// server policy, so a caller that may not create (a non-host on a host-only type) gets the refusal as the first
+	// failure. Every row counts against the allowance, so gameplay invokes right after a large apply see it spent.
+	// OnDone fires exactly once, on world teardown too.
+	void ApplyContainerManifest(const UCrowdyContainerManifest* Manifest, const FString& SessionId,
+		bool bIgnoreActiveSession, TFunction<void(const FCrowdyApplyManifestResult&)> OnDone);
 	// The session with its participants as of one revision: the resync read after a cue or a revision gap.
 	void GetSessionSnapshot(const FString& SessionId,
 		TFunction<void(bool bOk, const FCrowdyGameModelSessionSnapshot& Snapshot)> OnDone);
@@ -525,6 +557,8 @@ public:
 	static const TCHAR* SessionAdmissionWord(ECrowdySessionAdmission Admission);
 	static ECrowdySessionPresence ParseSessionPresence(const FString& Word);
 	static const TCHAR* SessionPresenceWord(ECrowdySessionPresence Presence);
+	static ECrowdySessionSeedState ParseSessionSeedState(const FString& Word);
+	static const TCHAR* SessionSeedStateWord(ECrowdySessionSeedState State);
 	static ECrowdySessionEndReason ParseSessionEndReason(const FString& Word);
 	static ECrowdySessionParticipantState ParseParticipantState(const FString& Word);
 	static ECrowdySessionLeftReason ParseLeftReason(const FString& Word);
@@ -572,7 +606,9 @@ public:
 
 	// Default session context. Set the active session once and every Game Model call that takes a Session Id may
 	// leave that pin empty to operate on it, so gameplay code stops threading the same session string through every
-	// node. World-scoped: cleared on world teardown. An explicit Session Id on a call still wins over the active one.
+	// node. Remembered on the game instance (UCrowdyActiveSessionMemory), so it survives a map travel and the next
+	// map's placed entities register inside it; Clear, Leave and End forget it. An explicit Session Id on a call
+	// still wins over the active one.
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Set Active Crowdy Session"))
 	void SetActiveSession(const FString& SessionId);
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Get Active Crowdy Session"))
@@ -584,6 +620,14 @@ public:
 	// (non-empty) session id wins; otherwise the active session; otherwise empty (an app-global call). Pure + static
 	// so every subsystem boundary resolves identically and the order is headless-testable.
 	static FString ResolveSessionId(const FString& Explicit, const FString& Active);
+
+	// The session a container call for TypeName binds under: empty for an app-scoped type, else ResolveSessionId.
+	// Invokes keep ResolveSessionId, where the session is context rather than scope.
+	FString ResolveContainerSessionId(const FString& TypeName, const FString& SessionId) const;
+
+	// Whether TypeName was recorded as app-scoped (meta=(CrowdyScope="App") on its class). A type nothing has
+	// registered or resolved yet reads as session-scoped.
+	bool IsContainerTypeAppScoped(const FString& TypeName) const;
 
 	// Last-error cache. The most recent server/transport error string the subsystem observed (or a caller set), so a
 	// UI can read a human reason after a failed call without threading it through every callback. Game-thread only.
@@ -719,6 +763,10 @@ public:
 	// Injects the entity subsystem that Initialize() normally caches, so a headless test (which never runs
 	// Initialize) can exercise the real ResolveTargetNetID / ResolveEntityParticipant against enrolled participants.
 	void SetEntitySubsystemForTest(UCrowdyEntitySubsystem* InEntities) { EntitySubsystemForEvents = InEntities; }
+	// Attaches the game-instance memory Initialize normally resolves and restores from it, the same path a new
+	// world takes after a travel.
+	void AttachSessionMemoryForTest(UCrowdyActiveSessionMemory* InMemory);
+	void ForgetActiveSessionIfForTest(const FString& SessionId) { ForgetActiveSessionIf(SessionId); }
 	// Injects the router whose entity-subscriber slot the relay reads, for the same reason: a headless test has no
 	// world to resolve one from. The subscriber is registered on the router itself, exactly as it is at runtime,
 	// so a test still exercises the one registration rather than a second one that exists only for tests.
@@ -844,6 +892,41 @@ public:
 	// How many container resolves started, so a test can prove a redraw that reuses a binding starts none. This is
 	// the point a bind begins to spend the Game API allowance, so it is what "costs no call" has to be measured at.
 	int32 GetContainerResolveStartCountForTest() const { return ContainerResolveStartCount; }
+	// How many list pages the bulk resolve read and how many entities it bound from them, so a test can prove N
+	// shared entities of one type cost pages, not N ensures.
+	int32 GetBulkResolveListCallCountForTest() const { return BulkResolveListCallCount; }
+	int32 GetBulkResolveHitCountForTest() const { return BulkResolveHitCount; }
+	// How many (type, session) groups the sweep handed to the bulk path, counted before any network or token
+	// question, so a headless test can prove N shared entities of one type dispatch once and ensure nothing.
+	int32 GetBulkResolveDispatchCountForTest() const { return BulkResolveDispatchCount; }
+	// The call count a bulk state read of N ids costs, so a test can prove N ids cost ceil(N/500) calls.
+	static int32 ContainerStateCallsForTest(int32 IdCount) { return ContainerStateCallsFor(IdCount); }
+	// The ids the ChunkIndex-th bulk state call carries, the same slicing the read sends, so a test can prove no
+	// call exceeds the server's cap and the last call carries the remainder.
+	static void ContainerStateChunkForTest(const TArray<FString>& ContainerIds, int32 ChunkIndex, TArray<FString>& OutChunk)
+	{
+		ContainerStateChunk(ContainerIds, ChunkIndex, OutChunk);
+	}
+	// Records a type as app-scoped without a class in hand, so the session-resolution rule is provable on its own.
+	void MarkContainerTypeAppScopedForTest(const FString& TypeName) { AppScopedByTypeName.Add(TypeName, true); }
+	// The session the sweep handed the bulk path for TypeName's group, so a test can prove an app-scoped type's group
+	// lists with no session while a session-scoped one lists under the active session.
+	bool TryGetBulkResolveDispatchSessionForTest(const FString& TypeName, FString& OutSession) const
+	{
+		const FString* Found = BulkResolveDispatchSessionByType.Find(TypeName);
+		if (!Found)
+		{
+			return false;
+		}
+		OutSession = *Found;
+		return true;
+	}
+	static void MatchContainerRowsForTest(const TArray<FCrowdyGameApiCodec::FContainerRow>& Rows,
+		const TMap<FString, FGuid>& NetIDByKey, const FString& ResolvedSession, TArray<FCrowdyBulkResolveHit>& OutHits)
+	{
+		MatchContainerRows(Rows, NetIDByKey, ResolvedSession, OutHits);
+	}
+	bool IsBulkResolveEligibleForTest(const FGuid& NetID) const { return IsBulkResolveEligible(NetID); }
 	// How many containers are waiting to be pulled, and which entity each will be pulled for, so a test can prove
 	// K notifications coalesce into one pull and that the pull carries the LATEST of them.
 	int32 GetPendingRefreshPullCountForTest() const { return PendingRefreshPulls.Num(); }
@@ -883,6 +966,7 @@ public:
 		bShuttingDown = true;
 		FailPendingCoalesceWindows();
 		FailPendingInvokeRetries();
+		FailPendingManifestApplies();
 	}
 #endif
 
@@ -981,6 +1065,70 @@ private:
 	// would silently give every such entity the default (pull) whatever its container type says.
 	bool ShouldPullOnRetryForEntity(const FGuid& NetID) const;
 
+	// Bulk resolve. A Host-owned entity's container is world identity, the same row on every client, so a level's
+	// worth of them of one type bind from a few list pages instead of one ensure each. BindParticipantContainer
+	// parks such an entity for the next sweep; the sweep groups the pending eligible entities by type, reads each
+	// type's rows page by page, binds every key it matches and falls the misses through to the per-entity ensure,
+	// which remains the only path that creates a row. Off with crowdy.gamemodel.bulkresolve 0.
+	// The app-global list omits the session, so every session's rows of that type share the page ceiling; past it
+	// the rest fall through to their own ensure, correct and only dearer.
+	static constexpr int32 BulkResolvePageSize = 1000;
+	static constexpr int32 BulkResolveMaxPagesPerType = 50;
+	// A parked entity waits this long for the rest of its registration burst, not a whole sweep interval.
+	static constexpr float BulkResolveGatherSeconds = 0.25f;
+	struct FCrowdyBulkResolveRun;
+	static bool IsBulkResolveEnabled();
+	bool IsBulkResolveEligible(const FGuid& NetID) const;
+	// Pure: the rows whose own session equals ResolvedSession and whose key names a pending entity. Both checks are
+	// the client's, never trusted to the server's filter.
+	static void MatchContainerRows(const TArray<FCrowdyGameApiCodec::FContainerRow>& Rows,
+		const TMap<FString, FGuid>& NetIDByKey, const FString& ResolvedSession, TArray<FCrowdyBulkResolveHit>& OutHits);
+	// Called by the sweep with the entities of one (type, session) group; the session is the one each entity was
+	// parked under, so every client binds the scope its registration saw, as the inline ensure did.
+	void BulkResolveType(const FString& TypeName, const FString& ResolvedSession, const TArray<FGuid>& NetIDs,
+		const FString& Endpoint, const FString& Token, int64 AppId);
+	void ReadBulkResolvePage(const TSharedRef<FCrowdyBulkResolveRun>& Run, int32 Offset);
+	void FinishBulkResolve(const TSharedRef<FCrowdyBulkResolveRun>& Run, bool bListOk);
+	// The one bind every resolved row goes through: the single ensure, the read-by-key and a bulk hit alike.
+	// Clears the in-flight guard, refuses an entity that unregistered during the round trip, binds, caches the owner.
+	bool BindResolvedRow(const FGuid& NetID, const FString& ContainerId, int64 OwnerUserId);
+	// The scope an eligible entity was parked under; read by the sweep's grouping and the miss ensure.
+	TMap<FGuid, FString> PendingSessionByNetID;
+	TSet<FGuid> BulkResolveInFlight;
+	// Keyed by type + session, the list a run reads.
+	TSet<FString> BulkResolveGroupsInFlight;
+	TMap<FString, double> BulkResolveTypeNextAttempt;
+	TMap<FString, int32> BulkResolveTypeFailures;
+	int32 BulkResolveDispatchCount = 0;
+	// Type name -> the session its last dispatched group listed under, for the test accessor.
+	TMap<FString, FString> BulkResolveDispatchSessionByType;
+	int32 BulkResolveListCallCount = 0;
+	int32 BulkResolveHitCount = 0;
+
+	// Bulk state reads: calls sent and rows received, diagnostics printed with the bulk-resolve trace.
+	int32 BulkStateCallCount = 0;
+	int32 BulkStateRowCount = 0;
+	// The number of calls a bulk state read of IdCount ids costs, one per MaxContainerStatesPerCall ids.
+	static int32 ContainerStateCallsFor(int32 IdCount);
+	// The ids the ChunkIndex-th call carries: at most MaxContainerStatesPerCall, in input order, empty past the end.
+	static void ContainerStateChunk(const TArray<FString>& ContainerIds, int32 ChunkIndex, TArray<FString>& OutChunk);
+	// The bound (ContainerId, NetID) pairs a bulk state read applies to: every row is applied to the entity its id
+	// was pulled for, resolved at apply time so an entity gone in the meantime is skipped.
+	void PullAndApplyContainerStates(TArray<TPair<FString, FGuid>>&& Targets);
+
+	// Container type name -> whether its class declares CrowdyScope="App". Filled where a registering entity's type is
+	// resolved from its class, and by name for a create or manifest row of a type nothing has registered yet.
+	TMap<FString, bool> AppScopedByTypeName;
+	// Type names whose class lookup missed, so the lookup is not repeated per row; a class registering later clears one.
+	TSet<FString> ContainerScopeUnresolved;
+	void RecordContainerScope(const FString& TypeName, const UClass* Class);
+	// Resolves an unrecorded type through its class by name; a type whose class is not loaded reads as session-scoped.
+	void EnsureContainerScopeKnown(const FString& TypeName);
+
+	// Says what a container-level refusal means: an app-scoped type bound with a session names the declaration to add,
+	// once per type; a model refusal goes through ReportModelRefusalOnce.
+	void ReportContainerRefusal(const FString& Code, const FString& TypeName, const FString& Message);
+
 	// Says once, on the first entity it happens to, that an entity records a class this client never loaded. That
 	// entity's container declaration is unreadable here, so it binds nothing and every effect aimed at it is
 	// refused, which is otherwise indistinguishable from a server that has not created the rows yet.
@@ -1022,8 +1170,9 @@ private:
 	// Ask for a pending-entity sweep soon. This is what a notification calls: it arms the sweep timer if it is not
 	// already armed, so a burst of notifications costs one sweep rather than one per notification. Sweeping directly
 	// per notification is what turned an ordinary state-change storm into one network round trip per pending entity
-	// per notification.
-	void RequestPendingModelEntitySweep();
+	// per notification. A shorter DelaySeconds pulls an armed sweep closer; a longer one never pushes it out. A sweep
+	// running inside its own timer callback counts as unarmed, so it can re-arm itself for what is left.
+	void RequestPendingModelEntitySweep(float DelaySeconds = PendingSweepIntervalSeconds);
 
 	// Re-attempts resolve for every entity that registered with model attributes but has not bound yet: a remote
 	// proxy whose owner had not created the container when it registered, or an authoritative entity that could not
@@ -1045,8 +1194,15 @@ private:
 	void TouchCollectionParent(const FString& ParentContainerId, const FString& ParentTypeName);
 
 	// The active (default) session id every SessionId-taking call falls back to when its own pin is empty. Resolved
-	// through ResolveSessionId at each subsystem boundary. World-scoped: cleared in Deinitialize.
+	// through ResolveSessionId at each subsystem boundary. This world's copy: cleared in Deinitialize, restored from
+	// the game instance's memory in Initialize.
 	FString ActiveSessionId;
+
+	// The game-instance holder the active session is mirrored into, so a travel does not lose it.
+	TWeakObjectPtr<UCrowdyActiveSessionMemory> SessionMemory;
+	void RestoreActiveSessionFromMemory();
+	// A left or ended session that was the active one is forgotten, or it would follow the player into the next map.
+	void ForgetActiveSessionIf(const FString& SessionId);
 
 	// The most recent Game Model error the subsystem saw (or a caller set via SetLastModelError). Read via
 	// GetLastModelError. Cleared in Deinitialize. Game-thread only.
@@ -1533,6 +1689,9 @@ private:
 	// that would have caused it.
 	void FailPendingCoalesceWindows();
 	void FailPendingInvokeRetries();
+	// Every manifest apply still running is completed with what it managed, so its caller is told at teardown.
+	void FailPendingManifestApplies();
+	TArray<TSharedPtr<FCrowdyManifestApplyRunner>> ManifestApplies;
 
 	// Marks this world's Game Model session as live. The API client is owned by the game instance and outlives this
 	// world subsystem, so a request issued here can complete after the world has torn down. Dropping this token in

@@ -456,7 +456,10 @@ class GameModelAPI : public DomainBase {
   /// up to 8 AND-combined `{key, op, valueJson}` predicates (ops ==, !=, <,
   /// >, <=, >=; requires typeName; missing properties fall back to the type
   /// default — the same shape automation selectors use); limit/offset page
-  /// after filtering over the stable created-at ordering (pass -1 to omit).
+  /// over the stable (createdAt, containerId) ordering (pass -1 to omit). An
+  /// omitted limit is a page of 200 and the maximum is 1,000 (BAD_REQUEST
+  /// above); without `where` the page is read in SQL, with `where` the
+  /// predicates run after a bounded read of the type.
   graphql::Json containersWhere(std::string_view appId, std::string_view typeName,
                                 const graphql::JVal& where, int limit = -1, int offset = -1,
                                 std::string_view sessionId = {},
@@ -790,6 +793,22 @@ class GameModelAPI : public DomainBase {
     vars["appId"] = appId;
     vars["containerId"] = containerId;
     execUnwrapAsync(gen::gameModel::documentFor("GameModelContainerState"), vars, "GameModelContainerState",
+                    std::move(cb));
+  }
+  /// Bulk twin of containerState: identity plus the property state visible to
+  /// the caller for up to 500 containers in one call, same per-row visibility
+  /// rules. Ids the app does not hold are omitted, duplicates come back once,
+  /// order follows the input. After paging containers() (default 200, max
+  /// 1,000 per page) two of these pull a page's state.
+  graphql::Json containerStates(std::string_view appId,
+                                const std::vector<std::string>& containerIds) const {
+    return execUnwrap(gen::gameModel::documentFor("GameModelContainerStates"),
+                      containerStatesVars(appId, containerIds), "GameModelContainerStates");
+  }
+  void containerStatesAsync(std::string_view appId, const std::vector<std::string>& containerIds,
+                            graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::gameModel::documentFor("GameModelContainerStates"),
+                    containerStatesVars(appId, containerIds), "GameModelContainerStates",
                     std::move(cb));
   }
   graphql::Json traverse(const graphql::JVal& vars) const {
@@ -1277,6 +1296,16 @@ class GameModelAPI : public DomainBase {
     graphql::JVal vars;
     vars["appId"] = appId;
     vars["sessionId"] = sessionId;
+    return vars;
+  }
+  static graphql::JVal containerStatesVars(std::string_view appId,
+                                           const std::vector<std::string>& containerIds) {
+    graphql::JArray ids;
+    ids.reserve(containerIds.size());
+    for (const auto& id : containerIds) ids.emplace_back(id);
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    vars["containerIds"] = graphql::JVal(std::move(ids));
     return vars;
   }
   static graphql::JVal sessionsVars(std::string_view appId, std::string_view status,

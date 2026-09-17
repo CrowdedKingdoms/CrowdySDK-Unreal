@@ -333,8 +333,8 @@ void UCrowdyRegistryBaker::UpdateForClass(UClass* Class)
 	FString ContainerTypeName;
 	if (FCrowdyAttributeRegistry::GetContainerTypeName(Class, ContainerTypeName))
 	{
-		Registry->ModelClasses.Add(
-			{ Path, ContainerTypeName, UCrowdyBakedRegistry::ShouldPullModelOnStart(Class) });
+		Registry->ModelClasses.Add({ Path, ContainerTypeName, UCrowdyBakedRegistry::ShouldPullModelOnStart(Class),
+			FCrowdyAttributeRegistry::IsContainerAppScoped(Class) });
 	}
 
 	// In-memory refresh only, so the asset reflects this class if someone opens it
@@ -395,8 +395,8 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 		FString ContainerTypeName;
 		if (FCrowdyAttributeRegistry::GetContainerTypeName(Class, ContainerTypeName))
 		{
-			Registry->ModelClasses.Add(
-				{ Path, ContainerTypeName, UCrowdyBakedRegistry::ShouldPullModelOnStart(Class) });
+			Registry->ModelClasses.Add({ Path, ContainerTypeName, UCrowdyBakedRegistry::ShouldPullModelOnStart(Class),
+				FCrowdyAttributeRegistry::IsContainerAppScoped(Class) });
 		}
 	}
 

@@ -203,6 +203,10 @@ struct FCrowdyBakedModelClass
 	// baked before this flag existed reads as "pulls" for every class in it.
 	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
 	bool bPullOnStart = true;
+
+	// Whether the class declares meta=(CrowdyScope="App"): its rows are app-wide and bind with no session id.
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	bool bAppScoped = false;
 };
 
 /**
@@ -321,6 +325,19 @@ public:
 	 * ShouldPullModelOnStart; this is the single-entry read it and the tests are built on.
 	 */
 	bool FindPullModelOnStart(const FSoftClassPath& ClassPath, bool& bOutPullOnStart) const;
+
+	/**
+	 * The baked CrowdyScope flag for exactly this class path: true when it was baked as an app-scoped container. False
+	 * for a session-scoped class, a class with no baked container entry, and a null class.
+	 */
+	bool FindContainerAppScoped(const FSoftClassPath& ClassPath) const;
+	/**
+	 * The same flag resolved for a class: the nearest class in its super chain with a baked entry decides, so a
+	 * subclass with no entry of its own follows its base. Cooked-build source of
+	 * FCrowdyAttributeRegistry::IsContainerAppScoped.
+	 */
+	bool FindContainerAppScoped(const UClass* Class) const;
+	static bool IsContainerClassAppScoped(const UClass* Class);
 
 	/**
 	 * Pure live->baked factory: appends one FCrowdyBakedRepProperty per layout property

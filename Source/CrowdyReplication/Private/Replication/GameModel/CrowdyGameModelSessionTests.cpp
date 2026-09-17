@@ -188,6 +188,8 @@ bool FCrowdyGameModelSessionToBpSessionTest::RunTest(const FString& Parameters)
 	Data.EndReason = TEXT("abandoned");
 	Data.CreatedAt = TEXT("2026-01-01T00:00:00Z");
 	Data.Presence = TEXT("none");
+	Data.SeededContainerCount = 8;
+	Data.bHasSeededContainerCount = true;
 
 	const FCrowdyGameModelSession Out = UCrowdyGameModelSubsystem::ToBpSession(Data);
 	TestEqual(TEXT("SessionId"), Out.SessionId, FString(TEXT("sess-1")));
@@ -209,15 +211,25 @@ bool FCrowdyGameModelSessionToBpSessionTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("EndReason"), Out.EndReason == ECrowdySessionEndReason::Abandoned);
 	TestEqual(TEXT("CreatedAt"), Out.CreatedAt, FString(TEXT("2026-01-01T00:00:00Z")));
 	TestTrue(TEXT("Presence"), Out.Presence == ECrowdySessionPresence::None);
+	TestEqual(TEXT("SeededContainerCount"), Out.SeededContainerCount, 8);
+	TestTrue(TEXT("bHasSeededContainerCount"), Out.bHasSeededContainerCount);
 
 	// The flags travel independently of the values: an unbounded, hostless session keeps both false.
 	FCrowdyGameSessionData Bare;
 	Bare.MaxParticipants = 4;
 	Bare.HostUserId = 1001;
+	Bare.SeededContainerCount = 3;
 	const FCrowdyGameModelSession BareOut = UCrowdyGameModelSubsystem::ToBpSession(Bare);
 	TestFalse(TEXT("bHasMaxParticipants false when the wire had null"), BareOut.bHasMaxParticipants);
 	TestFalse(TEXT("bHasHost false when the wire had null"), BareOut.bHasHost);
 	TestFalse(TEXT("bHasCurrentTurn false by default"), BareOut.bHasCurrentTurn);
+	TestFalse(TEXT("bHasSeededContainerCount false when the wire had null"), BareOut.bHasSeededContainerCount);
+
+	// The seed words round-trip; an unknown word is the server default.
+	TestEqual(TEXT("app word"), FString(UCrowdyGameModelSubsystem::SessionSeedStateWord(ECrowdySessionSeedState::App)), FString(TEXT("app")));
+	TestEqual(TEXT("defaults word"), FString(UCrowdyGameModelSubsystem::SessionSeedStateWord(ECrowdySessionSeedState::Defaults)), FString(TEXT("defaults")));
+	TestTrue(TEXT("app parses"), UCrowdyGameModelSubsystem::ParseSessionSeedState(TEXT("app")) == ECrowdySessionSeedState::App);
+	TestTrue(TEXT("anything else is defaults"), UCrowdyGameModelSubsystem::ParseSessionSeedState(TEXT("bogus")) == ECrowdySessionSeedState::Defaults);
 	return true;
 }
 

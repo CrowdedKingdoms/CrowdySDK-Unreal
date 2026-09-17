@@ -45,6 +45,21 @@ namespace CrowdyStudioGql
 	void ParseApps(const TSharedPtr<FJsonObject>& Envelope, TArray<TSharedPtr<FStudioApp>>& OutApps);
 	TSharedPtr<FStudioApp> ParseApp(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName);
 
+	// Folds the appDiscovery entry for AppId (datacenter code, WS endpoint) into an app record. False when the
+	// reply carries no entry for that id.
+	bool ParseAppDiscovery(const TSharedPtr<FJsonObject>& Envelope, int64 AppId, FStudioApp& InOutApp);
+	void ParsePlaceableDatacenters(const TSharedPtr<FJsonObject>& Envelope, TArray<FStudioDatacenter>& OutDatacenters, bool& bOutPlacementEnforced);
+	// platformConfig.freeAppsPerOrg, or 0 when the reply has no platformConfig node.
+	int32 ParseFreeAppsPerOrg(const TSharedPtr<FJsonObject>& Envelope);
+
+	// The { input: CreateAppInput } variables for createApp. The datacenter is a required, permanent placement;
+	// the server refuses a create without one. Status and visibility are left to the server's defaults.
+	TSharedPtr<FJsonObject> BuildCreateAppVariables(int64 OrgId, const FString& Name, const FString& Slug,
+		const FString& Datacenter, const FString& Description);
+
+	// The URL identifier the server accepts for a display name: lowercase letters, digits and single dashes.
+	FString SlugFromName(const FString& Name);
+
 	bool ParseGroupPolicy(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FStudioGroupPolicy& OutPolicy);
 	void ParseGroups(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
 	                 TArray<TSharedPtr<FStudioGroup>>& OutGroups);
@@ -88,9 +103,12 @@ namespace CrowdyStudioGql
 	                      TArray<TSharedPtr<FStudioAccessTier>>& OutTiers);
 	bool ParseGameModelPolicy(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FStudioGameModelPolicy& OutPolicy);
 	bool ParseSeedResult(const TSharedPtr<FJsonObject>& Envelope, FString& OutSummary);
+	// The container half of a seed result: new rows only in OutCreated; OutIdMapJson maps every sent tempId.
+	bool ParseSeedContainers(const TSharedPtr<FJsonObject>& Envelope, int32& OutCreated, FString& OutIdMapJson);
 	bool ParseModelLint(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FStudioLintReport& OutReport);
 
 	void ParseContainers(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
 	                     TArray<TSharedPtr<FStudioContainer>>& OutContainers);
 	bool ParseContainerState(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FStudioContainerState& OutState);
+	void ParseSessions(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, TArray<FStudioSession>& OutSessions);
 }

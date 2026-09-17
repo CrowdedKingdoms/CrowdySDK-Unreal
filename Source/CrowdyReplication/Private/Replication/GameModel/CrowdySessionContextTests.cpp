@@ -1,4 +1,7 @@
 #include "Replication/GameModel/CrowdyGameModelSubsystem.h"
+#include "Replication/GameModel/CrowdyActiveSessionMemory.h"
+#include "Engine/GameInstance.h"
+#include "UObject/StrongObjectPtr.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -34,8 +37,8 @@ bool FCrowdySessionIdResolutionOrderTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// The default session context is world-scoped: the explicit clear (ClearActiveSession) and the teardown path
-// (Deinitialize) both leave the active session empty, so a fresh world never inherits a stale session. The last-error
+// This world's copy of the session context: the explicit clear (ClearActiveSession) and the teardown path
+// (Deinitialize) both leave it empty; with no game-instance memory attached a fresh world starts empty. The last-error
 // cache follows the same lifecycle. A full PIE world teardown is exercised by GATE-S10-DefaultSessionPIE; here the
 // clear method and the Deinitialize reset are driven directly on a transient subsystem (no world, no HTTP).
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySessionClearedOnWorldTeardownTest,
@@ -70,6 +73,45 @@ bool FCrowdySessionClearedOnWorldTeardownTest::RunTest(const FString& Parameters
 	TestEqual(TEXT("active session cleared on teardown"), Model->GetActiveSession(), FString());
 	TestEqual(TEXT("last error cleared on teardown"), Model->GetLastModelError(), FString());
 
+	return true;
+}
+
+// A map travel tears one world's subsystem down and initializes another's; the active session rides the game
+// instance between them, so the next map's placed entities register inside it. A left or ended session is
+// forgotten so it does not follow the player, and an unrelated session's leave forgets nothing.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySessionSurvivesTravelTest,
+	"CrowdySDK.Replication.SessionSurvivesTravel", CrowdySessionContextTestFlags)
+bool FCrowdySessionSurvivesTravelTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<UGameInstance> Instance(NewObject<UGameInstance>(GetTransientPackage()));
+	UCrowdyActiveSessionMemory* Memory = NewObject<UCrowdyActiveSessionMemory>(Instance.Get());
+	UCrowdyGameModelSubsystem* LobbyWorld = NewObject<UCrowdyGameModelSubsystem>(GetTransientPackage());
+	UCrowdyGameModelSubsystem* MatchWorld = NewObject<UCrowdyGameModelSubsystem>(GetTransientPackage());
+	if (!TestNotNull(TEXT("memory"), Memory) || !TestNotNull(TEXT("lobby"), LobbyWorld) || !TestNotNull(TEXT("match"), MatchWorld))
+	{
+		return false;
+	}
+
+	LobbyWorld->AttachSessionMemoryForTest(Memory);
+	TestEqual(TEXT("nothing to restore at first"), LobbyWorld->GetActiveSession(), FString());
+	LobbyWorld->SetActiveSession(TEXT("s-1"));
+	TestEqual(TEXT("memory mirrors the set"), Memory->SessionId, FString(TEXT("s-1")));
+	LobbyWorld->Deinitialize();
+	TestEqual(TEXT("the old world's copy is cleared"), LobbyWorld->GetActiveSession(), FString());
+	TestEqual(TEXT("the memory is not"), Memory->SessionId, FString(TEXT("s-1")));
+
+	MatchWorld->AttachSessionMemoryForTest(Memory);
+	TestEqual(TEXT("the next world restores the session"), MatchWorld->GetActiveSession(), FString(TEXT("s-1")));
+
+	MatchWorld->ForgetActiveSessionIfForTest(TEXT("s-other"));
+	TestEqual(TEXT("leaving another session keeps the active one"), MatchWorld->GetActiveSession(), FString(TEXT("s-1")));
+	MatchWorld->ForgetActiveSessionIfForTest(TEXT("s-1"));
+	TestEqual(TEXT("leaving the active session forgets it"), MatchWorld->GetActiveSession(), FString());
+	TestEqual(TEXT("and the memory too"), Memory->SessionId, FString());
+
+	UCrowdyGameModelSubsystem* LaterWorld = NewObject<UCrowdyGameModelSubsystem>(GetTransientPackage());
+	LaterWorld->AttachSessionMemoryForTest(Memory);
+	TestEqual(TEXT("a later world inherits nothing"), LaterWorld->GetActiveSession(), FString());
 	return true;
 }
 

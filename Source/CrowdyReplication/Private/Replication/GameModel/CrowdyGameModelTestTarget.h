@@ -267,6 +267,26 @@ public:
 	int32 Bookkeeping = 0;
 };
 
+// An app-scoped container: its rows are app-wide and bind with no session. CrowdyContainerTest keeps it out of the
+// real schema sync.
+UCLASS(meta = (CrowdyContainer = "TestAppScoped", CrowdyScope = "App", CrowdyContainerTest))
+class UCrowdyGameModelAppScopedTarget : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(meta = (CrowdyModel))
+	int32 Visits = 0;
+};
+
+// A subclass of the app-scoped container that restates no scope: it follows its base only if the scope read walks
+// the super chain.
+UCLASS(meta = (CrowdyContainer = "TestAppScopedChild", CrowdyContainerTest))
+class UCrowdyGameModelAppScopedChildTarget : public UCrowdyGameModelAppScopedTarget
+{
+	GENERATED_BODY()
+};
+
 // A reflected enum for the discovery fixture: an `enum class : uint8` marked CrowdyModel must map to "int"
 // (parity with TEnumAsByte), not be silently dropped.
 UENUM()

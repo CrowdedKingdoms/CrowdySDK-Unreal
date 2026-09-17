@@ -48,8 +48,17 @@ namespace CrowdyStudioWidgets
 	// Maps an app/environment/group status string (LIVE/DRAFT/ARCHIVED/...) to a badge tone.
 	EBadgeTone ToneForStatus(const FString& Status);
 
+	// The strong colour a tone draws its text in (its fill is the same at low alpha), for badges built by hand.
+	FLinearColor ColorForTone(EBadgeTone Tone);
+
 	// A monospace chip, e.g. a slug or id.
 	TSharedRef<SWidget> Chip(const FText& Text);
+
+	// A small ghost button that copies Value to the clipboard on click; the tooltip names what it copies.
+	TSharedRef<SWidget> CopyButton(TAttribute<FString> Value, const FText& What);
+
+	// A chip with a copy button beside it, for ids, slugs and URLs the user will paste elsewhere.
+	TSharedRef<SWidget> CopyChip(TAttribute<FString> Value, const FText& What);
 
 	// A tinted, sized icon image. Name is the bare glyph name ("login", "apps", ...).
 	TSharedRef<SWidget> Icon(const TCHAR* Name, float Size = 18.0f, FSlateColor Tint = FSlateColor(FLinearColor::White));

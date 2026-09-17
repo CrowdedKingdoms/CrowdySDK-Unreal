@@ -9,6 +9,7 @@
 #include "GameModel/CrowdyGameModelDelete.h" // FCrowdyDeletePlan, FCrowdyDeleteOp, FCrowdyDeleteOutcome, FCrowdyDeleteLiveCount
 #include "GameModel/CrowdyModelLoadState.h" // ECrowdyModelFamily, ECrowdyModelLoadState, FCrowdyFamilyLoad
 #include "GameModel/CrowdyModelSnapshot.h" // FCrowdyModelSnapshot
+#include "GameModel/CrowdyPreSeedPlan.h" // FCrowdyPreSeedReport
 #include "GameModel/CrowdySchemaSync.h" // FCrowdySchemaSyncReport, FCrowdySchemaTypeUpsert/PropUpsert
 #include "Templates/SharedPointer.h"
 #include "Templates/UniquePtr.h"
@@ -19,6 +20,7 @@
 class FJsonObject;
 class FCrowdyCppAdminClientHost;
 class FCrowdyLoopbackAuthServer;
+class UCrowdyContainerManifest;
 class UCrowdyGameKitConfig;
 struct FCrowdySchemaSyncRun;
 struct FStreamableHandle;
@@ -87,10 +89,24 @@ public:
 	// Apps
 	// Lists every app the token can see (myApps) - no org needed, ids never hand-typed.
 	void FetchApps();
-	void CreateApp(int64 OrgId, const FString& Name, const FString& Slug, const FString& Status, const FString& Visibility);
-	void UpdateApp(int64 AppId, const FString& Name, const FString& Status, const FString& Visibility);
+	// Datacenter is the permanent placement code from GetPlaceableDatacenters(); the server refuses a create without
+	// one. OnDone runs once with the new app's id, or 0 when the create failed (the status line carries the reason).
+	void CreateApp(int64 OrgId, const FString& Name, const FString& Slug, const FString& Datacenter,
+		const FString& Description, TFunction<void(int64 /*CreatedAppId*/)> OnDone = TFunction<void(int64)>());
+	// Only the non-empty fields are sent; the server leaves the rest as they are. Description is optional so an
+	// unset value means unchanged while an empty one clears it. Status LIVE publishes, DRAFT unpublishes, and a
+	// status change is also how an archived app is restored.
+	void UpdateApp(int64 AppId, const FString& Name, const TOptional<FString>& Description, const FString& Status, const FString& Visibility);
 	void ArchiveApp(int64 AppId);
 	void FetchApp(int64 AppId);
+	// The datacenters this deployment can place a new app in. Cached after the first answer; the create dialog
+	// reads GetPlaceableDatacenters() and calls this again only to retry a failed read.
+	void FetchPlaceableDatacenters();
+	const TArray<FStudioDatacenter>& GetPlaceableDatacenters() const { return PlaceableDatacenters; }
+	bool HasFetchedPlaceableDatacenters() const { return bPlaceableDatacentersFetched; }
+	bool DidPlaceableDatacentersFail() const { return bPlaceableDatacentersFailed; }
+	// platformConfig.freeAppsPerOrg (0 until the platform config has been read).
+	int32 GetFreeAppsPerOrg() const { return FreeAppsPerOrg; }
 
 	//  Config Sync
 	void SyncConfig();
@@ -169,7 +185,7 @@ public:
 	// to be aimed at the app its subject was read from rather than at whatever happens to be selected when the button
 	// is pressed. No default value, so every call site is compiler-forced to answer.
 	void UpsertContainerType(const FString& TypeName, const FString& DisplayName, const FString& Description,
-		const FString& InstantiableBy, const FString& DefaultPropertyVisibility, int64 ExpectedAppId);
+		const FString& InstantiableBy, const FString& DefaultPropertyVisibility, const FString& Scope, int64 ExpectedAppId);
 	// Loads one container type's attributes, lazily on selection, and caches them per type. Attributes are never
 	// fetched for every type at once: one query per type across a large schema would be dozens of round trips before
 	// anything renders. A request already in flight for the same type is coalesced onto the one round-trip, unless
@@ -259,6 +275,23 @@ public:
 	// notifications).
 	void PlanSchemaSync();
 	void ApplySchemaSync();
+
+	// Container pre-seeding: create the server rows a map's level-placed entities will bind before anyone plays.
+	// ScanOpenMapForPreSeed derives the map's manifest asset from the open editor world (and saves it beside the
+	// map); PlanPreSeed reads the server's rows of every manifest type in the chosen scope and diffs; ApplyPreSeed
+	// ensures the missing rows, eight at a time, and never deletes. An empty ScopeSessionId is the app scope.
+	void ScanOpenMapForPreSeed();
+	void PlanPreSeed(const FString& ScopeSessionId);
+	// GenerationSeen is the plan the review was opened on; a plan that moved since is refused, not applied.
+	void ApplyPreSeed(uint64 GenerationSeen);
+	const FCrowdyPreSeedReport& GetPreSeedReport() const { return PreSeedReport; }
+	uint64 GetPreSeedPlanGeneration() const { return PreSeedPlanGeneration; }
+	// The manifest the next plan reads: the last scan's, else the open map's saved asset, else null.
+	const UCrowdyContainerManifest* ResolvePreSeedManifest();
+	// A run whose app is no longer selected is orphaned, not busy: SendGame drops its callbacks on an app switch.
+	bool IsPreSeedBusy() const { return (bPreSeedPlanInFlight || bPreSeedApplyInFlight) && PreSeedBusyAppId == SelectedAppId; }
+	// The app's sessions, for the scope picker. Empty on failure; the picker keeps its app entry either way.
+	void FetchSessions(TFunction<void(const TArray<FStudioSession>&)> OnDone);
 
 	// The pending plan as the selection layer reads it: the five upsert arrays by pointer, pinned to the app the plan
 	// was computed for. The arrays are the controller's, so this is only valid for as long as the caller holds it and
@@ -518,6 +551,7 @@ public:
 	FSimpleMulticastDelegate OnLoginProvidersChanged;
 	FSimpleMulticastDelegate OnOrganizationsChanged;
 	FSimpleMulticastDelegate OnAppsChanged;
+	FSimpleMulticastDelegate OnPlaceableDatacentersChanged;
 	FSimpleMulticastDelegate OnConfigChanged;
 	FSimpleMulticastDelegate OnBusyChanged;
 	// Fired when the active app context changes (a different app selected, or the remembered app
@@ -554,6 +588,7 @@ public:
 	FSimpleMulticastDelegate OnContainerStateChanged;
 	// Fired when a schema-sync plan or apply completes, so the game-model view rebuilds its report panel.
 	FSimpleMulticastDelegate OnSchemaSyncReportChanged;
+	FSimpleMulticastDelegate OnPreSeedReportChanged;
 	// Fired when a plan starts, moves to another phase, or ends. Separate from the report delegate above because it
 	// fires several times during one plan and carries no result: a view binds it to update a busy indicator, and
 	// updating on this signal is what keeps that indicator off the per-paint path.
@@ -883,6 +918,9 @@ private:
 
 	// Right after sign-in, pull the app list so the console opens populated instead of empty.
 	void FetchAppsForSignedInUser();
+	// appDiscovery for one app: its datacenter code and WS endpoint, merged into the list entry.
+	void FetchAppDiscovery(int64 AppId);
+	void FetchPlatformConfig();
 
 	/** Drop one app fetch from the in-flight count. Called on both the success and the failure path. */
 	void ReleaseAppsFetch();
@@ -988,6 +1026,12 @@ private:
 
 	/** How many app-list fetches are in flight. Counted, so two overlapping refreshes do not clear each other. */
 	int32 AppsFetchInFlight = 0;
+	TArray<FStudioDatacenter> PlaceableDatacenters;
+	bool bPlaceableDatacentersFetched = false;
+	bool bPlaceableDatacentersFailed = false;
+	int32 FreeAppsPerOrg = 0;
+	// The placement codes and the free-slot count belong to one deployment: dropped on sign-out and on a backend switch.
+	void ClearPlacementCache();
 	TArray<TSharedPtr<FStudioGroup>> Teams;
 	TArray<TSharedPtr<FStudioGroup>> Channels;
 	FStudioGroupPolicy TeamPolicy;
@@ -1079,6 +1123,30 @@ private:
 	// Numbers the container reads so a reply that is no longer the newest can be dropped. Moved on by an app
 	// switch as well, so a read issued before one cannot fill the list the switch emptied.
 	uint64 NextContainerReadSerial = 0;
+
+	// Pre-seed state. One plan or apply at a time; the generation ties an apply to the plan it was reviewed on, and
+	// an app switch retires everything (a reply for the previous app is dropped by SendGame, so nothing else would).
+	struct FCrowdyPreSeedPlanRun;
+	struct FCrowdyPreSeedApplyRun;
+	void ClearPreSeedState();
+	void ReadPreSeedTypePage(const TSharedRef<FCrowdyPreSeedPlanRun>& Run, int32 TypeIndex, int32 Offset);
+	void FinishPreSeedPlan(const TSharedRef<FCrowdyPreSeedPlanRun>& Run);
+	void FailPreSeedPlan(const TSharedRef<FCrowdyPreSeedPlanRun>& Run, const FString& Context);
+	// Sends the next seed batch, or hands over to the ensure loop once every batch has landed.
+	void SendPreSeedBatch(const TSharedRef<FCrowdyPreSeedApplyRun>& Run);
+	void PumpPreSeedApply(const TSharedRef<FCrowdyPreSeedApplyRun>& Run);
+	void FinishPreSeedApply(const TSharedRef<FCrowdyPreSeedApplyRun>& Run);
+	FString BuildPreSeedApplyNote(const TSharedRef<FCrowdyPreSeedApplyRun>& Run) const;
+	FCrowdyPreSeedReport PreSeedReport;
+	// The skip reasons of the last scan, carried into every later report: the one output a designer acts on.
+	TArray<FString> PreSeedScanWarnings;
+	TStrongObjectPtr<const UCrowdyContainerManifest> PreSeedManifest;
+	uint64 PreSeedPlanGeneration = 0;
+	int64 PreSeedPlannedAppId = 0;
+	int64 PreSeedBusyAppId = 0;
+	bool bPreSeedPlanInFlight = false;
+	bool bPreSeedApplyInFlight = false;
+	bool bPreSeedLastScanFailed = false;
 
 	// Schema sync state. SchemaSyncReport is the last plan/apply summary the view renders; the Pending*
 	// upserts are the deltas a plan computed, consumed by ApplySchemaSync (which builds a per-walk op list).

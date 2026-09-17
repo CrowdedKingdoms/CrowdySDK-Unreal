@@ -38,6 +38,8 @@ namespace
 		{ ECrowdyCppApiDomain::Apps, TEXT("UpdateApp"), ECrowdyCppTokenPlane::Management },
 		{ ECrowdyCppApiDomain::Apps, TEXT("ArchiveApp"), ECrowdyCppTokenPlane::Management },
 		{ ECrowdyCppApiDomain::Apps, TEXT("App"), ECrowdyCppTokenPlane::Management },
+		{ ECrowdyCppApiDomain::Apps, TEXT("AppDiscovery"), ECrowdyCppTokenPlane::Management },
+		{ ECrowdyCppApiDomain::Platform, TEXT("PlaceableDatacenters"), ECrowdyCppTokenPlane::Management },
 
 		{ ECrowdyCppApiDomain::AppAccess, TEXT("RuntimePermissions"), ECrowdyCppTokenPlane::Management },
 		{ ECrowdyCppApiDomain::AppAccess, TEXT("AppAccessTiers"), ECrowdyCppTokenPlane::Management },
@@ -108,6 +110,9 @@ namespace
 		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainers"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainerState"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelDeleteContainer"), ECrowdyCppTokenPlane::Game },
+		// Container pre-seeding: the scope picker's session list and the row ensure.
+		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelSessions"), ECrowdyCppTokenPlane::Game },
+		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelEnsureContainer"), ECrowdyCppTokenPlane::Game },
 	};
 
 	// What issuing one operation on a canned-transport test client revealed. Resolution and transport delivery are

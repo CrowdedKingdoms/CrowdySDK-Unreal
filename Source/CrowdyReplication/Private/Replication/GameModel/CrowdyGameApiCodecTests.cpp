@@ -177,6 +177,102 @@ bool FCrowdyGameModelParseContainerStateTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// The bulk read: the variables are top-level (appId a BigInt STRING, containerIds an array of strings with empty
+// ids dropped), and the reply parses per row, keeping a row whose propertiesJson is unusable (null State) so the
+// caller can still tell it apart from an id the server omitted, and dropping only a row with no containerId.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelParseContainerStatesTest,
+	"CrowdySDK.GameModel.ParseContainerStates", CrowdyGameApiTestFlags)
+bool FCrowdyGameModelParseContainerStatesTest::RunTest(const FString& Parameters)
+{
+	// Builder: appId is a string, containerIds an array of strings, the empty id dropped, duplicates kept.
+	{
+		TArray<FString> Ids;
+		Ids.Add(TEXT("c1"));
+		Ids.Add(FString());
+		Ids.Add(TEXT("c2"));
+		Ids.Add(TEXT("c1"));
+		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildContainerStatesVariables(7, Ids);
+		if (!TestTrue(TEXT("variables built"), Vars.IsValid()))
+		{
+			return false;
+		}
+		TestFalse(TEXT("variables are top-level, not wrapped in input"), Vars->HasField(TEXT("input")));
+		const TSharedPtr<FJsonValue> AppIdValue = Vars->TryGetField(TEXT("appId"));
+		if (TestNotNull(TEXT("appId present"), AppIdValue.Get()))
+		{
+			TestEqual(TEXT("appId is a JSON string"), static_cast<int32>(AppIdValue->Type), static_cast<int32>(EJson::String));
+			TestEqual(TEXT("appId string value"), AppIdValue->AsString(), FString(TEXT("7")));
+		}
+		const TSharedPtr<FJsonValue> IdsValue = Vars->TryGetField(TEXT("containerIds"));
+		if (TestNotNull(TEXT("containerIds present"), IdsValue.Get()))
+		{
+			TestEqual(TEXT("containerIds is a JSON array"), static_cast<int32>(IdsValue->Type), static_cast<int32>(EJson::Array));
+			const TArray<TSharedPtr<FJsonValue>>& Arr = IdsValue->AsArray();
+			if (TestEqual(TEXT("empty id dropped, duplicate kept"), Arr.Num(), 3))
+			{
+				TestEqual(TEXT("containerIds[0] is a string"), static_cast<int32>(Arr[0]->Type), static_cast<int32>(EJson::String));
+				TestEqual(TEXT("containerIds[0]"), Arr[0]->AsString(), FString(TEXT("c1")));
+				TestEqual(TEXT("containerIds[1]"), Arr[1]->AsString(), FString(TEXT("c2")));
+				TestEqual(TEXT("containerIds[2]"), Arr[2]->AsString(), FString(TEXT("c1")));
+			}
+		}
+		TestEqual(TEXT("per-call limit"), FCrowdyGameApiCodec::MaxContainerStatesPerCall, 500);
+	}
+
+	// Parser: three rows; the second has a null owner and unparseable propertiesJson; the third has no containerId.
+	{
+		const TSharedPtr<FJsonObject> Env = ParseObject(TEXT(
+			"{\"data\":{\"gameModelContainerStates\":["
+			"{\"containerId\":\"c1\",\"appId\":\"7\",\"sessionId\":\"s1\",\"typeName\":\"Character\",\"displayName\":\"A\","
+			"\"ownerUserId\":\"90001\",\"propertiesJson\":\"{\\\"hp\\\":87}\"},"
+			"{\"containerId\":\"c2\",\"appId\":\"7\",\"sessionId\":null,\"typeName\":\"Landmark\",\"displayName\":\"B\","
+			"\"ownerUserId\":null,\"propertiesJson\":\"not json\"},"
+			"{\"appId\":\"7\",\"typeName\":\"Character\",\"ownerUserId\":\"90002\",\"propertiesJson\":\"{}\"}"
+			"]}}"));
+		TArray<FCrowdyGameApiCodec::FContainerStateRow> Rows;
+		TestTrue(TEXT("rows parsed"), FCrowdyGameApiCodec::ParseContainerStatesEnvelope(Env, true, TArray<FString>(), Rows));
+		if (TestEqual(TEXT("the row without a containerId is dropped"), Rows.Num(), 2))
+		{
+			TestEqual(TEXT("row 1 id"), Rows[0].ContainerId, FString(TEXT("c1")));
+			TestEqual(TEXT("row 1 type"), Rows[0].TypeName, FString(TEXT("Character")));
+			TestEqual(TEXT("row 1 session"), Rows[0].SessionId, FString(TEXT("s1")));
+			TestEqual(TEXT("row 1 owner parsed from string"), Rows[0].OwnerUserId, static_cast<int64>(90001));
+			if (TestTrue(TEXT("row 1 state decoded"), Rows[0].State.IsValid()))
+			{
+				double Hp = 0.0;
+				TestTrue(TEXT("row 1 hp present"), Rows[0].State->TryGetNumberField(TEXT("hp"), Hp));
+				TestEqual(TEXT("row 1 hp value"), static_cast<int32>(Hp), 87);
+			}
+			TestEqual(TEXT("row 2 id"), Rows[1].ContainerId, FString(TEXT("c2")));
+			TestTrue(TEXT("row 2 app-scoped session is empty"), Rows[1].SessionId.IsEmpty());
+			TestEqual(TEXT("row 2 null owner reads as 0"), Rows[1].OwnerUserId, static_cast<int64>(0));
+			TestFalse(TEXT("row 2 unparseable propertiesJson leaves State null"), Rows[1].State.IsValid());
+		}
+	}
+
+	// An empty list is a clean read of nothing, not a failure.
+	{
+		const TSharedPtr<FJsonObject> Env = ParseObject(TEXT("{\"data\":{\"gameModelContainerStates\":[]}}"));
+		TArray<FCrowdyGameApiCodec::FContainerStateRow> Rows;
+		TestTrue(TEXT("empty list parses"), FCrowdyGameApiCodec::ParseContainerStatesEnvelope(Env, true, TArray<FString>(), Rows));
+		TestEqual(TEXT("no rows"), Rows.Num(), 0);
+	}
+
+	// Transport failure, a GraphQL error and a missing envelope each fail the read.
+	{
+		const TSharedPtr<FJsonObject> Env = ParseObject(TEXT("{\"data\":{\"gameModelContainerStates\":[{\"containerId\":\"c1\",\"propertiesJson\":\"{}\"}]}}"));
+		TArray<FCrowdyGameApiCodec::FContainerStateRow> Rows;
+		TestFalse(TEXT("transport failure -> false"), FCrowdyGameApiCodec::ParseContainerStatesEnvelope(Env, false, TArray<FString>(), Rows));
+		TestEqual(TEXT("no rows on a transport failure"), Rows.Num(), 0);
+		TArray<FString> Errors;
+		Errors.Add(TEXT("boom"));
+		TestFalse(TEXT("errors -> false"), FCrowdyGameApiCodec::ParseContainerStatesEnvelope(Env, true, Errors, Rows));
+		TestFalse(TEXT("missing envelope -> false"), FCrowdyGameApiCodec::ParseContainerStatesEnvelope(nullptr, true, TArray<FString>(), Rows));
+	}
+
+	return true;
+}
+
 // The create-container request builder emits appId as a JSON string, NEVER writes ownerUserId (the server
 // pins the owner to the caller -- fail-safe by omission, the whole trust argument for player creates), falls
 // displayName back to the type name, and omits sessionId/metadataJson when empty. This guards the two

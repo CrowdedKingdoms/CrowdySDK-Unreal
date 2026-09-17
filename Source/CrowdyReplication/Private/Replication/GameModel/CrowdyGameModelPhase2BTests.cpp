@@ -158,6 +158,67 @@ bool FCrowdyGameModelSessionBuildsRequestTest::RunTest(const FString& Parameters
 		}
 	}
 
+	// seedFromApp is absent for an empty type list, even with an initialState set, and absent when every name is
+	// empty: a seed with no types is not a seed.
+	{
+		FCrowdyCreateSessionOptions Options;
+		Options.SeedInitialState = TEXT("app");
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildCreateSessionVariables(1, FString(), TArray<int64>(), FString(), Options));
+		if (TestTrue(TEXT("input present (no seed types)"), Input.IsValid()))
+		{
+			TestEqual(TEXT("seedFromApp absent for an empty type list"), Phase2BFieldType(Input, TEXT("seedFromApp")), Phase2BAbsent);
+		}
+		Options.SeedFromAppTypeNames.Add(FString());
+		const TSharedPtr<FJsonObject> Input2 = Phase2BInput(
+			FCrowdyGameApiCodec::BuildCreateSessionVariables(1, FString(), TArray<int64>(), FString(), Options));
+		if (TestTrue(TEXT("input present (blank seed type)"), Input2.IsValid()))
+		{
+			TestEqual(TEXT("seedFromApp absent when every name is empty"), Phase2BFieldType(Input2, TEXT("seedFromApp")), Phase2BAbsent);
+		}
+	}
+
+	// seedFromApp { typeNames: [strings], initialState? }: typeNames is a JSON array of trimmed strings with blanks
+	// dropped; initialState is omitted when empty (the server defaults it) and a string when set.
+	{
+		FCrowdyCreateSessionOptions Options;
+		Options.SeedFromAppTypeNames.Add(TEXT("Landmark"));
+		Options.SeedFromAppTypeNames.Add(TEXT("  "));
+		Options.SeedFromAppTypeNames.Add(TEXT(" Camp "));
+		const TSharedPtr<FJsonObject> Input = Phase2BInput(
+			FCrowdyGameApiCodec::BuildCreateSessionVariables(1, FString(), TArray<int64>(), FString(), Options));
+		const TSharedPtr<FJsonObject>* SeedPtr = nullptr;
+		if (TestTrue(TEXT("seedFromApp is a JSON object"),
+			Input.IsValid() && Input->TryGetObjectField(TEXT("seedFromApp"), SeedPtr) && SeedPtr))
+		{
+			const TSharedPtr<FJsonObject>& Seed = *SeedPtr;
+			TestEqual(TEXT("initialState omitted when empty"), Phase2BFieldType(Seed, TEXT("initialState")), Phase2BAbsent);
+			const TSharedPtr<FJsonValue> TypeNames = Seed->TryGetField(TEXT("typeNames"));
+			if (TestTrue(TEXT("typeNames present"), TypeNames.IsValid()))
+			{
+				TestEqual(TEXT("typeNames is a JSON array"), static_cast<int32>(TypeNames->Type), static_cast<int32>(EJson::Array));
+				const TArray<TSharedPtr<FJsonValue>>& Names = TypeNames->AsArray();
+				if (TestEqual(TEXT("blank type name dropped"), Names.Num(), 2))
+				{
+					TestEqual(TEXT("typeNames[0] is a string"), static_cast<int32>(Names[0]->Type), Phase2BString);
+					TestEqual(TEXT("typeNames[0]"), Names[0]->AsString(), FString(TEXT("Landmark")));
+					TestEqual(TEXT("typeNames[1]"), Names[1]->AsString(), FString(TEXT("Camp")));
+				}
+			}
+		}
+
+		Options.SeedInitialState = TEXT("app");
+		const TSharedPtr<FJsonObject> Input2 = Phase2BInput(
+			FCrowdyGameApiCodec::BuildCreateSessionVariables(1, FString(), TArray<int64>(), FString(), Options));
+		const TSharedPtr<FJsonObject>* Seed2Ptr = nullptr;
+		if (TestTrue(TEXT("seedFromApp present (initialState set)"),
+			Input2.IsValid() && Input2->TryGetObjectField(TEXT("seedFromApp"), Seed2Ptr) && Seed2Ptr))
+		{
+			TestEqual(TEXT("initialState is a JSON string"), Phase2BFieldType(*Seed2Ptr, TEXT("initialState")), Phase2BString);
+			TestEqual(TEXT("initialState value"), (*Seed2Ptr)->GetStringField(TEXT("initialState")), FString(TEXT("app")));
+		}
+	}
+
 	// SetSessionTurn: userId written as a BigInt string when present; expectedHostTerm omitted at 0...
 	{
 		const TSharedPtr<FJsonObject> Input = Phase2BInput(
@@ -414,6 +475,34 @@ bool FCrowdyGameModelParseSessionTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("createdByUserId"), Session.CreatedByUserId, static_cast<int64>(90001));
 		TestEqual(TEXT("currentTurnUserId"), Session.CurrentTurnUserId, static_cast<int64>(90002));
 		TestTrue(TEXT("bHasCurrentTurn true"), Session.bHasCurrentTurn);
+		TestFalse(TEXT("bHasSeededContainerCount false when absent"), Session.bHasSeededContainerCount);
+	}
+
+	// seededContainerCount rides the create response as a JSON number; null (every other read) leaves the flag
+	// false, and a real 0 (nothing to copy) sets it.
+	{
+		const TSharedPtr<FJsonObject> Env = ParsePhase2BJson(TEXT(
+			"{\"data\":{\"gameModelCreateSession\":{\"sessionId\":\"sess1\",\"appId\":\"1\",\"status\":\"active\","
+			"\"seededContainerCount\":8}}}"));
+		FCrowdyGameSessionData Session;
+		TestTrue(TEXT("seeded session parsed"), FCrowdyGameApiCodec::ParseSessionEnvelope(
+			Env, true, TArray<FString>(), TEXT("gameModelCreateSession"), Session));
+		TestTrue(TEXT("bHasSeededContainerCount when present"), Session.bHasSeededContainerCount);
+		TestEqual(TEXT("seededContainerCount"), Session.SeededContainerCount, 8);
+
+		const TSharedPtr<FJsonObject> NullEnv = ParsePhase2BJson(TEXT(
+			"{\"data\":{\"gameModelSession\":{\"sessionId\":\"sess1\",\"appId\":\"1\",\"status\":\"active\","
+			"\"seededContainerCount\":null}}}"));
+		FCrowdyGameSessionData NullSession;
+		FCrowdyGameApiCodec::ParseSessionEnvelope(NullEnv, true, TArray<FString>(), TEXT("gameModelSession"), NullSession);
+		TestFalse(TEXT("bHasSeededContainerCount false when null"), NullSession.bHasSeededContainerCount);
+		TestEqual(TEXT("seededContainerCount stays 0 when null"), NullSession.SeededContainerCount, 0);
+
+		const TSharedPtr<FJsonObject> ZeroEnv = ParsePhase2BJson(TEXT(
+			"{\"data\":{\"gameModelCreateSession\":{\"sessionId\":\"sess1\",\"appId\":\"1\",\"seededContainerCount\":0}}}"));
+		FCrowdyGameSessionData ZeroSession;
+		FCrowdyGameApiCodec::ParseSessionEnvelope(ZeroEnv, true, TArray<FString>(), TEXT("gameModelCreateSession"), ZeroSession);
+		TestTrue(TEXT("bHasSeededContainerCount true for a real 0"), ZeroSession.bHasSeededContainerCount);
 	}
 
 	// currentTurnUserId null => bHasCurrentTurn stays false (no one's turn), never a spurious 0.

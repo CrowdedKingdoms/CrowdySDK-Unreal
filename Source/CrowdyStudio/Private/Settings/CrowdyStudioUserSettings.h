@@ -34,4 +34,8 @@ public:
 	// value falls back to "models"; the view, not this settings object, owns that fallback.
 	UPROPERTY(Config)
 	FString LastGameModelTab;
+
+	// The nav rail folded down to icons, so the page area gets the width.
+	UPROPERTY(Config)
+	bool bNavRailCollapsed = false;
 };

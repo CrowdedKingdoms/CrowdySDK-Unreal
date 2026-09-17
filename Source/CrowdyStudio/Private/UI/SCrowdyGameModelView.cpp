@@ -13,6 +13,7 @@
 #include "UI/GameModel/SCrowdyLiveModelsTab.h"
 #include "UI/GameModel/SCrowdyModelBrowserTab.h"
 #include "UI/GameModel/SCrowdyModelIssuesTab.h"
+#include "UI/GameModel/SCrowdyPreSeedCard.h"
 #include "UI/GameModel/SCrowdyReconcileStrip.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBox.h"
@@ -116,6 +117,9 @@ void SCrowdyGameModelView::Construct(const FArguments& InArgs)
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
 		[ SNew(SCrowdyReconcileStrip).Controller(Controller) ]
+
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
+		[ SNew(SCrowdyPreSeedCard).Controller(Controller) ]
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
 		[

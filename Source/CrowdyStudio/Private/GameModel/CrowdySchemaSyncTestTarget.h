@@ -91,3 +91,17 @@ public:
 	UFUNCTION()
 	void OnSignal_BossWave() {}
 };
+
+// An app-scoped, admin-instantiable container: the values are authored capitalized to prove the read is case-insensitive.
+UCLASS(meta = (CrowdyContainer = "SchemaSyncLandmark", CrowdyContainerTest, CrowdyScope = "App", CrowdyInstantiableBy = "Admin"))
+class UCrowdySchemaSyncAppScopedTarget : public UObject
+{
+	GENERATED_BODY()
+};
+
+// Unrecognized scope and instantiableBy words: both fall back to their defaults with a warning each.
+UCLASS(meta = (CrowdyContainer = "SchemaSyncBadWords", CrowdyContainerTest, CrowdyScope = "Galaxy", CrowdyInstantiableBy = "Anyone"))
+class UCrowdySchemaSyncBadWordsTarget : public UObject
+{
+	GENERATED_BODY()
+};

@@ -36,6 +36,32 @@
 
 namespace
 {
+#if WITH_METADATA
+	// A class meta from a fixed word list, lowercased; absent yields Default and an unrecognized value also warns.
+	FString ReadContainerMetaWord(const UClass* Class, const TCHAR* MetaKey, std::initializer_list<const TCHAR*> Accepted,
+		const TCHAR* Default, TArray<FString>* OutWarnings)
+	{
+		if (!Class->HasMetaData(MetaKey))
+		{
+			return Default;
+		}
+		const FString Value = Class->GetMetaData(MetaKey).TrimStartAndEnd().ToLower();
+		for (const TCHAR* Word : Accepted)
+		{
+			if (Value == Word)
+			{
+				return Value;
+			}
+		}
+		if (OutWarnings)
+		{
+			OutWarnings->Add(FString::Printf(TEXT("%s declares %s=\"%s\", which is not a recognized value; using '%s'."),
+				*Class->GetName(), MetaKey, *Class->GetMetaData(MetaKey), Default));
+		}
+		return Default;
+	}
+#endif
+
 	bool IsTransientClassName(const FString& Name)
 	{
 		return Name.StartsWith(TEXT("SKEL_"))
@@ -857,7 +883,7 @@ TArray<FCrowdyDesiredContainerType> FCrowdySchemaSync::BuildDesiredSchema(
 
 	for (const UClass* Class : Classes)
 	{
-		FCrowdyDesiredContainerType Desired = BuildDesiredForClass(Class);
+		FCrowdyDesiredContainerType Desired = BuildDesiredForClass(Class, &OutWarnings);
 		if (Desired.TypeName.IsEmpty())
 		{
 			continue;
@@ -875,7 +901,7 @@ TArray<FCrowdyDesiredContainerType> FCrowdySchemaSync::BuildDesiredSchema(
 	return Out;
 }
 
-FCrowdyDesiredContainerType FCrowdySchemaSync::BuildDesiredForClass(const UClass* Class)
+FCrowdyDesiredContainerType FCrowdySchemaSync::BuildDesiredForClass(const UClass* Class, TArray<FString>* OutWarnings)
 {
 	FCrowdyDesiredContainerType Desired;
 	if (!Class)
@@ -890,6 +916,12 @@ FCrowdyDesiredContainerType FCrowdySchemaSync::BuildDesiredForClass(const UClass
 	}
 	Desired.TypeName = TypeName;
 	Desired.DisplayName = TypeName;
+#if WITH_METADATA
+	Desired.Scope = ReadContainerMetaWord(Class, CrowdyGameModelMetaKeys::Scope,
+		{ TEXT("session"), TEXT("app") }, TEXT("session"), OutWarnings);
+	Desired.InstantiableBy = ReadContainerMetaWord(Class, CrowdyGameModelMetaKeys::InstantiableBy,
+		{ TEXT("member"), TEXT("admin"), TEXT("owner") }, TEXT("member"), OutWarnings);
+#endif
 	// Recorded as a soft class path so a reader can round-trip it back to the declaring Blueprint asset or C++ class.
 	Desired.OwningClassPath = FSoftClassPath(Class).ToString();
 
@@ -1125,9 +1157,16 @@ FCrowdySchemaDelta FCrowdySchemaSync::DiffSchema(
 		{
 			Delta.TypeUpserts.Add({ D, /*bIsNew*/ true });
 		}
-		else if (Cur->InstantiableBy != D.InstantiableBy || Cur->DefaultPropertyVisibility != D.DefaultVisibility)
+		else if (Cur->InstantiableBy != D.InstantiableBy || Cur->DefaultPropertyVisibility != D.DefaultVisibility
+			|| Cur->Scope != D.Scope)
 		{
 			Delta.TypeUpserts.Add({ D, /*bIsNew*/ false });
+			if (Cur->Scope != D.Scope)
+			{
+				Delta.Warnings.Add(FString::Printf(
+					TEXT("Container type '%s' scope changes '%s' -> '%s' (where its rows live). The server refuses 'session' -> 'app' while the type still holds session rows."),
+					*D.TypeName, *Cur->Scope, *D.Scope));
+			}
 			// instantiableBy / defaultPropertyVisibility gate who may create instances and what is visible by
 			// default, so a change is access-control-relevant: disclose the exact transition in the plan (the
 			// code has no meta to express a hand-locked admin/hidden type, so a sync resets it to the defaults).

@@ -77,6 +77,37 @@ bool FCrowdyAttributeRegistry::GetContainerTypeName(const UClass* Class, FString
 #endif
 }
 
+bool FCrowdyAttributeRegistry::IsContainerAppScoped(const UClass* Class)
+{
+	if (!Class)
+	{
+		return false;
+	}
+#if WITH_METADATA
+	// Class metadata is not inherited: the nearest class in the chain that declares a scope decides.
+	const UClass* Declaring = Class;
+	while (Declaring && !Declaring->HasMetaData(CrowdyGameModelMetaKeys::Scope))
+	{
+		Declaring = Declaring->GetSuperClass();
+	}
+	if (!Declaring)
+	{
+		return false;
+	}
+	const FString Word = Declaring->GetMetaData(CrowdyGameModelMetaKeys::Scope).TrimStartAndEnd();
+	if (Word.Equals(TEXT("App"), ESearchCase::IgnoreCase))
+	{
+		return true;
+	}
+	UE_CLOG(!Word.Equals(TEXT("Session"), ESearchCase::IgnoreCase), LogCrowdyGameModel, Warning,
+		TEXT("[GameModel] class '%s' declares CrowdyScope=\"%s\", which is neither App nor Session; treating it as Session."),
+		*Declaring->GetName(), *Word);
+	return false;
+#else
+	return UCrowdyBakedRegistry::IsContainerClassAppScoped(Class);
+#endif
+}
+
 namespace
 {
 	// A Blueprint compile leaves reflection classes behind that carry the same UCLASS metadata as the real generated

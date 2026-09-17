@@ -25,6 +25,14 @@ namespace CrowdyGameModelMetaKeys
 	// UCLASS marker: the Game Model container type name this class maps to.
 	inline const TCHAR* Container = TEXT("CrowdyContainer");
 
+	// UCLASS: where this container type's rows live, "Session" (default) or "App" (one row per key for the whole app,
+	// bound with no session id). Baked for cooked builds.
+	inline const TCHAR* Scope = TEXT("CrowdyScope");
+
+	// UCLASS: who may create rows of this type on the server, "Member" (default), "Admin" or "Owner". Read only by
+	// the Studio schema sync.
+	inline const TCHAR* InstantiableBy = TEXT("CrowdyInstantiableBy");
+
 	// Asset-registry tag written on every Blueprint save, naming the format the asset's Crowdy tags were written
 	// under. Its ABSENCE is the whole point: an asset carrying the current value has been described, so the
 	// container tag below can be trusted to be there or genuinely not there, and the asset never has to be loaded

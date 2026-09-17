@@ -43,6 +43,27 @@ bool FCrowdyStableNetIDFallbackTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// The registration-time snapshot wins over a live read whenever it exists: a cooked build releases the guid after
+// the actor registers its components, and a live read inside a level instance then answers a valid but shared
+// value. The live read is only the answer for a component that registered too late to snapshot. The release
+// itself cannot be reproduced in an editor build, where the live read never fails; only a cooked client covers it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStablePlacementGuidSelectionTest,
+	"CrowdySDK.GameModel.StablePlacementGuidSelection", CrowdyStableIdentityTestFlags)
+bool FCrowdyStablePlacementGuidSelectionTest::RunTest(const FString& Parameters)
+{
+	const FGuid Snapshot(1, 2, 3, 4);
+	const FGuid Live(5, 6, 7, 8);
+	TestEqual(TEXT("both valid: the snapshot wins"),
+		UCrowdyEntityComponent::SelectPlacementGuid(Snapshot, Live), Snapshot);
+	TestEqual(TEXT("no live value: the snapshot"),
+		UCrowdyEntityComponent::SelectPlacementGuid(Snapshot, FGuid()), Snapshot);
+	TestEqual(TEXT("no snapshot: the live value"),
+		UCrowdyEntityComponent::SelectPlacementGuid(FGuid(), Live), Live);
+	TestFalse(TEXT("neither: invalid"),
+		UCrowdyEntityComponent::SelectPlacementGuid(FGuid(), FGuid()).IsValid());
+	return true;
+}
+
 // The placement guid is a shared id only for an actor loaded with its level. An actor created during play is handed
 // a fresh guid by the engine in an editor build and none at all in a packaged one, so honouring it would give the
 // same actor two different ids depending on how the game was built. Both inputs are required.

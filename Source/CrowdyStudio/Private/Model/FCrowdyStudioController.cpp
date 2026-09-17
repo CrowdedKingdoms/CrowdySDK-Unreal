@@ -865,6 +865,7 @@ void FCrowdyStudioController::SignOut()
 
 	Organizations.Reset();
 	Apps.Reset();
+	ClearPlacementCache();
 	SelectedOrgId = 0;
 	// Cleared before the state below, not after: views compare the app they loaded for against the live selection to
 	// decide whether their own editor panes are stale, and that comparison has to see the selection already gone.
@@ -940,7 +941,25 @@ void FCrowdyStudioController::FetchApps()
 		[this](const TSharedPtr<FJsonObject>& Envelope)
 		{
 			ReleaseAppsFetch();
+			// The list query carries neither the discovery fields nor the single-app detail, so a refresh
+			// keeps what earlier per-app reads already filled in.
+			TArray<TSharedPtr<FStudioApp>> Previous = MoveTemp(Apps);
 			CrowdyStudioGql::ParseApps(Envelope, Apps);
+			for (const TSharedPtr<FStudioApp>& App : Apps)
+			{
+				for (const TSharedPtr<FStudioApp>& Old : Previous)
+				{
+					if (Old->AppId != App->AppId) { continue; }
+					App->DatacenterCode = Old->DatacenterCode;
+					App->GameApiWsUrl = Old->GameApiWsUrl;
+					App->DeploymentTarget = Old->DeploymentTarget;
+					App->RuntimeStatus = Old->RuntimeStatus;
+					App->RuntimeDenialReason = Old->RuntimeDenialReason;
+					App->ReservedUdpBytesPerSec = Old->ReservedUdpBytesPerSec;
+					App->ReservedGraphqlOpsPerSec = Old->ReservedGraphqlOpsPerSec;
+					break;
+				}
+			}
 			SetStatus(FString::Printf(TEXT("%d app(s)."), Apps.Num()), false);
 			OnAppsChanged.Broadcast();
 		},
@@ -960,48 +979,50 @@ void FCrowdyStudioController::ReleaseAppsFetch()
 }
 
 void FCrowdyStudioController::CreateApp(int64 OrgId, const FString& Name, const FString& Slug,
-	const FString& Status, const FString& Visibility)
+	const FString& Datacenter, const FString& Description, TFunction<void(int64)> OnDone)
 {
-	if (Name.IsEmpty() || Slug.IsEmpty())
+	auto Fail = [&OnDone](const TCHAR* Why, FCrowdyStudioController* Self)
 	{
-		SetStatus(TEXT("A new app needs both a name and a slug."), true);
-		return;
-	}
+		Self->SetStatus(Why, true);
+		if (OnDone) { OnDone(0); }
+	};
+	if (OrgId == 0) { Fail(TEXT("Select an organization before creating an app."), this); return; }
+	if (Name.IsEmpty() || Slug.IsEmpty()) { Fail(TEXT("A new app needs both a name and a URL identifier."), this); return; }
+	if (Datacenter.IsEmpty()) { Fail(TEXT("A new app needs a datacenter; the placement is permanent."), this); return; }
 
-	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
-	Input->SetStringField(TEXT("orgId"), FString::Printf(TEXT("%lld"), OrgId));
-	Input->SetStringField(TEXT("name"), Name);
-	Input->SetStringField(TEXT("slug"), Slug);
-	// status/visibility are the AppStatus/AppVisibility enums - passed as their value names.
-	if (!Status.IsEmpty())
-	{
-		Input->SetStringField(TEXT("status"), Status);
-	}
-	if (!Visibility.IsEmpty())
-	{
-		Input->SetStringField(TEXT("visibility"), Visibility);
-	}
-
-	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
-	Variables->SetObjectField(TEXT("input"), Input);
+	const TSharedPtr<FJsonObject> Variables = CrowdyStudioGql::BuildCreateAppVariables(OrgId, Name, Slug, Datacenter, Description);
 
 	SendManagement(ECrowdyCppApiDomain::Apps, TEXT("CreateApp"), Variables,
-		[this](const TSharedPtr<FJsonObject>& Envelope)
+		[this, OnDone](const TSharedPtr<FJsonObject>& Envelope)
 		{
 			const TSharedPtr<FStudioApp> Created = CrowdyStudioGql::ParseApp(Envelope, TEXT("createApp"));
 			SetStatus(Created.IsValid()
 				? FString::Printf(TEXT("Created app '%s'."), *Created->Name)
 				: TEXT("Created app."), false);
+			if (Created.IsValid())
+			{
+				Apps.Insert(Created, 0);
+				OnAppsChanged.Broadcast();
+			}
 			FetchApps();
+			if (OnDone) { OnDone(Created.IsValid() ? Created->AppId : 0); }
+		},
+		[OnDone]()
+		{
+			if (OnDone) { OnDone(0); }
 		});
 }
 
-void FCrowdyStudioController::UpdateApp(int64 AppId, const FString& Name, const FString& Status, const FString& Visibility)
+void FCrowdyStudioController::UpdateApp(int64 AppId, const FString& Name, const TOptional<FString>& Description, const FString& Status, const FString& Visibility)
 {
 	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
 	if (!Name.IsEmpty())
 	{
 		Input->SetStringField(TEXT("name"), Name);
+	}
+	if (Description.IsSet())
+	{
+		Input->SetStringField(TEXT("description"), Description.GetValue());
 	}
 	if (!Status.IsEmpty())
 	{
@@ -1051,12 +1072,15 @@ void FCrowdyStudioController::FetchApp(int64 AppId)
 				return;
 			}
 
-			// Fold the endpoint detail back into the list entry the views already show.
+			// Fold the endpoint detail back into the list entry the views already show. The discovery fields
+			// (datacenter, WS endpoint) are not in the app query, so keep the ones already merged.
 			bool bMerged = false;
 			for (TSharedPtr<FStudioApp>& Existing : Apps)
 			{
 				if (Existing->AppId == Detail->AppId)
 				{
+					Detail->DatacenterCode = Existing->DatacenterCode;
+					Detail->GameApiWsUrl = Existing->GameApiWsUrl;
 					*Existing = *Detail;
 					bMerged = true;
 					break;
@@ -1068,7 +1092,69 @@ void FCrowdyStudioController::FetchApp(int64 AppId)
 			}
 
 			OnAppsChanged.Broadcast();
+			FetchAppDiscovery(Detail->AppId);
 		});
+}
+
+void FCrowdyStudioController::FetchAppDiscovery(int64 AppId)
+{
+	TArray<TSharedPtr<FJsonValue>> Ids;
+	Ids.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%lld"), AppId)));
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetArrayField(TEXT("appIds"), Ids);
+
+	SendManagement(ECrowdyCppApiDomain::Apps, TEXT("AppDiscovery"), Variables,
+		[this, AppId](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			for (TSharedPtr<FStudioApp>& Existing : Apps)
+			{
+				if (Existing->AppId == AppId && CrowdyStudioGql::ParseAppDiscovery(Envelope, AppId, *Existing))
+				{
+					OnAppsChanged.Broadcast();
+					return;
+				}
+			}
+		},
+		TFunction<void()>(), /*bReportErrors*/ false);
+}
+
+void FCrowdyStudioController::FetchPlaceableDatacenters()
+{
+	// Both paths broadcast: a fetch that fails and says nothing leaves the create sheet on "Loading
+	// datacenters..." with no way to retry.
+	SendManagement(ECrowdyCppApiDomain::Platform, TEXT("PlaceableDatacenters"), nullptr,
+		[this](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			bool bEnforced = false;
+			CrowdyStudioGql::ParsePlaceableDatacenters(Envelope, PlaceableDatacenters, bEnforced);
+			bPlaceableDatacentersFetched = true;
+			bPlaceableDatacentersFailed = false;
+			OnPlaceableDatacentersChanged.Broadcast();
+		},
+		[this]()
+		{
+			bPlaceableDatacentersFailed = true;
+			OnPlaceableDatacentersChanged.Broadcast();
+		});
+}
+
+void FCrowdyStudioController::ClearPlacementCache()
+{
+	PlaceableDatacenters.Reset();
+	bPlaceableDatacentersFetched = false;
+	bPlaceableDatacentersFailed = false;
+	FreeAppsPerOrg = 0;
+}
+
+void FCrowdyStudioController::FetchPlatformConfig()
+{
+	SendManagement(ECrowdyCppApiDomain::Platform, TEXT("PlatformConfig"), nullptr,
+		[this](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			FreeAppsPerOrg = CrowdyStudioGql::ParseFreeAppsPerOrg(Envelope);
+			OnAppsChanged.Broadcast();
+		},
+		TFunction<void()>(), /*bReportErrors*/ false);
 }
 
 
@@ -1118,6 +1204,8 @@ FString FCrowdyStudioController::GetBackendMode() const
 void FCrowdyStudioController::SetBackendMode(const FString& Mode)
 {
 	FCrowdyConfigSync::SetBackendMode(Mode);
+	// The placement codes and free-slot count belong to one deployment; a Dev answer must not place a Prod app.
+	ClearPlacementCache();
 	SetStatus(TEXT("Backend changed. If your apps don't load, sign in again for this backend."), false);
 	OnConfigChanged.Broadcast();
 }
@@ -1130,6 +1218,7 @@ FString FCrowdyStudioController::GetCustomDiscoveryUrl() const
 void FCrowdyStudioController::SetCustomDiscoveryUrl(const FString& Url)
 {
 	FCrowdyConfigSync::SetCustomDiscoveryUrl(Url);
+	ClearPlacementCache();
 	OnConfigChanged.Broadcast();
 }
 
@@ -2061,7 +2150,7 @@ void FCrowdyStudioController::IngestContainerTypes(TArray<TSharedPtr<FStudioCont
 }
 
 void FCrowdyStudioController::UpsertContainerType(const FString& TypeName, const FString& DisplayName, const FString& Description,
-	const FString& InstantiableBy, const FString& DefaultPropertyVisibility, int64 ExpectedAppId)
+	const FString& InstantiableBy, const FString& DefaultPropertyVisibility, const FString& Scope, int64 ExpectedAppId)
 {
 	if (SelectedAppId == 0 || TypeName.IsEmpty() || DisplayName.IsEmpty())
 	{
@@ -2082,6 +2171,7 @@ void FCrowdyStudioController::UpsertContainerType(const FString& TypeName, const
 	SetOptionalStringField(Input, TEXT("description"), Description);
 	SetOptionalStringField(Input, TEXT("instantiableBy"), InstantiableBy);
 	SetOptionalStringField(Input, TEXT("defaultPropertyVisibility"), DefaultPropertyVisibility);
+	SetOptionalStringField(Input, TEXT("scope"), Scope);
 
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetObjectField(TEXT("input"), Input);
@@ -4018,6 +4108,7 @@ void FCrowdyStudioController::ApplySchemaSync()
 			Input->SetStringField(TEXT("displayName"), TypeUpsert.Type.DisplayName);
 			Input->SetStringField(TEXT("instantiableBy"), TypeUpsert.Type.InstantiableBy);
 			Input->SetStringField(TEXT("defaultPropertyVisibility"), TypeUpsert.Type.DefaultVisibility);
+			Input->SetStringField(TEXT("scope"), TypeUpsert.Type.Scope);
 
 			const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 			Variables->SetObjectField(TEXT("input"), Input);
@@ -5460,6 +5551,7 @@ void FCrowdyStudioController::ClearAppScopedState()
 	// that the answer has changed: the new app has its own snapshot, or none at all, and a browser left showing the
 	// previous app's Source and Status columns would be attributing one app's schema to another.
 	OnModelSnapshotChanged.Broadcast();
+	ClearPreSeedState();
 }
 
 void FCrowdyStudioController::SelectOrg(int64 OrgId)
@@ -6164,6 +6256,7 @@ void FCrowdyStudioController::EndRequest()
 void FCrowdyStudioController::FetchAppsForSignedInUser()
 {
 	FetchApps();
+	FetchPlatformConfig();
 
 	// On sign-in a remembered app is already selected (set in Initialize from saved settings), but it
 	// never went through SelectApp, so mint its app token and announce it here too so the team/channel

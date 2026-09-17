@@ -2118,6 +2118,68 @@ bool FCrowdyBuildReportPromotesDuplicateConflictTest::RunTest(const FString& Par
 	return true;
 }
 
+// CrowdyScope and CrowdyInstantiableBy are read from the class meta without regard to case and reflected as the
+// server's lowercase words; an unrecognized word falls back to the default and is warned about, never sent.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySchemaSyncScopeAndInstantiableByFromClassTest,
+	"CrowdySDK.GameModel.SchemaSyncScopeAndInstantiableByFromClass", CrowdySchemaSyncTestFlags)
+bool FCrowdySchemaSyncScopeAndInstantiableByFromClassTest::RunTest(const FString& Parameters)
+{
+	TArray<FString> Warnings;
+	const FCrowdyDesiredContainerType AppScoped =
+		FCrowdySchemaSync::BuildDesiredForClass(UCrowdySchemaSyncAppScopedTarget::StaticClass(), &Warnings);
+	TestEqual(TEXT("type name"), AppScoped.TypeName, FString(TEXT("SchemaSyncLandmark")));
+	TestEqual(TEXT("CrowdyScope=\"App\" reflects as app"), AppScoped.Scope, FString(TEXT("app")));
+	TestEqual(TEXT("CrowdyInstantiableBy=\"Admin\" reflects as admin"), AppScoped.InstantiableBy, FString(TEXT("admin")));
+	TestEqual(TEXT("recognized words warn about nothing"), Warnings.Num(), 0);
+
+	const FCrowdyDesiredContainerType Untagged =
+		FCrowdySchemaSync::BuildDesiredForClass(UCrowdySchemaSyncTestTarget::StaticClass(), &Warnings);
+	TestEqual(TEXT("no CrowdyScope defaults to session"), Untagged.Scope, FString(TEXT("session")));
+	TestEqual(TEXT("no CrowdyInstantiableBy defaults to member"), Untagged.InstantiableBy, FString(TEXT("member")));
+
+	const FCrowdyDesiredContainerType BadWords =
+		FCrowdySchemaSync::BuildDesiredForClass(UCrowdySchemaSyncBadWordsTarget::StaticClass(), &Warnings);
+	TestEqual(TEXT("an unrecognized scope falls back to session"), BadWords.Scope, FString(TEXT("session")));
+	TestEqual(TEXT("an unrecognized instantiableBy falls back to member"), BadWords.InstantiableBy, FString(TEXT("member")));
+	TestEqual(TEXT("one warning per unrecognized word"), Warnings.Num(), 2);
+	if (Warnings.Num() == 2)
+	{
+		TestTrue(TEXT("the scope warning names the authored word"), Warnings[0].Contains(TEXT("Galaxy")));
+		TestTrue(TEXT("the instantiableBy warning names the authored word"), Warnings[1].Contains(TEXT("Anyone")));
+	}
+	return true;
+}
+
+// A scope that differs between code and server is an upsert plus a warning naming the transition; a server type
+// whose scope matches (including one an older server never reported, which reads as session) is a no-op.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySchemaSyncScopeDriftTest,
+	"CrowdySDK.GameModel.SchemaSyncScopeDrift", CrowdySchemaSyncTestFlags)
+bool FCrowdySchemaSyncScopeDriftTest::RunTest(const FString& Parameters)
+{
+	FCrowdyDesiredContainerType Desired = MakeDesiredType(TEXT("Landmark"));
+	Desired.Scope = TEXT("app");
+
+	FStudioContainerType ServerSession = MakeServerType(TEXT("Landmark"));
+	TestEqual(TEXT("a server type never reporting scope reads as session"), ServerSession.Scope, FString(TEXT("session")));
+	const FCrowdySchemaDelta Drift = FCrowdySchemaSync::DiffSchema({ Desired }, { ServerSession }, {});
+	TestEqual(TEXT("a scope difference is one type upsert"), Drift.TypeUpserts.Num(), 1);
+	if (Drift.TypeUpserts.Num() == 1)
+	{
+		TestFalse(TEXT("an update, not a create"), Drift.TypeUpserts[0].bIsNew);
+		TestEqual(TEXT("the upsert carries the desired scope"), Drift.TypeUpserts[0].Type.Scope, FString(TEXT("app")));
+	}
+	const bool bWarned = Drift.Warnings.ContainsByPredicate([](const FString& Warning)
+		{ return Warning.Contains(TEXT("scope changes 'session' -> 'app'")); });
+	TestTrue(TEXT("the warning names the transition"), bWarned);
+
+	FStudioContainerType ServerApp = MakeServerType(TEXT("Landmark"));
+	ServerApp.Scope = TEXT("app");
+	const FCrowdySchemaDelta Matching = FCrowdySchemaSync::DiffSchema({ Desired }, { ServerApp }, {});
+	TestEqual(TEXT("a matching scope is no upsert"), Matching.TypeUpserts.Num(), 0);
+	TestEqual(TEXT("and no warning"), Matching.Warnings.Num(), 0);
+	return true;
+}
+
 namespace
 {
 	// One effect's compile facts as the sweep would have produced them, for the pure selection rules below. Named

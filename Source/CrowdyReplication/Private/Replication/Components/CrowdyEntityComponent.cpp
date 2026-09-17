@@ -112,7 +112,7 @@ FGuid UCrowdyEntityComponent::ComputeStableNetID(bool& bOutUsedPathFallback) con
 	// branch in the editor, where the engine hands every spawn a fresh guid, and the other branch in a packaged
 	// build, where it has none: two different ids for the same actor depending on how the game was built.
 	const bool bLevelPlaced = IsValid(Owner) && Owner->IsNetStartupActor();
-	const FGuid InstanceGuid = ResolveActorInstanceGuid(Owner);
+	const FGuid InstanceGuid = SelectPlacementGuid(PlacementGuidAtRegister, ResolveActorInstanceGuid(Owner));
 	if (ShouldUsePlacementGuid(bLevelPlaced, InstanceGuid.IsValid()))
 	{
 		bOutUsedPathFallback = false;
@@ -124,6 +124,23 @@ FGuid UCrowdyEntityComponent::ComputeStableNetID(bool& bOutUsedPathFallback) con
 	// caller warns about that case rather than pretending the id is usable.
 	bOutUsedPathFallback = true;
 	return FCrowdyModelIdentity::StableNetIDFromActorPath(IsValid(Owner) ? Owner->GetPathName() : GetPathName());
+}
+
+FGuid UCrowdyEntityComponent::SelectPlacementGuid(const FGuid& AtRegister, const FGuid& Live)
+{
+	return AtRegister.IsValid() ? AtRegister : Live;
+}
+
+void UCrowdyEntityComponent::OnRegister()
+{
+	Super::OnRegister();
+	// Only a level-placed owner has a shared guid worth keeping; a spawn inside a level instance would snapshot
+	// the level's own guid, which every spawn there shares.
+	const AActor* Owner = GetOwner();
+	if (!PlacementGuidAtRegister.IsValid() && Owner && Owner->IsNetStartupActor())
+	{
+		PlacementGuidAtRegister = ResolveActorInstanceGuid(Owner);
+	}
 }
 
 void UCrowdyEntityComponent::BeginPlay()
@@ -591,7 +608,7 @@ void UCrowdyEntityComponent::ResolveIdentity()
 			TEXT("[CrowdyEntityComponent]: '%s' uses Stable identity but was created during play, so there is nothing every client can derive the same id from and its id will differ per client. Spawn it through Crowdy SpawnEntity, which assigns an id and announces it, or give it a Crowdy binding key."),
 			*GetNameSafe(CachedOwner));
 		UE_CLOG(bUsedPathFallback && bLevelPlaced, LogCrowdyReplication, Warning,
-			TEXT("[CrowdyEntityComponent]: '%s' was loaded with its level but has no engine instance guid - using path-derived identity, which is not stable under World Partition."),
+			TEXT("[CrowdyEntityComponent]: '%s' was loaded with its level but has no engine instance guid, or its entity component was added after the actor registered its components - using path-derived identity, which is not stable under World Partition."),
 			*GetNameSafe(CachedOwner));
 		break;
 	}

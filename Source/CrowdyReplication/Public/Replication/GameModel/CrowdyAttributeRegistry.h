@@ -63,6 +63,10 @@ struct CROWDYREPLICATION_API FCrowdyAttributeRegistry
 	// class carries no CrowdyContainer meta, or the tag is empty.
 	static bool GetContainerTypeName(const UClass* Class, FString& OutTypeName);
 
+	// True when the class declares meta=(CrowdyScope="App"): one row per key for the whole app, bound with no session
+	// id. Absent or "Session" is false; any other word warns and is false. Baked for cooked builds.
+	static bool IsContainerAppScoped(const UClass* Class);
+
 	// The reverse: the container class whose CrowdyContainer tag is TypeName, or null when nothing declares it. The
 	// comparison is case-sensitive, matching the server, which treats a container type name as an exact key. Test
 	// fixtures (meta=(CrowdyContainerTest)) are excluded, as they are from every other scan of live container types.

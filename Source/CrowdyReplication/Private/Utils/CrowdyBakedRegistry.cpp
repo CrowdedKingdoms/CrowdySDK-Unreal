@@ -279,6 +279,37 @@ bool UCrowdyBakedRegistry::FindPullModelOnStart(const FSoftClassPath& ClassPath,
 	return false;
 }
 
+bool UCrowdyBakedRegistry::FindContainerAppScoped(const FSoftClassPath& ClassPath) const
+{
+	BuildLookups();
+	const FCrowdyBakedModelClass* Entry = ModelClassLookup.Find(ClassPath);
+	return Entry && Entry->bAppScoped;
+}
+
+bool UCrowdyBakedRegistry::FindContainerAppScoped(const UClass* Class) const
+{
+	BuildLookups();
+	// The nearest class in the chain with a baked entry carries the answer, as the live metadata walk does.
+	for (const UClass* Current = Class; Current; Current = Current->GetSuperClass())
+	{
+		if (const FCrowdyBakedModelClass* Entry = ModelClassLookup.Find(FSoftClassPath(const_cast<UClass*>(Current))))
+		{
+			return Entry->bAppScoped;
+		}
+	}
+	return false;
+}
+
+bool UCrowdyBakedRegistry::IsContainerClassAppScoped(const UClass* Class)
+{
+	if (!Class) return false;
+
+	const UCrowdyBakedRegistry* Registry = Get();
+	if (!Registry) return false;
+
+	return Registry->FindContainerAppScoped(Class);
+}
+
 bool UCrowdyBakedRegistry::ShouldPullModelOnStart(const UClass* Class)
 {
 	if (!Class)

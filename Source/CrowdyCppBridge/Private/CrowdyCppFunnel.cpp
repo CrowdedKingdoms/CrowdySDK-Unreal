@@ -38,6 +38,7 @@ namespace
 	// syntax error at runtime rather than at check time.
 	const char* const GameModelOperations[] = {
 		"GameModelContainerState",
+		"GameModelContainerStates",
 		"GameModelContainers",
 		"GameModelEnsureContainer",
 		"GameModelCreateContainer",

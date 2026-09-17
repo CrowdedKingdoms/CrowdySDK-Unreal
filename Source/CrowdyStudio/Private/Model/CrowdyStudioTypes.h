@@ -29,13 +29,41 @@ struct FStudioApp
 	FString Slug;
 	FString Status;
 	FString Visibility;
+	FString Description;
+	FString OrgName;
+	FString OrgSlug;
+	FString CreatedAt;
+	FString UpdatedAt;
 
 	// Endpoints as the server reports them. WsUrl is never derived from HttpUrl by
 	// string surgery it is populated from server data (the app/env or platformConfig).
 	FString GameApiUrl;
-	FString GameApiWsUrl;
 	FString SplitMode;
+
+	// From appDiscovery, not the app record: the shard's datacenter ("or", "va") and the WS endpoint. Empty
+	// until discovery answers; a list refetch keeps them.
+	FString DatacenterCode;
+	FString GameApiWsUrl;
+
+	// Only the single-app query returns these; the list leaves them empty and a refetch keeps them.
 	FString DeploymentTarget;
+	FString RuntimeStatus;
+	FString RuntimeDenialReason;
+	int64 ReservedUdpBytesPerSec = 0;
+	int64 ReservedGraphqlOpsPerSec = 0;
+};
+
+// One datacenter this deployment can place a new app in (placeableDatacenters).
+struct FStudioDatacenter
+{
+	FString Code;
+	FString GameApiUrl;
+	FString GameApiWsUrl;
+	bool bPlaceable = false;
+	// DatacenterServingStatus as sent: SERVING, NOT_SERVING or UNKNOWN. Kept as text because UNKNOWN is
+	// not an outage and must never be shown as one.
+	FString Serving;
+	int32 AppShardCount = 0;
 };
 
 // A read-back of the live UCrowdySDKDeveloperSettings, used by the Config view to show
@@ -146,6 +174,10 @@ struct FStudioContainerType
 	FString Description;
 	FString InstantiableBy;
 	FString DefaultPropertyVisibility;
+	// "session" (rows live in a session) or "app" (one row per key app-wide). A server predating the field reads as session.
+	FString Scope = TEXT("session");
+	// Who may claim a bindingKey on this type; empty when the type carries no bind policy.
+	FString BindPolicyJson;
 	FString MetadataJson;
 };
 
@@ -368,6 +400,14 @@ struct FStudioContainer
 	// The key this container was ensured under, or empty when it was created outright. A container held by a
 	// binding key is recreated by the runtime the next time that key is ensured, so deleting one is not final.
 	FString BindingKey;
+};
+
+// A Game Model session as listed by gameModelSessions, enough to pick one as a pre-seed scope.
+struct FStudioSession
+{
+	FString SessionId;
+	FString Name;
+	FString Status;
 };
 
 // A live container's visible property values (gameModelContainerState), filtered server-side to what

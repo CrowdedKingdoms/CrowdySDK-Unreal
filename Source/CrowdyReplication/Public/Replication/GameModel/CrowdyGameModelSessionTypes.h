@@ -65,6 +65,17 @@ enum class ECrowdySessionPresence : uint8
 	None
 };
 
+/**
+ * The values the rows seeded into a new session start with. Defaults: the type's property defaults; App: a copy of
+ * each app-scoped template row's current values.
+ */
+UENUM(BlueprintType)
+enum class ECrowdySessionSeedState : uint8
+{
+	Defaults,
+	App
+};
+
 /** Why a session ended. None while it is still active; EmptyTimeout when the server ended a session nobody was in. */
 UENUM(BlueprintType)
 enum class ECrowdySessionEndReason : uint8
@@ -219,6 +230,14 @@ struct FCrowdyGameModelSession
 
 	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Game Model")
 	ECrowdySessionPresence Presence = ECrowdySessionPresence::Actor;
+
+	// How many containers the create seeded from the app's templates, meaningful only when bHasSeededContainerCount:
+	// the create response carries it and every other read leaves it unset.
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Game Model", AdvancedDisplay)
+	int32 SeededContainerCount = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Game Model", AdvancedDisplay)
+	bool bHasSeededContainerCount = false;
 };
 
 /** One membership row of a session: who joined, in which role, and the incarnation a leave must name. */
@@ -356,6 +375,15 @@ struct FCrowdyGameModelCreateSessionOptions
 	// Empty means none; a repeated create with the same key returns the first session instead of a second one.
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Crowdy SDK|Game Model", AdvancedDisplay)
 	FString IdempotencyKey;
+
+	// Container types whose keyed app-scoped rows are copied into the new session as it is created. Empty seeds
+	// nothing. Each type must be admin-instantiable or carry a bind policy; the whole create is refused otherwise.
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Crowdy SDK|Game Model")
+	TArray<FString> SeedFromAppTypeNames;
+
+	// What the seeded copies start with; only sent when SeedFromAppTypeNames is non-empty.
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Crowdy SDK|Game Model")
+	ECrowdySessionSeedState SeedInitialState = ECrowdySessionSeedState::Defaults;
 };
 
 /** A directed relationship edge between two containers (inventory -> item, chest -> contents, tech-tree link). */

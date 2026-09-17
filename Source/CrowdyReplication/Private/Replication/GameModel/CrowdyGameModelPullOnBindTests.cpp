@@ -105,6 +105,47 @@ bool FCrowdyPullOnStartBakeRoundTripTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// The cooked read of the scope flag rides the same entries: a four-member entry reads back app-scoped, an entry
+// written before the flag existed reads as session-scoped, and a class with no entry of its own follows the nearest
+// ancestor that has one, exactly as the live metadata walk does. Mutating the chain walk in FindContainerAppScoped
+// to read only the class turns the inherited assertion red.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAppScopedBakeRoundTripTest,
+	"CrowdySDK.GameModel.AppScopedBakeRoundTrip", CrowdyPullOnBindTestFlags)
+bool FCrowdyAppScopedBakeRoundTripTest::RunTest(const FString& Parameters)
+{
+	UCrowdyBakedRegistry* Baked = NewObject<UCrowdyBakedRegistry>(GetTransientPackage());
+	if (!TestNotNull(TEXT("baked registry created"), Baked))
+	{
+		return false;
+	}
+
+	const FSoftClassPath AppPath(UCrowdyGameModelPullOffTarget::StaticClass());
+	const FSoftClassPath SessionPath(UCrowdyGameModelPullOnTarget::StaticClass());
+	const FSoftClassPath LegacyPath(UCrowdyGameModelPullInheritedTarget::StaticClass());
+	const FSoftClassPath UnknownPath(UCrowdyGameModelTestTarget::StaticClass());
+
+	Baked->ModelClasses.Add({ AppPath, TEXT("TestApp"), true, true });
+	Baked->ModelClasses.Add({ SessionPath, TEXT("TestPullOn"), true });
+	Baked->ModelClasses.Add({ LegacyPath, TEXT("TestPullOffChild") });
+
+	TestTrue(TEXT("an entry baked app-scoped reads back app-scoped"), Baked->FindContainerAppScoped(AppPath));
+	TestFalse(TEXT("a three-member entry reads as session-scoped"), Baked->FindContainerAppScoped(SessionPath));
+	TestFalse(TEXT("a two-member entry reads as session-scoped"), Baked->FindContainerAppScoped(LegacyPath));
+	TestFalse(TEXT("a class with no entry reads as session-scoped"), Baked->FindContainerAppScoped(UnknownPath));
+
+	// The chain: an untagged subclass has no entry, so its app-scoped base answers; a subclass with an entry of its
+	// own stops the walk there, even though its base is app-scoped.
+	TestTrue(TEXT("a subclass with no entry follows its app-scoped base"),
+		Baked->FindContainerAppScoped(UCrowdyGameModelPullUntaggedSubclass::StaticClass()));
+	TestFalse(TEXT("a subclass with its own session entry does not inherit its base's scope"),
+		Baked->FindContainerAppScoped(UCrowdyGameModelPullInheritedTarget::StaticClass()));
+	TestTrue(TEXT("the app-scoped class itself resolves through the class overload"),
+		Baked->FindContainerAppScoped(UCrowdyGameModelPullOffTarget::StaticClass()));
+	TestFalse(TEXT("a null class reads as session-scoped"), Baked->FindContainerAppScoped(static_cast<const UClass*>(nullptr)));
+
+	return true;
+}
+
 // The first-bind gate on a real participant: it reads the participant's OWN class, whatever shape the participant
 // is. A container component answers from its own class rather than from its anchor actor.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPullOnBindContainerSettingTest,
