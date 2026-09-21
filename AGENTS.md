@@ -11,10 +11,10 @@ Open a pull request.
 | Branch | What you do |
 |---|---|
 | `dev` | Branch off `origin/dev`. Open a pull request into `dev`. Merge it yourself. An ordinary change needs no review. |
-| `test` | Open a pull request from `dev` into `test`. Do not merge it. Ask an org admin to merge. |
-| `prod` | Open a pull request from `test` into `prod`. Do not merge it. Ask an org admin to merge. |
+| `test` | Open a pull request from `dev` into `test`. @Shady-S25 merges it. Anyone else asks an org admin. |
+| `prod` | Open a pull request from `test` into `prod`. @Shady-S25 merges it. Anyone else asks an org admin. |
 
-On `dev`, merge with the API. `gh pr merge` can refuse before it sends the request:
+That promotion right is this repository only. @Shady-S25 still cannot push straight to `test` or `prod`. Merge with the API. `gh pr merge` can refuse before it sends the request when a bypass is what lets the merge through:
 
 ```bash
 gh api repos/CrowdedKingdoms/CrowdySDK-Unreal/pulls/<n>/merge -X PUT -f merge_method=merge
