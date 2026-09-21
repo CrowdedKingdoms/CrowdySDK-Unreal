@@ -409,10 +409,10 @@ bool FCrowdyBackendThatCannotInitializeIsRefusedTest::RunTest(const FString& Par
 }
 
 /**
- * The shipped actor-pool backend is the one a profile that chose nothing now lands on, so what it does with
- * a config it cannot use decides whether that default is honest. A missing config is an ordinary authoring
- * mistake here rather than a programmer error, so it is reported and refused rather than ensured, which is
- * also what makes it visible in a packaged build.
+ * The shipped actor-pool backend is the one a profile that chose nothing now lands on. A missing config runs
+ * on the shipped default (CrowdySDKShippedDefaultsTests covers that resolution); a config of another
+ * backend's class is an authoring mistake, reported and refused rather than ensured, which is also what
+ * makes it visible in a packaged build.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyActorPoolBackendRefusesAnUnusableConfigTest,
 	"CrowdySDK.MapProfile.ActorPoolBackendRefusesAnUnusableConfig",
@@ -424,19 +424,15 @@ bool FCrowdyActorPoolBackendRefusesAnUnusableConfigTest::RunTest(const FString& 
 	FCrowdyMapProfileLogCapture Capture;
 
 	UCrowdyActorPoolBackend* Backend = NewObject<UCrowdyActorPoolBackend>(Map.World);
+	UCrowdyRenderingBackendConfig* WrongType = NewObject<UCrowdyUnrelatedBackendConfig>(Map.World);
 
-	TestFalse(TEXT("The actor-pool backend refuses a null config"),
-		Backend->InitializeBackend(Map.World, nullptr));
+	TestFalse(TEXT("The actor-pool backend refuses a config of the wrong type"),
+		Backend->InitializeBackend(Map.World, WrongType));
 
 	// The remedy has to name the setting the author has to fill in. A refusal that only says it failed sends
 	// the reader looking for a bug instead of a field.
 	TestTrue(TEXT("The refusal names the setting to fill in"),
 		Capture.TakeLinesContaining(TEXT("Backend Config")).Num() > 0);
-
-	UCrowdyRenderingBackendConfig* WrongType = NewObject<UCrowdyUnrelatedBackendConfig>(Map.World);
-
-	TestFalse(TEXT("The actor-pool backend refuses a config of the wrong type"),
-		Backend->InitializeBackend(Map.World, WrongType));
 
 	return true;
 }

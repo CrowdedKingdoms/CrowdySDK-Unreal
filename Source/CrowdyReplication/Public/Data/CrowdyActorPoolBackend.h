@@ -29,6 +29,13 @@ public:
 	virtual bool InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config) override;
 	virtual void DeinitializeBackend() override;
 
+	// The config this backend runs on: the one given, a transient default when none is, null when it is
+	// another backend's class.
+	static UCrowdyActorPoolBackendConfig* ResolveConfig(UCrowdyRenderingBackendConfig* Config, UObject* Outer);
+
+	// The policy class this backend instantiates: the config's, or UCrowdyTransformRepPolicy when unset.
+	static UClass* ResolvePolicyClass(const UCrowdyActorPoolBackendConfig* Config);
+
 	virtual void ActivateInstance(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& InitialState) override;
 	virtual void DeactivateInstance(int32 SlotId, const FGuid& UUID) override;
 	virtual void ExtractUpdate(const FInstancedStruct& State, int64 ServerTimestampMs, int32 SlotId) override;

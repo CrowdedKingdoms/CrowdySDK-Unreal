@@ -21,17 +21,17 @@ struct FChannelMessageNotification;
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelSuccess, FCrowdyChannel, Channel);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelsSuccess, TArray<FCrowdyChannel>, Channels);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelsSuccess, const TArray<FCrowdyChannel>&, Channels);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelMemberSuccess, FCrowdyChannelMember, Member);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelMembersSuccess, TArray<FCrowdyChannelMember>, Members);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelMembersSuccess, const TArray<FCrowdyChannelMember>&, Members);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelRoleSuccess, FCrowdyChannelRole, Role);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelRolesSuccess, TArray<FCrowdyChannelRole>, Roles);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelRolesSuccess, const TArray<FCrowdyChannelRole>&, Roles);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnMyChannelsSuccess, TArray<FCrowdyChannelMembership>, Memberships);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnMyChannelsSuccess, const TArray<FCrowdyChannelMembership>&, Memberships);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelPolicySuccess, FCrowdyChannelPolicy, Policy);
 
@@ -39,7 +39,7 @@ DECLARE_DYNAMIC_DELEGATE(FOnChannelVoidSuccess);
 
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnChannelError, FCrowdyChannelError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyChannelsCacheChanged, TArray<FCrowdyChannelMembership>, Memberships);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyChannelsCacheChanged, const TArray<FCrowdyChannelMembership>&, Memberships);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnChannelMessageReceived, int64, ChannelId, FString, SenderUUID,
                                                const TArray<uint8>&, Payload);
