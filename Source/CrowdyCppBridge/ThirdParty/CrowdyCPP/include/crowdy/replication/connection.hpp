@@ -134,6 +134,9 @@ class Connection {
   /// Idle keep-alive for your own actor (no fan-out). Send every ~2 s while
   /// idle so presence never lapses.
   Result<std::uint8_t> sendHeartbeat(const wire::ChunkCoord& chunk, const core::ActorUuid& uuid);
+  /// CLIENT_CAPABILITIES with wire::ClientCapability::kAll (Buddy v0.30.0). Sent
+  /// automatically when Config::advertiseCapabilities is on; public for tests.
+  Result<std::uint8_t> sendCapabilities();
 
   /// Put the pending outbound bundle on the wire now instead of at the end of
   /// Config::bundleWindowMs. Call it at the end of a frame when you want that
@@ -239,6 +242,8 @@ class Connection {
     /// message lost with it.
     std::uint64_t messagesDropped = 0;
     std::uint64_t hmacFailures = 0;
+    /// MESSAGE_BUNDLE_SIGNED datagrams received (Buddy v0.30.0; each verified once).
+    std::uint64_t signedBundlesReceived = 0;
     std::uint64_t malformed = 0;
     std::uint64_t ringDropped = 0;
     std::uint64_t reconnects = 0;
@@ -348,6 +353,7 @@ class Connection {
 
   std::int64_t readyAtMs_ = 0;
   std::int64_t lastRecvMs_ = 0;
+  std::int64_t lastCapsMs_ = 0;  ///< monotonic ms of the last CLIENT_CAPABILITIES; 0 = none yet
   std::int64_t lastSendMs_ = 0;
   std::atomic<bool> reconnectRequested_{false};
 

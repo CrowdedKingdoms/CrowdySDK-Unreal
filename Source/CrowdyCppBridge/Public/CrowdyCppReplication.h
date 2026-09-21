@@ -271,6 +271,15 @@ struct FCrowdyCppReplicationConfig
 	 * larger value trades that for fewer wakeups.
 	 */
 	int32 BundleWindowMs = 1;
+
+	/**
+	 * Tell the server what this client can read (CLIENT_CAPABILITIES) once the session is connected and every
+	 * 15 s after, so downlink bundles arrive as MESSAGE_BUNDLE_SIGNED with one signature per datagram instead of
+	 * one per member. A server older than v0.30.0 ignores it and keeps the per-member form. The repeat covers a
+	 * token refresh or a server-side migration, both of which reset the server's record silently. False restores
+	 * the 0.41 behaviour and is a diagnostic switch, not a setting a shipping build needs.
+	 */
+	bool bAdvertiseCapabilities = true;
 };
 
 /** Cumulative counters since the connection opened. They only grow, so a rate is a difference between snapshots. */
@@ -284,6 +293,13 @@ struct FCrowdyCppReplicationStats
 	int64 BytesReceived = 0;
 	int64 HmacFailures = 0;
 	int64 Malformed = 0;
+
+	/**
+	 * Received datagrams that were MESSAGE_BUNDLE_SIGNED: one signature over the whole datagram, verified once,
+	 * members unsigned. Counted before verification, so a forged one shows up here and in HmacFailures both.
+	 * Stays zero against a server that does not sign bundles, or with bAdvertiseCapabilities off.
+	 */
+	int64 SignedBundlesReceived = 0;
 
 	/** Inbound messages dropped because the queue to Poll was full. */
 	int64 RingDropped = 0;
