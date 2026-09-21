@@ -41,6 +41,15 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Connection|Status")
 	void InitConnectionMonitor();
+
+	// Binds the monitor's handlers to the given subsystems. InitConnectionMonitor resolves them from the game
+	// instance and calls this; a test hands them in directly.
+	void AttachTo(UCrowdySDKSubsystem* Sdk, UCrowdyUDPSubsystem* Udp);
+
+	// The last state the monitor reported, for a HUD that polls instead of binding OnConnectionStateChanged.
+	UFUNCTION(BlueprintPure, Category = "CrowdySDK|Connection|Status")
+	ECrowdyReconnectState GetReconnectState() const { return ReconnectState; }
+
 private:
 	
 	UPROPERTY()

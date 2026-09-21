@@ -43,6 +43,16 @@ ACrowdyStateHostOverrideActor::ACrowdyStateHostOverrideActor()
 	Entity->Mode = ECrowdyEntityMode::Static;
 }
 
+ACrowdyPlayerDerivedTestPawn::ACrowdyPlayerDerivedTestPawn()
+{
+	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));
+	Entity->IdentityPolicy = ECrowdyIdentityPolicy::PlayerDerived;
+	Entity->Ownership = ECrowdyOwnership::LocalClient;
+	Entity->Mode = ECrowdyEntityMode::Static;
+	AutoPossessAI = EAutoPossessAI::Disabled;
+	AutoPossessPlayer = EAutoReceiveInput::Disabled;
+}
+
 ACrowdyStateHeartbeatActor::ACrowdyStateHeartbeatActor()
 {
 	// Static mode: the component exists only so a test can set StateHeartbeat, which the replicator reads via

@@ -12,9 +12,9 @@
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdySessionFailureOutcome, FCrowdyModelFailure, Failure);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdySessionOutcome, FCrowdyGameModelSession, Session);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdySessionParticipantOutcome, FCrowdyGameModelSessionParticipant, Participant);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdySessionsOutcome, TArray<FCrowdyGameModelSession>, Sessions);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdySessionsOutcome, const TArray<FCrowdyGameModelSession>&, Sessions);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdySessionSnapshotOutcome, FCrowdyGameModelSessionSnapshot, Snapshot);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdySessionEventsOutcome, TArray<FCrowdyGameModelSessionEvent>, Events);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdySessionEventsOutcome, const TArray<FCrowdyGameModelSessionEvent>&, Events);
 
 /**
  * Creates a session (a match, room or lobby) with the local player as its first participant and host. By default

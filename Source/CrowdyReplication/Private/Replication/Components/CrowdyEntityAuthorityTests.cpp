@@ -4,14 +4,86 @@
 
 #include "Misc/AutomationTest.h"
 #include "Data/CrowdyEntityTypes.h"
+#include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/PlayerController.h"
 #include "Replication/State/CrowdyStateTestTarget.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
+#include "Subsystem/CrowdyGameSession.h"
+#include "UObject/Package.h"
+#include "Utils/HelperFunctions.h"
 
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyAuthorityTestFlags =
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
+
+	// An editor world, like the other headless fixtures: a Game world runs the engine's play initialisation and
+	// asserts in the Mass subsystem. An editor world never dispatches BeginPlay at spawn, so a test decides the
+	// order of BeginPlay and possession itself, which is exactly what these cases turn on.
+	struct FCrowdyPossessionTestWorld
+	{
+		UWorld* World = nullptr;
+
+		FCrowdyPossessionTestWorld()
+		{
+			World = UWorld::CreateWorld(EWorldType::Editor, /*bInformEngineOfWorld=*/false);
+			FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Editor);
+			Context.SetCurrentWorld(World);
+		}
+
+		~FCrowdyPossessionTestWorld()
+		{
+			GEngine->DestroyWorldContext(World);
+			World->DestroyWorld(/*bInformEngineOfWorld=*/false);
+		}
+	};
+
+	constexpr int64 PossessionTestUserID = 4242;
+
+	// The collaborators an editor world does not create: a bare entity subsystem with no local player id yet, and a
+	// game session signed in as PossessionTestUserID with no session UUID yet, so a test can see both get set.
+	struct FCrowdyPossessionCollaborators
+	{
+		UCrowdyEntitySubsystem* Entities = nullptr;
+		UCrowdyGameSession* Session = nullptr;
+
+		FCrowdyPossessionCollaborators()
+		{
+			Entities = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
+			UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
+			Session = NewObject<UCrowdyGameSession>(GameInstance);
+			Session->SetUserID(PossessionTestUserID);
+		}
+
+		FGuid ExpectedNetID() const { return UHelperFunctions::GetDeterministicID(PossessionTestUserID); }
+	};
+
+	ACrowdyPlayerDerivedTestPawn* SpawnPlayerDerivedPawn(UWorld* World, const FCrowdyPossessionCollaborators& Collaborators)
+	{
+		ACrowdyPlayerDerivedTestPawn* Pawn = World->SpawnActor<ACrowdyPlayerDerivedTestPawn>();
+		if (Pawn)
+		{
+			Pawn->Entity->SetCollaboratorsForTest(Collaborators.Entities, Collaborators.Session);
+		}
+		return Pawn;
+	}
+
+	// A player controller that answers "local": with no net driver the engine decides that by whether the
+	// controller's Player is a ULocalPlayer, so a bare one is attached directly. SetPlayer would also start the
+	// input system, which has no viewport here.
+	APlayerController* SpawnLocalPlayerController(UWorld* World)
+	{
+		APlayerController* Controller = World->SpawnActor<APlayerController>();
+		if (Controller)
+		{
+			Controller->Player = NewObject<ULocalPlayer>(GEngine);
+		}
+		return Controller;
+	}
 }
 
 // Ownership=Host derives a HostOwned role with no owner id (world entity); Ownership=LocalClient derives Owner with
@@ -315,6 +387,229 @@ bool FCrowdyOwnershipMatchTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("unregistered target is never owned"),
 		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, HostPlayer, ECrowdyRole::None, Zero, HostPlayer));
 
+	return true;
+}
+
+// The one shape that waits for possession is a self-resolving Player Derived pawn with no controller. Every other
+// input keeps today's BeginPlay-time registration: an injected identity never resolves, another policy does not
+// read a controller, a non-pawn can never be possessed, and a pawn already possessed can resolve right away.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityDeferIdentityToPossessionTest,
+	"CrowdySDK.Entity.DeferIdentityToPossession", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityDeferIdentityToPossessionTest::RunTest(const FString& Parameters)
+{
+	using UEC = UCrowdyEntityComponent;
+
+	TestTrue(TEXT("an unpossessed Player Derived pawn waits"),
+		UEC::ShouldDeferIdentityToPossession(false, ECrowdyIdentityPolicy::PlayerDerived, true, false));
+	TestFalse(TEXT("a pawn possessed before BeginPlay resolves now"),
+		UEC::ShouldDeferIdentityToPossession(false, ECrowdyIdentityPolicy::PlayerDerived, true, true));
+	TestFalse(TEXT("an injected identity never resolves, so it never waits"),
+		UEC::ShouldDeferIdentityToPossession(true, ECrowdyIdentityPolicy::PlayerDerived, true, false));
+	TestFalse(TEXT("a Stable actor does not read a controller"),
+		UEC::ShouldDeferIdentityToPossession(false, ECrowdyIdentityPolicy::Stable, true, false));
+	TestFalse(TEXT("a Random actor does not read a controller"),
+		UEC::ShouldDeferIdentityToPossession(false, ECrowdyIdentityPolicy::Random, true, false));
+	TestFalse(TEXT("a non-pawn can never be possessed, so it resolves (and falls back) now"),
+		UEC::ShouldDeferIdentityToPossession(false, ECrowdyIdentityPolicy::PlayerDerived, false, false));
+	return true;
+}
+
+// The defect: the engine possesses a pawn spawned during play only after that spawn has dispatched BeginPlay, so a
+// Player Derived pawn that resolved at BeginPlay found no controller and registered under a random id, and the
+// session UUID every local-player reader keys on was never set. Now the pawn holds no identity and registers
+// nothing until its first possession, at which point it registers under the account-derived id and sets the UUID.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedRegistersOnPossessionTest,
+	"CrowdySDK.Entity.PlayerDerivedRegistersOnPossession", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityPlayerDerivedRegistersOnPossessionTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	ACrowdyPlayerDerivedTestPawn* Pawn = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	if (!TestNotNull(TEXT("the pawn spawned"), Pawn))
+	{
+		return false;
+	}
+
+	Pawn->DispatchBeginPlay();
+
+	TestFalse(TEXT("before possession: no identity"), Pawn->Entity->GetNetID().IsValid());
+	TestFalse(TEXT("before possession: not registered"), Collaborators.Entities->FindEntityID(Pawn).IsValid());
+	TestFalse(TEXT("before possession: the session UUID is untouched"), Collaborators.Session->GetID().IsValid());
+	TestEqual(TEXT("before possession: nothing resolved"), Pawn->Entity->IdentityResolutionCount, 0);
+	TestTrue(TEXT("before possession: the pawn's controller change is being listened for"),
+		Pawn->ReceiveControllerChangedDelegate.IsBound());
+
+	APlayerController* Controller = SpawnLocalPlayerController(TestWorld.World);
+	if (!TestNotNull(TEXT("the player controller spawned"), Controller))
+	{
+		return false;
+	}
+	Pawn->PossessedBy(Controller);
+
+	const FGuid Expected = Collaborators.ExpectedNetID();
+	TestEqual(TEXT("after possession: registered under the account-derived id"),
+		Collaborators.Entities->FindEntityID(Pawn), Expected);
+	TestEqual(TEXT("after possession: the component holds that id"), Pawn->Entity->GetNetID(), Expected);
+	TestEqual(TEXT("after possession: this client owns its own pawn"),
+		static_cast<uint8>(Pawn->Entity->GetRole()), static_cast<uint8>(ECrowdyRole::Owner));
+	TestEqual(TEXT("after possession: the session UUID is the same id"), Collaborators.Session->GetID(), Expected);
+	TestEqual(TEXT("after possession: resolved exactly once"), Pawn->Entity->IdentityResolutionCount, 1);
+	TestFalse(TEXT("after possession: the listener is gone"), Pawn->ReceiveControllerChangedDelegate.IsBound());
+	return true;
+}
+
+// Control: the first-frame default pawn is possessed before the world begins play, so its controller is present at
+// BeginPlay and it resolves there as it always has. Nothing is bound and nothing waits.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedPossessedBeforeBeginPlayTest,
+	"CrowdySDK.Entity.PlayerDerivedPossessedBeforeBeginPlay", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityPlayerDerivedPossessedBeforeBeginPlayTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	ACrowdyPlayerDerivedTestPawn* Pawn = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	APlayerController* Controller = SpawnLocalPlayerController(TestWorld.World);
+	if (!TestNotNull(TEXT("the pawn spawned"), Pawn) || !TestNotNull(TEXT("the player controller spawned"), Controller))
+	{
+		return false;
+	}
+
+	Pawn->PossessedBy(Controller);
+	TestEqual(TEXT("possession before BeginPlay resolves nothing yet"), Pawn->Entity->IdentityResolutionCount, 0);
+
+	Pawn->DispatchBeginPlay();
+
+	const FGuid Expected = Collaborators.ExpectedNetID();
+	TestEqual(TEXT("BeginPlay registers under the account-derived id"), Collaborators.Entities->FindEntityID(Pawn), Expected);
+	TestEqual(TEXT("BeginPlay sets the session UUID"), Collaborators.Session->GetID(), Expected);
+	TestEqual(TEXT("resolved exactly once, at BeginPlay"), Pawn->Entity->IdentityResolutionCount, 1);
+	TestFalse(TEXT("nothing was bound to the controller change"), Pawn->ReceiveControllerChangedDelegate.IsBound());
+	return true;
+}
+
+// The identity is the account, not the controller: once resolved, an unpossess and a possession by another player
+// controller re-register nothing and change nothing.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedSecondPossessionTest,
+	"CrowdySDK.Entity.PlayerDerivedSecondPossession", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityPlayerDerivedSecondPossessionTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	ACrowdyPlayerDerivedTestPawn* Pawn = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	APlayerController* First = SpawnLocalPlayerController(TestWorld.World);
+	APlayerController* Second = SpawnLocalPlayerController(TestWorld.World);
+	if (!TestNotNull(TEXT("the pawn spawned"), Pawn) || !TestNotNull(TEXT("the first controller spawned"), First)
+		|| !TestNotNull(TEXT("the second controller spawned"), Second))
+	{
+		return false;
+	}
+
+	Pawn->DispatchBeginPlay();
+	Pawn->PossessedBy(First);
+	const FGuid Resolved = Pawn->Entity->GetNetID();
+	TestTrue(TEXT("the first possession resolved"), Resolved.IsValid());
+
+	Pawn->UnPossessed();
+	TestEqual(TEXT("an unpossess changes nothing"), Pawn->Entity->GetNetID(), Resolved);
+
+	Pawn->PossessedBy(Second);
+	TestEqual(TEXT("a second possession keeps the id"), Pawn->Entity->GetNetID(), Resolved);
+	TestEqual(TEXT("a second possession is still registered under it"), Collaborators.Entities->FindEntityID(Pawn), Resolved);
+	TestEqual(TEXT("a second possession does not resolve again"), Pawn->Entity->IdentityResolutionCount, 1);
+	TestFalse(TEXT("nothing is listening any more"), Pawn->ReceiveControllerChangedDelegate.IsBound());
+	return true;
+}
+
+// A respawn that keeps the previous pawn alive after unpossession (DetachFromControllerPendingDestroy plus a
+// lifespan): the new pawn derives the same account id, takes it from the corpse, and keeps it once the corpse ends play.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedRespawnSupersedesCorpseTest,
+	"CrowdySDK.Entity.PlayerDerivedRespawnSupersedesCorpse", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityPlayerDerivedRespawnSupersedesCorpseTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	ACrowdyPlayerDerivedTestPawn* First = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	ACrowdyPlayerDerivedTestPawn* Second = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	APlayerController* Controller = SpawnLocalPlayerController(TestWorld.World);
+	if (!TestNotNull(TEXT("the first pawn spawned"), First) || !TestNotNull(TEXT("the second pawn spawned"), Second)
+		|| !TestNotNull(TEXT("the controller spawned"), Controller))
+	{
+		return false;
+	}
+	const FGuid Expected = Collaborators.ExpectedNetID();
+
+	First->DispatchBeginPlay();
+	First->PossessedBy(Controller);
+	TestEqual(TEXT("the first pawn is registered under the account id"), Collaborators.Entities->FindEntityID(First), Expected);
+
+	First->UnPossessed();
+	Second->DispatchBeginPlay();
+	Second->PossessedBy(Controller);
+
+	TestEqual(TEXT("the second pawn is registered under the account id"), Collaborators.Entities->FindEntityID(Second), Expected);
+	TestEqual(TEXT("the registry's participant for the account id is the second pawn"),
+		Collaborators.Entities->FindParticipant(Expected), static_cast<UObject*>(Second));
+	TestFalse(TEXT("the corpse no longer holds an id"), Collaborators.Entities->FindEntityID(First).IsValid());
+	TestFalse(TEXT("the corpse's component forgot its id"), First->Entity->GetNetID().IsValid());
+
+	First->Entity->DestroyComponent();
+	TestEqual(TEXT("the corpse ending play leaves the live pawn registered"), Collaborators.Entities->FindEntityID(Second), Expected);
+	TestNotNull(TEXT("the record still resolves after the corpse is gone"), Collaborators.Entities->FindRecord(Expected));
+	return true;
+}
+
+// ClearIdentity on a pawn still waiting for its controller drops the wait too, so a later possession resolves nothing.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedClearIdentityWhileWaitingTest,
+	"CrowdySDK.Entity.PlayerDerivedClearIdentityWhileWaiting", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityPlayerDerivedClearIdentityWhileWaitingTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	ACrowdyPlayerDerivedTestPawn* Pawn = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	APlayerController* Controller = SpawnLocalPlayerController(TestWorld.World);
+	if (!TestNotNull(TEXT("the pawn spawned"), Pawn) || !TestNotNull(TEXT("the controller spawned"), Controller))
+	{
+		return false;
+	}
+
+	Pawn->DispatchBeginPlay();
+	Pawn->Entity->ClearIdentity();
+	TestFalse(TEXT("clearing the identity stops the wait"), Pawn->ReceiveControllerChangedDelegate.IsBound());
+
+	Pawn->PossessedBy(Controller);
+	TestEqual(TEXT("a possession after the clear resolves nothing"), Pawn->Entity->IdentityResolutionCount, 0);
+	TestFalse(TEXT("nothing was registered"), Collaborators.Entities->FindEntityID(Pawn).IsValid());
+	return true;
+}
+
+// A pawn that ends play before anyone possesses it leaves nothing behind: no record, no session UUID, no listener on
+// the pawn. It does say so, because a Player Derived pawn that was never registered is worth a line in the log. The
+// component is destroyed directly: an editor world never initialises its actors, so AActor::Destroy would not route
+// EndPlay there, while DestroyComponent runs the same EndPlay with the same Destroyed reason.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedEndPlayBeforePossessionTest,
+	"CrowdySDK.Entity.PlayerDerivedEndPlayBeforePossession", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityPlayerDerivedEndPlayBeforePossessionTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	ACrowdyPlayerDerivedTestPawn* Pawn = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	if (!TestNotNull(TEXT("the pawn spawned"), Pawn))
+	{
+		return false;
+	}
+	UCrowdyEntityComponent* Component = Pawn->Entity;
+
+	Pawn->DispatchBeginPlay();
+	TestTrue(TEXT("the pawn is waiting for a controller"), Pawn->ReceiveControllerChangedDelegate.IsBound());
+
+	AddExpectedMessagePlain(TEXT("was never possessed, so it was never registered"), ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains, 1);
+	Component->DestroyComponent();
+
+	TestFalse(TEXT("the component ended play"), Component->HasBegunPlay());
+	TestFalse(TEXT("nothing was registered"), Collaborators.Entities->FindEntityID(Pawn).IsValid());
+	TestFalse(TEXT("the session UUID is untouched"), Collaborators.Session->GetID().IsValid());
+	TestFalse(TEXT("the listener was removed"), Pawn->ReceiveControllerChangedDelegate.IsBound());
+	TestEqual(TEXT("nothing resolved"), Component->IdentityResolutionCount, 0);
 	return true;
 }
 

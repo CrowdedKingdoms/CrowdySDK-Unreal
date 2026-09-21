@@ -34,10 +34,10 @@ void UCrowdyChannels_GetMyChannels::Activate()
 	Channels->GetMyChannels(S, E);
 }
 
-void UCrowdyChannels_GetMyChannels::HandleSuccess(TArray<FCrowdyChannelMembership> Memberships)
+void UCrowdyChannels_GetMyChannels::HandleSuccess(const TArray<FCrowdyChannelMembership>& Memberships)
 {
 	FCrowdyMyChannelsResult Result;
-	Result.Memberships = MoveTemp(Memberships);
+	Result.Memberships = Memberships;
 	OnSuccess.Broadcast(Result);
 	SetReadyToDestroy();
 }
@@ -113,10 +113,10 @@ void UCrowdyChannels_GetChannels::Activate()
 	Channels->GetChannels(S, E);
 }
 
-void UCrowdyChannels_GetChannels::HandleSuccess(TArray<FCrowdyChannel> ChannelList)
+void UCrowdyChannels_GetChannels::HandleSuccess(const TArray<FCrowdyChannel>& ChannelList)
 {
 	FCrowdyChannelsResult Result;
-	Result.Channels = MoveTemp(ChannelList);
+	Result.Channels = ChannelList;
 	OnSuccess.Broadcast(Result);
 	SetReadyToDestroy();
 }
@@ -155,10 +155,10 @@ void UCrowdyChannels_GetChannelMembers::Activate()
 	Channels->GetChannelMembers(ChannelId, S, E);
 }
 
-void UCrowdyChannels_GetChannelMembers::HandleSuccess(TArray<FCrowdyChannelMember> Members)
+void UCrowdyChannels_GetChannelMembers::HandleSuccess(const TArray<FCrowdyChannelMember>& Members)
 {
 	FCrowdyChannelMembersResult Result;
-	Result.Members = MoveTemp(Members);
+	Result.Members = Members;
 	OnSuccess.Broadcast(Result);
 	SetReadyToDestroy();
 }
@@ -197,10 +197,10 @@ void UCrowdyChannels_GetChannelRoles::Activate()
 	Channels->GetChannelRoles(ChannelId, S, E);
 }
 
-void UCrowdyChannels_GetChannelRoles::HandleSuccess(TArray<FCrowdyChannelRole> Roles)
+void UCrowdyChannels_GetChannelRoles::HandleSuccess(const TArray<FCrowdyChannelRole>& Roles)
 {
 	FCrowdyChannelRolesResult Result;
-	Result.Roles = MoveTemp(Roles);
+	Result.Roles = Roles;
 	OnSuccess.Broadcast(Result);
 	SetReadyToDestroy();
 }
@@ -277,10 +277,10 @@ void UCrowdyChannels_GetPendingJoinRequests::Activate()
 	Channels->GetPendingJoinRequests(ChannelId, S, E);
 }
 
-void UCrowdyChannels_GetPendingJoinRequests::HandleSuccess(TArray<FCrowdyChannelMember> Members)
+void UCrowdyChannels_GetPendingJoinRequests::HandleSuccess(const TArray<FCrowdyChannelMember>& Members)
 {
 	FCrowdyChannelMembersResult Result;
-	Result.Members = MoveTemp(Members);
+	Result.Members = Members;
 	OnSuccess.Broadcast(Result);
 	SetReadyToDestroy();
 }

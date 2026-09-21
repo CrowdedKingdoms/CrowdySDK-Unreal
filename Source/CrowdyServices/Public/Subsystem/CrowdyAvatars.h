@@ -12,17 +12,17 @@ class FJsonObject;
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAvatarSuccess, FCrowdyAvatar, Avatar);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAvatarsSuccess, TArray<FCrowdyAvatar>, Avatars);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAvatarsSuccess, const TArray<FCrowdyAvatar>&, Avatars);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAppStateSuccess, FCrowdyAppAvatarState, AppState);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAppStatesSuccess, TArray<FCrowdyAppAvatarState>, AppStates);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAppStatesSuccess, const TArray<FCrowdyAppAvatarState>&, AppStates);
 
 DECLARE_DYNAMIC_DELEGATE(FOnAvatarVoidSuccess);
 
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnAvatarError, FCrowdyAvatarError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyAvatarsCacheChanged, TArray<FCrowdyAvatar>, Avatars);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyAvatarsCacheChanged, const TArray<FCrowdyAvatar>&, Avatars);
 
 UCLASS()
 class CROWDYSERVICES_API UCrowdyAvatars : public UGameInstanceSubsystem

@@ -72,13 +72,18 @@ enum class ECrowdyEffectCallableFrom : uint8
 /**
  * When an effect opts into running itself, how it is triggered. A single flat choice the author picks; each maps
  * to the server's trigger wire shape. EveryInterval and Cron are schedule triggers (triggerType "schedule",
- * scheduleKind "interval" / "cron"); OnPropertyChange and OnFunctionInvoked are event triggers (triggerType
- * "event").
+ * scheduleKind "interval" / "cron"); the rest are event triggers (triggerType "event").
  *
  * OnPropertyChange (onEvent "property_changed") fires when a watched property changes. Which writes it observes
  * depends on the write source: by default both a direct property write and a write a Model function makes as part
  * of its own execution. OnFunctionInvoked (onEvent "function_invoked") fires when another Model function commits,
  * which is the direct way to have one effect react to another running.
+ *
+ * OnPlayerLeft (onEvent "player_left") fires once per actor the platform stops seeing, the last player's included,
+ * so it is the one trigger that runs for an app that has just emptied. OnPlayerCountChanged (onEvent
+ * "player_count_changed") fires on a transition of the app's active-player gauge, coalesced on the trailing edge,
+ * and never at zero. Neither takes a filter; the function reads the event through its own parameters
+ * (user_id, remaining_player_count, ... for player_left; the server documents each event's list).
  */
 UENUM(BlueprintType)
 enum class ECrowdyEffectAutomationTrigger : uint8
@@ -86,7 +91,9 @@ enum class ECrowdyEffectAutomationTrigger : uint8
 	EveryInterval UMETA(DisplayName = "Every N milliseconds"),
 	Cron UMETA(DisplayName = "Cron schedule"),
 	OnPropertyChange UMETA(DisplayName = "On property change"),
-	OnFunctionInvoked UMETA(DisplayName = "On function invoked")
+	OnFunctionInvoked UMETA(DisplayName = "On function invoked"),
+	OnPlayerLeft UMETA(DisplayName = "On player left"),
+	OnPlayerCountChanged UMETA(DisplayName = "On player count changed")
 };
 
 /**
@@ -687,10 +694,10 @@ public:
 	FString AutomationChangeContainerType;
 
 	// A coalesce window in milliseconds for an event trigger: the first fire in the window wins and the rest are
-	// dropped. 0 fires on every event.
+	// dropped. 0 fires on every event. A player-left trigger never coalesces: each leave is its own run.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Automation",
 		meta = (DisplayName = "Debounce (ms)", ClampMin = "0",
-			EditCondition = "bRunAutomatically && (AutomationTrigger == ECrowdyEffectAutomationTrigger::OnPropertyChange || AutomationTrigger == ECrowdyEffectAutomationTrigger::OnFunctionInvoked)",
+			EditCondition = "bRunAutomatically && AutomationTrigger != ECrowdyEffectAutomationTrigger::EveryInterval && AutomationTrigger != ECrowdyEffectAutomationTrigger::Cron",
 			EditConditionHides))
 	int32 AutomationDebounceMs = 0;
 
