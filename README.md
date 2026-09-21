@@ -17,10 +17,11 @@ Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkin
 | Branch | What it holds |
 |---|---|
 | `prod` | Released versions only. Every release is a `vX.Y.Z` tag on this branch; install from a tag. |
+| `test` | The branch between `dev` and `prod`. |
 | `dev` | Everything merged since the last release. Builds, but the docs may describe it as "since 2.14" or "unreleased". |
 
-This repository is published from the SDK's development repository; issues and pull requests are
-read, but changes land through that repository and appear here on the next mirror.
+How a change moves: open a pull request. You may merge your own pull request into `dev`.
+An org admin merges into `test` and `prod`. Details are in [AGENTS.md](AGENTS.md).
 
 ## What it does
 
