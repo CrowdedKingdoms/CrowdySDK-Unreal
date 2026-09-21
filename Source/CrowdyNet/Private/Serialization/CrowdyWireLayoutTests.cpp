@@ -77,10 +77,14 @@ bool FCrowdyWireOpcodeAgreementTest::RunTest(const FString& Parameters)
 	CheckOpcode(TEXT("SINGLE_ACTOR_MESSAGE"), ECrowdyMessageType::SINGLE_ACTOR_MESSAGE, MessageType::SingleActorMessage);
 	CheckOpcode(TEXT("ACTOR_LEFT_NOTIFICATION"), ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION,
 		MessageType::ActorLeftNotification);
+	CheckOpcode(TEXT("CLIENT_CAPABILITIES"), ECrowdyMessageType::CLIENT_CAPABILITIES, MessageType::ClientCapabilities);
+	CheckOpcode(TEXT("MESSAGE_BUNDLE_SIGNED"), ECrowdyMessageType::MESSAGE_BUNDLE_SIGNED, MessageType::MessageBundleSigned);
 
 	// Every opcode Unreal sends through the shared spatial header must be one the shared codec also
 	// treats as long-spatial, or the two disagree about where the payload starts.
 	TestTrue(TEXT("128 uses the long spatial layout"), isLongSpatialLayout(128));
+	// The library sends this one itself; 0.42.0 shipped without it here and never sent it.
+	TestTrue(TEXT("29 uses the long spatial layout"), isLongSpatialLayout(29));
 	TestTrue(TEXT("138 uses the long spatial layout"), isLongSpatialLayout(138));
 	TestTrue(TEXT("139 uses the long spatial layout"), isLongSpatialLayout(139));
 	TestTrue(TEXT("140 uses the long spatial layout"), isLongSpatialLayout(140));

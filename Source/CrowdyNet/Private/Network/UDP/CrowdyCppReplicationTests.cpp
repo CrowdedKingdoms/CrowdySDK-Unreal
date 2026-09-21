@@ -460,6 +460,182 @@ bool FCrowdyReplicationInboundTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace
+{
+	/**
+	 * A MESSAGE_BUNDLE_SIGNED as a v0.30.0 server frames it: the bundle framing over unsigned members, closed by
+	 * one signature over everything before it. Built against the published layout, not the library's writer.
+	 */
+	TArray<uint8> SignedBundleOf(const TArray<TArray<uint8>>& Members)
+	{
+		TArray<uint8> Datagram;
+		Datagram.Add(static_cast<uint8>(ECrowdyMessageType::MESSAGE_BUNDLE_SIGNED));
+		for (const TArray<uint8>& Member : Members)
+		{
+			Datagram.Add(static_cast<uint8>(Member.Num() & 0xff));
+			Datagram.Add(static_cast<uint8>(Member.Num() >> 8));
+			Datagram.Append(Member);
+		}
+		Datagram.Append(USerializationFunctionLibrary::CalculateHMAC(
+			Datagram, CrowdyReplicationTestSupport::GoldenTokenString()));
+		return Datagram;
+	}
+
+	/** One notification with the signed marker clear and no signature: what a member of a signed bundle looks like. */
+	TArray<uint8> UnsignedNotification(const TArray<uint8>& Payload, const uint8 Sequence)
+	{
+		CrowdyWireParity::FParitySpatialMessage Message;
+		Message.TypeOverride = ECrowdyMessageType::ACTOR_UPDATE_NOTIFICATION;
+		Message.AppID = 7;
+		Message.ChunkX = 1;
+		Message.ChunkY = 2;
+		Message.ChunkZ = 3;
+		Message.ReplicationDistance = static_cast<ECrowdyReplicationDistance>(8);
+		Message.DecayRate = static_cast<ECrowdyDecayRate>(0);
+		Message.bContainsAuth = false;
+		Message.UUID = CrowdyWireParity::GoldenActorId();
+		Message.PayloadBytes = Payload;
+		return CrowdyWireParity::AppendSignedTail(
+			Message.Serialize(), CrowdyReplicationTestSupport::GoldenTokenString(), 1700000000000, Sequence, false);
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyReplicationSignedBundleTest,
+	"CrowdySDK.Transport.SignedBundleIsVerifiedOnceAndUnpacked",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyReplicationSignedBundleTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FConnectedFixture Fixture;
+	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open()))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	TArray<uint8> Delivered;
+	FCrowdyCppReplicationHandlers Handlers;
+	Handlers.OnSpatial = [&Delivered](const FCrowdyCppSpatialMessage& Message)
+	{
+		Delivered.Add(Message.Sequence);
+	};
+	Fixture.Connection->SetHandlers(MoveTemp(Handlers));
+
+	if (!TestTrue(TEXT("the priming send arrived"), Fixture.Prime()))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	const TArray<uint8> Payload = {0x01, 0x02, 0x03, 0x04};
+	const TArray<uint8> Genuine = SignedBundleOf({UnsignedNotification(Payload, 5), UnsignedNotification(Payload, 6)});
+	TestTrue(TEXT("the signed bundle was pushed to the client"), Fixture.Server.SendToClient(Genuine));
+
+	const bool bSawBoth = WaitUntil([&Fixture, &Delivered]()
+	{
+		Fixture.Connection->Poll();
+		return Delivered.Contains(5) && Delivered.Contains(6);
+	});
+	TestTrue(TEXT("both unsigned members reach the handler through the bundle's one signature"), bSawBoth);
+
+	FCrowdyCppReplicationStats Stats = Fixture.Connection->GetStats();
+	TestEqual(TEXT("one signed bundle was counted"), Stats.SignedBundlesReceived, static_cast<int64>(1));
+	TestEqual(TEXT("and it verified"), Stats.HmacFailures, static_cast<int64>(0));
+
+	// The same bundle with one payload byte flipped after it was signed: the tail no longer matches, so nothing
+	// inside it may be delivered, unsigned members included.
+	TArray<uint8> Tampered = Genuine;
+	Tampered[3 + 68] ^= 0x01;
+	TestTrue(TEXT("the tampered bundle was pushed to the client"), Fixture.Server.SendToClient(Tampered));
+
+	const bool bCounted = WaitUntil([&Fixture]()
+	{
+		Fixture.Connection->Poll();
+		return Fixture.Connection->GetStats().SignedBundlesReceived >= 2;
+	});
+	TestTrue(TEXT("the tampered bundle was received"), bCounted);
+	for (int32 Index = 0; Index < 20; ++Index)
+	{
+		Fixture.Connection->Poll();
+		FPlatformProcess::Sleep(0.01f);
+	}
+
+	Stats = Fixture.Connection->GetStats();
+	TestEqual(TEXT("the tampered bundle failed verification"), Stats.HmacFailures, static_cast<int64>(1));
+	TestEqual(TEXT("and delivered nothing"), Delivered.Num(), 2);
+
+	Fixture.Shut();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyReplicationAdvertisesCapabilitiesTest,
+	"CrowdySDK.Transport.CapabilitiesAreAdvertisedOnceConnected",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyReplicationAdvertisesCapabilitiesTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FConnectedFixture Fixture;
+	Fixture.bAdvertiseCapabilities = true;
+	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open()))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	// Nothing is sent by the test: the connection announces itself the moment it is connected.
+	const bool bConnected = WaitUntil([&Fixture]()
+	{
+		return Fixture.Connection->GetState() == ECrowdyCppConnState::Connected;
+	});
+	if (!TestTrue(TEXT("the connection reached Connected"), bConnected))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	TArray<uint8> Capabilities;
+	const bool bAdvertised = WaitUntil([&Fixture, &Capabilities]()
+	{
+		for (const TArray<uint8>& Message : SplitBundle(Fixture.Server.Receive(0.1)))
+		{
+			if (Message.Num() > 0 && Message[0] == static_cast<uint8>(ECrowdyMessageType::CLIENT_CAPABILITIES))
+			{
+				Capabilities = Message;
+				return true;
+			}
+		}
+		return false;
+	});
+	if (!bAdvertised)
+	{
+		const FCrowdyCppReplicationStats Stats = Fixture.Connection->GetStats();
+		AddError(FString::Printf(TEXT("no CLIENT_CAPABILITIES message reached the server: %lld message(s) sent, "
+			"%lld datagram(s) sent, %lld failed, %lld deferred"),
+			Stats.MessagesSent, Stats.DatagramsSent, Stats.SendsFailed, Stats.SendsDeferred));
+		Fixture.Shut();
+		return false;
+	}
+
+	// Long-spatial layout: a 68-byte header, the payload, then the 32-byte signature, the token id and the sequence.
+	constexpr int32 HeaderSize = 68;
+	constexpr int32 SignedTailSize = 32 + 8 + 1;
+	TestEqual(TEXT("the capability flags are one little-endian u32"), Capabilities.Num(), HeaderSize + 4 + SignedTailSize);
+	if (Capabilities.Num() == HeaderSize + 4 + SignedTailSize)
+	{
+		TestEqual(TEXT("the message is signed like every client frame"), Capabilities[35], static_cast<uint8>(1));
+		TestEqual(TEXT("bit 0 asks for signed bundles"), Capabilities[HeaderSize], static_cast<uint8>(1));
+		TestEqual(TEXT("and no other bit is set"),
+			Capabilities[HeaderSize + 1] | Capabilities[HeaderSize + 2] | Capabilities[HeaderSize + 3], 0);
+	}
+
+	Fixture.Shut();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyReplicationAbortTest,
 	"CrowdySDK.Transport.BlockingCallbackHonoursTheAbort",
 	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)

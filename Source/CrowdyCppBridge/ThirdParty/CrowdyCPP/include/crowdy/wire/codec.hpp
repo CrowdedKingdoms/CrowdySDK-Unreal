@@ -181,6 +181,25 @@ inline Status verifyLongSpatial(const core::ICrypto& crypto, Bytes datagram,
   return Errc::Ok;
 }
 
+/// Verify a MESSAGE_BUNDLE_SIGNED (Buddy v0.30.0): the last 32 bytes are
+/// HMAC(token, body || token) over everything before them -- the client scheme,
+/// at the tail. Members inside carry no HMAC of their own; walk them with
+/// forEachMessage after this returns Ok.
+inline Status verifySignedBundle(const core::ICrypto& crypto, Bytes datagram,
+                                 const Token64& token, const core::IMac* mac = nullptr) {
+  if (datagram.size() <= kHmacTagSize + 1 ||
+      datagram[0] != static_cast<std::uint8_t>(MessageType::MessageBundleSigned))
+    return Errc::Malformed;
+  const Status cryptoStatus = crypto.availability();
+  if (!cryptoStatus.ok()) return cryptoStatus;
+  const std::size_t bodyLen = datagram.size() - kHmacTagSize;
+  std::uint8_t expected[kHmacTagSize];
+  if (!spatialHmac(crypto, datagram.first(bodyLen), token, expected, mac)) return Errc::Malformed;
+  if (!crypto.constantTimeEquals(expected, datagram.data() + bodyLen, kHmacTagSize))
+    return Errc::HmacMismatch;
+  return Errc::Ok;
+}
+
 // ---------------------------------------------------------------------------
 // Voxel payload ([2B x][2B y][2B z][2B type][2B stateLen][state...])
 // ---------------------------------------------------------------------------
@@ -457,7 +476,11 @@ class BundleWriter {
 template <typename Fn>
 inline Status forEachMessage(Bytes datagram, Fn&& fn) {
   if (datagram.empty()) return Errc::Malformed;
-  if (datagram[0] != static_cast<std::uint8_t>(MessageType::MessageBundle)) {
+  if (datagram[0] == static_cast<std::uint8_t>(MessageType::MessageBundleSigned)) {
+    // The caller has verified the tail (verifySignedBundle); walk what precedes it.
+    if (datagram.size() <= kHmacTagSize + 1) return Errc::Malformed;
+    datagram = datagram.first(datagram.size() - kHmacTagSize);
+  } else if (datagram[0] != static_cast<std::uint8_t>(MessageType::MessageBundle)) {
     fn(datagram);
     return Errc::Ok;
   }
