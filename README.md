@@ -21,7 +21,8 @@ Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkin
 | `dev` | Everything merged since the last release. Builds, but the docs may describe it as "since 2.14" or "unreleased". |
 
 How a change moves: open a pull request. You may merge your own pull request into `dev`.
-An org admin merges into `test` and `prod`. Details are in [AGENTS.md](AGENTS.md).
+@Shady-S25 merges into `test` and `prod` on this repository. Anyone else asks an org admin.
+Details are in [AGENTS.md](AGENTS.md).
 
 ## What it does
 
