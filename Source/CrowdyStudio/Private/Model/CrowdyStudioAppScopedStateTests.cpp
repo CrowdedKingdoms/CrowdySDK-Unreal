@@ -166,6 +166,10 @@ bool FCrowdyStudioAppSwitchClearsGameModelStateTest::RunTest(const FString& /*Pa
 	TestEqual(TEXT("Live containers cleared"), Controller->GetContainers().Num(), 0);
 	TestFalse(TEXT("Container state cleared"), Controller->GetContainerState().bValid);
 	TestTrue(TEXT("Container state id cleared"), Controller->GetContainerState().ContainerId.IsEmpty());
+	// Clearing the values without clearing the read that filled them leaves the panel reporting the new app's
+	// nothing as an instance that was read and came back empty.
+	TestTrue(TEXT("Container state read state cleared"),
+		Controller->GetContainerStateLoad() == ECrowdyModelLoadState::NeverRequested);
 	TestTrue(TEXT("Selected container cleared"), Controller->GetSelectedContainerId().IsEmpty());
 	TestTrue(TEXT("Live container type filter cleared"),
 		FCrowdyStudioControllerTestAccess::GetLastContainerTypeFilter(*Controller).IsEmpty());

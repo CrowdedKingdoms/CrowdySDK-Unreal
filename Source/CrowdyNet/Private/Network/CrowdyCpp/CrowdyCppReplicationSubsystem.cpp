@@ -89,6 +89,14 @@ namespace
 			"and 0 sends one datagram per message."),
 		ECVF_Default);
 
+	/** Read when a connection opens, like crowdy.net.send.bundle. */
+	TAutoConsoleVariable<int32> CVarAdvertiseCapabilities(
+		TEXT("crowdy.net.recv.signedbundles"), 1,
+		TEXT("Tell the replication server this client reads MESSAGE_BUNDLE_SIGNED, so downlink bundles arrive with one "
+			"signature per datagram instead of one per member. A server older than v0.30.0 ignores it. 0 stops "
+			"advertising and keeps the per-member form; a diagnostic switch, not a setting."),
+		ECVF_Default);
+
 	/** Inbound pressure is reported at most this often, since it arrives at packet rate when it arrives at all. */
 	constexpr double InboundPressureReportIntervalSeconds = 5.0;
 
@@ -572,6 +580,7 @@ bool UCrowdyCppReplicationSubsystem::OpenConnection(const FCrowdyCppConnectionRe
 		: 0;
 
 	Config.bBundleSends = CVarSendBundle.GetValueOnGameThread() != 0;
+	Config.bAdvertiseCapabilities = CVarAdvertiseCapabilities.GetValueOnGameThread() != 0;
 
 	// The game is told the app is full, and so is this subsystem, because the two act on it differently: the game
 	// surfaces it to the player, and this has to stop treating the failure that follows as something to recover from.

@@ -16,17 +16,17 @@
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamSuccess, FCrowdyTeam, Team);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamsSuccess, TArray<FCrowdyTeam>, Teams);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamsSuccess, const TArray<FCrowdyTeam>&, Teams);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamMemberSuccess, FCrowdyTeamMember, Member);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamMembersSuccess, TArray<FCrowdyTeamMember>, Members);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamMembersSuccess, const TArray<FCrowdyTeamMember>&, Members);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamRoleSuccess, FCrowdyTeamRole, Role);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamRolesSuccess, TArray<FCrowdyTeamRole>, Roles);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamRolesSuccess, const TArray<FCrowdyTeamRole>&, Roles);
 
-DECLARE_DYNAMIC_DELEGATE_OneParam(FOnMyTeamsSuccess, TArray<FCrowdyTeamMembership>, Memberships);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnMyTeamsSuccess, const TArray<FCrowdyTeamMembership>&, Memberships);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamPolicySuccess, FCrowdyTeamPolicy, Policy);
 
@@ -34,7 +34,7 @@ DECLARE_DYNAMIC_DELEGATE(FOnTeamVoidSuccess);
 
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnTeamError, FCrowdyTeamError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyTeamsCacheChanged, TArray<FCrowdyTeamMembership>, Memberships);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyTeamsCacheChanged, const TArray<FCrowdyTeamMembership>&, Memberships);
 
 /**
  * Teams: persistent named groups of players with roles and permissions, scoped to one app.

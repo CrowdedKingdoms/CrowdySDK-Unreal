@@ -2,8 +2,11 @@
 
 
 #include "Network/UDP/CrowdyConnectionMonitor.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Network/UDP/CrowdyUDPSubsystem.h"
 #include "Subsystem/CrowdySDKSubsystem.h"
+#include "TimerManager.h"
 
 void UCrowdyConnectionMonitor::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -13,23 +16,30 @@ void UCrowdyConnectionMonitor::Initialize(FSubsystemCollectionBase& Collection)
 void UCrowdyConnectionMonitor::Deinitialize()
 {
 	Super::Deinitialize();
-	GetWorld()->GetTimerManager().ClearTimer(RetryTimer);
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(RetryTimer);
+	}
 }
 
 void UCrowdyConnectionMonitor::InitConnectionMonitor()
 {
-	CrowdySDK = GetWorld()->GetGameInstance()->GetSubsystem<UCrowdySDKSubsystem>();
-	CrowdyUdp = GetWorld()->GetGameInstance()->GetSubsystem<UCrowdyUDPSubsystem>();
-	
-	if (!CrowdySDK->OnUDPTimedOut.IsBound())
+	UGameInstance* Instance = GetGameInstance();
+	AttachTo(Instance ? Instance->GetSubsystem<UCrowdySDKSubsystem>() : nullptr,
+		Instance ? Instance->GetSubsystem<UCrowdyUDPSubsystem>() : nullptr);
+}
+
+void UCrowdyConnectionMonitor::AttachTo(UCrowdySDKSubsystem* Sdk, UCrowdyUDPSubsystem* Udp)
+{
+	CrowdySDK = Sdk;
+	CrowdyUdp = Udp;
+	if (!CrowdySDK)
 	{
-		CrowdySDK->OnUDPTimedOut.AddDynamic(this, &UCrowdyConnectionMonitor::OnUdpTimeoutDetected);
+		return;
 	}
-	
-	if (!CrowdyUdp->OnUDPConnectionSuccessful.IsBound())
-	{
-		CrowdySDK->OnUDPConnectionSuccess.AddDynamic(this, &UCrowdyConnectionMonitor::OnUdpConnectionSuccess);
-	}
+	// The SDK subsystem and game code bind these delegates too; only this monitor's own binding must be unique.
+	CrowdySDK->OnUDPTimedOut.AddUniqueDynamic(this, &UCrowdyConnectionMonitor::OnUdpTimeoutDetected);
+	CrowdySDK->OnUDPConnectionSuccess.AddUniqueDynamic(this, &UCrowdyConnectionMonitor::OnUdpConnectionSuccess);
 }
 
 void UCrowdyConnectionMonitor::OnUdpTimeoutDetected()
@@ -37,7 +47,12 @@ void UCrowdyConnectionMonitor::OnUdpTimeoutDetected()
 	ReconnectState = ECrowdyReconnectState::Disconnected;
 	OnConnectionStateChanged.Broadcast(ReconnectState);
 
-	GetWorld()->GetTimerManager().SetTimer(
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	World->GetTimerManager().SetTimer(
 		RetryTimer,
 		[this]()
 		{
@@ -66,7 +81,10 @@ void UCrowdyConnectionMonitor::OnUdpConnectionSuccess()
 {
 	ReconnectState = ECrowdyReconnectState::Connected;
 	OnConnectionStateChanged.Broadcast(ReconnectState);
-	GetWorld()->GetTimerManager().ClearTimer(RetryTimer);
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(RetryTimer);
+	}
 	IsUdpMonitoringActive = true;
 	AttemptIndex = 0;
 }

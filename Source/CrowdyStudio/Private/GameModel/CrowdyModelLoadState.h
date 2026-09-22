@@ -272,4 +272,48 @@ namespace CrowdyModelEmptyState
 	{
 		return TEXT("No live model matches the filters.");
 	}
+
+	/**
+	 * One live model's stored values. A live model is read when it is selected, so the remedy for a failure is
+	 * selecting it again rather than a Refresh, which re-reads the list instead.
+	 *
+	 * bAttributesKnown is whether the model's declared attributes have been read. Without them, a landed read that
+	 * found no values cannot go on to say the model declares none: that is a claim about a schema nobody has
+	 * looked at, and it is wrong exactly when the reader most needs it to be right.
+	 */
+	inline FString PropertyTable(ECrowdyModelLoadState State, bool bAttributesKnown)
+	{
+		switch (State)
+		{
+		case ECrowdyModelLoadState::Loading:
+			return TEXT("Reading this live model's values...");
+		case ECrowdyModelLoadState::Loaded:
+			return bAttributesKnown
+				? TEXT("This live model holds no values, and its model declares no attributes.")
+				: TEXT("This live model holds no values you can see.");
+		case ECrowdyModelLoadState::Failed:
+			return TEXT("This live model's values could not be read.\nSelect it again to try.");
+		default:
+			return TEXT("Select a live model above to see the values it holds.");
+		}
+	}
+
+	// The values arrived in a shape this editor cannot parse, or nested deeper than its guard allows. Neither an
+	// empty instance nor a failed read: the server answered, and what it sent cannot be laid out as rows.
+	inline FString PropertyTableUnreadable()
+	{
+		return TEXT("The server sent values this editor could not read.\nCopy values copies them as they arrived.");
+	}
+
+	// The read landed and the server named no such live model. Not a failure and not an empty instance: the row
+	// the reader clicked describes something the server will no longer answer for.
+	inline FString PropertyTableMissing()
+	{
+		return TEXT("The server returned nothing for this live model.\nIt may have been deleted. Press Refresh.");
+	}
+
+	inline FString PropertyTableFilteredBySearch(const FString& Query)
+	{
+		return FString::Printf(TEXT("No attribute matches \"%s\"."), *Query);
+	}
 }

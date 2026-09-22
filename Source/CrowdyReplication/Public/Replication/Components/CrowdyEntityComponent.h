@@ -11,8 +11,11 @@
 #include "StructUtils/InstancedStruct.h"
 #include "CrowdyEntityComponent.generated.h"
 
+class AController;
+class APawn;
 class UCrowdyAutoReplicator;
 class UCrowdyEntitySubsystem;
+class UCrowdyGameSession;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyEntitySpawned, const FInstancedStruct&, InitialState, bool, bIsLocallyOwned);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCrowdyEntityDestroyed, bool, bIsLocallyOwned);
@@ -33,6 +36,9 @@ enum class ECrowdyIdentityPolicy : uint8
 {
 	// Deterministic from the logged-in UserID. Only valid on the locally
 	// controlled player pawn; anything else falls back to Random with a warning.
+	// A pawn spawned during play registers inside its first possession, after the pawn's Possessed and
+	// Controller Changed events, and supersedes any earlier pawn still holding the account id: read the id
+	// from OnCrowdyOwnershipAssigned or the entity subsystem's OnEntityRegistered, not from BeginPlay or Possessed.
 	PlayerDerived UMETA(DisplayName="Player Derived"),
 	// Hashed from the owner's level path every client computes the same NetID
 	// for the same level-placed actor without hand-typed seeds.
@@ -290,6 +296,10 @@ public:
 	// The clause naming that verdict in a diagnostic, phrased as the condition that was actually measured.
 	static const TCHAR* DescribePlayerDerivedIdentity(ECrowdyPlayerDerivedIdentity Verdict);
 
+	// Whether a self-resolving Player Derived pawn waits for its first possession: a pawn spawned during play has
+	// no controller at BeginPlay, and reading the account there would mint a random id nobody else can address.
+	static bool ShouldDeferIdentityToPossession(bool bInjected, ECrowdyIdentityPolicy Policy, bool bIsPawn, bool bHasController);
+
 	// Whether a Dynamic entity with Auto Register ticked ends BeginPlay without joining the continuous state
 	// channel because it is host-owned. Auto Register starts the channel only for an entity this client owns
 	// outright, so a host-owned entity leaves BeginPlay sending nothing at all.
@@ -345,11 +355,18 @@ public:
 	void ReportPlayerDerivedFallbackForTest(const ECrowdyPlayerDerivedIdentity Verdict) { ReportPlayerDerivedFallback(Verdict); }
 	void ReportHostOwnedAutoRegisterSkippedForTest() { ReportHostOwnedAutoRegisterSkipped(); }
 
+	// Injects the entity subsystem and game session that BeginPlay and ResolveIdentity would look up from the
+	// world, so a headless test in an editor world (which creates neither) drives the real registration path.
+	void SetCollaboratorsForTest(UCrowdyEntitySubsystem* InEntities, UCrowdyGameSession* InSession);
+
 	// How many times each diagnostic has spoken on this instance, and the last thing each said.
 	int32 PlayerDerivedFallbackReportCount = 0;
 	int32 HostOwnedAutoRegisterReportCount = 0;
 	FString LastPlayerDerivedFallbackMessage;
 	FString LastHostOwnedAutoRegisterMessage;
+
+	// How many times this component has resolved its identity and registered.
+	int32 IdentityResolutionCount = 0;
 
 	// How many times OnCrowdyOwnershipAssigned has been announced, and the values carried by the last one.
 	int32 OwnershipAnnouncementCount = 0;
@@ -478,6 +495,14 @@ private:
 	// set the component registers nothing, so no listener can act on an actor that stands for no entity.
 	bool bPooledDormant = false;
 
+	// True while a Player Derived pawn that began play unpossessed waits for its first controller.
+	bool bAwaitingPossession = false;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	TWeakObjectPtr<UCrowdyEntitySubsystem> EntitySubsystemForTest;
+	TWeakObjectPtr<UCrowdyGameSession> GameSessionForTest;
+#endif
+
 	// True once OnCrowdyOwnershipAssigned has announced this identity, so the first announcement happens exactly
 	// once. Cleared by ClearIdentity so a pooled actor announces again when it is handed a new identity.
 	bool bOwnershipAnnounced = false;
@@ -491,7 +516,22 @@ private:
 	bool bPlayerDerivedFallbackReported = false;
 	bool bHostOwnedAutoRegisterReported = false;
 
+	UCrowdyEntitySubsystem* ResolveEntitySubsystem() const;
+	UCrowdyGameSession* ResolveGameSession() const;
+
 	void ResolveIdentity();
+
+	// Resolves, registers and starts the mode's channel; from BeginPlay, or from a deferred pawn's first possession.
+	void CompleteRegistration();
+
+	// One client has one account, so a newer Player Derived pawn takes the id from an earlier pawn still alive
+	// after unpossession (a respawn that lets the old pawn expire); the collision guard would refuse it otherwise.
+	void SupersedePreviousPlayerPawn();
+
+	void StopAwaitingPossession();
+
+	UFUNCTION()
+	void HandlePawnControllerChanged(APawn* Pawn, AController* OldController, AController* NewController);
 
 	// Says that PlayerDerived identity fell back to a random id, which condition caused it, and what to set
 	// instead. Speaks once per component instance.

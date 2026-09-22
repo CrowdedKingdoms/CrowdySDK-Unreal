@@ -10,6 +10,7 @@
 
 class FCrowdyStudioController;
 class SBox;
+class SCrowdyPropertyInspector;
 class SEditableTextBox;
 class STextBlock;
 class SWidgetSwitcher;
@@ -84,6 +85,14 @@ private:
 	// What the last purge did, shown until the reader asks for something else. The controller's status line does
 	// not survive the purge's own re-list, which writes a plain row count over it.
 	FText PurgeOutcomeLine;
+
+	// What the last copy from this tab copied, shown until the next read or selection. The values panel reports
+	// its own copies in its own footer; this is for the id copied out of the instance table.
+	FText CopyOutcomeLine;
+
+	// The name the highlighted instance is listed under, so the values panel has a heading to show while its read
+	// is still out and the state it will be given is still empty.
+	FString ShownInstanceLabel;
 	// The shared confirm behind both purge buttons. TypeName empty means the whole app.
 	void ConfirmAndPurge(const FString& TypeName);
 
@@ -96,6 +105,8 @@ private:
 	void HandleContainerTypesChanged();
 	void HandleContainersChanged();
 	void HandleContainerStateChanged();
+	// A model's attributes landed. The values on screen were laid out without them, so they are laid out again.
+	void HandlePropertyDefsCached();
 	void HandleContainerPurgeProgress();
 	void HandleContainerPurgeFinished();
 	// The active app changed and its token was minted.
@@ -108,7 +119,10 @@ private:
 	void UpdateDetailHeader();
 	void UpdateActionBar();
 	void UpdateStatusLine();
-	void SetInspectorLine(const FText& Line);
+	// Hand the values panel whatever is known about the highlighted instance right now, the state of the read
+	// behind it included: an instance nobody has asked for, one being read and one whose read failed are three
+	// different things to show and only one of them is "it holds nothing".
+	void ShowSelectedInstanceValues();
 
 	// Notice that this tab's contents describe an app other than the selected one, and empty them if so. Called
 	// both from the app-changed announcement and from the list refreshes the switch itself triggers, because the
@@ -166,7 +180,7 @@ private:
 	TSharedPtr<STextBlock> DetailTitleText;
 	TSharedPtr<SBox> DetailBadgeBox;
 	TSharedPtr<SCrowdyModelSectionTable> InstanceTable;
-	TSharedPtr<STextBlock> InspectorText;
+	TSharedPtr<SCrowdyPropertyInspector> PropertyInspector;
 	TSharedPtr<STextBlock> SelectionCountText;
 	TSharedPtr<STextBlock> StatusLineText;
 };

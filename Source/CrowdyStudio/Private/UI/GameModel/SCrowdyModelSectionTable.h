@@ -90,6 +90,10 @@ namespace CrowdyModelTableColumns
 	extern const FName Session;
 	extern const FName Binding;
 
+	// The property list on the Live tab: what one live model holds, attribute by attribute.
+	extern const FName Value;
+	extern const FName Holds;
+
 	// The columns every section of the Models detail pane shows: a gutter mark for where the row came from, its
 	// name, one value that differs per section (an attribute's type, a function's result, an automation's
 	// schedule) whose caption comes from the caller, its description, that same source in words, and how it

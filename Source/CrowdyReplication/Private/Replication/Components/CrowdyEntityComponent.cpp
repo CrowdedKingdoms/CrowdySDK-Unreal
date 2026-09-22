@@ -69,6 +69,8 @@ void UCrowdyEntityComponent::MarkPooledDormant()
 
 void UCrowdyEntityComponent::ClearIdentity()
 {
+	StopAwaitingPossession();
+
 	if (IsValid(EntitySubsystem) && NetID.IsValid())
 		EntitySubsystem->UnregisterEntity(NetID);
 
@@ -148,7 +150,7 @@ void UCrowdyEntityComponent::BeginPlay()
 	Super::BeginPlay();
 
 	CachedOwner = GetOwner();
-	EntitySubsystem = GetWorld()->GetSubsystem<UCrowdyEntitySubsystem>();
+	EntitySubsystem = ResolveEntitySubsystem();
 
 	// An actor the pool is pre-warming stands for no entity yet, so it resolves no identity and registers
 	// nothing. Registering and unregistering afterwards is not the same thing: registration is delivered
@@ -157,6 +159,70 @@ void UCrowdyEntityComponent::BeginPlay()
 	{
 		return;
 	}
+
+	// A pawn spawned during play is possessed after its BeginPlay, so its account is read on that possession.
+	APawn* Pawn = Cast<APawn>(CachedOwner);
+	if (ShouldDeferIdentityToPossession(bIdentityInjected, IdentityPolicy, Pawn != nullptr, Pawn && Pawn->GetController()))
+	{
+		bAwaitingPossession = true;
+		Pawn->ReceiveControllerChangedDelegate.AddDynamic(this, &UCrowdyEntityComponent::HandlePawnControllerChanged);
+		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyEntityComponent]: '%s' uses Player Derived identity and has no controller yet, so it registers when it is first possessed."),
+			*GetNameSafe(CachedOwner));
+		return;
+	}
+
+	CompleteRegistration();
+}
+
+bool UCrowdyEntityComponent::ShouldDeferIdentityToPossession(const bool bInjected, const ECrowdyIdentityPolicy Policy,
+	const bool bIsPawn, const bool bHasController)
+{
+	return !bInjected && Policy == ECrowdyIdentityPolicy::PlayerDerived && bIsPawn && !bHasController;
+}
+
+void UCrowdyEntityComponent::HandlePawnControllerChanged(APawn* Pawn, AController* OldController, AController* NewController)
+{
+	// An unpossess while waiting changes nothing; the first controller of any kind completes the registration.
+	if (!NewController || !Pawn)
+		return;
+
+	StopAwaitingPossession();
+	CompleteRegistration();
+}
+
+void UCrowdyEntityComponent::StopAwaitingPossession()
+{
+	if (!bAwaitingPossession)
+		return;
+
+	bAwaitingPossession = false;
+	if (APawn* Pawn = Cast<APawn>(CachedOwner))
+		Pawn->ReceiveControllerChangedDelegate.RemoveDynamic(this, &UCrowdyEntityComponent::HandlePawnControllerChanged);
+}
+
+void UCrowdyEntityComponent::SupersedePreviousPlayerPawn()
+{
+	AActor* Previous = Cast<AActor>(EntitySubsystem->FindParticipant(NetID));
+	if (!IsValid(Previous) || Previous == CachedOwner)
+		return;
+
+	UCrowdyEntityComponent* PreviousEntity = Previous->FindComponentByClass<UCrowdyEntityComponent>();
+	if (!PreviousEntity || PreviousEntity->IdentityPolicy != ECrowdyIdentityPolicy::PlayerDerived || PreviousEntity->bIdentityInjected)
+		return;
+
+	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+		TEXT("[CrowdyEntityComponent]: '%s' takes the Player Derived id %s from '%s', which is no longer the player's pawn."),
+		*GetNameSafe(CachedOwner), *NetID.ToString(), *GetNameSafe(Previous));
+	PreviousEntity->StopReplication();
+	PreviousEntity->ClearIdentity();
+}
+
+void UCrowdyEntityComponent::CompleteRegistration()
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	++IdentityResolutionCount;
+#endif
 
 	if (!bIdentityInjected)
 		ResolveIdentity();
@@ -174,6 +240,9 @@ void UCrowdyEntityComponent::BeginPlay()
 	{
 		if (ClassID == CROWDY_INVALID_CLASS_ID)
 			ClassID = UCrowdyClassRegistry::Get()->GetID(CachedOwner->GetClass());
+
+		if (IdentityPolicy == ECrowdyIdentityPolicy::PlayerDerived && !bIdentityInjected)
+			SupersedePreviousPlayerPawn();
 
 		FCrowdyEntityRecord Record;
 		Record.NetID   = NetID;
@@ -244,6 +313,14 @@ void UCrowdyEntityComponent::BeginPlay()
 
 void UCrowdyEntityComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (bAwaitingPossession)
+	{
+		StopAwaitingPossession();
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntityComponent]: '%s' uses Player Derived identity but was never possessed, so it was never registered as an entity."),
+			*GetNameSafe(CachedOwner));
+	}
+
 	if (UWorld* World = GetWorld())
 		World->GetTimerManager().ClearTimer(InitialOwnershipTimer);
 
@@ -529,6 +606,37 @@ bool UCrowdyEntityComponent::IsLocallyOwned() const
 	return false;
 }
 
+UCrowdyEntitySubsystem* UCrowdyEntityComponent::ResolveEntitySubsystem() const
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (EntitySubsystemForTest.IsValid())
+		return EntitySubsystemForTest.Get();
+#endif
+
+	const UWorld* World = GetWorld();
+	return World ? World->GetSubsystem<UCrowdyEntitySubsystem>() : nullptr;
+}
+
+UCrowdyGameSession* UCrowdyEntityComponent::ResolveGameSession() const
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (GameSessionForTest.IsValid())
+		return GameSessionForTest.Get();
+#endif
+
+	const UWorld* World = GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	return GameInstance ? GameInstance->GetSubsystem<UCrowdyGameSession>() : nullptr;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyEntityComponent::SetCollaboratorsForTest(UCrowdyEntitySubsystem* InEntities, UCrowdyGameSession* InSession)
+{
+	EntitySubsystemForTest = InEntities;
+	GameSessionForTest = InSession;
+}
+#endif
+
 void UCrowdyEntityComponent::ResolveIdentity()
 {
 	// An author-supplied binding key overrides IdentityPolicy: the object names its own cross-client identity, for
@@ -569,9 +677,7 @@ void UCrowdyEntityComponent::ResolveIdentity()
 
 		// The pawn questions are asked before the session is looked up, so an actor that could never use this
 		// policy is answered by what it is, not by whatever the session happened to be doing.
-		UWorld* World = GetWorld();
-		UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
-		UCrowdyGameSession* GameSession = GameInstance ? GameInstance->GetSubsystem<UCrowdyGameSession>() : nullptr;
+		UCrowdyGameSession* GameSession = ResolveGameSession();
 
 		FCrowdyPlayerDerivedIdentityFacts Facts;
 		Facts.bIsPawn = Pawn != nullptr;

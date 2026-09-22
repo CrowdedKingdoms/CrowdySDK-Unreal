@@ -82,7 +82,7 @@ public:
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyChannelMembership> Memberships);
+	void HandleSuccess(const TArray<FCrowdyChannelMembership>& Memberships);
 	UFUNCTION()
 	void HandleError(FCrowdyChannelError Error, FString Message);
 };
@@ -135,7 +135,7 @@ public:
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyChannel> Channels);
+	void HandleSuccess(const TArray<FCrowdyChannel>& Channels);
 	UFUNCTION()
 	void HandleError(FCrowdyChannelError Error, FString Message);
 };
@@ -162,7 +162,7 @@ private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	int64 ChannelId = 0;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyChannelMember> Members);
+	void HandleSuccess(const TArray<FCrowdyChannelMember>& Members);
 	UFUNCTION()
 	void HandleError(FCrowdyChannelError Error, FString Message);
 };
@@ -189,7 +189,7 @@ private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	int64 ChannelId = 0;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyChannelRole> Roles);
+	void HandleSuccess(const TArray<FCrowdyChannelRole>& Roles);
 	UFUNCTION()
 	void HandleError(FCrowdyChannelError Error, FString Message);
 };
@@ -242,7 +242,7 @@ private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	int64 ChannelId = 0;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyChannelMember> Members);
+	void HandleSuccess(const TArray<FCrowdyChannelMember>& Members);
 	UFUNCTION()
 	void HandleError(FCrowdyChannelError Error, FString Message);
 };

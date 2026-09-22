@@ -5,8 +5,20 @@
 #include "CoreMinimal.h"
 #include "Data/CrowdyRenderingBackend.h"
 #include "Data/CrowdyRenderingBackendConfig.h"
+#include "Data/CrowdyRepApplicationPolicy.h"
 #include "StructUtils/InstancedStruct.h"
 #include "CrowdyRenderingBackendTestTypes.generated.h"
+
+/** A concrete policy that applies nothing, for the cases that ask which policy class was chosen. */
+UCLASS()
+class UCrowdyInertRepPolicy : public UCrowdyRepApplicationPolicy
+{
+	GENERATED_BODY()
+
+public:
+	virtual bool ExtractFields(const FInstancedStruct& State, int64 ServerTimestampMs, int32 SlotId) override { return true; }
+	virtual void ApplyToActor(AActor* Actor, int32 SlotId, int64 RenderTimeMs) override {}
+};
 
 /** A concrete backend config of a type no shipped backend accepts, for the mismatched-config cases. */
 UCLASS()

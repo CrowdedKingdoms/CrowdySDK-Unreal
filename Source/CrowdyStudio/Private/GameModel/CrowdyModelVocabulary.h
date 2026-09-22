@@ -191,6 +191,14 @@ namespace CrowdyModelVocabulary
 		{
 			return TEXT("Runs when a live model is created");
 		}
+		if (TokenIs(Event, TEXT("player_left")))
+		{
+			return TEXT("Runs when a player leaves, the last one included");
+		}
+		if (TokenIs(Event, TEXT("player_count_changed")))
+		{
+			return TEXT("Runs when the player count changes");
+		}
 
 		return FString::Printf(TEXT("Runs when %s"), *Trigger.OnEvent.TrimStartAndEnd());
 	}

@@ -61,6 +61,9 @@ private:
 	// rather than the strip carrying a second set of parallel arrays about it.
 	TArray<CrowdyStudioWidgets::FCrowdyTabItem> MakeTabItems();
 
+	// The pre-seed card follows the open tab: it is authoring work, and the Live tab wants the height.
+	EVisibility GetPreSeedCardVisibility() const;
+
 	// Whether the Issues tab has anything to show. Findings, not errors: `clean` ignores warnings.
 	bool HasModelIssues() const;
 	// Every tab but Issues is always available; Issues follows the findings.

@@ -4,6 +4,7 @@
 #include "Components/ActorComponent.h"
 #include "Engine/NetSerialization.h" // FVector_NetQuantize
 #include "GameFramework/Actor.h"
+#include "GameFramework/Pawn.h"
 #include "Templates/Function.h"
 #include "Replication/Executor/ActorUpdateExecutor.h"
 #include "CrowdyStateTestTarget.generated.h"
@@ -466,6 +467,20 @@ public:
 	ACrowdyStateHostOverrideActor();
 	UPROPERTY(meta = (CrowdyState))
 	int32 RepInt = 0;
+	UPROPERTY()
+	TObjectPtr<UCrowdyEntityComponent> Entity;
+};
+
+/**
+ * Player Derived fixture: a pawn carrying a Player Derived, LocalClient-owned entity component, with both
+ * auto-possess modes off so a test decides when (and whether) it is possessed relative to BeginPlay.
+ */
+UCLASS(meta = (CrowdyTestFixture))
+class ACrowdyPlayerDerivedTestPawn : public APawn
+{
+	GENERATED_BODY()
+public:
+	ACrowdyPlayerDerivedTestPawn();
 	UPROPERTY()
 	TObjectPtr<UCrowdyEntityComponent> Entity;
 };

@@ -785,4 +785,291 @@ bool FCrowdyModelLedgerPropertySummaryExcludesReservedKeyTest::RunTest(const FSt
 	return true;
 }
 
+namespace
+{
+	// The defs of one small model, in the order the server would answer in rather than in the order the rows come
+	// out: a test that feeds sorted input cannot tell whether the sort ran.
+	TArray<TSharedPtr<FStudioPropertyDef>> MakeHeroDefs()
+	{
+		return TArray<TSharedPtr<FStudioPropertyDef>>{
+			MakeAttributeDef(TEXT("mana"), TEXT("Hero"), TEXT("int")),
+			MakeAttributeDef(TEXT("hp"), TEXT("Hero"), TEXT("int"), TEXT("What is left before the hero falls.")),
+			MakeAttributeDef(TEXT("title"), TEXT("Hero"), TEXT("string"))
+		};
+	}
+
+	const FCrowdyModelRow* FindPropertyRow(const TArray<FCrowdyModelRow>& Rows, const TCHAR* Key)
+	{
+		return Rows.FindByPredicate([Key](const FCrowdyModelRow& Row)
+		{
+			return Row.Name.Equals(Key, ESearchCase::CaseSensitive);
+		});
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModelLedgerPropertyRowsPairValuesWithAttributesTest,
+	"CrowdySDK.CrowdyStudio.ModelLedgerPropertyRowsPairValuesWithAttributes", CrowdyModelLedgerTestFlags)
+
+bool FCrowdyModelLedgerPropertyRowsPairValuesWithAttributesTest::RunTest(const FString& Parameters)
+{
+	const TArray<TSharedPtr<FStudioPropertyDef>> Defs = MakeHeroDefs();
+	const TArray<FCrowdyModelRow> Rows = CrowdyModelLedger::BuildPropertyRows(
+		TEXT("{\"mana\":50,\"hp\":84,\"title\":\"Knight of Ash\"}"), &Defs);
+
+	if (!TestEqual(TEXT("Every stored value becomes its own row"), Rows.Num(), 3))
+	{
+		return false;
+	}
+
+	// One row per attribute, each carrying the value beside it rather than a line the reader has to parse.
+	TestEqual(TEXT("Rows read in name order"), Rows[0].Name, FString(TEXT("hp")));
+	TestEqual(TEXT("A number reads as a number"), Rows[0].Value, FString(TEXT("84")));
+	TestEqual(TEXT("The declared type is what the model says, not what the value looks like"),
+		Rows[0].Secondary, FString(TEXT("Number")));
+	TestEqual(TEXT("The attribute's description travels with it"),
+		Rows[0].Detail, FString(TEXT("What is left before the hero falls.")));
+	TestEqual(TEXT("The second row is the next attribute by name"), Rows[1].Name, FString(TEXT("mana")));
+	TestEqual(TEXT("Text reads as the text itself"), Rows[2].Value, FString(TEXT("Knight of Ash")));
+	TestEqual(TEXT("The clipboard gets the value as the server holds it"),
+		Rows[2].RawValue, FString(TEXT("Knight of Ash")));
+	TestTrue(TEXT("A row built from a stored value says it carries one"), Rows[0].bHasValue);
+	TestEqual(TEXT("A property row says which model it belongs to"), Rows[0].OwningType, FString(TEXT("Hero")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModelLedgerPropertyRowsShowDeclaredButUnsetTest,
+	"CrowdySDK.CrowdyStudio.ModelLedgerPropertyRowsShowDeclaredButUnset", CrowdyModelLedgerTestFlags)
+
+bool FCrowdyModelLedgerPropertyRowsShowDeclaredButUnsetTest::RunTest(const FString& Parameters)
+{
+	const TArray<TSharedPtr<FStudioPropertyDef>> Defs = MakeHeroDefs();
+	const TArray<FCrowdyModelRow> Rows = CrowdyModelLedger::BuildPropertyRows(TEXT("{\"hp\":84}"), &Defs);
+
+	if (!TestEqual(TEXT("An attribute with no value is still a row"), Rows.Num(), 3))
+	{
+		return false;
+	}
+
+	// What the instance holds comes first: a reader opens this to see the values, and burying them among the
+	// declared-but-empty rows answers a question nobody asked first.
+	TestEqual(TEXT("The row carrying a value leads"), Rows[0].Name, FString(TEXT("hp")));
+	TestEqual(TEXT("Then the unset ones, in name order"), Rows[1].Name, FString(TEXT("mana")));
+	TestEqual(TEXT("An attribute with no value says so in plain words"), Rows[1].Value, FString(TEXT("not set")));
+	TestTrue(TEXT("And copying it copies nothing rather than the words"), Rows[1].RawValue.IsEmpty());
+	// The counts under the table and the Copy value button both read this rather than the words in the cell.
+	TestTrue(TEXT("The row carrying a value says so"), Rows[0].bHasValue);
+	TestFalse(TEXT("The unset one says it carries none"), Rows[1].bHasValue);
+	TestEqual(TEXT("It still shows what the model declares it to be"), Rows[1].Secondary, FString(TEXT("Number")));
+	TestEqual(TEXT("The last unset attribute is there too"), Rows[2].Name, FString(TEXT("title")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModelLedgerPropertyRowsClaimNothingWithoutDefsTest,
+	"CrowdySDK.CrowdyStudio.ModelLedgerPropertyRowsClaimNothingWithoutDefs", CrowdyModelLedgerTestFlags)
+
+bool FCrowdyModelLedgerPropertyRowsClaimNothingWithoutDefsTest::RunTest(const FString& Parameters)
+{
+	// Nobody has read this model's attributes. An attribute the model does not declare and an attribute nobody
+	// looked up are the same thing from here, so neither claim may be made.
+	const TArray<FCrowdyModelRow> Rows = CrowdyModelLedger::BuildPropertyRows(
+		TEXT("{\"hp\":84,\"ratio\":0.25}"), nullptr);
+
+	if (!TestEqual(TEXT("Only what the instance carries becomes a row"), Rows.Num(), 2))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("Nothing is said about what the model declares"), Rows[0].Detail.IsEmpty());
+	// The type still has to read as something, and the one honest source left is the value that arrived.
+	TestEqual(TEXT("A whole number is described as a whole number"), Rows[0].Secondary, FString(TEXT("Number")));
+	TestEqual(TEXT("A fractional one is not"), Rows[1].Secondary, FString(TEXT("Decimal")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModelLedgerPropertyRowsNameUndeclaredValuesTest,
+	"CrowdySDK.CrowdyStudio.ModelLedgerPropertyRowsNameUndeclaredValues", CrowdyModelLedgerTestFlags)
+
+bool FCrowdyModelLedgerPropertyRowsNameUndeclaredValuesTest::RunTest(const FString& Parameters)
+{
+	const TArray<TSharedPtr<FStudioPropertyDef>> Defs = MakeHeroDefs();
+	const TArray<FCrowdyModelRow> Rows = CrowdyModelLedger::BuildPropertyRows(
+		TEXT("{\"hp\":84,\"stowaway\":7}"), &Defs);
+
+	const FCrowdyModelRow* Stray = FindPropertyRow(Rows, TEXT("stowaway"));
+	if (!TestNotNull(TEXT("A stored value the model does not declare is still shown"), Stray))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("And it is named as one"), Stray->Detail,
+		FString(TEXT("This model does not declare this attribute.")));
+
+	const FCrowdyModelRow* Declared = FindPropertyRow(Rows, TEXT("hp"));
+	if (!TestNotNull(TEXT("A declared attribute is present as well"), Declared))
+	{
+		return false;
+	}
+	TestFalse(TEXT("A declared one is never labelled undeclared"),
+		Declared->Detail.Contains(TEXT("does not declare")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModelLedgerPropertyRowsRenderEveryValueKindTest,
+	"CrowdySDK.CrowdyStudio.ModelLedgerPropertyRowsRenderEveryValueKind", CrowdyModelLedgerTestFlags)
+
+bool FCrowdyModelLedgerPropertyRowsRenderEveryValueKindTest::RunTest(const FString& Parameters)
+{
+	const TArray<FCrowdyModelRow> Rows = CrowdyModelLedger::BuildPropertyRows(
+		TEXT("{\"alive\":true,\"blank\":\"\",\"gear\":[\"axe\",\"rope\"],\"missing\":null,\"stats\":{\"str\":3}}"),
+		nullptr);
+
+	const FCrowdyModelRow* Alive = FindPropertyRow(Rows, TEXT("alive"));
+	const FCrowdyModelRow* Blank = FindPropertyRow(Rows, TEXT("blank"));
+	const FCrowdyModelRow* Gear = FindPropertyRow(Rows, TEXT("gear"));
+	const FCrowdyModelRow* Missing = FindPropertyRow(Rows, TEXT("missing"));
+	const FCrowdyModelRow* Stats = FindPropertyRow(Rows, TEXT("stats"));
+	if (!TestTrue(TEXT("Every kind of stored value became a row"),
+		Alive && Blank && Gear && Missing && Stats))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("A flag reads as a plain answer"), Alive->Value, FString(TEXT("yes")));
+	TestEqual(TEXT("And copies as what the server holds"), Alive->RawValue, FString(TEXT("true")));
+	// Three different kinds of nothing, told apart: an empty text, a stored null, and an attribute with no value
+	// at all. A blank cell for any of them would leave the reader unable to say which they were looking at.
+	TestEqual(TEXT("An empty text says it is empty"), Blank->Value, FString(TEXT("empty")));
+	// And it is a value the instance holds, which is why nothing reads that back off an empty cell or an empty
+	// clipboard string: both are empty for this row and neither means the attribute is unset.
+	TestTrue(TEXT("An empty text is still a stored value"), Blank->bHasValue);
+	TestEqual(TEXT("A stored null is a value the instance holds"), Missing->Value, FString(TEXT("none")));
+	// A structure is shown as itself: a reader opening a live model wants what is inside it.
+	TestEqual(TEXT("A list shows its items"), Gear->Value, FString(TEXT("[\"axe\",\"rope\"]")));
+	TestEqual(TEXT("A structure shows its fields"), Stats->Value, FString(TEXT("{\"str\":3}")));
+	TestEqual(TEXT("A list is described as a list"), Gear->Secondary, FString(TEXT("List")));
+	TestEqual(TEXT("A structure is described as structured data"), Stats->Secondary, FString(TEXT("Structured data")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModelLedgerPropertyRowsBoundLongValuesTest,
+	"CrowdySDK.CrowdyStudio.ModelLedgerPropertyRowsBoundLongValues", CrowdyModelLedgerTestFlags)
+
+bool FCrowdyModelLedgerPropertyRowsBoundLongValuesTest::RunTest(const FString& Parameters)
+{
+	FString Paragraph;
+	for (int32 Index = 0; Index < 2000; ++Index)
+	{
+		Paragraph.AppendChar(TEXT('a'));
+	}
+
+	const TArray<FCrowdyModelRow> Rows = CrowdyModelLedger::BuildPropertyRows(
+		FString::Printf(TEXT("{\"bio\":\"%s\"}"), *Paragraph), nullptr);
+
+	if (!TestEqual(TEXT("The long value became a row"), Rows.Num(), 1))
+	{
+		return false;
+	}
+
+	// The cell's tooltip repeats the cell, so an unbounded value is an unbounded tooltip. The clipboard is the
+	// way to read the whole of one, and it is never cut.
+	TestTrue(TEXT("What a cell shows is bounded"), Rows[0].Value.Len() < 500);
+	TestEqual(TEXT("What the clipboard gets is whole"), Rows[0].RawValue.Len(), Paragraph.Len());
+	TestTrue(TEXT("And the cut is visible rather than silent"), Rows[0].Value.EndsWith(TEXT("...")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModelLedgerPropertyRowsHideReservedKeysTest,
+	"CrowdySDK.CrowdyStudio.ModelLedgerPropertyRowsHideReservedKeys", CrowdyModelLedgerTestFlags)
+
+bool FCrowdyModelLedgerPropertyRowsHideReservedKeysTest::RunTest(const FString& Parameters)
+{
+	const FString Json = TEXT("{\"crowdy_rev\":12,\"hp\":84}");
+
+	const TArray<FCrowdyModelRow> Hidden = CrowdyModelLedger::BuildPropertyRows(Json, nullptr);
+	TestEqual(TEXT("The runtime's own bookkeeping stays out of the way"), Hidden.Num(), 1);
+	TestNull(TEXT("Nothing of the reserved key is shown"), FindPropertyRow(Hidden, TEXT("crowdy_rev")));
+
+	// It is hidden, not unreachable: a reader chasing a replication problem has to be able to see it.
+	const TArray<FCrowdyModelRow> Shown =
+		CrowdyModelLedger::BuildPropertyRows(Json, nullptr, nullptr, /*bIncludeReserved*/ true);
+	TestEqual(TEXT("Asked for, it is there"), Shown.Num(), 2);
+	TestNotNull(TEXT("Under its own key"), FindPropertyRow(Shown, TEXT("crowdy_rev")));
+
+	// A reserved attribute the model happens to declare must not come back as an unset row either.
+	TArray<TSharedPtr<FStudioPropertyDef>> Defs = MakeHeroDefs();
+	Defs.Add(MakeAttributeDef(TEXT("crowdy_rev"), TEXT("Hero"), TEXT("int")));
+	const TArray<FCrowdyModelRow> WithDefs = CrowdyModelLedger::BuildPropertyRows(TEXT("{}"), &Defs);
+	TestNull(TEXT("A reserved attribute is not offered as unset"), FindPropertyRow(WithDefs, TEXT("crowdy_rev")));
+	TestEqual(TEXT("The designer attributes still are"), WithDefs.Num(), 3);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModelLedgerPropertyRowsRefuseUnreadablePayloadTest,
+	"CrowdySDK.CrowdyStudio.ModelLedgerPropertyRowsRefuseUnreadablePayload", CrowdyModelLedgerTestFlags)
+
+bool FCrowdyModelLedgerPropertyRowsRefuseUnreadablePayloadTest::RunTest(const FString& Parameters)
+{
+	const TArray<TSharedPtr<FStudioPropertyDef>> Defs = MakeHeroDefs();
+
+	// A payload that cannot be read says nothing about the instance, the declared attributes included: reporting
+	// every one of them as carrying no value would be a claim made from a read that never landed.
+	const TArray<FCrowdyModelRow> Broken = CrowdyModelLedger::BuildPropertyRows(TEXT("{\"hp\":"), &Defs);
+	TestEqual(TEXT("A payload that will not parse yields no rows"), Broken.Num(), 0);
+
+	FString TooDeep;
+	for (int32 Index = 0; Index < 200; ++Index)
+	{
+		TooDeep += TEXT("{\"a\":");
+	}
+	TooDeep += TEXT("1");
+	for (int32 Index = 0; Index < 200; ++Index)
+	{
+		TooDeep += TEXT("}");
+	}
+	TestEqual(TEXT("So does one nested past the parser's guard"),
+		CrowdyModelLedger::BuildPropertyRows(TooDeep, &Defs).Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModelLedgerPropertiesReadStateTellsEmptyFromUnreadableTest,
+	"CrowdySDK.CrowdyStudio.ModelLedgerPropertiesReadStateTellsEmptyFromUnreadable", CrowdyModelLedgerTestFlags)
+
+bool FCrowdyModelLedgerPropertiesReadStateTellsEmptyFromUnreadableTest::RunTest(const FString& Parameters)
+{
+	// An empty list of rows means four different things, and a panel that cannot tell them apart reports a server
+	// error as an instance with nothing in it.
+	TestTrue(TEXT("Nothing read yet is not an answer about the instance"),
+		CrowdyModelLedger::ClassifyPropertiesJson(FString()) == ECrowdyPropertyReadState::NoValues);
+	TestTrue(TEXT("An instance that genuinely holds nothing says so"),
+		CrowdyModelLedger::ClassifyPropertiesJson(TEXT("{}")) == ECrowdyPropertyReadState::NoValues);
+	TestTrue(TEXT("An instance with values reads as readable"),
+		CrowdyModelLedger::ClassifyPropertiesJson(TEXT("{\"hp\":84}")) == ECrowdyPropertyReadState::Ok);
+	TestTrue(TEXT("A payload that will not parse is its own answer"),
+		CrowdyModelLedger::ClassifyPropertiesJson(TEXT("not json at all")) == ECrowdyPropertyReadState::Unreadable);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModelLedgerPropertyRowsAreSearchableByValueTest,
+	"CrowdySDK.CrowdyStudio.ModelLedgerPropertyRowsAreSearchableByValue", CrowdyModelLedgerTestFlags)
+
+bool FCrowdyModelLedgerPropertyRowsAreSearchableByValueTest::RunTest(const FString& Parameters)
+{
+	const TArray<TSharedPtr<FStudioPropertyDef>> Defs = MakeHeroDefs();
+	const TArray<FCrowdyModelRow> Rows = CrowdyModelLedger::BuildPropertyRows(
+		TEXT("{\"hp\":84,\"title\":\"Knight of Ash\"}"), &Defs);
+
+	// The search box over a property list is used to find a value as often as to find an attribute, so the value
+	// is in the haystack the filter reads.
+	const TArray<FCrowdyModelRow> ByValue = CrowdyModelLedger::FilterRows(Rows, TEXT("knight"));
+	if (!TestEqual(TEXT("Typing a value finds the attribute holding it"), ByValue.Num(), 1))
+	{
+		return false;
+	}
+	TestEqual(TEXT("And it is the right one"), ByValue[0].Name, FString(TEXT("title")));
+
+	const TArray<FCrowdyModelRow> ByKey = CrowdyModelLedger::FilterRows(Rows, TEXT("hp"));
+	TestEqual(TEXT("Typing an attribute still finds it"), ByKey.Num(), 1);
+	return true;
+}
+
 #endif

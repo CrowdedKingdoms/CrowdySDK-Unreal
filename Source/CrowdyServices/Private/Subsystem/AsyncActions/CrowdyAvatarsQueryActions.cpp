@@ -27,10 +27,10 @@ void UCrowdyAvatars_GetMyAvatars::Activate()
 	Avatars->GetMyAvatars(S, E);
 }
 
-void UCrowdyAvatars_GetMyAvatars::HandleSuccess(TArray<FCrowdyAvatar> Avatars)
+void UCrowdyAvatars_GetMyAvatars::HandleSuccess(const TArray<FCrowdyAvatar>& Avatars)
 {
 	FCrowdyAvatarList R;
-	R.Avatars = MoveTemp(Avatars);
+	R.Avatars = Avatars;
 	OnSuccess.Broadcast(R);
 	SetReadyToDestroy();
 }
@@ -105,10 +105,10 @@ void UCrowdyAvatars_GetUserAvatars::Activate()
 	Avatars->GetUserAvatars(UserId, S, E);
 }
 
-void UCrowdyAvatars_GetUserAvatars::HandleSuccess(TArray<FCrowdyAvatar> Avatars)
+void UCrowdyAvatars_GetUserAvatars::HandleSuccess(const TArray<FCrowdyAvatar>& Avatars)
 {
 	FCrowdyAvatarList R;
-	R.Avatars = MoveTemp(Avatars);
+	R.Avatars = Avatars;
 	OnSuccess.Broadcast(R);
 	SetReadyToDestroy();
 }
@@ -185,10 +185,10 @@ void UCrowdyAvatars_GetAvatarAppStates::Activate()
 	Avatars->GetAvatarAppStates(AvatarIds, S, E);
 }
 
-void UCrowdyAvatars_GetAvatarAppStates::HandleSuccess(TArray<FCrowdyAppAvatarState> AppStates)
+void UCrowdyAvatars_GetAvatarAppStates::HandleSuccess(const TArray<FCrowdyAppAvatarState>& AppStates)
 {
 	FCrowdyAppAvatarStateList R;
-	R.AppStates = MoveTemp(AppStates);
+	R.AppStates = AppStates;
 	OnSuccess.Broadcast(R);
 	SetReadyToDestroy();
 }

@@ -767,6 +767,7 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 		Library.socketSendBufferBytes = Config.SocketSendBufferBytes;
 		Library.bundleSends = Config.bBundleSends;
 		Library.bundleWindowMs = FMath::Max(Config.BundleWindowMs, 0);
+		Library.advertiseCapabilities = Config.bAdvertiseCapabilities;
 
 		Owned.Connection = MakeUnique<crowdy::replication::Connection>(
 			std::move(Library), Owned.Provider, crowdy::core::defaultCrypto());
@@ -1388,6 +1389,7 @@ FCrowdyCppReplicationStats FCrowdyCppReplication::GetStats() const
 		Out.BytesSent = static_cast<int64>(Stats.bytesSent);
 		Out.BytesReceived = static_cast<int64>(Stats.bytesReceived);
 		Out.HmacFailures = static_cast<int64>(Stats.hmacFailures);
+		Out.SignedBundlesReceived = static_cast<int64>(Stats.signedBundlesReceived);
 		Out.Malformed = static_cast<int64>(Stats.malformed);
 		Out.RingDropped = static_cast<int64>(Stats.ringDropped);
 		Out.SendsDeferred = static_cast<int64>(Stats.sendsDeferred);

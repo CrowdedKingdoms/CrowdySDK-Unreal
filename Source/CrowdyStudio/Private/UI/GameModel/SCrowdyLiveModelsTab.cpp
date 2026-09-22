@@ -13,6 +13,7 @@
 #include "Styling/StyleDefaults.h"
 #include "UI/CrowdyStudioWidgets.h"
 #include "UI/GameModel/SCrowdyModelSectionTable.h"
+#include "UI/GameModel/SCrowdyPropertyInspector.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
@@ -100,6 +101,7 @@ void SCrowdyLiveModelsTab::Construct(const FArguments& InArgs)
 		Controller->OnContainerTypesChanged.AddSP(this, &SCrowdyLiveModelsTab::HandleContainerTypesChanged);
 		Controller->OnContainersChanged.AddSP(this, &SCrowdyLiveModelsTab::HandleContainersChanged);
 		Controller->OnContainerStateChanged.AddSP(this, &SCrowdyLiveModelsTab::HandleContainerStateChanged);
+		Controller->OnPropertyDefsCached.AddSP(this, &SCrowdyLiveModelsTab::HandlePropertyDefsCached);
 		Controller->OnContainerPurgeProgress.AddSP(this, &SCrowdyLiveModelsTab::HandleContainerPurgeProgress);
 		Controller->OnContainerPurgeFinished.AddSP(this, &SCrowdyLiveModelsTab::HandleContainerPurgeFinished);
 	}
@@ -218,13 +220,15 @@ void SCrowdyLiveModelsTab::Construct(const FArguments& InArgs)
 			]
 		]
 
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 0.0f)
 		[
 			SNew(STextBlock)
 			.TextStyle(&Style, "Crowdy.Text.Subtle")
 			.Text(LOCTEXT("LiveSubtitle", "Read from the server, so this is live even outside Play."))
 		],
-		FMargin(14.0f, 12.0f));
+		// Tight: everything this card costs comes out of the rows and the values under it, and the pane it sits
+		// in is the shortest part of the page.
+		FMargin(12.0f, 8.0f));
 
 	TSharedRef<SWidget> DetailPane =
 		SNew(SVerticalBox)
@@ -234,36 +238,39 @@ void SCrowdyLiveModelsTab::Construct(const FArguments& InArgs)
 
 		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0.0f, 10.0f, 0.0f, 0.0f)
 		[
-			CrowdyStudioWidgets::Card(
-				SAssignNew(InstanceTable, SCrowdyModelSectionTable)
-				.Controller(Controller)
-				.Columns(LiveInstanceColumns())
-				// The same sentence the table gets whenever nobody has asked for this model yet, from the same
-				// place, so the message a reader sees before a model is even selected and the one they see after
-				// cannot be two spellings of one answer that drift apart.
-				.Placeholder(FText::FromString(
-					CrowdyModelEmptyState::LiveInstanceTable(ECrowdyModelLoadState::NeverRequested)))
-				.PlaceholderIcon(TEXT("inspector"))
-				.OnSelectionChanged(this, &SCrowdyLiveModelsTab::OnInstanceSelectionChanged),
-				FMargin(4.0f), /*bFlat*/ true)
-		]
+			// The list and the values of whichever row is highlighted, with a handle between them: how much of the
+			// pane each deserves depends on whether the reader is hunting for an instance or reading one, and
+			// only the reader knows which. No alignment on either slot, or the splitter is arranged at the height
+			// it asks for and the virtualized lists inside it render nothing.
+			SNew(SSplitter)
+			.Style(&Style, "Crowdy.Splitter")
+			.Orientation(Orient_Vertical)
+			.PhysicalSplitterHandleSize(3.0f)
 
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 0.0f)
-		[
-			// A summary is one line however much the instance carries, but a line longer than the strip is still
-			// drawn in full unless it is clipped: a height on its own only reserves less room. The page area does
-			// not scroll, so an unclipped line paints straight over the action bar and the status line below it.
-			SNew(SBox)
-			.HeightOverride(34.0f)
-			.Clipping(EWidgetClipping::ClipToBounds)
+			// Both halves carry a virtualized list, and a list with no height draws no rows and lets its own
+			// placeholder paint over whatever is below it. The minimums are what each needs to be worth showing:
+			// a few instance rows, and a header, several attribute rows and the line under them.
+			+ SSplitter::Slot().Value(0.35f).MinSize(90.0f)
 			[
-				SNew(SBorder)
-				.BorderImage(Style.GetBrush("Crowdy.Inset"))
-				.Padding(FMargin(10.0f, 7.0f))
+				CrowdyStudioWidgets::Card(
+					SAssignNew(InstanceTable, SCrowdyModelSectionTable)
+					.Controller(Controller)
+					.Columns(LiveInstanceColumns())
+					// The same sentence the table gets whenever nobody has asked for this model yet, from the same
+					// place, so the message a reader sees before a model is even selected and the one they see after
+					// cannot be two spellings of one answer that drift apart.
+					.Placeholder(FText::FromString(
+						CrowdyModelEmptyState::LiveInstanceTable(ECrowdyModelLoadState::NeverRequested)))
+					.PlaceholderIcon(TEXT("inspector"))
+					.OnSelectionChanged(this, &SCrowdyLiveModelsTab::OnInstanceSelectionChanged),
+					FMargin(4.0f), /*bFlat*/ true)
+			]
+
+			+ SSplitter::Slot().Value(0.65f).MinSize(200.0f)
+			[
+				SNew(SBox).Padding(FMargin(0.0f, 6.0f, 0.0f, 0.0f))
 				[
-					SAssignNew(InspectorText, STextBlock)
-					.TextStyle(&Style, "Crowdy.Text.Body")
-					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+					SAssignNew(PropertyInspector, SCrowdyPropertyInspector).Controller(Controller)
 				]
 			]
 		]
@@ -420,7 +427,6 @@ void SCrowdyLiveModelsTab::Construct(const FArguments& InArgs)
 	];
 
 	DetailSwitcher->SetActiveWidgetIndex(0);
-	SetInspectorLine(LOCTEXT("LiveInspectorHint", "Select a live model to see its properties."));
 	UpdateActionBar();
 	RebuildModelList();
 }
@@ -433,6 +439,7 @@ SCrowdyLiveModelsTab::~SCrowdyLiveModelsTab()
 		Controller->OnContainerTypesChanged.RemoveAll(this);
 		Controller->OnContainersChanged.RemoveAll(this);
 		Controller->OnContainerStateChanged.RemoveAll(this);
+		Controller->OnPropertyDefsCached.RemoveAll(this);
 		Controller->OnContainerPurgeProgress.RemoveAll(this);
 		Controller->OnContainerPurgeFinished.RemoveAll(this);
 	}
@@ -470,8 +477,10 @@ void SCrowdyLiveModelsTab::RequestContainers(bool bAppend)
 
 	// What the answer will describe is decided by the filters this read was issued with, not by whatever is in the
 	// boxes when it lands: the user is free to type on while it is in flight.
-	// A new read is the reader asking for something else, so the last purge's line stops standing over it.
+	// A new read is the reader asking for something else, so the last purge's line and the last copy's stop
+	// standing over it.
 	PurgeOutcomeLine = FText::GetEmpty();
+	CopyOutcomeLine = FText::GetEmpty();
 
 	PendingTypeFilter = TypeFilter;
 	PendingSessionFilter = SessionFilter;
@@ -539,8 +548,9 @@ FReply SCrowdyLiveModelsTab::OnCopyInstanceIdClicked()
 	if (Row.IsValid() && !Row->Name.IsEmpty())
 	{
 		FPlatformApplicationMisc::ClipboardCopy(*Row->Name);
-		SetInspectorLine(FText::Format(
-			LOCTEXT("LiveCopiedId", "Copied {0} to the clipboard."), FText::FromString(Row->Name)));
+		CopyOutcomeLine = FText::Format(
+			LOCTEXT("LiveCopiedId", "Copied {0} to the clipboard."), FText::FromString(Row->Name));
+		UpdateStatusLine();
 	}
 	return FReply::Handled();
 }
@@ -695,7 +705,18 @@ void SCrowdyLiveModelsTab::HandleContainersChanged()
 			}
 			if (!bStillListed)
 			{
-				SetInspectorLine(LOCTEXT("LiveInspectorHint", "Select a live model to see its properties."));
+				ShownInstanceLabel.Reset();
+				if (PropertyInspector.IsValid())
+				{
+					PropertyInspector->Clear();
+				}
+			}
+			else
+			{
+				// The list was just read again, and the values beside it were read before that. A Refresh is the
+				// reader asking what is true now, so the open instance is re-read rather than left showing what
+				// was true at the last click.
+				Controller->FetchContainerState(ShownId);
 			}
 		}
 	}
@@ -708,20 +729,36 @@ void SCrowdyLiveModelsTab::HandleContainerStateChanged()
 		return;
 	}
 
-	const FStudioContainerState& State = Controller->GetContainerState();
-	if (!State.bValid)
+	ShowSelectedInstanceValues();
+}
+
+void SCrowdyLiveModelsTab::HandlePropertyDefsCached()
+{
+	// The values may already be on screen, laid out before the model's attributes were known: with them, every
+	// attribute the instance leaves unset becomes a row and every value gets the type the model declares for it.
+	if (PropertyInspector.IsValid())
 	{
-		SetInspectorLine(LOCTEXT("LiveInspectorHint", "Select a live model to see its properties."));
+		PropertyInspector->Refresh();
+	}
+}
+
+void SCrowdyLiveModelsTab::ShowSelectedInstanceValues()
+{
+	if (!PropertyInspector.IsValid() || !Controller.IsValid())
+	{
 		return;
 	}
 
-	const FString DisplayName = State.DisplayName.TrimStartAndEnd();
-	const FText Named = FText::FromString(DisplayName.IsEmpty() ? State.ContainerId : DisplayName);
-	const FString Summary = CrowdyModelLedger::FormatPropertySummary(State.PropertiesJson);
+	const FStudioContainerState& State = Controller->GetContainerState();
 
-	SetInspectorLine(Summary.IsEmpty()
-		? FText::Format(LOCTEXT("LiveInspectorNoProperties", "{0} - no properties this token may see."), Named)
-		: FText::Format(LOCTEXT("LiveInspectorLine", "{0} - {1}"), Named, FText::FromString(Summary)));
+	// The heading comes from the server's own name for the instance once it has answered, and from the row the
+	// reader clicked until then, so the panel is never headed by an empty name while its read is out.
+	const FString DisplayName = State.DisplayName.TrimStartAndEnd();
+	const FString Label = !DisplayName.IsEmpty()
+		? DisplayName
+		: (!ShownInstanceLabel.IsEmpty() ? ShownInstanceLabel : State.ContainerId);
+
+	PropertyInspector->Show(Controller->GetContainerStateLoad(), State, Label);
 }
 
 void SCrowdyLiveModelsTab::OnInstanceSelectionChanged(TSharedPtr<FCrowdyModelRow> Row, ESelectInfo::Type SelectInfo)
@@ -731,7 +768,7 @@ void SCrowdyLiveModelsTab::OnInstanceSelectionChanged(TSharedPtr<FCrowdyModelRow
 	UpdateActionBar();
 
 	// Ignore the programmatic clear the table emits when its rows are rebuilt on refresh. The instance it was
-	// showing may well still be there, and the inspector line is decided from the ids on the refresh itself.
+	// showing may well still be there, and whether it is is decided from the ids on the refresh itself.
 	if (SelectInfo == ESelectInfo::Direct)
 	{
 		return;
@@ -742,15 +779,27 @@ void SCrowdyLiveModelsTab::OnInstanceSelectionChanged(TSharedPtr<FCrowdyModelRow
 	const TSharedPtr<FCrowdyModelRow> Selected = InstanceTable.IsValid() ? InstanceTable->GetSelectedRow() : nullptr;
 	if (!Selected.IsValid())
 	{
-		SetInspectorLine(LOCTEXT("LiveInspectorHint", "Select a live model to see its properties."));
+		ShownInstanceLabel.Reset();
+		if (PropertyInspector.IsValid())
+		{
+			PropertyInspector->Clear();
+		}
 		return;
 	}
 
-	SetInspectorLine(FText::Format(
-		LOCTEXT("LiveInspectorReading", "{0} - reading properties..."), FText::FromString(Selected->Primary)));
+	ShownInstanceLabel = Selected->Primary;
 
 	if (Controller.IsValid())
 	{
+		// The model's attributes, so the values can be shown against what the model declares. Cached per type and
+		// asked for without claiming the flat mirror, which the Advanced tab's own list is reading.
+		if (!Selected->OwningType.IsEmpty() && Controller->GetPropertyDefsForType(Selected->OwningType) == nullptr)
+		{
+			Controller->FetchPropertyDefs(Selected->OwningType, /*bForceRefresh*/ false, /*bClaimMirror*/ false);
+		}
+
+		// Issuing the read is what puts the panel into its reading state: the controller announces the state
+		// change on its way out, and the panel is shown from that announcement like every other.
 		Controller->FetchContainerState(Selected->Name);
 	}
 }
@@ -1101,6 +1150,14 @@ void SCrowdyLiveModelsTab::UpdateStatusLine()
 		return;
 	}
 
+	// A copy the reader just made, which they are looking at this instant. It gives way to the purge line above,
+	// which describes something destructive that has just happened to the list underneath it.
+	if (!CopyOutcomeLine.IsEmpty())
+	{
+		StatusLineText->SetText(CopyOutcomeLine);
+		return;
+	}
+
 	if (!SelectedTypeName.IsSet())
 	{
 		StatusLineText->SetText(FText::GetEmpty());
@@ -1118,14 +1175,6 @@ void SCrowdyLiveModelsTab::UpdateStatusLine()
 	const int32 Shown = InstanceTable.IsValid() ? InstanceTable->NumRows() : 0;
 	StatusLineText->SetText(FText::Format(
 		LOCTEXT("LiveStatusShowing", "Showing the first {0}. Narrow the filters or load more."), FText::AsNumber(Shown)));
-}
-
-void SCrowdyLiveModelsTab::SetInspectorLine(const FText& Line)
-{
-	if (InspectorText.IsValid())
-	{
-		InspectorText->SetText(Line);
-	}
 }
 
 void SCrowdyLiveModelsTab::SyncEditorAppScope()
@@ -1173,7 +1222,14 @@ void SCrowdyLiveModelsTab::ClearAppScopedEditors()
 		DetailSwitcher->SetActiveWidgetIndex(0);
 	}
 
-	SetInspectorLine(LOCTEXT("LiveInspectorHint", "Select a live model to see its properties."));
+	ShownInstanceLabel.Reset();
+	if (PropertyInspector.IsValid())
+	{
+		PropertyInspector->Clear();
+	}
+
+	PurgeOutcomeLine = FText::GetEmpty();
+	CopyOutcomeLine = FText::GetEmpty();
 	UpdateActionBar();
 	UpdateStatusLine();
 

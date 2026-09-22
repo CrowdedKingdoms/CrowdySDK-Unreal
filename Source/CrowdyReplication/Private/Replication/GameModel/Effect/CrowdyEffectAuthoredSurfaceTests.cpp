@@ -290,6 +290,46 @@ bool FCrowdyEffectSurfaceTextRoundTripTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Every trigger the enum declares survives the stamp, the last one included. The schema sync builds its record
+// from this stamp without loading the asset, so a reader that clamps the trigger to yesterday's count turns every
+// newer trigger into the interval default and the sync deploys a schedule where an event was authored; that is
+// what shipped the player-left automation as a 30 s schedule on 2026-09-19. An out-of-range value still falls back.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectSurfaceCarriesEveryTriggerTest,
+	"CrowdySDK.Effect.SurfaceCarriesEveryTrigger", CrowdySurfaceTestFlags)
+bool FCrowdyEffectSurfaceCarriesEveryTriggerTest::RunTest(const FString& Parameters)
+{
+	const UEnum* TriggerEnum = StaticEnum<ECrowdyEffectAutomationTrigger>();
+	const int32 NumTriggers = TriggerEnum->NumEnums() - 1;
+	TestTrue(TEXT("the enum has the two presence triggers"), NumTriggers >= 6);
+
+	for (int32 Index = 0; Index < NumTriggers; ++Index)
+	{
+		FCrowdyEffectAuthoredSurface Original = MakePopulatedTextSurface();
+		Original.Automation.Trigger = static_cast<ECrowdyEffectAutomationTrigger>(Index);
+		FCrowdyEffectAuthoredSurface Parsed;
+		if (!TestTrue(TEXT("the payload parses"), CrowdyEffectAuthoredSurface::FromJson(CrowdyEffectAuthoredSurface::ToJson(Original), Parsed)))
+		{
+			return false;
+		}
+		TestEqual(FString::Printf(TEXT("trigger %s round-trips"), *TriggerEnum->GetNameStringByIndex(Index)),
+			static_cast<int32>(Parsed.Automation.Trigger), Index);
+	}
+
+	// A value past the enum's end is corruption, never a trigger.
+	FCrowdyEffectAuthoredSurface Original = MakePopulatedTextSurface();
+	FString Json = CrowdyEffectAuthoredSurface::ToJson(Original);
+	const FString Stamped = FString::Printf(TEXT("\"trig\":%d"), static_cast<int32>(ECrowdyEffectAutomationTrigger::OnPropertyChange));
+	if (TestTrue(TEXT("the stamp carries the trigger"), Json.Contains(Stamped)))
+	{
+		Json.ReplaceInline(*Stamped, *FString::Printf(TEXT("\"trig\":%d"), NumTriggers + 5));
+		FCrowdyEffectAuthoredSurface Parsed;
+		TestTrue(TEXT("a corrupted payload still parses"), CrowdyEffectAuthoredSurface::FromJson(Json, Parsed));
+		TestTrue(TEXT("an out-of-range trigger falls back to the default"),
+			Parsed.Automation.Trigger == FCrowdyEffectAutomationAuthoring().Trigger);
+	}
+	return true;
+}
+
 // The graph half of the same claim. A graph effect's program is a nested tree of operands, terms and requires, and
 // none of it is text the author could re-type: if the payload loses part of it, the effect quietly compiles to
 // something smaller than what was drawn.
