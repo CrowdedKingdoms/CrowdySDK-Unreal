@@ -16,8 +16,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FCrowdyPullDataContainerOutcome);
 // pin ever firing on a rejected mutation.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyInvokeOnContainerOutcome, bool, bSuccess, FString, ReturnValueJson, FString, ErrorMessage);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyEdgeOutcome, FCrowdyContainerEdge, Edge);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCrowdyTraverseOutcome, TArray<FCrowdyContainerRef>, Nodes, TArray<FCrowdyContainerEdge>, Edges);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyContainerRefsOutcome, TArray<FCrowdyContainerRef>, Children);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCrowdyTraverseOutcome, const TArray<FCrowdyContainerRef>&, Nodes, const TArray<FCrowdyContainerEdge>&, Edges);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyContainerRefsOutcome, const TArray<FCrowdyContainerRef>&, Children);
 
 /** Creates a free/data container (no actor) of TypeName; the server pins ownership to the caller. */
 UCLASS()

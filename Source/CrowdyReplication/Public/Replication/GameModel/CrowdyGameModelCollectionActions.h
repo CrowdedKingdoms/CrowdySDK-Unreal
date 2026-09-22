@@ -9,7 +9,7 @@
 #include "CrowdyGameModelCollectionActions.generated.h"
 
 // One item set carrying each item's fetched state (Get Collection With Items' State).
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyCollectionItemsOutcome, TArray<FCrowdyCollectionItem>, Items);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyCollectionItemsOutcome, const TArray<FCrowdyCollectionItem>&, Items);
 
 /**
  * Model Collection nodes: the designer-facing surface for a container that owns other containers (an inventory

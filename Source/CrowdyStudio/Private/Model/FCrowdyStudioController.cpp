@@ -2221,7 +2221,7 @@ bool FCrowdyStudioController::IsLatestPropertyDefRequest(const FString& TypeName
 	return SelectedAppId == RequestAppId && Latest != nullptr && *Latest == RequestSerial;
 }
 
-void FCrowdyStudioController::FetchPropertyDefs(const FString& TypeName, bool bForceRefresh)
+void FCrowdyStudioController::FetchPropertyDefs(const FString& TypeName, bool bForceRefresh, bool bClaimMirror)
 {
 	if (SelectedAppId == 0 || TypeName.IsEmpty())
 	{
@@ -2234,7 +2234,7 @@ void FCrowdyStudioController::FetchPropertyDefs(const FString& TypeName, bool bF
 	// The mirror follows the type most recently asked for by a selection, whether or not this call issues a query. A
 	// forced read is a background refresh after a write and must not claim the mirror: the user may have moved to
 	// another type since, and taking the mirror here would discard that type's reply and paint the written one instead.
-	if (!bForceRefresh)
+	if (!bForceRefresh && bClaimMirror)
 	{
 		PropertyDefsMirrorType = TypeName;
 	}
@@ -2244,7 +2244,10 @@ void FCrowdyStudioController::FetchPropertyDefs(const FString& TypeName, bool bF
 	// follows a write, and the read in flight was issued before that write, so it answers with the old list.
 	if (!bForceRefresh && PropertyDefFetchesInFlight.Contains(TypeName))
 	{
-		if (const TArray<TSharedPtr<FStudioPropertyDef>>* Cached = PropertyDefsByType.Find(TypeName))
+		const TArray<TSharedPtr<FStudioPropertyDef>>* Cached = PropertyDefsByType.Find(TypeName);
+		// Painting the mirror is the mirror-claiming caller's business. A caller that did not claim it is reading
+		// the per-type cache and must not repoint the list another view is showing.
+		if (Cached && bClaimMirror)
 		{
 			PropertyDefs = *Cached;
 			OnPropertyDefsChanged.Broadcast();
@@ -2699,6 +2702,7 @@ void FCrowdyStudioController::DeleteContainer(const FString& ContainerId, int64 
 			{
 				SelectedContainerId.Reset();
 				ContainerState = FStudioContainerState();
+				ContainerStateLoad = ECrowdyModelLoadState::NeverRequested;
 				OnContainerStateChanged.Broadcast();
 			}
 			// Re-read exactly what the user has on screen. When the list was paged, that is every page loaded so
@@ -5420,6 +5424,8 @@ void FCrowdyStudioController::FetchContainerState(const FString& ContainerId)
 
 	SelectedContainerId = ContainerId;
 	ContainerState = FStudioContainerState();
+	ContainerStateLoad = ECrowdyModelLoadState::Loading;
+	OnContainerStateChanged.Broadcast();
 
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	SetBigIntField(Variables, TEXT("appId"), SelectedAppId);
@@ -5433,6 +5439,19 @@ void FCrowdyStudioController::FetchContainerState(const FString& ContainerId)
 				return; // selection moved on before the reply arrived
 			}
 			CrowdyStudioGql::ParseContainerState(Envelope, TEXT("gameModelContainerState"), ContainerState);
+			ContainerStateLoad = ECrowdyModelLoadState::Loaded;
+			OnContainerStateChanged.Broadcast();
+		},
+		// Without this the read that failed stays reported as one still running, and the panel waiting on it says
+		// "reading..." for the rest of the session.
+		[this, ContainerId]()
+		{
+			if (SelectedContainerId != ContainerId)
+			{
+				return;
+			}
+			ContainerState = FStudioContainerState();
+			ContainerStateLoad = ECrowdyModelLoadState::Failed;
 			OnContainerStateChanged.Broadcast();
 		});
 }
@@ -5509,6 +5528,7 @@ void FCrowdyStudioController::ClearAppScopedState()
 	GameModelLint = FStudioLintReport();
 	Containers.Reset();
 	ContainerState = FStudioContainerState();
+	ContainerStateLoad = ECrowdyModelLoadState::NeverRequested;
 	SelectedContainerId.Reset();
 	LastContainerTypeFilter.Reset();
 	LastContainerSessionFilter.Reset();

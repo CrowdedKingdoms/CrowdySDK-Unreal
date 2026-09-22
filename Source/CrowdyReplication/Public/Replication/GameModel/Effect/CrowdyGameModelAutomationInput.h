@@ -88,7 +88,8 @@ struct FCrowdyGameModelAutomationTriggerInput
 	// The automation (by name) this trigger fires.
 	FString AutomationName;
 
-	// The model event: "function_invoked" | "property_changed" | "container_created".
+	// The model event: "function_invoked" | "property_changed" | "container_created" | "player_left" |
+	// "player_count_changed".
 	FString OnEvent;
 
 	// Filter: only this function name. Empty = any.

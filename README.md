@@ -24,6 +24,9 @@ How a change moves: open a pull request. You may merge your own pull request int
 @Shady-S25 merges into `test` and `prod` on this repository. Anyone else asks an org admin.
 Details are in [AGENTS.md](AGENTS.md).
 
+The plugin itself is developed in the SDK's own repository and published here; a change lands there
+and appears on `dev` on the next publish.
+
 ## What it does
 
 The SDK replicates state on two planes, and everything else follows from the split.

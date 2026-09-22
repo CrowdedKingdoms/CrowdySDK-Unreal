@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <string>
 #include <thread>
 
 namespace crowdy::replication {
@@ -106,6 +107,7 @@ Status Connection::doAssign() {
   readyAtMs_ = clock_.monotonicMillis() + config_.sessionReadyWaitMs;
   lastRecvMs_ = 0;
   lastSendMs_ = 0;
+  lastCapsMs_ = 0;  // a new server knows nothing about us
   return Errc::Ok;
 }
 
@@ -400,6 +402,17 @@ Result<std::uint8_t> Connection::sendChannelMessage(std::int64_t channelId,
   return params.sequence;
 }
 
+Result<std::uint8_t> Connection::sendCapabilities() {
+  std::uint8_t flags[4];
+  le::writeU32(flags, wire::ClientCapability::kAll);
+  SpatialSend p;
+  p.chunk = wire::ChunkCoord{};
+  p.distance = 0;
+  p.decay = wire::DecayRate::None;
+  p.payload = Bytes(flags, sizeof(flags));
+  return sendLongSpatial(MessageType::ClientCapabilities, p);
+}
+
 Result<std::uint8_t> Connection::sendHeartbeat(const wire::ChunkCoord& chunk,
                                                const core::ActorUuid& uuid) {
   SpatialSend p;
@@ -439,6 +452,23 @@ void Connection::handleDatagram(Bytes datagram) {
   // each one is verified with the same key.
   const Credentials creds = credentials();
   const wire::Token64& token = creds.token;
+
+  // MESSAGE_BUNDLE_SIGNED (Buddy v0.30.0): one HMAC over the datagram, verified
+  // here (always -- it is one per datagram); its members carry none of their own,
+  // so verifyLongSpatial below sees containsAuth = 0 and passes them through.
+  const bool signedBundle =
+      !datagram.empty() && datagram[0] == static_cast<std::uint8_t>(MessageType::MessageBundleSigned);
+  if (signedBundle) {
+    {
+      std::lock_guard lock(statsMutex_);
+      ++stats_.signedBundlesReceived;
+    }
+    if (!wire::verifySignedBundle(crypto_, datagram, token, creds.mac.get()).ok()) {
+      std::lock_guard lock(statsMutex_);
+      ++stats_.hmacFailures;
+      return;
+    }
+  }
   Status bundleStatus = wire::forEachMessage(datagram, [&](Bytes message) {
     if (message.empty()) return;
     const std::uint8_t type = message[0];
@@ -458,6 +488,10 @@ void Connection::handleDatagram(Bytes datagram) {
         return;
       }
       e.kind = Event::Kind::Channel;
+    } else if (type == static_cast<std::uint8_t>(MessageType::ClientCapabilities)) {
+      // Client-originated. Sharing the long-spatial layout must not enqueue a
+      // server echo as a spatial notification; a client never expects one back.
+      return;
     } else if (wire::isLongSpatialLayout(type)) {
       auto parsed = wire::parseLongSpatial(message);
       if (!parsed.ok()) {
@@ -533,6 +567,17 @@ void Connection::housekeeping() {
   // Flip Connecting -> Connected once the session-ready wait elapses.
   if (state() == ConnState::Connecting && nowMono >= readyAtMs_) {
     setState(ConnState::Connected);
+  }
+
+  // Advertise what we can read (Buddy v0.30.0) once connected, then periodically.
+  if (config_.advertiseCapabilities && state() == ConnState::Connected &&
+      (lastCapsMs_ == 0 || nowMono - lastCapsMs_ >= config_.advertiseIntervalMs)) {
+    lastCapsMs_ = nowMono;
+    const auto sent = sendCapabilities();
+    if (!sent.ok() && logger_.enabled(core::LogLevel::Warn)) {
+      logger_.log(core::LogLevel::Warn,
+                  std::string("CLIENT_CAPABILITIES send failed: ") + errcName(sent.error()));
+    }
   }
 
   // Proactive token refresh.

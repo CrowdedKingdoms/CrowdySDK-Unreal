@@ -5,23 +5,50 @@
 
 #include "Data/CrowdyActorPoolBackendConfig.h"
 #include "Data/CrowdyRepApplicationPolicy.h"
+#include "Data/CrowdyTransformRepPolicy.h"
 #include "Data/FCrowdyPoolConfig.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Subsystems/CrowdyActorPoolSubsystem.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 
-bool UCrowdyActorPoolBackend::InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config)
+UCrowdyActorPoolBackendConfig* UCrowdyActorPoolBackend::ResolveConfig(UCrowdyRenderingBackendConfig* Config, UObject* Outer)
 {
-	// A missing or mismatched config is an ordinary authoring mistake rather than a programmer error, since
-	// this backend is what a profile that never chose one lands on. It is logged rather than ensured so a
-	// packaged build says the same thing an editor build does.
-	PoolConfig = Cast<UCrowdyActorPoolBackendConfig>(Config);
-	if (!IsValid(PoolConfig))
+	// A config of another backend's class is an authoring mistake, logged rather than ensured so a packaged
+	// build says the same thing an editor build does. No config at all is what the shipped default profile
+	// carries, and it runs on a transient one so a project that configured nothing still draws its entities.
+	if (UCrowdyActorPoolBackendConfig* PoolConfig = Cast<UCrowdyActorPoolBackendConfig>(Config))
+	{
+		return PoolConfig;
+	}
+	if (Config)
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyActorPoolBackend]: Backend Config is %s, but this backend needs a CrowdyActorPoolBackendConfig ")
-			TEXT("to know what to spawn. Set Backend Config on the map profile to a Crowdy Actor Pool Backend Config asset."),
-			Config ? *FString::Printf(TEXT("a %s"), *Config->GetClass()->GetName()) : TEXT("not set"));
+			TEXT("[CrowdyActorPoolBackend]: Backend Config is a %s, but this backend needs a CrowdyActorPoolBackendConfig ")
+			TEXT("to know what to spawn. Set Backend Config on the map profile to a Crowdy Actor Pool Backend Config."),
+			*Config->GetClass()->GetName());
+		return nullptr;
+	}
+	return NewObject<UCrowdyActorPoolBackendConfig>(Outer);
+}
+
+UClass* UCrowdyActorPoolBackend::ResolvePolicyClass(const UCrowdyActorPoolBackendConfig* Config)
+{
+	UClass* PolicyClass = Config ? Config->ReplicationPolicyClass.Get() : nullptr;
+	if (IsValid(PolicyClass))
+	{
+		return PolicyClass;
+	}
+	UE_CLOG(CrowdyReplicationTrace::Pool(), LogCrowdyReplication, Log,
+		TEXT("[CrowdyActorPoolBackend]: No Replication Policy Class on '%s'; using CrowdyTransformRepPolicy."),
+		*GetNameSafe(Config));
+	return UCrowdyTransformRepPolicy::StaticClass();
+}
+
+bool UCrowdyActorPoolBackend::InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config)
+{
+	PoolConfig = ResolveConfig(Config, this);
+	if (!PoolConfig)
+	{
 		return false;
 	}
 
@@ -33,16 +60,7 @@ bool UCrowdyActorPoolBackend::InitializeBackend(UWorld* World, UCrowdyRenderingB
 	if (!ensureMsgf(IsValid(EntitySubsystem), TEXT("[CrowdyActorPoolBackend]: CrowdyEntitySubsystem not found.")))
 		return false;
 
-	if (!IsValid(PoolConfig->ReplicationPolicyClass.Get()))
-	{
-		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyActorPoolBackend]: Replication Policy Class is not set on '%s', so nothing would read the ")
-			TEXT("state arriving for these entities. Set it to a CrowdyRepApplicationPolicy subclass."),
-			*GetNameSafe(PoolConfig));
-		return false;
-	}
-
-	Policy = NewObject<UCrowdyRepApplicationPolicy>(this, PoolConfig->ReplicationPolicyClass.Get());
+	Policy = NewObject<UCrowdyRepApplicationPolicy>(this, ResolvePolicyClass(PoolConfig));
 
 	// Pre-warm pools for classes listed in PerClassPoolOverrides so their actors are
 	// ready before the first entity of that class arrives, avoiding a frame spike.
@@ -145,7 +163,7 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 
 void UCrowdyActorPoolBackend::DeactivateInstance(int32 SlotId, const FGuid& UUID)
 {
-	// Owner entities never got a RemoteProxy record registered — don't remove their Owner record.
+	// Owner entities never got a RemoteProxy record registered, so do not remove their Owner record.
 	if (IsValid(EntitySubsystem))
 	{
 		const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(UUID);
@@ -202,6 +220,6 @@ void UCrowdyActorPoolBackend::EnsurePoolForClass(UClass* ActorClass)
 	Cfg.PoolPolicyClass  = IsValid(PoolConfig) ? PoolConfig->PoolPolicyClass : nullptr;
 	Cfg.PoolSize         = Size;
 
-	// RegisterPool is idempotent — silently returns if pool for ActorClass already exists.
+	// RegisterPool is idempotent: it returns if pool for ActorClass already exists.
 	ActorPool->RegisterPool(Cfg);
 }

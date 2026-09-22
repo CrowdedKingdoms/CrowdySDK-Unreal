@@ -82,7 +82,7 @@ public:
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyTeamMembership> Memberships);
+	void HandleSuccess(const TArray<FCrowdyTeamMembership>& Memberships);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };
@@ -135,7 +135,7 @@ public:
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyTeam> Teams);
+	void HandleSuccess(const TArray<FCrowdyTeam>& Teams);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };
@@ -161,7 +161,7 @@ private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	int64 TeamId = 0;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyTeamMember> Members);
+	void HandleSuccess(const TArray<FCrowdyTeamMember>& Members);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };
@@ -187,7 +187,7 @@ private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	int64 TeamId = 0;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyTeamRole> Roles);
+	void HandleSuccess(const TArray<FCrowdyTeamRole>& Roles);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };
@@ -240,7 +240,7 @@ private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	int64 TeamId = 0;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyTeamMember> Members);
+	void HandleSuccess(const TArray<FCrowdyTeamMember>& Members);
 	UFUNCTION()
 	void HandleError(FCrowdyTeamError Error, FString Message);
 };

@@ -33,7 +33,11 @@ struct TInterpolatedField
 	{
 		if (Count == 0) return Default;
 		if (Count == 1) return Values[PhysicalIndex(0)];
-		
+
+		// A render time behind the oldest sample holds that sample; extrapolating backwards from the newest
+		// pair would snap away from it and back again once the render clock catches up.
+		if (RenderTimeMs <= Timestamps[PhysicalIndex(0)]) return Values[PhysicalIndex(0)];
+
 		int32 Low = 0, High = Count - 2;
 
 		while (Low <= High)

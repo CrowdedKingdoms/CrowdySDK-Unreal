@@ -6,9 +6,8 @@
 #include "Queries/Data/Avatar/Types/FCrowdyAvatarError.h"
 #include "CrowdyAvatarsQueryActions.generated.h"
 
-// TArray<> cannot be used directly as a dynamic multicast delegate parameter —
-// Blueprint's event generator produces incorrect property flags for array params,
-// causing persistent "Signature Error" compilation failures. Wrap in a struct.
+// The result rides in a struct so the async node has one output pin; a by-value TArray delegate parameter
+// fails Blueprint compilation with "Signature Error", and a const TArray& is the alternative.
 
 USTRUCT(BlueprintType)
 struct CROWDYSERVICES_API FCrowdyAvatarList
@@ -58,7 +57,7 @@ public:
 private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyAvatar> Avatars);
+	void HandleSuccess(const TArray<FCrowdyAvatar>& Avatars);
 	UFUNCTION()
 	void HandleError(FCrowdyAvatarError Error, FString Message);
 };
@@ -110,7 +109,7 @@ private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	int64 UserId = 0;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyAvatar> Avatars);
+	void HandleSuccess(const TArray<FCrowdyAvatar>& Avatars);
 	UFUNCTION()
 	void HandleError(FCrowdyAvatarError Error, FString Message);
 };
@@ -163,7 +162,7 @@ private:
 	TWeakObjectPtr<UObject> WorldContextObject;
 	TArray<int64> AvatarIds;
 	UFUNCTION()
-	void HandleSuccess(TArray<FCrowdyAppAvatarState> AppStates);
+	void HandleSuccess(const TArray<FCrowdyAppAvatarState>& AppStates);
 	UFUNCTION()
 	void HandleError(FCrowdyAvatarError Error, FString Message);
 };

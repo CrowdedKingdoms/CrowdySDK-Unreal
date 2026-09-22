@@ -76,6 +76,14 @@ struct Config {
   /// mismatches (recommended; disable only for benchmarking).
   bool verifyNotifications = true;
 
+  /// Tell the server what this client can read (CLIENT_CAPABILITIES, Buddy
+  /// v0.30.0) once the session is ready and every advertiseIntervalMs after,
+  /// so downlink bundles arrive with one HMAC instead of one per member. A
+  /// server older than v0.30.0 ignores it. The repeat covers a token refresh
+  /// or a server-side migration, which reset the server's record silently.
+  bool advertiseCapabilities = true;
+  std::int64_t advertiseIntervalMs = 15 * 1000;
+
   /// Silent-drop watchdog: if >0 and we have received traffic before, going
   /// this long with sends flowing but nothing received triggers reassignment.
   /// Disabled by default (a lone player legitimately receives nothing).

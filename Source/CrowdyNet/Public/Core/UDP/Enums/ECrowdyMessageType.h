@@ -48,9 +48,15 @@ enum class ECrowdyMessageType : uint8
     // Says an actor is still present without restating its state. Carries the spatial header and nothing else, so
     // it costs a fraction of an actor update and is what an idle actor sends between full ones.
     CLIENT_ACTOR_HEARTBEAT = 26 UMETA(DisplayName = "Client Actor Heartbeat", Hidden),
-    
-    
-    
+
+    // Client->server: what this client can read, sent by the transport itself once connected and every 15 s after.
+    // The payload is a little-endian u32 of capability flags; bit 0 asks for MESSAGE_BUNDLE_SIGNED downlinks.
+    CLIENT_CAPABILITIES = 29 UMETA(DisplayName = "Client Capabilities", Hidden),
+
+    // Server->client: a MESSAGE_BUNDLE whose members carry no signature of their own, closed by one 32-byte HMAC
+    // over the whole datagram. Verified and unpacked by the transport, so no decoder ever sees this opcode.
+    MESSAGE_BUNDLE_SIGNED = 30 UMETA(DisplayName = "Message Bundle Signed", Hidden),
+
     ACTOR_UPDATE_REQUEST = 128 UMETA(DisplayName = "Actor Update Request", Hidden),
 
     // Retired. The server stopped answering an actor update and reports every failure as a generic error

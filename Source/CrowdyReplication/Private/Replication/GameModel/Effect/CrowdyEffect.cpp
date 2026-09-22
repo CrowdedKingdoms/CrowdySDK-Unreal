@@ -192,6 +192,19 @@ FCrowdyGameModelAutomationInput UCrowdyEffect::BuildAutomationInput(const FCrowd
 		OutTrigger = Trigger;
 		break;
 	}
+	case ECrowdyEffectAutomationTrigger::OnPlayerLeft:
+	case ECrowdyEffectAutomationTrigger::OnPlayerCountChanged:
+	{
+		// Neither presence event takes a filter: the server rejects a function, type or property filter on them.
+		Out.TriggerType = TEXT("event");
+		FCrowdyGameModelAutomationTriggerInput Trigger;
+		Trigger.AutomationName = Out.Name;
+		Trigger.OnEvent = Authoring.Trigger == ECrowdyEffectAutomationTrigger::OnPlayerLeft
+			? TEXT("player_left") : TEXT("player_count_changed");
+		Trigger.DebounceMs = Authoring.DebounceMs;
+		OutTrigger = Trigger;
+		break;
+	}
 	case ECrowdyEffectAutomationTrigger::EveryInterval:
 	default:
 		Out.TriggerType = TEXT("schedule");
@@ -723,6 +736,11 @@ EDataValidationResult UCrowdyEffect::IsDataValid(FDataValidationContext& Validat
 			}
 			break;
 		}
+		case ECrowdyEffectAutomationTrigger::OnPlayerLeft:
+		case ECrowdyEffectAutomationTrigger::OnPlayerCountChanged:
+			// The presence triggers take no filter, so there is nothing of theirs to validate. No default arm, so
+			// the next trigger added has to say what it validates.
+			break;
 		}
 
 		// Container and Global both run against one named container, and the server refuses an upsert that names

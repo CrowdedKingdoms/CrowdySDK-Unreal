@@ -27,7 +27,23 @@ enum class ECrowdyModelRowKind : uint8
 	Automation,
 
 	// One live container the server currently holds, as listed on the Live tab.
-	LiveInstance
+	LiveInstance,
+
+	// One attribute of one live container, with the value the server holds for it right now.
+	PropertyValue
+};
+
+// Whether one live instance's stored values can be read at all. An empty list of rows means something different
+// under each of these, and a surface that cannot tell them apart reports a server error as a design fact.
+enum class ECrowdyPropertyReadState : uint8
+{
+	// The read landed and the instance carries no values this token may see. The model may still declare attributes.
+	NoValues,
+
+	// The server sent something this editor cannot parse, or nested deeper than the parser's guard allows.
+	Unreadable,
+
+	Ok
 };
 
 // Where a row came from. Unknown means nobody has planned this app yet, or the entity's only author was one the
@@ -119,6 +135,19 @@ struct FCrowdyModelRow
 	// The key the live instance was ensured under. Empty when it was created outright, and for every other row
 	// kind.
 	FString Binding;
+
+	// A property row's value as a reader sees it: "84", "yes", "Knight of Ash", or the value's own JSON when it
+	// holds a structure. "not set" when the model declares the attribute and this instance carries no value for it.
+	// Empty for every other row kind.
+	FString Value;
+
+	// The same value as the server holds it, for the clipboard, and unbounded where Value is cut to a length a
+	// cell can carry. Empty when nothing is stored, so copying a not-set row copies nothing.
+	FString RawValue;
+
+	// Whether this property row carries a stored value. Out of band rather than read back off Value or RawValue:
+	// an attribute holding an empty string is a stored value and both of those are empty for it.
+	bool bHasValue = false;
 
 	ECrowdyModelProvenance Provenance = ECrowdyModelProvenance::Unknown;
 	ECrowdyModelDrift Drift = ECrowdyModelDrift::None;
@@ -254,6 +283,27 @@ namespace CrowdyModelLedger
 	// yields an empty string rather than an error or the raw input, because the strip has no room to explain
 	// itself and the raw JSON is exactly what this replaces.
 	FString FormatPropertySummary(const FString& PropertiesJson, int32 MaxEntries = 6);
+
+	// Whether a live instance's properties can be read at all, decided once so a surface can say which of the
+	// three it is showing rather than rendering an empty list over all of them.
+	ECrowdyPropertyReadState ClassifyPropertiesJson(const FString& PropertiesJson);
+
+	// One row per attribute of one live instance: every value the instance carries, and, when the model's declared
+	// attributes are known, a row for each declared attribute the instance has no value for.
+	//
+	// Defs is null when nobody has read the model's attributes yet, and that is a different answer from an empty
+	// array: an unread vocabulary cannot tell an attribute the model does not declare from one nobody looked up,
+	// so with null neither claim is made and no not-set row is invented. Reserved plumbing keys are excluded
+	// unless asked for.
+	//
+	// Rows carrying a value come first, then the not-set ones, each group by name: a reader opens this to see what
+	// the instance holds, and burying eight values among forty declared-but-empty rows answers a question nobody
+	// asked first.
+	TArray<FCrowdyModelRow> BuildPropertyRows(
+		const FString& PropertiesJson,
+		const TArray<TSharedPtr<FStudioPropertyDef>>* Defs,
+		const FCrowdyModelSnapshot* Snapshot = nullptr,
+		bool bIncludeReserved = false);
 
 	// Whether one provenance survives a source setting. Unknown survives all three; see ECrowdyModelSourceFilter.
 	bool MatchesSourceFilter(ECrowdyModelProvenance Provenance, ECrowdyModelSourceFilter Filter);

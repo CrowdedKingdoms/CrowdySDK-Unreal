@@ -280,6 +280,12 @@ namespace CrowdyReplicationTestSupport
 		bool bBundleSends = true;
 
 		/**
+		 * Off by default: the connection would otherwise put a CLIENT_CAPABILITIES datagram on the wire the moment
+		 * it connects, and every test that counts datagrams would count it. The test about it turns it on.
+		 */
+		bool bAdvertiseCapabilities = false;
+
+		/**
 		 * A test that deliberately provokes a re-assignment should pass zero for the floor, so the re-assignment
 		 * completes instead of waiting out several seconds and then reporting a failure when the test tears down.
 		 */
@@ -300,6 +306,7 @@ namespace CrowdyReplicationTestSupport
 			Config.WatchdogSilenceMs = 0;
 			Config.MinReassignIntervalMs = MinReassignIntervalMs;
 			Config.bBundleSends = bBundleSends;
+			Config.bAdvertiseCapabilities = bAdvertiseCapabilities;
 
 			Connection = FCrowdyCppReplication::Make(Config, AssignTo(Server.Port), NeverRefresh());
 			if (!Connection.IsValid())

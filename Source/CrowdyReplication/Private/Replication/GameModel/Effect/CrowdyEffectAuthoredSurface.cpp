@@ -33,15 +33,19 @@ namespace
 
 	// Reads an enum that was stored as its integer value, refusing anything outside the declared range. A payload
 	// travels on disk and can arrive corrupted or hand-edited, and an out-of-range value cast straight to an enum is
-	// a value no switch has a case for, so it falls back to the field's own default instead.
+	// a value no switch has a case for, so it falls back to the field's own default instead. The range comes from
+	// the enum's own reflection, never from a literal: a literal is right on the day it is written and silently
+	// turns every value added later into the fallback, which a sync then deploys as the wrong trigger.
 	template <typename TEnum>
-	TEnum ReadEnum(const TSharedPtr<FJsonObject>& Object, const TCHAR* Key, int32 NumValues, TEnum Fallback)
+	TEnum ReadEnum(const TSharedPtr<FJsonObject>& Object, const TCHAR* Key, TEnum Fallback)
 	{
 		int32 Value = 0;
 		if (!Object.IsValid() || !Object->TryGetNumberField(Key, Value))
 		{
 			return Fallback;
 		}
+		// NumEnums counts the generated _MAX entry.
+		const int32 NumValues = StaticEnum<TEnum>()->NumEnums() - 1;
 		return (Value >= 0 && Value < NumValues) ? static_cast<TEnum>(Value) : Fallback;
 	}
 
@@ -105,9 +109,9 @@ namespace
 		{
 			return Operand;
 		}
-		Operand.Kind = ReadEnum(Object, TEXT("k"), 7, ECrowdyEffectOperandKind::Number);
+		Operand.Kind = ReadEnum(Object, TEXT("k"), ECrowdyEffectOperandKind::Number);
 		Operand.Literal = ReadString(Object, TEXT("lit"));
-		Operand.Role = ReadEnum(Object, TEXT("role"), 2, ECrowdyEffectRole::Source);
+		Operand.Role = ReadEnum(Object, TEXT("role"), ECrowdyEffectRole::Source);
 		Operand.Name = ReadString(Object, TEXT("name"));
 		Operand.If.Condition = ReadString(Object, TEXT("ifc"));
 		Operand.If.Then = ReadString(Object, TEXT("ift"));
@@ -203,9 +207,9 @@ namespace
 					continue;
 				}
 				FCrowdyEffectAssignmentSpec Assignment;
-				Assignment.TargetRole = ReadEnum(*EntryObject, TEXT("role"), 2, ECrowdyEffectRole::Target);
+				Assignment.TargetRole = ReadEnum(*EntryObject, TEXT("role"), ECrowdyEffectRole::Target);
 				Assignment.Attribute = ReadString(*EntryObject, TEXT("attr"));
-				Assignment.Operator = ReadEnum(*EntryObject, TEXT("op"), 5, ECrowdyEffectAssignmentOp::Subtract);
+				Assignment.Operator = ReadEnum(*EntryObject, TEXT("op"), ECrowdyEffectAssignmentOp::Subtract);
 
 				const TArray<TSharedPtr<FJsonValue>>* Terms = nullptr;
 				if ((*EntryObject)->TryGetArrayField(TEXT("val"), Terms) && Terms)
@@ -218,7 +222,7 @@ namespace
 							continue;
 						}
 						FCrowdyEffectTerm Term;
-						Term.Op = ReadEnum(*TermObject, TEXT("op"), 4, ECrowdyEffectBinaryOp::Add);
+						Term.Op = ReadEnum(*TermObject, TEXT("op"), ECrowdyEffectBinaryOp::Add);
 						if (const TSharedPtr<FJsonObject>* OperandObject = GetObjectField(*TermObject, TEXT("od")))
 						{
 							Term.Operand = ReadOperand(*OperandObject);
@@ -241,13 +245,13 @@ namespace
 					continue;
 				}
 				FCrowdyEffectRequireSpec Require;
-				Require.Kind = ReadEnum(*EntryObject, TEXT("kind"), 2, ECrowdyEffectRequireKind::Keyword);
-				Require.Keyword = ReadEnum(*EntryObject, TEXT("kw"), 6, ECrowdyEffectPolicyKeyword::Owner);
+				Require.Kind = ReadEnum(*EntryObject, TEXT("kind"), ECrowdyEffectRequireKind::Keyword);
+				Require.Keyword = ReadEnum(*EntryObject, TEXT("kw"), ECrowdyEffectPolicyKeyword::Owner);
 				if (const TSharedPtr<FJsonObject>* Left = GetObjectField(*EntryObject, TEXT("l")))
 				{
 					Require.Left = ReadOperand(*Left);
 				}
-				Require.Comparator = ReadEnum(*EntryObject, TEXT("cmp"), 6, ECrowdyEffectComparator::GreaterOrEqual);
+				Require.Comparator = ReadEnum(*EntryObject, TEXT("cmp"), ECrowdyEffectComparator::GreaterOrEqual);
 				if (const TSharedPtr<FJsonObject>* Right = GetObjectField(*EntryObject, TEXT("r")))
 				{
 					Require.Right = ReadOperand(*Right);
@@ -299,15 +303,15 @@ namespace
 		}
 		Automation.bRunAutomatically = ReadBool(Object, TEXT("run"), Automation.bRunAutomatically);
 		Automation.bEnabled = ReadBool(Object, TEXT("en"), Automation.bEnabled);
-		Automation.Trigger = ReadEnum(Object, TEXT("trig"), 4, Automation.Trigger);
+		Automation.Trigger = ReadEnum(Object, TEXT("trig"), Automation.Trigger);
 		Automation.IntervalMs = ReadInt(Object, TEXT("ms"), Automation.IntervalMs);
 		Automation.CronExpr = ReadString(Object, TEXT("cron"));
 		Automation.ChangePropertyKey = ReadString(Object, TEXT("propKey"));
-		Automation.WriteSource = ReadEnum(Object, TEXT("ws"), 3, Automation.WriteSource);
+		Automation.WriteSource = ReadEnum(Object, TEXT("ws"), Automation.WriteSource);
 		Automation.WatchFunctionName = ReadString(Object, TEXT("watchFn"));
 		Automation.ChangeContainerType = ReadString(Object, TEXT("changeType"));
 		Automation.DebounceMs = ReadInt(Object, TEXT("debounce"), Automation.DebounceMs);
-		Automation.TargetMode = ReadEnum(Object, TEXT("tmode"), 3, Automation.TargetMode);
+		Automation.TargetMode = ReadEnum(Object, TEXT("tmode"), Automation.TargetMode);
 		Automation.TargetTypeOverride = ReadString(Object, TEXT("ttype"));
 		Automation.TargetContainerId = ReadString(Object, TEXT("tcid"));
 		Automation.AutomationName = ReadString(Object, TEXT("name"));
@@ -482,7 +486,7 @@ bool CrowdyEffectAuthoredSurface::FromJson(const FString& Json, FCrowdyEffectAut
 	OutSurface.Description = ReadString(Root, TEXT("desc"));
 	OutSurface.ContainerClassPath = ReadString(Root, TEXT("class"));
 	OutSurface.SourceContainerType = ReadString(Root, TEXT("srcType"));
-	OutSurface.Source = ReadEnum(Root, TEXT("surf"), 2, ECrowdyEffectSource::Text);
+	OutSurface.Source = ReadEnum(Root, TEXT("surf"), ECrowdyEffectSource::Text);
 	OutSurface.ScriptText = ReadString(Root, TEXT("script"));
 	if (const TSharedPtr<FJsonObject>* Spec = GetObjectField(Root, TEXT("spec")))
 	{
@@ -580,7 +584,7 @@ bool CrowdyEffectAuthoredSurface::FromJson(const FString& Json, FCrowdyEffectAut
 
 	OutSurface.ReturnType = ReadString(Root, TEXT("ret"));
 	OutSurface.InvokeScope = ReadString(Root, TEXT("scope"));
-	OutSurface.NotificationCarrier = ReadEnum(Root, TEXT("carrier"), 4, ECrowdyEffectNotificationCarrier::Default);
+	OutSurface.NotificationCarrier = ReadEnum(Root, TEXT("carrier"), ECrowdyEffectNotificationCarrier::Default);
 	if (const TSharedPtr<FJsonObject>* Automation = GetObjectField(Root, TEXT("auto")))
 	{
 		OutSurface.Automation = ReadAutomation(*Automation);

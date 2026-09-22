@@ -27,10 +27,10 @@ void UCrowdyTeams_GetMyTeams::Activate()
 	Teams->GetMyTeams(S, E);
 }
 
-void UCrowdyTeams_GetMyTeams::HandleSuccess(TArray<FCrowdyTeamMembership> Memberships)
+void UCrowdyTeams_GetMyTeams::HandleSuccess(const TArray<FCrowdyTeamMembership>& Memberships)
 {
 	FCrowdyMyTeamsResult Result;
-	Result.Memberships = MoveTemp(Memberships);
+	Result.Memberships = Memberships;
 	OnSuccess.Broadcast(Result);
 	SetReadyToDestroy();
 }
@@ -105,10 +105,10 @@ void UCrowdyTeams_GetTeams::Activate()
 	Teams->GetTeams(S, E);
 }
 
-void UCrowdyTeams_GetTeams::HandleSuccess(TArray<FCrowdyTeam> Teams)
+void UCrowdyTeams_GetTeams::HandleSuccess(const TArray<FCrowdyTeam>& Teams)
 {
 	FCrowdyTeamsResult Result;
-	Result.Teams = MoveTemp(Teams);
+	Result.Teams = Teams;
 	OnSuccess.Broadcast(Result);
 	SetReadyToDestroy();
 }
@@ -146,10 +146,10 @@ void UCrowdyTeams_GetTeamMembers::Activate()
 	Teams->GetTeamMembers(TeamId, S, E);
 }
 
-void UCrowdyTeams_GetTeamMembers::HandleSuccess(TArray<FCrowdyTeamMember> Members)
+void UCrowdyTeams_GetTeamMembers::HandleSuccess(const TArray<FCrowdyTeamMember>& Members)
 {
 	FCrowdyTeamMembersResult Result;
-	Result.Members = MoveTemp(Members);
+	Result.Members = Members;
 	OnSuccess.Broadcast(Result);
 	SetReadyToDestroy();
 }
@@ -187,10 +187,10 @@ void UCrowdyTeams_GetTeamRoles::Activate()
 	Teams->GetTeamRoles(TeamId, S, E);
 }
 
-void UCrowdyTeams_GetTeamRoles::HandleSuccess(TArray<FCrowdyTeamRole> Roles)
+void UCrowdyTeams_GetTeamRoles::HandleSuccess(const TArray<FCrowdyTeamRole>& Roles)
 {
 	FCrowdyTeamRolesResult Result;
-	Result.Roles = MoveTemp(Roles);
+	Result.Roles = Roles;
 	OnSuccess.Broadcast(Result);
 	SetReadyToDestroy();
 }
@@ -267,10 +267,10 @@ void UCrowdyTeams_GetPendingJoinRequests::Activate()
 	Teams->GetPendingJoinRequests(TeamId, S, E);
 }
 
-void UCrowdyTeams_GetPendingJoinRequests::HandleSuccess(TArray<FCrowdyTeamMember> Members)
+void UCrowdyTeams_GetPendingJoinRequests::HandleSuccess(const TArray<FCrowdyTeamMember>& Members)
 {
 	FCrowdyTeamMembersResult Result;
-	Result.Members = MoveTemp(Members);
+	Result.Members = Members;
 	OnSuccess.Broadcast(Result);
 	SetReadyToDestroy();
 }

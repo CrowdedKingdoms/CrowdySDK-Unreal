@@ -220,6 +220,74 @@ bool FCrowdyEffectAutomationOnFunctionInvokedExplicitTypeTest::RunTest(const FSt
 	return true;
 }
 
+// A player-left effect compiles to an event automation whose trigger names player_left and carries no filter at
+// all: the server rejects a function, type or property filter on a presence event, so a stray one authored on the
+// asset (the property key here) must not leak onto the wire.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectAutomationOnPlayerLeftTest,
+	"CrowdySDK.Replication.EffectAutomationOnPlayerLeft", CrowdyEffectAutomationTestFlags)
+bool FCrowdyEffectAutomationOnPlayerLeftTest::RunTest(const FString& Parameters)
+{
+	ExpectDiscoveryErrors(*this, 1);
+
+	UCrowdyEffect* Effect = MakeAutomaticEffect();
+	Effect->AutomationTrigger = ECrowdyEffectAutomationTrigger::OnPlayerLeft;
+	Effect->AutomationChangePropertyKey = TEXT("health");
+	Effect->AutomationChangeContainerType = TEXT("BossCharacter");
+	Effect->AutomationWatchFunctionName = TEXT("initiate_boss_wave");
+	Effect->AutomationDebounceMs = 250;
+
+	const FCrowdyEffectLoweringResult R = Effect->Compile();
+
+	TestFalse(TEXT("no compile errors"), R.HasErrors());
+	TestTrue(TEXT("function is autonomous-invocable"), R.Function.bAutonomousInvocable);
+
+	if (TestTrue(TEXT("automation is set"), R.Automation.IsSet()))
+	{
+		TestEqual(TEXT("automation trigger type is event"), R.Automation.GetValue().TriggerType, FString(TEXT("event")));
+	}
+
+	if (TestTrue(TEXT("event trigger is set"), R.Trigger.IsSet()))
+	{
+		const FCrowdyGameModelAutomationTriggerInput& T = R.Trigger.GetValue();
+		TestEqual(TEXT("trigger automation name"), T.AutomationName, FString(TEXT("hero_tick")));
+		TestEqual(TEXT("on event"), T.OnEvent, FString(TEXT("player_left")));
+		TestTrue(TEXT("no function filter on a presence event"), T.FunctionName.IsEmpty());
+		TestTrue(TEXT("no container type filter on a presence event"), T.ContainerTypeName.IsEmpty());
+		TestTrue(TEXT("no property key on a presence event"), T.PropertyKey.IsEmpty());
+		TestTrue(TEXT("no write source on a presence event"), T.WriteSource.IsEmpty());
+		TestEqual(TEXT("debounce carried"), T.DebounceMs, 250);
+	}
+	return true;
+}
+
+// The player-count trigger is the other presence event, with the same no-filter shape.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectAutomationOnPlayerCountChangedTest,
+	"CrowdySDK.Replication.EffectAutomationOnPlayerCountChanged", CrowdyEffectAutomationTestFlags)
+bool FCrowdyEffectAutomationOnPlayerCountChangedTest::RunTest(const FString& Parameters)
+{
+	ExpectDiscoveryErrors(*this, 1);
+
+	UCrowdyEffect* Effect = MakeAutomaticEffect();
+	Effect->AutomationTrigger = ECrowdyEffectAutomationTrigger::OnPlayerCountChanged;
+	Effect->AutomationChangePropertyKey = TEXT("health");
+
+	const FCrowdyEffectLoweringResult R = Effect->Compile();
+
+	TestFalse(TEXT("no compile errors"), R.HasErrors());
+	if (TestTrue(TEXT("event trigger is set"), R.Trigger.IsSet()))
+	{
+		const FCrowdyGameModelAutomationTriggerInput& T = R.Trigger.GetValue();
+		TestEqual(TEXT("on event"), T.OnEvent, FString(TEXT("player_count_changed")));
+		TestTrue(TEXT("no property key on a presence event"), T.PropertyKey.IsEmpty());
+		TestTrue(TEXT("no container type filter on a presence event"), T.ContainerTypeName.IsEmpty());
+	}
+	if (TestTrue(TEXT("automation is set"), R.Automation.IsSet()))
+	{
+		TestEqual(TEXT("automation trigger type is event"), R.Automation.GetValue().TriggerType, FString(TEXT("event")));
+	}
+	return true;
+}
+
 // A cron effect compiles to a schedule/cron automation carrying the cron expression and no event trigger.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectAutomationCronTest,
 	"CrowdySDK.Replication.EffectAutomationCron", CrowdyEffectAutomationTestFlags)
