@@ -244,6 +244,144 @@ namespace
 			return TEXT("nothing");
 		}
 	}
+
+	// What a property row shows where the instance carries no value for an attribute its model declares. Not the
+	// same answer as a stored null, which is a value the instance does hold.
+	const TCHAR* ModelLedgerNotSetText = TEXT("not set");
+
+	// The longest a value may run inside a property cell. The cell ellipsizes and its tooltip repeats that same
+	// text, so this bounds the tooltip too; the clipboard copy is never cut.
+	constexpr int32 ModelLedgerMaxPropertyValueChars = 400;
+
+	FString ModelLedgerBoundValue(const FString& Value)
+	{
+		return Value.Len() <= ModelLedgerMaxPropertyValueChars
+			? Value
+			: Value.Left(ModelLedgerMaxPropertyValueChars) + TEXT("...");
+	}
+
+	FString ModelLedgerCompactJson(const TSharedPtr<FJsonValue>& Value)
+	{
+		FString Text;
+		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Text);
+
+		if (Value->Type == EJson::Object)
+		{
+			const TSharedPtr<FJsonObject>* Object = nullptr;
+			if (Value->TryGetObject(Object) && Object && Object->IsValid())
+			{
+				FJsonSerializer::Serialize(Object->ToSharedRef(), Writer);
+			}
+			return Text;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+		if (Value->TryGetArray(Items) && Items)
+		{
+			FJsonSerializer::Serialize(*Items, Writer);
+		}
+		return Text;
+	}
+
+	// One stored value as a reader sees it, and the same value for the clipboard. A structure is rendered as its
+	// own JSON rather than named, because a reader opening a live instance wants what is inside it and
+	// "structured data" is not one of the things inside it.
+	FString ModelLedgerPropertyValueText(const TSharedPtr<FJsonValue>& Value, FString& OutRaw)
+	{
+		OutRaw.Reset();
+		if (!Value.IsValid())
+		{
+			return TEXT("none");
+		}
+
+		switch (Value->Type)
+		{
+		case EJson::Boolean:
+			OutRaw = Value->AsBool() ? TEXT("true") : TEXT("false");
+			return Value->AsBool() ? TEXT("yes") : TEXT("no");
+
+		case EJson::Number:
+			OutRaw = FString::SanitizeFloat(Value->AsNumber(), 0);
+			return OutRaw;
+
+		case EJson::String:
+			OutRaw = Value->AsString();
+			// An attribute holding an empty string is not an attribute with no value, and a blank cell cannot say
+			// which of the two the reader is looking at.
+			return OutRaw.IsEmpty() ? TEXT("empty") : ModelLedgerBoundValue(OutRaw);
+
+		case EJson::Object:
+		case EJson::Array:
+			OutRaw = ModelLedgerCompactJson(Value);
+			return ModelLedgerBoundValue(OutRaw);
+
+		default:
+			// A stored null. It is a value the instance holds, so it is never phrased as the absence of one.
+			return TEXT("none");
+		}
+	}
+
+	// What kind of thing a stored value is, read off the value itself. Used only where the model's own declaration
+	// is unavailable: it describes what arrived, and never claims to be what the model declares.
+	FString ModelLedgerInferredTypeLabel(const TSharedPtr<FJsonValue>& Value)
+	{
+		if (!Value.IsValid())
+		{
+			return FString();
+		}
+
+		switch (Value->Type)
+		{
+		case EJson::Boolean:
+			return CrowdyModelVocabulary::ValueTypeLabel(TEXT("bool"));
+
+		case EJson::Number:
+		{
+			// Every number crosses the wire as a double, so a whole one is reported as a whole number rather than
+			// as a decimal that happens to have nothing after the point.
+			const double Number = Value->AsNumber();
+			const bool bWhole = FMath::IsNearlyEqual(Number, FMath::RoundToDouble(Number));
+			return CrowdyModelVocabulary::ValueTypeLabel(bWhole ? TEXT("int") : TEXT("float"));
+		}
+
+		case EJson::String:
+			return CrowdyModelVocabulary::ValueTypeLabel(TEXT("string"));
+
+		case EJson::Object:
+			return CrowdyModelVocabulary::ValueTypeLabel(TEXT("object"));
+
+		case EJson::Array:
+			return CrowdyModelVocabulary::ValueTypeLabel(TEXT("array"));
+
+		default:
+			return FString();
+		}
+	}
+
+	// The def declaring this key, or null. A server key is case-significant and the map behind a JSON object is
+	// not, so the match is spelled out rather than taken from a lookup.
+	const FStudioPropertyDef* ModelLedgerFindDef(
+		const TArray<TSharedPtr<FStudioPropertyDef>>& Defs, const FString& Key)
+	{
+		for (const TSharedPtr<FStudioPropertyDef>& Def : Defs)
+		{
+			if (Def.IsValid() && Def->Key.Equals(Key, ESearchCase::CaseSensitive))
+			{
+				return Def.Get();
+			}
+		}
+		return nullptr;
+	}
+
+	void ModelLedgerSortPropertyRows(TArray<FCrowdyModelRow>& Rows)
+	{
+		Rows.Sort([](const FCrowdyModelRow& A, const FCrowdyModelRow& B)
+		{
+			const int32 ByLabel = A.DisplayLabel().Compare(B.DisplayLabel(), ESearchCase::IgnoreCase);
+			return ByLabel != 0 ? ByLabel < 0 : A.Name.Compare(B.Name, ESearchCase::IgnoreCase) < 0;
+		});
+	}
 }
 
 bool CrowdyModelLedger::IsReservedAttribute(const FString& Key)
@@ -950,6 +1088,149 @@ FString CrowdyModelLedger::FormatPropertySummary(const FString& PropertiesJson, 
 		Summary += FString::Printf(TEXT("and %d more"), Remaining);
 	}
 	return Summary;
+}
+
+ECrowdyPropertyReadState CrowdyModelLedger::ClassifyPropertiesJson(const FString& PropertiesJson)
+{
+	const FString Trimmed = PropertiesJson.TrimStartAndEnd();
+	if (Trimmed.IsEmpty())
+	{
+		return ECrowdyPropertyReadState::NoValues;
+	}
+
+	if (!CrowdyJsonSafety::IsNestingWithinLimit(Trimmed))
+	{
+		return ECrowdyPropertyReadState::Unreadable;
+	}
+
+	TSharedPtr<FJsonObject> Root;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Trimmed);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+	{
+		return ECrowdyPropertyReadState::Unreadable;
+	}
+
+	return Root->Values.Num() > 0 ? ECrowdyPropertyReadState::Ok : ECrowdyPropertyReadState::NoValues;
+}
+
+TArray<FCrowdyModelRow> CrowdyModelLedger::BuildPropertyRows(
+	const FString& PropertiesJson,
+	const TArray<TSharedPtr<FStudioPropertyDef>>* Defs,
+	const FCrowdyModelSnapshot* Snapshot,
+	bool bIncludeReserved)
+{
+	TArray<FCrowdyModelRow> Stored;
+	TArray<FCrowdyModelRow> NotSet;
+
+	// Nothing about the instance may be claimed from a payload that could not be read, the declared attributes
+	// included: every one of them would otherwise be reported as carrying no value.
+	if (ClassifyPropertiesJson(PropertiesJson) == ECrowdyPropertyReadState::Unreadable)
+	{
+		return Stored;
+	}
+
+	TSharedPtr<FJsonObject> Root;
+	const FString Trimmed = PropertiesJson.TrimStartAndEnd();
+	if (!Trimmed.IsEmpty())
+	{
+		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Trimmed);
+		if (!FJsonSerializer::Deserialize(Reader, Root))
+		{
+			Root.Reset();
+		}
+	}
+
+	// The model this instance is of, taken from the defs, so an authored spelling can be looked up in the plan.
+	FString OwningType;
+	if (Defs)
+	{
+		for (const TSharedPtr<FStudioPropertyDef>& Def : *Defs)
+		{
+			if (Def.IsValid())
+			{
+				OwningType = Def->ContainerTypeName;
+				break;
+			}
+		}
+	}
+
+	auto StartRow = [Snapshot, &OwningType](const FString& Key, const FStudioPropertyDef* Def)
+	{
+		FCrowdyModelRow Row;
+		Row.Kind = ECrowdyModelRowKind::PropertyValue;
+		Row.Name = Key;
+		Row.OwningType = Def ? Def->ContainerTypeName : OwningType;
+		Row.Primary = Key;
+		Row.Display = CrowdyModelVocabulary::AttributeDisplayName(
+			Key, ModelLedgerAuthoredAttributeName(Snapshot, Row.OwningType, Key));
+		Row.Detail = Def ? Def->Description : FString();
+		return Row;
+	};
+
+	if (Root.IsValid())
+	{
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Property : Root->Values)
+		{
+			// The revision key and its kin are plumbing the runtime keeps for itself, so they are out of the way
+			// unless a reader asks to see them.
+			if (!bIncludeReserved && IsReservedAttribute(Property.Key))
+			{
+				continue;
+			}
+
+			const FStudioPropertyDef* Def = Defs ? ModelLedgerFindDef(*Defs, Property.Key) : nullptr;
+
+			FCrowdyModelRow Row = StartRow(Property.Key, Def);
+			Row.bHasValue = true;
+			Row.Value = ModelLedgerPropertyValueText(Property.Value, Row.RawValue);
+			// The model's own declaration wins; without one the value is described by what arrived, which says
+			// what it is without claiming the model declares it.
+			Row.Secondary = Def
+				? CrowdyModelVocabulary::ValueTypeLabel(Def->ValueType)
+				: ModelLedgerInferredTypeLabel(Property.Value);
+			// Only sayable where the model's attributes are known: with none read, an attribute nobody looked up
+			// and an attribute the model does not have look exactly alike.
+			if (!Def && Defs)
+			{
+				Row.Detail = TEXT("This model does not declare this attribute.");
+			}
+			Row.SearchKey = MakeSearchKey({ Row.Name, Row.Display, Row.Value, Row.Secondary, Row.Detail });
+			Stored.Add(MoveTemp(Row));
+		}
+	}
+
+	if (Defs)
+	{
+		for (const TSharedPtr<FStudioPropertyDef>& Def : *Defs)
+		{
+			if (!Def.IsValid() || (!bIncludeReserved && IsReservedAttribute(Def->Key)))
+			{
+				continue;
+			}
+			// A JSON object is backed by a case-insensitive map, so whether the instance carries this exact key is
+			// answered by walking the rows just built rather than by looking it up.
+			const bool bCarried = Stored.ContainsByPredicate([&Def](const FCrowdyModelRow& Row)
+			{
+				return Row.Name.Equals(Def->Key, ESearchCase::CaseSensitive);
+			});
+			if (bCarried)
+			{
+				continue;
+			}
+
+			FCrowdyModelRow Row = StartRow(Def->Key, Def.Get());
+			Row.Value = ModelLedgerNotSetText;
+			Row.Secondary = CrowdyModelVocabulary::ValueTypeLabel(Def->ValueType);
+			Row.SearchKey = MakeSearchKey({ Row.Name, Row.Display, Row.Value, Row.Secondary, Row.Detail });
+			NotSet.Add(MoveTemp(Row));
+		}
+	}
+
+	ModelLedgerSortPropertyRows(Stored);
+	ModelLedgerSortPropertyRows(NotSet);
+
+	Stored.Append(MoveTemp(NotSet));
+	return Stored;
 }
 
 TArray<FCrowdyModelSummary> CrowdyModelLedger::FilterModels(

@@ -119,7 +119,10 @@ void SCrowdyGameModelView::Construct(const FArguments& InArgs)
 		[ SNew(SCrowdyReconcileStrip).Controller(Controller) ]
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
-		[ SNew(SCrowdyPreSeedCard).Controller(Controller) ]
+		[
+			SNew(SCrowdyPreSeedCard).Controller(Controller)
+			.Visibility(this, &SCrowdyGameModelView::GetPreSeedCardVisibility)
+		]
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
 		[
@@ -246,6 +249,13 @@ bool SCrowdyGameModelView::HasModelIssues() const
 	static const FStudioLintReport Never;
 	const FStudioLintReport& Report = Controller.IsValid() ? Controller->GetGameModelLintReport() : Never;
 	return CrowdyLintTabStateFor(Report) == ECrowdyLintTabState::HasFindings;
+}
+
+EVisibility SCrowdyGameModelView::GetPreSeedCardVisibility() const
+{
+	// A collapsed child takes no height and no padding from the box, so the Live tab gets the whole card's band
+	// back for its instance list and values.
+	return CrowdyPreSeedCardBelongsOnTab(ActiveTab) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 bool SCrowdyGameModelView::IsTabAvailable(const FString& TabKey) const
