@@ -121,6 +121,9 @@ struct FCrowdyStudioControllerTestAccess
 		Controller.ContainerState.ContainerId = TEXT("container-1");
 		Controller.ContainerState.bValid = true;
 		Controller.SelectedContainerId = TEXT("container-1");
+		// The read that filled it. Left behind, the values panel under the new app reports the previous app's
+		// instance as read and lays out an empty instance where it should be saying nothing has been asked for.
+		Controller.ContainerStateLoad = ECrowdyModelLoadState::Loaded;
 
 		// The filters and the page the live list was last read at. All of it describes one app's read, so leaving
 		// any of it behind would re-list the next app at another app's filters and page.

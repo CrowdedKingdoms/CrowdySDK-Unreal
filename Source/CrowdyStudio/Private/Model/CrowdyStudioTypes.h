@@ -387,6 +387,14 @@ inline ECrowdyLintTabState CrowdyLintTabStateFor(const FStudioLintReport& Report
 	return Report.Findings.Num() > 0 ? ECrowdyLintTabState::HasFindings : ECrowdyLintTabState::Clean;
 }
 
+// Whether the Game Model page's pre-seed card belongs over the given tab. It creates the containers a map's
+// placed entities will bind, which is authoring work: over the Live tab it is a row of controls nobody there
+// presses, and the height it holds comes out of the instance list and the values below it.
+inline bool CrowdyPreSeedCardBelongsOnTab(const FString& TabKey)
+{
+	return TabKey != TEXT("live");
+}
+
 // A live runtime container instance (an entity the runtime has spawned), as listed by
 // gameModelContainers. Read-only; used by the Inspector-style live-state browser.
 struct FStudioContainer

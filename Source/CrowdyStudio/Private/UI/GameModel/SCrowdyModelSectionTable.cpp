@@ -33,6 +33,9 @@ namespace CrowdyModelTableColumns
 	const FName Session("Session");
 	const FName Binding("Binding");
 
+	const FName Value("Value");
+	const FName Holds("Holds");
+
 	TArray<FCrowdyModelColumn> ModelSectionColumns(const FText& DetailLabel)
 	{
 		TArray<FCrowdyModelColumn> Columns;

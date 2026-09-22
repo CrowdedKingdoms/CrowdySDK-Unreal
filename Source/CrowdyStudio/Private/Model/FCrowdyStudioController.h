@@ -191,7 +191,10 @@ public:
 	// anything renders. A request already in flight for the same type is coalesced onto the one round-trip, unless
 	// bForceRefresh is set: a write to the type has to re-read it, and the read already in flight was issued before
 	// that write, so it would answer with the pre-write list.
-	void FetchPropertyDefs(const FString& TypeName, bool bForceRefresh = false);
+	//
+	// bClaimMirror false reads the type into the per-type cache without pointing the flat mirror at it, for a view
+	// that needs a model's vocabulary while another view is showing a different model's attributes from the mirror.
+	void FetchPropertyDefs(const FString& TypeName, bool bForceRefresh = false, bool bClaimMirror = true);
 	// ExpectedAppId as on UpsertContainerType above, and for the same reason.
 	void UpsertPropertyDef(const FString& TypeName, const FString& Key, const FString& ValueType,
 		const FString& DefaultValueJson, const FString& Visibility, const FString& Writable, const FString& Description,
@@ -521,6 +524,9 @@ public:
 	bool ContainersMayHaveMore() const { return bContainersMayHaveMore; }
 	const FStudioContainerState& GetContainerState() const { return ContainerState; }
 	const FString& GetSelectedContainerId() const { return SelectedContainerId; }
+	// What the read behind GetContainerState is doing. An invalid state means four different things and a
+	// surface that cannot tell them apart shows a failed read as an instance with nothing in it.
+	ECrowdyModelLoadState GetContainerStateLoad() const { return ContainerStateLoad; }
 
 	bool IsSignedIn() const { return bSignedIn; }
 
@@ -1106,6 +1112,7 @@ private:
 	TArray<TSharedPtr<FStudioContainer>> Containers;
 	FStudioContainerState ContainerState;
 	FString SelectedContainerId;
+	ECrowdyModelLoadState ContainerStateLoad = ECrowdyModelLoadState::NeverRequested;
 	// The filters and page the last FetchContainers call used, so DeleteContainer's re-list reproduces what is on
 	// screen instead of silently widening to every container for the app or narrowing to the last page loaded.
 	FString LastContainerTypeFilter;
