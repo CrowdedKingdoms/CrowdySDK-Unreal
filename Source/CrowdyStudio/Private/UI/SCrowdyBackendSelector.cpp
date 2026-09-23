@@ -30,11 +30,11 @@ void SCrowdyBackendSelector::Construct(const FArguments& InArgs)
 			[
 				CrowdyStudioWidgets::Field(LOCTEXT("BackendModeLabel", "Crowdy backend"),
 					CrowdyStudioWidgets::SegmentedEnum(
-						{ TEXT("Dev"), TEXT("Prod"), TEXT("Custom") },
-						{ LOCTEXT("BackendDev", "Dev (shared)"), LOCTEXT("BackendProd", "Production"), LOCTEXT("BackendCustom", "Custom") },
+						{ TEXT("Dev"), TEXT("Test"), TEXT("Prod"), TEXT("Custom") },
+						{ LOCTEXT("BackendDev", "Dev (shared)"), LOCTEXT("BackendTest", "Test"), LOCTEXT("BackendProd", "Production"), LOCTEXT("BackendCustom", "Custom") },
 						TAttribute<FString>::CreateLambda([this]() { return Controller.IsValid() ? Controller->GetBackendMode() : FString(); }),
 						[this](const FString& V) { if (Controller.IsValid()) { Controller->SetBackendMode(V); } }),
-					LOCTEXT("BackendModeHint", "Dev and Production use built-in hosts. Custom lets you set your own Management API URL."))
+					LOCTEXT("BackendModeHint", "Dev, Test and Production use built-in hosts. Custom lets you set your own Management API URL."))
 			]
 			// Custom management URL, shown only when Custom is selected.
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)

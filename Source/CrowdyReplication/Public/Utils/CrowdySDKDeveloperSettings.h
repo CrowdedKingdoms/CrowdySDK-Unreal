@@ -40,6 +40,7 @@ UENUM()
 enum class ECrowdyEnvironment : uint8
 {
 	Dev    UMETA(DisplayName = "Dev (shared)"),
+	Test   UMETA(DisplayName = "Test"),
 	Prod   UMETA(DisplayName = "Production"),
 	Custom UMETA(DisplayName = "Custom (set Management API URL)")
 };
@@ -53,7 +54,9 @@ class CROWDYREPLICATION_API UCrowdySDKDeveloperSettings : public UDeveloperSetti
 	GENERATED_BODY()
 	
 public:
-	
+
+	UCrowdySDKDeveloperSettings();
+
 	virtual FName GetCategoryName() const override { return "Plugins"; }
 	virtual FName GetSectionName() const override { return "Crowdy SDK"; }
 
@@ -61,22 +64,26 @@ public:
 	// single source of truth. They are shown read-only so you can see what the game will use; set
 	// them from the console, not here.
 
-	/** Which Crowdy backend the game talks to. Dev/Production use built-in hosts; Custom uses the
-	 *  Discovery URL below. Choose it from the console's Backend selector. */
+	/** Which Crowdy backend the game talks to. Dev/Test/Production use built-in hosts; Custom uses the
+	 *  Discovery URL below. Choose it from the console's Backend selector. Until then it is the tier this
+	 *  SDK build was released for. */
 	UPROPERTY(Config, VisibleAnywhere, Category="Crowdy SDK|Developer|Network", meta=(DisplayName="Backend (managed by CrowdyStudio)"))
-	ECrowdyEnvironment Environment = ECrowdyEnvironment::Prod;
+	ECrowdyEnvironment Environment;
 
 	/** The shared origin used when Backend is Custom (no /graphql suffix). One name that every
 	 *  datacenter answers, so it is where a client asks which datacenter its app lives in and
 	 *  where it signs in. Not a gameplay endpoint: that is GameApiHttpUrl, which names one
-	 *  instance and is exactly the thing that can go away. */
+	 *  instance and is exactly the thing that can go away. Defaults to this SDK build's own tier. */
 	UPROPERTY(Config, VisibleAnywhere, Category="Crowdy SDK|Developer|Network",
 		meta=(DisplayName="Discovery URL (Custom)"))
-	FString DiscoveryUrl = TEXT("https://api.dev.crowdedkingdoms.com");
+	FString DiscoveryUrl;
 
-	/** The effective shared origin: built-in host for Dev/Prod, DiscoveryUrl for Custom. Read this
+	/** The effective shared origin: built-in host for Dev/Test/Prod, DiscoveryUrl for Custom. Read this
 	 *  rather than DiscoveryUrl directly. */
 	FString GetDiscoveryUrl() const;
+
+	/** The backend this SDK build was released for, and so the Backend a project gets until it picks one. */
+	static ECrowdyEnvironment GetReleaseEnvironment();
 
 	/** Active app id. The Game API scopes each realtime session to one app, so this must match a
 	 *  real app. Set it in the console by picking an app on the Project page. */
