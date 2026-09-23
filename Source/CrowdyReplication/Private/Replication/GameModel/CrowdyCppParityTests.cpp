@@ -5,6 +5,8 @@
 #include "CrowdyCppBridge.h"
 #include "Network/GraphQL/FCrowdyGameApiCodec.h"
 #include "Replication/GameModel/CrowdyGameModelTestSupport.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
+#include "crowdy/default_origin.hpp"
 
 #include "Interfaces/IPluginManager.h"
 #include "Misc/AutomationTest.h"
@@ -1194,9 +1196,8 @@ bool FCrowdyCppVendoredVersionTest::RunTest(const FString& Parameters)
 {
 	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.42.1");
 
-	// The tier decides where a client that names no origin at all dials, and it is generated per branch
-	// upstream, so it can change under a version bump without the version saying so. Pin it too.
-	static const FString ExpectedVendoredCrowdyCppTier = TEXT("dev");
+	// Each SDK branch vendors its own tier, so the tier VENDOR.txt records must be the one actually compiled in.
+	const FString CompiledCrowdyCppTier = UTF8_TO_TCHAR(crowdy::kDefaultTier);
 
 	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("CrowdySDK"));
 	if (!TestTrue(TEXT("the CrowdySDK plugin is found"), Plugin.IsValid()))
@@ -1246,9 +1247,28 @@ bool FCrowdyCppVendoredVersionTest::RunTest(const FString& Parameters)
 
 	if (TestTrue(TEXT("VENDOR.txt has a tier: line"), !ParsedTier.IsEmpty()))
 	{
-		TestEqual(TEXT("the vendored CrowdyCPP tier matches the pinned expectation"),
-			ParsedTier, ExpectedVendoredCrowdyCppTier);
+		TestEqual(TEXT("the tier VENDOR.txt records is the tier compiled in"),
+			ParsedTier, CompiledCrowdyCppTier);
 	}
+	return true;
+}
+
+// A project that never picks a Backend gets the tier this build was released for, and that Backend's built-in
+// host must be the origin the vendored CrowdyCPP was generated for, or the SDK and the library disagree on it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyReleaseBackendIsVendoredOriginTest,
+	"CrowdySDK.CrowdyCpp.ReleaseBackendIsVendoredOrigin", CrowdyCppParityTestFlags)
+bool FCrowdyReleaseBackendIsVendoredOriginTest::RunTest(const FString& Parameters)
+{
+	const ECrowdyEnvironment Release = UCrowdySDKDeveloperSettings::GetReleaseEnvironment();
+	if (!TestTrue(TEXT("the vendored tier names a built-in Backend"), Release != ECrowdyEnvironment::Custom))
+	{
+		return false;
+	}
+
+	UCrowdySDKDeveloperSettings* Settings = NewObject<UCrowdySDKDeveloperSettings>(GetTransientPackage());
+	Settings->Environment = Release;
+	TestEqual(TEXT("the release Backend's host is the vendored default origin"),
+		Settings->GetDiscoveryUrl(), FString(UTF8_TO_TCHAR(crowdy::kDefaultHttpOrigin)));
 	return true;
 }
 

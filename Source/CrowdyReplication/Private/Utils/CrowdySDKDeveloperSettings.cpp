@@ -4,6 +4,7 @@
 #include "Engine/World.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectKey.h"
+#include "crowdy/default_origin.hpp"
 
 namespace
 {
@@ -164,12 +165,32 @@ const UCrowdyMapProfile* UCrowdySDKDeveloperSettings::ResolveShippedDefaultProfi
 	return Loaded;
 }
 
+UCrowdySDKDeveloperSettings::UCrowdySDKDeveloperSettings()
+	: Environment(GetReleaseEnvironment())
+	, DiscoveryUrl(UTF8_TO_TCHAR(crowdy::kDefaultHttpOrigin))
+{
+}
+
+ECrowdyEnvironment UCrowdySDKDeveloperSettings::GetReleaseEnvironment()
+{
+	// The vendored CrowdyCPP is built per tier, so its default origin names the tier this SDK build ships for.
+	const FString VendoredTier = UTF8_TO_TCHAR(crowdy::kDefaultTier);
+	if (VendoredTier == TEXT("dev"))
+		return ECrowdyEnvironment::Dev;
+	if (VendoredTier == TEXT("test"))
+		return ECrowdyEnvironment::Test;
+	if (VendoredTier == TEXT("prod"))
+		return ECrowdyEnvironment::Prod;
+	return ECrowdyEnvironment::Custom;
+}
+
 FString UCrowdySDKDeveloperSettings::GetDiscoveryUrl() const
 {
 	switch (Environment)
 	{
-	case ECrowdyEnvironment::Dev:  return TEXT("https://api.dev.crowdedkingdoms.com");
-	case ECrowdyEnvironment::Prod: return TEXT("https://api.crowdedkingdoms.com");
+	case ECrowdyEnvironment::Dev:  return TEXT("https://ck.dev.crowdedkingdoms.com");
+	case ECrowdyEnvironment::Test: return TEXT("https://ck.test.crowdedkingdoms.com");
+	case ECrowdyEnvironment::Prod: return TEXT("https://ck.prod.crowdedkingdoms.com");
 	default:                       return DiscoveryUrl;
 	}
 }
