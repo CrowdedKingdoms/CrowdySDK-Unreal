@@ -52,6 +52,7 @@ namespace
 		switch (Env)
 		{
 		case ECrowdyEnvironment::Dev:    return TEXT("Dev");
+		case ECrowdyEnvironment::Test:   return TEXT("Test");
 		case ECrowdyEnvironment::Custom: return TEXT("Custom");
 		case ECrowdyEnvironment::Prod:
 		default:                         return TEXT("Prod");
@@ -61,6 +62,7 @@ namespace
 	ECrowdyEnvironment BackendModeToEnum(const FString& Mode)
 	{
 		if (Mode == TEXT("Dev"))    { return ECrowdyEnvironment::Dev; }
+		if (Mode == TEXT("Test"))   { return ECrowdyEnvironment::Test; }
 		if (Mode == TEXT("Custom")) { return ECrowdyEnvironment::Custom; }
 		return ECrowdyEnvironment::Prod;
 	}

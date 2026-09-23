@@ -35,7 +35,7 @@ public:
 	static int32 ApplyToRunningSessions();
 
 	// Backend selector, stored as UCrowdySDKDeveloperSettings::Environment. Mode is one of "Dev",
-	// "Prod", or "Custom". Custom uses the hand-set shared origin; Dev/Prod use built-in hosts.
+	// "Test", "Prod", or "Custom". Custom uses the hand-set shared origin; the others use built-in hosts.
 	// GetEffectiveDiscoveryUrl is the URL that actually results from the current mode.
 	static FString GetBackendMode();
 	static void SetBackendMode(const FString& Mode);
