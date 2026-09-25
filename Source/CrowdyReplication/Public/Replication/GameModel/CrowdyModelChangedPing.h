@@ -18,7 +18,7 @@
  *
  * This is the graceful-degradation carrier. The PRIMARY path is the server-native SERVER_EVENT
  * notification declared on the function (see the SERVER_EVENT_NOTIFICATION receive path). Both carriers
- * funnel into the same UCrowdyGameModelSubsystem::HandleModelChanged re-pull, so there is one apply path.
+ * funnel into the same UCrowdyGameModelSubsystem re-pull, so there is one apply path.
  */
 USTRUCT()
 struct FCrowdyModelChangedPing

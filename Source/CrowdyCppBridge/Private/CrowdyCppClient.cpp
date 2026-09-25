@@ -1,8 +1,11 @@
 #include "CrowdyCppClient.h"
 
 #include "CrowdyCppBridge.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/PlatformTime.h"
 #include "Platform/CrowdyCppHttpTransport.h"
 #include "Platform/CrowdyCppWebSocketTransport.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Serialization/CrowdyJsonSafety.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -40,17 +43,50 @@ namespace
 		TFunction<void()> DeliverCanceled;
 	};
 
+	// When the attempt now in flight was sent, and how many times the request has been sent again.
+	struct FRequestProgress
+	{
+		double AttemptSeconds = 0.0;
+		int32 Retries = 0;
+	};
+
+	// Which refusals a request may be sent again after: none, any the platform says to retry, or only PLATFORM_BUSY.
+	enum class EBusyRetryKind : uint8
+	{
+		None,
+		Query,
+		NeverStarted
+	};
+
+	// Everything needed to send one request again, unchanged, after the platform refused it.
+	struct FBusyRetry
+	{
+		TFunction<void(crowdy::CrowdyClient&, crowdy::graphql::GraphQLCallback)> Send;
+		crowdy::graphql::GraphQLCallback Deliver;
+		TSharedPtr<double> HandOffSeconds;
+		TSharedPtr<FRequestProgress> Progress;
+		uint64 HandleId = 0;
+		double DueSeconds = 0.0;
+		int32 OpSlot = INDEX_NONE;
+		ECrowdyCppTokenPlane Plane = ECrowdyCppTokenPlane::Game;
+		EBusyRetryKind Kind = EBusyRetryKind::None;
+	};
+
 	// Every request issued on one client and not yet completed, keyed by the handle its caller was given.
 	struct FRequestRegistry
 	{
 		TMap<uint64, TSharedPtr<FPendingCompletion>> Pending;
 		uint64 NextHandleId = 1;
 
+		// Requests waiting out a retry backoff, still in Pending so a cancel delivers them; at most MaxParkedRetries.
+		TArray<TSharedRef<FBusyRetry>> WaitingRetries;
+
 		// Deliver every pending completion as canceled, returning how many ran. The map is moved out first, so a
 		// completion that issues or cancels another request from inside its own delivery cannot mutate the container
 		// being walked, and the moved-out map keeps each entry alive across its own call.
 		int32 DrainAsCanceled()
 		{
+			WaitingRetries.Reset();
 			TMap<uint64, TSharedPtr<FPendingCompletion>> Draining = MoveTemp(Pending);
 			Pending.Reset();
 
@@ -84,7 +120,155 @@ namespace
 				UE_LOG(LogCrowdyCpp, Warning, TEXT("A canceled request completion threw a non-standard exception"));
 			}
 		}
+
+		// The most recent OpLatencySamples values, the oldest overwritten first. Sized once so recording never allocates.
+		struct FSampleRing
+		{
+			TArray<double> Ms;
+			int32 Next = 0;
+			int32 Count = 0;
+
+			void Add(double Value)
+			{
+				Ms[Next] = Value;
+				Next = (Next + 1) % Ms.Num();
+				Count = FMath::Min(Count + 1, Ms.Num());
+			}
+
+			void CopyOldestFirst(TArray<double>& Out) const
+			{
+				Out.Reset(Count);
+				const int32 Oldest = (Next - Count + Ms.Num()) % Ms.Num();
+				for (int32 Offset = 0; Offset < Count; ++Offset)
+				{
+					Out.Add(Ms[(Oldest + Offset) % Ms.Num()]);
+				}
+			}
+
+			void Reset()
+			{
+				Next = 0;
+				Count = 0;
+			}
+		};
+
+		// One operation's diagnostics. Slots are never removed, so an index taken at issue stays valid.
+		struct FOpSlot
+		{
+			FString Operation;
+			FSampleRing Latency;
+			FSampleRing Sdk;
+			FSampleRing Http;
+			int32 Calls = 0;
+			int32 Failures = 0;
+			int32 Retries = 0;
+			int32 RecoveredByRetry = 0;
+			double MaxMs = 0.0;
+			TMap<FString, int32> FailureReasons;
+		};
+		TArray<FOpSlot> OpSlots;
+
+		// Reasons are keyed by server code or status, never message text, so a handful covers every real case.
+		static constexpr int32 MaxFailureReasons = 8;
+		static constexpr int32 MaxFailureReasonChars = 48;
+
+		static void CountFailureReason(TMap<FString, int32>& Reasons, const FString& Reason)
+		{
+			const FString Key = Reason.Left(MaxFailureReasonChars);
+			if (int32* Count = Reasons.Find(Key))
+			{
+				++*Count;
+				return;
+			}
+			++Reasons.FindOrAdd(Reasons.Num() < MaxFailureReasons ? Key : FString(TEXT("other")));
+		}
+		TMap<FString, int32> OpSlotByName;
+
+		int32 FindOrAddOpSlot(const TCHAR* Operation)
+		{
+			const FString Name(Operation);
+			if (const int32* Found = OpSlotByName.Find(Name))
+			{
+				return *Found;
+			}
+			const int32 Index = OpSlots.AddDefaulted();
+			FOpSlot& Slot = OpSlots[Index];
+			Slot.Operation = Name;
+			Slot.Latency.Ms.SetNumZeroed(FCrowdyCppClient::OpLatencySamples);
+			Slot.Sdk.Ms.SetNumZeroed(FCrowdyCppClient::OpLatencySamples);
+			Slot.Http.Ms.SetNumZeroed(FCrowdyCppClient::OpLatencySamples);
+			OpSlotByName.Add(Name, Index);
+			return Index;
+		}
+
+		// HandOffSeconds is when the transport handed the request to the HTTP module, or 0 when it never said, in
+		// which case the split is unknown and recorded as nothing rather than as zero.
+		void RecordOp(int32 SlotIndex, double IssueSeconds, const FRequestProgress& Progress, double HandOffSeconds,
+			bool bSucceeded, const FString& FailureReason)
+		{
+			if (!OpSlots.IsValidIndex(SlotIndex))
+			{
+				return;
+			}
+			const double NowSeconds = FPlatformTime::Seconds();
+			const double LatencyMs = (NowSeconds - IssueSeconds) * 1000.0;
+			FOpSlot& Slot = OpSlots[SlotIndex];
+			++Slot.Calls;
+			Slot.Failures += bSucceeded ? 0 : 1;
+			Slot.RecoveredByRetry += bSucceeded && Progress.Retries > 0 ? 1 : 0;
+			if (!bSucceeded)
+			{
+				CountFailureReason(Slot.FailureReasons, FailureReason);
+			}
+			Slot.MaxMs = FMath::Max(Slot.MaxMs, LatencyMs);
+			Slot.Latency.Add(LatencyMs);
+			if (HandOffSeconds <= 0.0)
+			{
+				return;
+			}
+			Slot.Sdk.Add((HandOffSeconds - Progress.AttemptSeconds) * 1000.0);
+			Slot.Http.Add((NowSeconds - HandOffSeconds) * 1000.0);
+		}
 	};
+
+	// Whether a completed request did what it was asked. Every result type carries bOk except these two.
+	template <typename ResultType>
+	bool DidRequestSucceed(const ResultType& Result)
+	{
+		return Result.bOk;
+	}
+
+	bool DidRequestSucceed(const FCrowdyCppInvokeResult& Result)
+	{
+		return Result.bTransportOk && Result.bSuccess;
+	}
+
+	bool DidRequestSucceed(const FCrowdyCppJsonResult& Result)
+	{
+		return Result.bTransportOk;
+	}
+
+	// The server's own code on a result that carries one: an invoke's in-band fault has no GraphQL error to read it from.
+	template <typename ResultType>
+	FString ResultFailureCode(const ResultType&)
+	{
+		return FString();
+	}
+
+	FString ResultFailureCode(const FCrowdyCppInvokeResult& Result)
+	{
+		return Result.FaultCode;
+	}
+
+	FString ResultFailureCode(const FCrowdyCppJsonResult& Result)
+	{
+		return Result.ErrorCode;
+	}
+
+	FString ResultFailureCode(const FCrowdyCppAppTokenResult& Result)
+	{
+		return Result.ErrorCode;
+	}
 
 	// The exactly-once delivery closure for one request, and the handle its caller cancels it by.
 	template <typename ResultType>
@@ -92,6 +276,15 @@ namespace
 	{
 		TFunction<void(ResultType)> Fire;
 		FCrowdyCppRequestHandle Handle;
+
+		// Where the transport records the hand-off, while a CrowdyCppTransport::FHandOffScope marks it.
+		TSharedPtr<double> HandOffSeconds;
+
+		// Why the request failed, written by its completion from the outcome it saw; see OutcomeFailureReason.
+		TSharedPtr<FString> FailureReason;
+
+		TSharedPtr<FRequestProgress> Progress;
+		int32 OpSlot = INDEX_NONE;
 	};
 
 	// Wrap a caller's completion so it is delivered exactly once, by whichever path finishes first: the server
@@ -99,7 +292,7 @@ namespace
 	// since the underlying client cannot recall one request; what a cancel ends is the delivery, and the server's
 	// eventual answer is then discarded.
 	template <typename ResultType>
-	TIssuedRequest<ResultType> BeginRequest(const TSharedPtr<FRequestRegistry>& Registry,
+	TIssuedRequest<ResultType> BeginRequest(const TSharedPtr<FRequestRegistry>& Registry, const TCHAR* Operation,
 		TFunction<void(ResultType)> OnDone, ResultType CanceledResult)
 	{
 		const TSharedRef<TFunction<void(ResultType)>> Done =
@@ -117,7 +310,15 @@ namespace
 		// order the client tears down in, and deregistering is an optimisation there rather than a requirement.
 		const uint64 HandleId = Issued.Handle.Id;
 		const TWeakPtr<FRequestRegistry> WeakRegistry = Registry;
-		Issued.Fire = [Done, bFired, WeakRegistry, HandleId](ResultType Result)
+		const int32 OpSlot = Registry.IsValid() ? Registry->FindOrAddOpSlot(Operation) : INDEX_NONE;
+		const double IssueSeconds = FPlatformTime::Seconds();
+		Issued.OpSlot = OpSlot;
+		Issued.HandOffSeconds = MakeShared<double>(0.0);
+		Issued.FailureReason = MakeShared<FString>();
+		Issued.Progress = MakeShared<FRequestProgress>();
+		Issued.Progress->AttemptSeconds = IssueSeconds;
+		Issued.Fire = [Done, bFired, WeakRegistry, HandleId, OpSlot, IssueSeconds, HandOff = Issued.HandOffSeconds,
+			Reason = Issued.FailureReason, Progress = Issued.Progress](ResultType Result)
 		{
 			if (*bFired)
 			{
@@ -126,7 +327,10 @@ namespace
 			*bFired = true;
 			if (const TSharedPtr<FRequestRegistry> Pinned = WeakRegistry.Pin())
 			{
+				const FString Code = ResultFailureCode(Result);
+				const FString Why = !Code.IsEmpty() ? Code : (!Reason->IsEmpty() ? *Reason : FString(TEXT("transport")));
 				Pinned->Pending.Remove(HandleId);
+				Pinned->RecordOp(OpSlot, IssueSeconds, *Progress, *HandOff, DidRequestSucceed(Result), Why);
 			}
 			(*Done)(MoveTemp(Result));
 		};
@@ -134,10 +338,32 @@ namespace
 		if (Registry.IsValid())
 		{
 			const TSharedRef<FPendingCompletion> Entry = MakeShared<FPendingCompletion>();
-			Entry->DeliverCanceled = [Fire = Issued.Fire, CanceledResult]() { Fire(CanceledResult); };
+			// A canceled request's http time would stop at the cancel rather than at an answer, so it records no split.
+			Entry->DeliverCanceled = [Fire = Issued.Fire, CanceledResult, HandOff = Issued.HandOffSeconds,
+				Reason = Issued.FailureReason]()
+			{
+				*HandOff = 0.0;
+				*Reason = TEXT("canceled");
+				Fire(CanceledResult);
+			};
 			Registry->Pending.Add(HandleId, Entry);
 		}
 		return Issued;
+	}
+
+	// The re-sendable form of an issued request, bound to its handle, stats slot and hand-off stamp.
+	template <typename ResultType>
+	TSharedRef<FBusyRetry> MakeBusyRetry(const TIssuedRequest<ResultType>& Issued, ECrowdyCppTokenPlane Plane,
+		EBusyRetryKind Kind)
+	{
+		const TSharedRef<FBusyRetry> Retry = MakeShared<FBusyRetry>();
+		Retry->HandOffSeconds = Issued.HandOffSeconds;
+		Retry->Progress = Issued.Progress;
+		Retry->HandleId = Issued.Handle.Id;
+		Retry->OpSlot = Issued.OpSlot;
+		Retry->Plane = Plane;
+		Retry->Kind = Kind;
+		return Retry;
 	}
 
 	// What ListContainers hands back, so its two-value completion can ride the same one-result plumbing as every
@@ -163,6 +389,10 @@ struct FCrowdyCppClient::FImpl
 
 	// Every request issued and not yet completed. Held by shared pointer so a completion can hold it weakly.
 	TSharedPtr<FRequestRegistry> Requests = MakeShared<FRequestRegistry>();
+
+	// Shared with the HTTP transport, whose completions may land off the game thread.
+	std::shared_ptr<CrowdyCppTransport::FTransportCounters> TransportCounters =
+		std::make_shared<CrowdyCppTransport::FTransportCounters>();
 
 	// One bearer per endpoint. The underlying client holds a single auth state shared by both of its GraphQL
 	// clients, so the right token is installed immediately before each request is built rather than being seeded
@@ -298,6 +528,15 @@ struct FCrowdyCppClient::FImpl
 
 	// True when a request may be issued: constructed and not disposed.
 	bool IsUsable() const { return Client.IsValid() && !bClosed; }
+
+	// Send Retry under its plane, true when it went out; a refusal it may repeat is queued rather than delivered.
+	bool SendRetryable(const TSharedRef<FBusyRetry>& Retry);
+
+	// The operation name Retry's stats are kept under, for messages.
+	FString OperationOf(const FBusyRetry& Retry) const;
+
+	// Send again every queued request whose backoff has run out. Called from Poll().
+	void SendDueRetries();
 
 	void ApplyToken(ECrowdyCppTokenPlane Plane)
 	{
@@ -579,6 +818,23 @@ namespace
 		}
 	}
 
+	// The same attribution for a generic operation, which has no quarantine fields.
+	void ReadOutcomeFault(const crowdy::graphql::GraphQLOutcome& Out, FCrowdyCppJsonResult& OutResult)
+	{
+		const crowdy::graphql::GraphQLErrorDetail* Error = LeadingError(Out);
+		if (!Error)
+		{
+			return;
+		}
+		OutResult.ErrorCode = Utf8ToFString(Error->code);
+		OutResult.Blame = Utf8ToFString(Error->blame);
+		OutResult.bRetryable = !OutResult.Blame.IsEmpty() && Error->retryable;
+		if (Error->retryAfterMs.has_value())
+		{
+			OutResult.RetryAfterMs = static_cast<int64>(*Error->retryAfterMs);
+		}
+	}
+
 	// The server's stable extensions.code for a failed outcome, or empty when the failure carried no GraphQL errors
 	// (a network error, a timeout, a non-2xx with no error body). Read from the same entry OutcomeErrorMessage uses,
 	// so the code a caller branches on and the text it shows always describe the same failure.
@@ -586,6 +842,95 @@ namespace
 	{
 		const crowdy::graphql::GraphQLErrorDetail* Error = LeadingError(Out);
 		return Error ? Utf8ToFString(Error->code) : FString();
+	}
+
+	// A short, bounded name for why an outcome failed, safe to count and print: the server's code, else the HTTP
+	// status, else whether the server answered at all. Never message text, which can carry ids.
+	FString OutcomeFailureReason(const crowdy::graphql::GraphQLOutcome& Out)
+	{
+		const FString Code = OutcomeErrorCode(Out);
+		if (!Code.IsEmpty())
+		{
+			return Code;
+		}
+		if (Out.httpStatus != 0 && (Out.httpStatus < 200 || Out.httpStatus >= 300))
+		{
+			return FString::Printf(TEXT("http %d"), Out.httpStatus);
+		}
+		if (!Out.errors.empty())
+		{
+			return TEXT("graphql");
+		}
+		return Out.ok() ? TEXT("rejected") : TEXT("transport");
+	}
+
+	TAutoConsoleVariable<int32> CVarRetryBusy(
+		TEXT("crowdy.net.retry.busy"), 1,
+		TEXT("Sends an SDK query again, up to 3 times with backoff, when the platform refuses it and says to retry (blame PLATFORM, retryable); a container ensure or an invoke is sent again only when the platform says the work never started (PLATFORM_BUSY). 0 hands every refusal straight to the caller."),
+		ECVF_Default);
+
+	// Whether Out is a refusal a request of this kind may send again; CrowdyCPP reads a missing retryable as true.
+	bool IsRetryableRefusal(const crowdy::graphql::GraphQLOutcome& Out, EBusyRetryKind Kind)
+	{
+		const crowdy::graphql::GraphQLErrorDetail* Error = LeadingError(Out);
+		if (Kind == EBusyRetryKind::None || !Error || !Error->retryable
+			|| !Utf8ToFString(Error->blame).Equals(TEXT("PLATFORM"), ESearchCase::IgnoreCase))
+		{
+			return false;
+		}
+		if (Kind == EBusyRetryKind::NeverStarted)
+		{
+			return Error->code == "PLATFORM_BUSY";
+		}
+		// CrowdyCPP has already followed the redirect, and an unavailable app has nowhere else to be served from.
+		return Error->code != crowdy::graphql::kWrongDatacenterCode
+			&& Error->code != crowdy::graphql::kAppUnavailableCode;
+	}
+
+	// A query only reads and an ensure gets or creates one row by key, so sending either again cannot apply twice.
+	EBusyRetryKind RetryKindFor(ECrowdyCppApiDomain Domain, std::string_view Document, const std::string& Operation)
+	{
+		if (Document.substr(0, 6) == "query ")
+		{
+			return EBusyRetryKind::Query;
+		}
+		const bool bEnsure = Domain == ECrowdyCppApiDomain::GameModel && Operation == "GameModelEnsureContainer";
+		return bEnsure ? EBusyRetryKind::NeverStarted : EBusyRetryKind::None;
+	}
+
+	// Queue Retry to be sent again when Out is a refusal it may repeat; false when Out is to be delivered.
+	bool TryQueueBusyRetry(FRequestRegistry& Registry, const TSharedRef<FBusyRetry>& Retry,
+		const crowdy::graphql::GraphQLOutcome& Out)
+	{
+		if (Retry->Progress->Retries >= CrowdyCppMaxBusyRetries || !IsRetryableRefusal(Out, Retry->Kind)
+			|| !CrowdyCppIsBusyRetryEnabled() || !Registry.Pending.Contains(Retry->HandleId))
+		{
+			return false;
+		}
+		if (Registry.WaitingRetries.Num() >= FCrowdyCppClient::MaxParkedRetries)
+		{
+			return false;
+		}
+		const std::optional<std::int64_t>& RetryAfterMs = LeadingError(Out)->retryAfterMs;
+		const TOptional<double> Delay = CrowdyCppBusyRetryDelaySeconds(Retry->Progress->Retries,
+			RetryAfterMs.has_value() ? TOptional<int64>(static_cast<int64>(*RetryAfterMs)) : TOptional<int64>());
+		if (!Delay.IsSet())
+		{
+			return false;
+		}
+		Retry->DueSeconds = FPlatformTime::Seconds() + Delay.GetValue();
+		Registry.WaitingRetries.Add(Retry);
+		return true;
+	}
+
+	// The outcome a request that never reached the transport completes with.
+	crowdy::graphql::GraphQLOutcome UnsentOutcome(std::string Message)
+	{
+		crowdy::graphql::GraphQLOutcome Out;
+		Out.status = crowdy::Errc::SocketError;
+		Out.kind = crowdy::graphql::GraphQLErrorKind::Network;
+		Out.errorMessage = std::move(Message);
+		return Out;
 	}
 
 	// Convert a UE JSON value tree to a CrowdyCPP JVal (the GraphQL variable-building type). Used to carry
@@ -664,6 +1009,7 @@ namespace
 	// would otherwise build a DOM that overflows on teardown. Returns null on an over-deep or undecodable value.
 	TSharedPtr<FJsonValue> UnwrappedJsonToUeValue(const crowdy::graphql::Json& Value)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_DecodeResponse);
 		const FString Text = Utf8ToFString(Value.dump());
 		if (Text.IsEmpty() || !CrowdyJsonSafety::IsNestingWithinLimit(Text))
 		{
@@ -764,7 +1110,7 @@ namespace
 		ResultType Canceled;
 		Canceled.ErrorMessage = FCrowdyCppClient::CanceledErrorMessage();
 		const TIssuedRequest<ResultType> Issued =
-			BeginRequest<ResultType>(Registry, MoveTemp(OnDone), MoveTemp(Canceled));
+			BeginRequest<ResultType>(Registry, Label, MoveTemp(OnDone), MoveTemp(Canceled));
 		const TFunction<void(ResultType)>& FireOnce = Issued.Fire;
 
 		if (!Client)
@@ -776,8 +1122,9 @@ namespace
 		}
 
 		std::function<void(crowdy::graphql::GraphQLOutcome, PayloadType)> Cb =
-			[FireOnce, Map, Label](crowdy::graphql::GraphQLOutcome Out, PayloadType Value)
+			[FireOnce, Map, Label, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out, PayloadType Value)
 			{
+				*Reason = OutcomeFailureReason(Out);
 				// The callback runs from Poll()/drain(), OUTSIDE the issue-time try below, so contain any throw here
 				// and deliver a clean failure rather than let it escape into the engine ticker. The recovery delivery
 				// is contained too: it runs the caller's completion from inside a handler that has no try around it,
@@ -807,6 +1154,7 @@ namespace
 				}
 			};
 
+		const CrowdyCppTransport::FHandOffScope HandOff(*Issued.HandOffSeconds);
 		try
 		{
 			Invoke(*Client, MoveTemp(Cb));
@@ -1039,6 +1387,21 @@ namespace
 		UpsertAutomationTrigger
 	};
 
+	// The operation name an input op's diagnostics are recorded under.
+	const TCHAR* InputOpName(EGameModelInputOp Op)
+	{
+		switch (Op)
+		{
+		case EGameModelInputOp::Seed:
+			return TEXT("GameModelSeed");
+		case EGameModelInputOp::UpsertAutomation:
+			return TEXT("GameModelUpsertAutomation");
+		case EGameModelInputOp::UpsertAutomationTrigger:
+			return TEXT("GameModelUpsertAutomationTrigger");
+		}
+		return TEXT("GameModelInputOp");
+	}
+
 	// Shared body for the three input-style authoring mutations (seedAsync, upsertAutomationAsync,
 	// upsertAutomationTriggerAsync): each takes one input object and reports only success or failure. The input
 	// string is the kit-emit output (our own, not forged), but the nesting pre-scan is kept before the recursive
@@ -1050,7 +1413,7 @@ namespace
 		FCrowdyCppStudioOpResult Canceled;
 		Canceled.ErrorMessage = FCrowdyCppClient::CanceledErrorMessage();
 		const TIssuedRequest<FCrowdyCppStudioOpResult> Issued =
-			BeginRequest<FCrowdyCppStudioOpResult>(Registry, MoveTemp(OnDone), MoveTemp(Canceled));
+			BeginRequest<FCrowdyCppStudioOpResult>(Registry, InputOpName(Op), MoveTemp(OnDone), MoveTemp(Canceled));
 		const TFunction<void(FCrowdyCppStudioOpResult)>& FireOnce = Issued.Fire;
 
 		if (!Client)
@@ -1082,8 +1445,9 @@ namespace
 		// that string and re-parses whole numbers as integers, exactly as the runtime-op path does.
 		const crowdy::graphql::JVal Input = ObjectToJVal(InputObject);
 		crowdy::graphql::GraphQLCallback Cb =
-			[FireOnce](crowdy::graphql::GraphQLOutcome Out)
+			[FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
 			{
+				*Reason = OutcomeFailureReason(Out);
 				// The callback runs from Poll()/drain(), OUTSIDE the issue-time try below, so contain any throw here
 				// and deliver a clean failure rather than let it escape into the engine ticker.
 				try
@@ -1104,6 +1468,7 @@ namespace
 				}
 			};
 
+		const CrowdyCppTransport::FHandOffScope HandOff(*Issued.HandOffSeconds);
 		try
 		{
 			crowdy::domains::GameModelAPI& GameModel = Client->gameModel();
@@ -1244,6 +1609,109 @@ namespace
 	}
 }
 
+bool FCrowdyCppClient::FImpl::SendRetryable(const TSharedRef<FBusyRetry>& Retry)
+{
+	crowdy::CrowdyClient* Raw = Use(Retry->Plane);
+	if (!Raw)
+	{
+		Retry->Deliver(UnsentOutcome("CrowdyCPP client is not available"));
+		return false;
+	}
+
+	const TWeakPtr<FRequestRegistry> WeakRegistry = Requests;
+	const CrowdyCppTransport::FHandOffScope HandOff(*Retry->HandOffSeconds);
+	try
+	{
+		Retry->Send(*Raw, [Retry, WeakRegistry](crowdy::graphql::GraphQLOutcome Out)
+		{
+			const TSharedPtr<FRequestRegistry> Registry = WeakRegistry.Pin();
+			if (Registry.IsValid() && TryQueueBusyRetry(*Registry, Retry, Out))
+			{
+				return;
+			}
+			Retry->Deliver(std::move(Out));
+		});
+		return true;
+	}
+	catch (const std::exception& Ex)
+	{
+		UE_LOG(LogCrowdyCpp, Warning, TEXT("%s request threw while being sent: %hs"), *OperationOf(*Retry), Ex.what());
+		Retry->Deliver(UnsentOutcome(Ex.what()));
+	}
+	catch (...)
+	{
+		UE_LOG(LogCrowdyCpp, Warning, TEXT("%s request threw a non-standard exception while being sent"),
+			*OperationOf(*Retry));
+		Retry->Deliver(UnsentOutcome(std::string(TCHAR_TO_UTF8(
+			*FString::Printf(TEXT("operation '%s' threw a non-standard exception"), *OperationOf(*Retry))))));
+	}
+	return false;
+}
+
+FString FCrowdyCppClient::FImpl::OperationOf(const FBusyRetry& Retry) const
+{
+	return Requests.IsValid() && Requests->OpSlots.IsValidIndex(Retry.OpSlot)
+		? Requests->OpSlots[Retry.OpSlot].Operation : FString(TEXT("An SDK"));
+}
+
+void FCrowdyCppClient::FImpl::SendDueRetries()
+{
+	if (!Requests.IsValid() || Requests->WaitingRetries.IsEmpty())
+	{
+		return;
+	}
+
+	const double NowSeconds = FPlatformTime::Seconds();
+	TArray<TSharedRef<FBusyRetry>> Due;
+	for (int32 Index = Requests->WaitingRetries.Num() - 1; Index >= 0; --Index)
+	{
+		if (Requests->WaitingRetries[Index]->DueSeconds > NowSeconds)
+		{
+			continue;
+		}
+		Due.Add(Requests->WaitingRetries[Index]);
+		Requests->WaitingRetries.RemoveAtSwap(Index, EAllowShrinking::No);
+	}
+
+	for (const TSharedRef<FBusyRetry>& Retry : Due)
+	{
+		// A request canceled while it waited has already been delivered and is not sent again.
+		if (!IsUsable() || !Requests->Pending.Contains(Retry->HandleId))
+		{
+			continue;
+		}
+		++Retry->Progress->Retries;
+		Retry->Progress->AttemptSeconds = NowSeconds;
+		*Retry->HandOffSeconds = 0.0;
+		if (SendRetryable(Retry) && Requests->OpSlots.IsValidIndex(Retry->OpSlot))
+		{
+			++Requests->OpSlots[Retry->OpSlot].Retries;
+		}
+	}
+}
+
+bool CrowdyCppIsBusyRetryEnabled()
+{
+	return CVarRetryBusy.GetValueOnGameThread() != 0;
+}
+
+TOptional<double> CrowdyCppBusyRetryDelaySeconds(int32 RetryIndex, TOptional<int64> RetryAfterMs)
+{
+	constexpr double MinDelaySeconds = 0.1;
+	constexpr double MaxDelaySeconds = 5.0;
+	if (RetryAfterMs.IsSet() && RetryAfterMs.GetValue() >= 0)
+	{
+		const double NamedSeconds = static_cast<double>(RetryAfterMs.GetValue()) / 1000.0;
+		if (NamedSeconds > MaxDelaySeconds)
+		{
+			return TOptional<double>();
+		}
+		return FMath::Max(NamedSeconds, MinDelaySeconds) * FMath::FRandRange(1.0, 1.2);
+	}
+	const double BaseSeconds = FMath::FRandRange(MinDelaySeconds, 2.0 * MinDelaySeconds);
+	return FMath::Min(BaseSeconds * static_cast<double>(1 << FMath::Clamp(RetryIndex, 0, 8)), MaxDelaySeconds);
+}
+
 FCrowdyCppClient::FCrowdyCppClient()
 	: Impl(MakeUnique<FImpl>())
 {
@@ -1273,6 +1741,81 @@ const FString& FCrowdyCppClient::CanceledErrorMessage()
 	return Message;
 }
 
+void FCrowdyCppClient::GetStats(TArray<FCrowdyCppOpStats>& OutOps, FCrowdyCppTransportStats& OutTransport) const
+{
+	OutOps.Reset();
+	OutTransport = FCrowdyCppTransportStats();
+	if (!Impl)
+	{
+		return;
+	}
+
+	if (Impl->TransportCounters)
+	{
+		OutTransport.RequestBytes = Impl->TransportCounters->RequestBytes.load(std::memory_order_relaxed);
+		OutTransport.ResponseBytes = Impl->TransportCounters->ResponseBytes.load(std::memory_order_relaxed);
+		OutTransport.Responses = Impl->TransportCounters->Responses.load(std::memory_order_relaxed);
+		OutTransport.InFlight = Impl->TransportCounters->InFlight.load(std::memory_order_relaxed);
+		OutTransport.PeakInFlight = Impl->TransportCounters->PeakInFlight.load(std::memory_order_relaxed);
+	}
+
+	if (!Impl->Requests.IsValid())
+	{
+		return;
+	}
+	for (const FRequestRegistry::FOpSlot& Slot : Impl->Requests->OpSlots)
+	{
+		if (Slot.Calls == 0)
+		{
+			continue;
+		}
+		FCrowdyCppOpStats& Op = OutOps.AddDefaulted_GetRef();
+		Op.Operation = Slot.Operation;
+		Op.Calls = Slot.Calls;
+		Op.Failures = Slot.Failures;
+		Op.Retries = Slot.Retries;
+		Op.RecoveredByRetry = Slot.RecoveredByRetry;
+		Op.MaxMs = Slot.MaxMs;
+		Slot.Latency.CopyOldestFirst(Op.RecentLatenciesMs);
+		Slot.Sdk.CopyOldestFirst(Op.RecentSdkMs);
+		Slot.Http.CopyOldestFirst(Op.RecentHttpMs);
+		Op.FailureReasons = Slot.FailureReasons.Array();
+	}
+}
+
+void FCrowdyCppClient::ResetStats()
+{
+	if (!Impl)
+	{
+		return;
+	}
+	if (Impl->TransportCounters)
+	{
+		Impl->TransportCounters->RequestBytes.store(0, std::memory_order_relaxed);
+		Impl->TransportCounters->ResponseBytes.store(0, std::memory_order_relaxed);
+		Impl->TransportCounters->Responses.store(0, std::memory_order_relaxed);
+		// Requests still in flight stay counted, so the peak restarts from them rather than from zero.
+		Impl->TransportCounters->PeakInFlight.store(Impl->TransportCounters->InFlight.load(std::memory_order_relaxed),
+			std::memory_order_relaxed);
+	}
+	if (!Impl->Requests.IsValid())
+	{
+		return;
+	}
+	for (FRequestRegistry::FOpSlot& Slot : Impl->Requests->OpSlots)
+	{
+		Slot.Latency.Reset();
+		Slot.Sdk.Reset();
+		Slot.Http.Reset();
+		Slot.FailureReasons.Reset();
+		Slot.Calls = 0;
+		Slot.Failures = 0;
+		Slot.Retries = 0;
+		Slot.RecoveredByRetry = 0;
+		Slot.MaxMs = 0.0;
+	}
+}
+
 TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::Make(const FCrowdyCppClientConfig& InConfig)
 {
 	TSharedPtr<FCrowdyCppClient> Wrapper = MakeShareable(new FCrowdyCppClient());
@@ -1291,7 +1834,7 @@ TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::Make(const FCrowdyCppClientConfig
 	Config.httpUrl = std::string(TCHAR_TO_UTF8(*InConfig.ApiUrl));
 	Config.discoveryUrl = std::string(TCHAR_TO_UTF8(*InConfig.DiscoveryUrl));
 	Config.rediscover = FImpl::MakeRediscoverCallback(Wrapper->Impl->Rediscover);
-	Config.asyncTransport = CrowdyCppTransport::MakeFHttpTransport();
+	Config.asyncTransport = CrowdyCppTransport::MakeFHttpTransport(Wrapper->Impl->TransportCounters);
 	// config.transport (the sync path) stays null; the async path never derefs it.
 	// Name the provider rather than relying on the client's build-flag fallback,
 	// which resolves to the always-failing provider if the flag is ever lost.
@@ -1322,8 +1865,8 @@ TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::MakeForTest(const FString& Canned
 	Config.httpUrl = std::string(TCHAR_TO_UTF8(*InConfig.ApiUrl));
 	Config.discoveryUrl = std::string(TCHAR_TO_UTF8(*InConfig.DiscoveryUrl));
 	Config.rediscover = FImpl::MakeRediscoverCallback(Wrapper->Impl->Rediscover);
-	Config.asyncTransport = CrowdyCppTransport::MakeCannedTransport(
-		std::string(TCHAR_TO_UTF8(*CannedResponseBody)), static_cast<int>(HttpStatus), Capture);
+	Config.asyncTransport = CrowdyCppTransport::MakeCannedTransport(std::string(TCHAR_TO_UTF8(*CannedResponseBody)),
+		static_cast<int>(HttpStatus), Capture, Wrapper->Impl->TransportCounters);
 	Config.crypto = &crowdy::core::opensslCrypto();
 
 	TUniquePtr<crowdy::CrowdyClient> Client = TryConstructClient(std::move(Config));
@@ -1358,6 +1901,24 @@ bool FCrowdyCppClient::GetLastTestRequest(FString& OutUrl, FString& OutAuthoriza
 	OutUrl = Utf8ToFString(Impl->TestCapture->Url);
 	OutAuthorizationHeader = Utf8ToFString(Impl->TestCapture->Authorization);
 	return true;
+}
+
+bool FCrowdyCppClient::GetLastTestRequestBody(FString& OutBody) const
+{
+	if (!Impl || !Impl->TestCapture || !Impl->TestCapture->bHasRequest)
+	{
+		return false;
+	}
+	OutBody = Utf8ToFString(Impl->TestCapture->Body);
+	return true;
+}
+
+void FCrowdyCppClient::SetTestStampsHandOff(bool bStamp)
+{
+	if (Impl && Impl->TestCapture)
+	{
+		Impl->TestCapture->bStampHandOff = bStamp;
+	}
 }
 
 void FCrowdyCppClient::SetTestResponseScript(TArray<TPair<int32, FString>> Responses)
@@ -1500,6 +2061,8 @@ bool FCrowdyCppClient::Cancel(FCrowdyCppRequestHandle Handle)
 	{
 		return false;
 	}
+	Impl->Requests->WaitingRetries.RemoveAllSwap(
+		[&Handle](const TSharedRef<FBusyRetry>& Retry) { return Retry->HandleId == Handle.Id; });
 	if (Entry->DeliverCanceled)
 	{
 		FRequestRegistry::DeliverCanceledContained(*Entry);
@@ -1521,8 +2084,30 @@ int32 FCrowdyCppClient::NumPendingRequests() const
 	return Impl && Impl->Requests.IsValid() ? Impl->Requests->Pending.Num() : 0;
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+int32 FCrowdyCppClient::NumTestWaitingRetries() const
+{
+	return Impl && Impl->Requests.IsValid() ? Impl->Requests->WaitingRetries.Num() : 0;
+}
+
+double FCrowdyCppClient::GetTestNextRetryDueSeconds() const
+{
+	if (!Impl || !Impl->Requests.IsValid() || Impl->Requests->WaitingRetries.IsEmpty())
+	{
+		return 0.0;
+	}
+	double Soonest = Impl->Requests->WaitingRetries[0]->DueSeconds;
+	for (const TSharedRef<FBusyRetry>& Retry : Impl->Requests->WaitingRetries)
+	{
+		Soonest = FMath::Min(Soonest, Retry->DueSeconds);
+	}
+	return Soonest;
+}
+#endif
+
 void FCrowdyCppClient::Poll()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_ApiPoll);
 	// Polling a closed client is a no-op rather than an error: an owner may tick once more before it drops us.
 	if (Impl && Impl->Client && !Impl->bClosed)
 	{
@@ -1534,6 +2119,8 @@ void FCrowdyCppClient::Poll()
 
 		// Also after the pump, because a datacenter redirect is applied while a completion is being delivered.
 		Impl->FollowEndpointMove();
+
+		Impl->SendDueRetries();
 	}
 }
 
@@ -1546,11 +2133,10 @@ FCrowdyCppRequestHandle FCrowdyCppClient::ReadContainerState(int64 AppId, const 
 	FCrowdyCppContainerStateResult Canceled;
 	Canceled.ErrorMessage = CanceledErrorMessage();
 	const TIssuedRequest<FCrowdyCppContainerStateResult> Issued = BeginRequest<FCrowdyCppContainerStateResult>(
-		Impl ? Impl->Requests : nullptr, MoveTemp(OnDone), MoveTemp(Canceled));
+		Impl ? Impl->Requests : nullptr, TEXT("GameModelContainerState"), MoveTemp(OnDone), MoveTemp(Canceled));
 	const TFunction<void(FCrowdyCppContainerStateResult)>& FireOnce = Issued.Fire;
 
-	crowdy::CrowdyClient* Client = Impl ? Impl->Use(ECrowdyCppTokenPlane::Game) : nullptr;
-	if (!Client)
+	if (!Impl || !Impl->IsUsable())
 	{
 		FCrowdyCppContainerStateResult Result;
 		Result.ErrorMessage = TEXT("CrowdyCPP client is not available");
@@ -1562,70 +2148,64 @@ FCrowdyCppRequestHandle FCrowdyCppClient::ReadContainerState(int64 AppId, const 
 	const std::string AppIdStr = std::string(TCHAR_TO_UTF8(*LexToString(AppId)));
 	const std::string ContainerIdStr = std::string(TCHAR_TO_UTF8(*ContainerId));
 
-	try
+	const TSharedRef<FBusyRetry> Retry = MakeBusyRetry(Issued, ECrowdyCppTokenPlane::Game, EBusyRetryKind::Query);
+	Retry->Send = [AppIdStr, ContainerIdStr](crowdy::CrowdyClient& Client, crowdy::graphql::GraphQLCallback Cb)
 	{
-		Client->gameModel().containerStateAsync(AppIdStr, ContainerIdStr,
-			[FireOnce](crowdy::graphql::GraphQLOutcome Out)
+		Client.gameModel().containerStateAsync(AppIdStr, ContainerIdStr, std::move(Cb));
+	};
+	Retry->Deliver = [FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
+	{
+		*Reason = OutcomeFailureReason(Out);
+		// The callback runs from Poll()/drain(), outside any issue-time try, so contain any throw here and deliver a
+		// clean failure rather than let it escape into the engine ticker.
+		try
+		{
+			FCrowdyCppContainerStateResult Result;
+			if (!Out.ok())
 			{
-				// The callback runs from Poll()/drain(), OUTSIDE the issue-time try below, so contain any throw
-				// here and deliver a clean failure rather than let it escape into the engine ticker.
-				try
-				{
-					FCrowdyCppContainerStateResult Result;
-					if (!Out.ok())
-					{
-						Result.ErrorMessage = OutcomeErrorMessage(Out);
-						FireOnce(MoveTemp(Result));
-						return;
-					}
+				Result.ErrorMessage = OutcomeErrorMessage(Out);
+				FireOnce(MoveTemp(Result));
+				return;
+			}
 
-					// out.data is the unwrapped gameModelContainerState object, or a
-					// JSON null when the container does not exist; its propertiesJson
-					// field is the container state as a JSON string. bOk stays false
-					// unless that string decodes to an object, so an absent container
-					// and an unparseable one are both reported the same way: no state.
-					const std::string Props = Out.data["propertiesJson"].asString();
-					const FString PropertiesJson = Utf8ToFString(Props);
-					if (!PropertiesJson.IsEmpty() && CrowdyJsonSafety::IsNestingWithinLimit(PropertiesJson))
-					{
-						// The nesting pre-scan bounds the untrusted string before the
-						// recursive UE deserializer builds a DOM a forged deep payload
-						// could overflow on teardown.
-						const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(PropertiesJson);
-						TSharedPtr<FJsonObject> Parsed;
-						if (FJsonSerializer::Deserialize(Reader, Parsed) && Parsed.IsValid())
-						{
-							Result.bOk = true;
-							Result.State = Parsed;
-						}
-					}
-
-					if (!Result.bOk)
-					{
-						Result.ErrorMessage = TEXT("container not found or no readable state");
-					}
-					FireOnce(MoveTemp(Result));
-				}
-				catch (...)
+			// out.data is the unwrapped gameModelContainerState object, or a
+			// JSON null when the container does not exist; its propertiesJson
+			// field is the container state as a JSON string. bOk stays false
+			// unless that string decodes to an object, so an absent container
+			// and an unparseable one are both reported the same way: no state.
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_DecodeResponse);
+				const std::string Props = Out.data["propertiesJson"].asString();
+				const FString PropertiesJson = Utf8ToFString(Props);
+				if (!PropertiesJson.IsEmpty() && CrowdyJsonSafety::IsNestingWithinLimit(PropertiesJson))
 				{
-					FCrowdyCppContainerStateResult Failed;
-					Failed.ErrorMessage = TEXT("gameModelContainerState callback threw");
-					FireOnce(MoveTemp(Failed));
+					// The nesting pre-scan bounds the untrusted string before the
+					// recursive UE deserializer builds a DOM a forged deep payload
+					// could overflow on teardown.
+					const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(PropertiesJson);
+					TSharedPtr<FJsonObject> Parsed;
+					if (FJsonSerializer::Deserialize(Reader, Parsed) && Parsed.IsValid())
+					{
+						Result.bOk = true;
+						Result.State = Parsed;
+					}
 				}
-			});
-	}
-	catch (const std::exception& Ex)
-	{
-		FCrowdyCppContainerStateResult Result;
-		Result.ErrorMessage = FString(UTF8_TO_TCHAR(Ex.what()));
-		FireOnce(MoveTemp(Result));
-	}
-	catch (...)
-	{
-		FCrowdyCppContainerStateResult Result;
-		Result.ErrorMessage = TEXT("gameModelContainerState request threw a non-standard exception");
-		FireOnce(MoveTemp(Result));
-	}
+			}
+
+			if (!Result.bOk)
+			{
+				Result.ErrorMessage = TEXT("container not found or no readable state");
+			}
+			FireOnce(MoveTemp(Result));
+		}
+		catch (...)
+		{
+			FCrowdyCppContainerStateResult Failed;
+			Failed.ErrorMessage = TEXT("gameModelContainerState callback threw");
+			FireOnce(MoveTemp(Failed));
+		}
+	};
+	Impl->SendRetryable(Retry);
 	return Issued.Handle;
 }
 
@@ -1636,7 +2216,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::InvokeFunction(int64 AppId, const FStr
 	FCrowdyCppInvokeResult Canceled;
 	Canceled.ErrorMessage = CanceledErrorMessage();
 	const TIssuedRequest<FCrowdyCppInvokeResult> Issued = BeginRequest<FCrowdyCppInvokeResult>(
-		Impl ? Impl->Requests : nullptr, MoveTemp(OnDone), MoveTemp(Canceled));
+		Impl ? Impl->Requests : nullptr, TEXT("GameModelInvoke"), MoveTemp(OnDone), MoveTemp(Canceled));
 	const TFunction<void(FCrowdyCppInvokeResult)>& FireOnce = Issued.Fire;
 
 	crowdy::CrowdyClient* Client = Impl ? Impl->Use(ECrowdyCppTokenPlane::Game) : nullptr;
@@ -1660,11 +2240,13 @@ FCrowdyCppRequestHandle FCrowdyCppClient::InvokeFunction(int64 AppId, const FStr
 	}
 	Input["paramsJson"] = std::string(TCHAR_TO_UTF8(*ParamsJson));
 
+	const CrowdyCppTransport::FHandOffScope HandOff(*Issued.HandOffSeconds);
 	try
 	{
 		Client->gameModel().invokeAsync(Input,
-			[FireOnce](crowdy::graphql::GraphQLOutcome Out)
+			[FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
 			{
+				*Reason = OutcomeFailureReason(Out);
 				// The callback runs from Poll()/drain(), OUTSIDE the issue-time try below, so contain any throw
 				// here (e.g. bad_alloc decoding a forged response) and deliver a clean failure rather than let it
 				// escape into the engine ticker.
@@ -1691,12 +2273,15 @@ FCrowdyCppRequestHandle FCrowdyCppClient::InvokeFunction(int64 AppId, const FStr
 					// index walk over a non-flat array (an array of objects) is O(n^2). The dumped object is
 					// nesting-guarded before the recursive UE deserializer, since a forged deep value would
 					// otherwise overflow on teardown (yyjson parsed it iteratively; the UE re-parse is recursive).
-					const FString InvokeJson = Utf8ToFString(Out.data.dump());
 					TSharedPtr<FJsonObject> Parsed;
-					if (CrowdyJsonSafety::IsNestingWithinLimit(InvokeJson))
 					{
-						const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(InvokeJson);
-						FJsonSerializer::Deserialize(Reader, Parsed);
+						TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_DecodeResponse);
+						const FString InvokeJson = Utf8ToFString(Out.data.dump());
+						if (CrowdyJsonSafety::IsNestingWithinLimit(InvokeJson))
+						{
+							const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(InvokeJson);
+							FJsonSerializer::Deserialize(Reader, Parsed);
+						}
 					}
 					if (!Parsed.IsValid())
 					{
@@ -1794,7 +2379,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::ListContainers(int64 AppId, const FStr
 	};
 
 	const TIssuedRequest<FContainerListResult> Issued = BeginRequest<FContainerListResult>(
-		Impl ? Impl->Requests : nullptr, MoveTemp(Adapted), FContainerListResult());
+		Impl ? Impl->Requests : nullptr, TEXT("GameModelContainers"), MoveTemp(Adapted), FContainerListResult());
 	const TFunction<void(FContainerListResult)>& FireResult = Issued.Fire;
 	auto FireOnce = [FireResult](bool bOk, TArray<TSharedPtr<FJsonObject>> Containers)
 	{
@@ -1804,8 +2389,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::ListContainers(int64 AppId, const FStr
 		FireResult(MoveTemp(Result));
 	};
 
-	crowdy::CrowdyClient* Client = Impl ? Impl->Use(ECrowdyCppTokenPlane::Game) : nullptr;
-	if (!Client)
+	if (!Impl || !Impl->IsUsable())
 	{
 		FireOnce(false, TArray<TSharedPtr<FJsonObject>>());
 		return Issued.Handle;
@@ -1816,70 +2400,67 @@ FCrowdyCppRequestHandle FCrowdyCppClient::ListContainers(int64 AppId, const FStr
 	const std::string TypeNameStr = std::string(TCHAR_TO_UTF8(*TypeName));
 	const std::string SessionIdStr = std::string(TCHAR_TO_UTF8(*SessionId));
 
-	try
+	const TSharedRef<FBusyRetry> Retry = MakeBusyRetry(Issued, ECrowdyCppTokenPlane::Game, EBusyRetryKind::Query);
+	Retry->Send = [AppIdStr, TypeNameStr, SessionIdStr](crowdy::CrowdyClient& Client,
+		crowdy::graphql::GraphQLCallback Cb)
 	{
-		Client->gameModel().containersAsync(AppIdStr, TypeNameStr, SessionIdStr,
-			[FireOnce](crowdy::graphql::GraphQLOutcome Out)
+		Client.gameModel().containersAsync(AppIdStr, TypeNameStr, SessionIdStr, std::move(Cb));
+	};
+	Retry->Deliver = [FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
+	{
+		*Reason = OutcomeFailureReason(Out);
+		// The callback runs from Poll()/drain(), outside any issue-time try, so contain any throw here and deliver a
+		// clean failure rather than let it escape into the engine ticker.
+		try
+		{
+			TArray<TSharedPtr<FJsonObject>> Containers;
+			if (!Out.ok() || !Out.data.isArray())
 			{
-				// The callback runs from Poll()/drain(), OUTSIDE the issue-time try below, so contain any throw
-				// here and deliver a clean failure rather than let it escape into the engine ticker.
-				try
-				{
-					TArray<TSharedPtr<FJsonObject>> Containers;
-					if (!Out.ok() || !Out.data.isArray())
-					{
-						// Transport/GraphQL failure or an unexpected non-array payload: no containers, bOk false,
-						// since a missing or non-array field is always a failed read.
-						FireOnce(false, MoveTemp(Containers));
-						return;
-					}
+				// Transport/GraphQL failure or an unexpected non-array payload: no containers, bOk false,
+				// since a missing or non-array field is always a failed read.
+				FireOnce(false, MoveTemp(Containers));
+				return;
+			}
 
-					// out.data is the unwrapped [GmContainer] array. Re-serialize it and decode with the UE JSON
-					// reader so each element is a plain FJsonObject the subsystem can consume directly.
-					// yyjson parsed the response with an iterative parse, but this
-					// UE re-parse is recursive, so the dumped string is nesting-guarded first: a forged deep
-					// element would otherwise build a DOM that overflows on teardown. Over-limit rejects the
-					// whole list.
-					const FString ArrayJson = Utf8ToFString(Out.data.dump());
-					if (!CrowdyJsonSafety::IsNestingWithinLimit(ArrayJson))
-					{
-						FireOnce(false, MoveTemp(Containers));
-						return;
-					}
-					const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ArrayJson);
-					TArray<TSharedPtr<FJsonValue>> Parsed;
-					if (!FJsonSerializer::Deserialize(Reader, Parsed))
-					{
-						FireOnce(false, MoveTemp(Containers));
-						return;
-					}
-					Containers.Reserve(Parsed.Num());
-					for (const TSharedPtr<FJsonValue>& V : Parsed)
-					{
-						const TSharedPtr<FJsonObject> Obj = V.IsValid() ? V->AsObject() : nullptr;
-						if (Obj.IsValid())
-						{
-							Containers.Add(Obj);
-						}
-					}
-					FireOnce(true, MoveTemp(Containers));
-				}
-				catch (...)
+			// out.data is the unwrapped [GmContainer] array. Re-serialize it and decode with the UE JSON
+			// reader so each element is a plain FJsonObject the subsystem can consume directly.
+			// yyjson parsed the response with an iterative parse, but this
+			// UE re-parse is recursive, so the dumped string is nesting-guarded first: a forged deep
+			// element would otherwise build a DOM that overflows on teardown. Over-limit rejects the
+			// whole list.
+			TArray<TSharedPtr<FJsonValue>> Parsed;
+			bool bDecoded = false;
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_DecodeResponse);
+				const FString ArrayJson = Utf8ToFString(Out.data.dump());
+				if (CrowdyJsonSafety::IsNestingWithinLimit(ArrayJson))
 				{
-					FireOnce(false, TArray<TSharedPtr<FJsonObject>>());
+					const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ArrayJson);
+					bDecoded = FJsonSerializer::Deserialize(Reader, Parsed);
 				}
-			});
-	}
-	catch (const std::exception& Ex)
-	{
-		UE_LOG(LogCrowdyCpp, Warning, TEXT("gameModelContainers request threw: %hs"), Ex.what());
-		FireOnce(false, TArray<TSharedPtr<FJsonObject>>());
-	}
-	catch (...)
-	{
-		UE_LOG(LogCrowdyCpp, Warning, TEXT("gameModelContainers request threw a non-standard exception"));
-		FireOnce(false, TArray<TSharedPtr<FJsonObject>>());
-	}
+			}
+			if (!bDecoded)
+			{
+				FireOnce(false, MoveTemp(Containers));
+				return;
+			}
+			Containers.Reserve(Parsed.Num());
+			for (const TSharedPtr<FJsonValue>& V : Parsed)
+			{
+				const TSharedPtr<FJsonObject> Obj = V.IsValid() ? V->AsObject() : nullptr;
+				if (Obj.IsValid())
+				{
+					Containers.Add(Obj);
+				}
+			}
+			FireOnce(true, MoveTemp(Containers));
+		}
+		catch (...)
+		{
+			FireOnce(false, TArray<TSharedPtr<FJsonObject>>());
+		}
+	};
+	Impl->SendRetryable(Retry);
 	return Issued.Handle;
 }
 
@@ -1894,7 +2475,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 	FCrowdyCppJsonResult Canceled;
 	Canceled.ErrorMessage = CanceledErrorMessage();
 	const TIssuedRequest<FCrowdyCppJsonResult> Issued = BeginRequest<FCrowdyCppJsonResult>(
-		Impl ? Impl->Requests : nullptr, MoveTemp(OnDone), MoveTemp(Canceled));
+		Impl ? Impl->Requests : nullptr, *OperationName, MoveTemp(OnDone), MoveTemp(Canceled));
 	const TFunction<void(FCrowdyCppJsonResult)>& FireOnce = Issued.Fire;
 
 	if (!Impl)
@@ -1947,91 +2528,77 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 		return Issued.Handle;
 	}
 
-	crowdy::CrowdyClient* Client = Impl->Use(Chosen.GetValue());
-	if (!Client)
+	const TSharedRef<FBusyRetry> Retry =
+		MakeBusyRetry(Issued, Chosen.GetValue(), RetryKindFor(Domain, Document, OperationNameStr));
+	Retry->Send = [Document, JVars, OperationNameStr](crowdy::CrowdyClient& Client, crowdy::graphql::GraphQLCallback Cb)
 	{
-		FCrowdyCppJsonResult Result;
-		Result.ErrorMessage = TEXT("CrowdyCPP client is not available");
-		FireOnce(MoveTemp(Result));
-		return Issued.Handle;
-	}
-
-	try
+		Client.graphqlClient().requestAsync(Document, JVars, OperationNameStr, std::move(Cb));
+	};
+	Retry->Deliver = [FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
 	{
-		Client->graphqlClient().requestAsync(
-			Document, JVars, OperationNameStr,
-			[FireOnce](crowdy::graphql::GraphQLOutcome Out)
+		*Reason = OutcomeFailureReason(Out);
+		// The callback runs from Poll()/drain(), outside any issue-time try, so contain any throw here and deliver a
+		// clean failure rather than let it escape into the engine ticker.
+		try
+		{
+			FCrowdyCppJsonResult Result;
+			if (!Out.ok())
 			{
-				// The callback runs from Poll()/drain(), OUTSIDE the issue-time try below, so contain any throw here
-				// and deliver a clean failure rather than let it escape into the engine ticker.
-				try
-				{
-					FCrowdyCppJsonResult Result;
-					if (!Out.ok())
-					{
-						// Transport or GraphQL failure: no data object. bTransportOk stays false for a
-						// non-2xx call or any errors[] in the response.
-						//
-						// A WRONG_DATACENTER almost never reaches here: the client follows it and retries once,
-						// including when a concurrent request's redirect already moved the client, so what a
-						// caller sees is the answer from the datacenter it moved to. Only datacenters that keep
-						// disagreeing about an app surface it. APP_UNAVAILABLE does reach here, and is the one
-						// code worth branching on, because there is nowhere to move to.
-						Result.ErrorMessage = OutcomeErrorMessage(Out);
-						Result.ErrorCode = OutcomeErrorCode(Out);
-						FireOnce(MoveTemp(Result));
-						return;
-					}
+				// Transport or GraphQL failure: no data object. bTransportOk stays false for a
+				// non-2xx call or any errors[] in the response.
+				//
+				// A WRONG_DATACENTER almost never reaches here: the client follows it and retries once,
+				// including when a concurrent request's redirect already moved the client, so what a
+				// caller sees is the answer from the datacenter it moved to. Only datacenters that keep
+				// disagreeing about an app surface it. APP_UNAVAILABLE does reach here, and is the one
+				// code worth branching on, because there is nowhere to move to.
+				Result.ErrorMessage = OutcomeErrorMessage(Out);
+				ReadOutcomeFault(Out, Result);
+				FireOnce(MoveTemp(Result));
+				return;
+			}
 
-					// Out.data is the GraphQL response's `data` object (requestAsync does not unwrap the single root
-					// field, so it stays { "<gameModelX>": ... } - the shape FCrowdyGameApiCodec's ParseXEnvelope
-					// reads after GetDataObject). yyjson parsed the response iteratively, but this UE re-parse is
-					// recursive, so the dumped object is nesting-guarded first: a forged deep value would otherwise
-					// build a DOM that overflows on teardown. Over-limit fails closed.
-					const FString DataJson = Utf8ToFString(Out.data.dump());
-					if (CrowdyJsonSafety::IsNestingWithinLimit(DataJson))
-					{
-						const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(DataJson);
-						TSharedPtr<FJsonObject> Parsed;
-						if (FJsonSerializer::Deserialize(Reader, Parsed) && Parsed.IsValid())
-						{
-							Result.bTransportOk = true;
-							Result.Data = Parsed;
-							FireOnce(MoveTemp(Result));
-							return;
-						}
-					}
+			// Out.data is the GraphQL response's `data` object (requestAsync does not unwrap the single root
+			// field, so it stays { "<gameModelX>": ... } - the shape FCrowdyGameApiCodec's ParseXEnvelope
+			// reads after GetDataObject). yyjson parsed the response iteratively, but this UE re-parse is
+			// recursive, so the dumped object is nesting-guarded first: a forged deep value would otherwise
+			// build a DOM that overflows on teardown. Over-limit fails closed.
+			TSharedPtr<FJsonObject> Parsed;
+			bool bDecoded = false;
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_DecodeResponse);
+				const FString DataJson = Utf8ToFString(Out.data.dump());
+				if (CrowdyJsonSafety::IsNestingWithinLimit(DataJson))
+				{
+					const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(DataJson);
+					bDecoded = FJsonSerializer::Deserialize(Reader, Parsed) && Parsed.IsValid();
+				}
+			}
+			if (bDecoded)
+			{
+				Result.bTransportOk = true;
+				Result.Data = Parsed;
+				FireOnce(MoveTemp(Result));
+				return;
+			}
 
-					Result.ErrorMessage = TEXT("malformed or over-deep response data");
-					FireOnce(MoveTemp(Result));
-				}
-				catch (const std::exception& Ex)
-				{
-					FCrowdyCppJsonResult Failed;
-					Failed.ErrorMessage = FString(UTF8_TO_TCHAR(Ex.what()));
-					FireOnce(MoveTemp(Failed));
-				}
-				catch (...)
-				{
-					FCrowdyCppJsonResult Failed;
-					Failed.ErrorMessage = TEXT("Game Model runtime op callback threw a non-standard exception");
-					FireOnce(MoveTemp(Failed));
-				}
-			});
-	}
-	catch (const std::exception& Ex)
-	{
-		FCrowdyCppJsonResult Result;
-		Result.ErrorMessage = FString(UTF8_TO_TCHAR(Ex.what()));
-		FireOnce(MoveTemp(Result));
-	}
-	catch (...)
-	{
-		FCrowdyCppJsonResult Result;
-		Result.ErrorMessage = FString::Printf(
-			TEXT("operation '%s' threw a non-standard exception"), *OperationName);
-		FireOnce(MoveTemp(Result));
-	}
+			Result.ErrorMessage = TEXT("malformed or over-deep response data");
+			FireOnce(MoveTemp(Result));
+		}
+		catch (const std::exception& Ex)
+		{
+			FCrowdyCppJsonResult Failed;
+			Failed.ErrorMessage = FString(UTF8_TO_TCHAR(Ex.what()));
+			FireOnce(MoveTemp(Failed));
+		}
+		catch (...)
+		{
+			FCrowdyCppJsonResult Failed;
+			Failed.ErrorMessage = TEXT("Game Model runtime op callback threw a non-standard exception");
+			FireOnce(MoveTemp(Failed));
+		}
+	};
+	Impl->SendRetryable(Retry);
 	return Issued.Handle;
 }
 
@@ -2278,7 +2845,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::ResolveAppEndpoints(const TArray<FStri
 	FCrowdyCppAppDiscoveryResult Canceled;
 	Canceled.ErrorMessage = CanceledErrorMessage();
 	const TIssuedRequest<FCrowdyCppAppDiscoveryResult> Issued = BeginRequest<FCrowdyCppAppDiscoveryResult>(
-		Impl ? Impl->Requests : nullptr, MoveTemp(OnDone), MoveTemp(Canceled));
+		Impl ? Impl->Requests : nullptr, TEXT("AppDiscovery"), MoveTemp(OnDone), MoveTemp(Canceled));
 	const TFunction<void(FCrowdyCppAppDiscoveryResult)>& FireOnce = Issued.Fire;
 
 	// No bearer at all, and that is the point of the call: a client knows its app id long before it holds any
@@ -2310,11 +2877,13 @@ FCrowdyCppRequestHandle FCrowdyCppClient::ResolveAppEndpoints(const TArray<FStri
 		return Issued.Handle;
 	}
 
+	const CrowdyCppTransport::FHandOffScope HandOff(*Issued.HandOffSeconds);
 	try
 	{
 		Client->discovery().appsAsync(Ids,
-			[FireOnce](crowdy::graphql::GraphQLOutcome Out, std::vector<crowdy::domains::AppEndpoint> Endpoints)
+			[FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out, std::vector<crowdy::domains::AppEndpoint> Endpoints)
 			{
+				*Reason = OutcomeFailureReason(Out);
 				// Runs from Poll(), outside the try below, so contain any throw here too.
 				try
 				{

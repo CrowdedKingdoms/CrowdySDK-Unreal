@@ -82,14 +82,6 @@ namespace
 		}
 		return CROWDY_INVALID_CLASS_ID;
 	}
-
-	// Both branches of the Game API context check name the Game API, and a headless subsystem has no world, so a
-	// resolve that is actually attempted always logs one of them. Whitelisting the pair is what separates "the bind
-	// was refused before it began" from "it resolved a container and went looking for the row".
-	void ExpectGameApiContextFailure(FAutomationTestBase& Test)
-	{
-		Test.AddExpectedErrorPlain(TEXT("Game API"), EAutomationExpectedErrorFlags::Contains, 0);
-	}
 }
 
 // The enrollment path itself: a crowd entity registers with a stand-in participant, and the container it binds is
@@ -122,7 +114,6 @@ bool FCrowdyCrowdEntityBindsFromRecordedClassTest::RunTest(const FString& Parame
 	TestFalse(TEXT("the stand-in really declares no container of its own"),
 		CrowdyEntityClassContainer::TryGetContainerTypeName(StandIn->GetClass(), StandInType));
 
-	ExpectGameApiContextFailure(*this);
 	Model->HandleEntityRegisteredForTest(NetID);
 
 	FString PendingType;
@@ -130,6 +121,7 @@ bool FCrowdyCrowdEntityBindsFromRecordedClassTest::RunTest(const FString& Parame
 		Model->TryGetPendingModelEntityTypeForTest(NetID, PendingType));
 	TestEqual(TEXT("it is the type the recorded actor class declares"), PendingType, TEXT("TestCrowdActor"));
 	TestTrue(TEXT("the binding is recorded as class-derived"), Model->IsClassDerivedBindingForTest(NetID));
+	TestTrue(TEXT("and it waits for its type's bulk list"), Model->IsBulkResolveEligibleForTest(NetID));
 
 	return true;
 }
@@ -160,7 +152,6 @@ bool FCrowdyCrowdEntityBindingIsReadOnlyTest::RunTest(const FString& Parameters)
 	// Host-owned is the role that IS authoritative to create, so this is the record the clamp has to hold on.
 	Entities->RegisterEntity(MakeStandInRecord(DerivedNetID, StandIn, ECrowdyRole::HostOwned, ClassID));
 
-	ExpectGameApiContextFailure(*this);
 	Model->HandleEntityRegisteredForTest(DerivedNetID);
 
 	TestTrue(TEXT("the class-derived binding was taken"), Model->IsClassDerivedBindingForTest(DerivedNetID));
@@ -212,7 +203,6 @@ bool FCrowdyParticipantContainerOutranksRecordedClassTest::RunTest(const FString
 	FCrowdyEntityRecord Record = MakeStandInRecord(NetID, OwnActor, ECrowdyRole::RemoteProxy, OtherClassID);
 	Entities->RegisterEntity(Record);
 
-	ExpectGameApiContextFailure(*this);
 	Model->HandleEntityRegisteredForTest(NetID);
 
 	FString PendingType;
@@ -225,8 +215,8 @@ bool FCrowdyParticipantContainerOutranksRecordedClassTest::RunTest(const FString
 }
 
 // An entity whose recorded class declares no container is still left alone: nothing is pending, nothing is marked,
-// and no resolve is attempted at all. The absence of any Game API error here is the assertion that the bind never
-// began - whitelisting one would hide it.
+// and no resolve is attempted at all. The pending assertion is the proof: a remote entity that binds is parked
+// pending for its type's bulk list without any call, so the absence of a Game API error no longer shows anything.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCrowdEntityWithoutRecordedContainerTest,
 	"CrowdySDK.GameModel.CrowdEntityWithoutRecordedContainerStaysUnbound", CrowdyEntityClassTestFlags)
 bool FCrowdyCrowdEntityWithoutRecordedContainerTest::RunTest(const FString& Parameters)
@@ -434,7 +424,6 @@ bool FCrowdyClassDerivedBindingClearsOnUnregisterTest::RunTest(const FString& Pa
 	const FGuid NetID = FGuid::NewGuid();
 	Entities->RegisterEntity(MakeStandInRecord(NetID, StandIn, ECrowdyRole::HostOwned, ClassID));
 
-	ExpectGameApiContextFailure(*this);
 	Model->HandleEntityRegisteredForTest(NetID);
 	TestTrue(TEXT("the class-derived binding was taken"), Model->IsClassDerivedBindingForTest(NetID));
 

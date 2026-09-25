@@ -282,9 +282,9 @@ namespace
 		}
 		for (int32 Index = 0; Index < Desired.Num(); ++Index)
 		{
-			if (Desired[Index].Target != Current[Index].Target
+			if (!Desired[Index].Target.Equals(Current[Index].Target, ESearchCase::CaseSensitive)
 				|| Desired[Index].Property != Current[Index].Property
-				|| Desired[Index].Expression != Current[Index].Expression)
+				|| !Desired[Index].Expression.Equals(Current[Index].Expression, ESearchCase::CaseSensitive))
 			{
 				return false;
 			}
@@ -328,9 +328,9 @@ namespace
 			return Trimmed.IsEmpty() ? FString(TEXT("self")) : Trimmed;
 		};
 		if (A.FunctionName != B.FunctionName
-			|| A.DelayMsExpression != B.DelayMsExpression
-			|| A.DedupeKeyExpression != B.DedupeKeyExpression
-			|| NormalizedTarget(A.Target) != NormalizedTarget(B.Target)
+			|| !A.DelayMsExpression.Equals(B.DelayMsExpression, ESearchCase::CaseSensitive)
+			|| !A.DedupeKeyExpression.Equals(B.DedupeKeyExpression, ESearchCase::CaseSensitive)
+			|| !NormalizedTarget(A.Target).Equals(NormalizedTarget(B.Target), ESearchCase::CaseSensitive)
 			|| A.Params.Num() != B.Params.Num())
 		{
 			return false;
@@ -340,7 +340,7 @@ namespace
 		{
 			const FCrowdyGameModelTimerParam* Match = B.Params.FindByPredicate(
 				[&ParamA](const FCrowdyGameModelTimerParam& Candidate) { return Candidate.Name == ParamA.Name; });
-			if (!Match || Match->Expression != ParamA.Expression)
+			if (!Match || !Match->Expression.Equals(ParamA.Expression, ESearchCase::CaseSensitive))
 			{
 				return false;
 			}
@@ -417,7 +417,7 @@ namespace
 		{
 			const FCrowdyGameModelNotificationArg* Match = B.FindByPredicate(
 				[&ArgA](const FCrowdyGameModelNotificationArg& X) { return X.Name == ArgA.Name; });
-			if (!Match || Match->Expression != ArgA.Expression)
+			if (!Match || !Match->Expression.Equals(ArgA.Expression, ESearchCase::CaseSensitive))
 			{
 				return false;
 			}
@@ -992,7 +992,7 @@ bool FCrowdySchemaSync::JsonValueEquals(const FString& A, const FString& B)
 {
 	const FString TA = A.TrimStartAndEnd();
 	const FString TB = B.TrimStartAndEnd();
-	if (TA == TB)
+	if (TA.Equals(TB, ESearchCase::CaseSensitive))
 	{
 		return true;
 	}
@@ -1006,14 +1006,14 @@ bool FCrowdySchemaSync::JsonValueEquals(const FString& A, const FString& B)
 	{
 		return false; // unparseable JSON on one side: TA != TB and both non-empty here, so treat as changed
 	}
-	return CanonicalizeJsonValue(VA) == CanonicalizeJsonValue(VB);
+	return CanonicalizeJsonValue(VA).Equals(CanonicalizeJsonValue(VB), ESearchCase::CaseSensitive);
 }
 
 bool FCrowdySchemaSync::InvokePolicyEquals(const FString& Desired, const FString& Current)
 {
 	const FString TrimmedDesired = Desired.TrimStartAndEnd();
 	const FString TrimmedCurrent = Current.TrimStartAndEnd();
-	if (TrimmedDesired == TrimmedCurrent)
+	if (TrimmedDesired.Equals(TrimmedCurrent, ESearchCase::CaseSensitive))
 	{
 		return true;
 	}
@@ -1065,7 +1065,7 @@ bool FCrowdySchemaSync::InvokePolicyEquals(const FString& Desired, const FString
 	StripServerComputed(DesiredValue);
 	StripServerComputed(CurrentValue);
 
-	return CanonicalizeJsonValue(DesiredValue) == CanonicalizeJsonValue(CurrentValue);
+	return CanonicalizeJsonValue(DesiredValue).Equals(CanonicalizeJsonValue(CurrentValue), ESearchCase::CaseSensitive);
 }
 
 FString FCrowdySchemaSync::ToKitSnakeCase(const FString& Name)
@@ -1675,7 +1675,7 @@ void FCrowdySchemaSync::DiffFunctions(
 		const bool bContainerChanged = Cur->ContainerTypeName != D.ContainerTypeName;
 		const bool bDescChanged = Cur->Description != D.Description;
 		const bool bReturnTypeChanged = Cur->ReturnType != D.ReturnType;
-		const bool bReturnExprChanged = Cur->ReturnExpression != D.ReturnExpression;
+		const bool bReturnExprChanged = !Cur->ReturnExpression.Equals(D.ReturnExpression, ESearchCase::CaseSensitive);
 		const bool bScopeChanged = Cur->InvokeScope != D.InvokeScope;
 		// An effect toggling "run automatically" flips the function's autonomous flag with no other change; it must
 		// drive a function upsert or the flag never reaches the server (and the automation cannot run).

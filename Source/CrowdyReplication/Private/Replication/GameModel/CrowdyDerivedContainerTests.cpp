@@ -241,7 +241,6 @@ bool FCrowdyStandInBindsComponentContainerReadOnlyTest::RunTest(const FString& P
 
 	UCrowdyEntitySubsystem* Entities = MakeDerivedContainerEntities();
 	UCrowdyGameModelSubsystem* Model = MakeDerivedContainerModel(Entities);
-	ExpectDerivedContainerApiFailure(*this);
 
 	// The anchor: an entity drawn as a row, standing for an actor whose containers live on its components.
 	const FGuid AnchorNetID(0xA0, 1, 2, 3);
@@ -315,7 +314,6 @@ bool FCrowdyAnchorTeardownReleasesStandInsTest::RunTest(const FString& Parameter
 	UCrowdyEntitySubsystem* Entities = MakeDerivedContainerEntities();
 	UCrowdyGameModelSubsystem* Model = MakeDerivedContainerModel(Entities);
 	Model->BindEntityLifecycleForTest(Entities);
-	ExpectDerivedContainerApiFailure(*this);
 
 	const int32 MappingsBefore = Entities->GetParticipantMappingCountForTest();
 
@@ -414,9 +412,8 @@ bool FCrowdySubRecordResolvesToAnchorTest::RunTest(const FString& Parameters)
  *
  * Dropping duplicates is the easy half. Keeping the latest is the half that matters: a container rebound to a
  * different entity mid-window would otherwise have its values applied to the entity that let it go, and a bar
- * would read a value that belongs to somebody else. Mutating the map write in EnqueueRefreshPull to keep the
- * first entry (a FindOrAdd that does not overwrite) turns the latest-wins assertion red while leaving the
- * one-pull assertion green, which is why both are here.
+ * would read a value that belongs to somebody else. The drain addresses whoever holds the container when it runs,
+ * which is what the latest-wins assertion reads.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRefreshPullsCoalesceKeepingLatestTest,
 	"CrowdySDK.GameModel.RefreshPullsCoalesceKeepingLatest", CrowdyDerivedContainerTestFlags)
@@ -691,34 +688,34 @@ bool FCrowdyDerivedContainerCountIsCappedTest::RunTest(const FString& Parameters
 }
 
 /**
- * The coalesce window a refresh pull waits widens as the call allowance is spent.
- *
- * A pull IS a Game API call against the same per-window allowance an invoke spends, and it is counted in the same
- * ledger. A window fixed at its authored length emits pulls at one rate into an allowance those pulls are
- * themselves spending, so a fight surfaces as the server refusing rather than as this client merging harder.
- * Mutating ResolveRefreshPullWindowSeconds back to returning RefreshPullCoalesceSeconds turns this red.
+ * A refresh pull waits its authored window however much of the invoke allowance is spent. A pull spends none of
+ * that allowance, so stretching its window under invoke pressure would only make values land later.
  */
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRefreshPullWindowWidensUnderBudgetTest,
-	"CrowdySDK.GameModel.RefreshPullWindowWidensUnderBudget", CrowdyDerivedContainerTestFlags)
-bool FCrowdyRefreshPullWindowWidensUnderBudgetTest::RunTest(const FString& Parameters)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRefreshPullWindowIgnoresInvokeLedgerTest,
+	"CrowdySDK.GameModel.RefreshPullWindowIgnoresInvokeLedger", CrowdyDerivedContainerTestFlags)
+bool FCrowdyRefreshPullWindowIgnoresInvokeLedgerTest::RunTest(const FString& Parameters)
 {
-	UCrowdyEntitySubsystem* Entities = MakeDerivedContainerEntities();
-	UCrowdyGameModelSubsystem* Model = MakeDerivedContainerModel(Entities);
+	FCrowdyDerivedContainerWorld Env;
+	UCrowdyGameModelSubsystem* Model = NewObject<UCrowdyGameModelSubsystem>(Env.World);
+	Model->SetEntitySubsystemForTest(MakeDerivedContainerEntities());
 
-	TestEqual(TEXT("with the allowance untouched a pull waits exactly as long as it is authored to"),
-		Model->GetRefreshPullWindowSecondsForTest(),
-		UCrowdyGameModelSubsystem::RefreshPullCoalesceSeconds);
-
-	// A fight's worth of calls, whatever made them: the allowance does not care which kind they were.
 	const double Now = FApp::GetCurrentTime();
 	for (int32 Index = 0; Index < UCrowdyGameModelSubsystem::InvokeBudgetLimitPerWindow; ++Index)
 	{
 		Model->RecordInvokeAttemptForTest(Now);
 	}
+	if (!TestEqual(TEXT("the invoke allowance reads as fully spent"), Model->GetRecentInvokeCount(),
+		UCrowdyGameModelSubsystem::InvokeBudgetLimitPerWindow))
+	{
+		return false;
+	}
 
-	TestTrue(TEXT("with the allowance spent the same pull waits longer, so fewer of them are sent"),
-		Model->GetRefreshPullWindowSecondsForTest() > UCrowdyGameModelSubsystem::RefreshPullCoalesceSeconds);
+	const FGuid Holder(0xB3, 1, 2, 3);
+	Model->BindEntityContainerForTest(Holder, TEXT("container-hot"));
+	Model->HandleModelChangedByContainer(TEXT("container-hot"));
 
+	TestEqual(TEXT("the drain is armed for exactly the authored window"), Model->GetRefreshPullTimerRateForTest(),
+		UCrowdyGameModelSubsystem::RefreshPullCoalesceSeconds);
 	return true;
 }
 

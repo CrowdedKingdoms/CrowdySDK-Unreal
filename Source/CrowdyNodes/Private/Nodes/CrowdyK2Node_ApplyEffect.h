@@ -40,6 +40,7 @@ public:
 
 	//~ UEdGraphNode
 	virtual void AllocateDefaultPins() override;
+	virtual void PostReconstructNode() override;
 	virtual void PinDefaultValueChanged(UEdGraphPin* Pin) override;
 	virtual void PinConnectionListChanged(UEdGraphPin* Pin) override;
 	virtual void PostPlacedNewNode() override;
@@ -80,6 +81,9 @@ private:
 	// Set only while a reconstruction pass is in flight (see ReallocatePinsDuringReconstruction); GetLiteralEffect
 	// prefers this over the live Effect pin, which is briefly empty during that window. Never serialized.
 	UCrowdyEffect* PendingReconstructionEffect = nullptr;
+
+	// Magnitude values changed only in letter case, carried across a rebuild that would reset them. Never serialized.
+	TMap<FName, FString> PendingCaseOnlyMagnitudeValues;
 
 	// True between scheduling a deferred reconstruct and it firing, so a burst of default-value changes coalesces
 	// into a single rebuild. Transient editor state, never serialized.

@@ -22,7 +22,7 @@ struct FCrowdyInvokeResult;
  *
  * An effect that opts into coalescing is not sent immediately: repeated applies to the same target inside its
  * window are summed and sent as one server call, because the server admits only a limited number of Game Model
- * calls per player per app and an autofire weapon spends that allowance in seconds. Coalescing is off by default,
+ * invokes per player per app and an autofire weapon spends that allowance in seconds. Coalescing is off by default,
  * so every effect that does not ask for it behaves exactly as it always has. See UCrowdyEffect::bCoalescable for
  * what has to match before two applies merge, and ApplyInternal for what changes about timing and retries.
  *
