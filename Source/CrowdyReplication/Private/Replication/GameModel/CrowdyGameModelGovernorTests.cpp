@@ -11,13 +11,7 @@
 // static (or drives the ledger through a test-only seam), so the governor's own arithmetic is provable with no
 // world, no server and no timer.
 //
-// Two things here are NOT provable headless. TryScheduleBudgetRetry actually arming and firing a retry end to end
-// needs a world and a timer manager, so only its decision inputs are covered here; that a real refusal decodes into
-// those inputs is proved separately against the bridge in CrowdySDK.CrowdyCpp.InvokeRateLimitRefusal, off a canned
-// response. And the point where a Game API call is COUNTED sits where the client is resolved, which needs a game
-// instance hosting a real client: headlessly every call fails before it gets there, so nothing is ever counted. Both
-// need a live PIE/network gate; this suite covers the decision functions they are built from, and the ledger they
-// write into.
+// Retries armed and fired end to end on a real world's timer manager are covered in CrowdySDK.GameModel.BusyRetry.
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyGovernorTestFlags =

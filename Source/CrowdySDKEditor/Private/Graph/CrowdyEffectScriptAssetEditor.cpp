@@ -226,7 +226,7 @@ TArray<FString> FCrowdyEffectScriptAssetEditor::GetFunctionNames() const
 
 void FCrowdyEffectScriptAssetEditor::OnScriptCommitted(const FString& Text)
 {
-	if (!Effect || Effect->EffectScript == Text)
+	if (!Effect || Effect->EffectScript.Equals(Text, ESearchCase::CaseSensitive))
 	{
 		return;
 	}

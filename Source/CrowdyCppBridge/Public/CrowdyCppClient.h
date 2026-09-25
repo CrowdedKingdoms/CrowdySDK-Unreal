@@ -98,6 +98,15 @@ struct FCrowdyCppInvokeResult
  */
 CROWDYCPPBRIDGE_API bool CrowdyCppIsModelRefusalCode(const FString& Code);
 
+// How many times a request the platform refused as busy is sent again before its refusal is reported.
+inline constexpr int32 CrowdyCppMaxBusyRetries = 3;
+
+// Whether busy refusals are retried at all: the crowdy.net.retry.busy console variable. Game thread only.
+CROWDYCPPBRIDGE_API bool CrowdyCppIsBusyRetryEnabled();
+
+// Wait before retry RetryIndex: a named wait plus 0-20% (at least 100 ms), unset past 5 s; else 0.1-0.2 s doubled.
+CROWDYCPPBRIDGE_API TOptional<double> CrowdyCppBusyRetryDelaySeconds(int32 RetryIndex, TOptional<int64> RetryAfterMs);
+
 /**
  * The parsed outcome of a Game Model runtime op routed generically through CrowdyCPP. Data is the GraphQL
  * response's `data` object (re-serialized from the CrowdyCPP outcome, nesting-guarded, then re-parsed with the UE
@@ -118,6 +127,11 @@ struct FCrowdyCppJsonResult
 	// the app's datacenter cannot serve it right now and there is nowhere else to go, so a retry elsewhere is not
 	// the answer and ErrorMessage is worth showing verbatim.
 	FString ErrorCode;
+
+	// The same error's blame verbatim, its retryable (only alongside a blame) and retryAfterMs, after any retries.
+	FString Blame;
+	bool bRetryable = false;
+	TOptional<int64> RetryAfterMs;
 };
 
 /**
@@ -311,6 +325,38 @@ struct FCrowdyCppRealtimeControlEvent
 	bool IsTerminal() const { return !IsDraining() && Status == TEXT("failed"); }
 };
 
+// Completed calls, failures and issue-to-completion latency for one operation name, subscriptions excluded.
+struct FCrowdyCppOpStats
+{
+	FString Operation;
+	int32 Calls = 0;
+	int32 Failures = 0;
+	// Re-sends that went out after a platform refusal, and requests that succeeded after at least one of those.
+	int32 Retries = 0;
+	int32 RecoveredByRetry = 0;
+	double MaxMs = 0.0;
+	// The most recent latencies, oldest first, at most FCrowdyCppClient::OpLatencySamples of them.
+	TArray<double> RecentLatenciesMs;
+	// Final attempt sent to handed to the engine HTTP module, for requests handed off and not canceled.
+	TArray<double> RecentSdkMs;
+	// Handed off to completion delivered, including any wait inside the HTTP module and until the next Poll.
+	TArray<double> RecentHttpMs;
+	// Failures by reason: the server's error code, "http <status>", "graphql", "rejected", "canceled" or "transport".
+	// At most eight reasons per operation; the rest are counted under "other".
+	TArray<TPair<FString, int32>> FailureReasons;
+};
+
+// Bytes the HTTP transport sent and received, how many responses it got, and how many requests it holds open now
+// and at most since the last reset.
+struct FCrowdyCppTransportStats
+{
+	int64 RequestBytes = 0;
+	int64 ResponseBytes = 0;
+	int32 Responses = 0;
+	int32 InFlight = 0;
+	int32 PeakInFlight = 0;
+};
+
 /**
  * An opaque reference to one issued request, returned by every issuing call. Its only use is to cancel that request
  * before it completes; it carries no result and it does not keep anything alive. A handle whose request has already
@@ -435,6 +481,13 @@ public:
 	// against the right origin under the right bearer. False when no request has been issued or this is a real client.
 	bool GetLastTestRequest(FString& OutUrl, FString& OutAuthorizationHeader) const;
 
+	// The body of the last request a client from MakeForTest sent. False when none has been sent or on a real client.
+	bool GetLastTestRequestBody(FString& OutBody) const;
+
+	// Make a client from MakeForTest record each request's hand-off to the transport, as the real transport does, so
+	// its sdk and http samples fill. Off by default. No-op on a real client.
+	void SetTestStampsHandOff(bool bStamp);
+
 	// Script per-request (status, body) answers for a client from MakeForTest, consumed in order; requests past the
 	// end of the script get the canned response the client was built with. Lets one test drive a sequence such as a
 	// datacenter redirect followed by the retried call's answer. No-op on a real client.
@@ -484,6 +537,21 @@ public:
 	// transport failure without inspecting anything else.
 	static const FString& CanceledErrorMessage();
 
+	// Diagnostics since the last ResetStats: every completed request by operation name, and the transport's totals.
+	// Game thread only. A test client's canned transport counts requests in flight but no bytes.
+	static constexpr int32 OpLatencySamples = 256;
+	void GetStats(TArray<FCrowdyCppOpStats>& OutOps, FCrowdyCppTransportStats& OutTransport) const;
+	void ResetStats();
+
+	// How many refused requests may wait out a retry backoff at once; past it a refusal goes straight to its caller.
+	static constexpr int32 MaxParkedRetries = 256;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	// Requests waiting out a retry backoff now, and when the soonest falls due in FPlatformTime seconds (0 for none).
+	int32 NumTestWaitingRetries() const;
+	double GetTestNextRetryDueSeconds() const;
+#endif
+
 	// gameModelContainerState. OnDone runs on the calling thread exactly once, from Poll() for a request that
 	// reaches the server and inline for one that fails before it is issued. A test using MakeForTest must call
 	// Poll() to surface the canned result.
@@ -497,7 +565,8 @@ public:
 		const FString& SessionId, const FString& ParamsJson,
 		TFunction<void(FCrowdyCppInvokeResult)> OnDone);
 
-	// gameModelContainers. TypeName and SessionId are omitted from the request when empty. bOk is the
+	// gameModelContainers, one page: no limit or offset is sent, so the server answers with its default page size
+	// and a longer list is cut short. TypeName and SessionId are omitted from the request when empty. bOk is the
 	// transport-success flag (an empty list is bOk == true, empty array); a canceled read reports bOk false with an
 	// empty list. Same OnDone contract as above.
 	FCrowdyCppRequestHandle ListContainers(int64 AppId, const FString& TypeName, const FString& SessionId,
@@ -508,6 +577,8 @@ public:
 	// is not being asked for. A name the domain does not define fails without a round trip. Variables is the full
 	// GraphQL variables object. On success the raw `data` object is handed back for the caller to parse. Same
 	// OnDone contract as the calls above (exactly once, from Poll()).
+	//
+	// Queries (and GameModelEnsureContainer on PLATFORM_BUSY only) refused by the platform are resent before OnDone.
 	//
 	// One origin serves every operation, so all that is left to choose is the bearer, and the two are not
 	// interchangeable: the same call under the app-scoped bearer and under the session bearer answers about

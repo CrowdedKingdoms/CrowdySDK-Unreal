@@ -55,6 +55,9 @@ bool FCrowdyBulkResolveListVariablesTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("an oversized limit is clamped to 1000"), Oversized->GetNumberField(TEXT("limit")), 1000.0);
 	const TSharedPtr<FJsonObject> AtCap = FCrowdyGameApiCodec::BuildListContainersByTypeVariables(42, TEXT("Node"), FString(), 1000, 0);
 	TestEqual(TEXT("a limit at the cap is sent as is"), AtCap->GetNumberField(TEXT("limit")), 1000.0);
+
+	const TSharedPtr<FJsonObject> AnyType = FCrowdyGameApiCodec::BuildListContainersByTypeVariables(42, FString(), FString(), 1000, 0);
+	TestFalse(TEXT("an empty type is omitted, which lists every type"), AnyType->HasField(TEXT("typeName")));
 	return true;
 }
 
@@ -123,7 +126,8 @@ bool FCrowdyBulkResolveMatchTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// A Host-owned participant is bulk-eligible; a locally-owned one binds its own row and is not.
+// A Host-owned participant and a remote copy of another player's entity are bulk-eligible; a locally owned
+// per-player entity binds its own row and is not.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBulkResolveEligibilityTest,
 	"CrowdySDK.GameModel.BulkResolveEligibility", CrowdyBulkResolveTestFlags)
 bool FCrowdyBulkResolveEligibilityTest::RunTest(const FString& Parameters)
@@ -137,9 +141,16 @@ bool FCrowdyBulkResolveEligibilityTest::RunTest(const FString& Parameters)
 	const FGuid SharedNetID = Entities->RegisterParticipant(Shared, ECrowdyOwnership::Host);
 	UObject* Own = NewObject<UCrowdyGameModelTestTarget>(GetTransientPackage());
 	const FGuid OwnNetID = Entities->RegisterParticipant(Own, ECrowdyOwnership::LocalClient);
+	FCrowdyEntityRecord Proxy;
+	Proxy.NetID = FGuid::NewGuid();
+	Proxy.OwnerID = FGuid::NewGuid();
+	Proxy.Role = ECrowdyRole::RemoteProxy;
+	Proxy.Participant = NewObject<UCrowdyGameModelTestTarget>(GetTransientPackage());
+	Entities->RegisterEntity(Proxy);
 
 	TestTrue(TEXT("a Host-owned entity is bulk-eligible"), Model->IsBulkResolveEligibleForTest(SharedNetID));
-	TestFalse(TEXT("a locally-owned entity is not"), Model->IsBulkResolveEligibleForTest(OwnNetID));
+	TestTrue(TEXT("a remote copy of another player's entity is bulk-eligible"), Model->IsBulkResolveEligibleForTest(Proxy.NetID));
+	TestFalse(TEXT("a locally owned per-player entity is not"), Model->IsBulkResolveEligibleForTest(OwnNetID));
 	TestFalse(TEXT("an unknown entity is not"), Model->IsBulkResolveEligibleForTest(FGuid::NewGuid()));
 	return true;
 }
@@ -200,7 +211,7 @@ bool FCrowdyBulkResolveSweepRearmsFromItsOwnTickTest::RunTest(const FString& Par
 }
 
 // The sweep hands Host-owned pending entities of one type to the bulk path as ONE group and spends no per-entity
-// resolve on them, while a locally-owned entity still takes its own ensure. Mutating away the BulkHandled skip in
+// resolve on them, while a locally owned per-player entity still takes its own ensure. Mutating away the BulkHandled skip in
 // RetryPendingModelEntities turns the second assertion red.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBulkResolveSweepGroupsSharedEntitiesTest,
 	"CrowdySDK.GameModel.BulkResolveSweepGroupsSharedEntities", CrowdyBulkResolveTestFlags)
@@ -239,12 +250,12 @@ bool FCrowdyBulkResolveSweepGroupsSharedEntitiesTest::RunTest(const FString& Par
 
 	Model->RetryPendingModelEntitiesForTest();
 	TestEqual(TEXT("five shared entities of one type are one bulk group"), Model->GetBulkResolveDispatchCountForTest(), 1);
-	TestEqual(TEXT("only the locally-owned entity took a per-entity resolve"), Model->GetContainerResolveStartCountForTest(), 1);
+	TestEqual(TEXT("only the locally owned per-player entity took a per-entity resolve"), Model->GetContainerResolveStartCountForTest(), 1);
 	for (const FGuid& NetID : SharedNetIDs)
 	{
 		TestEqual(TEXT("a shared entity was never asked about one by one"), Model->GetPendingRetryAttemptsForTest(NetID), 0);
 	}
-	TestEqual(TEXT("the locally-owned entity was"), Model->GetPendingRetryAttemptsForTest(OwnNetID), 1);
+	TestEqual(TEXT("the locally owned per-player entity was"), Model->GetPendingRetryAttemptsForTest(OwnNetID), 1);
 	return true;
 }
 
@@ -369,5 +380,287 @@ bool FCrowdyBulkStateChunksTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("a full chunk's variables carry 500 ids"), Vars->GetArrayField(TEXT("containerIds")).Num(), 500);
 	return true;
 }
+
+namespace
+{
+	const TCHAR* const BulkProxyEndpoint = TEXT("https://game.test");
+
+	// A full list page of rows whose keys name no entity here.
+	FString BulkProxyFullPage(int32 Page)
+	{
+		FString Body = TEXT("{\"data\":{\"gameModelContainers\":[");
+		for (int32 Row = 0; Row < UCrowdyGameModelSubsystem::BulkResolvePageSize; ++Row)
+		{
+			Body += FString::Printf(TEXT("%s{\"containerId\":\"r%d-%d\",\"typeName\":\"Hero\",\"bindingKey\":\"k%d-%d\",\"sessionId\":\"\"}"),
+				Row == 0 ? TEXT("") : TEXT(","), Page, Row, Page, Row);
+		}
+		return Body + TEXT("]}}");
+	}
+
+	// A signed-in model with a canned client that answers every call with an empty list, counting each request.
+	struct FBulkProxyRig
+	{
+		UCrowdyEntitySubsystem* Entities = nullptr;
+		UCrowdyGameModelSubsystem* Model = nullptr;
+		FCrowdyGameModelTestClientHost ClientHost;
+		FGuid LocalPlayer = FGuid::NewGuid();
+		FGuid HostAnchor;
+		TArray<UObject*> Keep;
+		int32 Sends = 0;
+
+		FBulkProxyRig()
+			: Entities(NewObject<UCrowdyEntitySubsystem>(GetTransientPackage()))
+			, Model(NewObject<UCrowdyGameModelSubsystem>(GetTransientPackage()))
+			, ClientHost(Model, BulkProxyEndpoint, TEXT("{\"data\":{\"gameModelContainers\":[]}}"))
+		{
+			Entities->SetLocalPlayerID(LocalPlayer);
+			Model->SetEntitySubsystemForTest(Entities);
+			Model->BeginWorldSessionForTest();
+			Model->SetApiContextForTest(BulkProxyEndpoint, TEXT("test-token"), 42);
+			ClientHost.Client->SetTestOnRequest([this](const FString&) { ++Sends; });
+		}
+
+		~FBulkProxyRig()
+		{
+			ClientHost.Client->SetTestOnRequest(nullptr);
+		}
+
+		// A pending remote copy of another player's entity.
+		FGuid AddProxy()
+		{
+			FCrowdyEntityRecord Record;
+			Record.NetID = FGuid::NewGuid();
+			Record.OwnerID = FGuid::NewGuid();
+			Record.Role = ECrowdyRole::RemoteProxy;
+			Record.Participant = Keep.Add_GetRef(NewObject<UCrowdyGameModelTestTarget>(GetTransientPackage()));
+			Entities->RegisterEntity(Record);
+			Model->AddPendingModelEntityForTest(Record.NetID, TEXT("Hero"));
+			return Record.NetID;
+		}
+
+		// A pending shared entity, enrolled under one Host anchor since a participant's id is one per class.
+		FGuid AddShared()
+		{
+			if (!HostAnchor.IsValid())
+			{
+				HostAnchor = Entities->RegisterParticipant(Keep.Add_GetRef(NewObject<UCrowdyGameModelTestTarget>(GetTransientPackage())),
+					ECrowdyOwnership::Host);
+			}
+			UCrowdyGameModelTestComponent* Shared = NewObject<UCrowdyGameModelTestComponent>(GetTransientPackage());
+			Keep.Add(Shared);
+			const FGuid NetID = Entities->RegisterSubParticipant(Shared, HostAnchor);
+			Model->AddPendingModelEntityForTest(NetID, TEXT("Hero"));
+			return NetID;
+		}
+
+		// The variables the last request carried: a keyed read names a binding key and no page, an ensure an input.
+		TSharedPtr<FJsonObject> LastVariables() const
+		{
+			FString Body;
+			ClientHost.Client->GetLastTestRequestBody(Body);
+			const TSharedPtr<FJsonObject> Request = ParseObject(Body);
+			const TSharedPtr<FJsonObject>* Variables = nullptr;
+			return Request.IsValid() && Request->TryGetObjectField(TEXT("variables"), Variables) ? *Variables : MakeShared<FJsonObject>();
+		}
+
+		bool PollIdle()
+		{
+			return ClientHost.PollUntil([this] { return ClientHost.Client->NumPendingRequests() == 0; });
+		}
+	};
+}
+
+// A miss is decided by the entity's role: a remote copy the list read to its end makes no call and backs off, one a
+// cut list never reached reads its own row by key, and a shared entity still ensures its row.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBulkResolveMissByRoleTest,
+	"CrowdySDK.GameModel.BulkResolveMissDecidedByRole", CrowdyBulkResolveTestFlags)
+bool FCrowdyBulkResolveMissByRoleTest::RunTest(const FString& Parameters)
+{
+	FBulkProxyRig Rig;
+	const FGuid Absent = Rig.AddProxy();
+	Rig.Model->FinishBulkResolveForTest(TEXT("Hero"), FString(), {Absent}, {}, true);
+	TestEqual(TEXT("a remote copy the complete list did not name makes no call"), Rig.Sends, 0);
+	TestEqual(TEXT("and starts no resolve"), Rig.Model->GetContainerResolveStartCountForTest(), 0);
+	TestEqual(TEXT("it backs off instead"), Rig.Model->GetPendingRetryAttemptsForTest(Absent), 1);
+	FString Type;
+	TestTrue(TEXT("and stays pending"), Rig.Model->TryGetPendingModelEntityTypeForTest(Absent, Type));
+
+	const FGuid Unreached = Rig.AddProxy();
+	Rig.Model->FinishBulkResolveForTest(TEXT("Hero"), FString(), {Unreached}, {}, false);
+	TestEqual(TEXT("a remote copy a cut list never reached sends one call"), Rig.Sends, 1);
+	const TSharedPtr<FJsonObject> Keyed = Rig.LastVariables();
+	TestTrue(TEXT("its keyed read"), !Keyed->HasField(TEXT("limit"))
+		&& Keyed->GetStringField(TEXT("bindingKey")) == FCrowdyModelIdentity::NetIDToContainerKey(Unreached));
+	Rig.PollIdle();
+
+	const FGuid Shared = Rig.AddShared();
+	Rig.Model->FinishBulkResolveForTest(TEXT("Hero"), FString(), {Shared}, {}, true);
+	TestEqual(TEXT("a shared miss on a complete list still sends one call"), Rig.Sends, 2);
+	TestTrue(TEXT("its ensure"), Rig.LastVariables()->HasField(TEXT("input")));
+	Rig.PollIdle();
+	return true;
+}
+
+// A hit for an entity that is now owned here is not bound from the list: its own ensure binds it, which refuses a
+// row another user holds. A remote copy's hit and a shared entity's hit still bind.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBulkResolveHitNowOwnedHereTest,
+	"CrowdySDK.GameModel.BulkResolveHitNowOwnedHereIsNotBound", CrowdyBulkResolveTestFlags)
+bool FCrowdyBulkResolveHitNowOwnedHereTest::RunTest(const FString& Parameters)
+{
+	FBulkProxyRig Rig;
+	const FGuid Moved = Rig.AddProxy();
+	const FGuid Remote = Rig.AddProxy();
+	const FGuid Shared = Rig.AddShared();
+	Rig.Entities->ReassignOwnership(Moved, Rig.LocalPlayer, FGuid());
+	if (!TestTrue(TEXT("ownership moved here while the list was out"), Rig.Entities->IsLocallyOwned(Moved)))
+	{
+		return false;
+	}
+
+	TArray<UCrowdyGameModelSubsystem::FCrowdyBulkResolveHit> Hits;
+	for (const TPair<FGuid, const TCHAR*>& Listed : { TPair<FGuid, const TCHAR*>(Moved, TEXT("c-moved")),
+		TPair<FGuid, const TCHAR*>(Remote, TEXT("c-remote")), TPair<FGuid, const TCHAR*>(Shared, TEXT("c-shared")) })
+	{
+		UCrowdyGameModelSubsystem::FCrowdyBulkResolveHit& Hit = Hits.AddDefaulted_GetRef();
+		Hit.NetID = Listed.Key;
+		Hit.ContainerId = Listed.Value;
+	}
+	Rig.Model->FinishBulkResolveForTest(TEXT("Hero"), FString(), {Moved, Remote, Shared}, Hits, true);
+
+	FString Bound;
+	TestFalse(TEXT("the entity now owned here is not bound from the list"), Rig.Model->TryGetContainerId(Moved, Bound));
+	TestTrue(TEXT("a remote copy's hit binds"), Rig.Model->TryGetContainerId(Remote, Bound) && Bound == TEXT("c-remote"));
+	TestTrue(TEXT("a shared entity's hit binds"), Rig.Model->TryGetContainerId(Shared, Bound) && Bound == TEXT("c-shared"));
+	TestEqual(TEXT("two hits were bound"), Rig.Model->GetBulkResolveHitCountForTest(), 2);
+	TestTrue(TEXT("the owned entity went on to its own ensure"), Rig.Model->GetPendingRetryAttemptsForTest(Moved) == 1);
+	Rig.PollIdle();
+	return true;
+}
+
+// A group with no shared entity reads at most one page per entity. A walk cut by that budget marks its type, and
+// from then on that type's remote copies resolve one by one however many there are, while a shared entity still lists.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBulkResolveProxyPageBudgetTest,
+	"CrowdySDK.GameModel.BulkResolveProxyPageBudget", CrowdyBulkResolveTestFlags)
+bool FCrowdyBulkResolveProxyPageBudgetTest::RunTest(const FString& Parameters)
+{
+	FBulkProxyRig Rig;
+	Rig.ClientHost.Client->SetTestResponseScript({ TPair<int32, FString>(200, BulkProxyFullPage(0)),
+		TPair<int32, FString>(200, BulkProxyFullPage(1)), TPair<int32, FString>(200, TEXT("{\"data\":{\"gameModelContainers\":[]}}")) });
+	const FGuid First = Rig.AddProxy();
+	const FGuid Second = Rig.AddProxy();
+
+	Rig.Model->RetryPendingModelEntitiesForTest();
+	TestEqual(TEXT("the two remote copies are one group"), Rig.Model->GetBulkResolveDispatchCountForTest(), 1);
+	TestTrue(TEXT("every call landed"), Rig.PollIdle());
+	TestEqual(TEXT("two entities read at most two pages"), Rig.Model->GetBulkResolveListCallCountForTest(), 2);
+	TestTrue(TEXT("the cut walk marks its type"), Rig.Model->IsBulkResolveGroupCutForTest(TEXT("Hero"), FString()));
+	TestEqual(TEXT("both misses read their own row by key"), Rig.Model->GetContainerResolveStartCountForTest(), 2);
+	TestTrue(TEXT("and both back off"), Rig.Model->GetPendingRetryAttemptsForTest(First) == 1
+		&& Rig.Model->GetPendingRetryAttemptsForTest(Second) == 1);
+
+	Rig.AddProxy();
+	Rig.AddProxy();
+	Rig.AddProxy();
+	Rig.Model->RetryPendingModelEntitiesForTest();
+	TestEqual(TEXT("remote copies of a cut type are not listed"), Rig.Model->GetBulkResolveDispatchCountForTest(), 1);
+	TestEqual(TEXT("no page is read for them"), Rig.Model->GetBulkResolveListCallCountForTest(), 2);
+	TestEqual(TEXT("the three new ones resolve one by one, the two backing off do not"),
+		Rig.Model->GetContainerResolveStartCountForTest(), 5);
+	Rig.PollIdle();
+
+	Rig.AddShared();
+	Rig.Model->RetryPendingModelEntitiesForTest();
+	TestEqual(TEXT("a shared entity of a cut type still lists"), Rig.Model->GetBulkResolveDispatchCountForTest(), 2);
+	Rig.PollIdle();
+	return true;
+}
+
+// A remote copy whose own backoff is running is kept out of the next list.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBulkResolveBackoffSitsOutTest,
+	"CrowdySDK.GameModel.BulkResolveBackingOffEntitySitsOutTheList", CrowdyBulkResolveTestFlags)
+bool FCrowdyBulkResolveBackoffSitsOutTest::RunTest(const FString& Parameters)
+{
+	FBulkProxyRig Rig;
+	const FGuid Absent = Rig.AddProxy();
+	Rig.Model->FinishBulkResolveForTest(TEXT("Hero"), FString(), {Absent}, {}, true);
+	TestEqual(TEXT("the complete list left it backing off"), Rig.Model->GetPendingRetryAttemptsForTest(Absent), 1);
+
+	Rig.Model->RetryPendingModelEntitiesForTest();
+	TestEqual(TEXT("the next sweep lists nothing"), Rig.Model->GetBulkResolveDispatchCountForTest(), 0);
+	TestEqual(TEXT("and sends nothing"), Rig.Sends, 0);
+	return true;
+}
+
+// A group with a shared entity walks past the one-page-per-entity budget: its misses ensure, so the list is cheaper.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBulkResolveSharedWalkTest,
+	"CrowdySDK.GameModel.BulkResolveSharedGroupWalksPastBudget", CrowdyBulkResolveTestFlags)
+bool FCrowdyBulkResolveSharedWalkTest::RunTest(const FString& Parameters)
+{
+	FBulkProxyRig Rig;
+	Rig.ClientHost.Client->SetTestResponseScript({ TPair<int32, FString>(200, BulkProxyFullPage(0)),
+		TPair<int32, FString>(200, BulkProxyFullPage(1)) });
+	Rig.AddShared();
+
+	Rig.Model->RetryPendingModelEntitiesForTest();
+	TestTrue(TEXT("every call landed"), Rig.PollIdle());
+	TestEqual(TEXT("one shared entity's list reads to its short third page"), Rig.Model->GetBulkResolveListCallCountForTest(), 3);
+	TestFalse(TEXT("and does not mark its type as cut"), Rig.Model->IsBulkResolveGroupCutForTest(TEXT("Hero"), FString()));
+	TestEqual(TEXT("the stats count the pages"), Rig.Model->GetNetStats().BulkResolveListPages, 3);
+	Rig.Model->ResetNetStats();
+	TestEqual(TEXT("and a reset clears them"), Rig.Model->GetNetStats().BulkResolveListPages, 0);
+	return true;
+}
+
+#if WITH_METADATA
+// An entity parked for the bulk list forgets its parked scope when it unregisters.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBulkResolveUnregisterForgetsSessionTest,
+	"CrowdySDK.GameModel.BulkResolveUnregisterForgetsParkedSession", CrowdyBulkResolveTestFlags)
+bool FCrowdyBulkResolveUnregisterForgetsSessionTest::RunTest(const FString& Parameters)
+{
+	UCrowdyEntitySubsystem* Entities = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
+	Entities->SetLocalPlayerID(FGuid::NewGuid());
+	UCrowdyGameModelSubsystem* Model = NewObject<UCrowdyGameModelSubsystem>(GetTransientPackage());
+	Model->SetEntitySubsystemForTest(Entities);
+	const FGuid Anchor = Entities->RegisterParticipant(NewObject<UCrowdyGameModelTestTarget>(GetTransientPackage()), ECrowdyOwnership::Host);
+	UCrowdyGameModelTestComponent* Shared = NewObject<UCrowdyGameModelTestComponent>(GetTransientPackage());
+	const FGuid NetID = Entities->RegisterSubParticipant(Shared, Anchor);
+
+	Model->HandleEntityRegisteredForTest(NetID);
+	TestEqual(TEXT("the shared entity is parked with its scope"), Model->GetPendingSessionCountForTest(), 1);
+	Model->HandleEntityUnregisteredForTest(NetID);
+	TestEqual(TEXT("unregistering forgets it"), Model->GetPendingSessionCountForTest(), 0);
+	return true;
+}
+
+// A remote copy keeps no scope from its registration: its list follows the session active when the sweep runs.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBulkResolveRemoteCopyFollowsSessionTest,
+	"CrowdySDK.GameModel.BulkResolveRemoteCopyFollowsActiveSession", CrowdyBulkResolveTestFlags)
+bool FCrowdyBulkResolveRemoteCopyFollowsSessionTest::RunTest(const FString& Parameters)
+{
+	AllowMissingApiContextForBulkTests(*this);
+	UCrowdyEntitySubsystem* Entities = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
+	Entities->SetLocalPlayerID(FGuid::NewGuid());
+	UCrowdyGameModelSubsystem* Model = NewObject<UCrowdyGameModelSubsystem>(GetTransientPackage());
+	Model->SetEntitySubsystemForTest(Entities);
+	Model->SetActiveSession(TEXT("s-old"));
+	FCrowdyEntityRecord Proxy;
+	Proxy.NetID = FGuid::NewGuid();
+	Proxy.OwnerID = FGuid::NewGuid();
+	Proxy.Role = ECrowdyRole::RemoteProxy;
+	Proxy.Participant = NewObject<UCrowdyGameModelTestComponent>(GetTransientPackage());
+	Entities->RegisterEntity(Proxy);
+
+	Model->HandleEntityRegisteredForTest(Proxy.NetID);
+	FString Type;
+	TestTrue(TEXT("the remote copy waits for its type's list"), Model->TryGetPendingModelEntityTypeForTest(Proxy.NetID, Type));
+	Model->SetActiveSession(TEXT("s-new"));
+	Model->RetryPendingModelEntitiesForTest();
+
+	FString Session;
+	TestTrue(TEXT("its group was dispatched"), Model->TryGetBulkResolveDispatchSessionForTest(Type, Session));
+	TestEqual(TEXT("under the session active now"), Session, FString(TEXT("s-new")));
+	return true;
+}
+#endif
 
 #endif

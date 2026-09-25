@@ -13,11 +13,13 @@
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformTime.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Misc/App.h"    // FApp::GetCurrentTime for the self-echo window
 #include "Misc/Base64.h" // channel-payload decode fallback (docs call payload base64 binary)
 #include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h" // the game-instance owner of the API client
 #include "Policies/CondensedJsonPrintPolicy.h" // compact serialize of a collection item's state JSON
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Messages/Channels/FChannelMessages.h"
 #include "Messages/GameObjects/FServerEventNotification.h"
 #include "Replication/Components/CrowdyEntityComponent.h" // ECrowdyOwnership for auto-registering subsystems
@@ -81,10 +83,23 @@ namespace
 		return Out;
 	}
 
-	// How long (seconds) a container stays "recently self-invoked" for the self-echo drop. Long enough to cover a
-	// server commit + model-driven-notification round-trip, short enough that a rapid foreign change is not
-	// suppressed - and the drop is consume-once anyway, so only the first echo after a self-invoke is skipped.
+	// How long (seconds) a self-invoke mark lives after its own invoke is sent, and how long after a dropped hint the
+	// backstop pull follows: long enough for the invoke's notification round trip.
 	constexpr double SelfEchoWindowSeconds = 3.0;
+
+	// Removes the marks that have expired by Now and returns how many.
+	int32 RemoveExpiredSelfEchoMarks(TArray<double>& Marks, double Now)
+	{
+		return Marks.RemoveAll([Now](double Expiry) { return Expiry <= Now; });
+	}
+
+	// What one invoke attempt's completion shares with its dispatch: whether it was answered before the dispatch
+	// returned, and the expiry of the self-echo mark it holds (0 for none).
+	struct FCrowdyInvokeAttemptState
+	{
+		double SelfEchoExpiry = 0.0;
+		bool bAnswered = false;
+	};
 
 	// Broadcast each captured attribute change once, after the caller has fully updated the cache (and fired any
 	// OnReps). Target is the bound object (null for a free/data container); ModelId is the container id. No-op when
@@ -327,6 +342,8 @@ void UCrowdyGameModelSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// Mark this world's Game Model session live. ResolveLiveSelf hands out this subsystem only while the token is
 	// held, so a completion that lands after Deinitialize still runs but can no longer write into our state.
 	WorldSessionToken = MakeShared<uint8>(0);
+	// The API client outlives worlds, so its call stats restart with this world's window too.
+	ResetNetStats();
 
 	// The model-changed sink: bind the re-pull as the sole OnModelChanged consumer here so it survives even if
 	// the reception-layer registration below early-returns (no game instance in the transient world). Every
@@ -385,6 +402,7 @@ void UCrowdyGameModelSubsystem::Deinitialize()
 	FailPendingCoalesceWindows();
 	FailPendingInvokeRetries();
 	FailPendingManifestApplies();
+	FailPendingPulls();
 
 	// The pending-bind sweep has no caller to notify (it only re-drives binds), but it is armed on this world's timer
 	// manager, so it is cleared here with the rest.
@@ -444,6 +462,7 @@ void UCrowdyGameModelSubsystem::Deinitialize()
 	BulkResolveGroupsInFlight.Empty();
 	BulkResolveTypeNextAttempt.Empty();
 	BulkResolveTypeFailures.Empty();
+	BulkResolveCutGroups.Empty();
 	ResolveInFlight.Empty();
 	ClassDerivedBindings.Empty();
 	SubParticipantsByAnchor.Empty();
@@ -452,6 +471,7 @@ void UCrowdyGameModelSubsystem::Deinitialize()
 	DataContainerCache.Empty();
 	WatchedDataContainers.Empty();
 	RecentlySelfActed.Empty();
+	NetStats = FCrowdyGameModelNetStats();
 
 	// The default session context and the last-error cache are per-world; clear them on teardown so a fresh world
 	// never inherits a stale session or error string.
@@ -884,6 +904,16 @@ bool UCrowdyGameModelSubsystem::IsHostOwnedEntity(const FGuid& NetID) const
 
 bool UCrowdyGameModelSubsystem::ResolveApiContext(FString& OutEndpoint, FString& OutToken, int64& OutAppId) const
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	if (!ApiEndpointForTest.IsEmpty())
+	{
+		OutEndpoint = ApiEndpointForTest;
+		OutToken = ApiTokenForTest;
+		OutAppId = ApiAppIdForTest;
+		return true;
+	}
+#endif
+
 	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
 	OutEndpoint = Settings ? Settings->GetGameApiHttpUrl() : FString();
 	if (OutEndpoint.IsEmpty())
@@ -940,7 +970,7 @@ void UCrowdyGameModelSubsystem::InvokeResolved(TSharedRef<FCrowdyInvokeRequest> 
 }
 
 void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRequest> Resolved, int32 AttemptIndex,
-	TFunction<void(FCrowdyInvokeResult)> OnDone, const FCrowdyInvokeBindingGuard& Guard)
+	TFunction<void(FCrowdyInvokeResult)> OnDone, const FCrowdyInvokeBindingGuard& Guard, int32 BusyRetries)
 {
 	FString Endpoint;
 	FString Token;
@@ -998,10 +1028,13 @@ void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRe
 	// platform refusing it (repeat) from its own function failing (do not). The weak self is only consulted to decide
 	// whether a retry is possible; a completion that arrives after the world is gone still reports its outcome.
 	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	const TSharedRef<FCrowdyInvokeAttemptState> Attempt = MakeShared<FCrowdyInvokeAttemptState>();
+	const uint64 Dispatched = ++LastSendStamp;
 	Client->InvokeFunction(Resolved->AppId, Resolved->FunctionName, Resolved->SelfContainerId,
 		Resolved->SessionId, ParamsJson,
-		[WeakThis, Resolved, AttemptIndex, Guard, OnDone = MoveTemp(OnDone)](FCrowdyCppInvokeResult Result)
+		[WeakThis, Resolved, AttemptIndex, BusyRetries, Guard, Attempt, Dispatched, OnDone = MoveTemp(OnDone)](FCrowdyCppInvokeResult Result)
 		{
+			Attempt->bAnswered = true;
 			// A quarantined function refuses until its definition is written again, and the reason is the only
 			// actionable thing in the refusal. Keyed on the non-empty reason rather than on the code, because the
 			// player boundary rewrites the code to USER_CODE_ERROR on exactly this path while these fields survive.
@@ -1024,6 +1057,7 @@ void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRe
 			Mapped.Blame = CrowdyPlayerFaultBlameFromWireString(Result.Blame);
 			Mapped.bRetryable = Result.bRetryable;
 			Mapped.RetryAfterMs = Result.RetryAfterMs;
+			Mapped.DispatchSequence = Dispatched;
 			Mapped.Mutations.Reserve(Result.Mutations.Num());
 			for (FCrowdyCppMutationApplied& M : Result.Mutations)
 			{
@@ -1038,15 +1072,61 @@ void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRe
 			// A retry needs this world's timer manager, so it is only possible while the world session is live. When
 			// it is not, the refusal is reported as-is rather than swallowed.
 			UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis);
-			if (Self && Self->TryScheduleBudgetRetry(Resolved, AttemptIndex, Mapped, OnDone, Guard))
+			// An attempt that wrote nothing to its own container may send no echo, so it gives back its own mark.
+			const bool bWrote = Mapped.bTransportOk && Mapped.bSuccess && Mapped.Mutations.ContainsByPredicate(
+				[&Resolved](const FCrowdyMutationApplied& Mutation)
+				{
+					return Mutation.ContainerId.IsEmpty()
+						|| Mutation.ContainerId.Equals(Resolved->SelfContainerId, ESearchCase::CaseSensitive);
+				});
+			if (Self && Attempt->SelfEchoExpiry > 0.0 && !bWrote)
+			{
+				Self->UnmarkSelfActed(Resolved->SelfContainerId, Attempt->SelfEchoExpiry);
+			}
+			if (Self && !Mapped.bSuccess)
+			{
+				FCrowdyGameModelNetStats::CountBounded(Self->NetStats.InvokeFaults,
+					FCrowdyGameModelNetStats::MakeInvokeFaultKey(Mapped.FaultCode, CrowdyPlayerFaultBlameToWord(Mapped.Blame), Mapped.bRetryable,
+						Mapped.bTransportOk),
+					FCrowdyGameModelNetStats::MaxInvokeFaultKeys);
+			}
+			if (Self && Self->TryScheduleInvokeRetry(Resolved, AttemptIndex, BusyRetries, Mapped, OnDone, Guard))
 			{
 				return;
+			}
+			if (Self)
+			{
+				Self->NetStats.InvokeBusyRecovered += Mapped.bSuccess && BusyRetries > 0 ? 1 : 0;
+				Self->NetStats.InvokeBusyGaveUp += IsBusyRefusal(Mapped) ? 1 : 0;
 			}
 			if (OnDone)
 			{
 				OnDone(MoveTemp(Mapped));
 			}
 		});
+
+	// Counted here and only here, once per attempt a budget retry included: no other call spends the allowance. A
+	// request that could not start is answered inline, before this line, and was never sent.
+	if (Attempt->bAnswered)
+	{
+		return;
+	}
+	// Marked only once the attempt is out; its response and any echo both reach the game thread later than this.
+	if (Guard.bMarkSelfEcho)
+	{
+		Attempt->SelfEchoExpiry = MarkSelfActed(Resolved->SelfContainerId);
+	}
+	const double DispatchSeconds = FApp::GetCurrentTime();
+	RecordInvokeAttempt(DispatchSeconds);
+	++NetStats.InvokesDispatched;
+	const double InvokeCutoff = DispatchSeconds - static_cast<double>(InvokeBudgetWindowSeconds);
+	int32 ExpiredInvokes = 0;
+	while (ExpiredInvokes < NetStats.RecentInvokeSeconds.Num() && NetStats.RecentInvokeSeconds[ExpiredInvokes] < InvokeCutoff)
+	{
+		++ExpiredInvokes;
+	}
+	NetStats.RecentInvokeSeconds.RemoveAt(0, ExpiredInvokes, EAllowShrinking::No);
+	NetStats.RecentInvokeSeconds.Add(DispatchSeconds);
 }
 
 int32 UCrowdyGameModelSubsystem::GetRecentInvokeCount() const
@@ -1067,10 +1147,187 @@ int32 UCrowdyGameModelSubsystem::GetRecentInvokeCount() const
 	return Count;
 }
 
+int32 UCrowdyGameModelSubsystem::GetInvokesInWindow() const
+{
+	const double Cutoff = FApp::GetCurrentTime() - static_cast<double>(InvokeBudgetWindowSeconds);
+	int32 Count = 0;
+	for (int32 Index = NetStats.RecentInvokeSeconds.Num() - 1; Index >= 0 && NetStats.RecentInvokeSeconds[Index] >= Cutoff; --Index)
+	{
+		++Count;
+	}
+	return Count;
+}
+
+void UCrowdyGameModelSubsystem::ResetNetStats()
+{
+	NetStats.Reset(FPlatformTime::Seconds());
+	const UCrowdyCppClientSubsystem* Host = ResolveClientHost();
+	if (FCrowdyCppClient* Client = Host ? Host->GetExistingClient() : nullptr)
+	{
+		Client->ResetStats();
+	}
+}
+
+void UCrowdyGameModelSubsystem::GetOpStats(TArray<FCrowdyGameModelOpStatsRow>& OutRows,
+	FCrowdyGameModelTransportTotals& OutTotals) const
+{
+	OutRows.Reset();
+	OutTotals = FCrowdyGameModelTransportTotals();
+
+	// Read through the host without GetClient, so asking never builds a client.
+	const UCrowdyCppClientSubsystem* Host = ResolveClientHost();
+	const FCrowdyCppClient* Client = Host ? Host->GetExistingClient() : nullptr;
+	if (!Client)
+	{
+		return;
+	}
+
+	TArray<FCrowdyCppOpStats> Ops;
+	FCrowdyCppTransportStats Transport;
+	Client->GetStats(Ops, Transport);
+	OutTotals.RequestBytes = Transport.RequestBytes;
+	OutTotals.ResponseBytes = Transport.ResponseBytes;
+	OutTotals.Responses = Transport.Responses;
+	OutTotals.InFlight = Transport.InFlight;
+	OutTotals.PeakInFlight = Transport.PeakInFlight;
+
+	OutRows.Reserve(Ops.Num());
+	for (FCrowdyCppOpStats& Op : Ops)
+	{
+		FCrowdyGameModelOpStatsRow& Row = OutRows.AddDefaulted_GetRef();
+		Row.Operation = MoveTemp(Op.Operation);
+		Row.Calls = Op.Calls;
+		Row.Failures = Op.Failures;
+		Row.Retries = Op.Retries;
+		Row.RecoveredByRetry = Op.RecoveredByRetry;
+		Row.MaxMs = Op.MaxMs;
+		Row.P50Ms = FCrowdyGameModelNetStats::Percentile(Op.RecentLatenciesMs, 0.5);
+		Row.P95Ms = FCrowdyGameModelNetStats::Percentile(MoveTemp(Op.RecentLatenciesMs), 0.95);
+		Row.SdkP50Ms = FCrowdyGameModelNetStats::Percentile(Op.RecentSdkMs, 0.5);
+		Row.SdkP95Ms = FCrowdyGameModelNetStats::Percentile(MoveTemp(Op.RecentSdkMs), 0.95);
+		Row.HttpP50Ms = FCrowdyGameModelNetStats::Percentile(Op.RecentHttpMs, 0.5);
+		Row.HttpP95Ms = FCrowdyGameModelNetStats::Percentile(MoveTemp(Op.RecentHttpMs), 0.95);
+		Row.FailureReasons = MoveTemp(Op.FailureReasons);
+		Row.FailureReasons.Sort([](const TPair<FString, int32>& A, const TPair<FString, int32>& B)
+		{
+			return A.Value != B.Value ? A.Value > B.Value : A.Key < B.Key;
+		});
+	}
+}
+
+void UCrowdyGameModelSubsystem::DescribeNetStats(TArray<FString>& OutLines) const
+{
+	OutLines.Reset();
+	const double Elapsed = FMath::Max(FPlatformTime::Seconds() - NetStats.SinceSeconds, 0.001);
+	const int32 RedundantPercent = NetStats.PullApplies > 0
+		? FMath::RoundToInt32(100.0 * NetStats.RedundantPullApplies / NetStats.PullApplies) : 0;
+
+	OutLines.Add(FString::Printf(
+		TEXT("[GameModel] net stats over %.1f s: pulls %d (%.1f/s) rows %d applies %d redundant %d (%d%%) overlapping %d"),
+		Elapsed, NetStats.PullRequests, NetStats.PullRequests / Elapsed, NetStats.PulledRows, NetStats.PullApplies,
+		NetStats.RedundantPullApplies, RedundantPercent, NetStats.OverlappingPulls));
+	OutLines.Add(FString::Printf(TEXT("[GameModel] pulls held behind in flight %d follow-ups %d stale keys skipped %d"),
+		NetStats.PullsHeldBehindInFlight, NetStats.FollowUpPulls, NetStats.StaleKeysSkipped));
+	OutLines.Add(FString::Printf(
+		TEXT("[GameModel] self-echo: marked %d dropped %d hints-after-self-not-dropped %d marks expired %d backstop pulls %d"),
+		NetStats.SelfInvokesMarked, NetStats.SelfEchoesDropped, NetStats.HintsAfterSelfInvokeNotDropped,
+		NetStats.SelfEchoMarksExpired, NetStats.SelfEchoBackstopPulls));
+	OutLines.Add(FString::Printf(
+		TEXT("[GameModel] resolves %d re-resolves %d; invokes in window %d governor count %d (limit %d)%s"),
+		NetStats.ResolveStarts, NetStats.ReResolves, GetInvokesInWindow(), GetRecentInvokeCount(),
+		InvokeBudgetLimitPerWindow, NetStats.bEverBoundFull ? TEXT(" (re-resolve tracking full)") : TEXT("")));
+	OutLines.Add(FString::Printf(TEXT("[GameModel] invoke busy retries %d recovered %d gave up %d"),
+		NetStats.InvokeBusyRetries, NetStats.InvokeBusyRecovered, NetStats.InvokeBusyGaveUp));
+
+	TArray<FCrowdyGameModelOpStatsRow> Ops;
+	FCrowdyGameModelTransportTotals Transport;
+	GetOpStats(Ops, Transport);
+	Ops.Sort([](const FCrowdyGameModelOpStatsRow& A, const FCrowdyGameModelOpStatsRow& B) { return A.Operation < B.Operation; });
+	for (const FCrowdyGameModelOpStatsRow& Op : Ops)
+	{
+		const FString Reasons = FCrowdyGameModelNetStats::FormatFailureReasons(Op.FailureReasons);
+		const FString Retries = Op.Retries > 0 || Op.RecoveredByRetry > 0
+			? FString::Printf(TEXT(" retries %d recovered %d"), Op.Retries, Op.RecoveredByRetry) : FString();
+		OutLines.Add(FString::Printf(
+			TEXT("[GameModel] op %s calls %d fail %d p50 %.1f ms p95 %.1f ms max %.1f ms sdk p50 %.1f p95 %.1f http p50 %.1f p95 %.1f%s%s%s"),
+			*Op.Operation, Op.Calls, Op.Failures, Op.P50Ms, Op.P95Ms, Op.MaxMs, Op.SdkP50Ms, Op.SdkP95Ms,
+			Op.HttpP50Ms, Op.HttpP95Ms, *Retries, Reasons.IsEmpty() ? TEXT("") : TEXT(" failures: "),
+			*SanitizeForLog(Reasons)));
+	}
+	OutLines.Add(FString::Printf(TEXT("[GameModel] transport requests %.1f KB responses %.1f KB (%d)"),
+		Transport.RequestBytes / 1024.0, Transport.ResponseBytes / 1024.0, Transport.Responses));
+	OutLines.Add(FString::Printf(TEXT("[GameModel] transport in flight %d peak %d"),
+		Transport.InFlight, Transport.PeakInFlight));
+
+	constexpr int32 MaxTopContainers = 5;
+	TArray<TPair<FString, int32>> ByPulls = NetStats.PullsByContainer.Array();
+	const FString OverflowKey(FCrowdyGameModelNetStats::OverflowKey);
+	ByPulls.RemoveAll([&OverflowKey](const TPair<FString, int32>& Pair) { return Pair.Key == OverflowKey; });
+	ByPulls.Sort([](const TPair<FString, int32>& A, const TPair<FString, int32>& B) { return A.Value > B.Value; });
+	for (int32 Index = 0; Index < FMath::Min(ByPulls.Num(), MaxTopContainers); ++Index)
+	{
+		OutLines.Add(FString::Printf(TEXT("[GameModel] top pulled container %s %d (%.1f/s)"),
+			*SanitizeForLog(ByPulls[Index].Key), ByPulls[Index].Value, ByPulls[Index].Value / Elapsed));
+	}
+	if (const int32* OverflowPulls = NetStats.PullsByContainer.Find(OverflowKey))
+	{
+		OutLines.Add(FString::Printf(TEXT("[GameModel] pulls of containers past the %d-id cap: %d"),
+			FCrowdyGameModelNetStats::MaxPulledContainerKeys, *OverflowPulls));
+	}
+
+	for (const TPair<FString, int32>& Fault : NetStats.InvokeFaults)
+	{
+		OutLines.Add(FString::Printf(TEXT("[GameModel] invoke fault %s x%d"), *SanitizeForLog(Fault.Key), Fault.Value));
+	}
+}
+
+void UCrowdyGameModelSubsystem::RecordPullIssued(TConstArrayView<FString> ContainerIds, bool bApplies)
+{
+	++NetStats.PullRequests;
+	for (const FString& ContainerId : ContainerIds)
+	{
+		FCrowdyGameModelNetStats::CountBounded(NetStats.PullsByContainer, ContainerId,
+			FCrowdyGameModelNetStats::MaxPulledContainerKeys);
+		if (!bApplies)
+		{
+			continue;
+		}
+		int32& InFlight = NetStats.InFlightPulls.FindOrAdd(ContainerId);
+		NetStats.OverlappingPulls += InFlight > 0 ? 1 : 0;
+		++InFlight;
+	}
+}
+
+void UCrowdyGameModelSubsystem::RecordPullCompleted(TConstArrayView<FString> ContainerIds, int32 Rows, bool bApplies)
+{
+	NetStats.PulledRows += Rows;
+	if (!bApplies)
+	{
+		return;
+	}
+	for (const FString& ContainerId : ContainerIds)
+	{
+		int32* InFlight = NetStats.InFlightPulls.Find(ContainerId);
+		if (InFlight && --(*InFlight) <= 0)
+		{
+			NetStats.InFlightPulls.Remove(ContainerId);
+		}
+	}
+}
+
+void UCrowdyGameModelSubsystem::RecordResolvesSent(TConstArrayView<FGuid> NetIDs)
+{
+	NetStats.ResolveStarts += NetIDs.Num();
+	for (const FGuid& NetID : NetIDs)
+	{
+		NetStats.ReResolves += NetStats.EverBound.Contains(NetID) ? 1 : 0;
+	}
+}
+
 void UCrowdyGameModelSubsystem::RecordInvokeAttempt(double Now)
 {
 	// One allocation for the life of the subsystem. Every record after this is a couple of index writes: this runs on
-	// the way out of every Game Model call, so it must not touch the heap or move the entries already in it.
+	// the way out of every invoke, so it must not touch the heap or move the entries already in it.
 	if (InvokeLedger.Num() != InvokeLedgerCapacity)
 	{
 		InvokeLedger.SetNumZeroed(InvokeLedgerCapacity);
@@ -1104,7 +1361,7 @@ float UCrowdyGameModelSubsystem::ResolvePendingRetryDelaySeconds(int32 AttemptIn
 {
 	// A doubling backoff on the entity's own attempt count. An entity stays pending because something outside this
 	// client has not happened yet (its owner has not created the row, this client has no token), and asking again at
-	// the sweep's own cadence forever spends the allowance on a question whose answer is not changing.
+	// the sweep's own cadence forever spends calls on a question whose answer is not changing.
 	const int32 Doublings = FMath::Clamp(AttemptIndex, 0, 8);
 	const float Delay = MinPendingRetryDelaySeconds * static_cast<float>(1 << Doublings);
 	return FMath::Clamp(Delay, MinPendingRetryDelaySeconds, MaxPendingRetryDelaySeconds);
@@ -1195,11 +1452,26 @@ bool UCrowdyGameModelSubsystem::IsBudgetRefusal(const FCrowdyInvokeResult& Resul
 		&& Result.FaultCode.Equals(TEXT("RATE_LIMITED"), ESearchCase::IgnoreCase);
 }
 
-bool UCrowdyGameModelSubsystem::TryScheduleBudgetRetry(const TSharedRef<FCrowdyInvokeRequest>& Resolved,
-	int32 AttemptIndex, const FCrowdyInvokeResult& Result, const TFunction<void(FCrowdyInvokeResult)>& OnDone,
-	const FCrowdyInvokeBindingGuard& Guard)
+bool UCrowdyGameModelSubsystem::IsBusyRefusal(const FCrowdyInvokeResult& Result)
 {
-	if (bShuttingDown || AttemptIndex >= MaxBudgetRetries || !IsBudgetRefusal(Result))
+	// Thrown only: an in-band fault means the function ran, and running it again could apply its writes twice.
+	return !Result.bSuccess && !Result.bTransportOk && Result.bRetryable
+		&& Result.Blame == ECrowdyPlayerFaultBlame::Platform
+		&& Result.FaultCode.Equals(TEXT("PLATFORM_BUSY"), ESearchCase::IgnoreCase);
+}
+
+bool UCrowdyGameModelSubsystem::TryScheduleInvokeRetry(const TSharedRef<FCrowdyInvokeRequest>& Resolved,
+	int32 AttemptIndex, int32 BusyRetries, const FCrowdyInvokeResult& Result,
+	const TFunction<void(FCrowdyInvokeResult)>& OnDone, const FCrowdyInvokeBindingGuard& Guard)
+{
+	// Each kind has its own cap, so one invoke makes at most CrowdyCppMaxBusyRetries + MaxBudgetRetries retries.
+	const int32 BudgetRetries = AttemptIndex - BusyRetries;
+	// Unset when the server named a wait too long to hold the caller for.
+	const TOptional<double> BusyDelay = CrowdyCppBusyRetryDelaySeconds(BusyRetries, Result.RetryAfterMs);
+	const bool bBusy = BusyRetries < CrowdyCppMaxBusyRetries && IsBusyRefusal(Result) && CrowdyCppIsBusyRetryEnabled()
+		&& BusyDelay.IsSet();
+	const bool bBudget = BudgetRetries < MaxBudgetRetries && IsBudgetRefusal(Result);
+	if (bShuttingDown || (!bBusy && !bBudget))
 	{
 		return false;
 	}
@@ -1228,7 +1500,9 @@ bool UCrowdyGameModelSubsystem::TryScheduleBudgetRetry(const TSharedRef<FCrowdyI
 	// Read from THIS refusal, never from a remembered one. The server sends what remains of the current window, so a
 	// second refusal inside the same window names a shorter wait than the first, and reusing the earlier number would
 	// hold the caller past the moment the window actually reopened.
-	const float Delay = ResolveBudgetRetryDelaySeconds(AttemptIndex, Result.RetryAfterMs);
+	const float Delay = bBusy
+		? static_cast<float>(BusyDelay.GetValue())
+		: ResolveBudgetRetryDelaySeconds(BudgetRetries, Result.RetryAfterMs);
 
 	const uint64 RetryId = NextInvokeRetryId++;
 	FCrowdyPendingInvokeRetry Waiting;
@@ -1238,8 +1512,10 @@ bool UCrowdyGameModelSubsystem::TryScheduleBudgetRetry(const TSharedRef<FCrowdyI
 	FCrowdyPendingInvokeRetry& Stored = PendingInvokeRetries.Add(RetryId, MoveTemp(Waiting));
 
 	const int32 NextAttempt = AttemptIndex + 1;
+	const int32 NextBusyRetries = BusyRetries + (bBusy ? 1 : 0);
+	// A zero rate would clear the timer rather than fire it on the next tick.
 	World->GetTimerManager().SetTimer(Stored.Timer,
-		FTimerDelegate::CreateWeakLambda(this, [this, RetryId, Resolved, NextAttempt]()
+		FTimerDelegate::CreateWeakLambda(this, [this, RetryId, Resolved, NextAttempt, NextBusyRetries]()
 		{
 			// Claim the record before dispatching. Whoever removes it owns the completion, so a teardown racing this
 			// timer can never fail a caller the retry is about to serve, or serve one the teardown already failed.
@@ -1258,19 +1534,28 @@ bool UCrowdyGameModelSubsystem::TryScheduleBudgetRetry(const TSharedRef<FCrowdyI
 				UE_LOG(LogCrowdyGameModel, Warning,
 					TEXT("[GameModel] '%s' was not retried: the target's container binding changed during the backoff."),
 					*Resolved->FunctionName);
+				NetStats.InvokeBusyGaveUp += IsBusyRefusal(Claimed.LastResult) ? 1 : 0;
 				if (Claimed.OnDone)
 				{
 					Claimed.OnDone(MoveTemp(Claimed.LastResult));
 				}
 				return;
 			}
-			DispatchInvokeAttempt(Resolved, NextAttempt, MoveTemp(Claimed.OnDone), Claimed.Guard);
+			DispatchInvokeAttempt(Resolved, NextAttempt, MoveTemp(Claimed.OnDone), Claimed.Guard, NextBusyRetries);
 		}),
-		Delay, false);
+		FMath::Max(Delay, KINDA_SMALL_NUMBER), false);
 
+	if (bBusy)
+	{
+		++NetStats.InvokeBusyRetries;
+		UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
+			TEXT("[GameModel] '%s' was refused because the service was busy; retrying in %.2fs (retry %d of %d)."),
+			*Resolved->FunctionName, Delay, NextBusyRetries, CrowdyCppMaxBusyRetries);
+		return true;
+	}
 	UE_LOG(LogCrowdyGameModel, Warning,
 		TEXT("[GameModel] '%s' was refused for exceeding the per-player invoke allowance; retrying in %.1fs (attempt %d of %d). Sustained calls at this rate need coalescing."),
-		*Resolved->FunctionName, Delay, NextAttempt, MaxBudgetRetries);
+		*Resolved->FunctionName, Delay, BudgetRetries + 1, MaxBudgetRetries);
 	return true;
 }
 
@@ -1626,6 +1911,7 @@ void UCrowdyGameModelSubsystem::FailPendingInvokeRetries()
 		// invite it to wait out a number that was only ever true seconds ago. The attribution goes with it, because
 		// what actually happened here is a teardown, and leaving the rate-limit fault standing would let a caller
 		// read this as a refusal worth repeating when there is no longer a world to repeat it in.
+		NetStats.InvokeBusyGaveUp += IsBusyRefusal(Entry.Value.LastResult) ? 1 : 0;
 		FCrowdyInvokeResult Failed = MoveTemp(Entry.Value.LastResult);
 		Failed.RetryAfterMs.Reset();
 		Failed.Blame = ECrowdyPlayerFaultBlame::Unknown;
@@ -1653,9 +1939,7 @@ void UCrowdyGameModelSubsystem::DebugWatchContainerChanges(const FString& TypeNa
 		return;
 	}
 
-	// A WebSocket subscription is not a Game Model call and does not spend the per-player allowance, so it resolves
-	// the client without charging one.
-	FCrowdyCppClient* Client = EnsureCppClientUnmetered(Endpoint, Token);
+	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
 	if (!Client)
 	{
 		return;
@@ -1727,7 +2011,7 @@ void UCrowdyGameModelSubsystem::DebugStopWatchingContainerChanges()
 		return;
 	}
 
-	FCrowdyCppClient* Client = EnsureCppClientUnmetered(Endpoint, Token);
+	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
 	if (!Client)
 	{
 		return;
@@ -1772,6 +2056,38 @@ static FAutoConsoleCommandWithWorld GCrowdyUnwatchContainerChanges(
 				Subsystem->DebugStopWatchingContainerChanges();
 			}
 		}));
+
+static FAutoConsoleCommandWithWorld GCrowdyGameModelStats(
+	TEXT("crowdy.gamemodel.stats"),
+	TEXT("Log how the Game Model has used the network since the last reset: pulls, applies, self-echoes, resolves, invokes, per-operation latency and transport bytes."),
+	FConsoleCommandWithWorldDelegate::CreateLambda(
+		[](UWorld* World)
+		{
+			const UCrowdyGameModelSubsystem* Subsystem = ResolveGameModelSubsystem(World);
+			if (!Subsystem)
+			{
+				return;
+			}
+			TArray<FString> Lines;
+			Subsystem->DescribeNetStats(Lines);
+			for (const FString& Line : Lines)
+			{
+				UE_LOG(LogCrowdyGameModel, Display, TEXT("%s"), *Line);
+			}
+		}));
+
+static FAutoConsoleCommandWithWorld GCrowdyGameModelStatsReset(
+	TEXT("crowdy.gamemodel.stats.reset"),
+	TEXT("Zero the counters crowdy.gamemodel.stats reports, including the API client's per-operation and transport totals."),
+	FConsoleCommandWithWorldDelegate::CreateLambda(
+		[](UWorld* World)
+		{
+			if (UCrowdyGameModelSubsystem* Subsystem = ResolveGameModelSubsystem(World))
+			{
+				Subsystem->ResetNetStats();
+				UE_LOG(LogCrowdyGameModel, Display, TEXT("[GameModel] net stats reset."));
+			}
+		}));
 #endif
 
 UCrowdyGameModelSubsystem* UCrowdyGameModelSubsystem::ResolveLive(
@@ -1783,31 +2099,24 @@ UCrowdyGameModelSubsystem* UCrowdyGameModelSubsystem::ResolveLive(
 	return (Self && Self->WorldSessionToken.IsValid()) ? Self : nullptr;
 }
 
-FCrowdyCppClient* UCrowdyGameModelSubsystem::EnsureCppClient(const FString& Endpoint, const FString& Token)
+UCrowdyCppClientSubsystem* UCrowdyGameModelSubsystem::ResolveClientHost() const
 {
-	FCrowdyCppClient* Client = EnsureCppClientUnmetered(Endpoint, Token);
-	if (!Client)
+#if WITH_DEV_AUTOMATION_TESTS
+	if (UCrowdyCppClientSubsystem* Injected = ClientHostForTest.Get())
 	{
-		// Nothing will be sent, so nothing is charged.
-		return nullptr;
+		return Injected;
 	}
-
-	// Counted here, once, because every Game Model call this subsystem makes resolves its client through this
-	// function immediately before sending. The server's allowance covers all of them, not just invokes, so a governor
-	// fed only by invokes reads the allowance as far less spent than it is and never widens a merge window under the
-	// pressure it exists to relieve. A retried invoke resolves the client again and is counted again, which is
-	// correct: the server's gate counted the call it refused too.
-	RecordInvokeAttempt(FApp::GetCurrentTime());
-	return Client;
+#endif
+	return UCrowdyCppClientSubsystem::Get(this);
 }
 
-FCrowdyCppClient* UCrowdyGameModelSubsystem::EnsureCppClientUnmetered(const FString& Endpoint, const FString& Token)
+FCrowdyCppClient* UCrowdyGameModelSubsystem::EnsureCppClient(const FString& Endpoint, const FString& Token)
 {
 	// The client belongs to the game instance, not to this world, so it survives level travel and one completion
 	// pump serves every caller in the process. Because ownership lives above the world, a completion can outlive the
 	// subsystem that asked for it: it always runs (so every caller is notified and no latent action is left hanging),
 	// and anything it wants to write back into this subsystem goes through ResolveLiveSelf first.
-	UCrowdyCppClientSubsystem* Host = UCrowdyCppClientSubsystem::Get(this);
+	UCrowdyCppClientSubsystem* Host = ResolveClientHost();
 	if (!Host)
 	{
 		UE_LOG(LogCrowdyGameModel, Warning,
@@ -1839,6 +2148,12 @@ FCrowdyCppClient* UCrowdyGameModelSubsystem::EnsureCppClientUnmetered(const FStr
 void UCrowdyGameModelSubsystem::PullContainerState(const FString& ContainerId,
 	TFunction<void(bool, TSharedPtr<FJsonObject>)> OnDone)
 {
+	IssueStateRead(ContainerId, MoveTemp(OnDone), false);
+}
+
+void UCrowdyGameModelSubsystem::IssueStateRead(const FString& ContainerId,
+	TFunction<void(bool, TSharedPtr<FJsonObject>)> OnDone, bool bApplies)
+{
 	FString Endpoint;
 	FString Token;
 	int64 AppId = 0;
@@ -1864,11 +2179,18 @@ void UCrowdyGameModelSubsystem::PullContainerState(const FString& ContainerId,
 		return;
 	}
 
-	// The callback lands from Poll() on the game thread; it captures only OnDone (never this), so it is safe even
-	// if the subsystem outlives fewer ticks than the request.
+	RecordPullIssued(MakeArrayView(&ContainerId, 1), bApplies);
+
+	// The callback lands from Poll() on the game thread; it reaches this subsystem only through ResolveLiveSelf, so it
+	// is safe even if the subsystem outlives fewer ticks than the request.
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
 	Client->ReadContainerState(AppId, ContainerId,
-		[OnDone = MoveTemp(OnDone)](FCrowdyCppContainerStateResult Result)
+		[WeakThis, ContainerId, bApplies, OnDone = MoveTemp(OnDone)](FCrowdyCppContainerStateResult Result)
 		{
+			if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis))
+			{
+				Self->RecordPullCompleted(MakeArrayView(&ContainerId, 1), Result.bOk ? 1 : 0, bApplies);
+			}
 			if (OnDone)
 			{
 				OnDone(Result.bOk, Result.State);
@@ -1895,6 +2217,12 @@ void UCrowdyGameModelSubsystem::ContainerStateChunk(const TArray<FString>& Conta
 
 void UCrowdyGameModelSubsystem::PullContainerStateRows(const TArray<FString>& ContainerIds,
 	TFunction<void(bool, TArray<FCrowdyGameApiCodec::FContainerStateRow>)> OnDone)
+{
+	IssueStateRowsRead(ContainerIds, MoveTemp(OnDone), false);
+}
+
+void UCrowdyGameModelSubsystem::IssueStateRowsRead(const TArray<FString>& ContainerIds,
+	TFunction<void(bool, TArray<FCrowdyGameApiCodec::FContainerStateRow>)> OnDone, bool bApplies)
 {
 	using FRows = TArray<FCrowdyGameApiCodec::FContainerStateRow>;
 	FString Endpoint;
@@ -1928,8 +2256,9 @@ void UCrowdyGameModelSubsystem::PullContainerStateRows(const TArray<FString>& Co
 		TArray<FString> ChunkIds;
 		ContainerStateChunk(ContainerIds, Chunk, ChunkIds);
 		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildContainerStatesVariables(AppId, ChunkIds);
+		RecordPullIssued(ChunkIds, bApplies);
 		Client->RunRuntimeOp(TEXT("GameModelContainerStates"), Vars,
-			[WeakThis, Rows, Pending, AnyOk, Done, Chunk](FCrowdyCppJsonResult R)
+			[WeakThis, Rows, Pending, AnyOk, Done, Chunk, bApplies, ChunkIds = MoveTemp(ChunkIds)](FCrowdyCppJsonResult R)
 		{
 			FRows ChunkRows;
 			if (FCrowdyGameApiCodec::ParseContainerStatesEnvelope(WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), ChunkRows))
@@ -1944,6 +2273,7 @@ void UCrowdyGameModelSubsystem::PullContainerStateRows(const TArray<FString>& Co
 			if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis))
 			{
 				Self->RecordServerRefusal(R);
+				Self->RecordPullCompleted(ChunkIds, ChunkRows.Num(), bApplies);
 				Self->BulkStateRowCount += ChunkRows.Num();
 				UE_CLOG(CrowdyGameModelTrace::GameModel() && *Pending == 1, LogCrowdyGameModel, Log,
 					TEXT("[GameModel] container states: %d call(s), %d row(s)"), Self->BulkStateCallCount, Self->BulkStateRowCount);
@@ -1973,42 +2303,131 @@ void UCrowdyGameModelSubsystem::PullContainerStates(const TArray<FString>& Conta
 	});
 }
 
-void UCrowdyGameModelSubsystem::PullAndApplyContainerStates(TArray<TPair<FString, FGuid>>&& Targets)
+void UCrowdyGameModelSubsystem::PullAndApplyContainerStates(TArray<TPair<FString, FGuid>>&& Targets, bool bExplicit,
+	const TMap<FString, uint64>* QueuedSince)
 {
+	if (bShuttingDown)
+	{
+		return;
+	}
+	Targets.RemoveAll([this, bExplicit](const TPair<FString, FGuid>& Target)
+	{
+		return HoldBehindPullInFlight(Target.Key, Target.Value, bExplicit);
+	});
 	if (Targets.IsEmpty())
 	{
 		return;
 	}
-	if (Targets.Num() == 1)
-	{
-		HandleModelChanged(Targets[0].Value);
-		return;
-	}
+	// Grouped by container, so a row several entities share is read and recorded once and applied to each of them.
+	Targets.Sort([](const TPair<FString, FGuid>& A, const TPair<FString, FGuid>& B) { return A.Key < B.Key; });
 	TArray<FString> Ids;
 	Ids.Reserve(Targets.Num());
 	for (const TPair<FString, FGuid>& Target : Targets)
 	{
-		Ids.Add(Target.Key);
+		if (Ids.IsEmpty() || Ids.Last() != Target.Key)
+		{
+			Ids.Add(Target.Key);
+			const uint64* Since = QueuedSince ? QueuedSince->Find(Target.Key) : nullptr;
+			BeginContainerPull(Target.Key, false, Since ? *Since : MAX_uint64);
+		}
 	}
 	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
-	PullContainerStates(Ids, [WeakThis, Targets = MoveTemp(Targets)](bool bOk, TMap<FString, TSharedPtr<FJsonObject>> States)
+	if (Ids.Num() == 1)
+	{
+		IssueStateRead(Ids[0], [WeakThis, Targets = MoveTemp(Targets)](bool bOk, TSharedPtr<FJsonObject> State)
+		{
+			UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis);
+			if (!Self)
+			{
+				return;
+			}
+			TMap<FString, TSharedPtr<FJsonObject>> States;
+			States.Add(Targets[0].Key, MoveTemp(State));
+			Self->ApplyLandedStates(Targets, bOk, States);
+		}, true);
+		return;
+	}
+	IssueStateRowsRead(Ids, [WeakThis, Targets = MoveTemp(Targets)](bool bOk, TArray<FCrowdyGameApiCodec::FContainerStateRow> Rows)
 	{
 		UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis);
-		if (!bOk || !Self)
+		if (!Self)
 		{
 			return;
 		}
-		for (const TPair<FString, FGuid>& Target : Targets)
+		TMap<FString, TSharedPtr<FJsonObject>> States;
+		States.Reserve(Rows.Num());
+		for (FCrowdyGameApiCodec::FContainerStateRow& Row : Rows)
 		{
-			const TSharedPtr<FJsonObject>* State = States.Find(Target.Key);
-			UObject* Participant = State && State->IsValid() ? Self->ResolveEntityParticipant(Target.Value) : nullptr;
-			if (Participant)
+			States.Add(MoveTemp(Row.ContainerId), MoveTemp(Row.State));
+		}
+		Self->ApplyLandedStates(Targets, bOk, States);
+	}, true);
+}
+
+void UCrowdyGameModelSubsystem::ApplyLandedStates(const TArray<TPair<FString, FGuid>>& Targets, bool bOk,
+	const TMap<FString, TSharedPtr<FJsonObject>>& States)
+{
+	FCrowdyContainerPull Landed;
+	for (int32 Index = 0; Index < Targets.Num(); ++Index)
+	{
+		const TPair<FString, FGuid>& Target = Targets[Index];
+		if (Index == 0 || Targets[Index - 1].Key != Target.Key)
+		{
+			Landed = EndContainerPull(Target.Key);
+		}
+		const TSharedPtr<FJsonObject>* State = bOk ? States.Find(Target.Key) : nullptr;
+		UObject* Participant = State && State->IsValid() ? ResolveEntityParticipant(Target.Value) : nullptr;
+		if (!Participant || !ApplyStateToContainer(Target.Value, Participant, *State, Landed.KeysWrittenSince.Find(Target.Value)))
+		{
+			continue;
+		}
+		// A kept key disagreed with this read, so the container is read once more after the merge window.
+		NetStats.FollowUpPulls += PendingRefreshPulls.Contains(Target.Key) ? 0 : 1;
+		EnqueueRefreshPull(Target.Key, Target.Value);
+	}
+}
+
+struct UCrowdyGameModelSubsystem::FCrowdyContainerListRun
+{
+	FString TypeName;
+	FString ResolvedSession;
+	int64 AppId = 0;
+	int32 PagesRead = 0;
+	TArray<TSharedPtr<FJsonObject>> Rows;
+	TSet<FString> SeenContainerIds;
+	TFunction<void(bool, TArray<TSharedPtr<FJsonObject>>)> OnDone;
+
+	// Keeps no more than a page's worth even when the server ignored the limit, and drops a row an earlier page
+	// already held, which a row landing at the page boundary between two reads can cause.
+	void AddPage(TArray<TSharedPtr<FJsonObject>>& Page)
+	{
+		Page.SetNum(FMath::Min(Page.Num(), BulkResolvePageSize));
+		for (TSharedPtr<FJsonObject>& Row : Page)
+		{
+			FString ContainerId;
+			Row->TryGetStringField(TEXT("containerId"), ContainerId);
+			bool bSeen = false;
+			if (!ContainerId.IsEmpty())
 			{
-				Self->ApplyStateToContainer(Target.Value, Participant, *State);
+				SeenContainerIds.Add(ContainerId, &bSeen);
+			}
+			if (!bSeen)
+			{
+				Rows.Add(MoveTemp(Row));
 			}
 		}
-	});
-}
+	}
+
+	void Finish(bool bOk)
+	{
+		const TFunction<void(bool, TArray<TSharedPtr<FJsonObject>>)> Done = MoveTemp(OnDone);
+		OnDone = nullptr;
+		if (Done)
+		{
+			Done(bOk, bOk ? MoveTemp(Rows) : TArray<TSharedPtr<FJsonObject>>());
+		}
+	}
+};
 
 void UCrowdyGameModelSubsystem::ListContainers(const FString& TypeName, const FString& SessionId,
 	TFunction<void(bool, TArray<TSharedPtr<FJsonObject>>)> OnDone)
@@ -2025,32 +2444,71 @@ void UCrowdyGameModelSubsystem::ListContainers(const FString& TypeName, const FS
 		return;
 	}
 
-	// An empty Session Id falls back to the active (default) session so a list can be scoped without threading it.
+	// An empty Session Id falls back to the active (default) session so a list can be scoped without threading it; an
+	// app-scoped type takes none, whatever was asked.
+	EnsureContainerScopeKnown(TypeName);
 	const FString ResolvedSession = ResolveContainerSessionId(TypeName, SessionId);
 
 	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
 		TEXT("[GameModel] ListContainers type=%s session=%s appId=%lld"), *TypeName,
 		ResolvedSession.IsEmpty() ? TEXT("<app-global>") : *ResolvedSession, AppId);
 
-	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
+	const TSharedRef<FCrowdyContainerListRun> Run = MakeShared<FCrowdyContainerListRun>();
+	Run->TypeName = TypeName;
+	Run->ResolvedSession = ResolvedSession;
+	Run->AppId = AppId;
+	Run->OnDone = MoveTemp(OnDone);
+	ReadContainerListPage(Run, 0);
+}
+
+void UCrowdyGameModelSubsystem::ReadContainerListPage(const TSharedRef<FCrowdyContainerListRun>& Run, int32 Offset)
+{
+	// Resolved per page: a stale token or endpoint reinstalled on the shared host could rebuild the client mid-walk.
+	FString Endpoint, Token;
+	int64 AppId = 0;
+	FCrowdyCppClient* Client = ResolveApiContext(Endpoint, Token, AppId) ? EnsureCppClient(Endpoint, Token) : nullptr;
 	if (!Client)
 	{
-		if (OnDone)
-		{
-			OnDone(false, TArray<TSharedPtr<FJsonObject>>());
-		}
+		Run->Finish(false);
 		return;
 	}
 
-	// The callback lands from Poll() on the game thread; it captures only OnDone (never this).
-	Client->ListContainers(AppId, TypeName, ResolvedSession,
-		[OnDone = MoveTemp(OnDone)](bool bOk, TArray<TSharedPtr<FJsonObject>> Containers)
+	// The callback lands from Poll() on the game thread and reaches this subsystem only to ask for the next page.
+	const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildListContainersByTypeVariables(
+		Run->AppId, Run->TypeName, Run->ResolvedSession, BulkResolvePageSize, Offset);
+	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
+	Client->RunRuntimeOp(TEXT("GameModelContainers"), Vars, [WeakThis, Run, Offset](FCrowdyCppJsonResult R)
+	{
+		TArray<TSharedPtr<FJsonObject>> Page;
+		if (!FCrowdyGameApiCodec::ParseContainersEnvelope(WrapCppDataEnvelope(R.Data), R.bTransportOk, TArray<FString>(), Page))
 		{
-			if (OnDone)
-			{
-				OnDone(bOk, MoveTemp(Containers));
-			}
-		});
+			Run->Finish(false);
+			return;
+		}
+		const int32 PageRows = Page.Num();
+		Run->AddPage(Page);
+		++Run->PagesRead;
+		if (PageRows < BulkResolvePageSize)
+		{
+			Run->Finish(true);
+			return;
+		}
+		if (Run->PagesRead >= BulkResolveMaxPagesPerType)
+		{
+			UE_LOG(LogCrowdyGameModel, Warning,
+				TEXT("[GameModel] ListContainers of type '%s' stopped after %d pages (%d rows); any rows past them were not read."),
+				*Run->TypeName, Run->PagesRead, Run->Rows.Num());
+			Run->Finish(true);
+			return;
+		}
+		UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis);
+		if (!Self)
+		{
+			Run->Finish(false);
+			return;
+		}
+		Self->ReadContainerListPage(Run, Offset + BulkResolvePageSize);
+	});
 }
 
 void UCrowdyGameModelSubsystem::BindEntityContainer(const FGuid& NetID, const FString& ContainerId)
@@ -2065,6 +2523,7 @@ void UCrowdyGameModelSubsystem::AddContainerBinding(const FGuid& NetID, const FS
 	{
 		return;
 	}
+	NetStats.RecordBound(NetID);
 
 	// Re-binding the SAME container keeps the epoch, so an idempotent bind does not invalidate merge windows that are
 	// legitimately still open against it. Anything else is a new binding and gets a fresh epoch, which is what makes a
@@ -2206,8 +2665,8 @@ void UCrowdyGameModelSubsystem::ResolveOrCreateContainer(const FGuid& NetID, con
 		return;
 	}
 
-	// Past the two guards that answer without a round trip, so this counts the resolves that go on to spend the
-	// allowance rather than every call that asked.
+	// Past the two guards that answer without a round trip, so this counts the resolves that go on to make a call
+	// rather than every call that asked.
 	++ContainerResolveStartCount;
 
 	FString Endpoint, Token;
@@ -2307,6 +2766,7 @@ void UCrowdyGameModelSubsystem::ResolveOrCreateContainer(const FGuid& NetID, con
 			Complete(false, FString(), 0, false);
 			return;
 		}
+		RecordResolvesSent(MakeArrayView(&NetID, 1));
 
 		const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildEnsureContainerVariables(
 			AppId, TypeName, BindingKey, TypeName, ResolvedSession, FString());
@@ -2362,6 +2822,7 @@ void UCrowdyGameModelSubsystem::ResolveOrCreateContainer(const FGuid& NetID, con
 		Complete(false, false, FString(), 0);
 		return;
 	}
+	RecordResolvesSent(MakeArrayView(&NetID, 1));
 
 	const TSharedPtr<FJsonObject> Vars =
 		FCrowdyGameApiCodec::BuildReadContainerByKeyVariables(AppId, TypeName, ResolvedSession, BindingKey);
@@ -2536,12 +2997,15 @@ void UCrowdyGameModelSubsystem::BindParticipantContainer(const FGuid& NetID, UOb
 	// created the row yet is re-driven by RetryPendingModelEntities on the next model-changed notification.
 	PendingModelEntities.Add(NetID, TypeName);
 
-	// A shared entity's row is the same on every client, so it waits a short gather for the rest of its registration
-	// burst, then every pending entity of its type binds from one paged list. The scope is fixed here, at
-	// registration, exactly as the inline ensure fixed it, so every client lists and binds the same scope.
+	// A row every client lists alike waits a short gather for the rest of its registration burst, then every pending
+	// entity of its type binds from one paged list. A shared entity's scope is fixed here, at registration, exactly as
+	// the inline ensure fixed it; a remote copy follows the active session, as its keyed read would.
 	if (IsBulkResolveEnabled() && IsBulkResolveEligible(NetID))
 	{
-		PendingSessionByNetID.Add(NetID, ResolveContainerSessionId(TypeName, FString()));
+		if (IsAuthoritativeToCreate(NetID))
+		{
+			PendingSessionByNetID.Add(NetID, ResolveContainerSessionId(TypeName, FString()));
+		}
 		RequestPendingModelEntitySweep(BulkResolveGatherSeconds);
 		return;
 	}
@@ -2553,15 +3017,15 @@ void UCrowdyGameModelSubsystem::BindParticipantContainer(const FGuid& NetID, UOb
 
 	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
 	ResolveOrCreateContainer(NetID, TypeName, FString(),
-		[WeakThis, NetID, bShouldPull](bool bOk, const FString& /*ContainerId*/)
+		[WeakThis, NetID, bShouldPull](bool bOk, const FString& ContainerId)
 	{
 		// On first bind, pull once so the entity's live members reflect server truth and OnRep fires, unless the
-		// container type turned the pull off.
+		// container type turned the pull off. Queued, so binds landing together read in one call.
 		if (bOk && bShouldPull)
 		{
 			if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis))
 			{
-				Self->HandleModelChanged(NetID);
+				Self->EnqueueRefreshPull(ContainerId, NetID);
 			}
 		}
 	});
@@ -2964,6 +3428,7 @@ void UCrowdyGameModelSubsystem::HandleEntityUnregistered(const FGuid& NetID)
 	NetIDToOwnerUserId.Remove(NetID);
 	PendingModelEntities.Remove(NetID);
 	PendingBindBackoff.Remove(NetID);
+	PendingSessionByNetID.Remove(NetID);
 	ResolveInFlight.Remove(NetID);
 	ClassDerivedBindings.Remove(NetID);
 }
@@ -3018,15 +3483,16 @@ void UCrowdyGameModelSubsystem::RetryPendingModelEntities()
 
 	const double Now = FApp::GetCurrentTime();
 
-	// Shared entities of one type go out as one paged list rather than one ensure each. A type whose last list
-	// failed waits out its own backoff; its entities stay pending and stay out of the per-entity loop, because an
-	// ensure per entity is exactly the storm the list exists to avoid. Anything a list misses falls through to the
-	// per-entity ensure when the list completes, never here.
+	// Bulk-eligible entities of one type go out as one paged list rather than one call each. A type whose last list
+	// failed waits out its own backoff; its entities stay pending and stay out of the per-entity loop, because a
+	// call per entity is exactly the storm the list exists to avoid. Anything a list misses is decided when the list
+	// completes, never here.
 	TSet<FGuid> BulkHandled;
 	if (IsBulkResolveEnabled())
 	{
-		// Grouped by type and by the session each entity was parked under. The API context is asked for once here
-		// and quietly: before sign-in the per-entity loop below already says so, once per entity under its backoff.
+		// Grouped by type and by session: the one a shared entity was parked under, else the active one. The API
+		// context is asked for once here and quietly: before sign-in the per-entity loop below already says so, once
+		// per entity under its backoff.
 		struct FBulkGroup
 		{
 			FString TypeName;
@@ -3040,14 +3506,22 @@ void UCrowdyGameModelSubsystem::RetryPendingModelEntities()
 			{
 				continue;
 			}
-			BulkHandled.Add(Pair.Key);
-			if (BulkResolveInFlight.Contains(Pair.Key))
+			const FString* Parked = PendingSessionByNetID.Find(Pair.Key);
+			const FString Session = Parked ? *Parked : ResolveContainerSessionId(Pair.Value, FString());
+			const FString GroupKey = BulkResolveGroupKey(Pair.Value, Session);
+			// A remote copy of a type whose list was cut short reads its own row by key instead.
+			if (BulkResolveCutGroups.Contains(GroupKey) && !IsAuthoritativeToCreate(Pair.Key))
 			{
 				continue;
 			}
-			const FString* Parked = PendingSessionByNetID.Find(Pair.Key);
-			const FString Session = Parked ? *Parked : ResolveContainerSessionId(Pair.Value, FString());
-			FBulkGroup& Group = Groups.FindOrAdd(Pair.Value + TEXT("|") + Session);
+			BulkHandled.Add(Pair.Key);
+			// An entity whose own backoff is running sits this sweep out entirely, listed or not.
+			const FCrowdyPendingBindBackoff* Backoff = PendingBindBackoff.Find(Pair.Key);
+			if (BulkResolveInFlight.Contains(Pair.Key) || (Backoff && Backoff->Attempts > 0 && Now < Backoff->NextAttemptTime))
+			{
+				continue;
+			}
+			FBulkGroup& Group = Groups.FindOrAdd(GroupKey);
 			Group.TypeName = Pair.Value;
 			Group.Session = Session;
 			Group.NetIDs.Add(Pair.Key);
@@ -3077,7 +3551,7 @@ void UCrowdyGameModelSubsystem::RetryPendingModelEntities()
 			{
 				continue; // not signed in yet: the group stays pending and the next sweep asks again
 			}
-			BulkResolveType(Entry.Value.TypeName, Entry.Value.Session, Entry.Value.NetIDs, Endpoint, Token, AppId);
+			BulkResolveType(Entry.Value.TypeName, Entry.Value.Session, Entry.Value.NetIDs, AppId);
 		}
 	}
 
@@ -3117,7 +3591,7 @@ void UCrowdyGameModelSubsystem::RetryPendingModelEntities()
 		// (no token at world start), or a remote proxy whose owner had not created the row when it first registered.
 		const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
 		ResolveOrCreateContainer(PendingNetID, PendingType, FString(),
-			[WeakThis, PendingNetID](bool bOk, const FString& /*ContainerId*/)
+			[WeakThis, PendingNetID](bool bOk, const FString& ContainerId)
 		{
 			if (bOk)
 			{
@@ -3128,7 +3602,7 @@ void UCrowdyGameModelSubsystem::RetryPendingModelEntities()
 					// means the entity was unregistered during the round trip and must not pull.
 					if (Self->ShouldPullOnRetryForEntity(PendingNetID))
 					{
-						Self->HandleModelChanged(PendingNetID);
+						Self->EnqueueRefreshPull(ContainerId, PendingNetID);
 					}
 				}
 			}
@@ -3165,15 +3639,17 @@ void UCrowdyGameModelSubsystem::HandleHostChanged(const FGuid& NewHostID, const 
 	PendingBindBackoff.Empty();
 	BulkResolveTypeNextAttempt.Empty();
 	BulkResolveTypeFailures.Empty();
+	BulkResolveCutGroups.Empty();
 	RequestPendingModelEntitySweep();
 }
 
-void UCrowdyGameModelSubsystem::ApplyStateToContainer(const FGuid& NetID, UObject* Container,
-	const TSharedPtr<FJsonObject>& NewState)
+bool UCrowdyGameModelSubsystem::ApplyStateToContainer(const FGuid& NetID, UObject* Container,
+	const TSharedPtr<FJsonObject>& NewState, const TSet<FName>* KeysToKeep)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_ApplyState);
 	if (!Container || !NewState.IsValid())
 	{
-		return;
+		return false;
 	}
 
 	// An entity drawn as a row rather than as an object holds its own storage elsewhere, so the values below are
@@ -3189,12 +3665,18 @@ void UCrowdyGameModelSubsystem::ApplyStateToContainer(const FGuid& NetID, UObjec
 	// key the entity genuinely owns can resolve no property on it at all; that key is exactly the one whose only
 	// home is the subscriber's storage. Built only when there is a subscriber holding this entity.
 	TArray<FCrowdyAttributeChange> Relayed;
+	int32 KeptDiffering = 0;
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : NewState->Values)
 	{
 		const FName Key(*Pair.Key);
 		const FString Canonical = JsonValueToCompactString(Pair.Value);
 		const FString* Existing = Cache.Find(Key);
-		if (!Existing || *Existing != Canonical)
+		if (KeysToKeep && KeysToKeep->Contains(Key))
+		{
+			KeptDiffering += !Existing || !Existing->Equals(Canonical, ESearchCase::CaseSensitive) ? 1 : 0;
+			continue;
+		}
+		if (!Existing || !Existing->Equals(Canonical, ESearchCase::CaseSensitive))
 		{
 			const FString OldJson = Existing ? *Existing : FString();
 			// Advance the cache + fire a change only for a value that actually applied to the live member. The
@@ -3252,13 +3734,23 @@ void UCrowdyGameModelSubsystem::ApplyStateToContainer(const FGuid& NetID, UObjec
 	// Last, so a subscriber's own reaction runs after this container's cache, members and notifies have settled.
 	RelayChangesToEntitySubscriber(NetID, ModelId, Relayed);
 
+	// Every caller of this apply is a pull completion, so each one is a pulled state landing.
+	++NetStats.PullApplies;
+	if (Changes.IsEmpty() && Relayed.IsEmpty())
+	{
+		++NetStats.RedundantPullApplies;
+	}
+
+	NetStats.StaleKeysSkipped += KeptDiffering;
 	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
 		TEXT("[GameModel] ApplyState net=%s changed=%d relayed=%d"), *NetID.ToString(), Changes.Num(), Relayed.Num());
+	return KeptDiffering > 0;
 }
 
 void UCrowdyGameModelSubsystem::ApplyMutationsToContainer(const FGuid& NetID, UObject* Container,
-	const TArray<FCrowdyMutationApplied>& Mutations)
+	const TArray<FCrowdyMutationApplied>& Mutations, uint64 DispatchSequence)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_ApplyMutations);
 	if (!Container)
 	{
 		return;
@@ -3268,6 +3760,9 @@ void UCrowdyGameModelSubsystem::ApplyMutationsToContainer(const FGuid& NetID, UO
 	// entity with no object of its own has to be told about them too or its storage sits on the value the last
 	// pull left until the next one happens.
 	const bool bHasSubscriber = FindEntitySubscriberForEntity(ResolveSubscriberEntityID(NetID)) != nullptr;
+	FString ModelId;
+	TryGetContainerId(NetID, ModelId);
+	TSet<FName>* Protect = FindKeysToProtect(ModelId, NetID, DispatchSequence);
 
 	TMap<FName, FString>& Cache = ContainerCache.FindOrAdd(NetID);
 	TArray<FCrowdyAttributeChange> Changes;
@@ -3280,7 +3775,7 @@ void UCrowdyGameModelSubsystem::ApplyMutationsToContainer(const FGuid& NetID, UO
 		const TSharedPtr<FJsonValue> Value = ParseJsonValueString(Mutation.NewValueJson);
 		const FString Canonical = Value.IsValid() ? JsonValueToCompactString(Value) : Mutation.NewValueJson;
 		const FString* Existing = Cache.Find(Key);
-		if (!Existing || *Existing != Canonical)
+		if (!Existing || !Existing->Equals(Canonical, ESearchCase::CaseSensitive))
 		{
 			const FString OldJson = Existing ? *Existing : FString();
 			// Same rule as ApplyStateToContainer: advance the cache + notify only when the value actually applied.
@@ -3311,14 +3806,18 @@ void UCrowdyGameModelSubsystem::ApplyMutationsToContainer(const FGuid& NetID, UO
 				}
 			}
 		}
+		// Protected only once the cache holds this write, so a rejected value never shadows a pulled one.
+		const FString* Held = Protect ? Cache.Find(Key) : nullptr;
+		if (Held && Held->Equals(Canonical, ESearchCase::CaseSensitive))
+		{
+			Protect->Add(Key);
+		}
 	}
 
 	for (const FCrowdyAttributeChange& Change : Changes)
 	{
 		FireParameterlessOnRep(Container, FindOnRepForServerKey(Container, Change.Key));
 	}
-	FString ModelId;
-	TryGetContainerId(NetID, ModelId);
 	BroadcastAttributeChanges(OnModelAttributeChanged, Container, ModelId, Changes);
 
 	RelayChangesToEntitySubscriber(NetID, ModelId, Relayed);
@@ -3428,7 +3927,7 @@ bool UCrowdyGameModelSubsystem::TryGetNetIDForContainer(const FString& Container
 }
 
 void UCrowdyGameModelSubsystem::ApplyInvokeMutations(const FGuid& SelfNetID, const FString& SelfContainerId,
-	const TArray<FCrowdyMutationApplied>& Mutations)
+	const TArray<FCrowdyMutationApplied>& Mutations, uint64 DispatchSequence)
 {
 	// Group by destination BEFORE applying any of it, so each destination takes exactly one apply call.
 	// ApplyMutationsToContainer diffs against that container's cache and fires one OnRep per changed key, so
@@ -3461,15 +3960,22 @@ void UCrowdyGameModelSubsystem::ApplyInvokeMutations(const FGuid& SelfNetID, con
 		{
 			if (UObject* Participant = ResolveEntityParticipant(DestNetID))
 			{
-				ApplyMutationsToContainer(DestNetID, Participant, Pair.Value);
+				ApplyMutationsToContainer(DestNetID, Participant, Pair.Value, DispatchSequence);
 				continue;
 			}
 		}
 
 		if (WatchedDataContainers.Contains(Pair.Key))
 		{
-			ApplyDataContainerMutations(Pair.Key, Pair.Value);
+			ApplyDataContainerMutations(Pair.Key, Pair.Value, DispatchSequence);
 			continue;
+		}
+
+		// A first data pull still out may predate this write and has nowhere to keep it yet, so it reads once more.
+		FCrowdyContainerPull* Pending = PullsInFlight.Find(Pair.Key);
+		if (Pending && Pending->bDataPull && DispatchSequence > Pending->IssuedSequence)
+		{
+			Pending->bDataOnceMore = true;
 		}
 
 		// A write to a container this client neither binds nor watches. There is nothing local to update; a
@@ -3482,6 +3988,11 @@ void UCrowdyGameModelSubsystem::ApplyInvokeMutations(const FGuid& SelfNetID, con
 
 void UCrowdyGameModelSubsystem::HandleModelChanged(const FGuid& NetID)
 {
+	PullAndApplyEntity(NetID, true);
+}
+
+void UCrowdyGameModelSubsystem::PullAndApplyEntity(const FGuid& NetID, bool bExplicit)
+{
 	FString ContainerId;
 	if (!TryGetContainerId(NetID, ContainerId))
 	{
@@ -3489,21 +4000,102 @@ void UCrowdyGameModelSubsystem::HandleModelChanged(const FGuid& NetID)
 			TEXT("[GameModel] model-changed for unbound entity %s — ignored"), *NetID.ToString());
 		return;
 	}
+	TArray<TPair<FString, FGuid>> Targets;
+	Targets.Emplace(MoveTemp(ContainerId), NetID);
+	PullAndApplyContainerStates(MoveTemp(Targets), bExplicit);
+}
 
-	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
-	const FGuid CapturedNetID = NetID;
-	PullContainerState(ContainerId, [WeakThis, CapturedNetID](bool bOk, TSharedPtr<FJsonObject> State)
+bool UCrowdyGameModelSubsystem::HoldBehindPullInFlight(const FString& ContainerId, const FGuid& NetID, bool bExplicit)
+{
+	FCrowdyContainerPull* InFlight = PullsInFlight.Find(ContainerId);
+	if (!InFlight)
 	{
-		UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis);
-		if (!bOk || !Self || !State.IsValid())
+		return false;
+	}
+	InFlight->HeldEntities.FindOrAdd(NetID) |= bExplicit;
+	++NetStats.PullsHeldBehindInFlight;
+	return true;
+}
+
+void UCrowdyGameModelSubsystem::BeginContainerPull(const FString& ContainerId, bool bDataPull, uint64 ProtectAfter)
+{
+	FCrowdyContainerPull& Pull = PullsInFlight.Add(ContainerId);
+	Pull.IssuedSequence = FMath::Min(++LastSendStamp, ProtectAfter);
+	Pull.bDataPull = bDataPull;
+}
+
+UCrowdyGameModelSubsystem::FCrowdyContainerPull UCrowdyGameModelSubsystem::EndContainerPull(const FString& ContainerId)
+{
+	FCrowdyContainerPull Landed;
+	PullsInFlight.RemoveAndCopyValue(ContainerId, Landed);
+	if (bShuttingDown)
+	{
+		AnswerPullWaiters(Landed.DataWaiters, false);
+		return Landed;
+	}
+	// Sent before the landed state is applied; a pull the apply's handlers ask for is held behind these and adds one more.
+	if (Landed.bDataOnceMore)
+	{
+		++NetStats.FollowUpPulls;
+		PullDataContainer(ContainerId, [Waiters = MoveTemp(Landed.DataWaiters)](bool bOk) mutable
 		{
-			return;
-		}
-		if (UObject* Participant = Self->ResolveEntityParticipant(CapturedNetID))
+			AnswerPullWaiters(Waiters, bOk);
+		});
+	}
+	TArray<TPair<FString, FGuid>> Explicit;
+	bool bQueued = false;
+	for (const TPair<FGuid, bool>& Held : Landed.HeldEntities)
+	{
+		FString Bound;
+		if (!Held.Value)
 		{
-			Self->ApplyStateToContainer(CapturedNetID, Participant, State);
+			EnqueueRefreshPull(ContainerId, Held.Key);
+			bQueued = true;
 		}
-	});
+		else if (TryGetContainerId(Held.Key, Bound))
+		{
+			Explicit.Emplace(MoveTemp(Bound), Held.Key);
+		}
+	}
+	NetStats.FollowUpPulls += (bQueued ? 1 : 0) + (Explicit.IsEmpty() ? 0 : 1);
+	PullAndApplyContainerStates(MoveTemp(Explicit), true);
+	return Landed;
+}
+
+TSet<FName>* UCrowdyGameModelSubsystem::FindKeysToProtect(const FString& ContainerId, const FGuid& Receiver,
+	uint64 InvokeDispatched)
+{
+	FCrowdyContainerPull* InFlight = ContainerId.IsEmpty() ? nullptr : PullsInFlight.Find(ContainerId);
+	if (!InFlight || InvokeDispatched <= InFlight->IssuedSequence)
+	{
+		return nullptr;
+	}
+	return &InFlight->KeysWrittenSince.FindOrAdd(Receiver);
+}
+
+void UCrowdyGameModelSubsystem::AnswerPullWaiters(TArray<TFunction<void(bool)>>& Waiters, bool bOk)
+{
+	for (TFunction<void(bool)>& Waiter : Waiters)
+	{
+		Waiter(bOk);
+	}
+	Waiters.Reset();
+}
+
+void UCrowdyGameModelSubsystem::FailPendingPulls()
+{
+	// Moved out first: a waiter may pull again from inside its answer.
+	TMap<FString, FCrowdyContainerPull> Pulls = MoveTemp(PullsInFlight);
+	PullsInFlight.Reset();
+	for (TPair<FString, FCrowdyContainerPull>& Pull : Pulls)
+	{
+		AnswerPullWaiters(Pull.Value.DataWaiters, false);
+	}
+	SelfEchoBackstop.Empty();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(SelfEchoBackstopTimer);
+	}
 }
 
 void UCrowdyGameModelSubsystem::EnqueueRefreshPull(const FString& ContainerId, const FGuid& NetID)
@@ -3513,9 +4105,8 @@ void UCrowdyGameModelSubsystem::EnqueueRefreshPull(const FString& ContainerId, c
 		return;
 	}
 
-	// Add, not FindOrAdd: the entity holding a container can change between two notifications, and the pull has
-	// to address the one holding it now.
-	PendingRefreshPulls.Add(ContainerId, NetID);
+	// FindOrAdd keeps the first notification's stamp for the whole window.
+	PendingRefreshPulls.FindOrAdd(ContainerId, LastSendStamp);
 
 	UWorld* World = GetWorld();
 	if (!World)
@@ -3532,14 +4123,21 @@ void UCrowdyGameModelSubsystem::EnqueueRefreshPull(const FString& ContainerId, c
 
 	Timers.SetTimer(RefreshPullTimer,
 		FTimerDelegate::CreateWeakLambda(this, [this]() { DrainRefreshPulls(); }),
-		ResolveRefreshPullWindowSeconds(), false);
+		RefreshPullCoalesceSeconds, false);
 }
 
-float UCrowdyGameModelSubsystem::ResolveRefreshPullWindowSeconds() const
+#if WITH_DEV_AUTOMATION_TESTS
+float UCrowdyGameModelSubsystem::GetRefreshPullTimerRateForTest() const
 {
-	return StretchCoalesceWindowSeconds(RefreshPullCoalesceSeconds, GetRecentInvokeCount(),
-		InvokeBudgetLimitPerWindow);
+	const UWorld* World = GetWorld();
+	return World ? World->GetTimerManager().GetTimerRate(RefreshPullTimer) : -1.0f;
 }
+
+void UCrowdyGameModelSubsystem::SetClientHostForTest(UCrowdyCppClientSubsystem* InHost)
+{
+	ClientHostForTest = InHost;
+}
+#endif
 
 void UCrowdyGameModelSubsystem::DrainRefreshPulls()
 {
@@ -3550,21 +4148,30 @@ void UCrowdyGameModelSubsystem::DrainRefreshPulls()
 
 	// Moved out first: a pull's completion applies state, which fires notifies and delegates, and any of them may
 	// notify again for the same container. Those belong to the next window rather than to this drain.
-	TMap<FString, FGuid> Draining = MoveTemp(PendingRefreshPulls);
+	TMap<FString, uint64> Draining = MoveTemp(PendingRefreshPulls);
 	PendingRefreshPulls.Reset();
+	// Cleared so a notification queued while this drain runs arms a window of its own.
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(RefreshPullTimer);
+	}
 
-	// Each entity is read through the container it holds NOW, so a rebind mid-window pulls the right row.
+	// Every entity bound to a queued container now receives its pull, so two entities on one row both apply it.
 	TArray<TPair<FString, FGuid>> Targets;
 	Targets.Reserve(Draining.Num());
-	for (const TPair<FString, FGuid>& Pair : Draining)
+	for (const TPair<FString, uint64>& Pair : Draining)
 	{
-		FString Bound;
-		if (TryGetContainerId(Pair.Value, Bound))
+		const TArray<FGuid>* Holders = ContainerIdToNetIDs.Find(Pair.Key);
+		if (!Holders)
 		{
-			Targets.Emplace(MoveTemp(Bound), Pair.Value);
+			continue;
+		}
+		for (const FGuid& Holder : *Holders)
+		{
+			Targets.Emplace(Pair.Key, Holder);
 		}
 	}
-	PullAndApplyContainerStates(MoveTemp(Targets));
+	PullAndApplyContainerStates(MoveTemp(Targets), false, &Draining);
 }
 
 void UCrowdyGameModelSubsystem::HandleModelChangedByContainer(const FString& ContainerId)
@@ -3644,6 +4251,9 @@ void UCrowdyGameModelSubsystem::InvokeAndApplyResolved(const FGuid& SelfNetID, c
 	// writes both together, so the guard reads it as already moved and simply declines to retry.
 	FCrowdyInvokeBindingGuard Guard;
 	Guard.bEntityBound = true;
+	// Only the invoke's own container is marked: the server notifies just that one, so marking a routed destination
+	// would swallow the next genuine change to it.
+	Guard.bMarkSelfEcho = true;
 	Guard.SelfNetID = SelfNetID;
 	if (const uint32* CurrentEpoch = BindEpochByNetID.Find(SelfNetID))
 	{
@@ -3664,12 +4274,7 @@ void UCrowdyGameModelSubsystem::InvokeAndApplyResolved(const FGuid& SelfNetID, c
 			// Echo the CONFIRMED authoritative result into this client's cache + live members (not a prediction),
 			// firing OnRep. Routed per mutation, because an effect that writes source.<attr> as well as
 			// self.<attr> reports writes to two different containers in one result.
-			Self->ApplyInvokeMutations(CapturedNetID, CapturedContainerId, Result.Mutations);
-			// Record so this client drops its own model-changed echo (channel/139) for this container rather than
-			// re-pulling over the confirmed apply it just did. Only the invoke's own container is marked: the
-			// server notifies just that one, so marking a routed destination would arm a drop for a notification
-			// that never comes and swallow the next genuine change to it instead.
-			Self->MarkSelfActed(CapturedContainerId);
+			Self->ApplyInvokeMutations(CapturedNetID, CapturedContainerId, Result.Mutations, Result.DispatchSequence);
 			// Fallback nudge for peers (server-native notification is the primary path; CVar can disable this).
 			Self->EmitModelChangedPing(CapturedNetID, CapturedContainerId);
 		}
@@ -3984,12 +4589,18 @@ void UCrowdyGameModelSubsystem::HandleModelChangeHint(const FCrowdyModelChangeHi
 {
 	// Self-echo drop: if THIS client just invoked this container, its own model-changed echo would trigger a
 	// redundant re-pull that races the confirmed-mutation apply already done (a free/data pull full-replaces and
-	// can transiently evict the just-cached value). Drop exactly one such echo; a later genuine change re-pulls.
+	// can transiently evict the just-cached value). Each self-invoke drops one echo; a hint past those re-pulls.
 	if (!Hint.ContainerId.IsEmpty() && ConsumeSelfEcho(Hint.ContainerId))
 	{
 		UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
 			TEXT("[GameModel] self-echo for container %s - skipping redundant re-pull"), *Hint.ContainerId);
 		return;
+	}
+
+	const double* LastSelfInvoke = NetStats.LastSelfInvokeSeconds.Find(Hint.ContainerId);
+	if (LastSelfInvoke && FApp::GetCurrentTime() - *LastSelfInvoke <= SelfEchoWindowSeconds)
+	{
+		++NetStats.HintsAfterSelfInvokeNotDropped;
 	}
 
 	// Prefer the container (each client may bind its own entity to a shared container); fall back to the entity.
@@ -4000,49 +4611,134 @@ void UCrowdyGameModelSubsystem::HandleModelChangeHint(const FCrowdyModelChangeHi
 	}
 	else if (Hint.EntityID.IsValid())
 	{
-		HandleModelChanged(Hint.EntityID);
+		PullAndApplyEntity(Hint.EntityID, false);
 	}
 }
 
 void UCrowdyGameModelSubsystem::PruneExpiredSelfActed(double Now)
 {
-	// The map holds one entry per recent self-invoke, so this is cheap.
+	// The map holds only marks from the last window of invokes, so this is cheap.
 	for (auto It = RecentlySelfActed.CreateIterator(); It; ++It)
 	{
-		if (It->Value <= Now)
+		NetStats.SelfEchoMarksExpired += RemoveExpiredSelfEchoMarks(It->Value, Now);
+		if (It->Value.IsEmpty())
+		{
+			It.RemoveCurrent();
+		}
+	}
+	for (auto It = NetStats.LastSelfInvokeSeconds.CreateIterator(); It; ++It)
+	{
+		if (It->Value + SelfEchoWindowSeconds <= Now)
 		{
 			It.RemoveCurrent();
 		}
 	}
 }
 
-void UCrowdyGameModelSubsystem::MarkSelfActed(const FString& ContainerId)
+double UCrowdyGameModelSubsystem::MarkSelfActed(const FString& ContainerId)
 {
 	if (ContainerId.IsEmpty())
 	{
-		return;
+		return 0.0;
 	}
-	// Prune here too, not just in ConsumeSelfEcho, so a session that only invokes (and never receives a
-	// model-changed notification to drive a consume) keeps the map bounded by the window rather than growing it.
+	if (HasSeveralLocalHolders(ContainerId))
+	{
+		return 0.0;
+	}
 	const double Now = FApp::GetCurrentTime();
 	PruneExpiredSelfActed(Now);
-	RecentlySelfActed.Add(ContainerId, Now + SelfEchoWindowSeconds);
+	const double Expiry = Now + SelfEchoWindowSeconds;
+	RecentlySelfActed.FindOrAdd(ContainerId).Add(Expiry);
+	++NetStats.SelfInvokesMarked;
+	NetStats.LastSelfInvokeSeconds.Add(ContainerId, Now);
+	return Expiry;
+}
+
+void UCrowdyGameModelSubsystem::UnmarkSelfActed(const FString& ContainerId, double Expiry)
+{
+	// Past its expiry the mark is gone either way, and a hint it dropped is already covered by the backstop.
+	if (Expiry <= FApp::GetCurrentTime())
+	{
+		return;
+	}
+	TArray<double>* Marks = RecentlySelfActed.Find(ContainerId);
+	if (Marks && Marks->RemoveSingle(Expiry) > 0)
+	{
+		return;
+	}
+	// A hint took this attempt's mark, possibly for a change that committed unseen.
+	PullSelfEchoReceivers(ContainerId);
 }
 
 bool UCrowdyGameModelSubsystem::ConsumeSelfEcho(const FString& ContainerId)
 {
-	const double Now = FApp::GetCurrentTime();
-	PruneExpiredSelfActed(Now);
-
-	if (const double* Expiry = RecentlySelfActed.Find(ContainerId))
+	// Only this container is pruned: a hint can name any id, so it never walks the whole map.
+	TArray<double>* Marks = RecentlySelfActed.Find(ContainerId);
+	if (!Marks || HasSeveralLocalHolders(ContainerId))
 	{
-		if (*Expiry > Now)
-		{
-			RecentlySelfActed.Remove(ContainerId); // consume-once: only the first echo after a self-invoke is dropped
-			return true;
-		}
+		return false;
 	}
-	return false;
+	NetStats.SelfEchoMarksExpired += RemoveExpiredSelfEchoMarks(*Marks, FApp::GetCurrentTime());
+	if (Marks->IsEmpty())
+	{
+		RecentlySelfActed.Remove(ContainerId);
+		return false;
+	}
+	// The oldest mark, whose own echo is the one most likely to be arriving.
+	Marks->RemoveAt(0, EAllowShrinking::No);
+	++NetStats.SelfEchoesDropped;
+	NoteSelfEchoDropped(ContainerId);
+	return true;
+}
+
+bool UCrowdyGameModelSubsystem::HasSeveralLocalHolders(const FString& ContainerId) const
+{
+	const TArray<FGuid>* Holders = ContainerIdToNetIDs.Find(ContainerId);
+	return Holders && Holders->Num() > 1;
+}
+
+bool UCrowdyGameModelSubsystem::PullSelfEchoReceivers(const FString& ContainerId)
+{
+	// The same receivers a notification for this container would reach, without the pending-entity sweep.
+	const FGuid BoundNetID = FindNetIDForContainer(ContainerId);
+	if (BoundNetID.IsValid())
+	{
+		EnqueueRefreshPull(ContainerId, BoundNetID);
+		return true;
+	}
+	if (!WatchedDataContainers.Contains(ContainerId))
+	{
+		return false;
+	}
+	PullDataContainer(ContainerId, nullptr);
+	return true;
+}
+
+void UCrowdyGameModelSubsystem::NoteSelfEchoDropped(const FString& ContainerId)
+{
+	UWorld* World = GetWorld();
+	if (bShuttingDown || !World)
+	{
+		return;
+	}
+	const bool bArmed = !SelfEchoBackstop.IsEmpty();
+	SelfEchoBackstop.Add(ContainerId);
+	if (bArmed)
+	{
+		return;
+	}
+	World->GetTimerManager().SetTimer(SelfEchoBackstopTimer,
+		FTimerDelegate::CreateWeakLambda(this, [this]() { RunSelfEchoBackstop(); }), SelfEchoWindowSeconds, false);
+}
+
+void UCrowdyGameModelSubsystem::RunSelfEchoBackstop()
+{
+	// Moved out first, leaving the set empty, so a drop during these pulls arms the next round.
+	const TSet<FString> Dropped = MoveTemp(SelfEchoBackstop);
+	for (const FString& ContainerId : Dropped)
+	{
+		NetStats.SelfEchoBackstopPulls += PullSelfEchoReceivers(ContainerId) ? 1 : 0;
+	}
 }
 
 ECrowdySessionStatus UCrowdyGameModelSubsystem::ParseSessionStatus(const FString& Word)
@@ -4774,8 +5470,7 @@ void UCrowdyGameModelSubsystem::WatchSession(const FString& SessionId, int64 Aft
 		return;
 	}
 
-	// A WebSocket subscription is not a Game Model call and does not spend the per-player allowance.
-	FCrowdyCppClient* Client = EnsureCppClientUnmetered(Endpoint, Token);
+	FCrowdyCppClient* Client = EnsureCppClient(Endpoint, Token);
 	if (!Client)
 	{
 		return;
@@ -4867,7 +5562,7 @@ void UCrowdyGameModelSubsystem::UnwatchSession(const FString& SessionId)
 	// Cancelling by id needs no token or endpoint, so a signed-out client can still close its stream. The client
 	// is resolved through the host rather than a kept pointer because it outlives this world; if none exists any
 	// more, a rebuild or teardown already ended the stream.
-	UCrowdyCppClientSubsystem* Host = UCrowdyCppClientSubsystem::Get(this);
+	UCrowdyCppClientSubsystem* Host = ResolveClientHost();
 	FCrowdyCppClient* Client = Host ? Host->GetExistingClient() : nullptr;
 	if (!Client)
 	{
@@ -5131,27 +5826,40 @@ void UCrowdyGameModelSubsystem::CreateDataContainer(const FString& TypeName, con
 
 void UCrowdyGameModelSubsystem::PullDataContainer(const FString& ContainerId, TFunction<void(bool)> OnDone)
 {
-	if (ContainerId.IsEmpty())
+	// Teardown starts no pull and must not replace a record whose held callers are still owed an answer.
+	if (ContainerId.IsEmpty() || bShuttingDown)
 	{
 		if (OnDone) { OnDone(false); }
 		return;
 	}
 
+	if (FCrowdyContainerPull* InFlight = PullsInFlight.Find(ContainerId))
+	{
+		InFlight->bDataOnceMore = true;
+		if (OnDone) { InFlight->DataWaiters.Add(MoveTemp(OnDone)); }
+		++NetStats.PullsHeldBehindInFlight;
+		return;
+	}
+	BeginContainerPull(ContainerId, true);
+
 	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
 	const FString CapturedId = ContainerId;
-	PullContainerState(ContainerId, [WeakThis, CapturedId, OnDone = MoveTemp(OnDone)](bool bOk, TSharedPtr<FJsonObject> State)
+	IssueStateRead(ContainerId, [WeakThis, CapturedId, OnDone = MoveTemp(OnDone)](bool bOk, TSharedPtr<FJsonObject> State)
 	{
-		if (bOk && State.IsValid())
+		UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis);
+		const FCrowdyContainerPull Landed = Self ? Self->EndContainerPull(CapturedId) : FCrowdyContainerPull();
+		if (Self && bOk && State.IsValid())
 		{
-			if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis))
+			// Watch only on a SUCCESSFUL pull, so a bogus/failed id never leaves a permanent watch entry.
+			Self->WatchedDataContainers.Add(CapturedId);
+			if (Self->ApplyDataContainerState(CapturedId, State, Landed.KeysWrittenSince.Find(FGuid())))
 			{
-				// Watch only on a SUCCESSFUL pull, so a bogus/failed id never leaves a permanent watch entry.
-				Self->WatchedDataContainers.Add(CapturedId);
-				Self->ApplyDataContainerState(CapturedId, State);
+				++Self->NetStats.FollowUpPulls;
+				Self->PullDataContainer(CapturedId, nullptr);
 			}
 		}
 		if (OnDone) { OnDone(bOk); }
-	});
+	}, true);
 }
 
 void UCrowdyGameModelSubsystem::InvokeOnContainer(const FString& ContainerId, const FString& FunctionName,
@@ -5182,6 +5890,9 @@ void UCrowdyGameModelSubsystem::InvokeOnContainerResolved(const FString& Contain
 	Req->SessionId = ResolvedSessionId;
 	Req->Params = Params;
 
+	FCrowdyInvokeBindingGuard Guard;
+	Guard.bMarkSelfEcho = true;
+
 	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
 	const FString CapturedId = ContainerId;
 	InvokeResolved(MoveTemp(Req), [WeakThis, CapturedId, OnDone = MoveTemp(OnDone)](FCrowdyInvokeResult Result)
@@ -5202,10 +5913,7 @@ void UCrowdyGameModelSubsystem::InvokeOnContainerResolved(const FString& Contain
 			// removal change event. Routed per mutation for the same reason the entity path is: a function invoked
 			// on this container may also write another one, and those keys do not belong in this container's cache.
 			// The watch added just above is what makes this container resolve to the by-id merge.
-			Self->ApplyInvokeMutations(FGuid(), CapturedId, Result.Mutations);
-			// Record so this client drops its own model-changed echo for this container rather than redundantly
-			// re-pulling over the confirmed merge it just applied.
-			Self->MarkSelfActed(CapturedId);
+			Self->ApplyInvokeMutations(FGuid(), CapturedId, Result.Mutations, Result.DispatchSequence);
 		}
 		else if (Self && !Result.ErrorMessage.IsEmpty())
 		{
@@ -5213,7 +5921,7 @@ void UCrowdyGameModelSubsystem::InvokeOnContainerResolved(const FString& Contain
 			Self->SetLastModelError(Result.ErrorMessage);
 		}
 		if (OnDone) { OnDone(Result); }
-	});
+	}, Guard);
 }
 
 void UCrowdyGameModelSubsystem::SetDataProperty(const FString& ContainerId, const FString& Key,
@@ -5393,15 +6101,18 @@ void UCrowdyGameModelSubsystem::UnwatchDataContainer(const FString& ContainerId)
 	DataContainerCache.Remove(ContainerId);
 }
 
-void UCrowdyGameModelSubsystem::ApplyDataContainerState(const FString& ContainerId, const TSharedPtr<FJsonObject>& NewState)
+bool UCrowdyGameModelSubsystem::ApplyDataContainerState(const FString& ContainerId, const TSharedPtr<FJsonObject>& NewState,
+	const TSet<FName>* KeysToKeep)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_ApplyState);
 	if (ContainerId.IsEmpty() || !NewState.IsValid())
 	{
-		return;
+		return false;
 	}
 
 	TMap<FName, FString>& Cache = DataContainerCache.FindOrAdd(ContainerId);
 	TArray<FCrowdyAttributeChange> Changes;
+	int32 KeptDiffering = 0;
 
 	// The pulled state is the container's COMPLETE visible property set, so record which keys it carries: a
 	// free/data container's key set is dynamic (an inventory slot cleared, a quest objective dropped), unlike an
@@ -5415,7 +6126,12 @@ void UCrowdyGameModelSubsystem::ApplyDataContainerState(const FString& Container
 		// Canonicalize the SAME way the actor-bound apply path does so equal values always compare equal.
 		const FString Canonical = JsonValueToCompactString(Pair.Value);
 		const FString* Existing = Cache.Find(Key);
-		if (!Existing || *Existing != Canonical)
+		if (KeysToKeep && KeysToKeep->Contains(Key))
+		{
+			KeptDiffering += !Existing || !Existing->Equals(Canonical, ESearchCase::CaseSensitive) ? 1 : 0;
+			continue;
+		}
+		if (!Existing || !Existing->Equals(Canonical, ESearchCase::CaseSensitive))
 		{
 			FCrowdyAttributeChange& Change = Changes.AddDefaulted_GetRef();
 			Change.Key = Key;
@@ -5430,13 +6146,19 @@ void UCrowdyGameModelSubsystem::ApplyDataContainerState(const FString& Container
 	// empty NewValueJson so a per-attribute listener can tell it apart from a value change.
 	for (auto It = Cache.CreateIterator(); It; ++It)
 	{
-		if (!PresentKeys.Contains(It.Key()))
+		if (PresentKeys.Contains(It.Key()))
 		{
-			FCrowdyAttributeChange& Change = Changes.AddDefaulted_GetRef();
-			Change.Key = It.Key();
-			Change.OldValueJson = It.Value();
-			It.RemoveCurrent();
+			continue;
 		}
+		if (KeysToKeep && KeysToKeep->Contains(It.Key()))
+		{
+			++KeptDiffering;
+			continue;
+		}
+		FCrowdyAttributeChange& Change = Changes.AddDefaulted_GetRef();
+		Change.Key = It.Key();
+		Change.OldValueJson = It.Value();
+		It.RemoveCurrent();
 	}
 
 	// A free/data container has no actor and no per-attribute OnRep, so the whole-container delegate carries the
@@ -5450,18 +6172,29 @@ void UCrowdyGameModelSubsystem::ApplyDataContainerState(const FString& Container
 	}
 	BroadcastAttributeChanges(OnModelAttributeChanged, nullptr, ContainerId, Changes);
 
+	// Every caller of this apply is a pull completion; a data container relays to no subscriber.
+	++NetStats.PullApplies;
+	if (!bChanged)
+	{
+		++NetStats.RedundantPullApplies;
+	}
+
+	NetStats.StaleKeysSkipped += KeptDiffering;
 	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Verbose,
 		TEXT("[GameModel] ApplyDataContainerState container=%s changed=%s keys=%d"),
 		*ContainerId, bChanged ? TEXT("yes") : TEXT("no"), NewState->Values.Num());
+	return KeptDiffering > 0;
 }
 
 void UCrowdyGameModelSubsystem::ApplyDataContainerMutations(const FString& ContainerId,
-	const TArray<FCrowdyMutationApplied>& Mutations)
+	const TArray<FCrowdyMutationApplied>& Mutations, uint64 DispatchSequence)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_ApplyMutations);
 	if (ContainerId.IsEmpty())
 	{
 		return;
 	}
+	TSet<FName>* Protect = FindKeysToProtect(ContainerId, FGuid(), DispatchSequence);
 
 	TMap<FName, FString>& Cache = DataContainerCache.FindOrAdd(ContainerId);
 	TArray<FCrowdyAttributeChange> Changes;
@@ -5472,7 +6205,11 @@ void UCrowdyGameModelSubsystem::ApplyDataContainerMutations(const FString& Conta
 		const TSharedPtr<FJsonValue> Value = ParseJsonValueString(Mutation.NewValueJson);
 		const FString Canonical = Value.IsValid() ? JsonValueToCompactString(Value) : Mutation.NewValueJson;
 		const FString* Existing = Cache.Find(Key);
-		if (!Existing || *Existing != Canonical)
+		if (Protect)
+		{
+			Protect->Add(Key);
+		}
+		if (!Existing || !Existing->Equals(Canonical, ESearchCase::CaseSensitive))
 		{
 			FCrowdyAttributeChange& Change = Changes.AddDefaulted_GetRef();
 			Change.Key = Key;
@@ -5604,34 +6341,30 @@ void UCrowdyGameModelSubsystem::TouchCollectionParent(const FString& ParentConta
 		return;
 	}
 
-	FCrowdyInvokeRequest Req;
-	Req.FunctionName = CrowdyGameModelMetaKeys::CollectionTouchFunctionName(ParentTypeName);
+	TSharedRef<FCrowdyInvokeRequest> Req = MakeShared<FCrowdyInvokeRequest>();
+	Req->FunctionName = CrowdyGameModelMetaKeys::CollectionTouchFunctionName(ParentTypeName);
 	// The touch runs against the parent, so the server injects $self_container_id = ParentContainerId; the touch
 	// function's notification names the parent from that, so no params are needed.
-	Req.SelfContainerId = ParentContainerId;
-	Req.Params = MakeShared<FJsonObject>();
+	Req->SelfContainerId = ParentContainerId;
+	Req->SessionId = ResolveSessionId(FString(), ActiveSessionId);
+	Req->Params = MakeShared<FJsonObject>();
 
-	// The raw Invoke does not touch this client's cache, so nothing to poison. On success MarkSelfActed so this
-	// client drops its own inbound echo (it already refreshed off the edge change above).
-	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
-	Invoke(Req, [WeakThis, ParentContainerId](FCrowdyInvokeResult Result)
+	// Marked so this client drops its own echo: it already refreshed off the edge change above.
+	FCrowdyInvokeBindingGuard Guard;
+	Guard.bMarkSelfEcho = true;
+	InvokeResolved(MoveTemp(Req), [ParentContainerId](FCrowdyInvokeResult Result)
 	{
-		if (!Result.bTransportOk || !Result.bSuccess)
+		if (Result.bTransportOk && Result.bSuccess)
 		{
-			// Always-on warning, and reported whether or not the world session survived the round-trip: it needs
-			// nothing from the subsystem, and a touch that failed late is exactly the case a designer must hear
-			// about (the collection change did not propagate to peers).
-			UE_LOG(LogCrowdyGameModel, Warning,
-				TEXT("[GameModel] collection touch invoke failed for container=%s (%s); peers refresh on their next pull"),
-				*ParentContainerId, *Result.ErrorMessage);
 			return;
 		}
-		// Marking the self-echo touches this world's bookkeeping, so it only runs while the session is live.
-		if (UCrowdyGameModelSubsystem* Self = ResolveLiveSelf(WeakThis))
-		{
-			Self->MarkSelfActed(ParentContainerId);
-		}
-	});
+		// Always-on warning, and reported whether or not the world session survived the round-trip: it needs
+		// nothing from the subsystem, and a touch that failed late is exactly the case a designer must hear
+		// about (the collection change did not propagate to peers).
+		UE_LOG(LogCrowdyGameModel, Warning,
+			TEXT("[GameModel] collection touch invoke failed for container=%s (%s); peers refresh on their next pull"),
+			*ParentContainerId, *Result.ErrorMessage);
+	}, Guard);
 }
 
 void UCrowdyGameModelSubsystem::AddToCollection(const FString& ParentContainerId, const FString& ParentTypeName,
