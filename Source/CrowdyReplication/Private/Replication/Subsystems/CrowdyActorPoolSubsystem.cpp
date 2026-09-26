@@ -62,30 +62,37 @@ void UCrowdyActorPoolSubsystem::RegisterPool(const FCrowdyPoolConfig& Config)
 	FPool& Pool     = Pools.Add(Config.ActorClass.Get());
 	Pool.ActorClass = Config.ActorClass;
 	Pool.Policy     = NewObject<UCrowdyActorPoolPolicy>(this, PolicyClass);
+	Pool.MaxSize    = FMath::Max(Config.PoolSize, Config.MaxPoolSize);
 
 	Pool.Slots.Reserve(Config.PoolSize);
 	for (int32 i = 0; i < Config.PoolSize; i++)
-	{
-		// Deferred so the entity component can be marked dormant BEFORE BeginPlay. A pre-warmed actor that
-		// registers itself is observed synchronously by every listener, and the Game Model answers by ensuring
-		// a server container row for an actor that stands for nothing. OnActorPooled below unregisters the
-		// record, but the round trip is already sent and cannot be recalled.
-		AActor* Actor = GetWorld()->SpawnActorDeferred<AActor>(Config.ActorClass, FTransform::Identity,
-			nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-		if (!Actor) continue;
+		SpawnPooledActor(Pool);
+}
 
-		if (UCrowdyEntityComponent* Component = Actor->FindComponentByClass<UCrowdyEntityComponent>())
-			Component->MarkPooledDormant();
+AActor* UCrowdyActorPoolSubsystem::SpawnPooledActor(FPool& Pool)
+{
+	// Deferred so the entity component can be marked dormant BEFORE BeginPlay. A pooled actor that
+	// registers itself is observed synchronously by every listener, and the Game Model answers by ensuring
+	// a server container row for an actor that stands for nothing. OnActorPooled below unregisters the
+	// record, but the round trip is already sent and cannot be recalled.
+	AActor* Actor = GetWorld()->SpawnActorDeferred<AActor>(Pool.ActorClass, FTransform::Identity,
+		nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!Actor) return nullptr;
 
-		Actor->FinishSpawning(FTransform::Identity);
+	if (UCrowdyEntityComponent* Component = Actor->FindComponentByClass<UCrowdyEntityComponent>())
+		Component->MarkPooledDormant();
 
-		Pool.Policy->OnActorPooled(Actor);
+	// Growth spawns mid-game at the origin, where a colliding actor would push whatever stands there.
+	Actor->SetActorEnableCollision(false);
+	Actor->FinishSpawning(FTransform::Identity);
 
-		FSlot Slot;
-		Slot.Actor   = Actor;
-		Slot.bActive = false;
-		Pool.Slots.Add(Slot);
-	}
+	Pool.Policy->OnActorPooled(Actor);
+
+	FSlot Slot;
+	Slot.Actor   = Actor;
+	Slot.bActive = false;
+	Pool.Slots.Add(Slot);
+	return Actor;
 }
 
 AActor* UCrowdyActorPoolSubsystem::AcquireActor(const TSubclassOf<AActor> ActorClass)
@@ -93,23 +100,38 @@ AActor* UCrowdyActorPoolSubsystem::AcquireActor(const TSubclassOf<AActor> ActorC
 	FPool* Pool = FindPool(ActorClass.Get());
 	if (!Pool) return nullptr;
 
-	for (FSlot& Slot : Pool->Slots)
+	int32 Index = Pool->Slots.IndexOfByPredicate([](const FSlot& Slot) { return !Slot.bActive && Slot.Actor.IsValid(); });
+	if (Index == INDEX_NONE)
 	{
-		if (Slot.bActive || !Slot.Actor.IsValid()) continue;
+		// An actor destroyed by something else never comes back to the pool, so it stops counting against the cap.
+		Pool->Slots.RemoveAllSwap([](const FSlot& Slot) { return !Slot.Actor.IsValid(); });
 
-		AActor* Actor = Slot.Actor.Get();
-		if (!IsValid(Actor)) continue;
+		if (Pool->Slots.Num() >= Pool->MaxSize)
+		{
+			UE_CLOG(!Pool->bWarnedAtCap, LogCrowdyReplication, Warning,
+				TEXT("[CrowdyActorPool]: Pool for class %s is at its cap of %d actors, all in use, so further entities of this class wait until one is released. ")
+				TEXT("Raise Max Pool Size Per Class on the Actor Pool Backend Config to allow more. Said once per class."),
+				*ActorClass->GetName(), Pool->MaxSize);
+			Pool->bWarnedAtCap = true;
+			return nullptr;
+		}
 
-		Slot.bActive = true;
+		if (!SpawnPooledActor(*Pool)) return nullptr;
+		Index = Pool->Slots.Num() - 1;
 
-		if (Pool->Policy && IsValid(Pool->Policy))
-			Pool->Policy->OnActorActivated(Actor, FInstancedStruct{});
-
-		return Actor;
+		UE_CLOG(CrowdyReplicationTrace::Pool(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyActorPool]: Pool for class %s grew to %d actors (cap %d)."),
+			*ActorClass->GetName(), Pool->Slots.Num(), Pool->MaxSize);
 	}
 
-	UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyActorPool]: Pool exhausted for class %s"), *ActorClass->GetName());
-	return nullptr;
+	FSlot& Slot = Pool->Slots[Index];
+	Slot.bActive = true;
+
+	AActor* Actor = Slot.Actor.Get();
+	if (IsValid(Pool->Policy))
+		Pool->Policy->OnActorActivated(Actor, FInstancedStruct{});
+
+	return Actor;
 }
 
 void UCrowdyActorPoolSubsystem::ReleaseActor(AActor* Actor)
@@ -117,20 +139,26 @@ void UCrowdyActorPoolSubsystem::ReleaseActor(AActor* Actor)
 	check(IsInGameThread());
 	if (!IsValid(Actor)) return;
 
-	for (auto& [Class, Pool] : Pools)
+	// A pool spawns only its own class, so an actor can only be in the pool keyed by its class.
+	FPool* Pool = FindPool(Actor->GetClass());
+	if (!Pool) return;
+
+	for (FSlot& Slot : Pool->Slots)
 	{
-		for (FSlot& Slot : Pool.Slots)
-		{
-			if (Slot.Actor.Get() != Actor) continue;
+		if (Slot.Actor.Get() != Actor) continue;
 
-			Slot.bActive = false;
+		Slot.bActive = false;
 
-			if (Pool.Policy && IsValid(Pool.Policy))
-				Pool.Policy->OnActorDeactivated(Actor);
+		if (IsValid(Pool->Policy))
+			Pool->Policy->OnActorDeactivated(Actor);
 
-			return;
-		}
+		return;
 	}
+}
+
+bool UCrowdyActorPoolSubsystem::HasPool(const UClass* ActorClass) const
+{
+	return Pools.Contains(TSubclassOf<AActor>(const_cast<UClass*>(ActorClass)));
 }
 
 FPool* UCrowdyActorPoolSubsystem::FindPool(const UClass* ActorClass)

@@ -40,6 +40,19 @@ public:
 	virtual void DeactivateInstance(int32 SlotId, const FGuid& UUID) override;
 	virtual void ExtractUpdate(const FInstancedStruct& State, int64 ServerTimestampMs, int32 SlotId) override;
 	virtual void ApplyInterpolation(int32 SlotId, int64 RenderTimeMs) override;
+	virtual bool IsInstanceActive(int32 SlotId) const override;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	// The collaborators InitializeBackend finds on a game world, handed in directly so a test can run on an editor world.
+	void InitializeForTest(UCrowdyActorPoolSubsystem* InActorPool, UCrowdyEntitySubsystem* InEntitySubsystem, UCrowdyActorPoolBackendConfig* InConfig)
+	{
+		ActorPool = InActorPool;
+		EntitySubsystem = InEntitySubsystem;
+		PoolConfig = InConfig;
+	}
+
+	AActor* GetSlotActorForTest(int32 SlotId) const { return SlotActors.IsValidIndex(SlotId) ? SlotActors[SlotId].Get() : nullptr; }
+#endif
 
 private:
 
@@ -59,6 +72,18 @@ private:
 	/** Per-slot actor handle, parallel to CrowdyActorManager's Slots array. */
 	TArray<TWeakObjectPtr<AActor>> SlotActors;
 
+	/** Parallel to SlotActors: set where the slot holds an adopted spawn-event actor the pool does not own. */
+	TBitArray<> UnpooledSlots;
+
+	/** Parallel to SlotActors: set where the slot's actor draws a locally owned entity and is never registered. */
+	TBitArray<> OwnerProxySlots;
+
 	void EnsureSlotCapacity(int32 SlotId);
+
+	/** Whether the slot's actor is still this slot's to release: an owner proxy, or an actor with a record. */
+	bool IsSlotActorClaimed(int32 SlotId) const;
+
+	/** Empties the slot. A claimed actor goes back to the pool (or is destroyed if adopted); any other is left alone. */
+	void ReleaseSlotActor(int32 SlotId, bool bClaimed);
 	void EnsurePoolForClass(UClass* ActorClass);
 };

@@ -327,7 +327,8 @@ void UCrowdyEntityComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (IsValid(AutoReplicator))
 		AutoReplicator->UnregisterReplicationComponent(this);
 
-	if (IsValid(EntitySubsystem) && NetID.IsValid())
+	// Only this actor's own record: after a remote destroy with a delay, the id may already name a successor.
+	if (IsValid(EntitySubsystem) && NetID.IsValid() && EntitySubsystem->FindParticipant(NetID) == GetOwner())
 		EntitySubsystem->UnregisterEntity(NetID);
 
 	Super::EndPlay(EndPlayReason);

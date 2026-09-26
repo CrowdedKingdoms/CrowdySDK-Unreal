@@ -78,6 +78,7 @@ public:
 	// rather than a copy of it made in the test. A test that bound the delegates itself would keep passing with
 	// the binding deleted from Initialize.
 	void BindToTrackerForTest(UCrowdyActorTracker* Tracker) { BindToTracker(Tracker); }
+	void BindToEntitySubsystemForTest(UCrowdyEntitySubsystem* Entities) { BindToEntitySubsystem(Entities); }
 
 	int32 AllocateSlotForTest(const FGuid& UUID) { return AllocateSlot(UUID); }
 	void ReleaseSlotForTest(const FGuid& UUID) { ReleaseSlot(UUID); }
@@ -102,7 +103,13 @@ public:
 
 	// Parks an entry holding a slot, which is the state an update that arrives before its spawn event puts
 	// the manager into.
-	void ParkActivationForTest(const FGuid& UUID);
+	void ParkActivationForTest(const FGuid& UUID, const FInstancedStruct& InitialState = FInstancedStruct());
+
+	// What the entity subsystem's registration broadcast does to a parked entry or an inactive slot.
+	void CompletePendingActivationForTest(const FGuid& UUID) { OnEntityRegistered(UUID); }
+
+	// What the entity subsystem's unregistration broadcast does, a remote destroy being the case that matters.
+	void NotifyEntityUnregisteredForTest(const FGuid& UUID) { OnEntityUnregistered(UUID); }
 
 	// Feeds one update to whatever slot the UUID currently holds, parked or activated, the way
 	// ApplyPendingUpdates does.
@@ -134,6 +141,22 @@ private:
 	};
 
 	TArray<FSlotEntry> Slots;
+
+	/** Parallel to Slots: set where the backend could not activate the instance, so a later update retries. */
+	TBitArray<> InactiveSlots;
+
+	/** Parallel to Slots: the class the slot was last activated with, so a retry never resolves it again. */
+	TArray<TWeakObjectPtr<UClass>> SlotClasses;
+
+	/** Parallel to Slots: CapacityEpoch when the slot was last activated; an inactive slot retries once they differ. */
+	TArray<uint32> SlotRetryEpochs;
+
+	/** Bumped whenever a backend may have been given capacity back: a slot released or an entity unregistered. */
+	uint32 CapacityEpoch = 0;
+
+	/** Set inside ActivateSlot, whose own registration broadcast must not start another activation. */
+	bool bActivatingSlot = false;
+
 	TMap<FGuid, int32> UUIDToSlot;
 	TMap<FGuid, FPendingActivation> PendingActivations;
 
@@ -162,7 +185,13 @@ private:
 	/** Subscribe to everything the tracker reports. The one place those delegates are bound. */
 	void BindToTracker(UCrowdyActorTracker* Tracker);
 
+	/** Subscribe to entity registration and unregistration. The one place those delegates are bound. */
+	void BindToEntitySubsystem(UCrowdyEntitySubsystem* Entities);
+
 	int32 AllocateSlot(const FGuid& UUID);
+
+	/** Asks the backend to activate the slot and records whether it did. */
+	void ActivateSlot(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& State);
 
 	/**
 	 * Gives a slot back for reuse, after telling the backend to clean up whatever it holds for it.
@@ -199,4 +228,10 @@ private:
 
 	UFUNCTION()
 	void OnEntityRegistered(const FGuid& EntityID);
+
+	UFUNCTION()
+	void OnEntityUnregistered(const FGuid& EntityID);
+
+	/** Activates an inactive slot again with the class it was first activated with. */
+	void RetryInactiveSlot(int32 SlotId, const FGuid& UUID, const FInstancedStruct& State);
 };
