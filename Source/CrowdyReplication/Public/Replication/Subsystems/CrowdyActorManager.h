@@ -48,6 +48,9 @@ public:
 		int32 SlotId = INDEX_NONE;
 		FInstancedStruct InitialState;
 
+		// The payload type id the entity's first update carried, so an InitialState no struct resolved still names it.
+		FCrowdyTypeID PayloadTypeID = CROWDY_INVALID_TYPE_ID;
+
 		// Ticks spent waiting for a spawn event that resolves this entity's class. A late spawn event
 		// still completes activation normally; the count only drives the stranded report and eviction.
 		int32 TicksWaiting = 0;

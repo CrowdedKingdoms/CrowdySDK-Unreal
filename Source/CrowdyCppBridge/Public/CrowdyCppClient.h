@@ -468,6 +468,7 @@ public:
 	// Real client over Unreal's FHttpModule. Returns null if construction failed.
 	static TSharedPtr<FCrowdyCppClient> Make(const FCrowdyCppClientConfig& Config);
 
+#if WITH_DEV_AUTOMATION_TESTS
 	// Test client: every request resolves to a fixed canned HTTP response with no
 	// network I/O, exercising the real response-interpretation path. It starts
 	// with a placeholder game bearer installed so a test that does not care about
@@ -497,6 +498,7 @@ public:
 	// uses it to act as a concurrent caller - for example moving this client's endpoint mid-request, the way a
 	// parallel request's datacenter redirect would. No-op on a real client.
 	void SetTestOnRequest(TFunction<void(const FString& Url)> Hook);
+#endif
 
 	// The API origin this client is currently issuing against, with the GraphQL path resolved onto it. It moves:
 	// a WRONG_DATACENTER redirect and MoveToDatacenter both change it, so read it rather than assuming it is still
@@ -764,6 +766,7 @@ public:
 	// How many subscriptions are open. A subscription the server has ended is no longer counted.
 	int32 NumActiveSubscriptions() const;
 
+#if WITH_DEV_AUTOMATION_TESTS
 	// Test-only WebSocket driving, for a client from MakeForTest: it has no socket, and these play the server by
 	// hand instead. That is what makes the graphql-transport-ws handshake testable headlessly, since it is a
 	// conversation rather than a single round trip. Each is a no-op on a real client.
@@ -776,6 +779,7 @@ public:
 	// How many connections have been opened. More than one means the subscription client reconnected, which is the
 	// observable a test needs to prove that traffic on the other API plane leaves the socket alone.
 	int32 NumTestWebSocketConnections() const;
+#endif
 
 private:
 	FCrowdyCppClient();

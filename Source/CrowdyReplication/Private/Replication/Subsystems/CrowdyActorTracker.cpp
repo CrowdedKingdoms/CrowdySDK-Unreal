@@ -212,6 +212,7 @@ void UCrowdyActorTracker::HandleActorUpdateDelivery(const FCrowdyDelivery& Deliv
 
 	Update.ServerTimestamp = AUN.Timestamp;
 	Update.ClassID = static_cast<int64>(AUN.PayloadClassID);
+	Update.PayloadTypeID = static_cast<int32>(AUN.PayloadTypeID);
 	EnqueueUpdate(MoveTemp(Update));
 }
 
@@ -228,8 +229,8 @@ bool UCrowdyActorTracker::ForgetTrackedActor(const FGuid& UUID)
 	}
 
 	{
-		FWriteScopeLock W(ClassIDLock);
-		ClassIDByUUID.Remove(UUID);
+		FWriteScopeLock W(AppearedIdsLock);
+		AppearedIdsByUUID.Remove(UUID);
 	}
 
 	if (TrackedUUIDs.IsValid())
@@ -731,16 +732,9 @@ void UCrowdyActorTracker::ProcessQueue(int32 ShardIndex)
 					if (!Tracker)
 						return;
 
-					// Recorded before the broadcast, because a listener resolves the entity's class during
-					// it. Done here rather than per update: the class an entity claims cannot change
-					// while it is tracked, so an appearance is the only moment it needs writing.
-					{
-						FWriteScopeLock W(Tracker->ClassIDLock);
-						for (const FCrowdyActorUpdate& Update : SpawnBatch)
-						{
-							Tracker->ClassIDByUUID.Add(Update.UUID, static_cast<FCrowdyClassID>(Update.ClassID));
-						}
-					}
+					// Done here rather than per update: the class an entity claims cannot change while it is
+					// tracked, so an appearance is the only moment it needs writing.
+					Tracker->RecordAppearances(SpawnBatch);
 
 					for (const FCrowdyActorUpdate& Update : SpawnBatch)
 					{
@@ -800,20 +794,38 @@ void UCrowdyActorTracker::CheckTimeouts()
 	ProcessTimedOutActors(MoveTemp(TimedOut));
 }
 
+void UCrowdyActorTracker::RecordAppearances(const TArray<FCrowdyActorUpdate>& Appeared)
+{
+	FWriteScopeLock W(AppearedIdsLock);
+	for (const FCrowdyActorUpdate& Update : Appeared)
+	{
+		FAppearedIds& Ids = AppearedIdsByUUID.Add(Update.UUID);
+		Ids.ClassID = static_cast<FCrowdyClassID>(Update.ClassID);
+		Ids.PayloadTypeID = static_cast<FCrowdyTypeID>(Update.PayloadTypeID);
+	}
+}
+
 FCrowdyClassID UCrowdyActorTracker::GetClassIDForUUID(const FGuid& UUID) const
 {
-	FReadScopeLock R(ClassIDLock);
-	const FCrowdyClassID* Found = ClassIDByUUID.Find(UUID);
-	return Found ? *Found : CROWDY_INVALID_CLASS_ID;
+	FReadScopeLock R(AppearedIdsLock);
+	const FAppearedIds* Found = AppearedIdsByUUID.Find(UUID);
+	return Found ? Found->ClassID : CROWDY_INVALID_CLASS_ID;
+}
+
+FCrowdyTypeID UCrowdyActorTracker::GetPayloadTypeIDForUUID(const FGuid& UUID) const
+{
+	FReadScopeLock R(AppearedIdsLock);
+	const FAppearedIds* Found = AppearedIdsByUUID.Find(UUID);
+	return Found ? Found->PayloadTypeID : CROWDY_INVALID_TYPE_ID;
 }
 
 void UCrowdyActorTracker::ProcessTimedOutActors(TArray<FGuid> TimedOut)
 {
 	{
-		FWriteScopeLock W(ClassIDLock);
+		FWriteScopeLock W(AppearedIdsLock);
 		for (const FGuid& UUID : TimedOut)
 		{
-			ClassIDByUUID.Remove(UUID);
+			AppearedIdsByUUID.Remove(UUID);
 		}
 	}
 

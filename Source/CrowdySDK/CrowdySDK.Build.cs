@@ -36,7 +36,6 @@ public class CrowdySDK : ModuleRules
 				"OpenSSL",
 				"Json",
 				"JsonUtilities",
-				"HTTP",
 				"ProceduralMeshComponent",
 				"UMG",
 				"GameplayTags",

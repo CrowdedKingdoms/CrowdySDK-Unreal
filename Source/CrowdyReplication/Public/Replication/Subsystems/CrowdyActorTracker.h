@@ -60,6 +60,11 @@ struct FCrowdyActorUpdate
 	// property by property: a plain C++ member here would be silently dropped in transit.
 	UPROPERTY(BlueprintReadWrite)
 	int64 ClassID = 0;
+
+	// The payload type id the sender's state blob led with, kept even when no struct is registered for it here.
+	// Widened from the wire's uint16 for the same reason as ClassID.
+	UPROPERTY(BlueprintReadWrite)
+	int32 PayloadTypeID = 0;
 };
 
 
@@ -195,6 +200,9 @@ public:
 	 */
 	FCrowdyClassID GetClassIDForUUID(const FGuid& UUID) const;
 
+	// The payload type id a tracked UUID's first update carried, or CROWDY_INVALID_TYPE_ID if it is not tracked.
+	FCrowdyTypeID GetPayloadTypeIDForUUID(const FGuid& UUID) const;
+
 	/**
 	 * Take one delivered departure, and announce it.
 	 *
@@ -213,6 +221,9 @@ public:
 	 * that state directly so a case can drive the departure that follows.
 	 */
 	void MarkActorTrackedForTest(const FGuid& UUID);
+
+	// What the game thread records for a batch of appearing entities before announcing them.
+	void RecordAppearancesForTest(const TArray<FCrowdyActorUpdate>& Appeared) { RecordAppearances(Appeared); }
 #endif
 
 private:
@@ -276,9 +287,18 @@ private:
 	//
 	// Written when an entity first appears and erased when it times out, never per update: the class an
 	// entity claims does not change while it is tracked, and LastUpdateTimes above is already the one
-	// map this path writes on every update.
-	TMap<FGuid, FCrowdyClassID> ClassIDByUUID;
-	mutable FRWLock ClassIDLock;
+	// map this path writes on every update. The payload type id rides along so a park that cannot resolve the
+	// state struct can still say which id arrived.
+	struct FAppearedIds
+	{
+		FCrowdyClassID ClassID = CROWDY_INVALID_CLASS_ID;
+		FCrowdyTypeID PayloadTypeID = CROWDY_INVALID_TYPE_ID;
+	};
+	TMap<FGuid, FAppearedIds> AppearedIdsByUUID;
+	mutable FRWLock AppearedIdsLock;
+
+	// Written on the game thread before the appearance broadcast, since a listener resolves the class during it.
+	void RecordAppearances(const TArray<FCrowdyActorUpdate>& Appeared);
 	
 	//Config
 	int32 MaxTrackedActors = 1024;

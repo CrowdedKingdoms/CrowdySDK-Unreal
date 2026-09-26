@@ -700,6 +700,7 @@ bool FCrowdyGameModelBusyInvokeRecoversTest::RunTest(const FString& Parameters)
 	ClientHost.Client->Poll();
 	TestEqual(TEXT("the caller hears once"), Outcome.Delivered, 1);
 	TestTrue(TEXT("and hears the success"), Outcome.Last.bTransportOk && Outcome.Last.bSuccess);
+	TestEqual(TEXT("the result counts both sends"), Outcome.Last.Attempts, 2);
 	TestEqual(TEXT("both attempts were dispatched"), Stats.InvokesDispatched, 2);
 	TestEqual(TEXT("and both spend the allowance"), Model->GetRecentInvokeCount(), 2);
 	TestEqual(TEXT("one recovered"), Stats.InvokeBusyRecovered, 1);
@@ -745,6 +746,7 @@ bool FCrowdyGameModelBusyInvokeGivesUpTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the caller hears once"), Outcome.Delivered, 1);
 	TestTrue(TEXT("the busy refusal"), UCrowdyGameModelSubsystem::IsBusyRefusal(Outcome.Last));
 	TestEqual(TEXT("the first attempt and three retries"), Stats.InvokesDispatched, 1 + CrowdyCppMaxBusyRetries);
+	TestEqual(TEXT("the result counts every send"), Outcome.Last.Attempts, 1 + CrowdyCppMaxBusyRetries);
 	TestEqual(TEXT("three retries counted"), Stats.InvokeBusyRetries, CrowdyCppMaxBusyRetries);
 	TestEqual(TEXT("one given up"), Stats.InvokeBusyGaveUp, 1);
 	TestEqual(TEXT("none recovered"), Stats.InvokeBusyRecovered, 0);
@@ -772,6 +774,7 @@ bool FCrowdyGameModelBusyThenBudgetTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the caller hears once"), Outcome.Delivered, 1);
 	TestTrue(TEXT("and hears the success"), Outcome.Last.bTransportOk && Outcome.Last.bSuccess);
 	TestEqual(TEXT("six attempts"), Stats.InvokesDispatched, 6);
+	TestEqual(TEXT("the result counts busy and budget sends alike"), Outcome.Last.Attempts, 6);
 	TestEqual(TEXT("three of the retries were busy ones"), Stats.InvokeBusyRetries, 3);
 	TestEqual(TEXT("one recovered"), Stats.InvokeBusyRecovered, 1);
 	TestEqual(TEXT("none given up"), Stats.InvokeBusyGaveUp, 0);
@@ -795,6 +798,7 @@ bool FCrowdyGameModelBusyTeardownTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("a retry is armed"), Model->GetNetStats().InvokeBusyRetries, 1);
 	Model->FailPendingWorkForTest();
 	TestEqual(TEXT("teardown tells the caller once"), Outcome.Delivered, 1);
+	TestEqual(TEXT("with the armed retry never sent"), Outcome.Last.Attempts, 1);
 	TestEqual(TEXT("and counts the abandoned retry as given up"), Model->GetNetStats().InvokeBusyGaveUp, 1);
 	return true;
 }
@@ -836,6 +840,7 @@ bool FCrowdyGameModelBusyInvokeNotRetriedTest::RunTest(const FString& Parameters
 		ClientHost.Client->Poll();
 		TestEqual(FString::Printf(TEXT("%s: delivered at once"), Case.Name), Outcome.Delivered, 1);
 		TestFalse(FString::Printf(TEXT("%s: as the refusal"), Case.Name), Outcome.Last.bSuccess);
+		TestEqual(FString::Printf(TEXT("%s: sent once"), Case.Name), Outcome.Last.Attempts, 1);
 		Env.FireTimers();
 		ClientHost.Client->Poll();
 		TestEqual(FString::Printf(TEXT("%s: dispatched once"), Case.Name), Model->GetNetStats().InvokesDispatched, 1);

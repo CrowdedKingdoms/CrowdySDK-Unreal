@@ -37,13 +37,20 @@ namespace
 
 	// Both park messages end with this, so an entry that cannot even name its own payload says why
 	// instead of printing an empty name and sending the reader after a struct that does not exist.
-	FString CrowdyDescribeParkedActivationPayload(const FInstancedStruct& InitialState)
+	FString CrowdyDescribeParkedActivationPayload(const FInstancedStruct& InitialState, const FCrowdyTypeID PayloadTypeID)
 	{
 		const UScriptStruct* PayloadStruct = InitialState.GetScriptStruct();
+		if (!PayloadStruct && PayloadTypeID == CROWDY_INVALID_TYPE_ID)
+		{
+			return TEXT("its updates carried a state blob that decoded into no struct registered on this client, and no payload type id was recorded for it. ")
+				TEXT("Register the sender's state struct in this build, or check that both sides agree on which struct the payload type id names");
+		}
 		if (!PayloadStruct)
 		{
-			return TEXT("its updates carried a state blob that decoded into no struct registered on this client, so the payload cannot be named here either. ")
-				TEXT("Register the sender's state struct in this build, or check that both sides agree on which struct the payload type id names");
+			return FString::Printf(
+				TEXT("its updates carried payload type id %u, which decoded into no struct registered on this client. ")
+				TEXT("Register the sender's state struct in this build, or check that both sides agree on which struct that id names"),
+				PayloadTypeID);
 		}
 
 		return FString::Printf(
@@ -282,6 +289,7 @@ void UCrowdyActorManager::BindToTracker(UCrowdyActorTracker* Tracker)
 	// Both departures are bound, and that is the whole point of them being listed together: the server announcing
 	// an actor gone removes it from the map the timeout check reads, so an actor reported by one of these is never
 	// reported by the other and binding only one leaves those actors holding their slots forever.
+	ActorTracker = Tracker;
 	Tracker->OnRemoteEntityAppeared.AddDynamic(this, &UCrowdyActorManager::HandleActorSpawned);
 	Tracker->OnRemoteEntityTimedOut.AddDynamic(this, &UCrowdyActorManager::HandleActorDestroyed);
 	Tracker->OnRemoteEntityLeft.AddDynamic(this, &UCrowdyActorManager::HandleActorLeft);
@@ -498,6 +506,7 @@ void UCrowdyActorManager::HandleActorSpawned(FGuid UUID, FInstancedStruct Initia
 		FPendingActivation& Pending = PendingActivations.Add(UUID);
 		Pending.SlotId       = AllocateSlot(UUID);
 		Pending.InitialState = MoveTemp(InitialState);
+		Pending.PayloadTypeID = IsValid(ActorTracker) ? ActorTracker->GetPayloadTypeIDForUUID(UUID) : CROWDY_INVALID_TYPE_ID;
 		return;
 	}
 
@@ -562,7 +571,7 @@ void UCrowdyActorManager::AgePendingActivations(TMap<FGuid, FPendingActivation>&
 				TEXT("It is picked up again only if it stops sending for long enough to time out and reappear."),
 				*Pair.Key.ToString(),
 				Pending.TicksWaiting,
-				*CrowdyDescribeParkedActivationPayload(Pending.InitialState));
+				*CrowdyDescribeParkedActivationPayload(Pending.InitialState, Pending.PayloadTypeID));
 
 			OutEvicted.Add(Pair.Key);
 			continue;
@@ -578,7 +587,7 @@ void UCrowdyActorManager::AgePendingActivations(TMap<FGuid, FPendingActivation>&
 			TEXT("resolved, and is holding a render slot while it waits; %s."),
 			*Pair.Key.ToString(),
 			Pending.TicksWaiting,
-			*CrowdyDescribeParkedActivationPayload(Pending.InitialState));
+			*CrowdyDescribeParkedActivationPayload(Pending.InitialState, Pending.PayloadTypeID));
 	}
 
 	// Removed after the walk rather than during it, since erasing from the map being iterated is what
