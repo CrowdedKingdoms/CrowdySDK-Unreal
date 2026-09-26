@@ -7,12 +7,13 @@
 #include "Misc/App.h"
 #include "Network/GraphQL/FCrowdyGameApiCodec.h"
 #include "Replication/GameModel/CrowdyModelIdentity.h"
+#include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 
 namespace
 {
 	TAutoConsoleVariable<int32> CVarCrowdyGameModelBulkResolve(
 		TEXT("crowdy.gamemodel.bulkresolve"), 1,
-		TEXT("1: shared (Host-owned) entities bind their Game Model containers from one paged list per type; 0: one ensure per entity."),
+		TEXT("1: shared (Host-owned) entities and remote copies of other players' entities bind their Game Model containers from one paged list per type; 0: one call per entity."),
 		ECVF_Default);
 
 	// The client hands back the raw `data` object; the codec parsers read Envelope->data.
@@ -32,11 +33,11 @@ namespace
 	{
 		return FMath::Min(2.0 * static_cast<double>(1 << FMath::Clamp(Failures, 0, 4)), 30.0);
 	}
+}
 
-	FString BulkResolveGroupKey(const FString& TypeName, const FString& Session)
-	{
-		return TypeName + TEXT("|") + Session;
-	}
+FString UCrowdyGameModelSubsystem::BulkResolveGroupKey(const FString& TypeName, const FString& Session)
+{
+	return TypeName + TEXT("|") + Session;
 }
 
 struct UCrowdyGameModelSubsystem::FCrowdyBulkResolveRun
@@ -44,13 +45,14 @@ struct UCrowdyGameModelSubsystem::FCrowdyBulkResolveRun
 	FString TypeName;
 	FString ResolvedSession;
 	FString GroupKey;
-	FString Endpoint;
-	FString Token;
 	int64 AppId = 0;
 	TArray<FGuid> NetIDs;
 	TMap<FString, FGuid> NetIDByKey;
 	TArray<FCrowdyBulkResolveHit> Hits;
 	int32 PagesRead = 0;
+	int32 MaxPages = BulkResolveMaxPagesPerType;
+	bool bHasAuthoritative = false;
+	bool bReachedEnd = false;
 };
 
 bool UCrowdyGameModelSubsystem::IsBulkResolveEnabled()
@@ -60,9 +62,16 @@ bool UCrowdyGameModelSubsystem::IsBulkResolveEnabled()
 
 bool UCrowdyGameModelSubsystem::IsBulkResolveEligible(const FGuid& NetID) const
 {
-	// A class-derived binding reads another entity's row and must never ensure; a per-player entity has a row of
-	// its own that nobody else lists. Only a shared entity's row is the same on every client.
-	return !ClassDerivedBindings.Contains(NetID) && IsHostOwnedEntity(NetID);
+	// A shared entity's row, a remote copy of another player's entity and a class-derived read are all found by the
+	// list; only a locally owned entity ensures its own row one by one.
+	const UCrowdyEntitySubsystem* Entities = ResolveEntitySubsystem();
+	const FCrowdyEntityRecord* Record = Entities ? Entities->FindRecord(NetID) : nullptr;
+	if (!Record)
+	{
+		return false;
+	}
+	return ClassDerivedBindings.Contains(NetID) || Record->Role == ECrowdyRole::HostOwned
+		|| Record->Role == ECrowdyRole::RemoteProxy;
 }
 
 void UCrowdyGameModelSubsystem::MatchContainerRows(const TArray<FCrowdyGameApiCodec::FContainerRow>& Rows,
@@ -108,7 +117,7 @@ bool UCrowdyGameModelSubsystem::BindResolvedRow(const FGuid& NetID, const FStrin
 }
 
 void UCrowdyGameModelSubsystem::BulkResolveType(const FString& TypeName, const FString& ResolvedSession,
-	const TArray<FGuid>& NetIDs, const FString& Endpoint, const FString& Token, int64 AppId)
+	const TArray<FGuid>& NetIDs, int64 AppId)
 {
 	if (NetIDs.Num() == 0)
 	{
@@ -118,14 +127,18 @@ void UCrowdyGameModelSubsystem::BulkResolveType(const FString& TypeName, const F
 	Run->TypeName = TypeName;
 	Run->ResolvedSession = ResolvedSession;
 	Run->GroupKey = BulkResolveGroupKey(TypeName, ResolvedSession);
-	Run->Endpoint = Endpoint;
-	Run->Token = Token;
 	Run->AppId = AppId;
 	Run->NetIDs = NetIDs;
 	for (const FGuid& NetID : NetIDs)
 	{
 		Run->NetIDByKey.Add(FCrowdyModelIdentity::NetIDToContainerKey(NetID), NetID);
+		Run->bHasAuthoritative |= IsAuthoritativeToCreate(NetID);
 		BulkResolveInFlight.Add(NetID);
+	}
+	// Without a shared entity every miss would be a keyed read, so the list never costs more calls than those reads.
+	if (!Run->bHasAuthoritative)
+	{
+		Run->MaxPages = FMath::Min(BulkResolveMaxPagesPerType, NetIDs.Num());
 	}
 	BulkResolveGroupsInFlight.Add(Run->GroupKey);
 	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
@@ -136,13 +149,16 @@ void UCrowdyGameModelSubsystem::BulkResolveType(const FString& TypeName, const F
 
 void UCrowdyGameModelSubsystem::ReadBulkResolvePage(const TSharedRef<FCrowdyBulkResolveRun>& Run, int32 Offset)
 {
-	FCrowdyCppClient* Client = EnsureCppClient(Run->Endpoint, Run->Token);
+	// Resolved per page: a stale token or endpoint reinstalled on the shared host could rebuild the client mid-walk.
+	FString Endpoint, Token;
+	int64 AppId = 0;
+	FCrowdyCppClient* Client = ResolveApiContext(Endpoint, Token, AppId) ? EnsureCppClient(Endpoint, Token) : nullptr;
 	if (!Client)
 	{
 		FinishBulkResolve(Run, false);
 		return;
 	}
-	++BulkResolveListCallCount;
+	++NetStats.BulkResolveListPages;
 	const TSharedPtr<FJsonObject> Vars = FCrowdyGameApiCodec::BuildListContainersByTypeVariables(
 		Run->AppId, Run->TypeName, Run->ResolvedSession, BulkResolvePageSize, Offset);
 	const TWeakObjectPtr<UCrowdyGameModelSubsystem> WeakThis(this);
@@ -167,15 +183,35 @@ void UCrowdyGameModelSubsystem::ReadBulkResolvePage(const TSharedRef<FCrowdyBulk
 		MatchContainerRows(Rows, Run->NetIDByKey, Run->ResolvedSession, Run->Hits);
 		// A full page may have more behind it; a short page is the end of the type. Fullness is the server's row
 		// count, not the usable one, so a keyless row cannot end paging early. Past the ceiling the rest of the
-		// entities fall through to their own ensure, which is correct, only dearer.
-		if (RawRowCount >= BulkResolvePageSize && Run->PagesRead < BulkResolveMaxPagesPerType)
+		// entities fall through to their own call, which is correct, only dearer.
+		Run->bReachedEnd = RawRowCount < BulkResolvePageSize;
+		if (!Run->bReachedEnd && Run->PagesRead < Run->MaxPages)
 		{
 			S->ReadBulkResolvePage(Run, Offset + BulkResolvePageSize);
 			return;
 		}
+		if (!Run->bReachedEnd && !Run->bHasAuthoritative)
+		{
+			S->BulkResolveCutGroups.Add(Run->GroupKey);
+		}
 		S->FinishBulkResolve(Run, true);
 	});
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyGameModelSubsystem::FinishBulkResolveForTest(const FString& TypeName, const FString& Session,
+	const TArray<FGuid>& NetIDs, const TArray<FCrowdyBulkResolveHit>& Hits, bool bReachedEnd)
+{
+	const TSharedRef<FCrowdyBulkResolveRun> Run = MakeShared<FCrowdyBulkResolveRun>();
+	Run->TypeName = TypeName;
+	Run->ResolvedSession = Session;
+	Run->GroupKey = BulkResolveGroupKey(TypeName, Session);
+	Run->NetIDs = NetIDs;
+	Run->Hits = Hits;
+	Run->bReachedEnd = bReachedEnd;
+	FinishBulkResolve(Run, true);
+}
+#endif
 
 void UCrowdyGameModelSubsystem::FinishBulkResolve(const TSharedRef<FCrowdyBulkResolveRun>& Run, bool bListOk)
 {
@@ -208,11 +244,21 @@ void UCrowdyGameModelSubsystem::FinishBulkResolve(const TSharedRef<FCrowdyBulkRe
 			++Skipped;
 			continue;
 		}
+		// Now owned here, so it binds through its own ensure, which refuses a row another user holds.
+		if (IsAuthoritativeToCreate(Hit.NetID) && !IsHostOwnedEntity(Hit.NetID))
+		{
+			++Skipped;
+			continue;
+		}
+		const bool bBoundBefore = NetStats.EverBound.Contains(Hit.NetID);
 		if (!BindResolvedRow(Hit.NetID, Hit.ContainerId, Hit.OwnerUserId))
 		{
 			++Skipped;
 			continue;
 		}
+		// Only hits count here; a miss is counted once by its own call below.
+		++NetStats.ResolveStarts;
+		NetStats.ReResolves += bBoundBefore ? 1 : 0;
 		Bound.Add(Hit.NetID);
 		++BulkResolveHitCount;
 		if (ShouldPullOnRetryForEntity(Hit.NetID))
@@ -221,11 +267,11 @@ void UCrowdyGameModelSubsystem::FinishBulkResolve(const TSharedRef<FCrowdyBulkRe
 		}
 	}
 	// The bound hits that pull on start are read in one bulk call rather than one state read each.
-	PullAndApplyContainerStates(MoveTemp(PullTargets));
+	PullAndApplyContainerStates(MoveTemp(PullTargets), true);
 
 	// The misses: rows the server does not hold yet. The single ensure is the only path that creates one, and it
 	// is spent under the same per-sweep bound and per-entity backoff as any other pending resolve, so a level of
-	// unseeded objects (or an admin-only type nobody seeded) costs the allowance at the retry rate, not every sweep.
+	// unseeded objects (or an admin-only type nobody seeded) costs calls at the retry rate, not every sweep.
 	const double Now = FApp::GetCurrentTime();
 	int32 Ensured = 0;
 	int32 Deferred = 0;
@@ -237,6 +283,14 @@ void UCrowdyGameModelSubsystem::FinishBulkResolve(const TSharedRef<FCrowdyBulkRe
 			continue;
 		}
 		FCrowdyPendingBindBackoff& Backoff = PendingBindBackoff.FindOrAdd(NetID);
+		// A remote copy the complete list did not name has no row yet, so it backs off without a call.
+		if (Run->bReachedEnd && !IsAuthoritativeToCreate(NetID))
+		{
+			Backoff.NextAttemptTime = Now + static_cast<double>(ResolvePendingRetryDelaySeconds(Backoff.Attempts));
+			++Backoff.Attempts;
+			++Deferred;
+			continue;
+		}
 		if (Ensured >= MaxPendingResolvesPerSweep || (Backoff.Attempts > 0 && Now < Backoff.NextAttemptTime))
 		{
 			++Deferred;
@@ -245,12 +299,12 @@ void UCrowdyGameModelSubsystem::FinishBulkResolve(const TSharedRef<FCrowdyBulkRe
 		Backoff.NextAttemptTime = Now + static_cast<double>(ResolvePendingRetryDelaySeconds(Backoff.Attempts));
 		++Backoff.Attempts;
 		++Ensured;
-		ResolveOrCreateContainer(NetID, Run->TypeName, Run->ResolvedSession, [WeakThis, NetID](bool bOk, const FString&)
+		ResolveOrCreateContainer(NetID, Run->TypeName, Run->ResolvedSession, [WeakThis, NetID](bool bOk, const FString& ContainerId)
 		{
 			UCrowdyGameModelSubsystem* Self = bOk ? ResolveLiveSelf(WeakThis) : nullptr;
 			if (Self && Self->ShouldPullOnRetryForEntity(NetID))
 			{
-				Self->HandleModelChanged(NetID);
+				Self->EnqueueRefreshPull(ContainerId, NetID);
 			}
 		});
 	}
@@ -259,6 +313,6 @@ void UCrowdyGameModelSubsystem::FinishBulkResolve(const TSharedRef<FCrowdyBulkRe
 		RequestPendingModelEntitySweep();
 	}
 	UE_CLOG(CrowdyGameModelTrace::GameModel(), LogCrowdyGameModel, Log,
-		TEXT("[GameModel] bulk resolve %s: %d page(s), %d bound, %d ensured, %d deferred, %d hit(s) already bound or gone"),
+		TEXT("[GameModel] bulk resolve %s: %d page(s), %d bound, %d resolved singly, %d deferred, %d hit(s) already bound, gone or handed to their own ensure"),
 		*Run->TypeName, Run->PagesRead, Bound.Num(), Ensured, Deferred, Skipped);
 }

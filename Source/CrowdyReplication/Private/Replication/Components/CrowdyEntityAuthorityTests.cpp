@@ -613,4 +613,50 @@ bool FCrowdyEntityPlayerDerivedEndPlayBeforePossessionTest::RunTest(const FStrin
 	return true;
 }
 
+// A remote destroy with a delay unregisters the entity at once and destroys its actor later. If the id is registered
+// again meanwhile (a respawn keeping its id), the old actor ending play must leave the new record alone.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityEndPlayLeavesSuccessorRecordTest,
+	"CrowdySDK.Entity.EndPlayLeavesSuccessorRecord", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityEndPlayLeavesSuccessorRecordTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	ACrowdyStateHostOverrideActor* Departed = TestWorld.World->SpawnActor<ACrowdyStateHostOverrideActor>();
+	ACrowdyStateHostOverrideActor* Registered = TestWorld.World->SpawnActor<ACrowdyStateHostOverrideActor>();
+	AActor* Successor = TestWorld.World->SpawnActor<AActor>();
+	if (!TestNotNull(TEXT("the departed actor spawned"), Departed) || !TestNotNull(TEXT("the registered actor spawned"), Registered)
+		|| !TestNotNull(TEXT("the successor spawned"), Successor))
+	{
+		return false;
+	}
+
+	const FGuid Reused = FGuid::NewGuid();
+	Departed->Entity->SetCollaboratorsForTest(Collaborators.Entities, Collaborators.Session);
+	Departed->Entity->AssignPooledIdentity(Reused, FGuid(), ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+	Departed->DispatchBeginPlay();
+	if (!TestTrue(TEXT("the departed actor registered under its id"), Collaborators.Entities->FindEntity(Reused) == Departed))
+	{
+		return false;
+	}
+
+	Collaborators.Entities->UnregisterEntity(Reused);
+	FCrowdyEntityRecord SuccessorRecord;
+	SuccessorRecord.NetID = Reused;
+	SuccessorRecord.Role = ECrowdyRole::RemoteProxy;
+	SuccessorRecord.Participant = Successor;
+	Collaborators.Entities->RegisterEntity(SuccessorRecord);
+
+	Departed->Entity->DestroyComponent();
+	TestTrue(TEXT("the departed actor ending play leaves the successor's record"), Collaborators.Entities->FindEntity(Reused) == Successor);
+
+	// The control: an actor still named by its record removes it when it ends play.
+	const FGuid Own = FGuid::NewGuid();
+	Registered->Entity->SetCollaboratorsForTest(Collaborators.Entities, Collaborators.Session);
+	Registered->Entity->AssignPooledIdentity(Own, FGuid(), ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+	Registered->DispatchBeginPlay();
+	Registered->Entity->DestroyComponent();
+	TestNull(TEXT("an actor's own record goes when it ends play"), Collaborators.Entities->FindRecord(Own));
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

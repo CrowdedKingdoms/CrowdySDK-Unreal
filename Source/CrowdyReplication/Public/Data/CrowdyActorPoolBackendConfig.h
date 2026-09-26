@@ -34,4 +34,8 @@ public:
 	/** Per-class pool size overrides. Classes listed here are also pre-warmed at map load. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Actor Pool Backend")
 	TMap<TSoftClassPtr<AActor>, int32> PerClassPoolOverrides;
+
+	/** The pool size is what is made up front; this is how far a class's pool may grow when all of it is in use. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Actor Pool Backend", meta=(ClampMin=1))
+	int32 MaxPoolSizePerClass = 256;
 };

@@ -195,6 +195,12 @@ ECrowdyEntityRegistration UCrowdyEntitySubsystem::TryRegisterEntity(const FCrowd
 
 	OnEntityRegistered.Broadcast(Record.NetID);
 
+	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+		TEXT("[CrowdyEntitySubsystem]: Entity registered: entity %s, role %s, actor %s, location %s."),
+		*Record.NetID.ToString(), *StaticEnum<ECrowdyRole>()->GetNameStringByValue(static_cast<int64>(Record.Role)),
+		*GetNameSafe(IsValid(Record.GetActor()) ? Record.GetActor()->GetClass() : nullptr),
+		IsValid(Record.GetActor()) ? *Record.GetActor()->GetActorLocation().ToString() : TEXT("none"));
+
 	return ECrowdyEntityRegistration::Registered;
 }
 
@@ -544,6 +550,10 @@ AActor* UCrowdyEntitySubsystem::SpawnEntity(const TSubclassOf<AActor> EntityClas
 	FInstancedStruct Payload;
 	Payload.InitializeAs<FCrowdyEntitySpawnEvent>(SpawnEvent);
 	DispatchGameEvent(Actor, MoveTemp(Payload));
+
+	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+		TEXT("[CrowdyEntitySubsystem]: Spawn dispatched: entity %s, class %s, location %s."),
+		*EntityID.ToString(), *EntityClass->GetName(), *SpawnTransform.GetLocation().ToString());
 
 	return Actor;
 }
@@ -1063,6 +1073,10 @@ void UCrowdyEntitySubsystem::FinishRemoteSpawn(const FCrowdyEntitySpawnEvent& Ev
 
 	if (Component)
 		Component->OnCrowdySpawned.Broadcast(Event.InitialState, false);
+
+	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+		TEXT("[CrowdyEntitySubsystem]: Spawn received: entity %s, class %s, location %s."),
+		*Event.EntityID.ToString(), *EntityClass->GetName(), *Event.SpawnTransform.GetLocation().ToString());
 }
 
 void UCrowdyEntitySubsystem::HandleRemoteDestroy(const FCrowdyEntityDestroyEvent& Event)
@@ -1123,9 +1137,9 @@ void UCrowdyEntitySubsystem::DestroyAfterDelay(AActor* Actor, const float Delay)
 	if (Delay > 0.f)
 	{
 		FTimerHandle Handle;
-		GetWorld()->GetTimerManager().SetTimer(Handle, [Actor]()
+		GetWorld()->GetTimerManager().SetTimer(Handle, [WeakActor = TWeakObjectPtr<AActor>(Actor)]()
 		{
-			if (IsValid(Actor)) Actor->Destroy();
+			if (AActor* Target = WeakActor.Get()) Target->Destroy();
 		}, Delay, false);
 	}
 	else

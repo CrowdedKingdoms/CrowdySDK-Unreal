@@ -29,7 +29,7 @@ public:
 
 	/**
 	 * Session Id empty: the active session, or the app itself when no session is active; App Scope makes an empty
-	 * Session Id mean the app itself even while a session is active. Every row counts against the shared allowance.
+	 * Session Id mean the app itself even while a session is active.
 	 */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContext", AdvancedDisplay = "bAppScope"),
 		Category = "Crowdy SDK|Game Model|Containers", DisplayName = "Apply Container Manifest")

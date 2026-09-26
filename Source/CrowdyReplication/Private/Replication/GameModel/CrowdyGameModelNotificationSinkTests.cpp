@@ -137,9 +137,8 @@ bool FCrowdyChannelCarrierDecodesTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// The self-echo drop. A container this client just invoked drops its FIRST model-changed echo
-// (consume-once, so a later genuine change still re-pulls); the drop is per-container; an unmarked or empty
-// container is never dropped.
+// The self-echo drop. One mark drops one model-changed echo, so a later genuine change still re-pulls; the drop is
+// per-container; an unmarked or empty container is never dropped.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelSelfEchoDropTest,
 	"CrowdySDK.GameModel.SelfEchoDrop", CrowdyNotificationSinkTestFlags)
 bool FCrowdyGameModelSelfEchoDropTest::RunTest(const FString& Parameters)
@@ -153,7 +152,7 @@ bool FCrowdyGameModelSelfEchoDropTest::RunTest(const FString& Parameters)
 	// An unmarked container is never a self-echo.
 	TestFalse(TEXT("unmarked container is not a self-echo"), Model->ConsumeSelfEcho(TEXT("cid-1")));
 
-	// After marking, the first echo is dropped; the second is not (consume-once).
+	// After one mark, the first echo is dropped; the second is not.
 	Model->MarkSelfActed(TEXT("cid-1"));
 	TestTrue(TEXT("first echo dropped"), Model->ConsumeSelfEcho(TEXT("cid-1")));
 	TestFalse(TEXT("second echo re-pulls (consumed)"), Model->ConsumeSelfEcho(TEXT("cid-1")));

@@ -5,6 +5,7 @@
 #include "CrowdyNetLog.h"
 #include "Serialization/CrowdyJsonSafety.h"
 #include "Dom/JsonValue.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -162,6 +163,17 @@ ECrowdyPlayerFaultBlame CrowdyPlayerFaultBlameFromWireString(const FString& Wire
 	if (Wire.Equals(TEXT("AUTHOR"), ESearchCase::IgnoreCase))   return ECrowdyPlayerFaultBlame::Author;
 	if (Wire.Equals(TEXT("BUDGET"), ESearchCase::IgnoreCase))   return ECrowdyPlayerFaultBlame::Budget;
 	return ECrowdyPlayerFaultBlame::Unknown;
+}
+
+const TCHAR* CrowdyPlayerFaultBlameToWord(ECrowdyPlayerFaultBlame Blame)
+{
+	switch (Blame)
+	{
+	case ECrowdyPlayerFaultBlame::Platform: return TEXT("PLATFORM");
+	case ECrowdyPlayerFaultBlame::Author:   return TEXT("AUTHOR");
+	case ECrowdyPlayerFaultBlame::Budget:   return TEXT("BUDGET");
+	default:                                return TEXT("unknown");
+	}
 }
 
 FCrowdyInvokeResult FCrowdyGameApiCodec::ParseInvokeEnvelope(const TSharedPtr<FJsonObject>& Envelope,
@@ -506,7 +518,7 @@ TSharedPtr<FJsonObject> FCrowdyGameApiCodec::BuildListContainersByTypeVariables(
 {
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetStringField(TEXT("appId"), LexToString(AppId));
-	Variables->SetStringField(TEXT("typeName"), TypeName);
+	if (!TypeName.IsEmpty()) { Variables->SetStringField(TEXT("typeName"), TypeName); }
 	if (!SessionId.IsEmpty()) { Variables->SetStringField(TEXT("sessionId"), SessionId); }
 	Variables->SetNumberField(TEXT("limit"), FMath::Clamp(Limit, 1, MaxContainersPerPage));
 	Variables->SetNumberField(TEXT("offset"), FMath::Max(0, Offset));
@@ -608,6 +620,7 @@ bool FCrowdyGameApiCodec::ParseContainerStatesEnvelope(const TSharedPtr<FJsonObj
 		FString PropertiesJson;
 		if (Obj->TryGetStringField(TEXT("propertiesJson"), PropertiesJson))
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_DecodeResponse);
 			Row.State = ParseJsonObjectString(PropertiesJson);
 		}
 		OutRows.Add(MoveTemp(Row));

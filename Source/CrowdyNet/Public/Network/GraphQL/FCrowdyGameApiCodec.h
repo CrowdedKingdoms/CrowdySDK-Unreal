@@ -55,6 +55,9 @@ enum class ECrowdyPlayerFaultBlame : uint8
 // in-band fault parse and the thrown-error path share one spelling of the vocabulary rather than each carrying a copy.
 CROWDYNET_API ECrowdyPlayerFaultBlame CrowdyPlayerFaultBlameFromWireString(const FString& Wire);
 
+// The canonical word for Blame: the server's spelling for a known value, "unknown" for Unknown.
+CROWDYNET_API const TCHAR* CrowdyPlayerFaultBlameToWord(ECrowdyPlayerFaultBlame Blame);
+
 /**
  * The parsed outcome of a gameModelInvoke. bTransportOk and bSuccess are deliberately separate so a
  * rolled-back invoke is never mistaken for a network failure:
@@ -103,6 +106,9 @@ struct FCrowdyInvokeResult
 	// owes it a local backoff. Read it as a deadline from receipt rather than an interval to reuse: it is what
 	// REMAINED of a fixed window when the refusal was built, so a cached one is always too long.
 	TOptional<int64> RetryAfterMs;
+
+	// When the attempt that produced this result was sent, in the Game Model subsystem's local send order; 0 if unknown.
+	uint64 DispatchSequence = 0;
 };
 
 /**
@@ -299,10 +305,10 @@ public:
 	// The server refuses a gameModelContainers limit above this.
 	static constexpr int32 MaxContainersPerPage = 1000;
 
-	// Builds { appId, typeName, sessionId?, limit, offset } for one page of a type's rows. sessionId is omitted
-	// when empty, which the server reads as "every scope", so the caller keeps only rows whose own sessionId
-	// matches. limit is always sent and clamped to [1, MaxContainersPerPage]: an unbounded page is what makes a
-	// large type unsafe.
+	// Builds { appId, typeName?, sessionId?, limit, offset } for one page of a type's rows, or of every type's when
+	// typeName is empty. sessionId is omitted when empty, which the server reads as "every scope", so the caller
+	// keeps only rows whose own sessionId matches. limit is always sent and clamped to [1, MaxContainersPerPage]: an
+	// unbounded page is what makes a large type unsafe.
 	static TSharedPtr<FJsonObject> BuildListContainersByTypeVariables(int64 AppId, const FString& TypeName,
 		const FString& SessionId, int32 Limit, int32 Offset);
 
