@@ -253,6 +253,7 @@ double FCrowdyCppLoopback::NowSeconds() const
 	return bUseTimeOverrideForTest ? TestTimeSeconds : FPlatformTime::Seconds();
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
 void FCrowdyCppLoopback::SetTimeForTests(const double InSeconds)
 {
 	bUseTimeOverrideForTest = true;
@@ -264,6 +265,7 @@ void FCrowdyCppLoopback::ClearTimeForTests()
 	bUseTimeOverrideForTest = false;
 	TestTimeSeconds = 0.0;
 }
+#endif
 
 void FCrowdyCppLoopback::ResetCounters()
 {

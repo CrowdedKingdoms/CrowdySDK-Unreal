@@ -490,11 +490,13 @@ struct FCrowdyCppClient::FImpl
 	 */
 	FString LastSeenEndpoint;
 
+#if WITH_DEV_AUTOMATION_TESTS
 	// Set only for a test client, where it records what the canned transport was last handed.
 	std::shared_ptr<CrowdyCppTransport::FCannedRequestCapture> TestCapture;
 
 	// Set only for a test client, where it stands in for the socket so a test can play the server by hand.
 	std::shared_ptr<CrowdyCppTransport::FScriptedWebSocketServer> TestWebSocket;
+#endif
 
 	/**
 	 * The subscription client is built alongside the underlying client rather than taken from it, because it must

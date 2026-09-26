@@ -72,6 +72,7 @@ namespace CrowdyCppTransport
 	std::shared_ptr<crowdy::graphql::IAsyncHttpTransport> MakeFHttpTransport(
 		std::shared_ptr<FTransportCounters> Counters = nullptr);
 
+#if WITH_DEV_AUTOMATION_TESTS
 	// What a canned transport was last asked to send. Lets a test assert the
 	// endpoint a call was routed to and the bearer it would have carried, which
 	// are otherwise only observable against a live server.
@@ -104,4 +105,5 @@ namespace CrowdyCppTransport
 	// and nothing else.
 	std::shared_ptr<crowdy::graphql::IAsyncHttpTransport> MakeCannedTransport(std::string Body, int Status,
 		std::shared_ptr<FCannedRequestCapture> Capture = nullptr, std::shared_ptr<FTransportCounters> Counters = nullptr);
+#endif
 }
