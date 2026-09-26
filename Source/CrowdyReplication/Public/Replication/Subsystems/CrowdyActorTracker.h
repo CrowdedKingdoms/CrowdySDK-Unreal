@@ -224,6 +224,23 @@ public:
 
 	// What the game thread records for a batch of appearing entities before announcing them.
 	void RecordAppearancesForTest(const TArray<FCrowdyActorUpdate>& Appeared) { RecordAppearances(Appeared); }
+
+	// The shard queues with no worker pool behind them, which is the state in which nothing drains them.
+	void SetupQueuesForTest() { SetupQueues(); }
+	void EnqueueUpdateForTest(FCrowdyActorUpdate Update);
+	void ReleaseQueuesForTest() { DrainAndReleaseShards(); }
+
+	// Runs each shard's consumer once on the calling thread, as the worker pool would. Only with no pool, or it is a second reader.
+	void ProcessAllShardsForTest()
+	{
+		check(!WorkerThreadsSubsystem);
+		for (int32 ShardIndex = 0; ShardIndex < NumOfShards; ++ShardIndex)
+		{
+			ProcessQueue(ShardIndex);
+		}
+	}
+	int32 NumQueuedUpdatesForTest() const { return NumQueuedUpdates.load(std::memory_order_relaxed); }
+	int32 NumQueuedUpdatesDroppedForTest() const { return QueuedUpdatesDropped; }
 #endif
 
 private:
@@ -275,7 +292,13 @@ private:
 	std::atomic<bool> bReportedTrackingAtCapacity { false };
 	std::atomic<bool> bReportedGatheredBacklogDiscarded { false };
 	std::atomic<bool> bReportedStaleQueuedUpdateDropped { false };
-	
+
+	// What waits in the shard queues, counted because a queue cannot say; the receive path drops past the ceiling.
+	std::atomic<int32> NumQueuedUpdates { 0 };
+	int32 QueuedUpdatesDropped = 0;
+	int32 QueuedDropsSinceLog = 0;
+	double LastQueuedDropLogSeconds = 0.0;
+
 	//Timeout
 	TMap<FGuid, double> LastUpdateTimes;
 	FRWLock LastUpdateLock;
@@ -342,7 +365,16 @@ private:
 	 * having been heard from so none of them times out over it.
 	 */
 	void DiscardGatheredBacklog();
-	
+
+	/** The ceiling on updates waiting in the shard queues, past which an arriving one is dropped. */
+	static int32 GetMaxQueuedUpdates();
+
+	/** Count one dropped update and say so at most once a second, with the running total. */
+	void ReportQueuedUpdateDropped();
+
+	/** Empty the shard queues and give their events back; only once no consumer can still be reading them. */
+	void DrainAndReleaseShards();
+
 	bool LoadDeveloperSettings();
 	void ProcessQueue(int32 ShardIndex);
 

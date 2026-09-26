@@ -125,6 +125,7 @@ void UCrowdyActorManager::Deinitialize()
 
 	FCrowdyActorUpdate Discarded;
 	while (UpdateQueue.Dequeue(Discarded)) {}
+	NumOffThreadUpdates.store(0, std::memory_order_relaxed);
 	PendingUpdates.Empty();
 
 	Slots.Empty();
@@ -227,6 +228,11 @@ void UCrowdyActorManager::ApplyPendingUpdates()
 	{
 		// Still cleared, or a backend arriving later would be handed a frame of stale positions at once.
 		PendingUpdates.Reset();
+		FCrowdyActorUpdate Discarded;
+		int32 NumDiscarded = 0;
+		while (UpdateQueue.Dequeue(Discarded))
+			++NumDiscarded;
+		NumOffThreadUpdates.fetch_sub(NumDiscarded, std::memory_order_relaxed);
 		return;
 	}
 
@@ -256,8 +262,13 @@ void UCrowdyActorManager::ApplyPendingUpdates()
 	// The queue first: anything in it was handed over from another thread and so was gathered before
 	// whatever the game thread appended after it.
 	FCrowdyActorUpdate Queued;
+	int32 Dequeued = 0;
 	while (UpdateQueue.Dequeue(Queued))
+	{
+		++Dequeued;
 		Apply(Queued);
+	}
+	NumOffThreadUpdates.fetch_sub(Dequeued, std::memory_order_relaxed);
 
 	for (const FCrowdyActorUpdate& Update : PendingUpdates)
 		Apply(Update);
@@ -543,7 +554,28 @@ void UCrowdyActorManager::HandleUpdateBatch(const TArray<FCrowdyActorUpdate>& Up
 	}
 
 	for (const FCrowdyActorUpdate& Update : Updates)
-		UpdateQueue.Enqueue(Update);
+		EnqueueFromAnotherThread(Update);
+}
+
+void UCrowdyActorManager::EnqueueFromAnotherThread(const FCrowdyActorUpdate& Update)
+{
+	// Claimed before the check, so producers racing on several threads cannot overshoot the bound between them.
+	if (NumOffThreadUpdates.fetch_add(1, std::memory_order_relaxed) >= MaxOffThreadUpdates)
+	{
+		NumOffThreadUpdates.fetch_sub(1, std::memory_order_relaxed);
+		OffThreadUpdatesDropped.fetch_add(1, std::memory_order_relaxed);
+
+		if (!bReportedOffThreadQueueFull.exchange(true, std::memory_order_acq_rel))
+		{
+			UE_LOG(LogCrowdyReplication, Warning,
+				TEXT("[Crowdy Actor Manager]: Dropping actor updates broadcast from off the game thread, because %d are "
+					"already waiting for the next tick. Reported once."),
+				MaxOffThreadUpdates);
+		}
+		return;
+	}
+
+	UpdateQueue.Enqueue(Update);
 }
 
 void UCrowdyActorManager::AgePendingActivations(TMap<FGuid, FPendingActivation>& Park, const int32 WarnTicks, const int32 EvictTicks, TArray<FGuid>& OutEvicted)

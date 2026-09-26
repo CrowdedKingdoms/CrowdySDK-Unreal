@@ -33,6 +33,14 @@ namespace
 		TEXT("How many actor updates for already-tracked actors may be gathered before the backlog is "
 			"discarded (default 8192). Reached only when the world tick is not consuming them."),
 		ECVF_Default);
+
+	// A working pool empties the shard queues within a batch window, so only a pool that has stopped draining reaches it.
+	TAutoConsoleVariable<int32> CVarCrowdyTrackerMaxQueuedUpdates(
+		TEXT("crowdy.replication.tracker.maxqueuedupdates"),
+		8192,
+		TEXT("How many updates for actors not yet on screen may wait for a worker before further ones are dropped "
+			"(default 8192). Reached only when the worker pool is not draining them."),
+		ECVF_Default);
 }
 
 const FInstancedStruct& FCrowdyActorUpdate::ResolveState() const
@@ -142,18 +150,7 @@ void UCrowdyActorTracker::Deinitialize()
 	// other reader is looking at.
 	if (WaitForShardTasks())
 	{
-		for (const TUniquePtr<TQueue<FCrowdyActorUpdate, EQueueMode::Mpsc>>& Queue : UpdateQueues)
-		{
-			FCrowdyActorUpdate Discarded;
-			while (Queue->Dequeue(Discarded)) {}
-		}
-
-		for (FEvent* Event : ShardEvents)
-		{
-			FPlatformProcess::ReturnSynchEventToPool(Event);
-		}
-
-		ShardEvents.Empty();
+		DrainAndReleaseShards();
 	}
 	// Otherwise both are left alone. The queues are destroyed with this object regardless, so draining them buys
 	// nothing, and an event is only ever given back once it is certain nothing is waiting on it: handing one back
@@ -161,6 +158,23 @@ void UCrowdyActorTracker::Deinitialize()
 	// returning it costs one event per shard, on a path that only happens as a world is going away.
 
 	Super::Deinitialize();
+}
+
+void UCrowdyActorTracker::DrainAndReleaseShards()
+{
+	for (const TUniquePtr<TQueue<FCrowdyActorUpdate, EQueueMode::Mpsc>>& Queue : UpdateQueues)
+	{
+		FCrowdyActorUpdate Discarded;
+		while (Queue->Dequeue(Discarded)) {}
+	}
+	NumQueuedUpdates.store(0, std::memory_order_relaxed);
+
+	for (FEvent* Event : ShardEvents)
+	{
+		FPlatformProcess::ReturnSynchEventToPool(Event);
+	}
+
+	ShardEvents.Empty();
 }
 
 bool UCrowdyActorTracker::ShouldCreateSubsystem(UObject* Outer) const
@@ -268,6 +282,11 @@ void UCrowdyActorTracker::MarkActorTrackedForTest(const FGuid& UUID)
 
 	TrackedUUIDs->Add(UUID);
 	++NumOfTrackedActors;
+}
+
+void UCrowdyActorTracker::EnqueueUpdateForTest(FCrowdyActorUpdate Update)
+{
+	EnqueueUpdate(MoveTemp(Update));
 }
 #endif
 
@@ -404,7 +423,15 @@ void UCrowdyActorTracker::EnqueueUpdate(FCrowdyActorUpdate&& Update)
 		ShardIndex = GetTypeHash(Update.UUID) % NumOfShards;
 	}
 
+	// A producer can only refuse the newest on this queue. The claim below still runs, since it is what restarts a shard left idle with work.
+	if (NumQueuedUpdates.load(std::memory_order_relaxed) >= GetMaxQueuedUpdates())
 	{
+		ReportQueuedUpdateDropped();
+	}
+	else
+	{
+		NumQueuedUpdates.fetch_add(1, std::memory_order_relaxed);
+
 		// The queue allocates a node per item, so this is the second heap allocation an update pays on
 		// its way in, after the state copy.
 		TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_TrackerQueueEnqueue);
@@ -440,6 +467,29 @@ void UCrowdyActorTracker::Tick(float DeltaTime)
 int32 UCrowdyActorTracker::GetMaxGatheredUpdates()
 {
 	return FMath::Max(1, CVarCrowdyTrackerMaxGatheredUpdates.GetValueOnGameThread());
+}
+
+int32 UCrowdyActorTracker::GetMaxQueuedUpdates()
+{
+	return FMath::Max(1, CVarCrowdyTrackerMaxQueuedUpdates.GetValueOnGameThread());
+}
+
+void UCrowdyActorTracker::ReportQueuedUpdateDropped()
+{
+	++QueuedUpdatesDropped;
+	++QueuedDropsSinceLog;
+
+	const double Now = FPlatformTime::Seconds();
+	if (LastQueuedDropLogSeconds > 0.0 && Now - LastQueuedDropLogSeconds < 1.0)
+		return;
+
+	UE_LOG(LogCrowdyReplication, Warning,
+		TEXT("[Crowdy Actor Tracker]: Dropped %d update(s) for actors not yet on screen since the last report, because "
+			"%d were already waiting for a worker; %d dropped in total. Those actors appear on a later update."),
+		QueuedDropsSinceLog, GetMaxQueuedUpdates(), QueuedUpdatesDropped);
+
+	QueuedDropsSinceLog = 0;
+	LastQueuedDropLogSeconds = Now;
 }
 
 void UCrowdyActorTracker::DiscardGatheredBacklog()
@@ -669,9 +719,12 @@ void UCrowdyActorTracker::ProcessQueue(int32 ShardIndex)
 	while (true)
 	{
 		FCrowdyActorUpdate Update;
+		const int32 AlreadyGathered = Batch.Num();
 
 		while (Batch.Num() < MaxUpdatesPerBatch && UpdateQueues[ShardIndex]->Dequeue(Update))
 			Batch.Add(MoveTemp(Update));
+
+		NumQueuedUpdates.fetch_sub(Batch.Num() - AlreadyGathered, std::memory_order_relaxed);
 
 		if (bShuttingDown.load(std::memory_order_acquire))
 			return;

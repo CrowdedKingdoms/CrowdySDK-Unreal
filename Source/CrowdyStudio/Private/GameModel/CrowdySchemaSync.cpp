@@ -264,7 +264,7 @@ namespace
 			}
 			const FStudioFunctionParam& C = **CP;
 			if (C.ValueType != D.ValueType || C.bRequired != D.bRequired
-				|| C.SortOrder != D.SortOrder || C.Description != D.Description
+				|| C.SortOrder != D.SortOrder || !C.Description.Equals(D.Description, ESearchCase::CaseSensitive)
 				|| !FCrowdySchemaSync::JsonValueEquals(C.DefaultValueJson, D.DefaultValueJson))
 			{
 				return false;
@@ -283,7 +283,7 @@ namespace
 		for (int32 Index = 0; Index < Desired.Num(); ++Index)
 		{
 			if (!Desired[Index].Target.Equals(Current[Index].Target, ESearchCase::CaseSensitive)
-				|| Desired[Index].Property != Current[Index].Property
+				|| !Desired[Index].Property.Equals(Current[Index].Property, ESearchCase::CaseSensitive)
 				|| !Desired[Index].Expression.Equals(Current[Index].Expression, ESearchCase::CaseSensitive))
 			{
 				return false;
@@ -1195,6 +1195,10 @@ FCrowdySchemaDelta FCrowdySchemaSync::DiffSchema(
 				// FString keys fold case, so a server pair like hp / HP would otherwise collapse here in silence.
 				if (const FStudioPropertyDef** Existing = CurPropByKey.Find(P.Key))
 				{
+					if ((*Existing)->Key.Equals(P.Key, ESearchCase::CaseSensitive))
+					{
+						continue;
+					}
 					Delta.Warnings.Add(FString::Printf(
 						TEXT("Server properties '%s.%s' and '%s.%s' differ only in case; clients read them as one key and the last one parsed wins. Rename or delete one on the Models tab."),
 						*D.TypeName, *(*Existing)->Key, *D.TypeName, *P.Key));
@@ -1222,6 +1226,14 @@ FCrowdySchemaDelta FCrowdySchemaSync::DiffSchema(
 			{
 				Delta.PropUpserts.Add({ D.TypeName, P, /*bIsNew*/ true });
 				continue;
+			}
+
+			// The lookup above folds case but the server keeps keys as spelled, so a function writing 'hp' misses a server 'HP'.
+			if (!CurP->Key.Equals(P.Key, ESearchCase::CaseSensitive))
+			{
+				Delta.Warnings.Add(FString::Printf(
+					TEXT("Server property '%s.%s' differs only in case from the declared '%s', so functions writing '%s' do not reach it. Rename it to '%s' on the Models tab."),
+					*D.TypeName, *CurP->Key, *P.Key, *P.Key, *P.Key));
 			}
 
 			const bool bTypeChanged = CurP->ValueType != P.ValueType;
@@ -1687,7 +1699,7 @@ void FCrowdySchemaSync::DiffFunctions(
 			ComputeUpsertNotifications(D.Name, D.Notifications, Cur->Notifications, ToUpsert.Notifications, InOutDelta.Warnings);
 
 		const bool bContainerChanged = Cur->ContainerTypeName != D.ContainerTypeName;
-		const bool bDescChanged = Cur->Description != D.Description;
+		const bool bDescChanged = !Cur->Description.Equals(D.Description, ESearchCase::CaseSensitive);
 		const bool bReturnTypeChanged = Cur->ReturnType != D.ReturnType;
 		const bool bReturnExprChanged = !Cur->ReturnExpression.Equals(D.ReturnExpression, ESearchCase::CaseSensitive);
 		const bool bScopeChanged = Cur->InvokeScope != D.InvokeScope;
@@ -2113,7 +2125,7 @@ void FCrowdySchemaSync::DiffAutomations(
 		const bool bParamsChanged = !JsonValueEquals(Cur->ParamsJson, DesiredParams);
 		const bool bSelectorChanged = !JsonValueEquals(Cur->SelectorJson, D.SelectorJson);
 		bool bScalarChanged =
-			Cur->Description != D.Description
+			!Cur->Description.Equals(D.Description, ESearchCase::CaseSensitive)
 			|| Cur->bEnabled != D.bEnabled
 			|| Cur->ActionKind != D.ActionKind
 			|| Cur->FunctionName != D.FunctionName

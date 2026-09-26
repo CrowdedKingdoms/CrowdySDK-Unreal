@@ -32,6 +32,12 @@ public:
 	virtual FString GetWorldCentricTabPrefix() const override;
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;
 
+#if WITH_DEV_AUTOMATION_TESTS
+	// The script tab's own commit handler, and whether that tab was actually built.
+	void CommitScriptForTest(const FString& Text) { OnScriptCommitted(Text); }
+	bool HasScriptEditorForTest() const { return ScriptEditor.IsValid(); }
+#endif
+
 private:
 	TSharedRef<SDockTab> SpawnScriptTab(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnDetailsTab(const FSpawnTabArgs& Args);

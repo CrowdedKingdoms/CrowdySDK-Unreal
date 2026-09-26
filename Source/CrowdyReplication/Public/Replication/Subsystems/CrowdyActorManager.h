@@ -6,6 +6,9 @@
 #include "Replication/Subsystems/CrowdyActorTracker.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystems/WorldSubsystem.h"
+
+#include <atomic>
+
 #include "CrowdyActorManager.generated.h"
 
 class UCrowdyRenderingBackend;
@@ -102,7 +105,10 @@ public:
 
 	// Puts an update in through the cross-thread queue rather than the game-thread array. The drain reads
 	// the two in a fixed order and only a case that can fill both is able to pin which.
-	void EnqueueOffThreadForTest(const FCrowdyActorUpdate& Update) { UpdateQueue.Enqueue(Update); }
+	void EnqueueOffThreadForTest(const FCrowdyActorUpdate& Update) { EnqueueFromAnotherThread(Update); }
+	int32 NumOffThreadUpdatesDroppedForTest() const { return OffThreadUpdatesDropped.load(std::memory_order_relaxed); }
+	static int32 GetMaxOffThreadUpdatesForTest() { return MaxOffThreadUpdates; }
+	void ApplyPendingUpdatesForTest() { ApplyPendingUpdates(); }
 
 	// Parks an entry holding a slot, which is the state an update that arrives before its spawn event puts
 	// the manager into.
@@ -168,8 +174,12 @@ private:
 	TArray<FCrowdyActorUpdate> PendingUpdates;
 
 	// Only for a batch broadcast from another thread, which the tracker no longer does but the delegate
-	// still permits.
+	// still permits. Counted so it can be bounded, since a queue cannot say how deep it is.
 	TQueue<FCrowdyActorUpdate, EQueueMode::Mpsc> UpdateQueue;
+	static constexpr int32 MaxOffThreadUpdates = 8192;
+	std::atomic<int32> NumOffThreadUpdates { 0 };
+	std::atomic<int32> OffThreadUpdatesDropped { 0 };
+	std::atomic<bool> bReportedOffThreadQueueFull { false };
 
 	// Auto-populated at BeginPlay by each UCrowdyEntityComponent via RegisterStateClass.
 	// Maps update payload struct type → pool actor class for dynamic entities.
@@ -182,6 +192,9 @@ private:
 	int64 GetEstimatedServerTimeMs() const;
 
 	void ApplyPendingUpdates();
+
+	/** Queue an update from off the game thread, or drop and count it once the queue holds MaxOffThreadUpdates. */
+	void EnqueueFromAnotherThread(const FCrowdyActorUpdate& Update);
 	void TickInterpolation();
 	void TickPendingActivations();
 
