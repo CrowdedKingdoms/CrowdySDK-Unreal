@@ -3973,8 +3973,7 @@ void UCrowdyGameModelSubsystem::ApplyInvokeMutations(const FGuid& SelfNetID, con
 
 	for (const TPair<FString, TArray<FCrowdyMutationApplied>>& Pair : ByContainer)
 	{
-		// Precedence matches HandleModelChangedByContainer: a bound participant first, then a watched free/data
-		// container. Never both, so a container that has a participant does not also fire the by-id delegate.
+		// A bound participant first, then the by-id cache when the row is watched too, the same as a landed pull.
 		// By id even for the invoke's own row, so a write and the signal that follows it cannot land on two objects.
 		FGuid DestNetID = FindNetIDForContainer(Pair.Key);
 		if (!DestNetID.IsValid() && Pair.Key == SelfContainerId)
@@ -3982,13 +3981,15 @@ void UCrowdyGameModelSubsystem::ApplyInvokeMutations(const FGuid& SelfNetID, con
 			DestNetID = SelfNetID;
 		}
 
-		if (DestNetID.IsValid())
+		UObject* Participant = DestNetID.IsValid() ? ResolveEntityParticipant(DestNetID) : nullptr;
+		if (Participant)
 		{
-			if (UObject* Participant = ResolveEntityParticipant(DestNetID))
+			ApplyMutationsToContainer(DestNetID, Participant, Pair.Value, DispatchSequence);
+			if (WatchedDataContainers.Contains(Pair.Key))
 			{
-				ApplyMutationsToContainer(DestNetID, Participant, Pair.Value, DispatchSequence);
-				continue;
+				ApplyDataContainerMutations(Pair.Key, Pair.Value, DispatchSequence);
 			}
+			continue;
 		}
 
 		if (WatchedDataContainers.Contains(Pair.Key))
@@ -6230,7 +6231,12 @@ void UCrowdyGameModelSubsystem::ApplyDataContainerMutations(const FString& Conta
 		const FName Key(*Mutation.Key);
 		// Canonicalize the SAME way the pull path does so equal values compare equal across both apply paths.
 		const TSharedPtr<FJsonValue> Value = ParseJsonValueString(Mutation.NewValueJson);
-		const FString Canonical = Value.IsValid() ? JsonValueToCompactString(Value) : Mutation.NewValueJson;
+		// An unreadable value is neither cached nor kept, the same rule the entity apply follows.
+		if (!Value.IsValid())
+		{
+			continue;
+		}
+		const FString Canonical = JsonValueToCompactString(Value);
 		const FString* Existing = Cache.Find(Key);
 		if (Protect)
 		{

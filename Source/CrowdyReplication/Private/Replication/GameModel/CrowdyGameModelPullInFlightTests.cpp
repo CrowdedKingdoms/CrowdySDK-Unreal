@@ -410,6 +410,30 @@ bool FCrowdyPullInFlightRejectedWriteTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// The same rejected value on a row that is also watched by id stays out of the by-id cache too.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPullInFlightRejectedWriteWatchedTest,
+	"CrowdySDK.GameModel.PullInFlight.RejectedWriteIsNotKeptById", CrowdyPullInFlightTestSupport::PullInFlightTestFlags)
+bool FCrowdyPullInFlightRejectedWriteWatchedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyPullInFlightTestSupport;
+	FPullInFlightRig Rig;
+	UCrowdyGameModelTestTarget* Target = nullptr;
+	const FGuid NetID = Rig.Bind(TEXT("c-hot"), Target);
+	Rig.Model->WatchDataContainer(TEXT("c-hot"));
+
+	Rig.Model->HandleModelChanged(NetID);
+	Rig.Model->ApplyInvokeMutations(NetID, TEXT("c-hot"), PullInFlightMutation(TEXT("hp"), TEXT("{broken")),
+		Rig.Model->StampDispatchForTest());
+	FString Hp;
+	TestFalse(TEXT("the unreadable value is not cached by id"), Rig.Model->TryGetContainerValueJson(TEXT("c-hot"), TEXT("hp"), Hp));
+
+	Rig.Poll();
+	TestTrue(TEXT("so the pull reaches the by-id cache"),
+		Rig.Model->TryGetContainerValueJson(TEXT("c-hot"), TEXT("hp"), Hp) && Hp == TEXT("87"));
+	TestEqual(TEXT("and nothing was kept"), Rig.Stats().StaleKeysSkipped, 0);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPullInFlightSharedRowTest,
 	"CrowdySDK.GameModel.PullInFlight.TwoEntitiesOneRow", CrowdyPullInFlightTestSupport::PullInFlightTestFlags)
 bool FCrowdyPullInFlightSharedRowTest::RunTest(const FString& Parameters)
@@ -491,6 +515,30 @@ bool FCrowdyPullInFlightBoundAndWatchedKeepsByIdWriteTest::RunTest(const FString
 	TestTrue(TEXT("the older read does not roll the by-id write back"),
 		Rig.Model->TryGetContainerValueJson(TEXT("c-hot"), TEXT("hp"), Hp) && Hp == TEXT("50"));
 	TestEqual(TEXT("and a follow-up read is owed"), Rig.Model->GetPendingRefreshPullCountForTest(), 1);
+	return true;
+}
+
+// A confirmed invoke's echo on a row bound and also watched by id reaches both caches and both delegates.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPullInFlightBoundAndWatchedInvokeEchoTest,
+	"CrowdySDK.GameModel.PullInFlight.BoundAndWatchedRowTakesInvokeEcho", CrowdyPullInFlightTestSupport::PullInFlightTestFlags)
+bool FCrowdyPullInFlightBoundAndWatchedInvokeEchoTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyPullInFlightTestSupport;
+	FPullInFlightRig Rig;
+	UCrowdyGameModelTestTarget* Target = nullptr;
+	const FGuid NetID = Rig.Bind(TEXT("c-hot"), Target);
+	Rig.Model->WatchDataContainer(TEXT("c-hot"));
+	Rig.Model->OnDataContainerChanged.AddDynamic(Target, &UCrowdyGameModelTestTarget::HandleDataContainerChanged);
+
+	Rig.Model->ApplyInvokeMutations(NetID, TEXT("c-hot"), PullInFlightMutation(TEXT("hp"), TEXT("50")),
+		Rig.Model->StampDispatchForTest());
+
+	FString Hp;
+	TestEqual(TEXT("the entity takes the write"), Target->Hp, 50);
+	TestTrue(TEXT("the by-id cache takes the same write"),
+		Rig.Model->TryGetContainerValueJson(TEXT("c-hot"), TEXT("hp"), Hp) && Hp == TEXT("50"));
+	TestEqual(TEXT("the by-id delegate fires once"), Target->DataChangedCount, 1);
+	TestEqual(TEXT("with no read sent"), Rig.Sends, 0);
 	return true;
 }
 
