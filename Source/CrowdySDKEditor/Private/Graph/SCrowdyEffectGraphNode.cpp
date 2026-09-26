@@ -62,6 +62,10 @@ void SCrowdyEffectGraphNode::Tick(const FGeometry& AllottedGeometry, const doubl
 
 void SCrowdyEffectGraphNode::CreateBelowPinControls(TSharedPtr<SVerticalBox> MainBox)
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	TextFieldCommitsForTest.Reset();
+#endif
+
 	if (!MainBox.IsValid() || !EffectNode.IsValid())
 	{
 		return;
@@ -175,13 +179,8 @@ TSharedRef<SWidget> SCrowdyEffectGraphNode::MakeEnumCombo(
 TSharedRef<SWidget> SCrowdyEffectGraphNode::MakeTextField(
 	TFunction<FString()> Get, TFunction<void(const FString&)> Set, const FText& HintText, const FText& TransactionLabel)
 {
-	return SNew(SEditableTextBox)
-	.HintText(HintText)
-	.MinDesiredWidth(120.f)
-	.Text_Lambda([Get]() { return FText::FromString(Get()); })
-	.OnTextCommitted_Lambda([this, Get, Set, TransactionLabel](const FText& NewText, ETextCommit::Type)
+	auto Commit = [this, Get, Set, TransactionLabel](const FString& NewValue)
 	{
-		const FString NewValue = NewText.ToString();
 		if (NewValue.Equals(Get()))
 		{
 			return;
@@ -196,6 +195,19 @@ TSharedRef<SWidget> SCrowdyEffectGraphNode::MakeTextField(
 			// reshape pins; either way the graph changed, so refresh the preview without a pin reconstruct.
 			CommitNodeChange(false);
 		}
+	};
+
+#if WITH_DEV_AUTOMATION_TESTS
+	TextFieldCommitsForTest.Add(Commit);
+#endif
+
+	return SNew(SEditableTextBox)
+	.HintText(HintText)
+	.MinDesiredWidth(120.f)
+	.Text_Lambda([Get]() { return FText::FromString(Get()); })
+	.OnTextCommitted_Lambda([Commit](const FText& NewText, ETextCommit::Type)
+	{
+		Commit(NewText.ToString());
 	});
 }
 

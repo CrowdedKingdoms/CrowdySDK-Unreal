@@ -152,6 +152,30 @@ bool FCrowdyAutomationDiffEventResyncNoOpTest::RunTest(const FString& Parameters
 	return true;
 }
 
+// A description changed only in case is a change, since the server stores it as written.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAutomationDiffDescriptionCaseTest,
+	"CrowdySDK.Studio.AutomationDiffDescriptionCaseIsAChange", CrowdyAutomationDiffTestFlags)
+bool FCrowdyAutomationDiffDescriptionCaseTest::RunTest(const FString& Parameters)
+{
+	const FCrowdyGameModelAutomationInput Desired = MakeDesiredAutomation();
+
+	FStudioAutomation Server = MakeServerAutomationFrom(Desired);
+	Server.Description = Desired.Description.ToLower();
+
+	TArray<FCrowdyGameModelAutomationInput> DesiredAutos;
+	DesiredAutos.Add(Desired);
+	TArray<FStudioAutomation> CurrentAutos;
+	CurrentAutos.Add(Server);
+	TArray<FCrowdyGameModelFunctionInput> DesiredFns;
+	DesiredFns.Add(MakeAutonomousFunction(TEXT("goblin_tick")));
+
+	FCrowdySchemaDelta Delta;
+	FCrowdySchemaSync::DiffAutomations(DesiredAutos, {}, CurrentAutos, {}, DesiredFns, Delta);
+
+	TestEqual(TEXT("the case-only description edit is re-planned"), Delta.AutomationUpserts.Num(), 1);
+	return true;
+}
+
 // A cron automation uses cronExpr, not intervalMs; the input struct still carries the default IntervalMs (1000) but
 // the server leaves intervalMs unset for a cron automation. The diff must compare only the field the schedule kind
 // uses (cronExpr for cron), so a re-sync is a no-op.
