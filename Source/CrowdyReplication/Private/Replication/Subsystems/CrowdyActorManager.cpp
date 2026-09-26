@@ -89,14 +89,23 @@ void UCrowdyActorManager::Initialize(FSubsystemCollectionBase& Collection)
 
 	BindToTracker(ActorTracker);
 
+	BindToEntitySubsystem(EntitySubsystem);
+}
+
+void UCrowdyActorManager::BindToEntitySubsystem(UCrowdyEntitySubsystem* Entities)
+{
 	// Deferred activations fire when EntitySubsystem finishes processing a spawn event.
-	EntitySubsystem->OnEntityRegistered.AddDynamic(this, &UCrowdyActorManager::OnEntityRegistered);
+	Entities->OnEntityRegistered.AddDynamic(this, &UCrowdyActorManager::OnEntityRegistered);
+	Entities->OnEntityUnregistered.AddDynamic(this, &UCrowdyActorManager::OnEntityUnregistered);
 }
 
 void UCrowdyActorManager::Deinitialize()
 {
 	if (IsValid(EntitySubsystem))
+	{
 		EntitySubsystem->OnEntityRegistered.RemoveDynamic(this, &UCrowdyActorManager::OnEntityRegistered);
+		EntitySubsystem->OnEntityUnregistered.RemoveDynamic(this, &UCrowdyActorManager::OnEntityUnregistered);
+	}
 
 	UCrowdyActorTracker* CrowdyActorTracker = GetWorld()->GetSubsystem<UCrowdyActorTracker>();
 	if (IsValid(CrowdyActorTracker))
@@ -112,6 +121,9 @@ void UCrowdyActorManager::Deinitialize()
 	PendingUpdates.Empty();
 
 	Slots.Empty();
+	InactiveSlots.Empty();
+	SlotClasses.Empty();
+	SlotRetryEpochs.Empty();
 	UUIDToSlot.Empty();
 	PendingActivations.Empty();
 	EntitySubsystem = nullptr;
@@ -224,7 +236,14 @@ void UCrowdyActorManager::ApplyPendingUpdates()
 		const int32* SlotPtr = UUIDToSlot.Find(Update.UUID);
 		if (!SlotPtr) return;
 
-		ActiveBackend->ExtractUpdate(Update.ResolveState(), Update.ServerTimestamp, *SlotPtr);
+		const int32 SlotId = *SlotPtr;
+		const FInstancedStruct& State = Update.ResolveState();
+
+		// An inactive slot is retried only once something may have given the backend capacity back.
+		if (InactiveSlots[SlotId] && SlotRetryEpochs[SlotId] != CapacityEpoch)
+			RetryInactiveSlot(SlotId, Update.UUID, State);
+
+		ActiveBackend->ExtractUpdate(State, Update.ServerTimestamp, SlotId);
 	};
 
 	// The queue first: anything in it was handed over from another thread and so was gathered before
@@ -277,6 +296,8 @@ int32 UCrowdyActorManager::AllocateSlot(const FGuid& UUID)
 		{
 			Slots[i].bActive = true;
 			Slots[i].UUID    = UUID;
+			// A stale inactive bit then retries nothing: there is no class to retry with until this slot is activated.
+			SlotClasses[i] = nullptr;
 			UUIDToSlot.Add(UUID, i);
 			return i;
 		}
@@ -287,15 +308,41 @@ int32 UCrowdyActorManager::AllocateSlot(const FGuid& UUID)
 	NewSlot.UUID    = UUID;
 
 	const int32 SlotId = Slots.Add(NewSlot);
+	InactiveSlots.Add(false);
+	SlotClasses.Add(nullptr);
+	SlotRetryEpochs.Add(CapacityEpoch);
 	UUIDToSlot.Add(UUID, SlotId);
 	return SlotId;
 }
 
+void UCrowdyActorManager::ActivateSlot(const int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& State)
+{
+	TGuardValue<bool> ActivatingGuard(bActivatingSlot, true);
+	ActiveBackend->ActivateInstance(SlotId, UUID, EntityClass, State);
+	InactiveSlots[SlotId] = !ActiveBackend->IsInstanceActive(SlotId);
+	SlotClasses[SlotId] = EntityClass;
+	SlotRetryEpochs[SlotId] = CapacityEpoch;
+}
+
+void UCrowdyActorManager::RetryInactiveSlot(const int32 SlotId, const FGuid& UUID, const FInstancedStruct& State)
+{
+	UClass* EntityClass = SlotClasses[SlotId].Get();
+	if (!EntityClass)
+	{
+		// The class was unloaded; stamped so the lookup is not repeated on every update.
+		SlotRetryEpochs[SlotId] = CapacityEpoch;
+		return;
+	}
+
+	ActivateSlot(SlotId, UUID, EntityClass, State);
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
-void UCrowdyActorManager::ParkActivationForTest(const FGuid& UUID)
+void UCrowdyActorManager::ParkActivationForTest(const FGuid& UUID, const FInstancedStruct& InitialState)
 {
 	FPendingActivation& Pending = PendingActivations.Add(UUID);
 	Pending.SlotId = AllocateSlot(UUID);
+	Pending.InitialState = InitialState;
 }
 
 void UCrowdyActorManager::ExtractUpdateForTest(const FGuid& UUID, const FInstancedStruct& State)
@@ -326,6 +373,7 @@ void UCrowdyActorManager::ReleaseSlot(const FGuid& UUID)
 		ActiveBackend->DeactivateInstance(*SlotPtr, UUID);
 
 	FreeSlot(UUID);
+	++CapacityEpoch;
 }
 
 void UCrowdyActorManager::FreeSlot(const FGuid& UUID)
@@ -454,7 +502,7 @@ void UCrowdyActorManager::HandleActorSpawned(FGuid UUID, FInstancedStruct Initia
 	}
 
 	const int32 SlotId = AllocateSlot(UUID);
-	ActiveBackend->ActivateInstance(SlotId, UUID, EntityClass, InitialState);
+	ActivateSlot(SlotId, UUID, EntityClass, InitialState);
 	ActiveBackend->ExtractUpdate(InitialState, GetEstimatedServerTimeMs(), SlotId);
 
 }
@@ -554,7 +602,13 @@ void UCrowdyActorManager::OnEntityRegistered(const FGuid& EntityID)
 {
 	FPendingActivation Pending;
 	if (!PendingActivations.RemoveAndCopyValue(EntityID, Pending))
+	{
+		// The spawn-event actor of an entity the backend could not activate: it can be adopted now.
+		const int32* SlotPtr = UUIDToSlot.Find(EntityID);
+		if (SlotPtr && InactiveSlots[*SlotPtr] && !bActivatingSlot && IsValid(ActiveBackend))
+			RetryInactiveSlot(*SlotPtr, EntityID, FInstancedStruct());
 		return;
+	}
 
 	UClass* EntityClass = ResolveEntityClass(EntityID, Pending.InitialState);
 	if (!EntityClass)
@@ -571,6 +625,18 @@ void UCrowdyActorManager::OnEntityRegistered(const FGuid& EntityID)
 		return;
 	}
 
-	ActiveBackend->ActivateInstance(Pending.SlotId, EntityID, EntityClass, Pending.InitialState);
+	ActivateSlot(Pending.SlotId, EntityID, EntityClass, Pending.InitialState);
 	ActiveBackend->ExtractUpdate(Pending.InitialState, GetEstimatedServerTimeMs(), Pending.SlotId);
+}
+
+void UCrowdyActorManager::OnEntityUnregistered(const FGuid& EntityID)
+{
+	++CapacityEpoch;
+	if (!IsValid(ActiveBackend)) return;
+
+	// A remote destroy can take the actor from an active slot; the slot is then activated again by a later update.
+	const int32* SlotPtr = UUIDToSlot.Find(EntityID);
+	if (!SlotPtr || InactiveSlots[*SlotPtr]) return;
+
+	InactiveSlots[*SlotPtr] = !ActiveBackend->IsInstanceActive(*SlotPtr);
 }

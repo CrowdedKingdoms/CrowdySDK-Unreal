@@ -746,6 +746,11 @@ void UCrowdyCppReplicationSubsystem::InstallReceiveHandlers(const TSharedPtr<FCr
 			return;
 		}
 
+		UE_CLOG(CrowdyNetTrace::Net(), LogCrowdyNet, Log,
+			TEXT("Received opcode %d for actor %s in chunk (%lld, %lld, %lld), %d payload octets."),
+			Message.Opcode, *FString(Message.Uuid.Num(), reinterpret_cast<const ANSICHAR*>(Message.Uuid.GetData())),
+			Message.ChunkX, Message.ChunkY, Message.ChunkZ, Message.Payload.Num());
+
 		Self->DeliverFrame(CrowdyCppInboundFrame::FromSpatial(Message));
 	};
 
@@ -1016,6 +1021,10 @@ void UCrowdyCppReplicationSubsystem::ReportNetworkStats(const FCrowdyCppReplicat
 	LastStatsReportSeconds = Now;
 
 	const FCrowdyCppReplicationStats RawStats = Polled.GetStats();
+
+	UE_CLOG(CrowdyNetTrace::Net(), LogCrowdyNet, Log,
+		TEXT("Transport totals: %lld datagrams received, %lld failed verification, %lld dropped from the ring, %lld sends dropped."),
+		RawStats.DatagramsReceived, RawStats.HmacFailures, RawStats.RingDropped, RawStats.MessagesDropped);
 
 	FCounterSnapshot Current;
 	Current.BytesSent = RawStats.BytesSent;

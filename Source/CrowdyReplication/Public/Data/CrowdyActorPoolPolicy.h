@@ -10,7 +10,7 @@
 /**
  * Default actor-pool policy: hides pooled actors, shows them on activation, and strips
  * proxy movement. It is concrete and fully functional, so UCrowdyActorPoolBackendConfig
- * may leave PoolPolicyClass empty — the pool subsystem falls back to this class. Subclass
+ * may leave PoolPolicyClass empty: the pool subsystem falls back to this class. Subclass
  * it only to add per-actor activate/deactivate behavior.
  */
 UCLASS(Blueprintable, BlueprintType)
