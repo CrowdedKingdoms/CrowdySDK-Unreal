@@ -1,8 +1,8 @@
 CrowdyCPP vendored snapshot
 version: 0.42.1
-commit:  4f62cada50db84a95a51b37bb123a5c227197d56
-tag:     test/v0.42.1
-tier:    test (https://ck.test.crowdedkingdoms.com)
+commit:  4afa76fecdad32386aef1c01a92295349792129f
+tag:     prod/v0.42.1
+tier:    prod (https://ck.prod.crowdedkingdoms.com)
 source:  C:\Users\DANY\Documents\Unreal Projects\CrowdyCPP
 Regenerate with scripts/sync-crowdycpp.ps1. Do not hand-edit vendored files.
 Bridge-supplied symbols (not vendored): defaultLogger, systemClock,
