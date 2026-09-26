@@ -8,6 +8,7 @@
 #include "Data/CrowdyTransformRepPolicy.h"
 #include "Data/FCrowdyPoolConfig.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
+#include "Replication/Executor/ActorUpdateExecutor.h"
 #include "Replication/Subsystems/CrowdyActorPoolSubsystem.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 
@@ -77,6 +78,7 @@ bool UCrowdyActorPoolBackend::InitializeBackend(UWorld* World, UCrowdyRenderingB
 		Cfg.ActorClass     = ActorClass;
 		Cfg.PoolPolicyClass = PoolConfig->PoolPolicyClass;
 		Cfg.PoolSize        = PoolSize;
+		Cfg.MaxPoolSize     = PoolConfig->MaxPoolSizePerClass;
 		ActorPool->RegisterPool(Cfg);
 	}
 
@@ -90,6 +92,8 @@ void UCrowdyActorPoolBackend::DeinitializeBackend()
 	EntitySubsystem = nullptr;
 	PoolConfig     = nullptr;
 	SlotActors.Empty();
+	UnpooledSlots.Empty();
+	OwnerProxySlots.Empty();
 }
 
 void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& InitialState)
@@ -108,33 +112,45 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 
 	EnsurePoolForClass(EntityClass);
 
-	if (!bOwnerEntity)
+	// A previous actor still here means a missed deactivation; only a record naming that actor is dropped.
+	if (!bOwnerEntity && SlotActors[SlotId].IsValid())
 	{
-		// Release a previous actor in this slot if a prior deactivation was missed.
-		if (AActor* Previous = SlotActors[SlotId].Get())
-		{
+		const bool bClaimed = IsSlotActorClaimed(SlotId);
+		if (EntitySubsystem->FindEntity(UUID) == SlotActors[SlotId].Get())
 			EntitySubsystem->UnregisterEntity(UUID);
-			ActorPool->ReleaseActor(Previous);
-			SlotActors[SlotId] = nullptr;
-		}
-
-		// If the entity was spawned by FinishRemoteSpawn before pool activation, destroy that orphan.
-		if (const FCrowdyEntityRecord* Orphan = EntitySubsystem->FindRecord(UUID))
-		{
-			if (AActor* OldActor = Orphan->GetActor())
-				OldActor->Destroy();
-			EntitySubsystem->UnregisterEntity(UUID);
-		}
+		ReleaseSlotActor(SlotId, bClaimed);
 	}
 
+	// Secured before the orphan (the actor FinishRemoteSpawn made) is touched, so a refusal never costs it.
 	AActor* Actor = ActorPool->AcquireActor(EntityClass);
-	if (!Actor)
+
+	const FCrowdyEntityRecord* OrphanRecord = bOwnerEntity ? nullptr : EntitySubsystem->FindRecord(UUID);
+	const bool bHasOrphanRecord = OrphanRecord != nullptr;
+	AActor* Orphan = OrphanRecord ? OrphanRecord->GetActor() : nullptr;
+
+	if (!Actor && !IsValid(Orphan))
 	{
-		UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyActorPoolBackend]: Pool exhausted for %s — entity %s not activated."), *EntityClass->GetName(), *UUID.ToString());
+		UE_CLOG(CrowdyReplicationTrace::Pool(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyActorPoolBackend]: No pool actor for %s: entity %s not activated, retried on its next update."),
+			*EntityClass->GetName(), *UUID.ToString());
 		return;
 	}
 
-	if (!bOwnerEntity)
+	// At the cap the orphan is adopted with its own record, and destroyed rather than pooled on release.
+	const bool bAdopted = !Actor;
+	const bool bReplacedOrphan = !bAdopted && IsValid(Orphan);
+	if (bAdopted)
+	{
+		Actor = Orphan;
+	}
+	else if (bHasOrphanRecord)
+	{
+		if (bReplacedOrphan)
+			Orphan->Destroy();
+		EntitySubsystem->UnregisterEntity(UUID);
+	}
+
+	if (!bOwnerEntity && !bAdopted)
 	{
 		// Build the entity record. Inherit OwnerID/ClassID if the spawn event already
 		// populated a record (spawn event arrived before pool activation).
@@ -159,28 +175,73 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 	}
 
 	SlotActors[SlotId] = Actor;
+	UnpooledSlots[SlotId] = bAdopted;
+	OwnerProxySlots[SlotId] = bOwnerEntity;
+
+	UE_CLOG(CrowdyReplicationTrace::Pool(), LogCrowdyReplication, Log,
+		TEXT("[CrowdyActorPoolBackend]: Activated slot %d: entity %s, class %s, location %s, orphan replaced %s, adopted %s."),
+		SlotId, *UUID.ToString(), *EntityClass->GetName(),
+		InitialState.GetPtr<FCrowdyActorState>() ? *InitialState.GetPtr<FCrowdyActorState>()->Location.ToString() : TEXT("unknown"),
+		bReplacedOrphan ? TEXT("yes") : TEXT("no"),
+		bAdopted ? TEXT("yes") : TEXT("no"));
 }
 
 void UCrowdyActorPoolBackend::DeactivateInstance(int32 SlotId, const FGuid& UUID)
 {
+	const bool bHasSlot = SlotActors.IsValidIndex(SlotId);
+	const AActor* SlotActor = bHasSlot ? SlotActors[SlotId].Get() : nullptr;
+	const bool bClaimed = bHasSlot && IsSlotActorClaimed(SlotId);
+
 	// Owner entities never got a RemoteProxy record registered, so do not remove their Owner record.
 	if (IsValid(EntitySubsystem))
 	{
 		const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(UUID);
-		if (!Record || Record->Role != ECrowdyRole::Owner)
+		const bool bOwnerRecord = Record && Record->Role == ECrowdyRole::Owner;
+		AActor* Unadopted = Record && Record->Role == ECrowdyRole::RemoteProxy ? Record->GetActor() : nullptr;
+
+		// A spawn-event actor this slot never adopted would otherwise outlive its record.
+		if (IsValid(Unadopted) && Unadopted != SlotActor)
+			Unadopted->Destroy();
+		if (!bOwnerRecord)
 			EntitySubsystem->UnregisterEntity(UUID);
 	}
 
-	AActor* Actor = SlotActors.IsValidIndex(SlotId) ? SlotActors[SlotId].Get() : nullptr;
-
-	if (IsValid(ActorPool) && IsValid(Actor))
-		ActorPool->ReleaseActor(Actor);
-
-	if (SlotActors.IsValidIndex(SlotId))
-		SlotActors[SlotId] = nullptr;
+	if (bHasSlot)
+		ReleaseSlotActor(SlotId, bClaimed);
 
 	if (IsValid(Policy))
 		Policy->OnInstanceDeactivated(SlotId);
+}
+
+bool UCrowdyActorPoolBackend::IsInstanceActive(const int32 SlotId) const
+{
+	return SlotActors.IsValidIndex(SlotId) && SlotActors[SlotId].IsValid() && IsSlotActorClaimed(SlotId);
+}
+
+bool UCrowdyActorPoolBackend::IsSlotActorClaimed(const int32 SlotId) const
+{
+	return OwnerProxySlots[SlotId] || (IsValid(EntitySubsystem) && EntitySubsystem->FindEntityID(SlotActors[SlotId].Get()).IsValid());
+}
+
+void UCrowdyActorPoolBackend::ReleaseSlotActor(const int32 SlotId, const bool bClaimed)
+{
+	AActor* Actor = SlotActors[SlotId].Get();
+	const bool bUnpooled = UnpooledSlots[SlotId];
+	SlotActors[SlotId] = nullptr;
+	UnpooledSlots[SlotId] = false;
+	OwnerProxySlots[SlotId] = false;
+
+	// An actor whose record someone else removed is theirs to destroy; the pool prunes it once it is gone.
+	if (!IsValid(Actor) || !bClaimed) return;
+
+	if (bUnpooled)
+	{
+		Actor->Destroy();
+		return;
+	}
+
+	if (IsValid(ActorPool))
+		ActorPool->ReleaseActor(Actor);
 }
 
 void UCrowdyActorPoolBackend::ExtractUpdate(const FInstancedStruct& State, int64 ServerTimestampMs, int32 SlotId)
@@ -202,24 +263,27 @@ void UCrowdyActorPoolBackend::ApplyInterpolation(int32 SlotId, int64 RenderTimeM
 
 void UCrowdyActorPoolBackend::EnsureSlotCapacity(int32 SlotId)
 {
-	if (SlotId >= SlotActors.Num())
-		SlotActors.SetNum(SlotId + 1);
+	if (SlotId < SlotActors.Num()) return;
+
+	SlotActors.SetNum(SlotId + 1);
+	UnpooledSlots.SetNum(SlotId + 1, false);
+	OwnerProxySlots.SetNum(SlotId + 1, false);
 }
 
 void UCrowdyActorPoolBackend::EnsurePoolForClass(UClass* ActorClass)
 {
-	const FSoftObjectPath ClassPath(ActorClass->GetPathName());
-	const TSoftClassPtr<AActor> SoftClass(ActorClass);
+	if (ActorPool->HasPool(ActorClass)) return;
 
 	// Check PerClassPoolOverrides for a configured size; fall back to default.
-	const int32* Override = IsValid(PoolConfig) ? PoolConfig->PerClassPoolOverrides.Find(SoftClass) : nullptr;
+	const int32* Override = IsValid(PoolConfig) ? PoolConfig->PerClassPoolOverrides.Find(TSoftClassPtr<AActor>(ActorClass)) : nullptr;
 	const int32 Size = Override ? *Override : (IsValid(PoolConfig) ? PoolConfig->DefaultPoolSizePerClass : 8);
 
 	FCrowdyPoolConfig Cfg;
 	Cfg.ActorClass      = ActorClass;
 	Cfg.PoolPolicyClass  = IsValid(PoolConfig) ? PoolConfig->PoolPolicyClass : nullptr;
 	Cfg.PoolSize         = Size;
+	if (IsValid(PoolConfig))
+		Cfg.MaxPoolSize  = PoolConfig->MaxPoolSizePerClass;
 
-	// RegisterPool is idempotent: it returns if pool for ActorClass already exists.
 	ActorPool->RegisterPool(Cfg);
 }

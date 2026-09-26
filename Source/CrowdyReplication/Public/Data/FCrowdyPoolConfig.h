@@ -16,4 +16,8 @@ struct FCrowdyPoolConfig
 	
 	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Actor Pool")
 	int32 PoolSize = 64;
+
+	/** How many actors the pool may grow to when every one is in use. Never below PoolSize. */
+	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Actor Pool", meta=(ClampMin=1))
+	int32 MaxPoolSize = 256;
 };

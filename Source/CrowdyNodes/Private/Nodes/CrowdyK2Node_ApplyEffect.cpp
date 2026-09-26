@@ -72,10 +72,19 @@ void UCrowdyK2Node_ApplyEffect::ReallocatePinsDuringReconstruction(TArray<UEdGra
 			break;
 		}
 	}
+	PendingCaseOnlyMagnitudeValues = CrowdyApplyEffectNodePins::CaptureCaseOnlyMagnitudeValues(OldPins);
 
 	Super::ReallocatePinsDuringReconstruction(OldPins);
 
 	PendingReconstructionEffect = nullptr;
+}
+
+void UCrowdyK2Node_ApplyEffect::PostReconstructNode()
+{
+	Super::PostReconstructNode();
+
+	CrowdyApplyEffectNodePins::RestoreCaseOnlyMagnitudeValues(PendingCaseOnlyMagnitudeValues, Pins);
+	PendingCaseOnlyMagnitudeValues.Reset();
 }
 
 void UCrowdyK2Node_ApplyEffect::AllocateDefaultPins()

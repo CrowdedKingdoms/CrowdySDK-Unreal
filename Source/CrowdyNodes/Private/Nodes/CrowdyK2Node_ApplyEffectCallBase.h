@@ -93,6 +93,9 @@ private:
 	// over the live Effect pin, which is briefly empty during that window. Never serialized.
 	UCrowdyEffect* PendingReconstructionEffect = nullptr;
 
+	// Magnitude values changed only in letter case, carried across a rebuild that would reset them. Never serialized.
+	TMap<FName, FString> PendingCaseOnlyMagnitudeValues;
+
 	// True between scheduling a deferred rebuild and it firing, so a burst of default-value changes coalesces into a
 	// single rebuild. Transient editor state, never serialized.
 	bool bReconstructPending = false;

@@ -6,6 +6,8 @@
 #include "Data/CrowdyRenderingBackend.h"
 #include "Data/CrowdyRenderingBackendConfig.h"
 #include "Data/CrowdyRepApplicationPolicy.h"
+#include "GameFramework/Actor.h"
+#include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "StructUtils/InstancedStruct.h"
 #include "CrowdyRenderingBackendTestTypes.generated.h"
 
@@ -46,6 +48,11 @@ public:
 
 	/** What the backend was actually handed, so a test can tell a delivered state from an empty one. */
 	TArray<FInstancedStruct> ExtractedStates;
+	TArray<FInstancedStruct> ActivatedStates;
+	TArray<UClass*> ActivatedClasses;
+
+	/** Answer IsInstanceActive false, as a backend does when it could not take a rendering resource. */
+	bool bReportInactive = false;
 
 	virtual bool InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config) override
 	{
@@ -55,6 +62,13 @@ public:
 	virtual void ActivateInstance(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& InitialState) override
 	{
 		ActivatedSlots.Add(SlotId);
+		ActivatedStates.Add(InitialState);
+		ActivatedClasses.Add(EntityClass);
+	}
+
+	virtual bool IsInstanceActive(int32 SlotId) const override
+	{
+		return !bReportInactive;
 	}
 
 	virtual void DeactivateInstance(int32 SlotId, const FGuid& UUID) override
@@ -70,6 +84,50 @@ public:
 
 	virtual void ApplyInterpolation(int32 SlotId, int64 RenderTimeMs) override
 	{
+	}
+};
+
+/** A recording backend that re-registers the entity inside ActivateInstance, as the actor pool does. */
+UCLASS()
+class UCrowdyRegisteringBackend : public UCrowdyRecordingBackend
+{
+	GENERATED_BODY()
+
+public:
+
+	UPROPERTY()
+	TObjectPtr<UCrowdyEntitySubsystem> Entities;
+
+	virtual void ActivateInstance(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& InitialState) override
+	{
+		Super::ActivateInstance(SlotId, UUID, EntityClass, InitialState);
+
+		// Bounded, so a manager that re-enters shows up as extra activations rather than a stack overflow.
+		if (!Entities || ActivatedSlots.Num() > 4) return;
+
+		FCrowdyEntityRecord Record;
+		Record.NetID = UUID;
+		Record.Role = ECrowdyRole::RemoteProxy;
+		Record.Participant = this;
+		Entities->UnregisterEntity(UUID);
+		Entities->RegisterEntity(Record);
+	}
+};
+
+/** Records whether collision was on while it was being constructed, which is before any pool policy runs. */
+UCLASS()
+class ACrowdyPoolCollisionProbeActor : public AActor
+{
+	GENERATED_BODY()
+
+public:
+
+	bool bCollisionDuringConstruction = true;
+
+	virtual void OnConstruction(const FTransform& Transform) override
+	{
+		Super::OnConstruction(Transform);
+		bCollisionDuringConstruction = GetActorEnableCollision();
 	}
 };
 

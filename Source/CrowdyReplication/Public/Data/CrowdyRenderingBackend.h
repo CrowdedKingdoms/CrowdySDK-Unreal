@@ -56,6 +56,9 @@ public:
 	virtual void ActivateInstance(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& InitialState)
 		PURE_VIRTUAL(UCrowdyRenderingBackend::ActivateInstance,)
 
+	/** False when the slot has nothing to draw, so the manager calls ActivateInstance for it again later. */
+	virtual bool IsInstanceActive(int32 SlotId) const { return true; }
+
 	/**
 	 * The remote instance has left. Release the rendering resource and clean up the per-slot state.
 	 */

@@ -2563,4 +2563,99 @@ bool FCrowdyPropertyClearedDefaultIsNotDriftTest::RunTest(const FString& Paramet
 	return true;
 }
 
+// FString::operator== folds case, so every schema-diff compare of an authored value or expression has to be
+// case-sensitive: a default, policy, or expression that changes only in letter case is a real change and must plan
+// an upsert, while an identically spelled one must still plan nothing.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySchemaDiffValuesAreCaseSensitiveTest,
+	"CrowdySDK.GameModel.SchemaDiffValuesAreCaseSensitive", CrowdySchemaSyncTestFlags)
+bool FCrowdySchemaDiffValuesAreCaseSensitiveTest::RunTest(const FString& Parameters)
+{
+	TestFalse(TEXT("JsonValueEquals: identical text but for case differs"),
+		FCrowdySchemaSync::JsonValueEquals(TEXT("\"alice\""), TEXT("\"Alice\"")));
+	TestFalse(TEXT("JsonValueEquals: reordered keys with a case-only value change differ"),
+		FCrowdySchemaSync::JsonValueEquals(TEXT("{\"b\":\"Alice\",\"a\":1}"), TEXT("{\"a\":1,\"b\":\"alice\"}")));
+	TestTrue(TEXT("JsonValueEquals: reordered keys with the same spelling are equal"),
+		FCrowdySchemaSync::JsonValueEquals(TEXT("{\"b\":\"Alice\",\"a\":1}"), TEXT("{\"a\":1,\"b\":\"Alice\"}")));
+
+	const FString Policy = TEXT("{\"type\":\"condition\",\"expression\":\"self.title == \\\"Alice\\\"\"}");
+	TestFalse(TEXT("InvokePolicyEquals: identical text but for case differs"),
+		FCrowdySchemaSync::InvokePolicyEquals(Policy, Policy.Replace(TEXT("Alice"), TEXT("alice"), ESearchCase::CaseSensitive)));
+	const FString ReorderedPolicy = TEXT("{\"expression\":\"self.title == \\\"alice\\\"\",\"type\":\"condition\"}");
+	TestFalse(TEXT("InvokePolicyEquals: reordered keys with a case-only change differ"),
+		FCrowdySchemaSync::InvokePolicyEquals(Policy, ReorderedPolicy));
+	TestTrue(TEXT("InvokePolicyEquals: reordered keys with the same spelling are equal"),
+		FCrowdySchemaSync::InvokePolicyEquals(Policy, ReorderedPolicy.Replace(TEXT("alice"), TEXT("Alice"), ESearchCase::CaseSensitive)));
+
+	FCrowdyGameModelFunctionInput Desired = MakeDesiredFunction();
+	Desired.ReturnType = TEXT("string");
+	Desired.ReturnExpression = TEXT("self.Title");
+	Desired.Mutations[0].Target = TEXT("ref($Victim)");
+	FCrowdyGameModelTimer Timer = MakeSchemaSyncTimer(TEXT("take_damage"), TEXT("self.Delay"));
+	Timer.DedupeKeyExpression = TEXT("self.Key");
+	Timer.Target = TEXT("ref($Victim)");
+	FCrowdyGameModelTimerParam TimerParam;
+	TimerParam.Name = TEXT("amount");
+	TimerParam.Expression = TEXT("self.Power");
+	Timer.Params.Add(TimerParam);
+	Desired.Timers.Add(Timer);
+	Desired.Notifications.Add(MakeSdkChannelNotif(/*bAddressed*/ true));
+
+	const auto PlansUpsert = [&Desired](const FStudioFunction& Server)
+	{
+		FCrowdySchemaDelta Delta;
+		FCrowdySchemaSync::DiffFunctions({ Desired }, { Server }, Delta);
+		return Delta.FunctionUpserts.Num() > 0;
+	};
+
+	const FStudioFunction Same = [&Desired]()
+	{
+		FStudioFunction S = MakeServerFunctionFrom(Desired);
+		S.Timers = Desired.Timers;
+		S.Notifications = Desired.Notifications;
+		return S;
+	}();
+	TestFalse(TEXT("an identically spelled function plans no upsert"), PlansUpsert(Same));
+
+	FStudioFunction MutationCase = Same;
+	MutationCase.Mutations[0].Expression = MutationCase.Mutations[0].Expression.Replace(
+		TEXT("self.health"), TEXT("self.Health"), ESearchCase::CaseSensitive);
+	TestTrue(TEXT("a mutation expression changed only in case plans an upsert"), PlansUpsert(MutationCase));
+
+	FStudioFunction MutationTargetCase = Same;
+	MutationTargetCase.Mutations[0].Target = TEXT("ref($victim)");
+	TestTrue(TEXT("a mutation target changed only in case plans an upsert"), PlansUpsert(MutationTargetCase));
+
+	FStudioFunction TimerTargetCase = Same;
+	TimerTargetCase.Timers[0].Target = TEXT("ref($victim)");
+	TestTrue(TEXT("a timer target changed only in case plans an upsert"), PlansUpsert(TimerTargetCase));
+
+	FStudioFunction ReturnCase = Same;
+	ReturnCase.ReturnExpression = TEXT("self.title");
+	TestTrue(TEXT("a return expression changed only in case plans an upsert"), PlansUpsert(ReturnCase));
+
+	FStudioFunction DelayCase = Same;
+	DelayCase.Timers[0].DelayMsExpression = TEXT("self.delay");
+	TestTrue(TEXT("a timer delay expression changed only in case plans an upsert"), PlansUpsert(DelayCase));
+
+	FStudioFunction DedupeCase = Same;
+	DedupeCase.Timers[0].DedupeKeyExpression = TEXT("self.key");
+	TestTrue(TEXT("a timer dedupe expression changed only in case plans an upsert"), PlansUpsert(DedupeCase));
+
+	FStudioFunction TimerParamCase = Same;
+	TimerParamCase.Timers[0].Params[0].Expression = TEXT("self.power");
+	TestTrue(TEXT("a timer param expression changed only in case plans an upsert"), PlansUpsert(TimerParamCase));
+
+	FStudioFunction NotificationCase = Same;
+	for (FCrowdyGameModelNotificationArg& Arg : NotificationCase.Notifications[0].Args)
+	{
+		if (Arg.Name == TEXT("channel_name"))
+		{
+			Arg.Expression = Arg.Expression.ToUpper();
+		}
+	}
+	TestTrue(TEXT("a notification arg expression changed only in case plans an upsert"), PlansUpsert(NotificationCase));
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

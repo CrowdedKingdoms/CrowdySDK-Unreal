@@ -31,7 +31,7 @@ namespace
 		return Outcome;
 	}
 
-	// The allowance refusal is decided at the server's gate before the ensure runs, so repeating it is safe; a
+	// A rate-limit refusal is decided at the server's gate before the ensure runs, so repeating it is safe; a
 	// transport loss never reached the server either. A policy refusal is final.
 	bool ManifestOutcomeIsRetryable(const FCrowdyCppJsonResult& R)
 	{
@@ -158,14 +158,9 @@ void UCrowdyGameModelSubsystem::ApplyContainerManifest(const UCrowdyContainerMan
 		if (OnDone) { OnDone(Result); }
 	});
 
-	// Pacing against the shared allowance: the runner parks while the window is near full and resumes on this
-	// world's timer, and a RATE_LIMITED row is retried with backoff instead of ending the apply.
-	Runner->SetPacing(
-		[WeakThis]()
-		{
-			const UCrowdyGameModelSubsystem* S = ResolveLiveSelf(WeakThis);
-			return !S || S->GetRecentInvokeCount() < InvokeBudgetLimitPerWindow - FCrowdyManifestApplyRunner::DefaultMaxInFlight;
-		},
+	// An ensure spends none of the invoke allowance, so nothing holds the runner back but its in-flight cap. The
+	// world's timer is what a RATE_LIMITED row's backoff waits on, so the row is retried instead of ending the apply.
+	Runner->SetPacing(FCrowdyManifestApplyRunner::FCanSend(),
 		[WeakThis](float Seconds, TFunction<void()> Fn)
 		{
 			UCrowdyGameModelSubsystem* S = ResolveLiveSelf(WeakThis);

@@ -566,8 +566,8 @@ public:
 	// does not ask for it is sent exactly once per apply, exactly as it always has been.
 	//
 	// Turn it on for an effect a player applies many times a second (autofire damage, a channelled drain). The server
-	// admits only a limited number of Game Model calls per player per app, shared across every Game Model call the
-	// game makes, and an uncoalesced autofire spends that allowance in seconds; past it, calls are refused.
+	// admits only a limited number of Game Model invokes per player per app, shared across every invoke the game
+	// makes, and an uncoalesced autofire spends that allowance in seconds; past it, invokes are refused.
 	//
 	// Two applies merge only when they agree on everything except the accumulated parameter: the same target
 	// container, the same function, the same session, and the same value for every other tuning parameter. An apply

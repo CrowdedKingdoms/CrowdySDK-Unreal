@@ -62,6 +62,7 @@ void UCrowdyK2Node_ApplyEffectCallBase::ReallocatePinsDuringReconstruction(TArra
 			break;
 		}
 	}
+	PendingCaseOnlyMagnitudeValues = CrowdyApplyEffectNodePins::CaptureCaseOnlyMagnitudeValues(OldPins);
 
 	Super::ReallocatePinsDuringReconstruction(OldPins);
 
@@ -88,6 +89,9 @@ void UCrowdyK2Node_ApplyEffectCallBase::AllocateDefaultPins()
 void UCrowdyK2Node_ApplyEffectCallBase::PostReconstructNode()
 {
 	Super::PostReconstructNode();
+
+	CrowdyApplyEffectNodePins::RestoreCaseOnlyMagnitudeValues(PendingCaseOnlyMagnitudeValues, Pins);
+	PendingCaseOnlyMagnitudeValues.Reset();
 
 	// A rebuild carries a designer-set value from the old pin onto the new one, hidden or not. Re-hiding here, after
 	// that copy has happened, is what stops a Source or Level the effect no longer uses from reaching the call.

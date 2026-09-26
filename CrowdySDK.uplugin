@@ -1,7 +1,7 @@
 ﻿{
 	"FileVersion": 3,
 	"Version": 2,
-	"VersionName": "2.16.0",
+	"VersionName": "2.17.0",
 	"FriendlyName": "CrowdySDK",
 	"Description": "The Crowdy Unreal SDK is an Unreal Engine plugin that integrates your game with the Crowded Kingdoms platform",
 	"Category": "Crowded Kingdoms",

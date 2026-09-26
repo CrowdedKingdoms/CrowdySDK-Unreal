@@ -7,6 +7,7 @@
 #include "Dom/JsonObject.h"
 #include "Engine/World.h"
 #include "Network/GraphQL/FCrowdyGameApiCodec.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Replication/GameModel/CrowdyGameModelMetaKeys.h"
 #include "Replication/GameModel/CrowdyGameModelSubsystem.h"
 #include "Replication/GameModel/CrowdyModelValue.h"
@@ -246,6 +247,7 @@ FString UCrowdyEffects::GetContainerIdFor(UObject* Object)
 TSharedPtr<FJsonObject> UCrowdyEffects::BuildInvokeParams(const UCrowdyEffect* Effect,
 	const TMap<FName, FString>& Overrides, float Level, bool bHasSource, const FString& SourceContainerId, FString& OutError)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_BuildParams);
 	OutError.Reset();
 	if (!Effect)
 	{

@@ -57,6 +57,17 @@ public:
 	// The bearer for identity calls (a user session token). Safe to set before the client exists.
 	void SetManagementToken(const FString& Token);
 
+#if WITH_DEV_AUTOMATION_TESTS
+	// Installs InClient as though GetClient had built it for InConfig. No completion pump is registered: the test
+	// polls the client itself.
+	void SetClientForTest(TSharedPtr<FCrowdyCppClient> InClient, const FCrowdyCppClientConfig& InConfig)
+	{
+		Client = MoveTemp(InClient);
+		ClientConfig = InConfig;
+		bHasClientConfig = Client.IsValid();
+	}
+#endif
+
 private:
 	bool TickPollClient(float DeltaTime);
 

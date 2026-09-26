@@ -5,7 +5,7 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.14.0** (Unreal Engine 5.8). See the
+**Current version: 2.17.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
@@ -18,7 +18,7 @@ Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkin
 |---|---|
 | `prod` | Released versions only. Every release is a `vX.Y.Z` tag on this branch; install from a tag. |
 | `test` | The branch between `dev` and `prod`. |
-| `dev` | Everything merged since the last release. Builds, but the docs may describe it as "since 2.14" or "unreleased". |
+| `dev` | Everything merged since the last release. Builds, but the docs may describe its newest changes as "unreleased". |
 
 How a change moves: open a pull request. You may merge your own pull request into `dev`.
 @Shady-S25 merges into `test` and `prod` on this repository. Anyone else asks an org admin.

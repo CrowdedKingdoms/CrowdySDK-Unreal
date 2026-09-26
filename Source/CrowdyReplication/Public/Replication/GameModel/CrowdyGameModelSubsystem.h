@@ -11,6 +11,7 @@
 #include "Network/GraphQL/FCrowdyGameApiCodec.h"
 #include "Replication/GameModel/CrowdyContainerManifestApply.h"
 #include "Replication/GameModel/CrowdyContainerStandIn.h"
+#include "Replication/GameModel/CrowdyGameModelNetStats.h"
 #include "Replication/GameModel/CrowdyGameModelSessionTypes.h"
 #include "Replication/GameModel/CrowdyModelNotificationSink.h"
 #include "Replication/Subsystems/ICrowdyEntitySubscriber.h"
@@ -23,6 +24,7 @@ class UCrowdyEventRouter;
 class UCrowdyGameSession;
 class UCrowdySDKBridgeSubsystem;
 class FCrowdyCppClient;
+class UCrowdyCppClientSubsystem;
 class FCrowdyServiceRegistry;
 struct FServerEventNotification;
 struct FChannelMessageNotification;
@@ -136,8 +138,7 @@ struct FCrowdyCoalesceRequest
  *  2. Container cache and OnRep: binds an entity's realtime NetID to a server container id, caches the
  *     container's last-seen property values, and fires each changed attribute's parameterless CrowdyOnRep on the
  *     bound actor when a re-pull or a confirmed invoke changes a value. State is always pulled, never pushed. A
- *     model-changed notification (the fallback ping, or the server-native event) funnels into HandleModelChanged,
- *     which re-pulls and applies.
+ *     model-changed notification (the fallback ping, or the server-native event) funnels into one re-pull and apply.
  *
  * Attribute discovery reads live UPROPERTY metadata in the editor and a baked table in a cooked build. Bindings
  * are supplied explicitly via BindEntityContainer, or resolved automatically for a CrowdyContainer-tagged entity.
@@ -197,10 +198,10 @@ public:
 	static bool DecodeChannelSessionCue(const TArray<uint8>& Payload, FString& OutSessionId, int64& OutRevision,
 		FString& OutKind);
 
-	// Self-echo drop (see RecentlySelfActed below). MarkSelfActed records ContainerId as just-invoked by this
-	// client; ConsumeSelfEcho returns true (and consumes the record) when a model-changed echo arrives for a
-	// container this client just invoked, so the redundant self re-pull is skipped. Public for headless tests.
-	void MarkSelfActed(const FString& ContainerId);
+	// Self-echo drop (see RecentlySelfActed below). MarkSelfActed records one self-invoke of ContainerId and returns
+	// its expiry, or 0 when nothing was marked (no id, or more than one local holder of the row); ConsumeSelfEcho
+	// takes one mark and returns true, so that invoke's echo skips the redundant re-pull. Public for headless tests.
+	double MarkSelfActed(const FString& ContainerId);
 	bool ConsumeSelfEcho(const FString& ContainerId);
 
 	// Whether a participant of this class should pull its container's server state once on first bind, so its live
@@ -224,9 +225,10 @@ public:
 	// Initialize (a NewObject in a headless test) never resolves live.
 	static UCrowdyGameModelSubsystem* ResolveLive(const TWeakObjectPtr<UCrowdyGameModelSubsystem>& Weak);
 
-	// The server's per-player, per-app gameModelInvoke allowance, shared across every Game Model call the game makes
-	// and NOT just this one effect. Mirrored here so the governor can see the ceiling coming instead of only learning
-	// about it from a refusal. If the server's limits change, these are the two numbers to change.
+	// The server's per-player, per-app gameModelInvoke allowance, shared by every invoke the game makes and NOT just
+	// this one effect; reads, lists and ensures do not spend it. Mirrored here so the governor can see the ceiling
+	// coming instead of only learning about it from a refusal. If the server's limits change, these are the two
+	// numbers to change.
 	static constexpr int32 InvokeBudgetWindowSeconds = 10;
 	static constexpr int32 InvokeBudgetLimitPerWindow = 120;
 
@@ -280,8 +282,7 @@ public:
 	// How long notifications for one bound container are gathered before it is pulled. A fight touching a bound
 	// row changes it many times a second and every change notifies, so pulling per notification turns one fight
 	// into one round trip per change per row. Short enough that a value a player is reading still lands promptly.
-	// Stretched by StretchCoalesceWindowSeconds as the allowance is spent, exactly as an invoke's window is: a
-	// window that never widens emits pulls at a fixed rate into an allowance the pulls themselves are spending.
+	// Never stretched by the invoke governor: a pull spends none of the invoke allowance.
 	static constexpr float RefreshPullCoalesceSeconds = 0.1f;
 
 	// How many CrowdyContainer components one entity may be stood in for. The class an entity records is chosen by
@@ -330,11 +331,24 @@ public:
 	// summed magnitude rather than one apply's. Pure + static.
 	static bool IsBudgetRefusal(const FCrowdyInvokeResult& Result);
 
-	// How many Game API calls this client has made inside the budget window ending now: every call, not only
-	// gameModelInvoke, because the server's allowance covers all of them and a pull spends it exactly as an invoke
-	// does. Counted at the one point every call resolves its client (EnsureCppClient). The governor's view of how
-	// much of the allowance is spent; also the diagnostic a test or a HUD reads.
+	// Thrown, blame Platform, retryable, PLATFORM_BUSY: the function never started, so it may be sent again.
+	static bool IsBusyRefusal(const FCrowdyInvokeResult& Result);
+
+	// How many gameModelInvoke attempts this client has sent inside the budget window ending now, budget retries
+	// included; no other call counts, because no other call spends the allowance. The governor's view of how much of
+	// the allowance is spent; also the diagnostic a test or a HUD reads.
 	int32 GetRecentInvokeCount() const;
+
+	// Network diagnostics for this world: counters only, never read to make a decision.
+	const FCrowdyGameModelNetStats& GetNetStats() const { return NetStats; }
+	// Resets these stats and the API client's per-operation and transport stats.
+	void ResetNetStats();
+	// The same count as GetRecentInvokeCount, kept by the diagnostics rather than the governor; the two should agree.
+	int32 GetInvokesInWindow() const;
+	// Per-operation latency and transport totals from the game instance's API client; empty when none exists yet.
+	void GetOpStats(TArray<FCrowdyGameModelOpStatsRow>& OutRows, FCrowdyGameModelTransportTotals& OutTotals) const;
+	// The lines crowdy.gamemodel.stats logs.
+	void DescribeNetStats(TArray<FString>& OutLines) const;
 
 	// Whether offering an apply to the coalescer could merge anything at all right now: it needs a world (a merge
 	// window is a timer) and a subsystem that is not tearing down. Callers use it to skip building a merge
@@ -359,9 +373,9 @@ public:
 	// Transport facade. OnDone always runs on the game thread exactly once.
 	//
 	// One CALL is not one round trip: a refusal the server attributes to its own rate limit is retried, after a
-	// bounded backoff, up to MaxBudgetRetries times. Only that one outcome is ever repeated (see IsBudgetRefusal),
-	// and only one attempt is ever in flight at a time, so a caller still sees exactly one outcome and no write can
-	// be applied twice.
+	// bounded backoff, up to MaxBudgetRetries times, and a busy refusal up to CrowdyCppMaxBusyRetries times. Only
+	// those outcomes are ever repeated (see IsBudgetRefusal, IsBusyRefusal), and only one attempt is ever in flight at
+	// a time, so a caller still sees exactly one outcome and no write can be applied twice.
 	void Invoke(const FCrowdyInvokeRequest& Req, TFunction<void(FCrowdyInvokeResult)> OnDone);
 	void PullContainerState(const FString& ContainerId, TFunction<void(bool, TSharedPtr<FJsonObject>)> OnDone);
 	// Many containers' state in one read, chunked at MaxContainerStatesPerCall; bOk when any chunk answered, and an id
@@ -374,6 +388,13 @@ public:
 	// Bulk state calls sent and rows received so far, for a diagnostic line.
 	int32 GetBulkStateCallCount() const { return BulkStateCallCount; }
 	int32 GetBulkStateRowCount() const { return BulkStateRowCount; }
+	// The rows one paged list read asks for, and how many pages one list may read before it stops.
+	static constexpr int32 BulkResolvePageSize = 1000;
+	static constexpr int32 BulkResolveMaxPagesPerType = 50;
+	// Every container of TypeName (every type when empty) in SessionId (empty: the active session), each once, read
+	// BulkResolvePageSize rows at a time until a short page. Stops after BulkResolveMaxPagesPerType pages with a
+	// warning, returning what it read. A page that fails fails the whole list: bOk false and no rows. OnDone runs on
+	// the game thread exactly once.
 	void ListContainers(const FString& TypeName, const FString& SessionId,
 		TFunction<void(bool, TArray<TSharedPtr<FJsonObject>>)> OnDone);
 
@@ -454,8 +475,8 @@ public:
 		const TSharedPtr<FJsonObject>& Params, const FString& SessionId,
 		TFunction<void(FCrowdyInvokeResult)> OnDone);
 
-	// The single re-pull entry every notification carrier funnels into (fallback ping AND server-native
-	// SERVER_EVENT): re-pull the entity's container state and apply it, firing OnRep for changed keys.
+	// Re-pulls the entity's container state and applies it, firing OnRep for changed keys. While a pull of that
+	// container is already out, one more is sent as soon as it lands instead.
 	void HandleModelChanged(const FGuid& NetID);
 
 	// Container-keyed variant: find the LOCAL entity bound to ContainerId (each client may bind its own entity
@@ -465,9 +486,12 @@ public:
 	// World-free apply seams (public so headless tests exercise diff + OnRep with a NewObject target, no
 	// world, no live server). ApplyStateToContainer diffs NewState against the NetID-keyed cache and fires
 	// each changed key's parameterless CrowdyOnRep on Container; ApplyMutationsToContainer does the same
-	// from a confirmed invoke's mutationsApplied (key -> newValueJson).
-	void ApplyStateToContainer(const FGuid& NetID, UObject* Container, const TSharedPtr<FJsonObject>& NewState);
-	void ApplyMutationsToContainer(const FGuid& NetID, UObject* Container, const TArray<FCrowdyMutationApplied>& Mutations);
+	// from a confirmed invoke's mutationsApplied (key -> newValueJson). KeysToKeep are left as cached; the return
+	// says whether a kept key's pulled value differed from the cached one. DispatchSequence is when the invoke was sent.
+	bool ApplyStateToContainer(const FGuid& NetID, UObject* Container, const TSharedPtr<FJsonObject>& NewState,
+		const TSet<FName>* KeysToKeep = nullptr);
+	void ApplyMutationsToContainer(const FGuid& NetID, UObject* Container, const TArray<FCrowdyMutationApplied>& Mutations,
+		uint64 DispatchSequence = 0);
 
 	// Routes a confirmed invoke's mutations to the container each one NAMES, not to the invoke's own container.
 	// An effect may write source.<attr> as well as self.<attr> (crediting the attacker while damaging the target),
@@ -478,7 +502,7 @@ public:
 	// carrying no container id, which is what a server predating the field sends. Public alongside the other
 	// world-free apply seams so a headless test can route across two participants with no world and no server.
 	void ApplyInvokeMutations(const FGuid& SelfNetID, const FString& SelfContainerId,
-		const TArray<FCrowdyMutationApplied>& Mutations);
+		const TArray<FCrowdyMutationApplied>& Mutations, uint64 DispatchSequence = 0);
 
 	// Session lifecycle. Each facade fills endpoint/token/appId from the session exactly like Invoke, then
 	// marshals the call through FCrowdyGameApiCodec. OnDone always runs on the game thread once; a transport/logic failure
@@ -529,11 +553,10 @@ public:
 	void GetSession(const FString& SessionId, TFunction<void(bool bOk, const FCrowdyGameModelSession& Session)> OnDone);
 
 	// Creates the rows a container manifest names, in SessionId (empty: the active session, else the app scope;
-	// bIgnoreActiveSession makes an empty SessionId mean the app scope outright), eight at a time, paced on the
-	// shared allowance and stopping at the first failure it cannot retry. Creation is authorised by the type's
-	// server policy, so a caller that may not create (a non-host on a host-only type) gets the refusal as the first
-	// failure. Every row counts against the allowance, so gameplay invokes right after a large apply see it spent.
-	// OnDone fires exactly once, on world teardown too.
+	// bIgnoreActiveSession makes an empty SessionId mean the app scope outright), eight at a time, retrying a
+	// retryable refusal with backoff and stopping at the first failure it cannot retry. Creation is authorised by the
+	// type's server policy, so a caller that may not create (a non-host on a host-only type) gets the refusal as the
+	// first failure. OnDone fires exactly once, on world teardown too.
 	void ApplyContainerManifest(const UCrowdyContainerManifest* Manifest, const FString& SessionId,
 		bool bIgnoreActiveSession, TFunction<void(const FCrowdyApplyManifestResult&)> OnDone);
 	// The session with its participants as of one revision: the resync read after a cue or a revision gap.
@@ -645,7 +668,8 @@ public:
 	void CreateDataContainer(const FString& TypeName, const FString& DisplayName, const FString& SessionId,
 		const FString& MetadataJson, TFunction<void(bool bOk, const FString& ContainerId)> OnDone);
 	// Pull a container's visible state by id into the by-id cache, broadcasting OnDataContainerChanged when any
-	// value changed. Starts watching the container.
+	// value changed. Starts watching the container. OnDone runs once, when a read sent after this call lands: this
+	// call's own, or the one that follows a pull of the container already out.
 	void PullDataContainer(const FString& ContainerId, TFunction<void(bool bOk)> OnDone);
 	// Invoke a function against a container by id (not an actor). On success, apply the confirmed mutations to the
 	// by-id cache (broadcasting the change), then emit the fallback model-changed ping so peers re-pull.
@@ -709,14 +733,16 @@ public:
 	// no world and no HTTP): diffs NewState against the containerId-keyed cache and broadcasts
 	// OnDataContainerChanged exactly once when any value changed. Mirrors ApplyStateToContainer without the
 	// live-member write (a free container has no actor to write onto). NewState is the container's COMPLETE
-	// visible property set, so a cached key it omits is treated as removed.
-	void ApplyDataContainerState(const FString& ContainerId, const TSharedPtr<FJsonObject>& NewState);
+	// visible property set, so a cached key it omits is treated as removed. KeysToKeep are left as cached, as above.
+	bool ApplyDataContainerState(const FString& ContainerId, const TSharedPtr<FJsonObject>& NewState,
+		const TSet<FName>* KeysToKeep = nullptr);
 
 	// Merge seam for a free/data container: applies a confirmed invoke's changed-subset mutations onto the by-id
 	// cache, touching ONLY the listed keys (never treating an absent key as removed). Use this for an invoke echo,
 	// where mutationsApplied is the delta, not the full state; ApplyDataContainerState (full replace) is for a pull.
 	// Broadcasts OnDataContainerChanged + the per-attribute delegate for the keys that actually changed.
-	void ApplyDataContainerMutations(const FString& ContainerId, const TArray<FCrowdyMutationApplied>& Mutations);
+	void ApplyDataContainerMutations(const FString& ContainerId, const TArray<FCrowdyMutationApplied>& Mutations,
+		uint64 DispatchSequence = 0);
 
 	// Broadcast on the game thread when a watched free/data container's cached state changed after a pull.
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "On Game Model Changed (by Id)"))
@@ -882,19 +908,19 @@ public:
 	int32 GetHeldContainerStandInCountForTest() const { return ContainerStandIns.Num(); }
 	// How many times component-container enrolment was asked for, so a test can prove which caller asks.
 	int32 GetDerivedEnrollmentRequestCountForTest() const { return DerivedEnrollmentRequestCount; }
-	// The coalesce window a refresh pull would actually wait, which widens as the call allowance is spent.
-	float GetRefreshPullWindowSecondsForTest() const { return ResolveRefreshPullWindowSeconds(); }
+	// The delay the armed refresh-pull drain was set with, or a negative number when none is armed.
+	float GetRefreshPullTimerRateForTest() const;
 	// The pull decision a pending entity's retry makes, which has to answer from the recorded container class for a
 	// class-derived binding rather than from the stand-in that represents it.
 	bool ShouldPullOnRetryForEntityForTest(const FGuid& NetID) const { return ShouldPullOnRetryForEntity(NetID); }
 	// How many sweeps have actually run, so a test can prove that N notifications produce one sweep rather than N.
 	int32 GetPendingSweepCountForTest() const { return PendingSweepCount; }
 	// How many container resolves started, so a test can prove a redraw that reuses a binding starts none. This is
-	// the point a bind begins to spend the Game API allowance, so it is what "costs no call" has to be measured at.
+	// the point a bind begins to make Game API calls, so it is what "costs no call" has to be measured at.
 	int32 GetContainerResolveStartCountForTest() const { return ContainerResolveStartCount; }
 	// How many list pages the bulk resolve read and how many entities it bound from them, so a test can prove N
 	// shared entities of one type cost pages, not N ensures.
-	int32 GetBulkResolveListCallCountForTest() const { return BulkResolveListCallCount; }
+	int32 GetBulkResolveListCallCountForTest() const { return NetStats.BulkResolveListPages; }
 	int32 GetBulkResolveHitCountForTest() const { return BulkResolveHitCount; }
 	// How many (type, session) groups the sweep handed to the bulk path, counted before any network or token
 	// question, so a headless test can prove N shared entities of one type dispatch once and ensure nothing.
@@ -927,21 +953,38 @@ public:
 		MatchContainerRows(Rows, NetIDByKey, ResolvedSession, OutHits);
 	}
 	bool IsBulkResolveEligibleForTest(const FGuid& NetID) const { return IsBulkResolveEligible(NetID); }
-	// How many containers are waiting to be pulled, and which entity each will be pulled for, so a test can prove
-	// K notifications coalesce into one pull and that the pull carries the LATEST of them.
+	// Finishes a bulk list for NetIDs as if the server had answered it with Hits, read to its end or cut short.
+	void FinishBulkResolveForTest(const FString& TypeName, const FString& Session, const TArray<FGuid>& NetIDs,
+		const TArray<FCrowdyBulkResolveHit>& Hits, bool bReachedEnd = true);
+	// How many entities are parked for the bulk list with their scope.
+	int32 GetPendingSessionCountForTest() const { return PendingSessionByNetID.Num(); }
+	// Whether a (type, session) group's list was cut short, so its remote copies now read their rows by key.
+	bool IsBulkResolveGroupCutForTest(const FString& TypeName, const FString& Session) const
+	{
+		return BulkResolveCutGroups.Contains(BulkResolveGroupKey(TypeName, Session));
+	}
+	// How many containers are waiting to be pulled, and the entity holding each now (the oldest binding when several
+	// do), so a test can prove K notifications coalesce into one pull addressed to whoever holds the row at the drain.
 	int32 GetPendingRefreshPullCountForTest() const { return PendingRefreshPulls.Num(); }
 	bool TryGetPendingRefreshPullTargetForTest(const FString& ContainerId, FGuid& OutNetID) const
 	{
-		const FGuid* Found = PendingRefreshPulls.Find(ContainerId);
-		if (!Found)
+		if (!PendingRefreshPulls.Contains(ContainerId))
 		{
 			return false;
 		}
-		OutNetID = *Found;
+		OutNetID = FindNetIDForContainer(ContainerId);
 		return true;
 	}
 	// Runs the drain the timer would have run, which a headless test has no timer manager to fire.
 	void DrainRefreshPullsForTest() { DrainRefreshPulls(); }
+	// Takes the next send stamp as an invoke attempt would, so a test can order an invoke against a pull.
+	uint64 StampDispatchForTest() { return ++LastSendStamp; }
+	// Hands a hint to the model-changed consumer Initialize binds, which a headless test never runs.
+	void HandleModelChangeHintForTest(const FCrowdyModelChangeHint& Hint) { HandleModelChangeHint(Hint); }
+	void TouchCollectionParentForTest(const FString& ParentContainerId, const FString& ParentTypeName)
+	{
+		TouchCollectionParent(ParentContainerId, ParentTypeName);
+	}
 	// The id a subscriber is addressed by for values pulled against this record, so a test can prove a component
 	// container's values are handed to whoever holds the entity rather than to an id nobody has ever seen.
 	FGuid ResolveSubscriberEntityIDForTest(const FGuid& NetID) const { return ResolveSubscriberEntityID(NetID); }
@@ -958,6 +1001,15 @@ public:
 	// itself, so a test can tell "the notification was coalesced away" from "the sweep did nothing".
 	void RequestPendingModelEntitySweepForTest() { RequestPendingModelEntitySweep(); }
 	void RetryPendingModelEntitiesForTest() { RetryPendingModelEntities(); }
+	// Answers the API context check with these values, so a call gets as far as asking for the client.
+	void SetApiContextForTest(const FString& Endpoint, const FString& Token, int64 AppId)
+	{
+		ApiEndpointForTest = Endpoint;
+		ApiTokenForTest = Token;
+		ApiAppIdForTest = AppId;
+	}
+	// Stands in for the game instance's client host, which a headless test has no initialized game instance to hold.
+	void SetClientHostForTest(UCrowdyCppClientSubsystem* InHost);
 	// Drives the teardown drain on its own, without tearing a world down, so the "every waiting caller is still told
 	// what happened" property is provable in a headless test. It leaves the subsystem shut for further merging exactly
 	// as Deinitialize does, so nothing after it can queue a window that would never close.
@@ -967,6 +1019,7 @@ public:
 		FailPendingCoalesceWindows();
 		FailPendingInvokeRetries();
 		FailPendingManifestApplies();
+		FailPendingPulls();
 	}
 #endif
 
@@ -979,17 +1032,11 @@ private:
 	// subsystem, so it survives level travel and one pump serves every caller. Returns null when there is no game
 	// instance or the client could not be constructed; a caller that gets null must still complete its own callback
 	// with a failure result, or a latent node's pins never fire and any in-flight guard it took is never cleared.
-	//
-	// Resolving the client here is also where a call is counted against the per-player allowance, because every Game
-	// Model call in this file passes through this one function on its way out. The allowance is shared by all of them
-	// - ensure-container, read-by-key, list, pull, the session ops, set-property and invoke - so counting only one
-	// kind would leave the governor blind to most of what spends it, and counting at the individual call sites would
-	// silently stop covering whichever call is added next.
+	// Counts nothing: an invoke is counted against the allowance where it is dispatched.
 	FCrowdyCppClient* EnsureCppClient(const FString& Endpoint, const FString& Token);
 
-	// The same client, NOT counted against the allowance. Only for work that does not consume it: the diagnostic
-	// change feed opens and closes a WebSocket subscription rather than making a Game Model call.
-	FCrowdyCppClient* EnsureCppClientUnmetered(const FString& Endpoint, const FString& Token);
+	// The game instance's client host, or null outside a game instance.
+	UCrowdyCppClientSubsystem* ResolveClientHost() const;
 
 	// The short spelling this subsystem's own completions use for ResolveLive, whose contract it shares exactly.
 	static UCrowdyGameModelSubsystem* ResolveLiveSelf(const TWeakObjectPtr<UCrowdyGameModelSubsystem>& Weak)
@@ -1065,15 +1112,14 @@ private:
 	// would silently give every such entity the default (pull) whatever its container type says.
 	bool ShouldPullOnRetryForEntity(const FGuid& NetID) const;
 
-	// Bulk resolve. A Host-owned entity's container is world identity, the same row on every client, so a level's
-	// worth of them of one type bind from a few list pages instead of one ensure each. BindParticipantContainer
-	// parks such an entity for the next sweep; the sweep groups the pending eligible entities by type, reads each
-	// type's rows page by page, binds every key it matches and falls the misses through to the per-entity ensure,
-	// which remains the only path that creates a row. Off with crowdy.gamemodel.bulkresolve 0.
+	// Bulk resolve. A Host-owned entity's row and a remote copy's owner row are found by the same list on every client,
+	// so a level's worth of one type bind from a few list pages instead of one call each. BindParticipantContainer
+	// parks such an entity for the next sweep; the sweep groups them by type, reads each type's rows page by page and
+	// binds every key it matches. A shared miss ensures, the only path that creates a row; a remote copy's miss backs
+	// off when the list reached its end. Off with crowdy.gamemodel.bulkresolve 0.
 	// The app-global list omits the session, so every session's rows of that type share the page ceiling; past it
-	// the rest fall through to their own ensure, correct and only dearer.
-	static constexpr int32 BulkResolvePageSize = 1000;
-	static constexpr int32 BulkResolveMaxPagesPerType = 50;
+	// the rest fall back to their own call (a shared entity's ensure, a remote copy's keyed read), correct and only
+	// dearer. The page size and cap are public, above.
 	// A parked entity waits this long for the rest of its registration burst, not a whole sweep interval.
 	static constexpr float BulkResolveGatherSeconds = 0.25f;
 	struct FCrowdyBulkResolveRun;
@@ -1086,9 +1132,12 @@ private:
 	// Called by the sweep with the entities of one (type, session) group; the session is the one each entity was
 	// parked under, so every client binds the scope its registration saw, as the inline ensure did.
 	void BulkResolveType(const FString& TypeName, const FString& ResolvedSession, const TArray<FGuid>& NetIDs,
-		const FString& Endpoint, const FString& Token, int64 AppId);
+		int64 AppId);
 	void ReadBulkResolvePage(const TSharedRef<FCrowdyBulkResolveRun>& Run, int32 Offset);
 	void FinishBulkResolve(const TSharedRef<FCrowdyBulkResolveRun>& Run, bool bListOk);
+	// One ListContainers call's pages, read with the bulk resolve's page size and page cap.
+	struct FCrowdyContainerListRun;
+	void ReadContainerListPage(const TSharedRef<FCrowdyContainerListRun>& Run, int32 Offset);
 	// The one bind every resolved row goes through: the single ensure, the read-by-key and a bulk hit alike.
 	// Clears the in-flight guard, refuses an entity that unregistered during the round trip, binds, caches the owner.
 	bool BindResolvedRow(const FGuid& NetID, const FString& ContainerId, int64 OwnerUserId);
@@ -1099,10 +1148,13 @@ private:
 	TSet<FString> BulkResolveGroupsInFlight;
 	TMap<FString, double> BulkResolveTypeNextAttempt;
 	TMap<FString, int32> BulkResolveTypeFailures;
+	// Groups whose list, with no shared entity, was cut by its page budget; their remote copies resolve one by one.
+	TSet<FString> BulkResolveCutGroups;
+	// The key of a (type, session) group: the list a run reads and every map above keys on.
+	static FString BulkResolveGroupKey(const FString& TypeName, const FString& Session);
 	int32 BulkResolveDispatchCount = 0;
 	// Type name -> the session its last dispatched group listed under, for the test accessor.
 	TMap<FString, FString> BulkResolveDispatchSessionByType;
-	int32 BulkResolveListCallCount = 0;
 	int32 BulkResolveHitCount = 0;
 
 	// Bulk state reads: calls sent and rows received, diagnostics printed with the bulk-resolve trace.
@@ -1113,8 +1165,11 @@ private:
 	// The ids the ChunkIndex-th call carries: at most MaxContainerStatesPerCall, in input order, empty past the end.
 	static void ContainerStateChunk(const TArray<FString>& ContainerIds, int32 ChunkIndex, TArray<FString>& OutChunk);
 	// The bound (ContainerId, NetID) pairs a bulk state read applies to: every row is applied to the entity its id
-	// was pulled for, resolved at apply time so an entity gone in the meantime is skipped.
-	void PullAndApplyContainerStates(TArray<TPair<FString, FGuid>>&& Targets);
+	// was pulled for, resolved at apply time so an entity gone in the meantime is skipped. A container whose pull is
+	// already out is left out of the read and held behind that pull.
+	// QueuedSince, from the merge queue, stamps each container's record from when it was first queued.
+	void PullAndApplyContainerStates(TArray<TPair<FString, FGuid>>&& Targets, bool bExplicit,
+		const TMap<FString, uint64>* QueuedSince = nullptr);
 
 	// Container type name -> whether its class declares CrowdyScope="App". Filled where a registering entity's type is
 	// resolved from its class, and by name for a create or manifest row of a type nothing has registered yet.
@@ -1301,6 +1356,12 @@ private:
 #if WITH_DEV_AUTOMATION_TESTS
 	// Stands in for the router a headless test has no world to resolve. Never set outside a test.
 	TWeakObjectPtr<UCrowdyEventRouter> EventRouterForTest;
+	// Set only by SetApiContextForTest; an empty endpoint means the real context is resolved.
+	FString ApiEndpointForTest;
+	FString ApiTokenForTest;
+	int64 ApiAppIdForTest = 0;
+	// Set only by SetClientHostForTest; unset means the game instance's host is resolved.
+	TWeakObjectPtr<UCrowdyCppClientSubsystem> ClientHostForTest;
 #endif
 
 	// Whether the unloaded-recorded-class warning has been said. One world's worth of crowd entities all hit the
@@ -1356,32 +1417,74 @@ private:
 	// The one armed sweep. While it is pending, every further notification is absorbed rather than sweeping again.
 	FTimerHandle PendingSweepTimer;
 
-	// Containers whose model-changed notifications are waiting to be pulled, and the local entity holding each
-	// one. Keyed on the container, so however many notifications one container produces inside a window it is
-	// pulled once; the value is REPLACED by every notification, so the pull addresses whichever entity holds the
-	// container at the latest one rather than the one that held it at the first. A container rebound mid-window
-	// would otherwise have its owner's values applied onto the entity that has let it go.
-	TMap<FString, FGuid> PendingRefreshPulls;
+	// Containers whose model-changed notifications are waiting to be pulled. Keyed on the container, so however many
+	// notifications one container produces inside a window it is pulled once, for every entity bound to it when the
+	// window closes; a container rebound mid-window is never applied onto the entity that let it go. The value is
+	// the send stamp current at the container's first notification in the window: an invoke sent after it is newer
+	// than the pull, so its written keys are kept when the pull lands.
+	TMap<FString, uint64> PendingRefreshPulls;
 
 	// The one armed drain. While it is pending, every further notification joins the map instead of arming again.
 	FTimerHandle RefreshPullTimer;
 
-	// How long the drain should actually wait, given how much of the call allowance the last window's worth of
-	// calls already spent. A pull is a Game API call and is counted in the same ledger an invoke is, so a window
-	// that never widened would emit pulls at a fixed rate into an allowance those very pulls are spending, and
-	// the first sign of trouble would be the server refusing rather than this client merging harder.
-	float ResolveRefreshPullWindowSeconds() const;
-
 	// Records a notification for a bound container and arms the drain. Never pulls inline: the coalescing is the
-	// whole point, and one code path owning the pull is what keeps a fight from spending the call allowance.
+	// whole point, and one code path owning the pull is what keeps a fight from costing one read per change.
 	void EnqueueRefreshPull(const FString& ContainerId, const FGuid& NetID);
 
 	// Pulls each waiting container once and clears the map.
 	void DrainRefreshPulls();
 
+	// One applying pull in flight per container, one more held behind it, so an older answer never lands over a newer.
+	struct FCrowdyContainerPull
+	{
+		// Keys written by invokes sent after this pull, per receiving entity (an invalid id for the by-id cache).
+		TMap<FGuid, TSet<FName>> KeysWrittenSince;
+		// Entities held behind this pull, each with whether an explicit caller asked.
+		TMap<FGuid, bool> HeldEntities;
+		// Callers of a data pull held behind this one, answered by the pull that follows it.
+		TArray<TFunction<void(bool)>> DataWaiters;
+		uint64 IssuedSequence = 0;
+		bool bDataPull = false;
+		bool bDataOnceMore = false;
+	};
+	TMap<FString, FCrowdyContainerPull> PullsInFlight;
+	// Orders applying pulls and invoke attempts by when each was sent.
+	uint64 LastSendStamp = 0;
+
+	// A held notification's follow-up waits for the merge window; an explicit caller's goes out as soon as it can.
+	void PullAndApplyEntity(const FGuid& NetID, bool bExplicit);
+	// True when a pull of ContainerId is already out, in which case this request is held behind it.
+	bool HoldBehindPullInFlight(const FString& ContainerId, const FGuid& NetID, bool bExplicit);
+	// Starts ContainerId's record, stamped with when its pull is sent, or with ProtectAfter when that is earlier.
+	void BeginContainerPull(const FString& ContainerId, bool bDataPull, uint64 ProtectAfter = MAX_uint64);
+	// Clears the landed pull's record, sends the follow-up a held request asked for, and returns the record.
+	FCrowdyContainerPull EndContainerPull(const FString& ContainerId);
+	// Applies a landed read to targets grouped by container, ending each container's record once.
+	void ApplyLandedStates(const TArray<TPair<FString, FGuid>>& Targets, bool bOk,
+		const TMap<FString, TSharedPtr<FJsonObject>>& States);
+	// Where Receiver's successful writes to ContainerId are recorded, or null when no pull of it predates the invoke.
+	TSet<FName>* FindKeysToProtect(const FString& ContainerId, const FGuid& Receiver, uint64 InvokeDispatched);
+	static void AnswerPullWaiters(TArray<TFunction<void(bool)>>& Waiters, bool bOk);
+	// Answers every held data caller with a failure and forgets every pull and the self-echo backstop, so teardown
+	// sends no follow-up.
+	void FailPendingPulls();
+	// The state reads behind PullContainerState and PullContainerStateRows; bApplies marks a read whose result is applied.
+	void IssueStateRead(const FString& ContainerId, TFunction<void(bool, TSharedPtr<FJsonObject>)> OnDone, bool bApplies);
+	void IssueStateRowsRead(const TArray<FString>& ContainerIds,
+		TFunction<void(bool, TArray<FCrowdyGameApiCodec::FContainerStateRow>)> OnDone, bool bApplies);
+
 	// How many container resolves have got past the already-bound and in-flight guards, which is where a bind
-	// starts spending the Game API allowance. A diagnostic; it is never read to make a decision.
+	// starts making Game API calls. A diagnostic; it is never read to make a decision.
 	int32 ContainerResolveStartCount = 0;
+
+	// See GetNetStats.
+	FCrowdyGameModelNetStats NetStats;
+
+	// Records one pull request for each id about to be read, and releases them when the read completes.
+	void RecordPullIssued(TConstArrayView<FString> ContainerIds, bool bApplies);
+	void RecordPullCompleted(TConstArrayView<FString> ContainerIds, int32 Rows, bool bApplies);
+	// Records resolves whose request is about to be sent.
+	void RecordResolvesSent(TConstArrayView<FGuid> NetIDs);
 
 	// How many sweeps have run. A diagnostic (and the thing a test counts to prove that notification rate no longer
 	// decides round-trip rate); it is never read to make a decision.
@@ -1415,24 +1518,37 @@ private:
 	// never lands on us.
 	UCrowdyEntitySubsystem* EntitySubsystemForEvents = nullptr;
 
-	// The sole OnModelChanged consumer: route a normalized hint to the existing re-pull. Prefers the container
-	// (HandleModelChangedByContainer) when present, else the entity (HandleModelChanged) - the same precedence
-	// the ping carrier used before the seam existed. Bound to OnModelChangedDelegate in Initialize.
+	// The sole OnModelChanged consumer: the container's re-pull when the hint names one, else the entity's, both as notifications.
 	void HandleModelChangeHint(const FCrowdyModelChangeHint& Hint);
 
 	// Self-echo drop state. When THIS client invokes a container it applies the confirmed mutationsApplied
 	// directly; the server-native model-changed echo (channel or 139) then arrives for the same container.
 	// Re-pulling on that echo is redundant and, for a free/data container, races the just-cached value
-	// (ApplyDataContainerState full-replaces on the pull, transiently evicting it). MarkSelfActed records each
-	// self-invoked container briefly; ConsumeSelfEcho drops its first echo. Mirrors CrowdyState's self-echo drop,
-	// which keys on the originating sender id; a channel notification carries no reliable sender, so this keys on
-	// recency instead. Game-thread only. The two helpers are public purely so the consume-once/keying semantics
-	// are headless-testable (mirrors DecodeContainerIdFromState); the map stays private.
-	TMap<FString, double> RecentlySelfActed; // container id -> expiry (FApp::GetCurrentTime seconds)
+	// (ApplyDataContainerState full-replaces on the pull, transiently evicting it). Each invoke attempt marks its
+	// container when it is sent and gives its own mark back if it writes nothing; each echo takes the oldest live mark.
+	// A notification carries no reliable sender, so a dropped hint may be another writer's change: every container
+	// that drops one is pulled once SelfEchoWindowSeconds later, so such a change is hidden at most that long.
+	TMap<FString, TArray<double>> RecentlySelfActed; // container id -> mark expiries, oldest first
 
-	// Drop every RecentlySelfActed record whose window has closed. Called from both MarkSelfActed and
-	// ConsumeSelfEcho so the map stays bounded by the window even in a session that only ever invokes (never
-	// receives a model-changed notification to drive a consume).
+	// Containers that dropped a hint since the backstop timer was armed, and that timer.
+	TSet<FString> SelfEchoBackstop;
+	FTimerHandle SelfEchoBackstopTimer;
+
+	// Gives back the mark that expires at Expiry on ContainerId; pulls the container when a hint already took it.
+	void UnmarkSelfActed(const FString& ContainerId, double Expiry);
+
+	// Pulls ContainerId for whoever receives it here, as its notification would; false when nobody does.
+	bool PullSelfEchoReceivers(const FString& ContainerId);
+
+	// More than one local entity holds ContainerId; an invoke's writes reach only one of them, so its echo must pull.
+	bool HasSeveralLocalHolders(const FString& ContainerId) const;
+
+	// Records a dropped hint and arms the backstop pull when it is the first since the last one ran.
+	void NoteSelfEchoDropped(const FString& ContainerId);
+	void RunSelfEchoBackstop();
+
+	// Drop every expired mark, counting each, and every container left with none. Called on every mark, so the map
+	// stays bounded by the window.
 	void PruneExpiredSelfActed(double Now);
 
 	// Idempotently subscribe this subsystem to the three model-changed carriers (opcode 139 server-native event,
@@ -1580,6 +1696,8 @@ private:
 	struct FCrowdyInvokeBindingGuard
 	{
 		bool bEntityBound = false;
+		// Each attempt marks its container on dispatch, so this client drops the server's echo of it.
+		bool bMarkSelfEcho = false;
 		FGuid SelfNetID;
 		uint32 BindEpoch = 0;
 	};
@@ -1598,16 +1716,16 @@ private:
 	// Stamped onto each window as it opens, so "the oldest open window" is answerable without a clock.
 	uint64 NextCoalesceOpenSequence = 1;
 
-	// Invokes waiting out a budget backoff, keyed by an id the timer carries so a fired timer can claim its own
+	// Invokes waiting out a budget or busy backoff, keyed by an id the timer carries so a fired timer can claim its own
 	// record and a teardown can fail whatever is left.
 	TMap<uint64, FCrowdyPendingInvokeRetry> PendingInvokeRetries;
 	uint64 NextInvokeRetryId = 1;
 
-	// When each Game Model call this client made was dispatched, ascending, as a fixed-capacity ring: InvokeLedgerHead
+	// When each invoke attempt this client sent was dispatched, ascending, as a fixed-capacity ring: InvokeLedgerHead
 	// is the oldest live entry and InvokeLedgerCount how many there are. The sliding-window ledger the governor reads
 	// to decide how much of the allowance is spent. A ring rather than an array that shifts, because recording an
-	// attempt is on the path of every call and dropping expired entries off the front of an array memmoves the rest of
-	// it every time. Past the capacity the answer is already "the allowance is spent", so the oldest entry is
+	// attempt is on the path of every invoke and dropping expired entries off the front of an array memmoves the rest
+	// of it every time. Past the capacity the answer is already "the allowance is spent", so the oldest entry is
 	// overwritten rather than the ring grown.
 	static constexpr int32 InvokeLedgerCapacity = 4 * InvokeBudgetLimitPerWindow;
 	TArray<double> InvokeLedger;
@@ -1640,21 +1758,22 @@ private:
 		const TSharedPtr<FJsonObject>& Params, const FString& ResolvedSessionId,
 		TFunction<void(FCrowdyInvokeResult)> OnDone);
 
-	// The single gameModelInvoke dispatch: resolve the API context, send it, and either retry a budget refusal or hand
-	// the outcome to OnDone. InvokeResolved calls this with attempt 0; a retry calls it again with the SAME request
-	// object so the retried call is byte-identical.
+	// The single gameModelInvoke dispatch: resolve the API context, send it, and either retry a budget or busy refusal
+	// or hand the outcome to OnDone. InvokeResolved calls this with attempt 0; a retry calls it again with the SAME
+	// request object so the retried call is byte-identical. BusyRetries is how many of the earlier attempts were busy
+	// retries, so the two kinds are capped apart.
 	void DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRequest> Resolved, int32 AttemptIndex,
-		TFunction<void(FCrowdyInvokeResult)> OnDone, const FCrowdyInvokeBindingGuard& Guard);
+		TFunction<void(FCrowdyInvokeResult)> OnDone, const FCrowdyInvokeBindingGuard& Guard, int32 BusyRetries = 0);
 
-	// Arm a backoff and retry Resolved when Result is a rate-limit refusal and there is retry budget left. True when
-	// a retry was armed, in which case OnDone belongs to the retry and the caller must NOT complete it; false when
+	// Arm a backoff and retry Resolved when Result is a rate-limit or busy refusal with retries of its kind left. True
+	// when a retry was armed, in which case OnDone belongs to the retry and the caller must NOT complete it; false when
 	// the caller owns the outcome and must complete OnDone itself. Guard is re-checked when the timer fires, not here:
 	// the binding can move at any point during the backoff, so the only reading that means anything is the last one.
-	bool TryScheduleBudgetRetry(const TSharedRef<FCrowdyInvokeRequest>& Resolved, int32 AttemptIndex,
-		const FCrowdyInvokeResult& Result, const TFunction<void(FCrowdyInvokeResult)>& OnDone,
+	bool TryScheduleInvokeRetry(const TSharedRef<FCrowdyInvokeRequest>& Resolved, int32 AttemptIndex,
+		int32 BusyRetries, const FCrowdyInvokeResult& Result, const TFunction<void(FCrowdyInvokeResult)>& OnDone,
 		const FCrowdyInvokeBindingGuard& Guard);
 
-	// Record one dispatched Game API call in the sliding-window ledger, and drop everything that has aged out of it.
+	// Record one dispatched invoke attempt in the sliding-window ledger, and drop everything that has aged out of it.
 	void RecordInvokeAttempt(double Now);
 
 	// Bind / unbind an entity's container id, keeping the reverse index and the bind epoch in step. Every write to

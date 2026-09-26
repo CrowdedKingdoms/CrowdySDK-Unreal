@@ -24,8 +24,8 @@ class CROWDYREPLICATION_API UCrowdyModel : public UBlueprintFunctionLibrary
 	GENERATED_BODY()
 
 public:
-	// Re-pull Entity's Server Owned container now. A fresh authoritative read; each changed attribute's OnRep
-	// fires. Use after a change you could not observe via a notification (rare the pipeline pulls for you).
+	// Re-pull Entity's Server Owned container now, or right after a read of it already in flight lands. Each changed
+	// attribute's OnRep fires. Use after a change you could not observe via a notification (rare the pipeline pulls for you).
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Refresh Game Model")
 	static void PullNow(UObject* Entity);
 
