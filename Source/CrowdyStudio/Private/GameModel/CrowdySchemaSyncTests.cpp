@@ -677,6 +677,43 @@ bool FCrowdySchemaSyncPropDriftWarnsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Two server properties that differ only in case are disclosed, and the first one stays the one the diff compares.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySchemaSyncCaseOnlyPropPairWarnsTest,
+	"CrowdySDK.GameModel.SchemaCaseOnlyPropPairWarns", CrowdySchemaSyncTestFlags)
+bool FCrowdySchemaSyncCaseOnlyPropPairWarnsTest::RunTest(const FString& Parameters)
+{
+	FCrowdyDesiredContainerType Hero = MakeDesiredType(TEXT("Hero"));
+	Hero.Props.Add(MakeDesiredProp(TEXT("hp"), TEXT("int"), TEXT("100")));
+
+	TArray<FCrowdyDesiredContainerType> DesiredSchema;
+	DesiredSchema.Add(Hero);
+
+	TArray<FStudioContainerType> CurrentTypes;
+	CurrentTypes.Add(MakeServerType(TEXT("Hero")));
+
+	TMap<FString, TArray<FStudioPropertyDef>> CurrentProps;
+	TArray<FStudioPropertyDef>& HeroProps = CurrentProps.Add(TEXT("Hero"));
+	HeroProps.Add(MakeServerProp(TEXT("Hero"), TEXT("hp"), TEXT("int"), TEXT("100")));
+	HeroProps.Add(MakeServerProp(TEXT("Hero"), TEXT("HP"), TEXT("int"), TEXT("0")));
+
+	const FCrowdySchemaDelta Delta = FCrowdySchemaSync::DiffSchema(DesiredSchema, CurrentTypes, CurrentProps);
+
+	const bool bWarned = Delta.Warnings.ContainsByPredicate([](const FString& W)
+	{
+		return W.Contains(TEXT("differ only in case")) && W.Contains(TEXT("Hero.hp"), ESearchCase::CaseSensitive)
+			&& W.Contains(TEXT("Hero.HP"), ESearchCase::CaseSensitive);
+	});
+	TestTrue(TEXT("the case-only pair is disclosed by both names"), bWarned);
+	TestEqual(TEXT("the matching first property is compared, not the later HP"), Delta.PropUpserts.Num(), 0);
+
+	// The twin arriving first must not displace the property spelled exactly as the code declares it.
+	HeroProps.Swap(0, 1);
+	const FCrowdySchemaDelta Reversed = FCrowdySchemaSync::DiffSchema(DesiredSchema, CurrentTypes, CurrentProps);
+	TestEqual(TEXT("the exact spelling is compared even when its twin comes first"), Reversed.PropUpserts.Num(), 0);
+
+	return true;
+}
+
 // JsonValueEquals compares JSON-value texts semantically, so server formatting drift is not read as a change.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySchemaSyncJsonValueEqualsTest,
 	"CrowdySDK.GameModel.JsonValueEqualsSemantics", CrowdySchemaSyncTestFlags)

@@ -109,6 +109,9 @@ struct FCrowdyInvokeResult
 
 	// When the attempt that produced this result was sent, in the Game Model subsystem's local send order; 0 if unknown.
 	uint64 DispatchSequence = 0;
+
+	// How many times the Game Model subsystem sent this invoke, first send included: 1 on a busy refusal means it was never retried; 0 if never sent or not counted.
+	int32 Attempts = 0;
 };
 
 /**

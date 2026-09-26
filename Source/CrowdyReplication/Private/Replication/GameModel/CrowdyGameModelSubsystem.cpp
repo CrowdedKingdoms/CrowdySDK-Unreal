@@ -99,6 +99,7 @@ namespace
 	{
 		double SelfEchoExpiry = 0.0;
 		bool bAnswered = false;
+		bool bSent = false;
 	};
 
 	// Broadcast each captured attribute change once, after the caller has fully updated the cache (and fired any
@@ -978,6 +979,7 @@ void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRe
 	if (!ResolveApiContext(Endpoint, Token, AppId))
 	{
 		FCrowdyInvokeResult Failed;
+		Failed.Attempts = AttemptIndex;
 		Failed.ErrorMessage = TEXT("Game Model API context unavailable (endpoint or token missing)");
 		SetLastModelError(Failed.ErrorMessage);
 		if (OnDone)
@@ -1000,6 +1002,7 @@ void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRe
 	if (!Client)
 	{
 		FCrowdyInvokeResult Failed;
+		Failed.Attempts = AttemptIndex;
 		Failed.ErrorMessage = TEXT("Game Model API client unavailable");
 		SetLastModelError(Failed.ErrorMessage);
 		if (OnDone)
@@ -1058,6 +1061,8 @@ void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRe
 			Mapped.bRetryable = Result.bRetryable;
 			Mapped.RetryAfterMs = Result.RetryAfterMs;
 			Mapped.DispatchSequence = Dispatched;
+			// An inline answer means the request never left, so it does not count as a send.
+			Mapped.Attempts = AttemptIndex + (Attempt->bSent ? 1 : 0);
 			Mapped.Mutations.Reserve(Result.Mutations.Num());
 			for (FCrowdyCppMutationApplied& M : Result.Mutations)
 			{
@@ -1111,6 +1116,7 @@ void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRe
 	{
 		return;
 	}
+	Attempt->bSent = true;
 	// Marked only once the attempt is out; its response and any echo both reach the game thread later than this.
 	if (Guard.bMarkSelfEcho)
 	{
@@ -2371,13 +2377,20 @@ void UCrowdyGameModelSubsystem::ApplyLandedStates(const TArray<TPair<FString, FG
 	for (int32 Index = 0; Index < Targets.Num(); ++Index)
 	{
 		const TPair<FString, FGuid>& Target = Targets[Index];
-		if (Index == 0 || Targets[Index - 1].Key != Target.Key)
+		const bool bFirstForContainer = Index == 0 || Targets[Index - 1].Key != Target.Key;
+		if (bFirstForContainer)
 		{
 			Landed = EndContainerPull(Target.Key);
 		}
 		const TSharedPtr<FJsonObject>* State = bOk ? States.Find(Target.Key) : nullptr;
-		UObject* Participant = State && State->IsValid() ? ResolveEntityParticipant(Target.Value) : nullptr;
-		if (!Participant || !ApplyStateToContainer(Target.Value, Participant, *State, Landed.KeysWrittenSince.Find(Target.Value)))
+		const bool bHasState = State && State->IsValid();
+		const TSet<FName>* KeysToKeep = Landed.KeysWrittenSince.Find(Target.Value);
+		UObject* Participant = bHasState ? ResolveEntityParticipant(Target.Value) : nullptr;
+		const bool bEntityKeptDiffering = Participant && ApplyStateToContainer(Target.Value, Participant, *State, KeysToKeep);
+		// A bound row can also be watched by id, and its by-id readers are served from this same pull.
+		const bool bWatchedKeptDiffering = bFirstForContainer && bHasState && WatchedDataContainers.Contains(Target.Key)
+			&& ApplyWatchedBoundState(Target.Key, *State, KeysToKeep, Landed.KeysWrittenSince.Find(FGuid()));
+		if (!bWatchedKeptDiffering && !bEntityKeptDiffering)
 		{
 			continue;
 		}
@@ -2385,6 +2398,19 @@ void UCrowdyGameModelSubsystem::ApplyLandedStates(const TArray<TPair<FString, FG
 		NetStats.FollowUpPulls += PendingRefreshPulls.Contains(Target.Key) ? 0 : 1;
 		EnqueueRefreshPull(Target.Key, Target.Value);
 	}
+}
+
+bool UCrowdyGameModelSubsystem::ApplyWatchedBoundState(const FString& ContainerId, const TSharedPtr<FJsonObject>& NewState,
+	const TSet<FName>* EntityKeys, const TSet<FName>* ByIdKeys)
+{
+	// A write to this row may have landed in either cache while the pull was out, so both keep-sets guard it.
+	if (!EntityKeys || !ByIdKeys)
+	{
+		return ApplyDataContainerState(ContainerId, NewState, EntityKeys ? EntityKeys : ByIdKeys);
+	}
+	TSet<FName> Kept = *EntityKeys;
+	Kept.Append(*ByIdKeys);
+	return ApplyDataContainerState(ContainerId, NewState, &Kept);
 }
 
 struct UCrowdyGameModelSubsystem::FCrowdyContainerListRun
@@ -4181,7 +4207,8 @@ void UCrowdyGameModelSubsystem::HandleModelChangedByContainer(const FString& Con
 		return;
 	}
 	// Each client may bind its OWN entity to a shared container, so resolve the LOCAL entity bound to this
-	// container and re-pull that. A container we do not have bound is not ours to update.
+	// container and re-pull that. A container we do not have bound is not ours to update. That pull also refreshes
+	// the by-id cache when the row is watched too.
 	const FGuid BoundNetID = FindNetIDForContainer(ContainerId);
 	if (BoundNetID.IsValid())
 	{

@@ -1192,6 +1192,20 @@ FCrowdySchemaDelta FCrowdySchemaSync::DiffSchema(
 			CurPropByKey.Reserve(CurProps->Num());
 			for (const FStudioPropertyDef& P : *CurProps)
 			{
+				// FString keys fold case, so a server pair like hp / HP would otherwise collapse here in silence.
+				if (const FStudioPropertyDef** Existing = CurPropByKey.Find(P.Key))
+				{
+					Delta.Warnings.Add(FString::Printf(
+						TEXT("Server properties '%s.%s' and '%s.%s' differ only in case; clients read them as one key and the last one parsed wins. Rename or delete one on the Models tab."),
+						*D.TypeName, *(*Existing)->Key, *D.TypeName, *P.Key));
+					// The diff compares against the twin spelled exactly as the code declares it, when there is one.
+					const bool bExactDesired = D.Props.ContainsByPredicate([&P](const FCrowdyDesiredPropertyDef& Want)
+					{
+						return Want.Key.Equals(P.Key, ESearchCase::CaseSensitive);
+					});
+					*Existing = bExactDesired ? &P : *Existing;
+					continue;
+				}
 				CurPropByKey.Add(P.Key, &P);
 			}
 		}

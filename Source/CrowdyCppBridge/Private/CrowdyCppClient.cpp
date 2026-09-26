@@ -1853,6 +1853,7 @@ TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::Make(const FCrowdyCppClientConfig
 	return Wrapper;
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
 TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::MakeForTest(const FString& CannedResponseBody, int32 HttpStatus,
 	const FCrowdyCppClientConfig& InConfig)
 {
@@ -1952,6 +1953,7 @@ void FCrowdyCppClient::SetTestOnRequest(TFunction<void(const FString& Url)> Hook
 		Hook(Utf8ToFString(Url));
 	};
 }
+#endif
 
 void FCrowdyCppClient::SetGameToken(const FString& Token)
 {
@@ -3318,6 +3320,7 @@ int32 FCrowdyCppClient::NumActiveSubscriptions() const
 	return Active;
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
 TArray<FString> FCrowdyCppClient::TakeTestWebSocketSentFrames()
 {
 	TArray<FString> Frames;
@@ -3368,3 +3371,4 @@ int32 FCrowdyCppClient::NumTestWebSocketConnections() const
 {
 	return Impl && Impl->TestWebSocket ? static_cast<int32>(Impl->TestWebSocket->ConnectionsCreated()) : 0;
 }
+#endif
