@@ -33,6 +33,7 @@ namespace CrowdyCppTransport
 	 */
 	void FlushPendingWebSocketReleases();
 
+#if WITH_DEV_AUTOMATION_TESTS
 	/**
 	 * The server side of a connection, for tests. It replaces the socket entirely: nothing is created, no bytes
 	 * leave the process, and the test plays the server by hand. That is what makes the graphql-transport-ws
@@ -87,4 +88,5 @@ namespace CrowdyCppTransport
 	// Transport that hands every connection to Server instead of opening a socket.
 	std::shared_ptr<crowdy::graphql::IWebSocketTransport> MakeScriptedWebSocketTransport(
 		std::shared_ptr<FScriptedWebSocketServer> Server);
+#endif
 }

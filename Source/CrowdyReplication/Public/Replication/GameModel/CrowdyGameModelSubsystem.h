@@ -35,7 +35,7 @@ struct FCrowdyCppJsonResult;
 
 // Fires on the game thread when a free/data container's cached state changes after a pull, the OnRep analogue
 // for actorless containers (inventories, quests). A UI binds this and filters by ContainerId. Actor-bound
-// containers fire their actor's CrowdyOnRep instead; this delegate is only for containers with no entity.
+// containers fire their actor's CrowdyOnRep, and this as well only while the same row is also watched by id.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyDataContainerChanged, const FString&, ContainerId);
 
 /**
@@ -1024,6 +1024,10 @@ public:
 #endif
 
 private:
+	// The by-id apply for a row that is also bound to an entity, keeping keys written through either cache.
+	bool ApplyWatchedBoundState(const FString& ContainerId, const TSharedPtr<FJsonObject>& NewState,
+		const TSet<FName>* EntityKeys, const TSet<FName>* ByIdKeys);
+
 	// Resolves the Game API endpoint + bearer token + app id from settings + the game session. False (with a
 	// clear LogCrowdyGameModel error) when any is missing. Never logs the token.
 	bool ResolveApiContext(FString& OutEndpoint, FString& OutToken, int64& OutAppId) const;

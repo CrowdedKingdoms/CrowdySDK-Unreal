@@ -470,6 +470,7 @@ namespace
 		}
 	};
 
+#if WITH_DEV_AUTOMATION_TESTS
 	class FScriptedWebSocketConnection final : public IWebSocketConnection
 	{
 	public:
@@ -528,10 +529,12 @@ namespace
 	private:
 		std::shared_ptr<CrowdyCppTransport::FScriptedWebSocketServer> Server;
 	};
+#endif
 }
 
 namespace CrowdyCppTransport
 {
+#if WITH_DEV_AUTOMATION_TESTS
 	WebSocketEventCallback FScriptedWebSocketServer::LiveCallback() const
 	{
 		std::lock_guard<std::mutex> Lock(Mutex);
@@ -646,6 +649,7 @@ namespace CrowdyCppTransport
 		// reach a closed socket.
 		Callback = nullptr;
 	}
+#endif
 
 	void FlushPendingWebSocketReleases()
 	{
@@ -667,8 +671,10 @@ namespace CrowdyCppTransport
 #endif
 	}
 
+#if WITH_DEV_AUTOMATION_TESTS
 	std::shared_ptr<IWebSocketTransport> MakeScriptedWebSocketTransport(std::shared_ptr<FScriptedWebSocketServer> Server)
 	{
 		return std::make_shared<FScriptedWebSocketTransport>(std::move(Server));
 	}
+#endif
 }

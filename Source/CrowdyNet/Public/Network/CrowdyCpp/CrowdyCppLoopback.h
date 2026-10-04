@@ -136,6 +136,7 @@ public:
 	/** Zero the counters, leaving the queue and the armed ids alone. */
 	void ResetCounters();
 
+#if WITH_DEV_AUTOMATION_TESTS
 	/**
 	 * Drive the delay from a value a test sets rather than from the platform clock.
 	 *
@@ -145,6 +146,7 @@ public:
 	 */
 	void SetTimeForTests(double InSeconds);
 	void ClearTimeForTests();
+#endif
 
 private:
 	double NowSeconds() const;
