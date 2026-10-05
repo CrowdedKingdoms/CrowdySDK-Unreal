@@ -15,7 +15,7 @@
 #include "crowdy/graphql/json.hpp"
 #include "crowdy/graphql/websocket.hpp"
 
-/// client.exec() — ck-exec (dev-tier preview): a player's connection to the
+/// client.exec() — ck-exec: a player's connection to the
 /// execution host that runs an app's hubs (stateful, one instance per key) and
 /// spokes (stateless, replicated), and a developer's deploys.
 ///
@@ -329,7 +329,7 @@ class ExecAPI : public DomainBase {
   void deployAsync(std::string appId, std::string root, const std::vector<ExecNodeType>& types,
                    std::string buildId, graphql::GraphQLCallback done) const;
 
-  // ---- builds (dev-tier preview) ----
+  // ---- builds ----
 
   /// The starter packs (`execStarters`), which replace the compute templates:
   /// `{ manifestJson, starters: [{ crate, nodeType, description, files: [{ path, content }] }] }`.
@@ -356,7 +356,7 @@ class ExecAPI : public DomainBase {
   graphql::Json waitForBuild(std::string appId, std::string buildId, int intervalMs = 2000,
                              int timeoutMs = 600000) const;
 
-  // ---- mods: players' code on grids they own (dev-tier preview) ----
+  // ---- mods: players' code on grids they own ----
   //
   // A mod is the node type `mod:<name>` (`execModType`) keyed by its grid's id; players call it
   // through an `ExecConnection` like any node. Deploying, installing, publishing and deleting
@@ -430,7 +430,7 @@ class ExecAPI : public DomainBase {
   void modSetSwitchAsync(std::string appId, gen::ExecModScope scope, bool off, std::string target, std::string reason,
                          graphql::GraphQLCallback done) const;
 
-  // ---- CLIENT halves: a mod's browser half (dev-tier preview) ----
+  // ---- CLIENT halves: a mod's browser half ----
   //
   // A mod may carry a CLIENT half: WASM built from a `crowdy-client-sdk` crate, which its grid
   // serves to visitors who consent to its capability hash or trust its author. The SDK runs no
@@ -515,7 +515,7 @@ class ExecAPI : public DomainBase {
   void modClientArtifactBytesAsync(std::string appId, std::string modId,
                                    ExecModClientArtifactBytesCallback done) const;
 
-  // ---- operations (dev-tier preview) ----
+  // ---- operations ----
 
   /// A host and a developer connect token for `appId` (`execConnectAsDeveloper`),
   /// blocking. The session's calls arrive as `Caller::Developer` with your user id and
