@@ -6,6 +6,9 @@
 #include "Templates/Function.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class UCrowdyEffect;
 
 /**
@@ -25,6 +28,9 @@ enum class ECrowdyEffectSyncStatus : uint8
 
 	// The effect's function has never been synced: it does not exist on the server yet.
 	NotOnServer,
+
+	// Game Models are deprecated: nothing is read or synced, and asking again gives the same answer.
+	Deprecated,
 };
 
 /**
@@ -102,3 +108,5 @@ namespace CrowdyStudioSyncService
 			Warnings.Num(), *FString::Join(Warnings, TEXT(" ")));
 	}
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

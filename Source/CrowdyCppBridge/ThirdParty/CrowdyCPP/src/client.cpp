@@ -7,7 +7,6 @@
 #include "crowdy/studio/integration.hpp"
 #endif
 #include "crowdy/domains/admin.hpp"
-#include "crowdy/domains/operator.hpp"
 #include "crowdy/graphql/dispatcher.hpp"
 #include "crowdy/replication/connection.hpp"
 
@@ -450,7 +449,6 @@ CrowdyClient::CrowdyClient(ClientConfig config) : config_(std::move(config)) {
   users_ = std::make_unique<domains::UsersAPI>(gql_);
   portal_ = std::make_unique<domains::PortalAPI>(gql_, auth_, *crypto_);
   platform_ = std::make_unique<domains::PlatformAPI>(gql_);
-  operatorApi_ = std::make_unique<domains::OperatorAPI>(gql_);
 
   serverStatus_ = std::make_unique<domains::ServerStatusAPI>(gql_);
   chunks_ = std::make_unique<domains::ChunksAPI>(gql_);
@@ -462,14 +460,10 @@ CrowdyClient::CrowdyClient(ClientConfig config) : config_(std::move(config)) {
   teleport_ = std::make_unique<domains::TeleportAPI>(gql_);
   teams_ = std::make_unique<domains::TeamsAPI>(gql_);
   channels_ = std::make_unique<domains::ChannelsAPI>(gql_);
-  gameModel_ = std::make_unique<domains::GameModelAPI>(gql_, subscriptions_);
-#ifndef CROWDY_NO_EXCEPTIONS
-  compute_ = std::make_unique<domains::ComputeAPI>(gql_);
-#endif
-  playerCompute_ = std::make_unique<domains::PlayerComputeAPI>(gql_);
+  grids_ = std::make_unique<domains::GridsAPI>(gql_);
+  exec_ = std::make_unique<domains::ExecAPI>(gql_, webSocketTransport_);
   playerWallet_ = std::make_unique<domains::PlayerWalletAPI>(gql_);
   marketplace_ = std::make_unique<domains::MarketplaceAPI>(gql_);
-  playerModel_ = std::make_unique<domains::PlayerModelAPI>(gql_);
   gameApps_ = std::make_unique<domains::GameAppsAPI>(gql_);
 #ifndef CROWDY_NO_EXCEPTIONS
   crowdyStudio_ = std::make_unique<domains::CrowdyStudioAPI>(gql_);
@@ -670,14 +664,10 @@ CrowdyClient& CrowdyClient::operator=(CrowdyClient&& other) noexcept {
   teleport_ = std::move(other.teleport_);
   teams_ = std::move(other.teams_);
   channels_ = std::move(other.channels_);
-  gameModel_ = std::move(other.gameModel_);
-#ifndef CROWDY_NO_EXCEPTIONS
-  compute_ = std::move(other.compute_);
-#endif
-  playerCompute_ = std::move(other.playerCompute_);
+  grids_ = std::move(other.grids_);
+  exec_ = std::move(other.exec_);
   playerWallet_ = std::move(other.playerWallet_);
   marketplace_ = std::move(other.marketplace_);
-  playerModel_ = std::move(other.playerModel_);
   gameApps_ = std::move(other.gameApps_);
 #ifndef CROWDY_NO_EXCEPTIONS
   crowdyStudio_ = std::move(other.crowdyStudio_);
@@ -686,7 +676,6 @@ CrowdyClient& CrowdyClient::operator=(CrowdyClient&& other) noexcept {
   platform_ = std::move(other.platform_);
   crowdyStudioAgent_ = std::move(other.crowdyStudioAgent_);
   admin_ = std::move(other.admin_);
-  operatorApi_ = std::move(other.operatorApi_);
   replication_ = std::move(other.replication_);
   installSelfHandlers();
   return *this;
@@ -726,11 +715,14 @@ CrowdyClient::createCrowdyStudioIntegration(
 
   auto projectApi =
       std::make_shared<domains::CrowdyStudioAPI>(gql_);
-  auto playerCompute =
-      std::make_shared<domains::PlayerComputeAPI>(gql_);
+  auto exec =
+      std::make_shared<domains::ExecAPI>(gql_, webSocketTransport_);
   auto runtime =
-      std::make_shared<studio::CrowdyStudioPlayerComputeRuntime>(
-          playerCompute, options.clientRuntime);
+      std::make_shared<studio::CrowdyStudioModRuntime>(
+          exec, options.clientRuntime,
+          [dispatcher = dispatcher_] {
+            if (dispatcher) dispatcher->drain();
+          });
   if (options.observePlayerWallet && !options.walletProvider) {
     auto playerWallet =
         std::make_shared<domains::PlayerWalletAPI>(gql_);

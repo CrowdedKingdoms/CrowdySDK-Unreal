@@ -7,6 +7,7 @@
 #include "Templates/Function.h"
 
 class SDockTab;
+class SWidget;
 class FSpawnTabArgs;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogCrowdyStudio, Log, All);
@@ -67,6 +68,20 @@ namespace CrowdyStudioRegistry
 	// above is only testable by removing the hook, and a test that left the editor module's hook uninstalled would
 	// quietly disable unopened-container discovery for everything that ran after it.
 	CROWDYSTUDIO_API TFunction<void(TFunction<void()>)> GetLoadContainerAssetsHook();
+}
+
+namespace CrowdyStudioExtraPages
+{
+	// Adds a page to the console's navigation, after its own pages under a group of its own, for an editor module
+	// the console cannot depend on. Icon is a console icon name ("server", "apps", ...). The console reads the pages
+	// when its window opens and calls MakeWidget once per window; registering an Id again replaces its page. Pages
+	// need a sign-in, like the console's authoring pages.
+	CROWDYSTUDIO_API void RegisterPage(FName Id, const FText& Group, const FText& Label, const TCHAR* Icon,
+		TFunction<TSharedRef<SWidget>()> MakeWidget);
+	CROWDYSTUDIO_API void UnregisterPage(FName Id);
+
+	// Opens the console's tab on that page; while nobody is signed in it opens on Sign In and shows the page after.
+	CROWDYSTUDIO_API void OpenPage(FName Id);
 }
 
 /**

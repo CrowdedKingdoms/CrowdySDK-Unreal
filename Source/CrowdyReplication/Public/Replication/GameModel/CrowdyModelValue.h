@@ -14,18 +14,18 @@
  * value instead of parsing raw JSON by hand.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyModelValue : public UBlueprintFunctionLibrary
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyModelValue : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
 public:
 	// The value as an integer when it is a JSON number (truncated toward zero, matching the collection getters);
 	// Default when it is empty, malformed, or any other JSON type.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "As Integer")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "As Integer", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static int32 AsInt(const FString& ValueJson, int32 Default = 0);
 
 	// The value as a float when it is a JSON number; Default otherwise.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "As Float")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "As Float", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static float AsFloat(const FString& ValueJson, float Default = 0.0f);
 
 	// The value as a double when it is a JSON number; Default otherwise. Not a Blueprint node (AsFloat is the
@@ -33,10 +33,10 @@ public:
 	static double AsDouble(const FString& ValueJson, double Default = 0.0);
 
 	// The value as a bool when it is a JSON boolean; bDefault otherwise (a numeric 0/1 is not treated as a bool).
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "As Boolean")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "As Boolean", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static bool AsBool(const FString& ValueJson, bool bDefault = false);
 
 	// The string content when the value is a JSON string; Default otherwise (a number or bool is not a string).
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "As String")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "As String", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static FString AsString(const FString& ValueJson, const FString& Default = TEXT(""));
 };

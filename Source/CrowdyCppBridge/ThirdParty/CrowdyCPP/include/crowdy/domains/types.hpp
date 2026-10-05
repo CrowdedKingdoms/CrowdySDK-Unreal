@@ -147,40 +147,6 @@ struct AuthResponse {
   }
 };
 
-/// Decoded CLIENT artifact ready for a native sandbox/runtime. GraphQL BigInt
-/// fuel remains a decimal string so native engines can choose their own width.
-struct ClientArtifactBytes {
-  std::vector<std::uint8_t> bytes;
-  std::string artifactHash;
-  std::string fuelPerDispatch;
-  std::optional<std::string> contractJson;
-  std::string versionId;
-};
-
-/// Decode the common playerCompute/marketplace artifact response shape.
-inline std::optional<ClientArtifactBytes> decodeClientArtifactBytes(
-    const graphql::Json& artifact) {
-  if (!artifact.isObject() || !artifact["artifactBase64"].isString() ||
-      !artifact["artifactHash"].isString() ||
-      !artifact["clientFuelPerDispatch"].isString() ||
-      !artifact["versionId"].isString()) {
-    return std::nullopt;
-  }
-  auto bytes = core::base64Decode(artifact["artifactBase64"].asStringView());
-  if (!bytes) return std::nullopt;
-
-  ClientArtifactBytes decoded;
-  decoded.bytes = std::move(*bytes);
-  decoded.artifactHash = artifact["artifactHash"].asString();
-  decoded.fuelPerDispatch =
-      artifact["clientFuelPerDispatch"].asString();
-  if (artifact["contractJson"].isString()) {
-    decoded.contractJson = artifact["contractJson"].asString();
-  }
-  decoded.versionId = artifact["versionId"].asString();
-  return decoded;
-}
-
 /// Result of serverStatus.serverWithLeastClients — the Buddy-server
 /// assignment for native UDP (calling it also installs the UDP session
 /// server-side).

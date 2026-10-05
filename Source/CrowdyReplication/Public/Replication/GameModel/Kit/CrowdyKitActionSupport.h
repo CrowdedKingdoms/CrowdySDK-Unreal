@@ -6,6 +6,9 @@
 #include "Engine/World.h"
 #include "Replication/GameModel/CrowdyGameModelSubsystem.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 // Shared helpers for the per-genre kit node libraries (Combat, Leaderboards, Worldsim). These live in one header
 // rather than as file-local functions because CrowdyReplication builds with UE unity batching: two anonymous-namespace
 // helpers of the same name in co-batched translation units would be a redefinition. Keeping them inline here gives one
@@ -81,3 +84,5 @@ namespace CrowdyKitActionSupport
 		return Out;
 	}
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

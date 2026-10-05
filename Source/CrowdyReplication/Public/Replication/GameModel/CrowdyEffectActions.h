@@ -6,6 +6,9 @@
 #include "Kismet/BlueprintAsyncActionBase.h"
 #include "CrowdyEffectActions.generated.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class UCrowdyEffect;
 
 // Succeeded fires only on a COMMITTED effect apply (reached the server AND passed its rules). A transport
@@ -32,7 +35,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyApplyEffectOutcome, bool, 
  * all of them complete. Nothing about the pins changes, only when they fire.
  */
 UCLASS(meta = (HasDedicatedAsyncNode))
-class CROWDYREPLICATION_API UCrowdyApplyEffectAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyApplyEffectAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -62,3 +65,5 @@ private:
 	float Level = 1.0f;
 	FString SessionId;
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

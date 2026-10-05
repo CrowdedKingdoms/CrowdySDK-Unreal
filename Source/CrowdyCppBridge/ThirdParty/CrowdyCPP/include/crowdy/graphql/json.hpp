@@ -125,6 +125,16 @@ class Json {
   /// Serialize this value back to a JSON string.
   std::string dump() const;
 
+  /// This value as MessagePack, the payload format of ck-exec calls: integers
+  /// keep their exact width and sign, objects become maps with string keys. A
+  /// null Json encodes as nil.
+  std::string toMsgpack() const;
+  /// Parse one MessagePack value into a document. Binary becomes a base64
+  /// string and extension types null; nesting deeper than 64 is refused.
+  /// Returns a null Json (ok() == false) on malformed, truncated or trailing
+  /// input.
+  static Json fromMsgpack(std::string_view bytes);
+
   /// Iterate object members / array elements.
   template <typename Fn>
   void forEachMember(Fn&& fn) const {

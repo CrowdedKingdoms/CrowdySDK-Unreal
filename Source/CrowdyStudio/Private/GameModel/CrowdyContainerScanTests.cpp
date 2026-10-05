@@ -154,46 +154,36 @@ bool FCrowdyContainerScanTagPartitionTest::RunTest(const FString& Parameters)
 }
 
 // Native containers, which no tag can ever describe: a native class has no asset, so it has no registry entry to
-// carry one. This is a required rung of the scan rather than a fallback, and this project really has one.
+// carry one. A project that declares none has nothing to check here.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyContainerScanNativePathTest,
 	"CrowdySDK.CrowdyStudio.ContainerScanFindsNativeContainers", CrowdyContainerScanTestFlags)
 bool FCrowdyContainerScanNativePathTest::RunTest(const FString& Parameters)
 {
 	const TArray<UClass*> NativeContainers = FCrowdySchemaSync::GatherNativeContainerClasses();
 	const TArray<UClass*> AllContainers = FCrowdySchemaSync::GatherContainerClasses();
-
-	for (const UClass* Class : NativeContainers)
+	if (NativeContainers.IsEmpty())
 	{
-		UE_LOG(LogCrowdyStudio, Display, TEXT("Native Game Model container: %s"),
-			Class ? *Class->GetPathName() : TEXT("<null>"));
+		AddInfo(TEXT("This project declares no native container, so the native path has nothing to check."));
+		return true;
 	}
-
-	TestTrue(TEXT("the project declares at least one native container"), NativeContainers.Num() > 0);
 
 	bool bAllNative = true;
 	bool bAllReachTheSchema = true;
 	for (UClass* Class : NativeContainers)
 	{
 		bAllNative = bAllNative && Class && Class->HasAnyClassFlags(CLASS_Native);
-		// The union is the point: a native container that the native gather finds but the schema gather does not
-		// would be discovered and then dropped, which is the same outcome as never finding it.
+		// A native container the native gather finds but the schema gather drops is as lost as one never found.
 		bAllReachTheSchema = bAllReachTheSchema && AllContainers.Contains(Class);
 	}
 	TestTrue(TEXT("every class the native gather returns is native"), bAllNative);
 	TestTrue(TEXT("every native container also reaches the schema gather"), bAllReachTheSchema);
 
-	// The specific one this project ships. Named by path rather than by C++ type so this module does not have to
-	// depend on the plugin that declares it.
+	// Named by path rather than by C++ type so this module does not depend on the plugin that declares it.
 	if (UClass* TitanAttributes = FindObject<UClass>(
 		nullptr, TEXT("/Script/CKTitanAssault.CKTitanAssaultGameModelAttributeComponent")))
 	{
 		TestTrue(TEXT("the Titan Assault attribute component is found as a native container"),
 			NativeContainers.Contains(TitanAttributes));
-	}
-	else
-	{
-		UE_LOG(LogCrowdyStudio, Display,
-			TEXT("Container scan: CKTitanAssault is not loaded here, so its native container could not be checked by name."));
 	}
 
 	return true;

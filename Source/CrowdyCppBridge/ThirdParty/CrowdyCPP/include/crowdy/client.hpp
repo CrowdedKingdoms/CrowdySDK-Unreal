@@ -11,13 +11,11 @@
 #include "crowdy/domains/discovery.hpp"
 #include "crowdy/domains/realtime_control.hpp"
 #include "crowdy/domains/game_apps.hpp"
-#include "crowdy/domains/game_model.hpp"
 #include "crowdy/domains/crowdy_studio_agent.hpp"
-#include "crowdy/domains/player_compute.hpp"
 #include "crowdy/domains/player_wallet.hpp"
 #include "crowdy/domains/marketplace.hpp"
-#include "crowdy/domains/player_model.hpp"
 #include "crowdy/domains/groups.hpp"
+#include "crowdy/domains/grids.hpp"
 #include "crowdy/domains/portal.hpp"
 #include "crowdy/domains/server_status.hpp"
 #include "crowdy/domains/users.hpp"
@@ -27,9 +25,9 @@
 #include "crowdy/graphql/rediscover.hpp"
 #include "crowdy/replication/types.hpp"
 #include "crowdy/graphql/subscription_client.hpp"
+#include "crowdy/domains/exec.hpp"
 
 #ifndef CROWDY_NO_EXCEPTIONS
-#include "crowdy/domains/compute.hpp"
 #include "crowdy/domains/crowdy_studio.hpp"
 #include "crowdy/domains/crowdy_studio_github.hpp"
 #endif
@@ -38,7 +36,6 @@ namespace crowdy {
 
 namespace domains {
 class AdminAPI;
-class OperatorAPI;
 }  // namespace domains
 namespace studio {
 #ifndef CROWDY_NO_EXCEPTIONS
@@ -218,14 +215,14 @@ class CrowdyClient {
   domains::TeleportAPI& teleport() { return *teleport_; }
   domains::TeamsAPI& teams() { return *teams_; }
   domains::ChannelsAPI& channels() { return *channels_; }
-  domains::GameModelAPI& gameModel() { return *gameModel_; }
-#ifndef CROWDY_NO_EXCEPTIONS
-  domains::ComputeAPI& compute() { return *compute_; }
-#endif
-  domains::PlayerComputeAPI& playerCompute() { return *playerCompute_; }
+  /// Grid tokens and grid channels (DN-10).
+  domains::GridsAPI& grids() { return *grids_; }
+  /// ck-exec (dev-tier preview): an app's server code as hubs and spokes, and
+  /// players' mods on grids they own.
+  domains::ExecAPI& exec() { return *exec_; }
   domains::PlayerWalletAPI& playerWallet() { return *playerWallet_; }
+  /// Grid claims and the app's player-code administration.
   domains::MarketplaceAPI& marketplace() { return *marketplace_; }
-  domains::PlayerModelAPI& playerModel() { return *playerModel_; }
   domains::GameAppsAPI& gameApps() { return *gameApps_; }
 #ifndef CROWDY_NO_EXCEPTIONS
   /// Caller-owned, app-scoped Crowdy Studio projects and reusable files.
@@ -239,8 +236,8 @@ class CrowdyClient {
   }
 #endif
   domains::PlatformAPI& platform() { return *platform_; }
-  /// Agentic Crowdy Studio policy, sanitized usage, provider-data consent and
-  /// operator controls. The agent itself runs in the player's browser
+  /// Agentic Crowdy Studio policy, sanitized usage and provider-data consent.
+  /// The agent itself runs in the player's browser
   /// (CrowdyJS `dsh`) against the metered `/v1/model` endpoint; this SDK does
   /// not drive it.
   domains::CrowdyStudioAgentAPI& crowdyStudioAgent() {
@@ -288,8 +285,6 @@ class CrowdyClient {
   /// Studio-admin surface (orgs, apps, billing, usage, ...). Drive
   /// with an org/admin token from a trusted context.
   domains::AdminAPI& admin() { return *admin_; }
-  /// Operator control-plane surface (requires is_operator).
-  domains::OperatorAPI& operator_() { return *operatorApi_; }
 
   // ----- Low-level escape hatches ------------------------------------------------
   /// Raw GraphQL against the API endpoint.
@@ -386,14 +381,10 @@ class CrowdyClient {
   std::unique_ptr<domains::TeleportAPI> teleport_;
   std::unique_ptr<domains::TeamsAPI> teams_;
   std::unique_ptr<domains::ChannelsAPI> channels_;
-  std::unique_ptr<domains::GameModelAPI> gameModel_;
-#ifndef CROWDY_NO_EXCEPTIONS
-  std::unique_ptr<domains::ComputeAPI> compute_;
-#endif
-  std::unique_ptr<domains::PlayerComputeAPI> playerCompute_;
+  std::unique_ptr<domains::GridsAPI> grids_;
+  std::unique_ptr<domains::ExecAPI> exec_;
   std::unique_ptr<domains::PlayerWalletAPI> playerWallet_;
   std::unique_ptr<domains::MarketplaceAPI> marketplace_;
-  std::unique_ptr<domains::PlayerModelAPI> playerModel_;
   std::unique_ptr<domains::GameAppsAPI> gameApps_;
 #ifndef CROWDY_NO_EXCEPTIONS
   std::unique_ptr<domains::CrowdyStudioAPI> crowdyStudio_;
@@ -402,7 +393,6 @@ class CrowdyClient {
   std::unique_ptr<domains::PlatformAPI> platform_;
   std::unique_ptr<domains::CrowdyStudioAgentAPI> crowdyStudioAgent_;
   std::unique_ptr<domains::AdminAPI> admin_;
-  std::unique_ptr<domains::OperatorAPI> operatorApi_;
   std::unique_ptr<replication::ReplicationClient> replication_;
 };
 

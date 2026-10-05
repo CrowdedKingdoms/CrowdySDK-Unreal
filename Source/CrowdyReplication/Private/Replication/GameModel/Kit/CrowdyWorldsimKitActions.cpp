@@ -34,6 +34,13 @@ namespace
 		return FString();
 	}
 
+	// The subsystem's last recorded error when it has one, else Fallback.
+	FString CrowdyWorldsimFailureText(const TWeakObjectPtr<UCrowdyGameModelSubsystem>& Model, const TCHAR* Fallback)
+	{
+		const FString LastError = Model.IsValid() ? Model->GetLastModelError() : FString();
+		return LastError.IsEmpty() ? FString(Fallback) : LastError;
+	}
+
 	// Reads a float coordinate out of a pulled property map: a non-finite (forged NaN/Inf) value is coerced to 0
 	// so a downstream position math never sees a garbage float. Missing keys leave the caller's default.
 	float CrowdyWorldsimReadCoordinate(const TSharedPtr<FJsonObject>& State, const TCHAR* Key, float Fallback)
@@ -115,7 +122,7 @@ void UCrowdyGetWorldStateAction::Activate()
 			if (!bOk)
 			{
 				Action->Failed.Broadcast(FCrowdyWorldState(),
-					TEXT("failed to list the WorldState from the server"));
+					CrowdyWorldsimFailureText(WeakModel, TEXT("failed to list the WorldState from the server")));
 				Action->SetReadyToDestroy();
 				return;
 			}
@@ -239,7 +246,7 @@ void UCrowdyListResourceNodesAction::Activate()
 			if (!bOk)
 			{
 				Action->Failed.Broadcast(TArray<FCrowdyResourceNode>(),
-					TEXT("failed to list resource nodes from the server"));
+					CrowdyWorldsimFailureText(WeakModel, TEXT("failed to list resource nodes from the server")));
 				Action->SetReadyToDestroy();
 				return;
 			}
@@ -448,8 +455,8 @@ void UCrowdyPlantCropAction::Activate()
 			}
 			if (!bOk || NewContainerId.IsEmpty() || !Action->Model.IsValid())
 			{
-				Action->Failed.Broadcast(FString(),
-					TEXT("the server rejected the crop container create (check sign-in and app scope)"));
+				Action->Failed.Broadcast(FString(), CrowdyWorldsimFailureText(Action->Model,
+					TEXT("the server rejected the crop container create (check sign-in and app scope)")));
 				Action->SetReadyToDestroy();
 				return;
 			}
@@ -592,7 +599,8 @@ void UCrowdyListCropsAction::Activate()
 			}
 			if (!bOk)
 			{
-				Action->Failed.Broadcast(TArray<FCrowdyCrop>(), TEXT("failed to list crops from the server"));
+				Action->Failed.Broadcast(TArray<FCrowdyCrop>(),
+					CrowdyWorldsimFailureText(WeakModel, TEXT("failed to list crops from the server")));
 				Action->SetReadyToDestroy();
 				return;
 			}

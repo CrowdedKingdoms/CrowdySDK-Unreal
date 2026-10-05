@@ -5,6 +5,7 @@ public class CrowdyNodes : ModuleRules
     public CrowdyNodes(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+        CppCompileWarningSettings.DeprecationWarningLevel = WarningLevel.Off;
 
         PublicDependencyModuleNames.AddRange(
             new string[]

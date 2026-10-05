@@ -60,9 +60,8 @@ namespace CrowdyCppHostTestSupport
 	};
 
 	const FDomainProbe DomainProbes[] = {
-		{ECrowdyCppApiDomain::GameModel, TEXT("GameModelUpsertAutomation"), TEXT("GameModel"), false},
 		{ECrowdyCppApiDomain::Auth, TEXT("LogoutAllDevices"), TEXT("Auth"), true},
-		{ECrowdyCppApiDomain::Users, TEXT("UsersConnection"), TEXT("Users"), true},
+		{ECrowdyCppApiDomain::Users, TEXT("UpdateUserState"), TEXT("Users"), false},
 		{ECrowdyCppApiDomain::Apps, TEXT("App"), TEXT("Apps"), true},
 		{ECrowdyCppApiDomain::AppAccess, TEXT("AppAccessTiers"), TEXT("AppAccess"), true},
 		{ECrowdyCppApiDomain::GameApps, TEXT("GridOwnership"), TEXT("GameApps"), false},
@@ -234,11 +233,11 @@ bool FCrowdyCppRunOpWrongDomainTest::RunTest(const FString& Parameters)
 	// set must fail here rather than send a document the server would reject.
 	bool bCalled = false;
 	const FCrowdyCppJsonResult Result =
-		RunOpAndDrain(Client, ECrowdyCppApiDomain::Auth, TEXT("GameModelInvoke"), bCalled);
+		RunOpAndDrain(Client, ECrowdyCppApiDomain::Auth, TEXT("CreateTeam"), bCalled);
 
 	TestTrue(TEXT("completion fired"), bCalled);
 	TestFalse(TEXT("an operation the domain does not define is rejected"), Result.bTransportOk);
-	TestTrue(TEXT("the failure names the operation"), Result.ErrorMessage.Contains(TEXT("GameModelInvoke")));
+	TestTrue(TEXT("the failure names the operation"), Result.ErrorMessage.Contains(TEXT("CreateTeam")));
 
 	FString Url;
 	FString Authorization;
@@ -267,33 +266,33 @@ bool FCrowdyCppClosedClientTest::RunTest(const FString& Parameters)
 	// A latent Blueprint node whose pins never fire is indistinguishable from a hang.
 	bool bCalled = false;
 	const FCrowdyCppJsonResult OpResult =
-		RunOpAndDrain(Client, ECrowdyCppApiDomain::GameModel, TEXT("GameModelSession"), bCalled);
+		RunOpAndDrain(Client, ECrowdyCppApiDomain::Teams, TEXT("Teams"), bCalled);
 	TestTrue(TEXT("run op completion fired"), bCalled);
 	TestFalse(TEXT("run op failed"), OpResult.bTransportOk);
 
-	bool bReadCalled = false;
-	bool bReadOk = true;
-	Client->ReadContainerState(1, TEXT("c-1"),
-		[&bReadCalled, &bReadOk](FCrowdyCppContainerStateResult Result)
+	bool bProvidersCalled = false;
+	bool bProvidersOk = true;
+	Client->ListLoginProviders(
+		[&bProvidersCalled, &bProvidersOk](FCrowdyCppStringListResult Result)
 		{
-			bReadCalled = true;
-			bReadOk = Result.bOk;
+			bProvidersCalled = true;
+			bProvidersOk = Result.bOk;
 		});
 	Client->Poll();
-	TestTrue(TEXT("container read completion fired"), bReadCalled);
-	TestFalse(TEXT("container read failed"), bReadOk);
+	TestTrue(TEXT("auth op completion fired"), bProvidersCalled);
+	TestFalse(TEXT("auth op failed"), bProvidersOk);
 
-	bool bSeedCalled = false;
-	bool bSeedOk = true;
-	Client->SeedSchema(TEXT("{}"),
-		[&bSeedCalled, &bSeedOk](FCrowdyCppStudioOpResult Result)
+	bool bDiscoveryCalled = false;
+	bool bDiscoveryOk = true;
+	Client->ResolveAppEndpoints({ FString(TEXT("1")) },
+		[&bDiscoveryCalled, &bDiscoveryOk](FCrowdyCppAppDiscoveryResult Result)
 		{
-			bSeedCalled = true;
-			bSeedOk = Result.bOk;
+			bDiscoveryCalled = true;
+			bDiscoveryOk = Result.bOk;
 		});
 	Client->Poll();
-	TestTrue(TEXT("seed completion fired"), bSeedCalled);
-	TestFalse(TEXT("seed failed"), bSeedOk);
+	TestTrue(TEXT("discovery completion fired"), bDiscoveryCalled);
+	TestFalse(TEXT("discovery failed"), bDiscoveryOk);
 
 	FString Url;
 	FString Authorization;
@@ -327,11 +326,11 @@ bool FCrowdyCppAdminHostLifecycleTest::RunTest(const FString& Parameters)
 
 	bool bCalled = false;
 	bool bOk = true;
-	Client->SeedSchema(TEXT("{}"),
-		[&bCalled, &bOk](FCrowdyCppStudioOpResult Result)
+	Client->RunOp(ECrowdyCppApiDomain::Teams, TEXT("Teams"), MakeShared<FJsonObject>(),
+		[&bCalled, &bOk](FCrowdyCppJsonResult Result)
 		{
 			bCalled = true;
-			bOk = Result.bOk;
+			bOk = Result.bTransportOk;
 		});
 	TestTrue(TEXT("a call on the outlived client still completes"), bCalled);
 	TestFalse(TEXT("the host disposed its client on the way out"), bOk);

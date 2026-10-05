@@ -396,15 +396,6 @@ private:
 	                             const FString& InstigatorID, const FInstancedStruct& ActorStatePayload,
 	                             FCrowdyClassID ClassID);
 
-	/**
-	 * How this game addresses the API, from the developer settings.
-	 *
-	 * The fallback is the load-bearing part: the gameplay endpoint names one datacenter's instance and is empty
-	 * until an app has been resolved, whereas the shared origin is answered by every datacenter. Using it in that
-	 * gap is what lets a cold client ask anything at all, including where it should actually be talking.
-	 */
-	static FCrowdyCppClientConfig ResolveClientConfig();
-
 	UPROPERTY()
 	UCrowdyWorkerThreadsSubsystem* WorkerThreadsSubsystem;
 

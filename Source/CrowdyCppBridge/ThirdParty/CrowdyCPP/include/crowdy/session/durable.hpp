@@ -101,18 +101,20 @@ class SaveStateStore {
     return cache_;
   }
 
-  /// Replace the cached blob and persist it.
+  /// Replace the cached blob and persist it. A save that fails throws and
+  /// leaves the store as it was; built without exceptions, it keeps the blob
+  /// cached and dirty(), so the next save() retries it.
   void save(Bytes bytes) {
     std::vector<std::uint8_t> next(bytes.begin(), bytes.end());
     graphql::JVal input;
     input["appId"] = appId_;
     input["state"] = core::base64Encode(bytes);
-    client_.state().update(input);
+    const bool saved = client_.state().update(input).ok();
     std::lock_guard lock(mutex_);
     cache_ = std::move(next);
-    dirty_ = false;
-    lastSavedAt_ = core::systemClock().epochMillis();
     loaded_ = true;
+    dirty_ = !saved;
+    if (saved) lastSavedAt_ = core::systemClock().epochMillis();
   }
 
   /// Persist the current cache (after in-place edits via value()).

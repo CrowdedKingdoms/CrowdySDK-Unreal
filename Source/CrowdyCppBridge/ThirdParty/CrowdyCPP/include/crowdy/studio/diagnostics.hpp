@@ -14,20 +14,12 @@ namespace crowdy::studio {
 
 enum class CrowdyStudioDiagnosticSeverity { Error, Warning, Info, Hint };
 
-/**
- * Where a diagnostic came from, which is what an editor filters on.
- *
- * ModelLint is the server's `gameModelLint`, and it answers a different kind of question
- * from the other three. Those are about code the developer is editing. This is about
- * whether the app's game model hangs together at all -- a container naming a type nobody
- * defined, a function calling one that does not exist -- which has no file and no line and
- * which no amount of reading the open document would reveal.
- */
+/// Where a diagnostic came from, which is what an editor filters on. CrowdyJS's union has
+/// the same three.
 enum class CrowdyStudioDiagnosticSource {
   Rustc,
   LocalAdvisory,
-  Runtime,
-  ModelLint
+  Runtime
 };
 
 inline constexpr std::string_view toString(
@@ -48,7 +40,6 @@ inline constexpr std::string_view toString(
     case CrowdyStudioDiagnosticSource::LocalAdvisory:
       return "local-advisory";
     case CrowdyStudioDiagnosticSource::Runtime: return "runtime";
-    case CrowdyStudioDiagnosticSource::ModelLint: return "model-lint";
   }
   return "";
 }

@@ -9,19 +9,13 @@
 #include "crowdy/domains/types.hpp"
 #include "crowdy/generated/operations.hpp"
 
-/// client.marketplace() — the P4a player-code marketplace (free mode).
-///
-/// Player-facing browse/publish/acquire/install/consent and the D4 grid claim
-/// flows, plus studio moderation (admission queue, catalog administration,
-/// ownership transfer, claim-policy config). Player and moderation operations
-/// differ by the permissions they require, not by endpoint.
-///
-/// No money moves through any call here: every listing is free in P4a, an
-/// acquisition is an entitlement write, and the paid modes ship with P4b.
-/// Publishing snapshots artifact hashes and the DERIVED capability summary,
-/// never source; installs consent to the summary's hash. The browser-side
-/// broker handoff is runtime-specific; native clients can use
-/// clientArtifactBytes() to decode the portable artifact payload.
+/// client.marketplace() — the D4 grid claim flows (policy, requests, chunk
+/// and ownership claims, invites) and studio moderation of player code
+/// (admission queue, listing administration, ownership transfer,
+/// claim-policy config). The player-facing listings (publish, acquire,
+/// install) and grid-attached client mods went with legacy player compute;
+/// ck-exec mods publish and install through client.exec().modPublish /
+/// modInstall.
 namespace crowdy::domains {
 
 class MarketplaceAPI {
@@ -40,147 +34,8 @@ class MarketplaceAPI {
   };
 
  public:
-  using ArtifactBytesCallback = std::function<void(
-      graphql::GraphQLOutcome, ClientArtifactBytes)>;
-
   explicit MarketplaceAPI(std::shared_ptr<graphql::GraphQLClient> api)
       : api_(std::move(api)) {}
-
-  // -- Store ------------------------------------------------------------------
-
-  /// Browse the app's active listings with per-listing admission standing.
-  graphql::Json listings(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceListings", vars);
-  }
-  void listingsAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceListings", vars, std::move(cb));
-  }
-
-  /// Published versions of one listing (capability summaries + consent hashes).
-  graphql::Json versions(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceListingVersions", vars);
-  }
-  void versionsAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceListingVersions", vars, std::move(cb));
-  }
-
-  /// The caller's entitlements in this app.
-  graphql::Json myAcquisitions(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceMyAcquisitions", vars);
-  }
-  void myAcquisitionsAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceMyAcquisitions", vars, std::move(cb));
-  }
-
-  /// The caller's active installs in this app.
-  graphql::Json myInstalls(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceMyInstalls", vars);
-  }
-  void myInstallsAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceMyInstalls", vars, std::move(cb));
-  }
-
-  /// Create a listing (personal, or org-owned via input.ownerOrgId).
-  graphql::Json publishListing(const graphql::JVal& vars) const {
-    return api_.run("MarketplacePublishListing", vars);
-  }
-  void publishListingAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplacePublishListing", vars, std::move(cb));
-  }
-
-  /// Publish an immutable version from compiled module versions (hashes only).
-  graphql::Json publishVersion(const graphql::JVal& vars) const {
-    return api_.run("MarketplacePublishVersion", vars);
-  }
-  void publishVersionAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplacePublishVersion", vars, std::move(cb));
-  }
-
-  /// Free acquisition (entitlement write; idempotent per listing+caller).
-  graphql::Json acquire(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceAcquire", vars);
-  }
-  void acquireAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceAcquire", vars, std::move(cb));
-  }
-
-  /// Install after consenting to the version's capability hash.
-  graphql::Json install(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceInstall", vars);
-  }
-  void installAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceInstall", vars, std::move(cb));
-  }
-
-  /// Remove instances/attachments/fetch rights; the acquisition is retained.
-  graphql::Json uninstall(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceUninstall", vars);
-  }
-  void uninstallAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceUninstall", vars, std::move(cb));
-  }
-
-  // -- Grid-attached client mods (D2) -------------------------------------------
-
-  /// Client mods attached to a grid, with the caller's consent state.
-  graphql::Json gridClientMods(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceGridClientMods", vars);
-  }
-  void gridClientModsAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceGridClientMods", vars, std::move(cb));
-  }
-
-  /// Consent to one attachment's exact capability hash (per player).
-  graphql::Json consentGridClientMod(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceConsentGridClientMod", vars);
-  }
-  void consentGridClientModAsync(const graphql::JVal& vars,
-                                 graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceConsentGridClientMod", vars, std::move(cb));
-  }
-
-  /// Trust one author's active attachments at gridClientMods'
-  /// authorCapabilityHash. Widening requires another explicit call.
-  graphql::Json trustGridAuthor(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceTrustGridAuthor", vars);
-  }
-  void trustGridAuthorAsync(const graphql::JVal& vars,
-                            graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceTrustGridAuthor", vars, std::move(cb));
-  }
-
-  /// Fetch an acquired/attached listing's client artifact (base64 + metadata).
-  graphql::Json clientArtifact(const graphql::JVal& vars) const {
-    return api_.run("MarketplaceClientArtifact", vars);
-  }
-  void clientArtifactAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    api_.runAsync("MarketplaceClientArtifact", vars, std::move(cb));
-  }
-  /// Fetch and base64-decode an acquired/attached CLIENT artifact for a native
-  /// sandbox/runtime. fuelPerDispatch remains a decimal GraphQL BigInt string.
-  ClientArtifactBytes clientArtifactBytes(const graphql::JVal& vars) const {
-    return requireArtifactBytes(clientArtifact(vars));
-  }
-  void clientArtifactBytesAsync(const graphql::JVal& vars,
-                                ArtifactBytesCallback cb) const {
-    clientArtifactAsync(
-        vars,
-        [cb = std::move(cb)](graphql::GraphQLOutcome outcome) mutable {
-          ClientArtifactBytes decoded;
-          if (outcome.ok()) {
-            auto value = decodeClientArtifactBytes(outcome.data);
-            if (value) {
-              decoded = std::move(*value);
-            } else {
-              outcome.status = Errc::Malformed;
-              outcome.kind = graphql::GraphQLErrorKind::Protocol;
-              outcome.errorMessage =
-                  "playerCodeClientArtifact returned invalid artifact bytes";
-            }
-          }
-          cb(std::move(outcome), std::move(decoded));
-        });
-  }
 
   // -- D4 grid claim flows -------------------------------------------------------
 
@@ -322,8 +177,7 @@ class MarketplaceAPI {
     api_.runAsync("MarketplaceTransferListing", vars, std::move(cb));
   }
 
-  /// Catalog status (owner delist/relist; studio KILLED — pair with the
-  /// game-side listing kill switch to stop running installs).
+  /// Catalog status (owner delist/relist; studio KILLED).
   graphql::Json setListingStatus(const graphql::JVal& vars) const {
     return api_.run("MarketplaceSetListingStatus", vars);
   }
@@ -341,18 +195,6 @@ class MarketplaceAPI {
   }
 
  private:
-  static ClientArtifactBytes requireArtifactBytes(
-      const graphql::Json& artifact) {
-    auto decoded = decodeClientArtifactBytes(artifact);
-    if (decoded) return std::move(*decoded);
-#ifndef CROWDY_NO_EXCEPTIONS
-    throw graphql::CrowdyProtocolError(
-        "playerCodeClientArtifact returned invalid artifact bytes");
-#else
-    return {};
-#endif
-  }
-
   Executor api_;
 };
 

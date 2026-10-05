@@ -35,7 +35,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyCallModelFunctionOutcome, 
  * channel notification, use Apply Crowdy Effect instead.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyInvokeModelFunctionAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyInvokeModelFunctionAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 

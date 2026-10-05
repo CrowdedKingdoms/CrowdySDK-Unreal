@@ -6,6 +6,9 @@
 #include "Kismet/BlueprintAsyncActionBase.h"
 #include "CrowdyWorldsimKitActions.generated.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class FJsonObject;
 class UCrowdyGameModelSubsystem;
 
@@ -129,7 +132,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCrowdyHarvestCropOutcome, const FS
  * carries a clear reason.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyGetWorldStateAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGetWorldStateAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -163,7 +166,7 @@ private:
  * Gather Node.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyListResourceNodesAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyListResourceNodesAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -203,7 +206,7 @@ private:
  * TypePrefix must match the prefix the kit was deployed under, so the correct gather function is called.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyGatherNodeAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGatherNodeAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -244,7 +247,7 @@ private:
  * TypePrefix selects the deployed type name (<Prefix>Crop). DisplayName defaults to "Crop <OutputItemId>".
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyPlantCropAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyPlantCropAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -298,7 +301,7 @@ private:
  * the deployed type name (<Prefix>Crop).
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyListCropsAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyListCropsAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -339,7 +342,7 @@ private:
  * TypePrefix must match the prefix the kit was deployed under, so the correct harvest function is called.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyHarvestCropAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyHarvestCropAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -368,3 +371,5 @@ private:
 	FString ToStackContainerId;
 	FString SessionId;
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

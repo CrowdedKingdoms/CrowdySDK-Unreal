@@ -25,6 +25,7 @@ namespace
 		case ECrowdyEffectSyncStatus::Synced:      return LOCTEXT("StatusSynced", "Synced");
 		case ECrowdyEffectSyncStatus::Drifted:     return LOCTEXT("StatusDrifted", "Unsynced");
 		case ECrowdyEffectSyncStatus::NotOnServer: return LOCTEXT("StatusNotOnServer", "Not on server");
+		case ECrowdyEffectSyncStatus::Deprecated:  return LOCTEXT("StatusDeprecated", "Deprecated");
 		case ECrowdyEffectSyncStatus::Unknown:
 		default:                                   return LOCTEXT("StatusUnknown", "Unknown");
 		}
@@ -37,6 +38,7 @@ namespace
 		case ECrowdyEffectSyncStatus::Synced:      return FSlateColor(FLinearColor(0.35f, 0.78f, 0.42f));  // green
 		case ECrowdyEffectSyncStatus::Drifted:     return FSlateColor(FLinearColor(0.95f, 0.71f, 0.24f));  // amber
 		case ECrowdyEffectSyncStatus::NotOnServer: return FSlateColor(FLinearColor(0.45f, 0.62f, 0.95f));  // blue
+		case ECrowdyEffectSyncStatus::Deprecated:
 		case ECrowdyEffectSyncStatus::Unknown:
 		default:                                   return FSlateColor::UseSubduedForeground();
 		}
@@ -139,10 +141,18 @@ void FCrowdyEffectEditorToolbar::FillToolbar(
 			{
 				return StatusColor(CrowdyStudioSyncService::GetCachedStatus(WeakEffect.Get()));
 			})
-			.ToolTipText(LOCTEXT("StatusIndicatorTip",
-				"Whether this effect matches the Game Model schema on the server. Re-read whenever the status is not "
-				"already known: when the asset opens, after an edit, after a sync, and after anything else writes the "
-				"server schema."))
+			.ToolTipText_Lambda([WeakEffect]()
+			{
+				if (CrowdyStudioSyncService::GetCachedStatus(WeakEffect.Get()) == ECrowdyEffectSyncStatus::Deprecated)
+				{
+					return LOCTEXT("StatusDeprecatedTip",
+						"Game Models are deprecated and no longer available; use Server Compute.");
+				}
+				return LOCTEXT("StatusIndicatorTip",
+					"Whether this effect matches the Game Model schema on the server. Re-read whenever the status is not "
+					"already known: when the asset opens, after an edit, after a sync, and after anything else writes the "
+					"server schema.");
+			})
 		]);
 }
 

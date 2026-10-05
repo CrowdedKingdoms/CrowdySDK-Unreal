@@ -2825,9 +2825,10 @@ void FCrowdyStudioController::FetchAutomations()
 		});
 }
 
-bool FCrowdyStudioController::ShouldLoadGameModelLists(int64 SelectedAppId, int64 LoadedAppId)
+bool FCrowdyStudioController::ShouldLoadGameModelLists(int64 /*SelectedAppId*/, int64 /*LoadedAppId*/)
 {
-	return SelectedAppId != 0 && LoadedAppId != SelectedAppId;
+	// Game Models are deprecated, so opening the page or switching app never reads their lists.
+	return false;
 }
 
 void FCrowdyStudioController::EnsureGameModelListsLoaded()
@@ -2858,7 +2859,7 @@ void FCrowdyStudioController::FetchFeatures()
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	SetBigIntField(Variables, TEXT("appId"), SelectedAppId);
 
-	SendGame(ECrowdyCppApiDomain::GameModel, TEXT("GameModelFeatures"), Variables,
+	SendManagementForApp(ECrowdyCppApiDomain::AppAccess, TEXT("AppFeatures"), Variables,
 		[this](const TSharedPtr<FJsonObject>& Envelope)
 		{
 			CrowdyStudioGql::ParseFeatures(Envelope, TEXT("gameModelFeatures"), Features);
@@ -2883,7 +2884,7 @@ void FCrowdyStudioController::DefineFeature(const FString& FeatureKey, const FSt
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetObjectField(TEXT("input"), Input);
 
-	SendGame(ECrowdyCppApiDomain::GameModel, TEXT("GameModelDefineFeature"), Variables,
+	SendManagementForApp(ECrowdyCppApiDomain::AppAccess, TEXT("DefineAppFeature"), Variables,
 		[this](const TSharedPtr<FJsonObject>& /*Envelope*/)
 		{
 			SetStatus(TEXT("Saved feature."), false);
@@ -2902,7 +2903,7 @@ void FCrowdyStudioController::FetchTierFeatures()
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	SetBigIntField(Variables, TEXT("appId"), SelectedAppId);
 
-	SendGame(ECrowdyCppApiDomain::GameModel, TEXT("GameModelTierFeatures"), Variables,
+	SendManagementForApp(ECrowdyCppApiDomain::AppAccess, TEXT("TierFeatures"), Variables,
 		[this](const TSharedPtr<FJsonObject>& Envelope)
 		{
 			CrowdyStudioGql::ParseTierFeatures(Envelope, TEXT("gameModelTierFeatures"), TierFeatures);
@@ -2922,17 +2923,9 @@ void FCrowdyStudioController::FetchAppAccessTiers()
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	SetBigIntField(Variables, TEXT("appId"), SelectedAppId);
 
-	// The only app-scoped read that goes out on the management plane, so it carries its own pinned-app check rather
-	// than inheriting the one every game-plane op gets from SendGame. Without it a reply issued for the previous app
-	// refills the tier list after an app switch has already emptied it.
-	const int64 RequestAppId = SelectedAppId;
-	SendManagement(ECrowdyCppApiDomain::AppAccess, TEXT("AppAccessTiers"), Variables,
-		[this, RequestAppId](const TSharedPtr<FJsonObject>& Envelope)
+	SendManagementForApp(ECrowdyCppApiDomain::AppAccess, TEXT("AppAccessTiers"), Variables,
+		[this](const TSharedPtr<FJsonObject>& Envelope)
 		{
-			if (SelectedAppId != RequestAppId)
-			{
-				return;
-			}
 			CrowdyStudioGql::ParseAccessTiers(Envelope, TEXT("appAccessTiers"), AccessTiers);
 			OnAccessTiersChanged.Broadcast();
 		});
@@ -2954,7 +2947,7 @@ void FCrowdyStudioController::GrantTierFeature(int64 TierId, const FString& Feat
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetObjectField(TEXT("input"), Input);
 
-	SendGame(ECrowdyCppApiDomain::GameModel, TEXT("GameModelGrantTierFeature"), Variables,
+	SendManagementForApp(ECrowdyCppApiDomain::AppAccess, TEXT("GrantTierFeature"), Variables,
 		[this](const TSharedPtr<FJsonObject>& /*Envelope*/)
 		{
 			SetStatus(TEXT("Granted feature to tier."), false);
@@ -2978,7 +2971,7 @@ void FCrowdyStudioController::RevokeTierFeature(int64 TierId, const FString& Fea
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetObjectField(TEXT("input"), Input);
 
-	SendGame(ECrowdyCppApiDomain::GameModel, TEXT("GameModelRevokeTierFeature"), Variables,
+	SendManagementForApp(ECrowdyCppApiDomain::AppAccess, TEXT("RevokeTierFeature"), Variables,
 		[this](const TSharedPtr<FJsonObject>& /*Envelope*/)
 		{
 			SetStatus(TEXT("Revoked feature from tier."), false);
@@ -3272,6 +3265,12 @@ void FCrowdyStudioController::CancelSchemaRegistryWait()
 
 void FCrowdyStudioController::PlanSchemaSync()
 {
+	// Every read a plan needs is refused, so the asset streams that come first would only end in that refusal.
+	if (CrowdyStudioGql::IsDeprecatedGameModelDomain(ECrowdyCppApiDomain::GameModel))
+	{
+		SetStatus(CrowdyCppGameModelDeprecatedMessage, true);
+		return;
+	}
 	PlanSchemaSyncInternal();
 }
 
@@ -4772,6 +4771,11 @@ void FCrowdyStudioController::PurgeContainers(const FString& TypeName, int64 Exp
 		Refuse(TEXT("These live models were listed for a different app. Reload this app's live models first."));
 		return;
 	}
+	if (CrowdyStudioGql::IsDeprecatedGameModelDomain(ECrowdyCppApiDomain::GameModel))
+	{
+		Refuse(CrowdyCppGameModelDeprecatedMessage);
+		return;
+	}
 
 	ContainerPurgeAppId = SelectedAppId;
 	++ContainerPurgeSerial;
@@ -5764,6 +5768,22 @@ void FCrowdyStudioController::SendManagement(ECrowdyCppApiDomain Domain, const T
 		MoveTemp(OnSuccess), MoveTemp(OnFailure), bReportErrors);
 }
 
+void FCrowdyStudioController::SendManagementForApp(ECrowdyCppApiDomain Domain, const TCHAR* OperationName,
+	const TSharedPtr<FJsonObject>& Variables,
+	TFunction<void(const TSharedPtr<FJsonObject>&)> OnSuccess)
+{
+	const int64 IssuedForAppId = SelectedAppId;
+	SendManagement(Domain, OperationName, Variables,
+		[this, IssuedForAppId, Inner = MoveTemp(OnSuccess)](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			if (!Inner || IssuedForAppId != SelectedAppId)
+			{
+				return;
+			}
+			Inner(Envelope);
+		});
+}
+
 void FCrowdyStudioController::SendGame(ECrowdyCppApiDomain Domain, const TCHAR* OperationName,
 	const TSharedPtr<FJsonObject>& Variables,
 	TFunction<void(const TSharedPtr<FJsonObject>&)> OnSuccess, TFunction<void()> OnFailure)
@@ -5799,6 +5819,15 @@ void FCrowdyStudioController::SendGame(ECrowdyCppApiDomain Domain, const TCHAR* 
 				Inner();
 			}
 		};
+
+	// Refused before the token check, so a deprecated operation never mints an app token it could not use.
+	if (CrowdyStudioGql::IsDeprecatedGameModelDomain(Domain))
+	{
+		SetStatus(CrowdyCppGameModelDeprecatedMessage, true);
+		bLastFailureWasCanceled = false;
+		ScopedFailure();
+		return;
+	}
 
 	// Game-plane ops bear the app-scoped token, not the session token. When it is in hand and fresh,
 	// post straight away; otherwise mint (or refresh) it first, then post. An org token can't mint,
@@ -5963,6 +5992,12 @@ void FCrowdyStudioController::DeployGameKit(const UCrowdyGameKitConfig* Config,
 	if (SelectedAppId == 0)
 	{
 		Fail(TEXT("Select an app before deploying a Game Kit."));
+		return;
+	}
+	// A kit is Game Model schema, so it is refused before an app token is minted for it.
+	if (CrowdyStudioGql::IsDeprecatedGameModelDomain(ECrowdyCppApiDomain::GameModel))
+	{
+		Fail(CrowdyCppGameModelDeprecatedMessage);
 		return;
 	}
 	// Seeding schema + automations is manage_apps-gated, and that authority rides the app-scoped token minted from

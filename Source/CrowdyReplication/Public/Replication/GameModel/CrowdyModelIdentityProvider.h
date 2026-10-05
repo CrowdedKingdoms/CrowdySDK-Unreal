@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "Replication/GameModel/CrowdyModelIdentityInterface.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class UCrowdyEntitySubsystem;
 class UCrowdyGameModelSubsystem;
 class UCrowdyGameSession;
@@ -43,3 +46,5 @@ private:
 	// TryGetCachedOwnerUserId delegates here so the identity seam answers for a NetID once that entity has resolved.
 	UCrowdyGameModelSubsystem* ModelSubsystem = nullptr;
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

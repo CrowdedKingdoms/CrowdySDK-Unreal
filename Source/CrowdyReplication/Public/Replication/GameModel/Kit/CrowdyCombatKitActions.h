@@ -6,6 +6,9 @@
 #include "Kismet/BlueprintAsyncActionBase.h"
 #include "CrowdyCombatKitActions.generated.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class AActor;
 class FJsonObject;
 class UCrowdyGameModelSubsystem;
@@ -69,7 +72,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyApplyStatusEffectOutcome, 
  * record owner on create). The Actor must already be a registered Game Model entity.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdySpawnCombatantAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdySpawnCombatantAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -130,7 +133,7 @@ private:
  * called; leave it empty for a kit deployed with no prefix.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyCombatAttackAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyCombatAttackAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -166,7 +169,7 @@ private:
  * failure Failed carries a clear reason and a defaulted state.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyGetCombatantStateAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGetCombatantStateAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -204,7 +207,7 @@ private:
  * prefix. The Actor must be a registered Game Model entity with a bound combatant container.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyRespawnCombatantAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyRespawnCombatantAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -240,7 +243,7 @@ private:
  * registered Game Model entity with a bound combatant container.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyReviveCombatantAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyReviveCombatantAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -275,7 +278,7 @@ private:
  * was spawned under. The Actor must be a registered Game Model entity with a bound combatant container.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdySyncCombatantAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdySyncCombatantAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -321,7 +324,7 @@ private:
  * prefix.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyApplyStatusEffectAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyApplyStatusEffectAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -363,3 +366,5 @@ private:
 	FString TargetKey;
 	FString EffectContainerId;
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

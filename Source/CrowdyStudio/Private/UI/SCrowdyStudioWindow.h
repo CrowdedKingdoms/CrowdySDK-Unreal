@@ -26,8 +26,12 @@ public:
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
+	virtual ~SCrowdyStudioWindow() override;
 
 private:
+	// Shows the page another module asked for with CrowdyStudioExtraPages::OpenPage, once someone is signed in.
+	void ShowRequestedPage();
+
 	TSharedRef<SWidget> BuildHeader();
 	TSharedRef<SWidget> BuildNavRail();
 	TSharedRef<SWidget> BuildStatusBar();
@@ -57,6 +61,7 @@ private:
 	bool bNavCollapsed = false;
 
 	int32 ActiveIndex = 0;
+	FDelegateHandle PageRequestHandle;
 	FCurveSequence PageAnim;
 	FCurveHandle PageFade;
 };

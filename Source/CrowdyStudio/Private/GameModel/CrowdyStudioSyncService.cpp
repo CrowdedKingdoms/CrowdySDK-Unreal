@@ -700,6 +700,14 @@ namespace
 			return;
 		}
 
+		// Every read and write a run issues is a Game Model operation, so nothing is minted or sent.
+		if (CrowdyStudioGql::IsDeprecatedGameModelDomain(ECrowdyCppApiDomain::GameModel))
+		{
+			SetCached(Effect, ECrowdyEffectSyncStatus::Deprecated);
+			ReportGuard(ECrowdyEffectSyncStatus::Deprecated, CrowdyCppGameModelDeprecatedMessage);
+			return;
+		}
+
 		// Coalesce: a status read already in flight for this effect updates the cache when it lands, so do not fan out
 		// a second identical read. A sync is user-initiated and rare, so it is not coalesced.
 		if (!bForApply && GStatusInFlight.Contains(Effect))

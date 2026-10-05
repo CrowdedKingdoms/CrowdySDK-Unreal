@@ -17,12 +17,12 @@ public class CrowdyCppBridge : ModuleRules
 		PCHUsage = ModuleRules.PCHUsageMode.NoPCHs;
 		bUseUnity = false;
 
-		// CrowdyCPP's GraphQL and kit layers report errors by throwing.
+		// CrowdyCPP's GraphQL layer reports errors by throwing.
 		bEnableExceptions = true;
 		CppStandard = CppStandardVersion.Cpp20;
 
 		// The library dynamic_casts to recover typed GraphQL errors (client.cpp's
-		// token-refresh error mapping and kit/core.hpp's error classification).
+		// token-refresh error mapping).
 		// UBT defaults RTTI off, which MSVC reports only as a warning while
 		// producing a cast that always fails, so this is load-bearing rather than
 		// a build-cleanliness setting.
