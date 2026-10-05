@@ -126,26 +126,8 @@ bool FCrowdyEffectSignalRoundTripTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// The server may base64 the payload, exactly as it may for a model-changed notification, so both encodings decode.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectSignalBase64Test,
-	"CrowdySDK.Replication.EffectSignalBase64", CrowdyEffectSignalTestFlags)
-bool FCrowdyEffectSignalBase64Test::RunTest(const FString& Parameters)
-{
-	const FString Encoded = FBase64::Encode(TEXT("csg:WaveOver:xyz-9"));
-
-	FString Name;
-	FString ContainerId;
-	if (TestTrue(TEXT("base64 payload decodes"),
-		UCrowdyGameModelSubsystem::DecodeChannelSignal(AsciiBytes(Encoded), Name, ContainerId)))
-	{
-		TestEqual(TEXT("name"), Name, FString(TEXT("WaveOver")));
-		TestEqual(TEXT("container id"), ContainerId, FString(TEXT("xyz-9")));
-	}
-	return true;
-}
-
 // UCrowdyChannels skips Game Model frames so they never reach the reliable-RPC decoder, and it decides that with
-// HasGameModelChannelPrefix. That test therefore has to recognize every encoding the two decoders accept: if it
+// HasGameModelChannelPrefix. That check therefore has to recognize every encoding the two decoders accept: if it
 // recognized fewer, a frame would be decoded by the Game Model plane AND mis-decoded as an RPC frame, which is the
 // exact failure the skip exists to prevent. This locks the two sides together across both encodings.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelChannelPrefixMatchesDecodeTest,
@@ -187,73 +169,6 @@ bool FCrowdyGameModelChannelPrefixMatchesDecodeTest::RunTest(const FString& Para
 	TestFalse(TEXT("base64 chat is not a Game Model frame"),
 		CrowdyGameModelMetaKeys::HasGameModelChannelPrefix(AsciiBytes(FBase64::Encode(TEXT("hello world")))));
 
-	return true;
-}
-
-// The signal decoder and the model-changed decoder share one opcode, so each must refuse the other's frames and
-// both must refuse ordinary channel traffic. A cross-claim here would either swallow re-pulls or fire phantom
-// signals.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectSignalRejectsForeignPayloadsTest,
-	"CrowdySDK.Replication.EffectSignalRejectsForeignPayloads", CrowdyEffectSignalTestFlags)
-bool FCrowdyEffectSignalRejectsForeignPayloadsTest::RunTest(const FString& Parameters)
-{
-	FString Name;
-	FString ContainerId;
-
-	TestFalse(TEXT("a model-changed frame is not a signal"),
-		UCrowdyGameModelSubsystem::DecodeChannelSignal(AsciiBytes(TEXT("cmc:abc-123")), Name, ContainerId));
-	TestFalse(TEXT("chat is not a signal"),
-		UCrowdyGameModelSubsystem::DecodeChannelSignal(AsciiBytes(TEXT("hello world")), Name, ContainerId));
-	TestFalse(TEXT("an empty payload is not a signal"),
-		UCrowdyGameModelSubsystem::DecodeChannelSignal(TArray<uint8>(), Name, ContainerId));
-
-	// And the reverse direction: a signal frame must not read as a model-changed re-pull, or every signal would
-	// also cost a pull.
-	FString ModelChangedId;
-	TestFalse(TEXT("a signal frame is not a model-changed notification"),
-		UCrowdyGameModelSubsystem::DecodeChannelModelChangedId(
-			AsciiBytes(TEXT("csg:BossWave:abc-123")), ModelChangedId));
-	return true;
-}
-
-// The payload arrives over the network and its name selects a function to call, so a forged frame must not be able
-// to name something the authoring side could never produce.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectSignalRejectsForgedNamesTest,
-	"CrowdySDK.Replication.EffectSignalRejectsForgedNames", CrowdyEffectSignalTestFlags)
-bool FCrowdyEffectSignalRejectsForgedNamesTest::RunTest(const FString& Parameters)
-{
-	FString Name;
-	FString ContainerId;
-
-	TestFalse(TEXT("a name with a path separator is refused"),
-		UCrowdyGameModelSubsystem::DecodeChannelSignal(AsciiBytes(TEXT("csg:Some/Path:id")), Name, ContainerId));
-	TestFalse(TEXT("a name with spaces is refused"),
-		UCrowdyGameModelSubsystem::DecodeChannelSignal(AsciiBytes(TEXT("csg:Destroy Actor:id")), Name, ContainerId));
-	TestFalse(TEXT("a leading-digit name is refused"),
-		UCrowdyGameModelSubsystem::DecodeChannelSignal(AsciiBytes(TEXT("csg:1Bad:id")), Name, ContainerId));
-	TestFalse(TEXT("an empty name is refused"),
-		UCrowdyGameModelSubsystem::DecodeChannelSignal(AsciiBytes(TEXT("csg::id")), Name, ContainerId));
-	TestFalse(TEXT("a missing container id is refused"),
-		UCrowdyGameModelSubsystem::DecodeChannelSignal(AsciiBytes(TEXT("csg:BossWave:")), Name, ContainerId));
-	TestFalse(TEXT("no separator at all is refused"),
-		UCrowdyGameModelSubsystem::DecodeChannelSignal(AsciiBytes(TEXT("csg:BossWave")), Name, ContainerId));
-	return true;
-}
-
-// A container id may contain colons, so the split takes the FIRST separator after the prefix and leaves the rest
-// of the payload intact as the id.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEffectSignalSplitsOnFirstSeparatorTest,
-	"CrowdySDK.Replication.EffectSignalSplitsOnFirstSeparator", CrowdyEffectSignalTestFlags)
-bool FCrowdyEffectSignalSplitsOnFirstSeparatorTest::RunTest(const FString& Parameters)
-{
-	FString Name;
-	FString ContainerId;
-	if (TestTrue(TEXT("decodes"), UCrowdyGameModelSubsystem::DecodeChannelSignal(
-		AsciiBytes(TEXT("csg:BossWave:urn:uuid:abc")), Name, ContainerId)))
-	{
-		TestEqual(TEXT("name stops at the first separator"), Name, FString(TEXT("BossWave")));
-		TestEqual(TEXT("the whole remainder is the id"), ContainerId, FString(TEXT("urn:uuid:abc")));
-	}
 	return true;
 }
 

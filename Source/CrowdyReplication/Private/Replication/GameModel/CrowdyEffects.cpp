@@ -2,6 +2,7 @@
 
 #include "Replication/GameModel/CrowdyEffects.h"
 
+#include "CrowdyCppClient.h"
 #include "CrowdyGameModelLog.h"
 #include "Curves/CurveFloat.h"
 #include "Dom/JsonObject.h"
@@ -428,6 +429,11 @@ bool UCrowdyEffects::ApplyInternal(UObject* WorldContext, UObject* Target, const
 		OutError = TEXT("UCrowdyGameModelSubsystem not found");
 		return false;
 	}
+	if (Model->NoteGameModelDeprecated())
+	{
+		OutError = CrowdyCppGameModelDeprecatedMessage;
+		return false;
+	}
 
 	// Source (optional) -> its bound container id for the source_id param.
 	FString SourceContainerId;
@@ -521,7 +527,9 @@ void UCrowdyEffects::Apply(UCrowdyEffect* Effect, UObject* Target, UObject* Sour
 	const TMap<FName, FString>& Overrides, float Level, const FString& SessionId)
 {
 	FString Error;
-	if (!ApplyInternal(nullptr, Target, FString(), Effect, Source, Overrides, Level, SessionId, nullptr, Error))
+	// The deprecation is already logged once per process; repeating it on every fire-and-forget apply is noise.
+	if (!ApplyInternal(nullptr, Target, FString(), Effect, Source, Overrides, Level, SessionId, nullptr, Error)
+		&& !Error.Equals(CrowdyCppGameModelDeprecatedMessage))
 	{
 		UE_LOG(LogCrowdyGameModel, Warning, TEXT("[GameModel] Apply failed: %s"), *Error);
 	}
@@ -531,7 +539,8 @@ void UCrowdyEffects::ApplyToContainer(UObject* WorldContext, const FString& Cont
 	UObject* Source, const TMap<FName, FString>& Overrides, float Level, const FString& SessionId)
 {
 	FString Error;
-	if (!ApplyInternal(WorldContext, nullptr, ContainerId, Effect, Source, Overrides, Level, SessionId, nullptr, Error))
+	if (!ApplyInternal(WorldContext, nullptr, ContainerId, Effect, Source, Overrides, Level, SessionId, nullptr, Error)
+		&& !Error.Equals(CrowdyCppGameModelDeprecatedMessage))
 	{
 		UE_LOG(LogCrowdyGameModel, Warning, TEXT("[GameModel] ApplyToContainer failed: %s"), *Error);
 	}

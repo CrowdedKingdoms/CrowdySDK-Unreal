@@ -7,6 +7,9 @@
 #include "Replication/GameModel/CrowdyGameModelSessionTypes.h"
 #include "CrowdyGameModel.generated.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class UCrowdyGameModelSubsystem;
 
 /**
@@ -17,111 +20,113 @@ class UCrowdyGameModelSubsystem;
  * Every function resolves the subsystem off WorldContext, mirroring how UCrowdyModel resolves off an actor.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyGameModel : public UBlueprintFunctionLibrary
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGameModel : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
 public:
 	// The Game Model subsystem for WorldContext's world, or null outside a play world. A UI binds
 	// OnDataContainerChanged on the returned object to react to free/data container changes.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Advanced", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Advanced", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Get Game Model Subsystem")
 	static UCrowdyGameModelSubsystem* GetGameModelSubsystem(const UObject* WorldContext);
 
 	// The local player's Game Model user id, or 0 when signed out.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated; use Get User ID on the Crowdy Game Session instead."),
 		DisplayName = "Get Local User Id")
 	static int64 GetLocalUserId(const UObject* WorldContext);
 
 	// True when Session's current turn holder is the local user (client-side input gating; the server's
 	// is_current_turn policy is the real enforcement).
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Is My Turn")
 	static bool IsMyTurn(const UObject* WorldContext, const FCrowdyGameModelSession& Session);
 
 	// True when Session's host is the local user. Host-only calls (admission, transfer, end) are enforced
 	// server-side; this is the client-side gate for showing them.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Is Session Host")
 	static bool IsSessionHost(const UObject* WorldContext, const FCrowdyGameModelSession& Session);
 
 	// True when a player who is not in Session could join it now: it is active, admission is open, and there is a
 	// free seat. The server is the judge; this only decides whether to show a Join button.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", DisplayName = "Is Session Joinable")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", DisplayName = "Is Session Joinable", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static bool IsSessionJoinable(const FCrowdyGameModelSession& Session);
 
 	// Why the most recent session call was refused, for a Failed pin that was not wired: the enum to switch on,
 	// the server's code, and a message for a human. Error is None when the last call succeeded.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Get Last Session Failure")
 	static FCrowdyModelFailure GetLastSessionFailure(const UObject* WorldContext);
 
 	// Open / close a session's event stream; each event broadcasts on the subsystem's On Game Session Changed.
 	// AfterRevision -1 starts from now; a revision the caller already holds replays everything after it.
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Watch Game Session")
 	static void WatchSession(const UObject* WorldContext, const FString& SessionId, int64 AfterRevision = -1);
 
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Unwatch Game Session")
 	static void UnwatchSession(const UObject* WorldContext, const FString& SessionId);
 
 	// Typed reads of a free/data container's cached property by key. Return Default when the container is
 	// not watched, the key is not cached yet, or the cached value is a different type.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Get Model Attribute (Integer) by Id")
 	static int32 GetContainerInt(const UObject* WorldContext, const FString& ContainerId, FName Key, int32 Default = 0);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Get Model Attribute (Float) by Id")
 	static float GetContainerFloat(const UObject* WorldContext, const FString& ContainerId, FName Key, float Default = 0.0f);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Get Model Attribute (Boolean) by Id")
 	static bool GetContainerBool(const UObject* WorldContext, const FString& ContainerId, FName Key, bool bDefault = false);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Get Model Attribute (String) by Id")
 	static FString GetContainerString(const UObject* WorldContext, const FString& ContainerId, FName Key, const FString& Default = TEXT(""));
 
 	// Typed reads of one field from a collection item's StateJson (the state fetched by "Get Collection With Items'
 	// State"). Pure: parse the item's JSON state object and read Key. Return Default when the JSON is empty/invalid,
 	// the key is absent, or its value is a different type. Key is the item's server property key (lowercase).
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item (Integer)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item (Integer)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static int32 GetItemInt(const FString& ItemStateJson, FName Key, int32 Default = 0);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item (Float)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item (Float)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static float GetItemFloat(const FString& ItemStateJson, FName Key, float Default = 0.0f);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item (Boolean)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item (Boolean)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static bool GetItemBool(const FString& ItemStateJson, FName Key, bool bDefault = false);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item (String)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item (String)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static FString GetItemString(const FString& ItemStateJson, FName Key, const FString& Default = TEXT(""));
 
 	// The same typed reads taking a collection item struct directly (from "Get Collection With Items' State"), so a
 	// Blueprint reads a field off the item without first pulling out its StateJson. Each delegates to the matching
 	// StateJson getter above, so the default/mismatch behaviour is identical.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item Field (Integer)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item Field (Integer)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static int32 GetItemFieldInt(const FCrowdyCollectionItem& Item, FName Key, int32 Default = 0);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item Field (Float)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item Field (Float)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static float GetItemFieldFloat(const FCrowdyCollectionItem& Item, FName Key, float Default = 0.0f);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item Field (Boolean)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item Field (Boolean)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static bool GetItemFieldBool(const FCrowdyCollectionItem& Item, FName Key, bool bDefault = false);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item Field (String)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Collections", DisplayName = "Get Item Field (String)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static FString GetItemFieldString(const FCrowdyCollectionItem& Item, FName Key, const FString& Default = TEXT(""));
 
 	// Start/stop caching + notification-driven re-pull for a free/data container without an immediate pull (a
 	// UI that binds OnDataContainerChanged before the first change). Watching is also implied by a pull/create/
 	// invoke on the container.
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Advanced", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Advanced", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Watch Game Model")
 	static void WatchDataContainer(const UObject* WorldContext, const FString& ContainerId);
 
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Advanced", meta = (WorldContext = "WorldContext"),
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Advanced", meta = (WorldContext = "WorldContext", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."),
 		DisplayName = "Unwatch Game Model")
 	static void UnwatchDataContainer(const UObject* WorldContext, const FString& ContainerId);
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

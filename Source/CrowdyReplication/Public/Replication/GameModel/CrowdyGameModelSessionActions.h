@@ -22,7 +22,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdySessionEventsOutcome, const T
  * On Game Session Changed fires for it with full detail.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyCreateSessionAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyCreateSessionAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -58,7 +58,7 @@ private:
  * Failed says why: Full, Locked, Closed, Ended...
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyJoinSessionAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyJoinSessionAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -91,7 +91,7 @@ private:
 
 /** Leaves a session you created or joined on this client, and stops watching it. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyLeaveSessionAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyLeaveSessionAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -124,7 +124,7 @@ private:
  * this client last read the session, so a replaced host never acts by mistake.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdySetSessionAdmissionAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdySetSessionAdmissionAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -152,7 +152,7 @@ private:
 
 /** Host only. Hands the host role to another player who is in the session. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyTransferSessionHostAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyTransferSessionHostAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -180,7 +180,7 @@ private:
 
 /** Host only. Ends the session for everyone (they are all marked left, nobody can join) and stops watching it. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyEndSessionAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyEndSessionAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -211,7 +211,7 @@ private:
  * returned session carries the new turn holder.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdySetSessionTurnAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdySetSessionTurnAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -240,7 +240,7 @@ private:
 
 /** Lists the app's sessions, active ones by default. Nothing pushes a new session to a client: refresh to see it. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyListSessionsAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyListSessionsAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -272,7 +272,7 @@ private:
 
 /** Reads one session: who hosts it, how many are in, whose turn it is. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyGetSessionAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGetSessionAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -296,7 +296,7 @@ private:
 
 /** Reads a session with everyone in it: the roster read after a change, or when the change feed skipped ahead. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyGetSessionSnapshotAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGetSessionSnapshotAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -320,7 +320,7 @@ private:
 
 /** Reads a session's change history after a revision (0 for all of it). */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyGetSessionEventsAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGetSessionEventsAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 

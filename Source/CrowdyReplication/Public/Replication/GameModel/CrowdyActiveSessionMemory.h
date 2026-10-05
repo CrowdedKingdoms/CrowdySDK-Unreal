@@ -13,7 +13,7 @@
  * map created or joined.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyActiveSessionMemory : public UGameInstanceSubsystem
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyActiveSessionMemory : public UGameInstanceSubsystem
 {
 	GENERATED_BODY()
 

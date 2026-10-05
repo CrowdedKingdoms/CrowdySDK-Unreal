@@ -31,38 +31,6 @@ namespace
 			return crowdy::graphql::HttpResponse{200, std::string()};
 		}
 	};
-
-	// Every Game Model operation the plugin sends. Each must resolve to a
-	// non-empty document; an empty one means the vendored library no longer
-	// carries that operation, which would otherwise surface as a server-side
-	// syntax error at runtime rather than at check time.
-	const char* const GameModelOperations[] = {
-		"GameModelContainerState",
-		"GameModelContainerStates",
-		"GameModelContainers",
-		"GameModelEnsureContainer",
-		"GameModelCreateContainer",
-		"GameModelInvoke",
-		"GameModelCreateSession",
-		"GameModelJoinSession",
-		"GameModelSetSessionTurn",
-		"GameModelSessions",
-		"GameModelSession",
-		"GameModelLeaveSession",
-		"GameModelSetSessionAdmission",
-		"GameModelTransferSessionHost",
-		"GameModelEndSession",
-		"GameModelSessionSnapshot",
-		"GameModelSessionEvents",
-		"GameModelSetProperty",
-		"GameModelAddEdge",
-		"GameModelDeleteEdge",
-		"GameModelDeleteContainer",
-		"GameModelTraverse",
-		"GameModelSeed",
-		"GameModelUpsertAutomation",
-		"GameModelUpsertAutomationTrigger"
-	};
 }
 
 bool FCrowdyCppBridge::SelfTest()
@@ -99,16 +67,12 @@ bool FCrowdyCppBridge::SelfTest()
 		const std::int64_t millis = crowdy::core::parseIso8601Millis(kIso, sizeof(kIso) - 1);
 		const bool bClockOk = millis > 0 && crowdy::core::systemClock().monotonicMillis() >= 0;
 
-		// Every operation the plugin sends still resolves to a document.
-		bool bDocumentsOk = true;
-		for (const char* const OperationName : GameModelOperations)
+		// The generated operation tables resolve: an empty document here would otherwise surface as a server-side
+		// syntax error at runtime rather than at check time.
+		const bool bDocumentsOk = !crowdy::gen::exec::documentFor("ExecConnect").empty();
+		if (!bDocumentsOk)
 		{
-			if (crowdy::gen::gameModel::documentFor(OperationName).empty())
-			{
-				UE_LOG(LogCrowdyCpp, Error,
-					TEXT("CrowdyCPP self test: no document for operation '%hs'"), OperationName);
-				bDocumentsOk = false;
-			}
+			UE_LOG(LogCrowdyCpp, Error, TEXT("CrowdyCPP self test: no document for operation 'ExecConnect'"));
 		}
 
 		// Client + domains + GraphQL: construct and dispose with an inert

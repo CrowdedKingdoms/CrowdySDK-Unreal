@@ -1,0 +1,1 @@
+{"root":"root","types":{"root":{"kind":"hub","crate":"root","client":false},"arena":{"kind":"hub","parent":"root","crate":"arena","client":true,"persist_every_ms":30000,"evict_after_ms":300000},"sbx_locker":{"kind":"hub","parent":"root","crate":"sbx_locker","client":true,"persist_every_ms":5000,"evict_after_ms":600000}}}

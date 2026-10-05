@@ -25,79 +25,6 @@ namespace
 		}
 		return Bytes;
 	}
-
-	bool DecodeCue(const FString& Payload, FString& OutId, int64& OutRevision, FString& OutKind)
-	{
-		OutId.Reset();
-		OutRevision = -1;
-		OutKind.Reset();
-		return UCrowdyGameModelSubsystem::DecodeChannelSessionCue(SessionCueBytes(Payload), OutId, OutRevision, OutKind);
-	}
-}
-
-// The cue the server sends after every session change decodes into its three fields, in both encodings the channel
-// carries, and every malformed shape is refused rather than partially read: the payload is attacker-reachable.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelSessionCueDecodeTest,
-	"CrowdySDK.GameModel.SessionCueDecode", CrowdyGameModelSessionTestFlags)
-bool FCrowdyGameModelSessionCueDecodeTest::RunTest(const FString& Parameters)
-{
-	FString Id;
-	int64 Revision = -1;
-	FString Kind;
-
-	if (TestTrue(TEXT("a well-formed cue decodes"), DecodeCue(TEXT("gms|sess-abc|12|participant_joined"), Id, Revision, Kind)))
-	{
-		TestEqual(TEXT("session id"), Id, FString(TEXT("sess-abc")));
-		TestEqual(TEXT("revision"), Revision, static_cast<int64>(12));
-		TestEqual(TEXT("kind"), Kind, FString(TEXT("participant_joined")));
-	}
-
-	// The base64 form decodes to the same three fields; the shared form set must produce it, or the decoder is
-	// accepting fewer encodings than the channel subsystem skips.
-	{
-		const FString Plain = TEXT("gms|sess-b64|7|ended");
-		TArray<FString> Forms;
-		CrowdyGameModelMetaKeys::GameModelChannelPayloadForms(SessionCueBytes(FBase64::Encode(Plain)), Forms);
-		TestTrue(TEXT("the form set includes the decoded cue"), Forms.Contains(Plain));
-		if (TestTrue(TEXT("the base64 form decodes"), DecodeCue(FBase64::Encode(Plain), Id, Revision, Kind)))
-		{
-			TestEqual(TEXT("base64 session id"), Id, FString(TEXT("sess-b64")));
-			TestEqual(TEXT("base64 revision"), Revision, static_cast<int64>(7));
-			TestEqual(TEXT("base64 kind"), Kind, FString(TEXT("ended")));
-		}
-	}
-
-	{
-		FString LongId;
-		for (int32 Index = 0; Index < 129; ++Index) { LongId.AppendChar(TEXT('a')); }
-		TestFalse(TEXT("an oversized id is refused"), DecodeCue(TEXT("gms|") + LongId + TEXT("|1|ended"), Id, Revision, Kind));
-	}
-
-	TestFalse(TEXT("a missing kind field is refused"), DecodeCue(TEXT("gms|sess-abc|12"), Id, Revision, Kind));
-	TestFalse(TEXT("a missing revision field is refused"), DecodeCue(TEXT("gms|sess-abc"), Id, Revision, Kind));
-	TestFalse(TEXT("a fourth field is refused"), DecodeCue(TEXT("gms|sess-abc|12|ended|extra"), Id, Revision, Kind));
-	TestFalse(TEXT("an empty id is refused"), DecodeCue(TEXT("gms||12|ended"), Id, Revision, Kind));
-	TestFalse(TEXT("a non-integer revision is refused"), DecodeCue(TEXT("gms|sess-abc|12x|ended"), Id, Revision, Kind));
-	TestFalse(TEXT("a negative revision is refused"), DecodeCue(TEXT("gms|sess-abc|-1|ended"), Id, Revision, Kind));
-	TestFalse(TEXT("an empty revision is refused"), DecodeCue(TEXT("gms|sess-abc||ended"), Id, Revision, Kind));
-	TestFalse(TEXT("an empty kind is refused"), DecodeCue(TEXT("gms|sess-abc|12|"), Id, Revision, Kind));
-	TestFalse(TEXT("a kind over 64 characters is refused"),
-		DecodeCue(FString(TEXT("gms|sess-abc|12|")) + FString::ChrN(65, TEXT('k')), Id, Revision, Kind));
-	TestFalse(TEXT("the wrong prefix is refused"), DecodeCue(TEXT("gmx|sess-abc|12|ended"), Id, Revision, Kind));
-	TestFalse(TEXT("a model-changed payload is refused"), DecodeCue(TEXT("cmc:sess-abc"), Id, Revision, Kind));
-	TestFalse(TEXT("a signal payload is refused"), DecodeCue(TEXT("csg:BossWave:abc"), Id, Revision, Kind));
-	TestFalse(TEXT("chat is refused"), DecodeCue(TEXT("hello world"), Id, Revision, Kind));
-	TestFalse(TEXT("an empty payload is refused"),
-		UCrowdyGameModelSubsystem::DecodeChannelSessionCue(TArray<uint8>(), Id, Revision, Kind));
-
-	// A kind of exactly 64 characters is the boundary and is accepted.
-	if (TestTrue(TEXT("a kind of exactly 64 characters is accepted"),
-		DecodeCue(FString(TEXT("gms|sess-abc|3|")) + FString::ChrN(64, TEXT('k')), Id, Revision, Kind)))
-	{
-		TestEqual(TEXT("64-character kind length"), Kind.Len(), 64);
-	}
-
-	return true;
 }
 
 // UCrowdyChannels skips Game Model frames with HasGameModelChannelPrefix, so a cue must be claimed by it in every
@@ -121,45 +48,6 @@ bool FCrowdyGameModelSessionCuePrefixSkipTest::RunTest(const FString& Parameters
 		UCrowdyGameModelSubsystem::DecodeChannelModelChangedId(SessionCueBytes(Plain), Id));
 	TestFalse(TEXT("the signal decoder refuses a cue"),
 		UCrowdyGameModelSubsystem::DecodeChannelSignal(SessionCueBytes(Plain), Name, Id));
-	return true;
-}
-
-// The incarnation a leave sends: an explicit one wins, the remembered one is second, and with neither the leave
-// cannot be sent at all because the server requires one.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelSessionLeaveIncarnationTest,
-	"CrowdySDK.GameModel.SessionLeaveIncarnation", CrowdyGameModelSessionTestFlags)
-bool FCrowdyGameModelSessionLeaveIncarnationTest::RunTest(const FString& Parameters)
-{
-	const int32 Remembered = 3;
-	int32 Out = -1;
-
-	TestTrue(TEXT("explicit resolves"), UCrowdyGameModelSubsystem::ResolveLeaveIncarnation(5, &Remembered, Out));
-	TestEqual(TEXT("explicit wins over remembered"), Out, 5);
-
-	TestTrue(TEXT("explicit resolves with nothing remembered"), UCrowdyGameModelSubsystem::ResolveLeaveIncarnation(2, nullptr, Out));
-	TestEqual(TEXT("explicit alone"), Out, 2);
-
-	TestTrue(TEXT("remembered resolves when explicit is 0"), UCrowdyGameModelSubsystem::ResolveLeaveIncarnation(0, &Remembered, Out));
-	TestEqual(TEXT("remembered used"), Out, 3);
-
-	TestTrue(TEXT("remembered resolves when explicit is negative"), UCrowdyGameModelSubsystem::ResolveLeaveIncarnation(-1, &Remembered, Out));
-	TestEqual(TEXT("remembered used over a negative explicit"), Out, 3);
-
-	Out = -1;
-	TestFalse(TEXT("neither fails"), UCrowdyGameModelSubsystem::ResolveLeaveIncarnation(0, nullptr, Out));
-	TestEqual(TEXT("neither leaves 0"), Out, 0);
-
-	const int32 RememberedZero = 0;
-	TestFalse(TEXT("a remembered 0 is not an incarnation"), UCrowdyGameModelSubsystem::ResolveLeaveIncarnation(0, &RememberedZero, Out));
-
-	// A locally raised error never carries a server code, so the pair a UI reads always describes one failure.
-	UCrowdyGameModelSubsystem* Model = NewObject<UCrowdyGameModelSubsystem>(GetTransientPackage());
-	if (TestNotNull(TEXT("subsystem created"), Model))
-	{
-		Model->SetLastModelError(TEXT("no incarnation remembered"));
-		TestEqual(TEXT("local error message"), Model->GetLastModelError(), FString(TEXT("no incarnation remembered")));
-		TestEqual(TEXT("local error has no code"), Model->GetLastModelErrorCode(), FString());
-	}
 	return true;
 }
 

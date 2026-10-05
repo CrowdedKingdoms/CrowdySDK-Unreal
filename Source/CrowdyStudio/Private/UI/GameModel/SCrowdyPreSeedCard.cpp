@@ -146,8 +146,6 @@ void SCrowdyPreSeedCard::HandleAppChanged()
 	{
 		ScopeCombo->RefreshOptions();
 	}
-	// Announced after the app token is minted, so the new app's sessions can be listed now rather than on open.
-	RefreshScopes();
 }
 
 FReply SCrowdyPreSeedCard::OnScanClicked()

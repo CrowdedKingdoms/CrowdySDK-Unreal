@@ -7,6 +7,9 @@
 #include "Replication/GameModel/CrowdyGameModelSubsystem.h" // FCrowdyModelAttributeChanged (the shared change delegate)
 #include "CrowdyModelChangeActions.generated.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class UWorld;
 
 namespace CrowdyModelListen
@@ -33,7 +36,7 @@ namespace CrowdyModelListen
  * changed Target, ModelId, Attribute (the server key), and the old/new canonical JSON values.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyListenForModelChangesAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyListenForModelChangesAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -77,3 +80,5 @@ private:
 	TWeakObjectPtr<UWorld> BoundWorld;
 	FDelegateHandle WorldTearDownHandle;
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

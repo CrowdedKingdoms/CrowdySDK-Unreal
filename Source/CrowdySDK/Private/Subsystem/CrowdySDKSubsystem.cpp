@@ -279,6 +279,12 @@ void UCrowdySDKSubsystem::Logout() const
 		Replication->CloseConnection();
 	}
 
+	// The cached teams belong to the account that just left.
+	if (UCrowdyTeams* Teams = GetGameInstance()->GetSubsystem<UCrowdyTeams>())
+	{
+		Teams->ClearMyTeamsCache();
+	}
+
 	// The host subsystem only exists in a Game or PIE world, so signing out from anywhere else finds nothing to
 	// clear rather than crashing.
 	UWorld* World = GetWorld();
@@ -416,7 +422,7 @@ void UCrowdySDKSubsystem::RequestVersionInfo() const
 	// account that has already left.
 	ClientHost->SetGameToken(IsValid(GameSession) ? GameSession->GetGameToken() : FString());
 
-	FCrowdyCppClient* Client = ClientHost->GetClient(ResolveClientConfig());
+	FCrowdyCppClient* Client = ClientHost->GetClient(GetDefault<UCrowdySDKDeveloperSettings>()->MakeClientConfig());
 	if (!Client)
 	{
 		FailVersionInfo(TEXT("the API client could not be constructed"));
@@ -474,21 +480,6 @@ void UCrowdySDKSubsystem::RequestVersionInfo() const
 				}
 			}, LowLevelTasks::ETaskPriority::Normal, UE::Tasks::EExtendedTaskPriority::GameThreadNormalPri);
 		}, ECrowdyCppTokenPlane::Game);
-}
-
-FCrowdyCppClientConfig UCrowdySDKSubsystem::ResolveClientConfig()
-{
-	FCrowdyCppClientConfig Config;
-	if (const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>())
-	{
-		Config.DiscoveryUrl = Settings->GetDiscoveryUrl();
-		Config.ApiUrl = Settings->GetGameApiHttpUrl();
-		if (Config.ApiUrl.IsEmpty())
-		{
-			Config.ApiUrl = Config.DiscoveryUrl;
-		}
-	}
-	return Config;
 }
 
 void UCrowdySDKSubsystem::SetQueryEndpoint(const FString InEndpoint) const
@@ -654,7 +645,7 @@ void UCrowdySDKSubsystem::RequestTeleportPermission(const int64 ChunkX, const in
 	// still holds, so a request issued after a sign-out fails instead of answering as the account that just left.
 	ClientHost->SetGameToken(GameSession->GetGameToken());
 
-	FCrowdyCppClient* Client = ClientHost->GetClient(ResolveClientConfig());
+	FCrowdyCppClient* Client = ClientHost->GetClient(GetDefault<UCrowdySDKDeveloperSettings>()->MakeClientConfig());
 	if (!Client)
 	{
 		FailTeleportPermission(TEXT("the API client could not be constructed"));
@@ -1493,7 +1484,7 @@ void UCrowdySDKSubsystem::PollGameHost() const
 
 	ClientHost->SetGameToken(GameSession->GetGameToken());
 
-	FCrowdyCppClient* Client = ClientHost->GetClient(ResolveClientConfig());
+	FCrowdyCppClient* Client = ClientHost->GetClient(GetDefault<UCrowdySDKDeveloperSettings>()->MakeClientConfig());
 	if (!Client)
 	{
 		UE_LOG(LogCrowdySDK, Warning, TEXT("Could not construct the API client; the host poll cannot run."));

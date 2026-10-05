@@ -6,6 +6,9 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "CrowdyEffects.generated.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class UCrowdyEffect;
 class FJsonObject;
 struct FCrowdyInvokeResult;
@@ -33,7 +36,7 @@ struct FCrowdyInvokeResult;
  * magnitudes + the fixed source_id rule fully determine the invoke.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyEffects : public UBlueprintFunctionLibrary
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyEffects : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
@@ -183,3 +186,5 @@ public:
 		UObject* Source, const TMap<FName, FString>& Overrides, float Level, const FString& SessionId,
 		TFunction<void(FCrowdyInvokeResult)> OnDone, FString& OutError);
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

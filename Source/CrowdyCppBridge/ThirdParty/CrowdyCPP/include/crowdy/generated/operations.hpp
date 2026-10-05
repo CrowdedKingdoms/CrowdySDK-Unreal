@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: ccf86c6e087220b9c1f9f2fdcb8252fb7f6581fa9db8cd8bb43594451f81c989
-// operations sha256: 3de1666fc61e46cf5effefa06d71f3d98844d8323a7e763fb6362f56159e0b4f
+// schema.gql sha256: fa06ef384c9b7cfc4d42ea09d13e890ffadd78f7d6ac7cefaf2a0f00b97d3f0e
+// operations sha256: 9abc3be640876f499f47f8f4beeba306f2c2bca2bc301d7aad8d1156703566a4
 
 #pragma once
 
@@ -342,6 +342,23 @@ inline constexpr std::string_view kAppAccessTiersIsolatedDocument = R"gql(query 
 })gql";
 inline constexpr std::string_view kAppAccessTiersOperationName = "AppAccessTiers";
 
+/// appAccess/AppFeatures.graphql
+inline constexpr std::string_view kAppFeaturesDocument = R"gql(query AppFeatures($appId: BigInt!) {
+  gameModelFeatures(appId: $appId) {
+    appId
+    featureKey
+    description
+  }
+})gql";
+inline constexpr std::string_view kAppFeaturesIsolatedDocument = R"gql(query AppFeatures($appId: BigInt!) {
+  gameModelFeatures(appId: $appId) {
+    appId
+    featureKey
+    description
+  }
+})gql";
+inline constexpr std::string_view kAppFeaturesOperationName = "AppFeatures";
+
 /// appAccess/AppGrantMemberCandidates.graphql
 inline constexpr std::string_view kAppGrantMemberCandidatesDocument = R"gql(query AppGrantMemberCandidates($appId: BigInt!) {
   appGrantMemberCandidates(appId: $appId) {
@@ -561,6 +578,23 @@ inline constexpr std::string_view kCreateAccessTierIsolatedDocument = R"gql(muta
 })gql";
 inline constexpr std::string_view kCreateAccessTierOperationName = "CreateAccessTier";
 
+/// appAccess/DefineAppFeature.graphql
+inline constexpr std::string_view kDefineAppFeatureDocument = R"gql(mutation DefineAppFeature($input: DefineAppFeatureInput!) {
+  gameModelDefineFeature(input: $input) {
+    appId
+    featureKey
+    description
+  }
+})gql";
+inline constexpr std::string_view kDefineAppFeatureIsolatedDocument = R"gql(mutation DefineAppFeature($input: DefineAppFeatureInput!) {
+  gameModelDefineFeature(input: $input) {
+    appId
+    featureKey
+    description
+  }
+})gql";
+inline constexpr std::string_view kDefineAppFeatureOperationName = "DefineAppFeature";
+
 /// appAccess/GrantAppAccess.graphql
 inline constexpr std::string_view kGrantAppAccessDocument = R"gql(mutation GrantAppAccess($input: GrantAppAccessInput!) {
   grantAppAccess(input: $input) {
@@ -622,6 +656,23 @@ inline constexpr std::string_view kGrantMyAppAccessIsolatedDocument = R"gql(muta
   }
 })gql";
 inline constexpr std::string_view kGrantMyAppAccessOperationName = "GrantMyAppAccess";
+
+/// appAccess/GrantTierFeature.graphql
+inline constexpr std::string_view kGrantTierFeatureDocument = R"gql(mutation GrantTierFeature($input: GrantTierFeatureInput!) {
+  gameModelGrantTierFeature(input: $input) {
+    appId
+    tierId
+    featureKey
+  }
+})gql";
+inline constexpr std::string_view kGrantTierFeatureIsolatedDocument = R"gql(mutation GrantTierFeature($input: GrantTierFeatureInput!) {
+  gameModelGrantTierFeature(input: $input) {
+    appId
+    tierId
+    featureKey
+  }
+})gql";
+inline constexpr std::string_view kGrantTierFeatureOperationName = "GrantTierFeature";
 
 /// appAccess/MyAppAccess.graphql
 inline constexpr std::string_view kMyAppAccessDocument = R"gql(query MyAppAccess($appId: BigInt!) {
@@ -685,6 +736,15 @@ inline constexpr std::string_view kRevokeAppAccessIsolatedDocument = R"gql(mutat
 })gql";
 inline constexpr std::string_view kRevokeAppAccessOperationName = "RevokeAppAccess";
 
+/// appAccess/RevokeTierFeature.graphql
+inline constexpr std::string_view kRevokeTierFeatureDocument = R"gql(mutation RevokeTierFeature($input: GrantTierFeatureInput!) {
+  gameModelRevokeTierFeature(input: $input)
+})gql";
+inline constexpr std::string_view kRevokeTierFeatureIsolatedDocument = R"gql(mutation RevokeTierFeature($input: GrantTierFeatureInput!) {
+  gameModelRevokeTierFeature(input: $input)
+})gql";
+inline constexpr std::string_view kRevokeTierFeatureOperationName = "RevokeTierFeature";
+
 /// appAccess/RuntimePermissions.graphql
 inline constexpr std::string_view kRuntimePermissionsDocument = R"gql(query RuntimePermissions {
   runtimePermissions
@@ -693,6 +753,23 @@ inline constexpr std::string_view kRuntimePermissionsIsolatedDocument = R"gql(qu
   runtimePermissions
 })gql";
 inline constexpr std::string_view kRuntimePermissionsOperationName = "RuntimePermissions";
+
+/// appAccess/TierFeatures.graphql
+inline constexpr std::string_view kTierFeaturesDocument = R"gql(query TierFeatures($appId: BigInt!, $tierId: BigInt) {
+  gameModelTierFeatures(appId: $appId, tierId: $tierId) {
+    appId
+    tierId
+    featureKey
+  }
+})gql";
+inline constexpr std::string_view kTierFeaturesIsolatedDocument = R"gql(query TierFeatures($appId: BigInt!, $tierId: BigInt) {
+  gameModelTierFeatures(appId: $appId, tierId: $tierId) {
+    appId
+    tierId
+    featureKey
+  }
+})gql";
+inline constexpr std::string_view kTierFeaturesOperationName = "TierFeatures";
 
 /// appAccess/UpdateAccessTier.graphql
 inline constexpr std::string_view kUpdateAccessTierDocument = R"gql(mutation UpdateAccessTier($tierId: BigInt!, $input: UpdateAccessTierInput!) {
@@ -733,17 +810,22 @@ inline constexpr std::string_view kUpdateAccessTierOperationName = "UpdateAccess
 
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "AppAccessTiers") return kAppAccessTiersIsolatedDocument;
+  if (operationName == "AppFeatures") return kAppFeaturesIsolatedDocument;
   if (operationName == "AppGrantMemberCandidates") return kAppGrantMemberCandidatesIsolatedDocument;
   if (operationName == "AppUserAccessByApp") return kAppUserAccessByAppIsolatedDocument;
   if (operationName == "AppUserAccessConnection") return kAppUserAccessConnectionIsolatedDocument;
   if (operationName == "ArchiveAccessTier") return kArchiveAccessTierIsolatedDocument;
   if (operationName == "ClaimFreeAppAccess") return kClaimFreeAppAccessIsolatedDocument;
   if (operationName == "CreateAccessTier") return kCreateAccessTierIsolatedDocument;
+  if (operationName == "DefineAppFeature") return kDefineAppFeatureIsolatedDocument;
   if (operationName == "GrantAppAccess") return kGrantAppAccessIsolatedDocument;
   if (operationName == "GrantMyAppAccess") return kGrantMyAppAccessIsolatedDocument;
+  if (operationName == "GrantTierFeature") return kGrantTierFeatureIsolatedDocument;
   if (operationName == "MyAppAccess") return kMyAppAccessIsolatedDocument;
   if (operationName == "RevokeAppAccess") return kRevokeAppAccessIsolatedDocument;
+  if (operationName == "RevokeTierFeature") return kRevokeTierFeatureIsolatedDocument;
   if (operationName == "RuntimePermissions") return kRuntimePermissionsIsolatedDocument;
+  if (operationName == "TierFeatures") return kTierFeaturesIsolatedDocument;
   if (operationName == "UpdateAccessTier") return kUpdateAccessTierIsolatedDocument;
   return {};
 }
@@ -763,6 +845,7 @@ inline constexpr std::string_view kAppDocument = R"gql(query App($appId: BigInt!
     visibility
     status
     metadata
+    wildernessWritesOpen
     splitMode
     deploymentTarget
     reservedUdpBytesPerSec
@@ -789,6 +872,7 @@ inline constexpr std::string_view kAppIsolatedDocument = R"gql(query App($appId:
     visibility
     status
     metadata
+    wildernessWritesOpen
     splitMode
     deploymentTarget
     reservedUdpBytesPerSec
@@ -818,6 +902,7 @@ inline constexpr std::string_view kAppBySlugDocument = R"gql(query AppBySlug($or
     visibility
     status
     metadata
+    wildernessWritesOpen
     splitMode
     gameApiUrl
     createdAt
@@ -839,6 +924,7 @@ inline constexpr std::string_view kAppBySlugIsolatedDocument = R"gql(query AppBy
     visibility
     status
     metadata
+    wildernessWritesOpen
     splitMode
     gameApiUrl
     createdAt
@@ -882,6 +968,7 @@ inline constexpr std::string_view kAppsForOrgDocument = R"gql(query AppsForOrg($
     visibility
     status
     metadata
+    wildernessWritesOpen
     splitMode
     gameApiUrl
     createdAt
@@ -898,6 +985,7 @@ inline constexpr std::string_view kAppsForOrgIsolatedDocument = R"gql(query Apps
     visibility
     status
     metadata
+    wildernessWritesOpen
     splitMode
     gameApiUrl
     createdAt
@@ -1037,6 +1125,7 @@ inline constexpr std::string_view kCreateAppDocument = R"gql(mutation CreateApp(
     visibility
     status
     metadata
+    wildernessWritesOpen
     createdAt
   }
 })gql";
@@ -1050,6 +1139,7 @@ inline constexpr std::string_view kCreateAppIsolatedDocument = R"gql(mutation Cr
     visibility
     status
     metadata
+    wildernessWritesOpen
     createdAt
   }
 })gql";
@@ -1201,6 +1291,7 @@ inline constexpr std::string_view kMyAppsDocument = R"gql(query MyApps {
     visibility
     status
     metadata
+    wildernessWritesOpen
     splitMode
     gameApiUrl
     createdAt
@@ -1222,6 +1313,7 @@ inline constexpr std::string_view kMyAppsIsolatedDocument = R"gql(query MyApps {
     visibility
     status
     metadata
+    wildernessWritesOpen
     splitMode
     gameApiUrl
     createdAt
@@ -1235,23 +1327,6 @@ inline constexpr std::string_view kMyAppsIsolatedDocument = R"gql(query MyApps {
 })gql";
 inline constexpr std::string_view kMyAppsOperationName = "MyApps";
 
-/// apps/SetAppVisibility.graphql
-inline constexpr std::string_view kSetAppVisibilityDocument = R"gql(mutation SetAppVisibility($appId: BigInt!, $visibility: AppVisibility!) {
-  setAppVisibility(appId: $appId, visibility: $visibility) {
-    appId
-    visibility
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kSetAppVisibilityIsolatedDocument = R"gql(mutation SetAppVisibility($appId: BigInt!, $visibility: AppVisibility!) {
-  setAppVisibility(appId: $appId, visibility: $visibility) {
-    appId
-    visibility
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kSetAppVisibilityOperationName = "SetAppVisibility";
-
 /// apps/UpdateApp.graphql
 inline constexpr std::string_view kUpdateAppDocument = R"gql(mutation UpdateApp($appId: BigInt!, $input: UpdateAppInput!) {
   updateApp(appId: $appId, input: $input) {
@@ -1263,6 +1338,7 @@ inline constexpr std::string_view kUpdateAppDocument = R"gql(mutation UpdateApp(
     visibility
     status
     metadata
+    wildernessWritesOpen
     updatedAt
   }
 })gql";
@@ -1276,6 +1352,7 @@ inline constexpr std::string_view kUpdateAppIsolatedDocument = R"gql(mutation Up
     visibility
     status
     metadata
+    wildernessWritesOpen
     updatedAt
   }
 })gql";
@@ -1296,7 +1373,6 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "MarketplaceApps") return kMarketplaceAppsIsolatedDocument;
   if (operationName == "AppsConnection") return kAppsConnectionIsolatedDocument;
   if (operationName == "MyApps") return kMyAppsIsolatedDocument;
-  if (operationName == "SetAppVisibility") return kSetAppVisibilityIsolatedDocument;
   if (operationName == "UpdateApp") return kUpdateAppIsolatedDocument;
   return {};
 }
@@ -2433,6 +2509,15 @@ inline constexpr std::string_view kGetChunksByDistanceDocument = R"gql(query Get
         z
       }
       voxels
+      voxelStates {
+        voxelCoord {
+          x
+          y
+          z
+        }
+        voxelType
+        state
+      }
       owner
       createdAt
       updatedAt
@@ -2458,6 +2543,15 @@ inline constexpr std::string_view kGetChunksByDistanceIsolatedDocument = R"gql(q
         z
       }
       voxels
+      voxelStates {
+        voxelCoord {
+          x
+          y
+          z
+        }
+        voxelType
+        state
+      }
       owner
       createdAt
       updatedAt
@@ -2637,47 +2731,15 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 
 }  // namespace chunks
 
-namespace compute {
+namespace computeUnits {
 
-/// compute/AppComputeBudget.graphql
-inline constexpr std::string_view kAppComputeBudgetDocument = R"gql(fragment EngineComputeUnitsFields on EngineComputeUnits {
-  engine
-  units
-}
-
-fragment AppComputeBudgetInfoFields on AppComputeBudgetInfo {
+/// computeUnits/AppComputeBudget.graphql
+inline constexpr std::string_view kAppComputeBudgetDocument = R"gql(fragment AppComputeBudgetInfoFields on AppComputeBudgetInfo {
   appId
   unitsPerMinute
   enforce
   note
   updatedAt
-}
-
-query AppComputeUsage($appId: BigInt!, $windowMinutes: Int) {
-  appComputeUsage(appId: $appId, windowMinutes: $windowMinutes) {
-    windowMinutes
-    totalUnits
-    peakMinuteUnits
-    meanUnitsPerMinute
-    byEngine {
-      ...EngineComputeUnitsFields
-    }
-  }
-}
-
-query AppComputeBudgetStatus($appId: BigInt!) {
-  appComputeBudgetStatus(appId: $appId) {
-    appId
-    unitsUsed
-    allowance
-    allowanceIsAppOwn
-    overBudget
-    enforced
-    retryAfterMs
-    byEngine {
-      ...EngineComputeUnitsFields
-    }
-  }
 }
 
 query AppComputeBudget($appId: BigInt!) {
@@ -2705,43 +2767,6 @@ mutation SetAppComputeBudget(
 mutation ClearAppComputeBudget($appId: BigInt!) {
   clearAppComputeBudget(appId: $appId)
 })gql";
-inline constexpr std::string_view kAppComputeUsageIsolatedDocument = R"gql(query AppComputeUsage($appId: BigInt!, $windowMinutes: Int) {
-  appComputeUsage(appId: $appId, windowMinutes: $windowMinutes) {
-    windowMinutes
-    totalUnits
-    peakMinuteUnits
-    meanUnitsPerMinute
-    byEngine {
-      ...EngineComputeUnitsFields
-    }
-  }
-}
-
-fragment EngineComputeUnitsFields on EngineComputeUnits {
-  engine
-  units
-})gql";
-inline constexpr std::string_view kAppComputeUsageOperationName = "AppComputeUsage";
-inline constexpr std::string_view kAppComputeBudgetStatusIsolatedDocument = R"gql(query AppComputeBudgetStatus($appId: BigInt!) {
-  appComputeBudgetStatus(appId: $appId) {
-    appId
-    unitsUsed
-    allowance
-    allowanceIsAppOwn
-    overBudget
-    enforced
-    retryAfterMs
-    byEngine {
-      ...EngineComputeUnitsFields
-    }
-  }
-}
-
-fragment EngineComputeUnitsFields on EngineComputeUnits {
-  engine
-  units
-})gql";
-inline constexpr std::string_view kAppComputeBudgetStatusOperationName = "AppComputeBudgetStatus";
 inline constexpr std::string_view kAppComputeBudgetIsolatedDocument = R"gql(query AppComputeBudget($appId: BigInt!) {
   appComputeBudget(appId: $appId) {
     ...AppComputeBudgetInfoFields
@@ -2780,946 +2805,14 @@ inline constexpr std::string_view kClearAppComputeBudgetIsolatedDocument = R"gql
 })gql";
 inline constexpr std::string_view kClearAppComputeBudgetOperationName = "ClearAppComputeBudget";
 
-/// compute/ComputeModules.graphql
-inline constexpr std::string_view kComputeModulesDocument = R"gql(fragment ComputeModuleFields on WasmModule {
-  moduleId
-  appId
-  name
-  description
-  enabled
-  # `alwaysOn` was selected here and is gone (2026-09-01). Deprecated
-  # server-side and now always false: a module runs only while its app has a
-  # player present. Selecting it would hand every caller a meaningless value.
-  currentVersionId
-  circuitState
-  consecutiveFailures
-  cooldownUntil
-  breakerLatchedAt
-  breakerReason
-  lastError
-  createdAt
-  updatedAt
-}
-
-fragment ComputeVersionFields on WasmModuleVersion {
-  versionId
-  moduleId
-  appId
-  versionNo
-  sourceHash
-  sdkVersion
-  abiVersion
-  compileStatus
-  compileLog
-  compiledSizeBytes
-  publishedAt
-  createdAt
-}
-
-fragment ComputeTriggerFields on WasmModuleTrigger {
-  triggerId
-  appId
-  moduleId
-  triggerType
-  tickHz
-  onEvent
-  functionName
-  containerTypeName
-  propertyKey
-  eventName
-  debounceMs
-  exportName
-  invokePolicyJson
-  contractJson
-  createdAt
-}
-
-fragment ComputePolicyFields on WasmModulePolicy {
-  appId
-  enabled
-  maxModules
-  maxTickHz
-  fuelPerTick
-  fuelPerInvoke
-  maxMemoryMb
-  maxRunMs
-  maxDbOpsPerTick
-  maxEgressMsgsPerMin
-  maxEgressBytesPerMin
-  failureThreshold
-  cooldownMs
-  statePersistMinIntervalMs
-  maxStateWritesPerMin
-  maxStateBytesPerMin
-}
-
-fragment ComputeRunFields on WasmModuleRun {
-  runId
-  appId
-  flowId
-  moduleId
-  moduleName
-  triggerSource
-  entry
-  startedAt
-  durationUs
-  fuelUsed
-  dbReads
-  dbWrites
-  egressMsgs
-  egressBytes
-  success
-  errorMessage
-  circuitAction
-}
-
-mutation ComputeUpsertModule($input: UpsertComputeModuleInput!) {
-  computeUpsertModule(input: $input) {
-    ...ComputeModuleFields
-  }
-}
-
-mutation ComputeDeployVersion($input: DeployComputeVersionInput!) {
-  computeDeployVersion(input: $input) {
-    ...ComputeVersionFields
-  }
-}
-
-mutation ComputeSetModuleEnabled($appId: BigInt!, $name: String!, $enabled: Boolean!) {
-  computeSetModuleEnabled(appId: $appId, name: $name, enabled: $enabled) {
-    ...ComputeModuleFields
-  }
-}
-
-mutation ComputeResetBreaker($appId: BigInt!, $name: String!, $reason: String!) {
-  computeResetBreaker(appId: $appId, name: $name, reason: $reason) {
-    ...ComputeModuleFields
-  }
-}
-
-mutation ComputeDeleteModule($appId: BigInt!, $name: String!) {
-  computeDeleteModule(appId: $appId, name: $name)
-}
-
-mutation ComputeUpsertTrigger($input: UpsertComputeTriggerInput!) {
-  computeUpsertTrigger(input: $input) {
-    ...ComputeTriggerFields
-  }
-}
-
-mutation ComputeDeleteTrigger($appId: BigInt!, $triggerId: String!) {
-  computeDeleteTrigger(appId: $appId, triggerId: $triggerId)
-}
-
-mutation ComputeSetPolicy($input: SetComputePolicyInput!) {
-  computeSetPolicy(input: $input) {
-    ...ComputePolicyFields
-  }
-}
-
-mutation ComputeInvoke(
-  $appId: BigInt!
-  $moduleName: String!
-  $exportName: String!
-  $paramsJson: String
-) {
-  computeInvoke(
-    appId: $appId
-    moduleName: $moduleName
-    exportName: $exportName
-    paramsJson: $paramsJson
-  ) {
-    resultBase64
-    resultJson
-    fuelUsed
-    durationUs
-  }
-}
-
-query ComputeModules($appId: BigInt!) {
-  computeModules(appId: $appId) {
-    ...ComputeModuleFields
-  }
-}
-
-query ComputeModule($appId: BigInt!, $name: String!) {
-  computeModule(appId: $appId, name: $name) {
-    ...ComputeModuleFields
-  }
-}
-
-query ComputeModuleVersions($appId: BigInt!, $moduleName: String!, $limit: Int) {
-  computeModuleVersions(appId: $appId, moduleName: $moduleName, limit: $limit) {
-    ...ComputeVersionFields
-  }
-}
-
-query ComputeModuleTriggers($appId: BigInt!, $moduleName: String) {
-  computeModuleTriggers(appId: $appId, moduleName: $moduleName) {
-    ...ComputeTriggerFields
-  }
-}
-
-query ComputeModulePolicy($appId: BigInt!) {
-  computeModulePolicy(appId: $appId) {
-    ...ComputePolicyFields
-  }
-}
-
-query ComputeModuleRuns(
-  $appId: BigInt!
-  $moduleName: String
-  $success: Boolean
-  $limit: Int
-  $offset: Int
-) {
-  computeModuleRuns(
-    appId: $appId
-    moduleName: $moduleName
-    success: $success
-    limit: $limit
-    offset: $offset
-  ) {
-    ...ComputeRunFields
-  }
-}
-
-query ComputeModuleStats($appId: BigInt!, $windowMinutes: Int) {
-  computeModuleStats(appId: $appId, windowMinutes: $windowMinutes) {
-    windowMinutes
-    totalRuns
-    failedRuns
-    failureRatePct
-    totalFuelUsed
-    totalEgressMsgs
-    avgDurationUs
-    byModule {
-      moduleName
-      runs
-      failures
-      fuelUsed
-      avgDurationUs
-      circuitState
-    }
-  }
-}
-
-query ComputeModuleLogs($appId: BigInt!, $moduleName: String, $limit: Int) {
-  computeModuleLogs(appId: $appId, moduleName: $moduleName, limit: $limit) {
-    ts
-    moduleName
-    level
-    message
-    triggerSource
-  }
-}
-
-query ComputeAppDiagnostics($appId: BigInt!) {
-  computeAppDiagnostics(appId: $appId) {
-    appId
-    moduleCount
-    enabledModuleCount
-    versionCount
-    triggerCount
-    runs24h
-    failedRuns24h
-    fuelUsed24h
-    topModules {
-      moduleName
-      runs
-      failures
-    }
-    toolchainRustVersion
-    toolchainWasmOptVersion
-  }
-}
-
-query ComputeTemplates($appId: BigInt!) {
-  computeTemplates(appId: $appId) {
-    name
-    description
-    exports
-  }
-}
-
-mutation ComputeDeployTemplate($appId: BigInt!, $templateName: String!, $moduleName: String) {
-  computeDeployTemplate(appId: $appId, templateName: $templateName, moduleName: $moduleName) {
-    ...ComputeModuleFields
-  }
-})gql";
-inline constexpr std::string_view kComputeUpsertModuleIsolatedDocument = R"gql(mutation ComputeUpsertModule($input: UpsertComputeModuleInput!) {
-  computeUpsertModule(input: $input) {
-    ...ComputeModuleFields
-  }
-}
-
-fragment ComputeModuleFields on WasmModule {
-  moduleId
-  appId
-  name
-  description
-  enabled
-  currentVersionId
-  circuitState
-  consecutiveFailures
-  cooldownUntil
-  breakerLatchedAt
-  breakerReason
-  lastError
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kComputeUpsertModuleOperationName = "ComputeUpsertModule";
-inline constexpr std::string_view kComputeDeployVersionIsolatedDocument = R"gql(mutation ComputeDeployVersion($input: DeployComputeVersionInput!) {
-  computeDeployVersion(input: $input) {
-    ...ComputeVersionFields
-  }
-}
-
-fragment ComputeVersionFields on WasmModuleVersion {
-  versionId
-  moduleId
-  appId
-  versionNo
-  sourceHash
-  sdkVersion
-  abiVersion
-  compileStatus
-  compileLog
-  compiledSizeBytes
-  publishedAt
-  createdAt
-})gql";
-inline constexpr std::string_view kComputeDeployVersionOperationName = "ComputeDeployVersion";
-inline constexpr std::string_view kComputeSetModuleEnabledIsolatedDocument = R"gql(mutation ComputeSetModuleEnabled($appId: BigInt!, $name: String!, $enabled: Boolean!) {
-  computeSetModuleEnabled(appId: $appId, name: $name, enabled: $enabled) {
-    ...ComputeModuleFields
-  }
-}
-
-fragment ComputeModuleFields on WasmModule {
-  moduleId
-  appId
-  name
-  description
-  enabled
-  currentVersionId
-  circuitState
-  consecutiveFailures
-  cooldownUntil
-  breakerLatchedAt
-  breakerReason
-  lastError
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kComputeSetModuleEnabledOperationName = "ComputeSetModuleEnabled";
-inline constexpr std::string_view kComputeResetBreakerIsolatedDocument = R"gql(mutation ComputeResetBreaker($appId: BigInt!, $name: String!, $reason: String!) {
-  computeResetBreaker(appId: $appId, name: $name, reason: $reason) {
-    ...ComputeModuleFields
-  }
-}
-
-fragment ComputeModuleFields on WasmModule {
-  moduleId
-  appId
-  name
-  description
-  enabled
-  currentVersionId
-  circuitState
-  consecutiveFailures
-  cooldownUntil
-  breakerLatchedAt
-  breakerReason
-  lastError
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kComputeResetBreakerOperationName = "ComputeResetBreaker";
-inline constexpr std::string_view kComputeDeleteModuleIsolatedDocument = R"gql(mutation ComputeDeleteModule($appId: BigInt!, $name: String!) {
-  computeDeleteModule(appId: $appId, name: $name)
-})gql";
-inline constexpr std::string_view kComputeDeleteModuleOperationName = "ComputeDeleteModule";
-inline constexpr std::string_view kComputeUpsertTriggerIsolatedDocument = R"gql(mutation ComputeUpsertTrigger($input: UpsertComputeTriggerInput!) {
-  computeUpsertTrigger(input: $input) {
-    ...ComputeTriggerFields
-  }
-}
-
-fragment ComputeTriggerFields on WasmModuleTrigger {
-  triggerId
-  appId
-  moduleId
-  triggerType
-  tickHz
-  onEvent
-  functionName
-  containerTypeName
-  propertyKey
-  eventName
-  debounceMs
-  exportName
-  invokePolicyJson
-  contractJson
-  createdAt
-})gql";
-inline constexpr std::string_view kComputeUpsertTriggerOperationName = "ComputeUpsertTrigger";
-inline constexpr std::string_view kComputeDeleteTriggerIsolatedDocument = R"gql(mutation ComputeDeleteTrigger($appId: BigInt!, $triggerId: String!) {
-  computeDeleteTrigger(appId: $appId, triggerId: $triggerId)
-})gql";
-inline constexpr std::string_view kComputeDeleteTriggerOperationName = "ComputeDeleteTrigger";
-inline constexpr std::string_view kComputeSetPolicyIsolatedDocument = R"gql(mutation ComputeSetPolicy($input: SetComputePolicyInput!) {
-  computeSetPolicy(input: $input) {
-    ...ComputePolicyFields
-  }
-}
-
-fragment ComputePolicyFields on WasmModulePolicy {
-  appId
-  enabled
-  maxModules
-  maxTickHz
-  fuelPerTick
-  fuelPerInvoke
-  maxMemoryMb
-  maxRunMs
-  maxDbOpsPerTick
-  maxEgressMsgsPerMin
-  maxEgressBytesPerMin
-  failureThreshold
-  cooldownMs
-  statePersistMinIntervalMs
-  maxStateWritesPerMin
-  maxStateBytesPerMin
-})gql";
-inline constexpr std::string_view kComputeSetPolicyOperationName = "ComputeSetPolicy";
-inline constexpr std::string_view kComputeInvokeIsolatedDocument = R"gql(mutation ComputeInvoke($appId: BigInt!, $moduleName: String!, $exportName: String!, $paramsJson: String) {
-  computeInvoke(
-    appId: $appId
-    moduleName: $moduleName
-    exportName: $exportName
-    paramsJson: $paramsJson
-  ) {
-    resultBase64
-    resultJson
-    fuelUsed
-    durationUs
-  }
-})gql";
-inline constexpr std::string_view kComputeInvokeOperationName = "ComputeInvoke";
-inline constexpr std::string_view kComputeModulesIsolatedDocument = R"gql(query ComputeModules($appId: BigInt!) {
-  computeModules(appId: $appId) {
-    ...ComputeModuleFields
-  }
-}
-
-fragment ComputeModuleFields on WasmModule {
-  moduleId
-  appId
-  name
-  description
-  enabled
-  currentVersionId
-  circuitState
-  consecutiveFailures
-  cooldownUntil
-  breakerLatchedAt
-  breakerReason
-  lastError
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kComputeModulesOperationName = "ComputeModules";
-inline constexpr std::string_view kComputeModuleIsolatedDocument = R"gql(query ComputeModule($appId: BigInt!, $name: String!) {
-  computeModule(appId: $appId, name: $name) {
-    ...ComputeModuleFields
-  }
-}
-
-fragment ComputeModuleFields on WasmModule {
-  moduleId
-  appId
-  name
-  description
-  enabled
-  currentVersionId
-  circuitState
-  consecutiveFailures
-  cooldownUntil
-  breakerLatchedAt
-  breakerReason
-  lastError
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kComputeModuleOperationName = "ComputeModule";
-inline constexpr std::string_view kComputeModuleVersionsIsolatedDocument = R"gql(query ComputeModuleVersions($appId: BigInt!, $moduleName: String!, $limit: Int) {
-  computeModuleVersions(appId: $appId, moduleName: $moduleName, limit: $limit) {
-    ...ComputeVersionFields
-  }
-}
-
-fragment ComputeVersionFields on WasmModuleVersion {
-  versionId
-  moduleId
-  appId
-  versionNo
-  sourceHash
-  sdkVersion
-  abiVersion
-  compileStatus
-  compileLog
-  compiledSizeBytes
-  publishedAt
-  createdAt
-})gql";
-inline constexpr std::string_view kComputeModuleVersionsOperationName = "ComputeModuleVersions";
-inline constexpr std::string_view kComputeModuleTriggersIsolatedDocument = R"gql(query ComputeModuleTriggers($appId: BigInt!, $moduleName: String) {
-  computeModuleTriggers(appId: $appId, moduleName: $moduleName) {
-    ...ComputeTriggerFields
-  }
-}
-
-fragment ComputeTriggerFields on WasmModuleTrigger {
-  triggerId
-  appId
-  moduleId
-  triggerType
-  tickHz
-  onEvent
-  functionName
-  containerTypeName
-  propertyKey
-  eventName
-  debounceMs
-  exportName
-  invokePolicyJson
-  contractJson
-  createdAt
-})gql";
-inline constexpr std::string_view kComputeModuleTriggersOperationName = "ComputeModuleTriggers";
-inline constexpr std::string_view kComputeModulePolicyIsolatedDocument = R"gql(query ComputeModulePolicy($appId: BigInt!) {
-  computeModulePolicy(appId: $appId) {
-    ...ComputePolicyFields
-  }
-}
-
-fragment ComputePolicyFields on WasmModulePolicy {
-  appId
-  enabled
-  maxModules
-  maxTickHz
-  fuelPerTick
-  fuelPerInvoke
-  maxMemoryMb
-  maxRunMs
-  maxDbOpsPerTick
-  maxEgressMsgsPerMin
-  maxEgressBytesPerMin
-  failureThreshold
-  cooldownMs
-  statePersistMinIntervalMs
-  maxStateWritesPerMin
-  maxStateBytesPerMin
-})gql";
-inline constexpr std::string_view kComputeModulePolicyOperationName = "ComputeModulePolicy";
-inline constexpr std::string_view kComputeModuleRunsIsolatedDocument = R"gql(query ComputeModuleRuns($appId: BigInt!, $moduleName: String, $success: Boolean, $limit: Int, $offset: Int) {
-  computeModuleRuns(
-    appId: $appId
-    moduleName: $moduleName
-    success: $success
-    limit: $limit
-    offset: $offset
-  ) {
-    ...ComputeRunFields
-  }
-}
-
-fragment ComputeRunFields on WasmModuleRun {
-  runId
-  appId
-  flowId
-  moduleId
-  moduleName
-  triggerSource
-  entry
-  startedAt
-  durationUs
-  fuelUsed
-  dbReads
-  dbWrites
-  egressMsgs
-  egressBytes
-  success
-  errorMessage
-  circuitAction
-})gql";
-inline constexpr std::string_view kComputeModuleRunsOperationName = "ComputeModuleRuns";
-inline constexpr std::string_view kComputeModuleStatsIsolatedDocument = R"gql(query ComputeModuleStats($appId: BigInt!, $windowMinutes: Int) {
-  computeModuleStats(appId: $appId, windowMinutes: $windowMinutes) {
-    windowMinutes
-    totalRuns
-    failedRuns
-    failureRatePct
-    totalFuelUsed
-    totalEgressMsgs
-    avgDurationUs
-    byModule {
-      moduleName
-      runs
-      failures
-      fuelUsed
-      avgDurationUs
-      circuitState
-    }
-  }
-})gql";
-inline constexpr std::string_view kComputeModuleStatsOperationName = "ComputeModuleStats";
-inline constexpr std::string_view kComputeModuleLogsIsolatedDocument = R"gql(query ComputeModuleLogs($appId: BigInt!, $moduleName: String, $limit: Int) {
-  computeModuleLogs(appId: $appId, moduleName: $moduleName, limit: $limit) {
-    ts
-    moduleName
-    level
-    message
-    triggerSource
-  }
-})gql";
-inline constexpr std::string_view kComputeModuleLogsOperationName = "ComputeModuleLogs";
-inline constexpr std::string_view kComputeAppDiagnosticsIsolatedDocument = R"gql(query ComputeAppDiagnostics($appId: BigInt!) {
-  computeAppDiagnostics(appId: $appId) {
-    appId
-    moduleCount
-    enabledModuleCount
-    versionCount
-    triggerCount
-    runs24h
-    failedRuns24h
-    fuelUsed24h
-    topModules {
-      moduleName
-      runs
-      failures
-    }
-    toolchainRustVersion
-    toolchainWasmOptVersion
-  }
-})gql";
-inline constexpr std::string_view kComputeAppDiagnosticsOperationName = "ComputeAppDiagnostics";
-inline constexpr std::string_view kComputeTemplatesIsolatedDocument = R"gql(query ComputeTemplates($appId: BigInt!) {
-  computeTemplates(appId: $appId) {
-    name
-    description
-    exports
-  }
-})gql";
-inline constexpr std::string_view kComputeTemplatesOperationName = "ComputeTemplates";
-inline constexpr std::string_view kComputeDeployTemplateIsolatedDocument = R"gql(mutation ComputeDeployTemplate($appId: BigInt!, $templateName: String!, $moduleName: String) {
-  computeDeployTemplate(
-    appId: $appId
-    templateName: $templateName
-    moduleName: $moduleName
-  ) {
-    ...ComputeModuleFields
-  }
-}
-
-fragment ComputeModuleFields on WasmModule {
-  moduleId
-  appId
-  name
-  description
-  enabled
-  currentVersionId
-  circuitState
-  consecutiveFailures
-  cooldownUntil
-  breakerLatchedAt
-  breakerReason
-  lastError
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kComputeDeployTemplateOperationName = "ComputeDeployTemplate";
-
-/// compute/UserCodeFaults.graphql
-inline constexpr std::string_view kUserCodeFaultsDocument = R"gql(fragment UserCodeFaultRecordFields on UserCodeFaultRecord {
-  faultId
-  appId
-  engine
-  kind
-  blame
-  retryable
-  subject
-  entryPoint
-  flowId
-  gridId
-  actingUserId
-  durationUs
-  budgetUs
-  unitsUsed
-  unitsLimit
-  stepsCompleted
-  detail
-  instanceId
-  occurredAt
-}
-
-query UserCodeFaults(
-  $appId: BigInt!
-  $engine: UserCodeFaultEngine
-  $kind: UserCodeFaultKind
-  $blame: UserCodeFaultBlame
-  $subject: String
-  $windowMinutes: Int
-  $limit: Int
-  $offset: Int
-) {
-  userCodeFaults(
-    appId: $appId
-    engine: $engine
-    kind: $kind
-    blame: $blame
-    subject: $subject
-    windowMinutes: $windowMinutes
-    limit: $limit
-    offset: $offset
-  ) {
-    ...UserCodeFaultRecordFields
-  }
-}
-
-query UserCodeFaultSummary($appId: BigInt!, $windowMinutes: Int) {
-  userCodeFaultSummary(appId: $appId, windowMinutes: $windowMinutes) {
-    engine
-    kind
-    blame
-    subject
-    faults
-    lastAt
-  }
-})gql";
-inline constexpr std::string_view kUserCodeFaultsIsolatedDocument = R"gql(query UserCodeFaults($appId: BigInt!, $engine: UserCodeFaultEngine, $kind: UserCodeFaultKind, $blame: UserCodeFaultBlame, $subject: String, $windowMinutes: Int, $limit: Int, $offset: Int) {
-  userCodeFaults(
-    appId: $appId
-    engine: $engine
-    kind: $kind
-    blame: $blame
-    subject: $subject
-    windowMinutes: $windowMinutes
-    limit: $limit
-    offset: $offset
-  ) {
-    ...UserCodeFaultRecordFields
-  }
-}
-
-fragment UserCodeFaultRecordFields on UserCodeFaultRecord {
-  faultId
-  appId
-  engine
-  kind
-  blame
-  retryable
-  subject
-  entryPoint
-  flowId
-  gridId
-  actingUserId
-  durationUs
-  budgetUs
-  unitsUsed
-  unitsLimit
-  stepsCompleted
-  detail
-  instanceId
-  occurredAt
-})gql";
-inline constexpr std::string_view kUserCodeFaultsOperationName = "UserCodeFaults";
-inline constexpr std::string_view kUserCodeFaultSummaryIsolatedDocument = R"gql(query UserCodeFaultSummary($appId: BigInt!, $windowMinutes: Int) {
-  userCodeFaultSummary(appId: $appId, windowMinutes: $windowMinutes) {
-    engine
-    kind
-    blame
-    subject
-    faults
-    lastAt
-  }
-})gql";
-inline constexpr std::string_view kUserCodeFaultSummaryOperationName = "UserCodeFaultSummary";
-
 inline constexpr std::string_view documentFor(std::string_view operationName) {
-  if (operationName == "AppComputeUsage") return kAppComputeUsageIsolatedDocument;
-  if (operationName == "AppComputeBudgetStatus") return kAppComputeBudgetStatusIsolatedDocument;
   if (operationName == "AppComputeBudget") return kAppComputeBudgetIsolatedDocument;
   if (operationName == "SetAppComputeBudget") return kSetAppComputeBudgetIsolatedDocument;
   if (operationName == "ClearAppComputeBudget") return kClearAppComputeBudgetIsolatedDocument;
-  if (operationName == "ComputeUpsertModule") return kComputeUpsertModuleIsolatedDocument;
-  if (operationName == "ComputeDeployVersion") return kComputeDeployVersionIsolatedDocument;
-  if (operationName == "ComputeSetModuleEnabled") return kComputeSetModuleEnabledIsolatedDocument;
-  if (operationName == "ComputeResetBreaker") return kComputeResetBreakerIsolatedDocument;
-  if (operationName == "ComputeDeleteModule") return kComputeDeleteModuleIsolatedDocument;
-  if (operationName == "ComputeUpsertTrigger") return kComputeUpsertTriggerIsolatedDocument;
-  if (operationName == "ComputeDeleteTrigger") return kComputeDeleteTriggerIsolatedDocument;
-  if (operationName == "ComputeSetPolicy") return kComputeSetPolicyIsolatedDocument;
-  if (operationName == "ComputeInvoke") return kComputeInvokeIsolatedDocument;
-  if (operationName == "ComputeModules") return kComputeModulesIsolatedDocument;
-  if (operationName == "ComputeModule") return kComputeModuleIsolatedDocument;
-  if (operationName == "ComputeModuleVersions") return kComputeModuleVersionsIsolatedDocument;
-  if (operationName == "ComputeModuleTriggers") return kComputeModuleTriggersIsolatedDocument;
-  if (operationName == "ComputeModulePolicy") return kComputeModulePolicyIsolatedDocument;
-  if (operationName == "ComputeModuleRuns") return kComputeModuleRunsIsolatedDocument;
-  if (operationName == "ComputeModuleStats") return kComputeModuleStatsIsolatedDocument;
-  if (operationName == "ComputeModuleLogs") return kComputeModuleLogsIsolatedDocument;
-  if (operationName == "ComputeAppDiagnostics") return kComputeAppDiagnosticsIsolatedDocument;
-  if (operationName == "ComputeTemplates") return kComputeTemplatesIsolatedDocument;
-  if (operationName == "ComputeDeployTemplate") return kComputeDeployTemplateIsolatedDocument;
-  if (operationName == "UserCodeFaults") return kUserCodeFaultsIsolatedDocument;
-  if (operationName == "UserCodeFaultSummary") return kUserCodeFaultSummaryIsolatedDocument;
   return {};
 }
 
-}  // namespace compute
-
-namespace controlPlane {
-
-/// controlPlane/ControlPlane.graphql
-inline constexpr std::string_view kControlPlaneDocument = R"gql(query CpComputePlatformCeilings {
-  cpComputePlatformCeilings {
-    maxModules
-    maxTickHz
-    fuelPerTick
-    fuelPerInvoke
-    maxMemoryMb
-    maxRunMs
-    maxDbOpsPerTick
-    maxEgressMsgsPerMin
-    maxEgressBytesPerMin
-    maxStateWritesPerMin
-    maxStateBytesPerMin
-    updatedAt
-    updatedByUserId
-  }
-}
-
-mutation CpSetComputePlatformCeilings($input: CpSetComputePlatformCeilingsInput!) {
-  cpSetComputePlatformCeilings(input: $input) {
-    maxModules
-    maxTickHz
-    fuelPerTick
-    fuelPerInvoke
-    maxMemoryMb
-    maxRunMs
-    maxDbOpsPerTick
-    maxEgressMsgsPerMin
-    maxEgressBytesPerMin
-    maxStateWritesPerMin
-    maxStateBytesPerMin
-    updatedAt
-    updatedByUserId
-  }
-}
-
-# The SANCTIONED way to put funds in an org wallet.
-#
-# A hand-written INSERT INTO org_wallets is silently wrong rather than an error:
-# nothing assigns the wallet_id surrogate and the unique index tolerates repeated
-# NULLs, so the row inserts and every later lookup by wallet_id misses. This
-# mutation also re-evaluates the runtime out-of-funds decision, which is a stored
-# verdict rather than a live read of the balance — funding without re-evaluating
-# leaves a funded app still refusing every client.
-#
-# referenceId makes it idempotent: replaying one returns the original transaction
-# instead of crediting twice.
-mutation CpCreditOrgWallet(
-  $orgId: BigInt!
-  $amountCents: BigInt!
-  $reason: String!
-  $referenceId: String
-) {
-  creditOrgWallet(
-    orgId: $orgId
-    amountCents: $amountCents
-    reason: $reason
-    referenceId: $referenceId
-  ) {
-    transactionId
-    walletId
-    orgId
-    amountCents
-    balanceAfter
-    transactionType
-    description
-    referenceId
-    appId
-    createdAt
-  }
-})gql";
-inline constexpr std::string_view kCpComputePlatformCeilingsIsolatedDocument = R"gql(query CpComputePlatformCeilings {
-  cpComputePlatformCeilings {
-    maxModules
-    maxTickHz
-    fuelPerTick
-    fuelPerInvoke
-    maxMemoryMb
-    maxRunMs
-    maxDbOpsPerTick
-    maxEgressMsgsPerMin
-    maxEgressBytesPerMin
-    maxStateWritesPerMin
-    maxStateBytesPerMin
-    updatedAt
-    updatedByUserId
-  }
-})gql";
-inline constexpr std::string_view kCpComputePlatformCeilingsOperationName = "CpComputePlatformCeilings";
-inline constexpr std::string_view kCpSetComputePlatformCeilingsIsolatedDocument = R"gql(mutation CpSetComputePlatformCeilings($input: CpSetComputePlatformCeilingsInput!) {
-  cpSetComputePlatformCeilings(input: $input) {
-    maxModules
-    maxTickHz
-    fuelPerTick
-    fuelPerInvoke
-    maxMemoryMb
-    maxRunMs
-    maxDbOpsPerTick
-    maxEgressMsgsPerMin
-    maxEgressBytesPerMin
-    maxStateWritesPerMin
-    maxStateBytesPerMin
-    updatedAt
-    updatedByUserId
-  }
-})gql";
-inline constexpr std::string_view kCpSetComputePlatformCeilingsOperationName = "CpSetComputePlatformCeilings";
-inline constexpr std::string_view kCpCreditOrgWalletIsolatedDocument = R"gql(mutation CpCreditOrgWallet($orgId: BigInt!, $amountCents: BigInt!, $reason: String!, $referenceId: String) {
-  creditOrgWallet(
-    orgId: $orgId
-    amountCents: $amountCents
-    reason: $reason
-    referenceId: $referenceId
-  ) {
-    transactionId
-    walletId
-    orgId
-    amountCents
-    balanceAfter
-    transactionType
-    description
-    referenceId
-    appId
-    createdAt
-  }
-})gql";
-inline constexpr std::string_view kCpCreditOrgWalletOperationName = "CpCreditOrgWallet";
-
-inline constexpr std::string_view documentFor(std::string_view operationName) {
-  if (operationName == "CpComputePlatformCeilings") return kCpComputePlatformCeilingsIsolatedDocument;
-  if (operationName == "CpSetComputePlatformCeilings") return kCpSetComputePlatformCeilingsIsolatedDocument;
-  if (operationName == "CpCreditOrgWallet") return kCpCreditOrgWalletIsolatedDocument;
-  return {};
-}
-
-}  // namespace controlPlane
+}  // namespace computeUnits
 
 namespace crowdyStudio {
 
@@ -3928,14 +3021,6 @@ mutation CrowdyStudioCommonPublish(
 ) {
   crowdyStudioCommonPublish(input: $input) {
     ...CrowdyStudioCommonFileFields
-  }
-}
-
-mutation CrowdyStudioProjectCreateFromModules(
-  $input: CreateCrowdyStudioProjectFromModulesInput!
-) {
-  crowdyStudioProjectCreateFromModules(input: $input) {
-    ...CrowdyStudioProjectFields
   }
 })gql";
 inline constexpr std::string_view kCrowdyStudioProjectsIsolatedDocument = R"gql(query CrowdyStudioProjects($appId: BigInt!, $includeArchived: Boolean, $limit: Int, $offset: Int) {
@@ -4398,50 +3483,6 @@ fragment CrowdyStudioCommonFileFields on CrowdyStudioCommonFile {
   updatedAt
 })gql";
 inline constexpr std::string_view kCrowdyStudioCommonPublishOperationName = "CrowdyStudioCommonPublish";
-inline constexpr std::string_view kCrowdyStudioProjectCreateFromModulesIsolatedDocument = R"gql(mutation CrowdyStudioProjectCreateFromModules($input: CreateCrowdyStudioProjectFromModulesInput!) {
-  crowdyStudioProjectCreateFromModules(input: $input) {
-    ...CrowdyStudioProjectFields
-  }
-}
-
-fragment CrowdyStudioProjectFields on CrowdyStudioProject {
-  projectId
-  appId
-  ownerUserId
-  gridId
-  name
-  description
-  serverModuleName
-  clientModuleName
-  pairingPreference
-  sdkVersion
-  abiVersion
-  revision
-  archived
-  archivedAt
-  fileCount
-  totalBytes
-  source
-  githubOwner
-  githubRepo
-  githubBranch
-  githubSha
-  createdAt
-  updatedAt
-  files {
-    target
-    path
-    content
-    revision
-    provenance
-    provenanceLibraryFileId
-    provenanceLibraryRevision
-    provenanceCommonVersionId
-    createdAt
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kCrowdyStudioProjectCreateFromModulesOperationName = "CrowdyStudioProjectCreateFromModules";
 
 /// crowdyStudio/CrowdyStudioGitHub.graphql
 inline constexpr std::string_view kCrowdyStudioGitHubDocument = R"gql(fragment CrowdyStudioGitHubStatusFields on CrowdyStudioGitHubStatus {
@@ -4702,7 +3743,6 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CrowdyStudioCommonFiles") return kCrowdyStudioCommonFilesIsolatedDocument;
   if (operationName == "CrowdyStudioProjectImportFile") return kCrowdyStudioProjectImportFileIsolatedDocument;
   if (operationName == "CrowdyStudioCommonPublish") return kCrowdyStudioCommonPublishIsolatedDocument;
-  if (operationName == "CrowdyStudioProjectCreateFromModules") return kCrowdyStudioProjectCreateFromModulesIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubStatus") return kCrowdyStudioGitHubStatusIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubConnectUrl") return kCrowdyStudioGitHubConnectUrlIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubRepos") return kCrowdyStudioGitHubReposIsolatedDocument;
@@ -4720,65 +3760,6 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 }  // namespace crowdyStudio
 
 namespace crowdyStudioAgent {
-
-/// crowdyStudioAgent/CrowdyStudioAgentCatalog.graphql
-inline constexpr std::string_view kCrowdyStudioAgentCatalogDocument = R"gql(query CpCrowdyStudioAgentCatalog {
-  cpCrowdyStudioAgentCatalog {
-    instanceEnabled
-    instanceId
-    datacenterCode
-    provider
-    platformPolicyVersion
-    defaultModelId
-    registryDigest
-    modes
-    riskClasses
-    models {
-      modelId
-      isDefault
-      selectable
-      inputMicrosPerMillion
-      outputMicrosPerMillion
-    }
-    tools {
-      name
-      summary
-      executor
-      modes
-      riskClass
-      approvalRequired
-    }
-  }
-})gql";
-inline constexpr std::string_view kCpCrowdyStudioAgentCatalogIsolatedDocument = R"gql(query CpCrowdyStudioAgentCatalog {
-  cpCrowdyStudioAgentCatalog {
-    instanceEnabled
-    instanceId
-    datacenterCode
-    provider
-    platformPolicyVersion
-    defaultModelId
-    registryDigest
-    modes
-    riskClasses
-    models {
-      modelId
-      isDefault
-      selectable
-      inputMicrosPerMillion
-      outputMicrosPerMillion
-    }
-    tools {
-      name
-      summary
-      executor
-      modes
-      riskClass
-      approvalRequired
-    }
-  }
-})gql";
-inline constexpr std::string_view kCpCrowdyStudioAgentCatalogOperationName = "CpCrowdyStudioAgentCatalog";
 
 /// crowdyStudioAgent/CrowdyStudioAgentManagement.graphql
 inline constexpr std::string_view kCrowdyStudioAgentManagementDocument = R"gql(fragment CrowdyStudioAgentPolicyFields on CrowdyStudioAgentPolicy {
@@ -4945,28 +3926,6 @@ mutation CrowdyStudioAgentSetPolicy(
   $input: SetCrowdyStudioAgentAppPolicyInput!
 ) {
   setCrowdyStudioAgentPolicy(input: $input) {
-    ...CrowdyStudioAgentPolicyFields
-  }
-}
-
-query CpCrowdyStudioAgentPlatformPolicy {
-  cpCrowdyStudioAgentPlatformPolicy {
-    ...CrowdyStudioAgentPolicyFields
-  }
-}
-
-mutation CpSetCrowdyStudioAgentPlatformPolicy(
-  $input: SetCrowdyStudioAgentPlatformPolicyInput!
-) {
-  cpSetCrowdyStudioAgentPlatformPolicy(input: $input) {
-    ...CrowdyStudioAgentPolicyFields
-  }
-}
-
-mutation CpSetCrowdyStudioAgentAppKill(
-  $input: SetCrowdyStudioAgentOperatorAppKillInput!
-) {
-  cpSetCrowdyStudioAgentAppKill(input: $input) {
     ...CrowdyStudioAgentPolicyFields
   }
 })gql";
@@ -5291,264 +4250,6 @@ fragment CrowdyStudioAgentPolicyFields on CrowdyStudioAgentPolicy {
   updatedAt
 })gql";
 inline constexpr std::string_view kCrowdyStudioAgentSetPolicyOperationName = "CrowdyStudioAgentSetPolicy";
-inline constexpr std::string_view kCpCrowdyStudioAgentPlatformPolicyIsolatedDocument = R"gql(query CpCrowdyStudioAgentPlatformPolicy {
-  cpCrowdyStudioAgentPlatformPolicy {
-    ...CrowdyStudioAgentPolicyFields
-  }
-}
-
-fragment CrowdyStudioAgentPolicyFields on CrowdyStudioAgentPolicy {
-  kind
-  appId
-  enabled
-  killSwitch
-  operatorKillSwitch
-  disableReasonCode
-  disableReason
-  allowedModelIds
-  allowedToolNames
-  allowedModes
-  allowedRiskClasses
-  turnLimits {
-    providerRequests
-    inputTokens
-    outputTokens
-    reasoningTokens
-    totalTokens
-    providerCostMicrousd
-    toolCalls
-    toolRounds
-    compiles
-    wallClockMs
-    concurrentProviderRequests
-  }
-  sessionLimits {
-    providerRequests
-    inputTokens
-    outputTokens
-    reasoningTokens
-    totalTokens
-    providerCostMicrousd
-    toolCalls
-    compiles
-    concurrentRuns
-  }
-  playerDayLimits {
-    providerRequests
-    inputTokens
-    outputTokens
-    reasoningTokens
-    totalTokens
-    providerCostMicrousd
-    toolCalls
-    compiles
-    concurrentSessions
-    concurrentRunsPerApp
-  }
-  retention {
-    assistantChunkHours
-    detailedContextHours
-    sessionDataDays
-    usageDays
-  }
-  privacy {
-    requireZdr
-    denyDataCollection
-    allowPrivateSource
-    requirePrivateSourceConsent
-    persistProviderBodies
-  }
-  funding {
-    billingMode
-    payerKind
-    rateCardId
-    walletDebitEnabled
-  }
-  capabilityGaps {
-    mode
-    code
-    detail
-  }
-  revision
-  platformRevision
-  appRevision
-  effectiveRevision
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kCpCrowdyStudioAgentPlatformPolicyOperationName = "CpCrowdyStudioAgentPlatformPolicy";
-inline constexpr std::string_view kCpSetCrowdyStudioAgentPlatformPolicyIsolatedDocument = R"gql(mutation CpSetCrowdyStudioAgentPlatformPolicy($input: SetCrowdyStudioAgentPlatformPolicyInput!) {
-  cpSetCrowdyStudioAgentPlatformPolicy(input: $input) {
-    ...CrowdyStudioAgentPolicyFields
-  }
-}
-
-fragment CrowdyStudioAgentPolicyFields on CrowdyStudioAgentPolicy {
-  kind
-  appId
-  enabled
-  killSwitch
-  operatorKillSwitch
-  disableReasonCode
-  disableReason
-  allowedModelIds
-  allowedToolNames
-  allowedModes
-  allowedRiskClasses
-  turnLimits {
-    providerRequests
-    inputTokens
-    outputTokens
-    reasoningTokens
-    totalTokens
-    providerCostMicrousd
-    toolCalls
-    toolRounds
-    compiles
-    wallClockMs
-    concurrentProviderRequests
-  }
-  sessionLimits {
-    providerRequests
-    inputTokens
-    outputTokens
-    reasoningTokens
-    totalTokens
-    providerCostMicrousd
-    toolCalls
-    compiles
-    concurrentRuns
-  }
-  playerDayLimits {
-    providerRequests
-    inputTokens
-    outputTokens
-    reasoningTokens
-    totalTokens
-    providerCostMicrousd
-    toolCalls
-    compiles
-    concurrentSessions
-    concurrentRunsPerApp
-  }
-  retention {
-    assistantChunkHours
-    detailedContextHours
-    sessionDataDays
-    usageDays
-  }
-  privacy {
-    requireZdr
-    denyDataCollection
-    allowPrivateSource
-    requirePrivateSourceConsent
-    persistProviderBodies
-  }
-  funding {
-    billingMode
-    payerKind
-    rateCardId
-    walletDebitEnabled
-  }
-  capabilityGaps {
-    mode
-    code
-    detail
-  }
-  revision
-  platformRevision
-  appRevision
-  effectiveRevision
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kCpSetCrowdyStudioAgentPlatformPolicyOperationName = "CpSetCrowdyStudioAgentPlatformPolicy";
-inline constexpr std::string_view kCpSetCrowdyStudioAgentAppKillIsolatedDocument = R"gql(mutation CpSetCrowdyStudioAgentAppKill($input: SetCrowdyStudioAgentOperatorAppKillInput!) {
-  cpSetCrowdyStudioAgentAppKill(input: $input) {
-    ...CrowdyStudioAgentPolicyFields
-  }
-}
-
-fragment CrowdyStudioAgentPolicyFields on CrowdyStudioAgentPolicy {
-  kind
-  appId
-  enabled
-  killSwitch
-  operatorKillSwitch
-  disableReasonCode
-  disableReason
-  allowedModelIds
-  allowedToolNames
-  allowedModes
-  allowedRiskClasses
-  turnLimits {
-    providerRequests
-    inputTokens
-    outputTokens
-    reasoningTokens
-    totalTokens
-    providerCostMicrousd
-    toolCalls
-    toolRounds
-    compiles
-    wallClockMs
-    concurrentProviderRequests
-  }
-  sessionLimits {
-    providerRequests
-    inputTokens
-    outputTokens
-    reasoningTokens
-    totalTokens
-    providerCostMicrousd
-    toolCalls
-    compiles
-    concurrentRuns
-  }
-  playerDayLimits {
-    providerRequests
-    inputTokens
-    outputTokens
-    reasoningTokens
-    totalTokens
-    providerCostMicrousd
-    toolCalls
-    compiles
-    concurrentSessions
-    concurrentRunsPerApp
-  }
-  retention {
-    assistantChunkHours
-    detailedContextHours
-    sessionDataDays
-    usageDays
-  }
-  privacy {
-    requireZdr
-    denyDataCollection
-    allowPrivateSource
-    requirePrivateSourceConsent
-    persistProviderBodies
-  }
-  funding {
-    billingMode
-    payerKind
-    rateCardId
-    walletDebitEnabled
-  }
-  capabilityGaps {
-    mode
-    code
-    detail
-  }
-  revision
-  platformRevision
-  appRevision
-  effectiveRevision
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kCpSetCrowdyStudioAgentAppKillOperationName = "CpSetCrowdyStudioAgentAppKill";
 
 /// crowdyStudioAgent/CrowdyStudioModel.graphql
 inline constexpr std::string_view kCrowdyStudioModelDocument = R"gql(# The metered model endpoint's GraphQL companions. The endpoint itself is
@@ -5635,14 +4336,10 @@ inline constexpr std::string_view kCrowdyStudioModelUsageIsolatedDocument = R"gq
 inline constexpr std::string_view kCrowdyStudioModelUsageOperationName = "CrowdyStudioModelUsage";
 
 inline constexpr std::string_view documentFor(std::string_view operationName) {
-  if (operationName == "CpCrowdyStudioAgentCatalog") return kCpCrowdyStudioAgentCatalogIsolatedDocument;
   if (operationName == "CrowdyStudioAgentPolicy") return kCrowdyStudioAgentPolicyIsolatedDocument;
   if (operationName == "CrowdyStudioAgentEffectivePolicy") return kCrowdyStudioAgentEffectivePolicyIsolatedDocument;
   if (operationName == "CrowdyStudioAgentUsage") return kCrowdyStudioAgentUsageIsolatedDocument;
   if (operationName == "CrowdyStudioAgentSetPolicy") return kCrowdyStudioAgentSetPolicyIsolatedDocument;
-  if (operationName == "CpCrowdyStudioAgentPlatformPolicy") return kCpCrowdyStudioAgentPlatformPolicyIsolatedDocument;
-  if (operationName == "CpSetCrowdyStudioAgentPlatformPolicy") return kCpSetCrowdyStudioAgentPlatformPolicyIsolatedDocument;
-  if (operationName == "CpSetCrowdyStudioAgentAppKill") return kCpSetCrowdyStudioAgentAppKillIsolatedDocument;
   if (operationName == "CrowdyStudioProviderConsent") return kCrowdyStudioProviderConsentIsolatedDocument;
   if (operationName == "CrowdyStudioSetProviderConsent") return kCrowdyStudioSetProviderConsentIsolatedDocument;
   if (operationName == "CrowdyStudioModelUsage") return kCrowdyStudioModelUsageIsolatedDocument;
@@ -5650,6 +4347,1129 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 }
 
 }  // namespace crowdyStudioAgent
+
+namespace exec {
+
+/// exec/Exec.graphql
+inline constexpr std::string_view kExecDocument = R"gql(mutation ExecConnect($appId: BigInt!, $nodeType: String, $key: String) {
+  execConnect(appId: $appId, nodeType: $nodeType, key: $key) {
+    gatewayUrl
+    token
+    host
+    expiresAt
+  }
+}
+
+mutation ExecDeploy($input: ExecDeployInput!) {
+  execDeploy(input: $input) {
+    version
+  }
+}
+
+mutation ExecConnectAsDeveloper($appId: BigInt!, $nodeType: String, $key: String) {
+  execConnectAsDeveloper(appId: $appId, nodeType: $nodeType, key: $key) {
+    gatewayUrl
+    token
+    host
+    expiresAt
+  }
+}
+
+query ExecLogs(
+  $appId: BigInt!
+  $nodeType: String
+  $key: String
+  $maxLevel: Int
+  $before: String
+  $limit: Int
+  $flow: String
+) {
+  execLogs(
+    appId: $appId
+    nodeType: $nodeType
+    key: $key
+    maxLevel: $maxLevel
+    before: $before
+    limit: $limit
+    flow: $flow
+  ) {
+    id
+    nodeType
+    key
+    level
+    host
+    at
+    text
+    flow
+  }
+}
+
+query ExecInstances($appId: BigInt!) {
+  execInstances(appId: $appId) {
+    instanceId
+    nodeType
+    key
+    kind
+    phase
+    host
+    epoch
+    sinceMs
+    heldBack
+  }
+}
+
+query ExecVersions($appId: BigInt!) {
+  execVersions(appId: $appId) {
+    version
+    createdBy
+    createdAt
+    types
+    active
+    manifestJson
+  }
+}
+
+query ExecEndpointStats($appId: BigInt!, $nodeType: String, $sinceMinutes: Int) {
+  execEndpointStats(appId: $appId, nodeType: $nodeType, sinceMinutes: $sinceMinutes) {
+    nodeType
+    method
+    calls
+    appErrors
+    busy
+    denied
+    deadlineExceeded
+    otherErrors
+    timedCalls
+    latencyMsAvg
+    latencyMsMax
+    firstMinute
+    lastMinute
+  }
+}
+
+fragment ExecAppStatusFields on ExecAppStatus {
+  activeVersion
+  disabled
+  disabledTypes
+  budgetPaused
+}
+
+query ExecAppStatus($appId: BigInt!) {
+  execAppStatus(appId: $appId) {
+    ...ExecAppStatusFields
+  }
+}
+
+mutation ExecActivateVersion($appId: BigInt!, $version: Int!) {
+  execActivateVersion(appId: $appId, version: $version) {
+    ...ExecAppStatusFields
+  }
+}
+
+mutation ExecSetEnabled($appId: BigInt!, $enabled: Boolean!, $nodeType: String) {
+  execSetEnabled(appId: $appId, enabled: $enabled, nodeType: $nodeType) {
+    ...ExecAppStatusFields
+  }
+}
+
+query ExecStarters($appId: BigInt!) {
+  execStarters(appId: $appId) {
+    manifestJson
+    starters {
+      crate
+      nodeType
+      description
+      files {
+        path
+        content
+      }
+    }
+  }
+}
+
+fragment ExecBuildFields on ExecBuild {
+  buildId
+  status
+  kind
+  log
+  createdAt
+  startedAt
+  finishedAt
+  artifacts {
+    crate
+    digest
+    sizeBytes
+    capabilitySummaryJson
+    capabilityHash
+    tickIntervalMs
+  }
+}
+
+mutation ExecBuild($input: ExecBuildInput!) {
+  execBuild(input: $input) {
+    ...ExecBuildFields
+  }
+}
+
+query ExecBuildStatus($appId: BigInt!, $buildId: String!) {
+  execBuildStatus(appId: $appId, buildId: $buildId) {
+    ...ExecBuildFields
+  }
+}
+
+fragment ExecModFields on ExecMod {
+  modId
+  gridId
+  name
+  ownerId
+  version
+  digest
+  enabled
+  listingId
+  blocked
+  running
+  updatedAt
+}
+
+fragment ExecModListingFields on ExecModListing {
+  listingId
+  title
+  description
+  publisherId
+  sourceModId
+  sourceVersion
+  digest
+  installs
+  clientDigest
+  clientCapabilitySummaryJson
+  clientCapabilityHash
+  clientTickIntervalMs
+  createdAt
+  delistedAt
+}
+
+fragment ExecModSwitchFields on ExecModSwitch {
+  scope
+  target
+  reason
+  createdBy
+  createdAt
+}
+
+query ExecModStarter($appId: BigInt!) {
+  execModStarter(appId: $appId) {
+    crate
+    nodeType
+    description
+    files {
+      path
+      content
+    }
+  }
+}
+
+mutation ExecModBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
+  execModBuild(appId: $appId, crate: $crate) {
+    ...ExecBuildFields
+  }
+}
+
+query ExecModBuildStatus($appId: BigInt!, $buildId: String!) {
+  execModBuildStatus(appId: $appId, buildId: $buildId) {
+    ...ExecBuildFields
+  }
+}
+
+mutation ExecModDeploy(
+  $appId: BigInt!
+  $gridId: BigInt!
+  $name: String!
+  $buildId: String!
+) {
+  execModDeploy(appId: $appId, gridId: $gridId, name: $name, buildId: $buildId) {
+    ...ExecModFields
+  }
+}
+
+mutation ExecModSetEnabled(
+  $appId: BigInt!
+  $gridId: BigInt!
+  $name: String!
+  $enabled: Boolean!
+) {
+  execModSetEnabled(appId: $appId, gridId: $gridId, name: $name, enabled: $enabled) {
+    ...ExecModFields
+  }
+}
+
+mutation ExecModDelete($appId: BigInt!, $gridId: BigInt!, $name: String!) {
+  execModDelete(appId: $appId, gridId: $gridId, name: $name)
+}
+
+query ExecMods($appId: BigInt!, $gridId: BigInt!) {
+  execMods(appId: $appId, gridId: $gridId) {
+    ...ExecModFields
+  }
+}
+
+query ExecMyMods($appId: BigInt!) {
+  execMyMods(appId: $appId) {
+    ...ExecModFields
+  }
+}
+
+query ExecModLogs(
+  $appId: BigInt!
+  $gridId: BigInt!
+  $name: String!
+  $maxLevel: Int
+  $before: String
+  $limit: Int
+) {
+  execModLogs(
+    appId: $appId
+    gridId: $gridId
+    name: $name
+    maxLevel: $maxLevel
+    before: $before
+    limit: $limit
+  ) {
+    id
+    nodeType
+    key
+    level
+    host
+    at
+    text
+    flow
+  }
+}
+
+mutation ExecModPublish(
+  $appId: BigInt!
+  $gridId: BigInt!
+  $name: String!
+  $title: String!
+  $description: String
+) {
+  execModPublish(
+    appId: $appId
+    gridId: $gridId
+    name: $name
+    title: $title
+    description: $description
+  ) {
+    ...ExecModListingFields
+  }
+}
+
+query ExecModListings($appId: BigInt!) {
+  execModListings(appId: $appId) {
+    ...ExecModListingFields
+  }
+}
+
+mutation ExecModUnpublish($appId: BigInt!, $listingId: BigInt!) {
+  execModUnpublish(appId: $appId, listingId: $listingId)
+}
+
+mutation ExecModInstall(
+  $appId: BigInt!
+  $gridId: BigInt!
+  $name: String!
+  $listingId: BigInt!
+) {
+  execModInstall(appId: $appId, gridId: $gridId, name: $name, listingId: $listingId) {
+    ...ExecModFields
+  }
+}
+
+query ExecAppMods($appId: BigInt!, $gridId: BigInt, $ownerId: BigInt) {
+  execAppMods(appId: $appId, gridId: $gridId, ownerId: $ownerId) {
+    ...ExecModFields
+  }
+}
+
+query ExecModSwitches($appId: BigInt!) {
+  execModSwitches(appId: $appId) {
+    ...ExecModSwitchFields
+  }
+}
+
+mutation ExecModSetSwitch(
+  $appId: BigInt!
+  $scope: ExecModScope!
+  $off: Boolean!
+  $target: String
+  $reason: String
+) {
+  execModSetSwitch(appId: $appId, scope: $scope, off: $off, target: $target, reason: $reason) {
+    ...ExecModSwitchFields
+  }
+}
+
+fragment ExecModClientFields on ExecModClient {
+  modId
+  gridId
+  name
+  ownerId
+  clientVersion
+  digest
+  sizeBytes
+  capabilitySummaryJson
+  capabilityHash
+  tickIntervalMs
+  updatedAt
+}
+
+fragment ExecGridClientModFields on ExecGridClientMod {
+  modId
+  name
+  gridId
+  authorId
+  listingId
+  clientVersion
+  digest
+  capabilitySummaryJson
+  capabilityHash
+  tickIntervalMs
+  callerConsented
+  authorCapabilitySummaryJson
+  authorCapabilityHash
+  callerTrustsAuthor
+  updatedAt
+}
+
+mutation ExecModClientBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
+  execModClientBuild(appId: $appId, crate: $crate) {
+    ...ExecBuildFields
+  }
+}
+
+mutation ExecModClientDeploy(
+  $appId: BigInt!
+  $gridId: BigInt!
+  $name: String!
+  $buildId: String!
+) {
+  execModClientDeploy(appId: $appId, gridId: $gridId, name: $name, buildId: $buildId) {
+    ...ExecModClientFields
+  }
+}
+
+mutation ExecModClientDelete($appId: BigInt!, $gridId: BigInt!, $name: String!) {
+  execModClientDelete(appId: $appId, gridId: $gridId, name: $name)
+}
+
+query ExecGridClientMods($appId: BigInt!, $gridId: BigInt!) {
+  execGridClientMods(appId: $appId, gridId: $gridId) {
+    ...ExecGridClientModFields
+  }
+}
+
+mutation ExecConsentClientMod($appId: BigInt!, $modId: String!, $capabilityHash: String!) {
+  execConsentClientMod(appId: $appId, modId: $modId, capabilityHash: $capabilityHash)
+}
+
+mutation ExecTrustAuthor(
+  $appId: BigInt!
+  $gridId: BigInt!
+  $authorId: BigInt!
+  $capabilityHash: String!
+) {
+  execTrustAuthor(
+    appId: $appId
+    gridId: $gridId
+    authorId: $authorId
+    capabilityHash: $capabilityHash
+  )
+}
+
+mutation ExecRevokeClientModConsent($appId: BigInt!, $modId: String!) {
+  execRevokeClientModConsent(appId: $appId, modId: $modId)
+}
+
+mutation ExecRevokeAuthorTrust($appId: BigInt!, $gridId: BigInt!, $authorId: BigInt!) {
+  execRevokeAuthorTrust(appId: $appId, gridId: $gridId, authorId: $authorId)
+}
+
+query ExecModClientArtifact($appId: BigInt!, $modId: String!) {
+  execModClientArtifact(appId: $appId, modId: $modId) {
+    modId
+    name
+    gridId
+    clientVersion
+    digest
+    wasmBase64
+    sizeBytes
+    capabilitySummaryJson
+    capabilityHash
+    tickIntervalMs
+    fuelPerDispatch
+    abiVersion
+  }
+})gql";
+inline constexpr std::string_view kExecConnectIsolatedDocument = R"gql(mutation ExecConnect($appId: BigInt!, $nodeType: String, $key: String) {
+  execConnect(appId: $appId, nodeType: $nodeType, key: $key) {
+    gatewayUrl
+    token
+    host
+    expiresAt
+  }
+})gql";
+inline constexpr std::string_view kExecConnectOperationName = "ExecConnect";
+inline constexpr std::string_view kExecDeployIsolatedDocument = R"gql(mutation ExecDeploy($input: ExecDeployInput!) {
+  execDeploy(input: $input) {
+    version
+  }
+})gql";
+inline constexpr std::string_view kExecDeployOperationName = "ExecDeploy";
+inline constexpr std::string_view kExecConnectAsDeveloperIsolatedDocument = R"gql(mutation ExecConnectAsDeveloper($appId: BigInt!, $nodeType: String, $key: String) {
+  execConnectAsDeveloper(appId: $appId, nodeType: $nodeType, key: $key) {
+    gatewayUrl
+    token
+    host
+    expiresAt
+  }
+})gql";
+inline constexpr std::string_view kExecConnectAsDeveloperOperationName = "ExecConnectAsDeveloper";
+inline constexpr std::string_view kExecLogsIsolatedDocument = R"gql(query ExecLogs($appId: BigInt!, $nodeType: String, $key: String, $maxLevel: Int, $before: String, $limit: Int, $flow: String) {
+  execLogs(
+    appId: $appId
+    nodeType: $nodeType
+    key: $key
+    maxLevel: $maxLevel
+    before: $before
+    limit: $limit
+    flow: $flow
+  ) {
+    id
+    nodeType
+    key
+    level
+    host
+    at
+    text
+    flow
+  }
+})gql";
+inline constexpr std::string_view kExecLogsOperationName = "ExecLogs";
+inline constexpr std::string_view kExecInstancesIsolatedDocument = R"gql(query ExecInstances($appId: BigInt!) {
+  execInstances(appId: $appId) {
+    instanceId
+    nodeType
+    key
+    kind
+    phase
+    host
+    epoch
+    sinceMs
+    heldBack
+  }
+})gql";
+inline constexpr std::string_view kExecInstancesOperationName = "ExecInstances";
+inline constexpr std::string_view kExecVersionsIsolatedDocument = R"gql(query ExecVersions($appId: BigInt!) {
+  execVersions(appId: $appId) {
+    version
+    createdBy
+    createdAt
+    types
+    active
+    manifestJson
+  }
+})gql";
+inline constexpr std::string_view kExecVersionsOperationName = "ExecVersions";
+inline constexpr std::string_view kExecEndpointStatsIsolatedDocument = R"gql(query ExecEndpointStats($appId: BigInt!, $nodeType: String, $sinceMinutes: Int) {
+  execEndpointStats(
+    appId: $appId
+    nodeType: $nodeType
+    sinceMinutes: $sinceMinutes
+  ) {
+    nodeType
+    method
+    calls
+    appErrors
+    busy
+    denied
+    deadlineExceeded
+    otherErrors
+    timedCalls
+    latencyMsAvg
+    latencyMsMax
+    firstMinute
+    lastMinute
+  }
+})gql";
+inline constexpr std::string_view kExecEndpointStatsOperationName = "ExecEndpointStats";
+inline constexpr std::string_view kExecAppStatusIsolatedDocument = R"gql(query ExecAppStatus($appId: BigInt!) {
+  execAppStatus(appId: $appId) {
+    ...ExecAppStatusFields
+  }
+}
+
+fragment ExecAppStatusFields on ExecAppStatus {
+  activeVersion
+  disabled
+  disabledTypes
+  budgetPaused
+})gql";
+inline constexpr std::string_view kExecAppStatusOperationName = "ExecAppStatus";
+inline constexpr std::string_view kExecActivateVersionIsolatedDocument = R"gql(mutation ExecActivateVersion($appId: BigInt!, $version: Int!) {
+  execActivateVersion(appId: $appId, version: $version) {
+    ...ExecAppStatusFields
+  }
+}
+
+fragment ExecAppStatusFields on ExecAppStatus {
+  activeVersion
+  disabled
+  disabledTypes
+  budgetPaused
+})gql";
+inline constexpr std::string_view kExecActivateVersionOperationName = "ExecActivateVersion";
+inline constexpr std::string_view kExecSetEnabledIsolatedDocument = R"gql(mutation ExecSetEnabled($appId: BigInt!, $enabled: Boolean!, $nodeType: String) {
+  execSetEnabled(appId: $appId, enabled: $enabled, nodeType: $nodeType) {
+    ...ExecAppStatusFields
+  }
+}
+
+fragment ExecAppStatusFields on ExecAppStatus {
+  activeVersion
+  disabled
+  disabledTypes
+  budgetPaused
+})gql";
+inline constexpr std::string_view kExecSetEnabledOperationName = "ExecSetEnabled";
+inline constexpr std::string_view kExecStartersIsolatedDocument = R"gql(query ExecStarters($appId: BigInt!) {
+  execStarters(appId: $appId) {
+    manifestJson
+    starters {
+      crate
+      nodeType
+      description
+      files {
+        path
+        content
+      }
+    }
+  }
+})gql";
+inline constexpr std::string_view kExecStartersOperationName = "ExecStarters";
+inline constexpr std::string_view kExecBuildIsolatedDocument = R"gql(mutation ExecBuild($input: ExecBuildInput!) {
+  execBuild(input: $input) {
+    ...ExecBuildFields
+  }
+}
+
+fragment ExecBuildFields on ExecBuild {
+  buildId
+  status
+  kind
+  log
+  createdAt
+  startedAt
+  finishedAt
+  artifacts {
+    crate
+    digest
+    sizeBytes
+    capabilitySummaryJson
+    capabilityHash
+    tickIntervalMs
+  }
+})gql";
+inline constexpr std::string_view kExecBuildOperationName = "ExecBuild";
+inline constexpr std::string_view kExecBuildStatusIsolatedDocument = R"gql(query ExecBuildStatus($appId: BigInt!, $buildId: String!) {
+  execBuildStatus(appId: $appId, buildId: $buildId) {
+    ...ExecBuildFields
+  }
+}
+
+fragment ExecBuildFields on ExecBuild {
+  buildId
+  status
+  kind
+  log
+  createdAt
+  startedAt
+  finishedAt
+  artifacts {
+    crate
+    digest
+    sizeBytes
+    capabilitySummaryJson
+    capabilityHash
+    tickIntervalMs
+  }
+})gql";
+inline constexpr std::string_view kExecBuildStatusOperationName = "ExecBuildStatus";
+inline constexpr std::string_view kExecModStarterIsolatedDocument = R"gql(query ExecModStarter($appId: BigInt!) {
+  execModStarter(appId: $appId) {
+    crate
+    nodeType
+    description
+    files {
+      path
+      content
+    }
+  }
+})gql";
+inline constexpr std::string_view kExecModStarterOperationName = "ExecModStarter";
+inline constexpr std::string_view kExecModBuildIsolatedDocument = R"gql(mutation ExecModBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
+  execModBuild(appId: $appId, crate: $crate) {
+    ...ExecBuildFields
+  }
+}
+
+fragment ExecBuildFields on ExecBuild {
+  buildId
+  status
+  kind
+  log
+  createdAt
+  startedAt
+  finishedAt
+  artifacts {
+    crate
+    digest
+    sizeBytes
+    capabilitySummaryJson
+    capabilityHash
+    tickIntervalMs
+  }
+})gql";
+inline constexpr std::string_view kExecModBuildOperationName = "ExecModBuild";
+inline constexpr std::string_view kExecModBuildStatusIsolatedDocument = R"gql(query ExecModBuildStatus($appId: BigInt!, $buildId: String!) {
+  execModBuildStatus(appId: $appId, buildId: $buildId) {
+    ...ExecBuildFields
+  }
+}
+
+fragment ExecBuildFields on ExecBuild {
+  buildId
+  status
+  kind
+  log
+  createdAt
+  startedAt
+  finishedAt
+  artifacts {
+    crate
+    digest
+    sizeBytes
+    capabilitySummaryJson
+    capabilityHash
+    tickIntervalMs
+  }
+})gql";
+inline constexpr std::string_view kExecModBuildStatusOperationName = "ExecModBuildStatus";
+inline constexpr std::string_view kExecModDeployIsolatedDocument = R"gql(mutation ExecModDeploy($appId: BigInt!, $gridId: BigInt!, $name: String!, $buildId: String!) {
+  execModDeploy(appId: $appId, gridId: $gridId, name: $name, buildId: $buildId) {
+    ...ExecModFields
+  }
+}
+
+fragment ExecModFields on ExecMod {
+  modId
+  gridId
+  name
+  ownerId
+  version
+  digest
+  enabled
+  listingId
+  blocked
+  running
+  updatedAt
+})gql";
+inline constexpr std::string_view kExecModDeployOperationName = "ExecModDeploy";
+inline constexpr std::string_view kExecModSetEnabledIsolatedDocument = R"gql(mutation ExecModSetEnabled($appId: BigInt!, $gridId: BigInt!, $name: String!, $enabled: Boolean!) {
+  execModSetEnabled(
+    appId: $appId
+    gridId: $gridId
+    name: $name
+    enabled: $enabled
+  ) {
+    ...ExecModFields
+  }
+}
+
+fragment ExecModFields on ExecMod {
+  modId
+  gridId
+  name
+  ownerId
+  version
+  digest
+  enabled
+  listingId
+  blocked
+  running
+  updatedAt
+})gql";
+inline constexpr std::string_view kExecModSetEnabledOperationName = "ExecModSetEnabled";
+inline constexpr std::string_view kExecModDeleteIsolatedDocument = R"gql(mutation ExecModDelete($appId: BigInt!, $gridId: BigInt!, $name: String!) {
+  execModDelete(appId: $appId, gridId: $gridId, name: $name)
+})gql";
+inline constexpr std::string_view kExecModDeleteOperationName = "ExecModDelete";
+inline constexpr std::string_view kExecModsIsolatedDocument = R"gql(query ExecMods($appId: BigInt!, $gridId: BigInt!) {
+  execMods(appId: $appId, gridId: $gridId) {
+    ...ExecModFields
+  }
+}
+
+fragment ExecModFields on ExecMod {
+  modId
+  gridId
+  name
+  ownerId
+  version
+  digest
+  enabled
+  listingId
+  blocked
+  running
+  updatedAt
+})gql";
+inline constexpr std::string_view kExecModsOperationName = "ExecMods";
+inline constexpr std::string_view kExecMyModsIsolatedDocument = R"gql(query ExecMyMods($appId: BigInt!) {
+  execMyMods(appId: $appId) {
+    ...ExecModFields
+  }
+}
+
+fragment ExecModFields on ExecMod {
+  modId
+  gridId
+  name
+  ownerId
+  version
+  digest
+  enabled
+  listingId
+  blocked
+  running
+  updatedAt
+})gql";
+inline constexpr std::string_view kExecMyModsOperationName = "ExecMyMods";
+inline constexpr std::string_view kExecModLogsIsolatedDocument = R"gql(query ExecModLogs($appId: BigInt!, $gridId: BigInt!, $name: String!, $maxLevel: Int, $before: String, $limit: Int) {
+  execModLogs(
+    appId: $appId
+    gridId: $gridId
+    name: $name
+    maxLevel: $maxLevel
+    before: $before
+    limit: $limit
+  ) {
+    id
+    nodeType
+    key
+    level
+    host
+    at
+    text
+    flow
+  }
+})gql";
+inline constexpr std::string_view kExecModLogsOperationName = "ExecModLogs";
+inline constexpr std::string_view kExecModPublishIsolatedDocument = R"gql(mutation ExecModPublish($appId: BigInt!, $gridId: BigInt!, $name: String!, $title: String!, $description: String) {
+  execModPublish(
+    appId: $appId
+    gridId: $gridId
+    name: $name
+    title: $title
+    description: $description
+  ) {
+    ...ExecModListingFields
+  }
+}
+
+fragment ExecModListingFields on ExecModListing {
+  listingId
+  title
+  description
+  publisherId
+  sourceModId
+  sourceVersion
+  digest
+  installs
+  clientDigest
+  clientCapabilitySummaryJson
+  clientCapabilityHash
+  clientTickIntervalMs
+  createdAt
+  delistedAt
+})gql";
+inline constexpr std::string_view kExecModPublishOperationName = "ExecModPublish";
+inline constexpr std::string_view kExecModListingsIsolatedDocument = R"gql(query ExecModListings($appId: BigInt!) {
+  execModListings(appId: $appId) {
+    ...ExecModListingFields
+  }
+}
+
+fragment ExecModListingFields on ExecModListing {
+  listingId
+  title
+  description
+  publisherId
+  sourceModId
+  sourceVersion
+  digest
+  installs
+  clientDigest
+  clientCapabilitySummaryJson
+  clientCapabilityHash
+  clientTickIntervalMs
+  createdAt
+  delistedAt
+})gql";
+inline constexpr std::string_view kExecModListingsOperationName = "ExecModListings";
+inline constexpr std::string_view kExecModUnpublishIsolatedDocument = R"gql(mutation ExecModUnpublish($appId: BigInt!, $listingId: BigInt!) {
+  execModUnpublish(appId: $appId, listingId: $listingId)
+})gql";
+inline constexpr std::string_view kExecModUnpublishOperationName = "ExecModUnpublish";
+inline constexpr std::string_view kExecModInstallIsolatedDocument = R"gql(mutation ExecModInstall($appId: BigInt!, $gridId: BigInt!, $name: String!, $listingId: BigInt!) {
+  execModInstall(
+    appId: $appId
+    gridId: $gridId
+    name: $name
+    listingId: $listingId
+  ) {
+    ...ExecModFields
+  }
+}
+
+fragment ExecModFields on ExecMod {
+  modId
+  gridId
+  name
+  ownerId
+  version
+  digest
+  enabled
+  listingId
+  blocked
+  running
+  updatedAt
+})gql";
+inline constexpr std::string_view kExecModInstallOperationName = "ExecModInstall";
+inline constexpr std::string_view kExecAppModsIsolatedDocument = R"gql(query ExecAppMods($appId: BigInt!, $gridId: BigInt, $ownerId: BigInt) {
+  execAppMods(appId: $appId, gridId: $gridId, ownerId: $ownerId) {
+    ...ExecModFields
+  }
+}
+
+fragment ExecModFields on ExecMod {
+  modId
+  gridId
+  name
+  ownerId
+  version
+  digest
+  enabled
+  listingId
+  blocked
+  running
+  updatedAt
+})gql";
+inline constexpr std::string_view kExecAppModsOperationName = "ExecAppMods";
+inline constexpr std::string_view kExecModSwitchesIsolatedDocument = R"gql(query ExecModSwitches($appId: BigInt!) {
+  execModSwitches(appId: $appId) {
+    ...ExecModSwitchFields
+  }
+}
+
+fragment ExecModSwitchFields on ExecModSwitch {
+  scope
+  target
+  reason
+  createdBy
+  createdAt
+})gql";
+inline constexpr std::string_view kExecModSwitchesOperationName = "ExecModSwitches";
+inline constexpr std::string_view kExecModSetSwitchIsolatedDocument = R"gql(mutation ExecModSetSwitch($appId: BigInt!, $scope: ExecModScope!, $off: Boolean!, $target: String, $reason: String) {
+  execModSetSwitch(
+    appId: $appId
+    scope: $scope
+    off: $off
+    target: $target
+    reason: $reason
+  ) {
+    ...ExecModSwitchFields
+  }
+}
+
+fragment ExecModSwitchFields on ExecModSwitch {
+  scope
+  target
+  reason
+  createdBy
+  createdAt
+})gql";
+inline constexpr std::string_view kExecModSetSwitchOperationName = "ExecModSetSwitch";
+inline constexpr std::string_view kExecModClientBuildIsolatedDocument = R"gql(mutation ExecModClientBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
+  execModClientBuild(appId: $appId, crate: $crate) {
+    ...ExecBuildFields
+  }
+}
+
+fragment ExecBuildFields on ExecBuild {
+  buildId
+  status
+  kind
+  log
+  createdAt
+  startedAt
+  finishedAt
+  artifacts {
+    crate
+    digest
+    sizeBytes
+    capabilitySummaryJson
+    capabilityHash
+    tickIntervalMs
+  }
+})gql";
+inline constexpr std::string_view kExecModClientBuildOperationName = "ExecModClientBuild";
+inline constexpr std::string_view kExecModClientDeployIsolatedDocument = R"gql(mutation ExecModClientDeploy($appId: BigInt!, $gridId: BigInt!, $name: String!, $buildId: String!) {
+  execModClientDeploy(
+    appId: $appId
+    gridId: $gridId
+    name: $name
+    buildId: $buildId
+  ) {
+    ...ExecModClientFields
+  }
+}
+
+fragment ExecModClientFields on ExecModClient {
+  modId
+  gridId
+  name
+  ownerId
+  clientVersion
+  digest
+  sizeBytes
+  capabilitySummaryJson
+  capabilityHash
+  tickIntervalMs
+  updatedAt
+})gql";
+inline constexpr std::string_view kExecModClientDeployOperationName = "ExecModClientDeploy";
+inline constexpr std::string_view kExecModClientDeleteIsolatedDocument = R"gql(mutation ExecModClientDelete($appId: BigInt!, $gridId: BigInt!, $name: String!) {
+  execModClientDelete(appId: $appId, gridId: $gridId, name: $name)
+})gql";
+inline constexpr std::string_view kExecModClientDeleteOperationName = "ExecModClientDelete";
+inline constexpr std::string_view kExecGridClientModsIsolatedDocument = R"gql(query ExecGridClientMods($appId: BigInt!, $gridId: BigInt!) {
+  execGridClientMods(appId: $appId, gridId: $gridId) {
+    ...ExecGridClientModFields
+  }
+}
+
+fragment ExecGridClientModFields on ExecGridClientMod {
+  modId
+  name
+  gridId
+  authorId
+  listingId
+  clientVersion
+  digest
+  capabilitySummaryJson
+  capabilityHash
+  tickIntervalMs
+  callerConsented
+  authorCapabilitySummaryJson
+  authorCapabilityHash
+  callerTrustsAuthor
+  updatedAt
+})gql";
+inline constexpr std::string_view kExecGridClientModsOperationName = "ExecGridClientMods";
+inline constexpr std::string_view kExecConsentClientModIsolatedDocument = R"gql(mutation ExecConsentClientMod($appId: BigInt!, $modId: String!, $capabilityHash: String!) {
+  execConsentClientMod(
+    appId: $appId
+    modId: $modId
+    capabilityHash: $capabilityHash
+  )
+})gql";
+inline constexpr std::string_view kExecConsentClientModOperationName = "ExecConsentClientMod";
+inline constexpr std::string_view kExecTrustAuthorIsolatedDocument = R"gql(mutation ExecTrustAuthor($appId: BigInt!, $gridId: BigInt!, $authorId: BigInt!, $capabilityHash: String!) {
+  execTrustAuthor(
+    appId: $appId
+    gridId: $gridId
+    authorId: $authorId
+    capabilityHash: $capabilityHash
+  )
+})gql";
+inline constexpr std::string_view kExecTrustAuthorOperationName = "ExecTrustAuthor";
+inline constexpr std::string_view kExecRevokeClientModConsentIsolatedDocument = R"gql(mutation ExecRevokeClientModConsent($appId: BigInt!, $modId: String!) {
+  execRevokeClientModConsent(appId: $appId, modId: $modId)
+})gql";
+inline constexpr std::string_view kExecRevokeClientModConsentOperationName = "ExecRevokeClientModConsent";
+inline constexpr std::string_view kExecRevokeAuthorTrustIsolatedDocument = R"gql(mutation ExecRevokeAuthorTrust($appId: BigInt!, $gridId: BigInt!, $authorId: BigInt!) {
+  execRevokeAuthorTrust(appId: $appId, gridId: $gridId, authorId: $authorId)
+})gql";
+inline constexpr std::string_view kExecRevokeAuthorTrustOperationName = "ExecRevokeAuthorTrust";
+inline constexpr std::string_view kExecModClientArtifactIsolatedDocument = R"gql(query ExecModClientArtifact($appId: BigInt!, $modId: String!) {
+  execModClientArtifact(appId: $appId, modId: $modId) {
+    modId
+    name
+    gridId
+    clientVersion
+    digest
+    wasmBase64
+    sizeBytes
+    capabilitySummaryJson
+    capabilityHash
+    tickIntervalMs
+    fuelPerDispatch
+    abiVersion
+  }
+})gql";
+inline constexpr std::string_view kExecModClientArtifactOperationName = "ExecModClientArtifact";
+
+inline constexpr std::string_view documentFor(std::string_view operationName) {
+  if (operationName == "ExecConnect") return kExecConnectIsolatedDocument;
+  if (operationName == "ExecDeploy") return kExecDeployIsolatedDocument;
+  if (operationName == "ExecConnectAsDeveloper") return kExecConnectAsDeveloperIsolatedDocument;
+  if (operationName == "ExecLogs") return kExecLogsIsolatedDocument;
+  if (operationName == "ExecInstances") return kExecInstancesIsolatedDocument;
+  if (operationName == "ExecVersions") return kExecVersionsIsolatedDocument;
+  if (operationName == "ExecEndpointStats") return kExecEndpointStatsIsolatedDocument;
+  if (operationName == "ExecAppStatus") return kExecAppStatusIsolatedDocument;
+  if (operationName == "ExecActivateVersion") return kExecActivateVersionIsolatedDocument;
+  if (operationName == "ExecSetEnabled") return kExecSetEnabledIsolatedDocument;
+  if (operationName == "ExecStarters") return kExecStartersIsolatedDocument;
+  if (operationName == "ExecBuild") return kExecBuildIsolatedDocument;
+  if (operationName == "ExecBuildStatus") return kExecBuildStatusIsolatedDocument;
+  if (operationName == "ExecModStarter") return kExecModStarterIsolatedDocument;
+  if (operationName == "ExecModBuild") return kExecModBuildIsolatedDocument;
+  if (operationName == "ExecModBuildStatus") return kExecModBuildStatusIsolatedDocument;
+  if (operationName == "ExecModDeploy") return kExecModDeployIsolatedDocument;
+  if (operationName == "ExecModSetEnabled") return kExecModSetEnabledIsolatedDocument;
+  if (operationName == "ExecModDelete") return kExecModDeleteIsolatedDocument;
+  if (operationName == "ExecMods") return kExecModsIsolatedDocument;
+  if (operationName == "ExecMyMods") return kExecMyModsIsolatedDocument;
+  if (operationName == "ExecModLogs") return kExecModLogsIsolatedDocument;
+  if (operationName == "ExecModPublish") return kExecModPublishIsolatedDocument;
+  if (operationName == "ExecModListings") return kExecModListingsIsolatedDocument;
+  if (operationName == "ExecModUnpublish") return kExecModUnpublishIsolatedDocument;
+  if (operationName == "ExecModInstall") return kExecModInstallIsolatedDocument;
+  if (operationName == "ExecAppMods") return kExecAppModsIsolatedDocument;
+  if (operationName == "ExecModSwitches") return kExecModSwitchesIsolatedDocument;
+  if (operationName == "ExecModSetSwitch") return kExecModSetSwitchIsolatedDocument;
+  if (operationName == "ExecModClientBuild") return kExecModClientBuildIsolatedDocument;
+  if (operationName == "ExecModClientDeploy") return kExecModClientDeployIsolatedDocument;
+  if (operationName == "ExecModClientDelete") return kExecModClientDeleteIsolatedDocument;
+  if (operationName == "ExecGridClientMods") return kExecGridClientModsIsolatedDocument;
+  if (operationName == "ExecConsentClientMod") return kExecConsentClientModIsolatedDocument;
+  if (operationName == "ExecTrustAuthor") return kExecTrustAuthorIsolatedDocument;
+  if (operationName == "ExecRevokeClientModConsent") return kExecRevokeClientModConsentIsolatedDocument;
+  if (operationName == "ExecRevokeAuthorTrust") return kExecRevokeAuthorTrustIsolatedDocument;
+  if (operationName == "ExecModClientArtifact") return kExecModClientArtifactIsolatedDocument;
+  return {};
+}
+
+}  // namespace exec
 
 namespace gameApps {
 
@@ -5737,6 +5557,14 @@ query GridPermissionLimits($appId: BigInt!, $gridId: BigInt!) {
   }
 }
 
+query GridOpenPermissions($appId: BigInt!, $gridId: BigInt!) {
+  gridOpenPermissions(appId: $appId, gridId: $gridId) {
+    appId
+    gridId
+    permissionKeys
+  }
+}
+
 query GridGroupGrants($appId: BigInt!, $gridId: BigInt!, $groupId: BigInt!) {
   gridGroupGrants(appId: $appId, gridId: $gridId, groupId: $groupId) {
     appId
@@ -5795,6 +5623,14 @@ mutation RevokeGridPermissions($input: RevokeGridPermissionsInput!) {
 
 mutation SetGridPermissionLimits($input: SetGridPermissionLimitsInput!) {
   setGridPermissionLimits(input: $input) {
+    appId
+    gridId
+    permissionKeys
+  }
+}
+
+mutation SetGridOpenPermissions($input: SetGridOpenPermissionsInput!) {
+  setGridOpenPermissions(input: $input) {
     appId
     gridId
     permissionKeys
@@ -5929,6 +5765,14 @@ inline constexpr std::string_view kGridPermissionLimitsIsolatedDocument = R"gql(
   }
 })gql";
 inline constexpr std::string_view kGridPermissionLimitsOperationName = "GridPermissionLimits";
+inline constexpr std::string_view kGridOpenPermissionsIsolatedDocument = R"gql(query GridOpenPermissions($appId: BigInt!, $gridId: BigInt!) {
+  gridOpenPermissions(appId: $appId, gridId: $gridId) {
+    appId
+    gridId
+    permissionKeys
+  }
+})gql";
+inline constexpr std::string_view kGridOpenPermissionsOperationName = "GridOpenPermissions";
 inline constexpr std::string_view kGridGroupGrantsIsolatedDocument = R"gql(query GridGroupGrants($appId: BigInt!, $gridId: BigInt!, $groupId: BigInt!) {
   gridGroupGrants(appId: $appId, gridId: $gridId, groupId: $groupId) {
     appId
@@ -5993,6 +5837,14 @@ inline constexpr std::string_view kSetGridPermissionLimitsIsolatedDocument = R"g
   }
 })gql";
 inline constexpr std::string_view kSetGridPermissionLimitsOperationName = "SetGridPermissionLimits";
+inline constexpr std::string_view kSetGridOpenPermissionsIsolatedDocument = R"gql(mutation SetGridOpenPermissions($input: SetGridOpenPermissionsInput!) {
+  setGridOpenPermissions(input: $input) {
+    appId
+    gridId
+    permissionKeys
+  }
+})gql";
+inline constexpr std::string_view kSetGridOpenPermissionsOperationName = "SetGridOpenPermissions";
 inline constexpr std::string_view kAssignGroupToGridIsolatedDocument = R"gql(mutation AssignGroupToGrid($input: AssignGroupToGridInput!) {
   assignGroupToGrid(input: $input) {
     appId
@@ -6024,12 +5876,14 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "NearbyGridPermissions") return kNearbyGridPermissionsIsolatedDocument;
   if (operationName == "NearbyGrids") return kNearbyGridsIsolatedDocument;
   if (operationName == "GridPermissionLimits") return kGridPermissionLimitsIsolatedDocument;
+  if (operationName == "GridOpenPermissions") return kGridOpenPermissionsIsolatedDocument;
   if (operationName == "GridGroupGrants") return kGridGroupGrantsIsolatedDocument;
   if (operationName == "CreateGrid") return kCreateGridIsolatedDocument;
   if (operationName == "DeleteGrid") return kDeleteGridIsolatedDocument;
   if (operationName == "GrantGridPermissions") return kGrantGridPermissionsIsolatedDocument;
   if (operationName == "RevokeGridPermissions") return kRevokeGridPermissionsIsolatedDocument;
   if (operationName == "SetGridPermissionLimits") return kSetGridPermissionLimitsIsolatedDocument;
+  if (operationName == "SetGridOpenPermissions") return kSetGridOpenPermissionsIsolatedDocument;
   if (operationName == "AssignGroupToGrid") return kAssignGroupToGridIsolatedDocument;
   if (operationName == "RevokeGroupFromGrid") return kRevokeGroupFromGridIsolatedDocument;
   return {};
@@ -6037,2692 +5891,123 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 
 }  // namespace gameApps
 
-namespace gameModel {
+namespace grids {
 
-/// gameModel/GameModelAutomations.graphql
-inline constexpr std::string_view kGameModelAutomationsDocument = R"gql(fragment GmAutomationFields on GmAutomation {
-  automationId
-  appId
-  name
-  description
-  enabled
-  actionKind
-  functionName
-  computeModuleName
-  computeExport
-  targetMode
-  selfContainerId
-  targetTypeName
-  sessionId
-  paramsJson
-  selectorJson
-  runAsUserId
-  triggerType
-  scheduleKind
-  intervalMs
-  cronExpr
-  maxTargets
-  maxFnDepth
-  gasLimit
-  runTimeoutMs
-  maxRunsPerMinute
-  failureThreshold
-  cooldownMs
-  circuitState
-  consecutiveFailures
-  pausedUntil
-  lastError
-  lastRunAt
-  nextRunAt
-}
-
-fragment GmAutomationTriggerFields on GmAutomationTrigger {
-  triggerId
-  appId
-  automationId
-  onEvent
-  functionName
-  containerTypeName
-  propertyKey
-  writeSource
-  debounceMs
-  lastMatchedAt
-  matchCount24h
-  warnings
-}
-
-fragment GmAutomationPolicyFields on GmAutomationPolicy {
-  appId
-  enabled
-  maxAutomations
-  minIntervalMs
-  maxFanout
-  maxCascadeDepth
-  globalRunsPerMinute
-  minTimerDelayMs
-  maxPendingTimers
-}
-
-fragment GmAutomationRunFields on GmAutomationRun {
-  runId
-  appId
-  flowId
-  automationId
-  automationName
-  triggerSource
-  triggerId
-  parentRunId
-  cascadeDepth
-  startedAt
-  finishedAt
-  durationUs
-  targets
-  invocations
-  mutations
-  fnCalls
-  gasUsed
-  success
-  errorMessage
-  circuitAction
-  computeUnits
-}
-
-mutation GameModelUpsertAutomation($input: UpsertAutomationInput!) {
-  gameModelUpsertAutomation(input: $input) {
-    ...GmAutomationFields
-  }
-}
-
-mutation GameModelDeleteAutomation($appId: BigInt!, $name: String!) {
-  gameModelDeleteAutomation(appId: $appId, name: $name)
-}
-
-mutation GameModelSetAutomationEnabled($appId: BigInt!, $name: String!, $enabled: Boolean!) {
-  gameModelSetAutomationEnabled(appId: $appId, name: $name, enabled: $enabled) {
-    ...GmAutomationFields
-  }
-}
-
-mutation GameModelUpsertAutomationTrigger($input: UpsertAutomationTriggerInput!) {
-  gameModelUpsertAutomationTrigger(input: $input) {
-    ...GmAutomationTriggerFields
-  }
-}
-
-mutation GameModelDeleteAutomationTrigger($appId: BigInt!, $triggerId: String!) {
-  gameModelDeleteAutomationTrigger(appId: $appId, triggerId: $triggerId)
-}
-
-mutation GameModelSetAutomationPolicy($input: SetAutomationPolicyInput!) {
-  gameModelSetAutomationPolicy(input: $input) {
-    ...GmAutomationPolicyFields
-  }
-}
-
-mutation GameModelRunAutomation($appId: BigInt!, $name: String!) {
-  gameModelRunAutomation(appId: $appId, name: $name) {
-    ...GmAutomationRunFields
-  }
-}
-
-query GameModelAutomations($appId: BigInt!) {
-  gameModelAutomations(appId: $appId) {
-    ...GmAutomationFields
-  }
-}
-
-query GameModelAutomation($appId: BigInt!, $name: String!) {
-  gameModelAutomation(appId: $appId, name: $name) {
-    ...GmAutomationFields
-  }
-}
-
-query GameModelAutomationTriggers($appId: BigInt!, $automationName: String) {
-  gameModelAutomationTriggers(appId: $appId, automationName: $automationName) {
-    ...GmAutomationTriggerFields
-  }
-}
-
-query GameModelAutomationPolicy($appId: BigInt!) {
-  gameModelAutomationPolicy(appId: $appId) {
-    ...GmAutomationPolicyFields
-  }
-}
-
-query GameModelAutomationRuns(
-  $appId: BigInt!
-  $automationName: String
-  $success: Boolean
-  $limit: Int
-  $offset: Int
-) {
-  gameModelAutomationRuns(
-    appId: $appId
-    automationName: $automationName
-    success: $success
-    limit: $limit
-    offset: $offset
-  ) {
-    ...GmAutomationRunFields
-  }
-}
-
-query GameModelAutomationStats($appId: BigInt!, $windowMinutes: Int) {
-  gameModelAutomationStats(appId: $appId, windowMinutes: $windowMinutes) {
-    windowMinutes
-    totalRuns
-    failedRuns
-    failureRatePct
-    runsPerMinute
-    totalInvocations
-    totalMutations
-    totalComputeUnits
-    avgDurationUs
-    byAutomation {
-      automationName
-      runs
-      failures
-      invocations
-      computeUnits
-      avgDurationUs
-      circuitState
-    }
-  }
-}
-
-query GameModelAppDiagnostics($appId: BigInt!) {
-  gameModelAppDiagnostics(appId: $appId) {
+/// grids/CreateGridChannel.graphql
+inline constexpr std::string_view kCreateGridChannelDocument = R"gql(mutation CreateGridChannel($input: CreateGridChannelInput!) {
+  createGridChannel(input: $input) {
+    groupId
     appId
-    containerCount
-    propertyCount
-    edgeCount
-    sessionCount
-    functionCount
-    automationCount
-    eventCount
-    events24h
-    failedEvents24h
-    automationEvents24h
-    notificationsEmitted24h
-    notificationsUndeliverable24h
-    topFunctions {
-      functionName
-      invocations
-      failures
-    }
-  }
-}
-
-fragment GmTimerFields on GmTimer {
-  timerId
-  appId
-  sessionId
-  selfContainerId
-  functionName
-  paramsJson
-  fireAt
-  dedupeKey
-  cascadeDepth
-  flowId
-  armedBy
-  createdAt
-}
-
-mutation GameModelScheduleInvoke($input: ScheduleInvokeInput!) {
-  gameModelScheduleInvoke(input: $input) {
-    ...GmTimerFields
-  }
-}
-
-mutation GameModelCancelTimer($appId: BigInt!, $timerId: String, $dedupeKey: String) {
-  gameModelCancelTimer(appId: $appId, timerId: $timerId, dedupeKey: $dedupeKey)
-}
-
-query GameModelTimers($appId: BigInt!, $sessionId: String, $limit: Int) {
-  gameModelTimers(appId: $appId, sessionId: $sessionId, limit: $limit) {
-    ...GmTimerFields
-  }
-})gql";
-inline constexpr std::string_view kGameModelUpsertAutomationIsolatedDocument = R"gql(mutation GameModelUpsertAutomation($input: UpsertAutomationInput!) {
-  gameModelUpsertAutomation(input: $input) {
-    ...GmAutomationFields
-  }
-}
-
-fragment GmAutomationFields on GmAutomation {
-  automationId
-  appId
-  name
-  description
-  enabled
-  actionKind
-  functionName
-  computeModuleName
-  computeExport
-  targetMode
-  selfContainerId
-  targetTypeName
-  sessionId
-  paramsJson
-  selectorJson
-  runAsUserId
-  triggerType
-  scheduleKind
-  intervalMs
-  cronExpr
-  maxTargets
-  maxFnDepth
-  gasLimit
-  runTimeoutMs
-  maxRunsPerMinute
-  failureThreshold
-  cooldownMs
-  circuitState
-  consecutiveFailures
-  pausedUntil
-  lastError
-  lastRunAt
-  nextRunAt
-})gql";
-inline constexpr std::string_view kGameModelUpsertAutomationOperationName = "GameModelUpsertAutomation";
-inline constexpr std::string_view kGameModelDeleteAutomationIsolatedDocument = R"gql(mutation GameModelDeleteAutomation($appId: BigInt!, $name: String!) {
-  gameModelDeleteAutomation(appId: $appId, name: $name)
-})gql";
-inline constexpr std::string_view kGameModelDeleteAutomationOperationName = "GameModelDeleteAutomation";
-inline constexpr std::string_view kGameModelSetAutomationEnabledIsolatedDocument = R"gql(mutation GameModelSetAutomationEnabled($appId: BigInt!, $name: String!, $enabled: Boolean!) {
-  gameModelSetAutomationEnabled(appId: $appId, name: $name, enabled: $enabled) {
-    ...GmAutomationFields
-  }
-}
-
-fragment GmAutomationFields on GmAutomation {
-  automationId
-  appId
-  name
-  description
-  enabled
-  actionKind
-  functionName
-  computeModuleName
-  computeExport
-  targetMode
-  selfContainerId
-  targetTypeName
-  sessionId
-  paramsJson
-  selectorJson
-  runAsUserId
-  triggerType
-  scheduleKind
-  intervalMs
-  cronExpr
-  maxTargets
-  maxFnDepth
-  gasLimit
-  runTimeoutMs
-  maxRunsPerMinute
-  failureThreshold
-  cooldownMs
-  circuitState
-  consecutiveFailures
-  pausedUntil
-  lastError
-  lastRunAt
-  nextRunAt
-})gql";
-inline constexpr std::string_view kGameModelSetAutomationEnabledOperationName = "GameModelSetAutomationEnabled";
-inline constexpr std::string_view kGameModelUpsertAutomationTriggerIsolatedDocument = R"gql(mutation GameModelUpsertAutomationTrigger($input: UpsertAutomationTriggerInput!) {
-  gameModelUpsertAutomationTrigger(input: $input) {
-    ...GmAutomationTriggerFields
-  }
-}
-
-fragment GmAutomationTriggerFields on GmAutomationTrigger {
-  triggerId
-  appId
-  automationId
-  onEvent
-  functionName
-  containerTypeName
-  propertyKey
-  writeSource
-  debounceMs
-  lastMatchedAt
-  matchCount24h
-  warnings
-})gql";
-inline constexpr std::string_view kGameModelUpsertAutomationTriggerOperationName = "GameModelUpsertAutomationTrigger";
-inline constexpr std::string_view kGameModelDeleteAutomationTriggerIsolatedDocument = R"gql(mutation GameModelDeleteAutomationTrigger($appId: BigInt!, $triggerId: String!) {
-  gameModelDeleteAutomationTrigger(appId: $appId, triggerId: $triggerId)
-})gql";
-inline constexpr std::string_view kGameModelDeleteAutomationTriggerOperationName = "GameModelDeleteAutomationTrigger";
-inline constexpr std::string_view kGameModelSetAutomationPolicyIsolatedDocument = R"gql(mutation GameModelSetAutomationPolicy($input: SetAutomationPolicyInput!) {
-  gameModelSetAutomationPolicy(input: $input) {
-    ...GmAutomationPolicyFields
-  }
-}
-
-fragment GmAutomationPolicyFields on GmAutomationPolicy {
-  appId
-  enabled
-  maxAutomations
-  minIntervalMs
-  maxFanout
-  maxCascadeDepth
-  globalRunsPerMinute
-  minTimerDelayMs
-  maxPendingTimers
-})gql";
-inline constexpr std::string_view kGameModelSetAutomationPolicyOperationName = "GameModelSetAutomationPolicy";
-inline constexpr std::string_view kGameModelRunAutomationIsolatedDocument = R"gql(mutation GameModelRunAutomation($appId: BigInt!, $name: String!) {
-  gameModelRunAutomation(appId: $appId, name: $name) {
-    ...GmAutomationRunFields
-  }
-}
-
-fragment GmAutomationRunFields on GmAutomationRun {
-  runId
-  appId
-  flowId
-  automationId
-  automationName
-  triggerSource
-  triggerId
-  parentRunId
-  cascadeDepth
-  startedAt
-  finishedAt
-  durationUs
-  targets
-  invocations
-  mutations
-  fnCalls
-  gasUsed
-  success
-  errorMessage
-  circuitAction
-  computeUnits
-})gql";
-inline constexpr std::string_view kGameModelRunAutomationOperationName = "GameModelRunAutomation";
-inline constexpr std::string_view kGameModelAutomationsIsolatedDocument = R"gql(query GameModelAutomations($appId: BigInt!) {
-  gameModelAutomations(appId: $appId) {
-    ...GmAutomationFields
-  }
-}
-
-fragment GmAutomationFields on GmAutomation {
-  automationId
-  appId
-  name
-  description
-  enabled
-  actionKind
-  functionName
-  computeModuleName
-  computeExport
-  targetMode
-  selfContainerId
-  targetTypeName
-  sessionId
-  paramsJson
-  selectorJson
-  runAsUserId
-  triggerType
-  scheduleKind
-  intervalMs
-  cronExpr
-  maxTargets
-  maxFnDepth
-  gasLimit
-  runTimeoutMs
-  maxRunsPerMinute
-  failureThreshold
-  cooldownMs
-  circuitState
-  consecutiveFailures
-  pausedUntil
-  lastError
-  lastRunAt
-  nextRunAt
-})gql";
-inline constexpr std::string_view kGameModelAutomationsOperationName = "GameModelAutomations";
-inline constexpr std::string_view kGameModelAutomationIsolatedDocument = R"gql(query GameModelAutomation($appId: BigInt!, $name: String!) {
-  gameModelAutomation(appId: $appId, name: $name) {
-    ...GmAutomationFields
-  }
-}
-
-fragment GmAutomationFields on GmAutomation {
-  automationId
-  appId
-  name
-  description
-  enabled
-  actionKind
-  functionName
-  computeModuleName
-  computeExport
-  targetMode
-  selfContainerId
-  targetTypeName
-  sessionId
-  paramsJson
-  selectorJson
-  runAsUserId
-  triggerType
-  scheduleKind
-  intervalMs
-  cronExpr
-  maxTargets
-  maxFnDepth
-  gasLimit
-  runTimeoutMs
-  maxRunsPerMinute
-  failureThreshold
-  cooldownMs
-  circuitState
-  consecutiveFailures
-  pausedUntil
-  lastError
-  lastRunAt
-  nextRunAt
-})gql";
-inline constexpr std::string_view kGameModelAutomationOperationName = "GameModelAutomation";
-inline constexpr std::string_view kGameModelAutomationTriggersIsolatedDocument = R"gql(query GameModelAutomationTriggers($appId: BigInt!, $automationName: String) {
-  gameModelAutomationTriggers(appId: $appId, automationName: $automationName) {
-    ...GmAutomationTriggerFields
-  }
-}
-
-fragment GmAutomationTriggerFields on GmAutomationTrigger {
-  triggerId
-  appId
-  automationId
-  onEvent
-  functionName
-  containerTypeName
-  propertyKey
-  writeSource
-  debounceMs
-  lastMatchedAt
-  matchCount24h
-  warnings
-})gql";
-inline constexpr std::string_view kGameModelAutomationTriggersOperationName = "GameModelAutomationTriggers";
-inline constexpr std::string_view kGameModelAutomationPolicyIsolatedDocument = R"gql(query GameModelAutomationPolicy($appId: BigInt!) {
-  gameModelAutomationPolicy(appId: $appId) {
-    ...GmAutomationPolicyFields
-  }
-}
-
-fragment GmAutomationPolicyFields on GmAutomationPolicy {
-  appId
-  enabled
-  maxAutomations
-  minIntervalMs
-  maxFanout
-  maxCascadeDepth
-  globalRunsPerMinute
-  minTimerDelayMs
-  maxPendingTimers
-})gql";
-inline constexpr std::string_view kGameModelAutomationPolicyOperationName = "GameModelAutomationPolicy";
-inline constexpr std::string_view kGameModelAutomationRunsIsolatedDocument = R"gql(query GameModelAutomationRuns($appId: BigInt!, $automationName: String, $success: Boolean, $limit: Int, $offset: Int) {
-  gameModelAutomationRuns(
-    appId: $appId
-    automationName: $automationName
-    success: $success
-    limit: $limit
-    offset: $offset
-  ) {
-    ...GmAutomationRunFields
-  }
-}
-
-fragment GmAutomationRunFields on GmAutomationRun {
-  runId
-  appId
-  flowId
-  automationId
-  automationName
-  triggerSource
-  triggerId
-  parentRunId
-  cascadeDepth
-  startedAt
-  finishedAt
-  durationUs
-  targets
-  invocations
-  mutations
-  fnCalls
-  gasUsed
-  success
-  errorMessage
-  circuitAction
-  computeUnits
-})gql";
-inline constexpr std::string_view kGameModelAutomationRunsOperationName = "GameModelAutomationRuns";
-inline constexpr std::string_view kGameModelAutomationStatsIsolatedDocument = R"gql(query GameModelAutomationStats($appId: BigInt!, $windowMinutes: Int) {
-  gameModelAutomationStats(appId: $appId, windowMinutes: $windowMinutes) {
-    windowMinutes
-    totalRuns
-    failedRuns
-    failureRatePct
-    runsPerMinute
-    totalInvocations
-    totalMutations
-    totalComputeUnits
-    avgDurationUs
-    byAutomation {
-      automationName
-      runs
-      failures
-      invocations
-      computeUnits
-      avgDurationUs
-      circuitState
-    }
-  }
-})gql";
-inline constexpr std::string_view kGameModelAutomationStatsOperationName = "GameModelAutomationStats";
-inline constexpr std::string_view kGameModelAppDiagnosticsIsolatedDocument = R"gql(query GameModelAppDiagnostics($appId: BigInt!) {
-  gameModelAppDiagnostics(appId: $appId) {
-    appId
-    containerCount
-    propertyCount
-    edgeCount
-    sessionCount
-    functionCount
-    automationCount
-    eventCount
-    events24h
-    failedEvents24h
-    automationEvents24h
-    notificationsEmitted24h
-    notificationsUndeliverable24h
-    topFunctions {
-      functionName
-      invocations
-      failures
-    }
-  }
-})gql";
-inline constexpr std::string_view kGameModelAppDiagnosticsOperationName = "GameModelAppDiagnostics";
-inline constexpr std::string_view kGameModelScheduleInvokeIsolatedDocument = R"gql(mutation GameModelScheduleInvoke($input: ScheduleInvokeInput!) {
-  gameModelScheduleInvoke(input: $input) {
-    ...GmTimerFields
-  }
-}
-
-fragment GmTimerFields on GmTimer {
-  timerId
-  appId
-  sessionId
-  selfContainerId
-  functionName
-  paramsJson
-  fireAt
-  dedupeKey
-  cascadeDepth
-  flowId
-  armedBy
-  createdAt
-})gql";
-inline constexpr std::string_view kGameModelScheduleInvokeOperationName = "GameModelScheduleInvoke";
-inline constexpr std::string_view kGameModelCancelTimerIsolatedDocument = R"gql(mutation GameModelCancelTimer($appId: BigInt!, $timerId: String, $dedupeKey: String) {
-  gameModelCancelTimer(appId: $appId, timerId: $timerId, dedupeKey: $dedupeKey)
-})gql";
-inline constexpr std::string_view kGameModelCancelTimerOperationName = "GameModelCancelTimer";
-inline constexpr std::string_view kGameModelTimersIsolatedDocument = R"gql(query GameModelTimers($appId: BigInt!, $sessionId: String, $limit: Int) {
-  gameModelTimers(appId: $appId, sessionId: $sessionId, limit: $limit) {
-    ...GmTimerFields
-  }
-}
-
-fragment GmTimerFields on GmTimer {
-  timerId
-  appId
-  sessionId
-  selfContainerId
-  functionName
-  paramsJson
-  fireAt
-  dedupeKey
-  cascadeDepth
-  flowId
-  armedBy
-  createdAt
-})gql";
-inline constexpr std::string_view kGameModelTimersOperationName = "GameModelTimers";
-
-/// gameModel/GameModelFunctionCircuits.graphql
-inline constexpr std::string_view kGameModelFunctionCircuitsDocument = R"gql(query GameModelFunctionCircuits($appId: BigInt!, $name: String, $limit: Int) {
-  gameModelFunctionCircuits(appId: $appId, name: $name, limit: $limit) {
-    mode
-    failureThreshold
-    cooldownMs
-    circuits {
-      appId
-      functionName
-      circuitState
-      consecutiveFailures
-      cooldownUntil
-      openedAt
-      totalOpens
-      shadowRefusals
-      updatedAt
-    }
-  }
-})gql";
-inline constexpr std::string_view kGameModelFunctionCircuitsIsolatedDocument = R"gql(query GameModelFunctionCircuits($appId: BigInt!, $name: String, $limit: Int) {
-  gameModelFunctionCircuits(appId: $appId, name: $name, limit: $limit) {
-    mode
-    failureThreshold
-    cooldownMs
-    circuits {
-      appId
-      functionName
-      circuitState
-      consecutiveFailures
-      cooldownUntil
-      openedAt
-      totalOpens
-      shadowRefusals
-      updatedAt
-    }
-  }
-})gql";
-inline constexpr std::string_view kGameModelFunctionCircuitsOperationName = "GameModelFunctionCircuits";
-
-/// gameModel/GameModelLint.graphql
-inline constexpr std::string_view kGameModelLintDocument = R"gql(# The studio lint query. It lived as an inline string constant in
-# include/crowdy/studio/model_lint.hpp, which meant the codegen operation-isolation test
-# could never validate it against the schema -- the one query asking "is this app's model
-# coherent" was itself unchecked. Mirrors CrowdyJS's GameModelLint.graphql field for field.
-query CrowdyModelLint($appId: BigInt!) {
-  gameModelLint(appId: $appId) {
-    appId
-    errorCount
-    warningCount
-    clean
-    findings {
-      code
-      severity
-      subjectKind
-      subject
-      message
-      remedy
-      count
-    }
-  }
-})gql";
-inline constexpr std::string_view kCrowdyModelLintIsolatedDocument = R"gql(query CrowdyModelLint($appId: BigInt!) {
-  gameModelLint(appId: $appId) {
-    appId
-    errorCount
-    warningCount
-    clean
-    findings {
-      code
-      severity
-      subjectKind
-      subject
-      message
-      remedy
-      count
-    }
-  }
-})gql";
-inline constexpr std::string_view kCrowdyModelLintOperationName = "CrowdyModelLint";
-
-/// gameModel/GameModelRuntime.graphql
-inline constexpr std::string_view kGameModelRuntimeDocument = R"gql(fragment GmSessionFields on GmSession {
-  sessionId
-  appId
-  name
-  status
-  createdByUserId
-  currentTurnUserId
-  metadataJson
-  admission
-  maxParticipants
-  participantCount
-  hostUserId
-  hostTerm
-  revision
-  endedAt
-  endReason
-  createdAt
-  presence
-  seededContainerCount
-}
-
-fragment GmSessionParticipantFields on GmSessionParticipant {
-  sessionId
-  userId
-  role
-  state
-  incarnation
-  actorUuid
-  joinedAt
-  leftAt
-  leftReason
-}
-
-fragment GmSessionEventFields on GmSessionEvent {
-  appId
-  sessionId
-  revision
-  kind
-  payloadJson
-  createdAt
-}
-
-fragment GmContainerFields on GmContainer {
-  containerId
-  appId
-  sessionId
-  typeName
-  displayName
-  description
-  ownerUserId
-  metadataJson
-  bindingKey
-}
-
-fragment GmInvokeResultFields on GmInvokeResult {
-  eventId
-  functionName
-  success
-  returnValueJson
-  errorMessage
-  fault {
-    code
-    blame
-    retryable
-  }
-  mutationsApplied {
-    containerId
-    key
-    valueType
-    oldValueJson
-    newValueJson
-  }
-}
-
-mutation GameModelCreateSession($input: CreateSessionInput!) {
-  gameModelCreateSession(input: $input) {
-    ...GmSessionFields
-  }
-}
-
-mutation GameModelJoinSession($input: JoinSessionInput!) {
-  gameModelJoinSession(input: $input) {
-    ...GmSessionParticipantFields
-  }
-}
-
-mutation GameModelLeaveSession($input: LeaveSessionInput!) {
-  gameModelLeaveSession(input: $input) {
-    ...GmSessionParticipantFields
-  }
-}
-
-mutation GameModelSetSessionAdmission($input: SetSessionAdmissionInput!) {
-  gameModelSetSessionAdmission(input: $input) {
-    ...GmSessionFields
-  }
-}
-
-mutation GameModelTransferSessionHost($input: TransferSessionHostInput!) {
-  gameModelTransferSessionHost(input: $input) {
-    ...GmSessionFields
-  }
-}
-
-mutation GameModelEndSession($input: EndSessionInput!) {
-  gameModelEndSession(input: $input) {
-    ...GmSessionFields
-  }
-}
-
-mutation GameModelSetSessionTurn($input: SetSessionTurnInput!) {
-  gameModelSetSessionTurn(input: $input) {
-    ...GmSessionFields
-  }
-}
-
-mutation GameModelCreateContainer($input: CreateContainerInput!) {
-  gameModelCreateContainer(input: $input) {
-    ...GmContainerFields
-  }
-}
-
-mutation GameModelEnsureContainer($input: EnsureContainerInput!) {
-  gameModelEnsureContainer(input: $input) {
-    container {
-      ...GmContainerFields
-    }
-    created
-  }
-}
-
-mutation GameModelDeleteContainer($appId: BigInt!, $containerId: String!) {
-  gameModelDeleteContainer(appId: $appId, containerId: $containerId)
-}
-
-mutation GameModelSetProperty($input: SetContainerPropertyInput!) {
-  gameModelSetProperty(input: $input) {
-    ...GmContainerFields
-  }
-}
-
-mutation GameModelAddEdge($input: AddEdgeInput!) {
-  gameModelAddEdge(input: $input) {
-    edgeId
-    fromContainerId
-    toContainerId
-    relationshipType
-    weight
-  }
-}
-
-mutation GameModelDeleteEdge($appId: BigInt!, $edgeId: String!) {
-  gameModelDeleteEdge(appId: $appId, edgeId: $edgeId)
-}
-
-mutation GameModelInvoke($input: InvokeFunctionInput!) {
-  gameModelInvoke(input: $input) {
-    ...GmInvokeResultFields
-  }
-}
-
-query GameModelContainer($appId: BigInt!, $containerId: String!) {
-  gameModelContainer(appId: $appId, containerId: $containerId) {
-    ...GmContainerFields
-  }
-}
-
-query GameModelContainers(
-  $appId: BigInt!
-  $typeName: String
-  $sessionId: String
-  $bindingKey: String
-  $where: [GmPropertyPredicateInput!]
-  $limit: Int
-  $offset: Int
-) {
-  gameModelContainers(
-    appId: $appId
-    typeName: $typeName
-    sessionId: $sessionId
-    bindingKey: $bindingKey
-    where: $where
-    limit: $limit
-    offset: $offset
-  ) {
-    ...GmContainerFields
-  }
-}
-
-query GameModelContainerState($appId: BigInt!, $containerId: String!) {
-  gameModelContainerState(appId: $appId, containerId: $containerId) {
-    containerId
-    appId
-    sessionId
-    typeName
-    displayName
+    groupType
+    name
+    description
     ownerUserId
-    propertiesJson
-  }
-}
-
-query GameModelContainerStates($appId: BigInt!, $containerIds: [String!]!) {
-  gameModelContainerStates(appId: $appId, containerIds: $containerIds) {
-    containerId
-    appId
-    sessionId
-    typeName
-    displayName
-    ownerUserId
-    propertiesJson
-  }
-}
-
-query GameModelTraverse(
-  $appId: BigInt!
-  $rootId: String!
-  $relationshipType: String!
-  $depth: Int
-) {
-  gameModelTraverse(
-    appId: $appId
-    rootId: $rootId
-    relationshipType: $relationshipType
-    depth: $depth
-  ) {
-    rootId
-    nodes {
-      ...GmContainerFields
-    }
-    edges {
-      edgeId
-      fromContainerId
-      toContainerId
-      relationshipType
-      weight
-    }
-  }
-}
-
-query GameModelSession($appId: BigInt!, $sessionId: String!) {
-  gameModelSession(appId: $appId, sessionId: $sessionId) {
-    ...GmSessionFields
-  }
-}
-
-query GameModelSessions(
-  $appId: BigInt!
-  $status: String
-  $admission: String
-  $hostUserId: BigInt
-  $limit: Int
-) {
-  gameModelSessions(
-    appId: $appId
-    status: $status
-    admission: $admission
-    hostUserId: $hostUserId
-    limit: $limit
-  ) {
-    ...GmSessionFields
-  }
-}
-
-query GameModelSessionSnapshot($appId: BigInt!, $sessionId: String!) {
-  gameModelSessionSnapshot(appId: $appId, sessionId: $sessionId) {
-    revision
-    session {
-      ...GmSessionFields
-    }
-    participants {
-      ...GmSessionParticipantFields
-    }
-  }
-}
-
-query GameModelSessionEvents(
-  $appId: BigInt!
-  $sessionId: String!
-  $afterRevision: String!
-  $limit: Int
-) {
-  gameModelSessionEvents(
-    appId: $appId
-    sessionId: $sessionId
-    afterRevision: $afterRevision
-    limit: $limit
-  ) {
-    ...GmSessionEventFields
-  }
-}
-
-query GameModelSessionInspect($appId: BigInt!, $sessionId: String!) {
-  gameModelSessionInspect(appId: $appId, sessionId: $sessionId) {
-    session {
-      ...GmSessionFields
-    }
-    participants {
-      presence
-      presenceFrom
-      participant {
-        ...GmSessionParticipantFields
-      }
-    }
-    recentEvents {
-      ...GmSessionEventFields
-    }
-  }
-}
-
-subscription GameModelSessionChanged(
-  $appId: BigInt!
-  $sessionId: String!
-  $afterRevision: String
-) {
-  gameModelSessionChanged(
-    appId: $appId
-    sessionId: $sessionId
-    afterRevision: $afterRevision
-  ) {
-    ...GmSessionEventFields
-  }
-}
-
-query GameModelEvents(
-  $appId: BigInt!
-  $sessionId: String
-  $selfContainerId: String
-  $functionName: String
-  $success: Boolean
-  $limit: Int
-  $offset: Int
-) {
-  gameModelEvents(
-    appId: $appId
-    sessionId: $sessionId
-    selfContainerId: $selfContainerId
-    functionName: $functionName
-    success: $success
-    limit: $limit
-    offset: $offset
-  ) {
-    eventId
-    flowId
-    sessionId
-    functionName
-    selfContainerId
-    callerUserId
-    callerKind
-    automationId
-    paramsJson
-    mutationsAppliedJson
-    permissionEffectsAppliedJson
-    returnValueJson
-    success
-    errorMessage
-    executedAt
-  }
-}
-
-query GameModelEventsConnection(
-  $appId: BigInt!
-  $first: Int
-  $after: String
-  $sessionId: String
-  $selfContainerId: String
-  $functionName: String
-  $success: Boolean
-) {
-  gameModelEventsConnection(
-    appId: $appId
-    first: $first
-    after: $after
-    sessionId: $sessionId
-    selfContainerId: $selfContainerId
-    functionName: $functionName
-    success: $success
-  ) {
-    edges {
-      cursor
-      node {
-        eventId
-        flowId
-        sessionId
-        functionName
-        selfContainerId
-        callerUserId
-        callerKind
-        automationId
-        paramsJson
-        mutationsAppliedJson
-        permissionEffectsAppliedJson
-        returnValueJson
-        success
-        errorMessage
-        executedAt
-      }
-    }
-    pageInfo {
-      hasNextPage
-      hasPreviousPage
-      startCursor
-      endCursor
-    }
-    totalCount
-  }
-}
-
-query GameModelActivePlayerCount($appId: BigInt!) {
-  gameModelActivePlayerCount(appId: $appId) {
-    appId
-    activePlayerCount
+    membershipPolicy
     status
-    observedAt
-    revision
+    defaultRoleId
+    gridId
+    createdAt
   }
-}
-
-# Cross-engine flow timeline (diagnostics; requires manage_apps and a
-# game-api with gameModelFlow, 2026-07-19+). Selections are inlined because
-# each operations file is shipped as one self-contained document.
-query GameModelFlow($appId: BigInt!, $flowId: String!) {
-  gameModelFlow(appId: $appId, flowId: $flowId) {
-    flowId
-    events {
-      eventId
-      flowId
-      sessionId
-      functionName
-      selfContainerId
-      callerUserId
-      callerKind
-      automationId
-      paramsJson
-      mutationsAppliedJson
-      permissionEffectsAppliedJson
-      returnValueJson
-      success
-      errorMessage
-      executedAt
-    }
-    automationRuns {
-      runId
-      appId
-      flowId
-      automationId
-      automationName
-      triggerSource
-      parentRunId
-      cascadeDepth
-      startedAt
-      finishedAt
-      durationUs
-      targets
-      invocations
-      mutations
-      fnCalls
-      gasUsed
-      success
-      errorMessage
-      circuitAction
-      computeUnits
-    }
-    moduleRuns {
-      runId
-      appId
-      flowId
-      moduleId
-      moduleName
-      triggerSource
-      entry
-      startedAt
-      durationUs
-      fuelUsed
-      dbReads
-      dbWrites
-      egressMsgs
-      egressBytes
-      success
-      errorMessage
-      circuitAction
-    }
-  }
-}
-
-subscription GameModelActivePlayerCountChanged($appId: BigInt!) {
-  gameModelActivePlayerCountChanged(appId: $appId) {
+})gql";
+inline constexpr std::string_view kCreateGridChannelIsolatedDocument = R"gql(mutation CreateGridChannel($input: CreateGridChannelInput!) {
+  createGridChannel(input: $input) {
+    groupId
     appId
-    previousCount
-    currentCount
-    delta
-    revision
-    observedAt
-  }
-}
-
-subscription GameModelContainerChanged(
-  $appId: BigInt!
-  $typeName: String
-  $sessionId: String
-) {
-  gameModelContainerChanged(
-    appId: $appId
-    typeName: $typeName
-    sessionId: $sessionId
-  ) {
-    appId
-    containerId
-    typeName
-    sessionId
-    source
-    functionName
-    changedKeys
-    occurredAt
-  }
-})gql";
-inline constexpr std::string_view kGameModelCreateSessionIsolatedDocument = R"gql(mutation GameModelCreateSession($input: CreateSessionInput!) {
-  gameModelCreateSession(input: $input) {
-    ...GmSessionFields
-  }
-}
-
-fragment GmSessionFields on GmSession {
-  sessionId
-  appId
-  name
-  status
-  createdByUserId
-  currentTurnUserId
-  metadataJson
-  admission
-  maxParticipants
-  participantCount
-  hostUserId
-  hostTerm
-  revision
-  endedAt
-  endReason
-  createdAt
-  presence
-  seededContainerCount
-})gql";
-inline constexpr std::string_view kGameModelCreateSessionOperationName = "GameModelCreateSession";
-inline constexpr std::string_view kGameModelJoinSessionIsolatedDocument = R"gql(mutation GameModelJoinSession($input: JoinSessionInput!) {
-  gameModelJoinSession(input: $input) {
-    ...GmSessionParticipantFields
-  }
-}
-
-fragment GmSessionParticipantFields on GmSessionParticipant {
-  sessionId
-  userId
-  role
-  state
-  incarnation
-  actorUuid
-  joinedAt
-  leftAt
-  leftReason
-})gql";
-inline constexpr std::string_view kGameModelJoinSessionOperationName = "GameModelJoinSession";
-inline constexpr std::string_view kGameModelLeaveSessionIsolatedDocument = R"gql(mutation GameModelLeaveSession($input: LeaveSessionInput!) {
-  gameModelLeaveSession(input: $input) {
-    ...GmSessionParticipantFields
-  }
-}
-
-fragment GmSessionParticipantFields on GmSessionParticipant {
-  sessionId
-  userId
-  role
-  state
-  incarnation
-  actorUuid
-  joinedAt
-  leftAt
-  leftReason
-})gql";
-inline constexpr std::string_view kGameModelLeaveSessionOperationName = "GameModelLeaveSession";
-inline constexpr std::string_view kGameModelSetSessionAdmissionIsolatedDocument = R"gql(mutation GameModelSetSessionAdmission($input: SetSessionAdmissionInput!) {
-  gameModelSetSessionAdmission(input: $input) {
-    ...GmSessionFields
-  }
-}
-
-fragment GmSessionFields on GmSession {
-  sessionId
-  appId
-  name
-  status
-  createdByUserId
-  currentTurnUserId
-  metadataJson
-  admission
-  maxParticipants
-  participantCount
-  hostUserId
-  hostTerm
-  revision
-  endedAt
-  endReason
-  createdAt
-  presence
-  seededContainerCount
-})gql";
-inline constexpr std::string_view kGameModelSetSessionAdmissionOperationName = "GameModelSetSessionAdmission";
-inline constexpr std::string_view kGameModelTransferSessionHostIsolatedDocument = R"gql(mutation GameModelTransferSessionHost($input: TransferSessionHostInput!) {
-  gameModelTransferSessionHost(input: $input) {
-    ...GmSessionFields
-  }
-}
-
-fragment GmSessionFields on GmSession {
-  sessionId
-  appId
-  name
-  status
-  createdByUserId
-  currentTurnUserId
-  metadataJson
-  admission
-  maxParticipants
-  participantCount
-  hostUserId
-  hostTerm
-  revision
-  endedAt
-  endReason
-  createdAt
-  presence
-  seededContainerCount
-})gql";
-inline constexpr std::string_view kGameModelTransferSessionHostOperationName = "GameModelTransferSessionHost";
-inline constexpr std::string_view kGameModelEndSessionIsolatedDocument = R"gql(mutation GameModelEndSession($input: EndSessionInput!) {
-  gameModelEndSession(input: $input) {
-    ...GmSessionFields
-  }
-}
-
-fragment GmSessionFields on GmSession {
-  sessionId
-  appId
-  name
-  status
-  createdByUserId
-  currentTurnUserId
-  metadataJson
-  admission
-  maxParticipants
-  participantCount
-  hostUserId
-  hostTerm
-  revision
-  endedAt
-  endReason
-  createdAt
-  presence
-  seededContainerCount
-})gql";
-inline constexpr std::string_view kGameModelEndSessionOperationName = "GameModelEndSession";
-inline constexpr std::string_view kGameModelSetSessionTurnIsolatedDocument = R"gql(mutation GameModelSetSessionTurn($input: SetSessionTurnInput!) {
-  gameModelSetSessionTurn(input: $input) {
-    ...GmSessionFields
-  }
-}
-
-fragment GmSessionFields on GmSession {
-  sessionId
-  appId
-  name
-  status
-  createdByUserId
-  currentTurnUserId
-  metadataJson
-  admission
-  maxParticipants
-  participantCount
-  hostUserId
-  hostTerm
-  revision
-  endedAt
-  endReason
-  createdAt
-  presence
-  seededContainerCount
-})gql";
-inline constexpr std::string_view kGameModelSetSessionTurnOperationName = "GameModelSetSessionTurn";
-inline constexpr std::string_view kGameModelCreateContainerIsolatedDocument = R"gql(mutation GameModelCreateContainer($input: CreateContainerInput!) {
-  gameModelCreateContainer(input: $input) {
-    ...GmContainerFields
-  }
-}
-
-fragment GmContainerFields on GmContainer {
-  containerId
-  appId
-  sessionId
-  typeName
-  displayName
-  description
-  ownerUserId
-  metadataJson
-  bindingKey
-})gql";
-inline constexpr std::string_view kGameModelCreateContainerOperationName = "GameModelCreateContainer";
-inline constexpr std::string_view kGameModelEnsureContainerIsolatedDocument = R"gql(mutation GameModelEnsureContainer($input: EnsureContainerInput!) {
-  gameModelEnsureContainer(input: $input) {
-    container {
-      ...GmContainerFields
-    }
-    created
-  }
-}
-
-fragment GmContainerFields on GmContainer {
-  containerId
-  appId
-  sessionId
-  typeName
-  displayName
-  description
-  ownerUserId
-  metadataJson
-  bindingKey
-})gql";
-inline constexpr std::string_view kGameModelEnsureContainerOperationName = "GameModelEnsureContainer";
-inline constexpr std::string_view kGameModelDeleteContainerIsolatedDocument = R"gql(mutation GameModelDeleteContainer($appId: BigInt!, $containerId: String!) {
-  gameModelDeleteContainer(appId: $appId, containerId: $containerId)
-})gql";
-inline constexpr std::string_view kGameModelDeleteContainerOperationName = "GameModelDeleteContainer";
-inline constexpr std::string_view kGameModelSetPropertyIsolatedDocument = R"gql(mutation GameModelSetProperty($input: SetContainerPropertyInput!) {
-  gameModelSetProperty(input: $input) {
-    ...GmContainerFields
-  }
-}
-
-fragment GmContainerFields on GmContainer {
-  containerId
-  appId
-  sessionId
-  typeName
-  displayName
-  description
-  ownerUserId
-  metadataJson
-  bindingKey
-})gql";
-inline constexpr std::string_view kGameModelSetPropertyOperationName = "GameModelSetProperty";
-inline constexpr std::string_view kGameModelAddEdgeIsolatedDocument = R"gql(mutation GameModelAddEdge($input: AddEdgeInput!) {
-  gameModelAddEdge(input: $input) {
-    edgeId
-    fromContainerId
-    toContainerId
-    relationshipType
-    weight
-  }
-})gql";
-inline constexpr std::string_view kGameModelAddEdgeOperationName = "GameModelAddEdge";
-inline constexpr std::string_view kGameModelDeleteEdgeIsolatedDocument = R"gql(mutation GameModelDeleteEdge($appId: BigInt!, $edgeId: String!) {
-  gameModelDeleteEdge(appId: $appId, edgeId: $edgeId)
-})gql";
-inline constexpr std::string_view kGameModelDeleteEdgeOperationName = "GameModelDeleteEdge";
-inline constexpr std::string_view kGameModelInvokeIsolatedDocument = R"gql(mutation GameModelInvoke($input: InvokeFunctionInput!) {
-  gameModelInvoke(input: $input) {
-    ...GmInvokeResultFields
-  }
-}
-
-fragment GmInvokeResultFields on GmInvokeResult {
-  eventId
-  functionName
-  success
-  returnValueJson
-  errorMessage
-  fault {
-    code
-    blame
-    retryable
-  }
-  mutationsApplied {
-    containerId
-    key
-    valueType
-    oldValueJson
-    newValueJson
-  }
-})gql";
-inline constexpr std::string_view kGameModelInvokeOperationName = "GameModelInvoke";
-inline constexpr std::string_view kGameModelContainerIsolatedDocument = R"gql(query GameModelContainer($appId: BigInt!, $containerId: String!) {
-  gameModelContainer(appId: $appId, containerId: $containerId) {
-    ...GmContainerFields
-  }
-}
-
-fragment GmContainerFields on GmContainer {
-  containerId
-  appId
-  sessionId
-  typeName
-  displayName
-  description
-  ownerUserId
-  metadataJson
-  bindingKey
-})gql";
-inline constexpr std::string_view kGameModelContainerOperationName = "GameModelContainer";
-inline constexpr std::string_view kGameModelContainersIsolatedDocument = R"gql(query GameModelContainers($appId: BigInt!, $typeName: String, $sessionId: String, $bindingKey: String, $where: [GmPropertyPredicateInput!], $limit: Int, $offset: Int) {
-  gameModelContainers(
-    appId: $appId
-    typeName: $typeName
-    sessionId: $sessionId
-    bindingKey: $bindingKey
-    where: $where
-    limit: $limit
-    offset: $offset
-  ) {
-    ...GmContainerFields
-  }
-}
-
-fragment GmContainerFields on GmContainer {
-  containerId
-  appId
-  sessionId
-  typeName
-  displayName
-  description
-  ownerUserId
-  metadataJson
-  bindingKey
-})gql";
-inline constexpr std::string_view kGameModelContainersOperationName = "GameModelContainers";
-inline constexpr std::string_view kGameModelContainerStateIsolatedDocument = R"gql(query GameModelContainerState($appId: BigInt!, $containerId: String!) {
-  gameModelContainerState(appId: $appId, containerId: $containerId) {
-    containerId
-    appId
-    sessionId
-    typeName
-    displayName
+    groupType
+    name
+    description
     ownerUserId
-    propertiesJson
-  }
-})gql";
-inline constexpr std::string_view kGameModelContainerStateOperationName = "GameModelContainerState";
-inline constexpr std::string_view kGameModelContainerStatesIsolatedDocument = R"gql(query GameModelContainerStates($appId: BigInt!, $containerIds: [String!]!) {
-  gameModelContainerStates(appId: $appId, containerIds: $containerIds) {
-    containerId
-    appId
-    sessionId
-    typeName
-    displayName
-    ownerUserId
-    propertiesJson
-  }
-})gql";
-inline constexpr std::string_view kGameModelContainerStatesOperationName = "GameModelContainerStates";
-inline constexpr std::string_view kGameModelTraverseIsolatedDocument = R"gql(query GameModelTraverse($appId: BigInt!, $rootId: String!, $relationshipType: String!, $depth: Int) {
-  gameModelTraverse(
-    appId: $appId
-    rootId: $rootId
-    relationshipType: $relationshipType
-    depth: $depth
-  ) {
-    rootId
-    nodes {
-      ...GmContainerFields
-    }
-    edges {
-      edgeId
-      fromContainerId
-      toContainerId
-      relationshipType
-      weight
-    }
-  }
-}
-
-fragment GmContainerFields on GmContainer {
-  containerId
-  appId
-  sessionId
-  typeName
-  displayName
-  description
-  ownerUserId
-  metadataJson
-  bindingKey
-})gql";
-inline constexpr std::string_view kGameModelTraverseOperationName = "GameModelTraverse";
-inline constexpr std::string_view kGameModelSessionIsolatedDocument = R"gql(query GameModelSession($appId: BigInt!, $sessionId: String!) {
-  gameModelSession(appId: $appId, sessionId: $sessionId) {
-    ...GmSessionFields
-  }
-}
-
-fragment GmSessionFields on GmSession {
-  sessionId
-  appId
-  name
-  status
-  createdByUserId
-  currentTurnUserId
-  metadataJson
-  admission
-  maxParticipants
-  participantCount
-  hostUserId
-  hostTerm
-  revision
-  endedAt
-  endReason
-  createdAt
-  presence
-  seededContainerCount
-})gql";
-inline constexpr std::string_view kGameModelSessionOperationName = "GameModelSession";
-inline constexpr std::string_view kGameModelSessionsIsolatedDocument = R"gql(query GameModelSessions($appId: BigInt!, $status: String, $admission: String, $hostUserId: BigInt, $limit: Int) {
-  gameModelSessions(
-    appId: $appId
-    status: $status
-    admission: $admission
-    hostUserId: $hostUserId
-    limit: $limit
-  ) {
-    ...GmSessionFields
-  }
-}
-
-fragment GmSessionFields on GmSession {
-  sessionId
-  appId
-  name
-  status
-  createdByUserId
-  currentTurnUserId
-  metadataJson
-  admission
-  maxParticipants
-  participantCount
-  hostUserId
-  hostTerm
-  revision
-  endedAt
-  endReason
-  createdAt
-  presence
-  seededContainerCount
-})gql";
-inline constexpr std::string_view kGameModelSessionsOperationName = "GameModelSessions";
-inline constexpr std::string_view kGameModelSessionSnapshotIsolatedDocument = R"gql(query GameModelSessionSnapshot($appId: BigInt!, $sessionId: String!) {
-  gameModelSessionSnapshot(appId: $appId, sessionId: $sessionId) {
-    revision
-    session {
-      ...GmSessionFields
-    }
-    participants {
-      ...GmSessionParticipantFields
-    }
-  }
-}
-
-fragment GmSessionFields on GmSession {
-  sessionId
-  appId
-  name
-  status
-  createdByUserId
-  currentTurnUserId
-  metadataJson
-  admission
-  maxParticipants
-  participantCount
-  hostUserId
-  hostTerm
-  revision
-  endedAt
-  endReason
-  createdAt
-  presence
-  seededContainerCount
-}
-
-fragment GmSessionParticipantFields on GmSessionParticipant {
-  sessionId
-  userId
-  role
-  state
-  incarnation
-  actorUuid
-  joinedAt
-  leftAt
-  leftReason
-})gql";
-inline constexpr std::string_view kGameModelSessionSnapshotOperationName = "GameModelSessionSnapshot";
-inline constexpr std::string_view kGameModelSessionEventsIsolatedDocument = R"gql(query GameModelSessionEvents($appId: BigInt!, $sessionId: String!, $afterRevision: String!, $limit: Int) {
-  gameModelSessionEvents(
-    appId: $appId
-    sessionId: $sessionId
-    afterRevision: $afterRevision
-    limit: $limit
-  ) {
-    ...GmSessionEventFields
-  }
-}
-
-fragment GmSessionEventFields on GmSessionEvent {
-  appId
-  sessionId
-  revision
-  kind
-  payloadJson
-  createdAt
-})gql";
-inline constexpr std::string_view kGameModelSessionEventsOperationName = "GameModelSessionEvents";
-inline constexpr std::string_view kGameModelSessionInspectIsolatedDocument = R"gql(query GameModelSessionInspect($appId: BigInt!, $sessionId: String!) {
-  gameModelSessionInspect(appId: $appId, sessionId: $sessionId) {
-    session {
-      ...GmSessionFields
-    }
-    participants {
-      presence
-      presenceFrom
-      participant {
-        ...GmSessionParticipantFields
-      }
-    }
-    recentEvents {
-      ...GmSessionEventFields
-    }
-  }
-}
-
-fragment GmSessionFields on GmSession {
-  sessionId
-  appId
-  name
-  status
-  createdByUserId
-  currentTurnUserId
-  metadataJson
-  admission
-  maxParticipants
-  participantCount
-  hostUserId
-  hostTerm
-  revision
-  endedAt
-  endReason
-  createdAt
-  presence
-  seededContainerCount
-}
-
-fragment GmSessionParticipantFields on GmSessionParticipant {
-  sessionId
-  userId
-  role
-  state
-  incarnation
-  actorUuid
-  joinedAt
-  leftAt
-  leftReason
-}
-
-fragment GmSessionEventFields on GmSessionEvent {
-  appId
-  sessionId
-  revision
-  kind
-  payloadJson
-  createdAt
-})gql";
-inline constexpr std::string_view kGameModelSessionInspectOperationName = "GameModelSessionInspect";
-inline constexpr std::string_view kGameModelSessionChangedIsolatedDocument = R"gql(subscription GameModelSessionChanged($appId: BigInt!, $sessionId: String!, $afterRevision: String) {
-  gameModelSessionChanged(
-    appId: $appId
-    sessionId: $sessionId
-    afterRevision: $afterRevision
-  ) {
-    ...GmSessionEventFields
-  }
-}
-
-fragment GmSessionEventFields on GmSessionEvent {
-  appId
-  sessionId
-  revision
-  kind
-  payloadJson
-  createdAt
-})gql";
-inline constexpr std::string_view kGameModelSessionChangedOperationName = "GameModelSessionChanged";
-inline constexpr std::string_view kGameModelEventsIsolatedDocument = R"gql(query GameModelEvents($appId: BigInt!, $sessionId: String, $selfContainerId: String, $functionName: String, $success: Boolean, $limit: Int, $offset: Int) {
-  gameModelEvents(
-    appId: $appId
-    sessionId: $sessionId
-    selfContainerId: $selfContainerId
-    functionName: $functionName
-    success: $success
-    limit: $limit
-    offset: $offset
-  ) {
-    eventId
-    flowId
-    sessionId
-    functionName
-    selfContainerId
-    callerUserId
-    callerKind
-    automationId
-    paramsJson
-    mutationsAppliedJson
-    permissionEffectsAppliedJson
-    returnValueJson
-    success
-    errorMessage
-    executedAt
-  }
-})gql";
-inline constexpr std::string_view kGameModelEventsOperationName = "GameModelEvents";
-inline constexpr std::string_view kGameModelEventsConnectionIsolatedDocument = R"gql(query GameModelEventsConnection($appId: BigInt!, $first: Int, $after: String, $sessionId: String, $selfContainerId: String, $functionName: String, $success: Boolean) {
-  gameModelEventsConnection(
-    appId: $appId
-    first: $first
-    after: $after
-    sessionId: $sessionId
-    selfContainerId: $selfContainerId
-    functionName: $functionName
-    success: $success
-  ) {
-    edges {
-      cursor
-      node {
-        eventId
-        flowId
-        sessionId
-        functionName
-        selfContainerId
-        callerUserId
-        callerKind
-        automationId
-        paramsJson
-        mutationsAppliedJson
-        permissionEffectsAppliedJson
-        returnValueJson
-        success
-        errorMessage
-        executedAt
-      }
-    }
-    pageInfo {
-      hasNextPage
-      hasPreviousPage
-      startCursor
-      endCursor
-    }
-    totalCount
-  }
-})gql";
-inline constexpr std::string_view kGameModelEventsConnectionOperationName = "GameModelEventsConnection";
-inline constexpr std::string_view kGameModelActivePlayerCountIsolatedDocument = R"gql(query GameModelActivePlayerCount($appId: BigInt!) {
-  gameModelActivePlayerCount(appId: $appId) {
-    appId
-    activePlayerCount
+    membershipPolicy
     status
-    observedAt
-    revision
+    defaultRoleId
+    gridId
+    createdAt
   }
 })gql";
-inline constexpr std::string_view kGameModelActivePlayerCountOperationName = "GameModelActivePlayerCount";
-inline constexpr std::string_view kGameModelFlowIsolatedDocument = R"gql(query GameModelFlow($appId: BigInt!, $flowId: String!) {
-  gameModelFlow(appId: $appId, flowId: $flowId) {
-    flowId
-    events {
-      eventId
-      flowId
-      sessionId
-      functionName
-      selfContainerId
-      callerUserId
-      callerKind
-      automationId
-      paramsJson
-      mutationsAppliedJson
-      permissionEffectsAppliedJson
-      returnValueJson
-      success
-      errorMessage
-      executedAt
-    }
-    automationRuns {
-      runId
-      appId
-      flowId
-      automationId
-      automationName
-      triggerSource
-      parentRunId
-      cascadeDepth
-      startedAt
-      finishedAt
-      durationUs
-      targets
-      invocations
-      mutations
-      fnCalls
-      gasUsed
-      success
-      errorMessage
-      circuitAction
-      computeUnits
-    }
-    moduleRuns {
-      runId
-      appId
-      flowId
-      moduleId
-      moduleName
-      triggerSource
-      entry
-      startedAt
-      durationUs
-      fuelUsed
-      dbReads
-      dbWrites
-      egressMsgs
-      egressBytes
-      success
-      errorMessage
-      circuitAction
-    }
-  }
-})gql";
-inline constexpr std::string_view kGameModelFlowOperationName = "GameModelFlow";
-inline constexpr std::string_view kGameModelActivePlayerCountChangedIsolatedDocument = R"gql(subscription GameModelActivePlayerCountChanged($appId: BigInt!) {
-  gameModelActivePlayerCountChanged(appId: $appId) {
-    appId
-    previousCount
-    currentCount
-    delta
-    revision
-    observedAt
-  }
-})gql";
-inline constexpr std::string_view kGameModelActivePlayerCountChangedOperationName = "GameModelActivePlayerCountChanged";
-inline constexpr std::string_view kGameModelContainerChangedIsolatedDocument = R"gql(subscription GameModelContainerChanged($appId: BigInt!, $typeName: String, $sessionId: String) {
-  gameModelContainerChanged(
-    appId: $appId
-    typeName: $typeName
-    sessionId: $sessionId
-  ) {
-    appId
-    containerId
-    typeName
-    sessionId
-    source
-    functionName
-    changedKeys
-    occurredAt
-  }
-})gql";
-inline constexpr std::string_view kGameModelContainerChangedOperationName = "GameModelContainerChanged";
+inline constexpr std::string_view kCreateGridChannelOperationName = "CreateGridChannel";
 
-/// gameModel/GameModelStudio.graphql
-inline constexpr std::string_view kGameModelStudioDocument = R"gql(fragment GmFunctionFields on GmFunction {
-  functionId
-  appId
-  name
-  containerTypeName
-  description
-  returnType
-  invokeScope
-  invokePolicyJson
-  autonomousInvocable
-  returnExpression
-  warnings
-  parameters {
+/// grids/GridChannels.graphql
+inline constexpr std::string_view kGridChannelsDocument = R"gql(query GridChannels($appId: BigInt!, $gridId: BigInt!) {
+  gridChannels(appId: $appId, gridId: $gridId) {
+    groupId
+    appId
+    groupType
     name
-    valueType
-    required
-    defaultValueJson
     description
-    sortOrder
-  }
-  mutations {
-    target
-    property
-    expression
-  }
-  notifications {
-    kind
-    emitAs
-    args {
-      name
-      expression
-    }
-  }
-  permissionEffects {
-    action
-    permissionKeys
-    userExpression
-    gridIdExpression
-    ttlSecondsExpression
-  }
-  timers {
-    functionName
-    target
-    delayMsExpression
-    dedupeKeyExpression
-    params {
-      name
-      expression
-    }
-  }
-}
-
-fragment GmPropertyDefFields on GmPropertyDef {
-  appId
-  containerTypeName
-  key
-  valueType
-  defaultValueJson
-  visibility
-  writable
-  description
-}
-
-mutation GameModelSeed($input: SeedGameModelInput!) {
-  gameModelSeed(input: $input) {
-    containerTypesCreated
-    propertyDefinitionsCreated
-    functionsCreated
-    containersCreated
-    edgesCreated
-    warnings
-    idMapJson
-  }
-}
-
-mutation GameModelUpsertContainerType($input: UpsertContainerTypeInput!) {
-  gameModelUpsertContainerType(input: $input) {
-    appId
-    typeName
-    displayName
-    description
-    instantiableBy
-    defaultPropertyVisibility
-    bindPolicyJson
-    scope
-    metadataJson
-  }
-}
-
-mutation GameModelUpsertPropertyDef($input: UpsertPropertyDefInput!) {
-  gameModelUpsertPropertyDef(input: $input) {
-    ...GmPropertyDefFields
-  }
-}
-
-mutation GameModelDeletePropertyDef(
-  $appId: BigInt!
-  $containerTypeName: String!
-  $key: String!
-) {
-  gameModelDeletePropertyDef(
-    appId: $appId
-    containerTypeName: $containerTypeName
-    key: $key
-  )
-}
-
-mutation GameModelDeleteContainerType($appId: BigInt!, $typeName: String!) {
-  gameModelDeleteContainerType(appId: $appId, typeName: $typeName)
-}
-
-mutation GameModelUpsertFunction($input: UpsertFunctionInput!) {
-  gameModelUpsertFunction(input: $input) {
-    ...GmFunctionFields
-  }
-}
-
-mutation GameModelDeleteFunction($appId: BigInt!, $name: String!) {
-  gameModelDeleteFunction(appId: $appId, name: $name)
-}
-
-mutation GameModelDefineFeature($input: DefineAppFeatureInput!) {
-  gameModelDefineFeature(input: $input) {
-    appId
-    featureKey
-    description
-  }
-}
-
-mutation GameModelGrantTierFeature($input: GrantTierFeatureInput!) {
-  gameModelGrantTierFeature(input: $input) {
-    appId
-    tierId
-    featureKey
-  }
-}
-
-mutation GameModelSetPolicy($input: SetGameModelPolicyInput!) {
-  gameModelSetPolicy(input: $input) {
-    appId
-    sessionCreationPolicy
-    defaultParticipantRole
-  }
-}
-
-query GameModelTypeSchema($appId: BigInt!, $typeName: String!) {
-  gameModelTypeSchema(appId: $appId, typeName: $typeName) {
-    typeName
-    propertyDefinitions {
-      ...GmPropertyDefFields
-    }
-    functions {
-      ...GmFunctionFields
-    }
-  }
-}
-
-query GameModelContainerTypes($appId: BigInt!) {
-  gameModelContainerTypes(appId: $appId) {
-    appId
-    typeName
-    displayName
-    description
-    instantiableBy
-    defaultPropertyVisibility
-    bindPolicyJson
-    scope
-    metadataJson
-  }
-}
-
-query GameModelPropertyDefs($appId: BigInt!, $typeName: String!) {
-  gameModelPropertyDefs(appId: $appId, typeName: $typeName) {
-    ...GmPropertyDefFields
-  }
-}
-
-query GameModelFunction($appId: BigInt!, $name: String!) {
-  gameModelFunction(appId: $appId, name: $name) {
-    ...GmFunctionFields
-  }
-}
-
-query GameModelFunctions($appId: BigInt!, $containerTypeName: String) {
-  gameModelFunctions(appId: $appId, containerTypeName: $containerTypeName) {
-    ...GmFunctionFields
-  }
-}
-
-query GameModelFeatures($appId: BigInt!) {
-  gameModelFeatures(appId: $appId) {
-    appId
-    featureKey
-    description
-  }
-}
-
-query GameModelTierFeatures($appId: BigInt!, $tierId: BigInt) {
-  gameModelTierFeatures(appId: $appId, tierId: $tierId) {
-    appId
-    tierId
-    featureKey
-  }
-}
-
-query GameModelPolicy($appId: BigInt!) {
-  gameModelPolicy(appId: $appId) {
-    appId
-    sessionCreationPolicy
-    defaultParticipantRole
-  }
-}
-
-mutation GameModelRevokeTierFeature($input: GrantTierFeatureInput!) {
-  gameModelRevokeTierFeature(input: $input)
-})gql";
-inline constexpr std::string_view kGameModelSeedIsolatedDocument = R"gql(mutation GameModelSeed($input: SeedGameModelInput!) {
-  gameModelSeed(input: $input) {
-    containerTypesCreated
-    propertyDefinitionsCreated
-    functionsCreated
-    containersCreated
-    edgesCreated
-    warnings
-    idMapJson
+    ownerUserId
+    membershipPolicy
+    status
+    defaultRoleId
+    gridId
+    createdAt
   }
 })gql";
-inline constexpr std::string_view kGameModelSeedOperationName = "GameModelSeed";
-inline constexpr std::string_view kGameModelUpsertContainerTypeIsolatedDocument = R"gql(mutation GameModelUpsertContainerType($input: UpsertContainerTypeInput!) {
-  gameModelUpsertContainerType(input: $input) {
+inline constexpr std::string_view kGridChannelsIsolatedDocument = R"gql(query GridChannels($appId: BigInt!, $gridId: BigInt!) {
+  gridChannels(appId: $appId, gridId: $gridId) {
+    groupId
     appId
-    typeName
-    displayName
-    description
-    instantiableBy
-    defaultPropertyVisibility
-    bindPolicyJson
-    scope
-    metadataJson
-  }
-})gql";
-inline constexpr std::string_view kGameModelUpsertContainerTypeOperationName = "GameModelUpsertContainerType";
-inline constexpr std::string_view kGameModelUpsertPropertyDefIsolatedDocument = R"gql(mutation GameModelUpsertPropertyDef($input: UpsertPropertyDefInput!) {
-  gameModelUpsertPropertyDef(input: $input) {
-    ...GmPropertyDefFields
-  }
-}
-
-fragment GmPropertyDefFields on GmPropertyDef {
-  appId
-  containerTypeName
-  key
-  valueType
-  defaultValueJson
-  visibility
-  writable
-  description
-})gql";
-inline constexpr std::string_view kGameModelUpsertPropertyDefOperationName = "GameModelUpsertPropertyDef";
-inline constexpr std::string_view kGameModelDeletePropertyDefIsolatedDocument = R"gql(mutation GameModelDeletePropertyDef($appId: BigInt!, $containerTypeName: String!, $key: String!) {
-  gameModelDeletePropertyDef(
-    appId: $appId
-    containerTypeName: $containerTypeName
-    key: $key
-  )
-})gql";
-inline constexpr std::string_view kGameModelDeletePropertyDefOperationName = "GameModelDeletePropertyDef";
-inline constexpr std::string_view kGameModelDeleteContainerTypeIsolatedDocument = R"gql(mutation GameModelDeleteContainerType($appId: BigInt!, $typeName: String!) {
-  gameModelDeleteContainerType(appId: $appId, typeName: $typeName)
-})gql";
-inline constexpr std::string_view kGameModelDeleteContainerTypeOperationName = "GameModelDeleteContainerType";
-inline constexpr std::string_view kGameModelUpsertFunctionIsolatedDocument = R"gql(mutation GameModelUpsertFunction($input: UpsertFunctionInput!) {
-  gameModelUpsertFunction(input: $input) {
-    ...GmFunctionFields
-  }
-}
-
-fragment GmFunctionFields on GmFunction {
-  functionId
-  appId
-  name
-  containerTypeName
-  description
-  returnType
-  invokeScope
-  invokePolicyJson
-  autonomousInvocable
-  returnExpression
-  warnings
-  parameters {
+    groupType
     name
-    valueType
-    required
-    defaultValueJson
     description
-    sortOrder
-  }
-  mutations {
-    target
-    property
-    expression
-  }
-  notifications {
-    kind
-    emitAs
-    args {
-      name
-      expression
-    }
-  }
-  permissionEffects {
-    action
-    permissionKeys
-    userExpression
-    gridIdExpression
-    ttlSecondsExpression
-  }
-  timers {
-    functionName
-    target
-    delayMsExpression
-    dedupeKeyExpression
-    params {
-      name
-      expression
-    }
+    ownerUserId
+    membershipPolicy
+    status
+    defaultRoleId
+    gridId
+    createdAt
   }
 })gql";
-inline constexpr std::string_view kGameModelUpsertFunctionOperationName = "GameModelUpsertFunction";
-inline constexpr std::string_view kGameModelDeleteFunctionIsolatedDocument = R"gql(mutation GameModelDeleteFunction($appId: BigInt!, $name: String!) {
-  gameModelDeleteFunction(appId: $appId, name: $name)
-})gql";
-inline constexpr std::string_view kGameModelDeleteFunctionOperationName = "GameModelDeleteFunction";
-inline constexpr std::string_view kGameModelDefineFeatureIsolatedDocument = R"gql(mutation GameModelDefineFeature($input: DefineAppFeatureInput!) {
-  gameModelDefineFeature(input: $input) {
-    appId
-    featureKey
-    description
-  }
-})gql";
-inline constexpr std::string_view kGameModelDefineFeatureOperationName = "GameModelDefineFeature";
-inline constexpr std::string_view kGameModelGrantTierFeatureIsolatedDocument = R"gql(mutation GameModelGrantTierFeature($input: GrantTierFeatureInput!) {
-  gameModelGrantTierFeature(input: $input) {
-    appId
-    tierId
-    featureKey
-  }
-})gql";
-inline constexpr std::string_view kGameModelGrantTierFeatureOperationName = "GameModelGrantTierFeature";
-inline constexpr std::string_view kGameModelSetPolicyIsolatedDocument = R"gql(mutation GameModelSetPolicy($input: SetGameModelPolicyInput!) {
-  gameModelSetPolicy(input: $input) {
-    appId
-    sessionCreationPolicy
-    defaultParticipantRole
-  }
-})gql";
-inline constexpr std::string_view kGameModelSetPolicyOperationName = "GameModelSetPolicy";
-inline constexpr std::string_view kGameModelTypeSchemaIsolatedDocument = R"gql(query GameModelTypeSchema($appId: BigInt!, $typeName: String!) {
-  gameModelTypeSchema(appId: $appId, typeName: $typeName) {
-    typeName
-    propertyDefinitions {
-      ...GmPropertyDefFields
-    }
-    functions {
-      ...GmFunctionFields
-    }
-  }
-}
+inline constexpr std::string_view kGridChannelsOperationName = "GridChannels";
 
-fragment GmPropertyDefFields on GmPropertyDef {
-  appId
-  containerTypeName
-  key
-  valueType
-  defaultValueJson
-  visibility
-  writable
-  description
-}
-
-fragment GmFunctionFields on GmFunction {
-  functionId
-  appId
-  name
-  containerTypeName
-  description
-  returnType
-  invokeScope
-  invokePolicyJson
-  autonomousInvocable
-  returnExpression
-  warnings
-  parameters {
-    name
-    valueType
-    required
-    defaultValueJson
-    description
-    sortOrder
-  }
-  mutations {
-    target
-    property
-    expression
-  }
-  notifications {
-    kind
-    emitAs
-    args {
-      name
-      expression
-    }
-  }
-  permissionEffects {
-    action
-    permissionKeys
-    userExpression
-    gridIdExpression
-    ttlSecondsExpression
-  }
-  timers {
-    functionName
-    target
-    delayMsExpression
-    dedupeKeyExpression
-    params {
-      name
-      expression
-    }
-  }
-})gql";
-inline constexpr std::string_view kGameModelTypeSchemaOperationName = "GameModelTypeSchema";
-inline constexpr std::string_view kGameModelContainerTypesIsolatedDocument = R"gql(query GameModelContainerTypes($appId: BigInt!) {
-  gameModelContainerTypes(appId: $appId) {
+/// grids/MintGridToken.graphql
+inline constexpr std::string_view kMintGridTokenDocument = R"gql(mutation MintGridToken($input: MintGridTokenInput!) {
+  mintGridToken(input: $input) {
+    token
+    gameTokenId
     appId
-    typeName
-    displayName
-    description
-    instantiableBy
-    defaultPropertyVisibility
-    bindPolicyJson
-    scope
-    metadataJson
+    gridId
+    lowChunk {
+      x
+      y
+      z
+    }
+    highChunk {
+      x
+      y
+      z
+    }
+    expiresAt
   }
 })gql";
-inline constexpr std::string_view kGameModelContainerTypesOperationName = "GameModelContainerTypes";
-inline constexpr std::string_view kGameModelPropertyDefsIsolatedDocument = R"gql(query GameModelPropertyDefs($appId: BigInt!, $typeName: String!) {
-  gameModelPropertyDefs(appId: $appId, typeName: $typeName) {
-    ...GmPropertyDefFields
-  }
-}
-
-fragment GmPropertyDefFields on GmPropertyDef {
-  appId
-  containerTypeName
-  key
-  valueType
-  defaultValueJson
-  visibility
-  writable
-  description
-})gql";
-inline constexpr std::string_view kGameModelPropertyDefsOperationName = "GameModelPropertyDefs";
-inline constexpr std::string_view kGameModelFunctionIsolatedDocument = R"gql(query GameModelFunction($appId: BigInt!, $name: String!) {
-  gameModelFunction(appId: $appId, name: $name) {
-    ...GmFunctionFields
-  }
-}
-
-fragment GmFunctionFields on GmFunction {
-  functionId
-  appId
-  name
-  containerTypeName
-  description
-  returnType
-  invokeScope
-  invokePolicyJson
-  autonomousInvocable
-  returnExpression
-  warnings
-  parameters {
-    name
-    valueType
-    required
-    defaultValueJson
-    description
-    sortOrder
-  }
-  mutations {
-    target
-    property
-    expression
-  }
-  notifications {
-    kind
-    emitAs
-    args {
-      name
-      expression
-    }
-  }
-  permissionEffects {
-    action
-    permissionKeys
-    userExpression
-    gridIdExpression
-    ttlSecondsExpression
-  }
-  timers {
-    functionName
-    target
-    delayMsExpression
-    dedupeKeyExpression
-    params {
-      name
-      expression
-    }
-  }
-})gql";
-inline constexpr std::string_view kGameModelFunctionOperationName = "GameModelFunction";
-inline constexpr std::string_view kGameModelFunctionsIsolatedDocument = R"gql(query GameModelFunctions($appId: BigInt!, $containerTypeName: String) {
-  gameModelFunctions(appId: $appId, containerTypeName: $containerTypeName) {
-    ...GmFunctionFields
-  }
-}
-
-fragment GmFunctionFields on GmFunction {
-  functionId
-  appId
-  name
-  containerTypeName
-  description
-  returnType
-  invokeScope
-  invokePolicyJson
-  autonomousInvocable
-  returnExpression
-  warnings
-  parameters {
-    name
-    valueType
-    required
-    defaultValueJson
-    description
-    sortOrder
-  }
-  mutations {
-    target
-    property
-    expression
-  }
-  notifications {
-    kind
-    emitAs
-    args {
-      name
-      expression
-    }
-  }
-  permissionEffects {
-    action
-    permissionKeys
-    userExpression
-    gridIdExpression
-    ttlSecondsExpression
-  }
-  timers {
-    functionName
-    target
-    delayMsExpression
-    dedupeKeyExpression
-    params {
-      name
-      expression
-    }
-  }
-})gql";
-inline constexpr std::string_view kGameModelFunctionsOperationName = "GameModelFunctions";
-inline constexpr std::string_view kGameModelFeaturesIsolatedDocument = R"gql(query GameModelFeatures($appId: BigInt!) {
-  gameModelFeatures(appId: $appId) {
+inline constexpr std::string_view kMintGridTokenIsolatedDocument = R"gql(mutation MintGridToken($input: MintGridTokenInput!) {
+  mintGridToken(input: $input) {
+    token
+    gameTokenId
     appId
-    featureKey
-    description
+    gridId
+    lowChunk {
+      x
+      y
+      z
+    }
+    highChunk {
+      x
+      y
+      z
+    }
+    expiresAt
   }
 })gql";
-inline constexpr std::string_view kGameModelFeaturesOperationName = "GameModelFeatures";
-inline constexpr std::string_view kGameModelTierFeaturesIsolatedDocument = R"gql(query GameModelTierFeatures($appId: BigInt!, $tierId: BigInt) {
-  gameModelTierFeatures(appId: $appId, tierId: $tierId) {
-    appId
-    tierId
-    featureKey
-  }
-})gql";
-inline constexpr std::string_view kGameModelTierFeaturesOperationName = "GameModelTierFeatures";
-inline constexpr std::string_view kGameModelPolicyIsolatedDocument = R"gql(query GameModelPolicy($appId: BigInt!) {
-  gameModelPolicy(appId: $appId) {
-    appId
-    sessionCreationPolicy
-    defaultParticipantRole
-  }
-})gql";
-inline constexpr std::string_view kGameModelPolicyOperationName = "GameModelPolicy";
-inline constexpr std::string_view kGameModelRevokeTierFeatureIsolatedDocument = R"gql(mutation GameModelRevokeTierFeature($input: GrantTierFeatureInput!) {
-  gameModelRevokeTierFeature(input: $input)
-})gql";
-inline constexpr std::string_view kGameModelRevokeTierFeatureOperationName = "GameModelRevokeTierFeature";
+inline constexpr std::string_view kMintGridTokenOperationName = "MintGridToken";
 
 inline constexpr std::string_view documentFor(std::string_view operationName) {
-  if (operationName == "GameModelUpsertAutomation") return kGameModelUpsertAutomationIsolatedDocument;
-  if (operationName == "GameModelDeleteAutomation") return kGameModelDeleteAutomationIsolatedDocument;
-  if (operationName == "GameModelSetAutomationEnabled") return kGameModelSetAutomationEnabledIsolatedDocument;
-  if (operationName == "GameModelUpsertAutomationTrigger") return kGameModelUpsertAutomationTriggerIsolatedDocument;
-  if (operationName == "GameModelDeleteAutomationTrigger") return kGameModelDeleteAutomationTriggerIsolatedDocument;
-  if (operationName == "GameModelSetAutomationPolicy") return kGameModelSetAutomationPolicyIsolatedDocument;
-  if (operationName == "GameModelRunAutomation") return kGameModelRunAutomationIsolatedDocument;
-  if (operationName == "GameModelAutomations") return kGameModelAutomationsIsolatedDocument;
-  if (operationName == "GameModelAutomation") return kGameModelAutomationIsolatedDocument;
-  if (operationName == "GameModelAutomationTriggers") return kGameModelAutomationTriggersIsolatedDocument;
-  if (operationName == "GameModelAutomationPolicy") return kGameModelAutomationPolicyIsolatedDocument;
-  if (operationName == "GameModelAutomationRuns") return kGameModelAutomationRunsIsolatedDocument;
-  if (operationName == "GameModelAutomationStats") return kGameModelAutomationStatsIsolatedDocument;
-  if (operationName == "GameModelAppDiagnostics") return kGameModelAppDiagnosticsIsolatedDocument;
-  if (operationName == "GameModelScheduleInvoke") return kGameModelScheduleInvokeIsolatedDocument;
-  if (operationName == "GameModelCancelTimer") return kGameModelCancelTimerIsolatedDocument;
-  if (operationName == "GameModelTimers") return kGameModelTimersIsolatedDocument;
-  if (operationName == "GameModelFunctionCircuits") return kGameModelFunctionCircuitsIsolatedDocument;
-  if (operationName == "CrowdyModelLint") return kCrowdyModelLintIsolatedDocument;
-  if (operationName == "GameModelCreateSession") return kGameModelCreateSessionIsolatedDocument;
-  if (operationName == "GameModelJoinSession") return kGameModelJoinSessionIsolatedDocument;
-  if (operationName == "GameModelLeaveSession") return kGameModelLeaveSessionIsolatedDocument;
-  if (operationName == "GameModelSetSessionAdmission") return kGameModelSetSessionAdmissionIsolatedDocument;
-  if (operationName == "GameModelTransferSessionHost") return kGameModelTransferSessionHostIsolatedDocument;
-  if (operationName == "GameModelEndSession") return kGameModelEndSessionIsolatedDocument;
-  if (operationName == "GameModelSetSessionTurn") return kGameModelSetSessionTurnIsolatedDocument;
-  if (operationName == "GameModelCreateContainer") return kGameModelCreateContainerIsolatedDocument;
-  if (operationName == "GameModelEnsureContainer") return kGameModelEnsureContainerIsolatedDocument;
-  if (operationName == "GameModelDeleteContainer") return kGameModelDeleteContainerIsolatedDocument;
-  if (operationName == "GameModelSetProperty") return kGameModelSetPropertyIsolatedDocument;
-  if (operationName == "GameModelAddEdge") return kGameModelAddEdgeIsolatedDocument;
-  if (operationName == "GameModelDeleteEdge") return kGameModelDeleteEdgeIsolatedDocument;
-  if (operationName == "GameModelInvoke") return kGameModelInvokeIsolatedDocument;
-  if (operationName == "GameModelContainer") return kGameModelContainerIsolatedDocument;
-  if (operationName == "GameModelContainers") return kGameModelContainersIsolatedDocument;
-  if (operationName == "GameModelContainerState") return kGameModelContainerStateIsolatedDocument;
-  if (operationName == "GameModelContainerStates") return kGameModelContainerStatesIsolatedDocument;
-  if (operationName == "GameModelTraverse") return kGameModelTraverseIsolatedDocument;
-  if (operationName == "GameModelSession") return kGameModelSessionIsolatedDocument;
-  if (operationName == "GameModelSessions") return kGameModelSessionsIsolatedDocument;
-  if (operationName == "GameModelSessionSnapshot") return kGameModelSessionSnapshotIsolatedDocument;
-  if (operationName == "GameModelSessionEvents") return kGameModelSessionEventsIsolatedDocument;
-  if (operationName == "GameModelSessionInspect") return kGameModelSessionInspectIsolatedDocument;
-  if (operationName == "GameModelSessionChanged") return kGameModelSessionChangedIsolatedDocument;
-  if (operationName == "GameModelEvents") return kGameModelEventsIsolatedDocument;
-  if (operationName == "GameModelEventsConnection") return kGameModelEventsConnectionIsolatedDocument;
-  if (operationName == "GameModelActivePlayerCount") return kGameModelActivePlayerCountIsolatedDocument;
-  if (operationName == "GameModelFlow") return kGameModelFlowIsolatedDocument;
-  if (operationName == "GameModelActivePlayerCountChanged") return kGameModelActivePlayerCountChangedIsolatedDocument;
-  if (operationName == "GameModelContainerChanged") return kGameModelContainerChangedIsolatedDocument;
-  if (operationName == "GameModelSeed") return kGameModelSeedIsolatedDocument;
-  if (operationName == "GameModelUpsertContainerType") return kGameModelUpsertContainerTypeIsolatedDocument;
-  if (operationName == "GameModelUpsertPropertyDef") return kGameModelUpsertPropertyDefIsolatedDocument;
-  if (operationName == "GameModelDeletePropertyDef") return kGameModelDeletePropertyDefIsolatedDocument;
-  if (operationName == "GameModelDeleteContainerType") return kGameModelDeleteContainerTypeIsolatedDocument;
-  if (operationName == "GameModelUpsertFunction") return kGameModelUpsertFunctionIsolatedDocument;
-  if (operationName == "GameModelDeleteFunction") return kGameModelDeleteFunctionIsolatedDocument;
-  if (operationName == "GameModelDefineFeature") return kGameModelDefineFeatureIsolatedDocument;
-  if (operationName == "GameModelGrantTierFeature") return kGameModelGrantTierFeatureIsolatedDocument;
-  if (operationName == "GameModelSetPolicy") return kGameModelSetPolicyIsolatedDocument;
-  if (operationName == "GameModelTypeSchema") return kGameModelTypeSchemaIsolatedDocument;
-  if (operationName == "GameModelContainerTypes") return kGameModelContainerTypesIsolatedDocument;
-  if (operationName == "GameModelPropertyDefs") return kGameModelPropertyDefsIsolatedDocument;
-  if (operationName == "GameModelFunction") return kGameModelFunctionIsolatedDocument;
-  if (operationName == "GameModelFunctions") return kGameModelFunctionsIsolatedDocument;
-  if (operationName == "GameModelFeatures") return kGameModelFeaturesIsolatedDocument;
-  if (operationName == "GameModelTierFeatures") return kGameModelTierFeaturesIsolatedDocument;
-  if (operationName == "GameModelPolicy") return kGameModelPolicyIsolatedDocument;
-  if (operationName == "GameModelRevokeTierFeature") return kGameModelRevokeTierFeatureIsolatedDocument;
+  if (operationName == "CreateGridChannel") return kCreateGridChannelIsolatedDocument;
+  if (operationName == "GridChannels") return kGridChannelsIsolatedDocument;
+  if (operationName == "MintGridToken") return kMintGridTokenIsolatedDocument;
   return {};
 }
 
-}  // namespace gameModel
+}  // namespace grids
 
 namespace host {
 
@@ -8779,66 +6064,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 namespace marketplace {
 
 /// marketplace/Marketplace.graphql
-inline constexpr std::string_view kMarketplaceDocument = R"gql(fragment PlayerCodeListingFields on PlayerCodeListing {
-  listingId
-  appId
-  ownerKind
-  ownerRef
-  name
-  description
-  mediaJson
-  licenseMode
-  acquisitionMode
-  priceCents
-  rentIntervalDays
-  windowDays
-  unitBudget
-  status
-  createdAt
-}
-
-fragment PlayerCodeListingVersionFields on PlayerCodeListingVersion {
-  versionId
-  listingId
-  versionNo
-  serverArtifactHashes
-  clientArtifactHashes
-  requirements {
-    serverArtifactHash
-    clientArtifactHash
-  }
-  capabilitySummaryJson
-  capabilityHash
-  openSource
-  licenseText
-  createdAt
-}
-
-fragment PlayerCodeAcquisitionFields on PlayerCodeAcquisition {
-  acquisitionId
-  listingId
-  appId
-  mode
-  status
-  expiresAt
-  unitBudget
-  unitsConsumed
-  acquiredAt
-}
-
-fragment PlayerCodeInstallFields on PlayerCodeInstall {
-  installId
-  acquisitionId
-  listingId
-  appId
-  pinnedVersionId
-  targetGridId
-  consentedCapabilityHash
-  status
-  createdAt
-}
-
-fragment GridClaimRequestFields on GridClaimRequest {
+inline constexpr std::string_view kMarketplaceDocument = R"gql(fragment GridClaimRequestFields on GridClaimRequest {
   requestId
   appId
   gridId
@@ -8848,146 +6074,6 @@ fragment GridClaimRequestFields on GridClaimRequest {
 }
 
 # ---- Game API: browse / publish / acquire / install / consent -----------------
-
-query MarketplaceListings($appId: BigInt!) {
-  playerCodeListings(appId: $appId) {
-    ...PlayerCodeListingFields
-    admissionState
-    latestVersionId
-  }
-}
-
-query MarketplaceListingVersions($appId: BigInt!, $listingId: String!) {
-  playerCodeListingVersions(appId: $appId, listingId: $listingId) {
-    ...PlayerCodeListingVersionFields
-  }
-}
-
-query MarketplaceMyAcquisitions($appId: BigInt!) {
-  myPlayerCodeAcquisitions(appId: $appId) {
-    ...PlayerCodeAcquisitionFields
-  }
-}
-
-query MarketplaceMyInstalls($appId: BigInt!) {
-  myPlayerCodeInstalls(appId: $appId) {
-    ...PlayerCodeInstallFields
-  }
-}
-
-query MarketplaceGridClientMods($appId: BigInt!, $gridId: BigInt!) {
-  gridClientMods(appId: $appId, gridId: $gridId) {
-    attachmentId
-    listingId
-    listingName
-    versionId
-    sourceKind
-    authorKind
-    authorRef
-    serverVersionId
-    clientVersionId
-    clientArtifactHash
-    gridId
-    capabilitySummaryJson
-    capabilityHash
-    authorCapabilitySummaryJson
-    authorCapabilityHash
-    callerConsented
-    callerTrustsAuthor
-  }
-}
-
-query MarketplaceClientArtifact(
-  $appId: BigInt!
-  $listingId: String
-  $attachmentId: String
-  $versionId: String
-) {
-  playerCodeClientArtifact(
-    appId: $appId
-    listingId: $listingId
-    attachmentId: $attachmentId
-    versionId: $versionId
-  ) {
-    versionId
-    artifactHash
-    artifactBase64
-    sizeBytes
-    abiVersion
-    contractJson
-    clientFuelPerDispatch
-  }
-}
-
-mutation MarketplaceTrustGridAuthor(
-  $appId: BigInt!
-  $gridId: BigInt!
-  $authorKind: PlayerCodeOwnerKind!
-  $authorRef: BigInt!
-  $consentCapabilityHash: String!
-) {
-  trustGridAuthor(
-    appId: $appId
-    gridId: $gridId
-    authorKind: $authorKind
-    authorRef: $authorRef
-    consentCapabilityHash: $consentCapabilityHash
-  )
-}
-
-mutation MarketplacePublishListing($input: PublishPlayerCodeInput!) {
-  publishPlayerCode(input: $input) {
-    ...PlayerCodeListingFields
-    admissionState
-    latestVersionId
-  }
-}
-
-mutation MarketplacePublishVersion($input: PublishPlayerCodeVersionInput!) {
-  publishPlayerCodeVersion(input: $input) {
-    ...PlayerCodeListingVersionFields
-  }
-}
-
-mutation MarketplaceAcquire($appId: BigInt!, $listingId: String!) {
-  acquirePlayerCode(appId: $appId, listingId: $listingId) {
-    ...PlayerCodeAcquisitionFields
-  }
-}
-
-mutation MarketplaceInstall(
-  $appId: BigInt!
-  $acquisitionId: String!
-  $consentCapabilityHash: String!
-  $gridId: BigInt
-  $versionId: String
-) {
-  installPlayerCode(
-    appId: $appId
-    acquisitionId: $acquisitionId
-    consentCapabilityHash: $consentCapabilityHash
-    gridId: $gridId
-    versionId: $versionId
-  ) {
-    ...PlayerCodeInstallFields
-  }
-}
-
-mutation MarketplaceUninstall($appId: BigInt!, $installId: String!) {
-  uninstallPlayerCode(appId: $appId, installId: $installId)
-}
-
-mutation MarketplaceConsentGridClientMod(
-  $appId: BigInt!
-  $attachmentId: String!
-  $consentCapabilityHash: String!
-) {
-  consentGridClientMod(
-    appId: $appId
-    attachmentId: $attachmentId
-    consentCapabilityHash: $consentCapabilityHash
-  )
-}
 
 # ---- Game API: D4 grid claim flows --------------------------------------------
 
@@ -9079,243 +6165,6 @@ mutation MarketplaceIssueGridClaimInvite(
     inviteeUserId: $inviteeUserId
   )
 })gql";
-inline constexpr std::string_view kMarketplaceListingsIsolatedDocument = R"gql(query MarketplaceListings($appId: BigInt!) {
-  playerCodeListings(appId: $appId) {
-    ...PlayerCodeListingFields
-    admissionState
-    latestVersionId
-  }
-}
-
-fragment PlayerCodeListingFields on PlayerCodeListing {
-  listingId
-  appId
-  ownerKind
-  ownerRef
-  name
-  description
-  mediaJson
-  licenseMode
-  acquisitionMode
-  priceCents
-  rentIntervalDays
-  windowDays
-  unitBudget
-  status
-  createdAt
-})gql";
-inline constexpr std::string_view kMarketplaceListingsOperationName = "MarketplaceListings";
-inline constexpr std::string_view kMarketplaceListingVersionsIsolatedDocument = R"gql(query MarketplaceListingVersions($appId: BigInt!, $listingId: String!) {
-  playerCodeListingVersions(appId: $appId, listingId: $listingId) {
-    ...PlayerCodeListingVersionFields
-  }
-}
-
-fragment PlayerCodeListingVersionFields on PlayerCodeListingVersion {
-  versionId
-  listingId
-  versionNo
-  serverArtifactHashes
-  clientArtifactHashes
-  requirements {
-    serverArtifactHash
-    clientArtifactHash
-  }
-  capabilitySummaryJson
-  capabilityHash
-  openSource
-  licenseText
-  createdAt
-})gql";
-inline constexpr std::string_view kMarketplaceListingVersionsOperationName = "MarketplaceListingVersions";
-inline constexpr std::string_view kMarketplaceMyAcquisitionsIsolatedDocument = R"gql(query MarketplaceMyAcquisitions($appId: BigInt!) {
-  myPlayerCodeAcquisitions(appId: $appId) {
-    ...PlayerCodeAcquisitionFields
-  }
-}
-
-fragment PlayerCodeAcquisitionFields on PlayerCodeAcquisition {
-  acquisitionId
-  listingId
-  appId
-  mode
-  status
-  expiresAt
-  unitBudget
-  unitsConsumed
-  acquiredAt
-})gql";
-inline constexpr std::string_view kMarketplaceMyAcquisitionsOperationName = "MarketplaceMyAcquisitions";
-inline constexpr std::string_view kMarketplaceMyInstallsIsolatedDocument = R"gql(query MarketplaceMyInstalls($appId: BigInt!) {
-  myPlayerCodeInstalls(appId: $appId) {
-    ...PlayerCodeInstallFields
-  }
-}
-
-fragment PlayerCodeInstallFields on PlayerCodeInstall {
-  installId
-  acquisitionId
-  listingId
-  appId
-  pinnedVersionId
-  targetGridId
-  consentedCapabilityHash
-  status
-  createdAt
-})gql";
-inline constexpr std::string_view kMarketplaceMyInstallsOperationName = "MarketplaceMyInstalls";
-inline constexpr std::string_view kMarketplaceGridClientModsIsolatedDocument = R"gql(query MarketplaceGridClientMods($appId: BigInt!, $gridId: BigInt!) {
-  gridClientMods(appId: $appId, gridId: $gridId) {
-    attachmentId
-    listingId
-    listingName
-    versionId
-    sourceKind
-    authorKind
-    authorRef
-    serverVersionId
-    clientVersionId
-    clientArtifactHash
-    gridId
-    capabilitySummaryJson
-    capabilityHash
-    authorCapabilitySummaryJson
-    authorCapabilityHash
-    callerConsented
-    callerTrustsAuthor
-  }
-})gql";
-inline constexpr std::string_view kMarketplaceGridClientModsOperationName = "MarketplaceGridClientMods";
-inline constexpr std::string_view kMarketplaceClientArtifactIsolatedDocument = R"gql(query MarketplaceClientArtifact($appId: BigInt!, $listingId: String, $attachmentId: String, $versionId: String) {
-  playerCodeClientArtifact(
-    appId: $appId
-    listingId: $listingId
-    attachmentId: $attachmentId
-    versionId: $versionId
-  ) {
-    versionId
-    artifactHash
-    artifactBase64
-    sizeBytes
-    abiVersion
-    contractJson
-    clientFuelPerDispatch
-  }
-})gql";
-inline constexpr std::string_view kMarketplaceClientArtifactOperationName = "MarketplaceClientArtifact";
-inline constexpr std::string_view kMarketplaceTrustGridAuthorIsolatedDocument = R"gql(mutation MarketplaceTrustGridAuthor($appId: BigInt!, $gridId: BigInt!, $authorKind: PlayerCodeOwnerKind!, $authorRef: BigInt!, $consentCapabilityHash: String!) {
-  trustGridAuthor(
-    appId: $appId
-    gridId: $gridId
-    authorKind: $authorKind
-    authorRef: $authorRef
-    consentCapabilityHash: $consentCapabilityHash
-  )
-})gql";
-inline constexpr std::string_view kMarketplaceTrustGridAuthorOperationName = "MarketplaceTrustGridAuthor";
-inline constexpr std::string_view kMarketplacePublishListingIsolatedDocument = R"gql(mutation MarketplacePublishListing($input: PublishPlayerCodeInput!) {
-  publishPlayerCode(input: $input) {
-    ...PlayerCodeListingFields
-    admissionState
-    latestVersionId
-  }
-}
-
-fragment PlayerCodeListingFields on PlayerCodeListing {
-  listingId
-  appId
-  ownerKind
-  ownerRef
-  name
-  description
-  mediaJson
-  licenseMode
-  acquisitionMode
-  priceCents
-  rentIntervalDays
-  windowDays
-  unitBudget
-  status
-  createdAt
-})gql";
-inline constexpr std::string_view kMarketplacePublishListingOperationName = "MarketplacePublishListing";
-inline constexpr std::string_view kMarketplacePublishVersionIsolatedDocument = R"gql(mutation MarketplacePublishVersion($input: PublishPlayerCodeVersionInput!) {
-  publishPlayerCodeVersion(input: $input) {
-    ...PlayerCodeListingVersionFields
-  }
-}
-
-fragment PlayerCodeListingVersionFields on PlayerCodeListingVersion {
-  versionId
-  listingId
-  versionNo
-  serverArtifactHashes
-  clientArtifactHashes
-  requirements {
-    serverArtifactHash
-    clientArtifactHash
-  }
-  capabilitySummaryJson
-  capabilityHash
-  openSource
-  licenseText
-  createdAt
-})gql";
-inline constexpr std::string_view kMarketplacePublishVersionOperationName = "MarketplacePublishVersion";
-inline constexpr std::string_view kMarketplaceAcquireIsolatedDocument = R"gql(mutation MarketplaceAcquire($appId: BigInt!, $listingId: String!) {
-  acquirePlayerCode(appId: $appId, listingId: $listingId) {
-    ...PlayerCodeAcquisitionFields
-  }
-}
-
-fragment PlayerCodeAcquisitionFields on PlayerCodeAcquisition {
-  acquisitionId
-  listingId
-  appId
-  mode
-  status
-  expiresAt
-  unitBudget
-  unitsConsumed
-  acquiredAt
-})gql";
-inline constexpr std::string_view kMarketplaceAcquireOperationName = "MarketplaceAcquire";
-inline constexpr std::string_view kMarketplaceInstallIsolatedDocument = R"gql(mutation MarketplaceInstall($appId: BigInt!, $acquisitionId: String!, $consentCapabilityHash: String!, $gridId: BigInt, $versionId: String) {
-  installPlayerCode(
-    appId: $appId
-    acquisitionId: $acquisitionId
-    consentCapabilityHash: $consentCapabilityHash
-    gridId: $gridId
-    versionId: $versionId
-  ) {
-    ...PlayerCodeInstallFields
-  }
-}
-
-fragment PlayerCodeInstallFields on PlayerCodeInstall {
-  installId
-  acquisitionId
-  listingId
-  appId
-  pinnedVersionId
-  targetGridId
-  consentedCapabilityHash
-  status
-  createdAt
-})gql";
-inline constexpr std::string_view kMarketplaceInstallOperationName = "MarketplaceInstall";
-inline constexpr std::string_view kMarketplaceUninstallIsolatedDocument = R"gql(mutation MarketplaceUninstall($appId: BigInt!, $installId: String!) {
-  uninstallPlayerCode(appId: $appId, installId: $installId)
-})gql";
-inline constexpr std::string_view kMarketplaceUninstallOperationName = "MarketplaceUninstall";
-inline constexpr std::string_view kMarketplaceConsentGridClientModIsolatedDocument = R"gql(mutation MarketplaceConsentGridClientMod($appId: BigInt!, $attachmentId: String!, $consentCapabilityHash: String!) {
-  consentGridClientMod(
-    appId: $appId
-    attachmentId: $attachmentId
-    consentCapabilityHash: $consentCapabilityHash
-  )
-})gql";
-inline constexpr std::string_view kMarketplaceConsentGridClientModOperationName = "MarketplaceConsentGridClientMod";
 inline constexpr std::string_view kMarketplaceGridClaimPolicyIsolatedDocument = R"gql(query MarketplaceGridClaimPolicy($appId: BigInt!) {
   gridClaimPolicy(appId: $appId)
 })gql";
@@ -9652,19 +6501,6 @@ inline constexpr std::string_view kMarketplaceSetGridClaimPolicyIsolatedDocument
 inline constexpr std::string_view kMarketplaceSetGridClaimPolicyOperationName = "MarketplaceSetGridClaimPolicy";
 
 inline constexpr std::string_view documentFor(std::string_view operationName) {
-  if (operationName == "MarketplaceListings") return kMarketplaceListingsIsolatedDocument;
-  if (operationName == "MarketplaceListingVersions") return kMarketplaceListingVersionsIsolatedDocument;
-  if (operationName == "MarketplaceMyAcquisitions") return kMarketplaceMyAcquisitionsIsolatedDocument;
-  if (operationName == "MarketplaceMyInstalls") return kMarketplaceMyInstallsIsolatedDocument;
-  if (operationName == "MarketplaceGridClientMods") return kMarketplaceGridClientModsIsolatedDocument;
-  if (operationName == "MarketplaceClientArtifact") return kMarketplaceClientArtifactIsolatedDocument;
-  if (operationName == "MarketplaceTrustGridAuthor") return kMarketplaceTrustGridAuthorIsolatedDocument;
-  if (operationName == "MarketplacePublishListing") return kMarketplacePublishListingIsolatedDocument;
-  if (operationName == "MarketplacePublishVersion") return kMarketplacePublishVersionIsolatedDocument;
-  if (operationName == "MarketplaceAcquire") return kMarketplaceAcquireIsolatedDocument;
-  if (operationName == "MarketplaceInstall") return kMarketplaceInstallIsolatedDocument;
-  if (operationName == "MarketplaceUninstall") return kMarketplaceUninstallIsolatedDocument;
-  if (operationName == "MarketplaceConsentGridClientMod") return kMarketplaceConsentGridClientModIsolatedDocument;
   if (operationName == "MarketplaceGridClaimPolicy") return kMarketplaceGridClaimPolicyIsolatedDocument;
   if (operationName == "MarketplaceGridClaimRequests") return kMarketplaceGridClaimRequestsIsolatedDocument;
   if (operationName == "MarketplaceClaimGridOwnership") return kMarketplaceClaimGridOwnershipIsolatedDocument;
@@ -10021,23 +6857,6 @@ inline constexpr std::string_view kRevokeOrgTokenIsolatedDocument = R"gql(mutati
 })gql";
 inline constexpr std::string_view kRevokeOrgTokenOperationName = "RevokeOrgToken";
 
-/// organizations/SetOrgStatus.graphql
-inline constexpr std::string_view kSetOrgStatusDocument = R"gql(mutation SetOrgStatus($orgId: BigInt!, $status: String!) {
-  setOrgStatus(orgId: $orgId, status: $status) {
-    orgId
-    status
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kSetOrgStatusIsolatedDocument = R"gql(mutation SetOrgStatus($orgId: BigInt!, $status: String!) {
-  setOrgStatus(orgId: $orgId, status: $status) {
-    orgId
-    status
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kSetOrgStatusOperationName = "SetOrgStatus";
-
 /// organizations/UpdateOrgMemberRoles.graphql
 inline constexpr std::string_view kUpdateOrgMemberRolesDocument = R"gql(mutation UpdateOrgMemberRoles(
   $orgId: BigInt!
@@ -10123,7 +6942,6 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "OrganizationBySlug") return kOrganizationBySlugIsolatedDocument;
   if (operationName == "RemoveOrgMember") return kRemoveOrgMemberIsolatedDocument;
   if (operationName == "RevokeOrgToken") return kRevokeOrgTokenIsolatedDocument;
-  if (operationName == "SetOrgStatus") return kSetOrgStatusIsolatedDocument;
   if (operationName == "UpdateOrgMemberRoles") return kUpdateOrgMemberRolesIsolatedDocument;
   if (operationName == "UpdateOrgRole") return kUpdateOrgRoleIsolatedDocument;
   if (operationName == "UpdateOrgToken") return kUpdateOrgTokenIsolatedDocument;
@@ -10176,131 +6994,6 @@ inline constexpr std::string_view kCapturePaypalCheckoutIsolatedDocument = R"gql
   }
 })gql";
 inline constexpr std::string_view kCapturePaypalCheckoutOperationName = "CapturePaypalCheckout";
-
-/// payments/Checkouts.graphql
-inline constexpr std::string_view kCheckoutsDocument = R"gql(query Checkouts($filter: CheckoutFilterInput, $limit: Int, $offset: Int) {
-  checkouts(filter: $filter, limit: $limit, offset: $offset) {
-    items {
-      checkoutId
-      userId
-      provider
-      purpose
-      status
-      amountCents
-      currency
-      externalId
-      externalUrl
-      orgId
-      appId
-      tierId
-      createdAt
-      completedAt
-      expiresAt
-    }
-    pageInfo {
-      totalCount
-      limit
-      offset
-    }
-  }
-}
-
-query CheckoutsConnection(
-  $first: Int
-  $after: String
-  $filter: CheckoutFilterInput
-) {
-  checkoutsConnection(first: $first, after: $after, filter: $filter) {
-    edges {
-      cursor
-      node {
-        checkoutId
-        userId
-        provider
-        purpose
-        status
-        amountCents
-        currency
-        externalId
-        externalUrl
-        orgId
-        appId
-        tierId
-        error
-        createdAt
-        completedAt
-        expiresAt
-      }
-    }
-    pageInfo {
-      hasNextPage
-      hasPreviousPage
-      startCursor
-      endCursor
-    }
-    totalCount
-  }
-})gql";
-inline constexpr std::string_view kCheckoutsIsolatedDocument = R"gql(query Checkouts($filter: CheckoutFilterInput, $limit: Int, $offset: Int) {
-  checkouts(filter: $filter, limit: $limit, offset: $offset) {
-    items {
-      checkoutId
-      userId
-      provider
-      purpose
-      status
-      amountCents
-      currency
-      externalId
-      externalUrl
-      orgId
-      appId
-      tierId
-      createdAt
-      completedAt
-      expiresAt
-    }
-    pageInfo {
-      totalCount
-      limit
-      offset
-    }
-  }
-})gql";
-inline constexpr std::string_view kCheckoutsOperationName = "Checkouts";
-inline constexpr std::string_view kCheckoutsConnectionIsolatedDocument = R"gql(query CheckoutsConnection($first: Int, $after: String, $filter: CheckoutFilterInput) {
-  checkoutsConnection(first: $first, after: $after, filter: $filter) {
-    edges {
-      cursor
-      node {
-        checkoutId
-        userId
-        provider
-        purpose
-        status
-        amountCents
-        currency
-        externalId
-        externalUrl
-        orgId
-        appId
-        tierId
-        error
-        createdAt
-        completedAt
-        expiresAt
-      }
-    }
-    pageInfo {
-      hasNextPage
-      hasPreviousPage
-      startCursor
-      endCursor
-    }
-    totalCount
-  }
-})gql";
-inline constexpr std::string_view kCheckoutsConnectionOperationName = "CheckoutsConnection";
 
 /// payments/CreateCheckout.graphql
 inline constexpr std::string_view kCreateCheckoutDocument = R"gql(mutation CreateCheckout($input: CreateCheckoutInput!) {
@@ -10468,106 +7161,11 @@ inline constexpr std::string_view kMyCheckoutsConnectionIsolatedDocument = R"gql
 })gql";
 inline constexpr std::string_view kMyCheckoutsConnectionOperationName = "MyCheckoutsConnection";
 
-/// payments/PaymentEvents.graphql
-inline constexpr std::string_view kPaymentEventsDocument = R"gql(query PaymentEvents($limit: Int, $offset: Int) {
-  paymentEvents(limit: $limit, offset: $offset) {
-    items {
-      eventId
-      provider
-      externalEventId
-      eventType
-      checkoutId
-      processedAt
-      error
-      createdAt
-    }
-    pageInfo {
-      totalCount
-      limit
-      offset
-    }
-  }
-}
-
-query PaymentEventsConnection($first: Int, $after: String) {
-  paymentEventsConnection(first: $first, after: $after) {
-    edges {
-      cursor
-      node {
-        eventId
-        provider
-        externalEventId
-        eventType
-        checkoutId
-        processedAt
-        error
-        createdAt
-      }
-    }
-    pageInfo {
-      hasNextPage
-      hasPreviousPage
-      startCursor
-      endCursor
-    }
-    totalCount
-  }
-})gql";
-inline constexpr std::string_view kPaymentEventsIsolatedDocument = R"gql(query PaymentEvents($limit: Int, $offset: Int) {
-  paymentEvents(limit: $limit, offset: $offset) {
-    items {
-      eventId
-      provider
-      externalEventId
-      eventType
-      checkoutId
-      processedAt
-      error
-      createdAt
-    }
-    pageInfo {
-      totalCount
-      limit
-      offset
-    }
-  }
-})gql";
-inline constexpr std::string_view kPaymentEventsOperationName = "PaymentEvents";
-inline constexpr std::string_view kPaymentEventsConnectionIsolatedDocument = R"gql(query PaymentEventsConnection($first: Int, $after: String) {
-  paymentEventsConnection(first: $first, after: $after) {
-    edges {
-      cursor
-      node {
-        eventId
-        provider
-        externalEventId
-        eventType
-        checkoutId
-        processedAt
-        error
-        createdAt
-      }
-    }
-    pageInfo {
-      hasNextPage
-      hasPreviousPage
-      startCursor
-      endCursor
-    }
-    totalCount
-  }
-})gql";
-inline constexpr std::string_view kPaymentEventsConnectionOperationName = "PaymentEventsConnection";
-
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CapturePaypalCheckout") return kCapturePaypalCheckoutIsolatedDocument;
-  if (operationName == "Checkouts") return kCheckoutsIsolatedDocument;
-  if (operationName == "CheckoutsConnection") return kCheckoutsConnectionIsolatedDocument;
   if (operationName == "CreateCheckout") return kCreateCheckoutIsolatedDocument;
   if (operationName == "MyCheckouts") return kMyCheckoutsIsolatedDocument;
   if (operationName == "MyCheckoutsConnection") return kMyCheckoutsConnectionIsolatedDocument;
-  if (operationName == "PaymentEvents") return kPaymentEventsIsolatedDocument;
-  if (operationName == "PaymentEventsConnection") return kPaymentEventsConnectionIsolatedDocument;
   return {};
 }
 
@@ -10631,720 +7229,6 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 
 }  // namespace platform
 
-namespace playerCompute {
-
-/// playerCompute/PlayerCompute.graphql
-inline constexpr std::string_view kPlayerComputeDocument = R"gql(fragment PlayerWasmModuleFields on PlayerWasmModule {
-  moduleId
-  appId
-  gridId
-  name
-  description
-  authorUserId
-  authorOrgId
-  enabled
-  draft
-  currentVersionId
-  currentTarget
-  circuitState
-  lastError
-  createdAt
-  updatedAt
-}
-
-fragment PlayerWasmModuleVersionFields on PlayerWasmModuleVersion {
-  versionId
-  moduleId
-  versionNo
-  target
-  sourceFilesJson
-  openSource
-  compileStatus
-  compileLog
-  compiledSizeBytes
-  projectId
-  sourceRevision
-  githubCommitSha
-  createdAt
-}
-
-mutation PlayerComputeDeploy($input: DeployPlayerComputeInput!) {
-  playerComputeDeploy(input: $input) {
-    ...PlayerWasmModuleVersionFields
-  }
-}
-
-mutation PlayerComputeSetEnabled(
-  $appId: BigInt!
-  $gridId: BigInt!
-  $name: String!
-  $enabled: Boolean!
-) {
-  playerComputeSetEnabled(
-    appId: $appId
-    gridId: $gridId
-    name: $name
-    enabled: $enabled
-  ) {
-    ...PlayerWasmModuleFields
-  }
-}
-
-mutation PlayerComputeSetRequires(
-  $appId: BigInt!
-  $gridId: BigInt!
-  $serverName: String!
-  $requiredClientName: String
-) {
-  playerComputeSetRequires(
-    appId: $appId
-    gridId: $gridId
-    serverName: $serverName
-    requiredClientName: $requiredClientName
-  )
-}
-
-query PlayerComputeMyModules($appId: BigInt!) {
-  playerComputeMyModules(appId: $appId) {
-    ...PlayerWasmModuleFields
-  }
-}
-
-query PlayerComputeVersions(
-  $appId: BigInt!
-  $gridId: BigInt!
-  $name: String!
-) {
-  playerComputeVersions(appId: $appId, gridId: $gridId, name: $name) {
-    ...PlayerWasmModuleVersionFields
-  }
-}
-
-mutation PlayerComputeDelete(
-  $appId: BigInt!
-  $gridId: BigInt!
-  $name: String!
-) {
-  playerComputeDelete(appId: $appId, gridId: $gridId, name: $name)
-}
-
-mutation PlayerComputeInvoke(
-  $appId: BigInt!
-  $gridId: BigInt!
-  $moduleName: String!
-  $exportName: String!
-  $paramsJson: String
-) {
-  playerComputeInvoke(
-    appId: $appId
-    gridId: $gridId
-    moduleName: $moduleName
-    exportName: $exportName
-    paramsJson: $paramsJson
-  ) {
-    resultBase64
-    resultJson
-    fuelUsed
-    durationUs
-  }
-}
-
-fragment PlayerWasmModuleRunFields on PlayerWasmModuleRun {
-  runId
-  appId
-  gridId
-  moduleId
-  moduleName
-  executedAsUserId
-  flowId
-  triggerSource
-  startedAt
-  durationUs
-  fuelUsed
-  success
-  errorMessage
-}
-
-query PlayerComputeUsage($appId: BigInt!) {
-  playerComputeUsage(appId: $appId) {
-    appId
-    hourUnitsUsed
-    dayUnitsUsed
-    unitsPerHour
-    unitsPerDay
-    compilesThisHour
-    maxCompilesPerHour
-    gateStatus
-    gateReason
-  }
-}
-
-query PlayerComputeRuns(
-  $appId: BigInt!
-  $gridId: BigInt!
-  $moduleName: String
-  $success: Boolean
-  $limit: Int
-  $offset: Int
-) {
-  playerComputeRuns(
-    appId: $appId
-    gridId: $gridId
-    moduleName: $moduleName
-    success: $success
-    limit: $limit
-    offset: $offset
-  ) {
-    ...PlayerWasmModuleRunFields
-  }
-}
-
-query PlayerComputeLogs(
-  $appId: BigInt!
-  $gridId: BigInt!
-  $moduleName: String
-  $limit: Int
-) {
-  playerComputeLogs(
-    appId: $appId
-    gridId: $gridId
-    moduleName: $moduleName
-    limit: $limit
-  ) {
-    ...PlayerWasmModuleRunFields
-  }
-}
-
-mutation PlayerComputeSetSwitch(
-  $appId: BigInt!
-  $scope: String!
-  $disabled: Boolean!
-  $scopeRef: BigInt
-  $reason: String
-  $listingRef: String
-) {
-  playerComputeSetSwitch(
-    appId: $appId
-    scope: $scope
-    disabled: $disabled
-    scopeRef: $scopeRef
-    reason: $reason
-    listingRef: $listingRef
-  )
-}
-
-query PlayerComputeSwitches($appId: BigInt!) {
-  playerComputeSwitches(appId: $appId) {
-    switchId
-    appId
-    scope
-    scopeRef
-    listingRef
-    reason
-    disabledAt
-  }
-}
-
-query PlayerComputeArtifact(
-  $appId: BigInt!
-  $gridId: BigInt!
-  $name: String!
-  $versionId: String
-) {
-  playerComputeArtifact(
-    appId: $appId
-    gridId: $gridId
-    name: $name
-    versionId: $versionId
-  ) {
-    versionId
-    artifactHash
-    artifactBase64
-    sizeBytes
-    abiVersion
-    contractJson
-    clientFuelPerDispatch
-  }
-})gql";
-inline constexpr std::string_view kPlayerComputeDeployIsolatedDocument = R"gql(mutation PlayerComputeDeploy($input: DeployPlayerComputeInput!) {
-  playerComputeDeploy(input: $input) {
-    ...PlayerWasmModuleVersionFields
-  }
-}
-
-fragment PlayerWasmModuleVersionFields on PlayerWasmModuleVersion {
-  versionId
-  moduleId
-  versionNo
-  target
-  sourceFilesJson
-  openSource
-  compileStatus
-  compileLog
-  compiledSizeBytes
-  projectId
-  sourceRevision
-  githubCommitSha
-  createdAt
-})gql";
-inline constexpr std::string_view kPlayerComputeDeployOperationName = "PlayerComputeDeploy";
-inline constexpr std::string_view kPlayerComputeSetEnabledIsolatedDocument = R"gql(mutation PlayerComputeSetEnabled($appId: BigInt!, $gridId: BigInt!, $name: String!, $enabled: Boolean!) {
-  playerComputeSetEnabled(
-    appId: $appId
-    gridId: $gridId
-    name: $name
-    enabled: $enabled
-  ) {
-    ...PlayerWasmModuleFields
-  }
-}
-
-fragment PlayerWasmModuleFields on PlayerWasmModule {
-  moduleId
-  appId
-  gridId
-  name
-  description
-  authorUserId
-  authorOrgId
-  enabled
-  draft
-  currentVersionId
-  currentTarget
-  circuitState
-  lastError
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kPlayerComputeSetEnabledOperationName = "PlayerComputeSetEnabled";
-inline constexpr std::string_view kPlayerComputeSetRequiresIsolatedDocument = R"gql(mutation PlayerComputeSetRequires($appId: BigInt!, $gridId: BigInt!, $serverName: String!, $requiredClientName: String) {
-  playerComputeSetRequires(
-    appId: $appId
-    gridId: $gridId
-    serverName: $serverName
-    requiredClientName: $requiredClientName
-  )
-})gql";
-inline constexpr std::string_view kPlayerComputeSetRequiresOperationName = "PlayerComputeSetRequires";
-inline constexpr std::string_view kPlayerComputeMyModulesIsolatedDocument = R"gql(query PlayerComputeMyModules($appId: BigInt!) {
-  playerComputeMyModules(appId: $appId) {
-    ...PlayerWasmModuleFields
-  }
-}
-
-fragment PlayerWasmModuleFields on PlayerWasmModule {
-  moduleId
-  appId
-  gridId
-  name
-  description
-  authorUserId
-  authorOrgId
-  enabled
-  draft
-  currentVersionId
-  currentTarget
-  circuitState
-  lastError
-  createdAt
-  updatedAt
-})gql";
-inline constexpr std::string_view kPlayerComputeMyModulesOperationName = "PlayerComputeMyModules";
-inline constexpr std::string_view kPlayerComputeVersionsIsolatedDocument = R"gql(query PlayerComputeVersions($appId: BigInt!, $gridId: BigInt!, $name: String!) {
-  playerComputeVersions(appId: $appId, gridId: $gridId, name: $name) {
-    ...PlayerWasmModuleVersionFields
-  }
-}
-
-fragment PlayerWasmModuleVersionFields on PlayerWasmModuleVersion {
-  versionId
-  moduleId
-  versionNo
-  target
-  sourceFilesJson
-  openSource
-  compileStatus
-  compileLog
-  compiledSizeBytes
-  projectId
-  sourceRevision
-  githubCommitSha
-  createdAt
-})gql";
-inline constexpr std::string_view kPlayerComputeVersionsOperationName = "PlayerComputeVersions";
-inline constexpr std::string_view kPlayerComputeDeleteIsolatedDocument = R"gql(mutation PlayerComputeDelete($appId: BigInt!, $gridId: BigInt!, $name: String!) {
-  playerComputeDelete(appId: $appId, gridId: $gridId, name: $name)
-})gql";
-inline constexpr std::string_view kPlayerComputeDeleteOperationName = "PlayerComputeDelete";
-inline constexpr std::string_view kPlayerComputeInvokeIsolatedDocument = R"gql(mutation PlayerComputeInvoke($appId: BigInt!, $gridId: BigInt!, $moduleName: String!, $exportName: String!, $paramsJson: String) {
-  playerComputeInvoke(
-    appId: $appId
-    gridId: $gridId
-    moduleName: $moduleName
-    exportName: $exportName
-    paramsJson: $paramsJson
-  ) {
-    resultBase64
-    resultJson
-    fuelUsed
-    durationUs
-  }
-})gql";
-inline constexpr std::string_view kPlayerComputeInvokeOperationName = "PlayerComputeInvoke";
-inline constexpr std::string_view kPlayerComputeUsageIsolatedDocument = R"gql(query PlayerComputeUsage($appId: BigInt!) {
-  playerComputeUsage(appId: $appId) {
-    appId
-    hourUnitsUsed
-    dayUnitsUsed
-    unitsPerHour
-    unitsPerDay
-    compilesThisHour
-    maxCompilesPerHour
-    gateStatus
-    gateReason
-  }
-})gql";
-inline constexpr std::string_view kPlayerComputeUsageOperationName = "PlayerComputeUsage";
-inline constexpr std::string_view kPlayerComputeRunsIsolatedDocument = R"gql(query PlayerComputeRuns($appId: BigInt!, $gridId: BigInt!, $moduleName: String, $success: Boolean, $limit: Int, $offset: Int) {
-  playerComputeRuns(
-    appId: $appId
-    gridId: $gridId
-    moduleName: $moduleName
-    success: $success
-    limit: $limit
-    offset: $offset
-  ) {
-    ...PlayerWasmModuleRunFields
-  }
-}
-
-fragment PlayerWasmModuleRunFields on PlayerWasmModuleRun {
-  runId
-  appId
-  gridId
-  moduleId
-  moduleName
-  executedAsUserId
-  flowId
-  triggerSource
-  startedAt
-  durationUs
-  fuelUsed
-  success
-  errorMessage
-})gql";
-inline constexpr std::string_view kPlayerComputeRunsOperationName = "PlayerComputeRuns";
-inline constexpr std::string_view kPlayerComputeLogsIsolatedDocument = R"gql(query PlayerComputeLogs($appId: BigInt!, $gridId: BigInt!, $moduleName: String, $limit: Int) {
-  playerComputeLogs(
-    appId: $appId
-    gridId: $gridId
-    moduleName: $moduleName
-    limit: $limit
-  ) {
-    ...PlayerWasmModuleRunFields
-  }
-}
-
-fragment PlayerWasmModuleRunFields on PlayerWasmModuleRun {
-  runId
-  appId
-  gridId
-  moduleId
-  moduleName
-  executedAsUserId
-  flowId
-  triggerSource
-  startedAt
-  durationUs
-  fuelUsed
-  success
-  errorMessage
-})gql";
-inline constexpr std::string_view kPlayerComputeLogsOperationName = "PlayerComputeLogs";
-inline constexpr std::string_view kPlayerComputeSetSwitchIsolatedDocument = R"gql(mutation PlayerComputeSetSwitch($appId: BigInt!, $scope: String!, $disabled: Boolean!, $scopeRef: BigInt, $reason: String, $listingRef: String) {
-  playerComputeSetSwitch(
-    appId: $appId
-    scope: $scope
-    disabled: $disabled
-    scopeRef: $scopeRef
-    reason: $reason
-    listingRef: $listingRef
-  )
-})gql";
-inline constexpr std::string_view kPlayerComputeSetSwitchOperationName = "PlayerComputeSetSwitch";
-inline constexpr std::string_view kPlayerComputeSwitchesIsolatedDocument = R"gql(query PlayerComputeSwitches($appId: BigInt!) {
-  playerComputeSwitches(appId: $appId) {
-    switchId
-    appId
-    scope
-    scopeRef
-    listingRef
-    reason
-    disabledAt
-  }
-})gql";
-inline constexpr std::string_view kPlayerComputeSwitchesOperationName = "PlayerComputeSwitches";
-inline constexpr std::string_view kPlayerComputeArtifactIsolatedDocument = R"gql(query PlayerComputeArtifact($appId: BigInt!, $gridId: BigInt!, $name: String!, $versionId: String) {
-  playerComputeArtifact(
-    appId: $appId
-    gridId: $gridId
-    name: $name
-    versionId: $versionId
-  ) {
-    versionId
-    artifactHash
-    artifactBase64
-    sizeBytes
-    abiVersion
-    contractJson
-    clientFuelPerDispatch
-  }
-})gql";
-inline constexpr std::string_view kPlayerComputeArtifactOperationName = "PlayerComputeArtifact";
-
-inline constexpr std::string_view documentFor(std::string_view operationName) {
-  if (operationName == "PlayerComputeDeploy") return kPlayerComputeDeployIsolatedDocument;
-  if (operationName == "PlayerComputeSetEnabled") return kPlayerComputeSetEnabledIsolatedDocument;
-  if (operationName == "PlayerComputeSetRequires") return kPlayerComputeSetRequiresIsolatedDocument;
-  if (operationName == "PlayerComputeMyModules") return kPlayerComputeMyModulesIsolatedDocument;
-  if (operationName == "PlayerComputeVersions") return kPlayerComputeVersionsIsolatedDocument;
-  if (operationName == "PlayerComputeDelete") return kPlayerComputeDeleteIsolatedDocument;
-  if (operationName == "PlayerComputeInvoke") return kPlayerComputeInvokeIsolatedDocument;
-  if (operationName == "PlayerComputeUsage") return kPlayerComputeUsageIsolatedDocument;
-  if (operationName == "PlayerComputeRuns") return kPlayerComputeRunsIsolatedDocument;
-  if (operationName == "PlayerComputeLogs") return kPlayerComputeLogsIsolatedDocument;
-  if (operationName == "PlayerComputeSetSwitch") return kPlayerComputeSetSwitchIsolatedDocument;
-  if (operationName == "PlayerComputeSwitches") return kPlayerComputeSwitchesIsolatedDocument;
-  if (operationName == "PlayerComputeArtifact") return kPlayerComputeArtifactIsolatedDocument;
-  return {};
-}
-
-}  // namespace playerCompute
-
-namespace playerModel {
-
-/// playerModel/PlayerModel.graphql
-inline constexpr std::string_view kPlayerModelDocument = R"gql(query PlayerModelContainers($appId: BigInt!, $gridId: BigInt!) {
-  playerModelContainers(appId: $appId, gridId: $gridId) {
-    containerId appId gridId ownerUserId typeKey displayName
-    stateJson propertiesJson createdAt updatedAt
-  }
-}
-
-query PlayerModelContainer($input: PlayerModelContainerRefInput!) {
-  playerModelContainer(input: $input) {
-    containerId appId gridId ownerUserId typeKey displayName
-    stateJson propertiesJson createdAt updatedAt
-  }
-}
-
-mutation PlayerModelCreateContainer($input: CreatePlayerModelContainerInput!) {
-  playerModelCreateContainer(input: $input) {
-    containerId appId gridId ownerUserId typeKey displayName
-    stateJson propertiesJson createdAt updatedAt
-  }
-}
-
-mutation PlayerModelSetProperty($input: SetPlayerModelPropertyInput!) {
-  playerModelSetProperty(input: $input) {
-    containerId appId gridId ownerUserId typeKey displayName
-    stateJson propertiesJson createdAt updatedAt
-  }
-}
-
-mutation PlayerModelDeleteContainer($input: PlayerModelContainerRefInput!) {
-  playerModelDeleteContainer(input: $input)
-}
-
-query PlayerAutomations($appId: BigInt!, $gridId: BigInt!) {
-  playerAutomations(appId: $appId, gridId: $gridId) {
-    automationId appId gridId ownerUserId name description enabled
-    triggerJson actionJson maxRunsPerMinute failureThreshold cooldownMs
-    circuitState consecutiveFailures pausedUntil lastError lastRunAt
-    nextRunAt createdAt updatedAt
-  }
-}
-
-mutation PlayerAutomationCreate($input: CreatePlayerAutomationInput!) {
-  playerAutomationCreate(input: $input) {
-    automationId appId gridId ownerUserId name description enabled
-    triggerJson actionJson maxRunsPerMinute failureThreshold cooldownMs
-    circuitState consecutiveFailures pausedUntil lastError lastRunAt
-    nextRunAt createdAt updatedAt
-  }
-}
-
-mutation PlayerAutomationSetEnabled($input: SetPlayerAutomationEnabledInput!) {
-  playerAutomationSetEnabled(input: $input) {
-    automationId appId gridId ownerUserId name description enabled
-    triggerJson actionJson maxRunsPerMinute failureThreshold cooldownMs
-    circuitState consecutiveFailures pausedUntil lastError lastRunAt
-    nextRunAt createdAt updatedAt
-  }
-}
-
-mutation PlayerAutomationDelete($input: PlayerAutomationRefInput!) {
-  playerAutomationDelete(input: $input)
-})gql";
-inline constexpr std::string_view kPlayerModelContainersIsolatedDocument = R"gql(query PlayerModelContainers($appId: BigInt!, $gridId: BigInt!) {
-  playerModelContainers(appId: $appId, gridId: $gridId) {
-    containerId
-    appId
-    gridId
-    ownerUserId
-    typeKey
-    displayName
-    stateJson
-    propertiesJson
-    createdAt
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kPlayerModelContainersOperationName = "PlayerModelContainers";
-inline constexpr std::string_view kPlayerModelContainerIsolatedDocument = R"gql(query PlayerModelContainer($input: PlayerModelContainerRefInput!) {
-  playerModelContainer(input: $input) {
-    containerId
-    appId
-    gridId
-    ownerUserId
-    typeKey
-    displayName
-    stateJson
-    propertiesJson
-    createdAt
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kPlayerModelContainerOperationName = "PlayerModelContainer";
-inline constexpr std::string_view kPlayerModelCreateContainerIsolatedDocument = R"gql(mutation PlayerModelCreateContainer($input: CreatePlayerModelContainerInput!) {
-  playerModelCreateContainer(input: $input) {
-    containerId
-    appId
-    gridId
-    ownerUserId
-    typeKey
-    displayName
-    stateJson
-    propertiesJson
-    createdAt
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kPlayerModelCreateContainerOperationName = "PlayerModelCreateContainer";
-inline constexpr std::string_view kPlayerModelSetPropertyIsolatedDocument = R"gql(mutation PlayerModelSetProperty($input: SetPlayerModelPropertyInput!) {
-  playerModelSetProperty(input: $input) {
-    containerId
-    appId
-    gridId
-    ownerUserId
-    typeKey
-    displayName
-    stateJson
-    propertiesJson
-    createdAt
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kPlayerModelSetPropertyOperationName = "PlayerModelSetProperty";
-inline constexpr std::string_view kPlayerModelDeleteContainerIsolatedDocument = R"gql(mutation PlayerModelDeleteContainer($input: PlayerModelContainerRefInput!) {
-  playerModelDeleteContainer(input: $input)
-})gql";
-inline constexpr std::string_view kPlayerModelDeleteContainerOperationName = "PlayerModelDeleteContainer";
-inline constexpr std::string_view kPlayerAutomationsIsolatedDocument = R"gql(query PlayerAutomations($appId: BigInt!, $gridId: BigInt!) {
-  playerAutomations(appId: $appId, gridId: $gridId) {
-    automationId
-    appId
-    gridId
-    ownerUserId
-    name
-    description
-    enabled
-    triggerJson
-    actionJson
-    maxRunsPerMinute
-    failureThreshold
-    cooldownMs
-    circuitState
-    consecutiveFailures
-    pausedUntil
-    lastError
-    lastRunAt
-    nextRunAt
-    createdAt
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kPlayerAutomationsOperationName = "PlayerAutomations";
-inline constexpr std::string_view kPlayerAutomationCreateIsolatedDocument = R"gql(mutation PlayerAutomationCreate($input: CreatePlayerAutomationInput!) {
-  playerAutomationCreate(input: $input) {
-    automationId
-    appId
-    gridId
-    ownerUserId
-    name
-    description
-    enabled
-    triggerJson
-    actionJson
-    maxRunsPerMinute
-    failureThreshold
-    cooldownMs
-    circuitState
-    consecutiveFailures
-    pausedUntil
-    lastError
-    lastRunAt
-    nextRunAt
-    createdAt
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kPlayerAutomationCreateOperationName = "PlayerAutomationCreate";
-inline constexpr std::string_view kPlayerAutomationSetEnabledIsolatedDocument = R"gql(mutation PlayerAutomationSetEnabled($input: SetPlayerAutomationEnabledInput!) {
-  playerAutomationSetEnabled(input: $input) {
-    automationId
-    appId
-    gridId
-    ownerUserId
-    name
-    description
-    enabled
-    triggerJson
-    actionJson
-    maxRunsPerMinute
-    failureThreshold
-    cooldownMs
-    circuitState
-    consecutiveFailures
-    pausedUntil
-    lastError
-    lastRunAt
-    nextRunAt
-    createdAt
-    updatedAt
-  }
-})gql";
-inline constexpr std::string_view kPlayerAutomationSetEnabledOperationName = "PlayerAutomationSetEnabled";
-inline constexpr std::string_view kPlayerAutomationDeleteIsolatedDocument = R"gql(mutation PlayerAutomationDelete($input: PlayerAutomationRefInput!) {
-  playerAutomationDelete(input: $input)
-})gql";
-inline constexpr std::string_view kPlayerAutomationDeleteOperationName = "PlayerAutomationDelete";
-
-inline constexpr std::string_view documentFor(std::string_view operationName) {
-  if (operationName == "PlayerModelContainers") return kPlayerModelContainersIsolatedDocument;
-  if (operationName == "PlayerModelContainer") return kPlayerModelContainerIsolatedDocument;
-  if (operationName == "PlayerModelCreateContainer") return kPlayerModelCreateContainerIsolatedDocument;
-  if (operationName == "PlayerModelSetProperty") return kPlayerModelSetPropertyIsolatedDocument;
-  if (operationName == "PlayerModelDeleteContainer") return kPlayerModelDeleteContainerIsolatedDocument;
-  if (operationName == "PlayerAutomations") return kPlayerAutomationsIsolatedDocument;
-  if (operationName == "PlayerAutomationCreate") return kPlayerAutomationCreateIsolatedDocument;
-  if (operationName == "PlayerAutomationSetEnabled") return kPlayerAutomationSetEnabledIsolatedDocument;
-  if (operationName == "PlayerAutomationDelete") return kPlayerAutomationDeleteIsolatedDocument;
-  return {};
-}
-
-}  // namespace playerModel
-
 namespace playerWallet {
 
 /// playerWallet/PlayerWallet.graphql
@@ -11406,29 +7290,6 @@ fragment PlayerUsageChargeFields on PlayerUsageCharge {
   currency
   usageSnapshotJson
   createdAt
-}
-
-fragment PlayerWasmPolicyFields on PlayerWasmPolicy {
-  policyId
-  appId
-  scope
-  scopeRef
-  enabled
-  maxModulesPerGrid
-  maxModulesTotal
-  maxTickHz
-  fuelPerTick
-  fuelPerInvoke
-  maxMemoryMb
-  maxRunMs
-  maxDbOpsPerTick
-  maxEgressMsgsPerMin
-  maxEgressBytesPerMin
-  unitsPerHour
-  unitsPerDay
-  maxCompilesPerHour
-  maxContainerCreatesDay
-  clientFuelPerDispatch
 }
 
 query PlayerWalletBalance {
@@ -11509,26 +7370,6 @@ query PlayerRuntimeStates {
     reason
     updatedAt
   }
-}
-
-query PlayerWasmPolicies($appId: BigInt!) {
-  playerWasmPolicies(appId: $appId) {
-    ...PlayerWasmPolicyFields
-  }
-}
-
-mutation SetPlayerWasmPolicy($input: SetPlayerWasmPolicyInput!) {
-  setPlayerWasmPolicy(input: $input) {
-    ...PlayerWasmPolicyFields
-  }
-}
-
-mutation DeletePlayerWasmPolicy(
-  $appId: BigInt!
-  $scope: String!
-  $scopeRef: BigInt
-) {
-  deletePlayerWasmPolicy(appId: $appId, scope: $scope, scopeRef: $scopeRef)
 }
 
 query PlayerRateMarkup($appId: BigInt!) {
@@ -11708,68 +7549,6 @@ inline constexpr std::string_view kPlayerRuntimeStatesIsolatedDocument = R"gql(q
   }
 })gql";
 inline constexpr std::string_view kPlayerRuntimeStatesOperationName = "PlayerRuntimeStates";
-inline constexpr std::string_view kPlayerWasmPoliciesIsolatedDocument = R"gql(query PlayerWasmPolicies($appId: BigInt!) {
-  playerWasmPolicies(appId: $appId) {
-    ...PlayerWasmPolicyFields
-  }
-}
-
-fragment PlayerWasmPolicyFields on PlayerWasmPolicy {
-  policyId
-  appId
-  scope
-  scopeRef
-  enabled
-  maxModulesPerGrid
-  maxModulesTotal
-  maxTickHz
-  fuelPerTick
-  fuelPerInvoke
-  maxMemoryMb
-  maxRunMs
-  maxDbOpsPerTick
-  maxEgressMsgsPerMin
-  maxEgressBytesPerMin
-  unitsPerHour
-  unitsPerDay
-  maxCompilesPerHour
-  maxContainerCreatesDay
-  clientFuelPerDispatch
-})gql";
-inline constexpr std::string_view kPlayerWasmPoliciesOperationName = "PlayerWasmPolicies";
-inline constexpr std::string_view kSetPlayerWasmPolicyIsolatedDocument = R"gql(mutation SetPlayerWasmPolicy($input: SetPlayerWasmPolicyInput!) {
-  setPlayerWasmPolicy(input: $input) {
-    ...PlayerWasmPolicyFields
-  }
-}
-
-fragment PlayerWasmPolicyFields on PlayerWasmPolicy {
-  policyId
-  appId
-  scope
-  scopeRef
-  enabled
-  maxModulesPerGrid
-  maxModulesTotal
-  maxTickHz
-  fuelPerTick
-  fuelPerInvoke
-  maxMemoryMb
-  maxRunMs
-  maxDbOpsPerTick
-  maxEgressMsgsPerMin
-  maxEgressBytesPerMin
-  unitsPerHour
-  unitsPerDay
-  maxCompilesPerHour
-  maxContainerCreatesDay
-  clientFuelPerDispatch
-})gql";
-inline constexpr std::string_view kSetPlayerWasmPolicyOperationName = "SetPlayerWasmPolicy";
-inline constexpr std::string_view kDeletePlayerWasmPolicyIsolatedDocument = R"gql(mutation DeletePlayerWasmPolicy($appId: BigInt!, $scope: String!, $scopeRef: BigInt) {
-  deletePlayerWasmPolicy(appId: $appId, scope: $scope, scopeRef: $scopeRef)
-})gql";
-inline constexpr std::string_view kDeletePlayerWasmPolicyOperationName = "DeletePlayerWasmPolicy";
 inline constexpr std::string_view kPlayerRateMarkupIsolatedDocument = R"gql(query PlayerRateMarkup($appId: BigInt!) {
   playerRateMarkup(appId: $appId)
 })gql";
@@ -11808,9 +7587,6 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "BeginPlayerCardSetup") return kBeginPlayerCardSetupIsolatedDocument;
   if (operationName == "SetPlayerAutoBilling") return kSetPlayerAutoBillingIsolatedDocument;
   if (operationName == "PlayerRuntimeStates") return kPlayerRuntimeStatesIsolatedDocument;
-  if (operationName == "PlayerWasmPolicies") return kPlayerWasmPoliciesIsolatedDocument;
-  if (operationName == "SetPlayerWasmPolicy") return kSetPlayerWasmPolicyIsolatedDocument;
-  if (operationName == "DeletePlayerWasmPolicy") return kDeletePlayerWasmPolicyIsolatedDocument;
   if (operationName == "PlayerRateMarkup") return kPlayerRateMarkupIsolatedDocument;
   if (operationName == "SetPlayerRateMarkup") return kSetPlayerRateMarkupIsolatedDocument;
   if (operationName == "AppPlayerUsage") return kAppPlayerUsageIsolatedDocument;
@@ -13404,15 +9180,6 @@ inline constexpr std::string_view kDeleteMyAccountIsolatedDocument = R"gql(mutat
 })gql";
 inline constexpr std::string_view kDeleteMyAccountOperationName = "DeleteMyAccount";
 
-/// users/ForceLogoutUser.graphql
-inline constexpr std::string_view kForceLogoutUserDocument = R"gql(mutation ForceLogoutUser($userId: BigInt!) {
-  forceLogoutUser(userId: $userId)
-})gql";
-inline constexpr std::string_view kForceLogoutUserIsolatedDocument = R"gql(mutation ForceLogoutUser($userId: BigInt!) {
-  forceLogoutUser(userId: $userId)
-})gql";
-inline constexpr std::string_view kForceLogoutUserOperationName = "ForceLogoutUser";
-
 /// users/FreePlayWindow.graphql
 inline constexpr std::string_view kFreePlayWindowDocument = R"gql(query FreePlayWindow {
   freePlayWindowInfo {
@@ -13467,53 +9234,6 @@ inline constexpr std::string_view kMeIsolatedDocument = R"gql(query Me {
 })gql";
 inline constexpr std::string_view kMeOperationName = "Me";
 
-/// users/SetEarlyAccessOverride.graphql
-inline constexpr std::string_view kSetEarlyAccessOverrideDocument = R"gql(mutation SetEarlyAccessOverride($userId: BigInt!, $value: Boolean!) {
-  setEarlyAccessOverride(userId: $userId, value: $value) {
-    userId
-    grantEarlyAccessOverride
-  }
-})gql";
-inline constexpr std::string_view kSetEarlyAccessOverrideIsolatedDocument = R"gql(mutation SetEarlyAccessOverride($userId: BigInt!, $value: Boolean!) {
-  setEarlyAccessOverride(userId: $userId, value: $value) {
-    userId
-    grantEarlyAccessOverride
-  }
-})gql";
-inline constexpr std::string_view kSetEarlyAccessOverrideOperationName = "SetEarlyAccessOverride";
-
-/// users/SetOperator.graphql
-inline constexpr std::string_view kSetOperatorDocument = R"gql(mutation SetOperator($userId: BigInt!, $value: Boolean!) {
-  setOperator(userId: $userId, value: $value) {
-    userId
-    isOperator
-    isSuperAdmin
-  }
-})gql";
-inline constexpr std::string_view kSetOperatorIsolatedDocument = R"gql(mutation SetOperator($userId: BigInt!, $value: Boolean!) {
-  setOperator(userId: $userId, value: $value) {
-    userId
-    isOperator
-    isSuperAdmin
-  }
-})gql";
-inline constexpr std::string_view kSetOperatorOperationName = "SetOperator";
-
-/// users/SetSuperAdmin.graphql
-inline constexpr std::string_view kSetSuperAdminDocument = R"gql(mutation SetSuperAdmin($userId: BigInt!, $value: Boolean!) {
-  setSuperAdmin(userId: $userId, value: $value) {
-    userId
-    isSuperAdmin
-  }
-})gql";
-inline constexpr std::string_view kSetSuperAdminIsolatedDocument = R"gql(mutation SetSuperAdmin($userId: BigInt!, $value: Boolean!) {
-  setSuperAdmin(userId: $userId, value: $value) {
-    userId
-    isSuperAdmin
-  }
-})gql";
-inline constexpr std::string_view kSetSuperAdminOperationName = "SetSuperAdmin";
-
 /// users/UpdateGamertag.graphql
 inline constexpr std::string_view kUpdateGamertagDocument = R"gql(mutation UpdateGamertag($input: UpdateGamertagInput!) {
   updateGamertag(input: $input) {
@@ -13549,21 +9269,6 @@ inline constexpr std::string_view kUpdateUserStateIsolatedDocument = R"gql(mutat
   }
 })gql";
 inline constexpr std::string_view kUpdateUserStateOperationName = "UpdateUserState";
-
-/// users/UpdateUserType.graphql
-inline constexpr std::string_view kUpdateUserTypeDocument = R"gql(mutation UpdateUserType($userId: BigInt!, $value: String!) {
-  updateUserType(userId: $userId, value: $value) {
-    userId
-    userType
-  }
-})gql";
-inline constexpr std::string_view kUpdateUserTypeIsolatedDocument = R"gql(mutation UpdateUserType($userId: BigInt!, $value: String!) {
-  updateUserType(userId: $userId, value: $value) {
-    userId
-    userType
-  }
-})gql";
-inline constexpr std::string_view kUpdateUserTypeOperationName = "UpdateUserType";
 
 /// users/User.graphql
 inline constexpr std::string_view kUserDocument = R"gql(query User($id: BigInt!) {
@@ -13602,127 +9307,13 @@ inline constexpr std::string_view kUserIsolatedDocument = R"gql(query User($id: 
 })gql";
 inline constexpr std::string_view kUserOperationName = "User";
 
-/// users/UsersPaginated.graphql
-inline constexpr std::string_view kUsersPaginatedDocument = R"gql(query UsersPaginated($query: String, $limit: Int, $offset: Int) {
-  usersPaginated(query: $query, limit: $limit, offset: $offset) {
-    items {
-      userId
-      email
-      gamertag
-      disambiguation
-      isConfirmed
-      createdAt
-      grantEarlyAccess
-      grantEarlyAccessOverride
-      orgId
-      externalId
-      userType
-      isSuperAdmin
-    }
-    pageInfo {
-      totalCount
-      limit
-      offset
-    }
-  }
-}
-
-query UsersConnection($first: Int, $after: String, $query: String) {
-  usersConnection(first: $first, after: $after, query: $query) {
-    edges {
-      cursor
-      node {
-        userId
-        email
-        gamertag
-        disambiguation
-        isConfirmed
-        createdAt
-        grantEarlyAccess
-        grantEarlyAccessOverride
-        orgId
-        externalId
-        userType
-        isSuperAdmin
-      }
-    }
-    pageInfo {
-      hasNextPage
-      hasPreviousPage
-      startCursor
-      endCursor
-    }
-    totalCount
-  }
-})gql";
-inline constexpr std::string_view kUsersPaginatedIsolatedDocument = R"gql(query UsersPaginated($query: String, $limit: Int, $offset: Int) {
-  usersPaginated(query: $query, limit: $limit, offset: $offset) {
-    items {
-      userId
-      email
-      gamertag
-      disambiguation
-      isConfirmed
-      createdAt
-      grantEarlyAccess
-      grantEarlyAccessOverride
-      orgId
-      externalId
-      userType
-      isSuperAdmin
-    }
-    pageInfo {
-      totalCount
-      limit
-      offset
-    }
-  }
-})gql";
-inline constexpr std::string_view kUsersPaginatedOperationName = "UsersPaginated";
-inline constexpr std::string_view kUsersConnectionIsolatedDocument = R"gql(query UsersConnection($first: Int, $after: String, $query: String) {
-  usersConnection(first: $first, after: $after, query: $query) {
-    edges {
-      cursor
-      node {
-        userId
-        email
-        gamertag
-        disambiguation
-        isConfirmed
-        createdAt
-        grantEarlyAccess
-        grantEarlyAccessOverride
-        orgId
-        externalId
-        userType
-        isSuperAdmin
-      }
-    }
-    pageInfo {
-      hasNextPage
-      hasPreviousPage
-      startCursor
-      endCursor
-    }
-    totalCount
-  }
-})gql";
-inline constexpr std::string_view kUsersConnectionOperationName = "UsersConnection";
-
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "DeleteMyAccount") return kDeleteMyAccountIsolatedDocument;
-  if (operationName == "ForceLogoutUser") return kForceLogoutUserIsolatedDocument;
   if (operationName == "FreePlayWindow") return kFreePlayWindowIsolatedDocument;
   if (operationName == "Me") return kMeIsolatedDocument;
-  if (operationName == "SetEarlyAccessOverride") return kSetEarlyAccessOverrideIsolatedDocument;
-  if (operationName == "SetOperator") return kSetOperatorIsolatedDocument;
-  if (operationName == "SetSuperAdmin") return kSetSuperAdminIsolatedDocument;
   if (operationName == "UpdateGamertag") return kUpdateGamertagIsolatedDocument;
   if (operationName == "UpdateUserState") return kUpdateUserStateIsolatedDocument;
-  if (operationName == "UpdateUserType") return kUpdateUserTypeIsolatedDocument;
   if (operationName == "User") return kUserIsolatedDocument;
-  if (operationName == "UsersPaginated") return kUsersPaginatedIsolatedDocument;
-  if (operationName == "UsersConnection") return kUsersConnectionIsolatedDocument;
   return {};
 }
 

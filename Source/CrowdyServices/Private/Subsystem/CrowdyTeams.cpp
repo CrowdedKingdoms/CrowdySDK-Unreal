@@ -36,9 +36,55 @@ int64 UCrowdyTeams::GetAppId() const
 	return GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
 }
 
+FCrowdyCppClient* UCrowdyTeams::ResolveClient() const
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (const TSharedPtr<FCrowdyCppClient> Override = ClientForTest.Pin())
+	{
+		return Override.Get();
+	}
+#endif
+	return ResolveApiClient(GetGameInstance(), TeamsLogName);
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyTeams::InitializeForTest(const TSharedPtr<FCrowdyCppClient>& Client)
+{
+	LiveSessionToken = MakeShared<uint8>(0);
+	ClientForTest = Client;
+}
+#endif
+
+void UCrowdyTeams::ClearMyTeamsCache()
+{
+	AppliedSequence = SendSequence;
+	++ClearCount;
+	if (!bCachePopulated)
+	{
+		return;
+	}
+	CachedMyTeams.Reset();
+	bCachePopulated = false;
+	OnMyTeamsCacheChanged.Broadcast(CachedMyTeams);
+}
+
+void UCrowdyTeams::RefreshMyTeams()
+{
+	GetMyTeams(FOnMyTeamsSuccess(), FOnTeamError());
+}
+
+void UCrowdyTeams::RefreshAfterChange(uint32 ClearsAtSend)
+{
+	if (ClearCount != ClearsAtSend)
+	{
+		return;
+	}
+	RefreshMyTeams();
+}
+
 void UCrowdyTeams::GetMyTeams(FOnMyTeamsSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -50,8 +96,9 @@ void UCrowdyTeams::GetMyTeams(FOnMyTeamsSuccess OnSuccess, FOnTeamError OnError)
 	Variables->SetStringField(TEXT("appId"), BigInt(GetAppId()));
 
 	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Sequence = ++SendSequence;
 	Client->RunOp(TeamsDomain, TEXT("MyTeams"), Variables,
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Sequence, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			TArray<FCrowdyTeamMembership> Memberships;
 			FCrowdyTeamError Error;
@@ -61,8 +108,11 @@ void UCrowdyTeams::GetMyTeams(FOnMyTeamsSuccess OnSuccess, FOnTeamError OnError)
 				return;
 			}
 
-			if (UCrowdyTeams* Self = WeakThis.Get())
+			// An older answer than the one cached is stale, and one sent before a clear may be about another account.
+			UCrowdyTeams* Self = WeakThis.Get();
+			if (Self && Sequence > Self->AppliedSequence)
 			{
+				Self->AppliedSequence = Sequence;
 				Self->CachedMyTeams = Memberships;
 				Self->bCachePopulated = true;
 				Self->OnMyTeamsCacheChanged.Broadcast(Self->CachedMyTeams);
@@ -74,7 +124,7 @@ void UCrowdyTeams::GetMyTeams(FOnMyTeamsSuccess OnSuccess, FOnTeamError OnError)
 
 void UCrowdyTeams::GetTeam(int64 TeamId, FOnTeamSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -101,7 +151,7 @@ void UCrowdyTeams::GetTeam(int64 TeamId, FOnTeamSuccess OnSuccess, FOnTeamError 
 
 void UCrowdyTeams::GetTeams(FOnTeamsSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -128,7 +178,7 @@ void UCrowdyTeams::GetTeams(FOnTeamsSuccess OnSuccess, FOnTeamError OnError)
 
 void UCrowdyTeams::GetTeamMembers(int64 TeamId, FOnTeamMembersSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -155,7 +205,7 @@ void UCrowdyTeams::GetTeamMembers(int64 TeamId, FOnTeamMembersSuccess OnSuccess,
 
 void UCrowdyTeams::GetPendingJoinRequests(int64 TeamId, FOnTeamMembersSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -186,7 +236,7 @@ void UCrowdyTeams::GetPendingJoinRequests(int64 TeamId, FOnTeamMembersSuccess On
 
 void UCrowdyTeams::GetTeamRoles(int64 TeamId, FOnTeamRolesSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -213,7 +263,7 @@ void UCrowdyTeams::GetTeamRoles(int64 TeamId, FOnTeamRolesSuccess OnSuccess, FOn
 
 void UCrowdyTeams::GetTeamPolicy(FOnTeamPolicySuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -242,7 +292,7 @@ void UCrowdyTeams::CreateTeam(const FString& Name, const FString& Description,
                               ECrowdyTeamMembershipPolicy MembershipPolicy,
                               FOnTeamSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -256,8 +306,10 @@ void UCrowdyTeams::CreateTeam(const FString& Name, const FString& Description,
 	Input->SetStringField(TEXT("description"), Description);
 	Input->SetStringField(TEXT("membershipPolicy"), FCrowdyTeam::MembershipPolicyToString(MembershipPolicy));
 
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Clears = ClearCount;
 	Client->RunOp(TeamsDomain, TEXT("CreateTeam"), WrapInput(Input),
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Clears, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			FCrowdyTeam Team;
 			FCrowdyTeamError Error;
@@ -266,6 +318,10 @@ void UCrowdyTeams::CreateTeam(const FString& Name, const FString& Description,
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
 			}
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->RefreshAfterChange(Clears);
+			}
 			OnSuccess.ExecuteIfBound(Team);
 		}));
 }
@@ -273,7 +329,7 @@ void UCrowdyTeams::CreateTeam(const FString& Name, const FString& Description,
 void UCrowdyTeams::UpdateTeam(int64 TeamId, const FString& Name, const FString& Description,
                               FOnTeamSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -286,8 +342,10 @@ void UCrowdyTeams::UpdateTeam(int64 TeamId, const FString& Name, const FString& 
 	Input->SetStringField(TEXT("name"), Name);
 	Input->SetStringField(TEXT("description"), Description);
 
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Clears = ClearCount;
 	Client->RunOp(TeamsDomain, TEXT("UpdateTeam"), WrapInput(Input),
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Clears, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			FCrowdyTeam Team;
 			FCrowdyTeamError Error;
@@ -296,13 +354,17 @@ void UCrowdyTeams::UpdateTeam(int64 TeamId, const FString& Name, const FString& 
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
 			}
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->RefreshAfterChange(Clears);
+			}
 			OnSuccess.ExecuteIfBound(Team);
 		}));
 }
 
 void UCrowdyTeams::DeleteTeam(int64 TeamId, FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -313,8 +375,10 @@ void UCrowdyTeams::DeleteTeam(int64 TeamId, FOnTeamVoidSuccess OnSuccess, FOnTea
 	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
 
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Clears = ClearCount;
 	Client->RunOp(TeamsDomain, TEXT("DeleteTeam"), Variables,
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Clears, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			FCrowdyTeamError Error;
 			if (!ReadAcknowledgement(Result, Error))
@@ -322,13 +386,17 @@ void UCrowdyTeams::DeleteTeam(int64 TeamId, FOnTeamVoidSuccess OnSuccess, FOnTea
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
 			}
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->RefreshAfterChange(Clears);
+			}
 			OnSuccess.ExecuteIfBound();
 		}));
 }
 
 void UCrowdyTeams::JoinTeam(int64 TeamId, FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -339,8 +407,10 @@ void UCrowdyTeams::JoinTeam(int64 TeamId, FOnTeamMemberSuccess OnSuccess, FOnTea
 	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
 
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Clears = ClearCount;
 	Client->RunOp(TeamsDomain, TEXT("JoinTeam"), Variables,
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Clears, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			FCrowdyTeamMember Member;
 			FCrowdyTeamError Error;
@@ -349,13 +419,17 @@ void UCrowdyTeams::JoinTeam(int64 TeamId, FOnTeamMemberSuccess OnSuccess, FOnTea
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
 			}
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->RefreshAfterChange(Clears);
+			}
 			OnSuccess.ExecuteIfBound(Member);
 		}));
 }
 
 void UCrowdyTeams::RequestToJoinTeam(int64 TeamId, FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -382,7 +456,7 @@ void UCrowdyTeams::RequestToJoinTeam(int64 TeamId, FOnTeamMemberSuccess OnSucces
 
 void UCrowdyTeams::LeaveTeam(int64 TeamId, FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -393,14 +467,20 @@ void UCrowdyTeams::LeaveTeam(int64 TeamId, FOnTeamVoidSuccess OnSuccess, FOnTeam
 	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
 
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Clears = ClearCount;
 	Client->RunOp(TeamsDomain, TEXT("LeaveTeam"), Variables,
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Clears, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			FCrowdyTeamError Error;
 			if (!ReadAcknowledgement(Result, Error))
 			{
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
+			}
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->RefreshAfterChange(Clears);
 			}
 			OnSuccess.ExecuteIfBound();
 		}));
@@ -409,7 +489,7 @@ void UCrowdyTeams::LeaveTeam(int64 TeamId, FOnTeamVoidSuccess OnSuccess, FOnTeam
 void UCrowdyTeams::AddTeamMember(int64 TeamId, int64 UserId,
                                  FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -438,7 +518,7 @@ void UCrowdyTeams::AddTeamMember(int64 TeamId, int64 UserId,
 void UCrowdyTeams::RemoveTeamMember(int64 TeamId, int64 UserId,
                                     FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -450,14 +530,20 @@ void UCrowdyTeams::RemoveTeamMember(int64 TeamId, int64 UserId,
 	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
 	Variables->SetStringField(TEXT("userId"), BigInt(UserId));
 
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Clears = ClearCount;
 	Client->RunOp(TeamsDomain, TEXT("RemoveTeamMember"), Variables,
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Clears, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			FCrowdyTeamError Error;
 			if (!ReadAcknowledgement(Result, Error))
 			{
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
+			}
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->RefreshAfterChange(Clears);
 			}
 			OnSuccess.ExecuteIfBound();
 		}));
@@ -467,7 +553,7 @@ void UCrowdyTeams::CreateTeamRole(int64 TeamId, const FString& RoleName,
                                   FCrowdyTeamPermissions Permissions, int32 Rank,
                                   FOnTeamRoleSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -499,7 +585,7 @@ void UCrowdyTeams::UpdateTeamRole(int64 TeamRoleId, const FString& RoleName,
                                   FCrowdyTeamPermissions Permissions,
                                   FOnTeamRoleSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -512,8 +598,10 @@ void UCrowdyTeams::UpdateTeamRole(int64 TeamRoleId, const FString& RoleName,
 	Input->SetStringField(TEXT("roleName"), RoleName);
 	SetPermissionKeys(Input, Permissions.ToStringArray());
 
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Clears = ClearCount;
 	Client->RunOp(TeamsDomain, TEXT("UpdateTeamRole"), WrapInput(Input),
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Clears, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			FCrowdyTeamRole Role;
 			FCrowdyTeamError Error;
@@ -522,13 +610,17 @@ void UCrowdyTeams::UpdateTeamRole(int64 TeamRoleId, const FString& RoleName,
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
 			}
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->RefreshAfterChange(Clears);
+			}
 			OnSuccess.ExecuteIfBound(Role);
 		}));
 }
 
 void UCrowdyTeams::DeleteTeamRole(int64 TeamRoleId, FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -539,14 +631,20 @@ void UCrowdyTeams::DeleteTeamRole(int64 TeamRoleId, FOnTeamVoidSuccess OnSuccess
 	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetStringField(TEXT("groupRoleId"), BigInt(TeamRoleId));
 
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Clears = ClearCount;
 	Client->RunOp(TeamsDomain, TEXT("DeleteTeamRole"), Variables,
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Clears, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			FCrowdyTeamError Error;
 			if (!ReadAcknowledgement(Result, Error))
 			{
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
+			}
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->RefreshAfterChange(Clears);
 			}
 			OnSuccess.ExecuteIfBound();
 		}));
@@ -555,7 +653,7 @@ void UCrowdyTeams::DeleteTeamRole(int64 TeamRoleId, FOnTeamVoidSuccess OnSuccess
 void UCrowdyTeams::SetTeamMemberRoles(int64 TeamId, int64 UserId, const TArray<int64>& RoleIds,
                                       FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
@@ -574,8 +672,10 @@ void UCrowdyTeams::SetTeamMemberRoles(int64 TeamId, int64 UserId, const TArray<i
 	}
 	Input->SetArrayField(TEXT("roleIds"), RoleIdValues);
 
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Clears = ClearCount;
 	Client->RunOp(TeamsDomain, TEXT("SetTeamMemberRoles"), WrapInput(Input),
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Clears, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			FCrowdyTeamMember Member;
 			FCrowdyTeamError Error;
@@ -583,6 +683,10 @@ void UCrowdyTeams::SetTeamMemberRoles(int64 TeamId, int64 UserId, const TArray<i
 			{
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
+			}
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->RefreshAfterChange(Clears);
 			}
 			OnSuccess.ExecuteIfBound(Member);
 		}));
@@ -592,7 +696,7 @@ void UCrowdyTeams::SetTeamPolicy(ECrowdyTeamCreationPolicy CreationPolicy,
                                  ECrowdyTeamMembershipPolicy DefaultMembershipPolicy,
                                  FOnTeamPolicySuccess OnSuccess, FOnTeamError OnError)
 {
-	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), TeamsLogName);
+	FCrowdyCppClient* Client = ResolveClient();
 	if (!Client)
 	{
 		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();

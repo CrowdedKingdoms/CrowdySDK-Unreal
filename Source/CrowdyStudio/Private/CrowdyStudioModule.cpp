@@ -9,6 +9,7 @@
 #include "Dom/JsonValue.h"
 #include "GameModel/CrowdyEffectPlanCache.h"
 #include "Network/CrowdyCpp/CrowdyCppAdminClientHost.h"
+#include "UI/CrowdyStudioPages.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
 #if WITH_EDITOR
@@ -212,6 +213,45 @@ namespace
 	// Blueprint marked as a container but not opened this session is resident first (and thus discoverable).
 	// Asynchronous: it streams the assets and calls back, so the plan continues from the completion.
 	TFunction<void(TFunction<void()>)> GLoadContainerAssetsHook;
+
+	// Pages other editor modules add to the console, in the order they registered.
+	TArray<FCrowdyStudioExtraPage> GExtraPages;
+
+	FName GRequestedPage;
+	FSimpleMulticastDelegate GPageRequested;
+}
+
+void CrowdyStudioExtraPages::RegisterPage(FName Id, const FText& Group, const FText& Label, const TCHAR* Icon,
+	TFunction<TSharedRef<SWidget>()> MakeWidget)
+{
+	if (!ensureMsgf(static_cast<bool>(MakeWidget), TEXT("Crowdy Studio page %s has no widget maker and was not added"), *Id.ToString()))
+	{
+		return;
+	}
+	UnregisterPage(Id);
+	GExtraPages.Add({Id, Group, Label, FString(Icon ? Icon : TEXT("server")), MoveTemp(MakeWidget)});
+}
+
+void CrowdyStudioExtraPages::UnregisterPage(FName Id)
+{
+	GExtraPages.RemoveAll([Id](const FCrowdyStudioExtraPage& Page) { return Page.Id == Id; });
+}
+
+const TArray<FCrowdyStudioExtraPage>& CrowdyStudioExtraPages::GetPages()
+{
+	return GExtraPages;
+}
+
+FName CrowdyStudioExtraPages::TakeRequestedPage()
+{
+	const FName Page = GRequestedPage;
+	GRequestedPage = NAME_None;
+	return Page;
+}
+
+FSimpleMulticastDelegate& CrowdyStudioExtraPages::OnPageRequested()
+{
+	return GPageRequested;
 }
 
 void CrowdyStudioRegistry::SetRebuildHook(TFunction<void(TFunction<void()>)> Hook) { GRegistryRebuildHook = MoveTemp(Hook); }
@@ -256,6 +296,15 @@ namespace
 	const FName StudioTabId(TEXT("CrowdyStudio"));
 }
 #endif
+
+void CrowdyStudioExtraPages::OpenPage(FName Id)
+{
+	GRequestedPage = Id;
+#if WITH_EDITOR
+	FGlobalTabmanager::Get()->TryInvokeTab(FTabId(StudioTabId));
+#endif
+	GPageRequested.Broadcast();
+}
 
 void FCrowdyStudioModule::StartupModule()
 {

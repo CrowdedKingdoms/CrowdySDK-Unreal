@@ -5,6 +5,9 @@
 #include "CoreMinimal.h"
 #include "IDetailCustomization.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class IDetailCategoryBuilder;
 class IDetailChildrenBuilder;
 class IPropertyHandle;
@@ -106,3 +109,5 @@ private:
 	// re-parsing the effect every Slate tick.
 	TArray<FString> CachedMissingParams;
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

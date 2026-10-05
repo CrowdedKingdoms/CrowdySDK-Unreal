@@ -5,6 +5,7 @@ public class CrowdySDKEditor : ModuleRules
     public CrowdySDKEditor(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+        CppCompileWarningSettings.DeprecationWarningLevel = WarningLevel.Off;
 
         PublicDependencyModuleNames.AddRange(
             new string[]

@@ -157,6 +157,11 @@ const UCrowdyContainerManifest* FCrowdyStudioController::ResolvePreSeedManifest(
 
 void FCrowdyStudioController::PlanPreSeed(const FString& ScopeSessionId)
 {
+	if (CrowdyStudioGql::IsDeprecatedGameModelDomain(ECrowdyCppApiDomain::GameModel))
+	{
+		SetStatus(CrowdyCppGameModelDeprecatedMessage, true);
+		return;
+	}
 	if (SelectedAppId == 0)
 	{
 		SetStatus(TEXT("Select an app before planning a pre-seed."), true);

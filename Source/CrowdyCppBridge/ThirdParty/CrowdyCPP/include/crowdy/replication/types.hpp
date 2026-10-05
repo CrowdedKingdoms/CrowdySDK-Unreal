@@ -122,6 +122,14 @@ struct Config {
   /// wait, so sends made between two passes still share a datagram. Ignored
   /// when bundleSends is false.
   int bundleWindowMs = 1;
+  /// Called when notifications are waiting for poll(): at most once between
+  /// two poll() calls, from the thread that queued the first of them (the net
+  /// thread, or the pump() caller), and again from poll() itself when a
+  /// maxEvents bound left events queued. It exists so an event loop can sleep
+  /// until there is something to dispatch instead of polling on a timer:
+  /// write to a wake descriptor and return. It must not block, throw, or call
+  /// back into this connection.
+  std::function<void()> onEventsReady;
 };
 
 /// Parameters for a spatial send. Payload bytes are copied into the send

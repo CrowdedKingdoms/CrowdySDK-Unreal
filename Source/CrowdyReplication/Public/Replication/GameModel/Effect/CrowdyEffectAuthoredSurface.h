@@ -8,6 +8,9 @@
 #include "Replication/GameModel/Effect/CrowdyEffectLowering.h"
 #include "Replication/GameModel/Effect/CrowdyEffectSpec.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 /**
  * The tag keys a Crowdy Effect asset stamps on its own FAssetData when it saves, so a schema plan can read what the
  * effect authors without loading the package. Both are written together or not at all.
@@ -236,3 +239,5 @@ namespace CrowdyEffectAuthoredSurface
 		const FCrowdyEffectAuthoredSurface& Surface, ECrowdyEffectFnCatalog FnCatalog,
 		const TArray<FCrowdyEffectDiagnostic>& PriorDiagnostics, FString& OutTargetTypeName);
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

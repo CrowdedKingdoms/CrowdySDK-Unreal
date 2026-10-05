@@ -4,7 +4,10 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
+
+#include "crowdy/core/base64.hpp"
 
 namespace crowdy::graphql {
 
@@ -245,6 +248,270 @@ std::string Json::dump() const {
   std::string out(s);
   free(s);
   return out;
+}
+
+// ---- MessagePack --------------------------------------------------------------
+
+namespace {
+
+void packBe(std::string& out, std::uint64_t v, int bytes) {
+  for (int i = bytes - 1; i >= 0; --i) out.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+}
+
+void packUint(std::string& out, std::uint64_t u) {
+  if (u <= 0x7f) {
+    out.push_back(static_cast<char>(u));
+  } else if (u <= 0xff) {
+    out.push_back(static_cast<char>(0xcc));
+    packBe(out, u, 1);
+  } else if (u <= 0xffff) {
+    out.push_back(static_cast<char>(0xcd));
+    packBe(out, u, 2);
+  } else if (u <= 0xffffffffULL) {
+    out.push_back(static_cast<char>(0xce));
+    packBe(out, u, 4);
+  } else {
+    out.push_back(static_cast<char>(0xcf));
+    packBe(out, u, 8);
+  }
+}
+
+void packSint(std::string& out, std::int64_t i) {
+  if (i >= 0) return packUint(out, static_cast<std::uint64_t>(i));
+  const auto bits = static_cast<std::uint64_t>(i);
+  if (i >= -32) {
+    out.push_back(static_cast<char>(i));
+  } else if (i >= -128) {
+    out.push_back(static_cast<char>(0xd0));
+    packBe(out, bits, 1);
+  } else if (i >= -32768) {
+    out.push_back(static_cast<char>(0xd1));
+    packBe(out, bits, 2);
+  } else if (i >= -2147483648LL) {
+    out.push_back(static_cast<char>(0xd2));
+    packBe(out, bits, 4);
+  } else {
+    out.push_back(static_cast<char>(0xd3));
+    packBe(out, bits, 8);
+  }
+}
+
+void packHeader(std::string& out, std::size_t n, std::uint8_t fix, std::size_t fixMax,
+                std::uint8_t tag16, std::uint8_t tag32) {
+  if (n <= fixMax) {
+    out.push_back(static_cast<char>(fix | n));
+  } else if (n <= 0xffff) {
+    out.push_back(static_cast<char>(tag16));
+    packBe(out, n, 2);
+  } else {
+    out.push_back(static_cast<char>(tag32));
+    packBe(out, n, 4);
+  }
+}
+
+void packStr(std::string& out, const char* s, std::size_t len) {
+  if (len <= 31) {
+    out.push_back(static_cast<char>(0xa0 | len));
+  } else if (len <= 0xff) {
+    out.push_back(static_cast<char>(0xd9));
+    packBe(out, len, 1);
+  } else if (len <= 0xffff) {
+    out.push_back(static_cast<char>(0xda));
+    packBe(out, len, 2);
+  } else {
+    out.push_back(static_cast<char>(0xdb));
+    packBe(out, len, 4);
+  }
+  out.append(s, len);
+}
+
+void packVal(std::string& out, yyjson_val* v) {
+  switch (yyjson_get_type(v)) {
+    case YYJSON_TYPE_BOOL:
+      out.push_back(static_cast<char>(yyjson_get_bool(v) ? 0xc3 : 0xc2));
+      return;
+    case YYJSON_TYPE_NUM:
+      if (yyjson_is_uint(v)) return packUint(out, yyjson_get_uint(v));
+      if (yyjson_is_sint(v)) return packSint(out, yyjson_get_sint(v));
+      {
+        const double d = yyjson_get_real(v);
+        std::uint64_t bits = 0;
+        std::memcpy(&bits, &d, sizeof bits);
+        out.push_back(static_cast<char>(0xcb));
+        packBe(out, bits, 8);
+      }
+      return;
+    case YYJSON_TYPE_STR:
+      return packStr(out, yyjson_get_str(v), yyjson_get_len(v));
+    case YYJSON_TYPE_ARR: {
+      packHeader(out, yyjson_arr_size(v), 0x90, 15, 0xdc, 0xdd);
+      yyjson_arr_iter it;
+      yyjson_arr_iter_init(v, &it);
+      while (yyjson_val* e = yyjson_arr_iter_next(&it)) packVal(out, e);
+      return;
+    }
+    case YYJSON_TYPE_OBJ: {
+      packHeader(out, yyjson_obj_size(v), 0x80, 15, 0xde, 0xdf);
+      yyjson_obj_iter it;
+      yyjson_obj_iter_init(v, &it);
+      while (yyjson_val* k = yyjson_obj_iter_next(&it)) {
+        packStr(out, yyjson_get_str(k), yyjson_get_len(k));
+        packVal(out, yyjson_obj_iter_get_val(k));
+      }
+      return;
+    }
+    default:
+      out.push_back(static_cast<char>(0xc0));
+  }
+}
+
+constexpr int kMaxMsgpackDepth = 64;
+
+struct Unpacker {
+  const std::uint8_t* p;
+  const std::uint8_t* end;
+  yyjson_mut_doc* doc;
+  bool ok = true;
+
+  bool need(std::size_t n) {
+    if (static_cast<std::size_t>(end - p) < n) ok = false;
+    return ok;
+  }
+  std::uint64_t be(int bytes) {
+    std::uint64_t v = 0;
+    for (int i = 0; i < bytes; ++i) v = (v << 8) | *p++;
+    return v;
+  }
+  yyjson_mut_val* str(std::size_t len) {
+    if (!need(len)) return nullptr;
+    yyjson_mut_val* s = yyjson_mut_strncpy(doc, reinterpret_cast<const char*>(p), len);
+    p += len;
+    return s;
+  }
+  yyjson_mut_val* bin(std::size_t len) {
+    if (!need(len)) return nullptr;
+    const std::string b64 = crowdy::core::base64Encode(crowdy::Bytes(p, len));
+    p += len;
+    return yyjson_mut_strncpy(doc, b64.data(), b64.size());
+  }
+  yyjson_mut_val* skipExt(std::size_t len) {
+    if (!need(len + 1)) return nullptr;
+    p += len + 1;
+    return yyjson_mut_null(doc);
+  }
+  yyjson_mut_val* arr(std::size_t n, int depth) {
+    yyjson_mut_val* a = yyjson_mut_arr(doc);
+    for (std::size_t i = 0; i < n && ok; ++i) {
+      yyjson_mut_val* e = value(depth + 1);
+      if (e) yyjson_mut_arr_append(a, e);
+    }
+    return a;
+  }
+  yyjson_mut_val* map(std::size_t n, int depth) {
+    yyjson_mut_val* o = yyjson_mut_obj(doc);
+    for (std::size_t i = 0; i < n && ok; ++i) {
+      yyjson_mut_val* k = value(depth + 1);
+      yyjson_mut_val* v = value(depth + 1);
+      if (!ok || !k || !v) break;
+      if (!yyjson_mut_is_str(k)) {
+        // A non-string key keeps its value as text, as JSON has only string keys.
+        char* text = yyjson_mut_val_write(k, 0, nullptr);
+        k = yyjson_mut_strcpy(doc, text ? text : "null");
+        free(text);
+      }
+      yyjson_mut_obj_add(o, k, v);
+    }
+    return o;
+  }
+  yyjson_mut_val* value(int depth) {
+    if (depth > kMaxMsgpackDepth || !need(1)) {
+      ok = false;
+      return nullptr;
+    }
+    const std::uint8_t t = *p++;
+    if (t <= 0x7f) return yyjson_mut_uint(doc, t);
+    if (t >= 0xe0) return yyjson_mut_sint(doc, static_cast<std::int8_t>(t));
+    if ((t & 0xe0) == 0xa0) return str(t & 0x1f);
+    if ((t & 0xf0) == 0x90) return arr(t & 0x0f, depth);
+    if ((t & 0xf0) == 0x80) return map(t & 0x0f, depth);
+    auto sized = [&](int bytes) -> std::uint64_t { return need(bytes) ? be(bytes) : 0; };
+    switch (t) {
+      case 0xc0: return yyjson_mut_null(doc);
+      case 0xc2: return yyjson_mut_bool(doc, false);
+      case 0xc3: return yyjson_mut_bool(doc, true);
+      case 0xc4: { auto n = sized(1); return ok ? bin(n) : nullptr; }
+      case 0xc5: { auto n = sized(2); return ok ? bin(n) : nullptr; }
+      case 0xc6: { auto n = sized(4); return ok ? bin(n) : nullptr; }
+      case 0xc7: { auto n = sized(1); return ok ? skipExt(n) : nullptr; }
+      case 0xc8: { auto n = sized(2); return ok ? skipExt(n) : nullptr; }
+      case 0xc9: { auto n = sized(4); return ok ? skipExt(n) : nullptr; }
+      case 0xca: {
+        const auto bits = static_cast<std::uint32_t>(sized(4));
+        float f = 0;
+        std::memcpy(&f, &bits, sizeof f);
+        return ok ? yyjson_mut_real(doc, f) : nullptr;
+      }
+      case 0xcb: {
+        const std::uint64_t bits = sized(8);
+        double d = 0;
+        std::memcpy(&d, &bits, sizeof d);
+        return ok ? yyjson_mut_real(doc, d) : nullptr;
+      }
+      case 0xcc: { auto v = sized(1); return ok ? yyjson_mut_uint(doc, v) : nullptr; }
+      case 0xcd: { auto v = sized(2); return ok ? yyjson_mut_uint(doc, v) : nullptr; }
+      case 0xce: { auto v = sized(4); return ok ? yyjson_mut_uint(doc, v) : nullptr; }
+      case 0xcf: { auto v = sized(8); return ok ? yyjson_mut_uint(doc, v) : nullptr; }
+      case 0xd0: { auto v = sized(1); return ok ? yyjson_mut_sint(doc, static_cast<std::int8_t>(v)) : nullptr; }
+      case 0xd1: { auto v = sized(2); return ok ? yyjson_mut_sint(doc, static_cast<std::int16_t>(v)) : nullptr; }
+      case 0xd2: { auto v = sized(4); return ok ? yyjson_mut_sint(doc, static_cast<std::int32_t>(v)) : nullptr; }
+      case 0xd3: { auto v = sized(8); return ok ? yyjson_mut_sint(doc, static_cast<std::int64_t>(v)) : nullptr; }
+      case 0xd4: return skipExt(1);
+      case 0xd5: return skipExt(2);
+      case 0xd6: return skipExt(4);
+      case 0xd7: return skipExt(8);
+      case 0xd8: return skipExt(16);
+      case 0xd9: { auto n = sized(1); return ok ? str(n) : nullptr; }
+      case 0xda: { auto n = sized(2); return ok ? str(n) : nullptr; }
+      case 0xdb: { auto n = sized(4); return ok ? str(n) : nullptr; }
+      case 0xdc: { auto n = sized(2); return ok ? arr(n, depth) : nullptr; }
+      case 0xdd: { auto n = sized(4); return ok ? arr(n, depth) : nullptr; }
+      case 0xde: { auto n = sized(2); return ok ? map(n, depth) : nullptr; }
+      case 0xdf: { auto n = sized(4); return ok ? map(n, depth) : nullptr; }
+      default:
+        ok = false;  // 0xc1 is never used
+        return nullptr;
+    }
+  }
+};
+
+}  // namespace
+
+std::string Json::toMsgpack() const {
+  std::string out;
+  if (!val_) {
+    out.push_back(static_cast<char>(0xc0));
+    return out;
+  }
+  packVal(out, val(val_));
+  return out;
+}
+
+Json Json::fromMsgpack(std::string_view bytes) {
+  yyjson_mut_doc* md = yyjson_mut_doc_new(nullptr);
+  if (!md) return Json();
+  const auto* begin = reinterpret_cast<const std::uint8_t*>(bytes.data());
+  Unpacker u{begin, begin + bytes.size(), md};
+  yyjson_mut_val* root = u.value(0);
+  if (!u.ok || !root || u.p != u.end) {
+    yyjson_mut_doc_free(md);
+    return Json();
+  }
+  yyjson_mut_doc_set_root(md, root);
+  yyjson_doc* doc = yyjson_mut_doc_imut_copy(md, nullptr);
+  yyjson_mut_doc_free(md);
+  if (!doc) return Json();
+  auto holder = std::shared_ptr<void>(doc, [](void* d) { yyjson_doc_free(static_cast<yyjson_doc*>(d)); });
+  return Json(holder, yyjson_doc_get_root(doc));
 }
 
 std::size_t Json::memberCount() const { return isObject() ? yyjson_obj_size(val(val_)) : 0; }

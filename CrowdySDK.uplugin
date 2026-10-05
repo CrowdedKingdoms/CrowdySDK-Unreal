@@ -21,9 +21,12 @@
 		{ "Name": "CrowdyVoice",        "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyServices",     "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdySDK",          "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyExec",         "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyNodes",        "Type": "UncookedOnly", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyExecNodes",    "Type": "UncookedOnly", "LoadingPhase": "Default" },
 		{ "Name": "CrowdySDKEditor",    "Type": "Editor",  "LoadingPhase": "PostEngineInit" },
-		{ "Name": "CrowdyStudio",       "Type": "Editor",  "LoadingPhase": "PostEngineInit" }
+		{ "Name": "CrowdyStudio",       "Type": "Editor",  "LoadingPhase": "PostEngineInit" },
+		{ "Name": "CrowdyExecEditor",   "Type": "Editor",  "LoadingPhase": "Default" }
 	],
 	"Plugins": [
 		{
