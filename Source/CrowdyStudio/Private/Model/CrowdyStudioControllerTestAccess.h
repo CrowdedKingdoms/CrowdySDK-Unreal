@@ -5,6 +5,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "CoreMinimal.h"
+#include "CrowdyCppClient.h"
 #include "Dom/JsonObject.h"
 #include "GameModel/CrowdyApplySelection.h"
 #include "GameModel/CrowdyGameModelDelete.h"
@@ -12,6 +13,7 @@
 #include "GameModel/CrowdySchemaSync.h"
 #include "Model/CrowdyStudioTypes.h"
 #include "Model/FCrowdyStudioController.h"
+#include "Network/CrowdyCpp/CrowdyCppAdminClientHost.h"
 
 // Reaches the controller's app-scoped reset, its attribute cache and the delete state, which are internal because no
 // view may drive them directly. Declared a friend by the controller, so it must stay at global scope and keep this
@@ -407,6 +409,30 @@ struct FCrowdyStudioControllerTestAccess
 	static void SetSelectedApp(FCrowdyStudioController& Controller, int64 AppId)
 	{
 		Controller.SelectedAppId = AppId;
+	}
+
+	// Issue console operations on Client, with SessionToken as the management bearer and AppToken as the game one.
+	static void InstallApiClient(FCrowdyStudioController& Controller, const TSharedRef<FCrowdyCppClient>& Client,
+		const FString& SessionToken, const FString& AppToken)
+	{
+		Controller.ApiClientHost = FCrowdyCppAdminClientHost::CreateForTest(Client);
+		Controller.ApiClientDiscoveryUrl = Controller.ResolveDiscoveryUrl();
+		Controller.AuthToken = SessionToken;
+		Controller.GameAppToken = AppToken;
+	}
+
+	// A session sign-in, the only one that can mint an app token for a game-plane operation.
+	static void SetSessionSignIn(FCrowdyStudioController& Controller)
+	{
+		Controller.AuthScope = ECrowdyStudioAuthScope::Session;
+	}
+
+	// A container stream already running for AppId, so a plan for that app stops at its own guard instead of
+	// starting asset streams a test could not wait for.
+	static void SetSchemaContainerLoadInFlight(FCrowdyStudioController& Controller, int64 AppId)
+	{
+		Controller.bSchemaContainerLoadInFlight = true;
+		Controller.SchemaContainerLoadAppId = AppId;
 	}
 
 	static void MarkFetchInFlight(FCrowdyStudioController& Controller, const FString& TypeName)

@@ -6,6 +6,7 @@ public class CrowdyReplication : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 		bUseUnity = false;
+		CppCompileWarningSettings.DeprecationWarningLevel = WarningLevel.Off;
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{

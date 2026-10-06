@@ -15,7 +15,11 @@
 namespace crowdy::domains {
 
 /// client.chunks() — durable chunk storage. `voxels` blobs are base64 4096-
-/// byte dense grids (index x + y*16 + z*256).
+/// byte dense grids (index x + y*16 + z*256). `get` and `byDistance` also
+/// select each chunk's `voxelStates`: the states stored with it and every voxel
+/// edit recorded for it (a hub's or mod's `world.set_voxels`, `updateVoxel`,
+/// realtime voxel updates), which `voxels` does not hold. Apply each entry's
+/// `voxelType` over the grid, as ChunkStore does.
 class ChunksAPI : public DomainBase {
  public:
   using DomainBase::DomainBase;
@@ -53,7 +57,7 @@ class ChunksAPI : public DomainBase {
   }
 
   /// Bulk-load every stored chunk within `maxDistance` of `center`
-  /// (Chebyshev, 1-8).
+  /// (Chebyshev, 1-8), with their `voxelStates`.
   graphql::Json byDistance(std::string_view appId, const ChunkRef& center, int maxDistance) const {
     graphql::JVal vars;
     vars["input"]["appId"] = appId;
@@ -97,6 +101,14 @@ class ChunksAPI : public DomainBase {
     graphql::JVal vars;
     vars["input"] = input;
     execUnwrapAsync(gen::chunks::kUpdateChunkDocument, vars, {}, std::move(cb));
+  }
+
+  /// update(), blocking and never throwing: the whole outcome (`data` is the
+  /// response's `data`), so a caller can branch on the refusal in either build.
+  graphql::GraphQLOutcome updateOutcome(const graphql::JVal& input) const {
+    graphql::JVal vars;
+    vars["input"] = input;
+    return gql_->requestOutcome(gen::chunks::kUpdateChunkDocument, vars);
   }
 
   graphql::Json updateState(const graphql::JVal& input) const {

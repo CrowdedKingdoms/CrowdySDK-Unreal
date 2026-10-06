@@ -14,6 +14,8 @@
 #include "Queries/Data/Teams/Types/FCrowdyTeamRole.h"
 #include "CrowdyTeams.generated.h"
 
+class FCrowdyCppClient;
+
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamSuccess, FCrowdyTeam, Team);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamsSuccess, const TArray<FCrowdyTeam>&, Teams);
@@ -74,6 +76,17 @@ public:
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Teams|Cache")
 	bool HasPermissionInTeam(int64 TeamId, ECrowdyTeamPermission Permission) const;
+
+	/** Forgets the signed-in player's teams. An answer to a Get My Teams sent before this is not cached. */
+	void ClearMyTeamsCache();
+
+	/** Asks for the signed-in player's teams; the cache change event carries the answer. */
+	void RefreshMyTeams();
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Stands in for Initialize on a subsystem built outside a subsystem collection, sending every call to Client. */
+	void InitializeForTest(const TSharedPtr<FCrowdyCppClient>& Client);
+#endif
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Teams|Queries|Request")
 	void GetPendingJoinRequests(int64 TeamId, FOnTeamMembersSuccess OnSuccess, FOnTeamError OnError);
@@ -147,6 +160,17 @@ private:
 	TArray<FCrowdyTeamMembership> CachedMyTeams;
 	bool bCachePopulated = false;
 
+	/** Taken by every Get My Teams send; only an answer newer than the last one cached is cached. */
+	uint32 SendSequence = 0;
+	uint32 AppliedSequence = 0;
+
+	/** Bumped by every clear, so a change sent before one does not refill the cache. */
+	uint32 ClearCount = 0;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	TWeakPtr<FCrowdyCppClient> ClientForTest;
+#endif
+
 	/**
 	 * Marks this subsystem's usable lifetime. Every completion handed to the shared API client holds it weakly, so
 	 * a request still in flight at teardown lands on nothing rather than on a subsystem whose state has been
@@ -155,4 +179,8 @@ private:
 	TSharedPtr<uint8> LiveSessionToken;
 
 	int64 GetAppId() const;
+	FCrowdyCppClient* ResolveClient() const;
+
+	/** Refills the cache after a change sent when ClearCount was ClearsAtSend, unless a clear has happened since. */
+	void RefreshAfterChange(uint32 ClearsAtSend);
 };

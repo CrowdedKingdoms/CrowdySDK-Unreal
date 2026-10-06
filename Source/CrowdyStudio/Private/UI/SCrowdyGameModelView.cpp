@@ -86,6 +86,13 @@ void SCrowdyGameModelView::Construct(const FArguments& InArgs)
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)[ LintButton ]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ RefreshButton ]
 		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 8.0f)
+		[
+			CrowdyStudioWidgets::Card(
+				SNew(STextBlock).AutoWrapText(true).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::Warning()))
+				.Text(LOCTEXT("GameModelDeprecatedBanner", "Game Models are deprecated and no longer available; use Server Compute. Features and tier grants on the Advanced tab still work.")),
+				FMargin(16.0f, 12.0f))
+		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
 		[ SNew(STextBlock).TextStyle(&Style, "Crowdy.Text.Subtle").Text(LOCTEXT("GameModelPlane", "The design-time schema the runtime consumes. Game plane: needs a session sign-in that can mint an app token, so an org token will not do.")) ]
 
@@ -370,14 +377,10 @@ FReply SCrowdyGameModelView::OnRefreshClicked()
 {
 	if (Controller.IsValid())
 	{
-		Controller->FetchContainerTypes();
-		Controller->FetchFunctions(FString());
-		Controller->FetchAutomations();
 		Controller->FetchFeatures();
 		Controller->FetchTierFeatures();
 		Controller->FetchAppAccessTiers();
 		Controller->FetchRuntimePermissions();
-		Controller->FetchGameModelPolicy();
 	}
 	return FReply::Handled();
 }

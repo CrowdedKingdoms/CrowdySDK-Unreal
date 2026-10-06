@@ -43,6 +43,11 @@ namespace
 
 		{ ECrowdyCppApiDomain::AppAccess, TEXT("RuntimePermissions"), ECrowdyCppTokenPlane::Management },
 		{ ECrowdyCppApiDomain::AppAccess, TEXT("AppAccessTiers"), ECrowdyCppTokenPlane::Management },
+		{ ECrowdyCppApiDomain::AppAccess, TEXT("AppFeatures"), ECrowdyCppTokenPlane::Management },
+		{ ECrowdyCppApiDomain::AppAccess, TEXT("DefineAppFeature"), ECrowdyCppTokenPlane::Management },
+		{ ECrowdyCppApiDomain::AppAccess, TEXT("TierFeatures"), ECrowdyCppTokenPlane::Management },
+		{ ECrowdyCppApiDomain::AppAccess, TEXT("GrantTierFeature"), ECrowdyCppTokenPlane::Management },
+		{ ECrowdyCppApiDomain::AppAccess, TEXT("RevokeTierFeature"), ECrowdyCppTokenPlane::Management },
 
 		{ ECrowdyCppApiDomain::Teams, TEXT("Teams"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::Teams, TEXT("TeamPolicy"), ECrowdyCppTokenPlane::Game },
@@ -84,35 +89,6 @@ namespace
 		{ ECrowdyCppApiDomain::GameApps, TEXT("GridUserPermissions"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::GameApps, TEXT("GrantGridPermissions"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::GameApps, TEXT("RevokeGridPermissions"), ECrowdyCppTokenPlane::Game },
-
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainerTypes"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelUpsertContainerType"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelPropertyDefs"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelUpsertPropertyDef"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelFunctions"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelUpsertFunction"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelDeleteFunction"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelFeatures"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelDefineFeature"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelTierFeatures"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelGrantTierFeature"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelRevokeTierFeature"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelPolicy"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelSetPolicy"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelSeed"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelAutomations"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelAutomationTriggers"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelUpsertAutomation"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelUpsertAutomationTrigger"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelDeleteAutomation"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelDeleteContainerType"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelDeletePropertyDef"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainers"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainerState"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelDeleteContainer"), ECrowdyCppTokenPlane::Game },
-		// Container pre-seeding: the scope picker's session list and the row ensure.
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelSessions"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelEnsureContainer"), ECrowdyCppTokenPlane::Game },
 	};
 
 	// What issuing one operation on a canned-transport test client revealed. Resolution and transport delivery are
@@ -203,12 +179,12 @@ bool FCrowdyStudioRoutedOperationUnknownFailsTest::RunTest(const FString& Parame
 	}
 	Client->SetManagementToken(TEXT("test-management-token"));
 
-	const FProbeResult Probe = ProbeResolves(Client, ECrowdyCppApiDomain::GameModel,
-		TEXT("GameModelThisOperationDoesNotExist"), ECrowdyCppTokenPlane::Game);
+	const FProbeResult Probe = ProbeResolves(Client, ECrowdyCppApiDomain::AppAccess,
+		TEXT("AppAccessThisOperationDoesNotExist"), ECrowdyCppTokenPlane::Management);
 
 	TestFalse(TEXT("a bogus operation name does not resolve"), Probe.bResolved);
 	TestTrue(TEXT("the failure names the operation that could not be resolved"),
-		Probe.ErrorMessage.Contains(TEXT("GameModelThisOperationDoesNotExist")));
+		Probe.ErrorMessage.Contains(TEXT("AppAccessThisOperationDoesNotExist")));
 	return true;
 }
 
@@ -240,7 +216,6 @@ bool FCrowdyStudioRoutedOperationsEndpointTest::RunTest(const FString& Parameter
 		{ ECrowdyCppApiDomain::Teams, TEXT("Teams"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::Channels, TEXT("Channels"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::GameApps, TEXT("NearbyGridPermissions"), ECrowdyCppTokenPlane::Game },
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainerTypes"), ECrowdyCppTokenPlane::Game },
 	};
 
 	for (const FRoutedOperation& Rep : Representatives)
@@ -294,8 +269,7 @@ bool FCrowdyStudioRoutedOperationsEndpointTest::RunTest(const FString& Parameter
 	return true;
 }
 
-// The same check with no plane named by the caller, which is how every service subsystem and every Game Model
-// runtime call issues its operations. Those used to inherit the plane from the vendored operation table's endpoint
+// The same check with no plane named by the caller, which is how every service subsystem issues its operations. Those used to inherit the plane from the vendored operation table's endpoint
 // assignment; the platform has since merged its two GraphQL origins into one and that table no longer names an
 // endpoint at all. The bridge answers per domain instead, and the values below are the ones each operation resolved
 // to before the merge, which is the arrangement the live gates were run against. A domain whose default drifts
@@ -320,7 +294,6 @@ bool FCrowdyStudioDefaultPlaneTest::RunTest(const FString& Parameters)
 		{ ECrowdyCppApiDomain::AppAccess, TEXT("RuntimePermissions"), ECrowdyCppTokenPlane::Management },
 		{ ECrowdyCppApiDomain::Platform, TEXT("PlatformConfig"), ECrowdyCppTokenPlane::Management },
 
-		{ ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainerState"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::GameApps, TEXT("NearbyGridPermissions"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::CrowdyStudio, TEXT("CrowdyStudioProjects"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::Teams, TEXT("Teams"), ECrowdyCppTokenPlane::Game },
@@ -336,7 +309,6 @@ bool FCrowdyStudioDefaultPlaneTest::RunTest(const FString& Parameters)
 		// The three domains that never agreed on one plane, so these come from the per-operation exceptions rather
 		// than from a domain-wide answer. Their siblings are covered by MixedDomainStillNeedsACallerPlane below.
 		{ ECrowdyCppApiDomain::Auth, TEXT("LogoutAllDevices"), ECrowdyCppTokenPlane::Management },
-		{ ECrowdyCppApiDomain::Users, TEXT("UsersConnection"), ECrowdyCppTokenPlane::Management },
 		{ ECrowdyCppApiDomain::Users, TEXT("UpdateUserState"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::ServerStatus, TEXT("ServerWithLeastClients"), ECrowdyCppTokenPlane::Game },
 	};

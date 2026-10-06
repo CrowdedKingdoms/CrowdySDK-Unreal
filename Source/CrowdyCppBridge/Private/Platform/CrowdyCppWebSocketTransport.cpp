@@ -59,6 +59,10 @@ namespace
 		AsyncTask(ENamedThreads::GameThread, MoveTemp(Work));
 	}
 
+#if WITH_DEV_AUTOMATION_TESTS && WITH_WEBSOCKETS
+	TFunction<TSharedRef<IWebSocket>(const FString& Url, const FString& Protocol)> GTestSocketFactory;
+#endif
+
 	// The engine-side half of one connection, kept separate from the CrowdyCPP-side object because the two have
 	// different lifetimes: the connection can be dropped on the subscription client's timer thread, while the socket
 	// it owns may only be touched and destroyed on the game thread.
@@ -68,6 +72,13 @@ namespace
 		FString Protocol;
 		uint64 MaxFrameBytes = 0;
 		long ConnectTimeoutMs = 0;
+
+		// Fixed by the transport that made the connection: the GraphQL transport never sets it.
+		bool bBinary = false;
+
+		// Binary only, game thread only: the message being reassembled from the engine's fragments.
+		TArray<uint8> PendingBinary;
+		bool bDiscardingBinary = false;
 
 		// Game thread only, from start() onwards. IWebSocket is only declared where the engine has WebSocket
 		// support, so the socket and every use of it are guarded rather than just the code that creates it.
@@ -131,14 +142,12 @@ namespace
 #if WITH_WEBSOCKETS
 			// Always returns a socket, so there is no null to check for here. A missing WebSockets module is not
 			// something this can recover from either: the engine asserts inside the call rather than returning.
+#if WITH_DEV_AUTOMATION_TESTS
+			Socket = GTestSocketFactory ? GTestSocketFactory(Url, Protocol).ToSharedPtr()
+				: FWebSocketsModule::Get().CreateWebSocket(Url, Protocol).ToSharedPtr();
+#else
 			Socket = FWebSocketsModule::Get().CreateWebSocket(Url, Protocol);
-
-			// Bounds the reassembled inbound text message so a hostile or broken server cannot drive an unbounded
-			// allocation from the wire. Two caveats worth knowing: the engine counts this limit in characters while
-			// the check in DeliverText counts UTF-8 bytes, so the effective bound is whichever is tighter for the
-			// encoding in play; and one engine backend accepts the setting and ignores it, which is why that
-			// second check exists at all rather than being redundant.
-			Socket->SetTextMessageMemoryLimit(MaxFrameBytes);
+#endif
 
 			const TWeakPtr<FUnrealWebSocketState, ESPMode::ThreadSafe> Weak = AsWeak();
 
@@ -182,20 +191,43 @@ namespace
 				}
 			});
 
-			Socket->OnMessage().AddLambda([Weak](const FString& Message)
+			// The engine latches at Connect() which message kinds it queues, from which delegates are bound, so exactly
+			// one kind is bound here and the engine discards the other before copying anything.
+			if (bBinary)
 			{
-				if (const TSharedPtr<FUnrealWebSocketState, ESPMode::ThreadSafe> Live = Weak.Pin())
+				Socket->OnBinaryMessage().AddLambda([Weak](const void* Data, SIZE_T Size, bool bIsLastFragment)
 				{
-					Live->DeliverText(Message);
-				}
-			});
+					if (const TSharedPtr<FUnrealWebSocketState, ESPMode::ThreadSafe> Live = Weak.Pin())
+					{
+						Live->DeliverBinaryFragment(Data, Size, bIsLastFragment);
+					}
+				});
+			}
+			else
+			{
+				// Bounds the reassembled inbound text message so a hostile or broken server cannot drive an unbounded
+				// allocation from the wire. Two caveats worth knowing: the engine counts this limit in characters while
+				// the check in DeliverText counts UTF-8 bytes, so the effective bound is whichever is tighter for the
+				// encoding in play; and one engine backend accepts the setting and ignores it, which is why that
+				// second check exists at all rather than being redundant.
+				Socket->SetTextMessageMemoryLimit(MaxFrameBytes);
 
-			// Neither the binary nor the raw message delegate is bound, deliberately. graphql-transport-ws is a text
-			// protocol, so a binary frame is either a broken server or a hostile one, and binding either delegate is
-			// what tells the engine to start buffering those frames for delivery. That buffer has no size limit and
-			// no way to refuse, so subscribing to it would hand a hostile server an unbounded allocation for frames
-			// this code would only throw away. Left unbound, they are discarded before anything is copied, and a
-			// server that sends nothing else still ends the connection through the acknowledgement timeout.
+				Socket->OnMessage().AddLambda([Weak](const FString& Message)
+				{
+					if (const TSharedPtr<FUnrealWebSocketState, ESPMode::ThreadSafe> Live = Weak.Pin())
+					{
+						Live->DeliverText(Message);
+					}
+				});
+
+				// Neither the binary nor the raw message delegate is bound, deliberately. graphql-transport-ws is a
+				// text protocol, so a binary frame is either a broken server or a hostile one, and binding either
+				// delegate is what tells the engine to start buffering those frames for delivery. That buffer has no
+				// size limit and no way to refuse, so subscribing to it would hand a hostile server an unbounded
+				// allocation for frames this code would only throw away. Left unbound, they are discarded before
+				// anything is copied, and a server that sends nothing else still ends the connection through the
+				// acknowledgement timeout.
+			}
 
 			ArmConnectTimeout();
 
@@ -226,6 +258,41 @@ namespace
 			Event.kind = WebSocketEventKind::Frame;
 			Event.frame.kind = WebSocketFrameKind::Text;
 			Event.frame.payload.assign(Utf8.Get(), static_cast<size_t>(Utf8.Length()));
+			Deliver(MoveTemp(Event));
+		}
+
+		// The engine hands a binary message over in pieces of at most 64 KiB and never joins them itself.
+		void DeliverBinaryFragment(const void* Data, SIZE_T Size, bool bIsLastFragment)
+		{
+			if (bDiscardingBinary)
+			{
+				return;
+			}
+
+			const uint64 Cap = MaxFrameBytes > 0 ? MaxFrameBytes : crowdy::graphql::kDefaultWebSocketFrameLimit;
+			if (static_cast<uint64>(PendingBinary.Num()) + Size > Cap)
+			{
+				// Closing is the only brake: the engine has already queued whatever the server sent, without a limit.
+				bDiscardingBinary = true;
+				PendingBinary.Empty();
+				CloseSocket(1009, TEXT("message too big"));
+				DeliverTransportError(WebSocketErrorKind::FrameTooLarge, Errc::Malformed,
+					"an inbound binary message exceeded the configured size limit", false);
+				return;
+			}
+
+			PendingBinary.Append(static_cast<const uint8*>(Data), static_cast<int32>(Size));
+			if (!bIsLastFragment)
+			{
+				return;
+			}
+
+			WebSocketEvent Event;
+			Event.kind = WebSocketEventKind::Frame;
+			Event.frame.kind = WebSocketFrameKind::Binary;
+			Event.frame.payload.assign(reinterpret_cast<const char*>(PendingBinary.GetData()),
+				static_cast<size_t>(PendingBinary.Num()));
+			PendingBinary.Reset();
 			Deliver(MoveTemp(Event));
 		}
 
@@ -277,6 +344,7 @@ namespace
 #if WITH_WEBSOCKETS
 			Socket.Reset();
 #endif
+			PendingBinary.Empty();
 			ClearConnectTimeout();
 		}
 
@@ -386,13 +454,14 @@ namespace
 	class FUnrealWebSocketConnection final : public IWebSocketConnection
 	{
 	public:
-		explicit FUnrealWebSocketConnection(const WebSocketConnectRequest& Request)
+		FUnrealWebSocketConnection(const WebSocketConnectRequest& Request, bool bBinary)
 			: State(MakeShared<FUnrealWebSocketState, ESPMode::ThreadSafe>())
 		{
 			State->Url = Utf8ToFString(Request.url);
 			State->Protocol = Utf8ToFString(Request.subprotocol);
 			State->MaxFrameBytes = static_cast<uint64>(Request.maxFrameBytes);
 			State->ConnectTimeoutMs = Request.connectTimeoutMs;
+			State->bBinary = bBinary;
 		}
 
 		~FUnrealWebSocketConnection() override
@@ -466,7 +535,16 @@ namespace
 		{
 			// Dormant by contract: no engine call is made here, which is what lets the subscription client's timer
 			// thread reconnect without hopping threads first. The socket appears in start().
-			return std::make_shared<FUnrealWebSocketConnection>(Request);
+			return std::make_shared<FUnrealWebSocketConnection>(Request, false);
+		}
+	};
+
+	class FCrowdyNativeWebSocketTransport final : public IWebSocketTransport
+	{
+	public:
+		std::shared_ptr<IWebSocketConnection> createConnection(const WebSocketConnectRequest& Request) override
+		{
+			return std::make_shared<FUnrealWebSocketConnection>(Request, true);
 		}
 	};
 
@@ -489,9 +567,17 @@ namespace
 
 		Status send(WebSocketFrame Frame) override
 		{
-			if (!Server || Frame.kind != WebSocketFrameKind::Text)
+			if (!Server)
 			{
-				return Server ? Status(Errc::Ok) : Status(Errc::NotConnected);
+				return Errc::NotConnected;
+			}
+			if (Frame.kind == WebSocketFrameKind::Binary)
+			{
+				return Server->NoteSentBinary(std::move(Frame.payload)) ? Status(Errc::Ok) : Status(Errc::NotConnected);
+			}
+			if (Frame.kind != WebSocketFrameKind::Text)
+			{
+				return Errc::Ok;
 			}
 			return Server->NoteSent(std::move(Frame.payload)) ? Status(Errc::Ok) : Status(Errc::NotConnected);
 		}
@@ -516,13 +602,13 @@ namespace
 		{
 		}
 
-		std::shared_ptr<IWebSocketConnection> createConnection(const WebSocketConnectRequest&) override
+		std::shared_ptr<IWebSocketConnection> createConnection(const WebSocketConnectRequest& Request) override
 		{
 			if (!Server)
 			{
 				return nullptr;
 			}
-			Server->NoteConnectionCreated();
+			Server->NoteConnectionCreated(Request);
 			return std::make_shared<FScriptedWebSocketConnection>(Server);
 		}
 
@@ -567,6 +653,20 @@ namespace CrowdyCppTransport
 		Live(std::move(Event));
 	}
 
+	void FScriptedWebSocketServer::ReceiveBinary(const std::string& Bytes)
+	{
+		const WebSocketEventCallback Live = LiveCallback();
+		if (!Live)
+		{
+			return;
+		}
+		WebSocketEvent Event;
+		Event.kind = WebSocketEventKind::Frame;
+		Event.frame.kind = WebSocketFrameKind::Binary;
+		Event.frame.payload = Bytes;
+		Live(std::move(Event));
+	}
+
 	void FScriptedWebSocketServer::CloseFromServer(std::uint16_t Code, const std::string& Reason, bool bClean)
 	{
 		const WebSocketEventCallback Live = LiveCallback();
@@ -608,11 +708,26 @@ namespace CrowdyCppTransport
 		return Taken;
 	}
 
-	void FScriptedWebSocketServer::NoteConnectionCreated()
+	std::vector<std::string> FScriptedWebSocketServer::TakeSentBinaryFrames()
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		std::vector<std::string> Taken;
+		Taken.swap(SentBinaryFrames);
+		return Taken;
+	}
+
+	WebSocketConnectRequest FScriptedWebSocketServer::LastConnectRequest() const
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		return ConnectRequest;
+	}
+
+	void FScriptedWebSocketServer::NoteConnectionCreated(const WebSocketConnectRequest& Request)
 	{
 		// A reconnect gets a fresh connection against the same server, so the per-connection state resets while the
 		// sent-frame log stays where the test left it and the whole conversation stays visible.
 		std::lock_guard<std::mutex> Lock(Mutex);
+		ConnectRequest = Request;
 		++ConnectionsCreatedCount;
 		bClosedByClient = false;
 		CloseCode = 0;
@@ -633,6 +748,17 @@ namespace CrowdyCppTransport
 			return false;
 		}
 		SentFrames.push_back(std::move(Text));
+		return true;
+	}
+
+	bool FScriptedWebSocketServer::NoteSentBinary(std::string Bytes)
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (bClosedByClient)
+		{
+			return false;
+		}
+		SentBinaryFrames.push_back(std::move(Bytes));
 		return true;
 	}
 
@@ -670,6 +796,23 @@ namespace CrowdyCppTransport
 		return nullptr;
 #endif
 	}
+
+	std::shared_ptr<IWebSocketTransport> MakeCrowdyNativeWebSocketTransport()
+	{
+#if WITH_WEBSOCKETS
+		return std::make_shared<FCrowdyNativeWebSocketTransport>();
+#else
+		UE_LOG(LogCrowdyCpp, Log, TEXT("This build has no WebSocket support, so ck-exec connections are unavailable."));
+		return nullptr;
+#endif
+	}
+
+#if WITH_DEV_AUTOMATION_TESTS && WITH_WEBSOCKETS
+	void SetWebSocketFactoryForTest(TFunction<TSharedRef<IWebSocket>(const FString& Url, const FString& Protocol)> Factory)
+	{
+		GTestSocketFactory = MoveTemp(Factory);
+	}
+#endif
 
 #if WITH_DEV_AUTOMATION_TESTS
 	std::shared_ptr<IWebSocketTransport> MakeScriptedWebSocketTransport(std::shared_ptr<FScriptedWebSocketServer> Server)

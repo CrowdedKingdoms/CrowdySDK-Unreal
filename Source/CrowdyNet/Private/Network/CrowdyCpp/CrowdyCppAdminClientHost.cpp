@@ -40,6 +40,15 @@ TSharedPtr<FCrowdyCppAdminClientHost> FCrowdyCppAdminClientHost::Create(const FC
 	return Host;
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+TSharedPtr<FCrowdyCppAdminClientHost> FCrowdyCppAdminClientHost::CreateForTest(const TSharedRef<FCrowdyCppClient>& InClient)
+{
+	TSharedPtr<FCrowdyCppAdminClientHost> Host = MakeShareable(new FCrowdyCppAdminClientHost());
+	Host->Client = InClient;
+	return Host;
+}
+#endif
+
 FCrowdyCppAdminClientHost::~FCrowdyCppAdminClientHost()
 {
 	if (Client.IsValid())

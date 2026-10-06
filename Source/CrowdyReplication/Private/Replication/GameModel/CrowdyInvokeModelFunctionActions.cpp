@@ -2,6 +2,7 @@
 
 #include "Replication/GameModel/CrowdyInvokeModelFunctionActions.h"
 
+#include "CrowdyCppClient.h"
 #include "Dom/JsonObject.h"
 #include "Engine/World.h"
 #include "Network/GraphQL/FCrowdyGameApiCodec.h"
@@ -78,6 +79,12 @@ void UCrowdyInvokeModelFunctionAction::Activate()
 	if (!Model)
 	{
 		Failed.Broadcast(false, FString(), TEXT("no Game Model subsystem (not a play world?)"));
+		SetReadyToDestroy();
+		return;
+	}
+	if (Model->NoteGameModelDeprecated())
+	{
+		Failed.Broadcast(false, FString(), CrowdyCppGameModelDeprecatedMessage);
 		SetReadyToDestroy();
 		return;
 	}

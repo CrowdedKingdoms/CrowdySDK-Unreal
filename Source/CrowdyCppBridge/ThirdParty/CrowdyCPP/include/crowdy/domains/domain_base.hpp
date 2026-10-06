@@ -60,6 +60,21 @@ class DomainBase {
                        });
   }
 
+  /// Deliver an outcome the SDK decided without a request (a client-side refusal)
+  /// the way a response is delivered: through the client's Dispatcher when one is
+  /// set, so it fires from poll(), and not after this domain is destroyed.
+  void deliverAsync(graphql::GraphQLOutcome out, graphql::GraphQLCallback cb) const {
+    auto scope = asyncScope_;
+    auto invoke = [scope, cb = std::move(cb), out = std::move(out)]() mutable {
+      scope->run([&] { cb(std::move(out)); });
+    };
+    if (auto dispatcher = gql_->dispatcher()) {
+      dispatcher->post(std::move(invoke));
+    } else {
+      invoke();
+    }
+  }
+
   /// Async twin of execUnwrap(): on success the outcome's data is unwrapped to
   /// the single selected root field.
   void execUnwrapAsync(std::string_view document, const graphql::JVal& variables,

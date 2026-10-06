@@ -6,6 +6,9 @@
 #include "Kismet/BlueprintAsyncActionBase.h"
 #include "CrowdyLeaderboardsKitActions.generated.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class FJsonObject;
 class UCrowdyGameModelSubsystem;
 
@@ -65,7 +68,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCrowdyGetLeaderboardOutcome, const
  * snake_case(prefix) + "_submit_score"); leave it empty for a kit deployed with no prefix.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdySubmitScoreAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdySubmitScoreAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -104,7 +107,7 @@ private:
  * owner mirror is written best-effort (the server already pins the record owner).
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyEnsureLeaderboardEntryAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyEnsureLeaderboardEntryAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -141,7 +144,7 @@ private:
  * deployed with no prefix.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyGetLeaderboardAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGetLeaderboardAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -186,3 +189,5 @@ private:
 	int32 RowIndex = 0;
 	TArray<FCrowdyLeaderboardEntry> Collected;
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

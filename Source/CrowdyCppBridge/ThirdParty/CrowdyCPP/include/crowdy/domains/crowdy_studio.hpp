@@ -405,22 +405,6 @@ class CrowdyStudioAPI final : public DomainBase,
         std::move(callback));
   }
 
-  studio::CrowdyStudioProject createProjectFromModules(
-      const studio::CreateCrowdyStudioProjectFromModulesInput& input) {
-    return remember(request<studio::CrowdyStudioProject>(
-        "CrowdyStudioProjectCreateFromModules",
-        oneInput(createProjectFromModulesInput(input)),
-        [](const graphql::Json& value) { return mapProject(value); }));
-  }
-
-  void createProjectFromModulesAsync(
-      const studio::CreateCrowdyStudioProjectFromModulesInput& input,
-      ProjectCallback callback) {
-    requestProjectAsync("CrowdyStudioProjectCreateFromModules",
-                        oneInput(createProjectFromModulesInput(input)),
-                        std::move(callback));
-  }
-
  private:
   template <typename T, typename Mapper>
   T request(std::string_view operation, const graphql::JVal& variables,
@@ -940,22 +924,6 @@ class CrowdyStudioAPI final : public DomainBase,
         value.tags,
         [](const std::string& tag) { return graphql::JVal(tag); });
     input["content"] = value.content;
-    putIdempotency(input, value.idempotencyKey);
-    return input;
-  }
-
-  static graphql::JVal createProjectFromModulesInput(
-      const studio::CreateCrowdyStudioProjectFromModulesInput& value) {
-    graphql::JVal input;
-    input["appId"] = value.appId;
-    input["gridId"] = value.gridId;
-    if (value.serverModuleName) {
-      input["serverModuleName"] = *value.serverModuleName;
-    }
-    if (value.clientModuleName) {
-      input["clientModuleName"] = *value.clientModuleName;
-    }
-    if (value.projectName) input["projectName"] = *value.projectName;
     putIdempotency(input, value.idempotencyKey);
     return input;
   }

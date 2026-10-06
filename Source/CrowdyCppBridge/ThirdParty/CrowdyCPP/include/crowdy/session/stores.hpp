@@ -215,10 +215,13 @@ class LocalActorStore {
         .receivedAtMs = receivedAtMs};
   }
 
-  /// Drive the send loop. Call every frame with a monotonic clock.
+  /// Drive the send loop. Call every frame with a monotonic clock. A send that
+  /// failed, the loop's or a manual one, is sent again on the next tick slot
+  /// even when nothing changed.
   void tick(std::int64_t nowMs) {
     bool joined = false;
     bool dirty = false;
+    bool resendDue = false;
     std::int64_t lastSend = 0;
     std::int64_t lastFullSend = 0;
     std::int64_t lastHeartbeat = 0;
@@ -226,6 +229,7 @@ class LocalActorStore {
       std::lock_guard lock(observationMutex_);
       joined = joined_;
       dirty = dirty_;
+      resendDue = resendDue_;
       lastSend = lastSendMs_;
       lastFullSend = lastFullSendMs_;
       lastHeartbeat = lastHeartbeatMs_;
@@ -236,9 +240,9 @@ class LocalActorStore {
 
     const bool keyframeDue =
         nowMs - lastFullSend >= options_.keyframeIntervalMs;
-    if (dirty || keyframeDue) {
-      sendNow(nowMs, dirty ? LocalActorSendReason::Interval
-                           : LocalActorSendReason::Keyframe);
+    if (dirty || resendDue || keyframeDue) {
+      sendNow(nowMs, dirty || resendDue ? LocalActorSendReason::Interval
+                                        : LocalActorSendReason::Keyframe);
     } else if (options_.heartbeatIntervalMs > 0 &&
                nowMs - lastHeartbeat >= options_.heartbeatIntervalMs) {
       ChunkCoord chunk;
@@ -284,6 +288,7 @@ class LocalActorStore {
         seq.ok() ? std::optional<std::uint8_t>(seq.value())
                  : std::nullopt,
         nowMs, reason};
+    resendDue_ = !seq.ok();
     if (seq.ok()) {
       lastSequence_ = seq.value();
       inFlight_[seq.value()] = true;
@@ -298,7 +303,7 @@ class LocalActorStore {
           .receivedAtMs = nowMs};
     }
     // A deferred send is backpressure, not an error: the datagram never left,
-    // so dirty_ stays set and the next tick retries it. Recording it in
+    // so resendDue_ is set and the next tick retries it. Recording it in
     // lastError_ would make status() report Error for a merely busy socket.
     // Connection::stats().sendsDeferred is where saturation is observable.
     return seq.ok() ? Status(Errc::Ok) : Status(seq.error());
@@ -311,6 +316,8 @@ class LocalActorStore {
   StateBlob state_{};
   bool joined_ = false;
   bool dirty_ = false;
+  /// The last send did not leave: the next tick sends even if nothing changed.
+  bool resendDue_ = false;
   std::int64_t lastSendMs_ = 0;
   std::int64_t lastFullSendMs_ = 0;
   std::int64_t lastHeartbeatMs_ = 0;

@@ -19,7 +19,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyCollectionItemsOutcome, const
  * its per-type touch function after the edge changes; CollectionName defaults to "contains".
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyAddToCollectionAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyAddToCollectionAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -47,7 +47,7 @@ private:
 
 /** Unlinks an item from a collection (resolves + deletes the parent -> item edge) and notifies watchers. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyRemoveFromCollectionAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyRemoveFromCollectionAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -76,7 +76,7 @@ private:
 /** Lists a collection's item containers (the depth-1 members of the parent). No state is fetched; read a member's
  *  properties with the Get Container getters after a pull, or use Get Collection With Items' State. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyGetCollectionAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGetCollectionAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -103,7 +103,7 @@ private:
 /** Lists a collection's items AND fetches each item's visible state in one call (bounded to MaxItems, default 64).
  *  Read a scalar out of each item's StateJson with UCrowdyGameModel::GetItemInt/Float/Bool/String. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyGetCollectionWithStateAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGetCollectionWithStateAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -131,7 +131,7 @@ private:
 /** Creates a container to use as a collection item (the collection-workflow name for creating a data container of
  *  an item type; the server pins ownership to the caller). Add it to a collection with Add To Collection. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyCreateModelItemAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyCreateModelItemAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 

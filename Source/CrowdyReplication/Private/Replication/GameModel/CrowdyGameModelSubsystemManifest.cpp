@@ -63,6 +63,11 @@ void UCrowdyGameModelSubsystem::ApplyContainerManifest(const UCrowdyContainerMan
 		FailNow(TEXT("shutdown"), TEXT("The world is tearing down."), false);
 		return;
 	}
+	if (NoteGameModelDeprecated())
+	{
+		FailNow(CrowdyCppGameModelDeprecatedCode, CrowdyCppGameModelDeprecatedMessage, false);
+		return;
+	}
 	FString Endpoint, Token;
 	int64 AppId = 0;
 	if (!ResolveApiContext(Endpoint, Token, AppId))

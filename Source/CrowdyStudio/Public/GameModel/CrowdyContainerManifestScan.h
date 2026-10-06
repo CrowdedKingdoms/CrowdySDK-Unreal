@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "Data/CrowdyContainerManifest.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class AActor;
 class UWorld;
 
@@ -52,3 +55,5 @@ public:
 	/** Whether two row sets name the same containers, whatever order the scan found them in. */
 	static bool RowsMatch(const TArray<FCrowdyContainerManifestRow>& A, const TArray<FCrowdyContainerManifestRow>& B);
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

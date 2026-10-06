@@ -31,6 +31,11 @@ public:
 	static TSharedPtr<FCrowdyCppAdminClientHost> Create(const FCrowdyCppClientConfig& Config,
 		const FString& AdminToken);
 
+#if WITH_DEV_AUTOMATION_TESTS
+	// Host a client the test built, such as one from FCrowdyCppClient::MakeForTest. Nothing pumps it: the test polls.
+	static TSharedPtr<FCrowdyCppAdminClientHost> CreateForTest(const TSharedRef<FCrowdyCppClient>& InClient);
+#endif
+
 	~FCrowdyCppAdminClientHost();
 
 	FCrowdyCppAdminClientHost(const FCrowdyCppAdminClientHost&) = delete;

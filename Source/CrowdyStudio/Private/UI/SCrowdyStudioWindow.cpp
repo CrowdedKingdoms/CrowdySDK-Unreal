@@ -39,6 +39,20 @@
 
 #define LOCTEXT_NAMESPACE "CrowdyStudio"
 
+namespace CrowdyStudioWindowDetail
+{
+	bool IsExtraPageRegistered(FName Id)
+	{
+		return CrowdyStudioExtraPages::GetPages().ContainsByPredicate([Id](const FCrowdyStudioExtraPage& Page) { return Page.Id == Id; });
+	}
+
+	/** An unregistered page's module may be gone, so its widget and nav button collapse and are never drawn again. */
+	EVisibility ExtraPageVisibility(FName Id)
+	{
+		return IsExtraPageRegistered(Id) ? EVisibility::Visible : EVisibility::Collapsed;
+	}
+}
+
 void SCrowdyStudioWindow::Construct(const FArguments& InArgs)
 {
 	Controller = MakeShared<FCrowdyStudioController>();
@@ -123,6 +137,17 @@ void SCrowdyStudioWindow::Construct(const FArguments& InArgs)
 		]
 	];
 
+	// Pages other editor modules registered come after the console's own, in the order the nav rail lists them.
+	for (const FCrowdyStudioExtraPage& Page : CrowdyStudioExtraPages::GetPages())
+	{
+		PageSwitcher->AddSlot()
+		[
+			SNew(SBox)
+			.Visibility_Lambda([Id = Page.Id]() { return CrowdyStudioWindowDetail::ExtraPageVisibility(Id); })
+			[ Page.MakeWidget() ]
+		];
+	}
+
 	// Default to Sign In; HandleSignInStateChanged promotes to Home once a token validates.
 	if (PageSwitcher.IsValid())
 	{
@@ -132,7 +157,29 @@ void SCrowdyStudioWindow::Construct(const FArguments& InArgs)
 
 	Controller->OnSignInStateChanged.AddSP(this, &SCrowdyStudioWindow::HandleSignInStateChanged);
 	Controller->OnStatusMessage.AddSP(this, &SCrowdyStudioWindow::HandleStatusMessage);
+	PageRequestHandle = CrowdyStudioExtraPages::OnPageRequested().AddSP(this, &SCrowdyStudioWindow::ShowRequestedPage);
 	Controller->Initialize();
+	ShowRequestedPage();
+}
+
+SCrowdyStudioWindow::~SCrowdyStudioWindow()
+{
+	CrowdyStudioExtraPages::OnPageRequested().Remove(PageRequestHandle);
+}
+
+void SCrowdyStudioWindow::ShowRequestedPage()
+{
+	if (!Controller.IsValid() || !Controller->IsSignedIn())
+	{
+		return;
+	}
+	const FName Id = CrowdyStudioExtraPages::TakeRequestedPage();
+	const int32 Index = CrowdyStudioExtraPages::GetPages().IndexOfByPredicate([Id](const FCrowdyStudioExtraPage& Page) { return Page.Id == Id; });
+	if (Id.IsNone() || Index == INDEX_NONE)
+	{
+		return;
+	}
+	ShowPage(CrowdyStudioPages::WebConsole + 1 + Index);
 }
 
 TSharedRef<SWidget> SCrowdyStudioWindow::MakeHairline()
@@ -313,6 +360,22 @@ TSharedRef<SWidget> SCrowdyStudioWindow::BuildNavRail()
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavInspector", "Inspector"), TEXT("inspector"), CrowdyStudioPages::Inspector, false) ];
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavRegistry", "Registry"), TEXT("config"), CrowdyStudioPages::Registry, false) ];
 
+	const TArray<FCrowdyStudioExtraPage>& ExtraPages = CrowdyStudioExtraPages::GetPages();
+	for (int32 Index = 0; Index < ExtraPages.Num(); ++Index)
+	{
+		const FCrowdyStudioExtraPage& Page = ExtraPages[Index];
+		if (Index == 0 || !Page.Group.EqualTo(ExtraPages[Index - 1].Group))
+		{
+			GroupSlot(Nav, Page.Group);
+		}
+		Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)
+		[
+			SNew(SBox)
+			.Visibility_Lambda([Id = Page.Id]() { return CrowdyStudioWindowDetail::ExtraPageVisibility(Id); })
+			[ MakeNavButton(Page.Label, *Page.Icon, CrowdyStudioPages::WebConsole + 1 + Index, true) ]
+		];
+	}
+
 	return SNew(SBox).WidthOverride_Lambda([this]() { return bNavCollapsed ? 62.0f : 200.0f; })
 	[
 		SNew(SBorder)
@@ -492,6 +555,11 @@ void SCrowdyStudioWindow::ShowPage(int32 PageIndex)
 	{
 		return;
 	}
+	const TSharedPtr<SWidget> Target = PageSwitcher->GetWidget(PageIndex);
+	if (PageIndex > CrowdyStudioPages::WebConsole && (!Target.IsValid() || !Target->GetVisibility().IsVisible()))
+	{
+		PageIndex = CrowdyStudioPages::Home;
+	}
 	ActiveIndex = PageIndex;
 	PageSwitcher->SetActiveWidgetIndex(PageIndex);
 	PageAnim.Play(SharedThis(this));
@@ -537,6 +605,10 @@ void SCrowdyStudioWindow::HandleSignInStateChanged()
 		// A remembered token validated (or the user just signed in) while on Sign In: land on the
 		// Setup Wizard so the guided path is the first thing seen after signing in.
 		ShowPage(CrowdyStudioPages::Wizard);
+	}
+	if (Controller->IsSignedIn())
+	{
+		ShowRequestedPage();
 	}
 }
 

@@ -26,7 +26,7 @@ namespace CrowdyCppCancelTestSupport
 	FCrowdyCppRequestHandle IssueRunOp(const TSharedPtr<FCrowdyCppClient>& Client, int32& OutCallCount,
 		FString& OutError)
 	{
-		return Client->RunOp(ECrowdyCppApiDomain::GameModel, TEXT("GameModelSession"), MakeShared<FJsonObject>(),
+		return Client->RunOp(ECrowdyCppApiDomain::Teams, TEXT("Teams"), MakeShared<FJsonObject>(),
 			[&OutCallCount, &OutError](FCrowdyCppJsonResult Result)
 			{
 				++OutCallCount;
@@ -114,74 +114,46 @@ bool FCrowdyCppCancelAllDrainsTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	// One of every call shape, because each one wraps its caller's completion differently and a shape that forgot to
-	// register would be silently uncancelable.
+	// One call per wrapper that can stay pending: RunOp, an auth op, discovery. Game Model calls answer inline.
 	int32 RunOpCalls = 0;
 	FString RunOpError;
 	IssueRunOp(Client, RunOpCalls, RunOpError);
 
-	int32 ReadCalls = 0;
-	FString ReadError;
-	Client->ReadContainerState(1, TEXT("c-1"),
-		[&ReadCalls, &ReadError](FCrowdyCppContainerStateResult Result)
+	int32 ProvidersCalls = 0;
+	FString ProvidersError;
+	Client->ListLoginProviders(
+		[&ProvidersCalls, &ProvidersError](FCrowdyCppStringListResult Result)
 		{
-			++ReadCalls;
-			ReadError = Result.ErrorMessage;
+			++ProvidersCalls;
+			ProvidersError = Result.ErrorMessage;
 		});
 
-	int32 InvokeCalls = 0;
-	FString InvokeError;
-	Client->InvokeFunction(1, TEXT("fn"), TEXT("c-1"), FString(), TEXT("{}"),
-		[&InvokeCalls, &InvokeError](FCrowdyCppInvokeResult Result)
+	int32 DiscoveryCalls = 0;
+	FString DiscoveryError;
+	Client->ResolveAppEndpoints({ FString(TEXT("1")) },
+		[&DiscoveryCalls, &DiscoveryError](FCrowdyCppAppDiscoveryResult Result)
 		{
-			++InvokeCalls;
-			InvokeError = Result.ErrorMessage;
+			++DiscoveryCalls;
+			DiscoveryError = Result.ErrorMessage;
 		});
 
-	int32 ListCalls = 0;
-	bool bListOk = true;
-	int32 ListRows = -1;
-	Client->ListContainers(1, TEXT("Type"), FString(),
-		[&ListCalls, &bListOk, &ListRows](bool bOk, TArray<TSharedPtr<FJsonObject>> Containers)
-		{
-			++ListCalls;
-			bListOk = bOk;
-			ListRows = Containers.Num();
-		});
+	TestEqual(TEXT("each call registered a pending request"), Client->NumPendingRequests(), 3);
 
-	int32 SeedCalls = 0;
-	FString SeedError;
-	Client->SeedSchema(TEXT("{}"),
-		[&SeedCalls, &SeedError](FCrowdyCppStudioOpResult Result)
-		{
-			++SeedCalls;
-			SeedError = Result.ErrorMessage;
-		});
-
-	TestEqual(TEXT("every call shape registered a pending request"), Client->NumPendingRequests(), 5);
-
-	TestEqual(TEXT("cancelling all delivers every pending completion"), Client->CancelAll(), 5);
+	TestEqual(TEXT("cancelling all delivers every pending completion"), Client->CancelAll(), 3);
 	TestEqual(TEXT("nothing is left pending"), Client->NumPendingRequests(), 0);
 
 	TestEqual(TEXT("the run op completed once"), RunOpCalls, 1);
 	TestEqual(TEXT("the run op was canceled"), RunOpError, FCrowdyCppClient::CanceledErrorMessage());
-	TestEqual(TEXT("the container read completed once"), ReadCalls, 1);
-	TestEqual(TEXT("the container read was canceled"), ReadError, FCrowdyCppClient::CanceledErrorMessage());
-	TestEqual(TEXT("the invoke completed once"), InvokeCalls, 1);
-	TestEqual(TEXT("the invoke was canceled"), InvokeError, FCrowdyCppClient::CanceledErrorMessage());
-	TestEqual(TEXT("the list completed once"), ListCalls, 1);
-	TestFalse(TEXT("a canceled list reports failure"), bListOk);
-	TestEqual(TEXT("a canceled list carries no rows"), ListRows, 0);
-	TestEqual(TEXT("the seed completed once"), SeedCalls, 1);
-	TestEqual(TEXT("the seed was canceled"), SeedError, FCrowdyCppClient::CanceledErrorMessage());
+	TestEqual(TEXT("the auth op completed once"), ProvidersCalls, 1);
+	TestEqual(TEXT("the auth op was canceled"), ProvidersError, FCrowdyCppClient::CanceledErrorMessage());
+	TestEqual(TEXT("the discovery completed once"), DiscoveryCalls, 1);
+	TestEqual(TEXT("the discovery was canceled"), DiscoveryError, FCrowdyCppClient::CanceledErrorMessage());
 
 	// Draining the transport afterwards must not resurrect any of them.
 	Client->Poll();
 	TestEqual(TEXT("no run op completion arrives late"), RunOpCalls, 1);
-	TestEqual(TEXT("no container read completion arrives late"), ReadCalls, 1);
-	TestEqual(TEXT("no invoke completion arrives late"), InvokeCalls, 1);
-	TestEqual(TEXT("no list completion arrives late"), ListCalls, 1);
-	TestEqual(TEXT("no seed completion arrives late"), SeedCalls, 1);
+	TestEqual(TEXT("no auth op completion arrives late"), ProvidersCalls, 1);
+	TestEqual(TEXT("no discovery completion arrives late"), DiscoveryCalls, 1);
 
 	return true;
 }
@@ -250,13 +222,13 @@ bool FCrowdyCppCancelReissueTest::RunTest(const FString& Parameters)
 	int32 ReissuedCalls = 0;
 	bool bReissuedOk = false;
 
-	Retiring->RunOp(ECrowdyCppApiDomain::GameModel, TEXT("GameModelSession"), MakeShared<FJsonObject>(),
+	Retiring->RunOp(ECrowdyCppApiDomain::Teams, TEXT("Teams"), MakeShared<FJsonObject>(),
 		[&FirstCalls, &ReissuedCalls, &bReissuedOk, Replacement](FCrowdyCppJsonResult Result)
 		{
 			++FirstCalls;
 			if (Result.ErrorMessage == FCrowdyCppClient::CanceledErrorMessage())
 			{
-				Replacement->RunOp(ECrowdyCppApiDomain::GameModel, TEXT("GameModelSession"),
+				Replacement->RunOp(ECrowdyCppApiDomain::Teams, TEXT("Teams"),
 					MakeShared<FJsonObject>(),
 					[&ReissuedCalls, &bReissuedOk](FCrowdyCppJsonResult Reissued)
 					{
@@ -278,7 +250,7 @@ bool FCrowdyCppCancelReissueTest::RunTest(const FString& Parameters)
 	// on a disposed client, so the reaction to a cancellation can never hang either way.
 	int32 LateCalls = 0;
 	bool bLateOk = true;
-	Retiring->RunOp(ECrowdyCppApiDomain::GameModel, TEXT("GameModelSession"), MakeShared<FJsonObject>(),
+	Retiring->RunOp(ECrowdyCppApiDomain::Teams, TEXT("Teams"), MakeShared<FJsonObject>(),
 		[&LateCalls, &bLateOk](FCrowdyCppJsonResult Result)
 		{
 			++LateCalls;

@@ -7,11 +7,9 @@
 #include "Containers/Ticker.h"
 #include "Misc/AutomationTest.h"
 
-// The editor deploy facade (CrowdyKitDeployLayers) emits the kit layers, builds an admin-token API client, and
-// pumps its async completion on the core ticker, reporting one FCrowdyKitDeployOutcome. The network success path
-// is covered at the bridge level (CrowdySDK.CrowdyKit.Deploy*, canned transport); these tests lock the facade's
-// own contract: a pre-network failure (a bad emit, a missing endpoint) is reported through the same async path,
-// delivered on a later tick rather than re-entrantly, and never touches the network.
+// The editor deploy facade (CrowdyKitDeployLayers) reports one FCrowdyKitDeployOutcome on the core ticker. A
+// pre-network failure (a bad emit) is reported through that async path, delivered on a later tick rather than
+// re-entrantly, and never touches the network.
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyKitDeployFacadeTestFlags =
@@ -64,30 +62,6 @@ bool FCrowdyKitDeployFacadeEmitFailureTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("error message is set"), Outcome.Error.IsEmpty());
 	TestEqual(TEXT("no steps ran"), Outcome.StepsCompleted, 0);
 	TestEqual(TEXT("no steps total"), Outcome.StepsTotal, 0);
-	return true;
-}
-
-// A well-formed emit with no configured Game API endpoint fails before any network step, reported through the same
-// async outcome. A default Combat preset emits cleanly, so the only failure is the missing endpoint.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitDeployFacadeNoEndpointTest,
-	"CrowdySDK.CrowdyKit.DeployFacadeNoEndpoint", CrowdyKitDeployFacadeTestFlags)
-bool FCrowdyKitDeployFacadeNoEndpointTest::RunTest(const FString& Parameters)
-{
-	TArray<TObjectPtr<UCrowdyKitLayerPreset>> Layers;
-	Layers.Add(NewObject<UCrowdyCombatPreset>());
-
-	FCrowdyKitDeployOutcome Outcome;
-	bool bFiredBeforeTick = false;
-	const bool bFired = RunDeployFacade(Layers, FString(), Outcome, bFiredBeforeTick);
-
-	if (!TestTrue(TEXT("outcome delivered"), bFired))
-	{
-		return false;
-	}
-	TestFalse(TEXT("delivery is not re-entrant"), bFiredBeforeTick);
-	TestFalse(TEXT("deploy failed"), Outcome.bOk);
-	TestTrue(TEXT("error names the missing endpoint"), Outcome.Error.Contains(TEXT("endpoint")));
-	TestEqual(TEXT("no steps ran"), Outcome.StepsCompleted, 0);
 	return true;
 }
 

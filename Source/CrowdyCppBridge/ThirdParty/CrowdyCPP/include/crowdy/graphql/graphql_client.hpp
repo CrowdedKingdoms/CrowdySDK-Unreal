@@ -73,6 +73,12 @@ class GraphQLClient {
   Json request(std::string_view document, const JVal& variables = JVal(),
                std::string_view operationName = {});
 
+  /// Execute an operation and return the whole outcome. Blocking, and it never
+  /// throws, in either build: the same failure details request() throws (or, without
+  /// exceptions, discards), for a caller that branches on them inline.
+  GraphQLOutcome requestOutcome(std::string_view document, const JVal& variables = JVal(),
+                                std::string_view operationName = {});
+
   /// Execute an operation without blocking or throwing. `cb` is invoked once
   /// with the outcome. When an async transport is set the request runs on it;
   /// otherwise it falls back to the synchronous transport inline. When a

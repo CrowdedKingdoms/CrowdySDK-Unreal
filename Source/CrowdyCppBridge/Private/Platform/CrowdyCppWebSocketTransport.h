@@ -1,5 +1,7 @@
 #pragma once
 
+#include "CoreMinimal.h"
+
 // This header names CrowdyCPP types, so it includes the CrowdyCPP header
 // directly (no UE THIRD_PARTY guard, which would not be defined when this
 // private header is the first include in a bridge translation unit).
@@ -15,11 +17,25 @@
 // The bridge's WebSocket transports for GraphQL subscriptions. The subscription client drives an injected
 // IWebSocketTransport, so the only thing it needs from the engine is a socket behind this interface.
 // This header is private to the bridge because it names third-party types; dependent modules never see it.
+#if WITH_DEV_AUTOMATION_TESTS && WITH_WEBSOCKETS
+class IWebSocket;
+#endif
+
 namespace CrowdyCppTransport
 {
 	// Transport over Unreal's FWebSocketsModule. Returns null on a platform built without WebSocket support, which
 	// the subscription client reports as an unavailable transport rather than treating as a failure to retry.
 	std::shared_ptr<crowdy::graphql::IWebSocketTransport> MakeFWebSocketTransport();
+
+	// The binary-only transport for ck-exec sockets: messages arrive whole, capped at the connect request's frame
+	// limit, and text frames are dropped by the engine unread. Null without WebSocket support, like the one above.
+	std::shared_ptr<crowdy::graphql::IWebSocketTransport> MakeCrowdyNativeWebSocketTransport();
+
+#if WITH_DEV_AUTOMATION_TESTS && WITH_WEBSOCKETS
+	// Creates the engine socket in place of FWebSocketsModule, so a test can stand a fake behind the real transport.
+	// An unset function restores the engine's.
+	void SetWebSocketFactoryForTest(TFunction<TSharedRef<IWebSocket>(const FString& Url, const FString& Protocol)> Factory);
+#endif
 
 	/**
 	 * Let go of every socket whose connection has already been dropped, now, on the calling thread.
@@ -53,6 +69,9 @@ namespace CrowdyCppTransport
 		// Deliver one text frame.
 		void ReceiveText(const std::string& Text);
 
+		// Deliver one binary message.
+		void ReceiveBinary(const std::string& Bytes);
+
 		// Close from the server side. A non-clean close is what the client's reconnect policy reacts to.
 		void CloseFromServer(std::uint16_t Code, const std::string& Reason, bool bClean);
 
@@ -66,10 +85,17 @@ namespace CrowdyCppTransport
 		// Every text frame the client has sent since the last call, oldest first.
 		std::vector<std::string> TakeSentFrames();
 
+		// Every binary message the client has sent since the last call, oldest first.
+		std::vector<std::string> TakeSentBinaryFrames();
+
+		// The request the latest connection was created with.
+		crowdy::graphql::WebSocketConnectRequest LastConnectRequest() const;
+
 		// Driven by the connection this server stands in for.
-		void NoteConnectionCreated();
+		void NoteConnectionCreated(const crowdy::graphql::WebSocketConnectRequest& Request);
 		void NoteStarted(crowdy::graphql::WebSocketEventCallback Callback);
 		bool NoteSent(std::string Text);
+		bool NoteSentBinary(std::string Bytes);
 		void NoteClosedByClient(std::uint16_t Code);
 
 	private:
@@ -80,6 +106,8 @@ namespace CrowdyCppTransport
 		mutable std::mutex Mutex;
 		crowdy::graphql::WebSocketEventCallback Callback;
 		std::vector<std::string> SentFrames;
+		std::vector<std::string> SentBinaryFrames;
+		crowdy::graphql::WebSocketConnectRequest ConnectRequest;
 		int ConnectionsCreatedCount = 0;
 		std::uint16_t CloseCode = 0;
 		bool bClosedByClient = false;

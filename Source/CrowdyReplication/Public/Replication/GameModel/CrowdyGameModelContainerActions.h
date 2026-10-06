@@ -21,7 +21,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyContainerRefsOutcome, const T
 
 /** Creates a free/data container (no actor) of TypeName; the server pins ownership to the caller. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyCreateDataContainerAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyCreateDataContainerAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -49,7 +49,7 @@ private:
 
 /** Pulls a free/data container's visible state by id into the cache and starts watching it for change notifications. */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyPullDataContainerAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyPullDataContainerAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -76,7 +76,7 @@ private:
  * a JSON object literal; a malformed literal fails the node immediately without reaching the server.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyInvokeOnContainerAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyInvokeOnContainerAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -104,7 +104,7 @@ private:
 
 /** Adds a directed relationship edge between two containers (inventory -> item, chest -> contents, tech-tree link). */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyAddEdgeAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyAddEdgeAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -135,7 +135,7 @@ private:
 
 /** Walks the container graph from RootId up to Depth hops (clamped to 5 server-side). */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyTraverseAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyTraverseAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -162,7 +162,7 @@ private:
 
 /** The depth-1 node list from RootId (an inventory's items, a chest's loot). */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyListChildrenAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyListChildrenAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -190,7 +190,7 @@ private:
  * JSON-encoded value literal ("\"Aria\"", "42", "true"); the server coerces it to the property's declared type.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdySetDataPropertyAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdySetDataPropertyAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -222,7 +222,7 @@ private:
  * the id and broadcasts OnDataContainerChanged. Failed carries no payload (Succeeded vs Failed is the outcome).
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyDeleteContainerAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyDeleteContainerAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -246,7 +246,7 @@ private:
 
 /** Deletes one directed graph edge by id (source-container owner or admin, server-enforced). */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyDeleteEdgeAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyDeleteEdgeAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 

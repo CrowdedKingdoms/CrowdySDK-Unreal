@@ -192,13 +192,8 @@ HttpOutcome GraphQLClient::sendInline(const HttpRequest& request) {
   return transport_->sendOutcome(request);
 }
 
-#ifndef CROWDY_NO_EXCEPTIONS
-Json GraphQLClient::request(std::string_view document, const JVal& variables,
-                            std::string_view operationName) {
-  if (!transport_) {
-    throw CrowdyNetworkError(
-        "No default HTTP transport is available; inject IHttpTransport");
-  }
+GraphQLOutcome GraphQLClient::requestOutcome(std::string_view document, const JVal& variables,
+                                             std::string_view operationName) {
   HttpRequest req = buildHttpRequest(document, variables, operationName);
   GraphQLOutcome out = outcomeFromHttp(sendInline(req));
   // Exactly one retry, and only after the endpoint actually moved - whether
@@ -214,20 +209,24 @@ Json GraphQLClient::request(std::string_view document, const JVal& variables,
     setAuthorization(req, sentAuthorization);
     out = outcomeFromHttp(sendInline(req));
   }
+  return out;
+}
+
+#ifndef CROWDY_NO_EXCEPTIONS
+Json GraphQLClient::request(std::string_view document, const JVal& variables,
+                            std::string_view operationName) {
+  if (!transport_) {
+    throw CrowdyNetworkError(
+        "No default HTTP transport is available; inject IHttpTransport");
+  }
+  GraphQLOutcome out = requestOutcome(document, variables, operationName);
   if (!out.ok()) throwOutcome(out);
   return out.data;
 }
 #else
 Json GraphQLClient::request(std::string_view document, const JVal& variables,
                             std::string_view operationName) {
-  HttpRequest request = buildHttpRequest(document, variables, operationName);
-  GraphQLOutcome outcome = outcomeFromHttp(sendInline(request));
-  if (!outcome.ok() && applyDatacenterRedirect(outcome, request.url)) {
-    const std::string sentAuthorization = authorizationOf(request);
-    request = buildHttpRequest(document, variables, operationName);
-    setAuthorization(request, sentAuthorization);
-    outcome = outcomeFromHttp(sendInline(request));
-  }
+  GraphQLOutcome outcome = requestOutcome(document, variables, operationName);
   return outcome.ok() ? outcome.data : Json{};
 }
 #endif

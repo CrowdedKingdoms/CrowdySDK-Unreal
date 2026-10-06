@@ -15,6 +15,7 @@
 #include "Engine/SimpleConstructionScript.h"
 #include "GameFramework/Actor.h"
 #include "K2Node_BaseAsyncTask.h"
+#include "K2Node_BaseMCDelegate.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_CallFunctionOnMember.h"
 #include "K2Node_Composite.h"
@@ -492,6 +493,158 @@ namespace
 
 		return true;
 	}
+
+	// How many Game Model uses the deprecation warning names before summarising the rest as a count.
+	constexpr int32 MaxListedGameModelUses = 12;
+
+	struct FGameModelNodeUse
+	{
+		FString Title;
+		FString GraphName;
+		int32 Count = 0;
+	};
+
+	void AddGameModelNodeUse(TArray<FGameModelNodeUse>& NodeUses, FString Title, FString GraphName)
+	{
+		for (FGameModelNodeUse& Use : NodeUses)
+		{
+			if (!Use.Title.Equals(Title, ESearchCase::CaseSensitive)) continue;
+			if (!Use.GraphName.Equals(GraphName, ESearchCase::CaseSensitive)) continue;
+
+			++Use.Count;
+			return;
+		}
+
+		NodeUses.Add({MoveTemp(Title), MoveTemp(GraphName), 1});
+	}
+
+	// Read off the node's reflected field rather than through GetFactoryFunction, which logs an error for a node
+	// whose factory class no longer exists.
+	const UClass* GetAsyncFactoryClass(const UK2Node_BaseAsyncTask* Node)
+	{
+		static const FObjectPropertyBase* FactoryClassProperty = FindFProperty<FObjectPropertyBase>(
+			UK2Node_BaseAsyncTask::StaticClass(), TEXT("ProxyFactoryClass"));
+
+		return FactoryClassProperty
+			? Cast<UClass>(FactoryClassProperty->GetObjectPropertyValue_InContainer(Node))
+			: nullptr;
+	}
+}
+
+bool UCrowdyBlueprintCompilerExtension::IsGameModelClass(const UClass* Class)
+{
+	// The one interface beside the Game Model types is the entity binding key, which stays.
+	if (!Class || Class->HasAnyClassFlags(CLASS_Interface)) return false;
+
+	static const FName ReplicationPackageName(TEXT("/Script/CrowdyReplication"));
+	if (Class->GetPackage()->GetFName() != ReplicationPackageName) return false;
+
+	static const FName ModuleRelativePathKey(TEXT("ModuleRelativePath"));
+	const FString* SourcePath = Class->FindMetaData(ModuleRelativePathKey);
+	if (!SourcePath) return false;
+
+	return SourcePath->StartsWith(TEXT("Public/Replication/GameModel/"), ESearchCase::CaseSensitive)
+		|| SourcePath->Equals(TEXT("Public/Data/CrowdyContainerManifest.h"), ESearchCase::CaseSensitive);
+}
+
+bool UCrowdyBlueprintCompilerExtension::IsGameModelNode(const UEdGraphNode* Node)
+{
+	if (!Node) return false;
+
+	if (const UK2Node_BaseAsyncTask* AsyncNode = Cast<UK2Node_BaseAsyncTask>(Node))
+	{
+		if (IsGameModelClass(GetAsyncFactoryClass(AsyncNode))) return true;
+	}
+
+	if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
+	{
+		const UFunction* Function = CallNode->GetTargetFunction();
+		if (Function && IsGameModelClass(Function->GetOwnerClass())) return true;
+	}
+
+	if (const UK2Node_BaseMCDelegate* DelegateNode = Cast<UK2Node_BaseMCDelegate>(Node))
+	{
+		const FProperty* Delegate = DelegateNode->GetProperty();
+		if (Delegate && IsGameModelClass(Delegate->GetOwnerClass())) return true;
+	}
+
+	// The class of a pin's literal is read off its handle, so the effect asset itself is never loaded.
+	for (const UEdGraphPin* Pin : Node->Pins)
+	{
+		if (!Pin) continue;
+		if (IsGameModelClass(Pin->DefaultObject.GetClass())) return true;
+		if (IsGameModelClass(Cast<UClass>(Pin->PinType.PinSubCategoryObject.Get()))) return true;
+	}
+
+	return false;
+}
+
+TArray<FString> UCrowdyBlueprintCompilerExtension::CollectGameModelUses(const UBlueprint& Blueprint, const UClass* NewClass)
+{
+	TArray<FString> Uses;
+
+	if (NewClass && NewClass->HasMetaData(CrowdyGameModelMetaKeys::Container))
+	{
+		Uses.Add(FString::Printf(TEXT("Game Model container tag %s"),
+			*NewClass->GetMetaData(CrowdyGameModelMetaKeys::Container)));
+	}
+
+	static const FName ModelKey(CrowdyGameModelMetaKeys::Model);
+	for (const FBPVariableDescription& Variable : Blueprint.NewVariables)
+	{
+		if (Variable.HasMetaData(ModelKey))
+		{
+			Uses.Add(FString::Printf(TEXT("variable %s (CrowdyModel)"), *Variable.VarName.ToString()));
+			continue;
+		}
+
+		const UClass* VariableClass = Cast<UClass>(Variable.VarType.PinSubCategoryObject.Get());
+		if (!IsGameModelClass(VariableClass)) continue;
+
+		Uses.Add(FString::Printf(TEXT("variable %s (%s)"), *Variable.VarName.ToString(), *VariableClass->GetName()));
+	}
+
+	TArray<UEdGraph*> Graphs;
+	Blueprint.GetAllGraphs(Graphs);
+
+	TArray<FGameModelNodeUse> NodeUses;
+	for (const UEdGraph* Graph : Graphs)
+	{
+		if (!Graph) continue;
+
+		for (const UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!IsGameModelNode(Node)) continue;
+
+			AddGameModelNodeUse(NodeUses, Node->GetNodeTitle(ENodeTitleType::ListView).ToString(), Graph->GetName());
+		}
+	}
+
+	for (const FGameModelNodeUse& Use : NodeUses)
+	{
+		Uses.Add(Use.Count > 1
+			? FString::Printf(TEXT("%s x%d (%s)"), *Use.Title, Use.Count, *Use.GraphName)
+			: FString::Printf(TEXT("%s (%s)"), *Use.Title, *Use.GraphName));
+	}
+
+	return Uses;
+}
+
+FString UCrowdyBlueprintCompilerExtension::DescribeGameModelUses(const TArray<FString>& Uses)
+{
+	if (Uses.IsEmpty()) return FString();
+
+	const int32 ListedCount = FMath::Min(Uses.Num(), MaxListedGameModelUses);
+	FString List = FString::Join(MakeArrayView(Uses.GetData(), ListedCount), TEXT(", "));
+	if (Uses.Num() > ListedCount)
+	{
+		List += FString::Printf(TEXT(", and %d more"), Uses.Num() - ListedCount);
+	}
+
+	return FString::Printf(
+		TEXT("[CrowdySDK] This Blueprint uses Game Models, which are deprecated and no longer available; ")
+		TEXT("move it to a Server Object (Server Compute). Uses: %s."),
+		*List);
 }
 
 bool UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(const UFunction* Function)
@@ -672,6 +825,13 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 		// a game process has no marker to read and nothing that would consult the tags before the next
 		// compile in an editor writes them.
 		CrowdyBlueprintCompileHooks::StampContainerMetadata(Blueprint, NewClass);
+	}
+
+	// Raised on every compile, loading and cooking included, so a project sees each Blueprint that still uses them.
+	const FString GameModelWarning = DescribeGameModelUses(CollectGameModelUses(*Blueprint, CompilationContext.NewClass));
+	if (!GameModelWarning.IsEmpty())
+	{
+		CompilationContext.MessageLog.Warning(*GameModelWarning);
 	}
 
 	TArray<UEdGraph*> SourceGraphs;

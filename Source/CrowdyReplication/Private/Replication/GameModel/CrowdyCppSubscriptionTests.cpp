@@ -22,8 +22,9 @@ namespace CrowdyCppSubscriptionTestSupport
 	const FString DiscoveryBaseUrl = TEXT("https://api.test");
 	const FString GameToken = TEXT("game-bearer");
 
-	const FString ContainerChangedDocument =
-		TEXT("subscription OnContainerChanged($containerId: ID!) { gameModelContainerChanged(containerId: $containerId) { containerId } }");
+	// Hand-written and never sent to a real server: the test double plays the server, so only its shape matters.
+	const FString ItemChangedDocument =
+		TEXT("subscription OnItemChanged($itemId: ID!) { itemChanged(itemId: $itemId) { itemId } }");
 
 	TSharedPtr<FCrowdyCppClient> MakeSubscriptionTestClient()
 	{
@@ -86,17 +87,17 @@ namespace CrowdyCppSubscriptionTestSupport
 		return false;
 	}
 
-	FString NextFrameFor(const FString& OperationId, const FString& ContainerId)
+	FString NextFrameFor(const FString& OperationId, const FString& ItemId)
 	{
 		return FString::Printf(
-			TEXT("{\"id\":\"%s\",\"type\":\"next\",\"payload\":{\"data\":{\"gameModelContainerChanged\":{\"containerId\":\"%s\"}}}}"),
-			*OperationId, *ContainerId);
+			TEXT("{\"id\":\"%s\",\"type\":\"next\",\"payload\":{\"data\":{\"itemChanged\":{\"itemId\":\"%s\"}}}}"),
+			*OperationId, *ItemId);
 	}
 
-	TSharedPtr<FJsonObject> Variables(const FString& ContainerId)
+	TSharedPtr<FJsonObject> Variables(const FString& ItemId)
 	{
 		const TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
-		Object->SetStringField(TEXT("containerId"), ContainerId);
+		Object->SetStringField(TEXT("itemId"), ItemId);
 		return Object;
 	}
 
@@ -150,7 +151,7 @@ bool FCrowdyCppSubscriptionHandshakeTest::RunTest(const FString& Parameters)
 	}
 
 	const FCrowdyCppSubscriptionHandle Handle = Client->Subscribe(
-		ContainerChangedDocument, Variables(TEXT("c-1")), TEXT("OnContainerChanged"), RecordInto(Stream));
+		ItemChangedDocument, Variables(TEXT("c-1")), TEXT("OnItemChanged"), RecordInto(Stream));
 
 	TestTrue(TEXT("subscribing yields a valid handle"), Handle.IsValid());
 	TestEqual(TEXT("the subscription counts as active"), Client->NumActiveSubscriptions(), 1);
@@ -203,15 +204,15 @@ bool FCrowdyCppSubscriptionHandshakeTest::RunTest(const FString& Parameters)
 	{
 		FString Query;
 		(*SubscribePayload)->TryGetStringField(TEXT("query"), Query);
-		TestEqual(TEXT("the document is sent verbatim"), Query, ContainerChangedDocument);
+		TestEqual(TEXT("the document is sent verbatim"), Query, ItemChangedDocument);
 
 		const TSharedPtr<FJsonObject>* SentVariables = nullptr;
 		if (TestTrue(TEXT("the variables are sent"),
 			(*SubscribePayload)->TryGetObjectField(TEXT("variables"), SentVariables)))
 		{
-			FString ContainerId;
-			(*SentVariables)->TryGetStringField(TEXT("containerId"), ContainerId);
-			TestEqual(TEXT("the variable value survives the crossing"), ContainerId, TEXT("c-1"));
+			FString ItemId;
+			(*SentVariables)->TryGetStringField(TEXT("itemId"), ItemId);
+			TestEqual(TEXT("the variable value survives the crossing"), ItemId, TEXT("c-1"));
 		}
 	}
 
@@ -230,11 +231,11 @@ bool FCrowdyCppSubscriptionHandshakeTest::RunTest(const FString& Parameters)
 	{
 		const TSharedPtr<FJsonObject>* Changed = nullptr;
 		if (TestTrue(TEXT("the payload keeps its shape"),
-			Stream.LastData->TryGetObjectField(TEXT("gameModelContainerChanged"), Changed)))
+			Stream.LastData->TryGetObjectField(TEXT("itemChanged"), Changed)))
 		{
-			FString ContainerId;
-			(*Changed)->TryGetStringField(TEXT("containerId"), ContainerId);
-			TestEqual(TEXT("the payload keeps its values"), ContainerId, TEXT("c-1"));
+			FString ItemId;
+			(*Changed)->TryGetStringField(TEXT("itemId"), ItemId);
+			TestEqual(TEXT("the payload keeps its values"), ItemId, TEXT("c-1"));
 		}
 	}
 
@@ -268,9 +269,9 @@ bool FCrowdyCppSubscriptionUnsubscribeTest::RunTest(const FString& Parameters)
 	}
 
 	const FCrowdyCppSubscriptionHandle EndedHandle = Client->Subscribe(
-		ContainerChangedDocument, Variables(TEXT("c-1")), FString(), RecordInto(Ended));
+		ItemChangedDocument, Variables(TEXT("c-1")), FString(), RecordInto(Ended));
 	const FCrowdyCppSubscriptionHandle SurvivingHandle = Client->Subscribe(
-		ContainerChangedDocument, Variables(TEXT("c-2")), FString(), RecordInto(Surviving));
+		ItemChangedDocument, Variables(TEXT("c-2")), FString(), RecordInto(Surviving));
 
 	TestEqual(TEXT("both subscriptions are active"), Client->NumActiveSubscriptions(), 2);
 	TestNotEqual(TEXT("the two handles are distinct"), EndedHandle.Id, SurvivingHandle.Id);
@@ -333,7 +334,7 @@ bool FCrowdyCppSubscriptionClosedClientTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	Client->Subscribe(ContainerChangedDocument, Variables(TEXT("c-1")), FString(), RecordInto(Stream));
+	Client->Subscribe(ItemChangedDocument, Variables(TEXT("c-1")), FString(), RecordInto(Stream));
 	Client->TestWebSocketOpen();
 	Client->TestWebSocketReceiveText(TEXT("{\"type\":\"connection_ack\"}"));
 	Client->TakeTestWebSocketSentFrames();
@@ -352,7 +353,7 @@ bool FCrowdyCppSubscriptionClosedClientTest::RunTest(const FString& Parameters)
 
 	// Subscribing on a disposed client fails immediately rather than waiting on a socket that will never open.
 	const FCrowdyCppSubscriptionHandle Handle = Client->Subscribe(
-		ContainerChangedDocument, Variables(TEXT("c-2")), FString(), RecordInto(Refused));
+		ItemChangedDocument, Variables(TEXT("c-2")), FString(), RecordInto(Refused));
 
 	TestFalse(TEXT("a closed client hands back no handle"), Handle.IsValid());
 	if (TestEqual(TEXT("the refusal is reported once"), Refused.ErrorMessages.Num(), 1))
@@ -380,7 +381,7 @@ bool FCrowdyCppSubscriptionBearerIsolationTest::RunTest(const FString& Parameter
 		return false;
 	}
 
-	Client->Subscribe(ContainerChangedDocument, Variables(TEXT("c-1")), FString(), RecordInto(Stream));
+	Client->Subscribe(ItemChangedDocument, Variables(TEXT("c-1")), FString(), RecordInto(Stream));
 	Client->TestWebSocketOpen();
 	Client->TestWebSocketReceiveText(TEXT("{\"type\":\"connection_ack\"}"));
 	Client->TakeTestWebSocketSentFrames();
@@ -431,7 +432,7 @@ bool FCrowdyCppSubscriptionBoundsPayloadTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	Client->Subscribe(ContainerChangedDocument, Variables(TEXT("c-1")), FString(), RecordInto(Stream));
+	Client->Subscribe(ItemChangedDocument, Variables(TEXT("c-1")), FString(), RecordInto(Stream));
 	Client->TestWebSocketOpen();
 	Client->TestWebSocketReceiveText(TEXT("{\"type\":\"connection_ack\"}"));
 
@@ -493,24 +494,22 @@ bool FCrowdyCppSubscriptionOperationGateTest::RunTest(const FString& Parameters)
 
 	// A name the domain does not define is refused without opening anything, the same way an unknown request is.
 	const FCrowdyCppSubscriptionHandle UnknownHandle = Client->SubscribeOperation(
-		ECrowdyCppApiDomain::GameModel, TEXT("NoSuchOperation"), nullptr, RecordInto(Unknown));
+		ECrowdyCppApiDomain::Realtime, TEXT("NoSuchOperation"), nullptr, RecordInto(Unknown));
 	TestFalse(TEXT("an unknown operation hands back no handle"), UnknownHandle.IsValid());
 	TestEqual(TEXT("the unknown operation is reported"), Unknown.ErrorMessages.Num(), 1);
 
 	// A real operation that is a query rather than a subscription resolves to a perfectly good document, which is
 	// exactly why it has to be refused here instead of at the server.
 	const FCrowdyCppSubscriptionHandle QueryHandle = Client->SubscribeOperation(
-		ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainers"), nullptr, RecordInto(NotASubscription));
+		ECrowdyCppApiDomain::Teams, TEXT("Teams"), nullptr, RecordInto(NotASubscription));
 	TestFalse(TEXT("a query hands back no handle"), QueryHandle.IsValid());
 	TestEqual(TEXT("the query is reported"), NotASubscription.ErrorMessages.Num(), 1);
 	TestEqual(TEXT("neither refusal opened a connection"), Client->NumTestWebSocketConnections(), 0);
 	TestEqual(TEXT("neither refusal counts as active"), Client->NumActiveSubscriptions(), 0);
 
 	// The generated subscription resolves and is sent verbatim, so no subscription query text is written by hand.
-	const TSharedPtr<FJsonObject> RealVariables = MakeShared<FJsonObject>();
-	RealVariables->SetStringField(TEXT("appId"), TEXT("1"));
 	const FCrowdyCppSubscriptionHandle RealHandle = Client->SubscribeOperation(
-		ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainerChanged"), RealVariables, RecordInto(Real));
+		ECrowdyCppApiDomain::Realtime, TEXT("RealtimeControlEvents"), nullptr, RecordInto(Real));
 
 	if (!TestTrue(TEXT("the generated subscription resolves"), RealHandle.IsValid()))
 	{
@@ -532,7 +531,7 @@ bool FCrowdyCppSubscriptionOperationGateTest::RunTest(const FString& Parameters)
 		}
 		FString Query;
 		(*Payload)->TryGetStringField(TEXT("query"), Query);
-		if (Query.StartsWith(TEXT("subscription GameModelContainerChanged")))
+		if (Query.StartsWith(TEXT("subscription RealtimeControlEvents")))
 		{
 			bSentGeneratedDocument = true;
 		}

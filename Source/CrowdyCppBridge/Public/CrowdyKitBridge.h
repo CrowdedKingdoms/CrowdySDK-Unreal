@@ -6,16 +6,10 @@
 class FCrowdyCppClient;
 
 /**
- * Typed emit surface for the CrowdyCPP GameKit blueprints. Each genre maps to a
- * plain options struct here, which the bridge translates to the matching
- * crowdy::kit::<Genre>BlueprintOptions and runs through the linked builder. The
- * builders and their merge are pure JSON construction (no network), so EmitBundle
- * is synchronous and side-effect free; deploying the emitted bundle is a separate
- * async step.
+ * Options for the Game Kit blueprints. Game Models are deprecated: EmitBundle and DeployBundle both fail at once with
+ * CrowdyCppGameModelDeprecatedMessage.
  *
- * These are plain structs, not USTRUCTs: this module is the exception-containment
- * boundary over the vendored library and stays free of reflection. The editor
- * preset layer mirrors these as USTRUCTs and converts into them.
+ * These are plain structs, not USTRUCTs. The editor preset layer mirrors these as USTRUCTs and converts into them.
  */
 
 /** Owner-mirror property typing (kit convention: expressions cannot read container ownership). */
@@ -185,34 +179,14 @@ struct FCrowdyKitDeployResult
 	int32 StepsTotal = 0;
 };
 
-/**
- * Emits kit blueprint bundles from the linked CrowdyCPP kit builders. Pure and
- * synchronous; every builder/merge exception is contained and reported as a
- * failed bundle rather than allowed to escape into the engine.
- */
 class CROWDYCPPBRIDGE_API FCrowdyKitBridge
 {
 public:
-	/**
-	 * Build and merge the selected kit layers into one deployable bundle. AppId
-	 * rides as a JSON string (BigInt scalar). SessionId, when non-empty, scopes
-	 * the seed. Returns a failed bundle (bOk false) for an empty layer list, an
-	 * invalid layer (e.g. a Guild layer with no group id, a Living World layer
-	 * with every section disabled), or a duplicate type/property/function/
-	 * automation name across layers.
-	 */
+	// Returns a failed bundle (bOk false) carrying CrowdyCppGameModelDeprecatedMessage.
 	static FCrowdyKitBundle EmitBundle(int64 AppId, const TArray<FCrowdyKitLayerSpec>& Layers,
 		const FString& SessionId);
 
-	/**
-	 * Deploy an emitted bundle over the async client: the seed first, then each automation, then each trigger, in
-	 * that dependency order (an automation references seeded functions; a trigger references an automation). Steps
-	 * run sequentially; the first failure stops the chain. Client must carry an admin (manage_apps) token. The
-	 * deploy holds only a weak reference to Client, so the caller must keep the client alive and keep driving
-	 * Poll() until OnDone fires. Releasing the client mid-chain ends the deploy rather than stranding it: the step
-	 * in flight completes as canceled and OnDone reports that failure. OnDone is delivered from Poll() on the
-	 * calling thread, exactly once (a not-deployable bundle reports failure synchronously with no network).
-	 */
+	// Runs OnDone inline, exactly once, with bOk false and CrowdyCppGameModelDeprecatedMessage. Sends nothing.
 	static void DeployBundle(const TSharedRef<FCrowdyCppClient>& Client, const FCrowdyKitBundle& Bundle,
 		TFunction<void(FCrowdyKitDeployResult)> OnDone);
 };
