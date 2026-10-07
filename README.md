@@ -5,7 +5,7 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.17.0** (Unreal Engine 5.8). See the
+**Current version: 2.18.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
