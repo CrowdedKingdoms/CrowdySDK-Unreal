@@ -10,10 +10,10 @@ gameplay state, voice, teams, channels, and avatars.
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
-**On `dev` and `test`, not yet released:** Server Objects, server-owned state on the platform's
-server compute, used from Blueprint or C++, and the deprecation of the Game Model API they replace.
-Their pages are on the [dev docs](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/overview)
-until the next release.
+**New in 2.18.0:** Server Objects, server-owned state on the platform's server compute, used from
+Blueprint or C++, and the deprecation of the Game Model API they replace. Their pages are on the
+[dev docs](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/overview) until the docs site's
+next update.
 
 Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkingdoms.com/unreal-sdk/intro)**
 
@@ -118,7 +118,7 @@ The plugin is split into focused modules under `Source/`:
 ## Documentation
 
 - [SDK guide](https://docs.crowdedkingdoms.com/unreal-sdk/intro), start here
-- [Server Logic: Server Objects](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/overview) (dev docs until the next release)
+- [Server Logic: Server Objects](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/overview) (on the dev docs until the docs site's next update)
 - [Reference: subsystems, delegates, meta keys, console variables](https://docs.crowdedkingdoms.com/unreal-sdk/reference/subsystems)
 - [Changelog](https://docs.crowdedkingdoms.com/releases/intro)
 
