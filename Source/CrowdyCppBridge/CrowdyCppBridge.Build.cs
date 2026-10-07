@@ -14,15 +14,15 @@ public class CrowdyCppBridge : ModuleRules
 		// Vendored third-party C/C++ compiles cleanly only outside shared PCHs
 		// and unity groups (it includes winsock2 directly and must not inherit
 		// engine forced includes ahead of its own headers).
-		PCHUsage = ModuleRules.PCHUsageMode.NoSharedPCHs;
+		PCHUsage = ModuleRules.PCHUsageMode.NoPCHs;
 		bUseUnity = false;
 
-		// CrowdyCPP's GraphQL and kit layers report errors by throwing.
+		// CrowdyCPP's GraphQL layer reports errors by throwing.
 		bEnableExceptions = true;
 		CppStandard = CppStandardVersion.Cpp20;
 
 		// The library dynamic_casts to recover typed GraphQL errors (client.cpp's
-		// token-refresh error mapping and kit/core.hpp's error classification).
+		// token-refresh error mapping).
 		// UBT defaults RTTI off, which MSVC reports only as a warning while
 		// producing a cast that always fails, so this is load-bearing rather than
 		// a build-cleanliness setting.
@@ -31,8 +31,8 @@ public class CrowdyCppBridge : ModuleRules
 		// The vendored library is warning-clean under its own flags but not the
 		// engine's stricter set; keep those warnings from failing the build
 		// without weakening the engine-wide policy elsewhere.
-		ShadowVariableWarningLevel = WarningLevel.Off;
-		UndefinedIdentifierWarningLevel = WarningLevel.Off;
+		CppCompileWarningSettings.ShadowVariableWarningLevel = WarningLevel.Off;
+		CppCompileWarningSettings.UndefinedIdentifierWarningLevel = WarningLevel.Off;
 		bWarningsAsErrors = false;
 
 		string ThirdParty = Path.Combine(ModuleDirectory, "ThirdParty", "CrowdyCPP");

@@ -205,7 +205,7 @@ bool FCrowdyCppRedirectOvertakenTest::RunTest(const FString& Parameters)
 
 	bool bFired = false;
 	FCrowdyCppJsonResult Captured;
-	Client->RunOp(ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainerTypes"), MakeShared<FJsonObject>(),
+	Client->RunOp(ECrowdyCppApiDomain::Teams, TEXT("Teams"), MakeShared<FJsonObject>(),
 		[&Captured, &bFired](FCrowdyCppJsonResult Result)
 		{
 			Captured = MoveTemp(Result);
@@ -254,7 +254,7 @@ bool FCrowdyCppAppUnavailableTest::RunTest(const FString& Parameters)
 
 	bool bFired = false;
 	FCrowdyCppJsonResult Captured;
-	Client->RunOp(ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainerTypes"), MakeShared<FJsonObject>(),
+	Client->RunOp(ECrowdyCppApiDomain::Teams, TEXT("Teams"), MakeShared<FJsonObject>(),
 		[&Captured, &bFired](FCrowdyCppJsonResult Result)
 		{
 			Captured = MoveTemp(Result);
@@ -292,7 +292,7 @@ bool FCrowdyCppOrdinaryFailureHasNoCodeTest::RunTest(const FString& Parameters)
 
 	bool bFired = false;
 	FCrowdyCppJsonResult Captured;
-	Client->RunOp(ECrowdyCppApiDomain::GameModel, TEXT("GameModelContainerTypes"), MakeShared<FJsonObject>(),
+	Client->RunOp(ECrowdyCppApiDomain::Teams, TEXT("Teams"), MakeShared<FJsonObject>(),
 		[&Captured, &bFired](FCrowdyCppJsonResult Result)
 		{
 			Captured = MoveTemp(Result);

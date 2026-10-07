@@ -556,39 +556,6 @@ bool FCrowdyStudioContainerBindingKeyIsReadTest::RunTest(const FString& /*Parame
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioGameModelListsLoadOncePerAppTest,
-	"CrowdySDK.CrowdyStudio.GameModelListsLoadOncePerApp", CrowdyStudioAppScopedStateTestFlags)
-
-bool FCrowdyStudioGameModelListsLoadOncePerAppTest::RunTest(const FString& /*Parameters*/)
-{
-	// The Game Model page asks this every time it is painted, so the answer has to be no as soon as the lists are the
-	// selected app's. Saying yes twice for one app turns a page that is merely on screen into a read loop.
-	TestTrue(TEXT("Nothing loaded yet, so an app's lists are owed"),
-		FCrowdyStudioController::ShouldLoadGameModelLists(/*SelectedAppId*/ 7, /*LoadedAppId*/ 0));
-
-	TestFalse(TEXT("The lists are already this app's, so nothing is owed"),
-		FCrowdyStudioController::ShouldLoadGameModelLists(7, 7));
-
-	TestTrue(TEXT("The lists belong to another app, so this app's are owed"),
-		FCrowdyStudioController::ShouldLoadGameModelLists(7, 8));
-
-	// With no app selected there is nothing to read and no id to scope a read to, whatever was loaded before.
-	TestFalse(TEXT("No app selected, nothing is owed"),
-		FCrowdyStudioController::ShouldLoadGameModelLists(0, 0));
-	TestFalse(TEXT("No app selected still owes nothing when a previous app's lists are held"),
-		FCrowdyStudioController::ShouldLoadGameModelLists(0, 8));
-
-	// App ids are BigInt on the wire, so the comparison has to hold past the 32-bit range rather than truncating two
-	// distinct apps into one.
-	constexpr int64 BeyondInt32 = 4300000000LL;
-	TestFalse(TEXT("A BigInt app id matches itself"),
-		FCrowdyStudioController::ShouldLoadGameModelLists(BeyondInt32, BeyondInt32));
-	TestTrue(TEXT("Two app ids differing only above the 32-bit range are different apps"),
-		FCrowdyStudioController::ShouldLoadGameModelLists(BeyondInt32, BeyondInt32 + 1));
-
-	return true;
-}
-
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioSchemaPlanBusyIsScopedToTheSelectionTest,
 	"CrowdySDK.CrowdyStudio.SchemaPlanBusyIsScopedToTheSelection", CrowdyStudioAppScopedStateTestFlags)
 

@@ -111,6 +111,23 @@ class GameAppsAPI : public DomainBase {
     runAsync("GridPermissionLimits", vars, std::move(cb));
   }
 
+  /// The keys a grid grants every player with active access to the app (an open build
+  /// area, a public arena); empty when the grid is not open. Requires manage_apps.
+  graphql::Json openPermissions(std::string_view appId, std::string_view gridId) const {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    vars["gridId"] = gridId;
+    return run("GridOpenPermissions", vars);
+  }
+
+  void openPermissionsAsync(std::string_view appId, std::string_view gridId,
+                            graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    vars["gridId"] = gridId;
+    runAsync("GridOpenPermissions", vars, std::move(cb));
+  }
+
   graphql::Json groupGrants(std::string_view appId, std::string_view gridId,
                             std::string_view groupId) const {
     graphql::JVal vars;
@@ -159,6 +176,19 @@ class GameAppsAPI : public DomainBase {
   }
   void setPermissionLimitsAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
     byInputAsync("SetGridPermissionLimits", input, std::move(cb));
+  }
+  /// Open a grid to every player: replace the keys it grants each player with active access
+  /// (`{appId, gridId, permissionKeys}`, within the grid's limits; players who gain access
+  /// later get them too), then recompute the effective ACL. The most specific grid covering a
+  /// chunk decides a voxel write there, so a zone everyone may build in grants
+  /// `update_voxel_data` itself. An empty `permissionKeys` closes it. BAD_REQUEST refuses the
+  /// app's world grid, the four player-code keys, an inactive key and a 33rd open grid.
+  /// Requires manage_apps.
+  graphql::Json setOpenPermissions(const graphql::JVal& input) const {
+    return byInput("SetGridOpenPermissions", input);
+  }
+  void setOpenPermissionsAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    byInputAsync("SetGridOpenPermissions", input, std::move(cb));
   }
   graphql::Json assignGroup(const graphql::JVal& input) const {
     return byInput("AssignGroupToGrid", input);

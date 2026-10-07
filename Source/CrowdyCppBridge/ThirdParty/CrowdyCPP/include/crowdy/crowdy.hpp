@@ -4,14 +4,13 @@
 ///
 /// Layers:
 ///   crowdy::CrowdyClient        — GraphQL surface (auth, portal, world data,
-///                                 game model, teams/channels, admin, operator)
+///                                 ck-exec, teams/channels, admin, operator)
 ///   crowdy::replication         — native UDP replication client
 ///   crowdy::session             — world session layer (actors, chunks, inboxes)
-///   crowdy::kit                 — Game Kit (blueprints + runtime helpers)
+///   crowdy::kit                 — Game Kit (social helpers, wire codecs)
 
 #include "crowdy/client.hpp"
 #include "crowdy/domains/admin.hpp"
-#include "crowdy/domains/operator.hpp"
 #include "crowdy/generated/enums.hpp"
 #ifndef CROWDY_NO_EXCEPTIONS
 #include "crowdy/kit/kit.hpp"
@@ -20,9 +19,6 @@
 #include "crowdy/replication/connection.hpp"
 #include "crowdy/session/codec.hpp"
 #include "crowdy/session/durable.hpp"
-#ifndef CROWDY_NO_EXCEPTIONS
-#include "crowdy/session/model_mirror.hpp"
-#endif
 #include "crowdy/session/world_session.hpp"
 #include "crowdy/studio/layout.hpp"
 #ifndef CROWDY_NO_EXCEPTIONS

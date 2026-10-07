@@ -471,7 +471,7 @@ enum class ECrowdyEffectFnCatalog : uint8
  * in a cooked build, so Compile works in both.
  */
 UCLASS(BlueprintType)
-class CROWDYREPLICATION_API UCrowdyEffect : public UDataAsset
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyEffect : public UDataAsset
 {
 	GENERATED_BODY()
 

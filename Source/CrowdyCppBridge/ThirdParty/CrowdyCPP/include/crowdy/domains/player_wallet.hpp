@@ -101,48 +101,6 @@ class PlayerWalletAPI : public DomainBase {
     runAsync("PlayerRuntimeStates", {}, std::move(cb));
   }
 
-  /// Studio: list an app's player policy rows (view_compute_diagnostics).
-  graphql::Json policies(std::string_view appId) const {
-    graphql::JVal vars;
-    vars["appId"] = appId;
-    return run("PlayerWasmPolicies", vars);
-  }
-  void policiesAsync(std::string_view appId, graphql::GraphQLCallback cb) const {
-    graphql::JVal vars;
-    vars["appId"] = appId;
-    runAsync("PlayerWasmPolicies", vars, std::move(cb));
-  }
-
-  /// Studio: upsert a player policy row (manage_compute).
-  graphql::Json setPolicy(const graphql::JVal& input) const {
-    graphql::JVal vars;
-    vars["input"] = input;
-    return run("SetPlayerWasmPolicy", vars);
-  }
-  void setPolicyAsync(const graphql::JVal& input,
-                      graphql::GraphQLCallback cb) const {
-    graphql::JVal vars;
-    vars["input"] = input;
-    runAsync("SetPlayerWasmPolicy", vars, std::move(cb));
-  }
-
-  /// Studio: delete a player policy row (manage_compute).
-  graphql::Json deletePolicy(std::string_view appId, std::string_view scope,
-                             const graphql::JVal& options = graphql::JVal()) const {
-    graphql::JVal vars = options;
-    vars["appId"] = appId;
-    vars["scope"] = scope;
-    return run("DeletePlayerWasmPolicy", vars);
-  }
-  void deletePolicyAsync(std::string_view appId, std::string_view scope,
-                         const graphql::JVal& options,
-                         graphql::GraphQLCallback cb) const {
-    graphql::JVal vars = options;
-    vars["appId"] = appId;
-    vars["scope"] = scope;
-    runAsync("DeletePlayerWasmPolicy", vars, std::move(cb));
-  }
-
   /// Studio: read the app's player rate-card markup in bps (view_billing).
   graphql::Json rateMarkup(std::string_view appId) const {
     graphql::JVal vars;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CrowdyNativeExec.h"
 #include "Dom/JsonObject.h"
 #include "Misc/Optional.h"
 #include "Templates/Function.h"
@@ -56,12 +57,7 @@ struct FCrowdyCppInvokeResult
 	FString FaultCode;
 	FString Blame;
 
-	// The object a quarantine refusal is about, and the lint finding that quarantined it. A function or automation
-	// with an enforced gameModelLint error against it refuses to run until its definition is written again.
-	//
-	// Do NOT gate reading these on FaultCode: on gameModelInvoke the server rebuilds the error at the player
-	// boundary, so the code arrives as USER_CODE_ERROR with blame AUTHOR while these three survive intact. A
-	// non-empty QuarantineReason is the reliable signal, and it is the only field that says what to fix.
+	// What a quarantine refusal named. These stay empty: a Game Model call is refused before anything is sent.
 	FString QuarantinedKind;   // "function" or "automation"
 	FString QuarantinedName;
 	FString QuarantineReason;
@@ -87,15 +83,8 @@ struct FCrowdyCppInvokeResult
 	TOptional<int64> RetryAfterMs;
 };
 
-/**
- * Whether a server error code means "your game model is wrong", as opposed to a transient failure or a
- * permissions problem. Keys off the code, never the message text.
- *
- * The set of codes is CrowdyCPP's, not this bridge's, so it grows with the platform rather than with a list
- * maintained here. It answers for the codes the server states directly (a container bound to an undefined type,
- * a quarantined object); it does NOT cover gameModelInvoke, where the player boundary rewrites the code and only
- * a non-empty FCrowdyCppInvokeResult::QuarantineReason identifies the refusal.
- */
+// Whether a server error code means "your game model is wrong". Always false: Game Models are deprecated, so no
+// call reaches a server that could answer with one.
 CROWDYCPPBRIDGE_API bool CrowdyCppIsModelRefusalCode(const FString& Code);
 
 // How many times a request the platform refused as busy is sent again before its refusal is reported.
@@ -108,12 +97,11 @@ CROWDYCPPBRIDGE_API bool CrowdyCppIsBusyRetryEnabled();
 CROWDYCPPBRIDGE_API TOptional<double> CrowdyCppBusyRetryDelaySeconds(int32 RetryIndex, TOptional<int64> RetryAfterMs);
 
 /**
- * The parsed outcome of a Game Model runtime op routed generically through CrowdyCPP. Data is the GraphQL
- * response's `data` object (re-serialized from the CrowdyCPP outcome, nesting-guarded, then re-parsed with the UE
- * JSON reader), so a caller wraps it back into a { "data": ... } envelope and feeds it to the matching
- * FCrowdyGameApiCodec::ParseXEnvelope - field extraction is then identical by construction. bTransportOk is
- * the transport-success flag: a network/GraphQL failure reports bTransportOk == false with Data null and
- * the reason in ErrorMessage; the per-op logic outcome (e.g. a rolled-back delete returning false) lives inside Data.
+ * The parsed outcome of any RunOp, an operation routed generically through CrowdyCPP. Data is the GraphQL
+ * response's `data` object, re-serialized from the CrowdyCPP outcome, nesting-guarded, then re-parsed with the UE
+ * JSON reader. bTransportOk is the transport-success flag: a network/GraphQL failure reports bTransportOk == false
+ * with Data null and the reason in ErrorMessage; the per-op logic outcome (e.g. a delete returning false) lives
+ * inside Data.
  */
 struct FCrowdyCppJsonResult
 {
@@ -144,6 +132,35 @@ struct FCrowdyCppStudioOpResult
 	bool bOk = false;
 	FString ErrorMessage;
 };
+
+// The permanent answer of every Game Model call. Game Models are deprecated: such a call sends nothing, fails at
+// once, and is never worth repeating.
+inline constexpr const TCHAR* CrowdyCppGameModelDeprecatedCode = TEXT("GAME_MODEL_DEPRECATED");
+inline constexpr const TCHAR* CrowdyCppGameModelDeprecatedMessage =
+	TEXT("Game Models are deprecated and no longer available; use Server Compute.");
+
+// Write that answer into a default-constructed result: failed, not retryable, no blame and no wait.
+inline void CrowdyCppSetGameModelDeprecated(FCrowdyCppContainerStateResult& Result)
+{
+	Result.ErrorMessage = CrowdyCppGameModelDeprecatedMessage;
+}
+
+inline void CrowdyCppSetGameModelDeprecated(FCrowdyCppInvokeResult& Result)
+{
+	Result.ErrorMessage = CrowdyCppGameModelDeprecatedMessage;
+	Result.FaultCode = CrowdyCppGameModelDeprecatedCode;
+}
+
+inline void CrowdyCppSetGameModelDeprecated(FCrowdyCppJsonResult& Result)
+{
+	Result.ErrorMessage = CrowdyCppGameModelDeprecatedMessage;
+	Result.ErrorCode = CrowdyCppGameModelDeprecatedCode;
+}
+
+inline void CrowdyCppSetGameModelDeprecated(FCrowdyCppStudioOpResult& Result)
+{
+	Result.ErrorMessage = CrowdyCppGameModelDeprecatedMessage;
+}
 
 /**
  * The parsed outcome of a sign-in. Every sign-in path (password, register, dev bypass, magic link, social) returns
@@ -230,9 +247,8 @@ struct FCrowdyCppStringListResult
  * (or a manage_apps token for authoring ops), Management is the user's identity session token. A call never
  * inherits whichever bearer the previous caller happened to leave installed; the plane is resolved per call.
  *
- * This used to name an endpoint as well as a bearer. It no longer can: the platform collapsed its two GraphQL
- * origins into one, so the only thing left to choose is the token. The two are still not interchangeable, because
- * the same call under each answers about a different subject.
+ * One origin serves both planes, so the plane chooses only the token. The two are not interchangeable: the same call
+ * under each answers about a different subject.
  */
 enum class ECrowdyCppTokenPlane : uint8
 {
@@ -413,6 +429,7 @@ struct FCrowdyCppSubscriptionCallbacks
  */
 enum class ECrowdyCppApiDomain : uint8
 {
+	// Deprecated, like Compute: a call into either answers with the Game Model refusal and sends nothing.
 	GameModel,
 	Auth,
 	Users,
@@ -433,7 +450,9 @@ enum class ECrowdyCppApiDomain : uint8
 	Teleport,
 	Platform,
 	Realtime,
-	Compute
+	Compute,
+	// Server code for an app (build, deploy, versions, logs), as its developer: the session bearer by default.
+	Exec
 };
 
 /**
@@ -468,6 +487,7 @@ public:
 	// Real client over Unreal's FHttpModule. Returns null if construction failed.
 	static TSharedPtr<FCrowdyCppClient> Make(const FCrowdyCppClientConfig& Config);
 
+#if WITH_DEV_AUTOMATION_TESTS
 	// Test client: every request resolves to a fixed canned HTTP response with no
 	// network I/O, exercising the real response-interpretation path. It starts
 	// with a placeholder game bearer installed so a test that does not care about
@@ -497,6 +517,7 @@ public:
 	// uses it to act as a concurrent caller - for example moving this client's endpoint mid-request, the way a
 	// parallel request's datacenter redirect would. No-op on a real client.
 	void SetTestOnRequest(TFunction<void(const FString& Url)> Hook);
+#endif
 
 	// The API origin this client is currently issuing against, with the GraphQL path resolved onto it. It moves:
 	// a WRONG_DATACENTER redirect and MoveToDatacenter both change it, so read it rather than assuming it is still
@@ -552,33 +573,26 @@ public:
 	double GetTestNextRetryDueSeconds() const;
 #endif
 
-	// gameModelContainerState. OnDone runs on the calling thread exactly once, from Poll() for a request that
-	// reaches the server and inline for one that fails before it is issued. A test using MakeForTest must call
-	// Poll() to surface the canned result.
+	// The Game Model calls below (ReadContainerState, InvokeFunction, ListContainers, SeedSchema, UpsertAutomation,
+	// UpsertAutomationTrigger, and RunOp or SubscribeOperation on the GameModel or Compute domain) send nothing.
+	// Each answers inline, exactly once, with the CrowdyCppGameModelDeprecated refusal; ListContainers with false.
 	FCrowdyCppRequestHandle ReadContainerState(int64 AppId, const FString& ContainerId,
 		TFunction<void(FCrowdyCppContainerStateResult)> OnDone);
 
-	// gameModelInvoke. ParamsJson is the already-compact-serialized params object (or "{}" for none); it is
-	// passed through verbatim as the paramsJson field. SessionId is omitted from the request when empty
-	// (app-global scope). Same OnDone contract as ReadContainerState (exactly once, from Poll()).
 	FCrowdyCppRequestHandle InvokeFunction(int64 AppId, const FString& FunctionName, const FString& SelfContainerId,
 		const FString& SessionId, const FString& ParamsJson,
 		TFunction<void(FCrowdyCppInvokeResult)> OnDone);
 
-	// gameModelContainers, one page: no limit or offset is sent, so the server answers with its default page size
-	// and a longer list is cut short. TypeName and SessionId are omitted from the request when empty. bOk is the
-	// transport-success flag (an empty list is bOk == true, empty array); a canceled read reports bOk false with an
-	// empty list. Same OnDone contract as above.
 	FCrowdyCppRequestHandle ListContainers(int64 AppId, const FString& TypeName, const FString& SessionId,
 		TFunction<void(bool bOk, TArray<TSharedPtr<FJsonObject>>)> OnDone);
 
 	// Issue any generated operation by name. Domain selects the operation set the name is looked up in; the lookup
 	// yields that operation's own single-operation GraphQL document, so the request carries no surface the server
 	// is not being asked for. A name the domain does not define fails without a round trip. Variables is the full
-	// GraphQL variables object. On success the raw `data` object is handed back for the caller to parse. Same
-	// OnDone contract as the calls above (exactly once, from Poll()).
+	// GraphQL variables object. On success the raw `data` object is handed back for the caller to parse. OnDone runs
+	// exactly once: from Poll() for a request that is sent, inline for one refused before it is.
 	//
-	// Queries (and GameModelEnsureContainer on PLATFORM_BUSY only) refused by the platform are resent before OnDone.
+	// Queries refused by the platform are resent before OnDone.
 	//
 	// One origin serves every operation, so all that is left to choose is the bearer, and the two are not
 	// interchangeable: the same call under the app-scoped bearer and under the session bearer answers about
@@ -589,27 +603,18 @@ public:
 		const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
 		TOptional<ECrowdyCppTokenPlane> Plane = TOptional<ECrowdyCppTokenPlane>());
 
-	// Game Model runtime ops (sessions, edges, direct property writes, deletes). Variables is built by the matching
-	// FCrowdyGameApiCodec::BuildXVariables and the result is parsed by the matching ParseXEnvelope, so the wire
-	// contract and the field extraction are defined in exactly one place.
+	// A Game Model runtime op: answers with the deprecated refusal, like every GameModel-domain RunOp.
 	FCrowdyCppRequestHandle RunRuntimeOp(const FString& OperationName, const TSharedPtr<FJsonObject>& Variables,
 		TFunction<void(FCrowdyCppJsonResult)> OnDone)
 	{
 		return RunOp(ECrowdyCppApiDomain::GameModel, OperationName, Variables, MoveTemp(OnDone));
 	}
 
-	// gameModelSeed. InputJson is a serialized seed input object (container types, property defs, functions) as
-	// produced by the kit emit; it is re-parsed and passed as the mutation input. Requires an admin token. Same
-	// OnDone contract as the calls above (exactly once, from Poll()).
 	FCrowdyCppRequestHandle SeedSchema(const FString& InputJson, TFunction<void(FCrowdyCppStudioOpResult)> OnDone);
 
-	// gameModelUpsertAutomation. InputJson is one serialized automation input object. Requires an admin token.
-	// Same OnDone contract as the calls above.
 	FCrowdyCppRequestHandle UpsertAutomation(const FString& InputJson,
 		TFunction<void(FCrowdyCppStudioOpResult)> OnDone);
 
-	// gameModelUpsertAutomationTrigger. InputJson is one serialized trigger input object. Requires an admin token.
-	// Same OnDone contract as the calls above.
 	FCrowdyCppRequestHandle UpsertAutomationTrigger(const FString& InputJson,
 		TFunction<void(FCrowdyCppStudioOpResult)> OnDone);
 
@@ -764,6 +769,18 @@ public:
 	// How many subscriptions are open. A subscription the server has ended is no longer counted.
 	int32 NumActiveSubscriptions() const;
 
+	/**
+	 * Open a ck-exec connection to AppId's hubs. It dials on the first call or Connect().
+	 *
+	 * ResolveAppToken runs on the game thread before every dial, reconnects included, and must return the player's
+	 * app-scoped token for AppId; the dial installs that token and issues execConnect in one step, so no other plane's
+	 * bearer can ride it. Returns null when the client is closed or this build has no WebSocket support. Closing the
+	 * client closes every connection it made.
+	 */
+	TSharedPtr<FCrowdyNativeExecConnection> CreateExecConnection(int64 AppId, const FCrowdyNativeExecOptions& Options,
+		TFunction<FString()> ResolveAppToken);
+
+#if WITH_DEV_AUTOMATION_TESTS
 	// Test-only WebSocket driving, for a client from MakeForTest: it has no socket, and these play the server by
 	// hand instead. That is what makes the graphql-transport-ws handshake testable headlessly, since it is a
 	// conversation rather than a single round trip. Each is a no-op on a real client.
@@ -776,6 +793,15 @@ public:
 	// How many connections have been opened. More than one means the subscription client reconnected, which is the
 	// observable a test needs to prove that traffic on the other API plane leaves the socket alone.
 	int32 NumTestWebSocketConnections() const;
+
+	// The same, for the ck-exec gateway a client from MakeForTest stands in for.
+	void TestExecOpen();
+	void TestExecReceiveBinary(const TArray<uint8>& Bytes);
+	void TestExecCloseFromServer(int32 Code, bool bClean);
+	TArray<TArray<uint8>> TakeTestExecSentFrames();
+	int32 NumTestExecConnections() const;
+	bool GetTestExecConnectRequest(FString& OutUrl, FString& OutSubprotocol) const;
+#endif
 
 private:
 	FCrowdyCppClient();

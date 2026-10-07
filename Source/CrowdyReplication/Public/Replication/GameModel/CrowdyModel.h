@@ -19,33 +19,33 @@
  * (inventories, quests) have their own function library (UCrowdyGameModel).
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyModel : public UBlueprintFunctionLibrary
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyModel : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
 public:
 	// Re-pull Entity's Server Owned container now, or right after a read of it already in flight lands. Each changed
 	// attribute's OnRep fires. Use after a change you could not observe via a notification (rare the pipeline pulls for you).
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Refresh Game Model")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Refresh Game Model", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static void PullNow(UObject* Entity);
 
 	// Typed reads of a Server Owned attribute by its key (the lowercased property name). Return Default when
 	// the entity is not a bound container, the key is not cached yet, or the cached value is a different type.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Get Model Attribute (Integer)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Get Model Attribute (Integer)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static int32 GetInt(const UObject* Entity, FName Key, int32 Default = 0);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Get Model Attribute (Float)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Get Model Attribute (Float)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static float GetFloat(const UObject* Entity, FName Key, float Default = 0.0f);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Get Model Attribute (Boolean)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Get Model Attribute (Boolean)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static bool GetBool(const UObject* Entity, FName Key, bool bDefault = false);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Get Model Attribute (String)")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Get Model Attribute (String)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static FString GetString(const UObject* Entity, FName Key, const FString& Default = TEXT(""));
 
 	// True when Entity has a resolved Server Owned container bound (auto-bind succeeded, or one was bound
 	// explicitly). Lets a UI wait for the first authoritative pull before reading.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Is Game Model Ready")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Is Game Model Ready", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static bool IsContainerBound(const UObject* Entity);
 
 	// Returns Actor's CrowdyContainer component of ContainerClass (the attributes-component pattern), so an
@@ -54,7 +54,7 @@ public:
 	// Entity/Target of the model getters and the Apply Crowdy Effect node so the write lands on the component's
 	// container, not the actor's. Returns the FIRST component of that class; an actor carrying two of the same
 	// container component (each a distinct sub-participant) must reference the specific component directly instead.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Get Model Component")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Get Model Component", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static UActorComponent* GetModelComponent(AActor* Actor, TSubclassOf<UActorComponent> ContainerClass);
 
 	// Enroll a CrowdyContainer component ADDED AT RUNTIME so it binds its Game Model container. The automatic sweep
@@ -62,19 +62,19 @@ public:
 	// component a cross-client-stable identity by implementing ICrowdyBindingKeyProvider (Get Crowdy Binding Key);
 	// without a key its container id is not stable across clients. No-op when Component is null, its owner is not a
 	// registered Crowdy entity yet, or it is not a bindable container.
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Enroll Model Component")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Enroll Model Component", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static void EnrollModelComponent(UActorComponent* Component);
 
 	// The counterpart to Enroll Model Component: call when removing a runtime-added container component (while its
 	// actor lives on) so its Game Model binding and record are dropped instead of leaking. No-op if it was never
 	// enrolled, or if its actor is tearing down anyway (the actor teardown handles it).
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Unenroll Model Component")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Attributes", DisplayName = "Unenroll Model Component", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static void UnenrollModelComponent(UActorComponent* Component);
 
 	// Invoke a Server Owned function against Entity's container (fire-and-forget). The server evaluates the
 	// rules transactionally; on success the confirmed result echoes into the cache + OnRep here and peers are
 	// notified to re-pull. A latent node with Success/Failed pins + params is planned; this is the minimal
 	// no-parameter entry so Blueprints can drive a function today.
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Advanced", DisplayName = "Call Model Function (Fire and Forget)")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Advanced", DisplayName = "Call Model Function (Fire and Forget)", meta = (DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	static void Invoke(UObject* Entity, FName FunctionName);
 };

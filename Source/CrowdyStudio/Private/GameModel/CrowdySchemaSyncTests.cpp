@@ -677,6 +677,127 @@ bool FCrowdySchemaSyncPropDriftWarnsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Two server properties that differ only in case are disclosed, and the first one stays the one the diff compares.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySchemaSyncCaseOnlyPropPairWarnsTest,
+	"CrowdySDK.GameModel.SchemaCaseOnlyPropPairWarns", CrowdySchemaSyncTestFlags)
+bool FCrowdySchemaSyncCaseOnlyPropPairWarnsTest::RunTest(const FString& Parameters)
+{
+	FCrowdyDesiredContainerType Hero = MakeDesiredType(TEXT("Hero"));
+	Hero.Props.Add(MakeDesiredProp(TEXT("hp"), TEXT("int"), TEXT("100")));
+
+	TArray<FCrowdyDesiredContainerType> DesiredSchema;
+	DesiredSchema.Add(Hero);
+
+	TArray<FStudioContainerType> CurrentTypes;
+	CurrentTypes.Add(MakeServerType(TEXT("Hero")));
+
+	TMap<FString, TArray<FStudioPropertyDef>> CurrentProps;
+	TArray<FStudioPropertyDef>& HeroProps = CurrentProps.Add(TEXT("Hero"));
+	HeroProps.Add(MakeServerProp(TEXT("Hero"), TEXT("hp"), TEXT("int"), TEXT("100")));
+	HeroProps.Add(MakeServerProp(TEXT("Hero"), TEXT("HP"), TEXT("int"), TEXT("0")));
+
+	const FCrowdySchemaDelta Delta = FCrowdySchemaSync::DiffSchema(DesiredSchema, CurrentTypes, CurrentProps);
+
+	const bool bWarned = Delta.Warnings.ContainsByPredicate([](const FString& W)
+	{
+		return W.Contains(TEXT("differ only in case")) && W.Contains(TEXT("Hero.hp"), ESearchCase::CaseSensitive)
+			&& W.Contains(TEXT("Hero.HP"), ESearchCase::CaseSensitive);
+	});
+	TestTrue(TEXT("the case-only pair is disclosed by both names"), bWarned);
+	TestEqual(TEXT("the matching first property is compared, not the later HP"), Delta.PropUpserts.Num(), 0);
+
+	// The twin arriving first must not displace the property spelled exactly as the code declares it.
+	HeroProps.Swap(0, 1);
+	const FCrowdySchemaDelta Reversed = FCrowdySchemaSync::DiffSchema(DesiredSchema, CurrentTypes, CurrentProps);
+	TestEqual(TEXT("the exact spelling is compared even when its twin comes first"), Reversed.PropUpserts.Num(), 0);
+
+	// An exact duplicate row is not a case twin and says nothing.
+	HeroProps[0].Key = TEXT("hp");
+	HeroProps[1].Key = TEXT("hp");
+	const FCrowdySchemaDelta Duplicate = FCrowdySchemaSync::DiffSchema(DesiredSchema, CurrentTypes, CurrentProps);
+	TestFalse(TEXT("an exact duplicate is not reported as differing in case"), Duplicate.Warnings.ContainsByPredicate([](const FString& W)
+	{
+		return W.Contains(TEXT("differ only in case"));
+	}));
+
+	return true;
+}
+
+// A lone server property spelled differently from the declared key is disclosed, since functions write the declared spelling.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySchemaSyncCaseOnlyKeyMismatchWarnsTest,
+	"CrowdySDK.GameModel.SchemaCaseOnlyKeyMismatchWarns", CrowdySchemaSyncTestFlags)
+bool FCrowdySchemaSyncCaseOnlyKeyMismatchWarnsTest::RunTest(const FString& Parameters)
+{
+	FCrowdyDesiredContainerType Hero = MakeDesiredType(TEXT("Hero"));
+	Hero.Props.Add(MakeDesiredProp(TEXT("hp"), TEXT("int"), TEXT("100")));
+
+	TArray<FCrowdyDesiredContainerType> DesiredSchema;
+	DesiredSchema.Add(Hero);
+
+	TArray<FStudioContainerType> CurrentTypes;
+	CurrentTypes.Add(MakeServerType(TEXT("Hero")));
+
+	TMap<FString, TArray<FStudioPropertyDef>> CurrentProps;
+	CurrentProps.Add(TEXT("Hero")).Add(MakeServerProp(TEXT("Hero"), TEXT("HP"), TEXT("int"), TEXT("100")));
+
+	const FCrowdySchemaDelta Delta = FCrowdySchemaSync::DiffSchema(DesiredSchema, CurrentTypes, CurrentProps);
+
+	const bool bWarned = Delta.Warnings.ContainsByPredicate([](const FString& W)
+	{
+		return W.Contains(TEXT("Hero.HP"), ESearchCase::CaseSensitive) && W.Contains(TEXT("'hp'"), ESearchCase::CaseSensitive);
+	});
+	TestTrue(TEXT("the server spelling and the declared one are both named"), bWarned);
+	TestEqual(TEXT("only the mismatch is reported"), Delta.Warnings.Num(), 1);
+	TestEqual(TEXT("nothing else about the property changed"), Delta.PropUpserts.Num(), 0);
+	TestEqual(TEXT("the server property is not offered for pruning"), Delta.ServerOnlyProps.Num(), 0);
+
+	// The exact spelling says nothing.
+	CurrentProps[TEXT("Hero")][0].Key = TEXT("hp");
+	const FCrowdySchemaDelta Exact = FCrowdySchemaSync::DiffSchema(DesiredSchema, CurrentTypes, CurrentProps);
+	TestEqual(TEXT("an exactly spelled key warns about nothing"), Exact.Warnings.Num(), 0);
+
+	return true;
+}
+
+// A description or a mutation key changed only in case is a change: the server stores both as written.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyFunctionSyncCaseOnlyEditsReplanTest,
+	"CrowdySDK.GameModel.FunctionCaseOnlyEditsReplan", CrowdySchemaSyncTestFlags)
+bool FCrowdyFunctionSyncCaseOnlyEditsReplanTest::RunTest(const FString& Parameters)
+{
+	const FCrowdyGameModelFunctionInput Desired = MakeDesiredFunction();
+	if (!TestEqual(TEXT("the fixture function has one parameter"), Desired.Parameters.Num(), 1))
+	{
+		return false;
+	}
+
+	auto UpsertsAgainst = [&Desired](const FStudioFunction& Server)
+	{
+		FCrowdySchemaDelta Delta;
+		FCrowdySchemaSync::DiffFunctions({ Desired }, { Server }, Delta);
+		return Delta.FunctionUpserts.Num();
+	};
+
+	TestEqual(TEXT("an identical function plans nothing"), UpsertsAgainst(MakeServerFunctionFrom(Desired)), 0);
+
+	FStudioFunction Description = MakeServerFunctionFrom(Desired);
+	Description.Description = Desired.Description.ToLower();
+	TestEqual(TEXT("a description changed only in case is re-planned"), UpsertsAgainst(Description), 1);
+
+	FStudioFunction ParamDescription = MakeServerFunctionFrom(Desired);
+	FCrowdyGameModelFunctionInput DescribedParam = Desired;
+	DescribedParam.Parameters[0].Description = TEXT("Damage");
+	ParamDescription.Parameters[0].Description = TEXT("damage");
+	FCrowdySchemaDelta ParamDelta;
+	FCrowdySchemaSync::DiffFunctions({ DescribedParam }, { ParamDescription }, ParamDelta);
+	TestEqual(TEXT("a parameter description changed only in case is re-planned"), ParamDelta.FunctionUpserts.Num(), 1);
+
+	FStudioFunction MutationKey = MakeServerFunctionFrom(Desired);
+	MutationKey.Mutations[0].Property = TEXT("Health");
+	TestEqual(TEXT("a mutation key changed only in case is re-planned"), UpsertsAgainst(MutationKey), 1);
+
+	return true;
+}
+
 // JsonValueEquals compares JSON-value texts semantically, so server formatting drift is not read as a change.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySchemaSyncJsonValueEqualsTest,
 	"CrowdySDK.GameModel.JsonValueEqualsSemantics", CrowdySchemaSyncTestFlags)

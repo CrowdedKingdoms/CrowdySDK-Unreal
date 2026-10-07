@@ -49,6 +49,13 @@ struct WebSocketError {
   std::string message;
   /// Whether opening a fresh connection without changing the request may work.
   bool retryable = true;
+  /// The HTTP status of an upgrade the server answered with something other than 101, or 0.
+  /// A ck-exec gateway answers a refused connect token 401 and a session cap 429.
+  int httpStatus = 0;
+  /// That answer's body, when the transport can read it: a ck-exec gateway puts its reason
+  /// there. The libcurl transport cannot (libcurl ends a refused upgrade at its headers), so
+  /// it reports the status alone.
+  std::string httpBody;
 };
 
 struct WebSocketCloseInfo {

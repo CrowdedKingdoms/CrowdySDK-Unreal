@@ -242,9 +242,7 @@ public:
 	// the paint path and an unmarked call would re-issue every frame. One automatic attempt per app: if it fails, the
 	// status line carries the reason and Refresh is the retry.
 	void EnsureGameModelListsLoaded();
-	// Whether the call above has anything to do. Pure and static so the rule is exercised with no controller, no token
-	// and no server: an app must be selected, and the lists must not already be that app's. A zero LoadedAppId means
-	// nothing has been loaded for any app, which is also where an app switch leaves it.
+	// Whether the call above has anything to do. Always no: Game Models are deprecated and their reads are refused.
 	static bool ShouldLoadGameModelLists(int64 SelectedAppId, int64 LoadedAppId);
 	void FetchFeatures();
 	void DefineFeature(const FString& FeatureKey, const FString& Description);
@@ -847,6 +845,11 @@ private:
 		const TSharedPtr<FJsonObject>& Variables,
 		TFunction<void(const TSharedPtr<FJsonObject>& /*Envelope*/)> OnSuccess,
 		TFunction<void()> OnFailure = TFunction<void()>(), bool bReportErrors = true);
+
+	// SendManagement for an app-scoped operation: OnSuccess is dropped if the selected app has changed by the reply.
+	void SendManagementForApp(ECrowdyCppApiDomain Domain, const TCHAR* OperationName,
+		const TSharedPtr<FJsonObject>& Variables,
+		TFunction<void(const TSharedPtr<FJsonObject>& /*Envelope*/)> OnSuccess);
 
 	// Same contract as SendManagement, but issues against the game endpoint. Game API ops authorize with
 	// the app-scoped token (minted from the session token via mintAppToken), NOT the session token

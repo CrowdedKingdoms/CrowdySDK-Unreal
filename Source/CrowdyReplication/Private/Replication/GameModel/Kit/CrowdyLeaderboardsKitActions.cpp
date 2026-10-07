@@ -33,6 +33,13 @@ namespace
 		return FString();
 	}
 
+	// The subsystem's last recorded error when it has one, else Fallback.
+	FString CrowdyLeaderboardsFailureText(const TWeakObjectPtr<UCrowdyGameModelSubsystem>& Model, const TCHAR* Fallback)
+	{
+		const FString LastError = Model.IsValid() ? Model->GetLastModelError() : FString();
+		return LastError.IsEmpty() ? FString(Fallback) : LastError;
+	}
+
 	// The find-or-create walk for one player's entry on one board, shared by Submit Score and Ensure Leaderboard
 	// Entry. It lists the entry type, considers only the rows the local user owns, pulls each such row to match its
 	// board_id, and creates + seeds a new entry when none matches. The walk keeps itself alive through its async
@@ -79,7 +86,7 @@ namespace
 		{
 			if (!bOk)
 			{
-				Complete(false, FString(), TEXT("failed to list leaderboard entries"));
+				Complete(false, FString(), CrowdyLeaderboardsFailureText(Model, TEXT("failed to list leaderboard entries")));
 				return;
 			}
 
@@ -180,8 +187,8 @@ namespace
 		{
 			if (!bOk || NewContainerId.IsEmpty())
 			{
-				Complete(false, FString(),
-					TEXT("the server rejected the leaderboard entry create (check sign-in and app scope)"));
+				Complete(false, FString(), CrowdyLeaderboardsFailureText(Model,
+					TEXT("the server rejected the leaderboard entry create (check sign-in and app scope)")));
 				return;
 			}
 			CreatedContainerId = NewContainerId;
@@ -238,8 +245,8 @@ namespace
 				{
 					if (!bWriteOk)
 					{
-						Self->Complete(false, FString(),
-							TEXT("the server rejected the board_id write on the new leaderboard entry"));
+						Self->Complete(false, FString(), CrowdyLeaderboardsFailureText(Self->Model,
+							TEXT("the server rejected the board_id write on the new leaderboard entry")));
 						return;
 					}
 					Self->Complete(true, Self->CreatedContainerId, FString());
@@ -514,7 +521,7 @@ void UCrowdyGetLeaderboardAction::Activate()
 			if (!bOk)
 			{
 				Action->Failed.Broadcast(TArray<FCrowdyLeaderboardEntry>(),
-					TEXT("failed to list leaderboard entries"));
+					CrowdyLeaderboardsFailureText(Action->Model, TEXT("failed to list leaderboard entries")));
 				Action->SetReadyToDestroy();
 				return;
 			}

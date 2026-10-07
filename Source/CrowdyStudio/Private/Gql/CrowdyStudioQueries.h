@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CrowdyCppClient.h"
 #include "Dom/JsonObject.h" // WrapDataEnvelope constructs one inline, so the full type is needed here
 #include "Model/CrowdyStudioTypes.h"
 #include "Replication/GameModel/Effect/CrowdyGameModelAutomationInput.h" // FCrowdyGameModelAutomationInput, ...Trigger...
@@ -28,6 +29,12 @@ namespace CrowdyStudioGql
 			Envelope->SetObjectField(TEXT("data"), DataObject);
 		}
 		return Envelope;
+	}
+
+	// Game Models are deprecated: the client answers every Game Model and Compute operation with a refusal and sends nothing.
+	inline bool IsDeprecatedGameModelDomain(ECrowdyCppApiDomain Domain)
+	{
+		return Domain == ECrowdyCppApiDomain::GameModel || Domain == ECrowdyCppApiDomain::Compute;
 	}
 
 	// Build the variables for gameModelUpsertAutomation / gameModelUpsertAutomationTrigger from a neutral input

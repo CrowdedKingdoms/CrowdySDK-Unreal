@@ -6,6 +6,7 @@
 
 #include "CrowdyBlueprintCompilerExtension.generated.h"
 
+class UBlueprint;
 class UEdGraphNode;
 class UEdGraphPin;
 
@@ -84,6 +85,19 @@ public:
 	// The one-line reason and remedy for a limit, which is the text the compile warning carries. Split out
 	// so a test can pin that each limit says something, and so the two limits stay worded as one family.
 	static FString DescribeCrowdBodyLimit(ECrowdyCrowdBodyLimit Limit);
+
+	// True for a class of the deprecated Game Model API, read from its reflection data alone so nothing is loaded.
+	static bool IsGameModelClass(const UClass* Class);
+
+	// True when a node calls, binds or carries a Game Model type: an async action, a function, an event or a pin.
+	static bool IsGameModelNode(const UEdGraphNode* Node);
+
+	// One line per distinct Game Model use in the Blueprint, repeated nodes folded into a count. NewClass is the
+	// class being compiled, whose own container tag counts as a use.
+	static TArray<FString> CollectGameModelUses(const UBlueprint& Blueprint, const UClass* NewClass);
+
+	// The single compile warning naming the uses, or empty when there are none.
+	static FString DescribeGameModelUses(const TArray<FString>& Uses);
 
 protected:
 	virtual void ProcessBlueprintCompiled(

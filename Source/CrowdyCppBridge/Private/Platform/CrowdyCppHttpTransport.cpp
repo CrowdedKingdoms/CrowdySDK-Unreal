@@ -164,6 +164,7 @@ namespace
 		std::shared_ptr<CrowdyCppTransport::FTransportCounters> Counters;
 	};
 
+#if WITH_DEV_AUTOMATION_TESTS
 	// Synchronous transport that returns a fixed response. Wrapped by the inline
 	// async adapter so the canned path runs the identical interpret() logic as a
 	// real round trip.
@@ -229,6 +230,7 @@ namespace
 		std::shared_ptr<CrowdyCppTransport::FCannedRequestCapture> Capture;
 		std::shared_ptr<CrowdyCppTransport::FTransportCounters> Counters;
 	};
+#endif
 }
 
 namespace CrowdyCppTransport
@@ -283,10 +285,12 @@ namespace CrowdyCppTransport
 		return std::make_shared<FUnrealAsyncHttpTransport>(std::move(Counters));
 	}
 
+#if WITH_DEV_AUTOMATION_TESTS
 	std::shared_ptr<IAsyncHttpTransport> MakeCannedTransport(std::string Body, int Status,
 		std::shared_ptr<FCannedRequestCapture> Capture, std::shared_ptr<FTransportCounters> Counters)
 	{
 		return crowdy::graphql::makeInlineAsyncTransport(std::make_shared<FCannedSyncTransport>(
 			std::move(Body), Status, std::move(Capture), std::move(Counters)));
 	}
+#endif
 }

@@ -30,6 +30,31 @@ class CrowdyClient;
 /// All reads are plain snapshots on the same thread.
 namespace crowdy::session {
 
+/// Host election as WorldSession tracks it. CrowdyClient's HostAPI is the
+/// default (the CrowdyClient constructor); an engine or a language binding
+/// supplies its own. Called from tick() every hostHeartbeatIntervalMs.
+class IHostElection {
+ public:
+  virtual ~IHostElection() = default;
+  /// One heartbeat's answer. `ok = false` (a failed call) leaves the cached host
+  /// as it was; the next interval tries again.
+  struct Beat {
+    bool ok = false;
+    std::string hostUserId;
+    bool amIHost = false;
+  };
+  /// Heartbeat this player's host eligibility for `appId` and report the elected
+  /// host. Must not throw.
+  virtual Beat heartbeat(const std::string& appId) = 0;
+};
+
+/// The durable services a WorldSession can use; each may be null (that service is
+/// then off). Both must outlive the session.
+struct WorldSessionServices {
+  IChunkSource* chunks = nullptr;
+  IHostElection* host = nullptr;
+};
+
 struct WorldSessionConfig {
   std::string appId;
   LocalActorStore::Options self;
@@ -49,6 +74,8 @@ struct WorldSessionConfig {
   /// fragment; feed its payload to a media::VideoFrameAssembler.
   std::function<void(const replication::SpatialNotification&)> onAudio;
   std::function<void(const replication::SpatialNotification&)> onVideo;
+  /// Proximity text, which the session has no store for either (0.54.0).
+  std::function<void(const replication::SpatialNotification&)> onText;
   /// The server announced a departure (Buddy v0.25.0). The session already
   /// removed the actor from `actors()` and fired its onLeave; this is for state
   /// the game keeps outside the store (voice/video textures, name tags).
@@ -60,6 +87,9 @@ class WorldSession {
   /// Build over an already-connected replication connection. `client` may be
   /// null for offline/tests (chunk hydrate + host tracking are then off).
   WorldSession(std::shared_ptr<replication::Connection> conn, CrowdyClient* client,
+               WorldSessionConfig config);
+  /// Build over injected durable services instead of a CrowdyClient (0.54.0).
+  WorldSession(std::shared_ptr<replication::Connection> conn, WorldSessionServices services,
                WorldSessionConfig config);
   ~WorldSession();
 
@@ -93,11 +123,15 @@ class WorldSession {
   void dispose();
 
  private:
+  void init(IChunkSource* chunks);
   void installHandlers();
 
   std::shared_ptr<replication::Connection> conn_;
-  CrowdyClient* client_;
   WorldSessionConfig config_;
+  /// The adapters the CrowdyClient constructor builds; empty when services were injected.
+  std::unique_ptr<IChunkSource> ownedChunkSource_;
+  std::unique_ptr<IHostElection> ownedHost_;
+  IHostElection* host_ = nullptr;
   core::ActorUuid uuid_{};
 
   std::unique_ptr<LocalActorStore> self_;

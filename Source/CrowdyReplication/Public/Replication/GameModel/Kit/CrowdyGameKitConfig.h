@@ -19,7 +19,7 @@ class FDataValidationContext;
  * Studio can reference the config without the bridge dependency.
  */
 UCLASS(BlueprintType)
-class CROWDYREPLICATION_API UCrowdyGameKitConfig : public UDataAsset
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGameKitConfig : public UDataAsset
 {
 	GENERATED_BODY()
 

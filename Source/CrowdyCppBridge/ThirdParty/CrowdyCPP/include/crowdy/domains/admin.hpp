@@ -66,16 +66,6 @@ class OrganizationsAPI : public detail::AdminDomain {
     execUnwrapAsync(gen::organizations::kCreateOrganizationDocument, one("input", input), {},
                     std::move(cb));
   }
-  graphql::Json setStatus(std::string_view orgId, std::string_view status) const {
-    return execUnwrap(gen::organizations::kSetOrgStatusDocument,
-                      two("orgId", graphql::JVal(orgId), "status", graphql::JVal(status)));
-  }
-  void setStatusAsync(std::string_view orgId, std::string_view status,
-                      graphql::GraphQLCallback cb) const {
-    execUnwrapAsync(gen::organizations::kSetOrgStatusDocument,
-                    two("orgId", graphql::JVal(orgId), "status", graphql::JVal(status)), {},
-                    std::move(cb));
-  }
   graphql::Json members(std::string_view orgId) const {
     return execUnwrap(gen::organizations::kOrgMembersDocument, one("orgId", graphql::JVal(orgId)));
   }
@@ -357,17 +347,6 @@ class AppsAPI : public detail::AdminDomain {
     execUnwrapAsync(gen::apps::kArchiveAppDocument, one("appId", graphql::JVal(appId)), {},
                     std::move(cb));
   }
-  /// visibility: an AppVisibility enum value string.
-  graphql::Json setVisibility(std::string_view appId, std::string_view visibility) const {
-    return execUnwrap(gen::apps::kSetAppVisibilityDocument,
-                      two("appId", graphql::JVal(appId), "visibility", graphql::JVal(visibility)));
-  }
-  void setVisibilityAsync(std::string_view appId, std::string_view visibility,
-                          graphql::GraphQLCallback cb) const {
-    execUnwrapAsync(gen::apps::kSetAppVisibilityDocument,
-                    two("appId", graphql::JVal(appId), "visibility", graphql::JVal(visibility)), {},
-                    std::move(cb));
-  }
 };
 
 /// client.admin().appAccess() — access tiers + per-user grants.
@@ -475,6 +454,59 @@ class AppAccessAPI : public detail::AdminDomain {
     execUnwrapAsync(gen::appAccess::kRevokeAppAccessDocument,
                     two("appId", graphql::JVal(appId), "userId", graphql::JVal(userId)), {},
                     std::move(cb));
+  }
+
+  // Tier features: feature keys an access tier grants. A ck-exec hub checks a player's with the
+  // node API's players.features. The fields keep the game model's names
+  // (gameModelDefineFeature, ...); they are served beside access tiers. All need manage_apps.
+
+  /// Define (or re-describe) a feature key; idempotent on (appId, featureKey).
+  graphql::Json defineFeature(const graphql::JVal& input) const {
+    return execUnwrap(gen::appAccess::kDefineAppFeatureDocument, one("input", input));
+  }
+  void defineFeatureAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::appAccess::kDefineAppFeatureDocument, one("input", input), {},
+                    std::move(cb));
+  }
+  /// The feature keys defined for an app.
+  graphql::Json features(std::string_view appId) const {
+    return execUnwrap(gen::appAccess::kAppFeaturesDocument, one("appId", graphql::JVal(appId)));
+  }
+  void featuresAsync(std::string_view appId, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::appAccess::kAppFeaturesDocument, one("appId", graphql::JVal(appId)), {},
+                    std::move(cb));
+  }
+  /// Grant a feature key to an access tier.
+  graphql::Json grantTierFeature(const graphql::JVal& input) const {
+    return execUnwrap(gen::appAccess::kGrantTierFeatureDocument, one("input", input));
+  }
+  void grantTierFeatureAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::appAccess::kGrantTierFeatureDocument, one("input", input), {},
+                    std::move(cb));
+  }
+  /// Revoke a feature key from an access tier; true when a grant was removed.
+  graphql::Json revokeTierFeature(const graphql::JVal& input) const {
+    return execUnwrap(gen::appAccess::kRevokeTierFeatureDocument, one("input", input));
+  }
+  void revokeTierFeatureAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::appAccess::kRevokeTierFeatureDocument, one("input", input), {},
+                    std::move(cb));
+  }
+  /// Tier-to-feature grants for an app, optionally for one tier.
+  graphql::Json tierFeatures(std::string_view appId, std::string_view tierId = {}) const {
+    return execUnwrap(gen::appAccess::kTierFeaturesDocument, tierFeatureVars(appId, tierId));
+  }
+  void tierFeaturesAsync(std::string_view appId, std::string_view tierId,
+                         graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::appAccess::kTierFeaturesDocument, tierFeatureVars(appId, tierId), {},
+                    std::move(cb));
+  }
+
+ private:
+  graphql::JVal tierFeatureVars(std::string_view appId, std::string_view tierId) const {
+    graphql::JVal vars = one("appId", graphql::JVal(appId));
+    if (!tierId.empty()) vars["tierId"] = tierId;
+    return vars;
   }
 };
 
@@ -589,18 +621,6 @@ class PaymentsAPI : public detail::AdminDomain {
     if (!idempotencyKey.empty()) vars["idempotencyKey"] = idempotencyKey;
     execUnwrapAsync(gen::payments::kCapturePaypalCheckoutDocument, vars, {}, std::move(cb));
   }
-  graphql::Json checkouts(const graphql::JVal& vars = graphql::JVal()) const {
-    return execUnwrap(gen::payments::documentFor("Checkouts"), vars, "Checkouts");
-  }
-  void checkoutsAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    execUnwrapAsync(gen::payments::documentFor("Checkouts"), vars, "Checkouts", std::move(cb));
-  }
-  graphql::Json checkoutsConnection(const graphql::JVal& vars = graphql::JVal()) const {
-    return execUnwrap(gen::payments::documentFor("CheckoutsConnection"), vars, "CheckoutsConnection");
-  }
-  void checkoutsConnectionAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
-    execUnwrapAsync(gen::payments::documentFor("CheckoutsConnection"), vars, "CheckoutsConnection", std::move(cb));
-  }
   graphql::Json myCheckouts(int limit = 50, int offset = 0) const {
     graphql::JVal vars;
     vars["limit"] = std::int64_t{limit};
@@ -625,32 +645,6 @@ class PaymentsAPI : public detail::AdminDomain {
     vars["first"] = std::int64_t{first};
     if (!after.empty()) vars["after"] = after;
     execUnwrapAsync(gen::payments::documentFor("MyCheckoutsConnection"), vars, "MyCheckoutsConnection",
-                    std::move(cb));
-  }
-  graphql::Json paymentEvents(int limit = 50, int offset = 0) const {
-    graphql::JVal vars;
-    vars["limit"] = std::int64_t{limit};
-    vars["offset"] = std::int64_t{offset};
-    return execUnwrap(gen::payments::documentFor("PaymentEvents"), vars, "PaymentEvents");
-  }
-  void paymentEventsAsync(int limit, int offset, graphql::GraphQLCallback cb) const {
-    graphql::JVal vars;
-    vars["limit"] = std::int64_t{limit};
-    vars["offset"] = std::int64_t{offset};
-    execUnwrapAsync(gen::payments::documentFor("PaymentEvents"), vars, "PaymentEvents", std::move(cb));
-  }
-  graphql::Json paymentEventsConnection(int first = 50, std::string_view after = {}) const {
-    graphql::JVal vars;
-    vars["first"] = std::int64_t{first};
-    if (!after.empty()) vars["after"] = after;
-    return execUnwrap(gen::payments::documentFor("PaymentEventsConnection"), vars, "PaymentEventsConnection");
-  }
-  void paymentEventsConnectionAsync(int first, std::string_view after,
-                                    graphql::GraphQLCallback cb) const {
-    graphql::JVal vars;
-    vars["first"] = std::int64_t{first};
-    if (!after.empty()) vars["after"] = after;
-    execUnwrapAsync(gen::payments::documentFor("PaymentEventsConnection"), vars, "PaymentEventsConnection",
                     std::move(cb));
   }
 };
@@ -679,10 +673,34 @@ class QuotasAPI : public detail::AdminDomain {
   void effectiveAsync(const graphql::JVal& vars, graphql::GraphQLCallback cb) const {
     execUnwrapAsync(gen::quotas::kEffectiveQuotaDocument, vars, {}, std::move(cb));
   }
+  /// Refusal text of set/setAsync for an input naming neither an app nor an org.
+  static constexpr const char* kUnscopedSetRefusal =
+      "quotas.set needs an appId or an orgId: the SDK sets app and org quotas only";
+  /// Create or update a quota at an org or app scope (`appId` or `orgId`, optionally
+  /// `tierId`); requires `manage_quotas` there. The SDK does not set platform-global
+  /// rules: an input naming neither an app nor an org is refused before any request,
+  /// blocking as a graphql::CrowdyError with code "INVALID_ARGUMENT" (an empty result
+  /// in a CROWDY_NO_EXCEPTIONS build), async as an outcome with status
+  /// Errc::InvalidArgument, kind Protocol and the refusal in `errorMessage`.
   graphql::Json set(const graphql::JVal& input) const {
+    if (!scoped(input)) {
+#ifndef CROWDY_NO_EXCEPTIONS
+      throw graphql::CrowdyError("INVALID_ARGUMENT", kUnscopedSetRefusal);
+#else
+      return {};
+#endif
+    }
     return execUnwrap(gen::quotas::kSetQuotaDocument, one("input", input));
   }
   void setAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    if (!scoped(input)) {
+      graphql::GraphQLOutcome out;
+      out.status = Errc::InvalidArgument;
+      out.kind = graphql::GraphQLErrorKind::Protocol;
+      out.errorMessage = kUnscopedSetRefusal;
+      deliverAsync(std::move(out), std::move(cb));
+      return;
+    }
     execUnwrapAsync(gen::quotas::kSetQuotaDocument, one("input", input), {}, std::move(cb));
   }
   graphql::Json remove(std::string_view quotaId) const {
@@ -691,6 +709,18 @@ class QuotasAPI : public detail::AdminDomain {
   void removeAsync(std::string_view quotaId, graphql::GraphQLCallback cb) const {
     execUnwrapAsync(gen::quotas::kDeleteQuotaDocument, one("quotaId", graphql::JVal(quotaId)), {},
                     std::move(cb));
+  }
+
+ private:
+  static bool scoped(const graphql::JVal& input) {
+    if (!input.isObject()) return false;
+    for (const char* key : {"appId", "orgId"}) {
+      auto it = input.obj().find(key);
+      if (it == input.obj().end() || it->second.isNull()) continue;
+      const std::string* s = it->second.asStringPtr();
+      if (s == nullptr || !s->empty()) return true;
+    }
+    return false;
   }
 };
 

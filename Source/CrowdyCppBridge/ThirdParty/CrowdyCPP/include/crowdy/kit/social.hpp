@@ -10,93 +10,17 @@
 #include "crowdy/core/uuid.hpp"
 #include "crowdy/domains/game_apps.hpp"
 #include "crowdy/domains/groups.hpp"
-#include "crowdy/kit/inventory.hpp"
-#include "crowdy/kit/objects.hpp"
+#include "crowdy/graphql/json.hpp"
 #include "crowdy/replication/connection.hpp"
 
 /// Social — parties, guilds, and chat rooms in familiar words, wrapped over
 /// the platform's teams (membership + roles) and channels
-/// (location-independent messaging). Mirrors CrowdyJS's guildBlueprint /
-/// kit.social.
+/// (location-independent messaging). Mirrors CrowdyJS's kit.social.
 namespace crowdy::kit {
 
-// ---------------------------------------------------------------------------
-// Guild blueprint (the only deployable in the social kit)
-// ---------------------------------------------------------------------------
-
-/// Options for guildBlueprint.
-struct GuildBlueprintOptions {
-  /// Prefix for the composed type names ("Guild" -> GuildHall /
-  /// GuildBankInventory). Defaults to "Guild".
-  std::string typePrefix = "Guild";
-  /// The guild team's group id — the hall's group_permission policy checks
-  /// membership of THIS group. Create the team first (SocialKit::guildCreate),
-  /// then deploy the blueprint. Deploy one prefixed blueprint per guild that
-  /// needs its own hall.
-  std::string guildGroupId;
-  /// Optional group permission key the hall requires (e.g. a custom
-  /// "use_hall" role permission). Empty admits every guild member.
-  std::string hallPermission;
-  /// Also compose a guild-bank inventory (<prefix>Bank*). Defaults to true.
-  bool bank = true;
-};
-
-/// Names derived by guildBlueprint for a given prefix.
-struct GuildNames {
-  std::string hallType;
-  std::string openHallFn;
-  std::string closeHallFn;
-  std::string bankTypePrefix;
-  std::string bankInventoryType;
-  std::string bankStackType;
-};
-
-/// Compute the type/function names a guild blueprint (and the social kit's
-/// guild helpers) uses.
-inline GuildNames guildNames(std::string_view typePrefix = "Guild") {
-  const LockNames locks = lockNames(std::string(typePrefix) + "Hall");
-  const InventoryNames bank = inventoryNames(std::string(typePrefix) + "Bank");
-  GuildNames n;
-  n.hallType = locks.objectType;
-  n.openHallFn = locks.openFn;
-  n.closeHallFn = locks.closeFn;
-  n.bankTypePrefix = std::string(typePrefix) + "Bank";
-  n.bankInventoryType = bank.inventoryType;
-  n.bankStackType = bank.stackType;
-  return n;
-}
-
-/// Composite blueprint for a guild's shared assets — a demonstration of
-/// blueprint composition: a GuildHall lockable whose open/close is gated on
-/// membership of the guild team (group_permission), plus a prefixed
-/// guild-bank inventory (GuildBankInventory / GuildBankItemStack) for shared
-/// storage. The guild itself is a team (SocialKit's guild helpers), its chat
-/// a channel, and its territory a grid group-grant
-/// (SocialKit::guildClaimTerritory) — no new model surface needed for those.
-///
-/// Runtime counterparts: SocialKit (team/chat/territory), ObjectsKit
-/// constructed with guildNames().hallType (the hall), and InventoryKit
-/// constructed with guildNames().bankTypePrefix (the bank).
-inline KitBlueprint guildBlueprint(const GuildBlueprintOptions& options) {
-  if (options.guildGroupId.empty()) {
-    throw std::invalid_argument(
-        "guildBlueprint requires guildGroupId — create the guild team first, then deploy");
-  }
-  LockBlueprintOptions hallOptions;
-  hallOptions.objectTypeName = options.typePrefix + "Hall";
-  hallOptions.authority = {
-      LockAuthority::groupPermission(options.guildGroupId, options.hallPermission)};
-  std::vector<KitBlueprint> blueprints;
-  blueprints.push_back(lockBlueprint(hallOptions));
-  if (options.bank) {
-    InventoryBlueprintOptions bankOptions;
-    bankOptions.typePrefix = options.typePrefix + "Bank";
-    blueprints.push_back(inventoryBlueprint(bankOptions));
-  }
-  std::string name = options.typePrefix;
-  for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  return composeBlueprints(std::move(name), blueprints);
-}
+using graphql::Json;
+using graphql::JArray;
+using graphql::JVal;
 
 // ---------------------------------------------------------------------------
 // Runtime social kit
@@ -144,8 +68,7 @@ struct KitClaimTerritoryOptions {
 
 /// Runtime social helpers — parties, guilds, and chat rooms wrapped over the
 /// platform's teams (membership + roles) and channels (location-independent
-/// messaging). No model schema needed; the only deployable is the optional
-/// guildBlueprint composite (guild hall + bank).
+/// messaging). Nothing is deployed.
 ///
 /// Conventions: a party is a team named "party:<name>" paired with an
 /// equally-named channel; a guild is "guild:<name>" likewise. Guild

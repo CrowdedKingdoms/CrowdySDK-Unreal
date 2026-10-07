@@ -2,6 +2,7 @@
 
 #include "Replication/GameModel/Kit/CrowdyCombatKitActions.h"
 
+#include "CrowdyCppClient.h"
 #include "CrowdyGameModelLog.h"
 #include "Dom/JsonObject.h"
 #include "Engine/World.h"
@@ -34,6 +35,12 @@ void UCrowdySpawnCombatantAction::Activate()
 	if (!ModelPtr)
 	{
 		Failed.Broadcast(FString(), TEXT("no Game Model subsystem (not a play world?)"));
+		SetReadyToDestroy();
+		return;
+	}
+	if (ModelPtr->NoteGameModelDeprecated())
+	{
+		Failed.Broadcast(FString(), CrowdyCppGameModelDeprecatedMessage);
 		SetReadyToDestroy();
 		return;
 	}
@@ -209,6 +216,12 @@ void UCrowdyCombatAttackAction::Activate()
 		SetReadyToDestroy();
 		return;
 	}
+	if (Model->NoteGameModelDeprecated())
+	{
+		Failed.Broadcast(FString(), CrowdyCppGameModelDeprecatedMessage);
+		SetReadyToDestroy();
+		return;
+	}
 	if (!Attacker.IsValid() || !Target.IsValid())
 	{
 		Failed.Broadcast(FString(), TEXT("Combat Attack needs both an Attacker and a Target actor"));
@@ -344,6 +357,12 @@ void UCrowdyGetCombatantStateAction::Activate()
 		SetReadyToDestroy();
 		return;
 	}
+	if (Model->NoteGameModelDeprecated())
+	{
+		Failed.Broadcast(FCrowdyCombatantState(), CrowdyCppGameModelDeprecatedMessage);
+		SetReadyToDestroy();
+		return;
+	}
 	if (!Target.IsValid())
 	{
 		Failed.Broadcast(FCrowdyCombatantState(), TEXT("no Actor to read combatant state from"));
@@ -407,6 +426,12 @@ void UCrowdyRespawnCombatantAction::Activate()
 	if (!Model)
 	{
 		Failed.Broadcast(FString(), TEXT("no Game Model subsystem (not a play world?)"));
+		SetReadyToDestroy();
+		return;
+	}
+	if (Model->NoteGameModelDeprecated())
+	{
+		Failed.Broadcast(FString(), CrowdyCppGameModelDeprecatedMessage);
 		SetReadyToDestroy();
 		return;
 	}
@@ -489,6 +514,12 @@ void UCrowdyReviveCombatantAction::Activate()
 	if (!Model)
 	{
 		Failed.Broadcast(FString(), TEXT("no Game Model subsystem (not a play world?)"));
+		SetReadyToDestroy();
+		return;
+	}
+	if (Model->NoteGameModelDeprecated())
+	{
+		Failed.Broadcast(FString(), CrowdyCppGameModelDeprecatedMessage);
 		SetReadyToDestroy();
 		return;
 	}
@@ -580,6 +611,12 @@ void UCrowdySyncCombatantAction::Activate()
 	if (!Model)
 	{
 		Failed.Broadcast(FString(), TEXT("no Game Model subsystem (not a play world?)"));
+		SetReadyToDestroy();
+		return;
+	}
+	if (Model->NoteGameModelDeprecated())
+	{
+		Failed.Broadcast(FString(), CrowdyCppGameModelDeprecatedMessage);
 		SetReadyToDestroy();
 		return;
 	}
@@ -680,6 +717,12 @@ void UCrowdyApplyStatusEffectAction::Activate()
 	if (!ModelPtr)
 	{
 		Failed.Broadcast(FString(), FString(), TEXT("no Game Model subsystem (not a play world?)"));
+		SetReadyToDestroy();
+		return;
+	}
+	if (ModelPtr->NoteGameModelDeprecated())
+	{
+		Failed.Broadcast(FString(), FString(), CrowdyCppGameModelDeprecatedMessage);
 		SetReadyToDestroy();
 		return;
 	}

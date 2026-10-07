@@ -82,9 +82,16 @@ void Connection::setState(ConnState next) {
   e.kind = Event::Kind::Status;
   e.statusValue = next;
   e.len = 0;
-  if (!ring_.tryPush(e)) {
-    // Ring full of data events; status will be observed via state() instead.
+  if (ring_.tryPush(e)) {
+    signalEvents();
   }
+  // A full ring of data events drops the status event; state() still reports it.
+}
+
+void Connection::signalEvents() {
+  if (!config_.onEventsReady) return;
+  if (eventsSignalled_.exchange(true, std::memory_order_acq_rel)) return;
+  config_.onEventsReady();
 }
 
 Status Connection::doAssign() {
@@ -469,6 +476,7 @@ void Connection::handleDatagram(Bytes datagram) {
       return;
     }
   }
+  bool queued = false;
   Status bundleStatus = wire::forEachMessage(datagram, [&](Bytes message) {
     if (message.empty()) return;
     const std::uint8_t type = message[0];
@@ -527,7 +535,9 @@ void Connection::handleDatagram(Bytes datagram) {
       ++stats_.messagesReceived;
       ++stats_.messagesReceivedByType[type];
     }
-    if (!ring_.tryPush(e)) {
+    if (ring_.tryPush(e)) {
+      queued = true;
+    } else {
       std::lock_guard lock(statsMutex_);
       ++stats_.ringDropped;
     }
@@ -536,6 +546,7 @@ void Connection::handleDatagram(Bytes datagram) {
     std::lock_guard lock(statsMutex_);
     ++stats_.malformed;
   }
+  if (queued) signalEvents();
 }
 
 std::size_t Connection::receiveBatch(int timeoutMs) {
@@ -721,10 +732,17 @@ std::size_t Connection::poll(std::size_t maxEvents) {
     handlers = handlers_;
   }
 
+  // Cleared BEFORE draining: an event queued after this point signals again,
+  // whether it lands before or after the drain reaches it.
+  eventsSignalled_.store(false, std::memory_order_release);
   std::size_t dispatched = 0;
+  bool drained = false;
   while (dispatched < maxEvents) {
     auto event = ring_.tryPop();
-    if (!event) break;
+    if (!event) {
+      drained = true;
+      break;
+    }
     ++dispatched;
     const Event& e = *event;
     Bytes message(e.data, e.len);
@@ -825,6 +843,9 @@ std::size_t Connection::poll(std::size_t maxEvents) {
       }
     }
   }
+  // The maxEvents bound stopped the drain with events still queued: nothing new
+  // will arrive to signal them, so signal now.
+  if (!drained) signalEvents();
   return dispatched;
 }
 

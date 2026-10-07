@@ -48,6 +48,11 @@ void UCrowdyListenForModelChangesAction::Activate()
 		SetReadyToDestroy();
 		return;
 	}
+	if (Model->NoteGameModelDeprecated())
+	{
+		SetReadyToDestroy();
+		return;
+	}
 	BoundModel = Model;
 	BoundWorld = World;
 	Model->OnModelAttributeChanged.AddDynamic(this, &UCrowdyListenForModelChangesAction::HandleModelAttributeChanged);

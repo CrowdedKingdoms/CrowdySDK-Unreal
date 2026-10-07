@@ -442,15 +442,6 @@ struct PublishCrowdyStudioCommonFileInput {
   std::optional<std::string> idempotencyKey;
 };
 
-struct CreateCrowdyStudioProjectFromModulesInput {
-  std::string appId;
-  std::string gridId;
-  std::optional<std::string> serverModuleName;
-  std::optional<std::string> clientModuleName;
-  std::optional<std::string> projectName;
-  std::optional<std::string> idempotencyKey;
-};
-
 struct CrowdyStudioListOptions {
   bool includeArchived = false;
   int limit = 50;

@@ -37,13 +37,20 @@ namespace
 
 	// Both park messages end with this, so an entry that cannot even name its own payload says why
 	// instead of printing an empty name and sending the reader after a struct that does not exist.
-	FString CrowdyDescribeParkedActivationPayload(const FInstancedStruct& InitialState)
+	FString CrowdyDescribeParkedActivationPayload(const FInstancedStruct& InitialState, const FCrowdyTypeID PayloadTypeID)
 	{
 		const UScriptStruct* PayloadStruct = InitialState.GetScriptStruct();
+		if (!PayloadStruct && PayloadTypeID == CROWDY_INVALID_TYPE_ID)
+		{
+			return TEXT("its updates carried a state blob that decoded into no struct registered on this client, and no payload type id was recorded for it. ")
+				TEXT("Register the sender's state struct in this build, or check that both sides agree on which struct the payload type id names");
+		}
 		if (!PayloadStruct)
 		{
-			return TEXT("its updates carried a state blob that decoded into no struct registered on this client, so the payload cannot be named here either. ")
-				TEXT("Register the sender's state struct in this build, or check that both sides agree on which struct the payload type id names");
+			return FString::Printf(
+				TEXT("its updates carried payload type id %u, which decoded into no struct registered on this client. ")
+				TEXT("Register the sender's state struct in this build, or check that both sides agree on which struct that id names"),
+				PayloadTypeID);
 		}
 
 		return FString::Printf(
@@ -118,6 +125,7 @@ void UCrowdyActorManager::Deinitialize()
 
 	FCrowdyActorUpdate Discarded;
 	while (UpdateQueue.Dequeue(Discarded)) {}
+	NumOffThreadUpdates.store(0, std::memory_order_relaxed);
 	PendingUpdates.Empty();
 
 	Slots.Empty();
@@ -220,6 +228,11 @@ void UCrowdyActorManager::ApplyPendingUpdates()
 	{
 		// Still cleared, or a backend arriving later would be handed a frame of stale positions at once.
 		PendingUpdates.Reset();
+		FCrowdyActorUpdate Discarded;
+		int32 NumDiscarded = 0;
+		while (UpdateQueue.Dequeue(Discarded))
+			++NumDiscarded;
+		NumOffThreadUpdates.fetch_sub(NumDiscarded, std::memory_order_relaxed);
 		return;
 	}
 
@@ -249,8 +262,13 @@ void UCrowdyActorManager::ApplyPendingUpdates()
 	// The queue first: anything in it was handed over from another thread and so was gathered before
 	// whatever the game thread appended after it.
 	FCrowdyActorUpdate Queued;
+	int32 Dequeued = 0;
 	while (UpdateQueue.Dequeue(Queued))
+	{
+		++Dequeued;
 		Apply(Queued);
+	}
+	NumOffThreadUpdates.fetch_sub(Dequeued, std::memory_order_relaxed);
 
 	for (const FCrowdyActorUpdate& Update : PendingUpdates)
 		Apply(Update);
@@ -282,6 +300,7 @@ void UCrowdyActorManager::BindToTracker(UCrowdyActorTracker* Tracker)
 	// Both departures are bound, and that is the whole point of them being listed together: the server announcing
 	// an actor gone removes it from the map the timeout check reads, so an actor reported by one of these is never
 	// reported by the other and binding only one leaves those actors holding their slots forever.
+	ActorTracker = Tracker;
 	Tracker->OnRemoteEntityAppeared.AddDynamic(this, &UCrowdyActorManager::HandleActorSpawned);
 	Tracker->OnRemoteEntityTimedOut.AddDynamic(this, &UCrowdyActorManager::HandleActorDestroyed);
 	Tracker->OnRemoteEntityLeft.AddDynamic(this, &UCrowdyActorManager::HandleActorLeft);
@@ -498,6 +517,7 @@ void UCrowdyActorManager::HandleActorSpawned(FGuid UUID, FInstancedStruct Initia
 		FPendingActivation& Pending = PendingActivations.Add(UUID);
 		Pending.SlotId       = AllocateSlot(UUID);
 		Pending.InitialState = MoveTemp(InitialState);
+		Pending.PayloadTypeID = IsValid(ActorTracker) ? ActorTracker->GetPayloadTypeIDForUUID(UUID) : CROWDY_INVALID_TYPE_ID;
 		return;
 	}
 
@@ -534,7 +554,28 @@ void UCrowdyActorManager::HandleUpdateBatch(const TArray<FCrowdyActorUpdate>& Up
 	}
 
 	for (const FCrowdyActorUpdate& Update : Updates)
-		UpdateQueue.Enqueue(Update);
+		EnqueueFromAnotherThread(Update);
+}
+
+void UCrowdyActorManager::EnqueueFromAnotherThread(const FCrowdyActorUpdate& Update)
+{
+	// Claimed before the check, so producers racing on several threads cannot overshoot the bound between them.
+	if (NumOffThreadUpdates.fetch_add(1, std::memory_order_relaxed) >= MaxOffThreadUpdates)
+	{
+		NumOffThreadUpdates.fetch_sub(1, std::memory_order_relaxed);
+		OffThreadUpdatesDropped.fetch_add(1, std::memory_order_relaxed);
+
+		if (!bReportedOffThreadQueueFull.exchange(true, std::memory_order_acq_rel))
+		{
+			UE_LOG(LogCrowdyReplication, Warning,
+				TEXT("[Crowdy Actor Manager]: Dropping actor updates broadcast from off the game thread, because %d are "
+					"already waiting for the next tick. Reported once."),
+				MaxOffThreadUpdates);
+		}
+		return;
+	}
+
+	UpdateQueue.Enqueue(Update);
 }
 
 void UCrowdyActorManager::AgePendingActivations(TMap<FGuid, FPendingActivation>& Park, const int32 WarnTicks, const int32 EvictTicks, TArray<FGuid>& OutEvicted)
@@ -562,7 +603,7 @@ void UCrowdyActorManager::AgePendingActivations(TMap<FGuid, FPendingActivation>&
 				TEXT("It is picked up again only if it stops sending for long enough to time out and reappear."),
 				*Pair.Key.ToString(),
 				Pending.TicksWaiting,
-				*CrowdyDescribeParkedActivationPayload(Pending.InitialState));
+				*CrowdyDescribeParkedActivationPayload(Pending.InitialState, Pending.PayloadTypeID));
 
 			OutEvicted.Add(Pair.Key);
 			continue;
@@ -578,7 +619,7 @@ void UCrowdyActorManager::AgePendingActivations(TMap<FGuid, FPendingActivation>&
 			TEXT("resolved, and is holding a render slot while it waits; %s."),
 			*Pair.Key.ToString(),
 			Pending.TicksWaiting,
-			*CrowdyDescribeParkedActivationPayload(Pending.InitialState));
+			*CrowdyDescribeParkedActivationPayload(Pending.InitialState, Pending.PayloadTypeID));
 	}
 
 	// Removed after the walk rather than during it, since erasing from the map being iterated is what

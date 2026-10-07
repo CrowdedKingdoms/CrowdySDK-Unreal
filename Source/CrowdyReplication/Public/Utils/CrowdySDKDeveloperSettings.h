@@ -35,6 +35,7 @@ struct FCrowdyClassIDOverride
 };
 
 class UCrowdyBakedRegistry;
+struct FCrowdyCppClientConfig;
 
 UENUM()
 enum class ECrowdyEnvironment : uint8
@@ -111,6 +112,9 @@ public:
 	/** The game endpoints exactly as the console fetched them from the server. No derivation. */
 	FString GetGameApiHttpUrl() const;
 	FString GetGameApiWsUrl() const;
+
+	/** The config for the shared API client. ApiUrl is the game endpoint, or the shared origin while that is empty. */
+	FCrowdyCppClientConfig MakeClientConfig() const;
 
 	/** Which IP protocol stack the connection uses. Auto takes the IPv4 address; only IPv6 changes
 	 *  the choice, and the connection does not fall back to the other family. Set it from the

@@ -215,7 +215,8 @@ bool FCrowdyPendingActivationEvictionNamesUndecodedPayloadTest::RunTest(const FS
 	const FGuid Undecoded(31, 32, 33, 34);
 
 	TMap<FGuid, UCrowdyActorManager::FPendingActivation> Park;
-	Park.Add(Undecoded, MakeParkedEntry(0, nullptr));
+	UCrowdyActorManager::FPendingActivation& Entry = Park.Add(Undecoded, MakeParkedEntry(0, nullptr));
+	Entry.PayloadTypeID = 48879;
 
 	FCrowdyParkWarningCapture Capture;
 
@@ -236,8 +237,55 @@ bool FCrowdyPendingActivationEvictionNamesUndecodedPayloadTest::RunTest(const FS
 	TestEqual(TEXT("The eviction names the entity"), CountLinesContaining(Lines, Undecoded.ToString()), 1);
 	TestEqual(TEXT("The eviction says the state blob decoded into no registered struct"),
 		CountLinesContaining(Lines, TEXT("decoded into no struct registered on this client")), 1);
+	TestEqual(TEXT("The eviction names the payload type id that arrived"),
+		CountLinesContaining(Lines, TEXT("payload type id 48879,")), 1);
 	TestEqual(TEXT("The eviction does not send the reader after a struct it cannot name"),
 		CountLinesContaining(Lines, TEXT("RegisterStateClass")), 0);
+
+	// With no id recorded, the line says so rather than claiming the entity carried id 0.
+	const FGuid NoRecord(35, 36, 37, 38);
+	Park.Add(NoRecord, MakeParkedEntry(1, nullptr));
+	for (int32 Tick = 0; Tick < EvictTicks; Tick++)
+		UCrowdyActorManager::AgePendingActivations(Park, WarnTicks, EvictTicks, Evicted);
+	const TArray<FString> NoRecordLines = Capture.TakeLines();
+	TestEqual(TEXT("An unrecorded id is not printed as 0"), CountLinesContaining(NoRecordLines, TEXT("payload type id 0,")), 0);
+	TestEqual(TEXT("Both reports say no id was recorded"), CountLinesContaining(NoRecordLines, TEXT("no payload type id was recorded")), 2);
+
+	return true;
+}
+
+// The payload type id travels from the tracker's appearance record into the park, through the production binding.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyParkCarriesAppearedPayloadTypeIDTest,
+	"CrowdySDK.ActorManager.ParkCarriesAppearedPayloadTypeID",
+	CrowdyPendingActivationParkTestFlags)
+
+bool FCrowdyParkCarriesAppearedPayloadTypeIDTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<UCrowdyActorTracker> Tracker(NewObject<UCrowdyActorTracker>(GetTransientPackage()));
+	const TStrongObjectPtr<UCrowdyActorManager> Manager(NewObject<UCrowdyActorManager>(GetTransientPackage()));
+	const TStrongObjectPtr<UCrowdyRecordingBackend> Backend(NewObject<UCrowdyRecordingBackend>(GetTransientPackage()));
+	Manager->SetBackend(Backend.Get());
+	Manager->BindToTrackerForTest(Tracker.Get());
+
+	const FGuid Unresolved = FGuid::NewGuid();
+	FCrowdyActorUpdate First;
+	First.UUID = Unresolved;
+	First.PayloadTypeID = 4242;
+	Tracker->RecordAppearancesForTest({ First });
+	TestEqual(TEXT("The tracker keeps the id the first update carried"),
+		static_cast<int32>(Tracker->GetPayloadTypeIDForUUID(Unresolved)), 4242);
+
+	FCrowdyParkWarningCapture Capture;
+	Tracker->OnRemoteEntityAppeared.Broadcast(Unresolved, FInstancedStruct(), 1);
+
+	const int32 Bound = UCrowdyActorManager::GetPendingActivationEvictTicksForTest();
+	for (int32 Tick = 0; Tick < Bound; Tick++)
+		Manager->TickPendingActivationsForTest();
+
+	const TArray<FString> Lines = Capture.TakeLines();
+	TestEqual(TEXT("The eviction happened"), CountLinesContaining(Lines, TEXT("has been released")), 1);
+	TestEqual(TEXT("The stranded report and the eviction both name the id the entity was parked with"),
+		CountLinesContaining(Lines, TEXT("payload type id 4242,")), 2);
 
 	return true;
 }

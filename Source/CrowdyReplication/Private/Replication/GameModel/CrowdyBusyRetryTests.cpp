@@ -1,18 +1,15 @@
 #include "CrowdyCppClient.h"
-#include "Replication/GameModel/CrowdyGameModelSubsystem.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
-#include "Engine/Engine.h"
-#include "Engine/World.h"
+#include "Dom/JsonObject.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
-#include "Replication/GameModel/CrowdyGameModelTestSupport.h"
 
-// A request the platform refuses and says to retry is sent again: queries and ensures by the bridge, invokes by the
-// subsystem. Everything else, and everything with the switch off, reaches the caller at once.
+// A query the platform refuses and says to retry is sent again by the bridge. Everything else, and everything with
+// the switch off, reaches the caller at once.
 namespace CrowdyBusyRetryTestSupport
 {
 	constexpr EAutomationTestFlags BusyRetryTestFlags =
@@ -65,7 +62,7 @@ namespace CrowdyBusyRetryTestSupport
 
 	FCrowdyCppRequestHandle IssueOp(const TSharedPtr<FCrowdyCppClient>& Client, const TCHAR* Operation, FOpOutcome& Out)
 	{
-		return Client->RunOp(ECrowdyCppApiDomain::GameModel, Operation, MakeShared<FJsonObject>(),
+		return Client->RunOp(ECrowdyCppApiDomain::Teams, Operation, MakeShared<FJsonObject>(),
 			[&Out](FCrowdyCppJsonResult Result)
 			{
 				++Out.Delivered;
@@ -136,86 +133,6 @@ namespace CrowdyBusyRetryTestSupport
 			}
 		}
 	};
-
-	// A real world, so the subsystem has a timer manager to arm an invoke retry on.
-	struct FBusyRetryTestWorld
-	{
-		UWorld* World = nullptr;
-
-		FBusyRetryTestWorld()
-		{
-			World = UWorld::CreateWorld(EWorldType::Editor, /*bInformEngineOfWorld=*/false);
-			FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Editor);
-			Context.SetCurrentWorld(World);
-		}
-
-		~FBusyRetryTestWorld()
-		{
-			GEngine->DestroyWorldContext(World);
-			World->DestroyWorld(/*bInformEngineOfWorld=*/false);
-		}
-
-		// The first tick activates a timer armed this frame, the second crosses it.
-		void FireTimers() const
-		{
-			World->GetTimerManager().Tick(6.0f);
-			++GFrameCounter;
-			World->GetTimerManager().Tick(6.0f);
-		}
-	};
-
-	const TCHAR* const InvokeSuccessBody =
-		TEXT("{\"data\":{\"gameModelInvoke\":{\"success\":true,\"returnValueJson\":\"1\",\"errorMessage\":\"\",\"mutationsApplied\":[]}}}");
-
-	const TCHAR* const RateLimitedBody =
-		TEXT("{\"errors\":[{\"message\":\"Too many calls\",\"extensions\":{\"code\":\"RATE_LIMITED\",\"blame\":\"BUDGET\",\"retryable\":true,\"retryAfterMs\":0}}]}");
-
-	FCrowdyInvokeResult ThrownBusy()
-	{
-		FCrowdyInvokeResult Result;
-		Result.bTransportOk = false;
-		Result.bSuccess = false;
-		Result.bRetryable = true;
-		Result.Blame = ECrowdyPlayerFaultBlame::Platform;
-		Result.FaultCode = TEXT("PLATFORM_BUSY");
-		return Result;
-	}
-
-	struct FInvokeOutcome
-	{
-		int32 Delivered = 0;
-		FCrowdyInvokeResult Last;
-	};
-
-	void InvokeCounting(UCrowdyGameModelSubsystem* Model, FInvokeOutcome& Out)
-	{
-		FCrowdyInvokeRequest Request;
-		Request.FunctionName = TEXT("busy_retry_fn");
-		Request.SelfContainerId = TEXT("c1");
-		Model->Invoke(Request, [&Out](FCrowdyInvokeResult Result)
-		{
-			++Out.Delivered;
-			Out.Last = MoveTemp(Result);
-		});
-	}
-
-	// Answers and retries rounds until the invoke is delivered.
-	void DriveInvoke(const FBusyRetryTestWorld& Env, FCrowdyGameModelTestClientHost& ClientHost, const FInvokeOutcome& Out)
-	{
-		for (int32 Round = 0; Round < 12 && Out.Delivered == 0; ++Round)
-		{
-			ClientHost.Client->Poll();
-			Env.FireTimers();
-		}
-	}
-
-	UCrowdyGameModelSubsystem* MakeLiveModel(UWorld* World)
-	{
-		UCrowdyGameModelSubsystem* Model = NewObject<UCrowdyGameModelSubsystem>(World);
-		Model->BeginWorldSessionForTest();
-		Model->SetApiContextForTest(BusyRetryTestEndpoint, TEXT("test-token"), 42);
-		return Model;
-	}
 }
 
 // A busy refusal and then a PLATFORM_ERROR on a query are both retried: a repeated read is harmless.
@@ -235,20 +152,20 @@ bool FCrowdyCppBusyRetryRecoversTest::RunTest(const FString& Parameters)
 		TPair<int32, FString>(200, RefusalBody(TEXT("PLATFORM_ERROR"))) });
 
 	FOpOutcome Outcome;
-	IssueOp(Client, TEXT("GameModelSession"), Outcome);
+	IssueOp(Client, TEXT("Teams"), Outcome);
 	PollUntil(Client, [&Outcome] { return Outcome.Delivered > 0; });
 
 	TestEqual(TEXT("the caller hears once"), Outcome.Delivered, 1);
 	TestTrue(TEXT("and hears the success"), Outcome.Last.bTransportOk);
 	TestEqual(TEXT("the query was sent three times"), Sends, 3);
-	const FCrowdyCppOpStats Op = FindOpStats(Client, TEXT("GameModelSession"));
+	const FCrowdyCppOpStats Op = FindOpStats(Client, TEXT("Teams"));
 	TestEqual(TEXT("one call"), Op.Calls, 1);
 	TestEqual(TEXT("no failure"), Op.Failures, 0);
 	TestEqual(TEXT("two re-sends"), Op.Retries, 2);
 	TestEqual(TEXT("one request recovered"), Op.RecoveredByRetry, 1);
 
 	Client->ResetStats();
-	const FCrowdyCppOpStats Reset = FindOpStats(Client, TEXT("GameModelSession"));
+	const FCrowdyCppOpStats Reset = FindOpStats(Client, TEXT("Teams"));
 	TestEqual(TEXT("a reset clears the re-sends"), Reset.Retries, 0);
 	TestEqual(TEXT("and the recoveries"), Reset.RecoveredByRetry, 0);
 	return true;
@@ -269,7 +186,7 @@ bool FCrowdyCppBusyRetryGivesUpTest::RunTest(const FString& Parameters)
 	Client->SetTestResponseScript(Repeat(BusyBody(), 5));
 
 	FOpOutcome Outcome;
-	IssueOp(Client, TEXT("GameModelContainerStates"), Outcome);
+	IssueOp(Client, TEXT("Teams"), Outcome);
 	PollUntil(Client, [&Outcome] { return Outcome.Delivered > 0; });
 
 	TestEqual(TEXT("the caller hears once"), Outcome.Delivered, 1);
@@ -281,7 +198,7 @@ bool FCrowdyCppBusyRetryGivesUpTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the refusal says it may be retried"), Outcome.Last.bRetryable);
 	TestTrue(TEXT("with the server's wait"), Outcome.Last.RetryAfterMs.IsSet() && Outcome.Last.RetryAfterMs.GetValue() == 0);
 
-	const FCrowdyCppOpStats Op = FindOpStats(Client, TEXT("GameModelContainerStates"));
+	const FCrowdyCppOpStats Op = FindOpStats(Client, TEXT("Teams"));
 	TestEqual(TEXT("one call"), Op.Calls, 1);
 	TestEqual(TEXT("one failure"), Op.Failures, 1);
 	TestEqual(TEXT("three re-sends"), Op.Retries, CrowdyCppMaxBusyRetries);
@@ -316,14 +233,14 @@ bool FCrowdyCppBusyRetryOnlyPlatformRetryableTest::RunTest(const FString& Parame
 		}
 		Client->SetTestResponseScript({ TPair<int32, FString>(200, Case.Value) });
 		FOpOutcome Outcome;
-		IssueOp(Client, TEXT("GameModelSession"), Outcome);
+		IssueOp(Client, TEXT("Teams"), Outcome);
 		Client->Poll();
 		TestEqual(FString::Printf(TEXT("%s: delivered on the first poll"), Case.Key), Outcome.Delivered, 1);
 		TestFalse(FString::Printf(TEXT("%s: as the refusal"), Case.Key), Outcome.Last.bTransportOk);
 		TestEqual(FString::Printf(TEXT("%s: nothing waits to retry"), Case.Key), Client->NumTestWaitingRetries(), 0);
 		TestEqual(FString::Printf(TEXT("%s: sent once"), Case.Key), Sends, 1);
 		TestEqual(FString::Printf(TEXT("%s: no re-send counted"), Case.Key),
-			FindOpStats(Client, TEXT("GameModelSession")).Retries, 0);
+			FindOpStats(Client, TEXT("Teams")).Retries, 0);
 	}
 	return true;
 }
@@ -342,65 +259,12 @@ bool FCrowdyCppBusyRetryMutationsNotRetriedTest::RunTest(const FString& Paramete
 	}
 
 	Client->SetTestResponseScript(Repeat(BusyBody(), 1));
-	FOpOutcome SetProperty;
-	IssueOp(Client, TEXT("GameModelSetProperty"), SetProperty);
+	FOpOutcome Mutation;
+	IssueOp(Client, TEXT("CreateTeam"), Mutation);
 	Client->Poll();
-	TestEqual(TEXT("a mutation's refusal reaches the caller at once"), SetProperty.Delivered, 1);
+	TestEqual(TEXT("a mutation's refusal reaches the caller at once"), Mutation.Delivered, 1);
 	TestEqual(TEXT("and it is sent once"), Sends, 1);
-
-	Sends = 0;
-	Client->SetTestResponseScript(Repeat(BusyBody(), 1));
-	int32 InvokeDelivered = 0;
-	Client->InvokeFunction(1, TEXT("fn"), TEXT("c-1"), FString(), TEXT("{}"),
-		[&InvokeDelivered](FCrowdyCppInvokeResult) { ++InvokeDelivered; });
-	Client->Poll();
-	TestEqual(TEXT("an invoke's refusal reaches the caller at once"), InvokeDelivered, 1);
-	TestEqual(TEXT("and the bridge sends it once"), Sends, 1);
-
-	// An ensure creates a row, so only a refusal that says the work never started may be repeated.
-	Sends = 0;
-	Client->SetTestResponseScript(Repeat(RefusalBody(TEXT("PLATFORM_ERROR")), 1));
-	FOpOutcome EnsureError;
-	IssueOp(Client, TEXT("GameModelEnsureContainer"), EnsureError);
-	Client->Poll();
-	TestEqual(TEXT("an ensure's PLATFORM_ERROR reaches the caller at once"), EnsureError.Delivered, 1);
-	TestEqual(TEXT("and it is sent once"), Sends, 1);
-
-	Sends = 0;
-	Client->SetTestResponseScript(Repeat(BusyBody(), 1));
-	FOpOutcome Ensure;
-	IssueOp(Client, TEXT("GameModelEnsureContainer"), Ensure);
-	PollUntil(Client, [&Ensure] { return Ensure.Delivered > 0; });
-	TestTrue(TEXT("an ensure's PLATFORM_BUSY recovers"), Ensure.Delivered == 1 && Ensure.Last.bTransportOk);
-	TestEqual(TEXT("after one re-send"), Sends, 2);
-
-	Sends = 0;
-	Client->SetTestResponseScript({ TPair<int32, FString>(200, BusyBody()),
-		TPair<int32, FString>(200, TEXT("{\"data\":{\"gameModelContainerState\":{\"containerId\":\"c-1\",\"propertiesJson\":\"{\\\"hp\\\":1}\"}}}")) });
-	int32 ReadDelivered = 0;
-	bool bReadOk = false;
-	Client->ReadContainerState(1, TEXT("c-1"), [&ReadDelivered, &bReadOk](FCrowdyCppContainerStateResult Result)
-	{
-		++ReadDelivered;
-		bReadOk = Result.bOk;
-	});
-	PollUntil(Client, [&ReadDelivered] { return ReadDelivered > 0; });
-	TestTrue(TEXT("a container read recovers"), bReadOk);
-	TestEqual(TEXT("after one re-send"), Sends, 2);
-
-	Sends = 0;
-	Client->SetTestResponseScript({ TPair<int32, FString>(200, BusyBody()),
-		TPair<int32, FString>(200, TEXT("{\"data\":{\"gameModelContainers\":[]}}")) });
-	int32 ListDelivered = 0;
-	bool bListOk = false;
-	Client->ListContainers(1, TEXT("T"), FString(), [&ListDelivered, &bListOk](bool bOk, TArray<TSharedPtr<FJsonObject>>)
-	{
-		++ListDelivered;
-		bListOk = bOk;
-	});
-	PollUntil(Client, [&ListDelivered] { return ListDelivered > 0; });
-	TestTrue(TEXT("a container list recovers"), bListOk);
-	TestEqual(TEXT("after one re-send"), Sends, 2);
+	TestEqual(TEXT("nothing waits to retry"), Client->NumTestWaitingRetries(), 0);
 	return true;
 }
 
@@ -419,7 +283,7 @@ bool FCrowdyCppBusyRetryCancelWhileWaitingTest::RunTest(const FString& Parameter
 
 	Client->SetTestResponseScript(Repeat(BusyBody(), 3));
 	FOpOutcome Canceled;
-	const FCrowdyCppRequestHandle Handle = IssueOp(Client, TEXT("GameModelSession"), Canceled);
+	const FCrowdyCppRequestHandle Handle = IssueOp(Client, TEXT("Teams"),Canceled);
 	Client->Poll();
 	TestEqual(TEXT("a busy refusal is held, not delivered"), Canceled.Delivered, 0);
 	TestEqual(TEXT("it waits to retry"), Client->NumTestWaitingRetries(), 1);
@@ -431,14 +295,14 @@ bool FCrowdyCppBusyRetryCancelWhileWaitingTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("and stops its wait"), Client->NumTestWaitingRetries(), 0);
 
 	FOpOutcome Drained;
-	IssueOp(Client, TEXT("GameModelSession"), Drained);
+	IssueOp(Client, TEXT("Teams"),Drained);
 	Client->Poll();
 	TestEqual(TEXT("CancelAll reaches a request waiting to retry"), Client->CancelAll(), 1);
 	TestEqual(TEXT("and delivers it once"), Drained.Delivered, 1);
 	TestEqual(TEXT("and stops its wait"), Client->NumTestWaitingRetries(), 0);
 
 	FOpOutcome Closed;
-	IssueOp(Client, TEXT("GameModelSession"), Closed);
+	IssueOp(Client, TEXT("Teams"),Closed);
 	Client->Poll();
 	Client->Close();
 	TestEqual(TEXT("Close delivers a request waiting to retry once"), Closed.Delivered, 1);
@@ -469,7 +333,7 @@ bool FCrowdyCppBusyRetryCancelInFlightRetryTest::RunTest(const FString& Paramete
 		}
 		Client->SetTestResponseScript(Repeat(BusyBody(), 1));
 		FOpOutcome Outcome;
-		IssueOp(Client, TEXT("GameModelSession"), Outcome);
+		IssueOp(Client, TEXT("Teams"),Outcome);
 		if (!TestTrue(FString::Printf(TEXT("%s: the retry went out"), Name), PollUntil(Client, [&Sends] { return Sends == 2; })))
 		{
 			return false;
@@ -523,7 +387,7 @@ bool FCrowdyCppBusyRetryHonoursWaitTest::RunTest(const FString& Parameters)
 		}
 		Client->SetTestResponseScript(Repeat(BusyBody(TEXT("PLATFORM"), true, Case.RetryAfterMs), 1));
 		FOpOutcome Outcome;
-		IssueOp(Client, TEXT("GameModelSession"), Outcome);
+		IssueOp(Client, TEXT("Teams"),Outcome);
 		const double BeforeSeconds = FPlatformTime::Seconds();
 		Client->Poll();
 		const double AfterSeconds = FPlatformTime::Seconds();
@@ -541,7 +405,7 @@ bool FCrowdyCppBusyRetryHonoursWaitTest::RunTest(const FString& Parameters)
 	}
 	Client->SetTestResponseScript(Repeat(BusyBody(TEXT("PLATFORM"), true, 3000), 1));
 	FOpOutcome Early;
-	IssueOp(Client, TEXT("GameModelSession"), Early);
+	IssueOp(Client, TEXT("Teams"),Early);
 	PollTimes(Client, 3);
 	TestEqual(TEXT("nothing is sent before a 3 s wait"), Sends, 1);
 	Client->CancelAll();
@@ -549,7 +413,7 @@ bool FCrowdyCppBusyRetryHonoursWaitTest::RunTest(const FString& Parameters)
 	Sends = 0;
 	Client->SetTestResponseScript(Repeat(BusyBody(TEXT("PLATFORM"), true, 6000), 1));
 	FOpOutcome TooLong;
-	IssueOp(Client, TEXT("GameModelSession"), TooLong);
+	IssueOp(Client, TEXT("Teams"),TooLong);
 	Client->Poll();
 	TestEqual(TEXT("a wait past 5 s goes to the caller at once"), TooLong.Delivered, 1);
 	TestEqual(TEXT("with the server's wait on it"), TooLong.Last.RetryAfterMs.Get(0), static_cast<int64>(6000));
@@ -575,7 +439,7 @@ bool FCrowdyCppBusyRetryParkedBoundTest::RunTest(const FString& Parameters)
 	int32 Delivered = 0;
 	for (int32 Index = 0; Index < Requests; ++Index)
 	{
-		Client->RunOp(ECrowdyCppApiDomain::GameModel, TEXT("GameModelSession"), MakeShared<FJsonObject>(),
+		Client->RunOp(ECrowdyCppApiDomain::Teams, TEXT("Teams"), MakeShared<FJsonObject>(),
 			[&Delivered](FCrowdyCppJsonResult) { ++Delivered; });
 	}
 	Client->Poll();
@@ -607,7 +471,7 @@ bool FCrowdyCppBusyRetrySwitchOffTest::RunTest(const FString& Parameters)
 	}
 	Client->SetTestResponseScript(Repeat(BusyBody(), 1));
 	FOpOutcome Outcome;
-	IssueOp(Client, TEXT("GameModelSession"), Outcome);
+	IssueOp(Client, TEXT("Teams"),Outcome);
 	Client->Poll();
 	TestEqual(TEXT("the refusal reaches the caller at once"), Outcome.Delivered, 1);
 	TestFalse(TEXT("as a failure"), Outcome.Last.bTransportOk);
@@ -640,207 +504,6 @@ bool FCrowdyCppBusyRetryDelayTest::RunTest(const FString& Parameters)
 		{
 			return false;
 		}
-	}
-	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelBusyRefusalGateTest,
-	"CrowdySDK.GameModel.BusyRetry.RefusalGate", CrowdyBusyRetryTestSupport::BusyRetryTestFlags)
-bool FCrowdyGameModelBusyRefusalGateTest::RunTest(const FString& Parameters)
-{
-	using namespace CrowdyBusyRetryTestSupport;
-
-	TestTrue(TEXT("a thrown busy refusal"), UCrowdyGameModelSubsystem::IsBusyRefusal(ThrownBusy()));
-
-	FCrowdyInvokeResult LowerCase = ThrownBusy();
-	LowerCase.FaultCode = TEXT("platform_busy");
-	TestTrue(TEXT("the code is matched without case"), UCrowdyGameModelSubsystem::IsBusyRefusal(LowerCase));
-
-	FCrowdyInvokeResult InBand = ThrownBusy();
-	InBand.bTransportOk = true;
-	TestFalse(TEXT("in band, the function ran"), UCrowdyGameModelSubsystem::IsBusyRefusal(InBand));
-
-	FCrowdyInvokeResult Author = ThrownBusy();
-	Author.Blame = ECrowdyPlayerFaultBlame::Author;
-	TestFalse(TEXT("blame AUTHOR"), UCrowdyGameModelSubsystem::IsBusyRefusal(Author));
-
-	FCrowdyInvokeResult NotRetryable = ThrownBusy();
-	NotRetryable.bRetryable = false;
-	TestFalse(TEXT("not retryable"), UCrowdyGameModelSubsystem::IsBusyRefusal(NotRetryable));
-
-	FCrowdyInvokeResult OtherCode = ThrownBusy();
-	OtherCode.FaultCode = TEXT("PLATFORM_ERROR");
-	TestFalse(TEXT("a platform error may have run the function"), UCrowdyGameModelSubsystem::IsBusyRefusal(OtherCode));
-
-	FCrowdyInvokeResult Succeeded = ThrownBusy();
-	Succeeded.bSuccess = true;
-	TestFalse(TEXT("a success"), UCrowdyGameModelSubsystem::IsBusyRefusal(Succeeded));
-	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelBusyInvokeRecoversTest,
-	"CrowdySDK.GameModel.BusyRetry.InvokeRecovers", CrowdyBusyRetryTestSupport::BusyRetryTestFlags)
-bool FCrowdyGameModelBusyInvokeRecoversTest::RunTest(const FString& Parameters)
-{
-	using namespace CrowdyBusyRetryTestSupport;
-
-	FBusyRetryTestWorld Env;
-	UCrowdyGameModelSubsystem* Model = MakeLiveModel(Env.World);
-	FCrowdyGameModelTestClientHost ClientHost(Model, BusyRetryTestEndpoint, InvokeSuccessBody);
-	ClientHost.Client->SetTestResponseScript(Repeat(BusyBody(), 1));
-	const FCrowdyGameModelNetStats& Stats = Model->GetNetStats();
-
-	FInvokeOutcome Outcome;
-	InvokeCounting(Model, Outcome);
-	ClientHost.Client->Poll();
-	TestEqual(TEXT("the busy refusal is held"), Outcome.Delivered, 0);
-	TestEqual(TEXT("a retry is armed"), Stats.InvokeBusyRetries, 1);
-
-	Env.FireTimers();
-	ClientHost.Client->Poll();
-	TestEqual(TEXT("the caller hears once"), Outcome.Delivered, 1);
-	TestTrue(TEXT("and hears the success"), Outcome.Last.bTransportOk && Outcome.Last.bSuccess);
-	TestEqual(TEXT("both attempts were dispatched"), Stats.InvokesDispatched, 2);
-	TestEqual(TEXT("and both spend the allowance"), Model->GetRecentInvokeCount(), 2);
-	TestEqual(TEXT("one recovered"), Stats.InvokeBusyRecovered, 1);
-	TestEqual(TEXT("none given up"), Stats.InvokeBusyGaveUp, 0);
-
-	// A query retried by the bridge shows on its op line.
-	ClientHost.Client->SetTestResponseScript({ TPair<int32, FString>(200, BusyBody()),
-		TPair<int32, FString>(200, TEXT("{\"data\":{}}")) });
-	int32 QueryDelivered = 0;
-	ClientHost.Client->RunOp(ECrowdyCppApiDomain::GameModel, TEXT("GameModelSession"), MakeShared<FJsonObject>(),
-		[&QueryDelivered](FCrowdyCppJsonResult) { ++QueryDelivered; });
-	PollUntil(ClientHost.Client, [&QueryDelivered] { return QueryDelivered > 0; });
-
-	TArray<FString> Lines;
-	Model->DescribeNetStats(Lines);
-	TestTrue(TEXT("the busy line is printed"), Lines.Contains(TEXT("[GameModel] invoke busy retries 1 recovered 1 gave up 0")));
-	TestTrue(TEXT("the op line carries its retries"), Lines.ContainsByPredicate([](const FString& Line)
-	{
-		return Line.StartsWith(TEXT("[GameModel] op GameModelSession ")) && Line.Contains(TEXT(" retries 1 recovered 1"));
-	}));
-
-	Model->ResetNetStats();
-	TestTrue(TEXT("a reset clears the busy counters"),
-		Stats.InvokeBusyRetries == 0 && Stats.InvokeBusyRecovered == 0 && Stats.InvokeBusyGaveUp == 0);
-	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelBusyInvokeGivesUpTest,
-	"CrowdySDK.GameModel.BusyRetry.InvokeGivesUp", CrowdyBusyRetryTestSupport::BusyRetryTestFlags)
-bool FCrowdyGameModelBusyInvokeGivesUpTest::RunTest(const FString& Parameters)
-{
-	using namespace CrowdyBusyRetryTestSupport;
-
-	FBusyRetryTestWorld Env;
-	UCrowdyGameModelSubsystem* Model = MakeLiveModel(Env.World);
-	FCrowdyGameModelTestClientHost ClientHost(Model, BusyRetryTestEndpoint, InvokeSuccessBody);
-	ClientHost.Client->SetTestResponseScript(Repeat(BusyBody(), 5));
-	const FCrowdyGameModelNetStats& Stats = Model->GetNetStats();
-
-	FInvokeOutcome Outcome;
-	InvokeCounting(Model, Outcome);
-	DriveInvoke(Env, ClientHost, Outcome);
-	TestEqual(TEXT("the caller hears once"), Outcome.Delivered, 1);
-	TestTrue(TEXT("the busy refusal"), UCrowdyGameModelSubsystem::IsBusyRefusal(Outcome.Last));
-	TestEqual(TEXT("the first attempt and three retries"), Stats.InvokesDispatched, 1 + CrowdyCppMaxBusyRetries);
-	TestEqual(TEXT("three retries counted"), Stats.InvokeBusyRetries, CrowdyCppMaxBusyRetries);
-	TestEqual(TEXT("one given up"), Stats.InvokeBusyGaveUp, 1);
-	TestEqual(TEXT("none recovered"), Stats.InvokeBusyRecovered, 0);
-	return true;
-}
-
-// Busy and budget retries are capped apart: two busy retries leave both budget retries, and one more busy.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelBusyThenBudgetTest,
-	"CrowdySDK.GameModel.BusyRetry.BusyThenBudget", CrowdyBusyRetryTestSupport::BusyRetryTestFlags)
-bool FCrowdyGameModelBusyThenBudgetTest::RunTest(const FString& Parameters)
-{
-	using namespace CrowdyBusyRetryTestSupport;
-
-	FBusyRetryTestWorld Env;
-	UCrowdyGameModelSubsystem* Model = MakeLiveModel(Env.World);
-	FCrowdyGameModelTestClientHost ClientHost(Model, BusyRetryTestEndpoint, InvokeSuccessBody);
-	ClientHost.Client->SetTestResponseScript({ TPair<int32, FString>(200, BusyBody()),
-		TPair<int32, FString>(200, BusyBody()), TPair<int32, FString>(200, RateLimitedBody),
-		TPair<int32, FString>(200, RateLimitedBody), TPair<int32, FString>(200, BusyBody()) });
-	const FCrowdyGameModelNetStats& Stats = Model->GetNetStats();
-
-	FInvokeOutcome Outcome;
-	InvokeCounting(Model, Outcome);
-	DriveInvoke(Env, ClientHost, Outcome);
-	TestEqual(TEXT("the caller hears once"), Outcome.Delivered, 1);
-	TestTrue(TEXT("and hears the success"), Outcome.Last.bTransportOk && Outcome.Last.bSuccess);
-	TestEqual(TEXT("six attempts"), Stats.InvokesDispatched, 6);
-	TestEqual(TEXT("three of the retries were busy ones"), Stats.InvokeBusyRetries, 3);
-	TestEqual(TEXT("one recovered"), Stats.InvokeBusyRecovered, 1);
-	TestEqual(TEXT("none given up"), Stats.InvokeBusyGaveUp, 0);
-	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelBusyTeardownTest,
-	"CrowdySDK.GameModel.BusyRetry.TeardownGivesUp", CrowdyBusyRetryTestSupport::BusyRetryTestFlags)
-bool FCrowdyGameModelBusyTeardownTest::RunTest(const FString& Parameters)
-{
-	using namespace CrowdyBusyRetryTestSupport;
-
-	FBusyRetryTestWorld Env;
-	UCrowdyGameModelSubsystem* Model = MakeLiveModel(Env.World);
-	FCrowdyGameModelTestClientHost ClientHost(Model, BusyRetryTestEndpoint, InvokeSuccessBody);
-	ClientHost.Client->SetTestResponseScript(Repeat(BusyBody(), 1));
-
-	FInvokeOutcome Outcome;
-	InvokeCounting(Model, Outcome);
-	ClientHost.Client->Poll();
-	TestEqual(TEXT("a retry is armed"), Model->GetNetStats().InvokeBusyRetries, 1);
-	Model->FailPendingWorkForTest();
-	TestEqual(TEXT("teardown tells the caller once"), Outcome.Delivered, 1);
-	TestEqual(TEXT("and counts the abandoned retry as given up"), Model->GetNetStats().InvokeBusyGaveUp, 1);
-	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameModelBusyInvokeNotRetriedTest,
-	"CrowdySDK.GameModel.BusyRetry.InvokeNotRetried", CrowdyBusyRetryTestSupport::BusyRetryTestFlags)
-bool FCrowdyGameModelBusyInvokeNotRetriedTest::RunTest(const FString& Parameters)
-{
-	using namespace CrowdyBusyRetryTestSupport;
-
-	// In band the function ran; the others are not the busy refusal, not wanted, or name a wait too long to hold.
-	const FString InBand = TEXT(
-		"{\"data\":{\"gameModelInvoke\":{\"success\":false,\"returnValueJson\":null,\"errorMessage\":\"busy\",\"mutationsApplied\":[],"
-		"\"fault\":{\"code\":\"PLATFORM_BUSY\",\"blame\":\"PLATFORM\",\"retryable\":true}}}}");
-	struct FCase
-	{
-		const TCHAR* Name;
-		FString Body;
-		int32 Switch;
-		int32 GaveUp;
-	};
-	const FCase Cases[] = {
-		{ TEXT("in band"), InBand, 1, 0 },
-		{ TEXT("blame AUTHOR"), BusyBody(TEXT("AUTHOR")), 1, 0 },
-		{ TEXT("PLATFORM_ERROR"), RefusalBody(TEXT("PLATFORM_ERROR")), 1, 0 },
-		{ TEXT("switch off"), BusyBody(), 0, 1 },
-		{ TEXT("wait past 5 s"), BusyBody(TEXT("PLATFORM"), true, 6000), 1, 1 },
-	};
-	for (const FCase& Case : Cases)
-	{
-		const FBusyRetrySwitchScope Switch(Case.Switch);
-		FBusyRetryTestWorld Env;
-		UCrowdyGameModelSubsystem* Model = MakeLiveModel(Env.World);
-		FCrowdyGameModelTestClientHost ClientHost(Model, BusyRetryTestEndpoint, InvokeSuccessBody);
-		ClientHost.Client->SetTestResponseScript(Repeat(Case.Body, 1));
-
-		FInvokeOutcome Outcome;
-		InvokeCounting(Model, Outcome);
-		ClientHost.Client->Poll();
-		TestEqual(FString::Printf(TEXT("%s: delivered at once"), Case.Name), Outcome.Delivered, 1);
-		TestFalse(FString::Printf(TEXT("%s: as the refusal"), Case.Name), Outcome.Last.bSuccess);
-		Env.FireTimers();
-		ClientHost.Client->Poll();
-		TestEqual(FString::Printf(TEXT("%s: dispatched once"), Case.Name), Model->GetNetStats().InvokesDispatched, 1);
-		TestEqual(FString::Printf(TEXT("%s: no retry"), Case.Name), Model->GetNetStats().InvokeBusyRetries, 0);
-		TestEqual(FString::Printf(TEXT("%s: gave up"), Case.Name), Model->GetNetStats().InvokeBusyGaveUp, Case.GaveUp);
 	}
 	return true;
 }

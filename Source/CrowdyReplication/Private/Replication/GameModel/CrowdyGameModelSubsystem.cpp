@@ -99,6 +99,7 @@ namespace
 	{
 		double SelfEchoExpiry = 0.0;
 		bool bAnswered = false;
+		bool bSent = false;
 	};
 
 	// Broadcast each captured attribute change once, after the caller has fully updated the cache (and fired any
@@ -345,9 +346,8 @@ void UCrowdyGameModelSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// The API client outlives worlds, so its call stats restart with this world's window too.
 	ResetNetStats();
 
-	// The model-changed sink: bind the re-pull as the sole OnModelChanged consumer here so it survives even if
-	// the reception-layer registration below early-returns (no game instance in the transient world). Every
-	// carrier broadcasts via NotifyModelChanged; this is where a normalized hint becomes a re-pull.
+	// The model-changed sink: the re-pull is the sole OnModelChanged consumer. Every carrier broadcasts via
+	// NotifyModelChanged; this is where a normalized hint becomes a re-pull.
 	OnModelChangedDelegate.AddUObject(this, &UCrowdyGameModelSubsystem::HandleModelChangeHint);
 
 	// Register the fallback ping payload so the reflection serializer can encode/decode it as a CrowdyEvent.
@@ -357,9 +357,8 @@ void UCrowdyGameModelSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		Registry->RegisterStructAuto(FCrowdyModelChangedPing::StaticStruct());
 	}
 
-	// Subscribe to the model-changed carriers so server-native notifications reach HandleModelChangedDelivery.
-	// GetGameInstance() is null during the transient world at engine init guard it (a world-subsystem
-	// invariant); ShouldCreateSubsystem already restricts us to PIE/Game worlds.
+	// Null game instance in the transient world at engine init. Game Models are deprecated, so only the active
+	// session is kept: nothing subscribes to carriers, entity registration or host changes.
 	const UWorld* World = GetWorld();
 	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
 	if (!GameInstance)
@@ -369,27 +368,6 @@ void UCrowdyGameModelSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Bridge = GameInstance->GetSubsystem<UCrowdySDKBridgeSubsystem>();
 	SessionMemory = GameInstance->GetSubsystem<UCrowdyActiveSessionMemory>();
 	RestoreActiveSessionFromMemory();
-	EnsureReceptionLayerRegistered();
-
-	// Auto-bind: bring the entity subsystem up FIRST (InitializeDependency), else an entity that registers
-	// before we subscribe would broadcast OnEntityRegistered into the void (the InitializeDependency footgun
-	// from Subsystem Replication). Then subscribe so a CrowdyModel-attributed entity resolves-or-creates its
-	// container on registration.
-	Collection.InitializeDependency(UCrowdyEntitySubsystem::StaticClass());
-	EntitySubsystemForEvents = GetWorld()->GetSubsystem<UCrowdyEntitySubsystem>();
-	if (EntitySubsystemForEvents)
-	{
-		EntitySubsystemForEvents->OnEntityRegistered.AddDynamic(this, &UCrowdyGameModelSubsystem::HandleEntityRegistered);
-		EntitySubsystemForEvents->OnEntityUnregistered.AddDynamic(this, &UCrowdyGameModelSubsystem::HandleEntityUnregistered);
-	}
-
-	// A pending resolve (an entity that registered before the token was minted, or before its owner created the row)
-	// is otherwise re-driven only by an inbound model-changed notification. OnHostIDUpdated fires around connect /
-	// host election - near token mint and on host migration - so bind it as a non-notification liveness kick.
-	if (UCrowdyGameSession* Session = GetGameSession())
-	{
-		Session->OnHostIDUpdated.AddDynamic(this, &UCrowdyGameModelSubsystem::HandleHostChanged);
-	}
 }
 
 void UCrowdyGameModelSubsystem::Deinitialize()
@@ -619,10 +597,6 @@ void UCrowdyGameModelSubsystem::SubscribeToModelChangedCarriers(FCrowdyServiceRe
 void UCrowdyGameModelSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
-	// The service registry may not have existed at Initialize (the SDK subsystem creates it in its post-world-init
-	// pass); by BeginPlay it does, so ensure the reception registration actually happened.
-	EnsureReceptionLayerRegistered();
-	AutoRegisterTaggedSubsystems();
 }
 
 void UCrowdyGameModelSubsystem::AutoRegisterTaggedSubsystems()
@@ -904,43 +878,8 @@ bool UCrowdyGameModelSubsystem::IsHostOwnedEntity(const FGuid& NetID) const
 
 bool UCrowdyGameModelSubsystem::ResolveApiContext(FString& OutEndpoint, FString& OutToken, int64& OutAppId) const
 {
-#if WITH_DEV_AUTOMATION_TESTS
-	if (!ApiEndpointForTest.IsEmpty())
-	{
-		OutEndpoint = ApiEndpointForTest;
-		OutToken = ApiTokenForTest;
-		OutAppId = ApiAppIdForTest;
-		return true;
-	}
-#endif
-
-	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
-	OutEndpoint = Settings ? Settings->GetGameApiHttpUrl() : FString();
-	if (OutEndpoint.IsEmpty())
-	{
-		UE_LOG(LogCrowdyGameModel, Error,
-			TEXT("[GameModel] Game API endpoint is empty — pick and sync an app on the CrowdyStudio console (Project page) before invoking Game Models."));
-		return false;
-	}
-
-	const UCrowdyGameSession* Session = GetGameSession();
-	if (!Session)
-	{
-		UE_LOG(LogCrowdyGameModel, Error, TEXT("[GameModel] No UCrowdyGameSession — cannot resolve the Game API bearer token."));
-		return false;
-	}
-
-	// The app-scoped GAMEPLAY token is the bearer for the Game API (same source the query subsystem uses).
-	OutToken = Session->GetGameToken();
-	if (OutToken.IsEmpty())
-	{
-		UE_LOG(LogCrowdyGameModel, Error,
-			TEXT("[GameModel] No app-scoped game token — sign in and mint an app token before invoking Game Models."));
-		return false;
-	}
-
-	OutAppId = Session->GetAppID();
-	return true;
+	NoteGameModelDeprecated();
+	return false;
 }
 
 void UCrowdyGameModelSubsystem::Invoke(const FCrowdyInvokeRequest& Req, TFunction<void(FCrowdyInvokeResult)> OnDone)
@@ -972,12 +911,22 @@ void UCrowdyGameModelSubsystem::InvokeResolved(TSharedRef<FCrowdyInvokeRequest> 
 void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRequest> Resolved, int32 AttemptIndex,
 	TFunction<void(FCrowdyInvokeResult)> OnDone, const FCrowdyInvokeBindingGuard& Guard, int32 BusyRetries)
 {
+	if (NoteGameModelDeprecated())
+	{
+		if (OnDone)
+		{
+			OnDone(MakeGameModelDeprecatedResult());
+		}
+		return;
+	}
+
 	FString Endpoint;
 	FString Token;
 	int64 AppId = 0;
 	if (!ResolveApiContext(Endpoint, Token, AppId))
 	{
 		FCrowdyInvokeResult Failed;
+		Failed.Attempts = AttemptIndex;
 		Failed.ErrorMessage = TEXT("Game Model API context unavailable (endpoint or token missing)");
 		SetLastModelError(Failed.ErrorMessage);
 		if (OnDone)
@@ -1000,6 +949,7 @@ void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRe
 	if (!Client)
 	{
 		FCrowdyInvokeResult Failed;
+		Failed.Attempts = AttemptIndex;
 		Failed.ErrorMessage = TEXT("Game Model API client unavailable");
 		SetLastModelError(Failed.ErrorMessage);
 		if (OnDone)
@@ -1058,6 +1008,8 @@ void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRe
 			Mapped.bRetryable = Result.bRetryable;
 			Mapped.RetryAfterMs = Result.RetryAfterMs;
 			Mapped.DispatchSequence = Dispatched;
+			// An inline answer means the request never left, so it does not count as a send.
+			Mapped.Attempts = AttemptIndex + (Attempt->bSent ? 1 : 0);
 			Mapped.Mutations.Reserve(Result.Mutations.Num());
 			for (FCrowdyCppMutationApplied& M : Result.Mutations)
 			{
@@ -1111,6 +1063,7 @@ void UCrowdyGameModelSubsystem::DispatchInvokeAttempt(TSharedRef<FCrowdyInvokeRe
 	{
 		return;
 	}
+	Attempt->bSent = true;
 	// Marked only once the attempt is out; its response and any echo both reach the game thread later than this.
 	if (Guard.bMarkSelfEcho)
 	{
@@ -1598,7 +1551,8 @@ namespace
 
 bool UCrowdyGameModelSubsystem::IsCoalescingAvailable() const
 {
-	return !bShuttingDown && GetWorld() != nullptr;
+	// Game Models are deprecated: an apply is refused at once rather than held in a merge window first.
+	return false;
 }
 
 void UCrowdyGameModelSubsystem::EnqueueCoalescedInvoke(const FCrowdyCoalesceRequest& Request,
@@ -2371,13 +2325,20 @@ void UCrowdyGameModelSubsystem::ApplyLandedStates(const TArray<TPair<FString, FG
 	for (int32 Index = 0; Index < Targets.Num(); ++Index)
 	{
 		const TPair<FString, FGuid>& Target = Targets[Index];
-		if (Index == 0 || Targets[Index - 1].Key != Target.Key)
+		const bool bFirstForContainer = Index == 0 || Targets[Index - 1].Key != Target.Key;
+		if (bFirstForContainer)
 		{
 			Landed = EndContainerPull(Target.Key);
 		}
 		const TSharedPtr<FJsonObject>* State = bOk ? States.Find(Target.Key) : nullptr;
-		UObject* Participant = State && State->IsValid() ? ResolveEntityParticipant(Target.Value) : nullptr;
-		if (!Participant || !ApplyStateToContainer(Target.Value, Participant, *State, Landed.KeysWrittenSince.Find(Target.Value)))
+		const bool bHasState = State && State->IsValid();
+		const TSet<FName>* KeysToKeep = Landed.KeysWrittenSince.Find(Target.Value);
+		UObject* Participant = bHasState ? ResolveEntityParticipant(Target.Value) : nullptr;
+		const bool bEntityKeptDiffering = Participant && ApplyStateToContainer(Target.Value, Participant, *State, KeysToKeep);
+		// A bound row can also be watched by id, and its by-id readers are served from this same pull.
+		const bool bWatchedKeptDiffering = bFirstForContainer && bHasState && WatchedDataContainers.Contains(Target.Key)
+			&& ApplyWatchedBoundState(Target.Key, *State, KeysToKeep, Landed.KeysWrittenSince.Find(FGuid()));
+		if (!bWatchedKeptDiffering && !bEntityKeptDiffering)
 		{
 			continue;
 		}
@@ -2385,6 +2346,19 @@ void UCrowdyGameModelSubsystem::ApplyLandedStates(const TArray<TPair<FString, FG
 		NetStats.FollowUpPulls += PendingRefreshPulls.Contains(Target.Key) ? 0 : 1;
 		EnqueueRefreshPull(Target.Key, Target.Value);
 	}
+}
+
+bool UCrowdyGameModelSubsystem::ApplyWatchedBoundState(const FString& ContainerId, const TSharedPtr<FJsonObject>& NewState,
+	const TSet<FName>* EntityKeys, const TSet<FName>* ByIdKeys)
+{
+	// A write to this row may have landed in either cache while the pull was out, so both keep-sets guard it.
+	if (!EntityKeys || !ByIdKeys)
+	{
+		return ApplyDataContainerState(ContainerId, NewState, EntityKeys ? EntityKeys : ByIdKeys);
+	}
+	TSet<FName> Kept = *EntityKeys;
+	Kept.Append(*ByIdKeys);
+	return ApplyDataContainerState(ContainerId, NewState, &Kept);
 }
 
 struct UCrowdyGameModelSubsystem::FCrowdyContainerListRun
@@ -3146,6 +3120,10 @@ int32 UCrowdyGameModelSubsystem::EnrollDerivedComponentContainers(const FGuid& A
 	{
 		*bOutShouldRetry = false;
 	}
+	if (NoteGameModelDeprecated())
+	{
+		return 0;
+	}
 
 	UCrowdyEntitySubsystem* Entities = ResolveEntitySubsystem();
 	if (!Entities || !AnchorNetID.IsValid() || !IsValid(StandInOuter))
@@ -3343,7 +3321,7 @@ void UCrowdyGameModelSubsystem::ReplayCachedContainerStateToSubscriber(const FGu
 
 void UCrowdyGameModelSubsystem::EnrollModelComponent(UActorComponent* Component)
 {
-	if (!IsValid(Component))
+	if (NoteGameModelDeprecated() || !IsValid(Component))
 	{
 		return;
 	}
@@ -3947,8 +3925,7 @@ void UCrowdyGameModelSubsystem::ApplyInvokeMutations(const FGuid& SelfNetID, con
 
 	for (const TPair<FString, TArray<FCrowdyMutationApplied>>& Pair : ByContainer)
 	{
-		// Precedence matches HandleModelChangedByContainer: a bound participant first, then a watched free/data
-		// container. Never both, so a container that has a participant does not also fire the by-id delegate.
+		// A bound participant first, then the by-id cache when the row is watched too, the same as a landed pull.
 		// By id even for the invoke's own row, so a write and the signal that follows it cannot land on two objects.
 		FGuid DestNetID = FindNetIDForContainer(Pair.Key);
 		if (!DestNetID.IsValid() && Pair.Key == SelfContainerId)
@@ -3956,13 +3933,15 @@ void UCrowdyGameModelSubsystem::ApplyInvokeMutations(const FGuid& SelfNetID, con
 			DestNetID = SelfNetID;
 		}
 
-		if (DestNetID.IsValid())
+		UObject* Participant = DestNetID.IsValid() ? ResolveEntityParticipant(DestNetID) : nullptr;
+		if (Participant)
 		{
-			if (UObject* Participant = ResolveEntityParticipant(DestNetID))
+			ApplyMutationsToContainer(DestNetID, Participant, Pair.Value, DispatchSequence);
+			if (WatchedDataContainers.Contains(Pair.Key))
 			{
-				ApplyMutationsToContainer(DestNetID, Participant, Pair.Value, DispatchSequence);
-				continue;
+				ApplyDataContainerMutations(Pair.Key, Pair.Value, DispatchSequence);
 			}
+			continue;
 		}
 
 		if (WatchedDataContainers.Contains(Pair.Key))
@@ -4181,7 +4160,8 @@ void UCrowdyGameModelSubsystem::HandleModelChangedByContainer(const FString& Con
 		return;
 	}
 	// Each client may bind its OWN entity to a shared container, so resolve the LOCAL entity bound to this
-	// container and re-pull that. A container we do not have bound is not ours to update.
+	// container and re-pull that. A container we do not have bound is not ours to update. That pull also refreshes
+	// the by-id cache when the row is watched too.
 	const FGuid BoundNetID = FindNetIDForContainer(ContainerId);
 	if (BoundNetID.IsValid())
 	{
@@ -4226,6 +4206,15 @@ void UCrowdyGameModelSubsystem::InvokeAndApplyResolved(const FGuid& SelfNetID, c
 	const TSharedPtr<FJsonObject>& Params, const FString& ResolvedSessionId,
 	TFunction<void(FCrowdyInvokeResult)> OnDone)
 {
+	if (NoteGameModelDeprecated())
+	{
+		if (OnDone)
+		{
+			OnDone(MakeGameModelDeprecatedResult());
+		}
+		return;
+	}
+
 	FString ContainerId;
 	if (!TryGetContainerId(SelfNetID, ContainerId))
 	{
@@ -5140,6 +5129,12 @@ int32 UCrowdyGameModelSubsystem::GetRememberedSessionIncarnation(const FString& 
 void UCrowdyGameModelSubsystem::LeaveSession(const FString& SessionId, int32 Incarnation,
 	TFunction<void(bool, const FCrowdyGameModelSessionParticipant&)> OnDone)
 {
+	if (NoteGameModelDeprecated())
+	{
+		if (OnDone) { OnDone(false, FCrowdyGameModelSessionParticipant()); }
+		return;
+	}
+
 	const FString ResolvedSession = ResolveSessionId(SessionId, ActiveSessionId);
 
 	int32 UseIncarnation = 0;
@@ -5751,6 +5746,43 @@ FString UCrowdyGameModelSubsystem::GetLastModelErrorCode() const
 	return LastModelErrorCode;
 }
 
+namespace
+{
+	// Process-wide, so a game that keeps calling is warned once rather than once per call.
+	bool bGameModelDeprecationWarned = false;
+}
+
+bool UCrowdyGameModelSubsystem::NoteGameModelDeprecated() const
+{
+	LastModelError = CrowdyCppGameModelDeprecatedMessage;
+	LastModelErrorCode = CrowdyCppGameModelDeprecatedCode;
+	if (bGameModelDeprecationWarned)
+	{
+		return true;
+	}
+	bGameModelDeprecationWarned = true;
+	UE_LOG(LogCrowdyGameModel, Warning, TEXT("[GameModel] %s"), CrowdyCppGameModelDeprecatedMessage);
+	return true;
+}
+
+FCrowdyInvokeResult UCrowdyGameModelSubsystem::MakeGameModelDeprecatedResult()
+{
+	FCrowdyInvokeResult Result;
+	Result.bTransportOk = false;
+	Result.bSuccess = false;
+	Result.bRetryable = false;
+	Result.ErrorMessage = CrowdyCppGameModelDeprecatedMessage;
+	Result.FaultCode = CrowdyCppGameModelDeprecatedCode;
+	return Result;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyGameModelSubsystem::ResetDeprecationWarningForTest()
+{
+	bGameModelDeprecationWarned = false;
+}
+#endif
+
 FCrowdyModelFailure UCrowdyGameModelSubsystem::GetLastFailure() const
 {
 	FCrowdyModelFailure Failure;
@@ -5873,6 +5905,15 @@ void UCrowdyGameModelSubsystem::InvokeOnContainerResolved(const FString& Contain
 	const TSharedPtr<FJsonObject>& Params, const FString& ResolvedSessionId,
 	TFunction<void(FCrowdyInvokeResult)> OnDone)
 {
+	if (NoteGameModelDeprecated())
+	{
+		if (OnDone)
+		{
+			OnDone(MakeGameModelDeprecatedResult());
+		}
+		return;
+	}
+
 	if (ContainerId.IsEmpty())
 	{
 		if (OnDone)
@@ -6203,7 +6244,12 @@ void UCrowdyGameModelSubsystem::ApplyDataContainerMutations(const FString& Conta
 		const FName Key(*Mutation.Key);
 		// Canonicalize the SAME way the pull path does so equal values compare equal across both apply paths.
 		const TSharedPtr<FJsonValue> Value = ParseJsonValueString(Mutation.NewValueJson);
-		const FString Canonical = Value.IsValid() ? JsonValueToCompactString(Value) : Mutation.NewValueJson;
+		// An unreadable value is neither cached nor kept, the same rule the entity apply follows.
+		if (!Value.IsValid())
+		{
+			continue;
+		}
+		const FString Canonical = JsonValueToCompactString(Value);
 		const FString* Existing = Cache.Find(Key);
 		if (Protect)
 		{

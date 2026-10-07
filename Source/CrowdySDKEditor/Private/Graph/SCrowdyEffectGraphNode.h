@@ -33,6 +33,18 @@ public:
 	// waiting for a full graph refresh.
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
+#if WITH_DEV_AUTOMATION_TESTS
+	// Commits Text through the node body's Index-th text field, exactly as pressing Enter in it does.
+	void CommitTextFieldForTest(const int32 Index, const FString& Text) const
+	{
+		if (TextFieldCommitsForTest.IsValidIndex(Index))
+		{
+			TextFieldCommitsForTest[Index](Text);
+		}
+	}
+	int32 NumTextFieldsForTest() const { return TextFieldCommitsForTest.Num(); }
+#endif
+
 protected:
 	virtual void CreateBelowPinControls(TSharedPtr<SVerticalBox> MainBox) override;
 
@@ -80,6 +92,11 @@ private:
 	bool bCachedHasError = false;
 	int32 CachedErrorType = 0;
 	FString CachedErrorMsg;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	// The current body's text-field commits, rebuilt with the body.
+	TArray<TFunction<void(const FString&)>> TextFieldCommitsForTest;
+#endif
 };
 
 /**

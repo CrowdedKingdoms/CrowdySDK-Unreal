@@ -17,6 +17,9 @@
 #include "Replication/Subsystems/ICrowdyEntitySubscriber.h"
 #include "CrowdyGameModelSubsystem.generated.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class UCrowdyContainerManifest;
 class UCrowdyActiveSessionMemory;
 class UCrowdyEntitySubsystem;
@@ -35,7 +38,7 @@ struct FCrowdyCppJsonResult;
 
 // Fires on the game thread when a free/data container's cached state changes after a pull, the OnRep analogue
 // for actorless containers (inventories, quests). A UI binds this and filters by ContainerId. Actor-bound
-// containers fire their actor's CrowdyOnRep instead; this delegate is only for containers with no entity.
+// containers fire their actor's CrowdyOnRep, and this as well only while the same row is also watched by id.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyDataContainerChanged, const FString&, ContainerId);
 
 /**
@@ -144,7 +147,7 @@ struct FCrowdyCoalesceRequest
  * are supplied explicitly via BindEntityContainer, or resolved automatically for a CrowdyContainer-tagged entity.
  */
 UCLASS(BlueprintType)
-class CROWDYREPLICATION_API UCrowdyGameModelSubsystem : public UWorldSubsystem, public ICrowdyModelNotificationSink
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyGameModelSubsystem : public UWorldSubsystem, public ICrowdyModelNotificationSink
 {
 	GENERATED_BODY()
 
@@ -152,8 +155,7 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
-	// Auto-register tagged subsystems once the world (and every other subsystem) is up. Runs after Initialize's
-	// OnEntityRegistered subscription, so a fresh RegisterParticipant broadcast reaches HandleEntityRegistered.
+	// Enrolls nothing: Game Models are deprecated, so no tagged subsystem is registered as a participant.
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 
 	// ICrowdyModelNotificationSink: the seam a consumer subscribes to. Every inbound carrier normalizes to one
@@ -350,11 +352,8 @@ public:
 	// The lines crowdy.gamemodel.stats logs.
 	void DescribeNetStats(TArray<FString>& OutLines) const;
 
-	// Whether offering an apply to the coalescer could merge anything at all right now: it needs a world (a merge
-	// window is a timer) and a subsystem that is not tearing down. Callers use it to skip building a merge
-	// discriminator whose only use would be to key a window that cannot be opened. It answers only whether that work
-	// is worth doing, never where to send the apply: EnqueueCoalescedInvoke re-checks the same conditions and
-	// dispatches on its own when they do not hold, so a caller that ignores this is correct, only more expensive.
+	// Whether offering an apply to the coalescer could merge anything at all right now. Always false: Game Models are
+	// deprecated, so EnqueueCoalescedInvoke dispatches every apply on its own and it is refused at once.
 	bool IsCoalescingAvailable() const;
 
 	// Offer an invoke to the coalescer: merge it into an open window for the same target, function, session and
@@ -596,29 +595,29 @@ public:
 	static int32 ResolveHostTerm(int32 Requested, const int32* Known);
 
 	// The incarnation this subsystem's own Create/Join recorded for a session, or 0 when it has none.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns|Advanced", meta = (DisplayName = "Get Remembered Session Incarnation"))
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns|Advanced", meta = (DisplayName = "Get Remembered Session Incarnation", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	int32 GetRememberedSessionIncarnation(const FString& SessionId) const;
 
 	// The HostTerm this subsystem last read for a session (from any call that returned it), or 0 when it has none.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns|Advanced", meta = (DisplayName = "Get Known Session Host Term"))
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns|Advanced", meta = (DisplayName = "Get Known Session Host Term", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	int32 GetKnownSessionHostTerm(const FString& SessionId) const;
 
 	// The most recent refused session call as something a Blueprint can switch on, with the server's code and
 	// message. Error is None when the last call succeeded.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Get Last Session Failure"))
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Get Last Session Failure", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	FCrowdyModelFailure GetLastFailure() const;
 
 	// Opens a session's event stream over the WebSocket and broadcasts each event on OnSessionChanged. AfterRevision
 	// < 0 starts from now; otherwise the server replays everything after it. Watching the same id again replaces the
 	// earlier watch. Closed by UnwatchSession and on world teardown.
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Watch Game Session"))
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Watch Game Session", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	void WatchSession(const FString& SessionId, int64 AfterRevision = -1);
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Unwatch Game Session"))
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Unwatch Game Session", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	void UnwatchSession(const FString& SessionId);
 
 	// Broadcast on the game thread for every session change heard from either carrier. A channel cue carries no
 	// payload (PayloadJson empty): the game re-pulls the snapshot; a gap in Revision means pull the snapshot again.
-	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "On Game Session Changed"))
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "On Game Session Changed", DeprecatedProperty, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	FCrowdyOnSessionChanged OnSessionChanged;
 
 	// The local player's Game Model user id (from UCrowdyGameSession), or 0 when signed out.
@@ -632,11 +631,11 @@ public:
 	// node. Remembered on the game instance (UCrowdyActiveSessionMemory), so it survives a map travel and the next
 	// map's placed entities register inside it; Clear, Leave and End forget it. An explicit Session Id on a call
 	// still wins over the active one.
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Set Active Crowdy Session"))
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Set Active Crowdy Session", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	void SetActiveSession(const FString& SessionId);
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Get Active Crowdy Session"))
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Get Active Crowdy Session", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	FString GetActiveSession() const;
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Clear Active Crowdy Session"))
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Model|Sessions & Turns", meta = (DisplayName = "Clear Active Crowdy Session", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	void ClearActiveSession();
 
 	// The single point of truth for the session-resolution rule so it cannot drift across call sites: an explicit
@@ -655,12 +654,16 @@ public:
 	// Last-error cache. The most recent server/transport error string the subsystem observed (or a caller set), so a
 	// UI can read a human reason after a failed call without threading it through every callback. Game-thread only.
 	void SetLastModelError(const FString& InError);
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "Get Last Crowdy Model Error"))
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "Get Last Crowdy Model Error", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	FString GetLastModelError() const;
 	// The server's stable code for the most recent refused session call (SESSION_FULL, SESSION_LOCKED, ...), empty
 	// when the failure carried none. Branch on this, not on the human-readable error string.
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "Get Last Crowdy Model Error Code"))
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "Get Last Crowdy Model Error Code", DeprecatedFunction, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	FString GetLastModelErrorCode() const;
+
+	// Game Models are deprecated: every call is refused. Records the refusal as the last error, warns once per
+	// process, and returns true so a call site can refuse in one guard.
+	bool NoteGameModelDeprecated() const;
 
 	// Free/data containers addressed by containerId, with no actor. Create/pull/invoke/set-property, backed by a
 	// per-container cache the typed getters read and the OnDataContainerChanged delegate a UI binds to. A
@@ -745,21 +748,21 @@ public:
 		uint64 DispatchSequence = 0);
 
 	// Broadcast on the game thread when a watched free/data container's cached state changed after a pull.
-	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "On Game Model Changed (by Id)"))
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "On Game Model Changed (by Id)", DeprecatedProperty, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	FCrowdyDataContainerChanged OnDataContainerChanged;
 
 	// Broadcast on the game thread for every attribute whose value changed on any apply path, actor-bound or
 	// free/data. The zero-setup change observer behind the "Listen for Model Changes" node: bind once instead of
 	// wiring a per-attribute OnRep, then filter by Target or ModelId if desired. Fires alongside (not instead of)
 	// each changed attribute's CrowdyOnRep. See FCrowdyModelAttributeChanged.
-	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "On Model Attribute Changed"))
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "On Model Attribute Changed", DeprecatedProperty, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	FCrowdyModelAttributeChanged OnModelAttributeChanged;
 
 	// Broadcast on the game thread when a signal arrives, after the bound container's OnSignal_<Name> handler has
 	// run. The handler is the usual way to react; this is for anything that is not the container itself, such as UI
 	// or an audio system, and it still fires when the named container is not bound locally (Target is null then).
 	// Target is whatever ran the handler, else the object bound to the container.
-	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "On Crowdy Signal"))
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Model|Advanced", meta = (DisplayName = "On Crowdy Signal", DeprecatedProperty, DeprecationMessage = "Game Models are deprecated and no longer available; use a Server Object (Server Compute) instead."))
 	FCrowdySignalReceived OnCrowdySignal;
 
 	// Route one decoded signal: call OnSignal_<Name> on the locally bound container when there is one, then
@@ -899,6 +902,9 @@ public:
 		OutTypeName = *Found;
 		return true;
 	}
+	int32 GetPendingModelEntityCountForTest() const { return PendingModelEntities.Num(); }
+	// Lets the next refusal warn again, so a test can count the once-per-process warning.
+	static void ResetDeprecationWarningForTest();
 	// The real create-versus-read gate, so a test proves a class-derived binding can never ensure a row rather
 	// than just proving it was flagged as one.
 	bool IsAuthoritativeToCreateForTest(const FGuid& NetID) const { return IsAuthoritativeToCreate(NetID); }
@@ -1001,7 +1007,7 @@ public:
 	// itself, so a test can tell "the notification was coalesced away" from "the sweep did nothing".
 	void RequestPendingModelEntitySweepForTest() { RequestPendingModelEntitySweep(); }
 	void RetryPendingModelEntitiesForTest() { RetryPendingModelEntities(); }
-	// Answers the API context check with these values, so a call gets as far as asking for the client.
+	// Records an API context for a test. Ignored: Game Models are deprecated and every call is refused anyway.
 	void SetApiContextForTest(const FString& Endpoint, const FString& Token, int64 AppId)
 	{
 		ApiEndpointForTest = Endpoint;
@@ -1024,9 +1030,15 @@ public:
 #endif
 
 private:
-	// Resolves the Game API endpoint + bearer token + app id from settings + the game session. False (with a
-	// clear LogCrowdyGameModel error) when any is missing. Never logs the token.
+	// The by-id apply for a row that is also bound to an entity, keeping keys written through either cache.
+	bool ApplyWatchedBoundState(const FString& ContainerId, const TSharedPtr<FJsonObject>& NewState,
+		const TSet<FName>* EntityKeys, const TSet<FName>* ByIdKeys);
+
+	// Always false: Game Models are deprecated, so no call ever gets an endpoint or a token. Records the refusal.
 	bool ResolveApiContext(FString& OutEndpoint, FString& OutToken, int64& OutAppId) const;
+
+	// The failed, non-retryable invoke outcome every deprecated invoke answers with.
+	static FCrowdyInvokeResult MakeGameModelDeprecatedResult();
 
 	// The async client every Game Model API call runs on. It is owned by the game instance, not by this world
 	// subsystem, so it survives level travel and one pump serves every caller. Returns null when there is no game
@@ -1261,10 +1273,10 @@ private:
 
 	// The most recent Game Model error the subsystem saw (or a caller set via SetLastModelError). Read via
 	// GetLastModelError. Cleared in Deinitialize. Game-thread only.
-	FString LastModelError;
+	mutable FString LastModelError;
 
 	// The server's stable code for the most recent refused session call, alongside the string above.
-	FString LastModelErrorCode;
+	mutable FString LastModelErrorCode;
 
 	// Records a failed raw result into the two last-error strings; a clean transport records nothing.
 	void RecordServerRefusal(const FCrowdyCppJsonResult& Result);
@@ -1356,7 +1368,7 @@ private:
 #if WITH_DEV_AUTOMATION_TESTS
 	// Stands in for the router a headless test has no world to resolve. Never set outside a test.
 	TWeakObjectPtr<UCrowdyEventRouter> EventRouterForTest;
-	// Set only by SetApiContextForTest; an empty endpoint means the real context is resolved.
+	// Set only by SetApiContextForTest; never read, since every call is refused before it needs a context.
 	FString ApiEndpointForTest;
 	FString ApiTokenForTest;
 	int64 ApiAppIdForTest = 0;
@@ -1824,3 +1836,5 @@ private:
 	uint64 DebugContainerWatchId = 0;
 #endif
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

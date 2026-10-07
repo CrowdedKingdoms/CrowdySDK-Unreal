@@ -1,5 +1,6 @@
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
+#include "CrowdyCppClient.h"
 #include "CrowdyReplicationLog.h"
 #include "Engine/World.h"
 #include "Misc/PackageName.h"
@@ -205,6 +206,18 @@ FString UCrowdySDKDeveloperSettings::GetGameApiWsUrl() const
 {
 	// No derivation. The console writes this (the game URL with a ws scheme, as the docs do).
 	return GameApiWsUrl;
+}
+
+FCrowdyCppClientConfig UCrowdySDKDeveloperSettings::MakeClientConfig() const
+{
+	FCrowdyCppClientConfig Config;
+	Config.DiscoveryUrl = GetDiscoveryUrl();
+	Config.ApiUrl = GetGameApiHttpUrl();
+	if (Config.ApiUrl.IsEmpty())
+	{
+		Config.ApiUrl = Config.DiscoveryUrl;
+	}
+	return Config;
 }
 
 const UCrowdyMapProfile* UCrowdySDKDeveloperSettings::ResolveProfileForWorld(const UWorld* World)

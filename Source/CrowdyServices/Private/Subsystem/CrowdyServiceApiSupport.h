@@ -24,29 +24,10 @@
  */
 namespace CrowdyServiceApi
 {
-	/**
-	 * How the running game addresses the API, read from the developer settings.
-	 *
-	 * The two values are not interchangeable and the fallback is the interesting part. GameApiHttpUrl names the one
-	 * instance in the datacenter the app is served from, which is where its shards are and therefore the only place
-	 * a gameplay call is answered rather than refused. It is empty until an app has been resolved, and the shared
-	 * origin is the right stand-in for that gap: every datacenter answers it, so a cold client can get far enough to
-	 * ask where it should actually be. Leaving it empty instead would build a client with no endpoint at all, which
-	 * the merged-API era papered over by falling back to the management URL and this one cannot.
-	 */
+	/** How the running game addresses the API, read from the developer settings. */
 	inline FCrowdyCppClientConfig ResolveClientConfig()
 	{
-		FCrowdyCppClientConfig Config;
-		if (const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>())
-		{
-			Config.DiscoveryUrl = Settings->GetDiscoveryUrl();
-			Config.ApiUrl = Settings->GetGameApiHttpUrl();
-			if (Config.ApiUrl.IsEmpty())
-			{
-				Config.ApiUrl = Config.DiscoveryUrl;
-			}
-		}
-		return Config;
+		return GetDefault<UCrowdySDKDeveloperSettings>()->MakeClientConfig();
 	}
 
 	/** An error that never reached the server, so no server verdict exists to report. */

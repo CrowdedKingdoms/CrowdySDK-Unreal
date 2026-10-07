@@ -5,6 +5,9 @@
 #include "Replication/GameModel/CrowdyContainerManifestApply.h"
 #include "CrowdyContainerManifestActions.generated.h"
 
+// The deprecated Game Model types name one another here; only a caller's own use should warn.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 class UCrowdyContainerManifest;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyApplyManifestOutcome, FCrowdyApplyManifestResult, Result);
@@ -16,7 +19,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyApplyManifestOutcome, FCrowdy
  * first refusal, so Failed carries one failure and the count of rows never sent.
  */
 UCLASS()
-class CROWDYREPLICATION_API UCrowdyApplyContainerManifestAction : public UBlueprintAsyncActionBase
+class UE_DEPRECATED(5.8, "Game Models are deprecated and no longer available; use Server Compute (Server Objects) instead.") CROWDYREPLICATION_API UCrowdyApplyContainerManifestAction : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
@@ -44,3 +47,5 @@ private:
 	FString SessionId;
 	bool bAppScope = false;
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

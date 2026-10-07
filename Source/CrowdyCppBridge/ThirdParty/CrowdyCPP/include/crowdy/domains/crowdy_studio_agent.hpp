@@ -15,7 +15,7 @@ namespace crowdy::domains {
 
 /// Exact GraphQL surface for `crowdy.studio-agent/1` after the orchestrator
 /// retirement: app policy, sanitized usage, provider-data consent, the metered
-/// model usage read model, and operator controls. All go to the one API
+/// model usage read model. All go to the one API
 /// origin, gated by permission. The agent's session/run/lease/tool operations
 /// are gone from the API (the agent runs in the player's browser against the
 /// REST `/v1/model` endpoint), so this class no longer has them. It does not
@@ -93,30 +93,6 @@ class CrowdyStudioAgentAPI {
   void setPolicyAsync(const graphql::JVal& input,
                       graphql::GraphQLCallback cb) const {
     runInputAsync("CrowdyStudioAgentSetPolicy", input, std::move(cb));
-  }
-
-  // Operator roots.
-  graphql::Json platformPolicy() const {
-    return run("CpCrowdyStudioAgentPlatformPolicy", graphql::JVal());
-  }
-  void platformPolicyAsync(graphql::GraphQLCallback cb) const {
-    runAsync("CpCrowdyStudioAgentPlatformPolicy", graphql::JVal(),
-                    std::move(cb));
-  }
-  graphql::Json setPlatformPolicy(const graphql::JVal& input) const {
-    return runInput("CpSetCrowdyStudioAgentPlatformPolicy", input);
-  }
-  void setPlatformPolicyAsync(const graphql::JVal& input,
-                              graphql::GraphQLCallback cb) const {
-    runInputAsync("CpSetCrowdyStudioAgentPlatformPolicy", input,
-                         std::move(cb));
-  }
-  graphql::Json setOperatorAppKill(const graphql::JVal& input) const {
-    return runInput("CpSetCrowdyStudioAgentAppKill", input);
-  }
-  void setOperatorAppKillAsync(const graphql::JVal& input,
-                               graphql::GraphQLCallback cb) const {
-    runInputAsync("CpSetCrowdyStudioAgentAppKill", input, std::move(cb));
   }
 
  private:

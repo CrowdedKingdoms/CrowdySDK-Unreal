@@ -1,6 +1,8 @@
 #include "CrowdyCppClient.h"
 
 #include "CrowdyCppBridge.h"
+#include "CrowdyNativeExecInternal.h"
+#include "Async/Async.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
 #include "Platform/CrowdyCppHttpTransport.h"
@@ -15,6 +17,7 @@ THIRD_PARTY_INCLUDES_START
 #include "crowdy/core/crypto.hpp"
 #include "crowdy/core/result.hpp"
 #include "crowdy/domains/auth.hpp"
+#include "crowdy/domains/exec.hpp"
 #include "crowdy/domains/portal.hpp"
 #include "crowdy/domains/types.hpp"
 #include "crowdy/generated/operations.hpp"
@@ -22,12 +25,12 @@ THIRD_PARTY_INCLUDES_START
 #include "crowdy/graphql/graphql_client.hpp"
 #include "crowdy/graphql/json.hpp"
 #include "crowdy/graphql/subscription_client.hpp"
-#include "crowdy/studio/model_lint.hpp"
 THIRD_PARTY_INCLUDES_END
 
 #include <atomic>
 #include <exception>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -50,12 +53,11 @@ namespace
 		int32 Retries = 0;
 	};
 
-	// Which refusals a request may be sent again after: none, any the platform says to retry, or only PLATFORM_BUSY.
+	// Which refusals a request may be sent again after: none, or any the platform says to retry.
 	enum class EBusyRetryKind : uint8
 	{
 		None,
-		Query,
-		NeverStarted
+		Query
 	};
 
 	// Everything needed to send one request again, unchanged, after the platform refused it.
@@ -490,11 +492,13 @@ struct FCrowdyCppClient::FImpl
 	 */
 	FString LastSeenEndpoint;
 
+#if WITH_DEV_AUTOMATION_TESTS
 	// Set only for a test client, where it records what the canned transport was last handed.
 	std::shared_ptr<CrowdyCppTransport::FCannedRequestCapture> TestCapture;
 
 	// Set only for a test client, where it stands in for the socket so a test can play the server by hand.
 	std::shared_ptr<CrowdyCppTransport::FScriptedWebSocketServer> TestWebSocket;
+#endif
 
 	/**
 	 * The subscription client is built alongside the underlying client rather than taken from it, because it must
@@ -523,6 +527,48 @@ struct FCrowdyCppClient::FImpl
 	};
 
 	TMap<uint64, TUniquePtr<FLiveSubscription>> LiveSubscriptions;
+
+	// The binary transport ck-exec connections open their gateway sockets on.
+	std::shared_ptr<crowdy::graphql::IWebSocketTransport> ExecTransport;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	// Set only for a test client, where it stands in for the ck-exec gateway.
+	std::shared_ptr<CrowdyCppTransport::FScriptedWebSocketServer> TestExecWebSocket;
+#endif
+
+	// Every ck-exec connection made here, closed with the client before its completion pump shuts.
+	TArray<TWeakPtr<FCrowdyNativeExecConnection>> ExecConnections;
+
+	// Held by every dial, and cleared on Close, so a dial queued behind the close issues nothing.
+	struct FExecDialOwner
+	{
+		FImpl* Owner = nullptr;
+	};
+	std::shared_ptr<FExecDialOwner> ExecDialOwner = std::make_shared<FExecDialOwner>();
+
+	FImpl()
+	{
+		ExecDialOwner->Owner = this;
+	}
+
+	// Asks the Game API for a ck-exec host under the app token, then hands the answer to Found.
+	static void DialExec(std::shared_ptr<FExecDialOwner> DialOwner, std::string AppId, std::string NodeType,
+		std::string Key, TFunction<FString()> ResolveAppToken,
+		std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found);
+
+	void CloseExecConnections()
+	{
+		ExecDialOwner->Owner = nullptr;
+		TArray<TWeakPtr<FCrowdyNativeExecConnection>> Closing = MoveTemp(ExecConnections);
+		ExecConnections.Reset();
+		for (const TWeakPtr<FCrowdyNativeExecConnection>& Weak : Closing)
+		{
+			if (const TSharedPtr<FCrowdyNativeExecConnection> Live = Weak.Pin())
+			{
+				Live->Close();
+			}
+		}
+	}
 
 	bool bClosed = false;
 
@@ -784,41 +830,9 @@ namespace
 		return FString(UTF8_TO_TCHAR(crowdy::errcName(Out.status.code)));
 	}
 
-	// The blame attribution and retry verdict for a failed outcome, read from the same entry OutcomeErrorMessage
-	// uses. This is the channel the overload refusal arrives on: writes to one hot container are serialised and a
-	// call has a time budget, so past a certain rate the platform refuses rather than serving late, and says so with
-	// blame PLATFORM and retryable true.
-	//
-	// Retryable is reported ONLY alongside an attribution. CrowdyCPP defaults extensions.retryable to true so that a
-	// caller with no information errs toward trying again, which is the right default for a read; an invoke can have
-	// committed before the failure was reported, so here the absence of attribution has to read as "do not know",
-	// and only a server that named whose fault it was licenses a retry.
-	void ReadOutcomeFault(const crowdy::graphql::GraphQLOutcome& Out, FCrowdyCppInvokeResult& OutResult)
-	{
-		const crowdy::graphql::GraphQLErrorDetail* Error = LeadingError(Out);
-		if (!Error)
-		{
-			return;
-		}
-		OutResult.FaultCode = Utf8ToFString(Error->code);
-		OutResult.Blame = Utf8ToFString(Error->blame);
-		OutResult.bRetryable = !OutResult.Blame.IsEmpty() && Error->retryable;
-		// Read unconditionally rather than under a code test: the player boundary rewrites the code to
-		// USER_CODE_ERROR and leaves these three alone, so keying off the code would miss the refusal on
-		// exactly the path a player takes.
-		OutResult.QuarantinedKind = Utf8ToFString(Error->quarantinedKind);
-		OutResult.QuarantinedName = Utf8ToFString(Error->quarantinedName);
-		OutResult.QuarantineReason = Utf8ToFString(Error->quarantineReason);
-		// Passed through exactly as CrowdyCPP resolved it, absence included. It already refuses a non-numeric value,
-		// so anything present here is a number the server meant as a duration; bounding it is the consumer's job,
-		// since only the consumer knows what waiting that long would cost it.
-		if (Error->retryAfterMs.has_value())
-		{
-			OutResult.RetryAfterMs = static_cast<int64>(*Error->retryAfterMs);
-		}
-	}
-
-	// The same attribution for a generic operation, which has no quarantine fields.
+	// The code, blame and retry verdict for a failed outcome, read from the same entry OutcomeErrorMessage uses.
+	// Retryable is reported only alongside a blame: CrowdyCPP defaults it to true, and a mutation may have committed
+	// before an unattributed failure was reported.
 	void ReadOutcomeFault(const crowdy::graphql::GraphQLOutcome& Out, FCrowdyCppJsonResult& OutResult)
 	{
 		const crowdy::graphql::GraphQLErrorDetail* Error = LeadingError(Out);
@@ -866,7 +880,7 @@ namespace
 
 	TAutoConsoleVariable<int32> CVarRetryBusy(
 		TEXT("crowdy.net.retry.busy"), 1,
-		TEXT("Sends an SDK query again, up to 3 times with backoff, when the platform refuses it and says to retry (blame PLATFORM, retryable); a container ensure or an invoke is sent again only when the platform says the work never started (PLATFORM_BUSY). 0 hands every refusal straight to the caller."),
+		TEXT("Sends an SDK query again, up to 3 times with backoff, when the platform refuses it and says to retry (blame PLATFORM, retryable). 0 hands every refusal straight to the caller."),
 		ECVF_Default);
 
 	// Whether Out is a refusal a request of this kind may send again; CrowdyCPP reads a missing retryable as true.
@@ -878,24 +892,15 @@ namespace
 		{
 			return false;
 		}
-		if (Kind == EBusyRetryKind::NeverStarted)
-		{
-			return Error->code == "PLATFORM_BUSY";
-		}
 		// CrowdyCPP has already followed the redirect, and an unavailable app has nowhere else to be served from.
 		return Error->code != crowdy::graphql::kWrongDatacenterCode
 			&& Error->code != crowdy::graphql::kAppUnavailableCode;
 	}
 
-	// A query only reads and an ensure gets or creates one row by key, so sending either again cannot apply twice.
-	EBusyRetryKind RetryKindFor(ECrowdyCppApiDomain Domain, std::string_view Document, const std::string& Operation)
+	// A query only reads, so sending it again cannot apply twice.
+	EBusyRetryKind RetryKindFor(std::string_view Document)
 	{
-		if (Document.substr(0, 6) == "query ")
-		{
-			return EBusyRetryKind::Query;
-		}
-		const bool bEnsure = Domain == ECrowdyCppApiDomain::GameModel && Operation == "GameModelEnsureContainer";
-		return bEnsure ? EBusyRetryKind::NeverStarted : EBusyRetryKind::None;
+		return Document.substr(0, 6) == "query " ? EBusyRetryKind::Query : EBusyRetryKind::None;
 	}
 
 	// Queue Retry to be sent again when Out is a refusal it may repeat; false when Out is to be delivered.
@@ -1283,7 +1288,8 @@ namespace
 		using namespace crowdy::gen;
 		switch (Domain)
 		{
-		case ECrowdyCppApiDomain::GameModel:     return gameModel::documentFor(Op);
+		case ECrowdyCppApiDomain::GameModel:
+		case ECrowdyCppApiDomain::Compute:       return std::string_view();
 		case ECrowdyCppApiDomain::Auth:          return auth::documentFor(Op);
 		case ECrowdyCppApiDomain::Users:         return users::documentFor(Op);
 		case ECrowdyCppApiDomain::Apps:          return apps::documentFor(Op);
@@ -1303,27 +1309,19 @@ namespace
 		case ECrowdyCppApiDomain::Teleport:      return teleport::documentFor(Op);
 		case ECrowdyCppApiDomain::Platform:      return platform::documentFor(Op);
 		case ECrowdyCppApiDomain::Realtime:      return realtime::documentFor(Op);
-		case ECrowdyCppApiDomain::Compute:       return compute::documentFor(Op);
+		case ECrowdyCppApiDomain::Exec:          return crowdy::gen::exec::documentFor(Op);
 		}
 		return std::string_view();
 	}
 
-	// The token plane a domain's operations are issued under.
-	//
-	// This used to be read off the generated endpoint assignment, which named one URL per operation and so named a
-	// bearer with it. The platform has since merged its two GraphQL origins onto one server and the generated set
-	// stopped naming an endpoint at all, but the two tokens still mean different things: the same call under the
-	// app-scoped bearer and under the session bearer answers about different things.
-	//
-	// So the plane is stated here instead. Every value reproduces the endpoint the same operation resolved to
-	// before the merge, which is the arrangement the live gates were run against; CrowdyCppPlaneRoutingTests pins
-	// that operation by operation. A domain whose operations did not agree on one plane before the merge is left
-	// unset on purpose, and a caller that reaches one of those has to name the plane itself.
+	// The token plane a domain's operations are issued under. The generated operation set names no endpoint and the
+	// two bearers answer about different things, so the plane is stated here; CrowdyCppPlaneRoutingTests pins it
+	// operation by operation. A domain whose operations do not share one plane is left unset, and a caller that
+	// reaches one of those names the plane itself.
 	TOptional<ECrowdyCppTokenPlane> DomainDefaultPlane(ECrowdyCppApiDomain Domain)
 	{
 		switch (Domain)
 		{
-		case ECrowdyCppApiDomain::GameModel:
 		case ECrowdyCppApiDomain::GameApps:
 		case ECrowdyCppApiDomain::CrowdyStudio:
 		case ECrowdyCppApiDomain::Teams:
@@ -1335,27 +1333,23 @@ namespace
 		case ECrowdyCppApiDomain::Voxels:
 		case ECrowdyCppApiDomain::Actors:
 		case ECrowdyCppApiDomain::Teleport:
-		case ECrowdyCppApiDomain::Compute:
 			return ECrowdyCppTokenPlane::Game;
 
 		case ECrowdyCppApiDomain::Apps:
 		case ECrowdyCppApiDomain::AppAccess:
 		case ECrowdyCppApiDomain::Organizations:
 		case ECrowdyCppApiDomain::Platform:
+		case ECrowdyCppApiDomain::Exec:
 			return ECrowdyCppTokenPlane::Management;
 
-		// Auth, Users and ServerStatus each served operations on both planes before the merge, so there is no one
-		// answer for the domain to give. Most of their operations were reachable at either endpoint even then and
-		// so have always required the caller to choose; the handful that did not are named individually below.
+		// Auth, Users and ServerStatus serve operations on both planes, so the caller chooses; the few with one plane
+		// are named in OperationPlaneException.
 		default:
 			return TOptional<ECrowdyCppTokenPlane>();
 		}
 	}
 
-	// The operations whose plane disagrees with their own domain's. Each one resolved to exactly this endpoint
-	// before the platform merged its origins, and every other operation in these three domains was reachable at
-	// both endpoints even then, so those keep requiring the caller to say which plane it means rather than
-	// inheriting a domain-wide guess.
+	// The operations whose plane differs from their domain's default, or that have one where their domain has none.
 	TOptional<ECrowdyCppTokenPlane> OperationPlaneException(ECrowdyCppApiDomain Domain, const std::string& Op)
 	{
 		switch (Domain)
@@ -1365,12 +1359,16 @@ namespace
 			break;
 
 		case ECrowdyCppApiDomain::Users:
-			if (Op == "UsersConnection" || Op == "SetOperator") { return ECrowdyCppTokenPlane::Management; }
 			if (Op == "UpdateUserState") { return ECrowdyCppTokenPlane::Game; }
 			break;
 
 		case ECrowdyCppApiDomain::ServerStatus:
 			if (Op == "ServerWithLeastClients" || Op == "GameClientBootstrap") { return ECrowdyCppTokenPlane::Game; }
+			break;
+
+		// The Exec domain defaults to Management for developer operations; a player's connect uses the app token.
+		case ECrowdyCppApiDomain::Exec:
+			if (Op == "ExecConnect") { return ECrowdyCppTokenPlane::Game; }
 			break;
 
 		default:
@@ -1379,124 +1377,19 @@ namespace
 		return TOptional<ECrowdyCppTokenPlane>();
 	}
 
-	// Which admin authoring mutation a studio/automation input op issues.
-	enum class EGameModelInputOp
+	bool IsGameModelDomain(ECrowdyCppApiDomain Domain)
 	{
-		Seed,
-		UpsertAutomation,
-		UpsertAutomationTrigger
-	};
-
-	// The operation name an input op's diagnostics are recorded under.
-	const TCHAR* InputOpName(EGameModelInputOp Op)
-	{
-		switch (Op)
-		{
-		case EGameModelInputOp::Seed:
-			return TEXT("GameModelSeed");
-		case EGameModelInputOp::UpsertAutomation:
-			return TEXT("GameModelUpsertAutomation");
-		case EGameModelInputOp::UpsertAutomationTrigger:
-			return TEXT("GameModelUpsertAutomationTrigger");
-		}
-		return TEXT("GameModelInputOp");
+		return Domain == ECrowdyCppApiDomain::GameModel || Domain == ECrowdyCppApiDomain::Compute;
 	}
 
-	// Shared body for the three input-style authoring mutations (seedAsync, upsertAutomationAsync,
-	// upsertAutomationTriggerAsync): each takes one input object and reports only success or failure. The input
-	// string is the kit-emit output (our own, not forged), but the nesting pre-scan is kept before the recursive
-	// UE reader for consistency with the other parse sites. OnDone is delivered exactly once, from Poll().
-	FCrowdyCppRequestHandle RunGameModelInputOp(crowdy::CrowdyClient* Client,
-		const TSharedPtr<FRequestRegistry>& Registry, EGameModelInputOp Op, const FString& InputJson,
-		TFunction<void(FCrowdyCppStudioOpResult)> OnDone)
+	// Deliver a Game Model call's permanent refusal inline: nothing is sent, queued for retry, or left pending.
+	template <typename ResultType>
+	FCrowdyCppRequestHandle AnswerGameModelDeprecated(const TSharedPtr<FRequestRegistry>& Registry,
+		const TCHAR* Operation, TFunction<void(ResultType)> OnDone, ResultType Refusal)
 	{
-		FCrowdyCppStudioOpResult Canceled;
-		Canceled.ErrorMessage = FCrowdyCppClient::CanceledErrorMessage();
-		const TIssuedRequest<FCrowdyCppStudioOpResult> Issued =
-			BeginRequest<FCrowdyCppStudioOpResult>(Registry, InputOpName(Op), MoveTemp(OnDone), MoveTemp(Canceled));
-		const TFunction<void(FCrowdyCppStudioOpResult)>& FireOnce = Issued.Fire;
-
-		if (!Client)
-		{
-			FCrowdyCppStudioOpResult Result;
-			Result.ErrorMessage = TEXT("CrowdyCPP client is not available");
-			FireOnce(MoveTemp(Result));
-			return Issued.Handle;
-		}
-
-		if (!CrowdyJsonSafety::IsNestingWithinLimit(InputJson))
-		{
-			FCrowdyCppStudioOpResult Result;
-			Result.ErrorMessage = TEXT("deploy input JSON is too deeply nested");
-			FireOnce(MoveTemp(Result));
-			return Issued.Handle;
-		}
-		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(InputJson);
-		TSharedPtr<FJsonObject> InputObject;
-		if (!FJsonSerializer::Deserialize(Reader, InputObject) || !InputObject.IsValid())
-		{
-			FCrowdyCppStudioOpResult Result;
-			Result.ErrorMessage = TEXT("deploy input JSON is not a JSON object");
-			FireOnce(MoveTemp(Result));
-			return Issued.Handle;
-		}
-
-		// The seed input already carries appId as a JSON string (the kit emit stamped it); ObjectToJVal preserves
-		// that string and re-parses whole numbers as integers, exactly as the runtime-op path does.
-		const crowdy::graphql::JVal Input = ObjectToJVal(InputObject);
-		crowdy::graphql::GraphQLCallback Cb =
-			[FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
-			{
-				*Reason = OutcomeFailureReason(Out);
-				// The callback runs from Poll()/drain(), OUTSIDE the issue-time try below, so contain any throw here
-				// and deliver a clean failure rather than let it escape into the engine ticker.
-				try
-				{
-					FCrowdyCppStudioOpResult Result;
-					Result.bOk = Out.ok();
-					if (!Result.bOk)
-					{
-						Result.ErrorMessage = OutcomeErrorMessage(Out);
-					}
-					FireOnce(MoveTemp(Result));
-				}
-				catch (...)
-				{
-					FCrowdyCppStudioOpResult Failed;
-					Failed.ErrorMessage = TEXT("Game Model authoring op callback threw");
-					FireOnce(MoveTemp(Failed));
-				}
-			};
-
-		const CrowdyCppTransport::FHandOffScope HandOff(*Issued.HandOffSeconds);
-		try
-		{
-			crowdy::domains::GameModelAPI& GameModel = Client->gameModel();
-			switch (Op)
-			{
-			case EGameModelInputOp::Seed:
-				GameModel.seedAsync(Input, Cb);
-				break;
-			case EGameModelInputOp::UpsertAutomation:
-				GameModel.upsertAutomationAsync(Input, Cb);
-				break;
-			case EGameModelInputOp::UpsertAutomationTrigger:
-				GameModel.upsertAutomationTriggerAsync(Input, Cb);
-				break;
-			}
-		}
-		catch (const std::exception& Ex)
-		{
-			FCrowdyCppStudioOpResult Result;
-			Result.ErrorMessage = FString(UTF8_TO_TCHAR(Ex.what()));
-			FireOnce(MoveTemp(Result));
-		}
-		catch (...)
-		{
-			FCrowdyCppStudioOpResult Result;
-			Result.ErrorMessage = TEXT("Game Model authoring op threw a non-standard exception");
-			FireOnce(MoveTemp(Result));
-		}
+		const TIssuedRequest<ResultType> Issued = BeginRequest<ResultType>(Registry, Operation, MoveTemp(OnDone), Refusal);
+		*Issued.FailureReason = CrowdyCppGameModelDeprecatedCode;
+		Issued.Fire(MoveTemp(Refusal));
 		return Issued.Handle;
 	}
 
@@ -1712,6 +1605,66 @@ TOptional<double> CrowdyCppBusyRetryDelaySeconds(int32 RetryIndex, TOptional<int
 	return FMath::Min(BaseSeconds * static_cast<double>(1 << FMath::Clamp(RetryIndex, 0, 8)), MaxDelaySeconds);
 }
 
+void FCrowdyCppClient::FImpl::DialExec(std::shared_ptr<FExecDialOwner> DialOwner, std::string AppId,
+	std::string NodeType, std::string Key, TFunction<FString()> ResolveAppToken,
+	std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found)
+{
+	// Installing the bearer and building the request are one step only on the game thread, where every issue happens.
+	if (!IsInGameThread())
+	{
+		AsyncTask(ENamedThreads::GameThread, [DialOwner = MoveTemp(DialOwner), AppId = MoveTemp(AppId),
+			NodeType = MoveTemp(NodeType), Key = MoveTemp(Key), ResolveAppToken = MoveTemp(ResolveAppToken),
+			Found = MoveTemp(Found)]() mutable
+		{
+			DialExec(MoveTemp(DialOwner), MoveTemp(AppId), MoveTemp(NodeType), MoveTemp(Key), MoveTemp(ResolveAppToken),
+				MoveTemp(Found));
+		});
+		return;
+	}
+
+	FImpl* Owner = DialOwner ? DialOwner->Owner : nullptr;
+	if (!Owner || !Owner->IsUsable())
+	{
+		Found(crowdy::Errc::Closed);
+		return;
+	}
+
+	const FString Token = ResolveAppToken ? ResolveAppToken() : FString();
+	if (Token.IsEmpty())
+	{
+		UE_LOG(LogCrowdyCpp, Warning, TEXT("A ck-exec connection has no app token to dial with."));
+		Found(crowdy::Errc::Rejected);
+		return;
+	}
+
+	Owner->Client->setToken(std::string(TCHAR_TO_UTF8(*Token)));
+	try
+	{
+		Owner->Client->exec().endpointAsync(MoveTemp(AppId), MoveTemp(NodeType), MoveTemp(Key),
+			[Found](crowdy::Result<crowdy::domains::ExecEndpoint> Endpoint)
+			{
+				// The connect token rides the gateway URL, so an unencrypted remote gateway would put it in the clear.
+				if (Endpoint.ok() && IsInsecureRemoteEndpoint(Endpoint.value().gatewayUrl))
+				{
+					UE_LOG(LogCrowdyCpp, Error, TEXT("The ck-exec gateway is not encrypted, so the connection was refused."));
+					Found(crowdy::Errc::Rejected);
+					return;
+				}
+				Found(std::move(Endpoint));
+			});
+	}
+	catch (const std::exception& Ex)
+	{
+		UE_LOG(LogCrowdyCpp, Warning, TEXT("Asking for a ck-exec host threw: %hs"), Ex.what());
+		Found(crowdy::Errc::SocketError);
+	}
+	catch (...)
+	{
+		UE_LOG(LogCrowdyCpp, Warning, TEXT("Asking for a ck-exec host threw a non-standard exception"));
+		Found(crowdy::Errc::SocketError);
+	}
+}
+
 FCrowdyCppClient::FCrowdyCppClient()
 	: Impl(MakeUnique<FImpl>())
 {
@@ -1727,12 +1680,7 @@ FCrowdyCppClient::~FCrowdyCppClient()
 
 bool CrowdyCppIsModelRefusalCode(const FString& Code)
 {
-	if (Code.IsEmpty())
-	{
-		return false;
-	}
-	const FTCHARToUTF8 Utf8(*Code);
-	return crowdy::studio::isModelRefusalCode(std::string_view(Utf8.Get(), Utf8.Length()));
+	return false;
 }
 
 const FString& FCrowdyCppClient::CanceledErrorMessage()
@@ -1848,11 +1796,13 @@ TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::Make(const FCrowdyCppClientConfig
 	Wrapper->Impl->Client = MoveTemp(Client);
 	Wrapper->Impl->SubscriptionClient = TryConstructSubscriptionClient(*Wrapper->Impl->Client,
 		CrowdyCppTransport::MakeFWebSocketTransport(), Wrapper->Impl->SubscriptionAuth);
+	Wrapper->Impl->ExecTransport = CrowdyCppTransport::MakeCrowdyNativeWebSocketTransport();
 	Wrapper->Impl->InstallRepeatedFailureHandler();
 	Wrapper->Impl->LastSeenEndpoint = Utf8ToFString(Wrapper->Impl->Client->graphqlClient().endpoint());
 	return Wrapper;
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
 TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::MakeForTest(const FString& CannedResponseBody, int32 HttpStatus,
 	const FCrowdyCppClientConfig& InConfig)
 {
@@ -1882,6 +1832,8 @@ TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::MakeForTest(const FString& Canned
 	Wrapper->Impl->SubscriptionClient = TryConstructSubscriptionClient(*Wrapper->Impl->Client,
 		CrowdyCppTransport::MakeScriptedWebSocketTransport(Wrapper->Impl->TestWebSocket),
 		Wrapper->Impl->SubscriptionAuth);
+	Wrapper->Impl->TestExecWebSocket = std::make_shared<CrowdyCppTransport::FScriptedWebSocketServer>();
+	Wrapper->Impl->ExecTransport = CrowdyCppTransport::MakeScriptedWebSocketTransport(Wrapper->Impl->TestExecWebSocket);
 
 	Wrapper->Impl->InstallRepeatedFailureHandler();
 	Wrapper->Impl->LastSeenEndpoint = Utf8ToFString(Wrapper->Impl->Client->graphqlClient().endpoint());
@@ -1952,6 +1904,7 @@ void FCrowdyCppClient::SetTestOnRequest(TFunction<void(const FString& Url)> Hook
 		Hook(Utf8ToFString(Url));
 	};
 }
+#endif
 
 void FCrowdyCppClient::SetGameToken(const FString& Token)
 {
@@ -1985,6 +1938,11 @@ void FCrowdyCppClient::Close()
 	// first would shut that pump down, and the subscription client would then destroy the callers' callbacks on its
 	// own timer thread rather than here, taking whatever those callbacks captured with them.
 	Impl->FailLiveSubscriptions(CanceledErrorMessage());
+
+	// Before the underlying client closes: that shuts the pump their own failures would have been posted to, so each
+	// connection delivers its pending completions directly instead, and joins its timer thread.
+	Impl->CloseExecConnections();
+
 	if (Impl->SubscriptionClient)
 	{
 		try
@@ -2127,347 +2085,46 @@ void FCrowdyCppClient::Poll()
 FCrowdyCppRequestHandle FCrowdyCppClient::ReadContainerState(int64 AppId, const FString& ContainerId,
 	TFunction<void(FCrowdyCppContainerStateResult)> OnDone)
 {
-	// Deliver exactly once across every path: the async completion, the catch below, the not-constructed guard, and
-	// a cancellation. Poll() drains on the game thread and every other path runs synchronously on the same thread,
-	// so the fired flag needs no lock.
-	FCrowdyCppContainerStateResult Canceled;
-	Canceled.ErrorMessage = CanceledErrorMessage();
-	const TIssuedRequest<FCrowdyCppContainerStateResult> Issued = BeginRequest<FCrowdyCppContainerStateResult>(
-		Impl ? Impl->Requests : nullptr, TEXT("GameModelContainerState"), MoveTemp(OnDone), MoveTemp(Canceled));
-	const TFunction<void(FCrowdyCppContainerStateResult)>& FireOnce = Issued.Fire;
-
-	if (!Impl || !Impl->IsUsable())
-	{
-		FCrowdyCppContainerStateResult Result;
-		Result.ErrorMessage = TEXT("CrowdyCPP client is not available");
-		FireOnce(MoveTemp(Result));
-		return Issued.Handle;
-	}
-
-	// appId is a BigInt scalar: the domain twin emits the string we pass here.
-	const std::string AppIdStr = std::string(TCHAR_TO_UTF8(*LexToString(AppId)));
-	const std::string ContainerIdStr = std::string(TCHAR_TO_UTF8(*ContainerId));
-
-	const TSharedRef<FBusyRetry> Retry = MakeBusyRetry(Issued, ECrowdyCppTokenPlane::Game, EBusyRetryKind::Query);
-	Retry->Send = [AppIdStr, ContainerIdStr](crowdy::CrowdyClient& Client, crowdy::graphql::GraphQLCallback Cb)
-	{
-		Client.gameModel().containerStateAsync(AppIdStr, ContainerIdStr, std::move(Cb));
-	};
-	Retry->Deliver = [FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
-	{
-		*Reason = OutcomeFailureReason(Out);
-		// The callback runs from Poll()/drain(), outside any issue-time try, so contain any throw here and deliver a
-		// clean failure rather than let it escape into the engine ticker.
-		try
-		{
-			FCrowdyCppContainerStateResult Result;
-			if (!Out.ok())
-			{
-				Result.ErrorMessage = OutcomeErrorMessage(Out);
-				FireOnce(MoveTemp(Result));
-				return;
-			}
-
-			// out.data is the unwrapped gameModelContainerState object, or a
-			// JSON null when the container does not exist; its propertiesJson
-			// field is the container state as a JSON string. bOk stays false
-			// unless that string decodes to an object, so an absent container
-			// and an unparseable one are both reported the same way: no state.
-			{
-				TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_DecodeResponse);
-				const std::string Props = Out.data["propertiesJson"].asString();
-				const FString PropertiesJson = Utf8ToFString(Props);
-				if (!PropertiesJson.IsEmpty() && CrowdyJsonSafety::IsNestingWithinLimit(PropertiesJson))
-				{
-					// The nesting pre-scan bounds the untrusted string before the
-					// recursive UE deserializer builds a DOM a forged deep payload
-					// could overflow on teardown.
-					const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(PropertiesJson);
-					TSharedPtr<FJsonObject> Parsed;
-					if (FJsonSerializer::Deserialize(Reader, Parsed) && Parsed.IsValid())
-					{
-						Result.bOk = true;
-						Result.State = Parsed;
-					}
-				}
-			}
-
-			if (!Result.bOk)
-			{
-				Result.ErrorMessage = TEXT("container not found or no readable state");
-			}
-			FireOnce(MoveTemp(Result));
-		}
-		catch (...)
-		{
-			FCrowdyCppContainerStateResult Failed;
-			Failed.ErrorMessage = TEXT("gameModelContainerState callback threw");
-			FireOnce(MoveTemp(Failed));
-		}
-	};
-	Impl->SendRetryable(Retry);
-	return Issued.Handle;
+	FCrowdyCppContainerStateResult Refusal;
+	CrowdyCppSetGameModelDeprecated(Refusal);
+	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelContainerState"), MoveTemp(OnDone),
+		MoveTemp(Refusal));
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::InvokeFunction(int64 AppId, const FString& FunctionName,
 	const FString& SelfContainerId, const FString& SessionId, const FString& ParamsJson,
 	TFunction<void(FCrowdyCppInvokeResult)> OnDone)
 {
-	FCrowdyCppInvokeResult Canceled;
-	Canceled.ErrorMessage = CanceledErrorMessage();
-	const TIssuedRequest<FCrowdyCppInvokeResult> Issued = BeginRequest<FCrowdyCppInvokeResult>(
-		Impl ? Impl->Requests : nullptr, TEXT("GameModelInvoke"), MoveTemp(OnDone), MoveTemp(Canceled));
-	const TFunction<void(FCrowdyCppInvokeResult)>& FireOnce = Issued.Fire;
-
-	crowdy::CrowdyClient* Client = Impl ? Impl->Use(ECrowdyCppTokenPlane::Game) : nullptr;
-	if (!Client)
-	{
-		FCrowdyCppInvokeResult Result;
-		Result.ErrorMessage = TEXT("CrowdyCPP client is not available");
-		FireOnce(MoveTemp(Result));
-		return Issued.Handle;
-	}
-
-	// appId is a BigInt scalar (a JSON string, never a number); paramsJson is already the compact-serialized
-	// params object; sessionId is omitted for app-global scope. This mirrors BuildInvokeVariables.
-	crowdy::graphql::JVal Input;
-	Input["appId"] = std::string(TCHAR_TO_UTF8(*LexToString(AppId)));
-	Input["functionName"] = std::string(TCHAR_TO_UTF8(*FunctionName));
-	Input["selfContainerId"] = std::string(TCHAR_TO_UTF8(*SelfContainerId));
-	if (!SessionId.IsEmpty())
-	{
-		Input["sessionId"] = std::string(TCHAR_TO_UTF8(*SessionId));
-	}
-	Input["paramsJson"] = std::string(TCHAR_TO_UTF8(*ParamsJson));
-
-	const CrowdyCppTransport::FHandOffScope HandOff(*Issued.HandOffSeconds);
-	try
-	{
-		Client->gameModel().invokeAsync(Input,
-			[FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
-			{
-				*Reason = OutcomeFailureReason(Out);
-				// The callback runs from Poll()/drain(), OUTSIDE the issue-time try below, so contain any throw
-				// here (e.g. bad_alloc decoding a forged response) and deliver a clean failure rather than let it
-				// escape into the engine ticker.
-				try
-				{
-					FCrowdyCppInvokeResult Result;
-					if (!Out.ok())
-					{
-						// A transport or GraphQL failure: the request never yielded a GmInvokeResult, so this is
-						// NOT a rolled-back invoke. bTransportOk stays false, keeping a network/authorization
-						// error distinct from a committed-but-failed function. This is also where the platform's
-						// overload refusal lands, which is the one failure a caller SHOULD repeat, so the
-						// attribution is read here rather than left for the caller to guess at.
-						Result.ErrorMessage = OutcomeErrorMessage(Out);
-						ReadOutcomeFault(Out, Result);
-						FireOnce(MoveTemp(Result));
-						return;
-					}
-
-					// out.data is the unwrapped GmInvokeResult. Re-serialize it and decode with the UE JSON
-					// reader, then read the fields with the UE accessors (TryGetBoolField / TryGetStringField
-					// / TryGetArrayField), so field extraction, type coercion, and the non-object-element skip
-					// go through one shared code path. This also keeps the mutations walk O(n): a yyjson
-					// index walk over a non-flat array (an array of objects) is O(n^2). The dumped object is
-					// nesting-guarded before the recursive UE deserializer, since a forged deep value would
-					// otherwise overflow on teardown (yyjson parsed it iteratively; the UE re-parse is recursive).
-					TSharedPtr<FJsonObject> Parsed;
-					{
-						TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_DecodeResponse);
-						const FString InvokeJson = Utf8ToFString(Out.data.dump());
-						if (CrowdyJsonSafety::IsNestingWithinLimit(InvokeJson))
-						{
-							const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(InvokeJson);
-							FJsonSerializer::Deserialize(Reader, Parsed);
-						}
-					}
-					if (!Parsed.IsValid())
-					{
-						// The server was reached (out.ok()) but returned no decodable GmInvokeResult object: a
-						// malformed response, not a rolled-back invoke, so bTransportOk stays false because the
-						// gameModelInvoke object is required.
-						Result.ErrorMessage = TEXT("malformed response: missing gameModelInvoke");
-						FireOnce(MoveTemp(Result));
-						return;
-					}
-
-					// A real GmInvokeResult object: transport-ok regardless of the logic outcome (success is
-					// false for a rolled-back invoke, with the reason in fault).
-					Result.bTransportOk = true;
-
-					bool bInvokeSuccess = false;
-					Parsed->TryGetBoolField(TEXT("success"), bInvokeSuccess);
-					Result.bSuccess = bInvokeSuccess;
-					Parsed->TryGetStringField(TEXT("returnValueJson"), Result.ReturnValueJson);
-					Parsed->TryGetStringField(TEXT("errorMessage"), Result.ErrorMessage);
-
-					// The in-band channel: an authority denial or an evaluation failure. Absent when success is
-					// true. Unlike the thrown channel above, retryable is taken as the server sent it, because a
-					// fault object IS the attribution.
-					const TSharedPtr<FJsonObject>* FaultPtr = nullptr;
-					if (Parsed->TryGetObjectField(TEXT("fault"), FaultPtr) && FaultPtr && FaultPtr->IsValid())
-					{
-						const TSharedPtr<FJsonObject>& Fault = *FaultPtr;
-						Fault->TryGetStringField(TEXT("code"), Result.FaultCode);
-						Fault->TryGetStringField(TEXT("blame"), Result.Blame);
-						Fault->TryGetBoolField(TEXT("retryable"), Result.bRetryable);
-					}
-
-					const TArray<TSharedPtr<FJsonValue>>* Mutations = nullptr;
-					if (Parsed->TryGetArrayField(TEXT("mutationsApplied"), Mutations) && Mutations)
-					{
-						Result.Mutations.Reserve(Mutations->Num());
-						for (const TSharedPtr<FJsonValue>& Entry : *Mutations)
-						{
-							const TSharedPtr<FJsonObject> Obj = Entry.IsValid() ? Entry->AsObject() : nullptr;
-							if (!Obj.IsValid())
-							{
-								continue;
-							}
-							FCrowdyCppMutationApplied M;
-							Obj->TryGetStringField(TEXT("containerId"), M.ContainerId);
-							Obj->TryGetStringField(TEXT("key"), M.Key);
-							Obj->TryGetStringField(TEXT("oldValueJson"), M.OldValueJson);
-							Obj->TryGetStringField(TEXT("newValueJson"), M.NewValueJson);
-							Result.Mutations.Add(MoveTemp(M));
-						}
-					}
-
-					FireOnce(MoveTemp(Result));
-				}
-				catch (const std::exception& Ex)
-				{
-					FCrowdyCppInvokeResult Failed;
-					Failed.ErrorMessage = FString(UTF8_TO_TCHAR(Ex.what()));
-					FireOnce(MoveTemp(Failed));
-				}
-				catch (...)
-				{
-					FCrowdyCppInvokeResult Failed;
-					Failed.ErrorMessage = TEXT("gameModelInvoke callback threw a non-standard exception");
-					FireOnce(MoveTemp(Failed));
-				}
-			});
-	}
-	catch (const std::exception& Ex)
-	{
-		FCrowdyCppInvokeResult Result;
-		Result.ErrorMessage = FString(UTF8_TO_TCHAR(Ex.what()));
-		FireOnce(MoveTemp(Result));
-	}
-	catch (...)
-	{
-		FCrowdyCppInvokeResult Result;
-		Result.ErrorMessage = TEXT("gameModelInvoke request threw a non-standard exception");
-		FireOnce(MoveTemp(Result));
-	}
-	return Issued.Handle;
+	FCrowdyCppInvokeResult Refusal;
+	CrowdyCppSetGameModelDeprecated(Refusal);
+	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelInvoke"), MoveTemp(OnDone),
+		MoveTemp(Refusal));
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::ListContainers(int64 AppId, const FString& TypeName,
 	const FString& SessionId, TFunction<void(bool, TArray<TSharedPtr<FJsonObject>>)> OnDone)
 {
-	// The caller's two-value completion is adapted to the one-result shape the shared delivery plumbing uses, so
-	// this call is cancelable on the same terms as every other; a canceled read reports failure and an empty list.
-	const TSharedRef<TFunction<void(bool, TArray<TSharedPtr<FJsonObject>>)>> Caller =
-		MakeShared<TFunction<void(bool, TArray<TSharedPtr<FJsonObject>>)>>(MoveTemp(OnDone));
-	TFunction<void(FContainerListResult)> Adapted = [Caller](FContainerListResult Result)
+	// The two-value completion rides the same one-result delivery as every other call.
+	TFunction<void(FContainerListResult)> Adapted = [OnDone = MoveTemp(OnDone)](FContainerListResult Result)
 	{
-		(*Caller)(Result.bOk, MoveTemp(Result.Containers));
+		OnDone(Result.bOk, MoveTemp(Result.Containers));
 	};
-
-	const TIssuedRequest<FContainerListResult> Issued = BeginRequest<FContainerListResult>(
-		Impl ? Impl->Requests : nullptr, TEXT("GameModelContainers"), MoveTemp(Adapted), FContainerListResult());
-	const TFunction<void(FContainerListResult)>& FireResult = Issued.Fire;
-	auto FireOnce = [FireResult](bool bOk, TArray<TSharedPtr<FJsonObject>> Containers)
-	{
-		FContainerListResult Result;
-		Result.bOk = bOk;
-		Result.Containers = MoveTemp(Containers);
-		FireResult(MoveTemp(Result));
-	};
-
-	if (!Impl || !Impl->IsUsable())
-	{
-		FireOnce(false, TArray<TSharedPtr<FJsonObject>>());
-		return Issued.Handle;
-	}
-
-	// typeName and sessionId are omitted server-side when empty (the twin drops empty vars).
-	const std::string AppIdStr = std::string(TCHAR_TO_UTF8(*LexToString(AppId)));
-	const std::string TypeNameStr = std::string(TCHAR_TO_UTF8(*TypeName));
-	const std::string SessionIdStr = std::string(TCHAR_TO_UTF8(*SessionId));
-
-	const TSharedRef<FBusyRetry> Retry = MakeBusyRetry(Issued, ECrowdyCppTokenPlane::Game, EBusyRetryKind::Query);
-	Retry->Send = [AppIdStr, TypeNameStr, SessionIdStr](crowdy::CrowdyClient& Client,
-		crowdy::graphql::GraphQLCallback Cb)
-	{
-		Client.gameModel().containersAsync(AppIdStr, TypeNameStr, SessionIdStr, std::move(Cb));
-	};
-	Retry->Deliver = [FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
-	{
-		*Reason = OutcomeFailureReason(Out);
-		// The callback runs from Poll()/drain(), outside any issue-time try, so contain any throw here and deliver a
-		// clean failure rather than let it escape into the engine ticker.
-		try
-		{
-			TArray<TSharedPtr<FJsonObject>> Containers;
-			if (!Out.ok() || !Out.data.isArray())
-			{
-				// Transport/GraphQL failure or an unexpected non-array payload: no containers, bOk false,
-				// since a missing or non-array field is always a failed read.
-				FireOnce(false, MoveTemp(Containers));
-				return;
-			}
-
-			// out.data is the unwrapped [GmContainer] array. Re-serialize it and decode with the UE JSON
-			// reader so each element is a plain FJsonObject the subsystem can consume directly.
-			// yyjson parsed the response with an iterative parse, but this
-			// UE re-parse is recursive, so the dumped string is nesting-guarded first: a forged deep
-			// element would otherwise build a DOM that overflows on teardown. Over-limit rejects the
-			// whole list.
-			TArray<TSharedPtr<FJsonValue>> Parsed;
-			bool bDecoded = false;
-			{
-				TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_DecodeResponse);
-				const FString ArrayJson = Utf8ToFString(Out.data.dump());
-				if (CrowdyJsonSafety::IsNestingWithinLimit(ArrayJson))
-				{
-					const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ArrayJson);
-					bDecoded = FJsonSerializer::Deserialize(Reader, Parsed);
-				}
-			}
-			if (!bDecoded)
-			{
-				FireOnce(false, MoveTemp(Containers));
-				return;
-			}
-			Containers.Reserve(Parsed.Num());
-			for (const TSharedPtr<FJsonValue>& V : Parsed)
-			{
-				const TSharedPtr<FJsonObject> Obj = V.IsValid() ? V->AsObject() : nullptr;
-				if (Obj.IsValid())
-				{
-					Containers.Add(Obj);
-				}
-			}
-			FireOnce(true, MoveTemp(Containers));
-		}
-		catch (...)
-		{
-			FireOnce(false, TArray<TSharedPtr<FJsonObject>>());
-		}
-	};
-	Impl->SendRetryable(Retry);
-	return Issued.Handle;
+	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelContainers"), MoveTemp(Adapted),
+		FContainerListResult());
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, const FString& OperationName,
 	const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
 	TOptional<ECrowdyCppTokenPlane> Plane)
 {
+	if (IsGameModelDomain(Domain))
+	{
+		FCrowdyCppJsonResult Refusal;
+		CrowdyCppSetGameModelDeprecated(Refusal);
+		return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, *OperationName, MoveTemp(OnDone),
+			MoveTemp(Refusal));
+	}
+
 	// Deliver exactly once across every path: the async completion, the catch below, each pre-flight rejection, and
 	// a cancellation. The async transport delivers its callback from Poll() on the game thread and every other path
 	// runs synchronously on the same thread, so the fired flag needs no lock and the OnDone can safely touch
@@ -2529,7 +2186,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 	}
 
 	const TSharedRef<FBusyRetry> Retry =
-		MakeBusyRetry(Issued, Chosen.GetValue(), RetryKindFor(Domain, Document, OperationNameStr));
+		MakeBusyRetry(Issued, Chosen.GetValue(), RetryKindFor(Document));
 	Retry->Send = [Document, JVars, OperationNameStr](crowdy::CrowdyClient& Client, crowdy::graphql::GraphQLCallback Cb)
 	{
 		Client.graphqlClient().requestAsync(Document, JVars, OperationNameStr, std::move(Cb));
@@ -2559,8 +2216,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 			}
 
 			// Out.data is the GraphQL response's `data` object (requestAsync does not unwrap the single root
-			// field, so it stays { "<gameModelX>": ... } - the shape FCrowdyGameApiCodec's ParseXEnvelope
-			// reads after GetDataObject). yyjson parsed the response iteratively, but this UE re-parse is
+			// field, so it stays { "<rootField>": ... }). yyjson parsed the response iteratively, but this UE re-parse is
 			// recursive, so the dumped object is nesting-guarded first: a forged deep value would otherwise
 			// build a DOM that overflows on teardown. Over-limit fails closed.
 			TSharedPtr<FJsonObject> Parsed;
@@ -2594,7 +2250,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 		catch (...)
 		{
 			FCrowdyCppJsonResult Failed;
-			Failed.ErrorMessage = TEXT("Game Model runtime op callback threw a non-standard exception");
+			Failed.ErrorMessage = TEXT("operation callback threw a non-standard exception");
 			FireOnce(MoveTemp(Failed));
 		}
 	};
@@ -2605,22 +2261,28 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 FCrowdyCppRequestHandle FCrowdyCppClient::SeedSchema(const FString& InputJson,
 	TFunction<void(FCrowdyCppStudioOpResult)> OnDone)
 {
-	return RunGameModelInputOp(Impl ? Impl->Use(ECrowdyCppTokenPlane::Game) : nullptr,
-		Impl ? Impl->Requests : nullptr, EGameModelInputOp::Seed, InputJson, MoveTemp(OnDone));
+	FCrowdyCppStudioOpResult Refusal;
+	CrowdyCppSetGameModelDeprecated(Refusal);
+	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelSeed"), MoveTemp(OnDone),
+		MoveTemp(Refusal));
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::UpsertAutomation(const FString& InputJson,
 	TFunction<void(FCrowdyCppStudioOpResult)> OnDone)
 {
-	return RunGameModelInputOp(Impl ? Impl->Use(ECrowdyCppTokenPlane::Game) : nullptr,
-		Impl ? Impl->Requests : nullptr, EGameModelInputOp::UpsertAutomation, InputJson, MoveTemp(OnDone));
+	FCrowdyCppStudioOpResult Refusal;
+	CrowdyCppSetGameModelDeprecated(Refusal);
+	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelUpsertAutomation"),
+		MoveTemp(OnDone), MoveTemp(Refusal));
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::UpsertAutomationTrigger(const FString& InputJson,
 	TFunction<void(FCrowdyCppStudioOpResult)> OnDone)
 {
-	return RunGameModelInputOp(Impl ? Impl->Use(ECrowdyCppTokenPlane::Game) : nullptr,
-		Impl ? Impl->Requests : nullptr, EGameModelInputOp::UpsertAutomationTrigger, InputJson, MoveTemp(OnDone));
+	FCrowdyCppStudioOpResult Refusal;
+	CrowdyCppSetGameModelDeprecated(Refusal);
+	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelUpsertAutomationTrigger"),
+		MoveTemp(OnDone), MoveTemp(Refusal));
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::SignInWithPassword(const FString& Email, const FString& Password,
@@ -3223,7 +2885,11 @@ FCrowdyCppSubscriptionHandle FCrowdyCppClient::SubscribeOperation(ECrowdyCppApiD
 	const std::string_view Document = ResolveDocument(Domain, std::string(TCHAR_TO_UTF8(*OperationName)));
 
 	FString Refusal;
-	if (Document.empty())
+	if (IsGameModelDomain(Domain))
+	{
+		Refusal = CrowdyCppGameModelDeprecatedMessage;
+	}
+	else if (Document.empty())
 	{
 		// Refused without a socket rather than sent as an empty document, for the same reason RunOp refuses an
 		// unknown name: the server would reject it, and only after a round trip that told the caller nothing.
@@ -3318,6 +2984,55 @@ int32 FCrowdyCppClient::NumActiveSubscriptions() const
 	return Active;
 }
 
+TSharedPtr<FCrowdyNativeExecConnection> FCrowdyCppClient::CreateExecConnection(int64 AppId,
+	const FCrowdyNativeExecOptions& Options, TFunction<FString()> ResolveAppToken)
+{
+	if (!Impl || !Impl->IsUsable() || !Impl->ExecTransport)
+	{
+		return nullptr;
+	}
+
+	// The client's own pump, so every exec callback lands in Poll() on the game thread like everything else here.
+	std::shared_ptr<crowdy::graphql::Dispatcher> Dispatcher = Impl->Client->graphqlClient().dispatcher();
+	if (!Dispatcher)
+	{
+		return nullptr;
+	}
+
+	crowdy::domains::ExecConnectOptions CppOptions;
+	CppOptions.nodeType = std::string(TCHAR_TO_UTF8(*Options.NodeType));
+	CppOptions.key = std::string(TCHAR_TO_UTF8(*Options.Key));
+	CppOptions.callTimeoutMs = Options.CallTimeoutMs;
+	CppOptions.openTimeoutMs = Options.OpenTimeoutMs;
+	CppOptions.reconnect = Options.bReconnect;
+
+	std::shared_ptr<FImpl::FExecDialOwner> DialOwner = Impl->ExecDialOwner;
+	crowdy::domains::ExecDial Dial = [DialOwner, AppIdText = std::to_string(AppId), NodeType = CppOptions.nodeType,
+		Key = CppOptions.key, ResolveAppToken](std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found)
+	{
+		FImpl::DialExec(DialOwner, AppIdText, NodeType, Key, ResolveAppToken, std::move(Found));
+	};
+
+	try
+	{
+		TSharedRef<FCrowdyNativeExecConnection> Connection = CrowdyNativeExec::Wrap(
+			std::make_shared<crowdy::domains::ExecConnection>(Impl->ExecTransport, Dispatcher, std::move(Dial), CppOptions));
+		Impl->ExecConnections.RemoveAll([](const TWeakPtr<FCrowdyNativeExecConnection>& Weak) { return !Weak.IsValid(); });
+		Impl->ExecConnections.Add(Connection);
+		return Connection;
+	}
+	catch (const std::exception& Ex)
+	{
+		UE_LOG(LogCrowdyCpp, Warning, TEXT("Creating a ck-exec connection threw: %hs"), Ex.what());
+	}
+	catch (...)
+	{
+		UE_LOG(LogCrowdyCpp, Warning, TEXT("Creating a ck-exec connection threw a non-standard exception"));
+	}
+	return nullptr;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
 TArray<FString> FCrowdyCppClient::TakeTestWebSocketSentFrames()
 {
 	TArray<FString> Frames;
@@ -3368,3 +3083,61 @@ int32 FCrowdyCppClient::NumTestWebSocketConnections() const
 {
 	return Impl && Impl->TestWebSocket ? static_cast<int32>(Impl->TestWebSocket->ConnectionsCreated()) : 0;
 }
+
+void FCrowdyCppClient::TestExecOpen()
+{
+	if (Impl && Impl->TestExecWebSocket)
+	{
+		Impl->TestExecWebSocket->Open();
+	}
+}
+
+void FCrowdyCppClient::TestExecReceiveBinary(const TArray<uint8>& Bytes)
+{
+	if (Impl && Impl->TestExecWebSocket)
+	{
+		Impl->TestExecWebSocket->ReceiveBinary(std::string(reinterpret_cast<const char*>(Bytes.GetData()),
+			static_cast<size_t>(Bytes.Num())));
+	}
+}
+
+void FCrowdyCppClient::TestExecCloseFromServer(int32 Code, bool bClean)
+{
+	if (Impl && Impl->TestExecWebSocket)
+	{
+		Impl->TestExecWebSocket->CloseFromServer(static_cast<std::uint16_t>(FMath::Clamp(Code, 0, 65535)),
+			std::string(), bClean);
+	}
+}
+
+TArray<TArray<uint8>> FCrowdyCppClient::TakeTestExecSentFrames()
+{
+	TArray<TArray<uint8>> Frames;
+	if (!Impl || !Impl->TestExecWebSocket)
+	{
+		return Frames;
+	}
+	for (const std::string& Frame : Impl->TestExecWebSocket->TakeSentBinaryFrames())
+	{
+		Frames.Emplace(reinterpret_cast<const uint8*>(Frame.data()), static_cast<int32>(Frame.size()));
+	}
+	return Frames;
+}
+
+int32 FCrowdyCppClient::NumTestExecConnections() const
+{
+	return Impl && Impl->TestExecWebSocket ? static_cast<int32>(Impl->TestExecWebSocket->ConnectionsCreated()) : 0;
+}
+
+bool FCrowdyCppClient::GetTestExecConnectRequest(FString& OutUrl, FString& OutSubprotocol) const
+{
+	if (!Impl || !Impl->TestExecWebSocket || Impl->TestExecWebSocket->ConnectionsCreated() == 0)
+	{
+		return false;
+	}
+	const crowdy::graphql::WebSocketConnectRequest Request = Impl->TestExecWebSocket->LastConnectRequest();
+	OutUrl = Utf8ToFString(Request.url);
+	OutSubprotocol = Utf8ToFString(Request.subprotocol);
+	return true;
+}
+#endif

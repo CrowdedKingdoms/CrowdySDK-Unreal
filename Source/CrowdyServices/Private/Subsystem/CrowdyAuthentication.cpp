@@ -15,6 +15,7 @@
 #include "Engine/EngineTypes.h"
 #include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h"
 #include "Subsystem/CrowdyGameSession.h"
+#include "Subsystem/CrowdyTeams.h"
 #include "CrowdyServiceApiSupport.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
@@ -997,6 +998,14 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& 
 	FCrowdyAuthResult Result;
 	Result.GameToken = GameSession ? GameSession->GetSessionToken() : FString();
 	Result.UserID    = GameSession ? GameSession->GetUserID() : 0;
+
+	// A sign-in may be a different account, so the cached teams are dropped and asked for under the new token.
+	UCrowdyTeams* Teams = Flow != EAuthFlow::Refresh && GetGameInstance() ? GetGameInstance()->GetSubsystem<UCrowdyTeams>() : nullptr;
+	if (Teams)
+	{
+		Teams->ClearMyTeamsCache();
+		Teams->RefreshMyTeams();
+	}
 
 	OnSuccess.ExecuteIfBound(Result);
 
