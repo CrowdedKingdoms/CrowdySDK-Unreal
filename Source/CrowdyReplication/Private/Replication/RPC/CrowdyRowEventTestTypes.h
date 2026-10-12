@@ -9,7 +9,6 @@
 #include "Replication/Subsystems/ICrowdyEntitySubscriber.h"
 #include "CrowdyRowEventTestTypes.generated.h"
 
-struct FCrowdyAttributeChange;
 struct FCrowdyRepLayout;
 
 /**
@@ -117,12 +116,6 @@ public:
 		++ApplyDecodedStateCallCount;
 	}
 
-	virtual void ApplyModelChanges(const FGuid& EntityUUID, const FString& ContainerId,
-		TConstArrayView<FCrowdyAttributeChange> Changes) override
-	{
-		++ApplyModelChangesCallCount;
-	}
-
 	virtual bool HasEntityEventHandler(const UFunction* Function) const override
 	{
 		++HasEntityEventHandlerCallCount;
@@ -157,7 +150,6 @@ public:
 
 	int32 ResolveReceiverCallCount = 0;
 	int32 ApplyDecodedStateCallCount = 0;
-	int32 ApplyModelChangesCallCount = 0;
 	int32 HandleEntityEventCallCount = 0;
 	int32 ChargeEntityEventBudgetCallCount = 0;
 	mutable int32 IsEntityKnownCallCount = 0;

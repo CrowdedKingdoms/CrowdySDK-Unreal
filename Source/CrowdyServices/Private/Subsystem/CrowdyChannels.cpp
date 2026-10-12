@@ -6,7 +6,6 @@
 #include "Dom/JsonObject.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Messages/Channels/FChannelMessages.h"
-#include "Replication/GameModel/CrowdyGameModelMetaKeys.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Replication/RPC/FCrowdyRpcCall.h"
 #include "Replication/State/CrowdyStateCodec.h"
@@ -91,18 +90,6 @@ void UCrowdyChannels::EnsureChannelSubscription()
 
 void UCrowdyChannels::HandleChannelMessageNotification(const FChannelMessageNotification& Notification)
 {
-	// Three Game Model notification kinds also ride the session channel, delivered to every member alongside
-	// reliable-RPC and chat traffic, and all are handled by the Game Model subsystem - not here: the
-	// model-changed re-pull hint ("cmc:"), an effect signal ("csg:") and a session-changed cue ("gms|"). Skip them
-	// so none is mis-decoded as a reliable-RPC frame (which would read bogus lengths out of the trailing text), at
-	// the cost that a chat message starting with one of those prefixes is dropped from chat on every channel. Every
-	// subscriber to this one opcode has to ignore the others' frames, and has to recognize every encoding the
-	// Game Model decoders accept, which is why the test lives beside those decoders rather than being inlined here.
-	if (CrowdyGameModelMetaKeys::HasGameModelChannelPrefix(Notification.Payload))
-	{
-		return;
-	}
-
 	const int64 ChannelId = Notification.ChannelId;
 	const FString SenderUUID = Notification.UUID.ToString();
 	const TArray<uint8>& Payload = Notification.Payload;
@@ -755,7 +742,7 @@ void UCrowdyChannels::BootstrapReliableRpcChannels()
 
 	// Which channels do this app's Multicast CrowdyEvents target? We must join them all (a client only
 	// receives on channels it has joined). The session channel is joined regardless of what this reports,
-	// because the Game Model plane rides it without any CrowdyEvent naming it (see BuildDesiredJoinNames);
+	// because session-wide traffic rides it without any CrowdyEvent naming it (see BuildDesiredJoinNames);
 	// bUsesDefaultChannel therefore describes only whether reliable RPCs also route over it.
 	ReferencedChannelNames.Reset();
 	bUsesDefaultChannel = false;
@@ -848,7 +835,7 @@ UCrowdyChannels::FCrowdyChannelJoinPlan UCrowdyChannels::BuildJoinPlan(const TSe
 		}
 
 		// The session channel is the only one we create ourselves, so a fresh app needs nothing authored in
-		// Studio before Game Model signals and re-pull pings arrive. A named channel is a designer's, and
+		// Studio before session-wide traffic arrives. A named channel is a designer's, and
 		// inventing one under a guessed name would hide the typo it usually is.
 		if (Name == SessionChannelName)
 		{
@@ -1042,7 +1029,7 @@ void UCrowdyChannels::ProcessNextJoin()
 				else
 				{
 					UE_LOG(LogCrowdyServices, Warning,
-						TEXT("[CrowdyChannels] Could not create the session channel, so Game Model signals and model-changed pings will not arrive and default-channel RPCs will drop (its creation policy must allow members, or create it once in Crowdy Studio). %s"),
+						TEXT("[CrowdyChannels] Could not create the session channel, so session-wide traffic will not arrive and default-channel RPCs will drop (its creation policy must allow members, or create it once in Crowdy Studio). %s"),
 						*Error.Message);
 				}
 
@@ -1125,10 +1112,10 @@ void UCrowdyChannels::AbortRpcChannelBootstrap(FString Reason)
 		return;
 	}
 
-	// Error, not Warning: nothing else will report that the whole Game Model notification path is dead, and the
-	// symptom (signals and re-pull pings simply never arriving) looks like a server problem from the game's side.
+	// Error, not Warning: nothing else will report that the whole channel notification path is dead, and the
+	// symptom (messages simply never arriving) looks like a server problem from the game's side.
 	UE_LOG(LogCrowdyServices, Error,
-		TEXT("[CrowdyChannels] Channel bootstrap failed (%s) after %d attempt(s); dropped %d queued send(s). This client has joined no channels, so Game Model signals and model-changed pings will not arrive and channel RPCs will drop. A later reconnect retries."),
+		TEXT("[CrowdyChannels] Channel bootstrap failed (%s) after %d attempt(s); dropped %d queued send(s). This client has joined no channels, so session-wide traffic will not arrive and channel RPCs will drop. A later reconnect retries."),
 		*Reason, BootstrapRetryCount + 1, Dropped);
 }
 

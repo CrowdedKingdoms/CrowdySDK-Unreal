@@ -585,4 +585,103 @@ bool FCrowdyAuthPayloadReadersRejectBadShapesTest::RunTest(const FString& Parame
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthRecordPlayerConsentsSendsBothAnswersTest,
+	"CrowdySDK.Auth.RecordPlayerConsentsSendsBothAnswers", CrowdyAuthBridgeTestSupport::AuthTestFlags)
+
+bool FCrowdyAuthRecordPlayerConsentsSendsBothAnswersTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyAuthBridgeTestSupport;
+
+	const TSharedPtr<FCrowdyCppClient> Client = MakeAuthTestClient(TEXT("{\"data\":{\"recordPlayerConsents\":true}}"));
+	if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
+	{
+		return false;
+	}
+
+	bool bCalled = false;
+	FCrowdyCppBoolResult Captured;
+	Client->RecordPlayerConsents(true, true,
+		[&Captured, &bCalled](FCrowdyCppBoolResult Result)
+		{
+			Captured = MoveTemp(Result);
+			bCalled = true;
+		});
+	Client->Poll();
+
+	TestTrue(TEXT("completion fired"), bCalled);
+	TestTrue(TEXT("the answer was read"), Captured.bOk);
+	TestTrue(TEXT("and it is the server's true"), Captured.bValue);
+
+	FString Body;
+	TSharedPtr<FJsonObject> Request;
+	if (TestTrue(TEXT("a request body was sent"), Client->GetLastTestRequestBody(Body)))
+	{
+		FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Body), Request);
+	}
+	const TSharedPtr<FJsonObject>* Variables = nullptr;
+	if (TestTrue(TEXT("the request carries variables"),
+		Request.IsValid() && Request->TryGetObjectField(TEXT("variables"), Variables) && Variables))
+	{
+		bool bAcceptLegal = false;
+		bool bAttestAgeOfMajority = false;
+		TestTrue(TEXT("acceptLegal is sent"), (*Variables)->TryGetBoolField(TEXT("acceptLegal"), bAcceptLegal));
+		TestTrue(TEXT("acceptLegal is true"), bAcceptLegal);
+		TestTrue(TEXT("attestAgeOfMajority is sent"),
+			(*Variables)->TryGetBoolField(TEXT("attestAgeOfMajority"), bAttestAgeOfMajority));
+		TestTrue(TEXT("attestAgeOfMajority is true"), bAttestAgeOfMajority);
+	}
+
+	FString Url;
+	FString Authorization;
+	if (TestTrue(TEXT("a request reached the transport"), Client->GetLastTestRequest(Url, Authorization)))
+	{
+		// The consent belongs to the signed-in account, which only the session bearer names.
+		TestEqual(TEXT("carries the session bearer"), Authorization, TEXT("Bearer ") + ManagementToken);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthLegalAcceptanceRefusalCarriesItsCodeTest,
+	"CrowdySDK.Auth.LegalAcceptanceRefusalCarriesItsCode", CrowdyAuthBridgeTestSupport::AuthTestFlags)
+
+bool FCrowdyAuthLegalAcceptanceRefusalCarriesItsCodeTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyAuthBridgeTestSupport;
+
+	const FString Refusal = TEXT(
+		"{\"errors\":[{\"message\":\"Accept the current terms first.\","
+		"\"extensions\":{\"code\":\"LEGAL_ACCEPTANCE_REQUIRED\"}}],\"data\":null}");
+
+	{
+		const TSharedPtr<FCrowdyCppClient> Client = MakeAuthTestClient(Refusal, 403);
+		if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
+		{
+			return false;
+		}
+		FCrowdyCppAppTokenResult Captured;
+		Client->MintAppToken(31337, [&Captured](FCrowdyCppAppTokenResult Result) { Captured = MoveTemp(Result); });
+		Client->Poll();
+		TestFalse(TEXT("the refused mint fails"), Captured.bOk);
+		TestTrue(TEXT("with the consent code"),
+			Captured.ErrorCode.Equals(CrowdyCppLegalAcceptanceRequiredCode, ESearchCase::CaseSensitive));
+	}
+
+	{
+		const TSharedPtr<FCrowdyCppClient> Client = MakeAuthTestClient(Refusal, 403);
+		if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
+		{
+			return false;
+		}
+		FCrowdyCppBoolResult Captured;
+		Client->RecordPlayerConsents(true, true, [&Captured](FCrowdyCppBoolResult Result) { Captured = MoveTemp(Result); });
+		Client->Poll();
+		TestFalse(TEXT("a refused boolean operation fails"), Captured.bOk);
+		TestTrue(TEXT("and carries the server's code too"),
+			Captured.ErrorCode.Equals(CrowdyCppLegalAcceptanceRequiredCode, ESearchCase::CaseSensitive));
+	}
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

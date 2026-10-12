@@ -209,3 +209,43 @@ void UCrowdyAuth_BeginSocialSignIn::HandleError(FString Message)
 	OnError.Broadcast(Message);
 	SetReadyToDestroy();
 }
+
+UCrowdyAuth_RecordPlayerConsents* UCrowdyAuth_RecordPlayerConsents::RecordPlayerConsents(UObject* WorldContextObject,
+	bool bAcceptLegal, bool bAttestAgeOfMajority)
+{
+	UCrowdyAuth_RecordPlayerConsents* Action = NewObject<UCrowdyAuth_RecordPlayerConsents>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->bAcceptLegal = bAcceptLegal;
+	Action->bAttestAgeOfMajority = bAttestAgeOfMajority;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyAuth_RecordPlayerConsents::Activate()
+{
+	UCrowdyAuthentication* Auth = GetAuthSubsystem(WorldContextObject);
+	if (!Auth)
+	{
+		HandleError(TEXT("UCrowdyAuthentication subsystem not found"));
+		return;
+	}
+
+	FOnLegalConsentsRecorded S;
+	S.BindDynamic(this, &UCrowdyAuth_RecordPlayerConsents::HandleSuccess);
+	FOnAuthError E;
+	E.BindDynamic(this, &UCrowdyAuth_RecordPlayerConsents::HandleError);
+	Auth->RecordPlayerConsents(bAcceptLegal, bAttestAgeOfMajority, S, E);
+}
+
+void UCrowdyAuth_RecordPlayerConsents::HandleSuccess()
+{
+	OnSuccess.Broadcast();
+	SetReadyToDestroy();
+}
+
+void UCrowdyAuth_RecordPlayerConsents::HandleError(FString Message)
+{
+	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] Recording the player's consents failed: %s"), *Message);
+	OnError.Broadcast(Message);
+	SetReadyToDestroy();
+}

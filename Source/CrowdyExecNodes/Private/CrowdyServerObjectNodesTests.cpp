@@ -36,6 +36,26 @@ namespace CrowdyServerObjectNodesTests
 {
 	constexpr EAutomationTestFlags Flags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter;
 
+	// Marks the test enum a Blueprint type for each test's run only.
+	struct FTestEnumIsBlueprintTypeWhileTesting
+	{
+		FTestEnumIsBlueprintTypeWhileTesting()
+		{
+			StartHandle = FAutomationTestFramework::Get().OnTestStartEvent.AddLambda([](FAutomationTestBase*) { StaticEnum<ECrowdyExecNodesTestPhase>()->SetMetaData(TEXT("BlueprintType"), TEXT("true")); });
+			EndHandle = FAutomationTestFramework::Get().OnTestEndEvent.AddLambda([](FAutomationTestBase*) { StaticEnum<ECrowdyExecNodesTestPhase>()->RemoveMetaData(TEXT("BlueprintType")); });
+		}
+
+		~FTestEnumIsBlueprintTypeWhileTesting()
+		{
+			FAutomationTestFramework::Get().OnTestStartEvent.Remove(StartHandle);
+			FAutomationTestFramework::Get().OnTestEndEvent.Remove(EndHandle);
+		}
+
+		FDelegateHandle StartHandle;
+		FDelegateHandle EndHandle;
+	};
+	const FTestEnumIsBlueprintTypeWhileTesting TestEnumIsBlueprintTypeWhileTesting;
+
 	struct FExpectedPin
 	{
 		const TCHAR* Field = nullptr;

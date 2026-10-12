@@ -44,6 +44,25 @@ namespace CrowdyServerObjectShared
 		return LexToString(Memberships[0].Team.TeamId);
 	}
 
+	/** The chunk holding Location on the ground, as actor updates place it: Unreal's X and Y each divided by ChunkSize, rounded down. False for none. */
+	inline bool GroundChunkAt(const FVector& Location, double ChunkSize, int64& OutX, int64& OutY)
+	{
+		if (ChunkSize <= 0.0)
+		{
+			return false;
+		}
+		const double X = FMath::FloorToDouble(Location.X / ChunkSize);
+		const double Y = FMath::FloorToDouble(Location.Y / ChunkSize);
+		constexpr double Limit = 1.0e15;
+		if (!FMath::IsFinite(X) || !FMath::IsFinite(Y) || FMath::Abs(X) > Limit || FMath::Abs(Y) > Limit)
+		{
+			return false;
+		}
+		OutX = static_cast<int64>(X);
+		OutY = static_cast<int64>(Y);
+		return true;
+	}
+
 	/** ResolvePlayersTeam from the teams cache. */
 	inline FString ResolvePlayersTeam(const UCrowdyTeams* Teams, int64 TeamId, FString& OutError)
 	{

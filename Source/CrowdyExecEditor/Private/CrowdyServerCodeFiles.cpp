@@ -302,6 +302,39 @@ bool CrowdyServerCodeFiles::SetWatchedField(TArray<FName>& Watched, FName Field,
 	return Watched.Remove(Field) > 0;
 }
 
+bool CrowdyServerCodeFiles::SetFieldAudience(TArray<FName>& Watched, TArray<FName>& Owner, TArray<FName>& Team, FName Field, TOptional<ECrowdyServerFieldAudience> Audience)
+{
+	const bool bWatched = Audience.IsSet();
+	const bool bOwner = bWatched && Audience.GetValue() == ECrowdyServerFieldAudience::Owner;
+	const bool bTeam = bWatched && Audience.GetValue() == ECrowdyServerFieldAudience::Team;
+	bool bChanged = SetWatchedField(Watched, Field, bWatched);
+	bChanged |= SetWatchedField(Owner, Field, bOwner);
+	bChanged |= SetWatchedField(Team, Field, bTeam);
+	return bChanged;
+}
+
+bool CrowdyServerCodeFiles::SetVisibleToPlayers(TArray<FName>& Watched, TArray<FName>& Owner, TArray<FName>& Team, FName Field, bool bVisible)
+{
+	if (bVisible)
+	{
+		return SetWatchedField(Watched, Field, true);
+	}
+	return SetFieldAudience(Watched, Owner, Team, Field, TOptional<ECrowdyServerFieldAudience>());
+}
+
+TOptional<ECrowdyServerFieldAudience> CrowdyServerCodeFiles::GetFieldAudience(const TArray<FName>& Watched, const TArray<FName>& Owner, const TArray<FName>& Team, FName Field)
+{
+	if (!Watched.Contains(Field))
+	{
+		return TOptional<ECrowdyServerFieldAudience>();
+	}
+	if (Owner.Contains(Field))
+	{
+		return ECrowdyServerFieldAudience::Owner;
+	}
+	return Team.Contains(Field) ? ECrowdyServerFieldAudience::Team : ECrowdyServerFieldAudience::Everyone;
+}
+
 TArray<FName> CrowdyServerCodeFiles::FindMissingFields(TConstArrayView<FName> Watched, TConstArrayView<FName> StateFields)
 {
 	TArray<FName> Missing;

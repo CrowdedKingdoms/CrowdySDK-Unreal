@@ -5,8 +5,10 @@
 #include "CrowdyExecLog.h"
 #include "CrowdyNativeExec.h"
 #include "CrowdyServerObject.h"
+#include "CrowdyServerObjectComponent.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLink.h"
+#include "CrowdyServerObjectShared.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -14,6 +16,7 @@
 #include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Subsystem/CrowdySDKSubsystem.h"
+#include "Subsystem/CrowdyTeams.h"
 #include "UObject/UObjectGlobals.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
@@ -47,6 +50,13 @@ void UCrowdyServerObjectSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 	{
 		SDKSubsystem = SDK;
 		SDK->OnLogout.AddDynamic(this, &UCrowdyServerObjectSubsystem::HandleLogout);
+		SDK->OnLogin.AddDynamic(this, &UCrowdyServerObjectSubsystem::HandleLogin);
+		SDK->OnRegister.AddDynamic(this, &UCrowdyServerObjectSubsystem::HandleLogin);
+	}
+	if (UCrowdyTeams* Teams = Collection.InitializeDependency<UCrowdyTeams>())
+	{
+		TeamsSubsystem = Teams;
+		Teams->OnMyTeamsCacheChanged.AddDynamic(this, &UCrowdyServerObjectSubsystem::HandleMyTeamsChanged);
 	}
 
 	LastTickSeconds = FPlatformTime::Seconds();
@@ -64,6 +74,13 @@ void UCrowdyServerObjectSubsystem::Deinitialize()
 	if (UCrowdySDKSubsystem* SDK = SDKSubsystem.Get())
 	{
 		SDK->OnLogout.RemoveDynamic(this, &UCrowdyServerObjectSubsystem::HandleLogout);
+		SDK->OnLogin.RemoveDynamic(this, &UCrowdyServerObjectSubsystem::HandleLogin);
+		SDK->OnRegister.RemoveDynamic(this, &UCrowdyServerObjectSubsystem::HandleLogin);
+	}
+	SignInListeners.Reset();
+	if (UCrowdyTeams* Teams = TeamsSubsystem.Get())
+	{
+		Teams->OnMyTeamsCacheChanged.RemoveDynamic(this, &UCrowdyServerObjectSubsystem::HandleMyTeamsChanged);
 	}
 
 	TArray<TObjectPtr<UCrowdyServerObjectLink>> Stopped;
@@ -112,6 +129,17 @@ int64 UCrowdyServerObjectSubsystem::GetSignedInUserId() const
 {
 	const UCrowdyGameSession* Session = GetSession();
 	return Session ? Session->GetUserID() : 0;
+}
+
+double UCrowdyServerObjectSubsystem::GetChunkSize() const
+{
+	const UCrowdyGameSession* Session = GetSession();
+	return Session ? Session->GetChunkSize() : 0.0;
+}
+
+bool UCrowdyServerObjectSubsystem::FindGroundChunk(const FVector& Location, int64& OutX, int64& OutY) const
+{
+	return CrowdyServerObjectShared::GroundChunkAt(Location, GetChunkSize(), OutX, OutY);
 }
 
 UCrowdyGameSession* UCrowdyServerObjectSubsystem::GetSession() const
@@ -271,7 +299,7 @@ bool UCrowdyServerObjectSubsystem::TickFromTicker(float FrameDeltaSeconds)
 
 bool UCrowdyServerObjectSubsystem::Tick(float DeltaSeconds)
 {
-	const float GraceStep = bLoadingMap ? 0.f : FMath::Min(DeltaSeconds, 1.f);
+	const float GraceStep = bLoadingMap || IsSeamlessTravelling() ? 0.f : FMath::Min(DeltaSeconds, 1.f);
 	TickLinks(DeltaSeconds, GraceStep);
 
 	// Iterates a copy: releasing an object or ticking it can run game code that acquires or releases others.
@@ -305,12 +333,14 @@ bool UCrowdyServerObjectSubsystem::Tick(float DeltaSeconds)
 		bRedialing = false;
 		ConnectAttempts = 0;
 		ConnectRetryIn = 0.f;
+		FailedDialTypes.Reset();
 		return true;
 	}
 	if (Connection.IsValid() && IsDialStale())
 	{
 		CloseConnection();
 		ConnectRetryIn = 0.f;
+		FailedDialTypes.Reset();
 	}
 	if (Connection.IsValid())
 	{
@@ -346,13 +376,33 @@ const UCrowdyServerObject* UCrowdyServerObjectSubsystem::FindLiveObject() const
 	return nullptr;
 }
 
+const UCrowdyServerObject* UCrowdyServerObjectSubsystem::FindDialObject() const
+{
+	for (const TPair<FCrowdyServerObjectKey, TObjectPtr<UCrowdyServerObject>>& Entry : Objects)
+	{
+		const UCrowdyServerObject* Object = Entry.Value;
+		const ECrowdyServerObjectStatus Status = Object ? Object->GetStatus() : ECrowdyServerObjectStatus::Released;
+		if ((Status == ECrowdyServerObjectStatus::Connecting || Status == ECrowdyServerObjectStatus::Ready) && !FailedDialTypes.Contains(Object->GetDefinition()->TypeName))
+		{
+			return Object;
+		}
+	}
+	return nullptr;
+}
+
 void UCrowdyServerObjectSubsystem::EnsureConnection()
 {
 	if (Connection.IsValid())
 	{
 		return;
 	}
-	const UCrowdyServerObject* First = FindLiveObject();
+	// The dial places the shared connection with one object's type, so a type that cannot be placed must not block the rest.
+	const UCrowdyServerObject* First = FindDialObject();
+	if (!First)
+	{
+		FailedDialTypes.Reset();
+		First = FindLiveObject();
+	}
 	if (!First)
 	{
 		return;
@@ -395,6 +445,7 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	}
 	DialedClient = Client;
 	DialedAppId = Session->GetAppID();
+	DialedType = Options.NodeType;
 
 	const TWeakObjectPtr<UCrowdyServerObjectSubsystem> WeakThis = this;
 	const TWeakPtr<FCrowdyNativeExecConnection> Dialed = Connection;
@@ -437,6 +488,15 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	{
 		UE_LOG(LogCrowdyExec, Warning, TEXT("Server Objects could not connect to the server: %s"), *Error);
 		UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s failed %s"), bRedialing ? TEXT("redial") : TEXT("dial"), *CrowdyExec::SafeText(Error, 256));
+		FailedDialTypes.Add(DialedType);
+		const FString Reason = FString::Printf(TEXT("Could not open the connection to the server for %s: %s"), *DialedType, *CrowdyExec::SafeText(Error, 256));
+		for (UCrowdyServerObject* Object : SnapshotObjects())
+		{
+			if (Object)
+			{
+				Object->SetConnectProblem(Reason);
+			}
+		}
 		CloseConnection();
 		ScheduleReconnect();
 		return;
@@ -447,6 +507,7 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	bConnected = true;
 	ConnectAttempts = 0;
 	ConnectRetryIn = 0.f;
+	FailedDialTypes.Reset();
 
 	// Handles are numbered per connection, so every old one is forgotten before anything subscribes on this one.
 	const TArray<TObjectPtr<UCrowdyServerObject>> Snapshot = SnapshotObjects();
@@ -473,6 +534,7 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	{
 		if (Object && Object->GetStatus() == ECrowdyServerObjectStatus::Connecting)
 		{
+			Object->SetConnectProblem(FString());
 			Object->HandleConnected();
 		}
 	}
@@ -527,6 +589,59 @@ void UCrowdyServerObjectSubsystem::HandleLogout(bool bSuccess)
 	}
 	CloseConnection(TEXT(" (signed out)"));
 	bRedialing = false;
+	FailedDialTypes.Reset();
+}
+
+void UCrowdyServerObjectSubsystem::AddSignInListener(UCrowdyServerObjectComponent* Component)
+{
+	SignInListeners.Add(Component);
+}
+
+void UCrowdyServerObjectSubsystem::RemoveSignInListener(UCrowdyServerObjectComponent* Component)
+{
+	SignInListeners.Remove(Component);
+}
+
+void UCrowdyServerObjectSubsystem::HandleLogin(bool bSuccess, FString Message)
+{
+	if (!bSuccess)
+	{
+		return;
+	}
+	// A listener's sign-in handling may add or remove listeners, so it runs over a copy.
+	for (const TWeakObjectPtr<UCrowdyServerObjectComponent>& Listener : SignInListeners.Array())
+	{
+		UCrowdyServerObjectComponent* Component = Listener.Get();
+		if (!Component)
+		{
+			SignInListeners.Remove(Listener);
+			continue;
+		}
+		Component->HandleLogin(bSuccess);
+	}
+}
+
+void UCrowdyServerObjectSubsystem::HandleMyTeamsChanged(const TArray<FCrowdyTeamMembership>& Memberships)
+{
+	TArray<int64> TeamIds;
+	TeamIds.Reserve(Memberships.Num());
+	for (const FCrowdyTeamMembership& Membership : Memberships)
+	{
+		TeamIds.Add(Membership.Team.TeamId);
+	}
+	TeamIds.Sort();
+	if (TeamIds == MyTeamIds)
+	{
+		return;
+	}
+	MyTeamIds = MoveTemp(TeamIds);
+	for (UCrowdyServerObject* Object : SnapshotObjects())
+	{
+		if (Object)
+		{
+			Object->HandleCrowdyTeamsChanged();
+		}
+	}
 }
 
 void UCrowdyServerObjectSubsystem::HandlePreLoadMap(const FWorldContext& WorldContext, const FString& MapName)
@@ -544,6 +659,17 @@ void UCrowdyServerObjectSubsystem::HandlePostLoadMap(UWorld* World)
 	{
 		bLoadingMap = false;
 	}
+}
+
+bool UCrowdyServerObjectSubsystem::IsSeamlessTravelling() const
+{
+	if (SeamlessTravelOverride.IsSet())
+	{
+		return SeamlessTravelOverride.GetValue();
+	}
+	const UGameInstance* GameInstance = GetGameInstance();
+	const FWorldContext* Context = GameInstance ? GameInstance->GetWorldContext() : nullptr;
+	return Context && Context->SeamlessTravelHandler.IsInTransition();
 }
 
 TArray<TObjectPtr<UCrowdyServerObject>> UCrowdyServerObjectSubsystem::SnapshotObjects() const

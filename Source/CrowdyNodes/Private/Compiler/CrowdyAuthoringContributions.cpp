@@ -1,7 +1,6 @@
 #include "Compiler/CrowdyAuthoringContributions.h"
 
 #include "Data/CrowdyMapProfile.h"
-#include "Data/CrowdyRenderingBackend.h"
 #include "Engine/World.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
@@ -11,26 +10,6 @@ namespace CrowdyAuthoringContributions
 	{
 		TFunction<FString(const UFunction*)> GActionEventValidator;
 		TFunction<TArray<FCrowdyActionParameterSpec>()> GActionParameterProvider;
-
-		// Asked of the backend class the profile names, off its class default object, so no backend is
-		// created and no world is involved. A backend that draws entities without an actor of their class
-		// answers true for itself; nothing here knows which backends those are.
-		bool ProfileDrawsCrowdRows(const UCrowdyMapProfile* Profile)
-		{
-			if (!Profile) return false;
-
-			UClass* BackendClass = Profile->ActorManagement.BackendClass.Get();
-
-			// Checked rather than assumed from the property's declared type. A saved asset can name a class
-			// that has since been reparented or redirected, and this runs over whatever a project's settings
-			// happen to hold, so a class that no longer derives the backend is answered rather than asserted on.
-			if (!BackendClass || !BackendClass->IsChildOf(UCrowdyRenderingBackend::StaticClass())) return false;
-
-			const UCrowdyRenderingBackend* BackendDefaults =
-				Cast<UCrowdyRenderingBackend>(BackendClass->GetDefaultObject());
-
-			return BackendDefaults && BackendDefaults->DrawsEntitiesAsCrowdRows();
-		}
 	}
 
 	bool IsCrowdRepresentationSelected()
@@ -48,7 +27,7 @@ namespace CrowdyAuthoringContributions
 			// through it and it does not count here either.
 			if (Entry.Key.IsNull()) continue;
 
-			if (ProfileDrawsCrowdRows(Entry.Value.LoadSynchronous())) return true;
+			if (UCrowdySDKDeveloperSettings::ProfileDrawsCrowdRows(Entry.Value.LoadSynchronous())) return true;
 		}
 
 		// A map with no entry of its own falls back to Default Profile, and only a project that has not set
@@ -57,7 +36,7 @@ namespace CrowdyAuthoringContributions
 		// open, which is the case this whole query exists to answer.
 		if (!Settings->DefaultProfile.IsNull())
 		{
-			return ProfileDrawsCrowdRows(Settings->DefaultProfile.LoadSynchronous());
+			return UCrowdySDKDeveloperSettings::ProfileDrawsCrowdRows(Settings->DefaultProfile.LoadSynchronous());
 		}
 
 		// The reason a shipped profile could not be honoured is dropped here on purpose. This is a question
@@ -65,7 +44,7 @@ namespace CrowdyAuthoringContributions
 		// once per world where a map is actually starting up and something is actually broken.
 		FString UnavailableReason;
 
-		return ProfileDrawsCrowdRows(UCrowdySDKDeveloperSettings::ResolveShippedDefaultProfile(UnavailableReason));
+		return UCrowdySDKDeveloperSettings::ProfileDrawsCrowdRows(UCrowdySDKDeveloperSettings::ResolveShippedDefaultProfile(UnavailableReason));
 	}
 
 	TFunction<FString(const UFunction*)> SetActionEventValidator(TFunction<FString(const UFunction*)> Validator)

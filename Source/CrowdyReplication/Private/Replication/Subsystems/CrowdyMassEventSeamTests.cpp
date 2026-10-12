@@ -188,10 +188,9 @@ bool FCrowdyEventSeamActorSourcedRpcNeverConsultsExternalProviderTest::RunTest(c
 	TestEqual(TEXT("the subscriber was never asked whether the id is known"), SpySubscriber->IsEntityKnownCallCount, 0);
 	TestEqual(TEXT("nor asked to resolve a receiver"), SpySubscriber->ResolveReceiverCallCount, 0);
 
-	// The other planes are on the same registration now, so a delivery leaking onto one of them would be a
+	// The state plane is on the same registration now, so a delivery leaking onto it would be a
 	// call arriving twice by two roads rather than a miss, which nothing above would notice.
 	TestEqual(TEXT("and nothing reached it on the state plane"), SpySubscriber->ApplyDecodedStateCallCount, 0);
-	TestEqual(TEXT("or the model plane"), SpySubscriber->ApplyModelChangesCallCount, 0);
 
 	return true;
 }

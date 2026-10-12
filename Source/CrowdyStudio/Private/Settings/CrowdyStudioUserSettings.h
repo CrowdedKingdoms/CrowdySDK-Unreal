@@ -30,11 +30,6 @@ public:
 	UPROPERTY(Config)
 	bool bRememberToken = false;
 
-	// The Game Model page's last-open tab key ("models" / "live" / "advanced"). Empty or an unrecognized
-	// value falls back to "models"; the view, not this settings object, owns that fallback.
-	UPROPERTY(Config)
-	FString LastGameModelTab;
-
 	// The nav rail folded down to icons, so the page area gets the width.
 	UPROPERTY(Config)
 	bool bNavRailCollapsed = false;

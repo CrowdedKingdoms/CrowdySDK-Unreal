@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 
+enum class ECrowdyServerFieldAudience : uint8;
 class SCrowdyServerCodeTab;
 struct FCrowdyServerFunction;
 
@@ -98,6 +99,15 @@ namespace CrowdyServerCodeFiles
 
 	/** Makes Field watched or not, whatever its spelling in Watched. True when Watched changed. */
 	bool SetWatchedField(TArray<FName>& Watched, FName Field, bool bWatched);
+
+	/** Sets who receives Field: unset is Server Only (in none of the lists), otherwise Field is in Watched, and in Owner or Team when that is the audience. True when a list changed. */
+	bool SetFieldAudience(TArray<FName>& Watched, TArray<FName>& Owner, TArray<FName>& Team, FName Field, TOptional<ECrowdyServerFieldAudience> Audience);
+
+	/** Shows Field to players, keeping its audience, or hides it from every list. True when a list changed. */
+	bool SetVisibleToPlayers(TArray<FName>& Watched, TArray<FName>& Owner, TArray<FName>& Team, FName Field, bool bVisible);
+
+	/** Who receives Field, or unset for Server Only. */
+	TOptional<ECrowdyServerFieldAudience> GetFieldAudience(const TArray<FName>& Watched, const TArray<FName>& Owner, const TArray<FName>& Team, FName Field);
 
 	/** The watched names that are not among StateFields, in order. */
 	TArray<FName> FindMissingFields(TConstArrayView<FName> Watched, TConstArrayView<FName> StateFields);

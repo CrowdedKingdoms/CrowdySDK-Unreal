@@ -410,10 +410,10 @@ bool FCrowdyServerComputeService::Deploy()
 	TArray<FText> Lines;
 	Lines.Add(FText::Format(LOCTEXT("ConfirmDeploy", "Deploying replaces the active server code of {1} with this project's {0} Server Object {0}|plural(one=type,other=types)."),
 		Project.Types.Num(), GetAppTarget()));
+	AddSentence(Lines, Changes, EChange::Removed, LOCTEXT("ConfirmRemoves", "It removes {0}, which this project does not have; their Server Objects stop."));
 	AddSentence(Lines, Changes, EChange::New, LOCTEXT("ConfirmAdds", "It adds {0}."));
 	AddSentence(Lines, Changes, EChange::Changed, LOCTEXT("ConfirmChanges", "It changes {0}."));
 	AddSentence(Lines, Changes, EChange::Unknown, LOCTEXT("ConfirmReplacesUnknown", "It replaces live code this project has no record of in {0}."));
-	AddSentence(Lines, Changes, EChange::Removed, LOCTEXT("ConfirmRemoves", "It removes {0}, which the project no longer has; its Server Objects stop."));
 	if (!CrowdyExecRevisions::HasChanges(Changes))
 	{
 		Lines.Add(LOCTEXT("ConfirmNotKnown", "What the app runs now could not be read, so what this changes is not known."));
@@ -446,8 +446,25 @@ bool FCrowdyServerComputeService::DeployStarters()
 	{
 		return false;
 	}
-	if (!Confirm(FText::Format(LOCTEXT("ConfirmStarters", "Deploying the starter pack replaces the active server code of {0} with the platform's example Server Object types."), GetAppTarget()),
-		LOCTEXT("ConfirmStartersTitle", "Deploy starter pack")))
+	TArray<FText> Lines;
+	Lines.Add(FText::Format(LOCTEXT("ConfirmStarters", "Deploying the starter pack replaces the active server code of {0} with the platform's example Server Object types."), GetAppTarget()));
+	const bool bLiveKnown = bVersionsLoaded && VersionsError.IsEmpty();
+	const CrowdyExecDeveloper::FVersion* Live = bLiveKnown ? GetLiveVersion() : nullptr;
+	TArray<CrowdyExecRevisions::FLiveType> Running;
+	if (Live && CrowdyExecRevisions::ParseManifest(Live->ManifestJson, Running))
+	{
+		Running.RemoveAll([](const CrowdyExecRevisions::FLiveType& Type) { return Type.TypeName == CrowdyExecDeploy::RootTypeName; });
+		const FString Names = FString::JoinBy(Running, TEXT(", "), [](const CrowdyExecRevisions::FLiveType& Type) { return Type.TypeName; });
+		if (!Names.IsEmpty())
+		{
+			Lines.Add(FText::Format(LOCTEXT("ConfirmStartersRunning", "It removes {0}, which the active version runs, unless the starter pack has a type of the same name; that type then takes over its saved Server Objects."), FText::FromString(Names)));
+		}
+	}
+	else if (Live || !bLiveKnown)
+	{
+		Lines.Add(LOCTEXT("ConfirmStartersNotKnown", "What the app runs now could not be read, so what this removes is not known."));
+	}
+	if (!Confirm(FText::Join(FText::FromString(TEXT("\n\n")), Lines), LOCTEXT("ConfirmStartersTitle", "Deploy starter pack")))
 	{
 		return false;
 	}

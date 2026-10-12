@@ -202,7 +202,33 @@ bool FCrowdyExecCodegenMenuRenamedFolderTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuRetagTest, "CrowdySDK.CrowdyExecEditor.CodegenRetagsCratesOfMovedDefinition", CrowdyExecCodegenMenuTests::TestFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuNewestCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenMenuPicksTheNewestCrateNamingOneDefinition", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecCodegenMenuNewestCrateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	const FString Orphan = Server.MakeCrate(TEXT("a_orphan"), TEXT("// orphan\n"), BossPath);
+	const FString Live = Server.MakeCrate(TEXT("b_live"), TEXT("// live\n"), BossPath);
+	const FString OrphanCargo = FPaths::Combine(Orphan, TEXT("Cargo.toml"));
+	const FString LiveCargo = FPaths::Combine(Live, TEXT("Cargo.toml"));
+	const FDateTime Now = FDateTime::UtcNow();
+	const FDateTime Earlier = Now - FTimespan::FromHours(1);
+
+	IFileManager::Get().SetTimeStamp(*OrphanCargo, Earlier);
+	IFileManager::Get().SetTimeStamp(*LiveCargo, Now);
+	TestEqual(TEXT("of two crates naming the definition, the one written last is offered"), Server.Find(BossPath, TEXT("boss_new")), Live);
+
+	IFileManager::Get().SetTimeStamp(*OrphanCargo, Now);
+	IFileManager::Get().SetTimeStamp(*LiveCargo, Earlier);
+	TestEqual(TEXT("whichever sorts first or last"), Server.Find(BossPath, TEXT("boss_new")), Orphan);
+
+	IFileManager::Get().SetTimeStamp(*OrphanCargo, Now);
+	IFileManager::Get().SetTimeStamp(*LiveCargo, Now);
+	TestEqual(TEXT("crates written at the same time fall back to the first by name"), Server.Find(BossPath, TEXT("boss_new")), Orphan);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuRetagTest,"CrowdySDK.CrowdyExecEditor.CodegenRetagsCratesOfMovedDefinition", CrowdyExecCodegenMenuTests::TestFlags)
 bool FCrowdyExecCodegenMenuRetagTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyExecCodegenMenuTests;
@@ -218,8 +244,13 @@ bool FCrowdyExecCodegenMenuRetagTest::RunTest(const FString& Parameters)
 	const FString Other = WriteCargo(Server, TEXT("other"), OtherCargo);
 	const FString Untagged = Server.MakeCrate(TEXT("untagged"), TEXT("// untagged\n"), FString());
 	const FString UntaggedCargo = LoadCargo(Untagged);
+	const FDateTime Written(2020, 1, 2, 3, 4, 5);
+	IFileManager::Get().SetTimeStamp(*FPaths::Combine(Crlf, TEXT("Cargo.toml")), Written);
+	IFileManager::Get().SetTimeStamp(*FPaths::Combine(Lf, TEXT("Cargo.toml")), Written);
 
 	TestEqual(TEXT("every crate recording the old path, in any case, is retagged"), CrowdyExecCodegen::RetagCrates(Server.Path, OldPath, NewPath), 2);
+	TestTrue(TEXT("a retagged Cargo.toml keeps the time it was written, so the newest crate stays the live one"),
+		IFileManager::Get().GetTimeStamp(*FPaths::Combine(Crlf, TEXT("Cargo.toml"))) == Written && IFileManager::Get().GetTimeStamp(*FPaths::Combine(Lf, TEXT("Cargo.toml"))) == Written);
 	TestEqualSensitive(TEXT("only the path changes, CRLF line breaks kept"), LoadCargo(Crlf), TaggedCargo(NewEscaped, TEXT("\r\n")));
 	TestEqualSensitive(TEXT("and LF ones"), LoadCargo(Lf), TaggedCargo(NewEscaped, TEXT("\n")));
 	TestEqualSensitive(TEXT("the new path reads back"), CrowdyExecCodegen::ReadCrateDefinition(Crlf), NewPath);
@@ -535,6 +566,33 @@ bool FCrowdyExecCodegenMenuSharedTypeNameTest::RunTest(const FString& Parameters
 	TestEqual(TEXT("and nothing more is said"), Dialogs.Messages.Num(), 1);
 	First->SetFlags(RF_Transient);
 	Compute.RefreshTypes();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuForeignCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenMenuRefusesFolderItDidNotGenerate", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecCodegenMenuForeignCrateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeTipJar();
+	const FString Crate = Server.MakeCrate(TEXT("tip_jar"), TEXT("// hand-written\n"), FString());
+	{
+		FScriptedDialogs Dialogs;
+		TestFalse(TEXT("a folder holding a crate the SDK did not generate is refused"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path));
+		if (TestEqual(TEXT("with one message"), Dialogs.Messages.Num(), 1))
+		{
+			TestTrue(TEXT("as an error"), Dialogs.Categories[0] == EAppMsgCategory::Error);
+			TestTrue(FString::Printf(TEXT("saying the SDK did not generate it (%s)"), *Dialogs.Messages[0]), Dialogs.Messages[0].Contains(TEXT("did not generate"), ESearchCase::CaseSensitive));
+			TestTrue(TEXT("and what to do"), Dialogs.Messages[0].Contains(TEXT("Choose another Type Name, or move that folder."), ESearchCase::CaseSensitive));
+		}
+	}
+	TestEqualSensitive(TEXT("the hand-written code is left as it was"), LoadLogic(Crate), FString(TEXT("// hand-written\n")));
+	TestFalse(TEXT("and nothing is written beside it"), FPaths::FileExists(FPaths::Combine(Crate, TEXT("src/types.rs"))));
+
+	IFileManager::Get().DeleteDirectory(*Crate, false, true);
+	FScriptedDialogs Dialogs;
+	TestTrue(TEXT("a missing folder is generated into"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path));
+	TestTrue(TEXT("and so is the crate the SDK just generated, which records no definition"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path));
 	return true;
 }
 

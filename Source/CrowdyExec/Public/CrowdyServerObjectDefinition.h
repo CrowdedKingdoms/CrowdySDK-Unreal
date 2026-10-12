@@ -31,6 +31,37 @@ enum class ECrowdyServerObjectVisibility : uint8
 	Members
 };
 
+/** What one instance keeps. */
+UENUM(BlueprintType)
+enum class ECrowdyServerObjectHolds : uint8
+{
+	/** One set of the variables, as most types keep. */
+	OneSet UMETA(DisplayName = "One Set of Variables"),
+	/** The variables once for each entity, keyed by the entity's id, such as health for every member of a crowd. */
+	RecordPerEntity UMETA(DisplayName = "A Record per Entity")
+};
+
+/** Who receives a variable of a record that players can see. */
+UENUM(BlueprintType)
+enum class ECrowdyServerFieldAudience : uint8
+{
+	Everyone,
+	/** Only the player who owns the record's entity. */
+	Owner UMETA(DisplayName = "Owner Only"),
+	/** Only players on the record's team, as Team From decides it. */
+	Team UMETA(DisplayName = "Team Only")
+};
+
+/** Who is on a record's team, for its Team Only variables. */
+UENUM(BlueprintType)
+enum class ECrowdyServerTeamSource : uint8
+{
+	/** Players who own a record in the same instance with the same team; a player on no record there sees no Team Only values. */
+	ThisObjectsRecords UMETA(DisplayName = "This Object's Records"),
+	/** A record's team is a Crowdy Team id, and its members see the Team Only values in every instance. Deploying asks for players.read. */
+	CrowdyTeam UMETA(DisplayName = "Crowdy Team")
+};
+
 UENUM(BlueprintType)
 enum class ECrowdyServerFunctionCaller : uint8
 {
@@ -61,7 +92,9 @@ enum class ECrowdyServerTimerRepeat : uint8
 	/** Runs again and again, Time apart. */
 	Every,
 	/** Runs once, Time after it is started. */
-	After UMETA(DisplayName = "Once After")
+	After UMETA(DisplayName = "Once After"),
+	/** Runs at the times a cron expression names, such as every six hours or each day at midnight. */
+	Schedule UMETA(DisplayName = "On Schedule")
 };
 
 /** A timer on the server; logic.rs gets a function named after it, which runs each time it fires. */
@@ -73,13 +106,21 @@ struct CROWDYEXEC_API FCrowdyServerTimer
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timer")
 	FName Name;
 
-	/** Every Time, or once after Time. */
+	/** Every Time, once after Time, or on a Cron schedule. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timer", meta = (DisplayName = "Runs"))
 	ECrowdyServerTimerRepeat Repeat = ECrowdyServerTimerRepeat::Every;
 
 	/** How long between runs, or before the one run. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timer", meta = (DisplayName = "Time", ClampMin = 0.01, Units = "s"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timer", meta = (DisplayName = "Time", ClampMin = 0.01, Units = "s", EditCondition = "Repeat != ECrowdyServerTimerRepeat::Schedule", EditConditionHides))
 	float Seconds = 60.f;
+
+	// The tooltip is in the meta because its example holds a star-slash, which would end a comment.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timer", meta = (ToolTip = "When it runs: five fields (minute hour day-of-month month day-of-week), or six with seconds first, or @hourly, @daily, @weekly, @monthly or @yearly. 0 */6 * * * is every six hours on the hour. Times are UTC unless UTC Offset says otherwise.", EditCondition = "Repeat == ECrowdyServerTimerRepeat::Schedule", EditConditionHides))
+	FString Cron;
+
+	/** Reads the schedule's times this many minutes ahead of UTC: 60 runs 0 9 * * * at 09:00 in UTC+1. A fixed offset with no daylight saving. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timer", meta = (DisplayName = "UTC Offset", ClampMin = -840, ClampMax = 840, EditCondition = "Repeat == ECrowdyServerTimerRepeat::Schedule", EditConditionHides))
+	int32 UtcOffsetMinutes = 0;
 
 	/** Starts when an instance first starts; otherwise server code starts it with timers::start. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timer")
@@ -162,6 +203,10 @@ struct CROWDYEXEC_API FCrowdyServerFunction
 	/** Players, members, the leader, or only other server code and developer tools. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Function", meta = (DisplayName = "Callable By"))
 	ECrowdyServerFunctionCaller WhoCanCall = ECrowdyServerFunctionCaller::Players;
+
+	/** A feature key the calling player's access tier must grant, or the call is refused; matched exactly, capitals included. Features are set on the Access page in Crowdy Studio. Empty means none; other server code and developer tools are not checked. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Function", meta = (DisplayName = "Required Feature"))
+	FString RequiredFeature;
 
 	/** How long one player waits between calls that succeeded; 0 for no wait. Checked on the server. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Function", meta = (DisplayName = "Cooldown", ClampMin = 0, Units = "s"))
@@ -275,6 +320,9 @@ struct CROWDYEXEC_API FCrowdyExecBakedField
 
 	UPROPERTY(VisibleAnywhere, Category = "Baked")
 	bool bWatched = false;
+
+	UPROPERTY(VisibleAnywhere, Category = "Baked")
+	ECrowdyServerFieldAudience Audience = ECrowdyServerFieldAudience::Everyone;
 };
 
 USTRUCT()
@@ -336,6 +384,14 @@ public:
 	/** The Instance Id of a type with Only One Instance. */
 	static const TCHAR* const OnlyInstanceId;
 
+	/** Its server code may read world data, such as which actors are near a chunk; deploying asks the platform for the world.read permission. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads World Data"))
+	bool bReadsWorld = false;
+
+	/** One set of the variables, or a record of them for each entity. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Holds"))
+	ECrowdyServerObjectHolds Holds = ECrowdyServerObjectHolds::OneSet;
+
 	/** Whether the variables are added here or come from a struct of your own. */
 	UPROPERTY(EditAnywhere, Category = "Server Object", meta = (DisplayName = "Variables From"))
 	ECrowdyServerValuesForm StateForm = ECrowdyServerValuesForm::Struct;
@@ -353,6 +409,48 @@ public:
 	/** The variables players can read and watch (sent on the state topic). The others never leave the server. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Visible to Players"))
 	TArray<FName> WatchedFields;
+
+	/** The Visible to Players variables that only the player who owns the record's entity receives. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Visible to Owner Only",
+		EditCondition = "Holds == ECrowdyServerObjectHolds::RecordPerEntity", EditConditionHides))
+	TArray<FName> OwnerFields;
+
+	/** The Visible to Players variables that only players on the record's team receive. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Visible to Team Only",
+		EditCondition = "Holds == ECrowdyServerObjectHolds::RecordPerEntity", EditConditionHides))
+	TArray<FName> TeamFields;
+
+	/** The most records one instance keeps. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Records", meta = (DisplayName = "Max Records", ClampMin = 1, ClampMax = 4096,
+		EditCondition = "Holds == ECrowdyServerObjectHolds::RecordPerEntity", EditConditionHides))
+	int32 MaxRecords = 2048;
+
+	/** Changes made in between are sent together; the last value wins. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Records", meta = (DisplayName = "Send Changes Every", ClampMin = 50, ClampMax = 5000, ForceUnits = "ms",
+		EditCondition = "Holds == ECrowdyServerObjectHolds::RecordPerEntity", EditConditionHides))
+	int32 PushIntervalMs = 250;
+
+	/** Who receives a record's Team Only variables besides its owner. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Records", meta = (DisplayName = "Team From",
+		EditCondition = "Holds == ECrowdyServerObjectHolds::RecordPerEntity", EditConditionHides))
+	ECrowdyServerTeamSource TeamFrom = ECrowdyServerTeamSource::ThisObjectsRecords;
+
+	/** Whether this holds records whose teams are Crowdy Team ids. */
+	bool HasCrowdyTeamRecords() const { return Holds == ECrowdyServerObjectHolds::RecordPerEntity && TeamFrom == ECrowdyServerTeamSource::CrowdyTeam; }
+
+	/** When instances are keyed by area, each covers Area Size by Area Size chunks on the ground and its Instance Id is the area's x,y. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Areas", meta = (DisplayName = "Area Size", ClampMin = 1, ClampMax = 64))
+	int32 AreaSizeChunks = 4;
+
+	/** When instances are keyed by area, how many areas out from a player's own are followed: 1 follows the 3 by 3 around it. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Areas", meta = (DisplayName = "Areas Followed Around a Player", ClampMin = 0, ClampMax = 3))
+	int32 InterestRadiusAreas = 1;
+
+	/** The key of the area holding the chunk: x,y, the ground pair (Unreal's X and Y, not its height), each divided by Area Size and rounded down, such as -1,2. */
+	static FString MakeAreaKey(int64 ChunkX, int64 ChunkY, int32 AreaSize);
+
+	/** MakeAreaKey with this definition's Area Size. */
+	FString GetAreaKey(int64 ChunkX, int64 ChunkY) const;
 
 	/** What players, or other server code, can call on an instance. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Functions")

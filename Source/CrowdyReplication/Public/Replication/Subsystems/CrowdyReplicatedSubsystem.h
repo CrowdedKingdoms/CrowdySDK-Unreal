@@ -16,8 +16,8 @@ class UWorld;
  * Deinitialize; there is no per-world re-enrollment (unlike the game-instance base).
  *
  * Scope: host-owned only (the default ownership). This is the client-authoritative VIEW plane. Host
- * precedence is a convention, not enforced. Authoritative or cheat-sensitive state belongs in a Game Model,
- * never here.
+ * precedence is a convention, not enforced. Authoritative or cheat-sensitive state belongs in server code
+ * (Server Objects), never here.
  */
 UCLASS(Abstract)
 class CROWDYREPLICATION_API UCrowdyReplicatedWorldSubsystem : public UWorldSubsystem
@@ -47,7 +47,7 @@ protected:
  * different game instance.
  *
  * Same VIEW-plane guardrail as the world base: host-owned only, host precedence is convention, cheat-sensitive
- * state belongs in a Game Model.
+ * state belongs in server code (Server Objects).
  */
 UCLASS(Abstract)
 class CROWDYREPLICATION_API UCrowdyReplicatedGameInstanceSubsystem : public UGameInstanceSubsystem

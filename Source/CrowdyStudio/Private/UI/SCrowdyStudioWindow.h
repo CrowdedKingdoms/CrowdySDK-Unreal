@@ -9,6 +9,7 @@
 
 class FCrowdyStudioController;
 class SCrowdyLogoIntro;
+class SBox;
 class SCrowdyWebView;
 class SWidgetSwitcher;
 
@@ -18,7 +19,7 @@ class SWidgetSwitcher;
 //
 // The rail keeps only what a game uses the SDK for: pointing the project at an app (sign-in,
 // the Project page with config sync and a game server link) and authoring the runtime pieces (teams, channels,
-// grid, game model). Pure account/billing management opens the embedded web console instead.
+// grid, access). Pure account/billing management opens the embedded web console instead.
 class SCrowdyStudioWindow : public SCompoundWidget
 {
 public:
@@ -32,11 +33,16 @@ private:
 	// Shows the page another module asked for with CrowdyStudioExtraPages::OpenPage, once someone is signed in.
 	void ShowRequestedPage();
 
+	// Drops the page's widget before the module that made it unloads.
+	void HandlePageUnregistered(FName Id);
+
 	TSharedRef<SWidget> BuildHeader();
 	TSharedRef<SWidget> BuildNavRail();
 	TSharedRef<SWidget> BuildStatusBar();
 
-	TSharedRef<SWidget> MakeNavButton(const FText& Label, const TCHAR* Icon, int32 PageIndex, bool bRequiresSignIn);
+	// ToolTip is shown on hover; while the rail is folded to icons the label is shown with it.
+	TSharedRef<SWidget> MakeNavButton(const FText& Label, const TCHAR* Icon, int32 PageIndex, bool bRequiresSignIn,
+		const FText& ToolTip = FText::GetEmpty());
 	TSharedRef<SWidget> MakeWebNavButton(const FText& Label, const TCHAR* Icon, TFunction<FString()> UrlGetter);
 	TSharedRef<SWidget> MakeHairline();
 
@@ -62,6 +68,8 @@ private:
 
 	int32 ActiveIndex = 0;
 	FDelegateHandle PageRequestHandle;
+	FDelegateHandle PageUnregisteredHandle;
+	TMap<FName, TSharedPtr<SBox>> ExtraPageBoxes;
 	FCurveSequence PageAnim;
 	FCurveHandle PageFade;
 };

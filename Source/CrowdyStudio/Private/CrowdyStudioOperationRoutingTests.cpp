@@ -43,11 +43,11 @@ namespace
 
 		{ ECrowdyCppApiDomain::AppAccess, TEXT("RuntimePermissions"), ECrowdyCppTokenPlane::Management },
 		{ ECrowdyCppApiDomain::AppAccess, TEXT("AppAccessTiers"), ECrowdyCppTokenPlane::Management },
-		{ ECrowdyCppApiDomain::AppAccess, TEXT("AppFeatures"), ECrowdyCppTokenPlane::Management },
-		{ ECrowdyCppApiDomain::AppAccess, TEXT("DefineAppFeature"), ECrowdyCppTokenPlane::Management },
-		{ ECrowdyCppApiDomain::AppAccess, TEXT("TierFeatures"), ECrowdyCppTokenPlane::Management },
-		{ ECrowdyCppApiDomain::AppAccess, TEXT("GrantTierFeature"), ECrowdyCppTokenPlane::Management },
-		{ ECrowdyCppApiDomain::AppAccess, TEXT("RevokeTierFeature"), ECrowdyCppTokenPlane::Management },
+		{ ECrowdyCppApiDomain::AppAccess, TEXT("AppFeatures"), ECrowdyCppTokenPlane::Game },
+		{ ECrowdyCppApiDomain::AppAccess, TEXT("DefineAppFeature"), ECrowdyCppTokenPlane::Game },
+		{ ECrowdyCppApiDomain::AppAccess, TEXT("TierFeatures"), ECrowdyCppTokenPlane::Game },
+		{ ECrowdyCppApiDomain::AppAccess, TEXT("GrantTierFeature"), ECrowdyCppTokenPlane::Game },
+		{ ECrowdyCppApiDomain::AppAccess, TEXT("RevokeTierFeature"), ECrowdyCppTokenPlane::Game },
 
 		{ ECrowdyCppApiDomain::Teams, TEXT("Teams"), ECrowdyCppTokenPlane::Game },
 		{ ECrowdyCppApiDomain::Teams, TEXT("TeamPolicy"), ECrowdyCppTokenPlane::Game },

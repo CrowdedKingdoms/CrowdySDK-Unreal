@@ -41,11 +41,8 @@ namespace
 }
 
 // A pre-warmed pool actor stands for no entity, so the pool must mark it dormant BEFORE its spawn finishes.
-// Unregistering it afterwards is not the same thing, and that ordering was the whole defect: registration is
-// delivered synchronously, and the Game Model answers it by ensuring a server container row that no later
-// cleanup can recall. A pool of 8 pre-warmed actors carrying two containers each sent 16 such ensures for
-// actors that stood for nothing, and because every client derives the same ids for its own pool, two clients
-// raced to create the same rows and each was refused on the ones the other won.
+// Unregistering it afterwards is not the same thing: registration is delivered synchronously, so every listener
+// has already acted on an actor that stands for nothing, and no later cleanup recalls that.
 //
 // This asserts the marking rather than the absence of a record, because an editor world never begins play, so
 // "nothing registered" would be true here whatever the pool did. The unpooled actor below is the control that

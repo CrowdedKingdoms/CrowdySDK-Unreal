@@ -71,10 +71,8 @@ void UCrowdyActorPoolSubsystem::RegisterPool(const FCrowdyPoolConfig& Config)
 
 AActor* UCrowdyActorPoolSubsystem::SpawnPooledActor(FPool& Pool)
 {
-	// Deferred so the entity component can be marked dormant BEFORE BeginPlay. A pooled actor that
-	// registers itself is observed synchronously by every listener, and the Game Model answers by ensuring
-	// a server container row for an actor that stands for nothing. OnActorPooled below unregisters the
-	// record, but the round trip is already sent and cannot be recalled.
+	// Deferred so the entity component can be marked dormant BEFORE BeginPlay: a pooled actor that
+	// registers itself is observed synchronously by every listener, and unregistering afterwards cannot recall that.
 	AActor* Actor = GetWorld()->SpawnActorDeferred<AActor>(Pool.ActorClass, FTransform::Identity,
 		nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 	if (!Actor) return nullptr;

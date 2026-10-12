@@ -1,6 +1,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "StructUtils/InstancedStruct.h"
+#include "Templates/Function.h"
 
 class FProperty;
 struct FCrowdyExecLayout;
@@ -75,10 +77,52 @@ struct FCrowdyExecMembersView
 	bool bHasIsLeader = false;
 };
 
+/** Which message of a type that holds a record per entity is being read. */
+enum class ECrowdyExecRecordsMessage : uint8
+{
+	/** A page of read: every record, replacing what each held. */
+	Read,
+	/** A state push: changed values over the stored records, and the removed ids. */
+	Push,
+	/** A page of changes: the restricted values the player may see, over the stored records. */
+	Changes
+};
+
+/** One record a records message carried. */
+struct FCrowdyExecRecordUpdate
+{
+	FString Id;
+	/** The record in the State struct: a read's from the defaults, a push's or changes' from the stored record. */
+	FInstancedStruct Values;
+	/** Which of the State's fields the message carried, by their index in the field table. */
+	TBitArray<> Fields;
+	FString Team;
+	int64 Owner = 0;
+	bool bHasOwner = false;
+	bool bHasTeam = false;
+};
+
+struct FCrowdyExecRecordsMessage
+{
+	TArray<FCrowdyExecRecordUpdate> Records;
+	TArray<FString> Removed;
+	uint64 Epoch = 0;
+	uint64 Seq = 0;
+	uint64 RSeq = 0;
+	bool bRestricted = false;
+	bool bMore = false;
+};
+
 namespace CrowdyExec
 {
 	/** The version of the message shapes this client reads; server code built for another is refused. */
 	constexpr int32 ContractVersion = 1;
+
+	/** The version of the message shapes of a type that holds a record per entity. */
+	constexpr int32 RecordsContractVersion = 2;
+
+	/** The longest record id or team the server keeps, in bytes. */
+	constexpr int32 MaxRecordIdBytes = 64;
 
 	constexpr int32 MaxDepth = 16;
 	constexpr int32 MaxElements = 4096;
@@ -90,9 +134,20 @@ namespace CrowdyExec
 	/** The longest a timer's Seconds or a function's Cooldown may be: 30 days. */
 	constexpr int32 MaxWaitSeconds = 2592000;
 
+	/** The most a schedule timer's UTC Offset may shift it, in minutes either way. */
+	constexpr int32 MaxUtcOffsetMinutes = 840;
+
+	constexpr int32 MinPushIntervalMs = 50;
+	constexpr int32 MaxPushIntervalMs = 5000;
+	constexpr int32 MaxAreaSizeChunks = 64;
+	constexpr int32 MaxInterestRadiusAreas = 3;
+
 	/** Method names the generated server code uses itself, so no function or timer may take them. */
 	inline const TCHAR* const ReservedMethodNames[] = {TEXT("read"), TEXT("on_timer"), TEXT("on_topic"), TEXT("on_presence"), TEXT("on_session"),
 		TEXT("on_player_joined"), TEXT("on_player_left")};
+
+	/** The timer the generated server code sends a Record per Entity type's changes with; no timer of any type may take it. */
+	inline const TCHAR* const FlushTimerName = TEXT("crowdy_flush");
 
 	/** The built-in member functions' methods, taken while Members From is This Object. */
 	inline const TCHAR* const BuiltInMemberMethodNames[] = {TEXT("join"), TEXT("leave"), TEXT("add_member"), TEXT("remove_member"), TEXT("make_leader"),
@@ -184,6 +239,13 @@ namespace CrowdyExec
 		TConstArrayView<uint8> Bytes, void* State, FCrowdyExecStateHeader& OutHeader, TArray<FString>& OutFields, FString& OutError,
 		FCrowdyExecMembersView* OutMembers = nullptr);
 
+	/**
+	 * Reads a records message of a type that holds a record per entity. FindStored gives a stored record's values, or
+	 * null for an id not held, for a push or changes to decode over. On failure Out is untouched.
+	 */
+	bool DecodeRecords(const UCrowdyServerObjectDefinition& Definition, ECrowdyExecRecordsMessage Message, TConstArrayView<uint8> Bytes,
+		TFunctionRef<const void*(const FString&)> FindStored, FCrowdyExecRecordsMessage& Out, FString& OutError);
+
 	/** Resolves a definition's baked tables against the loaded structs. */
 	bool BuildLayout(const UCrowdyServerObjectDefinition& Definition, FCrowdyExecLayout& Out, FString& OutError);
 
@@ -226,6 +288,8 @@ struct FCrowdyExecField
 	TArray<uint8> Key;
 	int32 Type = INDEX_NONE;
 	bool bWatched = false;
+	/** Sent only to the record's owner or team, for a type that holds a record per entity. */
+	bool bRestricted = false;
 };
 
 struct FCrowdyExecStruct

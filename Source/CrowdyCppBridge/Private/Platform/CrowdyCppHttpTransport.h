@@ -99,8 +99,8 @@ namespace CrowdyCppTransport
 	};
 
 	// Test transport: every request resolves to a fixed canned response with no
-	// network I/O, running the real interpret() response path. Used to prove
-	// parity against FCrowdyGameApiCodec headlessly. When Capture is set, each
+	// network I/O, running the real interpret() response path. Used to test
+	// the client headlessly. When Capture is set, each
 	// request overwrites it before the canned response is returned. Counters, when given, count requests in flight
 	// and nothing else.
 	std::shared_ptr<crowdy::graphql::IAsyncHttpTransport> MakeCannedTransport(std::string Body, int Status,

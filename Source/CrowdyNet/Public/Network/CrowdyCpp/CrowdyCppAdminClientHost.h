@@ -5,8 +5,8 @@
 #include "Templates/SharedPointer.h"
 
 /**
- * Owns one admin-scoped API client for the length of a single editor flow, such as deploying a kit or syncing
- * schema to the server. It is the counterpart to the game instance's runtime client: the same client, a different
+ * Owns one admin-scoped API client for the length of a single editor flow, such as deploying server code
+ * to the app. It is the counterpart to the game instance's runtime client: the same client, a different
  * bearer, and a lifetime measured in one operation rather than one session.
  *
  * The point of the type is that ownership is the only thing a caller has to get right. Creating it registers the

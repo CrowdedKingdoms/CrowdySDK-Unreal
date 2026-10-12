@@ -47,7 +47,7 @@ namespace CrowdyExecDeploy
 	/** The crate of the root type, written by the SDK and never on disk. */
 	CrowdyExecDeveloper::FBuildCrate MakeRootCrate();
 
-	/** The manifest for Definitions under the root: each a hub named by its type, callable by players, with its save interval, idle timeout, the types it Can Call and, for Crowdy Team members, the players.read scope. Deterministic. */
+	/** The manifest for Definitions under the root: each a hub named by its type, callable by players, with its save interval, idle timeout, the types it Can Call and, for Crowdy Team members or a function with a Required Feature, the players.read scope. Deterministic. */
 	FString MakeManifest(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions);
 
 	/** Reads every definition's crate from CrateDirectoryFor(definition), adds the root crate and the manifest, and lists every problem. */

@@ -5,7 +5,6 @@
 #include "UObject/Interface.h"
 #include "ICrowdyEntitySubscriber.generated.h"
 
-struct FCrowdyAttributeChange;
 struct FCrowdyRepLayout;
 
 UINTERFACE(MinimalAPI, meta=(CannotImplementInterfaceInBlueprint))
@@ -19,7 +18,7 @@ class UCrowdyEntitySubscriber : public UInterface
  *
  * The router normally resolves an inbound payload's target in the entity registry, which holds actors and
  * enrolled objects, and delivers it onto that object: a call is invoked on it, state is decoded onto its
- * properties, a pulled model value is written onto its member. An entity simulated as a row in a table has
+ * properties. An entity simulated as a row in a table has
  * nothing there to resolve, and giving it an object purely so payloads have somewhere to land would undo
  * the reason it is a row. So a subscriber registers once and is handed the payloads for such entities,
  * whichever plane they arrive on, and decides for itself what each one does to its own storage.
@@ -127,24 +126,4 @@ public:
 	 */
 	virtual void ApplyDecodedState(const FGuid& EntityUUID, const FCrowdyRepLayout& Layout,
 		const void* DecodedContainer, TConstArrayView<int32> DeliveredIndices) = 0;
-
-	/**
-	 * Writes the server-owned values a model pull delivered into the entity's own storage.
-	 *
-	 * ContainerId names the server-side container the values came from. An entity can be told about more
-	 * than one, so read it rather than assuming every call is about the same one.
-	 *
-	 * Unlike a view-state delta, these ARE changes. They are diffed against a cache held per entity rather
-	 * than decoded into a buffer shared with other entities, so a key appears here only when its value
-	 * differs from what this client last saw for this entity, and a key absent from Changes has genuinely
-	 * not moved. Do not carry the reasoning for the state plane over to this one.
-	 *
-	 * Values are compact JSON, and NewValueJson is empty for a removed key.
-	 *
-	 * This is reached from a pull the caller already batched. Nothing here may start one, per entity or
-	 * otherwise: a pull issued from inside a per-entity path is how a crowd turns one notification into a
-	 * request per entity and stalls the game thread.
-	 */
-	virtual void ApplyModelChanges(const FGuid& EntityUUID, const FString& ContainerId,
-		TConstArrayView<FCrowdyAttributeChange> Changes) = 0;
 };

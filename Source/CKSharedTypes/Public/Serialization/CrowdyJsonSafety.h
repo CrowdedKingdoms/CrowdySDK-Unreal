@@ -17,9 +17,7 @@
  */
 namespace CrowdyJsonSafety
 {
-	// The deepest object/array nesting a server JSON payload may carry. Well above any legitimate GraphQL response
-	// or Game Model container (a handful of levels) and well below the depth that overflows the stack on recursive
-	// DOM teardown.
+	// Deepest object/array nesting a server JSON payload may carry: far above any real response, far below a stack overflow.
 	inline constexpr int32 MaxNestingDepth = 64;
 
 	// True when the JSON string's object/array nesting never exceeds MaxDepth. A single pass over the raw text

@@ -70,6 +70,9 @@ public:
 	/** Read Server Variable for C++: Dest is of type DestProperty. */
 	static bool ReadServerVariableInto(const UObject* Target, const UCrowdyServerObjectDefinition* Definition, FName Variable, const FProperty* DestProperty, void* Dest);
 
+	/** Copies Values' Name into Dest, true only when it fits and bReady; otherwise Dest is cleared, and a value that does not fit is warned about once. */
+	static bool ReadReadyValueInto(const FInstancedStruct* Values, bool bReady, FName Name, const FProperty* DestProperty, void* Dest);
+
 	/** Runs Handler's HandlerFunction (the value, then Has Value for an optional) now when Ready and after each change; rebinding moves it. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", meta = (BlueprintInternalUseOnly = "true"))
 	static void BindServerVariableChanged(UObject* Target, UCrowdyServerObjectDefinition* Definition, FName Variable, UObject* Handler, FName HandlerFunction);

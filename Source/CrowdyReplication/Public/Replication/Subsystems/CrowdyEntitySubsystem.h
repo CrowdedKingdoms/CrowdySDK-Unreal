@@ -72,7 +72,7 @@ public:
 	// RegisterEntity, reporting what it did. A registration can be refused - a NetID has only 32 bits of real
 	// entropy, so two unrelated participants can derive the same one, and the incumbent keeps it - and the caller
 	// that was refused is the party that ends up owning nothing. Refusal is otherwise visible only as a log line
-	// on whichever machine hit it, so anything that binds state to an id (a Game Model container, a damage target)
+	// on whichever machine hit it, so anything that binds state to an id (a Server Object, a damage target)
 	// should register through this and give up its claim on a Refused result. RegisterEntity is the same call with
 	// the answer discarded.
 	ECrowdyEntityRegistration TryRegisterEntity(const FCrowdyEntityRecord& Record);
@@ -99,44 +99,10 @@ public:
 	// live participant (logged as an error naming both): an id that answers for someone else is worse than none.
 	FGuid RegisterParticipant(UObject* Participant, ECrowdyOwnership Ownership);
 
-	// Enrolls Participant as a sub-participant anchored to an already-registered entity, for a CrowdyContainer
-	// component living on a registered actor. The NetID is derived from the anchor's NetID plus the participant's
-	// class path and object name, so two same-class components on one actor (and the same component across every
-	// client) get distinct, deterministic ids; it inherits the anchor's authority (Role + OwnerID), so a component
-	// on a Host-owned boss is Host-owned and one on a player pawn is that player's. Returns the derived NetID, or an
-	// invalid guid when the anchor is unregistered, the participant is invalid, or the derived id is already held by
-	// a DIFFERENT live participant (a key collision, logged as an error naming both, so an authoring mistake is loud
-	// rather than a silent mis-bind). Re-enrolling the same object under the same anchor is idempotent. Unregister
-	// via UnregisterParticipant, or let the anchor's teardown drop it. KeyOverride, when non-empty, replaces the
-	// object name in the derivation (an author-supplied binding key for a runtime-added component whose object name
-	// is not cross-client stable - see ICrowdyBindingKeyProvider); empty keeps the object-name derivation.
-	FGuid RegisterSubParticipant(UObject* Participant, const FGuid& AnchorNetID, const FString& KeyOverride = FString());
-
-	// RegisterSubParticipant for an object standing in for a component this machine does not have.
-	//
-	// An observed entity drawn as a row has no actor, so the CrowdyContainer components its owner enrolled exist
-	// here only as a derivation from the class. A stand-in object represents one, and SeedClass and InstanceTerm
-	// are the component's own class and the term the owner's enrollment used, so the id derived here is the SAME
-	// id the owner minted. That equality is the whole mechanism: the binding reads the owner's row by that key, so
-	// a mismatch finds nothing and the row silently keeps its spawn defaults. The record's ClassID is SeedClass's
-	// too, which is what lets the binding read the container off the component class rather than off the stand-in.
-	FGuid RegisterSubParticipantAs(UObject* Participant, const FGuid& AnchorNetID, const UClass* SeedClass,
-		const FString& InstanceTerm);
-
-	// The id RegisterSubParticipantAs would derive, without enrolling anything. Exposed because the derivation is
-	// the contract between an owner enrolling a real component and an observer standing in for it, and a caller
-	// has to be able to ask whether that id is already held before minting a second object to hold it.
-	static FGuid DeriveSubParticipantID(const FGuid& AnchorNetID, const UClass* SeedClass, const FString& InstanceTerm);
-
-	// Removes a participant previously enrolled via RegisterParticipant / RegisterSubParticipant.
+	// Removes a participant previously enrolled via RegisterParticipant.
 	void UnregisterParticipant(UObject* Participant);
 
 	const FCrowdyEntityRecord* FindRecord(const FGuid& NetID) const;
-
-	// Fills in the class of an entity registered before anything named one. Refuses a record that already
-	// carries a class: the recorded class decides what an entity declares, so completing a missing fact is
-	// safe where repointing an established one is not. False when the id is unknown or already classed.
-	bool TrySetRecordClassID(const FGuid& NetID, uint32 ClassID);
 
 	// True when this client is the entity's owner: the record names the local player AND its role says this client
 	// simulates and sends for it. Both are required because this answer authorizes creating server-side state bound
@@ -287,7 +253,7 @@ public:
 	// RemoteProxy elsewhere); an invalid (zero) id makes it host-owned (a world entity). ExpectedPreviousOwnerID,
 	// when valid, is a compare-and-swap guard: the change is dropped when the record's current owner no longer
 	// matches, so a stale or duplicate grant is a no-op. This is the client-authoritative view plane - a
-	// convention, not an enforcement boundary; cheat-sensitive ownership belongs in a Game Model.
+	// convention, not an enforcement boundary; cheat-sensitive ownership belongs in server code (Server Objects).
 	void ReassignOwnership(const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& ExpectedPreviousOwnerID);
 
 	// Broadcasts OnOwnershipRequested for TargetEntity, resolving the requester's representative actor (its avatar,

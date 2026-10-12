@@ -46,6 +46,7 @@ void FCrowdyServerTimerCustomization::CustomizeHeader(TSharedRef<IPropertyHandle
 
 void FCrowdyServerTimerCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& Utils)
 {
+	const TSharedPtr<IPropertyHandle> Repeat = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerTimer, Repeat));
 	uint32 Count = 0;
 	PropertyHandle->GetNumChildren(Count);
 	for (uint32 Index = 0; Index < Count; ++Index)
@@ -59,6 +60,13 @@ void FCrowdyServerTimerCustomization::CustomizeChildren(TSharedRef<IPropertyHand
 		if (Child->GetProperty() && Child->GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FCrowdyServerTimer, Seconds))
 		{
 			CrowdyServerObjectRows::ShowSeconds(Row, Child.ToSharedRef());
+			// The custom row replaces the property row that Edit Condition hides, so it hides itself for a schedule.
+			Row.Visibility(TAttribute<EVisibility>::CreateLambda([Repeat]()
+			{
+				uint8 Value = 0;
+				const bool bSchedule = Repeat.IsValid() && Repeat->GetValue(Value) == FPropertyAccess::Success && Value == static_cast<uint8>(ECrowdyServerTimerRepeat::Schedule);
+				return bSchedule ? EVisibility::Collapsed : EVisibility::Visible;
+			}));
 		}
 	}
 }

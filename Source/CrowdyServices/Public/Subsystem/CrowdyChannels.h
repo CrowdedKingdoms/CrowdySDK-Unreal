@@ -169,11 +169,10 @@ public:
 	/**
 	 * The channel names this client must join, given the channels the app's Multicast CrowdyEvents name.
 	 *
-	 * The session channel is ALWAYS included. It carries the Game Model plane's model-changed pings and effect
-	 * signals, and it is the target of a subsystem CrowdyState delta, none of which any Multicast CrowdyEvent
-	 * declares. Deriving the set from RPC usage alone therefore leaves a project with no channel-routed events
-	 * joined to nothing, and since a client only receives on channels it has joined, every signal and every
-	 * re-pull ping is dropped with nothing logged anywhere.
+	 * The session channel is ALWAYS included. It carries session-wide traffic and is the target of a subsystem
+	 * CrowdyState delta, none of which any Multicast CrowdyEvent declares. Deriving the set from RPC usage alone
+	 * therefore leaves a project with no channel-routed events joined to nothing, and since a client only receives
+	 * on channels it has joined, all of that traffic is dropped with nothing logged anywhere.
 	 *
 	 * Sorted, with the session channel last, so the join order is deterministic. Pure and static so the rule is
 	 * unit-tested without a live connection.
@@ -259,8 +258,8 @@ private:
 	FTimerHandle RpcChannelTimeoutTimer;
 
 	// Self-retries spent on the current bootstrap. A failed bootstrap used to wait for a UDP reconnect or the next
-	// reliable send, and a client that only consumes Game Model signals makes neither, so one transient read failure
-	// cost it every signal for the rest of the session. Reset by a fresh external kick and by a successful bootstrap,
+	// reliable send, and a client that only receives channel traffic makes neither, so one transient read failure
+	// cost it every message for the rest of the session. Reset by a fresh external kick and by a successful bootstrap,
 	// deliberately not by a self-retry, so the budget bounds the chain rather than the session.
 	int32 BootstrapRetryCount = 0;
 	FTimerHandle RpcChannelRetryTimer;

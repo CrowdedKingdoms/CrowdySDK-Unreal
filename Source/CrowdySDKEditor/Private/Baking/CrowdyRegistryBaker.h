@@ -57,23 +57,9 @@ public:
 
 	/**
 	 * Synchronously force-loads every tagged Blueprint / User Defined Struct in project + SDK content (the
-	 * cook/deep bake path). Also used by the Game Model schema sync so a container Blueprint that was marked
-	 * but never opened this session is resident before class discovery iterates loaded classes. Heavy on a
-	 * large project (holds the game thread while it loads), so callers run it behind a slow-task dialog.
+	 * cook/deep bake path). Heavy on a large project: it holds the game thread while it loads.
 	 */
 	static void LoadAllTaggedAssets();
-
-	/**
-	 * The same set of assets, streamed in instead of force-loaded, with OnComplete invoked on the game thread once
-	 * they are resident. This is what an interactive caller wants: the work is identical, but the editor stays usable
-	 * while it happens, where the synchronous form above holds the game thread for as long as the loads take (measured
-	 * at seconds on a real project, behind a modal dialog that could not even be cancelled).
-	 *
-	 * Falls back to the synchronous load in a commandlet/cook context, where there is no editor to keep responsive.
-	 * A re-request while one is already in flight is refused: OnComplete is still invoked, because a caller that
-	 * cannot rely on it firing has to invent its own timeout.
-	 */
-	static void LoadAllTaggedAssetsAsync(TFunction<void()> OnComplete);
 
 	/**
 	 * Sweeps every loaded class and struct into Registry, replacing whatever it held. This is the whole bake; the

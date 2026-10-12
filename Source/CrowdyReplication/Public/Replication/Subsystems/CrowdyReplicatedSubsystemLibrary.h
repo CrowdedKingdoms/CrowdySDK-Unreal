@@ -24,7 +24,7 @@ class UCrowdyEntitySubsystem;
  *
  * Scope is host-owned subsystems (Ownership defaults to Host): a singleton has no per-owner proxy on peers.
  * This is the client-authoritative view plane, where host precedence is a convention and not enforced, so
- * authoritative or cheat-sensitive state belongs in Game Models, never in a replicated subsystem property.
+ * authoritative or cheat-sensitive state belongs in server code (Server Objects), never in a replicated subsystem property.
  */
 UCLASS()
 class CROWDYREPLICATION_API UCrowdyReplicatedSubsystemLibrary : public UBlueprintFunctionLibrary

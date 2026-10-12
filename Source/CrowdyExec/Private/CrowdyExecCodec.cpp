@@ -228,13 +228,13 @@ namespace
 		return Name.IsNone() ? FString() : Name.ToString();
 	}
 
-	/** Contract is the value the message carried, or null when it carried none. */
-	FString ContractError(const FCrowdyExecToken* Contract)
+	/** Contract is the value the message carried, or null when it carried none; Reads is the format this client expects. */
+	FString ContractError(const FCrowdyExecToken* Contract, int32 Reads = CrowdyExec::ContractVersion)
 	{
 		const FString Format = !Contract ? FString(TEXT("none"))
 			: Contract->Type == ECrowdyExecToken::UInt ? FString::Printf(TEXT("%llu"), Contract->UInt) : FString(TEXT("unknown"));
 		return FString::Printf(TEXT("the server code was built for another SDK version (message format %s, this client reads %d); regenerate it and deploy it again"),
-			*Format, CrowdyExec::ContractVersion);
+			*Format, Reads);
 	}
 
 	int64 GetEnumValue(const FProperty* Property, const void* Address)
@@ -429,7 +429,7 @@ namespace
 	}
 
 	bool ReadStructBody(FCodecContext& Ctx, int32 StructIndex, void* Address, FCrowdyExecReader& Reader, int32 Count, int32 Depth,
-		TArray<FString>* OutSeen = nullptr, bool bWatchedOnly = false)
+		TArray<FString>* OutSeen = nullptr, bool bWatchedOnly = false, TBitArray<>* OutWritten = nullptr)
 	{
 		if (Depth > CrowdyExec::MaxDepth)
 		{
@@ -481,6 +481,10 @@ namespace
 			if (OutSeen && Result == ERead::Written)
 			{
 				OutSeen->Add(Field->Name);
+			}
+			if (OutWritten && Result == ERead::Written)
+			{
+				(*OutWritten)[FieldIndex] = true;
 			}
 		}
 		return true;
@@ -1545,6 +1549,291 @@ namespace
 		}
 		return true;
 	}
+
+	enum class ERecordsKey : uint8
+	{
+		Contract,
+		Epoch,
+		Seq,
+		RSeq,
+		Records,
+		Removed,
+		Restricted,
+		More,
+		Other
+	};
+
+	/** In ERecordsKey order. */
+	const ANSICHAR* const RecordsKeyNames[] = {"contract", "epoch", "seq", "rseq", "records", "removed", "restricted", "more"};
+
+	ERecordsKey RecordsKeyOf(const FCrowdyExecToken& Key)
+	{
+		for (int32 Index = 0; Index < static_cast<int32>(ERecordsKey::Other); ++Index)
+		{
+			if (KeyIs(Key, RecordsKeyNames[Index]))
+			{
+				return static_cast<ERecordsKey>(Index);
+			}
+		}
+		return ERecordsKey::Other;
+	}
+
+	constexpr uint32 RecordsKeyBit(ERecordsKey Key)
+	{
+		return 1u << static_cast<uint32>(Key);
+	}
+
+	/** The envelope keys each records message always carries. */
+	uint32 RequiredRecordsKeys(ECrowdyExecRecordsMessage Message)
+	{
+		const uint32 Paged = RecordsKeyBit(ERecordsKey::RSeq) | RecordsKeyBit(ERecordsKey::Records) | RecordsKeyBit(ERecordsKey::More);
+		switch (Message)
+		{
+		case ECrowdyExecRecordsMessage::Read:
+			return Paged | RecordsKeyBit(ERecordsKey::Contract) | RecordsKeyBit(ERecordsKey::Epoch) | RecordsKeyBit(ERecordsKey::Seq);
+		case ECrowdyExecRecordsMessage::Push:
+			return RecordsKeyBit(ERecordsKey::Epoch) | RecordsKeyBit(ERecordsKey::Seq) | RecordsKeyBit(ERecordsKey::RSeq) | RecordsKeyBit(ERecordsKey::Records)
+				| RecordsKeyBit(ERecordsKey::Removed) | RecordsKeyBit(ERecordsKey::Restricted);
+		default:
+			return Paged;
+		}
+	}
+
+	/** A record id or a team as the server keeps them: at most MaxRecordIdBytes with no control character. */
+	bool ReadRecordText(FCodecContext& Ctx, const FCrowdyExecToken& Token, int32 MinBytes, const TCHAR* What, FString& OutText)
+	{
+		if (Token.Type != ECrowdyExecToken::String)
+		{
+			return Ctx.FailExpected(What, Token);
+		}
+		if (Token.Count < MinBytes || Token.Count > CrowdyExec::MaxRecordIdBytes)
+		{
+			return Ctx.Fail(FString::Printf(TEXT("%s of %d bytes, not %d to %d"), What, Token.Count, MinBytes, CrowdyExec::MaxRecordIdBytes));
+		}
+		OutText = FromUtf8(Token.Data, Token.Count);
+		const int32 Control = OutText.FindLastCharByPredicate([](TCHAR Char) { return Char < 0x20 || (Char >= 0x7f && Char <= 0x9f); });
+		return Control == INDEX_NONE || Ctx.Fail(FString::Printf(TEXT("%s holds a control character"), What));
+	}
+
+	struct FRecordsDecode
+	{
+		ECrowdyExecRecordsMessage Message;
+		const FInstancedStruct& Defaults;
+		TFunctionRef<const void*(const FString&)> FindStored;
+	};
+
+	/** A record's fields: a read's over the defaults, a push's or changes' over the stored record, or the defaults for a new one. */
+	bool ReadRecordFields(FCodecContext& Ctx, FCrowdyExecReader& Reader, const FRecordsDecode& Decode, FCrowdyExecRecordUpdate& Out)
+	{
+		FCrowdyExecToken Fields;
+		if (!Reader.Next(Fields, Ctx.Reason))
+		{
+			return false;
+		}
+		if (Fields.Type != ECrowdyExecToken::Map)
+		{
+			return Ctx.FailExpected(TEXT("a map of fields"), Fields);
+		}
+		const void* Stored = Decode.Message == ECrowdyExecRecordsMessage::Read ? nullptr : Decode.FindStored(Out.Id);
+		Out.Values.InitializeAs(Decode.Defaults.GetScriptStruct(), static_cast<const uint8*>(Stored ? Stored : Decode.Defaults.GetMemory()));
+		Out.Fields.Init(false, Ctx.Layout.Structs[Ctx.Layout.StateStruct].Fields.Num());
+		return ReadStructBody(Ctx, Ctx.Layout.StateStruct, Out.Values.GetMutableMemory(), Reader, Fields.Count, 1, nullptr, true, &Out.Fields);
+	}
+
+	/** One key of a record: its fields, owner or team, each at most once; other keys are skipped. */
+	bool ReadRecordKey(FCodecContext& Ctx, FCrowdyExecReader& Reader, const FRecordsDecode& Decode, bool& bOutFields, FCrowdyExecRecordUpdate& Out)
+	{
+		FCrowdyExecToken Key;
+		if (!Reader.Next(Key, Ctx.Reason))
+		{
+			return false;
+		}
+		if (Key.Type != ECrowdyExecToken::String)
+		{
+			return Ctx.FailExpected(TEXT("a record key"), Key);
+		}
+		const bool bFields = KeyIs(Key, "fields");
+		const bool bOwner = KeyIs(Key, "owner");
+		const bool bTeam = KeyIs(Key, "team");
+		if ((bFields && bOutFields) || (bOwner && Out.bHasOwner) || (bTeam && Out.bHasTeam))
+		{
+			return Ctx.Fail(FString::Printf(TEXT("the record key %s appears twice"), *FromUtf8(Key.Data, Key.Count)));
+		}
+		bOutFields |= bFields;
+		Out.bHasOwner |= bOwner;
+		Out.bHasTeam |= bTeam;
+		FCrowdyExecToken Value;
+		if (bFields)
+		{
+			return ReadRecordFields(Ctx, Reader, Decode, Out);
+		}
+		if (bOwner)
+		{
+			return Reader.Next(Value, Ctx.Reason) && ReadEnvelopeUserId(Value, Out.Owner, Ctx.Reason);
+		}
+		if (bTeam)
+		{
+			return Reader.Next(Value, Ctx.Reason) && ReadRecordText(Ctx, Value, 0, TEXT("a team"), Out.Team);
+		}
+		return Reader.Skip(CrowdyExec::MaxDepth - 2, Ctx.Reason);
+	}
+
+	/** One entry of a records map: the id, then a map with its fields, and its owner and team where the message carries them. */
+	bool ReadRecordEntry(FCodecContext& Ctx, FCrowdyExecReader& Reader, const FRecordsDecode& Decode, FCrowdyExecRecordUpdate& Out)
+	{
+		FCrowdyExecToken Id;
+		FCrowdyExecToken Body;
+		if (!Reader.Next(Id, Ctx.Reason) || !ReadRecordText(Ctx, Id, 1, TEXT("a record id"), Out.Id) || !Reader.Next(Body, Ctx.Reason))
+		{
+			return false;
+		}
+		if (Body.Type != ECrowdyExecToken::Map)
+		{
+			return Ctx.FailExpected(TEXT("a record"), Body);
+		}
+		bool bFields = false;
+		for (int32 Index = 0; Index < Body.Count; ++Index)
+		{
+			if (!ReadRecordKey(Ctx, Reader, Decode, bFields, Out))
+			{
+				return false;
+			}
+		}
+		if (!bFields)
+		{
+			return Ctx.Fail(TEXT("the record carries no fields"));
+		}
+		const bool bRead = Decode.Message == ECrowdyExecRecordsMessage::Read;
+		return !bRead || (Out.bHasOwner && Out.bHasTeam) || Ctx.Fail(TEXT("the record carries no owner or team"));
+	}
+
+	bool ReadRecordsMap(FCodecContext& Ctx, FCrowdyExecReader& Reader, const FRecordsDecode& Decode, TArray<FCrowdyExecRecordUpdate>& Out)
+	{
+		FCrowdyExecToken Records;
+		if (!Reader.Next(Records, Ctx.Reason))
+		{
+			return false;
+		}
+		if (Records.Type != ECrowdyExecToken::Map)
+		{
+			return Ctx.FailExpected(TEXT("a map of records"), Records);
+		}
+		if (!CountElements(Ctx, Records.Count))
+		{
+			return false;
+		}
+		// The reader refused a count over MaxElements or over the bytes left, so this reserve is bounded.
+		Out.Reset(Records.Count);
+		for (int32 Index = 0; Index < Records.Count; ++Index)
+		{
+			FCrowdyExecRecordUpdate& Update = Out.AddDefaulted_GetRef();
+			if (!ReadRecordEntry(Ctx, Reader, Decode, Update))
+			{
+				Ctx.Path = TEXT(" record ") + Quoted(Update.Id) + Ctx.Path;
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool ReadRemovedIds(FCodecContext& Ctx, FCrowdyExecReader& Reader, TArray<FString>& Out)
+	{
+		FCrowdyExecToken Removed;
+		if (!Reader.Next(Removed, Ctx.Reason))
+		{
+			return false;
+		}
+		if (Removed.Type != ECrowdyExecToken::Array)
+		{
+			return Ctx.FailExpected(TEXT("an array of record ids"), Removed);
+		}
+		if (!CountElements(Ctx, Removed.Count))
+		{
+			return false;
+		}
+		Out.Reset(Removed.Count);
+		for (int32 Index = 0; Index < Removed.Count; ++Index)
+		{
+			FCrowdyExecToken Id;
+			if (!Reader.Next(Id, Ctx.Reason) || !ReadRecordText(Ctx, Id, 1, TEXT("a record id"), Out.AddDefaulted_GetRef()))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool ReadRecordsKey(FCodecContext& Ctx, FCrowdyExecReader& Reader, ERecordsKey Which, const FRecordsDecode& Decode, FCrowdyExecRecordsMessage& Out)
+	{
+		FCrowdyExecToken Value;
+		bool bHas = false;
+		switch (Which)
+		{
+		case ERecordsKey::Contract:
+			return Reader.Next(Value, Ctx.Reason) && ((Value.Type == ECrowdyExecToken::UInt && Value.UInt == static_cast<uint64>(CrowdyExec::RecordsContractVersion))
+				|| Ctx.Fail(ContractError(&Value, CrowdyExec::RecordsContractVersion)));
+		case ERecordsKey::Epoch: return ReadHeaderValue(Reader, Out.Epoch, Ctx.Reason);
+		case ERecordsKey::Seq: return ReadHeaderValue(Reader, Out.Seq, Ctx.Reason);
+		case ERecordsKey::RSeq: return ReadHeaderValue(Reader, Out.RSeq, Ctx.Reason);
+		case ERecordsKey::Records: return ReadRecordsMap(Ctx, Reader, Decode, Out.Records);
+		case ERecordsKey::Removed: return ReadRemovedIds(Ctx, Reader, Out.Removed);
+		case ERecordsKey::Restricted: return Reader.Next(Value, Ctx.Reason) && ReadEnvelopeFlag(Value, Out.bRestricted, bHas, Ctx.Reason);
+		case ERecordsKey::More: return Reader.Next(Value, Ctx.Reason) && ReadEnvelopeFlag(Value, Out.bMore, bHas, Ctx.Reason);
+		default: return Reader.Skip(CrowdyExec::MaxDepth, Ctx.Reason);
+		}
+	}
+
+	/** A records message: every key its kind always carries, each at most once; other keys are skipped. */
+	bool ReadRecordsEnvelope(FCodecContext& Ctx, FCrowdyExecReader& Reader, const FRecordsDecode& Decode, FCrowdyExecRecordsMessage& Out)
+	{
+		FCrowdyExecToken Envelope;
+		if (!Reader.Next(Envelope, Ctx.Reason))
+		{
+			return false;
+		}
+		if (Envelope.Type != ECrowdyExecToken::Map)
+		{
+			return Ctx.FailExpected(TEXT("a map"), Envelope);
+		}
+		uint32 Seen = 0;
+		for (int32 Index = 0; Index < Envelope.Count; ++Index)
+		{
+			FCrowdyExecToken Key;
+			if (!Reader.Next(Key, Ctx.Reason))
+			{
+				return false;
+			}
+			if (Key.Type != ECrowdyExecToken::String)
+			{
+				return Ctx.FailExpected(TEXT("a field name"), Key);
+			}
+			const ERecordsKey Which = RecordsKeyOf(Key);
+			if (Which != ERecordsKey::Other && (Seen & RecordsKeyBit(Which)) != 0)
+			{
+				return Ctx.Fail(FString::Printf(TEXT("the envelope key %s appears twice"), *FString(RecordsKeyNames[static_cast<int32>(Which)])));
+			}
+			Seen |= RecordsKeyBit(Which);
+			if (!ReadRecordsKey(Ctx, Reader, Which, Decode, Out))
+			{
+				return false;
+			}
+		}
+		if (!Reader.AtEnd())
+		{
+			return Ctx.Fail(TEXT("unexpected bytes after the message"));
+		}
+		const uint32 Missing = RequiredRecordsKeys(Decode.Message) & ~Seen;
+		if (Missing == 0)
+		{
+			return true;
+		}
+		// A message of another format says so, rather than naming a key it lacks.
+		if ((Missing & RecordsKeyBit(ERecordsKey::Contract)) != 0)
+		{
+			return Ctx.Fail(ContractError(nullptr, CrowdyExec::RecordsContractVersion));
+		}
+		return Ctx.Fail(FString::Printf(TEXT("the message carries no %s"), *FString(RecordsKeyNames[FMath::CountTrailingZeros(Missing)])));
+	}
 }
 
 FString CrowdyExec::SafeText(const FString& Text, int32 MaxChars)
@@ -2119,6 +2408,7 @@ bool CrowdyExec::BuildLayout(const UCrowdyServerObjectDefinition& Definition, FC
 			Field.Name = BakedField.ServerName;
 			Field.Key = ToUtf8(BakedField.ServerName);
 			Field.bWatched = BakedField.bWatched;
+			Field.bRestricted = BakedField.Audience != ECrowdyServerFieldAudience::Everyone;
 			FString TypeError;
 			if (!ResolveType(Out, Property, Field.Type, TypeError))
 			{
@@ -2304,6 +2594,42 @@ bool CrowdyExec::DecodeState(const UCrowdyServerObjectDefinition& Definition, EC
 	{
 		*OutMembers = MoveTemp(Members);
 	}
+	return true;
+}
+
+bool CrowdyExec::DecodeRecords(const UCrowdyServerObjectDefinition& Definition, ECrowdyExecRecordsMessage Message, TConstArrayView<uint8> Bytes,
+	TFunctionRef<const void*(const FString&)> FindStored, FCrowdyExecRecordsMessage& Out, FString& OutError)
+{
+	const FCrowdyExecLayout* Layout = Definition.ResolveLayout(OutError);
+	if (!Layout)
+	{
+		return false;
+	}
+	const UScriptStruct* StateStruct = Definition.GetStateStruct();
+	if (!StateStruct || Layout->StateStruct == INDEX_NONE || Layout->Structs[Layout->StateStruct].Struct != StateStruct)
+	{
+		OutError = FString::Printf(TEXT("%s: the State struct changed after its field tables were built; save it again"), *Definition.GetName());
+		return false;
+	}
+	const FString& StateName = Layout->Structs[Layout->StateStruct].DisplayName;
+	if (Bytes.Num() > MaxPayloadBytes)
+	{
+		OutError = FString::Printf(TEXT("%s: the message is %d bytes, over the limit of %d"), *StateName, Bytes.Num(), MaxPayloadBytes);
+		return false;
+	}
+	// A new record starts from the definition's values, so a List keeps the ones players never see.
+	FInstancedStruct Defaults;
+	Definition.InitializeValues(StateStruct, Defaults);
+	FCodecContext Ctx(*Layout);
+	FCrowdyExecReader Reader(Bytes);
+	FCrowdyExecRecordsMessage Decoded;
+	const FRecordsDecode Decode{Message, Defaults, FindStored};
+	if (!ReadRecordsEnvelope(Ctx, Reader, Decode, Decoded))
+	{
+		OutError = Ctx.Error(StateName);
+		return false;
+	}
+	Out = MoveTemp(Decoded);
 	return true;
 }
 
