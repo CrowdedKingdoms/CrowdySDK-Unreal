@@ -64,6 +64,7 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 	using FConnectCallback = TFunction<void(bool, const FString&)>;
 
 	std::shared_ptr<crowdy::domains::ExecConnection> Connection;
+	std::shared_ptr<FString> DialRefusal;
 
 	// Completions not yet delivered, by id, so Close can deliver each exactly once whatever CrowdyCPP does later.
 	TMap<uint64, FReplyCallback> PendingReplies;
@@ -97,6 +98,17 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 		OnDone(bConnected, Error);
 	}
 
+	/** Why connecting failed in the platform's words: the Game API's refusal to name a host, else the gateway's, else the failure's name. */
+	FString ConnectFailure(const crowdy::Status& Result) const
+	{
+		if (DialRefusal && !DialRefusal->IsEmpty())
+		{
+			return *DialRefusal;
+		}
+		const std::optional<crowdy::domains::ExecReply> Failure = Connection->lastFailure();
+		return Failure && !Failure->payload.empty() ? CrowdyNativeExecFromUtf8(Failure->payload) : FString(UTF8_TO_TCHAR(crowdy::errcName(Result.code)));
+	}
+
 	crowdy::domains::ExecReplyCallback ReplyTo(uint64 Id)
 	{
 		TWeakPtr<FImpl, ESPMode::ThreadSafe> Weak = AsWeak();
@@ -112,11 +124,12 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 
 namespace CrowdyNativeExec
 {
-	TSharedRef<FCrowdyNativeExecConnection> Wrap(std::shared_ptr<crowdy::domains::ExecConnection> Connection)
+	TSharedRef<FCrowdyNativeExecConnection> Wrap(std::shared_ptr<crowdy::domains::ExecConnection> Connection, std::shared_ptr<FString> DialRefusal)
 	{
 		TSharedRef<FCrowdyNativeExecConnection::FImpl, ESPMode::ThreadSafe> Impl =
 			MakeShared<FCrowdyNativeExecConnection::FImpl, ESPMode::ThreadSafe>();
 		Impl->Connection = std::move(Connection);
+		Impl->DialRefusal = std::move(DialRefusal);
 		return MakeShared<FCrowdyNativeExecConnection>(Impl);
 	}
 }
@@ -152,7 +165,7 @@ void FCrowdyNativeExecConnection::Connect(TFunction<void(bool bConnected, const 
 	{
 		if (const TSharedPtr<FImpl, ESPMode::ThreadSafe> Live = Weak.Pin())
 		{
-			Live->CompleteConnect(Id, Result.ok(), Result.ok() ? FString() : FString(UTF8_TO_TCHAR(crowdy::errcName(Result.code))));
+			Live->CompleteConnect(Id, Result.ok(), Result.ok() ? FString() : Live->ConnectFailure(Result));
 		}
 	});
 }

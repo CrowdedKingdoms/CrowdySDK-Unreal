@@ -1088,6 +1088,14 @@ FString UCrowdyServerObjectDefinition::GetAreaKey(int64 ChunkX, int64 ChunkY) co
 	return MakeAreaKey(ChunkX, ChunkY, AreaSizeChunks);
 }
 
+bool UCrowdyServerObjectDefinition::IsReachableByPlayers() const
+{
+	const bool bPlayerCallable = Functions.ContainsByPredicate([](const FCrowdyServerFunction& Function) { return Function.WhoCanCall != ECrowdyServerFunctionCaller::ServerOnly; });
+	// Records reach players without a watched variable: each carries its entity, owner and team.
+	return bPlayerCallable || !WatchedFields.IsEmpty() || Holds == ECrowdyServerObjectHolds::RecordPerEntity || MembersFrom != ECrowdyServerMembersSource::None
+		|| bOnPlayerJoined || bOnPlayerLeft;
+}
+
 bool UCrowdyServerObjectDefinition::IsMemberFunction(FName Name)
 {
 	return GetMemberFunctions().ContainsByPredicate([Name](const FCrowdyServerFunction& Function) { return Function.Name == Name; });

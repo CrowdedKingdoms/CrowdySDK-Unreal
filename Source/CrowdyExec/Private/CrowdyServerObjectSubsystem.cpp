@@ -163,6 +163,12 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 	{
 		return nullptr;
 	}
+	// Deployed closed to players, so the platform would refuse every read for as long as the object waited.
+	if (!Definition->IsReachableByPlayers())
+	{
+		OutError = FString::Printf(TEXT("%s is closed to players: only server code and developer tools reach it"), *Definition->TypeName);
+		return nullptr;
+	}
 	const FString UsedId = Definition->bOnlyOneInstance ? FString(UCrowdyServerObjectDefinition::OnlyInstanceId) : InstanceId;
 	if (!IsValidServerObjectInstanceId(UsedId))
 	{

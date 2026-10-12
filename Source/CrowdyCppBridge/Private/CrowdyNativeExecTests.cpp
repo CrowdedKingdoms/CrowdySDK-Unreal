@@ -428,6 +428,107 @@ bool FCrowdyNativeExecOversizedCallIsRefusedTest::RunTest(const FString& Paramet
 	return true;
 }
 
+// A paused app is refused when a host is asked for, before any socket; the player is told the Game API's reason.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeExecRefusedDialSaysWhyTest,
+	"CrowdySDK.CrowdyCppBridge.ExecRefusedDialSaysWhy", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeExecRefusedDialSaysWhyTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FCrowdyCppClient> Client = FCrowdyCppClient::MakeForTest(
+		TEXT("{\"errors\":[{\"message\":\"app 42 is paused: its organization has no funds (insufficient_funds)\",\"extensions\":{\"code\":\"FORBIDDEN\"}}],\"data\":null}"), 200);
+	if (!TestTrue(TEXT("a test client was made"), Client.IsValid()))
+	{
+		return false;
+	}
+	FCrowdyNativeExecOptions Options;
+	Options.NodeType = TEXT("probe");
+	const TSharedPtr<FCrowdyNativeExecConnection> Connection = Client->CreateExecConnection(42, Options, []() { return FString(TEXT("app-token")); });
+	if (!TestTrue(TEXT("a connection was created"), Connection.IsValid()))
+	{
+		return false;
+	}
+	TOptional<bool> bConnected;
+	FString Error;
+	Connection->Connect([&bConnected, &Error](bool bOk, const FString& Why)
+	{
+		bConnected = bOk;
+		Error = Why;
+	});
+	if (!TestTrue(TEXT("connecting completes"), CrowdyNativeExecPumpUntil(*Client, [&bConnected]() { return bConnected.IsSet(); })))
+	{
+		return false;
+	}
+	TestFalse(TEXT("it failed"), bConnected.GetValue());
+	TestEqualSensitive(TEXT("with the Game API's message and code"), Error,
+		FString(TEXT("app 42 is paused: its organization has no funds (insufficient_funds) (FORBIDDEN)")));
+	TestEqual(TEXT("and no socket was opened"), Client->NumTestExecConnections(), 0);
+	return true;
+}
+
+// A failure the bridge decides itself says why, rather than leaving CrowdyCPP's "no host for this app".
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeExecDialWithoutTokenSaysWhyTest,
+	"CrowdySDK.CrowdyCppBridge.ExecDialWithoutTokenSaysWhy", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeExecDialWithoutTokenSaysWhyTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FCrowdyCppClient> Client = FCrowdyCppClient::MakeForTest(CrowdyNativeExecConnectAnswer, 200);
+	if (!TestTrue(TEXT("a test client was made"), Client.IsValid()))
+	{
+		return false;
+	}
+	FCrowdyNativeExecOptions Options;
+	Options.NodeType = TEXT("probe");
+	const TSharedPtr<FCrowdyNativeExecConnection> Connection = Client->CreateExecConnection(42, Options, []() { return FString(); });
+	if (!TestTrue(TEXT("a connection was created"), Connection.IsValid()))
+	{
+		return false;
+	}
+	AddExpectedErrorPlain(TEXT("A ck-exec connection has no app token to dial with."), EAutomationExpectedErrorFlags::Contains, 0);
+	TOptional<bool> bConnected;
+	FString Error;
+	Connection->Connect([&bConnected, &Error](bool bOk, const FString& Why)
+	{
+		bConnected = bOk;
+		Error = Why;
+	});
+	if (!TestTrue(TEXT("connecting completes"), CrowdyNativeExecPumpUntil(*Client, [&bConnected]() { return bConnected.IsSet(); })))
+	{
+		return false;
+	}
+	TestFalse(TEXT("it failed"), bConnected.GetValue());
+	TestEqualSensitive(TEXT("saying the player has no app token"), Error, FString(TEXT("the player has no app token; sign in first")));
+	return true;
+}
+
+// A gateway that refuses the connect token closes before the socket opens; the reason it gives is the failure.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeExecRefusedGatewaySaysWhyTest,
+	"CrowdySDK.CrowdyCppBridge.ExecRefusedGatewaySaysWhy", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeExecRefusedGatewaySaysWhyTest::RunTest(const FString& Parameters)
+{
+	FCrowdyNativeExecRig Rig = CrowdyNativeExecMakeRig();
+	if (!TestTrue(TEXT("a connection was created"), Rig.Connection.IsValid()))
+	{
+		return false;
+	}
+	TOptional<bool> bConnected;
+	FString Error;
+	Rig.Connection->Connect([&bConnected, &Error](bool bOk, const FString& Why)
+	{
+		bConnected = bOk;
+		Error = Why;
+	});
+	if (!TestTrue(TEXT("the connection dialled the gateway"), CrowdyNativeExecPumpUntil(*Rig.Client, [&Rig]() { return Rig.Client->NumTestExecConnections() >= 1; })))
+	{
+		return false;
+	}
+	Rig.Client->TestExecCloseFromServer(4401, true);
+	if (!TestTrue(TEXT("connecting completes"), CrowdyNativeExecPumpUntil(*Rig.Client, [&bConnected]() { return bConnected.IsSet(); })))
+	{
+		return false;
+	}
+	TestFalse(TEXT("it failed"), bConnected.GetValue());
+	TestEqualSensitive(TEXT("with the gateway's reason, not the failure's name"), Error, FString(TEXT("the gateway closed the connection")));
+	return true;
+}
+
 #if WITH_WEBSOCKETS
 // The ck-exec transport binds only the binary delegate before connecting, and joins the engine's fragments.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeTransportReassemblesBinaryTest,

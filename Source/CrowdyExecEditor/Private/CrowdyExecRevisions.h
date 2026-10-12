@@ -34,6 +34,10 @@ namespace CrowdyExecRevisions
 		/** 0 when the manifest does not say. */
 		int64 SaveIntervalMs = 0;
 		int64 IdleTimeoutMs = 0;
+		/** Players may call it and watch it. */
+		bool bClient = true;
+		/** Sorted. */
+		TArray<FString> Scopes;
 	};
 
 	enum class EChange : uint8
@@ -60,7 +64,7 @@ namespace CrowdyExecRevisions
 		int32 LiveVersion = 0;
 		/** The index in the type's history of the revision the live version runs, INDEX_NONE when not there. */
 		int32 LiveRevision = INDEX_NONE;
-		/** For Changed, what differs, in plain words: "server code", "save interval", "idle timeout". */
+		/** For Changed, what differs, in plain words: "server code", "save interval", "idle timeout", "platform data", "player access". */
 		TArray<FString> What;
 	};
 

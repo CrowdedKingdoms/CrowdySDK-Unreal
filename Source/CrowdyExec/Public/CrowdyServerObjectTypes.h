@@ -34,7 +34,7 @@ enum class ECrowdyServerCallOutcome : uint8
 	NotDeployed,
 	/** The server did not answer in time. */
 	Timeout,
-	/** This player may not call that function on this Server Object. */
+	/** Refused: this player may not call that function, or the type or the app is switched off or paused; the reason says which. */
 	Denied,
 	/** The server code crashed while handling the call; its log says why. */
 	ServerCrashed,

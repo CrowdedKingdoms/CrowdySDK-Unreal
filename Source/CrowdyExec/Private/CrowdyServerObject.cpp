@@ -51,6 +51,12 @@ namespace CrowdyServerObjectDetail
 		return FString::Printf(TEXT("The server refused the request (status %d)"), static_cast<int32>(Reply.Status));
 	}
 
+	/** The platform says why it refused, such as a type switched off or an app paused by billing, so its message follows the sentence. */
+	FString WithServerMessage(const FString& Sentence, const FCrowdyNativeExecReply& Reply)
+	{
+		return Reply.Message.IsEmpty() ? Sentence : Sentence + TEXT(": ") + CrowdyExec::SafeText(Reply.Message, MaxReasonChars);
+	}
+
 	float RetryHintSeconds(const FCrowdyNativeExecReply& Reply)
 	{
 		return Reply.RetryAfterMs >= 0 ? FMath::Min(Reply.RetryAfterMs / 1000.f, MaxRetryHintSeconds) : 0.f;
@@ -68,15 +74,26 @@ namespace CrowdyServerObjectDetail
 		return FString::Printf(TEXT("%s is not deployed on the server"), *Definition.TypeName);
 	}
 
-	/** Why a retried read or subscribe refusal was given, or empty when saying so would not help. */
-	FString WaitingReason(const UCrowdyServerObjectDefinition& Definition, const FCrowdyNativeExecReply& Reply, const TCHAR* Verb)
+	bool IsConnectionClosed(const FCrowdyNativeExecReply& Reply)
 	{
+		return Reply.Status == ECrowdyNativeExecStatus::Unavailable
+			&& Reply.Message.Equals(FCrowdyNativeExecConnection::CanceledMessage(), ESearchCase::CaseSensitive);
+	}
+
+	/** Why a retried read or subscribe refusal was given, or empty when saying so would not help. */
+	FString WaitingReason(const UCrowdyServerObjectDefinition& Definition, const FCrowdyNativeExecReply& Reply, bool bRead)
+	{
+		const TCHAR* const Verb = bRead ? TEXT("read") : TEXT("watch");
 		switch (Reply.Status)
 		{
 		case ECrowdyNativeExecStatus::NotFound:
 			return NotDeployedReason(Definition);
 		case ECrowdyNativeExecStatus::Denied:
-			return FString::Printf(TEXT("This player may not %s this Server Object"), Verb);
+			return WithServerMessage(FString::Printf(TEXT("The server refused to let this player %s this Server Object"), Verb), Reply);
+		case ECrowdyNativeExecStatus::Unavailable:
+			// Such as an app at its instance limit, which would otherwise leave the object connecting with no reason. Reads
+			// only: a good read clears what a read set, while a subscribe's reason would outlast the recovery.
+			return !bRead || Reply.Message.IsEmpty() || IsConnectionClosed(Reply) ? FString() : WithServerMessage(TEXT("The server could not be reached"), Reply);
 		case ECrowdyNativeExecStatus::Trapped:
 			return TEXT("The server code crashed; check its log");
 		case ECrowdyNativeExecStatus::DeadlineExceeded:
@@ -94,12 +111,6 @@ namespace CrowdyServerObjectDetail
 	bool IsCallRetried(ECrowdyNativeExecStatus Status)
 	{
 		return Status == ECrowdyNativeExecStatus::Busy || Status == ECrowdyNativeExecStatus::RateLimited;
-	}
-
-	bool IsConnectionClosed(const FCrowdyNativeExecReply& Reply)
-	{
-		return Reply.Status == ECrowdyNativeExecStatus::Unavailable
-			&& Reply.Message.Equals(FCrowdyNativeExecConnection::CanceledMessage(), ESearchCase::CaseSensitive);
 	}
 
 	/** Server code refuses with "denied: <why>" or "cooldown: <why>": both are Denied, and a cooldown can be retried later. */
@@ -1342,7 +1353,7 @@ void UCrowdyServerObject::HandleRefreshFailure(const FCrowdyNativeExecReply& Rep
 		return;
 	}
 	// A refused subscribe's reason outlasts a read's, since a good read clears only the read's own.
-	const FString Waiting = CrowdyServerObjectDetail::WaitingReason(*Definition, Reply, Verb);
+	const FString Waiting = CrowdyServerObjectDetail::WaitingReason(*Definition, Reply, bRead);
 	const bool bKeepWatchReason = bRead && !bSubscribeConfirmed && !bReadSetReason && !FailureReason.IsEmpty();
 	if (!Waiting.IsEmpty() && !bKeepWatchReason)
 	{
@@ -2067,7 +2078,8 @@ FCrowdyServerCallResult UCrowdyServerObject::MakeCallResult(const FPendingCall& 
 	case ECrowdyNativeExecStatus::Unavailable:
 	case ECrowdyNativeExecStatus::Moved:
 		Result.Outcome = ECrowdyServerCallOutcome::Unavailable;
-		Result.Reason = TEXT("The server could not be reached");
+		Result.Reason = CrowdyServerObjectDetail::IsConnectionClosed(Reply) ? FString(TEXT("The server could not be reached"))
+			: CrowdyServerObjectDetail::WithServerMessage(TEXT("The server could not be reached"), Reply);
 		Result.bRetryable = true;
 		break;
 	case ECrowdyNativeExecStatus::NotFound:
@@ -2080,7 +2092,7 @@ FCrowdyServerCallResult UCrowdyServerObject::MakeCallResult(const FPendingCall& 
 		break;
 	case ECrowdyNativeExecStatus::Denied:
 		Result.Outcome = ECrowdyServerCallOutcome::Denied;
-		Result.Reason = FString::Printf(TEXT("This player may not call %s on this Server Object"), *Function);
+		Result.Reason = CrowdyServerObjectDetail::WithServerMessage(FString::Printf(TEXT("The server refused the call to %s"), *Function), Reply);
 		break;
 	case ECrowdyNativeExecStatus::Internal:
 		Result.Reason = FString::Printf(TEXT("The server failed handling %s"), *Function);

@@ -429,6 +429,10 @@ bool FCrowdyServerComputeService::Deploy()
 		Lines.Add(FText::Format(LOCTEXT("ConfirmDeployUnsaved", "{0} Server Code {0}|plural(one=file has,other=files have) unsaved edits; Deploy sends the saved files.\n{1}"),
 			Unsaved.Num(), FText::FromString(FString::Join(Names, TEXT("\n")))));
 	}
+	if (!Project.Warnings.IsEmpty())
+	{
+		Lines.Add(FText::Format(LOCTEXT("ConfirmDeployWarnings", "Check before deploying:\n{0}"), FText::FromString(FString::Join(Project.Warnings, TEXT("\n")))));
+	}
 	if (!Confirm(FText::Join(FText::FromString(TEXT("\n\n")), Lines), LOCTEXT("ConfirmDeployTitle", "Deploy")))
 	{
 		return false;

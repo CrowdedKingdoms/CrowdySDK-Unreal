@@ -1050,7 +1050,7 @@ bool FCrowdyServerObjectRefusedSubscribeKeepsBackoffTest::RunTest(const FString&
 	{
 		return false;
 	}
-	const FString Refused = TEXT("This player may not watch this Server Object");
+	const FString Refused = TEXT("The server refused to let this player watch this Server Object: not client-callable");
 	for (int32 Round = 1; Round <= 2; ++Round)
 	{
 		FSentFrame Subscribe;
@@ -1090,7 +1090,7 @@ bool FCrowdyServerObjectReadBeforeRefusedSubscribeKeepsBackoffTest::RunTest(cons
 	{
 		return false;
 	}
-	const FString Refused = TEXT("This player may not watch this Server Object");
+	const FString Refused = TEXT("The server refused to let this player watch this Server Object: not client-callable");
 	for (int32 Round = 1; Round <= 2; ++Round)
 	{
 		FSentFrame Subscribe;
@@ -1135,7 +1135,7 @@ bool FCrowdyServerObjectRefusedReadKeepsWatchReasonTest::RunTest(const FString& 
 	{
 		return false;
 	}
-	const FString Refused = TEXT("This player may not watch this Server Object");
+	const FString Refused = TEXT("The server refused to let this player watch this Server Object: not client-callable");
 	FSentFrame Subscribe;
 	FSentFrame Read;
 	if (!TestTrue(TEXT("the object subscribes"), Rig.WaitForFrame(KindSubscribe, TEXT("state"), Subscribe))
@@ -2824,6 +2824,124 @@ bool FCrowdyServerObjectMembersDeniedAndCooldownTest::RunTest(const FString& Par
 		TestEqual(FString::Printf(TEXT("'%s' is retryable only for a cooldown"), Case.Message), Result.bRetryable, Case.bRetryable);
 		TestEqualSensitive(FString::Printf(TEXT("'%s' has its reason"), Case.Message), Result.Reason, FString(Case.Reason));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectPlatformRefusalCarriesItsMessageTest,
+	"CrowdySDK.CrowdyExec.ServerObjectPlatformRefusalCarriesItsMessage", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectPlatformRefusalCarriesItsMessageTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = Rig.AcquireReady(Owner.Get(), Boss(3000, false, ECrowdyExecTestPhase::Calm), 5);
+	if (!Object)
+	{
+		return false;
+	}
+	struct FRefusalCase
+	{
+		ECrowdyNativeExecStatus Status;
+		const TCHAR* Message;
+		ECrowdyServerCallOutcome Outcome;
+		bool bRetryable;
+		const TCHAR* Reason;
+	};
+	const FRefusalCase Cases[] = {
+		{ECrowdyNativeExecStatus::Denied, TEXT("app 9 is paused: its organization has no funds (insufficient_funds)"), ECrowdyServerCallOutcome::Denied, false,
+			TEXT("The server refused the call to AttackBoss: app 9 is paused: its organization has no funds (insufficient_funds)")},
+		{ECrowdyNativeExecStatus::Denied, TEXT(""), ECrowdyServerCallOutcome::Denied, false, TEXT("The server refused the call to AttackBoss")},
+		{ECrowdyNativeExecStatus::Unavailable, TEXT("app 9 is at its instance limit"), ECrowdyServerCallOutcome::Unavailable, true,
+			TEXT("The server could not be reached: app 9 is at its instance limit")},
+		{ECrowdyNativeExecStatus::Unavailable, TEXT(""), ECrowdyServerCallOutcome::Unavailable, true, TEXT("The server could not be reached")}};
+	for (const FRefusalCase& Case : Cases)
+	{
+		FCallSpy Call;
+		Object->Call(AttackFunction, AttackParams(10), Call.OnDone());
+		if (!AnswerMemberCall(Rig, AttackMethod, Case.Status, Utf8Bytes(Case.Message), Call))
+		{
+			return false;
+		}
+		const FCrowdyServerCallResult& Result = (*Call.Results)[0];
+		TestEqual(FString::Printf(TEXT("'%s' has its outcome"), Case.Reason), Result.Outcome, Case.Outcome);
+		TestEqual(FString::Printf(TEXT("'%s' is retryable as before"), Case.Reason), Result.bRetryable, Case.bRetryable);
+		TestEqualSensitive(FString::Printf(TEXT("'%s' is the reason"), Case.Reason), Result.Reason, FString(Case.Reason));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectUnplacedReadGivesItsReasonTest,
+	"CrowdySDK.CrowdyExec.ServerObjectUnplacedReadGivesItsReason", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectUnplacedReadGivesItsReasonTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = Rig.Acquire(Rig.InstanceId, Owner.Get());
+	if (!Object || !Rig.Open())
+	{
+		return false;
+	}
+	FSentFrame Subscribe;
+	FSentFrame Read;
+	if (!TestTrue(TEXT("the object subscribes"), Rig.WaitForFrame(KindSubscribe, TEXT("state"), Subscribe))
+		|| !TestTrue(TEXT("the object reads"), Rig.WaitForFrame(KindCall, TEXT("read"), Read)))
+	{
+		return false;
+	}
+	Rig.Reply(Subscribe.Rid, ECrowdyNativeExecStatus::Unavailable, Utf8Bytes(TEXT("app 9 is at its instance limit")));
+	Rig.Reply(Read.Rid, ECrowdyNativeExecStatus::Unavailable, Utf8Bytes(FCrowdyNativeExecConnection::CanceledMessage()));
+	Rig.PumpFor(0.1);
+	TestTrue(TEXT("a read canceled by a closing connection, and a subscribe that could not be placed, give no reason"), Object->GetFailureReason().IsEmpty());
+
+	// The two refusals count toward one backoff of 2 s.
+	Rig.Tick(2.f);
+	FSentFrame Reread;
+	if (!TestTrue(TEXT("the read is retried"), Rig.WaitForFrame(KindCall, TEXT("read"), Reread)))
+	{
+		return false;
+	}
+	Rig.Reply(Reread.Rid, ECrowdyNativeExecStatus::Unavailable, Utf8Bytes(TEXT("app 9 is at its instance limit")));
+	Rig.PumpFor(0.1);
+	TestEqualSensitive(TEXT("a read the platform could not place says why"), Object->GetFailureReason(),
+		FString(TEXT("The server could not be reached: app 9 is at its instance limit")));
+	TestEqual(TEXT("and the object keeps trying"), Object->GetStatus(), ECrowdyServerObjectStatus::Connecting);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectClosedTypeIsRefusedTest,
+	"CrowdySDK.CrowdyExec.ServerObjectClosedTypeIsRefused", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectClosedTypeIsRefusedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> Closed(DuplicateObject<UCrowdyServerObjectDefinition>(Rig.Definition.Get(), GetTransientPackage()));
+	for (FCrowdyServerFunction& Function : Closed->Functions)
+	{
+		Function.WhoCanCall = ECrowdyServerFunctionCaller::ServerOnly;
+	}
+	Closed->WatchedFields.Reset();
+	Closed->MembersFrom = ECrowdyServerMembersSource::None;
+	Closed->bOnPlayerJoined = false;
+	Closed->bOnPlayerLeft = false;
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	FString Error;
+	TestNull(TEXT("a type closed to players is not acquired"), Rig.Subsystem->Acquire(Closed.Get(), Rig.InstanceId, Owner.Get(), Error));
+	TestEqualSensitive(TEXT("and the error says so"), Error,
+		Closed->TypeName + TEXT(" is closed to players: only server code and developer tools reach it"));
+	TestNotNull(TEXT("while the open type it was copied from is"), Rig.Subsystem->Acquire(Rig.Definition.Get(), Rig.InstanceId, Owner.Get(), Error));
 	return true;
 }
 

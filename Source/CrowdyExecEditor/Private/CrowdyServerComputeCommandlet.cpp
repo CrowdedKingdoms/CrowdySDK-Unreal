@@ -172,6 +172,15 @@ namespace CrowdyServerComputeCommandletDetail
 		Out.SetArrayField(TEXT("artifacts"), Artifacts);
 	}
 
+	void SetWarnings(FJsonObject& Out, const TArray<FString>& Warnings)
+	{
+		Out.SetArrayField(TEXT("warnings"), StringValues(Warnings));
+		for (const FString& Warning : Warnings)
+		{
+			Step(TEXT("warning: ") + Warning);
+		}
+	}
+
 	void SetTypes(FJsonObject& Out, const CrowdyExecDeploy::FProjectDeploy& Project)
 	{
 		TArray<TSharedPtr<FJsonValue>> Rows;
@@ -188,6 +197,7 @@ namespace CrowdyServerComputeCommandletDetail
 		}
 		Out.SetArrayField(TEXT("types"), Rows);
 		Out.SetArrayField(TEXT("problems"), StringValues(Project.Problems));
+		SetWarnings(Out, Project.Warnings);
 	}
 
 	void OnStatus(const FRunRef& Run, const Dev::TResult<Dev::FAppStatus>& Answer)
@@ -414,6 +424,7 @@ namespace CrowdyServerComputeCommandletDetail
 		Run->Result->SetNumberField(TEXT("liveVersion"), Live ? Live->Version : 0);
 		Run->Result->SetArrayField(TEXT("types"), Rows);
 		Run->Result->SetArrayField(TEXT("problems"), StringValues(Project.Problems));
+		SetWarnings(*Run->Result, Project.Warnings);
 		Run->Result->SetBoolField(TEXT("ready"), bReady);
 		Run->Result->SetBoolField(TEXT("hasChanges"), bHasChanges);
 		const TCHAR* const Summary = !bReady ? TEXT("not ready to deploy; see problems") : (bHasChanges ? TEXT("a deploy would change what runs") : TEXT("nothing changed"));
