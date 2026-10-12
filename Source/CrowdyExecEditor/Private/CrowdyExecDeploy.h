@@ -49,8 +49,20 @@ namespace CrowdyExecDeploy
 	/** The crate of the root type, written by the SDK and never on disk. */
 	CrowdyExecDeveloper::FBuildCrate MakeRootCrate();
 
-	/** The manifest for Definitions under the root: each a hub named by its type, open to players when they can reach it, with its save interval, idle timeout, the types it Can Call and its scopes. Deterministic. */
+	/** The manifest for Definitions under the root: each a hub named by its type, open to players when they can reach it, with its save interval, idle timeout, the types it Can Call, its scopes and the server limits it changes. Deterministic. */
 	FString MakeManifest(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions);
+
+	/** A per-type limit the platform enforces, in manifest units. */
+	struct FServerLimit
+	{
+		const TCHAR* Field = nullptr;
+		int64 Value = 0;
+		/** The platform's own; a manifest leaves out a limit at its default. */
+		int64 Default = 0;
+	};
+
+	/** Each server limit for Definition in manifest order, brought into the platform's range. */
+	TArray<FServerLimit> LimitsOf(const UCrowdyServerObjectDefinition& Definition);
 
 	/** The platform data a type's server code may use, in the platform's order: what its definition asks for, and players.read for Crowdy Team members or records and a Required Feature. */
 	TArray<FString> ScopesOf(const UCrowdyServerObjectDefinition& Definition);

@@ -310,6 +310,25 @@ namespace CrowdyExecDeployDetail
 		{TEXT("access.write"), TEXT("Manages Players' Access"), &UCrowdyServerObjectDefinition::bManagesAccess},
 	};
 
+	struct FLimitSetting
+	{
+		const TCHAR* Field;
+		int32 UCrowdyServerObjectDefinition::* Setting;
+		int32 Default;
+		int32 Min;
+		int32 Max;
+		/** Manifest units per unit of the setting. */
+		int64 Scale;
+	};
+
+	/** The platform's defaults and ranges: it brings a value outside a range into it, so the editor does the same before comparing. */
+	const FLimitSetting LimitSettings[] = {
+		{TEXT("memory_mb"), &UCrowdyServerObjectDefinition::MemoryMegabytes, 64, 1, 512, 1},
+		{TEXT("fuel_per_call"), &UCrowdyServerObjectDefinition::FuelPerCallMillions, 50, 1, 1000, 1000000},
+		{TEXT("mailbox"), &UCrowdyServerObjectDefinition::MaxWaitingCalls, 1024, 1, 4096, 1},
+		{TEXT("deadline_ms"), &UCrowdyServerObjectDefinition::CallTimeLimitMs, 2000, 10, 10000, 1},
+	};
+
 	/** A ckx-sdk call into platform data, as it reads with whitespace removed, and the scope it needs. */
 	struct FScopedCall
 	{
@@ -391,6 +410,17 @@ TArray<FString> CrowdyExecDeploy::ScopesOf(const UCrowdyServerObjectDefinition& 
 		}
 	}
 	return Scopes;
+}
+
+TArray<CrowdyExecDeploy::FServerLimit> CrowdyExecDeploy::LimitsOf(const UCrowdyServerObjectDefinition& Definition)
+{
+	using namespace CrowdyExecDeployDetail;
+	TArray<FServerLimit> Limits;
+	for (const FLimitSetting& Limit : LimitSettings)
+	{
+		Limits.Add({Limit.Field, FMath::Clamp(Definition.*Limit.Setting, Limit.Min, Limit.Max) * Limit.Scale, Limit.Default * Limit.Scale});
+	}
+	return Limits;
 }
 
 TArray<FString> CrowdyExecDeploy::FindScopeWarnings(const UCrowdyServerObjectDefinition& Definition, const CrowdyExecDeveloper::FBuildCrate& Crate)
@@ -524,6 +554,13 @@ FString CrowdyExecDeploy::MakeManifest(TConstArrayView<const UCrowdyServerObject
 		Json.Appendf(TEXT(",\"%s\":{\"kind\":\"hub\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":%s,\"persist_every_ms\":%lld,\"evict_after_ms\":%lld"),
 			Name, RootTypeName, Name, Definition->IsReachableByPlayers() ? TEXT("true") : TEXT("false"), static_cast<int64>(Definition->SaveIntervalSeconds) * 1000, static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000);
 		AppendCallsAndScopes(Json, *Definition);
+		for (const FServerLimit& Limit : LimitsOf(*Definition))
+		{
+			if (Limit.Value != Limit.Default)
+			{
+				Json.Appendf(TEXT(",\"%s\":%lld"), Limit.Field, Limit.Value);
+			}
+		}
 		Json.AppendChar(TEXT('}'));
 	}
 	Json.Append(TEXT("}}"));

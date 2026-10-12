@@ -38,6 +38,8 @@ namespace CrowdyExecRevisions
 		bool bClient = true;
 		/** Sorted. */
 		TArray<FString> Scopes;
+		/** Every number the manifest gives the type, by field, such as its server limits. */
+		TMap<FString, int64> Numbers;
 	};
 
 	enum class EChange : uint8
@@ -64,7 +66,7 @@ namespace CrowdyExecRevisions
 		int32 LiveVersion = 0;
 		/** The index in the type's history of the revision the live version runs, INDEX_NONE when not there. */
 		int32 LiveRevision = INDEX_NONE;
-		/** For Changed, what differs, in plain words: "server code", "save interval", "idle timeout", "platform data", "player access". */
+		/** For Changed, what differs, in plain words: "server code", "save interval", "idle timeout", "platform data", "player access", "server limits". */
 		TArray<FString> What;
 	};
 
