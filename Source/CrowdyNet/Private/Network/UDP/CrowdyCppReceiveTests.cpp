@@ -686,7 +686,7 @@ bool FCrowdyRoutedInboundChannelTest::RunTest(const FString& Parameters)
 	RelayedSender.Append(reinterpret_cast<const uint8*>(CrowdyWireParity::GoldenUuid()), 32);
 
 	// A server-originated notification has no sending client, so those 32 octets are not a 32-character id at all.
-	// Dropping such a frame once silently broke every model-driven re-pull hint, so it is covered explicitly.
+	// Dropping such a frame once silently broke every server-driven channel notification, so it is covered explicitly.
 	TArray<uint8> AbsentSender;
 	AbsentSender.SetNumZeroed(32);
 
@@ -1058,7 +1058,7 @@ bool FCrowdyRoutedInboundReachesLayersTest::RunTest(const FString& Parameters)
 		Parsing.MessagesReceived() > ReceivedBefore);
 
 	// The other installed handlers, each of which could be deleted outright without any of the above noticing. A
-	// channel delivery is how a model change is announced, and an error frame is what starts token recovery.
+	// channel delivery is how a server-side change is announced, and an error frame is what starts token recovery.
 	FRecordingReceptionLayer ChannelLayer;
 	ChannelLayer.SubscribeToOpcode(Parsing.Registry, ECrowdyMessageType::CHANNEL_MESSAGE_NOTIFICATION);
 

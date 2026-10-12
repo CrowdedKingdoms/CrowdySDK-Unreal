@@ -5,7 +5,6 @@ public class CrowdyNodes : ModuleRules
     public CrowdyNodes(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-        CppCompileWarningSettings.DeprecationWarningLevel = WarningLevel.Off;
 
         PublicDependencyModuleNames.AddRange(
             new string[]
@@ -31,9 +30,7 @@ public class CrowdyNodes : ModuleRules
                 // ECrowdyEventRecipient and FCrowdyEventContext, whose reflection symbols the compile pass
                 // needs. Reached only transitively through CrowdyReplication otherwise, which propagates the
                 // include paths but not the import library.
-                "CrowdyNet",
-                "Slate",
-                "SlateCore"
+                "CrowdyNet"
             }
         );
     }

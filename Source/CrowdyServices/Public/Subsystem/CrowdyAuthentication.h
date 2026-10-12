@@ -11,6 +11,7 @@ class UCrowdySDKBridgeSubsystem;
 class UCrowdyGameSession;
 class UCrowdyAuthSaveGame;
 class UCrowdyCppClientSubsystem;
+class UCrowdyTeams;
 class FCrowdyCppClient;
 class FCrowdyLoopbackAuthServer;
 
@@ -47,9 +48,23 @@ struct CROWDYSERVICES_API FCrowdyAuthResult
 	int64 UserID = 0;
 };
 
+/** One legal document a player agrees to before their first gameplay token. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyLegalDocument
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Authentication")
+	FText Title;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Authentication")
+	FString Url;
+};
+
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAuthSuccess, FCrowdyAuthResult, Result);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAuthError, FString, Message);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnLoginLinkSent, bool, bSent);
+DECLARE_DYNAMIC_DELEGATE(FOnLegalConsentsRecorded);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAuthLoginEvent, FCrowdyAuthResult, Result);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAuthLoginFailed, FString, Message);
@@ -58,6 +73,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAuthRegisterFailed, FString, Mess
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAuthSessionRestored, FCrowdyAuthResult, Result);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAuthSessionRestoreFailed, FString, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAppTokenRefreshed);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLegalAcceptanceRequired);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLegalAcceptanceEnded);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnLoginProvidersReceived, const TArray<FString>&, Providers);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnIdentitiesReceived, const TArray<FCrowdyUserIdentity>&, Identities);
@@ -124,6 +141,41 @@ public:
 	 *  Buddy session. */
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Authentication")
 	FOnAppTokenRefreshed OnAppTokenRefreshed;
+
+	/**
+	 * Fires when the server refuses a gameplay token until the player accepts the legal documents and confirms their
+	 * age. The sign-in or token refresh is held, not failed: show GetLegalDocuments with both checkboxes, then call
+	 * RecordPlayerConsents on accept (the held sign-in completes through its usual delegates) or
+	 * DeclineLegalAcceptance on decline. Fires once per hold: a newer sign-in refused while one is held takes its
+	 * place without firing again.
+	 */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Authentication")
+	FOnLegalAcceptanceRequired OnLegalAcceptanceRequired;
+
+	/** Fires when nothing is held any more, however the hold ended: close a consent prompt here. */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Authentication")
+	FOnLegalAcceptanceEnded OnLegalAcceptanceEnded;
+
+	/**
+	 * Record the signed-in player's acceptance of the legal documents and their age-of-majority attestation. Call it
+	 * only from the player's own explicit accept; both must be true or nothing is sent. OnRecorded fires first, then a
+	 * held sign-in resumes and completes through its own delegates. On failure the sign-in stays held.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
+	void RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority, FOnLegalConsentsRecorded OnRecorded,
+	                          FOnAuthError OnError);
+
+	/** The player declined: a held sign-in fails with a player-facing message. A held refresh is dropped. */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
+	void DeclineLegalAcceptance();
+
+	/** True while a sign-in or refresh is held waiting for the player's consent. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
+	bool IsLegalAcceptancePending() const;
+
+	/** The documents a consent prompt must link, in display order. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
+	static TArray<FCrowdyLegalDocument> GetLegalDocuments();
 
 	/**
 	 * Password sign-in. One option among the passwordless methods; returns the
@@ -252,6 +304,24 @@ public:
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
 	bool IsSignedIn() const;
 
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Runs the sign-in's last step, as a sign-in or a token refresh, with Teams standing in for the game instance's. */
+	void ApplyAppTokenForTest(const FCrowdyAppTokenFields& Token, bool bRefresh, UCrowdyTeams* Teams);
+
+	/** Stands in for Initialize on a subsystem built outside a subsystem collection, sending every call to Client. */
+	void InitializeForTest(const TSharedPtr<FCrowdyCppClient>& Client, UCrowdyGameSession* InGameSession);
+
+	/** Mints for a password sign-in that has already stored its session token. */
+	void MintForTest(FOnAuthSuccess OnSuccess, FOnAuthError OnError) { DispatchMint(EAuthFlow::Login, OnSuccess, OnError); }
+
+	/** Sends a refresh past RefreshAppToken's in-flight check, so a test can put one behind a sign-in. */
+	void RefreshForTest() { DispatchRefresh(); }
+
+	bool IsRotationTimerArmedForTest() const { return RefreshTickerHandle.IsValid(); }
+	int32 GetRotationRetriesUsedForTest() const { return RotationRetriesUsed; }
+	int32 GetServerNamedRefusalsForTest() const { return ServerNamedRefusals; }
+#endif
+
 private:
 	/** Which sign-in started a mint, so the pipeline knows which delegate to fire. */
 	enum class EAuthFlow : uint8
@@ -264,8 +334,36 @@ private:
 		Refresh,   // proactive rotation or reactive recovery; no per-call delegate
 	};
 
+	/** A sign-in or refresh whose token the server refused until the player records their consent. */
+	struct FHeldConsentFlow
+	{
+		EAuthFlow Flow = EAuthFlow::Login;
+		FOnAuthSuccess OnSuccess;
+		FOnAuthError OnError;
+	};
+
+	/** At most one flow waits for consent; while it does, every rotation trigger is a no-op. */
+	TOptional<FHeldConsentFlow> HeldConsentFlow;
+
+	/** Hold Flow until the player answers, announcing it only when nothing was held before. */
+	void HoldForLegalAcceptance(EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError);
+
+	/** Release a held flow with Message on its failure delegates, so its caller is always answered. */
+	void FailHeldConsentFlow(const TCHAR* Message);
+
+	/** Take the held flow out, announcing that nothing is held any more. */
+	FHeldConsentFlow ReleaseHeldConsentFlow();
+
+#if WITH_DEV_AUTOMATION_TESTS
+	TWeakPtr<FCrowdyCppClient> ClientForTest;
+#endif
+
 	UPROPERTY()
 	UCrowdyGameSession* GameSession = nullptr;
+
+	/** The game instance's teams, or the ones a test stands in. */
+	UCrowdyTeams* ResolveTeams() const;
+	TWeakObjectPtr<UCrowdyTeams> TeamsOverride;
 
 	/** Loopback HTTP listener for the magic-link / social redirect, created on first use.
 	 *  TPimplPtr so a forward-declared type works as a UObject member: the deleter is captured by

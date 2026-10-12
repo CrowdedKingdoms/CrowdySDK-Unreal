@@ -217,7 +217,7 @@ class CrowdyClient {
   domains::ChannelsAPI& channels() { return *channels_; }
   /// Grid tokens and grid channels (DN-10).
   domains::GridsAPI& grids() { return *grids_; }
-  /// ck-exec (dev-tier preview): an app's server code as hubs and spokes, and
+  /// ck-exec: an app's server code as hubs and spokes, and
   /// players' mods on grids they own.
   domains::ExecAPI& exec() { return *exec_; }
   domains::PlayerWalletAPI& playerWallet() { return *playerWallet_; }

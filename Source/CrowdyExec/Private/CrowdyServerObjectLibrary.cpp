@@ -300,12 +300,13 @@ namespace CrowdyServerObjectLibraryDetail
 		return true;
 	}
 
-	/** Where a target's per-variable handlers live, what owns them, and the object it holds now. */
+	/** Where a target's per-variable handlers live, what owns them, the object it holds now, and the record it reads, if any. */
 	struct FHolder
 	{
 		UCrowdyServerObject* Object = nullptr;
 		FCrowdyServerVariableBindings* Bindings = nullptr;
 		UObject* Owner = nullptr;
+		const FString* RecordId = nullptr;
 	};
 
 	UCrowdyServerObjectComponent* FindOnlyComponent(AActor* Actor, const UCrowdyServerObjectDefinition* Definition)
@@ -347,7 +348,7 @@ namespace CrowdyServerObjectLibraryDetail
 		{
 			return FHolder();
 		}
-		return FHolder{Component->GetServerObject(), &Component->GetVariableBindings(), Component};
+		return FHolder{Component->GetServerObject(), &Component->GetVariableBindings(), Component, Component->ReadsRecord() ? &Component->GetRecordId() : nullptr};
 	}
 
 	UCrowdyServerObjectSubsystem* FindSubsystem(const FHolder& Holder)
@@ -457,15 +458,29 @@ bool UCrowdyServerObjectLibrary::ReadServerVariableInto(const UObject* Target, c
 	{
 		return false;
 	}
-	const UCrowdyServerObject* Object = ResolveServerObject(Target, Definition);
-	if (Object && GetServerValueInto(Object->GetState(), Variable, DestProperty, Dest))
+	const CrowdyServerObjectLibraryDetail::FHolder Holder = CrowdyServerObjectLibraryDetail::FindHolder(Target, Definition);
+	// A component that moved to another area reads the one it left until the new one holds its record.
+	const UCrowdyServerObjectComponent* Component = Cast<UCrowdyServerObjectComponent>(Holder.Owner);
+	const UCrowdyServerObject* Read = Component ? Component->GetReadObject() : Holder.Object;
+	const FInstancedStruct* Values = Read ? Read->FindValues(Holder.RecordId) : nullptr;
+	// Before its first read the object holds the defaults, which are no answer from the server.
+	const bool bReady = Read && Read->GetStatus() == ECrowdyServerObjectStatus::Ready;
+	return ReadReadyValueInto(Values, bReady, Variable, DestProperty, Dest);
+}
+
+bool UCrowdyServerObjectLibrary::ReadReadyValueInto(const FInstancedStruct* Values, bool bReady, FName Name, const FProperty* DestProperty, void* Dest)
+{
+	if (!DestProperty || !Dest)
 	{
-		// Before its first read the object holds the defaults, which are no answer from the server.
-		return Object->GetStatus() == ECrowdyServerObjectStatus::Ready;
+		return false;
 	}
-	if (Object)
+	if (Values && GetServerValueInto(*Values, Name, DestProperty, Dest))
 	{
-		CrowdyServerObjectLibraryDetail::WarnUnfitValue(Object->GetState(), Variable, DestProperty);
+		return bReady;
+	}
+	if (Values)
+	{
+		CrowdyServerObjectLibraryDetail::WarnUnfitValue(*Values, Name, DestProperty);
 	}
 	DestProperty->ClearValue(Dest);
 	return false;

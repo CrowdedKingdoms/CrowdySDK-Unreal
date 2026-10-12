@@ -162,10 +162,9 @@ bool FCrowdyRowEventActorMulticastReachesHandlerTest::RunTest(const FString& Par
 	TestFalse(TEXT("a parameter the event does not declare reads as absent"), Fixture.Spy->bReadAbsentParam);
 	TestEqual(TEXT("and leaves the caller's value untouched"), Fixture.Spy->LastAbsentParam, -1);
 
-	// The other planes ride the same registration, so a delivery leaking onto one of them would be the call
+	// The state plane rides the same registration, so a delivery leaking onto it would be the call
 	// arriving twice by two roads, which nothing above would notice.
 	TestEqual(TEXT("nothing reached the state plane"), Fixture.Spy->ApplyDecodedStateCallCount, 0);
-	TestEqual(TEXT("nor the model plane"), Fixture.Spy->ApplyModelChangesCallCount, 0);
 
 	TestEqual(TEXT("nothing was counted as unhandled"),
 		Fixture.Router->NumUnhandledSubscriberEventsForTest(), 0);

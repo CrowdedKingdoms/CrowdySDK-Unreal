@@ -235,6 +235,28 @@ namespace CrowdyExecDeployDetail
 		}
 	}
 
+	/** Each type builds its own copy of its Logic File against its own State, so two types cannot use one file. */
+	void AddSharedLogicFileProblems(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions,
+		TFunctionRef<FString(const UCrowdyServerObjectDefinition&)> CrateDirectoryFor, TArray<FString>& OutProblems)
+	{
+		TArray<FString> LogicFiles;
+		for (const UCrowdyServerObjectDefinition* Definition : Definitions)
+		{
+			LogicFiles.Add(Definition ? CrowdyExecCodegen::GetLogicFile(*Definition, CrateDirectoryFor(*Definition)) : FString());
+		}
+		for (int32 Index = 1; Index < Definitions.Num(); ++Index)
+		{
+			const FString& LogicFile = LogicFiles[Index];
+			const int32 Earlier = LogicFile.IsEmpty() ? INDEX_NONE : LogicFiles.IndexOfByPredicate([&LogicFile](const FString& Other) { return FPaths::IsSamePath(Other, LogicFile); });
+			if (Earlier == INDEX_NONE || Earlier == Index || Definitions[Earlier]->TypeName.Equals(Definitions[Index]->TypeName, ESearchCase::CaseSensitive))
+			{
+				continue;
+			}
+			OutProblems.Add(FString::Printf(TEXT("%s and %s use the same Logic File %s; each type needs its own"),
+				*DisplayName(*Definitions[Earlier]), *DisplayName(*Definitions[Index]), *LogicFile));
+		}
+	}
+
 	/** The Can Call types' names, sorted, each once; an empty entry or one with no Type Name is left out. */
 	TArray<FString> CallableTypeNames(const UCrowdyServerObjectDefinition& Definition)
 	{
@@ -251,7 +273,7 @@ namespace CrowdyExecDeployDetail
 		return Names;
 	}
 
-	/** Adds "calls" when the type calls others and "scopes" when its members are a Crowdy Team, in that order; a type with neither gets nothing. */
+	/** Adds "calls" when the type calls others and "scopes" (players.read, then world.read) when its members or its records' teams are Crowdy Teams, a function needs a feature, or it reads world data, in that order; a type with none gets nothing. */
 	void AppendCallsAndScopes(FStringBuilderBase& Json, const UCrowdyServerObjectDefinition& Definition)
 	{
 		const TArray<FString> Calls = CallableTypeNames(Definition);
@@ -259,10 +281,14 @@ namespace CrowdyExecDeployDetail
 		{
 			Json.Appendf(TEXT(",\"calls\":[\"%s\"]"), *FString::Join(Calls, TEXT("\",\"")));
 		}
-		if (Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam)
+		const bool bNeedsFeature = Definition.Functions.ContainsByPredicate([](const FCrowdyServerFunction& Function) { return !Function.RequiredFeature.IsEmpty(); });
+		const bool bReadsPlayers = Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam || Definition.HasCrowdyTeamRecords() || bNeedsFeature;
+		if (!bReadsPlayers && !Definition.bReadsWorld)
 		{
-			Json.Append(TEXT(",\"scopes\":[\"players.read\"]"));
+			return;
 		}
+		Json.Appendf(TEXT(",\"scopes\":[%s%s%s]"), bReadsPlayers ? TEXT("\"players.read\"") : TEXT(""), bReadsPlayers && Definition.bReadsWorld ? TEXT(",") : TEXT(""),
+			Definition.bReadsWorld ? TEXT("\"world.read\"") : TEXT(""));
 	}
 }
 
@@ -311,6 +337,10 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 	if (!GenerateInMemory(Definition, Crate, Problem))
 	{
 		return WithProblem(State, ECrateState::Invalid, Problem);
+	}
+	if (FPaths::FileExists(FPaths::Combine(CrateDirectory, CargoPath)) && !CrowdyExecCodegen::IsGeneratedCrateFolder(CrateDirectory))
+	{
+		return WithProblem(State, ECrateState::Invalid, FString::Printf(TEXT("%s holds server code the Crowdy SDK did not generate; choose another Type Name, or move that folder"), *CrateDirectory));
 	}
 	const FString Logic = CrowdyExecCodegen::GetLogicFile(Definition, CrateDirectory);
 	if (Logic.IsEmpty())
@@ -413,6 +443,7 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 		Project.Crates.Add(MoveTemp(Crate));
 	}
 	AddDuplicateProblems(Definitions, Project.Problems);
+	AddSharedLogicFileProblems(Definitions, CrateDirectoryFor, Project.Problems);
 	FString LimitProblem;
 	if (!CheckBuildLimits(Project.Crates, LimitProblem))
 	{

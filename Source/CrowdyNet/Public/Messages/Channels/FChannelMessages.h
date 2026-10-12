@@ -97,9 +97,8 @@ struct FChannelMessageNotification : ICrowdyMessage
 		Timestamp = Frame.Envelope.Timestamp;
 		SequenceNumber = Frame.Envelope.Sequence;
 
-		// The sender id occupies a fixed 32 octets whatever it holds, but a server-native notification (a
-		// model-driven re-pull hint, or any automation run with no acting client) has no sender, so the
-		// region arrives empty or binary rather than as a 32-character hex string. Receivers act on
+		// The sender id occupies a fixed 32 octets whatever it holds, but a server-native notification (one with
+		// no acting client) has no sender, so the region arrives empty or binary rather than as a 32-character hex string. Receivers act on
 		// ChannelId and Payload, so it is taken for what it is worth and never rejected on: a strict
 		// 32-character check once dropped every server-driven channel notification silently.
 		UUID = FCrowdyActorId::FromOctets(Frame.Envelope.Uuid);

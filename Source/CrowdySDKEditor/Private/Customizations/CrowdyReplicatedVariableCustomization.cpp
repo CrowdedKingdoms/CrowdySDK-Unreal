@@ -11,13 +11,9 @@
 #include "Engine/Blueprint.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
-#include "GameModel/CrowdyContainerBlueprintExtension.h"
 #include "IDetailGroup.h"
 #include "IPropertyUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Replication/GameModel/CrowdyAttributeRegistry.h"
-#include "Replication/GameModel/CrowdyGameModelMetaKeys.h"
-#include "Replication/GameModel/CrowdyModelAttributeLookup.h"
 #include "Replication/State/CrowdyStateMetaKeys.h"
 #include "Replication/State/FCrowdyRepLayout.h"
 #include "ScopedTransaction.h"
@@ -27,7 +23,6 @@
 #include "UObject/CoreNetTypes.h" // ELifetimeCondition / COND_None
 #include "UObject/PropertyWrapper.h"
 #include "UObject/UnrealType.h"
-#include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -65,10 +60,7 @@ TSharedPtr<IDetailCustomization> FCrowdyReplicatedVariableCustomization::MakeIns
 	}
 
 	UBlueprint* Blueprint = Cast<UBlueprint>((*Objects)[0]);
-	// Show the dropdown where either plane is plausible: an actor/component (CrowdyState view state) OR a Game
-	// Model container class (its Server Owned attributes). Each mode is then greyed per the variable's type and
-	// the class below.
-	if (!IsActorOrComponentBlueprint(Blueprint) && !CrowdyContainerMarker::IsGameModelContainerClass(Blueprint))
+	if (!IsActorOrComponentBlueprint(Blueprint))
 	{
 		return nullptr;
 	}
@@ -107,9 +99,8 @@ void FCrowdyReplicatedVariableCustomization::CustomizeDetails(IDetailLayoutBuild
 
 TArray<ECrowdyReplicationMode> FCrowdyReplicatedVariableCustomization::SelectableModes()
 {
-	// The widget code below iterates this list, so a mode's availability is data, not Slate. Server Owned is
-	// greyed per-entry when the variable's type is not a supported Server Owned scalar/string (see the combo).
-	return { ECrowdyReplicationMode::None, ECrowdyReplicationMode::Replicated, ECrowdyReplicationMode::ServerOwned };
+	// The widget code below iterates this list, so a mode's availability is data, not Slate.
+	return { ECrowdyReplicationMode::None, ECrowdyReplicationMode::Replicated };
 }
 
 FText FCrowdyReplicatedVariableCustomization::ModeDisplayText(ECrowdyReplicationMode Mode)
@@ -118,8 +109,6 @@ FText FCrowdyReplicatedVariableCustomization::ModeDisplayText(ECrowdyReplication
 	{
 	case ECrowdyReplicationMode::Replicated:
 		return LOCTEXT("ModeReplicated", "Replicated");
-	case ECrowdyReplicationMode::ServerOwned:
-		return LOCTEXT("ModeServerOwned", "Server Owned");
 	case ECrowdyReplicationMode::None:
 	default:
 		return LOCTEXT("ModeNone", "None");
@@ -135,14 +124,8 @@ FText FCrowdyReplicatedVariableCustomization::ModeTooltipText(ECrowdyReplication
 			"CrowdyState: the fast, client-authoritative view plane. The owning client diffs this variable "
 			"each tick and ships only the changed value to peers, where it is written onto the live actor "
 			"and its RepNotify runs. Use it for movement, animation, and other high-frequency view state, "
-			"NOT for authoritative or cheat-sensitive data (that belongs in a Game Model). Recompile after "
+			"NOT for authoritative or cheat-sensitive data, since the owning client controls it. Recompile after "
 			"changing.");
-	case ECrowdyReplicationMode::ServerOwned:
-		return LOCTEXT("ModeServerOwnedTip",
-			"Game Model: server-authoritative truth over GraphQL. The value lives on the server; a client pulls "
-			"it and its RepNotify runs. Use it for authoritative or cheat-sensitive data (health, gold, "
-			"inventory), NOT high-frequency view state (that is Replicated). The variable's class must be a "
-			"CrowdyContainer for the attribute to be discovered. Recompile after changing.");
 	case ECrowdyReplicationMode::None:
 	default:
 		return LOCTEXT("ModeNoneTip", "Not networked by Crowdy.");
@@ -242,8 +225,8 @@ void FCrowdyReplicatedVariableCustomization::BuildReplicationCategory(IDetailLay
 			.ToolTipText(LOCTEXT("HeartbeatTip",
 				"Periodically re-send this variable even when unchanged (every map keyframe interval) so a late or "
 				"packet-loss-desynced observer converges without waiting for the next change. On by default. Turn "
-				"it off for high-frequency values that self-heal on their next change, or when a Game Model holds "
-				"the durable truth. On-change replication is unaffected either way."))
+				"it off for high-frequency values that self-heal on their next change. On-change replication is "
+				"unaffected either way."))
 			.Font(DetailBuilder.GetDetailFont())
 		]
 		.ValueContent()
@@ -287,15 +270,10 @@ void FCrowdyReplicatedVariableCustomization::BuildReplicationCategory(IDetailLay
 			.OnCheckStateChanged(this, &FCrowdyReplicatedVariableCustomization::OnManualDirtyCheckChanged)
 		];
 	}
-	else if (CurrentMode == ECrowdyReplicationMode::ServerOwned)
-	{
-		BuildServerOwnedCategory(Category, DetailBuilder);
-	}
 }
 
-// The shared parameterless-RepNotify (CrowdyOnRep) row: one GAS-style notify convention across both planes,
-// so Replicated and Server Owned present the identical row (text box + a Pick menu of the Blueprint's own
-// zero-parameter functions).
+// The parameterless-RepNotify (CrowdyOnRep) row: a text box + a Pick menu of the Blueprint's own
+// zero-parameter functions.
 void FCrowdyReplicatedVariableCustomization::BuildRepNotifyRow(
 	IDetailCategoryBuilder& Category, IDetailLayoutBuilder& DetailBuilder)
 {
@@ -306,7 +284,7 @@ void FCrowdyReplicatedVariableCustomization::BuildRepNotifyRow(
 		.Text(LOCTEXT("RepNotifyLabel", "RepNotify"))
 		.ToolTipText(LOCTEXT("RepNotifyTip",
 			"A parameterless function (GAS-style, no previous value) run on the receiver right after this "
-			"variable is written by a Crowdy update (a CrowdyState delta or a Game Model pull). Leave empty for "
+			"variable is written by a Crowdy update (a CrowdyState delta). Leave empty for "
 			"none. Pick from your zero-parameter functions or type a name."))
 		.Font(DetailBuilder.GetDetailFont())
 	]
@@ -342,123 +320,12 @@ void FCrowdyReplicatedVariableCustomization::BuildRepNotifyRow(
 	];
 }
 
-// The Server Owned rows: a container-tag note (when the class is not yet a CrowdyContainer), the shared
-// RepNotify row, the native Min/Max clamp the attribute inherits, and the read-Visibility dropdown.
-void FCrowdyReplicatedVariableCustomization::BuildServerOwnedCategory(
-	IDetailCategoryBuilder& Category, IDetailLayoutBuilder& DetailBuilder)
-{
-	// A note (only when the class is not a container yet) that a Server Owned variable is authored but not yet
-	// discoverable until its class becomes a container. Not an error: the marker is still written. The button
-	// marks the class in one click; the Crowdy toolbar menu or a CrowdyContainer C++ base do the same.
-	Category.AddCustomRow(LOCTEXT("ContainerTagFilter", "Crowdy Replication"))
-	.Visibility(MakeAttributeSP(this, &FCrowdyReplicatedVariableCustomization::GetContainerTagWarningVisibility))
-	.WholeRowContent()
-	[
-		SNew(SVerticalBox)
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		[
-			SNew(STextBlock)
-			.AutoWrapText(true)
-			.ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.5f, 0.2f)))
-			.Text(LOCTEXT("ContainerTagWarning",
-				"This class is not a Game Model container yet, so its Server Owned variables will not be synced. "
-				"Make it one with the button below. You can change this later from the Crowdy SDK toolbar."))
-			.Font(DetailBuilder.GetDetailFont())
-		]
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(0.f, 4.f, 0.f, 0.f)
-		.HAlign(HAlign_Left)
-		[
-			SNew(SButton)
-			.Text(LOCTEXT("MakeContainerButton", "Make this class a Game Model class"))
-			.ToolTipText(LOCTEXT("MakeContainerButtonTip",
-				"Mark this Blueprint as a Game Model container so its Server Owned attributes are discovered and "
-				"synced. Recompile to apply."))
-			.OnClicked(this, &FCrowdyReplicatedVariableCustomization::OnMakeContainerClicked)
-		]
-	];
-
-	BuildRepNotifyRow(Category, DetailBuilder);
-
-	// Min/Max (native ClampMin/ClampMax): the authoritative bounds the effect lowering wraps every write in.
-	Category.AddCustomRow(LOCTEXT("ClampFilter", "Min Max"))
-	.NameContent()
-	[
-		SNew(STextBlock)
-		.Text(LOCTEXT("ClampLabel", "Min / Max"))
-		.ToolTipText(LOCTEXT("ClampTip",
-			"The authoritative clamp for this attribute (Unreal's native ClampMin / ClampMax). Every effect "
-			"write is wrapped in these bounds on the server, so the value can never leave the range. Leave both "
-			"empty for no clamp."))
-		.Font(DetailBuilder.GetDetailFont())
-	]
-	.ValueContent()
-	.MinDesiredWidth(220.f)
-	[
-		SNew(SHorizontalBox)
-
-		+ SHorizontalBox::Slot()
-		.FillWidth(1.f)
-		.VAlign(VAlign_Center)
-		[
-			SNew(SEditableTextBox)
-			.Text(MakeAttributeSP(this, &FCrowdyReplicatedVariableCustomization::GetClampText, TEXT("ClampMin")))
-			.OnTextCommitted(this, &FCrowdyReplicatedVariableCustomization::OnClampCommitted, TEXT("ClampMin"))
-			.HintText(LOCTEXT("ClampMinHint", "Min"))
-			.Font(DetailBuilder.GetDetailFont())
-		]
-
-		+ SHorizontalBox::Slot()
-		.FillWidth(1.f)
-		.Padding(4.f, 0.f, 0.f, 0.f)
-		.VAlign(VAlign_Center)
-		[
-			SNew(SEditableTextBox)
-			.Text(MakeAttributeSP(this, &FCrowdyReplicatedVariableCustomization::GetClampText, TEXT("ClampMax")))
-			.OnTextCommitted(this, &FCrowdyReplicatedVariableCustomization::OnClampCommitted, TEXT("ClampMax"))
-			.HintText(LOCTEXT("ClampMaxHint", "Max"))
-			.Font(DetailBuilder.GetDetailFont())
-		]
-	];
-
-	// Read-Visibility (CrowdyVisibility): public | owner | hidden. Who may READ the attribute on the server.
-	Category.AddCustomRow(LOCTEXT("VisibilityFilter", "Visibility"))
-	.NameContent()
-	[
-		SNew(STextBlock)
-		.Text(LOCTEXT("VisibilityLabel", "Visibility"))
-		.ToolTipText(LOCTEXT("VisibilityTip",
-			"Who may READ this attribute on the server: Public (anyone who can read the container), Owner (only "
-			"the container's owner), or Hidden (server/admin only). Defaults to Public."))
-		.Font(DetailBuilder.GetDetailFont())
-	]
-	.ValueContent()
-	.MinDesiredWidth(200.f)
-	[
-		SNew(SComboButton)
-		.OnGetMenuContent(this, &FCrowdyReplicatedVariableCustomization::BuildVisibilityPickerMenu)
-		.ButtonContent()
-		[
-			SNew(STextBlock)
-			.Text(this, &FCrowdyReplicatedVariableCustomization::GetVisibilityText)
-			.Font(DetailBuilder.GetDetailFont())
-		]
-	];
-}
-
 TSharedRef<SWidget> FCrowdyReplicatedVariableCustomization::BuildModeComboContent()
 {
 	FMenuBuilder MenuBuilder(/*bCloseAfterSelection*/ true, nullptr);
 
 	const bool bReplicatable = IsVariableStateReplicatable();
-	const bool bServerOwnable = IsVariableServerOwnable();
-	// CrowdyState replicates only actor / actor-component entities. A plain-UObject CrowdyContainer Blueprint
-	// reaches this customization for its Server Owned attributes, but cannot ride the view plane whatever the
-	// property type, so Replicated must be greyed there too (not just when the type is unsupported).
+	// CrowdyState replicates only actor / actor-component entities.
 	const bool bClassSupportsState = IsActorOrComponentBlueprint(Blueprint.Get());
 
 	for (const ECrowdyReplicationMode Mode : SelectableModes())
@@ -473,17 +340,10 @@ TSharedRef<SWidget> FCrowdyReplicatedVariableCustomization::BuildModeComboConten
 			Tooltip = !bClassSupportsState
 				? LOCTEXT("ModeReplicatedClassTip",
 					"CrowdyState replicates only actor and actor-component entities. This class is neither, so the "
-					"variable cannot ride the view plane; use Server Owned for a Game Model container.")
+					"variable cannot ride the view plane.")
 				: LOCTEXT("ModeReplicatedDisabledTip",
 					"This variable's type cannot be CrowdyState-replicated (object references, containers, and "
 					"static arrays are not supported).");
-		}
-		else if (Mode == ECrowdyReplicationMode::ServerOwned && !bServerOwnable)
-		{
-			bEnabled = false;
-			Tooltip = LOCTEXT("ModeServerOwnedDisabledTip",
-				"This variable's type cannot be a Server Owned Game Model attribute (only integers, floats, "
-				"booleans, strings, and byte/enum values are supported).");
 		}
 
 		// Bind SetMode with the enum carried as a by-value payload (the FString-payload idiom the channel
@@ -502,15 +362,9 @@ TSharedRef<SWidget> FCrowdyReplicatedVariableCustomization::BuildModeComboConten
 
 ECrowdyReplicationMode FCrowdyReplicatedVariableCustomization::GetCurrentMode() const
 {
-	// The marker present on the variable decides the mode. A field lives in exactly one plane, so at most one
-	// marker is set; the mode-switch scrub keeps it that way.
 	if (HasVariableMeta(CrowdyStateMetaKeys::Replicate))
 	{
 		return ECrowdyReplicationMode::Replicated;
-	}
-	if (HasVariableMeta(CrowdyGameModelMetaKeys::Model))
-	{
-		return ECrowdyReplicationMode::ServerOwned;
 	}
 	return ECrowdyReplicationMode::None;
 }
@@ -534,14 +388,12 @@ void FCrowdyReplicatedVariableCustomization::SetMode(ECrowdyReplicationMode NewM
 	// One atomic undo unit for the whole switch: the per-stamp FScopedTransactions inside StampVariableMeta and
 	// ClearNativeReplication NEST into this outer one (UE commits only the outermost), so a single undo reverts
 	// the ENTIRE mode change. Without it, one undo reverts only the last step and can leave a partial state
-	// (e.g. native rep restored while CrowdyModel persists - the very dual-rep collapse the scrub prevents).
+	// (e.g. native rep restored while the Crowdy marker persists).
 	FScopedTransaction ModeTransaction(LOCTEXT("ChangeReplicationModeTxn", "Change Crowdy Replication mode"));
 
-	// Scrub the keys the previous mode owned that the new mode does not: this is the single place stale plane
-	// metadata is removed, so a Server Owned -> Replicated switch can never leave a key override or Visibility
-	// behind (the native Min/Max clamp is deliberately preserved: it is plain Unreal metadata, not a plane key),
-	// and the shared CrowdyOnRep survives a plane-to-plane switch. Unit-tested in
-	// CrowdyReplicationModeDecision::KeysToScrubOnSwitch; each stamp opens its own transaction, then one compile.
+	// Scrub the keys the previous mode owned that the new mode does not: this is the single place stale
+	// metadata is removed. Unit-tested in CrowdyReplicationModeDecision::KeysToScrubOnSwitch; each stamp opens
+	// its own transaction, then one compile.
 	for (const TCHAR* ScrubKey : CrowdyReplicationModeDecision::KeysToScrubOnSwitch(PreviousMode, NewMode))
 	{
 		StampVariableMeta(ScrubKey, TOptional<FString>(),
@@ -572,20 +424,6 @@ void FCrowdyReplicatedVariableCustomization::SetMode(ECrowdyReplicationMode NewM
 		ClearNativeReplication();
 
 		RecompileForMetaChange(CrowdyStateMetaKeys::Replicate, /*bValueSet*/ true);
-	}
-	else if (NewMode == ECrowdyReplicationMode::ServerOwned)
-	{
-		// The Game Model marker. Min/Max (native clamp) and Visibility are authored via the sub-rows; an absent
-		// Visibility reads as public (the type default), so nothing is pre-seeded. OnRep is the SAME shared key.
-		StampVariableMeta(CrowdyGameModelMetaKeys::Model, FString(),
-			LOCTEXT("SetServerOwned", "Set Crowdy Replication: Server Owned"));
-
-		EnsureDefaultOnRep();
-
-		// A Server Owned attribute is server truth, never also native-replicated.
-		ClearNativeReplication();
-
-		RecompileForMetaChange(CrowdyGameModelMetaKeys::Model, /*bValueSet*/ true);
 	}
 	else // None: the scrub above already removed every Crowdy key. Do NOT re-enable native rep (the user
 	{    // re-enables it via the native combo if they want it back).
@@ -656,7 +494,7 @@ void FCrowdyReplicatedVariableCustomization::EnsureDefaultOnRep()
 {
 	// Auto-create OnRep_<Var> and point CrowdyOnRep at it, but only when none is set yet, so a user-chosen name
 	// is never overwritten. EnsureOnRepGraph itself refuses to clobber an existing OnRep body (it guards on
-	// FindObject / FindFunctionByName before CreateNewGraph). Shared by Replicated and Server Owned.
+	// FindObject / FindFunctionByName before CreateNewGraph).
 	if (HasVariableMeta(CrowdyStateMetaKeys::OnRep))
 	{
 		return;
@@ -712,44 +550,6 @@ bool FCrowdyReplicatedVariableCustomization::IsVariableStateReplicatable() const
 EVisibility FCrowdyReplicatedVariableCustomization::GetTypeWarningVisibility() const
 {
 	return IsVariableStateReplicatable() ? EVisibility::Collapsed : EVisibility::Visible;
-}
-
-bool FCrowdyReplicatedVariableCustomization::IsVariableServerOwnable() const
-{
-	// A Server Owned attribute maps to a Game Model scalar/string/bool/enum value; anything else (struct,
-	// object, container, static array) returns empty from the shared classifier. Reuse it so this editor gate
-	// can never drift from what discovery (FCrowdyAttributeRegistry::DiscoverForClass) actually accepts.
-	return !FCrowdyAttributeRegistry::MapPropertyToValueType(VariableProperty.Get()).IsEmpty();
-}
-
-bool FCrowdyReplicatedVariableCustomization::IsGameModelContainerClass() const
-{
-	// One shared container check (marker, or the compiled CrowdyContainer tag) so the dropdown gate and this note
-	// can never disagree about container-hood for the same Blueprint.
-	return CrowdyContainerMarker::IsGameModelContainerClass(Blueprint.Get());
-}
-
-EVisibility FCrowdyReplicatedVariableCustomization::GetContainerTagWarningVisibility() const
-{
-	// The note is only meaningful in Server Owned mode, and only when the class is not a container yet.
-	return (GetCurrentMode() == ECrowdyReplicationMode::ServerOwned && !IsGameModelContainerClass())
-		? EVisibility::Visible
-		: EVisibility::Collapsed;
-}
-
-FReply FCrowdyReplicatedVariableCustomization::OnMakeContainerClicked()
-{
-	if (Blueprint.IsValid())
-	{
-		CrowdyContainerMarker::SetMarked(Blueprint.Get(), true);
-
-		// Refresh so the now-redundant note collapses (IsGameModelContainerClass reads the marker immediately).
-		if (PropertyUtilities.IsValid())
-		{
-			PropertyUtilities->RequestForceRefresh();
-		}
-	}
-	return FReply::Handled();
 }
 
 FText FCrowdyReplicatedVariableCustomization::GetRepNotifyText() const
@@ -836,71 +636,6 @@ TSharedRef<SWidget> FCrowdyReplicatedVariableCustomization::BuildRepNotifyPicker
 	}
 
 	return MenuBuilder.MakeWidget();
-}
-
-FText FCrowdyReplicatedVariableCustomization::GetClampText(const TCHAR* ClampKey) const
-{
-	return HasVariableMeta(ClampKey) ? FText::FromString(GetVariableMeta(ClampKey)) : FText::GetEmpty();
-}
-
-void FCrowdyReplicatedVariableCustomization::OnClampCommitted(
-	const FText& NewText, ETextCommit::Type /*CommitType*/, const TCHAR* ClampKey)
-{
-	const FString Trimmed = NewText.ToString().TrimStartAndEnd();
-	if (Trimmed.IsEmpty())
-	{
-		// An empty entry removes the bound (no clamp on that side).
-		WriteVariableMeta(ClampKey, TOptional<FString>(), LOCTEXT("ClearClamp", "Clear Crowdy Clamp"));
-		return;
-	}
-	// A non-numeric entry is rejected (keep the previous value); the text box re-reads the stored value.
-	if (!Trimmed.IsNumeric())
-	{
-		return;
-	}
-	WriteVariableMeta(ClampKey, Trimmed, LOCTEXT("SetClamp", "Set Crowdy Clamp"));
-}
-
-FText FCrowdyReplicatedVariableCustomization::GetVisibilityText() const
-{
-	// Absent CrowdyVisibility reads as the default "public".
-	if (!HasVariableMeta(CrowdyGameModelMetaKeys::Visibility))
-	{
-		return FText::FromString(CrowdyGameModelMetaKeys::DefaultVisibility);
-	}
-	const FString Vis = GetVariableMeta(CrowdyGameModelMetaKeys::Visibility);
-	return FText::FromString(Vis.IsEmpty() ? FString(CrowdyGameModelMetaKeys::DefaultVisibility) : Vis);
-}
-
-TSharedRef<SWidget> FCrowdyReplicatedVariableCustomization::BuildVisibilityPickerMenu()
-{
-	FMenuBuilder MenuBuilder(/*bCloseAfterSelection*/ true, nullptr);
-
-	auto AddVisibility = [this, &MenuBuilder](const TCHAR* Value, const FText& Tooltip)
-	{
-		MenuBuilder.AddMenuEntry(
-			FText::FromString(FString(Value)),
-			Tooltip,
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateSP(
-				this, &FCrowdyReplicatedVariableCustomization::SetVisibilityValue, FString(Value))));
-	};
-
-	AddVisibility(TEXT("public"), LOCTEXT("VisPublicTip", "Anyone who can read the container may read this attribute."));
-	AddVisibility(TEXT("owner"), LOCTEXT("VisOwnerTip", "Only the container's owner may read this attribute."));
-	AddVisibility(TEXT("hidden"), LOCTEXT("VisHiddenTip", "Only the server or an admin may read this attribute."));
-
-	return MenuBuilder.MakeWidget();
-}
-
-void FCrowdyReplicatedVariableCustomization::SetVisibilityValue(FString Visibility)
-{
-	// "public" is the default, so store it as an ABSENT key (keeps the asset clean and matches discovery, which
-	// defaults an absent CrowdyVisibility to public). Any other value is written verbatim.
-	const bool bDefault = (Visibility == CrowdyGameModelMetaKeys::DefaultVisibility);
-	WriteVariableMeta(CrowdyGameModelMetaKeys::Visibility,
-		bDefault ? TOptional<FString>() : TOptional<FString>(Visibility),
-		LOCTEXT("SetVisibility", "Set Crowdy Visibility"));
 }
 
 ECheckBoxState FCrowdyReplicatedVariableCustomization::GetOwnerOnlyCheckState() const
@@ -1012,13 +747,6 @@ void FCrowdyReplicatedVariableCustomization::RecompileForMetaChange(const TCHAR*
 	// and tear down the Details panel mid-handler).
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BlueprintPtr);
 	BlueprintPtr->MarkPackageDirty();
-
-	// The stamp above changed the metadata on the live property without replacing it, so nothing about the
-	// class or the property has changed identity and the cached Game Model attribute tables cannot tell they
-	// are out of date. Drop them, so the running apply path reads the new markers on its next pull the same
-	// way it did when it re-read the metadata on every lookup. Without this, taking a variable off the server
-	// plane leaves the server still writing to it and firing its notify until the next compile.
-	FCrowdyModelAttributeLookup::InvalidateAll();
 
 	UE_LOG(LogCrowdyEditor, Log,
 		TEXT("[CrowdySDK] Variable '%s' Crowdy metadata '%s' %s. Recompile to activate."),

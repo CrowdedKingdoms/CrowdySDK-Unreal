@@ -14,7 +14,6 @@
 #include "Templates/Function.h"
 #include "CrowdyStateFragmentTestTypes.generated.h"
 
-struct FCrowdyAttributeChange;
 
 // A plain (non-net-serialized) USTRUCT whose only member is heap-carrying, so a CrowdyState property of
 // this type exercises the scratch container's InitializeValue/DestroyValue pairing for a struct, not only
@@ -107,12 +106,6 @@ public:
 		}
 	}
 
-	virtual void ApplyModelChanges(const FGuid& EntityUUID, const FString& ContainerId,
-		TConstArrayView<FCrowdyAttributeChange> Changes) override
-	{
-		++ApplyModelChangesCallCount;
-	}
-
 	// An ordinary entity: held, and with a class recorded for it.
 	void SetOwnedClass(const FGuid& EntityUUID, const UClass* Class)
 	{
@@ -135,7 +128,6 @@ public:
 	mutable int32 GetEntityClassCallCount = 0;
 	int32 ResolveReceiverCallCount = 0;
 	int32 ApplyDecodedStateCallCount = 0;
-	int32 ApplyModelChangesCallCount = 0;
 	FGuid LastEntityUUID;
 	TArray<int32> LastChangedIndices;
 };

@@ -20,6 +20,10 @@ namespace CrowdyServerObjectDetail
 	constexpr int32 MaxReasonChars = 256;
 	constexpr float MaxRetryHintSeconds = 30.f;
 	constexpr float MaxUnsentSeconds = 30.f;
+	/** A paged read of records takes several round trips, so it buffers more pushes, bounded by the memory MaxBufferedPushes full ones take. */
+	constexpr int32 MaxBufferedRecordPushes = 1024;
+	constexpr int64 MaxBufferedRecordBytes = static_cast<int64>(MaxBufferedPushes) * CrowdyExec::MaxPayloadBytes;
+	constexpr float ChangesIntervalSeconds = 1.f;
 
 	const TCHAR* const ReleasedReason = TEXT("This Server Object was given back");
 
@@ -50,6 +54,13 @@ namespace CrowdyServerObjectDetail
 	float RetryHintSeconds(const FCrowdyNativeExecReply& Reply)
 	{
 		return Reply.RetryAfterMs >= 0 ? FMath::Min(Reply.RetryAfterMs / 1000.f, MaxRetryHintSeconds) : 0.f;
+	}
+
+	/** The wait before retrying after Failures refusals in a row: doubling from 1 s up to 10 s, or longer when the reply asks. */
+	float RetryInSeconds(int32 Failures, const FCrowdyNativeExecReply& Reply)
+	{
+		const float Backoff = FMath::Min(static_cast<float>(1 << FMath::Min(Failures - 1, 4)), 10.f);
+		return FMath::Max(Backoff, RetryHintSeconds(Reply));
 	}
 
 	FString NotDeployedReason(const UCrowdyServerObjectDefinition& Definition)
@@ -150,6 +161,28 @@ namespace CrowdyServerObjectDetail
 	{
 		const UCrowdyServerObjectSubsystem* Owner = Subsystem.Get();
 		return Owner ? Owner->GetSignedInUserId() : 0;
+	}
+
+	void WriteKey(FCrowdyExecWriter& Writer, const ANSICHAR* Key)
+	{
+		Writer.String(TConstArrayView<uint8>(reinterpret_cast<const uint8*>(Key), FCStringAnsi::Strlen(Key)));
+	}
+
+	/** A read's or changes' input: the page after the id After, and for changes the restricted seq Since. */
+	TArray<uint8> PageRequest(const FString& After, const uint64* Since = nullptr)
+	{
+		TArray<uint8> Bytes;
+		FCrowdyExecWriter Writer(Bytes);
+		const FTCHARToUTF8 AfterText(*After, After.Len());
+		Writer.MapHeader(Since ? 2 : 1);
+		if (Since)
+		{
+			WriteKey(Writer, "since");
+			Writer.UInt(*Since);
+		}
+		WriteKey(Writer, "after");
+		Writer.String(TConstArrayView<uint8>(reinterpret_cast<const uint8*>(AfterText.Get()), AfterText.Length()));
+		return Bytes;
 	}
 
 	/** The object's member values, so a read and a push apply them through one path. */
@@ -254,6 +287,79 @@ void UCrowdyServerObject::Setup(UCrowdyServerObjectSubsystem* InSubsystem, UCrow
 FInstancedPropertyBag UCrowdyServerObject::GetStateList() const
 {
 	return CrowdyExec::ToList(State);
+}
+
+bool UCrowdyServerObject::HoldsRecords() const
+{
+	return Definition && Definition->Holds == ECrowdyServerObjectHolds::RecordPerEntity;
+}
+
+const FInstancedStruct* UCrowdyServerObject::FindValues(const FString* RecordId) const
+{
+	if (!RecordId)
+	{
+		return &State;
+	}
+	const FCrowdyServerRecord* Record = Records.Find(*RecordId);
+	return Record ? &Record->Values : nullptr;
+}
+
+FDelegateHandle UCrowdyServerObject::WatchRecord(const FString& Id, FOnCrowdyServerValuesChanged::FDelegate Listener)
+{
+	TSharedRef<FOnCrowdyServerValuesChanged>* Watchers = RecordWatchers.Find(Id);
+	if (!Watchers)
+	{
+		Watchers = &RecordWatchers.Add(Id, MakeShared<FOnCrowdyServerValuesChanged>());
+	}
+	const FDelegateHandle Handle = (*Watchers)->Add(Listener);
+	if (Status != ECrowdyServerObjectStatus::Ready || !Records.Contains(Id))
+	{
+		return Handle;
+	}
+	TArray<FString> Fields;
+	CollectWatchedFields(nullptr, nullptr, Fields);
+	if (Fields.Num() > 0)
+	{
+		TGuardValue<uint64> Announcing(AnnouncedSerial, FCrowdyServerVariableBindings::LatestSerial());
+		Listener.ExecuteIfBound(this, Fields);
+	}
+	return Handle;
+}
+
+bool UCrowdyServerObject::IsRecordWatched(const FString& Id) const
+{
+	const TSharedRef<FOnCrowdyServerValuesChanged>* Watchers = RecordWatchers.Find(Id);
+	return Watchers && (*Watchers)->IsBound();
+}
+
+void UCrowdyServerObject::UnwatchRecord(const FString& Id, FDelegateHandle Handle)
+{
+	TSharedRef<FOnCrowdyServerValuesChanged>* Watchers = RecordWatchers.Find(Id);
+	if (!Watchers)
+	{
+		return;
+	}
+	(*Watchers)->Remove(Handle);
+	if (!(*Watchers)->IsBound())
+	{
+		RecordWatchers.Remove(Id);
+	}
+}
+
+bool UCrowdyServerObject::K2_FindRecord(const FString& Id, FInstancedStruct& Values, int64& Owner, FString& Team) const
+{
+	const FCrowdyServerRecord* Record = Status == ECrowdyServerObjectStatus::Ready ? Records.Find(Id) : nullptr;
+	Values = Record ? Record->Values : FInstancedStruct();
+	Owner = Record ? Record->Owner : 0;
+	Team = Record ? Record->Team : FString();
+	return Record != nullptr;
+}
+
+TArray<FString> UCrowdyServerObject::GetRecordIds() const
+{
+	TArray<FString> Ids;
+	Records.GetKeys(Ids);
+	return Ids;
 }
 
 FDelegateHandle UCrowdyServerObject::WatchValues(FOnCrowdyServerValuesChanged::FDelegate Listener)
@@ -415,10 +521,21 @@ void FCrowdyServerVariableBindings::Bind(UCrowdyServerObject* Object, FName Vari
 	Bindings.RemoveAll([Handler, Function](const FBinding& Each) { return !Each.Handler.IsValid() || (Each.Handler == Handler && Each.Function == Function); });
 	const FName KeptName(*CrowdyExec::KeepNameCharacters(Variable.ToString()));
 	const FBinding& Added = Bindings.Add_GetRef({Variable, KeptName, Handler, Function, ++CrowdyServerObjectDetail::LatestBindingSerial});
-	if (Object && Object->GetStatus() == ECrowdyServerObjectStatus::Ready)
+	if (Object && Object->GetStatus() == ECrowdyServerObjectStatus::Ready && FindValues(*Object))
 	{
 		Run(*Object, FBinding(Added));
 	}
+}
+
+void FCrowdyServerVariableBindings::ReadRecord(bool bRecord, const FString& Id)
+{
+	bReadsRecord = bRecord;
+	RecordId = bRecord ? Id : FString();
+}
+
+const FInstancedStruct* FCrowdyServerVariableBindings::FindValues(const UCrowdyServerObject& Object) const
+{
+	return Object.FindValues(bReadsRecord ? &RecordId : nullptr);
 }
 
 void FCrowdyServerVariableBindings::Unbind(FName Variable, const UObject* Handler, FName Function)
@@ -476,8 +593,13 @@ void FCrowdyServerVariableBindings::Run(const UCrowdyServerObject& Object, const
 	Running.RemoveSingleSwap(Key);
 }
 
-void FCrowdyServerVariableBindings::Call(const UCrowdyServerObject& Object, const FBinding& Binding)
+void FCrowdyServerVariableBindings::Call(const UCrowdyServerObject& Object, const FBinding& Binding) const
 {
+	const FInstancedStruct* Values = FindValues(Object);
+	if (!Values)
+	{
+		return;
+	}
 	UObject* Handler = Binding.Handler.Get();
 	UFunction* Function = Handler ? Handler->FindFunction(Binding.Function) : nullptr;
 	TFieldIterator<FProperty> Param(Function);
@@ -489,14 +611,14 @@ void FCrowdyServerVariableBindings::Call(const UCrowdyServerObject& Object, cons
 	const FProperty* ValueParam = *Param;
 	++Param;
 	const FBoolProperty* HasValueParam = Param && Param->HasAnyPropertyFlags(CPF_Parm) ? CastField<FBoolProperty>(*Param) : nullptr;
-	const FProperty* Field = UCrowdyServerObjectLibrary::FindServerValue(Object.GetState(), Binding.Variable);
+	const FProperty* Field = UCrowdyServerObjectLibrary::FindServerValue(*Values, Binding.Variable);
 	const FOptionalProperty* Optional = CastField<FOptionalProperty>(Field);
-	const bool bEmpty = Optional && !Optional->IsSet(Optional->ContainerPtrToValuePtr<void>(Object.GetState().GetMemory()));
+	const bool bEmpty = Optional && !Optional->IsSet(Optional->ContainerPtrToValuePtr<void>(Values->GetMemory()));
 
 	// Only the parameters: a Blueprint function's locals lie past ParmsSize, and ProcessEvent sets them up itself.
 	uint8* Params = static_cast<uint8*>(FMemory_Alloca_Aligned(Function->ParmsSize, Function->GetMinAlignment()));
 	CrowdyServerObjectDetail::InitializeParams(*Function, Params);
-	const bool bCopied = UCrowdyServerObjectLibrary::GetServerValueInto(Object.GetState(), Binding.Variable, ValueParam, ValueParam->ContainerPtrToValuePtr<void>(Params));
+	const bool bCopied = UCrowdyServerObjectLibrary::GetServerValueInto(*Values, Binding.Variable, ValueParam, ValueParam->ContainerPtrToValuePtr<void>(Params));
 	if (!bCopied && !bEmpty)
 	{
 		UE_LOG(LogCrowdyExec, Warning, TEXT("%s.%s cannot take %s's value; check the variable and its type"), *GetNameSafe(Handler), *Binding.Function.ToString(), *Binding.Variable.ToString());
@@ -622,8 +744,8 @@ void UCrowdyServerObject::HandleConnected()
 	const uint32 ConnectGeneration = Generation;
 	TArray<FString> Watched;
 	CollectWatchedFields(nullptr, nullptr, Watched);
-	// The members travel in the read, so an object with members reads even when it watches no variables.
-	if (Watched.Num() > 0 || Definition->MembersFrom != ECrowdyServerMembersSource::None)
+	// The members travel in the read, so an object with members reads even when it watches no variables, as does one of records.
+	if (Watched.Num() > 0 || Definition->MembersFrom != ECrowdyServerMembersSource::None || HoldsRecords())
 	{
 		Refresh();
 	}
@@ -654,6 +776,27 @@ void UCrowdyServerObject::HandleReconnected()
 	Refresh();
 }
 
+void UCrowdyServerObject::HandleCrowdyTeamsChanged()
+{
+	// Teammates' unchanged Team Only values reach a new member of their Crowdy Team only through a read.
+	if (Status != ECrowdyServerObjectStatus::Ready || !bHasRead || !Definition->HasCrowdyTeamRecords())
+	{
+		return;
+	}
+	TraceReread(TEXT("team"));
+	RequestRead();
+}
+
+void UCrowdyServerObject::SetConnectProblem(const FString& Reason)
+{
+	if (Status != ECrowdyServerObjectStatus::Connecting || (Reason.IsEmpty() && !bConnectSetReason))
+	{
+		return;
+	}
+	FailureReason = Reason;
+	bConnectSetReason = !Reason.IsEmpty();
+}
+
 void UCrowdyServerObject::Restart()
 {
 	if (Status != ECrowdyServerObjectStatus::Failed)
@@ -664,6 +807,7 @@ void UCrowdyServerObject::Restart()
 	SetStatus(ECrowdyServerObjectStatus::Connecting);
 	FailureReason.Reset();
 	bReadSetReason = false;
+	bConnectSetReason = false;
 	bHasRead = false;
 	AppliedEpoch = 0;
 	AppliedSeq = 0;
@@ -678,6 +822,9 @@ void UCrowdyServerObject::Restart()
 	bOpenForJoining = true;
 	bIsMember = false;
 	bIsLeader = false;
+	Records.Reset();
+	AppliedRSeq = 0;
+	OwnTeam.Reset();
 
 	const uint32 RestartGeneration = Generation;
 	NotifyStatus();
@@ -697,7 +844,12 @@ void UCrowdyServerObject::Fail(const FString& Reason, bool bNotify)
 	SetStatus(ECrowdyServerObjectStatus::Failed);
 	FailureReason = Reason;
 	bReadSetReason = false;
+	bConnectSetReason = false;
 	StopListening();
+	// Records hold what this player was allowed to see, which a sign-out or refusal must not leave behind.
+	Records.Reset();
+	AppliedRSeq = 0;
+	OwnTeam.Reset();
 	const uint32 FailGeneration = Generation;
 
 	TMap<uint32, FPendingCall> Calls = MoveTemp(PendingCalls);
@@ -743,6 +895,8 @@ void UCrowdyServerObject::MarkReleased(bool bNotify)
 	ValuesChanged.Clear();
 	VariableWatchers.Reset();
 	VariableBindings.Reset();
+	OnRecordsChanged.Clear();
+	RecordWatchers.Reset();
 }
 
 void UCrowdyServerObject::StopListening()
@@ -756,11 +910,15 @@ void UCrowdyServerObject::StopListening()
 	SubscribeHandle = 0;
 	bSubscribeConfirmed = false;
 	BufferedPushes.Reset();
+	BufferedBytes = 0;
 	bReadInFlight = false;
 	bReadAgain = false;
 	bRefreshScheduled = false;
 	RefreshRetryIn = 0.f;
 	RefreshFailures = 0;
+	PagedRecords.Reset();
+	bChangesInFlight = false;
+	bChangesWanted = false;
 }
 
 void UCrowdyServerObject::Tick(float DeltaSeconds)
@@ -774,6 +932,7 @@ void UCrowdyServerObject::Tick(float DeltaSeconds)
 	{
 		RefreshRetryIn -= DeltaSeconds;
 	}
+	ChangesWait = FMath::Max(ChangesWait - DeltaSeconds, 0.f);
 	TickCalls(DeltaSeconds);
 	if (Generation != TickGeneration || !CrowdyServerObjectDetail::GetConnection(Subsystem))
 	{
@@ -788,7 +947,9 @@ void UCrowdyServerObject::Tick(float DeltaSeconds)
 	if (Status == ECrowdyServerObjectStatus::Connecting && SubscribeHandle == 0 && !bReadInFlight && !bRefreshScheduled)
 	{
 		HandleConnected();
+		return;
 	}
+	SendDueChanges();
 }
 
 void UCrowdyServerObject::TickCalls(float DeltaSeconds)
@@ -895,18 +1056,33 @@ void UCrowdyServerObject::RequestRead()
 	{
 		return;
 	}
-	FCrowdyNativeExecConnection* Connection = CrowdyServerObjectDetail::GetConnection(Subsystem);
-	if (!Connection)
+	if (!CrowdyServerObjectDetail::GetConnection(Subsystem))
 	{
 		bRefreshScheduled = true;
 		RefreshRetryIn = 0.f;
 		return;
 	}
-	bReadInFlight = true;
 	bReadAgain = false;
+	PagedRecords.Reset();
+	PageAfter.Reset();
+	bFirstPage = true;
+	SendRead();
+}
+
+void UCrowdyServerObject::SendRead()
+{
+	FCrowdyNativeExecConnection* Connection = CrowdyServerObjectDetail::GetConnection(Subsystem);
+	if (!Connection)
+	{
+		bReadInFlight = false;
+		bRefreshScheduled = true;
+		RefreshRetryIn = 0.f;
+		return;
+	}
+	bReadInFlight = true;
 	TWeakObjectPtr<UCrowdyServerObject> WeakThis(this);
 	const uint32 ReadGeneration = Generation;
-	Connection->Call(Definition->TypeName, InstanceId, TEXT("read"), TArray<uint8>{ 0x80 },
+	Connection->Call(Definition->TypeName, InstanceId, TEXT("read"), HoldsRecords() ? CrowdyServerObjectDetail::PageRequest(PageAfter) : TArray<uint8>{ 0x80 },
 		[WeakThis, ReadGeneration](const FCrowdyNativeExecReply& Reply)
 		{
 			UCrowdyServerObject* Self = WeakThis.Get();
@@ -946,6 +1122,11 @@ void UCrowdyServerObject::HandleReadDone(const FCrowdyNativeExecReply& Reply)
 		HandleRefreshFailure(Reply, true);
 		return;
 	}
+	if (HoldsRecords())
+	{
+		HandleRecordsPage(Reply);
+		return;
+	}
 	FInstancedStruct Read;
 	Definition->InitializeValues(Definition->GetStateStruct(), Read);
 	FCrowdyExecStateHeader Header;
@@ -970,16 +1151,7 @@ void UCrowdyServerObject::HandleReadDone(const FCrowdyNativeExecReply& Reply)
 	AppliedEpoch = Header.Epoch;
 	AppliedSeq = Header.Seq;
 	bHasRead = true;
-	// Until a subscribe is accepted, a working read must not undo its backoff or its reason, only a read's.
-	if (bSubscribeConfirmed)
-	{
-		RefreshFailures = 0;
-	}
-	if (bSubscribeConfirmed || bReadSetReason)
-	{
-		FailureReason.Reset();
-		bReadSetReason = false;
-	}
+	NoteGoodRead();
 	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s/%s read applied epoch=%llu seq=%llu changed=%s"), *Definition->TypeName,
 		CrowdyServerObjectDetail::TraceId(*Definition, InstanceId),
 		AppliedEpoch, AppliedSeq, *CrowdyServerObjectDetail::TraceNames(ToVariableNames(Changed)));
@@ -1009,23 +1181,164 @@ void UCrowdyServerObject::HandleReadDone(const FCrowdyNativeExecReply& Reply)
 	}
 }
 
+void UCrowdyServerObject::NoteGoodRead()
+{
+	// Until a subscribe is accepted, a working read must not undo its backoff or its reason, only a read's.
+	if (bSubscribeConfirmed)
+	{
+		RefreshFailures = 0;
+	}
+	if (bSubscribeConfirmed || bReadSetReason)
+	{
+		FailureReason.Reset();
+		bReadSetReason = false;
+		bConnectSetReason = false;
+	}
+}
+
+void UCrowdyServerObject::HandleRecordsPage(const FCrowdyNativeExecReply& Reply)
+{
+	FCrowdyExecRecordsMessage Page;
+	FString Error;
+	if (!CrowdyExec::DecodeRecords(*Definition, ECrowdyExecRecordsMessage::Read, Reply.Payload, [](const FString&) -> const void* { return nullptr; }, Page, Error))
+	{
+		Fail(CrowdyExec::SafeText(Error, CrowdyServerObjectDetail::MaxReasonChars), true);
+		return;
+	}
+	// A server that restarted between pages started a new epoch, so the read starts over; the new read covers every push received so far.
+	if (!bFirstPage && Page.Epoch != PageEpoch)
+	{
+		TraceReread(TEXT("epoch"));
+		PagedRecords.Reset();
+		PageAfter.Reset();
+		BufferedPushes.Reset();
+		BufferedBytes = 0;
+		bFirstPage = true;
+		SendRead();
+		return;
+	}
+	if (bFirstPage)
+	{
+		PageEpoch = Page.Epoch;
+		PageSeq = Page.Seq;
+		PageRSeq = Page.RSeq;
+		bFirstPage = false;
+	}
+	const int32 PagedBefore = PagedRecords.Num();
+	for (FCrowdyExecRecordUpdate& Update : Page.Records)
+	{
+		PageAfter = Update.Id;
+		FCrowdyServerRecord& Record = PagedRecords.FindOrAdd(MoveTemp(Update.Id));
+		Record.Values = MoveTemp(Update.Values);
+		Record.Owner = Update.Owner;
+		Record.Team = MoveTemp(Update.Team);
+	}
+	if (PagedRecords.Num() > CrowdyExec::MaxElements)
+	{
+		Fail(FString::Printf(TEXT("The server sent more than the %d records an instance holds"), CrowdyExec::MaxElements), true);
+		return;
+	}
+	// Each page before the last must bring a record not held yet, so a read ends within MaxElements pages.
+	if (Page.bMore && PagedRecords.Num() == PagedBefore)
+	{
+		Fail(TEXT("The server sent a page of records with nothing new before the last"), true);
+		return;
+	}
+	if (Page.bMore)
+	{
+		SendRead();
+		return;
+	}
+	CommitRecordsRead();
+}
+
+void UCrowdyServerObject::CommitRecordsRead()
+{
+	// A State edited since the last read has another shape, so every record counts as new.
+	const bool bSameShape = State.GetScriptStruct() == Definition->GetStateStruct();
+	if (!bSameShape)
+	{
+		FInstancedStruct Fresh;
+		Definition->InitializeValues(Definition->GetStateStruct(), Fresh);
+		State = MoveTemp(Fresh);
+	}
+	TArray<FString> Changed;
+	TArray<TBitArray<>> ChangedFields;
+	TArray<FString> Removed;
+	TArray<TPair<FString, TArray<FString>>> Watched;
+	for (const TPair<FString, FCrowdyServerRecord>& Pair : PagedRecords)
+	{
+		const FCrowdyServerRecord* Old = bHasRead && bSameShape ? Records.Find(Pair.Key) : nullptr;
+		TBitArray<> Fields;
+		const bool bValues = CollectWatchedFieldBits(Old ? Old->Values.GetMemory() : nullptr, Pair.Value.Values.GetMemory(), Fields);
+		const bool bOwnership = !Old || Old->Owner != Pair.Value.Owner || !Old->Team.Equals(Pair.Value.Team, ESearchCase::CaseSensitive);
+		if (!bValues && !bOwnership)
+		{
+			continue;
+		}
+		Changed.Add(Pair.Key);
+		if (bValues && IsRecordWatched(Pair.Key))
+		{
+			CollectWrittenFields(Fields, Watched.Emplace_GetRef(Pair.Key, TArray<FString>()).Value);
+		}
+		ChangedFields.Add(MoveTemp(Fields));
+	}
+	for (const TPair<FString, FCrowdyServerRecord>& Pair : Records)
+	{
+		if (PagedRecords.Contains(Pair.Key))
+		{
+			continue;
+		}
+		Removed.Add(Pair.Key);
+		if (IsRecordWatched(Pair.Key))
+		{
+			CollectWatchedFields(nullptr, nullptr, Watched.Emplace_GetRef(Pair.Key, TArray<FString>()).Value);
+		}
+	}
+	Records = MoveTemp(PagedRecords);
+	PagedRecords.Reset();
+	AppliedEpoch = PageEpoch;
+	AppliedSeq = PageSeq;
+	AppliedRSeq = PageRSeq;
+	bHasRead = true;
+	OwnTeam = Definition->HasCrowdyTeamRecords() ? FString() : FindOwnTeam();
+	// A read carries every restricted value this player may see, so changes asked for before it are not needed.
+	++ChangesTicket;
+	bChangesWanted = false;
+	NoteGoodRead();
+	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s/%s records read applied epoch=%llu seq=%llu rseq=%llu records=%d changed=%d removed=%d"),
+		*Definition->TypeName, CrowdyServerObjectDetail::TraceId(*Definition, InstanceId), AppliedEpoch, AppliedSeq, AppliedRSeq, Records.Num(), Changed.Num(), Removed.Num());
+	const bool bBecameReady = Status == ECrowdyServerObjectStatus::Connecting;
+	if (bBecameReady)
+	{
+		SetStatus(ECrowdyServerObjectStatus::Ready);
+	}
+
+	// Records before status, so a listener bound from the Ready handler hears only its own catch-up call.
+	const uint32 ReadGeneration = Generation;
+	NotifyRecords(Changed, ChangedFields, Removed, Watched);
+	if (bBecameReady && Generation == ReadGeneration)
+	{
+		NotifyStatus();
+	}
+	if (Generation != ReadGeneration)
+	{
+		return;
+	}
+	ReplayBufferedPushes();
+	if (Generation == ReadGeneration && bReadAgain && !bReadInFlight)
+	{
+		RequestRead();
+	}
+}
+
 void UCrowdyServerObject::HandleRefreshFailure(const FCrowdyNativeExecReply& Reply, bool bRead)
 {
 	const TCHAR* const Verb = bRead ? TEXT("read") : TEXT("watch");
-	const bool bAppError = Reply.Status == ECrowdyNativeExecStatus::AppError;
-	if (bAppError && Reply.Message.StartsWith(TEXT("denied"), ESearchCase::CaseSensitive))
+	const FString Permanent = PermanentRefusal(Reply, Verb);
+	if (!Permanent.IsEmpty())
 	{
-		Fail(FString::Printf(TEXT("This player may not %s this Server Object"), Verb), true);
-		return;
-	}
-	if (bAppError && Reply.Message.StartsWith(TEXT("unknown_method"), ESearchCase::CaseSensitive))
-	{
-		Fail(FString::Printf(TEXT("The server code for %s has no watched values; regenerate and deploy it"), *Definition->TypeName), true);
-		return;
-	}
-	if (Reply.Status == ECrowdyNativeExecStatus::BadRequest)
-	{
-		Fail(CrowdyServerObjectDetail::PlainReason(Reply), true);
+		Fail(Permanent, true);
 		return;
 	}
 	// A refused subscribe's reason outlasts a read's, since a good read clears only the read's own.
@@ -1035,15 +1348,29 @@ void UCrowdyServerObject::HandleRefreshFailure(const FCrowdyNativeExecReply& Rep
 	{
 		FailureReason = Waiting;
 		bReadSetReason = bRead;
+		bConnectSetReason = false;
 	}
 	ScheduleRefresh(Reply);
+}
+
+FString UCrowdyServerObject::PermanentRefusal(const FCrowdyNativeExecReply& Reply, const TCHAR* Verb) const
+{
+	const bool bAppError = Reply.Status == ECrowdyNativeExecStatus::AppError;
+	if (bAppError && Reply.Message.StartsWith(TEXT("denied"), ESearchCase::CaseSensitive))
+	{
+		return FString::Printf(TEXT("This player may not %s this Server Object"), Verb);
+	}
+	if (bAppError && Reply.Message.StartsWith(TEXT("unknown_method"), ESearchCase::CaseSensitive))
+	{
+		return FString::Printf(TEXT("The server code for %s has no watched values; regenerate and deploy it"), *Definition->TypeName);
+	}
+	return Reply.Status == ECrowdyNativeExecStatus::BadRequest ? CrowdyServerObjectDetail::PlainReason(Reply) : FString();
 }
 
 void UCrowdyServerObject::ScheduleRefresh(const FCrowdyNativeExecReply& Reply)
 {
 	++RefreshFailures;
-	const float Backoff = FMath::Min(static_cast<float>(1 << FMath::Min(RefreshFailures - 1, 4)), 10.f);
-	RefreshRetryIn = FMath::Max(Backoff, CrowdyServerObjectDetail::RetryHintSeconds(Reply));
+	RefreshRetryIn = CrowdyServerObjectDetail::RetryInSeconds(RefreshFailures, Reply);
 	bRefreshScheduled = true;
 }
 
@@ -1058,47 +1385,38 @@ void UCrowdyServerObject::ReceivePush(const TArray<uint8>& Payload)
 		ApplyPush(Payload);
 		return;
 	}
-	if (BufferedPushes.Num() >= CrowdyServerObjectDetail::MaxBufferedPushes)
+	const bool bFull = HoldsRecords()
+		? BufferedPushes.Num() >= CrowdyServerObjectDetail::MaxBufferedRecordPushes || BufferedBytes + Payload.Num() > CrowdyServerObjectDetail::MaxBufferedRecordBytes
+		: BufferedPushes.Num() >= CrowdyServerObjectDetail::MaxBufferedPushes;
+	if (bFull)
 	{
 		BufferedPushes.Reset();
+		BufferedBytes = 0;
 		bReadAgain = true;
 		TraceReread(TEXT("overflow"));
 		return;
 	}
 	BufferedPushes.Add(Payload);
+	BufferedBytes += Payload.Num();
 }
 
 void UCrowdyServerObject::ApplyPush(const TArray<uint8>& Payload)
 {
+	// A records push nests deeper than a header read skips, so it is decoded whole and its header checked after.
+	if (HoldsRecords())
+	{
+		ApplyRecordsPush(Payload);
+		return;
+	}
 	FCrowdyExecStateHeader Header;
 	FString Error;
-	const bool bHeaderRead = CrowdyExec::ReadStateHeader(Payload, Header, Error);
-	if (!bHeaderRead || Header.Epoch != AppliedEpoch)
+	if (!CrowdyExec::ReadStateHeader(Payload, Header, Error))
 	{
-		if (bHeaderRead)
-		{
-			TraceReread(TEXT("epoch"));
-		}
 		RequestRead();
 		return;
 	}
-	if (Header.Seq <= AppliedSeq)
+	if (!AcceptsPush(Header))
 	{
-		UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s/%s push stale epoch=%llu seq=%llu"), *Definition->TypeName,
-			CrowdyServerObjectDetail::TraceId(*Definition, InstanceId),
-			AppliedEpoch, AppliedSeq);
-		return;
-	}
-	// Only Every Player pushes carry values, a gap missed some, and a State reshaped in the editor cannot take one: read instead.
-	const bool bOwnerOnly = Definition->Visibility != ECrowdyServerObjectVisibility::Public;
-	const bool bGap = Header.Seq > AppliedSeq + 1;
-	if (bOwnerOnly || bGap || State.GetScriptStruct() != Definition->GetStateStruct())
-	{
-		if (bOwnerOnly || bGap)
-		{
-			TraceReread(bOwnerOnly ? TEXT("ownerOnly") : TEXT("gap"));
-		}
-		RequestRead();
 		return;
 	}
 	FCrowdyExecMembersView View;
@@ -1122,10 +1440,41 @@ void UCrowdyServerObject::ApplyPush(const TArray<uint8>& Payload)
 	}
 }
 
+bool UCrowdyServerObject::AcceptsPush(const FCrowdyExecStateHeader& Header)
+{
+	if (Header.Epoch != AppliedEpoch)
+	{
+		TraceReread(TEXT("epoch"));
+		RequestRead();
+		return false;
+	}
+	if (Header.Seq <= AppliedSeq)
+	{
+		UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s/%s push stale epoch=%llu seq=%llu"), *Definition->TypeName,
+			CrowdyServerObjectDetail::TraceId(*Definition, InstanceId),
+			AppliedEpoch, AppliedSeq);
+		return false;
+	}
+	// Only Every Player pushes carry values, a gap missed some, and a State reshaped in the editor cannot take one: read instead.
+	const bool bOwnerOnly = Definition->Visibility != ECrowdyServerObjectVisibility::Public;
+	const bool bGap = Header.Seq > AppliedSeq + 1;
+	if (bOwnerOnly || bGap || State.GetScriptStruct() != Definition->GetStateStruct())
+	{
+		if (bOwnerOnly || bGap)
+		{
+			TraceReread(bOwnerOnly ? TEXT("ownerOnly") : TEXT("gap"));
+		}
+		RequestRead();
+		return false;
+	}
+	return true;
+}
+
 void UCrowdyServerObject::ReplayBufferedPushes()
 {
 	TArray<TArray<uint8>> Pending = MoveTemp(BufferedPushes);
 	BufferedPushes.Reset();
+	BufferedBytes = 0;
 	const uint32 ReplayGeneration = Generation;
 	for (const TArray<uint8>& Payload : Pending)
 	{
@@ -1159,6 +1508,412 @@ void UCrowdyServerObject::CollectWatchedFields(const void* Before, const void* A
 		OutFields.Add(Field.Name);
 	}
 }
+
+bool UCrowdyServerObject::CollectWatchedFieldBits(const void* Before, const void* After, TBitArray<>& OutFields) const
+{
+	FString Error;
+	const FCrowdyExecLayout* Layout = Definition->ResolveLayout(Error);
+	if (!Layout || Layout->StateStruct == INDEX_NONE)
+	{
+		return false;
+	}
+	const TArray<FCrowdyExecField>& Fields = Layout->Structs[Layout->StateStruct].Fields;
+	OutFields.Init(false, Fields.Num());
+	bool bAny = false;
+	for (int32 Index = 0; Index < Fields.Num(); ++Index)
+	{
+		const bool bChanged = Fields[Index].bWatched && (!Before || !Layout->Types[Fields[Index].Type].Property->Identical_InContainer(Before, After));
+		OutFields[Index] = bChanged;
+		bAny |= bChanged;
+	}
+	return bAny;
+}
+
+void UCrowdyServerObject::GetFieldVariableNames(TArray<FString>& OutNames) const
+{
+	OutNames.Reset();
+	FString Error;
+	const FCrowdyExecLayout* Layout = Definition ? Definition->ResolveLayout(Error) : nullptr;
+	if (!Layout || Layout->StateStruct == INDEX_NONE)
+	{
+		return;
+	}
+	for (const FCrowdyExecField& Field : Layout->Structs[Layout->StateStruct].Fields)
+	{
+		OutNames.Add(Field.bWatched ? CrowdyExec::KeepNameCharacters(Layout->Types[Field.Type].Property->GetAuthoredName()) : FString());
+	}
+}
+
+void UCrowdyServerObject::CollectWrittenFields(const TBitArray<>& Written, TArray<FString>& OutFields) const
+{
+	FString Error;
+	const FCrowdyExecLayout* Layout = Definition->ResolveLayout(Error);
+	if (!Layout || Layout->StateStruct == INDEX_NONE)
+	{
+		return;
+	}
+	const TArray<FCrowdyExecField>& Fields = Layout->Structs[Layout->StateStruct].Fields;
+	for (TConstSetBitIterator<> It(Written); It; ++It)
+	{
+		if (Fields.IsValidIndex(It.GetIndex()) && Fields[It.GetIndex()].bWatched)
+		{
+			OutFields.Add(Fields[It.GetIndex()].Name);
+		}
+	}
+}
+
+void UCrowdyServerObject::ResetRestrictedFields(FCrowdyExecRecordUpdate& Update, FInstancedStruct& Defaults) const
+{
+	FString Error;
+	const FCrowdyExecLayout* Layout = Definition->ResolveLayout(Error);
+	if (!Layout || Layout->StateStruct == INDEX_NONE || Update.Values.GetScriptStruct() != Definition->GetStateStruct())
+	{
+		return;
+	}
+	if (!Defaults.IsValid())
+	{
+		Definition->InitializeValues(Definition->GetStateStruct(), Defaults);
+	}
+	const TArray<FCrowdyExecField>& Fields = Layout->Structs[Layout->StateStruct].Fields;
+	for (int32 Index = 0; Index < Fields.Num() && Index < Update.Fields.Num(); ++Index)
+	{
+		const FProperty* Property = Layout->Types[Fields[Index].Type].Property;
+		if (!Fields[Index].bRestricted || Property->Identical_InContainer(Update.Values.GetMemory(), Defaults.GetMemory()))
+		{
+			continue;
+		}
+		Property->CopyCompleteValue_InContainer(Update.Values.GetMutableMemory(), Defaults.GetMemory());
+		Update.Fields[Index] = true;
+	}
+}
+
+void UCrowdyServerObject::ApplyRecordsPush(const TArray<uint8>& Payload)
+{
+	FCrowdyExecRecordsMessage Push;
+	FString Error;
+	auto FindStored = [this](const FString& Id) -> const void*
+	{
+		const FCrowdyServerRecord* Stored = Records.Find(Id);
+		return Stored ? Stored->Values.GetMemory() : nullptr;
+	};
+	// Records of a State reshaped in the editor cannot take a push decoded over them: read instead.
+	if (State.GetScriptStruct() != Definition->GetStateStruct()
+		|| !CrowdyExec::DecodeRecords(*Definition, ECrowdyExecRecordsMessage::Push, Payload, FindStored, Push, Error))
+	{
+		RequestRead();
+		return;
+	}
+	if (!AcceptsPush(FCrowdyExecStateHeader{Push.Epoch, Push.Seq}))
+	{
+		return;
+	}
+	AppliedSeq = Push.Seq;
+	const int64 UserId = CrowdyServerObjectDetail::FindSignedInUserId(Subsystem);
+	// Only an owner or team change of a record the player owned or owns can change the player's own team.
+	bool bOwnTouched = false;
+	TArray<FString> Changed;
+	TArray<TBitArray<>> ChangedFields;
+	TArray<FString> Removed;
+	TArray<TPair<FString, TArray<FString>>> Watched;
+	FInstancedStruct Defaults;
+	bool bReset = false;
+	for (FCrowdyExecRecordUpdate& Update : Push.Records)
+	{
+		// A new owner or team may no longer see the restricted values held; changes asked from before this push's restricted seq bring back what it may.
+		if (Update.bHasOwner || Update.bHasTeam)
+		{
+			ResetRestrictedFields(Update, Defaults);
+			bReset = true;
+		}
+		FCrowdyServerRecord& Record = Records.FindOrAdd(Update.Id);
+		const bool bWasOwn = UserId != 0 && Record.Owner == UserId;
+		Record.Values = MoveTemp(Update.Values);
+		if (Update.bHasOwner)
+		{
+			Record.Owner = Update.Owner;
+		}
+		if (Update.bHasTeam)
+		{
+			Record.Team = MoveTemp(Update.Team);
+		}
+		bOwnTouched |= (Update.bHasOwner || Update.bHasTeam) && (bWasOwn || (UserId != 0 && Record.Owner == UserId));
+		if (IsRecordWatched(Update.Id))
+		{
+			CollectWrittenFields(Update.Fields, Watched.Emplace_GetRef(Update.Id, TArray<FString>()).Value);
+		}
+		ChangedFields.Add(MoveTemp(Update.Fields));
+		Changed.Add(MoveTemp(Update.Id));
+	}
+	for (FString& Id : Push.Removed)
+	{
+		const FCrowdyServerRecord* Gone = Records.Find(Id);
+		if (!Gone)
+		{
+			continue;
+		}
+		bOwnTouched |= UserId != 0 && Gone->Owner == UserId;
+		Records.Remove(Id);
+		if (IsRecordWatched(Id))
+		{
+			CollectWatchedFields(nullptr, nullptr, Watched.Emplace_GetRef(Id, TArray<FString>()).Value);
+		}
+		Removed.Add(MoveTemp(Id));
+	}
+	if (Records.Num() > CrowdyExec::MaxElements)
+	{
+		Fail(FString::Printf(TEXT("The server sent more than the %d records an instance holds"), CrowdyExec::MaxElements), true);
+		return;
+	}
+	// A changes reply that overtook this push already moved past the values just reset, so the next one asks from before it.
+	if (bReset)
+	{
+		const uint64 Before = Push.RSeq > 0 ? Push.RSeq - 1 : 0;
+		AppliedRSeq = FMath::Min(AppliedRSeq, Before);
+		ChangesFirstRSeq = FMath::Min(ChangesFirstRSeq, Before);
+	}
+	// A Crowdy Team's membership is the platform's, so only a team taken from this object's records is followed here.
+	const FString Team = bOwnTouched && !Definition->HasCrowdyTeamRecords() ? FindOwnTeam() : OwnTeam;
+	const bool bTeamChanged = !Team.Equals(OwnTeam, ESearchCase::CaseSensitive);
+	OwnTeam = Team;
+	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s/%s records push applied epoch=%llu seq=%llu changed=%d removed=%d restricted=%d"),
+		*Definition->TypeName, CrowdyServerObjectDetail::TraceId(*Definition, InstanceId), AppliedEpoch, AppliedSeq, Changed.Num(), Removed.Num(), Push.bRestricted ? 1 : 0);
+
+	const uint32 PushGeneration = Generation;
+	NotifyRecords(Changed, ChangedFields, Removed, Watched);
+	if (Generation != PushGeneration)
+	{
+		return;
+	}
+	// Teammates' unchanged Team Only values reach a new team member only through a read.
+	if (bTeamChanged)
+	{
+		TraceReread(TEXT("team"));
+		RequestRead();
+		return;
+	}
+	if (Push.bRestricted)
+	{
+		RequestChanges();
+	}
+}
+
+void UCrowdyServerObject::RequestChanges()
+{
+	bChangesWanted = true;
+	SendDueChanges();
+}
+
+void UCrowdyServerObject::SendDueChanges()
+{
+	if (!bChangesWanted || bChangesInFlight || ChangesWait > 0.f || !bHasRead || bReadInFlight || !CrowdyServerObjectDetail::GetConnection(Subsystem))
+	{
+		return;
+	}
+	bChangesWanted = false;
+	ChangesWait = CrowdyServerObjectDetail::ChangesIntervalSeconds;
+	ChangesSince = AppliedRSeq;
+	ChangesAfter.Reset();
+	ChangesPages = 0;
+	bChangesFirstPage = true;
+	bChangesMissed = false;
+	SendChangesPage();
+}
+
+void UCrowdyServerObject::HandleChangesFailure(const FCrowdyNativeExecReply& Reply)
+{
+	const FString Permanent = PermanentRefusal(Reply, TEXT("read"));
+	if (!Permanent.IsEmpty())
+	{
+		Fail(Permanent, true);
+		return;
+	}
+	++ChangesFailures;
+	ChangesWait = CrowdyServerObjectDetail::RetryInSeconds(ChangesFailures, Reply);
+	bChangesWanted = true;
+}
+
+void UCrowdyServerObject::SendChangesPage()
+{
+	FCrowdyNativeExecConnection* Connection = CrowdyServerObjectDetail::GetConnection(Subsystem);
+	if (!Connection)
+	{
+		bChangesWanted = true;
+		return;
+	}
+	bChangesInFlight = true;
+	TWeakObjectPtr<UCrowdyServerObject> WeakThis(this);
+	const uint32 ChangesGeneration = Generation;
+	const uint32 Ticket = ChangesTicket;
+	Connection->Call(Definition->TypeName, InstanceId, TEXT("changes"), CrowdyServerObjectDetail::PageRequest(ChangesAfter, &ChangesSince),
+		[WeakThis, ChangesGeneration, Ticket](const FCrowdyNativeExecReply& Reply)
+		{
+			UCrowdyServerObject* Self = WeakThis.Get();
+			if (Self && Self->Generation == ChangesGeneration)
+			{
+				Self->HandleChangesDone(Ticket, Reply);
+			}
+		});
+}
+
+void UCrowdyServerObject::HandleChangesDone(uint32 Ticket, const FCrowdyNativeExecReply& Reply)
+{
+	bChangesInFlight = false;
+	// A read since this was sent already carries what it would bring.
+	if (Ticket != ChangesTicket)
+	{
+		return;
+	}
+	if (!Reply.IsOk())
+	{
+		HandleChangesFailure(Reply);
+		return;
+	}
+	ChangesFailures = 0;
+	FCrowdyExecRecordsMessage Page;
+	FString Error;
+	auto FindStored = [this](const FString& Id) -> const void*
+	{
+		const FCrowdyServerRecord* Stored = Records.Find(Id);
+		return Stored ? Stored->Values.GetMemory() : nullptr;
+	};
+	// Records of a State reshaped in the editor cannot take values decoded over them: read instead.
+	if (State.GetScriptStruct() != Definition->GetStateStruct()
+		|| !CrowdyExec::DecodeRecords(*Definition, ECrowdyExecRecordsMessage::Changes, Reply.Payload, FindStored, Page, Error))
+	{
+		TraceReread(TEXT("changes"));
+		RequestRead();
+		return;
+	}
+	if (bChangesFirstPage)
+	{
+		ChangesFirstRSeq = Page.RSeq;
+		bChangesFirstPage = false;
+	}
+	TArray<FString> Changed;
+	TArray<TBitArray<>> ChangedFields;
+	TArray<TPair<FString, TArray<FString>>> Watched;
+	for (FCrowdyExecRecordUpdate& Update : Page.Records)
+	{
+		ChangesAfter = Update.Id;
+		// A record whose creating push has not arrived yet is asked for again; one removed since has left the server's changes.
+		FCrowdyServerRecord* Record = Records.Find(Update.Id);
+		if (!Record)
+		{
+			bChangesMissed = true;
+			continue;
+		}
+		Record->Values = MoveTemp(Update.Values);
+		if (IsRecordWatched(Update.Id))
+		{
+			CollectWrittenFields(Update.Fields, Watched.Emplace_GetRef(Update.Id, TArray<FString>()).Value);
+		}
+		ChangedFields.Add(MoveTemp(Update.Fields));
+		Changed.Add(MoveTemp(Update.Id));
+	}
+	// Each page brings a record and an instance holds at most MaxElements, so paging stops after that many pages.
+	const bool bMore = Page.bMore && !Page.Records.IsEmpty() && ++ChangesPages < CrowdyExec::MaxElements;
+	// The first page's, so a change made while the pages were read is asked for again.
+	if (!bMore && !bChangesMissed)
+	{
+		AppliedRSeq = ChangesFirstRSeq;
+	}
+	bChangesWanted |= !bMore && bChangesMissed;
+	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s/%s records changes applied since=%llu rseq=%llu changed=%d more=%d"),
+		*Definition->TypeName, CrowdyServerObjectDetail::TraceId(*Definition, InstanceId), ChangesSince, Page.RSeq, Changed.Num(), bMore ? 1 : 0);
+	if (bMore)
+	{
+		SendChangesPage();
+	}
+	NotifyRecords(Changed, ChangedFields, TArray<FString>(), Watched);
+}
+
+FString UCrowdyServerObject::FindOwnTeam() const
+{
+	const int64 UserId = CrowdyServerObjectDetail::FindSignedInUserId(Subsystem);
+	const TPair<FString, FCrowdyServerRecord>* First = nullptr;
+	for (const TPair<FString, FCrowdyServerRecord>& Pair : Records)
+	{
+		const bool bEarlier = !First || FCString::Strcmp(*Pair.Key, *First->Key) < 0;
+		if (UserId != 0 && Pair.Value.Owner == UserId && bEarlier)
+		{
+			First = &Pair;
+		}
+	}
+	return First ? First->Value.Team : FString();
+}
+
+void UCrowdyServerObject::NotifyRecords(const TArray<FString>& Changed, const TArray<TBitArray<>>& ChangedFields, const TArray<FString>& Removed,
+	const TArray<TPair<FString, TArray<FString>>>& Watched)
+{
+	if (Changed.IsEmpty() && Removed.IsEmpty())
+	{
+		return;
+	}
+	const uint32 NotifyGeneration = Generation;
+	OnRecordsChanged.Broadcast(this, Changed, Removed, ChangedFields);
+	if (Generation != NotifyGeneration)
+	{
+		return;
+	}
+	// A Blueprint broadcast copies both lists, so it waits for a listener.
+	if (RecordsChanged.IsBound())
+	{
+		RecordsChanged.Broadcast(this, Changed, Removed);
+	}
+	TGuardValue<uint64> Announcing(AnnouncedSerial, FCrowdyServerVariableBindings::LatestSerial());
+	for (const TPair<FString, TArray<FString>>& Each : Watched)
+	{
+		if (Generation != NotifyGeneration)
+		{
+			return;
+		}
+		const TSharedRef<FOnCrowdyServerValuesChanged>* Watchers = RecordWatchers.Find(Each.Key);
+		if (!Watchers || Each.Value.IsEmpty())
+		{
+			continue;
+		}
+		// Held here, so a watcher that stops watching does not destroy the delegate it runs in.
+		const TSharedRef<FOnCrowdyServerValuesChanged> Running = *Watchers;
+		Running->Broadcast(this, Each.Value);
+	}
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyServerObject::ApplyRecordsForTest(TConstArrayView<TPair<FString, FInstancedStruct>> Changed, TConstArrayView<FString> Removed)
+{
+	TArray<FString> ChangedIds;
+	TArray<TBitArray<>> ChangedFields;
+	TArray<FString> RemovedIds;
+	TArray<TPair<FString, TArray<FString>>> Watched;
+	for (const TPair<FString, FInstancedStruct>& Each : Changed)
+	{
+		FCrowdyServerRecord& Record = Records.FindOrAdd(Each.Key);
+		TBitArray<>& Fields = ChangedFields.AddDefaulted_GetRef();
+		CollectWatchedFieldBits(Record.Values.IsValid() ? Record.Values.GetMemory() : nullptr, Each.Value.GetMemory(), Fields);
+		Record.Values = Each.Value;
+		if (IsRecordWatched(Each.Key))
+		{
+			CollectWrittenFields(Fields, Watched.Emplace_GetRef(Each.Key, TArray<FString>()).Value);
+		}
+		ChangedIds.Add(Each.Key);
+	}
+	for (const FString& Id : Removed)
+	{
+		if (Records.Remove(Id) == 0)
+		{
+			continue;
+		}
+		if (IsRecordWatched(Id))
+		{
+			CollectWatchedFields(nullptr, nullptr, Watched.Emplace_GetRef(Id, TArray<FString>()).Value);
+		}
+		RemovedIds.Add(Id);
+	}
+	bHasRead = true;
+	SetStatus(ECrowdyServerObjectStatus::Ready);
+	NotifyRecords(ChangedIds, ChangedFields, RemovedIds, Watched);
+}
+#endif
 
 void UCrowdyServerObject::SendDueCalls()
 {

@@ -244,15 +244,24 @@ namespace CrowdyExecCodegenMenu
 		TArray<FString> Folders;
 		IFileManager::Get().FindFiles(Folders, *FPaths::Combine(ServerDirectory, TEXT("*")), false, true);
 		Folders.Sort();
+		FString Newest;
+		FDateTime NewestStamp;
 		for (const FString& Folder : Folders)
 		{
 			const FString Candidate = FPaths::Combine(ServerDirectory, Folder);
-			if (!Folder.Equals(TypeName, ESearchCase::IgnoreCase) && CrowdyExecCodegen::ReadCrateDefinition(Candidate).Equals(DefinitionPath, ESearchCase::IgnoreCase))
+			if (Folder.Equals(TypeName, ESearchCase::IgnoreCase) || !CrowdyExecCodegen::ReadCrateDefinition(Candidate).Equals(DefinitionPath, ESearchCase::IgnoreCase))
 			{
-				return Candidate;
+				continue;
+			}
+			// Several crates can name one definition; the one Generate wrote last is the live one.
+			const FDateTime Stamp = IFileManager::Get().GetTimeStamp(*FPaths::Combine(Candidate, TEXT("Cargo.toml")));
+			if (Newest.IsEmpty() || Stamp > NewestStamp)
+			{
+				Newest = Candidate;
+				NewestStamp = Stamp;
 			}
 		}
-		return FString();
+		return Newest;
 	}
 
 	bool MoveCrateDirectory(const FString& From, const FString& To, FString& OutError)
@@ -472,6 +481,11 @@ namespace CrowdyExecCodegenMenu
 		}
 		FString Directory = FPaths::ConvertRelativePathToFull(FPaths::Combine(ServerDirectory, Definition.TypeName));
 		FPaths::NormalizeDirectoryName(Directory);
+		if (FPaths::FileExists(FPaths::Combine(Directory, TEXT("Cargo.toml"))) && !CrowdyExecCodegen::IsGeneratedCrateFolder(Directory))
+		{
+			ShowGenerateError(Definition, FString::Printf(TEXT("%s holds server code the Crowdy SDK did not generate, so Generate would overwrite it. Choose another Type Name, or move that folder."), *Directory));
+			return false;
+		}
 		FString MoveFrom;
 		if (!AskAboutRename(Definition, Directory, MoveFrom))
 		{

@@ -5,8 +5,8 @@
 #include "Engine/GameInstance.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
-#include "Replication/GameModel/CrowdyBindingKeyProvider.h"
-#include "Replication/GameModel/CrowdyModelIdentity.h"
+#include "Replication/Components/CrowdyBindingKeyProvider.h"
+#include "Replication/Components/CrowdyEntityIdentity.h"
 #include "Replication/Subsystems/CrowdyActorManager.h"
 #include "Replication/Subsystems/CrowdyAutoReplicator.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
@@ -125,7 +125,7 @@ FGuid UCrowdyEntityComponent::ComputeStableNetID(bool& bOutUsedPathFallback) con
 	// clients. For one created during play it does not, because there is nothing shared to derive it from; the
 	// caller warns about that case rather than pretending the id is usable.
 	bOutUsedPathFallback = true;
-	return FCrowdyModelIdentity::StableNetIDFromActorPath(IsValid(Owner) ? Owner->GetPathName() : GetPathName());
+	return FCrowdyEntityIdentity::StableNetIDFromActorPath(IsValid(Owner) ? Owner->GetPathName() : GetPathName());
 }
 
 FGuid UCrowdyEntityComponent::SelectPlacementGuid(const FGuid& AtRegister, const FGuid& Live)
@@ -666,7 +666,7 @@ void UCrowdyEntityComponent::ResolveIdentity()
 
 	if (bUseKey)
 	{
-		NetID = FCrowdyModelIdentity::NetIDFromBindingKey(BindingKey);
+		NetID = FCrowdyEntityIdentity::NetIDFromBindingKey(BindingKey);
 	}
 	else switch (IdentityPolicy)
 	{

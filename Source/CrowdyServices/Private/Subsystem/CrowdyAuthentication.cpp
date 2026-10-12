@@ -45,6 +45,9 @@ static constexpr int32  MaxRotationRetries   = 5;
 // know the argument refuses every attempt for as long as the client runs.
 static constexpr int32  MaxServerNamedRefusals = 2;
 
+static const TCHAR* const HeldFlowSupersededMessage =
+	TEXT("A newer sign-in replaced the one waiting for the terms and the age confirmation.");
+
 void UCrowdyAuthentication::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -63,6 +66,9 @@ void UCrowdyAuthentication::Deinitialize()
 	LiveSessionToken.Reset();
 
 	CancelProactiveRefresh();
+
+	// Dropped without an answer: nothing may broadcast during shutdown.
+	HeldConsentFlow.Reset();
 
 	// Tear down the loopback listener (unbinds its route, cancels timers) on the game thread.
 	LoopbackServer.Reset();
@@ -91,8 +97,25 @@ void UCrowdyAuthentication::PublishTokensToCppClient()
 	}
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyAuthentication::InitializeForTest(const TSharedPtr<FCrowdyCppClient>& Client,
+	UCrowdyGameSession* InGameSession)
+{
+	LiveSessionToken = MakeShared<uint8>(0);
+	ClientForTest = Client;
+	GameSession = InGameSession;
+}
+#endif
+
 FCrowdyCppClient* UCrowdyAuthentication::ResolveAuthClient()
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	if (const TSharedPtr<FCrowdyCppClient> Override = ClientForTest.Pin())
+	{
+		return Override.Get();
+	}
+#endif
+
 	UCrowdyCppClientSubsystem* Host = GetCppClientHost();
 	if (!Host)
 	{
@@ -234,6 +257,8 @@ void UCrowdyAuthentication::WithAppEndpointResolved(TFunction<void(FCrowdyCppCli
 void UCrowdyAuthentication::Login(const FString& Email, const FString& Password,
                                   FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
+	FailHeldConsentFlow(HeldFlowSupersededMessage);
+
 	// This subsystem and the client host share the game instance's lifetime, so a completion cannot arrive after
 	// the subsystem is gone; the weak check covers only teardown ordering within that shutdown.
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
@@ -262,6 +287,8 @@ void UCrowdyAuthentication::Login(const FString& Email, const FString& Password,
 void UCrowdyAuthentication::Register(const FString& Email, const FString& Password,
                                      FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
+	FailHeldConsentFlow(HeldFlowSupersededMessage);
+
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
 	WithAppEndpointResolved([WeakThis, Email, Password, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
@@ -314,6 +341,8 @@ void UCrowdyAuthentication::RequestLoginLink(const FString& Email, const FString
 
 void UCrowdyAuthentication::CompleteLoginLink(const FString& Token, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
+	FailHeldConsentFlow(HeldFlowSupersededMessage);
+
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
 	WithAppEndpointResolved([WeakThis, Token, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
@@ -353,6 +382,8 @@ void UCrowdyAuthentication::BeginMagicLinkSignIn(const FString& Email, FOnAuthSu
 		FailFlow(TEXT("A sign-in is already in progress"), EAuthFlow::MagicLink, OnError);
 		return;
 	}
+
+	FailHeldConsentFlow(HeldFlowSupersededMessage);
 
 	if (!LoopbackServer.IsValid())
 	{
@@ -454,6 +485,8 @@ void UCrowdyAuthentication::BeginSocialSignIn(const FString& Provider, FOnAuthSu
 		FailFlow(TEXT("A sign-in is already in progress"), EAuthFlow::Social, OnError);
 		return;
 	}
+
+	FailHeldConsentFlow(HeldFlowSupersededMessage);
 
 	if (!LoopbackServer.IsValid())
 	{
@@ -788,6 +821,133 @@ void UCrowdyAuthentication::UnlinkIdentity(const FString& IdentityId, FOnIdentit
 		}));
 }
 
+void UCrowdyAuthentication::RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority,
+	FOnLegalConsentsRecorded OnRecorded, FOnAuthError OnError)
+{
+	if (!bAcceptLegal || !bAttestAgeOfMajority)
+	{
+		OnError.ExecuteIfBound(TEXT("Both the terms and the age confirmation have to be accepted."));
+		return;
+	}
+	if (!GameSession || GameSession->GetSessionToken().IsEmpty())
+	{
+		OnError.ExecuteIfBound(TEXT("Sign in before recording consent."));
+		return;
+	}
+
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		OnError.ExecuteIfBound(TEXT("Authentication client unavailable."));
+		return;
+	}
+
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	Client->RecordPlayerConsents(bAcceptLegal, bAttestAgeOfMajority, GuardSession<FCrowdyCppBoolResult>(
+		[WeakThis, OnRecorded, OnError](FCrowdyCppBoolResult Result)
+		{
+			UCrowdyAuthentication* Self = WeakThis.Get();
+			if (!Self)
+			{
+				return;
+			}
+			if (!Result.bOk || !Result.bValue)
+			{
+				OnError.ExecuteIfBound(Result.bOk ? TEXT("The server did not record the consent.") : Result.ErrorMessage);
+				return;
+			}
+
+			if (!Self->HeldConsentFlow.IsSet())
+			{
+				OnRecorded.ExecuteIfBound();
+				return;
+			}
+
+			// Re-minted under the held flow, so the sign-in the player started is the one that completes.
+			const FHeldConsentFlow Held = Self->ReleaseHeldConsentFlow();
+			OnRecorded.ExecuteIfBound();
+			Self->DispatchMint(Held.Flow, Held.OnSuccess, Held.OnError);
+		}));
+}
+
+void UCrowdyAuthentication::DeclineLegalAcceptance()
+{
+	// A held refresh only logs here, and its app token is left to expire.
+	FailHeldConsentFlow(TEXT("Sign-in needs the terms and the age confirmation."));
+}
+
+bool UCrowdyAuthentication::IsLegalAcceptancePending() const
+{
+	return HeldConsentFlow.IsSet();
+}
+
+TArray<FCrowdyLegalDocument> UCrowdyAuthentication::GetLegalDocuments()
+{
+	const auto Document = [](const FText& Title, const TCHAR* Url)
+	{
+		FCrowdyLegalDocument Result;
+		Result.Title = Title;
+		Result.Url = Url;
+		return Result;
+	};
+
+	return {
+		Document(NSLOCTEXT("CrowdyAuthentication", "GameTerms", "Game Terms"),
+			TEXT("https://crowdedkingdoms.com/game-terms.html")),
+		Document(NSLOCTEXT("CrowdyAuthentication", "ApiTerms", "API Terms"),
+			TEXT("https://crowdedkingdoms.com/api-terms.html")),
+		Document(NSLOCTEXT("CrowdyAuthentication", "SdkTerms", "SDK Developer Terms"),
+			TEXT("https://crowdedkingdoms.com/sdk-terms.html")),
+		Document(NSLOCTEXT("CrowdyAuthentication", "BillingBasis", "Free Tier and Billing Basis"),
+			TEXT("https://crowdedkingdoms.com/billing-basis.html")),
+		Document(NSLOCTEXT("CrowdyAuthentication", "OverworldPrivacy", "Overworld Privacy Policy"),
+			TEXT("https://crowdedkingdoms.com/overworld-privacy.html")),
+	};
+}
+
+void UCrowdyAuthentication::HoldForLegalAcceptance(EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
+{
+	const bool bAlreadyHeld = HeldConsentFlow.IsSet();
+
+	// The held flow's re-mint covers a rotation as well, so a refused refresh adds nothing to it.
+	if (bAlreadyHeld && Flow == EAuthFlow::Refresh)
+	{
+		return;
+	}
+
+	// A newer refused sign-in takes over the hold: the player is still being asked, so nothing is announced.
+	TOptional<FHeldConsentFlow> Superseded = MoveTemp(HeldConsentFlow);
+	HeldConsentFlow = FHeldConsentFlow{Flow, OnSuccess, OnError};
+
+	UE_LOG(LogCrowdyServices, Warning,
+		TEXT("[CrowdyAuth] The server needs the player to accept the legal documents before it issues a gameplay token."));
+	if (bAlreadyHeld)
+	{
+		FailFlow(HeldFlowSupersededMessage, Superseded->Flow, Superseded->OnError);
+		return;
+	}
+	OnLegalAcceptanceRequired.Broadcast();
+}
+
+void UCrowdyAuthentication::FailHeldConsentFlow(const TCHAR* Message)
+{
+	if (!HeldConsentFlow.IsSet())
+	{
+		return;
+	}
+
+	const FHeldConsentFlow Held = ReleaseHeldConsentFlow();
+	FailFlow(Message, Held.Flow, Held.OnError);
+}
+
+UCrowdyAuthentication::FHeldConsentFlow UCrowdyAuthentication::ReleaseHeldConsentFlow()
+{
+	FHeldConsentFlow Held = MoveTemp(HeldConsentFlow.GetValue());
+	HeldConsentFlow.Reset();
+	OnLegalAcceptanceEnded.Broadcast();
+	return Held;
+}
+
 bool UCrowdyAuthentication::IsInteractiveSignInBusy() const
 {
 	return bLoopbackFlowPending || (LoopbackServer.IsValid() && LoopbackServer->IsActive());
@@ -856,24 +1016,30 @@ void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSucces
 			if (Result.bOk)
 			{
 				Self->ApplyAppTokenAndFinish(MakeAppTokenFields(Result), Flow, OnSuccess);
+				return;
 			}
-			else
-			{
-				const bool bWasCanceled = Result.ErrorMessage == FCrowdyCppClient::CanceledErrorMessage();
-				if (Flow == EAuthFlow::Refresh)
-				{
-					Self->ScheduleRotationRetry(bWasCanceled
-						? TEXT("the app-token mint was canceled")
-						: TEXT("the app-token mint failed"));
-				}
 
-				// A cancellation means the request was abandoned (the client was rebuilt under it), which is internal
-				// bookkeeping rather than something the user did wrong, so it is reported as an interruption instead
-				// of surfacing the transport's own wording on an error pin.
-				Self->FailFlow(bWasCanceled
-					? FString(TEXT("Sign-in was interrupted. Please try again."))
-					: Result.ErrorMessage, Flow, OnError);
+			// Not a failure: the flow waits for the player's consent, and no retry could succeed before it.
+			if (Result.ErrorCode.Equals(CrowdyCppLegalAcceptanceRequiredCode, ESearchCase::CaseSensitive))
+			{
+				Self->HoldForLegalAcceptance(Flow, OnSuccess, OnError);
+				return;
 			}
+
+			const bool bWasCanceled = Result.ErrorMessage == FCrowdyCppClient::CanceledErrorMessage();
+			if (Flow == EAuthFlow::Refresh)
+			{
+				Self->ScheduleRotationRetry(bWasCanceled
+					? TEXT("the app-token mint was canceled")
+					: TEXT("the app-token mint failed"));
+			}
+
+			// A cancellation means the request was abandoned (the client was rebuilt under it), which is internal
+			// bookkeeping rather than something the user did wrong, so it is reported as an interruption instead
+			// of surfacing the transport's own wording on an error pin.
+			Self->FailFlow(bWasCanceled
+				? FString(TEXT("Sign-in was interrupted. Please try again."))
+				: Result.ErrorMessage, Flow, OnError);
 		}));
 }
 
@@ -926,6 +1092,13 @@ void UCrowdyAuthentication::DispatchRefresh()
 				UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
 					TEXT("[CrowdyAuth] App-token refresh was canceled; leaving the current token in place."));
 				Self->ScheduleRotationRetry(TEXT("the app-token refresh was canceled"));
+				return;
+			}
+
+			// Terminal for rotation: a retry or re-mint is refused alike, and it says nothing about currentServer.
+			if (Result.ErrorCode.Equals(CrowdyCppLegalAcceptanceRequiredCode, ESearchCase::CaseSensitive))
+			{
+				Self->HoldForLegalAcceptance(EAuthFlow::Refresh, FOnAuthSuccess(), FOnAuthError());
 				return;
 			}
 
@@ -991,6 +1164,12 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& 
 	RotationRetriesUsed = 0;
 	ScheduleProactiveRefresh(Token.ExpiresAt);
 
+	// A token was just applied, so a held rotation has nothing left to wait for.
+	if (HeldConsentFlow.IsSet() && HeldConsentFlow->Flow == EAuthFlow::Refresh)
+	{
+		ReleaseHeldConsentFlow();
+	}
+
 	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
 		TEXT("[CrowdyAuth] App token applied. AppGameTokenID=%lld ExpiresAt=%s"),
 		Token.AppGameTokenID, *Token.ExpiresAt);
@@ -1000,7 +1179,7 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& 
 	Result.UserID    = GameSession ? GameSession->GetUserID() : 0;
 
 	// A sign-in may be a different account, so the cached teams are dropped and asked for under the new token.
-	UCrowdyTeams* Teams = Flow != EAuthFlow::Refresh && GetGameInstance() ? GetGameInstance()->GetSubsystem<UCrowdyTeams>() : nullptr;
+	UCrowdyTeams* Teams = Flow != EAuthFlow::Refresh ? ResolveTeams() : nullptr;
 	if (Teams)
 	{
 		Teams->ClearMyTeamsCache();
@@ -1027,6 +1206,25 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& 
 		break;
 	}
 }
+
+UCrowdyTeams* UCrowdyAuthentication::ResolveTeams() const
+{
+	if (UCrowdyTeams* Override = TeamsOverride.Get())
+	{
+		return Override;
+	}
+	const UGameInstance* GameInstance = GetGameInstance();
+	return GameInstance ? GameInstance->GetSubsystem<UCrowdyTeams>() : nullptr;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyAuthentication::ApplyAppTokenForTest(const FCrowdyAppTokenFields& Token, bool bRefresh, UCrowdyTeams* Teams)
+{
+	TeamsOverride = Teams;
+	ApplyAppTokenAndFinish(Token, bRefresh ? EAuthFlow::Refresh : EAuthFlow::Login, FOnAuthSuccess());
+	TeamsOverride.Reset();
+}
+#endif
 
 void UCrowdyAuthentication::FailFlow(const FString& Message, EAuthFlow Flow, FOnAuthError OnError)
 {
@@ -1061,7 +1259,7 @@ void UCrowdyAuthentication::RefreshAppToken()
 	if (GameSession->GetGameToken().IsEmpty() && GameSession->GetSessionToken().IsEmpty())
 		return;
 
-	if (IsTokenRotationInFlight())
+	if (IsTokenRotationInFlight() || HeldConsentFlow.IsSet())
 		return;
 
 	DispatchRefresh();
@@ -1083,8 +1281,8 @@ void UCrowdyAuthentication::RecoverExpiredAppToken()
 	}
 
 	// The server can emit TOKEN_EXPIRED on every in-flight packet; only one re-mint
-	// should be outstanding at a time.
-	if (IsTokenRotationInFlight())
+	// should be outstanding at a time. A flow held for consent would be refused again.
+	if (IsTokenRotationInFlight() || HeldConsentFlow.IsSet())
 		return;
 
 	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log, TEXT("[CrowdyAuth] Recovering expired app token (re-mint)."));
@@ -1281,6 +1479,8 @@ bool UCrowdyAuthentication::RestoreSession(FOnAuthSuccess OnSuccess, FOnAuthErro
 	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
 		TEXT("[CrowdyAuth] Restoring session. UserID=%lld"), Save->UserID);
 
+	FailHeldConsentFlow(HeldFlowSupersededMessage);
+
 	// Restore re-mints a fresh app token from the persisted session token, then the
 	// SDK requests UDP access, the same path as a fresh sign-in.
 	BeginMintPipeline(Save->SessionToken, Save->SessionGameTokenID, Save->UserID, EAuthFlow::Restore, OnSuccess, OnError);
@@ -1299,6 +1499,9 @@ void UCrowdyAuthentication::ClearSavedSession()
 	{
 		UGameplayStatics::DeleteGameInSlot(LegacySlot, AuthUserIndex);
 	}
+
+	// Last, so a handler that signs in again finds the credential already gone.
+	FailHeldConsentFlow(TEXT("Signed out before the terms and the age confirmation were accepted."));
 }
 
 void UCrowdyAuthentication::SaveSession(const FString& SessionToken, int64 SessionGameTokenID, int64 UserID) const

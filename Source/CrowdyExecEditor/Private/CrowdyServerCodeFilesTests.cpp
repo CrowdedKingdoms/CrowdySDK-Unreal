@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "CrowdyServerCodeFiles.h"
+#include "CrowdyServerObjectDefinition.h"
 #include "HAL/FileManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
@@ -205,6 +206,66 @@ bool FCrowdyServerCodeFilesWatchedFieldsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("the second missing name, in order"), Missing[1].ToString(), FString(TEXT("Old")));
 	}
 	TestEqual(TEXT("with no State every watched name is missing"), CrowdyServerCodeFiles::FindMissingFields(Listed, TArray<FName>()).Num(), 4);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerCodeFilesSetFieldAudienceTest, "CrowdySDK.CrowdyExecEditor.ServerCodeFilesSetFieldAudience", CrowdyServerCodeFilesTest::TestFlags)
+bool FCrowdyServerCodeFilesSetFieldAudienceTest::RunTest(const FString& Parameters)
+{
+	using CrowdyServerCodeFiles::GetFieldAudience;
+	using CrowdyServerCodeFiles::SetFieldAudience;
+	TArray<FName> Watched;
+	TArray<FName> Owner;
+	TArray<FName> Team;
+	const FName Health(TEXT("Health"));
+	TestFalse(TEXT("a variable in no list is Server Only"), GetFieldAudience(Watched, Owner, Team, Health).IsSet());
+	TestFalse(TEXT("Server Only for a variable already server only changes nothing"), SetFieldAudience(Watched, Owner, Team, Health, TOptional<ECrowdyServerFieldAudience>()));
+
+	TestTrue(TEXT("Server Only to Everyone changes the lists"), SetFieldAudience(Watched, Owner, Team, Health, ECrowdyServerFieldAudience::Everyone));
+	TestTrue(TEXT("and reads back as Everyone"), GetFieldAudience(Watched, Owner, Team, Health) == ECrowdyServerFieldAudience::Everyone);
+	TestTrue(TEXT("it is only in Visible to Players"), Watched.Contains(Health) && Owner.IsEmpty() && Team.IsEmpty());
+	TestFalse(TEXT("Everyone again changes nothing"), SetFieldAudience(Watched, Owner, Team, Health, ECrowdyServerFieldAudience::Everyone));
+
+	TestTrue(TEXT("Everyone to Owner changes the lists"), SetFieldAudience(Watched, Owner, Team, Health, ECrowdyServerFieldAudience::Owner));
+	TestTrue(TEXT("and reads back as Owner"), GetFieldAudience(Watched, Owner, Team, Health) == ECrowdyServerFieldAudience::Owner);
+	TestTrue(TEXT("it is in Visible to Players and Visible to Owner Only"), Watched.Contains(Health) && Owner.Contains(Health) && Team.IsEmpty());
+	TestFalse(TEXT("Owner again changes nothing"), SetFieldAudience(Watched, Owner, Team, Health, ECrowdyServerFieldAudience::Owner));
+
+	TestTrue(TEXT("Owner to Team changes the lists"), SetFieldAudience(Watched, Owner, Team, Health, ECrowdyServerFieldAudience::Team));
+	TestTrue(TEXT("and reads back as Team"), GetFieldAudience(Watched, Owner, Team, Health) == ECrowdyServerFieldAudience::Team);
+	TestTrue(TEXT("it left Visible to Owner Only"), Watched.Contains(Health) && Owner.IsEmpty() && Team.Contains(Health));
+
+	TestTrue(TEXT("Team to Server Only changes the lists"), SetFieldAudience(Watched, Owner, Team, Health, TOptional<ECrowdyServerFieldAudience>()));
+	TestFalse(TEXT("and reads back as Server Only"), GetFieldAudience(Watched, Owner, Team, Health).IsSet());
+	TestTrue(TEXT("it is in no list"), Watched.IsEmpty() && Owner.IsEmpty() && Team.IsEmpty());
+
+	Watched = {TEXT("HEALTH")};
+	Owner = {TEXT("health")};
+	TestTrue(TEXT("the spelling does not matter"), GetFieldAudience(Watched, Owner, Team, Health) == ECrowdyServerFieldAudience::Owner);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerCodeFilesSetVisibleToPlayersTest, "CrowdySDK.CrowdyExecEditor.ServerCodeFilesSetVisibleToPlayers", CrowdyServerCodeFilesTest::TestFlags)
+bool FCrowdyServerCodeFilesSetVisibleToPlayersTest::RunTest(const FString& Parameters)
+{
+	using CrowdyServerCodeFiles::SetVisibleToPlayers;
+	const FName Gold(TEXT("Gold"));
+	TArray<FName> Watched = {Gold};
+	TArray<FName> Owner = {Gold};
+	TArray<FName> Team;
+	TestFalse(TEXT("showing a variable already shown changes nothing"), SetVisibleToPlayers(Watched, Owner, Team, Gold, true));
+	TestTrue(TEXT("and keeps its audience"), Owner.Contains(Gold));
+
+	TestTrue(TEXT("hiding an Owner Only variable changes the lists"), SetVisibleToPlayers(Watched, Owner, Team, Gold, false));
+	TestTrue(TEXT("it leaves every list, so no hidden audience is left behind"), Watched.IsEmpty() && Owner.IsEmpty() && Team.IsEmpty());
+
+	Watched = {Gold};
+	Team = {Gold};
+	TestTrue(TEXT("hiding a Team Only variable changes the lists"), SetVisibleToPlayers(Watched, Owner, Team, Gold, false));
+	TestTrue(TEXT("it leaves Team Only too"), Watched.IsEmpty() && Team.IsEmpty());
+
+	TestTrue(TEXT("showing a hidden variable changes the lists"), SetVisibleToPlayers(Watched, Owner, Team, Gold, true));
+	TestTrue(TEXT("it comes back for everyone"), Watched.Contains(Gold) && Owner.IsEmpty() && Team.IsEmpty());
 	return true;
 }
 

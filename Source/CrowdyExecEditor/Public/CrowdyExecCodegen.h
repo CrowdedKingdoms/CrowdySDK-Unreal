@@ -28,7 +28,7 @@ namespace CrowdyExecCodegen
 		/** The crate's name, which is the type's name on the server. */
 		FString Name;
 		TArray<FGeneratedFile> Files;
-		/** The state struct the logic file implements Functions on. */
+		/** What the logic file implements Functions on: the state struct, or Records for a type holding a record per entity. */
 		FString StateName;
 		/** Every function the Functions trait asks for, in its order. */
 		TArray<FLogicStub> Stubs;
@@ -77,6 +77,9 @@ namespace CrowdyExecCodegen
 
 	/** The path of the definition asset a crate was generated from, as its Cargo.toml records it under [package.metadata.crowdy]; empty when the file or the entry is missing, as for a definition with no asset. */
 	CROWDYEXECEDITOR_API FString ReadCrateDefinition(const FString& Directory);
+
+	/** True when Directory has a Cargo.toml and the SDK generated the crate: it records a definition, or its src/lib.rs or src/types.rs opens with the generator's header. False for a missing or empty folder. */
+	CROWDYEXECEDITOR_API bool IsGeneratedCrateFolder(const FString& Directory);
 
 	/** CargoText without its [package.metadata.crowdy] section, which the platform's build refuses: the Cargo.toml a deploy sends. */
 	CROWDYEXECEDITOR_API FString WithoutCrateDefinition(const FString& CargoText);

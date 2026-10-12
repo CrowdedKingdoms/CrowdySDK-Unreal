@@ -233,16 +233,11 @@ namespace
 		}
 	};
 
-	// Whether a completed request did what it was asked. Every result type carries bOk except these two.
+	// Whether a completed request did what it was asked. Every result type carries bOk except the JSON one.
 	template <typename ResultType>
 	bool DidRequestSucceed(const ResultType& Result)
 	{
 		return Result.bOk;
-	}
-
-	bool DidRequestSucceed(const FCrowdyCppInvokeResult& Result)
-	{
-		return Result.bTransportOk && Result.bSuccess;
 	}
 
 	bool DidRequestSucceed(const FCrowdyCppJsonResult& Result)
@@ -250,16 +245,11 @@ namespace
 		return Result.bTransportOk;
 	}
 
-	// The server's own code on a result that carries one: an invoke's in-band fault has no GraphQL error to read it from.
+	// The server's own code on a result that carries one.
 	template <typename ResultType>
 	FString ResultFailureCode(const ResultType&)
 	{
 		return FString();
-	}
-
-	FString ResultFailureCode(const FCrowdyCppInvokeResult& Result)
-	{
-		return Result.FaultCode;
 	}
 
 	FString ResultFailureCode(const FCrowdyCppJsonResult& Result)
@@ -367,14 +357,6 @@ namespace
 		Retry->Kind = Kind;
 		return Retry;
 	}
-
-	// What ListContainers hands back, so its two-value completion can ride the same one-result plumbing as every
-	// other call and therefore be canceled the same way.
-	struct FContainerListResult
-	{
-		bool bOk = false;
-		TArray<TSharedPtr<FJsonObject>> Containers;
-	};
 
 	// Defined here rather than with the other response helpers below because FImpl uses it, and FImpl is written
 	// before them.
@@ -938,9 +920,8 @@ namespace
 		return Out;
 	}
 
-	// Convert a UE JSON value tree to a CrowdyCPP JVal (the GraphQL variable-building type). Used to carry
-	// FCrowdyGameApiCodec::BuildXVariables output across the boundary verbatim, so the request CrowdyCPP sends
-	// carries exactly the variables the codec produced. A whole-valued number becomes an integer so
+	// Convert a UE JSON value tree to a CrowdyCPP JVal (the GraphQL variable-building type), carrying the variables
+	// across the boundary verbatim. A whole-valued number becomes an integer so
 	// GraphQL Int fields (e.g. traverse depth) serialize without a decimal point, matching UE's own JSON writer.
 	crowdy::graphql::JVal JsonValueToJVal(const TSharedPtr<FJsonValue>& Value)
 	{
@@ -1235,6 +1216,7 @@ namespace
 		if (!Out.ok())
 		{
 			Result.ErrorMessage = OutcomeErrorMessage(Out);
+			Result.ErrorCode = OutcomeErrorCode(Out);
 			return Result;
 		}
 		if (!Out.data.isBool())
@@ -1288,8 +1270,6 @@ namespace
 		using namespace crowdy::gen;
 		switch (Domain)
 		{
-		case ECrowdyCppApiDomain::GameModel:
-		case ECrowdyCppApiDomain::Compute:       return std::string_view();
 		case ECrowdyCppApiDomain::Auth:          return auth::documentFor(Op);
 		case ECrowdyCppApiDomain::Users:         return users::documentFor(Op);
 		case ECrowdyCppApiDomain::Apps:          return apps::documentFor(Op);
@@ -1375,22 +1355,6 @@ namespace
 			break;
 		}
 		return TOptional<ECrowdyCppTokenPlane>();
-	}
-
-	bool IsGameModelDomain(ECrowdyCppApiDomain Domain)
-	{
-		return Domain == ECrowdyCppApiDomain::GameModel || Domain == ECrowdyCppApiDomain::Compute;
-	}
-
-	// Deliver a Game Model call's permanent refusal inline: nothing is sent, queued for retry, or left pending.
-	template <typename ResultType>
-	FCrowdyCppRequestHandle AnswerGameModelDeprecated(const TSharedPtr<FRequestRegistry>& Registry,
-		const TCHAR* Operation, TFunction<void(ResultType)> OnDone, ResultType Refusal)
-	{
-		const TIssuedRequest<ResultType> Issued = BeginRequest<ResultType>(Registry, Operation, MoveTemp(OnDone), Refusal);
-		*Issued.FailureReason = CrowdyCppGameModelDeprecatedCode;
-		Issued.Fire(MoveTemp(Refusal));
-		return Issued.Handle;
 	}
 
 	// Construct the CrowdyCPP client, containing any construction exception at the
@@ -1676,11 +1640,6 @@ FCrowdyCppClient::~FCrowdyCppClient()
 	// delivers every request still pending as canceled, so an owner that simply drops its last reference cannot
 	// strand a caller waiting on a completion that will now never come from the server.
 	Close();
-}
-
-bool CrowdyCppIsModelRefusalCode(const FString& Code)
-{
-	return false;
 }
 
 const FString& FCrowdyCppClient::CanceledErrorMessage()
@@ -2082,49 +2041,10 @@ void FCrowdyCppClient::Poll()
 	}
 }
 
-FCrowdyCppRequestHandle FCrowdyCppClient::ReadContainerState(int64 AppId, const FString& ContainerId,
-	TFunction<void(FCrowdyCppContainerStateResult)> OnDone)
-{
-	FCrowdyCppContainerStateResult Refusal;
-	CrowdyCppSetGameModelDeprecated(Refusal);
-	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelContainerState"), MoveTemp(OnDone),
-		MoveTemp(Refusal));
-}
-
-FCrowdyCppRequestHandle FCrowdyCppClient::InvokeFunction(int64 AppId, const FString& FunctionName,
-	const FString& SelfContainerId, const FString& SessionId, const FString& ParamsJson,
-	TFunction<void(FCrowdyCppInvokeResult)> OnDone)
-{
-	FCrowdyCppInvokeResult Refusal;
-	CrowdyCppSetGameModelDeprecated(Refusal);
-	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelInvoke"), MoveTemp(OnDone),
-		MoveTemp(Refusal));
-}
-
-FCrowdyCppRequestHandle FCrowdyCppClient::ListContainers(int64 AppId, const FString& TypeName,
-	const FString& SessionId, TFunction<void(bool, TArray<TSharedPtr<FJsonObject>>)> OnDone)
-{
-	// The two-value completion rides the same one-result delivery as every other call.
-	TFunction<void(FContainerListResult)> Adapted = [OnDone = MoveTemp(OnDone)](FContainerListResult Result)
-	{
-		OnDone(Result.bOk, MoveTemp(Result.Containers));
-	};
-	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelContainers"), MoveTemp(Adapted),
-		FContainerListResult());
-}
-
 FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, const FString& OperationName,
 	const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
 	TOptional<ECrowdyCppTokenPlane> Plane)
 {
-	if (IsGameModelDomain(Domain))
-	{
-		FCrowdyCppJsonResult Refusal;
-		CrowdyCppSetGameModelDeprecated(Refusal);
-		return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, *OperationName, MoveTemp(OnDone),
-			MoveTemp(Refusal));
-	}
-
 	// Deliver exactly once across every path: the async completion, the catch below, each pre-flight rejection, and
 	// a cancellation. The async transport delivers its callback from Poll() on the game thread and every other path
 	// runs synchronously on the same thread, so the fired flag needs no lock and the OnDone can safely touch
@@ -2256,33 +2176,6 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 	};
 	Impl->SendRetryable(Retry);
 	return Issued.Handle;
-}
-
-FCrowdyCppRequestHandle FCrowdyCppClient::SeedSchema(const FString& InputJson,
-	TFunction<void(FCrowdyCppStudioOpResult)> OnDone)
-{
-	FCrowdyCppStudioOpResult Refusal;
-	CrowdyCppSetGameModelDeprecated(Refusal);
-	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelSeed"), MoveTemp(OnDone),
-		MoveTemp(Refusal));
-}
-
-FCrowdyCppRequestHandle FCrowdyCppClient::UpsertAutomation(const FString& InputJson,
-	TFunction<void(FCrowdyCppStudioOpResult)> OnDone)
-{
-	FCrowdyCppStudioOpResult Refusal;
-	CrowdyCppSetGameModelDeprecated(Refusal);
-	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelUpsertAutomation"),
-		MoveTemp(OnDone), MoveTemp(Refusal));
-}
-
-FCrowdyCppRequestHandle FCrowdyCppClient::UpsertAutomationTrigger(const FString& InputJson,
-	TFunction<void(FCrowdyCppStudioOpResult)> OnDone)
-{
-	FCrowdyCppStudioOpResult Refusal;
-	CrowdyCppSetGameModelDeprecated(Refusal);
-	return AnswerGameModelDeprecated(Impl ? Impl->Requests : nullptr, TEXT("GameModelUpsertAutomationTrigger"),
-		MoveTemp(OnDone), MoveTemp(Refusal));
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::SignInWithPassword(const FString& Email, const FString& Password,
@@ -2428,6 +2321,20 @@ FCrowdyCppRequestHandle FCrowdyCppClient::UnlinkIdentity(const FString& Identity
 			std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
 		{
 			Client.auth().unlinkIdentityAsync(IdentityIdStr, std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority,
+	TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("recordPlayerConsents"), MoveTemp(OnDone),
+		[bAcceptLegal, bAttestAgeOfMajority](crowdy::CrowdyClient& Client,
+			std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().recordPlayerConsentsAsync(bAcceptLegal, bAttestAgeOfMajority, std::move(Cb));
 		},
 		&MapBool);
 }
@@ -2885,11 +2792,7 @@ FCrowdyCppSubscriptionHandle FCrowdyCppClient::SubscribeOperation(ECrowdyCppApiD
 	const std::string_view Document = ResolveDocument(Domain, std::string(TCHAR_TO_UTF8(*OperationName)));
 
 	FString Refusal;
-	if (IsGameModelDomain(Domain))
-	{
-		Refusal = CrowdyCppGameModelDeprecatedMessage;
-	}
-	else if (Document.empty())
+	if (Document.empty())
 	{
 		// Refused without a socket rather than sent as an empty document, for the same reason RunOp refuses an
 		// unknown name: the server would reject it, and only after a round trip that told the caller nothing.

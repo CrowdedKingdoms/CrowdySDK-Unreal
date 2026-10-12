@@ -51,23 +51,6 @@ namespace CrowdyStudioRegistry
 	CROWDYSTUDIO_API void SetRebuildHook(TFunction<void(TFunction<void()> /*OnComplete*/)> Hook);
 	CROWDYSTUDIO_API bool HasRebuildHook();
 	CROWDYSTUDIO_API void RequestRebuild(TFunction<void()> OnComplete = nullptr);
-
-	// A Blueprint marked as a Game Model container (its persisted CrowdyContainerBlueprintExtension) that has
-	// not been opened this editor session is not loaded, so the schema sync's class iteration would miss it.
-	// The load lives in the editor-only baker (UCrowdyRegistryBaker, in CrowdySDKEditor); this hook lets that module
-	// supply it without CrowdyStudio depending back on it (which would be a module cycle), mirroring SetRebuildHook
-	// above.
-	//
-	// ASYNCHRONOUS, and OnComplete is what carries the plan forward: the assets are streamed rather than force-loaded,
-	// because the synchronous form held the game thread for seconds on a real project behind a modal dialog. Like
-	// RequestRebuild, OnComplete always fires, including when no hook is set (the sync then proceeds with only the
-	// containers already loaded, which is a smaller answer rather than a wrong one) and when the request is refused.
-	CROWDYSTUDIO_API void SetLoadContainerAssetsHook(TFunction<void(TFunction<void()> /*OnComplete*/)> Hook);
-	CROWDYSTUDIO_API void RequestLoadContainerAssets(TFunction<void()> OnComplete);
-	// A copy of the installed hook, so a caller that swaps it can put the real one back. The always-completes contract
-	// above is only testable by removing the hook, and a test that left the editor module's hook uninstalled would
-	// quietly disable unopened-container discovery for everything that ran after it.
-	CROWDYSTUDIO_API TFunction<void(TFunction<void()>)> GetLoadContainerAssetsHook();
 }
 
 namespace CrowdyStudioExtraPages

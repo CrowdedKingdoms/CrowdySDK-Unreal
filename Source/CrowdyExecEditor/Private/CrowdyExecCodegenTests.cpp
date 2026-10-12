@@ -331,7 +331,7 @@ namespace CrowdyCodegenTest
 		return Bank;
 	}
 
-	/** ck_exec_rules: members kept by the object, a ranged and cooled-down input, timers, both events and Can Call. */
+	/** ck_exec_rules: members kept by the object, a ranged and cooled-down input, a function needing a feature, timers, both events and Can Call. */
 	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeRulesDefinition(UCrowdyServerObjectDefinition& Bank)
 	{
 		TStrongObjectPtr<UCrowdyServerObjectDefinition> Rules = MakeListDefinition(TEXT("ck_exec_rules"), {TEXT("Gold"), TEXT("Secret")});
@@ -340,6 +340,9 @@ namespace CrowdyCodegenTest
 		Rules->MaxMembers = 5;
 		AddTimer(*Rules, TEXT("EndMatch"), ECrowdyServerTimerRepeat::After, 10.f, false);
 		AddTimer(*Rules, TEXT("Tick"), ECrowdyServerTimerRepeat::Every, 5.f, true);
+		AddTimer(*Rules, TEXT("Restock"), ECrowdyServerTimerRepeat::Schedule, 0.f, true);
+		Rules->Timers.Last().Cron = TEXT("0 */6 * * *");
+		Rules->Timers.Last().UtcOffsetMinutes = 60;
 		Rules->bOnPlayerJoined = true;
 		Rules->bOnPlayerLeft = true;
 		FCrowdyServerFunction& Deposit = AddPlainFunction(*Rules, TEXT("Deposit"), ECrowdyServerFunctionCaller::Members);
@@ -351,6 +354,9 @@ namespace CrowdyCodegenTest
 		Deposit.ParamsList.SetValueInt32(TEXT("Amount"), 1);
 		Deposit.CooldownSeconds = 2.f;
 		AddPlainFunction(*Rules, TEXT("Start"), ECrowdyServerFunctionCaller::Leader);
+		FCrowdyServerFunction& Claim = AddPlainFunction(*Rules, TEXT("Claim"), ECrowdyServerFunctionCaller::Members);
+		Claim.RequiredFeature = TEXT("vip");
+		Claim.CooldownSeconds = 3.f;
 		Rules->CanCall = {&Bank};
 		return Rules;
 	}
@@ -1071,8 +1077,9 @@ bool FCrowdyExecCodegenRulesCrateTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a timer that cannot start gives the roster back too"), HasText(Lib, TEXT("                self.state = before;\n                self.roster = before_roster;\n                return Err(error);\n")));
 	TestTrue(TEXT("an automatic timer starts in spawn"), HasText(Lib, TEXT("        timers::arm(ctx, \"Tick\")?;\n")));
 	TestFalse(TEXT("a timer started by server code does not start in spawn"), HasText(Lib, TEXT("timers::arm(ctx, \"EndMatch\")?;")));
-	TestTrue(TEXT("server code starts only the definition's timers"), HasText(Lib, TEXT("if !matches!(name, \"EndMatch\" | \"Tick\") || !queue(name, true) {")));
-	TestTrue(TEXT("server code names them by constant"), HasText(Lib, TEXT("    pub const END_MATCH: &str = \"EndMatch\";\n    pub const TICK: &str = \"Tick\";\n")));
+	TestTrue(TEXT("server code starts only the definition's timers"), HasText(Lib, TEXT("if !matches!(name, \"EndMatch\" | \"Tick\" | \"Restock\") || !queue(name, true) {")));
+	TestTrue(TEXT("server code names them by constant"), HasText(Lib, TEXT("    pub const END_MATCH: &str = \"EndMatch\";\n    pub const TICK: &str = \"Tick\";\n    pub const RESTOCK: &str = \"Restock\";\n")));
+	TestTrue(TEXT("a schedule arms its next run from its cron and offset"), HasText(Lib, TEXT("\"Restock\" => ctx.timer_cron(\"Restock\", &ckx_sdk::cron::Cron::parse(\"0 */6 * * *\")?.with_utc_offset(60)?),")));
 	TestTrue(TEXT("an After timer fires once"), HasText(Lib, TEXT("\"EndMatch\" => ctx.timer_after(\"EndMatch\", 10000),")));
 	TestTrue(TEXT("an Every timer repeats"), HasText(Lib, TEXT("\"Tick\" => ctx.timer_every(\"Tick\", 5000),")));
 	TestTrue(TEXT("on_timer runs a timer's function"), HasText(Lib, TEXT("\"EndMatch\" => Functions::end_match(&mut self.state, ctx),")));
@@ -1194,7 +1201,7 @@ bool FCrowdyExecCodegenStructRangeTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	// FCrowdyServerTimer's Seconds carries meta=(ClampMin = 0.01).
+	// FCrowdyServerTimer's Seconds carries meta=(ClampMin = 0.01) and UtcOffsetMinutes ClampMin and ClampMax.
 	FCrowdyServerFunction& Arm = AddPlainFunction(*Definition, TEXT("Arm"), Players);
 	Arm.Params = FCrowdyServerTimer::StaticStruct();
 	FString Lib;
@@ -1203,7 +1210,8 @@ bool FCrowdyExecCodegenStructRangeTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TestTrue(TEXT("a C++ input's ClampMin is checked"), HasText(Lib, TEXT("                if params.Seconds < 0.01 {\n                    return Err(Error::new(\"bad_params: Seconds must be at least 0.01\"));\n")));
-	TestEqual(TEXT("only the ranged input is checked"), CountText(Lib, TEXT("return Err(Error::new(\"bad_params: ")), 1);
+	TestTrue(TEXT("a C++ input's ClampMin and ClampMax are checked together"), HasText(Lib, TEXT("bad_params: UtcOffsetMinutes must be")));
+	TestEqual(TEXT("only the ranged inputs are checked"), CountText(Lib, TEXT("return Err(Error::new(\"bad_params: ")), 2);
 	return true;
 }
 
@@ -1309,7 +1317,9 @@ bool FCrowdyExecCodegenTimersArmFirstTest::RunTest(const FString& Parameters)
 		HasText(Timed, TEXT("            for armed in &starts[..index] {\n                ctx.cancel_timer(armed);\n            }\n")));
 	TestTrue(TEXT("and refuses the dispatch naming the timer and the reason"),
 		HasText(Timed, TEXT("return Err(Error::new(&format!(\"the change was not kept: timer {name} could not start: {error}\")));")));
-	TestFalse(TEXT("a timer that cannot start is not only logged"), HasText(Timed, TEXT("Level::Warn")));
+	const FString LoadWarning = TEXT("let _ = ctx.log(Level::Warn, &format!(\"timer {name} could not be armed after a deploy changed it: {error}\"));");
+	TestTrue(TEXT("a load that cannot arm a changed timer logs it"), HasText(Timed, *LoadWarning));
+	TestFalse(TEXT("a timer that cannot start is not only logged"), HasText(Timed.Replace(*LoadWarning, TEXT("")), TEXT("Level::Warn")));
 	TestTrue(TEXT("the last start or stop queued for a timer counts"), HasText(Timed, TEXT("            last.retain(|(earlier, _)| *earlier != name);\n            last.push((name, start));\n")));
 	TestTrue(TEXT("a timer that cannot start is in the finish comment"), HasText(Timed, TEXT("a timer that cannot start leaves the state as it was")));
 	TestFalse(TEXT("but not without timers"), HasText(Plain, TEXT("a timer that cannot start")));
@@ -1547,11 +1557,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenKindsCrateTest, "CrowdySDK.Cr
 bool FCrowdyExecCodegenKindsCrateTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyCodegenTest;
-	// ck_exec_kinds: kinds checked inside a list, an optional and a map, watched and taken and given by Echo.
+	// ck_exec_kinds: kinds checked inside a list, a set, an optional and a map, watched and taken and given by Echo.
 	TStrongObjectPtr<UCrowdyServerObjectDefinition> Kinds(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
 	Kinds->TypeName = TEXT("ck_exec_kinds");
 	Kinds->State = FCrowdyExecTestKinds::StaticStruct();
-	Kinds->WatchedFields = {TEXT("Names"), TEXT("MaybeId"), TEXT("SeenAt")};
+	Kinds->WatchedFields = {TEXT("Names"), TEXT("MaybeId"), TEXT("SeenAt"), TEXT("Tags")};
 	FCrowdyServerFunction& Echo = AddPlainFunction(*Kinds, TEXT("Echo"), Players);
 	Echo.Params = FCrowdyExecTestKinds::StaticStruct();
 	Echo.Reply = FCrowdyExecTestKinds::StaticStruct();
@@ -1568,6 +1578,126 @@ bool FCrowdyExecCodegenKindsCrateTest::RunTest(const FString& Parameters)
 		HasText(Lib, TEXT("        Wire::check(&self.MaybeId).and_then(|()| self.MaybeId.as_ref().map_or(Ok(()), |v| check_guid(&v)))?;\n")));
 	TestTrue(TEXT("a map's name keys and date values are checked, then its keys as Unreal names"),
 		HasText(Lib, TEXT("        Wire::check(&self.SeenAt).and_then(|()| self.SeenAt.iter().try_for_each(|(k, v)| check_name(&k).and_then(|()| check_date(&v))).and_then(|()| check_name_keys(self.SeenAt.keys())))?;\n")));
+	TestTrue(TEXT("a set's names are checked one by one, then as Unreal names"),
+		HasText(Lib, TEXT("        Wire::check(&self.Tags).and_then(|()| self.Tags.iter().try_for_each(|v| check_name(&v)).and_then(|()| check_name_keys(self.Tags.iter())))?;\n")));
+	return true;
+}
+
+namespace CrowdyCodegenTest
+{
+	/** ck_exec_records: a record per entity with Health, Label and Rows for everyone, Gold for its owner, Ammo for its team and a server-only Secret; Hit for players and a Regen timer. */
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeRecordsDefinition()
+	{
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Records(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
+		Records->TypeName = TEXT("ck_exec_records");
+		Records->Holds = ECrowdyServerObjectHolds::RecordPerEntity;
+		Records->State = FCrowdyExecTestRecord::StaticStruct();
+		Records->WatchedFields = {TEXT("Health"), TEXT("Gold"), TEXT("Ammo"), TEXT("Label"), TEXT("Rows")};
+		Records->OwnerFields = {TEXT("Gold")};
+		Records->TeamFields = {TEXT("Ammo")};
+		Records->MaxRecords = 8;
+		Records->PushIntervalMs = 250;
+		FCrowdyServerFunction& Hit = AddPlainFunction(*Records, TEXT("Hit"), Players);
+		Hit.Params = FCrowdyExecTestRecordHit::StaticStruct();
+		AddTimer(*Records, TEXT("Regen"), ECrowdyServerTimerRepeat::Every, 5.f, true);
+		return Records;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenRecordsCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenRecordsMatchLocalCheckCrate", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenRecordsCrateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Records = MakeRecordsDefinition();
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Records, Crate))
+	{
+		return false;
+	}
+	CheckLocalCheckCrate(*this, Crate, TEXT("ck_exec_records"));
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	const FString Logic = GetFileText(*this, Crate, LogicPath);
+	TestEqualSensitive(TEXT("logic.rs implements Functions on the records"), Crate.StateName, FString(TEXT("Records")));
+	TestTrue(TEXT("and the stub says so"), HasText(Logic, TEXT("impl Functions for Records {\n")));
+	TestEqualSensitive(TEXT("the stub lacks nothing"), FString::Join(CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Leftover, TEXT(",")), FString());
+	TestEqual(TEXT("nor misses anything"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Missing.Num(), 0);
+	TestTrue(TEXT("a records type has its own contract"), HasText(Lib, TEXT("\nconst CONTRACT: u64 = 2;\n")));
+	TestTrue(TEXT("Max Records reaches the glue"), HasText(Lib, TEXT("\nconst MAX_RECORDS: usize = 8;\n")));
+	TestTrue(TEXT("and Send Changes Every"), HasText(Lib, TEXT("\nconst PUSH_INTERVAL_MS: u64 = 250;\n")));
+	TestTrue(TEXT("the send has its reserved timer"), HasText(Lib, TEXT("\nconst FLUSH_TIMER: &str = \"crowdy_flush\";\n")));
+	TestTrue(TEXT("which runs before the definition's timers"),
+		HasText(Lib, TEXT("            if name == FLUSH_TIMER {\n                return self.flush(ctx);\n            }\n            timers::open();\n")));
+	TestTrue(TEXT("and which logic.rs cannot stop"), HasText(Lib, TEXT("    pub fn stop(ctx: &Ctx, name: &str) -> bool {\n        // The send's timer belongs to the glue, so a stop of it is ignored.\n        if name == FLUSH_TIMER {\n            return false;\n        }\n")));
+	TestTrue(TEXT("the records live in a module logic.rs reaches only through their pub functions"),
+		HasText(Lib, TEXT("\npub use records::{Records, ServerObject};\n")) && HasText(Lib, TEXT("\nmod records {\n    use super::*;\n")));
+	TestFalse(TEXT("no dispatch copies the whole state"), HasText(Lib, TEXT("Clone::clone(&self.state)")));
+	TestTrue(TEXT("a function gets the records and ends through the journal"),
+		HasText(Lib, TEXT("let result = Functions::hit(&mut self.records, ctx, &call, params).map(|()| vec![0xc0]);\n                    self.finish(ctx, result)\n")));
+	TestTrue(TEXT("a push carries the Everyone values"), HasText(Lib, TEXT("            put(out, elements, \"Health\", &now.state.Health)?;\n"))
+		&& HasText(Lib, TEXT("            put(out, elements, \"Label\", &now.state.Label)?;\n")) && HasText(Lib, TEXT("            put(out, elements, \"Rows\", &now.state.Rows)?;\n")));
+	TestFalse(TEXT("but never an Owner Only, Team Only or server-only one"),
+		HasText(Lib, TEXT("&now.state.Gold)")) || HasText(Lib, TEXT("&now.state.Ammo)")) || HasText(Lib, TEXT("\"Secret\"")));
+	TestTrue(TEXT("a read gives Gold only to its owner"), HasText(Lib, TEXT("        if owner {\n            put(out, elements, \"Gold\", &entry.state.Gold)?;\n        }\n")));
+	TestTrue(TEXT("and Ammo only to its team"), HasText(Lib, TEXT("        if team {\n            put(out, elements, \"Ammo\", &entry.state.Ammo)?;\n        }\n")));
+	TestTrue(TEXT("a record over a message's element budget is refused"), HasText(Lib, TEXT("if elements > MAX_MESSAGE_ELEMENTS {\n")));
+	TestTrue(TEXT("a load arms the send that announces its epoch"), HasText(Lib, TEXT("match ctx.timer_after(FLUSH_TIMER, PUSH_INTERVAL_MS) {\n")));
+	TestTrue(TEXT("a change to either raises the restricted seq"),
+		HasText(Lib, TEXT("before.owner != now.owner || before.team != now.team || before.state.Gold != now.state.Gold || before.state.Ammo != now.state.Ammo")));
+	TestTrue(TEXT("a seed is refused"), HasText(Lib, TEXT("bad_seed: a Server Object holding a record per entity starts with no records")));
+	TestTrue(TEXT("a push carries the restricted seq"), HasText(Lib, TEXT("            write_map(&mut out, 6);\n            write_str(&mut out, \"epoch\");\n"))
+		&& HasText(Lib, TEXT("            write_str(&mut out, \"rseq\");\n            write_uint(&mut out, self.rseq);\n            write_str(&mut out, \"records\");\n            write_map(&mut out, count);\n            out.extend_from_slice(records);\n")));
+	TestTrue(TEXT("a team is the team of a record the viewer owns here"), HasText(Lib, TEXT("let team = self.records.owned_by(player).next()")));
+	TestFalse(TEXT("so the platform is never asked about teams"), HasText(Lib, TEXT("check_permission")));
+	TestTrue(TEXT("a Label or Rows can be refused or large, so a touched record is encoded and measured"), HasText(Lib, TEXT("read_record(&mut scratch, &mut elements, id, entry, true, true)?;")));
+	TestFalse(TEXT("changes do not gather every changed id before paging"), HasText(Lib, TEXT("let changed: BTreeSet<&str>")));
+
+	// Each change below follows a good bake, so the generator's own refusal is what is seen.
+	FString Error;
+	CrowdyExecCodegen::FGeneratedCrate Refused;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Flush = MakeRecordsDefinition();
+	if (!BakeDefinition(*this, *Flush))
+	{
+		return false;
+	}
+	AddTimer(*Flush, TEXT("crowdy_flush"), ECrowdyServerTimerRepeat::Every, 1.f, true);
+	TestFalse(TEXT("a timer named crowdy_flush does not generate"), CrowdyExecCodegen::Generate(*Flush, Refused, Error));
+	TestEqualSensitive(TEXT("and the refusal names it"), Error, FString(TEXT("Timer crowdy_flush: 'crowdy_flush' is reserved in the server code (Rust); rename the timer")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Members = MakeRecordsDefinition();
+	if (!BakeDefinition(*this, *Members))
+	{
+		return false;
+	}
+	Members->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	TestFalse(TEXT("members do not generate for records"), CrowdyExecCodegen::Generate(*Members, Refused, Error));
+	TestEqualSensitive(TEXT("and the refusal says why"), Error, FString(TEXT("A Record per Entity cannot use Members From; each record carries its own owner and team")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenRecordsCrowdyTeamCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenRecordsOnCrowdyTeamsMatchLocalCheckCrate", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenRecordsCrowdyTeamCrateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	// ck_exec_records_team: the same records whose teams are Crowdy Teams, watching only Health, Gold and Ammo.
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Records = MakeRecordsDefinition();
+	Records->TypeName = TEXT("ck_exec_records_team");
+	Records->WatchedFields = {TEXT("Health"), TEXT("Gold"), TEXT("Ammo")};
+	Records->TeamFrom = ECrowdyServerTeamSource::CrowdyTeam;
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Records, Crate))
+	{
+		return false;
+	}
+	CheckLocalCheckCrate(*this, Crate, TEXT("ck_exec_records_team"));
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	TestTrue(TEXT("membership of a record's team is the platform's answer"),
+		HasText(Lib, TEXT("viewer.ctx.players().check_permission(viewer.player, team, None)")));
+	TestTrue(TEXT("kept for the rest of the call"), HasText(Lib, TEXT("viewer.teams.insert(entry.team.clone(), member);")));
+	TestTrue(TEXT("the owner always sees its record's Team Only values"), HasText(Lib, TEXT("        if owner || entry.team.is_empty() {\n            return Ok((owner, owner));\n")));
+	TestTrue(TEXT("a team must be a Crowdy Team id"), HasText(Lib, TEXT("bad_record: a team must be a Crowdy Team id in decimal digits, or empty for none")));
+	TestFalse(TEXT("not the team of a record the viewer owns here"), HasText(Lib, TEXT("owned_by(player).next()")));
+	TestTrue(TEXT("watched numbers alone cannot be refused, so a touched record is not encoded again"),
+		HasText(Lib, TEXT("    fn check_touched(&self) -> Result<()> {\n            Ok(())\n        }\n")) && !HasText(Lib, TEXT("read_record(&mut scratch")));
 	return true;
 }
 
@@ -1612,6 +1742,62 @@ bool FCrowdyExecCodegenCrateDefinitionTest::RunTest(const FString& Parameters)
 	}
 	TestFalse(TEXT("a definition with no asset records none, so the golden crates stay the same"),
 		HasText(GetFileText(*this, FixtureCrate, CargoPath), TEXT("[package.metadata.crowdy]")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenGeneratedFolderTest, "CrowdySDK.CrowdyExecEditor.CodegenRecognizesItsOwnCrateFolder", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenGeneratedFolderTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	TArray<FString> Written;
+	FString Error;
+
+	UPackage* Package = CreatePackage(TEXT("/Temp/CrowdyExecCodegenTests/DA_OwnFolder"));
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> Tagged(NewObject<UCrowdyServerObjectDefinition>(Package, NAME_None, RF_Transient));
+	Tagged->TypeName = TEXT("ck_exec_own_folder");
+	Tagged->StateForm = ECrowdyServerValuesForm::List;
+	Tagged->StateList.AddProperty(TEXT("Gold"), EPropertyBagPropertyType::Int32);
+	CrowdyExecCodegen::FGeneratedCrate TaggedCrate;
+	FTempFolder WithRecord;
+	if (!GenerateCrate(*this, *Tagged, TaggedCrate) || !TestTrue(TEXT("the crate with a record is written"), CrowdyExecCodegen::WriteCrate(TaggedCrate, WithRecord.Path, Written, Error)))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a generated crate that records its definition is the SDK's"), CrowdyExecCodegen::IsGeneratedCrateFolder(WithRecord.Path));
+	IFileManager::Get().Delete(*FPaths::Combine(WithRecord.Path, LibPath));
+	IFileManager::Get().Delete(*FPaths::Combine(WithRecord.Path, TypesPath));
+	TestTrue(TEXT("the record alone is enough"), CrowdyExecCodegen::IsGeneratedCrateFolder(WithRecord.Path));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Fixture = MakeDefinition(*this, FixtureFunctions());
+	CrowdyExecCodegen::FGeneratedCrate FixtureCrate;
+	FTempFolder OldShape;
+	if (!Fixture || !GenerateCrate(*this, *Fixture, FixtureCrate) || !TestTrue(TEXT("the crate without a record is written"), CrowdyExecCodegen::WriteCrate(FixtureCrate, OldShape.Path, Written, Error)))
+	{
+		return false;
+	}
+	TestFalse(TEXT("the old-shape crate records no definition"), LoadText(FPaths::Combine(OldShape.Path, CargoPath)).Contains(TEXT("[package.metadata.crowdy]")));
+	TestTrue(TEXT("a generated crate with no record is the SDK's"), CrowdyExecCodegen::IsGeneratedCrateFolder(OldShape.Path));
+	const FString OldTypes = LoadText(FPaths::Combine(OldShape.Path, TypesPath));
+	IFileManager::Get().Delete(*FPaths::Combine(OldShape.Path, TypesPath));
+	TestTrue(TEXT("its lib.rs alone is enough"), CrowdyExecCodegen::IsGeneratedCrateFolder(OldShape.Path));
+	FFileHelper::SaveStringToFile(OldTypes, *FPaths::Combine(OldShape.Path, TypesPath), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	IFileManager::Get().Delete(*FPaths::Combine(OldShape.Path, LibPath));
+	TestTrue(TEXT("its types.rs alone is enough"), CrowdyExecCodegen::IsGeneratedCrateFolder(OldShape.Path));
+	IFileManager::Get().Delete(*FPaths::Combine(OldShape.Path, CargoPath));
+	TestFalse(TEXT("generated sources without a Cargo.toml are not a crate"), CrowdyExecCodegen::IsGeneratedCrateFolder(OldShape.Path));
+
+	FTempFolder HandWritten;
+	FFileHelper::SaveStringToFile(FString(TEXT("[package]\nname = \"mine\"\nversion = \"0.1.0\"\n")), *FPaths::Combine(HandWritten.Path, CargoPath), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	FFileHelper::SaveStringToFile(FString(TEXT("// my own server code\n// not generated by anyone else\n")), *FPaths::Combine(HandWritten.Path, LibPath), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	TestFalse(TEXT("a hand-written crate is not the SDK's"), CrowdyExecCodegen::IsGeneratedCrateFolder(HandWritten.Path));
+	FFileHelper::SaveStringToFile(FString(TEXT("// mine\n// generated by the Crowdy SDK from its definition\n")), *FPaths::Combine(HandWritten.Path, TypesPath), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	TestFalse(TEXT("the marker only counts on the first line"), CrowdyExecCodegen::IsGeneratedCrateFolder(HandWritten.Path));
+
+	FTempFolder Missing;
+	TestFalse(TEXT("a folder that does not exist is not the SDK's"), CrowdyExecCodegen::IsGeneratedCrateFolder(Missing.Path));
+	FTempFolder Empty;
+	IFileManager::Get().MakeDirectory(*Empty.Path, true);
+	TestFalse(TEXT("an empty folder is not the SDK's"), CrowdyExecCodegen::IsGeneratedCrateFolder(Empty.Path));
 	return true;
 }
 

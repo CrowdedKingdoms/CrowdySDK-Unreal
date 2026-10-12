@@ -2,6 +2,7 @@
 
 #include "CrowdyCppClient.h"
 #include "CrowdyReplicationLog.h"
+#include "Data/CrowdyRenderingBackend.h"
 #include "Engine/World.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectKey.h"
@@ -218,6 +219,20 @@ FCrowdyCppClientConfig UCrowdySDKDeveloperSettings::MakeClientConfig() const
 		Config.ApiUrl = Config.DiscoveryUrl;
 	}
 	return Config;
+}
+
+bool UCrowdySDKDeveloperSettings::ProfileDrawsCrowdRows(const UCrowdyMapProfile* Profile)
+{
+	if (!Profile) return false;
+
+	UClass* BackendClass = Profile->ActorManagement.BackendClass.Get();
+
+	// A saved asset can name a class that has since been reparented, so the derivation is checked rather than assumed from the property type.
+	if (!BackendClass || !BackendClass->IsChildOf(UCrowdyRenderingBackend::StaticClass())) return false;
+
+	const UCrowdyRenderingBackend* BackendDefaults = Cast<UCrowdyRenderingBackend>(BackendClass->GetDefaultObject());
+
+	return BackendDefaults && BackendDefaults->DrawsEntitiesAsCrowdRows();
 }
 
 const UCrowdyMapProfile* UCrowdySDKDeveloperSettings::ResolveProfileForWorld(const UWorld* World)

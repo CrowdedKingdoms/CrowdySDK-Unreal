@@ -50,9 +50,6 @@ bool FCrowdyStateDiscoveryFindsAnnotatedTest::RunTest(const FString& Parameters)
 	// The sweep also covers UCrowdyStateBadOnRepTarget, whose parameter-taking OnRep is cleared with an
 	// error by ValidateOnRepSignatures; whitelist it (one line covers both the missing and non-parameterless cases).
 	AddExpectedError(TEXT("is not a valid CrowdyOnRep notify"), EAutomationExpectedErrorFlags::Contains, 0);
-	// The sweep also covers UCrowdyGameModelDiscoveryTarget, whose DualPlane property is marked both CrowdyState
-	// and CrowdyModel; the symmetric plane-exclusivity filter drops it with an error.
-	AddExpectedError(TEXT("marked both CrowdyState and CrowdyModel"), EAutomationExpectedErrorFlags::Contains, 0);
 
 	Registry->RescanRepLayouts();
 

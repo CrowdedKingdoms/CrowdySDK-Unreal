@@ -7,8 +7,8 @@
 #include "CrowdyLog.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
-#include "GameModel/CrowdyEffectPlanCache.h"
 #include "Network/CrowdyCpp/CrowdyCppAdminClientHost.h"
+#include "UI/CrowdyStudioConsent.h"
 #include "UI/CrowdyStudioPages.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
@@ -102,8 +102,7 @@ void CrowdyStudioAuth::FetchAppChannelNames(int64 AppId, TFunction<void(const TA
 	}
 	MintHost->GetClient()->SetManagementToken(SessionToken);
 
-	MintHost->GetClient()->MintAppToken(AppId,
-		[MintHost, AppId, SettingsGameUrl, DiscoveryUrl, OnDone](FCrowdyCppAppTokenResult MintResult)
+	auto HandleMint = [MintHost, AppId, SettingsGameUrl, DiscoveryUrl, OnDone](FCrowdyCppAppTokenResult MintResult)
 		{
 			auto FailInner = [OnDone]()
 			{
@@ -200,6 +199,31 @@ void CrowdyStudioAuth::FetchAppChannelNames(int64 AppId, TFunction<void(const TA
 					}
 				},
 				ECrowdyCppTokenPlane::Game);
+		};
+
+	// A refusal for missing consent asks the player once and re-mints; every other outcome goes straight to the handler.
+	MintHost->GetClient()->MintAppToken(AppId,
+		[MintHost, AppId, OnDone, HandleMint](FCrowdyCppAppTokenResult MintResult)
+		{
+			if (!CrowdyStudioConsent::ShouldAskConsent(MintResult, false))
+			{
+				HandleMint(MoveTemp(MintResult));
+				return;
+			}
+
+			CrowdyStudioConsent::Ask(MintHost->GetClient(), [MintHost, AppId, OnDone, HandleMint](bool bRecorded)
+			{
+				if (!bRecorded)
+				{
+					UE_LOG(LogCrowdyStudio, Warning, TEXT("Channel picker: %s"), *CrowdyStudioConsent::DeclinedMessage());
+					if (OnDone)
+					{
+						OnDone(TArray<FString>());
+					}
+					return;
+				}
+				MintHost->GetClient()->MintAppToken(AppId, HandleMint);
+			});
 		});
 }
 
@@ -209,16 +233,12 @@ namespace
 	// Takes an OnComplete callback because the rebuild streams assets asynchronously.
 	TFunction<void(TFunction<void()>)> GRegistryRebuildHook;
 
-	// Set by CrowdySDKEditor at startup; invoked by the schema sync before it gathers container classes so a
-	// Blueprint marked as a container but not opened this session is resident first (and thus discoverable).
-	// Asynchronous: it streams the assets and calls back, so the plan continues from the completion.
-	TFunction<void(TFunction<void()>)> GLoadContainerAssetsHook;
-
 	// Pages other editor modules add to the console, in the order they registered.
 	TArray<FCrowdyStudioExtraPage> GExtraPages;
 
 	FName GRequestedPage;
 	FSimpleMulticastDelegate GPageRequested;
+	TMulticastDelegate<void(FName)> GPageUnregistered;
 }
 
 void CrowdyStudioExtraPages::RegisterPage(FName Id, const FText& Group, const FText& Label, const TCHAR* Icon,
@@ -228,12 +248,24 @@ void CrowdyStudioExtraPages::RegisterPage(FName Id, const FText& Group, const FT
 	{
 		return;
 	}
-	UnregisterPage(Id);
-	GExtraPages.Add({Id, Group, Label, FString(Icon ? Icon : TEXT("server")), MoveTemp(MakeWidget)});
+	FCrowdyStudioExtraPage Page{Id, Group, Label, FString(Icon ? Icon : TEXT("server")), MoveTemp(MakeWidget)};
+	// Replaced in place, so an open window's slots keep their order; its old widget is dropped until the window reopens.
+	if (FCrowdyStudioExtraPage* Existing = GExtraPages.FindByPredicate([Id](const FCrowdyStudioExtraPage& Listed) { return Listed.Id == Id; }))
+	{
+		GPageUnregistered.Broadcast(Id);
+		*Existing = MoveTemp(Page);
+		return;
+	}
+	GExtraPages.Add(MoveTemp(Page));
 }
 
 void CrowdyStudioExtraPages::UnregisterPage(FName Id)
 {
+	if (!GExtraPages.ContainsByPredicate([Id](const FCrowdyStudioExtraPage& Page) { return Page.Id == Id; }))
+	{
+		return;
+	}
+	GPageUnregistered.Broadcast(Id);
 	GExtraPages.RemoveAll([Id](const FCrowdyStudioExtraPage& Page) { return Page.Id == Id; });
 }
 
@@ -254,6 +286,11 @@ FSimpleMulticastDelegate& CrowdyStudioExtraPages::OnPageRequested()
 	return GPageRequested;
 }
 
+TMulticastDelegate<void(FName)>& CrowdyStudioExtraPages::OnPageUnregistered()
+{
+	return GPageUnregistered;
+}
+
 void CrowdyStudioRegistry::SetRebuildHook(TFunction<void(TFunction<void()>)> Hook) { GRegistryRebuildHook = MoveTemp(Hook); }
 bool CrowdyStudioRegistry::HasRebuildHook() { return static_cast<bool>(GRegistryRebuildHook); }
 void CrowdyStudioRegistry::RequestRebuild(TFunction<void()> OnComplete)
@@ -267,25 +304,6 @@ void CrowdyStudioRegistry::RequestRebuild(TFunction<void()> OnComplete)
 		UE_LOG(LogCrowdyStudio, Warning,
 			TEXT("Registry rebuild requested but no rebuild hook is set (CrowdySDKEditor not loaded?)."));
 		// Still fire OnComplete so the caller's view refresh isn't stranded.
-		if (OnComplete) OnComplete();
-	}
-}
-
-void CrowdyStudioRegistry::SetLoadContainerAssetsHook(TFunction<void(TFunction<void()>)> Hook) { GLoadContainerAssetsHook = MoveTemp(Hook); }
-TFunction<void(TFunction<void()>)> CrowdyStudioRegistry::GetLoadContainerAssetsHook() { return GLoadContainerAssetsHook; }
-void CrowdyStudioRegistry::RequestLoadContainerAssets(TFunction<void()> OnComplete)
-{
-	if (GLoadContainerAssetsHook)
-	{
-		GLoadContainerAssetsHook(MoveTemp(OnComplete));
-	}
-	else
-	{
-		// Graceful degradation: without the editor baker's hook the sync still works for containers already
-		// loaded (opened) this session; only never-opened ones are missed. Not an error, so this stays quiet.
-		UE_LOG(LogCrowdyStudio, Verbose,
-			TEXT("Container-asset load requested but no hook is set (CrowdySDKEditor not loaded?); syncing only loaded containers."));
-		// Still fire it, so the plan behind this call is never stranded on a missing hook.
 		if (OnComplete) OnComplete();
 	}
 }
@@ -317,10 +335,6 @@ void FCrowdyStudioModule::StartupModule()
 
 void FCrowdyStudioModule::ShutdownModule()
 {
-	// The schema plan's compile cache lives for the editor session, so it has to be emptied here or it would survive
-	// a module reload holding results compiled by code that is no longer loaded.
-	FCrowdyEffectPlanCache::Shutdown();
-
 #if WITH_EDITOR
 	UToolMenus::UnRegisterStartupCallback(this);
 

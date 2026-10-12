@@ -10,12 +10,17 @@
 class UCrowdyServerObject;
 class UCrowdyServerObjectDefinition;
 class UCrowdyServerObjectSubsystem;
+struct FCrowdyExecRecordUpdate;
+struct FCrowdyExecStateHeader;
 struct FCrowdyNativeExecPush;
 struct FCrowdyNativeExecReply;
 
 /** Fields names the watched values that changed, by their server names. */
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCrowdyServerValuesChanged, UCrowdyServerObject* /*Object*/, TConstArrayView<FString> /*Fields*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCrowdyServerObjectStatusChanged, UCrowdyServerObject* /*Object*/, ECrowdyServerObjectStatus /*Status*/);
+/** The ids of the records that are new or changed, then of those removed, then each changed record's changed State fields by index (see GetFieldVariableNames), in ChangedIds' order. */
+DECLARE_MULTICAST_DELEGATE_FourParams(FOnCrowdyServerRecordsChanged, UCrowdyServerObject* /*Object*/, TConstArrayView<FString> /*ChangedIds*/, TConstArrayView<FString> /*RemovedIds*/,
+	TConstArrayView<TBitArray<>> /*ChangedFields*/);
 
 /** Handlers of one variable each (the value, then Has Value for an optional) on whatever Server Object their holder follows. */
 struct CROWDYEXEC_API FCrowdyServerVariableBindings
@@ -35,6 +40,9 @@ struct CROWDYEXEC_API FCrowdyServerVariableBindings
 	int32 Num() const { return Bindings.Num(); }
 	bool HasLiveHandler() const;
 
+	/** Has the handlers read the record Id instead of the object's variables, or the variables again when bRecord is false. */
+	void ReadRecord(bool bRecord, const FString& Id);
+
 	/** The serial of the latest binding made anywhere; an announcement skips bindings made after it began. */
 	static uint64 LatestSerial();
 
@@ -53,15 +61,21 @@ private:
 
 	/** Runs Binding unless it is already running, so a handler that binds itself again does not recurse. */
 	void Run(const UCrowdyServerObject& Object, const FBinding& Binding);
-	static void Call(const UCrowdyServerObject& Object, const FBinding& Binding);
+	void Call(const UCrowdyServerObject& Object, const FBinding& Binding) const;
+
+	/** The values the handlers read: the object's variables, or the record RecordId when bReadsRecord. */
+	const FInstancedStruct* FindValues(const UCrowdyServerObject& Object) const;
 
 	TArray<FBinding> Bindings;
 	TArray<TPair<const UObject*, FName>, TInlineAllocator<2>> Running;
+	FString RecordId;
+	bool bReadsRecord = false;
 };
 
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FCrowdyServerVariablesEvent, UCrowdyServerObject*, Object, const TArray<FString>&, Changed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCrowdyServerVariablesChanged, UCrowdyServerObject*, Object, const TArray<FString>&, Changed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCrowdyServerStatusChanged, UCrowdyServerObject*, Object, ECrowdyServerObjectStatus, Status);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyServerRecordsChanged, UCrowdyServerObject*, Object, const TArray<FString>&, ChangedIds, const TArray<FString>&, RemovedIds);
 
 /**
  * One Server Object (a hub instance on the platform) as this player sees it: its watched values, kept current, and
@@ -76,7 +90,7 @@ public:
 	const UCrowdyServerObjectDefinition* GetDefinition() const { return Definition; }
 	const FString& GetInstanceId() const { return InstanceId; }
 	ECrowdyServerObjectStatus GetStatus() const { return Status; }
-	/** Why it Failed, or, while Connecting or Ready, why the last read or subscribe was refused; it is retried. */
+	/** Why it Failed, or, while Connecting or Ready, why the connection or the last read or subscribe failed; it is retried. */
 	const FString& GetFailureReason() const { return FailureReason; }
 
 	/** The watched values the server last sent, in the definition's State struct; its defaults until the first read. */
@@ -120,7 +134,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", DisplayName = "Get Status")
 	ECrowdyServerObjectStatus K2_GetStatus() const { return Status; }
 
-	/** Why it Failed, or, while Connecting or Ready, why the last read was refused; it is retried. */
+	/** Why it Failed, or, while Connecting or Ready, why the connection or the last read failed; it is retried. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", DisplayName = "Get Failure Reason")
 	FString K2_GetFailureReason() const { return FailureReason; }
 
@@ -169,6 +183,44 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
 	bool IsLeader() const { return bIsLeader; }
 
+	/** Whether the definition keeps a record per entity rather than one set of variables. */
+	bool HoldsRecords() const;
+
+	/** The record Id as the server last sent it, or null when there is none. Ids compare case-sensitively. */
+	const FCrowdyServerRecord* GetRecord(const FString& Id) const { return Records.Find(Id); }
+
+	int32 NumRecords() const { return Records.Num(); }
+
+	/** The variables, or with RecordId that record's values; null when that record is not there. */
+	const FInstancedStruct* FindValues(const FString* RecordId) const;
+
+	/** After every read, push or changes that changed or removed records. */
+	FOnCrowdyServerRecordsChanged OnRecordsChanged;
+
+	/** For each State field by index, its name as Get Server Value takes it when it is watched, else empty. */
+	void GetFieldVariableNames(TArray<FString>& OutNames) const;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Stands in for a push of records: sets Changed's values, drops Removed, makes the object Ready and announces them. */
+	void ApplyRecordsForTest(TConstArrayView<TPair<FString, FInstancedStruct>> Changed, TConstArrayView<FString> Removed);
+#endif
+
+	/** Runs Listener, naming the variables, after each change of record Id and when it is removed. When it is already current it also runs once now, naming them all. */
+	FDelegateHandle WatchRecord(const FString& Id, FOnCrowdyServerValuesChanged::FDelegate Listener);
+	void UnwatchRecord(const FString& Id, FDelegateHandle Handle);
+
+	/** For a Server Object that holds a record per entity: the record Id's variables, owner's user id and team. False when there is no such record or the object is not Ready. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", DisplayName = "Find Record")
+	bool K2_FindRecord(const FString& Id, FInstancedStruct& Values, int64& Owner, FString& Team) const;
+
+	/** For a Server Object that holds a record per entity: the id of every record, in no particular order. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
+	TArray<FString> GetRecordIds() const;
+
+	/** For a Server Object that holds a record per entity, after every change: the ids of the records that are new or changed, then of those removed. */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects", meta = (DisplayName = "On Records Changed"))
+	FCrowdyServerRecordsChanged RecordsChanged;
+
 private:
 	friend class UCrowdyServerObjectSubsystem;
 
@@ -185,6 +237,12 @@ private:
 
 	/** The connection came back after a drop: pushes sent meanwhile are lost, so read again. */
 	void HandleReconnected();
+
+	/** The signed-in player's Crowdy Teams changed: records whose teams are Crowdy Teams are read again. */
+	void HandleCrowdyTeamsChanged();
+
+	/** While Connecting, gives why the connection is not open yet as the reason; an empty Reason clears only a reason this gave. */
+	void SetConnectProblem(const FString& Reason);
 
 	/** Starts over from Connecting, for a Failed object acquired again. */
 	void Restart();
@@ -209,6 +267,8 @@ private:
 	FString FailureReason;
 	/** Whether FailureReason is a refused read's, which the next good read clears. */
 	bool bReadSetReason = false;
+	/** Whether FailureReason is a failed connect's, which the next good connect clears. */
+	bool bConnectSetReason = false;
 
 	UPROPERTY()
 	FInstancedStruct State;
@@ -267,8 +327,40 @@ private:
 	/** Subscribes to the watched values if not yet, then reads them. */
 	void Refresh();
 	void RequestRead();
+	/** Sends the read, or the next page of a read of records; schedules a refresh when there is no connection. */
+	void SendRead();
 	void HandleSubscribeDone(uint32 Attempt, const FCrowdyNativeExecReply& Reply);
 	void HandleReadDone(const FCrowdyNativeExecReply& Reply);
+	/** Clears a reason and backoff the last good read makes stale. */
+	void NoteGoodRead();
+	void HandleRecordsPage(const FCrowdyNativeExecReply& Reply);
+	/** Replaces the records with the pages read, then announces what changed. */
+	void CommitRecordsRead();
+	void ApplyRecordsPush(const TArray<uint8>& Payload);
+	/** Whether a push at Header applies now; otherwise it is stale, or a read is asked for. */
+	bool AcceptsPush(const FCrowdyExecStateHeader& Header);
+	/** Puts the Owner Only and Team Only values of Update back to Defaults, marking those that change. */
+	void ResetRestrictedFields(FCrowdyExecRecordUpdate& Update, FInstancedStruct& Defaults) const;
+	/** Asks for the restricted values that changed, at most one call in flight and one a second; a request meanwhile waits for the next. */
+	void RequestChanges();
+	void SendDueChanges();
+	void SendChangesPage();
+	void HandleChangesDone(uint32 Ticket, const FCrowdyNativeExecReply& Reply);
+	/** Fails the object for a permanent cause, as a refused read would; otherwise asks again after the refresh backoff. */
+	void HandleChangesFailure(const FCrowdyNativeExecReply& Reply);
+	/** Why a refusal will not change on retry, or empty when retrying may help. */
+	FString PermanentRefusal(const FCrowdyNativeExecReply& Reply, const TCHAR* Verb) const;
+	/** The team of the first record, by id, the signed-in player owns; empty when they own none. */
+	FString FindOwnTeam() const;
+	/** Whether a listener watches record Id, so its changed names are worth collecting. */
+	bool IsRecordWatched(const FString& Id) const;
+	/** The watched names of the fields Written marks. */
+	void CollectWrittenFields(const TBitArray<>& Written, TArray<FString>& OutFields) const;
+	/** Marks, by State field index, the watched fields that differ between Before and After, or every watched field when Before is null; true when any does. */
+	bool CollectWatchedFieldBits(const void* Before, const void* After, TBitArray<>& OutFields) const;
+	/** Announces changed and removed records, then runs the watchers of each in Watched with its changed names. ChangedFields runs parallel to Changed. */
+	void NotifyRecords(const TArray<FString>& Changed, const TArray<TBitArray<>>& ChangedFields, const TArray<FString>& Removed,
+		const TArray<TPair<FString, TArray<FString>>>& Watched);
 	/** A refused read or subscribe: fails the object for a permanent cause, otherwise retries. */
 	void HandleRefreshFailure(const FCrowdyNativeExecReply& Reply, bool bRead);
 	void ScheduleRefresh(const FCrowdyNativeExecReply& Reply);
@@ -306,4 +398,36 @@ private:
 	bool bRefreshScheduled = false;
 	/** Whether the server accepted the current subscribe; SubscribeHandle is set as soon as it is sent. */
 	bool bSubscribeConfirmed = false;
+
+	TCrowdyRecordMap<FCrowdyServerRecord> Records;
+	/** The pages of the read in progress, which replace Records once the last arrives. */
+	TCrowdyRecordMap<FCrowdyServerRecord> PagedRecords;
+	/** Shared, so a watcher that stops watching during an announcement does not destroy the delegate running it. */
+	TCrowdyRecordMap<TSharedRef<FOnCrowdyServerValuesChanged>> RecordWatchers;
+	/** The last id of the last page read; the next page starts after it. */
+	FString PageAfter;
+	/** The first page's, which a read keeps: pushes above its seq are replayed over the later pages. */
+	uint64 PageEpoch = 0;
+	uint64 PageSeq = 0;
+	uint64 PageRSeq = 0;
+	bool bFirstPage = true;
+	/** Bytes of BufferedPushes, which a read of records bounds instead of their count. */
+	int64 BufferedBytes = 0;
+	/** The restricted seq the next changes asks from: the first page's of the last read or changes. */
+	uint64 AppliedRSeq = 0;
+	uint64 ChangesSince = 0;
+	uint64 ChangesFirstRSeq = 0;
+	FString ChangesAfter;
+	/** Seconds before another changes call may be sent. */
+	float ChangesWait = 0.f;
+	int32 ChangesPages = 0;
+	int32 ChangesFailures = 0;
+	/** A page named a record not held yet, so the restricted seq is kept and changes asked for again. */
+	bool bChangesMissed = false;
+	/** Raised by every read, so the answer to a changes call sent before it is dropped. */
+	uint32 ChangesTicket = 0;
+	bool bChangesInFlight = false;
+	bool bChangesWanted = false;
+	bool bChangesFirstPage = true;
+	FString OwnTeam;
 };

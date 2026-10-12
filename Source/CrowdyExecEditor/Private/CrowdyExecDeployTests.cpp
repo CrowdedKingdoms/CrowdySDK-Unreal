@@ -449,6 +449,12 @@ bool FCrowdyExecDeployInvalidTest::RunTest(const FString& Parameters)
 	TestState(*this, TEXT("an Idle Timeout over 1800 seconds is invalid"), InspectWith(30, 1801), ECrateState::Invalid);
 	TestState(*this, TEXT("an Idle Timeout of 1 second is allowed"), InspectWith(30, 1), ECrateState::NotGenerated);
 	TestState(*this, TEXT("an Idle Timeout of 1800 seconds is allowed"), InspectWith(30, 1800), ECrateState::NotGenerated);
+
+	SaveText(TEXT("[package]\nname = \"timed\"\n"), FPaths::Combine(TimedDirectory, TEXT("Cargo.toml")));
+	SaveText(TEXT("// my own hub\n"), FPaths::Combine(TimedDirectory, TEXT("src/lib.rs")));
+	const CrowdyExecDeploy::FTypeState HandWritten = InspectWith(30, 300);
+	TestState(*this, TEXT("a folder of server code the SDK did not generate is a problem, not something to generate"), HandWritten, ECrateState::Invalid);
+	TestTrue(FString::Printf(TEXT("the problem gives the remedy (%s)"), *HandWritten.Problem), HandWritten.Problem.Contains(TEXT("choose another Type Name, or move that folder")));
 	return true;
 }
 
@@ -695,6 +701,28 @@ bool FCrowdyExecDeployAssembleOwnLogicTest::RunTest(const FString& Parameters)
 		FString(TEXT("Cargo.toml, src/lib.rs, src/logic.rs, src/types.rs")));
 	const FBuildFile* SentInside = FindBuildFile(FromInside.Crates[1], LogicPath);
 	TestTrue(TEXT("logic.rs carries the file the Logic File names"), SentInside && SentInside->Content.Equals(InsideText, ESearchCase::CaseSensitive));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Second = MakeDefinition(*this, TEXT("deploy_second"));
+	if (!Second || !WriteGenerated(*this, *Second, FPaths::Combine(Folder.Path, TEXT("deploy_second")), Crate))
+	{
+		return false;
+	}
+	Second->CodeSource = ECrowdyServerCodeSource::OwnFile;
+	Second->LogicFile.FilePath = FPaths::Combine(Directory, TEXT("src/../src/mine.rs"));
+	const CrowdyExecDeploy::FProjectDeploy Shared = CrowdyExecDeploy::AssembleProject({Definition.Get(), Second.Get()}, DirectoryFor);
+	TestEqualSensitive(TEXT("two types on one Logic File, however it is spelt, are one problem naming both"), FString::Join(Shared.Problems, TEXT(" | ")),
+		FString::Printf(TEXT("deploy_fixture and deploy_second use the same Logic File %s; each type needs its own"), *FPaths::ConvertRelativePathToFull(Inside)));
+
+	Second->LogicFile.FilePath = FPaths::Combine(Directory, LogicPath);
+	Definition->LogicFile.FilePath = Outside;
+	const CrowdyExecDeploy::FProjectDeploy OnGenerated = CrowdyExecDeploy::AssembleProject({Second.Get(), Definition.Get()}, DirectoryFor);
+	TestFalse(TEXT("a Logic File that is another type's crate copy, unused while that type has its own file, is no problem"),
+		OnGenerated.Problems.ContainsByPredicate([](const FString& Problem) { return Problem.Contains(TEXT("same Logic File")); }));
+
+	Definition->CodeSource = ECrowdyServerCodeSource::Generated;
+	const CrowdyExecDeploy::FProjectDeploy OnCrateCopy = CrowdyExecDeploy::AssembleProject({Definition.Get(), Second.Get()}, DirectoryFor);
+	TestTrue(FString::Printf(TEXT("a Logic File that is another type's generated logic.rs is shared (%s)"), *FString::Join(OnCrateCopy.Problems, TEXT(" | "))),
+		OnCrateCopy.Problems.ContainsByPredicate([](const FString& Problem) { return Problem.StartsWith(TEXT("deploy_fixture and deploy_second use the same Logic File"), ESearchCase::CaseSensitive); }));
 	return true;
 }
 

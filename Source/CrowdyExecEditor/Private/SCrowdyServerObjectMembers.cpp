@@ -227,7 +227,19 @@ void SCrowdyServerObjectMembers::Rebuild()
 	{
 		Known.Add(Item->Name);
 	}
-	for (const FName Missing : CrowdyServerCodeFiles::FindMissingFields(Current->WatchedFields, Known))
+	TArray<FName> Listed = Current->WatchedFields;
+	if (Current->Holds == ECrowdyServerObjectHolds::RecordPerEntity)
+	{
+		for (const FName Name : Current->OwnerFields)
+		{
+			Listed.AddUnique(Name);
+		}
+		for (const FName Name : Current->TeamFields)
+		{
+			Listed.AddUnique(Name);
+		}
+	}
+	for (const FName Missing : CrowdyServerCodeFiles::FindMissingFields(Listed, Known))
 	{
 		FItemPtr Item = MakeShared<FItem>();
 		Item->Type = FItem::EType::Variable;
@@ -619,7 +631,7 @@ void SCrowdyServerObjectMembers::RemoveVariable(FName Name)
 	EditDefinition(LOCTEXT("DeleteVariableTransaction", "Delete Variable"), [Name](UCrowdyServerObjectDefinition& Edited)
 	{
 		Edited.StateList.RemovePropertyByName(Name);
-		Edited.WatchedFields.Remove(Name);
+		CrowdyServerCodeFiles::SetVisibleToPlayers(Edited.WatchedFields, Edited.OwnerFields, Edited.TeamFields, Name, false);
 	});
 	Selection->SelectNone();
 }
@@ -628,7 +640,7 @@ void SCrowdyServerObjectMembers::SetVisibleToPlayers(FName Name, bool bVisible)
 {
 	EditDefinition(LOCTEXT("VisibleTransaction", "Change Visible to Players"), [Name, bVisible](UCrowdyServerObjectDefinition& Edited)
 	{
-		CrowdyServerCodeFiles::SetWatchedField(Edited.WatchedFields, Name, bVisible);
+		CrowdyServerCodeFiles::SetVisibleToPlayers(Edited.WatchedFields, Edited.OwnerFields, Edited.TeamFields, Name, bVisible);
 	});
 }
 

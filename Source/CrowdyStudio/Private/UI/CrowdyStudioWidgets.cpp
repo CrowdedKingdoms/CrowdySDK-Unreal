@@ -85,6 +85,14 @@ TSharedRef<SWidget> CrowdyStudioWidgets::Card(const TSharedRef<SWidget>& Content
 		];
 }
 
+TSharedRef<SWidget> CrowdyStudioWidgets::ListCard(const TSharedRef<SWidget>& List, float Height)
+{
+	return SNew(SBox).HeightOverride(Height)
+		[
+			Card(List, FMargin(4.0f), /*bFlat*/ true)
+		];
+}
+
 TSharedRef<SWidget> CrowdyStudioWidgets::SectionHeader(const FText& Title, const TCHAR* IconName, TSharedPtr<SWidget> RightAccessory)
 {
 	TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);

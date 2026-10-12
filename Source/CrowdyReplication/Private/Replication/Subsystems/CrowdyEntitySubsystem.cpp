@@ -217,10 +217,7 @@ void UCrowdyEntitySubsystem::UnregisterEntity(const FGuid& NetID)
 	}
 	else
 	{
-		// The participant died before its record was torn down (a component sub-participant can outlive-then-
-		// predecease its anchor's teardown cascade, and a component may already be pending-kill during EndPlay).
-		// Its TObjectKey cannot be reconstructed from a stale weak pointer, so drop any mapping to this NetID by
-		// value; otherwise the dead-object key leaks in ParticipantToID under component churn on long-lived actors.
+		// The participant is already gone and its TObjectKey cannot be rebuilt from a stale weak pointer, so drop any mapping to this NetID by value.
 		for (auto It = ParticipantToID.CreateIterator(); It; ++It)
 		{
 			if (It.Value() == NetID)
@@ -266,22 +263,6 @@ const FCrowdyEntityRecord* UCrowdyEntitySubsystem::FindRecord(const FGuid& NetID
 	return Records.Find(NetID);
 }
 
-bool UCrowdyEntitySubsystem::TrySetRecordClassID(const FGuid& NetID, const uint32 ClassID)
-{
-	if (ClassID == CROWDY_INVALID_CLASS_ID)
-	{
-		return false;
-	}
-
-	FCrowdyEntityRecord* Record = Records.Find(NetID);
-	if (!Record || Record->ClassID != CROWDY_INVALID_CLASS_ID)
-	{
-		return false;
-	}
-
-	Record->ClassID = ClassID;
-	return true;
-}
 
 bool UCrowdyEntitySubsystem::IsLocallyOwned(const FGuid& NetID) const
 {
@@ -366,106 +347,13 @@ FGuid UCrowdyEntitySubsystem::RegisterParticipant(UObject* Participant, const EC
 	Record.Participant = Participant;
 
 	// A refused registration means the id resolves to somebody else's live participant, so handing it back would
-	// have the caller bind its state under an id that does not answer for it. It gets no id instead, the same
-	// answer RegisterSubParticipant gives when its derived id is already taken.
+	// have the caller bind its state under an id that does not answer for it. It gets no id instead.
 	if (TryRegisterEntity(Record) != ECrowdyEntityRegistration::Registered)
 	{
 		return FGuid{};
 	}
 
 	return Record.NetID;
-}
-
-FGuid UCrowdyEntitySubsystem::DeriveSubParticipantID(const FGuid& AnchorNetID, const UClass* SeedClass,
-	const FString& InstanceTerm)
-{
-	if (!AnchorNetID.IsValid() || !SeedClass || InstanceTerm.IsEmpty())
-	{
-		return FGuid{};
-	}
-
-	// The anchor id + the component's class path + a per-instance term. The anchor id is already network-stable (a
-	// player id, a spawn-injected id, or the engine's per-placement ActorInstanceGuid), and the class path is
-	// identical on every client. The per-instance term is the object name by default - cross-client stable ONLY for
-	// an authored component (a Blueprint variable name or a native CreateDefaultSubobject name). A runtime-added
-	// component's name is a per-process counter that diverges across clients, so an author supplies a stable binding
-	// key to name it instead; when set, it replaces the object name.
-	const FString Seed = AnchorNetID.ToString(EGuidFormats::Digits)
-		+ TEXT(":") + SeedClass->GetPathName()
-		+ TEXT(":") + InstanceTerm;
-	return UHelperFunctions::GetDeterministicID(FCrowdyTypeIDGenerator::GenerateFromString(Seed));
-}
-
-FGuid UCrowdyEntitySubsystem::RegisterSubParticipant(UObject* Participant, const FGuid& AnchorNetID, const FString& KeyOverride)
-{
-	// The default derivation: the participant IS the component, so its own class and object name are the seed
-	// terms. KeyOverride, when set, replaces the object name (see the header).
-	if (!IsValid(Participant))
-	{
-		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyEntitySubsystem]: RegisterSubParticipant called with an invalid participant or anchor."));
-		return FGuid{};
-	}
-	const FString InstanceTerm = KeyOverride.IsEmpty() ? Participant->GetName() : KeyOverride;
-	return RegisterSubParticipantAs(Participant, AnchorNetID, Participant->GetClass(), InstanceTerm);
-}
-
-FGuid UCrowdyEntitySubsystem::RegisterSubParticipantAs(UObject* Participant, const FGuid& AnchorNetID,
-	const UClass* SeedClass, const FString& InstanceTerm)
-{
-	check(IsInGameThread());
-
-	if (!IsValid(Participant) || !AnchorNetID.IsValid() || !SeedClass || InstanceTerm.IsEmpty())
-	{
-		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyEntitySubsystem]: RegisterSubParticipant called with an invalid participant or anchor."));
-		return FGuid{};
-	}
-
-	const FCrowdyEntityRecord* Anchor = Records.Find(AnchorNetID);
-	if (!Anchor)
-	{
-		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyEntitySubsystem]: RegisterSubParticipant for '%s' has no registered anchor entity %s."),
-			*GetNameSafe(Participant), *AnchorNetID.ToString());
-		return FGuid{};
-	}
-
-	const FGuid NetID = DeriveSubParticipantID(AnchorNetID, SeedClass, InstanceTerm);
-
-	// Dup-key guard: a second, DIFFERENT live participant that derives the same id is two indistinguishable
-	// concerns (one participant per concern is the rule); refuse the second and name both so the mistake is loud.
-	// Re-enrolling the same object is idempotent and falls through to a plain re-registration below.
-	if (const FCrowdyEntityRecord* Existing = Records.Find(NetID))
-	{
-		UObject* Prior = Existing->GetParticipant();
-		if (IsValid(Prior) && Prior != Participant)
-		{
-			UE_LOG(LogCrowdyReplication, Error,
-				TEXT("[CrowdyEntitySubsystem]: sub-participant key collision under anchor %s: '%s' and '%s' derive the same id %s - not enrolling the second. Give one a distinct component name or binding key."),
-				*AnchorNetID.ToString(), *GetNameSafe(Prior), *GetNameSafe(Participant), *NetID.ToString());
-			return FGuid{};
-		}
-	}
-
-	FCrowdyEntityRecord Record;
-	Record.NetID       = NetID;
-	Record.OwnerID     = Anchor->OwnerID;
-	Record.Role        = Anchor->Role;
-	// The COMPONENT's class, not the participant's. For the real component the two are the same; for a stand-in
-	// they are not, and it is this that lets the binding read the container declaration off the component class.
-	Record.ClassID     = UCrowdyClassRegistry::Get()->GetID(SeedClass);
-	Record.AnchorNetID = AnchorNetID;
-	Record.Participant = Participant;
-
-	// The dup-key guard above catches the case this can refuse, so a refusal here means something changed the
-	// registry underneath us. Report no id rather than one that answers for a different participant.
-	if (TryRegisterEntity(Record) != ECrowdyEntityRegistration::Registered)
-	{
-		return FGuid{};
-	}
-
-	return NetID;
 }
 
 void UCrowdyEntitySubsystem::UnregisterParticipant(UObject* Participant)
@@ -1041,7 +929,7 @@ void UCrowdyEntitySubsystem::ReleaseRemoteStandIn(const FGuid& NetID)
 	}
 
 	// Said out loud because it is a swap of what answers for an entity, not a detail: whatever was tracking the
-	// stand-in (a Game Model binding, a targeting lookup) is dropped here and rebuilt against the actor.
+	// stand-in (a targeting lookup, say) is dropped here and rebuilt against the actor.
 	UE_LOG(LogCrowdyReplication, Warning,
 		TEXT("[CrowdyEntitySubsystem]: Entity %s was standing in as '%s' when its spawn event arrived; releasing the id to the spawned actor."),
 		*NetID.ToString(), *GetNameSafe(Participant));

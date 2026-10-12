@@ -7,8 +7,6 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "K2Node_CallFunction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Pins/CrowdyModelAttributeNamePin.h"
-#include "Replication/GameModel/CrowdyModel.h"
 #include "Replication/State/CrowdyStateBlueprintLibrary.h"
 #include "Replication/State/CrowdyStateMetaKeys.h"
 #include "Replication/State/FCrowdyRepLayout.h"
@@ -23,7 +21,6 @@
 namespace
 {
 	const FName GPropertyNamePinName(TEXT("PropertyName"));
-	const FName GModelKeyPinName(TEXT("Key"));
 }
 
 void SCrowdyStatePropertyNamePin::Construct(const FArguments& InArgs, UEdGraphPin* InPin)
@@ -243,14 +240,6 @@ TSharedPtr<SGraphPin> FCrowdyStatePropertyPinFactory::CreatePin(UEdGraphPin* InP
 			return SNew(SCrowdyStatePropertyNamePin, InPin);
 		}
 		return nullptr;
-	}
-
-	// The "Key" pin of a UCrowdyModel typed getter gets the attribute-key dropdown filtered to the getter's type.
-	if (InPin->PinName == GModelKeyPinName
-		&& Function->GetOwnerClass() == UCrowdyModel::StaticClass()
-		&& !SCrowdyModelAttributeNamePin::ValueTypeForGetter(Function->GetFName()).IsEmpty())
-	{
-		return SNew(SCrowdyModelAttributeNamePin, InPin);
 	}
 
 	return nullptr;

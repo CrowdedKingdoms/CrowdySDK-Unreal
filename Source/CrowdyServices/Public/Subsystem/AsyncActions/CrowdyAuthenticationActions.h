@@ -20,6 +20,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FBeginMagicLinkSignInDelegateOnError
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FBeginSocialSignInDelegateOnSuccess, FCrowdyAuthResult, Result);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FBeginSocialSignInDelegateOnError, FString, Message);
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FRecordPlayerConsentsDelegateOnSuccess);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRecordPlayerConsentsDelegateOnError, FString, Message);
+
 UCLASS()
 class CROWDYSERVICES_API UCrowdyAuth_Login : public UBlueprintAsyncActionBase
 {
@@ -163,5 +166,37 @@ private:
 	FString Provider;
 
 	UFUNCTION() void HandleSuccess(FCrowdyAuthResult Result);
+	UFUNCTION() void HandleError(FString Message);
+};
+
+/**
+ * Records the signed-in player's acceptance of the legal documents and their age-of-majority attestation. Call it
+ * only from the player's own explicit accept. A sign-in waiting on the consent then completes through its own pins.
+ */
+UCLASS()
+class CROWDYSERVICES_API UCrowdyAuth_RecordPlayerConsents : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FRecordPlayerConsentsDelegateOnSuccess OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FRecordPlayerConsentsDelegateOnError OnError;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
+		Category="Crowdy SDK|Authentication", DisplayName="Record Player Consents")
+	static UCrowdyAuth_RecordPlayerConsents* RecordPlayerConsents(UObject* WorldContextObject, bool bAcceptLegal,
+		bool bAttestAgeOfMajority);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	bool bAcceptLegal = false;
+	bool bAttestAgeOfMajority = false;
+
+	UFUNCTION() void HandleSuccess();
 	UFUNCTION() void HandleError(FString Message);
 };

@@ -6,89 +6,11 @@
 #include "Misc/Optional.h"
 #include "Templates/Function.h"
 
-/**
- * The parsed outcome of a Game Model container-state read routed through
- * CrowdyCPP. bOk is the read-success flag: it is true only when the server was
- * reached AND returned a decodable container-state object. A reachable-but-absent container (a null,
- * empty, or non-object state) reports bOk == false with State null, and is told
- * apart from a network/GraphQL failure only by ErrorMessage.
- */
-struct FCrowdyCppContainerStateResult
-{
-	bool bOk = false;
-	TSharedPtr<FJsonObject> State;   // the decoded container state when bOk
-	FString ErrorMessage;            // why the read yielded no state
-};
-
-/**
- * One property write the server applied inside a gameModelInvoke transaction, laid out like
- * FCrowdyMutationApplied. The value fields ride as JSON-encoded strings exactly as the Game API returns them.
- */
-struct FCrowdyCppMutationApplied
-{
-	// The container written, which need not be the invoke's own: an effect that writes source.<attr> reports it
-	// here. Empty only against a server predating the field.
-	FString ContainerId;
-	FString Key;
-	FString OldValueJson;
-	FString NewValueJson;
-};
-
-/**
- * The parsed outcome of a gameModelInvoke routed through CrowdyCPP, laid out like
- * FCrowdyInvokeResult so the subsystem maps it across field for field. bTransportOk and bSuccess are
- * kept separate so a rolled-back invoke (bTransportOk == true, bSuccess == false) is never mistaken for a
- * network/GraphQL failure (bTransportOk == false); in the failure case ErrorMessage carries the transport
- * or GraphQL error, in the rolled-back case it carries the server's reason.
- */
-struct FCrowdyCppInvokeResult
-{
-	bool bTransportOk = false;
-	bool bSuccess = false;
-	FString ReturnValueJson;
-	FString ErrorMessage;
-	TArray<FCrowdyCppMutationApplied> Mutations;
-
-	// Why the call failed and whether repeating it could work, filled from whichever channel reported the failure.
-	// An in-band rejection (bTransportOk true, bSuccess false) carries the server's PlayerFaultInfo; the overload
-	// refusal is a thrown GraphQL error instead (bTransportOk false) and carries the same attribution in
-	// errors[].extensions. FaultCode is the server's stable enumerated reason, Blame its vocabulary verbatim
-	// ("PLATFORM" | "AUTHOR" | "BUDGET"), empty when the failure carried no attribution.
-	FString FaultCode;
-	FString Blame;
-
-	// What a quarantine refusal named. These stay empty: a Game Model call is refused before anything is sent.
-	FString QuarantinedKind;   // "function" or "automation"
-	FString QuarantinedName;
-	FString QuarantineReason;
-
-	// True only when the server said so AND said whose fault it was. CrowdyCPP's own extensions.retryable defaults
-	// TRUE (only an explicit false means "do not bother"), which is right for its callers but wrong to pass through
-	// here unqualified: an unattributed network failure would then read as a licensed retry, and a retry of a call
-	// that may already have committed is worse than reporting the failure.
-	bool bRetryable = false;
-
-	// How long the server says to wait before trying again, from extensions.retryAfterMs. Only the thrown channel
-	// ever carries it: PlayerFaultInfo has no timing field at all, so an in-band fault leaves this unset by
-	// construction rather than by omission.
-	//
-	// Unset and zero are different instructions and must not be collapsed. Zero means the window has already rolled
-	// and the call may go again; unset means the server named no wait, and the caller owes it a local backoff. An
-	// int defaulting to 0 would turn silence into an immediate re-send, which against a rate limiter is the one
-	// response guaranteed to be refused again.
-	//
-	// It is the milliseconds REMAINING in the current fixed window when the refusal was built, not a fixed backoff,
-	// so it is a deadline measured from receipt. A later refusal in the same window carries a smaller number, and a
-	// value cached from an earlier one is always too long.
-	TOptional<int64> RetryAfterMs;
-};
-
-// Whether a server error code means "your game model is wrong". Always false: Game Models are deprecated, so no
-// call reaches a server that could answer with one.
-CROWDYCPPBRIDGE_API bool CrowdyCppIsModelRefusalCode(const FString& Code);
-
 // How many times a request the platform refused as busy is sent again before its refusal is reported.
 inline constexpr int32 CrowdyCppMaxBusyRetries = 3;
+
+// Refuses a gameplay-token mint or refresh until the player records consent; no retry succeeds before that.
+inline constexpr const TCHAR* CrowdyCppLegalAcceptanceRequiredCode = TEXT("LEGAL_ACCEPTANCE_REQUIRED");
 
 // Whether busy refusals are retried at all: the crowdy.net.retry.busy console variable. Game thread only.
 CROWDYCPPBRIDGE_API bool CrowdyCppIsBusyRetryEnabled();
@@ -121,46 +43,6 @@ struct FCrowdyCppJsonResult
 	bool bRetryable = false;
 	TOptional<int64> RetryAfterMs;
 };
-
-/**
- * The outcome of a Game Model studio/automation authoring mutation (seed, automation upsert, trigger upsert).
- * These ops return only success or failure to the caller: bOk is the transport-and-GraphQL success flag, and on
- * failure ErrorMessage carries the transport or server reason. They require an admin (manage_apps) token.
- */
-struct FCrowdyCppStudioOpResult
-{
-	bool bOk = false;
-	FString ErrorMessage;
-};
-
-// The permanent answer of every Game Model call. Game Models are deprecated: such a call sends nothing, fails at
-// once, and is never worth repeating.
-inline constexpr const TCHAR* CrowdyCppGameModelDeprecatedCode = TEXT("GAME_MODEL_DEPRECATED");
-inline constexpr const TCHAR* CrowdyCppGameModelDeprecatedMessage =
-	TEXT("Game Models are deprecated and no longer available; use Server Compute.");
-
-// Write that answer into a default-constructed result: failed, not retryable, no blame and no wait.
-inline void CrowdyCppSetGameModelDeprecated(FCrowdyCppContainerStateResult& Result)
-{
-	Result.ErrorMessage = CrowdyCppGameModelDeprecatedMessage;
-}
-
-inline void CrowdyCppSetGameModelDeprecated(FCrowdyCppInvokeResult& Result)
-{
-	Result.ErrorMessage = CrowdyCppGameModelDeprecatedMessage;
-	Result.FaultCode = CrowdyCppGameModelDeprecatedCode;
-}
-
-inline void CrowdyCppSetGameModelDeprecated(FCrowdyCppJsonResult& Result)
-{
-	Result.ErrorMessage = CrowdyCppGameModelDeprecatedMessage;
-	Result.ErrorCode = CrowdyCppGameModelDeprecatedCode;
-}
-
-inline void CrowdyCppSetGameModelDeprecated(FCrowdyCppStudioOpResult& Result)
-{
-	Result.ErrorMessage = CrowdyCppGameModelDeprecatedMessage;
-}
 
 /**
  * The parsed outcome of a sign-in. Every sign-in path (password, register, dev bypass, magic link, social) returns
@@ -232,6 +114,7 @@ struct FCrowdyCppBoolResult
 	bool bOk = false;
 	bool bValue = false;
 	FString ErrorMessage;
+	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
 };
 
 /** The outcome of an operation that answers with a list of strings. */
@@ -429,8 +312,6 @@ struct FCrowdyCppSubscriptionCallbacks
  */
 enum class ECrowdyCppApiDomain : uint8
 {
-	// Deprecated, like Compute: a call into either answers with the Game Model refusal and sends nothing.
-	GameModel,
 	Auth,
 	Users,
 	Apps,
@@ -450,7 +331,6 @@ enum class ECrowdyCppApiDomain : uint8
 	Teleport,
 	Platform,
 	Realtime,
-	Compute,
 	// Server code for an app (build, deploy, versions, logs), as its developer: the session bearer by default.
 	Exec
 };
@@ -573,19 +453,6 @@ public:
 	double GetTestNextRetryDueSeconds() const;
 #endif
 
-	// The Game Model calls below (ReadContainerState, InvokeFunction, ListContainers, SeedSchema, UpsertAutomation,
-	// UpsertAutomationTrigger, and RunOp or SubscribeOperation on the GameModel or Compute domain) send nothing.
-	// Each answers inline, exactly once, with the CrowdyCppGameModelDeprecated refusal; ListContainers with false.
-	FCrowdyCppRequestHandle ReadContainerState(int64 AppId, const FString& ContainerId,
-		TFunction<void(FCrowdyCppContainerStateResult)> OnDone);
-
-	FCrowdyCppRequestHandle InvokeFunction(int64 AppId, const FString& FunctionName, const FString& SelfContainerId,
-		const FString& SessionId, const FString& ParamsJson,
-		TFunction<void(FCrowdyCppInvokeResult)> OnDone);
-
-	FCrowdyCppRequestHandle ListContainers(int64 AppId, const FString& TypeName, const FString& SessionId,
-		TFunction<void(bool bOk, TArray<TSharedPtr<FJsonObject>>)> OnDone);
-
 	// Issue any generated operation by name. Domain selects the operation set the name is looked up in; the lookup
 	// yields that operation's own single-operation GraphQL document, so the request carries no surface the server
 	// is not being asked for. A name the domain does not define fails without a round trip. Variables is the full
@@ -602,21 +469,6 @@ public:
 	FCrowdyCppRequestHandle RunOp(ECrowdyCppApiDomain Domain, const FString& OperationName,
 		const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
 		TOptional<ECrowdyCppTokenPlane> Plane = TOptional<ECrowdyCppTokenPlane>());
-
-	// A Game Model runtime op: answers with the deprecated refusal, like every GameModel-domain RunOp.
-	FCrowdyCppRequestHandle RunRuntimeOp(const FString& OperationName, const TSharedPtr<FJsonObject>& Variables,
-		TFunction<void(FCrowdyCppJsonResult)> OnDone)
-	{
-		return RunOp(ECrowdyCppApiDomain::GameModel, OperationName, Variables, MoveTemp(OnDone));
-	}
-
-	FCrowdyCppRequestHandle SeedSchema(const FString& InputJson, TFunction<void(FCrowdyCppStudioOpResult)> OnDone);
-
-	FCrowdyCppRequestHandle UpsertAutomation(const FString& InputJson,
-		TFunction<void(FCrowdyCppStudioOpResult)> OnDone);
-
-	FCrowdyCppRequestHandle UpsertAutomationTrigger(const FString& InputJson,
-		TFunction<void(FCrowdyCppStudioOpResult)> OnDone);
 
 	// Sign-in and account identity. The five sign-in paths carry no bearer (they are how a caller obtains one) and
 	// the three identity calls carry the session token. Each returns the identity SESSION token, from which an
@@ -668,6 +520,11 @@ public:
 	// Detach a federated identity. The server refuses to remove the account's last remaining sign-in method, which
 	// arrives as a failure rather than as a false answer. Carries the session token.
 	FCrowdyCppRequestHandle UnlinkIdentity(const FString& IdentityId, TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
+	// Store the signed-in player's acceptance of the legal documents and their age-of-majority attestation. Call it
+	// only from the player's own explicit accept; the server refuses unless both are true. Carries the session token.
+	FCrowdyCppRequestHandle RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority,
+		TFunction<void(FCrowdyCppBoolResult)> OnDone);
 
 	// Exchange the identity session token for an app-scoped gameplay token, under the session bearer. The returned
 	// token is NOT installed on this client: an owner decides which plane it belongs to. The result also carries
