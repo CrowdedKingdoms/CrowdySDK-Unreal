@@ -504,6 +504,37 @@ bool FCrowdyExecRevisionsSettingsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsLimitsTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareServerLimits", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsLimitsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	const FBuildCrate Crate = MakeCrate(TEXT("t_arena"), TEXT("fn arena() {}\n"));
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {CrowdyExecDeploy::MakeRootCrate(), Crate};
+	Project.Types.Add(MakeTypeState(TEXT("t_arena"), CrowdyExecDeploy::ECrateState::UpToDate));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(TEXT("t_arena"), 30, 300);
+	const TArray<FRevision> History = {MakeRevision(Crate, TEXT("d_arena"), 1)};
+	const auto HistoryFor = [&History](const FString&) { return History; };
+
+	auto CompareWith = [&](const TCHAR* Limits)
+	{
+		CrowdyExecDeveloper::FVersion Live;
+		Live.Version = 2;
+		Live.ManifestJson = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"t_arena\":{\"kind\":\"hub\",\"digest\":\"d_arena\",\"parent\":\"root\",\"client\":true,")
+			TEXT("\"evict_after_ms\":300000,\"persist_every_ms\":30000%s}}}"), Limits);
+		return CrowdyExecRevisions::Compare(Project, {Definition.Get()}, &Live, true, HistoryFor);
+	};
+	TestChange(*this, TEXT("neither sets a limit"), CompareWith(TEXT("")), TEXT("t_arena"), EChange::Unchanged);
+	TestChange(*this, TEXT("live spells out the platform's defaults"), CompareWith(TEXT(",\"memory_mb\":64,\"fuel_per_call\":50000000,\"mailbox\":1024,\"deadline_ms\":2000")),
+		TEXT("t_arena"), EChange::Unchanged);
+	TestChange(*this, TEXT("live runs with more memory"), CompareWith(TEXT(",\"memory_mb\":256")), TEXT("t_arena"), EChange::Changed, TEXT("server limits"));
+
+	Definition->CallTimeLimitMs = 8000;
+	TestChange(*this, TEXT("the project gives calls longer"), CompareWith(TEXT("")), TEXT("t_arena"), EChange::Changed, TEXT("server limits"));
+	TestChange(*this, TEXT("live already gives them as long"), CompareWith(TEXT(",\"deadline_ms\":8000")), TEXT("t_arena"), EChange::Unchanged);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsHasChangesTest, "CrowdySDK.CrowdyExecEditor.RevisionsHasChanges", CrowdyExecRevisionsTest::TestFlags)
 bool FCrowdyExecRevisionsHasChangesTest::RunTest(const FString& Parameters)
 {

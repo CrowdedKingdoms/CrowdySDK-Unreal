@@ -55,6 +55,7 @@ namespace CrowdyServerObjectDefinitionCustomizationDetail
 	const FName AreasCategory(TEXT("Areas"));
 	const FName TimersCategory(TEXT("Timers & Events"));
 	const FName CanCallCategory(TEXT("Can Call"));
+	const FName ServerLimitsCategory(TEXT("Server Limits"));
 	constexpr float ValueMinWidth = 250.0f;
 	/** The widths Details gives a plain text or number property. */
 	constexpr float TextMinWidth = 125.0f;
@@ -462,6 +463,7 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeDetails(IDetailLayoutB
 		DetailBuilder.HideCategory(AreasCategory);
 		DetailBuilder.HideCategory(TimersCategory);
 		DetailBuilder.HideCategory(CanCallCategory);
+		DetailBuilder.HideCategory(ServerLimitsCategory);
 		if (Selection->Kind == FCrowdyServerObjectSelection::EKind::Function)
 		{
 			CustomizeFunction(DetailBuilder, Selection->Function);
@@ -755,13 +757,14 @@ void FCrowdyServerObjectDefinitionCustomization::AddValueRanges(IDetailCategoryB
 void FCrowdyServerObjectDefinitionCustomization::AddObjectCategories(IDetailLayoutBuilder& DetailBuilder)
 {
 	using namespace CrowdyServerObjectDefinitionCustomizationDetail;
-	auto AddCategory = [&DetailBuilder](FName Name, const FText& Label, std::initializer_list<FName> Properties)
+	auto AddCategory = [&DetailBuilder](FName Name, const FText& Label, std::initializer_list<FName> Properties) -> IDetailCategoryBuilder&
 	{
 		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(Name, Label, ECategoryPriority::TypeSpecific);
 		for (const FName Property : Properties)
 		{
 			Category.AddProperty(DetailBuilder.GetProperty(Property));
 		}
+		return Category;
 	};
 	// Max Members, Show Members to Players and Remove Members Who Leave hide themselves unless Members From is This Object.
 	AddCategory(AccessCategory, LOCTEXT("AccessCategory", "Access"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Visibility),
@@ -781,6 +784,9 @@ void FCrowdyServerObjectDefinitionCustomization::AddObjectCategories(IDetailLayo
 	AddCategory(TimersCategory, LOCTEXT("TimersCategory", "Timers & Events"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Timers),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnPlayerJoined), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnPlayerLeft)});
 	AddCategory(CanCallCategory, LOCTEXT("CanCallCategory", "Can Call"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, CanCall)});
+	AddCategory(ServerLimitsCategory, LOCTEXT("ServerLimitsCategory", "Server Limits"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MemoryMegabytes),
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, CallTimeLimitMs), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, FuelPerCallMillions),
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MaxWaitingCalls)}).InitiallyCollapsed(true);
 }
 
 void FCrowdyServerObjectDefinitionCustomization::CustomizeVariable(IDetailLayoutBuilder& DetailBuilder, FName Name)

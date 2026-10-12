@@ -171,6 +171,15 @@ namespace CrowdyExecRevisionsDetail
 		{
 			OutWhat.Add(TEXT("player access"));
 		}
+		for (const CrowdyExecDeploy::FServerLimit& Limit : CrowdyExecDeploy::LimitsOf(*Definition))
+		{
+			const int64* LiveValue = Live.Numbers.Find(Limit.Field);
+			if ((LiveValue ? *LiveValue : Limit.Default) != Limit.Value)
+			{
+				OutWhat.Add(TEXT("server limits"));
+				break;
+			}
+		}
 	}
 
 	CrowdyExecRevisions::EChange CompareType(const CrowdyExecDeploy::FTypeState& Type, const CrowdyExecDeveloper::FBuildCrate* Crate, const UCrowdyServerObjectDefinition* Definition,
@@ -437,6 +446,14 @@ bool CrowdyExecRevisions::ParseManifest(const FString& ManifestJson, TArray<FLiv
 		(*Type)->TryGetBoolField(TEXT("client"), Live.bClient);
 		(*Type)->TryGetStringArrayField(TEXT("scopes"), Live.Scopes);
 		Algo::Sort(Live.Scopes);
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : (*Type)->Values)
+		{
+			int64 Number = 0;
+			if (Field.Value && Field.Value->Type == EJson::Number && Field.Value->TryGetNumber(Number))
+			{
+				Live.Numbers.Add(Field.Key, Number);
+			}
+		}
 	}
 	Algo::Sort(OutTypes, [](const FLiveType& A, const FLiveType& B) { return A.TypeName.Compare(B.TypeName, ESearchCase::CaseSensitive) < 0; });
 	return true;

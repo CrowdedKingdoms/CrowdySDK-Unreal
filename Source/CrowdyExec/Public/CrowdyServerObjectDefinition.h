@@ -526,6 +526,22 @@ public:
 	/** Other Server Object types this one's server code calls. Used when server code is generated and deployed; a game never loads them. */
 	UPROPERTY(EditAnywhere, Category = "Can Call")
 	TArray<TObjectPtr<UCrowdyServerObjectDefinition>> CanCall;
+
+	/** Memory each running instance may use (memory_mb). Every instance reserves it from the app's memory limit, so a smaller type fits more instances. */
+	UPROPERTY(EditAnywhere, Category = "Server Limits", meta = (DisplayName = "Memory per Instance", ClampMin = 1, ClampMax = 512, ForceUnits = "MB", NoSpinbox = true))
+	int32 MemoryMegabytes = 64;
+
+	/** How long one call may run before the server stops it and the caller gets Timeout (deadline_ms). */
+	UPROPERTY(EditAnywhere, Category = "Server Limits", meta = (DisplayName = "Time per Call", ClampMin = 10, ClampMax = 10000, ForceUnits = "ms", NoSpinbox = true))
+	int32 CallTimeLimitMs = 2000;
+
+	/** How much work one call may do, in millions of fuel, before the server stops it (fuel_per_call). */
+	UPROPERTY(EditAnywhere, Category = "Server Limits", meta = (DisplayName = "Fuel per Call (Millions)", ClampMin = 1, ClampMax = 1000, NoSpinbox = true))
+	int32 FuelPerCallMillions = 50;
+
+	/** Calls that may wait at one instance; past it a call is answered Busy (mailbox). */
+	UPROPERTY(EditAnywhere, Category = "Server Limits", meta = (DisplayName = "Calls Waiting", ClampMin = 1, ClampMax = 4096, NoSpinbox = true))
+	int32 MaxWaitingCalls = 1024;
 #endif
 
 	/** How often the server saves a running instance (persist_every_ms). */

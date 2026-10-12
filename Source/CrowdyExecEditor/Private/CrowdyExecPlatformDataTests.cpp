@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "CrowdyExecDeploy.h"
+#include "CrowdyNativeExec.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "Misc/AutomationTest.h"
 #include "UObject/Package.h"
@@ -168,6 +169,53 @@ bool FCrowdyExecScopeWarningsTest::RunTest(const FString& Parameters)
 	Builder->bReadsAccess = true;
 	Builder->bManagesAccess = true;
 	TestEqual(TEXT("and with them on there is none"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(Admin)).Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecServerLimitsTest, "CrowdySDK.CrowdyExecEditor.ServerLimitsSentOnlyWhenChanged", CrowdyExecPlatformDataTests::TestFlags)
+bool FCrowdyExecServerLimitsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecPlatformDataTests;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Arena = MakeDefinition(TEXT("arena"));
+	const FString Defaults = ManifestOf(*Arena);
+	for (const TCHAR* Field : {TEXT("memory_mb"), TEXT("fuel_per_call"), TEXT("mailbox"), TEXT("deadline_ms")})
+	{
+		TestFalse(FString::Printf(TEXT("a new type leaves %s to the platform"), Field), Defaults.Contains(Field));
+	}
+
+	Arena->MemoryMegabytes = 128;
+	const FString MemoryOnly = ManifestOf(*Arena);
+	TestTrue(TEXT("a changed limit is sent"), MemoryOnly.Contains(TEXT("\"memory_mb\":128")));
+	TestFalse(TEXT("and the others still are not"), MemoryOnly.Contains(TEXT("deadline_ms")) || MemoryOnly.Contains(TEXT("fuel_per_call")) || MemoryOnly.Contains(TEXT("mailbox")));
+
+	Arena->CallTimeLimitMs = 5000;
+	Arena->FuelPerCallMillions = 200;
+	Arena->MaxWaitingCalls = 16;
+	const FString Changed = ManifestOf(*Arena);
+	TestTrue(TEXT("memory"), Changed.Contains(TEXT("\"memory_mb\":128")));
+	TestTrue(TEXT("fuel in fuel units"), Changed.Contains(TEXT("\"fuel_per_call\":200000000")));
+	TestTrue(TEXT("calls waiting"), Changed.Contains(TEXT("\"mailbox\":16")));
+	TestTrue(TEXT("time per call"), Changed.Contains(TEXT("\"deadline_ms\":5000")));
+
+	Arena->MemoryMegabytes = 4096;
+	Arena->CallTimeLimitMs = 1;
+	const FString Clamped = ManifestOf(*Arena);
+	TestTrue(TEXT("memory is brought into the platform's range"), Clamped.Contains(TEXT("\"memory_mb\":512")));
+	TestTrue(TEXT("and so is time per call"), Clamped.Contains(TEXT("\"deadline_ms\":10")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCallTimeoutTest, "CrowdySDK.CrowdyExecEditor.ClientOutwaitsTheLongestServerCall", CrowdyExecPlatformDataTests::TestFlags)
+bool FCrowdyExecCallTimeoutTest::RunTest(const FString& Parameters)
+{
+	const FProperty* TimePerCall = UCrowdyServerObjectDefinition::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, CallTimeLimitMs));
+	if (!TestNotNull(TEXT("Time per Call"), TimePerCall))
+	{
+		return false;
+	}
+	const int32 Longest = FCString::Atoi(*TimePerCall->GetMetaData(TEXT("ClampMax")));
+	TestTrue(TEXT("the longest a server lets a call run is known"), Longest > 0);
+	TestTrue(TEXT("a player's connection waits longer than that for an answer"), FCrowdyNativeExecOptions().CallTimeoutMs > Longest);
 	return true;
 }
 

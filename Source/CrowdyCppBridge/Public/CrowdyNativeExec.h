@@ -55,7 +55,8 @@ struct FCrowdyNativeExecOptions
 	FString NodeType;
 	FString Key;
 
-	int32 CallTimeoutMs = 10000;
+	// Longer than the 10 s a server lets a call's handler run at most; time waiting at the instance or reconnecting counts too.
+	int32 CallTimeoutMs = 12000;
 	int32 OpenTimeoutMs = 10000;
 	bool bReconnect = true;
 };
