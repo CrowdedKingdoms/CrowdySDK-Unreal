@@ -79,6 +79,35 @@ struct CROWDYEXEC_API FCrowdyServerCallResult
 	bool IsSuccess() const { return Outcome == ECrowdyServerCallOutcome::Success; }
 };
 
+/** One entity's record in a Server Object that holds a record per entity. */
+USTRUCT(BlueprintType)
+struct CROWDYEXEC_API FCrowdyServerRecord
+{
+	GENERATED_BODY()
+
+	/** The record's variables in the definition's State struct; read one with Get Server Value. */
+	UPROPERTY(BlueprintReadOnly, Category = "Server Object")
+	FInstancedStruct Values;
+
+	/** The user id of the player who owns the record's entity; 0 for none. */
+	UPROPERTY(BlueprintReadOnly, Category = "Server Object")
+	int64 Owner = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Server Object")
+	FString Team;
+};
+
+/** Keys a map by record id case-sensitively: two ids that differ only in case are two entities. */
+template <typename ValueType>
+struct TCrowdyRecordIdKeyFuncs : TDefaultMapKeyFuncs<FString, ValueType, false>
+{
+	static bool Matches(const FString& A, const FString& B) { return A.Equals(B, ESearchCase::CaseSensitive); }
+	static uint32 GetKeyHash(const FString& Key) { return FCrc::StrCrc32(*Key); }
+};
+
+template <typename ValueType>
+using TCrowdyRecordMap = TMap<FString, ValueType, FDefaultSetAllocator, TCrowdyRecordIdKeyFuncs<ValueType>>;
+
 /** Identifies one Server Object: its type and its Instance Id. Instance Ids compare case-sensitively. */
 USTRUCT()
 struct CROWDYEXEC_API FCrowdyServerObjectKey

@@ -226,9 +226,7 @@ TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::DecodeFram
 		}
 	case ECrowdyMessageType::SERVER_EVENT_NOTIFICATION:
 		{
-			// Server-originated spatial event (opcode 139). Same wire layout as a client event; the Game
-			// Model subsystem subscribes to this event type and filters it by EventType. Used by Game Model
-			// model-driven notifications (kind: spatial, emitAs: server_event).
+			// Server-originated spatial event (opcode 139). Subscribers filter it by EventType.
 			TSharedRef<FServerEventNotification> Message = MakeShared<FServerEventNotification>();
 			if (!Message->DecodePayload(Frame))
 			{

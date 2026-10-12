@@ -9,10 +9,9 @@
 
 DEFINE_LOG_CATEGORY(LogCrowdyNodes);
 
-// Hosts the plugin's UK2Node types and the Crowdy Blueprint compile pass. A UK2Node placed in a runtime
-// Blueprint must live in an UncookedOnly (or Developer) module so the node class is available while cooking
-// or editing uncooked assets, yet is stripped from the packaged game. The nodes self-register through the
-// Blueprint action database; the compile pass does not, so it is registered below.
+// Hosts the Crowdy Blueprint compile pass in an UncookedOnly module so it is available while cooking or
+// editing uncooked assets, yet is stripped from the packaged game. It does not self-register, so it is
+// registered below.
 class FCrowdyNodesModule : public IModuleInterface
 {
 public:

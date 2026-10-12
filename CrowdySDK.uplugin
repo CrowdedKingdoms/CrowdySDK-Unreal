@@ -1,7 +1,7 @@
 ﻿{
 	"FileVersion": 3,
 	"Version": 2,
-	"VersionName": "2.18.0",
+	"VersionName": "2.19.0",
 	"FriendlyName": "CrowdySDK",
 	"Description": "The Crowdy Unreal SDK is an Unreal Engine plugin that integrates your game with the Crowded Kingdoms platform",
 	"Category": "Crowded Kingdoms",
@@ -22,8 +22,10 @@
 		{ "Name": "CrowdyServices",     "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdySDK",          "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyExec",         "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyMass",         "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyNodes",        "Type": "UncookedOnly", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyExecNodes",    "Type": "UncookedOnly", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyMassNodes",    "Type": "UncookedOnly", "LoadingPhase": "Default" },
 		{ "Name": "CrowdySDKEditor",    "Type": "Editor",  "LoadingPhase": "PostEngineInit" },
 		{ "Name": "CrowdyStudio",       "Type": "Editor",  "LoadingPhase": "PostEngineInit" },
 		{ "Name": "CrowdyExecEditor",   "Type": "Editor",  "LoadingPhase": "Default" }
@@ -35,6 +37,14 @@
 		},
 		{
 			"Name": "ProceduralMeshComponent",
+			"Enabled": true
+		},
+		{
+			"Name": "MassGameplay",
+			"Enabled": true
+		},
+		{
+			"Name": "MassCrowd",
 			"Enabled": true
 		}
 	]

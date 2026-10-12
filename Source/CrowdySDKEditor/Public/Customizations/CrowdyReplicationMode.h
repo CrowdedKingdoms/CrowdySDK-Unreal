@@ -6,11 +6,7 @@
 
 /**
  * How a Blueprint variable participates in Crowdy networking. This is the single "Crowdy Replication"
- * mode a variable can be in; the details customization writes exactly one plane's metadata for it.
- *
- * None and Replicated ride the CrowdyState view plane surface; ServerOwned rides the Game Model truth plane.
- * A variable lives in exactly one plane, so the dropdown never leaves the other plane's metadata behind
- * (see CrowdyReplicationModeDecision::KeysToScrubOnSwitch).
+ * mode a variable can be in; the details customization writes that mode's metadata for it.
  */
 enum class ECrowdyReplicationMode : uint8
 {
@@ -19,32 +15,23 @@ enum class ECrowdyReplicationMode : uint8
 
 	// CrowdyState: the fast, client-authoritative view plane. Writes the CrowdyState marker; reveals the
 	// RepNotify field (CrowdyOnRep) and the Advanced sub-options (CrowdyOwnerOnly, CrowdyManualDirty, heartbeat).
-	Replicated,
-
-	// Game Models: server-authoritative truth over GraphQL. Writes the CrowdyModel marker; reveals the RepNotify
-	// field (the SAME CrowdyOnRep key, GAS-style), the native Min/Max clamp, and the read-Visibility dropdown.
-	ServerOwned
+	Replicated
 };
 
 /**
- * Pure, headless-testable decisions for the unified "Crowdy Replication" variable dropdown: which metadata
- * keys each plane OWNS, and therefore which keys a mode switch must scrub so no stale plane metadata lingers
- * on the variable (a Server Owned -> Replicated switch must clear the Crowdy key override and Visibility). Kept
- * out of the Slate customization so the plane key-ownership model is unit-tested rather than trapped in a callback.
+ * Pure, headless-testable decisions for the "Crowdy Replication" variable dropdown: which metadata keys a mode
+ * OWNS, and therefore which keys a mode switch must scrub so no stale metadata lingers on the variable. Kept
+ * out of the Slate customization so the key-ownership model is unit-tested rather than trapped in a callback.
  */
 namespace CrowdyReplicationModeDecision
 {
-	// The metadata keys a mode OWNS: it writes its marker when selected, and another mode must scrub them when
-	// switched to. CrowdyOnRep is deliberately EXCLUDED because it is SHARED by both replicated planes (one
-	// parameterless GAS-style notify convention), so it is only scrubbed when leaving Crowdy entirely (-> None).
-	// The native ClampMin/ClampMax the Server Owned Min/Max sub-option writes are also EXCLUDED: they are plain
-	// Unreal clamp metadata a variable can want in any mode, so no mode owns (or scrubs) them. Returns the
-	// CrowdyStateMetaKeys / CrowdyGameModelMetaKeys spellings only.
+	// The metadata keys a mode OWNS: it writes its marker when selected, and the keys are scrubbed when another
+	// mode is switched to. CrowdyOnRep is deliberately EXCLUDED, so it is only scrubbed when leaving Crowdy
+	// entirely (-> None). Returns the CrowdyStateMetaKeys spellings only.
 	CROWDYSDKEDITOR_API TArray<const TCHAR*> OwnedKeys(ECrowdyReplicationMode Mode);
 
 	// The keys to remove when a variable leaves FromMode for ToMode: the keys FromMode owns that ToMode does
-	// not, plus the shared CrowdyOnRep when ToMode is None (leaving Crowdy). Re-picking the same mode scrubs
-	// nothing. Compared by string content (the key constants are distinct pointers across the two namespaces).
+	// not, plus CrowdyOnRep when ToMode is None (leaving Crowdy). Re-picking the same mode scrubs nothing.
 	CROWDYSDKEDITOR_API TArray<const TCHAR*> KeysToScrubOnSwitch(ECrowdyReplicationMode FromMode, ECrowdyReplicationMode ToMode);
 
 	/**

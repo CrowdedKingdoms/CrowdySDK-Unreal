@@ -5,7 +5,6 @@ public class CrowdyStudio : ModuleRules
 	public CrowdyStudio(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-		CppCompileWarningSettings.DeprecationWarningLevel = WarningLevel.Off;
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
@@ -25,10 +24,7 @@ public class CrowdyStudio : ModuleRules
 			"ToolMenus",
 			"Projects",
 			"DeveloperSettings",
-			"AssetRegistry",
-			"PropertyEditor",
 			"Json",
-			"JsonUtilities",
 			"WebBrowser",
 			"CrowdyNet",
 			"CrowdyReplication",

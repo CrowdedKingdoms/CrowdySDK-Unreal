@@ -1335,6 +1335,36 @@ bool FCrowdyServerObjectFailedMapLoadResumesGraceTest::RunTest(const FString& Pa
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectSeamlessTravelPausesGraceTest,
+	"CrowdySDK.CrowdyExec.ServerObjectSeamlessTravelPausesGrace", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectSeamlessTravelPausesGraceTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	TStrongObjectPtr<UCrowdyServerObject> Object(Rig.Acquire(Rig.InstanceId, Owner.Get()));
+	if (!Object)
+	{
+		return false;
+	}
+	TestFalse(TEXT("a game instance with no world context is not travelling"), Rig.Subsystem->IsSeamlessTravellingForTest());
+	Rig.Subsystem->SetSeamlessTravelForTest(true);
+	Destroy(Owner);
+	Rig.Tick(20.f, 0.1f);
+	TestEqual(TEXT("no grace time passes during a seamless travel"), Rig.Subsystem->NumObjectsForTest(), 1);
+
+	Rig.Subsystem->SetSeamlessTravelForTest(false);
+	Rig.Tick(9.5f, 0.1f);
+	TestEqual(TEXT("after the travel the full grace period runs"), Rig.Subsystem->NumObjectsForTest(), 1);
+	Rig.Tick(1.f, 0.1f);
+	TestEqual(TEXT("then the object is given back"), Rig.Subsystem->NumObjectsForTest(), 0);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectAcquireRespectsConnectBackoffTest,
 	"CrowdySDK.CrowdyExec.ServerObjectAcquireRespectsConnectBackoff", CrowdyServerObjectTests::TestFlags)
 bool FCrowdyServerObjectAcquireRespectsConnectBackoffTest::RunTest(const FString& Parameters)
@@ -1362,6 +1392,65 @@ bool FCrowdyServerObjectAcquireRespectsConnectBackoffTest::RunTest(const FString
 	TestEqual(TEXT("nor does ticking 0.9 s of it"), DialsOf(Rig), 1);
 	Rig.Tick(0.2f, 0.1f);
 	TestTrue(TEXT("the redial comes once the backoff has passed"), Rig.PumpUntil([&Rig]() { return DialsOf(Rig) >= 2; }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectFailedDialTriesAnotherTypeTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFailedDialTriesAnotherTypeAndSaysWhy", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectFailedDialTriesAnotherTypeTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	AddExpectedErrorPlain(ConnectFailedWarning, EAutomationExpectedErrorFlags::Contains, 2);
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> Other(DuplicateObject(Rig.Definition.Get(), GetTransientPackage()));
+	Other->TypeName = TEXT("test_other");
+	TArray<FString> Errors;
+	if (!TestTrue(TEXT("the second test definition bakes"), Other->Bake(Errors)))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	FString Error;
+	UCrowdyServerObject* Boss = Rig.Acquire(Rig.InstanceId, Owner.Get());
+	UCrowdyServerObject* Second = Rig.Subsystem->Acquire(Other.Get(), TEXT("other-1"), Owner.Get(), Error);
+	if (!Boss || !Second || !FailDial(Rig, 1))
+	{
+		return false;
+	}
+	auto LastDialNames = [&Rig](const TCHAR* Type)
+	{
+		FString Body;
+		Rig.Client->GetLastTestRequestBody(Body);
+		return Body.Contains(FString::Printf(TEXT("\"%s\""), Type), ESearchCase::CaseSensitive);
+	};
+	TestTrue(TEXT("the first dial is placed with the first object's type"), LastDialNames(TypeName));
+	const FString BossFailed = FString::Printf(TEXT("Could not open the connection to the server for %s: "), TypeName);
+	TestTrue(FString::Printf(TEXT("a waiting object says the dial failed and for which type (%s)"), *Boss->GetFailureReason()), Boss->GetFailureReason().StartsWith(BossFailed, ESearchCase::CaseSensitive));
+	TestTrue(TEXT("so does an object of the other type"), Second->GetFailureReason().StartsWith(BossFailed, ESearchCase::CaseSensitive));
+	TestEqual(TEXT("and both still wait"), static_cast<int32>(Second->GetStatus()), static_cast<int32>(ECrowdyServerObjectStatus::Connecting));
+
+	Rig.Tick(1.1f, 0.1f);
+	if (!FailDial(Rig, 2))
+	{
+		return false;
+	}
+	TestTrue(TEXT("the next dial is placed with a type that has not failed"), LastDialNames(TEXT("test_other")));
+	TestTrue(FString::Printf(TEXT("the reason follows the latest dial (%s)"), *Boss->GetFailureReason()),
+		Boss->GetFailureReason().StartsWith(TEXT("Could not open the connection to the server for test_other: "), ESearchCase::CaseSensitive));
+
+	Rig.Tick(2.1f, 0.1f);
+	if (!TestTrue(TEXT("after every type has failed the dials start over"), Rig.PumpUntil([&Rig]() { return DialsOf(Rig) >= 3; })))
+	{
+		return false;
+	}
+	TestTrue(TEXT("from the first type"), LastDialNames(TypeName));
+	Rig.Client->TestExecOpen();
+	TestTrue(TEXT("the connection opens"), Rig.PumpUntil([&Rig]() { return Rig.Subsystem->GetConnection() != nullptr; }));
+	TestTrue(TEXT("a good connect clears the reason it gave"), Boss->GetFailureReason().IsEmpty() && Second->GetFailureReason().IsEmpty());
 	return true;
 }
 
@@ -2856,6 +2945,9 @@ struct FCrowdyServerObjectComponentTestAccess
 	static void StopWatchingSource(UCrowdyServerObjectComponent& Component) { Component.StopWatchingSource(); }
 	static void SignIn(UCrowdyServerObjectComponent& Component) { Component.HandleSignedIn(); }
 	static UCrowdyServerObject* GetSource(const UCrowdyServerObjectComponent& Component) { return Component.SourceObject; }
+	static int32 TeamsRequests(const UCrowdyServerObjectComponent& Component) { return Component.TeamsRequests; }
+	static void TickTeams(UCrowdyServerObjectComponent& Component, float DeltaSeconds) { Component.TickTeamsRetry(DeltaSeconds); }
+	static bool TeamsRetryArmed(const UCrowdyServerObjectComponent& Component) { return Component.bTeamsRetryArmed; }
 };
 
 namespace CrowdyServerObjectTests
@@ -3004,6 +3096,38 @@ bool FCrowdyServerObjectComponentTeamSignInTest::RunTest(const FString& Paramete
 	FCrowdyServerObjectComponentTestAccess::SignIn(*Component);
 	TestNull(TEXT("a sign-in using the player's only team lets go of the object held"), Component->GetServerObject());
 	TestEqualSensitive(TEXT("and waits for this account's teams"), Component->GetFailureReason(), FString(TEXT("Waiting for the player's teams")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectComponentTeamsAskedAgainTest,
+	"CrowdySDK.CrowdyExec.ServerObjectComponent.PlayersTeamAsksForTeamsAgain", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectComponentTeamsAskedAgainTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectComponent> Component = MakeRigComponent(Rig, ECrowdyServerObjectInstanceMode::PlayersTeam);
+	FCrowdyServerObjectComponentTestAccess::Join(*Component);
+	TestEqualSensitive(TEXT("with no team known the component waits for the teams"), Component->GetFailureReason(), FString(TEXT("Waiting for the player's teams")));
+	TestEqual(TEXT("waiting for the teams asks for them once"), FCrowdyServerObjectComponentTestAccess::TeamsRequests(*Component), 1);
+	TestTrue(TEXT("and retries while it waits"), FCrowdyServerObjectComponentTestAccess::TeamsRetryArmed(*Component));
+	TestFalse(TEXT("without taking over the component's own tick"), Component->PrimaryComponentTick.bCanEverTick || Component->IsComponentTickEnabled());
+	FCrowdyServerObjectComponentTestAccess::TickTeams(*Component, 1.f);
+	TestEqual(TEXT("and not again at once"), FCrowdyServerObjectComponentTestAccess::TeamsRequests(*Component), 1);
+	FCrowdyServerObjectComponentTestAccess::TickTeams(*Component, 5.f);
+	TestEqual(TEXT("a request that brought nothing is repeated after the backoff"), FCrowdyServerObjectComponentTestAccess::TeamsRequests(*Component), 2);
+	FCrowdyServerObjectComponentTestAccess::TickTeams(*Component, 5.f);
+	TestEqual(TEXT("and again while it waits"), FCrowdyServerObjectComponentTestAccess::TeamsRequests(*Component), 3);
+
+	Component->TeamId = 7;
+	FCrowdyServerObjectComponentTestAccess::Join(*Component);
+	TestNotNull(TEXT("a team that is known joins its object"), Component->GetServerObject());
+	TestFalse(TEXT("and stops retrying"), FCrowdyServerObjectComponentTestAccess::TeamsRetryArmed(*Component));
+	FCrowdyServerObjectComponentTestAccess::TickTeams(*Component, 10.f);
+	TestEqual(TEXT("and stops asking"), FCrowdyServerObjectComponentTestAccess::TeamsRequests(*Component), 3);
 	return true;
 }
 

@@ -58,7 +58,7 @@ public:
 	bool CanDeploy() const;
 	/** Asks first, naming what it adds, changes and removes, then builds and deploys every type and records their revisions. False when it did not start. */
 	bool Deploy();
-	/** Asks first, then deploys the platform's example types in place of the app's live version. */
+	/** Asks first, naming the types the active version runs, then deploys the platform's example types in place of it. */
 	bool DeployStarters();
 	/** A deploy, or another change to the live app, is under way. */
 	bool IsBusy() const { return bBusy || bActionBusy; }

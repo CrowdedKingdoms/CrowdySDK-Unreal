@@ -379,7 +379,7 @@ bool FCrowdyRouterUnroutedPayloadTest::RunTest(const FString& Parameters)
 // One logical notification arrives on three unrelated carriers. One handle over the three keys gives
 // one callback, and the opcode on the delivery still tells them apart.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRouterThreeCarriersTest,
-	"CrowdySDK.Net.Router.GameModelThreeCarriersOneSubscription", CrowdyRouterTest::RouterTestFlags)
+	"CrowdySDK.Net.Router.ThreeCarriersOneSubscription", CrowdyRouterTest::RouterTestFlags)
 bool FCrowdyRouterThreeCarriersTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyRouterTest;
@@ -409,7 +409,7 @@ bool FCrowdyRouterThreeCarriersTest::RunTest(const FString& Parameters)
 	TArray<ECrowdyMessageType> SeenOpcodes;
 
 	FCrowdySubscription Subscription = Registry.Subscribe(Carriers,
-		MakeOptions(ECrowdySubscriptionRole::Handle, TEXT("GameModel")),
+		MakeOptions(ECrowdySubscriptionRole::Handle, TEXT("ThreeCarriers")),
 		[&Calls, &SeenOpcodes](const FCrowdyDelivery& Delivery)
 		{
 			++Calls;

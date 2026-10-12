@@ -41,7 +41,7 @@
  *
  * CrowdyRecipient is an ECrowdyEventRecipient name, CrowdyDecay an ECrowdyDecayRate,
  * and CrowdyDistance an ECrowdyReplicationDistance; pass the short enumerator name.
- * Omit a key to take its default (Broadcast / No_Decay / Eight_Chunks).
+ * Omit a key to take its default (SpatialMulticast / No_Decay / Eight_Chunks).
  */
 #define CROWDY_EVENT(FuncName)                                                      \
 	template <typename... CrowdyArgTypes>                                           \

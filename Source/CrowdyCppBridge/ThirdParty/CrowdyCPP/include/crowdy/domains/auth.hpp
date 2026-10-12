@@ -324,6 +324,81 @@ class AuthAPI : public DomainBase {
         });
   }
 
+  // ----- The terms and age gate (ck-api v2.35.0) -------------------------------
+  // A gameplay token (mintAppToken, the portal code, refresh) is refused with
+  // LEGAL_ACCEPTANCE_REQUIRED until the player has the current required documents (Game
+  // Terms, API Terms, SDK Developer Terms, Free Tier and Billing Basis, Overworld Privacy
+  // Policy) and the age-of-majority attestation stored. recordPlayerConsents records the
+  // PLAYER's agreement: call it only after they ticked both boxes in your own UI.
+
+  /// registerUser with the clickwrap. A request from a browser must send both true, or it
+  /// is refused with LEGAL_ACCEPTANCE_REQUIRED before any account exists; the account then
+  /// starts accepted. A native client may register without them and call
+  /// recordPlayerConsents() before its first gameplay token.
+  AuthResponse registerUser(std::string_view email, std::string_view password,
+                            std::string_view gamertag, bool acceptLegal,
+                            bool attestAgeOfMajority) const {
+    graphql::JVal vars;
+    vars["registerUserInput"]["email"] = email;
+    vars["registerUserInput"]["password"] = password;
+    if (!gamertag.empty()) vars["registerUserInput"]["gamertag"] = gamertag;
+    vars["registerUserInput"]["acceptLegal"] = acceptLegal;
+    vars["registerUserInput"]["attestAgeOfMajority"] = attestAgeOfMajority;
+    auto r = AuthResponse::fromJson(execUnwrap(
+        "mutation Register($registerUserInput: RegisterUserInput!) {"
+        " register(registerUserInput: $registerUserInput) {"
+        " token gameTokenId user { userId email gamertag } } }",
+        vars));
+    if (!r.token.empty()) auth_->setToken(r.token);
+    return r;
+  }
+
+  /// Store the signed-in player's agreement to the current required legal documents and
+  /// their attestation that they are at least 18, or the age of majority where they live
+  /// if that is higher. Session token; both must be true; repeating it is harmless.
+  bool recordPlayerConsents(bool acceptLegal, bool attestAgeOfMajority) const {
+    graphql::JVal vars;
+    vars["acceptLegal"] = acceptLegal;
+    vars["attestAgeOfMajority"] = attestAgeOfMajority;
+    return execUnwrap(
+               "mutation RecordPlayerConsents($acceptLegal: Boolean!, $attestAgeOfMajority: Boolean!) {"
+               " recordPlayerConsents(acceptLegal: $acceptLegal,"
+               " attestAgeOfMajority: $attestAgeOfMajority) }",
+               vars)
+        .asBool();
+  }
+
+  void recordPlayerConsentsAsync(bool acceptLegal, bool attestAgeOfMajority,
+                                 std::function<void(graphql::GraphQLOutcome, bool)> cb) const {
+    graphql::JVal vars;
+    vars["acceptLegal"] = acceptLegal;
+    vars["attestAgeOfMajority"] = attestAgeOfMajority;
+    execUnwrapAsync(
+        "mutation RecordPlayerConsents($acceptLegal: Boolean!, $attestAgeOfMajority: Boolean!) {"
+        " recordPlayerConsents(acceptLegal: $acceptLegal,"
+        " attestAgeOfMajority: $attestAgeOfMajority) }",
+        vars, {}, [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+          bool value = false;
+          if (out.ok()) value = out.data.asBool();
+          cb(std::move(out), value);
+        });
+  }
+
+  /// Whether the signed-in player has the current required documents and the age
+  /// attestation stored, i.e. whether a gameplay token would be issued. Session token.
+  bool playerLegalAcceptance() const {
+    return execUnwrap("query PlayerLegalAcceptance { playerLegalAcceptance }").asBool();
+  }
+
+  void playerLegalAcceptanceAsync(std::function<void(graphql::GraphQLOutcome, bool)> cb) const {
+    execUnwrapAsync("query PlayerLegalAcceptance { playerLegalAcceptance }", graphql::JVal(), {},
+                    [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      bool value = false;
+                      if (out.ok()) value = out.data.asBool();
+                      cb(std::move(out), value);
+                    });
+  }
+
   bool confirmEmail(std::string_view token) const {
     graphql::JVal vars;
     vars["token"] = token;

@@ -2,7 +2,6 @@
 #include "CrowdyReplicationLog.h"
 #include "CrowdyLog.h"
 #include "Modules/ModuleManager.h"
-#include "Replication/GameModel/CrowdyModelAttributeLookup.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
@@ -29,7 +28,6 @@ class FCrowdyReplicationModule : public IModuleInterface
 public:
 	virtual void StartupModule() override
 	{
-		FCrowdyModelAttributeLookup::Install();
 		FCrowdyRPC::InstallFnInfoCacheInvalidation();
 
 		UCrowdySDKDeveloperSettings::RegisterShippedDefaultProfile(TEXT("CrowdySDK"),
@@ -41,7 +39,6 @@ public:
 		UCrowdySDKDeveloperSettings::UnregisterShippedDefaultProfile(TEXT("CrowdySDK"));
 
 		FCrowdyRPC::RemoveFnInfoCacheInvalidation();
-		FCrowdyModelAttributeLookup::Uninstall();
 	}
 };
 

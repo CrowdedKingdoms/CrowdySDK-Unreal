@@ -19,7 +19,7 @@ namespace CrowdyStudioPages
 		Teams,
 		Channels,
 		Grid,
-		GameModel,
+		Access,
 		Inspector,
 		Registry,
 		WebConsole
@@ -47,6 +47,9 @@ namespace CrowdyStudioExtraPages
 
 	/** Broadcast when OpenPage asks for a page, after the console's tab is open. */
 	FSimpleMulticastDelegate& OnPageRequested();
+
+	/** Broadcast with a page's Id before it is removed, while the module that made its widget is still loaded. */
+	TMulticastDelegate<void(FName)>& OnPageUnregistered();
 }
 
 // Lets a view ask the window to switch to another page (used by the dashboard and setup wizard).

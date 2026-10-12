@@ -12,8 +12,8 @@
 #include "UI/CrowdyStudioPages.h"
 #include "UI/CrowdyStudioWidgets.h"
 #include "UI/SCrowdyProjectView.h"
+#include "UI/SCrowdyAccessView.h"
 #include "UI/SCrowdyChannelsView.h"
-#include "UI/SCrowdyGameModelView.h"
 #include "UI/SCrowdyGridView.h"
 #include "UI/SCrowdyHomeView.h"
 #include "UI/SCrowdyInspectorView.h"
@@ -114,7 +114,7 @@ void SCrowdyStudioWindow::Construct(const FArguments& InArgs)
 					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyTeamsView).Controller(Controller) ]
 					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyChannelsView).Controller(Controller) ]
 					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyGridView).Controller(Controller) ]
-					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyGameModelView).Controller(Controller) ]
+					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyAccessView).Controller(Controller) ]
 					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyInspectorView) ]
 					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyRegistryInspector) ]
 					+ SWidgetSwitcher::Slot()[ SAssignNew(WebView, SCrowdyWebView).InitialUrl(FCrowdyStudioLinks::Dashboard()) ]
@@ -142,11 +142,12 @@ void SCrowdyStudioWindow::Construct(const FArguments& InArgs)
 	{
 		PageSwitcher->AddSlot()
 		[
-			SNew(SBox)
+			SAssignNew(ExtraPageBoxes.Add(Page.Id), SBox)
 			.Visibility_Lambda([Id = Page.Id]() { return CrowdyStudioWindowDetail::ExtraPageVisibility(Id); })
 			[ Page.MakeWidget() ]
 		];
 	}
+	PageUnregisteredHandle = CrowdyStudioExtraPages::OnPageUnregistered().AddSP(this, &SCrowdyStudioWindow::HandlePageUnregistered);
 
 	// Default to Sign In; HandleSignInStateChanged promotes to Home once a token validates.
 	if (PageSwitcher.IsValid())
@@ -165,6 +166,15 @@ void SCrowdyStudioWindow::Construct(const FArguments& InArgs)
 SCrowdyStudioWindow::~SCrowdyStudioWindow()
 {
 	CrowdyStudioExtraPages::OnPageRequested().Remove(PageRequestHandle);
+	CrowdyStudioExtraPages::OnPageUnregistered().Remove(PageUnregisteredHandle);
+}
+
+void SCrowdyStudioWindow::HandlePageUnregistered(FName Id)
+{
+	if (const TSharedPtr<SBox>* Box = ExtraPageBoxes.Find(Id))
+	{
+		(*Box)->SetContent(SNullWidget::NullWidget);
+	}
 }
 
 void SCrowdyStudioWindow::ShowRequestedPage()
@@ -349,12 +359,13 @@ TSharedRef<SWidget> SCrowdyStudioWindow::BuildNavRail()
 
 	GroupSlot(Nav, LOCTEXT("NavGrpConfigure", "CONFIGURE"));
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavProject", "Project"), TEXT("apps"), CrowdyStudioPages::Apps, true) ];
+	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavAccess", "Access"), TEXT("key"), CrowdyStudioPages::Access, true,
+		LOCTEXT("NavAccessTip", "Features and tier-feature grants for the selected app")) ];
 
 	GroupSlot(Nav, LOCTEXT("NavGrpAuthoring", "AUTHORING"));
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavTeams", "Teams"), TEXT("users"), CrowdyStudioPages::Teams, true) ];
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavChannels", "Channels"), TEXT("broadcast"), CrowdyStudioPages::Channels, true) ];
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavGrid", "Grid"), TEXT("grid"), CrowdyStudioPages::Grid, true) ];
-	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavGameModel", "Game Model"), TEXT("cube"), CrowdyStudioPages::GameModel, true) ];
 
 	GroupSlot(Nav, LOCTEXT("NavGrpDebug", "DEBUG"));
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavInspector", "Inspector"), TEXT("inspector"), CrowdyStudioPages::Inspector, false) ];
@@ -432,7 +443,8 @@ TSharedRef<SWidget> SCrowdyStudioWindow::BuildStatusBar()
 	];
 }
 
-TSharedRef<SWidget> SCrowdyStudioWindow::MakeNavButton(const FText& Label, const TCHAR* IconName, int32 PageIndex, bool bRequiresSignIn)
+TSharedRef<SWidget> SCrowdyStudioWindow::MakeNavButton(const FText& Label, const TCHAR* IconName, int32 PageIndex, bool bRequiresSignIn,
+	const FText& ToolTip)
 {
 	const FSlateBrush* IconBrush = FCrowdyStudioStyle::IconBrush(IconName);
 	auto FoldedOnly = [this]() { return bNavCollapsed ? EVisibility::Visible : EVisibility::Collapsed; };
@@ -473,7 +485,14 @@ TSharedRef<SWidget> SCrowdyStudioWindow::MakeNavButton(const FText& Label, const
 			.ContentPadding(TAttribute<FMargin>::CreateLambda([this]() { return bNavCollapsed ? FMargin(11.0f, 14.0f) : FMargin(23.0f, 14.0f); }))
 			.HAlign(HAlign_Fill)
 			.IsEnabled_Lambda(Enabled)
-			.ToolTipText_Lambda([this, Label]() { return bNavCollapsed ? Label : FText::GetEmpty(); })
+			.ToolTipText_Lambda([this, Label, ToolTip]()
+			{
+				if (!bNavCollapsed)
+				{
+					return ToolTip;
+				}
+				return ToolTip.IsEmpty() ? Label : FText::Format(LOCTEXT("NavFoldedTip", "{0}: {1}"), Label, ToolTip);
+			})
 			.OnClicked_Lambda([this, PageIndex]() { ShowPage(PageIndex); return FReply::Handled(); })
 			[
 				// Folded: a spacer either side centres the icon. Showing labels: the spacers collapse and the label fills.

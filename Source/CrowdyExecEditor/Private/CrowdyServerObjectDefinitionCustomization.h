@@ -13,9 +13,11 @@ class IDetailCategoryBuilder;
 class IDetailLayoutBuilder;
 class IDetailPropertyRow;
 class IPropertyHandle;
+class IPropertyUtilities;
 class SWidget;
 class SWrapBox;
 class UCrowdyServerObjectDefinition;
+enum class ECrowdyServerFieldAudience : uint8;
 struct FCrowdyServerFunction;
 struct FCrowdyServerObjectSelection;
 struct FCrowdyServerTimer;
@@ -86,6 +88,11 @@ private:
 	TSharedRef<SWidget> MakeTypeNameValue();
 	TSharedRef<SWidget> MakeFieldCheckBox(FName Field, const FText& Label, bool bWatched);
 	TSharedRef<SWidget> MakeMissingField(FName Field);
+	TSharedRef<SWidget> MakeAudienceCombo(FName Field);
+	TSharedRef<SWidget> MakeFieldAudience(FName Field, const FText& Label);
+	TSharedRef<SWidget> MakeAudienceMenu(FName Field);
+	FText GetAudienceText(FName Field) const;
+	void SetAudience(FName Field, TOptional<ECrowdyServerFieldAudience> Audience);
 
 	void Disconnect();
 	void RefreshTypeName();
@@ -114,7 +121,13 @@ private:
 	TWeakPtr<FCrowdyServerComputeService> Service;
 	TSharedPtr<IPropertyHandle> TypeNameHandle;
 	TSharedPtr<IPropertyHandle> WatchedHandle;
+	TSharedPtr<IPropertyHandle> OwnerHandle;
+	TSharedPtr<IPropertyHandle> TeamHandle;
+	TWeakPtr<IPropertyUtilities> Utilities;
 	TSharedPtr<SWrapBox> PlayersSeeBox;
+
+	/** Whether Holds was a record per entity when the rows were built, so a change rebuilds them. */
+	bool bBuiltPerEntity = false;
 
 	/** The Type Name as stored on the definition, which may differ from what is being typed. */
 	FString StoredTypeName;

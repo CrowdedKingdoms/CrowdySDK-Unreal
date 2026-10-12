@@ -333,48 +333,10 @@ namespace CrowdyComputeUI
 		return Change->Change == EChange::Unchanged || Change->Change == EChange::Changed || Change->Change == EChange::Unknown || Change->Change == EChange::Removed;
 	}
 
-	/** One badge for a type: what stops its code from building wins, then how it compares with the live version. */
 	TSharedRef<SWidget> ChangeBadge(const CrowdyExecDeploy::FTypeState& Type, const CrowdyExecRevisions::FTypeChange* Change)
 	{
-		switch (Type.State)
-		{
-		case CrowdyExecDeploy::ECrateState::NotGenerated:
-			return TipBadge(LOCTEXT("CodeNeedsGenerating", "Needs generating"), EBadgeTone::Warning,
-				LOCTEXT("CodeNeedsGeneratingTip", "Generate its Server Code first, from its definition or by right-clicking the definition in the Content Browser"));
-		case CrowdyExecDeploy::ECrateState::OutOfDate:
-			return TipBadge(LOCTEXT("CodeOutOfDate", "Out of date"), EBadgeTone::Warning,
-				LOCTEXT("CodeOutOfDateTip", "Its definition changed since its Server Code was generated; generate it again"));
-		case CrowdyExecDeploy::ECrateState::Invalid:
-			return TipBadge(LOCTEXT("CodeProblem", "Problem"), EBadgeTone::Danger, FText::FromString(Type.Problem));
-		default:
-			break;
-		}
-		if (!Change || Change->Change == EChange::NotCompared)
-		{
-			return TipBadge(LOCTEXT("CodeReady", "Ready"), EBadgeTone::Neutral,
-				LOCTEXT("CodeReadyTip", "Its Server Code is ready. It is compared with the live version once the app's versions are read."));
-		}
-		const FText Live = VersionNumber(Change->LiveVersion);
-		switch (Change->Change)
-		{
-		case EChange::Unchanged:
-			return TipBadge(LOCTEXT("NoChanges", "No changes"), EBadgeTone::Success,
-				FText::Format(LOCTEXT("NoChangesTip", "Live in version {0} exactly as it is here"), Live));
-		case EChange::Changed:
-		{
-			const FString What = FString::Join(Change->What, TEXT(", "));
-			return TipBadge(LOCTEXT("Changed", "Changed"), EBadgeTone::Warning, What.IsEmpty()
-				? FText::Format(LOCTEXT("ChangedTip", "Changed since version {0}. Deploy to make it live."), Live)
-				: FText::Format(LOCTEXT("ChangedWhatTip", "Changed since version {0}: {1}. Deploy to make it live."), Live, FText::FromString(What)));
-		}
-		case EChange::New:
-			return TipBadge(LOCTEXT("New", "New"), EBadgeTone::Info, LOCTEXT("NewTip", "Not live yet. Deploy to add it."));
-		case EChange::Unknown:
-			return TipBadge(LOCTEXT("LiveUnknown", "Live code unknown"), EBadgeTone::Neutral,
-				LOCTEXT("LiveUnknownTip", "The live version runs code this project has no record of, for example deployed from another copy of the project. Deploying replaces it."));
-		default:
-			return TipBadge(LOCTEXT("Removed", "Removed"), EBadgeTone::Neutral, LOCTEXT("RemovedTip", "On the server, not in this project"));
-		}
+		const CrowdyServerComputePage::FChangeBadge Badge = CrowdyServerComputePage::ChooseChangeBadge(Type, Change);
+		return TipBadge(Badge.Label, Badge.Tone, Badge.ToolTip);
 	}
 
 	/** What changed between two versions' manifests, root left out: "sbx_counter changed · sbx_locker added". */
@@ -437,6 +399,51 @@ namespace CrowdyComputeUI
 	}
 }
 
+CrowdyServerComputePage::FChangeBadge CrowdyServerComputePage::ChooseChangeBadge(const CrowdyExecDeploy::FTypeState& Type, const CrowdyExecRevisions::FTypeChange* Change)
+{
+	using CrowdyComputeUI::EBadgeTone;
+	using CrowdyComputeUI::EChange;
+	switch (Type.State)
+	{
+	case CrowdyExecDeploy::ECrateState::NotGenerated:
+		return {LOCTEXT("CodeNeedsGenerating", "Needs generating"), EBadgeTone::Warning,
+			LOCTEXT("CodeNeedsGeneratingTip", "Generate its Server Code first, from its definition or by right-clicking the definition in the Content Browser")};
+	case CrowdyExecDeploy::ECrateState::OutOfDate:
+		return {LOCTEXT("CodeOutOfDate", "Out of date"), EBadgeTone::Warning,
+			LOCTEXT("CodeOutOfDateTip", "Its definition changed since its Server Code was generated; generate it again")};
+	case CrowdyExecDeploy::ECrateState::Invalid:
+		return {LOCTEXT("CodeProblem", "Problem"), EBadgeTone::Danger, FText::FromString(Type.Problem)};
+	default:
+		break;
+	}
+	if (!Change || Change->Change == EChange::NotCompared)
+	{
+		return {LOCTEXT("CodeReady", "Ready"), EBadgeTone::Neutral,
+			LOCTEXT("CodeReadyTip", "Its Server Code is ready. It is compared with the live version once the app's versions are read.")};
+	}
+	const FText Live = CrowdyComputeUI::VersionNumber(Change->LiveVersion);
+	switch (Change->Change)
+	{
+	case EChange::Unchanged:
+		return {LOCTEXT("NoChanges", "No changes"), EBadgeTone::Success,
+			FText::Format(LOCTEXT("NoChangesTip", "Live in version {0} exactly as it is here"), Live)};
+	case EChange::Changed:
+	{
+		const FString What = FString::Join(Change->What, TEXT(", "));
+		return {LOCTEXT("Changed", "Changed"), EBadgeTone::Warning, What.IsEmpty()
+			? FText::Format(LOCTEXT("ChangedTip", "Changed since version {0}. Deploy to make it live."), Live)
+			: FText::Format(LOCTEXT("ChangedWhatTip", "Changed since version {0}: {1}. Deploy to make it live."), Live, FText::FromString(What))};
+	}
+	case EChange::New:
+		return {LOCTEXT("New", "New"), EBadgeTone::Info, LOCTEXT("NewTip", "Not live yet. Deploy to add it.")};
+	case EChange::Unknown:
+		return {LOCTEXT("LiveUnknown", "Live code unknown"), EBadgeTone::Neutral,
+			LOCTEXT("LiveUnknownTip", "The live version runs code this project has no record of, for example deployed from another copy of the project. Deploying replaces it.")};
+	default:
+		return {LOCTEXT("Removed", "Removed"), EBadgeTone::Neutral, LOCTEXT("RemovedTip", "On the server, not in this project")};
+	}
+}
+
 FText CrowdyServerComputePage::ReadableByPhrase(ECrowdyServerObjectVisibility Visibility)
 {
 	switch (Visibility)
@@ -466,6 +473,10 @@ FText CrowdyServerComputePage::WhyCrateFolderStays(const FString& TypeName, cons
 	if (!FileManager.DirectoryExists(*CrateDirectory))
 	{
 		return LOCTEXT("FolderMissing", "It has no Server Code folder.");
+	}
+	if (FPaths::FileExists(FPaths::Combine(CrateDirectory, TEXT("Cargo.toml"))) && !CrowdyExecCodegen::IsGeneratedCrateFolder(CrateDirectory))
+	{
+		return LOCTEXT("FolderNotGenerated", "Its Server Code folder holds server code the Crowdy SDK did not generate, so it is left as it is.");
 	}
 	bool bLink = FileManager.IsSymlink(*CrateDirectory);
 	if (!bLink)

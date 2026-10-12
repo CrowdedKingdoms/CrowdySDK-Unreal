@@ -11,6 +11,7 @@
 #include "Styling/SlateStyle.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateTypes.h"
+#include "UI/CrowdyBrandStyle.h"
 
 TSharedPtr<FSlateStyleSet> FCrowdyStudioStyle::Instance = nullptr;
 
@@ -32,23 +33,20 @@ namespace
 	}
 }
 
-// Palette (Crowded Kingdoms brand, adapted to the dark editor host).
-// Brand: bold / minimal / premium. Kingdom Black surfaces, Pure White ink, Warm Gold earned
-// (selected nav, focus, the single key action per page), Stone Gray captions.
-FLinearColor FCrowdyStudioStyle::Panel()        { return Hex(0x0B0B0C); } // window background (near Kingdom Black)
-FLinearColor FCrowdyStudioStyle::Rail()         { return Hex(0x070708); } // navigation rail (Kingdom Black)
-FLinearColor FCrowdyStudioStyle::Surface()      { return Hex(0x161617); } // card / platter (Soft Black)
-FLinearColor FCrowdyStudioStyle::SurfaceHover() { return Hex(0x202022); } // raised / hovered surface
-FLinearColor FCrowdyStudioStyle::Line()         { return Hex(0x2B2B2D); } // hairline borders
-FLinearColor FCrowdyStudioStyle::TextPrimary()  { return Hex(0xFAFAFA); } // Pure White ink
-FLinearColor FCrowdyStudioStyle::TextSecondary(){ return Hex(0xA1A1A4); }
-FLinearColor FCrowdyStudioStyle::TextSubtle()   { return Hex(0x6E6E73); } // Stone Gray
-FLinearColor FCrowdyStudioStyle::Gold()         { return Hex(0xD6A928); } // Warm Gold (brand accent)
-FLinearColor FCrowdyStudioStyle::GoldBright()   { return Hex(0xE8BE40); }
-FLinearColor FCrowdyStudioStyle::Success()      { return Hex(0x4FB477); }
-FLinearColor FCrowdyStudioStyle::Warning()      { return Hex(0xCC8A33); }
-FLinearColor FCrowdyStudioStyle::Danger()       { return Hex(0xE05260); }
-FLinearColor FCrowdyStudioStyle::Info()         { return Hex(0x6E92E8); }
+FLinearColor FCrowdyStudioStyle::Panel()        { return FCrowdyBrandStyle::Panel(); }
+FLinearColor FCrowdyStudioStyle::Rail()         { return FCrowdyBrandStyle::Rail(); }
+FLinearColor FCrowdyStudioStyle::Surface()      { return FCrowdyBrandStyle::Surface(); }
+FLinearColor FCrowdyStudioStyle::SurfaceHover() { return FCrowdyBrandStyle::SurfaceHover(); }
+FLinearColor FCrowdyStudioStyle::Line()         { return FCrowdyBrandStyle::Line(); }
+FLinearColor FCrowdyStudioStyle::TextPrimary()  { return FCrowdyBrandStyle::TextPrimary(); }
+FLinearColor FCrowdyStudioStyle::TextSecondary(){ return FCrowdyBrandStyle::TextSecondary(); }
+FLinearColor FCrowdyStudioStyle::TextSubtle()   { return FCrowdyBrandStyle::TextSubtle(); }
+FLinearColor FCrowdyStudioStyle::Gold()         { return FCrowdyBrandStyle::Gold(); }
+FLinearColor FCrowdyStudioStyle::GoldBright()   { return FCrowdyBrandStyle::GoldBright(); }
+FLinearColor FCrowdyStudioStyle::Success()      { return FCrowdyBrandStyle::Success(); }
+FLinearColor FCrowdyStudioStyle::Warning()      { return FCrowdyBrandStyle::Warning(); }
+FLinearColor FCrowdyStudioStyle::Danger()       { return FCrowdyBrandStyle::Danger(); }
+FLinearColor FCrowdyStudioStyle::Info()         { return FCrowdyBrandStyle::Info(); }
 
 TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 {
@@ -197,13 +195,6 @@ TSharedRef<FSlateStyleSet> FCrowdyStudioStyle::Create()
 
 	// Table view background. Rows stay on the shared Crowdy.TableRow; only the backing brush is new.
 	Style->Set("Crowdy.TableView", FTableViewStyle().SetBackgroundBrush(FSlateColorBrush(Panel())));
-
-	// The two pieces SCrowdyBusyBar paints: a recessed track and the pill that sweeps along it. Neutral, like the rest
-	// of the Game Model page, because this reports activity rather than a result and so spends no colour on meaning.
-	// Plain brushes rather than an FProgressBarStyle: SProgressBar's marquee needs a repeating tile to look like it is
-	// moving, and a solid brush there paints a bar that never appears to animate at all.
-	Style->Set("Crowdy.BusyBar.Track", new FSlateRoundedBoxBrush(Hex(0x18181A), 2.0f, FVector2f(64.0f, 4.0f)));
-	Style->Set("Crowdy.BusyBar.Pill",  new FSlateRoundedBoxBrush(TextSecondary(), 2.0f, FVector2f(20.0f, 4.0f)));
 
 	// Text styles.
 	const FName Bold = "Bold";

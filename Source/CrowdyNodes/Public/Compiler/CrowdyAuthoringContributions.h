@@ -21,8 +21,7 @@ class UFunction;
  * With nothing selected and nothing installed every query answers "no crowd", which is the correct answer
  * in a project that draws no crowds, and in a game process where there is no authoring going on at all.
  *
- * Same no-cycle hook pattern as CrowdyBlueprintCompileHooks and
- * CrowdyApplyEffectNodeShared::SetContainerBlueprintResolver.
+ * Same no-cycle hook pattern as CrowdyBlueprintCompileHooks.
  */
 /**
  * One parameter a one-shot action event is read by, described well enough for an editor to create the pin

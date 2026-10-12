@@ -2,8 +2,18 @@
 #include "CrowdyServicesLog.h"
 #include "CrowdyLog.h"
 #include "Modules/ModuleManager.h"
+#include "UI/CrowdyBrandStyle.h"
 
-IMPLEMENT_MODULE(FDefaultModuleImpl, CrowdyServices)
+class FCrowdyServicesModule : public FDefaultModuleImpl
+{
+public:
+	virtual void ShutdownModule() override
+	{
+		FCrowdyBrandStyle::Shutdown();
+	}
+};
+
+IMPLEMENT_MODULE(FCrowdyServicesModule, CrowdyServices)
 
 DEFINE_LOG_CATEGORY(LogCrowdyServices);
 

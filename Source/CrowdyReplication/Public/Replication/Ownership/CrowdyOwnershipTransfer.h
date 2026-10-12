@@ -7,8 +7,8 @@
 /**
  * Static Blueprint entry points for explicit ownership transfer, so a request or grant can be issued from
  * anywhere without first getting the target actor's Crowdy Entity Component by hand. Ownership lives on the
- * client-authoritative view plane: it is a coordination convention, NOT an enforcement boundary — cheat-sensitive
- * ownership belongs in a Game Model. A transfer is also transient (a client that spawns the entity after a grant
+ * client-authoritative view plane: it is a coordination convention, NOT an enforcement boundary; cheat-sensitive
+ * ownership belongs in server code (Server Objects). A transfer is also transient (a client that spawns the entity after a grant
  * sees the spawn-time owner).
  *
  * Flow: a client calls RequestOwnershipTransfer for an entity it does not own; the entity's current authority

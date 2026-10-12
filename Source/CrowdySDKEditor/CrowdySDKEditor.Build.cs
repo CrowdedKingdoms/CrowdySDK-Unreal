@@ -5,7 +5,6 @@ public class CrowdySDKEditor : ModuleRules
     public CrowdySDKEditor(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-        CppCompileWarningSettings.DeprecationWarningLevel = WarningLevel.Off;
 
         PublicDependencyModuleNames.AddRange(
             new string[]
@@ -39,21 +38,16 @@ public class CrowdySDKEditor : ModuleRules
                 "EditorWidgets",
                 "PropertyEditor",
                 "BlueprintGraph",
-                "KismetWidgets",
                 "Kismet",
                 "EditorStyle",
                 "KismetCompiler",
                 "GraphEditor",
                 "InputCore",
-                "WorkspaceMenuStructure",
-                "AssetTools",
                 "AssetRegistry",
                 "ToolMenus",
                 "Projects",
                 "CrowdyStudio",
-                "ClassViewer",
-                "DeveloperSettings",
-                "Json"
+                "DeveloperSettings"
             }
         );
     }

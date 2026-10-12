@@ -281,7 +281,7 @@ void UCrowdyEventRouter::Initialize(FSubsystemCollectionBase& Collection)
 void UCrowdyEventRouter::SubscribeToEventFallback(FCrowdyServiceRegistry& Registry)
 {
     // The router is the fallback for every event type nothing else Handles (entity spawn/destroy,
-    // the Game Model's three carriers, and any other claimed event id all take Handle keys and are
+    // and any other claimed event id all take Handle keys and are
     // never seen here).
     EventFallbackSubscription = Registry.SubscribeToAllPayloads(
         ECrowdyPayloadCategory::Event,
@@ -427,7 +427,7 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
     //   - Non-spatial participant (a subsystem): there is no single-actor transport for a non-actor, so an
     //     owner/host-only event legitimately arrives as a channel broadcast. Gate it by identity so only the
     //     intended client runs it. Precedence-by-convention, NOT enforced (a forged sender is honored)
-    //     cheat-sensitive state belongs in Game Models, not on this view plane.
+    //     cheat-sensitive state belongs in server code (Server Objects), not on this view plane.
     const bool bIsActorParticipant = Cast<AActor>(TargetParticipant) != nullptr;
     if (Info.Recipient == ECrowdyEventRecipient::OwningClient
         || Info.Recipient == ECrowdyEventRecipient::Host)
@@ -1065,7 +1065,7 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
         // is false for a HostOwned record on every client). Only the host may write world state: drop a non-HostSourced
         // delta for a locally HostOwned entity. This closes the vector the Phase C untracked one-shot push opens (any
         // client could otherwise write a shared world entity). Still precedence-by-convention (a forged HostSourced from
-        // a foreign client is honored) cheat-sensitive state belongs in Game Models, not on this unenforced view plane.
+        // a foreign client is honored) cheat-sensitive state belongs in server code (Server Objects), not on this unenforced view plane.
         if (const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(Delta.EntityID))
         {
             const bool bHostSourced = (Delta.Flags & CrowdyStateDeltaFlags::HostSourced) != 0;
@@ -1515,7 +1515,7 @@ void UCrowdyEventRouter::HandleDelivery(const FCrowdyDelivery& Delivery)
     const auto& EventMessage = static_cast<const FGameEventNotification&>(Delivery.Get());
 
     UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log, TEXT("[CrowdyEventRouter] Received event %s"), *EventMessage.GetTypeName().ToString());
-    // Events claimed by another subscriber (entity lifecycle, the Game Model, …) are Handled and never
+    // Events claimed by another subscriber (entity lifecycle, server code, …) are Handled and never
     // reach this fallback; it only sees event types nothing else claimed.
 
     FCrowdyInboundEvent InboundEvent;

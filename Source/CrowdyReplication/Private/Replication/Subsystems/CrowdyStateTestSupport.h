@@ -161,9 +161,10 @@ inline void RegisterParticipantAs(UCrowdyEntitySubsystem* Entities, const FGuid&
 // A minimal EDITOR world so actor OnRep notifies actually run. AActor::ProcessEvent (Actor.cpp) skips a
 // function unless the actor has a world AND (its actors are initialized OR GAllowActorScriptExecutionInEditor
 // is set); a worldless NewObject'd actor silently no-ops it, unlike a plain UObject. An editor-type world is
-// deliberate: the project's game world subsystems (CrowdyMass et al.) gate ShouldCreateSubsystem to PIE/Game,
-// so an editor world never spins them up and tears down cleanly, whereas a Game world's
-// CrowdyMassEntitySubsystem::Deinitialize asserts on an EntityManager this bare test world never initialized.
+// deliberate: the project's game world subsystems (CrowdyMass et al.) gate ShouldCreateSubsystem to PIE/Game
+// (CrowdyMass further to maps whose profile draws crowd rows), so an editor world never spins them up and tears
+// down cleanly, whereas a Game world on a Mass profile hits CrowdyMassEntitySubsystem::Deinitialize asserting
+// on an EntityManager this bare test world never initialized.
 // The held FEditorScriptExecutionGuard flips GAllowActorScriptExecutionInEditor for the fixture's lifetime so
 // ProcessEvent runs; the receive path fires OnRep via ProcessEvent, so the OnRep tests spawn targets here.
 struct FCrowdyStateTestWorld

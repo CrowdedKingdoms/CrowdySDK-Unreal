@@ -33,6 +33,9 @@ namespace
 		TEXT("/CrowdySDK/Data/DA_CrowdySDKDefaultProfile.DA_CrowdySDKDefaultProfile");
 
 	const TCHAR* const CrowdySDKExpectedCookedDirectory = TEXT("/CrowdySDK/Data");
+
+	// The Mass starting-point profile is opted into by path from Project Settings, so nothing references it either.
+	const TCHAR* const CrowdySDKExpectedMassCookedDirectory = TEXT("/CrowdySDK/Mass/Data");
 }
 
 /**
@@ -143,18 +146,18 @@ bool FCrowdySDKShippedProfileFolderIsCookedTest::RunTest(const FString& Paramete
 	FScriptArrayHelper_InContainer Directories(DirectoriesProperty, PackagingSettings);
 
 	bool bFoundShippedFolder = false;
+	bool bFoundMassFolder = false;
 	for (int32 Index = 0; Index < Directories.Num(); Index++)
 	{
 		const FString Path = PathProperty->GetPropertyValue_InContainer(Directories.GetRawPtr(Index));
-		if (Path == CrowdySDKExpectedCookedDirectory)
-		{
-			bFoundShippedFolder = true;
-			break;
-		}
+		bFoundShippedFolder |= Path == CrowdySDKExpectedCookedDirectory;
+		bFoundMassFolder |= Path == CrowdySDKExpectedMassCookedDirectory;
 	}
 
 	TestTrue(TEXT("The folder holding the shipped profile is cooked even with nothing referencing it"),
 		bFoundShippedFolder);
+	TestTrue(TEXT("The folder holding the Mass starting-point profile is cooked even with nothing referencing it"),
+		bFoundMassFolder);
 
 	return true;
 }

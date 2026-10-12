@@ -1,5 +1,5 @@
 #include "Replication/Components/CrowdyEntityComponent.h"
-#include "Replication/GameModel/CrowdyModelIdentity.h"
+#include "Replication/Components/CrowdyEntityIdentity.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -19,7 +19,7 @@ namespace
 // ActorInstanceGuid-valid path is a level-placed/streamed actor and is covered by the cooked live gate,
 // not a headless fixture.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStableNetIDFallbackTest,
-	"CrowdySDK.GameModel.StableNetIDFallback", CrowdyStableIdentityTestFlags)
+	"CrowdySDK.Entity.StableNetIDFallback", CrowdyStableIdentityTestFlags)
 bool FCrowdyStableNetIDFallbackTest::RunTest(const FString& Parameters)
 {
 	AActor* Actor = NewObject<AActor>(GetTransientPackage());
@@ -37,7 +37,7 @@ bool FCrowdyStableNetIDFallbackTest::RunTest(const FString& Parameters)
 	const FGuid NetID = Component->ComputeStableNetID(bUsedPathFallback);
 	TestTrue(TEXT("no engine guid reports the path fallback"), bUsedPathFallback);
 	TestEqual(TEXT("fallback reproduces the path derivation exactly"),
-		NetID, FCrowdyModelIdentity::StableNetIDFromActorPath(Actor->GetPathName()));
+		NetID, FCrowdyEntityIdentity::StableNetIDFromActorPath(Actor->GetPathName()));
 	TestTrue(TEXT("resolved NetID is valid"), NetID.IsValid());
 
 	return true;
@@ -48,7 +48,7 @@ bool FCrowdyStableNetIDFallbackTest::RunTest(const FString& Parameters)
 // value. The live read is only the answer for a component that registered too late to snapshot. The release
 // itself cannot be reproduced in an editor build, where the live read never fails; only a cooked client covers it.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStablePlacementGuidSelectionTest,
-	"CrowdySDK.GameModel.StablePlacementGuidSelection", CrowdyStableIdentityTestFlags)
+	"CrowdySDK.Entity.StablePlacementGuidSelection", CrowdyStableIdentityTestFlags)
 bool FCrowdyStablePlacementGuidSelectionTest::RunTest(const FString& Parameters)
 {
 	const FGuid Snapshot(1, 2, 3, 4);
@@ -68,7 +68,7 @@ bool FCrowdyStablePlacementGuidSelectionTest::RunTest(const FString& Parameters)
 // a fresh guid by the engine in an editor build and none at all in a packaged one, so honouring it would give the
 // same actor two different ids depending on how the game was built. Both inputs are required.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStablePlacementGuidGateTest,
-	"CrowdySDK.GameModel.StablePlacementGuidGate", CrowdyStableIdentityTestFlags)
+	"CrowdySDK.Entity.StablePlacementGuidGate", CrowdyStableIdentityTestFlags)
 bool FCrowdyStablePlacementGuidGateTest::RunTest(const FString& Parameters)
 {
 	TestTrue(TEXT("level-placed with a guid uses the placement id"),

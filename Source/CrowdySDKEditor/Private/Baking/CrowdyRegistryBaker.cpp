@@ -5,8 +5,8 @@
 #include "CrowdySDKEditor.h"
 #include "Replication/CrowdyMetaKeys.h"
 #include "Replication/RPC/CrowdyRPC.h"
+#include "Replication/State/CrowdyTestFixture.h"
 #include "Replication/State/FCrowdyRepLayout.h"
-#include "Replication/GameModel/CrowdyAttributeRegistry.h" // Game Model attribute discovery (bake source)
 #include "Utils/CrowdyBakedRegistry.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
@@ -42,24 +42,16 @@ namespace
 	const TCHAR* GSdkPluginName = TEXT("CrowdySDK");
 
 	// An SDK test fixture must never reach a shipped registry, and several of them carry deliberately invalid
-	// markup that discovery reports as an error, which fails a cook that is otherwise clean. Fixtures are marked
-	// two ways - CrowdyContainerTest on a container fixture, CrowdyTestFixture on the rest - so every sweep has to
-	// ask about both or the ones marked the other way walk straight through it.
+	// markup that discovery reports as an error, which fails a cook that is otherwise clean.
 	bool IsSdkTestOnlyClass(const UClass* Class)
 	{
-		return FCrowdyAttributeRegistry::IsTestFixture(Class) || FCrowdyAttributeRegistry::IsTestContainer(Class);
+		return CrowdyTestFixture::IsTestFixture(Class);
 	}
 
 	// Async (button) rebuild state: one at a time. The handle keeps the streamed assets resident
 	// until the bake runs in its completion callback.
 	bool GAsyncRebuildInFlight = false;
 	TSharedPtr<FStreamableHandle> GAsyncRebuildHandle;
-
-	// The same one-at-a-time state for the tagged-asset stream, kept apart from the rebuild's above because the two
-	// are independent requests: a Registry-page rebuild and a schema sync can be asked for at the same time, and
-	// sharing a latch would make either one refuse the other for no reason.
-	bool GAsyncTaggedLoadInFlight = false;
-	TSharedPtr<FStreamableHandle> GAsyncTaggedLoadHandle;
 
 	// Snapshots a CrowdyEvent function's routing/identity for the baked asset.
 	// BuildFnInfo reads the same live metadata + reflection the runtime uses in the
@@ -253,12 +245,10 @@ void UCrowdyRegistryBaker::FinishRebuild(TFunction<void()> OnComplete)
 
 	UE_LOG(LogCrowdyEditor, Log,
 		TEXT("[CrowdyRegistryBaker] Baked %d persistent + %d singleton struct(s), "
-		     "%d RPC function(s), %d rep prop(s) across %d class layout(s), "
-		     "%d model attribute(s) across %d container class(es)."),
+		     "%d RPC function(s), %d rep prop(s) across %d class layout(s)."),
 		Registry->PersistentStructs.Num(), Registry->SingletonStructs.Num(),
 		Registry->RpcFunctions.Num(),
-		Registry->RepProperties.Num(), Registry->RepLayoutHashes.Num(),
-		Registry->ModelAttributes.Num(), Registry->ModelClasses.Num());
+		Registry->RepProperties.Num(), Registry->RepLayoutHashes.Num());
 
 	if (OnComplete) OnComplete();
 }
@@ -311,32 +301,6 @@ void UCrowdyRegistryBaker::UpdateForClass(UClass* Class)
 		}
 	}
 
-	// Same evict-and-refill for this class's Game Model attributes + container tag.
-	Registry->ModelAttributes.RemoveAll(
-		[&Path](const FCrowdyBakedAttribute& Entry) { return Entry.OwnerClassPath == Path; });
-	Registry->ModelClasses.RemoveAll(
-		[&Path](const FCrowdyBakedModelClass& Entry) { return Entry.ClassPath == Path; });
-
-	// Asked before discovery runs, not just before the row is added: discovery reports a fixture's deliberately
-	// invalid markup as an error, and an error during a cook fails the cook.
-	if (bTestOnly)
-	{
-		return;
-	}
-
-	const TArray<FCrowdyAttributeDef> Defs = FCrowdyAttributeRegistry::DiscoverForClass(Class);
-	if (Defs.Num() > 0)
-	{
-		UCrowdyBakedRegistry::MakeBakedAttributes(Defs, Path, Registry->ModelAttributes);
-	}
-
-	FString ContainerTypeName;
-	if (FCrowdyAttributeRegistry::GetContainerTypeName(Class, ContainerTypeName))
-	{
-		Registry->ModelClasses.Add({ Path, ContainerTypeName, UCrowdyBakedRegistry::ShouldPullModelOnStart(Class),
-			FCrowdyAttributeRegistry::IsContainerAppScoped(Class) });
-	}
-
 	// In-memory refresh only, so the asset reflects this class if someone opens it
 	// in-editor this session. We deliberately do NOT MarkPackageDirty(): the baked
 	// registry is a derived cook artifact (regenerated in full by OnModifyCook) that
@@ -355,8 +319,6 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 	Registry->RpcFunctions.Reset();
 	Registry->RepProperties.Reset();
 	Registry->RepLayoutHashes.Reset();
-	Registry->ModelAttributes.Reset();
-	Registry->ModelClasses.Reset();
 
 	for (TObjectIterator<UClass> It; It; ++It)
 	{
@@ -372,34 +334,6 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 		}
 	}
 
-	// Game Model attributes (TRUTH plane), a separate pass mirroring the CrowdyState pass below.
-	// DiscoverForClass reads live metadata (editor) and walks IncludeSuper, so every class is inspected;
-	// the CrowdyContainer type-name tag is recorded independently so the cooked auto-bind gate resolves it.
-	for (TObjectIterator<UClass> It; It; ++It)
-	{
-		UClass* Class = *It;
-		if (IsTransientClassName(Class->GetName())) continue;
-
-		// Skipped before discovery runs, not just before the row is added: discovery reports a fixture's
-		// deliberately invalid markup as an error, and an error during a cook fails the cook.
-		if (IsSdkTestOnlyClass(Class)) continue;
-
-		const FSoftClassPath Path(Class);
-
-		const TArray<FCrowdyAttributeDef> Defs = FCrowdyAttributeRegistry::DiscoverForClass(Class);
-		if (Defs.Num() > 0)
-		{
-			UCrowdyBakedRegistry::MakeBakedAttributes(Defs, Path, Registry->ModelAttributes);
-		}
-
-		FString ContainerTypeName;
-		if (FCrowdyAttributeRegistry::GetContainerTypeName(Class, ContainerTypeName))
-		{
-			Registry->ModelClasses.Add({ Path, ContainerTypeName, UCrowdyBakedRegistry::ShouldPullModelOnStart(Class),
-				FCrowdyAttributeRegistry::IsContainerAppScoped(Class) });
-		}
-	}
-
 	// CrowdyState rep layouts, a separate pass over classes so it stays independent of the RPC
 	// loop above. BuildLayout walks the whole class (IncludeSuper), so unlike the ExcludeSuper RPC
 	// scan every class is inspected here and MakeBakedRepProperties records the positional order.
@@ -408,9 +342,7 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 		UClass* Class = *It;
 		if (IsTransientClassName(Class->GetName())) continue;
 
-		// The same skip the Game Model pass above applies: a container fixture carries CrowdyContainerTest rather
-		// than CrowdyTestFixture, and asking only about the latter let it through to BuildLayout, which reported
-		// its deliberate plane conflict as an error.
+		// A test fixture carries its own invalid markup, and BuildLayout reports it as an error that fails a cook.
 		if (IsSdkTestOnlyClass(Class)) continue;
 
 		FCrowdyRepLayout Layout;
@@ -459,23 +391,6 @@ void UCrowdyRegistryBaker::PopulateFromLoadedObjects(UCrowdyBakedRegistry* Regis
 		return AClass != BClass ? AClass < BClass : A.LayoutOrder < B.LayoutOrder;
 	});
 	Registry->RepLayoutHashes.Sort([](const FCrowdyBakedRepLayoutHash& A, const FCrowdyBakedRepLayoutHash& B)
-	{
-		return A.ClassPath.ToString() < B.ClassPath.ToString();
-	});
-
-	// Same canonical ordering for the model arrays: group attributes by class, then by their server key
-	// (stable + human-readable) so the baked bytes stay reproducible across machines.
-	Registry->ModelAttributes.Sort([](const FCrowdyBakedAttribute& A, const FCrowdyBakedAttribute& B)
-	{
-		const FString AClass = A.OwnerClassPath.ToString();
-		const FString BClass = B.OwnerClassPath.ToString();
-		if (AClass != BClass) { return AClass < BClass; }
-		if (A.Key != B.Key) { return A.Key < B.Key; }
-		// Total-order tiebreak: discovery's duplicate-server-key guard keeps keys unique per class, but if an
-		// equal-key pair ever slipped through, an unstable sort would produce nondeterministic cooked bytes.
-		return A.PropertyName.ToString() < B.PropertyName.ToString();
-	});
-	Registry->ModelClasses.Sort([](const FCrowdyBakedModelClass& A, const FCrowdyBakedModelClass& B)
 	{
 		return A.ClassPath.ToString() < B.ClassPath.ToString();
 	});
@@ -543,66 +458,6 @@ void UCrowdyRegistryBaker::LoadAllTaggedAssets()
 	GatherTaggedAssets(Assets);
 	for (const FAssetData& Asset : Assets)
 		Asset.GetAsset();
-}
-
-void UCrowdyRegistryBaker::LoadAllTaggedAssetsAsync(TFunction<void()> OnComplete)
-{
-	// No interactive editor to keep responsive; the synchronous load is the whole point here.
-	if (IsRunningCommandlet())
-	{
-		LoadAllTaggedAssets();
-		if (OnComplete) OnComplete();
-		return;
-	}
-
-	if (GAsyncTaggedLoadInFlight)
-	{
-		UE_LOG(LogCrowdyEditor, Log,
-			TEXT("[CrowdyRegistryBaker] Tagged-asset stream already in progress, ignoring re-request."));
-		if (OnComplete) OnComplete();
-		return;
-	}
-
-	// The registry query loads nothing; only the assets it names are streamed.
-	TArray<FAssetData> Assets;
-	GatherTaggedAssets(Assets);
-
-	TArray<FSoftObjectPath> Paths;
-	Paths.Reserve(Assets.Num());
-	for (const FAssetData& Asset : Assets)
-		Paths.Add(Asset.ToSoftObjectPath());
-
-	if (Paths.Num() == 0)
-	{
-		if (OnComplete) OnComplete();
-		return;
-	}
-
-	GAsyncTaggedLoadInFlight = true;
-
-	UE_LOG(LogCrowdyEditor, Log,
-		TEXT("[CrowdyRegistryBaker] Streaming %d tagged asset(s) without blocking the editor."), Paths.Num());
-
-	// The completion is COPIED into the delegate rather than moved, because the refusal path below still has to be
-	// able to call it. Moving would leave the local empty exactly when it is the only way to tell the caller that
-	// nothing is coming, and a caller with no completion has to invent a timeout instead.
-	GAsyncTaggedLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
-		MoveTemp(Paths),
-		FStreamableDelegate::CreateLambda([OnComplete]() mutable
-		{
-			GAsyncTaggedLoadHandle.Reset();
-			GAsyncTaggedLoadInFlight = false;
-			if (OnComplete) OnComplete();
-		}),
-		FStreamableManager::AsyncLoadHighPriority);
-
-	if (!GAsyncTaggedLoadHandle.IsValid())
-	{
-		// The request was refused outright, so no completion is ever coming from the delegate above. Clear the latch
-		// and tell the caller now, or a plan waits behind a guard nothing will ever release.
-		GAsyncTaggedLoadInFlight = false;
-		if (OnComplete) OnComplete();
-	}
 }
 
 // ─── Asset plumbing ─────────────────────────────────────────────────────────

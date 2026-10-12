@@ -10,6 +10,7 @@
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
 #include "EdGraphSchema_K2.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "IDetailGroup.h"
 #include "IDetailPropertyRow.h"
 #include "IPropertyUtilities.h"
@@ -27,6 +28,7 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/NumericUnitTypeInterface.inl"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SHyperlink.h"
@@ -48,6 +50,8 @@ namespace CrowdyServerObjectDefinitionCustomizationDetail
 	const FName AdvancedCategory(TEXT("Advanced"));
 	const FName AccessCategory(TEXT("Access"));
 	const FName MembersCategory(TEXT("Members"));
+	const FName RecordsCategory(TEXT("Records"));
+	const FName AreasCategory(TEXT("Areas"));
 	const FName TimersCategory(TEXT("Timers & Events"));
 	const FName CanCallCategory(TEXT("Can Call"));
 	constexpr float ValueMinWidth = 250.0f;
@@ -328,7 +332,8 @@ FText CrowdyServerObjectText::TimerTitle(const FCrowdyServerTimer& Timer)
 {
 	const FText Runs = StaticEnum<ECrowdyServerTimerRepeat>()->GetDisplayNameTextByValue(static_cast<int64>(Timer.Repeat));
 	const FText Name = Timer.Name.IsNone() ? LOCTEXT("UnnamedTimer", "New Timer") : FText::FromName(Timer.Name);
-	return FText::Format(LOCTEXT("TimerTitle", "{0}: {1} {2}"), Name, Runs, FText::FromString(MakeSecondsInterface()->ToString(Timer.Seconds)));
+	const FString When = Timer.Repeat == ECrowdyServerTimerRepeat::Schedule ? Timer.Cron.TrimStartAndEnd() : MakeSecondsInterface()->ToString(Timer.Seconds);
+	return FText::Format(LOCTEXT("TimerTitle", "{0}: {1} {2}"), Name, Runs, FText::FromString(When));
 }
 
 void CrowdyServerObjectRows::ShowSeconds(IDetailPropertyRow& Row, const TSharedRef<IPropertyHandle>& Seconds)
@@ -430,6 +435,15 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeDetails(IDetailLayoutB
 	Definition = Objects.Num() == 1 ? Cast<UCrowdyServerObjectDefinition>(Objects[0].Get()) : nullptr;
 	TypeNameHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, TypeName));
 	WatchedHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, WatchedFields));
+	OwnerHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, OwnerFields));
+	TeamHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, TeamFields));
+	Utilities = DetailBuilder.GetPropertyUtilities();
+	bBuiltPerEntity = Definition.IsValid() && Definition->Holds == ECrowdyServerObjectHolds::RecordPerEntity;
+	if (Definition.IsValid())
+	{
+		DetailBuilder.HideProperty(OwnerHandle);
+		DetailBuilder.HideProperty(TeamHandle);
+	}
 	DetailBuilder.HideCategory(ServerCodeCategory);
 	DetailBuilder.RegisterInstancedCustomPropertyTypeLayout(FCrowdyServerTimer::StaticStruct()->GetFName(),
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCrowdyServerTimerCustomization::MakeInstance));
@@ -443,6 +457,8 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeDetails(IDetailLayoutB
 		DetailBuilder.HideCategory(ServerNamesCategory);
 		DetailBuilder.HideCategory(BakedCategory);
 		DetailBuilder.HideCategory(MembersCategory);
+		DetailBuilder.HideCategory(RecordsCategory);
+		DetailBuilder.HideCategory(AreasCategory);
 		DetailBuilder.HideCategory(TimersCategory);
 		DetailBuilder.HideCategory(CanCallCategory);
 		if (Selection->Kind == FCrowdyServerObjectSelection::EKind::Function)
@@ -575,6 +591,7 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeFunction(IDetailLayout
 				Note(LOCTEXT("CallerNeedsMembers", "Members and Leader need Members From, set in the object's Members."))
 			]
 		];
+	Category.AddProperty(Function->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, RequiredFeature)));
 	const TSharedPtr<IPropertyHandle> Cooldown = Function->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, CooldownSeconds));
 	if (Cooldown.IsValid())
 	{
@@ -747,10 +764,14 @@ void FCrowdyServerObjectDefinitionCustomization::AddObjectCategories(IDetailLayo
 	};
 	// Max Members, Show Members to Players and Remove Members Who Leave hide themselves unless Members From is This Object.
 	AddCategory(AccessCategory, LOCTEXT("AccessCategory", "Access"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Visibility),
-		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnlyOneInstance)});
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnlyOneInstance), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsWorld)});
 	AddCategory(MembersCategory, LOCTEXT("MembersCategory", "Members"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MembersFrom),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MaxMembers), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bShowMembers),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bRemoveMembersWhoLeave)});
+	AddCategory(RecordsCategory, LOCTEXT("RecordsCategory", "Records"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MaxRecords),
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, PushIntervalMs), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, TeamFrom)});
+	AddCategory(AreasCategory, LOCTEXT("AreasCategory", "Areas"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, AreaSizeChunks),
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, InterestRadiusAreas)});
 	AddCategory(TimersCategory, LOCTEXT("TimersCategory", "Timers & Events"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Timers),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnPlayerJoined), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnPlayerLeft)});
 	AddCategory(CanCallCategory, LOCTEXT("CanCallCategory", "Can Call"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, CanCall)});
@@ -845,6 +866,18 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeVariable(IDetailLayout
 				TypeWidget.ToSharedRef()
 			];
 	}
+	TSharedPtr<SWidget> VisibleWidget;
+	if (Current->Holds == ECrowdyServerObjectHolds::RecordPerEntity)
+	{
+		VisibleWidget = MakeAudienceCombo(Name);
+	}
+	else
+	{
+		VisibleWidget = SNew(SCheckBox)
+			.ToolTipText(LOCTEXT("VisibleToPlayersToolTip", "Players can read and watch this variable. Off, it stays on the server."))
+			.IsChecked(Current->WatchedFields.Contains(Name) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+			.OnCheckStateChanged_Lambda([this, Name](ECheckBoxState State) { SetVisibleToPlayers(Name, State == ECheckBoxState::Checked); });
+	}
 	Category.AddCustomRow(LOCTEXT("VisibleToPlayers", "Visible to Players"))
 		.NameContent()
 		[
@@ -852,10 +885,7 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeVariable(IDetailLayout
 		]
 		.ValueContent()
 		[
-			SNew(SCheckBox)
-			.ToolTipText(LOCTEXT("VisibleToPlayersToolTip", "Players can read and watch this variable. Off, it stays on the server."))
-			.IsChecked(Current->WatchedFields.Contains(Name) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-			.OnCheckStateChanged_Lambda([this, Name](ECheckBoxState State) { SetVisibleToPlayers(Name, State == ECheckBoxState::Checked); })
+			VisibleWidget.ToSharedRef()
 		];
 }
 
@@ -874,10 +904,18 @@ void FCrowdyServerObjectDefinitionCustomization::RenameVariable(TSharedPtr<IProp
 	Current->Modify();
 	UE::StructUtils::ApplyChangesToSinglePropertyDesc(LOCTEXT("RenameVariable", "Rename Variable"), Renamed, Variables,
 		[NewName](FPropertyBagPropertyDesc& Edited) { Edited.Name = NewName; });
-	const int32 Watched = Current->WatchedFields.IndexOfByKey(Name);
-	if (Watched != INDEX_NONE)
+	bool bListed = false;
+	for (TArray<FName>* Fields : {&Current->WatchedFields, &Current->OwnerFields, &Current->TeamFields})
 	{
-		Current->WatchedFields[Watched] = NewName;
+		const int32 At = Fields->IndexOfByKey(Name);
+		if (At != INDEX_NONE)
+		{
+			(*Fields)[At] = NewName;
+			bListed = true;
+		}
+	}
+	if (bListed)
+	{
 		Current->PostEditChange();
 	}
 	if (Selection.IsValid())
@@ -894,13 +932,17 @@ void FCrowdyServerObjectDefinitionCustomization::SetVisibleToPlayers(FName Name,
 		return;
 	}
 	TArray<FName> Watched = Current->WatchedFields;
-	if (!CrowdyServerCodeFiles::SetWatchedField(Watched, Name, bVisible))
+	TArray<FName> Owner = Current->OwnerFields;
+	TArray<FName> Team = Current->TeamFields;
+	if (!CrowdyServerCodeFiles::SetVisibleToPlayers(Watched, Owner, Team, Name, bVisible))
 	{
 		return;
 	}
 	const FScopedTransaction Transaction(LOCTEXT("ChangeVisibleToPlayers", "Change Visible to Players"));
 	Current->Modify();
 	Current->WatchedFields = MoveTemp(Watched);
+	Current->OwnerFields = MoveTemp(Owner);
+	Current->TeamFields = MoveTemp(Team);
 	Current->PostEditChange();
 }
 
@@ -985,6 +1027,73 @@ TSharedRef<SWidget> FCrowdyServerObjectDefinitionCustomization::MakeFieldCheckBo
 		];
 }
 
+TSharedRef<SWidget> FCrowdyServerObjectDefinitionCustomization::MakeAudienceCombo(FName Field)
+{
+	return SNew(SComboButton)
+		.ToolTipText(LOCTEXT("AudienceToolTip", "Who receives this variable of a record: no player, every player, the player who owns the record's entity, or the owner's team."))
+		.OnGetMenuContent(this, &FCrowdyServerObjectDefinitionCustomization::MakeAudienceMenu, Field)
+		.ButtonContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text_Lambda([this, Field]() { return GetAudienceText(Field); })
+		];
+}
+
+TSharedRef<SWidget> FCrowdyServerObjectDefinitionCustomization::MakeFieldAudience(FName Field, const FText& Label)
+{
+	return SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+		[
+			SNew(STextBlock)
+			.Text(Label)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			MakeAudienceCombo(Field)
+		];
+}
+
+TSharedRef<SWidget> FCrowdyServerObjectDefinitionCustomization::MakeAudienceMenu(FName Field)
+{
+	FMenuBuilder Menu(true, nullptr);
+	auto AddEntry = [this, &Menu, Field](const FText& Label, const FText& ToolTip, TOptional<ECrowdyServerFieldAudience> Audience)
+	{
+		Menu.AddMenuEntry(Label, ToolTip, FSlateIcon(),
+			FUIAction(FExecuteAction::CreateSP(this, &FCrowdyServerObjectDefinitionCustomization::SetAudience, Field, Audience)));
+	};
+	AddEntry(LOCTEXT("AudienceServerOnly", "Server Only"), LOCTEXT("AudienceServerOnlyToolTip", "No player receives it; it stays on the server."), TOptional<ECrowdyServerFieldAudience>());
+	AddEntry(LOCTEXT("AudienceEveryone", "Everyone"), LOCTEXT("AudienceEveryoneToolTip", "Every player who can see the record receives it."), ECrowdyServerFieldAudience::Everyone);
+	AddEntry(LOCTEXT("AudienceOwner", "Owner Only"), LOCTEXT("AudienceOwnerToolTip", "Only the player who owns the record's entity receives it."), ECrowdyServerFieldAudience::Owner);
+	AddEntry(LOCTEXT("AudienceTeam", "Team Only"), LOCTEXT("AudienceTeamToolTip", "Only players whose own record has the same team receive it."), ECrowdyServerFieldAudience::Team);
+	return Menu.MakeWidget();
+}
+
+FText FCrowdyServerObjectDefinitionCustomization::GetAudienceText(FName Field) const
+{
+	const UCrowdyServerObjectDefinition* Current = Definition.Get();
+	if (!Current)
+	{
+		return FText::GetEmpty();
+	}
+	const TOptional<ECrowdyServerFieldAudience> Audience = CrowdyServerCodeFiles::GetFieldAudience(Current->WatchedFields, Current->OwnerFields, Current->TeamFields, Field);
+	if (!Audience.IsSet())
+	{
+		return LOCTEXT("AudienceServerOnly", "Server Only");
+	}
+	switch (Audience.GetValue())
+	{
+	case ECrowdyServerFieldAudience::Owner: return LOCTEXT("AudienceOwner", "Owner Only");
+	case ECrowdyServerFieldAudience::Team: return LOCTEXT("AudienceTeam", "Team Only");
+	default: return LOCTEXT("AudienceEveryone", "Everyone");
+	}
+}
+
 TSharedRef<SWidget> FCrowdyServerObjectDefinitionCustomization::MakeMissingField(FName Field)
 {
 	return SNew(SHorizontalBox)
@@ -1058,14 +1167,27 @@ void FCrowdyServerObjectDefinitionCustomization::RebuildPlayersSee()
 			: LOCTEXT("NoState", "Choose a State Struct to pick which variables players can see."))];
 		return;
 	}
+	const bool bPerEntity = Current->Holds == ECrowdyServerObjectHolds::RecordPerEntity;
 	TArray<FName> Fields;
 	for (TFieldIterator<FProperty> It(StateStruct); It; ++It)
 	{
 		const FName Field(*It->GetAuthoredName());
 		Fields.Add(Field);
-		PlayersSeeBox->AddSlot()[MakeFieldCheckBox(Field, It->GetDisplayNameText(), Current->WatchedFields.Contains(Field))];
+		PlayersSeeBox->AddSlot()[bPerEntity ? MakeFieldAudience(Field, It->GetDisplayNameText()) : MakeFieldCheckBox(Field, It->GetDisplayNameText(), Current->WatchedFields.Contains(Field))];
 	}
-	for (const FName Missing : CrowdyServerCodeFiles::FindMissingFields(Current->WatchedFields, Fields))
+	TArray<FName> Listed = Current->WatchedFields;
+	if (bPerEntity)
+	{
+		for (const FName Name : Current->OwnerFields)
+		{
+			Listed.AddUnique(Name);
+		}
+		for (const FName Name : Current->TeamFields)
+		{
+			Listed.AddUnique(Name);
+		}
+	}
+	for (const FName Missing : CrowdyServerCodeFiles::FindMissingFields(Listed, Fields))
 	{
 		PlayersSeeBox->AddSlot()[MakeMissingField(Missing)];
 	}
@@ -1082,6 +1204,11 @@ void FCrowdyServerObjectDefinitionCustomization::SetWatched(FName Field, bool bW
 	{
 		return;
 	}
+	if (!bWatched)
+	{
+		SetAudience(Field, TOptional<ECrowdyServerFieldAudience>());
+		return;
+	}
 	TArray<FName> Watched = Current->WatchedFields;
 	if (!CrowdyServerCodeFiles::SetWatchedField(Watched, Field, bWatched))
 	{
@@ -1093,6 +1220,37 @@ void FCrowdyServerObjectDefinitionCustomization::SetWatched(FName Field, bool bW
 	Current->WatchedFields = MoveTemp(Watched);
 	WatchedHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	WatchedHandle->NotifyFinishedChangingProperties();
+}
+
+void FCrowdyServerObjectDefinitionCustomization::SetAudience(FName Field, TOptional<ECrowdyServerFieldAudience> Audience)
+{
+	UCrowdyServerObjectDefinition* Current = Definition.Get();
+	if (!Current || !WatchedHandle.IsValid() || !OwnerHandle.IsValid() || !TeamHandle.IsValid())
+	{
+		return;
+	}
+	TArray<FName> Watched = Current->WatchedFields;
+	TArray<FName> Owner = Current->OwnerFields;
+	TArray<FName> Team = Current->TeamFields;
+	if (!CrowdyServerCodeFiles::SetFieldAudience(Watched, Owner, Team, Field, Audience))
+	{
+		return;
+	}
+	const TSharedPtr<IPropertyHandle> Handles[] = {WatchedHandle, OwnerHandle, TeamHandle};
+	const FScopedTransaction Transaction(LOCTEXT("ChangeAudience", "Change Who Receives a Variable"));
+	for (const TSharedPtr<IPropertyHandle>& Handle : Handles)
+	{
+		Handle->NotifyPreChange();
+	}
+	Current->Modify();
+	Current->WatchedFields = MoveTemp(Watched);
+	Current->OwnerFields = MoveTemp(Owner);
+	Current->TeamFields = MoveTemp(Team);
+	for (const TSharedPtr<IPropertyHandle>& Handle : Handles)
+	{
+		Handle->NotifyPostChange(EPropertyChangeType::ValueSet);
+		Handle->NotifyFinishedChangingProperties();
+	}
 }
 
 FText FCrowdyServerObjectDefinitionCustomization::ProblemFor(const FString& TypeName) const
@@ -1129,6 +1287,15 @@ bool FCrowdyServerObjectDefinitionCustomization::HandleDeferredRefresh(float Del
 	const UCrowdyServerObjectDefinition* Current = Definition.Get();
 	if (!Current)
 	{
+		return false;
+	}
+	if ((Current->Holds == ECrowdyServerObjectHolds::RecordPerEntity) != bBuiltPerEntity)
+	{
+		// The variable rows are built differently for a record per entity, so they are made again.
+		if (const TSharedPtr<IPropertyUtilities> Pinned = Utilities.Pin())
+		{
+			Pinned->RequestRefresh();
+		}
 		return false;
 	}
 	const bool bTypeNameChanged = !Current->TypeName.Equals(StoredTypeName, ESearchCase::CaseSensitive);
@@ -1188,7 +1355,7 @@ void FCrowdyServerObjectDefinitionCustomization::HandleWatchedChanged(ECheckBoxS
 
 void FCrowdyServerObjectDefinitionCustomization::HandleRemoveWatched(FName Field)
 {
-	SetWatched(Field, false);
+	SetAudience(Field, TOptional<ECrowdyServerFieldAudience>());
 }
 
 EVisibility FCrowdyServerObjectDefinitionCustomization::GetProblemVisibility() const

@@ -77,6 +77,7 @@ void FCrowdyServerFunctionCustomization::CustomizeHeader(TSharedRef<IPropertyHan
 void FCrowdyServerFunctionCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& Utils)
 {
 	const FName Rows[] = {
+		GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, RequiredFeature),
 		GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, CooldownSeconds),
 		GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, ParamsForm),
 		GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, Params),

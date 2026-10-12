@@ -12,9 +12,9 @@
 #include "GameFramework/Actor.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Executor/ActorUpdateExecutor.h"
-#include "Replication/GameModel/CrowdyAttributeRegistry.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Replication/RPC/FCrowdyRpcCall.h"
+#include "Replication/State/CrowdyTestFixture.h"
 #include "Replication/State/FCrowdyRepLayout.h"
 #include "Replication/State/FCrowdyStateDelta.h"
 #include "Replication/Subsystems/CrowdyEventRouter.h"
@@ -399,7 +399,7 @@ void UCrowdyAutoRegistry::RegisterClassRepLayout(UClass* Class)
 	// Judged on the finished layout, so the advisory sees exactly the properties that will replicate and
 	// reads the same flags the send path reads. Once per class per sweep, never on the per-entity path.
 	// An SDK test fixture class is registered normally but skipped here, so it never produces advisory noise.
-	if (!FCrowdyAttributeRegistry::IsTestFixture(Class))
+	if (!CrowdyTestFixture::IsTestFixture(Class))
 	{
 		CrowdyStateHeartbeatAdvisory::ReportLayout(Layout);
 	}
@@ -507,7 +507,7 @@ const FCrowdyRepLayout* UCrowdyAutoRegistry::FindRepLayout(const UClass* Class, 
 	// The cooked path reaches a layout only through here (metadata is gone, so the eager sweep builds
 	// nothing), and the flags come from the baked table, so the advisory reads the same either way.
 	// An SDK test fixture class is registered normally but skipped here, so it never produces advisory noise.
-	if (!FCrowdyAttributeRegistry::IsTestFixture(Class))
+	if (!CrowdyTestFixture::IsTestFixture(Class))
 	{
 		CrowdyStateHeartbeatAdvisory::ReportLayout(Built);
 	}
