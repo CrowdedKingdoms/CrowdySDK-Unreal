@@ -404,9 +404,21 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads Grids"))
 	bool bReadsGrids = false;
 
+	/** Its server code may create and delete grids, give a group keys on one, and open one to every player, as an app admin can in Studio; deploying asks the platform for grids.write. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Manages Grids"))
+	bool bManagesGrids = false;
+
 	/** Its server code may grant and revoke players' permissions on the app's grids; deploying asks the platform for permissions.write. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Grants Grid Permissions"))
 	bool bGrantsGridPermissions = false;
+
+	/** Its server code may read a player's access to the app: status, tier, expiry and suspension; deploying asks the platform for access.read. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads Players' Access"))
+	bool bReadsAccess = false;
+
+	/** Its server code may grant, revoke and suspend players' access to the app, as an app admin can in Studio; deploying asks the platform for access.write. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Manages Players' Access"))
+	bool bManagesAccess = false;
 
 	/** One set of the variables, or a record of them for each entity. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Holds"))

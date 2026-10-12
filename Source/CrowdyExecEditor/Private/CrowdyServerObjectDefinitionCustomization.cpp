@@ -769,7 +769,8 @@ void FCrowdyServerObjectDefinitionCustomization::AddObjectCategories(IDetailLayo
 	AddCategory(PlatformDataCategory, LOCTEXT("PlatformDataCategory", "Platform Data"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsPlayers),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bWritesPlayerState), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsWorld),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bWritesWorld), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsGrids),
-		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bGrantsGridPermissions)});
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bManagesGrids), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bGrantsGridPermissions),
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsAccess), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bManagesAccess)});
 	AddCategory(MembersCategory, LOCTEXT("MembersCategory", "Members"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MembersFrom),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MaxMembers), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bShowMembers),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bRemoveMembersWhoLeave)});

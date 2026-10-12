@@ -304,7 +304,10 @@ namespace CrowdyExecDeployDetail
 		{TEXT("world.read"), TEXT("Reads World Data"), &UCrowdyServerObjectDefinition::bReadsWorld},
 		{TEXT("world.write"), TEXT("Changes the World"), &UCrowdyServerObjectDefinition::bWritesWorld},
 		{TEXT("grids.read"), TEXT("Reads Grids"), &UCrowdyServerObjectDefinition::bReadsGrids},
+		{TEXT("grids.write"), TEXT("Manages Grids"), &UCrowdyServerObjectDefinition::bManagesGrids},
 		{TEXT("permissions.write"), TEXT("Grants Grid Permissions"), &UCrowdyServerObjectDefinition::bGrantsGridPermissions},
+		{TEXT("access.read"), TEXT("Reads Players' Access"), &UCrowdyServerObjectDefinition::bReadsAccess},
+		{TEXT("access.write"), TEXT("Manages Players' Access"), &UCrowdyServerObjectDefinition::bManagesAccess},
 	};
 
 	/** A ckx-sdk call into platform data, as it reads with whitespace removed, and the scope it needs. */
@@ -331,8 +334,18 @@ namespace CrowdyExecDeployDetail
 		{TEXT("grids().settings("), TEXT("grids.read")},
 		{TEXT("grids().at("), TEXT("grids.read")},
 		{TEXT("grids().check_permission("), TEXT("grids.read")},
+		{TEXT("grids().create("), TEXT("grids.write")},
+		{TEXT("grids().delete("), TEXT("grids.write")},
+		{TEXT("grids().assign_group("), TEXT("grids.write")},
+		{TEXT("grids().unassign_group("), TEXT("grids.write")},
+		{TEXT("grids().set_open_permissions("), TEXT("grids.write")},
 		{TEXT("permissions().grant("), TEXT("permissions.write")},
 		{TEXT("permissions().revoke("), TEXT("permissions.write")},
+		{TEXT("access().get("), TEXT("access.read")},
+		{TEXT("access().grant("), TEXT("access.write")},
+		{TEXT("access().revoke("), TEXT("access.write")},
+		{TEXT("access().suspend("), TEXT("access.write")},
+		{TEXT("access().unsuspend("), TEXT("access.write")},
 	};
 
 	/** The Rust source without its comments, strings and whitespace, so only code is matched and a call split across lines reads as one. */
