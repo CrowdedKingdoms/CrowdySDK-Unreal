@@ -4,6 +4,7 @@
 #include "CrowdyExecDeploy.h"
 #include "CrowdyExecDeveloperApi.h"
 #include "CrowdyExecRevisions.h"
+#include "UI/CrowdyStudioWidgets.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -23,6 +24,16 @@ namespace CrowdyServerComputePage
 
 	/** Who can read an instance, as a type row says it for the definition's Readable By. */
 	FText ReadableByPhrase(ECrowdyServerObjectVisibility Visibility);
+
+	struct FChangeBadge
+	{
+		FText Label;
+		CrowdyStudioWidgets::EBadgeTone Tone = CrowdyStudioWidgets::EBadgeTone::Neutral;
+		FText ToolTip;
+	};
+
+	/** One badge for a type: what stops its code from building wins, then how it compares with the live version. */
+	FChangeBadge ChooseChangeBadge(const CrowdyExecDeploy::FTypeState& Type, const CrowdyExecRevisions::FTypeChange* Change);
 }
 
 /** The Server Compute page of Crowdy Studio: deploys the project's Server Object types, and shows the app's versions, logs and call activity. */

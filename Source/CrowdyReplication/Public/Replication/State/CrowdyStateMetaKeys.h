@@ -38,7 +38,7 @@ namespace CrowdyStateMetaKeys
 	// waiting for the next change. WITHOUT this key a property still replicates on change every tick, it
 	// just is never re-sent while unchanged. Default off in C++ (add the key to opt a property in); the
 	// Blueprint "Crowdy Replication" dropdown defaults its Heartbeat toggle On. Durable/late-join state
-	// belongs in Game Models, so most transient view properties leave this off.
+	// belongs in server code, so most transient view properties leave this off.
 	inline const TCHAR* Heartbeat = TEXT("CrowdyHeartbeat");
 
 	/**

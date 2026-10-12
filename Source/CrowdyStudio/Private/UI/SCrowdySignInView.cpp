@@ -186,7 +186,7 @@ void SCrowdySignInView::Construct(const FArguments& InArgs)
 				[
 					CrowdyStudioWidgets::Field(LOCTEXT("OrgTokenLabel", "Organization token"),
 						SAssignNew(TokenBox, SEditableTextBox).Style(&Style, "Crowdy.Input").IsPassword(true).HintText(LOCTEXT("OrgTokenHint", "Paste a manage_* org token")),
-						LOCTEXT("OrgTokenHelp", "Management-only access. A session sign-in (email, provider, or link) is required for game-plane authoring (teams, channels, grid, game model)."))
+						LOCTEXT("OrgTokenHelp", "Management-only access. A session sign-in (email, provider, or link) is required for game-plane authoring (teams, channels, grid)."))
 				]
 				+ SVerticalBox::Slot().AutoHeight()
 				[

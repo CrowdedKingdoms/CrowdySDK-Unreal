@@ -8,10 +8,11 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "TimerManager.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Subsystem/CrowdyGameSession.h"
-#include "Subsystem/CrowdySDKSubsystem.h"
 #include "Subsystem/CrowdyTeams.h"
+#include "UObject/ObjectKey.h"
 #include "UObject/UnrealType.h"
 
 namespace CrowdyServerObjectComponentDetail
@@ -33,6 +34,15 @@ namespace CrowdyServerObjectComponentDetail
 	{
 		const UCrowdyGameSession* Session = FindGameInstanceSubsystem<UCrowdyGameSession>(World);
 		return Session ? Session->GetUserID() : 0;
+	}
+
+	/** True the first time an actor class has a component with no definition, so a crowd of them warns once. */
+	bool FirstMissingDefinition(const AActor* Owner)
+	{
+		static TSet<TObjectKey<UClass>> Warned;
+		bool bAlready = false;
+		Warned.Add(TObjectKey<UClass>(Owner ? Owner->GetClass() : nullptr), &bAlready);
+		return !bAlready;
 	}
 
 	FString WaitingForVariable(FName Variable)
@@ -83,6 +93,47 @@ namespace CrowdyServerObjectComponentDetail
 UCrowdyServerObjectComponent::UCrowdyServerObjectComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
+}
+
+void UCrowdyServerObjectComponent::TickTeamsRetry(float DeltaSeconds)
+{
+	if (Object || !JoinError.Equals(CrowdyServerObjectComponentDetail::WaitingForTeams, ESearchCase::CaseSensitive))
+	{
+		SetTeamsRetryArmed(false);
+		return;
+	}
+	TeamsRetryIn -= DeltaSeconds;
+	if (TeamsRetryIn <= 0.f)
+	{
+		RequestTeams();
+	}
+}
+
+void UCrowdyServerObjectComponent::SetTeamsRetryArmed(bool bArmed)
+{
+	bTeamsRetryArmed = bArmed;
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	FTimerManager& Timers = World->GetTimerManager();
+	if (!bArmed)
+	{
+		Timers.ClearTimer(TeamsRetryTimer);
+		return;
+	}
+	if (!Timers.IsTimerActive(TeamsRetryTimer))
+	{
+		Timers.SetTimer(TeamsRetryTimer, FTimerDelegate::CreateUObject(this, &UCrowdyServerObjectComponent::TickTeamsRetry, TeamsRetrySeconds), TeamsRetrySeconds, true);
+	}
+}
+
+void UCrowdyServerObjectComponent::RequestTeams()
+{
+	TeamsRetryIn = TeamsRetrySeconds;
+	++TeamsRequests;
+	CrowdyServerObjectComponentDetail::RequestMyTeams(GetWorld());
 }
 
 void UCrowdyServerObjectComponent::OnRegister()
@@ -152,19 +203,170 @@ FString UCrowdyServerObjectComponent::ResolveInstanceId(FString& OutError) const
 		}
 		return SourceValue;
 	}
+	case ECrowdyServerObjectInstanceMode::ThisActorsArea:
+		return ResolveAreaKey(OutError);
 	}
 	OutError = TEXT("Unknown Instance Mode on the Crowdy Server Object component");
 	return FString();
+}
+
+FString UCrowdyServerObjectComponent::ResolveAreaKey(FString& OutError) const
+{
+	const AActor* Owner = GetOwner();
+	const UCrowdyServerObjectSubsystem* ServerObjects = FindServerObjects();
+	int64 ChunkX = 0;
+	int64 ChunkY = 0;
+	const bool bPlaced = Owner && ServerObjects && CrowdyServerObjectShared::GroundChunkAt(Owner->GetActorLocation(), ServerObjects->GetChunkSize(), ChunkX, ChunkY);
+	if (!Definition || !bPlaced)
+	{
+		OutError = TEXT("This Actor's Area needs the component on an actor in a game, at a location in the world");
+		return FString();
+	}
+	return Definition->GetAreaKey(ChunkX, ChunkY);
+}
+
+bool UCrowdyServerObjectComponent::ReadsRecord() const
+{
+	return Definition && Definition->Holds == ECrowdyServerObjectHolds::RecordPerEntity;
+}
+
+FInstancedStruct UCrowdyServerObjectComponent::GetVariables() const
+{
+	const UCrowdyServerObject* Read = GetReadObject();
+	if (!Read)
+	{
+		return FInstancedStruct();
+	}
+	const FInstancedStruct* Values = Read->FindValues(ReadsRecord() ? &RecordId : nullptr);
+	return Values ? *Values : Read->GetState();
+}
+
+UCrowdyServerObject* UCrowdyServerObjectComponent::GetReadObject() const
+{
+	const bool bHandingOver = Previous && Object && !HoldsOwnRecord(Object) && HoldsOwnRecord(Previous);
+	return bHandingOver ? Previous.Get() : Object.Get();
+}
+
+bool UCrowdyServerObjectComponent::HoldsOwnRecord(const UCrowdyServerObject* Held) const
+{
+	return Held && Held->GetStatus() == ECrowdyServerObjectStatus::Ready && Held->GetRecord(RecordId);
+}
+
+bool UCrowdyServerObjectComponent::NeedsFollow() const
+{
+	const bool bArea = InstanceMode == ECrowdyServerObjectInstanceMode::ThisActorsArea && !(Definition && Definition->bOnlyOneInstance);
+	return bArea || (ReadsRecord() && !RecordNetId.IsValid());
+}
+
+bool UCrowdyServerObjectComponent::MovedChunk()
+{
+	const AActor* Owner = GetOwner();
+	const UCrowdyServerObjectSubsystem* ServerObjects = FindServerObjects();
+	int64 ChunkX = 0;
+	int64 ChunkY = 0;
+	if (!Owner || !ServerObjects || !CrowdyServerObjectShared::GroundChunkAt(Owner->GetActorLocation(), ServerObjects->GetChunkSize(), ChunkX, ChunkY))
+	{
+		return false;
+	}
+	const bool bMoved = !bFollowedChunk || ChunkX != FollowedChunkX || ChunkY != FollowedChunkY;
+	FollowedChunkX = ChunkX;
+	FollowedChunkY = ChunkY;
+	bFollowedChunk = true;
+	return bMoved;
+}
+
+void UCrowdyServerObjectComponent::SetFollowArmed(bool bArmed)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	FTimerManager& Timers = World->GetTimerManager();
+	if (!bArmed)
+	{
+		Timers.ClearTimer(FollowTimer);
+		return;
+	}
+	if (!Timers.IsTimerActive(FollowTimer))
+	{
+		Timers.SetTimer(FollowTimer, FTimerDelegate::CreateUObject(this, &UCrowdyServerObjectComponent::TickFollow), FollowSeconds, true);
+	}
+}
+
+void UCrowdyServerObjectComponent::TickFollow()
+{
+	if (bJoining || !Object)
+	{
+		return;
+	}
+	if (Previous && (HoldsOwnRecord(Object) || Previous->GetStatus() != ECrowdyServerObjectStatus::Ready))
+	{
+		Previous = nullptr;
+	}
+	// The key is worked out only when the actor reached another chunk.
+	const bool bArea = InstanceMode == ECrowdyServerObjectInstanceMode::ThisActorsArea && !(Definition && Definition->bOnlyOneInstance);
+	if (bArea && MovedChunk())
+	{
+		FString Error;
+		const FString Key = ResolveAreaKey(Error);
+		if (!Key.IsEmpty() && !Key.Equals(Object->GetInstanceId(), ESearchCase::CaseSensitive))
+		{
+			// The area left keeps answering Get Variables until the new one holds this actor's record.
+			Previous = HoldsOwnRecord(Object) ? Object.Get() : Previous.Get();
+			Join();
+			return;
+		}
+	}
+	// The record's first values run Blueprint code, which must not start a Join inside the watch.
+	TGuardValue<bool> JoiningGuard(bJoining, true);
+	FollowRecordId();
+	if (!NeedsFollow())
+	{
+		SetFollowArmed(false);
+	}
+}
+
+void UCrowdyServerObjectComponent::FollowRecordId()
+{
+	UCrowdyServerObject* Held = Object;
+	const UCrowdyEntityComponent* Found = Entity.Get();
+	const FGuid NetId = Found ? Found->GetNetID() : FGuid();
+	if (!Held || !ReadsRecord() || NetId == RecordNetId)
+	{
+		return;
+	}
+	if (RecordHandle.IsValid())
+	{
+		Held->UnwatchRecord(RecordId, RecordHandle);
+		RecordHandle.Reset();
+	}
+	RecordNetId = NetId;
+	RecordId = NetId.IsValid() ? NetId.ToString(EGuidFormats::Digits) : FString();
+	VariableBindings.ReadRecord(true, RecordId);
+	if (RecordId.IsEmpty())
+	{
+		return;
+	}
+	const FString Watched = RecordId;
+	const FDelegateHandle Watch = Held->WatchRecord(Watched, FOnCrowdyServerValuesChanged::FDelegate::CreateUObject(this, &UCrowdyServerObjectComponent::HandleVariables));
+	if (Object != Held || !RecordId.Equals(Watched, ESearchCase::CaseSensitive))
+	{
+		// A handler of the first values let go of it, or moved to another record.
+		Held->UnwatchRecord(Watched, Watch);
+		return;
+	}
+	RecordHandle = Watch;
 }
 
 void UCrowdyServerObjectComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (UCrowdySDKSubsystem* SDK = CrowdyServerObjectComponentDetail::FindGameInstanceSubsystem<UCrowdySDKSubsystem>(GetWorld()))
+	// The subsystem hears sign-ins once for every component, so thousands of them do not each bind to the SDK's event.
+	if (UCrowdyServerObjectSubsystem* ServerObjects = FindServerObjects())
 	{
-		SDK->OnLogin.AddUniqueDynamic(this, &UCrowdyServerObjectComponent::HandleLogin);
-		SDK->OnRegister.AddUniqueDynamic(this, &UCrowdyServerObjectComponent::HandleLogin);
+		ServerObjects->AddSignInListener(this);
 		bLoginBound = true;
 	}
 
@@ -190,13 +392,13 @@ bool UCrowdyServerObjectComponent::FollowsSourceValue() const
 
 void UCrowdyServerObjectComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	UCrowdySDKSubsystem* SDK = bLoginBound ? CrowdyServerObjectComponentDetail::FindGameInstanceSubsystem<UCrowdySDKSubsystem>(GetWorld()) : nullptr;
-	if (SDK)
+	UCrowdyServerObjectSubsystem* ServerObjects = bLoginBound ? FindServerObjects() : nullptr;
+	if (ServerObjects)
 	{
-		SDK->OnLogin.RemoveDynamic(this, &UCrowdyServerObjectComponent::HandleLogin);
-		SDK->OnRegister.RemoveDynamic(this, &UCrowdyServerObjectComponent::HandleLogin);
+		ServerObjects->RemoveSignInListener(this);
 	}
 	bLoginBound = false;
+	Previous = nullptr;
 
 	UCrowdyTeams* Teams = bTeamsBound ? CrowdyServerObjectComponentDetail::FindGameInstanceSubsystem<UCrowdyTeams>(GetWorld()) : nullptr;
 	if (Teams)
@@ -204,7 +406,9 @@ void UCrowdyServerObjectComponent::EndPlay(const EEndPlayReason::Type EndPlayRea
 		Teams->OnMyTeamsCacheChanged.RemoveDynamic(this, &UCrowdyServerObjectComponent::HandleMyTeamsChanged);
 	}
 	bTeamsBound = false;
-	bTeamsRequested = false;
+	TeamsRetryIn = 0.f;
+	SetTeamsRetryArmed(false);
+	SetFollowArmed(false);
 
 	StopWatchingSource();
 	Leave();
@@ -219,33 +423,43 @@ void UCrowdyServerObjectComponent::Join()
 	}
 	TGuardValue<bool> JoiningGuard(bJoining, true);
 	Leave();
+	SetTeamsRetryArmed(false);
 
 	if (!Definition)
 	{
-		Refuse(CrowdyServerObjectComponentDetail::PickDefinition);
+		Refuse(CrowdyServerObjectComponentDetail::PickDefinition, CrowdyServerObjectComponentDetail::FirstMissingDefinition(GetOwner()));
 		return;
 	}
 
 	FString Error;
 	const FString Id = ResolveInstanceId(Error);
-	if (!bTeamsRequested && Error.Equals(CrowdyServerObjectComponentDetail::WaitingForTeams, ESearchCase::CaseSensitive))
+	const bool bTeamsWait = Error.Equals(CrowdyServerObjectComponentDetail::WaitingForTeams, ESearchCase::CaseSensitive);
+	if (bTeamsWait && TeamsRetryIn <= 0.f)
 	{
-		bTeamsRequested = true;
-		CrowdyServerObjectComponentDetail::RequestMyTeams(GetWorld());
+		RequestTeams();
 	}
 
 	// Not a failure: it joins when the player signs in, their teams arrive or the source variable is set.
 	const bool bSignInWait = InstanceMode == ECrowdyServerObjectInstanceMode::SignedInPlayer;
-	const bool bTeamsWait = Error.Equals(CrowdyServerObjectComponentDetail::WaitingForTeams, ESearchCase::CaseSensitive);
 	const bool bSourceWait = FollowsSourceValue() && !SourceVariable.IsNone() && SourceValue.IsEmpty();
 	if (!Error.IsEmpty() && (bSignInWait || bTeamsWait || bSourceWait))
 	{
 		JoinError = bSignInWait ? FString(CrowdyServerObjectComponentDetail::WaitingForSignIn) : Error;
+		SetTeamsRetryArmed(bTeamsWait);
 		return;
 	}
 	if (!Error.IsEmpty())
 	{
 		Refuse(Error);
+		return;
+	}
+
+	// The record is that of this actor's entity, whose id may arrive after BeginPlay.
+	const AActor* Owner = GetOwner();
+	const UCrowdyEntityComponent* FoundEntity = Owner ? Owner->FindComponentByClass<UCrowdyEntityComponent>() : nullptr;
+	if (ReadsRecord() && !FoundEntity)
+	{
+		Refuse(TEXT("A Server Object with a record per entity needs a Crowdy Entity component on this actor; its id names the record"));
 		return;
 	}
 
@@ -266,14 +480,26 @@ void UCrowdyServerObjectComponent::Join()
 	Object = Acquired;
 	JoinError.Reset();
 	StatusHandle = Acquired->OnStatusChanged.AddUObject(this, &UCrowdyServerObjectComponent::HandleStatus);
-	const FDelegateHandle Watch = Acquired->WatchValues(FOnCrowdyServerValuesChanged::FDelegate::CreateUObject(this, &UCrowdyServerObjectComponent::HandleVariables));
+	Entity = FoundEntity;
+	RecordNetId.Invalidate();
+	RecordId.Reset();
+	VariableBindings.ReadRecord(ReadsRecord(), RecordId);
+	if (ReadsRecord())
+	{
+		FollowRecordId();
+	}
+	else
+	{
+		ValuesHandle = Acquired->WatchValues(FOnCrowdyServerValuesChanged::FDelegate::CreateUObject(this, &UCrowdyServerObjectComponent::HandleVariables));
+	}
 	if (Object != Acquired)
 	{
 		// A handler of the first values let go of it.
-		Acquired->UnwatchValues(Watch);
+		Acquired->UnwatchValues(ValuesHandle);
+		ValuesHandle.Reset();
 		return;
 	}
-	ValuesHandle = Watch;
+	SetFollowArmed(NeedsFollow());
 
 	// A shared object that is already Ready sends no status change of its own.
 	if (Acquired->GetStatus() == ECrowdyServerObjectStatus::Ready)
@@ -293,8 +519,11 @@ void UCrowdyServerObjectComponent::Leave()
 	Object = nullptr;
 	Held->OnStatusChanged.Remove(StatusHandle);
 	Held->UnwatchValues(ValuesHandle);
+	Held->UnwatchRecord(RecordId, RecordHandle);
 	StatusHandle.Reset();
 	ValuesHandle.Reset();
+	RecordHandle.Reset();
+	RecordNetId.Invalidate();
 
 	// A source that is also the held object is given back once, when it stops being watched; at shutdown the subsystem may be gone already.
 	UCrowdyServerObjectSubsystem* Subsystem = FindServerObjects();
@@ -316,12 +545,13 @@ UCrowdyServerObjectSubsystem* UCrowdyServerObjectComponent::FindServerObjects() 
 	return CrowdyServerObjectComponentDetail::FindGameInstanceSubsystem<UCrowdyServerObjectSubsystem>(GetWorld());
 }
 
-void UCrowdyServerObjectComponent::Refuse(const FString& Reason)
+void UCrowdyServerObjectComponent::Refuse(const FString& Reason, bool bWarn)
 {
 	// A Failed handler that calls Rejoin would otherwise refuse again inside this broadcast, without end.
 	TGuardValue<bool> JoiningGuard(bJoining, true);
 	JoinError = Reason;
-	UE_LOG(LogCrowdyExec, Warning, TEXT("Crowdy Server Object on %s could not join: %s"), *GetNameSafe(GetOwner()), *Reason);
+	SetTeamsRetryArmed(false);
+	UE_CLOG(bWarn, LogCrowdyExec, Warning, TEXT("Crowdy Server Object on %s could not join: %s"), *GetNameSafe(GetOwner()), *Reason);
 	OnStatusChanged.Broadcast(nullptr, ECrowdyServerObjectStatus::Failed);
 }
 
@@ -336,7 +566,7 @@ void UCrowdyServerObjectComponent::WatchSource()
 
 	if (!Definition)
 	{
-		Refuse(CrowdyServerObjectComponentDetail::PickDefinition);
+		Refuse(CrowdyServerObjectComponentDetail::PickDefinition, CrowdyServerObjectComponentDetail::FirstMissingDefinition(GetOwner()));
 		return;
 	}
 	if (!SourceDefinition)
@@ -461,7 +691,7 @@ void UCrowdyServerObjectComponent::HandleSourceVariables(UCrowdyServerObject* In
 	Join();
 }
 
-void UCrowdyServerObjectComponent::HandleLogin(bool bSuccess, FString Message)
+void UCrowdyServerObjectComponent::HandleLogin(bool bSuccess)
 {
 	if (!bSuccess || !HasBegunPlay())
 	{
@@ -478,8 +708,8 @@ void UCrowdyServerObjectComponent::HandleSignedIn()
 	{
 		Leave();
 		JoinError = CrowdyServerObjectComponentDetail::WaitingForTeams;
-		bTeamsRequested = true;
-		CrowdyServerObjectComponentDetail::RequestMyTeams(GetWorld());
+		SetTeamsRetryArmed(true);
+		RequestTeams();
 		return;
 	}
 
@@ -538,10 +768,25 @@ void UCrowdyServerObjectComponent::HandleVariables(UCrowdyServerObject* InObject
 	{
 		return;
 	}
-	OnVariablesChanged.Broadcast(InObject, InObject->ToVariableNames(Fields));
-	if (InObject == Object)
+	if (Previous && HoldsOwnRecord(InObject))
 	{
-		VariableBindings.Notify(Object, Fields);
+		Previous = nullptr;
+	}
+	// The names are made only for a listener.
+	if (OnVariablesChanged.IsBound())
+	{
+		OnVariablesChanged.Broadcast(InObject, InObject->ToVariableNames(Fields));
+	}
+	if (InObject != Object)
+	{
+		return;
+	}
+	VariableBindings.Notify(Object, Fields);
+	// A pooled actor given another entity loses its old record, which is when its new id is looked for.
+	if (InObject == Object && ReadsRecord() && !bJoining && !InObject->GetRecord(RecordId))
+	{
+		TGuardValue<bool> JoiningGuard(bJoining, true);
+		FollowRecordId();
 	}
 }
 
@@ -566,7 +811,8 @@ void UCrowdyServerObjectComponent::Rejoin()
 	}
 
 	// A retry asks for the teams again, in case the last request failed.
-	bTeamsRequested = false;
+	TeamsRetryIn = 0.f;
+	Previous = nullptr;
 	StopWatchingSource();
 	if (FollowsSourceValue())
 	{

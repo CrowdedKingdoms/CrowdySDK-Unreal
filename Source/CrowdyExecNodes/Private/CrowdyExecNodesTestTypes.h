@@ -6,7 +6,8 @@
 #include "UObject/SoftObjectPtr.h"
 #include "CrowdyExecNodesTestTypes.generated.h"
 
-UENUM(BlueprintType)
+// The tests make it a Blueprint type while they run, so it stays out of the editor's type pickers.
+UENUM()
 enum class ECrowdyExecNodesTestPhase : uint8
 {
 	Calm,

@@ -6,7 +6,6 @@
 #include "CrowdyCppClient.h"
 #include "Dom/JsonObject.h" // WrapDataEnvelope constructs one inline, so the full type is needed here
 #include "Model/CrowdyStudioTypes.h"
-#include "Replication/GameModel/Effect/CrowdyGameModelAutomationInput.h" // FCrowdyGameModelAutomationInput, ...Trigger...
 
 // Response parsing and variables-building for the studio operations. The GraphQL query/mutation
 // documents themselves live in the shared API client's generated operation set; this file only
@@ -30,19 +29,6 @@ namespace CrowdyStudioGql
 		}
 		return Envelope;
 	}
-
-	// Game Models are deprecated: the client answers every Game Model and Compute operation with a refusal and sends nothing.
-	inline bool IsDeprecatedGameModelDomain(ECrowdyCppApiDomain Domain)
-	{
-		return Domain == ECrowdyCppApiDomain::GameModel || Domain == ECrowdyCppApiDomain::Compute;
-	}
-
-	// Build the variables for gameModelUpsertAutomation / gameModelUpsertAutomationTrigger from a neutral input
-	// (compiled from a UCrowdyEffect that opts into running automatically). Every field is emitted EXPLICITLY so the
-	// server read-back matches and a follow-up plan is a genuine no-op; appId is emitted as a JSON string (BigInt).
-	// The returned object is the full { input: {...} } variables wrapper.
-	TSharedPtr<FJsonObject> BuildAutomationUpsertVariables(const FCrowdyGameModelAutomationInput& Automation, int64 AppId);
-	TSharedPtr<FJsonObject> BuildAutomationTriggerUpsertVariables(const FCrowdyGameModelAutomationTriggerInput& Trigger, int64 AppId);
 
 	// Each parser takes the full response envelope ({ data, errors }) and digs into
 	// `data` itself, returning false when the expected node is missing.
@@ -84,38 +70,11 @@ namespace CrowdyStudioGql
 	                          TArray<TSharedPtr<FStudioGridGroupGrant>>& OutGrants);
 	void ParseRuntimePermissions(const TSharedPtr<FJsonObject>& Envelope, TArray<FString>& OutKeys);
 
-	// Game model.
-	void ParseContainerTypes(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
-	                         TArray<TSharedPtr<FStudioContainerType>>& OutTypes);
-	void ParsePropertyDefs(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
-	                       TArray<TSharedPtr<FStudioPropertyDef>>& OutDefs);
-	void ParseFunctions(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
-	                    TArray<TSharedPtr<FStudioFunction>>& OutFns);
-	bool ParseFunction(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FStudioFunction& OutFn);
-
-	// Read the authored fields of every GmAutomation (the circuit-breaker runtime fields are ignored: they are
-	// server-owned state, not part of the desired schema the diff compares).
-	void ParseAutomations(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
-	                      TArray<FStudioAutomation>& OutAutomations);
-	// Read every GmAutomationTrigger. The wire references its automation by id, but the diff keys triggers by
-	// automation NAME, so the automations read in the same plan are passed in to resolve automationId -> name.
-	void ParseAutomationTriggers(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
-	                             const TArray<FStudioAutomation>& AutomationsForNameLookup,
-	                             TArray<FStudioAutomationTrigger>& OutTriggers);
+	// App access: feature keys, the tier-feature grants and the access tiers.
 	void ParseFeatures(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
 	                   TArray<TSharedPtr<FStudioAppFeature>>& OutFeatures);
 	void ParseTierFeatures(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
 	                       TArray<TSharedPtr<FStudioTierFeature>>& OutGrants);
 	void ParseAccessTiers(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
 	                      TArray<TSharedPtr<FStudioAccessTier>>& OutTiers);
-	bool ParseGameModelPolicy(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FStudioGameModelPolicy& OutPolicy);
-	bool ParseSeedResult(const TSharedPtr<FJsonObject>& Envelope, FString& OutSummary);
-	// The container half of a seed result: new rows only in OutCreated; OutIdMapJson maps every sent tempId.
-	bool ParseSeedContainers(const TSharedPtr<FJsonObject>& Envelope, int32& OutCreated, FString& OutIdMapJson);
-	bool ParseModelLint(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FStudioLintReport& OutReport);
-
-	void ParseContainers(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName,
-	                     TArray<TSharedPtr<FStudioContainer>>& OutContainers);
-	bool ParseContainerState(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, FStudioContainerState& OutState);
-	void ParseSessions(const TSharedPtr<FJsonObject>& Envelope, const TCHAR* OpName, TArray<FStudioSession>& OutSessions);
 }

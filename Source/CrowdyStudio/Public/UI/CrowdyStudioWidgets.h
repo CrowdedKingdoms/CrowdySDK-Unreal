@@ -37,6 +37,9 @@ namespace CrowdyStudioWidgets
 	// A rounded card/platter wrapping arbitrary content.
 	CROWDYSTUDIO_API TSharedRef<SWidget> Card(const TSharedRef<SWidget>& Content, const FMargin& Padding = FMargin(16.0f, 14.0f), bool bFlat = false);
 
+	// A flat card of fixed Height that wraps a list view, so the list scrolls inside it.
+	CROWDYSTUDIO_API TSharedRef<SWidget> ListCard(const TSharedRef<SWidget>& List, float Height);
+
 	// Section header: an optional leading icon, a bold title, and an optional right-aligned accessory.
 	CROWDYSTUDIO_API TSharedRef<SWidget> SectionHeader(const FText& Title, const TCHAR* Icon = nullptr, TSharedPtr<SWidget> RightAccessory = nullptr);
 

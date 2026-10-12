@@ -15,10 +15,10 @@ namespace
 	constexpr int64 SessionChannelId = 4242;
 }
 
-// The session channel is joined whether or not any Multicast CrowdyEvent names a channel. It carries the Game Model
-// plane's signals and model-changed pings and the subsystem CrowdyState delta, none of which any CrowdyEvent
-// declares, so deriving the join set from RPC usage alone left a project with no channel-routed events joined to
-// nothing. A client only receives on channels it has joined, so every signal was then dropped with nothing logged.
+// The session channel is joined whether or not any Multicast CrowdyEvent names a channel. It carries session-wide
+// traffic and the subsystem CrowdyState delta, none of which any CrowdyEvent declares, so deriving the join set
+// from RPC usage alone left a project with no channel-routed events joined to nothing. A client only receives on
+// channels it has joined, so all of that was then dropped with nothing logged.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyChannelJoinPlanIncludesSessionTest,
 	"CrowdySDK.Services.ChannelJoinPlanIncludesSession", CrowdyChannelJoinPlanTestFlags)
 bool FCrowdyChannelJoinPlanIncludesSessionTest::RunTest(const FString& Parameters)
@@ -77,7 +77,7 @@ bool FCrowdyChannelJoinPlanDedupesSessionTest::RunTest(const FString& Parameters
 
 // A fresh app has no channels authored, so the session channel has to be created before anything can be joined.
 // This is the case that fails silently when the plan is derived from the channels CrowdyEvents name: there are
-// none, so nothing is planned, nothing is created, and every Game Model signal is dropped.
+// none, so nothing is planned, nothing is created, and all session-wide traffic is dropped.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyChannelJoinPlanCreatesSessionChannelTest,
 	"CrowdySDK.Services.ChannelJoinPlanCreatesMissingSessionChannel", CrowdyChannelJoinPlanTestFlags)
 bool FCrowdyChannelJoinPlanCreatesSessionChannelTest::RunTest(const FString& Parameters)

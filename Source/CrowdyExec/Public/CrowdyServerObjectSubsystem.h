@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
 #include "CrowdyServerObjectTypes.h"
+#include "Queries/Data/Teams/Types/FCrowdyTeamMembership.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "CrowdyServerObjectSubsystem.generated.h"
 
@@ -10,6 +11,7 @@ class FCrowdyNativeExecConnection;
 class UCrowdyCppClientSubsystem;
 class UCrowdyGameSession;
 class UCrowdyServerObject;
+class UCrowdyServerObjectComponent;
 class UCrowdyServerObjectDefinition;
 class UCrowdyServerObjectLink;
 class UWorld;
@@ -46,11 +48,21 @@ public:
 	/** The signed-in player's user id, or 0 when nobody is signed in. */
 	int64 GetSignedInUserId() const;
 
+	/** The session's chunk size in world units, which actor updates place a location in a chunk by; 0 without a session. */
+	double GetChunkSize() const;
+
+	/** The chunk holding Location on the ground, as actor updates place it: Unreal's X and Y over the chunk size, rounded down. False without a session. */
+	bool FindGroundChunk(const FVector& Location, int64& OutX, int64& OutY) const;
+
 	/**
 	 * The Link following Definition's instance for Owner: made on first use, the same one for the same arguments. Dropped
 	 * when Owner is destroyed, or when it was not asked for during the grace period and no live handler is bound to it.
 	 */
 	UCrowdyServerObjectLink* FindLink(UObject* Owner, UCrowdyServerObjectDefinition* Definition, ECrowdyServerObjectFind Find, const FString& InstanceId, int64 TeamId);
+
+	/** Has Component hear each sign-in and registration until RemoveSignInListener; adding and removing cost the same however many there are. */
+	void AddSignInListener(UCrowdyServerObjectComponent* Component);
+	void RemoveSignInListener(UCrowdyServerObjectComponent* Component);
 
 	/** Records that Handler's Function is now bound through Holder, and gives the holder it was bound through before, if any. */
 	UObject* MoveBinding(const UObject* Handler, FName Function, UObject* Holder);
@@ -60,8 +72,12 @@ public:
 	void InitializeForTest(UCrowdyCppClientSubsystem* InClientHost, UCrowdyGameSession* InSession);
 	void TickForTest(float DeltaSeconds) { Tick(DeltaSeconds); }
 	void SignOutForTest() { HandleLogout(true); }
+	void SignInForTest() { HandleLogin(true, FString()); }
+	void MyTeamsChangedForTest(const TArray<FCrowdyTeamMembership>& Memberships) { HandleMyTeamsChanged(Memberships); }
 	void SetMapLoadingForTest(bool bLoading) { bLoadingMap = bLoading; }
 	void PostLoadMapForTest(UWorld* World) { HandlePostLoadMap(World); }
+	void SetSeamlessTravelForTest(bool bTravelling) { SeamlessTravelOverride = bTravelling; }
+	bool IsSeamlessTravellingForTest() const { return IsSeamlessTravelling(); }
 	int32 NumObjectsForTest() const { return Objects.Num(); }
 	int32 NumLinksForTest() const { return Links.Num(); }
 #endif
@@ -82,8 +98,23 @@ private:
 	UFUNCTION()
 	void HandleLogout(bool bSuccess);
 
+	UFUNCTION()
+	void HandleLogin(bool bSuccess, FString Message);
+
+	TSet<TWeakObjectPtr<UCrowdyServerObjectComponent>> SignInListeners;
+
+	/** The signed-in player's Crowdy Teams changed: records whose teams are Crowdy Teams are read again, as their Team Only values may now differ. */
+	UFUNCTION()
+	void HandleMyTeamsChanged(const TArray<FCrowdyTeamMembership>& Memberships);
+
+	/** The signed-in player's Crowdy Team ids, sorted, as last heard. */
+	TArray<int64> MyTeamIds;
+	TWeakObjectPtr<class UCrowdyTeams> TeamsSubsystem;
+
 	void HandlePreLoadMap(const FWorldContext& WorldContext, const FString& MapName);
 	void HandlePostLoadMap(UWorld* World);
+	/** Seamless travel reports no map load start, so it is read from the game instance's travel handler instead. */
+	bool IsSeamlessTravelling() const;
 
 	UPROPERTY()
 	TMap<FCrowdyServerObjectKey, TObjectPtr<UCrowdyServerObject>> Objects;
@@ -112,6 +143,7 @@ private:
 
 	TWeakObjectPtr<UCrowdyCppClientSubsystem> ClientHostOverride;
 	TWeakObjectPtr<UCrowdyGameSession> SessionOverride;
+	TOptional<bool> SeamlessTravelOverride;
 
 	FTSTicker::FDelegateHandle TickHandle;
 	FDelegateHandle PreLoadMapHandle;
@@ -121,6 +153,13 @@ private:
 
 	/** The first object that is Connecting or Ready, or null when none needs the connection. */
 	const UCrowdyServerObject* FindLiveObject() const;
+
+	/** The first live object of a type no dial has failed with since the last good one, or null when every live type has. */
+	const UCrowdyServerObject* FindDialObject() const;
+
+	/** The type the connection was last dialled with, and those whose dial failed since the last good one. */
+	FString DialedType;
+	TSet<FString> FailedDialTypes;
 
 	bool IsCurrentConnection(const TWeakPtr<FCrowdyNativeExecConnection>& Dialed) const;
 

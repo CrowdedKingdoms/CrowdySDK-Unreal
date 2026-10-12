@@ -45,12 +45,15 @@ pub struct ServerObject {
 struct SnapshotOut<'a> {
     contract: u64,
     state: &'a CrowdyExecTestBossState,
+    timer_kinds: BTreeMap<&'static str, &'static str>,
 }
 
 #[derive(Deserialize)]
 struct SnapshotIn {
     contract: u64,
     state: CrowdyExecTestBossState,
+    #[serde(default)]
+    timer_kinds: Option<BTreeMap<String, String>>,
 }
 
 impl Hub for ServerObject {
@@ -65,11 +68,15 @@ impl Hub for ServerObject {
         if saved.contract != CONTRACT {
             return Err(Error::new(&format!("the snapshot was written for contract {}, this code reads {}", saved.contract, CONTRACT)));
         }
+        // The type has no timers now, so any it had would only keep firing.
+        for name in saved.timer_kinds.iter().flat_map(BTreeMap::keys) {
+            ctx.cancel_timer(name);
+        }
         Ok(Self { state: saved.state, epoch: ctx.now_ms() as u64, seq: 0 })
     }
 
     fn persist(&mut self, _ctx: &Ctx) -> Result<Vec<u8>> {
-        encode(&SnapshotOut { contract: CONTRACT, state: &self.state })
+        encode(&SnapshotOut { contract: CONTRACT, state: &self.state, timer_kinds: BTreeMap::new() })
     }
 
     fn handle(&mut self, ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {

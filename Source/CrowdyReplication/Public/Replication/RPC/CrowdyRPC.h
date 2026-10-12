@@ -278,6 +278,40 @@ public:
 	}
 
 	/**
+	 * Builds Fn's parameter frame from compile-time-checked arguments, as MarshalCall does, and hands it to
+	 * Use for the length of the call. Fn must not be null. Returns what Use returns.
+	 */
+	template <typename C, typename... TParams, typename... TArgs>
+	static bool WithCheckedFrame(UFunction* Fn, void (C::*)(TParams...), TFunctionRef<bool(const void*)> Use,
+	                             TArgs&&... Args)
+	{
+		static_assert(sizeof...(TParams) == sizeof...(TArgs),
+			"CrowdyEvent: wrong number of arguments.");
+		static_assert((std::is_convertible_v<TArgs, TParams> && ...),
+			"CrowdyEvent: argument type mismatch.");
+
+		const bool bParamsPOD = GetFnInfo(Fn).bParamsPOD;
+		const int32 FrameSize = FMath::Max<int32>(Fn->ParmsSize, 1);
+		uint8* Frame = static_cast<uint8*>(FMemory_Alloca(FrameSize));
+		FMemory::Memzero(Frame, FrameSize);
+		if (!bParamsPOD)
+		{
+			Fn->InitializeStruct(Frame);
+		}
+
+		PlaceAll(Fn, Frame, std::index_sequence_for<TParams...>{},
+		         TTuple<TParams...>(Forward<TArgs>(Args)...));
+
+		const bool bResult = Use(Frame);
+
+		if (!bParamsPOD)
+		{
+			Fn->DestroyStruct(Frame);
+		}
+		return bResult;
+	}
+
+	/**
 	 * Sends a CrowdyEvent to an entity named by Target, with no calling instance involved.
 	 *
 	 * The ordinary send path needs a live UObject to read the entity identity and the world position
@@ -300,7 +334,7 @@ public:
 	 * The call goes out as this client: the local player is stamped as the sender and no sending
 	 * identity is ever read from Target. Aiming a call at an entity another client owns is what this
 	 * entry is for, not an error - the RPC plane is client-authoritative by design and the owner's own
-	 * instance is what runs the body. State that must not be forgeable belongs in a Game Model instead.
+	 * instance is what runs the body. State that must not be forgeable belongs in server code (Server Objects) instead.
 	 *
 	 * Returns false ONLY when there was no transport to route through, so a caller that has a local body
 	 * may run it as a fallback. Every other outcome returns true, including every drop: a drop means the

@@ -1,5 +1,7 @@
 #include "CrowdyServerObjectDefinition.h"
 
+#include "Algo/AllOf.h"
+#include "Algo/AnyOf.h"
 #include "CrowdyExecInternal.h"
 #include "CrowdyExecLog.h"
 #include "Engine/UserDefinedEnum.h"
@@ -301,6 +303,7 @@ namespace
 		TArray<const UScriptStruct*> Structs;
 		TArray<const UEnum*> Enums;
 		TArray<FName> WatchedFound;
+		TArray<FName> StateFields;
 
 		void CheckType(const FProperty* Property, const FString& FieldPath, bool bKey)
 		{
@@ -415,11 +418,49 @@ namespace
 					Field.ServerName = ServerName;
 					Field.Property = Property->GetFName();
 					Field.PropertyGuid = PropertyGuid;
-					if (bState && Definition.WatchedFields.Contains(FName(*Authored)))
+					if (!bState)
 					{
-						Field.bWatched = true;
-						WatchedFound.Add(FName(*Authored));
+						continue;
 					}
+					StateFields.Add(FName(*Authored));
+					if (!Definition.WatchedFields.Contains(FName(*Authored)))
+					{
+						continue;
+					}
+					Field.bWatched = true;
+					WatchedFound.Add(FName(*Authored));
+					if (Definition.Holds != ECrowdyServerObjectHolds::RecordPerEntity)
+					{
+						continue;
+					}
+					if (Definition.OwnerFields.Contains(FName(*Authored)))
+					{
+						Field.Audience = ECrowdyServerFieldAudience::Owner;
+					}
+					else if (Definition.TeamFields.Contains(FName(*Authored)))
+					{
+						Field.Audience = ECrowdyServerFieldAudience::Team;
+					}
+				}
+			}
+		}
+
+		/** Each name must be a State field that is Visible to Players, and not also in Other. */
+		void CheckAudience(const TArray<FName>& Names, const TCHAR* Label, const TCHAR* OtherLabel, const TArray<FName>& Other, const UScriptStruct* StateStruct)
+		{
+			for (const FName& Name : Names)
+			{
+				if (!StateFields.Contains(Name))
+				{
+					Errors.Add(FString::Printf(TEXT("%s variable '%s' is not a field of %s"), Label, *Name.ToString(), *Describe(StateStruct)));
+				}
+				else if (!Definition.WatchedFields.Contains(Name))
+				{
+					Errors.Add(FString::Printf(TEXT("%s variable '%s' is not Visible to Players; choose %s for it again"), Label, *Name.ToString(), Label));
+				}
+				if (Other.Contains(Name))
+				{
+					Errors.Add(FString::Printf(TEXT("'%s' is both %s and %s; choose one"), *Name.ToString(), Label, OtherLabel));
 				}
 			}
 		}
@@ -518,6 +559,191 @@ namespace
 		}
 	}
 
+	void CheckRecords(const UCrowdyServerObjectDefinition& Definition, TArray<FString>& Errors)
+	{
+		if (Definition.AreaSizeChunks < 1 || Definition.AreaSizeChunks > CrowdyExec::MaxAreaSizeChunks)
+		{
+			Errors.Add(FString::Printf(TEXT("Area Size is %d; it must be from 1 to %d"), Definition.AreaSizeChunks, CrowdyExec::MaxAreaSizeChunks));
+		}
+		if (Definition.InterestRadiusAreas < 0 || Definition.InterestRadiusAreas > CrowdyExec::MaxInterestRadiusAreas)
+		{
+			Errors.Add(FString::Printf(TEXT("Areas Followed Around a Player is %d; it must be from 0 to %d"), Definition.InterestRadiusAreas, CrowdyExec::MaxInterestRadiusAreas));
+		}
+		if (Definition.Holds != ECrowdyServerObjectHolds::RecordPerEntity)
+		{
+			return;
+		}
+		if (Definition.Visibility != ECrowdyServerObjectVisibility::Public)
+		{
+			Errors.Add(TEXT("A Record per Entity needs Readable By Every Player; make the variables others must not see Owner Only or Team Only"));
+		}
+		if (Definition.MaxRecords < 1 || Definition.MaxRecords > CrowdyExec::MaxElements)
+		{
+			Errors.Add(FString::Printf(TEXT("Max Records is %d; it must be from 1 to %d"), Definition.MaxRecords, CrowdyExec::MaxElements));
+		}
+		if (Definition.PushIntervalMs < CrowdyExec::MinPushIntervalMs || Definition.PushIntervalMs > CrowdyExec::MaxPushIntervalMs)
+		{
+			Errors.Add(FString::Printf(TEXT("Send Changes Every is %d ms; it must be from %d to %d ms"), Definition.PushIntervalMs, CrowdyExec::MinPushIntervalMs, CrowdyExec::MaxPushIntervalMs));
+		}
+		if (Definition.MembersFrom != ECrowdyServerMembersSource::None)
+		{
+			Errors.Add(TEXT("A Record per Entity cannot use Members From; each record carries its own owner and team"));
+		}
+		for (const FCrowdyServerFunction& Function : Definition.Functions)
+		{
+			if (CheckedMethodName(Function).Equals(TEXT("changes"), ESearchCase::CaseSensitive))
+			{
+				Errors.Add(FString::Printf(TEXT("Function %s: 'changes' is reserved in a Record per Entity; rename the function"), *Function.Name.ToString()));
+			}
+		}
+	}
+
+	bool IsFeatureKey(const FString& Key)
+	{
+		return !Key.IsEmpty() && Key.Len() <= 64 && Algo::AllOf(Key, [](TCHAR Char)
+		{
+			return IsLowerAscii(Char) || IsUpperAscii(Char) || IsDigitAscii(Char) || Char == '_' || Char == '-' || Char == '.';
+		});
+	}
+
+	void CheckRequiredFeature(const FCrowdyServerFunction& Function, TArray<FString>& Errors)
+	{
+		if (Function.RequiredFeature.IsEmpty())
+		{
+			return;
+		}
+		const FString& Key = Function.RequiredFeature;
+		if (!IsFeatureKey(Key))
+		{
+			Errors.Add(FString::Printf(TEXT("Function %s: Required Feature '%s' must be 1 to 64 letters, digits, underscores, hyphens and dots"), *Function.Name.ToString(), *Key));
+		}
+		if (Function.WhoCanCall == ECrowdyServerFunctionCaller::ServerOnly)
+		{
+			Errors.Add(FString::Printf(TEXT("Function %s: Required Feature is only checked for players, and Callable By Server Only refuses every player; clear it or change Callable By"), *Function.Name.ToString()));
+		}
+	}
+
+	enum class ECronField : uint8
+	{
+		Plain,
+		DayOfMonth,
+		DayOfWeek,
+	};
+
+	struct FCronLimits
+	{
+		const TCHAR* Label;
+		const TCHAR* Range;
+		int32 Min;
+		int32 Max;
+		const TCHAR* Names;
+		ECronField Kind;
+	};
+
+	bool IsPlainNumber(const FString& Text)
+	{
+		return !Text.IsEmpty() && Text.Len() <= 4 && Algo::AllOf(Text, [](TCHAR Char) { return FChar::IsDigit(Char); });
+	}
+
+	/** A number in the field's range, or one of its three-letter names, in any case. */
+	bool CronValue(const FString& Text, const FCronLimits& Limits)
+	{
+		if (IsPlainNumber(Text))
+		{
+			const int32 Value = FCString::Atoi(*Text);
+			return Value >= Limits.Min && Value <= Limits.Max;
+		}
+		return Limits.Names && Text.Len() == 3 && FCString::Strstr(Limits.Names, *Text.ToUpper()) != nullptr;
+	}
+
+	/** One comma-separated item: * or ? or a value or a range, with an optional /step, or L, 5L or 1#2 where the field allows. */
+	bool CronItemFits(const FString& Item, const FCronLimits& Limits)
+	{
+		FString Left;
+		FString Step;
+		const bool bStepped = Item.Split(TEXT("/"), &Left, &Step);
+		const FString& Base = bStepped ? Left : Item;
+		if (bStepped && (!IsPlainNumber(Step) || FCString::Atoi(*Step) < 1))
+		{
+			return false;
+		}
+		if (Base.Equals(TEXT("*"), ESearchCase::CaseSensitive))
+		{
+			return true;
+		}
+		if (Base.Equals(TEXT("?"), ESearchCase::CaseSensitive))
+		{
+			return !bStepped && Limits.Kind != ECronField::Plain;
+		}
+		if (Limits.Kind == ECronField::DayOfMonth && Base.Equals(TEXT("L"), ESearchCase::CaseSensitive))
+		{
+			return !bStepped;
+		}
+		FString From;
+		FString To;
+		if (Limits.Kind == ECronField::DayOfWeek && Base.Split(TEXT("#"), &From, &To))
+		{
+			return !bStepped && CronValue(From, Limits) && To.Len() == 1 && To[0] >= '1' && To[0] <= '5';
+		}
+		if (Limits.Kind == ECronField::DayOfWeek && Base.Len() > 1 && Base.EndsWith(TEXT("L"), ESearchCase::CaseSensitive))
+		{
+			return !bStepped && CronValue(Base.LeftChop(1), Limits);
+		}
+		if (!Base.Split(TEXT("-"), &From, &To))
+		{
+			return CronValue(Base, Limits);
+		}
+		return CronValue(From, Limits) && CronValue(To, Limits);
+	}
+
+	bool CronFieldFits(const FString& Field, const FCronLimits& Limits)
+	{
+		TArray<FString> Items;
+		Field.ParseIntoArray(Items, TEXT(","), false);
+		return !Field.EndsWith(TEXT(",")) && Algo::AllOf(Items, [&Limits](const FString& Item) { return CronItemFits(Item, Limits); });
+	}
+
+	/** Why a cron expression cannot be one, or empty when the server will read it; the server's own parser has the last word. */
+	FString CronProblem(const FString& Expression)
+	{
+		const FString Trimmed = Expression.TrimStartAndEnd();
+		if (Trimmed.IsEmpty())
+		{
+			return TEXT("On Schedule needs a Cron expression, such as 0 */6 * * *");
+		}
+		static const TCHAR* const Macros[] = {TEXT("@yearly"), TEXT("@monthly"), TEXT("@weekly"), TEXT("@daily"), TEXT("@hourly")};
+		if (Trimmed.StartsWith(TEXT("@")))
+		{
+			const bool bKnown = Algo::AnyOf(Macros, [&Trimmed](const TCHAR* Macro) { return Trimmed.Equals(Macro, ESearchCase::CaseSensitive); });
+			return bKnown ? FString() : FString::Printf(TEXT("Cron '%s' is not a schedule; use @hourly, @daily, @weekly, @monthly or @yearly"), *Trimmed);
+		}
+		const bool bOnlySyntax = Algo::AllOf(Trimmed, [](TCHAR Char) { return (Char < 128 && FChar::IsAlnum(Char)) || FCString::Strchr(TEXT("*?,-/# "), Char) != nullptr; });
+		TArray<FString> Fields;
+		Trimmed.ParseIntoArray(Fields, TEXT(" "), true);
+		if (!bOnlySyntax || (Fields.Num() != 5 && Fields.Num() != 6))
+		{
+			return FString::Printf(TEXT("Cron '%s' is not a schedule; use five fields (minute hour day-of-month month day-of-week), or six with seconds first"), *Trimmed);
+		}
+		static const FCronLimits Limits[] = {
+			{TEXT("seconds"), TEXT("0 to 59"), 0, 59, nullptr, ECronField::Plain},
+			{TEXT("minute"), TEXT("0 to 59"), 0, 59, nullptr, ECronField::Plain},
+			{TEXT("hour"), TEXT("0 to 23"), 0, 23, nullptr, ECronField::Plain},
+			{TEXT("day of the month"), TEXT("1 to 31, or L"), 1, 31, nullptr, ECronField::DayOfMonth},
+			{TEXT("month"), TEXT("1 to 12 or JAN to DEC"), 1, 12, TEXT("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC"), ECronField::Plain},
+			{TEXT("day of the week"), TEXT("0 to 7 or SUN to SAT, such as 5L or 1#2"), 0, 7, TEXT("SUN MON TUE WED THU FRI SAT"), ECronField::DayOfWeek},
+		};
+		const int32 FirstLimit = UE_ARRAY_COUNT(Limits) - Fields.Num();
+		for (int32 Index = 0; Index < Fields.Num(); ++Index)
+		{
+			const FCronLimits& Field = Limits[FirstLimit + Index];
+			if (!CronFieldFits(Fields[Index], Field))
+			{
+				return FString::Printf(TEXT("Cron '%s': the %s must be %s"), *Trimmed, Field.Label, Field.Range);
+			}
+		}
+		return FString();
+	}
+
 	/** Methods holds every function's method, built-in ones included, since a timer's handler shares their namespace. */
 	void CheckTimers(const UCrowdyServerObjectDefinition& Definition, const TSet<FString>& Methods, TArray<FString>& Errors)
 	{
@@ -548,11 +774,24 @@ namespace
 			{
 				Errors.Add(FString::Printf(TEXT("Timers: %s: '%s' is kept for the On Player Joined and On Player Left events"), *Name, *Handler));
 			}
-			else if (CrowdyExec::IsReservedMethodName(Handler, false))
+			else if (CrowdyExec::IsReservedMethodName(Handler, false) || Handler.Equals(CrowdyExec::FlushTimerName, ESearchCase::CaseSensitive))
 			{
 				Errors.Add(FString::Printf(TEXT("Timers: %s: '%s' is reserved in the server code; rename the timer"), *Name, *Handler));
 			}
 			Seen.Add(Handler);
+			if (Timer.Repeat == ECrowdyServerTimerRepeat::Schedule)
+			{
+				const FString Problem = CronProblem(Timer.Cron);
+				if (!Problem.IsEmpty())
+				{
+					Errors.Add(FString::Printf(TEXT("Timers: %s: %s"), *Name, *Problem));
+				}
+				if (FMath::Abs(Timer.UtcOffsetMinutes) > CrowdyExec::MaxUtcOffsetMinutes)
+				{
+					Errors.Add(FString::Printf(TEXT("Timers: %s: UTC Offset must be from -%d to %d minutes"), *Name, CrowdyExec::MaxUtcOffsetMinutes, CrowdyExec::MaxUtcOffsetMinutes));
+				}
+				continue;
+			}
 			if (!(Timer.Seconds >= 0.01f))
 			{
 				Errors.Add(FString::Printf(TEXT("Timers: %s: Seconds must be at least 0.01"), *Name));
@@ -837,6 +1076,18 @@ TConstArrayView<FCrowdyServerFunction> UCrowdyServerObjectDefinition::GetMemberF
 	return MemberFunctions;
 }
 
+FString UCrowdyServerObjectDefinition::MakeAreaKey(int64 ChunkX, int64 ChunkY, int32 AreaSize)
+{
+	const int64 Size = FMath::Max(AreaSize, 1);
+	auto Floor = [Size](int64 Chunk) { return Chunk / Size - ((Chunk % Size != 0 && Chunk < 0) ? 1 : 0); };
+	return FString::Printf(TEXT("%lld,%lld"), Floor(ChunkX), Floor(ChunkY));
+}
+
+FString UCrowdyServerObjectDefinition::GetAreaKey(int64 ChunkX, int64 ChunkY) const
+{
+	return MakeAreaKey(ChunkX, ChunkY, AreaSizeChunks);
+}
+
 bool UCrowdyServerObjectDefinition::IsMemberFunction(FName Name)
 {
 	return GetMemberFunctions().ContainsByPredicate([Name](const FCrowdyServerFunction& Function) { return Function.Name == Name; });
@@ -853,6 +1104,7 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 		OutErrors.Add(FString::Printf(TEXT("Type Name '%s' must be lowercase letters, digits and underscores, start with a letter, and be at most 48 characters"), *TypeName));
 	}
 	CheckMembers(*this, OutErrors);
+	CheckRecords(*this, OutErrors);
 #if WITH_EDITORONLY_DATA
 	CheckCanCall(*this, OutErrors);
 #endif
@@ -901,6 +1153,7 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 		{
 			OutErrors.Add(FString::Printf(TEXT("Function %s: Cooldown must be at most %d seconds"), *Function.Name.ToString(), CrowdyExec::MaxWaitSeconds));
 		}
+		CheckRequiredFeature(Function, OutErrors);
 		CheckListRanges(Function, OutErrors);
 		CheckStructRanges(Function, OutErrors);
 		if (const UScriptStruct* ParamsStruct = Function.GetParamsStruct())
@@ -945,6 +1198,11 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 		{
 			OutErrors.Add(FString::Printf(TEXT("Watched field '%s' is not a field of %s"), *Watched.ToString(), *Builder.Describe(StateStruct)));
 		}
+	}
+	if (Holds == ECrowdyServerObjectHolds::RecordPerEntity)
+	{
+		Builder.CheckAudience(OwnerFields, TEXT("Owner Only"), TEXT("Team Only"), TeamFields, StateStruct);
+		Builder.CheckAudience(TeamFields, TEXT("Team Only"), TEXT("Owner Only"), TArray<FName>(), StateStruct);
 	}
 	for (const FCrowdyServerFieldName& Override : FieldNames)
 	{

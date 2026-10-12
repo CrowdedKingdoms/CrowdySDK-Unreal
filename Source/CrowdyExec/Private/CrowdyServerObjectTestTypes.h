@@ -4,6 +4,7 @@
 #include "CrowdyExecTestTypes.h"
 #include "CrowdyServerObjectTypes.h"
 #include "Engine/EngineTypes.h"
+#include "GameFramework/Actor.h"
 #include "StructUtils/InstancedStruct.h"
 #include "UObject/Object.h"
 #include "CrowdyServerObjectTestTypes.generated.h"
@@ -34,9 +35,64 @@ struct FCrowdyServerObjectTestAttackReply
 	bool bKilled = false;
 };
 
+/** A row of a record's grid. */
+USTRUCT()
+struct FCrowdyServerObjectTestRecordRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<int32> Cells;
+};
+
+/** One entity's record, as the server's records test type keeps it: Health, Label and Rows for everyone, Gold for its owner, Ammo for its team. */
+USTRUCT()
+struct FCrowdyServerObjectTestRecord
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 Health = 100;
+
+	UPROPERTY()
+	int32 Gold = 0;
+
+	UPROPERTY()
+	int32 Ammo = 0;
+
+	UPROPERTY()
+	int32 Secret = 0;
+
+	UPROPERTY()
+	FString Label;
+
+	UPROPERTY()
+	TArray<FCrowdyServerObjectTestRecordRow> Rows;
+};
+
+/** A record nested to the 16 levels a bake allows: Deep's innermost vectors sit at level 16. */
+USTRUCT()
+struct FCrowdyServerObjectTestDeepRecord
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 Health = 100;
+
+	UPROPERTY()
+	FCrowdyExecTestDepth7 Deep;
+};
+
 /** Stands in for an actor or widget that holds a Server Object. */
 UCLASS(Transient)
 class UCrowdyServerObjectTestOwner : public UObject
+{
+	GENERATED_BODY()
+};
+
+/** An actor class only the missing-definition warning test uses, so no earlier test has warned about it. */
+UCLASS(Transient, NotPlaceable)
+class ACrowdyServerObjectTestCrowdActor : public AActor
 {
 	GENERATED_BODY()
 };

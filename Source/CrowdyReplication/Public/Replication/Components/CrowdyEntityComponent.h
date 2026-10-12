@@ -148,11 +148,8 @@ public:
 	 * Marks an actor the pool is pre-warming, and must be called BEFORE BeginPlay. A dormant component
 	 * resolves no identity and registers no entity at all, so nothing ever observes it.
 	 *
-	 * Unregistering afterwards is not equivalent and was the bug this exists to prevent: registration is
-	 * delivered synchronously, and a listener answers it by starting work that no later cleanup can recall.
-	 * A pool of 8 pre-warmed actors each carrying two Game Model containers sent 16 server container ensures
-	 * for actors that stood for nothing, and because every client derives the same ids for its pool, two
-	 * clients raced to create the same rows and each was refused on the ones the other won.
+	 * Unregistering afterwards is not equivalent: registration is delivered synchronously, so every listener
+	 * has already acted on an actor that stands for nothing, and no later cleanup recalls that.
 	 */
 	void MarkPooledDormant();
 
@@ -413,7 +410,7 @@ public:
 	// For a LocalClient-owned entity only: whether the elected host may override its CrowdyState as a super-user.
 	// Allow (default): host corrections are accepted and adopted. OwnerOnly: only the owner changes it. This is a
 	// coordination convention on the unenforced view plane, NOT a security boundary cheat-sensitive state belongs
-	// in Game Models. Hidden when Ownership==Host (a host-owned entity has no separate owner to protect).
+	// in server code (Server Objects). Hidden when Ownership==Host (a host-owned entity has no separate owner to protect).
 	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component",
 		meta=(EditCondition="Ownership == ECrowdyOwnership::LocalClient", EditConditionHides))
 	ECrowdyHostOverride HostOverride = ECrowdyHostOverride::Allow;

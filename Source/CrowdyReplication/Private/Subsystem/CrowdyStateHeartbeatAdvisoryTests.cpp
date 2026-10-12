@@ -7,7 +7,7 @@
 #include "CrowdyStateHeartbeatAdvisory.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/OutputDeviceRedirector.h"
-#include "Replication/GameModel/CrowdyAttributeRegistry.h"
+#include "Replication/State/CrowdyTestFixture.h"
 #include "Replication/State/FCrowdyRepLayout.h"
 #include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
@@ -321,9 +321,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateTestFixtureClassesAreRecognisedTest
 bool FCrowdyStateTestFixtureClassesAreRecognisedTest::RunTest(const FString& Parameters)
 {
 	TestTrue(TEXT("a class marked meta=(CrowdyTestFixture) is recognised as a fixture"),
-		FCrowdyAttributeRegistry::IsTestFixture(UCrowdyStateHeartbeatAdvisoryTarget::StaticClass()));
+		CrowdyTestFixture::IsTestFixture(UCrowdyStateHeartbeatAdvisoryTarget::StaticClass()));
 	TestFalse(TEXT("an ordinary class is not"),
-		FCrowdyAttributeRegistry::IsTestFixture(UObject::StaticClass()));
+		CrowdyTestFixture::IsTestFixture(UObject::StaticClass()));
 
 	return true;
 }

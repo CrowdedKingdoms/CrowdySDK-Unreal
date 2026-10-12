@@ -2,10 +2,12 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Engine/TimerHandle.h"
 #include "CrowdyServerObject.h"
 #include "Queries/Data/Teams/Types/FCrowdyTeamMembership.h"
 #include "CrowdyServerObjectComponent.generated.h"
 
+class UCrowdyEntityComponent;
 class UCrowdyServerObjectDefinition;
 class UCrowdyServerObjectSubsystem;
 
@@ -21,7 +23,9 @@ enum class ECrowdyServerObjectInstanceMode : uint8
 	/** The signed-in player's Crowdy Team id (Team Id picks one when they are in several). For Crowdy Team members. */
 	PlayersTeam UMETA(DisplayName = "Player's Team"),
 	/** A variable of another Server Object, such as a player's TeamId, followed as it changes. */
-	FromServerValue UMETA(DisplayName = "From Server Value")
+	FromServerValue UMETA(DisplayName = "From Server Value"),
+	/** The area this actor stands in, by the definition's Area Size, followed as the actor moves. */
+	ThisActorsArea UMETA(DisplayName = "This Actor's Area")
 };
 
 /** Which instance of the Source Definition a From Server Value component reads. */
@@ -34,7 +38,8 @@ enum class ECrowdyServerObjectSourceInstance : uint8
 
 /**
  * Holds one Server Object for its actor from BeginPlay to EndPlay and passes on its events. With Signed-In Player it
- * waits for sign-in, and joins again after a sign-in or a new account that follows a sign-out.
+ * waits for sign-in, and joins again after a sign-in or a new account that follows a sign-out. For a definition that
+ * holds a record per entity, its variables are those of the record of its actor's Crowdy entity.
  */
 UCLASS(ClassGroup = (Crowdy), meta = (BlueprintSpawnableComponent, DisplayName = "Crowdy Server Object"))
 class CROWDYEXEC_API UCrowdyServerObjectComponent : public UActorComponent
@@ -88,6 +93,19 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Server Object")
 	FString GetFailureReason() const;
 
+	/** The variables the server last sent: the Server Object's, or for a record per entity this actor's record. Their defaults until they are read. */
+	UFUNCTION(BlueprintPure, Category = "Server Object")
+	FInstancedStruct GetVariables() const;
+
+	/** Whether the definition holds a record per entity, so the variables are this actor's record. */
+	bool ReadsRecord() const;
+
+	/** The record this actor's variables are: its Crowdy entity's id, or empty while it has none. */
+	const FString& GetRecordId() const { return RecordId; }
+
+	/** The object the variables are read from: the held one, or after a move to another area, the area left until the new one holds this actor's record. */
+	UCrowdyServerObject* GetReadObject() const;
+
 	/** Joins the Server Object again, after it Failed or after changing Definition or Instance Id. Ignored while it is joining. */
 	UFUNCTION(BlueprintCallable, Category = "Server Object")
 	void Rejoin();
@@ -108,13 +126,16 @@ protected:
 
 private:
 	friend struct FCrowdyServerObjectComponentTestAccess;
+	friend struct FCrowdyServerObjectRecordsTestAccess;
+	friend class UCrowdyServerObjectSubsystem;
 
 	void Join();
 	void Leave();
-	void Refuse(const FString& Reason);
+	/** Reports the reason as Failed; bWarn also logs it. */
+	void Refuse(const FString& Reason, bool bWarn = true);
 
-	UFUNCTION()
-	void HandleLogin(bool bSuccess, FString Message);
+	/** Run by the Server Objects subsystem after each sign-in or registration. */
+	void HandleLogin(bool bSuccess);
 
 	/** What a sign-in changes once the component has begun play. */
 	void HandleSignedIn();
@@ -155,12 +176,59 @@ private:
 	FString SourceValue;
 
 	bool bTeamsBound = false;
-	bool bTeamsRequested = false;
+	float TeamsRetryIn = 0.f;
+	int32 TeamsRequests = 0;
+	static constexpr float TeamsRetrySeconds = 5.f;
+
+	/** While it waits for the teams, asks again every TeamsRetrySeconds from a world timer, so the component's own tick stays the user's. */
+	FTimerHandle TeamsRetryTimer;
+	bool bTeamsRetryArmed = false;
+
+	void RequestTeams();
+	void TickTeamsRetry(float DeltaSeconds);
+	void SetTeamsRetryArmed(bool bArmed);
 
 	FCrowdyServerVariableBindings VariableBindings;
 
 	/** From Server Value, unless the type has Only One Instance. */
 	bool FollowsSourceValue() const;
+
+	/** This Actor's Area's Instance Id, or empty with OutError saying why. */
+	FString ResolveAreaKey(FString& OutError) const;
+
+	/** Whether the component must look again every FollowSeconds: for the actor's area, or for its entity's id until it has one. */
+	bool NeedsFollow() const;
+
+	/** Joins the new area's object when the actor moved to another area, and watches the record of a new entity id. */
+	void TickFollow();
+
+	/** Whether the actor stands in another chunk than at the last look; false while it has no chunk. */
+	bool MovedChunk();
+
+	/** Whether Held is Ready and holds this actor's record. */
+	bool HoldsOwnRecord(const UCrowdyServerObject* Held) const;
+
+	/** The area left behind, still read while the held object does not hold this actor's record yet; not an owner of it. */
+	UPROPERTY(Transient)
+	TObjectPtr<UCrowdyServerObject> Previous;
+
+	int64 FollowedChunkX = 0;
+	int64 FollowedChunkY = 0;
+	bool bFollowedChunk = false;
+
+	/** Watches the record of the entity's current id, once it has one. */
+	void FollowRecordId();
+
+	void SetFollowArmed(bool bArmed);
+
+	static constexpr float FollowSeconds = 0.5f;
+	FTimerHandle FollowTimer;
+
+	/** The entity whose id names the record, found at join. */
+	TWeakObjectPtr<const UCrowdyEntityComponent> Entity;
+	FGuid RecordNetId;
+	FString RecordId;
+	FDelegateHandle RecordHandle;
 
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Stands in for the game instance's Server Objects, which a component outside a world cannot find. */

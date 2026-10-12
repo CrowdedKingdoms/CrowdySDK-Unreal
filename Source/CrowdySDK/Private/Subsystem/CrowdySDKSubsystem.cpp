@@ -919,10 +919,6 @@ void UCrowdySDKSubsystem::DispatchSingleActorMessage_Internal(const int64 ChunkX
 
 
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-
 DEFINE_FUNCTION(UCrowdySDKSubsystem::execK2_DispatchGameEvent)
 {
 	P_GET_PROPERTY(FInt64Property, Z_Param_ChunkX);

@@ -205,8 +205,7 @@ bool UCrowdyStateReplicator::ShouldCreateSubsystem(UObject* Outer) const
 		return false;
 	}
 
-	// PIE or Game only, mirroring UCrowdyAutoReplicator. The bUseStateReplicator gate is resolved in
-	// Initialize (the profile is not reliably available in ShouldCreateSubsystem).
+	// PIE or Game only, mirroring UCrowdyAutoReplicator. The bUseStateReplicator gate is checked in Initialize.
 	return World->WorldType == EWorldType::PIE || World->WorldType == EWorldType::Game;
 }
 

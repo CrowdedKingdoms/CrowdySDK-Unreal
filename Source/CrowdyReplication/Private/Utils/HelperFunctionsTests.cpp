@@ -11,7 +11,7 @@
 
 // GetDeterministicID mints the NetID that addresses damage, so a collision guard sits at the point that id
 // enters the registry (UCrowdyEntitySubsystem::RegisterEntity), since the hash itself cannot be widened without
-// orphaning every server-persisted Game Model container keyed off it (see the header comment on the function).
+// changing every id already issued (see the header comment on the function).
 // These tests cover the derivation's one load-bearing property (determinism), the guard refusing a forced
 // collision between two live participants, and the legitimate re-registration shapes the guard must not break.
 namespace

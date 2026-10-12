@@ -6,6 +6,7 @@
 #include "CrowdyTeamsTestTypes.h"
 #include "Engine/GameInstance.h"
 #include "Misc/AutomationTest.h"
+#include "Subsystem/CrowdyAuthentication.h"
 #include "UObject/StrongObjectPtr.h"
 
 namespace
@@ -86,6 +87,35 @@ bool FCrowdyTeamsClearEmptiesCacheTest::RunTest(const FString& Parameters)
 	{
 		TestEqual(TEXT("with no teams"), Rig.Listener->CacheEvents[1].Num(), 0);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTeamsSignInRefillsCacheTest,
+	"CrowdySDK.CrowdyServices.TeamsSignInClearsAndRefillsCache", TeamsTestFlags)
+bool FCrowdyTeamsSignInRefillsCacheTest::RunTest(const FString& Parameters)
+{
+	FCrowdyTeamsTestRig Rig(TeamsOneTeamAnswer);
+	TStrongObjectPtr<UCrowdyAuthentication> Auth(NewObject<UCrowdyAuthentication>(Rig.Instance.Get()));
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	Rig.Teams->GetMyTeams(FOnMyTeamsSuccess(), FOnTeamError());
+	Rig.Drain();
+	if (!TestTrue(TEXT("the cache holds the earlier account's team"), Rig.Teams->IsPlayerInTeam(7)))
+	{
+		return false;
+	}
+
+	Auth->ApplyAppTokenForTest(FCrowdyAppTokenFields(), true, Rig.Teams.Get());
+	TestTrue(TEXT("a token refresh keeps the cached teams"), Rig.Teams->IsPlayerInTeam(7));
+	TestEqual(TEXT("and asks for none"), Rig.Client->NumPendingRequests(), 0);
+
+	Auth->ApplyAppTokenForTest(FCrowdyAppTokenFields(), false, Rig.Teams.Get());
+	TestFalse(TEXT("a sign-in drops the cached teams at once, as they may be another account's"), Rig.Teams->HasCachedTeams());
+	TestTrue(TEXT("and asks for this account's"), Rig.Client->NumPendingRequests() > 0);
+	Rig.Drain();
+	TestTrue(TEXT("whose answer fills the cache"), Rig.Teams->IsPlayerInTeam(7));
 	return true;
 }
 
