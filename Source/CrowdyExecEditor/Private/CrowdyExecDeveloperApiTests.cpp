@@ -682,4 +682,65 @@ bool FCrowdyExecDeveloperStrictNumbersTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// A restart names its type and answers how many instances it stopped; the app's use and limits, the pause reason and the build's SDK version are read, and an older platform that leaves them out still parses.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeveloperRestartAndLimitsTest, "CrowdySDK.CrowdyExecEditor.DeveloperRestartAndAppLimits",
+	CrowdyExecDeveloperApiTests::TestFlags)
+bool FCrowdyExecDeveloperRestartAndLimitsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeveloperApiTests;
+	FRig Rig;
+	if (!TestTrue(TEXT("the rig is made"), Rig.IsValid()))
+	{
+		return false;
+	}
+	Rig.Script({
+		TEXT("{\"data\":{\"execRestartType\":{\"nodeType\":\"sbx_counter\",\"stopped\":3}}}"),
+		TEXT("{\"data\":{\"execAppStatus\":{\"activeVersion\":4,\"disabled\":false,\"disabledTypes\":[],\"budgetPaused\":true,\"budgetPauseReason\":\"spend_cap\",\"maxInstances\":null,\"maxReservedMb\":1024,\"instanceLimit\":16,\"instances\":5,\"reservedMb\":320}}}"),
+		TEXT("{\"data\":{\"execAppStatus\":{\"activeVersion\":4,\"disabled\":false,\"disabledTypes\":[],\"budgetPaused\":false}}}"),
+		TEXT("{\"data\":{\"execBuild\":{\"buildId\":\"b-9\",\"status\":\"succeeded\",\"kind\":\"exec\",\"log\":\"\",\"sdkVersion\":\"0.8.0\",\"artifacts\":[]}}}"),
+	});
+
+	const TSharedRef<TCapture<FRestart>> Restarted = MakeShared<TCapture<FRestart>>();
+	Rig.Client->RestartType(TEXT("sbx_counter"), Into(Restarted));
+	if (TestTrue(TEXT("the restart is answered"), Await(Rig, Restarted)) && TestTrue(Restarted->Result.Error.Message, Restarted->Result.bOk))
+	{
+		TestEqual(TEXT("the restart is sent under its name"), OperationOf(Rig), FString(TEXT("ExecRestartType")));
+		const TSharedPtr<FJsonObject> Request = Rig.LastRequest();
+		const TSharedPtr<FJsonObject>* Variables = nullptr;
+		TestTrue(TEXT("naming the type"), Request.IsValid() && Request->TryGetObjectField(TEXT("variables"), Variables)
+			&& (*Variables)->GetStringField(TEXT("nodeType")) == TEXT("sbx_counter") && (*Variables)->GetStringField(TEXT("appId")) == TestAppIdText);
+		TestEqual(TEXT("the instances it stopped"), Restarted->Result.Value.Stopped, 3);
+		TestEqual(TEXT("the type it restarted"), Restarted->Result.Value.NodeType, FString(TEXT("sbx_counter")));
+	}
+
+	const TSharedRef<TCapture<FAppStatus>> Limits = MakeShared<TCapture<FAppStatus>>();
+	Rig.Client->Status(Into(Limits));
+	if (TestTrue(TEXT("the status is answered"), Await(Rig, Limits)) && TestTrue(Limits->Result.Error.Message, Limits->Result.bOk))
+	{
+		const FAppStatus& Status = Limits->Result.Value;
+		TestEqual(TEXT("the pause reason"), Status.BudgetPauseReason, FString(TEXT("spend_cap")));
+		TestEqual(TEXT("instances placed"), Status.Instances.Get(-1), 5);
+		TestEqual(TEXT("the instance limit in force"), Status.InstanceLimit.Get(-1), 16);
+		TestEqual(TEXT("memory reserved"), Status.ReservedMb.Get(-1), 320);
+		TestEqual(TEXT("the memory limit"), Status.MaxReservedMb.Get(-1), 1024);
+	}
+
+	const TSharedRef<TCapture<FAppStatus>> Older = MakeShared<TCapture<FAppStatus>>();
+	Rig.Client->Status(Into(Older));
+	if (TestTrue(TEXT("the older status is answered"), Await(Rig, Older)) && TestTrue(Older->Result.Error.Message, Older->Result.bOk))
+	{
+		const FAppStatus& Status = Older->Result.Value;
+		TestFalse(TEXT("an older platform says nothing of the use or limits"), Status.Instances.IsSet() || Status.InstanceLimit.IsSet() || Status.ReservedMb.IsSet() || Status.MaxReservedMb.IsSet());
+		TestTrue(TEXT("nor of a pause reason"), Status.BudgetPauseReason.IsEmpty());
+	}
+
+	const TSharedRef<TCapture<FBuild>> Built = MakeShared<TCapture<FBuild>>();
+	Rig.Client->Build({}, Into(Built));
+	if (TestTrue(TEXT("the build is answered"), Await(Rig, Built)) && TestTrue(Built->Result.Error.Message, Built->Result.bOk))
+	{
+		TestEqual(TEXT("the SDK the platform compiled against"), Built->Result.Value.SdkVersion, FString(TEXT("0.8.0")));
+	}
+	return true;
+}
+
 #endif

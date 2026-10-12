@@ -34,11 +34,11 @@ struct PkcePair {
 /// talks to an older Game API (pre v1.83.7) keeps its refresh working.
 inline constexpr const char* kRefreshWithoutServer =
     "mutation RefreshAppToken { refreshAppToken {"
-    " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl } }";
+    " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl runtimeGate { status reason } } }";
 inline constexpr const char* kRefreshWithServer =
     "mutation RefreshAppToken($currentServer: CurrentServerInput) {"
     " refreshAppToken(currentServer: $currentServer) {"
-    " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl"
+    " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl runtimeGate { status reason }"
     " authorizedServer { ip4 clientPort } } }";
 
 class PortalAPI : public DomainBase {
@@ -51,7 +51,7 @@ class PortalAPI : public DomainBase {
         crypto_(crypto) {}
 
   static constexpr std::string_view kAppTokenFields =
-      "token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl";
+      "token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl runtimeGate { status reason }";
 
   /// Native/direct mint: exchange the identity session token for an
   /// app-scoped gameplay token. The token is NOT stored on this client —
@@ -62,7 +62,7 @@ class PortalAPI : public DomainBase {
     vars["input"]["appId"] = appId;
     return AppTokenResponse::fromJson(execUnwrap(
         "mutation MintAppToken($input: MintAppTokenInput!) { mintAppToken(input: $input) {"
-        " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl } }",
+        " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl runtimeGate { status reason } } }",
         vars));
   }
 
@@ -72,7 +72,7 @@ class PortalAPI : public DomainBase {
     vars["input"]["appId"] = appId;
     execUnwrapAsync(
         "mutation MintAppToken($input: MintAppTokenInput!) { mintAppToken(input: $input) {"
-        " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl } }",
+        " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl runtimeGate { status reason } } }",
         vars, {}, [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
           AppTokenResponse value{};
           if (out.ok()) value = AppTokenResponse::fromJson(out.data);
@@ -189,7 +189,7 @@ class PortalAPI : public DomainBase {
     auto r = AppTokenResponse::fromJson(execUnwrap(
         "mutation ExchangePortalCode($input: ExchangePortalCodeInput!) {"
         " exchangePortalCode(input: $input) {"
-        " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl } }",
+        " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl runtimeGate { status reason } } }",
         vars));
     if (!r.token.empty()) auth_->setToken(r.token);
     return r;
@@ -203,7 +203,7 @@ class PortalAPI : public DomainBase {
     execUnwrapAsync(
         "mutation ExchangePortalCode($input: ExchangePortalCodeInput!) {"
         " exchangePortalCode(input: $input) {"
-        " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl } }",
+        " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl runtimeGate { status reason } } }",
         vars, {},
         [auth = auth_, cb = std::move(cb)](
             graphql::GraphQLOutcome out) mutable {

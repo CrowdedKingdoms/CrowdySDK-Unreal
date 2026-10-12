@@ -35,6 +35,22 @@ public:
 	void ApplyStatus(const CrowdyExecDeveloper::FAppStatus& NewStatus);
 
 	const TOptional<CrowdyExecDeveloper::FAppStatus>& GetStatus() const { return Status; }
+	/** What the platform has placed, as last read; empty until read. */
+	const TArray<CrowdyExecDeveloper::FInstance>& GetInstances() const { return Instances; }
+	bool AreInstancesLoaded() const { return bInstancesLoaded; }
+	/** The type's instances that are running or starting, as last read. */
+	int32 CountRunning(const FString& TypeName) const;
+	void RefreshInstances();
+
+	/** Asks first, then moves the type's running instances to the active version. False when it did not start. */
+	bool RestartType(const FString& TypeName);
+	/** After a deploy: the changed types that still have instances running the previous version, empty when none. */
+	const TArray<FString>& GetTypesToMove() const { return TypesToMove; }
+	/** How many of their Server Objects were running the previous version when the deploy was answered. */
+	int32 GetRunningToMove() const { return RunningToMove; }
+	/** Moves every type in GetTypesToMove to the active version, without asking again. */
+	void MoveRunningToActive();
+	void DismissMove();
 	const TArray<CrowdyExecDeveloper::FVersion>& GetVersions() const { return Versions; }
 	bool AreVersionsLoaded() const { return bVersionsLoaded; }
 	/** The active version, or null when nothing is live or the versions are not read yet. */
@@ -104,8 +120,19 @@ private:
 	FClientKey ClientKey;
 	FString ClientError;
 
+	bool RestartTypes(TArray<FString> TypeNames);
+	void OfferToMove(TArray<FString> ChangedTypes);
+
 	TOptional<CrowdyExecDeveloper::FAppStatus> Status;
 	TArray<CrowdyExecDeveloper::FVersion> Versions;
+	TArray<CrowdyExecDeveloper::FInstance> Instances;
+	TArray<FString> TypesToMove;
+	/** The project's changed types as the deploy was confirmed, before anything is compared again. */
+	TArray<FString> SendingChanged;
+	int32 RunningToMove = 0;
+	int32 InstancesRequest = 0;
+	int32 MoveRequest = 0;
+	bool bInstancesLoaded = false;
 	FText StatusError;
 	FText VersionsError;
 

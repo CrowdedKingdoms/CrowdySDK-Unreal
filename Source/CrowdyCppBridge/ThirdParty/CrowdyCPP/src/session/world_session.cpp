@@ -143,6 +143,7 @@ void WorldSession::installHandlers() {
   handlers.voxelUpdate = [this](const replication::SpatialNotification& n,
                                 const wire::VoxelPayloadView& voxel) {
     chunks_->ingest(n, voxel);
+    if (config_.onVoxel) config_.onVoxel(n, voxel);
   };
   handlers.clientEvent = [this](const replication::SpatialNotification& n,
                                 const wire::EventPayloadView& payload) {
@@ -156,6 +157,8 @@ void WorldSession::installHandlers() {
   if (config_.onAudio) handlers.audio = config_.onAudio;
   if (config_.onVideo) handlers.video = config_.onVideo;
   if (config_.onText) handlers.text = config_.onText;
+  if (config_.onGenericSpatial) handlers.genericSpatial = config_.onGenericSpatial;
+  if (config_.onChannelAudio) handlers.channelAudio = config_.onChannelAudio;
   // The server's departure notice removes the actor now (onLeave fires from the
   // store) instead of after the staleAfterMs reap, then the game is told too.
   handlers.actorLeft = [this](const replication::SpatialNotification& n, std::uint8_t reason) {
@@ -258,16 +261,9 @@ std::size_t ChunkStore::ensureAround(const ChunkCoord& center, int distance) {
       std::memcpy(c.voxels.data(), chunk.voxels.data(), c.voxels.size());
     }
     for (const StoredVoxelState& entry : chunk.voxelStates) {
-      if (entry.x < 0 || entry.x >= kChunkSize || entry.y < 0 || entry.y >= kChunkSize ||
-          entry.z < 0 || entry.z >= kChunkSize)
-        continue;
-      const int index = voxelIndex(entry.x, entry.y, entry.z);
-      c.voxels[static_cast<std::size_t>(index)] = static_cast<std::uint8_t>(entry.voxelType);
-      if (entry.state.empty()) {
-        c.voxelStates.erase(index);
-      } else {
-        c.voxelStates[index] = VoxelState{entry.voxelType, entry.state};
-      }
+      if (!fitsInt16(entry.x) || !fitsInt16(entry.y) || !fitsInt16(entry.z)) continue;
+      putVoxel(c, entry.x, entry.y, entry.z, entry.voxelType,
+               Bytes(entry.state.data(), entry.state.size()));
     }
     touch(c);
     ++hydrated;

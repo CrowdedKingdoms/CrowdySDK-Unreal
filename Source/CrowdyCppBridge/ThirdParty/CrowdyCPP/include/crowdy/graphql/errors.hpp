@@ -93,7 +93,75 @@ struct GraphQLErrorDetail {
   /// `watchdog_timeout` means the failures were watchdog kills. Empty when
   /// the key is absent.
   std::string cause;
+  /// extensions.ownedByCaller on ACTOR_EXISTS: true when the taken uuid is already the
+  /// caller's actor (a retried create), false when another player holds it. Absent
+  /// when the server did not say.
+  std::optional<bool> ownedByCaller;
+  /// extensions.suspendedUntil (ISO-8601) on ACCESS_SUSPENDED; empty elsewhere.
+  std::string suspendedUntil;
+  /// extensions.reason on APP_PAUSED (why the app's runtime gate is not ACTIVE);
+  /// empty elsewhere.
+  std::string reason;
 };
+
+/// extensions.code for creating an actor whose uuid is taken (see actorExistsOf()).
+inline constexpr std::string_view kActorExistsCode = "ACTOR_EXISTS";
+/// extensions.code for a player whose access to the app was revoked (HTTP 403).
+inline constexpr std::string_view kAccessRevokedCode = "ACCESS_REVOKED";
+/// extensions.code for a player suspended from the app until `suspendedUntil` (HTTP 403).
+inline constexpr std::string_view kAccessSuspendedCode = "ACCESS_SUSPENDED";
+/// extensions.code for a player with no access to a paid or invite-only app (HTTP 403).
+inline constexpr std::string_view kAccessNotGrantedCode = "ACCESS_NOT_GRANTED";
+/// extensions.code for an app whose runtime gate is not ACTIVE (HTTP 403).
+inline constexpr std::string_view kAppPausedCode = "APP_PAUSED";
+
+/// The first error with `code`, or nullptr.
+inline const GraphQLErrorDetail* errorWithCode(const std::vector<GraphQLErrorDetail>& errors,
+                                               std::string_view code) {
+  for (const auto& error : errors) {
+    if (error.code == code) return &error;
+  }
+  return nullptr;
+}
+
+/// An ACTOR_EXISTS refusal: `ownedByCaller` true means the actor is already yours (a
+/// retried create; read it rather than failing), false that another player holds the
+/// uuid, absent when the server did not say.
+struct ActorExists {
+  std::optional<bool> ownedByCaller;
+};
+inline std::optional<ActorExists> actorExistsOf(const std::vector<GraphQLErrorDetail>& errors) {
+  const GraphQLErrorDetail* e = errorWithCode(errors, kActorExistsCode);
+  if (!e) return std::nullopt;
+  return ActorExists{e->ownedByCaller};
+}
+
+/// A refusal of the player's own access to an app: ACCESS_REVOKED, ACCESS_SUSPENDED
+/// (with `suspendedUntil`, after which access returns by itself) or ACCESS_NOT_GRANTED.
+/// None is fixed by retrying; tell the player.
+struct AccessRefusal {
+  std::string code;
+  std::string suspendedUntil;
+};
+inline std::optional<AccessRefusal> accessRefusalOf(const std::vector<GraphQLErrorDetail>& errors) {
+  for (std::string_view code : {kAccessSuspendedCode, kAccessRevokedCode, kAccessNotGrantedCode}) {
+    if (const GraphQLErrorDetail* e = errorWithCode(errors, code)) {
+      return AccessRefusal{std::string(code), e->suspendedUntil};
+    }
+  }
+  return std::nullopt;
+}
+
+/// An APP_PAUSED refusal; `reason` is extensions.reason (empty when none). Show the
+/// player that the world is paused instead of retrying in a loop.
+struct AppPaused {
+  std::string reason;
+};
+inline std::optional<AppPaused> appPausedOf(const std::vector<GraphQLErrorDetail>& errors) {
+  const GraphQLErrorDetail* e = errorWithCode(errors, kAppPausedCode);
+  if (!e) return std::nullopt;
+  return AppPaused{e->reason};
+}
 
 /// The server returned GraphQL errors. Preserves every error including
 /// extensions.

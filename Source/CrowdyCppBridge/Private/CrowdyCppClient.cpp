@@ -533,9 +533,9 @@ struct FCrowdyCppClient::FImpl
 		ExecDialOwner->Owner = this;
 	}
 
-	// Asks the Game API for a ck-exec host under the app token, then hands the answer to Found.
+	// Asks the Game API for a ck-exec host under the app token, or as the developer under a session token, then hands the answer to Found.
 	static void DialExec(std::shared_ptr<FExecDialOwner> DialOwner, std::string AppId, std::string NodeType,
-		std::string Key, TFunction<FString()> ResolveAppToken, std::shared_ptr<FString> Refusal,
+		std::string Key, bool bAsDeveloper, TFunction<FString()> ResolveAppToken, std::shared_ptr<FString> Refusal,
 		std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found);
 
 	void CloseExecConnections()
@@ -1570,17 +1570,17 @@ TOptional<double> CrowdyCppBusyRetryDelaySeconds(int32 RetryIndex, TOptional<int
 }
 
 void FCrowdyCppClient::FImpl::DialExec(std::shared_ptr<FExecDialOwner> DialOwner, std::string AppId,
-	std::string NodeType, std::string Key, TFunction<FString()> ResolveAppToken, std::shared_ptr<FString> Refusal,
+	std::string NodeType, std::string Key, bool bAsDeveloper, TFunction<FString()> ResolveAppToken, std::shared_ptr<FString> Refusal,
 	std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found)
 {
 	// Installing the bearer and building the request are one step only on the game thread, where every issue happens.
 	if (!IsInGameThread())
 	{
 		AsyncTask(ENamedThreads::GameThread, [DialOwner = MoveTemp(DialOwner), AppId = MoveTemp(AppId),
-			NodeType = MoveTemp(NodeType), Key = MoveTemp(Key), ResolveAppToken = MoveTemp(ResolveAppToken),
+			NodeType = MoveTemp(NodeType), Key = MoveTemp(Key), bAsDeveloper, ResolveAppToken = MoveTemp(ResolveAppToken),
 			Refusal = MoveTemp(Refusal), Found = MoveTemp(Found)]() mutable
 		{
-			DialExec(MoveTemp(DialOwner), MoveTemp(AppId), MoveTemp(NodeType), MoveTemp(Key), MoveTemp(ResolveAppToken),
+			DialExec(MoveTemp(DialOwner), MoveTemp(AppId), MoveTemp(NodeType), MoveTemp(Key), bAsDeveloper, MoveTemp(ResolveAppToken),
 				MoveTemp(Refusal), MoveTemp(Found));
 		});
 		return;
@@ -1598,11 +1598,14 @@ void FCrowdyCppClient::FImpl::DialExec(std::shared_ptr<FExecDialOwner> DialOwner
 	const FString Token = ResolveAppToken ? ResolveAppToken() : FString();
 	if (Token.IsEmpty())
 	{
-		UE_LOG(LogCrowdyCpp, Warning, TEXT("A ck-exec connection has no app token to dial with."));
-		*Refusal = TEXT("the player has no app token; sign in first");
+		UE_LOG(LogCrowdyCpp, Warning, TEXT("A ck-exec connection has no token to dial with."));
+		*Refusal = bAsDeveloper ? TEXT("the developer is not signed in; sign in to Crowdy Studio first") : TEXT("the player has no app token; sign in first");
 		Found(crowdy::Errc::Rejected);
 		return;
 	}
+	const std::string_view Document = bAsDeveloper ? crowdy::gen::exec::kExecConnectAsDeveloperIsolatedDocument : crowdy::gen::exec::kExecConnectIsolatedDocument;
+	const std::string_view Operation = bAsDeveloper ? crowdy::gen::exec::kExecConnectAsDeveloperOperationName : crowdy::gen::exec::kExecConnectOperationName;
+	const char* const AnswerField = bAsDeveloper ? "execConnectAsDeveloper" : "execConnect";
 
 	Owner->Client->setToken(std::string(TCHAR_TO_UTF8(*Token)));
 	crowdy::graphql::JVal Variables;
@@ -1616,8 +1619,7 @@ void FCrowdyCppClient::FImpl::DialExec(std::shared_ptr<FExecDialOwner> DialOwner
 	{
 		// Asked directly rather than through ExecAPI::endpointAsync, which keeps only the failure's kind: a paused or
 		// switched-off app is refused here, and its message is what tells the player why.
-		Owner->Client->graphqlClient().requestAsync(crowdy::gen::exec::kExecConnectIsolatedDocument, Variables,
-			crowdy::gen::exec::kExecConnectOperationName, [Found, Refusal](crowdy::graphql::GraphQLOutcome Out)
+		Owner->Client->graphqlClient().requestAsync(Document, Variables, Operation, [Found, Refusal, AnswerField](crowdy::graphql::GraphQLOutcome Out)
 			{
 				if (!Out.ok())
 				{
@@ -1626,7 +1628,7 @@ void FCrowdyCppClient::FImpl::DialExec(std::shared_ptr<FExecDialOwner> DialOwner
 					Found(Out.status.ok() ? crowdy::Errc::Rejected : Out.status.code);
 					return;
 				}
-				const crowdy::graphql::Json& Answer = Out.data["execConnect"];
+				const crowdy::graphql::Json& Answer = Out.data[AnswerField];
 				crowdy::domains::ExecEndpoint Endpoint{Answer["gatewayUrl"].asString(), Answer["token"].asString(), Answer["host"].asString()};
 				if (Endpoint.gatewayUrl.empty() || Endpoint.token.empty())
 				{
@@ -2943,9 +2945,9 @@ TSharedPtr<FCrowdyNativeExecConnection> FCrowdyCppClient::CreateExecConnection(i
 	std::shared_ptr<FImpl::FExecDialOwner> DialOwner = Impl->ExecDialOwner;
 	std::shared_ptr<FString> Refusal = std::make_shared<FString>();
 	crowdy::domains::ExecDial Dial = [DialOwner, AppIdText = std::to_string(AppId), NodeType = CppOptions.nodeType,
-		Key = CppOptions.key, ResolveAppToken, Refusal](std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found)
+		Key = CppOptions.key, bAsDeveloper = Options.bAsDeveloper, ResolveAppToken, Refusal](std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found)
 	{
-		FImpl::DialExec(DialOwner, AppIdText, NodeType, Key, ResolveAppToken, Refusal, std::move(Found));
+		FImpl::DialExec(DialOwner, AppIdText, NodeType, Key, bAsDeveloper, ResolveAppToken, Refusal, std::move(Found));
 	};
 
 	try

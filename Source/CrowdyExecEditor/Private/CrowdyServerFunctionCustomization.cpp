@@ -69,7 +69,7 @@ void FCrowdyServerFunctionCustomization::CustomizeHeader(TSharedRef<IPropertyHan
 		.MinDesiredWidth(200.0f)
 		[
 			Labelled(LOCTEXT("CallerLabel", "Callable By"),
-				LOCTEXT("CallerToolTip", "Players: any player. Members or Leader: only the object's members or its leader (needs Members From). Server Only: only other server code and developer tools."),
+				LOCTEXT("CallerToolTip", "Players: any player. Members or Leader: only the object's members or its leader (needs Members From). Server Only: only other server code and developer tools. Developers Only: only developer tools, such as Call as Developer."),
 				CallerHandle->CreatePropertyValueWidget())
 		];
 }

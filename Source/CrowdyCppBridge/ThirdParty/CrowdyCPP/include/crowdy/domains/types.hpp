@@ -79,6 +79,28 @@ struct ChunkRef {
   }
 };
 
+/// An app's runtime gate (ck-api AppRuntimeGateInfo): `status` is "ACTIVE" when the
+/// app runs; anything else ("GRACE", "DENIED", "SUSPENDED", or a later value) means it
+/// is paused, and `reason` says why (null when the server gives none).
+struct AppRuntimeGate {
+  std::string status;
+  NullableString reason;
+
+  static AppRuntimeGate fromJson(const graphql::Json& j) {
+    AppRuntimeGate g;
+    g.status = j["status"].asString();
+    g.reason = NullableString::fromJson(j["reason"]);
+    return g;
+  }
+};
+
+/// Whether a runtime gate (AppTokenResponse::runtimeGate, gameClientBootstrap's
+/// `runtimeGate`) says the app is paused: any status but ACTIVE. No gate reads as not
+/// paused.
+inline bool isAppPaused(const std::optional<AppRuntimeGate>& gate) {
+  return gate.has_value() && gate->status != "ACTIVE";
+}
+
 /// Result of portal.mintAppToken / exchangeCode / refresh.
 struct AppTokenResponse {
   std::string token;        ///< 64-char app-scoped token (also the UDP HMAC key)
@@ -93,6 +115,10 @@ struct AppTokenResponse {
   /// rather than retried. Null only when the server has no public URL.
   NullableString discoveryUrl;
   NullableString launchUrl;
+  /// The app's runtime gate when the token was minted (ck-api v2.39.0+). A paused app
+  /// still mints, so check isAppPaused(runtimeGate) before entering the world; the
+  /// replication server refuses a paused app's sends with ErrorCode::AppPaused (33).
+  std::optional<AppRuntimeGate> runtimeGate;
   /// Set only by `refreshAppToken(currentServer)`: the replication server the NEW
   /// token was just authorized on -- the one the client is already connected to.
   /// Empty ip4 / 0 port when the server did not (or could not) authorize there,
@@ -118,6 +144,7 @@ struct AppTokenResponse {
     r.gameApiWsUrl = NullableString::fromJson(j["gameApiWsUrl"]);
     r.discoveryUrl = NullableString::fromJson(j["discoveryUrl"]);
     r.launchUrl = NullableString::fromJson(j["launchUrl"]);
+    if (j["runtimeGate"].isObject()) r.runtimeGate = AppRuntimeGate::fromJson(j["runtimeGate"]);
     const auto& srv = j["authorizedServer"];
     if (srv.isObject()) {
       r.authorizedServerIp4 = srv["ip4"].asString();

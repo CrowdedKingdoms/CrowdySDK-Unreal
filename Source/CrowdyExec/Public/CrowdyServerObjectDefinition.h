@@ -72,7 +72,9 @@ enum class ECrowdyServerFunctionCaller : uint8
 	/** Only the leader, and other server code. Needs Members From. */
 	Leader,
 	/** Only other server code and developer tools can call it; a player's call is refused. */
-	ServerOnly UMETA(DisplayName = "Server Only")
+	ServerOnly UMETA(DisplayName = "Server Only"),
+	/** Only developer tools can call it, such as Call as Developer in the editor; players and other server code are refused. */
+	DevelopersOnly UMETA(DisplayName = "Developers Only")
 };
 
 /** Who belongs to a Server Object. */

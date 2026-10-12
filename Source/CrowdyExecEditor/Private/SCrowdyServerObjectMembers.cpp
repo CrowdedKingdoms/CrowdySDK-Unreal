@@ -75,6 +75,7 @@ namespace SCrowdyServerObjectMembersDetail
 		case ECrowdyServerFunctionCaller::Members: return LOCTEXT("MembersTag", "Members");
 		case ECrowdyServerFunctionCaller::Leader: return LOCTEXT("LeaderTag", "Leader");
 		case ECrowdyServerFunctionCaller::ServerOnly: return LOCTEXT("ServerOnlyTag", "Server Only");
+		case ECrowdyServerFunctionCaller::DevelopersOnly: return LOCTEXT("DevelopersOnlyTag", "Developers Only");
 		default: return LOCTEXT("PlayersTag", "Players");
 		}
 	}

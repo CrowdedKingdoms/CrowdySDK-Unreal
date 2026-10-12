@@ -280,12 +280,15 @@ inline constexpr std::size_t channelRequestSize(std::size_t payloadLen) {
   return channel::kHeaderSize + payloadLen + channel::kRequestTailSize;
 }
 
-/// Encode and sign a CHANNEL_MESSAGE_REQUEST. The HMAC signs all bytes up to
+/// Encode and sign a channel request of `type` (ChannelMessageRequest or
+/// ChannelAudioRequest, which share the layout). The HMAC signs all bytes up to
 /// and including containsAuth, concatenated with the token octets.
-inline Result<std::size_t> encodeChannelMessage(const core::ICrypto& crypto,
+inline Result<std::size_t> encodeChannelRequest(MessageType type, const core::ICrypto& crypto,
                                                 const ChannelMessageParams& p,
                                                 const Token64& token, MutableBytes out,
                                                 const core::IMac* mac = nullptr) {
+  if (type != MessageType::ChannelMessageRequest && type != MessageType::ChannelAudioRequest)
+    return Errc::InvalidArgument;
   if (p.payload.size() > channel::kMaxPayload) return Errc::InvalidArgument;
   const std::size_t total = channelRequestSize(p.payload.size());
   if (out.size() < total) return Errc::BufferTooSmall;
@@ -293,7 +296,7 @@ inline Result<std::size_t> encodeChannelMessage(const core::ICrypto& crypto,
   if (!cryptoStatus.ok()) return cryptoStatus.code;
 
   std::uint8_t* b = out.data();
-  b[0] = static_cast<std::uint8_t>(MessageType::ChannelMessageRequest);
+  b[0] = static_cast<std::uint8_t>(type);
   le::writeI64(b + channel::kChannelIdOffset, p.channelId);
   std::memcpy(b + channel::kUuidOffset, p.uuid.data(), kUuidSize);
   le::writeU16(b + channel::kPayloadLenOffset, static_cast<std::uint16_t>(p.payload.size()));
@@ -301,6 +304,74 @@ inline Result<std::size_t> encodeChannelMessage(const core::ICrypto& crypto,
     std::memcpy(b + channel::kPayloadOffset, p.payload.data(), p.payload.size());
 
   const std::size_t authOffset = channel::kPayloadOffset + p.payload.size();
+  b[authOffset] = 1;  // containsAuth
+  const std::size_t prefixLen = authOffset + 1;
+  if (!spatialHmac(crypto, Bytes(b, prefixLen), token, b + prefixLen, mac)) return Errc::Malformed;
+  le::writeI64(b + prefixLen + kHmacTagSize, p.gameTokenId);
+  b[total - 1] = p.sequence;
+  return total;
+}
+
+/// Encode and sign a CHANNEL_MESSAGE_REQUEST (17).
+inline Result<std::size_t> encodeChannelMessage(const core::ICrypto& crypto,
+                                                const ChannelMessageParams& p,
+                                                const Token64& token, MutableBytes out,
+                                                const core::IMac* mac = nullptr) {
+  return encodeChannelRequest(MessageType::ChannelMessageRequest, crypto, p, token, out, mac);
+}
+
+/// Encode and sign a CHANNEL_AUDIO_REQUEST (35, Buddy v0.37.0): opcode 17's layout and
+/// signing with its own type byte. `p.payload` is opaque, typically one voice packet.
+inline Result<std::size_t> encodeChannelAudio(const core::ICrypto& crypto,
+                                              const ChannelMessageParams& p,
+                                              const Token64& token, MutableBytes out,
+                                              const core::IMac* mac = nullptr) {
+  return encodeChannelRequest(MessageType::ChannelAudioRequest, crypto, p, token, out, mac);
+}
+
+struct RangedChannelMessageParams {
+  std::int64_t channelId = 0;
+  core::ActorUuid uuid{};
+  std::int64_t appId = 0;
+  ChunkCoord origin;
+  std::uint32_t maxDistance = 0;
+  Bytes payload;
+  std::int64_t gameTokenId = 0;
+  std::uint8_t sequence = 0;
+};
+
+inline constexpr std::size_t rangedChannelRequestSize(std::size_t payloadLen) {
+  return channel_ranged::kHeaderSize + payloadLen + channel::kRequestTailSize;
+}
+
+/// Encode and sign a CHANNEL_MESSAGE_RANGED_REQUEST (Buddy v0.35.0). Signed like
+/// encodeChannelMessage. InvalidArgument for a payload over channel::kMaxPayload or a
+/// maxDistance over channel_ranged::kMaxDistance (the server would refuse either).
+inline Result<std::size_t> encodeRangedChannelMessage(const core::ICrypto& crypto,
+                                                      const RangedChannelMessageParams& p,
+                                                      const Token64& token, MutableBytes out,
+                                                      const core::IMac* mac = nullptr) {
+  if (p.payload.size() > channel::kMaxPayload) return Errc::InvalidArgument;
+  if (p.maxDistance > channel_ranged::kMaxDistance) return Errc::InvalidArgument;
+  const std::size_t total = rangedChannelRequestSize(p.payload.size());
+  if (out.size() < total) return Errc::BufferTooSmall;
+  const Status cryptoStatus = crypto.availability();
+  if (!cryptoStatus.ok()) return cryptoStatus.code;
+
+  std::uint8_t* b = out.data();
+  b[0] = static_cast<std::uint8_t>(MessageType::ChannelMessageRangedRequest);
+  le::writeI64(b + channel::kChannelIdOffset, p.channelId);
+  std::memcpy(b + channel::kUuidOffset, p.uuid.data(), kUuidSize);
+  le::writeI64(b + channel_ranged::kAppIdOffset, p.appId);
+  le::writeI64(b + channel_ranged::kChunkXOffset, p.origin.x);
+  le::writeI64(b + channel_ranged::kChunkYOffset, p.origin.y);
+  le::writeI64(b + channel_ranged::kChunkZOffset, p.origin.z);
+  le::writeU32(b + channel_ranged::kMaxDistanceOffset, p.maxDistance);
+  le::writeU16(b + channel_ranged::kPayloadLenOffset, static_cast<std::uint16_t>(p.payload.size()));
+  if (!p.payload.empty())
+    std::memcpy(b + channel_ranged::kPayloadOffset, p.payload.data(), p.payload.size());
+
+  const std::size_t authOffset = channel_ranged::kPayloadOffset + p.payload.size();
   b[authOffset] = 1;  // containsAuth
   const std::size_t prefixLen = authOffset + 1;
   if (!spatialHmac(crypto, Bytes(b, prefixLen), token, b + prefixLen, mac)) return Errc::Malformed;
@@ -323,10 +394,13 @@ struct ChannelNotificationView {
   }
 };
 
+/// Parse a channel notification: ChannelMessageNotification (18) or
+/// ChannelAudioNotification (36), which share the layout; read `datagram[0]` for which.
 inline Result<ChannelNotificationView> parseChannelNotification(Bytes datagram) {
   if (datagram.size() < channel::kMinNotificationSize) return Errc::Malformed;
   const std::uint8_t* b = datagram.data();
-  if (b[0] != static_cast<std::uint8_t>(MessageType::ChannelMessageNotification))
+  if (b[0] != static_cast<std::uint8_t>(MessageType::ChannelMessageNotification) &&
+      b[0] != static_cast<std::uint8_t>(MessageType::ChannelAudioNotification))
     return Errc::Malformed;
   const std::uint16_t payloadLen = le::readU16(b + channel::kPayloadLenOffset);
   if (datagram.size() <

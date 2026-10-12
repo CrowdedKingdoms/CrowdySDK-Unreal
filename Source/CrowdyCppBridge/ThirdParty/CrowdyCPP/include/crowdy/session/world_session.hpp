@@ -76,6 +76,19 @@ struct WorldSessionConfig {
   std::function<void(const replication::SpatialNotification&)> onVideo;
   /// Proximity text, which the session has no store for either (0.54.0).
   std::function<void(const replication::SpatialNotification&)> onText;
+  /// App-defined spatial messages (GENERIC_SPATIAL_1, opcode 140; Connection::sendGenericSpatial
+  /// sends one), which the session has no store for (0.60.0).
+  std::function<void(const replication::SpatialNotification&)> onGenericSpatial;
+  /// Every inbound voxel update, after chunks() has merged it, for games that keep
+  /// their own world and need the sender and the state blob of each edit (0.60.0).
+  /// It includes the server's echo of this client's own edits (Buddy v0.37.0 delivers
+  /// every accepted edit back to its sender): compare the notification's uuid and
+  /// sequence with your send's. chunks() applies that echo idempotently.
+  std::function<void(const replication::SpatialNotification&, const wire::VoxelPayloadView&)> onVoxel;
+  /// Channel audio (opcode 36, Buddy v0.37.0) from another member of a channel this
+  /// player belongs to, which the session has no store for (0.60.0). Feed the payload to
+  /// a media::VoiceJitterBuffer keyed by channel id and sender uuid.
+  std::function<void(const replication::ChannelNotification&)> onChannelAudio;
   /// The server announced a departure (Buddy v0.25.0). The session already
   /// removed the actor from `actors()` and fired its onLeave; this is for state
   /// the game keeps outside the store (voice/video textures, name tags).

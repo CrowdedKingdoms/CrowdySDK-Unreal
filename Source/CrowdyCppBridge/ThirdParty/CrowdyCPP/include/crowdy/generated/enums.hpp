@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: d4cab94caefb3ae8c76baf2354277fd6b1bd41dbbe701b61c919387d22c70891
-// operations sha256: 9abc3be640876f499f47f8f4beeba306f2c2bca2bc301d7aad8d1156703566a4
+// schema.gql sha256: 4b9c470a996a1c6c423849546fc23eda164605753e2aa2083485156b27a8da1c
+// operations sha256: 56c3830a074c020782259846f3597932060a419b7b0868ad6b0d1b70e166fa21
 
 #pragma once
 
@@ -1168,6 +1168,91 @@ inline std::optional<ServerState> serverStateFromString(std::string_view s) {
   return std::nullopt;
 }
 
+enum class TierAccessMode {
+  OFF,
+  OBSERVE,
+  ENFORCE,
+};
+
+inline constexpr std::string_view toString(TierAccessMode v) {
+  switch (v) {
+    case TierAccessMode::OFF: return "OFF";
+    case TierAccessMode::OBSERVE: return "OBSERVE";
+    case TierAccessMode::ENFORCE: return "ENFORCE";
+  }
+  return "";
+}
+
+inline std::optional<TierAccessMode> tierAccessModeFromString(std::string_view s) {
+  if (s == "OFF") return TierAccessMode::OFF;
+  if (s == "OBSERVE") return TierAccessMode::OBSERVE;
+  if (s == "ENFORCE") return TierAccessMode::ENFORCE;
+  return std::nullopt;
+}
+
+enum class TierAccessRuleKind {
+  EMAIL,
+  EMAIL_DOMAIN,
+};
+
+inline constexpr std::string_view toString(TierAccessRuleKind v) {
+  switch (v) {
+    case TierAccessRuleKind::EMAIL: return "EMAIL";
+    case TierAccessRuleKind::EMAIL_DOMAIN: return "EMAIL_DOMAIN";
+  }
+  return "";
+}
+
+inline std::optional<TierAccessRuleKind> tierAccessRuleKindFromString(std::string_view s) {
+  if (s == "EMAIL") return TierAccessRuleKind::EMAIL;
+  if (s == "EMAIL_DOMAIN") return TierAccessRuleKind::EMAIL_DOMAIN;
+  return std::nullopt;
+}
+
+enum class TierAccessStatus {
+  NOT_RESTRICTED,
+  GRANTED,
+  PENDING_VERIFICATION,
+  DENIED,
+};
+
+inline constexpr std::string_view toString(TierAccessStatus v) {
+  switch (v) {
+    case TierAccessStatus::NOT_RESTRICTED: return "NOT_RESTRICTED";
+    case TierAccessStatus::GRANTED: return "GRANTED";
+    case TierAccessStatus::PENDING_VERIFICATION: return "PENDING_VERIFICATION";
+    case TierAccessStatus::DENIED: return "DENIED";
+  }
+  return "";
+}
+
+inline std::optional<TierAccessStatus> tierAccessStatusFromString(std::string_view s) {
+  if (s == "NOT_RESTRICTED") return TierAccessStatus::NOT_RESTRICTED;
+  if (s == "GRANTED") return TierAccessStatus::GRANTED;
+  if (s == "PENDING_VERIFICATION") return TierAccessStatus::PENDING_VERIFICATION;
+  if (s == "DENIED") return TierAccessStatus::DENIED;
+  return std::nullopt;
+}
+
+enum class TierAccessStoredMode {
+  OBSERVE,
+  ENFORCE,
+};
+
+inline constexpr std::string_view toString(TierAccessStoredMode v) {
+  switch (v) {
+    case TierAccessStoredMode::OBSERVE: return "OBSERVE";
+    case TierAccessStoredMode::ENFORCE: return "ENFORCE";
+  }
+  return "";
+}
+
+inline std::optional<TierAccessStoredMode> tierAccessStoredModeFromString(std::string_view s) {
+  if (s == "OBSERVE") return TierAccessStoredMode::OBSERVE;
+  if (s == "ENFORCE") return TierAccessStoredMode::ENFORCE;
+  return std::nullopt;
+}
+
 enum class UdpErrorCode {
   NO_ERROR,
   UNKNOWN_ERROR,
@@ -1202,6 +1287,7 @@ enum class UdpErrorCode {
   CANNOT_DELETE_DEFAULT_WORLD_GRID,
   GRID_HAS_NESTED_CHILDREN,
   TOKEN_EXPIRED,
+  APP_PAUSED,
 };
 
 inline constexpr std::string_view toString(UdpErrorCode v) {
@@ -1239,6 +1325,7 @@ inline constexpr std::string_view toString(UdpErrorCode v) {
     case UdpErrorCode::CANNOT_DELETE_DEFAULT_WORLD_GRID: return "CANNOT_DELETE_DEFAULT_WORLD_GRID";
     case UdpErrorCode::GRID_HAS_NESTED_CHILDREN: return "GRID_HAS_NESTED_CHILDREN";
     case UdpErrorCode::TOKEN_EXPIRED: return "TOKEN_EXPIRED";
+    case UdpErrorCode::APP_PAUSED: return "APP_PAUSED";
   }
   return "";
 }
@@ -1277,6 +1364,7 @@ inline std::optional<UdpErrorCode> udpErrorCodeFromString(std::string_view s) {
   if (s == "CANNOT_DELETE_DEFAULT_WORLD_GRID") return UdpErrorCode::CANNOT_DELETE_DEFAULT_WORLD_GRID;
   if (s == "GRID_HAS_NESTED_CHILDREN") return UdpErrorCode::GRID_HAS_NESTED_CHILDREN;
   if (s == "TOKEN_EXPIRED") return UdpErrorCode::TOKEN_EXPIRED;
+  if (s == "APP_PAUSED") return UdpErrorCode::APP_PAUSED;
   return std::nullopt;
 }
 

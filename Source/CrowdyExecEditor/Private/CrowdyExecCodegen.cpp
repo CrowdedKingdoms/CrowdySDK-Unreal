@@ -1637,9 +1637,14 @@ namespace CrowdyExecCodegenDetail
 			TEXT("\n");
 	}
 
-	/** The arm's first line: `authorize(ctx, &call, true)?;` without members, else with the caller rule. */
+	/** The arm's first line: `authorize(ctx, &call, true)?;` without members, else with the caller rule; a Developers Only arm checks call.developer() instead. */
 	FString FCodegen::AuthorizeLine(ECrowdyServerFunctionCaller Caller) const
 	{
+		// Players and other instances alike fail call.developer().
+		if (Caller == ECrowdyServerFunctionCaller::DevelopersOnly)
+		{
+			return TEXT("call.developer().map_err(|_| Error::new(\"denied: only developer tools may call this function\"))?;");
+		}
 		if (!HasMembers())
 		{
 			return FString::Printf(TEXT("authorize(ctx, &call, %s)?;"), Caller == ECrowdyServerFunctionCaller::Players ? TEXT("true") : TEXT("false"));
@@ -2818,6 +2823,11 @@ namespace CrowdyExecCodegenDetail
 		}
 		for (const FFunctionInfo& Function : Gen.FunctionInfos)
 		{
+			// Another instance's call to one is always refused.
+			if (Function.WhoCanCall == ECrowdyServerFunctionCaller::DevelopersOnly)
+			{
+				continue;
+			}
 			Items.Add(CallFunction(Callee.TypeName, Function.Method, Function.Ident, Function.Params, Function.Reply));
 		}
 		for (const FBuiltinMember& BuiltIn : BuiltinMembers)

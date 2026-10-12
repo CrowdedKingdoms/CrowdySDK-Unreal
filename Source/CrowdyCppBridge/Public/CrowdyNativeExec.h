@@ -59,10 +59,12 @@ struct FCrowdyNativeExecOptions
 	int32 CallTimeoutMs = 12000;
 	int32 OpenTimeoutMs = 10000;
 	bool bReconnect = true;
+	// Dials as the app's developer with a session token instead of as a player: calls arrive as Caller::Developer and may reach any node type.
+	bool bAsDeveloper = false;
 };
 
 /**
- * One player's connection to ck-exec, made by FCrowdyCppClient::CreateExecConnection.
+ * One connection to ck-exec, a player's or the app developer's, made by FCrowdyCppClient::CreateExecConnection.
  *
  * Game thread only. Callbacks run from the owning client's Poll(). Every call, ping, subscribe and connect completion
  * is delivered exactly once: a request still pending when the connection or its client closes completes then, as

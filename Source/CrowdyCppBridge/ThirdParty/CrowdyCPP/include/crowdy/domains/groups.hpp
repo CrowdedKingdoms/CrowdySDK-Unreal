@@ -336,6 +336,10 @@ class ChannelsAPI : public DomainBase {
     execUnwrapAsync(gen::channels::kChannelPolicyDocument, vars, {}, std::move(cb));
   }
 
+  /// Create a channel (`CreateChannelInput`). `membersCanSend` (default true) gives the
+  /// default member role send_messages; `membersCanSpeak` (default false) adds send_voice,
+  /// so members may send channel audio (Connection::sendChannelAudio; the player also needs
+  /// the app's use_voice_chat).
   graphql::Json create(const graphql::JVal& input) const {
     graphql::JVal vars;
     vars["input"] = input;
