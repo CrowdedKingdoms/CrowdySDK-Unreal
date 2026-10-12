@@ -617,9 +617,10 @@ namespace
 		{
 			Errors.Add(FString::Printf(TEXT("Function %s: Required Feature '%s' must be 1 to 64 letters, digits, underscores, hyphens and dots"), *Function.Name.ToString(), *Key));
 		}
-		if (Function.WhoCanCall == ECrowdyServerFunctionCaller::ServerOnly)
+		if (Function.WhoCanCall == ECrowdyServerFunctionCaller::ServerOnly || Function.WhoCanCall == ECrowdyServerFunctionCaller::DevelopersOnly)
 		{
-			Errors.Add(FString::Printf(TEXT("Function %s: Required Feature is only checked for players, and Callable By Server Only refuses every player; clear it or change Callable By"), *Function.Name.ToString()));
+			Errors.Add(FString::Printf(TEXT("Function %s: Required Feature is only checked for players, and Callable By %s refuses every player; clear it or change Callable By"),
+				*Function.Name.ToString(), Function.WhoCanCall == ECrowdyServerFunctionCaller::ServerOnly ? TEXT("Server Only") : TEXT("Developers Only")));
 		}
 	}
 
@@ -1090,7 +1091,10 @@ FString UCrowdyServerObjectDefinition::GetAreaKey(int64 ChunkX, int64 ChunkY) co
 
 bool UCrowdyServerObjectDefinition::IsReachableByPlayers() const
 {
-	const bool bPlayerCallable = Functions.ContainsByPredicate([](const FCrowdyServerFunction& Function) { return Function.WhoCanCall != ECrowdyServerFunctionCaller::ServerOnly; });
+	const bool bPlayerCallable = Functions.ContainsByPredicate([](const FCrowdyServerFunction& Function)
+	{
+		return Function.WhoCanCall != ECrowdyServerFunctionCaller::ServerOnly && Function.WhoCanCall != ECrowdyServerFunctionCaller::DevelopersOnly;
+	});
 	// Records reach players without a watched variable: each carries its entity, owner and team.
 	return bPlayerCallable || !WatchedFields.IsEmpty() || Holds == ECrowdyServerObjectHolds::RecordPerEntity || MembersFrom != ECrowdyServerMembersSource::None
 		|| bOnPlayerJoined || bOnPlayerLeft;

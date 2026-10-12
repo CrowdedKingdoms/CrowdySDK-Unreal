@@ -973,6 +973,17 @@ bool FCrowdyExecCodegenWhoCanCallTest::RunTest(const FString& Parameters)
 	const FString ServerOnlyLib = GetFileText(*this, ServerOnlyHit, LibPath);
 	TestTrue(TEXT("switching a function to Server only refuses players"), HasText(ServerOnlyLib, HitRefused));
 	TestFalse(TEXT("a Server only function no longer lets players in"), HasText(ServerOnlyLib, HitAllowed));
+
+	Definition->Functions[0].WhoCanCall = ECrowdyServerFunctionCaller::DevelopersOnly;
+	CrowdyExecCodegen::FGeneratedCrate DevelopersOnlyHit;
+	if (!GenerateCrate(*this, *Definition, DevelopersOnlyHit))
+	{
+		return false;
+	}
+	const FString DevelopersLib = GetFileText(*this, DevelopersOnlyHit, LibPath);
+	TestTrue(TEXT("a Developers only function lets in developer tools alone"), HasText(DevelopersLib,
+		TEXT("            \"hit\" => {\n                call.developer().map_err(|_| Error::new(\"denied: only developer tools may call this function\"))?;\n")));
+	TestFalse(TEXT("and no longer runs the player check"), HasText(DevelopersLib, HitAllowed) || HasText(DevelopersLib, HitRefused));
 	return true;
 }
 

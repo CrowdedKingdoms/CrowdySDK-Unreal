@@ -760,6 +760,32 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::BuildOverviewTab()
 							[ CrowdyComputeUI::QuietLabel(LOCTEXT("DeployStarters", "Deploy starter pack")) ]
 						]
 					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
+					[
+						SNew(SHorizontalBox)
+						.Visibility_Lambda([]() { return FCrowdyServerComputeService::Get().GetTypesToMove().IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible; })
+						+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center).Padding(0.f, 0.f, 12.f, 0.f)
+						[
+							SNew(STextBlock).AutoWrapText(true).Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+							.Text(this, &SCrowdyServerComputePanel::GetMoveLine)
+							.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::Warning()))
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 6.f, 0.f)
+						[
+							SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Secondary").ContentPadding(FMargin(9.f, 4.f))
+							.ToolTipText(LOCTEXT("MoveNowTip", "Saves and stops them; each starts again on the new version at its next call"))
+							.IsEnabled(this, &SCrowdyServerComputePanel::IsIdle)
+							.OnClicked(this, &SCrowdyServerComputePanel::OnMoveRunningClicked)
+							[ CrowdyComputeUI::ButtonLabel(LOCTEXT("MoveNow", "Move now")) ]
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						[
+							SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Ghost").ContentPadding(FMargin(8.f, 4.f))
+							.ToolTipText(LOCTEXT("LeaveThemTip", "They keep the previous version until they stop when idle"))
+							.OnClicked(this, &SCrowdyServerComputePanel::OnDismissMoveClicked)
+							[ CrowdyComputeUI::QuietLabel(LOCTEXT("LeaveThem", "Leave them")) ]
+						]
+					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f).HAlign(HAlign_Left)
 					[
 						SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Ghost").ContentPadding(FMargin(4.f, 3.f))
@@ -1003,8 +1029,9 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeStatusBadge() const
 	const CrowdyExecDeveloper::FAppStatus& Status = FCrowdyServerComputeService::Get().GetStatus().GetValue();
 	if (Status.bBudgetPaused)
 	{
-		return CrowdyComputeUI::TipBadge(LOCTEXT("BudgetPaused", "Budget paused"), EBadgeTone::Danger,
-			LOCTEXT("BudgetPausedTip", "The app used up its Server Compute budget, so players' calls are refused until it is raised"));
+		const FText Tip = LOCTEXT("BudgetPausedTip", "The app's Server Compute is paused by billing, so players' calls are refused until it is resumed");
+		return CrowdyComputeUI::TipBadge(LOCTEXT("BudgetPaused", "Budget paused"), EBadgeTone::Danger, Status.BudgetPauseReason.IsEmpty() ? Tip
+			: FText::Format(LOCTEXT("BudgetPausedReasonTip", "{0} (reason: {1})"), Tip, FText::FromString(Status.BudgetPauseReason)));
 	}
 	if (Status.bDisabled)
 	{
@@ -1016,6 +1043,20 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeStatusBadge() const
 		return CrowdyStudioWidgets::Badge(LOCTEXT("NothingDeployed", "Nothing deployed"), EBadgeTone::Neutral);
 	}
 	return CrowdyStudioWidgets::Badge(FText::Format(LOCTEXT("LiveVersion", "Live: version {0}"), CrowdyComputeUI::VersionNumber(Status.ActiveVersion.GetValue())), EBadgeTone::Success);
+}
+
+FText SCrowdyServerComputePanel::MakeUsageText(const CrowdyExecDeveloper::FAppStatus& Status)
+{
+	if (!Status.Instances.IsSet() || !Status.InstanceLimit.IsSet())
+	{
+		return FText::GetEmpty();
+	}
+	const FText Instances = FText::Format(LOCTEXT("UsageInstances", "{0} of {1} Server Objects"), Status.Instances.GetValue(), Status.InstanceLimit.GetValue());
+	if (!Status.ReservedMb.IsSet() || !Status.MaxReservedMb.IsSet())
+	{
+		return Instances;
+	}
+	return FText::Format(LOCTEXT("UsageMemory", "{0} · {1} of {2} MB"), Instances, Status.ReservedMb.GetValue(), Status.MaxReservedMb.GetValue());
 }
 
 void SCrowdyServerComputePanel::FillServiceRows()
@@ -1038,14 +1079,17 @@ void SCrowdyServerComputePanel::FillHeaderBadge()
 		HeaderBadgeBox->SetContent(SNullWidget::NullWidget);
 		return;
 	}
-	if (!Status->bDisabled)
-	{
-		HeaderBadgeBox->SetContent(MakeStatusBadge());
-		return;
-	}
+	const FText Usage = MakeUsageText(Status.GetValue());
 	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
 	HeaderBadgeBox->SetContent(
 		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 8.f, 0.f)
+		[
+			SNew(STextBlock).Font(FCoreStyle::GetDefaultFontStyle("Regular", 9)).Text(Usage)
+			.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary()))
+			.ToolTipText(LOCTEXT("UsageTip", "The app's Server Objects placed in this datacenter and the memory they reserve, against its organization's limits. Past either, no new Server Object starts until some stop."))
+			.Visibility(Usage.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
+		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 		[
 			MakeStatusBadge()
@@ -1053,6 +1097,7 @@ void SCrowdyServerComputePanel::FillHeaderBadge()
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.f, 0.f, 0.f, 0.f)
 		[
 			SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Secondary").ContentPadding(FMargin(9.f, 4.f))
+			.Visibility(Status->bDisabled ? EVisibility::Visible : EVisibility::Collapsed)
 			.ToolTipText(LOCTEXT("AppOnTip", "Lets players call the app's Server Functions again"))
 			.IsEnabled(this, &SCrowdyServerComputePanel::CanSwitch)
 			.OnClicked(this, &SCrowdyServerComputePanel::OnSwitchAppOnClicked)
@@ -1099,6 +1144,7 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeRow(const CrowdyExecDeplo
 	const UCrowdyServerObjectDefinition* Definition = Cast<UCrowdyServerObjectDefinition>(FSoftObjectPath(Type.AssetPath).ResolveObject());
 	const FString Description = Definition ? Definition->Description.TrimStartAndEnd() : FString();
 	const FText Meta = MakeTypeMeta(Definition, Type.TypeName);
+	const FText HeldBack = MakeHeldBackLine(Type.TypeName);
 
 	return SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight()
@@ -1137,6 +1183,12 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeRow(const CrowdyExecDeplo
 			SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Subtle").Text(FText::FromString(Type.Problem))
 			.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::Warning()))
 			.Visibility(Type.Problem.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 3.f, 0.f, 0.f)
+		[
+			SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Subtle").Text(HeldBack)
+			.ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::Danger()))
+			.Visibility(HeldBack.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
 		];
 }
 
@@ -1186,6 +1238,15 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeRunningSwitch(const FString& 
 	}
 	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
 	return SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 6.f, 0.f)
+		[
+			SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Ghost").ContentPadding(FMargin(8.f, 4.f))
+			.Visibility(bOff ? EVisibility::Collapsed : EVisibility::Visible)
+			.ToolTipText(LOCTEXT("RestartTip", "Moves this type's running Server Objects to the live version now: each is saved and stopped, and starts again at its next call"))
+			.IsEnabled(this, &SCrowdyServerComputePanel::CanSwitch)
+			.OnClicked(this, &SCrowdyServerComputePanel::OnRestartClicked, TypeName)
+			[ CrowdyComputeUI::QuietLabel(LOCTEXT("Restart", "Restart")) ]
+		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 		[
 			SNew(STextBlock).Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
@@ -1258,7 +1319,26 @@ FText SCrowdyServerComputePanel::MakeTypeMeta(const UCrowdyServerObjectDefinitio
 		}
 		Parts.Add(CrowdyComputeUI::CallsPhrase(Calls, CrowdyComputeUI::WindowPhrase(StatsShownWindow)).ToString());
 	}
+	const FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
+	if (Compute.AreInstancesLoaded())
+	{
+		Parts.Add(FText::Format(LOCTEXT("MetaRunning", "{0} running"), Compute.CountRunning(TypeName)).ToString());
+	}
 	return FText::FromString(FString::Join(Parts, TEXT(" · ")));
+}
+
+FText SCrowdyServerComputePanel::MakeHeldBackLine(const FString& TypeName) const
+{
+	TArray<FString> Lines;
+	for (const CrowdyExecDeveloper::FInstance& Instance : FCrowdyServerComputeService::Get().GetInstances())
+	{
+		if (!Instance.HeldBack.IsEmpty() && Instance.NodeType.Equals(TypeName, ESearchCase::CaseSensitive))
+		{
+			Lines.Add(FText::Format(LOCTEXT("HeldBack", "{0} is held back: {1}"), FText::FromString(Instance.Key.IsEmpty() ? Instance.InstanceId : Instance.Key),
+				FText::FromString(Instance.HeldBack)).ToString());
+		}
+	}
+	return FText::FromString(FString::Join(Lines, TEXT("\n")));
 }
 
 void SCrowdyServerComputePanel::FillVersions()
@@ -1744,6 +1824,45 @@ FReply SCrowdyServerComputePanel::OnSwitchAppOnClicked()
 	}
 	Client->SetEnabled(true, FString(), MakeActionAnswer(Compute, CrowdyComputeUI::ErrorAppSwitch, LOCTEXT("AppOnFailed", "Could not switch the app on")));
 	return FReply::Handled();
+}
+
+FReply SCrowdyServerComputePanel::OnRestartClicked(FString TypeName)
+{
+	if (RenewIfStale() || !IsIdle())
+	{
+		return FReply::Handled();
+	}
+	FCrowdyServerComputeService::Get().RestartType(TypeName);
+	return FReply::Handled();
+}
+
+FReply SCrowdyServerComputePanel::OnMoveRunningClicked()
+{
+	if (RenewIfStale() || !IsIdle())
+	{
+		return FReply::Handled();
+	}
+	FCrowdyServerComputeService::Get().MoveRunningToActive();
+	return FReply::Handled();
+}
+
+FReply SCrowdyServerComputePanel::OnDismissMoveClicked()
+{
+	FCrowdyServerComputeService::Get().DismissMove();
+	return FReply::Handled();
+}
+
+FText SCrowdyServerComputePanel::GetMoveLine() const
+{
+	const FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
+	const TArray<FString>& Types = Compute.GetTypesToMove();
+	if (Types.IsEmpty())
+	{
+		return FText::GetEmpty();
+	}
+	const int32 Running = Compute.GetRunningToMove();
+	return FText::Format(LOCTEXT("MoveLine", "{0} running Server {0}|plural(one=Object,other=Objects) of {1} still {0}|plural(one=runs,other=run) the previous version until {0}|plural(one=it stops,other=they stop) when idle. Move {0}|plural(one=it,other=them) to the new version now?"),
+		Running, FText::FromString(FString::Join(Types, TEXT(", "))));
 }
 
 FReply SCrowdyServerComputePanel::OnDeployClicked()

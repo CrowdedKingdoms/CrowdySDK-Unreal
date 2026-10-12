@@ -32,17 +32,27 @@ class GridsAPI : public DomainBase {
   }
 
   /// Create a channel that belongs to a grid you own; the grid's player
-  /// modules may `emit_channel` into it.
+  /// modules may `emit_channel` into it. `membersCanSpeak` (unset: the server's
+  /// default, false) gives the default member role `send_voice`, so members may send
+  /// channel audio (Connection::sendChannelAudio).
   graphql::Json createChannel(std::string_view appId, std::string_view gridId,
-                              std::string_view name) const {
+                              std::string_view name,
+                              std::optional<bool> membersCanSpeak = std::nullopt) const {
     return execUnwrap(gen::grids::kCreateGridChannelDocument,
-                      channelVars(appId, gridId, name));
+                      channelVars(appId, gridId, name, membersCanSpeak));
   }
 
   void createChannelAsync(std::string_view appId, std::string_view gridId,
                           std::string_view name, graphql::GraphQLCallback cb) const {
     execUnwrapAsync(gen::grids::kCreateGridChannelDocument,
-                    channelVars(appId, gridId, name), {}, std::move(cb));
+                    channelVars(appId, gridId, name, std::nullopt), {}, std::move(cb));
+  }
+
+  void createChannelAsync(std::string_view appId, std::string_view gridId,
+                          std::string_view name, bool membersCanSpeak,
+                          graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::grids::kCreateGridChannelDocument,
+                    channelVars(appId, gridId, name, membersCanSpeak), {}, std::move(cb));
   }
 
   /// The active channels of one grid, oldest first.
@@ -73,11 +83,12 @@ class GridsAPI : public DomainBase {
     return vars;
   }
   static graphql::JVal channelVars(std::string_view appId, std::string_view gridId,
-                                   std::string_view name) {
+                                   std::string_view name, std::optional<bool> membersCanSpeak) {
     graphql::JVal input;
     input["appId"] = appId;
     input["gridId"] = gridId;
     input["name"] = name;
+    if (membersCanSpeak) input["membersCanSpeak"] = *membersCanSpeak;
     graphql::JVal vars;
     vars["input"] = std::move(input);
     return vars;

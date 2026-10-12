@@ -600,4 +600,74 @@ class TeleportAPI : public DomainBase {
   }
 };
 
+/// client.inputLog() — the input log: the client inputs the realtime servers recorded for an
+/// app with replay logging on (`App.replayLoggingEnabled`, set with admin().apps().update).
+///
+/// Game plane: call it on the app-scoped client for the app; an identity session token is
+/// refused. A player reads only the sessions and inputs they sent; a holder of manage_apps on
+/// the app reads every session. Inputs are kept for the input log's published retention, so
+/// an old session can still be listed after its inputs are gone. INPUT_LOG_UNAVAILABLE on a
+/// deployment without input logging, and from messages(), retryable with the same cursor, when
+/// the log cannot be read right now.
+class InputLogAPI : public DomainBase {
+ public:
+  using DomainBase::DomainBase;
+
+  /// Recorded sessions of an app, newest first: an InputLogSessionConnection
+  /// (`edges[].node`, `pageInfo.endCursor`, `totalCount`). `filter` is an
+  /// InputLogSessionFilter: `userId` (another user's needs manage_apps, else FORBIDDEN),
+  /// `from` / `to`, `messageType`.
+  graphql::Json sessions(std::string_view appId, int first = 50, std::string_view after = {},
+                         const graphql::JVal& filter = graphql::JVal()) const {
+    return execUnwrap(gen::inputLog::kInputLogSessionsDocument,
+                      sessionVars(appId, first, after, filter));
+  }
+
+  void sessionsAsync(std::string_view appId, int first, std::string_view after,
+                     const graphql::JVal& filter, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::inputLog::kInputLogSessionsDocument,
+                    sessionVars(appId, first, after, filter), {}, std::move(cb));
+  }
+
+  /// The recorded inputs of one session (`gameTokenId`, from sessions()), oldest first: an
+  /// InputLogMessageConnection. `body` is the message in base64, from its type byte up to
+  /// its authentication tail, which is not recorded; `sizeBytes` is what stored input logs
+  /// are billed on. KEEP PAGING WHILE pageInfo.hasNextPage IS TRUE: a page can hold fewer
+  /// than `first` inputs, or none, when it reached the server's time or scan limit. `filter`
+  /// is an InputLogMessageFilter: `from` / `to`, `messageTypes` (at most 64). NOT_FOUND for
+  /// a session that is not yours without manage_apps.
+  graphql::Json messages(std::string_view appId, std::string_view gameTokenId, int first = 50,
+                         std::string_view after = {},
+                         const graphql::JVal& filter = graphql::JVal()) const {
+    return execUnwrap(gen::inputLog::kInputLogMessagesDocument,
+                      messageVars(appId, gameTokenId, first, after, filter));
+  }
+
+  void messagesAsync(std::string_view appId, std::string_view gameTokenId, int first,
+                     std::string_view after, const graphql::JVal& filter,
+                     graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::inputLog::kInputLogMessagesDocument,
+                    messageVars(appId, gameTokenId, first, after, filter), {}, std::move(cb));
+  }
+
+ private:
+  static graphql::JVal sessionVars(std::string_view appId, int first, std::string_view after,
+                                   const graphql::JVal& filter) {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    vars["first"] = std::int64_t{first};
+    if (!after.empty()) vars["after"] = after;
+    if (!filter.isNull()) vars["filter"] = filter;
+    return vars;
+  }
+
+  static graphql::JVal messageVars(std::string_view appId, std::string_view gameTokenId,
+                                   int first, std::string_view after,
+                                   const graphql::JVal& filter) {
+    graphql::JVal vars = sessionVars(appId, first, after, filter);
+    vars["gameTokenId"] = gameTokenId;
+    return vars;
+  }
+};
+
 }  // namespace crowdy::domains

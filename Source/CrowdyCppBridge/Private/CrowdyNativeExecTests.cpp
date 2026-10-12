@@ -481,7 +481,7 @@ bool FCrowdyNativeExecDialWithoutTokenSaysWhyTest::RunTest(const FString& Parame
 	{
 		return false;
 	}
-	AddExpectedErrorPlain(TEXT("A ck-exec connection has no app token to dial with."), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedErrorPlain(TEXT("A ck-exec connection has no token to dial with."), EAutomationExpectedErrorFlags::Contains, 0);
 	TOptional<bool> bConnected;
 	FString Error;
 	Connection->Connect([&bConnected, &Error](bool bOk, const FString& Why)
@@ -495,6 +495,41 @@ bool FCrowdyNativeExecDialWithoutTokenSaysWhyTest::RunTest(const FString& Parame
 	}
 	TestFalse(TEXT("it failed"), bConnected.GetValue());
 	TestEqualSensitive(TEXT("saying the player has no app token"), Error, FString(TEXT("the player has no app token; sign in first")));
+	return true;
+}
+
+// A developer connection asks execConnectAsDeveloper under the session token and opens the host it names.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeExecDeveloperDialTest,
+	"CrowdySDK.CrowdyCppBridge.ExecDeveloperDialsAsDeveloper", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeExecDeveloperDialTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FCrowdyCppClient> Client = FCrowdyCppClient::MakeForTest(
+		TEXT("{\"data\":{\"execConnectAsDeveloper\":{\"gatewayUrl\":\"wss://gateway.example.test\",\"token\":\"dev-connect-1\",\"host\":\"host-a\",\"expiresAt\":\"2026-01-01T00:00:00Z\"}}}"), 200);
+	if (!TestTrue(TEXT("a test client was made"), Client.IsValid()))
+	{
+		return false;
+	}
+	FCrowdyNativeExecOptions Options;
+	Options.NodeType = TEXT("probe");
+	Options.bAsDeveloper = true;
+	const TSharedPtr<FCrowdyNativeExecConnection> Connection = Client->CreateExecConnection(42, Options, []() { return FString(TEXT("session-token")); });
+	if (!TestTrue(TEXT("a connection was created"), Connection.IsValid()))
+	{
+		return false;
+	}
+	Connection->Connect([](bool, const FString&) {});
+	if (!TestTrue(TEXT("the developer's answer named a gateway it dialled"), CrowdyNativeExecPumpUntil(*Client, [&Client]() { return Client->NumTestExecConnections() >= 1; })))
+	{
+		return false;
+	}
+	FString Url;
+	FString Authorization;
+	Client->GetLastTestRequest(Url, Authorization);
+	FString Body;
+	Client->GetLastTestRequestBody(Body);
+	TestEqual(TEXT("under the developer's session token"), Authorization, FString(TEXT("Bearer session-token")));
+	TestTrue(FString::Printf(TEXT("named as the operation execConnectAsDeveloper (%s)"), *Body.Left(200)),
+		Body.Replace(TEXT(" "), TEXT("")).Contains(TEXT("\"operationName\":\"ExecConnectAsDeveloper\""), ESearchCase::CaseSensitive));
 	return true;
 }
 

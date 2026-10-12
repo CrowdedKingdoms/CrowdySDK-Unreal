@@ -7,6 +7,7 @@
 #include "CrowdyExecCodegen.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyExecDeveloperApi.h"
+#include "CrowdyExecDeveloperCall.h"
 #include "CrowdyExecLog.h"
 #include "CrowdyExecRevisions.h"
 #include "CrowdyServerComputeSettings.h"
@@ -26,9 +27,9 @@ namespace CrowdyServerComputeCommandletDetail
 	namespace Dev = CrowdyExecDeveloper;
 
 	const TCHAR* const Usage = TEXT("-run=CrowdyServerCompute -op=status | versions | changes | deploy -yes | starters -yes | activate -version=N -yes | disable -type=T -yes")
-		TEXT(" | enable -type=T -yes | logs [-type=T] [-flow=F] [-limit=N] | stats [-type=T], and -out=<file> for a JSON result");
+		TEXT(" | enable -type=T -yes | restart -type=T -yes | instances | call -type=T -fn=F [-key=K] [-inputs=<json or @file>] -yes | logs [-type=T] [-flow=F] [-limit=N] | stats [-type=T], and -out=<file> for a JSON result");
 
-	const TCHAR* const ConfirmError = TEXT("This replaces or switches the app's live server code; pass -yes to confirm.");
+	const TCHAR* const ConfirmError = TEXT("This changes the app's live server code or what it holds; pass -yes to confirm.");
 
 	constexpr double ShortTimeoutSeconds = 60.0;
 	constexpr double BuildTimeoutSeconds = 15.0 * 60.0;
@@ -93,6 +94,11 @@ namespace CrowdyServerComputeCommandletDetail
 		return MakeShared<FJsonValueNumber>(Value.GetValue());
 	}
 
+	TOptional<double> IntOrUnset(const TOptional<int32>& Value)
+	{
+		return Value.IsSet() ? TOptional<double>(Value.GetValue()) : TOptional<double>();
+	}
+
 	TSharedPtr<FJsonValue> StringOrNull(const FString& Value)
 	{
 		if (Value.IsEmpty())
@@ -138,8 +144,11 @@ namespace CrowdyServerComputeCommandletDetail
 	{
 		const FString Active = Status.ActiveVersion.IsSet() ? FString::FromInt(Status.ActiveVersion.GetValue()) : FString(TEXT("none"));
 		const FString Off = Status.DisabledTypes.IsEmpty() ? FString(TEXT("none")) : FString::Join(Status.DisabledTypes, TEXT(", "));
-		return FString::Printf(TEXT("active version %s; server code %s; types switched off: %s; budget %s"), *Active,
-			Status.bDisabled ? TEXT("switched off") : TEXT("on"), *Off, Status.bBudgetPaused ? TEXT("paused") : TEXT("not paused"));
+		const FString Paused = Status.BudgetPauseReason.IsEmpty() ? FString(TEXT("paused")) : FString::Printf(TEXT("paused (%s)"), *Status.BudgetPauseReason);
+		const auto Count = [](const TOptional<int32>& Value) { return Value.IsSet() ? FString::FromInt(Value.GetValue()) : FString(TEXT("?")); };
+		return FString::Printf(TEXT("active version %s; server code %s; types switched off: %s; budget %s; instances %s of %s, %s of %s MB reserved"), *Active,
+			Status.bDisabled ? TEXT("switched off") : TEXT("on"), *Off, Status.bBudgetPaused ? *Paused : TEXT("not paused"), *Count(Status.Instances),
+			*Count(Status.InstanceLimit), *Count(Status.ReservedMb), *Count(Status.MaxReservedMb));
 	}
 
 	void SetStatus(FJsonObject& Out, const Dev::FAppStatus& Status)
@@ -153,6 +162,11 @@ namespace CrowdyServerComputeCommandletDetail
 		Out.SetBoolField(TEXT("disabled"), Status.bDisabled);
 		Out.SetArrayField(TEXT("disabledTypes"), StringValues(Status.DisabledTypes));
 		Out.SetBoolField(TEXT("budgetPaused"), Status.bBudgetPaused);
+		Out.SetField(TEXT("budgetPauseReason"), StringOrNull(Status.BudgetPauseReason));
+		Out.SetField(TEXT("instances"), NumberOrNull(IntOrUnset(Status.Instances)));
+		Out.SetField(TEXT("instanceLimit"), NumberOrNull(IntOrUnset(Status.InstanceLimit)));
+		Out.SetField(TEXT("reservedMb"), NumberOrNull(IntOrUnset(Status.ReservedMb)));
+		Out.SetField(TEXT("maxReservedMb"), NumberOrNull(IntOrUnset(Status.MaxReservedMb)));
 	}
 
 	void SetBuild(FJsonObject& Out, const Dev::FBuild& Build)
@@ -169,6 +183,7 @@ namespace CrowdyServerComputeCommandletDetail
 		Out.SetStringField(TEXT("buildId"), Build.BuildId);
 		Out.SetStringField(TEXT("buildStatus"), Build.Status);
 		Out.SetStringField(TEXT("buildLog"), Build.Log);
+		Out.SetField(TEXT("sdkVersion"), StringOrNull(Build.SdkVersion));
 		Out.SetArrayField(TEXT("artifacts"), Artifacts);
 	}
 
@@ -308,7 +323,7 @@ namespace CrowdyServerComputeCommandletDetail
 			Fail(Run, FString::Printf(TEXT("The build %s %s; its log is above and in buildLog"), *Build.BuildId, *Build.Status));
 			return;
 		}
-		Step(FString::Printf(TEXT("build %s succeeded; deploying"), *Build.BuildId));
+		Step(FString::Printf(TEXT("build %s succeeded against ckx-sdk %s; deploying"), *Build.BuildId, Build.SdkVersion.IsEmpty() ? TEXT("(not said)") : *Build.SdkVersion));
 		SendingChange(*Run);
 		Run->Client->Deploy(ManifestJson, Build.BuildId, [Run, Artifacts = Build.Artifacts](const Dev::TResult<int32>& Deployed) { OnDeployed(Run, Artifacts, Deployed); });
 	}
@@ -504,6 +519,144 @@ namespace CrowdyServerComputeCommandletDetail
 		RunSwitch(Run, true);
 	}
 
+	void RunRestart(const FRunRef& Run)
+	{
+		FString Type;
+		if (!FParse::Value(*Run->Params, TEXT("-type="), Type) || Type.IsEmpty())
+		{
+			Fail(Run, TEXT("restart needs -type=T, the Server Object type whose running instances move to the active version"));
+			return;
+		}
+		Run->Result->SetStringField(TEXT("type"), Type);
+		Step(FString::Printf(TEXT("moving %s's running instances to the active version"), *Type));
+		SendingChange(*Run);
+		Run->Client->RestartType(Type, [Run](const Dev::TResult<Dev::FRestart>& Answer)
+		{
+			if (!Answer.bOk)
+			{
+				FailWith(Run, Answer.Error);
+				return;
+			}
+			Run->Result->SetNumberField(TEXT("stopped"), Answer.Value.Stopped);
+			Step(FString::Printf(TEXT("%s: %d running instances stopped; each starts again on the active version at its next call"), *Answer.Value.NodeType, Answer.Value.Stopped));
+			Succeed(Run);
+		});
+	}
+
+	// -inputs= is JSON, or @<file> holding it, since a shell mangles quotes.
+	bool ReadInputs(const FString& Params, FString& OutInputs, FString& OutError)
+	{
+		FParse::Value(*Params, TEXT("-inputs="), OutInputs, false);
+		if (!OutInputs.StartsWith(TEXT("@")))
+		{
+			return true;
+		}
+		const FString Path = FPaths::ConvertRelativePathToFull(FPaths::LaunchDir(), OutInputs.RightChop(1));
+		if (!FFileHelper::LoadFileToString(OutInputs, *Path))
+		{
+			OutError = FString::Printf(TEXT("could not read the inputs file %s"), *Path);
+			return false;
+		}
+		return true;
+	}
+
+	void RunCall(const FRunRef& Run)
+	{
+		FString Type;
+		FString Key;
+		FString FunctionName;
+		FParse::Value(*Run->Params, TEXT("-type="), Type);
+		FParse::Value(*Run->Params, TEXT("-key="), Key);
+		FParse::Value(*Run->Params, TEXT("-fn="), FunctionName);
+		if (Type.IsEmpty() || FunctionName.IsEmpty())
+		{
+			Fail(Run, TEXT("call needs -type=T -fn=F and -key=K (the Instance Id, not needed for a type with Only One Instance), with -inputs=<json or @file>"));
+			return;
+		}
+		IAssetRegistry::GetChecked().SearchAllAssets(true);
+		const TArray<UCrowdyServerObjectDefinition*> Definitions = CrowdyExecDeploy::FindProjectDefinitions();
+		UCrowdyServerObjectDefinition* const* Found = Definitions.FindByPredicate([&Type](const UCrowdyServerObjectDefinition* Each)
+		{
+			return Each && Each->TypeName.Equals(Type, ESearchCase::CaseSensitive);
+		});
+		const UCrowdyServerObjectDefinition* Definition = Found ? *Found : nullptr;
+		const FCrowdyServerFunction* Function = Definition ? Definition->Functions.FindByPredicate([&FunctionName](const FCrowdyServerFunction& Each)
+		{
+			return Each.Name.ToString().Equals(FunctionName, ESearchCase::IgnoreCase);
+		}) : nullptr;
+		if (!Function)
+		{
+			Fail(Run, Definition ? FString::Printf(TEXT("%s has no Server Function %s"), *Type, *FunctionName) : FString::Printf(TEXT("the project has no Server Object type %s"), *Type));
+			return;
+		}
+		if (!CrowdyExecDeveloperCall::IsForDevelopers(*Function))
+		{
+			Fail(Run, FString::Printf(TEXT("%s is Callable By players; call it from a game. Only Server Only and Developers Only functions are called here."), *FunctionName));
+			return;
+		}
+		FInstancedStruct Inputs;
+		FString InputsJson;
+		FString Error;
+		if (!ReadInputs(Run->Params, InputsJson, Error) || !CrowdyExecDeveloperCall::InputsFromJson(*Function, InputsJson, Inputs, Error))
+		{
+			Fail(Run, Error);
+			return;
+		}
+		Run->Result->SetStringField(TEXT("type"), Type);
+		Run->Result->SetStringField(TEXT("key"), Key);
+		Run->Result->SetStringField(TEXT("fn"), Function->Name.ToString());
+		Step(FString::Printf(TEXT("calling %s on %s \"%s\" as the developer"), *Function->Name.ToString(), *Type, *Key));
+		SendingChange(*Run);
+		CrowdyExecDeveloperCall::Call(*Run->Client, *Definition, *Function, Key, Inputs, [Run](const CrowdyExecDeveloperCall::FResult& Result)
+		{
+			Run->Result->SetStringField(TEXT("status"), Result.Status);
+			Run->Result->SetStringField(TEXT("message"), Result.Message);
+			Run->Result->SetStringField(TEXT("reply"), Result.ReplyJson);
+			Step(FString::Printf(TEXT("%s%s%s"), *Result.Status, Result.Message.IsEmpty() ? TEXT("") : *(TEXT(": ") + Result.Message),
+				Result.ReplyJson.IsEmpty() ? TEXT("") : *(TEXT(", reply ") + Result.ReplyJson)));
+			if (!Result.bOk)
+			{
+				Fail(Run, FString::Printf(TEXT("%s: %s"), *Result.Status, *Result.Message), Result.Status);
+				return;
+			}
+			Succeed(Run);
+		});
+	}
+
+	void OnInstances(const FRunRef& Run, const Dev::TResult<TArray<Dev::FInstance>>& Answer)
+	{
+		if (!Answer.bOk)
+		{
+			FailWith(Run, Answer.Error);
+			return;
+		}
+		TArray<TSharedPtr<FJsonValue>> Rows;
+		for (const Dev::FInstance& Instance : Answer.Value)
+		{
+			const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+			Row->SetStringField(TEXT("instanceId"), Instance.InstanceId);
+			Row->SetStringField(TEXT("nodeType"), Instance.NodeType);
+			Row->SetStringField(TEXT("key"), Instance.Key);
+			Row->SetStringField(TEXT("kind"), Instance.Kind);
+			Row->SetStringField(TEXT("phase"), Instance.Phase);
+			Row->SetField(TEXT("host"), StringOrNull(Instance.Host));
+			Row->SetField(TEXT("heldBack"), StringOrNull(Instance.HeldBack));
+			Row->SetStringField(TEXT("epoch"), LexToString(Instance.Epoch));
+			Row->SetNumberField(TEXT("sinceMs"), Instance.SinceMs);
+			Rows.Add(MakeShared<FJsonValueObject>(Row));
+			Step(FString::Printf(TEXT("%s %s: %s, epoch %lld%s"), *Instance.NodeType, *Instance.Key, *Instance.Phase, Instance.Epoch,
+				Instance.HeldBack.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(", held back: %s"), *Instance.HeldBack)));
+		}
+		Run->Result->SetArrayField(TEXT("instances"), Rows);
+		Step(FString::Printf(TEXT("%d instances placed"), Rows.Num()));
+		Succeed(Run);
+	}
+
+	void RunInstances(const FRunRef& Run)
+	{
+		Run->Client->Instances([Run](const Dev::TResult<TArray<Dev::FInstance>>& Answer) { OnInstances(Run, Answer); });
+	}
+
 	void OnLogs(const FRunRef& Run, const Dev::TResult<TArray<Dev::FLogLine>>& Answer)
 	{
 		if (!Answer.bOk)
@@ -601,6 +754,9 @@ namespace CrowdyServerComputeCommandletDetail
 		{TEXT("activate"), &RunActivate, ChangeTimeoutSeconds, true},
 		{TEXT("disable"), &RunDisable, ChangeTimeoutSeconds, true},
 		{TEXT("enable"), &RunEnable, ChangeTimeoutSeconds, true},
+		{TEXT("restart"), &RunRestart, ChangeTimeoutSeconds, true},
+		{TEXT("instances"), &RunInstances, ShortTimeoutSeconds, false},
+		{TEXT("call"), &RunCall, ChangeTimeoutSeconds, true},
 		{TEXT("logs"), &RunLogs, ShortTimeoutSeconds, false},
 		{TEXT("stats"), &RunStats, ShortTimeoutSeconds, false}};
 

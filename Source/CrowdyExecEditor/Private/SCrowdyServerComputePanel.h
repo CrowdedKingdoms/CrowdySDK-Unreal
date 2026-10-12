@@ -72,6 +72,10 @@ private:
 	TSharedRef<SWidget> MakeRunningSwitch(const FString& TypeName);
 	TSharedRef<SWidget> MakeTypeMenu(const FString& TypeName, const FString& AssetPath);
 	FText MakeTypeMeta(const UCrowdyServerObjectDefinition* Definition, const FString& TypeName) const;
+	/** "3 of 16 Server Objects · 192 of 1,024 MB", or empty when the platform does not say. */
+	static FText MakeUsageText(const CrowdyExecDeveloper::FAppStatus& Status);
+	/** One line per instance of the type the platform will not place, with its reason; empty when none. */
+	FText MakeHeldBackLine(const FString& TypeName) const;
 	bool CacheVersionTypes(const CrowdyExecDeveloper::FVersion& Version);
 	FText DescribeVersionChanges(const CrowdyExecDeveloper::FVersion& Version);
 
@@ -103,7 +107,12 @@ private:
 	FReply OnClearCallClicked();
 	FReply OnLoadOlderClicked();
 	FReply OnToggleBuildOutput();
+	FReply OnRestartClicked(FString TypeName);
+	FReply OnMoveRunningClicked();
+	FReply OnDismissMoveClicked();
 
+	/** After a deploy, how many Server Objects of the changed types still run the previous version; empty when none. */
+	FText GetMoveLine() const;
 	FText GetDeployLine() const;
 	FSlateColor GetDeployLineColor() const;
 

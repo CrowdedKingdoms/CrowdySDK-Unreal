@@ -170,8 +170,14 @@ void FCrowdyServerComputeService::ResetAppState()
 	// Answers still on their way were asked for the previous app, so they are dropped.
 	++StatusRequest;
 	++VersionsRequest;
+	++InstancesRequest;
 	Status.Reset();
 	Versions.Reset();
+	Instances.Reset();
+	++MoveRequest;
+	TypesToMove.Reset();
+	RunningToMove = 0;
+	bInstancesLoaded = false;
 	StatusError = FText::GetEmpty();
 	VersionsError = FText::GetEmpty();
 	BuildLog.Reset();
@@ -188,6 +194,156 @@ void FCrowdyServerComputeService::Refresh()
 	RefreshTypes();
 	RefreshStatus();
 	RefreshVersions();
+	RefreshInstances();
+}
+
+void FCrowdyServerComputeService::RefreshInstances()
+{
+	if (!Client)
+	{
+		return;
+	}
+	const int32 Request = ++InstancesRequest;
+	TWeakPtr<FCrowdyServerComputeService> WeakThis = AsShared();
+	Client->Instances([WeakThis, Request](const CrowdyExecDeveloper::TResult<TArray<CrowdyExecDeveloper::FInstance>>& Result)
+	{
+		const TSharedPtr<FCrowdyServerComputeService> Self = WeakThis.Pin();
+		// A failed read keeps the last one: instances are a hint beside each type, never a reason to block anything.
+		if (!Self || Request != Self->InstancesRequest || !Result.bOk)
+		{
+			return;
+		}
+		++Self->DataGeneration;
+		Self->Instances = Result.Value;
+		Self->bInstancesLoaded = true;
+		Self->ChangedEvent.Broadcast();
+	});
+}
+
+int32 FCrowdyServerComputeService::CountRunning(const FString& TypeName) const
+{
+	int32 Count = 0;
+	for (const CrowdyExecDeveloper::FInstance& Instance : Instances)
+	{
+		const bool bLive = Instance.Phase == TEXT("running") || Instance.Phase == TEXT("starting");
+		Count += bLive && Instance.NodeType.Equals(TypeName, ESearchCase::CaseSensitive) ? 1 : 0;
+	}
+	return Count;
+}
+
+bool FCrowdyServerComputeService::RestartType(const FString& TypeName)
+{
+	using namespace CrowdyServerComputeServiceDetail;
+	if (IsBusy() || !Client)
+	{
+		return false;
+	}
+	const CrowdyExecDeveloper::FVersion* Live = GetLiveVersion();
+	const FText Version = Live ? FText::Format(LOCTEXT("RestartToVersion", "version {0}"), VersionNumber(Live->Version)) : LOCTEXT("RestartToActive", "the active version");
+	const FText Message = FText::Format(LOCTEXT("ConfirmRestart", "Move {0}'s running Server Objects on {1} to {2} now?\n\nEach is saved and stopped, and starts again on {2} at its next call. Players watching one see it read again; a call that arrives while it stops may be answered Unavailable."),
+		FText::FromString(TypeName), GetAppTarget(), Version);
+	if (!Confirm(Message, LOCTEXT("ConfirmRestartTitle", "Restart")))
+	{
+		return false;
+	}
+	return RestartTypes({TypeName});
+}
+
+void FCrowdyServerComputeService::MoveRunningToActive()
+{
+	if (IsBusy() || TypesToMove.IsEmpty())
+	{
+		return;
+	}
+	TArray<FString> Types = MoveTemp(TypesToMove);
+	DismissMove();
+	RestartTypes(MoveTemp(Types));
+}
+
+void FCrowdyServerComputeService::DismissMove()
+{
+	++MoveRequest;
+	TypesToMove.Reset();
+	RunningToMove = 0;
+	ChangedEvent.Broadcast();
+}
+
+bool FCrowdyServerComputeService::RestartTypes(TArray<FString> TypeNames)
+{
+	using namespace CrowdyServerComputeServiceDetail;
+	if (TypeNames.IsEmpty() || !TryBeginAction())
+	{
+		return false;
+	}
+	struct FRestarts
+	{
+		int32 Waiting = 0;
+		int32 Stopped = 0;
+		TArray<FString> Failed;
+	};
+	const TSharedRef<FRestarts> Restarts = MakeShared<FRestarts>();
+	Restarts->Waiting = TypeNames.Num();
+	SetDeployMessage(LOCTEXT("Restarting", "Moving running Server Objects to the active version..."), FCrowdyStudioStyle::TextSecondary());
+	TWeakPtr<FCrowdyServerComputeService> WeakThis = AsShared();
+	for (const FString& TypeName : TypeNames)
+	{
+		Client->RestartType(TypeName, [WeakThis, Restarts, TypeName](const CrowdyExecDeveloper::TResult<CrowdyExecDeveloper::FRestart>& Result)
+		{
+			Restarts->Stopped += Result.bOk ? Result.Value.Stopped : 0;
+			if (!Result.bOk)
+			{
+				Restarts->Failed.Add(FString::Printf(TEXT("%s: %s"), *TypeName, *Result.Error.Message));
+			}
+			const TSharedPtr<FCrowdyServerComputeService> Self = WeakThis.Pin();
+			if (--Restarts->Waiting > 0 || !Self)
+			{
+				return;
+			}
+			Self->EndAction();
+			Self->RefreshInstances();
+			if (!Restarts->Failed.IsEmpty())
+			{
+				Self->SetDeployMessage(FText::Format(LOCTEXT("RestartFailed", "Could not move every type's running Server Objects: {0}"),
+					FText::FromString(FString::Join(Restarts->Failed, TEXT("; ")))), FCrowdyStudioStyle::Danger());
+				return;
+			}
+			Self->SetDeployMessage(FText::Format(LOCTEXT("Restarted", "{0} running Server {0}|plural(one=Object,other=Objects) stopped; each starts again on the active version at its next call."),
+				Restarts->Stopped), FCrowdyStudioStyle::Success());
+		});
+	}
+	return true;
+}
+
+void FCrowdyServerComputeService::OfferToMove(TArray<FString> ChangedTypes)
+{
+	if (!Client || ChangedTypes.IsEmpty())
+	{
+		return;
+	}
+	TWeakPtr<FCrowdyServerComputeService> WeakThis = AsShared();
+	const int32 Request = ++MoveRequest;
+	const double DeployedAt = FPlatformTime::Seconds();
+	Client->Instances([WeakThis, Request, DeployedAt, ChangedTypes = MoveTemp(ChangedTypes)](const CrowdyExecDeveloper::TResult<TArray<CrowdyExecDeveloper::FInstance>>& Result)
+	{
+		const TSharedPtr<FCrowdyServerComputeService> Self = WeakThis.Pin();
+		if (!Self || Request != Self->MoveRequest || !Result.bOk)
+		{
+			return;
+		}
+		// Running since before the deploy answered means placed on the previous version; anything starting since runs the new one.
+		const double SinceDeployMs = (FPlatformTime::Seconds() - DeployedAt) * 1000.0;
+		for (const CrowdyExecDeveloper::FInstance& Instance : Result.Value)
+		{
+			const bool bPrevious = Instance.Phase == TEXT("running") && Instance.SinceMs >= SinceDeployMs && ChangedTypes.Contains(Instance.NodeType);
+			if (bPrevious)
+			{
+				Self->TypesToMove.AddUnique(Instance.NodeType);
+				++Self->RunningToMove;
+			}
+		}
+		++Self->DataGeneration;
+		Self->ChangedEvent.Broadcast();
+	});
 }
 
 void FCrowdyServerComputeService::RefreshTypes()
@@ -317,6 +473,10 @@ void FCrowdyServerComputeService::ApplyStatus(const CrowdyExecDeveloper::FAppSta
 	++DataGeneration;
 	Status = NewStatus;
 	StatusError = FText::GetEmpty();
+	// A rollback or a switch changes what "the new version" is, so an offer to move onto it no longer holds.
+	++MoveRequest;
+	TypesToMove.Reset();
+	RunningToMove = 0;
 	RefreshVersions();
 	ChangedEvent.Broadcast();
 }
@@ -439,6 +599,14 @@ bool FCrowdyServerComputeService::Deploy()
 	}
 	Sending = Project;
 	SendingDirectories = CrateDirectories;
+	SendingChanged.Reset();
+	for (const FTypeChange& Change : Changes)
+	{
+		if (Change.Change == EChange::Changed || Change.Change == EChange::Unknown)
+		{
+			SendingChanged.Add(Change.TypeName);
+		}
+	}
 	StartBuild(Project.Crates, Project.ManifestJson, true);
 	return true;
 }
@@ -503,6 +671,9 @@ void FCrowdyServerComputeService::StartBuild(const TArray<CrowdyExecDeveloper::F
 {
 	using namespace CrowdyServerComputeServiceDetail;
 	bBusy = true;
+	++MoveRequest;
+	TypesToMove.Reset();
+	RunningToMove = 0;
 	BuildStartSeconds = FPlatformTime::Seconds();
 	BuildLog.Reset();
 	bLastBuildFailed = false;
@@ -591,9 +762,13 @@ void FCrowdyServerComputeService::OnBuildFinished(const CrowdyExecDeveloper::TRe
 			Self->FinishDeploy(FText::Format(LOCTEXT("DeployedNotRecorded", "{0} Its record could not be saved, so its changes cannot be compared: {1}"),
 				DeployedLine, FText::FromString(FString::Join(RecordErrors, TEXT("; ")))), FCrowdyStudioStyle::Warning());
 		}
+		TArray<FString> ChangedTypes = bRecord ? MoveTemp(Self->SendingChanged) : TArray<FString>();
+		Self->SendingChanged.Reset();
 		Self->RefreshTypes();
 		Self->RefreshStatus();
 		Self->RefreshVersions();
+		Self->RefreshInstances();
+		Self->OfferToMove(MoveTemp(ChangedTypes));
 	});
 }
 

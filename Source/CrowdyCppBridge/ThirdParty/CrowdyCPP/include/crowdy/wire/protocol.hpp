@@ -28,6 +28,17 @@ enum class MessageType : std::uint8_t {
   ChannelMessageRequest = 17,
   /// Server -> client: a channel message delivered to a member.
   ChannelMessageNotification = 18,
+  /// Client -> server (Buddy v0.35.0): publish to a channel so that only members
+  /// with a live actor within maxDistance chunks (Euclidean) of an origin chunk
+  /// receive it, as an ordinary ChannelMessageNotification. Always HMAC-signed.
+  ChannelMessageRangedRequest = 32,
+  /// Client -> server (Buddy v0.37.0): channel audio. Exactly ChannelMessageRequest's
+  /// layout and signing with this type byte; the payload is opaque (at most 1,024 bytes).
+  /// Needs the channel's send_voice and the session's use_voice_chat, else Unauthorized.
+  ChannelAudioRequest = 35,
+  /// Server -> client (Buddy v0.37.0): channel audio from another member, exactly
+  /// ChannelMessageNotification's layout with this type byte. No echo to the sender.
+  ChannelAudioNotification = 36,
   /// Server -> client: reconnect to a different server (load shedding).
   /// [type][32B HMAC over the type byte]. Always sent un-bundled.
   CommandReconnect = 22,
@@ -86,6 +97,10 @@ enum class ErrorCode : std::uint8_t {
   UserNotAuthenticated = 20,
   /// App-scoped token passed expiresAt — refresh or re-mint, then re-assign.
   TokenExpired = 32,
+  /// Buddy v0.37.0: the app's runtime gate is not active (no funds, a spend cap, a lapsed
+  /// subscription), so the send was refused. Sent at most once per session about every 5 s;
+  /// tell the player the world is paused rather than retrying.
+  AppPaused = 33,
 };
 
 /// Replication density across Chebyshev distance rings 1-8.
@@ -183,6 +198,7 @@ constexpr std::size_t kCommandReconnectSize = 1 + kHmacTagSize;
 // Notification (server -> client):
 //   [1B type=18][8B channelId][32B senderUuid][2B payloadLen][payload]
 //   [8B epochMillis][1B seq]
+// Channel audio (Buddy v0.37.0) is the same pair with type bytes 35 and 36.
 namespace channel {
 constexpr std::size_t kHeaderSize = 1 + 8 + kUuidSize + 2;  // 43 (through payloadLen)
 constexpr std::size_t kChannelIdOffset = 1;
@@ -195,6 +211,25 @@ constexpr std::size_t kMinRequestSize = kHeaderSize + kRequestTailSize;         
 constexpr std::size_t kMinNotificationSize = kHeaderSize + kNotificationTailSize;  // 52
 constexpr std::size_t kMaxPayload = 1024;
 }  // namespace channel
+
+// Ranged request (client -> server, Buddy v0.35.0): opcode 17's type, channelId and
+// uuid, then the origin and the distance, then 17's payload and tail.
+//   [1B type=32][8B channelId][32B uuid][8B appId][8B chunkX][8B chunkY][8B chunkZ]
+//   [4B maxDistance u32][2B payloadLen][payload][1B containsAuth=1][32B HMAC]
+//   [8B gameTokenId][1B seq]
+namespace channel_ranged {
+constexpr std::size_t kAppIdOffset = 41;
+constexpr std::size_t kChunkXOffset = 49;
+constexpr std::size_t kChunkYOffset = 57;
+constexpr std::size_t kChunkZOffset = 65;
+constexpr std::size_t kMaxDistanceOffset = 73;
+constexpr std::size_t kPayloadLenOffset = 77;
+constexpr std::size_t kHeaderSize = 79;  // through payloadLen
+constexpr std::size_t kPayloadOffset = kHeaderSize;
+constexpr std::size_t kMinRequestSize = kHeaderSize + channel::kRequestTailSize;  // 121
+/// Largest maxDistance the server accepts (the GraphQL Int ceiling).
+constexpr std::uint32_t kMaxDistance = 0x7FFFFFFFu;
+}  // namespace channel_ranged
 
 // ---- Event payload ----------------------------------------------------------
 // Client/server event messages carry [2B eventType][state...] in the payload
@@ -211,6 +246,8 @@ constexpr std::size_t kZOffset = 4;
 constexpr std::size_t kTypeOffset = 6;
 constexpr std::size_t kStateLenOffset = 8;
 constexpr std::size_t kStateOffset = 10;
+/// Most bytes a voxel edit's state may carry; the server refuses longer with InvalidRequest.
+constexpr std::size_t kMaxStateSize = 1024;
 }  // namespace voxel
 
 }  // namespace crowdy::wire

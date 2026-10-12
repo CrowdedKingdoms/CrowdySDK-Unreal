@@ -88,6 +88,8 @@ bool FCrowdyExecClosedToPlayersTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a type with nothing for players is closed to them"), ManifestOf(*Bare).Contains(Closed, ESearchCase::CaseSensitive));
 	Bare->Functions.AddDefaulted_GetRef().WhoCanCall = ECrowdyServerFunctionCaller::ServerOnly;
 	TestTrue(TEXT("a Server Only function keeps it closed"), ManifestOf(*Bare).Contains(Closed, ESearchCase::CaseSensitive));
+	Bare->Functions.AddDefaulted_GetRef().WhoCanCall = ECrowdyServerFunctionCaller::DevelopersOnly;
+	TestTrue(TEXT("so does a Developers Only function"), ManifestOf(*Bare).Contains(Closed, ESearchCase::CaseSensitive));
 
 	for (const ECrowdyServerFunctionCaller Caller : {ECrowdyServerFunctionCaller::Players, ECrowdyServerFunctionCaller::Members, ECrowdyServerFunctionCaller::Leader})
 	{

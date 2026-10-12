@@ -1204,6 +1204,20 @@ void ExecAPI::setEnabledAsync(std::string appId, bool enabled, std::string nodeT
             gen::exec::kExecSetEnabledOperationName, std::move(done));
 }
 
+graphql::Json ExecAPI::restartType(std::string appId, std::string nodeType) const {
+  graphql::JVal vars = appVariables(appId);
+  vars["nodeType"] = graphql::JVal(nodeType);
+  return exec(gen::exec::kExecRestartTypeIsolatedDocument, "execRestartType", vars,
+              gen::exec::kExecRestartTypeOperationName);
+}
+
+void ExecAPI::restartTypeAsync(std::string appId, std::string nodeType, graphql::GraphQLCallback done) const {
+  graphql::JVal vars = appVariables(appId);
+  vars["nodeType"] = graphql::JVal(nodeType);
+  execAsync(gen::exec::kExecRestartTypeIsolatedDocument, "execRestartType", vars,
+            gen::exec::kExecRestartTypeOperationName, std::move(done));
+}
+
 graphql::Json ExecAPI::deploy(std::string appId, std::string root, const std::vector<ExecNodeType>& types,
                              std::string buildId) const {
   return exec(gen::exec::kExecDeployIsolatedDocument, "execDeploy",

@@ -1,5 +1,6 @@
 #include "CrowdyServerObjectDefinitionCustomization.h"
 
+#include "CrowdyExecDeveloperCall.h"
 #include "CrowdyExecInternal.h"
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerComputeService.h"
@@ -18,6 +19,7 @@
 #include "PropertyBagDetails.h"
 #include "PropertyCustomizationHelpers.h"
 #include "PropertyHandle.h"
+#include "SCrowdyExecDeveloperCall.h"
 #include "SPinTypeSelector.h"
 #include "ScopedTransaction.h"
 #include "Math/UnitConversion.h"
@@ -600,6 +602,27 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeFunction(IDetailLayout
 	{
 		CrowdyServerObjectRows::ShowSeconds(Category.AddProperty(Cooldown), Cooldown.ToSharedRef());
 	}
+	const TWeakObjectPtr<UCrowdyServerObjectDefinition> Editable = Definition;
+	Category.AddCustomRow(LOCTEXT("CallAsDeveloperSearch", "Call as Developer"))
+		.Visibility(TAttribute<EVisibility>::CreateLambda([Weak, Index]()
+		{
+			const UCrowdyServerObjectDefinition* Live = Weak.Get();
+			return Live && Live->Functions.IsValidIndex(Index) && CrowdyExecDeveloperCall::IsForDevelopers(Live->Functions[Index]) ? EVisibility::Visible : EVisibility::Collapsed;
+		}))
+		.ValueContent()
+		[
+			SNew(SButton)
+			.Text(LOCTEXT("CallAsDeveloper", "Call as Developer..."))
+			.ToolTipText(LOCTEXT("CallAsDeveloperTip", "Calls this function on a live Server Object as you, the app's developer: the way to run a Server Only or Developers Only function by hand"))
+			.OnClicked_Lambda([Editable, Index]()
+			{
+				if (UCrowdyServerObjectDefinition* Live = Editable.Get())
+				{
+					SCrowdyExecDeveloperCall::Open(*Live, Index);
+				}
+				return FReply::Handled();
+			})
+		];
 	AddPins(DetailBuilder, Function, Index, false);
 	AddPins(DetailBuilder, Function, Index, true);
 	IDetailCategoryBuilder& Advanced = DetailBuilder.EditCategory(TEXT("FunctionAdvanced"), LOCTEXT("FunctionAdvanced", "Advanced"), ECategoryPriority::Uncommon);
