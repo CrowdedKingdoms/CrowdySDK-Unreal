@@ -74,6 +74,8 @@ namespace CrowdyExecRevisionsTest
 		Definition->TypeName = TypeName;
 		Definition->SaveIntervalSeconds = SaveIntervalSeconds;
 		Definition->IdleTimeoutSeconds = IdleTimeoutSeconds;
+		// A function players call keeps it open to players, as the live manifests here say every type is.
+		Definition->Functions.AddDefaulted();
 		return Definition;
 	}
 
@@ -460,6 +462,45 @@ bool FCrowdyExecRevisionsCompareTest::RunTest(const FString& Parameters)
 	TestChange(*this, TEXT("a manifest that cannot be read"), Unreadable, TEXT("t_notready"), EChange::NotCompared);
 	TestNull(TEXT("with a manifest that cannot be read, nothing is removed"), FindChange(Unreadable, TEXT("t_gone")));
 	TestTrue(TEXT("a manifest that cannot be read is never no change"), CrowdyExecRevisions::HasChanges(Unreadable));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsSettingsTest, "CrowdySDK.CrowdyExecEditor.RevisionsComparePlatformDataAndPlayerAccess", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsSettingsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	TArray<CrowdyExecRevisions::FLiveType> Parsed;
+	if (TestTrue(TEXT("the platform's manifest parses"), CrowdyExecRevisions::ParseManifest(SampleManifest, Parsed)) && Parsed.Num() == 3)
+	{
+		TestFalse(TEXT("the root's client false is read"), Parsed[0].bClient);
+		TestTrue(TEXT("a type's client true is read"), Parsed[1].bClient);
+	}
+
+	const FBuildCrate Crate = MakeCrate(TEXT("t_grid"), TEXT("fn grid() {}\n"));
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {CrowdyExecDeploy::MakeRootCrate(), Crate};
+	Project.Types.Add(MakeTypeState(TEXT("t_grid"), CrowdyExecDeploy::ECrateState::UpToDate));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(TEXT("t_grid"), 30, 300);
+	Definition->bReadsGrids = true;
+	Definition->bWritesWorld = true;
+	const TArray<FRevision> History = {MakeRevision(Crate, TEXT("d_grid"), 1)};
+	const auto HistoryFor = [&History](const FString&) { return History; };
+
+	auto CompareWith = [&](const TCHAR* Client, const TCHAR* Scopes)
+	{
+		CrowdyExecDeveloper::FVersion Live;
+		Live.Version = 2;
+		Live.ManifestJson = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"t_grid\":{\"kind\":\"hub\",\"digest\":\"d_grid\",\"parent\":\"root\",\"client\":%s,")
+			TEXT("\"evict_after_ms\":300000,\"persist_every_ms\":30000%s}}}"), Client, Scopes);
+		return CrowdyExecRevisions::Compare(Project, {Definition.Get()}, &Live, true, HistoryFor);
+	};
+	TestChange(*this, TEXT("the same scopes, in the platform's order"), CompareWith(TEXT("true"), TEXT(",\"scopes\":[\"world.write\",\"grids.read\"]")), TEXT("t_grid"), EChange::Unchanged);
+	TestChange(*this, TEXT("the same scopes, listed in another order"), CompareWith(TEXT("true"), TEXT(",\"scopes\":[\"grids.read\",\"world.write\"]")), TEXT("t_grid"), EChange::Unchanged);
+	TestChange(*this, TEXT("live asks for none"), CompareWith(TEXT("true"), TEXT("")), TEXT("t_grid"), EChange::Changed, TEXT("platform data"));
+	TestChange(*this, TEXT("live asks for one of the two"), CompareWith(TEXT("true"), TEXT(",\"scopes\":[\"grids.read\"]")), TEXT("t_grid"), EChange::Changed, TEXT("platform data"));
+	TestChange(*this, TEXT("live is closed to players"), CompareWith(TEXT("false"), TEXT(",\"scopes\":[\"world.write\",\"grids.read\"]")), TEXT("t_grid"), EChange::Changed, TEXT("player access"));
+	Definition->Functions[0].WhoCanCall = ECrowdyServerFunctionCaller::ServerOnly;
+	TestChange(*this, TEXT("the project closes it while live is open"), CompareWith(TEXT("true"), TEXT(",\"scopes\":[\"world.write\",\"grids.read\"]")), TEXT("t_grid"), EChange::Changed, TEXT("player access"));
 	return true;
 }
 

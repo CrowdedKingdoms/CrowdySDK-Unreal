@@ -1,5 +1,6 @@
 #include "CrowdyExecDeploy.h"
 
+#include "Algo/Find.h"
 #include "Algo/Sort.h"
 #include "Algo/Unique.h"
 #include "AssetRegistry/ARFilter.h"
@@ -7,6 +8,7 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Containers/StringConv.h"
 #include "CrowdyExecCodegen.h"
+#include "CrowdyRustSyntaxMarshaller.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
@@ -273,7 +275,7 @@ namespace CrowdyExecDeployDetail
 		return Names;
 	}
 
-	/** Adds "calls" when the type calls others and "scopes" (players.read, then world.read) when its members or its records' teams are Crowdy Teams, a function needs a feature, or it reads world data, in that order; a type with none gets nothing. */
+	/** Adds "calls" when the type calls others and "scopes" when it asks for platform data; a type with neither gets nothing. */
 	void AppendCallsAndScopes(FStringBuilderBase& Json, const UCrowdyServerObjectDefinition& Definition)
 	{
 		const TArray<FString> Calls = CallableTypeNames(Definition);
@@ -281,15 +283,126 @@ namespace CrowdyExecDeployDetail
 		{
 			Json.Appendf(TEXT(",\"calls\":[\"%s\"]"), *FString::Join(Calls, TEXT("\",\"")));
 		}
-		const bool bNeedsFeature = Definition.Functions.ContainsByPredicate([](const FCrowdyServerFunction& Function) { return !Function.RequiredFeature.IsEmpty(); });
-		const bool bReadsPlayers = Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam || Definition.HasCrowdyTeamRecords() || bNeedsFeature;
-		if (!bReadsPlayers && !Definition.bReadsWorld)
+		const TArray<FString> Scopes = CrowdyExecDeploy::ScopesOf(Definition);
+		if (!Scopes.IsEmpty())
 		{
-			return;
+			Json.Appendf(TEXT(",\"scopes\":[\"%s\"]"), *FString::Join(Scopes, TEXT("\",\"")));
 		}
-		Json.Appendf(TEXT(",\"scopes\":[%s%s%s]"), bReadsPlayers ? TEXT("\"players.read\"") : TEXT(""), bReadsPlayers && Definition.bReadsWorld ? TEXT(",") : TEXT(""),
-			Definition.bReadsWorld ? TEXT("\"world.read\"") : TEXT(""));
 	}
+
+	struct FPlatformScope
+	{
+		const TCHAR* Name;
+		const TCHAR* Setting;
+		bool UCrowdyServerObjectDefinition::* Asked;
+	};
+
+	/** In the platform's order, which is the order a manifest lists them in. */
+	const FPlatformScope PlatformScopes[] = {
+		{TEXT("players.read"), TEXT("Reads Players"), &UCrowdyServerObjectDefinition::bReadsPlayers},
+		{TEXT("players.write"), TEXT("Changes Players' App State"), &UCrowdyServerObjectDefinition::bWritesPlayerState},
+		{TEXT("world.read"), TEXT("Reads World Data"), &UCrowdyServerObjectDefinition::bReadsWorld},
+		{TEXT("world.write"), TEXT("Changes the World"), &UCrowdyServerObjectDefinition::bWritesWorld},
+		{TEXT("grids.read"), TEXT("Reads Grids"), &UCrowdyServerObjectDefinition::bReadsGrids},
+		{TEXT("permissions.write"), TEXT("Grants Grid Permissions"), &UCrowdyServerObjectDefinition::bGrantsGridPermissions},
+	};
+
+	/** A ckx-sdk call into platform data, as it reads with whitespace removed, and the scope it needs. */
+	struct FScopedCall
+	{
+		const TCHAR* Call;
+		const TCHAR* Scope;
+	};
+
+	const FScopedCall ScopedCalls[] = {
+		{TEXT("players().get("), TEXT("players.read")},
+		{TEXT("players().features("), TEXT("players.read")},
+		{TEXT("players().check_permission("), TEXT("players.read")},
+		{TEXT("players().state("), TEXT("players.read")},
+		{TEXT("players().avatar_state("), TEXT("players.read")},
+		{TEXT("players().set_state("), TEXT("players.write")},
+		{TEXT("world().chunk("), TEXT("world.read")},
+		{TEXT("world().voxels("), TEXT("world.read")},
+		{TEXT("world().actors("), TEXT("world.read")},
+		{TEXT("world().actors_near("), TEXT("world.read")},
+		{TEXT("world().set_voxels("), TEXT("world.write")},
+		{TEXT("world().set_chunk_state("), TEXT("world.write")},
+		{TEXT("grids().get("), TEXT("grids.read")},
+		{TEXT("grids().settings("), TEXT("grids.read")},
+		{TEXT("grids().at("), TEXT("grids.read")},
+		{TEXT("grids().check_permission("), TEXT("grids.read")},
+		{TEXT("permissions().grant("), TEXT("permissions.write")},
+		{TEXT("permissions().revoke("), TEXT("permissions.write")},
+	};
+
+	/** The Rust source without its comments, strings and whitespace, so only code is matched and a call split across lines reads as one. */
+	FString CodeOnly(const FString& Source)
+	{
+		TArray<FString> Lines;
+		Source.ParseIntoArrayLines(Lines, false);
+		CrowdyRustSyntax::FCarry Carry;
+		FString Code;
+		for (const FString& Line : Lines)
+		{
+			for (const CrowdyRustSyntax::FSpan& Span : CrowdyRustSyntax::ScanLine(Line, Carry))
+			{
+				if (Span.Kind == CrowdyRustSyntax::EKind::Comment || Span.Kind == CrowdyRustSyntax::EKind::String)
+				{
+					continue;
+				}
+				for (int32 Index = Span.Start; Index < Span.End; ++Index)
+				{
+					if (!FChar::IsWhitespace(Line[Index]))
+					{
+						Code.AppendChar(Line[Index]);
+					}
+				}
+			}
+		}
+		return Code;
+	}
+}
+
+TArray<FString> CrowdyExecDeploy::ScopesOf(const UCrowdyServerObjectDefinition& Definition)
+{
+	using namespace CrowdyExecDeployDetail;
+	const bool bNeedsFeature = Definition.Functions.ContainsByPredicate([](const FCrowdyServerFunction& Function) { return !Function.RequiredFeature.IsEmpty(); });
+	const bool bTeamsNeedPlayers = Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam || Definition.HasCrowdyTeamRecords() || bNeedsFeature;
+	TArray<FString> Scopes;
+	for (const FPlatformScope& Scope : PlatformScopes)
+	{
+		const bool bImplied = bTeamsNeedPlayers && Scope.Asked == &UCrowdyServerObjectDefinition::bReadsPlayers;
+		if (Definition.*Scope.Asked || bImplied)
+		{
+			Scopes.Add(Scope.Name);
+		}
+	}
+	return Scopes;
+}
+
+TArray<FString> CrowdyExecDeploy::FindScopeWarnings(const UCrowdyServerObjectDefinition& Definition, const CrowdyExecDeveloper::FBuildCrate& Crate)
+{
+	using namespace CrowdyExecDeployDetail;
+	FString Code;
+	for (const CrowdyExecDeveloper::FBuildFile& File : Crate.Files)
+	{
+		Code += File.Path.EndsWith(TEXT(".rs"), ESearchCase::CaseSensitive) ? CodeOnly(File.Content) : FString();
+	}
+	const TArray<FString> Asked = ScopesOf(Definition);
+	TArray<FString> Missing;
+	TArray<FString> Warnings;
+	for (const FScopedCall& Use : ScopedCalls)
+	{
+		if (Asked.Contains(Use.Scope) || Missing.Contains(Use.Scope) || !Code.Contains(Use.Call, ESearchCase::CaseSensitive))
+		{
+			continue;
+		}
+		Missing.Add(Use.Scope);
+		const FPlatformScope* Scope = Algo::FindBy(PlatformScopes, FStringView(Use.Scope), [](const FPlatformScope& Each) { return FStringView(Each.Name); });
+		Warnings.Add(FString::Printf(TEXT("%s: its server code calls %s), which needs %s; turn on %s or the platform refuses that call"),
+			*DisplayName(Definition), Use.Call, Use.Scope, Scope ? Scope->Setting : Use.Scope));
+	}
+	return Warnings;
 }
 
 TArray<UCrowdyServerObjectDefinition*> CrowdyExecDeploy::FindProjectDefinitions()
@@ -395,8 +508,8 @@ FString CrowdyExecDeploy::MakeManifest(TConstArrayView<const UCrowdyServerObject
 	for (const UCrowdyServerObjectDefinition* Definition : Sorted)
 	{
 		const TCHAR* const Name = *Definition->TypeName;
-		Json.Appendf(TEXT(",\"%s\":{\"kind\":\"hub\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":true,\"persist_every_ms\":%lld,\"evict_after_ms\":%lld"),
-			Name, RootTypeName, Name, static_cast<int64>(Definition->SaveIntervalSeconds) * 1000, static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000);
+		Json.Appendf(TEXT(",\"%s\":{\"kind\":\"hub\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":%s,\"persist_every_ms\":%lld,\"evict_after_ms\":%lld"),
+			Name, RootTypeName, Name, Definition->IsReachableByPlayers() ? TEXT("true") : TEXT("false"), static_cast<int64>(Definition->SaveIntervalSeconds) * 1000, static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000);
 		AppendCallsAndScopes(Json, *Definition);
 		Json.AppendChar(TEXT('}'));
 	}
@@ -440,6 +553,7 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 			Project.Problems.Add(FString::Printf(TEXT("%s: %s"), *DisplayName(*Definition), *ReadProblem));
 			continue;
 		}
+		Project.Warnings.Append(FindScopeWarnings(*Definition, Crate));
 		Project.Crates.Add(MoveTemp(Crate));
 	}
 	AddDuplicateProblems(Definitions, Project.Problems);

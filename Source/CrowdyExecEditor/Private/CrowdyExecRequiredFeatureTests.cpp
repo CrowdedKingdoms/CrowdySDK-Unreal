@@ -214,7 +214,7 @@ bool FCrowdyExecReadsWorldManifestTest::RunTest(const FString& Parameters)
 	const TStrongObjectPtr<UCrowdyServerObjectDefinition> World = MakeDefinition(TEXT("world_only"));
 	World->bReadsWorld = true;
 	TestTrue(TEXT("Reads World Data asks for world.read alone"), CrowdyExecDeploy::MakeManifest({World.Get()}).Contains(
-		TEXT("\"world_only\":{\"kind\":\"hub\",\"parent\":\"root\",\"crate\":\"world_only\",\"client\":true,\"persist_every_ms\":30000,\"evict_after_ms\":300000,\"scopes\":[\"world.read\"]}}}"), ESearchCase::CaseSensitive));
+		TEXT("\"crate\":\"world_only\",\"client\":false,\"persist_every_ms\":30000,\"evict_after_ms\":300000,\"scopes\":[\"world.read\"]}}}"), ESearchCase::CaseSensitive));
 
 	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Both = MakeDefinition(TEXT("both"));
 	Both->bReadsWorld = true;

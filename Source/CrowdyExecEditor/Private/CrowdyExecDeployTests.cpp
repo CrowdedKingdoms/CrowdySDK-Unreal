@@ -47,13 +47,14 @@ namespace CrowdyExecDeployTest
 		return Test.TestEqualSensitive(FString::Printf(TEXT("%s (%s)"), What, *Actual.Problem), FString(StateName(Actual.State)), FString(StateName(Expected)));
 	}
 
-	/** A type with no functions or intervals set, enough for the manifest, which reads nothing else. */
+	/** A type with one function players call and its intervals set, enough for the manifest. */
 	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeManifestDefinition(const TCHAR* TypeName, int32 SaveIntervalSeconds, int32 IdleTimeoutSeconds)
 	{
 		TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
 		Definition->TypeName = TypeName;
 		Definition->SaveIntervalSeconds = SaveIntervalSeconds;
 		Definition->IdleTimeoutSeconds = IdleTimeoutSeconds;
+		Definition->Functions.AddDefaulted();
 		return Definition;
 	}
 

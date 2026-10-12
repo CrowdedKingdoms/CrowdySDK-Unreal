@@ -1246,7 +1246,8 @@ FText SCrowdyServerComputePanel::MakeTypeMeta(const UCrowdyServerObjectDefinitio
 	{
 		Parts.Add(FText::Format(LOCTEXT("MetaFunctions", "{0} {0}|plural(one=function,other=functions)"), Definition->Functions.Num()).ToString());
 		Parts.Add(FText::Format(LOCTEXT("MetaWatched", "{0} {0}|plural(one=variable,other=variables) visible to players"), Definition->WatchedFields.Num()).ToString());
-		Parts.Add(CrowdyServerComputePage::ReadableByPhrase(Definition->Visibility).ToString());
+		Parts.Add((Definition->IsReachableByPlayers() ? CrowdyServerComputePage::ReadableByPhrase(Definition->Visibility)
+			: LOCTEXT("MetaClosed", "closed to players: only server code and developer tools reach it")).ToString());
 	}
 	if (bStatsLoaded)
 	{

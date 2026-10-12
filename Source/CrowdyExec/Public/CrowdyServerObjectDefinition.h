@@ -384,9 +384,29 @@ public:
 	/** The Instance Id of a type with Only One Instance. */
 	static const TCHAR* const OnlyInstanceId;
 
-	/** Its server code may read world data, such as which actors are near a chunk; deploying asks the platform for the world.read permission. */
+	/** Its server code may read players: their names, tier features, group membership and app state; deploying asks the platform for players.read. Crowdy Team members or records and a Required Feature ask for it too. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads Players"))
+	bool bReadsPlayers = false;
+
+	/** Its server code may replace a player's app state; deploying asks the platform for players.write. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Changes Players' App State"))
+	bool bWritesPlayerState = false;
+
+	/** Its server code may read world data, such as a chunk's voxels or which actors are near a chunk; deploying asks the platform for the world.read permission. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads World Data"))
 	bool bReadsWorld = false;
+
+	/** Its server code may write voxels and a chunk's state; deploying asks the platform for world.write. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Changes the World"))
+	bool bWritesWorld = false;
+
+	/** Its server code may read the app's grids: which grid covers a chunk, its owner, and whether a player holds a permission on it; deploying asks the platform for grids.read. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads Grids"))
+	bool bReadsGrids = false;
+
+	/** Its server code may grant and revoke players' permissions on the app's grids; deploying asks the platform for permissions.write. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Grants Grid Permissions"))
+	bool bGrantsGridPermissions = false;
 
 	/** One set of the variables, or a record of them for each entity. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Holds"))
@@ -486,6 +506,9 @@ public:
 	/** logic.rs gets on_player_left, run when a player's last connection to the instance closes. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timers & Events", meta = (DisplayName = "On Player Left"))
 	bool bOnPlayerLeft = false;
+
+	/** Whether players can do anything with an instance: call a function, watch a value, read records, be a member, or be heard joining or leaving. Deploying closes a type that is not to players, and acquiring one is refused. */
+	bool IsReachableByPlayers() const;
 
 #if WITH_EDITORONLY_DATA
 	/** Other Server Object types this one's server code calls. Used when server code is generated and deployed; a game never loads them. */

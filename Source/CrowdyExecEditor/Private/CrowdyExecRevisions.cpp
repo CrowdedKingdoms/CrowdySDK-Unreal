@@ -145,7 +145,7 @@ namespace CrowdyExecRevisionsDetail
 	}
 
 	/** A live 0 means the manifest does not say, which is not a difference. */
-	void AddIntervalChanges(const UCrowdyServerObjectDefinition* Definition, const CrowdyExecRevisions::FLiveType& Live, TArray<FString>& OutWhat)
+	void AddSettingChanges(const UCrowdyServerObjectDefinition* Definition, const CrowdyExecRevisions::FLiveType& Live, TArray<FString>& OutWhat)
 	{
 		if (!Definition)
 		{
@@ -160,6 +160,16 @@ namespace CrowdyExecRevisionsDetail
 		if (Live.IdleTimeoutMs != 0 && Live.IdleTimeoutMs != IdleTimeoutMs)
 		{
 			OutWhat.Add(TEXT("idle timeout"));
+		}
+		TArray<FString> Scopes = CrowdyExecDeploy::ScopesOf(*Definition);
+		Algo::Sort(Scopes);
+		if (Scopes != Live.Scopes)
+		{
+			OutWhat.Add(TEXT("platform data"));
+		}
+		if (Definition->IsReachableByPlayers() != Live.bClient)
+		{
+			OutWhat.Add(TEXT("player access"));
 		}
 	}
 
@@ -178,7 +188,7 @@ namespace CrowdyExecRevisionsDetail
 		}
 		const TArray<FRevision> History = HistoryFor(Type.TypeName);
 		Change.LiveRevision = FindRevisionWithDigest(History, Live->Digest);
-		AddIntervalChanges(Definition, *Live, Change.What);
+		AddSettingChanges(Definition, *Live, Change.What);
 		if (Change.LiveRevision == INDEX_NONE)
 		{
 			return EChange::Unknown;
@@ -424,6 +434,9 @@ bool CrowdyExecRevisions::ParseManifest(const FString& ManifestJson, TArray<FLiv
 		(*Type)->TryGetStringField(TEXT("digest"), Live.Digest);
 		Live.SaveIntervalMs = ReadMs(**Type, TEXT("persist_every_ms"));
 		Live.IdleTimeoutMs = ReadMs(**Type, TEXT("evict_after_ms"));
+		(*Type)->TryGetBoolField(TEXT("client"), Live.bClient);
+		(*Type)->TryGetStringArrayField(TEXT("scopes"), Live.Scopes);
+		Algo::Sort(Live.Scopes);
 	}
 	Algo::Sort(OutTypes, [](const FLiveType& A, const FLiveType& B) { return A.TypeName.Compare(B.TypeName, ESearchCase::CaseSensitive) < 0; });
 	return true;

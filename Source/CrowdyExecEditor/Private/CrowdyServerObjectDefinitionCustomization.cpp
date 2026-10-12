@@ -49,6 +49,7 @@ namespace CrowdyServerObjectDefinitionCustomizationDetail
 	const FName BakedCategory(TEXT("Baked"));
 	const FName AdvancedCategory(TEXT("Advanced"));
 	const FName AccessCategory(TEXT("Access"));
+	const FName PlatformDataCategory(TEXT("Platform Data"));
 	const FName MembersCategory(TEXT("Members"));
 	const FName RecordsCategory(TEXT("Records"));
 	const FName AreasCategory(TEXT("Areas"));
@@ -764,7 +765,11 @@ void FCrowdyServerObjectDefinitionCustomization::AddObjectCategories(IDetailLayo
 	};
 	// Max Members, Show Members to Players and Remove Members Who Leave hide themselves unless Members From is This Object.
 	AddCategory(AccessCategory, LOCTEXT("AccessCategory", "Access"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Visibility),
-		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnlyOneInstance), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsWorld)});
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnlyOneInstance)});
+	AddCategory(PlatformDataCategory, LOCTEXT("PlatformDataCategory", "Platform Data"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsPlayers),
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bWritesPlayerState), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsWorld),
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bWritesWorld), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsGrids),
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bGrantsGridPermissions)});
 	AddCategory(MembersCategory, LOCTEXT("MembersCategory", "Members"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MembersFrom),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MaxMembers), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bShowMembers),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bRemoveMembersWhoLeave)});
