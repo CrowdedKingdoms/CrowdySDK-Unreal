@@ -50,7 +50,10 @@ bool FCrowdyExecPlatformDataScopesTest::RunTest(const FString& Parameters)
 		{&UCrowdyServerObjectDefinition::bReadsWorld, TEXT("world.read")},
 		{&UCrowdyServerObjectDefinition::bWritesWorld, TEXT("world.write")},
 		{&UCrowdyServerObjectDefinition::bReadsGrids, TEXT("grids.read")},
+		{&UCrowdyServerObjectDefinition::bManagesGrids, TEXT("grids.write")},
 		{&UCrowdyServerObjectDefinition::bGrantsGridPermissions, TEXT("permissions.write")},
+		{&UCrowdyServerObjectDefinition::bReadsAccess, TEXT("access.read")},
+		{&UCrowdyServerObjectDefinition::bManagesAccess, TEXT("access.write")},
 	};
 	const TStrongObjectPtr<UCrowdyServerObjectDefinition> All = MakeDefinition(TEXT("all"));
 	for (const FCase& Case : Cases)
@@ -62,7 +65,8 @@ bool FCrowdyExecPlatformDataScopesTest::RunTest(const FString& Parameters)
 			ManifestOf(*One).Contains(FString::Printf(TEXT(",\"scopes\":[\"%s\"]}"), Case.Scope), ESearchCase::CaseSensitive));
 	}
 	TestTrue(TEXT("every setting on lists every scope once, in the platform's order"), ManifestOf(*All).Contains(
-		TEXT(",\"scopes\":[\"players.read\",\"players.write\",\"world.read\",\"world.write\",\"grids.read\",\"permissions.write\"]}"), ESearchCase::CaseSensitive));
+		TEXT(",\"scopes\":[\"players.read\",\"players.write\",\"world.read\",\"world.write\",\"grids.read\",\"grids.write\",\"permissions.write\",\"access.read\",\"access.write\"]}"),
+		ESearchCase::CaseSensitive));
 	TestFalse(TEXT("a type with none asks for no scope"), ManifestOf(*MakeDefinition(TEXT("none"))).Contains(TEXT("scopes")));
 
 	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Implied = MakeDefinition(TEXT("implied"));
@@ -153,6 +157,17 @@ bool FCrowdyExecScopeWarningsTest::RunTest(const FString& Parameters)
 		Warning.Split(TEXT("which needs "), nullptr, &Scope);
 		return Scope.Left(Scope.Find(TEXT(";")));
 	}), FString(TEXT("players.write|grids.read|permissions.write")));
+
+	const TCHAR* const Admin = TEXT("ctx.grids().create(low, high)?;\nctx.access().get(p)?;\nctx.access().suspend(p, 60)?;\n");
+	Warnings = CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(Admin));
+	TestTrue(TEXT("grid and access management name their settings"), Warnings.Num() == 3
+		&& Warnings[0].Contains(TEXT("needs grids.write; turn on Manages Grids"), ESearchCase::CaseSensitive)
+		&& Warnings[1].Contains(TEXT("needs access.read; turn on Reads Players' Access"), ESearchCase::CaseSensitive)
+		&& Warnings[2].Contains(TEXT("needs access.write; turn on Manages Players' Access"), ESearchCase::CaseSensitive));
+	Builder->bManagesGrids = true;
+	Builder->bReadsAccess = true;
+	Builder->bManagesAccess = true;
+	TestEqual(TEXT("and with them on there is none"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(Admin)).Num(), 0);
 	return true;
 }
 
