@@ -87,6 +87,24 @@ bool FCrowdyServerComputeBadgeTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerComputeRefreshTest, "CrowdySDK.CrowdyExecEditor.ServerComputeRefillsRowsOnlyWhenTheDataMoved", CrowdyServerComputePageTest::TestFlags)
+bool FCrowdyServerComputeRefreshTest::RunTest(const FString& Parameters)
+{
+	using CrowdyServerComputePage::ChooseServiceRefresh;
+	using CrowdyServerComputePage::EServiceRefresh;
+	TestTrue(TEXT("deploy progress with the rows filled from the current data keeps them, so an open menu stays open"),
+		ChooseServiceRefresh(true, false, 7, 7) == EServiceRefresh::KeepRows);
+	TestTrue(TEXT("data newer than the rows refills them"), ChooseServiceRefresh(true, false, 8, 7) == EServiceRefresh::RefillRows);
+	TestTrue(TEXT("a generation that wrapped past the rows' refills them"), ChooseServiceRefresh(true, false, 0, MAX_uint32) == EServiceRefresh::RefillRows);
+	for (const bool bSameData : {true, false})
+	{
+		const uint32 Filled = bSameData ? 7 : 6;
+		TestTrue(TEXT("a new client rebuilds the page"), ChooseServiceRefresh(true, true, 7, Filled) == EServiceRefresh::RebuildPage);
+		TestTrue(TEXT("a page not built yet is built"), ChooseServiceRefresh(false, false, 7, Filled) == EServiceRefresh::RebuildPage);
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerComputeRemoveFolderTest, "CrowdySDK.CrowdyExecEditor.ServerComputeRemoveKeepsOtherFolders", CrowdyServerComputePageTest::TestFlags)
 bool FCrowdyServerComputeRemoveFolderTest::RunTest(const FString& Parameters)
 {

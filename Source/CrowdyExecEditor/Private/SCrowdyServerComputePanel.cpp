@@ -399,6 +399,15 @@ namespace CrowdyComputeUI
 	}
 }
 
+CrowdyServerComputePage::EServiceRefresh CrowdyServerComputePage::ChooseServiceRefresh(bool bContentBuilt, bool bNewClient, uint32 DataGeneration, uint32 FilledGeneration)
+{
+	if (!bContentBuilt || bNewClient)
+	{
+		return EServiceRefresh::RebuildPage;
+	}
+	return DataGeneration != FilledGeneration ? EServiceRefresh::RefillRows : EServiceRefresh::KeepRows;
+}
+
 CrowdyServerComputePage::FChangeBadge CrowdyServerComputePage::ChooseChangeBadge(const CrowdyExecDeploy::FTypeState& Type, const CrowdyExecRevisions::FTypeChange* Change)
 {
 	using CrowdyComputeUI::EBadgeTone;
@@ -541,10 +550,12 @@ void SCrowdyServerComputePanel::OnServiceChanged()
 	UpdateDeployState();
 	const TSharedPtr<CrowdyExecDeveloper::FClient> Client = FCrowdyServerComputeService::Get().GetClient();
 	const bool bNewClient = Client != SeenClient.Pin() || Client.IsValid() != bHadClient;
-	if (bContentBuilt && !bNewClient)
+	const CrowdyServerComputePage::EServiceRefresh Refresh = CrowdyServerComputePage::ChooseServiceRefresh(bContentBuilt, bNewClient,
+		FCrowdyServerComputeService::Get().GetDataGeneration(), FilledGeneration);
+	if (Refresh != CrowdyServerComputePage::EServiceRefresh::RebuildPage)
 	{
 		// Deploy progress changes only the deploy line, which reads the service itself; rebuilding rows would close an open menu.
-		if (FCrowdyServerComputeService::Get().GetDataGeneration() != FilledGeneration)
+		if (Refresh == CrowdyServerComputePage::EServiceRefresh::RefillRows)
 		{
 			FillServiceRows();
 		}
