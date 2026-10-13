@@ -1166,6 +1166,7 @@ FString FCrowdyCppReplication::DescribeErrorCode(const uint8 ErrorCode)
 	case crowdy::wire::ErrorCode::InvalidAppId:         return TEXT("InvalidAppId");
 	case crowdy::wire::ErrorCode::UserNotAuthenticated: return TEXT("UserNotAuthenticated");
 	case crowdy::wire::ErrorCode::TokenExpired:         return TEXT("TokenExpired");
+	case crowdy::wire::ErrorCode::AppPaused:            return TEXT("AppPaused");
 	default:                                            return TEXT("Unrecognised");
 	}
 }
@@ -1173,6 +1174,11 @@ FString FCrowdyCppReplication::DescribeErrorCode(const uint8 ErrorCode)
 bool FCrowdyCppReplication::IsUnauthorizedErrorCode(const uint8 ErrorCode)
 {
 	return static_cast<crowdy::wire::ErrorCode>(ErrorCode) == crowdy::wire::ErrorCode::Unauthorized;
+}
+
+bool FCrowdyCppReplication::IsAppPausedErrorCode(const uint8 ErrorCode)
+{
+	return static_cast<crowdy::wire::ErrorCode>(ErrorCode) == crowdy::wire::ErrorCode::AppPaused;
 }
 
 bool FCrowdyCppReplication::SendSpatial(const uint8 Opcode, const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,

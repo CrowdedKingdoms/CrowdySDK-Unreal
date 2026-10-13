@@ -10,8 +10,10 @@
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 namespace CrowdyExecDeveloperCallTests
 {
@@ -132,6 +134,10 @@ bool FCrowdyExecDeveloperCallRoundTripTest::RunTest(const FString& Parameters)
 	}
 	const TSharedRef<CrowdyExecDeveloper::FClient> Client = CrowdyExecDeveloper::FClient::CreateForClient(Bridge.ToSharedRef(), 42);
 	Client->SetSessionTokenForTest(TEXT("session-token"));
+	// The scripted gateway sits outside the test Game API's domains, as a self-hosted one would.
+	TArray<FString>& Allowed = GetMutableDefault<UCrowdySDKDeveloperSettings>()->AllowedExecGatewayDomains;
+	const int32 AllowedAt = Allowed.Add(TEXT("example.test"));
+	ON_SCOPE_EXIT { Allowed.RemoveAt(AllowedAt); };
 	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition();
 	TArray<FString> BakeErrors;
 	if (!TestTrue(FString::Printf(TEXT("the definition bakes (%s)"), *FString::Join(BakeErrors, TEXT("; "))), Definition->Bake(BakeErrors)))

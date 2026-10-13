@@ -643,6 +643,7 @@ namespace CrowdyExecDeveloper
 		Options.Key = Key;
 		Options.bAsDeveloper = true;
 		Options.bReconnect = false;
+		Options.AllowedGatewayDomains = GetDefault<UCrowdySDKDeveloperSettings>()->AllowedExecGatewayDomains;
 		return Client->CreateExecConnection(AppId, Options, [Token = SessionToken]() { return Token; });
 	}
 

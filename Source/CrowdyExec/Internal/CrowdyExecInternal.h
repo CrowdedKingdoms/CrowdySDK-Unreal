@@ -149,6 +149,9 @@ namespace CrowdyExec
 	/** The timer the generated server code sends a Record per Entity type's changes with; no timer of any type may take it. */
 	inline const TCHAR* const FlushTimerName = TEXT("crowdy_flush");
 
+	/** The timer the generated server code ends the visits of restored player connections with; no timer of any type may take it. */
+	inline const TCHAR* const SessionsTimerName = TEXT("crowdy_sessions");
+
 	/** The built-in member functions' methods, taken while Members From is This Object. */
 	inline const TCHAR* const BuiltInMemberMethodNames[] = {TEXT("join"), TEXT("leave"), TEXT("add_member"), TEXT("remove_member"), TEXT("make_leader"),
 		TEXT("set_open_for_joining")};

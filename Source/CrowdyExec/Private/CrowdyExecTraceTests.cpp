@@ -862,4 +862,49 @@ bool FCrowdyExecTraceRetriedCallTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecTraceRootTest,
+	"CrowdySDK.CrowdyExec.TraceRootShowsADash", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyExecTraceRootTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecTraceTests;
+	FTraceSwitch Trace(true);
+	FTraceLines Capture;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	Rig.Definition->TypeName = UCrowdyServerObjectDefinition::RootTypeName;
+	Rig.Definition->bOnlyOneInstance = true;
+	TArray<FString> Errors;
+	const bool bBaked = Rig.Definition->Bake(Errors);
+	if (!TestTrue(FString::Printf(TEXT("the root definition bakes (%s)"), *FString::Join(Errors, TEXT("; "))), bBaked))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Root = Rig.Acquire(TEXT("main"), Owner.Get());
+	if (!Root || !TestTrue(TEXT("the root has no Instance Id"), Root->GetInstanceId().IsEmpty()) || !Rig.Open())
+	{
+		return false;
+	}
+	FSentFrame Subscribe;
+	FSentFrame Read;
+	if (!TestTrue(TEXT("the root subscribes"), Rig.WaitForFrame(KindSubscribe, TEXT("state"), Subscribe))
+		|| !TestTrue(TEXT("and reads"), Rig.WaitForFrame(KindCall, TEXT("read"), Read)))
+	{
+		return false;
+	}
+	Rig.Reply(Subscribe.Rid, ECrowdyNativeExecStatus::Ok, {});
+	Rig.Reply(Read.Rid, ECrowdyNativeExecStatus::Ok, Rig.ReadMessage(5, Boss(3000, false, ECrowdyExecTestPhase::Calm)));
+	if (!TestTrue(TEXT("the read makes the root Ready"), Rig.PumpUntil([Root]() { return Root->GetStatus() == ECrowdyServerObjectStatus::Ready; })))
+	{
+		return false;
+	}
+	const FString RootHead = FString::Printf(TEXT("exec: %s/"), *FString(UCrowdyServerObjectDefinition::RootTypeName));
+	TestEqual(TEXT("the root's read prints a dash for its missing Instance Id"), Capture.Count(RootHead + TEXT("- read applied epoch=")), 1);
+	TestEqual(TEXT("and no line names it with nothing"), Capture.Count(RootHead + TEXT(" ")), 0);
+	return true;
+}
+
 #endif

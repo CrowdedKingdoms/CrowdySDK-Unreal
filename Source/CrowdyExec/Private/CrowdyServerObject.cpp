@@ -62,11 +62,30 @@ namespace CrowdyServerObjectDetail
 		return Reply.RetryAfterMs >= 0 ? FMath::Min(Reply.RetryAfterMs / 1000.f, MaxRetryHintSeconds) : 0.f;
 	}
 
+	/** Seconds stretched by up to half again, so many clients do not retry in lockstep; Jitter is in [0, 1) and never shortens the wait. */
+	float Jittered(float Seconds, float Jitter)
+	{
+		return Seconds * (1.f + 0.5f * Jitter);
+	}
+
+	float NextJitter(const TWeakObjectPtr<UCrowdyServerObjectSubsystem>& Subsystem)
+	{
+		const UCrowdyServerObjectSubsystem* Owner = Subsystem.Get();
+		return Owner ? Owner->NextJitter() : 0.f;
+	}
+
 	/** The wait before retrying after Failures refusals in a row: doubling from 1 s up to 10 s, or longer when the reply asks. */
-	float RetryInSeconds(int32 Failures, const FCrowdyNativeExecReply& Reply)
+	float RetryInSeconds(int32 Failures, const FCrowdyNativeExecReply& Reply, float Jitter)
 	{
 		const float Backoff = FMath::Min(static_cast<float>(1 << FMath::Min(Failures - 1, 4)), 10.f);
-		return FMath::Max(Backoff, RetryHintSeconds(Reply));
+		return Jittered(FMath::Max(Backoff, RetryHintSeconds(Reply)), Jitter);
+	}
+
+	bool IsSwitchedOffText(const FString& Message)
+	{
+		return Message.Contains(TEXT(" is switched off in app "), ESearchCase::CaseSensitive)
+			|| (Message.StartsWith(TEXT("app "), ESearchCase::CaseSensitive)
+				&& (Message.Contains(TEXT(" is switched off"), ESearchCase::CaseSensitive) || Message.Contains(TEXT(" is paused"), ESearchCase::CaseSensitive)));
 	}
 
 	FString NotDeployedReason(const UCrowdyServerObjectDefinition& Definition)
@@ -88,6 +107,9 @@ namespace CrowdyServerObjectDetail
 			&& Reply.Message.Equals(FCrowdyNativeExecConnection::CanceledMessage(), ESearchCase::CaseSensitive);
 	}
 
+	/** A timeout the client gave up on: nothing came back, so the server's Time per Call is not the cause. */
+	const TCHAR* const NoAnswerReason = TEXT("The server sent no answer in time; the connection may be slow or lost");
+
 	/** Why a retried read or subscribe refusal was given, or empty when saying so would not help. */
 	FString WaitingReason(const UCrowdyServerObjectDefinition& Definition, const FCrowdyNativeExecReply& Reply, bool bRead)
 	{
@@ -99,6 +121,10 @@ namespace CrowdyServerObjectDetail
 				? FString(TEXT("This app has no Crowdy SDK root, so Players Online has no count: deploy the app from Server Compute (an app last deployed with an older Crowdy SDK, or by another tool, has none). It is asked again every minute."))
 				: NotDeployedReason(Definition);
 		case ECrowdyNativeExecStatus::Denied:
+			if (IsSwitchedOffText(Reply.Message))
+			{
+				return WithServerMessage(TEXT("The server is switched off or paused, so this Server Object waits"), Reply);
+			}
 			return WithServerMessage(FString::Printf(TEXT("The server refused to let this player %s this Server Object"), Verb), Reply);
 		case ECrowdyNativeExecStatus::Unavailable:
 			// Such as an app at its instance limit, which would otherwise leave the object connecting with no reason. Reads
@@ -107,7 +133,7 @@ namespace CrowdyServerObjectDetail
 		case ECrowdyNativeExecStatus::Trapped:
 			return TEXT("The server code crashed; check its log");
 		case ECrowdyNativeExecStatus::DeadlineExceeded:
-			return TEXT("The server did not answer in time");
+			return Reply.bNoReply ? FString(NoAnswerReason) : FString::Printf(TEXT("The server took longer than this type's Time per Call to %s this Server Object"), Verb);
 		case ECrowdyNativeExecStatus::Internal:
 			return TEXT("The server failed with an internal error");
 		case ECrowdyNativeExecStatus::AppError:
@@ -172,10 +198,14 @@ namespace CrowdyServerObjectDetail
 		return StaticEnum<TEnum>()->GetNameStringByValue(static_cast<int64>(Value));
 	}
 
-	/** The instance a trace line names: an Owner Only instance id is the player's user id, so it prints as "owner". */
+	/** The instance a trace line names: an Owner Only instance id is the player's user id, so it prints as "owner", and the root has none, so it prints as "-". */
 	const TCHAR* TraceId(const UCrowdyServerObjectDefinition& Definition, const FString& InstanceId)
 	{
-		return Definition.Visibility == ECrowdyServerObjectVisibility::OwnerOnly ? TEXT("owner") : *InstanceId;
+		if (Definition.Visibility == ECrowdyServerObjectVisibility::OwnerOnly)
+		{
+			return TEXT("owner");
+		}
+		return InstanceId.IsEmpty() ? TEXT("-") : *InstanceId;
 	}
 
 	int64 FindSignedInUserId(const TWeakObjectPtr<UCrowdyServerObjectSubsystem>& Subsystem)
@@ -1123,8 +1153,15 @@ void UCrowdyServerObject::HandleSubscribeDone(uint32 Attempt, const FCrowdyNativ
 	}
 	// The reason names the instance only as the line's head does.
 	const TCHAR* const ShownId = CrowdyServerObjectDetail::TraceId(*Definition, InstanceId);
-	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s/%s subscribe %s%s"), *Definition->TypeName, ShownId,
-		Reply.IsOk() ? TEXT("ok") : TEXT("failed "), Reply.IsOk() ? TEXT("") : *CrowdyServerObjectDetail::PlainReason(Reply).Replace(*InstanceId, ShownId, ESearchCase::CaseSensitive));
+	if (CrowdyExecTrace::Exec())
+	{
+		FString Refusal = Reply.IsOk() ? FString() : CrowdyServerObjectDetail::PlainReason(Reply);
+		if (!InstanceId.IsEmpty())
+		{
+			Refusal = Refusal.Replace(*InstanceId, ShownId, ESearchCase::CaseSensitive);
+		}
+		UE_LOG(LogCrowdyExec, Log, TEXT("exec: %s/%s subscribe %s%s"), *Definition->TypeName, ShownId, Reply.IsOk() ? TEXT("ok") : TEXT("failed "), *Refusal);
+	}
 	if (Reply.IsOk())
 	{
 		bSubscribeConfirmed = true;
@@ -1391,8 +1428,9 @@ FString UCrowdyServerObject::PermanentRefusal(const FCrowdyNativeExecReply& Repl
 void UCrowdyServerObject::ScheduleRefresh(const FCrowdyNativeExecReply& Reply)
 {
 	++RefreshFailures;
-	RefreshRetryIn = CrowdyServerObjectDetail::IsMissingRoot(*Definition, Reply) ? CrowdyServerObjectDetail::MissingRootRetrySeconds
-		: CrowdyServerObjectDetail::RetryInSeconds(RefreshFailures, Reply);
+	const float Jitter = CrowdyServerObjectDetail::NextJitter(Subsystem);
+	RefreshRetryIn = CrowdyServerObjectDetail::IsMissingRoot(*Definition, Reply) ? CrowdyServerObjectDetail::Jittered(CrowdyServerObjectDetail::MissingRootRetrySeconds, Jitter)
+		: CrowdyServerObjectDetail::RetryInSeconds(RefreshFailures, Reply, Jitter);
 	bRefreshScheduled = true;
 }
 
@@ -1750,7 +1788,7 @@ void UCrowdyServerObject::HandleChangesFailure(const FCrowdyNativeExecReply& Rep
 		return;
 	}
 	++ChangesFailures;
-	ChangesWait = CrowdyServerObjectDetail::RetryInSeconds(ChangesFailures, Reply);
+	ChangesWait = CrowdyServerObjectDetail::RetryInSeconds(ChangesFailures, Reply, CrowdyServerObjectDetail::NextJitter(Subsystem));
 	bChangesWanted = true;
 }
 
@@ -1935,6 +1973,18 @@ void UCrowdyServerObject::ApplyRecordsForTest(TConstArrayView<TPair<FString, FIn
 	SetStatus(ECrowdyServerObjectStatus::Ready);
 	NotifyRecords(ChangedIds, ChangedFields, RemovedIds, Watched);
 }
+
+FCrowdyServerCallResult UCrowdyServerObject::MakeCallResultForTest(FName Function, const FCrowdyNativeExecReply& Reply) const
+{
+	FPendingCall Pending;
+	Pending.Function = Function;
+	return MakeCallResult(Pending, Reply);
+}
+
+FString UCrowdyServerObject::WaitingReasonForTest(const FCrowdyNativeExecReply& Reply, bool bRead) const
+{
+	return CrowdyServerObjectDetail::WaitingReason(*Definition, Reply, bRead);
+}
 #endif
 
 void UCrowdyServerObject::SendDueCalls()
@@ -2006,7 +2056,7 @@ void UCrowdyServerObject::HandleCallDone(uint32 CallId, const FCrowdyNativeExecR
 	if (CrowdyServerObjectDetail::IsCallRetried(Reply.Status) && Pending->Attempts < CrowdyServerObjectDetail::MaxCallAttempts)
 	{
 		const float Backoff = FMath::Min(0.25f * static_cast<float>(1 << FMath::Min(Pending->Attempts - 1, 3)), 2.f);
-		Pending->RetryIn = FMath::Max(Backoff, CrowdyServerObjectDetail::RetryHintSeconds(Reply));
+		Pending->RetryIn = CrowdyServerObjectDetail::Jittered(FMath::Max(Backoff, CrowdyServerObjectDetail::RetryHintSeconds(Reply)), CrowdyServerObjectDetail::NextJitter(Subsystem));
 		return;
 	}
 	const FCrowdyServerCallResult Result = MakeCallResult(*Pending, Reply);
@@ -2099,9 +2149,17 @@ FCrowdyServerCallResult UCrowdyServerObject::MakeCallResult(const FPendingCall& 
 		break;
 	case ECrowdyNativeExecStatus::DeadlineExceeded:
 		Result.Outcome = ECrowdyServerCallOutcome::Timeout;
-		Result.Reason = TEXT("The server did not answer in time");
+		Result.Reason = Reply.bNoReply ? FString(CrowdyServerObjectDetail::NoAnswerReason)
+			: CrowdyServerObjectDetail::WithServerMessage(FString::Printf(TEXT("%s ran past its Time per Call on the server"), *Function), Reply);
 		break;
 	case ECrowdyNativeExecStatus::Denied:
+		if (CrowdyServerObjectDetail::IsSwitchedOffText(Reply.Message))
+		{
+			Result.Outcome = ECrowdyServerCallOutcome::Paused;
+			Result.bRetryable = true;
+			Result.Reason = CrowdyServerObjectDetail::WithServerMessage(FString::Printf(TEXT("The server is switched off or paused, so it refused the call to %s"), *Function), Reply);
+			break;
+		}
 		Result.Outcome = ECrowdyServerCallOutcome::Denied;
 		Result.Reason = CrowdyServerObjectDetail::WithServerMessage(FString::Printf(TEXT("The server refused the call to %s"), *Function), Reply);
 		break;

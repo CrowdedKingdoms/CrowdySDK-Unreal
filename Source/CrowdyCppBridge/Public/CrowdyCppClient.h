@@ -87,6 +87,11 @@ struct FCrowdyCppAppTokenResult
 
 	FString LaunchUrl;
 
+	// The app's runtime gate when the token was issued: ACTIVE when the app runs, anything else means it is paused and
+	// the reason says why. Both are empty when the answer carried no gate.
+	FString RuntimeGateStatus;
+	FString RuntimeGateReason;
+
 	// The replication server the Game API installed this token on, when the request named one. Empty on a mint, on
 	// a rotation that named no server, and on one the API answered without an authorizedServer: in all three the
 	// holder of this token has to re-assign before it can send. Never assume the server it was asked about.

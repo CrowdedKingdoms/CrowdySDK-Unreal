@@ -15,3 +15,14 @@ void UCrowdyGameSession::Deinitialize()
 {
 	Super::Deinitialize();
 }
+
+void UCrowdyGameSession::SetAppPaused(const bool bPaused, const FString& Reason)
+{
+	if (bAppPaused == bPaused && AppPausedReason.Equals(Reason, ESearchCase::CaseSensitive))
+	{
+		return;
+	}
+	bAppPaused = bPaused;
+	AppPausedReason = Reason;
+	OnAppPausedChanged.Broadcast(bPaused, Reason);
+}

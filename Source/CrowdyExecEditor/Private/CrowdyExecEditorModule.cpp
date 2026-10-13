@@ -239,8 +239,10 @@ public:
 		UToolMenus::UnregisterOwner(this);
 	}
 
+	// Blueprints that use the struct recompile before PostChange, while its old fields are already gone.
 	virtual void PreChange(const UUserDefinedStruct* Changed, FStructureEditorUtils::EStructureEditorChangeInfo ChangedType) override
 	{
+		CrowdyExec::NotifyStructsChanged();
 	}
 
 	// Re-baked now, so editor play uses the tables the next save or cook would write.

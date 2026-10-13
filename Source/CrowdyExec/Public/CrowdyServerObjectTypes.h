@@ -34,14 +34,16 @@ enum class ECrowdyServerCallOutcome : uint8
 	NotDeployed,
 	/** The server did not answer in time. */
 	Timeout,
-	/** Refused: this player may not call that function, or the type or the app is switched off or paused; the reason says which. */
+	/** Refused: this player may not call that function; the reason says why. */
 	Denied,
 	/** The server code crashed while handling the call; its log says why. */
 	ServerCrashed,
 	/** The call could not be sent as asked: an unknown function, or params of the wrong type. */
 	BadRequest,
 	/** The Server Object was given back, or the player signed out, before the call finished. */
-	Canceled
+	Canceled,
+	/** The game's server or this type is switched off or paused; try again later. */
+	Paused UMETA(DisplayName = "Paused")
 };
 
 /** Which instance of a Server Object type to find, when it is found by its definition. */
