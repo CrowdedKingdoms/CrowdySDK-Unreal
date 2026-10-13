@@ -4,6 +4,7 @@
 #include "CrowdyExecCodegenMenu.h"
 #include "CrowdyRustSyntaxMarshaller.h"
 #include "CrowdyServerComputeService.h"
+#include "CrowdyServerObjectLibrary.h"
 #include "DesktopPlatformModule.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
@@ -80,6 +81,12 @@ namespace SCrowdyServerCodeTabDetail
 		if (!CrowdyServerCodeFiles::IsValidTypeName(Definition.TypeName))
 		{
 			return LOCTEXT("InvalidTypeName", "Set a valid Type Name first: lowercase letters, digits and underscores, starting with a letter, at most 48 characters");
+		}
+		if (Definition.TypeName.Equals(UCrowdyServerObjectDefinition::RootTypeName, ESearchCase::CaseSensitive))
+		{
+			return Definition.GetPathName().Equals(UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath, ESearchCase::IgnoreCase)
+				? LOCTEXT("SdkRoot", "This is the Crowdy SDK's own root; its server code is built into every deploy, so there is nothing to generate.")
+				: LOCTEXT("RootTypeName", "root is the name of the platform's root Server Object type; choose another Type Name.");
 		}
 		if (!CrowdyExecCodegen::HasOwnLogicFile(Definition) && !FPaths::IsUnderDirectory(CrowdyExecCodegen::GetLogicFile(Definition), ProjectFolder()))
 		{
@@ -567,6 +574,15 @@ void SCrowdyServerCodeTab::FollowDisk()
 		return;
 	}
 	DiskStamp = Stamp;
+	// A file it cannot read or judge now (locked mid-save, a definition that does not generate) keeps what is known.
+	if (const TOptional<TArray<FString>> Removed = FindRemovedStubs())
+	{
+		if (!RemovedStubs.IsEmpty() && Removed->IsEmpty())
+		{
+			CrowdyServerCodeEdits::ForgetInsertedStubs(LoadedPath);
+		}
+		RemovedStubs = *Removed;
+	}
 	if (bDirty)
 	{
 		bStale = true;
@@ -580,6 +596,40 @@ void SCrowdyServerCodeTab::FollowDisk()
 	{
 		TextBox->GoTo(Cursor);
 	}
+}
+
+TOptional<TArray<FString>> SCrowdyServerCodeTab::FindRemovedStubs() const
+{
+	TArray<FString> Removed;
+	const TArray<FString> Inserted = CrowdyServerCodeEdits::InsertedStubs(LoadedPath);
+	if (Inserted.IsEmpty())
+	{
+		return Removed;
+	}
+	const CrowdyServerCodeFiles::FDiskText OnDisk = CrowdyServerCodeFiles::Read(LoadedPath);
+	if (!OnDisk.bReadable || Expected.StateName.IsEmpty())
+	{
+		return {};
+	}
+	const CrowdyExecCodegen::FLogicGaps After = CrowdyExecCodegen::FindLogicGaps(Expected, OnDisk.Text);
+	if (!After.Macros.IsEmpty())
+	{
+		return {};
+	}
+	const CrowdyExecCodegen::FLogicGaps Before = CrowdyExecCodegen::FindLogicGaps(Expected, Loaded.Text);
+	const auto HasMethod = [](const TArray<FString>& Names, const FString& Method)
+	{
+		return Names.ContainsByPredicate([&Method](const FString& Name) { return Name.Equals(Method, ESearchCase::CaseSensitive); });
+	};
+	for (const CrowdyExecCodegen::FLogicStub& Stub : After.Missing)
+	{
+		const bool bWasDefined = !Before.Missing.ContainsByPredicate([&Stub](const CrowdyExecCodegen::FLogicStub& Other) { return Other.Method.Equals(Stub.Method, ESearchCase::CaseSensitive); });
+		if (HasMethod(Inserted, Stub.Method) && (bWasDefined || HasMethod(RemovedStubs, Stub.Method)))
+		{
+			Removed.Add(Stub.Method);
+		}
+	}
+	return Removed;
 }
 
 TSharedRef<SWidget> SCrowdyServerCodeTab::MakeGapsNotice()
@@ -712,7 +762,13 @@ void SCrowdyServerCodeTab::Generate()
 	{
 		SaveEdits(true);
 	}
+	const TArray<FString> InsertedBefore = CrowdyServerCodeEdits::InsertedStubs(LoadedPath);
 	CrowdyExecCodegenMenu::GenerateServerCode(*Current);
+	// Only stubs Generate wrote again end the notice; a declined or failed Generate leaves it.
+	if (CrowdyServerCodeEdits::InsertedStubs(LoadedPath) != InsertedBefore)
+	{
+		RemovedStubs.Reset();
+	}
 	RefreshServiceTypes();
 	if (!bDirty)
 	{
@@ -733,7 +789,7 @@ void SCrowdyServerCodeTab::Generate()
 
 FText SCrowdyServerCodeTab::GetGenerateToolTip() const
 {
-	return WriteBlockReason.IsEmpty() ? LOCTEXT("GenerateToolTip", "Writes this type's server code under Server/<Type Name>; your logic file is never replaced") : WriteBlockReason;
+	return WriteBlockReason.IsEmpty() ? LOCTEXT("GenerateToolTip", "Writes this type's server code under Server/<Type Name>; your logic file is never replaced, but Generate can offer to add the functions it lacks") : WriteBlockReason;
 }
 
 void SCrowdyServerCodeTab::OfferSaveBeforeDeploy()
@@ -1022,6 +1078,11 @@ bool SCrowdyServerCodeTab::SaveEdits(bool bAskIfMoved)
 	bStale = false;
 	DiskStamp = IFileManager::Get().GetTimeStamp(*LoadedPath);
 	bChangedOnDisk = false;
+	if (!RemovedStubs.IsEmpty())
+	{
+		CrowdyServerCodeEdits::ForgetInsertedStubs(LoadedPath);
+		RemovedStubs.Reset();
+	}
 	// Edits kept from an earlier close are older than what was just saved.
 	CrowdyServerCodeEdits::Kept().Forget(LoadedPath);
 	RefreshState();
@@ -1333,7 +1394,7 @@ FReply SCrowdyServerCodeTab::HandleAddStubs()
 	{
 		return FReply::Handled();
 	}
-	if (Gaps.InsertAt != INDEX_NONE && TextBox.IsValid())
+	if (!CopiesStubsOnly() && TextBox.IsValid())
 	{
 		// The stubs go at the end of the block, so the cursor's line still means the same place.
 		const FTextLocation Cursor = TextBox->GetCursorLocation();
@@ -1381,11 +1442,15 @@ FText SCrowdyServerCodeTab::GetMissingText() const
 
 FText SCrowdyServerCodeTab::GetAddStubsText() const
 {
-	return Gaps.InsertAt == INDEX_NONE ? LOCTEXT("CopyStubs", "Copy Stubs") : LOCTEXT("AddStubs", "Add Stubs");
+	return CopiesStubsOnly() ? LOCTEXT("CopyStubs", "Copy Stubs") : LOCTEXT("AddStubs", "Add Stubs");
 }
 
 FText SCrowdyServerCodeTab::GetAddStubsToolTip() const
 {
+	if (!Gaps.Macros.IsEmpty())
+	{
+		return LOCTEXT("CopyStubsMacroToolTip", "Copies empty versions of the missing functions. The block that implements Functions uses a macro, which may already define some of them, so nothing is added for you.");
+	}
 	return Gaps.InsertAt == INDEX_NONE ? LOCTEXT("CopyStubsToolTip", "Copies empty versions of the missing functions, to paste into the block that implements Functions")
 		: LOCTEXT("AddStubsToolTip", "Adds empty versions of the missing functions to the code below, as unsaved changes");
 }
@@ -1500,7 +1565,29 @@ EVisibility SCrowdyServerCodeTab::GetChangedVisibility() const
 
 FText SCrowdyServerCodeTab::GetChangedText() const
 {
-	return FText::Format(LOCTEXT("ChangedOnDiskNotice", "{0} changed on disk, for example in another editor, while you have unsaved changes here."), FText::FromString(ShownPath));
+	const FText Changed = FText::Format(LOCTEXT("ChangedOnDiskNotice", "{0} changed on disk, for example in another editor, while you have unsaved changes here."), FText::FromString(ShownPath));
+	const FText Removed = GetRemovedStubsText();
+	return Removed.IsEmpty() ? Changed : FText::Format(LOCTEXT("ChangedAndRemoved", "{0} {1}"), Changed, Removed);
+}
+
+FText SCrowdyServerCodeTab::GetGapsText() const
+{
+	const FText Removed = bChangedOnDisk ? FText::GetEmpty() : GetRemovedStubsText();
+	return Removed.IsEmpty() ? GapsText : FText::Format(LOCTEXT("GapsAndRemoved", "{0} {1}"), Removed, GapsText);
+}
+
+FText SCrowdyServerCodeTab::GetRemovedStubsText() const
+{
+	if (RemovedStubs.IsEmpty())
+	{
+		return FText::GetEmpty();
+	}
+	TArray<FString> Names;
+	for (const FString& Method : RemovedStubs)
+	{
+		Names.Add(Method.StartsWith(TEXT("r#"), ESearchCase::CaseSensitive) ? Method.RightChop(2) : Method);
+	}
+	return FText::Format(LOCTEXT("StubsRemoved", "{0} was saved by another program without the functions Generate added: {1}."), FText::FromString(FPaths::GetCleanFilename(LoadedPath)), FText::FromString(FString::Join(Names, TEXT(", "))));
 }
 
 EVisibility SCrowdyServerCodeTab::GetAddStubsVisibility() const

@@ -127,6 +127,17 @@ namespace CrowdyExecRevisionsDetail
 		return Type.TryGetNumberField(Field, Ms) ? Ms : 0;
 	}
 
+	/** A whole number the manifest gives as a number or as a string of digits. */
+	bool ReadWholeNumber(const FJsonValue& Value, int64& OutNumber)
+	{
+		if (Value.Type == EJson::Number)
+		{
+			return Value.TryGetNumber(OutNumber);
+		}
+		const FString Text = Value.Type == EJson::String ? Value.AsString() : FString();
+		return Text.IsNumeric() && !Text.Contains(TEXT(".")) && LexTryParseString(OutNumber, *Text);
+	}
+
 	const CrowdyExecRevisions::FLiveType* FindLiveType(TConstArrayView<CrowdyExecRevisions::FLiveType> Types, const FString& TypeName)
 	{
 		return Types.FindByPredicate([&TypeName](const CrowdyExecRevisions::FLiveType& Type) { return IsSameText(Type.TypeName, TypeName); });
@@ -174,7 +185,8 @@ namespace CrowdyExecRevisionsDetail
 		for (const CrowdyExecDeploy::FServerLimit& Limit : CrowdyExecDeploy::LimitsOf(*Definition))
 		{
 			const int64* LiveValue = Live.Numbers.Find(Limit.Field);
-			if ((LiveValue ? *LiveValue : Limit.Default) != Limit.Value)
+			// The platform runs a limit clamped into its range, so a live value outside it is the clamped one.
+			if ((LiveValue ? CrowdyExecDeploy::ClampLimit(Limit.Field, *LiveValue) : Limit.Default) != Limit.Value)
 			{
 				OutWhat.Add(TEXT("server limits"));
 				break;
@@ -207,6 +219,45 @@ namespace CrowdyExecRevisionsDetail
 			Change.What.Insert(TEXT("server code"), 0);
 		}
 		return Change.What.IsEmpty() ? EChange::Unchanged : EChange::Changed;
+	}
+
+	/** The SDK's root rides every deploy: a deploy is offered when the live version has none, has an older one closed to players, or runs other root code than this SDK's. */
+	void AddRootChange(const CrowdyExecDeploy::FProjectDeploy& Project, const CrowdyExecRevisions::FLiveType* LiveRoot, int32 LiveVersion,
+		TFunctionRef<TArray<FRevision>(const FString& TypeName)> HistoryFor, TArray<CrowdyExecRevisions::FTypeChange>& OutChanges)
+	{
+		using CrowdyExecRevisions::EChange;
+		CrowdyExecRevisions::FTypeChange Change;
+		Change.TypeName = CrowdyExecDeploy::RootTypeName;
+		Change.LiveVersion = LiveVersion;
+		if (!LiveRoot)
+		{
+			Change.Change = EChange::New;
+			OutChanges.Add(MoveTemp(Change));
+			return;
+		}
+		// A root closed to players is an older SDK's, which keeps no Players Online.
+		if (!LiveRoot->bClient)
+		{
+			Change.Change = EChange::Changed;
+			Change.What.Add(TEXT("players online"));
+			OutChanges.Add(MoveTemp(Change));
+			return;
+		}
+		const CrowdyExecDeveloper::FBuildCrate* Crate = Project.Crates.FindByPredicate([](const CrowdyExecDeveloper::FBuildCrate& Candidate) { return IsSameText(Candidate.Name, CrowdyExecDeploy::RootTypeName); });
+		if (!Crate || Crate->Files.IsEmpty())
+		{
+			return;
+		}
+		// A live root this checkout has no record of is not a difference: a fresh checkout would show noise.
+		const TArray<FRevision> History = HistoryFor(CrowdyExecDeploy::RootTypeName);
+		Change.LiveRevision = FindRevisionWithDigest(History, LiveRoot->Digest);
+		if (Change.LiveRevision == INDEX_NONE || IsSameText(History[Change.LiveRevision].Fingerprint, CrowdyExecRevisions::Fingerprint(Crate->Files)))
+		{
+			return;
+		}
+		Change.Change = EChange::Changed;
+		Change.What.Add(TEXT("server code"));
+		OutChanges.Add(MoveTemp(Change));
 	}
 
 	TArray<FString> SplitLines(const FString& Text)
@@ -391,10 +442,6 @@ void CrowdyExecRevisions::RecordDeploy(const CrowdyExecDeploy::FProjectDeploy& P
 	using namespace CrowdyExecRevisionsDetail;
 	for (const CrowdyExecDeveloper::FBuildCrate& Crate : Project.Crates)
 	{
-		if (IsSameText(Crate.Name, CrowdyExecDeploy::RootTypeName))
-		{
-			continue;
-		}
 		const FString Directory = CrateDirectoryFor(Crate.Name);
 		if (Directory.IsEmpty())
 		{
@@ -449,7 +496,7 @@ bool CrowdyExecRevisions::ParseManifest(const FString& ManifestJson, TArray<FLiv
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : (*Type)->Values)
 		{
 			int64 Number = 0;
-			if (Field.Value && Field.Value->Type == EJson::Number && Field.Value->TryGetNumber(Number))
+			if (Field.Value && ReadWholeNumber(*Field.Value, Number))
 			{
 				Live.Numbers.Add(Field.Key, Number);
 			}
@@ -489,18 +536,20 @@ TArray<CrowdyExecRevisions::FTypeChange> CrowdyExecRevisions::Compare(const Crow
 		});
 		Change.Change = CompareType(Type, Crate, Definition ? *Definition : nullptr, LiveTypes, HistoryFor, Change);
 	}
+	if (bLiveKnown && bReadable)
+	{
+		AddRootChange(Project, FindLiveType(LiveTypes, CrowdyExecDeploy::RootTypeName), LiveVersion, HistoryFor, Changes);
+	}
+	// An unreadable manifest is never "no changes", even for a project with no types of its own.
+	if (bLiveKnown && !bReadable)
+	{
+		FTypeChange& Root = Changes.AddDefaulted_GetRef();
+		Root.TypeName = CrowdyExecDeploy::RootTypeName;
+		Root.Change = EChange::Unknown;
+		Root.LiveVersion = LiveVersion;
+	}
 	for (const FLiveType& LiveType : LiveTypes)
 	{
-		// A root closed to players is an older SDK's, which keeps no Players Online; this SDK's root is sent with any deploy.
-		if (IsSameText(LiveType.TypeName, CrowdyExecDeploy::RootTypeName) && !LiveType.bClient)
-		{
-			FTypeChange& Change = Changes.AddDefaulted_GetRef();
-			Change.TypeName = LiveType.TypeName;
-			Change.Change = EChange::Changed;
-			Change.LiveVersion = LiveVersion;
-			Change.What.Add(TEXT("players online"));
-			continue;
-		}
 		const bool bInProject = Project.Types.ContainsByPredicate([&LiveType](const CrowdyExecDeploy::FTypeState& Type) { return IsSameText(Type.TypeName, LiveType.TypeName); });
 		if (bInProject || IsSameText(LiveType.TypeName, CrowdyExecDeploy::RootTypeName))
 		{

@@ -32,6 +32,67 @@ namespace CrowdyExecDeveloperCallDetail
 		}
 	}
 
+	const FProperty* FindField(const UStruct& Struct, const FString& Name)
+	{
+		for (TFieldIterator<FProperty> It(&Struct); It; ++It)
+		{
+			if (It->GetAuthoredName().Equals(Name, ESearchCase::IgnoreCase))
+			{
+				return *It;
+			}
+		}
+		return nullptr;
+	}
+
+	/** Where in Value a 64-bit integer is written as a JSON number too large to be exact, such as "Ids[2]"; empty when nowhere. */
+	FString FindInexactInt64(const FProperty& Property, const FJsonValue& Value, const FString& Path)
+	{
+		constexpr double LargestExactNumber = 9007199254740991.0;
+		double Number = 0.0;
+		if (CastField<FInt64Property>(&Property) || CastField<FUInt64Property>(&Property))
+		{
+			return Value.Type == EJson::Number && Value.TryGetNumber(Number) && FMath::Abs(Number) > LargestExactNumber ? Path : FString();
+		}
+		const FProperty* Element = nullptr;
+		if (const FArrayProperty* Array = CastField<FArrayProperty>(&Property))
+		{
+			Element = Array->Inner;
+		}
+		else if (const FSetProperty* Set = CastField<FSetProperty>(&Property))
+		{
+			Element = Set->ElementProp;
+		}
+		if (Element && Value.Type == EJson::Array)
+		{
+			const TArray<TSharedPtr<FJsonValue>>& Items = Value.AsArray();
+			for (int32 Index = 0; Index < Items.Num(); ++Index)
+			{
+				const FString Found = Items[Index] ? FindInexactInt64(*Element, *Items[Index], FString::Printf(TEXT("%s[%d]"), *Path, Index)) : FString();
+				if (!Found.IsEmpty())
+				{
+					return Found;
+				}
+			}
+			return FString();
+		}
+		const FStructProperty* Struct = CastField<FStructProperty>(&Property);
+		const FMapProperty* Map = CastField<FMapProperty>(&Property);
+		if ((!Struct && !Map) || Value.Type != EJson::Object)
+		{
+			return FString();
+		}
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : Value.AsObject()->Values)
+		{
+			const FProperty* Inner = Map ? Map->ValueProp : FindField(*Struct->Struct, Field.Key);
+			const FString Found = Inner && Field.Value ? FindInexactInt64(*Inner, *Field.Value, Path + TEXT(".") + Field.Key) : FString();
+			if (!Found.IsEmpty())
+			{
+				return Found;
+			}
+		}
+		return FString();
+	}
+
 	CrowdyExecDeveloperCall::FResult Failed(const TCHAR* Status, const FString& Message)
 	{
 		CrowdyExecDeveloperCall::FResult Result;
@@ -67,14 +128,17 @@ bool CrowdyExecDeveloperCall::InputsFromJson(const FCrowdyServerFunction& Functi
 	// The converter skips a name it does not know, which would send that input's default without a word.
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : Object->Values)
 	{
-		bool bKnown = false;
-		for (TFieldIterator<FProperty> It(OutInputs.GetScriptStruct()); It && !bKnown; ++It)
-		{
-			bKnown = It->GetAuthoredName().Equals(Field.Key, ESearchCase::IgnoreCase);
-		}
-		if (!bKnown)
+		const FProperty* Known = CrowdyExecDeveloperCallDetail::FindField(*OutInputs.GetScriptStruct(), Field.Key);
+		if (!Known)
 		{
 			OutError = FString::Printf(TEXT("%s has no input named %s"), *Function.Name.ToString(), *Field.Key);
+			return false;
+		}
+		// The converter reads a JSON number through a double, which drops the low digits of a 64-bit id; a string is read exactly.
+		const FString Inexact = Field.Value ? CrowdyExecDeveloperCallDetail::FindInexactInt64(*Known, *Field.Value, Field.Key) : FString();
+		if (!Inexact.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("%s is above 9007199254740991; write it as a string, for example \"9007199254740993\"."), *Inexact);
 			return false;
 		}
 	}

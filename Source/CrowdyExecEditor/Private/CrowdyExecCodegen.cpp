@@ -4685,8 +4685,40 @@ namespace CrowdyExecCodegenDetail
 		return INDEX_NONE;
 	}
 
-	/** The brace closing the block opened at Open, INDEX_NONE when it never closes; OutMethods gets each function defined directly inside. */
-	int32 ScanBlock(const FString& Code, int32 Open, TArray<FString>& OutMethods)
+	/** The macro invoked by the name starting at Index in Code, with its !, as written; empty when no invocation starts there. A != is not one. */
+	FString MacroNameAt(const FString& Code, int32 Index)
+	{
+		const TCHAR Before = CharAt(Code, Index - 1);
+		const bool bQualified = Before == '.' || (Before == ':' && CharAt(Code, Index - 2) == ':');
+		if (!IsIdentChar(CharAt(Code, Index)) || IsIdentChar(Before) || bQualified)
+		{
+			return FString();
+		}
+		int32 NameEnd = Index;
+		while (NameEnd < Code.Len() && IsIdentChar(Code[NameEnd]))
+		{
+			++NameEnd;
+		}
+		int32 At = NameEnd;
+		while (FChar::IsWhitespace(CharAt(Code, At)))
+		{
+			++At;
+		}
+		if (CharAt(Code, At) != '!')
+		{
+			return FString();
+		}
+		++At;
+		while (FChar::IsWhitespace(CharAt(Code, At)))
+		{
+			++At;
+		}
+		const TCHAR Open = CharAt(Code, At);
+		return Open == '(' || Open == '[' || Open == '{' ? Code.Mid(Index, NameEnd - Index) + TEXT("!") : FString();
+	}
+
+	/** The brace closing the block opened at Open, INDEX_NONE when it never closes; OutMethods gets each function defined directly inside and OutMacros each macro invoked directly inside. */
+	int32 ScanBlock(const FString& Code, int32 Open, TArray<FString>& OutMethods, TArray<FString>& OutMacros)
 	{
 		int32 Depth = 0;
 		for (int32 Index = Open; Index < Code.Len(); ++Index)
@@ -4700,6 +4732,11 @@ namespace CrowdyExecCodegenDetail
 			if (!Name.IsEmpty() && !HasName(OutMethods, Name))
 			{
 				OutMethods.Add(Name);
+			}
+			const FString Macro = Depth == 1 ? MacroNameAt(Code, Index) : FString();
+			if (!Macro.IsEmpty() && !HasName(OutMacros, Macro))
+			{
+				OutMacros.Add(Macro);
 			}
 		}
 		return INDEX_NONE;
@@ -4796,7 +4833,7 @@ CrowdyExecCodegen::FLogicGaps CrowdyExecCodegen::FindLogicGaps(const FGeneratedC
 	const FString Code = CodeOnly(Logic);
 	TArray<FString> Defined;
 	const int32 Open = FindImplOpen(Code, Crate.StateName);
-	Gaps.InsertAt = Open == INDEX_NONE ? INDEX_NONE : ScanBlock(Code, Open, Defined);
+	Gaps.InsertAt = Open == INDEX_NONE ? INDEX_NONE : ScanBlock(Code, Open, Defined, Gaps.Macros);
 	// Without a whole impl block, any function of the file counts as written.
 	if (Gaps.InsertAt == INDEX_NONE)
 	{
@@ -4828,7 +4865,7 @@ CrowdyExecCodegen::FLogicGaps CrowdyExecCodegen::FindLogicGaps(const FGeneratedC
 FString CrowdyExecCodegen::AddLogicStubs(const FString& Logic, const FLogicGaps& Gaps)
 {
 	using namespace CrowdyExecCodegenDetail;
-	if (Gaps.Missing.IsEmpty() || !Logic.IsValidIndex(Gaps.InsertAt))
+	if (Gaps.Missing.IsEmpty() || !Gaps.Macros.IsEmpty() || !Logic.IsValidIndex(Gaps.InsertAt))
 	{
 		return Logic;
 	}

@@ -7,8 +7,10 @@
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerComputeService.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "CrowdyServerObjectLibrary.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
@@ -424,7 +426,9 @@ bool FCrowdyExecCodegenMenuStubOfferTest::RunTest(const FString& Parameters)
 		const bool bAsked = Dialogs.Messages.Num() == 1 && Dialogs.Types[0] == EAppMsgType::YesNo && Dialogs.Messages[0].StartsWith(Missing, ESearchCase::CaseSensitive);
 		TestTrue(FString::Printf(TEXT("Generate asks once whether to add it (%s)"), *FString::Join(Dialogs.Messages, TEXT(" | "))), bAsked);
 		TestTrue(TEXT("as a warning whose default is No"), bAsked && Dialogs.Categories[0] == EAppMsgCategory::Warning && Dialogs.Defaults[0] == EAppReturnType::No);
+		TestTrue(TEXT("the question warns about a program holding unsaved edits to the file"), bAsked && Dialogs.Messages[0].EndsWith(TEXT("This writes them into logic.rs on disk. If another program has it open with unsaved changes, save or close it there first, or its next save removes them."), ESearchCase::CaseSensitive));
 		TestEqualSensitive(TEXT("No adds nothing"), LoadLogic(Crate), Original);
+		TestTrue(TEXT("and records nothing"), CrowdyServerCodeEdits::InsertedStubs(LogicFile).IsEmpty());
 	}
 	{
 		FScriptedDialogs Dialogs;
@@ -434,6 +438,8 @@ bool FCrowdyExecCodegenMenuStubOfferTest::RunTest(const FString& Parameters)
 		const FString Logic = LoadLogic(Crate);
 		TestTrue(TEXT("Yes adds the missing function"), Logic.Contains(TEXT("fn clear("), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("and keeps the one already there"), Logic.Contains(TEXT("fn store("), ESearchCase::CaseSensitive));
+		TestEqualSensitive(TEXT("and records what it added"), FString::Join(CrowdyServerCodeEdits::InsertedStubs(LogicFile), TEXT(",")), FString(TEXT("clear")));
+		CrowdyServerCodeEdits::ForgetInsertedStubs(LogicFile);
 	}
 
 	FFileHelper::SaveStringToFile(Original, *LogicFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
@@ -698,6 +704,166 @@ bool FCrowdyExecCodegenMenuReadOnlyRetagTest::RunTest(const FString& Parameters)
 	PlatformFile.SetReadOnly(*Path, false);
 	TestEqualSensitive(TEXT("and stays as it was"), LoadCargo(Crate), Cargo);
 	TestFalse(TEXT("with no temporary file left beside it"), PlatformFile.FileExists(*(Path + TEXT(".tmp"))));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuMacroTextTest, "CrowdySDK.CrowdyExecEditor.CodegenMenuNamesMacrosInLogicGaps", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecCodegenMenuMacroTextTest::RunTest(const FString& Parameters)
+{
+	CrowdyExecCodegen::FLogicGaps Gaps;
+	Gaps.Missing = {{TEXT("heal"), TEXT("    fn heal() {}\n")}};
+	Gaps.InsertAt = 10;
+	const auto Describe = [&Gaps]() { return CrowdyExecCodegenMenu::DescribeLogicGaps(Gaps, TEXT("logic.rs"), TEXT("ExampleObjectState")).ToString(); };
+	TestEqualSensitive(TEXT("without macros nothing is said about them"), Describe(), FString(TEXT("logic.rs is missing heal, which this type now has.")));
+	Gaps.Macros = {TEXT("my_macro!"), TEXT("other!")};
+	TestEqualSensitive(TEXT("with macros the text names them"), Describe(),
+		FString(TEXT("logic.rs is missing heal, which this type now has. logic.rs also uses my_macro!, other!, which may define some of these; check before adding them.")));
+	Gaps.Missing.Reset();
+	Gaps.Leftover = {TEXT("join")};
+	TestEqualSensitive(TEXT("with nothing missing they are not mentioned"), Describe(), FString(TEXT("logic.rs defines join, which this type no longer has: rename or delete it.")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuMacroOfferTest, "CrowdySDK.CrowdyExecEditor.CodegenMenuCopiesStubsWhenLogicUsesMacros", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecCodegenMenuMacroOfferTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
+	Definition->TypeName = TEXT("ck_menu_macros");
+	Definition->StateForm = ECrowdyServerValuesForm::List;
+	Definition->StateList.AddProperty(TEXT("Gold"), EPropertyBagPropertyType::Int32);
+	AddFunction(*Definition, TEXT("Store"));
+	const FString Crate = CrateOf(Server, TEXT("ck_menu_macros"));
+	const FString LogicFile = CrowdyExecCodegen::GetLogicFile(*Definition, Crate);
+	{
+		FScriptedDialogs Dialogs;
+		if (!TestTrue(TEXT("the first Generate writes the crate"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path)))
+		{
+			return false;
+		}
+	}
+	const FString Generated = LoadLogic(Crate);
+	const int32 Impl = Generated.Find(TEXT("impl Functions for "), ESearchCase::CaseSensitive);
+	const int32 Open = Impl == INDEX_NONE ? INDEX_NONE : Generated.Find(TEXT("{"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Impl);
+	if (!TestTrue(TEXT("the generated logic.rs has its impl block"), Open != INDEX_NONE))
+	{
+		return false;
+	}
+	const FString WithMacro = Generated.Left(Open + 1) + TEXT("\n    my_macro!(store);") + Generated.Mid(Open + 1);
+	FFileHelper::SaveStringToFile(WithMacro, *LogicFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	AddFunction(*Definition, TEXT("Clear"));
+
+	FString Clipboard;
+	FPlatformApplicationMisc::ClipboardPaste(Clipboard);
+	{
+		FScriptedDialogs Dialogs;
+		TestTrue(TEXT("a logic file using a macro does not stop Generate"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path));
+		const bool bShown = Dialogs.Messages.Num() == 1 && Dialogs.Types[0] == EAppMsgType::Ok;
+		TestTrue(FString::Printf(TEXT("it shows one message instead of asking (%s)"), *FString::Join(Dialogs.Messages, TEXT(" | "))), bShown);
+		TestTrue(TEXT("naming the macro"), bShown && Dialogs.Messages[0].Contains(TEXT("logic.rs also uses my_macro!"), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("and handing over the functions"), bShown && Dialogs.Messages[0].Contains(TEXT("fn clear("), ESearchCase::CaseSensitive));
+	}
+	FString Copied;
+	FPlatformApplicationMisc::ClipboardPaste(Copied);
+	FPlatformApplicationMisc::ClipboardCopy(*Clipboard);
+	TestTrue(TEXT("the functions are on the clipboard"), Copied.Contains(TEXT("fn clear("), ESearchCase::CaseSensitive));
+	TestEqualSensitive(TEXT("the logic file is left as it was"), LoadLogic(Crate), WithMacro);
+	TestTrue(TEXT("and nothing is recorded as added"), CrowdyServerCodeEdits::InsertedStubs(LogicFile).IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuLibOverwriteTest, "CrowdySDK.CrowdyExecEditor.CodegenMenuAsksBeforeRemovingLibLines", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecCodegenMenuLibOverwriteTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeTipJar();
+	const FString Crate = CrateOf(Server, TEXT("tip_jar"));
+	const FString LibFile = FPaths::Combine(Crate, TEXT("src/lib.rs"));
+	FString Generated;
+	{
+		FScriptedDialogs Dialogs;
+		if (!TestTrue(TEXT("the first Generate writes the crate"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path)) || !FFileHelper::LoadFileToString(Generated, *LibFile))
+		{
+			return false;
+		}
+		TestEqual(TEXT("without a question"), Dialogs.Messages.Num(), 0);
+	}
+	{
+		FScriptedDialogs Dialogs;
+		TestTrue(TEXT("generating again over the file it wrote"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path));
+		TestEqual(TEXT("asks nothing"), Dialogs.Messages.Num(), 0);
+	}
+	const int32 FirstBreak = Generated.Find(TEXT("\n"), ESearchCase::CaseSensitive);
+	const FString WithModule = Generated.Left(FirstBreak + 1) + TEXT("mod foo;\n") + Generated.Mid(FirstBreak + 1);
+	FFileHelper::SaveStringToFile(WithModule, *LibFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	{
+		FScriptedDialogs Dialogs;
+		Dialogs.Answers = {EAppReturnType::No};
+		TestFalse(TEXT("No stops Generate"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path));
+		const bool bAsked = Dialogs.Messages.Num() == 1 && Dialogs.Types[0] == EAppMsgType::YesNo && Dialogs.Categories[0] == EAppMsgCategory::Warning && Dialogs.Defaults[0] == EAppReturnType::No;
+		TestTrue(FString::Printf(TEXT("after one warning question whose default is No (%s)"), *FString::Join(Dialogs.Messages, TEXT(" | "))), bAsked);
+		TestTrue(TEXT("which names the line and the file"), bAsked && Dialogs.Messages[0].Contains(TEXT("would remove: mod foo;."), ESearchCase::CaseSensitive) && Dialogs.Messages[0].StartsWith(LibFile, ESearchCase::CaseSensitive));
+		FString Kept;
+		FFileHelper::LoadFileToString(Kept, *LibFile);
+		TestEqualSensitive(TEXT("lib.rs keeps the line"), Kept, WithModule);
+	}
+	{
+		FScriptedDialogs Dialogs;
+		Dialogs.Answers = {EAppReturnType::Yes};
+		TestTrue(TEXT("Yes generates"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path));
+		TestEqual(TEXT("after the one question"), Dialogs.Messages.Num(), 1);
+		FString Rewritten;
+		FFileHelper::LoadFileToString(Rewritten, *LibFile);
+		TestEqualSensitive(TEXT("lib.rs is the generated one again"), Rewritten, Generated);
+	}
+	{
+		// An import Generate once wrote (another state kind) is not the author's module.
+		FFileHelper::SaveStringToFile(Generated + TEXT("pub use records::{Records, ServerObject};\n"), *LibFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+		FScriptedDialogs Dialogs;
+		TestTrue(TEXT("an import line alone"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path));
+		TestEqual(TEXT("asks nothing"), Dialogs.Messages.Num(), 0);
+	}
+	{
+		FFileHelper::SaveStringToFile(Generated + TEXT("#[path = \"util.rs\"] pub(crate) mod helper; // mine\n"), *LibFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+		FScriptedDialogs Dialogs;
+		Dialogs.Answers = {EAppReturnType::No};
+		TestFalse(TEXT("a module with a path and a visibility"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path));
+		TestTrue(FString::Printf(TEXT("is named (%s)"), *FString::Join(Dialogs.Messages, TEXT(" | "))),
+			Dialogs.Messages.Num() == 1 && Dialogs.Messages[0].Contains(TEXT("pub(crate) mod helper;"), ESearchCase::CaseSensitive));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuRootTest, "CrowdySDK.CrowdyExecEditor.CodegenMenuRefusesTheSdkRoot", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecCodegenMenuRootTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	UCrowdyServerObjectDefinition* SdkRoot = UCrowdyServerObjectLibrary::GetPlayersOnlineDefinition();
+	if (!TestNotNull(TEXT("the SDK's root definition loads"), SdkRoot))
+	{
+		return false;
+	}
+	{
+		FScriptedDialogs Dialogs;
+		TestFalse(TEXT("Generate refuses the SDK's own root"), CrowdyExecCodegenMenu::GenerateServerCode(*SdkRoot, Server.Path));
+		if (TestEqual(TEXT("with one message"), Dialogs.Messages.Num(), 1))
+		{
+			TestTrue(TEXT("as an error"), Dialogs.Categories[0] == EAppMsgCategory::Error);
+			TestEqualSensitive(TEXT("saying why"), Dialogs.Messages[0], FString(TEXT("This is the Crowdy SDK's own root; its server code is built into every deploy, so there is nothing to generate.")));
+		}
+	}
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Named = MakeTipJar();
+	Named->TypeName = UCrowdyServerObjectDefinition::RootTypeName;
+	{
+		FScriptedDialogs Dialogs;
+		TestFalse(TEXT("and a type of the project named root"), CrowdyExecCodegenMenu::GenerateServerCode(*Named, Server.Path));
+		TestTrue(FString::Printf(TEXT("is told to pick another name (%s)"), *FString::Join(Dialogs.Messages, TEXT(" | "))),
+			Dialogs.Messages.Num() == 1 && Dialogs.Messages[0].Contains(TEXT("choose another Type Name"), ESearchCase::CaseSensitive));
+	}
+	TestFalse(TEXT("and no folder is written"), IFileManager::Get().DirectoryExists(*CrateOf(Server, TEXT("root"))));
 	return true;
 }
 

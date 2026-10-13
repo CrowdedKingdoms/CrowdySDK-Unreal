@@ -66,7 +66,7 @@ namespace CrowdyExecRevisions
 		int32 LiveVersion = 0;
 		/** The index in the type's history of the revision the live version runs, INDEX_NONE when not there. */
 		int32 LiveRevision = INDEX_NONE;
-		/** For Changed, what differs, in plain words: "server code", "save interval", "idle timeout", "platform data", "player access", "server limits"; the root's only change is "players online". */
+		/** For Changed, what differs, in plain words: "server code", "save interval", "idle timeout", "platform data", "player access", "server limits"; the root's are "players online" and "server code". */
 		TArray<FString> What;
 	};
 
@@ -98,7 +98,7 @@ namespace CrowdyExecRevisions
 	/** The types a manifest runs, the root included. False when it is not a manifest. */
 	bool ParseManifest(const FString& ManifestJson, TArray<FLiveType>& OutTypes);
 
-	/** Each project type against the live version (Live null: nothing live; bLiveKnown false: not compared), then each live type the project no longer has. */
+	/** Each project type against the live version (Live null: nothing live; bLiveKnown false: not compared), then the SDK's root (listed only when a deploy would change it), then each live type the project no longer has. */
 	TArray<FTypeChange> Compare(const CrowdyExecDeploy::FProjectDeploy& Project, TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions,
 		const CrowdyExecDeveloper::FVersion* Live, bool bLiveKnown, TFunctionRef<TArray<FRevision>(const FString& TypeName)> HistoryFor);
 

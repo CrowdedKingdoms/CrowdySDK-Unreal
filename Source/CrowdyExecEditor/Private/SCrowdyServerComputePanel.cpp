@@ -256,15 +256,11 @@ namespace CrowdyComputeUI
 	}
 
 	/** What removing a type from the project does on the server, for the remove confirm. */
-	FText RemoveServerEffect(const FText& Type, const FText& Target, const CrowdyExecRevisions::FTypeChange* Change, bool bLastType)
+	FText RemoveServerEffect(const FText& Type, const FText& Target, const CrowdyExecRevisions::FTypeChange* Change)
 	{
 		if (Change && Change->Change == EChange::New)
 		{
 			return FText::Format(LOCTEXT("RemoveNotLive", "{0} is not live on the server ({1}), so nothing changes there."), Type, Target);
-		}
-		if (bLastType)
-		{
-			return FText::Format(LOCTEXT("RemoveLastType", "{0} keeps running on the server ({1}) until the project has a type to deploy again, since a deploy needs at least one type. To stop players' calls to it meanwhile, use Switch off on this page."), Type, Target);
 		}
 		return FText::Format(LOCTEXT("RemoveUntilDeploy", "{0} keeps running on the server ({1}) until your next deploy, which removes it."), Type, Target);
 	}
@@ -577,7 +573,7 @@ void SCrowdyServerComputePanel::UpdateDeployState()
 	const FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
 	const CrowdyExecDeploy::FProjectDeploy& Project = Compute.GetProject();
 	// Every type is ready and compared with a known live version, and none differs from it.
-	bNothingToDeploy = Compute.AreVersionsLoaded() && Compute.GetVersionsError().IsEmpty() && !Project.Types.IsEmpty() && Project.Problems.IsEmpty()
+	bNothingToDeploy = Compute.AreVersionsLoaded() && Compute.GetVersionsError().IsEmpty() && Project.Problems.IsEmpty()
 		&& !CrowdyExecRevisions::HasChanges(Compute.GetChanges());
 }
 
@@ -1141,7 +1137,7 @@ void SCrowdyServerComputePanel::FillTypes()
 	{
 		TypesList->AddSlot().AutoHeight()
 		[
-			CrowdyStudioWidgets::EmptyState(TEXT("cube"), LOCTEXT("NoTypes", "No Server Object types yet.\nCreate a Server Object Definition asset to add one."))
+			CrowdyStudioWidgets::EmptyState(TEXT("cube"), LOCTEXT("NoTypes", "No Server Object types yet.\nCreate a Server Object Definition asset to add one. Until then, deploying sends only the Crowdy SDK's root (Players Online)."))
 		];
 	}
 }
@@ -1206,10 +1202,7 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeRow(const CrowdyExecDeplo
 TSharedRef<SWidget> SCrowdyServerComputePanel::MakeRemovedRow(const FString& TypeName)
 {
 	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
-	// A deploy needs at least one type, so with none left nothing can take it off.
-	const FText Line = FCrowdyServerComputeService::Get().GetProject().Types.IsEmpty()
-		? LOCTEXT("RemovedLineNoTypes", "On the server, not in this project. It keeps running until the project has a type to deploy again, since a deploy needs at least one type. Switch it off here to stop players' calls to it.")
-		: LOCTEXT("RemovedLine", "On the server, not in this project. Your next deploy removes it.");
+	const FText Line = LOCTEXT("RemovedLine", "On the server, not in this project. Your next deploy removes it.");
 	return SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight()
 		[
@@ -1981,7 +1974,7 @@ FReply SCrowdyServerComputePanel::OnRemoveTypeClicked(FString TypeName, FString 
 	{
 		Lines.Add(FText::Format(LOCTEXT("ConfirmRemoveUnsaved", "Its unsaved code edits are lost:\n{0}"), FText::FromString(FString::Join(LostEdits, TEXT("\n")))));
 	}
-	Lines.Add(CrowdyComputeUI::RemoveServerEffect(Type, Compute.GetAppTarget(), Compute.FindChange(TypeName), Compute.GetProject().Types.Num() <= 1));
+	Lines.Add(CrowdyComputeUI::RemoveServerEffect(Type, Compute.GetAppTarget(), Compute.FindChange(TypeName)));
 	if (!CrowdyComputeUI::Confirm(FText::Join(FText::FromString(TEXT("\n\n")), Lines), FText::Format(LOCTEXT("ConfirmRemoveTitle", "Remove {0}"), Type)))
 	{
 		return FReply::Handled();

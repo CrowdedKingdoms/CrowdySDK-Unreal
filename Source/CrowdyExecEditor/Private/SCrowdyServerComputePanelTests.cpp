@@ -2,6 +2,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "CrowdyServerComputeService.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
@@ -155,6 +156,50 @@ bool FCrowdyServerComputeRemoveFolderTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a folder holding a link stays, since deleting it could delete what the link points to"), WhyCrateFolderStays(TEXT("sbx_linked"), Linked, Temp.Server, false).IsEmpty());
 	IFileManager::Get().DeleteDirectory(*Junction, false, false);
 #endif
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerComputeMoveOfferTest, "CrowdySDK.CrowdyExecEditor.ServerComputeMoveOfferNamesInstancesPlacedBeforeTheDeploy", CrowdyServerComputePageTest::TestFlags)
+bool FCrowdyServerComputeMoveOfferTest::RunTest(const FString& Parameters)
+{
+	using CrowdyExecDeveloper::FInstance;
+	const auto Make = [](const TCHAR* NodeType, const TCHAR* Key, int64 Epoch, const TCHAR* Phase)
+	{
+		FInstance Instance;
+		Instance.NodeType = NodeType;
+		Instance.Key = Key;
+		Instance.Epoch = Epoch;
+		Instance.Phase = Phase;
+		return Instance;
+	};
+	const TArray<FInstance> Before = {Make(TEXT("sbx_a"), TEXT("k1"), 3, TEXT("running")), Make(TEXT("sbx_a"), TEXT("k2"), 5, TEXT("running")),
+		Make(TEXT("sbx_b"), TEXT("k1"), 2, TEXT("running")), Make(TEXT("sbx_c"), TEXT("k1"), 1, TEXT("running"))};
+	const TArray<FString> Changed = {TEXT("sbx_a"), TEXT("sbx_c")};
+
+	int32 Running = -1;
+	TArray<FString> Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_a"), TEXT("k1"), 3, TEXT("running"))}, Changed, Running);
+	TestEqualSensitive(TEXT("an instance with the same epoch as before the deploy runs the previous version"), FString::Join(Types, TEXT(",")), FString(TEXT("sbx_a")));
+	TestEqual(TEXT("and is counted"), Running, 1);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_a"), TEXT("k1"), 4, TEXT("running"))}, Changed, Running);
+	TestTrue(TEXT("an instance placed again has a higher epoch and runs the new version"), Types.IsEmpty() && Running == 0);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_a"), TEXT("k9"), 1, TEXT("running"))}, Changed, Running);
+	TestTrue(TEXT("an instance that was not there before the deploy is not offered"), Types.IsEmpty() && Running == 0);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_b"), TEXT("k1"), 2, TEXT("running"))}, Changed, Running);
+	TestTrue(TEXT("a type the deploy did not change is not offered"), Types.IsEmpty() && Running == 0);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_a"), TEXT("k1"), 3, TEXT("stopping"))}, Changed, Running);
+	TestTrue(TEXT("an instance that is not running is not offered"), Types.IsEmpty() && Running == 0);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_a"), TEXT("k1"), 3, TEXT("running")), Make(TEXT("sbx_a"), TEXT("k2"), 5, TEXT("running")),
+		Make(TEXT("sbx_c"), TEXT("k1"), 1, TEXT("running")), Make(TEXT("sbx_a"), TEXT("k3"), 6, TEXT("running"))}, Changed, Running);
+	TestEqualSensitive(TEXT("each type is named once, in the order its instances are listed"), FString::Join(Types, TEXT(",")), FString(TEXT("sbx_a,sbx_c")));
+	TestEqual(TEXT("and every instance still on the previous version is counted"), Running, 3);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion({}, Before, Changed, Running);
+	TestTrue(TEXT("with nothing known from before, nothing is offered"), Types.IsEmpty() && Running == 0);
 	return true;
 }
 

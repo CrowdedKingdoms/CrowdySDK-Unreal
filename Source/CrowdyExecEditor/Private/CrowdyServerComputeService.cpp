@@ -11,6 +11,7 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Style/CrowdyStudioStyle.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
@@ -91,6 +92,32 @@ namespace CrowdyServerComputeServiceDetail
 	{
 		return Color.Equals(FCrowdyStudioStyle::Success());
 	}
+}
+
+TArray<FString> CrowdyServerComputeMove::TypesOnPreviousVersion(TConstArrayView<CrowdyExecDeveloper::FInstance> Before, TConstArrayView<CrowdyExecDeveloper::FInstance> After,
+	TConstArrayView<FString> ChangedTypes, int32& OutRunning)
+{
+	const auto PlacementOf = [](const CrowdyExecDeveloper::FInstance& Instance)
+	{
+		return FString::Printf(TEXT("%s\n%s\n%lld"), *Instance.NodeType, *Instance.Key, Instance.Epoch);
+	};
+	TSet<FString> Placed;
+	for (const CrowdyExecDeveloper::FInstance& Instance : Before)
+	{
+		Placed.Add(PlacementOf(Instance));
+	}
+	OutRunning = 0;
+	TArray<FString> Types;
+	for (const CrowdyExecDeveloper::FInstance& Instance : After)
+	{
+		if (Instance.Phase != TEXT("running") || !ChangedTypes.Contains(Instance.NodeType) || !Placed.Contains(PlacementOf(Instance)))
+		{
+			continue;
+		}
+		Types.AddUnique(Instance.NodeType);
+		++OutRunning;
+	}
+	return Types;
 }
 
 FCrowdyServerComputeService& FCrowdyServerComputeService::Get()
@@ -314,7 +341,7 @@ bool FCrowdyServerComputeService::RestartTypes(TArray<FString> TypeNames)
 	return true;
 }
 
-void FCrowdyServerComputeService::OfferToMove(TArray<FString> ChangedTypes)
+void FCrowdyServerComputeService::OfferToMove(TArray<FString> ChangedTypes, TSharedRef<FDeploySnapshot> Before)
 {
 	if (!Client || ChangedTypes.IsEmpty())
 	{
@@ -322,25 +349,27 @@ void FCrowdyServerComputeService::OfferToMove(TArray<FString> ChangedTypes)
 	}
 	TWeakPtr<FCrowdyServerComputeService> WeakThis = AsShared();
 	const int32 Request = ++MoveRequest;
-	const double DeployedAt = FPlatformTime::Seconds();
-	Client->Instances([WeakThis, Request, DeployedAt, ChangedTypes = MoveTemp(ChangedTypes)](const CrowdyExecDeveloper::TResult<TArray<CrowdyExecDeveloper::FInstance>>& Result)
+	if (!Before->bAnswered)
+	{
+		Before->OnAnswered = [WeakThis, Request, ChangedTypes = MoveTemp(ChangedTypes), Before]()
+		{
+			const TSharedPtr<FCrowdyServerComputeService> Self = WeakThis.Pin();
+			if (Self && Request == Self->MoveRequest)
+			{
+				Self->OfferToMove(ChangedTypes, Before);
+			}
+		};
+		return;
+	}
+	Client->Instances([WeakThis, Request, ChangedTypes = MoveTemp(ChangedTypes), Before](const CrowdyExecDeveloper::TResult<TArray<CrowdyExecDeveloper::FInstance>>& Result)
 	{
 		const TSharedPtr<FCrowdyServerComputeService> Self = WeakThis.Pin();
 		if (!Self || Request != Self->MoveRequest || !Result.bOk)
 		{
 			return;
 		}
-		// Running since before the deploy answered means placed on the previous version; anything starting since runs the new one.
-		const double SinceDeployMs = (FPlatformTime::Seconds() - DeployedAt) * 1000.0;
-		for (const CrowdyExecDeveloper::FInstance& Instance : Result.Value)
-		{
-			const bool bPrevious = Instance.Phase == TEXT("running") && Instance.SinceMs >= SinceDeployMs && ChangedTypes.Contains(Instance.NodeType);
-			if (bPrevious)
-			{
-				Self->TypesToMove.AddUnique(Instance.NodeType);
-				++Self->RunningToMove;
-			}
-		}
+		// Unknown instances from before the deploy: every running one of a changed type is offered rather than none.
+		Self->TypesToMove = CrowdyServerComputeMove::TypesOnPreviousVersion(Before->bKnown ? Before->Instances : Result.Value, Result.Value, ChangedTypes, Self->RunningToMove);
 		++Self->DataGeneration;
 		Self->ChangedEvent.Broadcast();
 	});
@@ -348,6 +377,8 @@ void FCrowdyServerComputeService::OfferToMove(TArray<FString> ChangedTypes)
 
 void FCrowdyServerComputeService::RefreshTypes()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FCrowdyServerComputeService::RefreshTypes);
+	const double StartSeconds = FPlatformTime::Seconds();
 	const TArray<const UCrowdyServerObjectDefinition*> Found = CrowdyServerComputeServiceDetail::ProjectDefinitions();
 	Definitions.Reset();
 	CrateDirectories.Reset();
@@ -356,10 +387,14 @@ void FCrowdyServerComputeService::RefreshTypes()
 		Definitions.Add(Definition);
 		CrateDirectories.Add(Definition->TypeName, CrowdyExecCodegen::GetCrateDirectory(*Definition));
 	}
+	// The SDK's root has no definition in the project; its history sits beside the project's crates.
+	CrateDirectories.Add(CrowdyExecDeploy::RootTypeName, FPaths::Combine(CrowdyExecCodegen::GetServerDirectory(), CrowdyExecDeploy::RootTypeName));
+	const double FoundSeconds = FPlatformTime::Seconds();
 	Project = CrowdyExecDeploy::AssembleProject(Found, [](const UCrowdyServerObjectDefinition& Definition)
 	{
 		return CrowdyExecCodegen::GetCrateDirectory(Definition);
 	});
+	const double AssembledSeconds = FPlatformTime::Seconds();
 	TMap<FString, FHistory> Kept = MoveTemp(Histories);
 	Histories.Reset();
 	for (const TPair<FString, FString>& Crate : CrateDirectories)
@@ -379,6 +414,8 @@ void FCrowdyServerComputeService::RefreshTypes()
 		UE_CLOG(!bLoaded, LogCrowdyExec, Warning, TEXT("Server Compute: %s: %s"), *Crate.Key, *Error);
 	}
 	TypesReadSeconds = FPlatformTime::Seconds();
+	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: Server Compute read %d types in %.1f ms (find %.1f ms, assemble %.1f ms, histories %.1f ms)"), Found.Num(),
+		(TypesReadSeconds - StartSeconds) * 1000.0, (FoundSeconds - StartSeconds) * 1000.0, (AssembledSeconds - FoundSeconds) * 1000.0, (TypesReadSeconds - AssembledSeconds) * 1000.0);
 	Recompare();
 	ChangedEvent.Broadcast();
 }
@@ -568,9 +605,16 @@ bool FCrowdyServerComputeService::Deploy()
 		return false;
 	}
 	TArray<FText> Lines;
-	Lines.Add(FText::Format(LOCTEXT("ConfirmDeploy", "Deploying replaces the active server code of {1} with this project's {0} Server Object {0}|plural(one=type,other=types)."),
-		Project.Types.Num(), GetAppTarget()));
-	AddSentence(Lines, Changes, EChange::Removed, LOCTEXT("ConfirmRemoves", "It removes {0}, which this project does not have; their Server Objects stop."));
+	if (Project.Types.IsEmpty())
+	{
+		Lines.Add(FText::Format(LOCTEXT("ConfirmDeployRootOnly", "Deploying replaces the active server code of {0}. This project has no Server Object types, so only the Crowdy SDK's root (Players Online) is deployed."), GetAppTarget()));
+	}
+	else
+	{
+		Lines.Add(FText::Format(LOCTEXT("ConfirmDeploy", "Deploying replaces the active server code of {1} with this project's {0} Server Object {0}|plural(one=type,other=types)."),
+			Project.Types.Num(), GetAppTarget()));
+	}
+	AddSentence(Lines, Changes, EChange::Removed, LOCTEXT("ConfirmRemoves", "It removes {0}, which this project does not have; their Server Objects stop. Their saved state is kept and is used again if you deploy them again."));
 	AddSentence(Lines, Changes, EChange::New, LOCTEXT("ConfirmAdds", "It adds {0}."));
 	AddSentence(Lines, Changes, EChange::Changed, LOCTEXT("ConfirmChanges", "It changes {0}."));
 	AddSentence(Lines, Changes, EChange::Unknown, LOCTEXT("ConfirmReplacesUnknown", "It replaces live code this project has no record of in {0}."));
@@ -629,7 +673,7 @@ bool FCrowdyServerComputeService::DeployStarters()
 		const FString Names = FString::JoinBy(Running, TEXT(", "), [](const CrowdyExecRevisions::FLiveType& Type) { return Type.TypeName; });
 		if (!Names.IsEmpty())
 		{
-			Lines.Add(FText::Format(LOCTEXT("ConfirmStartersRunning", "It removes {0}, which the active version runs, unless the starter pack has a type of the same name; that type then takes over its saved Server Objects."), FText::FromString(Names)));
+			Lines.Add(FText::Format(LOCTEXT("ConfirmStartersRunning", "It removes {0}, which the active version runs, unless the starter pack has a type of the same name; that type then takes over its saved Server Objects. Their saved state is kept and is used again if you deploy them again."), FText::FromString(Names)));
 		}
 	}
 	else if (Live || !bLiveKnown)
@@ -732,44 +776,62 @@ void FCrowdyServerComputeService::OnBuildFinished(const CrowdyExecDeveloper::TRe
 	SetDeployMessage(LOCTEXT("Deploying", "Deploying..."), FCrowdyStudioStyle::TextSecondary());
 	const TArray<CrowdyExecDeveloper::FBuildArtifact> Artifacts = Result.Value.Artifacts;
 	TWeakPtr<FCrowdyServerComputeService> WeakThis = AsShared();
-	Client->Deploy(ManifestJson, Result.Value.BuildId, [WeakThis, Artifacts, bRecord](const CrowdyExecDeveloper::TResult<int32>& Deployed)
+	// Asked just before the deploy and not waited for: an instance placed after it has a higher epoch.
+	const TSharedRef<FDeploySnapshot> Before = MakeShared<FDeploySnapshot>();
+	Client->Instances([Before](const CrowdyExecDeveloper::TResult<TArray<CrowdyExecDeveloper::FInstance>>& Answer)
 	{
-		const TSharedPtr<FCrowdyServerComputeService> Self = WeakThis.Pin();
-		if (!Self)
+		Before->bAnswered = true;
+		Before->bKnown = Answer.bOk;
+		Before->Instances = Answer.bOk ? Answer.Value : TArray<CrowdyExecDeveloper::FInstance>();
+		const TFunction<void()> Then = MoveTemp(Before->OnAnswered);
+		if (Then)
 		{
-			return;
+			Then();
 		}
-		if (!Deployed.bOk)
-		{
-			Self->FinishDeploy(ErrorText(LOCTEXT("DeployFailed", "Built, but the deploy failed"), Deployed.Error), FCrowdyStudioStyle::Danger());
-			return;
-		}
-		TArray<FString> RecordErrors;
-		if (bRecord)
-		{
-			CrowdyExecRevisions::RecordDeploy(Self->Sending, Artifacts, Deployed.Value, FDateTime::UtcNow(), GetDefault<UCrowdyServerComputeSettings>()->GetRevisionsToKeep(),
-				[&Self](const FString& TypeName) { return Self->SendingDirectories.FindRef(TypeName); }, RecordErrors);
-		}
-		Self->Sending = CrowdyExecDeploy::FProjectDeploy();
-		Self->SendingDirectories.Reset();
-		const FText DeployedLine = FText::Format(LOCTEXT("Deployed", "Deployed as version {0}."), VersionNumber(Deployed.Value));
-		if (RecordErrors.IsEmpty())
-		{
-			Self->FinishDeploy(DeployedLine, FCrowdyStudioStyle::Success());
-		}
-		else
-		{
-			Self->FinishDeploy(FText::Format(LOCTEXT("DeployedNotRecorded", "{0} Its record could not be saved, so its changes cannot be compared: {1}"),
-				DeployedLine, FText::FromString(FString::Join(RecordErrors, TEXT("; ")))), FCrowdyStudioStyle::Warning());
-		}
-		TArray<FString> ChangedTypes = bRecord ? MoveTemp(Self->SendingChanged) : TArray<FString>();
-		Self->SendingChanged.Reset();
-		Self->RefreshTypes();
-		Self->RefreshStatus();
-		Self->RefreshVersions();
-		Self->RefreshInstances();
-		Self->OfferToMove(MoveTemp(ChangedTypes));
 	});
+	Client->Deploy(ManifestJson, Result.Value.BuildId, [WeakThis, Artifacts, bRecord, Before](const CrowdyExecDeveloper::TResult<int32>& Deployed)
+	{
+		if (const TSharedPtr<FCrowdyServerComputeService> Service = WeakThis.Pin())
+		{
+			Service->OnDeployed(Deployed, Artifacts, bRecord, Before);
+		}
+	});
+}
+
+void FCrowdyServerComputeService::OnDeployed(const CrowdyExecDeveloper::TResult<int32>& Deployed, const TArray<CrowdyExecDeveloper::FBuildArtifact>& Artifacts, bool bRecord,
+	TSharedRef<FDeploySnapshot> Before)
+{
+	using namespace CrowdyServerComputeServiceDetail;
+	if (!Deployed.bOk)
+	{
+		FinishDeploy(ErrorText(LOCTEXT("DeployFailed", "Built, but the deploy failed"), Deployed.Error), FCrowdyStudioStyle::Danger());
+		return;
+	}
+	TArray<FString> RecordErrors;
+	if (bRecord)
+	{
+		CrowdyExecRevisions::RecordDeploy(Sending, Artifacts, Deployed.Value, FDateTime::UtcNow(), GetDefault<UCrowdyServerComputeSettings>()->GetRevisionsToKeep(),
+			[this](const FString& TypeName) { return SendingDirectories.FindRef(TypeName); }, RecordErrors);
+	}
+	Sending = CrowdyExecDeploy::FProjectDeploy();
+	SendingDirectories.Reset();
+	const FText DeployedLine = FText::Format(LOCTEXT("Deployed", "Deployed as version {0}."), VersionNumber(Deployed.Value));
+	if (RecordErrors.IsEmpty())
+	{
+		FinishDeploy(DeployedLine, FCrowdyStudioStyle::Success());
+	}
+	else
+	{
+		FinishDeploy(FText::Format(LOCTEXT("DeployedNotRecorded", "{0} Its record could not be saved, so its changes cannot be compared: {1}"),
+			DeployedLine, FText::FromString(FString::Join(RecordErrors, TEXT("; ")))), FCrowdyStudioStyle::Warning());
+	}
+	TArray<FString> ChangedTypes = bRecord ? MoveTemp(SendingChanged) : TArray<FString>();
+	SendingChanged.Reset();
+	RefreshTypes();
+	RefreshStatus();
+	RefreshVersions();
+	RefreshInstances();
+	OfferToMove(MoveTemp(ChangedTypes), Before);
 }
 
 void FCrowdyServerComputeService::SetDeployMessage(const FText& Message, const FLinearColor& Color, bool bCountSeconds)
@@ -826,10 +888,6 @@ FLinearColor FCrowdyServerComputeService::GetDeployLineColor() const
 
 FText FCrowdyServerComputeService::GetReadinessHint() const
 {
-	if (Project.Types.IsEmpty())
-	{
-		return LOCTEXT("HintNoTypes", "Create a Server Object Definition asset to deploy.");
-	}
 	int32 NeedsCode = 0;
 	int32 Broken = 0;
 	for (const CrowdyExecDeploy::FTypeState& Type : Project.Types)
@@ -852,14 +910,16 @@ FText FCrowdyServerComputeService::GetChangeSummary() const
 {
 	using namespace CrowdyServerComputeServiceDetail;
 	const int32 Sent = Project.Types.Num();
+	const FText Sends = Sent == 0 ? LOCTEXT("SendsRootOnly", "This project has no Server Object types, so deploying sends only the Crowdy SDK's root (Players Online).")
+		: FText::Format(LOCTEXT("SendsTypes", "Deploying sends the project's {0} {0}|plural(one=type,other=types)."), Sent);
 	if (!bVersionsLoaded || !VersionsError.IsEmpty())
 	{
-		return FText::Format(LOCTEXT("ReadyToDeploy", "Ready to deploy {0} Server Object {0}|plural(one=type,other=types)."), Sent);
+		return Sent == 0 ? Sends : FText::Format(LOCTEXT("ReadyToDeploy", "Ready to deploy {0} Server Object {0}|plural(one=type,other=types)."), Sent);
 	}
 	const CrowdyExecDeveloper::FVersion* Live = GetLiveVersion();
 	if (!Live)
 	{
-		return FText::Format(LOCTEXT("NothingLive", "Nothing is deployed yet. Deploying sends the project's {0} {0}|plural(one=type,other=types)."), Sent);
+		return FText::Format(LOCTEXT("NothingLive", "Nothing is deployed yet. {0}"), Sends);
 	}
 	if (!CrowdyExecRevisions::HasChanges(Changes))
 	{
@@ -886,8 +946,8 @@ FText FCrowdyServerComputeService::GetChangeSummary() const
 	{
 		Parts.Add(FText::Format(LOCTEXT("PartRemoved", "{0} removed"), RemovedCount));
 	}
-	return FText::Format(LOCTEXT("ChangeSummary", "Since version {0}: {1}. Deploying sends the project's {2} {2}|plural(one=type,other=types)."),
-		VersionNumber(Live->Version), FText::Join(FText::FromString(TEXT(", ")), Parts), Sent);
+	return FText::Format(LOCTEXT("ChangeSummary", "Since version {0}: {1}. {2}"),
+		VersionNumber(Live->Version), FText::Join(FText::FromString(TEXT(", ")), Parts), Sends);
 }
 
 #undef LOCTEXT_NAMESPACE

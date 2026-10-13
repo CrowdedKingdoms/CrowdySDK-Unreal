@@ -447,7 +447,8 @@ bool FCrowdyExecRevisionsCompareTest::RunTest(const FString& Parameters)
 	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("t_same"), EChange::New);
 	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("t_unknown"), EChange::New);
 	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("t_notready"), EChange::NotCompared);
-	TestEqual(TEXT("with nothing live, nothing is removed"), NothingLive.Num(), 8);
+	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("root"), EChange::New);
+	TestEqual(TEXT("with nothing live, nothing is removed, and the root is sent"), NothingLive.Num(), 9);
 
 	const TArray<FTypeChange> NotRead = CrowdyExecRevisions::Compare(Project, Definitions, &Live, false, HistoryFor);
 	TestChange(*this, TEXT("versions not read"), NotRead, TEXT("t_code"), EChange::NotCompared);
@@ -534,6 +535,69 @@ bool FCrowdyExecRevisionsOldRootTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsEmptyProjectTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareAnEmptyProjectSendsTheRoot", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsEmptyProjectTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {CrowdyExecDeploy::MakeRootCrate()};
+	const auto HistoryFor = [](const FString&) { return TArray<FRevision>(); };
+
+	const TArray<FTypeChange> NothingLive = CrowdyExecRevisions::Compare(Project, {}, nullptr, true, HistoryFor);
+	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("root"), EChange::New);
+	TestTrue(TEXT("so an empty project can deploy its root"), CrowdyExecRevisions::HasChanges(NothingLive));
+
+	CrowdyExecDeveloper::FVersion Live;
+	Live.Version = 2;
+	Live.ManifestJson = TEXT("{\"root\":\"root\",\"types\":{\"t_old\":{\"kind\":\"hub\",\"digest\":\"d_old\",\"parent\":\"root\",\"client\":true}}}");
+	const TArray<FTypeChange> NoRoot = CrowdyExecRevisions::Compare(Project, {}, &Live, true, HistoryFor);
+	TestChange(*this, TEXT("a live version with types and no root"), NoRoot, TEXT("root"), EChange::New);
+	TestChange(*this, TEXT("a live version with types and no root"), NoRoot, TEXT("t_old"), EChange::Removed);
+	TestTrue(TEXT("a live version with no root can be replaced"), CrowdyExecRevisions::HasChanges(NoRoot));
+
+	Live.ManifestJson = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"d_root\",\"parent\":null,\"client\":true}}}");
+	const TArray<FTypeChange> OnlyRoot = CrowdyExecRevisions::Compare(Project, {}, &Live, true, HistoryFor);
+	TestEqual(TEXT("a live root and no types is nothing to deploy"), OnlyRoot.Num(), 0);
+	TestFalse(TEXT("and then nothing changed"), CrowdyExecRevisions::HasChanges(OnlyRoot));
+
+	Live.ManifestJson = TEXT("not json");
+	const TArray<FTypeChange> Unreadable = CrowdyExecRevisions::Compare(Project, {}, &Live, true, HistoryFor);
+	TestChange(*this, TEXT("a live manifest that cannot be read"), Unreadable, TEXT("root"), EChange::Unknown);
+	TestTrue(TEXT("so an empty project can still deploy over it"), CrowdyExecRevisions::HasChanges(Unreadable));
+	TestEqual(TEXT("and neither does a live version not read yet"), CrowdyExecRevisions::Compare(Project, {}, nullptr, false, HistoryFor).Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsRootCodeTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareTheRootsServerCode", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsRootCodeTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	const FBuildCrate Root = CrowdyExecDeploy::MakeRootCrate();
+	const FBuildCrate OlderRoot = MakeCrate(TEXT("root"), TEXT("fn older_root() {}\n"));
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {Root};
+	CrowdyExecDeveloper::FVersion Live;
+	Live.Version = 3;
+	Live.ManifestJson = MakeLiveManifest({});
+
+	// MakeLiveManifest's root has the digest root_digest and no client field, which reads as open to players.
+	auto CompareWith = [&](const FBuildCrate& Recorded, const TCHAR* Digest)
+	{
+		const TArray<FRevision> History = {MakeRevision(Recorded, Digest, 1)};
+		return CrowdyExecRevisions::Compare(Project, {}, &Live, true, [&History](const FString&) { return History; });
+	};
+	const TArray<FTypeChange> Older = CompareWith(OlderRoot, TEXT("root_digest"));
+	TestChange(*this, TEXT("the live root ran other code"), Older, TEXT("root"), EChange::Changed, TEXT("server code"));
+	TestTrue(TEXT("so this SDK's root can be deployed"), CrowdyExecRevisions::HasChanges(Older));
+	const TArray<FTypeChange> Current = CompareWith(Root, TEXT("root_digest"));
+	TestNull(TEXT("the live root runs this SDK's code"), FindChange(Current, TEXT("root")));
+	TestFalse(TEXT("and then nothing changed"), CrowdyExecRevisions::HasChanges(Current));
+	const TArray<FTypeChange> Unknown = CompareWith(OlderRoot, TEXT("d_elsewhere"));
+	TestNull(TEXT("a live root this checkout has no record of is not listed"), FindChange(Unknown, TEXT("root")));
+	TestFalse(TEXT("and is no change"), CrowdyExecRevisions::HasChanges(Unknown));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsLimitsTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareServerLimits", CrowdyExecRevisionsTest::TestFlags)
 bool FCrowdyExecRevisionsLimitsTest::RunTest(const FString& Parameters)
 {
@@ -562,6 +626,15 @@ bool FCrowdyExecRevisionsLimitsTest::RunTest(const FString& Parameters)
 	Definition->CallTimeLimitMs = 8000;
 	TestChange(*this, TEXT("the project gives calls longer"), CompareWith(TEXT("")), TEXT("t_arena"), EChange::Changed, TEXT("server limits"));
 	TestChange(*this, TEXT("live already gives them as long"), CompareWith(TEXT(",\"deadline_ms\":8000")), TEXT("t_arena"), EChange::Unchanged);
+
+	Definition->CallTimeLimitMs = 2000;
+	Definition->MemoryMegabytes = 512;
+	TestChange(*this, TEXT("live asks for more memory than the platform gives"), CompareWith(TEXT(",\"memory_mb\":4096")), TEXT("t_arena"), EChange::Unchanged);
+	Definition->MemoryMegabytes = 64;
+	TestChange(*this, TEXT("live gives the default as a string"), CompareWith(TEXT(",\"memory_mb\":\"64\"")), TEXT("t_arena"), EChange::Unchanged);
+	TestChange(*this, TEXT("live gives another value as a string"), CompareWith(TEXT(",\"memory_mb\":\"256\"")), TEXT("t_arena"), EChange::Changed, TEXT("server limits"));
+	Definition->CallTimeLimitMs = 10;
+	TestChange(*this, TEXT("live asks for a shorter call limit than the platform gives"), CompareWith(TEXT(",\"deadline_ms\":5")), TEXT("t_arena"), EChange::Unchanged);
 	return true;
 }
 
@@ -633,11 +706,15 @@ bool FCrowdyExecRevisionsRecordDeployTest::RunTest(const FString& Parameters)
 	TArray<FString> Errors;
 	CrowdyExecRevisions::RecordDeploy(Project, Artifacts, 7, When, 5, CrateDirectoryFor, Errors);
 	TestEqualSensitive(TEXT("recording succeeds"), FString::Join(Errors, TEXT("; ")), FString());
-	TestEqualSensitive(TEXT("only the project's types are recorded, never the root"), FString::Join(Asked, TEXT(",")), FString(TEXT("t_a,t_b")));
-	TestFalse(TEXT("the root gets no history"), FPaths::FileExists(CrowdyExecRevisions::GetHistoryPath(FPaths::Combine(Folder.Path, TEXT("root")))));
+	TestEqualSensitive(TEXT("the root is recorded like any type"), FString::Join(Asked, TEXT(",")), FString(TEXT("root,t_a,t_b")));
 
 	TArray<FRevision> History;
 	FString Error;
+	if (TestTrue(TEXT("the root's history loads"), CrowdyExecRevisions::LoadHistory(FPaths::Combine(Folder.Path, TEXT("root")), History, Error)) && TestEqual(TEXT("the root has one revision"), History.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("its digest is the root's build artifact"), FString::Join(History[0].Digests, TEXT(",")), FString(TEXT("d_root")));
+		TestEqualSensitive(TEXT("it keeps the root's files as sent"), History[0].Fingerprint, CrowdyExecRevisions::Fingerprint(Project.Crates[0].Files));
+	}
 	if (!TestTrue(TEXT("t_a's history loads"), CrowdyExecRevisions::LoadHistory(FPaths::Combine(Folder.Path, TEXT("t_a")), History, Error))
 		|| !TestEqual(TEXT("t_a has one revision"), History.Num(), 1))
 	{

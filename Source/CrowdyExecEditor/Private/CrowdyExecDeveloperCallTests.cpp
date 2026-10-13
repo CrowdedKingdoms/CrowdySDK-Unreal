@@ -83,6 +83,43 @@ bool FCrowdyExecDeveloperCallInputsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeveloperCallInt64Test, "CrowdySDK.CrowdyExecEditor.DeveloperCallReadsLargeInt64Exactly", CrowdyExecDeveloperCallTests::TestFlags)
+bool FCrowdyExecDeveloperCallInt64Test::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeveloperCallTests;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition();
+	Definition->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	const FCrowdyServerFunction* AddMember = Definition->FindFunction(TEXT("AddMember"));
+	if (!TestNotNull(TEXT("AddMember is found"), AddMember))
+	{
+		return false;
+	}
+	FInstancedStruct Inputs;
+	FString Error;
+	const bool bString = CrowdyExecDeveloperCall::InputsFromJson(*AddMember, TEXT("{\"Player\":\"9007199254740993\"}"), Inputs, Error);
+	TestTrue(TEXT("an id written as a string is read exactly"), bString && Inputs.Get<FCrowdyServerMemberInputs>().Player == 9007199254740993);
+	Error.Reset();
+	TestFalse(TEXT("an id written as a number above 2^53 is refused"), CrowdyExecDeveloperCall::InputsFromJson(*AddMember, TEXT("{\"Player\":9007199254740993}"), Inputs, Error));
+	TestTrue(TEXT("naming the input"), Error.Contains(TEXT("Player")));
+	TestTrue(TEXT("a small id written as a number is read"), CrowdyExecDeveloperCall::InputsFromJson(*AddMember, TEXT("{\"Player\":123}"), Inputs, Error) && Inputs.Get<FCrowdyServerMemberInputs>().Player == 123);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeveloperCallBuiltInTest, "CrowdySDK.CrowdyExecEditor.DeveloperCallFindsBuiltInMemberFunctions", CrowdyExecDeveloperCallTests::TestFlags)
+bool FCrowdyExecDeveloperCallBuiltInTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeveloperCallTests;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition();
+	TestNull(TEXT("a built-in is not found without members"), Definition->FindFunction(TEXT("AddMember")));
+	Definition->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	const FCrowdyServerFunction* AddMember = Definition->FindFunction(TEXT("AddMember"));
+	if (TestNotNull(TEXT("a built-in is found by name on a definition with its own members"), AddMember))
+	{
+		TestTrue(TEXT("and is called as a developer"), CrowdyExecDeveloperCall::IsForDevelopers(*AddMember));
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeveloperCallRoundTripTest, "CrowdySDK.CrowdyExecEditor.DeveloperCallSendsAndReadsTheReply", CrowdyExecDeveloperCallTests::TestFlags)
 bool FCrowdyExecDeveloperCallRoundTripTest::RunTest(const FString& Parameters)
 {

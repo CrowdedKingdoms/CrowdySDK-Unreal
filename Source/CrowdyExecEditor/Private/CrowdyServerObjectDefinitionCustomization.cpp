@@ -1,5 +1,6 @@
 #include "CrowdyServerObjectDefinitionCustomization.h"
 
+#include "CrowdyExecDeploy.h"
 #include "CrowdyExecDeveloperCall.h"
 #include "CrowdyExecInternal.h"
 #include "CrowdyServerCodeFiles.h"
@@ -209,6 +210,16 @@ namespace CrowdyServerObjectDefinitionCustomizationDetail
 		}
 		const ECrowdyServerFunctionCaller Caller = Current->Functions[Index].WhoCanCall;
 		return Caller == ECrowdyServerFunctionCaller::Members || Caller == ECrowdyServerFunctionCaller::Leader;
+	}
+
+	/** A Cooldown or Required Feature limits only players' calls, so it does nothing on a function only developers or server code may call. */
+	bool CallerLimitIsIgnored(const UCrowdyServerObjectDefinition* Current, int32 Index)
+	{
+		if (!Current || !Current->Functions.IsValidIndex(Index) || !CrowdyExecDeveloperCall::IsForDevelopers(Current->Functions[Index]))
+		{
+			return false;
+		}
+		return Current->Functions[Index].CooldownSeconds > 0.0f || !Current->Functions[Index].RequiredFeature.IsEmpty();
 	}
 
 	/** One bound of a List input's Value Range, a whole number or not as the input is; the input is found by its id, so a rename keeps the box working. */
@@ -602,6 +613,33 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeFunction(IDetailLayout
 	{
 		CrowdyServerObjectRows::ShowSeconds(Category.AddProperty(Cooldown), Cooldown.ToSharedRef());
 	}
+	Category.AddCustomRow(LOCTEXT("CallerLimitIgnoredSearch", "Cooldown Required Feature"))
+		.Visibility(TAttribute<EVisibility>::CreateLambda([Weak, Index]()
+		{
+			return CallerLimitIsIgnored(Weak.Get(), Index) ? EVisibility::Visible : EVisibility::Collapsed;
+		}))
+		.ValueContent()
+		.MinDesiredWidth(ValueMinWidth)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				WarningIcon()
+			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("CallerLimitIgnored", "Cooldown and Required Feature have no effect here: they limit only players' calls, and only developer tools or server code may call this function."))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				.AutoWrapText(true)
+			]
+		];
 	const TWeakObjectPtr<UCrowdyServerObjectDefinition> Editable = Definition;
 	Category.AddCustomRow(LOCTEXT("CallAsDeveloperSearch", "Call as Developer"))
 		.Visibility(TAttribute<EVisibility>::CreateLambda([Weak, Index]()
@@ -616,9 +654,10 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeFunction(IDetailLayout
 			.ToolTipText(LOCTEXT("CallAsDeveloperTip", "Calls this function on a live Server Object as you, the app's developer: the way to run a Server Only or Developers Only function by hand"))
 			.OnClicked_Lambda([Editable, Index]()
 			{
-				if (UCrowdyServerObjectDefinition* Live = Editable.Get())
+				UCrowdyServerObjectDefinition* Live = Editable.Get();
+				if (Live && Live->Functions.IsValidIndex(Index))
 				{
-					SCrowdyExecDeveloperCall::Open(*Live, Index);
+					SCrowdyExecDeveloperCall::Open(*Live, Live->Functions[Index].Name);
 				}
 				return FReply::Handled();
 			})
@@ -792,11 +831,49 @@ void FCrowdyServerObjectDefinitionCustomization::AddObjectCategories(IDetailLayo
 	// Max Members, Show Members to Players and Remove Members Who Leave hide themselves unless Members From is This Object.
 	AddCategory(AccessCategory, LOCTEXT("AccessCategory", "Access"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Visibility),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnlyOneInstance)});
-	AddCategory(PlatformDataCategory, LOCTEXT("PlatformDataCategory", "Platform Data"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsPlayers),
-		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bWritesPlayerState), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsWorld),
+	IDetailCategoryBuilder& PlatformData = AddCategory(PlatformDataCategory, LOCTEXT("PlatformDataCategory", "Platform Data"), {});
+	const TSharedRef<IPropertyHandle> ReadsPlayers = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsPlayers));
+	const TWeakObjectPtr<const UCrowdyServerObjectDefinition> Live = Definition;
+	PlatformData.AddProperty(ReadsPlayers).CustomWidget()
+		.FilterString(ReadsPlayers->GetPropertyDisplayName())
+		.NameContent()
+		[
+			ReadsPlayers->CreatePropertyNameWidget()
+		]
+		.ValueContent()
+		[
+			SNew(SCheckBox)
+			.IsChecked_Lambda([ReadsPlayers, Live]()
+			{
+				const UCrowdyServerObjectDefinition* Current = Live.Get();
+				bool bStored = false;
+				if (ReadsPlayers->GetValue(bStored) != FPropertyAccess::Success)
+				{
+					return ECheckBoxState::Undetermined;
+				}
+				return bStored || (Current && !CrowdyExecDeploy::PlayersReadRequiredBecause(*Current).IsEmpty()) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			})
+			.IsEnabled_Lambda([Live]()
+			{
+				const UCrowdyServerObjectDefinition* Current = Live.Get();
+				return !Current || CrowdyExecDeploy::PlayersReadRequiredBecause(*Current).IsEmpty();
+			})
+			.OnCheckStateChanged_Lambda([ReadsPlayers](ECheckBoxState State) { ReadsPlayers->SetValue(State == ECheckBoxState::Checked); })
+			.ToolTipText_Lambda([ReadsPlayers, Live]()
+			{
+				const UCrowdyServerObjectDefinition* Current = Live.Get();
+				const FString Reason = Current ? CrowdyExecDeploy::PlayersReadRequiredBecause(*Current) : FString();
+				return Reason.IsEmpty() ? ReadsPlayers->GetToolTipText()
+					: FText::Format(LOCTEXT("ReadsPlayersForcedToolTip", "Needed because {0}, so deploy asks for players.read whatever this says."), FText::FromString(Reason));
+			})
+		];
+	for (const FName Scope : {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bWritesPlayerState), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsWorld),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bWritesWorld), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsGrids),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bManagesGrids), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bGrantsGridPermissions),
-		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsAccess), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bManagesAccess)});
+		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bReadsAccess), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bManagesAccess)})
+	{
+		PlatformData.AddProperty(DetailBuilder.GetProperty(Scope));
+	}
 	AddCategory(MembersCategory, LOCTEXT("MembersCategory", "Members"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MembersFrom),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MaxMembers), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bShowMembers),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bRemoveMembersWhoLeave)});
