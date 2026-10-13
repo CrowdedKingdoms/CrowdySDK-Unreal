@@ -9,6 +9,13 @@
 class UCrowdyServerObjectDefinition;
 enum class ECrowdyEnvironment : uint8;
 
+namespace CrowdyServerComputeMove
+{
+	/** The types in ChangedTypes with an instance running in After that was already placed in Before (the same node type, key and epoch), so it runs the version before a deploy; a placement since has a higher epoch. OutRunning counts those instances. */
+	TArray<FString> TypesOnPreviousVersion(TConstArrayView<CrowdyExecDeveloper::FInstance> Before, TConstArrayView<CrowdyExecDeveloper::FInstance> After,
+		TConstArrayView<FString> ChangedTypes, int32& OutRunning);
+}
+
 /** The editor's one link to Server Compute, shared by the Server Compute page and every definition asset: the app's live status and versions, what changed since, and deploys. */
 class FCrowdyServerComputeService : public TSharedFromThis<FCrowdyServerComputeService>
 {
@@ -111,6 +118,16 @@ private:
 	void Recompare();
 	void StartBuild(const TArray<CrowdyExecDeveloper::FBuildCrate>& Crates, const FString& ManifestJson, bool bRecord);
 	void OnBuildFinished(const CrowdyExecDeveloper::TResult<CrowdyExecDeveloper::FBuild>& Result, const FString& ManifestJson, bool bRecord);
+	/** The instances read as a deploy is sent; the move offer after the deploy waits for its answer. */
+	struct FDeploySnapshot
+	{
+		bool bAnswered = false;
+		bool bKnown = false;
+		TArray<CrowdyExecDeveloper::FInstance> Instances;
+		TFunction<void()> OnAnswered;
+	};
+
+	void OnDeployed(const CrowdyExecDeveloper::TResult<int32>& Deployed, const TArray<CrowdyExecDeveloper::FBuildArtifact>& Artifacts, bool bRecord, TSharedRef<FDeploySnapshot> Before);
 	void SetDeployMessage(const FText& Message, const FLinearColor& Color, bool bCountSeconds = false);
 	void FinishDeploy(const FText& Message, const FLinearColor& Color);
 	FText GetReadinessHint() const;
@@ -121,7 +138,7 @@ private:
 	FString ClientError;
 
 	bool RestartTypes(TArray<FString> TypeNames);
-	void OfferToMove(TArray<FString> ChangedTypes);
+	void OfferToMove(TArray<FString> ChangedTypes, TSharedRef<FDeploySnapshot> Before);
 
 	TOptional<CrowdyExecDeveloper::FAppStatus> Status;
 	TArray<CrowdyExecDeveloper::FVersion> Versions;

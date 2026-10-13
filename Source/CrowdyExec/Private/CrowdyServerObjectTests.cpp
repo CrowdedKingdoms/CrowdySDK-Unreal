@@ -4949,6 +4949,69 @@ bool FCrowdyServerObjectRootEmptyIdTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectRootNotDeployedTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.RootAnsweredNotFoundWaitsAMinuteWhileAnotherTypeRetries", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectRootNotDeployedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	const auto ReadAnsweredNotFound = [this](FRig& Rig)
+	{
+		FSentFrame Subscribe;
+		FSentFrame Read;
+		if (!Rig.Open() || !TestTrue(TEXT("the object subscribes"), Rig.WaitForFrame(KindSubscribe, TEXT("state"), Subscribe))
+			|| !TestTrue(TEXT("the object reads"), Rig.WaitForFrame(KindCall, TEXT("read"), Read)))
+		{
+			return false;
+		}
+		Rig.Reply(Subscribe.Rid, ECrowdyNativeExecStatus::Ok, {});
+		Rig.Reply(Read.Rid, ECrowdyNativeExecStatus::NotFound, {});
+		Rig.PumpFor(0.1);
+		return true;
+	};
+
+	{
+		FRig Rig(*this);
+		if (!Rig.IsValid())
+		{
+			return false;
+		}
+		Rig.Definition->TypeName = UCrowdyServerObjectDefinition::RootTypeName;
+		if (!UseOnlyOneInstance(Rig))
+		{
+			return false;
+		}
+		TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+		UCrowdyServerObject* Root = Rig.Acquire(TEXT("main"), Owner.Get());
+		if (!Root || !ReadAnsweredNotFound(Rig))
+		{
+			return false;
+		}
+		TestEqual(TEXT("a root answered NotFound keeps waiting, so a later deploy is picked up"), static_cast<int32>(Root->GetStatus()), static_cast<int32>(ECrowdyServerObjectStatus::Connecting));
+		TestTrue(FString::Printf(TEXT("saying the app has no root (%s)"), *Root->GetFailureReason()), Root->GetFailureReason().StartsWith(TEXT("This app has no Crowdy SDK root"), ESearchCase::CaseSensitive));
+		Rig.Tick(30.f);
+		TestFalse(TEXT("and does not read again within the minute"), Rig.SentAny(KindCall, TEXT("read")));
+		Rig.Tick(31.f);
+		TestTrue(TEXT("but reads again after it"), Rig.SentAny(KindCall, TEXT("read")));
+	}
+
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = Rig.Acquire(Rig.InstanceId, Owner.Get());
+	if (!Object || !ReadAnsweredNotFound(Rig))
+	{
+		return false;
+	}
+	TestEqual(TEXT("another type answered NotFound keeps retrying"), static_cast<int32>(Object->GetStatus()), static_cast<int32>(ECrowdyServerObjectStatus::Connecting));
+	TestTrue(FString::Printf(TEXT("naming the type as not deployed (%s)"), *Object->GetFailureReason()), Object->GetFailureReason().Contains(TEXT("is not deployed on the server")));
+	Rig.Tick(2.f);
+	TestTrue(TEXT("and reads again within seconds"), Rig.SentAny(KindCall, TEXT("read")));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectRootDialTest,
 	"CrowdySDK.CrowdyExec.ServerObjectFixes.ConnectionIsPlacedWithAnotherTypeThanTheRoot", CrowdyServerObjectTests::TestFlags)
 bool FCrowdyServerObjectRootDialTest::RunTest(const FString& Parameters)

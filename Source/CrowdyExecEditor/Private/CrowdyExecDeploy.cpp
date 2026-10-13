@@ -52,6 +52,29 @@ namespace CrowdyExecDeployDetail
 		return Text.Replace(TEXT("\r\n"), TEXT("\n")).TrimEnd();
 	}
 
+	FString QuotedLine(FString Line)
+	{
+		Line.TrimStartAndEndInline();
+		return FString::Printf(TEXT("\"%s\""), Line.Len() > 80 ? *(Line.Left(80) + TEXT("...")) : *Line);
+	}
+
+	/** Where two texts first differ, after the same normalisation Comparable applies. */
+	FString FirstDifference(const FString& OnDisk, const FString& Generated)
+	{
+		TArray<FString> Have;
+		TArray<FString> Want;
+		Comparable(OnDisk).ParseIntoArray(Have, TEXT("\n"), false);
+		Comparable(Generated).ParseIntoArray(Want, TEXT("\n"), false);
+		int32 Index = 0;
+		while (Index < Have.Num() && Index < Want.Num() && Have[Index].Equals(Want[Index], ESearchCase::CaseSensitive))
+		{
+			++Index;
+		}
+		const FString Has = Have.IsValidIndex(Index) ? FString::Printf(TEXT("the file has %s"), *QuotedLine(Have[Index])) : FString(TEXT("the file ends"));
+		const FString Writes = Want.IsValidIndex(Index) ? FString::Printf(TEXT("Generate writes %s"), *QuotedLine(Want[Index])) : FString(TEXT("Generate writes nothing more"));
+		return FString::Printf(TEXT("line %d: %s, %s"), Index + 1, *Has, *Writes);
+	}
+
 	bool IsBefore(const FString& A, const FString& B)
 	{
 		return A.Compare(B, ESearchCase::CaseSensitive) < 0;
@@ -368,23 +391,142 @@ namespace CrowdyExecDeployDetail
 		}
 		return Code;
 	}
+
+	/** Where the item an attribute at Index marks ends: after its braces, or after the semicolon of an item with none. */
+	int32 EndOfAttributedItem(const FString& Code, int32 Index)
+	{
+		const int32 Length = Code.Len();
+		while (Index + 1 < Length && Code[Index] == TEXT('#') && Code[Index + 1] == TEXT('['))
+		{
+			int32 Depth = 0;
+			do
+			{
+				Depth += (Code[Index] == TEXT('[')) - (Code[Index] == TEXT(']'));
+				++Index;
+			} while (Index < Length && Depth > 0);
+		}
+		int32 Nest = 0;
+		for (; Index < Length; ++Index)
+		{
+			const TCHAR Char = Code[Index];
+			Nest += (Char == TEXT('(') || Char == TEXT('[')) - (Char == TEXT(')') || Char == TEXT(']'));
+			// A field, variant or match arm ends at its comma, or where its enclosing block closes.
+			if (Nest <= 0 && (Char == TEXT('{') || Char == TEXT(';') || Char == TEXT(',') || Char == TEXT('}')))
+			{
+				break;
+			}
+		}
+		if (Index < Length && Code[Index] == TEXT('}'))
+		{
+			return Index;
+		}
+		if (Index >= Length || Code[Index] == TEXT(';') || Code[Index] == TEXT(','))
+		{
+			return FMath::Min(Index + 1, Length);
+		}
+		for (int32 Depth = 0; Index < Length; ++Index)
+		{
+			Depth += (Code[Index] == TEXT('{')) - (Code[Index] == TEXT('}'));
+			if (Depth == 0)
+			{
+				return Index + 1;
+			}
+		}
+		return Length;
+	}
+
+	/** Code with each #[cfg(test)] item removed, since test code never runs on the platform. Takes CodeOnly's output. */
+	FString StripCfgTest(const FString& Code)
+	{
+		const FString Marker = TEXT("#[cfg(test)]");
+		FString Kept;
+		int32 From = 0;
+		for (int32 At = Code.Find(Marker, ESearchCase::CaseSensitive); At != INDEX_NONE; At = Code.Find(Marker, ESearchCase::CaseSensitive, ESearchDir::FromStart, From))
+		{
+			Kept.Append(Code.Mid(From, At - From));
+			From = EndOfAttributedItem(Code, At);
+		}
+		return Kept + Code.RightChop(From);
+	}
 }
 
 TArray<FString> CrowdyExecDeploy::ScopesOf(const UCrowdyServerObjectDefinition& Definition)
 {
 	using namespace CrowdyExecDeployDetail;
-	const bool bNeedsFeature = Definition.Functions.ContainsByPredicate([](const FCrowdyServerFunction& Function) { return !Function.RequiredFeature.IsEmpty(); });
-	const bool bTeamsNeedPlayers = Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam || Definition.HasCrowdyTeamRecords() || bNeedsFeature;
+	const bool bPlayersRequired = !PlayersReadRequiredBecause(Definition).IsEmpty();
 	TArray<FString> Scopes;
 	for (const FPlatformScope& Scope : PlatformScopes)
 	{
-		const bool bImplied = bTeamsNeedPlayers && Scope.Asked == &UCrowdyServerObjectDefinition::bReadsPlayers;
+		const bool bImplied = bPlayersRequired && Scope.Asked == &UCrowdyServerObjectDefinition::bReadsPlayers;
 		if (Definition.*Scope.Asked || bImplied)
 		{
 			Scopes.Add(Scope.Name);
 		}
 	}
 	return Scopes;
+}
+
+FString CrowdyExecDeploy::PlayersReadRequiredBecause(const UCrowdyServerObjectDefinition& Definition)
+{
+	TArray<FString> Causes;
+	if (Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam)
+	{
+		Causes.Add(TEXT("Members From is Crowdy Team"));
+	}
+	if (Definition.HasCrowdyTeamRecords())
+	{
+		Causes.Add(TEXT("its records belong to Crowdy Teams"));
+	}
+	TArray<FString> Gated;
+	for (const FCrowdyServerFunction& Function : Definition.Functions)
+	{
+		// A feature is checked only for a player, and no player may call these.
+		const bool bPlayersCall = Function.WhoCanCall != ECrowdyServerFunctionCaller::DevelopersOnly && Function.WhoCanCall != ECrowdyServerFunctionCaller::ServerOnly;
+		if (bPlayersCall && !Function.RequiredFeature.IsEmpty())
+		{
+			Gated.Add(Function.Name.ToString());
+		}
+	}
+	if (!Gated.IsEmpty())
+	{
+		Causes.Add(FString::Printf(TEXT("Required Feature is set on %s"), *FString::Join(Gated, TEXT(", "))));
+	}
+	return FString::Join(Causes, TEXT("; "));
+}
+
+int64 CrowdyExecDeploy::ClampLimit(const FString& Field, int64 ManifestValue)
+{
+	using namespace CrowdyExecDeployDetail;
+	for (const FLimitSetting& Limit : LimitSettings)
+	{
+		if (Field.Equals(Limit.Field, ESearchCase::CaseSensitive))
+		{
+			return FMath::Clamp<int64>(ManifestValue, Limit.Min * Limit.Scale, Limit.Max * Limit.Scale);
+		}
+	}
+	return ManifestValue;
+}
+
+TArray<FString> CrowdyExecDeploy::FindCallerWarnings(const UCrowdyServerObjectDefinition& Definition)
+{
+	using namespace CrowdyExecDeployDetail;
+	TArray<FString> Warnings;
+	for (const FCrowdyServerFunction& Function : Definition.Functions)
+	{
+		if (Function.WhoCanCall != ECrowdyServerFunctionCaller::DevelopersOnly && Function.WhoCanCall != ECrowdyServerFunctionCaller::ServerOnly)
+		{
+			continue;
+		}
+		if (Function.CooldownSeconds > 0.f)
+		{
+			Warnings.Add(FString::Printf(TEXT("%s %s: Cooldown has no effect, since only players' calls are limited."), *DisplayName(Definition), *Function.Name.ToString()));
+		}
+		if (!Function.RequiredFeature.IsEmpty())
+		{
+			Warnings.Add(FString::Printf(TEXT("%s %s: Required Feature has no effect, since only players are checked."), *DisplayName(Definition), *Function.Name.ToString()));
+		}
+	}
+	return Warnings;
 }
 
 TArray<CrowdyExecDeploy::FServerLimit> CrowdyExecDeploy::LimitsOf(const UCrowdyServerObjectDefinition& Definition)
@@ -404,7 +546,7 @@ TArray<FString> CrowdyExecDeploy::FindScopeWarnings(const UCrowdyServerObjectDef
 	FString Code;
 	for (const CrowdyExecDeveloper::FBuildFile& File : Crate.Files)
 	{
-		Code += File.Path.EndsWith(TEXT(".rs"), ESearchCase::CaseSensitive) ? CodeOnly(File.Content) : FString();
+		Code += File.Path.EndsWith(TEXT(".rs"), ESearchCase::CaseSensitive) ? StripCfgTest(CodeOnly(File.Content)) : FString();
 	}
 	const TArray<FString> Asked = ScopesOf(Definition);
 	TArray<FString> Missing;
@@ -498,7 +640,7 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 		}
 		if (!Comparable(OnDisk).Equals(Comparable(File.Text), ESearchCase::CaseSensitive))
 		{
-			return WithProblem(State, ECrateState::OutOfDate, FString::Printf(TEXT("%s no longer matches the definition; regenerate it with Generate Server Code"), *Path));
+			return WithProblem(State, ECrateState::OutOfDate, FString::Printf(TEXT("%s no longer matches the definition (%s); regenerate it with Generate Server Code"), *Path, *FirstDifference(OnDisk, File.Text)));
 		}
 	}
 	if (!FPaths::FileExists(Logic))
@@ -566,11 +708,6 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 {
 	using namespace CrowdyExecDeployDetail;
 	FProjectDeploy Project;
-	if (Definitions.IsEmpty())
-	{
-		Project.Problems.Add(TEXT("The project has no Server Object types"));
-		return Project;
-	}
 	const CrowdyExecDeveloper::FBuildCrate& Root = Project.Crates.Add_GetRef(MakeRootCrate());
 	if (Root.Files.IsEmpty())
 	{
@@ -603,6 +740,7 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 			continue;
 		}
 		Project.Warnings.Append(FindScopeWarnings(*Definition, Crate));
+		Project.Warnings.Append(FindCallerWarnings(*Definition));
 		Project.Crates.Add(MoveTemp(Crate));
 	}
 	AddDuplicateProblems(Definitions, Project.Problems);

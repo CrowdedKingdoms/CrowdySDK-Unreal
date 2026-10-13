@@ -391,6 +391,24 @@ bool FCrowdyExecDeployInspectTest::RunTest(const FString& Parameters)
 	TestState(*this, TEXT("a changed types.rs is out of date"), Edited, ECrateState::OutOfDate);
 	TestTrue(FString::Printf(TEXT("the problem names the file (%s)"), *Edited.Problem), Edited.Problem.Contains(TEXT("types.rs")));
 	TestTrue(FString::Printf(TEXT("the problem says to regenerate (%s)"), *Edited.Problem), Edited.Problem.Contains(TEXT("Generate Server Code")));
+
+	TArray<FString> TypesLines;
+	Types.ParseIntoArray(TypesLines, TEXT("\n"), false);
+	int32 MiddleLine = TypesLines.Num() / 2;
+	while (MiddleLine < TypesLines.Num() && TypesLines[MiddleLine].TrimStartAndEnd().IsEmpty())
+	{
+		++MiddleLine;
+	}
+	if (TestTrue(TEXT("types.rs has a middle line to edit"), TypesLines.IsValidIndex(MiddleLine)))
+	{
+		TypesLines[MiddleLine] = TEXT("// changed in the middle");
+		SaveText(FString::Join(TypesLines, TEXT("\n")), TypesFile);
+		const CrowdyExecDeploy::FTypeState Middle = CrowdyExecDeploy::InspectType(*Definition, Directory);
+		TestState(*this, TEXT("a changed middle line is out of date"), Middle, ECrateState::OutOfDate);
+		TestTrue(FString::Printf(TEXT("the problem names the line (%s)"), *Middle.Problem), Middle.Problem.Contains(FString::Printf(TEXT("line %d:"), MiddleLine + 1)));
+		TestTrue(FString::Printf(TEXT("and the edited text (%s)"), *Middle.Problem), Middle.Problem.Contains(TEXT("// changed in the middle")));
+		TestTrue(FString::Printf(TEXT("and what Generate writes there (%s)"), *Middle.Problem), Middle.Problem.Contains(TEXT("Generate writes \"")));
+	}
 	SaveText(Types + TEXT("\n\n  \t\n"), TypesFile);
 	TestState(*this, TEXT("blank lines and spaces at the end of types.rs keep it up to date"), CrowdyExecDeploy::InspectType(*Definition, Directory), ECrateState::UpToDate);
 	SaveText(Types.TrimEnd(), TypesFile);
@@ -560,8 +578,13 @@ bool FCrowdyExecDeployAssembleTest::RunTest(const FString& Parameters)
 		Twice.Problems.ContainsByPredicate([](const FString& Problem) { return Problem.StartsWith(TEXT("Two Server Object types are named deploy_fixture"), ESearchCase::CaseSensitive); }));
 
 	const CrowdyExecDeploy::FProjectDeploy Empty = CrowdyExecDeploy::AssembleProject({}, DirectoryFor);
-	TestEqualSensitive(TEXT("a project with no types cannot deploy"), FString::Join(Empty.Problems, TEXT(" | ")), FString(TEXT("The project has no Server Object types")));
-	TestEqual(TEXT("a project with no types sends nothing"), Empty.Crates.Num(), 0);
+	TestEqualSensitive(TEXT("a project with no types has no problems"), FString::Join(Empty.Problems, TEXT(" | ")), FString());
+	if (TestEqual(TEXT("a project with no types sends the root alone"), Empty.Crates.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("the one crate is the root"), Empty.Crates[0].Name, FString(CrowdyExecDeploy::RootTypeName));
+	}
+	TestEqualSensitive(TEXT("and its manifest names only the root"), Empty.ManifestJson,
+		FString(TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"crate\":\"root\",\"client\":true}}}")));
 	return true;
 }
 
@@ -789,6 +812,125 @@ bool FCrowdyExecDeployAssembleGuardsTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("a file past the source limit is named before it is read (%s)"), *FString::Join(Oversized.Problems, TEXT(" | "))),
 		Oversized.Problems.ContainsByPredicate([](const FString& Problem) { return Problem.Contains(TEXT("big.rs")) && Problem.Contains(TEXT("2 MB")); }));
 	TestEqual(TEXT("a type with a file past the limit sends no crate"), Oversized.Crates.Num(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployClampLimitTest, "CrowdySDK.CrowdyExecEditor.DeployClampLimit", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployClampLimitTest::RunTest(const FString& Parameters)
+{
+	struct FCase
+	{
+		const TCHAR* Field;
+		int64 Below;
+		int64 Min;
+		int64 InRange;
+		int64 Max;
+		int64 Above;
+	};
+	const FCase Cases[] = {
+		{TEXT("memory_mb"), 0, 1, 64, 512, 4096},
+		{TEXT("fuel_per_call"), 999999, 1000000, 50000000, 1000000000, 2000000000},
+		{TEXT("mailbox"), 0, 1, 1024, 4096, 5000},
+		{TEXT("deadline_ms"), 9, 10, 2000, 10000, 20000},
+	};
+	for (const FCase& Case : Cases)
+	{
+		TestEqual(FString::Printf(TEXT("%s below its range is brought up to the smallest"), Case.Field), CrowdyExecDeploy::ClampLimit(Case.Field, Case.Below), Case.Min);
+		TestEqual(FString::Printf(TEXT("%s at the smallest is kept"), Case.Field), CrowdyExecDeploy::ClampLimit(Case.Field, Case.Min), Case.Min);
+		TestEqual(FString::Printf(TEXT("%s in range is kept"), Case.Field), CrowdyExecDeploy::ClampLimit(Case.Field, Case.InRange), Case.InRange);
+		TestEqual(FString::Printf(TEXT("%s at the largest is kept"), Case.Field), CrowdyExecDeploy::ClampLimit(Case.Field, Case.Max), Case.Max);
+		TestEqual(FString::Printf(TEXT("%s above its range is brought down to the largest"), Case.Field), CrowdyExecDeploy::ClampLimit(Case.Field, Case.Above), Case.Max);
+	}
+	TestEqual(TEXT("a negative value is brought up too"), CrowdyExecDeploy::ClampLimit(TEXT("memory_mb"), -5), static_cast<int64>(1));
+	TestEqual(TEXT("a field the platform does not limit is returned as given"), CrowdyExecDeploy::ClampLimit(TEXT("unknown"), 123456789012), static_cast<int64>(123456789012));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployPlayersReadReasonTest, "CrowdySDK.CrowdyExecEditor.DeployPlayersReadRequiredBecause", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployPlayersReadReasonTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	auto CheckScope = [this](const TCHAR* What, const UCrowdyServerObjectDefinition& Definition)
+	{
+		const bool bHasScope = CrowdyExecDeploy::ScopesOf(Definition).Contains(TEXT("players.read"));
+		TestTrue(FString::Printf(TEXT("%s: players.read is listed exactly when it is forced or asked for"), What),
+			bHasScope == (!CrowdyExecDeploy::PlayersReadRequiredBecause(Definition).IsEmpty() || Definition.bReadsPlayers));
+	};
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Bare = MakeManifestDefinition(TEXT("t"), 30, 300);
+	TestTrue(TEXT("a bare definition forces nothing"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Bare).IsEmpty());
+	CheckScope(TEXT("bare"), *Bare);
+	Bare->bReadsPlayers = true;
+	TestTrue(TEXT("Reads Players is not a forced reason"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Bare).IsEmpty());
+	CheckScope(TEXT("Reads Players"), *Bare);
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Team = MakeManifestDefinition(TEXT("t"), 30, 300);
+	Team->MembersFrom = ECrowdyServerMembersSource::CrowdyTeam;
+	TestTrue(TEXT("Crowdy Team members force it"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Team).Contains(TEXT("Crowdy Team"), ESearchCase::CaseSensitive));
+	CheckScope(TEXT("members"), *Team);
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Records = MakeManifestDefinition(TEXT("t"), 30, 300);
+	Records->Holds = ECrowdyServerObjectHolds::RecordPerEntity;
+	TestTrue(TEXT("records on this object's own teams force nothing"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Records).IsEmpty());
+	Records->TeamFrom = ECrowdyServerTeamSource::CrowdyTeam;
+	TestTrue(TEXT("records on Crowdy Teams force it"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Records).Contains(TEXT("records"), ESearchCase::CaseSensitive));
+	CheckScope(TEXT("records"), *Records);
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Gated = MakeManifestDefinition(TEXT("t"), 30, 300);
+	Gated->Functions.Reset();
+	FCrowdyServerFunction& Unlock = Gated->Functions.AddDefaulted_GetRef();
+	Unlock.Name = TEXT("Unlock");
+	Unlock.RequiredFeature = TEXT("vip");
+	FCrowdyServerFunction& Open = Gated->Functions.AddDefaulted_GetRef();
+	Open.Name = TEXT("Open");
+	Open.RequiredFeature = TEXT("vip");
+	Gated->Functions.AddDefaulted_GetRef().Name = TEXT("Plain");
+	TestEqualSensitive(TEXT("a Required Feature names the functions that set it"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Gated), FString(TEXT("Required Feature is set on Unlock, Open")));
+	CheckScope(TEXT("Required Feature"), *Gated);
+	Gated->Functions[1].WhoCanCall = ECrowdyServerFunctionCaller::DevelopersOnly;
+	TestEqualSensitive(TEXT("a function no player may call checks no feature, so it forces nothing"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Gated), FString(TEXT("Required Feature is set on Unlock")));
+	Gated->Functions[1].WhoCanCall = ECrowdyServerFunctionCaller::Players;
+
+	Gated->MembersFrom = ECrowdyServerMembersSource::CrowdyTeam;
+	const FString Both = CrowdyExecDeploy::PlayersReadRequiredBecause(*Gated);
+	TestTrue(FString::Printf(TEXT("two causes are both given (%s)"), *Both),
+		Both.Contains(TEXT("Members From is Crowdy Team"), ESearchCase::CaseSensitive) && Both.Contains(TEXT("Required Feature is set on Unlock, Open"), ESearchCase::CaseSensitive));
+	CheckScope(TEXT("two causes"), *Gated);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployCallerWarningsTest, "CrowdySDK.CrowdyExecEditor.DeployCallerWarnings", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployCallerWarningsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeManifestDefinition(TEXT("t"), 30, 300);
+	Definition->Functions.Reset();
+	FCrowdyServerFunction& Boost = Definition->Functions.AddDefaulted_GetRef();
+	Boost.Name = TEXT("Boost");
+	TestEqual(TEXT("a function players call has no warning"), CrowdyExecDeploy::FindCallerWarnings(*Definition).Num(), 0);
+
+	Boost.WhoCanCall = ECrowdyServerFunctionCaller::DevelopersOnly;
+	Boost.CooldownSeconds = 0.f;
+	TestEqual(TEXT("Developers Only with no Cooldown has no warning"), CrowdyExecDeploy::FindCallerWarnings(*Definition).Num(), 0);
+	Boost.CooldownSeconds = 5.f;
+	const TArray<FString> Cooldown = CrowdyExecDeploy::FindCallerWarnings(*Definition);
+	if (TestEqual(TEXT("Developers Only with a Cooldown is one warning"), Cooldown.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("naming the type, the function and the setting"), Cooldown[0], FString(TEXT("t Boost: Cooldown has no effect, since only players' calls are limited.")));
+	}
+	Boost.WhoCanCall = ECrowdyServerFunctionCaller::Players;
+	TestEqual(TEXT("a Cooldown on a function players call has no warning"), CrowdyExecDeploy::FindCallerWarnings(*Definition).Num(), 0);
+
+	Boost.CooldownSeconds = 0.f;
+	Boost.WhoCanCall = ECrowdyServerFunctionCaller::ServerOnly;
+	Boost.RequiredFeature = TEXT("vip");
+	const TArray<FString> Feature = CrowdyExecDeploy::FindCallerWarnings(*Definition);
+	if (TestEqual(TEXT("Server Only with a Required Feature is one warning"), Feature.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("naming the type, the function and the setting"), Feature[0], FString(TEXT("t Boost: Required Feature has no effect, since only players are checked.")));
+	}
+	Boost.WhoCanCall = ECrowdyServerFunctionCaller::Players;
+	TestEqual(TEXT("a Required Feature on a function players call has no warning"), CrowdyExecDeploy::FindCallerWarnings(*Definition).Num(), 0);
 	return true;
 }
 

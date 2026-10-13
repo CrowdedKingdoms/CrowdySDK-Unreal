@@ -25,7 +25,7 @@ void SCrowdyExecDeveloperCall::Construct(const FArguments& InArgs)
 	Definition = InArgs._Definition;
 	AnswerColor = FSlateColor::UseSubduedForeground();
 	const UCrowdyServerObjectDefinition* Current = Definition.Get();
-	const FCrowdyServerFunction* Function = Current && Current->Functions.IsValidIndex(InArgs._FunctionIndex) ? &Current->Functions[InArgs._FunctionIndex] : nullptr;
+	const FCrowdyServerFunction* Function = Current ? Current->FindFunction(InArgs._FunctionName) : nullptr;
 	FunctionName = Function ? Function->Name : NAME_None;
 
 	TSharedRef<SWidget> InputsWidget = SNew(STextBlock).Text(LOCTEXT("NoInputs", "It takes no inputs.")).ColorAndOpacity(FSlateColor::UseSubduedForeground());
@@ -100,13 +100,13 @@ void SCrowdyExecDeveloperCall::Construct(const FArguments& InArgs)
 	];
 }
 
-void SCrowdyExecDeveloperCall::Open(UCrowdyServerObjectDefinition& InDefinition, int32 InFunctionIndex)
+void SCrowdyExecDeveloperCall::Open(UCrowdyServerObjectDefinition& InDefinition, FName InFunctionName)
 {
 	const TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(LOCTEXT("WindowTitle", "Call as Developer"))
 		.ClientSize(FVector2D(520.0f, 480.0f))
 		[
-			SNew(SCrowdyExecDeveloperCall).Definition(&InDefinition).FunctionIndex(InFunctionIndex)
+			SNew(SCrowdyExecDeveloperCall).Definition(&InDefinition).FunctionName(InFunctionName)
 		];
 	FSlateApplication::Get().AddWindow(Window);
 }
@@ -114,7 +114,7 @@ void SCrowdyExecDeveloperCall::Open(UCrowdyServerObjectDefinition& InDefinition,
 const FCrowdyServerFunction* SCrowdyExecDeveloperCall::FindFunction() const
 {
 	const UCrowdyServerObjectDefinition* Current = Definition.Get();
-	const FCrowdyServerFunction* Found = Current ? Current->Functions.FindByPredicate([this](const FCrowdyServerFunction& Each) { return Each.Name == FunctionName; }) : nullptr;
+	const FCrowdyServerFunction* Found = Current ? Current->FindFunction(FunctionName) : nullptr;
 	return Found && CrowdyExecDeveloperCall::IsForDevelopers(*Found) ? Found : nullptr;
 }
 

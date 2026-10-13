@@ -425,14 +425,16 @@ bool UCrowdyServerObjectLibrary::GetPlayersOnline(UObject* Owner, int32& Players
 	{
 		return true;
 	}
-	// An app whose root an older SDK deployed refuses every read, which would otherwise read as 0 with no word why.
+	// An app with no root, or one an older SDK deployed, refuses every read, which would otherwise read as 0 with no word why.
 	const UCrowdyServerObject* Root = Link->GetServerObject();
 	const FString Reason = Root ? Root->GetFailureReason() : FString();
 	static FString Warned;
 	if (!Reason.IsEmpty() && !Reason.Equals(Warned, ESearchCase::CaseSensitive))
 	{
 		Warned = Reason;
-		UE_LOG(LogCrowdyExec, Warning, TEXT("Get Players Online has no count yet: %s. An app last deployed with an older Crowdy SDK keeps none; deploy it from Server Compute."), *Reason);
+		const bool bAdvised = Reason.Contains(TEXT("Server Compute"), ESearchCase::CaseSensitive);
+		UE_LOG(LogCrowdyExec, Warning, TEXT("Get Players Online has no count yet: %s%s"), *Reason,
+			bAdvised ? TEXT("") : TEXT(". An app last deployed with an older Crowdy SDK keeps none; deploy it from Server Compute."));
 	}
 	return false;
 }

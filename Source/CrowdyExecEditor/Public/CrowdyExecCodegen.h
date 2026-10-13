@@ -43,12 +43,14 @@ namespace CrowdyExecCodegen
 		TArray<FString> Leftover;
 		/** Where Missing goes: the closing brace of impl Functions for the state struct; INDEX_NONE when there is no such block. */
 		int32 InsertAt = INDEX_NONE;
+		/** Macros invoked directly in that block, as written with the !: they may define functions the scan cannot see, so nothing is inserted. */
+		TArray<FString> Macros;
 	};
 
 	/** Compares Logic (LF line breaks) with what Crate's Functions trait asks for, skipping comments, strings and characters. */
 	CROWDYEXECEDITOR_API FLogicGaps FindLogicGaps(const FGeneratedCrate& Crate, const FString& Logic);
 
-	/** Logic with Gaps.Missing written just before Gaps.InsertAt; Logic unchanged when nothing is missing or there is nowhere to write it. */
+	/** Logic with Gaps.Missing written just before Gaps.InsertAt; Logic unchanged when nothing is missing, there is nowhere to write it, or the block invokes a macro. */
 	CROWDYEXECEDITOR_API FString AddLogicStubs(const FString& Logic, const FLogicGaps& Gaps);
 
 	/** Builds every file of the crate, src/logic.rs only when Code Source is Generated. The same definition always gives the same text. False with OutError when a type cannot be written. */

@@ -137,6 +137,15 @@ namespace CrowdyServerCodeEdits
 	/** Edits kept by file while no Server Code tab shows that file. */
 	CrowdyServerCodeFiles::FEditStash& Kept();
 
+	/** Records the functions Generate wrote into the logic file at Path, so a tab can tell when another program's save removes them. */
+	void NoteStubsInserted(const FString& Path, TArray<FString> Methods);
+
+	/** The functions Generate last wrote into Path, as NoteStubsInserted recorded them; empty when none or forgotten. */
+	TArray<FString> InsertedStubs(const FString& Path);
+
+	/** Drops what NoteStubsInserted recorded for Path. */
+	void ForgetInsertedStubs(const FString& Path);
+
 	/** Adds or removes a tab whose unsaved edits UnsavedFiles and ForgetUnder include. */
 	void AddTab(SCrowdyServerCodeTab& Tab);
 	void RemoveTab(SCrowdyServerCodeTab& Tab);

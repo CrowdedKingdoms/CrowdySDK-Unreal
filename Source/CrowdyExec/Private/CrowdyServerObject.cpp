@@ -74,6 +74,14 @@ namespace CrowdyServerObjectDetail
 		return FString::Printf(TEXT("%s is not deployed on the server"), *Definition.TypeName);
 	}
 
+	/** Every deploy from this SDK sends the root, so an app answering NotFound for it was deployed without one: it is asked again only this often. */
+	constexpr float MissingRootRetrySeconds = 60.f;
+
+	bool IsMissingRoot(const UCrowdyServerObjectDefinition& Definition, const FCrowdyNativeExecReply& Reply)
+	{
+		return Reply.Status == ECrowdyNativeExecStatus::NotFound && Definition.TypeName.Equals(UCrowdyServerObjectDefinition::RootTypeName, ESearchCase::CaseSensitive);
+	}
+
 	bool IsConnectionClosed(const FCrowdyNativeExecReply& Reply)
 	{
 		return Reply.Status == ECrowdyNativeExecStatus::Unavailable
@@ -87,7 +95,9 @@ namespace CrowdyServerObjectDetail
 		switch (Reply.Status)
 		{
 		case ECrowdyNativeExecStatus::NotFound:
-			return NotDeployedReason(Definition);
+			return IsMissingRoot(Definition, Reply)
+				? FString(TEXT("This app has no Crowdy SDK root, so Players Online has no count: deploy the app from Server Compute (an app last deployed with an older Crowdy SDK, or by another tool, has none). It is asked again every minute."))
+				: NotDeployedReason(Definition);
 		case ECrowdyNativeExecStatus::Denied:
 			return WithServerMessage(FString::Printf(TEXT("The server refused to let this player %s this Server Object"), Verb), Reply);
 		case ECrowdyNativeExecStatus::Unavailable:
@@ -1381,7 +1391,8 @@ FString UCrowdyServerObject::PermanentRefusal(const FCrowdyNativeExecReply& Repl
 void UCrowdyServerObject::ScheduleRefresh(const FCrowdyNativeExecReply& Reply)
 {
 	++RefreshFailures;
-	RefreshRetryIn = CrowdyServerObjectDetail::RetryInSeconds(RefreshFailures, Reply);
+	RefreshRetryIn = CrowdyServerObjectDetail::IsMissingRoot(*Definition, Reply) ? CrowdyServerObjectDetail::MissingRootRetrySeconds
+		: CrowdyServerObjectDetail::RetryInSeconds(RefreshFailures, Reply);
 	bRefreshScheduled = true;
 }
 

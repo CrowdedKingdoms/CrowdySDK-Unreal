@@ -16,13 +16,13 @@ class SCrowdyExecDeveloperCall : public SCompoundWidget
 public:
 	SLATE_BEGIN_ARGS(SCrowdyExecDeveloperCall) {}
 		SLATE_ARGUMENT(TWeakObjectPtr<UCrowdyServerObjectDefinition>, Definition)
-		SLATE_ARGUMENT(int32, FunctionIndex)
+		SLATE_ARGUMENT(FName, FunctionName)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
 
-	/** A window for the definition's function at FunctionIndex. */
-	static void Open(UCrowdyServerObjectDefinition& Definition, int32 FunctionIndex);
+	/** A window for the definition's function named FunctionName, a built-in member function included. */
+	static void Open(UCrowdyServerObjectDefinition& Definition, FName FunctionName);
 
 private:
 	FReply OnCallClicked();
@@ -31,7 +31,7 @@ private:
 	const FCrowdyServerFunction* FindFunction() const;
 
 	TWeakObjectPtr<UCrowdyServerObjectDefinition> Definition;
-	/** Found again by name on every call, since functions may be added, removed or reordered while the window is open. */
+	/** Found again by name on every call, since functions may be added, removed or renamed while the window is open. */
 	FName FunctionName;
 	/** The function's struct when the window opened, kept alive for the inputs view and compared on every call. */
 	TStrongObjectPtr<UScriptStruct> InputsStruct;

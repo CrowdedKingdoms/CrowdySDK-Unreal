@@ -272,6 +272,7 @@ namespace CrowdyServerComputeCommandletDetail
 			OutDefinitions.Add(Definition);
 			OutCrateDirectories.Add(Definition->TypeName, CrowdyExecCodegen::GetCrateDirectory(*Definition));
 		}
+		OutCrateDirectories.Add(CrowdyExecDeploy::RootTypeName, FPaths::Combine(CrowdyExecCodegen::GetServerDirectory(), CrowdyExecDeploy::RootTypeName));
 		return CrowdyExecDeploy::AssembleProject(OutDefinitions, [](const UCrowdyServerObjectDefinition& Definition) { return CrowdyExecCodegen::GetCrateDirectory(Definition); });
 	}
 
@@ -372,7 +373,8 @@ namespace CrowdyServerComputeCommandletDetail
 			Fail(Run, FString::Join(Run->Sending.Problems, TEXT("\n")));
 			return;
 		}
-		Step(FString::Printf(TEXT("deploying the project's %d Server Object types"), Run->Sending.Types.Num()));
+		Step(Run->Sending.Types.IsEmpty() ? FString(TEXT("deploying the Crowdy SDK's root only: the project has no Server Object types"))
+			: FString::Printf(TEXT("deploying the project's %d Server Object types"), Run->Sending.Types.Num()));
 		Run->bRecord = true;
 		BuildAndDeploy(Run, Run->Sending.Crates, Run->Sending.ManifestJson);
 	}
@@ -580,10 +582,7 @@ namespace CrowdyServerComputeCommandletDetail
 			return Each && Each->TypeName.Equals(Type, ESearchCase::CaseSensitive);
 		});
 		const UCrowdyServerObjectDefinition* Definition = Found ? *Found : nullptr;
-		const FCrowdyServerFunction* Function = Definition ? Definition->Functions.FindByPredicate([&FunctionName](const FCrowdyServerFunction& Each)
-		{
-			return Each.Name.ToString().Equals(FunctionName, ESearchCase::IgnoreCase);
-		}) : nullptr;
+		const FCrowdyServerFunction* Function = Definition ? Definition->FindFunction(FName(*FunctionName)) : nullptr;
 		if (!Function)
 		{
 			Fail(Run, Definition ? FString::Printf(TEXT("%s has no Server Function %s"), *Type, *FunctionName) : FString::Printf(TEXT("the project has no Server Object type %s"), *Type));

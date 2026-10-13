@@ -174,6 +174,46 @@ bool FCrowdyExecScopeWarningsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecScopeWarningsCfgTestTest, "CrowdySDK.CrowdyExecEditor.ScopeWarningsSkipTestOnlyCode", CrowdyExecPlatformDataTests::TestFlags)
+bool FCrowdyExecScopeWarningsCfgTestTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecPlatformDataTests;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Builder = MakeDefinition(TEXT("builder"));
+	const FString InTests = TEXT("#[cfg(test)]\nmod tests { fn t(ctx:&Ctx){ ctx.world().set_voxels(&w); } }\n");
+	TestEqual(TEXT("a call inside a cfg(test) module is not counted"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(*InTests)).Num(), 0);
+
+	const FString Outside = TEXT("fn place(ctx: &Ctx) { ctx.world().set_voxels(&w); }\n");
+	TestEqual(TEXT("the same call outside it still warns"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(*(InTests + Outside))).Num(), 1);
+	TestEqual(TEXT("and before it"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(*(Outside + InTests))).Num(), 1);
+
+	const FString Attributed = TEXT("#[cfg(test)]\n#[allow(dead_code)]\nuse crate::helper;\nfn place(ctx: &Ctx) { ctx.world().set_voxels(&w); }\n");
+	TestEqual(TEXT("a cfg(test) item ending in a semicolon takes only itself"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(*Attributed)).Num(), 1);
+
+	const FString Nested = TEXT("#[cfg(test)]\n#[allow(unused)]\nmod tests { mod inner { fn a() {} } fn t(ctx:&Ctx){ ctx.grids().create(a, b); } }\n");
+	TestEqual(TEXT("nested braces in a cfg(test) module are matched"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(*Nested)).Num(), 0);
+
+	const FString Field = TEXT("struct S { #[cfg(test)] dbg: u32, real: u32 }\nfn place(ctx: &Ctx) { ctx.world().set_voxels(&w); }\n");
+	TestEqual(TEXT("a cfg(test) field takes only itself"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(*Field)).Num(), 1);
+	const FString LastField = TEXT("struct S { real: u32, #[cfg(test)] dbg: u32 }\nfn place(ctx: &Ctx) { ctx.world().set_voxels(&w); }\n");
+	TestEqual(TEXT("and so does a last field with no comma"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(*LastField)).Num(), 1);
+	const FString Arm = TEXT("fn pick(ctx: &Ctx, k: u8) { match k { #[cfg(test)] 0 => 1, _ => { ctx.world().set_voxels(&w); 2 } }; }\n");
+	TestEqual(TEXT("and a cfg(test) match arm"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(*Arm)).Num(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecScopeWarningsRawStringTest, "CrowdySDK.CrowdyExecEditor.ScopeWarningsSkipRawStrings", CrowdyExecPlatformDataTests::TestFlags)
+bool FCrowdyExecScopeWarningsRawStringTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecPlatformDataTests;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Builder = MakeDefinition(TEXT("builder"));
+	const TCHAR* const Raw = TEXT("let s = r#\"ctx.world().set_voxels(x) \" ctx\"#;\n");
+	TestEqual(TEXT("a call inside a raw string is not code"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(Raw)).Num(), 0);
+	// A backslash escapes nothing in a raw string, so it closes at its second quote and the call after it is code.
+	const TCHAR* const RawThenCall = TEXT("let t = r\"a\\\"; ctx.world().set_voxels(&w)?;\n");
+	TestEqual(TEXT("a call after a raw string ending in a backslash is code"), CrowdyExecDeploy::FindScopeWarnings(*Builder, MakeCrate(RawThenCall)).Num(), 1);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecServerLimitsTest, "CrowdySDK.CrowdyExecEditor.ServerLimitsSentOnlyWhenChanged", CrowdyExecPlatformDataTests::TestFlags)
 bool FCrowdyExecServerLimitsTest::RunTest(const FString& Parameters)
 {

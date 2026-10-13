@@ -2164,7 +2164,41 @@ bool FCrowdyExecCodegenLogicGapsRustFormsTest::RunTest(const FString& Parameters
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenTimerConstantsTest, "CrowdySDK.CrowdyExecEditor.CodegenTimerNamesAreConstants", CrowdyCodegenTest::TestFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenLogicGapsMacrosTest, "CrowdySDK.CrowdyExecEditor.CodegenLogicGapsNameMacros", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenLogicGapsMacrosTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition;
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateGapsCrate(*this, Definition, Crate))
+	{
+		return false;
+	}
+	const FString Written = FString::Printf(TEXT(
+		"impl Functions for %s {\n"
+		"    fn hit(&mut self, ctx: &Ctx, call: &Call<'_>, params: CrowdyExecTestHit) -> Result<()> {\n"
+		"        inner_macro!(ctx);\n"
+		"        Ok(())\n"
+		"    }\n"
+		"    const SAME: bool = FIRST != (SECOND);\n"
+		"    my_macro!(heal);\n"
+		"    other! { fn end_match(&mut self){} }\n"
+		"    // commented!(fn)\n"
+		"}\n"), *Crate.StateName);
+	const CrowdyExecCodegen::FLogicGaps Gaps = CrowdyExecCodegen::FindLogicGaps(Crate, Written);
+	TestEqualSensitive(TEXT("macros invoked in the block are named with their !; one inside a function, a != and a comment are not"),
+		FString::Join(Gaps.Macros, TEXT(",")), FString(TEXT("my_macro!,other!")));
+	TestEqualSensitive(TEXT("what a macro might define still counts as missing"), DescribeGaps(Gaps), FString(TEXT("missing heal,end_match,on_player_joined | leftover ")));
+	TestEqualSensitive(TEXT("but no stub is added next to a macro"), CrowdyExecCodegen::AddLogicStubs(Written, Gaps), Written);
+
+	const FString Plain = Written.Replace(TEXT("    my_macro!(heal);\n"), TEXT("")).Replace(TEXT("    other! { fn end_match(&mut self){} }\n"), TEXT(""));
+	const CrowdyExecCodegen::FLogicGaps NoMacros = CrowdyExecCodegen::FindLogicGaps(Crate, Plain);
+	TestTrue(TEXT("without them the block has no macros"), NoMacros.Macros.IsEmpty());
+	TestTrue(TEXT("and stubs are added again"), CrowdyExecCodegen::AddLogicStubs(Plain, NoMacros) != Plain);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenTimerConstantsTest,"CrowdySDK.CrowdyExecEditor.CodegenTimerNamesAreConstants", CrowdyCodegenTest::TestFlags)
 bool FCrowdyExecCodegenTimerConstantsTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyCodegenTest;

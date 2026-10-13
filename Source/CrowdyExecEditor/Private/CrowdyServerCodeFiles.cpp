@@ -17,6 +17,15 @@ namespace CrowdyServerCodeFilesDetail
 
 	TArray<SCrowdyServerCodeTab*> LiveTabs;
 
+	TMap<FString, TArray<FString>> StubsByFile;
+
+	FString FullPath(const FString& Path)
+	{
+		FString Full = FPaths::ConvertRelativePathToFull(Path);
+		FPaths::NormalizeFilename(Full);
+		return Full;
+	}
+
 	bool IsLowerAscii(TCHAR Char)
 	{
 		return Char >= 'a' && Char <= 'z';
@@ -98,6 +107,25 @@ void CrowdyServerCodeEdits::ShowWritten(const FString& Path)
 CrowdyServerCodeFiles::FEditStash& CrowdyServerCodeEdits::Kept()
 {
 	return CrowdyServerCodeFilesDetail::UnsavedEdits;
+}
+
+void CrowdyServerCodeEdits::NoteStubsInserted(const FString& Path, TArray<FString> Methods)
+{
+	using namespace CrowdyServerCodeFilesDetail;
+	StubsByFile.Add(FullPath(Path), MoveTemp(Methods));
+}
+
+TArray<FString> CrowdyServerCodeEdits::InsertedStubs(const FString& Path)
+{
+	using namespace CrowdyServerCodeFilesDetail;
+	const TArray<FString>* Methods = StubsByFile.Find(FullPath(Path));
+	return Methods ? *Methods : TArray<FString>();
+}
+
+void CrowdyServerCodeEdits::ForgetInsertedStubs(const FString& Path)
+{
+	using namespace CrowdyServerCodeFilesDetail;
+	StubsByFile.Remove(FullPath(Path));
 }
 
 void CrowdyServerCodeEdits::AddTab(SCrowdyServerCodeTab& Tab)

@@ -64,6 +64,15 @@ namespace CrowdyExecDeploy
 	/** Each server limit for Definition in manifest order, brought into the platform's range. */
 	TArray<FServerLimit> LimitsOf(const UCrowdyServerObjectDefinition& Definition);
 
+	/** The value the platform uses for a manifest limit (memory_mb, fuel_per_call, mailbox or deadline_ms): ManifestValue, brought into the field's range. Any other field is returned as given. */
+	int64 ClampLimit(const FString& Field, int64 ManifestValue);
+
+	/** Why the definition needs players.read whether or not Reads Players is on, such as "Members From is Crowdy Team"; empty when nothing forces it. */
+	FString PlayersReadRequiredBecause(const UCrowdyServerObjectDefinition& Definition);
+
+	/** A warning for each setting on a Developers Only or Server Only function that is never checked, since only players' calls are: Cooldown and Required Feature. */
+	TArray<FString> FindCallerWarnings(const UCrowdyServerObjectDefinition& Definition);
+
 	/** The platform data a type's server code may use, in the platform's order: what its definition asks for, and players.read for Crowdy Team members or records and a Required Feature. */
 	TArray<FString> ScopesOf(const UCrowdyServerObjectDefinition& Definition);
 

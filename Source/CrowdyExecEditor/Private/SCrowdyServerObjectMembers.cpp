@@ -1,5 +1,6 @@
 #include "SCrowdyServerObjectMembers.h"
 
+#include "CrowdyExecDeveloperCall.h"
 #include "CrowdyExecInternal.h"
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerObjectDefinition.h"
@@ -9,6 +10,7 @@
 #include "EdGraphSchema_K2.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "PropertyBagDetails.h"
+#include "SCrowdyExecDeveloperCall.h"
 #include "ScopedTransaction.h"
 #include "InputCoreTypes.h"
 #include "Styling/AppStyle.h"
@@ -524,7 +526,39 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeMemberRow(const FItemPtr& It
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 				]
 			];
-		return Row;
+		const FCrowdyServerFunction* BuiltIn = bBuiltIn ? UCrowdyServerObjectDefinition::GetMemberFunctions().FindByPredicate([&Item](const FCrowdyServerFunction& Each) { return Each.Name == Item->Name; }) : nullptr;
+		if (!BuiltIn || !CrowdyExecDeveloperCall::IsForDevelopers(*BuiltIn))
+		{
+			return Row;
+		}
+		// The row is disabled and unselectable, so the button sits beside it rather than in it.
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			[
+				Row
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SButton)
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+				.ToolTipText(LOCTEXT("CallAsDeveloperToolTip", "Call as Developer: runs this function on a live Server Object as you, the app's developer"))
+				.OnClicked_Lambda([this, Name = Item->Name]()
+				{
+					if (UCrowdyServerObjectDefinition* Current = Definition.Get())
+					{
+						SCrowdyExecDeveloperCall::Open(*Current, Name);
+					}
+					return FReply::Handled();
+				})
+				[
+					SNew(SImage)
+					.Image(FAppStyle::GetBrush("Icons.Play"))
+					.ColorAndOpacity(FSlateColor::UseForeground())
+				]
+			];
 	}
 	const FName Name = Item->Name;
 	const bool bVisible = Item->bVisibleToPlayers;
