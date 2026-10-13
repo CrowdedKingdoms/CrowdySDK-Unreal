@@ -4588,6 +4588,121 @@ bool FCrowdyServerObjectFixComponentHolderCheckTest::RunTest(const FString& Para
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectFixFailedHandlerJoinsTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.FailedHandlerThatJoinsAgainIsNotRefusedTwice", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectFixFailedHandlerJoinsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	AddExpectedMessagePlain(TEXT("could not join"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	// No Instance Id, so every join is refused; the handler joins again from inside the refusal, once.
+	TStrongObjectPtr<UCrowdyServerObjectComponent> Component = MakeRigComponent(Rig, ECrowdyServerObjectInstanceMode::InstanceId);
+	TStrongObjectPtr<UCrowdyServerObjectTestListener> Listener = MakeListener();
+	Component->OnStatusChanged.AddDynamic(Listener.Get(), &UCrowdyServerObjectTestListener::HandleStatus);
+	bool bJoinedAgain = false;
+	UCrowdyServerObjectComponent* Held = Component.Get();
+	Listener->OnStatus = [&bJoinedAgain, Held]()
+	{
+		if (bJoinedAgain)
+		{
+			return;
+		}
+		bJoinedAgain = true;
+		FCrowdyServerObjectComponentTestAccess::Join(*Held);
+	};
+	FCrowdyServerObjectComponentTestAccess::Join(*Component);
+	Listener->OnStatus = nullptr;
+	TestTrue(TEXT("the handler joined again from inside the refusal"), bJoinedAgain);
+	TestTrue(FString::Printf(TEXT("the join inside the Failed broadcast is ignored, so Failed is announced once (got %s)"), *StatusNames(Listener->StatusEvents)),
+		Listener->StatusEvents == TArray<ECrowdyServerObjectStatus>({ECrowdyServerObjectStatus::Failed}));
+	TestFalse(TEXT("the component still has its reason"), Component->GetFailureReason().IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectFixFirstValuesLetGoTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.FirstValuesHandlerThatLetsGoIsNotAnnouncedReady", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectFixFirstValuesLetGoTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	// Team 7's object is already Ready, so the component's first values arrive inside its join.
+	Rig.InstanceId = TEXT("7");
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	if (!Rig.AcquireReady(Owner.Get(), Boss(3000, false, ECrowdyExecTestPhase::Calm), 5))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectComponent> Component = MakeRigComponent(Rig, ECrowdyServerObjectInstanceMode::PlayersTeam);
+	Component->TeamId = 7;
+	TStrongObjectPtr<UCrowdyServerObjectTestListener> Listener = MakeListener();
+	Component->OnVariablesChanged.AddDynamic(Listener.Get(), &UCrowdyServerObjectTestListener::HandleVariables);
+	Component->OnStatusChanged.AddDynamic(Listener.Get(), &UCrowdyServerObjectTestListener::HandleStatus);
+	bool bLetGo = false;
+	UCrowdyServerObjectComponent* Held = Component.Get();
+	Listener->OnVariables = [&bLetGo, Held]()
+	{
+		if (bLetGo)
+		{
+			return;
+		}
+		bLetGo = true;
+		// Leaving the team lets the object go at once and waits for the player's teams.
+		Held->TeamId = 0;
+		FCrowdyServerObjectComponentTestAccess::SignIn(*Held);
+	};
+	FCrowdyServerObjectComponentTestAccess::Join(*Component);
+	Listener->OnVariables = nullptr;
+	TestTrue(TEXT("the first values reached the handler inside the join"), bLetGo);
+	TestNull(TEXT("the component holds nothing after its handler let go"), Component->GetServerObject());
+	TestTrue(FString::Printf(TEXT("so the join announces no Ready for the object it no longer holds (got %s)"), *StatusNames(Listener->StatusEvents)),
+		Listener->StatusEvents.IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectFixComponentStaleStatusTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.ComponentDropsAStatusTheObjectMovedOnFrom", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectFixComponentStaleStatusTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectComponent> Component = JoinedComponent(Rig);
+	if (!Component)
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestListener> Listener = MakeListener();
+	Component->OnStatusChanged.AddDynamic(Listener.Get(), &UCrowdyServerObjectTestListener::HandleStatus);
+	// Added after the component's own handler, so it runs first: it restarts the object while Failed is still being announced.
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Again = MakeOwner();
+	FRig* RigPtr = &Rig;
+	const UCrowdyServerObjectTestOwner* AgainOwner = Again.Get();
+	UCrowdyServerObject* Held = Component->GetServerObject();
+	const FDelegateHandle Restarter = Held->OnStatusChanged.AddLambda([RigPtr, AgainOwner](UCrowdyServerObject*, ECrowdyServerObjectStatus NewStatus)
+	{
+		if (NewStatus == ECrowdyServerObjectStatus::Failed)
+		{
+			RigPtr->Acquire(RigPtr->InstanceId, AgainOwner);
+		}
+	});
+	Rig.Subsystem->SignOutForTest();
+	Held->OnStatusChanged.Remove(Restarter);
+	TestTrue(FString::Printf(TEXT("the component passes on Connecting and drops the Failed the object had already moved on from (got %s)"), *StatusNames(Listener->StatusEvents)),
+		Listener->StatusEvents == TArray<ECrowdyServerObjectStatus>({ECrowdyServerObjectStatus::Connecting}));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectFixComponentServerNamesTest,
 	"CrowdySDK.CrowdyExec.ServerObjectFixes.ComponentVariablesChangedGivesUnrealNames", CrowdyServerObjectTests::TestFlags)
 bool FCrowdyServerObjectFixComponentServerNamesTest::RunTest(const FString& Parameters)

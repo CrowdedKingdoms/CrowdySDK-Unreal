@@ -204,4 +204,86 @@ bool FCrowdyServerObjectNodesSavedBlueprintTest::RunTest(const FString& Paramete
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesDefinitionLoadsLaterTest, "CrowdySDK.Editor.ServerObjectNodes.BlueprintLoadedBeforeItsDefinitionKeepsItsPins",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+bool FCrowdyServerObjectNodesDefinitionLoadsLaterTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesLoadTests;
+	const FString Root = FString::Printf(TEXT("/Temp/CrowdyExecNodesLoadTest_%s"), *FGuid::NewGuid().ToString());
+	UCrowdyServerObjectDefinition* List = MakeListAsset(Root);
+	UPackage* Package = CreatePackage(*(Root / TEXT("BP_LoadLater")));
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), Package, TEXT("BP_LoadLater"), BPTYPE_Normal, UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	const FString BlueprintPath = Blueprint->GetPathName();
+	const FString DefinitionPath = List->GetPathName();
+	// By path, since the objects are unloaded and loaded again on the way: whatever is in memory at the end goes.
+	ON_SCOPE_EXIT
+	{
+		TArray<UPackage*> Packages;
+		if (UCrowdyServerObjectDefinition* Definition = FindObject<UCrowdyServerObjectDefinition>(nullptr, *DefinitionPath))
+		{
+			FBlueprintActionDatabase::Get().ClearAssetActions(Definition);
+			Packages.Add(Definition->GetPackage());
+		}
+		if (UBlueprint* Left = FindObject<UBlueprint>(nullptr, *BlueprintPath))
+		{
+			Packages.Add(Left->GetPackage());
+		}
+		FText Error;
+		UPackageTools::UnloadPackages(Packages, Error, true);
+		IFileManager::Get().DeleteDirectory(*FPackageName::LongPackageNameToFilename(Root), false, true);
+	};
+	UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	int32 PositionY = 0;
+	UK2Node_Event* BeginPlay = FBlueprintEditorUtils::FindOverrideForFunction(Blueprint, AActor::StaticClass(), TEXT("ReceiveBeginPlay"));
+	BeginPlay = BeginPlay ? BeginPlay : FKismetEditorUtilities::AddDefaultEventNode(Blueprint, Graph, TEXT("ReceiveBeginPlay"), AActor::StaticClass(), PositionY);
+	if (!TestNotNull(TEXT("every node is placed"), SpawnEveryNode(Graph, List, TEXT("Total"), TEXT("Tip"), BeginPlay, 0)))
+	{
+		return false;
+	}
+	FCompilerResultsLog Results;
+	Results.bSilentMode = true;
+	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection, &Results);
+	TMap<FString, FString> PinsBefore;
+	for (const UEdGraphNode* Node : AllNodes(Blueprint))
+	{
+		if (Node->IsA<UCrowdyK2Node_ServerObjectBase>())
+		{
+			PinsBefore.Add(Node->GetName(), DescribePins(Node));
+		}
+	}
+	if (!TestTrue(TEXT("the definition and the Blueprint save"), Save(List) && Save(Blueprint)))
+	{
+		return false;
+	}
+
+	// Unloading the definition too means loading the Blueprint is what brings it back, so its nodes meet it mid-load.
+	FBlueprintActionDatabase::Get().ClearAssetActions(List);
+	FText UnloadError;
+	TestTrue(TEXT("the Blueprint and the definition unload"), UPackageTools::UnloadPackages({Package, List->GetPackage()}, UnloadError, true));
+	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+	TestNull(TEXT("the definition is no longer in memory"), FindObject<UCrowdyServerObjectDefinition>(nullptr, *DefinitionPath));
+
+	UBlueprint* Loaded = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
+	if (!TestNotNull(TEXT("the Blueprint loads back from disk"), Loaded))
+	{
+		return false;
+	}
+	TestNotNull(TEXT("loading the Blueprint loaded its definition"), FindObject<UCrowdyServerObjectDefinition>(nullptr, *DefinitionPath));
+	TestEqual(TEXT("its compile on load leaves it up to date"), int32(Loaded->Status), int32(BS_UpToDate));
+	int32 Compared = 0;
+	for (const UEdGraphNode* Node : AllNodes(Loaded))
+	{
+		const FString* Before = PinsBefore.Find(Node->GetName());
+		if (!Before || !Node->IsA<UCrowdyK2Node_ServerObjectBase>())
+		{
+			continue;
+		}
+		++Compared;
+		TestEqual(FString::Printf(TEXT("%s loads with the pins it was saved with"), *Node->GetName()), DescribePins(Node), *Before);
+	}
+	TestEqual(TEXT("all four typed nodes load"), Compared, 4);
+	return true;
+}
+
 #endif

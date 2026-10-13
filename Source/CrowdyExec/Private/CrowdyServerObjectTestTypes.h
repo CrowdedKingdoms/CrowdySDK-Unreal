@@ -409,11 +409,18 @@ public:
 		}
 	}
 
+	/** Runs after HandleStatus records the status. */
+	TFunction<void()> OnStatus;
+
 	UFUNCTION()
 	void HandleStatus(UCrowdyServerObject* Object, ECrowdyServerObjectStatus NewStatus)
 	{
 		StatusEvents.Add(NewStatus);
 		StatusHadObject.Add(Object != nullptr);
+		if (OnStatus)
+		{
+			OnStatus();
+		}
 	}
 
 	UFUNCTION()

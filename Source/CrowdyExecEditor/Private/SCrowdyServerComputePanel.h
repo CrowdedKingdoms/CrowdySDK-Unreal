@@ -34,6 +34,16 @@ namespace CrowdyServerComputePage
 
 	/** One badge for a type: what stops its code from building wins, then how it compares with the live version. */
 	FChangeBadge ChooseChangeBadge(const CrowdyExecDeploy::FTypeState& Type, const CrowdyExecRevisions::FTypeChange* Change);
+
+	enum class EServiceRefresh : uint8
+	{
+		RebuildPage,
+		RefillRows,
+		KeepRows
+	};
+
+	/** What a change of the service rebuilds: the whole page for a new client, the rows only when the service's data moved on, else nothing that could close an open menu. */
+	EServiceRefresh ChooseServiceRefresh(bool bContentBuilt, bool bNewClient, uint32 DataGeneration, uint32 FilledGeneration);
 }
 
 /** The Server Compute page of Crowdy Studio: deploys the project's Server Object types, and shows the app's versions, logs and call activity. */
