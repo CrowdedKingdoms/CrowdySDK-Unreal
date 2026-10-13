@@ -262,6 +262,7 @@ void UCrowdySDKSubsystem::Logout() const
 		Auth->ClearSavedSession();
 
 	GameSession->ClearCurrentSessionData();
+	GameSession->SetAppPaused(false, FString());
 
 	// Scrub the bearers the shared API client still holds. It reinstalls them from here on every resolve, so a call
 	// issued after this point would otherwise still go out as the account that just signed out.

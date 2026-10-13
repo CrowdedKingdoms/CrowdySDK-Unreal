@@ -10,6 +10,7 @@
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnOwnerUUIDUpdated, FString, NewOwnerUUID);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnHostIDUpdated, const FGuid&, NewHostID, const FGuid&, PreviousHostID);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyAppPausedChanged, bool, bPaused, const FString&, Reason);
 
 /**
  * 
@@ -136,7 +137,22 @@ public:
 	 *  modules (CrowdyReplication) can read it without a dependency cycle. */
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session")
 	FOnHostIDUpdated OnHostIDUpdated;
-	
+
+	/** Fired on the game thread when the app is paused or comes back, or when the reason changes. */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Game Session")
+	FOnCrowdyAppPausedChanged OnAppPausedChanged;
+
+	/** True while the app is paused: its owner or the platform switched it off, or it ran out of funds. The world and Server Objects refuse until it is back. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Game Session")
+	bool IsAppPaused() const { return bAppPaused; }
+
+	/** Why the app is paused, in words a player can read. Empty when it is not paused or no reason was given. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Game Session")
+	FString GetAppPausedReason() const { return AppPausedReason; }
+
+	/** Game thread only. Broadcasts OnAppPausedChanged only when the paused flag or the reason changes. */
+	void SetAppPaused(bool bPaused, const FString& Reason);
+
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetAppID(const int64 InAppID) {GameSessionInfo.AppID = InAppID;}
 	
@@ -317,7 +333,11 @@ private:
 
 	UPROPERTY()
 	FGuid HostID;
-	
+
+	bool bAppPaused = false;
+
+	FString AppPausedReason;
+
 	/** Atomic so it can be written from a background response thread and read
 	 *  from the game thread (or any other thread) without a lock. */
 	std::atomic<int64> HostUserID { 0 };

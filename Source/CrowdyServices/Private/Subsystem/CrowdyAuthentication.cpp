@@ -45,6 +45,21 @@ static constexpr int32  MaxRotationRetries   = 5;
 // know the argument refuses every attempt for as long as the client runs.
 static constexpr int32  MaxServerNamedRefusals = 2;
 
+// Any gate status but ACTIVE pauses the app, GRACE included; an answer with no gate leaves the state as it was.
+static void ApplyRuntimeGate(UCrowdyGameSession* Session, const FCrowdyCppAppTokenResult& Result)
+{
+	if (!Session || Result.RuntimeGateStatus.IsEmpty())
+	{
+		return;
+	}
+	if (Result.RuntimeGateStatus.Equals(TEXT("ACTIVE"), ESearchCase::CaseSensitive))
+	{
+		Session->SetAppPaused(false, FString());
+		return;
+	}
+	Session->SetAppPaused(true, Result.RuntimeGateReason.IsEmpty() ? Result.RuntimeGateStatus.ToLower() : Result.RuntimeGateReason);
+}
+
 static const TCHAR* const HeldFlowSupersededMessage =
 	TEXT("A newer sign-in replaced the one waiting for the terms and the age confirmation.");
 
@@ -1015,6 +1030,7 @@ void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSucces
 			--Self->CppRotationsInFlight;
 			if (Result.bOk)
 			{
+				ApplyRuntimeGate(Self->GameSession, Result);
 				Self->ApplyAppTokenAndFinish(MakeAppTokenFields(Result), Flow, OnSuccess);
 				return;
 			}
@@ -1081,6 +1097,7 @@ void UCrowdyAuthentication::DispatchRefresh()
 			{
 				// A rotation that got through clears the refusal run, so only CONSECUTIVE refusals count.
 				Self->ServerNamedRefusals = 0;
+				ApplyRuntimeGate(Self->GameSession, Result);
 				Self->ApplyAppTokenAndFinish(MakeAppTokenFields(Result), EAuthFlow::Refresh, FOnAuthSuccess());
 				return;
 			}

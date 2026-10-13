@@ -33,6 +33,9 @@ struct FCrowdyNativeExecReply
 	bool bRetryable = false;
 	bool bRateLimited = false;
 
+	// The client gave up waiting (no reply within the call timeout), as opposed to the server's own deadline.
+	bool bNoReply = false;
+
 	// How long a rate-limit refusal asks the caller to wait, or -1 when it does not say.
 	int32 RetryAfterMs = -1;
 
@@ -55,12 +58,14 @@ struct FCrowdyNativeExecOptions
 	FString NodeType;
 	FString Key;
 
-	// Longer than the 10 s a server lets a call's handler run at most; time waiting at the instance or reconnecting counts too.
-	int32 CallTimeoutMs = 12000;
+	// The longest Time per Call a type may have, 10 s, plus time waiting behind other calls.
+	int32 CallTimeoutMs = 20000;
 	int32 OpenTimeoutMs = 10000;
 	bool bReconnect = true;
 	// Dials as the app's developer with a session token instead of as a player: calls arrive as Caller::Developer and may reach any node type.
 	bool bAsDeveloper = false;
+	// Domains, besides the Game API's own, whose exec gateways may be used, for self-hosted setups.
+	TArray<FString> AllowedGatewayDomains;
 };
 
 /**
@@ -102,6 +107,12 @@ public:
 
 	FString GetHost() const;
 	bool IsConnected() const;
+
+	// True when the last dial was refused because the gateway is outside the Game API's estate and not allowed: no retry can fix it.
+	bool IsRefusedForGood() const;
+
+	// Why the last dial was refused, empty when it was not.
+	FString GetRefusal() const;
 
 	// Terminal: nothing reconnects, and pending completions are delivered as canceled. Safe to call more than once.
 	void Close();

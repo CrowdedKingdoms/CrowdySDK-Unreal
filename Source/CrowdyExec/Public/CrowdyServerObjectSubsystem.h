@@ -67,8 +67,14 @@ public:
 	/** Records that Handler's Function is now bound through Holder, and gives the holder it was bound through before, if any. */
 	UObject* MoveBinding(const UObject* Handler, FName Function, UObject* Holder);
 
+	/** A random fraction in [0, 1) that stretches a retry wait, so many clients do not retry in lockstep. */
+	float NextJitter() const;
+
+	/** True the first time Reason is given, and again when it changes; the Players Online warning prints once per reason in each game instance. */
+	bool NotePlayersOnlineReason(const FString& Reason);
+
 #if WITH_DEV_AUTOMATION_TESTS
-	/** Stands in for Initialize on a subsystem built outside a subsystem collection. Registers no ticker or delegates. */
+	/** Stands in for Initialize on a subsystem built outside a subsystem collection. Registers no ticker or delegates, and takes no retry jitter. */
 	void InitializeForTest(UCrowdyCppClientSubsystem* InClientHost, UCrowdyGameSession* InSession);
 	void TickForTest(float DeltaSeconds) { Tick(DeltaSeconds); }
 	void SignOutForTest() { HandleLogout(true); }
@@ -77,6 +83,9 @@ public:
 	void SetMapLoadingForTest(bool bLoading) { bLoadingMap = bLoading; }
 	void PostLoadMapForTest(UWorld* World) { HandlePostLoadMap(World); }
 	void SetSeamlessTravelForTest(bool bTravelling) { SeamlessTravelOverride = bTravelling; }
+	void SetJitterForTest(TOptional<float> Jitter) { JitterOverride = Jitter; }
+	/** Closes the connection as a failed dial would, so it redials after the usual wait and every object reads again. */
+	void DropConnectionForTest() { CloseConnection(TEXT(" (dropped for a test)")); ScheduleReconnect(); }
 	bool IsSeamlessTravellingForTest() const { return IsSeamlessTravelling(); }
 	int32 NumObjectsForTest() const { return Objects.Num(); }
 	int32 NumLinksForTest() const { return Links.Num(); }
@@ -144,6 +153,10 @@ private:
 	TWeakObjectPtr<UCrowdyCppClientSubsystem> ClientHostOverride;
 	TWeakObjectPtr<UCrowdyGameSession> SessionOverride;
 	TOptional<bool> SeamlessTravelOverride;
+	TOptional<float> JitterOverride;
+	/** Gateway domains a test's scripted server uses, allowed beside the project's own. */
+	TArray<FString> TestGatewayDomains;
+	FString PlayersOnlineWarned;
 
 	FTSTicker::FDelegateHandle TickHandle;
 	FDelegateHandle PreLoadMapHandle;
@@ -166,6 +179,8 @@ private:
 	/** The shared client was rebuilt or the app changed since the connection was dialed; closing the client closed it. */
 	bool IsDialStale() const;
 	void ScheduleReconnect();
+	/** The gateway was refused for a reason no retry fixes: closes the connection, backs off, and fails every live object with Error. */
+	void FailRefusedForGood(const FString& Error);
 	TArray<TObjectPtr<UCrowdyServerObject>> SnapshotObjects() const;
 
 	TWeakObjectPtr<class UCrowdySDKSubsystem> SDKSubsystem;

@@ -56,37 +56,70 @@ bool CrowdyExec::SameKeptName(FStringView A, FStringView B)
 	}
 }
 
+namespace
+{
+	const FProperty* ScanTravellingField(const UStruct* Struct, FName Name)
+	{
+		// A cooked Blueprint struct only knows its field names without spaces and punctuation, so compare what is left of both.
+		const bool bAuthoredNames = Struct->IsA<UUserDefinedStruct>();
+		TStringBuilder<128> Wanted;
+		Name.AppendString(Wanted);
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			if (!CrowdyExec::IsTravellingProperty(*It))
+			{
+				continue;
+			}
+			TStringBuilder<128> Field;
+			if (bAuthoredNames)
+			{
+				Field << It->GetAuthoredName();
+			}
+			else
+			{
+				It->GetFName().AppendString(Field);
+			}
+			if (CrowdyExec::SameKeptName(Field.ToView(), Wanted.ToView()))
+			{
+				return *It;
+			}
+		}
+		return nullptr;
+	}
+
+	struct FFoundField
+	{
+		TWeakObjectPtr<const UStruct> Struct;
+		const FProperty* Field = nullptr;
+	};
+}
+
 const FProperty* CrowdyExec::FindTravellingField(const UStruct* Struct, FName Name)
 {
 	if (!Struct)
 	{
 		return nullptr;
 	}
-	// A cooked Blueprint struct only knows its field names without spaces and punctuation, so compare what is left of both.
-	const bool bAuthoredNames = Struct->IsA<UUserDefinedStruct>();
-	TStringBuilder<128> Wanted;
-	Name.AppendString(Wanted);
-	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	if (!IsInGameThread())
 	{
-		if (!IsTravellingProperty(*It))
-		{
-			continue;
-		}
-		TStringBuilder<128> Field;
-		if (bAuthoredNames)
-		{
-			Field << It->GetAuthoredName();
-		}
-		else
-		{
-			It->GetFName().AppendString(Field);
-		}
-		if (SameKeptName(Field.ToView(), Wanted.ToView()))
-		{
-			return *It;
-		}
+		return ScanTravellingField(Struct, Name);
 	}
-	return nullptr;
+	// Get Server Variable runs per read, often in Tick; a scan of a Blueprint struct builds a name per field.
+	static TMap<TPair<const UStruct*, FName>, FFoundField> Found;
+	static uint32 FoundGeneration = 0;
+	if (FoundGeneration != GetStructGeneration())
+	{
+		Found.Reset();
+		FoundGeneration = GetStructGeneration();
+	}
+	const TPair<const UStruct*, FName> Key(Struct, Name);
+	if (const FFoundField* Known = Found.Find(Key); Known && Known->Struct.Get() == Struct)
+	{
+		return Known->Field;
+	}
+	const FProperty* Field = ScanTravellingField(Struct, Name);
+	Found.Add(Key, FFoundField{ Struct, Field });
+	return Field;
 }
 
 const TCHAR* const UCrowdyServerObjectDefinition::OnlyInstanceId = TEXT("main");
@@ -781,7 +814,8 @@ namespace
 			{
 				Errors.Add(FString::Printf(TEXT("Timers: %s: '%s' is kept for the On Player Joined and On Player Left events"), *Name, *Handler));
 			}
-			else if (CrowdyExec::IsReservedMethodName(Handler, false) || Handler.Equals(CrowdyExec::FlushTimerName, ESearchCase::CaseSensitive))
+			else if (CrowdyExec::IsReservedMethodName(Handler, false) || Handler.Equals(CrowdyExec::FlushTimerName, ESearchCase::CaseSensitive)
+				|| Handler.Equals(CrowdyExec::SessionsTimerName, ESearchCase::CaseSensitive))
 			{
 				Errors.Add(FString::Printf(TEXT("Timers: %s: '%s' is reserved in the server code; rename the timer"), *Name, *Handler));
 			}

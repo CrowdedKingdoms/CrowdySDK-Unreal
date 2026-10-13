@@ -25,23 +25,6 @@ namespace
 		return TArray<uint8>(reinterpret_cast<const uint8*>(Value.data()), static_cast<int32>(Value.size()));
 	}
 
-	FCrowdyNativeExecReply CrowdyNativeExecReplyFrom(const crowdy::domains::ExecReply& Reply)
-	{
-		FCrowdyNativeExecReply Out;
-		Out.Status = static_cast<ECrowdyNativeExecStatus>(Reply.status);
-		Out.bRetryable = Reply.retryable();
-		Out.bRateLimited = Reply.rateLimited();
-		const std::optional<long> RetryAfter = Reply.retryAfterMs();
-		Out.RetryAfterMs = RetryAfter ? static_cast<int32>(FMath::Clamp<long>(*RetryAfter, 0, MAX_int32)) : -1;
-		if (Reply.ok())
-		{
-			Out.Payload = CrowdyNativeExecBytes(Reply.payload);
-			return Out;
-		}
-		Out.Message = CrowdyNativeExecFromUtf8(Reply.payload);
-		return Out;
-	}
-
 	FCrowdyNativeExecReply CrowdyNativeExecRefusal(ECrowdyNativeExecStatus Status, const FString& Message)
 	{
 		FCrowdyNativeExecReply Out;
@@ -65,6 +48,7 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 
 	std::shared_ptr<crowdy::domains::ExecConnection> Connection;
 	std::shared_ptr<FString> DialRefusal;
+	std::shared_ptr<bool> RefusedForGood;
 
 	// Completions not yet delivered, by id, so Close can deliver each exactly once whatever CrowdyCPP does later.
 	TMap<uint64, FReplyCallback> PendingReplies;
@@ -116,7 +100,7 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 		{
 			if (const TSharedPtr<FImpl, ESPMode::ThreadSafe> Live = Weak.Pin())
 			{
-				Live->CompleteReply(Id, CrowdyNativeExecReplyFrom(Reply));
+				Live->CompleteReply(Id, CrowdyNativeExec::ReplyFrom(Reply));
 			}
 		};
 	}
@@ -124,13 +108,34 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 
 namespace CrowdyNativeExec
 {
-	TSharedRef<FCrowdyNativeExecConnection> Wrap(std::shared_ptr<crowdy::domains::ExecConnection> Connection, std::shared_ptr<FString> DialRefusal)
+	TSharedRef<FCrowdyNativeExecConnection> Wrap(std::shared_ptr<crowdy::domains::ExecConnection> Connection, std::shared_ptr<FString> DialRefusal,
+		std::shared_ptr<bool> RefusedForGood)
 	{
 		TSharedRef<FCrowdyNativeExecConnection::FImpl, ESPMode::ThreadSafe> Impl =
 			MakeShared<FCrowdyNativeExecConnection::FImpl, ESPMode::ThreadSafe>();
 		Impl->Connection = std::move(Connection);
 		Impl->DialRefusal = std::move(DialRefusal);
+		Impl->RefusedForGood = std::move(RefusedForGood);
 		return MakeShared<FCrowdyNativeExecConnection>(Impl);
+	}
+
+	FCrowdyNativeExecReply ReplyFrom(const crowdy::domains::ExecReply& Reply)
+	{
+		FCrowdyNativeExecReply Out;
+		Out.Status = static_cast<ECrowdyNativeExecStatus>(Reply.status);
+		Out.bRetryable = Reply.retryable();
+		Out.bRateLimited = Reply.rateLimited();
+		const std::optional<long> RetryAfter = Reply.retryAfterMs();
+		Out.RetryAfterMs = RetryAfter ? static_cast<int32>(FMath::Clamp<long>(*RetryAfter, 0, MAX_int32)) : -1;
+		if (Reply.ok())
+		{
+			Out.Payload = CrowdyNativeExecBytes(Reply.payload);
+			return Out;
+		}
+		Out.Message = CrowdyNativeExecFromUtf8(Reply.payload);
+		// The client's own call timeout, as opposed to a deadline the server reports.
+		Out.bNoReply = Out.Status == ECrowdyNativeExecStatus::DeadlineExceeded && Out.Message.StartsWith(TEXT("no reply in "), ESearchCase::CaseSensitive);
+		return Out;
 	}
 }
 
@@ -270,6 +275,16 @@ FString FCrowdyNativeExecConnection::GetHost() const
 bool FCrowdyNativeExecConnection::IsConnected() const
 {
 	return !Impl->bClosed && Impl->Connection->connected();
+}
+
+bool FCrowdyNativeExecConnection::IsRefusedForGood() const
+{
+	return Impl->RefusedForGood && *Impl->RefusedForGood;
+}
+
+FString FCrowdyNativeExecConnection::GetRefusal() const
+{
+	return Impl->DialRefusal ? *Impl->DialRefusal : FString();
 }
 
 void FCrowdyNativeExecConnection::Close()

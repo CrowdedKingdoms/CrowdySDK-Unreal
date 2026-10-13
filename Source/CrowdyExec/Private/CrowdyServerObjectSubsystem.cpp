@@ -112,6 +112,8 @@ void UCrowdyServerObjectSubsystem::InitializeForTest(UCrowdyCppClientSubsystem* 
 {
 	ClientHostOverride = InClientHost;
 	SessionOverride = InSession;
+	JitterOverride = 0.f;
+	TestGatewayDomains = { TEXT("example.test") };
 }
 #endif
 
@@ -351,6 +353,13 @@ bool UCrowdyServerObjectSubsystem::Tick(float DeltaSeconds)
 	}
 	if (Connection.IsValid())
 	{
+		// A refused redial closes the connection without a connect completion, so it is seen here.
+		if (Connection->IsRefusedForGood())
+		{
+			UE_LOG(LogCrowdyExec, Warning, TEXT("Server Objects could not reconnect to the server: %s"), *Connection->GetRefusal());
+			FailRefusedForGood(Connection->GetRefusal());
+			return true;
+		}
 		// The connection redials a dropped socket itself and reports only the reconnect, so the drop is seen here.
 		const bool bDropped = bConnected && !bTracedDrop && CrowdyExecTrace::Exec() && !Connection->IsConnected();
 		UE_CLOG(bDropped, LogCrowdyExec, Log, TEXT("exec: connection closed"));
@@ -426,7 +435,7 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	UCrowdyCppClientSubsystem* Host = GetClientHost();
 	if (!Session || !Host || Session->GetGameToken().IsEmpty())
 	{
-		ConnectRetryIn = 1.f;
+		ConnectRetryIn = 1.f + 0.5f * NextJitter();
 		return;
 	}
 
@@ -445,6 +454,8 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	FCrowdyNativeExecOptions Options;
 	Options.NodeType = First->GetInstanceId().IsEmpty() ? FString() : First->GetDefinition()->TypeName;
 	Options.Key = First->GetInstanceId();
+	Options.AllowedGatewayDomains = GetDefault<UCrowdySDKDeveloperSettings>()->AllowedExecGatewayDomains;
+	Options.AllowedGatewayDomains.Append(TestGatewayDomains);
 
 	// Read on every dial, so a reconnect after the token rotates carries the current one.
 	const TWeakObjectPtr<UCrowdyGameSession> WeakSession = Session;
@@ -504,7 +515,14 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 		UE_LOG(LogCrowdyExec, Warning, TEXT("Server Objects could not connect to the server: %s"), *Error);
 		UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s failed %s"), bRedialing ? TEXT("redial") : TEXT("dial"), *CrowdyExec::SafeText(Error, 256));
 		FailedDialTypes.Add(DialedType);
-		const FString Reason = FString::Printf(TEXT("Could not open the connection to the server for %s: %s"), *DialedType, *CrowdyExec::SafeText(Error, 256));
+		const FString SafeError = CrowdyExec::SafeText(Error, 256);
+		if (Connection.IsValid() && Connection->IsRefusedForGood())
+		{
+			FailRefusedForGood(Error);
+			return;
+		}
+		const TCHAR* const Lead = CrowdyServerObjectDetail::IsSwitchedOffText(Error) ? TEXT("The server is switched off or paused for") : TEXT("Could not open the connection to the server for");
+		const FString Reason = FString::Printf(TEXT("%s %s: %s"), Lead, *DialedType, *SafeError);
 		for (UCrowdyServerObject* Object : SnapshotObjects())
 		{
 			if (Object)
@@ -555,10 +573,41 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	}
 }
 
+void UCrowdyServerObjectSubsystem::FailRefusedForGood(const FString& Error)
+{
+	CloseConnection();
+	// Backed off before the objects fail, so game code that acquires again from On Failed does not dial once per round trip.
+	ScheduleReconnect();
+	const FString Refused = FString::Printf(TEXT("Could not open the connection to the server: %s"), *CrowdyExec::SafeText(Error, 256));
+	for (UCrowdyServerObject* Object : SnapshotObjects())
+	{
+		if (Object && (Object->GetStatus() == ECrowdyServerObjectStatus::Connecting || Object->GetStatus() == ECrowdyServerObjectStatus::Ready))
+		{
+			Object->Fail(Refused, true);
+		}
+	}
+}
+
 void UCrowdyServerObjectSubsystem::ScheduleReconnect()
 {
 	++ConnectAttempts;
-	ConnectRetryIn = FMath::Min(FMath::Pow(2.f, static_cast<float>(ConnectAttempts - 1)), 30.f);
+	ConnectRetryIn = FMath::Min(FMath::Pow(2.f, static_cast<float>(ConnectAttempts - 1)), 30.f) * (1.f + 0.5f * NextJitter());
+	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: redial in %.3f s"), ConnectRetryIn);
+}
+
+float UCrowdyServerObjectSubsystem::NextJitter() const
+{
+	return JitterOverride.IsSet() ? JitterOverride.GetValue() : FMath::FRand();
+}
+
+bool UCrowdyServerObjectSubsystem::NotePlayersOnlineReason(const FString& Reason)
+{
+	if (Reason.Equals(PlayersOnlineWarned, ESearchCase::CaseSensitive))
+	{
+		return false;
+	}
+	PlayersOnlineWarned = Reason;
+	return true;
 }
 
 void UCrowdyServerObjectSubsystem::HandleReconnect()

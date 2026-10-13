@@ -1075,7 +1075,7 @@ bool FCrowdyExecCodegenRulesCrateTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a roster change alone is pushed"), HasText(Lib, TEXT("if changed.is_empty() && roster.is_empty() {")));
 	TestTrue(TEXT("on_session has the platform's signature"), HasText(Lib, TEXT("fn on_session(&mut self, ctx: &Ctx, player: u64, session: ckx_sdk::Session) -> Result<()> {")));
 	TestTrue(TEXT("a member who leaves is removed, for good, before On Player Left"),
-		HasText(Lib, TEXT("members::remove(player);\n                self.finish(ctx, before, Ok(()))?;\n                // The removal stands even when on_player_left fails.\n")));
+		HasText(Lib, TEXT("members::remove(player);\n        self.finish(ctx, before, Ok(()))?;\n        // The removal stands even when on_player_left fails.\n")));
 	TestTrue(TEXT("sessions are saved"), HasText(Lib, TEXT("    sessions: &'a BTreeMap<u64, u32>,\n")));
 	TestTrue(TEXT("older snapshots load without sessions"), HasText(Lib, TEXT("    #[serde(default)]\n    sessions: BTreeMap<u64, u32>,\n")));
 	TestTrue(TEXT("sessions are capped"), HasText(Lib, TEXT("if connections == 0 && self.sessions.len() >= MAX_SESSION_PLAYERS {")));
@@ -1196,7 +1196,7 @@ bool FCrowdyExecCodegenMembersOptionsTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TestTrue(TEXT("Remove Members Who Leave alone counts sessions"), HasText(MembersOnly, TEXT("fn on_session(")));
-	TestTrue(TEXT("Remove Members Who Leave removes the leaver"), HasText(MembersOnly, TEXT("members::remove(player);\n                self.finish(ctx, before, Ok(()))\n")));
+	TestTrue(TEXT("Remove Members Who Leave removes the leaver"), HasText(MembersOnly, TEXT("members::remove(player);\n        self.finish(ctx, before, Ok(()))\n")));
 	TestTrue(TEXT("Readable By Members hides the fields from non-members"), HasText(MembersOnly, TEXT("self.read_reply(member, member, leader)")));
 	TestTrue(TEXT("Readable By Members pushes carry only epoch and seq"), HasText(MembersOnly, TEXT("        let mut out = Vec::new();\n        write_map(&mut out, 2);\n")));
 	TestFalse(TEXT("Readable By Members pushes carry no member keys"), HasText(MembersOnly, TEXT("for (name, bytes) in &roster {")));
@@ -1328,8 +1328,12 @@ bool FCrowdyExecCodegenTimersArmFirstTest::RunTest(const FString& Parameters)
 		HasText(Timed, TEXT("            for armed in &starts[..index] {\n                ctx.cancel_timer(armed);\n            }\n")));
 	TestTrue(TEXT("and refuses the dispatch naming the timer and the reason"),
 		HasText(Timed, TEXT("return Err(Error::new(&format!(\"the change was not kept: timer {name} could not start: {error}\")));")));
-	const FString LoadWarning = TEXT("let _ = ctx.log(Level::Warn, &format!(\"timer {name} could not be armed after a deploy changed it: {error}\"));");
+	const FString LoadWarning = TEXT("let _ = ctx.log(Level::Warn, &format!(\"timer {name} keeps any old schedule: the changed one could not be armed: {error}\"));");
 	TestTrue(TEXT("a load that cannot arm a changed timer logs it"), HasText(Timed, *LoadWarning));
+	TestTrue(TEXT("a load asks which timers are pending and never cancels one to re-arm it"),
+		HasText(Timed, TEXT("        let pending: BTreeSet<String> = ctx.timers().into_iter().map(|(name, _)| name).collect();\n"))
+		&& HasText(Timed, TEXT("                Some(old) => old.as_str() != kind && pending.contains(name),\n                None => pending.contains(name) || automatic,\n"))
+		&& !HasText(Timed, TEXT("&& ctx.cancel_timer(name)")) && !HasText(Timed, TEXT("ctx.cancel_timer(name) || automatic")));
 	TestFalse(TEXT("a timer that cannot start is not only logged"), HasText(Timed.Replace(*LoadWarning, TEXT("")), TEXT("Level::Warn")));
 	TestTrue(TEXT("the last start or stop queued for a timer counts"), HasText(Timed, TEXT("            last.retain(|(earlier, _)| *earlier != name);\n            last.push((name, start));\n")));
 	TestTrue(TEXT("a timer that cannot start is in the finish comment"), HasText(Timed, TEXT("a timer that cannot start leaves the state as it was")));
@@ -1709,6 +1713,112 @@ bool FCrowdyExecCodegenRecordsCrowdyTeamCrateTest::RunTest(const FString& Parame
 	TestFalse(TEXT("not the team of a record the viewer owns here"), HasText(Lib, TEXT("owned_by(player).next()")));
 	TestTrue(TEXT("watched numbers alone cannot be refused, so a touched record is not encoded again"),
 		HasText(Lib, TEXT("    fn check_touched(&self) -> Result<()> {\n            Ok(())\n        }\n")) && !HasText(Lib, TEXT("read_record(&mut scratch")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenSessionsExpireTest, "CrowdySDK.CrowdyExecEditor.CodegenSessionsExpireAfterARestart", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenSessionsExpireTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(*this, {HitFunction, HealFunction});
+	if (!Definition)
+	{
+		return false;
+	}
+	Definition->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	Definition->bRemoveMembersWhoLeave = true;
+	Definition->bOnPlayerLeft = true;
+	FString Lib;
+	if (!GenerateLib(*this, *Definition, Lib))
+	{
+		return false;
+	}
+	TestTrue(TEXT("restored counts are held apart, and not saved"),
+		HasText(Lib, TEXT("    sessions: BTreeMap<u64, u32>,\n    // The players whose restored connection count nothing has confirmed yet; not saved.\n    unconfirmed: BTreeSet<u64>,\n")));
+	TestEqual(TEXT("only the object holds the set"), CountText(Lib, TEXT("unconfirmed: BTreeSet<u64>,")), 1);
+	TestTrue(TEXT("a spawn restores nothing"), HasText(Lib, TEXT("sessions: BTreeMap::new(), unconfirmed: BTreeSet::new(), announced: false })")));
+	TestTrue(TEXT("a load holds every restored player as unconfirmed"), HasText(Lib, TEXT("unconfirmed: saved.sessions.keys().copied().collect(), sessions: saved.sessions, announced: false })")));
+	TestTrue(TEXT("the timer is reserved and the wait is two minutes"),
+		HasText(Lib, TEXT("const SESSIONS_TIMER: &str = \"crowdy_sessions\";\nconst SESSION_CONFIRM_MS: u64 = 120_000;\n")));
+	TestTrue(TEXT("the announcement is a flag the object keeps, not saved"),
+		HasText(Lib, TEXT("    unconfirmed: BTreeSet<u64>,\n    // Whether the new epoch has been announced to watchers; not saved.\n    announced: bool,\n"))
+		&& HasText(Lib, TEXT("unconfirmed: BTreeSet::new(), announced: false })")) && HasText(Lib, TEXT("sessions: saved.sessions, announced: false })")));
+	TestTrue(TEXT("a load with restored counts arms the first run, which announces the epoch"),
+		HasText(Lib, TEXT("        if !saved.sessions.is_empty() {\n            if let Err(error) = ctx.timer_after(SESSIONS_TIMER, SESSION_ANNOUNCE_MS) {\n")));
+	TestTrue(TEXT("the first run publishes an empty push of the next seq and arms the second"),
+		HasText(Lib, TEXT("        if !self.announced {\n            self.announced = true;\n            self.seq += 1;\n"))
+		&& HasText(Lib, TEXT("            write_uint(&mut out, self.seq);\n            let _ = ctx.publish(\"state\", &out);\n            if let Err(error) = ctx.timer_after(SESSIONS_TIMER, SESSION_CONFIRM_MS) {\n")));
+	TestTrue(TEXT("on_timer runs it before the definition's timers, with or without any"),
+		HasText(Lib, TEXT("    fn on_timer(&mut self, ctx: &Ctx, name: &str) -> Result<()> {\n        if name == SESSIONS_TIMER {\n            return self.sessions_timer(ctx);\n        }\n")));
+	TestTrue(TEXT("any call from a player confirms the restored count"),
+		HasText(Lib, TEXT("    fn handle(&mut self, ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n        if let Ok(player) = call.player() {\n            self.unconfirmed.remove(&player);\n        }\n        match call.method {\n")));
+	TestTrue(TEXT("a Joined for an unconfirmed player sets the count to one and runs no hook, the visit goes on"),
+		HasText(Lib, TEXT("        let restored = self.unconfirmed.remove(&player);\n"))
+		&& HasText(Lib, TEXT("                if restored {\n                    self.sessions.insert(player, 1);\n                    return Ok(());\n                }\n                if connections == 0 && ")));
+	TestTrue(TEXT("a Left that leaves an unconfirmed player a count keeps them unconfirmed"),
+		HasText(Lib, TEXT("                    self.sessions.insert(player, connections - 1);\n                    if restored {\n                        self.unconfirmed.insert(player);\n                    }\n                    return Ok(());\n")));
+	TestTrue(TEXT("the last connection leaving ends the visit through the one helper"), HasText(Lib, TEXT("                    return Ok(());\n                }\n                self.session_ended(ctx, player)\n            }\n")));
+	TestTrue(TEXT("and so does the expiry"), HasText(Lib, TEXT("        for player in std::mem::take(&mut self.unconfirmed) {\n            if let Err(error) = self.session_ended(ctx, player) {\n")));
+	TestEqual(TEXT("the removal and On Player Left are written once"), CountText(Lib, TEXT("Functions::on_player_left(&mut self.state, ctx, player)")), 1);
+	TestTrue(TEXT("the helper removes the member, which stands even when On Player Left fails"),
+		HasText(Lib, TEXT("    fn session_ended(&mut self, ctx: &Ctx, player: u64) -> Result<()> {\n        self.sessions.remove(&player);\n"))
+		&& HasText(Lib, TEXT("        members::remove(player);\n        self.finish(ctx, before, Ok(()))?;\n        // The removal stands even when on_player_left fails.\n")));
+
+	AddTimer(*Definition, TEXT("Respawn"), ECrowdyServerTimerRepeat::After, 10.f, false);
+	FString Timed;
+	if (!GenerateLib(*this, *Definition, Timed))
+	{
+		return false;
+	}
+	const int32 ModuleStart = Timed.Find(TEXT("pub mod timers {"), ESearchCase::CaseSensitive);
+	const int32 ModuleEnd = Timed.Find(TEXT("\n}\n"), ESearchCase::CaseSensitive, ESearchDir::FromStart, ModuleStart);
+	TestTrue(TEXT("the timers module is found"), ModuleStart != INDEX_NONE && ModuleEnd > ModuleStart);
+	const FString Module = Timed.Mid(ModuleStart, ModuleEnd - ModuleStart);
+	TestFalse(TEXT("the definition's timers never cancel or re-arm the sessions timer"), HasText(Module, TEXT("SESSIONS_TIMER")) || HasText(Module, TEXT("crowdy_sessions")));
+	TestTrue(TEXT("a type with timers still runs it first"), HasText(Timed, TEXT("        if name == SESSIONS_TIMER {\n            return self.sessions_timer(ctx);\n        }\n        members::lend(&self.roster);\n")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Plain = MakeDefinition(*this, {HitFunction, HealFunction});
+	if (!Plain)
+	{
+		return false;
+	}
+	Plain->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	Plain->bRemoveMembersWhoLeave = false;
+	FString Without;
+	if (!GenerateLib(*this, *Plain, Without))
+	{
+		return false;
+	}
+	for (const TCHAR* Part : {TEXT("unconfirmed"), TEXT("SESSIONS_TIMER"), TEXT("SESSION_CONFIRM_MS"), TEXT("session_ended"), TEXT("sessions_timer"), TEXT("crowdy_sessions")})
+	{
+		TestFalse(FString::Printf(TEXT("a type that counts no sessions has no %s"), Part), HasText(Without, Part));
+	}
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Records = MakeRecordsDefinition();
+	Records->bOnPlayerLeft = true;
+	FString RecordsLib;
+	if (!GenerateLib(*this, *Records, RecordsLib))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a records type reuses the send that announces its epoch, then waits the minute"),
+		HasText(RecordsLib, TEXT("match ctx.timer_after(FLUSH_TIMER, PUSH_INTERVAL_MS) {\n"))
+		&& HasText(RecordsLib, TEXT("            if let Err(error) = ctx.timer_after(SESSIONS_TIMER, SESSION_CONFIRM_MS) {\n")));
+	TestFalse(TEXT("and has no first run of its own"), HasText(RecordsLib, TEXT("SESSION_ANNOUNCE_MS")) || HasText(RecordsLib, TEXT("announced")));
+	TestTrue(TEXT("it runs the expiry after the send"),
+		HasText(RecordsLib, TEXT("            if name == FLUSH_TIMER {\n                return self.flush(ctx);\n            }\n            if name == SESSIONS_TIMER {\n                return self.sessions_timer(ctx);\n            }\n")));
+	TestTrue(TEXT("a call confirms there too"), HasText(RecordsLib, TEXT("            if let Ok(player) = call.player() {\n                self.unconfirmed.remove(&player);\n            }\n")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Reserved = MakeDefinition(*this, {HealFunction});
+	if (!Reserved || !BakeDefinition(*this, *Reserved))
+	{
+		return false;
+	}
+	AddTimer(*Reserved, TEXT("crowdy_sessions"), ECrowdyServerTimerRepeat::Every, 1.f, true);
+	CrowdyExecCodegen::FGeneratedCrate Refused;
+	FString Error;
+	TestFalse(TEXT("a timer named crowdy_sessions does not generate"), CrowdyExecCodegen::Generate(*Reserved, Refused, Error));
+	TestEqualSensitive(TEXT("and the refusal names it"), Error, FString(TEXT("Timer crowdy_sessions: 'crowdy_sessions' is reserved in the server code (Rust); rename the timer")));
 	return true;
 }
 

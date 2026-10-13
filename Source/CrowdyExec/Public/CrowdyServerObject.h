@@ -22,6 +22,12 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCrowdyServerObjectStatusChanged, UCrowdy
 DECLARE_MULTICAST_DELEGATE_FourParams(FOnCrowdyServerRecordsChanged, UCrowdyServerObject* /*Object*/, TConstArrayView<FString> /*ChangedIds*/, TConstArrayView<FString> /*RemovedIds*/,
 	TConstArrayView<TBitArray<>> /*ChangedFields*/);
 
+namespace CrowdyServerObjectDetail
+{
+	/** Whether a platform refusal says the app or a type is switched off or paused. */
+	CROWDYEXEC_API bool IsSwitchedOffText(const FString& Message);
+}
+
 /** Handlers of one variable each (the value, then Has Value for an optional) on whatever Server Object their holder follows. */
 struct CROWDYEXEC_API FCrowdyServerVariableBindings
 {
@@ -116,6 +122,12 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	int32 NumVariableWatchersForTest() const { return VariableWatchers.Num(); }
+
+	/** The result a call of Function gets from Reply, as the platform's answer would give it. */
+	FCrowdyServerCallResult MakeCallResultForTest(FName Function, const FCrowdyNativeExecReply& Reply) const;
+
+	/** The reason a refused read (or watch) gives while it retries; empty when it gives none. */
+	FString WaitingReasonForTest(const FCrowdyNativeExecReply& Reply, bool bRead) const;
 #endif
 
 	/**

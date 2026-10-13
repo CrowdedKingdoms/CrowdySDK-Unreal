@@ -802,6 +802,9 @@ namespace CrowdyExecCodegenDetail
 		void AppendBuiltinDispatch(FString& Text) const;
 		void AppendTimerHook(FString& Text) const;
 		void AppendSessionHook(FString& Text) const;
+		void AppendSessionEnding(FString& Text) const;
+		void AppendRestoredSessionsTimer(FString& Text) const;
+		void AppendConfirmCaller(FString& Text) const;
 		void AppendServerObjectImpl(FString& Text) const;
 		void AppendReadFor(FString& Text) const;
 		void AppendReadReply(FString& Text) const;
@@ -1193,7 +1196,8 @@ namespace CrowdyExecCodegenDetail
 			{
 				return Fail(FString::Printf(TEXT("Timer %s: the server code (Rust) uses timers::%s itself; rename the timer"), *Info.Name, *Info.Constant));
 			}
-			if (Info.Name.Equals(CrowdyExec::FlushTimerName, ESearchCase::IgnoreCase) || Info.Method.Equals(CrowdyExec::FlushTimerName, ESearchCase::CaseSensitive))
+			if (Info.Name.Equals(CrowdyExec::FlushTimerName, ESearchCase::IgnoreCase) || Info.Method.Equals(CrowdyExec::FlushTimerName, ESearchCase::CaseSensitive)
+				|| Info.Name.Equals(CrowdyExec::SessionsTimerName, ESearchCase::IgnoreCase) || Info.Method.Equals(CrowdyExec::SessionsTimerName, ESearchCase::CaseSensitive))
 			{
 				return Fail(FString::Printf(TEXT("Timer %s: '%s' is reserved in the server code (Rust); rename the timer"), *Info.Name, *Info.Method));
 			}
@@ -1771,6 +1775,12 @@ namespace CrowdyExecCodegenDetail
 				TEXT("            return self.flush(ctx);\n")
 				TEXT("        }\n");
 		}
+		if (UsesSessions())
+		{
+			Text += TEXT("        if name == SESSIONS_TIMER {\n")
+				TEXT("            return self.sessions_timer(ctx);\n")
+				TEXT("        }\n");
+		}
 		Text += KeepBefore(TEXT("        "));
 		if (TimerInfos.IsEmpty())
 		{
@@ -1813,9 +1823,15 @@ namespace CrowdyExecCodegenDetail
 		Text += TEXT("\n")
 			TEXT("    // Connections are counted per player and saved: the first opens a visit, the last closes it; an uncounted player is skipped.\n")
 			TEXT("    fn on_session(&mut self, ctx: &Ctx, player: u64, session: ckx_sdk::Session) -> Result<()> {\n")
+			TEXT("        let restored = self.unconfirmed.remove(&player);\n")
 			TEXT("        let connections = self.sessions.get(&player).copied().unwrap_or(0);\n")
 			TEXT("        match session {\n")
 			TEXT("            ckx_sdk::Session::Joined => {\n")
+			TEXT("                // A connection while the restored count is unconfirmed most likely replaces the restored ones, and the visit goes on.\n")
+			TEXT("                if restored {\n")
+			TEXT("                    self.sessions.insert(player, 1);\n")
+			TEXT("                    return Ok(());\n")
+			TEXT("                }\n")
 			TEXT("                if connections == 0 && self.sessions.len() >= MAX_SESSION_PLAYERS {\n")
 			TEXT("                    return Ok(());\n")
 			TEXT("                }\n")
@@ -1840,31 +1856,110 @@ namespace CrowdyExecCodegenDetail
 			TEXT("                }\n")
 			TEXT("                if connections > 1 {\n")
 			TEXT("                    self.sessions.insert(player, connections - 1);\n")
+			TEXT("                    if restored {\n")
+			TEXT("                        self.unconfirmed.insert(player);\n")
+			TEXT("                    }\n")
 			TEXT("                    return Ok(());\n")
 			TEXT("                }\n")
-			TEXT("                self.sessions.remove(&player);\n");
-		if (RemovesLeavers())
-		{
-			Text += KeepBefore(TEXT("                "));
-			Text += TEXT("                members::remove(player);\n");
-			Text += Definition.bOnPlayerLeft ? TEXT("                self.finish(ctx, before, Ok(()))?;\n")
-				TEXT("                // The removal stands even when on_player_left fails.\n") : TEXT("                self.finish(ctx, before, Ok(()))\n");
-		}
-		if (Definition.bOnPlayerLeft)
-		{
-			Text += KeepBefore(TEXT("                "));
-			Text += FString::Printf(TEXT("                let result = Functions::on_player_left(&mut %s, ctx, player);\n"), Target());
-			Text += FString::Printf(TEXT("                %s\n"), FinishCall());
-		}
-		if (!Definition.bOnPlayerLeft && !RemovesLeavers())
-		{
-			Text += TEXT("                Ok(())\n");
-		}
-		Text += TEXT("            }\n")
+			TEXT("                self.session_ended(ctx, player)\n")
+			TEXT("            }\n")
 			TEXT("            #[allow(unreachable_patterns)]\n")
 			TEXT("            _ => Ok(()),\n")
 			TEXT("        }\n")
 			TEXT("    }\n");
+	}
+
+	/** The one ending of a visit, inside impl ServerObject, for the last connection leaving and for an unconfirmed count expiring, and the timer that expires them. */
+	void FCodegen::AppendSessionEnding(FString& Text) const
+	{
+		if (!UsesSessions())
+		{
+			return;
+		}
+		Text += TEXT("\n")
+			TEXT("    // The player's last connection is gone, so their visit ends.\n")
+			TEXT("    fn session_ended(&mut self, ctx: &Ctx, player: u64) -> Result<()> {\n")
+			TEXT("        self.sessions.remove(&player);\n");
+		if (RemovesLeavers())
+		{
+			Text += KeepBefore(TEXT("        "));
+			Text += TEXT("        members::remove(player);\n");
+			Text += Definition.bOnPlayerLeft ? TEXT("        self.finish(ctx, before, Ok(()))?;\n")
+				TEXT("        // The removal stands even when on_player_left fails.\n") : TEXT("        self.finish(ctx, before, Ok(()))\n");
+		}
+		if (Definition.bOnPlayerLeft)
+		{
+			Text += KeepBefore(TEXT("        "));
+			Text += FString::Printf(TEXT("        let result = Functions::on_player_left(&mut %s, ctx, player);\n"), Target());
+			Text += FString::Printf(TEXT("        %s\n"), FinishCall());
+		}
+		if (!Definition.bOnPlayerLeft && !RemovesLeavers())
+		{
+			Text += TEXT("        Ok(())\n");
+		}
+		Text += TEXT("    }\n")
+			TEXT("\n");
+		if (IsRecords())
+		{
+			Text += TEXT("    // Ends the visits of the players whose restored connections nothing confirmed since the load.\n")
+				TEXT("    fn sessions_timer(&mut self, ctx: &Ctx) -> Result<()> {\n");
+		}
+		else
+		{
+			Text += TEXT("    // The first run announces the new epoch so watchers read again; the second ends the visits nothing confirmed.\n")
+				TEXT("    fn sessions_timer(&mut self, ctx: &Ctx) -> Result<()> {\n")
+				TEXT("        if self.unconfirmed.is_empty() {\n")
+				TEXT("            return Ok(());\n")
+				TEXT("        }\n")
+				TEXT("        if !self.announced {\n")
+				TEXT("            self.announced = true;\n")
+				TEXT("            self.seq += 1;\n")
+				TEXT("            let mut out = Vec::new();\n")
+				TEXT("            write_map(&mut out, 2);\n")
+				TEXT("            write_str(&mut out, \"epoch\");\n")
+				TEXT("            write_uint(&mut out, self.epoch);\n")
+				TEXT("            write_str(&mut out, \"seq\");\n")
+				TEXT("            write_uint(&mut out, self.seq);\n")
+				TEXT("            let _ = ctx.publish(\"state\", &out);\n")
+				TEXT("            if let Err(error) = ctx.timer_after(SESSIONS_TIMER, SESSION_CONFIRM_MS) {\n")
+				TEXT("                let _ = ctx.log(Level::Warn, &format!(\"restored connections could not be checked after a load: {error}\"));\n")
+				TEXT("            }\n")
+				TEXT("            return Ok(());\n")
+				TEXT("        }\n");
+		}
+		Text += TEXT("        for player in std::mem::take(&mut self.unconfirmed) {\n")
+			TEXT("            if let Err(error) = self.session_ended(ctx, player) {\n")
+			TEXT("                let _ = ctx.log(Level::Warn, &format!(\"the visit of player {player} could not be ended: {error}\"));\n")
+			TEXT("            }\n")
+			TEXT("        }\n")
+			TEXT("        Ok(())\n")
+			TEXT("    }\n");
+	}
+
+	/** Load's check of the connection counts it restored: nothing says which outlived the stop, so a timer ends the ones nothing confirms. */
+	void FCodegen::AppendRestoredSessionsTimer(FString& Text) const
+	{
+		if (!UsesSessions())
+		{
+			return;
+		}
+		Text += TEXT("        if !saved.sessions.is_empty() {\n");
+		Text += FString::Printf(TEXT("            if let Err(error) = ctx.timer_after(SESSIONS_TIMER, %s) {\n"), IsRecords() ? TEXT("SESSION_CONFIRM_MS") : TEXT("SESSION_ANNOUNCE_MS"));
+		Text += TEXT("                let _ = ctx.log(Level::Warn, &format!(\"restored connections could not be checked after a load: {error}\"));\n")
+			TEXT("            }\n")
+			TEXT("        }\n");
+	}
+
+	/** A call from a player proves a connection of theirs is alive, so the count restored for them stands. */
+	void FCodegen::AppendConfirmCaller(FString& Text) const
+	{
+		if (!UsesSessions())
+		{
+			return;
+		}
+		Text += TEXT("        if let Ok(player) = call.player() {\n")
+			TEXT("            self.unconfirmed.remove(&player);\n")
+			TEXT("        }\n");
 	}
 
 	/** What spawn, load and persist add for the members, cooldowns, sessions and timers the definition uses, each starting ", ". */
@@ -1884,8 +1979,10 @@ namespace CrowdyExecCodegenDetail
 		}
 		if (UsesSessions())
 		{
-			OutSpawn += TEXT(", sessions: BTreeMap::new()");
-			OutLoad += TEXT(", sessions: saved.sessions");
+			OutSpawn += TEXT(", sessions: BTreeMap::new(), unconfirmed: BTreeSet::new()");
+			OutLoad += TEXT(", unconfirmed: saved.sessions.keys().copied().collect(), sessions: saved.sessions");
+			OutSpawn += IsRecords() ? TEXT("") : TEXT(", announced: false");
+			OutLoad += IsRecords() ? TEXT("") : TEXT(", announced: false");
 			OutPersist += TEXT(", sessions: &self.sessions");
 		}
 		OutPersist += TimerInfos.IsEmpty() ? TEXT(", timer_kinds: BTreeMap::new()") : TEXT(", timer_kinds: timers::saved_kinds()");
@@ -1955,6 +2052,7 @@ namespace CrowdyExecCodegenDetail
 			TEXT("\n")
 			TEXT("    fn load(ctx: &Ctx, snapshot: &[u8], _from_version: u64) -> Result<Self> {\n");
 		AppendLoadHead(Text);
+		AppendRestoredSessionsTimer(Text);
 		Text += FString::Printf(TEXT("        Ok(Self { state: saved.state, epoch: ctx.now_ms() as u64, seq: 0%s })\n"), *LoadExtra);
 		Text += TEXT("    }\n")
 			TEXT("\n")
@@ -1962,8 +2060,9 @@ namespace CrowdyExecCodegenDetail
 		Text += FString::Printf(TEXT("        encode(&SnapshotOut { contract: CONTRACT, state: &self.state%s })\n"), *PersistExtra);
 		Text += TEXT("    }\n")
 			TEXT("\n")
-			TEXT("    fn handle(&mut self, ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n")
-			TEXT("        match call.method {\n");
+			TEXT("    fn handle(&mut self, ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n");
+		AppendConfirmCaller(Text);
+		Text += TEXT("        match call.method {\n");
 		if (HasRead())
 		{
 			Text += TEXT("            \"read\" => {\n");
@@ -2262,6 +2361,7 @@ namespace CrowdyExecCodegenDetail
 			AppendReadReply(Text);
 		}
 		AppendPreparePush(Text);
+		AppendSessionEnding(Text);
 		Text += TEXT("}\n\n");
 	}
 
@@ -2582,7 +2682,7 @@ namespace CrowdyExecCodegenDetail
 			TEXT("    seq: u64,\n");
 		Text += bRoster ? TEXT("    roster: Roster,\n") : TEXT("");
 		Text += bCooldowns ? TEXT("    cooldowns: Cooldowns,\n") : TEXT("");
-		Text += UsesSessions() ? TEXT("    sessions: BTreeMap<u64, u32>,\n") : TEXT("");
+		Text += UsesSessions() ? TEXT("    sessions: BTreeMap<u64, u32>,\n    // The players whose restored connection count nothing has confirmed yet; not saved.\n    unconfirmed: BTreeSet<u64>,\n    // Whether the new epoch has been announced to watchers; not saved.\n    announced: bool,\n") : TEXT("");
 		Text += TEXT("}\n")
 			TEXT("\n")
 			TEXT("#[derive(Serialize)]\n")
@@ -2625,7 +2725,11 @@ namespace CrowdyExecCodegenDetail
 		Text += IsTeam() ? TeamItems : TEXT("");
 		Text += UsesFeatures() ? FeatureItems : TEXT("");
 		Text += UsesCooldowns() ? CooldownItems : TEXT("");
-		Text += UsesSessions() ? TEXT("const MAX_SESSION_PLAYERS: usize = 100000;\n\n") : TEXT("");
+		if (UsesSessions())
+		{
+			Text += FString::Printf(TEXT("const MAX_SESSION_PLAYERS: usize = 100000;\nconst SESSIONS_TIMER: &str = \"%s\";\nconst SESSION_CONFIRM_MS: u64 = 120_000;\n"), CrowdyExec::SessionsTimerName);
+			Text += IsRecords() ? TEXT("\n") : TEXT("const SESSION_ANNOUNCE_MS: u64 = 10;\n\n");
+		}
 		if (!TimerInfos.IsEmpty())
 		{
 			AppendTimersModule(Text);
@@ -2727,19 +2831,21 @@ namespace CrowdyExecCodegenDetail
 			TEXT("\n")
 			TEXT("    // A pending timer whose Runs changed is armed again under the new Runs, a new one that was pending or starts automatically is armed, a removed one is stopped; a stopped or fired one stays so.\n")
 			TEXT("    pub(crate) fn rearm_changed(ctx: &Ctx, saved: &BTreeMap<String, String>) {\n")
+			TEXT("        let pending: BTreeSet<String> = ctx.timers().into_iter().map(|(name, _)| name).collect();\n")
 			TEXT("        for name in saved.keys().filter(|name| !KINDS.iter().any(|&(kept, _, _)| kept == name.as_str())) {\n")
 			TEXT("            ctx.cancel_timer(name);\n")
 			TEXT("        }\n")
 			TEXT("        for &(name, kind, automatic) in KINDS {\n")
 			TEXT("            let rearm = match saved.get(name) {\n")
-			TEXT("                Some(old) => old.as_str() != kind && ctx.cancel_timer(name),\n")
-			TEXT("                None => ctx.cancel_timer(name) || automatic,\n")
+			TEXT("                Some(old) => old.as_str() != kind && pending.contains(name),\n")
+			TEXT("                None => pending.contains(name) || automatic,\n")
 			TEXT("            };\n")
 			TEXT("            if !rearm {\n")
 			TEXT("                continue;\n")
 			TEXT("            }\n")
+			TEXT("            // Arming replaces a pending timer by name, so a failed arm leaves the old one.\n")
 			TEXT("            if let Err(error) = arm(ctx, name) {\n")
-			TEXT("                let _ = ctx.log(Level::Warn, &format!(\"timer {name} could not be armed after a deploy changed it: {error}\"));\n")
+			TEXT("                let _ = ctx.log(Level::Warn, &format!(\"timer {name} keeps any old schedule: the changed one could not be armed: {error}\"));\n")
 			TEXT("            }\n")
 			TEXT("        }\n")
 			TEXT("    }\n")
@@ -3763,7 +3869,7 @@ namespace CrowdyExecCodegenDetail
 			TEXT("    seq: u64,\n")
 			TEXT("    rseq: u64,\n");
 		Text += bCooldowns ? TEXT("    cooldowns: Cooldowns,\n") : TEXT("");
-		Text += bSessions ? TEXT("    sessions: BTreeMap<u64, u32>,\n") : TEXT("");
+		Text += bSessions ? TEXT("    sessions: BTreeMap<u64, u32>,\n    // The players whose restored connection count nothing has confirmed yet; not saved.\n    unconfirmed: BTreeSet<u64>,\n") : TEXT("");
 		Text += TEXT("}\n")
 			TEXT("\n")
 			TEXT("#[derive(Serialize)]\n")
@@ -3831,6 +3937,7 @@ namespace CrowdyExecCodegenDetail
 			TEXT("                let _ = ctx.log(Level::Warn, &format!(\"the send could not be armed after a load: {error}\"));\n")
 			TEXT("            }\n")
 			TEXT("        }\n");
+		AppendRestoredSessionsTimer(Text);
 		Text += FString::Printf(TEXT("        Ok(Self { records, epoch: ctx.now_ms() as u64%s, ..Self::default() })\n"), *LoadExtra);
 		Text += TEXT("    }\n")
 			TEXT("\n")
@@ -3838,8 +3945,9 @@ namespace CrowdyExecCodegenDetail
 		Text += FString::Printf(TEXT("        encode(&SnapshotOut { contract: CONTRACT, records: &self.records.entries%s })\n"), *PersistExtra);
 		Text += TEXT("    }\n")
 			TEXT("\n")
-			TEXT("    fn handle(&mut self, ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n")
-			TEXT("        match call.method {\n")
+			TEXT("    fn handle(&mut self, ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n");
+		AppendConfirmCaller(Text);
+		Text += TEXT("        match call.method {\n")
 			TEXT("            \"read\" => {\n")
 			TEXT("                authorize(ctx, &call, true)?;\n")
 			TEXT("                let params: PageInputs = call.decode().map_err(bad_params)?;\n")
@@ -3903,6 +4011,7 @@ namespace CrowdyExecCodegenDetail
 		AppendCheckWatched(Text);
 		Text += HasCrowdyTeams() ? RecordsCrowdyTeamViewer : RecordsOwnTeamViewer;
 		Text += RecordsObjectItems;
+		AppendSessionEnding(Text);
 		Text += TEXT("}\n")
 			TEXT("\n");
 	}
