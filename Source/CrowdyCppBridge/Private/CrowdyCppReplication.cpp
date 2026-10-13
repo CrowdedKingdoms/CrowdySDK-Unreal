@@ -1242,6 +1242,13 @@ bool FCrowdyCppReplication::SendSpatial(const uint8 Opcode, const int64 ChunkX, 
 			OutError = TEXT("the voxel payload carries more state than it declares");
 			return false;
 		}
+		// The send itself refuses a larger state, after this has already answered that it was queued.
+		if (Voxel->state.size() > crowdy::wire::voxel::kMaxStateSize)
+		{
+			OutError = FString::Printf(TEXT("the voxel state is %d octets, over the %d a voxel update carries"),
+				static_cast<int32>(Voxel->state.size()), static_cast<int32>(crowdy::wire::voxel::kMaxStateSize));
+			return false;
+		}
 		break;
 	}
 

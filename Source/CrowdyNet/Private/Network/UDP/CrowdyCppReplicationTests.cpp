@@ -369,6 +369,16 @@ bool FCrowdyReplicationVoxelConsistencyTest::RunTest(const FString& Parameters)
 		Fixture.Connection->SendSpatial(131, 0, 0, 0, GoldenUuidView(), UnderDeclared, 8, 0, Error));
 	TestTrue(TEXT("the refusal says which way it disagrees"), Error.Contains(TEXT("declares")));
 
+	// A state over 1,024 octets still fits a datagram, so only the voxel limit can refuse it before it is queued.
+	TArray<uint8> OverLimit;
+	OverLimit.Append({0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00});
+	OverLimit.Append({0x01, 0x04});             // declares 1,025 octets of state
+	OverLimit.AddZeroed(1025);                  // and carries them
+	Error.Reset();
+	TestFalse(TEXT("a voxel state over 1,024 octets is refused"),
+		Fixture.Connection->SendSpatial(131, 0, 0, 0, GoldenUuidView(), OverLimit, 8, 0, Error));
+	TestTrue(TEXT("the refusal names the limit"), Error.Contains(TEXT("over the 1024")));
+
 	Error.Reset();
 	TestFalse(TEXT("an event payload with no event type is refused"),
 		Fixture.Connection->SendSpatial(138, 0, 0, 0, GoldenUuidView(), TArray<uint8>{0x01}, 8, 0, Error));
@@ -379,6 +389,14 @@ bool FCrowdyReplicationVoxelConsistencyTest::RunTest(const FString& Parameters)
 
 	TestEqual(TEXT("nothing refused reached the wire"), Fixture.Connection->GetStats().DatagramsSent,
 		static_cast<int64>(0));
+
+	TArray<uint8> AtLimit;
+	AtLimit.Append({0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00});
+	AtLimit.Append({0x00, 0x04});               // declares 1,024 octets of state
+	AtLimit.AddZeroed(1024);
+	Error.Reset();
+	TestTrue(FString::Printf(TEXT("a voxel state of exactly 1,024 octets is queued (%s)"), *Error),
+		Fixture.Connection->SendSpatial(131, 0, 0, 0, GoldenUuidView(), AtLimit, 8, 0, Error));
 
 	Fixture.Shut();
 	return true;
