@@ -90,6 +90,12 @@ const FProperty* CrowdyExec::FindTravellingField(const UStruct* Struct, FName Na
 }
 
 const TCHAR* const UCrowdyServerObjectDefinition::OnlyInstanceId = TEXT("main");
+const TCHAR* const UCrowdyServerObjectDefinition::RootTypeName = TEXT("root");
+
+FString UCrowdyServerObjectDefinition::GetOnlyInstanceId() const
+{
+	return TypeName.Equals(RootTypeName, ESearchCase::CaseSensitive) ? FString() : FString(OnlyInstanceId);
+}
 
 namespace
 {

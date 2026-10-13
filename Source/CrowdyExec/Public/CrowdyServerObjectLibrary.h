@@ -31,6 +31,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", meta = (DefaultToSelf = "Owner"))
 	static void ReleaseServerObject(UCrowdyServerObject* Object, UObject* Owner);
 
+	/**
+	 * How many players are in the app's world, held by the root Server Object the Crowdy SDK deploys with a project's types.
+	 * Owner follows it from the first call until Owner is destroyed. False, with 0, until the count first arrives.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", meta = (DefaultToSelf = "Owner"))
+	static bool GetPlayersOnline(UObject* Owner, int32& PlayersOnline);
+
+	/** The root Server Object's definition, CSO_PlayersOnline in the Crowdy SDK's content: Players Online is its one variable. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
+	static UCrowdyServerObjectDefinition* GetPlayersOnlineDefinition();
+
+	/** Where Get Players Online Definition loads it from. */
+	static const TCHAR* const PlayersOnlineDefinitionPath;
+
 	/** The signed-in player's user id, the Instance Id of their own Owner Only Server Object. Empty when nobody is signed in. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", meta = (WorldContext = "WorldContextObject"))
 	static FString GetPlayerInstanceId(UObject* WorldContextObject);

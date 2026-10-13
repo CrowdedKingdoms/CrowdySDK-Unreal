@@ -31,6 +31,11 @@ public:
 	/** Handlers bound to one variable of whatever Server Object this Link follows, run again for each object it joins. */
 	FCrowdyServerVariableBindings& GetVariableBindings() { return VariableBindings; }
 
+	/** Keeps the Link for as long as its owner lives, however long since it was last asked for. */
+	void KeepWhileOwnerLives() { bKeepWhileOwnerLives = true; }
+
+	bool KeepsWhileOwnerLives() const { return bKeepWhileOwnerLives; }
+
 private:
 	friend class UCrowdyServerObjectSubsystem;
 	friend struct FCrowdyServerObjectLinkTestAccess;
@@ -89,6 +94,7 @@ private:
 
 	bool bLoginBound = false;
 	bool bTeamsBound = false;
+	bool bKeepWhileOwnerLives = false;
 
 	static constexpr float TeamsRetrySeconds = 5.f;
 };

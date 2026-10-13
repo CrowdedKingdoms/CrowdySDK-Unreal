@@ -8,7 +8,7 @@ class UCrowdyServerObjectDefinition;
 /** What a deploy of the project's Server Object types sends: their crates as they are on disk, a root, and the manifest naming them. */
 namespace CrowdyExecDeploy
 {
-	/** The root every project type sits under on the platform, which needs exactly one root per app. It keeps no state. */
+	/** The root every project type sits under on the platform, which needs exactly one root per app. It keeps Players Online. */
 	inline const TCHAR* const RootTypeName = TEXT("root");
 
 	enum class ECrateState : uint8
@@ -40,13 +40,13 @@ namespace CrowdyExecDeploy
 		TArray<FString> Warnings;
 	};
 
-	/** Every Server Object definition asset in the project, loaded, sorted by type name. */
+	/** Every Server Object definition asset in the project but the SDK's root, loaded, sorted by type name. */
 	TArray<UCrowdyServerObjectDefinition*> FindProjectDefinitions();
 
 	/** Where a type's crate is on disk and whether it matches what Generate Server Code would write now. */
 	FTypeState InspectType(const UCrowdyServerObjectDefinition& Definition, const FString& CrateDirectory);
 
-	/** The crate of the root type, written by the SDK and never on disk. */
+	/** The crate of the root type, generated from the SDK's Players Online definition and never on disk; no files when that does not load or generate. */
 	CrowdyExecDeveloper::FBuildCrate MakeRootCrate();
 
 	/** The manifest for Definitions under the root: each a hub named by its type, open to players when they can reach it, with its save interval, idle timeout, the types it Can Call, its scopes and the server limits it changes. Deterministic. */

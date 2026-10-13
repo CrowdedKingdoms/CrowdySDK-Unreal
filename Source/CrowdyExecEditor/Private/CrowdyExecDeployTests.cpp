@@ -5,6 +5,7 @@
 #include "CrowdyExecCodegen.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "CrowdyServerObjectLibrary.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
@@ -196,40 +197,59 @@ bool FCrowdyExecDeployRootCrateTest::RunTest(const FString& Parameters)
 	using namespace CrowdyExecDeployTest;
 	const FBuildCrate Root = CrowdyExecDeploy::MakeRootCrate();
 	TestEqualSensitive(TEXT("the root crate is named root"), Root.Name, FString(CrowdyExecDeploy::RootTypeName));
-	TestEqualSensitive(TEXT("the root crate has a Cargo.toml and a lib.rs"), FilePaths(Root), FString(TEXT("Cargo.toml, src/lib.rs")));
 	const FBuildFile* Lib = FindBuildFile(Root, TEXT("src/lib.rs"));
+	const FBuildFile* Types = FindBuildFile(Root, TypesPath);
+	const FBuildFile* Logic = FindBuildFile(Root, LogicPath);
 	const FBuildFile* Cargo = FindBuildFile(Root, TEXT("Cargo.toml"));
-	if (!TestNotNull(TEXT("the root has a lib.rs"), Lib) || !TestNotNull(TEXT("the root has a Cargo.toml"), Cargo))
+	if (!TestEqual(FString::Printf(TEXT("the root crate is a generated crate (%s)"), *FilePaths(Root)), Root.Files.Num(), 4)
+		|| !TestTrue(TEXT("with a lib.rs, types.rs, logic.rs and Cargo.toml"), Lib && Types && Logic && Cargo))
 	{
 		return false;
 	}
 	for (const TCHAR* Part : {
-		TEXT("use ckx_sdk::prelude::*;\n"),
-		TEXT("#[derive(Serialize, Deserialize, Default)]\npub struct Root {}\n"),
-		TEXT("\nimpl Hub for Root {\n"),
-		TEXT("    fn spawn(_ctx: &Ctx, _seed: &[u8]) -> Result<Self> {\n        Ok(Self::default())\n    }\n"),
-		TEXT("    fn load(_ctx: &Ctx, _snapshot: &[u8], _from_version: u64) -> Result<Self> {\n        Ok(Self::default())\n    }\n"),
-		TEXT("    fn persist(&mut self, _ctx: &Ctx) -> Result<Vec<u8>> {\n        encode(self)\n    }\n"),
-		TEXT("    fn handle(&mut self, _ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n        Err(Error::unknown_method(call.method))\n    }\n}\n"),
-		TEXT("\nckx_sdk::export_hub!(Root);\n")})
+		TEXT("\n    fn on_presence(&mut self, ctx: &Ctx, presence: &Presence) -> Result<()> {\n"),
+		TEXT("        let decoded: Result<SnapshotIn> = decode(snapshot);\n")
+		TEXT("        let Some(saved) = decoded.ok().filter(|saved| saved.contract == CONTRACT) else {\n")
+		TEXT("            return <Self as Hub>::spawn(ctx, &[]);\n")
+		TEXT("        };\n"),
+		TEXT("            \"read\" => {\n"),
+		TEXT("ckx_sdk::export_hub!(ServerObject);")})
 	{
 		TestTrue(FString::Printf(TEXT("the root's lib.rs has: %s"), Part), Lib->Content.Contains(Part, ESearchCase::CaseSensitive));
 	}
-	TestFalse(TEXT("the root's lib.rs has no carriage returns"), Lib->Content.Contains(TEXT("\r")));
+	TestTrue(TEXT("the root runs only under its empty Instance Id"), Lib->Content.Contains(
+		TEXT("        if ctx.key != \"\" {\n            return Err(Error::new(\"denied: the root has only one instance, whose Instance Id is empty\"));\n"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("nor refuses a snapshot an older SDK's root saved"), Lib->Content.Contains(TEXT("the snapshot was written for contract"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("its types.rs holds Players Online"), Types->Content.Contains(TEXT("pub PlayersOnline: i32"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("its logic.rs keeps the count on_presence reports"), Logic->Content.Contains(
+		TEXT("impl Functions for CrowdyPlayersOnlineState {\n")
+		TEXT("    fn on_presence(&mut self, _ctx: &Ctx, presence: &Presence) -> Result<()> {\n")
+		TEXT("        self.PlayersOnline = i32::try_from(presence.count).unwrap_or(i32::MAX);\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("its Cargo.toml names the crate root"), Cargo->Content.Contains(TEXT("name = \"root\"\n"), ESearchCase::CaseSensitive));
+	TestEqualSensitive(TEXT("and carries no definition record"), CrowdyExecCodegen::WithoutCrateDefinition(Cargo->Content), Cargo->Content);
+	for (const FBuildFile& File : Root.Files)
+	{
+		TestFalse(FString::Printf(TEXT("the root's %s has no carriage returns"), *File.Path), File.Content.Contains(TEXT("\r")));
+	}
+	return true;
+}
 
-	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(*this, FixtureType);
-	CrowdyExecCodegen::FGeneratedCrate Generated;
-	if (!Definition || !GenerateCrate(*this, *Definition, Generated))
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployRootDefinitionTest, "CrowdySDK.CrowdyExecEditor.DeployRootDefinitionIsTheSdks", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployRootDefinitionTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const UCrowdyServerObjectDefinition* Root = UCrowdyServerObjectLibrary::GetPlayersOnlineDefinition();
+	if (!TestNotNull(FString::Printf(TEXT("%s loads"), UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath), Root))
 	{
 		return false;
 	}
-	const FString* GeneratedCargo = FindGeneratedText(Generated, TEXT("Cargo.toml"));
-	if (!TestNotNull(TEXT("the generated crate has a Cargo.toml"), GeneratedCargo))
-	{
-		return false;
-	}
-	const FString Renamed = GeneratedCargo->Replace(TEXT("name = \"deploy_fixture\""), TEXT("name = \"root\""), ESearchCase::CaseSensitive);
-	TestEqualSensitive(TEXT("the root's Cargo.toml is a generated one with the root's name"), Cargo->Content, Renamed);
+	TestEqualSensitive(TEXT("its Type Name is root"), Root->TypeName, FString(CrowdyExecDeploy::RootTypeName));
+	TestTrue(TEXT("it has Only One Instance, readable by every player"), Root->bOnlyOneInstance && Root->Visibility == ECrowdyServerObjectVisibility::Public);
+	TestTrue(TEXT("its State Struct is Crowdy Players Online State"), Root->State == FCrowdyPlayersOnlineState::StaticStruct());
+	TestTrue(TEXT("Players Online is its one variable, visible to players"), Root->WatchedFields == TArray<FName>{TEXT("PlayersOnline")});
+	TestEqual(TEXT("it has no functions"), Root->Functions.Num(), 0);
+	TestTrue(TEXT("players can reach it"), Root->IsReachableByPlayers());
+	TestFalse(TEXT("it is not one of the project's types"), CrowdyExecDeploy::FindProjectDefinitions().Contains(Root));
 	return true;
 }
 
@@ -242,8 +262,8 @@ bool FCrowdyExecDeployManifestTest::RunTest(const FString& Parameters)
 	const FString Manifest = CrowdyExecDeploy::MakeManifest({Locker.Get(), Arena.Get()});
 	TestEqualSensitive(TEXT("the manifest is the same each time"), CrowdyExecDeploy::MakeManifest({Locker.Get(), Arena.Get()}), Manifest);
 	TestEqualSensitive(TEXT("the manifest does not depend on the definitions' order"), CrowdyExecDeploy::MakeManifest({Arena.Get(), Locker.Get()}), Manifest);
-	TestTrue(TEXT("the root comes first, before a type whose name sorts earlier"),
-		Manifest.StartsWith(TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"crate\":\"root\",\"client\":false},\"arena\":"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("the root comes first, before a type whose name sorts earlier, open to players for Players Online"),
+		Manifest.StartsWith(TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"crate\":\"root\",\"client\":true},\"arena\":"), ESearchCase::CaseSensitive));
 
 	TSharedPtr<FJsonObject> Parsed;
 	const bool bParsed = FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Manifest), Parsed) && Parsed.IsValid();

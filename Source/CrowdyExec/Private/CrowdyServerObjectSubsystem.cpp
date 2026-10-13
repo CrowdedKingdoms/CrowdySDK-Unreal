@@ -169,8 +169,9 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 		OutError = FString::Printf(TEXT("%s is closed to players: only server code and developer tools reach it"), *Definition->TypeName);
 		return nullptr;
 	}
-	const FString UsedId = Definition->bOnlyOneInstance ? FString(UCrowdyServerObjectDefinition::OnlyInstanceId) : InstanceId;
-	if (!IsValidServerObjectInstanceId(UsedId))
+	const FString UsedId = Definition->bOnlyOneInstance ? Definition->GetOnlyInstanceId() : InstanceId;
+	// The root's only Instance Id is empty, which no other instance may have.
+	if (!Definition->bOnlyOneInstance && !IsValidServerObjectInstanceId(UsedId))
 	{
 		OutError = TEXT("An Instance Id must be 1 to 256 bytes with no control characters");
 		return nullptr;
@@ -229,7 +230,7 @@ UCrowdyServerObjectLink* UCrowdyServerObjectSubsystem::FindLink(UObject* Owner, 
 	Key.Owner = Owner;
 	Key.Definition = Definition;
 	Key.Find = bOnlyOne ? ECrowdyServerObjectFind::InstanceId : Find;
-	Key.InstanceId = Key.Find != ECrowdyServerObjectFind::InstanceId ? FString() : bOnlyOne ? UCrowdyServerObjectDefinition::OnlyInstanceId : InstanceId;
+	Key.InstanceId = Key.Find != ECrowdyServerObjectFind::InstanceId ? FString() : bOnlyOne ? Definition->GetOnlyInstanceId() : InstanceId;
 	Key.TeamId = Key.Find == ECrowdyServerObjectFind::PlayersTeam ? TeamId : 0;
 	if (UCrowdyServerObjectLink* Found = Links.FindRef(Key))
 	{
@@ -265,7 +266,7 @@ void UCrowdyServerObjectSubsystem::TickLinks(float DeltaSeconds, float GraceStep
 		UCrowdyServerObjectLink* Link = It.Value();
 		Link->SinceFound += GraceStep;
 		// A Link only an On Changed node uses is never asked for again, so a live handler keeps it.
-		const bool bUnused = Link->SinceFound > GracePeriodSeconds && !Link->GetVariableBindings().HasLiveHandler();
+		const bool bUnused = Link->SinceFound > GracePeriodSeconds && !Link->GetVariableBindings().HasLiveHandler() && !Link->KeepsWhileOwnerLives();
 		if (Link->IsOwnerAlive() && !bUnused)
 		{
 			Kept.Add(Link);
@@ -384,16 +385,23 @@ const UCrowdyServerObject* UCrowdyServerObjectSubsystem::FindLiveObject() const
 
 const UCrowdyServerObject* UCrowdyServerObjectSubsystem::FindDialObject() const
 {
+	// The root, the one object with an empty Instance Id, places the connection only when nothing else can.
+	const UCrowdyServerObject* Root = nullptr;
 	for (const TPair<FCrowdyServerObjectKey, TObjectPtr<UCrowdyServerObject>>& Entry : Objects)
 	{
 		const UCrowdyServerObject* Object = Entry.Value;
 		const ECrowdyServerObjectStatus Status = Object ? Object->GetStatus() : ECrowdyServerObjectStatus::Released;
-		if ((Status == ECrowdyServerObjectStatus::Connecting || Status == ECrowdyServerObjectStatus::Ready) && !FailedDialTypes.Contains(Object->GetDefinition()->TypeName))
+		if ((Status != ECrowdyServerObjectStatus::Connecting && Status != ECrowdyServerObjectStatus::Ready) || FailedDialTypes.Contains(Object->GetDefinition()->TypeName))
+		{
+			continue;
+		}
+		if (!Object->GetInstanceId().IsEmpty())
 		{
 			return Object;
 		}
+		Root = Root ? Root : Object;
 	}
-	return nullptr;
+	return Root;
 }
 
 void UCrowdyServerObjectSubsystem::EnsureConnection()
@@ -407,7 +415,7 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	if (!First)
 	{
 		FailedDialTypes.Reset();
-		First = FindLiveObject();
+		First = FindDialObject();
 	}
 	if (!First)
 	{
@@ -433,8 +441,9 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 		return;
 	}
 
+	// The root runs on one host for the whole app, so a dial for it names no type and the platform places the connection.
 	FCrowdyNativeExecOptions Options;
-	Options.NodeType = First->GetDefinition()->TypeName;
+	Options.NodeType = First->GetInstanceId().IsEmpty() ? FString() : First->GetDefinition()->TypeName;
 	Options.Key = First->GetInstanceId();
 
 	// Read on every dial, so a reconnect after the token rotates carries the current one.
@@ -451,7 +460,7 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	}
 	DialedClient = Client;
 	DialedAppId = Session->GetAppID();
-	DialedType = Options.NodeType;
+	DialedType = First->GetDefinition()->TypeName;
 
 	const TWeakObjectPtr<UCrowdyServerObjectSubsystem> WeakThis = this;
 	const TWeakPtr<FCrowdyNativeExecConnection> Dialed = Connection;

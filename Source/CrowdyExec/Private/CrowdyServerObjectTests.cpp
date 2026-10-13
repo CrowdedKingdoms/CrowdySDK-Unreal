@@ -4771,6 +4771,138 @@ bool FCrowdyServerObjectFixOnlyOneAcquireTest::RunTest(const FString& Parameters
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectRootEmptyIdTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.RootIsFollowedByItsEmptyInstanceId", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectRootEmptyIdTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	Rig.Definition->TypeName = UCrowdyServerObjectDefinition::RootTypeName;
+	if (!UseOnlyOneInstance(Rig))
+	{
+		return false;
+	}
+	TestTrue(TEXT("the root's only Instance Id is empty"), Rig.Definition->GetOnlyInstanceId().IsEmpty());
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObjectLink* Link = Rig.Subsystem->FindLink(Owner.Get(), Rig.Definition.Get(), ECrowdyServerObjectFind::InstanceId, FString(), 0);
+	UCrowdyServerObject* Object = Link ? Link->GetServerObject() : nullptr;
+	if (!TestNotNull(FString::Printf(TEXT("a Link follows the root without an Instance Id (%s)"), Link ? *Link->GetFailureReason() : TEXT("no Link")), Object))
+	{
+		return false;
+	}
+	TestTrue(TEXT("its object has the empty Instance Id"), Object->GetInstanceId().IsEmpty());
+	TestTrue(TEXT("and acquiring by any Instance Id gives the same object"), Rig.Acquire(TEXT("main"), Owner.Get()) == Object);
+	TStrongObjectPtr<UCrowdyServerObjectComponent> Component = MakeRigComponent(Rig, ECrowdyServerObjectInstanceMode::InstanceId);
+	FCrowdyServerObjectComponentTestAccess::Join(*Component);
+	TestTrue(TEXT("as does a component with no Instance Id"), Component->GetServerObject() == Object);
+	if (!TestTrue(TEXT("the root dials the gateway"), Rig.PumpUntil([&Rig]() { return DialsOf(Rig) >= 1; })))
+	{
+		return false;
+	}
+	FString DialBody;
+	Rig.Client->GetLastTestRequestBody(DialBody);
+	TestTrue(FString::Printf(TEXT("a dial for the root alone names no type, so the platform places it (%s)"), *DialBody),
+		!DialBody.IsEmpty() && !DialBody.Contains(TEXT("\"nodeType\""), ESearchCase::CaseSensitive));
+	FSentFrame Subscribe;
+	if (!Rig.Open() || !TestTrue(TEXT("the root subscribes"), Rig.WaitForFrame(KindSubscribe, TEXT("state"), Subscribe)))
+	{
+		return false;
+	}
+	TestTrue(TEXT("addressed to root with an empty key"), Subscribe.NodeType.Equals(TEXT("root"), ESearchCase::CaseSensitive) && Subscribe.Key.IsEmpty());
+	Rig.Reply(Subscribe.Rid, ECrowdyNativeExecStatus::Ok, {});
+	FSentFrame Read;
+	if (!TestTrue(TEXT("the root reads"), Rig.WaitForFrame(KindCall, TEXT("read"), Read)))
+	{
+		return false;
+	}
+	Rig.Reply(Read.Rid, ECrowdyNativeExecStatus::Ok, Rig.ReadMessage(3, Boss(4, false, ECrowdyExecTestPhase::Calm)));
+	TestTrue(TEXT("and becomes Ready"), Rig.PumpUntil([Object]() { return Object->GetStatus() == ECrowdyServerObjectStatus::Ready; }));
+	int32 Health = 0;
+	TestTrue(TEXT("its value reads through the Link"),
+		UCrowdyServerObjectLibrary::ReadServerVariableInto(Link, Rig.Definition.Get(), TEXT("Health"), FCrowdyServerObjectTestPins::StaticStruct()->FindPropertyByName(TEXT("Count")), &Health)
+		&& Health == 4);
+
+	// Get Players Online keeps its Link, so a count read once in a while is still followed.
+	Link->KeepWhileOwnerLives();
+	Rig.Tick(30.f);
+	TestTrue(TEXT("a kept Link outlives the grace period while its owner lives"),
+		Rig.Subsystem->FindLink(Owner.Get(), Rig.Definition.Get(), ECrowdyServerObjectFind::InstanceId, FString(), 0) == Link && Link->GetServerObject() == Object);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectRootDialTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.ConnectionIsPlacedWithAnotherTypeThanTheRoot", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectRootDialTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	AddExpectedErrorPlain(ConnectFailedWarning, EAutomationExpectedErrorFlags::Contains, 2);
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> Root(DuplicateObject(Rig.Definition.Get(), GetTransientPackage()));
+	Root->TypeName = UCrowdyServerObjectDefinition::RootTypeName;
+	Root->bOnlyOneInstance = true;
+	TArray<FString> Errors;
+	if (!TestTrue(TEXT("the root test definition bakes"), Root->Bake(Errors)))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	FString Error;
+	UCrowdyServerObject* RootObject = Rig.Subsystem->Acquire(Root.Get(), FString(), Owner.Get(), Error);
+	UCrowdyServerObject* Boss = Rig.Acquire(Rig.InstanceId, Owner.Get());
+	if (!RootObject || !Boss || !FailDial(Rig, 1))
+	{
+		return false;
+	}
+	TestTrue(FString::Printf(TEXT("a failed dial for the root names it (%s)"), *Boss->GetFailureReason()),
+		Boss->GetFailureReason().StartsWith(TEXT("Could not open the connection to the server for root: "), ESearchCase::CaseSensitive));
+	Rig.Tick(1.1f, 0.1f);
+	if (!FailDial(Rig, 2))
+	{
+		return false;
+	}
+	// Every type has failed once, so the dials start over, and the root, acquired first, still does not place the connection.
+	Rig.Tick(2.1f, 0.1f);
+	if (!TestTrue(TEXT("the dials start over"), Rig.PumpUntil([&Rig]() { return DialsOf(Rig) >= 3; })))
+	{
+		return false;
+	}
+	FString Body;
+	Rig.Client->GetLastTestRequestBody(Body);
+	TestTrue(FString::Printf(TEXT("with another type live, the dial names that type (%s)"), *Body), Body.Contains(FString::Printf(TEXT("\"%s\""), TypeName), ESearchCase::CaseSensitive));
+	Rig.Client->TestExecOpen();
+	TestTrue(TEXT("the connection opens"), Rig.PumpUntil([&Rig]() { return Rig.Subsystem->GetConnection() != nullptr; }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectOtherEmptyIdTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.EmptyInstanceIdIsRefusedForOtherTypes", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectOtherEmptyIdTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid() || !UseOnlyOneInstance(Rig))
+	{
+		return false;
+	}
+	TestEqualSensitive(TEXT("another type's only Instance Id is main"), Rig.Definition->GetOnlyInstanceId(), FString(UCrowdyServerObjectDefinition::OnlyInstanceId));
+	Rig.Definition->bOnlyOneInstance = false;
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	FString Error;
+	TestNull(TEXT("an empty Instance Id is refused"), Rig.Subsystem->Acquire(Rig.Definition.Get(), FString(), Owner.Get(), Error));
+	TestTrue(FString::Printf(TEXT("saying why (%s)"), *Error), Error.Contains(TEXT("1 to 256 bytes")));
+	UCrowdyServerObjectLink* Link = Rig.Subsystem->FindLink(Owner.Get(), Rig.Definition.Get(), ECrowdyServerObjectFind::InstanceId, FString(), 0);
+	TestTrue(TEXT("and a Link without one waits for it"), Link && !Link->GetServerObject() && Link->GetFailureReason().Contains(TEXT("Set an Instance Id")));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectFixSetOptionalUnfitTest,
 	"CrowdySDK.CrowdyExec.ServerObjectFixes.SetOptionalThatDoesNotFitWarns", CrowdyServerObjectTests::TestFlags)
 bool FCrowdyServerObjectFixSetOptionalUnfitTest::RunTest(const FString& Parameters)

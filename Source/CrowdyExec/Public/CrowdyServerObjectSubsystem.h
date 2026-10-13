@@ -154,7 +154,7 @@ private:
 	/** The first object that is Connecting or Ready, or null when none needs the connection. */
 	const UCrowdyServerObject* FindLiveObject() const;
 
-	/** The first live object of a type no dial has failed with since the last good one, or null when every live type has. */
+	/** The first live object of a type no dial has failed with since the last good one, the root only when no other is; null when every live type has failed. */
 	const UCrowdyServerObject* FindDialObject() const;
 
 	/** The type the connection was last dialled with, and those whose dial failed since the last good one. */

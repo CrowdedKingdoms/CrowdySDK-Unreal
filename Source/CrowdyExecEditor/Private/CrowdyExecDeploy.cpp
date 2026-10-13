@@ -10,6 +10,7 @@
 #include "CrowdyExecCodegen.h"
 #include "CrowdyRustSyntaxMarshaller.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "CrowdyServerObjectLibrary.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -29,46 +30,20 @@ namespace CrowdyExecDeployDetail
 	constexpr int64 MinIdleTimeoutMs = 1000;
 	constexpr int64 MaxIdleTimeoutMs = 1800000;
 
-	const TCHAR* const RootLib =
-		TEXT("// The root every Server Object type sits under on the platform, written by the Crowdy SDK. It keeps no state.\n")
-		TEXT("use ckx_sdk::prelude::*;\n")
-		TEXT("\n")
-		TEXT("#[derive(Serialize, Deserialize, Default)]\n")
-		TEXT("pub struct Root {}\n")
-		TEXT("\n")
-		TEXT("impl Hub for Root {\n")
-		TEXT("    fn spawn(_ctx: &Ctx, _seed: &[u8]) -> Result<Self> {\n")
-		TEXT("        Ok(Self::default())\n")
-		TEXT("    }\n")
-		TEXT("\n")
-		TEXT("    fn load(_ctx: &Ctx, _snapshot: &[u8], _from_version: u64) -> Result<Self> {\n")
-		TEXT("        Ok(Self::default())\n")
-		TEXT("    }\n")
-		TEXT("\n")
-		TEXT("    fn persist(&mut self, _ctx: &Ctx) -> Result<Vec<u8>> {\n")
-		TEXT("        encode(self)\n")
-		TEXT("    }\n")
-		TEXT("\n")
-		TEXT("    fn handle(&mut self, _ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n")
-		TEXT("        Err(Error::unknown_method(call.method))\n")
-		TEXT("    }\n")
-		TEXT("}\n")
-		TEXT("\n")
-		TEXT("ckx_sdk::export_hub!(Root);\n");
-
-	/** The same package shape Generate Server Code writes for every type. */
-	FString CargoText(const FString& CrateName)
+	/** The root's own code for its state struct StateName; the platform calls on_presence on the root alone. */
+	FString RootLogic(const FString& StateName)
 	{
-		return FString::Printf(TEXT("[package]\nname = \"%s\"\n"), *CrateName)
-			+ TEXT("version = \"0.1.0\"\n")
-			TEXT("edition = \"2024\"\n")
-			TEXT("\n")
-			TEXT("[lib]\n")
-			TEXT("crate-type = [\"cdylib\"]\n")
-			TEXT("\n")
-			TEXT("[dependencies]\n")
-			TEXT("ckx-sdk = \"0.7.0\"\n")
-			TEXT("serde = { version = \"1\", features = [\"derive\"] }\n");
+		return FString(TEXT("// The root every Server Object type sits under on the platform, written by the Crowdy SDK: it keeps the number of\n")
+			TEXT("// players in the app's world, which players read as Players Online.\n")
+			TEXT("use crate::*;\n")
+			TEXT("use ckx_sdk::prelude::*;\n")
+			TEXT("\n"))
+			+ FString::Printf(TEXT("impl Functions for %s {\n"), *StateName)
+			+ TEXT("    fn on_presence(&mut self, _ctx: &Ctx, presence: &Presence) -> Result<()> {\n")
+			TEXT("        self.PlayersOnline = i32::try_from(presence.count).unwrap_or(i32::MAX);\n")
+			TEXT("        Ok(())\n")
+			TEXT("    }\n")
+			TEXT("}\n");
 	}
 
 	/** Line endings and whitespace at the end of the file do not make a crate stale. */
@@ -457,8 +432,14 @@ TArray<UCrowdyServerObjectDefinition*> CrowdyExecDeploy::FindProjectDefinitions(
 	TArray<FAssetData> Assets;
 	IAssetRegistry::GetChecked().GetAssets(Filter, Assets);
 	TArray<UCrowdyServerObjectDefinition*> Definitions;
+	const FSoftObjectPath BuiltInRoot(UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath);
 	for (const FAssetData& Asset : Assets)
 	{
+		// The SDK's own root definition deploys as the root, never as one of the project's types.
+		if (Asset.GetSoftObjectPath() == BuiltInRoot)
+		{
+			continue;
+		}
 		if (UCrowdyServerObjectDefinition* Definition = Cast<UCrowdyServerObjectDefinition>(Asset.GetAsset()))
 		{
 			Definitions.Add(Definition);
@@ -536,8 +517,20 @@ CrowdyExecDeveloper::FBuildCrate CrowdyExecDeploy::MakeRootCrate()
 	using namespace CrowdyExecDeployDetail;
 	CrowdyExecDeveloper::FBuildCrate Crate;
 	Crate.Name = RootTypeName;
-	Crate.Files.Add(CrowdyExecDeveloper::FBuildFile{CargoPath, CargoText(RootTypeName)});
-	Crate.Files.Add(CrowdyExecDeveloper::FBuildFile{TEXT("src/lib.rs"), RootLib});
+	const UCrowdyServerObjectDefinition* Definition = UCrowdyServerObjectLibrary::GetPlayersOnlineDefinition();
+	CrowdyExecCodegen::FGeneratedCrate Generated;
+	FString Problem;
+	if (!Definition || !GenerateInMemory(*Definition, Generated, Problem))
+	{
+		return Crate;
+	}
+	for (const CrowdyExecCodegen::FGeneratedFile& File : Generated.Files)
+	{
+		const bool bLogic = File.Path.Equals(LogicPath, ESearchCase::CaseSensitive);
+		const bool bCargo = File.Path.Equals(CargoPath, ESearchCase::CaseSensitive);
+		Crate.Files.Add(CrowdyExecDeveloper::FBuildFile{File.Path,
+			bLogic ? RootLogic(Generated.StateName) : bCargo ? CrowdyExecCodegen::WithoutCrateDefinition(File.Text) : File.Text});
+	}
 	return Crate;
 }
 
@@ -547,7 +540,8 @@ FString CrowdyExecDeploy::MakeManifest(TConstArrayView<const UCrowdyServerObject
 	TArray<const UCrowdyServerObjectDefinition*> Sorted = Definitions.FilterByPredicate([](const UCrowdyServerObjectDefinition* Definition) { return Definition != nullptr; });
 	Algo::Sort(Sorted, [](const UCrowdyServerObjectDefinition* A, const UCrowdyServerObjectDefinition* B) { return IsBefore(A->TypeName, B->TypeName); });
 	TStringBuilder<1024> Json;
-	Json.Appendf(TEXT("{\"root\":\"%s\",\"types\":{\"%s\":{\"kind\":\"hub\",\"crate\":\"%s\",\"client\":false}"), RootTypeName, RootTypeName, RootTypeName);
+	// Open to players, who read and follow its Players Online.
+	Json.Appendf(TEXT("{\"root\":\"%s\",\"types\":{\"%s\":{\"kind\":\"hub\",\"crate\":\"%s\",\"client\":true}"), RootTypeName, RootTypeName, RootTypeName);
 	for (const UCrowdyServerObjectDefinition* Definition : Sorted)
 	{
 		const TCHAR* const Name = *Definition->TypeName;
@@ -578,6 +572,11 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 		return Project;
 	}
 	const CrowdyExecDeveloper::FBuildCrate& Root = Project.Crates.Add_GetRef(MakeRootCrate());
+	if (Root.Files.IsEmpty())
+	{
+		Project.Problems.Add(FString::Printf(TEXT("The Crowdy SDK's root Server Object, %s, did not load or does not generate; reinstall the Crowdy SDK"),
+			UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath));
+	}
 	int64 Budget = MaxSourceBytes;
 	for (const CrowdyExecDeveloper::FBuildFile& File : Root.Files)
 	{

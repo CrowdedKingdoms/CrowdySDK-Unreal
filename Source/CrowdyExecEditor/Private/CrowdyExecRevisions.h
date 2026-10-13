@@ -66,7 +66,7 @@ namespace CrowdyExecRevisions
 		int32 LiveVersion = 0;
 		/** The index in the type's history of the revision the live version runs, INDEX_NONE when not there. */
 		int32 LiveRevision = INDEX_NONE;
-		/** For Changed, what differs, in plain words: "server code", "save interval", "idle timeout", "platform data", "player access", "server limits". */
+		/** For Changed, what differs, in plain words: "server code", "save interval", "idle timeout", "platform data", "player access", "server limits"; the root's only change is "players online". */
 		TArray<FString> What;
 	};
 
