@@ -491,6 +491,16 @@ TArray<CrowdyExecRevisions::FTypeChange> CrowdyExecRevisions::Compare(const Crow
 	}
 	for (const FLiveType& LiveType : LiveTypes)
 	{
+		// A root closed to players is an older SDK's, which keeps no Players Online; this SDK's root is sent with any deploy.
+		if (IsSameText(LiveType.TypeName, CrowdyExecDeploy::RootTypeName) && !LiveType.bClient)
+		{
+			FTypeChange& Change = Changes.AddDefaulted_GetRef();
+			Change.TypeName = LiveType.TypeName;
+			Change.Change = EChange::Changed;
+			Change.LiveVersion = LiveVersion;
+			Change.What.Add(TEXT("players online"));
+			continue;
+		}
 		const bool bInProject = Project.Types.ContainsByPredicate([&LiveType](const CrowdyExecDeploy::FTypeState& Type) { return IsSameText(Type.TypeName, LiveType.TypeName); });
 		if (bInProject || IsSameText(LiveType.TypeName, CrowdyExecDeploy::RootTypeName))
 		{

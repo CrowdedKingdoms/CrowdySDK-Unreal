@@ -677,6 +677,11 @@ namespace CrowdyExecCodegenDetail
 			return Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam;
 		}
 
+		bool IsRoot() const
+		{
+			return Definition.TypeName.Equals(UCrowdyServerObjectDefinition::RootTypeName, ESearchCase::CaseSensitive);
+		}
+
 		bool ShowsMembers() const
 		{
 			return KeepsRoster() && Definition.bShowMembers;
@@ -1734,10 +1739,11 @@ namespace CrowdyExecCodegenDetail
 	{
 		if (Definition.bOnlyOneInstance)
 		{
-			const FString OnlyId = UCrowdyServerObjectDefinition::OnlyInstanceId;
+			const FString OnlyId = Definition.GetOnlyInstanceId();
+			const FString Refusal = IsRoot() ? FString(TEXT("denied: the root has only one instance, whose Instance Id is empty"))
+				: FString::Printf(TEXT("denied: this Server Object has only one instance, whose Instance Id is %s"), *OnlyId);
 			Text += FString::Printf(TEXT("        if ctx.key != %s {\n"), *RustStrLiteral(OnlyId));
-			Text += FString::Printf(TEXT("            return Err(Error::new(%s));\n"),
-				*RustStrLiteral(FString::Printf(TEXT("denied: this Server Object has only one instance, whose Instance Id is %s"), *OnlyId)));
+			Text += FString::Printf(TEXT("            return Err(Error::new(%s));\n"), *RustStrLiteral(Refusal));
 			Text += TEXT("        }\n");
 		}
 		if (IsTeam())
@@ -1897,7 +1903,13 @@ namespace CrowdyExecCodegenDetail
 	void FCodegen::AppendLoadHead(FString& Text) const
 	{
 		AppendInstanceCheck(Text);
-		Text += TEXT("        let saved: SnapshotIn = decode(snapshot)?;\n")
+		Text += IsRoot()
+			? TEXT("        // A root an older Crowdy SDK deployed saved nothing this reads; the platform tells the root the count again within a minute.\n")
+			TEXT("        let decoded: Result<SnapshotIn> = decode(snapshot);\n")
+			TEXT("        let Some(saved) = decoded.ok().filter(|saved| saved.contract == CONTRACT) else {\n")
+			TEXT("            return <Self as Hub>::spawn(ctx, &[]);\n")
+			TEXT("        };\n")
+			: TEXT("        let saved: SnapshotIn = decode(snapshot)?;\n")
 			TEXT("        if saved.contract != CONTRACT {\n")
 			TEXT("            return Err(Error::new(&format!(\"the snapshot was written for contract {}, this code reads {}\", saved.contract, CONTRACT)));\n")
 			TEXT("        }\n");

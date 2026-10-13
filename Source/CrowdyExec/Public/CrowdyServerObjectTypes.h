@@ -97,6 +97,17 @@ struct CROWDYEXEC_API FCrowdyServerRecord
 	FString Team;
 };
 
+/** The variables of the root Server Object every app has, which the Crowdy SDK writes and deploys. */
+USTRUCT(BlueprintType)
+struct CROWDYEXEC_API FCrowdyPlayersOnlineState
+{
+	GENERATED_BODY()
+
+	/** Players the platform's realtime servers report in the app's world; one who stops playing still counts until their session ends, a few minutes later. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object")
+	int32 PlayersOnline = 0;
+};
+
 /** Keys a map by record id case-sensitively: two ids that differ only in case are two entities. */
 template <typename ValueType>
 struct TCrowdyRecordIdKeyFuncs : TDefaultMapKeyFuncs<FString, ValueType, false>

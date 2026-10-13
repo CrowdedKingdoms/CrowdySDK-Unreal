@@ -153,7 +153,7 @@ FString UCrowdyServerObjectComponent::ResolveInstanceId(FString& OutError) const
 	OutError.Reset();
 	if (Definition && Definition->bOnlyOneInstance)
 	{
-		return UCrowdyServerObjectDefinition::OnlyInstanceId;
+		return Definition->GetOnlyInstanceId();
 	}
 	switch (InstanceMode)
 	{

@@ -104,7 +104,8 @@ FString UCrowdyServerObjectLink::ResolveInstanceId(FString& OutError, const TArr
 	}
 	if (Find == ECrowdyServerObjectFind::InstanceId)
 	{
-		if (InstanceId.IsEmpty())
+		// The root has Only One Instance, and its Instance Id is empty.
+		if (InstanceId.IsEmpty() && !(Definition && Definition->bOnlyOneInstance))
 		{
 			OutError = TEXT("Set an Instance Id to find the Server Object by");
 		}

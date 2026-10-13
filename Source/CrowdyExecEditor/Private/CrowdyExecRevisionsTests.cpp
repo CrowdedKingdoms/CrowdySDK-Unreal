@@ -504,6 +504,36 @@ bool FCrowdyExecRevisionsSettingsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsOldRootTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareAnOlderRoot", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsOldRootTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	const FBuildCrate Crate = MakeCrate(TEXT("t_same"), TEXT("fn same() {}\n"));
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {CrowdyExecDeploy::MakeRootCrate(), Crate};
+	Project.Types.Add(MakeTypeState(TEXT("t_same"), CrowdyExecDeploy::ECrateState::UpToDate));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(TEXT("t_same"), 30, 300);
+	const TArray<FRevision> History = {MakeRevision(Crate, TEXT("d_same"), 1)};
+	const auto HistoryFor = [&History](const FString&) { return History; };
+
+	auto CompareWith = [&](const TCHAR* RootClient)
+	{
+		CrowdyExecDeveloper::FVersion Live;
+		Live.Version = 3;
+		Live.ManifestJson = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"d_root\",\"parent\":null,\"client\":%s},")
+			TEXT("\"t_same\":{\"kind\":\"hub\",\"digest\":\"d_same\",\"parent\":\"root\",\"client\":true,\"evict_after_ms\":300000,\"persist_every_ms\":30000}}}"), RootClient);
+		return CrowdyExecRevisions::Compare(Project, {Definition.Get()}, &Live, true, HistoryFor);
+	};
+	const TArray<FTypeChange> Older = CompareWith(TEXT("false"));
+	TestChange(*this, TEXT("a root closed to players"), Older, TEXT("t_same"), EChange::Unchanged);
+	TestChange(*this, TEXT("a root closed to players"), Older, TEXT("root"), EChange::Changed, TEXT("players online"));
+	TestTrue(TEXT("so a project with nothing else changed can deploy this SDK's root"), CrowdyExecRevisions::HasChanges(Older));
+	const TArray<FTypeChange> Current = CompareWith(TEXT("true"));
+	TestNull(TEXT("a root open to players is not listed"), FindChange(Current, TEXT("root")));
+	TestFalse(TEXT("and then nothing changed"), CrowdyExecRevisions::HasChanges(Current));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsLimitsTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareServerLimits", CrowdyExecRevisionsTest::TestFlags)
 bool FCrowdyExecRevisionsLimitsTest::RunTest(const FString& Parameters)
 {

@@ -386,6 +386,12 @@ public:
 	/** The Instance Id of a type with Only One Instance. */
 	static const TCHAR* const OnlyInstanceId;
 
+	/** The platform's root type, every app's parent of the others; its one instance's Instance Id is empty. */
+	static const TCHAR* const RootTypeName;
+
+	/** The Instance Id a type with Only One Instance is reached by: empty for the root, else Only Instance Id. */
+	FString GetOnlyInstanceId() const;
+
 	/** Its server code may read players: their names, tier features, group membership and app state; deploying asks the platform for players.read. Crowdy Team members or records and a Required Feature ask for it too. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads Players"))
 	bool bReadsPlayers = false;

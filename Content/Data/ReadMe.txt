@@ -22,3 +22,10 @@ registered first would win and the answer would depend on module load order.
 
 Until the asset exists, any Game or PIE map that configures nothing says so in the log and names this
 path, so a missing default is never silent.
+
+CSO_PlayersOnline (a Crowdy Server Object definition, /CrowdySDK/Data/CSO_PlayersOnline) is the root
+Server Object every app has. Deploying from Server Compute generates the root's server code from it,
+and Get Players Online reads its one variable, Players Online, by path; so it lives here, where every
+cook includes it. Its Type Name is root, it has Only One Instance (the root's Instance Id is empty),
+its State Struct is Crowdy Players Online State, and Players Online is Visible to Players. Do not
+change it: the root's server code is the SDK's, and a project deploys it as it is.

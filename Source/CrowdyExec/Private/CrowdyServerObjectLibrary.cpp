@@ -408,6 +408,51 @@ FString UCrowdyServerObjectLibrary::GetPlayerInstanceId(UObject* WorldContextObj
 	return UserId > 0 ? LexToString(UserId) : FString();
 }
 
+const TCHAR* const UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath = TEXT("/CrowdySDK/Data/CSO_PlayersOnline.CSO_PlayersOnline");
+
+bool UCrowdyServerObjectLibrary::GetPlayersOnline(UObject* Owner, int32& PlayersOnline)
+{
+	PlayersOnline = 0;
+	UCrowdyServerObjectDefinition* Definition = GetPlayersOnlineDefinition();
+	UCrowdyServerObjectLink* Link = Definition ? FindServerObjectLink(Owner, Definition, ECrowdyServerObjectFind::InstanceId, FString(), 0) : nullptr;
+	if (!Link)
+	{
+		return false;
+	}
+	Link->KeepWhileOwnerLives();
+	static const FProperty* const Count = FCrowdyPlayersOnlineState::StaticStruct()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FCrowdyPlayersOnlineState, PlayersOnline));
+	if (ReadServerVariableInto(Link, Definition, Count->GetFName(), Count, &PlayersOnline))
+	{
+		return true;
+	}
+	// An app whose root an older SDK deployed refuses every read, which would otherwise read as 0 with no word why.
+	const UCrowdyServerObject* Root = Link->GetServerObject();
+	const FString Reason = Root ? Root->GetFailureReason() : FString();
+	static FString Warned;
+	if (!Reason.IsEmpty() && !Reason.Equals(Warned, ESearchCase::CaseSensitive))
+	{
+		Warned = Reason;
+		UE_LOG(LogCrowdyExec, Warning, TEXT("Get Players Online has no count yet: %s. An app last deployed with an older Crowdy SDK keeps none; deploy it from Server Compute."), *Reason);
+	}
+	return false;
+}
+
+UCrowdyServerObjectDefinition* UCrowdyServerObjectLibrary::GetPlayersOnlineDefinition()
+{
+	// Loaded once and kept, so a missing asset is reported once and a held one is never loaded again mid-game.
+	static UCrowdyServerObjectDefinition* const Loaded = []()
+	{
+		UCrowdyServerObjectDefinition* Definition = LoadObject<UCrowdyServerObjectDefinition>(nullptr, PlayersOnlineDefinitionPath);
+		UE_CLOG(!Definition, LogCrowdyExec, Error, TEXT("%s did not load, so there is no Players Online; it ships in the Crowdy SDK's content, which every cook includes."), PlayersOnlineDefinitionPath);
+		if (Definition)
+		{
+			Definition->AddToRoot();
+		}
+		return Definition;
+	}();
+	return Loaded;
+}
+
 const FProperty* UCrowdyServerObjectLibrary::FindServerValue(const FInstancedStruct& Values, FName Name)
 {
 	return CrowdyExec::FindTravellingField(Values.GetScriptStruct(), Name);
