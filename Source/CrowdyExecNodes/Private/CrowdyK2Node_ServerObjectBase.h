@@ -40,7 +40,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Server Object", meta = (EditCondition = "bFind", EditConditionHides))
 	ECrowdyServerObjectFind Instance = ECrowdyServerObjectFind::InstanceId;
 
-	/** The variable or function this node is about. */
+	/** The variable, function or message this node is about. */
 	UPROPERTY(VisibleAnywhere, Category = "Server Object")
 	FName Member;
 
@@ -60,7 +60,7 @@ public:
 	/** Definition's functions, with the built-in member functions when it keeps its own members. */
 	static void GatherFunctionNames(const UCrowdyServerObjectDefinition* Definition, TArray<FName>& Out);
 
-	/** The menu entries for Definition: Get and On Changed per variable, Call per function, and Get Server State. */
+	/** The menu entries for Definition: Get and On Changed per variable, Call per function, On Received per message, and Get Server State. */
 	static void GatherMenuEntries(const UCrowdyServerObjectDefinition* Definition, TArray<FCrowdyServerObjectMenuEntry>& Out);
 
 	//~ UEdGraphNode
@@ -104,6 +104,12 @@ protected:
 
 	/** Moves Pin's wires onto To, reporting a wire that no longer fits Pin's type instead of dropping it. */
 	bool MoveValueLinks(FKismetCompilerContext& CompilerContext, UEdGraphPin& Pin, UEdGraphPin& To);
+
+	/**
+	 * Chains a Get Server Value from ValuesPin (an Instanced Struct) into each of Outputs that has a wire, after ThenPin, and returns the last exec pin.
+	 * Null after reporting a failure.
+	 */
+	UEdGraphPin* ExpandOutputs(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph, TConstArrayView<FCrowdyServerValuePin> Outputs, UEdGraphPin* ThenPin, UEdGraphPin* ValuesPin);
 
 	/** Reports Value's refusal as a compile error; false when it has one. */
 	bool CheckValue(FKismetCompilerContext& CompilerContext, const FCrowdyServerValuePin& Value) const;

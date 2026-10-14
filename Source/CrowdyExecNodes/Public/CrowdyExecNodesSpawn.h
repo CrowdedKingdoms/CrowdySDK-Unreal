@@ -14,6 +14,9 @@ namespace CrowdyServerObjectNodePins
 	CROWDYEXECNODES_API extern const FName TeamId;
 	CROWDYEXECNODES_API extern const FName Changed;
 
+	/** On Message Received's exec output, shown as Received, which runs once the payload's value pins are set. */
+	CROWDYEXECNODES_API extern const FName Received;
+
 	/** Get Server State's advanced pin, false until the server has sent the object's values. */
 	CROWDYEXECNODES_API extern const FName HasValues;
 }
@@ -31,12 +34,13 @@ namespace CrowdyServerCallPins
 	CROWDYEXECNODES_API extern const FName Timeout;
 }
 
-/** Places Server Object nodes in a graph from C++, as the action menu does; null, with a warning, when the definition lacks the variable or function. */
+/** Places Server Object nodes in a graph from C++, as the action menu does; null, with a warning, when the definition lacks the variable, function or message. */
 namespace CrowdyExecNodesSpawn
 {
 	CROWDYEXECNODES_API UEdGraphNode* SpawnServerVariableGetter(UEdGraph* Graph, UCrowdyServerObjectDefinition* Definition, FName Variable, FVector2D Position);
 	CROWDYEXECNODES_API UEdGraphNode* SpawnServerVariableChanged(UEdGraph* Graph, UCrowdyServerObjectDefinition* Definition, FName Variable, FVector2D Position);
 	CROWDYEXECNODES_API UEdGraphNode* SpawnServerFunctionCall(UEdGraph* Graph, UCrowdyServerObjectDefinition* Definition, FName Function, FVector2D Position);
+	CROWDYEXECNODES_API UEdGraphNode* SpawnServerMessageReceived(UEdGraph* Graph, UCrowdyServerObjectDefinition* Definition, FName Message, FVector2D Position);
 	CROWDYEXECNODES_API UEdGraphNode* SpawnServerState(UEdGraph* Graph, UCrowdyServerObjectDefinition* Definition, FVector2D Position);
 
 	/** Makes Node find its object by its definition and Instance instead of a Target, and rebuilds its pins. */

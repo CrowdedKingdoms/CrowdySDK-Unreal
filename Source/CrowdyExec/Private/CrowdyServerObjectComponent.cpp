@@ -479,6 +479,7 @@ void UCrowdyServerObjectComponent::Join()
 
 	Object = Acquired;
 	JoinError.Reset();
+	MessageBindings.Follow(Acquired, FOnCrowdyServerMessage::FDelegate::CreateUObject(this, &UCrowdyServerObjectComponent::HandleMessage));
 	StatusHandle = Acquired->OnStatusChanged.AddUObject(this, &UCrowdyServerObjectComponent::HandleStatus);
 	Entity = FoundEntity;
 	RecordNetId.Invalidate();
@@ -517,6 +518,7 @@ void UCrowdyServerObjectComponent::Leave()
 	}
 
 	Object = nullptr;
+	MessageBindings.Unfollow();
 	Held->OnStatusChanged.Remove(StatusHandle);
 	Held->UnwatchValues(ValuesHandle);
 	Held->UnwatchRecord(RecordId, RecordHandle);
@@ -787,6 +789,14 @@ void UCrowdyServerObjectComponent::HandleVariables(UCrowdyServerObject* InObject
 	{
 		TGuardValue<bool> JoiningGuard(bJoining, true);
 		FollowRecordId();
+	}
+}
+
+void UCrowdyServerObjectComponent::HandleMessage(UCrowdyServerObject* InObject, FName Message, const FInstancedStruct& Payload)
+{
+	if (InObject == Object)
+	{
+		MessageBindings.Notify(Object, Message, Payload);
 	}
 }
 

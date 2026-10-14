@@ -314,47 +314,6 @@ UEdGraphPin* UCrowdyK2Node_CallServerFunction::ExpandInputs(FKismetCompilerConte
 	return Then;
 }
 
-UEdGraphPin* UCrowdyK2Node_CallServerFunction::ExpandOutputs(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph, TConstArrayView<FCrowdyServerValuePin> Outputs, UEdGraphPin* SuccessPin, UEdGraphPin* OutputsPin)
-{
-	const UEdGraphSchema_K2* Schema = CompilerContext.GetSchema();
-	UEdGraphPin* Then = SuccessPin;
-	for (const FCrowdyServerValuePin& Output : Outputs)
-	{
-		UEdGraphPin* Pin = FindPin(Output.Name, EGPD_Output);
-		UEdGraphPin* HasValue = Output.bOptional ? FindPin(CrowdyServerObjectPins::HasValuePinName(Output.Name), EGPD_Output) : nullptr;
-		if ((!Pin || Pin->LinkedTo.Num() == 0) && (!HasValue || HasValue->LinkedTo.Num() == 0))
-		{
-			continue;
-		}
-
-		UK2Node_CallFunction* Get = CompilerContext.SpawnIntermediateNode<UK2Node_CallFunction>(this, SourceGraph);
-		Get->FunctionReference.SetExternalMember(GET_FUNCTION_NAME_CHECKED(UCrowdyServerObjectLibrary, GetServerValue), UCrowdyServerObjectLibrary::StaticClass());
-		Get->AllocateDefaultPins();
-		UEdGraphPin* Values = Get->FindPin(TEXT("Values"));
-		UEdGraphPin* Name = Get->FindPin(TEXT("Name"));
-		UEdGraphPin* Value = Get->FindPin(TEXT("Value"));
-		UEdGraphPin* Found = Get->GetReturnValuePin();
-		if (!Pin || !Values || !Name || !Value || !Found)
-		{
-			CompilerContext.MessageLog.Error(*LOCTEXT("GetChanged", "@@ could not be expanded: refresh the node.").ToString(), this);
-			return nullptr;
-		}
-
-		// The call's Outputs becomes a local the delegate writes before On Success runs, so each read sees this call's reply.
-		Schema->TryCreateConnection(OutputsPin, Values);
-		Name->DefaultValue = Output.Name.ToString();
-		Value->PinType = Output.Type;
-		MoveValueLinks(CompilerContext, *Pin, *Value);
-		if (HasValue)
-		{
-			MoveValueLinks(CompilerContext, *HasValue, *Found);
-		}
-		Schema->TryCreateConnection(Then, Get->GetExecPin());
-		Then = Get->GetThenPin();
-	}
-	return Then;
-}
-
 void UCrowdyK2Node_CallServerFunction::ExpandNode(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph)
 {
 	Super::ExpandNode(CompilerContext, SourceGraph);

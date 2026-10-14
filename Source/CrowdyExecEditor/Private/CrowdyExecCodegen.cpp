@@ -53,7 +53,7 @@ namespace CrowdyExecCodegenDetail
 		TEXT("WireKey"), TEXT("Checked"), TEXT("bool"), TEXT("char"), TEXT("str"), TEXT("i8"), TEXT("i16"), TEXT("i32"), TEXT("i64"),
 		TEXT("i128"), TEXT("isize"), TEXT("u8"), TEXT("u16"), TEXT("u32"), TEXT("u64"), TEXT("u128"), TEXT("usize"), TEXT("f32"),
 		TEXT("f64"), TEXT("std"), TEXT("core"), TEXT("alloc"), TEXT("serde"), TEXT("ckx_sdk"), TEXT("logic"), TEXT("types"), TEXT("Roster"), TEXT("Rule"),
-		TEXT("Cooldowns"), TEXT("MemberInputs"), TEXT("OpenInputs"), TEXT("members"), TEXT("timers"), TEXT("calls")};
+		TEXT("Cooldowns"), TEXT("MemberInputs"), TEXT("OpenInputs"), TEXT("members"), TEXT("timers"), TEXT("calls"), TEXT("messages"), TEXT("listen")};
 
 	/** In ECrowdyExecKind's order: the Unreal type a types.rs field comment names, which the removal check compares. */
 	const TCHAR* const KindWords[] = {
@@ -450,6 +450,39 @@ namespace CrowdyExecCodegenDetail
 		int32 UtcOffsetMinutes = 0;
 	};
 
+	struct FMessageInfo
+	{
+		FString Name;
+		/** The topic the platform carries it by. */
+		FString Topic;
+		/** The messages module's constant holding Topic: BOSS_DEFEATED. */
+		FString Constant;
+		/** The payload struct's name in types.rs; empty for none. */
+		FString Payload;
+	};
+
+	/** A message of another type this one listens to, and the handler logic.rs writes for it. */
+	struct FListenInfo
+	{
+		FString TypeName;
+		/** The type's module under calls and listen. */
+		FString TypeIdent;
+		FString Topic;
+		FString Handler;
+		/** The payload struct as the calls module names it; empty for none. */
+		FString Payload;
+	};
+
+	/** A type this one calls or listens to: its calls module and its messages. */
+	struct FCallee
+	{
+		FString TypeName;
+		FString Ident;
+		FString Module;
+		TArray<FMessageInfo> Messages;
+		bool bListen = false;
+	};
+
 	/** The timers module's own static, which no timer's constant may take. */
 	const TCHAR* const TimerQueueStatic = TEXT("QUEUED");
 
@@ -633,12 +666,16 @@ namespace CrowdyExecCodegenDetail
 		TArray<TArray<FString>> VariantIdents;
 		TArray<FFunctionInfo> FunctionInfos;
 		TArray<FTimerInfo> TimerInfos;
+		TArray<FMessageInfo> MessageInfos;
+		TArray<FListenInfo> ListenInfos;
 		TArray<FString> TakenNames;
 		/** Lists of the same shape share one struct; each other List starting with its values keeps its own name as an alias: {alias, struct}. */
 		TArray<TPair<FString, FString>> Aliases;
 		TArray<FListStruct> ListStructs;
-		/** The calls module for Can Call, empty without it. */
+		/** The calls module for Can Call and Listen To, empty without them. */
 		FString CallsModule;
+		/** The listen module for Listen To, empty without it. */
+		FString ListenModule;
 		FString Error;
 
 		bool Fail(const FString& Message)
@@ -747,11 +784,14 @@ namespace CrowdyExecCodegenDetail
 		bool CollectFunctions();
 		bool CollectRanges(const UScriptStruct* Params, FFunctionInfo& Info);
 		bool CollectTimers();
+		bool CollectMessages();
 		bool BuildCalls();
-		bool CalleeModule(const UCrowdyServerObjectDefinition& Callee, FString& Out);
+		bool CalleeModule(const UCrowdyServerObjectDefinition& Callee, const TCHAR* Setting, FCallee& Out);
+		bool BuildListen(const TArray<FCallee>& Callees);
 		bool IsBuiltinInputsOnly(int32 StructIndex) const;
 		bool TypesItems(TArray<FString>& Items);
 		bool NameList(const FCrowdyServerFunction& Function, bool bReply, FString& InOutName);
+		bool NameValues(const FString& Owner, const FString& ListName, const UScriptStruct* Struct, TFunctionRef<void(FInstancedStruct&)> Initialize, FString& InOutName);
 		bool FindStructName(const UScriptStruct* Struct, FString& Out) const;
 		FString RustType(int32 TypeIndex) const;
 		FString TypeComment(int32 TypeIndex) const;
@@ -782,6 +822,7 @@ namespace CrowdyExecCodegenDetail
 		void AppendObjectStructs(FString& Text) const;
 		void AppendFeatureItems(FString& Text) const;
 		void AppendTimersModule(FString& Text) const;
+		void AppendMessagesModule(FString& Text) const;
 		void SnapshotExtras(FString& OutSpawn, FString& OutLoad, FString& OutPersist) const;
 		void AppendAutomaticTimers(FString& Text) const;
 		void AppendLoadHead(FString& Text) const;
@@ -798,6 +839,7 @@ namespace CrowdyExecCodegenDetail
 		void AppendRecordWriters(FString& Text) const;
 		FString AuthorizeLine(ECrowdyServerFunctionCaller Caller) const;
 		FString KeepBefore(const TCHAR* Indent) const;
+		FString StartLines() const;
 		void AppendDispatch(FString& Text, const FFunctionInfo& Function) const;
 		void AppendBuiltinDispatch(FString& Text) const;
 		void AppendTimerHook(FString& Text) const;
@@ -1169,6 +1211,39 @@ namespace CrowdyExecCodegenDetail
 		return true;
 	}
 
+	bool FCodegen::CollectMessages()
+	{
+		for (const FCrowdyServerMessage& Message : Definition.Messages)
+		{
+			FMessageInfo& Info = MessageInfos.AddDefaulted_GetRef();
+			Info.Name = Message.Name.ToString();
+			Info.Topic = Message.GetTopic();
+			Info.Constant = Info.Topic.ToUpper();
+			const bool bTaken = MessageInfos.ContainsByPredicate([&Info](const FMessageInfo& Other) { return &Other != &Info && Other.Topic.Equals(Info.Topic, ESearchCase::CaseSensitive); });
+			if (Message.Name.IsNone() || Info.Topic.IsEmpty() || Info.Topic.Equals(TEXT("state"), ESearchCase::CaseSensitive) || bTaken)
+			{
+				return Fail(FString::Printf(TEXT("Server Message %s: its topic '%s' is reserved or another message's; set another server name for it on the definition"), *Info.Name, *Info.Topic));
+			}
+			const UScriptStruct* Struct = Message.GetPayloadStruct();
+			if (!Struct)
+			{
+				continue;
+			}
+			const int32 StructIndex = Layout.FindStruct(Struct);
+			if (StructIndex == INDEX_NONE)
+			{
+				return Fail(FString::Printf(TEXT("Server Message %s: its struct is missing from the field tables; save the definition again"), *Info.Name));
+			}
+			Info.Payload = StructNames[StructIndex];
+			auto InitializePayload = [&Message](FInstancedStruct& Out) { Message.InitializePayload(Out); };
+			if (!NameValues(FString::Printf(TEXT("Server Message %s"), *Info.Name), Message.GetPayloadListName(), Struct, InitializePayload, Info.Payload))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
 	bool FCodegen::CollectTimers()
 	{
 		for (const FCrowdyServerTimer& Timer : Definition.Timers)
@@ -1231,7 +1306,14 @@ namespace CrowdyExecCodegenDetail
 	/** A List whose struct is named for another List goes by its own name: an alias when it starts with the same values, else a struct of its own. */
 	bool FCodegen::NameList(const FCrowdyServerFunction& Function, bool bReply, FString& InOutName)
 	{
-		const FString ListName = bReply ? Function.GetReplyListName() : Function.GetParamsListName();
+		auto InitializeList = [&Function, bReply](FInstancedStruct& Out) { return bReply ? Function.InitializeReply(Out) : Function.InitializeParams(Out); };
+		return NameValues(FString::Printf(TEXT("Server Function %s"), *Function.Name.ToString()), bReply ? Function.GetReplyListName() : Function.GetParamsListName(),
+			bReply ? Function.GetReplyStruct() : Function.GetParamsStruct(), InitializeList, InOutName);
+	}
+
+	/** Owner names the function or message the values belong to in an error. */
+	bool FCodegen::NameValues(const FString& Owner, const FString& ListName, const UScriptStruct* Struct, TFunctionRef<void(FInstancedStruct&)> Initialize, FString& InOutName)
+	{
 		if (ListName.IsEmpty() || InOutName.IsEmpty())
 		{
 			return true;
@@ -1241,12 +1323,11 @@ namespace CrowdyExecCodegenDetail
 		{
 			return true;
 		}
-		FListStruct List{ClaimTypeName(Wanted, TakenNames), Layout.FindStruct(bReply ? Function.GetReplyStruct() : Function.GetParamsStruct())};
-		auto InitializeList = [&Function, bReply](FInstancedStruct& Out) { return bReply ? Function.InitializeReply(Out) : Function.InitializeParams(Out); };
+		FListStruct List{ClaimTypeName(Wanted, TakenNames), Layout.FindStruct(Struct)};
 		FDefaultBytes Shared;
-		if (!EncodeStructDefaults(List.StructIndex, Shared) || !EncodeDefaults(List.StructIndex, InitializeList, List.Defaults))
+		if (!EncodeStructDefaults(List.StructIndex, Shared) || !EncodeDefaults(List.StructIndex, Initialize, List.Defaults))
 		{
-			return Fail(FString::Printf(TEXT("Server Function %s: %s: %s"), *Function.Name.ToString(), *ListName, *Error));
+			return Fail(FString::Printf(TEXT("%s: %s: %s"), *Owner, *ListName, *Error));
 		}
 		const FString SharedName = InOutName;
 		InOutName = List.Name;
@@ -1602,7 +1683,7 @@ namespace CrowdyExecCodegenDetail
 		return Signature.Mid(3, Signature.Find(TEXT("(")) - 3);
 	}
 
-	/** The logic.rs functions a definition's timers and ticked events add, without their ending. */
+	/** The logic.rs functions a definition's timers, ticked events and listened messages add, without their ending. */
 	TArray<FString> HandlerSignatures(const FCodegen& Gen)
 	{
 		TArray<FString> Signatures;
@@ -1617,6 +1698,11 @@ namespace CrowdyExecCodegenDetail
 		if (Gen.Definition.bOnPlayerLeft)
 		{
 			Signatures.Add(TEXT("fn on_player_left(&mut self, ctx: &Ctx, player: u64) -> Result<()>"));
+		}
+		for (const FListenInfo& Listen : Gen.ListenInfos)
+		{
+			const FString Payload = Listen.Payload.IsEmpty() ? FString() : FString::Printf(TEXT(", payload: calls::%s::%s"), *Listen.TypeIdent, *Listen.Payload);
+			Signatures.Add(FString::Printf(TEXT("fn %s(&mut self, ctx: &Ctx, key: &str%s) -> Result<()>"), *Listen.Handler, *Payload));
 		}
 		return Signatures;
 	}
@@ -1661,16 +1747,33 @@ namespace CrowdyExecCodegenDetail
 		return FString::Printf(TEXT("authorize(ctx, &call, %sRule::%s)?;"), KeepsRoster() ? TEXT("&self.roster, ") : TEXT(""), RuleName(Caller));
 	}
 
-	/** Keeps the state for a rollback; with members it first lends them to server code, with timers it holds their starts. Records keep a journal of what they touch instead. */
+	/** Keeps the state for a rollback; with members it first lends them to server code, with timers it holds their starts, with messages their sends. Records keep a journal of what they touch instead. */
 	FString FCodegen::KeepBefore(const TCHAR* Indent) const
 	{
 		const FString Lend = KeepsRoster() ? FString(Indent) + TEXT("members::lend(&self.roster);\n") : FString();
-		const FString Open = TimerInfos.IsEmpty() ? FString() : FString(Indent) + TEXT("timers::open();\n");
+		const FString Open = (TimerInfos.IsEmpty() ? FString() : FString(Indent) + TEXT("timers::open();\n"))
+			+ (MessageInfos.IsEmpty() ? FString() : FString(Indent) + TEXT("messages::open();\n"))
+			+ (ListenInfos.IsEmpty() ? FString() : FString(Indent) + TEXT("listen::open();\n"));
 		if (IsRecords())
 		{
 			return Lend + Open;
 		}
 		return Lend + Open + Indent + TEXT("let before = Clone::clone(&self.state);\n");
+	}
+
+	/** finish's last steps that can fail: the listens and stops the handler queued, then its timers; a refused timer undoes the listens. */
+	FString FCodegen::StartLines() const
+	{
+		FString Lines;
+		if (!ListenInfos.IsEmpty())
+		{
+			Lines += TEXT("            listen::apply(ctx, &listens)?;\n");
+		}
+		if (TimerInfos.IsEmpty())
+		{
+			return Lines;
+		}
+		return Lines + (ListenInfos.IsEmpty() ? TEXT("            timers::arm_queued(ctx, &queued)?;\n") : TEXT("            timers::arm_queued(ctx, &queued).inspect_err(|_| listen::undo(ctx, &listens))?;\n"));
 	}
 
 	void FCodegen::AppendDispatch(FString& Text, const FFunctionInfo& Function) const
@@ -2023,7 +2126,23 @@ namespace CrowdyExecCodegenDetail
 	{
 		Text += TEXT("    fn on_topic(&mut self, ctx: &Ctx, msg: TopicMsg<'_>) -> Result<()> {\n");
 		Text += KeepBefore(TEXT("        "));
-		Text += FString::Printf(TEXT("        let result = Functions::on_topic(&mut %s, ctx, msg);\n"), Target());
+		if (ListenInfos.IsEmpty())
+		{
+			Text += FString::Printf(TEXT("        let result = Functions::on_topic(&mut %s, ctx, msg);\n"), Target());
+		}
+		else
+		{
+			Text += TEXT("        let result = match (msg.node_type, msg.topic) {\n");
+			for (const FListenInfo& Listen : ListenInfos)
+			{
+				const FString Handler = FString::Printf(TEXT("Functions::%s(&mut %s, ctx, msg.key"), *Listen.Handler, Target());
+				Text += FString::Printf(TEXT("            (%s, %s) => "), *RustStrLiteral(Listen.TypeName), *RustStrLiteral(Listen.Topic));
+				Text += Listen.Payload.IsEmpty() ? FString::Printf(TEXT("%s),\n"), *Handler)
+					: FString::Printf(TEXT("listen::decode_message(&msg).and_then(|payload| %s, payload)),\n"), *Handler);
+			}
+			Text += FString::Printf(TEXT("            _ => Functions::on_topic(&mut %s, ctx, msg),\n"), Target());
+			Text += TEXT("        };\n");
+		}
 		Text += FString::Printf(TEXT("        %s\n"), FinishCall());
 		Text += TEXT("    }\n")
 			TEXT("\n")
@@ -2322,6 +2441,7 @@ namespace CrowdyExecCodegenDetail
 	void FCodegen::AppendServerObjectImpl(FString& Text) const
 	{
 		const bool bTimers = !TimerInfos.IsEmpty();
+		const bool bMessages = !MessageInfos.IsEmpty();
 		const bool bRoster = KeepsRoster();
 		Text += TEXT("impl ServerObject {\n");
 		Text += bTimers ? TEXT("    // A failed dispatch, an unsendable change or a timer that cannot start leaves the state as it was and publishes nothing.\n")
@@ -2329,10 +2449,12 @@ namespace CrowdyExecCodegenDetail
 		Text += FString::Printf(TEXT("    fn finish<T>(&mut self, ctx: &Ctx, before: %s, result: Result<T>) -> Result<T> {\n"), *StateName());
 		Text += bRoster ? TEXT("        let before_roster = std::mem::replace(&mut self.roster, members::take());\n") : TEXT("");
 		Text += bTimers ? TEXT("        let queued = timers::close();\n") : TEXT("");
+		Text += bMessages ? TEXT("        let sent = messages::close();\n") : TEXT("");
+		Text += ListenInfos.IsEmpty() ? TEXT("") : TEXT("        let listens = listen::close();\n");
 		Text += TEXT("        // Everything that can fail runs before the change is kept and pushed.\n")
 			TEXT("        let prepared = result.and_then(|value| {\n");
 		Text += bRoster ? TEXT("            let push = self.prepare_push(&before, &before_roster)?;\n") : TEXT("            let push = self.prepare_push(&before)?;\n");
-		Text += bTimers ? TEXT("            timers::arm_queued(ctx, &queued)?;\n") : TEXT("");
+		Text += StartLines();
 		Text += TEXT("            Ok((value, push))\n")
 			TEXT("        });\n")
 			TEXT("        let (value, push) = match prepared {\n")
@@ -2347,6 +2469,7 @@ namespace CrowdyExecCodegenDetail
 			TEXT("            self.seq += 1;\n")
 			TEXT("            let _ = ctx.publish(\"state\", &out);\n")
 			TEXT("        }\n");
+		Text += bMessages ? TEXT("        messages::release(ctx, &sent);\n") : TEXT("");
 		Text += bTimers ? TEXT("        timers::stop_queued(ctx, &queued);\n") : TEXT("");
 		Text += TEXT("        Ok(value)\n")
 			TEXT("    }\n")
@@ -2734,7 +2857,12 @@ namespace CrowdyExecCodegenDetail
 		{
 			AppendTimersModule(Text);
 		}
+		if (!MessageInfos.IsEmpty())
+		{
+			AppendMessagesModule(Text);
+		}
 		Text += CallsModule;
+		Text += ListenModule;
 	}
 
 	void FCodegen::AppendTimersModule(FString& Text) const
@@ -2872,6 +3000,73 @@ namespace CrowdyExecCodegenDetail
 			TEXT("\n");
 	}
 
+	void FCodegen::AppendMessagesModule(FString& Text) const
+	{
+		Text += TEXT("// Sends the definition's messages to everyone listening; a send waits for the handler that made it to succeed and is dropped when the handler fails.\n")
+			TEXT("pub mod messages {\n")
+			TEXT("    use super::*;\n")
+			TEXT("    use std::cell::RefCell;\n")
+			TEXT("\n")
+			TEXT("    // Each message's topic, so a misspelt one does not build; the glue's own constants are reached through super.\n");
+		for (const FMessageInfo& Message : MessageInfos)
+		{
+			Text += FString::Printf(TEXT("    pub const %s: &str = %s;\n"), *Message.Constant, *RustStrLiteral(Message.Topic));
+		}
+		Text += TEXT("\n")
+			TEXT("    pub(crate) fn open() {\n")
+			TEXT("        stack(|sends| sends.push(Vec::new()));\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    pub(crate) fn close() -> Vec<(&'static str, Vec<u8>)> {\n")
+			TEXT("        stack(|sends| sends.pop()).unwrap_or_default()\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    // Publishes what a handler sent, in the order it sent it, once its change is kept and pushed.\n")
+			TEXT("    pub(crate) fn release(ctx: &Ctx, sent: &[(&'static str, Vec<u8>)]) {\n")
+			TEXT("        for (topic, payload) in sent {\n")
+			TEXT("            let _ = ctx.publish(topic, payload);\n")
+			TEXT("        }\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    fn stack<R>(use_stack: impl FnOnce(&mut Vec<Vec<(&'static str, Vec<u8>)>>) -> R) -> R {\n")
+			TEXT("        thread_local! {\n")
+			TEXT("            static QUEUED: RefCell<Vec<Vec<(&'static str, Vec<u8>)>>> = const { RefCell::new(Vec::new()) };\n")
+			TEXT("        }\n")
+			TEXT("        QUEUED.with(|queued| use_stack(&mut queued.borrow_mut()))\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    // Refused outside a handler, where nothing would ever send it.\n")
+			TEXT("    fn queue(topic: &'static str, payload: Vec<u8>) -> Result<()> {\n")
+			TEXT("        stack(|sends| sends.last_mut().map(|sent| sent.push((topic, payload))))\n")
+			TEXT("            .ok_or_else(|| Error::new(\"a message can only be sent from a handler\"))\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    fn send<T: Serialize + Wire>(topic: &'static str, payload: &T) -> Result<()> {\n")
+			TEXT("        let what = format!(\"message {topic}\");\n")
+			TEXT("        Wire::check(payload).map_err(|why| unsendable(&what, why))?;\n")
+			TEXT("        if payload.elements() > super::MAX_MESSAGE_ELEMENTS {\n")
+			TEXT("            return Err(unsendable(&what, \"it holds more than 65536 elements\"));\n")
+			TEXT("        }\n")
+			TEXT("        let bytes = encode(payload)?;\n")
+			TEXT("        if bytes.len() > super::MAX_MESSAGE {\n")
+			TEXT("            return Err(unsendable(&what, \"it is larger than 1 MiB\"));\n")
+			TEXT("        }\n")
+			TEXT("        queue(topic, bytes)\n")
+			TEXT("    }\n");
+		for (const FMessageInfo& Message : MessageInfos)
+		{
+			Text += FString::Printf(TEXT("\n    /// %s: sent to everyone listening once the handler that sends it succeeds.\n"), *Message.Name);
+			if (Message.Payload.IsEmpty())
+			{
+				Text += FString::Printf(TEXT("    pub fn send_%s() -> Result<()> {\n        queue(%s, vec![0xc0])\n    }\n"), *Message.Topic, *Message.Constant);
+				continue;
+			}
+			Text += FString::Printf(TEXT("    pub fn send_%s(payload: &%s) -> Result<()> {\n        send(%s, payload)\n    }\n"), *Message.Topic, *Message.Payload, *Message.Constant);
+		}
+		Text += TEXT("}\n")
+			TEXT("\n");
+	}
+
 	/** A typed call to another type's method: its inputs encoded, its reply decoded. */
 	FString CallFunction(const FString& TypeName, const FString& Method, const FString& Ident, const FString& Inputs, const FString& Outputs)
 	{
@@ -2888,53 +3083,180 @@ namespace CrowdyExecCodegenDetail
 		return Text + TEXT("    let reply = ") + Call + TEXT(";\n    decode(&reply)\n}\n");
 	}
 
+	/** Can Call and Listen To types each get a calls module; a type in both gets one. */
 	bool FCodegen::BuildCalls()
 	{
-		TArray<FString> Types;
-		FString Modules;
-		for (const TObjectPtr<UCrowdyServerObjectDefinition>& Entry : Definition.CanCall)
+		TArray<FCallee> Callees;
+		auto AddCallee = [this, &Callees](const UCrowdyServerObjectDefinition* Callee, const TCHAR* Setting, bool bListen)
 		{
-			const UCrowdyServerObjectDefinition* Callee = Entry.Get();
 			if (!Callee || Callee == &Definition || Callee->TypeName.IsEmpty())
 			{
-				return Fail(TEXT("Can Call: every entry must be another Server Object definition with a Type Name"));
+				return Fail(FString::Printf(TEXT("%s: every entry must be another Server Object definition with a Type Name"), Setting));
 			}
-			if (Types.Contains(Callee->TypeName))
+			if (FCallee* Known = Callees.FindByPredicate([Callee](const FCallee& Other) { return Other.TypeName == Callee->TypeName; }))
 			{
-				continue;
+				Known->bListen |= bListen;
+				return true;
 			}
-			Types.Add(Callee->TypeName);
-			FString Module;
-			if (!CalleeModule(*Callee, Module))
+			FCallee& Added = Callees.AddDefaulted_GetRef();
+			Added.TypeName = Callee->TypeName;
+			Added.bListen = bListen;
+			return CalleeModule(*Callee, Setting, Added);
+		};
+		for (const TObjectPtr<UCrowdyServerObjectDefinition>& Entry : Definition.CanCall)
+		{
+			if (!AddCallee(Entry.Get(), TEXT("Can Call"), false))
 			{
 				return false;
 			}
-			Modules += (Modules.IsEmpty() ? TEXT("") : TEXT("\n")) + Module;
+		}
+		for (const TObjectPtr<UCrowdyServerObjectDefinition>& Entry : Definition.ListenTo)
+		{
+			if (!AddCallee(Entry.Get(), TEXT("Listen To"), true))
+			{
+				return false;
+			}
+		}
+		FString Modules;
+		for (const FCallee& Callee : Callees)
+		{
+			Modules += (Modules.IsEmpty() ? TEXT("") : TEXT("\n")) + Callee.Module;
 		}
 		if (!Modules.IsEmpty())
 		{
 			CallsModule = TEXT("// Calls to the Server Object types this one can call; what a call did stays done when the caller's dispatch fails.\n")
 				TEXT("pub mod calls {\n") + Modules + TEXT("}\n\n");
 		}
+		return BuildListen(Callees);
+	}
+
+	/** The listen module, and the handler and payload of each message listened to; false when two would take the same name. */
+	bool FCodegen::BuildListen(const TArray<FCallee>& Callees)
+	{
+		FString Modules;
+		for (const FCallee& Callee : Callees)
+		{
+			if (!Callee.bListen)
+			{
+				continue;
+			}
+			FString Subscriptions;
+			for (const FMessageInfo& Message : Callee.Messages)
+			{
+				FString Ident;
+				const FString Stop = TEXT("stop_") + Message.Topic;
+				const FString Handler = FString::Printf(TEXT("on_%s_%s"), *Callee.TypeName, *Message.Topic);
+				auto SameName = [&Handler](const auto& Other) { return Other.Method.Equals(Handler, ESearchCase::CaseSensitive); };
+				if (!RustIdent(Message.Topic, Ident) || Callee.Messages.ContainsByPredicate([&Stop](const FMessageInfo& Other) { return Other.Topic.Equals(Stop, ESearchCase::CaseSensitive); }))
+				{
+					return Fail(FString::Printf(TEXT("Listen To %s: the message %s cannot be listened to under '%s' in the server code (Rust); set another server name for it on %s"),
+						*Callee.TypeName, *Message.Name, *Message.Topic, *Callee.TypeName));
+				}
+				if (IsOneOf(Handler, ReservedMethods) || FunctionInfos.ContainsByPredicate(SameName) || TimerInfos.ContainsByPredicate(SameName)
+					|| ListenInfos.ContainsByPredicate([&Handler](const FListenInfo& Other) { return Other.Handler.Equals(Handler, ESearchCase::CaseSensitive); }))
+				{
+					return Fail(FString::Printf(TEXT("Listen To %s: the handler %s for the message %s is also the name of a function, a timer or another handler; rename one of them"),
+						*Callee.TypeName, *Handler, *Message.Name));
+				}
+				ListenInfos.Add({Callee.TypeName, Callee.Ident, Message.Topic, Handler, Message.Payload});
+				Subscriptions += FString::Printf(TEXT("\n        pub fn %s(ctx: &Ctx, key: &str) -> Result<()> {\n            super::queue(true, %s, key, %s)\n        }\n"),
+					*Ident, *RustStrLiteral(Callee.TypeName), *RustStrLiteral(Message.Topic));
+				Subscriptions += FString::Printf(TEXT("\n        pub fn %s(ctx: &Ctx, key: &str) -> Result<()> {\n            super::queue(false, %s, key, %s)\n        }\n"),
+					*Stop, *RustStrLiteral(Callee.TypeName), *RustStrLiteral(Message.Topic));
+			}
+			if (!Subscriptions.IsEmpty())
+			{
+				Modules += FString::Printf(TEXT("\n    pub mod %s {\n        use super::super::*;\n"), *Callee.Ident) + Subscriptions + TEXT("    }\n");
+			}
+		}
+		if (Modules.IsEmpty())
+		{
+			return true;
+		}
+		ListenModule = TEXT("// Listens to the messages of the Server Object types this one listens to, which reach on_topic. A listen or stop waits for the handler that made it to succeed and is dropped when the handler fails.\n")
+			TEXT("pub mod listen {\n")
+			TEXT("    use super::*;\n")
+			TEXT("    use std::cell::RefCell;\n")
+			TEXT("\n")
+			TEXT("    pub(crate) struct Change {\n")
+			TEXT("        subscribe: bool,\n")
+			TEXT("        node_type: &'static str,\n")
+			TEXT("        key: String,\n")
+			TEXT("        topic: &'static str,\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    pub(crate) fn open() {\n")
+			TEXT("        stack(|changes| changes.push(Vec::new()));\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    pub(crate) fn close() -> Vec<Change> {\n")
+			TEXT("        stack(|changes| changes.pop()).unwrap_or_default()\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    // Applies the changes in order once the handler's other steps have passed; when the platform refuses one, those before it are undone and the handler fails.\n")
+			TEXT("    pub(crate) fn apply(ctx: &Ctx, changes: &[Change]) -> Result<()> {\n")
+			TEXT("        for (index, change) in changes.iter().enumerate() {\n")
+			TEXT("            let Change { subscribe, node_type, key, topic } = change;\n")
+			TEXT("            let done = if *subscribe { ctx.subscribe(node_type, key, topic) } else { ctx.unsubscribe(node_type, key, topic) };\n")
+			TEXT("            let Err(error) = done else {\n")
+			TEXT("                continue;\n")
+			TEXT("            };\n")
+			TEXT("            undo(ctx, &changes[..index]);\n")
+			TEXT("            let verb = if *subscribe { \"listen to\" } else { \"stop listening to\" };\n")
+			TEXT("            return Err(Error::new(&format!(\"could not {verb} {node_type}.{topic}: {error}\")));\n")
+			TEXT("        }\n")
+			TEXT("        Ok(())\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    // Puts back what applied changes did, last first; one the platform refuses again is left.\n")
+			TEXT("    pub(crate) fn undo(ctx: &Ctx, applied: &[Change]) {\n")
+			TEXT("        for change in applied.iter().rev() {\n")
+			TEXT("            let Change { subscribe, node_type, key, topic } = change;\n")
+			TEXT("            let _ = if *subscribe { ctx.unsubscribe(node_type, key, topic) } else { ctx.subscribe(node_type, key, topic) };\n")
+			TEXT("        }\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    fn stack<R>(use_stack: impl FnOnce(&mut Vec<Vec<Change>>) -> R) -> R {\n")
+			TEXT("        thread_local! {\n")
+			TEXT("            static QUEUED: RefCell<Vec<Vec<Change>>> = const { RefCell::new(Vec::new()) };\n")
+			TEXT("        }\n")
+			TEXT("        QUEUED.with(|queued| use_stack(&mut queued.borrow_mut()))\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    // Refused outside a handler, where nothing would ever apply it.\n")
+			TEXT("    fn queue(subscribe: bool, node_type: &'static str, key: &str, topic: &'static str) -> Result<()> {\n")
+			TEXT("        stack(|changes| changes.last_mut().map(|queued| queued.push(Change { subscribe, node_type, key: key.to_string(), topic })))\n")
+			TEXT("            .ok_or_else(|| Error::new(\"listening can only be started or stopped from a handler\"))\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    pub(crate) fn decode_message<T: serde::de::DeserializeOwned>(msg: &TopicMsg<'_>) -> Result<T> {\n")
+			TEXT("        msg.decode().map_err(|error| {\n")
+			TEXT("            let text = error.to_string();\n")
+			TEXT("            Error::new(&format!(\"bad_message: {}.{}: {}\", msg.node_type, msg.topic, text.strip_prefix(\"decode: \").unwrap_or(&text)))\n")
+			TEXT("        })\n")
+			TEXT("    }\n") + Modules + TEXT("}\n\n");
 		return true;
 	}
 
-	/** The callee's inputs and outputs are its own structs, written again inside its module. */
-	bool FCodegen::CalleeModule(const UCrowdyServerObjectDefinition& Callee, FString& Out)
+	/** The callee's inputs, outputs and message payloads are its own structs, written again inside its module. */
+	bool FCodegen::CalleeModule(const UCrowdyServerObjectDefinition& Callee, const TCHAR* Setting, FCallee& Added)
 	{
+		FString& Out = Added.Module;
 		FString LayoutError;
 		const FCrowdyExecLayout* CalleeLayout = Callee.ResolveLayout(LayoutError);
 		if (!CalleeLayout)
 		{
-			return Fail(FString::Printf(TEXT("Can Call %s: %s"), *Callee.TypeName, *LayoutError));
+			return Fail(FString::Printf(TEXT("%s %s: %s"), Setting, *Callee.TypeName, *LayoutError));
 		}
 		FCodegen Gen{Callee, *CalleeLayout};
 		TArray<FString> Items;
 		FString Ident;
-		if (!Gen.AssignNames() || !Gen.CollectFunctions() || !Gen.TypesItems(Items) || !RustIdent(Callee.TypeName, Ident))
+		if (!Gen.AssignNames() || !Gen.CollectFunctions() || !Gen.CollectMessages() || !Gen.TypesItems(Items) || !RustIdent(Callee.TypeName, Ident))
 		{
-			return Fail(FString::Printf(TEXT("Can Call %s: %s"), *Callee.TypeName, Gen.Error.IsEmpty() ? TEXT("its Type Name cannot be a name in the server code (Rust)") : *Gen.Error));
+			return Fail(FString::Printf(TEXT("%s %s: %s"), Setting, *Callee.TypeName, Gen.Error.IsEmpty() ? TEXT("its Type Name cannot be a name in the server code (Rust)") : *Gen.Error));
 		}
+		Added.Ident = Ident;
+		Added.Messages = MoveTemp(Gen.MessageInfos);
 		if (Gen.KeepsRoster())
 		{
 			Items.Add(MemberInputItems);
@@ -3976,15 +4298,18 @@ namespace CrowdyExecCodegenDetail
 	void FCodegen::AppendRecordsImpl(FString& Text) const
 	{
 		const bool bTimers = !TimerInfos.IsEmpty();
+		const bool bMessages = !MessageInfos.IsEmpty();
 		Text += TEXT("impl ServerObject {\n")
 			TEXT("    // A failed dispatch, an unsendable record or a timer that cannot start puts back the records it touched and sends nothing.\n")
 			TEXT("    fn finish<T>(&mut self, ctx: &Ctx, result: Result<T>) -> Result<T> {\n");
 		Text += bTimers ? TEXT("        let queued = timers::close();\n") : TEXT("");
+		Text += bMessages ? TEXT("        let sent = messages::close();\n") : TEXT("");
+		Text += ListenInfos.IsEmpty() ? TEXT("") : TEXT("        let listens = listen::close();\n");
 		Text += TEXT("        // Everything that can fail runs before the change is kept.\n")
 			TEXT("        let prepared = result.and_then(|value| {\n")
 			TEXT("            self.records.check_touched()?;\n")
 			TEXT("            let armed = self.arm_flush(ctx)?;\n");
-		Text += bTimers ? TEXT("            timers::arm_queued(ctx, &queued)?;\n") : TEXT("");
+		Text += StartLines();
 		Text += TEXT("            Ok((value, armed))\n")
 			TEXT("        });\n")
 			TEXT("        let (value, armed) = match prepared {\n")
@@ -3996,6 +4321,8 @@ namespace CrowdyExecCodegenDetail
 			TEXT("        };\n")
 			TEXT("        self.records.journal.clear();\n")
 			TEXT("        self.records.flush_pending |= armed;\n");
+		Text += bMessages ? TEXT("        // The records go out with the next send, so a message sent now can arrive before the change it follows.\n")
+			TEXT("        messages::release(ctx, &sent);\n") : TEXT("");
 		Text += bTimers ? TEXT("        timers::stop_queued(ctx, &queued);\n") : TEXT("");
 		Text += TEXT("        Ok(value)\n")
 			TEXT("    }\n")
@@ -4917,7 +5244,7 @@ bool CrowdyExecCodegen::Generate(const UCrowdyServerObjectDefinition& Definition
 	}
 	FCodegen Gen{Definition, *Layout};
 	FString Types;
-	if (!Gen.CheckRecordsShape() || !Gen.AssignNames() || !Gen.CollectFunctions() || !Gen.CollectTimers() || !Gen.TypesFile(Types) || !Gen.BuildCalls())
+	if (!Gen.CheckRecordsShape() || !Gen.AssignNames() || !Gen.CollectFunctions() || !Gen.CollectMessages() || !Gen.CollectTimers() || !Gen.TypesFile(Types) || !Gen.BuildCalls())
 	{
 		OutError = Gen.Error;
 		return false;

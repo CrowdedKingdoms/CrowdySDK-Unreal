@@ -19,6 +19,7 @@ class SWrapBox;
 class UCrowdyServerObjectDefinition;
 enum class ECrowdyServerFieldAudience : uint8;
 struct FCrowdyServerFunction;
+struct FCrowdyServerMessage;
 struct FCrowdyServerObjectSelection;
 struct FCrowdyServerTimer;
 struct FPropertyBagPropertyDesc;
@@ -32,6 +33,15 @@ namespace CrowdyServerObjectText
 
 	/** A function's inputs and outputs named as its Call node's pins: (Amount) returns Total. With bFieldNames a struct's fields are listed instead of its name. */
 	FText Signature(const FCrowdyServerFunction& Function, bool bFieldNames);
+
+	/** A message's payload named as its On Received node's pins: (Winner). () for none. With bFieldNames a struct's fields are listed instead of its name. */
+	FText PayloadSignature(const FCrowdyServerMessage& Message, bool bFieldNames);
+
+	/** The note under Server Messages about who hears a message. */
+	FText MessagePrivacyWarning();
+
+	/** Whether the note applies: players can listen to a message, and some players may not read the variables. */
+	bool ShowsMessagePrivacyWarning(const UCrowdyServerObjectDefinition& Definition);
 
 	/** A timer's name and what it does: Respawn: Once After 10 s; New Timer while it has no name. */
 	FText TimerTitle(const FCrowdyServerTimer& Timer);
@@ -62,7 +72,7 @@ namespace CrowdyServerValueRange
 
 /**
  * The Server Object definition's details. In its asset editor they follow the Server Object panel's selection: the
- * object's settings, one variable, or one function's inputs and outputs. Elsewhere every setting is shown at once.
+ * object's settings, one variable, one function's inputs and outputs, or one message's payload. Elsewhere every setting is shown at once.
  */
 class FCrowdyServerObjectDefinitionCustomization : public IDetailCustomization
 {
@@ -78,6 +88,8 @@ public:
 
 private:
 	void CustomizeFunction(IDetailLayoutBuilder& DetailBuilder, int32 Index);
+	void CustomizeMessage(IDetailLayoutBuilder& DetailBuilder, int32 Index);
+	void AddMessagesCategory(IDetailLayoutBuilder& DetailBuilder);
 	void AddPins(IDetailLayoutBuilder& DetailBuilder, const TSharedRef<IPropertyHandle>& Function, int32 Index, bool bOutputs);
 	void AddValueRanges(IDetailCategoryBuilder& Category, int32 Index, const TSharedPtr<IPropertyHandle>& List);
 	void AddObjectCategories(IDetailLayoutBuilder& DetailBuilder);

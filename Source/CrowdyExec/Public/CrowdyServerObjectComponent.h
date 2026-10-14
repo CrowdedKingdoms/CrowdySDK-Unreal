@@ -116,6 +116,9 @@ public:
 	/** Handlers bound to one variable of whatever Server Object this component holds, run again for each object it joins. */
 	FCrowdyServerVariableBindings& GetVariableBindings() { return VariableBindings; }
 
+	/** Handlers bound to one message of whatever Server Object this component holds; the component listens to each message on every object it joins. */
+	FCrowdyServerMessageBindings& GetMessageBindings() { return MessageBindings; }
+
 	/** The game instance's Server Objects, or null outside a game. */
 	UCrowdyServerObjectSubsystem* FindServerObjects() const;
 
@@ -127,6 +130,7 @@ protected:
 private:
 	friend struct FCrowdyServerObjectComponentTestAccess;
 	friend struct FCrowdyServerObjectRecordsTestAccess;
+	friend struct FCrowdyServerObjectMessageTestAccess;
 	friend class UCrowdyServerObjectSubsystem;
 
 	void Join();
@@ -150,6 +154,7 @@ private:
 	void HandleSourceStatus(UCrowdyServerObject* InObject, ECrowdyServerObjectStatus Status);
 
 	void HandleVariables(UCrowdyServerObject* InObject, TConstArrayView<FString> Fields);
+	void HandleMessage(UCrowdyServerObject* InObject, FName Message, const FInstancedStruct& Payload);
 	void HandleStatus(UCrowdyServerObject* InObject, ECrowdyServerObjectStatus Status);
 
 	UPROPERTY(Transient)
@@ -189,6 +194,7 @@ private:
 	void SetTeamsRetryArmed(bool bArmed);
 
 	FCrowdyServerVariableBindings VariableBindings;
+	FCrowdyServerMessageBindings MessageBindings;
 
 	/** From Server Value, unless the type has Only One Instance. */
 	bool FollowsSourceValue() const;

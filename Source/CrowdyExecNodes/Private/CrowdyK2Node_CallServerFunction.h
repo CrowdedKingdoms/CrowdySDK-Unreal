@@ -58,5 +58,4 @@ private:
 	UEdGraphPin* ChainInputError(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph, UEdGraphPin* Errors, UEdGraphPin* Set, FName Input);
 	UEdGraphPin* ExpandInputs(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph, TConstArrayView<FCrowdyServerValuePin> Inputs, UEdGraphPin* InputsPin,
 		UEdGraphPin* InputErrorPin);
-	UEdGraphPin* ExpandOutputs(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph, TConstArrayView<FCrowdyServerValuePin> Outputs, UEdGraphPin* SuccessPin, UEdGraphPin* OutputsPin);
 };

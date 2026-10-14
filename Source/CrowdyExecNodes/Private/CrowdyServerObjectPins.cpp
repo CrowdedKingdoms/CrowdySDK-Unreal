@@ -210,7 +210,7 @@ void CrowdyServerObjectPins::RefuseClashes(TArray<FCrowdyServerValuePin>& Values
 {
 	// Pins are found by name, ignoring case, so a value named like one of the node's own pins would be mistaken for it.
 	TArray<FName> Taken = {UEdGraphSchema_K2::PN_Execute, UEdGraphSchema_K2::PN_Then, UEdGraphSchema_K2::PN_Self, CrowdyServerObjectNodePins::InstanceId,
-		CrowdyServerObjectNodePins::TeamId, CrowdyServerObjectNodePins::Changed, CrowdyServerObjectNodePins::HasValues, CrowdyServerCallPins::FunctionPicker, CrowdyServerCallPins::OnSuccess,
+		CrowdyServerObjectNodePins::TeamId, CrowdyServerObjectNodePins::Changed, CrowdyServerObjectNodePins::Received, CrowdyServerObjectNodePins::HasValues, CrowdyServerCallPins::FunctionPicker, CrowdyServerCallPins::OnSuccess,
 		CrowdyServerCallPins::OnFailed, CrowdyServerCallPins::Outcome, CrowdyServerCallPins::Reason, CrowdyServerCallPins::Retryable,
 		CrowdyServerCallPins::Timeout};
 	for (const FCrowdyServerValuePin& Value : Values)
@@ -242,6 +242,10 @@ void CrowdyServerObjectPins::PreloadDefinition(UCrowdyServerObjectDefinition* De
 	{
 		CrowdyServerObjectPinsPrivate::Preload(Function.Params);
 		CrowdyServerObjectPinsPrivate::Preload(Function.Reply);
+	}
+	for (const FCrowdyServerMessage& Message : Definition->Messages)
+	{
+		CrowdyServerObjectPinsPrivate::Preload(Message.Payload);
 	}
 }
 

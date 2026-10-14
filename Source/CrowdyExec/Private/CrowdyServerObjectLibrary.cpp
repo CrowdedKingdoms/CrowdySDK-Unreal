@@ -307,6 +307,7 @@ namespace CrowdyServerObjectLibraryDetail
 		FCrowdyServerVariableBindings* Bindings = nullptr;
 		UObject* Owner = nullptr;
 		const FString* RecordId = nullptr;
+		FCrowdyServerMessageBindings* Messages = nullptr;
 	};
 
 	UCrowdyServerObjectComponent* FindOnlyComponent(AActor* Actor, const UCrowdyServerObjectDefinition* Definition)
@@ -333,11 +334,11 @@ namespace CrowdyServerObjectLibraryDetail
 		auto Fits = [Definition](const UCrowdyServerObjectDefinition* Held) { return !Definition || Held == Definition; };
 		if (UCrowdyServerObject* Object = Cast<UCrowdyServerObject>(Mutable))
 		{
-			return Fits(Object->GetDefinition()) ? FHolder{Object, &Object->GetVariableBindings(), Object} : FHolder();
+			return Fits(Object->GetDefinition()) ? FHolder{Object, &Object->GetVariableBindings(), Object, nullptr, &Object->GetMessageBindings()} : FHolder();
 		}
 		if (UCrowdyServerObjectLink* Link = Cast<UCrowdyServerObjectLink>(Mutable))
 		{
-			return Fits(Link->GetDefinition()) ? FHolder{Link->GetServerObject(), &Link->GetVariableBindings(), Link} : FHolder();
+			return Fits(Link->GetDefinition()) ? FHolder{Link->GetServerObject(), &Link->GetVariableBindings(), Link, nullptr, &Link->GetMessageBindings()} : FHolder();
 		}
 		UCrowdyServerObjectComponent* Component = Cast<UCrowdyServerObjectComponent>(Mutable);
 		if (AActor* Actor = Cast<AActor>(Mutable))
@@ -348,7 +349,8 @@ namespace CrowdyServerObjectLibraryDetail
 		{
 			return FHolder();
 		}
-		return FHolder{Component->GetServerObject(), &Component->GetVariableBindings(), Component, Component->ReadsRecord() ? &Component->GetRecordId() : nullptr};
+		return FHolder{Component->GetServerObject(), &Component->GetVariableBindings(), Component, Component->ReadsRecord() ? &Component->GetRecordId() : nullptr,
+			&Component->GetMessageBindings()};
 	}
 
 	UCrowdyServerObjectSubsystem* FindSubsystem(const FHolder& Holder)
@@ -557,6 +559,34 @@ void UCrowdyServerObjectLibrary::UnbindServerVariableChanged(UObject* Target, UC
 	if (Holder.Bindings)
 	{
 		Holder.Bindings->Unbind(Variable, Handler, HandlerFunction);
+	}
+}
+
+void UCrowdyServerObjectLibrary::BindServerMessage(UObject* Target, UCrowdyServerObjectDefinition* Definition, FName Message, UObject* Handler, FName HandlerFunction)
+{
+	const CrowdyServerObjectLibraryDetail::FHolder Holder = CrowdyServerObjectLibraryDetail::FindHolder(Target, Definition);
+	if (!Holder.Messages)
+	{
+		UE_LOG(LogCrowdyExec, Warning, TEXT("%s is not a Server Object of %s, a Crowdy Server Object component with it, an actor with one, or a Server Object Link, so its %s messages are not heard"),
+			*GetNameSafe(Target), *GetNameSafe(Definition), *Message.ToString());
+		return;
+	}
+	UCrowdyServerObjectSubsystem* Subsystem = Handler ? CrowdyServerObjectLibraryDetail::FindSubsystem(Holder) : nullptr;
+	UObject* Previous = Subsystem ? Subsystem->MoveBinding(Handler, HandlerFunction, Holder.Owner) : nullptr;
+	const CrowdyServerObjectLibraryDetail::FHolder Old = CrowdyServerObjectLibraryDetail::FindHolder(Previous, nullptr);
+	if (Old.Messages && Old.Owner != Holder.Owner)
+	{
+		Old.Messages->UnbindHandler(Handler, HandlerFunction);
+	}
+	Holder.Messages->Bind(Message, Handler, HandlerFunction);
+}
+
+void UCrowdyServerObjectLibrary::UnbindServerMessage(UObject* Target, UCrowdyServerObjectDefinition* Definition, FName Message, UObject* Handler, FName HandlerFunction)
+{
+	const CrowdyServerObjectLibraryDetail::FHolder Holder = CrowdyServerObjectLibraryDetail::FindHolder(Target, Definition);
+	if (Holder.Messages)
+	{
+		Holder.Messages->Unbind(Message, Handler, HandlerFunction);
 	}
 }
 

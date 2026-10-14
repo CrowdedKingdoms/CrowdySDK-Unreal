@@ -6,6 +6,7 @@
 #include "CrowdyK2Node_CallServerFunction.h"
 #include "CrowdyK2Node_GetServerState.h"
 #include "CrowdyK2Node_GetServerVariable.h"
+#include "CrowdyK2Node_ServerMessageReceived.h"
 #include "CrowdyK2Node_ServerVariableChanged.h"
 #include "CrowdyServerObject.h"
 #include "CrowdyServerObjectComponent.h"
@@ -29,6 +30,7 @@
 const FName CrowdyServerObjectNodePins::InstanceId(TEXT("Instance Id"));
 const FName CrowdyServerObjectNodePins::TeamId(TEXT("Team Id"));
 const FName CrowdyServerObjectNodePins::Changed(TEXT("Value Changed"));
+const FName CrowdyServerObjectNodePins::Received(TEXT("Message Received"));
 const FName CrowdyServerObjectNodePins::HasValues(TEXT("Has Values"));
 
 UCrowdyServerObjectDefinition* UCrowdyK2Node_ServerObjectBase::GetDefinition() const
@@ -98,6 +100,14 @@ void UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(const UCrowdyServerObject
 		if (UCrowdyK2Node_CallServerFunction::HasEveryPin(Definition, Function))
 		{
 			Out.Add({UCrowdyK2Node_CallServerFunction::StaticClass(), Function, FGuid(), UCrowdyK2Node_CallServerFunction::MakeTitle(Function, Asset)});
+		}
+	}
+
+	for (const FCrowdyServerMessage& Message : Definition->Messages)
+	{
+		if (Message.bPlayersCanListen && UCrowdyK2Node_ServerMessageReceived::HasEveryPin(Definition, Message.Name))
+		{
+			Out.Add({UCrowdyK2Node_ServerMessageReceived::StaticClass(), Message.Name, FGuid(), UCrowdyK2Node_ServerMessageReceived::MakeTitle(Message.Name, Asset)});
 		}
 	}
 
@@ -171,6 +181,10 @@ bool UCrowdyK2Node_ServerObjectBase::HasExternalDependencies(TArray<UStruct*>* O
 		{
 			OptionalOutput->AddUnique(const_cast<UScriptStruct*>(Function.GetParamsStruct()));
 			OptionalOutput->AddUnique(const_cast<UScriptStruct*>(Function.GetReplyStruct()));
+		}
+		for (const FCrowdyServerMessage& Message : Current->Messages)
+		{
+			OptionalOutput->AddUnique(const_cast<UScriptStruct*>(Message.GetPayloadStruct()));
 		}
 		OptionalOutput->Remove(nullptr);
 	}
@@ -348,6 +362,48 @@ bool UCrowdyK2Node_ServerObjectBase::MoveValueLinks(FKismetCompilerContext& Comp
 		return false;
 	}
 	return true;
+}
+
+UEdGraphPin* UCrowdyK2Node_ServerObjectBase::ExpandOutputs(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph, TConstArrayView<FCrowdyServerValuePin> Outputs, UEdGraphPin* ThenPin,
+	UEdGraphPin* ValuesPin)
+{
+	const UEdGraphSchema_K2* Schema = CompilerContext.GetSchema();
+	UEdGraphPin* Then = ThenPin;
+	for (const FCrowdyServerValuePin& Output : Outputs)
+	{
+		UEdGraphPin* Pin = FindPin(Output.Name, EGPD_Output);
+		UEdGraphPin* HasValue = Output.bOptional ? FindPin(CrowdyServerObjectPins::HasValuePinName(Output.Name), EGPD_Output) : nullptr;
+		if ((!Pin || Pin->LinkedTo.Num() == 0) && (!HasValue || HasValue->LinkedTo.Num() == 0))
+		{
+			continue;
+		}
+
+		UK2Node_CallFunction* Get = CompilerContext.SpawnIntermediateNode<UK2Node_CallFunction>(this, SourceGraph);
+		Get->FunctionReference.SetExternalMember(GET_FUNCTION_NAME_CHECKED(UCrowdyServerObjectLibrary, GetServerValue), UCrowdyServerObjectLibrary::StaticClass());
+		Get->AllocateDefaultPins();
+		UEdGraphPin* Values = Get->FindPin(TEXT("Values"));
+		UEdGraphPin* Name = Get->FindPin(TEXT("Name"));
+		UEdGraphPin* Value = Get->FindPin(TEXT("Value"));
+		UEdGraphPin* Found = Get->GetReturnValuePin();
+		if (!Pin || !Values || !Name || !Value || !Found)
+		{
+			CompilerContext.MessageLog.Error(*LOCTEXT("GetChanged", "@@ could not be expanded: refresh the node.").ToString(), this);
+			return nullptr;
+		}
+
+		// ValuesPin's owner (an event parameter or the call's Outputs) is written before the chain runs, so each read sees what was delivered.
+		Schema->TryCreateConnection(ValuesPin, Values);
+		Name->DefaultValue = Output.Name.ToString();
+		Value->PinType = Output.Type;
+		MoveValueLinks(CompilerContext, *Pin, *Value);
+		if (HasValue)
+		{
+			MoveValueLinks(CompilerContext, *HasValue, *Found);
+		}
+		Schema->TryCreateConnection(Then, Get->GetExecPin());
+		Then = Get->GetThenPin();
+	}
+	return Then;
 }
 
 bool UCrowdyK2Node_ServerObjectBase::IsConnectionDisallowed(const UEdGraphPin* MyPin, const UEdGraphPin* OtherPin, FString& OutReason) const

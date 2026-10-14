@@ -240,6 +240,55 @@ struct CROWDYEXEC_API FCrowdyServerFunction
 	FString GetReplyListName() const;
 };
 
+/** A message a Server Object's server code sends to everyone listening: players and other Server Object types. */
+USTRUCT(BlueprintType)
+struct CROWDYEXEC_API FCrowdyServerMessage
+{
+	GENERATED_BODY()
+
+	/** The message's name in Unreal. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Message")
+	FName Name;
+
+	/** The topic on the server. Empty uses Name in snake case: BossDefeated becomes boss_defeated. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Message", AdvancedDisplay)
+	FString ServerName;
+
+	/** Whether the payload is variables added here or a struct of your own. */
+	UPROPERTY(EditAnywhere, Category = "Server Message", meta = (DisplayName = "Payload From"))
+	ECrowdyServerValuesForm PayloadForm = ECrowdyServerValuesForm::Struct;
+
+	/** Players can listen to this message. Off: only other Server Object types that Listen To this one hear it, and it does not open the type to players. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Message", meta = (DisplayName = "Players Can Listen"))
+	bool bPlayersCanListen = true;
+
+	/** The struct each message carries. None carries nothing. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Message", meta = (DisplayName = "Payload Struct",
+		EditCondition = "PayloadForm == ECrowdyServerValuesForm::Struct", EditConditionHides))
+	TObjectPtr<UScriptStruct> Payload;
+
+	/** The variables each message carries, with their default values. No variables carries nothing. */
+	UPROPERTY(EditAnywhere, Category = "Server Message", meta = (DisplayName = "Payload", DefaultType = "Int32", IsPinTypeAccepted = "IsServerValueTypeAccepted",
+		EditCondition = "PayloadForm == ECrowdyServerValuesForm::List", EditConditionHides))
+	FInstancedPropertyBag PayloadList;
+
+	/** The topic as of the last bake, spelled as in the editor, which a packaged game cannot read back from Name. */
+	UPROPERTY()
+	FString BakedTopic;
+
+	/** The topic: BakedTopic, or worked out from ServerName and Name when the definition was never baked. */
+	FString GetTopic() const;
+
+	/** What each message carries: Payload, or PayloadList's struct. Null when it carries nothing. */
+	const UScriptStruct* GetPayloadStruct() const;
+
+	/** Out becomes a fresh payload: PayloadList's own values, or Payload's defaults. Empty when the message carries nothing. */
+	void InitializePayload(FInstancedStruct& Out) const;
+
+	/** The name PayloadList goes by in server code, such as BossDefeatedMessage; empty when the message carries a struct. */
+	FString GetPayloadListName() const;
+};
+
 /** Keeps a field's name on the server when the field is renamed in Unreal. */
 USTRUCT(BlueprintType)
 struct CROWDYEXEC_API FCrowdyServerFieldName
@@ -496,6 +545,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Functions")
 	TArray<FCrowdyServerFunction> Functions;
 
+	/** What the server code sends to everyone listening: players, and other Server Object types that Listen To this one. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Messages")
+	TArray<FCrowdyServerMessage> Messages;
+
+	/** The message called Name, or null. */
+	const FCrowdyServerMessage* FindMessage(FName Name) const;
+
+	/** The message sent on Topic, or null. */
+	const FCrowdyServerMessage* FindMessageByTopic(const FString& Topic) const;
+
 	/** Who belongs to an instance: nobody, members it keeps itself, or a Crowdy Team's members. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Members", meta = (DisplayName = "Members From"))
 	ECrowdyServerMembersSource MembersFrom = ECrowdyServerMembersSource::None;
@@ -527,13 +586,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timers & Events", meta = (DisplayName = "On Player Left"))
 	bool bOnPlayerLeft = false;
 
-	/** Whether players can do anything with an instance: call a function, watch a value, read records, be a member, or be heard joining or leaving. Deploying closes a type that is not to players, and acquiring one is refused. */
+	/** Whether players can do anything with an instance: call a function, watch a value, read records, be a member, listen to a message that players can listen to, or be heard joining or leaving. Deploying closes a type that is not to players, and acquiring one is refused. */
 	bool IsReachableByPlayers() const;
+
+	/** Whether any message lets players listen. */
+	bool HasPlayerMessages() const;
+
+	/** Whether some players may read less than every player can: Readable By is not Every Player, or some variables are Owner Only or Team Only. Messages still reach every player who connects. */
+	bool HasRestrictedReaders() const;
 
 #if WITH_EDITORONLY_DATA
 	/** Other Server Object types this one's server code calls. Used when server code is generated and deployed; a game never loads them. */
 	UPROPERTY(EditAnywhere, Category = "Can Call")
 	TArray<TObjectPtr<UCrowdyServerObjectDefinition>> CanCall;
+
+	/** Other Server Object types whose messages this one's server code can listen to; each is also callable. */
+	UPROPERTY(EditAnywhere, Category = "Listen To")
+	TArray<TObjectPtr<UCrowdyServerObjectDefinition>> ListenTo;
 
 	/** Memory each running instance may use (memory_mb). Every instance reserves it from the app's memory limit, so a smaller type fits more instances. */
 	UPROPERTY(EditAnywhere, Category = "Server Limits", meta = (DisplayName = "Memory per Instance", ClampMin = 1, ClampMax = 512, ForceUnits = "MB", NoSpinbox = true))
@@ -594,7 +663,7 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "Baked", AdvancedDisplay)
 	TArray<FCrowdyExecBakedEnum> BakedEnums;
 
-	/** Rebuilds the field tables from the structs, and each function's method name. On a problem it clears the tables and returns every problem found. */
+	/** Rebuilds the field tables from the structs, and each function's method name and message's topic. On a problem it clears the tables and returns every problem found. */
 	bool Bake(TArray<FString>& OutErrors);
 
 	/** Builds the field tables without storing them. */
@@ -609,7 +678,7 @@ public:
 	/** The State's variable called Variable, ignoring case, spaces and punctuation; null when there is none that travels. */
 	const FProperty* FindVariable(FName Variable) const;
 
-	/** Out becomes Struct's starting values: a List's values as set here, otherwise the struct's defaults. Null Struct empties Out; a function's own values come from its InitializeParams or InitializeReply. */
+	/** Out becomes Struct's starting values: a List's values as set here, otherwise the struct's defaults. Null Struct empties Out; a function's own values come from its InitializeParams or InitializeReply, a message's from its InitializePayload. */
 	void InitializeValues(const UScriptStruct* Struct, FInstancedStruct& Out) const;
 
 	/** The name a List's values go by in messages and server code, such as AddTipParams; empty when Struct is not one of this definition's Lists. */
@@ -618,7 +687,7 @@ public:
 	/** The struct of the List that FindListName calls Name. */
 	const UScriptStruct* FindListStruct(const FString& Name) const;
 
-	/** Every List in use, by the name FindListName gives it: the State's first, then each function's inputs and outputs. */
+	/** Every List in use, by the name FindListName gives it: the State's first, then each function's inputs and outputs, then each message's payload. */
 	void GetLists(TArray<FCrowdyServerNamedList>& Out) const;
 
 	/** The function called Name: one of Functions, or a built-in member function when Members From is This Object. */
