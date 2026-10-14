@@ -643,7 +643,10 @@ namespace CrowdyExecDeveloper
 		Options.Key = Key;
 		Options.bAsDeveloper = true;
 		Options.bReconnect = false;
-		Options.AllowedGatewayDomains = GetDefault<UCrowdySDKDeveloperSettings>()->AllowedExecGatewayDomains;
+		const UCrowdySDKDeveloperSettings* DeveloperSettings = GetDefault<UCrowdySDKDeveloperSettings>();
+		Options.AllowedGatewayDomains = DeveloperSettings->AllowedExecGatewayDomains;
+		Options.CallTimeoutMs = DeveloperSettings->GetServerObjectCallTimeoutMs();
+		Options.OpenTimeoutMs = DeveloperSettings->GetServerObjectOpenTimeoutMs();
 		return Client->CreateExecConnection(AppId, Options, [Token = SessionToken]() { return Token; });
 	}
 

@@ -5,6 +5,7 @@
 #include "BlueprintActionDatabase.h"
 #include "CrowdyExecNodesSpawn.h"
 #include "CrowdyExecNodesTestTypes.h"
+#include "CrowdyK2Node_CallServerFunction.h"
 #include "CrowdyK2Node_ServerObjectBase.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "EdGraph/EdGraph.h"
@@ -151,6 +152,7 @@ bool FCrowdyServerObjectNodesSavedBlueprintTest::RunTest(const FString& Paramete
 	{
 		return false;
 	}
+	ListCall->FindPinChecked(CrowdyServerCallPins::Timeout, EGPD_Input)->DefaultValue = TEXT("2.5");
 	FCompilerResultsLog Results;
 	Results.bSilentMode = true;
 	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection, &Results);
@@ -201,6 +203,19 @@ bool FCrowdyServerObjectNodesSavedBlueprintTest::RunTest(const FString& Paramete
 		TestEqual(FString::Printf(TEXT("%s rebuilds the pins it loaded with"), *Node->GetName()), DescribePins(Node), Before);
 	}
 	TestEqual(TEXT("all eight typed nodes load"), TypedNodes, 8);
+
+	int32 TipCalls = 0;
+	for (const UEdGraphNode* Node : AllNodes(Loaded))
+	{
+		const UCrowdyK2Node_CallServerFunction* Call = Cast<UCrowdyK2Node_CallServerFunction>(Node);
+		if (!Call || Call->Member != TEXT("Tip"))
+		{
+			continue;
+		}
+		++TipCalls;
+		TestEqual(TEXT("a Timeout set before the save loads back"), Call->FindPinChecked(CrowdyServerCallPins::Timeout, EGPD_Input)->DefaultValue, FString(TEXT("2.5")));
+	}
+	TestEqual(TEXT("the Tip call loads"), TipCalls, 1);
 	return true;
 }
 

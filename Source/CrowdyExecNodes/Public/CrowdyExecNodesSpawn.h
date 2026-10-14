@@ -26,6 +26,9 @@ namespace CrowdyServerCallPins
 	CROWDYEXECNODES_API extern const FName Outcome;
 	CROWDYEXECNODES_API extern const FName Reason;
 	CROWDYEXECNODES_API extern const FName Retryable;
+
+	/** The advanced input, shown as Timeout: seconds before the call gives up, when shorter than the project's Server Object Call Timeout. */
+	CROWDYEXECNODES_API extern const FName Timeout;
 }
 
 /** Places Server Object nodes in a graph from C++, as the action menu does; null, with a warning, when the definition lacks the variable or function. */

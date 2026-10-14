@@ -45,6 +45,20 @@ public:
 	/** The open connection, or null while there is none. */
 	FCrowdyNativeExecConnection* GetConnection() const;
 
+	/** The platform answers this many pings per connection in PingWindowSeconds and drops the rest without a word. */
+	static constexpr int32 MaxPingsPerWindow = 60;
+	static constexpr float PingWindowSeconds = 10.f;
+	/** Added to the window, as a ping is counted when sent and the platform counts it later. */
+	static constexpr float PingWindowMarginSeconds = 0.5f;
+
+	/**
+	 * Pings the platform over the open connection and runs OnDone once, on the game thread, with whether it answered, the
+	 * round trip in milliseconds and, when it did not, why. Never opens a connection: with none open, or past the ping
+	 * allowance, OnDone runs before Ping returns. A connection that closes while the ping waits reports on the next tick.
+	 * Dropped without running if the game instance shuts down first.
+	 */
+	void Ping(TFunction<void(bool bOk, float RoundTripMs, const FString& Reason)> OnDone);
+
 	/** The signed-in player's user id, or 0 when nobody is signed in. */
 	int64 GetSignedInUserId() const;
 
@@ -89,6 +103,8 @@ public:
 	bool IsSeamlessTravellingForTest() const { return IsSeamlessTravelling(); }
 	int32 NumObjectsForTest() const { return Objects.Num(); }
 	int32 NumLinksForTest() const { return Links.Num(); }
+	/** The call and open timeouts, in milliseconds, the last dial asked for. */
+	TPair<int32, int32> GetDialTimeoutsForTest() const { return DialTimeoutsForTest; }
 #endif
 
 private:
@@ -157,6 +173,9 @@ private:
 	/** Gateway domains a test's scripted server uses, allowed beside the project's own. */
 	TArray<FString> TestGatewayDomains;
 	FString PlayersOnlineWarned;
+#if WITH_DEV_AUTOMATION_TESTS
+	TPair<int32, int32> DialTimeoutsForTest{0, 0};
+#endif
 
 	FTSTicker::FDelegateHandle TickHandle;
 	FDelegateHandle PreLoadMapHandle;
@@ -185,6 +204,15 @@ private:
 
 	TWeakObjectPtr<class UCrowdySDKSubsystem> SDKSubsystem;
 	double LastTickSeconds = 0.0;
+
+	/** Ticked time since the subsystem started, which the ping window counts in. */
+	double TickedSeconds = 0.0;
+
+	/** When the pings still inside the window were sent, oldest first; forgotten with the connection. */
+	TArray<double> RecentPings;
+
+	/** Pings whose connection closed under them, reported on the next tick so no caller code runs inside a close. */
+	TArray<TFunction<void(bool, float, const FString&)>> ClosedPings;
 
 	/** Compared by address only, never dereferenced. */
 	const class FCrowdyCppClient* DialedClient = nullptr;

@@ -302,6 +302,29 @@ namespace CrowdyServerObjectNodesTests
 		return false;
 	}
 
+	// A float literal is compiled into its function's bytecode as its four bytes.
+	bool ContainsFloat(const UFunction* Code, float Value)
+	{
+		if (!Code)
+		{
+			return false;
+		}
+		for (int32 Index = 0; Index + int32(sizeof(Value)) <= Code->Script.Num(); ++Index)
+		{
+			if (FMemory::Memcmp(&Code->Script[Index], &Value, sizeof(Value)) == 0)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	UFunction* UbergraphOf(UBlueprint* Blueprint)
+	{
+		const UBlueprintGeneratedClass* Generated = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+		return Generated ? Generated->UberGraphFunction : nullptr;
+	}
+
 	void Link(UEdGraphNode* From, FName FromPin, UEdGraphNode* To, FName ToPin)
 	{
 		From->FindPinChecked(FromPin, EGPD_Output)->MakeLinkTo(To->FindPinChecked(ToPin, EGPD_Input));
@@ -825,7 +848,141 @@ bool FCrowdyServerObjectNodesStatusPinsSavedTest::RunTest(const FString& Paramet
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesChangedTwiceTest, "CrowdySDK.Editor.ServerObjectNodes.ChangedTwiceForOneVariableCompiles", CrowdyServerObjectNodesTests::Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesTimeoutPinTest, "CrowdySDK.Editor.ServerObjectNodes.CallTimeoutPinIsAdvancedAndDefaultsToZero", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesTimeoutPinTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	UEdGraph* Graph = MakeGraph();
+	UCrowdyK2Node_CallServerFunction* Call = AddNode<UCrowdyK2Node_CallServerFunction>(Graph, Definition, TEXT("Echo"));
+	const UEdGraphPin* Timeout = Call->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
+	if (!TestNotNull(TEXT("the call has a Timeout input"), Timeout))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Timeout is a real"), Timeout->PinType.PinCategory, UEdGraphSchema_K2::PC_Real);
+	TestEqual(TEXT("and a float, as the proxy's parameter is"), Timeout->PinType.PinSubCategory, UEdGraphSchema_K2::PC_Float);
+	TestTrue(TEXT("Timeout is advanced"), Timeout->bAdvancedView);
+	TestEqual(TEXT("and starts at 0, which uses the project's call timeout"), FCString::Atof(*Timeout->DefaultValue), 0.f);
+	TestFalse(TEXT("and has a tooltip"), Timeout->PinToolTip.IsEmpty());
+	TestTrue(TEXT("the node hides its advanced pins until expanded"), Call->AdvancedPinDisplay == ENodeAdvancedPins::Hidden);
+	for (const UEdGraphPin* Pin : Call->Pins)
+	{
+		if (Pin->Direction == EGPD_Input && Pin != Timeout)
+		{
+			TestFalse(Pin->PinName.ToString() + TEXT(" is not advanced, since Timeout is the only advanced input"), Pin->bAdvancedView);
+		}
+	}
+	const int32 IntIndex = Call->Pins.IndexOfByPredicate([](const UEdGraphPin* Pin) { return Pin->Direction == EGPD_Input && Pin->PinName == FName(TEXT("Int")); });
+	TestTrue(TEXT("Timeout comes after the function's inputs"), IntIndex >= 0 && Call->Pins.IndexOfByKey(Timeout) > IntIndex);
+
+	UCrowdyK2Node_CallServerFunction* Wired = AddNode<UCrowdyK2Node_CallServerFunction>(Graph, Definition, TEXT("Echo"));
+	UK2Node_CallFunction* Literal = AddCall(Graph, UKismetSystemLibrary::StaticClass(), GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, MakeLiteralDouble));
+	Link(Literal, UEdGraphSchema_K2::PN_ReturnValue, Wired, CrowdyServerCallPins::Timeout);
+	UCrowdyK2Node_CallServerFunction* Typed = AddNode<UCrowdyK2Node_CallServerFunction>(Graph, Definition, TEXT("Echo"));
+	Typed->FindPinChecked(CrowdyServerCallPins::Timeout, EGPD_Input)->DefaultValue = TEXT("4.5");
+	UCrowdyK2Node_CallServerFunction* Saved = AddNode<UCrowdyK2Node_CallServerFunction>(Graph, Definition, TEXT("Echo"));
+	Saved->RemovePin(Saved->FindPinChecked(CrowdyServerCallPins::Timeout, EGPD_Input));
+	Wired->ReconstructNode();
+	Typed->ReconstructNode();
+	Saved->ReconstructNode();
+
+	const UEdGraphPin* WiredTimeout = Wired->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
+	if (TestNotNull(TEXT("a rebuilt node keeps Timeout"), WiredTimeout))
+	{
+		TestTrue(TEXT("with its wire"), WiredTimeout->LinkedTo.Num() == 1 && WiredTimeout->LinkedTo[0]->GetOwningNode() == Literal);
+		TestTrue(TEXT("and still advanced"), WiredTimeout->bAdvancedView);
+	}
+	const UEdGraphPin* TypedTimeout = Typed->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
+	if (TestNotNull(TEXT("a rebuilt node keeps a typed Timeout"), TypedTimeout))
+	{
+		TestEqual(TEXT("and its value"), FCString::Atof(*TypedTimeout->DefaultValue), 4.5f);
+	}
+	const UEdGraphPin* SavedTimeout = Saved->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
+	if (TestNotNull(TEXT("a node saved before Timeout existed grows it on rebuild"), SavedTimeout))
+	{
+		TestEqual(TEXT("at 0"), FCString::Atof(*SavedTimeout->DefaultValue), 0.f);
+		TestTrue(TEXT("advanced"), SavedTimeout->bAdvancedView);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesTimeoutExpandsTest, "CrowdySDK.Editor.ServerObjectNodes.CallTimeoutReachesTheProxy", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesTimeoutExpandsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* Call = CrowdyExecNodesSpawn::SpawnServerFunctionCall(Rig.Graph, Definition, TEXT("Echo"), FVector2D(300, 0));
+	if (!TestNotNull(TEXT("the spawn helper places the call"), Call))
+	{
+		return false;
+	}
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Call, UEdGraphSchema_K2::PN_Execute);
+	auto CompileClean = [this, &Rig]()
+	{
+		int32 ErrorCount = 0;
+		for (const FString& Error : Compile(Rig.Blueprint, ErrorCount))
+		{
+			AddInfo(FString::Printf(TEXT("compile error: %s"), *Error));
+		}
+		return ErrorCount == 0;
+	};
+
+	constexpr float Seconds = 7.25f;
+	TestTrue(TEXT("the call compiles with Timeout untouched"), CompileClean());
+	TestFalse(TEXT("an untouched Timeout sends no seconds of its own"), ContainsFloat(UbergraphOf(Rig.Blueprint), Seconds));
+
+	Call->FindPinChecked(CrowdyServerCallPins::Timeout, EGPD_Input)->DefaultValue = TEXT("7.25");
+	TestTrue(TEXT("the call compiles with a typed Timeout"), CompileClean());
+	TestTrue(TEXT("a typed Timeout is the seconds the typed call is given"), ContainsFloat(UbergraphOf(Rig.Blueprint), Seconds));
+
+	UK2Node_CallFunction* Literal = AddCall(Rig.Graph, UKismetSystemLibrary::StaticClass(), GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, MakeLiteralDouble));
+	Link(Literal, UEdGraphSchema_K2::PN_ReturnValue, Call, CrowdyServerCallPins::Timeout);
+	TestTrue(TEXT("the call compiles with a wired Timeout"), CompileClean());
+	const UFunction* Ubergraph = UbergraphOf(Rig.Blueprint);
+	TestTrue(TEXT("a wired Timeout moves onto the typed call, which evaluates it"), CallsFunction(Ubergraph, UKismetSystemLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, MakeLiteralDouble))));
+	TestFalse(TEXT("and the wire wins over the typed value"), ContainsFloat(Ubergraph, Seconds));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesTimeoutClashTest, "CrowdySDK.Editor.ServerObjectNodes.InputNamedTimeoutKeepsItsPin", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesTimeoutClashTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeDefinition(TEXT("DA_TimeoutInput"));
+	Definition->TypeName = TEXT("timeout_input");
+	FCrowdyServerFunction& Wait = Definition->Functions.AddDefaulted_GetRef();
+	Wait.Name = TEXT("Wait");
+	Wait.ParamsForm = ECrowdyServerValuesForm::List;
+	Wait.ParamsList.AddProperty(TEXT("Timeout"), EPropertyBagPropertyType::Int32);
+
+	TArray<FCrowdyServerValuePin> Inputs;
+	CrowdyServerObjectPins::GatherValues(Wait.GetParamsStruct(), Inputs);
+	const FCrowdyServerValuePin* Timeout = CrowdyServerObjectPins::FindValue(Inputs, FGuid(), TEXT("Timeout"));
+	if (!TestNotNull(TEXT("Timeout is an input"), Timeout))
+	{
+		return false;
+	}
+	TestTrue(TEXT("an input called Timeout keeps its pin beside the node's own Timeout"), Timeout->HasPin());
+
+	TArray<FCrowdyServerObjectMenuEntry> Entries;
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(Definition, Entries);
+	TestTrue(TEXT("and the menu offers its Call"), Entries.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.Member == TEXT("Wait"); }));
+
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* Call = CrowdyExecNodesSpawn::SpawnServerFunctionCall(Rig.Graph, Definition, TEXT("Wait"), FVector2D(0, 0));
+	if (!TestNotNull(TEXT("the Call node spawns"), Call))
+	{
+		return false;
+	}
+	const UEdGraphPin* Input = Call->FindPin(TEXT("Timeout"), EGPD_Input);
+	const UEdGraphPin* Own = Call->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
+	TestTrue(TEXT("the input and the node's own Timeout are two pins"), Input && Own && Input != Own && !Input->bAdvancedView && Own->bAdvancedView);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesChangedTwiceTest,"CrowdySDK.Editor.ServerObjectNodes.ChangedTwiceForOneVariableCompiles", CrowdyServerObjectNodesTests::Flags)
 bool FCrowdyServerObjectNodesChangedTwiceTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyServerObjectNodesTests;

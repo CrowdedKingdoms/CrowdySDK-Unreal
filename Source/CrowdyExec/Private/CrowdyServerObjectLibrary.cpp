@@ -691,26 +691,27 @@ FString UCrowdyServerObjectLibrary::NoteInputError(const FString& Errors, bool b
 	return Errors.IsEmpty() ? Sentence : Errors + TEXT(" ") + Sentence;
 }
 
-UCrowdyServerCallAction* UCrowdyServerCallAction::CallServerFunction(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs)
+UCrowdyServerCallAction* UCrowdyServerCallAction::CallServerFunction(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs, float Timeout)
 {
 	UCrowdyServerCallAction* Action = NewObject<UCrowdyServerCallAction>();
-	Action->Setup(WorldContextObject, Object, Function, Inputs, FString());
+	Action->Setup(WorldContextObject, Object, Function, Inputs, FString(), Timeout);
 	return Action;
 }
 
-UCrowdyServerCallAction* UCrowdyServerTypedCallAction::CallServerFunctionWithInputs(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs, const FString& InputError)
+UCrowdyServerCallAction* UCrowdyServerTypedCallAction::CallServerFunctionWithInputs(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs, const FString& InputError, float Timeout)
 {
 	UCrowdyServerTypedCallAction* Action = NewObject<UCrowdyServerTypedCallAction>();
-	Action->Setup(WorldContextObject, Object, Function, Inputs, InputError);
+	Action->Setup(WorldContextObject, Object, Function, Inputs, InputError, Timeout);
 	return Action;
 }
 
-void UCrowdyServerCallAction::Setup(UObject* WorldContextObject, UCrowdyServerObject* InObject, FName InFunction, const FInstancedStruct& InInputs, const FString& InInputError)
+void UCrowdyServerCallAction::Setup(UObject* WorldContextObject, UCrowdyServerObject* InObject, FName InFunction, const FInstancedStruct& InInputs, const FString& InInputError, float InTimeout)
 {
 	CalledObject = InObject;
 	CalledFunction = InFunction;
 	CalledInputs = InInputs;
 	RefusedInputs = InInputError;
+	CalledTimeout = InTimeout;
 	RegisterWithGameInstance(WorldContextObject);
 }
 
@@ -730,7 +731,7 @@ void UCrowdyServerCallAction::Activate()
 		{
 			This->Finish(Result);
 		}
-	});
+	}, CalledTimeout);
 }
 
 void UCrowdyServerCallAction::Finish(const FCrowdyServerCallResult& Result)
@@ -742,6 +743,52 @@ void UCrowdyServerCallAction::Finish(const FCrowdyServerCallResult& Result)
 	else
 	{
 		OnFailed.Broadcast(Result.Reply, Result.Outcome, Result.Reason, Result.bRetryable);
+	}
+	SetReadyToDestroy();
+}
+
+UCrowdyServerPingAction* UCrowdyServerPingAction::PingServerObjects(UObject* WorldContextObject)
+{
+	UCrowdyServerPingAction* Action = NewObject<UCrowdyServerPingAction>();
+	const UGameInstance* GameInstance = CrowdyServerObjectLibraryDetail::FindGameInstance(WorldContextObject);
+	Action->PingSubsystem = GameInstance ? GameInstance->GetSubsystem<UCrowdyServerObjectSubsystem>() : nullptr;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyServerPingAction::SetSubsystemForTest(UCrowdyServerObjectSubsystem* Subsystem)
+{
+	PingSubsystem = Subsystem;
+}
+#endif
+
+void UCrowdyServerPingAction::Activate()
+{
+	UCrowdyServerObjectSubsystem* Subsystem = PingSubsystem.Get();
+	if (!Subsystem)
+	{
+		Finish(false, 0.f, TEXT("Ping Server Objects needs a world with a game instance"));
+		return;
+	}
+	Subsystem->Ping([WeakThis = TWeakObjectPtr<UCrowdyServerPingAction>(this)](bool bOk, float RoundTripMs, const FString& Reason)
+	{
+		if (UCrowdyServerPingAction* This = WeakThis.Get())
+		{
+			This->Finish(bOk, RoundTripMs, Reason);
+		}
+	});
+}
+
+void UCrowdyServerPingAction::Finish(bool bOk, float RoundTripMs, const FString& Reason)
+{
+	if (bOk)
+	{
+		OnSuccess.Broadcast(RoundTripMs, FString());
+	}
+	else
+	{
+		OnFailed.Broadcast(0.f, Reason);
 	}
 	SetReadyToDestroy();
 }

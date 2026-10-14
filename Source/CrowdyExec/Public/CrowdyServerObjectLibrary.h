@@ -10,6 +10,7 @@
 class UCrowdyServerObject;
 class UCrowdyServerObjectDefinition;
 class UCrowdyServerObjectLink;
+class UCrowdyServerObjectSubsystem;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FCrowdyServerCallDone, const FInstancedStruct&, Outputs, ECrowdyServerCallOutcome, Outcome, const FString&, Reason, bool, bRetryable);
 
@@ -131,14 +132,17 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects")
 	FCrowdyServerCallDone OnFailed;
 
-	/** Inputs come from Make Inputs, or Make Instanced Struct for a function whose inputs are a struct; leave empty when it takes none. */
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "Inputs"), DisplayName = "Call Server Function")
-	static UCrowdyServerCallAction* CallServerFunction(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs);
+	/**
+	 * Inputs come from Make Inputs, or Make Instanced Struct for a function whose inputs are a struct; leave empty when it takes none.
+	 * @param Timeout Seconds before the call gives up, when shorter than the project's Server Object Call Timeout; 0 leaves that timeout.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "Inputs", AdvancedDisplay = "Timeout"), DisplayName = "Call Server Function")
+	static UCrowdyServerCallAction* CallServerFunction(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs, float Timeout = 0.f);
 
 	virtual void Activate() override;
 
 protected:
-	void Setup(UObject* WorldContextObject, UCrowdyServerObject* InObject, FName InFunction, const FInstancedStruct& InInputs, const FString& InInputError);
+	void Setup(UObject* WorldContextObject, UCrowdyServerObject* InObject, FName InFunction, const FInstancedStruct& InInputs, const FString& InInputError, float InTimeout);
 
 private:
 	void Finish(const FCrowdyServerCallResult& Result);
@@ -149,6 +153,7 @@ private:
 	FName CalledFunction;
 	FInstancedStruct CalledInputs;
 	FString RefusedInputs;
+	float CalledTimeout = 0.f;
 };
 
 /** The typed Call node's action; the node places it itself, so it has no palette entry of its own. */
@@ -158,7 +163,44 @@ class CROWDYEXEC_API UCrowdyServerTypedCallAction : public UCrowdyServerCallActi
 	GENERATED_BODY()
 
 public:
-	/** Call Server Function, except that a non-empty InputError sends nothing and fails with it as a Bad Request. */
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "Inputs"))
-	static UCrowdyServerCallAction* CallServerFunctionWithInputs(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs, const FString& InputError);
+	/**
+	 * Call Server Function, except that a non-empty InputError sends nothing and fails with it as a Bad Request.
+	 * @param Timeout Seconds before the call gives up, when shorter than the project's Server Object Call Timeout; 0 leaves that timeout.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "Inputs", AdvancedDisplay = "Timeout"))
+	static UCrowdyServerCallAction* CallServerFunctionWithInputs(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs, const FString& InputError, float Timeout = 0.f);
+};
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCrowdyServerPingDone, float, RoundTripMs, const FString&, Reason);
+
+/** Sends the platform a ping over the Server Object connection and fires On Success with the round trip, or On Failed with why, exactly once, unless the game shuts down first. */
+UCLASS()
+class CROWDYEXEC_API UCrowdyServerPingAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	/** RoundTripMs is how long the platform took to answer; Reason is empty. */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects")
+	FCrowdyServerPingDone OnSuccess;
+
+	/** Reason says why there was no answer; RoundTripMs is 0. */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects")
+	FCrowdyServerPingDone OnFailed;
+
+	/** Pings over the connection Server Objects already hold open; it never opens one. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"), DisplayName = "Ping Server Objects")
+	static UCrowdyServerPingAction* PingServerObjects(UObject* WorldContextObject);
+
+	virtual void Activate() override;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Stands in for the game instance's subsystem, which a test without a world cannot reach. */
+	void SetSubsystemForTest(UCrowdyServerObjectSubsystem* Subsystem);
+#endif
+
+private:
+	void Finish(bool bOk, float RoundTripMs, const FString& Reason);
+
+	TWeakObjectPtr<UCrowdyServerObjectSubsystem> PingSubsystem;
 };

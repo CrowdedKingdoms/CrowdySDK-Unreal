@@ -93,6 +93,12 @@ protected:
 	/** An output hidden until the node's advanced pins are expanded. */
 	UEdGraphPin* CreateAdvancedOutput(FName Category, UObject* SubCategoryObject, FName Name, const FText& Tooltip);
 
+	/** An input hidden until the node's advanced pins are expanded. */
+	UEdGraphPin* CreateAdvancedInput(FName Category, FName SubCategory, FName Name, const FText& Tooltip);
+
+	/** Marks Pin advanced with Tooltip, and has the node hide advanced pins when it had none. */
+	UEdGraphPin* MakeAdvanced(UEdGraphPin* Pin, const FText& Tooltip);
+
 	/** Feeds the object's source into each of Inputs, Target-typed pins of intermediate calls. False after reporting why. */
 	bool ExpandSource(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph, TConstArrayView<UEdGraphPin*> Inputs);
 

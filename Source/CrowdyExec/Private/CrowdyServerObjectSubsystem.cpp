@@ -102,6 +102,7 @@ void UCrowdyServerObjectSubsystem::Deinitialize()
 		}
 	}
 	CloseConnection(TEXT(" (shutting down)"));
+	ClosedPings.Reset();
 	bRedialing = false;
 
 	Super::Deinitialize();
@@ -297,6 +298,51 @@ FCrowdyNativeExecConnection* UCrowdyServerObjectSubsystem::GetConnection() const
 	return bConnected ? Connection.Get() : nullptr;
 }
 
+void UCrowdyServerObjectSubsystem::Ping(TFunction<void(bool bOk, float RoundTripMs, const FString& Reason)> OnDone)
+{
+	if (!OnDone)
+	{
+		return;
+	}
+	FCrowdyNativeExecConnection* Open = GetConnection();
+	if (!Open)
+	{
+		OnDone(false, 0.f, TEXT("No Server Object connection is open"));
+		return;
+	}
+	const double Cutoff = TickedSeconds - PingWindowSeconds - PingWindowMarginSeconds;
+	RecentPings.RemoveAll([Cutoff](double SentAt) { return SentAt <= Cutoff; });
+	if (RecentPings.Num() >= MaxPingsPerWindow)
+	{
+		OnDone(false, 0.f, FString::Printf(TEXT("Too many pings: the platform answers at most %d every %d seconds"), MaxPingsPerWindow, FMath::RoundToInt(PingWindowSeconds)));
+		return;
+	}
+	RecentPings.Add(TickedSeconds);
+
+	const double Started = FPlatformTime::Seconds();
+	const TWeakObjectPtr<UCrowdyServerObjectSubsystem> WeakThis = this;
+	Open->Ping([WeakThis, Started, OnDone = MoveTemp(OnDone)](const FCrowdyNativeExecReply& Reply)
+	{
+		if (Reply.IsOk())
+		{
+			OnDone(true, static_cast<float>((FPlatformTime::Seconds() - Started) * 1000.0), FString());
+			return;
+		}
+		const bool bClosed = Reply.Status == ECrowdyNativeExecStatus::Unavailable
+			&& Reply.Message.Equals(FCrowdyNativeExecConnection::CanceledMessage(), ESearchCase::CaseSensitive);
+		UCrowdyServerObjectSubsystem* This = WeakThis.Get();
+		if (bClosed)
+		{
+			if (This)
+			{
+				This->ClosedPings.Add(OnDone);
+			}
+			return;
+		}
+		OnDone(false, 0.f, Reply.Message.IsEmpty() ? FString(TEXT("The platform did not answer the ping")) : CrowdyExec::SafeText(Reply.Message, 256));
+	});
+}
+
 bool UCrowdyServerObjectSubsystem::TickFromTicker(float FrameDeltaSeconds)
 {
 	// The core ticker passes the frame's delta, not the time since this ticker last ran.
@@ -308,6 +354,16 @@ bool UCrowdyServerObjectSubsystem::TickFromTicker(float FrameDeltaSeconds)
 
 bool UCrowdyServerObjectSubsystem::Tick(float DeltaSeconds)
 {
+	TickedSeconds += DeltaSeconds;
+	if (!ClosedPings.IsEmpty())
+	{
+		const TArray<TFunction<void(bool, float, const FString&)>> Closed = MoveTemp(ClosedPings);
+		for (const TFunction<void(bool, float, const FString&)>& OnDone : Closed)
+		{
+			OnDone(false, 0.f, TEXT("The Server Object connection closed before the platform answered"));
+		}
+	}
+
 	const float GraceStep = bLoadingMap || IsSeamlessTravelling() ? 0.f : FMath::Min(DeltaSeconds, 1.f);
 	TickLinks(DeltaSeconds, GraceStep);
 
@@ -454,8 +510,14 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	FCrowdyNativeExecOptions Options;
 	Options.NodeType = First->GetInstanceId().IsEmpty() ? FString() : First->GetDefinition()->TypeName;
 	Options.Key = First->GetInstanceId();
-	Options.AllowedGatewayDomains = GetDefault<UCrowdySDKDeveloperSettings>()->AllowedExecGatewayDomains;
+	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+	Options.AllowedGatewayDomains = Settings->AllowedExecGatewayDomains;
 	Options.AllowedGatewayDomains.Append(TestGatewayDomains);
+	Options.CallTimeoutMs = Settings->GetServerObjectCallTimeoutMs();
+	Options.OpenTimeoutMs = Settings->GetServerObjectOpenTimeoutMs();
+#if WITH_DEV_AUTOMATION_TESTS
+	DialTimeoutsForTest = {Options.CallTimeoutMs, Options.OpenTimeoutMs};
+#endif
 
 	// Read on every dial, so a reconnect after the token rotates carries the current one.
 	const TWeakObjectPtr<UCrowdyGameSession> WeakSession = Session;
@@ -636,6 +698,7 @@ void UCrowdyServerObjectSubsystem::CloseConnection(const TCHAR* Why)
 	DialedAppId = 0;
 	bConnected = false;
 	bConnecting = false;
+	RecentPings.Reset();
 	if (Closing.IsValid())
 	{
 		Closing->Close();

@@ -281,3 +281,39 @@ void FCrowdyConfigSync::SetHostPollIntervalSeconds(float Seconds)
 		Settings->TryUpdateDefaultConfigFile();
 	}
 }
+
+float FCrowdyConfigSync::GetServerObjectCallTimeoutSeconds()
+{
+	if (const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>())
+	{
+		return Settings->ServerObjectCallTimeoutSeconds;
+	}
+	return 20.0f;
+}
+
+void FCrowdyConfigSync::SetServerObjectCallTimeoutSeconds(float Seconds)
+{
+	if (UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>())
+	{
+		Settings->ServerObjectCallTimeoutSeconds = FMath::Clamp(Seconds, UCrowdySDKDeveloperSettings::MinServerObjectCallTimeoutSeconds, 120.0f);
+		Settings->TryUpdateDefaultConfigFile();
+	}
+}
+
+float FCrowdyConfigSync::GetServerObjectOpenTimeoutSeconds()
+{
+	if (const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>())
+	{
+		return Settings->ServerObjectOpenTimeoutSeconds;
+	}
+	return 10.0f;
+}
+
+void FCrowdyConfigSync::SetServerObjectOpenTimeoutSeconds(float Seconds)
+{
+	if (UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>())
+	{
+		Settings->ServerObjectOpenTimeoutSeconds = FMath::Clamp(Seconds, 1.0f, 60.0f);
+		Settings->TryUpdateDefaultConfigFile();
+	}
+}

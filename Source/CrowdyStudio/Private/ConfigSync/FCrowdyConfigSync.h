@@ -53,4 +53,11 @@ public:
 	static void SetUdpTimeoutSeconds(float Seconds);
 	static float GetHostPollIntervalSeconds();
 	static void SetHostPollIntervalSeconds(float Seconds);
+
+	// The Server Object connection's timeouts, applied from the next Play. Setters clamp to the settings'
+	// ranges (call 11-120 s, open 1-60 s) and persist like the knobs above.
+	static float GetServerObjectCallTimeoutSeconds();
+	static void SetServerObjectCallTimeoutSeconds(float Seconds);
+	static float GetServerObjectOpenTimeoutSeconds();
+	static void SetServerObjectOpenTimeoutSeconds(float Seconds);
 };

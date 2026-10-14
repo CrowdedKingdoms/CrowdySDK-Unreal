@@ -397,6 +397,65 @@ void UCrowdyServerObject::UnwatchRecord(const FString& Id, FDelegateHandle Handl
 	}
 }
 
+void UCrowdyServerObject::PruneRecordEventWatchers()
+{
+	for (int32 Index = RecordEventWatchers.Num() - 1; Index >= 0; --Index)
+	{
+		if (RecordEventWatchers[Index].Event.IsBound())
+		{
+			continue;
+		}
+		const FRecordEventWatcher Dead = RecordEventWatchers[Index];
+		RecordEventWatchers.RemoveAt(Index);
+		UnwatchRecord(Dead.RecordId, Dead.Handle);
+	}
+}
+
+void UCrowdyServerObject::K2_WatchRecord(const FString& RecordId, FCrowdyServerRecordEvent Event)
+{
+	if (!Event.IsBound())
+	{
+		return;
+	}
+	PruneRecordEventWatchers();
+	const bool bWatching = RecordEventWatchers.ContainsByPredicate([&RecordId, &Event](const FRecordEventWatcher& Each) { return Each.Watches(RecordId, Event); });
+	if (bWatching)
+	{
+		return;
+	}
+	RecordEventWatchers.Add({RecordId, Event, FDelegateHandle()});
+	const FDelegateHandle Handle = WatchRecord(RecordId, FOnCrowdyServerValuesChanged::FDelegate::CreateWeakLambda(this,
+		[this, RecordId, Event](UCrowdyServerObject*, TConstArrayView<FString> Fields)
+		{
+			if (!Event.IsBound())
+			{
+				PruneRecordEventWatchers();
+				return;
+			}
+			Event.ExecuteIfBound(this, RecordId, ToVariableNames(Fields));
+		}));
+	// The catch-up run may have stopped this watcher already.
+	FRecordEventWatcher* Added = RecordEventWatchers.FindByPredicate([&RecordId, &Event](const FRecordEventWatcher& Each) { return Each.Watches(RecordId, Event); });
+	if (!Added)
+	{
+		UnwatchRecord(RecordId, Handle);
+		return;
+	}
+	Added->Handle = Handle;
+}
+
+void UCrowdyServerObject::K2_UnwatchRecord(const FString& RecordId, FCrowdyServerRecordEvent Event)
+{
+	const int32 Index = RecordEventWatchers.IndexOfByPredicate([&RecordId, &Event](const FRecordEventWatcher& Each) { return Each.Watches(RecordId, Event); });
+	if (Index == INDEX_NONE)
+	{
+		return;
+	}
+	const FRecordEventWatcher Stopped = RecordEventWatchers[Index];
+	RecordEventWatchers.RemoveAt(Index);
+	UnwatchRecord(Stopped.RecordId, Stopped.Handle);
+}
+
 bool UCrowdyServerObject::K2_FindRecord(const FString& Id, FInstancedStruct& Values, int64& Owner, FString& Team) const
 {
 	const FCrowdyServerRecord* Record = Status == ECrowdyServerObjectStatus::Ready ? Records.Find(Id) : nullptr;
@@ -684,14 +743,14 @@ void FCrowdyServerVariableBindings::Call(const UCrowdyServerObject& Object, cons
 	CrowdyServerObjectDetail::DestroyParams(*Function, Params);
 }
 
-void UCrowdyServerObject::Call(FName Function, const FInstancedStruct& Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone)
+void UCrowdyServerObject::Call(FName Function, const FInstancedStruct& Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
 {
-	CallWith(Function, Params.GetScriptStruct(), Params.GetMemory(), MoveTemp(OnDone));
+	CallWith(Function, Params.GetScriptStruct(), Params.GetMemory(), MoveTemp(OnDone), TimeoutSeconds);
 }
 
-void UCrowdyServerObject::Call(FName Function, const FInstancedPropertyBag& Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone)
+void UCrowdyServerObject::Call(FName Function, const FInstancedPropertyBag& Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
 {
-	CallWith(Function, Params.GetPropertyBagStruct(), Params.GetValue().GetMemory(), MoveTemp(OnDone));
+	CallWith(Function, Params.GetPropertyBagStruct(), Params.GetValue().GetMemory(), MoveTemp(OnDone), TimeoutSeconds);
 }
 
 FInstancedPropertyBag UCrowdyServerObject::MakeParams(FName Function) const
@@ -707,7 +766,7 @@ FInstancedStruct UCrowdyServerObject::MakeInputs(FName Function) const
 	return UCrowdyServerObjectLibrary::MakeFunctionInputs(Definition, Function);
 }
 
-void UCrowdyServerObject::CallWith(FName Function, const UScriptStruct* GivenStruct, const void* Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone)
+void UCrowdyServerObject::CallWith(FName Function, const UScriptStruct* GivenStruct, const void* Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
 {
 	if (!OnDone)
 	{
@@ -759,6 +818,7 @@ void UCrowdyServerObject::CallWith(FName Function, const UScriptStruct* GivenStr
 	Pending.ReplyName = Found->ReplyForm == ECrowdyServerValuesForm::List ? Found->GetReplyListName() : CrowdyExec::DisplayName(Pending.ReplyStruct);
 	Pending.OnDone = MoveTemp(OnDone);
 	Pending.MadeAt = FPlatformTime::Seconds();
+	Pending.TimeoutSeconds = TimeoutSeconds;
 	SendCall(CallId);
 }
 
@@ -948,6 +1008,7 @@ void UCrowdyServerObject::MarkReleased(bool bNotify)
 	VariableBindings.Reset();
 	OnRecordsChanged.Clear();
 	RecordWatchers.Reset();
+	RecordEventWatchers.Reset();
 }
 
 void UCrowdyServerObject::StopListening()
@@ -970,6 +1031,7 @@ void UCrowdyServerObject::StopListening()
 	PagedRecords.Reset();
 	bChangesInFlight = false;
 	bChangesWanted = false;
+	LateCalls.Reset();
 }
 
 void UCrowdyServerObject::Tick(float DeltaSeconds)
@@ -1011,15 +1073,23 @@ void UCrowdyServerObject::TickCalls(float DeltaSeconds)
 	}
 	const bool bConnected = CrowdyServerObjectDetail::GetConnection(Subsystem) != nullptr;
 	TArray<uint32, TInlineAllocator<8>> Closed;
+	TArray<uint32, TInlineAllocator<8>> TimedOut;
 	TArray<uint32, TInlineAllocator<8>> Unsent;
 	for (TPair<uint32, FPendingCall>& Pair : PendingCalls)
 	{
 		FPendingCall& Pending = Pair.Value;
 		Pending.RetryIn -= Pending.bInFlight ? 0.f : DeltaSeconds;
 		Pending.UnsentSeconds += (bConnected || Pending.bInFlight) ? 0.f : DeltaSeconds;
+		// A long hitch counts as one second, so an answer waiting unread is not timed out by the frame that delayed it.
+		Pending.ElapsedSeconds += FMath::Min(DeltaSeconds, 1.f);
 		if (Pending.bConnectionClosed)
 		{
 			Closed.Add(Pair.Key);
+			continue;
+		}
+		if (Pending.TimeoutSeconds > 0.f && Pending.ElapsedSeconds >= Pending.TimeoutSeconds)
+		{
+			TimedOut.Add(Pair.Key);
 			continue;
 		}
 		if (Pending.UnsentSeconds > CrowdyServerObjectDetail::MaxUnsentSeconds)
@@ -1039,6 +1109,25 @@ void UCrowdyServerObject::TickCalls(float DeltaSeconds)
 			return;
 		}
 		CompleteCall(CallId, ClosedResult);
+	}
+	for (const uint32 CallId : TimedOut)
+	{
+		if (Generation != TickGeneration)
+		{
+			return;
+		}
+		const FPendingCall* Pending = PendingCalls.Find(CallId);
+		if (!Pending)
+		{
+			continue;
+		}
+		const FString Reason = FString::Printf(TEXT("No answer within %s seconds; %s may still have run on the server"),
+			*FString::SanitizeFloat(Pending->TimeoutSeconds, 0), *Pending->Function.ToString());
+		if (Pending->bInFlight)
+		{
+			LateCalls.Add(CallId, ReadsMembershipAfter(*Pending));
+		}
+		CompleteCall(CallId, CrowdyServerObjectDetail::MakeResult(ECrowdyServerCallOutcome::Timeout, Reason, false));
 	}
 	for (const uint32 CallId : Unsent)
 	{
@@ -1920,6 +2009,15 @@ void UCrowdyServerObject::NotifyRecords(const TArray<FString>& Changed, const TA
 	{
 		RecordsChanged.Broadcast(this, Changed, Removed);
 	}
+	if (Generation != NotifyGeneration)
+	{
+		return;
+	}
+	BroadcastRecordsUpdated(Changed, ChangedFields, Removed);
+	if (Generation != NotifyGeneration)
+	{
+		return;
+	}
 	TGuardValue<uint64> Announcing(AnnouncedSerial, FCrowdyServerVariableBindings::LatestSerial());
 	for (const TPair<FString, TArray<FString>>& Each : Watched)
 	{
@@ -1936,6 +2034,36 @@ void UCrowdyServerObject::NotifyRecords(const TArray<FString>& Changed, const TA
 		const TSharedRef<FOnCrowdyServerValuesChanged> Running = *Watchers;
 		Running->Broadcast(this, Each.Value);
 	}
+}
+
+void UCrowdyServerObject::BroadcastRecordsUpdated(const TArray<FString>& Changed, const TArray<TBitArray<>>& ChangedFields, const TArray<FString>& Removed)
+{
+	if (!RecordsUpdated.IsBound())
+	{
+		return;
+	}
+	TArray<FString> VariableNames;
+	GetFieldVariableNames(VariableNames);
+	TArray<FCrowdyServerRecordChange> Changes;
+	Changes.Reserve(Changed.Num());
+	for (int32 Index = 0; Index < Changed.Num(); ++Index)
+	{
+		FCrowdyServerRecordChange& Change = Changes.AddDefaulted_GetRef();
+		Change.RecordId = Changed[Index];
+		if (!ChangedFields.IsValidIndex(Index))
+		{
+			continue;
+		}
+		for (TConstSetBitIterator<> It(ChangedFields[Index]); It; ++It)
+		{
+			const FString* Name = VariableNames.IsValidIndex(It.GetIndex()) ? &VariableNames[It.GetIndex()] : nullptr;
+			if (Name && !Name->IsEmpty())
+			{
+				Change.ChangedVariables.Add(*Name);
+			}
+		}
+	}
+	RecordsUpdated.Broadcast(this, Changes, Removed);
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -2044,6 +2172,7 @@ void UCrowdyServerObject::HandleCallDone(uint32 CallId, const FCrowdyNativeExecR
 	FPendingCall* Pending = PendingCalls.Find(CallId);
 	if (!Pending)
 	{
+		HandleLateReply(CallId, Reply);
 		return;
 	}
 	Pending->bInFlight = false;
@@ -2060,16 +2189,35 @@ void UCrowdyServerObject::HandleCallDone(uint32 CallId, const FCrowdyNativeExecR
 		return;
 	}
 	const FCrowdyServerCallResult Result = MakeCallResult(*Pending, Reply);
-	const bool bJoinOrLeave = CrowdyServerObjectDetail::IsBuiltInMemberCall(*Definition, Pending->Function, Pending->Method, TEXT("join"))
-		|| CrowdyServerObjectDetail::IsBuiltInMemberCall(*Definition, Pending->Function, Pending->Method, TEXT("leave"));
+	ReadAfterAnswer(Result.IsSuccess() && ReadsMembershipAfter(*Pending), Reply);
+	CompleteCall(CallId, Result);
+}
+
+bool UCrowdyServerObject::ReadsMembershipAfter(const FPendingCall& Pending) const
+{
+	const bool bJoinOrLeave = CrowdyServerObjectDetail::IsBuiltInMemberCall(*Definition, Pending.Function, Pending.Method, TEXT("join"))
+		|| CrowdyServerObjectDetail::IsBuiltInMemberCall(*Definition, Pending.Function, Pending.Method, TEXT("leave"));
 	// A pushed list brings the new membership itself; otherwise a read asks the server for Is Member and Is Leader.
-	const bool bReadMembership = Result.IsSuccess() && bJoinOrLeave && !CrowdyServerObjectDetail::IsMembershipPushed(*Definition);
+	return bJoinOrLeave && !CrowdyServerObjectDetail::IsMembershipPushed(*Definition);
+}
+
+void UCrowdyServerObject::ReadAfterAnswer(bool bReadMembership, const FCrowdyNativeExecReply& Reply)
+{
 	// A crashed instance restarts from its last snapshot, so the watched values may have rolled back.
 	if ((bReadMembership || Reply.Status == ECrowdyNativeExecStatus::Trapped) && SubscribeHandle != 0)
 	{
 		RequestRead();
 	}
-	CompleteCall(CallId, Result);
+}
+
+void UCrowdyServerObject::HandleLateReply(uint32 CallId, const FCrowdyNativeExecReply& Reply)
+{
+	bool bMembership = false;
+	if (!LateCalls.RemoveAndCopyValue(CallId, bMembership) || CrowdyServerObjectDetail::IsConnectionClosed(Reply))
+	{
+		return;
+	}
+	ReadAfterAnswer(bMembership && Reply.IsOk(), Reply);
 }
 
 void UCrowdyServerObject::CompleteCall(uint32 CallId, const FCrowdyServerCallResult& Result)
