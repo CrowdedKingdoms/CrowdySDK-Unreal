@@ -268,8 +268,9 @@ void UCrowdyServerObjectSubsystem::TickLinks(float DeltaSeconds, float GraceStep
 	{
 		UCrowdyServerObjectLink* Link = It.Value();
 		Link->SinceFound += GraceStep;
-		// A Link only an On Changed node uses is never asked for again, so a live handler keeps it.
-		const bool bUnused = Link->SinceFound > GracePeriodSeconds && !Link->GetVariableBindings().HasLiveHandler() && !Link->KeepsWhileOwnerLives();
+		// A Link only an On Changed or On Received node uses is never asked for again, so a live handler keeps it.
+		const bool bUnused = Link->SinceFound > GracePeriodSeconds && !Link->GetVariableBindings().HasLiveHandler() && !Link->GetMessageBindings().HasLiveHandler()
+			&& !Link->KeepsWhileOwnerLives();
 		if (Link->IsOwnerAlive() && !bUnused)
 		{
 			Kept.Add(Link);
@@ -609,7 +610,12 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	TArray<UCrowdyServerObject*, TInlineAllocator<8>> Resubscribe;
 	for (UCrowdyServerObject* Object : Snapshot)
 	{
-		if (!Object || Object->SubscribeHandle == 0)
+		if (!Object)
+		{
+			continue;
+		}
+		Object->DropMessageSubscriptions(false);
+		if (Object->SubscribeHandle == 0)
 		{
 			continue;
 		}
@@ -624,6 +630,13 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	{
 		Object->TraceReread(TEXT("reconnect"));
 		Object->Refresh();
+	}
+	for (UCrowdyServerObject* Object : Snapshot)
+	{
+		if (Object)
+		{
+			Object->SyncMessageSubscriptions(true);
+		}
 	}
 	for (UCrowdyServerObject* Object : Snapshot)
 	{

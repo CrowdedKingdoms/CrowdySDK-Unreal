@@ -216,6 +216,21 @@ namespace
 #endif
 	}
 
+	FString AuthoredTopic(const FCrowdyServerMessage& Message)
+	{
+		return Message.ServerName.IsEmpty() ? SnakeCase(Message.Name.ToString()) : Message.ServerName;
+	}
+
+	/** The topic a check judges: in the editor the one the next bake writes down, never a stale baked one. */
+	FString CheckedTopic(const FCrowdyServerMessage& Message)
+	{
+#if WITH_EDITOR
+		return AuthoredTopic(Message);
+#else
+		return Message.GetTopic();
+#endif
+	}
+
 	const UScriptStruct* PickValues(ECrowdyServerValuesForm Form, const UScriptStruct* Struct, const FInstancedPropertyBag& List)
 	{
 		if (Form == ECrowdyServerValuesForm::Struct)
@@ -246,6 +261,13 @@ namespace
 			if (Holds(Function.ReplyForm, Function.ReplyList))
 			{
 				return &Function.ReplyList;
+			}
+		}
+		for (const FCrowdyServerMessage& Message : Definition.Messages)
+		{
+			if (Holds(Message.PayloadForm, Message.PayloadList))
+			{
+				return &Message.PayloadList;
 			}
 		}
 		return nullptr;
@@ -845,30 +867,67 @@ namespace
 	}
 
 #if WITH_EDITORONLY_DATA
-	void CheckCanCall(const UCrowdyServerObjectDefinition& Definition, TArray<FString>& Errors)
+	/** Label is the category the list is under, and SelfProblem what is wrong with a type naming itself. */
+	void CheckTypeList(const UCrowdyServerObjectDefinition& Definition, const TArray<TObjectPtr<UCrowdyServerObjectDefinition>>& Types, const TCHAR* Label,
+		const TCHAR* SelfProblem, TArray<FString>& Errors)
 	{
-		for (const TObjectPtr<UCrowdyServerObjectDefinition>& Callee : Definition.CanCall)
+		for (const TObjectPtr<UCrowdyServerObjectDefinition>& Type : Types)
 		{
-			if (!Callee)
+			if (!Type)
 			{
-				Errors.Add(TEXT("Can Call: an entry is empty; choose a Server Object definition or remove the entry"));
+				Errors.Add(FString::Printf(TEXT("%s: an entry is empty; choose a Server Object definition or remove the entry"), Label));
 			}
-			else if (Callee.Get() == &Definition)
+			else if (Type.Get() == &Definition)
 			{
-				Errors.Add(TEXT("Can Call: a type cannot call itself"));
+				Errors.Add(FString::Printf(TEXT("%s: %s"), Label, SelfProblem));
 			}
-			else if (Callee->TypeName.IsEmpty())
+			else if (Type->TypeName.IsEmpty())
 			{
-				Errors.Add(FString::Printf(TEXT("Can Call: %s has no Type Name"), *Callee->GetName()));
+				Errors.Add(FString::Printf(TEXT("%s: %s has no Type Name"), Label, *Type->GetName()));
 			}
-			else if (!IsServerName(Callee->TypeName, 48, true))
+			else if (!IsServerName(Type->TypeName, 48, true))
 			{
-				Errors.Add(FString::Printf(TEXT("Can Call: %s has the Type Name '%s', which must be lowercase letters, digits and underscores, start with a letter, and be at most 48 characters"),
-					*Callee->GetName(), *Callee->TypeName));
+				Errors.Add(FString::Printf(TEXT("%s: %s has the Type Name '%s', which must be lowercase letters, digits and underscores, start with a letter, and be at most 48 characters"),
+					Label, *Type->GetName(), *Type->TypeName));
 			}
 		}
 	}
 #endif
+
+	/** The messages' topics must be server names, not the SDK's own state topic, and differ from each other. */
+	void CheckMessages(const UCrowdyServerObjectDefinition& Definition, TArray<FString>& Errors)
+	{
+		TSet<FString> Topics;
+		TSet<FName> Names;
+		for (const FCrowdyServerMessage& Message : Definition.Messages)
+		{
+			const FString Topic = CheckedTopic(Message);
+			const FString Name = Message.Name.ToString();
+			bool bNameTaken = false;
+			Names.Add(Message.Name, &bNameTaken);
+			if (Message.Name.IsNone())
+			{
+				Errors.Add(TEXT("Messages: a message has no Name"));
+			}
+			else if (bNameTaken)
+			{
+				Errors.Add(FString::Printf(TEXT("Message %s: another message has this name"), *Name));
+			}
+			else if (!IsServerName(Topic, 64, true))
+			{
+				Errors.Add(FString::Printf(TEXT("Message %s: '%s' cannot be its topic, which must be lowercase letters, digits and underscores, start with a letter, and be at most 64 characters"), *Name, *Topic));
+			}
+			else if (Topic.Equals(TEXT("state"), ESearchCase::CaseSensitive))
+			{
+				Errors.Add(FString::Printf(TEXT("Message %s: '%s' is reserved for the variables players watch; rename the message"), *Name, *Topic));
+			}
+			else if (Topics.Contains(Topic))
+			{
+				Errors.Add(FString::Printf(TEXT("Message %s: another message is also sent on the topic '%s'"), *Name, *Topic));
+			}
+			Topics.Add(Topic);
+		}
+	}
 
 	struct FRangeBound
 	{
@@ -1017,6 +1076,26 @@ FString FCrowdyServerFunction::GetReplyListName() const
 	return ReplyForm == ECrowdyServerValuesForm::List ? KeepNameCharacters(Name.ToString()) + TEXT("Reply") : FString();
 }
 
+FString FCrowdyServerMessage::GetTopic() const
+{
+	return BakedTopic.IsEmpty() ? AuthoredTopic(*this) : BakedTopic;
+}
+
+const UScriptStruct* FCrowdyServerMessage::GetPayloadStruct() const
+{
+	return PickValues(PayloadForm, Payload, PayloadList);
+}
+
+void FCrowdyServerMessage::InitializePayload(FInstancedStruct& Out) const
+{
+	InitializeFunctionValues(PayloadForm, Payload, PayloadList, Out);
+}
+
+FString FCrowdyServerMessage::GetPayloadListName() const
+{
+	return PayloadForm == ECrowdyServerValuesForm::List ? KeepNameCharacters(Name.ToString()) + TEXT("Message") : FString();
+}
+
 const UScriptStruct* UCrowdyServerObjectDefinition::GetStateStruct() const
 {
 	return PickValues(StateForm, State, StateList);
@@ -1076,6 +1155,26 @@ void UCrowdyServerObjectDefinition::GetLists(TArray<FCrowdyServerNamedList>& Out
 			Out.Add({Function.GetReplyListName(), &Function.ReplyList});
 		}
 	}
+	for (const FCrowdyServerMessage& Message : Messages)
+	{
+		if (Message.PayloadForm == ECrowdyServerValuesForm::List)
+		{
+			Out.Add({Message.GetPayloadListName(), &Message.PayloadList});
+		}
+	}
+}
+
+const FCrowdyServerMessage* UCrowdyServerObjectDefinition::FindMessage(FName Name) const
+{
+	return Messages.FindByPredicate([Name](const FCrowdyServerMessage& Message) { return Message.Name == Name; });
+}
+
+const FCrowdyServerMessage* UCrowdyServerObjectDefinition::FindMessageByTopic(const FString& Topic) const
+{
+	return Messages.FindByPredicate([&Topic](const FCrowdyServerMessage& Message)
+	{
+		return Message.BakedTopic.IsEmpty() ? Message.GetTopic().Equals(Topic, ESearchCase::CaseSensitive) : Message.BakedTopic.Equals(Topic, ESearchCase::CaseSensitive);
+	});
 }
 
 const FCrowdyServerFunction* UCrowdyServerObjectDefinition::FindFunction(FName Name) const
@@ -1137,7 +1236,17 @@ bool UCrowdyServerObjectDefinition::IsReachableByPlayers() const
 	});
 	// Records reach players without a watched variable: each carries its entity, owner and team.
 	return bPlayerCallable || !WatchedFields.IsEmpty() || Holds == ECrowdyServerObjectHolds::RecordPerEntity || MembersFrom != ECrowdyServerMembersSource::None
-		|| bOnPlayerJoined || bOnPlayerLeft;
+		|| bOnPlayerJoined || bOnPlayerLeft || HasPlayerMessages();
+}
+
+bool UCrowdyServerObjectDefinition::HasPlayerMessages() const
+{
+	return Messages.ContainsByPredicate([](const FCrowdyServerMessage& Message) { return Message.bPlayersCanListen; });
+}
+
+bool UCrowdyServerObjectDefinition::HasRestrictedReaders() const
+{
+	return Visibility != ECrowdyServerObjectVisibility::Public || !OwnerFields.IsEmpty() || !TeamFields.IsEmpty();
 }
 
 bool UCrowdyServerObjectDefinition::IsMemberFunction(FName Name)
@@ -1158,8 +1267,10 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 	CheckMembers(*this, OutErrors);
 	CheckRecords(*this, OutErrors);
 #if WITH_EDITORONLY_DATA
-	CheckCanCall(*this, OutErrors);
+	CheckTypeList(*this, CanCall, TEXT("Can Call"), TEXT("a type cannot call itself"), OutErrors);
+	CheckTypeList(*this, ListenTo, TEXT("Listen To"), TEXT("a type cannot listen to itself"), OutErrors);
 #endif
+	CheckMessages(*this, OutErrors);
 	const UScriptStruct* StateStruct = GetStateStruct();
 	if (!StateStruct)
 	{
@@ -1217,6 +1328,13 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 			Builder.Structs.AddUnique(ReplyStruct);
 		}
 	}
+	for (const FCrowdyServerMessage& Message : Messages)
+	{
+		if (const UScriptStruct* PayloadStruct = Message.GetPayloadStruct())
+		{
+			Builder.Structs.AddUnique(PayloadStruct);
+		}
+	}
 	const TConstArrayView<FCrowdyServerFunction> BuiltIns = MembersFrom == ECrowdyServerMembersSource::ThisObject ? GetMemberFunctions() : TConstArrayView<FCrowdyServerFunction>();
 	for (const FCrowdyServerFunction& BuiltIn : BuiltIns)
 	{
@@ -1228,7 +1346,7 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 	}
 	CheckTimers(*this, Methods, OutErrors);
 
-	// Only the State, Params and Reply structs are listed yet; baking adds the structs they reach.
+	// Only the State, Params, Reply and Payload structs are listed yet; baking adds the structs they reach.
 	for (const UScriptStruct* Root : Builder.Structs)
 	{
 		if (StructDepth(Root, 1) > CrowdyExec::MaxDepth)
@@ -1285,6 +1403,10 @@ bool UCrowdyServerObjectDefinition::Bake(TArray<FString>& OutErrors)
 	for (FCrowdyServerFunction& Function : Functions)
 	{
 		Function.BakedMethodName = AuthoredMethodName(Function);
+	}
+	for (FCrowdyServerMessage& Message : Messages)
+	{
+		Message.BakedTopic = AuthoredTopic(Message);
 	}
 	const bool bBuilt = BuildTables(BakedStructs, BakedEnums, OutErrors);
 	Layout.Reset();

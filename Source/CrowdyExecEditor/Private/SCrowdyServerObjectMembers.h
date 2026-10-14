@@ -45,18 +45,22 @@ public:
 			TypeSettings,
 			Variables,
 			Functions,
+			Messages,
 			/** The member functions Members From This Object adds, listed but not editable. */
 			BuiltIns,
 			Variable,
 			Function,
-			BuiltIn
+			Message,
+			BuiltIn,
+			/** A warning listed under a section, which cannot be selected. */
+			Note
 		};
 
 		EType Type = EType::Variable;
 		FName Name;
 		int32 Index = INDEX_NONE;
 		FText Label;
-		/** A variable's type, or a function's pins: (Amount) -> Total. */
+		/** A variable's type, a function's pins: (Amount) returns Total, or a message's payload: (Winner). */
 		FText Detail;
 		FSlateColor TypeColor;
 		FText Problem;
@@ -69,10 +73,22 @@ public:
 	};
 	using FItemPtr = TSharedPtr<FItem>;
 
+	/** The rows for Current: Type Settings, Variables, Functions, Server Messages, and Built-in while Members From is This Object. */
+	static TArray<FItemPtr> BuildRoots(const UCrowdyServerObjectDefinition* Current, const FItemPtr& TypeSettings);
+
+	/** The Server Messages section: a row per message, then the privacy note when ShowsMessagePrivacyWarning. */
+	static FItemPtr MakeMessagesSection(const UCrowdyServerObjectDefinition& Current, const TArray<FString>& Errors);
+
+	/** Adds a message with a name no other has, in the Variables form, and returns its index. */
+	static int32 AddMessageTo(UCrowdyServerObjectDefinition& Edited);
+
+	/** Inserts a copy of the message after it under a name no other has, and returns the copy's index; INDEX_NONE for no such message. */
+	static int32 DuplicateMessageIn(UCrowdyServerObjectDefinition& Edited, int32 Index);
+
 	/** The row that shows Selection: Type Settings when nothing is selected, null when the selected member has no row. */
 	static FItemPtr FindRow(TConstArrayView<FItemPtr> Roots, const FCrowdyServerObjectSelection& Selection);
 
-	/** Selects what Item stands for: its variable or function, or the type's settings for any other row or none. */
+	/** Selects what Item stands for: its variable, function or message, or the type's settings for any other row or none. */
 	static void SelectItem(const FItemPtr& Item, FCrowdyServerObjectSelection& Selection);
 
 private:
@@ -82,6 +98,7 @@ private:
 	TSharedRef<SWidget> MakeTypeSettingsRow(const FItemPtr& Item);
 	TSharedRef<SWidget> MakeSectionRow(const FItemPtr& Item);
 	TSharedRef<SWidget> MakeMemberRow(const FItemPtr& Item);
+	TSharedRef<SWidget> MakeNoteRow(const FItemPtr& Item);
 	TSharedPtr<SWidget> MakeContextMenu();
 
 	void EditDefinition(const FText& Description, TFunctionRef<void(UCrowdyServerObjectDefinition&)> Edit);
@@ -92,6 +109,9 @@ private:
 	void AddFunction();
 	void DuplicateFunction(int32 Index);
 	void RemoveFunction(int32 Index);
+	void AddMessage();
+	void DuplicateMessage(int32 Index);
+	void RemoveMessage(int32 Index);
 
 	void HandleSelectionChanged(FItemPtr Item, ESelectInfo::Type SelectInfo);
 	void HandleDoubleClick(FItemPtr Item);

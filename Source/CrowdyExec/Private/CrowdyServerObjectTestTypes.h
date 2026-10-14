@@ -35,6 +35,19 @@ struct FCrowdyServerObjectTestAttackReply
 	bool bKilled = false;
 };
 
+/** What the test boss's Server Messages carry: as a struct, and as the List of the same two values. */
+USTRUCT()
+struct FCrowdyServerObjectTestMessagePayload
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 Amount = 0;
+
+	UPROPERTY()
+	FString Source;
+};
+
 /** A row of a record's grid. */
 USTRUCT()
 struct FCrowdyServerObjectTestRecordRow
@@ -436,5 +449,38 @@ public:
 		FailedOutcomes.Add(Outcome);
 		FailedReasons.Add(Reason);
 		FailedRetryable.Add(bRetryable);
+	}
+
+	TArray<FInstancedStruct> MessagePayloads;
+	TArray<FInstancedStruct> SecondMessagePayloads;
+	TArray<FName> EventMessages;
+	TArray<FInstancedStruct> EventPayloads;
+
+	/** A function a Server Message node's event stands in for: the payload is its one parameter. */
+	UFUNCTION()
+	void HandleMessagePayload(const FInstancedStruct& Payload)
+	{
+		MessagePayloads.Add(Payload);
+		if (OnMessage)
+		{
+			OnMessage();
+		}
+	}
+
+	/** Runs after HandleMessagePayload records the payload, as more of a handler's graph would. */
+	TFunction<void()> OnMessage;
+
+	UFUNCTION()
+	void HandleMessagePayloadSecond(const FInstancedStruct& Payload)
+	{
+		SecondMessagePayloads.Add(Payload);
+	}
+
+	/** The Blueprint event Watch Message takes. */
+	UFUNCTION()
+	void HandleMessageEvent(UCrowdyServerObject* Object, FName Message, const FInstancedStruct& Payload)
+	{
+		EventMessages.Add(Message);
+		EventPayloads.Add(Payload);
 	}
 };

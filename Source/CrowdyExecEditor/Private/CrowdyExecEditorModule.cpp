@@ -10,6 +10,7 @@
 #include "CrowdyServerFunctionCustomization.h"
 #include "CrowdyServerListRepair.h"
 #include "CrowdyServerListValueNameCustomization.h"
+#include "CrowdyServerMessageCustomization.h"
 #include "CrowdyServerNameCustomization.h"
 #include "CrowdyServerObjectAssetTypeActions.h"
 #include "CrowdyServerObjectDefinition.h"
@@ -46,6 +47,7 @@ namespace CrowdyExecEditorModule
 	const FName EnumValueNameStructName(TEXT("CrowdyServerEnumValueName"));
 	const FName ListValueNameStructName(TEXT("CrowdyServerListValueName"));
 	const FName FunctionStructName(TEXT("CrowdyServerFunction"));
+	const FName MessageStructName(TEXT("CrowdyServerMessage"));
 	const FName MainFrameName(TEXT("MainFrame"));
 
 	bool StructReaches(const UStruct* Struct, const UScriptStruct* Target, TSet<const UStruct*>& Seen);
@@ -114,6 +116,13 @@ namespace CrowdyExecEditorModule
 				return true;
 			}
 		}
+		for (const FCrowdyServerMessage& Message : Definition.Messages)
+		{
+			if (StructReaches(Message.GetPayloadStruct(), Struct, Seen))
+			{
+				return true;
+			}
+		}
 		return Definition.BakedStructs.ContainsByPredicate([Struct](const FCrowdyExecBakedStruct& Baked) { return Baked.Struct.Get() == Struct; });
 	}
 
@@ -163,6 +172,10 @@ namespace CrowdyExecEditorModule
 			bRepaired |= RepairList(Function.ParamsList);
 			bRepaired |= RepairList(Function.ReplyList);
 		}
+		for (FCrowdyServerMessage& Message : Definition.Messages)
+		{
+			bRepaired |= RepairList(Message.PayloadList);
+		}
 		if (bRepaired)
 		{
 			Definition.MarkPackageDirty();
@@ -196,6 +209,8 @@ public:
 			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCrowdyServerListValueNameCustomization::MakeInstance));
 		PropertyEditor.RegisterCustomPropertyTypeLayout(CrowdyExecEditorModule::FunctionStructName,
 			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCrowdyServerFunctionCustomization::MakeInstance));
+		PropertyEditor.RegisterCustomPropertyTypeLayout(CrowdyExecEditorModule::MessageStructName,
+			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCrowdyServerMessageCustomization::MakeInstance));
 		ServerObjectActions = MakeShared<FCrowdyServerObjectAssetTypeActions>();
 		FModuleManager::LoadModuleChecked<FAssetToolsModule>(CrowdyExecEditorModule::AssetToolsName).Get().RegisterAssetTypeActions(ServerObjectActions.ToSharedRef());
 		IMainFrameModule* MainFrame = GIsEditor && !IsRunningCommandlet() ? FModuleManager::LoadModulePtr<IMainFrameModule>(CrowdyExecEditorModule::MainFrameName) : nullptr;
@@ -219,6 +234,7 @@ public:
 			PropertyEditor->UnregisterCustomPropertyTypeLayout(CrowdyExecEditorModule::EnumValueNameStructName);
 			PropertyEditor->UnregisterCustomPropertyTypeLayout(CrowdyExecEditorModule::ListValueNameStructName);
 			PropertyEditor->UnregisterCustomPropertyTypeLayout(CrowdyExecEditorModule::FunctionStructName);
+			PropertyEditor->UnregisterCustomPropertyTypeLayout(CrowdyExecEditorModule::MessageStructName);
 		}
 		FAssetToolsModule* AssetTools = ServerObjectActions.IsValid() ? FModuleManager::GetModulePtr<FAssetToolsModule>(CrowdyExecEditorModule::AssetToolsName) : nullptr;
 		if (AssetTools)

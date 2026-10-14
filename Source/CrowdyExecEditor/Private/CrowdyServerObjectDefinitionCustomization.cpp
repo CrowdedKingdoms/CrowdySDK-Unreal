@@ -47,6 +47,7 @@ namespace CrowdyServerObjectDefinitionCustomizationDetail
 {
 	const FName ServerObjectCategory(TEXT("Server Object"));
 	const FName ServerFunctionsCategory(TEXT("Server Functions"));
+	const FName ServerMessagesCategory(TEXT("Server Messages"));
 	const FName ServerCodeCategory(TEXT("Server Code"));
 	const FName ServerNamesCategory(TEXT("Server Names"));
 	const FName BakedCategory(TEXT("Baked"));
@@ -58,6 +59,7 @@ namespace CrowdyServerObjectDefinitionCustomizationDetail
 	const FName AreasCategory(TEXT("Areas"));
 	const FName TimersCategory(TEXT("Timers & Events"));
 	const FName CanCallCategory(TEXT("Can Call"));
+	const FName ListenToCategory(TEXT("Listen To"));
 	const FName ServerLimitsCategory(TEXT("Server Limits"));
 	constexpr float ValueMinWidth = 250.0f;
 	/** The widths Details gives a plain text or number property. */
@@ -136,6 +138,12 @@ namespace CrowdyServerObjectDefinitionCustomizationDetail
 		return FText::Format(LOCTEXT("NodeLine", "{0} {1}"), FText::FromName(Function.Name), CrowdyServerObjectText::Signature(Function, false));
 	}
 
+	/** The message as its Received node reads: BossDefeated (Winner). */
+	FText NodeLine(const FCrowdyServerMessage& Message)
+	{
+		return FText::Format(LOCTEXT("MessageNodeLine", "{0} {1}"), FText::FromName(Message.Name), CrowdyServerObjectText::PayloadSignature(Message, false));
+	}
+
 	/** One side of a signature: a List's values or a struct's travelling fields, labelled as the Call node shows its pins, or the struct's own name. */
 	FString SignatureSide(ECrowdyServerValuesForm Form, const UScriptStruct* Struct, const FInstancedPropertyBag& List, bool bFieldNames)
 	{
@@ -199,6 +207,89 @@ namespace CrowdyServerObjectDefinitionCustomizationDetail
 		UE::StructUtils::ApplyChangesToPropertyDescs(LOCTEXT("AddPin", "Add Pin"), List,
 			[Name](TArray<FPropertyBagPropertyDesc>& Descs) { Descs.Emplace(Name, EPropertyBagPropertyType::Int32); });
 		return FReply::Handled();
+	}
+
+	/** The words a values category (a function's inputs or outputs, a message's payload) shows. */
+	struct FValueCategoryText
+	{
+		FName Id;
+		FText Title;
+		FText UseStructToolTip;
+		FText AddToolTip;
+		FText EmptyLabel;
+		FText EmptyNote;
+	};
+
+	/** A category for a set of values: a Use Struct box and an add button in its header, then the struct or the list's rows. Returns the category only when it lists rows. */
+	IDetailCategoryBuilder* AddValueCategory(IDetailLayoutBuilder& DetailBuilder, const FValueCategoryText& Text, const TSharedPtr<IPropertyHandle>& Form,
+		const TSharedPtr<IPropertyHandle>& Struct, const TSharedPtr<IPropertyHandle>& List, bool bUseStruct, const FInstancedPropertyBag& Values)
+	{
+		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(Text.Id, Text.Title, ECategoryPriority::Default);
+		const TSharedRef<SHorizontalBox> Header = SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			[
+				SNullWidget::NullWidget
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+			[
+				SNew(SCheckBox)
+				.IsChecked(bUseStruct ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.ToolTipText(Text.UseStructToolTip)
+				.OnCheckStateChanged_Lambda([Form](ECheckBoxState State)
+				{
+					Form->SetValue(static_cast<uint8>(State == ECheckBoxState::Checked ? ECrowdyServerValuesForm::Struct : ECrowdyServerValuesForm::List));
+				})
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("UseStruct", "Use Struct"))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+				]
+			];
+		if (!bUseStruct)
+		{
+			// Only an add button: the engine's list header also offers to remove every pin in one click.
+			Header->AddSlot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SButton)
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+					.ToolTipText(Text.AddToolTip)
+					.OnClicked_Lambda([List]() { return AddPin(List); })
+					[
+						SNew(SImage)
+						.Image(FAppStyle::GetBrush("Icons.PlusCircle"))
+						.ColorAndOpacity(FSlateColor::UseForeground())
+					]
+				];
+		}
+		Category.HeaderContent(Header);
+
+		if (bUseStruct)
+		{
+			Category.AddProperty(Struct);
+			return nullptr;
+		}
+		const UPropertyBag* Bag = Values.GetPropertyBagStruct();
+		if (!Bag || Bag->GetPropertyDescs().IsEmpty())
+		{
+			Category.AddCustomRow(Text.EmptyLabel)
+				.WholeRowContent()
+				[
+					Note(Text.EmptyNote)
+				];
+			return nullptr;
+		}
+		FPropertyBagInstanceDataDetails::FConstructParams Params;
+		Params.BagStructProperty = List;
+		Params.PropUtils = DetailBuilder.GetPropertyUtilities();
+		Params.ChildRowFeatures = PinRowFeatures;
+		Category.AddCustomBuilder(MakeShared<FPropertyBagInstanceDataDetails>(Params));
+		return &Category;
 	}
 
 	/** Members and Leader callers are refused by the bake while the object has no Members From. */
@@ -343,6 +434,22 @@ FText CrowdyServerObjectText::Signature(const FCrowdyServerFunction& Function, b
 	return Outputs.IsEmpty() ? Inputs : FText::Format(LOCTEXT("SignatureReturns", "{0} returns {1}"), Inputs, FText::FromString(Outputs));
 }
 
+FText CrowdyServerObjectText::PayloadSignature(const FCrowdyServerMessage& Message, bool bFieldNames)
+{
+	using namespace CrowdyServerObjectDefinitionCustomizationDetail;
+	return FText::FromString(TEXT("(") + SignatureSide(Message.PayloadForm, Message.Payload, Message.PayloadList, bFieldNames) + TEXT(")"));
+}
+
+FText CrowdyServerObjectText::MessagePrivacyWarning()
+{
+	return LOCTEXT("MessagePrivacy", "Every player who can connect to this type hears its messages, whoever may read its variables. Keep private data out of messages.");
+}
+
+bool CrowdyServerObjectText::ShowsMessagePrivacyWarning(const UCrowdyServerObjectDefinition& Definition)
+{
+	return Definition.HasPlayerMessages() && Definition.HasRestrictedReaders();
+}
+
 FText CrowdyServerObjectText::TimerTitle(const FCrowdyServerTimer& Timer)
 {
 	const FText Runs = StaticEnum<ECrowdyServerTimerRepeat>()->GetDisplayNameTextByValue(static_cast<int64>(Timer.Repeat));
@@ -469,6 +576,7 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeDetails(IDetailLayoutB
 	{
 		DetailBuilder.HideCategory(ServerObjectCategory);
 		DetailBuilder.HideCategory(ServerFunctionsCategory);
+		DetailBuilder.HideCategory(ServerMessagesCategory);
 		DetailBuilder.HideCategory(ServerNamesCategory);
 		DetailBuilder.HideCategory(BakedCategory);
 		DetailBuilder.HideCategory(MembersCategory);
@@ -476,10 +584,16 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeDetails(IDetailLayoutB
 		DetailBuilder.HideCategory(AreasCategory);
 		DetailBuilder.HideCategory(TimersCategory);
 		DetailBuilder.HideCategory(CanCallCategory);
+		DetailBuilder.HideCategory(ListenToCategory);
 		DetailBuilder.HideCategory(ServerLimitsCategory);
 		if (Selection->Kind == FCrowdyServerObjectSelection::EKind::Function)
 		{
 			CustomizeFunction(DetailBuilder, Selection->Function);
+			return;
+		}
+		if (Selection->Kind == FCrowdyServerObjectSelection::EKind::Message)
+		{
+			CustomizeMessage(DetailBuilder, Selection->Message);
 			return;
 		}
 		CustomizeVariable(DetailBuilder, Selection->Variable);
@@ -495,6 +609,7 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeDetails(IDetailLayoutB
 		DetailBuilder.HideProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, StateList)));
 		DetailBuilder.HideProperty(WatchedHandle);
 		DetailBuilder.HideCategory(ServerFunctionsCategory);
+		DetailBuilder.HideCategory(ServerMessagesCategory);
 	}
 	else
 	{
@@ -512,6 +627,7 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeDetails(IDetailLayoutB
 	if (!bFollowSelection)
 	{
 		DetailBuilder.EditCategory(ServerFunctionsCategory, FText::GetEmpty(), ECategoryPriority::TypeSpecific);
+		AddMessagesCategory(DetailBuilder);
 	}
 	AddObjectCategories(DetailBuilder);
 	AddAdvancedCategory(DetailBuilder);
@@ -669,6 +785,87 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeFunction(IDetailLayout
 	Advanced.AddProperty(Function->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, ServerName)));
 }
 
+void FCrowdyServerObjectDefinitionCustomization::CustomizeMessage(IDetailLayoutBuilder& DetailBuilder, int32 Index)
+{
+	using namespace CrowdyServerObjectDefinitionCustomizationDetail;
+	const UCrowdyServerObjectDefinition* Current = Definition.Get();
+	const TSharedPtr<IPropertyHandleArray> Messages = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Messages))->AsArray();
+	uint32 Count = 0;
+	if (!Current || !Messages.IsValid() || Messages->GetNumElements(Count) != FPropertyAccess::Success || !Current->Messages.IsValidIndex(Index) || Index >= static_cast<int32>(Count))
+	{
+		return;
+	}
+	const TSharedRef<IPropertyHandle> Message = Messages->GetElement(Index);
+	const FCrowdyServerMessage& Data = Current->Messages[Index];
+	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(TEXT("Message"), LOCTEXT("MessageCategory", "Message"), ECategoryPriority::Important);
+	Category.HeaderContent(
+		SNew(SBox)
+		.HAlign(HAlign_Right)
+		.VAlign(VAlign_Center)
+		.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+		[
+			SNew(STextBlock)
+			.Text(NodeLine(Data))
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+		]);
+	Category.AddProperty(Message->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerMessage, Name)));
+	Category.AddProperty(Message->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerMessage, bPlayersCanListen)));
+
+	FValueCategoryText Text;
+	Text.Id = TEXT("Payload");
+	Text.Title = LOCTEXT("Payload", "Payload");
+	Text.UseStructToolTip = LOCTEXT("PayloadUseStructToolTip", "Send a C++ or Blueprint struct of your own instead of the values listed here");
+	Text.AddToolTip = LOCTEXT("AddPayloadValue", "Add a value");
+	Text.EmptyLabel = LOCTEXT("NoPayload", "No payload");
+	Text.EmptyNote = LOCTEXT("NoPayloadNote", "No payload: listeners are told it happened and receive nothing. Add a value with the + button.");
+	const TSharedPtr<IPropertyHandle> Form = Message->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerMessage, PayloadForm));
+	const TSharedPtr<IPropertyHandle> Struct = Message->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerMessage, Payload));
+	const TSharedPtr<IPropertyHandle> List = Message->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerMessage, PayloadList));
+	if (Form.IsValid() && Struct.IsValid() && List.IsValid())
+	{
+		AddValueCategory(DetailBuilder, Text, Form, Struct, List, Data.PayloadForm == ECrowdyServerValuesForm::Struct, Data.PayloadList);
+	}
+	IDetailCategoryBuilder& Advanced = DetailBuilder.EditCategory(TEXT("MessageAdvanced"), LOCTEXT("MessageAdvanced", "Advanced"), ECategoryPriority::Uncommon);
+	Advanced.InitiallyCollapsed(true);
+	Advanced.AddProperty(Message->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerMessage, ServerName)));
+}
+
+void FCrowdyServerObjectDefinitionCustomization::AddMessagesCategory(IDetailLayoutBuilder& DetailBuilder)
+{
+	using namespace CrowdyServerObjectDefinitionCustomizationDetail;
+	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(ServerMessagesCategory, FText::GetEmpty(), ECategoryPriority::TypeSpecific);
+	const TWeakObjectPtr<const UCrowdyServerObjectDefinition> Weak = Definition;
+	Category.AddCustomRow(LOCTEXT("MessagePrivacySearch", "Messages Players Hear"))
+		.Visibility(TAttribute<EVisibility>::CreateLambda([Weak]()
+		{
+			const UCrowdyServerObjectDefinition* Live = Weak.Get();
+			return Live && CrowdyServerObjectText::ShowsMessagePrivacyWarning(*Live) ? EVisibility::Visible : EVisibility::Collapsed;
+		}))
+		.ValueContent()
+		.MinDesiredWidth(ValueMinWidth)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				WarningIcon()
+			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(CrowdyServerObjectText::MessagePrivacyWarning())
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				.AutoWrapText(true)
+			]
+		];
+}
+
 void FCrowdyServerObjectDefinitionCustomization::AddPins(IDetailLayoutBuilder& DetailBuilder, const TSharedRef<IPropertyHandle>& Function, int32 Index, bool bOutputs)
 {
 	using namespace CrowdyServerObjectDefinitionCustomizationDetail;
@@ -683,80 +880,21 @@ void FCrowdyServerObjectDefinitionCustomization::AddPins(IDetailLayoutBuilder& D
 	const FCrowdyServerFunction& Data = Current->Functions[Index];
 	const bool bUseStruct = (bOutputs ? Data.ReplyForm : Data.ParamsForm) == ECrowdyServerValuesForm::Struct;
 	const FInstancedPropertyBag& Values = bOutputs ? Data.ReplyList : Data.ParamsList;
-	const TSharedPtr<IPropertyUtilities> PropUtils = DetailBuilder.GetPropertyUtilities();
 
-	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(bOutputs ? TEXT("Outputs") : TEXT("Inputs"),
-		bOutputs ? LOCTEXT("Outputs", "Outputs") : LOCTEXT("Inputs", "Inputs"), ECategoryPriority::Default);
-	const TSharedRef<SHorizontalBox> Header = SNew(SHorizontalBox)
-		+ SHorizontalBox::Slot()
-		.FillWidth(1.0f)
-		[
-			SNullWidget::NullWidget
-		]
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.VAlign(VAlign_Center)
-		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
-		[
-			SNew(SCheckBox)
-			.IsChecked(bUseStruct ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-			.ToolTipText(bOutputs
-				? LOCTEXT("OutputsUseStructToolTip", "Reply with a C++ or Blueprint struct of your own instead of the outputs listed here")
-				: LOCTEXT("InputsUseStructToolTip", "Take a C++ or Blueprint struct of your own instead of the inputs listed here"))
-			.OnCheckStateChanged_Lambda([Form](ECheckBoxState State)
-			{
-				Form->SetValue(static_cast<uint8>(State == ECheckBoxState::Checked ? ECrowdyServerValuesForm::Struct : ECrowdyServerValuesForm::List));
-			})
-			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("UseStruct", "Use Struct"))
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-			]
-		];
-	if (!bUseStruct)
+	FValueCategoryText Text;
+	Text.Id = bOutputs ? TEXT("Outputs") : TEXT("Inputs");
+	Text.Title = bOutputs ? LOCTEXT("Outputs", "Outputs") : LOCTEXT("Inputs", "Inputs");
+	Text.UseStructToolTip = bOutputs
+		? LOCTEXT("OutputsUseStructToolTip", "Reply with a C++ or Blueprint struct of your own instead of the outputs listed here")
+		: LOCTEXT("InputsUseStructToolTip", "Take a C++ or Blueprint struct of your own instead of the inputs listed here");
+	Text.AddToolTip = bOutputs ? LOCTEXT("AddOutput", "Add an output") : LOCTEXT("AddInput", "Add an input");
+	Text.EmptyLabel = bOutputs ? LOCTEXT("NoOutputs", "No outputs") : LOCTEXT("NoInputs", "No inputs");
+	Text.EmptyNote = bOutputs ? LOCTEXT("NoOutputsNote", "No outputs: the function replies nothing. Add one with the + button.")
+		: LOCTEXT("NoInputsNote", "No inputs: the caller sends nothing. Add one with the + button.");
+	IDetailCategoryBuilder* Listed = AddValueCategory(DetailBuilder, Text, Form, Struct, List, bUseStruct, Values);
+	if (Listed && !bOutputs)
 	{
-		// Only an add button: the engine's list header also offers to remove every pin in one click.
-		Header->AddSlot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			[
-				SNew(SButton)
-				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-				.ToolTipText(bOutputs ? LOCTEXT("AddOutput", "Add an output") : LOCTEXT("AddInput", "Add an input"))
-				.OnClicked_Lambda([List]() { return AddPin(List); })
-				[
-					SNew(SImage)
-					.Image(FAppStyle::GetBrush("Icons.PlusCircle"))
-					.ColorAndOpacity(FSlateColor::UseForeground())
-				]
-			];
-	}
-	Category.HeaderContent(Header);
-
-	if (bUseStruct)
-	{
-		Category.AddProperty(Struct);
-		return;
-	}
-	const UPropertyBag* Bag = Values.GetPropertyBagStruct();
-	if (!Bag || Bag->GetPropertyDescs().IsEmpty())
-	{
-		Category.AddCustomRow(bOutputs ? LOCTEXT("NoOutputs", "No outputs") : LOCTEXT("NoInputs", "No inputs"))
-			.WholeRowContent()
-			[
-				Note(bOutputs ? LOCTEXT("NoOutputsNote", "No outputs: the function replies nothing. Add one with the + button.")
-					: LOCTEXT("NoInputsNote", "No inputs: the caller sends nothing. Add one with the + button."))
-			];
-		return;
-	}
-	FPropertyBagInstanceDataDetails::FConstructParams Params;
-	Params.BagStructProperty = List;
-	Params.PropUtils = PropUtils;
-	Params.ChildRowFeatures = PinRowFeatures;
-	Category.AddCustomBuilder(MakeShared<FPropertyBagInstanceDataDetails>(Params));
-	if (!bOutputs)
-	{
-		AddValueRanges(Category, Index, List);
+		AddValueRanges(*Listed, Index, List);
 	}
 }
 
@@ -884,6 +1022,7 @@ void FCrowdyServerObjectDefinitionCustomization::AddObjectCategories(IDetailLayo
 	AddCategory(TimersCategory, LOCTEXT("TimersCategory", "Timers & Events"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Timers),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnPlayerJoined), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnPlayerLeft)});
 	AddCategory(CanCallCategory, LOCTEXT("CanCallCategory", "Can Call"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, CanCall)});
+	AddCategory(ListenToCategory, LOCTEXT("ListenToCategory", "Listen To"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, ListenTo)});
 	AddCategory(ServerLimitsCategory, LOCTEXT("ServerLimitsCategory", "Server Limits"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MemoryMegabytes),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, CallTimeLimitMs), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, FuelPerCallMillions),
 		GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MaxWaitingCalls)}).InitiallyCollapsed(true);

@@ -257,16 +257,24 @@ namespace CrowdyExecDeployDetail
 		}
 	}
 
-	/** The Can Call types' names, sorted, each once; an empty entry or one with no Type Name is left out. */
+	/** The Can Call and Listen To types' names, sorted, each once; an empty entry or one with no Type Name is left out. */
 	TArray<FString> CallableTypeNames(const UCrowdyServerObjectDefinition& Definition)
 	{
 		TArray<FString> Names;
-		for (const UCrowdyServerObjectDefinition* Target : Definition.CanCall)
+		auto AddName = [&Names](const UCrowdyServerObjectDefinition* Target)
 		{
 			if (Target && !Target->TypeName.IsEmpty())
 			{
 				Names.Add(Target->TypeName);
 			}
+		};
+		for (const UCrowdyServerObjectDefinition* Target : Definition.CanCall)
+		{
+			AddName(Target);
+		}
+		for (const UCrowdyServerObjectDefinition* Target : Definition.ListenTo)
+		{
+			AddName(Target);
 		}
 		Algo::Sort(Names, &IsBefore);
 		Names.SetNum(Algo::Unique(Names, [](const FString& A, const FString& B) { return A.Equals(B, ESearchCase::CaseSensitive); }));

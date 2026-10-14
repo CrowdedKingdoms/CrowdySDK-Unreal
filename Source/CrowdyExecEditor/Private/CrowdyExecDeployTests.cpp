@@ -358,6 +358,40 @@ bool FCrowdyExecDeployManifestCallsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployManifestListenToTest, "CrowdySDK.CrowdyExecEditor.DeployManifestListenToJoinsCalls", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployManifestListenToTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Locker = MakeManifestDefinition(TEXT("sbx_locker"), 5, 600);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Arena = MakeManifestDefinition(TEXT("arena"), 30, 300);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Unnamed = MakeManifestDefinition(TEXT(""), 30, 300);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Listener = MakeManifestDefinition(TEXT("watcher"), 10, 60);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Mixed = MakeManifestDefinition(TEXT("mixed"), 10, 60);
+	const FString Plain = CrowdyExecDeploy::MakeManifest({Locker.Get(), Arena.Get(), Listener.Get(), Mixed.Get()});
+
+	for (UCrowdyServerObjectDefinition* Target : {Locker.Get(), static_cast<UCrowdyServerObjectDefinition*>(nullptr), Unnamed.Get(), Arena.Get(), Locker.Get()})
+	{
+		Listener->ListenTo.Add(Target);
+	}
+	Mixed->CanCall.Add(Locker.Get());
+	Mixed->ListenTo.Add(Arena.Get());
+	Mixed->ListenTo.Add(Locker.Get());
+	const FString Manifest = CrowdyExecDeploy::MakeManifest({Locker.Get(), Arena.Get(), Listener.Get(), Mixed.Get()});
+	TestTrue(TEXT("a type that only listens lists the types it listens to as calls, sorted, once each"),
+		Manifest.Contains(TEXT("\"watcher\":{\"kind\":\"hub\",\"parent\":\"root\",\"crate\":\"watcher\",\"client\":true,\"persist_every_ms\":10000,\"evict_after_ms\":60000,\"calls\":[\"arena\",\"sbx_locker\"]}"),
+			ESearchCase::CaseSensitive));
+	TestTrue(TEXT("Can Call and Listen To merge into one list"),
+		Manifest.Contains(TEXT("\"mixed\":{\"kind\":\"hub\",\"parent\":\"root\",\"crate\":\"mixed\",\"client\":true,\"persist_every_ms\":10000,\"evict_after_ms\":60000,\"calls\":[\"arena\",\"sbx_locker\"]}"),
+			ESearchCase::CaseSensitive));
+	TestFalse(TEXT("listening changes the manifest"), Manifest.Equals(Plain, ESearchCase::CaseSensitive));
+
+	Listener->ListenTo.Empty();
+	Mixed->ListenTo.Empty();
+	Mixed->CanCall.Empty();
+	TestEqualSensitive(TEXT("a type that listens to nothing is unchanged"), CrowdyExecDeploy::MakeManifest({Locker.Get(), Arena.Get(), Listener.Get(), Mixed.Get()}), Plain);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployInspectTest, "CrowdySDK.CrowdyExecEditor.DeployInspectType", CrowdyExecDeployTest::TestFlags)
 bool FCrowdyExecDeployInspectTest::RunTest(const FString& Parameters)
 {

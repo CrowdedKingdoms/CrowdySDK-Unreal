@@ -58,6 +58,10 @@ namespace CrowdyServerObjectNodesLoadTests
 		Tip.ParamsList.AddProperty(TEXT("Amount"), EPropertyBagPropertyType::Int32);
 		Tip.ReplyForm = ECrowdyServerValuesForm::List;
 		Tip.ReplyList.AddProperty(TEXT("Total"), EPropertyBagPropertyType::Int32);
+		FCrowdyServerMessage& Tipped = Definition->Messages.AddDefaulted_GetRef();
+		Tipped.Name = TEXT("Tipped");
+		Tipped.PayloadForm = ECrowdyServerValuesForm::List;
+		Tipped.PayloadList.AddProperty(TEXT("Amount"), EPropertyBagPropertyType::Int32);
 		return Definition;
 	}
 
@@ -71,22 +75,27 @@ namespace CrowdyServerObjectNodesLoadTests
 		Echo.Name = TEXT("Echo");
 		Echo.Params = FCrowdyExecNodesTestEveryType::StaticStruct();
 		Echo.Reply = FCrowdyExecNodesTestEveryType::StaticStruct();
+		FCrowdyServerMessage& Struck = Definition->Messages.AddDefaulted_GetRef();
+		Struck.Name = TEXT("Struck");
+		Struck.Payload = FCrowdyExecNodesTestHit::StaticStruct();
 		return Definition;
 	}
 
 	// Every kind of node on Definition, with each exec chained from Then so none of them warns.
-	UEdGraphNode* SpawnEveryNode(UEdGraph* Graph, UCrowdyServerObjectDefinition* Definition, FName Variable, FName Function, UEdGraphNode* Previous, int32 Y)
+	UEdGraphNode* SpawnEveryNode(UEdGraph* Graph, UCrowdyServerObjectDefinition* Definition, FName Variable, FName Function, FName Message, UEdGraphNode* Previous, int32 Y)
 	{
 		UEdGraphNode* Changed = CrowdyExecNodesSpawn::SpawnServerVariableChanged(Graph, Definition, Variable, FVector2D(300, Y));
+		UEdGraphNode* Received = CrowdyExecNodesSpawn::SpawnServerMessageReceived(Graph, Definition, Message, FVector2D(450, Y));
 		UEdGraphNode* Call = CrowdyExecNodesSpawn::SpawnServerFunctionCall(Graph, Definition, Function, FVector2D(600, Y));
 		CrowdyExecNodesSpawn::SpawnServerVariableGetter(Graph, Definition, Variable, FVector2D(300, Y + 200));
 		CrowdyExecNodesSpawn::SpawnServerState(Graph, Definition, FVector2D(600, Y + 200));
-		if (!Changed || !Call)
+		if (!Changed || !Received || !Call)
 		{
 			return nullptr;
 		}
 		Previous->FindPinChecked(UEdGraphSchema_K2::PN_Then, EGPD_Output)->MakeLinkTo(Changed->FindPinChecked(UEdGraphSchema_K2::PN_Execute, EGPD_Input));
-		Changed->FindPinChecked(UEdGraphSchema_K2::PN_Then, EGPD_Output)->MakeLinkTo(Call->FindPinChecked(UEdGraphSchema_K2::PN_Execute, EGPD_Input));
+		Changed->FindPinChecked(UEdGraphSchema_K2::PN_Then, EGPD_Output)->MakeLinkTo(Received->FindPinChecked(UEdGraphSchema_K2::PN_Execute, EGPD_Input));
+		Received->FindPinChecked(UEdGraphSchema_K2::PN_Then, EGPD_Output)->MakeLinkTo(Call->FindPinChecked(UEdGraphSchema_K2::PN_Execute, EGPD_Input));
 		return Call;
 	}
 
@@ -146,8 +155,8 @@ bool FCrowdyServerObjectNodesSavedBlueprintTest::RunTest(const FString& Paramete
 	int32 PositionY = 0;
 	UK2Node_Event* BeginPlay = FBlueprintEditorUtils::FindOverrideForFunction(Blueprint, AActor::StaticClass(), TEXT("ReceiveBeginPlay"));
 	BeginPlay = BeginPlay ? BeginPlay : FKismetEditorUtilities::AddDefaultEventNode(Blueprint, Graph, TEXT("ReceiveBeginPlay"), AActor::StaticClass(), PositionY);
-	UEdGraphNode* ListCall = SpawnEveryNode(Graph, List, TEXT("Total"), TEXT("Tip"), BeginPlay, 0);
-	UEdGraphNode* StructCall = ListCall ? SpawnEveryNode(Graph, Struct, TEXT("Hit"), TEXT("Echo"), ListCall, 600) : nullptr;
+	UEdGraphNode* ListCall = SpawnEveryNode(Graph, List, TEXT("Total"), TEXT("Tip"), TEXT("Tipped"), BeginPlay, 0);
+	UEdGraphNode* StructCall = ListCall ? SpawnEveryNode(Graph, Struct, TEXT("Hit"), TEXT("Echo"), TEXT("Struck"), ListCall, 600) : nullptr;
 	if (!TestNotNull(TEXT("every node is placed"), StructCall))
 	{
 		return false;
@@ -202,7 +211,7 @@ bool FCrowdyServerObjectNodesSavedBlueprintTest::RunTest(const FString& Paramete
 		Node->ReconstructNode();
 		TestEqual(FString::Printf(TEXT("%s rebuilds the pins it loaded with"), *Node->GetName()), DescribePins(Node), Before);
 	}
-	TestEqual(TEXT("all eight typed nodes load"), TypedNodes, 8);
+	TestEqual(TEXT("all ten typed nodes load"), TypedNodes, 10);
 
 	int32 TipCalls = 0;
 	for (const UEdGraphNode* Node : AllNodes(Loaded))
@@ -252,7 +261,7 @@ bool FCrowdyServerObjectNodesDefinitionLoadsLaterTest::RunTest(const FString& Pa
 	int32 PositionY = 0;
 	UK2Node_Event* BeginPlay = FBlueprintEditorUtils::FindOverrideForFunction(Blueprint, AActor::StaticClass(), TEXT("ReceiveBeginPlay"));
 	BeginPlay = BeginPlay ? BeginPlay : FKismetEditorUtilities::AddDefaultEventNode(Blueprint, Graph, TEXT("ReceiveBeginPlay"), AActor::StaticClass(), PositionY);
-	if (!TestNotNull(TEXT("every node is placed"), SpawnEveryNode(Graph, List, TEXT("Total"), TEXT("Tip"), BeginPlay, 0)))
+	if (!TestNotNull(TEXT("every node is placed"), SpawnEveryNode(Graph, List, TEXT("Total"), TEXT("Tip"), TEXT("Tipped"), BeginPlay, 0)))
 	{
 		return false;
 	}
@@ -297,7 +306,7 @@ bool FCrowdyServerObjectNodesDefinitionLoadsLaterTest::RunTest(const FString& Pa
 		++Compared;
 		TestEqual(FString::Printf(TEXT("%s loads with the pins it was saved with"), *Node->GetName()), DescribePins(Node), *Before);
 	}
-	TestEqual(TEXT("all four typed nodes load"), Compared, 4);
+	TestEqual(TEXT("all five typed nodes load"), Compared, 5);
 	return true;
 }
 

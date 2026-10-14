@@ -24,6 +24,8 @@ namespace CrowdyServerObjectDetail
 	constexpr int32 MaxBufferedRecordPushes = 1024;
 	constexpr int64 MaxBufferedRecordBytes = static_cast<int64>(MaxBufferedPushes) * CrowdyExec::MaxPayloadBytes;
 	constexpr float ChangesIntervalSeconds = 1.f;
+	constexpr float MaxMessageRetrySeconds = 30.f;
+	constexpr int32 MaxPendingMessages = 32;
 
 	const TCHAR* const ReleasedReason = TEXT("This Server Object was given back");
 
@@ -333,6 +335,7 @@ void UCrowdyServerObject::Setup(UCrowdyServerObjectSubsystem* InSubsystem, UCrow
 	InstanceId = InInstanceId;
 	Definition->InitializeValues(Definition->GetStateStruct(), State);
 	Status = ECrowdyServerObjectStatus::Connecting;
+	MessageBindings.Follow(this, FOnCrowdyServerMessage::FDelegate::CreateUObject(this, &UCrowdyServerObject::HandleBoundMessage));
 }
 
 FInstancedPropertyBag UCrowdyServerObject::GetStateList() const
@@ -542,6 +545,338 @@ void UCrowdyServerObject::K2_UnwatchVariables(FCrowdyServerVariablesEvent Event)
 	VariableWatchers.Remove(Event);
 }
 
+UCrowdyServerObject::FMessageTopic* UCrowdyServerObject::FindOrAddMessageTopic(FName Message)
+{
+	if (Status == ECrowdyServerObjectStatus::Released)
+	{
+		return nullptr;
+	}
+	if (const TSharedRef<FMessageTopic>* Found = MessageTopics.Find(Message))
+	{
+		return &Found->Get();
+	}
+	const FCrowdyServerMessage* Declared = Definition->FindMessage(Message);
+	if (!Declared)
+	{
+		UE_LOG(LogCrowdyExec, Warning, TEXT("%s has no message named %s, so nothing can listen to it"), *Definition->TypeName, *Message.ToString());
+		return nullptr;
+	}
+	if (!Declared->bPlayersCanListen)
+	{
+		bool bWarnedBefore = false;
+		ServerOnlyWarned.Add(Message, &bWarnedBefore);
+		UE_CLOG(!bWarnedBefore, LogCrowdyExec, Warning, TEXT("%s is heard only by other Server Object types; turn on Players Can Listen to hear it in a game"), *Message.ToString());
+		return nullptr;
+	}
+	return &MessageTopics.Add(Message, MakeShared<FMessageTopic>()).Get();
+}
+
+FDelegateHandle UCrowdyServerObject::WatchMessage(FName Message, FOnCrowdyServerMessage::FDelegate Listener)
+{
+	FMessageTopic* Topic = Listener.IsBound() ? FindOrAddMessageTopic(Message) : nullptr;
+	if (!Topic)
+	{
+		return FDelegateHandle();
+	}
+	const FDelegateHandle Handle = Listener.GetHandle();
+	Topic->bRefused = false;
+	Topic->Listeners.Add(MoveTemp(Listener));
+	SyncMessageSubscriptions();
+	return Handle;
+}
+
+void UCrowdyServerObject::UnwatchMessage(FName Message, FDelegateHandle Handle)
+{
+	const TSharedRef<FMessageTopic>* Found = MessageTopics.Find(Message);
+	if (!Found || !Handle.IsValid() || (*Found)->Listeners.RemoveAll([Handle](const FOnCrowdyServerMessage::FDelegate& Each) { return Each.GetHandle() == Handle; }) == 0)
+	{
+		return;
+	}
+	SyncMessageSubscriptions();
+}
+
+void UCrowdyServerObject::K2_WatchMessage(FName Message, FCrowdyServerMessageEvent Event)
+{
+	FMessageTopic* Topic = Event.IsBound() ? FindOrAddMessageTopic(Message) : nullptr;
+	if (!Topic)
+	{
+		return;
+	}
+	Topic->Events.RemoveAll([](const FCrowdyServerMessageEvent& Each) { return !Each.IsBound(); });
+	Topic->Events.AddUnique(Event);
+	Topic->bRefused = false;
+	SyncMessageSubscriptions();
+}
+
+void UCrowdyServerObject::K2_UnwatchMessage(FName Message, FCrowdyServerMessageEvent Event)
+{
+	const TSharedRef<FMessageTopic>* Found = MessageTopics.Find(Message);
+	if (!Found)
+	{
+		return;
+	}
+	(*Found)->Events.Remove(Event);
+	SyncMessageSubscriptions();
+}
+
+void UCrowdyServerObject::TickMessages(float DeltaSeconds)
+{
+	bool bDue = false;
+	for (TPair<FName, TSharedRef<FMessageTopic>>& Pair : MessageTopics)
+	{
+		FMessageTopic& Topic = Pair.Value.Get();
+		if (!Topic.bRefused || Topic.RetryIn <= 0.f)
+		{
+			continue;
+		}
+		Topic.RetryIn -= DeltaSeconds;
+		if (Topic.RetryIn <= 0.f)
+		{
+			Topic.bRefused = false;
+			bDue = true;
+		}
+	}
+	if (bDue)
+	{
+		SyncMessageSubscriptions();
+	}
+}
+
+void UCrowdyServerObject::SyncMessageSubscriptions(bool bRetryRefused)
+{
+	if (Status != ECrowdyServerObjectStatus::Connecting && Status != ECrowdyServerObjectStatus::Ready)
+	{
+		return;
+	}
+	FCrowdyNativeExecConnection* Connection = CrowdyServerObjectDetail::GetConnection(Subsystem);
+	TArray<FName, TInlineAllocator<8>> Wanted;
+	for (auto It = MessageTopics.CreateIterator(); It; ++It)
+	{
+		const FMessageTopic& Topic = It.Value().Get();
+		if (!Topic.IsWanted())
+		{
+			if (Connection)
+			{
+				Connection->Unsubscribe(Topic.Handle);
+			}
+			It.RemoveCurrent();
+			continue;
+		}
+		if (Connection && Topic.Handle == 0 && (!Topic.bRefused || bRetryRefused))
+		{
+			Wanted.Add(It.Key());
+		}
+	}
+	for (const FName Message : Wanted)
+	{
+		SubscribeMessage(Message);
+	}
+}
+
+void UCrowdyServerObject::SubscribeMessage(FName Message)
+{
+	FCrowdyNativeExecConnection* Connection = CrowdyServerObjectDetail::GetConnection(Subsystem);
+	const TSharedRef<FMessageTopic>* Found = MessageTopics.Find(Message);
+	const FCrowdyServerMessage* Declared = Definition->FindMessage(Message);
+	if (!Connection || !Found || !Declared)
+	{
+		return;
+	}
+	FMessageTopic& Topic = Found->Get();
+	const uint32 Attempt = ++MessageAttempt;
+	Topic.Attempt = Attempt;
+	Topic.bRefused = false;
+	Topic.RetryIn = 0.f;
+	TWeakObjectPtr<UCrowdyServerObject> WeakThis(this);
+	const uint32 SubscribeGeneration = Generation;
+	const uint64 Handle = Connection->Subscribe(Definition->TypeName, InstanceId, Declared->GetTopic(),
+		[WeakThis, SubscribeGeneration](const FCrowdyNativeExecPush& Push)
+		{
+			UCrowdyServerObject* Self = WeakThis.Get();
+			if (Self && Self->Generation == SubscribeGeneration)
+			{
+				Self->HandlePush(Push);
+			}
+		},
+		[WeakThis, SubscribeGeneration, Message, Attempt](const FCrowdyNativeExecReply& Reply)
+		{
+			UCrowdyServerObject* Self = WeakThis.Get();
+			if (Self && Self->Generation == SubscribeGeneration)
+			{
+				Self->HandleMessageSubscribeDone(Message, Attempt, Reply);
+			}
+		});
+	if (Generation != SubscribeGeneration)
+	{
+		Connection->Unsubscribe(Handle);
+		return;
+	}
+	if (Topic.Attempt == Attempt)
+	{
+		Topic.Handle = Handle;
+	}
+}
+
+void UCrowdyServerObject::HandleMessageSubscribeDone(FName Message, uint32 Attempt, const FCrowdyNativeExecReply& Reply)
+{
+	const TSharedRef<FMessageTopic>* Found = MessageTopics.Find(Message);
+	if (!Found || (*Found)->Attempt != Attempt)
+	{
+		return;
+	}
+	FMessageTopic& Topic = Found->Get();
+	if (Reply.IsOk())
+	{
+		Topic.bWarned = false;
+		Topic.Failures = 0;
+		return;
+	}
+	Topic.Handle = 0;
+	Topic.bRefused = true;
+	if (CrowdyServerObjectDetail::IsConnectionClosed(Reply))
+	{
+		return;
+	}
+	// Asked again after a growing wait; a closed connection waits for the reconnect instead.
+	const float Backoff = FMath::Min(static_cast<float>(1 << FMath::Min(Topic.Failures++, 5)), CrowdyServerObjectDetail::MaxMessageRetrySeconds);
+	Topic.RetryIn = CrowdyServerObjectDetail::Jittered(FMath::Max(Backoff, CrowdyServerObjectDetail::RetryHintSeconds(Reply)), CrowdyServerObjectDetail::NextJitter(Subsystem));
+	if (Topic.bWarned)
+	{
+		return;
+	}
+	Topic.bWarned = true;
+	UE_LOG(LogCrowdyExec, Warning, TEXT("%s could not listen to its %s message, so it is asked again after a wait: %s"), *Definition->TypeName, *Message.ToString(),
+		*CrowdyServerObjectDetail::PlainReason(Reply));
+}
+
+void UCrowdyServerObject::DropMessageSubscriptions(bool bUnsubscribe)
+{
+	FCrowdyNativeExecConnection* Connection = bUnsubscribe ? CrowdyServerObjectDetail::GetConnection(Subsystem) : nullptr;
+	for (TPair<FName, TSharedRef<FMessageTopic>>& Pair : MessageTopics)
+	{
+		FMessageTopic& Topic = Pair.Value.Get();
+		if (Connection)
+		{
+			Connection->Unsubscribe(Topic.Handle);
+		}
+		Topic.Handle = 0;
+		Topic.Attempt = 0;
+		Topic.bRefused = false;
+		Topic.Failures = 0;
+		Topic.RetryIn = 0.f;
+	}
+}
+
+void UCrowdyServerObject::HandlePush(const FCrowdyNativeExecPush& Push)
+{
+	if (Push.Topic.Equals(TEXT("state"), ESearchCase::CaseSensitive))
+	{
+		ReceivePush(Push.Payload);
+		return;
+	}
+	ReceiveMessage(Push);
+}
+
+void UCrowdyServerObject::ReceiveMessage(const FCrowdyNativeExecPush& Push)
+{
+	const bool bListening = Status == ECrowdyServerObjectStatus::Connecting || Status == ECrowdyServerObjectStatus::Ready;
+	const FCrowdyServerMessage* Declared = bListening ? Definition->FindMessageByTopic(Push.Topic) : nullptr;
+	const TSharedRef<FMessageTopic>* Found = Declared ? MessageTopics.Find(Declared->Name) : nullptr;
+	if (!Found || !(*Found)->IsWanted())
+	{
+		return;
+	}
+	FInstancedStruct Payload;
+	Declared->InitializePayload(Payload);
+	FString Error;
+	if (Payload.IsValid() && !CrowdyExec::Decode(*Definition, *Payload.GetScriptStruct(), Push.Payload, Payload.GetMutableMemory(), Error))
+	{
+		UE_LOG(LogCrowdyExec, Warning, TEXT("%s sent a %s message that does not fit its payload, so it was dropped: %s"), *Definition->TypeName, *Declared->Name.ToString(),
+			*CrowdyExec::SafeText(Error, CrowdyServerObjectDetail::MaxReasonChars));
+		return;
+	}
+	// A message may not overtake the state it describes, so one received while the values are read waits for the read.
+	if (Status == ECrowdyServerObjectStatus::Connecting || bReadInFlight)
+	{
+		if (PendingMessages.Num() >= CrowdyServerObjectDetail::MaxPendingMessages)
+		{
+			PendingMessages.RemoveAt(0);
+			UE_LOG(LogCrowdyExec, Warning, TEXT("%s held back %d messages while reading its values, so the oldest was dropped"), *Definition->TypeName, CrowdyServerObjectDetail::MaxPendingMessages);
+		}
+		PendingMessages.Emplace(Declared->Name, MoveTemp(Payload));
+		return;
+	}
+	const uint32 ReceiveGeneration = Generation;
+	FlushPendingMessages();
+	if (Generation == ReceiveGeneration)
+	{
+		AnnounceMessage(Declared->Name, Payload);
+	}
+}
+
+void UCrowdyServerObject::FlushPendingMessages()
+{
+	const uint32 FlushGeneration = Generation;
+	while (!PendingMessages.IsEmpty() && Generation == FlushGeneration && Status == ECrowdyServerObjectStatus::Ready && !bReadInFlight)
+	{
+		const TPair<FName, FInstancedStruct> Next = MoveTemp(PendingMessages[0]);
+		PendingMessages.RemoveAt(0);
+		AnnounceMessage(Next.Key, Next.Value);
+	}
+}
+
+void UCrowdyServerObject::AnnounceMessage(FName Message, const FInstancedStruct& Payload)
+{
+	const TSharedRef<FMessageTopic>* Found = MessageTopics.Find(Message);
+	if (!Found)
+	{
+		return;
+	}
+	const TSharedRef<FMessageTopic> Topic = *Found;
+	const uint32 AnnounceGeneration = Generation;
+	// A listener may release the object, which ends the announcement.
+	auto Continues = [this, AnnounceGeneration]() { return Generation == AnnounceGeneration && Status == ECrowdyServerObjectStatus::Ready; };
+	// A listener may watch or stop watching during the call; one stopped by an earlier listener is skipped.
+	const TArray<FOnCrowdyServerMessage::FDelegate> Listeners = Topic->Listeners;
+	for (const FOnCrowdyServerMessage::FDelegate& Listener : Listeners)
+	{
+		const FDelegateHandle Handle = Listener.GetHandle();
+		if (!Continues())
+		{
+			return;
+		}
+		if (Topic->Listeners.ContainsByPredicate([Handle](const FOnCrowdyServerMessage::FDelegate& Each) { return Each.GetHandle() == Handle; }))
+		{
+			Listener.ExecuteIfBound(this, Message, Payload);
+		}
+	}
+	const TArray<FCrowdyServerMessageEvent> Watchers = Topic->Events;
+	for (const FCrowdyServerMessageEvent& Watcher : Watchers)
+	{
+		if (!Continues())
+		{
+			return;
+		}
+		if (Topic->Events.Contains(Watcher))
+		{
+			Watcher.ExecuteIfBound(this, Message, Payload);
+		}
+	}
+	const int32 Held = Topic->Listeners.Num() + Topic->Events.Num();
+	Topic->Listeners.RemoveAll([](const FOnCrowdyServerMessage::FDelegate& Each) { return !Each.IsBound(); });
+	Topic->Events.RemoveAll([](const FCrowdyServerMessageEvent& Each) { return !Each.IsBound(); });
+	if (Held != Topic->Listeners.Num() + Topic->Events.Num())
+	{
+		SyncMessageSubscriptions();
+	}
+}
+
+void UCrowdyServerObject::HandleBoundMessage(UCrowdyServerObject* Announcer, FName Message, const FInstancedStruct& Payload)
+{
+	const TObjectPtr<UCrowdyServerObject> Self(this);
+	MessageBindings.Notify(Self, Message, Payload);
+}
+
 void UCrowdyServerObject::NotifyStatus()
 {
 	// A native listener may move the status on (a rejoin restarts a Failed object); Blueprint then hears only the newer one.
@@ -743,6 +1078,159 @@ void FCrowdyServerVariableBindings::Call(const UCrowdyServerObject& Object, cons
 	CrowdyServerObjectDetail::DestroyParams(*Function, Params);
 }
 
+FCrowdyServerMessageBindings::~FCrowdyServerMessageBindings()
+{
+	Unfollow();
+}
+
+bool FCrowdyServerMessageBindings::HasLiveHandler() const
+{
+	return Bindings.ContainsByPredicate([](const FBinding& Each) { return Each.Handler.IsValid(); });
+}
+
+void FCrowdyServerMessageBindings::Follow(UCrowdyServerObject* Object, const FOnCrowdyServerMessage::FDelegate& InRelay)
+{
+	if (Object && Followed.Get() == Object)
+	{
+		return;
+	}
+	if (UCrowdyServerObject* Left = Followed.Get())
+	{
+		for (const TPair<FName, FDelegateHandle>& Pair : Watching)
+		{
+			Left->UnwatchMessage(Pair.Key, Pair.Value);
+		}
+	}
+	Watching.Reset();
+	Followed = Object;
+	if (!Object)
+	{
+		return;
+	}
+	Relay = InRelay;
+	for (const FBinding& Each : Bindings)
+	{
+		Watch(Each.Message);
+	}
+}
+
+void FCrowdyServerMessageBindings::Watch(FName Message)
+{
+	UCrowdyServerObject* Object = Followed.Get();
+	if (!Object || Watching.Contains(Message))
+	{
+		return;
+	}
+	const FDelegateHandle Handle = Object->WatchMessage(Message, Relay);
+	Watching.Add(Message, Handle);
+}
+
+void FCrowdyServerMessageBindings::Unwatch(FName Message)
+{
+	FDelegateHandle Handle;
+	UCrowdyServerObject* Object = Followed.Get();
+	if (Watching.RemoveAndCopyValue(Message, Handle) && Object)
+	{
+		Object->UnwatchMessage(Message, Handle);
+	}
+}
+
+void FCrowdyServerMessageBindings::Prune()
+{
+	TArray<FName, TInlineAllocator<4>> Unwanted;
+	for (const TPair<FName, FDelegateHandle>& Pair : Watching)
+	{
+		const FName Message = Pair.Key;
+		if (!Bindings.ContainsByPredicate([Message](const FBinding& Each) { return Each.Message == Message && Each.Handler.IsValid(); }))
+		{
+			Unwanted.Add(Message);
+		}
+	}
+	for (const FName Message : Unwanted)
+	{
+		Unwatch(Message);
+	}
+}
+
+void FCrowdyServerMessageBindings::Bind(FName Message, UObject* Handler, FName Function)
+{
+	if (!Handler || Function.IsNone())
+	{
+		return;
+	}
+	Bindings.RemoveAll([Handler, Function](const FBinding& Each) { return !Each.Handler.IsValid() || (Each.Handler == Handler && Each.Function == Function); });
+	Bindings.Add({Message, Handler, Function});
+	Watch(Message);
+	Prune();
+}
+
+void FCrowdyServerMessageBindings::Unbind(FName Message, const UObject* Handler, FName Function)
+{
+	Bindings.RemoveAll([Message, Handler, Function](const FBinding& Each) { return Each.Message == Message && Each.Handler.Get() == Handler && Each.Function == Function; });
+	Prune();
+}
+
+void FCrowdyServerMessageBindings::UnbindHandler(const UObject* Handler, FName Function)
+{
+	Bindings.RemoveAll([Handler, Function](const FBinding& Each) { return Each.Handler.Get() == Handler && Each.Function == Function; });
+	Prune();
+}
+
+void FCrowdyServerMessageBindings::Reset()
+{
+	Bindings.Reset();
+	Prune();
+}
+
+void FCrowdyServerMessageBindings::Notify(const TObjectPtr<UCrowdyServerObject>& Held, FName Message, const FInstancedStruct& Payload)
+{
+	UCrowdyServerObject* Object = Held;
+	if (!Object || Bindings.IsEmpty())
+	{
+		return;
+	}
+	// A handler may bind, unbind or move the holder to another object; a binding made or dropped meanwhile is skipped.
+	const TArray<FBinding> Snapshot = Bindings;
+	for (const FBinding& Binding : Snapshot)
+	{
+		if (Held != Object)
+		{
+			break;
+		}
+		if (Binding.Message == Message && Binding.Handler.IsValid() && Bindings.Contains(Binding))
+		{
+			Run(Binding, Payload);
+		}
+	}
+	Bindings.RemoveAll([](const FBinding& Each) { return !Each.Handler.IsValid(); });
+	Prune();
+}
+
+void FCrowdyServerMessageBindings::Run(const FBinding& Binding, const FInstancedStruct& Payload)
+{
+	UObject* Handler = Binding.Handler.Get();
+	const TPair<const UObject*, FName> Key(Handler, Binding.Function);
+	UFunction* Function = Handler ? Handler->FindFunction(Binding.Function) : nullptr;
+	TFieldIterator<FProperty> Param(Function);
+	const FStructProperty* PayloadParam = Param ? CastField<FStructProperty>(*Param) : nullptr;
+	if (!Function || !PayloadParam || PayloadParam->Struct != TBaseStructure<FInstancedStruct>::Get())
+	{
+		UE_LOG(LogCrowdyExec, Warning, TEXT("%s has no function %s taking a payload, so %s's messages cannot reach it"), *GetNameSafe(Handler), *Binding.Function.ToString(), *Binding.Message.ToString());
+		return;
+	}
+	if (Running.Contains(Key))
+	{
+		return;
+	}
+	Running.Add(Key);
+	uint8* Params = static_cast<uint8*>(FMemory_Alloca_Aligned(Function->ParmsSize, Function->GetMinAlignment()));
+	CrowdyServerObjectDetail::InitializeParams(*Function, Params);
+	*PayloadParam->ContainerPtrToValuePtr<FInstancedStruct>(Params) = Payload;
+	Handler->ProcessEvent(Function, Params);
+	CrowdyServerObjectDetail::DestroyParams(*Function, Params);
+	Running.RemoveSingleSwap(Key);
+}
+
 void UCrowdyServerObject::Call(FName Function, const FInstancedStruct& Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
 {
 	CallWith(Function, Params.GetScriptStruct(), Params.GetMemory(), MoveTemp(OnDone), TimeoutSeconds);
@@ -848,6 +1336,7 @@ bool UCrowdyServerObject::PruneOwners()
 
 void UCrowdyServerObject::HandleConnected()
 {
+	SyncMessageSubscriptions();
 	if (Status != ECrowdyServerObjectStatus::Connecting || bReadInFlight || bRefreshScheduled)
 	{
 		return;
@@ -874,12 +1363,18 @@ void UCrowdyServerObject::HandleConnected()
 void UCrowdyServerObject::HandleReconnected()
 {
 	FCrowdyNativeExecConnection* Connection = CrowdyServerObjectDetail::GetConnection(Subsystem);
-	// Nothing to refresh before the subscription exists; a Failed or Released object never holds one.
-	if (SubscribeHandle == 0 || !Connection)
+	if (!Connection)
 	{
 		return;
 	}
-	// A renewed subscription is never confirmed, so subscribe afresh for a real answer, then read what was missed.
+	DropMessageSubscriptions(true);
+	SyncMessageSubscriptions(true);
+	// Nothing to refresh before the subscription exists; a Failed or Released object never holds one.
+	if (SubscribeHandle == 0)
+	{
+		return;
+	}
+	// A renewed subscription is never confirmed, so subscribe afresh for a real answer, then read what was missed; the message topics are subscribed afresh above.
 	Connection->Unsubscribe(SubscribeHandle);
 	SubscribeHandle = 0;
 	bSubscribeConfirmed = false;
@@ -1006,6 +1501,8 @@ void UCrowdyServerObject::MarkReleased(bool bNotify)
 	ValuesChanged.Clear();
 	VariableWatchers.Reset();
 	VariableBindings.Reset();
+	MessageBindings.Reset();
+	MessageTopics.Reset();
 	OnRecordsChanged.Clear();
 	RecordWatchers.Reset();
 	RecordEventWatchers.Reset();
@@ -1021,6 +1518,8 @@ void UCrowdyServerObject::StopListening()
 	}
 	SubscribeHandle = 0;
 	bSubscribeConfirmed = false;
+	DropMessageSubscriptions(true);
+	PendingMessages.Reset();
 	BufferedPushes.Reset();
 	BufferedBytes = 0;
 	bReadInFlight = false;
@@ -1046,6 +1545,7 @@ void UCrowdyServerObject::Tick(float DeltaSeconds)
 		RefreshRetryIn -= DeltaSeconds;
 	}
 	ChangesWait = FMath::Max(ChangesWait - DeltaSeconds, 0.f);
+	TickMessages(DeltaSeconds);
 	TickCalls(DeltaSeconds);
 	if (Generation != TickGeneration || !CrowdyServerObjectDetail::GetConnection(Subsystem))
 	{
@@ -1152,6 +1652,7 @@ void UCrowdyServerObject::Refresh()
 		RefreshRetryIn = 0.f;
 		return;
 	}
+	SyncMessageSubscriptions(true);
 	if (SubscribeHandle == 0)
 	{
 		TWeakObjectPtr<UCrowdyServerObject> WeakThis(this);
@@ -1164,7 +1665,7 @@ void UCrowdyServerObject::Refresh()
 				UCrowdyServerObject* Self = WeakThis.Get();
 				if (Self && Self->Generation == SubscribeGeneration)
 				{
-					Self->ReceivePush(Push.Payload);
+					Self->HandlePush(Push);
 				}
 			},
 			[WeakThis, SubscribeGeneration, Attempt](const FCrowdyNativeExecReply& Reply)
@@ -1326,6 +1827,10 @@ void UCrowdyServerObject::HandleReadDone(const FCrowdyNativeExecReply& Reply)
 	{
 		RequestRead();
 	}
+	if (Generation == ReadGeneration)
+	{
+		FlushPendingMessages();
+	}
 }
 
 void UCrowdyServerObject::NoteGoodRead()
@@ -1476,6 +1981,10 @@ void UCrowdyServerObject::CommitRecordsRead()
 	if (Generation == ReadGeneration && bReadAgain && !bReadInFlight)
 	{
 		RequestRead();
+	}
+	if (Generation == ReadGeneration)
+	{
+		FlushPendingMessages();
 	}
 }
 

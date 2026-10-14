@@ -10,7 +10,8 @@ struct FCrowdyServerObjectSelection
 		/** The object itself: its settings. */
 		None,
 		Variable,
-		Function
+		Function,
+		Message
 	};
 
 	EKind Kind = EKind::None;
@@ -18,34 +19,42 @@ struct FCrowdyServerObjectSelection
 	FName Variable;
 	/** The function's index in the definition's Functions. */
 	int32 Function = INDEX_NONE;
+	/** The message's index in the definition's Messages. */
+	int32 Message = INDEX_NONE;
 
 	FSimpleMulticastDelegate OnChanged;
 
 	void SelectNone()
 	{
-		Set(EKind::None, NAME_None, INDEX_NONE);
+		Set(EKind::None, NAME_None, INDEX_NONE, INDEX_NONE);
 	}
 
 	void SelectVariable(FName Name)
 	{
-		Set(EKind::Variable, Name, INDEX_NONE);
+		Set(EKind::Variable, Name, INDEX_NONE, INDEX_NONE);
 	}
 
 	void SelectFunction(int32 Index)
 	{
-		Set(EKind::Function, NAME_None, Index);
+		Set(EKind::Function, NAME_None, Index, INDEX_NONE);
+	}
+
+	void SelectMessage(int32 Index)
+	{
+		Set(EKind::Message, NAME_None, INDEX_NONE, Index);
 	}
 
 private:
-	void Set(EKind InKind, FName InVariable, int32 InFunction)
+	void Set(EKind InKind, FName InVariable, int32 InFunction, int32 InMessage)
 	{
-		if (Kind == InKind && Variable == InVariable && Function == InFunction)
+		if (Kind == InKind && Variable == InVariable && Function == InFunction && Message == InMessage)
 		{
 			return;
 		}
 		Kind = InKind;
 		Variable = InVariable;
 		Function = InFunction;
+		Message = InMessage;
 		OnChanged.Broadcast();
 	}
 };

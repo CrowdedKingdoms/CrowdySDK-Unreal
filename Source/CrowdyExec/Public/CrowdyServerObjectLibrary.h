@@ -95,6 +95,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", meta = (BlueprintInternalUseOnly = "true"))
 	static void UnbindServerVariableChanged(UObject* Target, UCrowdyServerObjectDefinition* Definition, FName Variable, UObject* Handler, FName HandlerFunction);
 
+	/** Runs Handler's HandlerFunction, with the payload as a Server Value struct, each time the server code sends Message to Target's object; rebinding moves it. Nothing is replayed. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", meta = (BlueprintInternalUseOnly = "true"))
+	static void BindServerMessage(UObject* Target, UCrowdyServerObjectDefinition* Definition, FName Message, UObject* Handler, FName HandlerFunction);
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", meta = (BlueprintInternalUseOnly = "true"))
+	static void UnbindServerMessage(UObject* Target, UCrowdyServerObjectDefinition* Definition, FName Message, UObject* Handler, FName HandlerFunction);
+
 	/** Function's inputs with their default values; empty when it takes none. */
 	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "Crowdy SDK|Server Objects", meta = (BlueprintInternalUseOnly = "true"))
 	static FInstancedStruct MakeFunctionInputs(const UCrowdyServerObjectDefinition* Definition, FName Function);
