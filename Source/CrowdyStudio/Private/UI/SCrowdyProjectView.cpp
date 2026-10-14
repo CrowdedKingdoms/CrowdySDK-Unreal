@@ -694,7 +694,7 @@ TSharedRef<SWidget> SCrowdyProjectView::BuildConnectionTab()
 	return CrowdyStudioWidgets::Card(
 		SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 14.0f)
-		[ SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Body").Text(LOCTEXT("ConnExplainer", "Realtime UDP tuning, written to DefaultGame.ini. Defaults suit most games; a running session picks up what it can immediately, the rest applies on the next Play.")) ]
+		[ SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Body").Text(LOCTEXT("ConnExplainer", "Realtime UDP and Server Object connection tuning, written to DefaultGame.ini. Defaults suit most games; a running session picks up what it can immediately, the rest applies on the next Play.")) ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 14.0f)
 		[
 			CrowdyStudioWidgets::Field(LOCTEXT("UdpProtoLabel", "UDP Protocol"),
@@ -745,6 +745,40 @@ TSharedRef<SWidget> SCrowdyProjectView::BuildConnectionTab()
 					})
 				],
 				LOCTEXT("HostPollHint", "How often the SDK checks the server for the current game host (1-60)."))
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 10.0f)
+		[ SNew(STextBlock).TextStyle(&Style, "Crowdy.Text.BodyStrong").Text(LOCTEXT("ServerObjectsHeading", "Server Objects")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 14.0f)
+		[
+			CrowdyStudioWidgets::Field(LOCTEXT("ServerObjectCallTimeoutLabel", "Call Timeout (seconds)"),
+				SNew(SBox).WidthOverride(160.0f).HAlign(HAlign_Left)
+				[
+					SNew(SSpinBox<float>)
+					.MinValue(11.0f).MaxValue(120.0f).MinSliderValue(11.0f).MaxSliderValue(120.0f)
+					.Delta(1.0f)
+					.Value_Lambda([]() { return FCrowdyConfigSync::GetServerObjectCallTimeoutSeconds(); })
+					.OnValueCommitted_Lambda([](float V, ETextCommit::Type)
+					{
+						FCrowdyConfigSync::SetServerObjectCallTimeoutSeconds(V);
+					})
+				],
+				LOCTEXT("ServerObjectCallTimeoutHint", "How long a Server Object call waits for the answer (11-120), above the longest Time per Call a type may have. A Call node's Timeout can shorten it for one call. Applies from the next Play."))
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			CrowdyStudioWidgets::Field(LOCTEXT("ServerObjectOpenTimeoutLabel", "Open Timeout (seconds)"),
+				SNew(SBox).WidthOverride(160.0f).HAlign(HAlign_Left)
+				[
+					SNew(SSpinBox<float>)
+					.MinValue(1.0f).MaxValue(60.0f).MinSliderValue(1.0f).MaxSliderValue(60.0f)
+					.Delta(1.0f)
+					.Value_Lambda([]() { return FCrowdyConfigSync::GetServerObjectOpenTimeoutSeconds(); })
+					.OnValueCommitted_Lambda([](float V, ETextCommit::Type)
+					{
+						FCrowdyConfigSync::SetServerObjectOpenTimeoutSeconds(V);
+					})
+				],
+				LOCTEXT("ServerObjectOpenTimeoutHint", "How long opening the Server Object connection waits before the attempt fails (1-60). Applies from the next Play."))
 		],
 		FMargin(16.0f, 14.0f));
 }

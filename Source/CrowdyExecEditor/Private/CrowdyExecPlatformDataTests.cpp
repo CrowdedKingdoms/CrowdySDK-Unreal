@@ -9,6 +9,7 @@
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UObjectGlobals.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 namespace CrowdyExecPlatformDataTests
 {
@@ -258,6 +259,16 @@ bool FCrowdyExecCallTimeoutTest::RunTest(const FString& Parameters)
 	const int32 Longest = FCString::Atoi(*TimePerCall->GetMetaData(TEXT("ClampMax")));
 	TestTrue(TEXT("the longest a server lets a call run is known"), Longest > 0);
 	TestTrue(TEXT("a player's connection waits longer than that for an answer"), FCrowdyNativeExecOptions().CallTimeoutMs > Longest);
+
+	const FProperty* Setting = UCrowdySDKDeveloperSettings::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UCrowdySDKDeveloperSettings, ServerObjectCallTimeoutSeconds));
+	if (!TestNotNull(TEXT("the project's Server Object Call Timeout"), Setting))
+	{
+		return false;
+	}
+	TestTrue(TEXT("the shortest call timeout a project can set still outwaits it"), FCString::Atof(*Setting->GetMetaData(TEXT("ClampMin"))) * 1000.f > Longest);
+	UCrowdySDKDeveloperSettings* Settings = NewObject<UCrowdySDKDeveloperSettings>(GetTransientPackage(), NAME_None, RF_Transient);
+	Settings->ServerObjectCallTimeoutSeconds = 0.f;
+	TestTrue(TEXT("and so does one an ini sets below it"), Settings->GetServerObjectCallTimeoutMs() > Longest);
 	return true;
 }
 

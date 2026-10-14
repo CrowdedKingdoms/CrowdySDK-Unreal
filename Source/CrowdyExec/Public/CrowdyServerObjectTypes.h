@@ -99,6 +99,20 @@ struct CROWDYEXEC_API FCrowdyServerRecord
 	FString Team;
 };
 
+/** One record that changed in a Server Object that holds a record per entity, and which of its variables did. */
+USTRUCT(BlueprintType)
+struct CROWDYEXEC_API FCrowdyServerRecordChange
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Server Object")
+	FString RecordId;
+
+	/** The variables whose values changed, as Get Server Value takes them. */
+	UPROPERTY(BlueprintReadOnly, Category = "Server Object")
+	TArray<FString> ChangedVariables;
+};
+
 /** The variables of the root Server Object every app has, which the Crowdy SDK writes and deploys. */
 USTRUCT(BlueprintType)
 struct CROWDYEXEC_API FCrowdyPlayersOnlineState

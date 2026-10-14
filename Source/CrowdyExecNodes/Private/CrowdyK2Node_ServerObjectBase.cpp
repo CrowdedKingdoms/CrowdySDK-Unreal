@@ -242,7 +242,16 @@ UEdGraphPin* UCrowdyK2Node_ServerObjectBase::CreateReadyPin(FName Name, const FG
 
 UEdGraphPin* UCrowdyK2Node_ServerObjectBase::CreateAdvancedOutput(FName Category, UObject* SubCategoryObject, FName Name, const FText& Tooltip)
 {
-	UEdGraphPin* Pin = CreatePin(EGPD_Output, Category, SubCategoryObject, Name);
+	return MakeAdvanced(CreatePin(EGPD_Output, Category, SubCategoryObject, Name), Tooltip);
+}
+
+UEdGraphPin* UCrowdyK2Node_ServerObjectBase::CreateAdvancedInput(FName Category, FName SubCategory, FName Name, const FText& Tooltip)
+{
+	return MakeAdvanced(CreatePin(EGPD_Input, Category, SubCategory, Name), Tooltip);
+}
+
+UEdGraphPin* UCrowdyK2Node_ServerObjectBase::MakeAdvanced(UEdGraphPin* Pin, const FText& Tooltip)
+{
 	Pin->bAdvancedView = true;
 	Pin->PinToolTip = Tooltip.ToString();
 	if (AdvancedPinDisplay == ENodeAdvancedPins::NoPins)
