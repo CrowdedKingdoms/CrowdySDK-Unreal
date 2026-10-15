@@ -491,13 +491,14 @@ private:
 	void ScheduleRotationRetry(const TCHAR* Reason);
 
 	/**
-	 * When ErrorCode is ACCOUNT_BLOCKED, ends the session's access with the server's message, stops rotation and
-	 * returns true. A blocked account is refused every sign-in and mint, so none of them is retried.
+	 * When ErrorCode refuses the player's access (a blocked account, or the app's ACCESS_REVOKED, ACCESS_SUSPENDED or
+	 * ACCESS_NOT_GRANTED), ends the session's access with the server's message, stops rotation and returns true. Every
+	 * later mint is refused the same way until the access is restored, so none of them is retried.
 	 */
-	bool NoteAccountBlocked(const FString& ErrorCode, const FString& Message, const FString& BlockedUntil);
+	bool NoteAccessRefused(const FString& ErrorCode, const FString& Message, const FString& Until);
 
-	/** Set by NoteAccountBlocked until a sign-in succeeds; stops token rotation and recovery from re-minting. */
-	bool bAccountBlocked = false;
+	/** Set by NoteAccessRefused until a sign-in succeeds; stops token rotation and recovery from re-minting. */
+	bool bAccessRefused = false;
 
 	/** Rotation attempts spent since the last app token was applied. */
 	int32 RotationRetriesUsed = 0;

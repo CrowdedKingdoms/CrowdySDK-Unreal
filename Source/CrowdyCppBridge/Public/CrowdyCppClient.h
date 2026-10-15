@@ -15,6 +15,20 @@ inline constexpr const TCHAR* CrowdyCppLegalAcceptanceRequiredCode = TEXT("LEGAL
 // A platform operator blocked the account: every sign-in and request is refused, and retrying does not help.
 inline constexpr const TCHAR* CrowdyCppAccountBlockedCode = TEXT("ACCOUNT_BLOCKED");
 
+// The app refused this player's own access: revoked, suspended until a time, or never granted (or the grant expired).
+inline constexpr const TCHAR* CrowdyCppAccessRevokedCode = TEXT("ACCESS_REVOKED");
+inline constexpr const TCHAR* CrowdyCppAccessSuspendedCode = TEXT("ACCESS_SUSPENDED");
+inline constexpr const TCHAR* CrowdyCppAccessNotGrantedCode = TEXT("ACCESS_NOT_GRANTED");
+
+// Whether Code refuses the player's access as a whole (a blocked account or one of the app's access refusals), which no retry fixes.
+inline bool CrowdyCppIsAccessRefusalCode(const FString& Code)
+{
+	return Code.Equals(CrowdyCppAccountBlockedCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppAccessRevokedCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppAccessSuspendedCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppAccessNotGrantedCode, ESearchCase::CaseSensitive);
+}
+
 // Whether busy refusals are retried at all: the crowdy.net.retry.busy console variable. Game thread only.
 CROWDYCPPBRIDGE_API bool CrowdyCppIsBusyRetryEnabled();
 
@@ -58,7 +72,7 @@ struct FCrowdyCppAuthResult
 	bool bOk = false;
 	FString ErrorMessage;
 	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
-	FString BlockedUntil;   // ISO-8601 end of a timed block on ACCOUNT_BLOCKED; empty while it lasts until lifted
+	FString BlockedUntil;   // ISO-8601 end of a timed block (ACCOUNT_BLOCKED) or suspension (ACCESS_SUSPENDED); empty otherwise
 	FString SessionToken;
 	int64 SessionGameTokenID = 0;
 	int64 UserID = 0;

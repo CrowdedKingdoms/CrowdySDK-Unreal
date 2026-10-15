@@ -154,7 +154,7 @@ public:
 	/** Game thread only. Broadcasts OnAppPausedChanged only when the paused flag or the reason changes. */
 	void SetAppPaused(bool bPaused, const FString& Reason);
 
-	/** Fired on the game thread when the player's access ends: suspended, revoked, expired, signed out by the platform, or the account blocked. Server Objects stop and fail with the reason; the game re-acquires them once the player has access again. Blocked Until is an ISO-8601 time for a timed block, else empty; when that time is only learned after the access ended, this fires once more with it. */
+	/** Fired on the game thread when the player's access ends or is refused: suspended, revoked, never granted or expired, signed out by the platform, or the account blocked. Server Objects stop and fail with the reason; the game re-acquires them once the player has access again. Blocked Until is an ISO-8601 time for a timed block or suspension, else empty; when that time is only learned after the access ended, this fires once more with it. */
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Game Session")
 	FOnCrowdyAccessEnded OnAccessEnded;
 
@@ -166,7 +166,7 @@ public:
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Game Session")
 	FString GetAccessEndedReason() const { return AccessEndedReason; }
 
-	/** Until when the account is blocked (ISO-8601), empty when it is not blocked or the block lasts until lifted. */
+	/** Until when the account is blocked or the player suspended (ISO-8601), empty otherwise or while it lasts until lifted. */
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Game Session")
 	FString GetAccessBlockedUntil() const { return AccessBlockedUntil; }
 

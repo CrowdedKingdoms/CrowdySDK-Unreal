@@ -293,7 +293,7 @@ void UCrowdyAuthentication::Login(const FString& Email, const FString& Password,
 				}
 				else
 				{
-					Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
+					Self->NoteAccessRefused(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
 					Self->FailFlow(Result.ErrorMessage, EAuthFlow::Login, OnError);
 				}
 			}));
@@ -323,7 +323,7 @@ void UCrowdyAuthentication::Register(const FString& Email, const FString& Passwo
 				}
 				else
 				{
-					Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
+					Self->NoteAccessRefused(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
 					Self->FailFlow(Result.ErrorMessage, EAuthFlow::Register, OnError);
 				}
 			}));
@@ -377,7 +377,7 @@ void UCrowdyAuthentication::CompleteLoginLink(const FString& Token, FOnAuthSucce
 				}
 				else
 				{
-					Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
+					Self->NoteAccessRefused(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
 					Self->FailFlow(Result.ErrorMessage, EAuthFlow::MagicLink, OnError);
 				}
 			}));
@@ -636,7 +636,7 @@ void UCrowdyAuthentication::CompleteSocialLogin(const FString& Provider, const F
 				}
 				else
 				{
-					Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
+					Self->NoteAccessRefused(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
 					Self->FailFlow(Result.ErrorMessage, EAuthFlow::Social, OnError);
 				}
 			}));
@@ -1046,7 +1046,7 @@ void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSucces
 				return;
 			}
 
-			if (Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil))
+			if (Self->NoteAccessRefused(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil))
 			{
 				Self->FailFlow(Result.ErrorMessage, Flow, OnError);
 				return;
@@ -1130,7 +1130,7 @@ void UCrowdyAuthentication::DispatchRefresh()
 			}
 
 			// Terminal as well: a re-mint is refused the same way.
-			if (Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil))
+			if (Self->NoteAccessRefused(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil))
 			{
 				return;
 			}
@@ -1195,7 +1195,7 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& 
 
 	if (Flow != EAuthFlow::Refresh)
 	{
-		bAccountBlocked = false;
+		bAccessRefused = false;
 		if (GameSession)
 		{
 			GameSession->ClearAccessEnded();
@@ -1293,27 +1293,27 @@ void UCrowdyAuthentication::FailFlow(const FString& Message, EAuthFlow Flow, FOn
 	}
 }
 
-bool UCrowdyAuthentication::NoteAccountBlocked(const FString& ErrorCode, const FString& Message, const FString& BlockedUntil)
+bool UCrowdyAuthentication::NoteAccessRefused(const FString& ErrorCode, const FString& Message, const FString& Until)
 {
-	if (!ErrorCode.Equals(CrowdyCppAccountBlockedCode, ESearchCase::CaseSensitive))
+	if (!CrowdyCppIsAccessRefusalCode(ErrorCode))
 	{
 		return false;
 	}
 
-	bAccountBlocked = true;
+	bAccessRefused = true;
 	CancelProactiveRefresh();
-	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] The account is blocked%s%s; sign-in and token rotation stop."),
-		BlockedUntil.IsEmpty() ? TEXT("") : TEXT(" until "), *BlockedUntil);
+	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] Access refused (%s)%s%s; sign-in and token rotation stop."),
+		*ErrorCode, Until.IsEmpty() ? TEXT("") : TEXT(" until "), *Until);
 	if (GameSession)
 	{
-		GameSession->SetAccessEnded(Message, BlockedUntil);
+		GameSession->SetAccessEnded(Message, Until);
 	}
 	return true;
 }
 
 void UCrowdyAuthentication::RefreshAppToken()
 {
-	if (!GameSession || bAccountBlocked)
+	if (!GameSession || bAccessRefused)
 		return;
 
 	if (GameSession->GetGameToken().IsEmpty() && GameSession->GetSessionToken().IsEmpty())
@@ -1340,7 +1340,7 @@ void UCrowdyAuthentication::RecoverExpiredAppToken()
 		return;
 	}
 
-	if (bAccountBlocked)
+	if (bAccessRefused)
 	{
 		return;
 	}

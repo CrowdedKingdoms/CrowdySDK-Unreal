@@ -398,6 +398,14 @@ void UCrowdySDKSubsystem::OpenRoutedConnection()
 		}
 	};
 
+	Request.ReportTokenRejected = [WeakThis]()
+	{
+		if (UCrowdySDKSubsystem* Self = WeakThis.Get())
+		{
+			Self->HandleTokenExpired();
+		}
+	};
+
 	// The state is already Connecting, set by the request this came from. What follows is asynchronous, so the
 	// outcome arrives as a connection state change rather than from here.
 	if (!Replication->OpenConnection(Request))

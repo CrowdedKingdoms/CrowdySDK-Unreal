@@ -18,6 +18,19 @@ namespace
 		"{\"errors\":[{\"message\":\"This account is blocked.\","
 		"\"extensions\":{\"code\":\"ACCOUNT_BLOCKED\",\"blockedUntil\":\"2026-12-01T00:00:00Z\"}}],\"data\":null}");
 
+	const TCHAR* const SuspendedAnswer = TEXT(
+		"{\"errors\":[{\"message\":\"Your access to this app is suspended.\","
+		"\"extensions\":{\"code\":\"ACCESS_SUSPENDED\",\"suspendedUntil\":\"2026-11-01T00:00:00Z\"}}],\"data\":null}");
+
+	const TCHAR* const RevokedAnswer = TEXT(
+		"{\"errors\":[{\"message\":\"Your access to this app was revoked.\",\"extensions\":{\"code\":\"ACCESS_REVOKED\"}}],\"data\":null}");
+
+	const TCHAR* const NotGrantedAnswer = TEXT(
+		"{\"errors\":[{\"message\":\"You have no access to this app.\",\"extensions\":{\"code\":\"ACCESS_NOT_GRANTED\"}}],\"data\":null}");
+
+	const TCHAR* const OtherRefusalAnswer = TEXT(
+		"{\"errors\":[{\"message\":\"Not allowed.\",\"extensions\":{\"code\":\"FORBIDDEN\"}}],\"data\":null}");
+
 	// Far-out expiry so the rotation timer a successful mint arms cannot fire during a test.
 	const TCHAR* const BlockedMintAnswer = TEXT(
 		"{\"data\":{\"mintAppToken\":{\"token\":\"app-xyz\",\"gameTokenId\":\"5150\",\"appId\":\"31337\","
@@ -33,7 +46,7 @@ namespace
 		TStrongObjectPtr<UCrowdyAuthTestListener> Listener;
 		TSharedPtr<FCrowdyCppClient> Client;
 
-		explicit FBlockedRig(int32 BlockedAnswers)
+		explicit FBlockedRig(int32 BlockedAnswers, const TCHAR* Answer = BlockedAnswer)
 			: Instance(NewObject<UGameInstance>(GetTransientPackage(), NAME_None, RF_Transient))
 			, Auth(NewObject<UCrowdyAuthentication>(Instance.Get()))
 			, Session(NewObject<UCrowdyGameSession>(Instance.Get()))
@@ -48,7 +61,7 @@ namespace
 			TArray<TPair<int32, FString>> Script;
 			for (int32 Index = 0; Index < BlockedAnswers; ++Index)
 			{
-				Script.Emplace(403, FString(BlockedAnswer));
+				Script.Emplace(403, FString(Answer));
 			}
 			Client->SetTestResponseScript(MoveTemp(Script));
 			Client->SetManagementToken(TEXT("session-abc"));
@@ -264,6 +277,101 @@ bool FCrowdyAccountBlockedSignInClearsItTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("with no reason left"), Rig.Session->GetAccessEndedReason().IsEmpty());
 	TestTrue(TEXT("and no end time"), Rig.Session->GetAccessBlockedUntil().IsEmpty());
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAccessRefusalBridgeCarriesItTest,
+	"CrowdySDK.Auth.AccessRefused.BridgeCarriesTheRefusal", BlockedTestFlags)
+
+bool FCrowdyAccessRefusalBridgeCarriesItTest::RunTest(const FString& Parameters)
+{
+	const TPair<const TCHAR*, const TCHAR*> Cases[] = {
+		{ SuspendedAnswer, CrowdyCppAccessSuspendedCode }, { RevokedAnswer, CrowdyCppAccessRevokedCode },
+		{ NotGrantedAnswer, CrowdyCppAccessNotGrantedCode } };
+	for (const TPair<const TCHAR*, const TCHAR*>& Case : Cases)
+	{
+		const TSharedPtr<FCrowdyCppClient> Client = FCrowdyCppClient::MakeForTest(Case.Key, 403);
+		if (!TestTrue(TEXT("the scripted client was built"), Client.IsValid()))
+		{
+			return false;
+		}
+		FCrowdyCppAppTokenResult Minted;
+		Client->MintAppToken(31337, [&Minted](FCrowdyCppAppTokenResult Result) { Minted = MoveTemp(Result); });
+		Client->Poll();
+		TestFalse(FString::Printf(TEXT("%s: the mint fails"), Case.Value), Minted.bOk);
+		TestEqual(FString::Printf(TEXT("%s: with the server's code"), Case.Value), Minted.ErrorCode, FString(Case.Value));
+		TestTrue(FString::Printf(TEXT("%s: and its message"), Case.Value), Minted.ErrorMessage.StartsWith(TEXT("You")));
+		TestEqual(FString::Printf(TEXT("%s: the end of a suspension, else nothing"), Case.Value), Minted.BlockedUntil,
+			Case.Key == SuspendedAnswer ? FString(TEXT("2026-11-01T00:00:00Z")) : FString());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAccessRefusalRefreshEndsAccessTest,
+	"CrowdySDK.Auth.AccessRefused.RefreshEndsAccess", BlockedTestFlags)
+
+bool FCrowdyAccessRefusalRefreshEndsAccessTest::RunTest(const FString& Parameters)
+{
+	FBlockedRig Rig(1, SuspendedAnswer);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	Rig.Auth->RefreshAppToken();
+	Rig.Drain();
+
+	TestTrue(TEXT("a suspension found by the refresh ends the session's access"), Rig.Session->HasAccessEnded());
+	TestEqual(TEXT("announced once"), Rig.Listener->AccessEndedReasons.Num(), 1);
+	TestEqual(TEXT("with the server's message"), Rig.Session->GetAccessEndedReason(), TEXT("Your access to this app is suspended."));
+	TestEqual(TEXT("and when it lifts"), Rig.Session->GetAccessBlockedUntil(), TEXT("2026-11-01T00:00:00Z"));
+	TestFalse(TEXT("no rotation retry is armed"), Rig.Auth->IsRotationTimerArmedForTest());
+	TestEqual(TEXT("no retry was spent"), Rig.Auth->GetRotationRetriesUsedForTest(), 0);
+
+	Rig.Auth->RefreshAppToken();
+	Rig.Auth->RecoverExpiredAppToken();
+	TestEqual(TEXT("later rotation triggers send nothing"), Rig.Client->NumPendingRequests(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAccessRefusalSignInEndsAccessTest,
+	"CrowdySDK.Auth.AccessRefused.SignInEndsAccess", BlockedTestFlags)
+
+bool FCrowdyAccessRefusalSignInEndsAccessTest::RunTest(const FString& Parameters)
+{
+	for (const TCHAR* Answer : { RevokedAnswer, NotGrantedAnswer })
+	{
+		FBlockedRig Rig(1, Answer);
+		if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+		{
+			return false;
+		}
+		Rig.Mint();
+		Rig.Drain();
+		TestTrue(TEXT("a refused mint ends the session's access"), Rig.Session->HasAccessEnded());
+		TestTrue(TEXT("with no end time"), Rig.Session->GetAccessBlockedUntil().IsEmpty());
+		TestEqual(TEXT("the sign-in fails"), Rig.Listener->LoginFailures.Num(), 1);
+		TestEqual(TEXT("and nothing is retried"), Rig.Client->NumPendingRequests(), 0);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAccessRefusalOtherRefusalRetriesTest,
+	"CrowdySDK.Auth.AccessRefused.OtherRefusalStillRetries", BlockedTestFlags)
+
+bool FCrowdyAccessRefusalOtherRefusalRetriesTest::RunTest(const FString& Parameters)
+{
+	FBlockedRig Rig(1, OtherRefusalAnswer);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	Rig.Auth->RefreshAppToken();
+	Rig.Drain();
+
+	TestFalse(TEXT("an ordinary refusal does not end the access"), Rig.Session->HasAccessEnded());
+	TestTrue(TEXT("and the rotation retries"), Rig.Auth->IsRotationTimerArmedForTest());
 	return true;
 }
 
