@@ -850,20 +850,29 @@ namespace
 		return Error ? Utf8ToFString(Error->code) : FString();
 	}
 
-	// Fills the failure fields from an ACCOUNT_BLOCKED entry wherever it sits among the errors, so a blocked account
-	// never reads as another refusal. Returns false when the outcome carries none.
-	bool ReadAccountBlock(const crowdy::graphql::GraphQLOutcome& Out, FString& OutMessage, FString& OutCode,
+	// Fills the failure fields from an ACCOUNT_BLOCKED entry, else from the app's access refusal, wherever it sits among
+	// the errors, so neither reads as another refusal. Returns false when the outcome carries neither.
+	bool ReadAccessRefusal(const crowdy::graphql::GraphQLOutcome& Out, FString& OutMessage, FString& OutCode,
 		FString& OutBlockedUntil)
 	{
 		const crowdy::graphql::GraphQLErrorDetail* Error =
 			crowdy::graphql::errorWithCode(Out.errors, crowdy::graphql::kAccountBlockedCode);
-		if (!Error)
+		if (Error)
+		{
+			OutMessage = Utf8ToFString(Error->message);
+			OutCode = Utf8ToFString(Error->code);
+			OutBlockedUntil = Utf8ToFString(Error->blockedUntil);
+			return true;
+		}
+		const std::optional<crowdy::graphql::AccessRefusal> Refusal = crowdy::graphql::accessRefusalOf(Out.errors);
+		if (!Refusal)
 		{
 			return false;
 		}
-		OutMessage = Utf8ToFString(Error->message);
-		OutCode = Utf8ToFString(Error->code);
-		OutBlockedUntil = Utf8ToFString(Error->blockedUntil);
+		Error = crowdy::graphql::errorWithCode(Out.errors, Refusal->code);
+		OutMessage = Error ? Utf8ToFString(Error->message) : OutMessage;
+		OutCode = Utf8ToFString(Refusal->code);
+		OutBlockedUntil = Utf8ToFString(Refusal->suspendedUntil);
 		return true;
 	}
 
@@ -1045,7 +1054,7 @@ namespace
 		{
 			Result.ErrorMessage = OutcomeErrorMessage(Out);
 			Result.ErrorCode = OutcomeErrorCode(Out);
-			ReadAccountBlock(Out, Result.ErrorMessage, Result.ErrorCode, Result.BlockedUntil);
+			ReadAccessRefusal(Out, Result.ErrorMessage, Result.ErrorCode, Result.BlockedUntil);
 			return Result;
 		}
 
@@ -1083,7 +1092,7 @@ namespace
 		{
 			Result.ErrorMessage = OutcomeErrorMessage(Out);
 			Result.ErrorCode = OutcomeErrorCode(Out);
-			ReadAccountBlock(Out, Result.ErrorMessage, Result.ErrorCode, Result.BlockedUntil);
+			ReadAccessRefusal(Out, Result.ErrorMessage, Result.ErrorCode, Result.BlockedUntil);
 			return Result;
 		}
 

@@ -207,13 +207,13 @@ namespace
 	 * shuts down gives up instead of holding the join open for a full round trip.
 	 */
 	FCrowdyCppAssignServer MakeAssignServerCallback(const TWeakObjectPtr<UGameInstance>& WeakInstance,
-		const FCrowdyCppClientConfig& ClientConfig, TFunction<void()> ReportAppFull)
+		const FCrowdyCppClientConfig& ClientConfig, TFunction<void()> ReportAppFull, TFunction<void()> ReportTokenRejected)
 	{
-		return [WeakInstance, ClientConfig, ReportAppFull](const FCrowdyCppShouldAbort& ShouldAbort)
+		return [WeakInstance, ClientConfig, ReportAppFull, ReportTokenRejected](const FCrowdyCppShouldAbort& ShouldAbort)
 		{
 			const TSharedRef<FAssignmentHandoff> Handoff = MakeShared<FAssignmentHandoff>();
 
-			AsyncTask(ENamedThreads::GameThread, [WeakInstance, ClientConfig, ReportAppFull, Handoff]()
+			AsyncTask(ENamedThreads::GameThread, [WeakInstance, ClientConfig, ReportAppFull, ReportTokenRejected, Handoff]()
 			{
 				const auto Finish = [Handoff](FCrowdyCppSessionAssignment&& Answer)
 				{
@@ -250,7 +250,7 @@ namespace
 				}
 
 				Client->RunOp(ECrowdyCppApiDomain::ServerStatus, TEXT("ServerWithLeastClients"),
-					MakeShared<FJsonObject>(), [Finish, ReportAppFull, WeakInstance](FCrowdyCppJsonResult Result)
+					MakeShared<FJsonObject>(), [Finish, ReportAppFull, ReportTokenRejected, WeakInstance](FCrowdyCppJsonResult Result)
 					{
 						FCrowdyCppSessionAssignment Answer;
 
@@ -261,6 +261,11 @@ namespace
 							if (Result.ErrorMessage.Contains(TEXT("Insufficient")) && ReportAppFull)
 							{
 								ReportAppFull();
+							}
+							// A revoked token is refused on every retry until a new one is minted.
+							if (Result.ErrorCode.Equals(TEXT("UNAUTHENTICATED"), ESearchCase::CaseSensitive) && ReportTokenRejected)
+							{
+								ReportTokenRejected();
 							}
 
 							Answer.ErrorMessage = Result.ErrorMessage;
@@ -620,7 +625,7 @@ bool UCrowdyCppReplicationSubsystem::OpenConnection(const FCrowdyCppConnectionRe
 	ClientConfig.ApiUrl = Request.GameApiUrl.IsEmpty() ? Request.DiscoveryUrl : Request.GameApiUrl;
 
 	TSharedPtr<FCrowdyCppReplication> Built = FCrowdyCppReplication::Make(Config,
-		MakeAssignServerCallback(WeakInstance, ClientConfig, MoveTemp(OnAppFull)),
+		MakeAssignServerCallback(WeakInstance, ClientConfig, MoveTemp(OnAppFull), Request.ReportTokenRejected),
 		MakeRefreshTokenCallback(WeakInstance, Request.RequestTokenRefresh, Request.Token));
 
 	if (!Built.IsValid())

@@ -83,6 +83,12 @@ struct FCrowdyCppConnectionRequest
 	 * player should be told instead of watching a connection retry into a server that has no room.
 	 */
 	TFunction<void()> ReportAppFull;
+
+	/**
+	 * Tell the game the server assignment refused the app token as invalid or expired (UNAUTHENTICATED), as it does once
+	 * the token is revoked. Called on the game thread; the game mints a new token, or learns its access was refused.
+	 */
+	TFunction<void()> ReportTokenRejected;
 };
 
 /**
