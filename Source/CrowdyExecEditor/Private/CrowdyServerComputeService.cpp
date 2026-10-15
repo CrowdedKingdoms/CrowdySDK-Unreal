@@ -618,6 +618,14 @@ bool FCrowdyServerComputeService::Deploy()
 	AddSentence(Lines, Changes, EChange::New, LOCTEXT("ConfirmAdds", "It adds {0}."));
 	AddSentence(Lines, Changes, EChange::Changed, LOCTEXT("ConfirmChanges", "It changes {0}."));
 	AddSentence(Lines, Changes, EChange::Unknown, LOCTEXT("ConfirmReplacesUnknown", "It replaces live code this project has no record of in {0}."));
+	for (const FTypeChange& Change : Changes)
+	{
+		const FString KindSentence = CrowdyExecRevisions::DescribeKindChange(Change);
+		if (!KindSentence.IsEmpty())
+		{
+			Lines.Add(FText::FromString(KindSentence));
+		}
+	}
 	if (!CrowdyExecRevisions::HasChanges(Changes))
 	{
 		Lines.Add(LOCTEXT("ConfirmNotKnown", "What the app runs now could not be read, so what this changes is not known."));

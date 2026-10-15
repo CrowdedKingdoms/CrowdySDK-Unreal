@@ -172,9 +172,9 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 		OutError = FString::Printf(TEXT("%s is closed to players: only server code and developer tools reach it"), *Definition->TypeName);
 		return nullptr;
 	}
-	const FString UsedId = Definition->bOnlyOneInstance ? Definition->GetOnlyInstanceId() : InstanceId;
-	// The root's only Instance Id is empty, which no other instance may have.
-	if (!Definition->bOnlyOneInstance && !IsValidServerObjectInstanceId(UsedId))
+	const FString UsedId = Definition->HasOnlyOneInstance() ? Definition->GetOnlyInstanceId() : InstanceId;
+	// The root's and a library's only Instance Id is empty, which no other instance may have.
+	if (!Definition->HasOnlyOneInstance() && !IsValidServerObjectInstanceId(UsedId))
 	{
 		OutError = TEXT("An Instance Id must be 1 to 256 bytes with no control characters");
 		return nullptr;
@@ -221,6 +221,39 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 	return Object;
 }
 
+UCrowdyServerObject* UCrowdyServerObjectSubsystem::AcquireLibrary(UCrowdyServerObjectDefinition* Definition, const TFunction<void(const FCrowdyServerCallResult&)>& OnDone)
+{
+	FString Error;
+	UCrowdyServerObject* Library = Acquire(Definition, FString(), this, Error);
+	if (Library || !OnDone)
+	{
+		return Library;
+	}
+	FCrowdyServerCallResult Refused;
+	Refused.Outcome = ECrowdyServerCallOutcome::BadRequest;
+	Refused.Reason = Error;
+	OnDone(Refused);
+	return nullptr;
+}
+
+void UCrowdyServerObjectSubsystem::CallLibraryFunction(UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedStruct& Inputs,
+	TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
+{
+	if (UCrowdyServerObject* Library = AcquireLibrary(Definition, OnDone))
+	{
+		Library->Call(Function, Inputs, MoveTemp(OnDone), TimeoutSeconds);
+	}
+}
+
+void UCrowdyServerObjectSubsystem::CallLibraryFunction(UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedPropertyBag& Inputs,
+	TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
+{
+	if (UCrowdyServerObject* Library = AcquireLibrary(Definition, OnDone))
+	{
+		Library->Call(Function, Inputs, MoveTemp(OnDone), TimeoutSeconds);
+	}
+}
+
 UCrowdyServerObjectLink* UCrowdyServerObjectSubsystem::FindLink(UObject* Owner, UCrowdyServerObjectDefinition* Definition, ECrowdyServerObjectFind Find, const FString& InstanceId, int64 TeamId)
 {
 	if (!Owner || !Definition)
@@ -228,7 +261,7 @@ UCrowdyServerObjectLink* UCrowdyServerObjectSubsystem::FindLink(UObject* Owner, 
 		return nullptr;
 	}
 	// Arguments the instance does not use are evened out, so every way of asking for it shares one Link.
-	const bool bOnlyOne = Definition->bOnlyOneInstance;
+	const bool bOnlyOne = Definition->HasOnlyOneInstance();
 	FCrowdyServerObjectLinkKey Key;
 	Key.Owner = Owner;
 	Key.Definition = Definition;

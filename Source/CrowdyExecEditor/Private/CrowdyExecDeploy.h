@@ -49,7 +49,7 @@ namespace CrowdyExecDeploy
 	/** The crate of the root type, generated from the SDK's Players Online definition and never on disk; no files when that does not load or generate. */
 	CrowdyExecDeveloper::FBuildCrate MakeRootCrate();
 
-	/** The manifest for Definitions under the root: each a hub named by its type, open to players when they can reach it, with its save interval, idle timeout, the types it Can Call, its scopes and the server limits it changes. Deterministic. */
+	/** The manifest for Definitions under the root: each a hub (or a spoke for a Server Function Library) named by its type, open to players when they can reach it, with its save interval and idle timeout (a library: its replicas, concurrency and max_replicas), the types it Can Call (["*"] for any), its scopes and the server limits it changes. Deterministic. */
 	FString MakeManifest(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions);
 
 	/** A per-type limit the platform enforces, in manifest units. */
@@ -63,6 +63,17 @@ namespace CrowdyExecDeploy
 
 	/** Each server limit for Definition in manifest order, brought into the platform's range. */
 	TArray<FServerLimit> LimitsOf(const UCrowdyServerObjectDefinition& Definition);
+
+	/** How many instances of a Server Function Library run and how many calls each answers at once, brought into the platform's range. */
+	struct FScaling
+	{
+		int32 Replicas = 1;
+		/** At least Replicas; the manifest names it only when it is more. */
+		int32 MaxReplicas = 1;
+		int32 Concurrency = 16;
+	};
+
+	FScaling ScalingOf(const UCrowdyServerObjectDefinition& Definition);
 
 	/** The value the platform uses for a manifest limit (memory_mb, fuel_per_call, mailbox or deadline_ms): ManifestValue, brought into the field's range. Any other field is returned as given. */
 	int64 ClampLimit(const FString& Field, int64 ManifestValue);

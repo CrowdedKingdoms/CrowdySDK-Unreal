@@ -638,6 +638,66 @@ bool FCrowdyExecRevisionsLimitsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsLibraryTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareLibraryKindAndScaling", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsLibraryTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	const FBuildCrate Crate = MakeCrate(TEXT("t_lib"), TEXT("fn lib() {}\n"));
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {CrowdyExecDeploy::MakeRootCrate(), Crate};
+	Project.Types.Add(MakeTypeState(TEXT("t_lib"), CrowdyExecDeploy::ECrateState::UpToDate));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(TEXT("t_lib"), 30, 300);
+	const TArray<FRevision> History = {MakeRevision(Crate, TEXT("d_lib"), 1)};
+	const auto HistoryFor = [&History](const FString&) { return History; };
+
+	auto CompareWith = [&](const TCHAR* Live)
+	{
+		CrowdyExecDeveloper::FVersion Version;
+		Version.Version = 2;
+		Version.ManifestJson = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"t_lib\":{%s}}}"), Live);
+		return CrowdyExecRevisions::Compare(Project, {Definition.Get()}, &Version, true, HistoryFor);
+	};
+	const TCHAR* const LiveHub = TEXT("\"kind\":\"hub\",\"digest\":\"d_lib\",\"parent\":\"root\",\"client\":true,\"evict_after_ms\":300000,\"persist_every_ms\":30000");
+	const FString LiveSpoke = TEXT("\"kind\":\"spoke\",\"digest\":\"d_lib\",\"parent\":\"root\",\"client\":true,\"replicas\":2,\"max_replicas\":4,\"concurrency\":8");
+
+	TestChange(*this, TEXT("a Server Object stays one"), CompareWith(LiveHub), TEXT("t_lib"), EChange::Unchanged);
+
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	TestChange(*this, TEXT("a Server Object becomes a library"), CompareWith(LiveHub), TEXT("t_lib"), EChange::Changed, TEXT("kind"));
+	const TArray<FTypeChange> ToLibraryChanges = CompareWith(LiveHub);
+	const FTypeChange* ToLibrary = FindChange(ToLibraryChanges, TEXT("t_lib"));
+	if (TestNotNull(TEXT("the change is listed"), ToLibrary))
+	{
+		TestTrue(TEXT("and it says so"), ToLibrary->KindChange == CrowdyExecRevisions::EKindChange::ToLibrary);
+		TestEqualSensitive(TEXT("with the sentence for the confirmation"), CrowdyExecRevisions::DescribeKindChange(*ToLibrary),
+			FString(TEXT("t_lib changes from Server Object to Server Function Library: its saved data is kept, unused, and comes back if it becomes a Server Object again.")));
+	}
+
+	Definition->MinInstances = 2;
+	Definition->MaxInstances = 4;
+	Definition->ParallelCallsPerInstance = 8;
+	TestChange(*this, TEXT("a library with the live scaling"), CompareWith(*LiveSpoke), TEXT("t_lib"), EChange::Unchanged);
+	Definition->MaxInstances = 5;
+	TestChange(*this, TEXT("a library with another max instances"), CompareWith(*LiveSpoke), TEXT("t_lib"), EChange::Changed, TEXT("scaling"));
+	Definition->MaxInstances = 4;
+	Definition->ParallelCallsPerInstance = 16;
+	TestChange(*this, TEXT("a library with another concurrency"), CompareWith(*LiveSpoke), TEXT("t_lib"), EChange::Changed, TEXT("scaling"));
+	Definition->MinInstances = 1;
+	Definition->MaxInstances = 1;
+	TestChange(*this, TEXT("a library whose live manifest leaves the scaling out"), CompareWith(TEXT("\"kind\":\"spoke\",\"digest\":\"d_lib\",\"parent\":\"root\",\"client\":true")),
+		TEXT("t_lib"), EChange::Unchanged);
+
+	Definition->Kind = ECrowdyServerObjectKind::ServerObject;
+	const TArray<FTypeChange> ToObject = CompareWith(*LiveSpoke);
+	const FTypeChange* FromLibrary = FindChange(ToObject, TEXT("t_lib"));
+	if (TestNotNull(TEXT("the reverse change is listed"), FromLibrary))
+	{
+		TestTrue(TEXT("a library becomes a Server Object"), FromLibrary->KindChange == CrowdyExecRevisions::EKindChange::ToServerObject && FromLibrary->What.Contains(TEXT("kind")));
+		TestTrue(TEXT("and its sentence says where the saved data comes from"), CrowdyExecRevisions::DescribeKindChange(*FromLibrary).Contains(TEXT("it starts from the saved data it had as a Server Object, if any.")));
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsHasChangesTest, "CrowdySDK.CrowdyExecEditor.RevisionsHasChanges", CrowdyExecRevisionsTest::TestFlags)
 bool FCrowdyExecRevisionsHasChangesTest::RunTest(const FString& Parameters)
 {

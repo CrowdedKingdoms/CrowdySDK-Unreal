@@ -51,6 +51,12 @@ void UCrowdyK2Node_GetServerState::ExpandNode(FKismetCompilerContext& CompilerCo
 		BreakAllNodeLinks();
 		return;
 	}
+	if (GetDefinition()->IsFunctionLibrary())
+	{
+		CompilerContext.MessageLog.Error(*FText::Format(LOCTEXT("LibraryHasNoState", "@@: {0} is a Server Function Library and has no values to get."), GetAssetName()).ToString(), this);
+		BreakAllNodeLinks();
+		return;
+	}
 	TArray<FCrowdyServerValuePin> Variables;
 	GatherVisibleVariables(Variables);
 	bool bAllPins = true;

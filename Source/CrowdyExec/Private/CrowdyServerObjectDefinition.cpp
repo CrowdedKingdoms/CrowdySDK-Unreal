@@ -127,7 +127,7 @@ const TCHAR* const UCrowdyServerObjectDefinition::RootTypeName = TEXT("root");
 
 FString UCrowdyServerObjectDefinition::GetOnlyInstanceId() const
 {
-	return TypeName.Equals(RootTypeName, ESearchCase::CaseSensitive) ? FString() : FString(OnlyInstanceId);
+	return IsFunctionLibrary() || TypeName.Equals(RootTypeName, ESearchCase::CaseSensitive) ? FString() : FString(OnlyInstanceId);
 }
 
 namespace
@@ -248,7 +248,8 @@ namespace
 		{
 			return Form == ECrowdyServerValuesForm::List && List.GetPropertyBagStruct() == Struct;
 		};
-		if (Holds(Definition.StateForm, Definition.StateList))
+		const bool bLibrary = Definition.IsFunctionLibrary();
+		if (!bLibrary && Holds(Definition.StateForm, Definition.StateList))
 		{
 			return &Definition.StateList;
 		}
@@ -262,6 +263,10 @@ namespace
 			{
 				return &Function.ReplyList;
 			}
+		}
+		if (bLibrary)
+		{
+			return nullptr;
 		}
 		for (const FCrowdyServerMessage& Message : Definition.Messages)
 		{
@@ -575,8 +580,39 @@ namespace
 		});
 	}
 
+	/** What a Server Function Library cannot do: it has no members and saves nothing, so a function may not need either. */
+	void CheckLibrary(const UCrowdyServerObjectDefinition& Definition, TArray<FString>& Errors)
+	{
+		if (!Definition.IsFunctionLibrary())
+		{
+			return;
+		}
+		for (const FCrowdyServerFunction& Function : Definition.Functions)
+		{
+			const FString Name = Function.Name.ToString();
+			if (Function.WhoCanCall == ECrowdyServerFunctionCaller::Members || Function.WhoCanCall == ECrowdyServerFunctionCaller::Leader)
+			{
+				Errors.Add(FString::Printf(TEXT("%s: Members and Leader need members, and a Server Function Library has none."), *Name));
+			}
+			if (Function.CooldownSeconds > 0.f)
+			{
+				Errors.Add(FString::Printf(TEXT("%s: a cooldown is saved data, and a Server Function Library saves none."), *Name));
+			}
+		}
+#if WITH_EDITORONLY_DATA
+		if (Definition.MaxInstances < Definition.MinInstances)
+		{
+			Errors.Add(TEXT("Max Instances must be at least Min Instances."));
+		}
+#endif
+	}
+
 	void CheckMembers(const UCrowdyServerObjectDefinition& Definition, TArray<FString>& Errors)
 	{
+		if (Definition.IsFunctionLibrary())
+		{
+			return;
+		}
 		const bool bNoMembers = Definition.MembersFrom == ECrowdyServerMembersSource::None;
 		const bool bOwnMembers = Definition.MembersFrom == ECrowdyServerMembersSource::ThisObject;
 		if (bNoMembers && Definition.Visibility == ECrowdyServerObjectVisibility::Members)
@@ -622,6 +658,10 @@ namespace
 
 	void CheckRecords(const UCrowdyServerObjectDefinition& Definition, TArray<FString>& Errors)
 	{
+		if (Definition.IsFunctionLibrary())
+		{
+			return;
+		}
 		if (Definition.AreaSizeChunks < 1 || Definition.AreaSizeChunks > CrowdyExec::MaxAreaSizeChunks)
 		{
 			Errors.Add(FString::Printf(TEXT("Area Size is %d; it must be from 1 to %d"), Definition.AreaSizeChunks, CrowdyExec::MaxAreaSizeChunks));
@@ -809,6 +849,10 @@ namespace
 	/** Methods holds every function's method, built-in ones included, since a timer's handler shares their namespace. */
 	void CheckTimers(const UCrowdyServerObjectDefinition& Definition, const TSet<FString>& Methods, TArray<FString>& Errors)
 	{
+		if (Definition.IsFunctionLibrary())
+		{
+			return;
+		}
 		static const FString EventHandlers[] = {TEXT("on_player_joined"), TEXT("on_player_left")};
 		static const FString Unwritable[] = {TEXT("self"), TEXT("super"), TEXT("crate")};
 		TSet<FString> Seen;
@@ -892,11 +936,27 @@ namespace
 			}
 		}
 	}
+
+	/** A library sends no messages, so listening to one hears nothing. */
+	void CheckListenToLibraries(const TArray<TObjectPtr<UCrowdyServerObjectDefinition>>& Types, TArray<FString>& Errors)
+	{
+		for (const TObjectPtr<UCrowdyServerObjectDefinition>& Type : Types)
+		{
+			if (Type && Type->IsFunctionLibrary())
+			{
+				Errors.Add(FString::Printf(TEXT("%s is a Server Function Library and sends no messages."), Type->TypeName.IsEmpty() ? *Type->GetName() : *Type->TypeName));
+			}
+		}
+	}
 #endif
 
 	/** The messages' topics must be server names, not the SDK's own state topic, and differ from each other. */
 	void CheckMessages(const UCrowdyServerObjectDefinition& Definition, TArray<FString>& Errors)
 	{
+		if (Definition.IsFunctionLibrary())
+		{
+			return;
+		}
 		TSet<FString> Topics;
 		TSet<FName> Names;
 		for (const FCrowdyServerMessage& Message : Definition.Messages)
@@ -1098,6 +1158,10 @@ FString FCrowdyServerMessage::GetPayloadListName() const
 
 const UScriptStruct* UCrowdyServerObjectDefinition::GetStateStruct() const
 {
+	if (IsFunctionLibrary())
+	{
+		return nullptr;
+	}
 	return PickValues(StateForm, State, StateList);
 }
 
@@ -1140,7 +1204,8 @@ const UScriptStruct* UCrowdyServerObjectDefinition::FindListStruct(const FString
 
 void UCrowdyServerObjectDefinition::GetLists(TArray<FCrowdyServerNamedList>& Out) const
 {
-	if (StateForm == ECrowdyServerValuesForm::List)
+	const bool bLibrary = IsFunctionLibrary();
+	if (!bLibrary && StateForm == ECrowdyServerValuesForm::List)
 	{
 		Out.Add({PascalCase(TypeName) + TEXT("State"), &StateList});
 	}
@@ -1155,6 +1220,10 @@ void UCrowdyServerObjectDefinition::GetLists(TArray<FCrowdyServerNamedList>& Out
 			Out.Add({Function.GetReplyListName(), &Function.ReplyList});
 		}
 	}
+	if (bLibrary)
+	{
+		return;
+	}
 	for (const FCrowdyServerMessage& Message : Messages)
 	{
 		if (Message.PayloadForm == ECrowdyServerValuesForm::List)
@@ -1166,11 +1235,19 @@ void UCrowdyServerObjectDefinition::GetLists(TArray<FCrowdyServerNamedList>& Out
 
 const FCrowdyServerMessage* UCrowdyServerObjectDefinition::FindMessage(FName Name) const
 {
+	if (IsFunctionLibrary())
+	{
+		return nullptr;
+	}
 	return Messages.FindByPredicate([Name](const FCrowdyServerMessage& Message) { return Message.Name == Name; });
 }
 
 const FCrowdyServerMessage* UCrowdyServerObjectDefinition::FindMessageByTopic(const FString& Topic) const
 {
+	if (IsFunctionLibrary())
+	{
+		return nullptr;
+	}
 	return Messages.FindByPredicate([&Topic](const FCrowdyServerMessage& Message)
 	{
 		return Message.BakedTopic.IsEmpty() ? Message.GetTopic().Equals(Topic, ESearchCase::CaseSensitive) : Message.BakedTopic.Equals(Topic, ESearchCase::CaseSensitive);
@@ -1184,7 +1261,7 @@ const FCrowdyServerFunction* UCrowdyServerObjectDefinition::FindFunction(FName N
 	{
 		return Own;
 	}
-	if (MembersFrom != ECrowdyServerMembersSource::ThisObject)
+	if (IsFunctionLibrary() || MembersFrom != ECrowdyServerMembersSource::ThisObject)
 	{
 		return nullptr;
 	}
@@ -1234,6 +1311,10 @@ bool UCrowdyServerObjectDefinition::IsReachableByPlayers() const
 	{
 		return Function.WhoCanCall != ECrowdyServerFunctionCaller::ServerOnly && Function.WhoCanCall != ECrowdyServerFunctionCaller::DevelopersOnly;
 	});
+	if (IsFunctionLibrary())
+	{
+		return bPlayerCallable;
+	}
 	// Records reach players without a watched variable: each carries its entity, owner and team.
 	return bPlayerCallable || !WatchedFields.IsEmpty() || Holds == ECrowdyServerObjectHolds::RecordPerEntity || MembersFrom != ECrowdyServerMembersSource::None
 		|| bOnPlayerJoined || bOnPlayerLeft || HasPlayerMessages();
@@ -1241,12 +1322,12 @@ bool UCrowdyServerObjectDefinition::IsReachableByPlayers() const
 
 bool UCrowdyServerObjectDefinition::HasPlayerMessages() const
 {
-	return Messages.ContainsByPredicate([](const FCrowdyServerMessage& Message) { return Message.bPlayersCanListen; });
+	return !IsFunctionLibrary() && Messages.ContainsByPredicate([](const FCrowdyServerMessage& Message) { return Message.bPlayersCanListen; });
 }
 
 bool UCrowdyServerObjectDefinition::HasRestrictedReaders() const
 {
-	return Visibility != ECrowdyServerObjectVisibility::Public || !OwnerFields.IsEmpty() || !TeamFields.IsEmpty();
+	return !IsFunctionLibrary() && (Visibility != ECrowdyServerObjectVisibility::Public || !OwnerFields.IsEmpty() || !TeamFields.IsEmpty());
 }
 
 bool UCrowdyServerObjectDefinition::IsMemberFunction(FName Name)
@@ -1264,15 +1345,21 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 	{
 		OutErrors.Add(FString::Printf(TEXT("Type Name '%s' must be lowercase letters, digits and underscores, start with a letter, and be at most 48 characters"), *TypeName));
 	}
+	const bool bLibrary = IsFunctionLibrary();
+	CheckLibrary(*this, OutErrors);
 	CheckMembers(*this, OutErrors);
 	CheckRecords(*this, OutErrors);
 #if WITH_EDITORONLY_DATA
 	CheckTypeList(*this, CanCall, TEXT("Can Call"), TEXT("a type cannot call itself"), OutErrors);
-	CheckTypeList(*this, ListenTo, TEXT("Listen To"), TEXT("a type cannot listen to itself"), OutErrors);
+	if (!bLibrary)
+	{
+		CheckTypeList(*this, ListenTo, TEXT("Listen To"), TEXT("a type cannot listen to itself"), OutErrors);
+		CheckListenToLibraries(ListenTo, OutErrors);
+	}
 #endif
 	CheckMessages(*this, OutErrors);
 	const UScriptStruct* StateStruct = GetStateStruct();
-	if (!StateStruct)
+	if (!StateStruct && !bLibrary)
 	{
 		OutErrors.Add(StateForm == ECrowdyServerValuesForm::List ? TEXT("Add at least one variable, or use a State struct") : TEXT("Choose a State struct"));
 	}
@@ -1328,14 +1415,16 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 			Builder.Structs.AddUnique(ReplyStruct);
 		}
 	}
-	for (const FCrowdyServerMessage& Message : Messages)
+	const TConstArrayView<FCrowdyServerMessage> OwnMessages = bLibrary ? TConstArrayView<FCrowdyServerMessage>() : TConstArrayView<FCrowdyServerMessage>(Messages);
+	for (const FCrowdyServerMessage& Message : OwnMessages)
 	{
 		if (const UScriptStruct* PayloadStruct = Message.GetPayloadStruct())
 		{
 			Builder.Structs.AddUnique(PayloadStruct);
 		}
 	}
-	const TConstArrayView<FCrowdyServerFunction> BuiltIns = MembersFrom == ECrowdyServerMembersSource::ThisObject ? GetMemberFunctions() : TConstArrayView<FCrowdyServerFunction>();
+	const bool bBuiltIns = !bLibrary && MembersFrom == ECrowdyServerMembersSource::ThisObject;
+	const TConstArrayView<FCrowdyServerFunction> BuiltIns = bBuiltIns ? GetMemberFunctions() : TConstArrayView<FCrowdyServerFunction>();
 	for (const FCrowdyServerFunction& BuiltIn : BuiltIns)
 	{
 		Methods.Add(BuiltIn.GetMethodName());
@@ -1362,14 +1451,15 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 	{
 		Builder.BakeEnum(Enum, OutEnums.AddDefaulted_GetRef());
 	}
-	for (const FName& Watched : WatchedFields)
+	const TConstArrayView<FName> Visible = bLibrary ? TConstArrayView<FName>() : TConstArrayView<FName>(WatchedFields);
+	for (const FName& Watched : Visible)
 	{
 		if (!Builder.WatchedFound.Contains(Watched))
 		{
 			OutErrors.Add(FString::Printf(TEXT("Watched field '%s' is not a field of %s"), *Watched.ToString(), *Builder.Describe(StateStruct)));
 		}
 	}
-	if (Holds == ECrowdyServerObjectHolds::RecordPerEntity)
+	if (!bLibrary && Holds == ECrowdyServerObjectHolds::RecordPerEntity)
 	{
 		Builder.CheckAudience(OwnerFields, TEXT("Owner Only"), TEXT("Team Only"), TeamFields, StateStruct);
 		Builder.CheckAudience(TeamFields, TEXT("Team Only"), TEXT("Owner Only"), TArray<FName>(), StateStruct);

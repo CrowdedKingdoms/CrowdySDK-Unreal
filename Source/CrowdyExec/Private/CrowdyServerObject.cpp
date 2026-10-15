@@ -170,7 +170,7 @@ namespace CrowdyServerObjectDetail
 	/** Whether a call was the built-in member function with BuiltInMethod, not a function of the definition's own. */
 	bool IsBuiltInMemberCall(const UCrowdyServerObjectDefinition& Definition, FName Function, const FString& Method, const TCHAR* BuiltInMethod)
 	{
-		return Definition.MembersFrom == ECrowdyServerMembersSource::ThisObject && UCrowdyServerObjectDefinition::IsMemberFunction(Function)
+		return !Definition.IsFunctionLibrary() && Definition.MembersFrom == ECrowdyServerMembersSource::ThisObject && UCrowdyServerObjectDefinition::IsMemberFunction(Function)
 			&& Method.Equals(BuiltInMethod, ESearchCase::CaseSensitive);
 	}
 
@@ -203,7 +203,7 @@ namespace CrowdyServerObjectDetail
 	/** The instance a trace line names: an Owner Only instance id is the player's user id, so it prints as "owner", and the root has none, so it prints as "-". */
 	const TCHAR* TraceId(const UCrowdyServerObjectDefinition& Definition, const FString& InstanceId)
 	{
-		if (Definition.Visibility == ECrowdyServerObjectVisibility::OwnerOnly)
+		if (!Definition.IsFunctionLibrary() && Definition.Visibility == ECrowdyServerObjectVisibility::OwnerOnly)
 		{
 			return TEXT("owner");
 		}
@@ -345,7 +345,7 @@ FInstancedPropertyBag UCrowdyServerObject::GetStateList() const
 
 bool UCrowdyServerObject::HoldsRecords() const
 {
-	return Definition && Definition->Holds == ECrowdyServerObjectHolds::RecordPerEntity;
+	return Definition && !Definition->IsFunctionLibrary() && Definition->Holds == ECrowdyServerObjectHolds::RecordPerEntity;
 }
 
 const FInstancedStruct* UCrowdyServerObject::FindValues(const FString* RecordId) const
@@ -1345,7 +1345,8 @@ void UCrowdyServerObject::HandleConnected()
 	TArray<FString> Watched;
 	CollectWatchedFields(nullptr, nullptr, Watched);
 	// The members travel in the read, so an object with members reads even when it watches no variables, as does one of records.
-	if (Watched.Num() > 0 || Definition->MembersFrom != ECrowdyServerMembersSource::None || HoldsRecords())
+	// A library has nothing to watch, whatever its asset still holds from when it was a Server Object.
+	if (!Definition->IsFunctionLibrary() && (Watched.Num() > 0 || Definition->MembersFrom != ECrowdyServerMembersSource::None || HoldsRecords()))
 	{
 		Refresh();
 	}

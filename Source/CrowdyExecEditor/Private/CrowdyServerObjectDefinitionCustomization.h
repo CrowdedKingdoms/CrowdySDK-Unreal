@@ -87,6 +87,7 @@ public:
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
 private:
+	IDetailPropertyRow* AddStateRows(IDetailLayoutBuilder& DetailBuilder, IDetailCategoryBuilder& ServerObject, bool bFollowSelection);
 	void CustomizeFunction(IDetailLayoutBuilder& DetailBuilder, int32 Index);
 	void CustomizeMessage(IDetailLayoutBuilder& DetailBuilder, int32 Index);
 	void AddMessagesCategory(IDetailLayoutBuilder& DetailBuilder);
@@ -140,6 +141,9 @@ private:
 
 	/** Whether Holds was a record per entity when the rows were built, so a change rebuilds them. */
 	bool bBuiltPerEntity = false;
+
+	/** Whether the type was a Server Function Library when the rows were built, so a change of Kind rebuilds them. */
+	bool bBuiltLibrary = false;
 
 	/** The Type Name as stored on the definition, which may differ from what is being typed. */
 	FString StoredTypeName;

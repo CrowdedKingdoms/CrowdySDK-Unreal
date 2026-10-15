@@ -459,6 +459,15 @@ FText CrowdyServerComputePage::ReadableByPhrase(ECrowdyServerObjectVisibility Vi
 	}
 }
 
+FText CrowdyServerComputePage::InstancesPhrase(int32 MinInstances, int32 MaxInstances)
+{
+	if (MaxInstances <= MinInstances)
+	{
+		return FText::Format(LOCTEXT("MetaInstances", "{0} {0}|plural(one=instance,other=instances)"), MinInstances);
+	}
+	return FText::Format(LOCTEXT("MetaInstanceRange", "{0} to {1} instances"), MinInstances, MaxInstances);
+}
+
 FText CrowdyServerComputePage::WhyCrateFolderStays(const FString& TypeName, const FString& CrateDirectory, const FString& ServerDirectory, bool bSharedTypeName)
 {
 	if (bSharedTypeName)
@@ -1307,12 +1316,24 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeMenu(const FString& TypeN
 FText SCrowdyServerComputePanel::MakeTypeMeta(const UCrowdyServerObjectDefinition* Definition, const FString& TypeName) const
 {
 	TArray<FString> Parts;
+	const bool bLibrary = Definition && Definition->IsFunctionLibrary();
+	if (bLibrary)
+	{
+		Parts.Add(LOCTEXT("MetaLibrary", "Server Function Library").ToString());
+	}
 	if (Definition)
 	{
 		Parts.Add(FText::Format(LOCTEXT("MetaFunctions", "{0} {0}|plural(one=function,other=functions)"), Definition->Functions.Num()).ToString());
-		Parts.Add(FText::Format(LOCTEXT("MetaWatched", "{0} {0}|plural(one=variable,other=variables) visible to players"), Definition->WatchedFields.Num()).ToString());
-		Parts.Add((Definition->IsReachableByPlayers() ? CrowdyServerComputePage::ReadableByPhrase(Definition->Visibility)
-			: LOCTEXT("MetaClosed", "closed to players: only server code and developer tools reach it")).ToString());
+		Parts.Add(bLibrary ? CrowdyServerComputePage::InstancesPhrase(Definition->MinInstances, Definition->MaxInstances).ToString()
+			: FText::Format(LOCTEXT("MetaWatched", "{0} {0}|plural(one=variable,other=variables) visible to players"), Definition->WatchedFields.Num()).ToString());
+		if (!Definition->IsReachableByPlayers())
+		{
+			Parts.Add(LOCTEXT("MetaClosed", "closed to players: only server code and developer tools reach it").ToString());
+		}
+		else if (!bLibrary)
+		{
+			Parts.Add(CrowdyServerComputePage::ReadableByPhrase(Definition->Visibility).ToString());
+		}
 	}
 	if (bStatsLoaded)
 	{

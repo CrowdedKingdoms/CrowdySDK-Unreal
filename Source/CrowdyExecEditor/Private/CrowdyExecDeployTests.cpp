@@ -968,4 +968,70 @@ bool FCrowdyExecDeployCallerWarningsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployManifestLibraryTest, "CrowdySDK.CrowdyExecEditor.DeployManifestLibraryIsASpoke", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployManifestLibraryTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeManifestDefinition(TEXT("math_lib"), 5, 7);
+	Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	Library->MembersFrom = ECrowdyServerMembersSource::CrowdyTeam;
+	const FString Fixed = CrowdyExecDeploy::MakeManifest({Library.Get()});
+	TestTrue(TEXT("a library is a spoke with its replicas and concurrency and no save interval, idle timeout or max_replicas"), Fixed.Contains(
+		TEXT("\"math_lib\":{\"kind\":\"spoke\",\"parent\":\"root\",\"crate\":\"math_lib\",\"client\":true,\"replicas\":1,\"concurrency\":16}}}"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("what a Server Object keeps is ignored, so Crowdy Team members ask for no scope"), Fixed.Contains(TEXT("scopes"), ESearchCase::CaseSensitive));
+
+	Library->MinInstances = 2;
+	Library->MaxInstances = 2;
+	Library->ParallelCallsPerInstance = 4;
+	TestTrue(TEXT("max_replicas equal to replicas is left out"), CrowdyExecDeploy::MakeManifest({Library.Get()}).Contains(
+		TEXT("\"client\":true,\"replicas\":2,\"concurrency\":4}}}"), ESearchCase::CaseSensitive));
+
+	Library->MaxInstances = 6;
+	TestTrue(TEXT("max_replicas above replicas is listed after the concurrency"), CrowdyExecDeploy::MakeManifest({Library.Get()}).Contains(
+		TEXT("\"client\":true,\"replicas\":2,\"concurrency\":4,\"max_replicas\":6}}}"), ESearchCase::CaseSensitive));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeManifestDefinition(TEXT("plain"), 30, 300);
+	Hub->MinInstances = 3;
+	Hub->MaxInstances = 9;
+	TestTrue(TEXT("a Server Object never gets the scaling fields"), CrowdyExecDeploy::MakeManifest({Hub.Get()}).Contains(
+		TEXT("\"plain\":{\"kind\":\"hub\",\"parent\":\"root\",\"crate\":\"plain\",\"client\":true,\"persist_every_ms\":30000,\"evict_after_ms\":300000}}}"), ESearchCase::CaseSensitive));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployManifestCallAnyTest, "CrowdySDK.CrowdyExecEditor.DeployManifestCanCallAnyType", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployManifestCallAnyTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Other = MakeManifestDefinition(TEXT("other"), 30, 300);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Caller = MakeManifestDefinition(TEXT("caller"), 30, 300);
+	Caller->CanCall.Add(Other.Get());
+	Caller->bCanCallAnyType = true;
+	TestTrue(TEXT("a type that can call any type lists a star in place of the names"), CrowdyExecDeploy::MakeManifest({Caller.Get()}).Contains(
+		TEXT("\"evict_after_ms\":300000,\"calls\":[\"*\"]}}}"), ESearchCase::CaseSensitive));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeManifestDefinition(TEXT("any_lib"), 30, 300);
+	Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	Library->bCanCallAnyType = true;
+	TestTrue(TEXT("so does a library"), CrowdyExecDeploy::MakeManifest({Library.Get()}).Contains(TEXT("\"concurrency\":16,\"calls\":[\"*\"]}}}"), ESearchCase::CaseSensitive));
+
+	Caller->bCanCallAnyType = false;
+	TestTrue(TEXT("without the setting the names are listed"), CrowdyExecDeploy::MakeManifest({Caller.Get()}).Contains(TEXT("\"calls\":[\"other\"]"), ESearchCase::CaseSensitive));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployInspectLibraryTest, "CrowdySDK.CrowdyExecEditor.DeployInspectLibraryIgnoresSaveSettings", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployInspectLibraryTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeManifestDefinition(TEXT("save_free"), 1, 5000);
+	Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	const CrowdyExecDeploy::FTypeState Library1 = CrowdyExecDeploy::InspectType(*Library, FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("CrowdyExecDeployTests"), TEXT("no_such_crate")));
+	TestFalse(TEXT("a library's Save Every and Stop When Idle For are not checked"), Library1.Problem.Contains(TEXT("Save Interval")) || Library1.Problem.Contains(TEXT("Idle Timeout")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeManifestDefinition(TEXT("save_bound"), 1, 5000);
+	const CrowdyExecDeploy::FTypeState HubState = CrowdyExecDeploy::InspectType(*Hub, FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("CrowdyExecDeployTests"), TEXT("no_such_crate")));
+	TestTrue(TEXT("a Server Object's are"), HubState.Problem.Contains(TEXT("Save Interval must be 5 to 60 seconds")));
+	return true;
+}
+
 #endif

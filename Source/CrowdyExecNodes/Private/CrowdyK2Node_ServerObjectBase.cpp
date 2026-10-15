@@ -33,6 +33,18 @@ const FName CrowdyServerObjectNodePins::Changed(TEXT("Value Changed"));
 const FName CrowdyServerObjectNodePins::Received(TEXT("Message Received"));
 const FName CrowdyServerObjectNodePins::HasValues(TEXT("Has Values"));
 
+namespace CrowdyK2NodeServerObjectBaseDetail
+{
+	FText MenuCategory(const UCrowdyServerObjectDefinition* Definition, const FText& Asset)
+	{
+		if (Definition && Definition->IsFunctionLibrary())
+		{
+			return FText::Format(LOCTEXT("LibraryMenuCategory", "Server Function Libraries|{0}"), Asset);
+		}
+		return FText::Format(LOCTEXT("MenuCategory", "Server Objects|{0}"), Asset);
+	}
+}
+
 UCrowdyServerObjectDefinition* UCrowdyK2Node_ServerObjectBase::GetDefinition() const
 {
 	CrowdyServerObjectPins::PreloadDefinition(Definition);
@@ -42,7 +54,7 @@ UCrowdyServerObjectDefinition* UCrowdyK2Node_ServerObjectBase::GetDefinition() c
 bool UCrowdyK2Node_ServerObjectBase::UsesFind() const
 {
 	const UCrowdyServerObjectDefinition* Current = GetDefinition();
-	return bFind || (Current && Current->bOnlyOneInstance);
+	return bFind || (Current && Current->HasOnlyOneInstance());
 }
 
 bool UCrowdyK2Node_ServerObjectBase::IsTargetClass(const UClass* Class)
@@ -59,7 +71,7 @@ void UCrowdyK2Node_ServerObjectBase::GatherFunctionNames(const UCrowdyServerObje
 		return;
 	}
 	Algo::Transform(Definition->Functions, Out, &FCrowdyServerFunction::Name);
-	if (Definition->MembersFrom == ECrowdyServerMembersSource::ThisObject)
+	if (!Definition->IsFunctionLibrary() && Definition->MembersFrom == ECrowdyServerMembersSource::ThisObject)
 	{
 		Algo::Transform(UCrowdyServerObjectDefinition::GetMemberFunctions(), Out, &FCrowdyServerFunction::Name);
 	}
@@ -73,6 +85,24 @@ void UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(const UCrowdyServerObject
 		return;
 	}
 	const FText Asset = FText::FromString(Definition->GetName());
+
+	TArray<FName> Functions;
+	GatherFunctionNames(Definition, Functions);
+	auto AddCalls = [&Out, &Functions, Definition, &Asset]()
+	{
+		for (const FName Function : Functions)
+		{
+			if (UCrowdyK2Node_CallServerFunction::HasEveryPin(Definition, Function))
+			{
+				Out.Add({UCrowdyK2Node_CallServerFunction::StaticClass(), Function, FGuid(), UCrowdyK2Node_CallServerFunction::MakeTitle(Function, Asset)});
+			}
+		}
+	};
+	if (Definition->IsFunctionLibrary())
+	{
+		AddCalls();
+		return;
+	}
 
 	// A node is offered only when every value it shows has a pin, since a value without one fails its compile.
 	TArray<FCrowdyServerValuePin> Variables;
@@ -93,15 +123,7 @@ void UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(const UCrowdyServerObject
 		Out.Add({UCrowdyK2Node_ServerVariableChanged::StaticClass(), Variable.Name, Variable.Id, UCrowdyK2Node_ServerVariableChanged::MakeTitle(Variable.Name, Asset)});
 	}
 
-	TArray<FName> Functions;
-	GatherFunctionNames(Definition, Functions);
-	for (const FName Function : Functions)
-	{
-		if (UCrowdyK2Node_CallServerFunction::HasEveryPin(Definition, Function))
-		{
-			Out.Add({UCrowdyK2Node_CallServerFunction::StaticClass(), Function, FGuid(), UCrowdyK2Node_CallServerFunction::MakeTitle(Function, Asset)});
-		}
-	}
+	AddCalls();
 
 	for (const FCrowdyServerMessage& Message : Definition->Messages)
 	{
@@ -131,7 +153,7 @@ void UCrowdyK2Node_ServerObjectBase::GetMenuActions(FBlueprintActionDatabaseRegi
 
 		TArray<FCrowdyServerObjectMenuEntry> Entries;
 		GatherMenuEntries(Asset, Entries);
-		const FText Category = FText::Format(LOCTEXT("MenuCategory", "Server Objects|{0}"), FText::FromString(Asset->GetName()));
+		const FText Category = CrowdyK2NodeServerObjectBaseDetail::MenuCategory(Asset, FText::FromString(Asset->GetName()));
 		for (const FCrowdyServerObjectMenuEntry& Entry : Entries)
 		{
 			if (Entry.NodeClass != GetClass())
@@ -158,7 +180,7 @@ void UCrowdyK2Node_ServerObjectBase::GetMenuActions(FBlueprintActionDatabaseRegi
 
 FText UCrowdyK2Node_ServerObjectBase::GetMenuCategory() const
 {
-	return FText::Format(LOCTEXT("NodeCategory", "Server Objects|{0}"), GetAssetName());
+	return CrowdyK2NodeServerObjectBaseDetail::MenuCategory(GetDefinition(), GetAssetName());
 }
 
 FText UCrowdyK2Node_ServerObjectBase::GetAssetName() const
@@ -176,13 +198,15 @@ bool UCrowdyK2Node_ServerObjectBase::HasExternalDependencies(TArray<UStruct*>* O
 	}
 	if (OptionalOutput)
 	{
-		OptionalOutput->AddUnique(const_cast<UScriptStruct*>(Current->GetStateStruct()));
+		// A Server Function Library has no state and sends no messages, whatever the asset still holds.
+		static const TArray<FCrowdyServerMessage> NoMessages;
+		OptionalOutput->AddUnique(const_cast<UScriptStruct*>(Current->IsFunctionLibrary() ? nullptr : Current->GetStateStruct()));
 		for (const FCrowdyServerFunction& Function : Current->Functions)
 		{
 			OptionalOutput->AddUnique(const_cast<UScriptStruct*>(Function.GetParamsStruct()));
 			OptionalOutput->AddUnique(const_cast<UScriptStruct*>(Function.GetReplyStruct()));
 		}
-		for (const FCrowdyServerMessage& Message : Current->Messages)
+		for (const FCrowdyServerMessage& Message : Current->IsFunctionLibrary() ? NoMessages : Current->Messages)
 		{
 			OptionalOutput->AddUnique(const_cast<UScriptStruct*>(Message.GetPayloadStruct()));
 		}
@@ -212,7 +236,7 @@ void UCrowdyK2Node_ServerObjectBase::CreateSourcePins()
 		return;
 	}
 	const UCrowdyServerObjectDefinition* Current = GetDefinition();
-	if (Current && Current->bOnlyOneInstance)
+	if (Current && Current->HasOnlyOneInstance())
 	{
 		return;
 	}
@@ -502,7 +526,7 @@ void UCrowdyK2Node_ServerObjectBase::GetNodeContextMenuActions(UToolMenu* Menu, 
 {
 	Super::GetNodeContextMenuActions(Menu, Context);
 	const UCrowdyServerObjectDefinition* Current = GetDefinition();
-	if (!Menu || !Context || Context->bIsDebugging || !Current || Current->bOnlyOneInstance)
+	if (!Menu || !Context || Context->bIsDebugging || !Current || Current->HasOnlyOneInstance())
 	{
 		return;
 	}

@@ -66,13 +66,14 @@ UEdGraphNode* CrowdyExecNodesSpawn::SpawnServerFunctionCall(UEdGraph* Graph, UCr
 
 UEdGraphNode* CrowdyExecNodesSpawn::SpawnServerMessageReceived(UEdGraph* Graph, UCrowdyServerObjectDefinition* Definition, FName Message, FVector2D Position)
 {
-	const bool bExists = Definition && Definition->FindMessage(Message);
+	const bool bExists = Definition && !Definition->IsFunctionLibrary() && Definition->FindMessage(Message);
 	return CrowdyExecNodesSpawnPrivate::Spawn<UCrowdyK2Node_ServerMessageReceived>(Graph, Definition, Message, Position, bExists);
 }
 
 UEdGraphNode* CrowdyExecNodesSpawn::SpawnServerState(UEdGraph* Graph, UCrowdyServerObjectDefinition* Definition, FVector2D Position)
 {
-	return CrowdyExecNodesSpawnPrivate::Spawn<UCrowdyK2Node_GetServerState>(Graph, Definition, NAME_None, Position, true);
+	const bool bExists = !Definition || !Definition->IsFunctionLibrary();
+	return CrowdyExecNodesSpawnPrivate::Spawn<UCrowdyK2Node_GetServerState>(Graph, Definition, NAME_None, Position, bExists);
 }
 
 void CrowdyExecNodesSpawn::SetFindByAsset(UEdGraphNode* Node, ECrowdyServerObjectFind Instance)
