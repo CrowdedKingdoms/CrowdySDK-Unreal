@@ -541,6 +541,114 @@ bool FCrowdyServerObjectNodesOnlyOneInstanceTest::RunTest(const FString& Paramet
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesLibraryPinlessTest, "CrowdySDK.Editor.ServerObjectNodes.LibraryCallPinless", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesLibraryPinlessTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	UEdGraph* Graph = MakeGraph();
+
+	UCrowdyK2Node_CallServerFunction* Call = AddNode<UCrowdyK2Node_CallServerFunction>(Graph, Definition, TEXT("Echo"));
+	TestTrue(TEXT("a library's Call node finds its object by the asset"), Call->UsesFind());
+	TestNull(TEXT("it has no Target"), Call->FindPin(UEdGraphSchema_K2::PN_Self, EGPD_Input));
+	TestNull(TEXT("it has no Instance Id"), Call->FindPin(CrowdyServerObjectNodePins::InstanceId, EGPD_Input));
+	TestNull(TEXT("it has no Team Id"), Call->FindPin(CrowdyServerObjectNodePins::TeamId, EGPD_Input));
+	TestNotNull(TEXT("it keeps the function's input pins"), Call->FindPin(TEXT("Int"), EGPD_Input));
+	TestEqual(TEXT("its menu category names the library"), Call->GetMenuCategory().ToString(), FString::Printf(TEXT("Server Function Libraries|%s"), *Definition->GetName()));
+
+	Call->bFind = false;
+	Definition->Kind = ECrowdyServerObjectKind::ServerObject;
+	Call->ReconstructNode();
+	TestFalse(TEXT("as a Server Object it takes a Target again"), Call->UsesFind());
+	TestNotNull(TEXT("and the Target pin returns"), Call->FindPin(UEdGraphSchema_K2::PN_Self, EGPD_Input));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesLibraryMenuTest, "CrowdySDK.Editor.ServerObjectNodes.LibraryMenuOffersOnlyCalls", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesLibraryMenuTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Temp/CrowdyExecNodesTests/DA_LibraryMenu_%s"), *FGuid::NewGuid().ToString()));
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition(Package);
+	Definition->SetFlags(RF_Public | RF_Standalone);
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	Definition->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	Definition->Messages.AddDefaulted_GetRef().Name = TEXT("Won");
+	const FString Asset = Definition->GetName();
+
+	TArray<FCrowdyServerObjectMenuEntry> Entries;
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(Definition, Entries);
+	TestEqual(TEXT("one Call node per function, and no variable, state, message or member entries"), Entries.Num(), 1);
+	const bool bOnlyCalls = !Entries.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.NodeClass != UCrowdyK2Node_CallServerFunction::StaticClass(); });
+	TestTrue(TEXT("every entry is a Call node"), bOnlyCalls);
+
+	FBlueprintActionDatabase& Database = FBlueprintActionDatabase::Get();
+	Database.RefreshAssetActions(Definition);
+	const FBlueprintActionDatabase::FActionList* Actions = Database.GetAllActions().Find(Definition);
+	const bool bCategorized = Actions && !Actions->IsEmpty() && !Actions->ContainsByPredicate([&Asset](const UBlueprintNodeSpawner* Spawner)
+	{
+		return Spawner->DefaultMenuSignature.Category.ToString() != FString::Printf(TEXT("Server Function Libraries|%s"), *Asset);
+	});
+	TestTrue(TEXT("the entries sit under Server Function Libraries and the asset's name"), bCategorized);
+
+	Database.ClearAssetActions(Definition);
+	Definition->ClearFlags(RF_Public | RF_Standalone);
+	Definition->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesLibraryCompileTest, "CrowdySDK.Editor.ServerObjectNodes.LibraryCallCompiles", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesLibraryCompileTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	FCompileRig Rig = MakeActorBlueprint();
+
+	TestNull(TEXT("no variable getter is placed for a library"), CrowdyExecNodesSpawn::SpawnServerVariableGetter(Rig.Graph, Definition, TEXT("Int"), FVector2D::ZeroVector));
+	TestNull(TEXT("no state node is placed for a library"), CrowdyExecNodesSpawn::SpawnServerState(Rig.Graph, Definition, FVector2D::ZeroVector));
+	UEdGraphNode* Call = CrowdyExecNodesSpawn::SpawnServerFunctionCall(Rig.Graph, Definition, TEXT("Echo"), FVector2D(300, 0));
+	if (!TestNotNull(TEXT("the Call node is placed"), Call))
+	{
+		return false;
+	}
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Call, UEdGraphSchema_K2::PN_Execute);
+
+	int32 ErrorCount = 0;
+	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
+	for (const FString& Error : Errors)
+	{
+		AddInfo(FString::Printf(TEXT("compile error: %s"), *Error));
+	}
+	TestEqual(TEXT("a Blueprint calling a library function compiles without errors"), ErrorCount, 0);
+	const UFunction* Find = UCrowdyServerObjectLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UCrowdyServerObjectLibrary, FindServerObjectLink));
+	TestTrue(TEXT("the call reaches the library through Find Server Object Link, with no Target"), CallsFunction(UbergraphOf(Rig.Blueprint), Find));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesLibraryStateTest, "CrowdySDK.Editor.ServerObjectNodes.GetStateOfALibraryIsACompileError", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesLibraryStateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* State = CrowdyExecNodesSpawn::SpawnServerState(Rig.Graph, Definition, FVector2D::ZeroVector);
+	UK2Node_CallFunction* Print = AddPrint(Rig.Graph);
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Print, UEdGraphSchema_K2::PN_Execute);
+	Link(State, CrowdyServerObjectNodePins::HasValues, Print, TEXT("bPrintToScreen"));
+
+	int32 ErrorCount = 0;
+	Compile(Rig.Blueprint, ErrorCount);
+	TestEqual(TEXT("as a Server Object the node compiles"), ErrorCount, 0);
+
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
+	const FString Expected = FString::Printf(TEXT("%s is a Server Function Library and has no values to get."), *Definition->GetName());
+	TestTrue(TEXT("once its definition is a library, the node in the graph is a compile error that says why"), AnyContains(Errors, *Expected));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMenuTest, "CrowdySDK.Editor.ServerObjectNodes.MenuPerAsset", CrowdyServerObjectNodesTests::Flags)
 bool FCrowdyServerObjectNodesMenuTest::RunTest(const FString& Parameters)
 {

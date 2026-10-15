@@ -45,7 +45,7 @@ namespace CrowdyExecCodegenDetail
 		TEXT("Fn"), TEXT("FnMut"), TEXT("FnOnce"), TEXT("Iterator"), TEXT("IntoIterator"), TEXT("Extend"), TEXT("ToString"),
 		TEXT("ToOwned"), TEXT("From"), TEXT("Into"), TEXT("TryFrom"), TEXT("TryInto"), TEXT("AsRef"), TEXT("AsMut"),
 		TEXT("PartialEq"), TEXT("Eq"), TEXT("PartialOrd"), TEXT("Ord"), TEXT("Debug"), TEXT("Hash"), TEXT("Serialize"),
-		TEXT("Deserialize"), TEXT("Self"), TEXT("Hub"), TEXT("Ctx"), TEXT("Call"), TEXT("Caller"), TEXT("Error"), TEXT("Level"),
+		TEXT("Deserialize"), TEXT("Self"), TEXT("Hub"), TEXT("Spoke"), TEXT("Ctx"), TEXT("Call"), TEXT("Caller"), TEXT("Error"), TEXT("Level"),
 		TEXT("TopicMsg"), TEXT("Presence"), TEXT("Session"), TEXT("Cron"), TEXT("ChunkPos"), TEXT("Spatial"), TEXT("GridPick"),
 		TEXT("VoxelWrite"), TEXT("Schema"), TEXT("PropKind"), TEXT("Visibility"), TEXT("Viewer"), TEXT("Value"), TEXT("Functions"),
 		TEXT("ServerObject"), TEXT("SnapshotIn"), TEXT("SnapshotOut"), TEXT("Vector"), TEXT("Vector2D"), TEXT("IntPoint"),
@@ -677,6 +677,8 @@ namespace CrowdyExecCodegenDetail
 		/** The listen module for Listen To, empty without it. */
 		FString ListenModule;
 		FString Error;
+		/** What a Server Function Library's logic.rs implements Functions on, a struct with no fields. */
+		FString LibraryName;
 
 		bool Fail(const FString& Message)
 		{
@@ -689,9 +691,15 @@ namespace CrowdyExecCodegenDetail
 			return StructNames[Layout.StateStruct];
 		}
 
+		/** A Server Function Library has only functions; everything else on its definition is left out here. */
+		bool IsLibrary() const
+		{
+			return Definition.IsFunctionLibrary();
+		}
+
 		bool IsOwnerOnly() const
 		{
-			return Definition.Visibility == ECrowdyServerObjectVisibility::OwnerOnly;
+			return !IsLibrary() && Definition.Visibility == ECrowdyServerObjectVisibility::OwnerOnly;
 		}
 
 		bool UsesKind(ECrowdyExecKind Kind) const
@@ -701,17 +709,17 @@ namespace CrowdyExecCodegenDetail
 
 		bool HasMembers() const
 		{
-			return Definition.MembersFrom != ECrowdyServerMembersSource::None;
+			return !IsLibrary() && Definition.MembersFrom != ECrowdyServerMembersSource::None;
 		}
 
 		bool KeepsRoster() const
 		{
-			return Definition.MembersFrom == ECrowdyServerMembersSource::ThisObject;
+			return !IsLibrary() && Definition.MembersFrom == ECrowdyServerMembersSource::ThisObject;
 		}
 
 		bool IsTeam() const
 		{
-			return Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam;
+			return !IsLibrary() && Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam;
 		}
 
 		bool IsRoot() const
@@ -741,7 +749,7 @@ namespace CrowdyExecCodegenDetail
 
 		bool UsesSessions() const
 		{
-			return Definition.bOnPlayerJoined || Definition.bOnPlayerLeft || RemovesLeavers();
+			return !IsLibrary() && (Definition.bOnPlayerJoined || Definition.bOnPlayerLeft || RemovesLeavers());
 		}
 
 		bool HasRead() const
@@ -751,7 +759,7 @@ namespace CrowdyExecCodegenDetail
 
 		bool IsRecords() const
 		{
-			return Definition.Holds == ECrowdyServerObjectHolds::RecordPerEntity;
+			return !IsLibrary() && Definition.Holds == ECrowdyServerObjectHolds::RecordPerEntity;
 		}
 
 		/** Whether a record's team is a Crowdy Team id, whose members the platform answers for. */
@@ -763,6 +771,10 @@ namespace CrowdyExecCodegenDetail
 		/** What logic.rs implements Functions on: the state struct, or Records for a record per entity. */
 		FString LogicTarget() const
 		{
+			if (IsLibrary())
+			{
+				return LibraryName;
+			}
 			return IsRecords() ? FString(RecordsName) : StateName();
 		}
 
@@ -816,6 +828,8 @@ namespace CrowdyExecCodegenDetail
 
 		FString CargoFile() const;
 		FString LibFile() const;
+		FString LibraryLibFile() const;
+		void AppendSpoke(FString& Text) const;
 		TArray<CrowdyExecCodegen::FLogicStub> LogicStubs() const;
 		FString LogicFile() const;
 		void AppendTrait(FString& Text) const;
@@ -1083,6 +1097,10 @@ namespace CrowdyExecCodegenDetail
 		{
 			TakenNames.Add(Reserved);
 		}
+		if (IsLibrary())
+		{
+			LibraryName = ClaimTypeName(TEXT("Library"), TakenNames);
+		}
 		for (const FCrowdyExecStruct& Struct : Layout.Structs)
 		{
 			const bool bNamedByLayout = Cast<UUserDefinedStruct>(Struct.Struct) || Cast<UPropertyBag>(Struct.Struct);
@@ -1175,7 +1193,7 @@ namespace CrowdyExecCodegenDetail
 			{
 				return false;
 			}
-			Info.CooldownMs = Function.CooldownSeconds > 0.f ? FMath::Max<int64>(1, FMath::RoundToInt64(Function.CooldownSeconds * 1000.0)) : 0;
+			Info.CooldownMs = !IsLibrary() && Function.CooldownSeconds > 0.f ? FMath::Max<int64>(1, FMath::RoundToInt64(Function.CooldownSeconds * 1000.0)) : 0;
 			if (!CollectRanges(Function.GetParamsStruct(), Info))
 			{
 				return false;
@@ -1213,6 +1231,10 @@ namespace CrowdyExecCodegenDetail
 
 	bool FCodegen::CollectMessages()
 	{
+		if (IsLibrary())
+		{
+			return true;
+		}
 		for (const FCrowdyServerMessage& Message : Definition.Messages)
 		{
 			FMessageInfo& Info = MessageInfos.AddDefaulted_GetRef();
@@ -1246,6 +1268,10 @@ namespace CrowdyExecCodegenDetail
 
 	bool FCodegen::CollectTimers()
 	{
+		if (IsLibrary())
+		{
+			return true;
+		}
 		for (const FCrowdyServerTimer& Timer : Definition.Timers)
 		{
 			FCrowdyServerFunction Named;
@@ -1386,6 +1412,10 @@ namespace CrowdyExecCodegenDetail
 	TArray<int32> FCodegen::WatchedFields() const
 	{
 		TArray<int32> Watched;
+		if (IsLibrary())
+		{
+			return Watched;
+		}
 		const TArray<FCrowdyExecField>& Fields = Layout.Structs[Layout.StateStruct].Fields;
 		for (int32 Index = 0; Index < Fields.Num(); ++Index)
 		{
@@ -1649,8 +1679,8 @@ namespace CrowdyExecCodegenDetail
 		{
 			return false;
 		}
-		Out = FString::Printf(TEXT("// The Server Object type %s's structs, %s. Regenerate it; do not edit.\n"),
-			*Definition.TypeName, GeneratedMarker);
+		Out = FString::Printf(TEXT("// The %s %s's structs, %s. Regenerate it; do not edit.\n"),
+			IsLibrary() ? TEXT("Server Function Library") : TEXT("Server Object type"), *Definition.TypeName, GeneratedMarker);
 		Out += TEXT("use serde::{Deserialize, Serialize};\nuse std::collections::{BTreeMap, BTreeSet};\n\n");
 		Out += FString::Join(Items, TEXT("\n"));
 		return true;
@@ -1687,6 +1717,10 @@ namespace CrowdyExecCodegenDetail
 	TArray<FString> HandlerSignatures(const FCodegen& Gen)
 	{
 		TArray<FString> Signatures;
+		if (Gen.IsLibrary())
+		{
+			return Signatures;
+		}
 		for (const FTimerInfo& Timer : Gen.TimerInfos)
 		{
 			Signatures.Add(FString::Printf(TEXT("fn %s(&mut self, ctx: &Ctx) -> Result<()>"), *Timer.Ident));
@@ -1718,6 +1752,11 @@ namespace CrowdyExecCodegenDetail
 		for (const FString& Handler : HandlerSignatures(*this))
 		{
 			Text += TEXT("    ") + Handler + TEXT(";\n");
+		}
+		if (IsLibrary())
+		{
+			Text += TEXT("}\n\n");
+			return;
 		}
 		Text += TEXT("    fn on_timer(&mut self, ctx: &Ctx, name: &str) -> Result<()> {\n")
 			TEXT("        Ok(())\n")
@@ -1793,12 +1832,18 @@ namespace CrowdyExecCodegenDetail
 		{
 			Text += Check;
 		}
+		const TCHAR* const Reply = Function.Reply.IsEmpty() ? TEXT(".map(|()| vec![0xc0])") : TEXT(".and_then(|reply| encode_reply(&reply))");
+		if (IsLibrary())
+		{
+			Text += FString::Printf(TEXT("                Functions::%s(&mut %s, ctx, &call%s)%s\n            }\n"), *Function.Ident, *LibraryName,
+				Function.Params.IsEmpty() ? TEXT("") : TEXT(", params"), Reply);
+			return;
+		}
 		if (Function.CooldownMs > 0)
 		{
 			Text += FString::Printf(TEXT("                check_cooldown(&self.cooldowns, ctx, &call, %s, %lld)?;\n"), *RustStrLiteral(Function.Name), Function.CooldownMs);
 		}
 		Text += KeepBefore(TEXT("                "));
-		const TCHAR* const Reply = Function.Reply.IsEmpty() ? TEXT(".map(|()| vec![0xc0])") : TEXT(".and_then(|reply| encode_reply(&reply))");
 		Text += FString::Printf(TEXT("                let result = Functions::%s(&mut %s, ctx, &call%s)%s;\n"), *Function.Ident, Target(),
 			Function.Params.IsEmpty() ? TEXT("") : TEXT(", params"), Reply);
 		if (Function.CooldownMs <= 0)
@@ -1844,6 +1889,11 @@ namespace CrowdyExecCodegenDetail
 
 	void FCodegen::AppendInstanceCheck(FString& Text) const
 	{
+		// The platform names a library's replica in ctx.key, so there is no Instance Id to check.
+		if (IsLibrary())
+		{
+			return;
+		}
 		if (Definition.bOnlyOneInstance)
 		{
 			const FString OnlyId = Definition.GetOnlyInstanceId();
@@ -2505,6 +2555,16 @@ namespace CrowdyExecCodegenDetail
 		TEXT("}\n")
 		TEXT("\n");
 
+	const TCHAR* const LibraryAuthorizeHelper =
+		TEXT("// Players may call only player-callable functions; developer tools and other server code may call everything.\n")
+		TEXT("fn authorize(ctx: &Ctx, call: &Call<'_>, player_callable: bool) -> Result<()> {\n")
+		TEXT("    if call.player().is_ok() && !player_callable {\n")
+		TEXT("        return Err(Error::new(\"denied: players may not call this function\"));\n")
+		TEXT("    }\n")
+		TEXT("    Ok(())\n")
+		TEXT("}\n")
+		TEXT("\n");
+
 	const TCHAR* const UserIdHelper =
 		TEXT("fn is_user_id(key: &str) -> bool {\n")
 		TEXT("    key.parse::<u64>().map(|id| id.to_string() == key).unwrap_or(false)\n")
@@ -2744,7 +2804,7 @@ namespace CrowdyExecCodegenDetail
 	{
 		if (!HasMembers())
 		{
-			Text += AuthorizeHelper;
+			Text += IsLibrary() ? LibraryAuthorizeHelper : AuthorizeHelper;
 			return;
 		}
 		const bool bRoster = KeepsRoster();
@@ -3067,14 +3127,14 @@ namespace CrowdyExecCodegenDetail
 			TEXT("\n");
 	}
 
-	/** A typed call to another type's method: its inputs encoded, its reply decoded. */
-	FString CallFunction(const FString& TypeName, const FString& Method, const FString& Ident, const FString& Inputs, const FString& Outputs)
+	/** A typed call to another type's method: its inputs encoded, its reply decoded. A call to a Server Function Library has no key, since its Instance Id is empty. */
+	FString CallFunction(const FString& TypeName, const FString& Method, const FString& Ident, const FString& Inputs, const FString& Outputs, bool bKeyless = false)
 	{
-		FString Text = FString::Printf(TEXT("pub fn %s(ctx: &Ctx, key: &str%s) -> Result<%s> {\n"), *Ident,
+		FString Text = FString::Printf(TEXT("pub fn %s(ctx: &Ctx%s%s) -> Result<%s> {\n"), *Ident, bKeyless ? TEXT("") : TEXT(", key: &str"),
 			Inputs.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(", inputs: &%s"), *Inputs), Outputs.IsEmpty() ? TEXT("()") : *Outputs);
 		Text += Inputs.IsEmpty() ? TEXT("") : TEXT("    let payload = encode(inputs)?;\n");
 		// The callee's error follows its name, so a callee's refusal never reads as the caller's own.
-		const FString Call = FString::Printf(TEXT("ctx.call(\"%s\", key, \"%s\", %s).map_err(|error| Error::new(&format!(\"%s.%s failed: {error}\")))?"), *TypeName, *Method,
+		const FString Call = FString::Printf(TEXT("ctx.call(\"%s\", %s, \"%s\", %s).map_err(|error| Error::new(&format!(\"%s.%s failed: {error}\")))?"), *TypeName, bKeyless ? TEXT("\"\"") : TEXT("key"), *Method,
 			Inputs.IsEmpty() ? TEXT("&[0x80]") : TEXT("&payload"), *TypeName, *Method);
 		if (Outputs.IsEmpty())
 		{
@@ -3082,6 +3142,13 @@ namespace CrowdyExecCodegenDetail
 		}
 		return Text + TEXT("    let reply = ") + Call + TEXT(";\n    decode(&reply)\n}\n");
 	}
+
+	/** Written into the calls module of a type that can call any type; the payload and the reply are left as bytes. */
+	const TCHAR* const CallAnyFunction =
+		TEXT("    /// A call to any Server Object type by its name, with the payload already encoded; the reply comes back undecoded.\n")
+		TEXT("    pub fn any(ctx: &ckx_sdk::Ctx, node_type: &str, key: &str, method: &str, payload: &[u8]) -> std::result::Result<Vec<u8>, ckx_sdk::CallError> {\n")
+		TEXT("        ctx.call(node_type, key, method, payload)\n")
+		TEXT("    }\n");
 
 	/** Can Call and Listen To types each get a calls module; a type in both gets one. */
 	bool FCodegen::BuildCalls()
@@ -3110,7 +3177,8 @@ namespace CrowdyExecCodegenDetail
 				return false;
 			}
 		}
-		for (const TObjectPtr<UCrowdyServerObjectDefinition>& Entry : Definition.ListenTo)
+		const TArray<TObjectPtr<UCrowdyServerObjectDefinition>> NoListening;
+		for (const TObjectPtr<UCrowdyServerObjectDefinition>& Entry : IsLibrary() ? NoListening : Definition.ListenTo)
 		{
 			if (!AddCallee(Entry.Get(), TEXT("Listen To"), true))
 			{
@@ -3121,6 +3189,10 @@ namespace CrowdyExecCodegenDetail
 		for (const FCallee& Callee : Callees)
 		{
 			Modules += (Modules.IsEmpty() ? TEXT("") : TEXT("\n")) + Callee.Module;
+		}
+		if (Definition.bCanCallAnyType)
+		{
+			Modules += (Modules.IsEmpty() ? TEXT("") : TEXT("\n")) + FString(CallAnyFunction);
 		}
 		if (!Modules.IsEmpty())
 		{
@@ -3268,7 +3340,7 @@ namespace CrowdyExecCodegenDetail
 			{
 				continue;
 			}
-			Items.Add(CallFunction(Callee.TypeName, Function.Method, Function.Ident, Function.Params, Function.Reply));
+			Items.Add(CallFunction(Callee.TypeName, Function.Method, Function.Ident, Function.Params, Function.Reply, Callee.IsFunctionLibrary()));
 		}
 		for (const FBuiltinMember& BuiltIn : BuiltinMembers)
 		{
@@ -4545,8 +4617,63 @@ namespace CrowdyExecCodegenDetail
 		return Text;
 	}
 
+	/** logic.rs implements Functions on a struct with no fields: each instance runs several copies of the module, so nothing kept in memory carries from one call to the next. */
+	void FCodegen::AppendSpoke(FString& Text) const
+	{
+		Text += FString::Printf(TEXT("pub struct %s;\n\n"), *LibraryName);
+		Text += TEXT("pub struct ServerObject;\n")
+			TEXT("\n")
+			TEXT("impl Spoke for ServerObject {\n")
+			TEXT("    fn start(ctx: &Ctx) -> Result<Self> {\n")
+			TEXT("        Ok(Self)\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    fn handle(&mut self, ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n")
+			TEXT("        match call.method {\n");
+		for (const FFunctionInfo& Function : FunctionInfos)
+		{
+			AppendDispatch(Text, Function);
+		}
+		Text += TEXT("            other => Err(Error::new(&format!(\"unknown_method: {other}\"))),\n")
+			TEXT("        }\n")
+			TEXT("    }\n")
+			TEXT("}\n")
+			TEXT("\n");
+	}
+
+	FString FCodegen::LibraryLibFile() const
+	{
+		FString Text = FString::Printf(TEXT("// The Server Function Library %s's glue, %s. Regenerate it; do not edit.\n"),
+			*Definition.TypeName, GeneratedMarker);
+		Text += FString::Printf(TEXT("// Your code goes in logic.rs, which implements Functions on %s. A library saves nothing between calls.\n"), *LibraryName);
+		Text += TEXT("#![allow(non_snake_case, non_camel_case_types, dead_code, unused_imports, unused_variables)]\n")
+			TEXT("\n")
+			TEXT("mod logic;\n")
+			TEXT("mod types;\n")
+			TEXT("\n")
+			TEXT("use ckx_sdk::prelude::*;\n")
+			TEXT("use std::collections::{BTreeMap, BTreeSet};\n")
+			TEXT("pub use types::*;\n")
+			TEXT("\n");
+		AppendTrait(Text);
+		AppendFeatureItems(Text);
+		AppendSpoke(Text);
+		AppendAuthorize(Text);
+		Text += LibHelpers;
+		Text += WireHelpers;
+		Text += TimeRanges();
+		Text += KindHelpers;
+		AppendWireImpls(Text);
+		Text += TEXT("ckx_sdk::export_spoke!(ServerObject);\n");
+		return Text;
+	}
+
 	FString FCodegen::LibFile() const
 	{
+		if (IsLibrary())
+		{
+			return LibraryLibFile();
+		}
 		if (IsRecords())
 		{
 			return RecordsLibFile();
@@ -4599,7 +4726,8 @@ namespace CrowdyExecCodegenDetail
 
 	FString FCodegen::LogicFile() const
 	{
-		FString Text = FString::Printf(TEXT("// Your server code for the Server Object type %s. The generator writes this file once and never again.\n"), *Definition.TypeName);
+		FString Text = FString::Printf(TEXT("// Your server code for the %s %s. The generator writes this file once and never again.\n"),
+			IsLibrary() ? TEXT("Server Function Library") : TEXT("Server Object type"), *Definition.TypeName);
 		Text += TEXT("use crate::*;\nuse ckx_sdk::prelude::*;\n\n");
 		Text += FString::Printf(TEXT("impl Functions for %s {\n"), *LogicTarget());
 		TArray<FString> Bodies;
@@ -5237,7 +5365,7 @@ bool CrowdyExecCodegen::Generate(const UCrowdyServerObjectDefinition& Definition
 	{
 		return false;
 	}
-	if (Layout->StateStruct == INDEX_NONE)
+	if (!Definition.IsFunctionLibrary() && Layout->StateStruct == INDEX_NONE)
 	{
 		OutError = FString::Printf(TEXT("%s has no State struct"), *Definition.GetName());
 		return false;

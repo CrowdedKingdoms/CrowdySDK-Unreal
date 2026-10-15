@@ -292,6 +292,25 @@ bool FCrowdyMassServerRecordsDerivationOneSetTest::RunTest(const FString& Parame
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassServerRecordsDerivationLibraryTest,
+	"CrowdySDK.Mass.ServerRecordsDerivationIgnoresFunctionLibraries", CrowdyMassServerRecordsTests::TestFlags)
+bool FCrowdyMassServerRecordsDerivationLibraryTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyMassServerRecordsTests;
+	FFixture Fixture(*this);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = Fixture.MakeDefinition(ECrowdyServerObjectHolds::RecordPerEntity);
+	Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	const TStrongObjectPtr<UBlueprintGeneratedClass> Class(MakeBlueprintClass(Library.Get(), ECrowdyServerObjectInstanceMode::InstanceId));
+
+	const FCrowdyMassDerivedServerRecords Derived = FCrowdyMassServerRecordsDerivation::FromClass(Class.Get());
+	TestNull(TEXT("a Server Function Library holds no records, whatever its asset still says"), Derived.Definition);
+	TestTrue(TEXT("and is not reported as a mistake"), Derived.Reason.IsEmpty());
+
+	Library->Kind = ECrowdyServerObjectKind::ServerObject;
+	TestTrue(TEXT("the same asset as a Server Object is derived as records"), FCrowdyMassServerRecordsDerivation::FromClass(Class.Get()).Definition == Library.Get());
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassServerRecordsUnsupportedModeTest,
 	"CrowdySDK.Mass.ServerRecordsUnsupportedModeWarnsOnce", CrowdyMassServerRecordsTests::TestFlags)
 bool FCrowdyMassServerRecordsUnsupportedModeTest::RunTest(const FString& Parameters)

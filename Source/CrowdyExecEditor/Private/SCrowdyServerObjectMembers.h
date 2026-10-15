@@ -73,7 +73,7 @@ public:
 	};
 	using FItemPtr = TSharedPtr<FItem>;
 
-	/** The rows for Current: Type Settings, Variables, Functions, Server Messages, and Built-in while Members From is This Object. */
+	/** The rows for Current: Type Settings, Variables, Functions, Server Messages, and Built-in while Members From is This Object. A Server Function Library has only Type Settings and Functions. */
 	static TArray<FItemPtr> BuildRoots(const UCrowdyServerObjectDefinition* Current, const FItemPtr& TypeSettings);
 
 	/** The Server Messages section: a row per message, then the privacy note when ShowsMessagePrivacyWarning. */

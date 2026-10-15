@@ -4,6 +4,8 @@
 #include "Containers/Ticker.h"
 #include "CrowdyServerObjectTypes.h"
 #include "Queries/Data/Teams/Types/FCrowdyTeamMembership.h"
+#include "StructUtils/InstancedStruct.h"
+#include "StructUtils/PropertyBag.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "CrowdyServerObjectSubsystem.generated.h"
 
@@ -41,6 +43,14 @@ public:
 
 	/** Stops Owner holding Object. An object left without owners is given back after the grace period. */
 	void Release(UCrowdyServerObject* Object, const UObject* Owner);
+
+	/**
+	 * Calls Function on the Server Function Library Definition names. This subsystem holds the library, so it stays
+	 * connected for later calls. OnDone runs once: refused before sending, or with the answer. Dropped without running if
+	 * the game instance shuts down first.
+	 */
+	void CallLibraryFunction(UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedStruct& Inputs, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds = 0.f);
+	void CallLibraryFunction(UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedPropertyBag& Inputs, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds = 0.f);
 
 	/** The open connection, or null while there is none. */
 	FCrowdyNativeExecConnection* GetConnection() const;
@@ -109,6 +119,9 @@ public:
 
 private:
 	bool Tick(float DeltaSeconds);
+
+	/** The library object this subsystem holds for Definition. Null when it cannot be used, after running OnDone with why. */
+	UCrowdyServerObject* AcquireLibrary(UCrowdyServerObjectDefinition* Definition, const TFunction<void(const FCrowdyServerCallResult&)>& OnDone);
 
 	/** Opens the connection if objects need one and it is not open or opening. */
 	void EnsureConnection();

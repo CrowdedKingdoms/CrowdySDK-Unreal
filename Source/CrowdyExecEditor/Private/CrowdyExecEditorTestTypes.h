@@ -69,3 +69,13 @@ struct FCrowdyExecTestRecordHit
 	UPROPERTY()
 	int32 Amount = 0;
 };
+
+/** A struct whose server code name is Library, the name a Server Function Library's own struct takes. */
+USTRUCT()
+struct FLibrary
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 Count = 0;
+};

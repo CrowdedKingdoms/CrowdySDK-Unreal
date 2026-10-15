@@ -169,7 +169,7 @@ void CrowdyServerObjectPins::GatherValues(const UScriptStruct* Struct, TArray<FC
 
 void CrowdyServerObjectPins::GatherVariables(const UCrowdyServerObjectDefinition* Definition, TArray<FCrowdyServerValuePin>& Out)
 {
-	const UScriptStruct* State = Definition ? Definition->GetStateStruct() : nullptr;
+	const UScriptStruct* State = Definition && !Definition->IsFunctionLibrary() ? Definition->GetStateStruct() : nullptr;
 	CrowdyServerObjectPinsPrivate::Gather(State, [Definition](const FProperty* Property, FName Name)
 	{
 		return Definition->FindVariable(Name) == Property;

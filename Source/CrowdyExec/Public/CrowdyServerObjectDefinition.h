@@ -10,6 +10,16 @@
 struct FCrowdyExecLayout;
 struct FInstancedStruct;
 
+/** What a type is on the server. */
+UENUM(BlueprintType)
+enum class ECrowdyServerObjectKind : uint8
+{
+	/** Saves its variables, one instance per Instance Id, and runs one call at a time. */
+	ServerObject UMETA(DisplayName = "Server Object"),
+	/** Functions only, like a Blueprint Function Library: it saves nothing between calls, and several instances answer calls at once. */
+	FunctionLibrary UMETA(DisplayName = "Server Function Library")
+};
+
 /** How a set of values is described. */
 UENUM()
 enum class ECrowdyServerValuesForm : uint8
@@ -413,7 +423,7 @@ struct CROWDYEXEC_API FCrowdyExecBakedEnum
 	TArray<FName> EnumeratorNames;
 };
 
-/** One Server Object type (a hub type on the platform): its state, the values players can watch, and the functions they can call. */
+/** One Server Object type (a hub type on the platform, or a spoke when it is a Server Function Library): its state, the values players can watch, and the functions they can call. */
 UCLASS(BlueprintType)
 class CROWDYEXEC_API UCrowdyServerObjectDefinition : public UDataAsset
 {
@@ -423,6 +433,15 @@ public:
 	/** The type's name on the server (the node type): lowercase letters, digits and underscores, starting with a letter. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object")
 	FString TypeName;
+
+	/** A Server Object saves its variables; a Server Function Library only has functions, saves nothing between calls, and answers many calls at once. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object")
+	ECrowdyServerObjectKind Kind = ECrowdyServerObjectKind::ServerObject;
+
+	bool IsFunctionLibrary() const { return Kind == ECrowdyServerObjectKind::FunctionLibrary; }
+
+	/** Whether nothing picks an instance: Only One Instance is on, or this is a Server Function Library. */
+	bool HasOnlyOneInstance() const { return bOnlyOneInstance || IsFunctionLibrary(); }
 
 	/** Every player, only the player who owns the instance, or only its members. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Readable By"))
@@ -438,7 +457,7 @@ public:
 	/** The platform's root type, every app's parent of the others; its one instance's Instance Id is empty. */
 	static const TCHAR* const RootTypeName;
 
-	/** The Instance Id a type with Only One Instance is reached by: empty for the root, else Only Instance Id. */
+	/** The Instance Id a type that HasOnlyOneInstance is reached by: empty for the root and a Server Function Library, else Only Instance Id. */
 	FString GetOnlyInstanceId() const;
 
 	/** Its server code may read players: their names, tier features, group membership and app state; deploying asks the platform for players.read. Crowdy Team members or records and a Required Feature ask for it too. */
@@ -525,7 +544,7 @@ public:
 	ECrowdyServerTeamSource TeamFrom = ECrowdyServerTeamSource::ThisObjectsRecords;
 
 	/** Whether this holds records whose teams are Crowdy Team ids. */
-	bool HasCrowdyTeamRecords() const { return Holds == ECrowdyServerObjectHolds::RecordPerEntity && TeamFrom == ECrowdyServerTeamSource::CrowdyTeam; }
+	bool HasCrowdyTeamRecords() const { return !IsFunctionLibrary() && Holds == ECrowdyServerObjectHolds::RecordPerEntity && TeamFrom == ECrowdyServerTeamSource::CrowdyTeam; }
 
 	/** When instances are keyed by area, each covers Area Size by Area Size chunks on the ground and its Instance Id is the area's x,y. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Areas", meta = (DisplayName = "Area Size", ClampMin = 1, ClampMax = 64))
@@ -599,6 +618,25 @@ public:
 	/** Other Server Object types this one's server code calls. Used when server code is generated and deployed; a game never loads them. */
 	UPROPERTY(EditAnywhere, Category = "Can Call")
 	TArray<TObjectPtr<UCrowdyServerObjectDefinition>> CanCall;
+
+	/** Server code may call, and listen to, every type in the app, including types added later. Generated helpers are still made only for the types listed in Can Call. */
+	UPROPERTY(EditAnywhere, Category = "Can Call", meta = (DisplayName = "Can Call Any Type"))
+	bool bCanCallAnyType = false;
+
+	/** Instances of a Server Function Library kept running at all times (replicas). Each counts toward the app's instance limit. */
+	UPROPERTY(EditAnywhere, Category = "Scaling", meta = (DisplayName = "Min Instances", ClampMin = 1, ClampMax = 64, NoSpinbox = true,
+		EditCondition = "Kind == ECrowdyServerObjectKind::FunctionLibrary", EditConditionHides))
+	int32 MinInstances = 1;
+
+	/** The server adds instances up to this many once calls have waited 2 seconds, and removes one after about 30 idle seconds (max_replicas). Equal to Min Instances, it never adds any. */
+	UPROPERTY(EditAnywhere, Category = "Scaling", meta = (DisplayName = "Max Instances", ClampMin = 1, ClampMax = 64, NoSpinbox = true,
+		EditCondition = "Kind == ECrowdyServerObjectKind::FunctionLibrary", EditConditionHides))
+	int32 MaxInstances = 1;
+
+	/** Calls each instance answers at the same time (concurrency). */
+	UPROPERTY(EditAnywhere, Category = "Scaling", meta = (DisplayName = "Parallel Calls per Instance", ClampMin = 1, ClampMax = 256, NoSpinbox = true,
+		EditCondition = "Kind == ECrowdyServerObjectKind::FunctionLibrary", EditConditionHides))
+	int32 ParallelCallsPerInstance = 16;
 
 	/** Other Server Object types whose messages this one's server code can listen to; each is also callable. */
 	UPROPERTY(EditAnywhere, Category = "Listen To")

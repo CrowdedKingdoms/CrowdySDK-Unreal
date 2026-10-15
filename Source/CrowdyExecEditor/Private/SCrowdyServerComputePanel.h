@@ -25,6 +25,9 @@ namespace CrowdyServerComputePage
 	/** Who can read an instance, as a type row says it for the definition's Readable By. */
 	FText ReadableByPhrase(ECrowdyServerObjectVisibility Visibility);
 
+	/** How many instances a Server Function Library runs, as a type row says it: 1 to 4 instances, or 4 instances when the two are equal. */
+	FText InstancesPhrase(int32 MinInstances, int32 MaxInstances);
+
 	struct FChangeBadge
 	{
 		FText Label;

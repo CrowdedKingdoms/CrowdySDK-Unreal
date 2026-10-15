@@ -374,6 +374,42 @@ namespace CrowdyServerObjectLibraryDetail
 		Warned.Add(Name);
 		UE_LOG(LogCrowdyExec, Warning, TEXT("%s's value does not fit a %s pin, so it reads as the pin's default"), *Name.ToString(), *DestProperty->GetCPPType());
 	}
+
+	/** Calls Function on the library Definition names and runs OnDone exactly once: refused before sending, or with the answer. */
+	template <typename TInputs>
+	void CallLibrary(UObject* WorldContextObject, UCrowdyServerObjectDefinition* Definition, FName Function, const TInputs& Inputs,
+		TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
+	{
+		if (!OnDone)
+		{
+			OnDone = [](const FCrowdyServerCallResult&) {};
+		}
+		auto Refuse = [&OnDone](ECrowdyServerCallOutcome Outcome, const FString& Reason)
+		{
+			FCrowdyServerCallResult Result;
+			Result.Outcome = Outcome;
+			Result.Reason = Reason;
+			OnDone(Result);
+		};
+		if (!Definition || !Definition->IsFunctionLibrary())
+		{
+			Refuse(ECrowdyServerCallOutcome::BadRequest, FString::Printf(TEXT("%s is not a Server Function Library"), Definition ? *Definition->GetName() : TEXT("None")));
+			return;
+		}
+		if (!Definition->FindFunction(Function))
+		{
+			Refuse(ECrowdyServerCallOutcome::BadRequest, FString::Printf(TEXT("%s has no function named %s"), *Definition->TypeName, *Function.ToString()));
+			return;
+		}
+		const UGameInstance* GameInstance = FindGameInstance(WorldContextObject);
+		UCrowdyServerObjectSubsystem* Subsystem = GameInstance ? GameInstance->GetSubsystem<UCrowdyServerObjectSubsystem>() : nullptr;
+		if (!Subsystem)
+		{
+			Refuse(ECrowdyServerCallOutcome::Unavailable, TEXT("Calling a Server Function Library needs a world with a game instance"));
+			return;
+		}
+		Subsystem->CallLibraryFunction(Definition, Function, Inputs, MoveTemp(OnDone), TimeoutSeconds);
+	}
 }
 
 UCrowdyServerObject* UCrowdyServerObjectLibrary::GetServerObject(UObject* WorldContextObject, UCrowdyServerObjectDefinition* Definition, const FString& InstanceId, UObject* Owner, FString& Error)
@@ -400,6 +436,18 @@ void UCrowdyServerObjectLibrary::ReleaseServerObject(UCrowdyServerObject* Object
 		return;
 	}
 	Subsystem->Release(Object, Owner);
+}
+
+void UCrowdyServerObjectLibrary::CallLibraryFunction(UObject* WorldContextObject, UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedStruct& Inputs,
+	TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
+{
+	CrowdyServerObjectLibraryDetail::CallLibrary(WorldContextObject, Definition, Function, Inputs, MoveTemp(OnDone), TimeoutSeconds);
+}
+
+void UCrowdyServerObjectLibrary::CallLibraryFunction(UObject* WorldContextObject, UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedPropertyBag& Inputs,
+	TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
+{
+	CrowdyServerObjectLibraryDetail::CallLibrary(WorldContextObject, Definition, Function, Inputs, MoveTemp(OnDone), TimeoutSeconds);
 }
 
 FString UCrowdyServerObjectLibrary::GetPlayerInstanceId(UObject* WorldContextObject)

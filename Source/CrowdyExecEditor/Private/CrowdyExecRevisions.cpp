@@ -155,20 +155,48 @@ namespace CrowdyExecRevisionsDetail
 		});
 	}
 
+	/** A field the manifest leaves out runs at the platform's default: one replica, as many max replicas as replicas, 16 calls at once. */
+	bool LiveScalingDiffers(const UCrowdyServerObjectDefinition& Definition, const CrowdyExecRevisions::FLiveType& Live)
+	{
+		const CrowdyExecDeploy::FScaling Scaling = CrowdyExecDeploy::ScalingOf(Definition);
+		const auto NumberOr = [&Live](const TCHAR* Field, int64 Default)
+		{
+			const int64* Value = Live.Numbers.Find(Field);
+			return Value ? *Value : Default;
+		};
+		const int64 Replicas = NumberOr(TEXT("replicas"), 1);
+		const int64 MaxReplicas = NumberOr(TEXT("max_replicas"), Replicas);
+		const int64 Concurrency = NumberOr(TEXT("concurrency"), 16);
+		return Replicas != Scaling.Replicas || MaxReplicas != Scaling.MaxReplicas || Concurrency != Scaling.Concurrency;
+	}
+
 	/** A live 0 means the manifest does not say, which is not a difference. */
-	void AddSettingChanges(const UCrowdyServerObjectDefinition* Definition, const CrowdyExecRevisions::FLiveType& Live, TArray<FString>& OutWhat)
+	void AddSettingChanges(const UCrowdyServerObjectDefinition* Definition, const CrowdyExecRevisions::FLiveType& Live, CrowdyExecRevisions::FTypeChange& Change)
 	{
 		if (!Definition)
 		{
 			return;
 		}
+		TArray<FString>& OutWhat = Change.What;
+		const bool bLibrary = Definition->IsFunctionLibrary();
+		const bool bLiveLibrary = IsSameText(Live.Kind, TEXT("spoke"));
+		if (bLibrary != bLiveLibrary)
+		{
+			OutWhat.Add(TEXT("kind"));
+			Change.KindChange = bLibrary ? CrowdyExecRevisions::EKindChange::ToLibrary : CrowdyExecRevisions::EKindChange::ToServerObject;
+		}
+		else if (bLibrary && LiveScalingDiffers(*Definition, Live))
+		{
+			OutWhat.Add(TEXT("scaling"));
+		}
+		// A library saves nothing, and a type that was a library has no save interval or idle timeout to compare.
 		const int64 SaveIntervalMs = static_cast<int64>(Definition->SaveIntervalSeconds) * 1000;
 		const int64 IdleTimeoutMs = static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000;
-		if (Live.SaveIntervalMs != 0 && Live.SaveIntervalMs != SaveIntervalMs)
+		if (!bLibrary && Live.SaveIntervalMs != 0 && Live.SaveIntervalMs != SaveIntervalMs)
 		{
 			OutWhat.Add(TEXT("save interval"));
 		}
-		if (Live.IdleTimeoutMs != 0 && Live.IdleTimeoutMs != IdleTimeoutMs)
+		if (!bLibrary && Live.IdleTimeoutMs != 0 && Live.IdleTimeoutMs != IdleTimeoutMs)
 		{
 			OutWhat.Add(TEXT("idle timeout"));
 		}
@@ -209,7 +237,7 @@ namespace CrowdyExecRevisionsDetail
 		}
 		const TArray<FRevision> History = HistoryFor(Type.TypeName);
 		Change.LiveRevision = FindRevisionWithDigest(History, Live->Digest);
-		AddSettingChanges(Definition, *Live, Change.What);
+		AddSettingChanges(Definition, *Live, Change);
 		if (Change.LiveRevision == INDEX_NONE)
 		{
 			return EChange::Unknown;
@@ -488,6 +516,7 @@ bool CrowdyExecRevisions::ParseManifest(const FString& ManifestJson, TArray<FLiv
 		FLiveType& Live = OutTypes.AddDefaulted_GetRef();
 		Live.TypeName = Pair.Key;
 		(*Type)->TryGetStringField(TEXT("digest"), Live.Digest);
+		(*Type)->TryGetStringField(TEXT("kind"), Live.Kind);
 		Live.SaveIntervalMs = ReadMs(**Type, TEXT("persist_every_ms"));
 		Live.IdleTimeoutMs = ReadMs(**Type, TEXT("evict_after_ms"));
 		(*Type)->TryGetBoolField(TEXT("client"), Live.bClient);
@@ -561,6 +590,19 @@ TArray<CrowdyExecRevisions::FTypeChange> CrowdyExecRevisions::Compare(const Crow
 		Change.LiveVersion = LiveVersion;
 	}
 	return Changes;
+}
+
+FString CrowdyExecRevisions::DescribeKindChange(const FTypeChange& Change)
+{
+	switch (Change.KindChange)
+	{
+	case EKindChange::ToLibrary:
+		return FString::Printf(TEXT("%s changes from Server Object to Server Function Library: its saved data is kept, unused, and comes back if it becomes a Server Object again."), *Change.TypeName);
+	case EKindChange::ToServerObject:
+		return FString::Printf(TEXT("%s changes from Server Function Library to Server Object: it starts from the saved data it had as a Server Object, if any."), *Change.TypeName);
+	default:
+		return FString();
+	}
 }
 
 bool CrowdyExecRevisions::HasChanges(TConstArrayView<FTypeChange> Changes)

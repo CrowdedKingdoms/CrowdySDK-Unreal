@@ -216,4 +216,15 @@ bool FCrowdyServerComputeReadableByTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerComputeInstancesPhraseTest, "CrowdySDK.CrowdyExecEditor.ServerComputeLibraryInstancesPhrase", CrowdyServerComputePageTest::TestFlags)
+bool FCrowdyServerComputeInstancesPhraseTest::RunTest(const FString& Parameters)
+{
+	using CrowdyServerComputePage::InstancesPhrase;
+	TestEqualSensitive(TEXT("a range of instances"), InstancesPhrase(1, 4).ToString(), FString(TEXT("1 to 4 instances")));
+	TestEqualSensitive(TEXT("equal bounds name one count"), InstancesPhrase(4, 4).ToString(), FString(TEXT("4 instances")));
+	TestEqualSensitive(TEXT("a single instance is singular"), InstancesPhrase(1, 1).ToString(), FString(TEXT("1 instance")));
+	TestEqualSensitive(TEXT("a Max below Min reads as the Min"), InstancesPhrase(3, 2).ToString(), FString(TEXT("3 instances")));
+	return true;
+}
+
 #endif

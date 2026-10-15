@@ -5,6 +5,7 @@
 #include "Kismet/BlueprintAsyncActionBase.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "StructUtils/InstancedStruct.h"
+#include "StructUtils/PropertyBag.h"
 #include "CrowdyServerObjectLibrary.generated.h"
 
 class UCrowdyServerObject;
@@ -49,6 +50,12 @@ public:
 	/** The signed-in player's user id, the Instance Id of their own Owner Only Server Object. Empty when nobody is signed in. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", meta = (WorldContext = "WorldContextObject"))
 	static FString GetPlayerInstanceId(UObject* WorldContextObject);
+
+	/** Calls Function on a Server Function Library; OnDone runs once with the answer, the refusal or the timeout; it is not called if the game instance shuts down first. The world keeps the library's connection, so there is nothing to release. */
+	static void CallLibraryFunction(UObject* WorldContextObject, UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedStruct& Inputs, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds = 0.f);
+
+	/** Calls a Server Function Library's function that takes a List, with Inputs from MakeParams. */
+	static void CallLibraryFunction(UObject* WorldContextObject, UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedPropertyBag& Inputs, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds = 0.f);
 
 	/** Sets the value called Name in Values (inputs from Make Inputs). False when there is none by that name or Value is of another type. */
 	UFUNCTION(BlueprintCallable, CustomThunk, Category = "Crowdy SDK|Server Objects", meta = (CustomStructureParam = "Value", DisplayName = "Set Server Value"))

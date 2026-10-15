@@ -168,8 +168,8 @@ void CrowdyExecDeveloperCall::Call(const CrowdyExecDeveloper::FClient& Client, c
 		return;
 	}
 	// As a game acquires it: a type with one instance has one Instance Id, whatever was typed.
-	const FString UsedKey = Definition.bOnlyOneInstance ? Definition.GetOnlyInstanceId() : Key;
-	if (UsedKey.IsEmpty() && !Definition.bOnlyOneInstance)
+	const FString UsedKey = Definition.HasOnlyOneInstance() ? Definition.GetOnlyInstanceId() : Key;
+	if (UsedKey.IsEmpty() && !Definition.HasOnlyOneInstance())
 	{
 		OnDone(Failed(TEXT("BadRequest"), TEXT("Give the Instance Id of the Server Object to call")));
 		return;

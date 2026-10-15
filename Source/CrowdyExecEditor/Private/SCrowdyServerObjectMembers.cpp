@@ -289,6 +289,10 @@ TArray<SCrowdyServerObjectMembers::FItemPtr> SCrowdyServerObjectMembers::BuildRo
 		Functions->Children.Add(Item);
 	}
 
+	if (Current->IsFunctionLibrary())
+	{
+		return {TypeSettings, Functions};
+	}
 	TArray<FItemPtr> Roots = {TypeSettings, Variables, Functions, MakeMessagesSection(*Current, Errors)};
 	if (Current->MembersFrom == ECrowdyServerMembersSource::ThisObject)
 	{

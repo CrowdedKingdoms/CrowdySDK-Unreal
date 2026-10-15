@@ -26,7 +26,7 @@ FCrowdyMassDerivedServerRecords FCrowdyMassServerRecordsDerivation::FromClass(co
 		[&Found](const UActorComponent* Component)
 		{
 			const UCrowdyServerObjectComponent* Candidate = Cast<UCrowdyServerObjectComponent>(Component);
-			const bool bRecords = Candidate && Candidate->Definition && Candidate->Definition->Holds == ECrowdyServerObjectHolds::RecordPerEntity;
+			const bool bRecords = Candidate && Candidate->ReadsRecord();
 			Found = bRecords ? Candidate : nullptr;
 			return !bRecords;
 		});
@@ -41,7 +41,7 @@ FCrowdyMassDerivedServerRecords FCrowdyMassServerRecordsDerivation::FromClass(co
 	Result.Route = RouteOfClassDefaultComponent(*Found, DefaultObject);
 	Result.ComponentName = Found->GetName();
 
-	if (Definition->bOnlyOneInstance)
+	if (Definition->HasOnlyOneInstance())
 	{
 		Result.InstanceId = UCrowdyServerObjectDefinition::OnlyInstanceId;
 		Result.bSupported = true;

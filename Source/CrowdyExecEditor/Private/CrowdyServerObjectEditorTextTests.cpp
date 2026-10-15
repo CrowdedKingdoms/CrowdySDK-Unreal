@@ -198,7 +198,33 @@ bool FCrowdyServerMessageSectionTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerMessageNamesTest, "CrowdySDK.CrowdyExecEditor.AddedAndCopiedMessagesGetUniqueNames", CrowdyServerObjectEditorTextTest::TestFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerLibraryRowsTest, "CrowdySDK.CrowdyExecEditor.LibraryListsOnlyTypeSettingsAndFunctions", CrowdyServerObjectEditorTextTest::TestFlags)
+bool FCrowdyServerLibraryRowsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectEditorTextTest;
+	using EType = SCrowdyServerObjectMembers::FItem::EType;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	Definition->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	Definition->StateForm = ECrowdyServerValuesForm::List;
+	Definition->StateList.AddProperty(TEXT("Leftover"), EPropertyBagPropertyType::Int32);
+	SCrowdyServerObjectMembers::AddMessageTo(*Definition);
+	Definition->Functions.AddDefaulted_GetRef().Name = TEXT("Roll");
+
+	const TArray<SCrowdyServerObjectMembers::FItemPtr> Roots = SCrowdyServerObjectMembers::BuildRoots(Definition.Get(), MakeItem(EType::TypeSettings));
+	if (!TestEqual(TEXT("a library lists Type Settings and Functions only, whatever the asset still holds"), Roots.Num(), 2))
+	{
+		return false;
+	}
+	TestTrue(TEXT("Type Settings comes first, then Functions"), Roots[0]->Type == EType::TypeSettings && Roots[1]->Type == EType::Functions);
+	TestEqual(TEXT("its function is listed"), Roots[1]->Children.Num(), 1);
+
+	Definition->Kind = ECrowdyServerObjectKind::ServerObject;
+	TestEqual(TEXT("as a Server Object it lists Variables, Server Messages and Built-in again"), SCrowdyServerObjectMembers::BuildRoots(Definition.Get(), MakeItem(EType::TypeSettings)).Num(), 5);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerMessageNamesTest,"CrowdySDK.CrowdyExecEditor.AddedAndCopiedMessagesGetUniqueNames", CrowdyServerObjectEditorTextTest::TestFlags)
 bool FCrowdyServerMessageNamesTest::RunTest(const FString& Parameters)
 {
 	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));

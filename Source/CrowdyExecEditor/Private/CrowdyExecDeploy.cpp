@@ -274,17 +274,20 @@ namespace CrowdyExecDeployDetail
 		}
 		for (const UCrowdyServerObjectDefinition* Target : Definition.ListenTo)
 		{
-			AddName(Target);
+			if (!Definition.IsFunctionLibrary())
+			{
+				AddName(Target);
+			}
 		}
 		Algo::Sort(Names, &IsBefore);
 		Names.SetNum(Algo::Unique(Names, [](const FString& A, const FString& B) { return A.Equals(B, ESearchCase::CaseSensitive); }));
 		return Names;
 	}
 
-	/** Adds "calls" when the type calls others and "scopes" when it asks for platform data; a type with neither gets nothing. */
+	/** Adds "calls" when the type calls others (["*"] for any type) and "scopes" when it asks for platform data; a type with neither gets nothing. */
 	void AppendCallsAndScopes(FStringBuilderBase& Json, const UCrowdyServerObjectDefinition& Definition)
 	{
-		const TArray<FString> Calls = CallableTypeNames(Definition);
+		const TArray<FString> Calls = Definition.bCanCallAnyType ? TArray<FString>{TEXT("*")} : CallableTypeNames(Definition);
 		if (!Calls.IsEmpty())
 		{
 			Json.Appendf(TEXT(",\"calls\":[\"%s\"]"), *FString::Join(Calls, TEXT("\",\"")));
@@ -477,11 +480,11 @@ TArray<FString> CrowdyExecDeploy::ScopesOf(const UCrowdyServerObjectDefinition& 
 FString CrowdyExecDeploy::PlayersReadRequiredBecause(const UCrowdyServerObjectDefinition& Definition)
 {
 	TArray<FString> Causes;
-	if (Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam)
+	if (!Definition.IsFunctionLibrary() && Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam)
 	{
 		Causes.Add(TEXT("Members From is Crowdy Team"));
 	}
-	if (Definition.HasCrowdyTeamRecords())
+	if (!Definition.IsFunctionLibrary() && Definition.HasCrowdyTeamRecords())
 	{
 		Causes.Add(TEXT("its records belong to Crowdy Teams"));
 	}
@@ -548,6 +551,15 @@ TArray<CrowdyExecDeploy::FServerLimit> CrowdyExecDeploy::LimitsOf(const UCrowdyS
 	return Limits;
 }
 
+CrowdyExecDeploy::FScaling CrowdyExecDeploy::ScalingOf(const UCrowdyServerObjectDefinition& Definition)
+{
+	FScaling Scaling;
+	Scaling.Replicas = FMath::Clamp(Definition.MinInstances, 1, 64);
+	Scaling.MaxReplicas = FMath::Clamp(Definition.MaxInstances, Scaling.Replicas, 64);
+	Scaling.Concurrency = FMath::Clamp(Definition.ParallelCallsPerInstance, 1, 256);
+	return Scaling;
+}
+
 TArray<FString> CrowdyExecDeploy::FindScopeWarnings(const UCrowdyServerObjectDefinition& Definition, const CrowdyExecDeveloper::FBuildCrate& Crate)
 {
 	using namespace CrowdyExecDeployDetail;
@@ -610,12 +622,12 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 		return WithProblem(State, ECrateState::Invalid, TEXT("root is the name of the platform's root Server Object type; choose another Type Name"));
 	}
 	const int64 SaveIntervalMs = static_cast<int64>(Definition.SaveIntervalSeconds) * 1000;
-	if (SaveIntervalMs < MinSaveIntervalMs || SaveIntervalMs > MaxSaveIntervalMs)
+	if (!Definition.IsFunctionLibrary() && (SaveIntervalMs < MinSaveIntervalMs || SaveIntervalMs > MaxSaveIntervalMs))
 	{
 		return WithProblem(State, ECrateState::Invalid, TEXT("Save Interval must be 5 to 60 seconds"));
 	}
 	const int64 IdleTimeoutMs = static_cast<int64>(Definition.IdleTimeoutSeconds) * 1000;
-	if (IdleTimeoutMs < MinIdleTimeoutMs || IdleTimeoutMs > MaxIdleTimeoutMs)
+	if (!Definition.IsFunctionLibrary() && (IdleTimeoutMs < MinIdleTimeoutMs || IdleTimeoutMs > MaxIdleTimeoutMs))
 	{
 		return WithProblem(State, ECrateState::Invalid, TEXT("Idle Timeout must be 1 to 1800 seconds"));
 	}
@@ -695,8 +707,22 @@ FString CrowdyExecDeploy::MakeManifest(TConstArrayView<const UCrowdyServerObject
 	for (const UCrowdyServerObjectDefinition* Definition : Sorted)
 	{
 		const TCHAR* const Name = *Definition->TypeName;
-		Json.Appendf(TEXT(",\"%s\":{\"kind\":\"hub\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":%s,\"persist_every_ms\":%lld,\"evict_after_ms\":%lld"),
-			Name, RootTypeName, Name, Definition->IsReachableByPlayers() ? TEXT("true") : TEXT("false"), static_cast<int64>(Definition->SaveIntervalSeconds) * 1000, static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000);
+		const TCHAR* const Client = Definition->IsReachableByPlayers() ? TEXT("true") : TEXT("false");
+		if (Definition->IsFunctionLibrary())
+		{
+			const FScaling Scaling = ScalingOf(*Definition);
+			Json.Appendf(TEXT(",\"%s\":{\"kind\":\"spoke\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":%s,\"replicas\":%d,\"concurrency\":%d"),
+				Name, RootTypeName, Name, Client, Scaling.Replicas, Scaling.Concurrency);
+			if (Scaling.MaxReplicas > Scaling.Replicas)
+			{
+				Json.Appendf(TEXT(",\"max_replicas\":%d"), Scaling.MaxReplicas);
+			}
+		}
+		else
+		{
+			Json.Appendf(TEXT(",\"%s\":{\"kind\":\"hub\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":%s,\"persist_every_ms\":%lld,\"evict_after_ms\":%lld"),
+				Name, RootTypeName, Name, Client, static_cast<int64>(Definition->SaveIntervalSeconds) * 1000, static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000);
+		}
 		AppendCallsAndScopes(Json, *Definition);
 		for (const FServerLimit& Limit : LimitsOf(*Definition))
 		{

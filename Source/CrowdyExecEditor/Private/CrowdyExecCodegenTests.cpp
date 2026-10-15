@@ -2626,4 +2626,260 @@ bool FCrowdyExecCodegenTimerConstantsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace CrowdyCodegenTest
+{
+	/** ck_exec_library: a Server Function Library with Add (a List in, a List out) and Ping (Server Only). */
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeLibraryDefinition()
+	{
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Library(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
+		Library->TypeName = TEXT("ck_exec_library");
+		Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+		FCrowdyServerFunction& Add = AddPlainFunction(*Library, TEXT("Add"), Players);
+		Add.ParamsForm = ECrowdyServerValuesForm::List;
+		AddListValue(Add.ParamsList, FPropertyBagPropertyDesc(TEXT("Left"), EPropertyBagPropertyType::Int32));
+		AddListValue(Add.ParamsList, FPropertyBagPropertyDesc(TEXT("Right"), EPropertyBagPropertyType::Int32));
+		Add.ReplyForm = ECrowdyServerValuesForm::List;
+		AddListValue(Add.ReplyList, FPropertyBagPropertyDesc(TEXT("Total"), EPropertyBagPropertyType::Int32));
+		AddPlainFunction(*Library, TEXT("Ping"), ServerOnly);
+		return Library;
+	}
+
+	/** ck_exec_library_hub: Sum calls the library's Add and Raw calls its Ping through Can Call Any Type. */
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeLibraryHubDefinition(UCrowdyServerObjectDefinition& Library)
+	{
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeListDefinition(TEXT("ck_exec_library_hub"), {TEXT("Total")});
+		Hub->WatchedFields = {TEXT("Total")};
+		AddPlainFunction(*Hub, TEXT("Sum"), Players);
+		AddPlainFunction(*Hub, TEXT("Raw"), Players);
+		Hub->CanCall = {&Library};
+		Hub->bCanCallAnyType = true;
+		return Hub;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenLibraryCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenLibraryMatchesLocalCheckCrate", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenLibraryCrateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeLibraryDefinition();
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Library, Crate))
+	{
+		return false;
+	}
+	CheckLocalCheckCrate(*this, Crate, TEXT("ck_exec_library"));
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	const FString Logic = GetFileText(*this, Crate, LogicPath);
+	const FString Cargo = GetFileText(*this, Crate, CargoPath);
+	TestTrue(TEXT("a library is a spoke"), HasText(Lib, TEXT("impl Spoke for ServerObject {\n    fn start(ctx: &Ctx) -> Result<Self> {\n        Ok(Self)\n    }\n")));
+	TestTrue(TEXT("exported as one"), HasText(Lib, TEXT("ckx_sdk::export_spoke!(ServerObject);\n")));
+	for (const TCHAR* Part : {TEXT("export_hub"), TEXT("impl Hub"), TEXT("fn spawn"), TEXT("fn persist"), TEXT("SnapshotOut"), TEXT("SnapshotIn"), TEXT("CONTRACT"), TEXT("fn finish"),
+		TEXT("fn prepare_push"), TEXT("\"read\" =>"), TEXT("ctx.publish"), TEXT("timers"), TEXT("on_timer"), TEXT("on_topic"), TEXT("on_presence"), TEXT("on_session"), TEXT("messages::"),
+		TEXT("listen::"), TEXT("members::"), TEXT("Roster"), TEXT("cooldown"), TEXT("ctx.key"), TEXT("OWNER_ONLY"), TEXT("self.state"), TEXT("epoch")})
+	{
+		TestFalse(FString::Printf(TEXT("a library has no '%s'"), Part), HasText(Lib, Part));
+	}
+	TestTrue(TEXT("its functions are implemented on a struct with no fields"), HasText(Lib, TEXT("pub struct Library;\n")) && HasText(Logic, TEXT("impl Functions for Library {\n")));
+	TestTrue(TEXT("a function keeps its authorize, decoding and reply, and returns the call's result"),
+		HasText(Lib, TEXT("            \"add\" => {\n                authorize(ctx, &call, true)?;\n                let params: AddParams = call.decode().map_err(bad_params)?;\n")
+			TEXT("                Wire::check(&params).map_err(|why| Error::new(&format!(\"bad_params: {why}\")))?;\n")
+			TEXT("                Functions::add(&mut Library, ctx, &call, params).and_then(|reply| encode_reply(&reply))\n            }\n")));
+	TestTrue(TEXT("a Server Only function is refused to players"),
+		HasText(Lib, TEXT("            \"ping\" => {\n                authorize(ctx, &call, false)?;\n                Functions::ping(&mut Library, ctx, &call).map(|()| vec![0xc0])\n            }\n")));
+	TestTrue(TEXT("the trait asks for the two functions only"), HasText(Lib, TEXT("pub trait Functions {\n    fn add(&mut self, ctx: &Ctx, call: &Call<'_>, params: AddParams) -> Result<AddReply>;\n    fn ping(&mut self, ctx: &Ctx, call: &Call<'_>) -> Result<()>;\n}\n")));
+	TestTrue(TEXT("the Cargo pin is the platform's"), HasText(Cargo, TEXT("ckx-sdk = \"0.7.0\"\n")));
+	TestEqual(TEXT("logic.rs has the two functions and nothing else"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Missing.Num(), 0);
+	TestEqual(TEXT("with no leftover"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Leftover.Num(), 0);
+	TestEqual(TEXT("and the stubs ask for the two"), Crate.Stubs.Num(), 2);
+	TestEqualSensitive(TEXT("the logic file implements Functions on the library's struct"), Crate.StateName, FString(TEXT("Library")));
+
+	CrowdyExecCodegen::FGeneratedCrate Again;
+	if (GenerateCrate(*this, *Library, Again))
+	{
+		TestEqualSensitive(TEXT("the same definition gives the same glue"), GetFileText(*this, Again, LibPath), Lib);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenLibraryIgnoresServerObjectSettingsTest, "CrowdySDK.CrowdyExecEditor.CodegenLibraryIgnoresWhatOnlyAServerObjectUses", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenLibraryIgnoresServerObjectSettingsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeLibraryDefinition();
+	FString Plain;
+	if (!GenerateLib(*this, *Library, Plain))
+	{
+		return false;
+	}
+	bool bFound = true;
+	Library->State = FindTestStruct(*this, TEXT("CrowdyExecTestBossState"), bFound);
+	Library->WatchedFields = {TEXT("Health")};
+	Library->Visibility = ECrowdyServerObjectVisibility::OwnerOnly;
+	Library->bOnlyOneInstance = true;
+	Library->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	Library->bOnPlayerJoined = true;
+	Library->bOnPlayerLeft = true;
+	AddTimer(*Library, TEXT("Tick"), ECrowdyServerTimerRepeat::Every, 5.f, true);
+	AddServerMessage(*Library, TEXT("Done"));
+	FString Left;
+	if (!bFound || !GenerateLib(*this, *Library, Left))
+	{
+		return false;
+	}
+	TestEqualSensitive(TEXT("a library that was a Server Object generates what it would have without those settings"), Left, Plain);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenLibraryCalleeTest, "CrowdySDK.CrowdyExecEditor.CodegenCallsToALibraryHaveNoKey", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenLibraryCalleeTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeLibraryDefinition();
+	if (!BakeDefinition(*this, *Library))
+	{
+		return false;
+	}
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeLibraryHubDefinition(*Library);
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Hub, Crate))
+	{
+		return false;
+	}
+	CheckLocalCheckCrate(*this, Crate, TEXT("ck_exec_library_hub"));
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	TestTrue(TEXT("the library's functions are typed helpers with no key"),
+		HasText(Lib, TEXT("        pub fn add(ctx: &Ctx, inputs: &AddParams) -> Result<AddReply> {\n")));
+	TestTrue(TEXT("one that takes nothing has only the context"), HasText(Lib, TEXT("        pub fn ping(ctx: &Ctx) -> Result<()> {\n")));
+	TestTrue(TEXT("and calls the library under the empty key"), HasText(Lib, TEXT("ctx.call(\"ck_exec_library\", \"\", \"add\", &payload)")) && HasText(Lib, TEXT("ctx.call(\"ck_exec_library\", \"\", \"ping\", &[0x80])")));
+	TestFalse(TEXT("none takes a key"), HasText(Lib, TEXT("pub fn add(ctx: &Ctx, key: &str")) || HasText(Lib, TEXT("pub fn ping(ctx: &Ctx, key: &str")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Bank = MakeBankDefinition();
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Caller = MakeLibraryDefinition();
+	Caller->TypeName = TEXT("ck_exec_library_caller");
+	Caller->CanCall = {Bank.Get(), Library.Get()};
+	if (!BakeDefinition(*this, *Bank))
+	{
+		return false;
+	}
+	FString CallerLib;
+	if (!GenerateLib(*this, *Caller, CallerLib))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a library can call a Server Object with its key"), HasText(CallerLib, TEXT("        pub fn store(ctx: &Ctx, key: &str, inputs: &StoreParams) -> Result<StoreReply> {\n")));
+	TestTrue(TEXT("and another library without"), HasText(CallerLib, TEXT("        pub fn ping(ctx: &Ctx) -> Result<()> {\n")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenCallAnyTest, "CrowdySDK.CrowdyExecEditor.CodegenCallsAnyOnlyWithCanCallAnyType", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenCallAnyTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeLibraryDefinition();
+	if (!BakeDefinition(*this, *Library))
+	{
+		return false;
+	}
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeLibraryHubDefinition(*Library);
+	const TCHAR* const Any = TEXT("    pub fn any(ctx: &ckx_sdk::Ctx, node_type: &str, key: &str, method: &str, payload: &[u8]) -> std::result::Result<Vec<u8>, ckx_sdk::CallError> {\n        ctx.call(node_type, key, method, payload)\n    }\n");
+	FString WithAny;
+	if (!GenerateLib(*this, *Hub, WithAny))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Can Call Any Type adds the untyped call"), CountText(WithAny, Any), 1);
+	TestTrue(TEXT("beside the helpers for the types listed"), HasText(WithAny, TEXT("pub mod calls {\n    pub mod ck_exec_library {\n")));
+
+	Hub->bCanCallAnyType = false;
+	FString WithoutAny;
+	if (!GenerateLib(*this, *Hub, WithoutAny))
+	{
+		return false;
+	}
+	TestFalse(TEXT("without it there is none"), HasText(WithoutAny, TEXT("pub fn any(")));
+
+	Hub->bCanCallAnyType = true;
+	Hub->CanCall.Empty();
+	FString AnyOnly;
+	if (!GenerateLib(*this, *Hub, AnyOnly))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a type that lists no one still gets the module"), HasText(AnyOnly, TEXT("pub mod calls {\n    /// A call to any Server Object type")));
+	TestEqual(TEXT("with the untyped call once"), CountText(AnyOnly, Any), 1);
+
+	Hub->bCanCallAnyType = false;
+	FString Neither;
+	if (!GenerateLib(*this, *Hub, Neither))
+	{
+		return false;
+	}
+	TestFalse(TEXT("and one that lists no one and cannot call any has no calls module"), HasText(Neither, TEXT("pub mod calls")));
+	return true;
+}
+
+namespace CrowdyCodegenTest
+{
+	/** ck_exec_ping_library: a Server Function Library whose one function takes and returns nothing, so it has no structs. */
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakePingLibraryDefinition()
+	{
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Library(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
+		Library->TypeName = TEXT("ck_exec_ping_library");
+		Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+		AddPlainFunction(*Library, TEXT("Ping"), Players);
+		return Library;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenStructlessLibraryTest, "CrowdySDK.CrowdyExecEditor.CodegenLibraryWithoutStructs", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenStructlessLibraryTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakePingLibraryDefinition();
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Library, Crate))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a library with no structs has no field tables"), Library->BakedStructs.IsEmpty());
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	TestTrue(TEXT("it is still a spoke"), HasText(Lib, TEXT("ckx_sdk::export_spoke!(ServerObject);\n")));
+	TestTrue(TEXT("and dispatches its function"), HasText(Lib, TEXT("            \"ping\" => {\n                authorize(ctx, &call, true)?;\n                Functions::ping(&mut Library, ctx, &call).map(|()| vec![0xc0])\n            }\n")));
+	TestEqual(TEXT("and the stub asks for the one function"), Crate.Stubs.Num(), 1);
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeListDefinition(TEXT("ck_exec_ping_hub"), {TEXT("Total")});
+	Hub->WatchedFields = {TEXT("Total")};
+	AddPlainFunction(*Hub, TEXT("Poke"), Players);
+	Hub->CanCall = {Library.Get()};
+	FString HubLib;
+	if (!GenerateLib(*this, *Hub, HubLib))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a Server Object that lists it in Can Call gets a helper for it"), HasText(HubLib, TEXT("        pub fn ping(ctx: &Ctx) -> Result<()> {\n")));
+	TestTrue(TEXT("which calls it under the empty key"), HasText(HubLib, TEXT("ctx.call(\"ck_exec_ping_library\", \"\", \"ping\", &[0x80])")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenLibraryNameFirstTest, "CrowdySDK.CrowdyExecEditor.CodegenLibraryKeepsItsUnitStructName", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenLibraryNameFirstTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakePingLibraryDefinition();
+	Library->TypeName = TEXT("ck_exec_name_library");
+	AddPlainFunction(*Library, TEXT("Roll"), Players).Params = FLibrary::StaticStruct();
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Library, Crate))
+	{
+		return false;
+	}
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	const FString Types = GetFileText(*this, Crate, TypesPath);
+	TestTrue(TEXT("the library's struct keeps the name Library"), HasText(Lib, TEXT("pub struct Library;\n")));
+	TestEqualSensitive(TEXT("and logic.rs implements Functions on it"), Crate.StateName, FString(TEXT("Library")));
+	TestTrue(TEXT("a struct of the library's own named Library is renamed instead"), HasText(Types, TEXT("pub struct LibraryType {\n")));
+	TestFalse(TEXT("and does not take the name"), HasText(Types, TEXT("pub struct Library {\n")));
+	return true;
+}
+
 #endif
