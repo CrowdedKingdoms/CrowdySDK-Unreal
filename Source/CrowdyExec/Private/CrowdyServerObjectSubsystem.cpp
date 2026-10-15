@@ -568,6 +568,7 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	DialedClient = Client;
 	DialedAppId = Session->GetAppID();
 	DialedType = First->GetDefinition()->TypeName;
+	bDialedWithType = !Options.NodeType.IsEmpty();
 
 	const TWeakObjectPtr<UCrowdyServerObjectSubsystem> WeakThis = this;
 	const TWeakPtr<FCrowdyNativeExecConnection> Dialed = Connection;
@@ -617,8 +618,9 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 			FailRefusedForGood(Error);
 			return;
 		}
-		const TCHAR* const Lead = CrowdyServerObjectDetail::IsSwitchedOffText(Error) ? TEXT("The server is switched off or paused for") : TEXT("Could not open the connection to the server for");
-		const FString Reason = FString::Printf(TEXT("%s %s: %s"), Lead, *DialedType, *SafeError);
+		const TCHAR* const Lead = CrowdyServerObjectDetail::IsSwitchedOffText(Error) ? TEXT("The server is switched off or paused") : TEXT("Could not open the connection to the server");
+		// A dial that named no type is not about the type it was made for, so its failure names none either.
+		const FString Reason = bDialedWithType ? FString::Printf(TEXT("%s for %s: %s"), Lead, *DialedType, *SafeError) : FString::Printf(TEXT("%s: %s"), Lead, *SafeError);
 		for (UCrowdyServerObject* Object : SnapshotObjects())
 		{
 			if (Object)

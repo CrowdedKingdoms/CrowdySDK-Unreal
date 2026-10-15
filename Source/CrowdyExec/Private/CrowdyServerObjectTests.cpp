@@ -5041,8 +5041,8 @@ bool FCrowdyServerObjectRootDialTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	TestTrue(FString::Printf(TEXT("a failed dial for the root names it (%s)"), *Boss->GetFailureReason()),
-		Boss->GetFailureReason().StartsWith(TEXT("Could not open the connection to the server for root: "), ESearchCase::CaseSensitive));
+	TestTrue(FString::Printf(TEXT("a failed dial for the root names no type, as the dial named none (%s)"), *Boss->GetFailureReason()),
+		Boss->GetFailureReason().StartsWith(TEXT("Could not open the connection to the server: "), ESearchCase::CaseSensitive));
 	Rig.Tick(1.1f, 0.1f);
 	if (!FailDial(Rig, 2))
 	{
@@ -5059,6 +5059,39 @@ bool FCrowdyServerObjectRootDialTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("with another type live, the dial names that type (%s)"), *Body), Body.Contains(FString::Printf(TEXT("\"%s\""), TypeName), ESearchCase::CaseSensitive));
 	Rig.Client->TestExecOpen();
 	TestTrue(TEXT("the connection opens"), Rig.PumpUntil([&Rig]() { return Rig.Subsystem->GetConnection() != nullptr; }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectLibraryDialFailureTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.FailedLibraryDialNamesNoType", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectLibraryDialFailureTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	AddExpectedErrorPlain(ConnectFailedWarning, EAutomationExpectedErrorFlags::Contains, 1);
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> Library(DuplicateObject(Rig.Definition.Get(), GetTransientPackage()));
+	Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	TArray<FString> Errors;
+	if (!TestTrue(TEXT("the library test definition bakes"), Library->Bake(Errors)))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	FString Error;
+	UCrowdyServerObject* Object = Rig.Subsystem->Acquire(Library.Get(), FString(), Owner.Get(), Error);
+	if (!Object || !FailDial(Rig, 1))
+	{
+		return false;
+	}
+	const FString Reason = Object->GetFailureReason();
+	TestTrue(FString::Printf(TEXT("a library's failed dial, which named no type, names none (%s)"), *Reason),
+		Reason.StartsWith(TEXT("Could not open the connection to the server: "), ESearchCase::CaseSensitive) && !Reason.Contains(Library->TypeName, ESearchCase::CaseSensitive));
+	Rig.Tick(2.1f, 0.1f);
+	TestTrue(TEXT("and the library is dialled again"), Rig.PumpUntil([&Rig]() { return DialsOf(Rig) >= 2; }));
 	return true;
 }
 
