@@ -26,6 +26,9 @@ enum class Errc {
   /// buffer is the usual cause) and nothing was transferred. The socket is
   /// healthy — retry shortly. Distinct from SocketError, which is a fault.
   WouldBlock,
+  /// The caller cancelled the request (graphql::CancelToken). Not a fault and
+  /// not a timeout: nothing went wrong, nobody wanted the answer any more.
+  Cancelled,
 };
 
 inline const char* errcName(Errc e) {
@@ -43,6 +46,7 @@ inline const char* errcName(Errc e) {
     case Errc::Closed: return "Closed";
     case Errc::CryptoUnavailable: return "CryptoUnavailable";
     case Errc::WouldBlock: return "WouldBlock";
+    case Errc::Cancelled: return "Cancelled";
   }
   return "Unknown";
 }

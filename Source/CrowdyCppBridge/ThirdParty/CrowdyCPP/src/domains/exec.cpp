@@ -428,6 +428,11 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
     reconnectListeners_.push_back(std::move(listener));
   }
 
+  void onAccessEnded(std::function<void(std::string)> listener) {
+    std::lock_guard lock(mu_);
+    accessEndedListeners_.push_back(std::move(listener));
+  }
+
   std::string host() const {
     std::lock_guard lock(mu_);
     return endpoint_.host;
@@ -611,6 +616,7 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
         if (ev.frame.kind == graphql::WebSocketFrameKind::Binary) onFrame(gen, ev.frame.payload);
         return;
       case graphql::WebSocketEventKind::Close:
+        if (ev.close.code == kExecCloseAccessEnded) return onAccessEndedClose(gen, ev.close.reason);
         // 4401 is how a gateway before ck-exec 0.10.0 refused a token: it upgraded, then closed.
         return onLost(gen, ev.close.code == 4401 ? ExecStatus::Denied : ExecStatus::Unavailable,
                       ev.close.reason.empty() ? "the gateway closed the connection" : ev.close.reason);
@@ -728,6 +734,29 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
       if (gen != gen_ || closed_) return;
       loseLocked(run, status, why, false);
     }
+    deliver(std::move(run));
+  }
+
+  /// The host ended the session because the player's access ended. Final, because
+  /// reconnecting would only be refused again: everything waiting fails `Denied`.
+  void onAccessEndedClose(std::uint64_t gen, const std::string& reason) {
+    std::vector<std::function<void()>> run;
+    {
+      std::lock_guard lock(mu_);
+      if (gen != gen_ || closed_) return;
+      closed_ = true;
+      ws_.reset();
+      open_ = false;
+      dialing_ = false;
+      reconnectDue_ = false;
+      const std::string why = reason.empty() ? "the host ended the session: access ended" : reason;
+      lastFailure_ = ExecReply{ExecStatus::Denied, why};
+      failAllLocked(run, why, ExecStatus::Denied);
+      for (auto& w : waiters_) run.push_back([w] { w(Errc::Rejected); });
+      waiters_.clear();
+      for (auto& l : accessEndedListeners_) run.push_back([l, reason] { l(reason); });
+    }
+    cv_.notify_all();
     deliver(std::move(run));
   }
 
@@ -915,6 +944,7 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
   std::map<std::uint64_t, std::string> handles_;
   std::uint64_t nextHandle_ = 0;
   std::vector<std::function<void(std::string)>> reconnectListeners_;
+  std::vector<std::function<void(std::string)>> accessEndedListeners_;
 };
 
 ExecConnection::ExecConnection(std::shared_ptr<graphql::IWebSocketTransport> transport,
@@ -962,6 +992,10 @@ void ExecConnection::ping(ExecReplyCallback done) { impl_->request({Kind::Ping, 
 
 void ExecConnection::onReconnect(std::function<void(std::string)> listener) {
   impl_->onReconnect(std::move(listener));
+}
+
+void ExecConnection::onAccessEnded(std::function<void(std::string)> listener) {
+  impl_->onAccessEnded(std::move(listener));
 }
 
 std::string ExecConnection::host() const { return impl_->host(); }

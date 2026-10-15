@@ -210,6 +210,48 @@ class TeamsAPI : public DomainBase {
     execUnwrapAsync(gen::teams::kRemoveTeamMemberDocument, vars, {}, std::move(cb));
   }
 
+  /// Ban a user from this team: their membership (or a new one, for someone not yet in it)
+  /// becomes `banned` and their roles go. Joining, requesting to join and being added are
+  /// then refused with GROUP_MEMBER_BANNED (graphql::groupMemberBannedOf) until unban();
+  /// leaving or being removed does not lift it. `reason` (at most 500 characters) is for the
+  /// team's managers and is not shown to the banned user. Returns the banned membership.
+  /// Requires the `manage_members` team permission (app admins bypass); never the team's
+  /// owner, never yourself.
+  graphql::Json ban(std::string_view groupId, std::string_view userId,
+                    std::string_view reason = {}) const {
+    graphql::JVal vars;
+    vars["groupId"] = groupId;
+    vars["userId"] = userId;
+    if (!reason.empty()) vars["reason"] = reason;
+    return execUnwrap(gen::teams::kBanTeamMemberDocument, vars);
+  }
+
+  void banAsync(std::string_view groupId, std::string_view userId, std::string_view reason,
+                graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["groupId"] = groupId;
+    vars["userId"] = userId;
+    if (!reason.empty()) vars["reason"] = reason;
+    execUnwrapAsync(gen::teams::kBanTeamMemberDocument, vars, {}, std::move(cb));
+  }
+
+  /// Lift a ban, so the user may join or be added again (nothing is restored). Returns true
+  /// if there was a ban. Requires the `manage_members` team permission (app admins bypass).
+  graphql::Json unban(std::string_view groupId, std::string_view userId) const {
+    graphql::JVal vars;
+    vars["groupId"] = groupId;
+    vars["userId"] = userId;
+    return execUnwrap(gen::teams::kUnbanTeamMemberDocument, vars);
+  }
+
+  void unbanAsync(std::string_view groupId, std::string_view userId,
+                  graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["groupId"] = groupId;
+    vars["userId"] = userId;
+    execUnwrapAsync(gen::teams::kUnbanTeamMemberDocument, vars, {}, std::move(cb));
+  }
+
   graphql::Json setMemberRoles(const graphql::JVal& input) const {
     graphql::JVal vars;
     vars["input"] = input;
@@ -452,6 +494,50 @@ class ChannelsAPI : public DomainBase {
     vars["groupId"] = groupId;
     vars["userId"] = userId;
     execUnwrapAsync(gen::channels::kRemoveChannelMemberDocument, vars, {}, std::move(cb));
+  }
+
+  /// Ban a user from this channel: their membership (or a new one, for someone not yet in
+  /// it) becomes `banned`, their roles go, and the replication server stops routing the
+  /// channel to and from them. Joining, requesting to join and being added are then refused
+  /// with GROUP_MEMBER_BANNED (graphql::groupMemberBannedOf) until unban(); leaving or being
+  /// removed does not lift it. `reason` (at most 500 characters) is for the channel's
+  /// managers and is not shown to the banned user. Returns the banned membership. Requires
+  /// the `manage_members` channel permission (app admins bypass); never the channel's owner,
+  /// never yourself.
+  graphql::Json ban(std::string_view groupId, std::string_view userId,
+                    std::string_view reason = {}) const {
+    graphql::JVal vars;
+    vars["groupId"] = groupId;
+    vars["userId"] = userId;
+    if (!reason.empty()) vars["reason"] = reason;
+    return execUnwrap(gen::channels::kBanChannelMemberDocument, vars);
+  }
+
+  void banAsync(std::string_view groupId, std::string_view userId, std::string_view reason,
+                graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["groupId"] = groupId;
+    vars["userId"] = userId;
+    if (!reason.empty()) vars["reason"] = reason;
+    execUnwrapAsync(gen::channels::kBanChannelMemberDocument, vars, {}, std::move(cb));
+  }
+
+  /// Lift a ban, so the user may join or be added again (nothing is restored). Returns true
+  /// if there was a ban. Requires the `manage_members` channel permission (app admins
+  /// bypass).
+  graphql::Json unban(std::string_view groupId, std::string_view userId) const {
+    graphql::JVal vars;
+    vars["groupId"] = groupId;
+    vars["userId"] = userId;
+    return execUnwrap(gen::channels::kUnbanChannelMemberDocument, vars);
+  }
+
+  void unbanAsync(std::string_view groupId, std::string_view userId,
+                  graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["groupId"] = groupId;
+    vars["userId"] = userId;
+    execUnwrapAsync(gen::channels::kUnbanChannelMemberDocument, vars, {}, std::move(cb));
   }
 
   graphql::Json setMemberRoles(const graphql::JVal& input) const {

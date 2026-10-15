@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: 4b9c470a996a1c6c423849546fc23eda164605753e2aa2083485156b27a8da1c
-// operations sha256: 56c3830a074c020782259846f3597932060a419b7b0868ad6b0d1b70e166fa21
+// schema.gql sha256: 6371485e92515c0d490b1a9e6aa4203ca9badf80c1d18aa72d5b6065f1499159
+// operations sha256: c87015eb452efc3af9be2ea05767a95d686791cd9d0cd4910515f334c1464b2d
 
 #pragma once
 
@@ -2021,6 +2021,41 @@ inline constexpr std::string_view kAddChannelMemberIsolatedDocument = R"gql(muta
 })gql";
 inline constexpr std::string_view kAddChannelMemberOperationName = "AddChannelMember";
 
+/// channels/BanChannelMember.graphql
+inline constexpr std::string_view kBanChannelMemberDocument = R"gql(mutation BanChannelMember($groupId: BigInt!, $userId: BigInt!, $reason: String) {
+  banChannelMember(groupId: $groupId, userId: $userId, reason: $reason) {
+    groupMemberId
+    groupId
+    userId
+    status
+    createdAt
+    roles {
+      groupRoleId
+      roleName
+      rank
+      isSystem
+      permissions
+    }
+  }
+})gql";
+inline constexpr std::string_view kBanChannelMemberIsolatedDocument = R"gql(mutation BanChannelMember($groupId: BigInt!, $userId: BigInt!, $reason: String) {
+  banChannelMember(groupId: $groupId, userId: $userId, reason: $reason) {
+    groupMemberId
+    groupId
+    userId
+    status
+    createdAt
+    roles {
+      groupRoleId
+      roleName
+      rank
+      isSystem
+      permissions
+    }
+  }
+})gql";
+inline constexpr std::string_view kBanChannelMemberOperationName = "BanChannelMember";
+
 /// channels/Channel.graphql
 inline constexpr std::string_view kChannelDocument = R"gql(query Channel($groupId: BigInt!) {
   channel(groupId: $groupId) {
@@ -2439,6 +2474,15 @@ inline constexpr std::string_view kSetChannelPolicyIsolatedDocument = R"gql(muta
 })gql";
 inline constexpr std::string_view kSetChannelPolicyOperationName = "SetChannelPolicy";
 
+/// channels/UnbanChannelMember.graphql
+inline constexpr std::string_view kUnbanChannelMemberDocument = R"gql(mutation UnbanChannelMember($groupId: BigInt!, $userId: BigInt!) {
+  unbanChannelMember(groupId: $groupId, userId: $userId)
+})gql";
+inline constexpr std::string_view kUnbanChannelMemberIsolatedDocument = R"gql(mutation UnbanChannelMember($groupId: BigInt!, $userId: BigInt!) {
+  unbanChannelMember(groupId: $groupId, userId: $userId)
+})gql";
+inline constexpr std::string_view kUnbanChannelMemberOperationName = "UnbanChannelMember";
+
 /// channels/UpdateChannel.graphql
 inline constexpr std::string_view kUpdateChannelDocument = R"gql(mutation UpdateChannel($input: UpdateChannelInput!) {
   updateChannel(input: $input) {
@@ -2497,6 +2541,7 @@ inline constexpr std::string_view kUpdateChannelRoleOperationName = "UpdateChann
 
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "AddChannelMember") return kAddChannelMemberIsolatedDocument;
+  if (operationName == "BanChannelMember") return kBanChannelMemberIsolatedDocument;
   if (operationName == "Channel") return kChannelIsolatedDocument;
   if (operationName == "ChannelMembers") return kChannelMembersIsolatedDocument;
   if (operationName == "ChannelPolicy") return kChannelPolicyIsolatedDocument;
@@ -2513,6 +2558,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "RequestToJoinChannel") return kRequestToJoinChannelIsolatedDocument;
   if (operationName == "SetChannelMemberRoles") return kSetChannelMemberRolesIsolatedDocument;
   if (operationName == "SetChannelPolicy") return kSetChannelPolicyIsolatedDocument;
+  if (operationName == "UnbanChannelMember") return kUnbanChannelMemberIsolatedDocument;
   if (operationName == "UpdateChannel") return kUpdateChannelIsolatedDocument;
   if (operationName == "UpdateChannelRole") return kUpdateChannelRoleIsolatedDocument;
   return {};
@@ -6341,6 +6387,7 @@ inline constexpr std::string_view kInputLogSessionsDocument = R"gql(query InputL
         endReason
         messageCount
         byteCount
+        missingRecords
         messageTypes
       }
     }
@@ -6368,6 +6415,7 @@ inline constexpr std::string_view kInputLogSessionsIsolatedDocument = R"gql(quer
         endReason
         messageCount
         byteCount
+        missingRecords
         messageTypes
       }
     }
@@ -8868,6 +8916,41 @@ inline constexpr std::string_view kAddTeamMemberIsolatedDocument = R"gql(mutatio
 })gql";
 inline constexpr std::string_view kAddTeamMemberOperationName = "AddTeamMember";
 
+/// teams/BanTeamMember.graphql
+inline constexpr std::string_view kBanTeamMemberDocument = R"gql(mutation BanTeamMember($groupId: BigInt!, $userId: BigInt!, $reason: String) {
+  banTeamMember(groupId: $groupId, userId: $userId, reason: $reason) {
+    groupMemberId
+    groupId
+    userId
+    status
+    createdAt
+    roles {
+      groupRoleId
+      roleName
+      rank
+      isSystem
+      permissions
+    }
+  }
+})gql";
+inline constexpr std::string_view kBanTeamMemberIsolatedDocument = R"gql(mutation BanTeamMember($groupId: BigInt!, $userId: BigInt!, $reason: String) {
+  banTeamMember(groupId: $groupId, userId: $userId, reason: $reason) {
+    groupMemberId
+    groupId
+    userId
+    status
+    createdAt
+    roles {
+      groupRoleId
+      roleName
+      rank
+      isSystem
+      permissions
+    }
+  }
+})gql";
+inline constexpr std::string_view kBanTeamMemberOperationName = "BanTeamMember";
+
 /// teams/CreateTeam.graphql
 inline constexpr std::string_view kCreateTeamDocument = R"gql(mutation CreateTeam($input: CreateTeamInput!) {
   createTeam(input: $input) {
@@ -9286,6 +9369,15 @@ inline constexpr std::string_view kTeamsIsolatedDocument = R"gql(query Teams($ap
 })gql";
 inline constexpr std::string_view kTeamsOperationName = "Teams";
 
+/// teams/UnbanTeamMember.graphql
+inline constexpr std::string_view kUnbanTeamMemberDocument = R"gql(mutation UnbanTeamMember($groupId: BigInt!, $userId: BigInt!) {
+  unbanTeamMember(groupId: $groupId, userId: $userId)
+})gql";
+inline constexpr std::string_view kUnbanTeamMemberIsolatedDocument = R"gql(mutation UnbanTeamMember($groupId: BigInt!, $userId: BigInt!) {
+  unbanTeamMember(groupId: $groupId, userId: $userId)
+})gql";
+inline constexpr std::string_view kUnbanTeamMemberOperationName = "UnbanTeamMember";
+
 /// teams/UpdateTeam.graphql
 inline constexpr std::string_view kUpdateTeamDocument = R"gql(mutation UpdateTeam($input: UpdateTeamInput!) {
   updateTeam(input: $input) {
@@ -9344,6 +9436,7 @@ inline constexpr std::string_view kUpdateTeamRoleOperationName = "UpdateTeamRole
 
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "AddTeamMember") return kAddTeamMemberIsolatedDocument;
+  if (operationName == "BanTeamMember") return kBanTeamMemberIsolatedDocument;
   if (operationName == "CreateTeam") return kCreateTeamIsolatedDocument;
   if (operationName == "CreateTeamRole") return kCreateTeamRoleIsolatedDocument;
   if (operationName == "DeleteTeam") return kDeleteTeamIsolatedDocument;
@@ -9360,6 +9453,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "TeamPolicy") return kTeamPolicyIsolatedDocument;
   if (operationName == "TeamRoles") return kTeamRolesIsolatedDocument;
   if (operationName == "Teams") return kTeamsIsolatedDocument;
+  if (operationName == "UnbanTeamMember") return kUnbanTeamMemberIsolatedDocument;
   if (operationName == "UpdateTeam") return kUpdateTeamIsolatedDocument;
   if (operationName == "UpdateTeamRole") return kUpdateTeamRoleIsolatedDocument;
   return {};

@@ -30,7 +30,8 @@
 /// Frames are ck-exec's client protocol; payloads are MessagePack
 /// (graphql::Json::toMsgpack / fromMsgpack). The connection recovers by itself:
 /// a closed socket or a `Moved` reply asks for a host again, renews every
-/// subscription, and retries the call once. Mirrors CrowdyJS `client.exec`.
+/// subscription, and retries the call once. A close because the player's access
+/// ended (kExecCloseAccessEnded) is final instead. Mirrors CrowdyJS `client.exec`.
 /// See https://docs.dev.crowdedkingdoms.com/exec/intro.
 namespace crowdy::domains {
 
@@ -158,6 +159,12 @@ struct ExecLogsQuery {
   std::string flow;
 };
 
+/// The close code a host ends a session with when the player's access ended: a suspension,
+/// a revoke, a sign-out or an account block (ck-exec 0.16). Final: the connection does not
+/// reconnect, and ExecConnection::onAccessEnded listeners hear the reason. CrowdyJS
+/// `EXEC_CLOSE_ACCESS_ENDED`.
+inline constexpr std::uint16_t kExecCloseAccessEnded = 4403;
+
 /// One player's connection to a ck-exec host. Thread-safe. Every callback runs
 /// through the dispatcher (CrowdyClient::poll()); without one, on the
 /// transport's thread.
@@ -200,6 +207,13 @@ class ExecConnection {
 
   /// Called with the new host after every reconnect.
   void onReconnect(std::function<void(std::string host)> listener);
+  /// Called once, with the host's reason, when the host closes the connection because the
+  /// player's access ended (close code kExecCloseAccessEnded: suspended, revoked, signed out
+  /// or blocked). The connection is closed for good then and does not reconnect: calls in
+  /// flight fail `Denied` with the reason, later ones `Unavailable`. Tell the player, and
+  /// connect again only once they hold access again, with a fresh connect token
+  /// (`ExecAPI::connect` mints one; the host refuses one minted before the cut for 90 s).
+  void onAccessEnded(std::function<void(std::string reason)> listener);
 
   std::string host() const;
   bool connected() const;
@@ -208,7 +222,9 @@ class ExecConnection {
   /// connect token with HTTP 401 and its reason before any WebSocket exists, which is `Denied`
   /// with that reason (the transport's `WebSocketError::httpStatus` / `httpBody`), and a player
   /// past their session cap with 429, which is `Unavailable`. A gateway before 0.10.0 closed
-  /// with 4401, also `Denied`. Calls waiting on the attempt fail with the same reply.
+  /// with 4401, also `Denied`. Calls waiting on the attempt fail with the same reply. A host
+  /// ending the session because the player's access ended (kExecCloseAccessEnded, ck-exec
+  /// 0.16) is `Denied` with its reason, and the connection stays closed.
   std::optional<ExecReply> lastFailure() const;
   /// Close; nothing reconnects and pending calls fail as Unavailable.
   void close();

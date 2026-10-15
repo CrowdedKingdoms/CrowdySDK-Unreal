@@ -284,6 +284,10 @@ void setRefreshOutcome(GameplayTokenRefreshResult& result,
       result.errorCode = "TIMEOUT";
       result.errorMessage = outcome.errorMessage;
       break;
+    case graphql::GraphQLErrorKind::Cancelled:
+      result.errorCode = "CANCELLED";
+      result.errorMessage = outcome.errorMessage;
+      break;
     case graphql::GraphQLErrorKind::GraphQL:
       result.errorCode = "GRAPHQL_ERROR";
       result.errorMessage = "GraphQL refresh failed";
