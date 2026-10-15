@@ -41,23 +41,22 @@ struct FCrowdyChannelRolesResult
 	TArray<FCrowdyChannelRole> Roles;
 };
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FChannelAsyncOnSuccess, FCrowdyChannel, Channel);
+// One signature serves On Success and On Error, because a Blueprint async node builds its data pins from the first delegate only.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FChannelAsyncResult, FCrowdyChannel, Channel, FCrowdyChannelError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FChannelsAsyncOnSuccess, FCrowdyChannelsResult, Channels);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FChannelsAsyncResult, FCrowdyChannelsResult, Channels, FCrowdyChannelError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMyChannelsAsyncOnSuccess, FCrowdyMyChannelsResult, Memberships);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FMyChannelsAsyncResult, FCrowdyMyChannelsResult, Memberships, FCrowdyChannelError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FChannelMemberAsyncOnSuccess, FCrowdyChannelMember, Member);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FChannelMemberAsyncResult, FCrowdyChannelMember, Member, FCrowdyChannelError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FChannelMembersAsyncOnSuccess, FCrowdyChannelMembersResult, Members);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FChannelMembersAsyncResult, FCrowdyChannelMembersResult, Members, FCrowdyChannelError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FChannelRoleAsyncOnSuccess, FCrowdyChannelRole, Role);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FChannelRoleAsyncResult, FCrowdyChannelRole, Role, FCrowdyChannelError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FChannelRolesAsyncOnSuccess, FCrowdyChannelRolesResult, Roles);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FChannelRolesAsyncResult, FCrowdyChannelRolesResult, Roles, FCrowdyChannelError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FChannelPolicyAsyncOnSuccess, FCrowdyChannelPolicy, Policy);
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FChannelVoidAsyncOnSuccess);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FChannelPolicyAsyncResult, FCrowdyChannelPolicy, Policy, FCrowdyChannelError, Error, FString, Message);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FChannelAsyncOnError, FCrowdyChannelError, Error, FString, Message);
 
@@ -69,9 +68,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetMyChannels : public UBlueprintAsyncA
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FMyChannelsAsyncOnSuccess OnSuccess;
+	FMyChannelsAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FMyChannelsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Queries", DisplayName="Get My Channels")
@@ -95,9 +94,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetChannel : public UBlueprintAsyncActi
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnSuccess OnSuccess;
+	FChannelAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Queries", DisplayName="Get Channel")
@@ -122,9 +121,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetChannels : public UBlueprintAsyncAct
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelsAsyncOnSuccess OnSuccess;
+	FChannelsAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Queries", DisplayName="Get All Channels")
@@ -148,9 +147,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetChannelMembers : public UBlueprintAs
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelMembersAsyncOnSuccess OnSuccess;
+	FChannelMembersAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelMembersAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Queries", DisplayName="Get Channel Members")
@@ -175,9 +174,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetChannelRoles : public UBlueprintAsyn
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelRolesAsyncOnSuccess OnSuccess;
+	FChannelRolesAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelRolesAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Queries", DisplayName="Get Channel Roles")
@@ -202,9 +201,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetChannelPolicy : public UBlueprintAsy
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelPolicyAsyncOnSuccess OnSuccess;
+	FChannelPolicyAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelPolicyAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Queries", DisplayName="Get Channel Policy")
@@ -228,9 +227,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetPendingJoinRequests : public UBluepr
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelMembersAsyncOnSuccess OnSuccess;
+	FChannelMembersAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelMembersAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Queries", DisplayName="Get Pending Join Requests")

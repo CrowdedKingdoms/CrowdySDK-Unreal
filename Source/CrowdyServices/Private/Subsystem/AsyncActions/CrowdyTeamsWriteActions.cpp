@@ -34,14 +34,14 @@ void UCrowdyTeams_CreateTeam::Activate()
 
 void UCrowdyTeams_CreateTeam::HandleSuccess(FCrowdyTeam Team)
 {
-	OnSuccess.Broadcast(Team);
+	OnSuccess.Broadcast(Team, FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyTeams_CreateTeam::HandleError(FCrowdyTeamError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyTeam(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -76,14 +76,14 @@ void UCrowdyTeams_UpdateTeam::Activate()
 
 void UCrowdyTeams_UpdateTeam::HandleSuccess(FCrowdyTeam Team)
 {
-	OnSuccess.Broadcast(Team);
+	OnSuccess.Broadcast(Team, FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyTeams_UpdateTeam::HandleError(FCrowdyTeamError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyTeam(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -115,7 +115,7 @@ void UCrowdyTeams_DeleteTeam::Activate()
 
 void UCrowdyTeams_DeleteTeam::HandleSuccess()
 {
-	OnSuccess.Broadcast();
+	OnSuccess.Broadcast(FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
@@ -154,14 +154,14 @@ void UCrowdyTeams_JoinTeam::Activate()
 
 void UCrowdyTeams_JoinTeam::HandleSuccess(FCrowdyTeamMember Member)
 {
-	OnSuccess.Broadcast(Member);
+	OnSuccess.Broadcast(Member, FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyTeams_JoinTeam::HandleError(FCrowdyTeamError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyTeamMember(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -194,14 +194,14 @@ void UCrowdyTeams_RequestToJoinTeam::Activate()
 
 void UCrowdyTeams_RequestToJoinTeam::HandleSuccess(FCrowdyTeamMember Member)
 {
-	OnSuccess.Broadcast(Member);
+	OnSuccess.Broadcast(Member, FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyTeams_RequestToJoinTeam::HandleError(FCrowdyTeamError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyTeamMember(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -233,7 +233,7 @@ void UCrowdyTeams_LeaveTeam::Activate()
 
 void UCrowdyTeams_LeaveTeam::HandleSuccess()
 {
-	OnSuccess.Broadcast();
+	OnSuccess.Broadcast(FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
@@ -274,14 +274,14 @@ void UCrowdyTeams_AddTeamMember::Activate()
 
 void UCrowdyTeams_AddTeamMember::HandleSuccess(FCrowdyTeamMember Member)
 {
-	OnSuccess.Broadcast(Member);
+	OnSuccess.Broadcast(Member, FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyTeams_AddTeamMember::HandleError(FCrowdyTeamError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyTeamMember(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -315,7 +315,7 @@ void UCrowdyTeams_RemoveTeamMember::Activate()
 
 void UCrowdyTeams_RemoveTeamMember::HandleSuccess()
 {
-	OnSuccess.Broadcast();
+	OnSuccess.Broadcast(FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
@@ -323,6 +323,89 @@ void UCrowdyTeams_RemoveTeamMember::HandleError(FCrowdyTeamError Error, FString 
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
+	SetReadyToDestroy();
+}
+
+
+UCrowdyTeams_BanTeamMember* UCrowdyTeams_BanTeamMember::BanTeamMember(
+	UObject* WorldContextObject, int64 TeamId, int64 UserId, const FString& Reason)
+{
+	UCrowdyTeams_BanTeamMember* Action = NewObject<UCrowdyTeams_BanTeamMember>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->TeamId = TeamId;
+	Action->UserId = UserId;
+	Action->Reason = Reason;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyTeams_BanTeamMember::Activate()
+{
+	UCrowdyTeams* Teams = GetTeamsSubsystem(WorldContextObject);
+	if (!Teams)
+	{
+		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyTeams not found"));
+		HandleError(Err, Err.Message);
+		return;
+	}
+	FOnTeamMemberSuccess S;
+	S.BindDynamic(this, &UCrowdyTeams_BanTeamMember::HandleSuccess);
+	FOnTeamError E;
+	E.BindDynamic(this, &UCrowdyTeams_BanTeamMember::HandleError);
+	Teams->BanTeamMember(TeamId, UserId, Reason, S, E);
+}
+
+void UCrowdyTeams_BanTeamMember::HandleSuccess(FCrowdyTeamMember Member)
+{
+	OnSuccess.Broadcast(Member, FCrowdyTeamError(), FString());
+	SetReadyToDestroy();
+}
+
+void UCrowdyTeams_BanTeamMember::HandleError(FCrowdyTeamError Error, FString Message)
+{
+	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
+	OnError.Broadcast(FCrowdyTeamMember(), Error, Error.Message);
+	SetReadyToDestroy();
+}
+
+
+UCrowdyTeams_UnbanTeamMember* UCrowdyTeams_UnbanTeamMember::UnbanTeamMember(
+	UObject* WorldContextObject, int64 TeamId, int64 UserId)
+{
+	UCrowdyTeams_UnbanTeamMember* Action = NewObject<UCrowdyTeams_UnbanTeamMember>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->TeamId = TeamId;
+	Action->UserId = UserId;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyTeams_UnbanTeamMember::Activate()
+{
+	UCrowdyTeams* Teams = GetTeamsSubsystem(WorldContextObject);
+	if (!Teams)
+	{
+		const FCrowdyTeamError Err = FCrowdyTeamError::FromMessage(TEXT("UCrowdyTeams not found"));
+		HandleError(Err, Err.Message);
+		return;
+	}
+	FOnTeamUnbanSuccess S;
+	S.BindDynamic(this, &UCrowdyTeams_UnbanTeamMember::HandleSuccess);
+	FOnTeamError E;
+	E.BindDynamic(this, &UCrowdyTeams_UnbanTeamMember::HandleError);
+	Teams->UnbanTeamMember(TeamId, UserId, S, E);
+}
+
+void UCrowdyTeams_UnbanTeamMember::HandleSuccess(bool bWasBanned)
+{
+	OnSuccess.Broadcast(bWasBanned, FCrowdyTeamError(), FString());
+	SetReadyToDestroy();
+}
+
+void UCrowdyTeams_UnbanTeamMember::HandleError(FCrowdyTeamError Error, FString Message)
+{
+	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
+	OnError.Broadcast(false, Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -357,14 +440,14 @@ void UCrowdyTeams_SetTeamMemberRoles::Activate()
 
 void UCrowdyTeams_SetTeamMemberRoles::HandleSuccess(FCrowdyTeamMember Member)
 {
-	OnSuccess.Broadcast(Member);
+	OnSuccess.Broadcast(Member, FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyTeams_SetTeamMemberRoles::HandleError(FCrowdyTeamError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyTeamMember(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -400,14 +483,14 @@ void UCrowdyTeams_CreateTeamRole::Activate()
 
 void UCrowdyTeams_CreateTeamRole::HandleSuccess(FCrowdyTeamRole Role)
 {
-	OnSuccess.Broadcast(Role);
+	OnSuccess.Broadcast(Role, FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyTeams_CreateTeamRole::HandleError(FCrowdyTeamError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyTeamRole(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -442,14 +525,14 @@ void UCrowdyTeams_UpdateTeamRole::Activate()
 
 void UCrowdyTeams_UpdateTeamRole::HandleSuccess(FCrowdyTeamRole Role)
 {
-	OnSuccess.Broadcast(Role);
+	OnSuccess.Broadcast(Role, FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyTeams_UpdateTeamRole::HandleError(FCrowdyTeamError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyTeamRole(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -481,7 +564,7 @@ void UCrowdyTeams_DeleteTeamRole::Activate()
 
 void UCrowdyTeams_DeleteTeamRole::HandleSuccess()
 {
-	OnSuccess.Broadcast();
+	OnSuccess.Broadcast(FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
@@ -524,13 +607,13 @@ void UCrowdyTeams_SetTeamPolicy::Activate()
 
 void UCrowdyTeams_SetTeamPolicy::HandleSuccess(FCrowdyTeamPolicy Policy)
 {
-	OnSuccess.Broadcast(Policy);
+	OnSuccess.Broadcast(Policy, FCrowdyTeamError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyTeams_SetTeamPolicy::HandleError(FCrowdyTeamError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyTeamPolicy(), Error, Error.Message);
 	SetReadyToDestroy();
 }

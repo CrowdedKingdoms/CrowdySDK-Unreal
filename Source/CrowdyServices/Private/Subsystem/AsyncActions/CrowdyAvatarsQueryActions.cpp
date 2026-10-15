@@ -31,14 +31,14 @@ void UCrowdyAvatars_GetMyAvatars::HandleSuccess(const TArray<FCrowdyAvatar>& Ava
 {
 	FCrowdyAvatarList R;
 	R.Avatars = Avatars;
-	OnSuccess.Broadcast(R);
+	OnSuccess.Broadcast(R, FCrowdyAvatarError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyAvatars_GetMyAvatars::HandleError(FCrowdyAvatarError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyAvatarList(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -69,14 +69,14 @@ void UCrowdyAvatars_GetAvatar::Activate()
 
 void UCrowdyAvatars_GetAvatar::HandleSuccess(FCrowdyAvatar Avatar)
 {
-	OnSuccess.Broadcast(Avatar);
+	OnSuccess.Broadcast(Avatar, FCrowdyAvatarError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyAvatars_GetAvatar::HandleError(FCrowdyAvatarError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyAvatar(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -109,14 +109,14 @@ void UCrowdyAvatars_GetUserAvatars::HandleSuccess(const TArray<FCrowdyAvatar>& A
 {
 	FCrowdyAvatarList R;
 	R.Avatars = Avatars;
-	OnSuccess.Broadcast(R);
+	OnSuccess.Broadcast(R, FCrowdyAvatarError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyAvatars_GetUserAvatars::HandleError(FCrowdyAvatarError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyAvatarList(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -148,14 +148,14 @@ void UCrowdyAvatars_GetAvatarAppState::Activate()
 
 void UCrowdyAvatars_GetAvatarAppState::HandleSuccess(FCrowdyAppAvatarState AppState)
 {
-	OnSuccess.Broadcast(AppState);
+	OnSuccess.Broadcast(AppState, FCrowdyAvatarError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyAvatars_GetAvatarAppState::HandleError(FCrowdyAvatarError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyAppAvatarState(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -189,13 +189,13 @@ void UCrowdyAvatars_GetAvatarAppStates::HandleSuccess(const TArray<FCrowdyAppAva
 {
 	FCrowdyAppAvatarStateList R;
 	R.AppStates = AppStates;
-	OnSuccess.Broadcast(R);
+	OnSuccess.Broadcast(R, FCrowdyAvatarError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyAvatars_GetAvatarAppStates::HandleError(FCrowdyAvatarError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyAppAvatarStateList(), Error, Error.Message);
 	SetReadyToDestroy();
 }

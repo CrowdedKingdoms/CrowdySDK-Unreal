@@ -48,4 +48,14 @@ public:
 
 	UFUNCTION()
 	void HandleConsentError(FString Message) { ConsentErrors.Add(Message); }
+
+	TArray<FString> AccessEndedReasons;
+	TArray<FString> AccessEndedBlockedUntils;
+
+	UFUNCTION()
+	void HandleAccessEnded(const FString& Reason, const FString& BlockedUntil)
+	{
+		AccessEndedReasons.Add(Reason);
+		AccessEndedBlockedUntils.Add(BlockedUntil);
+	}
 };

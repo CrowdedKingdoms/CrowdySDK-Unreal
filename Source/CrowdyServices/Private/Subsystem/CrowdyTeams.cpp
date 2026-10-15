@@ -549,6 +549,81 @@ void UCrowdyTeams::RemoveTeamMember(int64 TeamId, int64 UserId,
 		}));
 }
 
+void UCrowdyTeams::BanTeamMember(int64 TeamId, int64 UserId, const FString& Reason,
+                                 FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError)
+{
+	FCrowdyTeamError Refusal;
+	if (BanReasonTooLong(Reason, Refusal))
+	{
+		OnError.ExecuteIfBound(Refusal, Refusal.Message);
+		return;
+	}
+
+	FCrowdyCppClient* Client = ResolveClient();
+	if (!Client)
+	{
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+	Variables->SetStringField(TEXT("userId"), BigInt(UserId));
+	if (!Reason.IsEmpty())
+	{
+		Variables->SetStringField(TEXT("reason"), Reason);
+	}
+
+	TWeakObjectPtr<UCrowdyTeams> WeakThis(this);
+	const uint32 Clears = ClearCount;
+	Client->RunOp(TeamsDomain, TEXT("BanTeamMember"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Clears, OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyTeamMember Member;
+			FCrowdyTeamError Error;
+			if (!ReadObject(Result, TEXT("banTeamMember"), Member, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			if (UCrowdyTeams* Self = WeakThis.Get())
+			{
+				Self->RefreshAfterChange(Clears);
+			}
+			OnSuccess.ExecuteIfBound(Member);
+		}));
+}
+
+void UCrowdyTeams::UnbanTeamMember(int64 TeamId, int64 UserId,
+                                   FOnTeamUnbanSuccess OnSuccess, FOnTeamError OnError)
+{
+	FCrowdyCppClient* Client = ResolveClient();
+	if (!Client)
+	{
+		const FCrowdyTeamError Error = ClientUnavailableError<FCrowdyTeamError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(TeamId));
+	Variables->SetStringField(TEXT("userId"), BigInt(UserId));
+
+	Client->RunOp(TeamsDomain, TEXT("UnbanTeamMember"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			bool bWasBanned = false;
+			FCrowdyTeamError Error;
+			if (!ReadBoolean(Result, TEXT("unbanTeamMember"), bWasBanned, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(bWasBanned);
+		}));
+}
+
 void UCrowdyTeams::CreateTeamRole(int64 TeamId, const FString& RoleName,
                                   FCrowdyTeamPermissions Permissions, int32 Rank,
                                   FOnTeamRoleSuccess OnSuccess, FOnTeamError OnError)

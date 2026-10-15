@@ -12,6 +12,9 @@ inline constexpr int32 CrowdyCppMaxBusyRetries = 3;
 // Refuses a gameplay-token mint or refresh until the player records consent; no retry succeeds before that.
 inline constexpr const TCHAR* CrowdyCppLegalAcceptanceRequiredCode = TEXT("LEGAL_ACCEPTANCE_REQUIRED");
 
+// A platform operator blocked the account: every sign-in and request is refused, and retrying does not help.
+inline constexpr const TCHAR* CrowdyCppAccountBlockedCode = TEXT("ACCOUNT_BLOCKED");
+
 // Whether busy refusals are retried at all: the crowdy.net.retry.busy console variable. Game thread only.
 CROWDYCPPBRIDGE_API bool CrowdyCppIsBusyRetryEnabled();
 
@@ -54,6 +57,8 @@ struct FCrowdyCppAuthResult
 {
 	bool bOk = false;
 	FString ErrorMessage;
+	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
+	FString BlockedUntil;   // ISO-8601 end of a timed block on ACCOUNT_BLOCKED; empty while it lasts until lifted
 	FString SessionToken;
 	int64 SessionGameTokenID = 0;
 	int64 UserID = 0;
@@ -72,6 +77,7 @@ struct FCrowdyCppAppTokenResult
 	bool bOk = false;
 	FString ErrorMessage;
 	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
+	FString BlockedUntil;   // as on FCrowdyCppAuthResult
 	FString AppToken;
 	int64 AppGameTokenID = 0;
 	FString AppID;
@@ -659,7 +665,7 @@ public:
 	// The same, for the ck-exec gateway a client from MakeForTest stands in for.
 	void TestExecOpen();
 	void TestExecReceiveBinary(const TArray<uint8>& Bytes);
-	void TestExecCloseFromServer(int32 Code, bool bClean);
+	void TestExecCloseFromServer(int32 Code, bool bClean, const FString& Reason = FString());
 	TArray<TArray<uint8>> TakeTestExecSentFrames();
 	int32 NumTestExecConnections() const;
 	bool GetTestExecConnectRequest(FString& OutUrl, FString& OutSubprotocol) const;

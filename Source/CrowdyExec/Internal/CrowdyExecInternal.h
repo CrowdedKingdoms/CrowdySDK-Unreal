@@ -261,6 +261,31 @@ namespace CrowdyExec
 	/** Server text made safe for one line: at most MaxChars characters, control and direction-override characters replaced, a cut marked. */
 	FString SafeText(const FString& Text, int32 MaxChars);
 
+	/** Whether Text is the platform's reason for ending a player's access: "access ended: <why>", or "access ended" alone. */
+	inline bool IsAccessEndedText(const FString& Text)
+	{
+		return Text.StartsWith(TEXT("access ended"), ESearchCase::CaseSensitive);
+	}
+
+	/** Whether Reason is one AccessEndedReason made. */
+	inline bool IsAccessEndedReason(const FString& Reason)
+	{
+		return Reason.StartsWith(TEXT("Your access ended: "), ESearchCase::CaseSensitive);
+	}
+
+	/** The reason an object or call fails with once the player's access ended, from the platform's text or an account block's message. */
+	inline FString AccessEndedReason(const FString& ServerText)
+	{
+		FString Why = ServerText;
+		if (IsAccessEndedText(ServerText))
+		{
+			Why = ServerText.RightChop(FCString::Strlen(TEXT("access ended"))).TrimStart();
+			Why.RemoveFromStart(TEXT(":"), ESearchCase::CaseSensitive);
+			Why.TrimStartInline();
+		}
+		return FString::Printf(TEXT("Your access ended: %s"), Why.IsEmpty() ? TEXT("no reason was given") : *SafeText(Why, 256));
+	}
+
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Forgets which unknown enum names were reported, so a test sees every report again. */
 	void ResetUnknownEnumReportsForTest();

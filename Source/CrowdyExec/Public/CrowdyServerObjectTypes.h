@@ -43,7 +43,9 @@ enum class ECrowdyServerCallOutcome : uint8
 	/** The Server Object was given back, or the player signed out, before the call finished. */
 	Canceled,
 	/** The game's server or this type is switched off or paused; try again later. */
-	Paused UMETA(DisplayName = "Paused")
+	Paused UMETA(DisplayName = "Paused"),
+	/** The player's access to the game ended (suspended, revoked, expired, signed out or blocked); nothing works until they have access again. */
+	AccessEnded UMETA(DisplayName = "Access Ended")
 };
 
 /** Which instance of a Server Object type to find, when it is found by its definition. */

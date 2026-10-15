@@ -25,15 +25,14 @@ struct CROWDYSERVICES_API FCrowdyAppAvatarStateList
 	TArray<FCrowdyAppAvatarState> AppStates;
 };
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAvatarAsyncOnSuccess, FCrowdyAvatar, Avatar);
+// One signature serves On Success and On Error, because a Blueprint async node builds its data pins from the first delegate only.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAvatarAsyncResult, FCrowdyAvatar, Avatar, FCrowdyAvatarError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAvatarsAsyncOnSuccess, FCrowdyAvatarList, Result);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAvatarsAsyncResult, FCrowdyAvatarList, Result, FCrowdyAvatarError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAppStateAsyncOnSuccess, FCrowdyAppAvatarState, AppState);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAppStateAsyncResult, FCrowdyAppAvatarState, AppState, FCrowdyAvatarError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAppStatesAsyncOnSuccess, FCrowdyAppAvatarStateList, Result);
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FAvatarVoidAsyncOnSuccess);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAppStatesAsyncResult, FCrowdyAppAvatarStateList, Result, FCrowdyAvatarError, Error, FString, Message);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAvatarsAsyncOnError, FCrowdyAvatarError, Error, FString, Message);
 
@@ -44,9 +43,9 @@ class CROWDYSERVICES_API UCrowdyAvatars_GetMyAvatars : public UBlueprintAsyncAct
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnSuccess OnSuccess;
+	FAvatarsAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnError OnError;
+	FAvatarsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Queries", DisplayName="Get My Avatars")
@@ -69,9 +68,9 @@ class CROWDYSERVICES_API UCrowdyAvatars_GetAvatar : public UBlueprintAsyncAction
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAvatarAsyncOnSuccess OnSuccess;
+	FAvatarAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnError OnError;
+	FAvatarAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Queries", DisplayName="Get Avatar")
@@ -95,9 +94,9 @@ class CROWDYSERVICES_API UCrowdyAvatars_GetUserAvatars : public UBlueprintAsyncA
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnSuccess OnSuccess;
+	FAvatarsAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnError OnError;
+	FAvatarsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Queries", DisplayName="Get User Avatars")
@@ -121,9 +120,9 @@ class CROWDYSERVICES_API UCrowdyAvatars_GetAvatarAppState : public UBlueprintAsy
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAppStateAsyncOnSuccess OnSuccess;
+	FAppStateAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnError OnError;
+	FAppStateAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Queries", DisplayName="Get Avatar App State")
@@ -147,9 +146,9 @@ class CROWDYSERVICES_API UCrowdyAvatars_GetAvatarAppStates : public UBlueprintAs
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAppStatesAsyncOnSuccess OnSuccess;
+	FAppStatesAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnError OnError;
+	FAppStatesAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Queries", DisplayName="Get Avatar App States")

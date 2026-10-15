@@ -490,6 +490,15 @@ private:
 	 */
 	void ScheduleRotationRetry(const TCHAR* Reason);
 
+	/**
+	 * When ErrorCode is ACCOUNT_BLOCKED, ends the session's access with the server's message, stops rotation and
+	 * returns true. A blocked account is refused every sign-in and mint, so none of them is retried.
+	 */
+	bool NoteAccountBlocked(const FString& ErrorCode, const FString& Message, const FString& BlockedUntil);
+
+	/** Set by NoteAccountBlocked until a sign-in succeeds; stops token rotation and recovery from re-minting. */
+	bool bAccountBlocked = false;
+
 	/** Rotation attempts spent since the last app token was applied. */
 	int32 RotationRetriesUsed = 0;
 

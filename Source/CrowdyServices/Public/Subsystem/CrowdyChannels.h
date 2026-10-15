@@ -37,6 +37,8 @@ DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelPolicySuccess, FCrowdyChannelPolicy,
 
 DECLARE_DYNAMIC_DELEGATE(FOnChannelVoidSuccess);
 
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnChannelUnbanSuccess, bool, bWasBanned);
+
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnChannelError, FCrowdyChannelError, Error, FString, Message);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyChannelsCacheChanged, const TArray<FCrowdyChannelMembership>&, Memberships);
@@ -132,6 +134,16 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Members")
 	void RemoveChannelMember(int64 ChannelId, int64 UserId, FOnChannelVoidSuccess OnSuccess, FOnChannelError OnError);
+
+	// Bans a user from the channel: removes them and refuses every later join, request or add until unbanned. Needs
+	// manage_members; never the owner or yourself. A Reason over 500 characters is refused without a request.
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Members")
+	void BanChannelMember(int64 ChannelId, int64 UserId, const FString& Reason,
+	                      FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError);
+
+	// Lifts a ban. Was Banned is false when the user had none.
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Members")
+	void UnbanChannelMember(int64 ChannelId, int64 UserId, FOnChannelUnbanSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Roles")
 	void CreateChannelRole(int64 ChannelId, const FString& RoleName, FCrowdyChannelPermissions Permissions,

@@ -2,10 +2,20 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Algo/AnyOf.h"
+#include "CrowdyChannelsTestTypes.h"
 #include "CrowdyServiceApiSupport.h"
 #include "CrowdyServiceApiTestSupport.h"
+#include "CrowdyTeamsTestTypes.h"
 #include "Dom/JsonObject.h"
+#include "Engine/GameInstance.h"
+#include "Kismet/BlueprintAsyncActionBase.h"
 #include "Misc/AutomationTest.h"
+#include "Subsystem/CrowdyChannels.h"
+#include "Subsystem/CrowdyTeams.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/UnrealType.h"
 #include "Queries/Data/Channels/Types/FCrowdyChannelError.h"
 #include "Queries/Data/Channels/Types/FCrowdyChannelMember.h"
 #include "Queries/Data/Channels/Types/FCrowdyChannelMembership.h"
@@ -50,6 +60,8 @@ namespace
 		{ ECrowdyCppApiDomain::Teams, TEXT("LeaveTeam") },
 		{ ECrowdyCppApiDomain::Teams, TEXT("AddTeamMember") },
 		{ ECrowdyCppApiDomain::Teams, TEXT("RemoveTeamMember") },
+		{ ECrowdyCppApiDomain::Teams, TEXT("BanTeamMember") },
+		{ ECrowdyCppApiDomain::Teams, TEXT("UnbanTeamMember") },
 		{ ECrowdyCppApiDomain::Teams, TEXT("CreateTeamRole") },
 		{ ECrowdyCppApiDomain::Teams, TEXT("UpdateTeamRole") },
 		{ ECrowdyCppApiDomain::Teams, TEXT("DeleteTeamRole") },
@@ -70,6 +82,8 @@ namespace
 		{ ECrowdyCppApiDomain::Channels, TEXT("LeaveChannel") },
 		{ ECrowdyCppApiDomain::Channels, TEXT("AddChannelMember") },
 		{ ECrowdyCppApiDomain::Channels, TEXT("RemoveChannelMember") },
+		{ ECrowdyCppApiDomain::Channels, TEXT("BanChannelMember") },
+		{ ECrowdyCppApiDomain::Channels, TEXT("UnbanChannelMember") },
 		{ ECrowdyCppApiDomain::Channels, TEXT("CreateChannelRole") },
 		{ ECrowdyCppApiDomain::Channels, TEXT("UpdateChannelRole") },
 		{ ECrowdyCppApiDomain::Channels, TEXT("DeleteChannelRole") },
@@ -397,6 +411,224 @@ bool FCrowdyGroupServiceVariableShapeTest::RunTest(const FString& Parameters)
 	FString Unused;
 	TestFalse(TEXT("nothing is left at the top level"), Variables->TryGetStringField(TEXT("groupId"), Unused));
 
+	return true;
+}
+
+// GROUP_MEMBER_BANNED is the one failure a caller must tell apart from every other refusal, and the server is free to
+// reword its message, so Banned comes from the error code alone. The message here deliberately matches another class.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGroupServiceBannedCodeTest,
+	"CrowdySDK.CrowdyServices.GroupBannedFromErrorCode", GroupServiceTestFlags)
+bool FCrowdyGroupServiceBannedCodeTest::RunTest(const FString& Parameters)
+{
+	FCrowdyCppJsonResult Banned;
+	Banned.bTransportOk = false;
+	Banned.ErrorMessage = TEXT("Team not found");
+	Banned.ErrorCode = TEXT("GROUP_MEMBER_BANNED");
+
+	TestEqual(TEXT("a banned code maps to Banned on a team"),
+		CrowdyServiceApi::DescribeFailure<FCrowdyTeamError>(Banned).Code, ECrowdyTeamErrorCode::Banned);
+	TestEqual(TEXT("and on a channel"),
+		CrowdyServiceApi::DescribeFailure<FCrowdyChannelError>(Banned).Code, ECrowdyChannelErrorCode::Banned);
+	TestEqual(TEXT("and keeps the server's message to show"),
+		CrowdyServiceApi::DescribeFailure<FCrowdyTeamError>(Banned).Message, FString(TEXT("Team not found")));
+
+	FCrowdyCppJsonResult WordOnly;
+	WordOnly.bTransportOk = false;
+	WordOnly.ErrorMessage = TEXT("You are banned from this team");
+	TestEqual(TEXT("the word banned in a message is not the code"),
+		CrowdyServiceApi::DescribeFailure<FCrowdyTeamError>(WordOnly).Code, ECrowdyTeamErrorCode::ServerError);
+
+	FCrowdyCppJsonResult OtherCode;
+	OtherCode.bTransportOk = false;
+	OtherCode.ErrorMessage = TEXT("Team not found");
+	OtherCode.ErrorCode = TEXT("NOT_FOUND");
+	TestEqual(TEXT("another code leaves the message classification alone"),
+		CrowdyServiceApi::DescribeFailure<FCrowdyChannelError>(OtherCode).Code, ECrowdyChannelErrorCode::NotFound);
+
+	return true;
+}
+
+// A ban reason longer than 500 characters never leaves the client: the call answers through its error delegate and no
+// request is queued. Exactly 500 is allowed, so the boundary is pinned from both sides.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGroupServiceBanReasonLimitTest,
+	"CrowdySDK.CrowdyServices.GroupBanReasonLimit", GroupServiceTestFlags)
+bool FCrowdyGroupServiceBanReasonLimitTest::RunTest(const FString& Parameters)
+{
+	const FString AtLimit = FString::ChrN(CrowdyServiceApi::MaxBanReasonLength, TEXT('a'));
+	const FString OverLimit = AtLimit + TEXT("a");
+
+	FCrowdyTeamError HelperError;
+	TestFalse(TEXT("a reason of exactly 500 characters is not too long"),
+		CrowdyServiceApi::BanReasonTooLong(AtLimit, HelperError));
+	TestTrue(TEXT("a reason of 501 characters is"), CrowdyServiceApi::BanReasonTooLong(OverLimit, HelperError));
+	TestEqual(TEXT("and is refused as a policy violation"), HelperError.Code, ECrowdyTeamErrorCode::PolicyViolation);
+
+	const TStrongObjectPtr<UGameInstance> Instance(NewObject<UGameInstance>(GetTransientPackage(), NAME_None, RF_Transient));
+
+	const TStrongObjectPtr<UCrowdyTeams> Teams(NewObject<UCrowdyTeams>(Instance.Get()));
+	const TStrongObjectPtr<UCrowdyTeamsTestListener> TeamListener(
+		NewObject<UCrowdyTeamsTestListener>(GetTransientPackage(), NAME_None, RF_Transient));
+	const TSharedPtr<FCrowdyCppClient> Client = FCrowdyCppClient::MakeForTest(TEXT(R"({"data":{
+		"banTeamMember":{"groupMemberId":"900","groupId":"7","userId":"142","status":"banned"},
+		"myTeams":[]}})"), 200);
+	if (!TestTrue(TEXT("the scripted client was built"), Client.IsValid()))
+	{
+		return false;
+	}
+	Teams->InitializeForTest(Client);
+
+	FOnTeamMemberSuccess OnTeamBanned;
+	OnTeamBanned.BindDynamic(TeamListener.Get(), &UCrowdyTeamsTestListener::HandleMember);
+	FOnTeamError OnTeamError;
+	OnTeamError.BindDynamic(TeamListener.Get(), &UCrowdyTeamsTestListener::HandleError);
+
+	Teams->BanTeamMember(7, 142, OverLimit, OnTeamBanned, OnTeamError);
+	TestEqual(TEXT("a team ban with a long reason answers its error delegate"), TeamListener->Errors.Num(), 1);
+	TestEqual(TEXT("and sends nothing"), Client->NumPendingRequests(), 0);
+
+	Teams->BanTeamMember(7, 142, AtLimit, OnTeamBanned, OnTeamError);
+	TestTrue(TEXT("a team ban at the limit is sent"), Client->NumPendingRequests() > 0);
+	for (int32 Pass = 0; Pass < 8 && Client->NumPendingRequests() > 0; ++Pass)
+	{
+		Client->Poll();
+	}
+	TestEqual(TEXT("and its answer reaches the success delegate"), TeamListener->Successes, 1);
+	TestEqual(TEXT("without a further error"), TeamListener->Errors.Num(), 1);
+
+	const TStrongObjectPtr<UCrowdyChannels> Channels(NewObject<UCrowdyChannels>(Instance.Get()));
+	const TStrongObjectPtr<UCrowdyChannelsTestListener> ChannelListener(
+		NewObject<UCrowdyChannelsTestListener>(GetTransientPackage(), NAME_None, RF_Transient));
+
+	FOnChannelMemberSuccess OnChannelBanned;
+	OnChannelBanned.BindDynamic(ChannelListener.Get(), &UCrowdyChannelsTestListener::HandleMember);
+	FOnChannelError OnChannelError;
+	OnChannelError.BindDynamic(ChannelListener.Get(), &UCrowdyChannelsTestListener::HandleError);
+
+	Channels->BanChannelMember(7, 142, OverLimit, OnChannelBanned, OnChannelError);
+	if (TestEqual(TEXT("a channel ban with a long reason answers its error delegate"),
+		ChannelListener->ErrorCodes.Num(), 1))
+	{
+		TestEqual(TEXT("as a policy violation"), ChannelListener->ErrorCodes[0],
+			ECrowdyChannelErrorCode::PolicyViolation);
+	}
+
+	// This subsystem has no client on a bare game instance, so a reason the limit lets through reaches the point where
+	// the client is resolved and fails as a network error: a different code from the length refusal.
+	Channels->BanChannelMember(7, 142, AtLimit, OnChannelBanned, OnChannelError);
+	if (TestEqual(TEXT("a channel ban at the limit gets past the length check"), ChannelListener->ErrorCodes.Num(), 2))
+	{
+		TestEqual(TEXT("and is not refused for its length"), ChannelListener->ErrorCodes[1],
+			ECrowdyChannelErrorCode::NetworkError);
+	}
+
+	return true;
+}
+
+// Unban answers a boolean, true when there was a ban to lift. That boolean is the whole answer, so a payload without it
+// must be refused rather than read as "was not banned".
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGroupServiceUnbanAnswerTest,
+	"CrowdySDK.CrowdyServices.GroupUnbanAnswer", GroupServiceTestFlags)
+bool FCrowdyGroupServiceUnbanAnswerTest::RunTest(const FString& Parameters)
+{
+	FCrowdyChannelError Error;
+	bool bWasBanned = false;
+
+	TestTrue(TEXT("a true answer reads"), CrowdyServiceApi::ReadBoolean(
+		MakeResult(TEXT(R"({ "unbanChannelMember": true })")), TEXT("unbanChannelMember"), bWasBanned, Error));
+	TestTrue(TEXT("as there having been a ban"), bWasBanned);
+
+	TestTrue(TEXT("a false answer reads"), CrowdyServiceApi::ReadBoolean(
+		MakeResult(TEXT(R"({ "unbanChannelMember": false })")), TEXT("unbanChannelMember"), bWasBanned, Error));
+	TestFalse(TEXT("as there having been none"), bWasBanned);
+
+	bWasBanned = true;
+	TestFalse(TEXT("an answer without the field is refused"), CrowdyServiceApi::ReadBoolean(
+		MakeResult(TEXT(R"({ "unbanTeamMember": true })")), TEXT("unbanChannelMember"), bWasBanned, Error));
+	TestEqual(TEXT("and reported as a server error"), Error.Code, ECrowdyChannelErrorCode::ServerError);
+
+	return true;
+}
+
+// A Blueprint async node builds its data pins from its first assignable delegate only, so On Error shows an Error and a
+// Message pin only when every assignable delegate of the node shares one signature that carries them.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAsyncNodesShareOneSignatureTest,
+	"CrowdySDK.CrowdyServices.AsyncNodesShareOneSignature", GroupServiceTestFlags)
+bool FCrowdyAsyncNodesShareOneSignatureTest::RunTest(const FString& Parameters)
+{
+	const TCHAR* const Prefixes[] = { TEXT("CrowdyChannels_"), TEXT("CrowdyTeams_"), TEXT("CrowdyAvatars_"), TEXT("CrowdyAuth_") };
+
+	auto CollectParameters = [](const UFunction* Signature)
+	{
+		TArray<const FProperty*> Result;
+		for (TFieldIterator<FProperty> It(Signature); It; ++It)
+		{
+			if (It->HasAnyPropertyFlags(CPF_Parm) && !It->HasAnyPropertyFlags(CPF_ReturnParm))
+			{
+				Result.Add(*It);
+			}
+		}
+		return Result;
+	};
+
+	auto SameParameter = [](const FProperty* A, const FProperty* B)
+	{
+		if (A->GetFName() != B->GetFName() || A->GetClass() != B->GetClass())
+		{
+			return false;
+		}
+		const FStructProperty* StructA = CastField<const FStructProperty>(A);
+		return !StructA || StructA->Struct == CastField<const FStructProperty>(B)->Struct;
+	};
+
+	int32 Checked = 0;
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		const UClass* Class = *It;
+		if (!Class->IsChildOf(UBlueprintAsyncActionBase::StaticClass()) || Class->HasAnyClassFlags(CLASS_Abstract)
+			|| Class->GetOutermost()->GetName() != TEXT("/Script/CrowdyServices"))
+		{
+			continue;
+		}
+		const FString ClassName = Class->GetName();
+		const bool bChecked = Algo::AnyOf(Prefixes, [&ClassName](const TCHAR* Prefix) { return ClassName.StartsWith(Prefix); });
+		if (!bChecked)
+		{
+			continue;
+		}
+		++Checked;
+
+		TArray<const FProperty*> FirstParameters;
+		bool bFirst = true;
+		for (TFieldIterator<FMulticastDelegateProperty> Property(Class, EFieldIterationFlags::None); Property; ++Property)
+		{
+			if (!Property->HasAnyPropertyFlags(CPF_BlueprintAssignable))
+			{
+				continue;
+			}
+			const TArray<const FProperty*> Current = CollectParameters(Property->SignatureFunction);
+			if (bFirst)
+			{
+				FirstParameters = Current;
+				bFirst = false;
+				continue;
+			}
+			bool bSame = Current.Num() == FirstParameters.Num();
+			for (int32 Index = 0; bSame && Index < Current.Num(); ++Index)
+			{
+				bSame = SameParameter(Current[Index], FirstParameters[Index]);
+			}
+			TestTrue(FString::Printf(TEXT("%s: %s has the signature of its first delegate"), *ClassName, *Property->GetName()), bSame);
+		}
+
+		TestFalse(FString::Printf(TEXT("%s has an assignable delegate"), *ClassName), bFirst);
+		const bool bHasError = FirstParameters.ContainsByPredicate([](const FProperty* P) { return P->GetFName() == TEXT("Error"); });
+		const bool bHasMessage = FirstParameters.ContainsByPredicate([](const FProperty* P) { return P->GetFName() == TEXT("Message"); });
+		// Sign-in failures carry only the server's text.
+		TestTrue(FString::Printf(TEXT("%s: its signature has an Error parameter"), *ClassName), bHasError || ClassName.StartsWith(TEXT("CrowdyAuth_")));
+		TestTrue(FString::Printf(TEXT("%s: its signature has a Message parameter"), *ClassName), bHasMessage);
+	}
+
+	TestTrue(FString::Printf(TEXT("the filter found the async nodes (%d)"), Checked), Checked >= 61);
 	return true;
 }
 
