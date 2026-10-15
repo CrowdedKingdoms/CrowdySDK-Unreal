@@ -190,14 +190,23 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 	Key.Definition = Definition;
 	Key.InstanceId = UsedId;
 
+	const UCrowdyGameSession* Session = GetSession();
+	const bool bAccessEnded = Session && Session->HasAccessEnded();
+	const FString EndedReason = bAccessEnded ? CrowdyExec::AccessEndedReason(Session->GetAccessEndedReason()) : FString();
+
 	if (UCrowdyServerObject* Existing = Objects.FindRef(Key))
 	{
-		if (Existing->GetStatus() == ECrowdyServerObjectStatus::Failed)
+		if (Existing->GetStatus() == ECrowdyServerObjectStatus::Failed && !bAccessEnded)
 		{
 			Existing->Restart();
 		}
 		Existing->AddOwner(Owner);
 		Existing->GraceRemaining = -1.f;
+		if (bAccessEnded)
+		{
+			Existing->Fail(EndedReason, true);
+			return Existing;
+		}
 		if (ConnectRetryIn <= 0.f)
 		{
 			EnsureConnection();
@@ -209,6 +218,11 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 	Object->Setup(this, Definition, UsedId);
 	Object->AddOwner(Owner);
 	Objects.Add(Key, Object);
+	if (bAccessEnded)
+	{
+		Object->Fail(EndedReason, true);
+		return Object;
+	}
 	// While a reconnect backoff runs, Tick dials when it ends.
 	if (ConnectRetryIn <= 0.f)
 	{
@@ -426,6 +440,13 @@ bool UCrowdyServerObjectSubsystem::Tick(float DeltaSeconds)
 		Object->Tick(DeltaSeconds);
 	}
 
+	// The session heard the access end from elsewhere, such as an account block, so nothing is dialled and nothing stays waiting.
+	const UCrowdyGameSession* Session = GetSession();
+	if (Session && Session->HasAccessEnded() && FindLiveObject())
+	{
+		FailAccessEnded(Session->GetAccessEndedReason());
+		return true;
+	}
 	if (!FindLiveObject())
 	{
 		CloseConnection(TEXT(" (no Server Object in use)"));
@@ -581,6 +602,15 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 		}
 	});
 
+	Connection->OnAccessEnded([WeakThis, Dialed](const FString& Reason)
+	{
+		UCrowdyServerObjectSubsystem* This = WeakThis.Get();
+		if (This && This->IsCurrentConnection(Dialed))
+		{
+			This->HandleAccessEnded(Reason);
+		}
+	});
+
 	bConnecting = true;
 	Connection->Connect([WeakThis, Dialed](bool bOk, const FString& Error)
 	{
@@ -609,6 +639,11 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	bConnecting = false;
 	if (!bOk)
 	{
+		if (Connection.IsValid() && Connection->IsAccessEnded())
+		{
+			HandleAccessEnded(Connection->GetAccessEndedReason());
+			return;
+		}
 		UE_LOG(LogCrowdyExec, Warning, TEXT("Server Objects could not connect to the server: %s"), *Error);
 		UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s failed %s"), bRedialing ? TEXT("redial") : TEXT("dial"), *CrowdyExec::SafeText(Error, 256));
 		FailedDialTypes.Add(DialedType);
@@ -731,6 +766,34 @@ void UCrowdyServerObjectSubsystem::HandleReconnect()
 		if (Object)
 		{
 			Object->HandleReconnected();
+		}
+	}
+}
+
+void UCrowdyServerObjectSubsystem::HandleAccessEnded(const FString& ServerReason)
+{
+	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: access ended %s"), *CrowdyExec::SafeText(ServerReason, 256));
+	if (UCrowdyGameSession* Session = GetSession())
+	{
+		Session->SetAccessEnded(ServerReason, FString());
+	}
+	FailAccessEnded(ServerReason);
+}
+
+void UCrowdyServerObjectSubsystem::FailAccessEnded(const FString& ServerReason)
+{
+	// Closed before the objects fail, so game code that acquires from On Failed finds the session ended and dials nothing.
+	CloseConnection(TEXT(" (access ended)"));
+	bRedialing = false;
+	ConnectAttempts = 0;
+	ConnectRetryIn = 0.f;
+	FailedDialTypes.Reset();
+	const FString Reason = CrowdyExec::AccessEndedReason(ServerReason);
+	for (UCrowdyServerObject* Object : SnapshotObjects())
+	{
+		if (Object && (Object->GetStatus() == ECrowdyServerObjectStatus::Connecting || Object->GetStatus() == ECrowdyServerObjectStatus::Ready))
+		{
+			Object->Fail(Reason, true);
 		}
 	}
 }

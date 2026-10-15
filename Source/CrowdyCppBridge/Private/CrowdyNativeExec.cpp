@@ -56,6 +56,26 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 	uint64 NextId = 0;
 	bool bClosed = false;
 
+	TArray<TFunction<void(const FString&)>> AccessEndedListeners;
+	FString AccessEndedReason;
+	bool bAccessEnded = false;
+
+	void HandleAccessEnded(const std::string& Reason)
+	{
+		if (bClosed || bAccessEnded)
+		{
+			return;
+		}
+		bAccessEnded = true;
+		AccessEndedReason = Reason.empty() ? FString(TEXT("access ended")) : CrowdyNativeExecFromUtf8(Reason);
+		TArray<TFunction<void(const FString&)>> Listeners = MoveTemp(AccessEndedListeners);
+		AccessEndedListeners.Reset();
+		for (const TFunction<void(const FString&)>& Listener : Listeners)
+		{
+			Listener(AccessEndedReason);
+		}
+	}
+
 	uint64 TrackReply(FReplyCallback OnDone)
 	{
 		PendingReplies.Add(++NextId, MoveTemp(OnDone));
@@ -116,6 +136,14 @@ namespace CrowdyNativeExec
 		Impl->Connection = std::move(Connection);
 		Impl->DialRefusal = std::move(DialRefusal);
 		Impl->RefusedForGood = std::move(RefusedForGood);
+		TWeakPtr<FCrowdyNativeExecConnection::FImpl, ESPMode::ThreadSafe> Weak = Impl->AsWeak();
+		Impl->Connection->onAccessEnded([Weak](std::string Reason)
+		{
+			if (const TSharedPtr<FCrowdyNativeExecConnection::FImpl, ESPMode::ThreadSafe> Live = Weak.Pin())
+			{
+				Live->HandleAccessEnded(Reason);
+			}
+		});
 		return MakeShared<FCrowdyNativeExecConnection>(Impl);
 	}
 
@@ -267,6 +295,30 @@ void FCrowdyNativeExecConnection::OnReconnect(TFunction<void(const FString& Host
 	});
 }
 
+void FCrowdyNativeExecConnection::OnAccessEnded(TFunction<void(const FString& Reason)> Listener)
+{
+	if (Impl->bClosed || !Listener)
+	{
+		return;
+	}
+	if (Impl->bAccessEnded)
+	{
+		Listener(Impl->AccessEndedReason);
+		return;
+	}
+	Impl->AccessEndedListeners.Add(MoveTemp(Listener));
+}
+
+bool FCrowdyNativeExecConnection::IsAccessEnded() const
+{
+	return Impl->bAccessEnded;
+}
+
+FString FCrowdyNativeExecConnection::GetAccessEndedReason() const
+{
+	return Impl->AccessEndedReason;
+}
+
 FString FCrowdyNativeExecConnection::GetHost() const
 {
 	return Impl->bClosed ? FString() : CrowdyNativeExecFromUtf8(Impl->Connection->host());
@@ -294,6 +346,7 @@ void FCrowdyNativeExecConnection::Close()
 		return;
 	}
 	Impl->bClosed = true;
+	Impl->AccessEndedListeners.Reset();
 	Impl->Connection->close();
 
 	// Delivered here rather than through CrowdyCPP, whose own failures may be posted to a dispatcher that is about to

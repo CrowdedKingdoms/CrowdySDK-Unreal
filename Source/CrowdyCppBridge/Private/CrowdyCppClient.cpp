@@ -850,6 +850,23 @@ namespace
 		return Error ? Utf8ToFString(Error->code) : FString();
 	}
 
+	// Fills the failure fields from an ACCOUNT_BLOCKED entry wherever it sits among the errors, so a blocked account
+	// never reads as another refusal. Returns false when the outcome carries none.
+	bool ReadAccountBlock(const crowdy::graphql::GraphQLOutcome& Out, FString& OutMessage, FString& OutCode,
+		FString& OutBlockedUntil)
+	{
+		const crowdy::graphql::GraphQLErrorDetail* Error =
+			crowdy::graphql::errorWithCode(Out.errors, crowdy::graphql::kAccountBlockedCode);
+		if (!Error)
+		{
+			return false;
+		}
+		OutMessage = Utf8ToFString(Error->message);
+		OutCode = Utf8ToFString(Error->code);
+		OutBlockedUntil = Utf8ToFString(Error->blockedUntil);
+		return true;
+	}
+
 	// A short, bounded name for why an outcome failed, safe to count and print: the server's code, else the HTTP
 	// status, else whether the server answered at all. Never message text, which can carry ids.
 	FString OutcomeFailureReason(const crowdy::graphql::GraphQLOutcome& Out)
@@ -1027,6 +1044,8 @@ namespace
 		if (!Out.ok())
 		{
 			Result.ErrorMessage = OutcomeErrorMessage(Out);
+			Result.ErrorCode = OutcomeErrorCode(Out);
+			ReadAccountBlock(Out, Result.ErrorMessage, Result.ErrorCode, Result.BlockedUntil);
 			return Result;
 		}
 
@@ -1064,6 +1083,7 @@ namespace
 		{
 			Result.ErrorMessage = OutcomeErrorMessage(Out);
 			Result.ErrorCode = OutcomeErrorCode(Out);
+			ReadAccountBlock(Out, Result.ErrorMessage, Result.ErrorCode, Result.BlockedUntil);
 			return Result;
 		}
 
@@ -3127,12 +3147,13 @@ void FCrowdyCppClient::TestExecReceiveBinary(const TArray<uint8>& Bytes)
 	}
 }
 
-void FCrowdyCppClient::TestExecCloseFromServer(int32 Code, bool bClean)
+void FCrowdyCppClient::TestExecCloseFromServer(int32 Code, bool bClean, const FString& Reason)
 {
 	if (Impl && Impl->TestExecWebSocket)
 	{
+		const FTCHARToUTF8 ReasonUtf8(*Reason);
 		Impl->TestExecWebSocket->CloseFromServer(static_cast<std::uint16_t>(FMath::Clamp(Code, 0, 65535)),
-			std::string(), bClean);
+			std::string(ReasonUtf8.Get(), static_cast<size_t>(ReasonUtf8.Length())), bClean);
 	}
 }
 

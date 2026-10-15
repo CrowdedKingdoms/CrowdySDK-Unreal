@@ -114,6 +114,15 @@ public:
 	// Why the last dial was refused, empty when it was not.
 	FString GetRefusal() const;
 
+	// Runs once, on the game thread, when the server closes the connection because the player's access ended (suspended, revoked, expired, signed out or blocked); the connection is then final. A listener added after the end runs at once.
+	void OnAccessEnded(TFunction<void(const FString& Reason)> Listener);
+
+	// True once the server closed the connection because the player's access ended: no call or reconnect on it can succeed.
+	bool IsAccessEnded() const;
+
+	// The server's words for why the access ended, empty until it did.
+	FString GetAccessEndedReason() const;
+
 	// Terminal: nothing reconnects, and pending completions are delivered as canceled. Safe to call more than once.
 	void Close();
 

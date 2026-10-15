@@ -293,6 +293,7 @@ void UCrowdyAuthentication::Login(const FString& Email, const FString& Password,
 				}
 				else
 				{
+					Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
 					Self->FailFlow(Result.ErrorMessage, EAuthFlow::Login, OnError);
 				}
 			}));
@@ -322,6 +323,7 @@ void UCrowdyAuthentication::Register(const FString& Email, const FString& Passwo
 				}
 				else
 				{
+					Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
 					Self->FailFlow(Result.ErrorMessage, EAuthFlow::Register, OnError);
 				}
 			}));
@@ -375,6 +377,7 @@ void UCrowdyAuthentication::CompleteLoginLink(const FString& Token, FOnAuthSucce
 				}
 				else
 				{
+					Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
 					Self->FailFlow(Result.ErrorMessage, EAuthFlow::MagicLink, OnError);
 				}
 			}));
@@ -633,6 +636,7 @@ void UCrowdyAuthentication::CompleteSocialLogin(const FString& Provider, const F
 				}
 				else
 				{
+					Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil);
 					Self->FailFlow(Result.ErrorMessage, EAuthFlow::Social, OnError);
 				}
 			}));
@@ -1042,6 +1046,12 @@ void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSucces
 				return;
 			}
 
+			if (Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil))
+			{
+				Self->FailFlow(Result.ErrorMessage, Flow, OnError);
+				return;
+			}
+
 			const bool bWasCanceled = Result.ErrorMessage == FCrowdyCppClient::CanceledErrorMessage();
 			if (Flow == EAuthFlow::Refresh)
 			{
@@ -1119,6 +1129,12 @@ void UCrowdyAuthentication::DispatchRefresh()
 				return;
 			}
 
+			// Terminal as well: a re-mint is refused the same way.
+			if (Self->NoteAccountBlocked(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil))
+			{
+				return;
+			}
+
 			// A Game API older than ck-api v1.83.7 does not accept currentServer and refuses the whole mutation, so
 			// every later rotation would pay the same failed round trip and re-mint. Stop naming the server once
 			// that looks like what is happening.
@@ -1176,6 +1192,15 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& 
 	// This is also the write-back the refresh path depends on, since that call deliberately does not install its
 	// own result.
 	PublishTokensToCppClient();
+
+	if (Flow != EAuthFlow::Refresh)
+	{
+		bAccountBlocked = false;
+		if (GameSession)
+		{
+			GameSession->ClearAccessEnded();
+		}
+	}
 
 	// A rotation landed, so the next one starts with a full retry budget.
 	RotationRetriesUsed = 0;
@@ -1268,9 +1293,27 @@ void UCrowdyAuthentication::FailFlow(const FString& Message, EAuthFlow Flow, FOn
 	}
 }
 
+bool UCrowdyAuthentication::NoteAccountBlocked(const FString& ErrorCode, const FString& Message, const FString& BlockedUntil)
+{
+	if (!ErrorCode.Equals(CrowdyCppAccountBlockedCode, ESearchCase::CaseSensitive))
+	{
+		return false;
+	}
+
+	bAccountBlocked = true;
+	CancelProactiveRefresh();
+	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] The account is blocked%s%s; sign-in and token rotation stop."),
+		BlockedUntil.IsEmpty() ? TEXT("") : TEXT(" until "), *BlockedUntil);
+	if (GameSession)
+	{
+		GameSession->SetAccessEnded(Message, BlockedUntil);
+	}
+	return true;
+}
+
 void UCrowdyAuthentication::RefreshAppToken()
 {
-	if (!GameSession)
+	if (!GameSession || bAccountBlocked)
 		return;
 
 	if (GameSession->GetGameToken().IsEmpty() && GameSession->GetSessionToken().IsEmpty())
@@ -1294,6 +1337,11 @@ void UCrowdyAuthentication::RecoverExpiredAppToken()
 	if (GameSession->GetSessionToken().IsEmpty())
 	{
 		UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] TOKEN_EXPIRED but no session token to re-mint from."));
+		return;
+	}
+
+	if (bAccountBlocked)
+	{
 		return;
 	}
 

@@ -540,6 +540,75 @@ void UCrowdyChannels::RemoveChannelMember(int64 ChannelId, int64 UserId,
 		}));
 }
 
+void UCrowdyChannels::BanChannelMember(int64 ChannelId, int64 UserId, const FString& Reason,
+                                       FOnChannelMemberSuccess OnSuccess, FOnChannelError OnError)
+{
+	FCrowdyChannelError Refusal;
+	if (BanReasonTooLong(Reason, Refusal))
+	{
+		OnError.ExecuteIfBound(Refusal, Refusal.Message);
+		return;
+	}
+
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
+	{
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+	Variables->SetStringField(TEXT("userId"), BigInt(UserId));
+	if (!Reason.IsEmpty())
+	{
+		Variables->SetStringField(TEXT("reason"), Reason);
+	}
+
+	Client->RunOp(ChannelsDomain, TEXT("BanChannelMember"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyChannelMember Member;
+			FCrowdyChannelError Error;
+			if (!ReadObject(Result, TEXT("banChannelMember"), Member, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(Member);
+		}));
+}
+
+void UCrowdyChannels::UnbanChannelMember(int64 ChannelId, int64 UserId,
+                                         FOnChannelUnbanSuccess OnSuccess, FOnChannelError OnError)
+{
+	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
+	if (!Client)
+	{
+		const FCrowdyChannelError Error = ClientUnavailableError<FCrowdyChannelError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("groupId"), BigInt(ChannelId));
+	Variables->SetStringField(TEXT("userId"), BigInt(UserId));
+
+	Client->RunOp(ChannelsDomain, TEXT("UnbanChannelMember"), Variables,
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			bool bWasBanned = false;
+			FCrowdyChannelError Error;
+			if (!ReadBoolean(Result, TEXT("unbanChannelMember"), bWasBanned, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnSuccess.ExecuteIfBound(bWasBanned);
+		}));
+}
+
 void UCrowdyChannels::CreateChannelRole(int64 ChannelId, const FString& RoleName,
                                         FCrowdyChannelPermissions Permissions, int32 Rank,
                                         FOnChannelRoleSuccess OnSuccess, FOnChannelError OnError)

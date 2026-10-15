@@ -1271,7 +1271,7 @@ void UCrowdyServerObject::CallWith(FName Function, const UScriptStruct* GivenStr
 	}
 	if (Status == ECrowdyServerObjectStatus::Failed)
 	{
-		Refuse(ECrowdyServerCallOutcome::Unavailable, FailureReason);
+		Refuse(CrowdyExec::IsAccessEndedReason(FailureReason) ? ECrowdyServerCallOutcome::AccessEnded : ECrowdyServerCallOutcome::Unavailable, FailureReason);
 		return;
 	}
 	const FCrowdyServerFunction* Found = Definition->FindFunction(Function);
@@ -1461,7 +1461,8 @@ void UCrowdyServerObject::Fail(const FString& Reason, bool bNotify)
 
 	TMap<uint32, FPendingCall> Calls = MoveTemp(PendingCalls);
 	PendingCalls.Reset();
-	const FCrowdyServerCallResult Canceled = CrowdyServerObjectDetail::MakeResult(ECrowdyServerCallOutcome::Canceled, FailureReason);
+	const FCrowdyServerCallResult Canceled = CrowdyServerObjectDetail::MakeResult(
+		CrowdyExec::IsAccessEndedReason(FailureReason) ? ECrowdyServerCallOutcome::AccessEnded : ECrowdyServerCallOutcome::Canceled, FailureReason);
 	for (TPair<uint32, FPendingCall>& Pair : Calls)
 	{
 		TraceAnswered(Pair.Value, Canceled.Outcome);
@@ -2013,6 +2014,10 @@ void UCrowdyServerObject::HandleRefreshFailure(const FCrowdyNativeExecReply& Rep
 FString UCrowdyServerObject::PermanentRefusal(const FCrowdyNativeExecReply& Reply, const TCHAR* Verb) const
 {
 	const bool bAppError = Reply.Status == ECrowdyNativeExecStatus::AppError;
+	if (Reply.Status == ECrowdyNativeExecStatus::Denied && CrowdyExec::IsAccessEndedText(Reply.Message))
+	{
+		return CrowdyExec::AccessEndedReason(Reply.Message);
+	}
 	if (bAppError && Reply.Message.StartsWith(TEXT("denied"), ESearchCase::CaseSensitive))
 	{
 		return FString::Printf(TEXT("This player may not %s this Server Object"), Verb);
@@ -2811,6 +2816,13 @@ FCrowdyServerCallResult UCrowdyServerObject::MakeCallResult(const FPendingCall& 
 			: CrowdyServerObjectDetail::WithServerMessage(FString::Printf(TEXT("%s ran past its Time per Call on the server"), *Function), Reply);
 		break;
 	case ECrowdyNativeExecStatus::Denied:
+		if (CrowdyExec::IsAccessEndedText(Reply.Message))
+		{
+			Result.Outcome = ECrowdyServerCallOutcome::AccessEnded;
+			Result.bRetryable = false;
+			Result.Reason = CrowdyExec::AccessEndedReason(Reply.Message);
+			break;
+		}
 		if (CrowdyServerObjectDetail::IsSwitchedOffText(Reply.Message))
 		{
 			Result.Outcome = ECrowdyServerCallOutcome::Paused;

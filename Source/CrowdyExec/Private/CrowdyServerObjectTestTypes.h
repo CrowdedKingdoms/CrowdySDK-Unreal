@@ -484,3 +484,19 @@ public:
 		EventPayloads.Add(Payload);
 	}
 };
+
+/** Records each time the game session announces that the player's access ended. */
+UCLASS(Transient)
+class UCrowdyServerObjectTestAccessSpy : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	TArray<FString> Reasons;
+
+	UFUNCTION()
+	void HandleAccessEnded(const FString& Reason, const FString& BlockedUntil)
+	{
+		Reasons.Add(Reason);
+	}
+};

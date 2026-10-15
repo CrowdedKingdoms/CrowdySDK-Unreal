@@ -7,6 +7,8 @@
 #include "Queries/Data/Channels/Types/FCrowdyChannelPermissions.h"
 #include "CrowdyChannelsWriteActions.generated.h"
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FChannelUnbanAsyncResult, bool, bWasBanned, FCrowdyChannelError, Error, FString, Message);
+
 UCLASS()
 class CROWDYSERVICES_API UCrowdyChannels_CreateChannel : public UBlueprintAsyncActionBase
 {
@@ -14,9 +16,9 @@ class CROWDYSERVICES_API UCrowdyChannels_CreateChannel : public UBlueprintAsyncA
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnSuccess OnSuccess;
+	FChannelAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Create Channel")
@@ -45,9 +47,9 @@ class CROWDYSERVICES_API UCrowdyChannels_UpdateChannel : public UBlueprintAsyncA
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnSuccess OnSuccess;
+	FChannelAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Update Channel")
@@ -73,7 +75,7 @@ class CROWDYSERVICES_API UCrowdyChannels_DeleteChannel : public UBlueprintAsyncA
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelVoidAsyncOnSuccess OnSuccess;
+	FChannelAsyncOnError OnSuccess;
 	UPROPERTY(BlueprintAssignable)
 	FChannelAsyncOnError OnError;
 
@@ -99,9 +101,9 @@ class CROWDYSERVICES_API UCrowdyChannels_JoinChannel : public UBlueprintAsyncAct
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelMemberAsyncOnSuccess OnSuccess;
+	FChannelMemberAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelMemberAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Join Channel")
@@ -125,9 +127,9 @@ class CROWDYSERVICES_API UCrowdyChannels_RequestToJoinChannel : public UBlueprin
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelMemberAsyncOnSuccess OnSuccess;
+	FChannelMemberAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelMemberAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Request to Join Channel")
@@ -151,7 +153,7 @@ class CROWDYSERVICES_API UCrowdyChannels_LeaveChannel : public UBlueprintAsyncAc
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelVoidAsyncOnSuccess OnSuccess;
+	FChannelAsyncOnError OnSuccess;
 	UPROPERTY(BlueprintAssignable)
 	FChannelAsyncOnError OnError;
 
@@ -177,9 +179,9 @@ class CROWDYSERVICES_API UCrowdyChannels_AddChannelMember : public UBlueprintAsy
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelMemberAsyncOnSuccess OnSuccess;
+	FChannelMemberAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelMemberAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Add Channel Member")
@@ -203,7 +205,7 @@ class CROWDYSERVICES_API UCrowdyChannels_RemoveChannelMember : public UBlueprint
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelVoidAsyncOnSuccess OnSuccess;
+	FChannelAsyncOnError OnSuccess;
 	UPROPERTY(BlueprintAssignable)
 	FChannelAsyncOnError OnError;
 
@@ -224,15 +226,70 @@ private:
 };
 
 UCLASS()
+class CROWDYSERVICES_API UCrowdyChannels_BanChannelMember : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FChannelMemberAsyncResult OnSuccess;
+	UPROPERTY(BlueprintAssignable)
+	FChannelMemberAsyncResult OnError;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
+		Category="Crowdy SDK|Channels|Mutations", DisplayName="Ban Channel Member")
+	static UCrowdyChannels_BanChannelMember* BanChannelMember(UObject* WorldContextObject, int64 ChannelId,
+	                                                          int64 UserId, const FString& Reason);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int64 ChannelId = 0, UserId = 0;
+	FString Reason;
+	UFUNCTION()
+	void HandleSuccess(FCrowdyChannelMember Member);
+	UFUNCTION()
+	void HandleError(FCrowdyChannelError Error, FString Message);
+};
+
+UCLASS()
+class CROWDYSERVICES_API UCrowdyChannels_UnbanChannelMember : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FChannelUnbanAsyncResult OnSuccess;
+	UPROPERTY(BlueprintAssignable)
+	FChannelUnbanAsyncResult OnError;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
+		Category="Crowdy SDK|Channels|Mutations", DisplayName="Unban Channel Member")
+	static UCrowdyChannels_UnbanChannelMember* UnbanChannelMember(UObject* WorldContextObject, int64 ChannelId,
+	                                                              int64 UserId);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int64 ChannelId = 0, UserId = 0;
+	UFUNCTION()
+	void HandleSuccess(bool bWasBanned);
+	UFUNCTION()
+	void HandleError(FCrowdyChannelError Error, FString Message);
+};
+
+UCLASS()
 class CROWDYSERVICES_API UCrowdyChannels_SetChannelMemberRoles : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelMemberAsyncOnSuccess OnSuccess;
+	FChannelMemberAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelMemberAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Set Channel Member Roles")
@@ -258,9 +315,9 @@ class CROWDYSERVICES_API UCrowdyChannels_CreateChannelRole : public UBlueprintAs
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelRoleAsyncOnSuccess OnSuccess;
+	FChannelRoleAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelRoleAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Create Channel Role")
@@ -289,9 +346,9 @@ class CROWDYSERVICES_API UCrowdyChannels_UpdateChannelRole : public UBlueprintAs
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelRoleAsyncOnSuccess OnSuccess;
+	FChannelRoleAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelRoleAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Update Channel Role")
@@ -319,7 +376,7 @@ class CROWDYSERVICES_API UCrowdyChannels_DeleteChannelRole : public UBlueprintAs
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelVoidAsyncOnSuccess OnSuccess;
+	FChannelAsyncOnError OnSuccess;
 	UPROPERTY(BlueprintAssignable)
 	FChannelAsyncOnError OnError;
 
@@ -345,9 +402,9 @@ class CROWDYSERVICES_API UCrowdyChannels_SetChannelPolicy : public UBlueprintAsy
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FChannelPolicyAsyncOnSuccess OnSuccess;
+	FChannelPolicyAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FChannelAsyncOnError OnError;
+	FChannelPolicyAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Channels|Mutations", DisplayName="Set Channel Policy")

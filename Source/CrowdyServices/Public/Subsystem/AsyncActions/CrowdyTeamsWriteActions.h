@@ -7,6 +7,8 @@
 #include "Queries/Data/Teams/Types/FCrowdyTeamPermissions.h"
 #include "CrowdyTeamsWriteActions.generated.h"
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FTeamUnbanAsyncResult, bool, bWasBanned, FCrowdyTeamError, Error, FString, Message);
+
 UCLASS()
 class CROWDYSERVICES_API UCrowdyTeams_CreateTeam : public UBlueprintAsyncActionBase
 {
@@ -14,9 +16,9 @@ class CROWDYSERVICES_API UCrowdyTeams_CreateTeam : public UBlueprintAsyncActionB
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FTeamAsyncOnSuccess OnSuccess;
+	FTeamAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FTeamAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Mutations", DisplayName="Create Team")
@@ -43,9 +45,9 @@ class CROWDYSERVICES_API UCrowdyTeams_UpdateTeam : public UBlueprintAsyncActionB
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FTeamAsyncOnSuccess OnSuccess;
+	FTeamAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FTeamAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Mutations", DisplayName="Update Team")
@@ -71,7 +73,7 @@ class CROWDYSERVICES_API UCrowdyTeams_DeleteTeam : public UBlueprintAsyncActionB
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FVoidAsyncOnSuccess OnSuccess;
+	FTeamsAsyncOnError OnSuccess;
 	UPROPERTY(BlueprintAssignable)
 	FTeamsAsyncOnError OnError;
 
@@ -97,9 +99,9 @@ class CROWDYSERVICES_API UCrowdyTeams_JoinTeam : public UBlueprintAsyncActionBas
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FMemberAsyncOnSuccess OnSuccess;
+	FMemberAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FMemberAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Mutations", DisplayName="Join Team")
@@ -123,9 +125,9 @@ class CROWDYSERVICES_API UCrowdyTeams_RequestToJoinTeam : public UBlueprintAsync
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FMemberAsyncOnSuccess OnSuccess;
+	FMemberAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FMemberAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Mutations", DisplayName="Request to Join Team")
@@ -149,7 +151,7 @@ class CROWDYSERVICES_API UCrowdyTeams_LeaveTeam : public UBlueprintAsyncActionBa
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FVoidAsyncOnSuccess OnSuccess;
+	FTeamsAsyncOnError OnSuccess;
 	UPROPERTY(BlueprintAssignable)
 	FTeamsAsyncOnError OnError;
 
@@ -175,9 +177,9 @@ class CROWDYSERVICES_API UCrowdyTeams_AddTeamMember : public UBlueprintAsyncActi
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FMemberAsyncOnSuccess OnSuccess;
+	FMemberAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FMemberAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Mutations", DisplayName="Add Team Member")
@@ -201,7 +203,7 @@ class CROWDYSERVICES_API UCrowdyTeams_RemoveTeamMember : public UBlueprintAsyncA
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FVoidAsyncOnSuccess OnSuccess;
+	FTeamsAsyncOnError OnSuccess;
 	UPROPERTY(BlueprintAssignable)
 	FTeamsAsyncOnError OnError;
 
@@ -221,15 +223,69 @@ private:
 };
 
 UCLASS()
+class CROWDYSERVICES_API UCrowdyTeams_BanTeamMember : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FMemberAsyncResult OnSuccess;
+	UPROPERTY(BlueprintAssignable)
+	FMemberAsyncResult OnError;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
+		Category="Crowdy SDK|Teams|Mutations", DisplayName="Ban Team Member")
+	static UCrowdyTeams_BanTeamMember* BanTeamMember(UObject* WorldContextObject, int64 TeamId, int64 UserId,
+	                                                 const FString& Reason);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int64 TeamId = 0, UserId = 0;
+	FString Reason;
+	UFUNCTION()
+	void HandleSuccess(FCrowdyTeamMember Member);
+	UFUNCTION()
+	void HandleError(FCrowdyTeamError Error, FString Message);
+};
+
+UCLASS()
+class CROWDYSERVICES_API UCrowdyTeams_UnbanTeamMember : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FTeamUnbanAsyncResult OnSuccess;
+	UPROPERTY(BlueprintAssignable)
+	FTeamUnbanAsyncResult OnError;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
+		Category="Crowdy SDK|Teams|Mutations", DisplayName="Unban Team Member")
+	static UCrowdyTeams_UnbanTeamMember* UnbanTeamMember(UObject* WorldContextObject, int64 TeamId, int64 UserId);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int64 TeamId = 0, UserId = 0;
+	UFUNCTION()
+	void HandleSuccess(bool bWasBanned);
+	UFUNCTION()
+	void HandleError(FCrowdyTeamError Error, FString Message);
+};
+
+UCLASS()
 class CROWDYSERVICES_API UCrowdyTeams_SetTeamMemberRoles : public UBlueprintAsyncActionBase
 {
 	GENERATED_BODY()
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FMemberAsyncOnSuccess OnSuccess;
+	FMemberAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FMemberAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Mutations", DisplayName="Set Team Member Roles")
@@ -255,9 +311,9 @@ class CROWDYSERVICES_API UCrowdyTeams_CreateTeamRole : public UBlueprintAsyncAct
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FRoleAsyncOnSuccess OnSuccess;
+	FRoleAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FRoleAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Mutations", DisplayName="Create Team Role")
@@ -286,9 +342,9 @@ class CROWDYSERVICES_API UCrowdyTeams_UpdateTeamRole : public UBlueprintAsyncAct
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FRoleAsyncOnSuccess OnSuccess;
+	FRoleAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FRoleAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Mutations", DisplayName="Update Team Role")
@@ -315,7 +371,7 @@ class CROWDYSERVICES_API UCrowdyTeams_DeleteTeamRole : public UBlueprintAsyncAct
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FVoidAsyncOnSuccess OnSuccess;
+	FTeamsAsyncOnError OnSuccess;
 	UPROPERTY(BlueprintAssignable)
 	FTeamsAsyncOnError OnError;
 
@@ -341,9 +397,9 @@ class CROWDYSERVICES_API UCrowdyTeams_SetTeamPolicy : public UBlueprintAsyncActi
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FPolicyAsyncOnSuccess OnSuccess;
+	FPolicyAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FPolicyAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Mutations", DisplayName="Set Team Policy")

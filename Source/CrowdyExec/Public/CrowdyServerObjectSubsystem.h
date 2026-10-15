@@ -127,6 +127,10 @@ private:
 	void EnsureConnection();
 	void HandleConnectDone(bool bConnected, const FString& Error);
 	void HandleReconnect();
+	/** The platform ended the player's access: tells the session, then closes the connection and fails every live object. */
+	void HandleAccessEnded(const FString& ServerReason);
+	/** Closes the connection without a redial and fails every live object with the access-ended reason made from ServerReason. */
+	void FailAccessEnded(const FString& ServerReason);
 	/** Why names a close made on purpose, which the trace prints after "connection closed"; empty for a drop. */
 	void CloseConnection(const TCHAR* Why = TEXT(""));
 

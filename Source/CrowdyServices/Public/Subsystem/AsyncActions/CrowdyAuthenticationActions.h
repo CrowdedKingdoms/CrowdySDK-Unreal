@@ -5,23 +5,9 @@
 #include "Subsystem/CrowdyAuthentication.h"
 #include "CrowdyAuthenticationActions.generated.h"
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FLoginDelegateOnSuccess, FCrowdyAuthResult, Result);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FLoginDelegateOnError, FString, Message);
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRegisterDelegateOnSuccess, FCrowdyAuthResult, Result);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRegisterDelegateOnFailure, FString, Message);
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRestoreSessionDelegateOnSuccess, FCrowdyAuthResult, Result);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRestoreSessionDelegateOnError, FString, Message);
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FBeginMagicLinkSignInDelegateOnSuccess, FCrowdyAuthResult, Result);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FBeginMagicLinkSignInDelegateOnError, FString, Message);
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FBeginSocialSignInDelegateOnSuccess, FCrowdyAuthResult, Result);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FBeginSocialSignInDelegateOnError, FString, Message);
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FRecordPlayerConsentsDelegateOnSuccess);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRecordPlayerConsentsDelegateOnError, FString, Message);
+// One signature serves On Success and On Error, because a Blueprint async node builds its data pins from the first delegate only.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAuthAsyncResult, FCrowdyAuthResult, Result, FString, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRecordPlayerConsentsAsyncResult, FString, Message);
 
 UCLASS()
 class CROWDYSERVICES_API UCrowdyAuth_Login : public UBlueprintAsyncActionBase
@@ -30,10 +16,10 @@ class CROWDYSERVICES_API UCrowdyAuth_Login : public UBlueprintAsyncActionBase
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FLoginDelegateOnSuccess OnSuccess;
+	FAuthAsyncResult OnSuccess;
 
 	UPROPERTY(BlueprintAssignable)
-	FLoginDelegateOnError OnError;
+	FAuthAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Authentication", DisplayName="Login")
@@ -57,10 +43,10 @@ class CROWDYSERVICES_API UCrowdyAuth_Register : public UBlueprintAsyncActionBase
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FRegisterDelegateOnSuccess OnSuccess;
+	FAuthAsyncResult OnSuccess;
 
 	UPROPERTY(BlueprintAssignable)
-	FRegisterDelegateOnFailure OnError;
+	FAuthAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Authentication", DisplayName="Register")
@@ -89,10 +75,10 @@ class CROWDYSERVICES_API UCrowdyAuth_RestoreSession : public UBlueprintAsyncActi
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FRestoreSessionDelegateOnSuccess OnSuccess;
+	FAuthAsyncResult OnSuccess;
 
 	UPROPERTY(BlueprintAssignable)
-	FRestoreSessionDelegateOnError OnError;
+	FAuthAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Authentication", DisplayName="Restore Session")
@@ -119,10 +105,10 @@ class CROWDYSERVICES_API UCrowdyAuth_BeginMagicLinkSignIn : public UBlueprintAsy
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FBeginMagicLinkSignInDelegateOnSuccess OnSuccess;
+	FAuthAsyncResult OnSuccess;
 
 	UPROPERTY(BlueprintAssignable)
-	FBeginMagicLinkSignInDelegateOnError OnError;
+	FAuthAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Authentication", DisplayName="Magic Link Sign In")
@@ -150,10 +136,10 @@ class CROWDYSERVICES_API UCrowdyAuth_BeginSocialSignIn : public UBlueprintAsyncA
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FBeginSocialSignInDelegateOnSuccess OnSuccess;
+	FAuthAsyncResult OnSuccess;
 
 	UPROPERTY(BlueprintAssignable)
-	FBeginSocialSignInDelegateOnError OnError;
+	FAuthAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Authentication", DisplayName="Social Sign In")
@@ -180,10 +166,10 @@ class CROWDYSERVICES_API UCrowdyAuth_RecordPlayerConsents : public UBlueprintAsy
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FRecordPlayerConsentsDelegateOnSuccess OnSuccess;
+	FRecordPlayerConsentsAsyncResult OnSuccess;
 
 	UPROPERTY(BlueprintAssignable)
-	FRecordPlayerConsentsDelegateOnError OnError;
+	FRecordPlayerConsentsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Authentication", DisplayName="Record Player Consents")
