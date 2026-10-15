@@ -206,6 +206,9 @@ private:
 	FString DialedType;
 	TSet<FString> FailedDialTypes;
 
+	/** Whether the last dial named its type to the platform; the root and a Server Function Library dial with none. */
+	bool bDialedWithType = false;
+
 	bool IsCurrentConnection(const TWeakPtr<FCrowdyNativeExecConnection>& Dialed) const;
 
 	/** The shared client was rebuilt or the app changed since the connection was dialed; closing the client closed it. */
