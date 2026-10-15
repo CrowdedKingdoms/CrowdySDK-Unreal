@@ -300,6 +300,9 @@ bool writeBackRetryable(const graphql::GraphQLOutcome& out) {
       return true;
     case graphql::GraphQLErrorKind::Http:
       return !isWriteBackRefusalStatus(out.httpStatus);
+    case graphql::GraphQLErrorKind::Cancelled:
+      // Whoever cancelled it decided; sending it again would overrule them.
+      return false;
     case graphql::GraphQLErrorKind::GraphQL:
       break;
     case graphql::GraphQLErrorKind::None:
