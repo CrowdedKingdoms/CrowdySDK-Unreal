@@ -67,6 +67,7 @@ public:
 	void AddMyPassword(const FString& NewPassword);
 	// Ends every session of the account on every device, this editor's included, then signs out here.
 	void SignOutEverywhere();
+	int64 GetMyUserId() const { return UserId; }
 	const FString& GetMyEmail() const { return MyEmail; }
 	const FString& GetMyGamertag() const { return MyGamertag; }
 	const FString& GetMyDisambiguation() const { return MyDisambiguation; }
