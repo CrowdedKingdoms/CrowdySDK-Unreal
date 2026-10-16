@@ -2343,6 +2343,10 @@ FInstancedPropertyBag CrowdyExec::ToList(const FInstancedStruct& Values)
 
 bool CrowdyExec::BuildLayout(const UCrowdyServerObjectDefinition& Definition, FCrowdyExecLayout& Out, FString& OutError)
 {
+	if (Definition.BakedStructs.IsEmpty() && Definition.IsFunctionLibrary())
+	{
+		return true;
+	}
 	if (Definition.BakedStructs.IsEmpty())
 	{
 		OutError = FString::Printf(TEXT("%s has no field tables; fix the problems it reports and save it"), *Definition.GetName());

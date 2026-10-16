@@ -192,6 +192,9 @@ struct Handlers {
   std::function<void(const SpatialNotification&)> genericSpatial;
   std::function<void(const SpatialNotification&)> singleActorMessage;
   std::function<void(const ChannelNotification&)> channelMessage;
+  /// Channel audio (opcode 36, Buddy v0.37.0) from another member of a channel you
+  /// belong to; `payload` is opaque (one voice packet with the SDK voice helpers).
+  std::function<void(const ChannelNotification&)> channelAudio;
   std::function<void(const GenericError&)> genericError;
   /// Every spatial notification, before the typed handler.
   std::function<void(const SpatialNotification&)> any;

@@ -58,7 +58,33 @@ namespace CrowdyServiceApi
 		{
 			return MakeNetworkError<ErrorType>(TEXT("The request was interrupted before it completed."));
 		}
-		return ErrorType::FromMessage(Result.ErrorMessage);
+		if constexpr (requires { ErrorType::FromFailure(Result.ErrorMessage, Result.ErrorCode); })
+		{
+			return ErrorType::FromFailure(Result.ErrorMessage, Result.ErrorCode);
+		}
+		else
+		{
+			return ErrorType::FromMessage(Result.ErrorMessage);
+		}
+	}
+
+	/** The longest reason a ban can carry; the server refuses more. */
+	inline constexpr int32 MaxBanReasonLength = 500;
+
+	/** Whether a ban reason is too long to send, filling OutError with the refusal when it is. */
+	template <typename ErrorType>
+	bool BanReasonTooLong(const FString& Reason, ErrorType& OutError)
+	{
+		if (Reason.Len() <= MaxBanReasonLength)
+		{
+			return false;
+		}
+
+		OutError.Code = decltype(OutError.Code)::PolicyViolation;
+		OutError.Message = FString::Printf(
+			TEXT("The ban reason is %d characters; it can be at most %d, so the request was not sent."),
+			Reason.Len(), MaxBanReasonLength);
+		return true;
 	}
 
 	/** The error reported when the call succeeded but its payload was not the shape this operation returns. */
@@ -163,6 +189,25 @@ namespace CrowdyServiceApi
 	bool ReadAcknowledgement(const FCrowdyCppJsonResult& Result, ErrorType& OutError)
 	{
 		return ReadPayload(Result, OutError) != nullptr;
+	}
+
+	/** Read the operation's boolean answer into bOut; an answer that is not a boolean is refused. */
+	template <typename ErrorType>
+	bool ReadBoolean(const FCrowdyCppJsonResult& Result, const TCHAR* FieldName, bool& bOut, ErrorType& OutError)
+	{
+		const TSharedPtr<FJsonObject>* Payload = ReadPayload(Result, OutError);
+		if (!Payload)
+		{
+			return false;
+		}
+
+		if (!(*Payload)->TryGetBoolField(FieldName, bOut))
+		{
+			OutError = UnreadableResponseError<ErrorType>();
+			return false;
+		}
+
+		return true;
 	}
 
 	/**

@@ -5,6 +5,7 @@
 
 class FCrowdyCppAdminClientHost;
 class FCrowdyCppClient;
+class FCrowdyNativeExecConnection;
 
 /** The platform's server-code operations for one app, as the signed-in developer. Game thread only; every callback runs on the game thread. */
 namespace CrowdyExecDeveloper
@@ -35,6 +36,8 @@ namespace CrowdyExecDeveloper
 		FString Status;
 		/** The compiler's output once finished. */
 		FString Log;
+		/** The ckx-sdk version the platform compiled against, whatever the crates name; empty until the build starts. */
+		FString SdkVersion;
 		TArray<FBuildArtifact> Artifacts;
 
 		bool IsFinished() const { return Status == TEXT("succeeded") || Status == TEXT("failed"); }
@@ -57,6 +60,21 @@ namespace CrowdyExecDeveloper
 		bool bDisabled = false;
 		TArray<FString> DisabledTypes;
 		bool bBudgetPaused = false;
+		/** insufficient_funds, spend_cap, subscription_lapsed or compute_budget; empty when not paused or not said. */
+		FString BudgetPauseReason;
+		/** The app's placed instances and the memory they reserve in this datacenter, against its limits; unset when the platform does not say. */
+		TOptional<int32> Instances;
+		TOptional<int32> InstanceLimit;
+		TOptional<int32> ReservedMb;
+		/** Unset also when only the instance count limits it. */
+		TOptional<int32> MaxReservedMb;
+	};
+
+	struct FRestart
+	{
+		FString NodeType;
+		/** The running instances stopped; each starts again on the active version at its next call. */
+		int32 Stopped = 0;
 	};
 
 	struct FInstance
@@ -168,10 +186,18 @@ namespace CrowdyExecDeveloper
 		/** An empty NodeType switches the whole app. */
 		void SetEnabled(bool bEnabled, const FString& NodeType, TFunction<void(const TResult<FAppStatus>&)> OnDone);
 		void Status(TFunction<void(const TResult<FAppStatus>&)> OnDone);
+		/** Moves NodeType's running instances to the active version: each is saved and stopped, and starts again at its next call. */
+		void RestartType(const FString& NodeType, TFunction<void(const TResult<FRestart>&)> OnDone);
 		void Instances(TFunction<void(const TResult<TArray<FInstance>>&)> OnDone);
 		void Logs(const FLogQuery& Query, TFunction<void(const TResult<TArray<FLogLine>>&)> OnDone);
 		/** An empty NodeType covers every type; SinceMinutes below 1 uses the platform's default hour. */
 		void EndpointStats(const FString& NodeType, int32 SinceMinutes, TFunction<void(const TResult<TArray<FEndpointStat>>&)> OnDone);
+
+		/** A ck-exec connection as the signed-in developer, placed on NodeType's instance Key: its calls arrive as Caller::Developer and may reach any type. Null when there is no sign-in. */
+		TSharedPtr<FCrowdyNativeExecConnection> ConnectAsDeveloper(const FString& NodeType, const FString& Key) const;
+
+		/** The session token a client made for tests dials developer connections with. */
+		void SetSessionTokenForTest(FString Token) { SessionToken = MoveTemp(Token); }
 
 		/** Waits between retries of a change the platform refused as busy, so tests can shorten them. */
 		void SetBusyWaitsForTest(TArray<float> Seconds) { BusyWaitSeconds = MoveTemp(Seconds); }
@@ -181,6 +207,8 @@ namespace CrowdyExecDeveloper
 
 		TSharedPtr<FCrowdyCppAdminClientHost> Host;
 		TSharedPtr<FCrowdyCppClient> Client;
+		/** The developer's session token, for the connections it dials; empty for a client made for tests. */
+		FString SessionToken;
 		int64 AppId = 0;
 		TArray<float> BusyWaitSeconds = {2.f, 4.f, 8.f, 15.f, 30.f};
 	};

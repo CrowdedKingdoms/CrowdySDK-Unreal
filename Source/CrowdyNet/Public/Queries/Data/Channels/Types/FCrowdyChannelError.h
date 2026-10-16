@@ -13,11 +13,13 @@ enum class ECrowdyChannelErrorCode : uint8
 	NotMember,
 	NetworkError,
 	ServerError,
+	Banned,
 };
 
 /**
  * Why a channel call failed. The code is a best-effort classification of the server's message, for callers that
- * want to branch; Message is what to show.
+ * want to branch; Message is what to show. Banned is the exception: it comes from the server's own error code, never
+ * from the message text.
  */
 USTRUCT(BlueprintType)
 struct CROWDYNET_API FCrowdyChannelError
@@ -43,6 +45,16 @@ struct CROWDYNET_API FCrowdyChannelError
 		else if (Lower.Contains(TEXT("policy")))           Error.Code = ECrowdyChannelErrorCode::PolicyViolation;
 		else if (Lower.Contains(TEXT("http")))             Error.Code = ECrowdyChannelErrorCode::NetworkError;
 		else if (!Msg.IsEmpty())                           Error.Code = ECrowdyChannelErrorCode::ServerError;
+
+		return Error;
+	}
+
+	/** FromMessage, then the server's stable error code where it names a failure the message text cannot. */
+	static FCrowdyChannelError FromFailure(const FString& Msg, const FString& ServerCode)
+	{
+		FCrowdyChannelError Error = FromMessage(Msg);
+		if (ServerCode == TEXT("GROUP_MEMBER_BANNED"))
+			Error.Code = ECrowdyChannelErrorCode::Banned;
 
 		return Error;
 	}

@@ -600,4 +600,158 @@ class TeleportAPI : public DomainBase {
   }
 };
 
+/// client.inputLog() — the input log: the client inputs the realtime servers recorded for an
+/// app with replay logging on (`App.replayLoggingEnabled`, set with admin().apps().update,
+/// which answers INPUT_LOG_FUNDS_NEEDED, with the balance it needs, unless the org wallet can
+/// keep one retention period of the app's recent traffic: graphql::inputLogFundsNeededOf).
+///
+/// Game plane: call it on the app-scoped client for the app; an identity session token is
+/// refused. A player reads only the sessions and inputs they sent; a holder of manage_apps on
+/// the app reads every session. Inputs are kept for the input log's published retention, so
+/// an old session can still be listed after its inputs are gone. INPUT_LOG_UNAVAILABLE on a
+/// deployment without input logging.
+///
+/// Recording is best-effort, and a session says what it lost: `missingRecords` counts the
+/// inputs the replication server accepted that never reached the log (0 when the recording is
+/// complete as far as is known; null on one recorded before the count existed). A lost end
+/// cannot be counted: such a session closes as `unrecorded`.
+///
+/// From the Game API release after v2.40.2, messages() answers
+/// INPUT_LOG_TEMPORARILY_UNAVAILABLE when the log cannot be read right now and
+/// INPUT_LOG_RATE_LIMITED when a read waited out its few-second deadline behind earlier ones
+/// (a server runs one read per user, and two per app and per org, at a time). Both carry
+/// `extensions.retryable`: retry with the same cursor after a short back-off, a bounded number
+/// of times (graphql::inputLogReadRetryable). A read nobody will see should be cancelled
+/// with a graphql::CancelToken (the overloads below), which closes the request and frees its
+/// share; the client's timeout still applies.
+///
+/// \code
+/// crowdy::graphql::CancelToken reading;  // cancel() when the user moves on
+/// std::string after;
+/// for (int retries = 0, backoffMs = 250;;) {
+///   crowdy::graphql::Json page;
+///   try {
+///     page = client.inputLog().messages(appId, gameTokenId, 200, after, {}, reading);
+///   } catch (const crowdy::graphql::CrowdyGraphQLError& e) {
+///     if (!crowdy::graphql::inputLogReadRetryable(e.errors()) || ++retries > 8) throw;
+///     std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+///     backoffMs = std::min(backoffMs * 2, 5000);
+///     continue;  // the same cursor: nothing is skipped
+///   }
+///   retries = 0;
+///   backoffMs = 250;
+///   for (std::size_t i = 0; i < page["edges"].size(); ++i) handle(page["edges"].at(i)["node"]);
+///   if (!page["pageInfo"]["hasNextPage"].asBool()) break;
+///   if (page["pageInfo"]["endCursor"].isString()) after = page["pageInfo"]["endCursor"].asString();
+/// }
+/// \endcode
+class InputLogAPI : public DomainBase {
+ public:
+  using DomainBase::DomainBase;
+
+  /// Recorded sessions of an app, newest first: an InputLogSessionConnection
+  /// (`edges[].node`, `pageInfo.endCursor`, `totalCount`). `filter` is an
+  /// InputLogSessionFilter: `userId` (another user's needs manage_apps, else FORBIDDEN),
+  /// `from` / `to`, `messageType`. A node's `endReason` is `expired`, `revoked`,
+  /// `reconnect` or `released` as the client saw it; `logging_off` (replay logging was turned
+  /// off), `shutdown` (the replication server recording it stopped; the client reconnects
+  /// elsewhere, the session continues and its end is replaced) or `paused` (recording paused
+  /// while the app's logging setting could not be confirmed; a later record reopens the
+  /// session), from the Game API release after v2.40.2; `unrecorded` (no end was recorded,
+  /// closed an hour after its last input); or null while the session may still run.
+  graphql::Json sessions(std::string_view appId, int first = 50, std::string_view after = {},
+                         const graphql::JVal& filter = graphql::JVal()) const {
+    return execUnwrap(gen::inputLog::kInputLogSessionsDocument,
+                      sessionVars(appId, first, after, filter));
+  }
+
+  /// sessions(), cancellable with `cancel` (CrowdyCancelledError once cancelled).
+  graphql::Json sessions(std::string_view appId, int first, std::string_view after,
+                         const graphql::JVal& filter, const graphql::CancelToken& cancel) const {
+    return execUnwrap(gen::inputLog::kInputLogSessionsDocument,
+                      sessionVars(appId, first, after, filter), {}, withCancel(cancel));
+  }
+
+  void sessionsAsync(std::string_view appId, int first, std::string_view after,
+                     const graphql::JVal& filter, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::inputLog::kInputLogSessionsDocument,
+                    sessionVars(appId, first, after, filter), {}, std::move(cb));
+  }
+
+  /// sessionsAsync(), cancellable with `cancel` (delivered as GraphQLErrorKind::Cancelled).
+  void sessionsAsync(std::string_view appId, int first, std::string_view after,
+                     const graphql::JVal& filter, const graphql::CancelToken& cancel,
+                     graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::inputLog::kInputLogSessionsDocument,
+                    sessionVars(appId, first, after, filter), {}, withCancel(cancel),
+                    std::move(cb));
+  }
+
+  /// The recorded inputs of one session (`gameTokenId`, from sessions()), oldest first: an
+  /// InputLogMessageConnection. `body` is the message in base64, from its type byte up to
+  /// its authentication tail, which is not recorded; `sizeBytes` is what stored input logs
+  /// are billed on. KEEP PAGING WHILE pageInfo.hasNextPage IS TRUE, not while `endCursor` is
+  /// set: a page can hold fewer than `first` inputs, or none, when it reached the server's
+  /// time or scan limit; keep the previous cursor if one comes back null. `filter` is an
+  /// InputLogMessageFilter: `from` / `to`, `messageTypes` (at most 64). NOT_FOUND for a
+  /// session that is not yours without manage_apps; BAD_USER_INPUT for a malformed cursor or,
+  /// from the Game API release after v2.40.2, a cursor from another session.
+  graphql::Json messages(std::string_view appId, std::string_view gameTokenId, int first = 50,
+                         std::string_view after = {},
+                         const graphql::JVal& filter = graphql::JVal()) const {
+    return execUnwrap(gen::inputLog::kInputLogMessagesDocument,
+                      messageVars(appId, gameTokenId, first, after, filter));
+  }
+
+  /// messages(), cancellable with `cancel` (CrowdyCancelledError once cancelled).
+  graphql::Json messages(std::string_view appId, std::string_view gameTokenId, int first,
+                         std::string_view after, const graphql::JVal& filter,
+                         const graphql::CancelToken& cancel) const {
+    return execUnwrap(gen::inputLog::kInputLogMessagesDocument,
+                      messageVars(appId, gameTokenId, first, after, filter), {},
+                      withCancel(cancel));
+  }
+
+  void messagesAsync(std::string_view appId, std::string_view gameTokenId, int first,
+                     std::string_view after, const graphql::JVal& filter,
+                     graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::inputLog::kInputLogMessagesDocument,
+                    messageVars(appId, gameTokenId, first, after, filter), {}, std::move(cb));
+  }
+
+  /// messagesAsync(), cancellable with `cancel` (delivered as GraphQLErrorKind::Cancelled).
+  void messagesAsync(std::string_view appId, std::string_view gameTokenId, int first,
+                     std::string_view after, const graphql::JVal& filter,
+                     const graphql::CancelToken& cancel, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::inputLog::kInputLogMessagesDocument,
+                    messageVars(appId, gameTokenId, first, after, filter), {},
+                    withCancel(cancel), std::move(cb));
+  }
+
+ private:
+  static graphql::RequestOptions withCancel(const graphql::CancelToken& cancel) {
+    graphql::RequestOptions options;
+    options.cancel = cancel;
+    return options;
+  }
+
+  static graphql::JVal sessionVars(std::string_view appId, int first, std::string_view after,
+                                   const graphql::JVal& filter) {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    vars["first"] = std::int64_t{first};
+    if (!after.empty()) vars["after"] = after;
+    if (!filter.isNull()) vars["filter"] = filter;
+    return vars;
+  }
+
+  static graphql::JVal messageVars(std::string_view appId, std::string_view gameTokenId,
+                                   int first, std::string_view after,
+                                   const graphql::JVal& filter) {
+    graphql::JVal vars = sessionVars(appId, first, after, filter);
+    vars["gameTokenId"] = gameTokenId;
+    return vars;
+  }
+};
+
 }  // namespace crowdy::domains

@@ -9,6 +9,7 @@
 #include "CrowdyK2Node_CallServerFunction.h"
 #include "CrowdyK2Node_GetServerState.h"
 #include "CrowdyK2Node_GetServerVariable.h"
+#include "CrowdyK2Node_ServerMessageReceived.h"
 #include "CrowdyK2Node_ServerVariableChanged.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLibrary.h"
@@ -23,6 +24,7 @@
 #include "K2Node_Event.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Kismet/KismetStringLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/CompilerResultsLog.h"
@@ -171,6 +173,23 @@ namespace CrowdyServerObjectNodesTests
 		return Definition;
 	}
 
+	// A struct payload, a List payload with an Array, and a message with no payload.
+	UCrowdyServerObjectDefinition* MakeMessageDefinition(UObject* Outer = GetTransientPackage())
+	{
+		UCrowdyServerObjectDefinition* Definition = MakeDefinition(TEXT("DA_Messages"), Outer);
+		Definition->TypeName = TEXT("messages_type");
+		FCrowdyServerMessage& Hit = Definition->Messages.AddDefaulted_GetRef();
+		Hit.Name = TEXT("HitTaken");
+		Hit.Payload = FCrowdyExecNodesTestHit::StaticStruct();
+		FCrowdyServerMessage& Loot = Definition->Messages.AddDefaulted_GetRef();
+		Loot.Name = TEXT("LootDropped");
+		Loot.PayloadForm = ECrowdyServerValuesForm::List;
+		Loot.PayloadList.AddProperty(TEXT("Gold"), EPropertyBagPropertyType::Int32);
+		Loot.PayloadList.AddContainerProperty(TEXT("Items"), FPropertyBagContainerTypes{EPropertyBagContainerType::Array}, EPropertyBagPropertyType::String, nullptr);
+		Definition->Messages.AddDefaulted_GetRef().Name = TEXT("Won");
+		return Definition;
+	}
+
 	UCrowdyServerObjectDefinition* MakeRefusedDefinition()
 	{
 		UCrowdyServerObjectDefinition* Definition = MakeDefinition(TEXT("DA_Refused"));
@@ -300,6 +319,47 @@ namespace CrowdyServerObjectNodesTests
 			}
 		}
 		return false;
+	}
+
+	// Where Code first calls Callee, or INDEX_NONE; a call that runs earlier sits at a lower offset.
+	int32 CallOffset(const UFunction* Code, const UFunction* Callee)
+	{
+		if (!Code || !Callee)
+		{
+			return INDEX_NONE;
+		}
+		const ScriptPointerType Address = reinterpret_cast<ScriptPointerType>(Callee);
+		for (int32 Index = 0; Index + int32(sizeof(Address)) <= Code->Script.Num(); ++Index)
+		{
+			if (FMemory::Memcmp(&Code->Script[Index], &Address, sizeof(Address)) == 0)
+			{
+				return Index;
+			}
+		}
+		return INDEX_NONE;
+	}
+
+	// A float literal is compiled into its function's bytecode as its four bytes.
+	bool ContainsFloat(const UFunction* Code, float Value)
+	{
+		if (!Code)
+		{
+			return false;
+		}
+		for (int32 Index = 0; Index + int32(sizeof(Value)) <= Code->Script.Num(); ++Index)
+		{
+			if (FMemory::Memcmp(&Code->Script[Index], &Value, sizeof(Value)) == 0)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	UFunction* UbergraphOf(UBlueprint* Blueprint)
+	{
+		const UBlueprintGeneratedClass* Generated = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+		return Generated ? Generated->UberGraphFunction : nullptr;
 	}
 
 	void Link(UEdGraphNode* From, FName FromPin, UEdGraphNode* To, FName ToPin)
@@ -478,6 +538,114 @@ bool FCrowdyServerObjectNodesOnlyOneInstanceTest::RunTest(const FString& Paramet
 		TestNull(Title + TEXT(" has no Instance Id"), Node->FindPin(CrowdyServerObjectNodePins::InstanceId, EGPD_Input));
 		TestNull(Title + TEXT(" has no Team Id"), Node->FindPin(CrowdyServerObjectNodePins::TeamId, EGPD_Input));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesLibraryPinlessTest, "CrowdySDK.Editor.ServerObjectNodes.LibraryCallPinless", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesLibraryPinlessTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	UEdGraph* Graph = MakeGraph();
+
+	UCrowdyK2Node_CallServerFunction* Call = AddNode<UCrowdyK2Node_CallServerFunction>(Graph, Definition, TEXT("Echo"));
+	TestTrue(TEXT("a library's Call node finds its object by the asset"), Call->UsesFind());
+	TestNull(TEXT("it has no Target"), Call->FindPin(UEdGraphSchema_K2::PN_Self, EGPD_Input));
+	TestNull(TEXT("it has no Instance Id"), Call->FindPin(CrowdyServerObjectNodePins::InstanceId, EGPD_Input));
+	TestNull(TEXT("it has no Team Id"), Call->FindPin(CrowdyServerObjectNodePins::TeamId, EGPD_Input));
+	TestNotNull(TEXT("it keeps the function's input pins"), Call->FindPin(TEXT("Int"), EGPD_Input));
+	TestEqual(TEXT("its menu category names the library"), Call->GetMenuCategory().ToString(), FString::Printf(TEXT("Server Function Libraries|%s"), *Definition->GetName()));
+
+	Call->bFind = false;
+	Definition->Kind = ECrowdyServerObjectKind::ServerObject;
+	Call->ReconstructNode();
+	TestFalse(TEXT("as a Server Object it takes a Target again"), Call->UsesFind());
+	TestNotNull(TEXT("and the Target pin returns"), Call->FindPin(UEdGraphSchema_K2::PN_Self, EGPD_Input));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesLibraryMenuTest, "CrowdySDK.Editor.ServerObjectNodes.LibraryMenuOffersOnlyCalls", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesLibraryMenuTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Temp/CrowdyExecNodesTests/DA_LibraryMenu_%s"), *FGuid::NewGuid().ToString()));
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition(Package);
+	Definition->SetFlags(RF_Public | RF_Standalone);
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	Definition->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	Definition->Messages.AddDefaulted_GetRef().Name = TEXT("Won");
+	const FString Asset = Definition->GetName();
+
+	TArray<FCrowdyServerObjectMenuEntry> Entries;
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(Definition, Entries);
+	TestEqual(TEXT("one Call node per function, and no variable, state, message or member entries"), Entries.Num(), 1);
+	const bool bOnlyCalls = !Entries.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.NodeClass != UCrowdyK2Node_CallServerFunction::StaticClass(); });
+	TestTrue(TEXT("every entry is a Call node"), bOnlyCalls);
+
+	FBlueprintActionDatabase& Database = FBlueprintActionDatabase::Get();
+	Database.RefreshAssetActions(Definition);
+	const FBlueprintActionDatabase::FActionList* Actions = Database.GetAllActions().Find(Definition);
+	const bool bCategorized = Actions && !Actions->IsEmpty() && !Actions->ContainsByPredicate([&Asset](const UBlueprintNodeSpawner* Spawner)
+	{
+		return Spawner->DefaultMenuSignature.Category.ToString() != FString::Printf(TEXT("Server Function Libraries|%s"), *Asset);
+	});
+	TestTrue(TEXT("the entries sit under Server Function Libraries and the asset's name"), bCategorized);
+
+	Database.ClearAssetActions(Definition);
+	Definition->ClearFlags(RF_Public | RF_Standalone);
+	Definition->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesLibraryCompileTest, "CrowdySDK.Editor.ServerObjectNodes.LibraryCallCompiles", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesLibraryCompileTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	FCompileRig Rig = MakeActorBlueprint();
+
+	TestNull(TEXT("no variable getter is placed for a library"), CrowdyExecNodesSpawn::SpawnServerVariableGetter(Rig.Graph, Definition, TEXT("Int"), FVector2D::ZeroVector));
+	TestNull(TEXT("no state node is placed for a library"), CrowdyExecNodesSpawn::SpawnServerState(Rig.Graph, Definition, FVector2D::ZeroVector));
+	UEdGraphNode* Call = CrowdyExecNodesSpawn::SpawnServerFunctionCall(Rig.Graph, Definition, TEXT("Echo"), FVector2D(300, 0));
+	if (!TestNotNull(TEXT("the Call node is placed"), Call))
+	{
+		return false;
+	}
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Call, UEdGraphSchema_K2::PN_Execute);
+
+	int32 ErrorCount = 0;
+	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
+	for (const FString& Error : Errors)
+	{
+		AddInfo(FString::Printf(TEXT("compile error: %s"), *Error));
+	}
+	TestEqual(TEXT("a Blueprint calling a library function compiles without errors"), ErrorCount, 0);
+	const UFunction* Find = UCrowdyServerObjectLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UCrowdyServerObjectLibrary, FindServerObjectLink));
+	TestTrue(TEXT("the call reaches the library through Find Server Object Link, with no Target"), CallsFunction(UbergraphOf(Rig.Blueprint), Find));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesLibraryStateTest, "CrowdySDK.Editor.ServerObjectNodes.GetStateOfALibraryIsACompileError", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesLibraryStateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* State = CrowdyExecNodesSpawn::SpawnServerState(Rig.Graph, Definition, FVector2D::ZeroVector);
+	UK2Node_CallFunction* Print = AddPrint(Rig.Graph);
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Print, UEdGraphSchema_K2::PN_Execute);
+	Link(State, CrowdyServerObjectNodePins::HasValues, Print, TEXT("bPrintToScreen"));
+
+	int32 ErrorCount = 0;
+	Compile(Rig.Blueprint, ErrorCount);
+	TestEqual(TEXT("as a Server Object the node compiles"), ErrorCount, 0);
+
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
+	const FString Expected = FString::Printf(TEXT("%s is a Server Function Library and has no values to get."), *Definition->GetName());
+	TestTrue(TEXT("once its definition is a library, the node in the graph is a compile error that says why"), AnyContains(Errors, *Expected));
 	return true;
 }
 
@@ -825,7 +993,141 @@ bool FCrowdyServerObjectNodesStatusPinsSavedTest::RunTest(const FString& Paramet
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesChangedTwiceTest, "CrowdySDK.Editor.ServerObjectNodes.ChangedTwiceForOneVariableCompiles", CrowdyServerObjectNodesTests::Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesTimeoutPinTest, "CrowdySDK.Editor.ServerObjectNodes.CallTimeoutPinIsAdvancedAndDefaultsToZero", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesTimeoutPinTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	UEdGraph* Graph = MakeGraph();
+	UCrowdyK2Node_CallServerFunction* Call = AddNode<UCrowdyK2Node_CallServerFunction>(Graph, Definition, TEXT("Echo"));
+	const UEdGraphPin* Timeout = Call->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
+	if (!TestNotNull(TEXT("the call has a Timeout input"), Timeout))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Timeout is a real"), Timeout->PinType.PinCategory, UEdGraphSchema_K2::PC_Real);
+	TestEqual(TEXT("and a float, as the proxy's parameter is"), Timeout->PinType.PinSubCategory, UEdGraphSchema_K2::PC_Float);
+	TestTrue(TEXT("Timeout is advanced"), Timeout->bAdvancedView);
+	TestEqual(TEXT("and starts at 0, which uses the project's call timeout"), FCString::Atof(*Timeout->DefaultValue), 0.f);
+	TestFalse(TEXT("and has a tooltip"), Timeout->PinToolTip.IsEmpty());
+	TestTrue(TEXT("the node hides its advanced pins until expanded"), Call->AdvancedPinDisplay == ENodeAdvancedPins::Hidden);
+	for (const UEdGraphPin* Pin : Call->Pins)
+	{
+		if (Pin->Direction == EGPD_Input && Pin != Timeout)
+		{
+			TestFalse(Pin->PinName.ToString() + TEXT(" is not advanced, since Timeout is the only advanced input"), Pin->bAdvancedView);
+		}
+	}
+	const int32 IntIndex = Call->Pins.IndexOfByPredicate([](const UEdGraphPin* Pin) { return Pin->Direction == EGPD_Input && Pin->PinName == FName(TEXT("Int")); });
+	TestTrue(TEXT("Timeout comes after the function's inputs"), IntIndex >= 0 && Call->Pins.IndexOfByKey(Timeout) > IntIndex);
+
+	UCrowdyK2Node_CallServerFunction* Wired = AddNode<UCrowdyK2Node_CallServerFunction>(Graph, Definition, TEXT("Echo"));
+	UK2Node_CallFunction* Literal = AddCall(Graph, UKismetSystemLibrary::StaticClass(), GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, MakeLiteralDouble));
+	Link(Literal, UEdGraphSchema_K2::PN_ReturnValue, Wired, CrowdyServerCallPins::Timeout);
+	UCrowdyK2Node_CallServerFunction* Typed = AddNode<UCrowdyK2Node_CallServerFunction>(Graph, Definition, TEXT("Echo"));
+	Typed->FindPinChecked(CrowdyServerCallPins::Timeout, EGPD_Input)->DefaultValue = TEXT("4.5");
+	UCrowdyK2Node_CallServerFunction* Saved = AddNode<UCrowdyK2Node_CallServerFunction>(Graph, Definition, TEXT("Echo"));
+	Saved->RemovePin(Saved->FindPinChecked(CrowdyServerCallPins::Timeout, EGPD_Input));
+	Wired->ReconstructNode();
+	Typed->ReconstructNode();
+	Saved->ReconstructNode();
+
+	const UEdGraphPin* WiredTimeout = Wired->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
+	if (TestNotNull(TEXT("a rebuilt node keeps Timeout"), WiredTimeout))
+	{
+		TestTrue(TEXT("with its wire"), WiredTimeout->LinkedTo.Num() == 1 && WiredTimeout->LinkedTo[0]->GetOwningNode() == Literal);
+		TestTrue(TEXT("and still advanced"), WiredTimeout->bAdvancedView);
+	}
+	const UEdGraphPin* TypedTimeout = Typed->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
+	if (TestNotNull(TEXT("a rebuilt node keeps a typed Timeout"), TypedTimeout))
+	{
+		TestEqual(TEXT("and its value"), FCString::Atof(*TypedTimeout->DefaultValue), 4.5f);
+	}
+	const UEdGraphPin* SavedTimeout = Saved->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
+	if (TestNotNull(TEXT("a node saved before Timeout existed grows it on rebuild"), SavedTimeout))
+	{
+		TestEqual(TEXT("at 0"), FCString::Atof(*SavedTimeout->DefaultValue), 0.f);
+		TestTrue(TEXT("advanced"), SavedTimeout->bAdvancedView);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesTimeoutExpandsTest, "CrowdySDK.Editor.ServerObjectNodes.CallTimeoutReachesTheProxy", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesTimeoutExpandsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* Call = CrowdyExecNodesSpawn::SpawnServerFunctionCall(Rig.Graph, Definition, TEXT("Echo"), FVector2D(300, 0));
+	if (!TestNotNull(TEXT("the spawn helper places the call"), Call))
+	{
+		return false;
+	}
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Call, UEdGraphSchema_K2::PN_Execute);
+	auto CompileClean = [this, &Rig]()
+	{
+		int32 ErrorCount = 0;
+		for (const FString& Error : Compile(Rig.Blueprint, ErrorCount))
+		{
+			AddInfo(FString::Printf(TEXT("compile error: %s"), *Error));
+		}
+		return ErrorCount == 0;
+	};
+
+	constexpr float Seconds = 7.25f;
+	TestTrue(TEXT("the call compiles with Timeout untouched"), CompileClean());
+	TestFalse(TEXT("an untouched Timeout sends no seconds of its own"), ContainsFloat(UbergraphOf(Rig.Blueprint), Seconds));
+
+	Call->FindPinChecked(CrowdyServerCallPins::Timeout, EGPD_Input)->DefaultValue = TEXT("7.25");
+	TestTrue(TEXT("the call compiles with a typed Timeout"), CompileClean());
+	TestTrue(TEXT("a typed Timeout is the seconds the typed call is given"), ContainsFloat(UbergraphOf(Rig.Blueprint), Seconds));
+
+	UK2Node_CallFunction* Literal = AddCall(Rig.Graph, UKismetSystemLibrary::StaticClass(), GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, MakeLiteralDouble));
+	Link(Literal, UEdGraphSchema_K2::PN_ReturnValue, Call, CrowdyServerCallPins::Timeout);
+	TestTrue(TEXT("the call compiles with a wired Timeout"), CompileClean());
+	const UFunction* Ubergraph = UbergraphOf(Rig.Blueprint);
+	TestTrue(TEXT("a wired Timeout moves onto the typed call, which evaluates it"), CallsFunction(Ubergraph, UKismetSystemLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, MakeLiteralDouble))));
+	TestFalse(TEXT("and the wire wins over the typed value"), ContainsFloat(Ubergraph, Seconds));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesTimeoutClashTest, "CrowdySDK.Editor.ServerObjectNodes.InputNamedTimeoutKeepsItsPin", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesTimeoutClashTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeDefinition(TEXT("DA_TimeoutInput"));
+	Definition->TypeName = TEXT("timeout_input");
+	FCrowdyServerFunction& Wait = Definition->Functions.AddDefaulted_GetRef();
+	Wait.Name = TEXT("Wait");
+	Wait.ParamsForm = ECrowdyServerValuesForm::List;
+	Wait.ParamsList.AddProperty(TEXT("Timeout"), EPropertyBagPropertyType::Int32);
+
+	TArray<FCrowdyServerValuePin> Inputs;
+	CrowdyServerObjectPins::GatherValues(Wait.GetParamsStruct(), Inputs);
+	const FCrowdyServerValuePin* Timeout = CrowdyServerObjectPins::FindValue(Inputs, FGuid(), TEXT("Timeout"));
+	if (!TestNotNull(TEXT("Timeout is an input"), Timeout))
+	{
+		return false;
+	}
+	TestTrue(TEXT("an input called Timeout keeps its pin beside the node's own Timeout"), Timeout->HasPin());
+
+	TArray<FCrowdyServerObjectMenuEntry> Entries;
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(Definition, Entries);
+	TestTrue(TEXT("and the menu offers its Call"), Entries.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.Member == TEXT("Wait"); }));
+
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* Call = CrowdyExecNodesSpawn::SpawnServerFunctionCall(Rig.Graph, Definition, TEXT("Wait"), FVector2D(0, 0));
+	if (!TestNotNull(TEXT("the Call node spawns"), Call))
+	{
+		return false;
+	}
+	const UEdGraphPin* Input = Call->FindPin(TEXT("Timeout"), EGPD_Input);
+	const UEdGraphPin* Own = Call->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
+	TestTrue(TEXT("the input and the node's own Timeout are two pins"), Input && Own && Input != Own && !Input->bAdvancedView && Own->bAdvancedView);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesChangedTwiceTest,"CrowdySDK.Editor.ServerObjectNodes.ChangedTwiceForOneVariableCompiles", CrowdyServerObjectNodesTests::Flags)
 bool FCrowdyServerObjectNodesChangedTwiceTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyServerObjectNodesTests;
@@ -1017,6 +1319,351 @@ bool FCrowdyServerObjectNodesHiddenVariableTest::RunTest(const FString& Paramete
 	int32 ErrorCount = 0;
 	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
 	TestTrue(TEXT("a node on a hidden variable is a compile error naming it"), AnyContains(Errors, TEXT("Big is not Visible to Players")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessageMenuTest, "CrowdySDK.Editor.ServerObjectNodes.MessageMenuEntryPerMessage", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessageMenuTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeMessageDefinition();
+	FCrowdyServerMessage& Refusing = Definition->Messages.AddDefaulted_GetRef();
+	Refusing.Name = TEXT("Refusing");
+	Refusing.Payload = FCrowdyExecNodesTestRefused::StaticStruct();
+	FCrowdyServerMessage& Quiet = Definition->Messages.AddDefaulted_GetRef();
+	Quiet.Name = TEXT("Quiet");
+	Quiet.bPlayersCanListen = false;
+
+	TArray<FCrowdyServerObjectMenuEntry> Entries;
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(Definition, Entries);
+	TArray<FCrowdyServerObjectMenuEntry> Received = Entries.FilterByPredicate([](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.NodeClass == UCrowdyK2Node_ServerMessageReceived::StaticClass(); });
+	TestEqual(TEXT("the menu offers one On Received per message whose payload has every pin"), Received.Num(), 3);
+	const FString Asset = Definition->GetName();
+	for (const TCHAR* Message : {TEXT("HitTaken"), TEXT("LootDropped"), TEXT("Won")})
+	{
+		const bool bOffered = Received.ContainsByPredicate([Message, &Asset](const FCrowdyServerObjectMenuEntry& Entry)
+		{
+			return Entry.Member == FName(Message) && Entry.Title.ToString() == FString::Printf(TEXT("On %s Received (%s)"), Message, *Asset);
+		});
+		TestTrue(FString::Printf(TEXT("%s is offered, titled for the message"), Message), bOffered);
+	}
+	TestFalse(TEXT("a message whose payload has a value without a pin is not offered"), Received.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.Member == TEXT("Refusing"); }));
+	TestFalse(TEXT("a message players cannot listen to is not offered"), Received.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.Member == TEXT("Quiet"); }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessagePlayersTest, "CrowdySDK.Editor.ServerObjectNodes.MessageForServerObjectsOnlyIsACompileError", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessagePlayersTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeMessageDefinition();
+	Definition->Messages.FindByPredicate([](const FCrowdyServerMessage& Message) { return Message.Name == TEXT("Won"); })->bPlayersCanListen = false;
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* Won = CrowdyExecNodesSpawn::SpawnServerMessageReceived(Rig.Graph, Definition, TEXT("Won"), FVector2D(300, 0));
+	if (!TestNotNull(TEXT("the spawn helper still places the node"), Won))
+	{
+		return false;
+	}
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Won, UEdGraphSchema_K2::PN_Execute);
+	int32 ErrorCount = 0;
+	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
+	TestTrue(TEXT("a placed node fails to compile, saying what to turn on"), AnyContains(Errors, TEXT("Won is heard only by other Server Object types; turn on Players Can Listen")));
+
+	Definition->Messages.FindByPredicate([](const FCrowdyServerMessage& Message) { return Message.Name == TEXT("Won"); })->bPlayersCanListen = true;
+	Compile(Rig.Blueprint, ErrorCount);
+	TestEqual(TEXT("and compiles once players can listen"), ErrorCount, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessagePinsTest, "CrowdySDK.Editor.ServerObjectNodes.MessageReceivedPins", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessagePinsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeMessageDefinition();
+	UEdGraph* Graph = MakeGraph();
+	UCrowdyK2Node_ServerMessageReceived* Hit = AddNode<UCrowdyK2Node_ServerMessageReceived>(Graph, Definition, TEXT("HitTaken"));
+	UCrowdyK2Node_ServerMessageReceived* Loot = AddNode<UCrowdyK2Node_ServerMessageReceived>(Graph, Definition, TEXT("LootDropped"));
+	UCrowdyK2Node_ServerMessageReceived* Won = AddNode<UCrowdyK2Node_ServerMessageReceived>(Graph, Definition, TEXT("Won"));
+
+	for (const UCrowdyK2Node_ServerMessageReceived* Node : {Hit, Loot, Won})
+	{
+		const FString Title = Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+		const UEdGraphPin* Bind = Node->FindPin(UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		TestTrue(Title + TEXT(" has an exec Bind"), Bind && Bind->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+		TestTrue(Title + TEXT(" has Then and Received execs"), Node->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output) && Node->FindPin(CrowdyServerObjectNodePins::Received, EGPD_Output));
+		TestNotNull(Title + TEXT(" takes a Target"), Node->FindPin(UEdGraphSchema_K2::PN_Self, EGPD_Input));
+		const UEdGraphPin* ReceivedPin = Node->FindPin(CrowdyServerObjectNodePins::Received, EGPD_Output);
+		TestTrue(Title + TEXT(" shows its internal Message Received pin as Received"), ReceivedPin && ReceivedPin->PinFriendlyName.ToString() == TEXT("Received"));
+	}
+	TestEqual(TEXT("the title names the message and the asset"), Hit->GetNodeTitle(ENodeTitleType::FullTitle).ToString(), FString::Printf(TEXT("On HitTaken Received (%s)"), *Definition->GetName()));
+
+	CheckPin(*this, TEXT("struct payload"), Hit, {TEXT("Damage"), UEdGraphSchema_K2::PC_Int}, EGPD_Output);
+	CheckPin(*this, TEXT("struct payload"), Hit, {TEXT("Source"), UEdGraphSchema_K2::PC_Name}, EGPD_Output);
+	CheckPin(*this, TEXT("List payload"), Loot, {TEXT("Gold"), UEdGraphSchema_K2::PC_Int}, EGPD_Output);
+	CheckPin(*this, TEXT("List payload"), Loot, {TEXT("Items"), UEdGraphSchema_K2::PC_String, nullptr, NAME_None, EPinContainerType::Array}, EGPD_Output);
+	for (const TCHAR* Field : {TEXT("Gold"), TEXT("Items")})
+	{
+		const UEdGraphPin* Pin = Loot->FindPin(Field, EGPD_Output);
+		TestTrue(FString::Printf(TEXT("the List entry %s keeps its id on its pin, so a rename keeps the wire"), Field), Pin && Pin->PersistentGuid.IsValid());
+	}
+	TestNull(TEXT("a payload value is not on another message"), Hit->FindPin(TEXT("Gold"), EGPD_Output));
+	const int32 WonOutputs = Won->Pins.FilterByPredicate([](const UEdGraphPin* Pin) { return Pin->Direction == EGPD_Output; }).Num();
+	TestEqual(TEXT("a message with no payload has only Then and Received"), WonOutputs, 2);
+
+	TArray<UStruct*> Dependencies;
+	TestTrue(TEXT("the node depends on the definition"), Hit->HasExternalDependencies(&Dependencies));
+	TestTrue(TEXT("and on the payload struct, so its Blueprint recompiles when the struct changes"), Dependencies.Contains(FCrowdyExecNodesTestHit::StaticStruct()));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessagePinTypesTest, "CrowdySDK.Editor.ServerObjectNodes.MessageReceivedPinsEveryKind", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessagePinTypesTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	FCrowdyServerMessage& Everything = Definition->Messages.AddDefaulted_GetRef();
+	Everything.Name = TEXT("Everything");
+	Everything.Payload = FCrowdyExecNodesTestEveryType::StaticStruct();
+	UEdGraph* Graph = MakeGraph();
+	UCrowdyK2Node_ServerMessageReceived* Node = AddNode<UCrowdyK2Node_ServerMessageReceived>(Graph, Definition, TEXT("Everything"));
+	for (const FExpectedPin& Row : EveryTypePins())
+	{
+		CheckPin(*this, TEXT("On Received"), Node, Row, EGPD_Output);
+	}
+	TestNull(TEXT("a transient field travels nowhere, so it has no pin"), Node->FindPin(TEXT("Cache")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesReceivedVariableTest, "CrowdySDK.Editor.ServerObjectNodes.VariableNamedReceivedKeepsItsPin", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesReceivedVariableTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeListDefinition(TEXT("Received"), EPropertyBagPropertyType::Int32);
+	UEdGraph* Graph = MakeGraph();
+	TestNotNull(TEXT("Get keeps the pin of a variable called Received"), AddNode<UCrowdyK2Node_GetServerVariable>(Graph, Definition, TEXT("Received"))->FindPin(TEXT("Received"), EGPD_Output));
+	TestNotNull(TEXT("and so does On Changed"), AddNode<UCrowdyK2Node_ServerVariableChanged>(Graph, Definition, TEXT("Received"))->FindPin(TEXT("Received"), EGPD_Output));
+	TArray<FCrowdyServerObjectMenuEntry> Entries;
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(Definition, Entries);
+	TestTrue(TEXT("and the menu still offers it"), Entries.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.Member == TEXT("Received"); }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessageClashTest, "CrowdySDK.Editor.ServerObjectNodes.MessagePayloadNamedReceivedKeepsItsPin", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessageClashTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeDefinition(TEXT("DA_ReceivedClash"));
+	Definition->TypeName = TEXT("received_clash");
+	FCrowdyServerMessage& Message = Definition->Messages.AddDefaulted_GetRef();
+	Message.Name = TEXT("Ping");
+	Message.PayloadForm = ECrowdyServerValuesForm::List;
+	Message.PayloadList.AddProperty(TEXT("Received"), EPropertyBagPropertyType::Int32);
+
+	TArray<FCrowdyServerValuePin> Values;
+	CrowdyServerObjectPins::GatherValues(Message.GetPayloadStruct(), Values);
+	const FCrowdyServerValuePin* Plain = CrowdyServerObjectPins::FindValue(Values, FGuid(), TEXT("Received"));
+	if (!TestNotNull(TEXT("Received is a payload value"), Plain))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a payload value called Received keeps its pin beside the node's own Received"), Plain->HasPin());
+
+	TArray<FCrowdyServerObjectMenuEntry> Entries;
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(Definition, Entries);
+	TestTrue(TEXT("and the menu offers its On Received"), Entries.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.Member == TEXT("Ping"); }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessageCompileTest, "CrowdySDK.Editor.ServerObjectNodes.MessageReceivedCompiles", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessageCompileTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeMessageDefinition();
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* Hit = CrowdyExecNodesSpawn::SpawnServerMessageReceived(Rig.Graph, Definition, TEXT("HitTaken"), FVector2D(300, 0));
+	UEdGraphNode* Loot = CrowdyExecNodesSpawn::SpawnServerMessageReceived(Rig.Graph, Definition, TEXT("LootDropped"), FVector2D(500, 0));
+	UEdGraphNode* Won = CrowdyExecNodesSpawn::SpawnServerMessageReceived(Rig.Graph, Definition, TEXT("Won"), FVector2D(700, 0));
+	if (!TestNotNull(TEXT("the spawn helper places a struct payload node"), Hit) || !TestNotNull(TEXT("a List payload node"), Loot) || !TestNotNull(TEXT("and a no payload node"), Won))
+	{
+		return false;
+	}
+	UK2Node_CallFunction* PrintHit = AddPrint(Rig.Graph);
+	UK2Node_CallFunction* PrintLoot = AddPrint(Rig.Graph);
+	UK2Node_CallFunction* PrintWon = AddPrint(Rig.Graph);
+	UK2Node_CallFunction* Damage = AddCall(Rig.Graph, UKismetStringLibrary::StaticClass(), GET_FUNCTION_NAME_CHECKED(UKismetStringLibrary, Conv_IntToString));
+	UK2Node_CallFunction* Gold = AddCall(Rig.Graph, UKismetStringLibrary::StaticClass(), GET_FUNCTION_NAME_CHECKED(UKismetStringLibrary, Conv_IntToString));
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Hit, UEdGraphSchema_K2::PN_Execute);
+	Link(Hit, UEdGraphSchema_K2::PN_Then, Loot, UEdGraphSchema_K2::PN_Execute);
+	Link(Loot, UEdGraphSchema_K2::PN_Then, Won, UEdGraphSchema_K2::PN_Execute);
+	Link(Hit, CrowdyServerObjectNodePins::Received, PrintHit, UEdGraphSchema_K2::PN_Execute);
+	Link(Hit, TEXT("Damage"), Damage, TEXT("InInt"));
+	Link(Damage, UEdGraphSchema_K2::PN_ReturnValue, PrintHit, TEXT("InString"));
+	Link(Loot, CrowdyServerObjectNodePins::Received, PrintLoot, UEdGraphSchema_K2::PN_Execute);
+	Link(Loot, TEXT("Gold"), Gold, TEXT("InInt"));
+	Link(Gold, UEdGraphSchema_K2::PN_ReturnValue, PrintLoot, TEXT("InString"));
+	Link(Won, CrowdyServerObjectNodePins::Received, PrintWon, UEdGraphSchema_K2::PN_Execute);
+
+	int32 ErrorCount = 0;
+	for (const FString& Error : Compile(Rig.Blueprint, ErrorCount))
+	{
+		AddInfo(FString::Printf(TEXT("compile error: %s"), *Error));
+	}
+	TestEqual(TEXT("a Blueprint with a struct, a List and a no payload message node compiles without errors"), ErrorCount, 0);
+
+	// Bind fills the handler's first parameter with the payload, so each handler must take one Instanced Struct.
+	TArray<FString> Handlers;
+	for (TFieldIterator<UFunction> It(Rig.Blueprint->GeneratedClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+	{
+		if (!It->GetName().StartsWith(TEXT("OnServerMessage_")))
+		{
+			continue;
+		}
+		TArray<FString> Params;
+		for (TFieldIterator<FProperty> Param(*It); Param && Param->HasAnyPropertyFlags(CPF_Parm); ++Param)
+		{
+			Params.Add(Param->GetCPPType());
+		}
+		Handlers.Add(FString::Join(Params, TEXT(",")));
+	}
+	TestEqual(TEXT("each message node became an event function"), Handlers.Num(), 3);
+	TestEqual(TEXT("each handler takes the payload as one Instanced Struct"), FString::Join(Handlers, TEXT(" | ")), FString(TEXT("FInstancedStruct | FInstancedStruct | FInstancedStruct")));
+
+	const UFunction* Ubergraph = UbergraphOf(Rig.Blueprint);
+	TestTrue(TEXT("the node binds through Bind Server Message"), CallsFunction(Ubergraph, UCrowdyServerObjectLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UCrowdyServerObjectLibrary, BindServerMessage))));
+	TestTrue(TEXT("and reads a wired payload value with Get Server Value"), CallsFunction(Ubergraph, UCrowdyServerObjectLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UCrowdyServerObjectLibrary, GetServerValue))));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessageOrderTest, "CrowdySDK.Editor.ServerObjectNodes.MessageReceivedRunsAfterTheReads", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessageOrderTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeMessageDefinition();
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* Hit = CrowdyExecNodesSpawn::SpawnServerMessageReceived(Rig.Graph, Definition, TEXT("HitTaken"), FVector2D(300, 0));
+	if (!TestNotNull(TEXT("the spawn helper places the node"), Hit))
+	{
+		return false;
+	}
+	UK2Node_CallFunction* Print = AddPrint(Rig.Graph);
+	UK2Node_CallFunction* Damage = AddCall(Rig.Graph, UKismetStringLibrary::StaticClass(), GET_FUNCTION_NAME_CHECKED(UKismetStringLibrary, Conv_IntToString));
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Hit, UEdGraphSchema_K2::PN_Execute);
+	Link(Hit, CrowdyServerObjectNodePins::Received, Print, UEdGraphSchema_K2::PN_Execute);
+	Link(Hit, TEXT("Damage"), Damage, TEXT("InInt"));
+	Link(Damage, UEdGraphSchema_K2::PN_ReturnValue, Print, TEXT("InString"));
+
+	int32 ErrorCount = 0;
+	Compile(Rig.Blueprint, ErrorCount);
+	TestEqual(TEXT("the node compiles without errors"), ErrorCount, 0);
+
+	const UFunction* Ubergraph = UbergraphOf(Rig.Blueprint);
+	const int32 Read = CallOffset(Ubergraph, UCrowdyServerObjectLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UCrowdyServerObjectLibrary, GetServerValue)));
+	const int32 Ran = CallOffset(Ubergraph, UKismetSystemLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, PrintString)));
+	if (TestTrue(TEXT("the payload is read and Received runs"), Read != INDEX_NONE && Ran != INDEX_NONE))
+	{
+		TestTrue(TEXT("Received runs after the payload's values are read"), Read < Ran);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessageRemovedTest, "CrowdySDK.Editor.ServerObjectNodes.RemovedMessageIsACompileError", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessageRemovedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeMessageDefinition();
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* Won = CrowdyExecNodesSpawn::SpawnServerMessageReceived(Rig.Graph, Definition, TEXT("Won"), FVector2D(300, 0));
+	if (!TestNotNull(TEXT("the spawn helper places the node"), Won))
+	{
+		return false;
+	}
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Won, UEdGraphSchema_K2::PN_Execute);
+	int32 ErrorCount = 0;
+	Compile(Rig.Blueprint, ErrorCount);
+	TestEqual(TEXT("the node compiles while its message exists"), ErrorCount, 0);
+
+	Definition->Messages.RemoveAll([](const FCrowdyServerMessage& Message) { return Message.Name == TEXT("Won"); });
+	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
+	TestTrue(TEXT("a message removed from the definition is a compile error naming it"), AnyContains(Errors, TEXT("has no message Won any more. Place it again from the menu, or give the message its old name back.")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessageRefusalTest, "CrowdySDK.Editor.ServerObjectNodes.MessagePayloadRefusalIsACompileError", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessageRefusalTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeDefinition(TEXT("DA_RefusedMessage"));
+	Definition->TypeName = TEXT("refused_message");
+	FCrowdyServerMessage& Refusing = Definition->Messages.AddDefaulted_GetRef();
+	Refusing.Name = TEXT("Refusing");
+	Refusing.Payload = FCrowdyExecNodesTestRefused::StaticStruct();
+	FCompileRig Rig = MakeActorBlueprint();
+	UCrowdyK2Node_ServerMessageReceived* Node = AddNode<UCrowdyK2Node_ServerMessageReceived>(Rig.Graph, Definition, TEXT("Refusing"));
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Node, UEdGraphSchema_K2::PN_Execute);
+
+	int32 ErrorCount = 0;
+	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
+	TestTrue(TEXT("the compile names the payload value and says what to do"), Errors.ContainsByPredicate([](const FString& Error)
+	{
+		return Error.Contains(TEXT("Hidden has no pin")) && Error.Contains(TEXT("mark it BlueprintType"));
+	}));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessageUnboundTest, "CrowdySDK.Editor.ServerObjectNodes.UnboundMessageWarns", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessageUnboundTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeMessageDefinition();
+	FCompileRig Rig = MakeActorBlueprint();
+	UCrowdyK2Node_ServerMessageReceived* Node = AddNode<UCrowdyK2Node_ServerMessageReceived>(Rig.Graph, Definition, TEXT("Won"));
+	UK2Node_CallFunction* Print = AddPrint(Rig.Graph);
+	Link(Node, CrowdyServerObjectNodePins::Received, Print, UEdGraphSchema_K2::PN_Execute);
+
+	int32 ErrorCount = 0;
+	const TArray<FString> Warnings = Compile(Rig.Blueprint, ErrorCount, EMessageSeverity::Warning);
+	TestTrue(TEXT("an On Received with nothing on Bind warns that it never runs"), AnyContains(Warnings, TEXT("never runs: connect Bind")));
+	TestEqual(TEXT("and is no error"), ErrorCount, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessageRenameTest, "CrowdySDK.Editor.ServerObjectNodes.MessagePayloadRenameKeepsLinks", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessageRenameTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeMessageDefinition();
+	UEdGraph* Graph = MakeGraph();
+	UCrowdyK2Node_ServerMessageReceived* Node = AddNode<UCrowdyK2Node_ServerMessageReceived>(Graph, Definition, TEXT("LootDropped"));
+	UK2Node_CallFunction* Sink = AddCall(Graph, UKismetMathLibrary::StaticClass(), GET_FUNCTION_NAME_CHECKED(UKismetMathLibrary, Add_IntInt));
+	if (!TestNotNull(TEXT("the node has a Gold pin"), Node->FindPin(TEXT("Gold"), EGPD_Output)))
+	{
+		return false;
+	}
+	Link(Node, TEXT("Gold"), Sink, TEXT("A"));
+
+	FCrowdyServerMessage* Loot = Definition->Messages.FindByPredicate([](const FCrowdyServerMessage& Message) { return Message.Name == TEXT("LootDropped"); });
+	TestEqual(TEXT("the List entry is renamed"), Loot->PayloadList.RenameProperty(TEXT("Gold"), TEXT("Coins")), EPropertyBagAlterationResult::Success);
+	Node->ReconstructNode();
+
+	TestNull(TEXT("the old pin is gone"), Node->FindPin(TEXT("Gold"), EGPD_Output));
+	const UEdGraphPin* Coins = Node->FindPin(TEXT("Coins"), EGPD_Output);
+	if (TestNotNull(TEXT("the pin has the new name"), Coins))
+	{
+		TestTrue(TEXT("the renamed pin keeps its wire"), Coins->LinkedTo.Contains(Sink->FindPinChecked(TEXT("A"))));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMessageSpawnMissingTest, "CrowdySDK.Editor.ServerObjectNodes.SpawnRefusesMissingMessage", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesMessageSpawnMissingTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeMessageDefinition();
+	UEdGraph* Graph = MakeGraph();
+	AddExpectedErrorPlain(TEXT("so no"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestNull(TEXT("no On Received for a message the definition lacks"), CrowdyExecNodesSpawn::SpawnServerMessageReceived(Graph, Definition, TEXT("Nope"), FVector2D::ZeroVector));
+	TestEqual(TEXT("nothing is added to the graph"), Graph->Nodes.Num(), 0);
+	TestNotNull(TEXT("a message it has still spawns"), CrowdyExecNodesSpawn::SpawnServerMessageReceived(Graph, Definition, TEXT("Won"), FVector2D::ZeroVector));
 	return true;
 }
 

@@ -21,6 +21,14 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCrowdyServerObjectStatusChanged, UCrowdy
 /** The ids of the records that are new or changed, then of those removed, then each changed record's changed State fields by index (see GetFieldVariableNames), in ChangedIds' order. */
 DECLARE_MULTICAST_DELEGATE_FourParams(FOnCrowdyServerRecordsChanged, UCrowdyServerObject* /*Object*/, TConstArrayView<FString> /*ChangedIds*/, TConstArrayView<FString> /*RemovedIds*/,
 	TConstArrayView<TBitArray<>> /*ChangedFields*/);
+/** A message the server code sent to everyone listening, with its payload in the message's struct; empty for a message with no payload. */
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnCrowdyServerMessage, UCrowdyServerObject* /*Object*/, FName /*Message*/, const FInstancedStruct& /*Payload*/);
+
+namespace CrowdyServerObjectDetail
+{
+	/** Whether a platform refusal says the app or a type is switched off or paused. */
+	CROWDYEXEC_API bool IsSwitchedOffText(const FString& Message);
+}
 
 /** Handlers of one variable each (the value, then Has Value for an optional) on whatever Server Object their holder follows. */
 struct CROWDYEXEC_API FCrowdyServerVariableBindings
@@ -72,10 +80,65 @@ private:
 	bool bReadsRecord = false;
 };
 
+/** Handlers of one message each on whatever Server Object their holder follows; the holder calls Notify for the messages its Follow relay hears. */
+struct CROWDYEXEC_API FCrowdyServerMessageBindings
+{
+	~FCrowdyServerMessageBindings();
+
+	/** Listens on Object, through Relay, for every message bound and for each bound later; another Object moves the interest, null stops it. */
+	void Follow(UCrowdyServerObject* Object, const FOnCrowdyServerMessage::FDelegate& Relay);
+
+	/** Binds Handler's Function to Message, replacing its earlier binding of Function. It does not run at once: a message is not a current value. */
+	void Bind(FName Message, UObject* Handler, FName Function);
+
+	void Unbind(FName Message, const UObject* Handler, FName Function);
+
+	/** Drops Handler's binding of Function, whatever its message. */
+	void UnbindHandler(const UObject* Handler, FName Function);
+
+	/** Runs the handlers of Message, with Payload as their first parameter, while Held is still the object announcing it, and drops dead handlers. */
+	void Notify(const TObjectPtr<UCrowdyServerObject>& Held, FName Message, const FInstancedStruct& Payload);
+
+	/** Stops listening for the followed object's messages, keeping the bindings for the next object followed. */
+	void Unfollow() { Follow(nullptr, FOnCrowdyServerMessage::FDelegate()); }
+
+	/** Drops every binding and stops listening for their messages. */
+	void Reset();
+
+	int32 Num() const { return Bindings.Num(); }
+	bool HasLiveHandler() const;
+
+private:
+	struct FBinding
+	{
+		FName Message;
+		TWeakObjectPtr<UObject> Handler;
+		FName Function;
+
+		bool operator==(const FBinding& Other) const { return Message == Other.Message && Handler == Other.Handler && Function == Other.Function; }
+	};
+
+	void Watch(FName Message);
+	void Unwatch(FName Message);
+
+	/** Stops listening for the messages no live binding wants. */
+	void Prune();
+	void Run(const FBinding& Binding, const FInstancedStruct& Payload);
+
+	TArray<FBinding> Bindings;
+	TArray<TPair<const UObject*, FName>, TInlineAllocator<2>> Running;
+	FOnCrowdyServerMessage::FDelegate Relay;
+	TWeakObjectPtr<UCrowdyServerObject> Followed;
+	TMap<FName, FDelegateHandle> Watching;
+};
+
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FCrowdyServerVariablesEvent, UCrowdyServerObject*, Object, const TArray<FString>&, Changed);
+DECLARE_DYNAMIC_DELEGATE_ThreeParams(FCrowdyServerMessageEvent, UCrowdyServerObject*, Object, FName, Message, const FInstancedStruct&, Payload);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCrowdyServerVariablesChanged, UCrowdyServerObject*, Object, const TArray<FString>&, Changed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCrowdyServerStatusChanged, UCrowdyServerObject*, Object, ECrowdyServerObjectStatus, Status);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyServerRecordsChanged, UCrowdyServerObject*, Object, const TArray<FString>&, ChangedIds, const TArray<FString>&, RemovedIds);
+DECLARE_DYNAMIC_DELEGATE_ThreeParams(FCrowdyServerRecordEvent, UCrowdyServerObject*, Object, const FString&, RecordId, const TArray<FString>&, Changed);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyServerRecordsUpdated, UCrowdyServerObject*, Object, const TArray<FCrowdyServerRecordChange>&, Changed, const TArray<FString>&, RemovedIds);
 
 /**
  * One Server Object (a hub instance on the platform) as this player sees it: its watched values, kept current, and
@@ -88,6 +151,11 @@ class CROWDYEXEC_API UCrowdyServerObject : public UObject
 
 public:
 	const UCrowdyServerObjectDefinition* GetDefinition() const { return Definition; }
+
+	/** The definition asset this object was made from, to pass to nodes that take one. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", DisplayName = "Get Definition")
+	UCrowdyServerObjectDefinition* K2_GetDefinition() const { return Definition; }
+
 	const FString& GetInstanceId() const { return InstanceId; }
 	ECrowdyServerObjectStatus GetStatus() const { return Status; }
 	/** Why it Failed, or, while Connecting or Ready, why the connection or the last read or subscribe failed; it is retried. */
@@ -103,6 +171,14 @@ public:
 	FDelegateHandle WatchValues(FOnCrowdyServerValuesChanged::FDelegate Listener);
 	void UnwatchValues(FDelegateHandle Handle);
 
+	/**
+	 * Runs Listener with the payload each time the server code sends Message, while the object is Ready. The object listens to the
+	 * message's topic for as long as anything watches it. Nothing is replayed: a message sent while not listening is lost.
+	 * An invalid handle when the definition has no such message.
+	 */
+	FDelegateHandle WatchMessage(FName Message, FOnCrowdyServerMessage::FDelegate Listener);
+	void UnwatchMessage(FName Message, FDelegateHandle Handle);
+
 	FOnCrowdyServerObjectStatusChanged OnStatusChanged;
 
 	/** Fields, by server name, as the names Get Server Value finds; names that are not variables, such as Members, stay as they are. */
@@ -111,22 +187,42 @@ public:
 	/** Handlers bound to one variable of this object; dropped when it is given back. */
 	FCrowdyServerVariableBindings& GetVariableBindings() { return VariableBindings; }
 
+	/** Handlers bound to one message of this object; dropped when it is given back. */
+	FCrowdyServerMessageBindings& GetMessageBindings() { return MessageBindings; }
+
 	/** While a change is announced, the latest binding serial when it began; bindings made later already ran when bound. */
 	uint64 GetAnnouncedSerial() const { return AnnouncedSerial; }
 
 #if WITH_DEV_AUTOMATION_TESTS
 	int32 NumVariableWatchersForTest() const { return VariableWatchers.Num(); }
+	int32 NumRecordEventWatchersForTest() const { return RecordEventWatchers.Num(); }
+
+	/** Feeds Push through the routing every subscription's pushes take. */
+	void HandlePushForTest(const FCrowdyNativeExecPush& Push) { HandlePush(Push); }
+
+	/** How many message topic subscribes this object has sent, over its life. */
+	uint32 NumMessageSubscribesForTest() const { return MessageAttempt; }
+	bool IsRecordWatchedForTest(const FString& Id) const { return IsRecordWatched(Id); }
+
+	/** The result a call of Function gets from Reply, as the platform's answer would give it. */
+	FCrowdyServerCallResult MakeCallResultForTest(FName Function, const FCrowdyNativeExecReply& Reply) const;
+
+	/** The reason a refused read (or watch) gives while it retries; empty when it gives none. */
+	FString WaitingReasonForTest(const FCrowdyNativeExecReply& Reply, bool bRead) const;
 #endif
 
 	/**
 	 * Calls the Server Function the definition names Function. Params is the function's Params struct, or empty when it
 	 * has none. Busy and unreachable servers are retried a few times. OnDone runs exactly once, on the game thread,
 	 * except when the game instance shuts down first: pending calls are then dropped without running it.
+	 * TimeoutSeconds above 0 is a limit of its own, counted from the call and covering retries and waiting to send: the call then
+	 * completes as a Timeout, and an answer arriving later is not reported. It can only shorten the wait: the project's Server
+	 * Object Call Timeout still ends each attempt. 0 leaves only that timeout.
 	 */
-	void Call(FName Function, const FInstancedStruct& Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone);
+	void Call(FName Function, const FInstancedStruct& Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds = 0.f);
 
 	/** Calls a function that sends a List, with Params from MakeParams and its values set by name. A List reply reads by name through CrowdyExec::ToList. */
-	void Call(FName Function, const FInstancedPropertyBag& Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone);
+	void Call(FName Function, const FInstancedPropertyBag& Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds = 0.f);
 
 	/** The List Function sends, with its default values, to set values on by name and pass to Call. Empty when it sends a struct or nothing. */
 	FInstancedPropertyBag MakeParams(FName Function) const;
@@ -156,6 +252,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", DisplayName = "Stop Watching Variables")
 	void K2_UnwatchVariables(FCrowdyServerVariablesEvent Event);
 
+	/** Runs Event each time the server code sends Message, while the object is Ready; read the payload with Get Server Value. A message sent while not listening is lost. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", DisplayName = "Watch Message")
+	void K2_WatchMessage(FName Message, FCrowdyServerMessageEvent Event);
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", DisplayName = "Stop Watching Message")
+	void K2_UnwatchMessage(FName Message, FCrowdyServerMessageEvent Event);
+
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects", meta = (DisplayName = "On Status Changed"))
 	FCrowdyServerStatusChanged StatusChanged;
 
@@ -184,11 +287,14 @@ public:
 	bool IsLeader() const { return bIsLeader; }
 
 	/** Whether the definition keeps a record per entity rather than one set of variables. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
 	bool HoldsRecords() const;
 
 	/** The record Id as the server last sent it, or null when there is none. Ids compare case-sensitively. */
 	const FCrowdyServerRecord* GetRecord(const FString& Id) const { return Records.Find(Id); }
 
+	/** How many records the object holds now. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
 	int32 NumRecords() const { return Records.Num(); }
 
 	/** The variables, or with RecordId that record's values; null when that record is not there. */
@@ -209,6 +315,13 @@ public:
 	FDelegateHandle WatchRecord(const FString& Id, FOnCrowdyServerValuesChanged::FDelegate Listener);
 	void UnwatchRecord(const FString& Id, FDelegateHandle Handle);
 
+	/** Runs Event after each change of the record RecordId and when it is removed (then Find Record is false), naming the changed variables as Get Server Value takes them. When the record is already current it also runs once now, naming them all. Records dropped because the object Failed are not reported; On Status Changed is. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", DisplayName = "Watch Record")
+	void K2_WatchRecord(const FString& RecordId, FCrowdyServerRecordEvent Event);
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", DisplayName = "Stop Watching Record")
+	void K2_UnwatchRecord(const FString& RecordId, FCrowdyServerRecordEvent Event);
+
 	/** For a Server Object that holds a record per entity: the record Id's variables, owner's user id and team. False when there is no such record or the object is not Ready. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", DisplayName = "Find Record")
 	bool K2_FindRecord(const FString& Id, FInstancedStruct& Values, int64& Owner, FString& Team) const;
@@ -220,6 +333,10 @@ public:
 	/** For a Server Object that holds a record per entity, after every change: the ids of the records that are new or changed, then of those removed. */
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects", meta = (DisplayName = "On Records Changed"))
 	FCrowdyServerRecordsChanged RecordsChanged;
+
+	/** Like On Records Changed, but also naming each changed record's changed variables, as Get Server Value takes them; none when only its owner or team changed. */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects", meta = (DisplayName = "On Records Updated"))
+	FCrowdyServerRecordsUpdated RecordsUpdated;
 
 private:
 	friend class UCrowdyServerObjectSubsystem;
@@ -256,7 +373,7 @@ private:
 	/** Advances retry timers by DeltaSeconds. */
 	void Tick(float DeltaSeconds);
 
-	void CallWith(FName Function, const UScriptStruct* ParamsStruct, const void* Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone);
+	void CallWith(FName Function, const UScriptStruct* ParamsStruct, const void* Params, TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds);
 
 	UPROPERTY()
 	TObjectPtr<UCrowdyServerObjectDefinition> Definition;
@@ -290,8 +407,79 @@ private:
 	/** Blueprint watchers; one whose object is gone is dropped at the next change. */
 	TArray<FCrowdyServerVariablesEvent> VariableWatchers;
 
+	struct FRecordEventWatcher
+	{
+		FString RecordId;
+		FCrowdyServerRecordEvent Event;
+		FDelegateHandle Handle;
+
+		bool Watches(const FString& Id, const FCrowdyServerRecordEvent& Other) const { return RecordId.Equals(Id, ESearchCase::CaseSensitive) && Event == Other; }
+	};
+
+	/** Blueprint record watchers, each riding WatchRecord; one whose object is gone is dropped at the next change of its record. */
+	TArray<FRecordEventWatcher> RecordEventWatchers;
+
+	/** Stops the record watchers whose Blueprint object is gone. */
+	void PruneRecordEventWatchers();
+
+	/** Broadcasts RecordsUpdated for the records NotifyRecords announces. */
+	void BroadcastRecordsUpdated(const TArray<FString>& Changed, const TArray<TBitArray<>>& ChangedFields, const TArray<FString>& Removed);
+
 	FCrowdyServerVariableBindings VariableBindings;
 	uint64 AnnouncedSerial = MAX_uint64;
+
+	/** Everything listening to one message and the state of its topic subscription. */
+	struct FMessageTopic
+	{
+		/** Kept as single delegates, so an announcement can stop between two of them. */
+		TArray<FOnCrowdyServerMessage::FDelegate> Listeners;
+		/** Blueprint watchers; one whose object is gone is dropped at the next message. */
+		TArray<FCrowdyServerMessageEvent> Events;
+		uint64 Handle = 0;
+		uint32 Attempt = 0;
+		/** The last subscribe was refused: it is asked again when RetryIn runs out, or at the next refresh or reconnect. */
+		bool bRefused = false;
+		bool bWarned = false;
+		int32 Failures = 0;
+		float RetryIn = 0.f;
+
+		bool IsWanted() const { return Listeners.Num() > 0 || Events.Num() > 0; }
+	};
+
+	/** Shared, so a listener that stops watching during an announcement does not destroy the delegate running it. */
+	TMap<FName, TSharedRef<FMessageTopic>> MessageTopics;
+	FCrowdyServerMessageBindings MessageBindings;
+	/** Numbers every message subscribe, so the answer to one since dropped or replaced says nothing about the current one. */
+	uint32 MessageAttempt = 0;
+
+	/** The topic entry for a message the definition has, made if new; null, with a warning, for any other. */
+	FMessageTopic* FindOrAddMessageTopic(FName Message);
+
+	/** Subscribes the topics something wants and unsubscribes those nothing does; bRetryRefused also asks again for those refused. */
+	void SyncMessageSubscriptions(bool bRetryRefused = false);
+	void SubscribeMessage(FName Message);
+
+	/** Counts down the wait of each refused topic and asks again when it ends. */
+	void TickMessages(float DeltaSeconds);
+	void HandleMessageSubscribeDone(FName Message, uint32 Attempt, const FCrowdyNativeExecReply& Reply);
+
+	/** Forgets every topic subscription, to subscribe afresh; bUnsubscribe also ends them on the connection, which a new connection has no use for. */
+	void DropMessageSubscriptions(bool bUnsubscribe);
+
+	/** Routes a push by its topic: the watched values, or a message. */
+	void HandlePush(const FCrowdyNativeExecPush& Push);
+	void ReceiveMessage(const FCrowdyNativeExecPush& Push);
+	void AnnounceMessage(FName Message, const FInstancedStruct& Payload);
+
+	/** Announces the messages that arrived during a read, once it is done and the pushes it held are applied. */
+	void FlushPendingMessages();
+
+	/** Messages received while the values were being read, oldest first; they may not overtake the state they describe. */
+	TArray<TPair<FName, FInstancedStruct>> PendingMessages;
+
+	/** Messages already warned about as heard only by other Server Object types. */
+	TSet<FName> ServerOnlyWarned;
+	void HandleBoundMessage(UCrowdyServerObject* Announcer, FName Message, const FInstancedStruct& Payload);
 
 	/** Sets Status without broadcasting it. */
 	void SetStatus(ECrowdyServerObjectStatus NewStatus);
@@ -318,6 +506,9 @@ private:
 		float RetryIn = 0.f;
 		/** Ticked time spent waiting for a connection to send it on. */
 		float UnsentSeconds = 0.f;
+		/** The caller's own limit in ticked seconds from the call; 0 or less for none. */
+		float TimeoutSeconds = 0.f;
+		float ElapsedSeconds = 0.f;
 		int32 Attempts = 0;
 		bool bInFlight = false;
 		/** Canceled by a connection closed elsewhere; completed on the next Tick, never inline. */
@@ -378,6 +569,14 @@ private:
 	void SendCall(uint32 CallId);
 	void HandleCallDone(uint32 CallId, const FCrowdyNativeExecReply& Reply);
 	FCrowdyServerCallResult MakeCallResult(const FPendingCall& Pending, const FCrowdyNativeExecReply& Reply) const;
+	/** Whether a successful answer to Pending must be followed by a read of Is Member and Is Leader. */
+	bool ReadsMembershipAfter(const FPendingCall& Pending) const;
+	/** Reads again after an answer that changed membership the server does not push, or after a crash rolled the values back. */
+	void ReadAfterAnswer(bool bReadMembership, const FCrowdyNativeExecReply& Reply);
+	/** The answer to a call already reported as timed out: still reads again when that answer calls for it. */
+	void HandleLateReply(uint32 CallId, const FCrowdyNativeExecReply& Reply);
+	/** Calls in flight when their own Timeout ran out, and whether a successful answer reads membership. */
+	TMap<uint32, bool> LateCalls;
 
 	/** Drops the subscription, reads, buffered pushes and retry timers, and turns away every callback still to come. */
 	void StopListening();

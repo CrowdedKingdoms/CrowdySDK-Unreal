@@ -127,6 +127,17 @@ namespace CrowdyExecRevisionsDetail
 		return Type.TryGetNumberField(Field, Ms) ? Ms : 0;
 	}
 
+	/** A whole number the manifest gives as a number or as a string of digits. */
+	bool ReadWholeNumber(const FJsonValue& Value, int64& OutNumber)
+	{
+		if (Value.Type == EJson::Number)
+		{
+			return Value.TryGetNumber(OutNumber);
+		}
+		const FString Text = Value.Type == EJson::String ? Value.AsString() : FString();
+		return Text.IsNumeric() && !Text.Contains(TEXT(".")) && LexTryParseString(OutNumber, *Text);
+	}
+
 	const CrowdyExecRevisions::FLiveType* FindLiveType(TConstArrayView<CrowdyExecRevisions::FLiveType> Types, const FString& TypeName)
 	{
 		return Types.FindByPredicate([&TypeName](const CrowdyExecRevisions::FLiveType& Type) { return IsSameText(Type.TypeName, TypeName); });
@@ -144,22 +155,70 @@ namespace CrowdyExecRevisionsDetail
 		});
 	}
 
+	/** A field the manifest leaves out runs at the platform's default: one replica, as many max replicas as replicas, 16 calls at once. */
+	bool LiveScalingDiffers(const UCrowdyServerObjectDefinition& Definition, const CrowdyExecRevisions::FLiveType& Live)
+	{
+		const CrowdyExecDeploy::FScaling Scaling = CrowdyExecDeploy::ScalingOf(Definition);
+		const auto NumberOr = [&Live](const TCHAR* Field, int64 Default)
+		{
+			const int64* Value = Live.Numbers.Find(Field);
+			return Value ? *Value : Default;
+		};
+		const int64 Replicas = NumberOr(TEXT("replicas"), 1);
+		const int64 MaxReplicas = NumberOr(TEXT("max_replicas"), Replicas);
+		const int64 Concurrency = NumberOr(TEXT("concurrency"), 16);
+		return Replicas != Scaling.Replicas || MaxReplicas != Scaling.MaxReplicas || Concurrency != Scaling.Concurrency;
+	}
+
 	/** A live 0 means the manifest does not say, which is not a difference. */
-	void AddIntervalChanges(const UCrowdyServerObjectDefinition* Definition, const CrowdyExecRevisions::FLiveType& Live, TArray<FString>& OutWhat)
+	void AddSettingChanges(const UCrowdyServerObjectDefinition* Definition, const CrowdyExecRevisions::FLiveType& Live, CrowdyExecRevisions::FTypeChange& Change)
 	{
 		if (!Definition)
 		{
 			return;
 		}
+		TArray<FString>& OutWhat = Change.What;
+		const bool bLibrary = Definition->IsFunctionLibrary();
+		const bool bLiveLibrary = IsSameText(Live.Kind, TEXT("spoke"));
+		if (bLibrary != bLiveLibrary)
+		{
+			OutWhat.Add(TEXT("kind"));
+			Change.KindChange = bLibrary ? CrowdyExecRevisions::EKindChange::ToLibrary : CrowdyExecRevisions::EKindChange::ToServerObject;
+		}
+		else if (bLibrary && LiveScalingDiffers(*Definition, Live))
+		{
+			OutWhat.Add(TEXT("scaling"));
+		}
+		// A library saves nothing, and a type that was a library has no save interval or idle timeout to compare.
 		const int64 SaveIntervalMs = static_cast<int64>(Definition->SaveIntervalSeconds) * 1000;
 		const int64 IdleTimeoutMs = static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000;
-		if (Live.SaveIntervalMs != 0 && Live.SaveIntervalMs != SaveIntervalMs)
+		if (!bLibrary && Live.SaveIntervalMs != 0 && Live.SaveIntervalMs != SaveIntervalMs)
 		{
 			OutWhat.Add(TEXT("save interval"));
 		}
-		if (Live.IdleTimeoutMs != 0 && Live.IdleTimeoutMs != IdleTimeoutMs)
+		if (!bLibrary && Live.IdleTimeoutMs != 0 && Live.IdleTimeoutMs != IdleTimeoutMs)
 		{
 			OutWhat.Add(TEXT("idle timeout"));
+		}
+		TArray<FString> Scopes = CrowdyExecDeploy::ScopesOf(*Definition);
+		Algo::Sort(Scopes);
+		if (Scopes != Live.Scopes)
+		{
+			OutWhat.Add(TEXT("platform data"));
+		}
+		if (Definition->IsReachableByPlayers() != Live.bClient)
+		{
+			OutWhat.Add(TEXT("player access"));
+		}
+		for (const CrowdyExecDeploy::FServerLimit& Limit : CrowdyExecDeploy::LimitsOf(*Definition))
+		{
+			const int64* LiveValue = Live.Numbers.Find(Limit.Field);
+			// The platform runs a limit clamped into its range, so a live value outside it is the clamped one.
+			if ((LiveValue ? CrowdyExecDeploy::ClampLimit(Limit.Field, *LiveValue) : Limit.Default) != Limit.Value)
+			{
+				OutWhat.Add(TEXT("server limits"));
+				break;
+			}
 		}
 	}
 
@@ -178,7 +237,7 @@ namespace CrowdyExecRevisionsDetail
 		}
 		const TArray<FRevision> History = HistoryFor(Type.TypeName);
 		Change.LiveRevision = FindRevisionWithDigest(History, Live->Digest);
-		AddIntervalChanges(Definition, *Live, Change.What);
+		AddSettingChanges(Definition, *Live, Change);
 		if (Change.LiveRevision == INDEX_NONE)
 		{
 			return EChange::Unknown;
@@ -188,6 +247,45 @@ namespace CrowdyExecRevisionsDetail
 			Change.What.Insert(TEXT("server code"), 0);
 		}
 		return Change.What.IsEmpty() ? EChange::Unchanged : EChange::Changed;
+	}
+
+	/** The SDK's root rides every deploy: a deploy is offered when the live version has none, has an older one closed to players, or runs other root code than this SDK's. */
+	void AddRootChange(const CrowdyExecDeploy::FProjectDeploy& Project, const CrowdyExecRevisions::FLiveType* LiveRoot, int32 LiveVersion,
+		TFunctionRef<TArray<FRevision>(const FString& TypeName)> HistoryFor, TArray<CrowdyExecRevisions::FTypeChange>& OutChanges)
+	{
+		using CrowdyExecRevisions::EChange;
+		CrowdyExecRevisions::FTypeChange Change;
+		Change.TypeName = CrowdyExecDeploy::RootTypeName;
+		Change.LiveVersion = LiveVersion;
+		if (!LiveRoot)
+		{
+			Change.Change = EChange::New;
+			OutChanges.Add(MoveTemp(Change));
+			return;
+		}
+		// A root closed to players is an older SDK's, which keeps no Players Online.
+		if (!LiveRoot->bClient)
+		{
+			Change.Change = EChange::Changed;
+			Change.What.Add(TEXT("players online"));
+			OutChanges.Add(MoveTemp(Change));
+			return;
+		}
+		const CrowdyExecDeveloper::FBuildCrate* Crate = Project.Crates.FindByPredicate([](const CrowdyExecDeveloper::FBuildCrate& Candidate) { return IsSameText(Candidate.Name, CrowdyExecDeploy::RootTypeName); });
+		if (!Crate || Crate->Files.IsEmpty())
+		{
+			return;
+		}
+		// A live root this checkout has no record of is not a difference: a fresh checkout would show noise.
+		const TArray<FRevision> History = HistoryFor(CrowdyExecDeploy::RootTypeName);
+		Change.LiveRevision = FindRevisionWithDigest(History, LiveRoot->Digest);
+		if (Change.LiveRevision == INDEX_NONE || IsSameText(History[Change.LiveRevision].Fingerprint, CrowdyExecRevisions::Fingerprint(Crate->Files)))
+		{
+			return;
+		}
+		Change.Change = EChange::Changed;
+		Change.What.Add(TEXT("server code"));
+		OutChanges.Add(MoveTemp(Change));
 	}
 
 	TArray<FString> SplitLines(const FString& Text)
@@ -372,10 +470,6 @@ void CrowdyExecRevisions::RecordDeploy(const CrowdyExecDeploy::FProjectDeploy& P
 	using namespace CrowdyExecRevisionsDetail;
 	for (const CrowdyExecDeveloper::FBuildCrate& Crate : Project.Crates)
 	{
-		if (IsSameText(Crate.Name, CrowdyExecDeploy::RootTypeName))
-		{
-			continue;
-		}
 		const FString Directory = CrateDirectoryFor(Crate.Name);
 		if (Directory.IsEmpty())
 		{
@@ -422,8 +516,20 @@ bool CrowdyExecRevisions::ParseManifest(const FString& ManifestJson, TArray<FLiv
 		FLiveType& Live = OutTypes.AddDefaulted_GetRef();
 		Live.TypeName = Pair.Key;
 		(*Type)->TryGetStringField(TEXT("digest"), Live.Digest);
+		(*Type)->TryGetStringField(TEXT("kind"), Live.Kind);
 		Live.SaveIntervalMs = ReadMs(**Type, TEXT("persist_every_ms"));
 		Live.IdleTimeoutMs = ReadMs(**Type, TEXT("evict_after_ms"));
+		(*Type)->TryGetBoolField(TEXT("client"), Live.bClient);
+		(*Type)->TryGetStringArrayField(TEXT("scopes"), Live.Scopes);
+		Algo::Sort(Live.Scopes);
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : (*Type)->Values)
+		{
+			int64 Number = 0;
+			if (Field.Value && ReadWholeNumber(*Field.Value, Number))
+			{
+				Live.Numbers.Add(Field.Key, Number);
+			}
+		}
 	}
 	Algo::Sort(OutTypes, [](const FLiveType& A, const FLiveType& B) { return A.TypeName.Compare(B.TypeName, ESearchCase::CaseSensitive) < 0; });
 	return true;
@@ -459,6 +565,18 @@ TArray<CrowdyExecRevisions::FTypeChange> CrowdyExecRevisions::Compare(const Crow
 		});
 		Change.Change = CompareType(Type, Crate, Definition ? *Definition : nullptr, LiveTypes, HistoryFor, Change);
 	}
+	if (bLiveKnown && bReadable)
+	{
+		AddRootChange(Project, FindLiveType(LiveTypes, CrowdyExecDeploy::RootTypeName), LiveVersion, HistoryFor, Changes);
+	}
+	// An unreadable manifest is never "no changes", even for a project with no types of its own.
+	if (bLiveKnown && !bReadable)
+	{
+		FTypeChange& Root = Changes.AddDefaulted_GetRef();
+		Root.TypeName = CrowdyExecDeploy::RootTypeName;
+		Root.Change = EChange::Unknown;
+		Root.LiveVersion = LiveVersion;
+	}
 	for (const FLiveType& LiveType : LiveTypes)
 	{
 		const bool bInProject = Project.Types.ContainsByPredicate([&LiveType](const CrowdyExecDeploy::FTypeState& Type) { return IsSameText(Type.TypeName, LiveType.TypeName); });
@@ -472,6 +590,19 @@ TArray<CrowdyExecRevisions::FTypeChange> CrowdyExecRevisions::Compare(const Crow
 		Change.LiveVersion = LiveVersion;
 	}
 	return Changes;
+}
+
+FString CrowdyExecRevisions::DescribeKindChange(const FTypeChange& Change)
+{
+	switch (Change.KindChange)
+	{
+	case EKindChange::ToLibrary:
+		return FString::Printf(TEXT("%s changes from Server Object to Server Function Library: its saved data is kept, unused, and comes back if it becomes a Server Object again."), *Change.TypeName);
+	case EKindChange::ToServerObject:
+		return FString::Printf(TEXT("%s changes from Server Function Library to Server Object: it starts from the saved data it had as a Server Object, if any."), *Change.TypeName);
+	default:
+		return FString();
+	}
 }
 
 bool CrowdyExecRevisions::HasChanges(TConstArrayView<FTypeChange> Changes)

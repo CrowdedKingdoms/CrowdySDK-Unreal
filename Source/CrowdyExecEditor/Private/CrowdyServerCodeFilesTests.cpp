@@ -352,4 +352,19 @@ bool FCrowdyServerCodeFilesEditStashTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerCodeFilesInsertedStubsTest, "CrowdySDK.CrowdyExecEditor.ServerCodeFilesRecordInsertedStubs", CrowdyServerCodeFilesTest::TestFlags)
+bool FCrowdyServerCodeFilesInsertedStubsTest::RunTest(const FString& Parameters)
+{
+	const FString Path = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("CrowdyServerCodeFilesTests"), FGuid::NewGuid().ToString(), TEXT("logic.rs")));
+	TestTrue(TEXT("nothing is recorded for a new file"), CrowdyServerCodeEdits::InsertedStubs(Path).IsEmpty());
+	CrowdyServerCodeEdits::NoteStubsInserted(Path, {TEXT("clear"), TEXT("heal")});
+	TestEqualSensitive(TEXT("the functions are recorded"), FString::Join(CrowdyServerCodeEdits::InsertedStubs(Path), TEXT(",")), FString(TEXT("clear,heal")));
+	TestEqualSensitive(TEXT("under the file's full path, with either slash"), FString::Join(CrowdyServerCodeEdits::InsertedStubs(Path.Replace(TEXT("/"), TEXT("\\"))), TEXT(",")), FString(TEXT("clear,heal")));
+	CrowdyServerCodeEdits::NoteStubsInserted(Path, {TEXT("join")});
+	TestEqualSensitive(TEXT("a later record replaces it"), FString::Join(CrowdyServerCodeEdits::InsertedStubs(Path), TEXT(",")), FString(TEXT("join")));
+	CrowdyServerCodeEdits::ForgetInsertedStubs(Path);
+	TestTrue(TEXT("forgetting drops it"), CrowdyServerCodeEdits::InsertedStubs(Path).IsEmpty());
+	return true;
+}
+
 #endif

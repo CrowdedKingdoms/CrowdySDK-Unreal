@@ -42,14 +42,14 @@ void UCrowdyChannels_CreateChannel::Activate()
 
 void UCrowdyChannels_CreateChannel::HandleSuccess(FCrowdyChannel Channel)
 {
-	OnSuccess.Broadcast(Channel);
+	OnSuccess.Broadcast(Channel, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_CreateChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannel(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -84,14 +84,14 @@ void UCrowdyChannels_UpdateChannel::Activate()
 
 void UCrowdyChannels_UpdateChannel::HandleSuccess(FCrowdyChannel Channel)
 {
-	OnSuccess.Broadcast(Channel);
+	OnSuccess.Broadcast(Channel, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_UpdateChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannel(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -124,7 +124,7 @@ void UCrowdyChannels_DeleteChannel::Activate()
 
 void UCrowdyChannels_DeleteChannel::HandleSuccess()
 {
-	OnSuccess.Broadcast();
+	OnSuccess.Broadcast(FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
@@ -163,14 +163,14 @@ void UCrowdyChannels_JoinChannel::Activate()
 
 void UCrowdyChannels_JoinChannel::HandleSuccess(FCrowdyChannelMember Member)
 {
-	OnSuccess.Broadcast(Member);
+	OnSuccess.Broadcast(Member, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_JoinChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelMember(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -203,14 +203,14 @@ void UCrowdyChannels_RequestToJoinChannel::Activate()
 
 void UCrowdyChannels_RequestToJoinChannel::HandleSuccess(FCrowdyChannelMember Member)
 {
-	OnSuccess.Broadcast(Member);
+	OnSuccess.Broadcast(Member, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_RequestToJoinChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelMember(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -242,7 +242,7 @@ void UCrowdyChannels_LeaveChannel::Activate()
 
 void UCrowdyChannels_LeaveChannel::HandleSuccess()
 {
-	OnSuccess.Broadcast();
+	OnSuccess.Broadcast(FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
@@ -283,14 +283,14 @@ void UCrowdyChannels_AddChannelMember::Activate()
 
 void UCrowdyChannels_AddChannelMember::HandleSuccess(FCrowdyChannelMember Member)
 {
-	OnSuccess.Broadcast(Member);
+	OnSuccess.Broadcast(Member, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_AddChannelMember::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelMember(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -324,7 +324,7 @@ void UCrowdyChannels_RemoveChannelMember::Activate()
 
 void UCrowdyChannels_RemoveChannelMember::HandleSuccess()
 {
-	OnSuccess.Broadcast();
+	OnSuccess.Broadcast(FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
@@ -332,6 +332,89 @@ void UCrowdyChannels_RemoveChannelMember::HandleError(FCrowdyChannelError Error,
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
 	OnError.Broadcast(Error, Error.Message);
+	SetReadyToDestroy();
+}
+
+
+UCrowdyChannels_BanChannelMember* UCrowdyChannels_BanChannelMember::BanChannelMember(
+	UObject* WorldContextObject, int64 ChannelId, int64 UserId, const FString& Reason)
+{
+	UCrowdyChannels_BanChannelMember* Action = NewObject<UCrowdyChannels_BanChannelMember>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->ChannelId = ChannelId;
+	Action->UserId = UserId;
+	Action->Reason = Reason;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyChannels_BanChannelMember::Activate()
+{
+	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
+	if (!Channels)
+	{
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
+		HandleError(Err, Err.Message);
+		return;
+	}
+	FOnChannelMemberSuccess S;
+	S.BindDynamic(this, &UCrowdyChannels_BanChannelMember::HandleSuccess);
+	FOnChannelError E;
+	E.BindDynamic(this, &UCrowdyChannels_BanChannelMember::HandleError);
+	Channels->BanChannelMember(ChannelId, UserId, Reason, S, E);
+}
+
+void UCrowdyChannels_BanChannelMember::HandleSuccess(FCrowdyChannelMember Member)
+{
+	OnSuccess.Broadcast(Member, FCrowdyChannelError(), FString());
+	SetReadyToDestroy();
+}
+
+void UCrowdyChannels_BanChannelMember::HandleError(FCrowdyChannelError Error, FString Message)
+{
+	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
+	OnError.Broadcast(FCrowdyChannelMember(), Error, Error.Message);
+	SetReadyToDestroy();
+}
+
+
+UCrowdyChannels_UnbanChannelMember* UCrowdyChannels_UnbanChannelMember::UnbanChannelMember(
+	UObject* WorldContextObject, int64 ChannelId, int64 UserId)
+{
+	UCrowdyChannels_UnbanChannelMember* Action = NewObject<UCrowdyChannels_UnbanChannelMember>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->ChannelId = ChannelId;
+	Action->UserId = UserId;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyChannels_UnbanChannelMember::Activate()
+{
+	UCrowdyChannels* Channels = GetChannelsSubsystemW(WorldContextObject);
+	if (!Channels)
+	{
+		const FCrowdyChannelError Err = FCrowdyChannelError::FromMessage(TEXT("UCrowdyChannels not found"));
+		HandleError(Err, Err.Message);
+		return;
+	}
+	FOnChannelUnbanSuccess S;
+	S.BindDynamic(this, &UCrowdyChannels_UnbanChannelMember::HandleSuccess);
+	FOnChannelError E;
+	E.BindDynamic(this, &UCrowdyChannels_UnbanChannelMember::HandleError);
+	Channels->UnbanChannelMember(ChannelId, UserId, S, E);
+}
+
+void UCrowdyChannels_UnbanChannelMember::HandleSuccess(bool bWasBanned)
+{
+	OnSuccess.Broadcast(bWasBanned, FCrowdyChannelError(), FString());
+	SetReadyToDestroy();
+}
+
+void UCrowdyChannels_UnbanChannelMember::HandleError(FCrowdyChannelError Error, FString Message)
+{
+	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
+	OnError.Broadcast(false, Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -366,14 +449,14 @@ void UCrowdyChannels_SetChannelMemberRoles::Activate()
 
 void UCrowdyChannels_SetChannelMemberRoles::HandleSuccess(FCrowdyChannelMember Member)
 {
-	OnSuccess.Broadcast(Member);
+	OnSuccess.Broadcast(Member, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_SetChannelMemberRoles::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelMember(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -410,14 +493,14 @@ void UCrowdyChannels_CreateChannelRole::Activate()
 
 void UCrowdyChannels_CreateChannelRole::HandleSuccess(FCrowdyChannelRole Role)
 {
-	OnSuccess.Broadcast(Role);
+	OnSuccess.Broadcast(Role, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_CreateChannelRole::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelRole(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -452,14 +535,14 @@ void UCrowdyChannels_UpdateChannelRole::Activate()
 
 void UCrowdyChannels_UpdateChannelRole::HandleSuccess(FCrowdyChannelRole Role)
 {
-	OnSuccess.Broadcast(Role);
+	OnSuccess.Broadcast(Role, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_UpdateChannelRole::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelRole(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -492,7 +575,7 @@ void UCrowdyChannels_DeleteChannelRole::Activate()
 
 void UCrowdyChannels_DeleteChannelRole::HandleSuccess()
 {
-	OnSuccess.Broadcast();
+	OnSuccess.Broadcast(FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
@@ -534,13 +617,13 @@ void UCrowdyChannels_SetChannelPolicy::Activate()
 
 void UCrowdyChannels_SetChannelPolicy::HandleSuccess(FCrowdyChannelPolicy Policy)
 {
-	OnSuccess.Broadcast(Policy);
+	OnSuccess.Broadcast(Policy, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_SetChannelPolicy::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelPolicy(), Error, Error.Message);
 	SetReadyToDestroy();
 }

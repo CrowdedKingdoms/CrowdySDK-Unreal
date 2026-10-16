@@ -82,8 +82,17 @@ void setAuthorization(HttpRequest& request, const std::string& value) {
   if (!value.empty()) request.headers.emplace_back("Authorization", value);
 }
 
+GraphQLOutcome cancelledOutcome(std::string message) {
+  GraphQLOutcome out;
+  out.status = Errc::Cancelled;
+  out.kind = GraphQLErrorKind::Cancelled;
+  out.errorMessage = std::move(message);
+  return out;
+}
+
 GraphQLOutcome outcomeFromHttp(HttpOutcome http) {
   if (!http.status.ok()) {
+    if (http.status.code == Errc::Cancelled) return cancelledOutcome(std::move(http.errorMessage));
     GraphQLOutcome out;
     out.status = http.status;
     out.kind =
@@ -92,6 +101,25 @@ GraphQLOutcome outcomeFromHttp(HttpOutcome http) {
     return out;
   }
   return interpret(http.response.status, http.response.body);
+}
+
+bool cancelled(const std::optional<CancelToken>& cancel) {
+  return cancel && cancel->cancelled();
+}
+
+/// A request cancelled while in flight reports cancelled whatever its transport
+/// answered: a transport may ignore the token, and the caller has said it no
+/// longer wants the answer.
+GraphQLOutcome settle(GraphQLOutcome out, const std::optional<CancelToken>& cancel,
+                      const std::string& url) {
+  if (cancelled(cancel) && out.kind != GraphQLErrorKind::Cancelled) {
+    return cancelledOutcome("GraphQL request cancelled: " + url);
+  }
+  return out;
+}
+
+GraphQLOutcome settle(GraphQLOutcome out, const HttpRequest& request) {
+  return settle(std::move(out), request.cancel, request.url);
 }
 
 #ifndef CROWDY_NO_EXCEPTIONS
@@ -108,6 +136,7 @@ GraphQLOutcome outcomeFromHttp(HttpOutcome http) {
     case GraphQLErrorKind::Protocol: throw CrowdyProtocolError(out.errorMessage);
     case GraphQLErrorKind::Network: throw CrowdyNetworkError(out.errorMessage);
     case GraphQLErrorKind::Timeout: throw CrowdyTimeoutError(out.errorMessage);
+    case GraphQLErrorKind::Cancelled: throw CrowdyCancelledError(out.errorMessage);
     case GraphQLErrorKind::None: break;
   }
   throw CrowdyProtocolError("unknown GraphQL failure");
@@ -164,7 +193,8 @@ bool GraphQLClient::applyDatacenterRedirect(const GraphQLOutcome& outcome,
 }
 
 HttpRequest GraphQLClient::buildHttpRequest(std::string_view document, const JVal& variables,
-                                            std::string_view operationName) const {
+                                            std::string_view operationName,
+                                            const RequestOptions& options) const {
   JVal body;
   body["query"] = JVal(document);
   if (!variables.isNull()) body["variables"] = variables;
@@ -174,6 +204,7 @@ HttpRequest GraphQLClient::buildHttpRequest(std::string_view document, const JVa
   req.url = endpoint();
   req.body = body.dump();
   req.timeoutMs = config_.timeoutMs;
+  req.cancel = options.cancel;
   req.headers.emplace_back("Content-Type", "application/json");
   req.headers.emplace_back("Accept", "application/json");
   const std::string token = auth_->token();
@@ -194,8 +225,15 @@ HttpOutcome GraphQLClient::sendInline(const HttpRequest& request) {
 
 GraphQLOutcome GraphQLClient::requestOutcome(std::string_view document, const JVal& variables,
                                              std::string_view operationName) {
-  HttpRequest req = buildHttpRequest(document, variables, operationName);
-  GraphQLOutcome out = outcomeFromHttp(sendInline(req));
+  return requestOutcome(document, variables, operationName, RequestOptions{});
+}
+
+GraphQLOutcome GraphQLClient::requestOutcome(std::string_view document, const JVal& variables,
+                                             std::string_view operationName,
+                                             const RequestOptions& options) {
+  if (cancelled(options.cancel)) return cancelledOutcome("GraphQL request cancelled before it was sent");
+  HttpRequest req = buildHttpRequest(document, variables, operationName, options);
+  GraphQLOutcome out = settle(outcomeFromHttp(sendInline(req)), req);
   // Exactly one retry, and only after the endpoint actually moved - whether
   // this redirect moved it or a concurrent request's already had. Retrying a
   // second WRONG_DATACENTER is how two datacenters that disagree about an app
@@ -205,44 +243,57 @@ GraphQLOutcome GraphQLClient::requestOutcome(std::string_view document, const JV
     // Authorization; the shared AuthState may hold a different caller's bearer
     // by now.
     const std::string sentAuthorization = authorizationOf(req);
-    req = buildHttpRequest(document, variables, operationName);
+    req = buildHttpRequest(document, variables, operationName, options);
     setAuthorization(req, sentAuthorization);
-    out = outcomeFromHttp(sendInline(req));
+    out = settle(outcomeFromHttp(sendInline(req)), req);
   }
   return out;
 }
 
-#ifndef CROWDY_NO_EXCEPTIONS
 Json GraphQLClient::request(std::string_view document, const JVal& variables,
                             std::string_view operationName) {
+  return request(document, variables, operationName, RequestOptions{});
+}
+
+#ifndef CROWDY_NO_EXCEPTIONS
+Json GraphQLClient::request(std::string_view document, const JVal& variables,
+                            std::string_view operationName, const RequestOptions& options) {
   if (!transport_) {
     throw CrowdyNetworkError(
         "No default HTTP transport is available; inject IHttpTransport");
   }
-  GraphQLOutcome out = requestOutcome(document, variables, operationName);
+  GraphQLOutcome out = requestOutcome(document, variables, operationName, options);
   if (!out.ok()) throwOutcome(out);
   return out.data;
 }
 #else
 Json GraphQLClient::request(std::string_view document, const JVal& variables,
-                            std::string_view operationName) {
-  GraphQLOutcome outcome = requestOutcome(document, variables, operationName);
+                            std::string_view operationName, const RequestOptions& options) {
+  GraphQLOutcome outcome = requestOutcome(document, variables, operationName, options);
   return outcome.ok() ? outcome.data : Json{};
 }
 #endif
 
 void GraphQLClient::requestAsync(std::string_view document, const JVal& variables,
                                  std::string_view operationName, GraphQLCallback cb) {
-  requestAsyncAttempt(std::string(document), variables,
-                      std::string(operationName), std::move(cb), false);
+  requestAsyncAttempt(std::string(document), variables, std::string(operationName),
+                      RequestOptions{}, std::move(cb), false);
+}
+
+void GraphQLClient::requestAsync(std::string_view document, const JVal& variables,
+                                 std::string_view operationName, const RequestOptions& options,
+                                 GraphQLCallback cb) {
+  requestAsyncAttempt(std::string(document), variables, std::string(operationName), options,
+                      std::move(cb), false);
 }
 
 void GraphQLClient::requestAsyncAttempt(std::string document,
                                         const JVal& variables,
                                         std::string operationName,
+                                        RequestOptions options,
                                         GraphQLCallback cb, bool isRetry,
                                         std::optional<std::string> retryAuthorization) {
-  HttpRequest req = buildHttpRequest(document, variables, operationName);
+  HttpRequest req = buildHttpRequest(document, variables, operationName, options);
   if (retryAuthorization) {
     setAuthorization(req, *retryAuthorization);
   }
@@ -256,11 +307,11 @@ void GraphQLClient::requestAsyncAttempt(std::string document,
   // this attempt actually used even after a concurrent redirect moved the
   // client or a concurrent caller switched the shared AuthState.
   if (!isRetry) {
-    cb = [this, document, variables, operationName, sentUrl = req.url,
+    cb = [this, document, variables, operationName, options, sentUrl = req.url,
           sentAuthorization = authorizationOf(req),
           cb = std::move(cb)](GraphQLOutcome out) mutable {
       if (!out.ok() && applyDatacenterRedirect(out, sentUrl)) {
-        requestAsyncAttempt(document, variables, operationName, std::move(cb),
+        requestAsyncAttempt(document, variables, operationName, options, std::move(cb),
                             true, std::move(sentAuthorization));
         return;
       }
@@ -284,9 +335,14 @@ void GraphQLClient::requestAsyncAttempt(std::string document,
     }
   };
 
+  if (cancelled(req.cancel)) {
+    deliver(cancelledOutcome("GraphQL request cancelled before it was sent"));
+    return;
+  }
+
   if (asyncTransport_) {
-    auto complete = [deliver](HttpOutcome http) mutable {
-      deliver(outcomeFromHttp(std::move(http)));
+    auto complete = [deliver, cancel = req.cancel, url = req.url](HttpOutcome http) mutable {
+      deliver(settle(outcomeFromHttp(std::move(http)), cancel, url));
     };
 #ifndef CROWDY_NO_EXCEPTIONS
     try {
@@ -294,6 +350,8 @@ void GraphQLClient::requestAsyncAttempt(std::string document,
     } catch (const CrowdyTimeoutError& error) {
       deliver(GraphQLOutcome{Errc::Timeout, GraphQLErrorKind::Timeout, {},
                              {}, 0, error.what(), {}});
+    } catch (const CrowdyCancelledError& error) {
+      deliver(cancelledOutcome(error.what()));
     } catch (const std::exception& error) {
       deliver(GraphQLOutcome{Errc::SocketError,
                              GraphQLErrorKind::Network, {}, {}, 0,
@@ -307,7 +365,7 @@ void GraphQLClient::requestAsyncAttempt(std::string document,
     asyncTransport_->sendAsync(req, std::move(complete));
 #endif
   } else {
-    deliver(outcomeFromHttp(sendInline(req)));
+    deliver(settle(outcomeFromHttp(sendInline(req)), req));
   }
 }
 

@@ -14,7 +14,7 @@
 
 #define LOCTEXT_NAMESPACE "CrowdyServerFunctionCustomization"
 
-namespace CrowdyServerFunctionCustomizationDetail
+namespace CrowdyServerMemberRows
 {
 	TSharedRef<SWidget> Labelled(const FText& Label, const FText& ToolTip, const TSharedRef<SWidget>& Value)
 	{
@@ -46,7 +46,7 @@ TSharedRef<IPropertyTypeCustomization> FCrowdyServerFunctionCustomization::MakeI
 
 void FCrowdyServerFunctionCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& Utils)
 {
-	using namespace CrowdyServerFunctionCustomizationDetail;
+	using namespace CrowdyServerMemberRows;
 	const TSharedPtr<IPropertyHandle> NameHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, Name));
 	const TSharedPtr<IPropertyHandle> CallerHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, WhoCanCall));
 	if (!NameHandle.IsValid() || !CallerHandle.IsValid())
@@ -69,7 +69,7 @@ void FCrowdyServerFunctionCustomization::CustomizeHeader(TSharedRef<IPropertyHan
 		.MinDesiredWidth(200.0f)
 		[
 			Labelled(LOCTEXT("CallerLabel", "Callable By"),
-				LOCTEXT("CallerToolTip", "Players: any player. Members or Leader: only the object's members or its leader (needs Members From). Server Only: only other server code and developer tools."),
+				LOCTEXT("CallerToolTip", "Players: any player. Members or Leader: only the object's members or its leader (needs Members From). Server Only: only other server code and developer tools. Developers Only: only developer tools, such as Call as Developer."),
 				CallerHandle->CreatePropertyValueWidget())
 		];
 }

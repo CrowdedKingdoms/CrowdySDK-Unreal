@@ -19,6 +19,9 @@ HttpOutcome IHttpTransport::sendOutcome(const HttpRequest& request) noexcept {
   } catch (const CrowdyTimeoutError& error) {
     out.status = Errc::Timeout;
     out.errorMessage = error.what();
+  } catch (const CrowdyCancelledError& error) {
+    out.status = Errc::Cancelled;
+    out.errorMessage = error.what();
   } catch (const std::exception& error) {
     out.status = Errc::SocketError;
     out.errorMessage = error.what();

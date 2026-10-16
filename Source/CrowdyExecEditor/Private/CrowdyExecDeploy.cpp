@@ -1,5 +1,6 @@
 #include "CrowdyExecDeploy.h"
 
+#include "Algo/Find.h"
 #include "Algo/Sort.h"
 #include "Algo/Unique.h"
 #include "AssetRegistry/ARFilter.h"
@@ -7,7 +8,9 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Containers/StringConv.h"
 #include "CrowdyExecCodegen.h"
+#include "CrowdyRustSyntaxMarshaller.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "CrowdyServerObjectLibrary.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -27,52 +30,49 @@ namespace CrowdyExecDeployDetail
 	constexpr int64 MinIdleTimeoutMs = 1000;
 	constexpr int64 MaxIdleTimeoutMs = 1800000;
 
-	const TCHAR* const RootLib =
-		TEXT("// The root every Server Object type sits under on the platform, written by the Crowdy SDK. It keeps no state.\n")
-		TEXT("use ckx_sdk::prelude::*;\n")
-		TEXT("\n")
-		TEXT("#[derive(Serialize, Deserialize, Default)]\n")
-		TEXT("pub struct Root {}\n")
-		TEXT("\n")
-		TEXT("impl Hub for Root {\n")
-		TEXT("    fn spawn(_ctx: &Ctx, _seed: &[u8]) -> Result<Self> {\n")
-		TEXT("        Ok(Self::default())\n")
-		TEXT("    }\n")
-		TEXT("\n")
-		TEXT("    fn load(_ctx: &Ctx, _snapshot: &[u8], _from_version: u64) -> Result<Self> {\n")
-		TEXT("        Ok(Self::default())\n")
-		TEXT("    }\n")
-		TEXT("\n")
-		TEXT("    fn persist(&mut self, _ctx: &Ctx) -> Result<Vec<u8>> {\n")
-		TEXT("        encode(self)\n")
-		TEXT("    }\n")
-		TEXT("\n")
-		TEXT("    fn handle(&mut self, _ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n")
-		TEXT("        Err(Error::unknown_method(call.method))\n")
-		TEXT("    }\n")
-		TEXT("}\n")
-		TEXT("\n")
-		TEXT("ckx_sdk::export_hub!(Root);\n");
-
-	/** The same package shape Generate Server Code writes for every type. */
-	FString CargoText(const FString& CrateName)
+	/** The root's own code for its state struct StateName; the platform calls on_presence on the root alone. */
+	FString RootLogic(const FString& StateName)
 	{
-		return FString::Printf(TEXT("[package]\nname = \"%s\"\n"), *CrateName)
-			+ TEXT("version = \"0.1.0\"\n")
-			TEXT("edition = \"2024\"\n")
-			TEXT("\n")
-			TEXT("[lib]\n")
-			TEXT("crate-type = [\"cdylib\"]\n")
-			TEXT("\n")
-			TEXT("[dependencies]\n")
-			TEXT("ckx-sdk = \"0.7.0\"\n")
-			TEXT("serde = { version = \"1\", features = [\"derive\"] }\n");
+		return FString(TEXT("// The root every Server Object type sits under on the platform, written by the Crowdy SDK: it keeps the number of\n")
+			TEXT("// players in the app's world, which players read as Players Online.\n")
+			TEXT("use crate::*;\n")
+			TEXT("use ckx_sdk::prelude::*;\n")
+			TEXT("\n"))
+			+ FString::Printf(TEXT("impl Functions for %s {\n"), *StateName)
+			+ TEXT("    fn on_presence(&mut self, _ctx: &Ctx, presence: &Presence) -> Result<()> {\n")
+			TEXT("        self.PlayersOnline = i32::try_from(presence.count).unwrap_or(i32::MAX);\n")
+			TEXT("        Ok(())\n")
+			TEXT("    }\n")
+			TEXT("}\n");
 	}
 
 	/** Line endings and whitespace at the end of the file do not make a crate stale. */
 	FString Comparable(const FString& Text)
 	{
 		return Text.Replace(TEXT("\r\n"), TEXT("\n")).TrimEnd();
+	}
+
+	FString QuotedLine(FString Line)
+	{
+		Line.TrimStartAndEndInline();
+		return FString::Printf(TEXT("\"%s\""), Line.Len() > 80 ? *(Line.Left(80) + TEXT("...")) : *Line);
+	}
+
+	/** Where two texts first differ, after the same normalisation Comparable applies. */
+	FString FirstDifference(const FString& OnDisk, const FString& Generated)
+	{
+		TArray<FString> Have;
+		TArray<FString> Want;
+		Comparable(OnDisk).ParseIntoArray(Have, TEXT("\n"), false);
+		Comparable(Generated).ParseIntoArray(Want, TEXT("\n"), false);
+		int32 Index = 0;
+		while (Index < Have.Num() && Index < Want.Num() && Have[Index].Equals(Want[Index], ESearchCase::CaseSensitive))
+		{
+			++Index;
+		}
+		const FString Has = Have.IsValidIndex(Index) ? FString::Printf(TEXT("the file has %s"), *QuotedLine(Have[Index])) : FString(TEXT("the file ends"));
+		const FString Writes = Want.IsValidIndex(Index) ? FString::Printf(TEXT("Generate writes %s"), *QuotedLine(Want[Index])) : FString(TEXT("Generate writes nothing more"));
+		return FString::Printf(TEXT("line %d: %s, %s"), Index + 1, *Has, *Writes);
 	}
 
 	bool IsBefore(const FString& A, const FString& B)
@@ -257,15 +257,26 @@ namespace CrowdyExecDeployDetail
 		}
 	}
 
-	/** The Can Call types' names, sorted, each once; an empty entry or one with no Type Name is left out. */
+	/** The Can Call and Listen To types' names, sorted, each once; an empty entry or one with no Type Name is left out. */
 	TArray<FString> CallableTypeNames(const UCrowdyServerObjectDefinition& Definition)
 	{
 		TArray<FString> Names;
-		for (const UCrowdyServerObjectDefinition* Target : Definition.CanCall)
+		auto AddName = [&Names](const UCrowdyServerObjectDefinition* Target)
 		{
 			if (Target && !Target->TypeName.IsEmpty())
 			{
 				Names.Add(Target->TypeName);
+			}
+		};
+		for (const UCrowdyServerObjectDefinition* Target : Definition.CanCall)
+		{
+			AddName(Target);
+		}
+		for (const UCrowdyServerObjectDefinition* Target : Definition.ListenTo)
+		{
+			if (!Definition.IsFunctionLibrary())
+			{
+				AddName(Target);
 			}
 		}
 		Algo::Sort(Names, &IsBefore);
@@ -273,23 +284,305 @@ namespace CrowdyExecDeployDetail
 		return Names;
 	}
 
-	/** Adds "calls" when the type calls others and "scopes" (players.read, then world.read) when its members or its records' teams are Crowdy Teams, a function needs a feature, or it reads world data, in that order; a type with none gets nothing. */
+	/** Adds "calls" when the type calls others (["*"] for any type) and "scopes" when it asks for platform data; a type with neither gets nothing. */
 	void AppendCallsAndScopes(FStringBuilderBase& Json, const UCrowdyServerObjectDefinition& Definition)
 	{
-		const TArray<FString> Calls = CallableTypeNames(Definition);
+		const TArray<FString> Calls = Definition.bCanCallAnyType ? TArray<FString>{TEXT("*")} : CallableTypeNames(Definition);
 		if (!Calls.IsEmpty())
 		{
 			Json.Appendf(TEXT(",\"calls\":[\"%s\"]"), *FString::Join(Calls, TEXT("\",\"")));
 		}
-		const bool bNeedsFeature = Definition.Functions.ContainsByPredicate([](const FCrowdyServerFunction& Function) { return !Function.RequiredFeature.IsEmpty(); });
-		const bool bReadsPlayers = Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam || Definition.HasCrowdyTeamRecords() || bNeedsFeature;
-		if (!bReadsPlayers && !Definition.bReadsWorld)
+		const TArray<FString> Scopes = CrowdyExecDeploy::ScopesOf(Definition);
+		if (!Scopes.IsEmpty())
 		{
-			return;
+			Json.Appendf(TEXT(",\"scopes\":[\"%s\"]"), *FString::Join(Scopes, TEXT("\",\"")));
 		}
-		Json.Appendf(TEXT(",\"scopes\":[%s%s%s]"), bReadsPlayers ? TEXT("\"players.read\"") : TEXT(""), bReadsPlayers && Definition.bReadsWorld ? TEXT(",") : TEXT(""),
-			Definition.bReadsWorld ? TEXT("\"world.read\"") : TEXT(""));
 	}
+
+	struct FPlatformScope
+	{
+		const TCHAR* Name;
+		const TCHAR* Setting;
+		bool UCrowdyServerObjectDefinition::* Asked;
+	};
+
+	/** In the platform's order, which is the order a manifest lists them in. */
+	const FPlatformScope PlatformScopes[] = {
+		{TEXT("players.read"), TEXT("Reads Players"), &UCrowdyServerObjectDefinition::bReadsPlayers},
+		{TEXT("players.write"), TEXT("Changes Players' App State"), &UCrowdyServerObjectDefinition::bWritesPlayerState},
+		{TEXT("world.read"), TEXT("Reads World Data"), &UCrowdyServerObjectDefinition::bReadsWorld},
+		{TEXT("world.write"), TEXT("Changes the World"), &UCrowdyServerObjectDefinition::bWritesWorld},
+		{TEXT("grids.read"), TEXT("Reads Grids"), &UCrowdyServerObjectDefinition::bReadsGrids},
+		{TEXT("grids.write"), TEXT("Manages Grids"), &UCrowdyServerObjectDefinition::bManagesGrids},
+		{TEXT("permissions.write"), TEXT("Grants Grid Permissions"), &UCrowdyServerObjectDefinition::bGrantsGridPermissions},
+		{TEXT("access.read"), TEXT("Reads Players' Access"), &UCrowdyServerObjectDefinition::bReadsAccess},
+		{TEXT("access.write"), TEXT("Manages Players' Access"), &UCrowdyServerObjectDefinition::bManagesAccess},
+	};
+
+	struct FLimitSetting
+	{
+		const TCHAR* Field;
+		int32 UCrowdyServerObjectDefinition::* Setting;
+		int32 Default;
+		int32 Min;
+		int32 Max;
+		/** Manifest units per unit of the setting. */
+		int64 Scale;
+	};
+
+	/** The platform's defaults and ranges: it brings a value outside a range into it, so the editor does the same before comparing. */
+	const FLimitSetting LimitSettings[] = {
+		{TEXT("memory_mb"), &UCrowdyServerObjectDefinition::MemoryMegabytes, 64, 1, 512, 1},
+		{TEXT("fuel_per_call"), &UCrowdyServerObjectDefinition::FuelPerCallMillions, 50, 1, 1000, 1000000},
+		{TEXT("mailbox"), &UCrowdyServerObjectDefinition::MaxWaitingCalls, 1024, 1, 4096, 1},
+		{TEXT("deadline_ms"), &UCrowdyServerObjectDefinition::CallTimeLimitMs, 2000, 10, 10000, 1},
+	};
+
+	/** A ckx-sdk call into platform data, as it reads with whitespace removed, and the scope it needs. */
+	struct FScopedCall
+	{
+		const TCHAR* Call;
+		const TCHAR* Scope;
+	};
+
+	const FScopedCall ScopedCalls[] = {
+		{TEXT("players().get("), TEXT("players.read")},
+		{TEXT("players().features("), TEXT("players.read")},
+		{TEXT("players().check_permission("), TEXT("players.read")},
+		{TEXT("players().state("), TEXT("players.read")},
+		{TEXT("players().avatar_state("), TEXT("players.read")},
+		{TEXT("players().set_state("), TEXT("players.write")},
+		{TEXT("world().chunk("), TEXT("world.read")},
+		{TEXT("world().voxels("), TEXT("world.read")},
+		{TEXT("world().actors("), TEXT("world.read")},
+		{TEXT("world().actors_near("), TEXT("world.read")},
+		{TEXT("world().set_voxels("), TEXT("world.write")},
+		{TEXT("world().set_chunk_state("), TEXT("world.write")},
+		{TEXT("grids().get("), TEXT("grids.read")},
+		{TEXT("grids().settings("), TEXT("grids.read")},
+		{TEXT("grids().at("), TEXT("grids.read")},
+		{TEXT("grids().check_permission("), TEXT("grids.read")},
+		{TEXT("grids().create("), TEXT("grids.write")},
+		{TEXT("grids().delete("), TEXT("grids.write")},
+		{TEXT("grids().assign_group("), TEXT("grids.write")},
+		{TEXT("grids().unassign_group("), TEXT("grids.write")},
+		{TEXT("grids().set_open_permissions("), TEXT("grids.write")},
+		{TEXT("permissions().grant("), TEXT("permissions.write")},
+		{TEXT("permissions().revoke("), TEXT("permissions.write")},
+		{TEXT("access().get("), TEXT("access.read")},
+		{TEXT("access().grant("), TEXT("access.write")},
+		{TEXT("access().revoke("), TEXT("access.write")},
+		{TEXT("access().suspend("), TEXT("access.write")},
+		{TEXT("access().unsuspend("), TEXT("access.write")},
+	};
+
+	/** The Rust source without its comments, strings and whitespace, so only code is matched and a call split across lines reads as one. */
+	FString CodeOnly(const FString& Source)
+	{
+		TArray<FString> Lines;
+		Source.ParseIntoArrayLines(Lines, false);
+		CrowdyRustSyntax::FCarry Carry;
+		FString Code;
+		for (const FString& Line : Lines)
+		{
+			for (const CrowdyRustSyntax::FSpan& Span : CrowdyRustSyntax::ScanLine(Line, Carry))
+			{
+				if (Span.Kind == CrowdyRustSyntax::EKind::Comment || Span.Kind == CrowdyRustSyntax::EKind::String)
+				{
+					continue;
+				}
+				for (int32 Index = Span.Start; Index < Span.End; ++Index)
+				{
+					if (!FChar::IsWhitespace(Line[Index]))
+					{
+						Code.AppendChar(Line[Index]);
+					}
+				}
+			}
+		}
+		return Code;
+	}
+
+	/** Where the item an attribute at Index marks ends: after its braces, or after the semicolon of an item with none. */
+	int32 EndOfAttributedItem(const FString& Code, int32 Index)
+	{
+		const int32 Length = Code.Len();
+		while (Index + 1 < Length && Code[Index] == TEXT('#') && Code[Index + 1] == TEXT('['))
+		{
+			int32 Depth = 0;
+			do
+			{
+				Depth += (Code[Index] == TEXT('[')) - (Code[Index] == TEXT(']'));
+				++Index;
+			} while (Index < Length && Depth > 0);
+		}
+		int32 Nest = 0;
+		for (; Index < Length; ++Index)
+		{
+			const TCHAR Char = Code[Index];
+			Nest += (Char == TEXT('(') || Char == TEXT('[')) - (Char == TEXT(')') || Char == TEXT(']'));
+			// A field, variant or match arm ends at its comma, or where its enclosing block closes.
+			if (Nest <= 0 && (Char == TEXT('{') || Char == TEXT(';') || Char == TEXT(',') || Char == TEXT('}')))
+			{
+				break;
+			}
+		}
+		if (Index < Length && Code[Index] == TEXT('}'))
+		{
+			return Index;
+		}
+		if (Index >= Length || Code[Index] == TEXT(';') || Code[Index] == TEXT(','))
+		{
+			return FMath::Min(Index + 1, Length);
+		}
+		for (int32 Depth = 0; Index < Length; ++Index)
+		{
+			Depth += (Code[Index] == TEXT('{')) - (Code[Index] == TEXT('}'));
+			if (Depth == 0)
+			{
+				return Index + 1;
+			}
+		}
+		return Length;
+	}
+
+	/** Code with each #[cfg(test)] item removed, since test code never runs on the platform. Takes CodeOnly's output. */
+	FString StripCfgTest(const FString& Code)
+	{
+		const FString Marker = TEXT("#[cfg(test)]");
+		FString Kept;
+		int32 From = 0;
+		for (int32 At = Code.Find(Marker, ESearchCase::CaseSensitive); At != INDEX_NONE; At = Code.Find(Marker, ESearchCase::CaseSensitive, ESearchDir::FromStart, From))
+		{
+			Kept.Append(Code.Mid(From, At - From));
+			From = EndOfAttributedItem(Code, At);
+		}
+		return Kept + Code.RightChop(From);
+	}
+}
+
+TArray<FString> CrowdyExecDeploy::ScopesOf(const UCrowdyServerObjectDefinition& Definition)
+{
+	using namespace CrowdyExecDeployDetail;
+	const bool bPlayersRequired = !PlayersReadRequiredBecause(Definition).IsEmpty();
+	TArray<FString> Scopes;
+	for (const FPlatformScope& Scope : PlatformScopes)
+	{
+		const bool bImplied = bPlayersRequired && Scope.Asked == &UCrowdyServerObjectDefinition::bReadsPlayers;
+		if (Definition.*Scope.Asked || bImplied)
+		{
+			Scopes.Add(Scope.Name);
+		}
+	}
+	return Scopes;
+}
+
+FString CrowdyExecDeploy::PlayersReadRequiredBecause(const UCrowdyServerObjectDefinition& Definition)
+{
+	TArray<FString> Causes;
+	if (!Definition.IsFunctionLibrary() && Definition.MembersFrom == ECrowdyServerMembersSource::CrowdyTeam)
+	{
+		Causes.Add(TEXT("Members From is Crowdy Team"));
+	}
+	if (!Definition.IsFunctionLibrary() && Definition.HasCrowdyTeamRecords())
+	{
+		Causes.Add(TEXT("its records belong to Crowdy Teams"));
+	}
+	TArray<FString> Gated;
+	for (const FCrowdyServerFunction& Function : Definition.Functions)
+	{
+		// A feature is checked only for a player, and no player may call these.
+		const bool bPlayersCall = Function.WhoCanCall != ECrowdyServerFunctionCaller::DevelopersOnly && Function.WhoCanCall != ECrowdyServerFunctionCaller::ServerOnly;
+		if (bPlayersCall && !Function.RequiredFeature.IsEmpty())
+		{
+			Gated.Add(Function.Name.ToString());
+		}
+	}
+	if (!Gated.IsEmpty())
+	{
+		Causes.Add(FString::Printf(TEXT("Required Feature is set on %s"), *FString::Join(Gated, TEXT(", "))));
+	}
+	return FString::Join(Causes, TEXT("; "));
+}
+
+int64 CrowdyExecDeploy::ClampLimit(const FString& Field, int64 ManifestValue)
+{
+	using namespace CrowdyExecDeployDetail;
+	for (const FLimitSetting& Limit : LimitSettings)
+	{
+		if (Field.Equals(Limit.Field, ESearchCase::CaseSensitive))
+		{
+			return FMath::Clamp<int64>(ManifestValue, Limit.Min * Limit.Scale, Limit.Max * Limit.Scale);
+		}
+	}
+	return ManifestValue;
+}
+
+TArray<FString> CrowdyExecDeploy::FindCallerWarnings(const UCrowdyServerObjectDefinition& Definition)
+{
+	using namespace CrowdyExecDeployDetail;
+	TArray<FString> Warnings;
+	for (const FCrowdyServerFunction& Function : Definition.Functions)
+	{
+		if (Function.WhoCanCall != ECrowdyServerFunctionCaller::DevelopersOnly && Function.WhoCanCall != ECrowdyServerFunctionCaller::ServerOnly)
+		{
+			continue;
+		}
+		if (Function.CooldownSeconds > 0.f)
+		{
+			Warnings.Add(FString::Printf(TEXT("%s %s: Cooldown has no effect, since only players' calls are limited."), *DisplayName(Definition), *Function.Name.ToString()));
+		}
+		if (!Function.RequiredFeature.IsEmpty())
+		{
+			Warnings.Add(FString::Printf(TEXT("%s %s: Required Feature has no effect, since only players are checked."), *DisplayName(Definition), *Function.Name.ToString()));
+		}
+	}
+	return Warnings;
+}
+
+TArray<CrowdyExecDeploy::FServerLimit> CrowdyExecDeploy::LimitsOf(const UCrowdyServerObjectDefinition& Definition)
+{
+	using namespace CrowdyExecDeployDetail;
+	TArray<FServerLimit> Limits;
+	for (const FLimitSetting& Limit : LimitSettings)
+	{
+		Limits.Add({Limit.Field, FMath::Clamp(Definition.*Limit.Setting, Limit.Min, Limit.Max) * Limit.Scale, Limit.Default * Limit.Scale});
+	}
+	return Limits;
+}
+
+CrowdyExecDeploy::FScaling CrowdyExecDeploy::ScalingOf(const UCrowdyServerObjectDefinition& Definition)
+{
+	FScaling Scaling;
+	Scaling.Replicas = FMath::Clamp(Definition.MinInstances, 1, 64);
+	Scaling.MaxReplicas = FMath::Clamp(Definition.MaxInstances, Scaling.Replicas, 64);
+	Scaling.Concurrency = FMath::Clamp(Definition.ParallelCallsPerInstance, 1, 256);
+	return Scaling;
+}
+
+TArray<FString> CrowdyExecDeploy::FindScopeWarnings(const UCrowdyServerObjectDefinition& Definition, const CrowdyExecDeveloper::FBuildCrate& Crate)
+{
+	using namespace CrowdyExecDeployDetail;
+	FString Code;
+	for (const CrowdyExecDeveloper::FBuildFile& File : Crate.Files)
+	{
+		Code += File.Path.EndsWith(TEXT(".rs"), ESearchCase::CaseSensitive) ? StripCfgTest(CodeOnly(File.Content)) : FString();
+	}
+	const TArray<FString> Asked = ScopesOf(Definition);
+	TArray<FString> Missing;
+	TArray<FString> Warnings;
+	for (const FScopedCall& Use : ScopedCalls)
+	{
+		if (Asked.Contains(Use.Scope) || Missing.Contains(Use.Scope) || !Code.Contains(Use.Call, ESearchCase::CaseSensitive))
+		{
+			continue;
+		}
+		Missing.Add(Use.Scope);
+		const FPlatformScope* Scope = Algo::FindBy(PlatformScopes, FStringView(Use.Scope), [](const FPlatformScope& Each) { return FStringView(Each.Name); });
+		Warnings.Add(FString::Printf(TEXT("%s: its server code calls %s), which needs %s; turn on %s or the platform refuses that call"),
+			*DisplayName(Definition), Use.Call, Use.Scope, Scope ? Scope->Setting : Use.Scope));
+	}
+	return Warnings;
 }
 
 TArray<UCrowdyServerObjectDefinition*> CrowdyExecDeploy::FindProjectDefinitions()
@@ -301,8 +594,14 @@ TArray<UCrowdyServerObjectDefinition*> CrowdyExecDeploy::FindProjectDefinitions(
 	TArray<FAssetData> Assets;
 	IAssetRegistry::GetChecked().GetAssets(Filter, Assets);
 	TArray<UCrowdyServerObjectDefinition*> Definitions;
+	const FSoftObjectPath BuiltInRoot(UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath);
 	for (const FAssetData& Asset : Assets)
 	{
+		// The SDK's own root definition deploys as the root, never as one of the project's types.
+		if (Asset.GetSoftObjectPath() == BuiltInRoot)
+		{
+			continue;
+		}
 		if (UCrowdyServerObjectDefinition* Definition = Cast<UCrowdyServerObjectDefinition>(Asset.GetAsset()))
 		{
 			Definitions.Add(Definition);
@@ -323,12 +622,12 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 		return WithProblem(State, ECrateState::Invalid, TEXT("root is the name of the platform's root Server Object type; choose another Type Name"));
 	}
 	const int64 SaveIntervalMs = static_cast<int64>(Definition.SaveIntervalSeconds) * 1000;
-	if (SaveIntervalMs < MinSaveIntervalMs || SaveIntervalMs > MaxSaveIntervalMs)
+	if (!Definition.IsFunctionLibrary() && (SaveIntervalMs < MinSaveIntervalMs || SaveIntervalMs > MaxSaveIntervalMs))
 	{
 		return WithProblem(State, ECrateState::Invalid, TEXT("Save Interval must be 5 to 60 seconds"));
 	}
 	const int64 IdleTimeoutMs = static_cast<int64>(Definition.IdleTimeoutSeconds) * 1000;
-	if (IdleTimeoutMs < MinIdleTimeoutMs || IdleTimeoutMs > MaxIdleTimeoutMs)
+	if (!Definition.IsFunctionLibrary() && (IdleTimeoutMs < MinIdleTimeoutMs || IdleTimeoutMs > MaxIdleTimeoutMs))
 	{
 		return WithProblem(State, ECrateState::Invalid, TEXT("Idle Timeout must be 1 to 1800 seconds"));
 	}
@@ -361,7 +660,7 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 		}
 		if (!Comparable(OnDisk).Equals(Comparable(File.Text), ESearchCase::CaseSensitive))
 		{
-			return WithProblem(State, ECrateState::OutOfDate, FString::Printf(TEXT("%s no longer matches the definition; regenerate it with Generate Server Code"), *Path));
+			return WithProblem(State, ECrateState::OutOfDate, FString::Printf(TEXT("%s no longer matches the definition (%s); regenerate it with Generate Server Code"), *Path, *FirstDifference(OnDisk, File.Text)));
 		}
 	}
 	if (!FPaths::FileExists(Logic))
@@ -380,8 +679,20 @@ CrowdyExecDeveloper::FBuildCrate CrowdyExecDeploy::MakeRootCrate()
 	using namespace CrowdyExecDeployDetail;
 	CrowdyExecDeveloper::FBuildCrate Crate;
 	Crate.Name = RootTypeName;
-	Crate.Files.Add(CrowdyExecDeveloper::FBuildFile{CargoPath, CargoText(RootTypeName)});
-	Crate.Files.Add(CrowdyExecDeveloper::FBuildFile{TEXT("src/lib.rs"), RootLib});
+	const UCrowdyServerObjectDefinition* Definition = UCrowdyServerObjectLibrary::GetPlayersOnlineDefinition();
+	CrowdyExecCodegen::FGeneratedCrate Generated;
+	FString Problem;
+	if (!Definition || !GenerateInMemory(*Definition, Generated, Problem))
+	{
+		return Crate;
+	}
+	for (const CrowdyExecCodegen::FGeneratedFile& File : Generated.Files)
+	{
+		const bool bLogic = File.Path.Equals(LogicPath, ESearchCase::CaseSensitive);
+		const bool bCargo = File.Path.Equals(CargoPath, ESearchCase::CaseSensitive);
+		Crate.Files.Add(CrowdyExecDeveloper::FBuildFile{File.Path,
+			bLogic ? RootLogic(Generated.StateName) : bCargo ? CrowdyExecCodegen::WithoutCrateDefinition(File.Text) : File.Text});
+	}
 	return Crate;
 }
 
@@ -391,13 +702,35 @@ FString CrowdyExecDeploy::MakeManifest(TConstArrayView<const UCrowdyServerObject
 	TArray<const UCrowdyServerObjectDefinition*> Sorted = Definitions.FilterByPredicate([](const UCrowdyServerObjectDefinition* Definition) { return Definition != nullptr; });
 	Algo::Sort(Sorted, [](const UCrowdyServerObjectDefinition* A, const UCrowdyServerObjectDefinition* B) { return IsBefore(A->TypeName, B->TypeName); });
 	TStringBuilder<1024> Json;
-	Json.Appendf(TEXT("{\"root\":\"%s\",\"types\":{\"%s\":{\"kind\":\"hub\",\"crate\":\"%s\",\"client\":false}"), RootTypeName, RootTypeName, RootTypeName);
+	// Open to players, who read and follow its Players Online.
+	Json.Appendf(TEXT("{\"root\":\"%s\",\"types\":{\"%s\":{\"kind\":\"hub\",\"crate\":\"%s\",\"client\":true}"), RootTypeName, RootTypeName, RootTypeName);
 	for (const UCrowdyServerObjectDefinition* Definition : Sorted)
 	{
 		const TCHAR* const Name = *Definition->TypeName;
-		Json.Appendf(TEXT(",\"%s\":{\"kind\":\"hub\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":true,\"persist_every_ms\":%lld,\"evict_after_ms\":%lld"),
-			Name, RootTypeName, Name, static_cast<int64>(Definition->SaveIntervalSeconds) * 1000, static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000);
+		const TCHAR* const Client = Definition->IsReachableByPlayers() ? TEXT("true") : TEXT("false");
+		if (Definition->IsFunctionLibrary())
+		{
+			const FScaling Scaling = ScalingOf(*Definition);
+			Json.Appendf(TEXT(",\"%s\":{\"kind\":\"spoke\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":%s,\"replicas\":%d,\"concurrency\":%d"),
+				Name, RootTypeName, Name, Client, Scaling.Replicas, Scaling.Concurrency);
+			if (Scaling.MaxReplicas > Scaling.Replicas)
+			{
+				Json.Appendf(TEXT(",\"max_replicas\":%d"), Scaling.MaxReplicas);
+			}
+		}
+		else
+		{
+			Json.Appendf(TEXT(",\"%s\":{\"kind\":\"hub\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":%s,\"persist_every_ms\":%lld,\"evict_after_ms\":%lld"),
+				Name, RootTypeName, Name, Client, static_cast<int64>(Definition->SaveIntervalSeconds) * 1000, static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000);
+		}
 		AppendCallsAndScopes(Json, *Definition);
+		for (const FServerLimit& Limit : LimitsOf(*Definition))
+		{
+			if (Limit.Value != Limit.Default)
+			{
+				Json.Appendf(TEXT(",\"%s\":%lld"), Limit.Field, Limit.Value);
+			}
+		}
 		Json.AppendChar(TEXT('}'));
 	}
 	Json.Append(TEXT("}}"));
@@ -409,12 +742,12 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 {
 	using namespace CrowdyExecDeployDetail;
 	FProjectDeploy Project;
-	if (Definitions.IsEmpty())
-	{
-		Project.Problems.Add(TEXT("The project has no Server Object types"));
-		return Project;
-	}
 	const CrowdyExecDeveloper::FBuildCrate& Root = Project.Crates.Add_GetRef(MakeRootCrate());
+	if (Root.Files.IsEmpty())
+	{
+		Project.Problems.Add(FString::Printf(TEXT("The Crowdy SDK's root Server Object, %s, did not load or does not generate; reinstall the Crowdy SDK"),
+			UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath));
+	}
 	int64 Budget = MaxSourceBytes;
 	for (const CrowdyExecDeveloper::FBuildFile& File : Root.Files)
 	{
@@ -440,6 +773,8 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 			Project.Problems.Add(FString::Printf(TEXT("%s: %s"), *DisplayName(*Definition), *ReadProblem));
 			continue;
 		}
+		Project.Warnings.Append(FindScopeWarnings(*Definition, Crate));
+		Project.Warnings.Append(FindCallerWarnings(*Definition));
 		Project.Crates.Add(MoveTemp(Crate));
 	}
 	AddDuplicateProblems(Definitions, Project.Problems);

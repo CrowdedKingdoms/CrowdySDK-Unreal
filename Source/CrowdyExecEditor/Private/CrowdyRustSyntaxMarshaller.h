@@ -27,10 +27,11 @@ namespace CrowdyRustSyntax
 		EKind Kind = EKind::Plain;
 	};
 
-	/** What a line leaves open for the next one: a block comment (Rust nests them) or a string. */
+	/** What a line leaves open for the next one: a block comment (Rust nests them) or a string. RawHashes is the number of # marks of an open raw string, -1 for an ordinary one. */
 	struct FCarry
 	{
 		int32 CommentDepth = 0;
+		int32 RawHashes = -1;
 		bool bInString = false;
 	};
 

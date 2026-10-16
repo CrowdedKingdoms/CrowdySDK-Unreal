@@ -102,6 +102,7 @@ void UCrowdyServerObjectSubsystem::Deinitialize()
 		}
 	}
 	CloseConnection(TEXT(" (shutting down)"));
+	ClosedPings.Reset();
 	bRedialing = false;
 
 	Super::Deinitialize();
@@ -112,6 +113,8 @@ void UCrowdyServerObjectSubsystem::InitializeForTest(UCrowdyCppClientSubsystem* 
 {
 	ClientHostOverride = InClientHost;
 	SessionOverride = InSession;
+	JitterOverride = 0.f;
+	TestGatewayDomains = { TEXT("example.test") };
 }
 #endif
 
@@ -163,8 +166,15 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 	{
 		return nullptr;
 	}
-	const FString UsedId = Definition->bOnlyOneInstance ? FString(UCrowdyServerObjectDefinition::OnlyInstanceId) : InstanceId;
-	if (!IsValidServerObjectInstanceId(UsedId))
+	// Deployed closed to players, so the platform would refuse every read for as long as the object waited.
+	if (!Definition->IsReachableByPlayers())
+	{
+		OutError = FString::Printf(TEXT("%s is closed to players: only server code and developer tools reach it"), *Definition->TypeName);
+		return nullptr;
+	}
+	const FString UsedId = Definition->HasOnlyOneInstance() ? Definition->GetOnlyInstanceId() : InstanceId;
+	// The root's and a library's only Instance Id is empty, which no other instance may have.
+	if (!Definition->HasOnlyOneInstance() && !IsValidServerObjectInstanceId(UsedId))
 	{
 		OutError = TEXT("An Instance Id must be 1 to 256 bytes with no control characters");
 		return nullptr;
@@ -180,14 +190,23 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 	Key.Definition = Definition;
 	Key.InstanceId = UsedId;
 
+	const UCrowdyGameSession* Session = GetSession();
+	const bool bAccessEnded = Session && Session->HasAccessEnded();
+	const FString EndedReason = bAccessEnded ? CrowdyExec::AccessEndedReason(Session->GetAccessEndedReason()) : FString();
+
 	if (UCrowdyServerObject* Existing = Objects.FindRef(Key))
 	{
-		if (Existing->GetStatus() == ECrowdyServerObjectStatus::Failed)
+		if (Existing->GetStatus() == ECrowdyServerObjectStatus::Failed && !bAccessEnded)
 		{
 			Existing->Restart();
 		}
 		Existing->AddOwner(Owner);
 		Existing->GraceRemaining = -1.f;
+		if (bAccessEnded)
+		{
+			Existing->Fail(EndedReason, true);
+			return Existing;
+		}
 		if (ConnectRetryIn <= 0.f)
 		{
 			EnsureConnection();
@@ -199,6 +218,11 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 	Object->Setup(this, Definition, UsedId);
 	Object->AddOwner(Owner);
 	Objects.Add(Key, Object);
+	if (bAccessEnded)
+	{
+		Object->Fail(EndedReason, true);
+		return Object;
+	}
 	// While a reconnect backoff runs, Tick dials when it ends.
 	if (ConnectRetryIn <= 0.f)
 	{
@@ -211,6 +235,39 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 	return Object;
 }
 
+UCrowdyServerObject* UCrowdyServerObjectSubsystem::AcquireLibrary(UCrowdyServerObjectDefinition* Definition, const TFunction<void(const FCrowdyServerCallResult&)>& OnDone)
+{
+	FString Error;
+	UCrowdyServerObject* Library = Acquire(Definition, FString(), this, Error);
+	if (Library || !OnDone)
+	{
+		return Library;
+	}
+	FCrowdyServerCallResult Refused;
+	Refused.Outcome = ECrowdyServerCallOutcome::BadRequest;
+	Refused.Reason = Error;
+	OnDone(Refused);
+	return nullptr;
+}
+
+void UCrowdyServerObjectSubsystem::CallLibraryFunction(UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedStruct& Inputs,
+	TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
+{
+	if (UCrowdyServerObject* Library = AcquireLibrary(Definition, OnDone))
+	{
+		Library->Call(Function, Inputs, MoveTemp(OnDone), TimeoutSeconds);
+	}
+}
+
+void UCrowdyServerObjectSubsystem::CallLibraryFunction(UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedPropertyBag& Inputs,
+	TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
+{
+	if (UCrowdyServerObject* Library = AcquireLibrary(Definition, OnDone))
+	{
+		Library->Call(Function, Inputs, MoveTemp(OnDone), TimeoutSeconds);
+	}
+}
+
 UCrowdyServerObjectLink* UCrowdyServerObjectSubsystem::FindLink(UObject* Owner, UCrowdyServerObjectDefinition* Definition, ECrowdyServerObjectFind Find, const FString& InstanceId, int64 TeamId)
 {
 	if (!Owner || !Definition)
@@ -218,12 +275,12 @@ UCrowdyServerObjectLink* UCrowdyServerObjectSubsystem::FindLink(UObject* Owner, 
 		return nullptr;
 	}
 	// Arguments the instance does not use are evened out, so every way of asking for it shares one Link.
-	const bool bOnlyOne = Definition->bOnlyOneInstance;
+	const bool bOnlyOne = Definition->HasOnlyOneInstance();
 	FCrowdyServerObjectLinkKey Key;
 	Key.Owner = Owner;
 	Key.Definition = Definition;
 	Key.Find = bOnlyOne ? ECrowdyServerObjectFind::InstanceId : Find;
-	Key.InstanceId = Key.Find != ECrowdyServerObjectFind::InstanceId ? FString() : bOnlyOne ? UCrowdyServerObjectDefinition::OnlyInstanceId : InstanceId;
+	Key.InstanceId = Key.Find != ECrowdyServerObjectFind::InstanceId ? FString() : bOnlyOne ? Definition->GetOnlyInstanceId() : InstanceId;
 	Key.TeamId = Key.Find == ECrowdyServerObjectFind::PlayersTeam ? TeamId : 0;
 	if (UCrowdyServerObjectLink* Found = Links.FindRef(Key))
 	{
@@ -258,8 +315,9 @@ void UCrowdyServerObjectSubsystem::TickLinks(float DeltaSeconds, float GraceStep
 	{
 		UCrowdyServerObjectLink* Link = It.Value();
 		Link->SinceFound += GraceStep;
-		// A Link only an On Changed node uses is never asked for again, so a live handler keeps it.
-		const bool bUnused = Link->SinceFound > GracePeriodSeconds && !Link->GetVariableBindings().HasLiveHandler();
+		// A Link only an On Changed or On Received node uses is never asked for again, so a live handler keeps it.
+		const bool bUnused = Link->SinceFound > GracePeriodSeconds && !Link->GetVariableBindings().HasLiveHandler() && !Link->GetMessageBindings().HasLiveHandler()
+			&& !Link->KeepsWhileOwnerLives();
 		if (Link->IsOwnerAlive() && !bUnused)
 		{
 			Kept.Add(Link);
@@ -288,6 +346,51 @@ FCrowdyNativeExecConnection* UCrowdyServerObjectSubsystem::GetConnection() const
 	return bConnected ? Connection.Get() : nullptr;
 }
 
+void UCrowdyServerObjectSubsystem::Ping(TFunction<void(bool bOk, float RoundTripMs, const FString& Reason)> OnDone)
+{
+	if (!OnDone)
+	{
+		return;
+	}
+	FCrowdyNativeExecConnection* Open = GetConnection();
+	if (!Open)
+	{
+		OnDone(false, 0.f, TEXT("No Server Object connection is open"));
+		return;
+	}
+	const double Cutoff = TickedSeconds - PingWindowSeconds - PingWindowMarginSeconds;
+	RecentPings.RemoveAll([Cutoff](double SentAt) { return SentAt <= Cutoff; });
+	if (RecentPings.Num() >= MaxPingsPerWindow)
+	{
+		OnDone(false, 0.f, FString::Printf(TEXT("Too many pings: the platform answers at most %d every %d seconds"), MaxPingsPerWindow, FMath::RoundToInt(PingWindowSeconds)));
+		return;
+	}
+	RecentPings.Add(TickedSeconds);
+
+	const double Started = FPlatformTime::Seconds();
+	const TWeakObjectPtr<UCrowdyServerObjectSubsystem> WeakThis = this;
+	Open->Ping([WeakThis, Started, OnDone = MoveTemp(OnDone)](const FCrowdyNativeExecReply& Reply)
+	{
+		if (Reply.IsOk())
+		{
+			OnDone(true, static_cast<float>((FPlatformTime::Seconds() - Started) * 1000.0), FString());
+			return;
+		}
+		const bool bClosed = Reply.Status == ECrowdyNativeExecStatus::Unavailable
+			&& Reply.Message.Equals(FCrowdyNativeExecConnection::CanceledMessage(), ESearchCase::CaseSensitive);
+		UCrowdyServerObjectSubsystem* This = WeakThis.Get();
+		if (bClosed)
+		{
+			if (This)
+			{
+				This->ClosedPings.Add(OnDone);
+			}
+			return;
+		}
+		OnDone(false, 0.f, Reply.Message.IsEmpty() ? FString(TEXT("The platform did not answer the ping")) : CrowdyExec::SafeText(Reply.Message, 256));
+	});
+}
+
 bool UCrowdyServerObjectSubsystem::TickFromTicker(float FrameDeltaSeconds)
 {
 	// The core ticker passes the frame's delta, not the time since this ticker last ran.
@@ -299,6 +402,16 @@ bool UCrowdyServerObjectSubsystem::TickFromTicker(float FrameDeltaSeconds)
 
 bool UCrowdyServerObjectSubsystem::Tick(float DeltaSeconds)
 {
+	TickedSeconds += DeltaSeconds;
+	if (!ClosedPings.IsEmpty())
+	{
+		const TArray<TFunction<void(bool, float, const FString&)>> Closed = MoveTemp(ClosedPings);
+		for (const TFunction<void(bool, float, const FString&)>& OnDone : Closed)
+		{
+			OnDone(false, 0.f, TEXT("The Server Object connection closed before the platform answered"));
+		}
+	}
+
 	const float GraceStep = bLoadingMap || IsSeamlessTravelling() ? 0.f : FMath::Min(DeltaSeconds, 1.f);
 	TickLinks(DeltaSeconds, GraceStep);
 
@@ -327,6 +440,13 @@ bool UCrowdyServerObjectSubsystem::Tick(float DeltaSeconds)
 		Object->Tick(DeltaSeconds);
 	}
 
+	// The session heard the access end from elsewhere, such as an account block, so nothing is dialled and nothing stays waiting.
+	const UCrowdyGameSession* Session = GetSession();
+	if (Session && Session->HasAccessEnded() && FindLiveObject())
+	{
+		FailAccessEnded(Session->GetAccessEndedReason());
+		return true;
+	}
 	if (!FindLiveObject())
 	{
 		CloseConnection(TEXT(" (no Server Object in use)"));
@@ -344,6 +464,13 @@ bool UCrowdyServerObjectSubsystem::Tick(float DeltaSeconds)
 	}
 	if (Connection.IsValid())
 	{
+		// A refused redial closes the connection without a connect completion, so it is seen here.
+		if (Connection->IsRefusedForGood())
+		{
+			UE_LOG(LogCrowdyExec, Warning, TEXT("Server Objects could not reconnect to the server: %s"), *Connection->GetRefusal());
+			FailRefusedForGood(Connection->GetRefusal());
+			return true;
+		}
 		// The connection redials a dropped socket itself and reports only the reconnect, so the drop is seen here.
 		const bool bDropped = bConnected && !bTracedDrop && CrowdyExecTrace::Exec() && !Connection->IsConnected();
 		UE_CLOG(bDropped, LogCrowdyExec, Log, TEXT("exec: connection closed"));
@@ -378,16 +505,23 @@ const UCrowdyServerObject* UCrowdyServerObjectSubsystem::FindLiveObject() const
 
 const UCrowdyServerObject* UCrowdyServerObjectSubsystem::FindDialObject() const
 {
+	// The root, the one object with an empty Instance Id, places the connection only when nothing else can.
+	const UCrowdyServerObject* Root = nullptr;
 	for (const TPair<FCrowdyServerObjectKey, TObjectPtr<UCrowdyServerObject>>& Entry : Objects)
 	{
 		const UCrowdyServerObject* Object = Entry.Value;
 		const ECrowdyServerObjectStatus Status = Object ? Object->GetStatus() : ECrowdyServerObjectStatus::Released;
-		if ((Status == ECrowdyServerObjectStatus::Connecting || Status == ECrowdyServerObjectStatus::Ready) && !FailedDialTypes.Contains(Object->GetDefinition()->TypeName))
+		if ((Status != ECrowdyServerObjectStatus::Connecting && Status != ECrowdyServerObjectStatus::Ready) || FailedDialTypes.Contains(Object->GetDefinition()->TypeName))
+		{
+			continue;
+		}
+		if (!Object->GetInstanceId().IsEmpty())
 		{
 			return Object;
 		}
+		Root = Root ? Root : Object;
 	}
-	return nullptr;
+	return Root;
 }
 
 void UCrowdyServerObjectSubsystem::EnsureConnection()
@@ -401,7 +535,7 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	if (!First)
 	{
 		FailedDialTypes.Reset();
-		First = FindLiveObject();
+		First = FindDialObject();
 	}
 	if (!First)
 	{
@@ -412,7 +546,7 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	UCrowdyCppClientSubsystem* Host = GetClientHost();
 	if (!Session || !Host || Session->GetGameToken().IsEmpty())
 	{
-		ConnectRetryIn = 1.f;
+		ConnectRetryIn = 1.f + 0.5f * NextJitter();
 		return;
 	}
 
@@ -427,9 +561,18 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 		return;
 	}
 
+	// The root runs on one host for the whole app, so a dial for it names no type and the platform places the connection.
 	FCrowdyNativeExecOptions Options;
-	Options.NodeType = First->GetDefinition()->TypeName;
+	Options.NodeType = First->GetInstanceId().IsEmpty() ? FString() : First->GetDefinition()->TypeName;
 	Options.Key = First->GetInstanceId();
+	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+	Options.AllowedGatewayDomains = Settings->AllowedExecGatewayDomains;
+	Options.AllowedGatewayDomains.Append(TestGatewayDomains);
+	Options.CallTimeoutMs = Settings->GetServerObjectCallTimeoutMs();
+	Options.OpenTimeoutMs = Settings->GetServerObjectOpenTimeoutMs();
+#if WITH_DEV_AUTOMATION_TESTS
+	DialTimeoutsForTest = {Options.CallTimeoutMs, Options.OpenTimeoutMs};
+#endif
 
 	// Read on every dial, so a reconnect after the token rotates carries the current one.
 	const TWeakObjectPtr<UCrowdyGameSession> WeakSession = Session;
@@ -445,7 +588,8 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	}
 	DialedClient = Client;
 	DialedAppId = Session->GetAppID();
-	DialedType = Options.NodeType;
+	DialedType = First->GetDefinition()->TypeName;
+	bDialedWithType = !Options.NodeType.IsEmpty();
 
 	const TWeakObjectPtr<UCrowdyServerObjectSubsystem> WeakThis = this;
 	const TWeakPtr<FCrowdyNativeExecConnection> Dialed = Connection;
@@ -455,6 +599,15 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 		if (This && This->IsCurrentConnection(Dialed))
 		{
 			This->HandleReconnect();
+		}
+	});
+
+	Connection->OnAccessEnded([WeakThis, Dialed](const FString& Reason)
+	{
+		UCrowdyServerObjectSubsystem* This = WeakThis.Get();
+		if (This && This->IsCurrentConnection(Dialed))
+		{
+			This->HandleAccessEnded(Reason);
 		}
 	});
 
@@ -486,10 +639,23 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	bConnecting = false;
 	if (!bOk)
 	{
+		if (Connection.IsValid() && Connection->IsAccessEnded())
+		{
+			HandleAccessEnded(Connection->GetAccessEndedReason());
+			return;
+		}
 		UE_LOG(LogCrowdyExec, Warning, TEXT("Server Objects could not connect to the server: %s"), *Error);
 		UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s failed %s"), bRedialing ? TEXT("redial") : TEXT("dial"), *CrowdyExec::SafeText(Error, 256));
 		FailedDialTypes.Add(DialedType);
-		const FString Reason = FString::Printf(TEXT("Could not open the connection to the server for %s: %s"), *DialedType, *CrowdyExec::SafeText(Error, 256));
+		const FString SafeError = CrowdyExec::SafeText(Error, 256);
+		if (Connection.IsValid() && Connection->IsRefusedForGood())
+		{
+			FailRefusedForGood(Error);
+			return;
+		}
+		const TCHAR* const Lead = CrowdyServerObjectDetail::IsSwitchedOffText(Error) ? TEXT("The server is switched off or paused") : TEXT("Could not open the connection to the server");
+		// A dial that named no type is not about the type it was made for, so its failure names none either.
+		const FString Reason = bDialedWithType ? FString::Printf(TEXT("%s for %s: %s"), Lead, *DialedType, *SafeError) : FString::Printf(TEXT("%s: %s"), Lead, *SafeError);
 		for (UCrowdyServerObject* Object : SnapshotObjects())
 		{
 			if (Object)
@@ -514,7 +680,12 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	TArray<UCrowdyServerObject*, TInlineAllocator<8>> Resubscribe;
 	for (UCrowdyServerObject* Object : Snapshot)
 	{
-		if (!Object || Object->SubscribeHandle == 0)
+		if (!Object)
+		{
+			continue;
+		}
+		Object->DropMessageSubscriptions(false);
+		if (Object->SubscribeHandle == 0)
 		{
 			continue;
 		}
@@ -532,6 +703,13 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	}
 	for (UCrowdyServerObject* Object : Snapshot)
 	{
+		if (Object)
+		{
+			Object->SyncMessageSubscriptions(true);
+		}
+	}
+	for (UCrowdyServerObject* Object : Snapshot)
+	{
 		if (Object && Object->GetStatus() == ECrowdyServerObjectStatus::Connecting)
 		{
 			Object->SetConnectProblem(FString());
@@ -540,10 +718,41 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 	}
 }
 
+void UCrowdyServerObjectSubsystem::FailRefusedForGood(const FString& Error)
+{
+	CloseConnection();
+	// Backed off before the objects fail, so game code that acquires again from On Failed does not dial once per round trip.
+	ScheduleReconnect();
+	const FString Refused = FString::Printf(TEXT("Could not open the connection to the server: %s"), *CrowdyExec::SafeText(Error, 256));
+	for (UCrowdyServerObject* Object : SnapshotObjects())
+	{
+		if (Object && (Object->GetStatus() == ECrowdyServerObjectStatus::Connecting || Object->GetStatus() == ECrowdyServerObjectStatus::Ready))
+		{
+			Object->Fail(Refused, true);
+		}
+	}
+}
+
 void UCrowdyServerObjectSubsystem::ScheduleReconnect()
 {
 	++ConnectAttempts;
-	ConnectRetryIn = FMath::Min(FMath::Pow(2.f, static_cast<float>(ConnectAttempts - 1)), 30.f);
+	ConnectRetryIn = FMath::Min(FMath::Pow(2.f, static_cast<float>(ConnectAttempts - 1)), 30.f) * (1.f + 0.5f * NextJitter());
+	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: redial in %.3f s"), ConnectRetryIn);
+}
+
+float UCrowdyServerObjectSubsystem::NextJitter() const
+{
+	return JitterOverride.IsSet() ? JitterOverride.GetValue() : FMath::FRand();
+}
+
+bool UCrowdyServerObjectSubsystem::NotePlayersOnlineReason(const FString& Reason)
+{
+	if (Reason.Equals(PlayersOnlineWarned, ESearchCase::CaseSensitive))
+	{
+		return false;
+	}
+	PlayersOnlineWarned = Reason;
+	return true;
 }
 
 void UCrowdyServerObjectSubsystem::HandleReconnect()
@@ -561,6 +770,34 @@ void UCrowdyServerObjectSubsystem::HandleReconnect()
 	}
 }
 
+void UCrowdyServerObjectSubsystem::HandleAccessEnded(const FString& ServerReason)
+{
+	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: access ended %s"), *CrowdyExec::SafeText(ServerReason, 256));
+	if (UCrowdyGameSession* Session = GetSession())
+	{
+		Session->SetAccessEnded(ServerReason, FString());
+	}
+	FailAccessEnded(ServerReason);
+}
+
+void UCrowdyServerObjectSubsystem::FailAccessEnded(const FString& ServerReason)
+{
+	// Closed before the objects fail, so game code that acquires from On Failed finds the session ended and dials nothing.
+	CloseConnection(TEXT(" (access ended)"));
+	bRedialing = false;
+	ConnectAttempts = 0;
+	ConnectRetryIn = 0.f;
+	FailedDialTypes.Reset();
+	const FString Reason = CrowdyExec::AccessEndedReason(ServerReason);
+	for (UCrowdyServerObject* Object : SnapshotObjects())
+	{
+		if (Object && (Object->GetStatus() == ECrowdyServerObjectStatus::Connecting || Object->GetStatus() == ECrowdyServerObjectStatus::Ready))
+		{
+			Object->Fail(Reason, true);
+		}
+	}
+}
+
 void UCrowdyServerObjectSubsystem::CloseConnection(const TCHAR* Why)
 {
 	// Detached before closing, so completions the close delivers are recognised as belonging to an old connection.
@@ -572,6 +809,7 @@ void UCrowdyServerObjectSubsystem::CloseConnection(const TCHAR* Why)
 	DialedAppId = 0;
 	bConnected = false;
 	bConnecting = false;
+	RecentPings.Reset();
 	if (Closing.IsValid())
 	{
 		Closing->Close();

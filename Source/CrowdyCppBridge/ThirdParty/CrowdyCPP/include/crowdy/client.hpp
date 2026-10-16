@@ -213,6 +213,8 @@ class CrowdyClient {
   domains::StateAPI& state() { return *state_; }
   domains::HostAPI& host() { return *host_; }
   domains::TeleportAPI& teleport() { return *teleport_; }
+  /// The input log: recorded client inputs of an app with replay logging on.
+  domains::InputLogAPI& inputLog() { return *inputLog_; }
   domains::TeamsAPI& teams() { return *teams_; }
   domains::ChannelsAPI& channels() { return *channels_; }
   /// Grid tokens and grid channels (DN-10).
@@ -379,6 +381,7 @@ class CrowdyClient {
   std::unique_ptr<domains::StateAPI> state_;
   std::unique_ptr<domains::HostAPI> host_;
   std::unique_ptr<domains::TeleportAPI> teleport_;
+  std::unique_ptr<domains::InputLogAPI> inputLog_;
   std::unique_ptr<domains::TeamsAPI> teams_;
   std::unique_ptr<domains::ChannelsAPI> channels_;
   std::unique_ptr<domains::GridsAPI> grids_;

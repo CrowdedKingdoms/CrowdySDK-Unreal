@@ -74,6 +74,8 @@ namespace CrowdyExecRevisionsTest
 		Definition->TypeName = TypeName;
 		Definition->SaveIntervalSeconds = SaveIntervalSeconds;
 		Definition->IdleTimeoutSeconds = IdleTimeoutSeconds;
+		// A function players call keeps it open to players, as the live manifests here say every type is.
+		Definition->Functions.AddDefaulted();
 		return Definition;
 	}
 
@@ -445,7 +447,8 @@ bool FCrowdyExecRevisionsCompareTest::RunTest(const FString& Parameters)
 	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("t_same"), EChange::New);
 	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("t_unknown"), EChange::New);
 	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("t_notready"), EChange::NotCompared);
-	TestEqual(TEXT("with nothing live, nothing is removed"), NothingLive.Num(), 8);
+	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("root"), EChange::New);
+	TestEqual(TEXT("with nothing live, nothing is removed, and the root is sent"), NothingLive.Num(), 9);
 
 	const TArray<FTypeChange> NotRead = CrowdyExecRevisions::Compare(Project, Definitions, &Live, false, HistoryFor);
 	TestChange(*this, TEXT("versions not read"), NotRead, TEXT("t_code"), EChange::NotCompared);
@@ -460,6 +463,238 @@ bool FCrowdyExecRevisionsCompareTest::RunTest(const FString& Parameters)
 	TestChange(*this, TEXT("a manifest that cannot be read"), Unreadable, TEXT("t_notready"), EChange::NotCompared);
 	TestNull(TEXT("with a manifest that cannot be read, nothing is removed"), FindChange(Unreadable, TEXT("t_gone")));
 	TestTrue(TEXT("a manifest that cannot be read is never no change"), CrowdyExecRevisions::HasChanges(Unreadable));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsSettingsTest, "CrowdySDK.CrowdyExecEditor.RevisionsComparePlatformDataAndPlayerAccess", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsSettingsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	TArray<CrowdyExecRevisions::FLiveType> Parsed;
+	if (TestTrue(TEXT("the platform's manifest parses"), CrowdyExecRevisions::ParseManifest(SampleManifest, Parsed)) && Parsed.Num() == 3)
+	{
+		TestFalse(TEXT("the root's client false is read"), Parsed[0].bClient);
+		TestTrue(TEXT("a type's client true is read"), Parsed[1].bClient);
+	}
+
+	const FBuildCrate Crate = MakeCrate(TEXT("t_grid"), TEXT("fn grid() {}\n"));
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {CrowdyExecDeploy::MakeRootCrate(), Crate};
+	Project.Types.Add(MakeTypeState(TEXT("t_grid"), CrowdyExecDeploy::ECrateState::UpToDate));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(TEXT("t_grid"), 30, 300);
+	Definition->bReadsGrids = true;
+	Definition->bWritesWorld = true;
+	const TArray<FRevision> History = {MakeRevision(Crate, TEXT("d_grid"), 1)};
+	const auto HistoryFor = [&History](const FString&) { return History; };
+
+	auto CompareWith = [&](const TCHAR* Client, const TCHAR* Scopes)
+	{
+		CrowdyExecDeveloper::FVersion Live;
+		Live.Version = 2;
+		Live.ManifestJson = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"t_grid\":{\"kind\":\"hub\",\"digest\":\"d_grid\",\"parent\":\"root\",\"client\":%s,")
+			TEXT("\"evict_after_ms\":300000,\"persist_every_ms\":30000%s}}}"), Client, Scopes);
+		return CrowdyExecRevisions::Compare(Project, {Definition.Get()}, &Live, true, HistoryFor);
+	};
+	TestChange(*this, TEXT("the same scopes, in the platform's order"), CompareWith(TEXT("true"), TEXT(",\"scopes\":[\"world.write\",\"grids.read\"]")), TEXT("t_grid"), EChange::Unchanged);
+	TestChange(*this, TEXT("the same scopes, listed in another order"), CompareWith(TEXT("true"), TEXT(",\"scopes\":[\"grids.read\",\"world.write\"]")), TEXT("t_grid"), EChange::Unchanged);
+	TestChange(*this, TEXT("live asks for none"), CompareWith(TEXT("true"), TEXT("")), TEXT("t_grid"), EChange::Changed, TEXT("platform data"));
+	TestChange(*this, TEXT("live asks for one of the two"), CompareWith(TEXT("true"), TEXT(",\"scopes\":[\"grids.read\"]")), TEXT("t_grid"), EChange::Changed, TEXT("platform data"));
+	TestChange(*this, TEXT("live is closed to players"), CompareWith(TEXT("false"), TEXT(",\"scopes\":[\"world.write\",\"grids.read\"]")), TEXT("t_grid"), EChange::Changed, TEXT("player access"));
+	Definition->Functions[0].WhoCanCall = ECrowdyServerFunctionCaller::ServerOnly;
+	TestChange(*this, TEXT("the project closes it while live is open"), CompareWith(TEXT("true"), TEXT(",\"scopes\":[\"world.write\",\"grids.read\"]")), TEXT("t_grid"), EChange::Changed, TEXT("player access"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsOldRootTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareAnOlderRoot", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsOldRootTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	const FBuildCrate Crate = MakeCrate(TEXT("t_same"), TEXT("fn same() {}\n"));
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {CrowdyExecDeploy::MakeRootCrate(), Crate};
+	Project.Types.Add(MakeTypeState(TEXT("t_same"), CrowdyExecDeploy::ECrateState::UpToDate));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(TEXT("t_same"), 30, 300);
+	const TArray<FRevision> History = {MakeRevision(Crate, TEXT("d_same"), 1)};
+	const auto HistoryFor = [&History](const FString&) { return History; };
+
+	auto CompareWith = [&](const TCHAR* RootClient)
+	{
+		CrowdyExecDeveloper::FVersion Live;
+		Live.Version = 3;
+		Live.ManifestJson = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"d_root\",\"parent\":null,\"client\":%s},")
+			TEXT("\"t_same\":{\"kind\":\"hub\",\"digest\":\"d_same\",\"parent\":\"root\",\"client\":true,\"evict_after_ms\":300000,\"persist_every_ms\":30000}}}"), RootClient);
+		return CrowdyExecRevisions::Compare(Project, {Definition.Get()}, &Live, true, HistoryFor);
+	};
+	const TArray<FTypeChange> Older = CompareWith(TEXT("false"));
+	TestChange(*this, TEXT("a root closed to players"), Older, TEXT("t_same"), EChange::Unchanged);
+	TestChange(*this, TEXT("a root closed to players"), Older, TEXT("root"), EChange::Changed, TEXT("players online"));
+	TestTrue(TEXT("so a project with nothing else changed can deploy this SDK's root"), CrowdyExecRevisions::HasChanges(Older));
+	const TArray<FTypeChange> Current = CompareWith(TEXT("true"));
+	TestNull(TEXT("a root open to players is not listed"), FindChange(Current, TEXT("root")));
+	TestFalse(TEXT("and then nothing changed"), CrowdyExecRevisions::HasChanges(Current));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsEmptyProjectTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareAnEmptyProjectSendsTheRoot", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsEmptyProjectTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {CrowdyExecDeploy::MakeRootCrate()};
+	const auto HistoryFor = [](const FString&) { return TArray<FRevision>(); };
+
+	const TArray<FTypeChange> NothingLive = CrowdyExecRevisions::Compare(Project, {}, nullptr, true, HistoryFor);
+	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("root"), EChange::New);
+	TestTrue(TEXT("so an empty project can deploy its root"), CrowdyExecRevisions::HasChanges(NothingLive));
+
+	CrowdyExecDeveloper::FVersion Live;
+	Live.Version = 2;
+	Live.ManifestJson = TEXT("{\"root\":\"root\",\"types\":{\"t_old\":{\"kind\":\"hub\",\"digest\":\"d_old\",\"parent\":\"root\",\"client\":true}}}");
+	const TArray<FTypeChange> NoRoot = CrowdyExecRevisions::Compare(Project, {}, &Live, true, HistoryFor);
+	TestChange(*this, TEXT("a live version with types and no root"), NoRoot, TEXT("root"), EChange::New);
+	TestChange(*this, TEXT("a live version with types and no root"), NoRoot, TEXT("t_old"), EChange::Removed);
+	TestTrue(TEXT("a live version with no root can be replaced"), CrowdyExecRevisions::HasChanges(NoRoot));
+
+	Live.ManifestJson = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"d_root\",\"parent\":null,\"client\":true}}}");
+	const TArray<FTypeChange> OnlyRoot = CrowdyExecRevisions::Compare(Project, {}, &Live, true, HistoryFor);
+	TestEqual(TEXT("a live root and no types is nothing to deploy"), OnlyRoot.Num(), 0);
+	TestFalse(TEXT("and then nothing changed"), CrowdyExecRevisions::HasChanges(OnlyRoot));
+
+	Live.ManifestJson = TEXT("not json");
+	const TArray<FTypeChange> Unreadable = CrowdyExecRevisions::Compare(Project, {}, &Live, true, HistoryFor);
+	TestChange(*this, TEXT("a live manifest that cannot be read"), Unreadable, TEXT("root"), EChange::Unknown);
+	TestTrue(TEXT("so an empty project can still deploy over it"), CrowdyExecRevisions::HasChanges(Unreadable));
+	TestEqual(TEXT("and neither does a live version not read yet"), CrowdyExecRevisions::Compare(Project, {}, nullptr, false, HistoryFor).Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsRootCodeTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareTheRootsServerCode", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsRootCodeTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	const FBuildCrate Root = CrowdyExecDeploy::MakeRootCrate();
+	const FBuildCrate OlderRoot = MakeCrate(TEXT("root"), TEXT("fn older_root() {}\n"));
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {Root};
+	CrowdyExecDeveloper::FVersion Live;
+	Live.Version = 3;
+	Live.ManifestJson = MakeLiveManifest({});
+
+	// MakeLiveManifest's root has the digest root_digest and no client field, which reads as open to players.
+	auto CompareWith = [&](const FBuildCrate& Recorded, const TCHAR* Digest)
+	{
+		const TArray<FRevision> History = {MakeRevision(Recorded, Digest, 1)};
+		return CrowdyExecRevisions::Compare(Project, {}, &Live, true, [&History](const FString&) { return History; });
+	};
+	const TArray<FTypeChange> Older = CompareWith(OlderRoot, TEXT("root_digest"));
+	TestChange(*this, TEXT("the live root ran other code"), Older, TEXT("root"), EChange::Changed, TEXT("server code"));
+	TestTrue(TEXT("so this SDK's root can be deployed"), CrowdyExecRevisions::HasChanges(Older));
+	const TArray<FTypeChange> Current = CompareWith(Root, TEXT("root_digest"));
+	TestNull(TEXT("the live root runs this SDK's code"), FindChange(Current, TEXT("root")));
+	TestFalse(TEXT("and then nothing changed"), CrowdyExecRevisions::HasChanges(Current));
+	const TArray<FTypeChange> Unknown = CompareWith(OlderRoot, TEXT("d_elsewhere"));
+	TestNull(TEXT("a live root this checkout has no record of is not listed"), FindChange(Unknown, TEXT("root")));
+	TestFalse(TEXT("and is no change"), CrowdyExecRevisions::HasChanges(Unknown));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsLimitsTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareServerLimits", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsLimitsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	const FBuildCrate Crate = MakeCrate(TEXT("t_arena"), TEXT("fn arena() {}\n"));
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {CrowdyExecDeploy::MakeRootCrate(), Crate};
+	Project.Types.Add(MakeTypeState(TEXT("t_arena"), CrowdyExecDeploy::ECrateState::UpToDate));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(TEXT("t_arena"), 30, 300);
+	const TArray<FRevision> History = {MakeRevision(Crate, TEXT("d_arena"), 1)};
+	const auto HistoryFor = [&History](const FString&) { return History; };
+
+	auto CompareWith = [&](const TCHAR* Limits)
+	{
+		CrowdyExecDeveloper::FVersion Live;
+		Live.Version = 2;
+		Live.ManifestJson = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"t_arena\":{\"kind\":\"hub\",\"digest\":\"d_arena\",\"parent\":\"root\",\"client\":true,")
+			TEXT("\"evict_after_ms\":300000,\"persist_every_ms\":30000%s}}}"), Limits);
+		return CrowdyExecRevisions::Compare(Project, {Definition.Get()}, &Live, true, HistoryFor);
+	};
+	TestChange(*this, TEXT("neither sets a limit"), CompareWith(TEXT("")), TEXT("t_arena"), EChange::Unchanged);
+	TestChange(*this, TEXT("live spells out the platform's defaults"), CompareWith(TEXT(",\"memory_mb\":64,\"fuel_per_call\":50000000,\"mailbox\":1024,\"deadline_ms\":2000")),
+		TEXT("t_arena"), EChange::Unchanged);
+	TestChange(*this, TEXT("live runs with more memory"), CompareWith(TEXT(",\"memory_mb\":256")), TEXT("t_arena"), EChange::Changed, TEXT("server limits"));
+
+	Definition->CallTimeLimitMs = 8000;
+	TestChange(*this, TEXT("the project gives calls longer"), CompareWith(TEXT("")), TEXT("t_arena"), EChange::Changed, TEXT("server limits"));
+	TestChange(*this, TEXT("live already gives them as long"), CompareWith(TEXT(",\"deadline_ms\":8000")), TEXT("t_arena"), EChange::Unchanged);
+
+	Definition->CallTimeLimitMs = 2000;
+	Definition->MemoryMegabytes = 512;
+	TestChange(*this, TEXT("live asks for more memory than the platform gives"), CompareWith(TEXT(",\"memory_mb\":4096")), TEXT("t_arena"), EChange::Unchanged);
+	Definition->MemoryMegabytes = 64;
+	TestChange(*this, TEXT("live gives the default as a string"), CompareWith(TEXT(",\"memory_mb\":\"64\"")), TEXT("t_arena"), EChange::Unchanged);
+	TestChange(*this, TEXT("live gives another value as a string"), CompareWith(TEXT(",\"memory_mb\":\"256\"")), TEXT("t_arena"), EChange::Changed, TEXT("server limits"));
+	Definition->CallTimeLimitMs = 10;
+	TestChange(*this, TEXT("live asks for a shorter call limit than the platform gives"), CompareWith(TEXT(",\"deadline_ms\":5")), TEXT("t_arena"), EChange::Unchanged);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsLibraryTest, "CrowdySDK.CrowdyExecEditor.RevisionsCompareLibraryKindAndScaling", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsLibraryTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	const FBuildCrate Crate = MakeCrate(TEXT("t_lib"), TEXT("fn lib() {}\n"));
+	CrowdyExecDeploy::FProjectDeploy Project;
+	Project.Crates = {CrowdyExecDeploy::MakeRootCrate(), Crate};
+	Project.Types.Add(MakeTypeState(TEXT("t_lib"), CrowdyExecDeploy::ECrateState::UpToDate));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(TEXT("t_lib"), 30, 300);
+	const TArray<FRevision> History = {MakeRevision(Crate, TEXT("d_lib"), 1)};
+	const auto HistoryFor = [&History](const FString&) { return History; };
+
+	auto CompareWith = [&](const TCHAR* Live)
+	{
+		CrowdyExecDeveloper::FVersion Version;
+		Version.Version = 2;
+		Version.ManifestJson = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"t_lib\":{%s}}}"), Live);
+		return CrowdyExecRevisions::Compare(Project, {Definition.Get()}, &Version, true, HistoryFor);
+	};
+	const TCHAR* const LiveHub = TEXT("\"kind\":\"hub\",\"digest\":\"d_lib\",\"parent\":\"root\",\"client\":true,\"evict_after_ms\":300000,\"persist_every_ms\":30000");
+	const FString LiveSpoke = TEXT("\"kind\":\"spoke\",\"digest\":\"d_lib\",\"parent\":\"root\",\"client\":true,\"replicas\":2,\"max_replicas\":4,\"concurrency\":8");
+
+	TestChange(*this, TEXT("a Server Object stays one"), CompareWith(LiveHub), TEXT("t_lib"), EChange::Unchanged);
+
+	Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	TestChange(*this, TEXT("a Server Object becomes a library"), CompareWith(LiveHub), TEXT("t_lib"), EChange::Changed, TEXT("kind"));
+	const TArray<FTypeChange> ToLibraryChanges = CompareWith(LiveHub);
+	const FTypeChange* ToLibrary = FindChange(ToLibraryChanges, TEXT("t_lib"));
+	if (TestNotNull(TEXT("the change is listed"), ToLibrary))
+	{
+		TestTrue(TEXT("and it says so"), ToLibrary->KindChange == CrowdyExecRevisions::EKindChange::ToLibrary);
+		TestEqualSensitive(TEXT("with the sentence for the confirmation"), CrowdyExecRevisions::DescribeKindChange(*ToLibrary),
+			FString(TEXT("t_lib changes from Server Object to Server Function Library: its saved data is kept, unused, and comes back if it becomes a Server Object again.")));
+	}
+
+	Definition->MinInstances = 2;
+	Definition->MaxInstances = 4;
+	Definition->ParallelCallsPerInstance = 8;
+	TestChange(*this, TEXT("a library with the live scaling"), CompareWith(*LiveSpoke), TEXT("t_lib"), EChange::Unchanged);
+	Definition->MaxInstances = 5;
+	TestChange(*this, TEXT("a library with another max instances"), CompareWith(*LiveSpoke), TEXT("t_lib"), EChange::Changed, TEXT("scaling"));
+	Definition->MaxInstances = 4;
+	Definition->ParallelCallsPerInstance = 16;
+	TestChange(*this, TEXT("a library with another concurrency"), CompareWith(*LiveSpoke), TEXT("t_lib"), EChange::Changed, TEXT("scaling"));
+	Definition->MinInstances = 1;
+	Definition->MaxInstances = 1;
+	TestChange(*this, TEXT("a library whose live manifest leaves the scaling out"), CompareWith(TEXT("\"kind\":\"spoke\",\"digest\":\"d_lib\",\"parent\":\"root\",\"client\":true")),
+		TEXT("t_lib"), EChange::Unchanged);
+
+	Definition->Kind = ECrowdyServerObjectKind::ServerObject;
+	const TArray<FTypeChange> ToObject = CompareWith(*LiveSpoke);
+	const FTypeChange* FromLibrary = FindChange(ToObject, TEXT("t_lib"));
+	if (TestNotNull(TEXT("the reverse change is listed"), FromLibrary))
+	{
+		TestTrue(TEXT("a library becomes a Server Object"), FromLibrary->KindChange == CrowdyExecRevisions::EKindChange::ToServerObject && FromLibrary->What.Contains(TEXT("kind")));
+		TestTrue(TEXT("and its sentence says where the saved data comes from"), CrowdyExecRevisions::DescribeKindChange(*FromLibrary).Contains(TEXT("it starts from the saved data it had as a Server Object, if any.")));
+	}
 	return true;
 }
 
@@ -531,11 +766,15 @@ bool FCrowdyExecRevisionsRecordDeployTest::RunTest(const FString& Parameters)
 	TArray<FString> Errors;
 	CrowdyExecRevisions::RecordDeploy(Project, Artifacts, 7, When, 5, CrateDirectoryFor, Errors);
 	TestEqualSensitive(TEXT("recording succeeds"), FString::Join(Errors, TEXT("; ")), FString());
-	TestEqualSensitive(TEXT("only the project's types are recorded, never the root"), FString::Join(Asked, TEXT(",")), FString(TEXT("t_a,t_b")));
-	TestFalse(TEXT("the root gets no history"), FPaths::FileExists(CrowdyExecRevisions::GetHistoryPath(FPaths::Combine(Folder.Path, TEXT("root")))));
+	TestEqualSensitive(TEXT("the root is recorded like any type"), FString::Join(Asked, TEXT(",")), FString(TEXT("root,t_a,t_b")));
 
 	TArray<FRevision> History;
 	FString Error;
+	if (TestTrue(TEXT("the root's history loads"), CrowdyExecRevisions::LoadHistory(FPaths::Combine(Folder.Path, TEXT("root")), History, Error)) && TestEqual(TEXT("the root has one revision"), History.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("its digest is the root's build artifact"), FString::Join(History[0].Digests, TEXT(",")), FString(TEXT("d_root")));
+		TestEqualSensitive(TEXT("it keeps the root's files as sent"), History[0].Fingerprint, CrowdyExecRevisions::Fingerprint(Project.Crates[0].Files));
+	}
 	if (!TestTrue(TEXT("t_a's history loads"), CrowdyExecRevisions::LoadHistory(FPaths::Combine(Folder.Path, TEXT("t_a")), History, Error))
 		|| !TestEqual(TEXT("t_a has one revision"), History.Num(), 1))
 	{

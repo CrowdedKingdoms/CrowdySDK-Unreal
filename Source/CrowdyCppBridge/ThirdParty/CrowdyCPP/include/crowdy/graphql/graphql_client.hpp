@@ -11,6 +11,7 @@
 #include "crowdy/core/result.hpp"
 #include "crowdy/graphql/async_scope.hpp"
 #include "crowdy/graphql/auth_state.hpp"
+#include "crowdy/graphql/cancel.hpp"
 #include "crowdy/graphql/datacenter_redirect.hpp"
 #include "crowdy/graphql/dispatcher.hpp"
 #include "crowdy/graphql/errors.hpp"
@@ -28,8 +29,16 @@ struct GraphQLClientConfig {
 
 /// Which failure a GraphQLOutcome represents (None when it succeeded). The
 /// blocking request() maps each of these onto the matching CrowdyError; the
-/// async path leaves them as data so callers branch on the code.
-enum class GraphQLErrorKind { None, Http, GraphQL, Protocol, Network, Timeout };
+/// async path leaves them as data so callers branch on the code. Cancelled
+/// (0.62.0) is the caller's own CancelToken, never a server or network fault.
+enum class GraphQLErrorKind { None, Http, GraphQL, Protocol, Network, Timeout, Cancelled };
+
+/// Per-request options: CrowdyJS's `{ signal }`.
+struct RequestOptions {
+  /// Cancel the request from any thread (see CancelToken). The client's timeout
+  /// still applies; a token never replaces it.
+  std::optional<CancelToken> cancel;
+};
 
 /// Non-throwing result of an operation, the async twin of request(). ok() means
 /// the server returned data with no GraphQL errors; otherwise `kind` and the
@@ -72,12 +81,19 @@ class GraphQLClient {
 #endif
   Json request(std::string_view document, const JVal& variables = JVal(),
                std::string_view operationName = {});
+  /// request() with options. A cancelled request throws CrowdyCancelledError
+  /// (returns an invalid Json without exceptions).
+  Json request(std::string_view document, const JVal& variables,
+               std::string_view operationName, const RequestOptions& options);
 
   /// Execute an operation and return the whole outcome. Blocking, and it never
   /// throws, in either build: the same failure details request() throws (or, without
   /// exceptions, discards), for a caller that branches on them inline.
   GraphQLOutcome requestOutcome(std::string_view document, const JVal& variables = JVal(),
                                 std::string_view operationName = {});
+  GraphQLOutcome requestOutcome(std::string_view document, const JVal& variables,
+                                std::string_view operationName,
+                                const RequestOptions& options);
 
   /// Execute an operation without blocking or throwing. `cb` is invoked once
   /// with the outcome. When an async transport is set the request runs on it;
@@ -86,6 +102,12 @@ class GraphQLClient {
   /// otherwise inline on whatever thread the transport completed on.
   void requestAsync(std::string_view document, const JVal& variables,
                     std::string_view operationName, GraphQLCallback cb);
+  /// requestAsync() with options. A cancelled request is delivered as
+  /// GraphQLErrorKind::Cancelled once its transport completes (at once when the
+  /// token was cancelled before the call, which then sends nothing).
+  void requestAsync(std::string_view document, const JVal& variables,
+                    std::string_view operationName, const RequestOptions& options,
+                    GraphQLCallback cb);
 
   /// Handle a WRONG_DATACENTER redirect. The handler MOVES the client (this
   /// endpoint, and typically the WebSocket and UDP session with it) and returns
@@ -147,7 +169,8 @@ class GraphQLClient {
 
  private:
   HttpRequest buildHttpRequest(std::string_view document, const JVal& variables,
-                               std::string_view operationName) const;
+                               std::string_view operationName,
+                               const RequestOptions& options = {}) const;
   HttpOutcome sendInline(const HttpRequest& request);
   /// Offer a failed outcome to the wrong-datacenter handler. True when the
   /// request is worth re-issuing: either this outcome's redirect moved the
@@ -163,8 +186,8 @@ class GraphQLClient {
   /// whatever the shared AuthState holds by delivery time - engines that
   /// multiplex token planes over one client switch that state per call.
   void requestAsyncAttempt(std::string document, const JVal& variables,
-                           std::string operationName, GraphQLCallback cb,
-                           bool isRetry,
+                           std::string operationName, RequestOptions options,
+                           GraphQLCallback cb, bool isRetry,
                            std::optional<std::string> retryAuthorization =
                                std::nullopt);
 

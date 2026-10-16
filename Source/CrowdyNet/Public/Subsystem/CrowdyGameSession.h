@@ -10,6 +10,8 @@
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnOwnerUUIDUpdated, FString, NewOwnerUUID);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnHostIDUpdated, const FGuid&, NewHostID, const FGuid&, PreviousHostID);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyAppPausedChanged, bool, bPaused, const FString&, Reason);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyAccessEnded, const FString&, Reason, const FString&, BlockedUntil);
 
 /**
  * 
@@ -136,7 +138,44 @@ public:
 	 *  modules (CrowdyReplication) can read it without a dependency cycle. */
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session")
 	FOnHostIDUpdated OnHostIDUpdated;
-	
+
+	/** Fired on the game thread when the app is paused or comes back, or when the reason changes. */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Game Session")
+	FOnCrowdyAppPausedChanged OnAppPausedChanged;
+
+	/** True while the app is paused: its owner or the platform switched it off, or it ran out of funds. The world and Server Objects refuse until it is back. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Game Session")
+	bool IsAppPaused() const { return bAppPaused; }
+
+	/** Why the app is paused, in words a player can read. Empty when it is not paused or no reason was given. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Game Session")
+	FString GetAppPausedReason() const { return AppPausedReason; }
+
+	/** Game thread only. Broadcasts OnAppPausedChanged only when the paused flag or the reason changes. */
+	void SetAppPaused(bool bPaused, const FString& Reason);
+
+	/** Fired on the game thread when the player's access ends or is refused: suspended, revoked, never granted or expired, signed out by the platform, or the account blocked. Server Objects stop and fail with the reason; the game re-acquires them once the player has access again. Blocked Until is an ISO-8601 time for a timed block or suspension, else empty; when that time is only learned after the access ended, this fires once more with it. */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Game Session")
+	FOnCrowdyAccessEnded OnAccessEnded;
+
+	/** True after the player's access ended, until they sign in again. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Game Session")
+	bool HasAccessEnded() const { return bAccessEnded; }
+
+	/** Why the player's access ended, in the platform's words. Empty while it has not. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Game Session")
+	FString GetAccessEndedReason() const { return AccessEndedReason; }
+
+	/** Until when the account is blocked or the player suspended (ISO-8601), empty otherwise or while it lasts until lifted. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Game Session")
+	FString GetAccessBlockedUntil() const { return AccessBlockedUntil; }
+
+	/** Game thread only. Records that the access ended and broadcasts OnAccessEnded the first time; later calls are ignored until ClearAccessEnded, except one that brings the first end time of a block. */
+	void SetAccessEnded(const FString& Reason, const FString& BlockedUntil);
+
+	/** Game thread only. Forgets an ended access, as a new sign-in does. */
+	void ClearAccessEnded();
+
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetAppID(const int64 InAppID) {GameSessionInfo.AppID = InAppID;}
 	
@@ -317,7 +356,17 @@ private:
 
 	UPROPERTY()
 	FGuid HostID;
-	
+
+	bool bAppPaused = false;
+
+	FString AppPausedReason;
+
+	bool bAccessEnded = false;
+
+	FString AccessEndedReason;
+
+	FString AccessBlockedUntil;
+
 	/** Atomic so it can be written from a background response thread and read
 	 *  from the game thread (or any other thread) without a lock. */
 	std::atomic<int64> HostUserID { 0 };

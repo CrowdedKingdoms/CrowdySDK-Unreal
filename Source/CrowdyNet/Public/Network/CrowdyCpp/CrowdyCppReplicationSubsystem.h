@@ -83,6 +83,12 @@ struct FCrowdyCppConnectionRequest
 	 * player should be told instead of watching a connection retry into a server that has no room.
 	 */
 	TFunction<void()> ReportAppFull;
+
+	/**
+	 * Tell the game the server assignment refused the app token as invalid or expired (UNAUTHENTICATED), as it does once
+	 * the token is revoked. Called on the game thread; the game mints a new token, or learns its access was refused.
+	 */
+	TFunction<void()> ReportTokenRejected;
 };
 
 /**
@@ -265,6 +271,16 @@ private:
 	void ReportSendError(const struct FCrowdyCppSendError& Error);
 
 	/**
+	 * The server repeats its paused-app error while the app is paused and says nothing when it ends. The pause it set
+	 * is cleared only on evidence the app is back: a message arriving, or sends going out for a while with no repeat.
+	 */
+	void NoteAppPausedByServer();
+	void NoteInboundAfterAppPaused();
+	void ClearAppPausedByServer();
+	int64 CountMessagesSent();
+	bool TickAppPausedExpiry(float DeltaTime);
+
+	/**
 	 * Say something, occasionally, about inbound traffic the drain could not keep up with: drains the frame budget
 	 * cut short while the connection still held messages, and messages the connection then had to throw away. A
 	 * truncated drain is what leaves messages behind for a later one to lose, so the two are reported together.
@@ -392,6 +408,11 @@ private:
 	double SendErrorWindowStartedSeconds = 0.0;
 	int32 SendErrorsReportedThisWindow = 0;
 	int32 SendErrorsSuppressedThisWindow = 0;
+
+	/** When the server's paused-app error last arrived, and how many messages had been sent by then. Game thread only. */
+	double LastAppPausedErrorSeconds = 0.0;
+	int64 MessagesSentAtAppPausedError = 0;
+	FTSTicker::FDelegateHandle AppPausedTickerHandle;
 
 	/**
 	 * The subset of the connection's cumulative counters ReportNetworkStats turns into a rate. A plain copy

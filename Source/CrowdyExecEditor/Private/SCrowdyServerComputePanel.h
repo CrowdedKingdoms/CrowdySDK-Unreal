@@ -25,6 +25,9 @@ namespace CrowdyServerComputePage
 	/** Who can read an instance, as a type row says it for the definition's Readable By. */
 	FText ReadableByPhrase(ECrowdyServerObjectVisibility Visibility);
 
+	/** How many instances a Server Function Library runs, as a type row says it: 1 to 4 instances, or 4 instances when the two are equal. */
+	FText InstancesPhrase(int32 MinInstances, int32 MaxInstances);
+
 	struct FChangeBadge
 	{
 		FText Label;
@@ -34,6 +37,16 @@ namespace CrowdyServerComputePage
 
 	/** One badge for a type: what stops its code from building wins, then how it compares with the live version. */
 	FChangeBadge ChooseChangeBadge(const CrowdyExecDeploy::FTypeState& Type, const CrowdyExecRevisions::FTypeChange* Change);
+
+	enum class EServiceRefresh : uint8
+	{
+		RebuildPage,
+		RefillRows,
+		KeepRows
+	};
+
+	/** What a change of the service rebuilds: the whole page for a new client, the rows only when the service's data moved on, else nothing that could close an open menu. */
+	EServiceRefresh ChooseServiceRefresh(bool bContentBuilt, bool bNewClient, uint32 DataGeneration, uint32 FilledGeneration);
 }
 
 /** The Server Compute page of Crowdy Studio: deploys the project's Server Object types, and shows the app's versions, logs and call activity. */
@@ -68,10 +81,20 @@ private:
 	TSharedRef<SWidget> MakeStatusBadge() const;
 	TSharedRef<SWidget> MakeTypeRow(const CrowdyExecDeploy::FTypeState& Type);
 	TSharedRef<SWidget> MakeRemovedRow(const FString& TypeName);
+	/** One entry of the type list on the left: the name and its badge, selecting the type on click. */
+	TSharedRef<SWidget> MakeTypeRailRow(const FString& TypeName, const CrowdyServerComputePage::FChangeBadge& Badge);
+	/** Shows the selected type's details on the right, or what to do when there is none. */
+	void FillTypeDetail();
+	/** How many types the next deploy adds, changes or removes. */
+	int32 CountPendingTypes() const;
 	/** Running or Switched off, with its switch, for a type the live version runs; nothing otherwise. */
 	TSharedRef<SWidget> MakeRunningSwitch(const FString& TypeName);
 	TSharedRef<SWidget> MakeTypeMenu(const FString& TypeName, const FString& AssetPath);
 	FText MakeTypeMeta(const UCrowdyServerObjectDefinition* Definition, const FString& TypeName) const;
+	/** "3 of 16 Server Objects · 192 of 1,024 MB", or empty when the platform does not say. */
+	static FText MakeUsageText(const CrowdyExecDeveloper::FAppStatus& Status);
+	/** One line per instance of the type the platform will not place, with its reason; empty when none. */
+	FText MakeHeldBackLine(const FString& TypeName) const;
 	bool CacheVersionTypes(const CrowdyExecDeveloper::FVersion& Version);
 	FText DescribeVersionChanges(const CrowdyExecDeveloper::FVersion& Version);
 
@@ -103,7 +126,12 @@ private:
 	FReply OnClearCallClicked();
 	FReply OnLoadOlderClicked();
 	FReply OnToggleBuildOutput();
+	FReply OnRestartClicked(FString TypeName);
+	FReply OnMoveRunningClicked();
+	FReply OnDismissMoveClicked();
 
+	/** After a deploy, how many Server Objects of the changed types still run the previous version; empty when none. */
+	FText GetMoveLine() const;
 	FText GetDeployLine() const;
 	FSlateColor GetDeployLineColor() const;
 
@@ -139,6 +167,12 @@ private:
 	TSharedPtr<SBox> HeaderBadgeBox;
 	TSharedPtr<SWidgetSwitcher> TabSwitcher;
 	TSharedPtr<SVerticalBox> TypesList;
+	TSharedPtr<SBox> TypeDetailBox;
+	/** The type the right side shows, kept across refills while it still exists. */
+	FString SelectedType;
+	/** "", "changed" or "problems": which types the list shows. */
+	FString TypeFilter;
+	FString TypeSearch;
 	TSharedPtr<SVerticalBox> VersionsList;
 	TSharedPtr<SVerticalBox> LogsList;
 	TSharedPtr<SVerticalBox> ActivityList;

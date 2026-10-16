@@ -87,6 +87,9 @@ class LocalActorStore {
     std::int64_t keyframeIntervalMs = 3000;
     /// While unchanged, send CLIENT_ACTOR_HEARTBEAT at this interval instead
     /// of a full update (0 disables heartbeats; keyframes still flow).
+    /// Idle players on different servers meet at the first full update after
+    /// joining (replication v0.37.0); before it, heartbeats ahead of the first
+    /// update kept them apart.
     std::int64_t heartbeatIntervalMs = 2000;
     std::uint8_t distance = 8;
     wire::DecayRate decay = wire::DecayRate::Exponential;

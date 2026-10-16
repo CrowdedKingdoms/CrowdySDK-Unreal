@@ -5,6 +5,7 @@
 #include "Templates/PimplPtr.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Queries/Authentication/FCrowdyUserIdentity.h"
+#include "Subsystem/CrowdyAccountTypes.h"
 #include "CrowdyAuthentication.generated.h"
 
 class UCrowdySDKBridgeSubsystem;
@@ -80,6 +81,10 @@ DECLARE_DYNAMIC_DELEGATE_OneParam(FOnLoginProvidersReceived, const TArray<FStrin
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnIdentitiesReceived, const TArray<FCrowdyUserIdentity>&, Identities);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnIdentityLinked, FCrowdyUserIdentity, Identity);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnIdentityUnlinked, bool, bRemoved);
+
+DECLARE_DYNAMIC_DELEGATE(FOnAccountDone);
+DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnAccountError, FCrowdyAccountError, Error, FString, Message);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAppAccessRead, FCrowdyAppAccess, Access);
 
 /*
  * Owns sign-in, the app-token lifecycle, and session persistence. Injected by
@@ -258,6 +263,48 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
 	void UnlinkIdentity(const FString& IdentityId, FOnIdentityUnlinked OnResult, FOnAuthError OnError);
+
+	/** Emails a password-reset link. Works signed out; the answer is the same whether or not Email has an account. */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Account")
+	void RequestPasswordReset(const FString& Email, FOnAccountDone OnDone, FOnAccountError OnError);
+
+	/** Emails the address confirmation again. Works signed out; the answer is the same whether or not Email has an account. */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Account")
+	void ResendConfirmationEmail(const FString& Email, FOnAccountDone OnDone, FOnAccountError OnError);
+
+	/** Changes the signed-in player's password. The player's other devices are signed out; this one stays signed in. */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Account")
+	void ChangePassword(const FString& CurrentPassword, const FString& NewPassword, FOnAccountDone OnDone,
+		FOnAccountError OnError);
+
+	/** Adds a password to an account made by magic link or social sign-in. Refused as Password Already Set when it has one. */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Account")
+	void AddPassword(const FString& NewPassword, FOnAccountDone OnDone, FOnAccountError OnError);
+
+	/** Deletes the signed-in player's account, then signs out here. Ask the player to confirm first: it cannot be undone. */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Account")
+	void DeleteAccount(FOnAccountDone OnDone, FOnAccountError OnError);
+
+	/** Ends every session of the signed-in player on every device, then signs out here. */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Account")
+	void SignOutEverywhere(FOnAccountDone OnDone, FOnAccountError OnError);
+
+	/** Reads the signed-in player's access to this app. Works while the app refuses them, so a game can say why. */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Account")
+	void GetMyAccess(FOnAppAccessRead OnResult, FOnAccountError OnError);
+
+	/**
+	 * Claims this app's free access for the signed-in player, then finishes signing in. Use it when sign-in was refused
+	 * because the player has no access. Never lifts a revoke, and fails when the app has no free tier.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Account")
+	void ClaimFreeAccess(FOnAuthSuccess OnSuccess, FOnAuthError OnError);
+
+	/** Ends this session on the server without waiting for the answer. Sign-out calls it before forgetting the token. */
+	void EndServerSession();
+
+	/** Broadcast after Delete Account or Sign Out Everywhere ended this session on the server, so the SDK signs out here. */
+	FSimpleMulticastDelegate OnServerSessionEnded;
 
 	/**
 	 * Rotate the app-scoped token for the current app (refreshAppToken). Called
@@ -489,6 +536,19 @@ private:
 	 * are spent the token is left to expire and is re-minted when the server reports it expired.
 	 */
 	void ScheduleRotationRetry(const TCHAR* Reason);
+
+	/**
+	 * When ErrorCode refuses the player's access (a blocked account, or the app's ACCESS_REVOKED, ACCESS_SUSPENDED or
+	 * ACCESS_NOT_GRANTED), ends the session's access with the server's message, stops rotation and returns true. Every
+	 * later mint is refused the same way until the access is restored, so none of them is retried.
+	 */
+	bool NoteAccessRefused(const FString& ErrorCode, const FString& Message, const FString& Until);
+
+	/** Forgets a session the server has already ended, then broadcasts OnServerSessionEnded. */
+	void ForgetEndedSession();
+
+	/** Set by NoteAccessRefused until a sign-in succeeds; stops token rotation and recovery from re-minting. */
+	bool bAccessRefused = false;
 
 	/** Rotation attempts spent since the last app token was applied. */
 	int32 RotationRetriesUsed = 0;

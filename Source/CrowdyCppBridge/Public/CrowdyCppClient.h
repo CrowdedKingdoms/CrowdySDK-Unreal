@@ -12,6 +12,23 @@ inline constexpr int32 CrowdyCppMaxBusyRetries = 3;
 // Refuses a gameplay-token mint or refresh until the player records consent; no retry succeeds before that.
 inline constexpr const TCHAR* CrowdyCppLegalAcceptanceRequiredCode = TEXT("LEGAL_ACCEPTANCE_REQUIRED");
 
+// A platform operator blocked the account: every sign-in and request is refused, and retrying does not help.
+inline constexpr const TCHAR* CrowdyCppAccountBlockedCode = TEXT("ACCOUNT_BLOCKED");
+
+// The app refused this player's own access: revoked, suspended until a time, or never granted (or the grant expired).
+inline constexpr const TCHAR* CrowdyCppAccessRevokedCode = TEXT("ACCESS_REVOKED");
+inline constexpr const TCHAR* CrowdyCppAccessSuspendedCode = TEXT("ACCESS_SUSPENDED");
+inline constexpr const TCHAR* CrowdyCppAccessNotGrantedCode = TEXT("ACCESS_NOT_GRANTED");
+
+// Whether Code refuses the player's access as a whole (a blocked account or one of the app's access refusals), which no retry fixes.
+inline bool CrowdyCppIsAccessRefusalCode(const FString& Code)
+{
+	return Code.Equals(CrowdyCppAccountBlockedCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppAccessRevokedCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppAccessSuspendedCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppAccessNotGrantedCode, ESearchCase::CaseSensitive);
+}
+
 // Whether busy refusals are retried at all: the crowdy.net.retry.busy console variable. Game thread only.
 CROWDYCPPBRIDGE_API bool CrowdyCppIsBusyRetryEnabled();
 
@@ -54,6 +71,8 @@ struct FCrowdyCppAuthResult
 {
 	bool bOk = false;
 	FString ErrorMessage;
+	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
+	FString BlockedUntil;   // ISO-8601 end of a timed block (ACCOUNT_BLOCKED) or suspension (ACCESS_SUSPENDED); empty otherwise
 	FString SessionToken;
 	int64 SessionGameTokenID = 0;
 	int64 UserID = 0;
@@ -72,6 +91,7 @@ struct FCrowdyCppAppTokenResult
 	bool bOk = false;
 	FString ErrorMessage;
 	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
+	FString BlockedUntil;   // as on FCrowdyCppAuthResult
 	FString AppToken;
 	int64 AppGameTokenID = 0;
 	FString AppID;
@@ -86,6 +106,11 @@ struct FCrowdyCppAppTokenResult
 	FString DiscoveryUrl;
 
 	FString LaunchUrl;
+
+	// The app's runtime gate when the token was issued: ACTIVE when the app runs, anything else means it is paused and
+	// the reason says why. Both are empty when the answer carried no gate.
+	FString RuntimeGateStatus;
+	FString RuntimeGateReason;
 
 	// The replication server the Game API installed this token on, when the request named one. Empty on a mint, on
 	// a rotation that named no server, and on one the API answered without an authorizedServer: in all three the
@@ -106,6 +131,7 @@ struct FCrowdyCppJsonValueResult
 	bool bOk = false;
 	TSharedPtr<FJsonValue> Value;
 	FString ErrorMessage;
+	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
 };
 
 /** The outcome of an operation that answers with a single boolean. bOk is the transport flag; bValue is the answer. */
@@ -526,6 +552,30 @@ public:
 	FCrowdyCppRequestHandle RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority,
 		TFunction<void(FCrowdyCppBoolResult)> OnDone);
 
+	// Email a password-reset link, or resend the address confirmation. Public, so no bearer; the server answers the
+	// same whether or not the address has an account.
+	FCrowdyCppRequestHandle RequestPasswordReset(const FString& Email, TFunction<void(FCrowdyCppBoolResult)> OnDone);
+	FCrowdyCppRequestHandle ResendConfirmationEmail(const FString& Email, TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
+	// Change the signed-in account's password, or add one to an account that has none. Carry the session token.
+	FCrowdyCppRequestHandle ChangePassword(const FString& CurrentPassword, const FString& NewPassword,
+		TFunction<void(FCrowdyCppBoolResult)> OnDone);
+	FCrowdyCppRequestHandle SetInitialPassword(const FString& NewPassword, TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
+	// End the session the session token belongs to and every app token minted from it, or every session of the
+	// account. Carry the session token, which is read when the call is issued.
+	FCrowdyCppRequestHandle Logout(TFunction<void(FCrowdyCppBoolResult)> OnDone);
+	FCrowdyCppRequestHandle LogoutAllDevices(TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
+	// Delete the signed-in player's own account: personal data is anonymized and every session ends. Carries the app
+	// token.
+	FCrowdyCppRequestHandle DeleteMyAccount(TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
+	// Rename the signed-in user. The value is the user object with the new gamertag and disambiguation. Carries the
+	// session token, the only one the platform takes for it.
+	FCrowdyCppRequestHandle UpdateGamertag(const FString& Gamertag, const FString& Disambiguation,
+		TFunction<void(FCrowdyCppJsonValueResult)> OnDone);
+
 	// Exchange the identity session token for an app-scoped gameplay token, under the session bearer. The returned
 	// token is NOT installed on this client: an owner decides which plane it belongs to. The result also carries
 	// the app's own datacenter endpoint and the shared DiscoveryUrl, which together are what let a client relocate.
@@ -654,7 +704,7 @@ public:
 	// The same, for the ck-exec gateway a client from MakeForTest stands in for.
 	void TestExecOpen();
 	void TestExecReceiveBinary(const TArray<uint8>& Bytes);
-	void TestExecCloseFromServer(int32 Code, bool bClean);
+	void TestExecCloseFromServer(int32 Code, bool bClean, const FString& Reason = FString());
 	TArray<TArray<uint8>> TakeTestExecSentFrames();
 	int32 NumTestExecConnections() const;
 	bool GetTestExecConnectRequest(FString& OutUrl, FString& OutSubprotocol) const;

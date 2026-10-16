@@ -120,6 +120,11 @@ namespace
 	/** Shortest gap between two requests for a token rotation, since each one is a real call against the auth API. */
 	constexpr double RotationRequestFloorSeconds = 30.0;
 
+	/** The server repeats its paused-app error about every 5 s, so sends this long with no repeat mean the app is back. */
+	constexpr double AppPausedSilenceSeconds = 15.0;
+	constexpr float AppPausedCheckSeconds = 1.0f;
+	constexpr const TCHAR* AppPausedByServerReason = TEXT("the app is paused");
+
 	/** Shared between a blocking session callback and the game-thread work it queued, so either may finish first. */
 	struct FAssignmentHandoff
 	{
@@ -202,13 +207,13 @@ namespace
 	 * shuts down gives up instead of holding the join open for a full round trip.
 	 */
 	FCrowdyCppAssignServer MakeAssignServerCallback(const TWeakObjectPtr<UGameInstance>& WeakInstance,
-		const FCrowdyCppClientConfig& ClientConfig, TFunction<void()> ReportAppFull)
+		const FCrowdyCppClientConfig& ClientConfig, TFunction<void()> ReportAppFull, TFunction<void()> ReportTokenRejected)
 	{
-		return [WeakInstance, ClientConfig, ReportAppFull](const FCrowdyCppShouldAbort& ShouldAbort)
+		return [WeakInstance, ClientConfig, ReportAppFull, ReportTokenRejected](const FCrowdyCppShouldAbort& ShouldAbort)
 		{
 			const TSharedRef<FAssignmentHandoff> Handoff = MakeShared<FAssignmentHandoff>();
 
-			AsyncTask(ENamedThreads::GameThread, [WeakInstance, ClientConfig, ReportAppFull, Handoff]()
+			AsyncTask(ENamedThreads::GameThread, [WeakInstance, ClientConfig, ReportAppFull, ReportTokenRejected, Handoff]()
 			{
 				const auto Finish = [Handoff](FCrowdyCppSessionAssignment&& Answer)
 				{
@@ -245,7 +250,7 @@ namespace
 				}
 
 				Client->RunOp(ECrowdyCppApiDomain::ServerStatus, TEXT("ServerWithLeastClients"),
-					MakeShared<FJsonObject>(), [Finish, ReportAppFull, WeakInstance](FCrowdyCppJsonResult Result)
+					MakeShared<FJsonObject>(), [Finish, ReportAppFull, ReportTokenRejected, WeakInstance](FCrowdyCppJsonResult Result)
 					{
 						FCrowdyCppSessionAssignment Answer;
 
@@ -256,6 +261,11 @@ namespace
 							if (Result.ErrorMessage.Contains(TEXT("Insufficient")) && ReportAppFull)
 							{
 								ReportAppFull();
+							}
+							// A revoked token is refused on every retry until a new one is minted.
+							if (Result.ErrorCode.Equals(TEXT("UNAUTHENTICATED"), ESearchCase::CaseSensitive) && ReportTokenRejected)
+							{
+								ReportTokenRejected();
 							}
 
 							Answer.ErrorMessage = Result.ErrorMessage;
@@ -435,6 +445,12 @@ namespace
 
 void UCrowdyCppReplicationSubsystem::Deinitialize()
 {
+	if (AppPausedTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(AppPausedTickerHandle);
+		AppPausedTickerHandle.Reset();
+	}
+
 	// Before the receive target goes, since its own ticker delivers into the parser this is about to
 	// detach.
 	DisarmLocalDelivery();
@@ -609,7 +625,7 @@ bool UCrowdyCppReplicationSubsystem::OpenConnection(const FCrowdyCppConnectionRe
 	ClientConfig.ApiUrl = Request.GameApiUrl.IsEmpty() ? Request.DiscoveryUrl : Request.GameApiUrl;
 
 	TSharedPtr<FCrowdyCppReplication> Built = FCrowdyCppReplication::Make(Config,
-		MakeAssignServerCallback(WeakInstance, ClientConfig, MoveTemp(OnAppFull)),
+		MakeAssignServerCallback(WeakInstance, ClientConfig, MoveTemp(OnAppFull), Request.ReportTokenRejected),
 		MakeRefreshTokenCallback(WeakInstance, Request.RequestTokenRefresh, Request.Token));
 
 	if (!Built.IsValid())
@@ -751,6 +767,7 @@ void UCrowdyCppReplicationSubsystem::InstallReceiveHandlers(const TSharedPtr<FCr
 			Message.Opcode, *FString(Message.Uuid.Num(), reinterpret_cast<const ANSICHAR*>(Message.Uuid.GetData())),
 			Message.ChunkX, Message.ChunkY, Message.ChunkZ, Message.Payload.Num());
 
+		Self->NoteInboundAfterAppPaused();
 		Self->DeliverFrame(CrowdyCppInboundFrame::FromSpatial(Message));
 	};
 
@@ -762,6 +779,7 @@ void UCrowdyCppReplicationSubsystem::InstallReceiveHandlers(const TSharedPtr<FCr
 			return;
 		}
 
+		Self->NoteInboundAfterAppPaused();
 		Self->DeliverFrame(CrowdyCppInboundFrame::FromChannel(Message));
 	};
 
@@ -776,7 +794,14 @@ void UCrowdyCppReplicationSubsystem::InstallReceiveHandlers(const TSharedPtr<FCr
 			return;
 		}
 
-		Self->ReportSendError(Error);
+		if (FCrowdyCppReplication::IsAppPausedErrorCode(Error.ErrorCode))
+		{
+			Self->NoteAppPausedByServer();
+		}
+		else
+		{
+			Self->ReportSendError(Error);
+		}
 
 		// Held here rather than inside the builder, because the frame borrows these two octets.
 		const uint8 Body[] = { Error.Sequence, Error.ErrorCode };
@@ -1009,6 +1034,79 @@ void UCrowdyCppReplicationSubsystem::ReportSendError(const FCrowdyCppSendError& 
 	UE_LOG(LogCrowdyNet, Warning,
 		TEXT("The server rejected a send: code %d (%s), sequence %d, sent %lldms ago as %s for actor %s.%s"),
 		Error.ErrorCode, *CodeName, Error.Sequence, Error.SendAgeMs, *OpcodeName, *ActorId, *Remedy);
+}
+
+int64 UCrowdyCppReplicationSubsystem::CountMessagesSent()
+{
+	const TSharedPtr<FCrowdyCppReplication> Pinned = GetConnection();
+	return Pinned.IsValid() ? Pinned->GetStats().MessagesSent : 0;
+}
+
+void UCrowdyCppReplicationSubsystem::NoteAppPausedByServer()
+{
+	LastAppPausedErrorSeconds = FPlatformTime::Seconds();
+	MessagesSentAtAppPausedError = CountMessagesSent();
+
+	const UGameInstance* Instance = GetGameInstance();
+	UCrowdyGameSession* Session = Instance ? Instance->GetSubsystem<UCrowdyGameSession>() : nullptr;
+	if (!Session || Session->IsAppPaused())
+	{
+		return;
+	}
+
+	UE_LOG(LogCrowdyNet, Warning, TEXT("The app is paused; the world refuses updates until it is back."));
+	Session->SetAppPaused(true, AppPausedByServerReason);
+	if (!AppPausedTickerHandle.IsValid())
+	{
+		AppPausedTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateUObject(this, &UCrowdyCppReplicationSubsystem::TickAppPausedExpiry), AppPausedCheckSeconds);
+	}
+}
+
+void UCrowdyCppReplicationSubsystem::NoteInboundAfterAppPaused()
+{
+	if (AppPausedTickerHandle.IsValid())
+	{
+		ClearAppPausedByServer();
+	}
+}
+
+void UCrowdyCppReplicationSubsystem::ClearAppPausedByServer()
+{
+	if (AppPausedTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(AppPausedTickerHandle);
+		AppPausedTickerHandle.Reset();
+	}
+	const UGameInstance* Instance = GetGameInstance();
+	UCrowdyGameSession* Session = Instance ? Instance->GetSubsystem<UCrowdyGameSession>() : nullptr;
+	// Only a pause the server's error frames set is cleared here; a token answer's carries its own reason.
+	if (Session && Session->GetAppPausedReason().Equals(AppPausedByServerReason, ESearchCase::CaseSensitive))
+	{
+		Session->SetAppPaused(false, FString());
+	}
+}
+
+bool UCrowdyCppReplicationSubsystem::TickAppPausedExpiry(float DeltaTime)
+{
+	const UGameInstance* Instance = GetGameInstance();
+	UCrowdyGameSession* Session = Instance ? Instance->GetSubsystem<UCrowdyGameSession>() : nullptr;
+	if (!Session || !Session->GetAppPausedReason().Equals(AppPausedByServerReason, ESearchCase::CaseSensitive))
+	{
+		// Cleared or taken over elsewhere, so there is nothing left to watch.
+		AppPausedTickerHandle.Reset();
+		return false;
+	}
+
+	// Silence alone is not evidence: a game that stopped sending while paused would see the flag flap.
+	if (FPlatformTime::Seconds() - LastAppPausedErrorSeconds < AppPausedSilenceSeconds || CountMessagesSent() <= MessagesSentAtAppPausedError)
+	{
+		return true;
+	}
+
+	AppPausedTickerHandle.Reset();
+	Session->SetAppPaused(false, FString());
+	return false;
 }
 
 void UCrowdyCppReplicationSubsystem::ReportNetworkStats(const FCrowdyCppReplication& Polled)

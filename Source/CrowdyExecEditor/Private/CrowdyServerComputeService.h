@@ -9,6 +9,13 @@
 class UCrowdyServerObjectDefinition;
 enum class ECrowdyEnvironment : uint8;
 
+namespace CrowdyServerComputeMove
+{
+	/** The types in ChangedTypes with an instance running in After that was already placed in Before (the same node type, key and epoch), so it runs the version before a deploy; a placement since has a higher epoch. OutRunning counts those instances. */
+	TArray<FString> TypesOnPreviousVersion(TConstArrayView<CrowdyExecDeveloper::FInstance> Before, TConstArrayView<CrowdyExecDeveloper::FInstance> After,
+		TConstArrayView<FString> ChangedTypes, int32& OutRunning);
+}
+
 /** The editor's one link to Server Compute, shared by the Server Compute page and every definition asset: the app's live status and versions, what changed since, and deploys. */
 class FCrowdyServerComputeService : public TSharedFromThis<FCrowdyServerComputeService>
 {
@@ -35,6 +42,22 @@ public:
 	void ApplyStatus(const CrowdyExecDeveloper::FAppStatus& NewStatus);
 
 	const TOptional<CrowdyExecDeveloper::FAppStatus>& GetStatus() const { return Status; }
+	/** What the platform has placed, as last read; empty until read. */
+	const TArray<CrowdyExecDeveloper::FInstance>& GetInstances() const { return Instances; }
+	bool AreInstancesLoaded() const { return bInstancesLoaded; }
+	/** The type's instances that are running or starting, as last read. */
+	int32 CountRunning(const FString& TypeName) const;
+	void RefreshInstances();
+
+	/** Asks first, then moves the type's running instances to the active version. False when it did not start. */
+	bool RestartType(const FString& TypeName);
+	/** After a deploy: the changed types that still have instances running the previous version, empty when none. */
+	const TArray<FString>& GetTypesToMove() const { return TypesToMove; }
+	/** How many of their Server Objects were running the previous version when the deploy was answered. */
+	int32 GetRunningToMove() const { return RunningToMove; }
+	/** Moves every type in GetTypesToMove to the active version, without asking again. */
+	void MoveRunningToActive();
+	void DismissMove();
 	const TArray<CrowdyExecDeveloper::FVersion>& GetVersions() const { return Versions; }
 	bool AreVersionsLoaded() const { return bVersionsLoaded; }
 	/** The active version, or null when nothing is live or the versions are not read yet. */
@@ -95,6 +118,16 @@ private:
 	void Recompare();
 	void StartBuild(const TArray<CrowdyExecDeveloper::FBuildCrate>& Crates, const FString& ManifestJson, bool bRecord);
 	void OnBuildFinished(const CrowdyExecDeveloper::TResult<CrowdyExecDeveloper::FBuild>& Result, const FString& ManifestJson, bool bRecord);
+	/** The instances read as a deploy is sent; the move offer after the deploy waits for its answer. */
+	struct FDeploySnapshot
+	{
+		bool bAnswered = false;
+		bool bKnown = false;
+		TArray<CrowdyExecDeveloper::FInstance> Instances;
+		TFunction<void()> OnAnswered;
+	};
+
+	void OnDeployed(const CrowdyExecDeveloper::TResult<int32>& Deployed, const TArray<CrowdyExecDeveloper::FBuildArtifact>& Artifacts, bool bRecord, TSharedRef<FDeploySnapshot> Before);
 	void SetDeployMessage(const FText& Message, const FLinearColor& Color, bool bCountSeconds = false);
 	void FinishDeploy(const FText& Message, const FLinearColor& Color);
 	FText GetReadinessHint() const;
@@ -104,8 +137,19 @@ private:
 	FClientKey ClientKey;
 	FString ClientError;
 
+	bool RestartTypes(TArray<FString> TypeNames);
+	void OfferToMove(TArray<FString> ChangedTypes, TSharedRef<FDeploySnapshot> Before);
+
 	TOptional<CrowdyExecDeveloper::FAppStatus> Status;
 	TArray<CrowdyExecDeveloper::FVersion> Versions;
+	TArray<CrowdyExecDeveloper::FInstance> Instances;
+	TArray<FString> TypesToMove;
+	/** The project's changed types as the deploy was confirmed, before anything is compared again. */
+	TArray<FString> SendingChanged;
+	int32 RunningToMove = 0;
+	int32 InstancesRequest = 0;
+	int32 MoveRequest = 0;
+	bool bInstancesLoaded = false;
 	FText StatusError;
 	FText VersionsError;
 

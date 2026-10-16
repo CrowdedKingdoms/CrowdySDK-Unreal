@@ -151,9 +151,9 @@ void UCrowdyServerObjectComponent::OnRegister()
 FString UCrowdyServerObjectComponent::ResolveInstanceId(FString& OutError) const
 {
 	OutError.Reset();
-	if (Definition && Definition->bOnlyOneInstance)
+	if (Definition && Definition->HasOnlyOneInstance())
 	{
-		return UCrowdyServerObjectDefinition::OnlyInstanceId;
+		return Definition->GetOnlyInstanceId();
 	}
 	switch (InstanceMode)
 	{
@@ -227,7 +227,7 @@ FString UCrowdyServerObjectComponent::ResolveAreaKey(FString& OutError) const
 
 bool UCrowdyServerObjectComponent::ReadsRecord() const
 {
-	return Definition && Definition->Holds == ECrowdyServerObjectHolds::RecordPerEntity;
+	return Definition && !Definition->IsFunctionLibrary() && Definition->Holds == ECrowdyServerObjectHolds::RecordPerEntity;
 }
 
 FInstancedStruct UCrowdyServerObjectComponent::GetVariables() const
@@ -254,7 +254,7 @@ bool UCrowdyServerObjectComponent::HoldsOwnRecord(const UCrowdyServerObject* Hel
 
 bool UCrowdyServerObjectComponent::NeedsFollow() const
 {
-	const bool bArea = InstanceMode == ECrowdyServerObjectInstanceMode::ThisActorsArea && !(Definition && Definition->bOnlyOneInstance);
+	const bool bArea = InstanceMode == ECrowdyServerObjectInstanceMode::ThisActorsArea && !(Definition && Definition->HasOnlyOneInstance());
 	return bArea || (ReadsRecord() && !RecordNetId.IsValid());
 }
 
@@ -305,7 +305,7 @@ void UCrowdyServerObjectComponent::TickFollow()
 		Previous = nullptr;
 	}
 	// The key is worked out only when the actor reached another chunk.
-	const bool bArea = InstanceMode == ECrowdyServerObjectInstanceMode::ThisActorsArea && !(Definition && Definition->bOnlyOneInstance);
+	const bool bArea = InstanceMode == ECrowdyServerObjectInstanceMode::ThisActorsArea && !(Definition && Definition->HasOnlyOneInstance());
 	if (bArea && MovedChunk())
 	{
 		FString Error;
@@ -387,7 +387,7 @@ void UCrowdyServerObjectComponent::BeginPlay()
 
 bool UCrowdyServerObjectComponent::FollowsSourceValue() const
 {
-	return InstanceMode == ECrowdyServerObjectInstanceMode::FromServerValue && !(Definition && Definition->bOnlyOneInstance);
+	return InstanceMode == ECrowdyServerObjectInstanceMode::FromServerValue && !(Definition && Definition->HasOnlyOneInstance());
 }
 
 void UCrowdyServerObjectComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -479,6 +479,7 @@ void UCrowdyServerObjectComponent::Join()
 
 	Object = Acquired;
 	JoinError.Reset();
+	MessageBindings.Follow(Acquired, FOnCrowdyServerMessage::FDelegate::CreateUObject(this, &UCrowdyServerObjectComponent::HandleMessage));
 	StatusHandle = Acquired->OnStatusChanged.AddUObject(this, &UCrowdyServerObjectComponent::HandleStatus);
 	Entity = FoundEntity;
 	RecordNetId.Invalidate();
@@ -517,6 +518,7 @@ void UCrowdyServerObjectComponent::Leave()
 	}
 
 	Object = nullptr;
+	MessageBindings.Unfollow();
 	Held->OnStatusChanged.Remove(StatusHandle);
 	Held->UnwatchValues(ValuesHandle);
 	Held->UnwatchRecord(RecordId, RecordHandle);
@@ -703,7 +705,7 @@ void UCrowdyServerObjectComponent::HandleLogin(bool bSuccess)
 void UCrowdyServerObjectComponent::HandleSignedIn()
 {
 	// The teams cache may still hold the last account's teams, so this account's are asked for and joined when they arrive.
-	const bool bOnlyOne = Definition && Definition->bOnlyOneInstance;
+	const bool bOnlyOne = Definition && Definition->HasOnlyOneInstance();
 	if (InstanceMode == ECrowdyServerObjectInstanceMode::PlayersTeam && TeamId == 0 && !bOnlyOne)
 	{
 		Leave();
@@ -787,6 +789,14 @@ void UCrowdyServerObjectComponent::HandleVariables(UCrowdyServerObject* InObject
 	{
 		TGuardValue<bool> JoiningGuard(bJoining, true);
 		FollowRecordId();
+	}
+}
+
+void UCrowdyServerObjectComponent::HandleMessage(UCrowdyServerObject* InObject, FName Message, const FInstancedStruct& Payload)
+{
+	if (InObject == Object)
+	{
+		MessageBindings.Notify(Object, Message, Payload);
 	}
 }
 

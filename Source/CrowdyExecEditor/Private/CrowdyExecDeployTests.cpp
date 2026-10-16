@@ -5,6 +5,7 @@
 #include "CrowdyExecCodegen.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "CrowdyServerObjectLibrary.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
@@ -47,13 +48,14 @@ namespace CrowdyExecDeployTest
 		return Test.TestEqualSensitive(FString::Printf(TEXT("%s (%s)"), What, *Actual.Problem), FString(StateName(Actual.State)), FString(StateName(Expected)));
 	}
 
-	/** A type with no functions or intervals set, enough for the manifest, which reads nothing else. */
+	/** A type with one function players call and its intervals set, enough for the manifest. */
 	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeManifestDefinition(const TCHAR* TypeName, int32 SaveIntervalSeconds, int32 IdleTimeoutSeconds)
 	{
 		TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
 		Definition->TypeName = TypeName;
 		Definition->SaveIntervalSeconds = SaveIntervalSeconds;
 		Definition->IdleTimeoutSeconds = IdleTimeoutSeconds;
+		Definition->Functions.AddDefaulted();
 		return Definition;
 	}
 
@@ -195,40 +197,59 @@ bool FCrowdyExecDeployRootCrateTest::RunTest(const FString& Parameters)
 	using namespace CrowdyExecDeployTest;
 	const FBuildCrate Root = CrowdyExecDeploy::MakeRootCrate();
 	TestEqualSensitive(TEXT("the root crate is named root"), Root.Name, FString(CrowdyExecDeploy::RootTypeName));
-	TestEqualSensitive(TEXT("the root crate has a Cargo.toml and a lib.rs"), FilePaths(Root), FString(TEXT("Cargo.toml, src/lib.rs")));
 	const FBuildFile* Lib = FindBuildFile(Root, TEXT("src/lib.rs"));
+	const FBuildFile* Types = FindBuildFile(Root, TypesPath);
+	const FBuildFile* Logic = FindBuildFile(Root, LogicPath);
 	const FBuildFile* Cargo = FindBuildFile(Root, TEXT("Cargo.toml"));
-	if (!TestNotNull(TEXT("the root has a lib.rs"), Lib) || !TestNotNull(TEXT("the root has a Cargo.toml"), Cargo))
+	if (!TestEqual(FString::Printf(TEXT("the root crate is a generated crate (%s)"), *FilePaths(Root)), Root.Files.Num(), 4)
+		|| !TestTrue(TEXT("with a lib.rs, types.rs, logic.rs and Cargo.toml"), Lib && Types && Logic && Cargo))
 	{
 		return false;
 	}
 	for (const TCHAR* Part : {
-		TEXT("use ckx_sdk::prelude::*;\n"),
-		TEXT("#[derive(Serialize, Deserialize, Default)]\npub struct Root {}\n"),
-		TEXT("\nimpl Hub for Root {\n"),
-		TEXT("    fn spawn(_ctx: &Ctx, _seed: &[u8]) -> Result<Self> {\n        Ok(Self::default())\n    }\n"),
-		TEXT("    fn load(_ctx: &Ctx, _snapshot: &[u8], _from_version: u64) -> Result<Self> {\n        Ok(Self::default())\n    }\n"),
-		TEXT("    fn persist(&mut self, _ctx: &Ctx) -> Result<Vec<u8>> {\n        encode(self)\n    }\n"),
-		TEXT("    fn handle(&mut self, _ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n        Err(Error::unknown_method(call.method))\n    }\n}\n"),
-		TEXT("\nckx_sdk::export_hub!(Root);\n")})
+		TEXT("\n    fn on_presence(&mut self, ctx: &Ctx, presence: &Presence) -> Result<()> {\n"),
+		TEXT("        let decoded: Result<SnapshotIn> = decode(snapshot);\n")
+		TEXT("        let Some(saved) = decoded.ok().filter(|saved| saved.contract == CONTRACT) else {\n")
+		TEXT("            return <Self as Hub>::spawn(ctx, &[]);\n")
+		TEXT("        };\n"),
+		TEXT("            \"read\" => {\n"),
+		TEXT("ckx_sdk::export_hub!(ServerObject);")})
 	{
 		TestTrue(FString::Printf(TEXT("the root's lib.rs has: %s"), Part), Lib->Content.Contains(Part, ESearchCase::CaseSensitive));
 	}
-	TestFalse(TEXT("the root's lib.rs has no carriage returns"), Lib->Content.Contains(TEXT("\r")));
+	TestTrue(TEXT("the root runs only under its empty Instance Id"), Lib->Content.Contains(
+		TEXT("        if ctx.key != \"\" {\n            return Err(Error::new(\"denied: the root has only one instance, whose Instance Id is empty\"));\n"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("nor refuses a snapshot an older SDK's root saved"), Lib->Content.Contains(TEXT("the snapshot was written for contract"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("its types.rs holds Players Online"), Types->Content.Contains(TEXT("pub PlayersOnline: i32"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("its logic.rs keeps the count on_presence reports"), Logic->Content.Contains(
+		TEXT("impl Functions for CrowdyPlayersOnlineState {\n")
+		TEXT("    fn on_presence(&mut self, _ctx: &Ctx, presence: &Presence) -> Result<()> {\n")
+		TEXT("        self.PlayersOnline = i32::try_from(presence.count).unwrap_or(i32::MAX);\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("its Cargo.toml names the crate root"), Cargo->Content.Contains(TEXT("name = \"root\"\n"), ESearchCase::CaseSensitive));
+	TestEqualSensitive(TEXT("and carries no definition record"), CrowdyExecCodegen::WithoutCrateDefinition(Cargo->Content), Cargo->Content);
+	for (const FBuildFile& File : Root.Files)
+	{
+		TestFalse(FString::Printf(TEXT("the root's %s has no carriage returns"), *File.Path), File.Content.Contains(TEXT("\r")));
+	}
+	return true;
+}
 
-	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(*this, FixtureType);
-	CrowdyExecCodegen::FGeneratedCrate Generated;
-	if (!Definition || !GenerateCrate(*this, *Definition, Generated))
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployRootDefinitionTest, "CrowdySDK.CrowdyExecEditor.DeployRootDefinitionIsTheSdks", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployRootDefinitionTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const UCrowdyServerObjectDefinition* Root = UCrowdyServerObjectLibrary::GetPlayersOnlineDefinition();
+	if (!TestNotNull(FString::Printf(TEXT("%s loads"), UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath), Root))
 	{
 		return false;
 	}
-	const FString* GeneratedCargo = FindGeneratedText(Generated, TEXT("Cargo.toml"));
-	if (!TestNotNull(TEXT("the generated crate has a Cargo.toml"), GeneratedCargo))
-	{
-		return false;
-	}
-	const FString Renamed = GeneratedCargo->Replace(TEXT("name = \"deploy_fixture\""), TEXT("name = \"root\""), ESearchCase::CaseSensitive);
-	TestEqualSensitive(TEXT("the root's Cargo.toml is a generated one with the root's name"), Cargo->Content, Renamed);
+	TestEqualSensitive(TEXT("its Type Name is root"), Root->TypeName, FString(CrowdyExecDeploy::RootTypeName));
+	TestTrue(TEXT("it has Only One Instance, readable by every player"), Root->bOnlyOneInstance && Root->Visibility == ECrowdyServerObjectVisibility::Public);
+	TestTrue(TEXT("its State Struct is Crowdy Players Online State"), Root->State == FCrowdyPlayersOnlineState::StaticStruct());
+	TestTrue(TEXT("Players Online is its one variable, visible to players"), Root->WatchedFields == TArray<FName>{TEXT("PlayersOnline")});
+	TestEqual(TEXT("it has no functions"), Root->Functions.Num(), 0);
+	TestTrue(TEXT("players can reach it"), Root->IsReachableByPlayers());
+	TestFalse(TEXT("it is not one of the project's types"), CrowdyExecDeploy::FindProjectDefinitions().Contains(Root));
 	return true;
 }
 
@@ -241,8 +262,8 @@ bool FCrowdyExecDeployManifestTest::RunTest(const FString& Parameters)
 	const FString Manifest = CrowdyExecDeploy::MakeManifest({Locker.Get(), Arena.Get()});
 	TestEqualSensitive(TEXT("the manifest is the same each time"), CrowdyExecDeploy::MakeManifest({Locker.Get(), Arena.Get()}), Manifest);
 	TestEqualSensitive(TEXT("the manifest does not depend on the definitions' order"), CrowdyExecDeploy::MakeManifest({Arena.Get(), Locker.Get()}), Manifest);
-	TestTrue(TEXT("the root comes first, before a type whose name sorts earlier"),
-		Manifest.StartsWith(TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"crate\":\"root\",\"client\":false},\"arena\":"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("the root comes first, before a type whose name sorts earlier, open to players for Players Online"),
+		Manifest.StartsWith(TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"crate\":\"root\",\"client\":true},\"arena\":"), ESearchCase::CaseSensitive));
 
 	TSharedPtr<FJsonObject> Parsed;
 	const bool bParsed = FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Manifest), Parsed) && Parsed.IsValid();
@@ -337,6 +358,40 @@ bool FCrowdyExecDeployManifestCallsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployManifestListenToTest, "CrowdySDK.CrowdyExecEditor.DeployManifestListenToJoinsCalls", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployManifestListenToTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Locker = MakeManifestDefinition(TEXT("sbx_locker"), 5, 600);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Arena = MakeManifestDefinition(TEXT("arena"), 30, 300);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Unnamed = MakeManifestDefinition(TEXT(""), 30, 300);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Listener = MakeManifestDefinition(TEXT("watcher"), 10, 60);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Mixed = MakeManifestDefinition(TEXT("mixed"), 10, 60);
+	const FString Plain = CrowdyExecDeploy::MakeManifest({Locker.Get(), Arena.Get(), Listener.Get(), Mixed.Get()});
+
+	for (UCrowdyServerObjectDefinition* Target : {Locker.Get(), static_cast<UCrowdyServerObjectDefinition*>(nullptr), Unnamed.Get(), Arena.Get(), Locker.Get()})
+	{
+		Listener->ListenTo.Add(Target);
+	}
+	Mixed->CanCall.Add(Locker.Get());
+	Mixed->ListenTo.Add(Arena.Get());
+	Mixed->ListenTo.Add(Locker.Get());
+	const FString Manifest = CrowdyExecDeploy::MakeManifest({Locker.Get(), Arena.Get(), Listener.Get(), Mixed.Get()});
+	TestTrue(TEXT("a type that only listens lists the types it listens to as calls, sorted, once each"),
+		Manifest.Contains(TEXT("\"watcher\":{\"kind\":\"hub\",\"parent\":\"root\",\"crate\":\"watcher\",\"client\":true,\"persist_every_ms\":10000,\"evict_after_ms\":60000,\"calls\":[\"arena\",\"sbx_locker\"]}"),
+			ESearchCase::CaseSensitive));
+	TestTrue(TEXT("Can Call and Listen To merge into one list"),
+		Manifest.Contains(TEXT("\"mixed\":{\"kind\":\"hub\",\"parent\":\"root\",\"crate\":\"mixed\",\"client\":true,\"persist_every_ms\":10000,\"evict_after_ms\":60000,\"calls\":[\"arena\",\"sbx_locker\"]}"),
+			ESearchCase::CaseSensitive));
+	TestFalse(TEXT("listening changes the manifest"), Manifest.Equals(Plain, ESearchCase::CaseSensitive));
+
+	Listener->ListenTo.Empty();
+	Mixed->ListenTo.Empty();
+	Mixed->CanCall.Empty();
+	TestEqualSensitive(TEXT("a type that listens to nothing is unchanged"), CrowdyExecDeploy::MakeManifest({Locker.Get(), Arena.Get(), Listener.Get(), Mixed.Get()}), Plain);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployInspectTest, "CrowdySDK.CrowdyExecEditor.DeployInspectType", CrowdyExecDeployTest::TestFlags)
 bool FCrowdyExecDeployInspectTest::RunTest(const FString& Parameters)
 {
@@ -370,6 +425,24 @@ bool FCrowdyExecDeployInspectTest::RunTest(const FString& Parameters)
 	TestState(*this, TEXT("a changed types.rs is out of date"), Edited, ECrateState::OutOfDate);
 	TestTrue(FString::Printf(TEXT("the problem names the file (%s)"), *Edited.Problem), Edited.Problem.Contains(TEXT("types.rs")));
 	TestTrue(FString::Printf(TEXT("the problem says to regenerate (%s)"), *Edited.Problem), Edited.Problem.Contains(TEXT("Generate Server Code")));
+
+	TArray<FString> TypesLines;
+	Types.ParseIntoArray(TypesLines, TEXT("\n"), false);
+	int32 MiddleLine = TypesLines.Num() / 2;
+	while (MiddleLine < TypesLines.Num() && TypesLines[MiddleLine].TrimStartAndEnd().IsEmpty())
+	{
+		++MiddleLine;
+	}
+	if (TestTrue(TEXT("types.rs has a middle line to edit"), TypesLines.IsValidIndex(MiddleLine)))
+	{
+		TypesLines[MiddleLine] = TEXT("// changed in the middle");
+		SaveText(FString::Join(TypesLines, TEXT("\n")), TypesFile);
+		const CrowdyExecDeploy::FTypeState Middle = CrowdyExecDeploy::InspectType(*Definition, Directory);
+		TestState(*this, TEXT("a changed middle line is out of date"), Middle, ECrateState::OutOfDate);
+		TestTrue(FString::Printf(TEXT("the problem names the line (%s)"), *Middle.Problem), Middle.Problem.Contains(FString::Printf(TEXT("line %d:"), MiddleLine + 1)));
+		TestTrue(FString::Printf(TEXT("and the edited text (%s)"), *Middle.Problem), Middle.Problem.Contains(TEXT("// changed in the middle")));
+		TestTrue(FString::Printf(TEXT("and what Generate writes there (%s)"), *Middle.Problem), Middle.Problem.Contains(TEXT("Generate writes \"")));
+	}
 	SaveText(Types + TEXT("\n\n  \t\n"), TypesFile);
 	TestState(*this, TEXT("blank lines and spaces at the end of types.rs keep it up to date"), CrowdyExecDeploy::InspectType(*Definition, Directory), ECrateState::UpToDate);
 	SaveText(Types.TrimEnd(), TypesFile);
@@ -539,8 +612,13 @@ bool FCrowdyExecDeployAssembleTest::RunTest(const FString& Parameters)
 		Twice.Problems.ContainsByPredicate([](const FString& Problem) { return Problem.StartsWith(TEXT("Two Server Object types are named deploy_fixture"), ESearchCase::CaseSensitive); }));
 
 	const CrowdyExecDeploy::FProjectDeploy Empty = CrowdyExecDeploy::AssembleProject({}, DirectoryFor);
-	TestEqualSensitive(TEXT("a project with no types cannot deploy"), FString::Join(Empty.Problems, TEXT(" | ")), FString(TEXT("The project has no Server Object types")));
-	TestEqual(TEXT("a project with no types sends nothing"), Empty.Crates.Num(), 0);
+	TestEqualSensitive(TEXT("a project with no types has no problems"), FString::Join(Empty.Problems, TEXT(" | ")), FString());
+	if (TestEqual(TEXT("a project with no types sends the root alone"), Empty.Crates.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("the one crate is the root"), Empty.Crates[0].Name, FString(CrowdyExecDeploy::RootTypeName));
+	}
+	TestEqualSensitive(TEXT("and its manifest names only the root"), Empty.ManifestJson,
+		FString(TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"crate\":\"root\",\"client\":true}}}")));
 	return true;
 }
 
@@ -768,6 +846,191 @@ bool FCrowdyExecDeployAssembleGuardsTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("a file past the source limit is named before it is read (%s)"), *FString::Join(Oversized.Problems, TEXT(" | "))),
 		Oversized.Problems.ContainsByPredicate([](const FString& Problem) { return Problem.Contains(TEXT("big.rs")) && Problem.Contains(TEXT("2 MB")); }));
 	TestEqual(TEXT("a type with a file past the limit sends no crate"), Oversized.Crates.Num(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployClampLimitTest, "CrowdySDK.CrowdyExecEditor.DeployClampLimit", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployClampLimitTest::RunTest(const FString& Parameters)
+{
+	struct FCase
+	{
+		const TCHAR* Field;
+		int64 Below;
+		int64 Min;
+		int64 InRange;
+		int64 Max;
+		int64 Above;
+	};
+	const FCase Cases[] = {
+		{TEXT("memory_mb"), 0, 1, 64, 512, 4096},
+		{TEXT("fuel_per_call"), 999999, 1000000, 50000000, 1000000000, 2000000000},
+		{TEXT("mailbox"), 0, 1, 1024, 4096, 5000},
+		{TEXT("deadline_ms"), 9, 10, 2000, 10000, 20000},
+	};
+	for (const FCase& Case : Cases)
+	{
+		TestEqual(FString::Printf(TEXT("%s below its range is brought up to the smallest"), Case.Field), CrowdyExecDeploy::ClampLimit(Case.Field, Case.Below), Case.Min);
+		TestEqual(FString::Printf(TEXT("%s at the smallest is kept"), Case.Field), CrowdyExecDeploy::ClampLimit(Case.Field, Case.Min), Case.Min);
+		TestEqual(FString::Printf(TEXT("%s in range is kept"), Case.Field), CrowdyExecDeploy::ClampLimit(Case.Field, Case.InRange), Case.InRange);
+		TestEqual(FString::Printf(TEXT("%s at the largest is kept"), Case.Field), CrowdyExecDeploy::ClampLimit(Case.Field, Case.Max), Case.Max);
+		TestEqual(FString::Printf(TEXT("%s above its range is brought down to the largest"), Case.Field), CrowdyExecDeploy::ClampLimit(Case.Field, Case.Above), Case.Max);
+	}
+	TestEqual(TEXT("a negative value is brought up too"), CrowdyExecDeploy::ClampLimit(TEXT("memory_mb"), -5), static_cast<int64>(1));
+	TestEqual(TEXT("a field the platform does not limit is returned as given"), CrowdyExecDeploy::ClampLimit(TEXT("unknown"), 123456789012), static_cast<int64>(123456789012));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployPlayersReadReasonTest, "CrowdySDK.CrowdyExecEditor.DeployPlayersReadRequiredBecause", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployPlayersReadReasonTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	auto CheckScope = [this](const TCHAR* What, const UCrowdyServerObjectDefinition& Definition)
+	{
+		const bool bHasScope = CrowdyExecDeploy::ScopesOf(Definition).Contains(TEXT("players.read"));
+		TestTrue(FString::Printf(TEXT("%s: players.read is listed exactly when it is forced or asked for"), What),
+			bHasScope == (!CrowdyExecDeploy::PlayersReadRequiredBecause(Definition).IsEmpty() || Definition.bReadsPlayers));
+	};
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Bare = MakeManifestDefinition(TEXT("t"), 30, 300);
+	TestTrue(TEXT("a bare definition forces nothing"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Bare).IsEmpty());
+	CheckScope(TEXT("bare"), *Bare);
+	Bare->bReadsPlayers = true;
+	TestTrue(TEXT("Reads Players is not a forced reason"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Bare).IsEmpty());
+	CheckScope(TEXT("Reads Players"), *Bare);
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Team = MakeManifestDefinition(TEXT("t"), 30, 300);
+	Team->MembersFrom = ECrowdyServerMembersSource::CrowdyTeam;
+	TestTrue(TEXT("Crowdy Team members force it"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Team).Contains(TEXT("Crowdy Team"), ESearchCase::CaseSensitive));
+	CheckScope(TEXT("members"), *Team);
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Records = MakeManifestDefinition(TEXT("t"), 30, 300);
+	Records->Holds = ECrowdyServerObjectHolds::RecordPerEntity;
+	TestTrue(TEXT("records on this object's own teams force nothing"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Records).IsEmpty());
+	Records->TeamFrom = ECrowdyServerTeamSource::CrowdyTeam;
+	TestTrue(TEXT("records on Crowdy Teams force it"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Records).Contains(TEXT("records"), ESearchCase::CaseSensitive));
+	CheckScope(TEXT("records"), *Records);
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Gated = MakeManifestDefinition(TEXT("t"), 30, 300);
+	Gated->Functions.Reset();
+	FCrowdyServerFunction& Unlock = Gated->Functions.AddDefaulted_GetRef();
+	Unlock.Name = TEXT("Unlock");
+	Unlock.RequiredFeature = TEXT("vip");
+	FCrowdyServerFunction& Open = Gated->Functions.AddDefaulted_GetRef();
+	Open.Name = TEXT("Open");
+	Open.RequiredFeature = TEXT("vip");
+	Gated->Functions.AddDefaulted_GetRef().Name = TEXT("Plain");
+	TestEqualSensitive(TEXT("a Required Feature names the functions that set it"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Gated), FString(TEXT("Required Feature is set on Unlock, Open")));
+	CheckScope(TEXT("Required Feature"), *Gated);
+	Gated->Functions[1].WhoCanCall = ECrowdyServerFunctionCaller::DevelopersOnly;
+	TestEqualSensitive(TEXT("a function no player may call checks no feature, so it forces nothing"), CrowdyExecDeploy::PlayersReadRequiredBecause(*Gated), FString(TEXT("Required Feature is set on Unlock")));
+	Gated->Functions[1].WhoCanCall = ECrowdyServerFunctionCaller::Players;
+
+	Gated->MembersFrom = ECrowdyServerMembersSource::CrowdyTeam;
+	const FString Both = CrowdyExecDeploy::PlayersReadRequiredBecause(*Gated);
+	TestTrue(FString::Printf(TEXT("two causes are both given (%s)"), *Both),
+		Both.Contains(TEXT("Members From is Crowdy Team"), ESearchCase::CaseSensitive) && Both.Contains(TEXT("Required Feature is set on Unlock, Open"), ESearchCase::CaseSensitive));
+	CheckScope(TEXT("two causes"), *Gated);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployCallerWarningsTest, "CrowdySDK.CrowdyExecEditor.DeployCallerWarnings", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployCallerWarningsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeManifestDefinition(TEXT("t"), 30, 300);
+	Definition->Functions.Reset();
+	FCrowdyServerFunction& Boost = Definition->Functions.AddDefaulted_GetRef();
+	Boost.Name = TEXT("Boost");
+	TestEqual(TEXT("a function players call has no warning"), CrowdyExecDeploy::FindCallerWarnings(*Definition).Num(), 0);
+
+	Boost.WhoCanCall = ECrowdyServerFunctionCaller::DevelopersOnly;
+	Boost.CooldownSeconds = 0.f;
+	TestEqual(TEXT("Developers Only with no Cooldown has no warning"), CrowdyExecDeploy::FindCallerWarnings(*Definition).Num(), 0);
+	Boost.CooldownSeconds = 5.f;
+	const TArray<FString> Cooldown = CrowdyExecDeploy::FindCallerWarnings(*Definition);
+	if (TestEqual(TEXT("Developers Only with a Cooldown is one warning"), Cooldown.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("naming the type, the function and the setting"), Cooldown[0], FString(TEXT("t Boost: Cooldown has no effect, since only players' calls are limited.")));
+	}
+	Boost.WhoCanCall = ECrowdyServerFunctionCaller::Players;
+	TestEqual(TEXT("a Cooldown on a function players call has no warning"), CrowdyExecDeploy::FindCallerWarnings(*Definition).Num(), 0);
+
+	Boost.CooldownSeconds = 0.f;
+	Boost.WhoCanCall = ECrowdyServerFunctionCaller::ServerOnly;
+	Boost.RequiredFeature = TEXT("vip");
+	const TArray<FString> Feature = CrowdyExecDeploy::FindCallerWarnings(*Definition);
+	if (TestEqual(TEXT("Server Only with a Required Feature is one warning"), Feature.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("naming the type, the function and the setting"), Feature[0], FString(TEXT("t Boost: Required Feature has no effect, since only players are checked.")));
+	}
+	Boost.WhoCanCall = ECrowdyServerFunctionCaller::Players;
+	TestEqual(TEXT("a Required Feature on a function players call has no warning"), CrowdyExecDeploy::FindCallerWarnings(*Definition).Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployManifestLibraryTest, "CrowdySDK.CrowdyExecEditor.DeployManifestLibraryIsASpoke", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployManifestLibraryTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeManifestDefinition(TEXT("math_lib"), 5, 7);
+	Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	Library->MembersFrom = ECrowdyServerMembersSource::CrowdyTeam;
+	const FString Fixed = CrowdyExecDeploy::MakeManifest({Library.Get()});
+	TestTrue(TEXT("a library is a spoke with its replicas and concurrency and no save interval, idle timeout or max_replicas"), Fixed.Contains(
+		TEXT("\"math_lib\":{\"kind\":\"spoke\",\"parent\":\"root\",\"crate\":\"math_lib\",\"client\":true,\"replicas\":1,\"concurrency\":16}}}"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("what a Server Object keeps is ignored, so Crowdy Team members ask for no scope"), Fixed.Contains(TEXT("scopes"), ESearchCase::CaseSensitive));
+
+	Library->MinInstances = 2;
+	Library->MaxInstances = 2;
+	Library->ParallelCallsPerInstance = 4;
+	TestTrue(TEXT("max_replicas equal to replicas is left out"), CrowdyExecDeploy::MakeManifest({Library.Get()}).Contains(
+		TEXT("\"client\":true,\"replicas\":2,\"concurrency\":4}}}"), ESearchCase::CaseSensitive));
+
+	Library->MaxInstances = 6;
+	TestTrue(TEXT("max_replicas above replicas is listed after the concurrency"), CrowdyExecDeploy::MakeManifest({Library.Get()}).Contains(
+		TEXT("\"client\":true,\"replicas\":2,\"concurrency\":4,\"max_replicas\":6}}}"), ESearchCase::CaseSensitive));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeManifestDefinition(TEXT("plain"), 30, 300);
+	Hub->MinInstances = 3;
+	Hub->MaxInstances = 9;
+	TestTrue(TEXT("a Server Object never gets the scaling fields"), CrowdyExecDeploy::MakeManifest({Hub.Get()}).Contains(
+		TEXT("\"plain\":{\"kind\":\"hub\",\"parent\":\"root\",\"crate\":\"plain\",\"client\":true,\"persist_every_ms\":30000,\"evict_after_ms\":300000}}}"), ESearchCase::CaseSensitive));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployManifestCallAnyTest, "CrowdySDK.CrowdyExecEditor.DeployManifestCanCallAnyType", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployManifestCallAnyTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Other = MakeManifestDefinition(TEXT("other"), 30, 300);
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Caller = MakeManifestDefinition(TEXT("caller"), 30, 300);
+	Caller->CanCall.Add(Other.Get());
+	Caller->bCanCallAnyType = true;
+	TestTrue(TEXT("a type that can call any type lists a star in place of the names"), CrowdyExecDeploy::MakeManifest({Caller.Get()}).Contains(
+		TEXT("\"evict_after_ms\":300000,\"calls\":[\"*\"]}}}"), ESearchCase::CaseSensitive));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeManifestDefinition(TEXT("any_lib"), 30, 300);
+	Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	Library->bCanCallAnyType = true;
+	TestTrue(TEXT("so does a library"), CrowdyExecDeploy::MakeManifest({Library.Get()}).Contains(TEXT("\"concurrency\":16,\"calls\":[\"*\"]}}}"), ESearchCase::CaseSensitive));
+
+	Caller->bCanCallAnyType = false;
+	TestTrue(TEXT("without the setting the names are listed"), CrowdyExecDeploy::MakeManifest({Caller.Get()}).Contains(TEXT("\"calls\":[\"other\"]"), ESearchCase::CaseSensitive));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployInspectLibraryTest, "CrowdySDK.CrowdyExecEditor.DeployInspectLibraryIgnoresSaveSettings", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployInspectLibraryTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeManifestDefinition(TEXT("save_free"), 1, 5000);
+	Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	const CrowdyExecDeploy::FTypeState Library1 = CrowdyExecDeploy::InspectType(*Library, FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("CrowdyExecDeployTests"), TEXT("no_such_crate")));
+	TestFalse(TEXT("a library's Save Every and Stop When Idle For are not checked"), Library1.Problem.Contains(TEXT("Save Interval")) || Library1.Problem.Contains(TEXT("Idle Timeout")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeManifestDefinition(TEXT("save_bound"), 1, 5000);
+	const CrowdyExecDeploy::FTypeState HubState = CrowdyExecDeploy::InspectType(*Hub, FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("CrowdyExecDeployTests"), TEXT("no_such_crate")));
+	TestTrue(TEXT("a Server Object's are"), HubState.Problem.Contains(TEXT("Save Interval must be 5 to 60 seconds")));
 	return true;
 }
 

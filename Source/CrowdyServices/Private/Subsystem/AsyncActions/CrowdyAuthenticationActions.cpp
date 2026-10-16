@@ -41,14 +41,14 @@ void UCrowdyAuth_Login::Activate()
 
 void UCrowdyAuth_Login::HandleSuccess(FCrowdyAuthResult Result)
 {
-	OnSuccess.Broadcast(Result);
+	OnSuccess.Broadcast(Result, FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyAuth_Login::HandleError(FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] Login failed: %s"), *Message);
-	OnError.Broadcast(Message);
+	OnError.Broadcast(FCrowdyAuthResult(), Message);
 	SetReadyToDestroy();
 }
 
@@ -82,14 +82,14 @@ void UCrowdyAuth_Register::Activate()
 
 void UCrowdyAuth_Register::HandleSuccess(FCrowdyAuthResult Result)
 {
-	OnSuccess.Broadcast(Result);
+	OnSuccess.Broadcast(Result, FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyAuth_Register::HandleError(FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] Register failed: %s"), *Message);
-	OnError.Broadcast(Message);
+	OnError.Broadcast(FCrowdyAuthResult(), Message);
 	SetReadyToDestroy();
 }
 
@@ -123,14 +123,14 @@ void UCrowdyAuth_RestoreSession::Activate()
 
 void UCrowdyAuth_RestoreSession::HandleSuccess(FCrowdyAuthResult Result)
 {
-	OnSuccess.Broadcast(Result);
+	OnSuccess.Broadcast(Result, FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyAuth_RestoreSession::HandleError(FString Message)
 {
 	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log, TEXT("[CrowdyAuth] Session restore: %s"), *Message);
-	OnError.Broadcast(Message);
+	OnError.Broadcast(FCrowdyAuthResult(), Message);
 	SetReadyToDestroy();
 }
 
@@ -161,14 +161,14 @@ void UCrowdyAuth_BeginMagicLinkSignIn::Activate()
 
 void UCrowdyAuth_BeginMagicLinkSignIn::HandleSuccess(FCrowdyAuthResult Result)
 {
-	OnSuccess.Broadcast(Result);
+	OnSuccess.Broadcast(Result, FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyAuth_BeginMagicLinkSignIn::HandleError(FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] Magic-link sign-in failed: %s"), *Message);
-	OnError.Broadcast(Message);
+	OnError.Broadcast(FCrowdyAuthResult(), Message);
 	SetReadyToDestroy();
 }
 
@@ -199,14 +199,14 @@ void UCrowdyAuth_BeginSocialSignIn::Activate()
 
 void UCrowdyAuth_BeginSocialSignIn::HandleSuccess(FCrowdyAuthResult Result)
 {
-	OnSuccess.Broadcast(Result);
+	OnSuccess.Broadcast(Result, FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyAuth_BeginSocialSignIn::HandleError(FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] Social sign-in failed: %s"), *Message);
-	OnError.Broadcast(Message);
+	OnError.Broadcast(FCrowdyAuthResult(), Message);
 	SetReadyToDestroy();
 }
 
@@ -239,7 +239,7 @@ void UCrowdyAuth_RecordPlayerConsents::Activate()
 
 void UCrowdyAuth_RecordPlayerConsents::HandleSuccess()
 {
-	OnSuccess.Broadcast();
+	OnSuccess.Broadcast(FString());
 	SetReadyToDestroy();
 }
 

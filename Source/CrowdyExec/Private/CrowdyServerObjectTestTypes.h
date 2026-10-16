@@ -35,6 +35,19 @@ struct FCrowdyServerObjectTestAttackReply
 	bool bKilled = false;
 };
 
+/** What the test boss's Server Messages carry: as a struct, and as the List of the same two values. */
+USTRUCT()
+struct FCrowdyServerObjectTestMessagePayload
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 Amount = 0;
+
+	UPROPERTY()
+	FString Source;
+};
+
 /** A row of a record's grid. */
 USTRUCT()
 struct FCrowdyServerObjectTestRecordRow
@@ -409,11 +422,18 @@ public:
 		}
 	}
 
+	/** Runs after HandleStatus records the status. */
+	TFunction<void()> OnStatus;
+
 	UFUNCTION()
 	void HandleStatus(UCrowdyServerObject* Object, ECrowdyServerObjectStatus NewStatus)
 	{
 		StatusEvents.Add(NewStatus);
 		StatusHadObject.Add(Object != nullptr);
+		if (OnStatus)
+		{
+			OnStatus();
+		}
 	}
 
 	UFUNCTION()
@@ -429,5 +449,54 @@ public:
 		FailedOutcomes.Add(Outcome);
 		FailedReasons.Add(Reason);
 		FailedRetryable.Add(bRetryable);
+	}
+
+	TArray<FInstancedStruct> MessagePayloads;
+	TArray<FInstancedStruct> SecondMessagePayloads;
+	TArray<FName> EventMessages;
+	TArray<FInstancedStruct> EventPayloads;
+
+	/** A function a Server Message node's event stands in for: the payload is its one parameter. */
+	UFUNCTION()
+	void HandleMessagePayload(const FInstancedStruct& Payload)
+	{
+		MessagePayloads.Add(Payload);
+		if (OnMessage)
+		{
+			OnMessage();
+		}
+	}
+
+	/** Runs after HandleMessagePayload records the payload, as more of a handler's graph would. */
+	TFunction<void()> OnMessage;
+
+	UFUNCTION()
+	void HandleMessagePayloadSecond(const FInstancedStruct& Payload)
+	{
+		SecondMessagePayloads.Add(Payload);
+	}
+
+	/** The Blueprint event Watch Message takes. */
+	UFUNCTION()
+	void HandleMessageEvent(UCrowdyServerObject* Object, FName Message, const FInstancedStruct& Payload)
+	{
+		EventMessages.Add(Message);
+		EventPayloads.Add(Payload);
+	}
+};
+
+/** Records each time the game session announces that the player's access ended. */
+UCLASS(Transient)
+class UCrowdyServerObjectTestAccessSpy : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	TArray<FString> Reasons;
+
+	UFUNCTION()
+	void HandleAccessEnded(const FString& Reason, const FString& BlockedUntil)
+	{
+		Reasons.Add(Reason);
 	}
 };

@@ -34,6 +34,7 @@ public class CrowdyExecEditor : ModuleRules
 			"HTTP",
 			"InputCore",
 			"Json",
+			"JsonUtilities",
 			"MainFrame",
 			"StructUtilsEditor",
 			"KismetWidgets"

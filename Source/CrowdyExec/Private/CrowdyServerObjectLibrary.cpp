@@ -307,6 +307,7 @@ namespace CrowdyServerObjectLibraryDetail
 		FCrowdyServerVariableBindings* Bindings = nullptr;
 		UObject* Owner = nullptr;
 		const FString* RecordId = nullptr;
+		FCrowdyServerMessageBindings* Messages = nullptr;
 	};
 
 	UCrowdyServerObjectComponent* FindOnlyComponent(AActor* Actor, const UCrowdyServerObjectDefinition* Definition)
@@ -333,11 +334,11 @@ namespace CrowdyServerObjectLibraryDetail
 		auto Fits = [Definition](const UCrowdyServerObjectDefinition* Held) { return !Definition || Held == Definition; };
 		if (UCrowdyServerObject* Object = Cast<UCrowdyServerObject>(Mutable))
 		{
-			return Fits(Object->GetDefinition()) ? FHolder{Object, &Object->GetVariableBindings(), Object} : FHolder();
+			return Fits(Object->GetDefinition()) ? FHolder{Object, &Object->GetVariableBindings(), Object, nullptr, &Object->GetMessageBindings()} : FHolder();
 		}
 		if (UCrowdyServerObjectLink* Link = Cast<UCrowdyServerObjectLink>(Mutable))
 		{
-			return Fits(Link->GetDefinition()) ? FHolder{Link->GetServerObject(), &Link->GetVariableBindings(), Link} : FHolder();
+			return Fits(Link->GetDefinition()) ? FHolder{Link->GetServerObject(), &Link->GetVariableBindings(), Link, nullptr, &Link->GetMessageBindings()} : FHolder();
 		}
 		UCrowdyServerObjectComponent* Component = Cast<UCrowdyServerObjectComponent>(Mutable);
 		if (AActor* Actor = Cast<AActor>(Mutable))
@@ -348,7 +349,8 @@ namespace CrowdyServerObjectLibraryDetail
 		{
 			return FHolder();
 		}
-		return FHolder{Component->GetServerObject(), &Component->GetVariableBindings(), Component, Component->ReadsRecord() ? &Component->GetRecordId() : nullptr};
+		return FHolder{Component->GetServerObject(), &Component->GetVariableBindings(), Component, Component->ReadsRecord() ? &Component->GetRecordId() : nullptr,
+			&Component->GetMessageBindings()};
 	}
 
 	UCrowdyServerObjectSubsystem* FindSubsystem(const FHolder& Holder)
@@ -371,6 +373,42 @@ namespace CrowdyServerObjectLibraryDetail
 		}
 		Warned.Add(Name);
 		UE_LOG(LogCrowdyExec, Warning, TEXT("%s's value does not fit a %s pin, so it reads as the pin's default"), *Name.ToString(), *DestProperty->GetCPPType());
+	}
+
+	/** Calls Function on the library Definition names and runs OnDone exactly once: refused before sending, or with the answer. */
+	template <typename TInputs>
+	void CallLibrary(UObject* WorldContextObject, UCrowdyServerObjectDefinition* Definition, FName Function, const TInputs& Inputs,
+		TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
+	{
+		if (!OnDone)
+		{
+			OnDone = [](const FCrowdyServerCallResult&) {};
+		}
+		auto Refuse = [&OnDone](ECrowdyServerCallOutcome Outcome, const FString& Reason)
+		{
+			FCrowdyServerCallResult Result;
+			Result.Outcome = Outcome;
+			Result.Reason = Reason;
+			OnDone(Result);
+		};
+		if (!Definition || !Definition->IsFunctionLibrary())
+		{
+			Refuse(ECrowdyServerCallOutcome::BadRequest, FString::Printf(TEXT("%s is not a Server Function Library"), Definition ? *Definition->GetName() : TEXT("None")));
+			return;
+		}
+		if (!Definition->FindFunction(Function))
+		{
+			Refuse(ECrowdyServerCallOutcome::BadRequest, FString::Printf(TEXT("%s has no function named %s"), *Definition->TypeName, *Function.ToString()));
+			return;
+		}
+		const UGameInstance* GameInstance = FindGameInstance(WorldContextObject);
+		UCrowdyServerObjectSubsystem* Subsystem = GameInstance ? GameInstance->GetSubsystem<UCrowdyServerObjectSubsystem>() : nullptr;
+		if (!Subsystem)
+		{
+			Refuse(ECrowdyServerCallOutcome::Unavailable, TEXT("Calling a Server Function Library needs a world with a game instance"));
+			return;
+		}
+		Subsystem->CallLibraryFunction(Definition, Function, Inputs, MoveTemp(OnDone), TimeoutSeconds);
 	}
 }
 
@@ -400,12 +438,70 @@ void UCrowdyServerObjectLibrary::ReleaseServerObject(UCrowdyServerObject* Object
 	Subsystem->Release(Object, Owner);
 }
 
+void UCrowdyServerObjectLibrary::CallLibraryFunction(UObject* WorldContextObject, UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedStruct& Inputs,
+	TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
+{
+	CrowdyServerObjectLibraryDetail::CallLibrary(WorldContextObject, Definition, Function, Inputs, MoveTemp(OnDone), TimeoutSeconds);
+}
+
+void UCrowdyServerObjectLibrary::CallLibraryFunction(UObject* WorldContextObject, UCrowdyServerObjectDefinition* Definition, FName Function, const FInstancedPropertyBag& Inputs,
+	TFunction<void(const FCrowdyServerCallResult&)> OnDone, float TimeoutSeconds)
+{
+	CrowdyServerObjectLibraryDetail::CallLibrary(WorldContextObject, Definition, Function, Inputs, MoveTemp(OnDone), TimeoutSeconds);
+}
+
 FString UCrowdyServerObjectLibrary::GetPlayerInstanceId(UObject* WorldContextObject)
 {
 	const UGameInstance* GameInstance = CrowdyServerObjectLibraryDetail::FindGameInstance(WorldContextObject);
 	const UCrowdyGameSession* Session = GameInstance ? GameInstance->GetSubsystem<UCrowdyGameSession>() : nullptr;
 	const int64 UserId = Session ? Session->GetUserID() : 0;
 	return UserId > 0 ? LexToString(UserId) : FString();
+}
+
+const TCHAR* const UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath = TEXT("/CrowdySDK/Data/CSO_PlayersOnline.CSO_PlayersOnline");
+
+bool UCrowdyServerObjectLibrary::GetPlayersOnline(UObject* Owner, int32& PlayersOnline)
+{
+	PlayersOnline = 0;
+	UCrowdyServerObjectDefinition* Definition = GetPlayersOnlineDefinition();
+	UCrowdyServerObjectLink* Link = Definition ? FindServerObjectLink(Owner, Definition, ECrowdyServerObjectFind::InstanceId, FString(), 0) : nullptr;
+	if (!Link)
+	{
+		return false;
+	}
+	Link->KeepWhileOwnerLives();
+	static const FProperty* const Count = FCrowdyPlayersOnlineState::StaticStruct()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FCrowdyPlayersOnlineState, PlayersOnline));
+	if (ReadServerVariableInto(Link, Definition, Count->GetFName(), Count, &PlayersOnline))
+	{
+		return true;
+	}
+	// An app with no root, or one an older SDK deployed, refuses every read, which would otherwise read as 0 with no word why.
+	const UCrowdyServerObject* Root = Link->GetServerObject();
+	const FString Reason = Root ? Root->GetFailureReason() : FString();
+	UCrowdyServerObjectSubsystem* Subsystem = Root ? Cast<UCrowdyServerObjectSubsystem>(Root->GetOuter()) : nullptr;
+	if (Subsystem && !Reason.IsEmpty() && Subsystem->NotePlayersOnlineReason(Reason))
+	{
+		const bool bAdvised = Reason.Contains(TEXT("Server Compute"), ESearchCase::CaseSensitive);
+		UE_LOG(LogCrowdyExec, Warning, TEXT("Get Players Online has no count yet: %s%s"), *Reason,
+			bAdvised ? TEXT("") : TEXT(". An app last deployed with an older Crowdy SDK keeps none; deploy it from Server Compute."));
+	}
+	return false;
+}
+
+UCrowdyServerObjectDefinition* UCrowdyServerObjectLibrary::GetPlayersOnlineDefinition()
+{
+	// Loaded once and kept, so a missing asset is reported once and a held one is never loaded again mid-game.
+	static UCrowdyServerObjectDefinition* const Loaded = []()
+	{
+		UCrowdyServerObjectDefinition* Definition = LoadObject<UCrowdyServerObjectDefinition>(nullptr, PlayersOnlineDefinitionPath);
+		UE_CLOG(!Definition, LogCrowdyExec, Error, TEXT("%s did not load, so there is no Players Online; it ships in the Crowdy SDK's content, which every cook includes."), PlayersOnlineDefinitionPath);
+		if (Definition)
+		{
+			Definition->AddToRoot();
+		}
+		return Definition;
+	}();
+	return Loaded;
 }
 
 const FProperty* UCrowdyServerObjectLibrary::FindServerValue(const FInstancedStruct& Values, FName Name)
@@ -511,6 +607,34 @@ void UCrowdyServerObjectLibrary::UnbindServerVariableChanged(UObject* Target, UC
 	if (Holder.Bindings)
 	{
 		Holder.Bindings->Unbind(Variable, Handler, HandlerFunction);
+	}
+}
+
+void UCrowdyServerObjectLibrary::BindServerMessage(UObject* Target, UCrowdyServerObjectDefinition* Definition, FName Message, UObject* Handler, FName HandlerFunction)
+{
+	const CrowdyServerObjectLibraryDetail::FHolder Holder = CrowdyServerObjectLibraryDetail::FindHolder(Target, Definition);
+	if (!Holder.Messages)
+	{
+		UE_LOG(LogCrowdyExec, Warning, TEXT("%s is not a Server Object of %s, a Crowdy Server Object component with it, an actor with one, or a Server Object Link, so its %s messages are not heard"),
+			*GetNameSafe(Target), *GetNameSafe(Definition), *Message.ToString());
+		return;
+	}
+	UCrowdyServerObjectSubsystem* Subsystem = Handler ? CrowdyServerObjectLibraryDetail::FindSubsystem(Holder) : nullptr;
+	UObject* Previous = Subsystem ? Subsystem->MoveBinding(Handler, HandlerFunction, Holder.Owner) : nullptr;
+	const CrowdyServerObjectLibraryDetail::FHolder Old = CrowdyServerObjectLibraryDetail::FindHolder(Previous, nullptr);
+	if (Old.Messages && Old.Owner != Holder.Owner)
+	{
+		Old.Messages->UnbindHandler(Handler, HandlerFunction);
+	}
+	Holder.Messages->Bind(Message, Handler, HandlerFunction);
+}
+
+void UCrowdyServerObjectLibrary::UnbindServerMessage(UObject* Target, UCrowdyServerObjectDefinition* Definition, FName Message, UObject* Handler, FName HandlerFunction)
+{
+	const CrowdyServerObjectLibraryDetail::FHolder Holder = CrowdyServerObjectLibraryDetail::FindHolder(Target, Definition);
+	if (Holder.Messages)
+	{
+		Holder.Messages->Unbind(Message, Handler, HandlerFunction);
 	}
 }
 
@@ -645,26 +769,27 @@ FString UCrowdyServerObjectLibrary::NoteInputError(const FString& Errors, bool b
 	return Errors.IsEmpty() ? Sentence : Errors + TEXT(" ") + Sentence;
 }
 
-UCrowdyServerCallAction* UCrowdyServerCallAction::CallServerFunction(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs)
+UCrowdyServerCallAction* UCrowdyServerCallAction::CallServerFunction(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs, float Timeout)
 {
 	UCrowdyServerCallAction* Action = NewObject<UCrowdyServerCallAction>();
-	Action->Setup(WorldContextObject, Object, Function, Inputs, FString());
+	Action->Setup(WorldContextObject, Object, Function, Inputs, FString(), Timeout);
 	return Action;
 }
 
-UCrowdyServerCallAction* UCrowdyServerTypedCallAction::CallServerFunctionWithInputs(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs, const FString& InputError)
+UCrowdyServerCallAction* UCrowdyServerTypedCallAction::CallServerFunctionWithInputs(UObject* WorldContextObject, UCrowdyServerObject* Object, FName Function, const FInstancedStruct& Inputs, const FString& InputError, float Timeout)
 {
 	UCrowdyServerTypedCallAction* Action = NewObject<UCrowdyServerTypedCallAction>();
-	Action->Setup(WorldContextObject, Object, Function, Inputs, InputError);
+	Action->Setup(WorldContextObject, Object, Function, Inputs, InputError, Timeout);
 	return Action;
 }
 
-void UCrowdyServerCallAction::Setup(UObject* WorldContextObject, UCrowdyServerObject* InObject, FName InFunction, const FInstancedStruct& InInputs, const FString& InInputError)
+void UCrowdyServerCallAction::Setup(UObject* WorldContextObject, UCrowdyServerObject* InObject, FName InFunction, const FInstancedStruct& InInputs, const FString& InInputError, float InTimeout)
 {
 	CalledObject = InObject;
 	CalledFunction = InFunction;
 	CalledInputs = InInputs;
 	RefusedInputs = InInputError;
+	CalledTimeout = InTimeout;
 	RegisterWithGameInstance(WorldContextObject);
 }
 
@@ -684,7 +809,7 @@ void UCrowdyServerCallAction::Activate()
 		{
 			This->Finish(Result);
 		}
-	});
+	}, CalledTimeout);
 }
 
 void UCrowdyServerCallAction::Finish(const FCrowdyServerCallResult& Result)
@@ -696,6 +821,52 @@ void UCrowdyServerCallAction::Finish(const FCrowdyServerCallResult& Result)
 	else
 	{
 		OnFailed.Broadcast(Result.Reply, Result.Outcome, Result.Reason, Result.bRetryable);
+	}
+	SetReadyToDestroy();
+}
+
+UCrowdyServerPingAction* UCrowdyServerPingAction::PingServerObjects(UObject* WorldContextObject)
+{
+	UCrowdyServerPingAction* Action = NewObject<UCrowdyServerPingAction>();
+	const UGameInstance* GameInstance = CrowdyServerObjectLibraryDetail::FindGameInstance(WorldContextObject);
+	Action->PingSubsystem = GameInstance ? GameInstance->GetSubsystem<UCrowdyServerObjectSubsystem>() : nullptr;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdyServerPingAction::SetSubsystemForTest(UCrowdyServerObjectSubsystem* Subsystem)
+{
+	PingSubsystem = Subsystem;
+}
+#endif
+
+void UCrowdyServerPingAction::Activate()
+{
+	UCrowdyServerObjectSubsystem* Subsystem = PingSubsystem.Get();
+	if (!Subsystem)
+	{
+		Finish(false, 0.f, TEXT("Ping Server Objects needs a world with a game instance"));
+		return;
+	}
+	Subsystem->Ping([WeakThis = TWeakObjectPtr<UCrowdyServerPingAction>(this)](bool bOk, float RoundTripMs, const FString& Reason)
+	{
+		if (UCrowdyServerPingAction* This = WeakThis.Get())
+		{
+			This->Finish(bOk, RoundTripMs, Reason);
+		}
+	});
+}
+
+void UCrowdyServerPingAction::Finish(bool bOk, float RoundTripMs, const FString& Reason)
+{
+	if (bOk)
+	{
+		OnSuccess.Broadcast(RoundTripMs, FString());
+	}
+	else
+	{
+		OnFailed.Broadcast(0.f, Reason);
 	}
 	SetReadyToDestroy();
 }

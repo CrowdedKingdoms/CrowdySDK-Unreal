@@ -21,3 +21,11 @@ inline UCrowdyTeams* GetTeamsSubsystem(const TWeakObjectPtr<UObject>& Ctx)
 	UGameInstance* GI = Ctx->GetWorld() ? Ctx->GetWorld()->GetGameInstance() : nullptr;
 	return GI ? GI->GetSubsystem<UCrowdyTeams>() : nullptr;
 }
+
+template <typename SubsystemType>
+SubsystemType* GetServiceSubsystem(const TWeakObjectPtr<UObject>& Ctx)
+{
+	if (!Ctx.IsValid()) return nullptr;
+	UGameInstance* GI = Ctx->GetWorld() ? Ctx->GetWorld()->GetGameInstance() : nullptr;
+	return GI ? GI->GetSubsystem<SubsystemType>() : nullptr;
+}

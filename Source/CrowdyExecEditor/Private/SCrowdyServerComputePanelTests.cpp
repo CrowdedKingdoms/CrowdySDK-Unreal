@@ -2,6 +2,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "CrowdyServerComputeService.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
@@ -87,6 +88,24 @@ bool FCrowdyServerComputeBadgeTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerComputeRefreshTest, "CrowdySDK.CrowdyExecEditor.ServerComputeRefillsRowsOnlyWhenTheDataMoved", CrowdyServerComputePageTest::TestFlags)
+bool FCrowdyServerComputeRefreshTest::RunTest(const FString& Parameters)
+{
+	using CrowdyServerComputePage::ChooseServiceRefresh;
+	using CrowdyServerComputePage::EServiceRefresh;
+	TestTrue(TEXT("deploy progress with the rows filled from the current data keeps them, so an open menu stays open"),
+		ChooseServiceRefresh(true, false, 7, 7) == EServiceRefresh::KeepRows);
+	TestTrue(TEXT("data newer than the rows refills them"), ChooseServiceRefresh(true, false, 8, 7) == EServiceRefresh::RefillRows);
+	TestTrue(TEXT("a generation that wrapped past the rows' refills them"), ChooseServiceRefresh(true, false, 0, MAX_uint32) == EServiceRefresh::RefillRows);
+	for (const bool bSameData : {true, false})
+	{
+		const uint32 Filled = bSameData ? 7 : 6;
+		TestTrue(TEXT("a new client rebuilds the page"), ChooseServiceRefresh(true, true, 7, Filled) == EServiceRefresh::RebuildPage);
+		TestTrue(TEXT("a page not built yet is built"), ChooseServiceRefresh(false, false, 7, Filled) == EServiceRefresh::RebuildPage);
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerComputeRemoveFolderTest, "CrowdySDK.CrowdyExecEditor.ServerComputeRemoveKeepsOtherFolders", CrowdyServerComputePageTest::TestFlags)
 bool FCrowdyServerComputeRemoveFolderTest::RunTest(const FString& Parameters)
 {
@@ -140,6 +159,50 @@ bool FCrowdyServerComputeRemoveFolderTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerComputeMoveOfferTest, "CrowdySDK.CrowdyExecEditor.ServerComputeMoveOfferNamesInstancesPlacedBeforeTheDeploy", CrowdyServerComputePageTest::TestFlags)
+bool FCrowdyServerComputeMoveOfferTest::RunTest(const FString& Parameters)
+{
+	using CrowdyExecDeveloper::FInstance;
+	const auto Make = [](const TCHAR* NodeType, const TCHAR* Key, int64 Epoch, const TCHAR* Phase)
+	{
+		FInstance Instance;
+		Instance.NodeType = NodeType;
+		Instance.Key = Key;
+		Instance.Epoch = Epoch;
+		Instance.Phase = Phase;
+		return Instance;
+	};
+	const TArray<FInstance> Before = {Make(TEXT("sbx_a"), TEXT("k1"), 3, TEXT("running")), Make(TEXT("sbx_a"), TEXT("k2"), 5, TEXT("running")),
+		Make(TEXT("sbx_b"), TEXT("k1"), 2, TEXT("running")), Make(TEXT("sbx_c"), TEXT("k1"), 1, TEXT("running"))};
+	const TArray<FString> Changed = {TEXT("sbx_a"), TEXT("sbx_c")};
+
+	int32 Running = -1;
+	TArray<FString> Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_a"), TEXT("k1"), 3, TEXT("running"))}, Changed, Running);
+	TestEqualSensitive(TEXT("an instance with the same epoch as before the deploy runs the previous version"), FString::Join(Types, TEXT(",")), FString(TEXT("sbx_a")));
+	TestEqual(TEXT("and is counted"), Running, 1);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_a"), TEXT("k1"), 4, TEXT("running"))}, Changed, Running);
+	TestTrue(TEXT("an instance placed again has a higher epoch and runs the new version"), Types.IsEmpty() && Running == 0);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_a"), TEXT("k9"), 1, TEXT("running"))}, Changed, Running);
+	TestTrue(TEXT("an instance that was not there before the deploy is not offered"), Types.IsEmpty() && Running == 0);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_b"), TEXT("k1"), 2, TEXT("running"))}, Changed, Running);
+	TestTrue(TEXT("a type the deploy did not change is not offered"), Types.IsEmpty() && Running == 0);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_a"), TEXT("k1"), 3, TEXT("stopping"))}, Changed, Running);
+	TestTrue(TEXT("an instance that is not running is not offered"), Types.IsEmpty() && Running == 0);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Make(TEXT("sbx_a"), TEXT("k1"), 3, TEXT("running")), Make(TEXT("sbx_a"), TEXT("k2"), 5, TEXT("running")),
+		Make(TEXT("sbx_c"), TEXT("k1"), 1, TEXT("running")), Make(TEXT("sbx_a"), TEXT("k3"), 6, TEXT("running"))}, Changed, Running);
+	TestEqualSensitive(TEXT("each type is named once, in the order its instances are listed"), FString::Join(Types, TEXT(",")), FString(TEXT("sbx_a,sbx_c")));
+	TestEqual(TEXT("and every instance still on the previous version is counted"), Running, 3);
+
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion({}, Before, Changed, Running);
+	TestTrue(TEXT("with nothing known from before, nothing is offered"), Types.IsEmpty() && Running == 0);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerComputeReadableByTest, "CrowdySDK.CrowdyExecEditor.ServerComputeReadableByPhrase", CrowdyServerComputePageTest::TestFlags)
 bool FCrowdyServerComputeReadableByTest::RunTest(const FString& Parameters)
 {
@@ -150,6 +213,17 @@ bool FCrowdyServerComputeReadableByTest::RunTest(const FString& Parameters)
 		ReadableByPhrase(ECrowdyServerObjectVisibility::OwnerOnly).ToString().Equals(TEXT("only its owner can read it"), ESearchCase::CaseSensitive));
 	TestTrue(TEXT("Members is readable by its members, not by every player"),
 		ReadableByPhrase(ECrowdyServerObjectVisibility::Members).ToString().Equals(TEXT("readable by its members"), ESearchCase::CaseSensitive));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerComputeInstancesPhraseTest, "CrowdySDK.CrowdyExecEditor.ServerComputeLibraryInstancesPhrase", CrowdyServerComputePageTest::TestFlags)
+bool FCrowdyServerComputeInstancesPhraseTest::RunTest(const FString& Parameters)
+{
+	using CrowdyServerComputePage::InstancesPhrase;
+	TestEqualSensitive(TEXT("a range of instances"), InstancesPhrase(1, 4).ToString(), FString(TEXT("1 to 4 instances")));
+	TestEqualSensitive(TEXT("equal bounds name one count"), InstancesPhrase(4, 4).ToString(), FString(TEXT("4 instances")));
+	TestEqualSensitive(TEXT("a single instance is singular"), InstancesPhrase(1, 1).ToString(), FString(TEXT("1 instance")));
+	TestEqualSensitive(TEXT("a Max below Min reads as the Min"), InstancesPhrase(3, 2).ToString(), FString(TEXT("3 instances")));
 	return true;
 }
 

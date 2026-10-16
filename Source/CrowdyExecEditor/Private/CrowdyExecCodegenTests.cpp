@@ -973,6 +973,17 @@ bool FCrowdyExecCodegenWhoCanCallTest::RunTest(const FString& Parameters)
 	const FString ServerOnlyLib = GetFileText(*this, ServerOnlyHit, LibPath);
 	TestTrue(TEXT("switching a function to Server only refuses players"), HasText(ServerOnlyLib, HitRefused));
 	TestFalse(TEXT("a Server only function no longer lets players in"), HasText(ServerOnlyLib, HitAllowed));
+
+	Definition->Functions[0].WhoCanCall = ECrowdyServerFunctionCaller::DevelopersOnly;
+	CrowdyExecCodegen::FGeneratedCrate DevelopersOnlyHit;
+	if (!GenerateCrate(*this, *Definition, DevelopersOnlyHit))
+	{
+		return false;
+	}
+	const FString DevelopersLib = GetFileText(*this, DevelopersOnlyHit, LibPath);
+	TestTrue(TEXT("a Developers only function lets in developer tools alone"), HasText(DevelopersLib,
+		TEXT("            \"hit\" => {\n                call.developer().map_err(|_| Error::new(\"denied: only developer tools may call this function\"))?;\n")));
+	TestFalse(TEXT("and no longer runs the player check"), HasText(DevelopersLib, HitAllowed) || HasText(DevelopersLib, HitRefused));
 	return true;
 }
 
@@ -1064,7 +1075,7 @@ bool FCrowdyExecCodegenRulesCrateTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a roster change alone is pushed"), HasText(Lib, TEXT("if changed.is_empty() && roster.is_empty() {")));
 	TestTrue(TEXT("on_session has the platform's signature"), HasText(Lib, TEXT("fn on_session(&mut self, ctx: &Ctx, player: u64, session: ckx_sdk::Session) -> Result<()> {")));
 	TestTrue(TEXT("a member who leaves is removed, for good, before On Player Left"),
-		HasText(Lib, TEXT("members::remove(player);\n                self.finish(ctx, before, Ok(()))?;\n                // The removal stands even when on_player_left fails.\n")));
+		HasText(Lib, TEXT("members::remove(player);\n        self.finish(ctx, before, Ok(()))?;\n        // The removal stands even when on_player_left fails.\n")));
 	TestTrue(TEXT("sessions are saved"), HasText(Lib, TEXT("    sessions: &'a BTreeMap<u64, u32>,\n")));
 	TestTrue(TEXT("older snapshots load without sessions"), HasText(Lib, TEXT("    #[serde(default)]\n    sessions: BTreeMap<u64, u32>,\n")));
 	TestTrue(TEXT("sessions are capped"), HasText(Lib, TEXT("if connections == 0 && self.sessions.len() >= MAX_SESSION_PLAYERS {")));
@@ -1185,7 +1196,7 @@ bool FCrowdyExecCodegenMembersOptionsTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TestTrue(TEXT("Remove Members Who Leave alone counts sessions"), HasText(MembersOnly, TEXT("fn on_session(")));
-	TestTrue(TEXT("Remove Members Who Leave removes the leaver"), HasText(MembersOnly, TEXT("members::remove(player);\n                self.finish(ctx, before, Ok(()))\n")));
+	TestTrue(TEXT("Remove Members Who Leave removes the leaver"), HasText(MembersOnly, TEXT("members::remove(player);\n        self.finish(ctx, before, Ok(()))\n")));
 	TestTrue(TEXT("Readable By Members hides the fields from non-members"), HasText(MembersOnly, TEXT("self.read_reply(member, member, leader)")));
 	TestTrue(TEXT("Readable By Members pushes carry only epoch and seq"), HasText(MembersOnly, TEXT("        let mut out = Vec::new();\n        write_map(&mut out, 2);\n")));
 	TestFalse(TEXT("Readable By Members pushes carry no member keys"), HasText(MembersOnly, TEXT("for (name, bytes) in &roster {")));
@@ -1317,8 +1328,12 @@ bool FCrowdyExecCodegenTimersArmFirstTest::RunTest(const FString& Parameters)
 		HasText(Timed, TEXT("            for armed in &starts[..index] {\n                ctx.cancel_timer(armed);\n            }\n")));
 	TestTrue(TEXT("and refuses the dispatch naming the timer and the reason"),
 		HasText(Timed, TEXT("return Err(Error::new(&format!(\"the change was not kept: timer {name} could not start: {error}\")));")));
-	const FString LoadWarning = TEXT("let _ = ctx.log(Level::Warn, &format!(\"timer {name} could not be armed after a deploy changed it: {error}\"));");
+	const FString LoadWarning = TEXT("let _ = ctx.log(Level::Warn, &format!(\"timer {name} keeps any old schedule: the changed one could not be armed: {error}\"));");
 	TestTrue(TEXT("a load that cannot arm a changed timer logs it"), HasText(Timed, *LoadWarning));
+	TestTrue(TEXT("a load asks which timers are pending and never cancels one to re-arm it"),
+		HasText(Timed, TEXT("        let pending: BTreeSet<String> = ctx.timers().into_iter().map(|(name, _)| name).collect();\n"))
+		&& HasText(Timed, TEXT("                Some(old) => old.as_str() != kind && pending.contains(name),\n                None => pending.contains(name) || automatic,\n"))
+		&& !HasText(Timed, TEXT("&& ctx.cancel_timer(name)")) && !HasText(Timed, TEXT("ctx.cancel_timer(name) || automatic")));
 	TestFalse(TEXT("a timer that cannot start is not only logged"), HasText(Timed.Replace(*LoadWarning, TEXT("")), TEXT("Level::Warn")));
 	TestTrue(TEXT("the last start or stop queued for a timer counts"), HasText(Timed, TEXT("            last.retain(|(earlier, _)| *earlier != name);\n            last.push((name, start));\n")));
 	TestTrue(TEXT("a timer that cannot start is in the finish comment"), HasText(Timed, TEXT("a timer that cannot start leaves the state as it was")));
@@ -1698,6 +1713,401 @@ bool FCrowdyExecCodegenRecordsCrowdyTeamCrateTest::RunTest(const FString& Parame
 	TestFalse(TEXT("not the team of a record the viewer owns here"), HasText(Lib, TEXT("owned_by(player).next()")));
 	TestTrue(TEXT("watched numbers alone cannot be refused, so a touched record is not encoded again"),
 		HasText(Lib, TEXT("    fn check_touched(&self) -> Result<()> {\n            Ok(())\n        }\n")) && !HasText(Lib, TEXT("read_record(&mut scratch")));
+	return true;
+}
+
+namespace CrowdyCodegenTest
+{
+	FCrowdyServerMessage& AddServerMessage(UCrowdyServerObjectDefinition& Definition, const TCHAR* Name)
+	{
+		FCrowdyServerMessage& Message = Definition.Messages.AddDefaulted_GetRef();
+		Message.Name = Name;
+		return Message;
+	}
+
+	/** ck_exec_messages: Defeat sends a message with a struct, one with a List and one with no payload. Null when a test struct is missing. */
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeMessagesDefinition(FAutomationTestBase& Test)
+	{
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Sender = MakeListDefinition(TEXT("ck_exec_messages"), {TEXT("Gold")});
+		Sender->WatchedFields = {TEXT("Gold")};
+		FCrowdyServerFunction& Defeat = AddPlainFunction(*Sender, TEXT("Defeat"), Players);
+		Defeat.ParamsForm = ECrowdyServerValuesForm::List;
+		AddListValue(Defeat.ParamsList, FPropertyBagPropertyDesc(TEXT("Amount"), EPropertyBagPropertyType::Int32));
+		bool bFound = true;
+		AddServerMessage(*Sender, TEXT("BossDefeated")).Payload = FindTestStruct(Test, TEXT("CrowdyExecTestHit"), bFound);
+		FCrowdyServerMessage& Score = AddServerMessage(*Sender, TEXT("ScoreChanged"));
+		Score.PayloadForm = ECrowdyServerValuesForm::List;
+		AddListValue(Score.PayloadList, FPropertyBagPropertyDesc(TEXT("Total"), EPropertyBagPropertyType::Int32));
+		AddServerMessage(*Sender, TEXT("RoundEnded"));
+		// Topics that spell the glue's own constants must not break it.
+		AddServerMessage(*Sender, TEXT("MaxMessage"));
+		AddServerMessage(*Sender, TEXT("MaxMessageElements"));
+		return bFound ? Sender : TStrongObjectPtr<UCrowdyServerObjectDefinition>();
+	}
+
+	/** ck_exec_messages_listener: Follow and Unfollow, listening to the sender. */
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeListenerDefinition(UCrowdyServerObjectDefinition& Sender)
+	{
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Listener = MakeListDefinition(TEXT("ck_exec_messages_listener"), {TEXT("Gold")});
+		Listener->WatchedFields = {TEXT("Gold")};
+		AddPlainFunction(*Listener, TEXT("Follow"), Players);
+		AddPlainFunction(*Listener, TEXT("Unfollow"), Players);
+		Listener->ListenTo = {&Sender};
+		return Listener;
+	}
+
+	/** A type with a message of each name and no payload, to be listened to. */
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeSenderOf(const TCHAR* TypeName, const TArray<const TCHAR*>& Messages)
+	{
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Sender = MakeListDefinition(TypeName, {TEXT("Gold")});
+		for (const TCHAR* Message : Messages)
+		{
+			AddServerMessage(*Sender, Message);
+		}
+		return Sender;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMessagesCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenMessagesMatchLocalCheckCrate", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenMessagesCrateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Sender = MakeMessagesDefinition(*this);
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!Sender || !GenerateCrate(*this, *Sender, Crate))
+	{
+		return false;
+	}
+	CheckLocalCheckCrate(*this, Crate, TEXT("ck_exec_messages"));
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	const FString Types = GetFileText(*this, Crate, TypesPath);
+	const FString Logic = GetFileText(*this, Crate, LogicPath);
+	CrowdyExecCodegen::FGeneratedCrate Again;
+	if (GenerateCrate(*this, *Sender, Again))
+	{
+		TestEqualSensitive(TEXT("the same definition gives the same glue"), GetFileText(*this, Again, LibPath), Lib);
+	}
+	TestTrue(TEXT("a message's topic is its name in snake case, a constant of the messages module"),
+		HasText(Lib, TEXT("    pub const BOSS_DEFEATED: &str = \"boss_defeated\";\n    pub const SCORE_CHANGED: &str = \"score_changed\";\n    pub const ROUND_ENDED: &str = \"round_ended\";\n    pub const MAX_MESSAGE: &str = \"max_message\";\n    pub const MAX_MESSAGE_ELEMENTS: &str = \"max_message_elements\";\n")));
+	TestTrue(TEXT("a topic named like a glue constant leaves the glue's limits reached through super"),
+		HasText(Lib, TEXT("        if payload.elements() > super::MAX_MESSAGE_ELEMENTS {\n")) && HasText(Lib, TEXT("        if bytes.len() > super::MAX_MESSAGE {\n")));	TestTrue(TEXT("a struct message sends its struct"),
+		HasText(Lib, TEXT("    pub fn send_boss_defeated(payload: &CrowdyExecTestHit) -> Result<()> {\n        send(BOSS_DEFEATED, payload)\n    }\n")));
+	TestTrue(TEXT("a List message sends the struct named after it"),
+		HasText(Lib, TEXT("    pub fn send_score_changed(payload: &ScoreChangedMessage) -> Result<()> {\n        send(SCORE_CHANGED, payload)\n    }\n")));
+	TestTrue(TEXT("and the struct is written with its value's id"),
+		HasText(Types, *FString::Printf(TEXT("pub struct ScoreChangedMessage {\n    pub Total: i32, // Int32 id=%s\n}"), *ValueIdText(TEXT("Total")))));
+	TestTrue(TEXT("a message with no payload takes none and publishes nil"),
+		HasText(Lib, TEXT("    pub fn send_round_ended() -> Result<()> {\n        queue(ROUND_ENDED, vec![0xc0])\n    }\n")));
+	TestTrue(TEXT("a payload is checked as a reply is, before it is queued"),
+		HasText(Lib, TEXT("        Wire::check(payload).map_err(|why| unsendable(&what, why))?;\n        if payload.elements() > super::MAX_MESSAGE_ELEMENTS {\n"))
+		&& HasText(Lib, TEXT("        if bytes.len() > super::MAX_MESSAGE {\n            return Err(unsendable(&what, \"it is larger than 1 MiB\"));\n        }\n        queue(topic, bytes)\n")));
+	TestTrue(TEXT("a send outside a handler is refused"), HasText(Lib, TEXT("Error::new(\"a message can only be sent from a handler\")")));
+	TestTrue(TEXT("a function's sends wait for its dispatch"), HasText(Lib, TEXT("                messages::open();\n                let before = Clone::clone(&self.state);\n                let result = Functions::defeat(")));
+	TestEqual(TEXT("so do the event hooks'"), CountText(Lib, TEXT("messages::open();")), 4);
+	TestTrue(TEXT("finish takes them before anything can fail"), HasText(Lib, TEXT("-> Result<T> {\n        let sent = messages::close();\n        // Everything that can fail runs before the change is kept and pushed.\n")));
+	TestTrue(TEXT("and publishes them after the state, once the change is kept"),
+		HasText(Lib, TEXT("            let _ = ctx.publish(\"state\", &out);\n        }\n        messages::release(ctx, &sent);\n        Ok(value)\n")));
+	TestEqual(TEXT("a failed handler's sends are released nowhere"), CountText(Lib, TEXT("messages::release(ctx")), 1);
+	TestTrue(TEXT("sends are published in the order they were made"), HasText(Lib, TEXT("        for (topic, payload) in sent {\n            let _ = ctx.publish(topic, payload);\n        }\n")));
+	TestTrue(TEXT("each payload struct is checked as a reply's is"), HasText(Lib, TEXT("impl Wire for ScoreChangedMessage {\n")) && HasText(Lib, TEXT("impl Wire for CrowdyExecTestHit {\n")));
+	TestFalse(TEXT("a type with messages and no listening has no listen module"), HasText(Lib, TEXT("pub mod listen")));
+	TestEqual(TEXT("the stub asks for the function only"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Missing.Num(), 0);
+	TestEqual(TEXT("and has no leftover"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Leftover.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenNoMessagesTest, "CrowdySDK.CrowdyExecEditor.CodegenWithoutMessagesHasNoMessageGlue", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenNoMessagesTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(*this, {HealFunction});
+	FString Lib;
+	if (!Definition || !GenerateLib(*this, *Definition, Lib))
+	{
+		return false;
+	}
+	for (const TCHAR* Part : {TEXT("pub mod messages"), TEXT("messages::"), TEXT("pub mod listen"), TEXT("listen::"), TEXT("match (msg.node_type")})
+	{
+		TestFalse(FString::Printf(TEXT("a type with no messages and no Listen To has no '%s'"), Part), HasText(Lib, Part));
+	}
+	TestTrue(TEXT("on_topic goes to server code as before"), HasText(Lib, TEXT("        let before = Clone::clone(&self.state);\n        let result = Functions::on_topic(&mut self.state, ctx, msg);\n")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenListenCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenListenMatchesLocalCheckCrate", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenListenCrateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Sender = MakeMessagesDefinition(*this);
+	if (!Sender || !BakeDefinition(*this, *Sender))
+	{
+		return false;
+	}
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Listener = MakeListenerDefinition(*Sender);
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Listener, Crate))
+	{
+		return false;
+	}
+	CheckLocalCheckCrate(*this, Crate, TEXT("ck_exec_messages_listener"));
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	const FString Logic = GetFileText(*this, Crate, LogicPath);
+	TestTrue(TEXT("each message of the listened type has a typed handler taking the sender's key and its payload"),
+		HasText(Lib, TEXT("    fn on_ck_exec_messages_boss_defeated(&mut self, ctx: &Ctx, key: &str, payload: calls::ck_exec_messages::CrowdyExecTestHit) -> Result<()>;\n"))
+		&& HasText(Lib, TEXT("    fn on_ck_exec_messages_score_changed(&mut self, ctx: &Ctx, key: &str, payload: calls::ck_exec_messages::ScoreChangedMessage) -> Result<()>;\n")));
+	TestTrue(TEXT("one with no payload takes none"), HasText(Lib, TEXT("    fn on_ck_exec_messages_round_ended(&mut self, ctx: &Ctx, key: &str) -> Result<()>;\n")));
+	TestTrue(TEXT("a listened type is also callable, and its payload types are in its calls module"),
+		HasText(Lib, TEXT("pub mod calls {\n    pub mod ck_exec_messages {\n")) && HasText(Lib, TEXT("        pub struct ScoreChangedMessage {\n")));
+	TestTrue(TEXT("a listen queues a subscription of the type, the key given and the topic"),
+		HasText(Lib, TEXT("        pub fn boss_defeated(ctx: &Ctx, key: &str) -> Result<()> {\n            super::queue(true, \"ck_exec_messages\", key, \"boss_defeated\")\n")));
+	TestTrue(TEXT("and its stop queues the unsubscription"),
+		HasText(Lib, TEXT("        pub fn stop_boss_defeated(ctx: &Ctx, key: &str) -> Result<()> {\n            super::queue(false, \"ck_exec_messages\", key, \"boss_defeated\")\n")));
+	TestTrue(TEXT("a listen outside a handler is refused"), HasText(Lib, TEXT("Error::new(\"listening can only be started or stopped from a handler\")")));
+	TestTrue(TEXT("a refused change names the type, the topic and the platform's reason"), HasText(Lib, TEXT("\"could not {verb} {node_type}.{topic}: {error}\"")));
+	TestTrue(TEXT("every dispatch opens the queue of listens with its snapshot"),
+		HasText(Lib, TEXT("                listen::open();\n                let before = Clone::clone(&self.state);\n                let result = Functions::follow(")));
+	TestTrue(TEXT("finish takes them with its other queues"), HasText(Lib, TEXT("-> Result<T> {\n        let listens = listen::close();\n        // Everything that can fail runs before the change is kept and pushed.\n")));
+	TestTrue(TEXT("and applies them after the push is prepared, so a refused one fails the handler and rolls it back"),
+		HasText(Lib, TEXT("            let push = self.prepare_push(&before)?;\n            listen::apply(ctx, &listens)?;\n            Ok((value, push))\n")));
+	TestTrue(TEXT("a refused change undoes the ones applied before it, last first"),
+		HasText(Lib, TEXT("            undo(ctx, &changes[..index]);\n")) && HasText(Lib, TEXT("        for change in applied.iter().rev() {\n")));
+	TestEqual(TEXT("no subscription is made anywhere else"), CountText(Lib, TEXT("ctx.subscribe(")), 2);
+	TestTrue(TEXT("on_topic matches the type and the topic and decodes the payload"),
+		HasText(Lib, TEXT("            (\"ck_exec_messages\", \"boss_defeated\") => listen::decode_message(&msg).and_then(|payload| Functions::on_ck_exec_messages_boss_defeated(&mut self.state, ctx, msg.key, payload)),\n")));
+	TestTrue(TEXT("a message with no payload is not decoded"),
+		HasText(Lib, TEXT("            (\"ck_exec_messages\", \"round_ended\") => Functions::on_ck_exec_messages_round_ended(&mut self.state, ctx, msg.key),\n")));
+	TestTrue(TEXT("anything else still reaches on_topic, inside the same keep and finish"),
+		HasText(Lib, TEXT("            _ => Functions::on_topic(&mut self.state, ctx, msg),\n        };\n        self.finish(ctx, before, result)\n")));
+	TestTrue(TEXT("a payload that does not decode is an error naming the message"), HasText(Lib, TEXT("Error::new(&format!(\"bad_message: {}.{}: {}\", msg.node_type, msg.topic,")));
+	TestFalse(TEXT("a listener that sends nothing has no messages module"), HasText(Lib, TEXT("pub mod messages")));
+	TestTrue(TEXT("logic.rs gets the handlers, which succeed until written"), HasText(Logic, TEXT("    fn on_ck_exec_messages_round_ended(&mut self, ctx: &Ctx, key: &str) -> Result<()> {\n        Ok(())\n    }\n")));
+
+	const CrowdyExecCodegen::FLogicGaps Gaps = CrowdyExecCodegen::FindLogicGaps(Crate, TEXT("impl Functions for CkExecMessagesListenerState {\n}\n"));
+	TestEqual(TEXT("a logic file without them is told it lacks the two functions and the five handlers"), Gaps.Missing.Num(), 7);
+	TestTrue(TEXT("including the typed handlers"), Gaps.Missing.ContainsByPredicate([](const CrowdyExecCodegen::FLogicStub& Stub) { return Stub.Method == TEXT("on_ck_exec_messages_boss_defeated"); }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenListenCallsTest, "CrowdySDK.CrowdyExecEditor.CodegenListenToJoinsCanCall", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenListenCallsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Sender = MakeMessagesDefinition(*this);
+	if (!Sender || !BakeDefinition(*this, *Sender))
+	{
+		return false;
+	}
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Listener = MakeListenerDefinition(*Sender);
+	Listener->CanCall = {Sender.Get()};
+	Listener->ListenTo.Add(Sender.Get());
+	FString Lib;
+	if (!GenerateLib(*this, *Listener, Lib))
+	{
+		return false;
+	}
+	TestEqual(TEXT("a type both called and listened to has one calls module"), CountText(Lib, TEXT("pub mod calls {\n    pub mod ck_exec_messages {\n")), 1);
+	TestEqual(TEXT("and one listen module"), CountText(Lib, TEXT("pub mod listen {\n")), 1);
+	TestEqual(TEXT("whose handlers are asked for once"), CountText(Lib, TEXT("fn on_ck_exec_messages_round_ended(")), 1);
+	TestEqual(TEXT("and whose functions can be called"), CountText(Lib, TEXT("pub fn defeat(ctx: &Ctx, key: &str, inputs: &DefeatParams)")), 1);
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Bank = MakeBankDefinition();
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Quiet = MakeListenerDefinition(*Bank);
+	if (!BakeDefinition(*this, *Bank))
+	{
+		return false;
+	}
+	FString QuietLib;
+	if (!GenerateLib(*this, *Quiet, QuietLib))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a listened type with no messages is only callable"), HasText(QuietLib, TEXT("pub mod calls {\n    pub mod ck_exec_bank {\n")));
+	TestFalse(TEXT("and adds no listen module"), HasText(QuietLib, TEXT("pub mod listen")));
+	TestFalse(TEXT("nor a match in on_topic"), HasText(QuietLib, TEXT("match (msg.node_type")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenListenRefusalsTest, "CrowdySDK.CrowdyExecEditor.CodegenListenRefusesNamesThatClash", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenListenRefusalsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Sender = MakeMessagesDefinition(*this);
+	if (!Sender || !BakeDefinition(*this, *Sender))
+	{
+		return false;
+	}
+	FString Error;
+	CrowdyExecCodegen::FGeneratedCrate Refused;
+
+	// Each change below follows a good bake, so the generator's own refusal is what is seen.
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Empty = MakeListenerDefinition(*Sender);
+	if (!BakeDefinition(*this, *Empty))
+	{
+		return false;
+	}
+	Empty->ListenTo.Add(nullptr);
+	TestFalse(TEXT("an empty Listen To entry does not generate"), CrowdyExecCodegen::Generate(*Empty, Refused, Error));
+	TestEqualSensitive(TEXT("and the refusal says so"), Error, FString(TEXT("Listen To: every entry must be another Server Object definition with a Type Name")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Stale = MakeMessagesDefinition(*this);
+	if (!Stale || !BakeDefinition(*this, *Stale))
+	{
+		return false;
+	}
+	bool bFound = true;
+	Stale->Messages[0].Payload = FindTestStruct(*this, TEXT("CrowdyExecTestRaw"), bFound);
+	TestFalse(TEXT("a payload struct the field tables lack does not generate, rather than publishing nil"), CrowdyExecCodegen::Generate(*Stale, Refused, Error));
+	TestEqualSensitive(TEXT("and the refusal says to save again"), Error, FString(TEXT("Server Message BossDefeated: its struct is missing from the field tables; save the definition again")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Function = MakeListenerDefinition(*Sender);
+	AddPlainFunction(*Function, TEXT("OnCkExecMessagesRoundEnded"), Players);
+	TestTrue(TEXT("the function bakes"), BakeDefinition(*this, *Function));
+	TestFalse(TEXT("a function named like a handler does not generate"), CrowdyExecCodegen::Generate(*Function, Refused, Error));
+	TestTrue(TEXT("and the refusal names the handler"), Error.Contains(TEXT("on_ck_exec_messages_round_ended")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Timer = MakeListenerDefinition(*Sender);
+	AddTimer(*Timer, TEXT("OnCkExecMessagesRoundEnded"), ECrowdyServerTimerRepeat::Every, 1.f, false);
+	TestTrue(TEXT("the timer bakes"), BakeDefinition(*this, *Timer));
+	TestFalse(TEXT("a timer named like a handler does not generate"), CrowdyExecCodegen::Generate(*Timer, Refused, Error));
+	TestTrue(TEXT("and the refusal names the handler"), Error.Contains(TEXT("on_ck_exec_messages_round_ended")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Player = MakeSenderOf(TEXT("player"), {TEXT("Joined")});
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hook = MakeListenerDefinition(*Player);
+	TestTrue(TEXT("both bake"), BakeDefinition(*this, *Player) && BakeDefinition(*this, *Hook));
+	TestFalse(TEXT("a handler named like the player-joined event does not generate"), CrowdyExecCodegen::Generate(*Hook, Refused, Error));
+	TestTrue(TEXT("and the refusal names it"), Error.Contains(TEXT("on_player_joined")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Stops = MakeSenderOf(TEXT("ck_exec_stops"), {TEXT("Boss"), TEXT("StopBoss")});
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Clash = MakeListenerDefinition(*Stops);
+	TestTrue(TEXT("both bake"), BakeDefinition(*this, *Stops) && BakeDefinition(*this, *Clash));
+	TestFalse(TEXT("a message whose topic is another's with stop_ in front does not generate"), CrowdyExecCodegen::Generate(*Clash, Refused, Error));
+	TestTrue(TEXT("and the refusal names the topic"), Error.Contains(TEXT("'boss'")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenRecordsMessagesTest, "CrowdySDK.CrowdyExecEditor.CodegenRecordsSendMessages", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenRecordsMessagesTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Records = MakeRecordsDefinition();
+	AddServerMessage(*Records, TEXT("Respawned"));
+	FString Lib;
+	if (!GenerateLib(*this, *Records, Lib))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a record type has the messages module"), HasText(Lib, TEXT("pub mod messages {\n")) && HasText(Lib, TEXT("    pub const RESPAWNED: &str = \"respawned\";\n")));
+	TestTrue(TEXT("its dispatches queue sends"), HasText(Lib, TEXT("                messages::open();\n")));
+	TestTrue(TEXT("finish takes them before anything can fail"), HasText(Lib, TEXT("            let sent = messages::close();\n            // Everything that can fail runs before the change is kept.\n")));
+	TestTrue(TEXT("and publishes them once the records are kept, saying they can arrive before the records' send"),
+		HasText(Lib, TEXT("            self.records.flush_pending |= armed;\n            // The records go out with the next send, so a message sent now can arrive before the change it follows.\n            messages::release(ctx, &sent);\n")));
+	TestEqual(TEXT("and nowhere else"), CountText(Lib, TEXT("messages::release(ctx")), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenSessionsExpireTest, "CrowdySDK.CrowdyExecEditor.CodegenSessionsExpireAfterARestart", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenSessionsExpireTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeDefinition(*this, {HitFunction, HealFunction});
+	if (!Definition)
+	{
+		return false;
+	}
+	Definition->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	Definition->bRemoveMembersWhoLeave = true;
+	Definition->bOnPlayerLeft = true;
+	FString Lib;
+	if (!GenerateLib(*this, *Definition, Lib))
+	{
+		return false;
+	}
+	TestTrue(TEXT("restored counts are held apart, and not saved"),
+		HasText(Lib, TEXT("    sessions: BTreeMap<u64, u32>,\n    // The players whose restored connection count nothing has confirmed yet; not saved.\n    unconfirmed: BTreeSet<u64>,\n")));
+	TestEqual(TEXT("only the object holds the set"), CountText(Lib, TEXT("unconfirmed: BTreeSet<u64>,")), 1);
+	TestTrue(TEXT("a spawn restores nothing"), HasText(Lib, TEXT("sessions: BTreeMap::new(), unconfirmed: BTreeSet::new(), announced: false })")));
+	TestTrue(TEXT("a load holds every restored player as unconfirmed"), HasText(Lib, TEXT("unconfirmed: saved.sessions.keys().copied().collect(), sessions: saved.sessions, announced: false })")));
+	TestTrue(TEXT("the timer is reserved and the wait is two minutes"),
+		HasText(Lib, TEXT("const SESSIONS_TIMER: &str = \"crowdy_sessions\";\nconst SESSION_CONFIRM_MS: u64 = 120_000;\n")));
+	TestTrue(TEXT("the announcement is a flag the object keeps, not saved"),
+		HasText(Lib, TEXT("    unconfirmed: BTreeSet<u64>,\n    // Whether the new epoch has been announced to watchers; not saved.\n    announced: bool,\n"))
+		&& HasText(Lib, TEXT("unconfirmed: BTreeSet::new(), announced: false })")) && HasText(Lib, TEXT("sessions: saved.sessions, announced: false })")));
+	TestTrue(TEXT("a load with restored counts arms the first run, which announces the epoch"),
+		HasText(Lib, TEXT("        if !saved.sessions.is_empty() {\n            if let Err(error) = ctx.timer_after(SESSIONS_TIMER, SESSION_ANNOUNCE_MS) {\n")));
+	TestTrue(TEXT("the first run publishes an empty push of the next seq and arms the second"),
+		HasText(Lib, TEXT("        if !self.announced {\n            self.announced = true;\n            self.seq += 1;\n"))
+		&& HasText(Lib, TEXT("            write_uint(&mut out, self.seq);\n            let _ = ctx.publish(\"state\", &out);\n            if let Err(error) = ctx.timer_after(SESSIONS_TIMER, SESSION_CONFIRM_MS) {\n")));
+	TestTrue(TEXT("on_timer runs it before the definition's timers, with or without any"),
+		HasText(Lib, TEXT("    fn on_timer(&mut self, ctx: &Ctx, name: &str) -> Result<()> {\n        if name == SESSIONS_TIMER {\n            return self.sessions_timer(ctx);\n        }\n")));
+	TestTrue(TEXT("any call from a player confirms the restored count"),
+		HasText(Lib, TEXT("    fn handle(&mut self, ctx: &Ctx, call: Call<'_>) -> Result<Vec<u8>> {\n        if let Ok(player) = call.player() {\n            self.unconfirmed.remove(&player);\n        }\n        match call.method {\n")));
+	TestTrue(TEXT("a Joined for an unconfirmed player sets the count to one and runs no hook, the visit goes on"),
+		HasText(Lib, TEXT("        let restored = self.unconfirmed.remove(&player);\n"))
+		&& HasText(Lib, TEXT("                if restored {\n                    self.sessions.insert(player, 1);\n                    return Ok(());\n                }\n                if connections == 0 && ")));
+	TestTrue(TEXT("a Left that leaves an unconfirmed player a count keeps them unconfirmed"),
+		HasText(Lib, TEXT("                    self.sessions.insert(player, connections - 1);\n                    if restored {\n                        self.unconfirmed.insert(player);\n                    }\n                    return Ok(());\n")));
+	TestTrue(TEXT("the last connection leaving ends the visit through the one helper"), HasText(Lib, TEXT("                    return Ok(());\n                }\n                self.session_ended(ctx, player)\n            }\n")));
+	TestTrue(TEXT("and so does the expiry"), HasText(Lib, TEXT("        for player in std::mem::take(&mut self.unconfirmed) {\n            if let Err(error) = self.session_ended(ctx, player) {\n")));
+	TestEqual(TEXT("the removal and On Player Left are written once"), CountText(Lib, TEXT("Functions::on_player_left(&mut self.state, ctx, player)")), 1);
+	TestTrue(TEXT("the helper removes the member, which stands even when On Player Left fails"),
+		HasText(Lib, TEXT("    fn session_ended(&mut self, ctx: &Ctx, player: u64) -> Result<()> {\n        self.sessions.remove(&player);\n"))
+		&& HasText(Lib, TEXT("        members::remove(player);\n        self.finish(ctx, before, Ok(()))?;\n        // The removal stands even when on_player_left fails.\n")));
+
+	AddTimer(*Definition, TEXT("Respawn"), ECrowdyServerTimerRepeat::After, 10.f, false);
+	FString Timed;
+	if (!GenerateLib(*this, *Definition, Timed))
+	{
+		return false;
+	}
+	const int32 ModuleStart = Timed.Find(TEXT("pub mod timers {"), ESearchCase::CaseSensitive);
+	const int32 ModuleEnd = Timed.Find(TEXT("\n}\n"), ESearchCase::CaseSensitive, ESearchDir::FromStart, ModuleStart);
+	TestTrue(TEXT("the timers module is found"), ModuleStart != INDEX_NONE && ModuleEnd > ModuleStart);
+	const FString Module = Timed.Mid(ModuleStart, ModuleEnd - ModuleStart);
+	TestFalse(TEXT("the definition's timers never cancel or re-arm the sessions timer"), HasText(Module, TEXT("SESSIONS_TIMER")) || HasText(Module, TEXT("crowdy_sessions")));
+	TestTrue(TEXT("a type with timers still runs it first"), HasText(Timed, TEXT("        if name == SESSIONS_TIMER {\n            return self.sessions_timer(ctx);\n        }\n        members::lend(&self.roster);\n")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Plain = MakeDefinition(*this, {HitFunction, HealFunction});
+	if (!Plain)
+	{
+		return false;
+	}
+	Plain->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	Plain->bRemoveMembersWhoLeave = false;
+	FString Without;
+	if (!GenerateLib(*this, *Plain, Without))
+	{
+		return false;
+	}
+	for (const TCHAR* Part : {TEXT("unconfirmed"), TEXT("SESSIONS_TIMER"), TEXT("SESSION_CONFIRM_MS"), TEXT("session_ended"), TEXT("sessions_timer"), TEXT("crowdy_sessions")})
+	{
+		TestFalse(FString::Printf(TEXT("a type that counts no sessions has no %s"), Part), HasText(Without, Part));
+	}
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Records = MakeRecordsDefinition();
+	Records->bOnPlayerLeft = true;
+	FString RecordsLib;
+	if (!GenerateLib(*this, *Records, RecordsLib))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a records type reuses the send that announces its epoch, then waits the minute"),
+		HasText(RecordsLib, TEXT("match ctx.timer_after(FLUSH_TIMER, PUSH_INTERVAL_MS) {\n"))
+		&& HasText(RecordsLib, TEXT("            if let Err(error) = ctx.timer_after(SESSIONS_TIMER, SESSION_CONFIRM_MS) {\n")));
+	TestFalse(TEXT("and has no first run of its own"), HasText(RecordsLib, TEXT("SESSION_ANNOUNCE_MS")) || HasText(RecordsLib, TEXT("announced")));
+	TestTrue(TEXT("it runs the expiry after the send"),
+		HasText(RecordsLib, TEXT("            if name == FLUSH_TIMER {\n                return self.flush(ctx);\n            }\n            if name == SESSIONS_TIMER {\n                return self.sessions_timer(ctx);\n            }\n")));
+	TestTrue(TEXT("a call confirms there too"), HasText(RecordsLib, TEXT("            if let Ok(player) = call.player() {\n                self.unconfirmed.remove(&player);\n            }\n")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Reserved = MakeDefinition(*this, {HealFunction});
+	if (!Reserved || !BakeDefinition(*this, *Reserved))
+	{
+		return false;
+	}
+	AddTimer(*Reserved, TEXT("crowdy_sessions"), ECrowdyServerTimerRepeat::Every, 1.f, true);
+	CrowdyExecCodegen::FGeneratedCrate Refused;
+	FString Error;
+	TestFalse(TEXT("a timer named crowdy_sessions does not generate"), CrowdyExecCodegen::Generate(*Reserved, Refused, Error));
+	TestEqualSensitive(TEXT("and the refusal names it"), Error, FString(TEXT("Timer crowdy_sessions: 'crowdy_sessions' is reserved in the server code (Rust); rename the timer")));
 	return true;
 }
 
@@ -2153,7 +2563,41 @@ bool FCrowdyExecCodegenLogicGapsRustFormsTest::RunTest(const FString& Parameters
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenTimerConstantsTest, "CrowdySDK.CrowdyExecEditor.CodegenTimerNamesAreConstants", CrowdyCodegenTest::TestFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenLogicGapsMacrosTest, "CrowdySDK.CrowdyExecEditor.CodegenLogicGapsNameMacros", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenLogicGapsMacrosTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition;
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateGapsCrate(*this, Definition, Crate))
+	{
+		return false;
+	}
+	const FString Written = FString::Printf(TEXT(
+		"impl Functions for %s {\n"
+		"    fn hit(&mut self, ctx: &Ctx, call: &Call<'_>, params: CrowdyExecTestHit) -> Result<()> {\n"
+		"        inner_macro!(ctx);\n"
+		"        Ok(())\n"
+		"    }\n"
+		"    const SAME: bool = FIRST != (SECOND);\n"
+		"    my_macro!(heal);\n"
+		"    other! { fn end_match(&mut self){} }\n"
+		"    // commented!(fn)\n"
+		"}\n"), *Crate.StateName);
+	const CrowdyExecCodegen::FLogicGaps Gaps = CrowdyExecCodegen::FindLogicGaps(Crate, Written);
+	TestEqualSensitive(TEXT("macros invoked in the block are named with their !; one inside a function, a != and a comment are not"),
+		FString::Join(Gaps.Macros, TEXT(",")), FString(TEXT("my_macro!,other!")));
+	TestEqualSensitive(TEXT("what a macro might define still counts as missing"), DescribeGaps(Gaps), FString(TEXT("missing heal,end_match,on_player_joined | leftover ")));
+	TestEqualSensitive(TEXT("but no stub is added next to a macro"), CrowdyExecCodegen::AddLogicStubs(Written, Gaps), Written);
+
+	const FString Plain = Written.Replace(TEXT("    my_macro!(heal);\n"), TEXT("")).Replace(TEXT("    other! { fn end_match(&mut self){} }\n"), TEXT(""));
+	const CrowdyExecCodegen::FLogicGaps NoMacros = CrowdyExecCodegen::FindLogicGaps(Crate, Plain);
+	TestTrue(TEXT("without them the block has no macros"), NoMacros.Macros.IsEmpty());
+	TestTrue(TEXT("and stubs are added again"), CrowdyExecCodegen::AddLogicStubs(Plain, NoMacros) != Plain);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenTimerConstantsTest,"CrowdySDK.CrowdyExecEditor.CodegenTimerNamesAreConstants", CrowdyCodegenTest::TestFlags)
 bool FCrowdyExecCodegenTimerConstantsTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyCodegenTest;
@@ -2179,6 +2623,262 @@ bool FCrowdyExecCodegenTimerConstantsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a timer named Queued bakes"), Definition->Bake(Errors));
 	TestFalse(TEXT("but its constant would be the module's own static"), CrowdyExecCodegen::Generate(*Definition, Crate, Error));
 	TestEqualSensitive(TEXT("and the refusal says so"), Error, FString(TEXT("Timer Queued: the server code (Rust) uses timers::QUEUED itself; rename the timer")));
+	return true;
+}
+
+namespace CrowdyCodegenTest
+{
+	/** ck_exec_library: a Server Function Library with Add (a List in, a List out) and Ping (Server Only). */
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeLibraryDefinition()
+	{
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Library(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
+		Library->TypeName = TEXT("ck_exec_library");
+		Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+		FCrowdyServerFunction& Add = AddPlainFunction(*Library, TEXT("Add"), Players);
+		Add.ParamsForm = ECrowdyServerValuesForm::List;
+		AddListValue(Add.ParamsList, FPropertyBagPropertyDesc(TEXT("Left"), EPropertyBagPropertyType::Int32));
+		AddListValue(Add.ParamsList, FPropertyBagPropertyDesc(TEXT("Right"), EPropertyBagPropertyType::Int32));
+		Add.ReplyForm = ECrowdyServerValuesForm::List;
+		AddListValue(Add.ReplyList, FPropertyBagPropertyDesc(TEXT("Total"), EPropertyBagPropertyType::Int32));
+		AddPlainFunction(*Library, TEXT("Ping"), ServerOnly);
+		return Library;
+	}
+
+	/** ck_exec_library_hub: Sum calls the library's Add and Raw calls its Ping through Can Call Any Type. */
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakeLibraryHubDefinition(UCrowdyServerObjectDefinition& Library)
+	{
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeListDefinition(TEXT("ck_exec_library_hub"), {TEXT("Total")});
+		Hub->WatchedFields = {TEXT("Total")};
+		AddPlainFunction(*Hub, TEXT("Sum"), Players);
+		AddPlainFunction(*Hub, TEXT("Raw"), Players);
+		Hub->CanCall = {&Library};
+		Hub->bCanCallAnyType = true;
+		return Hub;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenLibraryCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenLibraryMatchesLocalCheckCrate", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenLibraryCrateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeLibraryDefinition();
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Library, Crate))
+	{
+		return false;
+	}
+	CheckLocalCheckCrate(*this, Crate, TEXT("ck_exec_library"));
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	const FString Logic = GetFileText(*this, Crate, LogicPath);
+	const FString Cargo = GetFileText(*this, Crate, CargoPath);
+	TestTrue(TEXT("a library is a spoke"), HasText(Lib, TEXT("impl Spoke for ServerObject {\n    fn start(ctx: &Ctx) -> Result<Self> {\n        Ok(Self)\n    }\n")));
+	TestTrue(TEXT("exported as one"), HasText(Lib, TEXT("ckx_sdk::export_spoke!(ServerObject);\n")));
+	for (const TCHAR* Part : {TEXT("export_hub"), TEXT("impl Hub"), TEXT("fn spawn"), TEXT("fn persist"), TEXT("SnapshotOut"), TEXT("SnapshotIn"), TEXT("CONTRACT"), TEXT("fn finish"),
+		TEXT("fn prepare_push"), TEXT("\"read\" =>"), TEXT("ctx.publish"), TEXT("timers"), TEXT("on_timer"), TEXT("on_topic"), TEXT("on_presence"), TEXT("on_session"), TEXT("messages::"),
+		TEXT("listen::"), TEXT("members::"), TEXT("Roster"), TEXT("cooldown"), TEXT("ctx.key"), TEXT("OWNER_ONLY"), TEXT("self.state"), TEXT("epoch")})
+	{
+		TestFalse(FString::Printf(TEXT("a library has no '%s'"), Part), HasText(Lib, Part));
+	}
+	TestTrue(TEXT("its functions are implemented on a struct with no fields"), HasText(Lib, TEXT("pub struct Library;\n")) && HasText(Logic, TEXT("impl Functions for Library {\n")));
+	TestTrue(TEXT("a function keeps its authorize, decoding and reply, and returns the call's result"),
+		HasText(Lib, TEXT("            \"add\" => {\n                authorize(ctx, &call, true)?;\n                let params: AddParams = call.decode().map_err(bad_params)?;\n")
+			TEXT("                Wire::check(&params).map_err(|why| Error::new(&format!(\"bad_params: {why}\")))?;\n")
+			TEXT("                Functions::add(&mut Library, ctx, &call, params).and_then(|reply| encode_reply(&reply))\n            }\n")));
+	TestTrue(TEXT("a Server Only function is refused to players"),
+		HasText(Lib, TEXT("            \"ping\" => {\n                authorize(ctx, &call, false)?;\n                Functions::ping(&mut Library, ctx, &call).map(|()| vec![0xc0])\n            }\n")));
+	TestTrue(TEXT("the trait asks for the two functions only"), HasText(Lib, TEXT("pub trait Functions {\n    fn add(&mut self, ctx: &Ctx, call: &Call<'_>, params: AddParams) -> Result<AddReply>;\n    fn ping(&mut self, ctx: &Ctx, call: &Call<'_>) -> Result<()>;\n}\n")));
+	TestTrue(TEXT("the Cargo pin is the platform's"), HasText(Cargo, TEXT("ckx-sdk = \"0.7.0\"\n")));
+	TestEqual(TEXT("logic.rs has the two functions and nothing else"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Missing.Num(), 0);
+	TestEqual(TEXT("with no leftover"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Leftover.Num(), 0);
+	TestEqual(TEXT("and the stubs ask for the two"), Crate.Stubs.Num(), 2);
+	TestEqualSensitive(TEXT("the logic file implements Functions on the library's struct"), Crate.StateName, FString(TEXT("Library")));
+
+	CrowdyExecCodegen::FGeneratedCrate Again;
+	if (GenerateCrate(*this, *Library, Again))
+	{
+		TestEqualSensitive(TEXT("the same definition gives the same glue"), GetFileText(*this, Again, LibPath), Lib);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenLibraryIgnoresServerObjectSettingsTest, "CrowdySDK.CrowdyExecEditor.CodegenLibraryIgnoresWhatOnlyAServerObjectUses", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenLibraryIgnoresServerObjectSettingsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeLibraryDefinition();
+	FString Plain;
+	if (!GenerateLib(*this, *Library, Plain))
+	{
+		return false;
+	}
+	bool bFound = true;
+	Library->State = FindTestStruct(*this, TEXT("CrowdyExecTestBossState"), bFound);
+	Library->WatchedFields = {TEXT("Health")};
+	Library->Visibility = ECrowdyServerObjectVisibility::OwnerOnly;
+	Library->bOnlyOneInstance = true;
+	Library->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+	Library->bOnPlayerJoined = true;
+	Library->bOnPlayerLeft = true;
+	AddTimer(*Library, TEXT("Tick"), ECrowdyServerTimerRepeat::Every, 5.f, true);
+	AddServerMessage(*Library, TEXT("Done"));
+	FString Left;
+	if (!bFound || !GenerateLib(*this, *Library, Left))
+	{
+		return false;
+	}
+	TestEqualSensitive(TEXT("a library that was a Server Object generates what it would have without those settings"), Left, Plain);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenLibraryCalleeTest, "CrowdySDK.CrowdyExecEditor.CodegenCallsToALibraryHaveNoKey", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenLibraryCalleeTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeLibraryDefinition();
+	if (!BakeDefinition(*this, *Library))
+	{
+		return false;
+	}
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeLibraryHubDefinition(*Library);
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Hub, Crate))
+	{
+		return false;
+	}
+	CheckLocalCheckCrate(*this, Crate, TEXT("ck_exec_library_hub"));
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	TestTrue(TEXT("the library's functions are typed helpers with no key"),
+		HasText(Lib, TEXT("        pub fn add(ctx: &Ctx, inputs: &AddParams) -> Result<AddReply> {\n")));
+	TestTrue(TEXT("one that takes nothing has only the context"), HasText(Lib, TEXT("        pub fn ping(ctx: &Ctx) -> Result<()> {\n")));
+	TestTrue(TEXT("and calls the library under the empty key"), HasText(Lib, TEXT("ctx.call(\"ck_exec_library\", \"\", \"add\", &payload)")) && HasText(Lib, TEXT("ctx.call(\"ck_exec_library\", \"\", \"ping\", &[0x80])")));
+	TestFalse(TEXT("none takes a key"), HasText(Lib, TEXT("pub fn add(ctx: &Ctx, key: &str")) || HasText(Lib, TEXT("pub fn ping(ctx: &Ctx, key: &str")));
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Bank = MakeBankDefinition();
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Caller = MakeLibraryDefinition();
+	Caller->TypeName = TEXT("ck_exec_library_caller");
+	Caller->CanCall = {Bank.Get(), Library.Get()};
+	if (!BakeDefinition(*this, *Bank))
+	{
+		return false;
+	}
+	FString CallerLib;
+	if (!GenerateLib(*this, *Caller, CallerLib))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a library can call a Server Object with its key"), HasText(CallerLib, TEXT("        pub fn store(ctx: &Ctx, key: &str, inputs: &StoreParams) -> Result<StoreReply> {\n")));
+	TestTrue(TEXT("and another library without"), HasText(CallerLib, TEXT("        pub fn ping(ctx: &Ctx) -> Result<()> {\n")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenCallAnyTest, "CrowdySDK.CrowdyExecEditor.CodegenCallsAnyOnlyWithCanCallAnyType", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenCallAnyTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakeLibraryDefinition();
+	if (!BakeDefinition(*this, *Library))
+	{
+		return false;
+	}
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeLibraryHubDefinition(*Library);
+	const TCHAR* const Any = TEXT("    pub fn any(ctx: &ckx_sdk::Ctx, node_type: &str, key: &str, method: &str, payload: &[u8]) -> std::result::Result<Vec<u8>, ckx_sdk::CallError> {\n        ctx.call(node_type, key, method, payload)\n    }\n");
+	FString WithAny;
+	if (!GenerateLib(*this, *Hub, WithAny))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Can Call Any Type adds the untyped call"), CountText(WithAny, Any), 1);
+	TestTrue(TEXT("beside the helpers for the types listed"), HasText(WithAny, TEXT("pub mod calls {\n    pub mod ck_exec_library {\n")));
+
+	Hub->bCanCallAnyType = false;
+	FString WithoutAny;
+	if (!GenerateLib(*this, *Hub, WithoutAny))
+	{
+		return false;
+	}
+	TestFalse(TEXT("without it there is none"), HasText(WithoutAny, TEXT("pub fn any(")));
+
+	Hub->bCanCallAnyType = true;
+	Hub->CanCall.Empty();
+	FString AnyOnly;
+	if (!GenerateLib(*this, *Hub, AnyOnly))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a type that lists no one still gets the module"), HasText(AnyOnly, TEXT("pub mod calls {\n    /// A call to any Server Object type")));
+	TestEqual(TEXT("with the untyped call once"), CountText(AnyOnly, Any), 1);
+
+	Hub->bCanCallAnyType = false;
+	FString Neither;
+	if (!GenerateLib(*this, *Hub, Neither))
+	{
+		return false;
+	}
+	TestFalse(TEXT("and one that lists no one and cannot call any has no calls module"), HasText(Neither, TEXT("pub mod calls")));
+	return true;
+}
+
+namespace CrowdyCodegenTest
+{
+	/** ck_exec_ping_library: a Server Function Library whose one function takes and returns nothing, so it has no structs. */
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> MakePingLibraryDefinition()
+	{
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Library(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
+		Library->TypeName = TEXT("ck_exec_ping_library");
+		Library->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+		AddPlainFunction(*Library, TEXT("Ping"), Players);
+		return Library;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenStructlessLibraryTest, "CrowdySDK.CrowdyExecEditor.CodegenLibraryWithoutStructs", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenStructlessLibraryTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakePingLibraryDefinition();
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Library, Crate))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a library with no structs has no field tables"), Library->BakedStructs.IsEmpty());
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	TestTrue(TEXT("it is still a spoke"), HasText(Lib, TEXT("ckx_sdk::export_spoke!(ServerObject);\n")));
+	TestTrue(TEXT("and dispatches its function"), HasText(Lib, TEXT("            \"ping\" => {\n                authorize(ctx, &call, true)?;\n                Functions::ping(&mut Library, ctx, &call).map(|()| vec![0xc0])\n            }\n")));
+	TestEqual(TEXT("and the stub asks for the one function"), Crate.Stubs.Num(), 1);
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeListDefinition(TEXT("ck_exec_ping_hub"), {TEXT("Total")});
+	Hub->WatchedFields = {TEXT("Total")};
+	AddPlainFunction(*Hub, TEXT("Poke"), Players);
+	Hub->CanCall = {Library.Get()};
+	FString HubLib;
+	if (!GenerateLib(*this, *Hub, HubLib))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a Server Object that lists it in Can Call gets a helper for it"), HasText(HubLib, TEXT("        pub fn ping(ctx: &Ctx) -> Result<()> {\n")));
+	TestTrue(TEXT("which calls it under the empty key"), HasText(HubLib, TEXT("ctx.call(\"ck_exec_ping_library\", \"\", \"ping\", &[0x80])")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenLibraryNameFirstTest, "CrowdySDK.CrowdyExecEditor.CodegenLibraryKeepsItsUnitStructName", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenLibraryNameFirstTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Library = MakePingLibraryDefinition();
+	Library->TypeName = TEXT("ck_exec_name_library");
+	AddPlainFunction(*Library, TEXT("Roll"), Players).Params = FLibrary::StaticStruct();
+	CrowdyExecCodegen::FGeneratedCrate Crate;
+	if (!GenerateCrate(*this, *Library, Crate))
+	{
+		return false;
+	}
+	const FString Lib = GetFileText(*this, Crate, LibPath);
+	const FString Types = GetFileText(*this, Crate, TypesPath);
+	TestTrue(TEXT("the library's struct keeps the name Library"), HasText(Lib, TEXT("pub struct Library;\n")));
+	TestEqualSensitive(TEXT("and logic.rs implements Functions on it"), Crate.StateName, FString(TEXT("Library")));
+	TestTrue(TEXT("a struct of the library's own named Library is renamed instead"), HasText(Types, TEXT("pub struct LibraryType {\n")));
+	TestFalse(TEXT("and does not take the name"), HasText(Types, TEXT("pub struct Library {\n")));
 	return true;
 }
 

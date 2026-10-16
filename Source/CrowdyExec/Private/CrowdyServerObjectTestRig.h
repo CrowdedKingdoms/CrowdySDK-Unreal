@@ -4,6 +4,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Algo/Count.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "CrowdyCppClient.h"
 #include "CrowdyExecCodec.h"
@@ -102,6 +103,23 @@ namespace CrowdyServerObjectTests
 		Frame.Add(static_cast<uint8>(InstanceKey.Length() >> 8));
 		Frame.Append(reinterpret_cast<const uint8*>(InstanceKey.Get()), InstanceKey.Length());
 		Frame.Append({0x05, 's', 't', 'a', 't', 'e'});
+		Frame.Append(Payload);
+		return Frame;
+	}
+
+	/** A push on Topic of instance Key, as the server's publish sends it. */
+	inline TArray<uint8> TopicPushFrame(const FString& Key, const FString& Topic, const TArray<uint8>& Payload)
+	{
+		const FTCHARToUTF8 Type(TypeName);
+		const FTCHARToUTF8 InstanceKey(*Key);
+		const FTCHARToUTF8 TopicText(*Topic);
+		TArray<uint8> Frame = {0x82, static_cast<uint8>(Type.Length())};
+		Frame.Append(reinterpret_cast<const uint8*>(Type.Get()), Type.Length());
+		Frame.Add(static_cast<uint8>(InstanceKey.Length()));
+		Frame.Add(static_cast<uint8>(InstanceKey.Length() >> 8));
+		Frame.Append(reinterpret_cast<const uint8*>(InstanceKey.Get()), InstanceKey.Length());
+		Frame.Add(static_cast<uint8>(TopicText.Length()));
+		Frame.Append(reinterpret_cast<const uint8*>(TopicText.Get()), TopicText.Length());
 		Frame.Append(Payload);
 		return Frame;
 	}
@@ -471,6 +489,28 @@ namespace CrowdyServerObjectTests
 		void Push(const TArray<uint8>& Payload)
 		{
 			Client->TestExecReceiveBinary(PushFrame(InstanceId, Payload));
+		}
+
+		void PushTopic(const FString& Topic, const TArray<uint8>& Payload)
+		{
+			Client->TestExecReceiveBinary(TopicPushFrame(InstanceId, Topic, Payload));
+		}
+
+		/** Pumps until the subscribe to Topic was sent, then acknowledges it and takes it. */
+		bool AckTopic(const FString& Topic)
+		{
+			FSentFrame Subscribe;
+			if (!Test.TestTrue(FString::Printf(TEXT("the object subscribes to %s"), *Topic), WaitForFrame(KindSubscribe, Topic, Subscribe)))
+			{
+				return false;
+			}
+			Reply(Subscribe.Rid, ECrowdyNativeExecStatus::Ok, {});
+			return true;
+		}
+
+		int32 CountFrames(uint8 Kind, const FString& Name) const
+		{
+			return Algo::CountIf(Sent, [Kind, &Name](const FSentFrame& Frame) { return Frame.Kind == Kind && Frame.Name.Equals(Name, ESearchCase::CaseSensitive); });
 		}
 
 		/** Acknowledges and takes every subscribe sent so far. */

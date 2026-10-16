@@ -862,4 +862,81 @@ bool FCrowdyExecTraceRetriedCallTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecTraceRootTest,
+	"CrowdySDK.CrowdyExec.TraceRootShowsADash", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyExecTraceRootTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecTraceTests;
+	FTraceSwitch Trace(true);
+	FTraceLines Capture;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	Rig.Definition->TypeName = UCrowdyServerObjectDefinition::RootTypeName;
+	Rig.Definition->bOnlyOneInstance = true;
+	TArray<FString> Errors;
+	const bool bBaked = Rig.Definition->Bake(Errors);
+	if (!TestTrue(FString::Printf(TEXT("the root definition bakes (%s)"), *FString::Join(Errors, TEXT("; "))), bBaked))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Root = Rig.Acquire(TEXT("main"), Owner.Get());
+	if (!Root || !TestTrue(TEXT("the root has no Instance Id"), Root->GetInstanceId().IsEmpty()) || !Rig.Open())
+	{
+		return false;
+	}
+	FSentFrame Subscribe;
+	FSentFrame Read;
+	if (!TestTrue(TEXT("the root subscribes"), Rig.WaitForFrame(KindSubscribe, TEXT("state"), Subscribe))
+		|| !TestTrue(TEXT("and reads"), Rig.WaitForFrame(KindCall, TEXT("read"), Read)))
+	{
+		return false;
+	}
+	Rig.Reply(Subscribe.Rid, ECrowdyNativeExecStatus::Ok, {});
+	Rig.Reply(Read.Rid, ECrowdyNativeExecStatus::Ok, Rig.ReadMessage(5, Boss(3000, false, ECrowdyExecTestPhase::Calm)));
+	if (!TestTrue(TEXT("the read makes the root Ready"), Rig.PumpUntil([Root]() { return Root->GetStatus() == ECrowdyServerObjectStatus::Ready; })))
+	{
+		return false;
+	}
+	const FString RootHead = FString::Printf(TEXT("exec: %s/"), *FString(UCrowdyServerObjectDefinition::RootTypeName));
+	TestEqual(TEXT("the root's read prints a dash for its missing Instance Id"), Capture.Count(RootHead + TEXT("- read applied epoch=")), 1);
+	TestEqual(TEXT("and no line names it with nothing"), Capture.Count(RootHead + TEXT(" ")), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecTraceLibraryHasNoKeyTest,
+	"CrowdySDK.CrowdyExec.Trace.LibraryPrintsADashNotOwner", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyExecTraceLibraryHasNoKeyTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecTraceTests;
+	FTraceSwitch Trace(true);
+	FTraceLines Capture;
+	FRig Rig(*this, ECrowdyServerObjectVisibility::OwnerOnly);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	Rig.Definition->Kind = ECrowdyServerObjectKind::FunctionLibrary;
+	Rig.InstanceId = FString();
+	TArray<FString> Errors;
+	if (!TestTrue(FString::Printf(TEXT("the library bakes (%s)"), *FString::Join(Errors, TEXT("; "))), Rig.Definition->Bake(Errors)))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Library = Rig.Acquire(FString(), Owner.Get());
+	if (!Library || !Rig.Open()
+		|| !TestTrue(TEXT("the library is Ready"), Rig.PumpUntil([Library]() { return Library->GetStatus() == ECrowdyServerObjectStatus::Ready; })))
+	{
+		return false;
+	}
+	const FString LibraryHead = FString::Printf(TEXT("exec: %s/- "), TypeName);
+	TestEqual(TEXT("becoming Ready names the library by a dash"), Capture.Count(LibraryHead + TEXT("status Connecting -> Ready")), 1);
+	TestEqual(TEXT("and never as owner, though its asset is still Owner Only"), Capture.Count(OwnerHead()), 0);
+	return true;
+}
+
 #endif
