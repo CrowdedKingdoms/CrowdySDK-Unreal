@@ -81,6 +81,12 @@ private:
 	TSharedRef<SWidget> MakeStatusBadge() const;
 	TSharedRef<SWidget> MakeTypeRow(const CrowdyExecDeploy::FTypeState& Type);
 	TSharedRef<SWidget> MakeRemovedRow(const FString& TypeName);
+	/** One entry of the type list on the left: the name and its badge, selecting the type on click. */
+	TSharedRef<SWidget> MakeTypeRailRow(const FString& TypeName, const CrowdyServerComputePage::FChangeBadge& Badge);
+	/** Shows the selected type's details on the right, or what to do when there is none. */
+	void FillTypeDetail();
+	/** How many types the next deploy adds, changes or removes. */
+	int32 CountPendingTypes() const;
 	/** Running or Switched off, with its switch, for a type the live version runs; nothing otherwise. */
 	TSharedRef<SWidget> MakeRunningSwitch(const FString& TypeName);
 	TSharedRef<SWidget> MakeTypeMenu(const FString& TypeName, const FString& AssetPath);
@@ -161,6 +167,12 @@ private:
 	TSharedPtr<SBox> HeaderBadgeBox;
 	TSharedPtr<SWidgetSwitcher> TabSwitcher;
 	TSharedPtr<SVerticalBox> TypesList;
+	TSharedPtr<SBox> TypeDetailBox;
+	/** The type the right side shows, kept across refills while it still exists. */
+	FString SelectedType;
+	/** "", "changed" or "problems": which types the list shows. */
+	FString TypeFilter;
+	FString TypeSearch;
 	TSharedPtr<SVerticalBox> VersionsList;
 	TSharedPtr<SVerticalBox> LogsList;
 	TSharedPtr<SVerticalBox> ActivityList;
