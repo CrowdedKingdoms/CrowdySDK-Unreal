@@ -59,7 +59,19 @@ public:
 
 	void SignOut();
 
-	// Organizations 
+	// The signed-in developer's own account. Only a session sign-in has one; an organization token does not.
+	bool CanManageAccount() const { return bSignedIn && AuthScope == ECrowdyStudioAuthScope::Session; }
+	void FetchMyProfile();
+	void SetMyName(const FString& Gamertag, const FString& Disambiguation);
+	void ChangeMyPassword(const FString& CurrentPassword, const FString& NewPassword);
+	void AddMyPassword(const FString& NewPassword);
+	// Ends every session of the account on every device, this editor's included, then signs out here.
+	void SignOutEverywhere();
+	const FString& GetMyEmail() const { return MyEmail; }
+	const FString& GetMyGamertag() const { return MyGamertag; }
+	const FString& GetMyDisambiguation() const { return MyDisambiguation; }
+
+	// Organizations
 	void FetchMyOrganizations();
 	void CreateOrganization(const FString& Name, const FString& Slug);
 
@@ -276,6 +288,7 @@ public:
 	FSimpleMulticastDelegate OnFeaturesChanged;
 	FSimpleMulticastDelegate OnTierFeaturesChanged;
 	FSimpleMulticastDelegate OnAccessTiersChanged;
+	FSimpleMulticastDelegate OnMyProfileChanged;
 	FOnStudioStatusMessage OnStatusMessage;
 
 private:
@@ -419,6 +432,14 @@ private:
 	ECrowdyStudioAuthScope AuthScope = ECrowdyStudioAuthScope::None;
 	bool bSignedIn = false;
 	int64 UserId = 0;
+
+	FString MyEmail;
+	FString MyGamertag;
+	FString MyDisambiguation;
+
+	// Issues one account call on the shared client under the session token, then reports Done or the failure.
+	void RunAccountCall(const TCHAR* Doing, TFunction<FCrowdyCppRequestHandle(FCrowdyCppClient&, TFunction<void(FCrowdyCppBoolResult)>)> Issue,
+		const FString& Done, TFunction<void()> OnSucceeded = TFunction<void()>());
 
 	// Loopback HTTP listener for the social / magic-link redirect, created on first interactive sign-in.
 	// A plain TUniquePtr is fine here (the controller is not a UObject, so the UHT special-member

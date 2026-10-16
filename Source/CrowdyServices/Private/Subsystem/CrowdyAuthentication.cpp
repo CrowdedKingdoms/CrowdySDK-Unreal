@@ -840,6 +840,279 @@ void UCrowdyAuthentication::UnlinkIdentity(const FString& IdentityId, FOnIdentit
 		}));
 }
 
+static void FinishAccountCall(const FCrowdyCppBoolResult& Result, const FOnAccountDone& OnDone, const FOnAccountError& OnError)
+{
+	if (!Result.bOk)
+	{
+		const FCrowdyAccountError Error = Result.ErrorMessage == FCrowdyCppClient::CanceledErrorMessage()
+			? FCrowdyAccountError::Make(ECrowdyAccountErrorCode::NetworkError, TEXT("The request was interrupted before it completed."))
+			: FCrowdyAccountError::FromFailure(Result.ErrorMessage, Result.ErrorCode);
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+	OnDone.ExecuteIfBound();
+}
+
+static void FailAccountCall(const FOnAccountError& OnError, ECrowdyAccountErrorCode Code, const TCHAR* Message)
+{
+	OnError.ExecuteIfBound(FCrowdyAccountError::Make(Code, Message), Message);
+}
+
+// An access row, or OutRow null when the field is null: the player has never held access.
+static bool ReadAccessRow(const FCrowdyCppJsonResult& Result, const TCHAR* Field, const TSharedPtr<FJsonObject>*& OutRow,
+	FCrowdyAccountError& OutError)
+{
+	OutRow = nullptr;
+	const TSharedPtr<FJsonObject>* Payload = CrowdyServiceApi::ReadPayload(Result, OutError);
+	if (!Payload)
+	{
+		return false;
+	}
+	if ((*Payload)->TryGetObjectField(Field, OutRow))
+	{
+		return true;
+	}
+	if ((*Payload)->HasTypedField<EJson::Null>(Field))
+	{
+		return true;
+	}
+	OutError = CrowdyServiceApi::UnreadableResponseError<FCrowdyAccountError>();
+	return false;
+}
+
+void UCrowdyAuthentication::RequestPasswordReset(const FString& Email, FOnAccountDone OnDone, FOnAccountError OnError)
+{
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NetworkError, TEXT("Authentication client unavailable."));
+		return;
+	}
+	Client->RequestPasswordReset(Email, GuardSession<FCrowdyCppBoolResult>([OnDone, OnError](FCrowdyCppBoolResult Result)
+	{
+		FinishAccountCall(Result, OnDone, OnError);
+	}));
+}
+
+void UCrowdyAuthentication::ResendConfirmationEmail(const FString& Email, FOnAccountDone OnDone, FOnAccountError OnError)
+{
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NetworkError, TEXT("Authentication client unavailable."));
+		return;
+	}
+	Client->ResendConfirmationEmail(Email, GuardSession<FCrowdyCppBoolResult>([OnDone, OnError](FCrowdyCppBoolResult Result)
+	{
+		FinishAccountCall(Result, OnDone, OnError);
+	}));
+}
+
+void UCrowdyAuthentication::ChangePassword(const FString& CurrentPassword, const FString& NewPassword,
+	FOnAccountDone OnDone, FOnAccountError OnError)
+{
+	if (!GameSession || GameSession->GetSessionToken().IsEmpty())
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NotSignedIn, TEXT("Sign in before changing the password."));
+		return;
+	}
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NetworkError, TEXT("Authentication client unavailable."));
+		return;
+	}
+	Client->ChangePassword(CurrentPassword, NewPassword, GuardSession<FCrowdyCppBoolResult>(
+		[OnDone, OnError](FCrowdyCppBoolResult Result)
+		{
+			FinishAccountCall(Result, OnDone, OnError);
+		}));
+}
+
+void UCrowdyAuthentication::AddPassword(const FString& NewPassword, FOnAccountDone OnDone, FOnAccountError OnError)
+{
+	if (!GameSession || GameSession->GetSessionToken().IsEmpty())
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NotSignedIn, TEXT("Sign in before adding a password."));
+		return;
+	}
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NetworkError, TEXT("Authentication client unavailable."));
+		return;
+	}
+	Client->SetInitialPassword(NewPassword, GuardSession<FCrowdyCppBoolResult>([OnDone, OnError](FCrowdyCppBoolResult Result)
+	{
+		FinishAccountCall(Result, OnDone, OnError);
+	}));
+}
+
+void UCrowdyAuthentication::DeleteAccount(FOnAccountDone OnDone, FOnAccountError OnError)
+{
+	if (!IsSignedIn())
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NotSignedIn, TEXT("Sign in before deleting the account."));
+		return;
+	}
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NetworkError, TEXT("Authentication client unavailable."));
+		return;
+	}
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	Client->DeleteMyAccount(GuardSession<FCrowdyCppBoolResult>([WeakThis, OnDone, OnError](FCrowdyCppBoolResult Result)
+	{
+		UCrowdyAuthentication* Self = WeakThis.Get();
+		if (Self && Result.bOk)
+		{
+			Self->ForgetEndedSession();
+		}
+		FinishAccountCall(Result, OnDone, OnError);
+	}));
+}
+
+void UCrowdyAuthentication::SignOutEverywhere(FOnAccountDone OnDone, FOnAccountError OnError)
+{
+	if (!GameSession || GameSession->GetSessionToken().IsEmpty())
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NotSignedIn, TEXT("Sign in before signing out everywhere."));
+		return;
+	}
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NetworkError, TEXT("Authentication client unavailable."));
+		return;
+	}
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	Client->LogoutAllDevices(GuardSession<FCrowdyCppBoolResult>([WeakThis, OnDone, OnError](FCrowdyCppBoolResult Result)
+	{
+		UCrowdyAuthentication* Self = WeakThis.Get();
+		if (Self && Result.bOk)
+		{
+			Self->ForgetEndedSession();
+		}
+		FinishAccountCall(Result, OnDone, OnError);
+	}));
+}
+
+void UCrowdyAuthentication::ForgetEndedSession()
+{
+	// The server already ended it, so the sign-out that follows has nothing left to send.
+	ClearSavedSession();
+	if (GameSession)
+	{
+		GameSession->SetSessionToken(FString());
+	}
+	OnServerSessionEnded.Broadcast();
+}
+
+void UCrowdyAuthentication::EndServerSession()
+{
+	if (!GameSession || GameSession->GetSessionToken().IsEmpty())
+	{
+		return;
+	}
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		return;
+	}
+	// Sign-out never waits on this: the caller forgets the token whatever the server answers.
+	Client->Logout([](FCrowdyCppBoolResult Result)
+	{
+		UE_CLOG(!Result.bOk, LogCrowdyServices, Warning,
+			TEXT("[CrowdyAuth] The server did not end the session (%s); it stays valid until it expires."), *Result.ErrorMessage);
+	});
+}
+
+void UCrowdyAuthentication::GetMyAccess(FOnAppAccessRead OnResult, FOnAccountError OnError)
+{
+	if (!GameSession || GameSession->GetSessionToken().IsEmpty())
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NotSignedIn, TEXT("Sign in before reading access."));
+		return;
+	}
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		FailAccountCall(OnError, ECrowdyAccountErrorCode::NetworkError, TEXT("Authentication client unavailable."));
+		return;
+	}
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), LexToString(GameSession->GetAppID()));
+	Client->RunOp(ECrowdyCppApiDomain::AppAccess, TEXT("MyAppAccess"), Variables, GuardSession<FCrowdyCppJsonResult>(
+		[OnResult, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyAccountError Error;
+			const TSharedPtr<FJsonObject>* Row = nullptr;
+			if (!ReadAccessRow(Result, TEXT("myAppAccess"), Row, Error))
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnResult.ExecuteIfBound(FCrowdyAppAccess::FromJson(Row ? *Row : nullptr, FDateTime::UtcNow()));
+		}));
+}
+
+void UCrowdyAuthentication::ClaimFreeAccess(FOnAuthSuccess OnSuccess, FOnAuthError OnError)
+{
+	if (!GameSession || GameSession->GetSessionToken().IsEmpty())
+	{
+		OnError.ExecuteIfBound(TEXT("Sign in before claiming access."));
+		return;
+	}
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		OnError.ExecuteIfBound(TEXT("Authentication client unavailable."));
+		return;
+	}
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), LexToString(GameSession->GetAppID()));
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	Client->RunOp(ECrowdyCppApiDomain::AppAccess, TEXT("ClaimFreeAppAccess"), Variables, GuardSession<FCrowdyCppJsonResult>(
+		[WeakThis, OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		{
+			UCrowdyAuthentication* Self = WeakThis.Get();
+			if (!Self)
+			{
+				return;
+			}
+			FCrowdyAccountError Error;
+			const TSharedPtr<FJsonObject>* Row = nullptr;
+			if (!ReadAccessRow(Result, TEXT("claimFreeAppAccess"), Row, Error))
+			{
+				OnError.ExecuteIfBound(Error.Message);
+				return;
+			}
+			if (!Row)
+			{
+				OnError.ExecuteIfBound(TEXT("The server's answer could not be read."));
+				return;
+			}
+			const FCrowdyAppAccess Access = FCrowdyAppAccess::FromJson(*Row, FDateTime::UtcNow());
+			if (Access.State != ECrowdyAccessState::Active)
+			{
+				OnError.ExecuteIfBound(TEXT("The app still refuses this player's access."));
+				return;
+			}
+
+			// Already in the game: a second mint would only replace a working token.
+			if (Self->IsSignedIn() && !Self->bAccessRefused)
+			{
+				FCrowdyAuthResult SignedIn;
+				SignedIn.GameToken = Self->GameSession->GetSessionToken();
+				SignedIn.UserID = Self->GameSession->GetUserID();
+				OnSuccess.ExecuteIfBound(SignedIn);
+				return;
+			}
+			Self->DispatchMint(EAuthFlow::Login, OnSuccess, OnError);
+		}));
+}
+
 void UCrowdyAuthentication::RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority,
 	FOnLegalConsentsRecorded OnRecorded, FOnAuthError OnError)
 {

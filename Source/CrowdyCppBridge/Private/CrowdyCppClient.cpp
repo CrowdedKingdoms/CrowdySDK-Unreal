@@ -2486,6 +2486,99 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RecordPlayerConsents(bool bAcceptLegal
 		&MapBool);
 }
 
+FCrowdyCppRequestHandle FCrowdyCppClient::RequestPasswordReset(const FString& Email,
+	TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	const std::string EmailStr = std::string(TCHAR_TO_UTF8(*Email));
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::None) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("requestPasswordReset"), MoveTemp(OnDone),
+		[EmailStr](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().requestPasswordResetAsync(EmailStr, std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::ResendConfirmationEmail(const FString& Email,
+	TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	const std::string EmailStr = std::string(TCHAR_TO_UTF8(*Email));
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::None) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("resendConfirmationEmail"), MoveTemp(OnDone),
+		[EmailStr](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().resendConfirmationEmailAsync(EmailStr, std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::ChangePassword(const FString& CurrentPassword, const FString& NewPassword,
+	TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	const std::string CurrentStr = std::string(TCHAR_TO_UTF8(*CurrentPassword));
+	const std::string NewStr = std::string(TCHAR_TO_UTF8(*NewPassword));
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("changePassword"), MoveTemp(OnDone),
+		[CurrentStr, NewStr](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().changePasswordAsync(CurrentStr, NewStr, std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::SetInitialPassword(const FString& NewPassword,
+	TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	const std::string NewStr = std::string(TCHAR_TO_UTF8(*NewPassword));
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("setInitialPassword"), MoveTemp(OnDone),
+		[NewStr](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().setInitialPasswordAsync(NewStr, std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::Logout(TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("logout"), MoveTemp(OnDone),
+		[](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().logoutAsync(std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::LogoutAllDevices(TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("logoutAllDevices"), MoveTemp(OnDone),
+		[](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().logoutAllDevicesAsync(std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::DeleteMyAccount(TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Game) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("deleteMyAccount"), MoveTemp(OnDone),
+		[](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.users().deleteMyAccountAsync(std::move(Cb));
+		},
+		&MapBool);
+}
+
 FCrowdyCppRequestHandle FCrowdyCppClient::MintAppToken(int64 AppId,
 	TFunction<void(FCrowdyCppAppTokenResult)> OnDone)
 {
