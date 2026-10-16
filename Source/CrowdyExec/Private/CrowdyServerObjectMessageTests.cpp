@@ -12,7 +12,9 @@
 #include "CrowdyServerObjectSubsystem.h"
 #include "CrowdyServerObjectTestRig.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
 #include "UObject/Package.h"
+#include "UObject/UnrealType.h"
 #include "UObject/StrongObjectPtr.h"
 
 /** Reaches the component's private join, which a component outside a world cannot reach through BeginPlay. */
@@ -1109,6 +1111,68 @@ bool FCrowdyServerMessageLibraryBindingTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("unbinding drops it"), Link->GetMessageBindings().Num(), 0);
 	FSentFrame Unsubscribe;
 	TestTrue(TEXT("and the topic is unsubscribed with nothing left to hear it"), Rig.WaitForFrame(KindUnsubscribe, StructTopic, Unsubscribe));
+	return true;
+}
+
+namespace CrowdyServerObjectMessageTests
+{
+	int32 LocalPayloadCalls = 0;
+
+	void CountLocalPayloadCall(UObject* Context, FFrame& Stack, RESULT_DECL)
+	{
+		++LocalPayloadCalls;
+	}
+
+	/** A function with no parameters whose first property is a local payload, the shape a Blueprint function with a local of that type has. */
+	UFunction* AddLocalPayloadFunction(UClass* Class, FName Name)
+	{
+		UFunction* Function = NewObject<UFunction>(Class, Name, RF_Transient);
+		Function->FunctionFlags |= FUNC_Native;
+		FStructProperty* Local = new FStructProperty(Function, TEXT("Local"));
+		Local->Struct = TBaseStructure<FInstancedStruct>::Get();
+		Function->AddCppProperty(Local);
+		Function->SetNativeFunc(&CountLocalPayloadCall);
+		Function->StaticLink(true);
+		Class->AddFunctionToFunctionMap(Function, Name);
+		return Function;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerMessageLocalPayloadRefusedTest,
+	"CrowdySDK.CrowdyExec.ServerMessage.HandlerWhosePayloadIsALocalNotAParameterIsRefused", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerMessageLocalPayloadRefusedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	using namespace CrowdyServerObjectMessageTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid() || !AddMessages(Rig))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = ReadyBoss(Rig, Owner.Get());
+	if (!Object)
+	{
+		return false;
+	}
+	UClass* Class = UCrowdyServerObjectTestListener::StaticClass();
+	const FName Name(TEXT("HandleWithLocalPayload"));
+	UFunction* Function = AddLocalPayloadFunction(Class, Name);
+	ON_SCOPE_EXIT
+	{
+		Class->RemoveFunctionFromFunctionMap(Function);
+		Function->MarkAsGarbage();
+	};
+	TestEqual(TEXT("the function takes no parameters"), static_cast<int32>(Function->ParmsSize), 0);
+	LocalPayloadCalls = 0;
+	TStrongObjectPtr<UCrowdyServerObjectTestListener> Handler = MessageListener();
+	UCrowdyServerObjectLibrary::BindServerMessage(Object, Rig.Definition.Get(), StructName, Handler.Get(), Name);
+	AckEvery(Rig, StructTopic);
+
+	AddExpectedMessagePlain(TEXT("taking a payload"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	Rig.PushTopic(StructTopic, PushPayload(Rig, 9, TEXT("local")));
+	Rig.PumpFor(0.3);
+	TestEqual(TEXT("a handler with no payload parameter is never run, so the payload is not written past its parameters"), LocalPayloadCalls, 0);
 	return true;
 }
 
