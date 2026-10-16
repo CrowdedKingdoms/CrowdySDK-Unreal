@@ -5,6 +5,7 @@
 #include "CrowdyServerComputeService.h"
 #include "CrowdyServerComputeSettings.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "Algo/Count.h"
 #include "Editor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
@@ -15,6 +16,7 @@
 #include "Style/CrowdyStudioStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateStyle.h"
+#include "Styling/StyleDefaults.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UI/CrowdyStudioWidgets.h"
 #include "UObject/SoftObjectPath.h"
@@ -24,10 +26,12 @@
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/SBoxPanel.h"
@@ -611,6 +615,7 @@ void SCrowdyServerComputePanel::RebuildContent()
 	bContentBuilt = true;
 	HeaderBadgeBox.Reset();
 	TypesList.Reset();
+	TypeDetailBox.Reset();
 	VersionsList.Reset();
 	LogsList.Reset();
 	ActivityList.Reset();
@@ -720,52 +725,61 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::BuildPageHeader()
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 				[ SNew(STextBlock).Text(LOCTEXT("Refresh", "Refresh")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 9)).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary())) ]
 			]
+		]
+		// In the title row so it stays in reach however long the type list grows.
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top).Padding(8.f, 0.f, 0.f, 0.f)
+		[
+			SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Primary").ContentPadding(FMargin(14.f, 5.f))
+			.IsEnabled_Lambda([this]() { return CanDeploy() && !bNothingToDeploy; })
+			.ToolTipText(LOCTEXT("DeployTip", "Builds every type's server code on the server and makes it the app's live version. Players use it at once."))
+			.OnClicked(this, &SCrowdyServerComputePanel::OnDeployClicked)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 6.f, 0.f)
+				[ CrowdyStudioWidgets::Icon(TEXT("server"), 14.f, FSlateColor::UseForeground()) ]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					SNew(STextBlock).Font(FCoreStyle::GetDefaultFontStyle("Bold", 10)).ColorAndOpacity(FSlateColor::UseForeground())
+					.Text_Lambda([this]()
+					{
+						if (!IsIdle())
+						{
+							return LOCTEXT("DeployBusy", "Working...");
+						}
+						if (bNothingToDeploy)
+						{
+							return LOCTEXT("DeployUpToDate", "Up to date");
+						}
+						const int32 Pending = CountPendingTypes();
+						return Pending > 0 ? FText::Format(LOCTEXT("DeployCount", "Deploy  {0}"), FText::AsNumber(Pending)) : LOCTEXT("Deploy", "Deploy");
+					})
+				]
+			]
 		];
 }
 
 TSharedRef<SWidget> SCrowdyServerComputePanel::BuildOverviewTab()
 {
 	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
-	return SNew(SScrollBox)
-		+ SScrollBox::Slot()
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 10.f)
 		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 12.f)
-			[
-				CrowdyStudioWidgets::Card(
+			CrowdyStudioWidgets::Card(
 					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 10.f)
-					[ CrowdyStudioWidgets::SectionHeader(LOCTEXT("TypesHeader", "Server Object types"), TEXT("cube")) ]
-					+ SVerticalBox::Slot().AutoHeight()
-					[ SAssignNew(TypesList, SVerticalBox) ])
-			]
-			+ SVerticalBox::Slot().AutoHeight()
-			[
-				CrowdyStudioWidgets::Card(
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
-					[ CrowdyStudioWidgets::SectionHeader(LOCTEXT("DeployHeader", "Deploy"), TEXT("server")) ]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 12.f)
-					[
-						SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Subtle")
-						.Text(LOCTEXT("DeployExplain", "Builds every type's server code on the server and makes it the app's live version. Players use it at once."))
-					]
 					+ SVerticalBox::Slot().AutoHeight()
 					[
 						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 12.f, 0.f)
-						[
-							SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Primary").ContentPadding(FMargin(18.f, 7.f))
-							.Visibility_Lambda([this]() { return (bNothingToDeploy && !FCrowdyServerComputeService::Get().IsBusy()) ? EVisibility::Collapsed : EVisibility::Visible; })
-							.IsEnabled(this, &SCrowdyServerComputePanel::CanDeploy)
-							.OnClicked(this, &SCrowdyServerComputePanel::OnDeployClicked)
-							[ CrowdyComputeUI::ButtonLabel(LOCTEXT("Deploy", "Deploy"), 10) ]
-						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 8.f, 0.f)
+						[ CrowdyStudioWidgets::Icon(TEXT("server"), 14.f, FSlateColor(FCrowdyStudioStyle::TextSecondary())) ]
 						+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center).Padding(0.f, 0.f, 12.f, 0.f)
 						[
 							SNew(STextBlock).AutoWrapText(true).Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-							.Text(this, &SCrowdyServerComputePanel::GetDeployLine)
-							.ColorAndOpacity(this, &SCrowdyServerComputePanel::GetDeployLineColor)
+							.Text_Lambda([this]()
+							{
+								const FText Line = GetDeployLine();
+								return Line.IsEmpty() ? LOCTEXT("DeployExplain", "Deploy builds every type's server code on the server and makes it the app's live version. Players use it at once.") : Line;
+							})
+							.ColorAndOpacity_Lambda([this]() { return GetDeployLine().IsEmpty() ? FSlateColor(FCrowdyStudioStyle::TextSecondary()) : GetDeployLineColor(); })
 						]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 						[
@@ -832,19 +846,50 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::BuildOverviewTab()
 							.IsReadOnly(true)
 							.Font(FCoreStyle::GetDefaultFontStyle("Mono", 9))
 						]
-					])
-			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
+					], FMargin(14.f, 9.f))
+		]
+		+ SVerticalBox::Slot().AutoHeight()[ BuildErrorLine(CrowdyComputeUI::ErrorRemove) ]
+		+ SVerticalBox::Slot().AutoHeight()[ BuildErrorLine(CrowdyComputeUI::ErrorSwitch) ]
+		+ SVerticalBox::Slot().AutoHeight()[ CrowdyComputeUI::ErrorLine([]() { return FCrowdyServerComputeService::Get().GetStatusError(); }) ]
+		+ SVerticalBox::Slot().FillHeight(1.f).Padding(0.f, 4.f, 0.f, 0.f)
+		[
+			SNew(SSplitter)
+			.Style(&Style, "Crowdy.Splitter")
+			.Orientation(Orient_Horizontal)
+			.PhysicalSplitterHandleSize(3.f)
+			+ SSplitter::Slot().Value(0.32f).MinSize(220.f)
 			[
-				BuildErrorLine(CrowdyComputeUI::ErrorRemove)
+				SNew(SBox).Padding(FMargin(0.f, 0.f, 6.f, 0.f))
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+					[
+						SNew(SSearchBox)
+						.Style(&Style, "Crowdy.SearchBox")
+						.HintText(LOCTEXT("SearchTypes", "Search types"))
+						.OnTextChanged_Lambda([this](const FText& Text) { TypeSearch = Text.ToString().TrimStartAndEnd(); FillTypes(); })
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)
+					[
+						CrowdyStudioWidgets::TabStrip(
+							{ TEXT(""), TEXT("changed"), TEXT("problems") },
+							{ LOCTEXT("FilterAllTypes", "All"), LOCTEXT("FilterChanged", "To deploy"), LOCTEXT("FilterProblems", "Problems") },
+							TAttribute<FString>::CreateLambda([this]() { return TypeFilter; }),
+							[this](const FString& Filter) { TypeFilter = Filter; FillTypes(); })
+					]
+					+ SVerticalBox::Slot().FillHeight(1.f)
+					[
+						CrowdyStudioWidgets::Card(SNew(SScrollBox) + SScrollBox::Slot()[ SAssignNew(TypesList, SVerticalBox) ], FMargin(4.f), /*bFlat*/ true)
+					]
+				]
 			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
+			+ SSplitter::Slot().Value(0.68f).MinSize(320.f)
 			[
-				BuildErrorLine(CrowdyComputeUI::ErrorSwitch)
-			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
-			[
-				CrowdyComputeUI::ErrorLine([]() { return FCrowdyServerComputeService::Get().GetStatusError(); })
+				SNew(SBox).Padding(FMargin(6.f, 0.f, 0.f, 0.f))
+				[
+					SNew(SScrollBox)
+					+ SScrollBox::Slot()[ SAssignNew(TypeDetailBox, SBox) ]
+				]
 			]
 		];
 }
@@ -1127,28 +1172,122 @@ void SCrowdyServerComputePanel::FillTypes()
 	{
 		return;
 	}
+	using CrowdyExecRevisions::EChange;
 	const FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
 	TypesList->ClearChildren();
+	const FString Search = TypeSearch;
+	auto Shows = [this, &Search](const FString& TypeName, bool bPending, bool bProblem)
+	{
+		const bool bFilter = TypeFilter.IsEmpty() || (TypeFilter == TEXT("changed") && bPending) || (TypeFilter == TEXT("problems") && bProblem);
+		return bFilter && (Search.IsEmpty() || TypeName.Contains(Search));
+	};
+
+	TArray<FString> AllTypes;
 	int32 Rows = 0;
 	for (const CrowdyExecDeploy::FTypeState& Type : Compute.GetProject().Types)
 	{
-		TypesList->AddSlot().AutoHeight().Padding(0.f, Rows++ == 0 ? 0.f : 14.f, 0.f, 0.f)[ MakeTypeRow(Type) ];
+		AllTypes.Add(Type.TypeName);
+		const CrowdyExecRevisions::FTypeChange* Change = Compute.FindChange(Type.TypeName);
+		const bool bPending = Change && (Change->Change == EChange::Changed || Change->Change == EChange::New || Change->Change == EChange::Unknown);
+		const bool bProblem = Type.State != CrowdyExecDeploy::ECrateState::UpToDate || !MakeHeldBackLine(Type.TypeName).IsEmpty();
+		if (Shows(Type.TypeName, bPending, bProblem))
+		{
+			TypesList->AddSlot().AutoHeight()[ MakeTypeRailRow(Type.TypeName, CrowdyServerComputePage::ChooseChangeBadge(Type, Change)) ];
+			++Rows;
+		}
 	}
 	for (const CrowdyExecRevisions::FTypeChange& Change : Compute.GetChanges())
 	{
-		if (Change.Change != CrowdyExecRevisions::EChange::Removed || Change.TypeName == CrowdyExecDeploy::RootTypeName)
+		if (Change.Change != EChange::Removed || Change.TypeName == CrowdyExecDeploy::RootTypeName)
 		{
 			continue;
 		}
-		TypesList->AddSlot().AutoHeight().Padding(0.f, Rows++ == 0 ? 0.f : 14.f, 0.f, 0.f)[ MakeRemovedRow(Change.TypeName) ];
+		AllTypes.Add(Change.TypeName);
+		if (Shows(Change.TypeName, true, false))
+		{
+			const CrowdyServerComputePage::FChangeBadge Removed = { LOCTEXT("Removed", "Removed"), CrowdyStudioWidgets::EBadgeTone::Neutral, LOCTEXT("RemovedTip", "On the server, not in this project") };
+			TypesList->AddSlot().AutoHeight()[ MakeTypeRailRow(Change.TypeName, Removed) ];
+			++Rows;
+		}
+	}
+	if (!AllTypes.Contains(SelectedType))
+	{
+		SelectedType = AllTypes.IsEmpty() ? FString() : AllTypes[0];
 	}
 	if (Rows == 0)
 	{
 		TypesList->AddSlot().AutoHeight()
 		[
-			CrowdyStudioWidgets::EmptyState(TEXT("cube"), LOCTEXT("NoTypes", "No Server Object types yet.\nCreate a Server Object Definition asset to add one. Until then, deploying sends only the Crowdy SDK's root (Players Online)."))
+			AllTypes.IsEmpty()
+				? CrowdyStudioWidgets::EmptyState(TEXT("cube"), LOCTEXT("NoTypesShort", "No Server Object types yet."))
+				: CrowdyStudioWidgets::EmptyState(TEXT("search"), LOCTEXT("NoTypesMatch", "No types match.\nClear the search or the filter."))
 		];
 	}
+	FillTypeDetail();
+}
+
+TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeRailRow(const FString& TypeName, const CrowdyServerComputePage::FChangeBadge& Badge)
+{
+	// Each row is its own vertical box, which is what the docs screenshots drop a row by.
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SBorder)
+			.BorderImage_Lambda([this, TypeName]() { return SelectedType == TypeName ? FCrowdyStudioStyle::Get().GetBrush("Crowdy.Nav.Active") : FStyleDefaults::GetNoBrush(); })
+			.Padding(0.f)
+			[
+				SNew(SButton).ButtonStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Button.Nav.Flush").ContentPadding(FMargin(10.f, 8.f)).HAlign(HAlign_Fill)
+				.ToolTipText(Badge.ToolTip)
+				.OnClicked_Lambda([this, TypeName]() { SelectedType = TypeName; FillTypeDetail(); return FReply::Handled(); })
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
+					[
+						SNew(STextBlock).Text(FText::FromString(TypeName)).Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+						.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+						.ColorAndOpacity_Lambda([this, TypeName]() { return FSlateColor(SelectedType == TypeName ? FCrowdyStudioStyle::TextPrimary() : FCrowdyStudioStyle::TextSecondary()); })
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.f, 0.f, 0.f, 0.f)
+					[ CrowdyStudioWidgets::Badge(Badge.Label, Badge.Tone) ]
+				]
+			]
+		];
+}
+
+void SCrowdyServerComputePanel::FillTypeDetail()
+{
+	if (!TypeDetailBox)
+	{
+		return;
+	}
+	const FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
+	if (const CrowdyExecDeploy::FTypeState* Type = Compute.GetProject().Types.FindByPredicate([this](const CrowdyExecDeploy::FTypeState& T) { return T.TypeName == SelectedType; }))
+	{
+		TypeDetailBox->SetContent(CrowdyStudioWidgets::Card(MakeTypeRow(*Type), FMargin(16.f, 14.f)));
+		return;
+	}
+	const bool bRemoved = !SelectedType.IsEmpty() && Compute.GetChanges().ContainsByPredicate([this](const CrowdyExecRevisions::FTypeChange& Change)
+	{
+		return Change.TypeName == SelectedType && Change.Change == CrowdyExecRevisions::EChange::Removed;
+	});
+	if (bRemoved)
+	{
+		TypeDetailBox->SetContent(CrowdyStudioWidgets::Card(MakeRemovedRow(SelectedType), FMargin(16.f, 14.f)));
+		return;
+	}
+	TypeDetailBox->SetContent(CrowdyStudioWidgets::Card(
+		CrowdyStudioWidgets::EmptyState(TEXT("cube"), LOCTEXT("NoTypes", "No Server Object types yet.\nCreate a Server Object Definition asset to add one. Until then, deploying sends only the Crowdy SDK's root (Players Online).")),
+		FMargin(16.f), /*bFlat*/ true));
+}
+
+int32 SCrowdyServerComputePanel::CountPendingTypes() const
+{
+	using CrowdyExecRevisions::EChange;
+	return static_cast<int32>(Algo::CountIf(FCrowdyServerComputeService::Get().GetChanges(), [](const CrowdyExecRevisions::FTypeChange& Change)
+	{
+		return Change.TypeName != CrowdyExecDeploy::RootTypeName
+			&& (Change.Change == EChange::Changed || Change.Change == EChange::New || Change.Change == EChange::Unknown || Change.Change == EChange::Removed);
+	}));
 }
 
 TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeRow(const CrowdyExecDeploy::FTypeState& Type)
@@ -1168,7 +1307,7 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeRow(const CrowdyExecDeplo
 			SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
 			[
-				SNew(STextBlock).Text(FText::FromString(Type.TypeName)).TextStyle(&Style, "Crowdy.Text.BodyStrong")
+				SNew(STextBlock).Text(FText::FromString(Type.TypeName)).TextStyle(&Style, "Crowdy.Text.Heading")
 				.ToolTipText(FText::Format(LOCTEXT("TypeTip", "Type Name [node type], defined by {0}"), FText::FromString(Type.AssetPath)))
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(10.f, 0.f, 0.f, 0.f)
@@ -1184,15 +1323,23 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeRow(const CrowdyExecDeplo
 				MakeTypeMenu(Type.TypeName, Type.AssetPath)
 			]
 		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 3.f, 0.f, 0.f)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 8.f, 0.f, 0.f)
 		[
 			SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Body").Text(FText::FromString(Description))
 			.Visibility(Description.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
 		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 3.f, 0.f, 0.f)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 0.f)
 		[
 			SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Subtle").Text(Meta)
 			.Visibility(Meta.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
+		[
+			SNew(SBorder).BorderImage(Style.GetBrush("Crowdy.Inset")).Padding(FMargin(12.f, 8.f))
+			[
+				SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Body")
+				.Text(CrowdyServerComputePage::ChooseChangeBadge(Type, Change).ToolTip)
+			]
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 3.f, 0.f, 0.f)
 		[
