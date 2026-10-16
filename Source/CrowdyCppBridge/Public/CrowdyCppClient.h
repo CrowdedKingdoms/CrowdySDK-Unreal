@@ -131,6 +131,7 @@ struct FCrowdyCppJsonValueResult
 	bool bOk = false;
 	TSharedPtr<FJsonValue> Value;
 	FString ErrorMessage;
+	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
 };
 
 /** The outcome of an operation that answers with a single boolean. bOk is the transport flag; bValue is the answer. */
@@ -569,6 +570,11 @@ public:
 	// Delete the signed-in player's own account: personal data is anonymized and every session ends. Carries the app
 	// token.
 	FCrowdyCppRequestHandle DeleteMyAccount(TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
+	// Rename the signed-in user. The value is the user object with the new gamertag and disambiguation. Carries the
+	// session token, the only one the platform takes for it.
+	FCrowdyCppRequestHandle UpdateGamertag(const FString& Gamertag, const FString& Disambiguation,
+		TFunction<void(FCrowdyCppJsonValueResult)> OnDone);
 
 	// Exchange the identity session token for an app-scoped gameplay token, under the session bearer. The returned
 	// token is NOT installed on this client: an owner decides which plane it belongs to. The result also carries

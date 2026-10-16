@@ -125,22 +125,27 @@ void UCrowdyPlayers::SetPlayerName(const FString& Gamertag, const FString& Disam
 		return;
 	}
 
-	// Both fields are required: the pair is the player's unique handle.
-	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
-	Input->SetStringField(TEXT("gamertag"), Gamertag);
-	Input->SetStringField(TEXT("disambiguation"), Disambiguation);
-	Client->RunOp(ECrowdyCppApiDomain::Users, TEXT("UpdateGamertag"), CrowdyServiceApi::WrapInput(Input),
-		CrowdyServiceApi::GuardLifetime<FCrowdyCppJsonResult>(LiveToken, [OnResult, OnError](FCrowdyCppJsonResult Result)
+	Client->UpdateGamertag(Gamertag, Disambiguation,
+		CrowdyServiceApi::GuardLifetime<FCrowdyCppJsonValueResult>(LiveToken, [OnResult, OnError](FCrowdyCppJsonValueResult Result)
 		{
 			FCrowdyAccountError Error;
+			const TSharedPtr<FJsonObject>* User = nullptr;
 			FCrowdyPlayerProfile Profile;
-			if (!CrowdyServiceApi::ReadObject(Result, TEXT("updateGamertag"), Profile, Error))
+			if (!Result.bOk)
+			{
+				Error = Result.ErrorMessage == FCrowdyCppClient::CanceledErrorMessage()
+					? FCrowdyAccountError::Make(ECrowdyAccountErrorCode::NetworkError, TEXT("The request was interrupted before it completed."))
+					: FCrowdyAccountError::FromFailure(Result.ErrorMessage, Result.ErrorCode);
+			}
+			else if (!Result.Value.IsValid() || !Result.Value->TryGetObject(User) || !FCrowdyPlayerProfile::ParseFromJson(*User, Profile))
+			{
+				Error = CrowdyServiceApi::UnreadableResponseError<FCrowdyAccountError>();
+			}
+			if (!Error.Message.IsEmpty())
 			{
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
 			}
 			OnResult.ExecuteIfBound(Profile);
-		}),
-		// A rename changes the account, so the platform takes it only under the session token.
-		ECrowdyCppTokenPlane::Management);
+		}));
 }

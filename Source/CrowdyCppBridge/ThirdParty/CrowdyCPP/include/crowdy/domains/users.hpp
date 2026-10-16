@@ -28,15 +28,23 @@ class UsersAPI : public DomainBase {
     execUnwrapAsync(gen::users::kMeDocument, graphql::JVal(), {}, std::move(cb));
   }
 
-  graphql::Json updateGamertag(std::string_view gamertag) const {
+  /// Set the signed-in user's gamertag and disambiguation. `gamertag` is at most
+  /// 64 characters and `disambiguation` at most 128; the pair is the unique handle.
+  /// An empty disambiguation is a handle with no discriminator, and it is still sent:
+  /// the server requires the field. Updates only the caller.
+  graphql::Json updateGamertag(std::string_view gamertag,
+                               std::string_view disambiguation) const {
     graphql::JVal vars;
     vars["input"]["gamertag"] = gamertag;
+    vars["input"]["disambiguation"] = disambiguation;
     return execUnwrap(gen::users::kUpdateGamertagDocument, vars);
   }
 
-  void updateGamertagAsync(std::string_view gamertag, graphql::GraphQLCallback cb) const {
+  void updateGamertagAsync(std::string_view gamertag, std::string_view disambiguation,
+                           graphql::GraphQLCallback cb) const {
     graphql::JVal vars;
     vars["input"]["gamertag"] = gamertag;
+    vars["input"]["disambiguation"] = disambiguation;
     execUnwrapAsync(gen::users::kUpdateGamertagDocument, vars, {}, std::move(cb));
   }
 

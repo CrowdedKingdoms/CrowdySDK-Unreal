@@ -1213,6 +1213,7 @@ namespace
 		if (!Out.ok())
 		{
 			Result.ErrorMessage = OutcomeErrorMessage(Out);
+			Result.ErrorCode = OutcomeErrorCode(Out);
 			return Result;
 		}
 		Result.Value = UnwrappedJsonToUeValue(Data);
@@ -2577,6 +2578,21 @@ FCrowdyCppRequestHandle FCrowdyCppClient::DeleteMyAccount(TFunction<void(FCrowdy
 			Client.users().deleteMyAccountAsync(std::move(Cb));
 		},
 		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::UpdateGamertag(const FString& Gamertag, const FString& Disambiguation,
+	TFunction<void(FCrowdyCppJsonValueResult)> OnDone)
+{
+	const std::string GamertagStr = std::string(TCHAR_TO_UTF8(*Gamertag));
+	const std::string DisambiguationStr = std::string(TCHAR_TO_UTF8(*Disambiguation));
+	return RunAuthOp<FCrowdyCppJsonValueResult, crowdy::graphql::Json>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("updateGamertag"), MoveTemp(OnDone),
+		[GamertagStr, DisambiguationStr](crowdy::CrowdyClient& Client, FJsonPayloadCallback Cb)
+		{
+			Client.users().updateGamertagAsync(GamertagStr, DisambiguationStr, AsJsonPayloadCallback(std::move(Cb)));
+		},
+		&MapUnwrappedJson);
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::MintAppToken(int64 AppId,
