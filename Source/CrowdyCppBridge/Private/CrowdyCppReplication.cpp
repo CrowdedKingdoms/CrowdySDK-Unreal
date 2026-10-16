@@ -1166,6 +1166,7 @@ FString FCrowdyCppReplication::DescribeErrorCode(const uint8 ErrorCode)
 	case crowdy::wire::ErrorCode::InvalidAppId:         return TEXT("InvalidAppId");
 	case crowdy::wire::ErrorCode::UserNotAuthenticated: return TEXT("UserNotAuthenticated");
 	case crowdy::wire::ErrorCode::TokenExpired:         return TEXT("TokenExpired");
+	case crowdy::wire::ErrorCode::AppPaused:            return TEXT("AppPaused");
 	default:                                            return TEXT("Unrecognised");
 	}
 }
@@ -1173,6 +1174,11 @@ FString FCrowdyCppReplication::DescribeErrorCode(const uint8 ErrorCode)
 bool FCrowdyCppReplication::IsUnauthorizedErrorCode(const uint8 ErrorCode)
 {
 	return static_cast<crowdy::wire::ErrorCode>(ErrorCode) == crowdy::wire::ErrorCode::Unauthorized;
+}
+
+bool FCrowdyCppReplication::IsAppPausedErrorCode(const uint8 ErrorCode)
+{
+	return static_cast<crowdy::wire::ErrorCode>(ErrorCode) == crowdy::wire::ErrorCode::AppPaused;
 }
 
 bool FCrowdyCppReplication::SendSpatial(const uint8 Opcode, const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
@@ -1234,6 +1240,13 @@ bool FCrowdyCppReplication::SendSpatial(const uint8 Opcode, const int64 ChunkX, 
 		if (crowdy::wire::voxel::kFixedSize + Voxel->state.size() != static_cast<std::size_t>(PayloadSize))
 		{
 			OutError = TEXT("the voxel payload carries more state than it declares");
+			return false;
+		}
+		// The send itself refuses a larger state, after this has already answered that it was queued.
+		if (Voxel->state.size() > crowdy::wire::voxel::kMaxStateSize)
+		{
+			OutError = FString::Printf(TEXT("the voxel state is %d octets, over the %d a voxel update carries"),
+				static_cast<int32>(Voxel->state.size()), static_cast<int32>(crowdy::wire::voxel::kMaxStateSize));
 			return false;
 		}
 		break;

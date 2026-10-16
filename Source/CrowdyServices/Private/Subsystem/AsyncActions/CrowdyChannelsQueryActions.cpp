@@ -38,14 +38,14 @@ void UCrowdyChannels_GetMyChannels::HandleSuccess(const TArray<FCrowdyChannelMem
 {
 	FCrowdyMyChannelsResult Result;
 	Result.Memberships = Memberships;
-	OnSuccess.Broadcast(Result);
+	OnSuccess.Broadcast(Result, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_GetMyChannels::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyMyChannelsResult(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -77,14 +77,14 @@ void UCrowdyChannels_GetChannel::Activate()
 
 void UCrowdyChannels_GetChannel::HandleSuccess(FCrowdyChannel Channel)
 {
-	OnSuccess.Broadcast(Channel);
+	OnSuccess.Broadcast(Channel, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_GetChannel::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannel(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -117,14 +117,14 @@ void UCrowdyChannels_GetChannels::HandleSuccess(const TArray<FCrowdyChannel>& Ch
 {
 	FCrowdyChannelsResult Result;
 	Result.Channels = ChannelList;
-	OnSuccess.Broadcast(Result);
+	OnSuccess.Broadcast(Result, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_GetChannels::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelsResult(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -159,14 +159,14 @@ void UCrowdyChannels_GetChannelMembers::HandleSuccess(const TArray<FCrowdyChanne
 {
 	FCrowdyChannelMembersResult Result;
 	Result.Members = Members;
-	OnSuccess.Broadcast(Result);
+	OnSuccess.Broadcast(Result, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_GetChannelMembers::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelMembersResult(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -201,14 +201,14 @@ void UCrowdyChannels_GetChannelRoles::HandleSuccess(const TArray<FCrowdyChannelR
 {
 	FCrowdyChannelRolesResult Result;
 	Result.Roles = Roles;
-	OnSuccess.Broadcast(Result);
+	OnSuccess.Broadcast(Result, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_GetChannelRoles::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelRolesResult(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -239,14 +239,14 @@ void UCrowdyChannels_GetChannelPolicy::Activate()
 
 void UCrowdyChannels_GetChannelPolicy::HandleSuccess(FCrowdyChannelPolicy Policy)
 {
-	OnSuccess.Broadcast(Policy);
+	OnSuccess.Broadcast(Policy, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_GetChannelPolicy::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelPolicy(), Error, Error.Message);
 	SetReadyToDestroy();
 }
 
@@ -281,13 +281,13 @@ void UCrowdyChannels_GetPendingJoinRequests::HandleSuccess(const TArray<FCrowdyC
 {
 	FCrowdyChannelMembersResult Result;
 	Result.Members = Members;
-	OnSuccess.Broadcast(Result);
+	OnSuccess.Broadcast(Result, FCrowdyChannelError(), FString());
 	SetReadyToDestroy();
 }
 
 void UCrowdyChannels_GetPendingJoinRequests::HandleError(FCrowdyChannelError Error, FString Message)
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("%s"), *Message);
-	OnError.Broadcast(Error, Error.Message);
+	OnError.Broadcast(FCrowdyChannelMembersResult(), Error, Error.Message);
 	SetReadyToDestroy();
 }

@@ -30,7 +30,8 @@
 /// Frames are ck-exec's client protocol; payloads are MessagePack
 /// (graphql::Json::toMsgpack / fromMsgpack). The connection recovers by itself:
 /// a closed socket or a `Moved` reply asks for a host again, renews every
-/// subscription, and retries the call once. Mirrors CrowdyJS `client.exec`.
+/// subscription, and retries the call once. A close because the player's access
+/// ended (kExecCloseAccessEnded) is final instead. Mirrors CrowdyJS `client.exec`.
 /// See https://docs.dev.crowdedkingdoms.com/exec/intro.
 namespace crowdy::domains {
 
@@ -137,7 +138,8 @@ struct ExecConnectOptions {
   /// How long a call waits for its reply.
   long callTimeoutMs = 10000;
   long openTimeoutMs = 10000;
-  /// Connect again when the socket closes unexpectedly.
+  /// Connect again when the socket closes unexpectedly. Each wait is half its backoff plus up to
+  /// as much again at random, doubling from `initialReconnectDelayMs` to `maxReconnectDelayMs`.
   bool reconnect = true;
   long initialReconnectDelayMs = 250;
   long maxReconnectDelayMs = 5000;
@@ -157,6 +159,12 @@ struct ExecLogsQuery {
   /// and host. `ExecAPI::logs` only; mod logs take no flow.
   std::string flow;
 };
+
+/// The close code a host ends a session with when the player's access ended: a suspension,
+/// a revoke, a sign-out or an account block (ck-exec 0.16). Final: the connection does not
+/// reconnect, and ExecConnection::onAccessEnded listeners hear the reason. CrowdyJS
+/// `EXEC_CLOSE_ACCESS_ENDED`.
+inline constexpr std::uint16_t kExecCloseAccessEnded = 4403;
 
 /// One player's connection to a ck-exec host. Thread-safe. Every callback runs
 /// through the dispatcher (CrowdyClient::poll()); without one, on the
@@ -184,12 +192,13 @@ class ExecConnection {
   /// Calls made before then wait for the connection.
   void connect(std::function<void(Status)> done = {});
 
-  /// Call a node's endpoint with raw bytes. `done` fires once.
+  /// Call a node's endpoint with raw bytes. `done` fires once. `timeoutMs` above 0 replaces
+  /// ExecConnectOptions::callTimeoutMs for this call.
   void callRaw(std::string nodeType, std::string key, std::string method,
-               std::string payload, ExecReplyCallback done);
+               std::string payload, ExecReplyCallback done, long timeoutMs = 0);
   /// Call with `args` as MessagePack; decode the reply with ExecReply::value().
   void call(std::string nodeType, std::string key, std::string method,
-            const graphql::JVal& args, ExecReplyCallback done);
+            const graphql::JVal& args, ExecReplyCallback done, long timeoutMs = 0);
   /// Receive what a node publishes on `topic`. Returns a handle for
   /// unsubscribe(); `done` fires with the gateway's answer to the first one.
   std::uint64_t subscribe(std::string nodeType, std::string key, std::string topic,
@@ -200,6 +209,13 @@ class ExecConnection {
 
   /// Called with the new host after every reconnect.
   void onReconnect(std::function<void(std::string host)> listener);
+  /// Called once, with the host's reason, when the host closes the connection because the
+  /// player's access ended (close code kExecCloseAccessEnded: suspended, revoked, signed out
+  /// or blocked). The connection is closed for good then and does not reconnect: calls in
+  /// flight fail `Denied` with the reason, later ones `Unavailable`. Tell the player, and
+  /// connect again only once they hold access again, with a fresh connect token
+  /// (`ExecAPI::connect` mints one; the host refuses one minted before the cut for 90 s).
+  void onAccessEnded(std::function<void(std::string reason)> listener);
 
   std::string host() const;
   bool connected() const;
@@ -208,15 +224,21 @@ class ExecConnection {
   /// connect token with HTTP 401 and its reason before any WebSocket exists, which is `Denied`
   /// with that reason (the transport's `WebSocketError::httpStatus` / `httpBody`), and a player
   /// past their session cap with 429, which is `Unavailable`. A gateway before 0.10.0 closed
-  /// with 4401, also `Denied`. Calls waiting on the attempt fail with the same reply.
+  /// with 4401, also `Denied`. Calls waiting on the attempt fail with the same reply. A host
+  /// ending the session because the player's access ended (kExecCloseAccessEnded, ck-exec
+  /// 0.16) is `Denied` with its reason, and the connection stays closed.
   std::optional<ExecReply> lastFailure() const;
   /// Close; nothing reconnects and pending calls fail as Unavailable.
   void close();
 
+  /// Dial only gateways `execGatewayRefusal` passes for the Game API `gameApiUrl()` names (read
+  /// at each dial). ExecAPI::connect pins the connections it makes; pin one you build yourself
+  /// over an ExecDial the same way. A refused gateway is never dialed: the attempt fails
+  /// `Unavailable` with the reason.
+  void pinGateway(std::function<std::string()> gameApiUrl);
+
  private:
   friend class ExecAPI;
-  /// Dial only gateways `execGatewayRefusal` passes for the Game API `gameApiUrl` names.
-  void pinGateway(std::function<std::string()> gameApiUrl);
 
   class Impl;
   std::shared_ptr<Impl> impl_;
@@ -338,11 +360,13 @@ class ExecAPI : public DomainBase {
   graphql::Json starters(std::string appId) const;
   void startersAsync(std::string appId, graphql::GraphQLCallback done) const;
   /// Build crates into modules on the platform (`execBuild`), so you need no Rust
-  /// toolchain. Returns the build at once, queued: `{ buildId, status, kind, log, createdAt,
-  /// startedAt, finishedAt, artifacts: [{ crate, digest, sizeBytes, capabilitySummaryJson,
-  /// capabilityHash, tickIntervalMs }] }`. `kind` is `exec` here and `client` for a CLIENT half
-  /// (`modClientBuild`), whose artifact alone carries the three capability fields. Requires
-  /// `manage_compute`.
+  /// toolchain. Returns the build at once, queued: `{ buildId, status, kind, log, sdkVersion,
+  /// createdAt, startedAt, finishedAt, artifacts: [{ crate, digest, sizeBytes,
+  /// capabilitySummaryJson, capabilityHash, tickIntervalMs }] }`. `kind` is `exec` here and
+  /// `client` for a CLIENT half (`modClientBuild`), whose artifact alone carries the three
+  /// capability fields. `sdkVersion` is the `ckx-sdk` (CLIENT half: `crowdy-client-sdk`) version
+  /// the platform compiled against, whatever version the crate names; null until the build
+  /// starts (ck-api v2.40.2 or later). Requires `manage_compute`.
   graphql::Json build(std::string appId, const std::vector<ExecCrate>& crates) const;
   void buildAsync(std::string appId, const std::vector<ExecCrate>& crates, graphql::GraphQLCallback done) const;
   /// A build's status, log and modules (`execBuildStatus`), or null. Requires
@@ -554,8 +578,9 @@ class ExecAPI : public DomainBase {
   graphql::Json endpointStats(std::string appId, std::string nodeType = {}, int sinceMinutes = -1) const;
   void endpointStatsAsync(std::string appId, std::string nodeType, int sinceMinutes,
                           graphql::GraphQLCallback done) const;
-  /// `{ activeVersion, disabled, disabledTypes, budgetPaused }` (`execAppStatus`).
-  /// Requires `view_compute_diagnostics`.
+  /// `{ activeVersion, disabled, disabledTypes, budgetPaused, budgetPauseReason,
+  /// maxInstances, maxReservedMb, instanceLimit, instances, reservedMb }`
+  /// (`execAppStatus`). Requires `view_compute_diagnostics`.
   graphql::Json status(std::string appId) const;
   void statusAsync(std::string appId, graphql::GraphQLCallback done) const;
   /// Make an earlier version active again, a rollback (`execActivateVersion`);
@@ -567,6 +592,13 @@ class ExecAPI : public DomainBase {
   /// with `Denied`. Requires `manage_compute`.
   graphql::Json setEnabled(std::string appId, bool enabled, std::string nodeType = {}) const;
   void setEnabledAsync(std::string appId, bool enabled, std::string nodeType, graphql::GraphQLCallback done) const;
+  /// Move one node type's running instances to the app's active version
+  /// (`execRestartType`): each is persisted and stopped, and starts again on the
+  /// active version at its next call. A deploy changes what NEW instances run; this
+  /// moves the running ones without switching the type off. `{ nodeType, stopped }`,
+  /// the instances it stopped. Requires `manage_compute`.
+  graphql::Json restartType(std::string appId, std::string nodeType) const;
+  void restartTypeAsync(std::string appId, std::string nodeType, graphql::GraphQLCallback done) const;
 
  private:
   ExecDial dialer(std::string appId, std::string nodeType, std::string key, bool developer = false) const;

@@ -1,5 +1,6 @@
 #include "SCrowdyServerObjectMembers.h"
 
+#include "CrowdyExecDeveloperCall.h"
 #include "CrowdyExecInternal.h"
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerObjectDefinition.h"
@@ -9,6 +10,7 @@
 #include "EdGraphSchema_K2.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "PropertyBagDetails.h"
+#include "SCrowdyExecDeveloperCall.h"
 #include "ScopedTransaction.h"
 #include "InputCoreTypes.h"
 #include "Styling/AppStyle.h"
@@ -75,6 +77,7 @@ namespace SCrowdyServerObjectMembersDetail
 		case ECrowdyServerFunctionCaller::Members: return LOCTEXT("MembersTag", "Members");
 		case ECrowdyServerFunctionCaller::Leader: return LOCTEXT("LeaderTag", "Leader");
 		case ECrowdyServerFunctionCaller::ServerOnly: return LOCTEXT("ServerOnlyTag", "Server Only");
+		case ECrowdyServerFunctionCaller::DevelopersOnly: return LOCTEXT("DevelopersOnlyTag", "Developers Only");
 		default: return LOCTEXT("PlayersTag", "Players");
 		}
 	}
@@ -122,7 +125,7 @@ void SCrowdyServerObjectMembers::Construct(const FArguments& InArgs)
 			.SelectionMode(ESelectionMode::Single)
 			.OnGenerateRow(this, &SCrowdyServerObjectMembers::MakeRow)
 			.OnGetChildren_Lambda([](FItemPtr Item, TArray<FItemPtr>& OutChildren) { OutChildren = Item->Children; })
-			.OnIsSelectableOrNavigable_Lambda([](FItemPtr Item) { return Item.IsValid() && Item->Type != FItem::EType::BuiltIn; })
+			.OnIsSelectableOrNavigable_Lambda([](FItemPtr Item) { return Item.IsValid() && Item->Type != FItem::EType::BuiltIn && Item->Type != FItem::EType::Note; })
 			.OnSelectionChanged(this, &SCrowdyServerObjectMembers::HandleSelectionChanged)
 			.OnMouseButtonDoubleClick(this, &SCrowdyServerObjectMembers::HandleDoubleClick)
 			.OnContextMenuOpening(this, &SCrowdyServerObjectMembers::MakeContextMenu)
@@ -158,6 +161,11 @@ FReply SCrowdyServerObjectMembers::OnKeyDown(const FGeometry& MyGeometry, const 
 		RemoveFunction(Item->Index);
 		return FReply::Handled();
 	}
+	if (Item->Type == FItem::EType::Message)
+	{
+		RemoveMessage(Item->Index);
+		return FReply::Handled();
+	}
 	if (Item->Type == FItem::EType::Variable && (Current->StateForm == ECrowdyServerValuesForm::List || Item->bStale))
 	{
 		RemoveVariable(Item->Name);
@@ -174,7 +182,6 @@ void SCrowdyServerObjectMembers::ShowTypeSettings()
 
 void SCrowdyServerObjectMembers::Rebuild()
 {
-	using namespace SCrowdyServerObjectMembersDetail;
 	Roots.Reset();
 	const UCrowdyServerObjectDefinition* Current = Definition.Get();
 	if (!Current)
@@ -182,6 +189,18 @@ void SCrowdyServerObjectMembers::Rebuild()
 		Tree->RequestTreeRefresh();
 		return;
 	}
+	Roots = BuildRoots(Current, TypeSettings);
+	Tree->RequestTreeRefresh();
+	for (const FItemPtr& Section : Roots)
+	{
+		Tree->SetItemExpansion(Section, true);
+	}
+	RestoreSelection(true);
+}
+
+TArray<SCrowdyServerObjectMembers::FItemPtr> SCrowdyServerObjectMembers::BuildRoots(const UCrowdyServerObjectDefinition* Current, const FItemPtr& TypeSettings)
+{
+	using namespace SCrowdyServerObjectMembersDetail;
 	TArray<FCrowdyExecBakedStruct> Structs;
 	TArray<FCrowdyExecBakedEnum> Enums;
 	TArray<FString> Errors;
@@ -270,7 +289,11 @@ void SCrowdyServerObjectMembers::Rebuild()
 		Functions->Children.Add(Item);
 	}
 
-	Roots = {TypeSettings, Variables, Functions};
+	if (Current->IsFunctionLibrary())
+	{
+		return {TypeSettings, Functions};
+	}
+	TArray<FItemPtr> Roots = {TypeSettings, Variables, Functions, MakeMessagesSection(*Current, Errors)};
 	if (Current->MembersFrom == ECrowdyServerMembersSource::ThisObject)
 	{
 		FItemPtr BuiltIns = MakeSection(FItem::EType::BuiltIns, LOCTEXT("BuiltIns", "Built-in"));
@@ -286,12 +309,35 @@ void SCrowdyServerObjectMembers::Rebuild()
 		}
 		Roots.Add(BuiltIns);
 	}
-	Tree->RequestTreeRefresh();
-	for (const FItemPtr& Section : Roots)
+	return Roots;
+}
+
+SCrowdyServerObjectMembers::FItemPtr SCrowdyServerObjectMembers::MakeMessagesSection(const UCrowdyServerObjectDefinition& Current, const TArray<FString>& Errors)
+{
+	using namespace SCrowdyServerObjectMembersDetail;
+	FItemPtr Messages = MakeSection(FItem::EType::Messages, LOCTEXT("ServerMessages", "Server Messages"));
+	for (int32 Index = 0; Index < Current.Messages.Num(); ++Index)
 	{
-		Tree->SetItemExpansion(Section, true);
+		const FCrowdyServerMessage& Message = Current.Messages[Index];
+		FItemPtr Item = MakeShared<FItem>();
+		Item->Type = FItem::EType::Message;
+		Item->Name = Message.Name;
+		Item->Index = Index;
+		Item->Label = FText::FromName(Message.Name);
+		const FText Payload = CrowdyServerObjectText::PayloadSignature(Message, false);
+		Item->Detail = Message.bPlayersCanListen ? Payload : FText::Format(LOCTEXT("ServerOnlyMessage", "{0} (server only)"), Payload);
+		const FString PayloadList = Message.GetPayloadListName();
+		Item->Problem = ProblemsFor(Errors, {FString::Printf(TEXT("Message %s:"), *Message.Name.ToString()), PayloadList.IsEmpty() ? FString() : PayloadList + TEXT(".")});
+		Messages->Children.Add(Item);
 	}
-	RestoreSelection(true);
+	if (CrowdyServerObjectText::ShowsMessagePrivacyWarning(Current))
+	{
+		FItemPtr Note = MakeShared<FItem>();
+		Note->Type = FItem::EType::Note;
+		Note->Problem = CrowdyServerObjectText::MessagePrivacyWarning();
+		Messages->Children.Add(Note);
+	}
+	return Messages;
 }
 
 SCrowdyServerObjectMembers::FItemPtr SCrowdyServerObjectMembers::FindRow(TConstArrayView<FItemPtr> Roots, const FCrowdyServerObjectSelection& Selection)
@@ -304,6 +350,7 @@ SCrowdyServerObjectMembers::FItemPtr SCrowdyServerObjectMembers::FindRow(TConstA
 		case FItem::EType::TypeSettings: return Selection.Kind == EKind::None;
 		case FItem::EType::Variable: return Selection.Kind == EKind::Variable && Item->Name == Selection.Variable;
 		case FItem::EType::Function: return Selection.Kind == EKind::Function && Item->Index == Selection.Function;
+		case FItem::EType::Message: return Selection.Kind == EKind::Message && Item->Index == Selection.Message;
 		default: return false;
 		}
 	};
@@ -329,6 +376,11 @@ void SCrowdyServerObjectMembers::SelectItem(const FItemPtr& Item, FCrowdyServerO
 	if (Type == FItem::EType::Function)
 	{
 		Selection.SelectFunction(Item->Index);
+		return;
+	}
+	if (Type == FItem::EType::Message)
+	{
+		Selection.SelectMessage(Item->Index);
 		return;
 	}
 	Selection.SelectNone();
@@ -357,12 +409,13 @@ void SCrowdyServerObjectMembers::RestoreSelection(bool bDropMissing)
 
 TSharedRef<ITableRow> SCrowdyServerObjectMembers::MakeRow(FItemPtr Item, const TSharedRef<STableViewBase>& Owner)
 {
-	const bool bSection = Item->Type == FItem::EType::Variables || Item->Type == FItem::EType::Functions || Item->Type == FItem::EType::BuiltIns;
+	const bool bSection = Item->Type == FItem::EType::Variables || Item->Type == FItem::EType::Functions || Item->Type == FItem::EType::Messages || Item->Type == FItem::EType::BuiltIns;
 	const bool bTypeSettings = Item->Type == FItem::EType::TypeSettings;
+	const TSharedRef<SWidget> Content = bTypeSettings ? MakeTypeSettingsRow(Item) : bSection ? MakeSectionRow(Item) : Item->Type == FItem::EType::Note ? MakeNoteRow(Item) : MakeMemberRow(Item);
 	return SNew(STableRow<FItemPtr>, Owner)
 		.Padding(FMargin(2.0f, bSection || bTypeSettings ? 4.0f : 2.0f))
 		[
-			bTypeSettings ? MakeTypeSettingsRow(Item) : bSection ? MakeSectionRow(Item) : MakeMemberRow(Item)
+			Content
 		];
 }
 
@@ -392,6 +445,7 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeTypeSettingsRow(const FItemP
 TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeSectionRow(const FItemPtr& Item)
 {
 	const bool bVariables = Item->Type == FItem::EType::Variables;
+	const bool bMessages = Item->Type == FItem::EType::Messages;
 	TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
 		.FillWidth(1.0f)
@@ -405,6 +459,10 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeSectionRow(const FItemPtr& I
 	{
 		Row->SetToolTipText(LOCTEXT("BuiltInsToolTip", "Added by Members From This Object; they cannot be edited or deleted"));
 		return Row;
+	}
+	if (bMessages)
+	{
+		Row->SetToolTipText(LOCTEXT("MessagesToolTip", "What the server tells everyone listening: players and other Server Object types"));
 	}
 	if (bVariables)
 	{
@@ -434,7 +492,7 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeSectionRow(const FItemPtr& I
 		[
 			SNew(SButton)
 			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-			.ToolTipText(bVariables ? LOCTEXT("AddVariableToolTip", "Add a variable") : LOCTEXT("AddFunctionToolTip", "Add a function"))
+			.ToolTipText(bVariables ? LOCTEXT("AddVariableToolTip", "Add a variable") : bMessages ? LOCTEXT("AddMessageToolTip", "Add a message") : LOCTEXT("AddFunctionToolTip", "Add a function"))
 			.Visibility_Lambda([this, bVariables]()
 			{
 				// A new definition starts on a struct with none chosen; adding a variable is how it moves to variables.
@@ -442,9 +500,9 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeSectionRow(const FItemPtr& I
 				const bool bUsesStruct = bVariables && Current && Current->StateForm == ECrowdyServerValuesForm::Struct && Current->State;
 				return bUsesStruct ? EVisibility::Hidden : EVisibility::Visible;
 			})
-			.OnClicked_Lambda([this, bVariables]()
+			.OnClicked_Lambda([this, bVariables, bMessages]()
 			{
-				bVariables ? AddVariable() : AddFunction();
+				bVariables ? AddVariable() : bMessages ? AddMessage() : AddFunction();
 				return FReply::Handled();
 			})
 			[
@@ -460,6 +518,7 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeMemberRow(const FItemPtr& It
 {
 	const bool bVariable = Item->Type == FItem::EType::Variable;
 	const bool bBuiltIn = Item->Type == FItem::EType::BuiltIn;
+	const bool bMessage = Item->Type == FItem::EType::Message;
 	TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
@@ -467,7 +526,7 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeMemberRow(const FItemPtr& It
 		.Padding(0.0f, 0.0f, 6.0f, 0.0f)
 		[
 			SNew(SImage)
-			.Image(FAppStyle::GetBrush(bVariable ? "Kismet.VariableList.TypeIcon" : "GraphEditor.Function_16x"))
+			.Image(FAppStyle::GetBrush(bVariable ? "Kismet.VariableList.TypeIcon" : bMessage ? "GraphEditor.Event_16x" : "GraphEditor.Function_16x"))
 			.ColorAndOpacity(bVariable ? Item->TypeColor : FSlateColor::UseForeground())
 		]
 		+ SHorizontalBox::Slot()
@@ -504,7 +563,9 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeMemberRow(const FItemPtr& It
 		];
 	if (!bVariable)
 	{
-		Row->SetToolTipText(bBuiltIn ? SCrowdyServerObjectMembersDetail::BuiltInToolTip(Item->Name) : LOCTEXT("FunctionRowToolTip", "Double-click to open it in the server code"));
+		const FText RowToolTip = bMessage ? LOCTEXT("MessageRowToolTip", "A message the server sends to everyone listening")
+			: LOCTEXT("FunctionRowToolTip", "Double-click to open it in the server code");
+		Row->SetToolTipText(bBuiltIn ? SCrowdyServerObjectMembersDetail::BuiltInToolTip(Item->Name) : RowToolTip);
 		Row->SetEnabled(!bBuiltIn);
 		Row->AddSlot()
 			.AutoWidth()
@@ -523,7 +584,39 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeMemberRow(const FItemPtr& It
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 				]
 			];
-		return Row;
+		const FCrowdyServerFunction* BuiltIn = bBuiltIn ? UCrowdyServerObjectDefinition::GetMemberFunctions().FindByPredicate([&Item](const FCrowdyServerFunction& Each) { return Each.Name == Item->Name; }) : nullptr;
+		if (!BuiltIn || !CrowdyExecDeveloperCall::IsForDevelopers(*BuiltIn))
+		{
+			return Row;
+		}
+		// The row is disabled and unselectable, so the button sits beside it rather than in it.
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			[
+				Row
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SButton)
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+				.ToolTipText(LOCTEXT("CallAsDeveloperToolTip", "Call as Developer: runs this function on a live Server Object as you, the app's developer"))
+				.OnClicked_Lambda([this, Name = Item->Name]()
+				{
+					if (UCrowdyServerObjectDefinition* Current = Definition.Get())
+					{
+						SCrowdyExecDeveloperCall::Open(*Current, Name);
+					}
+					return FReply::Handled();
+				})
+				[
+					SNew(SImage)
+					.Image(FAppStyle::GetBrush("Icons.Play"))
+					.ColorAndOpacity(FSlateColor::UseForeground())
+				]
+			];
 	}
 	const FName Name = Item->Name;
 	const bool bVisible = Item->bVisibleToPlayers;
@@ -550,6 +643,31 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeMemberRow(const FItemPtr& It
 	return Row;
 }
 
+TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeNoteRow(const FItemPtr& Item)
+{
+	return SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+		[
+			SNew(SImage)
+			.Image(FAppStyle::GetBrush("Icons.Warning"))
+			.ColorAndOpacity(FStyleColors::Warning)
+			.DesiredSizeOverride(FVector2D(16.0f, 16.0f))
+		]
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.0f)
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(Item->Problem)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+			.AutoWrapText(true)
+		];
+}
+
 TSharedPtr<SWidget> SCrowdyServerObjectMembers::MakeContextMenu()
 {
 	const TArray<FItemPtr> Selected = Tree->GetSelectedItems();
@@ -559,7 +677,7 @@ TSharedPtr<SWidget> SCrowdyServerObjectMembers::MakeContextMenu()
 		return nullptr;
 	}
 	const FItemPtr Item = Selected[0];
-	if (Item->Type == FItem::EType::TypeSettings || Item->Type == FItem::EType::BuiltIns || Item->Type == FItem::EType::BuiltIn)
+	if (Item->Type == FItem::EType::TypeSettings || Item->Type == FItem::EType::BuiltIns || Item->Type == FItem::EType::BuiltIn || Item->Type == FItem::EType::Note)
 	{
 		return nullptr;
 	}
@@ -587,6 +705,15 @@ TSharedPtr<SWidget> SCrowdyServerObjectMembers::MakeContextMenu()
 			FUIAction(FExecuteAction::CreateSP(this, &SCrowdyServerObjectMembers::DuplicateFunction, Item->Index)));
 		Menu.AddMenuEntry(LOCTEXT("DeleteFunction", "Delete"), LOCTEXT("DeleteFunctionToolTip", "Removes this function"), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Delete"),
 			FUIAction(FExecuteAction::CreateSP(this, &SCrowdyServerObjectMembers::RemoveFunction, Item->Index)));
+		break;
+	case FItem::EType::Messages:
+		Menu.AddMenuEntry(LOCTEXT("AddMessage", "Add Message"), FText::GetEmpty(), FSlateIcon(), FUIAction(FExecuteAction::CreateSP(this, &SCrowdyServerObjectMembers::AddMessage)));
+		break;
+	case FItem::EType::Message:
+		Menu.AddMenuEntry(LOCTEXT("DuplicateMessage", "Duplicate"), FText::GetEmpty(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Duplicate"),
+			FUIAction(FExecuteAction::CreateSP(this, &SCrowdyServerObjectMembers::DuplicateMessage, Item->Index)));
+		Menu.AddMenuEntry(LOCTEXT("DeleteMessage", "Delete"), LOCTEXT("DeleteMessageToolTip", "Removes this message"), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Delete"),
+			FUIAction(FExecuteAction::CreateSP(this, &SCrowdyServerObjectMembers::RemoveMessage, Item->Index)));
 		break;
 	default:
 		break;
@@ -703,6 +830,68 @@ void SCrowdyServerObjectMembers::RemoveFunction(int32 Index)
 		if (Edited.Functions.IsValidIndex(Index))
 		{
 			Edited.Functions.RemoveAt(Index);
+		}
+	});
+	Selection->SelectNone();
+}
+
+int32 SCrowdyServerObjectMembers::AddMessageTo(UCrowdyServerObjectDefinition& Edited)
+{
+	const FName Name = SCrowdyServerObjectMembersDetail::UniqueName(TEXT("NewMessage"), [&Edited](FName Candidate)
+	{
+		return Edited.Messages.ContainsByPredicate([Candidate](const FCrowdyServerMessage& Message) { return Message.Name == Candidate; });
+	});
+	FCrowdyServerMessage& Added = Edited.Messages.AddDefaulted_GetRef();
+	Added.Name = Name;
+	Added.PayloadForm = ECrowdyServerValuesForm::List;
+	return Edited.Messages.Num() - 1;
+}
+
+int32 SCrowdyServerObjectMembers::DuplicateMessageIn(UCrowdyServerObjectDefinition& Edited, int32 Index)
+{
+	if (!Edited.Messages.IsValidIndex(Index))
+	{
+		return INDEX_NONE;
+	}
+	const FString Base = Edited.Messages[Index].Name.ToString() + TEXT("Copy");
+	const FName Name = SCrowdyServerObjectMembersDetail::UniqueName(*Base, [&Edited](FName Candidate)
+	{
+		return Edited.Messages.ContainsByPredicate([Candidate](const FCrowdyServerMessage& Message) { return Message.Name == Candidate; });
+	});
+	FCrowdyServerMessage Copy = Edited.Messages[Index];
+	Copy.Name = Name;
+	Copy.ServerName.Reset();
+	Edited.Messages.Insert(MoveTemp(Copy), Index + 1);
+	return Index + 1;
+}
+
+void SCrowdyServerObjectMembers::AddMessage()
+{
+	int32 Added = INDEX_NONE;
+	EditDefinition(LOCTEXT("AddMessageTransaction", "Add Message"), [&Added](UCrowdyServerObjectDefinition& Edited) { Added = AddMessageTo(Edited); });
+	if (Added != INDEX_NONE)
+	{
+		Selection->SelectMessage(Added);
+	}
+}
+
+void SCrowdyServerObjectMembers::DuplicateMessage(int32 Index)
+{
+	int32 Copied = INDEX_NONE;
+	EditDefinition(LOCTEXT("DuplicateMessageTransaction", "Duplicate Message"), [&Copied, Index](UCrowdyServerObjectDefinition& Edited) { Copied = DuplicateMessageIn(Edited, Index); });
+	if (Copied != INDEX_NONE)
+	{
+		Selection->SelectMessage(Copied);
+	}
+}
+
+void SCrowdyServerObjectMembers::RemoveMessage(int32 Index)
+{
+	EditDefinition(LOCTEXT("DeleteMessageTransaction", "Delete Message"), [Index](UCrowdyServerObjectDefinition& Edited)
+	{
+		if (Edited.Messages.IsValidIndex(Index))
+		{
+			Edited.Messages.RemoveAt(Index);
 		}
 	});
 	Selection->SelectNone();

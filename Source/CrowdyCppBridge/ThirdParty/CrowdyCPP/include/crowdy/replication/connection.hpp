@@ -91,6 +91,9 @@ class Connection {
   Result<std::uint8_t> sendActorUpdate(const SpatialSend& p) {
     return sendLongSpatial(wire::MessageType::ActorUpdateRequest, p);
   }
+  /// Positions and type are app-defined int16s; InvalidArgument for a state over
+  /// wire::voxel::kMaxStateSize (1,024 bytes). The server delivers an accepted edit back to
+  /// its sender as an ordinary voxelUpdate.
   Result<std::uint8_t> sendVoxelUpdate(const wire::ChunkCoord& chunk, const core::ActorUuid& uuid,
                                        std::int16_t x, std::int16_t y, std::int16_t z,
                                        std::int16_t voxelType, Bytes voxelState,
@@ -131,6 +134,23 @@ class Connection {
   /// Publish to a channel (requires membership + send_messages).
   Result<std::uint8_t> sendChannelMessage(std::int64_t channelId, const core::ActorUuid& uuid,
                                           Bytes payload);
+  /// Channel audio (opcode 35, Buddy v0.37.0): opcode 17's layout and signing with its own
+  /// type byte, delivered to every active member wherever they are (party or guild voice)
+  /// as Handlers::channelAudio. `payload` is opaque, at most 1,024 bytes (typically one
+  /// media::VoicePacketizer packet). Needs the channel's send_voice and the session's
+  /// use_voice_chat; a refusal arrives as GenericError Unauthorized for the returned
+  /// sequence. The sender receives no echo.
+  Result<std::uint8_t> sendChannelAudio(std::int64_t channelId, const core::ActorUuid& uuid,
+                                        Bytes payload);
+  /// Publish to a channel so that only members with a live actor in this
+  /// connection's app within maxDistance chunks of `origin` receive it (Euclidean
+  /// between chunk coordinates, boundary included; 0..2147483647; Buddy v0.35.0).
+  /// Members receive an ordinary channel notification. Same send right as
+  /// sendChannelMessage; a refusal arrives as a GenericError for the returned
+  /// sequence. InvalidArgument for a distance over wire::channel_ranged::kMaxDistance.
+  Result<std::uint8_t> sendRangedChannelMessage(std::int64_t channelId, const core::ActorUuid& uuid,
+                                                Bytes payload, const wire::ChunkCoord& origin,
+                                                std::uint32_t maxDistance);
   /// Idle keep-alive for your own actor (no fan-out). Send every ~2 s while
   /// idle so presence never lapses.
   Result<std::uint8_t> sendHeartbeat(const wire::ChunkCoord& chunk, const core::ActorUuid& uuid);
@@ -298,6 +318,8 @@ class Connection {
   Credentials credentials() const;
 
   Result<std::uint8_t> sendLongSpatial(wire::MessageType type, const SpatialSend& p);
+  Result<std::uint8_t> sendChannelRequest(wire::MessageType type, std::int64_t channelId,
+                                          const core::ActorUuid& uuid, Bytes payload);
   /// Hand one encoded message to the send path: straight to the socket when
   /// Config::bundleSends is off, otherwise into the pending bundle (flushing
   /// first when it is full or its window has passed).

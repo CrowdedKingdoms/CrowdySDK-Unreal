@@ -25,23 +25,6 @@ namespace
 		return TArray<uint8>(reinterpret_cast<const uint8*>(Value.data()), static_cast<int32>(Value.size()));
 	}
 
-	FCrowdyNativeExecReply CrowdyNativeExecReplyFrom(const crowdy::domains::ExecReply& Reply)
-	{
-		FCrowdyNativeExecReply Out;
-		Out.Status = static_cast<ECrowdyNativeExecStatus>(Reply.status);
-		Out.bRetryable = Reply.retryable();
-		Out.bRateLimited = Reply.rateLimited();
-		const std::optional<long> RetryAfter = Reply.retryAfterMs();
-		Out.RetryAfterMs = RetryAfter ? static_cast<int32>(FMath::Clamp<long>(*RetryAfter, 0, MAX_int32)) : -1;
-		if (Reply.ok())
-		{
-			Out.Payload = CrowdyNativeExecBytes(Reply.payload);
-			return Out;
-		}
-		Out.Message = CrowdyNativeExecFromUtf8(Reply.payload);
-		return Out;
-	}
-
 	FCrowdyNativeExecReply CrowdyNativeExecRefusal(ECrowdyNativeExecStatus Status, const FString& Message)
 	{
 		FCrowdyNativeExecReply Out;
@@ -64,12 +47,34 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 	using FConnectCallback = TFunction<void(bool, const FString&)>;
 
 	std::shared_ptr<crowdy::domains::ExecConnection> Connection;
+	std::shared_ptr<FString> DialRefusal;
+	std::shared_ptr<bool> RefusedForGood;
 
 	// Completions not yet delivered, by id, so Close can deliver each exactly once whatever CrowdyCPP does later.
 	TMap<uint64, FReplyCallback> PendingReplies;
 	TMap<uint64, FConnectCallback> PendingConnects;
 	uint64 NextId = 0;
 	bool bClosed = false;
+
+	TArray<TFunction<void(const FString&)>> AccessEndedListeners;
+	FString AccessEndedReason;
+	bool bAccessEnded = false;
+
+	void HandleAccessEnded(const std::string& Reason)
+	{
+		if (bClosed || bAccessEnded)
+		{
+			return;
+		}
+		bAccessEnded = true;
+		AccessEndedReason = Reason.empty() ? FString(TEXT("access ended")) : CrowdyNativeExecFromUtf8(Reason);
+		TArray<TFunction<void(const FString&)>> Listeners = MoveTemp(AccessEndedListeners);
+		AccessEndedListeners.Reset();
+		for (const TFunction<void(const FString&)>& Listener : Listeners)
+		{
+			Listener(AccessEndedReason);
+		}
+	}
 
 	uint64 TrackReply(FReplyCallback OnDone)
 	{
@@ -97,6 +102,17 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 		OnDone(bConnected, Error);
 	}
 
+	/** Why connecting failed in the platform's words: the Game API's refusal to name a host, else the gateway's, else the failure's name. */
+	FString ConnectFailure(const crowdy::Status& Result) const
+	{
+		if (DialRefusal && !DialRefusal->IsEmpty())
+		{
+			return *DialRefusal;
+		}
+		const std::optional<crowdy::domains::ExecReply> Failure = Connection->lastFailure();
+		return Failure && !Failure->payload.empty() ? CrowdyNativeExecFromUtf8(Failure->payload) : FString(UTF8_TO_TCHAR(crowdy::errcName(Result.code)));
+	}
+
 	crowdy::domains::ExecReplyCallback ReplyTo(uint64 Id)
 	{
 		TWeakPtr<FImpl, ESPMode::ThreadSafe> Weak = AsWeak();
@@ -104,7 +120,7 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 		{
 			if (const TSharedPtr<FImpl, ESPMode::ThreadSafe> Live = Weak.Pin())
 			{
-				Live->CompleteReply(Id, CrowdyNativeExecReplyFrom(Reply));
+				Live->CompleteReply(Id, CrowdyNativeExec::ReplyFrom(Reply));
 			}
 		};
 	}
@@ -112,12 +128,42 @@ struct FCrowdyNativeExecConnection::FImpl : public TSharedFromThis<FImpl, ESPMod
 
 namespace CrowdyNativeExec
 {
-	TSharedRef<FCrowdyNativeExecConnection> Wrap(std::shared_ptr<crowdy::domains::ExecConnection> Connection)
+	TSharedRef<FCrowdyNativeExecConnection> Wrap(std::shared_ptr<crowdy::domains::ExecConnection> Connection, std::shared_ptr<FString> DialRefusal,
+		std::shared_ptr<bool> RefusedForGood)
 	{
 		TSharedRef<FCrowdyNativeExecConnection::FImpl, ESPMode::ThreadSafe> Impl =
 			MakeShared<FCrowdyNativeExecConnection::FImpl, ESPMode::ThreadSafe>();
 		Impl->Connection = std::move(Connection);
+		Impl->DialRefusal = std::move(DialRefusal);
+		Impl->RefusedForGood = std::move(RefusedForGood);
+		TWeakPtr<FCrowdyNativeExecConnection::FImpl, ESPMode::ThreadSafe> Weak = Impl->AsWeak();
+		Impl->Connection->onAccessEnded([Weak](std::string Reason)
+		{
+			if (const TSharedPtr<FCrowdyNativeExecConnection::FImpl, ESPMode::ThreadSafe> Live = Weak.Pin())
+			{
+				Live->HandleAccessEnded(Reason);
+			}
+		});
 		return MakeShared<FCrowdyNativeExecConnection>(Impl);
+	}
+
+	FCrowdyNativeExecReply ReplyFrom(const crowdy::domains::ExecReply& Reply)
+	{
+		FCrowdyNativeExecReply Out;
+		Out.Status = static_cast<ECrowdyNativeExecStatus>(Reply.status);
+		Out.bRetryable = Reply.retryable();
+		Out.bRateLimited = Reply.rateLimited();
+		const std::optional<long> RetryAfter = Reply.retryAfterMs();
+		Out.RetryAfterMs = RetryAfter ? static_cast<int32>(FMath::Clamp<long>(*RetryAfter, 0, MAX_int32)) : -1;
+		if (Reply.ok())
+		{
+			Out.Payload = CrowdyNativeExecBytes(Reply.payload);
+			return Out;
+		}
+		Out.Message = CrowdyNativeExecFromUtf8(Reply.payload);
+		// The client's own call timeout, as opposed to a deadline the server reports.
+		Out.bNoReply = Out.Status == ECrowdyNativeExecStatus::DeadlineExceeded && Out.Message.StartsWith(TEXT("no reply in "), ESearchCase::CaseSensitive);
+		return Out;
 	}
 }
 
@@ -152,7 +198,7 @@ void FCrowdyNativeExecConnection::Connect(TFunction<void(bool bConnected, const 
 	{
 		if (const TSharedPtr<FImpl, ESPMode::ThreadSafe> Live = Weak.Pin())
 		{
-			Live->CompleteConnect(Id, Result.ok(), Result.ok() ? FString() : FString(UTF8_TO_TCHAR(crowdy::errcName(Result.code))));
+			Live->CompleteConnect(Id, Result.ok(), Result.ok() ? FString() : Live->ConnectFailure(Result));
 		}
 	});
 }
@@ -249,6 +295,30 @@ void FCrowdyNativeExecConnection::OnReconnect(TFunction<void(const FString& Host
 	});
 }
 
+void FCrowdyNativeExecConnection::OnAccessEnded(TFunction<void(const FString& Reason)> Listener)
+{
+	if (Impl->bClosed || !Listener)
+	{
+		return;
+	}
+	if (Impl->bAccessEnded)
+	{
+		Listener(Impl->AccessEndedReason);
+		return;
+	}
+	Impl->AccessEndedListeners.Add(MoveTemp(Listener));
+}
+
+bool FCrowdyNativeExecConnection::IsAccessEnded() const
+{
+	return Impl->bAccessEnded;
+}
+
+FString FCrowdyNativeExecConnection::GetAccessEndedReason() const
+{
+	return Impl->AccessEndedReason;
+}
+
 FString FCrowdyNativeExecConnection::GetHost() const
 {
 	return Impl->bClosed ? FString() : CrowdyNativeExecFromUtf8(Impl->Connection->host());
@@ -259,6 +329,16 @@ bool FCrowdyNativeExecConnection::IsConnected() const
 	return !Impl->bClosed && Impl->Connection->connected();
 }
 
+bool FCrowdyNativeExecConnection::IsRefusedForGood() const
+{
+	return Impl->RefusedForGood && *Impl->RefusedForGood;
+}
+
+FString FCrowdyNativeExecConnection::GetRefusal() const
+{
+	return Impl->DialRefusal ? *Impl->DialRefusal : FString();
+}
+
 void FCrowdyNativeExecConnection::Close()
 {
 	if (Impl->bClosed)
@@ -266,6 +346,7 @@ void FCrowdyNativeExecConnection::Close()
 		return;
 	}
 	Impl->bClosed = true;
+	Impl->AccessEndedListeners.Reset();
 	Impl->Connection->close();
 
 	// Delivered here rather than through CrowdyCPP, whose own failures may be posted to a dispatcher that is about to

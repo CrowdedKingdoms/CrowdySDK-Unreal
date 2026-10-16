@@ -5,18 +5,23 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.19.0** (Unreal Engine 5.8). See the
+**Current version: 2.20.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
-**New in 2.19.0:** the Game Model API is removed; Server Objects, server-owned state on the
-platform's server compute, used from Blueprint or C++, replace it. Crowds drawn with Mass are part
-of the plugin, and a Server Object can keep a record per crowd entity. Signing in asks the player to
-agree to the terms and confirm their age. Until the docs site's next update these pages are on the
-dev docs: [Move from Game Models](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/move-from-game-models),
-[Server Objects](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/overview) and
-[Crowds with Mass](https://docs.dev.crowdedkingdoms.com/unreal-sdk/mass/draw-a-crowd-with-mass).
+**New in 2.20.0:** Server Objects ask for more platform data, set server limits, send and hear
+messages, and share code through Server Function Libraries; a refused call says why. Players can
+reset, change or add a password, sign out everywhere, delete their account, read and set player
+names, and claim free access, and Crowdy Studio has an Account page for your own account. **After
+updating, run Generate Server Code on every Server Object type with a timer or a player event before
+you deploy**: their generated code changed, and Server Compute refuses to deploy until it is
+regenerated. Until the
+docs site's next update these pages are on the dev docs:
+[Server Function Libraries](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/server-function-libraries),
+[Server messages](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/write-server-logic#send-a-message),
+[Account settings](https://docs.dev.crowdedkingdoms.com/unreal-sdk/services/authentication#account-settings) and
+[Player Names](https://docs.dev.crowdedkingdoms.com/unreal-sdk/services/player-names).
 
 Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkingdoms.com/unreal-sdk/intro)**
 

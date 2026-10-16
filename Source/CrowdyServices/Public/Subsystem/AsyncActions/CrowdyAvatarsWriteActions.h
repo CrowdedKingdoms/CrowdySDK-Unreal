@@ -11,9 +11,9 @@ class CROWDYSERVICES_API UCrowdyAvatars_CreateAvatar : public UBlueprintAsyncAct
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAvatarAsyncOnSuccess OnSuccess;
+	FAvatarAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnError OnError;
+	FAvatarAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Mutations", DisplayName="Create Avatar")
@@ -37,9 +37,9 @@ class CROWDYSERVICES_API UCrowdyAvatars_UpdateAvatar : public UBlueprintAsyncAct
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAvatarAsyncOnSuccess OnSuccess;
+	FAvatarAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnError OnError;
+	FAvatarAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Mutations", DisplayName="Update Avatar")
@@ -64,7 +64,7 @@ class CROWDYSERVICES_API UCrowdyAvatars_DeleteAvatar : public UBlueprintAsyncAct
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAvatarVoidAsyncOnSuccess OnSuccess;
+	FAvatarsAsyncOnError OnSuccess;
 	UPROPERTY(BlueprintAssignable)
 	FAvatarsAsyncOnError OnError;
 
@@ -90,9 +90,9 @@ class CROWDYSERVICES_API UCrowdyAvatars_UpdatePublicAvatarState : public UBluepr
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAvatarAsyncOnSuccess OnSuccess;
+	FAvatarAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnError OnError;
+	FAvatarAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Mutations", DisplayName="Update Public Avatar State")
@@ -118,9 +118,9 @@ class CROWDYSERVICES_API UCrowdyAvatars_UpdatePrivateAvatarState : public UBluep
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAvatarAsyncOnSuccess OnSuccess;
+	FAvatarAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnError OnError;
+	FAvatarAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Mutations", DisplayName="Update Private Avatar State")
@@ -146,9 +146,9 @@ class CROWDYSERVICES_API UCrowdyAvatars_UpdateAvatarAppState : public UBlueprint
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FAppStateAsyncOnSuccess OnSuccess;
+	FAppStateAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FAvatarsAsyncOnError OnError;
+	FAppStateAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Mutations", DisplayName="Update Avatar App State")

@@ -2,11 +2,13 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "crowdy/core/result.hpp"
+#include "crowdy/graphql/cancel.hpp"
 
 /// Pluggable HTTP transport. The default implementation (curlTransport())
 /// wraps libcurl; engine wrappers substitute their own HTTP stack (e.g. an
@@ -21,6 +23,11 @@ struct HttpRequest {
   std::vector<std::pair<std::string, std::string>> headers;
   std::string body;
   long timeoutMs = 60000;
+  /// Set when the caller can cancel this request (GraphQLClient's RequestOptions).
+  /// A transport that honors it ends the request once `cancel->cancelled()` and
+  /// reports Errc::Cancelled; one that ignores it lets the request run, and
+  /// GraphQLClient still reports it cancelled. The timeout applies either way.
+  std::optional<CancelToken> cancel;
 };
 
 struct HttpResponse {

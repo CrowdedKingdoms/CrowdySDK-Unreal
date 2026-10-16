@@ -38,7 +38,7 @@ public:
 	/** Follows an edit of the definition: a new Type Name, Code Source or logic file shows another file, offering to save the edits first. */
 	void HandleDefinitionChanged();
 
-	/** Offers to save unsaved edits, then writes the type's server code. Never replaces the logic file. */
+	/** Offers to save unsaved edits, then writes the type's server code. Never replaces the logic file; it can offer to add the functions the file lacks. */
 	void Generate();
 	bool CanGenerate() const { return WriteBlockReason.IsEmpty(); }
 	FText GetGenerateToolTip() const;
@@ -66,6 +66,8 @@ public:
 	const FString& GetEditedText() const { return EditedText; }
 	/** The file changed on disk while this tab had unsaved edits, and neither Reload nor Keep Mine was chosen yet. */
 	bool HasChangedOnDisk() const { return bChangedOnDisk; }
+	/** Says which functions Generate added that another program's save of the file removed; empty when none. */
+	FText GetRemovedStubsText() const;
 
 private:
 	struct FRevisionItem
@@ -141,7 +143,7 @@ private:
 	FReply HandleKeepMine();
 
 	FText GetPathText() const;
-	FText GetGapsText() const { return GapsText; }
+	FText GetGapsText() const;
 	FText GetAddStubsText() const;
 	FText GetAddStubsToolTip() const;
 	FText GetMissingText() const;
@@ -177,6 +179,10 @@ private:
 	bool CanSave() const;
 	bool CanRestore() const;
 	bool CanAddStubs() const { return !IsReadOnly(); }
+	/** There is no block to add the stubs to, or its macros may define some of them already. */
+	bool CopiesStubsOnly() const { return Gaps.InsertAt == INDEX_NONE || !Gaps.Macros.IsEmpty(); }
+	/** The functions Generate inserted that the file on disk no longer has; unset when the file cannot be read or judged now. */
+	TOptional<TArray<FString>> FindRemovedStubs() const;
 
 	TWeakObjectPtr<UCrowdyServerObjectDefinition> Definition;
 	TWeakPtr<FCrowdyServerComputeService> Service;
@@ -204,6 +210,8 @@ private:
 	/** How the code in the editor falls short of it. */
 	CrowdyExecCodegen::FLogicGaps Gaps;
 	FText GapsText;
+	/** Functions Generate added that another program's save removed, as written in Expected.Stubs. */
+	TArray<FString> RemovedStubs;
 
 	/** The type's deployed revisions, newest first, as last read. */
 	TArray<CrowdyExecRevisions::FRevision> History;

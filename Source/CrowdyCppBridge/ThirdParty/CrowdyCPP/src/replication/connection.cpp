@@ -327,6 +327,7 @@ Result<std::uint8_t> Connection::sendVoxelUpdate(const wire::ChunkCoord& chunk,
                                                  std::int16_t y, std::int16_t z,
                                                  std::int16_t voxelType, Bytes voxelState,
                                                  std::uint8_t distance, wire::DecayRate decay) {
+  if (voxelState.size() > wire::voxel::kMaxStateSize) return Errc::InvalidArgument;
   std::uint8_t payload[wire::kMaxLongSpatialPayload];
   auto pn = wire::encodeVoxelPayload(x, y, z, voxelType, voxelState,
                                      MutableBytes(payload, sizeof(payload)));
@@ -390,6 +391,16 @@ Result<std::uint8_t> Connection::sendSingleActorMessage(const wire::ChunkCoord& 
 
 Result<std::uint8_t> Connection::sendChannelMessage(std::int64_t channelId,
                                                     const core::ActorUuid& uuid, Bytes payload) {
+  return sendChannelRequest(MessageType::ChannelMessageRequest, channelId, uuid, payload);
+}
+
+Result<std::uint8_t> Connection::sendChannelAudio(std::int64_t channelId,
+                                                  const core::ActorUuid& uuid, Bytes payload) {
+  return sendChannelRequest(MessageType::ChannelAudioRequest, channelId, uuid, payload);
+}
+
+Result<std::uint8_t> Connection::sendChannelRequest(MessageType type, std::int64_t channelId,
+                                                    const core::ActorUuid& uuid, Bytes payload) {
   if (!socket_.isOpen()) return Errc::NotConnected;
   const Credentials creds = credentials();
 
@@ -401,8 +412,36 @@ Result<std::uint8_t> Connection::sendChannelMessage(std::int64_t channelId,
   params.sequence = nextSequence();
 
   std::uint8_t buf[wire::kMaxDatagramSize];
-  auto n = wire::encodeChannelMessage(crypto_, params, creds.token, MutableBytes(buf, sizeof(buf)),
-                                      creds.mac.get());
+  auto n = wire::encodeChannelRequest(type, crypto_, params, creds.token,
+                                      MutableBytes(buf, sizeof(buf)), creds.mac.get());
+  if (!n.ok()) return n.error();
+  Status st = transmit(buf, n.value());
+  if (!st.ok()) return st.code;
+  return params.sequence;
+}
+
+Result<std::uint8_t> Connection::sendRangedChannelMessage(std::int64_t channelId,
+                                                          const core::ActorUuid& uuid,
+                                                          Bytes payload,
+                                                          const wire::ChunkCoord& origin,
+                                                          std::uint32_t maxDistance) {
+  if (!socket_.isOpen()) return Errc::NotConnected;
+  if (maxDistance > wire::channel_ranged::kMaxDistance) return Errc::InvalidArgument;
+  const Credentials creds = credentials();
+
+  wire::RangedChannelMessageParams params;
+  params.channelId = channelId;
+  params.uuid = uuid;
+  params.appId = config_.appId;
+  params.origin = origin;
+  params.maxDistance = maxDistance;
+  params.payload = payload;
+  params.gameTokenId = creds.gameTokenId;
+  params.sequence = nextSequence();
+
+  std::uint8_t buf[wire::kMaxDatagramSize];
+  auto n = wire::encodeRangedChannelMessage(crypto_, params, creds.token,
+                                            MutableBytes(buf, sizeof(buf)), creds.mac.get());
   if (!n.ok()) return n.error();
   Status st = transmit(buf, n.value());
   if (!st.ok()) return st.code;
@@ -489,7 +528,8 @@ void Connection::handleDatagram(Bytes datagram) {
         return;
       }
       e.kind = Event::Kind::Error;
-    } else if (type == static_cast<std::uint8_t>(MessageType::ChannelMessageNotification)) {
+    } else if (type == static_cast<std::uint8_t>(MessageType::ChannelMessageNotification) ||
+               type == static_cast<std::uint8_t>(MessageType::ChannelAudioNotification)) {
       if (!wire::parseChannelNotification(message).ok()) {
         std::lock_guard lock(statsMutex_);
         ++stats_.malformed;
@@ -771,10 +811,13 @@ std::size_t Connection::poll(std::size_t maxEvents) {
 
       case Event::Kind::Channel: {
         auto ch = wire::parseChannelNotification(message);
-        if (ch.ok() && handlers.channelMessage) {
-          handlers.channelMessage(
-              {ch->channelId, ch->senderUuid, ch->payload, ch->epochMillis, ch->sequence});
-        }
+        if (!ch.ok()) break;
+        const ChannelNotification n{ch->channelId, ch->senderUuid, ch->payload, ch->epochMillis,
+                                    ch->sequence};
+        const bool audio =
+            message[0] == static_cast<std::uint8_t>(MessageType::ChannelAudioNotification);
+        if (audio && handlers.channelAudio) handlers.channelAudio(n);
+        if (!audio && handlers.channelMessage) handlers.channelMessage(n);
         break;
       }
 

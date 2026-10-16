@@ -22,6 +22,7 @@ THIRD_PARTY_INCLUDES_START
 #include "crowdy/domains/types.hpp"
 #include "crowdy/generated/operations.hpp"
 #include "crowdy/graphql/auth_state.hpp"
+#include "crowdy/graphql/estate.hpp"
 #include "crowdy/graphql/graphql_client.hpp"
 #include "crowdy/graphql/json.hpp"
 #include "crowdy/graphql/subscription_client.hpp"
@@ -533,10 +534,19 @@ struct FCrowdyCppClient::FImpl
 		ExecDialOwner->Owner = this;
 	}
 
-	// Asks the Game API for a ck-exec host under the app token, then hands the answer to Found.
+	// What every dial of one ck-exec connection shares: which gateway domains it may use, and whether the last dial was refused for good.
+	struct FExecDialPolicy
+	{
+		TArray<FString> AllowedGatewayDomains;
+		std::shared_ptr<bool> RefusedForGood = std::make_shared<bool>(false);
+		std::weak_ptr<crowdy::domains::ExecConnection> Connection;
+		bool bGatewayAccepted = false;
+	};
+
+	// Asks the Game API for a ck-exec host under the app token, or as the developer under a session token, then hands the answer to Found.
 	static void DialExec(std::shared_ptr<FExecDialOwner> DialOwner, std::string AppId, std::string NodeType,
-		std::string Key, TFunction<FString()> ResolveAppToken,
-		std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found);
+		std::string Key, bool bAsDeveloper, TFunction<FString()> ResolveAppToken, std::shared_ptr<FString> Refusal,
+		std::shared_ptr<FExecDialPolicy> Policy, std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found);
 
 	void CloseExecConnections()
 	{
@@ -840,6 +850,32 @@ namespace
 		return Error ? Utf8ToFString(Error->code) : FString();
 	}
 
+	// Fills the failure fields from an ACCOUNT_BLOCKED entry, else from the app's access refusal, wherever it sits among
+	// the errors, so neither reads as another refusal. Returns false when the outcome carries neither.
+	bool ReadAccessRefusal(const crowdy::graphql::GraphQLOutcome& Out, FString& OutMessage, FString& OutCode,
+		FString& OutBlockedUntil)
+	{
+		const crowdy::graphql::GraphQLErrorDetail* Error =
+			crowdy::graphql::errorWithCode(Out.errors, crowdy::graphql::kAccountBlockedCode);
+		if (Error)
+		{
+			OutMessage = Utf8ToFString(Error->message);
+			OutCode = Utf8ToFString(Error->code);
+			OutBlockedUntil = Utf8ToFString(Error->blockedUntil);
+			return true;
+		}
+		const std::optional<crowdy::graphql::AccessRefusal> Refusal = crowdy::graphql::accessRefusalOf(Out.errors);
+		if (!Refusal)
+		{
+			return false;
+		}
+		Error = crowdy::graphql::errorWithCode(Out.errors, Refusal->code);
+		OutMessage = Error ? Utf8ToFString(Error->message) : OutMessage;
+		OutCode = Utf8ToFString(Refusal->code);
+		OutBlockedUntil = Utf8ToFString(Refusal->suspendedUntil);
+		return true;
+	}
+
 	// A short, bounded name for why an outcome failed, safe to count and print: the server's code, else the HTTP
 	// status, else whether the server answered at all. Never message text, which can carry ids.
 	FString OutcomeFailureReason(const crowdy::graphql::GraphQLOutcome& Out)
@@ -1017,6 +1053,8 @@ namespace
 		if (!Out.ok())
 		{
 			Result.ErrorMessage = OutcomeErrorMessage(Out);
+			Result.ErrorCode = OutcomeErrorCode(Out);
+			ReadAccessRefusal(Out, Result.ErrorMessage, Result.ErrorCode, Result.BlockedUntil);
 			return Result;
 		}
 
@@ -1054,6 +1092,7 @@ namespace
 		{
 			Result.ErrorMessage = OutcomeErrorMessage(Out);
 			Result.ErrorCode = OutcomeErrorCode(Out);
+			ReadAccessRefusal(Out, Result.ErrorMessage, Result.ErrorCode, Result.BlockedUntil);
 			return Result;
 		}
 
@@ -1071,6 +1110,11 @@ namespace
 		Result.GameApiWsUrl = Utf8ToFString(Value.gameApiWsUrl.valueOrEmpty());
 		Result.DiscoveryUrl = Utf8ToFString(Value.discoveryUrl.valueOrEmpty());
 		Result.LaunchUrl = Utf8ToFString(Value.launchUrl.valueOrEmpty());
+		if (Value.runtimeGate)
+		{
+			Result.RuntimeGateStatus = Utf8ToFString(Value.runtimeGate->status);
+			Result.RuntimeGateReason = Utf8ToFString(Value.runtimeGate->reason.valueOrEmpty());
+		}
 
 		// Only when the reply actually names a server. A response with no authorizedServer parses into an empty
 		// address and a zero port, and copying those through unguarded would offer a caller an endpoint to compare
@@ -1169,6 +1213,7 @@ namespace
 		if (!Out.ok())
 		{
 			Result.ErrorMessage = OutcomeErrorMessage(Out);
+			Result.ErrorCode = OutcomeErrorCode(Out);
 			return Result;
 		}
 		Result.Value = UnwrappedJsonToUeValue(Data);
@@ -1410,6 +1455,49 @@ namespace
 			|| Authority == TEXT("::1"));
 	}
 
+	// A settings entry reduced to a bare lower-case domain: no scheme, path, port, wildcard or dots at the ends.
+	FString NormalizeGatewayDomain(const FString& Entry)
+	{
+		FString Domain = Entry.TrimStartAndEnd().ToLower();
+		int32 Cut = INDEX_NONE;
+		if (Domain.FindChar(TEXT('/'), Cut) && Cut > 0 && Domain[Cut - 1] == TEXT(':'))
+		{
+			Domain.RightChopInline(Cut + 2);
+		}
+		if (Domain.FindChar(TEXT('/'), Cut))
+		{
+			Domain.LeftInline(Cut);
+		}
+		if (Domain.FindChar(TEXT(':'), Cut))
+		{
+			Domain.LeftInline(Cut);
+		}
+		Domain.RemoveFromStart(TEXT("*."));
+		Domain.RemoveFromStart(TEXT("."));
+		Domain.RemoveFromEnd(TEXT("."));
+		return Domain;
+	}
+
+	// Whether a gateway's host is one of the allowed domains or a subdomain of one.
+	bool IsAllowedGatewayHost(const std::string& GatewayUrl, const TArray<FString>& AllowedDomains)
+	{
+		const std::optional<std::string> Host = crowdy::graphql::estateHostname(GatewayUrl);
+		if (!Host)
+		{
+			return false;
+		}
+		const FString HostText = Utf8ToFString(*Host);
+		for (const FString& Entry : AllowedDomains)
+		{
+			const FString Domain = NormalizeGatewayDomain(Entry);
+			if (!Domain.IsEmpty() && (HostText == Domain || HostText.EndsWith(TEXT(".") + Domain, ESearchCase::CaseSensitive)))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	// Build the subscription client that carries the game bearer alone, sharing the client's completion pump so
 	// Poll() drains subscription callbacks along with everything else. Returns null when it could not be built, in
 	// which case Subscribe reports itself unavailable rather than the client failing to construct at all.
@@ -1570,25 +1658,27 @@ TOptional<double> CrowdyCppBusyRetryDelaySeconds(int32 RetryIndex, TOptional<int
 }
 
 void FCrowdyCppClient::FImpl::DialExec(std::shared_ptr<FExecDialOwner> DialOwner, std::string AppId,
-	std::string NodeType, std::string Key, TFunction<FString()> ResolveAppToken,
-	std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found)
+	std::string NodeType, std::string Key, bool bAsDeveloper, TFunction<FString()> ResolveAppToken, std::shared_ptr<FString> Refusal,
+	std::shared_ptr<FExecDialPolicy> Policy, std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found)
 {
 	// Installing the bearer and building the request are one step only on the game thread, where every issue happens.
 	if (!IsInGameThread())
 	{
 		AsyncTask(ENamedThreads::GameThread, [DialOwner = MoveTemp(DialOwner), AppId = MoveTemp(AppId),
-			NodeType = MoveTemp(NodeType), Key = MoveTemp(Key), ResolveAppToken = MoveTemp(ResolveAppToken),
-			Found = MoveTemp(Found)]() mutable
+			NodeType = MoveTemp(NodeType), Key = MoveTemp(Key), bAsDeveloper, ResolveAppToken = MoveTemp(ResolveAppToken),
+			Refusal = MoveTemp(Refusal), Policy = MoveTemp(Policy), Found = MoveTemp(Found)]() mutable
 		{
-			DialExec(MoveTemp(DialOwner), MoveTemp(AppId), MoveTemp(NodeType), MoveTemp(Key), MoveTemp(ResolveAppToken),
-				MoveTemp(Found));
+			DialExec(MoveTemp(DialOwner), MoveTemp(AppId), MoveTemp(NodeType), MoveTemp(Key), bAsDeveloper, MoveTemp(ResolveAppToken),
+				MoveTemp(Refusal), MoveTemp(Policy), MoveTemp(Found));
 		});
 		return;
 	}
 
 	FImpl* Owner = DialOwner ? DialOwner->Owner : nullptr;
+	// Every failure below says why itself; otherwise CrowdyCPP's own words, "no host for this app", would be the reason.
 	if (!Owner || !Owner->IsUsable())
 	{
+		*Refusal = TEXT("the client is closed");
 		Found(crowdy::Errc::Closed);
 		return;
 	}
@@ -1596,35 +1686,93 @@ void FCrowdyCppClient::FImpl::DialExec(std::shared_ptr<FExecDialOwner> DialOwner
 	const FString Token = ResolveAppToken ? ResolveAppToken() : FString();
 	if (Token.IsEmpty())
 	{
-		UE_LOG(LogCrowdyCpp, Warning, TEXT("A ck-exec connection has no app token to dial with."));
+		UE_LOG(LogCrowdyCpp, Warning, TEXT("A ck-exec connection has no token to dial with."));
+		*Refusal = bAsDeveloper ? TEXT("the developer is not signed in; sign in to Crowdy Studio first") : TEXT("the player has no app token; sign in first");
 		Found(crowdy::Errc::Rejected);
 		return;
 	}
+	const std::string_view Document = bAsDeveloper ? crowdy::gen::exec::kExecConnectAsDeveloperIsolatedDocument : crowdy::gen::exec::kExecConnectIsolatedDocument;
+	const std::string_view Operation = bAsDeveloper ? crowdy::gen::exec::kExecConnectAsDeveloperOperationName : crowdy::gen::exec::kExecConnectOperationName;
+	const char* const AnswerField = bAsDeveloper ? "execConnectAsDeveloper" : "execConnect";
 
 	Owner->Client->setToken(std::string(TCHAR_TO_UTF8(*Token)));
+	crowdy::graphql::JVal Variables;
+	Variables["appId"] = crowdy::graphql::JVal(AppId);
+	if (!NodeType.empty())
+	{
+		Variables["nodeType"] = crowdy::graphql::JVal(NodeType);
+		Variables["key"] = crowdy::graphql::JVal(Key);
+	}
 	try
 	{
-		Owner->Client->exec().endpointAsync(MoveTemp(AppId), MoveTemp(NodeType), MoveTemp(Key),
-			[Found](crowdy::Result<crowdy::domains::ExecEndpoint> Endpoint)
+		// Asked directly rather than through ExecAPI::endpointAsync, which keeps only the failure's kind: a paused or
+		// switched-off app is refused here, and its message is what tells the player why.
+		Owner->Client->graphqlClient().requestAsync(Document, Variables, Operation,
+			[Found, Refusal, Policy, GameApiUrl = Owner->Client->graphqlClient().endpoint(), AnswerField](crowdy::graphql::GraphQLOutcome Out)
 			{
+				if (!Out.ok())
+				{
+					const FString Code = OutcomeErrorCode(Out);
+					*Refusal = Code.IsEmpty() ? OutcomeErrorMessage(Out) : FString::Printf(TEXT("%s (%s)"), *OutcomeErrorMessage(Out), *Code);
+					Found(Out.status.ok() ? crowdy::Errc::Rejected : Out.status.code);
+					return;
+				}
+				const crowdy::graphql::Json& Answer = Out.data[AnswerField];
+				crowdy::domains::ExecEndpoint Endpoint{Answer["gatewayUrl"].asString(), Answer["token"].asString(), Answer["host"].asString()};
+				if (Endpoint.gatewayUrl.empty() || Endpoint.token.empty())
+				{
+					*Refusal = TEXT("the Game API named no gateway to connect to");
+					Found(crowdy::Errc::Malformed);
+					return;
+				}
 				// The connect token rides the gateway URL, so an unencrypted remote gateway would put it in the clear.
-				if (Endpoint.ok() && IsInsecureRemoteEndpoint(Endpoint.value().gatewayUrl))
+				if (IsInsecureRemoteEndpoint(Endpoint.gatewayUrl))
 				{
 					UE_LOG(LogCrowdyCpp, Error, TEXT("The ck-exec gateway is not encrypted, so the connection was refused."));
+					*Refusal = TEXT("the gateway the Game API named is not encrypted, so it was refused");
 					Found(crowdy::Errc::Rejected);
 					return;
 				}
+				const std::optional<std::string> OutsideEstate = crowdy::domains::execGatewayRefusal(GameApiUrl, Endpoint.gatewayUrl);
+				// Only the estate reason can be waived; a credentialed URL or a wrong scheme stays refused.
+				const bool bOnlyOutsideEstate = OutsideEstate && OutsideEstate->find(" is outside the estate of ") != std::string::npos;
+				if (OutsideEstate && !(bOnlyOutsideEstate && IsAllowedGatewayHost(Endpoint.gatewayUrl, Policy->AllowedGatewayDomains)))
+				{
+					UE_LOG(LogCrowdyCpp, Error, TEXT("The ck-exec gateway is outside the Game API's domains or malformed (%s), so the connection was refused."), *Utf8ToFString(*OutsideEstate));
+					*Refusal = FString::Printf(TEXT("the Game API named a gateway outside its own domains (%s); if you host the server yourself, add its domain to Allowed Exec Gateway Domains in Project Settings"),
+						*Utf8ToFString(*OutsideEstate));
+					*Policy->RefusedForGood = true;
+					const bool bRedial = Policy->bGatewayAccepted;
+					Found(crowdy::Errc::Rejected);
+					if (!bRedial)
+					{
+						return;
+					}
+					// CrowdyCPP redials by itself once it has opened, so only closing stops it; deferred because this runs inside its callback.
+					AsyncTask(ENamedThreads::GameThread, [Connection = Policy->Connection]()
+					{
+						if (const std::shared_ptr<crowdy::domains::ExecConnection> Live = Connection.lock())
+						{
+							Live->close();
+						}
+					});
+					return;
+				}
+				Policy->bGatewayAccepted = true;
+				Refusal->Reset();
 				Found(std::move(Endpoint));
 			});
 	}
 	catch (const std::exception& Ex)
 	{
 		UE_LOG(LogCrowdyCpp, Warning, TEXT("Asking for a ck-exec host threw: %hs"), Ex.what());
+		*Refusal = TEXT("asking the Game API for a host failed");
 		Found(crowdy::Errc::SocketError);
 	}
 	catch (...)
 	{
 		UE_LOG(LogCrowdyCpp, Warning, TEXT("Asking for a ck-exec host threw a non-standard exception"));
+		*Refusal = TEXT("asking the Game API for a host failed");
 		Found(crowdy::Errc::SocketError);
 	}
 }
@@ -2339,6 +2487,114 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RecordPlayerConsents(bool bAcceptLegal
 		&MapBool);
 }
 
+FCrowdyCppRequestHandle FCrowdyCppClient::RequestPasswordReset(const FString& Email,
+	TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	const std::string EmailStr = std::string(TCHAR_TO_UTF8(*Email));
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::None) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("requestPasswordReset"), MoveTemp(OnDone),
+		[EmailStr](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().requestPasswordResetAsync(EmailStr, std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::ResendConfirmationEmail(const FString& Email,
+	TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	const std::string EmailStr = std::string(TCHAR_TO_UTF8(*Email));
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::None) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("resendConfirmationEmail"), MoveTemp(OnDone),
+		[EmailStr](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().resendConfirmationEmailAsync(EmailStr, std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::ChangePassword(const FString& CurrentPassword, const FString& NewPassword,
+	TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	const std::string CurrentStr = std::string(TCHAR_TO_UTF8(*CurrentPassword));
+	const std::string NewStr = std::string(TCHAR_TO_UTF8(*NewPassword));
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("changePassword"), MoveTemp(OnDone),
+		[CurrentStr, NewStr](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().changePasswordAsync(CurrentStr, NewStr, std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::SetInitialPassword(const FString& NewPassword,
+	TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	const std::string NewStr = std::string(TCHAR_TO_UTF8(*NewPassword));
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("setInitialPassword"), MoveTemp(OnDone),
+		[NewStr](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().setInitialPasswordAsync(NewStr, std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::Logout(TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("logout"), MoveTemp(OnDone),
+		[](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().logoutAsync(std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::LogoutAllDevices(TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("logoutAllDevices"), MoveTemp(OnDone),
+		[](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().logoutAllDevicesAsync(std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::DeleteMyAccount(TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Game) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("deleteMyAccount"), MoveTemp(OnDone),
+		[](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.users().deleteMyAccountAsync(std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::UpdateGamertag(const FString& Gamertag, const FString& Disambiguation,
+	TFunction<void(FCrowdyCppJsonValueResult)> OnDone)
+{
+	const std::string GamertagStr = std::string(TCHAR_TO_UTF8(*Gamertag));
+	const std::string DisambiguationStr = std::string(TCHAR_TO_UTF8(*Disambiguation));
+	return RunAuthOp<FCrowdyCppJsonValueResult, crowdy::graphql::Json>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("updateGamertag"), MoveTemp(OnDone),
+		[GamertagStr, DisambiguationStr](crowdy::CrowdyClient& Client, FJsonPayloadCallback Cb)
+		{
+			Client.users().updateGamertagAsync(GamertagStr, DisambiguationStr, AsJsonPayloadCallback(std::move(Cb)));
+		},
+		&MapUnwrappedJson);
+}
+
 FCrowdyCppRequestHandle FCrowdyCppClient::MintAppToken(int64 AppId,
 	TFunction<void(FCrowdyCppAppTokenResult)> OnDone)
 {
@@ -2910,16 +3166,21 @@ TSharedPtr<FCrowdyNativeExecConnection> FCrowdyCppClient::CreateExecConnection(i
 	CppOptions.reconnect = Options.bReconnect;
 
 	std::shared_ptr<FImpl::FExecDialOwner> DialOwner = Impl->ExecDialOwner;
+	std::shared_ptr<FString> Refusal = std::make_shared<FString>();
+	std::shared_ptr<FImpl::FExecDialPolicy> Policy = std::make_shared<FImpl::FExecDialPolicy>();
+	Policy->AllowedGatewayDomains = Options.AllowedGatewayDomains;
 	crowdy::domains::ExecDial Dial = [DialOwner, AppIdText = std::to_string(AppId), NodeType = CppOptions.nodeType,
-		Key = CppOptions.key, ResolveAppToken](std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found)
+		Key = CppOptions.key, bAsDeveloper = Options.bAsDeveloper, ResolveAppToken, Refusal, Policy](std::function<void(crowdy::Result<crowdy::domains::ExecEndpoint>)> Found)
 	{
-		FImpl::DialExec(DialOwner, AppIdText, NodeType, Key, ResolveAppToken, std::move(Found));
+		FImpl::DialExec(DialOwner, AppIdText, NodeType, Key, bAsDeveloper, ResolveAppToken, Refusal, Policy, std::move(Found));
 	};
 
 	try
 	{
-		TSharedRef<FCrowdyNativeExecConnection> Connection = CrowdyNativeExec::Wrap(
-			std::make_shared<crowdy::domains::ExecConnection>(Impl->ExecTransport, Dispatcher, std::move(Dial), CppOptions));
+		std::shared_ptr<crowdy::domains::ExecConnection> Raw =
+			std::make_shared<crowdy::domains::ExecConnection>(Impl->ExecTransport, Dispatcher, std::move(Dial), CppOptions);
+		Policy->Connection = Raw;
+		TSharedRef<FCrowdyNativeExecConnection> Connection = CrowdyNativeExec::Wrap(std::move(Raw), Refusal, Policy->RefusedForGood);
 		Impl->ExecConnections.RemoveAll([](const TWeakPtr<FCrowdyNativeExecConnection>& Weak) { return !Weak.IsValid(); });
 		Impl->ExecConnections.Add(Connection);
 		return Connection;
@@ -3004,12 +3265,13 @@ void FCrowdyCppClient::TestExecReceiveBinary(const TArray<uint8>& Bytes)
 	}
 }
 
-void FCrowdyCppClient::TestExecCloseFromServer(int32 Code, bool bClean)
+void FCrowdyCppClient::TestExecCloseFromServer(int32 Code, bool bClean, const FString& Reason)
 {
 	if (Impl && Impl->TestExecWebSocket)
 	{
+		const FTCHARToUTF8 ReasonUtf8(*Reason);
 		Impl->TestExecWebSocket->CloseFromServer(static_cast<std::uint16_t>(FMath::Clamp(Code, 0, 65535)),
-			std::string(), bClean);
+			std::string(ReasonUtf8.Get(), static_cast<size_t>(ReasonUtf8.Length())), bClean);
 	}
 }
 

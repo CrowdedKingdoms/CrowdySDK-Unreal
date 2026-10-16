@@ -102,4 +102,35 @@ bool FCrowdyRustSyntaxCarryTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRustSyntaxRawStringTest, "CrowdySDK.CrowdyExecEditor.RustSyntaxColoursRawStrings", CrowdyRustSyntaxTest::TestFlags)
+bool FCrowdyRustSyntaxRawStringTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyRustSyntaxTest;
+	const FString Line = TEXT("let s = r#\"a \" // b\"#; // c");
+	TestTrue(TEXT("a raw string is one string span, quote and slashes included"), Render(Line).Contains(TEXT("S[r#\"a \" // b\"#]")));
+	TestTrue(TEXT("the comment after it is a comment"), Render(Line).EndsWith(TEXT("C[// c]")));
+	TestTrue(TEXT("a byte raw string is a string"), Render(TEXT("br#\"x\"#")).Equals(TEXT("S[br#\"x\"#]"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("a C raw string is a string"), Render(TEXT("cr\"x\"")).Equals(TEXT("S[cr\"x\"]"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("a raw identifier is not a string"), Render(TEXT("r#type")).Contains(TEXT("S[")));
+	TestFalse(TEXT("a name ending in r is not a raw string opener"), Render(TEXT("bar\"x\"")).StartsWith(TEXT("S[")));
+
+	CrowdyRustSyntax::FCarry Open;
+	Render(TEXT("let s = r##\"first"), Open);
+	TestTrue(TEXT("an unclosed raw string stays open"), Open.bInString);
+	TestEqual(TEXT("with its mark count"), Open.RawHashes, 2);
+	const FString Middle = Render(TEXT("a \"# b \" c"), Open);
+	TestTrue(TEXT("a quote with too few marks does not close it"), Open.bInString);
+	TestTrue(TEXT("and the line is all string"), Middle.StartsWith(TEXT("S[")) && !Middle.Contains(TEXT(" K[")));
+	const FString Last = Render(TEXT("end\"## ; fn"), Open);
+	TestFalse(TEXT("the matching marks close it"), Open.bInString);
+	TestEqual(TEXT("and the carry forgets the marks"), Open.RawHashes, -1);
+	TestTrue(TEXT("code follows the close"), Last.StartsWith(TEXT("S[end\"##]")) && Last.EndsWith(TEXT("K[fn]")));
+
+	CrowdyRustSyntax::FCarry NoEscape;
+	const FString Escaped = Render(TEXT("r\"a\\\"; fn"), NoEscape);
+	TestFalse(TEXT("nothing escapes in a raw string, so the second quote closes it"), NoEscape.bInString);
+	TestTrue(TEXT("and code follows"), Escaped.StartsWith(TEXT("S[r\"a\\\"]")) && Escaped.EndsWith(TEXT("K[fn]")));
+	return true;
+}
+
 #endif

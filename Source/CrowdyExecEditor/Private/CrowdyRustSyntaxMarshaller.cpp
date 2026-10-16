@@ -132,6 +132,50 @@ namespace CrowdyRustSyntaxDetail
 		return Line.Len();
 	}
 
+	/** The length of the raw string opener at Index (r", r#", br#" or cr#"), 0 when none starts there; OutHashes gets its number of # marks. */
+	int32 RawOpenLength(FStringView Line, int32 Index, int32& OutHashes)
+	{
+		const int32 Len = Line.Len();
+		if (Index > 0 && IsWordPart(Line[Index - 1]))
+		{
+			return 0;
+		}
+		int32 At = Index + ((Line[Index] == 'b' || Line[Index] == 'c') ? 1 : 0);
+		if (At >= Len || Line[At] != 'r')
+		{
+			return 0;
+		}
+		OutHashes = 0;
+		for (++At; At < Len && Line[At] == '#'; ++At)
+		{
+			++OutHashes;
+		}
+		return At < Len && Line[At] == '"' ? At + 1 - Index : 0;
+	}
+
+	/** Past the quote and marks closing an open raw string, or the end of the line while it stays open; nothing escapes inside. */
+	int32 RawStringEnd(FStringView Line, int32 Index, int32 Hashes, bool& bInString)
+	{
+		for (; Index < Line.Len(); ++Index)
+		{
+			if (Line[Index] != '"')
+			{
+				continue;
+			}
+			int32 Marks = 0;
+			while (Marks < Hashes && Index + 1 + Marks < Line.Len() && Line[Index + 1 + Marks] == '#')
+			{
+				++Marks;
+			}
+			if (Marks == Hashes)
+			{
+				bInString = false;
+				return Index + 1 + Hashes;
+			}
+		}
+		return Line.Len();
+	}
+
 	/** Past a character literal ('a', '\n'), or past a lifetime or label ('a), which is not one. */
 	int32 QuoteEnd(FStringView Line, int32 Index, bool& bLiteral)
 	{
@@ -187,14 +231,24 @@ TArray<CrowdyRustSyntax::FSpan> CrowdyRustSyntax::ScanLine(FStringView Line, FCa
 			AddSpan(Spans, Start, Index, EKind::Comment);
 			continue;
 		}
-		if (!Carry.bInString && Char == '"')
+		int32 RawHashes = 0;
+		const int32 RawOpen = Carry.bInString ? 0 : RawOpenLength(Line, Index, RawHashes);
+		if (RawOpen > 0)
 		{
 			Carry.bInString = true;
+			Carry.RawHashes = RawHashes;
+			Index += RawOpen;
+		}
+		else if (!Carry.bInString && Char == '"')
+		{
+			Carry.bInString = true;
+			Carry.RawHashes = -1;
 			++Index;
 		}
 		if (Carry.bInString)
 		{
-			Index = StringEnd(Line, Index, Carry.bInString);
+			Index = Carry.RawHashes >= 0 ? RawStringEnd(Line, Index, Carry.RawHashes, Carry.bInString) : StringEnd(Line, Index, Carry.bInString);
+			Carry.RawHashes = Carry.bInString ? Carry.RawHashes : -1;
 			AddSpan(Spans, Start, Index, EKind::String);
 			continue;
 		}

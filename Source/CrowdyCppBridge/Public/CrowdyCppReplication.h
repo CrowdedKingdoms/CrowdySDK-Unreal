@@ -485,6 +485,12 @@ public:
 	static bool IsUnauthorizedErrorCode(uint8 ErrorCode);
 
 	/**
+	 * True for the code the server sends, repeatedly, while the app is paused: switched off by its owner or the
+	 * platform, or out of funds. Offered as a predicate for the same reason as IsUnauthorizedErrorCode.
+	 */
+	static bool IsAppPausedErrorCode(uint8 ErrorCode);
+
+	/**
 	 * How long after a send the facade will still attribute an error frame to it. The sequence number is one byte,
 	 * so beyond roughly a lap of the counter an attribution says more about traffic volume than about the error.
 	 */

@@ -31,6 +31,14 @@ public:
 	/** Handlers bound to one variable of whatever Server Object this Link follows, run again for each object it joins. */
 	FCrowdyServerVariableBindings& GetVariableBindings() { return VariableBindings; }
 
+	/** Handlers bound to one message of whatever Server Object this Link follows; the Link listens to each message on every object it joins. */
+	FCrowdyServerMessageBindings& GetMessageBindings() { return MessageBindings; }
+
+	/** Keeps the Link for as long as its owner lives, however long since it was last asked for. */
+	void KeepWhileOwnerLives() { bKeepWhileOwnerLives = true; }
+
+	bool KeepsWhileOwnerLives() const { return bKeepWhileOwnerLives; }
+
 private:
 	friend class UCrowdyServerObjectSubsystem;
 	friend struct FCrowdyServerObjectLinkTestAccess;
@@ -63,6 +71,7 @@ private:
 	void HandleMyTeamsChanged(const TArray<FCrowdyTeamMembership>& Memberships);
 
 	void HandleVariables(UCrowdyServerObject* InObject, TConstArrayView<FString> Fields);
+	void HandleMessage(UCrowdyServerObject* InObject, FName Message, const FInstancedStruct& Payload);
 
 	TWeakObjectPtr<UObject> Owner;
 
@@ -79,6 +88,7 @@ private:
 	FDelegateHandle ValuesHandle;
 	FString JoinError;
 	FCrowdyServerVariableBindings VariableBindings;
+	FCrowdyServerMessageBindings MessageBindings;
 
 	/** Seconds since the subsystem last handed this Link out. */
 	float SinceFound = 0.f;
@@ -89,6 +99,7 @@ private:
 
 	bool bLoginBound = false;
 	bool bTeamsBound = false;
+	bool bKeepWhileOwnerLives = false;
 
 	static constexpr float TeamsRetrySeconds = 5.f;
 };

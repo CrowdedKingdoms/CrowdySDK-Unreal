@@ -69,6 +69,7 @@ void UCrowdyServerObjectLink::Stop()
 	bTeamsBound = false;
 	Leave();
 	VariableBindings.Reset();
+	MessageBindings.Reset();
 }
 
 void UCrowdyServerObjectLink::Tick(float DeltaSeconds)
@@ -104,7 +105,8 @@ FString UCrowdyServerObjectLink::ResolveInstanceId(FString& OutError, const TArr
 	}
 	if (Find == ECrowdyServerObjectFind::InstanceId)
 	{
-		if (InstanceId.IsEmpty())
+		// The root and a Server Function Library have one instance, and its Instance Id is empty.
+		if (InstanceId.IsEmpty() && !(Definition && Definition->HasOnlyOneInstance()))
 		{
 			OutError = TEXT("Set an Instance Id to find the Server Object by");
 		}
@@ -147,6 +149,7 @@ void UCrowdyServerObjectLink::Join(const TArray<FCrowdyTeamMembership>* Arrived)
 	}
 	Object = Acquired;
 	JoinError.Reset();
+	MessageBindings.Follow(Acquired, FOnCrowdyServerMessage::FDelegate::CreateUObject(this, &UCrowdyServerObjectLink::HandleMessage));
 	ValuesHandle = Acquired->WatchValues(FOnCrowdyServerValuesChanged::FDelegate::CreateUObject(this, &UCrowdyServerObjectLink::HandleVariables));
 }
 
@@ -158,6 +161,7 @@ void UCrowdyServerObjectLink::Leave()
 		return;
 	}
 	Object = nullptr;
+	MessageBindings.Unfollow();
 	Held->UnwatchValues(ValuesHandle);
 	ValuesHandle.Reset();
 	if (UCrowdyServerObjectSubsystem* Subsystem = GetSubsystem())
@@ -214,5 +218,13 @@ void UCrowdyServerObjectLink::HandleVariables(UCrowdyServerObject* InObject, TCo
 	if (InObject == Object)
 	{
 		VariableBindings.Notify(Object, Fields);
+	}
+}
+
+void UCrowdyServerObjectLink::HandleMessage(UCrowdyServerObject* InObject, FName Message, const FInstancedStruct& Payload)
+{
+	if (InObject == Object)
+	{
+		MessageBindings.Notify(Object, Message, Payload);
 	}
 }

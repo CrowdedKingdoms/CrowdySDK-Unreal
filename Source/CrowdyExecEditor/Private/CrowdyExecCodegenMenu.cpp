@@ -4,6 +4,7 @@
 #include "CrowdyExecCodegen.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyExecInternal.h"
+#include "CrowdyServerObjectLibrary.h"
 #include "CrowdyExecLog.h"
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerComputeService.h"
@@ -128,6 +129,58 @@ namespace CrowdyExecCodegenMenu
 		const EAppReturnType::Type Answer = Ask(EAppMsgCategory::Warning, EAppMsgType::YesNo, EAppReturnType::No, Message,
 			LOCTEXT("ConfirmRemovalsTitle", "Generate Server Code"));
 		return Answer == EAppReturnType::Yes;
+	}
+
+	/** The top-level `mod name;` lines of a lib.rs, trimmed, that load a module file Generate does not write (it writes only logic and types). */
+	TArray<FString> HandAddedModules(const FString& Text)
+	{
+		TArray<FString> Lines;
+		Text.ParseIntoArrayLines(Lines, false);
+		TArray<FString> Modules;
+		for (FString& Line : Lines)
+		{
+			FString Declaration = Line;
+			int32 Comment = INDEX_NONE;
+			if (Declaration.FindChar(TEXT('/'), Comment) && Declaration.Mid(Comment, 2) == TEXT("//"))
+			{
+				Declaration.LeftInline(Comment);
+			}
+			Declaration.TrimEndInline();
+			const int32 Mod = Declaration.Find(TEXT("mod "), ESearchCase::CaseSensitive);
+			// What may stand before `mod`: nothing, a visibility such as pub(crate), or an attribute such as #[path = "x.rs"].
+			const FString Before = Mod == INDEX_NONE ? FString() : Declaration.Left(Mod).TrimEnd();
+			const bool bTopLevel = Mod != INDEX_NONE && !Line.StartsWith(TEXT(" ")) && !Line.StartsWith(TEXT("\t")) && Declaration.EndsWith(TEXT(";"), ESearchCase::CaseSensitive)
+				&& (Before.IsEmpty() || Before.StartsWith(TEXT("pub"), ESearchCase::CaseSensitive) || Before.StartsWith(TEXT("#["), ESearchCase::CaseSensitive));
+			if (!bTopLevel)
+			{
+				continue;
+			}
+			const FString Name = Declaration.Mid(Mod + 4).LeftChop(1).TrimStartAndEnd();
+			if (!Name.Equals(TEXT("logic"), ESearchCase::CaseSensitive) && !Name.Equals(TEXT("types"), ESearchCase::CaseSensitive))
+			{
+				Modules.Add(Declaration);
+			}
+		}
+		return Modules;
+	}
+
+	/** Asks before Generate rewrites a src/lib.rs under Directory that loads module files of the author's own. False to stop. */
+	bool ConfirmLibOverwrite(const FString& Directory)
+	{
+		const FString Path = FPaths::Combine(Directory, TEXT("src/lib.rs"));
+		FString OnDisk;
+		if (!FPaths::FileExists(Path) || !FFileHelper::LoadFileToString(OnDisk, *Path))
+		{
+			return true;
+		}
+		const TArray<FString> Extra = HandAddedModules(OnDisk);
+		if (Extra.IsEmpty())
+		{
+			return true;
+		}
+		const FText Message = FText::Format(LOCTEXT("ConfirmLibOverwrite", "{0} has lines Generate does not write and would remove: {1}. Generate rewrites lib.rs; declare your own modules at the top of logic.rs instead, where `mod name;` loads src/logic/name.rs. Regenerate anyway?"),
+			FText::FromString(Path), FText::FromString(FString::Join(Extra, TEXT(", "))));
+		return Ask(EAppMsgCategory::Warning, EAppMsgType::YesNo, EAppReturnType::No, Message, LOCTEXT("ConfirmLibOverwriteTitle", "Generate Server Code")) == EAppReturnType::Yes;
 	}
 
 	FString FindRenamedList(const UCrowdyServerObjectDefinition& Definition, const CrowdyExecCodegen::FListValueRename& Rename)
@@ -356,9 +409,11 @@ namespace CrowdyExecCodegenMenu
 			return Leftover;
 		}
 		const FText Names = FText::FromString(FString::Join(Missing, TEXT(", ")));
-		const FText MissingText = Gaps.InsertAt == INDEX_NONE
+		const FText Found = Gaps.InsertAt == INDEX_NONE
 			? FText::Format(LOCTEXT("GapsMissingNoBlock", "{0} is missing {1}, and has no impl Functions for {2} block to add them to."), File, Names, FText::FromString(StateName))
 			: FText::Format(LOCTEXT("GapsMissing", "{0} is missing {1}, which this type now has."), File, Names);
+		const FText MissingText = Gaps.Macros.IsEmpty() ? Found
+			: FText::Format(LOCTEXT("GapsMacros", "{0} {1} also uses {2}, which may define some of these; check before adding them."), Found, File, FText::FromString(FString::Join(Gaps.Macros, TEXT(", "))));
 		return Gaps.Leftover.IsEmpty() ? MissingText : FText::Format(LOCTEXT("GapsBoth", "{0} {1}"), MissingText, Leftover);
 	}
 
@@ -394,8 +449,8 @@ namespace CrowdyExecCodegenMenu
 			Ask(EAppMsgCategory::Warning, EAppMsgType::Ok, EAppReturnType::Ok, FText::Format(LOCTEXT("GapsLeftoverOnly", "{0}\n\n{1}"), Described, Unbuildable), Title);
 			return;
 		}
-		// A file that is not UTF-8 would be rewritten as UTF-8, so it is left alone, as Save asks before doing.
-		if (Gaps.InsertAt == INDEX_NONE || !OnDisk.bUtf8)
+		// A file that is not UTF-8 would be rewritten as UTF-8, and one with macros may define the functions already, so it is left alone, as Save asks before doing.
+		if (Gaps.InsertAt == INDEX_NONE || !OnDisk.bUtf8 || !Gaps.Macros.IsEmpty())
 		{
 			const FString Stubs = JoinStubs(Gaps);
 			const FText Kept = OnDisk.bUtf8 ? FText::GetEmpty()
@@ -405,8 +460,8 @@ namespace CrowdyExecCodegenMenu
 				Described, Kept, FText::FromString(Stubs)), Title);
 			return;
 		}
-		const FText Question = FText::Format(LOCTEXT("GapsAsk", "{0}\n\nAdd empty versions of the missing functions? A function fails with \"not written yet\" until you write it; a timer or event does nothing.{1}"),
-			Described, Gaps.Leftover.IsEmpty() ? FText::GetEmpty() : FText::Format(LOCTEXT("GapsAskLeftover", "\n\n{0}"), Unbuildable));
+		const FText Question = FText::Format(LOCTEXT("GapsAsk", "{0}\n\nAdd empty versions of the missing functions? A function fails with \"not written yet\" until you write it; a timer or event does nothing.{1}\n\nThis writes them into {2} on disk. If another program has it open with unsaved changes, save or close it there first, or its next save removes them."),
+			Described, Gaps.Leftover.IsEmpty() ? FText::GetEmpty() : FText::Format(LOCTEXT("GapsAskLeftover", "\n\n{0}"), Unbuildable), FText::FromString(FPaths::GetCleanFilename(LogicFile)));
 		if (Ask(EAppMsgCategory::Warning, EAppMsgType::YesNo, EAppReturnType::No, Question, Title) != EAppReturnType::Yes)
 		{
 			return;
@@ -414,7 +469,7 @@ namespace CrowdyExecCodegenMenu
 		// The file may have changed while the question was open, for example saved from another editor.
 		const CrowdyServerCodeFiles::FDiskText Now = CrowdyServerCodeFiles::Read(LogicFile);
 		const CrowdyExecCodegen::FLogicGaps Fresh = CrowdyExecCodegen::FindLogicGaps(Crate, Now.Text);
-		if (!Now.bReadable || !Now.bUtf8 || Fresh.InsertAt == INDEX_NONE)
+		if (!Now.bReadable || !Now.bUtf8 || Fresh.InsertAt == INDEX_NONE || !Fresh.Macros.IsEmpty())
 		{
 			ShowGenerateError(Definition, FString::Printf(TEXT("%s changed while Generate was asking, so nothing was added. Generate again."), *LogicFile));
 			return;
@@ -424,6 +479,12 @@ namespace CrowdyExecCodegenMenu
 			ShowGenerateError(Definition, FString::Printf(TEXT("Could not write %s. Close any program using it and try again."), *LogicFile));
 			return;
 		}
+		TArray<FString> Inserted;
+		for (const CrowdyExecCodegen::FLogicStub& Stub : Fresh.Missing)
+		{
+			Inserted.Add(Stub.Method);
+		}
+		CrowdyServerCodeEdits::NoteStubsInserted(LogicFile, MoveTemp(Inserted));
 		CrowdyServerCodeEdits::ShowWritten(LogicFile);
 	}
 
@@ -466,6 +527,13 @@ namespace CrowdyExecCodegenMenu
 
 	bool GenerateServerCode(UCrowdyServerObjectDefinition& Definition, const FString& ServerDirectory)
 	{
+		if (Definition.TypeName.Equals(UCrowdyServerObjectDefinition::RootTypeName, ESearchCase::CaseSensitive))
+		{
+			const bool bSdkRoot = Definition.GetPathName().Equals(UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath, ESearchCase::IgnoreCase);
+			ShowGenerateError(Definition, bSdkRoot ? TEXT("This is the Crowdy SDK's own root; its server code is built into every deploy, so there is nothing to generate.")
+				: TEXT("root is the name of the platform's root Server Object type; choose another Type Name."));
+			return false;
+		}
 		TArray<FString> Errors;
 		if (!Definition.Bake(Errors))
 		{
@@ -493,6 +561,10 @@ namespace CrowdyExecCodegenMenu
 		}
 		// A move already told the developer that saved instances do not carry over.
 		if (MoveFrom.IsEmpty() && (!ConfirmRenames(Definition, Crate, Directory) || !ConfirmRemovals(Definition, Crate, Directory)))
+		{
+			return false;
+		}
+		if (!ConfirmLibOverwrite(MoveFrom.IsEmpty() ? Directory : MoveFrom))
 		{
 			return false;
 		}

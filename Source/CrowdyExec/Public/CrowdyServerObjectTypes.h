@@ -34,14 +34,18 @@ enum class ECrowdyServerCallOutcome : uint8
 	NotDeployed,
 	/** The server did not answer in time. */
 	Timeout,
-	/** This player may not call that function on this Server Object. */
+	/** Refused: this player may not call that function; the reason says why. */
 	Denied,
 	/** The server code crashed while handling the call; its log says why. */
 	ServerCrashed,
 	/** The call could not be sent as asked: an unknown function, or params of the wrong type. */
 	BadRequest,
 	/** The Server Object was given back, or the player signed out, before the call finished. */
-	Canceled
+	Canceled,
+	/** The game's server or this type is switched off or paused; try again later. */
+	Paused UMETA(DisplayName = "Paused"),
+	/** The player's access to the game ended (suspended, revoked, expired, signed out or blocked); nothing works until they have access again. */
+	AccessEnded UMETA(DisplayName = "Access Ended")
 };
 
 /** Which instance of a Server Object type to find, when it is found by its definition. */
@@ -95,6 +99,31 @@ struct CROWDYEXEC_API FCrowdyServerRecord
 
 	UPROPERTY(BlueprintReadOnly, Category = "Server Object")
 	FString Team;
+};
+
+/** One record that changed in a Server Object that holds a record per entity, and which of its variables did. */
+USTRUCT(BlueprintType)
+struct CROWDYEXEC_API FCrowdyServerRecordChange
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Server Object")
+	FString RecordId;
+
+	/** The variables whose values changed, as Get Server Value takes them. */
+	UPROPERTY(BlueprintReadOnly, Category = "Server Object")
+	TArray<FString> ChangedVariables;
+};
+
+/** The variables of the root Server Object every app has, which the Crowdy SDK writes and deploys. */
+USTRUCT(BlueprintType)
+struct CROWDYEXEC_API FCrowdyPlayersOnlineState
+{
+	GENERATED_BODY()
+
+	/** Players the platform's realtime servers report in the app's world; one who stops playing still counts until their session ends, a few minutes later. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object")
+	int32 PlayersOnline = 0;
 };
 
 /** Keys a map by record id case-sensitively: two ids that differ only in case are two entities. */

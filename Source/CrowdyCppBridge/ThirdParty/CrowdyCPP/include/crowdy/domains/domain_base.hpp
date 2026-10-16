@@ -34,7 +34,14 @@ class DomainBase {
   graphql::Json execUnwrap(std::string_view document,
                            const graphql::JVal& variables = graphql::JVal(),
                            std::string_view operationName = {}) const {
-    graphql::Json data = gql_->request(document, variables, operationName);
+    return execUnwrap(document, variables, operationName, graphql::RequestOptions{});
+  }
+
+  /// execUnwrap() with request options (a CancelToken).
+  graphql::Json execUnwrap(std::string_view document, const graphql::JVal& variables,
+                           std::string_view operationName,
+                           const graphql::RequestOptions& options) const {
+    graphql::Json data = gql_->request(document, variables, operationName, options);
     if (data.isObject() && data.size() == 1) {
       graphql::Json single;
       data.forEachMember([&](std::string_view, graphql::Json v) { single = v; });
@@ -79,8 +86,16 @@ class DomainBase {
   /// the single selected root field.
   void execUnwrapAsync(std::string_view document, const graphql::JVal& variables,
                        std::string_view operationName, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(document, variables, operationName, graphql::RequestOptions{},
+                    std::move(cb));
+  }
+
+  /// execUnwrapAsync() with request options (a CancelToken).
+  void execUnwrapAsync(std::string_view document, const graphql::JVal& variables,
+                       std::string_view operationName, const graphql::RequestOptions& options,
+                       graphql::GraphQLCallback cb) const {
     auto scope = asyncScope_;
-    gql_->requestAsync(document, variables, operationName,
+    gql_->requestAsync(document, variables, operationName, options,
                        [scope, cb = std::move(cb)](
                            graphql::GraphQLOutcome out) mutable {
                          scope->run([&] {

@@ -455,6 +455,55 @@ class AppAccessAPI : public detail::AdminDomain {
                     two("appId", graphql::JVal(appId), "userId", graphql::JVal(userId)), {},
                     std::move(cb));
   }
+  /// Suspend a player's access to an app until `until` (ISO-8601): a timed ban that
+  /// lifts by itself. Until then their gameplay tokens are refused with
+  /// ACCESS_SUSPENDED (graphql::accessRefusalOf() reads its `suspendedUntil`), and
+  /// the tokens they hold for the app are deleted and their realtime sessions ended at
+  /// once. `until` must be in the future and at most 365 days away; the player must
+  /// have an access record. A replay with the same non-empty `idempotencyKey` and
+  /// arguments returns the first result. Returns the access record, `suspendedUntil`
+  /// set. Requires the `manage_access_tiers` app permission.
+  graphql::Json suspend(std::string_view appId, std::string_view userId, std::string_view until,
+                        std::string_view idempotencyKey = {}) const {
+    return execUnwrap(gen::appAccess::kSuspendAppAccessDocument,
+                      suspendVars(appId, userId, until, idempotencyKey));
+  }
+  void suspendAsync(std::string_view appId, std::string_view userId, std::string_view until,
+                    std::string_view idempotencyKey, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::appAccess::kSuspendAppAccessDocument,
+                    suspendVars(appId, userId, until, idempotencyKey), {}, std::move(cb));
+  }
+  /// Lift a player's suspension before it lapses (a no-op for a player who is not
+  /// suspended). Returns the access record, `suspendedUntil` cleared. Requires
+  /// `manage_access_tiers`.
+  graphql::Json unsuspend(std::string_view appId, std::string_view userId) const {
+    return execUnwrap(gen::appAccess::kUnsuspendAppAccessDocument,
+                      two("appId", graphql::JVal(appId), "userId", graphql::JVal(userId)));
+  }
+  void unsuspendAsync(std::string_view appId, std::string_view userId,
+                      graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::appAccess::kUnsuspendAppAccessDocument,
+                    two("appId", graphql::JVal(appId), "userId", graphql::JVal(userId)), {},
+                    std::move(cb));
+  }
+  /// Re-apply every player's tier keys that follow onto the app's world grid and
+  /// rebuild the world grid's permissions. Tier changes made through this API already
+  /// do it; call it after a change made another way. Requires `manage_access_tiers`.
+  bool resyncTierGridPermissions(std::string_view appId) const {
+    return execUnwrap(gen::appAccess::kResyncTierGridPermissionsDocument,
+                      one("appId", graphql::JVal(appId)))
+        .asBool();
+  }
+  void resyncTierGridPermissionsAsync(std::string_view appId,
+                                      std::function<void(graphql::GraphQLOutcome, bool)> cb) const {
+    execUnwrapAsync(gen::appAccess::kResyncTierGridPermissionsDocument,
+                    one("appId", graphql::JVal(appId)), {},
+                    [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      bool value = false;
+                      if (out.ok()) value = out.data.asBool();
+                      cb(std::move(out), value);
+                    });
+  }
 
   // Tier features: feature keys an access tier grants. A ck-exec hub checks a player's with the
   // node API's players.features. The fields keep the game model's names
@@ -503,6 +552,15 @@ class AppAccessAPI : public detail::AdminDomain {
   }
 
  private:
+  static graphql::JVal suspendVars(std::string_view appId, std::string_view userId,
+                                   std::string_view until, std::string_view idempotencyKey) {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    vars["userId"] = userId;
+    vars["until"] = until;
+    if (!idempotencyKey.empty()) vars["idempotencyKey"] = idempotencyKey;
+    return vars;
+  }
   graphql::JVal tierFeatureVars(std::string_view appId, std::string_view tierId) const {
     graphql::JVal vars = one("appId", graphql::JVal(appId));
     if (!tierId.empty()) vars["tierId"] = tierId;

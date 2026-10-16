@@ -2,6 +2,7 @@
 
 #include "Containers/Ticker.h"
 #include "CrowdyCppClient.h"
+#include "CrowdyNativeExec.h"
 #include "CrowdyStudioModule.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -220,6 +221,7 @@ namespace CrowdyExecDevApi
 		Out.BuildId = Reader.String(TEXT("buildId"));
 		Out.Status = Reader.String(TEXT("status"));
 		Out.Log = Reader.String(TEXT("log"), true);
+		Out.SdkVersion = Reader.String(TEXT("sdkVersion"), true);
 		Reader.List(TEXT("artifacts"), Out.Artifacts, &ReadArtifact);
 	}
 
@@ -244,6 +246,17 @@ namespace CrowdyExecDevApi
 		Out.bDisabled = Reader.Flag(TEXT("disabled"));
 		Out.DisabledTypes = Reader.Strings(TEXT("disabledTypes"));
 		Out.bBudgetPaused = Reader.Flag(TEXT("budgetPaused"));
+		Out.BudgetPauseReason = Reader.String(TEXT("budgetPauseReason"), true);
+		Out.Instances = Reader.OptionalInt(TEXT("instances"));
+		Out.InstanceLimit = Reader.OptionalInt(TEXT("instanceLimit"));
+		Out.ReservedMb = Reader.OptionalInt(TEXT("reservedMb"));
+		Out.MaxReservedMb = Reader.OptionalInt(TEXT("maxReservedMb"));
+	}
+
+	void ReadRestart(FAnswerReader& Reader, FRestart& Out)
+	{
+		Out.NodeType = Reader.String(TEXT("nodeType"));
+		Out.Stopped = Reader.Int(TEXT("stopped"));
 	}
 
 	void ReadInstance(FAnswerReader& Reader, FInstance& Out)
@@ -614,8 +627,27 @@ namespace CrowdyExecDeveloper
 		const TSharedRef<FClient> NewClient = MakeShareable(new FClient());
 		NewClient->Host = NewHost;
 		NewClient->Client = NewHost->GetClient();
+		NewClient->SessionToken = Token;
 		NewClient->AppId = Settings->AppID;
 		return NewClient;
+	}
+
+	TSharedPtr<FCrowdyNativeExecConnection> FClient::ConnectAsDeveloper(const FString& NodeType, const FString& Key) const
+	{
+		if (!Client || SessionToken.IsEmpty())
+		{
+			return nullptr;
+		}
+		FCrowdyNativeExecOptions Options;
+		Options.NodeType = NodeType;
+		Options.Key = Key;
+		Options.bAsDeveloper = true;
+		Options.bReconnect = false;
+		const UCrowdySDKDeveloperSettings* DeveloperSettings = GetDefault<UCrowdySDKDeveloperSettings>();
+		Options.AllowedGatewayDomains = DeveloperSettings->AllowedExecGatewayDomains;
+		Options.CallTimeoutMs = DeveloperSettings->GetServerObjectCallTimeoutMs();
+		Options.OpenTimeoutMs = DeveloperSettings->GetServerObjectOpenTimeoutMs();
+		return Client->CreateExecConnection(AppId, Options, [Token = SessionToken]() { return Token; });
 	}
 
 	TSharedRef<FClient> FClient::CreateForClient(TSharedRef<FCrowdyCppClient> InClient, int64 InAppId)
@@ -721,6 +753,15 @@ namespace CrowdyExecDeveloper
 	{
 		CrowdyExecDevApi::RunObject<FAppStatus>(Client, TEXT("ExecAppStatus"), TEXT("execAppStatus"),
 			CrowdyExecDevApi::AppVariables(AppId), TArray<float>(), MoveTemp(OnDone), &CrowdyExecDevApi::ReadAppStatus);
+	}
+
+	void FClient::RestartType(const FString& NodeType, TFunction<void(const TResult<FRestart>&)> OnDone)
+	{
+		const TSharedRef<FJsonObject> Variables = CrowdyExecDevApi::AppVariables(AppId);
+		Variables->SetStringField(TEXT("nodeType"), NodeType);
+
+		CrowdyExecDevApi::RunObject<FRestart>(Client, TEXT("ExecRestartType"), TEXT("execRestartType"),
+			Variables, BusyWaitSeconds, MoveTemp(OnDone), &CrowdyExecDevApi::ReadRestart);
 	}
 
 	void FClient::Instances(TFunction<void(const TResult<TArray<FInstance>>&)> OnDone)

@@ -13,6 +13,7 @@
 #include "UI/CrowdyStudioWidgets.h"
 #include "UI/SCrowdyProjectView.h"
 #include "UI/SCrowdyAccessView.h"
+#include "UI/SCrowdyAccountView.h"
 #include "UI/SCrowdyChannelsView.h"
 #include "UI/SCrowdyGridView.h"
 #include "UI/SCrowdyHomeView.h"
@@ -115,6 +116,7 @@ void SCrowdyStudioWindow::Construct(const FArguments& InArgs)
 					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyChannelsView).Controller(Controller) ]
 					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyGridView).Controller(Controller) ]
 					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyAccessView).Controller(Controller) ]
+					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyAccountView).Controller(Controller) ]
 					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyInspectorView) ]
 					+ SWidgetSwitcher::Slot()[ SNew(SCrowdyRegistryInspector) ]
 					+ SWidgetSwitcher::Slot()[ SAssignNew(WebView, SCrowdyWebView).InitialUrl(FCrowdyStudioLinks::Dashboard()) ]
@@ -356,6 +358,8 @@ TSharedRef<SWidget> SCrowdyStudioWindow::BuildNavRail()
 	// Guided setup first, then the overview.
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavWizard", "Setup Wizard"), TEXT("wand"), CrowdyStudioPages::Wizard, false) ];
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavHome", "Home"), TEXT("home"), CrowdyStudioPages::Home, true) ];
+	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavAccount", "Account"), TEXT("login"), CrowdyStudioPages::Account, true,
+		LOCTEXT("NavAccountTip", "Your own name, password and sessions")) ];
 
 	GroupSlot(Nav, LOCTEXT("NavGrpConfigure", "CONFIGURE"));
 	Nav->AddSlot().AutoHeight().Padding(0.0f, 1.0f)[ MakeNavButton(LOCTEXT("NavProject", "Project"), TEXT("apps"), CrowdyStudioPages::Apps, true) ];

@@ -171,6 +171,7 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	CrowdyAuth->OnRegisterFailed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthRegisterFailed);
 	CrowdyAuth->OnSessionRestored.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthSessionRestored);
 	CrowdyAuth->OnAppTokenRefreshed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAppTokenRefreshed);
+	CrowdyAuth->OnServerSessionEnded.AddWeakLambda(this, [this]() { Logout(); });
 }
 
 void UCrowdySDKSubsystem::Deinitialize()
@@ -256,12 +257,16 @@ void UCrowdySDKSubsystem::RefreshAppToken() const
 
 void UCrowdySDKSubsystem::Logout() const
 {
-	// Forget the durable credential too: cancel the refresh timer and delete the
-	// persisted SESSION token so the next launch does not silently restore the user.
+	// End the session on the server first, while its token is still installed, then forget the durable credential:
+	// cancel the refresh timer and delete the persisted SESSION token so the next launch does not restore the user.
 	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+	{
+		Auth->EndServerSession();
 		Auth->ClearSavedSession();
+	}
 
 	GameSession->ClearCurrentSessionData();
+	GameSession->SetAppPaused(false, FString());
 
 	// Scrub the bearers the shared API client still holds. It reinstalls them from here on every resolve, so a call
 	// issued after this point would otherwise still go out as the account that just signed out.
@@ -394,6 +399,14 @@ void UCrowdySDKSubsystem::OpenRoutedConnection()
 			FCrowdyUDPEndpoint Full;
 			Full.bGateKeep = true;
 			Self->HandleUDPAddressNotify(Full);
+		}
+	};
+
+	Request.ReportTokenRejected = [WeakThis]()
+	{
+		if (UCrowdySDKSubsystem* Self = WeakThis.Get())
+		{
+			Self->HandleTokenExpired();
 		}
 	};
 

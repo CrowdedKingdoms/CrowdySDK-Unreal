@@ -41,23 +41,22 @@ struct FCrowdyTeamRolesResult
 	TArray<FCrowdyTeamRole> Roles;
 };
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FTeamAsyncOnSuccess, FCrowdyTeam, Team);
+// One signature serves On Success and On Error, because a Blueprint async node builds its data pins from the first delegate only.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FTeamAsyncResult, FCrowdyTeam, Team, FCrowdyTeamError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FTeamsAsyncOnSuccess, FCrowdyTeamsResult, Result);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FTeamsAsyncResult, FCrowdyTeamsResult, Result, FCrowdyTeamError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMyTeamsAsyncOnSuccess, FCrowdyMyTeamsResult, Result);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FMyTeamsAsyncResult, FCrowdyMyTeamsResult, Result, FCrowdyTeamError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMemberAsyncOnSuccess, FCrowdyTeamMember, Member);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FMemberAsyncResult, FCrowdyTeamMember, Member, FCrowdyTeamError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMembersAsyncOnSuccess, FCrowdyTeamMembersResult, Result);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FMembersAsyncResult, FCrowdyTeamMembersResult, Result, FCrowdyTeamError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRoleAsyncOnSuccess, FCrowdyTeamRole, Role);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FRoleAsyncResult, FCrowdyTeamRole, Role, FCrowdyTeamError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRolesAsyncOnSuccess, FCrowdyTeamRolesResult, Result);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FRolesAsyncResult, FCrowdyTeamRolesResult, Result, FCrowdyTeamError, Error, FString, Message);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FPolicyAsyncOnSuccess, FCrowdyTeamPolicy, Policy);
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FVoidAsyncOnSuccess);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FPolicyAsyncResult, FCrowdyTeamPolicy, Policy, FCrowdyTeamError, Error, FString, Message);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FTeamsAsyncOnError, FCrowdyTeamError, Error, FString, Message);
 
@@ -69,9 +68,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetMyTeams : public UBlueprintAsyncActionB
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FMyTeamsAsyncOnSuccess OnSuccess;
+	FMyTeamsAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FMyTeamsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get My Teams")
@@ -95,9 +94,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetTeam : public UBlueprintAsyncActionBase
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FTeamAsyncOnSuccess OnSuccess;
+	FTeamAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FTeamAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get Team")
@@ -122,9 +121,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetTeams : public UBlueprintAsyncActionBas
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnSuccess OnSuccess;
+	FTeamsAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FTeamsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get All Teams")
@@ -147,9 +146,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetTeamMembers : public UBlueprintAsyncAct
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FMembersAsyncOnSuccess OnSuccess;
+	FMembersAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FMembersAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get Team Members")
@@ -173,9 +172,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetTeamRoles : public UBlueprintAsyncActio
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FRolesAsyncOnSuccess OnSuccess;
+	FRolesAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FRolesAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get Team Roles")
@@ -200,9 +199,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetTeamPolicy : public UBlueprintAsyncActi
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FPolicyAsyncOnSuccess OnSuccess;
+	FPolicyAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FPolicyAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get Team Policy")
@@ -226,9 +225,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetPendingJoinRequests : public UBlueprint
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FMembersAsyncOnSuccess OnSuccess;
+	FMembersAsyncResult OnSuccess;
 	UPROPERTY(BlueprintAssignable)
-	FTeamsAsyncOnError OnError;
+	FMembersAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Teams|Queries", DisplayName="Get Pending Join Requests")

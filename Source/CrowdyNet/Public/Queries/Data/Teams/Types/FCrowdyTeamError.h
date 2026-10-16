@@ -13,6 +13,7 @@ enum class ECrowdyTeamErrorCode : uint8
 	NotMember,
 	NetworkError,
 	ServerError,
+	Banned,
 };
 
 USTRUCT(BlueprintType)
@@ -39,6 +40,16 @@ struct CROWDYNET_API FCrowdyTeamError
 		else if (Lower.Contains(TEXT("policy")))           Err.Code = ECrowdyTeamErrorCode::PolicyViolation;
 		else if (Lower.Contains(TEXT("http")))             Err.Code = ECrowdyTeamErrorCode::NetworkError;
 		else if (!Msg.IsEmpty())                           Err.Code = ECrowdyTeamErrorCode::ServerError;
+
+		return Err;
+	}
+
+	/** FromMessage, then the server's stable error code where it names a failure the message text cannot. */
+	static FCrowdyTeamError FromFailure(const FString& Msg, const FString& ServerCode)
+	{
+		FCrowdyTeamError Err = FromMessage(Msg);
+		if (ServerCode == TEXT("GROUP_MEMBER_BANNED"))
+			Err.Code = ECrowdyTeamErrorCode::Banned;
 
 		return Err;
 	}

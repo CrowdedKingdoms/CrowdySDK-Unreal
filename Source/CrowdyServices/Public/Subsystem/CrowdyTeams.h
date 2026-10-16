@@ -34,6 +34,8 @@ DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamPolicySuccess, FCrowdyTeamPolicy, Polic
 
 DECLARE_DYNAMIC_DELEGATE(FOnTeamVoidSuccess);
 
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnTeamUnbanSuccess, bool, bWasBanned);
+
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnTeamError, FCrowdyTeamError, Error, FString, Message);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMyTeamsCacheChanged, const TArray<FCrowdyTeamMembership>&, Memberships);
@@ -135,6 +137,18 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Teams|Mutations|Members")
 	void RemoveTeamMember(int64 TeamId, int64 UserId, FOnTeamVoidSuccess OnSuccess, FOnTeamError OnError);
+
+	/**
+	 * Bans a user from the team: removes them and refuses every later join, request or add until unbanned. Needs
+	 * manage_members; never the owner or yourself. A Reason over 500 characters is refused without a request.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Teams|Mutations|Members")
+	void BanTeamMember(int64 TeamId, int64 UserId, const FString& Reason,
+	                   FOnTeamMemberSuccess OnSuccess, FOnTeamError OnError);
+
+	/** Lifts a ban. Was Banned is false when the user had none. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Teams|Mutations|Members")
+	void UnbanTeamMember(int64 TeamId, int64 UserId, FOnTeamUnbanSuccess OnSuccess, FOnTeamError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Teams|Mutations|Roles")
 	void CreateTeamRole(int64 TeamId, const FString& RoleName, FCrowdyTeamPermissions Permissions,

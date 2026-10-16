@@ -12,10 +12,10 @@
 /// packaged snapshot -> optimistic apply -> referee invoke -> confirm or
 /// rollback loop that server-refereed action clients otherwise hand-roll.
 ///
-/// The referee side (compute-module invoke export or Model function) is
-/// expected to be idempotent on `actionId`: one is generated per attempt so
-/// a retry of the same action returns the prior verdict instead of
-/// double-applying (the Blocks-with-Friends receipt pattern).
+/// The referee side (a hub endpoint) is expected to be idempotent on
+/// `actionId`: one is generated per attempt so a retry of the same action
+/// returns the prior verdict instead of double-applying, as a kit hub's
+/// `action_id` receipts do (KitCallOptions::action).
 namespace crowdy::kit {
 
 /// Outcome of run_optimistic_action.

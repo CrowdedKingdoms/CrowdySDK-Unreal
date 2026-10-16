@@ -10,6 +10,16 @@
 struct FCrowdyExecLayout;
 struct FInstancedStruct;
 
+/** What a type is on the server. */
+UENUM(BlueprintType)
+enum class ECrowdyServerObjectKind : uint8
+{
+	/** Saves its variables, one instance per Instance Id, and runs one call at a time. */
+	ServerObject UMETA(DisplayName = "Server Object"),
+	/** Functions only, like a Blueprint Function Library: it saves nothing between calls, and several instances answer calls at once. */
+	FunctionLibrary UMETA(DisplayName = "Server Function Library")
+};
+
 /** How a set of values is described. */
 UENUM()
 enum class ECrowdyServerValuesForm : uint8
@@ -72,7 +82,9 @@ enum class ECrowdyServerFunctionCaller : uint8
 	/** Only the leader, and other server code. Needs Members From. */
 	Leader,
 	/** Only other server code and developer tools can call it; a player's call is refused. */
-	ServerOnly UMETA(DisplayName = "Server Only")
+	ServerOnly UMETA(DisplayName = "Server Only"),
+	/** Only developer tools can call it, such as Call as Developer in the editor; players and other server code are refused. */
+	DevelopersOnly UMETA(DisplayName = "Developers Only")
 };
 
 /** Who belongs to a Server Object. */
@@ -238,6 +250,55 @@ struct CROWDYEXEC_API FCrowdyServerFunction
 	FString GetReplyListName() const;
 };
 
+/** A message a Server Object's server code sends to everyone listening: players and other Server Object types. */
+USTRUCT(BlueprintType)
+struct CROWDYEXEC_API FCrowdyServerMessage
+{
+	GENERATED_BODY()
+
+	/** The message's name in Unreal. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Message")
+	FName Name;
+
+	/** The topic on the server. Empty uses Name in snake case: BossDefeated becomes boss_defeated. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Message", AdvancedDisplay)
+	FString ServerName;
+
+	/** Whether the payload is variables added here or a struct of your own. */
+	UPROPERTY(EditAnywhere, Category = "Server Message", meta = (DisplayName = "Payload From"))
+	ECrowdyServerValuesForm PayloadForm = ECrowdyServerValuesForm::Struct;
+
+	/** Players can listen to this message. Off: only other Server Object types that Listen To this one hear it, and it does not open the type to players. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Message", meta = (DisplayName = "Players Can Listen"))
+	bool bPlayersCanListen = true;
+
+	/** The struct each message carries. None carries nothing. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Message", meta = (DisplayName = "Payload Struct",
+		EditCondition = "PayloadForm == ECrowdyServerValuesForm::Struct", EditConditionHides))
+	TObjectPtr<UScriptStruct> Payload;
+
+	/** The variables each message carries, with their default values. No variables carries nothing. */
+	UPROPERTY(EditAnywhere, Category = "Server Message", meta = (DisplayName = "Payload", DefaultType = "Int32", IsPinTypeAccepted = "IsServerValueTypeAccepted",
+		EditCondition = "PayloadForm == ECrowdyServerValuesForm::List", EditConditionHides))
+	FInstancedPropertyBag PayloadList;
+
+	/** The topic as of the last bake, spelled as in the editor, which a packaged game cannot read back from Name. */
+	UPROPERTY()
+	FString BakedTopic;
+
+	/** The topic: BakedTopic, or worked out from ServerName and Name when the definition was never baked. */
+	FString GetTopic() const;
+
+	/** What each message carries: Payload, or PayloadList's struct. Null when it carries nothing. */
+	const UScriptStruct* GetPayloadStruct() const;
+
+	/** Out becomes a fresh payload: PayloadList's own values, or Payload's defaults. Empty when the message carries nothing. */
+	void InitializePayload(FInstancedStruct& Out) const;
+
+	/** The name PayloadList goes by in server code, such as BossDefeatedMessage; empty when the message carries a struct. */
+	FString GetPayloadListName() const;
+};
+
 /** Keeps a field's name on the server when the field is renamed in Unreal. */
 USTRUCT(BlueprintType)
 struct CROWDYEXEC_API FCrowdyServerFieldName
@@ -362,7 +423,7 @@ struct CROWDYEXEC_API FCrowdyExecBakedEnum
 	TArray<FName> EnumeratorNames;
 };
 
-/** One Server Object type (a hub type on the platform): its state, the values players can watch, and the functions they can call. */
+/** One Server Object type (a hub type on the platform, or a spoke when it is a Server Function Library): its state, the values players can watch, and the functions they can call. */
 UCLASS(BlueprintType)
 class CROWDYEXEC_API UCrowdyServerObjectDefinition : public UDataAsset
 {
@@ -372,6 +433,15 @@ public:
 	/** The type's name on the server (the node type): lowercase letters, digits and underscores, starting with a letter. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object")
 	FString TypeName;
+
+	/** A Server Object saves its variables; a Server Function Library only has functions, saves nothing between calls, and answers many calls at once. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object")
+	ECrowdyServerObjectKind Kind = ECrowdyServerObjectKind::ServerObject;
+
+	bool IsFunctionLibrary() const { return Kind == ECrowdyServerObjectKind::FunctionLibrary; }
+
+	/** Whether nothing picks an instance: Only One Instance is on, or this is a Server Function Library. */
+	bool HasOnlyOneInstance() const { return bOnlyOneInstance || IsFunctionLibrary(); }
 
 	/** Every player, only the player who owns the instance, or only its members. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Readable By"))
@@ -384,9 +454,47 @@ public:
 	/** The Instance Id of a type with Only One Instance. */
 	static const TCHAR* const OnlyInstanceId;
 
-	/** Its server code may read world data, such as which actors are near a chunk; deploying asks the platform for the world.read permission. */
+	/** The platform's root type, every app's parent of the others; its one instance's Instance Id is empty. */
+	static const TCHAR* const RootTypeName;
+
+	/** The Instance Id a type that HasOnlyOneInstance is reached by: empty for the root and a Server Function Library, else Only Instance Id. */
+	FString GetOnlyInstanceId() const;
+
+	/** Its server code may read players: their names, tier features, group membership and app state; deploying asks the platform for players.read. Crowdy Team members or records and a Required Feature ask for it too. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads Players"))
+	bool bReadsPlayers = false;
+
+	/** Its server code may replace a player's app state; deploying asks the platform for players.write. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Changes Players' App State"))
+	bool bWritesPlayerState = false;
+
+	/** Its server code may read world data, such as a chunk's voxels or which actors are near a chunk; deploying asks the platform for the world.read permission. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads World Data"))
 	bool bReadsWorld = false;
+
+	/** Its server code may write voxels and a chunk's state; deploying asks the platform for world.write. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Changes the World"))
+	bool bWritesWorld = false;
+
+	/** Its server code may read the app's grids: which grid covers a chunk, its owner, and whether a player holds a permission on it; deploying asks the platform for grids.read. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads Grids"))
+	bool bReadsGrids = false;
+
+	/** Its server code may create and delete grids, give a group keys on one, and open one to every player, as an app admin can in Studio; deploying asks the platform for grids.write. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Manages Grids"))
+	bool bManagesGrids = false;
+
+	/** Its server code may grant and revoke players' permissions on the app's grids; deploying asks the platform for permissions.write. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Grants Grid Permissions"))
+	bool bGrantsGridPermissions = false;
+
+	/** Its server code may read a player's access to the app: status, tier, expiry and suspension; deploying asks the platform for access.read. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Reads Players' Access"))
+	bool bReadsAccess = false;
+
+	/** Its server code may grant, revoke and suspend players' access to the app, as an app admin can in Studio; deploying asks the platform for access.write. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Manages Players' Access"))
+	bool bManagesAccess = false;
 
 	/** One set of the variables, or a record of them for each entity. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (DisplayName = "Holds"))
@@ -436,7 +544,7 @@ public:
 	ECrowdyServerTeamSource TeamFrom = ECrowdyServerTeamSource::ThisObjectsRecords;
 
 	/** Whether this holds records whose teams are Crowdy Team ids. */
-	bool HasCrowdyTeamRecords() const { return Holds == ECrowdyServerObjectHolds::RecordPerEntity && TeamFrom == ECrowdyServerTeamSource::CrowdyTeam; }
+	bool HasCrowdyTeamRecords() const { return !IsFunctionLibrary() && Holds == ECrowdyServerObjectHolds::RecordPerEntity && TeamFrom == ECrowdyServerTeamSource::CrowdyTeam; }
 
 	/** When instances are keyed by area, each covers Area Size by Area Size chunks on the ground and its Instance Id is the area's x,y. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Areas", meta = (DisplayName = "Area Size", ClampMin = 1, ClampMax = 64))
@@ -455,6 +563,16 @@ public:
 	/** What players, or other server code, can call on an instance. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Functions")
 	TArray<FCrowdyServerFunction> Functions;
+
+	/** What the server code sends to everyone listening: players, and other Server Object types that Listen To this one. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Messages")
+	TArray<FCrowdyServerMessage> Messages;
+
+	/** The message called Name, or null. */
+	const FCrowdyServerMessage* FindMessage(FName Name) const;
+
+	/** The message sent on Topic, or null. */
+	const FCrowdyServerMessage* FindMessageByTopic(const FString& Topic) const;
 
 	/** Who belongs to an instance: nobody, members it keeps itself, or a Crowdy Team's members. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Members", meta = (DisplayName = "Members From"))
@@ -487,10 +605,58 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timers & Events", meta = (DisplayName = "On Player Left"))
 	bool bOnPlayerLeft = false;
 
+	/** Whether players can do anything with an instance: call a function, watch a value, read records, be a member, listen to a message that players can listen to, or be heard joining or leaving. Deploying closes a type that is not to players, and acquiring one is refused. */
+	bool IsReachableByPlayers() const;
+
+	/** Whether any message lets players listen. */
+	bool HasPlayerMessages() const;
+
+	/** Whether some players may read less than every player can: Readable By is not Every Player, or some variables are Owner Only or Team Only. Messages still reach every player who connects. */
+	bool HasRestrictedReaders() const;
+
 #if WITH_EDITORONLY_DATA
 	/** Other Server Object types this one's server code calls. Used when server code is generated and deployed; a game never loads them. */
 	UPROPERTY(EditAnywhere, Category = "Can Call")
 	TArray<TObjectPtr<UCrowdyServerObjectDefinition>> CanCall;
+
+	/** Server code may call, and listen to, every type in the app, including types added later. Generated helpers are still made only for the types listed in Can Call. */
+	UPROPERTY(EditAnywhere, Category = "Can Call", meta = (DisplayName = "Can Call Any Type"))
+	bool bCanCallAnyType = false;
+
+	/** Instances of a Server Function Library kept running at all times (replicas). Each counts toward the app's instance limit. */
+	UPROPERTY(EditAnywhere, Category = "Scaling", meta = (DisplayName = "Min Instances", ClampMin = 1, ClampMax = 64, NoSpinbox = true,
+		EditCondition = "Kind == ECrowdyServerObjectKind::FunctionLibrary", EditConditionHides))
+	int32 MinInstances = 1;
+
+	/** The server adds instances up to this many once calls have waited 2 seconds, and removes one after about 30 idle seconds (max_replicas). Equal to Min Instances, it never adds any. */
+	UPROPERTY(EditAnywhere, Category = "Scaling", meta = (DisplayName = "Max Instances", ClampMin = 1, ClampMax = 64, NoSpinbox = true,
+		EditCondition = "Kind == ECrowdyServerObjectKind::FunctionLibrary", EditConditionHides))
+	int32 MaxInstances = 1;
+
+	/** Calls each instance answers at the same time (concurrency). */
+	UPROPERTY(EditAnywhere, Category = "Scaling", meta = (DisplayName = "Parallel Calls per Instance", ClampMin = 1, ClampMax = 256, NoSpinbox = true,
+		EditCondition = "Kind == ECrowdyServerObjectKind::FunctionLibrary", EditConditionHides))
+	int32 ParallelCallsPerInstance = 16;
+
+	/** Other Server Object types whose messages this one's server code can listen to; each is also callable. */
+	UPROPERTY(EditAnywhere, Category = "Listen To")
+	TArray<TObjectPtr<UCrowdyServerObjectDefinition>> ListenTo;
+
+	/** Memory each running instance may use (memory_mb). Every instance reserves it from the app's memory limit, so a smaller type fits more instances. */
+	UPROPERTY(EditAnywhere, Category = "Server Limits", meta = (DisplayName = "Memory per Instance", ClampMin = 1, ClampMax = 512, ForceUnits = "MB", NoSpinbox = true))
+	int32 MemoryMegabytes = 64;
+
+	/** How long one call may run before the server stops it and the caller gets Timeout (deadline_ms). */
+	UPROPERTY(EditAnywhere, Category = "Server Limits", meta = (DisplayName = "Time per Call", ClampMin = 10, ClampMax = 10000, ForceUnits = "ms", NoSpinbox = true))
+	int32 CallTimeLimitMs = 2000;
+
+	/** How much work one call may do, in millions of fuel, before the server stops it (fuel_per_call). */
+	UPROPERTY(EditAnywhere, Category = "Server Limits", meta = (DisplayName = "Fuel per Call (Millions)", ClampMin = 1, ClampMax = 1000, NoSpinbox = true))
+	int32 FuelPerCallMillions = 50;
+
+	/** Calls that may wait at one instance; past it a call is answered Busy (mailbox). */
+	UPROPERTY(EditAnywhere, Category = "Server Limits", meta = (DisplayName = "Calls Waiting", ClampMin = 1, ClampMax = 4096, NoSpinbox = true))
+	int32 MaxWaitingCalls = 1024;
 #endif
 
 	/** How often the server saves a running instance (persist_every_ms). */
@@ -535,7 +701,7 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "Baked", AdvancedDisplay)
 	TArray<FCrowdyExecBakedEnum> BakedEnums;
 
-	/** Rebuilds the field tables from the structs, and each function's method name. On a problem it clears the tables and returns every problem found. */
+	/** Rebuilds the field tables from the structs, and each function's method name and message's topic. On a problem it clears the tables and returns every problem found. */
 	bool Bake(TArray<FString>& OutErrors);
 
 	/** Builds the field tables without storing them. */
@@ -550,7 +716,7 @@ public:
 	/** The State's variable called Variable, ignoring case, spaces and punctuation; null when there is none that travels. */
 	const FProperty* FindVariable(FName Variable) const;
 
-	/** Out becomes Struct's starting values: a List's values as set here, otherwise the struct's defaults. Null Struct empties Out; a function's own values come from its InitializeParams or InitializeReply. */
+	/** Out becomes Struct's starting values: a List's values as set here, otherwise the struct's defaults. Null Struct empties Out; a function's own values come from its InitializeParams or InitializeReply, a message's from its InitializePayload. */
 	void InitializeValues(const UScriptStruct* Struct, FInstancedStruct& Out) const;
 
 	/** The name a List's values go by in messages and server code, such as AddTipParams; empty when Struct is not one of this definition's Lists. */
@@ -559,7 +725,7 @@ public:
 	/** The struct of the List that FindListName calls Name. */
 	const UScriptStruct* FindListStruct(const FString& Name) const;
 
-	/** Every List in use, by the name FindListName gives it: the State's first, then each function's inputs and outputs. */
+	/** Every List in use, by the name FindListName gives it: the State's first, then each function's inputs and outputs, then each message's payload. */
 	void GetLists(TArray<FCrowdyServerNamedList>& Out) const;
 
 	/** The function called Name: one of Functions, or a built-in member function when Members From is This Object. */
