@@ -1212,7 +1212,7 @@ void FCrowdyServerMessageBindings::Run(const FBinding& Binding, const FInstanced
 	const TPair<const UObject*, FName> Key(Handler, Binding.Function);
 	UFunction* Function = Handler ? Handler->FindFunction(Binding.Function) : nullptr;
 	TFieldIterator<FProperty> Param(Function);
-	const FStructProperty* PayloadParam = Param ? CastField<FStructProperty>(*Param) : nullptr;
+	const FStructProperty* PayloadParam = Param && Param->HasAnyPropertyFlags(CPF_Parm) ? CastField<FStructProperty>(*Param) : nullptr;
 	if (!Function || !PayloadParam || PayloadParam->Struct != TBaseStructure<FInstancedStruct>::Get())
 	{
 		UE_LOG(LogCrowdyExec, Warning, TEXT("%s has no function %s taking a payload, so %s's messages cannot reach it"), *GetNameSafe(Handler), *Binding.Function.ToString(), *Binding.Message.ToString());
