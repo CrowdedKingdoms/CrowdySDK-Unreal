@@ -59,3 +59,32 @@ public:
 		AccessEndedBlockedUntils.Add(BlockedUntil);
 	}
 };
+
+/** Records what the account and player calls hand their delegates. */
+UCLASS(Transient)
+class UCrowdyAccountTestListener : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	int32 Dones = 0;
+	TArray<FCrowdyAccountError> Errors;
+	TArray<FCrowdyAppAccess> Accesses;
+	TArray<FCrowdyPlayerProfile> Profiles;
+	TArray<TArray<FCrowdyPlayerProfile>> ProfileLists;
+
+	UFUNCTION()
+	void HandleDone() { ++Dones; }
+
+	UFUNCTION()
+	void HandleError(FCrowdyAccountError Error, FString Message) { Errors.Add(Error); }
+
+	UFUNCTION()
+	void HandleAccess(FCrowdyAppAccess Access) { Accesses.Add(Access); }
+
+	UFUNCTION()
+	void HandleProfile(FCrowdyPlayerProfile Profile) { Profiles.Add(Profile); }
+
+	UFUNCTION()
+	void HandleProfiles(const TArray<FCrowdyPlayerProfile>& List) { ProfileLists.Add(List); }
+};

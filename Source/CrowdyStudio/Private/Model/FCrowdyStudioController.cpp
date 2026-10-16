@@ -703,9 +703,26 @@ bool FCrowdyStudioController::IsInteractiveSignInBusy() const
 
 void FCrowdyStudioController::SignOut()
 {
+	// End the session on the server while its token is still installed; nothing waits for the answer. An organization
+	// token is not a session, so it is only forgotten.
+	if (AuthScope == ECrowdyStudioAuthScope::Session && !AuthToken.IsEmpty())
+	{
+		if (const TSharedPtr<FCrowdyCppClient> Client = ResolveApiClient(TEXT("logout")))
+		{
+			Client->Logout([](FCrowdyCppBoolResult Result)
+			{
+				UE_CLOG(!Result.bOk, LogCrowdyStudio, Warning,
+					TEXT("[studio] The server did not end the session (%s); it stays valid until it expires."), *Result.ErrorMessage);
+			});
+		}
+	}
+
 	FCrowdyTokenVault::Clear();
 
 	AuthToken.Empty();
+	MyEmail.Empty();
+	MyGamertag.Empty();
+	MyDisambiguation.Empty();
 	AuthScope = ECrowdyStudioAuthScope::None;
 	bSignedIn = false;
 	UserId = 0;
@@ -747,9 +764,137 @@ void FCrowdyStudioController::SignOut()
 	OnSignInStateChanged.Broadcast();
 	OnOrganizationsChanged.Broadcast();
 	OnAppsChanged.Broadcast();
+	OnMyProfileChanged.Broadcast();
 }
 
+void FCrowdyStudioController::FetchMyProfile()
+{
+	if (!CanManageAccount())
+	{
+		return;
+	}
+	SendManagement(ECrowdyCppApiDomain::Users, TEXT("Me"), nullptr,
+		[this](const TSharedPtr<FJsonObject>& Envelope)
+		{
+			const TSharedPtr<FJsonObject>* Data = nullptr;
+			const TSharedPtr<FJsonObject>* Me = nullptr;
+			if (!Envelope.IsValid() || !Envelope->TryGetObjectField(TEXT("data"), Data) || !(*Data)->TryGetObjectField(TEXT("me"), Me))
+			{
+				return;
+			}
+			MyEmail.Empty();
+			MyGamertag.Empty();
+			MyDisambiguation.Empty();
+			(*Me)->TryGetStringField(TEXT("email"), MyEmail);
+			(*Me)->TryGetStringField(TEXT("gamertag"), MyGamertag);
+			(*Me)->TryGetStringField(TEXT("disambiguation"), MyDisambiguation);
+			OnMyProfileChanged.Broadcast();
+		});
+}
 
+void FCrowdyStudioController::SetMyName(const FString& Gamertag, const FString& Disambiguation)
+{
+	if (!CanManageAccount())
+	{
+		SetStatus(TEXT("Sign in with your account to change your name."), true);
+		return;
+	}
+	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("gamertag"), Gamertag);
+	Input->SetStringField(TEXT("disambiguation"), Disambiguation);
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetObjectField(TEXT("input"), Input);
+	SendManagement(ECrowdyCppApiDomain::Users, TEXT("UpdateGamertag"), Variables,
+		[this, Gamertag, Disambiguation](const TSharedPtr<FJsonObject>&)
+		{
+			MyGamertag = Gamertag;
+			MyDisambiguation = Disambiguation;
+			SetStatus(TEXT("Name changed."), false);
+			OnMyProfileChanged.Broadcast();
+		});
+}
+
+void FCrowdyStudioController::RunAccountCall(const TCHAR* Doing,
+	TFunction<FCrowdyCppRequestHandle(FCrowdyCppClient&, TFunction<void(FCrowdyCppBoolResult)>)> Issue, const FString& Done,
+	TFunction<void()> OnSucceeded)
+{
+	if (!CanManageAccount())
+	{
+		SetStatus(FString::Printf(TEXT("Sign in with your account to %s."), Doing), true);
+		return;
+	}
+	const TSharedPtr<FCrowdyCppClient> Client = ResolveApiClient(TEXT("account"));
+	if (!Client.IsValid())
+	{
+		SetStatus(TEXT("Could not construct the API client; the operation was not sent."), true);
+		return;
+	}
+
+	BeginRequest();
+	TWeakPtr<FCrowdyStudioController> WeakThis = AsShared();
+	Issue(*Client, [WeakThis, Done, OnSucceeded = MoveTemp(OnSucceeded)](FCrowdyCppBoolResult Result)
+	{
+		const TSharedPtr<FCrowdyStudioController> Self = WeakThis.Pin();
+		if (!Self.IsValid())
+		{
+			return;
+		}
+		Self->EndRequest();
+		if (!Result.bOk)
+		{
+			Self->SetStatus(Result.ErrorMessage, true);
+			return;
+		}
+		Self->SetStatus(Done, false);
+		if (OnSucceeded)
+		{
+			OnSucceeded();
+		}
+	});
+}
+
+void FCrowdyStudioController::ChangeMyPassword(const FString& CurrentPassword, const FString& NewPassword)
+{
+	RunAccountCall(TEXT("change your password"),
+		[CurrentPassword, NewPassword](FCrowdyCppClient& Client, TFunction<void(FCrowdyCppBoolResult)> OnDone)
+		{
+			return Client.ChangePassword(CurrentPassword, NewPassword, MoveTemp(OnDone));
+		},
+		TEXT("Password changed. Your other devices are signed out."));
+}
+
+void FCrowdyStudioController::AddMyPassword(const FString& NewPassword)
+{
+	RunAccountCall(TEXT("add a password"),
+		[NewPassword](FCrowdyCppClient& Client, TFunction<void(FCrowdyCppBoolResult)> OnDone)
+		{
+			return Client.SetInitialPassword(NewPassword, MoveTemp(OnDone));
+		},
+		TEXT("Password added. You can now sign in with it."));
+}
+
+void FCrowdyStudioController::SignOutEverywhere()
+{
+	TWeakPtr<FCrowdyStudioController> WeakThis = AsShared();
+	RunAccountCall(TEXT("sign out everywhere"),
+		[](FCrowdyCppClient& Client, TFunction<void(FCrowdyCppBoolResult)> OnDone)
+		{
+			return Client.LogoutAllDevices(MoveTemp(OnDone));
+		},
+		TEXT("Signed out on every device."),
+		[WeakThis]()
+		{
+			const TSharedPtr<FCrowdyStudioController> Self = WeakThis.Pin();
+			if (!Self.IsValid())
+			{
+				return;
+			}
+			// Already ended on the server, so the sign-out has nothing left to send.
+			Self->AuthToken.Empty();
+			Self->SignOut();
+			Self->SetStatus(TEXT("Signed out on every device."), false);
+		});
+}
 
 void FCrowdyStudioController::FetchMyOrganizations()
 {

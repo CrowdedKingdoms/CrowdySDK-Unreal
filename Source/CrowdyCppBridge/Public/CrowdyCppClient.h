@@ -551,6 +551,25 @@ public:
 	FCrowdyCppRequestHandle RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority,
 		TFunction<void(FCrowdyCppBoolResult)> OnDone);
 
+	// Email a password-reset link, or resend the address confirmation. Public, so no bearer; the server answers the
+	// same whether or not the address has an account.
+	FCrowdyCppRequestHandle RequestPasswordReset(const FString& Email, TFunction<void(FCrowdyCppBoolResult)> OnDone);
+	FCrowdyCppRequestHandle ResendConfirmationEmail(const FString& Email, TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
+	// Change the signed-in account's password, or add one to an account that has none. Carry the session token.
+	FCrowdyCppRequestHandle ChangePassword(const FString& CurrentPassword, const FString& NewPassword,
+		TFunction<void(FCrowdyCppBoolResult)> OnDone);
+	FCrowdyCppRequestHandle SetInitialPassword(const FString& NewPassword, TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
+	// End the session the session token belongs to and every app token minted from it, or every session of the
+	// account. Carry the session token, which is read when the call is issued.
+	FCrowdyCppRequestHandle Logout(TFunction<void(FCrowdyCppBoolResult)> OnDone);
+	FCrowdyCppRequestHandle LogoutAllDevices(TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
+	// Delete the signed-in player's own account: personal data is anonymized and every session ends. Carries the app
+	// token.
+	FCrowdyCppRequestHandle DeleteMyAccount(TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
 	// Exchange the identity session token for an app-scoped gameplay token, under the session bearer. The returned
 	// token is NOT installed on this client: an owner decides which plane it belongs to. The result also carries
 	// the app's own datacenter endpoint and the shared DiscoveryUrl, which together are what let a client relocate.

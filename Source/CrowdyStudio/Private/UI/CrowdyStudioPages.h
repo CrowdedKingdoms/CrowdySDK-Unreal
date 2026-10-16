@@ -20,6 +20,7 @@ namespace CrowdyStudioPages
 		Channels,
 		Grid,
 		Access,
+		Account,
 		Inspector,
 		Registry,
 		WebConsole
