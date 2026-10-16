@@ -464,6 +464,26 @@ bool FCrowdyPlayersRenameSendsBothTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPlayersTakenNameTest, "CrowdySDK.Players.TakenNameIsNameTaken", AccountTestFlags)
+
+bool FCrowdyPlayersTakenNameTest::RunTest(const FString& Parameters)
+{
+	FPlayersRig Rig(TEXT("{\"errors\":[{\"message\":\"That gamertag is taken.\",\"extensions\":{\"code\":\"CONFLICT\"}}],\"data\":null}"));
+	if (!TestTrue(TEXT("the test client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	Rig.Players->SetPlayerName(TEXT("ada"), TEXT("0042"), Rig.Read(), Rig.Failed());
+	Rig.Drain();
+
+	TestEqual(TEXT("it failed"), Rig.Listener->Errors.Num(), 1);
+	TestEqual(TEXT("as Name Taken, from the server's code"),
+		Rig.Listener->Errors.IsEmpty() ? ECrowdyAccountErrorCode::Unknown : Rig.Listener->Errors[0].Code, ECrowdyAccountErrorCode::NameTaken);
+	TestEqual(TEXT("with the server's message"), Rig.Listener->Errors.IsEmpty() ? FString() : Rig.Listener->Errors[0].Message, TEXT("That gamertag is taken."));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPlayersUnknownPlayerTest, "CrowdySDK.Players.UnknownPlayerIsNotFound", AccountTestFlags)
 
 bool FCrowdyPlayersUnknownPlayerTest::RunTest(const FString& Parameters)
