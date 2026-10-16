@@ -138,7 +138,8 @@ struct ExecConnectOptions {
   /// How long a call waits for its reply.
   long callTimeoutMs = 10000;
   long openTimeoutMs = 10000;
-  /// Connect again when the socket closes unexpectedly.
+  /// Connect again when the socket closes unexpectedly. Each wait is half its backoff plus up to
+  /// as much again at random, doubling from `initialReconnectDelayMs` to `maxReconnectDelayMs`.
   bool reconnect = true;
   long initialReconnectDelayMs = 250;
   long maxReconnectDelayMs = 5000;
@@ -191,12 +192,13 @@ class ExecConnection {
   /// Calls made before then wait for the connection.
   void connect(std::function<void(Status)> done = {});
 
-  /// Call a node's endpoint with raw bytes. `done` fires once.
+  /// Call a node's endpoint with raw bytes. `done` fires once. `timeoutMs` above 0 replaces
+  /// ExecConnectOptions::callTimeoutMs for this call.
   void callRaw(std::string nodeType, std::string key, std::string method,
-               std::string payload, ExecReplyCallback done);
+               std::string payload, ExecReplyCallback done, long timeoutMs = 0);
   /// Call with `args` as MessagePack; decode the reply with ExecReply::value().
   void call(std::string nodeType, std::string key, std::string method,
-            const graphql::JVal& args, ExecReplyCallback done);
+            const graphql::JVal& args, ExecReplyCallback done, long timeoutMs = 0);
   /// Receive what a node publishes on `topic`. Returns a handle for
   /// unsubscribe(); `done` fires with the gateway's answer to the first one.
   std::uint64_t subscribe(std::string nodeType, std::string key, std::string topic,
@@ -229,10 +231,14 @@ class ExecConnection {
   /// Close; nothing reconnects and pending calls fail as Unavailable.
   void close();
 
+  /// Dial only gateways `execGatewayRefusal` passes for the Game API `gameApiUrl()` names (read
+  /// at each dial). ExecAPI::connect pins the connections it makes; pin one you build yourself
+  /// over an ExecDial the same way. A refused gateway is never dialed: the attempt fails
+  /// `Unavailable` with the reason.
+  void pinGateway(std::function<std::string()> gameApiUrl);
+
  private:
   friend class ExecAPI;
-  /// Dial only gateways `execGatewayRefusal` passes for the Game API `gameApiUrl` names.
-  void pinGateway(std::function<std::string()> gameApiUrl);
 
   class Impl;
   std::shared_ptr<Impl> impl_;

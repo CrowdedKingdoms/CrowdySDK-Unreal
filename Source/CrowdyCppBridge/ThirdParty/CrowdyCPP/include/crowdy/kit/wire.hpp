@@ -8,11 +8,12 @@
 
 #include "crowdy/graphql/json.hpp"
 
-/// Engine wire registry — the client mirror of the server's
-/// `crowdy-game-kit-core::wire` (the single source of truth for the actor
-/// pose layout and flag-bit registry used by compute-module game engines).
-/// Parity with the Rust crate (and CrowdyJS's kit/wire) is checked by
-/// kit_test.cpp: any change here must land in kit-core first.
+/// The kit's realtime wire: the server-event registry kit hubs emit through the realtime tier
+/// (`ckx_sdk::kit::wire` is its source: ids 77 and 90-101, JSON bodies with camelCase keys, an
+/// app's own from kEventAppFirst), and the 48-byte engine pose layout with its flag bits, for
+/// hubs that show actors with it rather than with KitActorState (kit/realtime.hpp). The
+/// registry's bodies are held to ck-exec's `kit-protocol.json` by kit_runtime_test.cpp, as
+/// CrowdyJS's `wire.ts` is: a change lands in `ckx_sdk::kit::wire` first.
 ///
 /// 48-byte little-endian pose: pos f32 x3 (0..11), yaw/pitch f32 (12..19),
 /// velocity f32 x3 (20..31), flags u8 (32), held u8 (33), 34-35 reserved,
@@ -121,26 +122,34 @@ inline std::optional<EnginePose> decodeEnginePose(const std::vector<std::uint8_t
 // Server-event payloads ([u16 LE event type][state bytes], state = JSON)
 // ---------------------------------------------------------------------------
 
-/// Contact damage decided by a mob/combat engine (kit-play referee).
+/// A mob or a trap hit a player.
 inline constexpr std::uint16_t kEventContactDamage = 77;
-/// Weather/season transition from a world engine (kit-sim weather).
+/// The weather or the time of day turned.
 inline constexpr std::uint16_t kEventWeather = 90;
-/// Turn changed (kit-play turns; match engines).
+/// A turn passed to the next player.
 inline constexpr std::uint16_t kEventTurn = 91;
-/// Score / match summary (kit-play score).
+/// Scores or a result.
 inline constexpr std::uint16_t kEventScore = 92;
-/// Match proposal (matchmaking -> matches handoff).
+/// A match was proposed to the players in it.
 inline constexpr std::uint16_t kEventProposal = 93;
-/// Ability cast/impact (kit-play abilities).
+/// An ability was cast, or landed.
 inline constexpr std::uint16_t kEventAbility = 94;
-/// Movement-envelope violation (movement-warden, observe/flag).
+/// A movement the warden flagged.
 inline constexpr std::uint16_t kEventMovementViolation = 95;
-/// Control-point state change (territory).
+/// A control point changed hands, or its capture moved.
 inline constexpr std::uint16_t kEventControlPoint = 96;
-/// Race timing: checkpoint/lap/finish (kit-play timing).
+/// A racer started, passed a checkpoint, finished a lap or the race.
 inline constexpr std::uint16_t kEventRaceTiming = 97;
-/// Zone change: shrinking circles, event areas (kit-sim zones).
+/// A play zone moved or shrank.
 inline constexpr std::uint16_t kEventZoneChange = 98;
+/// A wave began or ended, or a boss changed phase.
+inline constexpr std::uint16_t kEventEncounter = 99;
+/// The contested object (a ball) changed hands, or a goal was scored.
+inline constexpr std::uint16_t kEventPossession = 100;
+/// An emote: a client event players send each other, the kit's convention (EmotesKit).
+inline constexpr std::uint16_t kEventEmote = 101;
+/// The first event type an app's own events may use.
+inline constexpr std::uint16_t kEventAppFirst = 1000;
 
 /// A split engine server-event payload: type + parsed JSON body.
 struct EngineEvent {
@@ -348,9 +357,9 @@ inline std::optional<RaceTimingEvent> parseRaceTimingEvent(const std::uint8_t* b
   return out;
 }
 
-/// A parsed type-98 zone-change event (BR circles, event areas).
+/// A parsed type-98 zone-change event (a shrinking circle, an event area).
 struct ZoneChangeEvent {
-  std::string kind;  ///< "warning", "shrinking", "settled", or "final"
+  std::string kind;  ///< "hold", "shrink", or "closed"
   std::int64_t phase = -1;
   double radiusNow = 0.0;
   double centerX = 0.0;
@@ -371,6 +380,74 @@ inline std::optional<ZoneChangeEvent> parseZoneChangeEvent(const std::uint8_t* b
   out.centerZ = event->body["centerZ"].asDouble();
   out.body = event->body;
   return out;
+}
+
+/// A parsed type-99 encounter event (waves, a boss's phases).
+struct EncounterEvent {
+  std::string kind;  ///< "wave_started", "wave_cleared", "boss_phase", or "finished"
+  std::string encounterId;
+  std::int64_t wave = 0;
+  std::int64_t phase = 0;
+  graphql::Json body;
+};
+
+/// Parse an encounter event; nullopt when the payload is another type.
+inline std::optional<EncounterEvent> parseEncounterEvent(const std::uint8_t* bytes, std::size_t len) {
+  auto event = parseEngineEvent(bytes, len);
+  if (!event || event->eventType != kEventEncounter) return std::nullopt;
+  EncounterEvent out;
+  out.kind = event->body["kind"].asString();
+  out.encounterId = event->body["encounterId"].asString();
+  out.wave = event->body["wave"].asInt64();
+  out.phase = event->body["phase"].asInt64();
+  out.body = event->body;
+  return out;
+}
+
+/// A parsed type-100 possession event (the contested object changed hands, or a goal).
+struct PossessionEvent {
+  std::string kind;  ///< "claimed", "passed", "loose", or "goal"
+  std::optional<std::string> holderId;
+  std::optional<std::string> team;
+  graphql::Json body;
+};
+
+/// Parse a possession event; nullopt when the payload is another type.
+inline std::optional<PossessionEvent> parsePossessionEvent(const std::uint8_t* bytes, std::size_t len) {
+  auto event = parseEngineEvent(bytes, len);
+  if (!event || event->eventType != kEventPossession) return std::nullopt;
+  PossessionEvent out;
+  out.kind = event->body["kind"].asString();
+  if (!event->body["holderId"].isNull() && event->body["holderId"].ok()) out.holderId = event->body["holderId"].asString();
+  if (!event->body["team"].isNull() && event->body["team"].ok()) out.team = event->body["team"].asString();
+  out.body = event->body;
+  return out;
+}
+
+/// A parsed type-101 emote (a client event, the kit's convention).
+struct EmoteEvent {
+  std::string emote;
+  /// The actor the emote is aimed at, if any.
+  std::optional<std::string> targetUuid;
+  graphql::Json body;
+};
+
+/// Parse an emote; nullopt when the payload is another type.
+inline std::optional<EmoteEvent> parseEmoteEvent(const std::uint8_t* bytes, std::size_t len) {
+  auto event = parseEngineEvent(bytes, len);
+  if (!event || event->eventType != kEventEmote) return std::nullopt;
+  EmoteEvent out;
+  out.emote = event->body["emote"].asString();
+  if (!event->body["targetUuid"].isNull() && event->body["targetUuid"].ok()) out.targetUuid = event->body["targetUuid"].asString();
+  out.body = event->body;
+  return out;
+}
+
+/// An emote's JSON body, `{ emote, targetUuid }`, as a client event's state.
+inline std::string encodeEmoteBody(std::string_view emote, std::optional<std::string_view> targetUuid = std::nullopt) {
+  graphql::JVal body = graphql::JVal::object({{"emote", graphql::JVal(std::string(emote))}});
+  body["targetUuid"] = targetUuid ? graphql::JVal(std::string(*targetUuid)) : graphql::JVal(nullptr);
+  return body.dump();
 }
 
 }  // namespace crowdy::kit

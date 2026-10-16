@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <random>
 #include <thread>
 #include <utility>
 
@@ -348,6 +349,7 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
     std::uint64_t gen = 0;
     bool retried = false;
     bool internal = false;  // a subscription renewal: nobody waits on it
+    long timeoutMs = 0;
   };
 
   void connect(std::function<void(Status)> done) {
@@ -366,7 +368,7 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
     deliver(std::move(run));
   }
 
-  void request(exec_wire::ClientFrame frame, ExecReplyCallback done, bool internal = false) {
+  void request(exec_wire::ClientFrame frame, ExecReplyCallback done, bool internal = false, long timeoutMs = 0) {
     std::vector<std::function<void()>> run;
     {
       std::lock_guard lock(mu_);
@@ -375,8 +377,10 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
       } else {
         const std::uint32_t rid = nextRid();
         frame.rid = rid;
-        Pending p{std::move(frame), std::move(done), Clock::now() + std::chrono::milliseconds(opts_.callTimeoutMs)};
+        const long wait = timeoutMs > 0 ? timeoutMs : opts_.callTimeoutMs;
+        Pending p{std::move(frame), std::move(done), Clock::now() + std::chrono::milliseconds(wait)};
         p.internal = internal;
+        p.timeoutMs = wait;
         pending_.emplace(rid, std::move(p));
         if (ws_ && open_) {
           sendLocked(rid);
@@ -800,7 +804,7 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
         waiters_.clear();
         failAllLocked(run, why, status);
       } else if (opts_.reconnect) {
-        scheduleReconnectLocked(immediately ? 0 : backoffMs_);
+        scheduleReconnectLocked(immediately ? 0 : jittered(backoffMs_));
       } else {
         failAllLocked(run, why, status);
       }
@@ -810,7 +814,7 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
   void attemptFailedLocked(std::vector<std::function<void()>>& run, Errc code, const std::string& why) {
     lastFailure_ = ExecReply{ExecStatus::Unavailable, why};
     if (everOpened_ && opts_.reconnect) {
-      scheduleReconnectLocked(backoffMs_);
+      scheduleReconnectLocked(jittered(backoffMs_));
       backoffMs_ = std::min(backoffMs_ * 2, opts_.maxReconnectDelayMs);
       return;
     }
@@ -828,6 +832,13 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
       }
     }
     pending_.clear();
+  }
+
+  /// Half of `ms`, plus up to as much again at random: the players of a host that went away do
+  /// not all dial its replacement at once.
+  long jittered(long ms) {
+    const long half = ms / 2;
+    return half + static_cast<long>(std::uniform_int_distribution<long>(0, std::max(0L, ms - half))(jitter_));
   }
 
   void scheduleReconnectLocked(long delayMs) {
@@ -888,7 +899,7 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
           continue;
         }
         auto done = std::move(it->second.done);
-        const long ms = opts_.callTimeoutMs;
+        const long ms = it->second.timeoutMs > 0 ? it->second.timeoutMs : opts_.callTimeoutMs;
         it = pending_.erase(it);
         if (done) run.push_back([done, ms] { done(ExecReply{ExecStatus::DeadlineExceeded, "no reply in " + std::to_string(ms) + " ms"}); });
       }
@@ -932,6 +943,7 @@ class ExecConnection::Impl : public std::enable_shared_from_this<Impl> {
   std::function<std::string()> gatewayPin_;
   std::optional<ExecReply> lastFailure_;
   long backoffMs_;
+  std::mt19937 jitter_{std::random_device{}()};
   bool reconnectDue_ = false;
   Clock::time_point reconnectAt_{};
 
@@ -969,15 +981,15 @@ std::shared_ptr<ExecConnection> ExecConnection::open(std::shared_ptr<graphql::IW
 void ExecConnection::connect(std::function<void(Status)> done) { impl_->connect(std::move(done)); }
 
 void ExecConnection::callRaw(std::string nodeType, std::string key, std::string method, std::string payload,
-                             ExecReplyCallback done) {
+                             ExecReplyCallback done, long timeoutMs) {
   impl_->request({Kind::Call, 0, std::move(nodeType), std::move(key), std::move(method), std::move(payload)},
-                 std::move(done));
+                 std::move(done), false, timeoutMs);
 }
 
 void ExecConnection::call(std::string nodeType, std::string key, std::string method, const graphql::JVal& args,
-                          ExecReplyCallback done) {
+                          ExecReplyCallback done, long timeoutMs) {
   std::string payload = graphql::Json::parse(args.dump()).toMsgpack();
-  callRaw(std::move(nodeType), std::move(key), std::move(method), std::move(payload), std::move(done));
+  callRaw(std::move(nodeType), std::move(key), std::move(method), std::move(payload), std::move(done), timeoutMs);
 }
 
 std::uint64_t ExecConnection::subscribe(std::string nodeType, std::string key, std::string topic,

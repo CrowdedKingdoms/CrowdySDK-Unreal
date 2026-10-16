@@ -7,7 +7,7 @@
 ///                                 ck-exec, teams/channels, admin, operator)
 ///   crowdy::replication         — native UDP replication client
 ///   crowdy::session             — world session layer (actors, chunks, inboxes)
-///   crowdy::kit                 — Game Kit (social helpers, wire codecs)
+///   crowdy::kit                 — Game Kit (the starter hubs' clients, social helpers, wire codecs)
 
 #include "crowdy/client.hpp"
 #include "crowdy/domains/admin.hpp"
