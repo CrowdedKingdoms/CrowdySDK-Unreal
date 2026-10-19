@@ -17,6 +17,9 @@ enum class ECrowdyNativeExecStatus : uint8
 	Internal = 9,
 	Trapped = 10,
 	BadRequest = 11,
+	AppPaused = 12,
+	AppDisabled = 13,
+	TypeDisabled = 14,
 	Unknown = 255
 };
 

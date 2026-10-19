@@ -1,6 +1,7 @@
 #include "crowdy/kit/runtime.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <map>
@@ -50,17 +51,33 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
     }
   }
 
-  std::uint64_t after(long delayMs, std::function<void()> fn) {
-    std::lock_guard lock(tmu_);
-    if (stopping_) return 0;
-    const std::uint64_t id = ++nextTimer_;
-    due_.emplace(Clock::now() + std::chrono::milliseconds(std::max(0L, delayMs)), id);
-    fns_.emplace(id, std::move(fn));
-    if (!worker_.joinable()) {
-      worker_ = std::thread([self = shared_from_this()] { self->run(); });
+  struct TimerJob {
+    std::function<void()> run;
+    /// Called when the job is discarded without running (the kit is closing).
+    std::function<void()> onDrop;
+  };
+
+  /// `onDrop` runs if the job cannot be queued or is cleared before it runs. Empty for a caller's
+  /// own `after`.
+  std::uint64_t after(long delayMs, std::function<void()> fn, std::function<void()> onDrop = {}) {
+    std::function<void()> dropped;
+    {
+      std::lock_guard lock(tmu_);
+      if (stopping_) {
+        dropped = std::move(onDrop);
+      } else {
+        const std::uint64_t id = ++nextTimer_;
+        due_.emplace(Clock::now() + std::chrono::milliseconds(std::max(0L, delayMs)), id);
+        fns_.emplace(id, TimerJob{std::move(fn), std::move(onDrop)});
+        if (!worker_.joinable()) {
+          worker_ = std::thread([self = shared_from_this()] { self->run(); });
+        }
+        tcv_.notify_all();
+        return id;
+      }
     }
-    tcv_.notify_all();
-    return id;
+    if (dropped) dropped();
+    return 0;
   }
 
   void cancel(std::uint64_t id) {
@@ -84,19 +101,23 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
       due_.erase(due_.begin());
       auto found = fns_.find(id);
       if (found == fns_.end()) continue;
-      auto fn = std::move(found->second);
+      auto job = std::move(found->second);
       fns_.erase(found);
       lock.unlock();
-      deliver(std::move(fn));
+      deliver(std::move(job.run));
       lock.lock();
     }
   }
 
   void stopTimer() {
+    std::vector<std::function<void()>> drops;
     std::thread worker;
     {
       std::lock_guard lock(tmu_);
       stopping_ = true;
+      for (auto& entry : fns_) {
+        if (entry.second.onDrop) drops.push_back(std::move(entry.second.onDrop));
+      }
       due_.clear();
       fns_.clear();
       tcv_.notify_all();
@@ -109,6 +130,7 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
         worker.join();
       }
     }
+    for (auto& drop : drops) drop();
   }
 
   // ---- the budget ----
@@ -136,24 +158,33 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
     tokens_ = 0;
   }
 
-  /// Runs `fn` once the budget has a token for it.
-  void paced(std::function<void()> fn) {
+  /// Runs `fn` once the budget has a token for it. `onDrop` runs instead when the kit closes first.
+  void paced(std::function<void()> fn, std::function<void()> onDrop = {}) {
+    if (isClosed()) {
+      if (onDrop) onDrop();
+      return;
+    }
     const long wait = takeOrWait();
     if (wait == 0) {
       fn();
       return;
     }
     std::weak_ptr<Impl> weak = weak_from_this();
-    after(wait, [weak, fn = std::move(fn)]() mutable {
-      if (auto self = weak.lock()) self->paced(std::move(fn));
-    });
+    std::function<void()> drop = onDrop;
+    after(
+        wait,
+        [weak, fn = std::move(fn), onDrop = std::move(onDrop)]() mutable {
+          if (auto self = weak.lock()) self->paced(std::move(fn), std::move(onDrop));
+          else if (onDrop) onDrop();
+        },
+        std::move(drop));
   }
 
   // ---- the connection ----
 
   std::shared_ptr<domains::ExecConnection> connection() {
     std::lock_guard lock(cmu_);
-    if (!ended_.empty()) return nullptr;
+    if (isClosed() || !ended_.empty()) return nullptr;
     if (conn_) return conn_;
     std::shared_ptr<domains::ExecConnection> c = options_.connection;
     if (!c) {
@@ -162,10 +193,10 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
       if (!c) return nullptr;
     }
     std::weak_ptr<Impl> weak = weak_from_this();
-    c->onReconnect([weak](std::string host) {
+    reconnectId_ = c->onReconnect([weak](std::string host) {
       if (auto self = weak.lock()) self->notify(self->reconnectListeners_, host);
     });
-    c->onAccessEnded([weak](std::string reason) {
+    accessEndedId_ = c->onAccessEnded([weak](std::string reason) {
       if (auto self = weak.lock()) {
         {
           std::lock_guard ended(self->cmu_);
@@ -201,50 +232,132 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
     long timeoutMs = 0;
     KitCallback done;
     int attempt = 0;
+    std::mutex mu;
+    /// On the wire: the connection will answer, so closing does not invent a reply.
+    bool sent = false;
+    bool settled = false;
   };
 
-  void send(std::shared_ptr<Attempt> a) {
+  static KitReply closedReply() { return KitReply::from(ExecReply{ExecStatus::Unavailable, "the kit is closed"}); }
+
+  bool isClosed() const { return closed_.load(); }
+
+  static KitCallback takeAttempt(const std::shared_ptr<Attempt>& a, bool onlyUnsent) {
+    std::lock_guard lock(a->mu);
+    if (a->settled) return {};
+    if (onlyUnsent && a->sent) return {};
+    a->settled = true;
+    return std::move(a->done);
+  }
+
+  void failUnsent(const std::shared_ptr<Attempt>& a) {
+    KitCallback done = takeAttempt(a, true);
+    if (!done) return;
+    const KitReply r = closedReply();
+    deliver([done, r] { done(r); });
+  }
+
+  static bool claimSend(const std::shared_ptr<Attempt>& a) {
+    std::lock_guard lock(a->mu);
+    if (a->settled) return false;
+    a->sent = true;
+    return true;
+  }
+
+  static void unclaim(const std::shared_ptr<Attempt>& a) {
+    std::lock_guard lock(a->mu);
+    if (!a->settled) a->sent = false;
+  }
+
+  /// The reply arrived and a resend is waiting. Closing must still run `done`.
+  void clearSent(const std::shared_ptr<Attempt>& a) {
+    std::lock_guard lock(a->mu);
+    a->sent = false;
+  }
+
+  void scheduleRetry(const std::shared_ptr<Attempt>& a, long delayMs) {
+    clearSent(a);
     std::weak_ptr<Impl> weak = weak_from_this();
-    paced([weak, a] {
-      auto self = weak.lock();
-      if (!self) return;
-      auto conn = self->connection();
-      if (!conn) {
-        const std::string ended = self->endedReason();
-        KitReply r = ended.empty() ? KitReply::from(ExecReply{ExecStatus::Unavailable, "the kit has no exec client to connect with"})
-                                   : KitReply::from(ExecReply{ExecStatus::Denied, "access ended: " + ended});
-        auto done = a->done;
-        self->deliver([done, r] {
-          if (done) done(r);
+    after(
+        delayMs,
+        [weak, a] {
+          if (auto self = weak.lock()) self->send(a);
+        },
+        [weak, a] {
+          if (auto self = weak.lock()) self->failUnsent(a);
+          else if (KitCallback done = takeAttempt(a, true)) done(closedReply());
         });
-        return;
-      }
-      conn->call(
-          a->nodeType, a->key, a->method, a->args,
-          [weak, a](ExecReply reply) {
-            if (auto runtime = weak.lock()) runtime->answered(a, std::move(reply));
-          },
-          a->timeoutMs);
-    });
+  }
+
+  void send(std::shared_ptr<Attempt> a) {
+    if (isClosed()) {
+      failUnsent(a);
+      return;
+    }
+    std::weak_ptr<Impl> weak = weak_from_this();
+    paced(
+        [weak, a] {
+          auto self = weak.lock();
+          if (!self) {
+            if (KitCallback done = takeAttempt(a, true)) done(closedReply());
+            return;
+          }
+          if (self->isClosed()) {
+            self->failUnsent(a);
+            return;
+          }
+          auto conn = self->connection();
+          if (!conn) {
+            const std::string ended = self->endedReason();
+            KitReply r = ended.empty() ? KitReply::from(ExecReply{ExecStatus::Unavailable, "the kit has no exec client to connect with"})
+                                       : KitReply::from(ExecReply{ExecStatus::Denied, "access ended: " + ended});
+            if (KitCallback done = takeAttempt(a, false)) {
+              self->deliver([done, r] { done(r); });
+            }
+            return;
+          }
+          if (!claimSend(a)) return;
+          if (self->isClosed()) {
+            unclaim(a);
+            self->failUnsent(a);
+            return;
+          }
+          conn->call(
+              a->nodeType, a->key, a->method, a->args,
+              [weak, a](ExecReply reply) {
+                if (auto runtime = weak.lock()) {
+                  runtime->answered(a, std::move(reply));
+                } else if (KitCallback done = takeAttempt(a, false)) {
+                  done(KitReply::from(std::move(reply)));
+                }
+              },
+              a->timeoutMs);
+        },
+        [weak, a] {
+          if (auto self = weak.lock()) self->failUnsent(a);
+          else if (KitCallback done = takeAttempt(a, true)) done(closedReply());
+        });
   }
 
   void answered(const std::shared_ptr<Attempt>& a, ExecReply reply) {
+    if (isClosed()) {
+      if (KitCallback done = takeAttempt(a, false)) done(KitReply::from(std::move(reply)));
+      return;
+    }
     if (!reply.ok() && a->attempt < retries_) {
       const bool coded = reply.status == ExecStatus::AppError;
       // A hub that could not hear from another one did not finish, and keeps no receipt.
       if (coded && a->hasActionId && KitReply::from(reply).code() == codes::kUnavailable) {
         const long base = std::min(2000L, 200L << a->attempt);
         a->attempt += 1;
-        std::weak_ptr<Impl> weak = weak_from_this();
-        after(static_cast<long>(static_cast<double>(base) * jitter()), [weak, a] {
-          if (auto self = weak.lock()) self->send(a);
-        });
+        scheduleRetry(a, static_cast<long>(static_cast<double>(base) * jitter()));
         return;
       }
       if (!coded) {
         if (reply.status == ExecStatus::Busy && reply.rateLimited()) {
           hold(reply.retryAfterMs().value_or(1000));
           a->attempt += 1;
+          clearSent(a);
           send(a);
           return;
         }
@@ -254,15 +367,12 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
         if (didNotRun || (a->hasActionId && unknown)) {
           const long base = std::min(2000L, 200L << a->attempt);
           a->attempt += 1;
-          std::weak_ptr<Impl> weak = weak_from_this();
-          after(static_cast<long>(static_cast<double>(base) * jitter()), [weak, a] {
-            if (auto self = weak.lock()) self->send(a);
-          });
+          scheduleRetry(a, static_cast<long>(static_cast<double>(base) * jitter()));
           return;
         }
       }
     }
-    if (a->done) a->done(KitReply::from(std::move(reply)));
+    if (KitCallback done = takeAttempt(a, false)) done(KitReply::from(std::move(reply)));
   }
 
   double jitter() {
@@ -272,17 +382,64 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
 
   // ---- subscriptions ----
 
+  /// The subscribe callback, shared by the pacer and the connection so it runs once.
+  struct SubWait {
+    std::mutex mu;
+    KitCallback done;
+    bool sent = false;
+    bool settled = false;
+  };
+
   struct Handle {
     std::string topicKey;
     std::uint64_t connHandle = 0;
-    bool cancelled = false;
+    std::shared_ptr<SubWait> wait;
   };
+
+  struct PendingUnsub {
+    std::shared_ptr<domains::ExecConnection> conn;
+    std::uint64_t ch = 0;
+  };
+
+  static KitCallback takeSub(const std::shared_ptr<SubWait>& w, bool onlyUnsent) {
+    if (!w) return {};
+    std::lock_guard lock(w->mu);
+    if (w->settled) return {};
+    if (onlyUnsent && w->sent) return {};
+    w->settled = true;
+    return std::move(w->done);
+  }
+
+  void failSub(const std::shared_ptr<SubWait>& w) {
+    KitCallback done = takeSub(w, true);
+    if (!done) return;
+    const KitReply r = closedReply();
+    deliver([done, r] { done(r); });
+  }
+
+  void dropPending(std::uint64_t ch) {
+    std::lock_guard lock(smu_);
+    for (auto it = pendingUnsubs_.begin(); it != pendingUnsubs_.end(); ++it) {
+      if (it->ch == ch) {
+        pendingUnsubs_.erase(it);
+        return;
+      }
+    }
+  }
 
   std::uint64_t subscribe(std::string nodeType, std::string key, std::string topic, domains::ExecPushHandler onPush,
                           KitCallback done) {
+    if (isClosed()) {
+      const KitReply r = closedReply();
+      deliver([done, r] {
+        if (done) done(r);
+      });
+      return 0;
+    }
     const std::string topicKey = nodeType + '\0' + key + '\0' + topic;
     std::uint64_t handle = 0;
     bool first = false;
+    auto wait = std::make_shared<SubWait>();
     {
       std::lock_guard lock(smu_);
       const auto held = counts_.find(topicKey);
@@ -296,30 +453,49 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
       first = held == counts_.end();
       counts_[topicKey] += 1;
       handle = ++nextHandle_;
-      handles_.emplace(handle, Handle{topicKey});
+      wait->done = std::move(done);
+      handles_.emplace(handle, Handle{topicKey, 0, wait});
     }
     std::weak_ptr<Impl> weak = weak_from_this();
     auto go = [weak, handle, nodeType = std::move(nodeType), key = std::move(key), topic = std::move(topic),
-               onPush = std::move(onPush), done = std::move(done)]() mutable {
+               onPush = std::move(onPush), wait]() mutable {
       auto self = weak.lock();
-      if (!self) return;
+      if (!self) {
+        if (KitCallback cb = takeSub(wait, true)) cb(closedReply());
+        return;
+      }
+      if (self->isClosed()) {
+        self->failSub(wait);
+        return;
+      }
       auto conn = self->connection();
       if (!conn) {
         KitReply r = KitReply::from(ExecReply{ExecStatus::Unavailable, "the kit has no connection"});
-        self->deliver([done, r] {
-          if (done) done(r);
-        });
+        if (KitCallback cb = takeSub(wait, false)) self->deliver([cb, r] { cb(r); });
+        return;
+      }
+      {
+        std::lock_guard lock(wait->mu);
+        if (wait->settled) return;
+        wait->sent = true;
+      }
+      if (self->isClosed()) {
+        {
+          std::lock_guard lock(wait->mu);
+          if (!wait->settled) wait->sent = false;
+        }
+        self->failSub(wait);
         return;
       }
       const std::uint64_t ch = conn->subscribe(std::move(nodeType), std::move(key), std::move(topic), std::move(onPush),
-                                               [done](ExecReply reply) {
-                                                 if (done) done(KitReply::from(std::move(reply)));
+                                               [wait](ExecReply reply) {
+                                                 if (KitCallback cb = takeSub(wait, false)) cb(KitReply::from(std::move(reply)));
                                                });
       bool drop = false;
       {
         std::lock_guard lock(self->smu_);
         auto h = self->handles_.find(handle);
-        if (h == self->handles_.end()) {
+        if (h == self->handles_.end() || self->isClosed()) {
           drop = true;
         } else {
           h->second.connHandle = ch;
@@ -328,7 +504,10 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
       if (drop) conn->unsubscribe(ch);
     };
     if (first) {
-      paced(std::move(go));
+      paced(std::move(go), [weak, wait] {
+        if (auto self = weak.lock()) self->failSub(wait);
+        else if (KitCallback cb = takeSub(wait, true)) cb(closedReply());
+      });
     } else {
       go();
     }
@@ -354,14 +533,22 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
     std::shared_ptr<domains::ExecConnection> conn;
     {
       std::lock_guard lock(cmu_);
-      conn = conn_;
+      conn = conn_ ? conn_ : options_.connection;
     }
     if (!conn) return;
-    if (last) {
-      paced([conn, ch] { conn->unsubscribe(ch); });
-    } else {
+    if (!last || isClosed()) {
       conn->unsubscribe(ch);
+      return;
     }
+    {
+      std::lock_guard lock(smu_);
+      pendingUnsubs_.push_back(PendingUnsub{conn, ch});
+    }
+    std::weak_ptr<Impl> weak = weak_from_this();
+    paced([weak, conn, ch] {
+      if (auto self = weak.lock()) self->dropPending(ch);
+      conn->unsubscribe(ch);
+    });
   }
 
   std::size_t subscriptions() const {
@@ -383,17 +570,44 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
   }
 
   void close() {
+    if (closed_.exchange(true)) return;
+    // Stop the timer before unsubscribing, so a parked subscribe cannot land after the sweep.
+    // onDrop completes queued calls and subscribes, and leaves parked unsubscribes in pendingUnsubs_.
     stopTimer();
+
+    std::vector<PendingUnsub> unsubs;
+    std::vector<std::shared_ptr<SubWait>> waits;
     std::shared_ptr<domains::ExecConnection> conn;
+    std::uint64_t reconnectId = 0;
+    std::uint64_t accessId = 0;
     {
       std::lock_guard lock(cmu_);
-      conn = std::move(conn_);
+      conn = conn_ ? conn_ : options_.connection;
+      reconnectId = reconnectId_;
+      accessId = accessEndedId_;
+      reconnectId_ = 0;
+      accessEndedId_ = 0;
       conn_.reset();
     }
-    if (conn && !options_.connection) conn->close();
-    std::lock_guard lock(smu_);
-    counts_.clear();
-    handles_.clear();
+    {
+      std::lock_guard lock(smu_);
+      unsubs.swap(pendingUnsubs_);
+      for (const auto& entry : handles_) {
+        if (entry.second.connHandle != 0 && conn) unsubs.push_back(PendingUnsub{conn, entry.second.connHandle});
+        if (entry.second.wait) waits.push_back(entry.second.wait);
+      }
+      handles_.clear();
+      counts_.clear();
+    }
+    for (const auto& w : waits) failSub(w);
+    for (const auto& u : unsubs) {
+      if (u.conn && u.ch != 0) u.conn->unsubscribe(u.ch);
+    }
+    if (conn) {
+      if (reconnectId != 0) conn->removeListener(reconnectId);
+      if (accessId != 0) conn->removeListener(accessId);
+      if (!options_.connection) conn->close();
+    }
   }
 
   // ---- state ----
@@ -401,7 +615,7 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
   std::mutex tmu_;
   std::condition_variable tcv_;
   std::multimap<Clock::time_point, std::uint64_t> due_;
-  std::map<std::uint64_t, std::function<void()>> fns_;
+  std::map<std::uint64_t, TimerJob> fns_;
   std::uint64_t nextTimer_ = 0;
   bool stopping_ = false;
   std::thread worker_;
@@ -412,13 +626,17 @@ class KitRuntime::Impl : public std::enable_shared_from_this<KitRuntime::Impl> {
   Clock::time_point blockedUntil_{};
   std::mt19937 rng_{std::random_device{}()};
 
+  std::atomic<bool> closed_{false};
   std::mutex cmu_;
   std::shared_ptr<domains::ExecConnection> conn_;
   std::string ended_;
+  std::uint64_t reconnectId_ = 0;
+  std::uint64_t accessEndedId_ = 0;
 
   mutable std::mutex smu_;
   std::map<std::string, int> counts_;
   std::map<std::uint64_t, Handle> handles_;
+  std::vector<PendingUnsub> pendingUnsubs_;
   std::uint64_t nextHandle_ = 0;
 
   std::mutex lmu_;
