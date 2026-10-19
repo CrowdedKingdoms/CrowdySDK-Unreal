@@ -28,6 +28,9 @@ namespace CrowdyExecDeveloperCallDetail
 		case ECrowdyNativeExecStatus::Internal: return TEXT("Internal");
 		case ECrowdyNativeExecStatus::Trapped: return TEXT("Trapped");
 		case ECrowdyNativeExecStatus::BadRequest: return TEXT("BadRequest");
+		case ECrowdyNativeExecStatus::AppPaused: return TEXT("AppPaused");
+		case ECrowdyNativeExecStatus::AppDisabled: return TEXT("AppDisabled");
+		case ECrowdyNativeExecStatus::TypeDisabled: return TEXT("TypeDisabled");
 		default: return TEXT("Unknown");
 		}
 	}

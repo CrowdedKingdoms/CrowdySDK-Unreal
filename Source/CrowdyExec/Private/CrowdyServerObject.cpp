@@ -85,7 +85,10 @@ namespace CrowdyServerObjectDetail
 
 	bool IsSwitchedOffText(const FString& Message)
 	{
-		return Message.Contains(TEXT(" is switched off in app "), ESearchCase::CaseSensitive)
+		// A refused connect ends with the Game API's code; older hosts said it only in words.
+		return Message.EndsWith(TEXT("(APP_PAUSED)"), ESearchCase::CaseSensitive) || Message.EndsWith(TEXT("(APP_DISABLED)"), ESearchCase::CaseSensitive)
+			|| Message.EndsWith(TEXT("(TYPE_DISABLED)"), ESearchCase::CaseSensitive)
+			|| Message.Contains(TEXT(" is switched off in app "), ESearchCase::CaseSensitive)
 			|| (Message.StartsWith(TEXT("app "), ESearchCase::CaseSensitive)
 				&& (Message.Contains(TEXT(" is switched off"), ESearchCase::CaseSensitive) || Message.Contains(TEXT(" is paused"), ESearchCase::CaseSensitive)));
 	}
@@ -128,6 +131,10 @@ namespace CrowdyServerObjectDetail
 				return WithServerMessage(TEXT("The server is switched off or paused, so this Server Object waits"), Reply);
 			}
 			return WithServerMessage(FString::Printf(TEXT("The server refused to let this player %s this Server Object"), Verb), Reply);
+		case ECrowdyNativeExecStatus::AppPaused:
+		case ECrowdyNativeExecStatus::AppDisabled:
+		case ECrowdyNativeExecStatus::TypeDisabled:
+			return WithServerMessage(TEXT("The server is switched off or paused, so this Server Object waits"), Reply);
 		case ECrowdyNativeExecStatus::Unavailable:
 			// Such as an app at its instance limit, which would otherwise leave the object connecting with no reason. Reads
 			// only: a good read clears what a read set, while a subscribe's reason would outlast the recovery.
@@ -165,6 +172,14 @@ namespace CrowdyServerObjectDetail
 		Result.Outcome = ECrowdyServerCallOutcome::Denied;
 		Result.bRetryable = bCooldown;
 		Result.Reason = Rest.IsEmpty() ? FString::Printf(TEXT("This player may not call %s on this Server Object"), *Function) : Rest;
+	}
+
+	/** A switched-off or paused app or type did not run the call; it can be tried again once it is back on. */
+	void ApplyPaused(FCrowdyServerCallResult& Result, const FCrowdyNativeExecReply& Reply, const FString& Function)
+	{
+		Result.Outcome = ECrowdyServerCallOutcome::Paused;
+		Result.bRetryable = true;
+		Result.Reason = WithServerMessage(FString::Printf(TEXT("The server is switched off or paused, so it refused the call to %s"), *Function), Reply);
 	}
 
 	/** Whether a call was the built-in member function with BuiltInMethod, not a function of the definition's own. */
@@ -2825,13 +2840,16 @@ FCrowdyServerCallResult UCrowdyServerObject::MakeCallResult(const FPendingCall& 
 		}
 		if (CrowdyServerObjectDetail::IsSwitchedOffText(Reply.Message))
 		{
-			Result.Outcome = ECrowdyServerCallOutcome::Paused;
-			Result.bRetryable = true;
-			Result.Reason = CrowdyServerObjectDetail::WithServerMessage(FString::Printf(TEXT("The server is switched off or paused, so it refused the call to %s"), *Function), Reply);
+			CrowdyServerObjectDetail::ApplyPaused(Result, Reply, Function);
 			break;
 		}
 		Result.Outcome = ECrowdyServerCallOutcome::Denied;
 		Result.Reason = CrowdyServerObjectDetail::WithServerMessage(FString::Printf(TEXT("The server refused the call to %s"), *Function), Reply);
+		break;
+	case ECrowdyNativeExecStatus::AppPaused:
+	case ECrowdyNativeExecStatus::AppDisabled:
+	case ECrowdyNativeExecStatus::TypeDisabled:
+		CrowdyServerObjectDetail::ApplyPaused(Result, Reply, Function);
 		break;
 	case ECrowdyNativeExecStatus::Internal:
 		Result.Reason = FString::Printf(TEXT("The server failed handling %s"), *Function);
