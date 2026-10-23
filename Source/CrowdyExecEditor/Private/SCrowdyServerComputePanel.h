@@ -119,9 +119,16 @@ private:
 	FReply OnSwitchAppOnClicked();
 	FReply OnDeployClicked();
 	FReply OnDeployStartersClicked();
+	/** The Game Kit starters, each adding itself and the starters it needs to the project. */
+	TSharedRef<SWidget> MakeAddStarterMenu();
+	FReply OnAddStarterClicked(FString TypeName);
 	FReply OnMakeActiveClicked(int32 Version);
 	FReply OnOpenDefinitionClicked(FString AssetPath);
+	/** Opens Call as Developer on the player starter's grant or deposit. */
+	FReply OnSoftCurrencyClicked(FString AssetPath, FString Method);
 	FReply OnRemoveTypeClicked(FString TypeName, FString AssetPath);
+	// Remove from project for a Game Kit starter: the starters that go with it, their folders and definitions, as -op=removestarter.
+	void RemoveStarter(const FString& TypeName);
 	FReply OnShowCallClicked(FString Flow);
 	FReply OnClearCallClicked();
 	FReply OnLoadOlderClicked();

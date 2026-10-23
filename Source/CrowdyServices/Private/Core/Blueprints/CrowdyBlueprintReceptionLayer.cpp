@@ -169,6 +169,11 @@ void UCrowdyBlueprintReceptionLayer::DispatchToBlueprint(
 	case ECrowdyMessageType::ACTOR_UPDATE_NOTIFICATION:
 		{
 			const auto& Msg = static_cast<const FActorUpdateNotificationMessage&>(*Message);
+			if (Msg.bViewerBeat)
+			{
+				break;
+			}
+
 			FActorUpdateNotificationBP BP;
 			BP.ChunkX = Msg.ChunkX;
 			BP.ChunkY = Msg.ChunkY;

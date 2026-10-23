@@ -2,6 +2,7 @@
 
 #include "CrowdyCppBridge.h"
 #include "CrowdyNativeExecInternal.h"
+#include "CrowdyNativeKitInternal.h"
 #include "Async/Async.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
@@ -522,6 +523,9 @@ struct FCrowdyCppClient::FImpl
 	// Every ck-exec connection made here, closed with the client before its completion pump shuts.
 	TArray<TWeakPtr<FCrowdyNativeExecConnection>> ExecConnections;
 
+	// Every Game Kit made here, closed before the connections they ride.
+	TArray<TWeakPtr<FCrowdyNativeKit>> GameKits;
+
 	// Held by every dial, and cleared on Close, so a dial queued behind the close issues nothing.
 	struct FExecDialOwner
 	{
@@ -550,6 +554,16 @@ struct FCrowdyCppClient::FImpl
 
 	void CloseExecConnections()
 	{
+		TArray<TWeakPtr<FCrowdyNativeKit>> Kits = MoveTemp(GameKits);
+		GameKits.Reset();
+		for (const TWeakPtr<FCrowdyNativeKit>& Weak : Kits)
+		{
+			if (const TSharedPtr<FCrowdyNativeKit> Live = Weak.Pin())
+			{
+				Live->Close();
+			}
+		}
+
 		ExecDialOwner->Owner = nullptr;
 		TArray<TWeakPtr<FCrowdyNativeExecConnection>> Closing = MoveTemp(ExecConnections);
 		ExecConnections.Reset();
@@ -3194,6 +3208,23 @@ TSharedPtr<FCrowdyNativeExecConnection> FCrowdyCppClient::CreateExecConnection(i
 		UE_LOG(LogCrowdyCpp, Warning, TEXT("Creating a ck-exec connection threw a non-standard exception"));
 	}
 	return nullptr;
+}
+
+TSharedPtr<FCrowdyNativeKit> FCrowdyCppClient::CreateGameKit(int64 AppId, const FCrowdyNativeExecConnection& Connection, int64 PlayerId)
+{
+	if (!Impl || !Impl->IsUsable())
+	{
+		return nullptr;
+	}
+	TSharedPtr<FCrowdyNativeKit> Kit = CrowdyNativeKit::Make(*Impl->Client, std::to_string(AppId), FCrowdyNativeExecAccess::Connection(Connection),
+		PlayerId > 0 ? std::to_string(PlayerId) : std::string());
+	if (!Kit)
+	{
+		return nullptr;
+	}
+	Impl->GameKits.RemoveAll([](const TWeakPtr<FCrowdyNativeKit>& Weak) { return !Weak.IsValid(); });
+	Impl->GameKits.Add(Kit);
+	return Kit;
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

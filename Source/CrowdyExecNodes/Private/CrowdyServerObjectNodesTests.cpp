@@ -938,16 +938,16 @@ bool FCrowdyServerObjectNodesStatusPinsTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("then On Success"), Outputs[1]->PinName, CrowdyServerCallPins::OnSuccess);
 	TestEqual(TEXT("then On Failed"), Outputs[2]->PinName, CrowdyServerCallPins::OnFailed);
 	const int32 IntIndex = Outputs.IndexOfByPredicate([](const UEdGraphPin* Pin) { return Pin->PinName == FName(TEXT("Int")); });
-	const int32 First = Outputs.Num() - 3;
+	const TArray<FName> Status = {CrowdyServerCallPins::Outcome, CrowdyServerCallPins::Reason, CrowdyServerCallPins::Retryable, CrowdyServerCallPins::Code};
+	const int32 First = Outputs.Num() - Status.Num();
 	TestTrue(TEXT("the function's outputs follow On Failed and come before the status pins"), IntIndex >= 3 && IntIndex < First);
 
-	const TArray<FName> Status = {CrowdyServerCallPins::Outcome, CrowdyServerCallPins::Reason, CrowdyServerCallPins::Retryable};
 	for (int32 Index = 0; Index < Outputs.Num(); ++Index)
 	{
 		const bool bStatus = Index >= First;
 		if (bStatus)
 		{
-			TestEqual(TEXT("the last three outputs are Outcome, Reason, Retryable in order"), Outputs[Index]->PinName, Status[Index - First]);
+			TestEqual(TEXT("the last four outputs are Outcome, Reason, Retryable, Code in order"), Outputs[Index]->PinName, Status[Index - First]);
 			TestFalse(Outputs[Index]->PinName.ToString() + TEXT(" has a tooltip"), Outputs[Index]->PinToolTip.IsEmpty());
 		}
 		TestEqual(Outputs[Index]->PinName.ToString() + TEXT(" is advanced exactly when it is a status pin"), Outputs[Index]->bAdvancedView, bStatus);

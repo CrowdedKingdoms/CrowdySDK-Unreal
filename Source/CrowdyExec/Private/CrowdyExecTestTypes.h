@@ -99,6 +99,22 @@ struct FCrowdyExecTestBossState
 	int32 Secret = 0;
 };
 
+/** A Game Kit state with an optional index whose zero is valid: bHasWave says whether Wave arrived with a value. Wave's default is not zero. */
+USTRUCT()
+struct FCrowdyExecTestWaveState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 Wave = -1;
+
+	UPROPERTY()
+	bool bHasWave = false;
+
+	UPROPERTY()
+	int32 Round = 0;
+};
+
 USTRUCT()
 struct FCrowdyExecTestHit
 {

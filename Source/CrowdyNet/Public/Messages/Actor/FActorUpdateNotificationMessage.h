@@ -5,6 +5,7 @@
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Subscription/FCrowdyPayloadKey.h"
 #include "Messages/Actor/FActorUpdateBody.h"
+#include "Messages/Actor/FCrowdyKitActorState.h"
 #include "Serialization/CrowdyFrame.h"
 #include "Utils/SerializationFunctionLibrary.h"
 
@@ -47,6 +48,9 @@ struct FActorUpdateNotificationMessage : FActorUpdateBody
 	 * Only ever set from a frame that decoded, since the decoder refuses a frame naming no class.
 	 */
 	FCrowdyClassID PayloadClassID = CROWDY_INVALID_CLASS_ID;
+
+	// True for a viewer's keepalive: an actor update with no state, from a client watching without an avatar; receivers draw nothing for it.
+	bool bViewerBeat = false;
 
 	/**
 	 * Retrieves the specific type of the message.
@@ -117,28 +121,45 @@ struct FActorUpdateNotificationMessage : FActorUpdateBody
 		}
 
 		GUID = USerializationFunctionLibrary::ToGuid(UUID);
-		
+
+		if (Data.IsEmpty())
+		{
+			bViewerBeat = true;
+			return true;
+		}
+
+		// The SDK's own framing is read first, so none of its frames changes meaning. A Game Kit hub sends a server-driven
+		// actor's state bare, whose first bytes never read as a length that fits, so it is tried only where this framing fails.
 		if (!USerializationFunctionLibrary::DeserializeValue(Data, StateSize, Offset))
 		{
 			UE_LOG(LogCrowdyNet, Warning, TEXT("FActorUpdateNotificationMessage::DecodePayload - StateSize deserialization failed"));
 			return false;
 		}
-		
+
 		Offset += sizeof(StateSize);
-		
+
 		if (StateSize <= 0)
 		{
+			// As a state whose first key is one letter and whose value is a float, such as {"x": 1.5, ...}.
+			if (DecodeKitActor(Data))
+			{
+				return true;
+			}
 			UE_LOG(LogCrowdyNet, Warning, TEXT("FActorUpdateNotificationMessage::DecodePayload - StateSize is out of valid range %d expected %d."),
 			StateSize, ExpectedStateSize);
 			return false;
 		}
-		
+
 		// The declared length comes off the wire, so the bound is written as a comparison against the
 		// bytes remaining. Adding it to the offset first would overflow for a large declared length and
 		// produce a negative sum that passes the check. A malformed frame is expected input here rather
 		// than a programming error, so it reports rather than ensuring.
 		if (StateSize > Data.Num() - Offset)
 		{
+			if (DecodeKitActor(Data))
+			{
+				return true;
+			}
 			UE_LOG(LogCrowdyNet, Warning,
 				TEXT("FActorUpdateNotificationMessage::DecodePayload - declared state length %d runs past the end of a %d byte frame at offset %d."),
 				StateSize, Data.Num(), Offset);
@@ -162,5 +183,22 @@ struct FActorUpdateNotificationMessage : FActorUpdateBody
 	}
 
 	void SetExpectedStateSize(const int32 Size) { ExpectedStateSize = Size; }
-	
+
+private:
+	// A kit actor names no SDK type or class: its class comes from its Kind.
+	bool DecodeKitActor(const TConstArrayView<uint8> Data)
+	{
+		FCrowdyKitActorState Kit;
+		if (!FCrowdyKitActorState::Decode(Data, Kit))
+		{
+			return false;
+		}
+		Kit.InstanceId = FCrowdyKitActorState::ReadInstanceId(MakeArrayView(UUID.Octets, FCrowdyActorId::NumOctets));
+		State.InitializeAs<FCrowdyKitActorState>(MoveTemp(Kit));
+		StateView = Data;
+		StateSize = Data.Num();
+		PayloadTypeID = CROWDY_INVALID_TYPE_ID;
+		PayloadClassID = CROWDY_INVALID_CLASS_ID;
+		return true;
+	}
 };

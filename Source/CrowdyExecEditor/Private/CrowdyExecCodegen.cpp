@@ -5360,6 +5360,12 @@ bool CrowdyExecCodegen::Generate(const UCrowdyServerObjectDefinition& Definition
 {
 	using namespace CrowdyExecCodegenDetail;
 	OutCrate = FGeneratedCrate();
+	if (Definition.IsGameKitStarter())
+	{
+		OutError = FString::Printf(TEXT("%s is a Game Kit starter: its server code is the starter's own Rust in %s/src/lib.rs, which Generate never writes; edit that file"),
+			*Definition.TypeName, *GetCrateDirectory(Definition));
+		return false;
+	}
 	const FCrowdyExecLayout* Layout = Definition.ResolveLayout(OutError);
 	if (!Layout)
 	{
@@ -5645,7 +5651,8 @@ FString CrowdyExecCodegen::GetLogicFile(const UCrowdyServerObjectDefinition& Def
 {
 	if (!HasOwnLogicFile(Definition))
 	{
-		return FPaths::ConvertRelativePathToFull(FPaths::Combine(CrateDirectory, TEXT("src/logic.rs")));
+		// A Game Kit starter's Server Functions are the starter's own lib.rs.
+		return FPaths::ConvertRelativePathToFull(FPaths::Combine(CrateDirectory, Definition.IsGameKitStarter() ? TEXT("src/lib.rs") : TEXT("src/logic.rs")));
 	}
 	const FString& Own = Definition.LogicFile.FilePath;
 	if (Own.IsEmpty())

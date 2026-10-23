@@ -3,6 +3,7 @@
 #include "Components/ActorComponent.h"
 #include "CrowdyExecInternal.h"
 #include "CrowdyExecLog.h"
+#include "CrowdyGameKitTypes.h"
 #include "CrowdyServerObject.h"
 #include "CrowdyServerObjectComponent.h"
 #include "CrowdyServerObjectDefinition.h"
@@ -17,6 +18,7 @@
 #include "UObject/PropertyOptional.h"
 #include "UObject/ScriptMacros.h"
 #include "UObject/UnrealType.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 namespace CrowdyServerObjectLibraryDetail
 {
@@ -463,7 +465,10 @@ const TCHAR* const UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath = TEX
 bool UCrowdyServerObjectLibrary::GetPlayersOnline(UObject* Owner, int32& PlayersOnline)
 {
 	PlayersOnline = 0;
-	UCrowdyServerObjectDefinition* Definition = GetPlayersOnlineDefinition();
+	// A setting naming no starter's definition deploys under the SDK's root, so that is where the count is.
+	UCrowdyServerObjectDefinition* KitWorld = GetGameKitWorldDefinition();
+	const bool bKitWorld = KitWorld != nullptr;
+	UCrowdyServerObjectDefinition* Definition = bKitWorld ? KitWorld : GetPlayersOnlineDefinition();
 	UCrowdyServerObjectLink* Link = Definition ? FindServerObjectLink(Owner, Definition, ECrowdyServerObjectFind::InstanceId, FString(), 0) : nullptr;
 	if (!Link)
 	{
@@ -471,7 +476,8 @@ bool UCrowdyServerObjectLibrary::GetPlayersOnline(UObject* Owner, int32& Players
 	}
 	Link->KeepWhileOwnerLives();
 	static const FProperty* const Count = FCrowdyPlayersOnlineState::StaticStruct()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FCrowdyPlayersOnlineState, PlayersOnline));
-	if (ReadServerVariableInto(Link, Definition, Count->GetFName(), Count, &PlayersOnline))
+	static const FName KitWorldCount = GET_MEMBER_NAME_CHECKED(FCrowdyKitWorldConditions, Online);
+	if (ReadServerVariableInto(Link, Definition, bKitWorld ? KitWorldCount : Count->GetFName(), Count, &PlayersOnline))
 	{
 		return true;
 	}
@@ -486,6 +492,30 @@ bool UCrowdyServerObjectLibrary::GetPlayersOnline(UObject* Owner, int32& Players
 			bAdvised ? TEXT("") : TEXT(". An app last deployed with an older Crowdy SDK keeps none; deploy it from Server Compute."));
 	}
 	return false;
+}
+
+UCrowdyServerObjectDefinition* UCrowdyServerObjectLibrary::GetGameKitWorldDefinition()
+{
+	const FSoftObjectPath& Path = GetDefault<UCrowdySDKDeveloperSettings>()->GameKitWorld;
+	if (Path.IsNull())
+	{
+		return nullptr;
+	}
+	// Get Players Online asks every frame, so a path that gave nothing is not loaded again until the setting changes.
+	static FSoftObjectPath Tried;
+	static TWeakObjectPtr<UCrowdyServerObjectDefinition> Found;
+	if (Path == Tried && (Found.IsValid() || Found.IsExplicitlyNull()))
+	{
+		return Found.Get();
+	}
+	Tried = Path;
+	UObject* Loaded = Path.ResolveObject();
+	Loaded = Loaded ? Loaded : LoadObject<UObject>(nullptr, *Path.ToString(), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	UCrowdyServerObjectDefinition* Definition = Cast<UCrowdyServerObjectDefinition>(Loaded);
+	Found = Definition && Definition->IsGameKitStarter() ? Definition : nullptr;
+	UE_CLOG(!Found.IsValid(), LogCrowdyExec, Warning, TEXT("The Game Kit World setting names %s, which is not a Game Kit starter's Server Object definition, so Get Players Online reads the Crowdy SDK's root; clear the setting, or add the world starter again in Server Compute."),
+		*Path.ToString());
+	return Found.Get();
 }
 
 UCrowdyServerObjectDefinition* UCrowdyServerObjectLibrary::GetPlayersOnlineDefinition()
@@ -816,11 +846,11 @@ void UCrowdyServerCallAction::Finish(const FCrowdyServerCallResult& Result)
 {
 	if (Result.IsSuccess())
 	{
-		OnSuccess.Broadcast(Result.Reply, Result.Outcome, Result.Reason, Result.bRetryable);
+		OnSuccess.Broadcast(Result.Reply, Result.Outcome, Result.Reason, Result.bRetryable, Result.Code);
 	}
 	else
 	{
-		OnFailed.Broadcast(Result.Reply, Result.Outcome, Result.Reason, Result.bRetryable);
+		OnFailed.Broadcast(Result.Reply, Result.Outcome, Result.Reason, Result.bRetryable, Result.Code);
 	}
 	SetReadyToDestroy();
 }

@@ -29,6 +29,7 @@ namespace CrowdyServerCallPins
 	CROWDYEXECNODES_API extern const FName Outcome;
 	CROWDYEXECNODES_API extern const FName Reason;
 	CROWDYEXECNODES_API extern const FName Retryable;
+	CROWDYEXECNODES_API extern const FName Code;
 
 	/** The advanced input, shown as Timeout: seconds before the call gives up, when shorter than the project's Server Object Call Timeout. */
 	CROWDYEXECNODES_API extern const FName Timeout;

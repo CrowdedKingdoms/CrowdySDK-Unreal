@@ -6,6 +6,7 @@
 #include "Dom/JsonObject.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Messages/Channels/FChannelMessages.h"
+#include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Replication/RPC/FCrowdyRpcCall.h"
 #include "Replication/State/CrowdyStateCodec.h"
@@ -771,18 +772,45 @@ void UCrowdyChannels::PublishChannelMessage(int64 ChannelId, const TArray<uint8>
 	UGameInstance* GameInstance = GetGameInstance();
 	if (!GameInstance) return;
 
-	UCrowdySDKBridgeSubsystem* Bridge = GameInstance->GetSubsystem<UCrowdySDKBridgeSubsystem>();
 	UCrowdyGameSession* GameSession = GameInstance->GetSubsystem<UCrowdyGameSession>();
-	if (!Bridge || !Bridge->SendMessageFn || !IsValid(GameSession))
+	if (!IsValid(GameSession))
+		return;
+
+	PublishChannelMessageAs(ChannelId, GameSession->GetUUID(), Payload);
+}
+
+void UCrowdyChannels::PublishChannelMessageAs(int64 ChannelId, const FString& SenderUuid, const TArray<uint8>& Payload)
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	if (!GameInstance) return;
+
+	UCrowdySDKBridgeSubsystem* Bridge = GameInstance->GetSubsystem<UCrowdySDKBridgeSubsystem>();
+	if (!Bridge || !Bridge->SendMessageFn)
 		return;
 
 	FChannelMessageRequest Request;
 	Request.ChannelId = ChannelId;
-	Request.UUID = FCrowdyActorId::FromStringOrUnset(GameSession->GetUUID());
+	Request.UUID = FCrowdyActorId::FromStringOrUnset(SenderUuid);
 	Request.Payload = Payload;
 	Request.SequenceNumber = OutgoingSequence++;
 
 	Bridge->SendMessageFn(Request);
+}
+
+bool UCrowdyChannels::CanPublishChannelMessage() const
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	if (!GameInstance) return false;
+
+	const UCrowdySDKBridgeSubsystem* Bridge = GameInstance->GetSubsystem<UCrowdySDKBridgeSubsystem>();
+	const UCrowdyGameSession* GameSession = GameInstance->GetSubsystem<UCrowdyGameSession>();
+	const UCrowdyCppReplicationSubsystem* Replication = GameInstance->GetSubsystem<UCrowdyCppReplicationSubsystem>();
+	return Bridge && Bridge->SendMessageFn && IsValid(GameSession) && Replication && Replication->IsRouting();
+}
+
+void UCrowdyChannels::RefreshMyChannels()
+{
+	GetMyChannels(FOnMyChannelsSuccess(), FOnChannelError());
 }
 
 FString UCrowdyChannels::GetSessionChannelName() const

@@ -1,10 +1,14 @@
 #include "CrowdyExecDeveloperCall.h"
 
+#include "Algo/AnyOf.h"
 #include "CrowdyExecCodec.h"
+#include "CrowdyGameKitStarters.h"
+#include "CrowdyGameKitTypes.h"
 #include "CrowdyNativeExec.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "Dom/JsonObject.h"
 #include "JsonObjectConverter.h"
+#include "Misc/Guid.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "UObject/StrongObjectPtr.h"
@@ -96,6 +100,32 @@ namespace CrowdyExecDeveloperCallDetail
 		return FString();
 	}
 
+	/** Marks present every input the JSON names that has a presence flag, unless the JSON names the flag itself. */
+	void SetNamedPresence(const UCrowdyServerObjectDefinition& Definition, const FJsonObject& Object, FInstancedStruct& Inputs)
+	{
+		const UScriptStruct* Struct = Inputs.GetScriptStruct();
+		const FCrowdyExecBakedStruct* Baked = Definition.BakedStructs.FindByPredicate([Struct](const FCrowdyExecBakedStruct& Each) { return Each.Struct == Struct; });
+		if (!Baked)
+		{
+			return;
+		}
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Named : Object.Values)
+		{
+			const FProperty* Known = FindField(*Struct, Named.Key);
+			if (!Known || !Named.Value || Named.Value->IsNull())
+			{
+				continue;
+			}
+			const FCrowdyExecBakedField* BakedField = Baked->Fields.FindByPredicate([Known](const FCrowdyExecBakedField& Each) { return Each.Property == Known->GetFName() && !Each.PresenceProperty.IsNone(); });
+			const FBoolProperty* Flag = BakedField ? FindFProperty<FBoolProperty>(Struct, BakedField->PresenceProperty) : nullptr;
+			if (!Flag || Algo::AnyOf(Object.Values, [Flag, Struct](const TPair<FString, TSharedPtr<FJsonValue>>& Each) { return FindField(*Struct, Each.Key) == Flag; }))
+			{
+				continue;
+			}
+			Flag->SetPropertyValue_InContainer(Inputs.GetMutableMemory(), true);
+		}
+	}
+
 	CrowdyExecDeveloperCall::FResult Failed(const TCHAR* Status, const FString& Message)
 	{
 		CrowdyExecDeveloperCall::FResult Result;
@@ -110,7 +140,12 @@ bool CrowdyExecDeveloperCall::IsForDevelopers(const FCrowdyServerFunction& Funct
 	return Function.WhoCanCall == ECrowdyServerFunctionCaller::ServerOnly || Function.WhoCanCall == ECrowdyServerFunctionCaller::DevelopersOnly;
 }
 
-bool CrowdyExecDeveloperCall::InputsFromJson(const FCrowdyServerFunction& Function, const FString& Json, FInstancedStruct& OutInputs, FString& OutError)
+bool CrowdyExecDeveloperCall::IsForDevelopers(const UCrowdyServerObjectDefinition& Definition, const FCrowdyServerFunction& Function)
+{
+	return IsForDevelopers(Function) || CrowdyGameKitStarters::IsDeveloperOnly(Definition, Function);
+}
+
+bool CrowdyExecDeveloperCall::InputsFromJson(const FCrowdyServerFunction& Function, const FString& Json, FInstancedStruct& OutInputs, FString& OutError, const UCrowdyServerObjectDefinition* Definition)
 {
 	Function.InitializeParams(OutInputs);
 	if (Json.TrimStartAndEnd().IsEmpty())
@@ -150,7 +185,69 @@ bool CrowdyExecDeveloperCall::InputsFromJson(const FCrowdyServerFunction& Functi
 		OutError = FString::Printf(TEXT("the inputs do not fit %s's: %s"), *Function.Name.ToString(), *Json);
 		return false;
 	}
+	if (Definition)
+	{
+		CrowdyExecDeveloperCallDetail::SetNamedPresence(*Definition, *Object, OutInputs);
+	}
 	return true;
+}
+
+FString CrowdyExecDeveloperCall::MakeFreshRef(const FCrowdyServerFunction& Function)
+{
+	return FString::Printf(TEXT("studio-%s-%s"), *Function.GetMethodName(), *FGuid::NewGuid().ToString(EGuidFormats::Digits).ToLower());
+}
+
+void CrowdyExecDeveloperCall::FillFreshRef(const UCrowdyServerObjectDefinition& Definition, const FCrowdyServerFunction& Function, FInstancedStruct& Inputs, FString& OutRef)
+{
+	OutRef.Reset();
+	const FStrProperty* Ref = Definition.IsGameKitStarter() && Inputs.IsValid() ? CastField<FStrProperty>(CrowdyExecDeveloperCallDetail::FindField(*Inputs.GetScriptStruct(), TEXT("Ref"))) : nullptr;
+	if (!Ref)
+	{
+		return;
+	}
+	FString& Value = *Ref->ContainerPtrToValuePtr<FString>(Inputs.GetMutableMemory());
+	if (Value.TrimStartAndEnd().IsEmpty())
+	{
+		Value = MakeFreshRef(Function);
+	}
+	OutRef = Value;
+}
+
+bool CrowdyExecDeveloperCall::IsPlayerKey(const FString& Key)
+{
+	int64 UserId = 0;
+	return !Key.IsEmpty() && FCString::IsNumeric(*Key) && LexTryParseString(UserId, *Key) && UserId > 0 && LexToString(UserId) == Key;
+}
+
+FString CrowdyExecDeveloperCall::FindPointlessCall(const UCrowdyServerObjectDefinition& Definition, const FString& Key, const FInstancedStruct& Inputs)
+{
+	if (Definition.IsKeyedByPlayer() && !IsPlayerKey(Key))
+	{
+		return FString::Printf(TEXT("%s is not a player's user id as a game reads it, such as 101910912345678: a number above 0 with no sign or leading zero"), *Key);
+	}
+	const UScriptStruct* Struct = Definition.IsGameKitStarter() ? Inputs.GetScriptStruct() : nullptr;
+	if (!Struct)
+	{
+		return FString();
+	}
+	bool bBundle = false;
+	bool bGives = false;
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		const void* Value = It->ContainerPtrToValuePtr<void>(Inputs.GetMemory());
+		const FStructProperty* Field = CastField<FStructProperty>(*It);
+		if (Field && Field->Struct == FCrowdyKitBundle::StaticStruct())
+		{
+			const FCrowdyKitBundle& Bundle = *static_cast<const FCrowdyKitBundle*>(Value);
+			bBundle = true;
+			bGives |= !Bundle.Items.IsEmpty() || !Bundle.Currency.IsEmpty();
+		}
+		const FInt64Property* Number = CastField<FInt64Property>(*It);
+		bGives |= Number && It->GetAuthoredName().Equals(TEXT("Xp"), ESearchCase::IgnoreCase) && Number->GetPropertyValue(Value) != 0;
+		const FMapProperty* Map = CastField<FMapProperty>(*It);
+		bGives |= Map && It->GetAuthoredName().Equals(TEXT("Counters"), ESearchCase::IgnoreCase) && FScriptMapHelper(Map, Value).Num() > 0;
+	}
+	return bBundle && !bGives ? FString(TEXT("this gives the player nothing: fill the Bundle's Currency or Items, such as gold 100")) : FString();
 }
 
 void CrowdyExecDeveloperCall::Call(const CrowdyExecDeveloper::FClient& Client, const UCrowdyServerObjectDefinition& Definition, const FCrowdyServerFunction& Function,

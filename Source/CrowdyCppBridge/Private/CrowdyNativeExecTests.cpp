@@ -6,6 +6,8 @@
 #include "CrowdyCppReplication.h"
 #include "CrowdyNativeExec.h"
 #include "CrowdyNativeExecInternal.h"
+#include "CrowdyNativeKit.h"
+#include "CrowdyNativeKitInternal.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "HAL/PlatformProcess.h"
 #include "Platform/CrowdyCppWebSocketTransport.h"
@@ -1041,5 +1043,414 @@ bool FCrowdyNativeGraphQLTransportRefusesBinaryTest::RunTest(const FString& Para
 	return true;
 }
 #endif
+
+namespace
+{
+	struct FCrowdyNativeKitSentCall
+	{
+		FString NodeType;
+		FString Key;
+		FString Method;
+		TArray<uint8> Payload;
+		bool bValid = false;
+	};
+
+	// Reads a call frame: tag, rid, node type (str8), key (str16), method (str8), then the payload.
+	FCrowdyNativeKitSentCall CrowdyNativeKitParseCall(const TArray<uint8>& Frame)
+	{
+		FCrowdyNativeKitSentCall Out;
+		int32 At = 5;
+		auto Take = [&Frame, &At](int32 Length, FString& Into)
+		{
+			if (Length < 0 || At + Length > Frame.Num())
+			{
+				return false;
+			}
+			const FUTF8ToTCHAR Converted(reinterpret_cast<const ANSICHAR*>(Frame.GetData() + At), Length);
+			Into = FString(Converted.Length(), Converted.Get());
+			At += Length;
+			return true;
+		};
+		if (Frame.Num() < 6 || Frame[0] != 0x01 || !Take(Frame[At++], Out.NodeType) || At + 2 > Frame.Num())
+		{
+			return Out;
+		}
+		const int32 KeyLength = Frame[At] | (Frame[At + 1] << 8);
+		At += 2;
+		if (!Take(KeyLength, Out.Key) || At >= Frame.Num() || !Take(Frame[At++], Out.Method))
+		{
+			return Out;
+		}
+		Out.Payload = TArray<uint8>(Frame.GetData() + At, Frame.Num() - At);
+		Out.bValid = true;
+		return Out;
+	}
+
+	TArray<uint8> CrowdyNativeKitText(const char* Text)
+	{
+		return TArray<uint8>(reinterpret_cast<const uint8*>(Text), static_cast<int32>(FCStringAnsi::Strlen(Text)));
+	}
+
+	// The rig's connection with a kit over it, dialled and open, and the one frame the kit's first call sent.
+	struct FCrowdyNativeKitRig
+	{
+		FCrowdyNativeExecRig Exec;
+		TSharedPtr<FCrowdyNativeKit> Kit;
+	};
+
+	bool CrowdyNativeKitMakeRig(FAutomationTestBase& Test, FCrowdyNativeKitRig& Rig)
+	{
+		Rig.Exec = CrowdyNativeExecMakeRig();
+		if (!Test.TestTrue(TEXT("a connection was created"), Rig.Exec.Connection.IsValid()))
+		{
+			return false;
+		}
+		Rig.Kit = Rig.Exec.Client->CreateGameKit(42, *Rig.Exec.Connection, 7);
+		return Test.TestTrue(TEXT("a kit was made over it"), Rig.Kit.IsValid());
+	}
+
+	bool CrowdyNativeKitTakeCall(FAutomationTestBase& Test, FCrowdyNativeKitRig& Rig, FCrowdyNativeKitSentCall& Out, uint32& OutRid)
+	{
+		TArray<TArray<uint8>> Sent;
+		const bool bSent = CrowdyNativeExecPumpUntil(*Rig.Exec.Client, [&Rig, &Sent]()
+		{
+			Sent.Append(Rig.Exec.Client->TakeTestExecSentFrames());
+			return Sent.Num() > 0;
+		});
+		if (!Test.TestTrue(TEXT("the kit sent a frame"), bSent) || !Test.TestEqual(TEXT("one frame"), Sent.Num(), 1))
+		{
+			return false;
+		}
+		Out = CrowdyNativeKitParseCall(Sent[0]);
+		OutRid = CrowdyNativeExecRid(Sent[0]);
+		return Test.TestTrue(TEXT("it is a call frame"), Out.bValid);
+	}
+}
+
+// A kit call rides the SDK's own connection rather than opening one, and its arguments go out exactly as given.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeKitCallRidesTheSharedConnectionTest,
+	"CrowdySDK.CrowdyCppBridge.GameKit.CallRidesTheSharedConnection", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeKitCallRidesTheSharedConnectionTest::RunTest(const FString& Parameters)
+{
+	FCrowdyNativeKitRig Rig;
+	if (!CrowdyNativeKitMakeRig(*this, Rig))
+	{
+		return false;
+	}
+
+	// {"a": [true, nil], "f": 2.5, "i": 4000000000, "n": -129, "s": "ok"}, keys in order and every value at its narrowest.
+	const TArray<uint8> Args = {0x85, 0xa1, 0x61, 0x92, 0xc3, 0xc0, 0xa1, 0x66, 0xcb, 0x40, 0x04, 0, 0, 0, 0, 0, 0,
+		0xa1, 0x69, 0xce, 0xee, 0x6b, 0x28, 0x00, 0xa1, 0x6e, 0xd1, 0xff, 0x7f, 0xa1, 0x73, 0xa2, 0x6f, 0x6b};
+	int32 Replies = 0;
+	FCrowdyNativeKitReply Reply;
+	Rig.Kit->Call(TEXT("world"), FString(), TEXT("harvest"), Args, false, 0, [&Replies, &Reply](const FCrowdyNativeKitReply& In)
+	{
+		++Replies;
+		Reply = In;
+	});
+	if (!CrowdyNativeExecOpen(*this, Rig.Exec))
+	{
+		return false;
+	}
+	FCrowdyNativeKitSentCall Call;
+	uint32 Rid = 0;
+	if (!CrowdyNativeKitTakeCall(*this, Rig, Call, Rid))
+	{
+		return false;
+	}
+	TestEqual(TEXT("the kit dialled no connection of its own"), Rig.Exec.Client->NumTestExecConnections(), 1);
+	TestEqual(TEXT("the call names the hub"), Call.NodeType, FString(TEXT("world")));
+	TestTrue(TEXT("the root hub has no key"), Call.Key.IsEmpty());
+	TestEqual(TEXT("and the method"), Call.Method, FString(TEXT("harvest")));
+	TestEqual(TEXT("the arguments go out byte for byte, integers and the float kept apart"),
+		BytesToHexLower(Call.Payload.GetData(), Call.Payload.Num()), BytesToHexLower(Args.GetData(), Args.Num()));
+
+	Rig.Exec.Client->TestExecReceiveBinary(CrowdyNativeExecReply(Rid, 0, {0xa2, 0x6f, 0x6b}));
+	TestTrue(TEXT("the reply arrived"), CrowdyNativeExecPumpUntil(*Rig.Exec.Client, [&Replies]() { return Replies > 0; }));
+	TestEqual(TEXT("exactly once"), Replies, 1);
+	TestTrue(TEXT("it is Ok"), Reply.IsOk());
+	TestTrue(TEXT("with the hub's payload"), Reply.Payload == TArray<uint8>({0xa2, 0x6f, 0x6b}));
+	return true;
+}
+
+// A hub's coded refusal is read into its code and words, and a call sent once carries an action id.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeKitRefusalCarriesTheHubsCodeTest,
+	"CrowdySDK.CrowdyCppBridge.GameKit.RefusalCarriesTheHubsCode", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeKitRefusalCarriesTheHubsCodeTest::RunTest(const FString& Parameters)
+{
+	FCrowdyNativeKitRig Rig;
+	if (!CrowdyNativeKitMakeRig(*this, Rig))
+	{
+		return false;
+	}
+
+	int32 Replies = 0;
+	FCrowdyNativeKitReply Reply;
+	Rig.Kit->Call(TEXT("matchmaker"), TEXT("ranked"), TEXT("join"), {0x81, 0xa6, 0x72, 0x61, 0x74, 0x69, 0x6e, 0x67, 0x05}, true, 0,
+		[&Replies, &Reply](const FCrowdyNativeKitReply& In)
+	{
+		++Replies;
+		Reply = In;
+	});
+	if (!CrowdyNativeExecOpen(*this, Rig.Exec))
+	{
+		return false;
+	}
+	FCrowdyNativeKitSentCall Call;
+	uint32 Rid = 0;
+	if (!CrowdyNativeKitTakeCall(*this, Rig, Call, Rid))
+	{
+		return false;
+	}
+	const FString Sent = BytesToHexLower(Call.Payload.GetData(), Call.Payload.Num());
+	TestTrue(TEXT("a call sent once carries action_id"), Sent.Contains(TEXT("a9616374696f6e5f6964")));
+	TestTrue(TEXT("beside its own argument"), Sent.Contains(TEXT("a6726174696e6705")));
+
+	Rig.Exec.Client->TestExecReceiveBinary(CrowdyNativeExecReply(Rid, 1, CrowdyNativeKitText("kit:full: the queue is full")));
+	TestTrue(TEXT("the refusal arrived"), CrowdyNativeExecPumpUntil(*Rig.Exec.Client, [&Replies]() { return Replies > 0; }));
+	TestEqual(TEXT("exactly once"), Replies, 1);
+	TestEqual(TEXT("as the hub's own refusal"), static_cast<int32>(Reply.Status), static_cast<int32>(ECrowdyNativeExecStatus::AppError));
+	TestEqual(TEXT("with its code"), Reply.Code, FString(TEXT("full")));
+	TestEqual(TEXT("and its words"), Reply.Message, FString(TEXT("the queue is full")));
+	return true;
+}
+
+// Arguments the kit cannot send as one value are refused before anything goes out.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeKitRefusesUnsendableArgumentsTest,
+	"CrowdySDK.CrowdyCppBridge.GameKit.RefusesUnsendableArguments", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeKitRefusesUnsendableArgumentsTest::RunTest(const FString& Parameters)
+{
+	crowdy::graphql::JVal Value;
+	TestTrue(TEXT("no arguments are nil"), CrowdyNativeKit::ArgsFromMsgpack({}, Value) && Value.isNull());
+	TestFalse(TEXT("a truncated map"), CrowdyNativeKit::ArgsFromMsgpack({0x81, 0xa1, 0x61}, Value));
+	TestFalse(TEXT("trailing bytes"), CrowdyNativeKit::ArgsFromMsgpack({0x01, 0x02}, Value));
+	TestFalse(TEXT("binary"), CrowdyNativeKit::ArgsFromMsgpack({0xc4, 0x01, 0x00}, Value));
+	TestFalse(TEXT("an extension type"), CrowdyNativeKit::ArgsFromMsgpack({0xd4, 0x01, 0x00}, Value));
+	TestFalse(TEXT("a key that is not a string"), CrowdyNativeKit::ArgsFromMsgpack({0x81, 0x01, 0x02}, Value));
+	TestFalse(TEXT("an integer past int64"), CrowdyNativeKit::ArgsFromMsgpack({0xcf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, Value));
+	TestFalse(TEXT("a forged array count"), CrowdyNativeKit::ArgsFromMsgpack({0xdd, 0x7f, 0xff, 0xff, 0xff, 0x01}, Value));
+	TArray<uint8> Deep;
+	Deep.Init(0x91, 65);
+	Deep.Add(0x01);
+	TestFalse(TEXT("nesting deeper than 64"), CrowdyNativeKit::ArgsFromMsgpack(Deep, Value));
+	Deep.RemoveAt(0);
+	TestTrue(TEXT("nesting of 64 is fine"), CrowdyNativeKit::ArgsFromMsgpack(Deep, Value));
+
+	FCrowdyNativeKitRig Rig;
+	if (!CrowdyNativeKitMakeRig(*this, Rig))
+	{
+		return false;
+	}
+	FCrowdyNativeKitReply Reply;
+	Rig.Kit->Call(TEXT("world"), FString(), TEXT("harvest"), {0xc4, 0x01, 0x00}, false, 0, [&Reply](const FCrowdyNativeKitReply& In) { Reply = In; });
+	TestEqual(TEXT("the call is refused as a bad request"), static_cast<int32>(Reply.Status), static_cast<int32>(ECrowdyNativeExecStatus::BadRequest));
+	CrowdyNativeExecPumpUntil(*Rig.Exec.Client, []() { return false; }, 0.2);
+	TestEqual(TEXT("and nothing was dialled"), Rig.Exec.Client->NumTestExecConnections(), 0);
+	return true;
+}
+
+// Closing the kit completes its pending call and ends its subscriptions, and the connection it rode keeps working.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeKitCloseKeepsTheConnectionTest,
+	"CrowdySDK.CrowdyCppBridge.GameKit.CloseKeepsTheConnection", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeKitCloseKeepsTheConnectionTest::RunTest(const FString& Parameters)
+{
+	FCrowdyNativeKitRig Rig;
+	if (!CrowdyNativeKitMakeRig(*this, Rig))
+	{
+		return false;
+	}
+
+	TArray<FCrowdyNativeExecPush> Pushes;
+	bool bSubscribed = false;
+	Rig.Kit->Subscribe(TEXT("world"), FString(), TEXT("conditions"),
+		[&Pushes](const FCrowdyNativeExecPush& Push) { Pushes.Add(Push); },
+		[&bSubscribed](const FCrowdyNativeKitReply& Reply) { bSubscribed = Reply.IsOk(); });
+	if (!CrowdyNativeExecOpen(*this, Rig.Exec))
+	{
+		return false;
+	}
+	TArray<TArray<uint8>> Sent;
+	CrowdyNativeExecPumpUntil(*Rig.Exec.Client, [&Rig, &Sent]()
+	{
+		Sent.Append(Rig.Exec.Client->TakeTestExecSentFrames());
+		return Sent.Num() > 0;
+	});
+	if (!TestEqual(TEXT("one subscribe was sent"), Sent.Num(), 1) || !TestEqual(TEXT("it is a subscribe"), static_cast<int32>(Sent[0][0]), 0x02))
+	{
+		return false;
+	}
+	Rig.Exec.Client->TestExecReceiveBinary(CrowdyNativeExecReply(CrowdyNativeExecRid(Sent[0]), 0, {}));
+	Rig.Exec.Client->TestExecReceiveBinary(CrowdyNativeExecPushFrame(TEXT("world"), FString(), TEXT("conditions"), {0x80}));
+	TestTrue(TEXT("the push reached the kit"), CrowdyNativeExecPumpUntil(*Rig.Exec.Client, [&Pushes]() { return Pushes.Num() > 0; }));
+	TestTrue(TEXT("the subscribe was acknowledged"), bSubscribed);
+	TestEqual(TEXT("the kit counts one topic"), Rig.Kit->NumSubscriptions(), 1);
+
+	int32 Replies = 0;
+	FCrowdyNativeKitReply Reply;
+	Rig.Kit->Call(TEXT("world"), FString(), TEXT("harvest"), {0x80}, false, 0, [&Replies, &Reply](const FCrowdyNativeKitReply& In)
+	{
+		++Replies;
+		Reply = In;
+	});
+	FCrowdyNativeKitSentCall Call;
+	uint32 Rid = 0;
+	if (!CrowdyNativeKitTakeCall(*this, Rig, Call, Rid))
+	{
+		return false;
+	}
+
+	Rig.Kit->Close();
+	TestEqual(TEXT("the pending call completed exactly once"), Replies, 1);
+	TestEqual(TEXT("as Unavailable"), static_cast<int32>(Reply.Status), static_cast<int32>(ECrowdyNativeExecStatus::Unavailable));
+	TestEqual(TEXT("with the kit's canceled message"), Reply.Message, FCrowdyNativeKit::CanceledMessage());
+	const TArray<TArray<uint8>> AfterClose = Rig.Exec.Client->TakeTestExecSentFrames();
+	TestTrue(TEXT("its subscription was ended on the connection"), AfterClose.ContainsByPredicate([](const TArray<uint8>& Frame) { return Frame.Num() > 0 && Frame[0] == 0x03; }));
+
+	Rig.Exec.Client->TestExecReceiveBinary(CrowdyNativeExecReply(Rid, 0, {0xc0}));
+	CrowdyNativeExecPumpUntil(*Rig.Exec.Client, []() { return false; }, 0.2);
+	TestEqual(TEXT("a late reply does not complete it again"), Replies, 1);
+
+	int32 ConnectionReplies = 0;
+	Rig.Exec.Connection->Call(TEXT("probe"), FString(), TEXT("echo"), {0x80}, [&ConnectionReplies](const FCrowdyNativeExecReply& In)
+	{
+		ConnectionReplies += In.IsOk() ? 1 : 0;
+	});
+	TArray<TArray<uint8>> Later;
+	CrowdyNativeExecPumpUntil(*Rig.Exec.Client, [&Rig, &Later]()
+	{
+		Later.Append(Rig.Exec.Client->TakeTestExecSentFrames());
+		return Later.Num() > 0;
+	});
+	if (!TestEqual(TEXT("the connection still sends"), Later.Num(), 1))
+	{
+		return false;
+	}
+	Rig.Exec.Client->TestExecReceiveBinary(CrowdyNativeExecReply(CrowdyNativeExecRid(Later[0]), 0, {0xc0}));
+	TestTrue(TEXT("and still answers"), CrowdyNativeExecPumpUntil(*Rig.Exec.Client, [&ConnectionReplies]() { return ConnectionReplies > 0; }));
+	TestTrue(TEXT("the connection is still open"), Rig.Exec.Connection->IsConnected());
+	return true;
+}
+
+// A push already queued for a subscription when it ends is dropped, so a handler whose owner just unsubscribed never runs.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeKitQueuedPushAfterUnsubscribeIsDroppedTest,
+	"CrowdySDK.CrowdyCppBridge.GameKit.QueuedPushAfterUnsubscribeIsDropped", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeKitQueuedPushAfterUnsubscribeIsDroppedTest::RunTest(const FString& Parameters)
+{
+	FCrowdyNativeKitRig Rig;
+	if (!CrowdyNativeKitMakeRig(*this, Rig))
+	{
+		return false;
+	}
+	int32 Pushes = 0;
+	bool bSubscribed = false;
+	const uint64 Handle = Rig.Kit->Subscribe(TEXT("world"), FString(), TEXT("conditions"),
+		[&Pushes](const FCrowdyNativeExecPush&) { ++Pushes; },
+		[&bSubscribed](const FCrowdyNativeKitReply& Reply) { bSubscribed = Reply.IsOk(); });
+	if (!CrowdyNativeExecOpen(*this, Rig.Exec))
+	{
+		return false;
+	}
+	TArray<TArray<uint8>> Sent;
+	CrowdyNativeExecPumpUntil(*Rig.Exec.Client, [&Rig, &Sent]()
+	{
+		Sent.Append(Rig.Exec.Client->TakeTestExecSentFrames());
+		return Sent.Num() > 0;
+	});
+	if (!TestEqual(TEXT("one subscribe was sent"), Sent.Num(), 1))
+	{
+		return false;
+	}
+	Rig.Exec.Client->TestExecReceiveBinary(CrowdyNativeExecReply(CrowdyNativeExecRid(Sent[0]), 0, {}));
+	TestTrue(TEXT("the subscribe was acknowledged"), CrowdyNativeExecPumpUntil(*Rig.Exec.Client, [&bSubscribed]() { return bSubscribed; }));
+
+	// Received and queued for the next Poll, but not yet delivered.
+	Rig.Exec.Client->TestExecReceiveBinary(CrowdyNativeExecPushFrame(TEXT("world"), FString(), TEXT("conditions"), {0x80}));
+	FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+	Rig.Kit->Unsubscribe(Handle);
+	CrowdyNativeExecPumpUntil(*Rig.Exec.Client, []() { return false; }, 0.2);
+	TestEqual(TEXT("the queued push did not reach the handler"), Pushes, 0);
+	TestEqual(TEXT("the kit holds no topic"), Rig.Kit->NumSubscriptions(), 0);
+	return true;
+}
+
+// A call sent once carries its action id inside its arguments, so arguments that are not a map, or none, are refused.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeKitOnceNeedsAMapTest,
+	"CrowdySDK.CrowdyCppBridge.GameKit.OnceNeedsAMap", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeKitOnceNeedsAMapTest::RunTest(const FString& Parameters)
+{
+	FCrowdyNativeKitRig Rig;
+	if (!CrowdyNativeKitMakeRig(*this, Rig))
+	{
+		return false;
+	}
+	FCrowdyNativeKitReply Reply;
+	Rig.Kit->Call(TEXT("session"), TEXT("s1"), TEXT("act"), {0x92, 0x01, 0x02}, true, 0, [&Reply](const FCrowdyNativeKitReply& In) { Reply = In; });
+	TestEqual(TEXT("an array sent once is refused as a bad request"), static_cast<int32>(Reply.Status), static_cast<int32>(ECrowdyNativeExecStatus::BadRequest));
+	Reply = FCrowdyNativeKitReply();
+	Rig.Kit->Call(TEXT("session"), TEXT("s1"), TEXT("act"), {0x92, 0x01, 0x02}, false, 0, [&Reply](const FCrowdyNativeKitReply& In) { Reply = In; });
+	TestNotEqual(TEXT("the same array sent plainly is not"), static_cast<int32>(Reply.Status), static_cast<int32>(ECrowdyNativeExecStatus::BadRequest));
+
+	Rig.Kit->Call(TEXT("session"), TEXT("s1"), TEXT("ready"), {}, true, 0, [](const FCrowdyNativeKitReply&) {});
+	if (!CrowdyNativeExecOpen(*this, Rig.Exec))
+	{
+		return false;
+	}
+	TArray<TArray<uint8>> Sent;
+	CrowdyNativeExecPumpUntil(*Rig.Exec.Client, [&Rig, &Sent]()
+	{
+		Sent.Append(Rig.Exec.Client->TakeTestExecSentFrames());
+		return Sent.Num() >= 2;
+	});
+	const FCrowdyNativeKitSentCall* Ready = nullptr;
+	TArray<FCrowdyNativeKitSentCall> Calls;
+	for (const TArray<uint8>& Frame : Sent)
+	{
+		Calls.Add(CrowdyNativeKitParseCall(Frame));
+	}
+	Ready = Calls.FindByPredicate([](const FCrowdyNativeKitSentCall& Call) { return Call.Method == TEXT("ready"); });
+	if (!TestNotNull(TEXT("no arguments sent once went out"), Ready))
+	{
+		return false;
+	}
+	TestTrue(TEXT("as a map holding only the action id"), BytesToHexLower(Ready->Payload.GetData(), Ready->Payload.Num()).StartsWith(TEXT("81a9616374696f6e5f6964")));
+	return true;
+}
+
+// Closing the client closes the kits it made, completing what was pending.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeKitClientCloseClosesTheKitTest,
+	"CrowdySDK.CrowdyCppBridge.GameKit.ClientCloseClosesTheKit", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeKitClientCloseClosesTheKitTest::RunTest(const FString& Parameters)
+{
+	FCrowdyNativeKitRig Rig;
+	if (!CrowdyNativeKitMakeRig(*this, Rig))
+	{
+		return false;
+	}
+	int32 Replies = 0;
+	FCrowdyNativeKitReply Reply;
+	Rig.Kit->Call(TEXT("world"), FString(), TEXT("harvest"), {0x80}, false, 0, [&Replies, &Reply](const FCrowdyNativeKitReply& In)
+	{
+		++Replies;
+		Reply = In;
+	});
+	if (!CrowdyNativeExecOpen(*this, Rig.Exec))
+	{
+		return false;
+	}
+	FCrowdyNativeKitSentCall Call;
+	uint32 Rid = 0;
+	if (!CrowdyNativeKitTakeCall(*this, Rig, Call, Rid))
+	{
+		return false;
+	}
+
+	Rig.Exec.Client->Close();
+	Rig.Exec.Client->Poll();
+	TestTrue(TEXT("the kit is closed with its client"), Rig.Kit->IsClosed());
+	TestEqual(TEXT("its pending call completed exactly once"), Replies, 1);
+	TestEqual(TEXT("as Unavailable"), static_cast<int32>(Reply.Status), static_cast<int32>(ECrowdyNativeExecStatus::Unavailable));
+	TestFalse(TEXT("a closed client makes no kit"), Rig.Exec.Client->CreateGameKit(42, *Rig.Exec.Connection, 7).IsValid());
+	return true;
+}
 
 #endif  // WITH_DEV_AUTOMATION_TESTS

@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Hash/xxhash.h"
 #include "Misc/AutomationTest.h"
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Messages/GameObjects/FGameObjectActivationNotification.h"
@@ -170,8 +171,8 @@ bool FCrowdyMessageFieldsGameEventNotificationTest::RunTest(const FString& Param
 	}
 
 	// Vector C2: the same envelope as vector C, but the target id holds octets that are not text. The
-	// key is derived from the 32 octets themselves, so a component holding anything outside the
-	// hexadecimal alphabet reads as the largest value and the other three still read as themselves.
+	// key is derived from the 32 octets themselves, so an id outside the hexadecimal alphabet keys on
+	// a 128-bit xxHash of all 32.
 	//
 	// This is the vector that tells the two derivations apart. Reading the same octets as a string
 	// first loses them: 0xff cannot begin a UTF-8 sequence, the continuation octets behind it are
@@ -199,7 +200,12 @@ bool FCrowdyMessageFieldsGameEventNotificationTest::RunTest(const FString& Param
 		{
 			TestEqual(TEXT("C2: Target"), static_cast<int32>(Message.Target),
 				static_cast<int32>(ECrowdyTarget::Entity));
-			const FGuid ExpectedTargetID(0xaaaabbbb, 0xccccdddd, 0xeeeeffff, 0xffffffff);
+			TArray<uint8> TargetOctets;
+			EventFieldsTestAppendAscii(TargetOctets, "aaaabbbbccccddddeeeeffff00");
+			TargetOctets.Append(NonTextTail, 6);
+			const FXxHash128 Hash = FXxHash128::HashBuffer(TargetOctets.GetData(), TargetOctets.Num());
+			const FGuid ExpectedTargetID(static_cast<uint32>(Hash.HashHigh >> 32), static_cast<uint32>(Hash.HashHigh),
+				static_cast<uint32>(Hash.HashLow >> 32), static_cast<uint32>(Hash.HashLow));
 			TestTrue(TEXT("C2: TargetID is derived from the octets"), Message.TargetID == ExpectedTargetID);
 			TestTrue(TEXT("C2: TargetID is a usable key"), Message.TargetID.IsValid());
 		}

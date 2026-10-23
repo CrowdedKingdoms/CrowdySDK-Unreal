@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
+#include "CrowdyExecBuildAndDeploy.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyExecDeveloperApi.h"
 #include "CrowdyExecRevisions.h"
@@ -116,8 +117,10 @@ private:
 	void RefreshStatus();
 	void RefreshVersions();
 	void Recompare();
-	void StartBuild(const TArray<CrowdyExecDeveloper::FBuildCrate>& Crates, const FString& ManifestJson, bool bRecord);
-	void OnBuildFinished(const CrowdyExecDeveloper::TResult<CrowdyExecDeveloper::FBuild>& Result, const FString& ManifestJson, bool bRecord);
+	/** The active version as last read (Version 0: nothing live); unset when the versions or its manifest are not known. */
+	TOptional<CrowdyExecBuildAndDeploy::FLive> GetLive() const;
+	/** Starts Plan; false with the reason on the deploy line when it cannot be deployed over what is live (CrowdyExecBuildAndDeploy::FindPlanProblem). */
+	bool StartDeploy(CrowdyExecBuildAndDeploy::FPlan Plan, const FString& ManifestJson, bool bRecord);
 	/** The instances read as a deploy is sent; the move offer after the deploy waits for its answer. */
 	struct FDeploySnapshot
 	{
@@ -127,7 +130,7 @@ private:
 		TFunction<void()> OnAnswered;
 	};
 
-	void OnDeployed(const CrowdyExecDeveloper::TResult<int32>& Deployed, const TArray<CrowdyExecDeveloper::FBuildArtifact>& Artifacts, bool bRecord, TSharedRef<FDeploySnapshot> Before);
+	void OnDeployDone(const CrowdyExecBuildAndDeploy::FOutcome& Outcome, bool bRecord, TSharedRef<FDeploySnapshot> Before);
 	void SetDeployMessage(const FText& Message, const FLinearColor& Color, bool bCountSeconds = false);
 	void FinishDeploy(const FText& Message, const FLinearColor& Color);
 	FText GetReadinessHint() const;

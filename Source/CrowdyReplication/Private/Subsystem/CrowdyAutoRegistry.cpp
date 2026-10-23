@@ -121,7 +121,21 @@ void UCrowdyAutoRegistry::InstallIDOverrideResolvers()
 		return FCrowdyTypeIDGenerator::GenerateFromStruct(Struct);
 	};
 
-	UEventPayloadRegistry::Get()->SetIDResolver(Resolver);
+	// Events also keep off the platform's reserved numbers; actor state keeps the plain mapping its saves were written with.
+	const auto EventResolver = [](const UScriptStruct* Struct) -> FCrowdyTypeID
+	{
+		for (const FCrowdyIDOverride& Override : GetDefault<UCrowdySDKDeveloperSettings>()->IDOverrides)
+		{
+			if (Override.Struct.Get() == Struct)
+			{
+				return UEventPayloadRegistry::ResolveEventID(Struct, TOptional<int32>(Override.OverrideID));
+			}
+		}
+
+		return UEventPayloadRegistry::ResolveEventID(Struct);
+	};
+
+	UEventPayloadRegistry::Get()->SetIDResolver(EventResolver);
 	UActorUpdatePayloadRegistry::Get()->SetIDResolver(Resolver);
 }
 

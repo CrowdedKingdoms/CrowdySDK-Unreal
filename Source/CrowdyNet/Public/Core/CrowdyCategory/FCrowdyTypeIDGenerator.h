@@ -4,6 +4,7 @@
 #include "Hash/CityHash.h"
 #include "Misc/Crc.h"
 #include "Core/FCrowdyTypeID.h"
+#include "Core/UDP/CrowdyKitEvents.h"
 
 /**
  * Derives the wire identifiers Crowdy puts in front of a payload.
@@ -31,12 +32,44 @@ struct FCrowdyTypeIDGenerator
 		return CityHash64(reinterpret_cast<const char*>(Utf8.Get()), Utf8.Length());
 	}
 
+	// A number the platform fixes for its own events, which no struct may take.
+	static constexpr bool IsReservedTypeID(const uint32 TypeID)
+	{
+		return TypeID == CrowdyKitEvent::Emote;
+	}
+
+	// Maps a hash into 1..65535. Persistence and actor state key on this number, so it never changes.
+	static constexpr FCrowdyTypeID TypeIDFromHash(const uint32 Hash)
+	{
+		return static_cast<FCrowdyTypeID>((Hash % 65535u) + 1u);
+	}
+
+	// The same mapping for an event payload, which also avoids a reserved number: a hash that would land on one is
+	// read again from its high part, so every peer settles on the same number and every other hash is unchanged.
+	static constexpr FCrowdyTypeID EventTypeIDFromHash(const uint32 Hash)
+	{
+		const FCrowdyTypeID First = TypeIDFromHash(Hash);
+		if (!IsReservedTypeID(First))
+		{
+			return First;
+		}
+
+		const uint32 Second = ((Hash / 65535u) % 65535u) + 1u;
+		return static_cast<FCrowdyTypeID>(IsReservedTypeID(Second) ? 65535u : Second);
+	}
+
 	// Maps into 1..65535; CROWDY_INVALID_TYPE_ID is never produced.
 	static FCrowdyTypeID GenerateFromStruct(const UScriptStruct* Struct)
 	{
 		check(Struct);
-		const uint32 Hash = HashNameUtf8(Struct->GetPathName());
-		return static_cast<FCrowdyTypeID>((Hash % 65535u) + 1u);
+		return TypeIDFromHash(HashNameUtf8(Struct->GetPathName()));
+	}
+
+	// GenerateFromStruct for an event payload: never a reserved number.
+	static FCrowdyTypeID GenerateEventFromStruct(const UScriptStruct* Struct)
+	{
+		check(Struct);
+		return EventTypeIDFromHash(HashNameUtf8(Struct->GetPathName()));
 	}
 
 	static bool WouldCollide(FCrowdyTypeID ID, const UScriptStruct* Incoming, const TMap<FCrowdyTypeID, TObjectPtr<UScriptStruct>>& Existing)

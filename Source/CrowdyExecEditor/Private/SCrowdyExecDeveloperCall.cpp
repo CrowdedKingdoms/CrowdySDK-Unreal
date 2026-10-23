@@ -1,6 +1,7 @@
 #include "SCrowdyExecDeveloperCall.h"
 
 #include "CrowdyExecDeveloperCall.h"
+#include "CrowdyGameKitTypes.h"
 #include "CrowdyServerComputeService.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "Framework/Application/SlateApplication.h"
@@ -49,6 +50,30 @@ void SCrowdyExecDeveloperCall::Construct(const FArguments& InArgs)
 
 	const FText Title = Function ? FText::Format(LOCTEXT("Heading", "Call {0} on {1} as the developer"), FText::FromName(Function->Name), FText::FromString(Current->TypeName))
 		: LOCTEXT("NoFunction", "The function is no longer in the definition.");
+	const UScriptStruct* InputsType = Start.GetScriptStruct();
+	const bool bKit = Current && Current->IsGameKitStarter();
+	const FStructProperty* BundleField = nullptr;
+	bool bTakesRef = false;
+	if (InputsType && bKit)
+	{
+		for (TFieldIterator<FProperty> It(InputsType); It; ++It)
+		{
+			bTakesRef |= It->IsA<FStrProperty>() && It->GetAuthoredName().Equals(TEXT("Ref"), ESearchCase::IgnoreCase);
+			const FStructProperty* Field = CastField<FStructProperty>(*It);
+			BundleField = Field && Field->Struct == FCrowdyKitBundle::StaticStruct() ? Field : BundleField;
+		}
+	}
+	const bool bKeyedByPlayer = Current && Current->IsKeyedByPlayer();
+	FText Notes;
+	if (BundleField)
+	{
+		Notes = LOCTEXT("SoftCurrency", "In-game soft currency and items, which are game state like a score: never real money.");
+	}
+	if (bTakesRef)
+	{
+		Notes = FText::Format(LOCTEXT("FreshRef", "{0}{1}Leave Ref empty and each press makes a fresh one, so each press gives again. A Ref sent before answers as it did then and gives nothing more, which makes it safe to send again after a lost answer."),
+			Notes, Notes.IsEmpty() ? FText::GetEmpty() : FText::FromString(TEXT(" ")));
+	}
 	ChildSlot
 	[
 		SNew(SBorder)
@@ -67,14 +92,19 @@ void SCrowdyExecDeveloperCall::Construct(const FArguments& InArgs)
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
 			[
+				SNew(STextBlock).AutoWrapText(true).Visibility(Notes.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible).Text(Notes)
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
 				[
-					SNew(STextBlock).Text(LOCTEXT("InstanceId", "Instance Id"))
+					SNew(STextBlock).Text(bKeyedByPlayer ? LOCTEXT("Player", "Player") : LOCTEXT("InstanceId", "Instance Id"))
 				]
 				+ SHorizontalBox::Slot().FillWidth(1.0f)
 				[
-					SAssignNew(KeyBox, SEditableTextBox).HintText(LOCTEXT("InstanceIdHint", "the Server Object's Instance Id, such as boss-1"))
+					SAssignNew(KeyBox, SEditableTextBox).HintText(bKeyedByPlayer ? LOCTEXT("PlayerHint", "the player's user id, which is their player hub's Instance Id")
+						: LOCTEXT("InstanceIdHint", "the Server Object's Instance Id, such as boss-1"))
 				]
 			]
 			+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0.0f, 0.0f, 0.0f, 8.0f)
@@ -115,7 +145,7 @@ const FCrowdyServerFunction* SCrowdyExecDeveloperCall::FindFunction() const
 {
 	const UCrowdyServerObjectDefinition* Current = Definition.Get();
 	const FCrowdyServerFunction* Found = Current ? Current->FindFunction(FunctionName) : nullptr;
-	return Found && CrowdyExecDeveloperCall::IsForDevelopers(*Found) ? Found : nullptr;
+	return Found && CrowdyExecDeveloperCall::IsForDevelopers(*Current, *Found) ? Found : nullptr;
 }
 
 bool SCrowdyExecDeveloperCall::CanCall() const
@@ -152,12 +182,24 @@ FReply SCrowdyExecDeveloperCall::OnCallClicked()
 	{
 		Values.InitializeAs(Function.GetParamsStruct(), Inputs->GetStructMemory());
 	}
+	const FString Key = KeyBox->GetText().ToString().TrimStartAndEnd();
+	const FString Pointless = CrowdyExecDeveloperCall::FindPointlessCall(*Current, Key, Values);
+	if (!Pointless.IsEmpty())
+	{
+		Answer = FText::FromString(Pointless);
+		AnswerColor = FStyleColors::Error;
+		return FReply::Handled();
+	}
+	// The inputs view keeps an empty Ref, so the next press makes another.
+	FString Ref;
+	CrowdyExecDeveloperCall::FillFreshRef(*Current, Function, Values, Ref);
+	const FText RefLine = Ref.IsEmpty() ? FText::GetEmpty() : FText::Format(LOCTEXT("RefLine", "Ref {0}\n"), FText::FromString(Ref));
 	bCalling = true;
-	Answer = LOCTEXT("Calling", "Calling...");
+	Answer = FText::Format(LOCTEXT("Calling", "{0}Calling..."), RefLine);
 	AnswerColor = FSlateColor::UseSubduedForeground();
 	const TWeakPtr<SCrowdyExecDeveloperCall> WeakThis = SharedThis(this);
-	CrowdyExecDeveloperCall::Call(*Client, *Current, Function, KeyBox->GetText().ToString().TrimStartAndEnd(), Values,
-		[WeakThis](const CrowdyExecDeveloperCall::FResult& Result)
+	CrowdyExecDeveloperCall::Call(*Client, *Current, Function, Key, Values,
+		[WeakThis, RefLine](const CrowdyExecDeveloperCall::FResult& Result)
 		{
 			const TSharedPtr<SCrowdyExecDeveloperCall> Self = WeakThis.Pin();
 			if (!Self)
@@ -168,10 +210,11 @@ FReply SCrowdyExecDeveloperCall::OnCallClicked()
 			Self->AnswerColor = Result.bOk ? FStyleColors::Success : FStyleColors::Error;
 			if (Result.bOk)
 			{
-				Self->Answer = Result.ReplyJson.IsEmpty() ? LOCTEXT("OkNoReply", "Ok") : FText::Format(LOCTEXT("OkReply", "Ok\n{0}"), FText::FromString(Result.ReplyJson));
+				Self->Answer = Result.ReplyJson.IsEmpty() ? FText::Format(LOCTEXT("OkNoReply", "{0}Ok"), RefLine)
+					: FText::Format(LOCTEXT("OkReply", "{0}Ok\n{1}"), RefLine, FText::FromString(Result.ReplyJson));
 				return;
 			}
-			Self->Answer = FText::Format(LOCTEXT("Refused", "{0}: {1}"), FText::FromString(Result.Status), FText::FromString(Result.Message));
+			Self->Answer = FText::Format(LOCTEXT("Refused", "{0}{1}: {2}"), RefLine, FText::FromString(Result.Status), FText::FromString(Result.Message));
 		});
 	return FReply::Handled();
 }

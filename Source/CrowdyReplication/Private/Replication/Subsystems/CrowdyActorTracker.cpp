@@ -8,6 +8,7 @@
 #include "Messages/Actor/FActorLeftNotification.h"
 #include "Messages/Actor/FActorUpdateNotificationMessage.h"
 #include "Messages/Actor/FActorUpdateRequestMessage.h"
+#include "Messages/Actor/FCrowdyKitActorState.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
 #include "Internal/FCrowdyServiceRegistry.h"
@@ -116,7 +117,7 @@ void UCrowdyActorTracker::Initialize(FSubsystemCollectionBase& Collection)
 		&UCrowdyActorTracker::CheckTimeouts,
 		CrowdyActorTimeoutSweepSeconds,
 		true);
-	
+
 	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log, TEXT("[Crowdy Actor Tracker]: Initialized."));
 }
 
@@ -128,7 +129,9 @@ void UCrowdyActorTracker::Deinitialize()
 	ActorLeftSubscription.Release();
 
 	if (const UWorld* World = GetWorld())
+	{
 		World->GetTimerManager().ClearTimer(TimeoutTimerHandle);
+	}
 
 	// Stop handing shards out, then wait for whatever is already reading one. Both matter: the consumers read
 	// state that is about to go away, and a queue may only be drained while nothing else is reading it.
@@ -212,6 +215,12 @@ void UCrowdyActorTracker::HandleActorUpdateDelivery(const FCrowdyDelivery& Deliv
 	// implied by the subscription; nothing else routes here.
 	const auto& AUN = Delivery.GetAs<FActorUpdateNotificationMessage>();
 
+	// A viewer has no avatar, so an avatar still shown under its id (a player who became a viewer) times out as usual.
+	if (AUN.bViewerBeat)
+	{
+		return;
+	}
+
 	FCrowdyActorUpdate Update;
 	Update.UUID = AUN.GUID;
 
@@ -240,6 +249,7 @@ bool UCrowdyActorTracker::ForgetTrackedActor(const FGuid& UUID)
 	{
 		FWriteScopeLock W(LastUpdateLock);
 		bWasTracked = LastUpdateTimes.Remove(UUID) > 0;
+		bWasTracked |= KitLastUpdateTimes.Remove(UUID) > 0;
 	}
 
 	{
@@ -287,6 +297,12 @@ void UCrowdyActorTracker::MarkActorTrackedForTest(const FGuid& UUID)
 void UCrowdyActorTracker::EnqueueUpdateForTest(FCrowdyActorUpdate Update)
 {
 	EnqueueUpdate(MoveTemp(Update));
+}
+
+void UCrowdyActorTracker::NoteHeardForTest(const TArray<FCrowdyActorUpdate>& Updates, const double SecondsAgo)
+{
+	FWriteScopeLock W(LastUpdateLock);
+	NoteHeardLocked(Updates, FPlatformTime::Seconds() - SecondsAgo);
 }
 #endif
 
@@ -462,6 +478,13 @@ void UCrowdyActorTracker::EnqueueUpdate(FCrowdyActorUpdate&& Update)
 void UCrowdyActorTracker::Tick(float DeltaTime)
 {
 	FlushTrackedUpdates();
+
+	KitSweepElapsed += DeltaTime;
+	if (KitSweepElapsed < FMath::Clamp(KitActorTimeout / 4.0f, 0.05f, 0.5f))
+		return;
+
+	KitSweepElapsed = 0.0f;
+	CheckKitTimeouts();
 }
 
 int32 UCrowdyActorTracker::GetMaxGatheredUpdates()
@@ -502,10 +525,8 @@ void UCrowdyActorTracker::DiscardGatheredBacklog()
 	// Recorded anyway, or an actor whose updates are being discarded looks silent and is timed out and
 	// despawned, which is a far worse answer than a stale position.
 	{
-		const double Now = FPlatformTime::Seconds();
 		FWriteScopeLock W(LastUpdateLock);
-		for (const FCrowdyActorUpdate& Update : TrackedUpdates)
-			LastUpdateTimes.Add(Update.UUID, Now);
+		NoteHeardLocked(TrackedUpdates, FPlatformTime::Seconds());
 	}
 
 	TrackedUpdates.Reset();
@@ -526,11 +547,11 @@ void UCrowdyActorTracker::FlushTrackedUpdates()
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_TrackerFlushTracked);
 
+	DropForgedKitUpdates();
+
 	{
-		const double Now = FPlatformTime::Seconds();
 		FWriteScopeLock W(LastUpdateLock);
-		for (const FCrowdyActorUpdate& Update : TrackedUpdates)
-			LastUpdateTimes.Add(Update.UUID, Now);
+		NoteHeardLocked(TrackedUpdates, FPlatformTime::Seconds());
 	}
 
 	OnTrackedActorUpdates.Broadcast(TrackedUpdates);
@@ -689,6 +710,7 @@ bool UCrowdyActorTracker::LoadDeveloperSettings()
 		Config.ActorTimeoutThreshold
 	);
 
+	KitActorTimeout = FMath::Max(0.25f, Config.KitActorTimeout);
 	ToggleOwnerTracking(Config.bEnableOwnerTracking);
 	ToggleBroadcastUpdatesToGameThread(Config.bDispatchUpdatesOnGameThread);
 
@@ -815,12 +837,57 @@ void UCrowdyActorTracker::ProcessQueue(int32 ShardIndex)
     }
 	
     {
-        const double Now = FPlatformTime::Seconds();
         FWriteScopeLock W(LastUpdateLock);
-        for (const FCrowdyActorUpdate& Update : Batch)
-            LastUpdateTimes.Add(Update.UUID, Now);
+        NoteHeardLocked(Batch, FPlatformTime::Seconds());
     }
-	
+
+}
+
+bool UCrowdyActorTracker::IsKitActorUpdate(const FCrowdyActorUpdate& Update)
+{
+	return static_cast<FCrowdyTypeID>(Update.PayloadTypeID) == CROWDY_INVALID_TYPE_ID
+		&& Update.ResolveState().GetScriptStruct() == FCrowdyKitActorState::StaticStruct();
+}
+
+void UCrowdyActorTracker::NoteHeardLocked(const TConstArrayView<FCrowdyActorUpdate> Updates, const double Now)
+{
+	for (const FCrowdyActorUpdate& Update : Updates)
+	{
+		(IsKitActorUpdate(Update) ? KitLastUpdateTimes : LastUpdateTimes).Add(Update.UUID, Now);
+	}
+}
+
+void UCrowdyActorTracker::DropForgedKitUpdates()
+{
+	FReadScopeLock R(AppearedIdsLock);
+	TrackedUpdates.RemoveAll([this](const FCrowdyActorUpdate& Update)
+	{
+		if (!IsKitActorUpdate(Update))
+			return false;
+		const FAppearedIds* Ids = AppearedIdsByUUID.Find(Update.UUID);
+		return Ids && !Ids->bKitActor;
+	});
+}
+
+void UCrowdyActorTracker::CheckKitTimeouts()
+{
+	const double Now = FPlatformTime::Seconds();
+	TArray<FGuid> TimedOut;
+	{
+		FWriteScopeLock W(LastUpdateLock);
+		for (auto It = KitLastUpdateTimes.CreateIterator(); It; ++It)
+		{
+			if (Now - It->Value > KitActorTimeout)
+			{
+				TimedOut.Add(It->Key);
+				It.RemoveCurrent();
+			}
+		}
+	}
+	if (!TimedOut.IsEmpty())
+	{
+		ProcessTimedOutActors(MoveTemp(TimedOut), KitActorTimeout);
+	}
 }
 
 void UCrowdyActorTracker::CheckTimeouts()
@@ -844,7 +911,7 @@ void UCrowdyActorTracker::CheckTimeouts()
 			LastUpdateTimes.Remove(UUID);
 	}
 
-	ProcessTimedOutActors(MoveTemp(TimedOut));
+	ProcessTimedOutActors(MoveTemp(TimedOut), ActorTimeoutThreshold);
 }
 
 void UCrowdyActorTracker::RecordAppearances(const TArray<FCrowdyActorUpdate>& Appeared)
@@ -855,7 +922,22 @@ void UCrowdyActorTracker::RecordAppearances(const TArray<FCrowdyActorUpdate>& Ap
 		FAppearedIds& Ids = AppearedIdsByUUID.Add(Update.UUID);
 		Ids.ClassID = static_cast<FCrowdyClassID>(Update.ClassID);
 		Ids.PayloadTypeID = static_cast<FCrowdyTypeID>(Update.PayloadTypeID);
+		Ids.bKitActor = IsKitActorUpdate(Update);
+		Ids.WireId = Update.Message.IsValid() ? Update.Message->UUID : FCrowdyActorId();
 	}
+}
+
+bool UCrowdyActorTracker::FindWireId(const FGuid& UUID, FCrowdyActorId& OutWireId) const
+{
+	FReadScopeLock R(AppearedIdsLock);
+	const FAppearedIds* Found = AppearedIdsByUUID.Find(UUID);
+	if (!Found || !Found->WireId.IsSet())
+	{
+		return false;
+	}
+
+	OutWireId = Found->WireId;
+	return true;
 }
 
 FCrowdyClassID UCrowdyActorTracker::GetClassIDForUUID(const FGuid& UUID) const
@@ -872,7 +954,7 @@ FCrowdyTypeID UCrowdyActorTracker::GetPayloadTypeIDForUUID(const FGuid& UUID) co
 	return Found ? Found->PayloadTypeID : CROWDY_INVALID_TYPE_ID;
 }
 
-void UCrowdyActorTracker::ProcessTimedOutActors(TArray<FGuid> TimedOut)
+void UCrowdyActorTracker::ProcessTimedOutActors(TArray<FGuid> TimedOut, const float Silence)
 {
 	{
 		FWriteScopeLock W(AppearedIdsLock);
@@ -884,9 +966,12 @@ void UCrowdyActorTracker::ProcessTimedOutActors(TArray<FGuid> TimedOut)
 
 	for (const FGuid& UUID : TimedOut)
 	{
-		TrackedUUIDs->Remove(UUID);
 		PendingSpawns->Remove(UUID);
-		--NumOfTrackedActors;
+		// An actor heard but never tracked, as one refused at capacity, was never counted either.
+		if (TrackedUUIDs->Remove(UUID))
+		{
+			--NumOfTrackedActors;
+		}
 	}
 
 	// The other half of the pair above. The announcement is one unreliable datagram sent once, so losing it
@@ -899,7 +984,7 @@ void UCrowdyActorTracker::ProcessTimedOutActors(TArray<FGuid> TimedOut)
 			UE_LOG(LogCrowdyReplication, Verbose,
 				TEXT("[Crowdy Actor Tracker]: %s went %.1f s without an update; releasing it. No departure was "
 					"announced for it."),
-				*UUID.ToString(), ActorTimeoutThreshold);
+				*UUID.ToString(), Silence);
 		}
 	}
 

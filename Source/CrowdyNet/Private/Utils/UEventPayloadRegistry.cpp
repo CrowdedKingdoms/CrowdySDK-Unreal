@@ -148,7 +148,33 @@ void UEventPayloadRegistry::RegisterStructAuto(UScriptStruct* Struct)
 
 	const FCrowdyTypeID TypeID = IDResolver
 		? IDResolver(Struct)
-		: FCrowdyTypeIDGenerator::GenerateFromStruct(Struct);
+		: ResolveEventID(Struct);
 
 	RegisterStruct(Struct, TypeID);
+}
+
+FCrowdyTypeID UEventPayloadRegistry::ResolveEventID(const UScriptStruct* Struct, const TOptional<int32> Override)
+{
+	const bool bUsable = Override.IsSet() && Override.GetValue() >= 1 && Override.GetValue() <= 65535
+		&& !FCrowdyTypeIDGenerator::IsReservedTypeID(static_cast<uint32>(Override.GetValue()));
+	if (bUsable)
+	{
+		return static_cast<FCrowdyTypeID>(Override.GetValue());
+	}
+
+	if (Override.IsSet())
+	{
+		UE_LOG(LogCrowdyNet, Error, TEXT("[EventPayloadRegistry] '%s' is overridden to %d, a number the platform keeps for its own events or one outside 1 to 65535; using the generated id instead."),
+			*GetNameSafe(Struct), Override.GetValue());
+	}
+
+	const FCrowdyTypeID Plain = FCrowdyTypeIDGenerator::GenerateFromStruct(Struct);
+	const FCrowdyTypeID Event = FCrowdyTypeIDGenerator::GenerateEventFromStruct(Struct);
+	if (Plain != Event)
+	{
+		UE_LOG(LogCrowdyNet, Warning, TEXT("[EventPayloadRegistry] '%s' hashes to %d, a number the platform keeps for its own events; it is registered as %d."),
+			*GetNameSafe(Struct), static_cast<int32>(Plain), static_cast<int32>(Event));
+	}
+
+	return Event;
 }

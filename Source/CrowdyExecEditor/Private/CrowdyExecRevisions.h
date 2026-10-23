@@ -42,6 +42,10 @@ namespace CrowdyExecRevisions
 		TArray<FString> Scopes;
 		/** Every number the manifest gives the type, by field, such as its server limits. */
 		TMap<FString, int64> Numbers;
+		/** The spawn seed, base64; empty when the manifest gives none. */
+		FString SeedB64;
+		/** The type it runs under; empty for the root. */
+		FString Parent;
 	};
 
 	enum class EChange : uint8
@@ -76,7 +80,7 @@ namespace CrowdyExecRevisions
 		int32 LiveVersion = 0;
 		/** The index in the type's history of the revision the live version runs, INDEX_NONE when not there. */
 		int32 LiveRevision = INDEX_NONE;
-		/** For Changed, what differs, in plain words: "server code", "kind", "scaling", "save interval", "idle timeout", "platform data", "player access", "server limits"; the root's are "players online" and "server code". */
+		/** For Changed, what differs, in plain words: "server code", "kind", "scaling", "save interval", "idle timeout", "platform data", "player access", "config" (a Game Kit starter's), "parent" (the root it runs under changed, as when the Game Kit's world becomes the root), "server limits"; the root's are "players online" and "server code". */
 		TArray<FString> What;
 		/** Not None when the live type is of the other kind; "kind" is then in What too. */
 		EKindChange KindChange = EKindChange::None;
@@ -112,6 +116,12 @@ namespace CrowdyExecRevisions
 
 	/** The types a manifest runs, the root included. False when it is not a manifest. */
 	bool ParseManifest(const FString& ManifestJson, TArray<FLiveType>& OutTypes);
+
+	/** Every module digest Versions' manifests name: the modules the platform holds for the app, which a manifest may name without building them. */
+	TSet<FString> UploadedDigests(TConstArrayView<CrowdyExecDeveloper::FVersion> Versions);
+
+	/** The newest digest History recorded for exactly Crate's files that is in Uploaded, so the crate need not be built again; empty when there is none. */
+	FString FindUploadedDigest(TConstArrayView<FRevision> History, const CrowdyExecDeveloper::FBuildCrate& Crate, const TSet<FString>& Uploaded);
 
 	/** Each project type against the live version (Live null: nothing live; bLiveKnown false: not compared), then the SDK's root (listed only when a deploy would change it), then each live type the project no longer has. */
 	TArray<FTypeChange> Compare(const CrowdyExecDeploy::FProjectDeploy& Project, TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions,
