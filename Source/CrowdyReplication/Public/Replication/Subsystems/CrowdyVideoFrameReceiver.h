@@ -26,8 +26,8 @@ struct FCrowdyVideoFrame
 	/**
 	 * The key derived from the sender's wire id, which is what the rest of the SDK addresses an actor by.
 	 *
-	 * The derivation reads the 32 octets as hexadecimal, so two senders whose ids differ only outside that
-	 * alphabet derive the same key. Use SenderId to tell two senders apart for certain.
+	 * Two senders whose hexadecimal ids differ only in case derive the same key. Use SenderId to tell two
+	 * senders apart for certain.
 	 */
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Video")
 	FGuid SenderUUID;

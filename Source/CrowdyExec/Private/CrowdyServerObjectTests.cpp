@@ -13,6 +13,7 @@
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLibrary.h"
 #include "CrowdyServerObjectLink.h"
+#include "CrowdyServerObjectShared.h"
 #include "CrowdyServerObjectSubsystem.h"
 #include "CrowdyServerObjectTestRig.h"
 #include "Engine/GameInstance.h"
@@ -4868,6 +4869,37 @@ bool FCrowdyServerObjectFixOnlyOneSignInTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectComponentKeyedByPlayerTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.EmptyInstanceIdOfAPlayerStarterWaitsForSignIn", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectComponentKeyedByPlayerTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	Rig.Definition->CodeSource = ECrowdyServerCodeSource::GameKitStarter;
+	Rig.Definition->bKitKeyedByPlayer = true;
+	TStrongObjectPtr<UCrowdyServerObjectComponent> Component = MakeRigComponent(Rig, ECrowdyServerObjectInstanceMode::InstanceId);
+	TStrongObjectPtr<UCrowdyServerObjectTestListener> Listener = MakeListener();
+	Component->OnStatusChanged.AddDynamic(Listener.Get(), &UCrowdyServerObjectTestListener::HandleStatus);
+	FString Error;
+	TestTrue(TEXT("a starter keyed by player with no Instance Id has none before sign-in"), Component->ResolveInstanceId(Error).IsEmpty());
+	TestTrue(FString::Printf(TEXT("because nobody is signed in (%s)"), *Error), Error.StartsWith(TEXT("Nobody is signed in yet")));
+	FCrowdyServerObjectComponentTestAccess::Join(*Component);
+	TestNull(TEXT("so it holds nothing yet"), Component->GetServerObject());
+	TestTrue(FString::Printf(TEXT("and waits for the sign-in rather than failing (got %s)"), *StatusNames(Listener->StatusEvents)), Listener->StatusEvents.IsEmpty());
+	TestEqualSensitive(TEXT("saying so"), Component->GetFailureReason(), FString(CrowdyServerObjectShared::WaitingForSignIn));
+
+	Component->InstanceId = TEXT("42");
+	TestEqualSensitive(TEXT("a typed Instance Id is still that player's"), Component->ResolveInstanceId(Error), FString(TEXT("42")));
+	Component->InstanceId.Reset();
+	Rig.Definition->bKitKeyedByPlayer = false;
+	TestTrue(TEXT("a starter not keyed by player still needs an Instance Id"), Component->ResolveInstanceId(Error).IsEmpty() && Error.StartsWith(TEXT("Set an Instance Id")));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectFixOnlyOneAcquireTest,
 	"CrowdySDK.CrowdyExec.ServerObjectFixes.OnlyOneInstanceAcquireUsesTheOnlyInstance", CrowdyServerObjectTests::TestFlags)
 bool FCrowdyServerObjectFixOnlyOneAcquireTest::RunTest(const FString& Parameters)
@@ -5011,6 +5043,15 @@ bool FCrowdyServerObjectRootNotDeployedTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("naming the type as not deployed (%s)"), *Object->GetFailureReason()), Object->GetFailureReason().Contains(TEXT("is not deployed on the server")));
 	Rig.Tick(2.f);
 	TestTrue(TEXT("and reads again within seconds"), Rig.SentAny(KindCall, TEXT("read")));
+
+	FCrowdyNativeExecReply AbsentType;
+	AbsentType.Status = ECrowdyNativeExecStatus::Denied;
+	AbsentType.Message = TEXT("clients may not subscribe to that type");
+	TestEqualSensitive(TEXT("a watch refused because the active version lacks the type names it as not deployed"), Object->WaitingReasonForTest(AbsentType, false),
+		FString::Printf(TEXT("%s is not deployed on the server"), *Rig.Definition->TypeName));
+	FCrowdyNativeExecReply OtherDenial = AbsentType;
+	OtherDenial.Message = TEXT("clients may not subscribe to that topic");
+	TestTrue(TEXT("another denial still says the server refused"), Object->WaitingReasonForTest(OtherDenial, false).StartsWith(TEXT("The server refused to let this player watch"), ESearchCase::CaseSensitive));
 	return true;
 }
 

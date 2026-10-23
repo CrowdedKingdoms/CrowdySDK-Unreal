@@ -191,9 +191,8 @@ bool FCrowdyVideoReceiverAnnouncesAssembledFramesTest::RunTest(const FString& Pa
 	return true;
 }
 
-// An actor id is 32 opaque octets and hexadecimal only by convention, while the key derived from it reads
-// them as hexadecimal and folds every component holding anything else onto one value. So two senders can
-// share a key, and a departure names only the key. The assembler is keyed by the octets, which is what the
+// An actor id is 32 opaque octets, while the key derived from a hexadecimal one reads its digits in either
+// case. So two senders can share a key, and a departure names only the key. The assembler is keyed by the octets, which is what the
 // two must not be confused over: forgetting whichever sender was seen most recently would destroy a frame
 // that was still arriving and leave the departed sender's counter behind for the life of the world.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVideoReceiverForgetsEverySenderAKeyNamesTest,
@@ -208,9 +207,9 @@ bool FCrowdyVideoReceiverForgetsEverySenderAKeyNamesTest::RunTest(const FString&
 		return false;
 	}
 
-	// Neither octet is a hexadecimal digit, so every eight-octet component of both derives the same value.
-	const FCrowdyActorId First = CrowdyActorTestSender('z');
-	const FCrowdyActorId Second = CrowdyActorTestSender('y');
+	// The same hexadecimal digit in upper and lower case: different octets, one value.
+	const FCrowdyActorId First = CrowdyActorTestSender('B');
+	const FCrowdyActorId Second = CrowdyActorTestSender('b');
 	const FCrowdyActorId Unrelated = CrowdyActorTestSender('a');
 
 	const FGuid SharedGuid = USerializationFunctionLibrary::ToGuid(First);

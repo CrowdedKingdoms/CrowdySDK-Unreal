@@ -2,6 +2,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "CrowdyExecBuildAndDeploy.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyExecRevisions.h"
 #include "CrowdyServerObjectDefinition.h"
@@ -797,6 +798,73 @@ bool FCrowdyExecRevisionsRecordDeployTest::RunTest(const FString& Parameters)
 	TestEqualSensitive(TEXT("a history that cannot be read is left as it was"), BrokenText, FString(TEXT("broken")));
 	TestTrue(TEXT("the other types are still recorded"), CrowdyExecRevisions::LoadHistory(FPaths::Combine(Folder.Path, TEXT("t_a")), History, Error)
 		&& History.Num() == 1 && History[0].Versions.Num() == 2 && History[0].Versions[0] == 8);
+	return true;
+}
+
+// The digests the app holds are every one its versions name; a crate reuses the newest of them recorded for exactly its files.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsUploadedDigestsTest, "CrowdySDK.CrowdyExecEditor.RevisionsReuseAnUploadedDigest", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsUploadedDigestsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	CrowdyExecDeveloper::FVersion Older;
+	Older.ManifestJson = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"d_root\"},\"t_a\":{\"kind\":\"hub\",\"digest\":\"d_a_old\"}}}");
+	CrowdyExecDeveloper::FVersion Newer;
+	Newer.ManifestJson = SampleManifest;
+	CrowdyExecDeveloper::FVersion Unreadable;
+	Unreadable.ManifestJson = TEXT("not a manifest");
+	const TSet<FString> Uploaded = CrowdyExecRevisions::UploadedDigests({Older, Newer, Unreadable});
+	TestTrue(TEXT("an older version's digests are held"), Uploaded.Contains(TEXT("d_a_old")) && Uploaded.Contains(TEXT("d_root")));
+	TestTrue(TEXT("and the newer one's"), Uploaded.Contains(TEXT("49818bf390cf07d7cebb4b896da90eb8b736a2652ff21d1df75fefa6ea5a18ff")));
+	TestEqual(TEXT("every digest once"), Uploaded.Num(), 5);
+
+	const FBuildCrate Crate = MakeCrate(TEXT("t_a"), TEXT("fn a() {}\n"));
+	FRevision Same = MakeRevision(Crate, TEXT("d_a_new"), 3);
+	Same.Digests.Add(TEXT("d_a_old"));
+	const FRevision Other = MakeRevision(MakeCrate(TEXT("t_a"), TEXT("fn other() {}\n")), TEXT("d_root"), 2);
+	TestEqual(TEXT("the newest recorded digest the app holds is reused"), CrowdyExecRevisions::FindUploadedDigest({Other, Same}, Crate, Uploaded), FString(TEXT("d_a_old")));
+	TSet<FString> Both = Uploaded;
+	Both.Add(TEXT("d_a_new"));
+	TestEqual(TEXT("the newest wins when the app holds both"), CrowdyExecRevisions::FindUploadedDigest({Same}, Crate, Both), FString(TEXT("d_a_new")));
+	TestTrue(TEXT("another revision's digest is never reused"), CrowdyExecRevisions::FindUploadedDigest({Other}, Crate, Uploaded).IsEmpty());
+	const FBuildCrate Edited = MakeCrate(TEXT("t_a"), TEXT("fn a() { edited }\n"));
+	TestTrue(TEXT("an edited crate is built"), CrowdyExecRevisions::FindUploadedDigest({Same}, Edited, Uploaded).IsEmpty());
+	TestTrue(TEXT("a digest the app does not hold is not named"), CrowdyExecRevisions::FindUploadedDigest({MakeRevision(Crate, TEXT("d_elsewhere"), 1)}, Crate, Uploaded).IsEmpty());
+	FBuildCrate CrlfOnly = Crate;
+	CrlfOnly.Files[1].Content = TEXT("fn a() {}\r\n");
+	TestEqual(TEXT("line endings do not make a crate edited"), CrowdyExecRevisions::FindUploadedDigest({Same}, CrlfOnly, Uploaded), FString(TEXT("d_a_old")));
+	return true;
+}
+
+// A plan reuses what the app holds for unchanged crates and builds only the rest, split as the platform takes them.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsPlanTest, "CrowdySDK.CrowdyExecEditor.DeployPlanBuildsOnlyChangedCrates", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsPlanTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	TArray<FBuildCrate> Crates;
+	TMap<FString, TArray<FRevision>> Histories;
+	TSet<FString> Uploaded;
+	for (int32 Index = 0; Index < 18; ++Index)
+	{
+		const FString Name = FString::Printf(TEXT("t_%02d"), Index);
+		const FBuildCrate& Crate = Crates.Add_GetRef(MakeCrate(*Name, *FString::Printf(TEXT("fn f%d() {}\n"), Index)));
+		if (Index < 15)
+		{
+			const FString Digest = TEXT("d_") + Name;
+			Histories.Add(Name, TArray<FRevision>{MakeRevision(Crate, *Digest, 1)});
+			Uploaded.Add(Digest);
+		}
+	}
+	auto HistoryFor = [&Histories](const FString& Name) { return Histories.FindRef(Name); };
+	const CrowdyExecBuildAndDeploy::FPlan Plan = CrowdyExecBuildAndDeploy::MakePlan(Crates, Uploaded, HistoryFor);
+	TestEqual(TEXT("the unchanged crates are reused"), Plan.Reused.Num(), 15);
+	TestEqual(TEXT("by their digest"), Plan.Reused.FindRef(TEXT("t_03")), FString(TEXT("d_t_03")));
+	TestTrue(TEXT("the rest are one build"), Plan.Builds.Num() == 1 && Plan.Builds[0].Num() == 3 && Plan.Builds[0][0].Name == TEXT("t_15"));
+
+	const CrowdyExecBuildAndDeploy::FPlan Fresh = CrowdyExecBuildAndDeploy::MakePlan(Crates, TSet<FString>(), HistoryFor);
+	TestTrue(TEXT("with nothing held everything is built"), Fresh.Reused.IsEmpty());
+	TestTrue(TEXT("in builds of 16 at most"), Fresh.Builds.Num() == 2 && Fresh.Builds[0].Num() == 16 && Fresh.Builds[1].Num() == 2);
+	const CrowdyExecBuildAndDeploy::FPlan Small = CrowdyExecBuildAndDeploy::MakePlan(Crates, TSet<FString>(), HistoryFor, 8);
+	TestEqual(TEXT("or the build size asked for"), Small.Builds.Num(), 3);
 	return true;
 }
 

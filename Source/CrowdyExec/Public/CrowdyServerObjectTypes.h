@@ -45,7 +45,9 @@ enum class ECrowdyServerCallOutcome : uint8
 	/** The game's server or this type is switched off or paused; try again later. */
 	Paused UMETA(DisplayName = "Paused"),
 	/** The player's access to the game ended (suspended, revoked, expired, signed out or blocked); nothing works until they have access again. */
-	AccessEnded UMETA(DisplayName = "Access Ended")
+	AccessEnded UMETA(DisplayName = "Access Ended"),
+	/** A Game Kit starter said no for a reason of the game's, such as a full match or another player's turn; Code says which. */
+	Refused
 };
 
 /** Which instance of a Server Object type to find, when it is found by its definition. */
@@ -79,6 +81,10 @@ struct CROWDYEXEC_API FCrowdyServerCallResult
 	/** Calling again later may succeed. */
 	UPROPERTY(BlueprintReadOnly, Category = "Server Object")
 	bool bRetryable = false;
+
+	/** A Game Kit starter's refusal code, such as full or not_your_turn; None otherwise. */
+	UPROPERTY(BlueprintReadOnly, Category = "Server Object")
+	FName Code;
 
 	bool IsSuccess() const { return Outcome == ECrowdyServerCallOutcome::Success; }
 };

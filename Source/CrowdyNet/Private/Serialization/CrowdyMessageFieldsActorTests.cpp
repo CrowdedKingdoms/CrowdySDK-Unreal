@@ -220,6 +220,161 @@ bool FCrowdyMessageFieldsActorNotificationZeroStateSizeTest::RunTest(const FStri
 	return true;
 }
 
+namespace
+{
+	void AppendKitText(TArray<uint8>& Out, const ANSICHAR* Text)
+	{
+		const int32 Length = FCStringAnsi::Strlen(Text);
+		check(Length < 256);
+		if (Length < 32)
+		{
+			Out.Add(static_cast<uint8>(0xA0 | Length));
+		}
+		else
+		{
+			Out.Add(0xD9);
+			Out.Add(static_cast<uint8>(Length));
+		}
+		Out.Append(reinterpret_cast<const uint8*>(Text), Length);
+	}
+
+	void AppendKitDouble(TArray<uint8>& Out, const double Value)
+	{
+		uint64 Bits = 0;
+		FMemory::Memcpy(&Bits, &Value, sizeof(Bits));
+		Out.Add(0xCB);
+		for (int32 Shift = 56; Shift >= 0; Shift -= 8)
+		{
+			Out.Add(static_cast<uint8>(Bits >> Shift));
+		}
+	}
+
+	// A Game Kit hub's mob as its realtime state carries it, written by hand as MessagePack: a map of kind, id, x, z, hp, max_hp
+	// and mode, with no y, yaw, owner or name. A null Kind leaves out the kind, which makes it no kit actor at all.
+	TArray<uint8> KitMobState(const ANSICHAR* Kind = "mob", const double X = 1.5)
+	{
+		TArray<uint8> Out;
+		Out.Add(static_cast<uint8>(0x80 | (Kind ? 7 : 6)));
+		if (Kind)
+		{
+			AppendKitText(Out, "kind");
+			AppendKitText(Out, Kind);
+		}
+		AppendKitText(Out, "id");
+		Out.Add(0x03);
+		AppendKitText(Out, "x");
+		AppendKitDouble(Out, X);
+		AppendKitText(Out, "z");
+		AppendKitDouble(Out, -2.0);
+		AppendKitText(Out, "hp");
+		Out.Add(0x28);
+		AppendKitText(Out, "max_hp");
+		Out.Add(0x64);
+		AppendKitText(Out, "mode");
+		AppendKitText(Out, "chase");
+		return Out;
+	}
+
+	// A kit actor's id is its hub's text padded out, not hexadecimal.
+	const FString KitMobUuid = TEXT("M10,-4@3________________________");
+}
+
+// A Game Kit hub's server-driven actor sends its state bare, as MessagePack with no length in front, so the SDK's framing does not
+// fit it and the decoder reads it as a kit actor instead of refusing the frame.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMessageFieldsActorNotificationKitActorTest,
+	"CrowdySDK.Wire.FieldsFActorUpdateNotificationMessage.KitActor", CrowdyMessageFieldsActorTestFlags)
+bool FCrowdyMessageFieldsActorNotificationKitActorTest::RunTest(const FString& Parameters)
+{
+	// A name already, as a starter's Kit Actors makes it.
+	const FName Mob(TEXT("mob"));
+	const TArray<uint8> State = KitMobState();
+	TArray<uint8> Data = BuildActorFieldsMetadata(7, 1, 0, -2, 2, 0, 0, KitMobUuid);
+	Data.Append(State);
+	AppendActorFieldsTail(Data, 5000LL, 9);
+
+	FActorUpdateNotificationMessage Message;
+	if (!TestTrue(TEXT("accepts a kit actor's bare state"), CrowdyWireParity::DecodeStrippedPayload(Message, Data)))
+	{
+		return false;
+	}
+	const FCrowdyKitActorState* Kit = Message.State.GetPtr<FCrowdyKitActorState>();
+	if (!TestNotNull(TEXT("and decodes it as a kit actor"), Kit))
+	{
+		return false;
+	}
+	TestEqual(TEXT("its kind"), Kit->Kind, Mob);
+	TestEqual(TEXT("its id in the hub"), Kit->Id, static_cast<int64>(3));
+	TestEqual(TEXT("where it is, chunks turned into units"), Kit->Location, FVector(1.5, 0.0, -2.0) * FCrowdyKitActorState::ChunkWorldSize);
+	TestTrue(TEXT("its health"), Kit->bHasHp && Kit->Hp == 40 && Kit->MaxHp == 100);
+	TestEqual(TEXT("its mode"), Kit->Mode, FString(TEXT("chase")));
+	TestTrue(TEXT("no owner, name or yaw it did not give"), Kit->Owner == 0 && Kit->Name.IsEmpty() && Kit->Rotation.IsZero());
+	TestTrue(TEXT("the whole body is its state"), ActorFieldsBytesEqual(Message.StateView, State));
+	TestEqual(TEXT("it names no SDK type"), static_cast<int32>(Message.PayloadTypeID), static_cast<int32>(CROWDY_INVALID_TYPE_ID));
+	TestEqual(TEXT("its key is its id's"), Message.GUID, USerializationFunctionLibrary::ToGuid(KitMobUuid));
+	TestEqual(TEXT("its hub's Instance Id is its id's"), Kit->InstanceId, FString(TEXT("10,-4")));
+
+	const auto Frame = [](const TArray<uint8>& Body)
+	{
+		TArray<uint8> Out = BuildActorFieldsMetadata(7, 1, 0, -2, 2, 0, 0, KitMobUuid);
+		Out.Append(Body);
+		AppendActorFieldsTail(Out, 5000LL, 9);
+		return Out;
+	};
+	FActorUpdateNotificationMessage Refused;
+	TestFalse(TEXT("a map with no kind is no kit actor, and the frame is refused as before"), CrowdyWireParity::DecodeStrippedPayload(Refused, Frame(KitMobState(nullptr))));
+	TestFalse(TEXT("nor is one with a kind longer than any starter names"),
+		CrowdyWireParity::DecodeStrippedPayload(Refused, Frame(KitMobState("kind_padded_out_well_past_the_sixty_four_bytes_a_kind_may_take_up"))));
+	TestFalse(TEXT("nor one with a place that is not a number"), CrowdyWireParity::DecodeStrippedPayload(Refused, Frame(KitMobState("mob", std::numeric_limits<double>::quiet_NaN()))));
+	TestFalse(TEXT("nor one past the edge of any world"), CrowdyWireParity::DecodeStrippedPayload(Refused, Frame(KitMobState("mob", 1.0e300))));
+
+	// Its first four bytes read as a negative length rather than one too long.
+	TArray<uint8> XFirst;
+	XFirst.Add(0x84);
+	AppendKitText(XFirst, "x");
+	AppendKitDouble(XFirst, 1.5);
+	AppendKitText(XFirst, "kind");
+	AppendKitText(XFirst, "mob");
+	AppendKitText(XFirst, "id");
+	XFirst.Add(0x03);
+	AppendKitText(XFirst, "z");
+	AppendKitDouble(XFirst, -2.0);
+	FActorUpdateNotificationMessage Reordered;
+	TestTrue(TEXT("a state with another key first is a kit actor too"), CrowdyWireParity::DecodeStrippedPayload(Reordered, Frame(XFirst))
+		&& Reordered.State.GetPtr<FCrowdyKitActorState>() != nullptr);
+
+	FActorUpdateNotificationMessage Unnamed;
+	if (TestTrue(TEXT("a kind no starter names still decodes"),
+		CrowdyWireParity::DecodeStrippedPayload(Unnamed, Frame(KitMobState("kind_no_starter_has_named_3f1c")))))
+	{
+		TestTrue(TEXT("but adds no name, as None"), Unnamed.State.GetPtr<FCrowdyKitActorState>()->Kind.IsNone()
+			&& FName(TEXT("kind_no_starter_has_named_3f1c"), FNAME_Find).IsNone());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMessageFieldsActorNotificationKitInstanceIdTest,
+	"CrowdySDK.Wire.FieldsFActorUpdateNotificationMessage.KitActorInstanceId", CrowdyMessageFieldsActorTestFlags)
+bool FCrowdyMessageFieldsActorNotificationKitInstanceIdTest::RunTest(const FString& Parameters)
+{
+	const auto Read = [](const ANSICHAR* Text)
+	{
+		uint8 Octets[FCrowdyActorId::NumOctets] = {};
+		FMemory::Memcpy(Octets, Text, FMath::Min<int32>(FCStringAnsi::Strlen(Text), FCrowdyActorId::NumOctets));
+		return FCrowdyKitActorState::ReadInstanceId(MakeArrayView(Octets, FCrowdyActorId::NumOctets));
+	};
+	TestEqual(TEXT("a zero-padded npcs id names its area"), Read("P-2,13@41"), FString(TEXT("-2,13")));
+	TestEqual(TEXT("the first @ ends it"), Read("N0,0@7@9"), FString(TEXT("0,0")));
+	TestEqual(TEXT("a ball's id names its match"), Read("Bball-bp-x@1"), FString(TEXT("ball-bp-x")));
+	TestEqual(TEXT("an id filling all 32 octets"), Read("M-4294967296,-4294967296@9999999"), FString(TEXT("-4294967296,-4294967296")));
+	TestEqual(TEXT("an earlier npcs id, which named its centre chunk, names no hub rather than the wrong one"), Read("M42,-14:3"), FString());
+	TestEqual(TEXT("a lower-case start names no hub"), Read("ball@abc"), FString());
+	TestEqual(TEXT("nor an empty Instance Id"), Read("M@3"), FString());
+	TestEqual(TEXT("nor an id with no @"), Read("M2,-1"), FString());
+	TestEqual(TEXT("nor one with a space before the @"), Read("M2, 1@3"), FString());
+	TestEqual(TEXT("nor a hexadecimal player id"), Read("0123456789abcdef0123456789abcdef"), FString());
+	return true;
+}
+
 // FActorUpdateRequestMessage::DecodePayload has no accept path at all today: it logs a warning and
 // unconditionally returns false, regardless of what Data holds. That makes it the one type in this file
 // without a positive-acceptance vector; both vectors below pin the reject-everything behavior instead,

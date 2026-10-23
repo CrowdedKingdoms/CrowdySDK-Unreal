@@ -23,6 +23,7 @@ const FName CrowdyServerCallPins::OnFailed(TEXT("On Failed"));
 const FName CrowdyServerCallPins::Outcome(TEXT("Call Outcome"));
 const FName CrowdyServerCallPins::Reason(TEXT("Call Reason"));
 const FName CrowdyServerCallPins::Retryable(TEXT("Call Retryable"));
+const FName CrowdyServerCallPins::Code(TEXT("Call Code"));
 const FName CrowdyServerCallPins::Timeout(TEXT("Call Timeout"));
 
 FText UCrowdyK2Node_CallServerFunction::MakeTitle(FName Function, const FText& Asset)
@@ -135,6 +136,8 @@ void UCrowdyK2Node_CallServerFunction::AllocateDefaultPins()
 	Reason->PinFriendlyName = LOCTEXT("ReasonPin", "Reason");
 	UEdGraphPin* Retryable = CreateAdvancedOutput(UEdGraphSchema_K2::PC_Boolean, nullptr, CrowdyServerCallPins::Retryable, LOCTEXT("RetryableTooltip", "Whether calling again may succeed."));
 	Retryable->PinFriendlyName = LOCTEXT("RetryablePin", "Retryable");
+	UEdGraphPin* Code = CreateAdvancedOutput(UEdGraphSchema_K2::PC_Name, nullptr, CrowdyServerCallPins::Code, LOCTEXT("CodeTooltip", "A Game Kit starter's refusal code, such as full or not_your_turn; None otherwise."));
+	Code->PinFriendlyName = LOCTEXT("CodePin", "Code");
 	PrefillInputDefaults(Inputs);
 	Super::AllocateDefaultPins();
 }
@@ -375,9 +378,10 @@ void UCrowdyK2Node_CallServerFunction::ExpandNode(FKismetCompilerContext& Compil
 	UEdGraphPin* CallOutcome = Call->FindPin(TEXT("Outcome"));
 	UEdGraphPin* CallReason = Call->FindPin(TEXT("Reason"));
 	UEdGraphPin* CallRetryable = Call->FindPin(TEXT("bRetryable"));
+	UEdGraphPin* CallCode = Call->FindPin(TEXT("Code"), EGPD_Output);
 	UEdGraphPin* CallTimeout = Call->FindPin(TEXT("Timeout"), EGPD_Input);
 	if (!HeldTarget || !HeldDefinition || !Held->GetReturnValuePin() || !CallObject || !CallFunction || !CallInputs || !CallInputError || !CallOutputs || !CallSuccess
-		|| !CallFailed || !CallOutcome || !CallReason || !CallRetryable || !CallTimeout)
+		|| !CallFailed || !CallOutcome || !CallReason || !CallRetryable || !CallCode || !CallTimeout)
 	{
 		CompilerContext.MessageLog.Error(*LOCTEXT("CallChanged", "@@ could not be expanded: Call Server Function has changed its parameters.").ToString(), this);
 		BreakAllNodeLinks();
@@ -435,6 +439,7 @@ void UCrowdyK2Node_CallServerFunction::ExpandNode(FKismetCompilerContext& Compil
 	CompilerContext.MovePinLinksToIntermediate(*FindPinChecked(CrowdyServerCallPins::Outcome), *CallOutcome);
 	CompilerContext.MovePinLinksToIntermediate(*FindPinChecked(CrowdyServerCallPins::Reason), *CallReason);
 	CompilerContext.MovePinLinksToIntermediate(*FindPinChecked(CrowdyServerCallPins::Retryable), *CallRetryable);
+	CompilerContext.MovePinLinksToIntermediate(*FindPinChecked(CrowdyServerCallPins::Code), *CallCode);
 	if (UEdGraphPin* SuccessThen = ExpandOutputs(CompilerContext, SourceGraph, Outputs, CallSuccess, CallOutputs))
 	{
 		CompilerContext.MovePinLinksToIntermediate(*FindPinChecked(CrowdyServerCallPins::OnSuccess), *SuccessThen);

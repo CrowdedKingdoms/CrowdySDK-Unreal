@@ -10,6 +10,7 @@
 #include "CrowdyServerObjectSubsystem.generated.h"
 
 class FCrowdyNativeExecConnection;
+class FCrowdyNativeKit;
 class UCrowdyCppClientSubsystem;
 class UCrowdyGameSession;
 class UCrowdyServerObject;
@@ -54,6 +55,9 @@ public:
 
 	/** The open connection, or null while there is none. */
 	FCrowdyNativeExecConnection* GetConnection() const;
+
+	/** The Game Kit on the open connection, made on first use and closed with the connection; null while there is none. */
+	FCrowdyNativeKit* GetKit();
 
 	/** The platform answers this many pings per connection in PingWindowSeconds and drops the rest without a word. */
 	static constexpr int32 MaxPingsPerWindow = 60;
@@ -112,6 +116,7 @@ public:
 	void DropConnectionForTest() { CloseConnection(TEXT(" (dropped for a test)")); ScheduleReconnect(); }
 	bool IsSeamlessTravellingForTest() const { return IsSeamlessTravelling(); }
 	int32 NumObjectsForTest() const { return Objects.Num(); }
+	int32 NumKitsMadeForTest() const { return KitsMade; }
 	int32 NumLinksForTest() const { return Links.Num(); }
 	/** The call and open timeouts, in milliseconds, the last dial asked for. */
 	TPair<int32, int32> GetDialTimeoutsForTest() const { return DialTimeoutsForTest; }
@@ -164,6 +169,10 @@ private:
 	UPROPERTY()
 	TMap<FCrowdyServerObjectLinkKey, TObjectPtr<UCrowdyServerObjectLink>> Links;
 
+	/** The classes the project's starters draw their actors as, held so they stay loaded across map loads. */
+	UPROPERTY()
+	TArray<TObjectPtr<UClass>> KitActorClasses;
+
 	/** Which holder each handler function is bound through, so binding it elsewhere moves it. */
 	TMap<TPair<TWeakObjectPtr<const UObject>, FName>, TWeakObjectPtr<UObject>> BindingHolders;
 
@@ -171,6 +180,11 @@ private:
 	void TickLinks(float DeltaSeconds, float GraceStep);
 
 	TSharedPtr<FCrowdyNativeExecConnection> Connection;
+	TSharedPtr<FCrowdyNativeKit> Kit;
+	/** How many kits this subsystem has started, so a new one can be told from the old. */
+	int32 KitsMade = 0;
+	/** Making the kit failed on this connection; the next connection tries again. */
+	bool bKitFailed = false;
 	bool bConnected = false;
 	bool bConnecting = false;
 	/** The next dial follows the close of an open connection, so its result is traced as a redial; idle, sign-out and shutdown clear it. */
@@ -237,4 +251,9 @@ private:
 	/** Compared by address only, never dereferenced. */
 	const class FCrowdyCppClient* DialedClient = nullptr;
 	int64 DialedAppId = 0;
+	/** The player signed in when the connection was dialed, whose token it carries. */
+	int64 DialedUserId = 0;
+
+	/** A sign-in as another player than the connection was dialed for: closes it to dial again with their token, and drops the last player's Owner Values. */
+	void HandleSignedInPlayerChanged();
 };

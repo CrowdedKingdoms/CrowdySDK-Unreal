@@ -132,5 +132,7 @@ public:
 	static const FString& CanceledMessage();
 
 private:
+	friend struct FCrowdyNativeExecAccess;
+
 	TSharedRef<FImpl> Impl;
 };

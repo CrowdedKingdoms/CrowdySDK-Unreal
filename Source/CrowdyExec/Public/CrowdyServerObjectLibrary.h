@@ -13,7 +13,7 @@ class UCrowdyServerObjectDefinition;
 class UCrowdyServerObjectLink;
 class UCrowdyServerObjectSubsystem;
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FCrowdyServerCallDone, const FInstancedStruct&, Outputs, ECrowdyServerCallOutcome, Outcome, const FString&, Reason, bool, bRetryable);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FiveParams(FCrowdyServerCallDone, const FInstancedStruct&, Outputs, ECrowdyServerCallOutcome, Outcome, const FString&, Reason, bool, bRetryable, FName, Code);
 
 /** Blueprint access to Server Objects: get one, and read or set its values by name. */
 UCLASS()
@@ -34,11 +34,15 @@ public:
 	static void ReleaseServerObject(UCrowdyServerObject* Object, UObject* Owner);
 
 	/**
-	 * How many players are in the app's world, held by the root Server Object the Crowdy SDK deploys with a project's types.
+	 * How many players are in the app's world, held by the app's root: the Game Kit's world when the Game Kit World setting
+	 * names one, else the root Server Object the Crowdy SDK deploys with a project's types.
 	 * Owner follows it from the first call until Owner is destroyed. False, with 0, until the count first arrives.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", meta = (DefaultToSelf = "Owner"))
 	static bool GetPlayersOnline(UObject* Owner, int32& PlayersOnline);
+
+	/** The definition the Game Kit World setting names, loaded on first use; null when the setting is empty or names no Game Kit starter. */
+	static UCrowdyServerObjectDefinition* GetGameKitWorldDefinition();
 
 	/** The root Server Object's definition, CSO_PlayersOnline in the Crowdy SDK's content: Players Online is its one variable. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
@@ -142,7 +146,7 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects")
 	FCrowdyServerCallDone OnSuccess;
 
-	/** Reason says what went wrong; Retryable means calling again later may succeed. */
+	/** Reason says what went wrong; Retryable means calling again later may succeed; Code is a Game Kit starter's refusal code. */
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects")
 	FCrowdyServerCallDone OnFailed;
 

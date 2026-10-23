@@ -167,7 +167,9 @@ enum class ECrowdyServerCodeSource : uint8
 	/** Server/<Type Name>/src/logic.rs, which Generate Server Code writes once and never replaces. */
 	Generated,
 	/** A .rs file of your own, sent as the type's logic.rs. Generate Server Code writes no logic.rs for it. */
-	OwnFile UMETA(DisplayName = "My Own File")
+	OwnFile UMETA(DisplayName = "My Own File"),
+	/** One of the platform's Game Kit starters: its Rust is the starter's own, and players reach it over the Game Kit's protocol. */
+	GameKitStarter UMETA(DisplayName = "Game Kit Starter")
 };
 
 /** A function on a Server Object that players, or other server code, can call (a hub method on the platform). */
@@ -223,6 +225,10 @@ struct CROWDYEXEC_API FCrowdyServerFunction
 	/** How long one player waits between calls that succeeded; 0 for no wait. Checked on the server. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Function", meta = (DisplayName = "Cooldown", ClampMin = 0, Units = "s"))
 	float CooldownSeconds = 0.f;
+
+	/** Game Kit starters only: sends an action id with each call, so the server runs it once however often it is sent again. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Function", meta = (DisplayName = "Send Once"))
+	bool bSendOnce = false;
 
 	/** The method name as of the last bake, spelled as in the editor, which a packaged game cannot read back from Name. */
 	UPROPERTY()
@@ -297,6 +303,25 @@ struct CROWDYEXEC_API FCrowdyServerMessage
 
 	/** The name PayloadList goes by in server code, such as BossDefeatedMessage; empty when the message carries a struct. */
 	FString GetPayloadListName() const;
+};
+
+/** A Game Kit starter's value only the signed-in player reads, such as a player's wallet: answered by its own call, and read again when the starter says it changed for that player. */
+USTRUCT(BlueprintType)
+struct CROWDYEXEC_API FCrowdyKitOwnerValue
+{
+	GENERATED_BODY()
+
+	/** The call that answers it, with no inputs, such as wallet. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit")
+	FString Method;
+
+	/** What the starter's changed messages call it, such as wallet. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit")
+	FString What;
+
+	/** The State's variable it fills, such as Wallet. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit")
+	FName Variable;
 };
 
 /** Keeps a field's name on the server when the field is renamed in Unreal. */
@@ -384,6 +409,10 @@ struct CROWDYEXEC_API FCrowdyExecBakedField
 
 	UPROPERTY(VisibleAnywhere, Category = "Baked")
 	ECrowdyServerFieldAudience Audience = ECrowdyServerFieldAudience::Everyone;
+
+	/** A Game Kit starter's bool that records whether this field arrived with a value (bHas<Field>); it is no field of its own, so it has no entry. */
+	UPROPERTY(VisibleAnywhere, Category = "Baked")
+	FName PresenceProperty;
 };
 
 USTRUCT()
@@ -457,7 +486,7 @@ public:
 	/** The platform's root type, every app's parent of the others; its one instance's Instance Id is empty. */
 	static const TCHAR* const RootTypeName;
 
-	/** The Instance Id a type that HasOnlyOneInstance is reached by: empty for the root and a Server Function Library, else Only Instance Id. */
+	/** The Instance Id a type that HasOnlyOneInstance is reached by: empty for the root, a Server Function Library and a Game Kit starter, else Only Instance Id. */
 	FString GetOnlyInstanceId() const;
 
 	/** Its server code may read players: their names, tier features, group membership and app state; deploying asks the platform for players.read. Crowdy Team members or records and a Required Feature ask for it too. */
@@ -671,10 +700,70 @@ public:
 	/** What this type is for, shown beside it in Server Compute. */
 	UPROPERTY(EditAnywhere, Category = "Server Object", meta = (MultiLine = true))
 	FString Description;
+#endif
 
+	/** Kept in a packaged game too, which reaches a Game Kit starter over the Game Kit's protocol. */
 	UPROPERTY(EditAnywhere, Category = "Server Code")
 	ECrowdyServerCodeSource CodeSource = ECrowdyServerCodeSource::Generated;
 
+	bool IsGameKitStarter() const { return CodeSource == ECrowdyServerCodeSource::GameKitStarter; }
+
+	/** The topic whose snapshots are a Game Kit starter's variables, such as world or queue. Empty when players watch none. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit", meta = (DisplayName = "State Topic"))
+	FString KitStateTopic;
+
+	/** The topic whose members are a Game Kit starter's records, such as nodes for world: Find Record and On Records Changed read them by member id. Empty when it has none. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit", meta = (DisplayName = "Collection Topic"))
+	FString KitCollectionTopic;
+
+	/** One member of the collection, the values Find Record gives; a field whose server name is id takes the member's id. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit", meta = (DisplayName = "Record Struct"))
+	TObjectPtr<UScriptStruct> KitRecord;
+
+	/** Whether this is a Game Kit starter whose Collection Topic's members are its records. */
+	bool HasKitCollection() const { return IsGameKitStarter() && !KitCollectionTopic.IsEmpty() && KitRecord; }
+
+	/** Values only the signed-in player reads, each filling a variable of the State the State Topic does not carry: a player's inventory, wallet and progress, a market's orders and trades. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit", meta = (DisplayName = "Owner Values"))
+	TArray<FCrowdyKitOwnerValue> KitOwnerValues;
+
+	/** The Instance Id is a player's user id, as for the player starter: an empty one means the signed-in player, and Owner Values are read only on that player's own. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit", meta = (DisplayName = "Keyed By Player"))
+	bool bKitKeyedByPlayer = false;
+
+	/** Whether this is a Game Kit starter whose Instance Id is a player's user id. */
+	bool IsKeyedByPlayer() const { return IsGameKitStarter() && bKitKeyedByPlayer; }
+
+	/** The function that reports where the player is, such as Move for the arena: its inputs' X and Y take the owner's location in metres (Unreal units over 100). A Crowdy Server Object component sends it while the Server Object is Ready. None for a starter that does not track players. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Kit", meta = (DisplayName = "Position Function"))
+	FName KitPositionFunction;
+
+	/** How many times a second a component reports, from 1 to 10. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Kit", meta = (DisplayName = "Position Reports Per Second", ClampMin = 1, ClampMax = 10))
+	float KitPositionRate = 5.f;
+
+	/** Whether this is a Game Kit starter that tracks where its players are. */
+	bool ReportsPosition() const { return IsGameKitStarter() && !KitPositionFunction.IsNone(); }
+
+	/** The actors this starter shows the players near it, by kind (mob, npc, pet, ball), and the class each is drawn as; each gets a Crowdy Kit Actor component. While it has a kind, the definition is listed in the Game Kit Actor Starters project setting. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Kit", meta = (DisplayName = "Kit Actors"))
+	TMap<FName, TSoftClassPtr<AActor>> KitActors;
+
+#if WITH_EDITORONLY_DATA
+	/** The Game Kit type this one runs under, such as world for a matchmaker; under the app's root when the project has no type of that name. Empty makes this starter the app's root, as world is. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit", meta = (DisplayName = "Parent"))
+	FString KitParent;
+
+	/** The types this starter's server code calls, such as session for a matchmaker; Deploy names those the project has. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit", meta = (DisplayName = "Calls"))
+	TArray<FString> KitCalls;
+
+	/** The starter's JSON config, its spawn seed, such as {"day_ms": 600000} for world or {"board": "weekly"} for a session that posts its scores to that leaderboard; empty keeps the starter's defaults. Read only where its Rust's spawn reads the seed (world's, session's, player's and market's do; the matchmaker's and leaderboard's do not), and only when an instance first starts. */
+	UPROPERTY(EditAnywhere, Category = "Game Kit", meta = (DisplayName = "Config", MultiLine = true))
+	FString KitConfig;
+#endif
+
+#if WITH_EDITORONLY_DATA
 	/** Your own server code (the logic.rs Server Functions), used when Code Source is My Own File. */
 	UPROPERTY(EditAnywhere, Category = "Server Code", meta = (FilePathFilter = "Rust source (*.rs)|*.rs", RelativeToGameDir,
 		EditCondition = "CodeSource == ECrowdyServerCodeSource::OwnFile", EditConditionHides))
@@ -713,6 +802,9 @@ public:
 	/** The State: State, or StateList's struct. Null when none is chosen. */
 	const UScriptStruct* GetStateStruct() const;
 
+	/** The struct one record holds: a Game Kit starter's Record Struct when it has a collection, else the State. */
+	const UScriptStruct* GetRecordStruct() const { return HasKitCollection() ? KitRecord.Get() : GetStateStruct(); }
+
 	/** The State's variable called Variable, ignoring case, spaces and punctuation; null when there is none that travels. */
 	const FProperty* FindVariable(FName Variable) const;
 
@@ -748,6 +840,9 @@ public:
 
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
+
+	/** Lists this definition in the Game Kit Actor Starters project setting while its Kit Actors has a kind, and takes it out once it has none. */
+	void SyncGameKitActorStarters() const;
 #endif
 
 private:

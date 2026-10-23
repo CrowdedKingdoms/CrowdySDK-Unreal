@@ -162,14 +162,14 @@ public:
 	static FGuid ToGuid(const FString& String);
 
 	/**
-	 * The 128 bits the 32 octets encode when they are hexadecimal, which is the convention they follow.
+	 * The 128 bits the 32 octets encode when they are hexadecimal, which is the convention they follow, and
+	 * otherwise a 128-bit hash of all 32 (a Game Kit starter's actor ids are text, such as "M10,-4@3").
 	 *
-	 * The result is a comparison key, not the identity: a component that is not hexadecimal reads as the
-	 * largest value, so two ids that differ only outside the hexadecimal alphabet derive the same key.
-	 * The 32 octets are what addresses an actor; this is only a cheap way to look one up locally.
+	 * The result is a comparison key, not the identity: hexadecimal digits read the same in either case, so
+	 * ids that differ only in case derive the same key. The 32 octets are what addresses an actor; this is
+	 * only a cheap way to look one up locally.
 	 *
-	 * An id that is not set derives no key and returns an invalid guid, so it never collapses onto the
-	 * same key a non-hexadecimal id derives.
+	 * An id that is not set derives no key and returns an invalid guid.
 	 */
 	static FGuid ToGuid(const FCrowdyActorId& ActorId);
 

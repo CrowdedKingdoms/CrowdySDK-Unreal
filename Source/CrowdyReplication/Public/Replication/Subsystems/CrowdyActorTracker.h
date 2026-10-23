@@ -10,7 +10,9 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "Templates/SharedPointer.h"
 #include "Data/FCrowdyGuidSet.h"
+#include "Misc/ScopeRWLock.h"
 #include "Replication/Subsystems/CrowdyShardScheduling.h"
+#include "Serialization/CrowdyActorId.h"
 
 #include <atomic>
 
@@ -203,6 +205,12 @@ public:
 	// The payload type id a tracked UUID's first update carried, or CROWDY_INVALID_TYPE_ID if it is not tracked.
 	FCrowdyTypeID GetPayloadTypeIDForUUID(const FGuid& UUID) const;
 
+	// The 32 octets a tracked actor's first update was addressed by, as they arrived; false if it is not tracked or none was kept.
+	bool FindWireId(const FGuid& UUID, FCrowdyActorId& OutWireId) const;
+
+	// Whether Update is a Game Kit starter's actor rather than one of the SDK's own; the type id is read first, as it costs nothing.
+	static bool IsKitActorUpdate(const FCrowdyActorUpdate& Update);
+
 	/**
 	 * Take one delivered departure, and announce it.
 	 *
@@ -224,6 +232,7 @@ public:
 
 	// What the game thread records for a batch of appearing entities before announcing them.
 	void RecordAppearancesForTest(const TArray<FCrowdyActorUpdate>& Appeared) { RecordAppearances(Appeared); }
+	bool ForgetTrackedActorForTest(const FGuid& UUID) { return ForgetTrackedActor(UUID); }
 
 	// The shard queues with no worker pool behind them, which is the state in which nothing drains them.
 	void SetupQueuesForTest() { SetupQueues(); }
@@ -240,6 +249,33 @@ public:
 		}
 	}
 	int32 NumQueuedUpdatesForTest() const { return NumQueuedUpdates.load(std::memory_order_relaxed); }
+
+	// Notes Updates as heard SecondsAgo.
+	void NoteHeardForTest(const TArray<FCrowdyActorUpdate>& Updates, double SecondsAgo);
+	void GatherForTest(const TArray<FCrowdyActorUpdate>& Updates) { TrackedUpdates.Append(Updates); }
+	const TArray<FCrowdyActorUpdate>& GetGatheredForTest() const { return TrackedUpdates; }
+	void DropForgedKitUpdatesForTest() { DropForgedKitUpdates(); }
+	void CheckTimeoutsForTest() { CheckTimeouts(); }
+	void HandleActorUpdateDeliveryForTest(const FCrowdyDelivery& Delivery) { HandleActorUpdateDelivery(Delivery); }
+	void BackdateHeardForTest(const FGuid& UUID, const double SecondsAgo)
+	{
+		FWriteScopeLock W(LastUpdateLock);
+		if (double* Heard = LastUpdateTimes.Find(UUID))
+		{
+			*Heard = FPlatformTime::Seconds() - SecondsAgo;
+		}
+	}
+	double HeardAgeForTest(const FGuid& UUID)
+	{
+		FReadScopeLock R(LastUpdateLock);
+		const double* Heard = LastUpdateTimes.Find(UUID);
+		return Heard ? FPlatformTime::Seconds() - *Heard : -1.0;
+	}
+	void CheckKitTimeoutsForTest() { CheckKitTimeouts(); }
+	void SetKitActorTimeoutForTest(float Seconds) { KitActorTimeout = Seconds; }
+	bool IsHeardForTest(const FGuid& UUID) const { return LastUpdateTimes.Contains(UUID) || KitLastUpdateTimes.Contains(UUID); }
+	bool IsHeardAsKitActorForTest(const FGuid& UUID) const { return KitLastUpdateTimes.Contains(UUID); }
+	bool IsTrackedForTest(const FGuid& UUID) const { return TrackedUUIDs.IsValid() && TrackedUUIDs->Contains(UUID); }
 	int32 NumQueuedUpdatesDroppedForTest() const { return QueuedUpdatesDropped; }
 #endif
 
@@ -304,6 +340,18 @@ private:
 	FRWLock LastUpdateLock;
 	FTimerHandle TimeoutTimerHandle;
 
+	// Game Kit actors, timed out apart on their own short bound, under LastUpdateLock as well. Swept from Tick after the
+	// frame's updates are noted, so a long frame or a pause is not read as every kit actor going silent.
+	TMap<FGuid, double> KitLastUpdateTimes;
+	float KitSweepElapsed = 0.0f;
+
+	// Under LastUpdateLock: notes each update's actor as heard at Now, a kit actor in its own map.
+	void NoteHeardLocked(TConstArrayView<FCrowdyActorUpdate> Updates, double Now);
+	void CheckKitTimeouts();
+
+	// A kit update for an actor that appeared as one of the SDK's own is forged: it would mark that actor a kit actor and time it out.
+	void DropForgedKitUpdates();
+
 	// The entity class each tracked UUID declared on the wire, so the actor manager can resolve a class
 	// from the message rather than inferring one from the state struct, where two classes sharing a
 	// struct collapse into whichever registered last.
@@ -316,6 +364,8 @@ private:
 	{
 		FCrowdyClassID ClassID = CROWDY_INVALID_CLASS_ID;
 		FCrowdyTypeID PayloadTypeID = CROWDY_INVALID_TYPE_ID;
+		bool bKitActor = false;
+		FCrowdyActorId WireId;
 	};
 	TMap<FGuid, FAppearedIds> AppearedIdsByUUID;
 	mutable FRWLock AppearedIdsLock;
@@ -328,7 +378,8 @@ private:
 	int32 MaxUpdatesPerBatch = 64;
 	float MaxBatchWaitTime = 0.002f;
 	float ActorTimeoutThreshold = 12.0f;
-	
+	float KitActorTimeout = 1.0f;
+
 	//State
 	FGuid LocalUUID;
 	bool bOwnerTrackingEnabled = true;
@@ -413,7 +464,8 @@ private:
 	void ReportStaleQueuedUpdateDropped();
 
 	void CheckTimeouts();
-	void ProcessTimedOutActors(TArray<FGuid> TimedOut);
+	// Silence is the seconds the actors went unheard, for the trace.
+	void ProcessTimedOutActors(TArray<FGuid> TimedOut, float Silence);
 	
 	UFUNCTION()
 	void SetLocalUUID(FString NewUUID);

@@ -4,34 +4,58 @@
 
 #include "CrowdyReplicationLog.h"
 #include "GameFramework/Actor.h"
+#include "Messages/Actor/FCrowdyKitActorState.h"
 #include "Replication/Executor/ActorUpdateExecutor.h"
+
+namespace
+{
+	// A player's actor state, or a Game Kit starter's actor, which a hub moves.
+	bool CrowdyTransformRepPolicyRead(const FInstancedStruct& State, FVector& OutLocation, FRotator& OutRotation)
+	{
+		if (const FCrowdyActorState* Actor = State.GetPtr<FCrowdyActorState>())
+		{
+			OutLocation = Actor->Location;
+			OutRotation = Actor->Rotation;
+			return true;
+		}
+		if (const FCrowdyKitActorState* Kit = State.GetPtr<FCrowdyKitActorState>())
+		{
+			OutLocation = Kit->Location;
+			OutRotation = Kit->Rotation;
+			return true;
+		}
+		return false;
+	}
+}
 
 void UCrowdyTransformRepPolicy::OnInstanceActivated_Implementation(AActor* Actor, const FInstancedStruct& InitialState)
 {
-	const FCrowdyActorState* State = InitialState.GetPtr<FCrowdyActorState>();
-	if (!Actor || !State)
+	FVector Location;
+	FRotator Rotation;
+	if (!Actor || !CrowdyTransformRepPolicyRead(InitialState, Location, Rotation))
 	{
 		return;
 	}
 
-	Actor->SetActorLocationAndRotation(State->Location, State->Rotation);
+	Actor->SetActorLocationAndRotation(Location, Rotation);
 }
 
 bool UCrowdyTransformRepPolicy::ExtractFields(const FInstancedStruct& State, int64 ServerTimestampMs, int32 SlotId)
 {
-	const FCrowdyActorState* Incoming = State.GetPtr<FCrowdyActorState>();
-	if (!Incoming || SlotId < 0)
+	FVector Location;
+	FRotator Rotation;
+	if (!CrowdyTransformRepPolicyRead(State, Location, Rotation) || SlotId < 0)
 	{
 		// Refusing makes the backend skip the update; a partial transform would be worse than none.
 		UE_CLOG(CrowdyReplicationTrace::Pool(), LogCrowdyReplication, Warning,
-			TEXT("[CrowdyTransformRepPolicy] Update for slot %d carried %s, not FCrowdyActorState, so it was skipped."),
+			TEXT("[CrowdyTransformRepPolicy] Update for slot %d carried %s, not FCrowdyActorState or FCrowdyKitActorState, so it was skipped."),
 			SlotId, *GetNameSafe(State.GetScriptStruct()));
 		return false;
 	}
 
 	EnsureSlot(SlotId);
-	Positions[SlotId].Push(Incoming->Location, ServerTimestampMs);
-	Rotations[SlotId].Push(Incoming->Rotation, ServerTimestampMs);
+	Positions[SlotId].Push(Location, ServerTimestampMs);
+	Rotations[SlotId].Push(Rotation, ServerTimestampMs);
 	return true;
 }
 

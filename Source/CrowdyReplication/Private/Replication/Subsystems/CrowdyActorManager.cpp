@@ -5,7 +5,9 @@
 
 #include "Data/CrowdyRenderingBackend.h"
 #include "Data/CrowdyRenderingBackendConfig.h"
+#include "Messages/Actor/FCrowdyKitActorState.h"
 #include "Replication/Subsystems/CrowdyActorTracker.h"
+#include "Replication/Subsystems/CrowdyKitActorClasses.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/UCrowdyClassRegistry.h"
@@ -451,6 +453,12 @@ bool UCrowdyActorManager::LoadConfig()
 
 UClass* UCrowdyActorManager::ResolveEntityClass(const FGuid& UUID, const FInstancedStruct& State) const
 {
+	// A Game Kit starter's actor names no class on the wire: its kind does.
+	if (const FCrowdyKitActorState* Kit = State.GetPtr<FCrowdyKitActorState>())
+	{
+		return CrowdyKitActorClasses::Resolve(Kit->Kind);
+	}
+
 	// Primary path: the class the sender named on its own update. Shape and identity are separate facts
 	// on the wire, so this asks the message what the entity IS rather than inferring it from the shape
 	// of its bytes. That inference is what made two classes sharing one state struct resolve as
@@ -510,6 +518,12 @@ void UCrowdyActorManager::HandleActorSpawned(FGuid UUID, FInstancedStruct Initia
 	if (UUIDToSlot.Contains(UUID)) return;
 
 	UClass* EntityClass = ResolveEntityClass(UUID, InitialState);
+
+	// No spawn event ever names a kit actor's class, so one whose kind has none is not drawn rather than parked; Resolve said why.
+	if (!EntityClass && InitialState.GetPtr<FCrowdyKitActorState>())
+	{
+		return;
+	}
 
 	if (!EntityClass)
 	{

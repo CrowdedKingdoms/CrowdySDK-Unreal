@@ -29,6 +29,9 @@ struct FActorUpdateRequestMessage : FActorUpdateBody
 	/** The request owns the octets it sends, so the shared body's buffer is public on this side. */
 	using FActorUpdateBody::StateBytes;
 
+	/** Sends the spatial header and nothing after it, not even a length: how a viewer with no actor state says it is watching. */
+	bool bViewerBeat = false;
+
 	/**
 	 * Retrieves the type of the message.
 	 *
@@ -55,6 +58,11 @@ struct FActorUpdateRequestMessage : FActorUpdateBody
 	/** The spatial header followed by the actor update body. */
 	virtual TArray<uint8> Serialize() const override
 	{
+		if (bViewerBeat)
+		{
+			return SerializeMetadata();
+		}
+
 		TArray<uint8> Data = SerializeMetadata(BodySize());
 		AppendBody(Data);
 		return Data;
