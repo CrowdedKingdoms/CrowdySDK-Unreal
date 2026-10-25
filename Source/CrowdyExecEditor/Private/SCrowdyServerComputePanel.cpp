@@ -1,6 +1,7 @@
 #include "SCrowdyServerComputePanel.h"
 
 #include "CrowdyExecCodegen.h"
+#include "CrowdyExecCodegenMenu.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyGameKitStarters.h"
 #include "CrowdyServerCodeFiles.h"
@@ -722,6 +723,21 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::BuildPageHeader()
 				[ SNew(STextBlock).Text(LOCTEXT("Refresh", "Refresh")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 9)).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary())) ]
 			]
 		]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top).Padding(8.f, 0.f, 0.f, 0.f)
+		[
+			SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Secondary").ContentPadding(FMargin(9.f, 5.f))
+			.IsEnabled(this, &SCrowdyServerComputePanel::CanGenerate)
+			.ToolTipText(LOCTEXT("GenerateTip", "Generates the server code of every type that is out of date or has none yet, asking what a single Generate asks, then saves the definitions it changed."))
+			.OnClicked(this, &SCrowdyServerComputePanel::OnGenerateClicked)
+			[
+				SNew(STextBlock).Font(FCoreStyle::GetDefaultFontStyle("Regular", 9)).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary()))
+				.Text_Lambda([this]()
+				{
+					const int32 Count = CountToGenerate();
+					return Count > 0 ? FText::Format(LOCTEXT("GenerateCount", "Generate  {0}"), FText::AsNumber(Count)) : LOCTEXT("Generate", "Generate");
+				})
+			]
+		]
 		// In the title row so it stays in reach however long the type list grows.
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top).Padding(8.f, 0.f, 0.f, 0.f)
 		[
@@ -1292,6 +1308,11 @@ int32 SCrowdyServerComputePanel::CountPendingTypes() const
 		return Change.TypeName != CrowdyExecDeploy::RootTypeName
 			&& (Change.Change == EChange::Changed || Change.Change == EChange::New || Change.Change == EChange::Unknown || Change.Change == EChange::Removed);
 	}));
+}
+
+int32 SCrowdyServerComputePanel::CountToGenerate() const
+{
+	return static_cast<int32>(Algo::CountIf(FCrowdyServerComputeService::Get().GetProject().Types, &CrowdyExecDeploy::NeedsGenerating));
 }
 
 TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeRow(const CrowdyExecDeploy::FTypeState& Type)
@@ -2183,6 +2204,20 @@ FText SCrowdyServerComputePanel::GetMoveLine() const
 		Running, FText::FromString(FString::Join(Types, TEXT(", "))));
 }
 
+FReply SCrowdyServerComputePanel::OnGenerateClicked()
+{
+	if (!CanGenerate())
+	{
+		return FReply::Handled();
+	}
+	const CrowdyExecCodegenMenu::FGenerateAllResult Result = CrowdyExecCodegenMenu::GenerateAllInProject(CrowdyExecCodegenMenu::EGenerateAnswers::Dialogs);
+	FCrowdyServerComputeService::Get().RefreshTypes();
+	FNotificationInfo Info(CrowdyExecCodegenMenu::DescribeGenerateAll(Result));
+	Info.ExpireDuration = Result.Refused.IsEmpty() && !Result.bSaveFailed ? 8.0f : 15.0f;
+	FSlateNotificationManager::Get().AddNotification(Info);
+	return FReply::Handled();
+}
+
 FReply SCrowdyServerComputePanel::OnDeployClicked()
 {
 	if (RenewIfStale() || !CanDeploy())
@@ -2437,6 +2472,11 @@ FSlateColor SCrowdyServerComputePanel::GetDeployLineColor() const
 bool SCrowdyServerComputePanel::IsIdle() const
 {
 	return !FCrowdyServerComputeService::Get().IsBusy();
+}
+
+bool SCrowdyServerComputePanel::CanGenerate() const
+{
+	return IsIdle() && CountToGenerate() > 0;
 }
 
 bool SCrowdyServerComputePanel::CanDeploy() const

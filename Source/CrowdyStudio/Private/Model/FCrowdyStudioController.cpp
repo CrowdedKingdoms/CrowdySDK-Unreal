@@ -87,24 +87,30 @@ void FCrowdyStudioController::Initialize()
 		SelectedAppId = User->LastAppId;
 	}
 
+	RestoreSavedSignIn();
+}
+
+bool FCrowdyStudioController::RestoreSavedSignIn()
+{
 	FString Saved;
 	int32 SavedScope = 0;
 	int64 SavedUserId = 0;
-	if (FCrowdyTokenVault::Load(Saved, SavedScope, SavedUserId) && !Saved.IsEmpty())
+	if (!FCrowdyTokenVault::Load(Saved, SavedScope, SavedUserId) || Saved.IsEmpty())
 	{
-		// A remembered SESSION token is mint-capable, so restore it as session-scoped and run the same
-		// tail as a fresh sign-in - that fetches apps and, via AnnounceAppContext, mints the app token
-		// for the remembered app. Without this the token would be treated as an org token (which cannot
-		// mint), so game-plane authoring would wrongly demand a re-sign-in after every editor launch.
-		if (SavedScope == static_cast<int32>(ECrowdyStudioAuthScope::Session))
-		{
-			FinishSessionSignIn(Saved, SavedUserId, TEXT("Restored signed-in session."));
-		}
-		else
-		{
-			SignInWithToken(Saved);
-		}
+		return false;
 	}
+
+	// A remembered SESSION token is mint-capable, so restore it as session-scoped and run the same
+	// tail as a fresh sign-in - that fetches apps and, via AnnounceAppContext, mints the app token
+	// for the remembered app. Without this the token would be treated as an org token (which cannot
+	// mint), so game-plane authoring would wrongly demand a re-sign-in after every editor launch.
+	if (SavedScope == static_cast<int32>(ECrowdyStudioAuthScope::Session))
+	{
+		FinishSessionSignIn(Saved, SavedUserId, TEXT("Restored signed-in session."));
+		return true;
+	}
+	SignInWithToken(Saved);
+	return true;
 }
 
 
@@ -146,7 +152,10 @@ void FCrowdyStudioController::SignInWithToken(const FString& OrgToken)
 			AuthToken.Empty();
 			AuthScope = ECrowdyStudioAuthScope::None;
 			bSignedIn = false;
-			FCrowdyTokenVault::Clear();
+			if (bLastFailureWasRejection)
+			{
+				FCrowdyTokenVault::Clear();
+			}
 			OnSignInStateChanged.Broadcast();
 		});
 }
@@ -170,6 +179,12 @@ FString FCrowdyStudioController::DescribeApiFailure(const FString& ErrorMessage,
 		return TEXT("Permission denied (HTTP 403). Your account may lack access to this app.");
 	}
 	return ErrorMessage;
+}
+
+bool FCrowdyStudioController::IsCredentialRejection(const FString& ErrorMessage, const FString& ErrorCode)
+{
+	return ErrorCode.Equals(TEXT("UNAUTHENTICATED"), ESearchCase::CaseSensitive)
+		|| ErrorMessage.Contains(TEXT("HTTP 401")) || ErrorMessage.Contains(TEXT("HTTP 403"));
 }
 
 TSharedPtr<FCrowdyCppClient> FCrowdyStudioController::ResolveApiClient(const TCHAR* OperationName)
@@ -1099,27 +1114,39 @@ void FCrowdyStudioController::FetchApp(int64 AppId)
 			}
 
 			OnAppsChanged.Broadcast();
-			FetchAppDiscovery(Detail->AppId);
+			FetchAppDiscovery({ Detail->AppId });
 		});
 }
 
-void FCrowdyStudioController::FetchAppDiscovery(int64 AppId)
+void FCrowdyStudioController::FetchAppDiscovery(const TArray<int64>& AppIds)
 {
+	if (AppIds.IsEmpty())
+	{
+		return;
+	}
+
 	TArray<TSharedPtr<FJsonValue>> Ids;
-	Ids.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%lld"), AppId)));
+	for (const int64 AppId : AppIds)
+	{
+		Ids.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%lld"), AppId)));
+	}
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetArrayField(TEXT("appIds"), Ids);
 
 	SendManagement(ECrowdyCppApiDomain::Apps, TEXT("AppDiscovery"), Variables,
-		[this, AppId](const TSharedPtr<FJsonObject>& Envelope)
+		[this, AppIds](const TSharedPtr<FJsonObject>& Envelope)
 		{
+			bool bChanged = false;
 			for (TSharedPtr<FStudioApp>& Existing : Apps)
 			{
-				if (Existing->AppId == AppId && CrowdyStudioGql::ParseAppDiscovery(Envelope, AppId, *Existing))
+				if (AppIds.Contains(Existing->AppId))
 				{
-					OnAppsChanged.Broadcast();
-					return;
+					bChanged |= CrowdyStudioGql::ParseAppDiscovery(Envelope, Existing->AppId, *Existing);
 				}
+			}
+			if (bChanged)
+			{
+				OnAppsChanged.Broadcast();
 			}
 		},
 		TFunction<void()>(), /*bReportErrors*/ false);
@@ -1178,7 +1205,11 @@ void FCrowdyStudioController::SyncConfig()
 		return;
 	}
 
-	FCrowdyConfigSync::ApplyAppToSettings(*App);
+	if (!FCrowdyConfigSync::ApplyAppToSettings(*App))
+	{
+		SetStatus(FCrowdyConfigSync::WriteFailedMessage, true);
+		return;
+	}
 	const int32 LiveSessions = FCrowdyConfigSync::ApplyToRunningSessions();
 
 	SetStatus(LiveSessions > 0
@@ -2385,6 +2416,7 @@ void FCrowdyStudioController::IssueOperation(ECrowdyCppApiDomain Domain, const T
 		}
 		// Not a cancellation: the client simply couldn't be built.
 		bLastFailureWasCanceled = false;
+		bLastFailureWasRejection = false;
 		if (OnFailure)
 		{
 			OnFailure();
@@ -2424,6 +2456,7 @@ void FCrowdyStudioController::IssueOperation(ECrowdyCppApiDomain Domain, const T
 					Self->SetStatus(Error, true);
 				}
 				Self->bLastFailureWasCanceled = bWasCanceled;
+				Self->bLastFailureWasRejection = IsCredentialRejection(Result.ErrorMessage, Result.ErrorCode);
 				if (OnFailure)
 				{
 					OnFailure();

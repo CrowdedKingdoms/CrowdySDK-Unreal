@@ -6,14 +6,18 @@
 #include "CoreGlobals.h"
 #include "CrowdyExecBuildAndDeploy.h"
 #include "CrowdyExecCodegen.h"
+#include "CrowdyExecCodegenMenu.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyExecDeveloperApi.h"
 #include "CrowdyExecDeveloperCall.h"
 #include "CrowdyExecLog.h"
 #include "CrowdyExecRevisions.h"
 #include "CrowdyGameKitStarters.h"
+#include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerComputeSettings.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "CrowdyServerObjectSpec.h"
+#include "CrowdyStudioModule.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "HAL/PlatformProcess.h"
@@ -21,19 +25,30 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "Policies/PrettyJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "UObject/Class.h"
+#include "UObject/Package.h"
+#include "UObject/StrongObjectPtr.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 namespace CrowdyServerComputeCommandletDetail
 {
 	namespace Dev = CrowdyExecDeveloper;
 
 	const TCHAR* const Usage = TEXT("-run=CrowdyServerCompute -op=status | versions | changes | deploy -yes [-batch=N] [-rebuild] | starters -yes [-batch=N] | activate -version=N -yes | disable -type=T -yes")
-		TEXT(" | enable -type=T -yes | restart -type=T -yes | instances | call -type=T -fn=F [-key=K] [-inputs=<json or @file>] -yes | logs [-type=T] [-flow=F] [-limit=N] | stats [-type=T]")
+		TEXT(" | enable [-type=T] -yes (without -type, the whole app) | restart -type=T -yes | instances | call -type=T -fn=F [-key=K] [-inputs=<json or @file>] -yes | logs [-type=T] [-flow=F] [-limit=N] | stats [-type=T]")
 		TEXT(" | grant -player=<user id> -bundle=<json or @file> [-xp=N] [-ref=R] -yes | deposit -player=<user id> -bundle=<json or @file> [-ref=R] -yes (in-game soft currency, never real money)")
 		TEXT(" | addstarter -starter=world|matchmaker|session|leaderboard|player|market|npcs|minigame|tactics|director|instance|territory|zone|deck|arena|race|ball [-config=<json or @file>]")
 		TEXT(" | removestarter -starter=world|matchmaker|session|leaderboard|player|market|npcs|minigame|tactics|director|instance|territory|zone|deck|arena|race|ball -yes")
-		TEXT(" | batch -ops=<file> (one op's arguments per line, # comments; add -batchcontinue to a line to go on after its failure), and -out=<file> for a JSON result");
+		TEXT(" | generate [-type=T] [-yes] (writes the server code of every type that is out of date or has none, or of just T, and saves the definitions it changed; a question refuses its type, and -yes answers those that keep saved data and delete nothing)")
+		TEXT(" | whoami (whether Crowdy Studio is signed in on this machine, and the project's app, without the token)")
+		TEXT(" | exporttype [-type=T] [-spec=<file>] (a type's settings as a JSON spec, in the result's definition and in the file; without -type, a new type's template)")
+		TEXT(" | newtype -spec=<json or @file> [-path=/Game/ServerObjects] (makes a type from a spec, or refuses with every problem and makes nothing)")
+		TEXT(" | edittype -type=T -spec=<json or @file> [-yes] (replaces a type's settings with a spec that holds all of them; without -yes it only reports what would change)")
+		TEXT(" | batch -ops=<file> (one op's arguments per line, # comments; add -batchcontinue to a line to go on after its failure), and -out=<file> for a JSON result")
+		TEXT("; generate, newtype, edittype, addstarter and removestarter refuse while an Unreal Editor is running, which would save its own copy over them: close it, or pass -editoropen to write anyway");
 
 	const TCHAR* const ConfirmError = TEXT("This changes the app's live server code or what it holds; pass -yes to confirm.");
 
@@ -84,6 +99,18 @@ namespace CrowdyServerComputeCommandletDetail
 		Fail(Run, Error.Message, Error.Code);
 	}
 
+	/** True, with the run failed, when an op that writes the project is asked of an editor that holds the project in memory. */
+	bool RefuseWhileEditorOpen(const FRunRef& Run)
+	{
+		const FString Problem = UCrowdyServerComputeCommandlet::FindEditorOpenProblem(Run->Params, &UCrowdyServerComputeCommandlet::IsEditorRunning);
+		if (Problem.IsEmpty())
+		{
+			return false;
+		}
+		Fail(Run, Problem);
+		return true;
+	}
+
 	/** Marks a change to the app as sent, with at least ChangeTimeoutSeconds left for its answer. */
 	void SendingChange(FRun& Run)
 	{
@@ -122,6 +149,28 @@ namespace CrowdyServerComputeCommandletDetail
 			Values.Add(MakeShared<FJsonValueString>(Item));
 		}
 		return Values;
+	}
+
+	/** Writes Json to OutPath, which is relative to where the editor was started. */
+	bool WriteJsonFile(const TSharedRef<FJsonObject>& Json, const FString& OutPath, bool bPretty)
+	{
+		const FString Path = FPaths::ConvertRelativePathToFull(FPaths::LaunchDir(), OutPath);
+		FString Text;
+		if (bPretty)
+		{
+			FJsonSerializer::Serialize(Json, TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Text));
+		}
+		else
+		{
+			FJsonSerializer::Serialize(Json, TJsonWriterFactory<>::Create(&Text));
+		}
+		if (!FFileHelper::SaveStringToFile(Text, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+		{
+			UE_LOG(LogCrowdyExec, Error, TEXT("Server Compute: could not write %s"), *Path);
+			return false;
+		}
+		Step(FString::Printf(TEXT("wrote %s"), *Path));
+		return true;
 	}
 
 	const TCHAR* LevelName(int32 Level)
@@ -290,6 +339,10 @@ namespace CrowdyServerComputeCommandletDetail
 	/** Writes to the project, not the app, so it needs no connection and no -yes. */
 	void AddStarter(const FRunRef& Run)
 	{
+		if (RefuseWhileEditorOpen(Run))
+		{
+			return;
+		}
 		FString Starter;
 		FParse::Value(*Run->Params, TEXT("-starter="), Starter);
 		Run->Result->SetStringField(TEXT("starter"), Starter);
@@ -330,6 +383,10 @@ namespace CrowdyServerComputeCommandletDetail
 			Fail(Run, Problem.IsEmpty() ? FString::Printf(TEXT("This deletes %s: their definitions and server code, edits included; pass -yes to confirm."), *Names) : Problem);
 			return;
 		}
+		if (RefuseWhileEditorOpen(Run))
+		{
+			return;
+		}
 		Step(FString::Printf(TEXT("removing %s"), *Names));
 		TArray<FString> Removed;
 		FString Error;
@@ -339,6 +396,105 @@ namespace CrowdyServerComputeCommandletDetail
 		if (!bRemoved)
 		{
 			Fail(Run, Error);
+			return;
+		}
+		Succeed(Run);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> TypeMessageRows(TConstArrayView<CrowdyExecCodegenMenu::FTypeMessage> Messages, const TCHAR* TextField)
+	{
+		TArray<TSharedPtr<FJsonValue>> Rows;
+		for (const CrowdyExecCodegenMenu::FTypeMessage& Message : Messages)
+		{
+			const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+			Row->SetStringField(TEXT("typeName"), Message.TypeName);
+			Row->SetStringField(TextField, Message.Text);
+			Rows.Add(MakeShared<FJsonValueObject>(Row));
+			Step(FString::Printf(TEXT("%s: %s"), *Message.TypeName, *Message.Text));
+		}
+		return Rows;
+	}
+
+	/** Writes to the project, not the app, so it needs no connection. A question that a single Generate would ask refuses its type; -yes answers the ones that keep saved data and delete nothing. */
+	void RunGenerate(const FRunRef& Run)
+	{
+		if (RefuseWhileEditorOpen(Run))
+		{
+			return;
+		}
+		IAssetRegistry::GetChecked().SearchAllAssets(true);
+		const CrowdyExecCodegenMenu::EGenerateAnswers Answers = FParse::Param(*Run->Params, TEXT("yes")) ? CrowdyExecCodegenMenu::EGenerateAnswers::Yes : CrowdyExecCodegenMenu::EGenerateAnswers::Refuse;
+		FString Type;
+		FParse::Value(*Run->Params, TEXT("-type="), Type);
+		Run->Result->SetField(TEXT("type"), StringOrNull(Type));
+		const CrowdyExecCodegenMenu::FGenerateAllResult Result = CrowdyExecCodegenMenu::GenerateAllInProject(Answers, Type);
+		TArray<TSharedPtr<FJsonValue>> GapRows;
+		for (const CrowdyExecCodegenMenu::FTypeLogicGaps& Gaps : Result.LogicGaps)
+		{
+			const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+			Row->SetStringField(TEXT("typeName"), Gaps.TypeName);
+			Row->SetStringField(TEXT("logicFile"), Gaps.LogicFile);
+			Row->SetArrayField(TEXT("missing"), StringValues(Gaps.Missing));
+			Row->SetArrayField(TEXT("leftover"), StringValues(Gaps.Leftover));
+			Row->SetBoolField(TEXT("stubsAdded"), Gaps.bStubsAdded);
+			GapRows.Add(MakeShared<FJsonValueObject>(Row));
+			Step(FString::Printf(TEXT("%s: %s is missing %s%s; defines %s the type no longer has"), *Gaps.TypeName, *Gaps.LogicFile, *FString::Join(Gaps.Missing, TEXT(", ")),
+				Gaps.bStubsAdded ? TEXT(" (empty versions added)") : TEXT(""), *FString::Join(Gaps.Leftover, TEXT(", "))));
+		}
+		Run->Result->SetArrayField(TEXT("logicGaps"), GapRows);
+		Run->Result->SetArrayField(TEXT("generated"), StringValues(Result.Generated));
+		Step(FString::Printf(TEXT("generated %d types: %s"), Result.Generated.Num(), *FString::Join(Result.Generated, TEXT(", "))));
+		Run->Result->SetArrayField(TEXT("refused"), TypeMessageRows(Result.Refused, TEXT("reason")));
+		Run->Result->SetArrayField(TEXT("skipped"), TypeMessageRows(Result.Skipped, TEXT("reason")));
+		Run->Result->SetArrayField(TEXT("notes"), TypeMessageRows(Result.Notes, TEXT("note")));
+		TArray<FString> Saved;
+		for (const UPackage* Package : Result.bSaveFailed ? TArray<UPackage*>() : Result.Dirtied)
+		{
+			Saved.Add(Package->GetName());
+		}
+		Run->Result->SetArrayField(TEXT("saved"), StringValues(Saved));
+		Step(FString::Printf(TEXT("saved %d definitions: %s"), Saved.Num(), *FString::Join(Saved, TEXT(", "))));
+		Run->Result->SetBoolField(TEXT("saveFailed"), Result.bSaveFailed);
+		if (!Result.Refused.IsEmpty())
+		{
+			Fail(Run, FString::Printf(TEXT("%d types were not generated; the reasons are above and in refused"), Result.Refused.Num()));
+			return;
+		}
+		if (Result.bSaveFailed)
+		{
+			Fail(Run, TEXT("The server code was written, but the definitions it changed could not be saved."));
+			return;
+		}
+		Succeed(Run);
+	}
+
+	/** Reads this machine's sign-in and the project's app, never the token itself. */
+	void RunWhoami(const FRunRef& Run)
+	{
+		const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+		int32 Scope = 0;
+		int64 UserId = 0;
+		const bool bSignedIn = CrowdyStudioAuth::GetSignedInIdentity(Scope, UserId);
+		// The value's own name, as the Studio commandlet reports it.
+		FString Environment = UEnum::GetValueAsString(Settings->Environment);
+		int32 Colon = INDEX_NONE;
+		if (Environment.FindLastChar(TEXT(':'), Colon))
+		{
+			Environment.RightChopInline(Colon + 1);
+		}
+		Run->Result->SetBoolField(TEXT("signedIn"), bSignedIn);
+		// 1 is a developer's own sign-in; any other scope, such as 2 or an old 0, is restored as an organization token, which has no user.
+		Run->Result->SetStringField(TEXT("scope"), UCrowdyServerComputeCommandlet::GetSignInScopeName(bSignedIn, Scope));
+		Run->Result->SetStringField(TEXT("userId"), FString::Printf(TEXT("%lld"), UserId));
+		Run->Result->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), Settings->AppID));
+		Run->Result->SetStringField(TEXT("orgId"), FString::Printf(TEXT("%lld"), Settings->OrgId));
+		Run->Result->SetStringField(TEXT("environment"), Environment);
+		Step(FString::Printf(TEXT("%s; app %lld of organization %lld on %s"), bSignedIn ? TEXT("signed in to Crowdy Studio on this machine") : TEXT("not signed in"),
+			Settings->AppID, Settings->OrgId, *Environment));
+		const FString Problem = UCrowdyServerComputeCommandlet::FindSignInProblem(bSignedIn, Settings->AppID);
+		if (!Problem.IsEmpty())
+		{
+			Fail(Run, Problem);
 			return;
 		}
 		Succeed(Run);
@@ -663,14 +819,15 @@ namespace CrowdyServerComputeCommandletDetail
 	void RunSwitch(const FRunRef& Run, bool bEnabled)
 	{
 		FString Type;
-		if (!FParse::Value(*Run->Params, TEXT("-type="), Type) || Type.IsEmpty())
+		FString Error;
+		if (!UCrowdyServerComputeCommandlet::ReadSwitchType(Run->Params, bEnabled, Type, Error))
 		{
-			Fail(Run, FString::Printf(TEXT("%s needs -type=T, the Server Object type to switch %s"), bEnabled ? TEXT("enable") : TEXT("disable"), bEnabled ? TEXT("on") : TEXT("off")));
+			Fail(Run, Error);
 			return;
 		}
 		Run->Result->SetStringField(TEXT("type"), Type);
 		Run->Result->SetBoolField(TEXT("enabled"), bEnabled);
-		Step(FString::Printf(TEXT("switching %s %s"), *Type, bEnabled ? TEXT("on") : TEXT("off")));
+		Step(Type.IsEmpty() ? FString(TEXT("switching the whole app on")) : FString::Printf(TEXT("switching %s %s"), *Type, bEnabled ? TEXT("on") : TEXT("off")));
 		SendingChange(*Run);
 		Run->Client->SetEnabled(bEnabled, Type, [Run](const Dev::TResult<Dev::FAppStatus>& Answer) { OnStatus(Run, Answer); });
 	}
@@ -709,7 +866,7 @@ namespace CrowdyServerComputeCommandletDetail
 		});
 	}
 
-	const UCrowdyServerObjectDefinition* FindProjectType(const FString& Type)
+	UCrowdyServerObjectDefinition* FindProjectType(const FString& Type)
 	{
 		IAssetRegistry::GetChecked().SearchAllAssets(true);
 		const TArray<UCrowdyServerObjectDefinition*> Definitions = CrowdyExecDeploy::FindProjectDefinitions();
@@ -718,6 +875,198 @@ namespace CrowdyServerComputeCommandletDetail
 			return Each && Each->TypeName.Equals(Type, ESearchCase::CaseSensitive);
 		});
 		return Found ? *Found : nullptr;
+	}
+
+	/** The project's one type called Type; null, with the run failed, when there is none (the known types are named) or another type spells its name alike. */
+	UCrowdyServerObjectDefinition* RequireProjectType(const FRunRef& Run, TConstArrayView<UCrowdyServerObjectDefinition*> Project, const FString& Type)
+	{
+		UCrowdyServerObjectDefinition* const* Found = Project.FindByPredicate([&Type](const UCrowdyServerObjectDefinition* Each) { return Each->TypeName.Equals(Type, ESearchCase::CaseSensitive); });
+		if (!Found)
+		{
+			Fail(Run, FString::Printf(TEXT("No Server Object type is named %s in the project. The types are: %s"), *Type,
+				*FString::JoinBy(Project, TEXT(", "), [](const UCrowdyServerObjectDefinition* Each) { return Each->TypeName; })));
+			return nullptr;
+		}
+		const bool bShared = Project.ContainsByPredicate([Found](const UCrowdyServerObjectDefinition* Each)
+		{
+			return Each != *Found && Each->TypeName.Equals((*Found)->TypeName, ESearchCase::IgnoreCase);
+		});
+		if (bShared)
+		{
+			Fail(Run, FString::Printf(TEXT("%s: %s"), *Type, *CrowdyServerCodeFiles::SharedTypeNameProblem().ToString()));
+			return nullptr;
+		}
+		return *Found;
+	}
+
+	/** Every Server Object type of the project, loaded. */
+	TArray<UCrowdyServerObjectDefinition*> LoadProjectTypes()
+	{
+		IAssetRegistry::GetChecked().SearchAllAssets(true);
+		return CrowdyExecDeploy::FindProjectDefinitions();
+	}
+
+	/** Reads -spec= as a JSON object; false, with the run failed, when it is missing or is not one. */
+	bool ReadSpec(const FRunRef& Run, const TCHAR* Operation, TSharedPtr<FJsonObject>& OutSpec)
+	{
+		FString Json;
+		FString Error;
+		if (!UCrowdyServerComputeCommandlet::ReadJsonSwitch(Run->Params, TEXT("-spec="), Json, Error))
+		{
+			Fail(Run, Error);
+			return false;
+		}
+		if (Json.TrimStartAndEnd().IsEmpty())
+		{
+			Fail(Run, FString::Printf(TEXT("%s needs -spec=<json or @file>, the type's settings; -op=exporttype writes one to start from"), Operation));
+			return false;
+		}
+		if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), OutSpec) || !OutSpec)
+		{
+			Fail(Run, TEXT("-spec is not a JSON object"));
+			return false;
+		}
+		return true;
+	}
+
+	void FailWithProblems(const FRunRef& Run, const TArray<FString>& Problems, const TCHAR* Summary)
+	{
+		Run->Result->SetArrayField(TEXT("errors"), StringValues(Problems));
+		Fail(Run, FString::Printf(TEXT("%s:\n%s"), Summary, *FString::Join(Problems, TEXT("\n"))));
+	}
+
+	/** Reads the project, not the app, so it needs no connection. */
+	void RunExportType(const FRunRef& Run)
+	{
+		FString Type;
+		FParse::Value(*Run->Params, TEXT("-type="), Type);
+		Run->Result->SetField(TEXT("type"), StringOrNull(Type));
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Template;
+		const UCrowdyServerObjectDefinition* Definition = nullptr;
+		if (Type.IsEmpty())
+		{
+			Template.Reset(NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), NAME_None, RF_Transient));
+			Definition = Template.Get();
+		}
+		else
+		{
+			Definition = RequireProjectType(Run, LoadProjectTypes(), Type);
+		}
+		if (!Definition)
+		{
+			return;
+		}
+		const TSharedRef<FJsonObject> Spec = CrowdyServerObjectSpec::ToJson(*Definition);
+		Run->Result->SetObjectField(TEXT("definition"), Spec);
+		FString SpecPath;
+		FParse::Value(*Run->Params, TEXT("-spec="), SpecPath);
+		Run->Result->SetField(TEXT("specFile"), StringOrNull(SpecPath));
+		if (!SpecPath.IsEmpty() && !WriteJsonFile(Spec, SpecPath, true))
+		{
+			Fail(Run, FString::Printf(TEXT("could not write the spec to %s"), *SpecPath));
+			return;
+		}
+		Step(Type.IsEmpty() ? FString(TEXT("exported the template of a new type")) : FString::Printf(TEXT("exported the settings of %s"), *Type));
+		Succeed(Run);
+	}
+
+	/** Writes to the project, not the app. Refuses with every problem, and makes nothing, when the spec has one. */
+	void RunNewType(const FRunRef& Run)
+	{
+		TSharedPtr<FJsonObject> Spec;
+		if (!ReadSpec(Run, TEXT("newtype"), Spec) || RefuseWhileEditorOpen(Run))
+		{
+			return;
+		}
+		FString ContentPath = TEXT("/Game/ServerObjects");
+		FParse::Value(*Run->Params, TEXT("-path="), ContentPath);
+		TArray<FString> Problems;
+		const TStrongObjectPtr<UCrowdyServerObjectDefinition> Candidate = CrowdyServerObjectSpec::MakeNew(*Spec, LoadProjectTypes(), Problems);
+		FString Error;
+		UCrowdyServerObjectDefinition* Asset = Candidate.IsValid() ? CrowdyServerObjectSpec::CreateAsset(*Candidate, ContentPath, Error) : nullptr;
+		if (Candidate.IsValid() && !Asset)
+		{
+			Problems.Add(Error);
+		}
+		if (!Asset)
+		{
+			FailWithProblems(Run, Problems, TEXT("The spec was refused and no type was made"));
+			return;
+		}
+		Run->Result->SetStringField(TEXT("type"), Asset->TypeName);
+		Run->Result->SetStringField(TEXT("asset"), Asset->GetPathName());
+		Run->Result->SetBoolField(TEXT("gameKitActorStartersChanged"), CrowdyServerObjectSpec::SyncActorStarters(*Asset));
+		Run->Result->SetStringField(TEXT("note"), FString::Printf(TEXT("Run -op=generate -type=%s next to write the type's server code."), *Asset->TypeName));
+		Step(FString::Printf(TEXT("made %s as %s"), *Asset->TypeName, *Asset->GetPathName()));
+		Succeed(Run);
+	}
+
+	/** Writes to the project, not the app. Without -yes it only reports what the spec would change, and fails, as removestarter does. */
+	void RunEditType(const FRunRef& Run)
+	{
+		FString Type;
+		FParse::Value(*Run->Params, TEXT("-type="), Type);
+		Run->Result->SetStringField(TEXT("type"), Type);
+		if (Type.IsEmpty())
+		{
+			Fail(Run, TEXT("edittype needs -type=T, the type to change, and -spec=<json or @file>; -op=exporttype -type=T writes the spec to start from"));
+			return;
+		}
+		TSharedPtr<FJsonObject> Spec;
+		const TArray<UCrowdyServerObjectDefinition*> Project = LoadProjectTypes();
+		UCrowdyServerObjectDefinition* Existing = ReadSpec(Run, TEXT("edittype"), Spec) ? RequireProjectType(Run, Project, Type) : nullptr;
+		if (!Existing)
+		{
+			return;
+		}
+		TArray<FString> Problems;
+		const TStrongObjectPtr<UCrowdyServerObjectDefinition> Candidate = CrowdyServerObjectSpec::MakeEdited(*Spec, *Existing, Project, Problems);
+		if (!Candidate.IsValid())
+		{
+			FailWithProblems(Run, Problems, TEXT("The spec was refused and the type is unchanged"));
+			return;
+		}
+		const TArray<FString> Changed = CrowdyServerObjectSpec::FindChangedKeys(*Existing, *Candidate);
+		TArray<TSharedPtr<FJsonValue>> RenamedRows;
+		for (const CrowdyServerObjectSpec::FRenamedListValue& Renamed : CrowdyServerObjectSpec::FindRenamedListValues(*Existing, *Candidate))
+		{
+			const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+			Row->SetStringField(TEXT("list"), Renamed.List);
+			Row->SetStringField(TEXT("id"), Renamed.Id.ToString(EGuidFormats::DigitsWithHyphensLower));
+			Row->SetStringField(TEXT("from"), Renamed.From);
+			Row->SetStringField(TEXT("to"), Renamed.To);
+			RenamedRows.Add(MakeShared<FJsonValueObject>(Row));
+			Step(FString::Printf(TEXT("%s: the value %s becomes %s and keeps its Id"), *Renamed.List, *Renamed.From, *Renamed.To));
+		}
+		Run->Result->SetArrayField(TEXT("changed"), StringValues(Changed));
+		Run->Result->SetArrayField(TEXT("renamedListValues"), RenamedRows);
+		Run->Result->SetBoolField(TEXT("saved"), false);
+		Step(Changed.IsEmpty() ? FString(TEXT("the spec matches the saved type")) : FString::Printf(TEXT("would change %s"), *FString::Join(Changed, TEXT(", "))));
+		if (Changed.IsEmpty())
+		{
+			Succeed(Run);
+			return;
+		}
+		if (!FParse::Param(*Run->Params, TEXT("yes")))
+		{
+			Fail(Run, FString::Printf(TEXT("This replaces %s of %s; nothing was saved. Pass -yes to confirm."), *FString::Join(Changed, TEXT(", ")), *Type));
+			return;
+		}
+		if (RefuseWhileEditorOpen(Run))
+		{
+			return;
+		}
+		FString Error;
+		if (!CrowdyServerObjectSpec::ApplyEdit(*Candidate, *Existing, Error))
+		{
+			Fail(Run, Error);
+			return;
+		}
+		Run->Result->SetBoolField(TEXT("saved"), true);
+		Run->Result->SetBoolField(TEXT("gameKitActorStartersChanged"), CrowdyServerObjectSpec::SyncActorStarters(*Existing));
+		Run->Result->SetStringField(TEXT("note"), FString::Printf(TEXT("Run -op=generate -type=%s next to bring the server code in line; with -yes it keeps the old server names of renamed List values, so saved data carries over."), *Type));
+		Step(FString::Printf(TEXT("saved %s"), *Existing->GetPathName()));
+		Succeed(Run);
 	}
 
 	/** Calls Function as the developer and reports its answer; a Game Kit starter's empty Ref is filled with a fresh one first. */
@@ -1027,6 +1376,24 @@ namespace CrowdyServerComputeCommandletDetail
 		return nullptr;
 	}
 
+	struct FLocalOperation
+	{
+		const TCHAR* Name;
+		void (*Run)(const FRunRef&);
+	};
+
+	/** Change the project, not the app, so they need no connection. */
+	const FLocalOperation LocalOperations[] = {
+		{TEXT("addstarter"), &AddStarter},
+		{TEXT("removestarter"), &RemoveStarter},
+		{TEXT("generate"), &RunGenerate},
+		{TEXT("whoami"), &RunWhoami},
+		{TEXT("exporttype"), &RunExportType},
+		{TEXT("newtype"), &RunNewType},
+		{TEXT("edittype"), &RunEditType}};
+
+	const TCHAR* const BatchOperation = TEXT("batch");
+
 	void Start(const FRunRef& Run, const FOperation& Operation)
 	{
 		FString Error;
@@ -1060,20 +1427,6 @@ namespace CrowdyServerComputeCommandletDetail
 		return Run.bDone;
 	}
 
-	bool WriteResult(const TSharedRef<FJsonObject>& Result, const FString& OutPath)
-	{
-		const FString Path = FPaths::ConvertRelativePathToFull(FPaths::LaunchDir(), OutPath);
-		FString Text;
-		FJsonSerializer::Serialize(Result, TJsonWriterFactory<>::Create(&Text));
-		if (!FFileHelper::SaveStringToFile(Text, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
-		{
-			UE_LOG(LogCrowdyExec, Error, TEXT("Server Compute: could not write %s"), *Path);
-			return false;
-		}
-		Step(FString::Printf(TEXT("wrote %s"), *Path));
-		return true;
-	}
-
 	bool Finish(const FRunRef& Run)
 	{
 		Run->Result->SetBoolField(TEXT("ok"), Run->bOk);
@@ -1087,7 +1440,7 @@ namespace CrowdyServerComputeCommandletDetail
 		{
 			return Run->bOk;
 		}
-		return WriteResult(Run->Result, OutPath) && Run->bOk;
+		return WriteJsonFile(Run->Result, OutPath, false) && Run->bOk;
 	}
 
 	/** Runs one operation from its argument list with its own client and deadline, writes its -out file and returns whether it succeeded. */
@@ -1098,15 +1451,13 @@ namespace CrowdyServerComputeCommandletDetail
 		FString OperationName;
 		FParse::Value(*Params, TEXT("-op="), OperationName);
 		Run->Result->SetStringField(TEXT("op"), OperationName);
-		if (OperationName.Equals(TEXT("addstarter"), ESearchCase::IgnoreCase))
+		for (const FLocalOperation& Local : LocalOperations)
 		{
-			AddStarter(Run);
-			return Finish(Run);
-		}
-		if (OperationName.Equals(TEXT("removestarter"), ESearchCase::IgnoreCase))
-		{
-			RemoveStarter(Run);
-			return Finish(Run);
+			if (OperationName.Equals(Local.Name, ESearchCase::IgnoreCase))
+			{
+				Local.Run(Run);
+				return Finish(Run);
+			}
 		}
 		const FOperation* Operation = FindOperation(OperationName);
 		if (!Operation)
@@ -1192,11 +1543,81 @@ int32 UCrowdyServerComputeCommandlet::Main(const FString& Params)
 	using namespace CrowdyServerComputeCommandletDetail;
 	FString OperationName;
 	FParse::Value(*Params, TEXT("-op="), OperationName);
-	if (OperationName.Equals(TEXT("batch"), ESearchCase::IgnoreCase))
+	if (OperationName.Equals(BatchOperation, ESearchCase::IgnoreCase))
 	{
 		return RunBatch(Params) ? 0 : 1;
 	}
 	return RunOne(Params) ? 0 : 1;
+}
+
+bool UCrowdyServerComputeCommandlet::ReadSwitchType(const FString& Params, bool bEnabled, FString& OutType, FString& OutError)
+{
+	OutType.Reset();
+	FParse::Value(*Params, TEXT("-type="), OutType);
+	if (bEnabled || !OutType.IsEmpty())
+	{
+		return true;
+	}
+	OutError = TEXT("disable needs -type=T, the Server Object type to switch off; the whole app is switched off from Server Compute");
+	return false;
+}
+
+FString UCrowdyServerComputeCommandlet::FindSignInProblem(bool bSignedIn, int64 AppId)
+{
+	TArray<FString> Missing;
+	if (!bSignedIn)
+	{
+		Missing.Add(TEXT("Sign in to Crowdy Studio on this machine"));
+	}
+	if (AppId <= 0)
+	{
+		Missing.Add(TEXT("Choose the app in Crowdy Studio and press Sync"));
+	}
+	return FString::Join(Missing, TEXT("; "));
+}
+
+const TCHAR* UCrowdyServerComputeCommandlet::GetSignInScopeName(bool bSignedIn, int32 Scope)
+{
+	if (!bSignedIn)
+	{
+		return TEXT("");
+	}
+	return Scope == 1 ? TEXT("session") : TEXT("organizationToken");
+}
+
+bool UCrowdyServerComputeCommandlet::IsEditorRunning()
+{
+	return FPlatformProcess::IsApplicationRunning(TEXT("UnrealEditor.exe"));
+}
+
+FString UCrowdyServerComputeCommandlet::FindEditorOpenProblem(const FString& Params, TFunctionRef<bool()> EditorIsRunning)
+{
+	if (FParse::Param(*Params, TEXT("editoropen")) || !EditorIsRunning())
+	{
+		return FString();
+	}
+	return TEXT("An Unreal Editor is running. Close it first: it holds this project's Server Object types in memory and would save its own copy over what this op writes. Pass -editoropen to write anyway.");
+}
+
+const TCHAR* UCrowdyServerComputeCommandlet::GetUsage()
+{
+	return CrowdyServerComputeCommandletDetail::Usage;
+}
+
+TArray<FString> UCrowdyServerComputeCommandlet::GetOperationNames()
+{
+	using namespace CrowdyServerComputeCommandletDetail;
+	TArray<FString> Names;
+	for (const FOperation& Operation : Operations)
+	{
+		Names.Add(Operation.Name);
+	}
+	for (const FLocalOperation& Local : LocalOperations)
+	{
+		Names.Add(Local.Name);
+	}
+	Names.Add(BatchOperation);
+	return Names;
 }
 
 bool UCrowdyServerComputeCommandlet::ParseBatchLines(const FString& Text, TArray<FString>& OutLines, FString& OutError)

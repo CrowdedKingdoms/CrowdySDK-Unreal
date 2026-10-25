@@ -27,7 +27,17 @@ namespace CrowdyExecDeploy
 		ECrateState State = ECrateState::NotGenerated;
 		/** Why it cannot be built, for any state but UpToDate. */
 		FString Problem;
+		/** Its crate is the starter's own Rust, which Generate Server Code never writes. */
+		bool bGameKitStarter = false;
+		/** NotGenerated until the developer chooses or makes the My Own File Logic File, which generating cannot do. */
+		bool bNeedsDeveloper = false;
 	};
+
+	/** True when Generate Server Code would bring the type's crate up to date: it is out of date or has none, and is not a Game Kit starter or waiting on the developer. */
+	inline bool NeedsGenerating(const FTypeState& Type)
+	{
+		return !Type.bGameKitStarter && !Type.bNeedsDeveloper && (Type.State == ECrateState::OutOfDate || Type.State == ECrateState::NotGenerated);
+	}
 
 	struct FProjectDeploy
 	{

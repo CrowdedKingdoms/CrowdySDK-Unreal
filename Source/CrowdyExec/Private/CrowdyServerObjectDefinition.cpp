@@ -31,6 +31,23 @@ FString CrowdyExec::KeepNameCharacters(const FString& Authored)
 	return Name;
 }
 
+FString CrowdyExec::PascalCase(const FString& SnakeName)
+{
+	FString Name;
+	bool bWordStart = true;
+	for (const TCHAR Char : KeepNameCharacters(SnakeName))
+	{
+		if (Char == '_')
+		{
+			bWordStart = true;
+			continue;
+		}
+		Name.AppendChar(bWordStart && Char >= 'a' && Char <= 'z' ? static_cast<TCHAR>(Char - 'a' + 'A') : Char);
+		bWordStart = false;
+	}
+	return Name;
+}
+
 bool CrowdyExec::SameKeptName(FStringView A, FStringView B)
 {
 	auto IsKept = [](TCHAR Char) { return (Char >= 'a' && Char <= 'z') || (Char >= 'A' && Char <= 'Z') || (Char >= '0' && Char <= '9') || Char == '_'; };
@@ -161,24 +178,7 @@ namespace
 	}
 
 	using CrowdyExec::KeepNameCharacters;
-
-	/** tip_jar becomes TipJar. */
-	FString PascalCase(const FString& SnakeName)
-	{
-		FString Name;
-		bool bWordStart = true;
-		for (const TCHAR Char : KeepNameCharacters(SnakeName))
-		{
-			if (Char == '_')
-			{
-				bWordStart = true;
-				continue;
-			}
-			Name.AppendChar(bWordStart && IsLowerAscii(Char) ? static_cast<TCHAR>(Char - 'a' + 'A') : Char);
-			bWordStart = false;
-		}
-		return Name;
-	}
+	using CrowdyExec::PascalCase;
 
 	/** AttackBoss becomes attack_boss. */
 	FString SnakeCase(const FString& Source)

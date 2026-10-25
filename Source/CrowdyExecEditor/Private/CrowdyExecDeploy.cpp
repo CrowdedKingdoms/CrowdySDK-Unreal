@@ -811,6 +811,7 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 	FTypeState State;
 	State.TypeName = Definition.TypeName;
 	State.AssetPath = Definition.GetPathName();
+	State.bGameKitStarter = Definition.IsGameKitStarter();
 	if (Definition.TypeName.Equals(RootTypeName, ESearchCase::CaseSensitive))
 	{
 		return WithProblem(State, ECrateState::Invalid, TEXT("root is the name of the platform's root Server Object type; choose another Type Name"));
@@ -846,6 +847,7 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 	const FString Logic = CrowdyExecCodegen::GetLogicFile(Definition, CrateDirectory);
 	if (Logic.IsEmpty())
 	{
+		State.bNeedsDeveloper = true;
 		return WithProblem(State, ECrateState::NotGenerated, NoLogicFileChosen);
 	}
 	for (const CrowdyExecCodegen::FGeneratedFile& File : Crate.Files)
@@ -867,7 +869,8 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 	}
 	if (!FPaths::FileExists(Logic))
 	{
-		const FString Missing = CrowdyExecCodegen::HasOwnLogicFile(Definition)
+		State.bNeedsDeveloper = CrowdyExecCodegen::HasOwnLogicFile(Definition);
+		const FString Missing = State.bNeedsDeveloper
 			? FString::Printf(TEXT("its Logic File %s does not exist; choose an existing file, or switch Code Source to Generated"), *Logic)
 			: FString::Printf(TEXT("its server code is missing %s; write it with Generate Server Code"), *Logic);
 		return WithProblem(State, ECrateState::NotGenerated, Missing);

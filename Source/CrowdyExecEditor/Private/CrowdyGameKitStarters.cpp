@@ -6,6 +6,7 @@
 #include "CrowdyGameKitTypes.h"
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "CrowdyServerObjectSpec.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
@@ -15,7 +16,6 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "UObject/Package.h"
-#include "UObject/SavePackage.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
 namespace CrowdyGameKitStartersDetail
@@ -503,13 +503,8 @@ namespace CrowdyGameKitStartersDetail
 		}
 		Asset->KitConfig = Config;
 		FAssetRegistryModule::AssetCreated(Asset);
-		Asset->MarkPackageDirty();
-		FSavePackageArgs SaveArgs;
-		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-		const FString FileName = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
-		if (!UPackage::SavePackage(Package, Asset, *FileName, SaveArgs))
+		if (!CrowdyServerObjectSpec::SaveDefinitionPackage(*Asset, OutError))
 		{
-			OutError = FString::Printf(TEXT("could not save %s to %s"), *PackageName, *FileName);
 			return false;
 		}
 		OutSaved = Asset;

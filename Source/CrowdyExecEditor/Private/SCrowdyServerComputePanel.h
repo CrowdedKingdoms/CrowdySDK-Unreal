@@ -87,6 +87,8 @@ private:
 	void FillTypeDetail();
 	/** How many types the next deploy adds, changes or removes. */
 	int32 CountPendingTypes() const;
+	/** How many types Generate would write: out of date, or with no server code yet. */
+	int32 CountToGenerate() const;
 	/** Running or Switched off, with its switch, for a type the live version runs; nothing otherwise. */
 	TSharedRef<SWidget> MakeRunningSwitch(const FString& TypeName);
 	TSharedRef<SWidget> MakeTypeMenu(const FString& TypeName, const FString& AssetPath);
@@ -117,6 +119,7 @@ private:
 	FReply OnRefreshClicked();
 	FReply OnSwitchClicked(FString TypeName, bool bEnable);
 	FReply OnSwitchAppOnClicked();
+	FReply OnGenerateClicked();
 	FReply OnDeployClicked();
 	FReply OnRebuildAllClicked();
 	/** The arrow beside Deploy, opening Rebuild All and Deploy. */
@@ -147,6 +150,7 @@ private:
 
 	/** No deploy or other change to the live app is waiting on the platform. */
 	bool IsIdle() const;
+	bool CanGenerate() const;
 	bool CanDeploy() const;
 	bool CanRebuildAll() const;
 	bool CanSwitch() const;

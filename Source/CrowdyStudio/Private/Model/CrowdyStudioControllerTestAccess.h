@@ -102,6 +102,11 @@ struct FCrowdyStudioControllerTestAccess
 		return Controller.AccessListsAppId;
 	}
 
+	static bool IsCredentialRejection(const FString& ErrorMessage, const FString& ErrorCode)
+	{
+		return FCrowdyStudioController::IsCredentialRejection(ErrorMessage, ErrorCode);
+	}
+
 	static void SetSignedIn(FCrowdyStudioController& Controller)
 	{
 		Controller.bSignedIn = true;
@@ -116,6 +121,11 @@ struct FCrowdyStudioControllerTestAccess
 	static void SetSelectedApp(FCrowdyStudioController& Controller, int64 AppId)
 	{
 		Controller.SelectedAppId = AppId;
+	}
+
+	static void AddApp(FCrowdyStudioController& Controller, const FStudioApp& App)
+	{
+		Controller.Apps.Add(MakeShared<FStudioApp>(App));
 	}
 
 	// Issue console operations on Client, with SessionToken as the management bearer and AppToken as the game one.

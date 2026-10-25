@@ -252,6 +252,9 @@ namespace CrowdyExec
 	/** The characters a default server name keeps from an authored name: ASCII letters, digits and underscores. */
 	FString KeepNameCharacters(const FString& Authored);
 
+	/** tip_jar becomes TipJar. */
+	CROWDYEXEC_API FString PascalCase(const FString& SnakeName);
+
 	/** Whether A and B match once KeepNameCharacters is applied to both, ignoring case, without building either. */
 	CROWDYEXEC_API bool SameKeptName(FStringView A, FStringView B);
 
