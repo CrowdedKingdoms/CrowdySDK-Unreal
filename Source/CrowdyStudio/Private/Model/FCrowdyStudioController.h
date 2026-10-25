@@ -43,6 +43,10 @@ public:
 	// constructor so the views can bind their delegates before anything broadcasts.
 	void Initialize();
 
+	// Signs in with the remembered token without selecting an app, so no app token is minted and no prompt can open.
+	// False when nothing is remembered. Initialize does this after restoring the remembered selection.
+	bool RestoreSavedSignIn();
+
 	//Sign-in
 	void SignInWithToken(const FString& OrgToken);
 	void LoginWithEmail(const FString& Email, const FString& Password);
@@ -89,6 +93,8 @@ public:
 	void UpdateApp(int64 AppId, const FString& Name, const TOptional<FString>& Description, const FString& Status, const FString& Visibility);
 	void ArchiveApp(int64 AppId);
 	void FetchApp(int64 AppId);
+	// One appDiscovery request for all of AppIds: each app's datacenter code and WS endpoint, merged into its list entry.
+	void FetchAppDiscovery(const TArray<int64>& AppIds);
 	// The datacenters this deployment can place a new app in. Cached after the first answer; the create dialog
 	// reads GetPlaceableDatacenters() and calls this again only to retry a failed read.
 	void FetchPlaceableDatacenters();
@@ -419,8 +425,6 @@ private:
 
 	// Right after sign-in, pull the app list so the console opens populated instead of empty.
 	void FetchAppsForSignedInUser();
-	// appDiscovery for one app: its datacenter code and WS endpoint, merged into the list entry.
-	void FetchAppDiscovery(int64 AppId);
 	void FetchPlatformConfig();
 
 	/** Drop one app fetch from the in-flight count. Called on both the success and the failure path. */
@@ -512,6 +516,14 @@ private:
 	 * client down, not an answer from the server, so it must not be dressed up as one.
 	 */
 	static FString DescribeApiFailure(const FString& ErrorMessage, bool& bOutWasCanceled);
+
+	// True when the server answered and refused the credential (HTTP 401 or 403, or UNAUTHENTICATED), as opposed to
+	// a network error, a timeout or a 5xx, which say nothing about whether the stored token is still good.
+	static bool IsCredentialRejection(const FString& ErrorMessage, const FString& ErrorCode);
+
+	// Whether the failure OnFailure() is about to report was IsCredentialRejection. Set with bLastFailureWasCanceled in
+	// IssueOperation and meaningful only inside that same OnFailure call.
+	bool bLastFailureWasRejection = false;
 
 	// Whether the failure OnFailure() is about to report was a cancellation (the console retiring its own client)
 	// rather than a genuine server/transport error. Set immediately before every OnFailure() call in

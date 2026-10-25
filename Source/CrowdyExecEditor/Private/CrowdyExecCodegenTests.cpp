@@ -1834,6 +1834,22 @@ bool FCrowdyExecCodegenNoMessagesTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMessageNameEscapedTest, "CrowdySDK.CrowdyExecEditor.CodegenMessageNameCannotBreakOutOfItsComment", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenMessageNameEscapedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Sender = MakeSenderOf(TEXT("ck_exec_evil_name"), {TEXT("Evil\npub fn injected() {}")});
+	Sender->Messages[0].ServerName = TEXT("evil");
+	FString Lib;
+	if (!GenerateLib(*this, *Sender, Lib))
+	{
+		return false;
+	}
+	TestFalse(TEXT("a newline in a message name does not start a line of Rust"), HasText(Lib, TEXT("\npub fn injected() {}")));
+	TestTrue(TEXT("the name is written escaped inside its doc comment"), HasText(Lib, TEXT("    /// Evil\\u{A}pub fn injected() {}: sent to everyone listening")));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenListenCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenListenMatchesLocalCheckCrate", CrowdyCodegenTest::TestFlags)
 bool FCrowdyExecCodegenListenCrateTest::RunTest(const FString& Parameters)
 {

@@ -1,5 +1,6 @@
 #include "CrowdyExecCodegenMenu.h"
 
+#include "Algo/Transform.h"
 #include "ContentBrowserMenuContexts.h"
 #include "CrowdyExecCodegen.h"
 #include "CrowdyExecDeploy.h"
@@ -9,6 +10,7 @@
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerComputeService.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "FileHelpers.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/FileManager.h"
@@ -22,6 +24,7 @@
 #include "StructUtils/PropertyBag.h"
 #include "Textures/SlateIcon.h"
 #include "ToolMenus.h"
+#include "UObject/Package.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "CrowdyExecCodegenMenu"
@@ -41,9 +44,37 @@ namespace CrowdyExecCodegenMenu
 		DialogAnswer = MoveTemp(Previous);
 	}
 
-	/** Every dialog of Generate goes through here, so a test can answer it. */
-	EAppReturnType::Type Ask(EAppMsgCategory Category, EAppMsgType::Type Type, EAppReturnType::Type Default, const FText& Message, const FText& Title)
+	/** The Generate All run in progress: how it answers, what the current type's Generate said last, and what a run without a window left unanswered. */
+	struct FAskLog
 	{
+		EGenerateAnswers Answers = EGenerateAnswers::Dialogs;
+		FString LastMessage;
+		bool bLastWasQuestion = false;
+		TArray<FString> Unanswered;
+		/** What a run without a window had no notice to show, such as the names that now stand for another type. */
+		TArray<FString> Said;
+		FTypeLogicGaps Gaps;
+	};
+
+	FAskLog* AskLog = nullptr;
+
+	/** Every dialog of Generate goes through here, so a test or a run without a window can answer it. bYesIsSafe: yes keeps saved data and deletes nothing, so a run told to say yes may. */
+	EAppReturnType::Type Ask(EAppMsgCategory Category, EAppMsgType::Type Type, EAppReturnType::Type Default, const FText& Message, const FText& Title, bool bYesIsSafe = false)
+	{
+		if (AskLog)
+		{
+			AskLog->LastMessage = Message.ToString();
+			AskLog->bLastWasQuestion = Type != EAppMsgType::Ok;
+			if (AskLog->Answers != EGenerateAnswers::Dialogs)
+			{
+				const EAppReturnType::Type Answer = bYesIsSafe && AskLog->Answers == EGenerateAnswers::Yes ? EAppReturnType::Yes : Default;
+				if (Answer != EAppReturnType::Yes)
+				{
+					AskLog->Unanswered.Add(AskLog->LastMessage);
+				}
+				return Answer;
+			}
+		}
 		if (DialogAnswer)
 		{
 			return DialogAnswer(Category, Type, Default, Message);
@@ -251,7 +282,7 @@ namespace CrowdyExecCodegenMenu
 		const FText Message = FText::Format(LOCTEXT("ConfirmRenames", "Saved instances hold these values under their old names:\n\n{0}\n\nYes: keep the old names on the server, so saved values carry over.\nNo: rename them on the server; saved values under the old names are dropped.\nCancel: stop."),
 			FText::FromString(FString::Join(Lines, TEXT("\n"))));
 		const EAppReturnType::Type Answer = Ask(EAppMsgCategory::Warning, EAppMsgType::YesNoCancel, EAppReturnType::Cancel, Message,
-			LOCTEXT("ConfirmRenamesTitle", "Generate Server Code"));
+			LOCTEXT("ConfirmRenamesTitle", "Generate Server Code"), true);
 		if (Answer != EAppReturnType::Yes)
 		{
 			return Answer == EAppReturnType::No;
@@ -338,6 +369,17 @@ namespace CrowdyExecCodegenMenu
 		return true;
 	}
 
+	/** Whether the type's My Own File Logic File sits in Folder, where a move of Folder would leave the Logic File chosen at a path that no longer holds it. */
+	bool OwnLogicFileIsUnder(const UCrowdyServerObjectDefinition& Definition, const FString& Folder)
+	{
+		if (!CrowdyExecCodegen::HasOwnLogicFile(Definition))
+		{
+			return false;
+		}
+		const FString LogicFile = CrowdyExecCodegen::GetLogicFile(Definition);
+		return !LogicFile.IsEmpty() && FPaths::IsUnderDirectory(LogicFile, Folder);
+	}
+
 	/** What a move does to the type's logic: keeps logic.rs, or, with My Own File, leaves the Logic File alone unless it sits in the moved folder. */
 	FText DescribeLogicOnMove(const UCrowdyServerObjectDefinition& Definition, const FString& Old, const FText& OldName, const FText& NewName)
 	{
@@ -345,13 +387,12 @@ namespace CrowdyExecCodegenMenu
 		{
 			return LOCTEXT("MoveKeepsLogic", "Moving keeps your logic.rs.");
 		}
-		const FString LogicFile = CrowdyExecCodegen::GetLogicFile(Definition);
-		if (LogicFile.IsEmpty() || !FPaths::IsUnderDirectory(LogicFile, Old))
+		if (!OwnLogicFileIsUnder(Definition, Old))
 		{
 			return FText::Format(LOCTEXT("LogicElsewhere", "Your Logic File is outside Server/{0}, so moving does not touch it."), OldName);
 		}
 		return FText::Format(LOCTEXT("LogicInside", "Warning: your Logic File {0} is inside Server/{1}. After moving, choose it again under Server/{2}."),
-			FText::FromString(LogicFile), OldName, NewName);
+			FText::FromString(CrowdyExecCodegen::GetLogicFile(Definition)), OldName, NewName);
 	}
 
 	/** Asks what to do with server code left under the previous Type Name. False to stop; OutMoveFrom is the folder to move into Directory, empty to leave it. */
@@ -376,7 +417,7 @@ namespace CrowdyExecCodegenMenu
 		}
 		const FText Message = FText::Format(LOCTEXT("MoveOldFolder", "{0}\n\n{3}\n\nYes: move Server/{1} to Server/{2}, then generate.\nNo: generate into a new Server/{2} and leave Server/{1} as it is.\nCancel: stop."),
 			Changed, OldName, NewName, DescribeLogicOnMove(Definition, Old, OldName, NewName));
-		const EAppReturnType::Type Answer = Ask(EAppMsgCategory::Warning, EAppMsgType::YesNoCancel, EAppReturnType::Cancel, Message, Title);
+		const EAppReturnType::Type Answer = Ask(EAppMsgCategory::Warning, EAppMsgType::YesNoCancel, EAppReturnType::Cancel, Message, Title, !OwnLogicFileIsUnder(Definition, Old));
 		if (Answer != EAppReturnType::Yes)
 		{
 			return Answer == EAppReturnType::No;
@@ -394,14 +435,16 @@ namespace CrowdyExecCodegenMenu
 		return true;
 	}
 
+	/** A raw identifier such as r#match reads as the function's name. */
+	FString ReadableMethod(const CrowdyExecCodegen::FLogicStub& Stub)
+	{
+		return Stub.Method.StartsWith(TEXT("r#"), ESearchCase::CaseSensitive) ? Stub.Method.RightChop(2) : Stub.Method;
+	}
+
 	FText DescribeLogicGaps(const CrowdyExecCodegen::FLogicGaps& Gaps, const FString& FileName, const FString& StateName)
 	{
 		TArray<FString> Missing;
-		for (const CrowdyExecCodegen::FLogicStub& Stub : Gaps.Missing)
-		{
-			// A raw identifier such as r#match reads as the function's name.
-			Missing.Add(Stub.Method.StartsWith(TEXT("r#"), ESearchCase::CaseSensitive) ? Stub.Method.RightChop(2) : Stub.Method);
-		}
+		Algo::Transform(Gaps.Missing, Missing, &ReadableMethod);
 		const FText File = FText::FromString(FileName);
 		const FText Leftover = FText::Format(LOCTEXT("GapsLeftover", "{0} defines {1}, which this type no longer has: rename or delete it."), File, FText::FromString(FString::Join(Gaps.Leftover, TEXT(", "))));
 		if (Missing.IsEmpty())
@@ -441,6 +484,12 @@ namespace CrowdyExecCodegenMenu
 		{
 			return;
 		}
+		if (AskLog)
+		{
+			AskLog->Gaps.LogicFile = LogicFile;
+			Algo::Transform(Gaps.Missing, AskLog->Gaps.Missing, &ReadableMethod);
+			AskLog->Gaps.Leftover = Gaps.Leftover;
+		}
 		const FText Title = FText::Format(LOCTEXT("GapsTitle", "Generate Server Code: {0}"), FText::FromString(Definition.GetName()));
 		const FText Described = DescribeLogicGaps(Gaps, FPaths::GetCleanFilename(LogicFile), Crate.StateName);
 		const FText Unbuildable = LOCTEXT("GapsUnbuildable", "Until then the server code does not build.");
@@ -455,14 +504,19 @@ namespace CrowdyExecCodegenMenu
 			const FString Stubs = JoinStubs(Gaps);
 			const FText Kept = OnDisk.bUtf8 ? FText::GetEmpty()
 				: FText::Format(LOCTEXT("GapsNotUtf8", "{0} is not UTF-8 text, so it is left as it is. "), FText::FromString(FPaths::GetCleanFilename(LogicFile)));
-			FPlatformApplicationMisc::ClipboardCopy(*Stubs);
-			Ask(EAppMsgCategory::Warning, EAppMsgType::Ok, EAppReturnType::Ok, FText::Format(LOCTEXT("GapsCopied", "{0}\n\n{1}These empty versions are on the clipboard; paste them into the block that implements Functions:\n\n{2}"),
-				Described, Kept, FText::FromString(Stubs)), Title);
+			const bool bClipboard = !AskLog || AskLog->Answers == EGenerateAnswers::Dialogs;
+			if (bClipboard)
+			{
+				FPlatformApplicationMisc::ClipboardCopy(*Stubs);
+			}
+			const FText Hand = bClipboard ? LOCTEXT("GapsCopied", "These empty versions are on the clipboard; paste them into the block that implements Functions:")
+				: LOCTEXT("GapsNotCopied", "Add these empty versions to the block that implements Functions:");
+			Ask(EAppMsgCategory::Warning, EAppMsgType::Ok, EAppReturnType::Ok, FText::Format(LOCTEXT("GapsHandOver", "{0}\n\n{1}{2}\n\n{3}"), Described, Kept, Hand, FText::FromString(Stubs)), Title);
 			return;
 		}
 		const FText Question = FText::Format(LOCTEXT("GapsAsk", "{0}\n\nAdd empty versions of the missing functions? A function fails with \"not written yet\" until you write it; a timer or event does nothing.{1}\n\nThis writes them into {2} on disk. If another program has it open with unsaved changes, save or close it there first, or its next save removes them."),
 			Described, Gaps.Leftover.IsEmpty() ? FText::GetEmpty() : FText::Format(LOCTEXT("GapsAskLeftover", "\n\n{0}"), Unbuildable), FText::FromString(FPaths::GetCleanFilename(LogicFile)));
-		if (Ask(EAppMsgCategory::Warning, EAppMsgType::YesNo, EAppReturnType::No, Question, Title) != EAppReturnType::Yes)
+		if (Ask(EAppMsgCategory::Warning, EAppMsgType::YesNo, EAppReturnType::No, Question, Title, true) != EAppReturnType::Yes)
 		{
 			return;
 		}
@@ -486,6 +540,10 @@ namespace CrowdyExecCodegenMenu
 		}
 		CrowdyServerCodeEdits::NoteStubsInserted(LogicFile, MoveTemp(Inserted));
 		CrowdyServerCodeEdits::ShowWritten(LogicFile);
+		if (AskLog)
+		{
+			AskLog->Gaps.bStubsAdded = true;
+		}
 	}
 
 	/** The generated names that stand for another type than in the types.rs under Directory; none when there is no such file. */
@@ -509,6 +567,12 @@ namespace CrowdyExecCodegenMenu
 			return;
 		}
 		const FText Message = FText::FromString(FString::Join(Changes, TEXT("\n")));
+		if (AskLog && AskLog->Answers != EGenerateAnswers::Dialogs)
+		{
+			AskLog->Said.Add(Message.ToString());
+			UE_LOG(LogCrowdyExec, Warning, TEXT("%s"), *Message.ToString());
+			return;
+		}
 		if (DialogAnswer)
 		{
 			DialogAnswer(EAppMsgCategory::Warning, EAppMsgType::Ok, EAppReturnType::Ok, Message);
@@ -518,6 +582,13 @@ namespace CrowdyExecCodegenMenu
 		FNotificationInfo Info(Message);
 		Info.ExpireDuration = 15.0f;
 		FSlateNotificationManager::Get().AddNotification(Info);
+	}
+
+	FString CrateDirectoryUnder(const FString& ServerDirectory, const UCrowdyServerObjectDefinition& Definition)
+	{
+		FString Directory = FPaths::ConvertRelativePathToFull(FPaths::Combine(ServerDirectory, Definition.TypeName));
+		FPaths::NormalizeDirectoryName(Directory);
+		return Directory;
 	}
 
 	bool GenerateServerCode(UCrowdyServerObjectDefinition& Definition)
@@ -547,8 +618,7 @@ namespace CrowdyExecCodegenMenu
 			ShowGenerateError(Definition, Error);
 			return false;
 		}
-		FString Directory = FPaths::ConvertRelativePathToFull(FPaths::Combine(ServerDirectory, Definition.TypeName));
-		FPaths::NormalizeDirectoryName(Directory);
+		const FString Directory = CrateDirectoryUnder(ServerDirectory, Definition);
 		if (FPaths::FileExists(FPaths::Combine(Directory, TEXT("Cargo.toml"))) && !CrowdyExecCodegen::IsGeneratedCrateFolder(Directory))
 		{
 			ShowGenerateError(Definition, FString::Printf(TEXT("%s holds server code the Crowdy SDK did not generate, so Generate would overwrite it. Choose another Type Name, or move that folder."), *Directory));
@@ -580,9 +650,13 @@ namespace CrowdyExecCodegenMenu
 			ShowGenerateError(Definition, Error);
 			return false;
 		}
-		FNotificationInfo Info(FText::Format(LOCTEXT("Written", "Wrote the server code of {0} to {1}"), FText::FromString(Definition.TypeName), FText::FromString(Directory)));
-		Info.ExpireDuration = 8.0f;
-		FSlateNotificationManager::Get().AddNotification(Info);
+		// A Generate All run names what it wrote in one notice.
+		if (!AskLog)
+		{
+			FNotificationInfo Info(FText::Format(LOCTEXT("Written", "Wrote the server code of {0} to {1}"), FText::FromString(Definition.TypeName), FText::FromString(Directory)));
+			Info.ExpireDuration = 8.0f;
+			FSlateNotificationManager::Get().AddNotification(Info);
+		}
 		ShowTypeIdentityChanges(IdentityChanges);
 		const FString LogicFile = CrowdyExecCodegen::GetLogicFile(Definition, Directory);
 		if (LogicFile.IsEmpty())
@@ -597,6 +671,118 @@ namespace CrowdyExecCodegenMenu
 		}
 		OfferLogicStubs(Definition, Crate, LogicFile);
 		return true;
+	}
+
+	FGenerateAllResult GenerateAll(TConstArrayView<UCrowdyServerObjectDefinition*> Definitions, const FString& ServerDirectory, EGenerateAnswers Answers, const FString& OnlyType)
+	{
+		FGenerateAllResult Result;
+		const bool bNamed = !OnlyType.IsEmpty();
+		if (bNamed && !Definitions.ContainsByPredicate([&OnlyType](const UCrowdyServerObjectDefinition* Each) { return Each->TypeName.Equals(OnlyType, ESearchCase::CaseSensitive); }))
+		{
+			const FString Known = FString::JoinBy(Definitions, TEXT(", "), [](const UCrowdyServerObjectDefinition* Each) { return Each->TypeName; });
+			Result.Refused.Add({OnlyType, FString::Printf(TEXT("No Server Object type is named %s in the project. The types are: %s"), *OnlyType, *Known)});
+			return Result;
+		}
+		FAskLog Log;
+		Log.Answers = Answers;
+		TGuardValue<FAskLog*> Scope(AskLog, &Log);
+		for (UCrowdyServerObjectDefinition* Definition : Definitions)
+		{
+			if (bNamed ? !Definition->TypeName.Equals(OnlyType, ESearchCase::CaseSensitive) : Definition->IsGameKitStarter())
+			{
+				continue;
+			}
+			const CrowdyExecDeploy::FTypeState State = CrowdyExecDeploy::InspectType(*Definition, CrateDirectoryUnder(ServerDirectory, *Definition));
+			if (State.State == CrowdyExecDeploy::ECrateState::Invalid)
+			{
+				(bNamed ? Result.Refused : Result.Skipped).Add({State.TypeName, State.Problem});
+				continue;
+			}
+			if (!bNamed && State.bNeedsDeveloper)
+			{
+				Result.Skipped.Add({State.TypeName, State.Problem});
+				continue;
+			}
+			if (!bNamed && !CrowdyExecDeploy::NeedsGenerating(State))
+			{
+				continue;
+			}
+			const bool bShared = Definitions.ContainsByPredicate([Definition](const UCrowdyServerObjectDefinition* Other)
+			{
+				return Other != Definition && Other->TypeName.Equals(Definition->TypeName, ESearchCase::IgnoreCase);
+			});
+			if (bShared)
+			{
+				Result.Refused.Add({State.TypeName, CrowdyServerCodeFiles::SharedTypeNameProblem().ToString()});
+				continue;
+			}
+			Log.LastMessage.Reset();
+			Log.bLastWasQuestion = false;
+			Log.Unanswered.Reset();
+			Log.Said.Reset();
+			Log.Gaps = FTypeLogicGaps();
+			UPackage* Package = Definition->GetOutermost();
+			const bool bWasDirty = Package->IsDirty();
+			const bool bGenerated = GenerateServerCode(*Definition, ServerDirectory);
+			if (!bWasDirty && Package->IsDirty())
+			{
+				Result.Dirtied.AddUnique(Package);
+			}
+			if (bGenerated && !Log.Gaps.LogicFile.IsEmpty())
+			{
+				Log.Gaps.TypeName = State.TypeName;
+				Result.LogicGaps.Add(MoveTemp(Log.Gaps));
+			}
+			if (bGenerated)
+			{
+				Result.Generated.Add(State.TypeName);
+				Algo::Transform(Log.Unanswered, Result.Notes, [&State](const FString& Text) { return FTypeMessage{State.TypeName, Text}; });
+				Algo::Transform(Log.Said, Result.Notes, [&State](const FString& Text) { return FTypeMessage{State.TypeName, Text}; });
+				continue;
+			}
+			Result.Refused.Add({State.TypeName, Log.LastMessage});
+			Result.bCancelled = Answers == EGenerateAnswers::Dialogs && Log.bLastWasQuestion;
+			if (Result.bCancelled)
+			{
+				break;
+			}
+		}
+		return Result;
+	}
+
+	FGenerateAllResult GenerateAllInProject(EGenerateAnswers Answers, const FString& OnlyType)
+	{
+		FGenerateAllResult Result = GenerateAll(CrowdyExecDeploy::FindProjectDefinitions(), CrowdyExecCodegen::GetServerDirectory(), Answers, OnlyType);
+		Result.bSaveFailed = !Result.Dirtied.IsEmpty() && !UEditorLoadingAndSavingUtils::SavePackages(Result.Dirtied, false);
+		return Result;
+	}
+
+	FText DescribeGenerateAll(const FGenerateAllResult& Result)
+	{
+		TArray<FText> Lines;
+		if (!Result.Generated.IsEmpty())
+		{
+			Lines.Add(FText::Format(LOCTEXT("GeneratedAll", "Wrote the server code of {0}."), FText::FromString(FString::Join(Result.Generated, TEXT(", ")))));
+		}
+		for (const FTypeMessage& Refused : Result.Refused)
+		{
+			FString Reason = Refused.Text;
+			Refused.Text.Split(TEXT("\n"), &Reason, nullptr);
+			Lines.Add(FText::Format(LOCTEXT("NotGeneratedOne", "{0} was not generated: {1}"), FText::FromString(Refused.TypeName), FText::FromString(Reason)));
+		}
+		for (const FTypeMessage& Skipped : Result.Skipped)
+		{
+			Lines.Add(FText::Format(LOCTEXT("SkippedOne", "{0} was skipped, as it needs you first: {1}"), FText::FromString(Skipped.TypeName), FText::FromString(Skipped.Text)));
+		}
+		if (Result.bCancelled)
+		{
+			Lines.Add(LOCTEXT("GenerateAllStopped", "The types after it were left as they are."));
+		}
+		if (Result.bSaveFailed)
+		{
+			Lines.Add(LOCTEXT("GenerateAllNotSaved", "The definitions it changed could not be saved; save them from the Content Browser."));
+		}
+		return Lines.IsEmpty() ? LOCTEXT("NothingToGenerate", "Every type's server code is up to date.") : FText::Join(FText::FromString(TEXT("\n")), Lines);
 	}
 
 	/** Refuses, as the Server Code tab does, a definition whose Type Name another definition also has, since both would write one crate folder. True when refused. */

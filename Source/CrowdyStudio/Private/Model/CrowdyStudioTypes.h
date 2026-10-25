@@ -74,6 +74,14 @@ struct FStudioSettingsSnapshot
 	FString DiscoveryUrl;
 	FString GameApiHttpUrl;
 	FString GameApiWsUrl;
+
+	bool operator==(const FStudioSettingsSnapshot& Other) const
+	{
+		return AppId == Other.AppId && OrgId == Other.OrgId
+			&& DiscoveryUrl.Equals(Other.DiscoveryUrl, ESearchCase::CaseSensitive)
+			&& GameApiHttpUrl.Equals(Other.GameApiHttpUrl, ESearchCase::CaseSensitive)
+			&& GameApiWsUrl.Equals(Other.GameApiWsUrl, ESearchCase::CaseSensitive);
+	}
 };
 
 // The per-app team/channel creation + default-membership policy. Both teams and channels use the

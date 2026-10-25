@@ -47,6 +47,12 @@ FString CrowdyStudioAuth::GetSignedInToken()
 	return FCrowdyTokenVault::Load(Token) ? Token : FString();
 }
 
+bool CrowdyStudioAuth::GetSignedInIdentity(int32& OutScope, int64& OutUserId)
+{
+	FString Token;
+	return FCrowdyTokenVault::Load(Token, OutScope, OutUserId) && !Token.IsEmpty();
+}
+
 void CrowdyStudioAuth::FetchAppChannelNames(int64 AppId, TFunction<void(const TArray<FString>&)> OnDone)
 {
 	auto Fail = [OnDone]()

@@ -68,21 +68,33 @@ namespace
 	}
 }
 
-void FCrowdyConfigSync::ApplyAppToSettings(const FStudioApp& App)
+bool FCrowdyConfigSync::ApplyAppToSettings(const FStudioApp& App)
 {
 	UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
 	if (!Settings)
 	{
 		UE_LOG(LogCrowdyStudio, Error, TEXT("Config Sync: developer settings unavailable."));
-		return;
+		return false;
 	}
 
+	ApplyAppToObject(*Settings, App);
+
+	const bool bSaved = Settings->TryUpdateDefaultConfigFile();
+
+	UE_LOG(LogCrowdyStudio, Log,
+		TEXT("Config Sync: AppID=%lld OrgId=%lld Discovery=%s GameHttp=%s saved=%d"),
+		Settings->AppID, Settings->OrgId, *Settings->GetDiscoveryUrl(), *Settings->GetGameApiHttpUrl(), bSaved ? 1 : 0);
+	return bSaved;
+}
+
+void FCrowdyConfigSync::ApplyAppToObject(UCrowdySDKDeveloperSettings& Settings, const FStudioApp& App)
+{
 	// Compute the result once (BuildProposedSettings) so the diff the user sees and the values we
 	// actually write can never disagree.
 	const FStudioSettingsSnapshot Target = BuildProposedSettings(App);
 
-	Settings->AppID = Target.AppId;
-	Settings->OrgId = Target.OrgId;
+	Settings.AppID = Target.AppId;
+	Settings.OrgId = Target.OrgId;
 
 	// The app's own gameApiUrl is the source of truth for where clients connect: the shared
 	// endpoint, or a linked dedicated/sandbox server. When the server gives us one, pin it (with the
@@ -90,30 +102,25 @@ void FCrowdyConfigSync::ApplyAppToSettings(const FStudioApp& App)
 	// the game endpoints stay unset until an app is synced.
 	if (!App.GameApiUrl.IsEmpty())
 	{
-		Settings->GameApiHttpUrl = Target.GameApiHttpUrl;
-		Settings->GameApiWsUrl = Target.GameApiWsUrl;
+		Settings.GameApiHttpUrl = Target.GameApiHttpUrl;
+		Settings.GameApiWsUrl = Target.GameApiWsUrl;
 	}
-
-	Settings->TryUpdateDefaultConfigFile();
-
-	UE_LOG(LogCrowdyStudio, Log,
-		TEXT("Config Sync: AppID=%lld OrgId=%lld Discovery=%s GameHttp=%s"),
-		Settings->AppID, Settings->OrgId, *Settings->GetDiscoveryUrl(), *Settings->GetGameApiHttpUrl());
 }
 
 FStudioSettingsSnapshot FCrowdyConfigSync::ReadCurrentSettings()
 {
+	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+	return Settings ? ReadSettings(*Settings) : FStudioSettingsSnapshot();
+}
+
+FStudioSettingsSnapshot FCrowdyConfigSync::ReadSettings(const UCrowdySDKDeveloperSettings& Settings)
+{
 	FStudioSettingsSnapshot Snapshot;
-
-	if (const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>())
-	{
-		Snapshot.AppId = Settings->AppID;
-		Snapshot.OrgId = Settings->OrgId;
-		Snapshot.DiscoveryUrl = Settings->GetDiscoveryUrl();
-		Snapshot.GameApiHttpUrl = Settings->GetGameApiHttpUrl();
-		Snapshot.GameApiWsUrl = Settings->GetGameApiWsUrl();
-	}
-
+	Snapshot.AppId = Settings.AppID;
+	Snapshot.OrgId = Settings.OrgId;
+	Snapshot.DiscoveryUrl = Settings.GetDiscoveryUrl();
+	Snapshot.GameApiHttpUrl = Settings.GetGameApiHttpUrl();
+	Snapshot.GameApiWsUrl = Settings.GetGameApiWsUrl();
 	return Snapshot;
 }
 

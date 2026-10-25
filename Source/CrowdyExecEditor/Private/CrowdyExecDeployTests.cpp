@@ -455,6 +455,7 @@ bool FCrowdyExecDeployInspectTest::RunTest(const FString& Parameters)
 	IFileManager::Get().Delete(*LogicFile);
 	const CrowdyExecDeploy::FTypeState NoLogic = CrowdyExecDeploy::InspectType(*Definition, Directory);
 	TestState(*this, TEXT("a type without logic.rs is not generated"), NoLogic, ECrateState::NotGenerated);
+	TestTrue(TEXT("and Generate can write it"), !NoLogic.bNeedsDeveloper && CrowdyExecDeploy::NeedsGenerating(NoLogic));
 	TestTrue(FString::Printf(TEXT("the problem names logic.rs (%s)"), *NoLogic.Problem), NoLogic.Problem.Contains(TEXT("logic.rs")));
 	SaveText(Logic + TEXT("// the user's own code\n"), LogicFile);
 	TestState(*this, TEXT("an edited logic.rs is the user's and keeps the type up to date"), CrowdyExecDeploy::InspectType(*Definition, Directory), ECrateState::UpToDate);
@@ -841,6 +842,7 @@ bool FCrowdyExecDeployInspectOwnLogicTest::RunTest(const FString& Parameters)
 	TestState(*this, TEXT("a missing Logic File is not generated"), Missing, ECrateState::NotGenerated);
 	TestTrue(FString::Printf(TEXT("the problem names the Logic File (%s)"), *Missing.Problem), Missing.Problem.Contains(OwnLogic));
 	TestTrue(FString::Printf(TEXT("the problem says to choose a file or switch to Generated (%s)"), *Missing.Problem), Missing.Problem.Contains(TEXT("switch Code Source to Generated")));
+	TestTrue(TEXT("it waits on the developer, so Generate has nothing to do for it"), Missing.bNeedsDeveloper && !CrowdyExecDeploy::NeedsGenerating(Missing));
 
 	SaveText(TEXT("// the crate's own copy, not used while a Logic File is set\n"), FPaths::Combine(Directory, LogicPath));
 	TestState(*this, TEXT("a logic.rs in the crate does not stand in for a missing Logic File"), CrowdyExecDeploy::InspectType(*Definition, Directory), ECrateState::NotGenerated);
@@ -872,6 +874,7 @@ bool FCrowdyExecDeployInspectNoFileChosenTest::RunTest(const FString& Parameters
 	const CrowdyExecDeploy::FTypeState Unchosen = CrowdyExecDeploy::InspectType(*Definition, Directory);
 	TestState(*this, TEXT("My Own File with no file chosen is not generated"), Unchosen, ECrateState::NotGenerated);
 	TestEqualSensitive(TEXT("the problem says no file is chosen and how to fix it"), Unchosen.Problem, Expected);
+	TestTrue(TEXT("it waits on the developer, so Generate has nothing to do for it"), Unchosen.bNeedsDeveloper && !CrowdyExecDeploy::NeedsGenerating(Unchosen));
 
 	auto DirectoryFor = [&Folder](const UCrowdyServerObjectDefinition& Def) { return FPaths::Combine(Folder.Path, Def.TypeName); };
 	const CrowdyExecDeploy::FProjectDeploy Project = CrowdyExecDeploy::AssembleProject({Definition.Get()}, DirectoryFor);
