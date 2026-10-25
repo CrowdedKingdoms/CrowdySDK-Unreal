@@ -328,19 +328,23 @@ class ChunkStore {
   /// The server delivers every accepted edit back to its sender (Buddy v0.37.0);
   /// ingest() matches that echo to this edit (sender uuid + sequence + voxel) and
   /// does not apply it again, so a local edit fires onChunkChanged once.
+  ///
+  /// `optimistic` false (CrowdyJS `setVoxel({ optimistic: false })`, 0.67.4) changes
+  /// nothing locally and marks nothing for write-back: the edit is applied when its echo
+  /// arrives, so the cache shows only what the server accepted.
   Result<std::uint8_t> setVoxel(const ChunkCoord& coord, int x, int y, int z,
                                 std::int16_t voxelType, Bytes voxelState,
-                                const core::ActorUuid& uuid) {
+                                const core::ActorUuid& uuid, bool optimistic = true) {
     if (!fitsInt16(x) || !fitsInt16(y) || !fitsInt16(z)) return Errc::InvalidArgument;
     if (voxelState.size() > wire::voxel::kMaxStateSize) return Errc::InvalidArgument;
-    applyLocal(coord, x, y, z, voxelType, voxelState);
+    if (optimistic) applyLocal(coord, x, y, z, voxelType, voxelState);
     auto seq = conn_.sendVoxelUpdate(coord, uuid, static_cast<std::int16_t>(x),
                                      static_cast<std::int16_t>(y), static_cast<std::int16_t>(z),
                                      voxelType, voxelState, options_.voxelSendDistance);
     if (seq.ok()) {
       rememberEdit(coord, voxelKey(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y),
                                    static_cast<std::int16_t>(z)),
-                   PendingEdit{uuid, seq.value(), nowMs(), false});
+                   PendingEdit{uuid, seq.value(), nowMs(), /*stale=*/!optimistic});
     }
     return seq;
   }

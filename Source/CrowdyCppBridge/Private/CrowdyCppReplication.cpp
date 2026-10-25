@@ -289,6 +289,9 @@ namespace
 	struct FCrowdySendRecord
 	{
 		int64 SentAtMs = 0;
+		/** When the send before this one used the slot; 0 when none did. */
+		int64 PreviousSentAtMs = 0;
+		int64 ChannelId = 0;
 		crowdy::core::ActorUuid Uuid{};
 		uint8 Opcode = 0;
 		bool bIsChannel = false;
@@ -308,10 +311,12 @@ namespace
 		{
 			FScopeLock Lock(&Mutex);
 			FCrowdySendRecord& Slot = Slots[Sequence];
+			Slot.PreviousSentAtMs = Slot.bUsed ? Slot.SentAtMs : 0;
 			Slot.SentAtMs = NowMs;
 			Slot.Uuid = Send.Uuid;
 			Slot.Opcode = Send.Opcode;
 			Slot.bIsChannel = Send.bIsChannel;
+			Slot.ChannelId = Send.ChannelId;
 			Slot.bUsed = true;
 		}
 
@@ -325,6 +330,11 @@ namespace
 			// by the time anything sends. Inside the first few seconds of the process it is not, and then every
 			// sequence nothing has used would answer with a zeroed record.
 			if (!Slot.bUsed || NowMs - Slot.SentAtMs > MaxAgeMs || NowMs < Slot.SentAtMs)
+			{
+				return FCrowdySendRecord();
+			}
+			// A slot taken again soon after its last send cannot say which of the two an error is about, so it names neither.
+			if (Slot.PreviousSentAtMs > 0 && Slot.SentAtMs - Slot.PreviousSentAtMs < FCrowdyCppReplication::MinSendAttributionReuseMs)
 			{
 				return FCrowdySendRecord();
 			}
@@ -870,6 +880,7 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 		{
 			Reported.SendOpcode = Attributed.Opcode;
 			Reported.bSendWasChannel = Attributed.bIsChannel;
+			Reported.SendChannelId = Attributed.ChannelId;
 			// Borrows the record, which is a copy taken under the ledger's lock and lives for this whole call.
 			Reported.SendUuid = TArrayView<const uint8>(
 				reinterpret_cast<const uint8*>(Attributed.Uuid.data()), Attributed.Uuid.size());
@@ -1303,6 +1314,7 @@ bool FCrowdyCppReplication::SendChannelMessage(const int64 ChannelId, const TArr
 
 	FCrowdyCppQueuedSend Queued;
 	Queued.bIsChannel = true;
+	Queued.Opcode = static_cast<uint8>(crowdy::wire::MessageType::ChannelMessageRequest);
 	Queued.ChannelId = ChannelId;
 	FMemory::Memcpy(Queued.Uuid.data(), Uuid.GetData(), crowdy::wire::kUuidSize);
 	Queued.Payload.Append(Payload.GetData(), PayloadSize);

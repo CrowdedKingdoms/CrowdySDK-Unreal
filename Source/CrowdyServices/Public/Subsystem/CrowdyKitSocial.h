@@ -45,7 +45,7 @@ struct CROWDYSERVICES_API FCrowdyKitGroup
 UENUM(BlueprintType)
 enum class ECrowdyKitChatResult : uint8
 {
-	/** The message left this client. The server delivers it to the channel's members and drops it from a player who is not one, without telling the sender. */
+	/** The message left this client. The server delivers it to the channel's members; a refusal, such as from a player who is not one, arrives later on the realtime subsystem's On Send Refused. */
 	Sent,
 	EmptyText,
 	/** More than 1024 bytes of UTF-8. */
@@ -134,7 +134,7 @@ public:
 
 	static TArray<FString> DefaultTerritoryPermissionKeys();
 
-	/** Sends Text, as UTF-8 of at most 1024 bytes, to the group's chat channel. Nothing is sent unless the result is Sent. Sent means the message left this client: the server delivers it to the channel's members and drops it from a player who is not one, without telling the sender. */
+	/** Sends Text, as UTF-8 of at most 1024 bytes, to the group's chat channel. Nothing is sent unless the result is Sent. Sent means the message left this client: the server delivers it to the channel's members, and a refusal (a player who is not one, or whose access tier lacks use_text_chat) arrives later on the realtime subsystem's On Send Refused. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy|Game Kit|Social", meta = (ExpandEnumAsExecs = "ReturnValue"))
 	ECrowdyKitChatResult SendChat(const FCrowdyKitGroup& Group, const FString& Text);
 

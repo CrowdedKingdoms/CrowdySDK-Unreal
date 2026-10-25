@@ -97,6 +97,9 @@ struct FCrowdyCppSendError
 	/** True when that send was a channel message rather than a spatial one. Meaningless unless bAttributed. */
 	bool bSendWasChannel = false;
 
+	/** The channel that send published to. Meaningless unless bAttributed and bSendWasChannel. */
+	int64 SendChannelId = 0;
+
 	/** The actor id that send carried, 32 octets. Empty unless bAttributed. */
 	TArrayView<const uint8> SendUuid;
 
@@ -495,6 +498,9 @@ public:
 	 * so beyond roughly a lap of the counter an attribution says more about traffic volume than about the error.
 	 */
 	static constexpr int64 MaxSendAttributionAgeMs = 5000;
+
+	/** A sequence used again sooner than this after its last send is not attributed: its error could be about either send. */
+	static constexpr int64 MinSendAttributionReuseMs = 1000;
 
 private:
 	FCrowdyCppReplication();

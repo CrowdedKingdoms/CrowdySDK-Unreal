@@ -973,9 +973,101 @@ void UCrowdyCppReplicationSubsystem::ReportInboundPressure(const FCrowdyCppRepli
 	LastInboundPressureReportSeconds = Now;
 }
 
+bool UCrowdyCppReplicationSubsystem::DescribeSendRefusal(const FCrowdyCppSendError& Error, FCrowdySendRefusal& OutRefusal)
+{
+	if (!Error.bAttributed)
+	{
+		return false;
+	}
+
+	OutRefusal = FCrowdySendRefusal();
+	OutRefusal.Code = Error.ErrorCode;
+	OutRefusal.CodeName = FCrowdyCppReplication::DescribeErrorCode(Error.ErrorCode);
+	OutRefusal.bChannelMessage = Error.bSendWasChannel;
+	OutRefusal.ChannelId = Error.bSendWasChannel ? Error.SendChannelId : 0;
+	OutRefusal.MessageType = Error.SendOpcode;
+
+	const ECrowdyMessageType Type = static_cast<ECrowdyMessageType>(Error.SendOpcode);
+	if (Error.bSendWasChannel)
+	{
+		OutRefusal.What = TEXT("a channel message");
+	}
+	else if (Type == ECrowdyMessageType::SINGLE_ACTOR_MESSAGE)
+	{
+		OutRefusal.What = TEXT("a message to one actor");
+	}
+	else if (Type == ECrowdyMessageType::CLIENT_TEXT_PACKET)
+	{
+		OutRefusal.What = TEXT("proximity text");
+	}
+	else
+	{
+		OutRefusal.What = FString::Printf(TEXT("message type %d (%s)"), Error.SendOpcode,
+			*StaticEnum<ECrowdyMessageType>()->GetNameStringByValue(static_cast<int64>(Error.SendOpcode)));
+	}
+
+	if (!FCrowdyCppReplication::IsUnauthorizedErrorCode(Error.ErrorCode))
+	{
+		return true;
+	}
+	if (Error.bSendWasChannel)
+	{
+		OutRefusal.Remedy = TEXT("Either the player is not a member of the channel with the send messages permission, or the player's access tier"
+			" does not grant use_text_chat, without which the server refuses every channel message: chat, and the SDK's reliable CrowdyEvents and"
+			" channel CrowdyState, which ride the session channel.");
+	}
+	else if (Type == ECrowdyMessageType::CLIENT_TEXT_PACKET)
+	{
+		OutRefusal.Remedy = TEXT("The player's access tier does not grant use_text_chat, so the server refuses proximity text.");
+	}
+	else if (Type == ECrowdyMessageType::SINGLE_ACTOR_MESSAGE)
+	{
+		OutRefusal.Remedy = TEXT("The player's access tier does not grant use_direct_messages, so the server refuses messages to one actor:"
+			" Owning Client and Host events, and owner-only CrowdyState.");
+	}
+	else if (Type == ECrowdyMessageType::CLIENT_VIDEO_PACKET)
+	{
+		OutRefusal.Remedy = TEXT("Video is a per-app capability the server grants, so this app does not carry it and no video frame will"
+			" reach anyone until it does.");
+	}
+	return true;
+}
+
+bool UCrowdyCppReplicationSubsystem::AdmitRefusal(const FCrowdySendRefusal& Refusal, const double Now)
+{
+	constexpr int32 MaxDistinctRefusalsPerWindow = 64;
+	if (RefusalWindowStartedSeconds <= 0.0 || Now - RefusalWindowStartedSeconds >= 1.0)
+	{
+		RefusalWindowStartedSeconds = Now;
+		RefusalsThisWindow.Reset();
+	}
+	if (RefusalsThisWindow.Num() >= MaxDistinctRefusalsPerWindow)
+	{
+		return false;
+	}
+	const uint64 Key = (static_cast<uint64>(static_cast<uint8>(Refusal.Code)) << 56) ^ (static_cast<uint64>(static_cast<uint8>(Refusal.MessageType)) << 48)
+		^ static_cast<uint64>(Refusal.ChannelId);
+	bool bAlreadyIn = false;
+	RefusalsThisWindow.Add(Key, &bAlreadyIn);
+	return !bAlreadyIn;
+}
+
 void UCrowdyCppReplicationSubsystem::ReportSendError(const FCrowdyCppSendError& Error)
 {
 	const double Now = FPlatformTime::Seconds();
+
+	// Broadcast before the log's rate cap, which only keeps the log readable; repeats of one refusal within a second are told once.
+	FCrowdySendRefusal Refusal;
+	bool bDescribed = false;
+	if (OnSendRefused.IsBound())
+	{
+		bDescribed = DescribeSendRefusal(Error, Refusal);
+		if (bDescribed && AdmitRefusal(Refusal, Now))
+		{
+			OnSendRefused.Broadcast(Refusal);
+		}
+	}
+
 	if (SendErrorWindowStartedSeconds <= 0.0 || Now - SendErrorWindowStartedSeconds >= 1.0)
 	{
 		if (SendErrorsSuppressedThisWindow > 0)
@@ -1023,13 +1115,11 @@ void UCrowdyCppReplicationSubsystem::ReportSendError(const FCrowdyCppSendError& 
 	// A refused capability is the one rejection with nothing else to see: the send was accepted locally, the
 	// datagram went out, and the only sign anything is wrong is this frame. Saying which capability the
 	// opcode needs is what turns it into something to act on rather than a code to look up.
-	FString Remedy;
-	if (FCrowdyCppReplication::IsUnauthorizedErrorCode(Error.ErrorCode) && !Error.bSendWasChannel
-		&& Error.SendOpcode == static_cast<uint8>(ECrowdyMessageType::CLIENT_VIDEO_PACKET))
+	if (!bDescribed)
 	{
-		Remedy = TEXT(" Video is a per-app capability the server grants, so this app does not carry it and no"
-			" video frame will reach anyone until it does.");
+		bDescribed = DescribeSendRefusal(Error, Refusal);
 	}
+	const FString Remedy = bDescribed && !Refusal.Remedy.IsEmpty() ? TEXT(" ") + Refusal.Remedy : FString();
 
 	UE_LOG(LogCrowdyNet, Warning,
 		TEXT("The server rejected a send: code %d (%s), sequence %d, sent %lldms ago as %s for actor %s.%s"),
