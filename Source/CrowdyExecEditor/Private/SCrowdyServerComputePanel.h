@@ -118,6 +118,9 @@ private:
 	FReply OnSwitchClicked(FString TypeName, bool bEnable);
 	FReply OnSwitchAppOnClicked();
 	FReply OnDeployClicked();
+	FReply OnRebuildAllClicked();
+	/** The arrow beside Deploy, opening Rebuild All and Deploy. */
+	TSharedRef<SWidget> MakeDeployMenu();
 	FReply OnDeployStartersClicked();
 	/** The Game Kit starters, each adding itself and the starters it needs to the project. */
 	TSharedRef<SWidget> MakeAddStarterMenu();
@@ -145,6 +148,7 @@ private:
 	/** No deploy or other change to the live app is waiting on the platform. */
 	bool IsIdle() const;
 	bool CanDeploy() const;
+	bool CanRebuildAll() const;
 	bool CanSwitch() const;
 
 	/** The service this page listens to, held weakly so a page outliving it never touches it. */

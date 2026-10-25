@@ -37,6 +37,7 @@ void UCrowdyAuth_Login::Activate()
 	FOnAuthError E;
 	E.BindDynamic(this, &UCrowdyAuth_Login::HandleError);
 	Auth->Login(Email, Password, S, E);
+	Password.Empty();
 }
 
 void UCrowdyAuth_Login::HandleSuccess(FCrowdyAuthResult Result)
@@ -78,6 +79,7 @@ void UCrowdyAuth_Register::Activate()
 	FOnAuthError E;
 	E.BindDynamic(this, &UCrowdyAuth_Register::HandleError);
 	Auth->Register(Email, Password, S, E);
+	Password.Empty();
 }
 
 void UCrowdyAuth_Register::HandleSuccess(FCrowdyAuthResult Result)

@@ -87,6 +87,8 @@ protected:
 	virtual void Send(UCrowdyAuthentication& Auth, const FOnAccountDone& Done, const FOnAccountError& Failed) override;
 
 private:
+	friend class FCrowdyAccountPasswordIsClearedAfterSendTest;
+
 	FString CurrentPassword;
 	FString NewPassword;
 };
@@ -106,6 +108,8 @@ protected:
 	virtual void Send(UCrowdyAuthentication& Auth, const FOnAccountDone& Done, const FOnAccountError& Failed) override;
 
 private:
+	friend class FCrowdyAccountPasswordIsClearedAfterSendTest;
+
 	FString NewPassword;
 };
 

@@ -1010,6 +1010,7 @@ bool FCrowdyServerObjectNodesTimeoutPinTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Timeout is advanced"), Timeout->bAdvancedView);
 	TestEqual(TEXT("and starts at 0, which uses the project's call timeout"), FCString::Atof(*Timeout->DefaultValue), 0.f);
 	TestFalse(TEXT("and has a tooltip"), Timeout->PinToolTip.IsEmpty());
+	TestEqualSensitive(TEXT("and is labelled Timeout when no input clashes"), Timeout->GetDisplayName().ToString(), FString(TEXT("Timeout")));
 	TestTrue(TEXT("the node hides its advanced pins until expanded"), Call->AdvancedPinDisplay == ENodeAdvancedPins::Hidden);
 	for (const UEdGraphPin* Pin : Call->Pins)
 	{
@@ -1124,6 +1125,11 @@ bool FCrowdyServerObjectNodesTimeoutClashTest::RunTest(const FString& Parameters
 	const UEdGraphPin* Input = Call->FindPin(TEXT("Timeout"), EGPD_Input);
 	const UEdGraphPin* Own = Call->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
 	TestTrue(TEXT("the input and the node's own Timeout are two pins"), Input && Own && Input != Own && !Input->bAdvancedView && Own->bAdvancedView);
+	if (Input && Own)
+	{
+		TestEqualSensitive(TEXT("the node's own pin is labelled Call Timeout beside the input"), Own->GetDisplayName().ToString(), FString(TEXT("Call Timeout")));
+		TestNotEqual(TEXT("so the two pins show different labels"), Own->GetDisplayName().ToString(), Input->GetDisplayName().ToString());
+	}
 	return true;
 }
 

@@ -1701,9 +1701,9 @@ namespace CrowdyExecCodegenDetail
 		Text += TEXT("[lib]\n")
 			TEXT("crate-type = [\"cdylib\"]\n")
 			TEXT("\n")
-			TEXT("[dependencies]\n")
-			TEXT("ckx-sdk = \"0.7.0\"\n")
-			TEXT("serde = { version = \"1\", features = [\"derive\"] }\n");
+			TEXT("[dependencies]\n");
+		Text += FString::Printf(TEXT("ckx-sdk = \"%s\"\n"), CrowdyExecCodegen::CkxSdkVersion);
+		Text += TEXT("serde = { version = \"1\", features = [\"derive\"] }\n");
 		return Text;
 	}
 

@@ -88,6 +88,28 @@ bool FCrowdyTrackerQueueDropsPastItsCeilingTest::RunTest(const FString&)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTrackerConfigureAfterSetupKeepsItsSetsTest,
+	"CrowdySDK.Replication.TrackerConfigureAfterSetupKeepsItsSets",
+	CrowdyActorUpdateQueueBoundTestFlags)
+
+bool FCrowdyTrackerConfigureAfterSetupKeepsItsSetsTest::RunTest(const FString&)
+{
+	AddExpectedMessagePlain(TEXT("Configure was ignored"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	const TStrongObjectPtr<UCrowdyActorTracker> Tracker(NewObject<UCrowdyActorTracker>(GetTransientPackage()));
+	Tracker->SetupQueuesForTest();
+
+	const FGuid UUID = FGuid::NewGuid();
+	Tracker->MarkActorTrackedForTest(UUID);
+	TestTrue(TEXT("the actor is tracked before the call"), Tracker->IsTrackedForTest(UUID));
+
+	Tracker->Configure(8, 2, 0.5f, 3.0f);
+	TestTrue(TEXT("a running tracker keeps the sets it was tracking in"), Tracker->IsTrackedForTest(UUID));
+
+	Tracker->ReleaseQueuesForTest();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyActorManagerOffThreadQueueDropsPastItsCeilingTest,
 	"CrowdySDK.Replication.ActorManagerOffThreadQueueDropsPastItsCeiling",
 	CrowdyActorUpdateQueueBoundTestFlags)

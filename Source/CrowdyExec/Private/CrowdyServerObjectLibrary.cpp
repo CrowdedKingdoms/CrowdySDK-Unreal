@@ -476,21 +476,50 @@ bool UCrowdyServerObjectLibrary::GetPlayersOnline(UObject* Owner, int32& Players
 	}
 	Link->KeepWhileOwnerLives();
 	static const FProperty* const Count = FCrowdyPlayersOnlineState::StaticStruct()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FCrowdyPlayersOnlineState, PlayersOnline));
-	static const FName KitWorldCount = GET_MEMBER_NAME_CHECKED(FCrowdyKitWorldConditions, Online);
-	if (ReadServerVariableInto(Link, Definition, bKitWorld ? KitWorldCount : Count->GetFName(), Count, &PlayersOnline))
+	bool bUnsent = false;
+	if (bKitWorld ? ReadKitWorldOnline(Link, Definition, PlayersOnline, bUnsent) : ReadServerVariableInto(Link, Definition, Count->GetFName(), Count, &PlayersOnline))
 	{
 		return true;
 	}
-	// An app with no root, or one an older SDK deployed, refuses every read, which would otherwise read as 0 with no word why.
 	const UCrowdyServerObject* Root = Link->GetServerObject();
-	const FString Reason = Root ? Root->GetFailureReason() : FString();
 	UCrowdyServerObjectSubsystem* Subsystem = Root ? Cast<UCrowdyServerObjectSubsystem>(Root->GetOuter()) : nullptr;
+	if (bUnsent)
+	{
+		static const FString NoCountReason = TEXT("the world's snapshot carries no player count; a world from the platform's own starter pack does not send one");
+		if (Subsystem && Subsystem->NotePlayersOnlineReason(NoCountReason))
+		{
+			UE_LOG(LogCrowdyExec, Warning, TEXT("Get Players Online has no count: %s"), *NoCountReason);
+		}
+		return false;
+	}
+	// An app with no root, or one an older SDK deployed, refuses every read, which would otherwise read as 0 with no word why.
+	const FString Reason = Root ? Root->GetFailureReason() : FString();
 	if (Subsystem && !Reason.IsEmpty() && Subsystem->NotePlayersOnlineReason(Reason))
 	{
 		const bool bAdvised = Reason.Contains(TEXT("Server Compute"), ESearchCase::CaseSensitive);
 		UE_LOG(LogCrowdyExec, Warning, TEXT("Get Players Online has no count yet: %s%s"), *Reason,
 			bAdvised ? TEXT("") : TEXT(". An app last deployed with an older Crowdy SDK keeps none; deploy it from Server Compute."));
 	}
+	return false;
+}
+
+bool UCrowdyServerObjectLibrary::ReadKitWorldOnline(const UObject* Target, const UCrowdyServerObjectDefinition* World, int32& Online, bool& bUnsent)
+{
+	static const FProperty* const Count = FCrowdyKitWorldConditions::StaticStruct()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FCrowdyKitWorldConditions, Online));
+	static const FProperty* const HasCount = FCrowdyKitWorldConditions::StaticStruct()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FCrowdyKitWorldConditions, bHasOnline));
+	bUnsent = false;
+	if (!ReadServerVariableInto(Target, World, Count->GetFName(), Count, &Online))
+	{
+		return false;
+	}
+	bool bSent = false;
+	ReadServerVariableInto(Target, World, HasCount->GetFName(), HasCount, &bSent);
+	if (bSent)
+	{
+		return true;
+	}
+	Online = 0;
+	bUnsent = true;
 	return false;
 }
 

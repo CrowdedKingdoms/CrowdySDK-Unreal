@@ -804,8 +804,8 @@ bool FCrowdyExecDeployAssembleDropsRecordTest::RunTest(const FString& Parameters
 		return false;
 	}
 	TestEqualSensitive(TEXT("the platform gets only package, lib and dependencies, as before the record"), Cargo->Content,
-		FString(TEXT("[package]\nname = \"deploy_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n")
-			TEXT("[dependencies]\nckx-sdk = \"0.7.0\"\nserde = { version = \"1\", features = [\"derive\"] }\n")));
+		FString::Printf(TEXT("[package]\nname = \"deploy_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n")
+			TEXT("[dependencies]\nckx-sdk = \"%s\"\nserde = { version = \"1\", features = [\"derive\"] }\n"), CrowdyExecCodegen::CkxSdkVersion));
 
 	TestEqualSensitive(TEXT("CRLF lines and a record as the last section"),
 		CrowdyExecCodegen::WithoutCrateDefinition(TEXT("[package]\r\nname = \"x\"\r\n\r\n[package.metadata.crowdy]\r\ndefinition = \"/Game/A.A\"\r\n")),

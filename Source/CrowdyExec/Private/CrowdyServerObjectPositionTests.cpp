@@ -36,6 +36,12 @@ struct FCrowdyServerObjectPositionTestAccess
 	}
 	static bool InFlight(const UCrowdyServerObjectComponent& Component) { return Component.bPositionInFlight; }
 	static bool Armed(const UCrowdyServerObjectComponent& Component) { return Component.PositionInX != nullptr; }
+	static void ArmTicker(UCrowdyServerObjectComponent& Component)
+	{
+		Component.bPositionTickerForTest = true;
+		Component.SetPositionArmed(true);
+	}
+	static bool TickerArmed(const UCrowdyServerObjectComponent& Component) { return Component.PositionTicker.IsValid(); }
 };
 
 namespace CrowdyServerObjectPositionTests
@@ -813,6 +819,51 @@ bool FCrowdyServerObjectPositionIgnoresANonFiniteReplyTest::RunTest(const FStrin
 	FAccess::HandleAnswer(*Fixture.Component, OwnerStart, Result);
 	TestTrue(TEXT("a reply with an infinite X moves nothing"), Fixture.Location().Equals(OwnerStart, 0.01));
 	TestEqual(TEXT("and tells nobody"), Fixture.Listener->Kept.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectPositionReportsFromACoreTickerTest,
+	"CrowdySDK.CrowdyExec.ServerObjectComponent.PositionReportsFromACoreTicker", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectPositionReportsFromACoreTickerTest::RunTest(const FString& Parameters)
+{
+	FPositionFixture Fixture(*this);
+	if (!Fixture.Begin(MoveFunction))
+	{
+		return false;
+	}
+	FAccess::ArmTicker(*Fixture.Component);
+	if (!TestTrue(TEXT("a Ready starter with a Position Function arms a core ticker"), FAccess::TickerArmed(*Fixture.Component)))
+	{
+		return false;
+	}
+	FAccess::SetTime(*Fixture.Component, 10.0);
+	FTSTicker::GetCoreTicker().Tick(1.f);
+	FSentFrame First;
+	if (!Fixture.TakeMove(First))
+	{
+		return false;
+	}
+	TestEqual(TEXT("a pass of the core ticker sends one move"), Fixture.MovesSent(), 0);
+	if (!Fixture.Answer(First, OwnerStart.X / 100.0, OwnerStart.Y / 100.0))
+	{
+		return false;
+	}
+
+	Fixture.MoveTo(OwnerStart + FVector(512.5, 0.0, 0.0));
+	FAccess::SetTime(*Fixture.Component, 20.0);
+	FTSTicker::GetCoreTicker().Tick(1.f);
+	FSentFrame Second;
+	if (!Fixture.TakeMove(Second))
+	{
+		return false;
+	}
+
+	FAccess::Leave(*Fixture.Component);
+	TestFalse(TEXT("leaving the object stops the ticker"), FAccess::TickerArmed(*Fixture.Component));
+	Fixture.MoveTo(OwnerStart + FVector(2048.5, 0.0, 0.0));
+	FAccess::SetTime(*Fixture.Component, 30.0);
+	FTSTicker::GetCoreTicker().Tick(1.f);
+	TestEqual(TEXT("and a pass of the core ticker after it sends nothing more"), Fixture.MovesSent(), 0);
 	return true;
 }
 

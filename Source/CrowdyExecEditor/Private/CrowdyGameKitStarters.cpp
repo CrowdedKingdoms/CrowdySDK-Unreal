@@ -395,6 +395,83 @@ namespace CrowdyGameKitStartersDetail
 		}
 	}
 
+	/** A numeric Config key the starter's server code reads as an integer, and the range it takes; a wrong type or range fails the starter's start. */
+	struct FConfigLimit
+	{
+		const TCHAR* Starter;
+		const TCHAR* Key;
+		int64 Min;
+		int64 Max;
+	};
+
+	constexpr int64 MaxExactMilliseconds = 9007199254740992;
+
+	const FConfigLimit ConfigLimits[] = {
+		{TEXT("world"), TEXT("day_ms"), 0, MaxExactMilliseconds},
+		{TEXT("world"), TEXT("nodes"), 0, 65535},
+		{TEXT("world"), TEXT("node_amount"), 0, 4294967295},
+		{TEXT("world"), TEXT("regrow_ms"), 0, MaxExactMilliseconds},
+		{TEXT("npcs"), TEXT("z"), -4294967296, 4294967296},
+	};
+
+	/** A top-level Config key as the starters' server code reads it: the name compares with case, and a number keeps its text. */
+	struct FConfigEntry
+	{
+		FString Key;
+		EJsonNotation Kind = EJsonNotation::Null;
+		FString Text;
+	};
+
+	TArray<FConfigEntry> ReadConfigEntries(const FString& Config)
+	{
+		TArray<FConfigEntry> Entries;
+		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Config);
+		EJsonNotation Notation;
+		if (!Reader->ReadNext(Notation) || Notation != EJsonNotation::ObjectStart)
+		{
+			return Entries;
+		}
+		while (Reader->ReadNext(Notation) && Notation != EJsonNotation::ObjectEnd && Notation != EJsonNotation::Error)
+		{
+			FConfigEntry& Entry = Entries.AddDefaulted_GetRef();
+			Entry.Key = Reader->GetIdentifier();
+			Entry.Kind = Notation;
+			if (Notation == EJsonNotation::String)
+			{
+				Entry.Text = Reader->GetValueAsString();
+			}
+			else if (Notation == EJsonNotation::Number)
+			{
+				Entry.Text = Reader->GetValueAsNumberString();
+			}
+			else if (Notation == EJsonNotation::ObjectStart)
+			{
+				Reader->SkipObject();
+			}
+			else if (Notation == EJsonNotation::ArrayStart)
+			{
+				Reader->SkipArray();
+			}
+		}
+		return Entries;
+	}
+
+	const FConfigEntry* FindEntry(const TArray<FConfigEntry>& Entries, const TCHAR* Key)
+	{
+		return Entries.FindByPredicate([Key](const FConfigEntry& Entry) { return Entry.Key.Equals(Key, ESearchCase::CaseSensitive); });
+	}
+
+	/** Whether a number's text is an integer within the limit as the server code's parser takes it: no fraction or exponent, no minus on an unsigned key, no -0, and nothing longer than any limit's digits (so the parse cannot overflow). */
+	bool IsWholeWithin(const FString& Text, const FConfigLimit& Limit)
+	{
+		if (Text.Len() > 17 || Text.Contains(TEXT("."), ESearchCase::CaseSensitive) || Text.Contains(TEXT("e"), ESearchCase::IgnoreCase) || Text == TEXT("-0") || (Limit.Min == 0 && Text.StartsWith(TEXT("-"))))
+		{
+			return false;
+		}
+		const int64 Number = FCString::Atoi64(*Text);
+		return Number >= Limit.Min && Number <= Limit.Max;
+	}
+
 	bool CopyCrate(const CrowdyGameKitStarters::FStarter& Starter, const FString& Directory, FString& OutError)
 	{
 		const FString Source = CrowdyGameKitStarters::GetCrateSource(Starter);
@@ -514,6 +591,35 @@ FString CrowdyGameKitStarters::ConfigToAdd(const FStarter& Starter, const FStrin
 	return FString::Printf(TEXT("{\"secret\": \"%s\"}"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 }
 
+FString CrowdyGameKitStarters::FindConfigProblem(const FString& TypeName, const FString& Config)
+{
+	using namespace CrowdyGameKitStartersDetail;
+	const TArray<FConfigEntry> Entries = ReadConfigEntries(Config);
+	const FStarter* Starter = FindStarter(TypeName);
+	const FConfigEntry* Secret = Starter && Starter->bMakesSecret ? FindEntry(Entries, TEXT("secret")) : nullptr;
+	if (Secret && Secret->Kind != EJsonNotation::String)
+	{
+		return TEXT("\"secret\" set to something other than text");
+	}
+	for (const FConfigLimit& Limit : ConfigLimits)
+	{
+		const FConfigEntry* Entry = TypeName.Equals(Limit.Starter, ESearchCase::CaseSensitive) ? FindEntry(Entries, Limit.Key) : nullptr;
+		if (Entry && !(Entry->Kind == EJsonNotation::Number && IsWholeWithin(Entry->Text, Limit)))
+		{
+			return FString::Printf(TEXT("\"%s\" set to something other than a whole number from %lld to %lld"), Limit.Key, Limit.Min, Limit.Max);
+		}
+	}
+	return FString();
+}
+
+bool CrowdyGameKitStarters::HasConfigSecret(const FString& Config)
+{
+	using namespace CrowdyGameKitStartersDetail;
+	const TArray<FConfigEntry> Entries = ReadConfigEntries(Config);
+	const FConfigEntry* Secret = FindEntry(Entries, TEXT("secret"));
+	return Secret && Secret->Kind == EJsonNotation::String && !Secret->Text.IsEmpty();
+}
+
 bool CrowdyGameKitStarters::IsDeveloperOnly(const UCrowdyServerObjectDefinition& Definition, const FCrowdyServerFunction& Function)
 {
 	const FStarter* Starter = Definition.IsGameKitStarter() ? FindStarter(Definition.TypeName) : nullptr;
@@ -601,6 +707,12 @@ bool CrowdyGameKitStarters::AddStarter(const FString& TypeName, TConstArrayView<
 	if (!Config.TrimStartAndEnd().IsEmpty() && !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Config), ConfigObject))
 	{
 		OutError = FString::Printf(TEXT("the Config for %s is not a JSON object: %s"), *TypeName, *Config);
+		return false;
+	}
+	const FString ConfigProblem = ConfigObject.IsValid() ? FindConfigProblem(TypeName, Config) : FString();
+	if (!ConfigProblem.IsEmpty())
+	{
+		OutError = FString::Printf(TEXT("the Config for %s has %s"), *TypeName, *ConfigProblem);
 		return false;
 	}
 	const bool bAddsNamed = Plan.ContainsByPredicate([&TypeName](const FStarter* Starter) { return TypeName.Equals(Starter->TypeName, ESearchCase::CaseSensitive); });

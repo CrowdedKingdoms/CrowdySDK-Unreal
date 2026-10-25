@@ -17,8 +17,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_FiveParams(FCrowdyKitOnEmote, AActor*, Sender
  * Emotes: a short name such as wave or cheer that a player sends to the players near them, optionally aimed at one actor.
  *
  * It rides the Game Kit's client event 101 with a JSON body of the emote and the target's uuid, so players on
- * CrowdyCPP, CrowdyJS and CrowdyPy see each other's emotes. It is view state: nothing here is kept, checked or
- * rate limited, and a game that must trust an emote asks a Server Object instead.
+ * CrowdyCPP, CrowdyJS and CrowdyPy see each other's emotes. It is view state: nothing here is kept or checked, and
+ * a game that must trust an emote asks a Server Object instead. Inbound emotes share one budget, set by the
+ * crowdy.kit.emotes.maxpersecond and crowdy.kit.emotes.burst console variables; the rest are dropped.
  */
 UCLASS(BlueprintType, meta = (DisplayName = "Crowdy Kit Emotes"))
 class CROWDYREPLICATION_API UCrowdyKitEmotes : public UWorldSubsystem
@@ -68,9 +69,20 @@ public:
 	/** What the event subscription calls: takes a client event's sender and state and passes them to ReceiveEmote. */
 	void HandleDelivery(const FCrowdyDelivery& Delivery);
 
+	bool TryAdmitEmoteForTest(const double Now) { return TryAdmitEmote(Now); }
+	int32 NumEmotesDroppedForTest() const { return EmotesDropped; }
+
 private:
 
 	bool ResolveTargetUuid(AActor* Target, FString& OutTargetUuid, FString& Reason) const;
 
+	/** Takes one token from the shared budget, refilled at the CVar rate up to the CVar burst. False, and counted, when the budget is empty. */
+	bool TryAdmitEmote(double Now);
+
 	FCrowdySubscription EmoteSubscription;
+
+	double EmoteTokens = 0.0;
+	double EmoteTokensAt = 0.0;
+	int32 EmotesDropped = 0;
+	bool bReportedEmoteFlood = false;
 };

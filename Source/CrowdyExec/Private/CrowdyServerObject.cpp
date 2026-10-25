@@ -156,6 +156,18 @@ namespace CrowdyServerObjectDetail
 				&& (Message.Contains(TEXT(" is switched off"), ESearchCase::CaseSensitive) || Message.Contains(TEXT(" is paused"), ESearchCase::CaseSensitive)));
 	}
 
+	/** Why the socket cannot redial when the app or type is switched off, or empty: a call waiting meanwhile got no answer, but the pause is the cause. */
+	FString RedialRefusal(const TWeakObjectPtr<UCrowdyServerObjectSubsystem>& Subsystem)
+	{
+		const FCrowdyNativeExecConnection* Connection = GetConnection(Subsystem);
+		if (!Connection || Connection->IsConnected())
+		{
+			return FString();
+		}
+		const FString Refusal = Connection->GetRefusal();
+		return IsSwitchedOffText(Refusal) ? Refusal : FString();
+	}
+
 	FString NotDeployedReason(const UCrowdyServerObjectDefinition& Definition)
 	{
 		return FString::Printf(TEXT("%s is not deployed on the server"), *Definition.TypeName);
@@ -559,7 +571,15 @@ FDelegateHandle UCrowdyServerObject::WatchRecord(const FString& Id, FOnCrowdySer
 	{
 		Watchers = &RecordWatchers.Add(Id, MakeShared<FOnCrowdyServerValuesChanged>());
 	}
-	const FDelegateHandle Handle = (*Watchers)->Add(Listener);
+	const uint32 JoinedDuring = ActiveNotify;
+	const FDelegateHandle Handle = (*Watchers)->Add(JoinedDuring == 0 ? Listener
+		: FOnCrowdyServerValuesChanged::FDelegate::CreateWeakLambda(this, [this, Listener, JoinedDuring](UCrowdyServerObject* Object, TConstArrayView<FString> Fields)
+		{
+			if (ActiveNotify != JoinedDuring)
+			{
+				Listener.ExecuteIfBound(Object, Fields);
+			}
+		}));
 	if (Status != ECrowdyServerObjectStatus::Ready || !Records.Contains(Id))
 	{
 		return Handle;
@@ -2365,7 +2385,15 @@ void UCrowdyServerObject::HandleRefreshFailure(const FCrowdyNativeExecReply& Rep
 		return;
 	}
 	// A refused subscribe's reason outlasts a read's, since a good read clears only the read's own.
-	const FString Waiting = CrowdyServerObjectDetail::WaitingReason(*Definition, Reply, bRead);
+	FCrowdyNativeExecReply Shown = Reply;
+	const FString Refusal = Reply.Status == ECrowdyNativeExecStatus::DeadlineExceeded && Reply.bNoReply && !Definition->IsGameKitStarter()
+		? CrowdyServerObjectDetail::RedialRefusal(Subsystem) : FString();
+	if (!Refusal.IsEmpty())
+	{
+		Shown.Status = ECrowdyNativeExecStatus::AppPaused;
+		Shown.Message = Refusal;
+	}
+	const FString Waiting = CrowdyServerObjectDetail::WaitingReason(*Definition, Shown, bRead);
 	const bool bKeepWatchReason = bRead && !bSubscribeConfirmed && !bReadSetReason && !FailureReason.IsEmpty();
 	if (!Waiting.IsEmpty() && !bKeepWatchReason)
 	{
@@ -3511,6 +3539,7 @@ void UCrowdyServerObject::NotifyRecords(const TArray<FString>& Changed, const TA
 		return;
 	}
 	const uint32 NotifyGeneration = Generation;
+	TGuardValue<uint32> Notifying(ActiveNotify, ++NotifyCount);
 	OnRecordsChanged.Broadcast(this, Changed, Removed, ChangedFields);
 	if (Generation != NotifyGeneration)
 	{
@@ -3815,6 +3844,13 @@ FCrowdyServerCallResult UCrowdyServerObject::MakeCallResult(const FPendingCall& 
 		Result.Reason = CrowdyServerObjectDetail::NotDeployedReason(*Definition);
 		break;
 	case ECrowdyNativeExecStatus::DeadlineExceeded:
+		if (const FString Refusal = Reply.bNoReply && !Definition->IsGameKitStarter() ? CrowdyServerObjectDetail::RedialRefusal(Subsystem) : FString(); !Refusal.IsEmpty())
+		{
+			FCrowdyNativeExecReply Refused = Reply;
+			Refused.Message = Refusal;
+			CrowdyServerObjectDetail::ApplyPaused(Result, Refused, Function);
+			break;
+		}
 		Result.Outcome = ECrowdyServerCallOutcome::Timeout;
 		Result.Reason = Reply.bNoReply ? FString(CrowdyServerObjectDetail::NoAnswerReason)
 			: CrowdyServerObjectDetail::WithServerMessage(FString::Printf(TEXT("%s ran past its Time per Call on the server"), *Function), Reply);

@@ -15,6 +15,9 @@ namespace CrowdyExecBuildAndDeploy
 		TMap<FString, FString> Reused;
 	};
 
+	/** The digests a plan may reuse: those Versions name, none when the versions are not known or bRebuildAll asks for every crate to be built again. */
+	TSet<FString> DigestsToReuse(TConstArrayView<CrowdyExecDeveloper::FVersion> Versions, bool bVersionsKnown, bool bRebuildAll);
+
 	/** Reuses a crate's module when HistoryFor(crate name) recorded a digest for exactly its files that Uploaded has, and builds the rest, at most MaxCratesPerBuild a build. */
 	FPlan MakePlan(TConstArrayView<CrowdyExecDeveloper::FBuildCrate> Crates, const TSet<FString>& Uploaded,
 		TFunctionRef<TArray<CrowdyExecRevisions::FRevision>(const FString& CrateName)> HistoryFor, int32 MaxCratesPerBuild = 16);

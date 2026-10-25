@@ -2687,7 +2687,7 @@ bool FCrowdyExecCodegenLibraryCrateTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a Server Only function is refused to players"),
 		HasText(Lib, TEXT("            \"ping\" => {\n                authorize(ctx, &call, false)?;\n                Functions::ping(&mut Library, ctx, &call).map(|()| vec![0xc0])\n            }\n")));
 	TestTrue(TEXT("the trait asks for the two functions only"), HasText(Lib, TEXT("pub trait Functions {\n    fn add(&mut self, ctx: &Ctx, call: &Call<'_>, params: AddParams) -> Result<AddReply>;\n    fn ping(&mut self, ctx: &Ctx, call: &Call<'_>) -> Result<()>;\n}\n")));
-	TestTrue(TEXT("the Cargo pin is the platform's"), HasText(Cargo, TEXT("ckx-sdk = \"0.7.0\"\n")));
+	TestTrue(TEXT("the Cargo pin is the platform's"), HasText(Cargo, *FString::Printf(TEXT("ckx-sdk = \"%s\"\n"), CrowdyExecCodegen::CkxSdkVersion)));
 	TestEqual(TEXT("logic.rs has the two functions and nothing else"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Missing.Num(), 0);
 	TestEqual(TEXT("with no leftover"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Leftover.Num(), 0);
 	TestEqual(TEXT("and the stubs ask for the two"), Crate.Stubs.Num(), 2);

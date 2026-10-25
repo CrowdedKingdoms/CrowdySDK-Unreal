@@ -196,6 +196,15 @@ namespace CrowdyExecBuildAndDeployDetail
 	}
 }
 
+TSet<FString> CrowdyExecBuildAndDeploy::DigestsToReuse(TConstArrayView<CrowdyExecDeveloper::FVersion> Versions, bool bVersionsKnown, bool bRebuildAll)
+{
+	if (!bVersionsKnown || bRebuildAll)
+	{
+		return TSet<FString>();
+	}
+	return CrowdyExecRevisions::UploadedDigests(Versions);
+}
+
 CrowdyExecBuildAndDeploy::FPlan CrowdyExecBuildAndDeploy::MakePlan(TConstArrayView<CrowdyExecDeveloper::FBuildCrate> Crates, const TSet<FString>& Uploaded,
 	TFunctionRef<TArray<CrowdyExecRevisions::FRevision>(const FString& CrateName)> HistoryFor, int32 MaxCratesPerBuild)
 {

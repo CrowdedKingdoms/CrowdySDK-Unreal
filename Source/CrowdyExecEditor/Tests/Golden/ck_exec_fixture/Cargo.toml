@@ -7,5 +7,5 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-ckx-sdk = "0.7.0"
+ckx-sdk = "0.12.1"
 serde = { version = "1", features = ["derive"] }

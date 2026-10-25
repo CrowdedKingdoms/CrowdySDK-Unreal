@@ -955,6 +955,7 @@ bool FCrowdyGameKitStarterKitWorldHoldsPlayersOnline::RunTest(const FString& Par
 	}
 	FCrowdyKitWorldConditions Conditions;
 	Conditions.Online = 7;
+	Conditions.bHasOnline = true;
 	Conditions.Weather = ECrowdyKitWeather::Rain;
 	Conditions.Modifiers.Add(TEXT("xp"), 2.0);
 	Rig.Reply(Read.Rid, ECrowdyNativeExecStatus::Ok, KitMessage(Epoch, 3, "snapshot", Rig.Encode(Conditions)));
@@ -968,6 +969,82 @@ bool FCrowdyGameKitStarterKitWorldHoldsPlayersOnline::RunTest(const FString& Par
 
 	GetMutableDefault<UCrowdySDKDeveloperSettings>()->GameKitWorld = FSoftObjectPath(GetTransientPackage());
 	TestNull(TEXT("a setting that names no starter's definition gives none"), UCrowdyServerObjectLibrary::GetGameKitWorldDefinition());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitStarterWorldWithNoOnlineHasNoCount,
+	"CrowdySDK.CrowdyExec.Kit.WorldWithNoOnlineHasNoCount", CrowdyServerObjectTests::TestFlags)
+
+bool FCrowdyGameKitStarterWorldWithNoOnlineHasNoCount::RunTest(const FString& Parameters)
+{
+	FRig Rig(*this);
+	const FSoftObjectPath Saved = GetDefault<UCrowdySDKDeveloperSettings>()->GameKitWorld;
+	ON_SCOPE_EXIT { GetMutableDefault<UCrowdySDKDeveloperSettings>()->GameKitWorld = Saved; };
+	if (!Rig.IsValid() || !MakeKitWorld(Rig))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	FSentFrame Read;
+	UCrowdyServerObject* Object = AcquireKitWorld(Rig, Owner.Get(), Read);
+	if (!Object)
+	{
+		return false;
+	}
+	FCrowdyKitWorldConditions Conditions;
+	Conditions.Online = 7;
+	Conditions.bHasOnline = true;
+	Conditions.TimeOfDay = 0.25;
+	Rig.Reply(Read.Rid, ECrowdyNativeExecStatus::Ok, KitMessage(Epoch, 1, "snapshot", Rig.Encode(Conditions)));
+	if (!TestTrue(TEXT("the world's snapshot makes it Ready"), Rig.PumpUntil([Object]() { return Object->GetStatus() == ECrowdyServerObjectStatus::Ready; })))
+	{
+		return false;
+	}
+	const UCrowdyServerObjectDefinition* World = Rig.Definition.Get();
+	int32 Online = -1;
+	bool bUnsent = true;
+	TestTrue(TEXT("a world that sends its count has one"), UCrowdyServerObjectLibrary::ReadKitWorldOnline(Object, World, Online, bUnsent) && Online == 7 && !bUnsent);
+
+	uint64 Seq = 1;
+	auto Push = [this, &Rig, Object, &Seq](FCrowdyKitWorldConditions& Next, bool bLeaveOnlineOut)
+	{
+		Next.TimeOfDay = static_cast<double>(++Seq);
+		const TArray<FString> WithoutOnline = {TEXT("time_of_day"), TEXT("night"), TEXT("weather"), TEXT("modifiers")};
+		const TArray<uint8> Message = KitMessage(Epoch, Seq, "snapshot", bLeaveOnlineOut ? Rig.Encode(Next, WithoutOnline) : Rig.Encode(Next));
+		// The world is its own type and key, not the rig's default instance.
+		Rig.Client->TestExecReceiveBinary(TopicPushFrame(Object->GetInstanceId(), Topic, Message, TEXT("world")));
+		const double Marker = Next.TimeOfDay;
+		return TestTrue(FString::Printf(TEXT("snapshot %d arrives"), static_cast<int32>(Seq)),
+			Rig.PumpUntil([Object, Marker]() { const FCrowdyKitWorldConditions* Now = Object->GetState().GetPtr<FCrowdyKitWorldConditions>(); return Now && Now->TimeOfDay == Marker; }));
+	};
+
+	Conditions.Online = 5;
+	if (!Push(Conditions, true))
+	{
+		return false;
+	}
+	const FCrowdyKitWorldConditions* Shown = Object->GetState().GetPtr<FCrowdyKitWorldConditions>();
+	TestTrue(TEXT("a snapshot without online leaves the world holding no count"), Shown && !Shown->bHasOnline);
+	Online = -1;
+	bUnsent = false;
+	TestFalse(TEXT("so it has none to give, though it is Ready"), UCrowdyServerObjectLibrary::ReadKitWorldOnline(Object, World, Online, bUnsent));
+	TestTrue(TEXT("with 0, and saying the world sent none"), Online == 0 && bUnsent);
+
+	Conditions.Online = 7;
+	if (!Push(Conditions, false))
+	{
+		return false;
+	}
+	bUnsent = true;
+	TestTrue(TEXT("a snapshot carrying online gives the count"), UCrowdyServerObjectLibrary::ReadKitWorldOnline(Object, World, Online, bUnsent) && Online == 7 && !bUnsent);
+
+	Conditions.bHasOnline = false;
+	if (!Push(Conditions, false))
+	{
+		return false;
+	}
+	TestFalse(TEXT("online sent as nil is no count"), UCrowdyServerObjectLibrary::ReadKitWorldOnline(Object, World, Online, bUnsent));
+	TestTrue(TEXT("with 0, and saying the world sent none"), Online == 0 && bUnsent);
 	return true;
 }
 

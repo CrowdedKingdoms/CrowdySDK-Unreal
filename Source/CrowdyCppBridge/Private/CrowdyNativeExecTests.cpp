@@ -548,6 +548,10 @@ bool FCrowdyNativeExecAllowListNormalisesAndWaivesOnlyTheEstateTest::RunTest(con
 	TestFalse(TEXT("a wildcard and a port allow the gateway"), bRefused);
 	Dial(TEXT("wss://u:p@allowed.example.test"), TEXT("example.test"), bRefused);
 	TestTrue(TEXT("a credentialed URL stays refused even on an allowed domain"), bRefused);
+
+	AddExpectedMessagePlain(TEXT("entry 'https://' is not a domain name"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	Dial(TEXT("wss://gateway.example.test"), TEXT("https://"), bRefused);
+	TestTrue(TEXT("an entry that reads as no domain allows nothing"), bRefused);
 	return true;
 }
 

@@ -157,4 +157,122 @@ bool FCrowdyMassSpatialGridOverlapPastTheCapScansTrackedTest::RunTest(const FStr
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassSpatialGridLongZeroRadiusTraceScansInsteadTest,
+	"CrowdySDK.Mass.SpatialGridLongZeroRadiusTraceScansInstead", CrowdyMassSpatialGridTestFlags)
+bool FCrowdyMassSpatialGridLongZeroRadiusTraceScansInsteadTest::RunTest(const FString& Parameters)
+{
+	FCrowdyMassSpatialGridTestFixture Fixture;
+	if (!Fixture.Settings->bEnableSpatialGrid || !Fixture.ProjectCapIsTestable() || Fixture.Settings->SpatialGridTraceQueryRadius > 0.0f)
+	{
+		AddWarning(TEXT("The project turns the trace grid off, sets a cap too large to enumerate here, or widens every trace."));
+		return true;
+	}
+
+	const FMassEntityHandle Entity = Fixture.MakeTrackedEntity();
+	Fixture.Subsystem->UpdateSpatialGridEntityForTest(Entity, Fixture.CellCentre(), 0.0f);
+
+	int32 Visits = 0;
+	int32 VisitedCells = 0;
+	const auto CountVisit = [&Visits](const FCrowdyMassTraceCandidateCell&, const bool)
+	{
+		++Visits;
+		return true;
+	};
+
+	const FVector Start = Fixture.CellCentre();
+	const FVector Short = Start + FVector(Fixture.CellSize() * 2.0, 0.0, 0.0);
+	TestTrue(TEXT("a short trace is answered by the grid"),
+		Fixture.Subsystem->ForEachTraceCandidateCell(Start, Short, 0.0f, CountVisit, VisitedCells));
+	TestTrue(TEXT("and visits its cells"), Visits > 0);
+
+	Visits = 0;
+	const double CapCells = Fixture.Settings->SpatialGridMaxRayCells;
+	const FVector Long = Start + FVector(Fixture.CellSize() * (CapCells + 10.0), 0.0, 0.0);
+	TestFalse(TEXT("a trace longer than the cap in cells is left to the scan"),
+		Fixture.Subsystem->ForEachTraceCandidateCell(Start, Long, 0.0f, CountVisit, VisitedCells));
+	TestEqual(TEXT("without visiting a cell, so the scan does not test anything twice"), Visits, 0);
+
+	TArray<FIntVector> RayCells;
+	TestTrue(TEXT("the ray cell query answers a short ray"),
+		Fixture.Subsystem->GetSpatialGridCellsForRayForTest(Start, Short, 0.0f, Fixture.Settings->SpatialGridMaxRayCells, RayCells));
+	TestTrue(TEXT("with its cells"), RayCells.Num() > 0);
+	const int32 SeenAfterShort = Fixture.Subsystem->NumRaySeenCellsForTest();
+	TestTrue(TEXT("a short ray leaves room under the cap to tell a walk from a refusal"), SeenAfterShort < Fixture.Settings->SpatialGridMaxRayCells);
+
+	TestFalse(TEXT("the ray cell query refuses a ray longer than the cap in cells"),
+		Fixture.Subsystem->GetSpatialGridCellsForRayForTest(Start, Long, 0.0f, Fixture.Settings->SpatialGridMaxRayCells, RayCells));
+	TestEqual(TEXT("with no cells"), RayCells.Num(), 0);
+	TestEqual(TEXT("before it walked or recorded a cell"), Fixture.Subsystem->NumRaySeenCellsForTest(), SeenAfterShort);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassSpatialGridHugeSweepRadiusScansInsteadTest,
+	"CrowdySDK.Mass.SpatialGridHugeSweepRadiusScansInstead", CrowdyMassSpatialGridTestFlags)
+bool FCrowdyMassSpatialGridHugeSweepRadiusScansInsteadTest::RunTest(const FString& Parameters)
+{
+	FCrowdyMassSpatialGridTestFixture Fixture;
+	if (!Fixture.Settings->bEnableSpatialGrid || !Fixture.ProjectCapIsTestable())
+	{
+		AddWarning(TEXT("The project turns the trace grid off or sets a cap too large to enumerate here."));
+		return true;
+	}
+
+	const FMassEntityHandle Entity = Fixture.MakeTrackedEntity();
+	const FVector EntityAt = Fixture.CellCentre() + FVector(Fixture.CellSize() * 1000.0, 0.0, 0.0);
+	Fixture.Subsystem->UpdateSpatialGridEntityForTest(Entity, EntityAt, 0.0f);
+
+	const FVector Start = Fixture.CellCentre();
+	const FVector End = Start + FVector(Fixture.CellSize(), 0.0, 0.0);
+	int32 Visits = 0;
+	int32 VisitedCells = 0;
+	TestFalse(TEXT("a huge sweep radius is left to the scan"),
+		Fixture.Subsystem->ForEachTraceCandidateCell(Start, End, 1.0e30f,
+			[&Visits](const FCrowdyMassTraceCandidateCell&, const bool) { ++Visits; return true; }, VisitedCells));
+	TestEqual(TEXT("without visiting a cell"), Visits, 0);
+
+	TArray<FMassEntityHandle> Candidates;
+	TestFalse(TEXT("the candidate query falls back to the scan"),
+		Fixture.Subsystem->GetTraceCandidateEntities(Start, End, 1.0e30f, Candidates, VisitedCells));
+	TestTrue(TEXT("so an entity far off the ray is still a candidate"), Candidates.Contains(Entity));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassSpatialGridOutOfRangeTraceEndpointScansTest,
+	"CrowdySDK.Mass.SpatialGridOutOfRangeTraceEndpointScans", CrowdyMassSpatialGridTestFlags)
+bool FCrowdyMassSpatialGridOutOfRangeTraceEndpointScansTest::RunTest(const FString& Parameters)
+{
+	FCrowdyMassSpatialGridTestFixture Fixture;
+	if (!Fixture.Settings->bEnableSpatialGrid || !Fixture.ProjectCapIsTestable())
+	{
+		AddWarning(TEXT("The project turns the trace grid off or sets a cap too large to enumerate here."));
+		return true;
+	}
+
+	const FMassEntityHandle Entity = Fixture.MakeTrackedEntity();
+	Fixture.Subsystem->UpdateSpatialGridEntityForTest(Entity, Fixture.CellCentre(), 0.0f);
+
+	const FVector Start = Fixture.CellCentre();
+	const FVector OutOfRange(1.0e18, 0.0, 0.0);
+	const FVector NotANumber(std::numeric_limits<double>::quiet_NaN());
+	int32 Visits = 0;
+	int32 VisitedCells = 0;
+	const auto CountVisit = [&Visits](const FCrowdyMassTraceCandidateCell&, const bool)
+	{
+		++Visits;
+		return true;
+	};
+
+	TestFalse(TEXT("an end past the cell index range is left to the scan"),
+		Fixture.Subsystem->ForEachTraceCandidateCell(Start, OutOfRange, 0.0f, CountVisit, VisitedCells));
+	TestFalse(TEXT("a start that is not a number is left to the scan"),
+		Fixture.Subsystem->ForEachTraceCandidateCell(NotANumber, Start, 0.0f, CountVisit, VisitedCells));
+	TestEqual(TEXT("neither visits a cell"), Visits, 0);
+
+	TArray<FMassEntityHandle> Candidates;
+	TestFalse(TEXT("the candidate query falls back to the scan for an out of range end"),
+		Fixture.Subsystem->GetTraceCandidateEntities(Start, OutOfRange, 0.0f, Candidates, VisitedCells));
+	TestTrue(TEXT("which returns the tracked entity"), Candidates.Contains(Entity));
+	return true;
+}
+
 #endif

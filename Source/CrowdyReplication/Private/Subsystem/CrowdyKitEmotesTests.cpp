@@ -5,6 +5,7 @@
 
 #include "Core/UDP/CrowdyKitEvents.h"
 #include "Core/UDP/Subscription/FCrowdyDelivery.h"
+#include "HAL/IConsoleManager.h"
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Messages/GameObjects/FKitEventRequest.h"
 #include "Messages/GameObjects/FServerEventNotification.h"
@@ -345,6 +346,75 @@ bool FCrowdyKitEmotesSendRefusesTest::RunTest(const FString& Parameters)
 	Reason = TEXT("stale");
 	TestFalse(TEXT("sending from a subsystem with no game instance is refused"), Emotes->SendEmote(TEXT("wave"), nullptr, Reason));
 	TestFalse(TEXT("with a fresh reason"), Reason.IsEmpty() || Reason == TEXT("stale"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitEmotesFloodIsDroppedTest,
+	"CrowdySDK.Replication.KitEmotes.FloodIsDroppedBeforeTheParse", KitEmotesTestFlags)
+bool FCrowdyKitEmotesFloodIsDroppedTest::RunTest(const FString& Parameters)
+{
+	AddExpectedMessagePlain(TEXT("Dropping inbound emotes over the budget"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	const IConsoleVariable* BurstVariable = IConsoleManager::Get().FindConsoleVariable(TEXT("crowdy.kit.emotes.burst"));
+	if (!TestNotNull(TEXT("the burst is a console variable"), BurstVariable))
+	{
+		return false;
+	}
+	const int32 Burst = BurstVariable->GetInt();
+
+	TStrongObjectPtr<UCrowdyKitEmotes> Emotes(NewObject<UCrowdyKitEmotes>(GetTransientPackage()));
+	TStrongObjectPtr<UCrowdyKitEmotesTestListener> Listener(NewObject<UCrowdyKitEmotesTestListener>(GetTransientPackage()));
+	Emotes->OnEmote.AddDynamic(Listener.Get(), &UCrowdyKitEmotesTestListener::OnEmote);
+
+	TArray<uint8> Body;
+	FString Reason;
+	TestTrue(TEXT("the body encodes"), UCrowdyKitEmotes::EncodeEmoteBody(TEXT("wave"), FString(), Body, Reason));
+
+	constexpr int32 Deliveries = 200;
+	for (int32 Index = 0; Index < Deliveries; ++Index)
+	{
+		TSharedRef<FGameEventNotification, ESPMode::ThreadSafe> ClientEvent = MakeShared<FGameEventNotification, ESPMode::ThreadSafe>();
+		ClientEvent->UUID = FCrowdyActorId::FromGuid(FGuid::NewGuid());
+		ClientEvent->EventType = CrowdyKitEvent::Emote;
+		ClientEvent->StateView = Body;
+		const TSharedRef<const ICrowdyMessage, ESPMode::ThreadSafe> ClientMessage = ClientEvent;
+		const FCrowdyDelivery Delivery(ECrowdyMessageType::CLIENT_EVENT_NOTIFICATION, ClientEvent->GetPayloadKey(),
+			nullptr, ClientEvent->GetPayloadBytes(), ClientMessage);
+		Emotes->HandleDelivery(Delivery);
+	}
+
+	TestTrue(TEXT("the first emotes are read"), Listener->Calls > 0);
+	TestTrue(TEXT("a burst's worth and a little refill are read, not all of them"), Listener->Calls <= Burst + 8);
+	TestEqual(TEXT("every emote is either read or counted as dropped"), Listener->Calls + Emotes->NumEmotesDroppedForTest(), Deliveries);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitEmotesBudgetRefillsTest,
+	"CrowdySDK.Replication.KitEmotes.EmoteBudgetRefills", KitEmotesTestFlags)
+bool FCrowdyKitEmotesBudgetRefillsTest::RunTest(const FString& Parameters)
+{
+	AddExpectedMessagePlain(TEXT("Dropping inbound emotes over the budget"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	const IConsoleVariable* BurstVariable = IConsoleManager::Get().FindConsoleVariable(TEXT("crowdy.kit.emotes.burst"));
+	if (!TestNotNull(TEXT("the burst is a console variable"), BurstVariable))
+	{
+		return false;
+	}
+	const int32 Burst = BurstVariable->GetInt();
+
+	TStrongObjectPtr<UCrowdyKitEmotes> Emotes(NewObject<UCrowdyKitEmotes>(GetTransientPackage()));
+
+	constexpr double Start = 1000.0;
+	int32 Admitted = 0;
+	while (Admitted < Burst + 1 && Emotes->TryAdmitEmoteForTest(Start))
+	{
+		++Admitted;
+	}
+	TestEqual(TEXT("a fresh budget admits its burst and no more at one instant"), Admitted, Burst);
+	TestFalse(TEXT("an empty budget refuses"), Emotes->TryAdmitEmoteForTest(Start));
+	TestEqual(TEXT("and counts the refusals"), Emotes->NumEmotesDroppedForTest(), 2);
+
+	TestTrue(TEXT("a second later it admits again"), Emotes->TryAdmitEmoteForTest(Start + 1.0));
 	return true;
 }
 

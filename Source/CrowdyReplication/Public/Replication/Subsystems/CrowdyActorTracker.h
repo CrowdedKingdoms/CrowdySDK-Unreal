@@ -189,7 +189,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Actor Tracker")
 	void ToggleBroadcastUpdatesToGameThread(const bool bEnable);
 	
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Actor Tracker")
+	/** Ignored once the tracker runs, which is before any Blueprint can call it: set these limits in the map profile or the CrowdySDK developer settings. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Actor Tracker", meta = (DeprecatedFunction, DeprecationMessage = "Ignored once the tracker runs, which is before any Blueprint can call it. Set these limits in the map profile or the CrowdySDK developer settings."))
 	void Configure(int32 InMaxTrackedActors,
 		int32 InMaxUpdatesPerBatch,
 		float InMaxBatchWaitTime,

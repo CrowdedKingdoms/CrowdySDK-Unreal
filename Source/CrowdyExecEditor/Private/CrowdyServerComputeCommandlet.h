@@ -26,4 +26,7 @@ public:
 
 	/** Splits a batch file into one argument list per operation, skipping blank and # lines; fails, naming the line, on a nested batch or when nothing is left. */
 	static bool ParseBatchLines(const FString& Text, TArray<FString>& OutLines, FString& OutError);
+
+	/** Reads a JSON switch such as -inputs=: the JSON itself, or @<file> / @"<file with spaces>" holding it. */
+	static bool ReadJsonSwitch(const FString& Params, const TCHAR* Switch, FString& OutJson, FString& OutError);
 };

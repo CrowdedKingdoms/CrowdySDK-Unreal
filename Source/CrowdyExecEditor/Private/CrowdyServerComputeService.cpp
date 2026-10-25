@@ -592,7 +592,12 @@ bool FCrowdyServerComputeService::CanDeploy() const
 	return !IsBusy() && Client && Project.Problems.IsEmpty() && (CrowdyExecRevisions::HasChanges(Changes) || !bLiveKnown);
 }
 
-bool FCrowdyServerComputeService::Deploy()
+bool FCrowdyServerComputeService::CanRebuildAll() const
+{
+	return !IsBusy() && Client && Project.Problems.IsEmpty();
+}
+
+bool FCrowdyServerComputeService::Deploy(bool bRebuildAll)
 {
 	using namespace CrowdyServerComputeServiceDetail;
 	if (IsBusy() || RenewClientIfStale())
@@ -600,7 +605,7 @@ bool FCrowdyServerComputeService::Deploy()
 		return false;
 	}
 	RefreshTypes();
-	if (!CanDeploy())
+	if (bRebuildAll ? !CanRebuildAll() : !CanDeploy())
 	{
 		return false;
 	}
@@ -626,13 +631,17 @@ bool FCrowdyServerComputeService::Deploy()
 			Lines.Add(FText::FromString(KindSentence));
 		}
 	}
-	if (!CrowdyExecRevisions::HasChanges(Changes))
+	const bool bLiveKnown = bVersionsLoaded && VersionsError.IsEmpty();
+	if (!CrowdyExecRevisions::HasChanges(Changes) && !(bRebuildAll && bLiveKnown))
 	{
 		Lines.Add(LOCTEXT("ConfirmNotKnown", "What the app runs now could not be read, so what this changes is not known."));
 	}
-	const bool bLiveKnown = bVersionsLoaded && VersionsError.IsEmpty();
 	CrowdyExecBuildAndDeploy::FPlan Plan = CrowdyExecBuildAndDeploy::MakePlan(Project.Crates,
-		bLiveKnown ? CrowdyExecRevisions::UploadedDigests(Versions) : TSet<FString>(), [this](const FString& CrateName) { return GetHistory(CrateName); });
+		CrowdyExecBuildAndDeploy::DigestsToReuse(Versions, bLiveKnown, bRebuildAll), [this](const FString& CrateName) { return GetHistory(CrateName); });
+	if (bRebuildAll)
+	{
+		Lines.Add(LOCTEXT("ConfirmRebuildAll", "Every type's server code is built again, including types whose code did not change."));
+	}
 	if (!Plan.Reused.IsEmpty())
 	{
 		TArray<FString> Names;

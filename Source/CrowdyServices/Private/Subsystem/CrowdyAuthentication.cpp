@@ -45,19 +45,31 @@ static constexpr int32  MaxRotationRetries   = 5;
 // know the argument refuses every attempt for as long as the client runs.
 static constexpr int32  MaxServerNamedRefusals = 2;
 
-// Any gate status but ACTIVE pauses the app, GRACE included; an answer with no gate leaves the state as it was.
-static void ApplyRuntimeGate(UCrowdyGameSession* Session, const FCrowdyCppAppTokenResult& Result)
+// Any gate status but ACTIVE pauses the app, GRACE included. An answer with no gate lifts only a pause an earlier
+// answer set (OwnPauseReason), never one raised elsewhere.
+static void ApplyRuntimeGate(UCrowdyGameSession* Session, const FCrowdyCppAppTokenResult& Result, FString& OwnPauseReason)
 {
-	if (!Session || Result.RuntimeGateStatus.IsEmpty())
+	if (!Session)
 	{
+		return;
+	}
+	if (Result.RuntimeGateStatus.IsEmpty())
+	{
+		if (Session->GetAppPausedReason().Equals(OwnPauseReason, ESearchCase::CaseSensitive))
+		{
+			Session->SetAppPaused(false, FString());
+		}
+		OwnPauseReason.Reset();
 		return;
 	}
 	if (Result.RuntimeGateStatus.Equals(TEXT("ACTIVE"), ESearchCase::CaseSensitive))
 	{
 		Session->SetAppPaused(false, FString());
+		OwnPauseReason.Reset();
 		return;
 	}
-	Session->SetAppPaused(true, Result.RuntimeGateReason.IsEmpty() ? Result.RuntimeGateStatus.ToLower() : Result.RuntimeGateReason);
+	OwnPauseReason = Result.RuntimeGateReason.IsEmpty() ? Result.RuntimeGateStatus.ToLower() : Result.RuntimeGateReason;
+	Session->SetAppPaused(true, OwnPauseReason);
 }
 
 static const TCHAR* const HeldFlowSupersededMessage =
@@ -277,15 +289,17 @@ void UCrowdyAuthentication::Login(const FString& Email, const FString& Password,
 	// This subsystem and the client host share the game instance's lifetime, so a completion cannot arrive after
 	// the subsystem is gone; the weak check covers only teardown ordering within that shutdown.
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
-	WithAppEndpointResolved([WeakThis, Email, Password, OnSuccess, OnError](FCrowdyCppClient& Client)
+	const int32 Generation = SignInGeneration;
+	WithAppEndpointResolved([WeakThis, Generation, Email, Password, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
 		UCrowdyAuthentication* Issuer = WeakThis.Get();
 		if (!Issuer) return;
 		Client.SignInWithPassword(Email, Password, Issuer->GuardSession<FCrowdyCppAuthResult>(
-			[WeakThis, OnSuccess, OnError](FCrowdyCppAuthResult Result)
+			[WeakThis, Generation, OnSuccess, OnError](FCrowdyCppAuthResult Result)
 			{
 				UCrowdyAuthentication* Self = WeakThis.Get();
 				if (!Self) return;
+				if (Self->AbandonStaleSignIn(Generation, OnError)) return;
 				if (Result.bOk)
 				{
 					Self->BeginMintPipeline(Result.SessionToken, Result.SessionGameTokenID, Result.UserID,
@@ -306,16 +320,18 @@ void UCrowdyAuthentication::Register(const FString& Email, const FString& Passwo
 	FailHeldConsentFlow(HeldFlowSupersededMessage);
 
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
-	WithAppEndpointResolved([WeakThis, Email, Password, OnSuccess, OnError](FCrowdyCppClient& Client)
+	const int32 Generation = SignInGeneration;
+	WithAppEndpointResolved([WeakThis, Generation, Email, Password, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
 		UCrowdyAuthentication* Issuer = WeakThis.Get();
 		if (!Issuer) return;
 		// No gamertag is sent; the server assigns a default.
 		Client.RegisterWithPassword(Email, Password, FString(), Issuer->GuardSession<FCrowdyCppAuthResult>(
-			[WeakThis, OnSuccess, OnError](FCrowdyCppAuthResult Result)
+			[WeakThis, Generation, OnSuccess, OnError](FCrowdyCppAuthResult Result)
 			{
 				UCrowdyAuthentication* Self = WeakThis.Get();
 				if (!Self) return;
+				if (Self->AbandonStaleSignIn(Generation, OnError)) return;
 				if (Result.bOk)
 				{
 					Self->BeginMintPipeline(Result.SessionToken, Result.SessionGameTokenID, Result.UserID,
@@ -361,15 +377,17 @@ void UCrowdyAuthentication::CompleteLoginLink(const FString& Token, FOnAuthSucce
 	FailHeldConsentFlow(HeldFlowSupersededMessage);
 
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
-	WithAppEndpointResolved([WeakThis, Token, OnSuccess, OnError](FCrowdyCppClient& Client)
+	const int32 Generation = SignInGeneration;
+	WithAppEndpointResolved([WeakThis, Generation, Token, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
 		UCrowdyAuthentication* Issuer = WeakThis.Get();
 		if (!Issuer) return;
 		Client.CompleteLoginLink(Token, Issuer->GuardSession<FCrowdyCppAuthResult>(
-			[WeakThis, OnSuccess, OnError](FCrowdyCppAuthResult Result)
+			[WeakThis, Generation, OnSuccess, OnError](FCrowdyCppAuthResult Result)
 			{
 				UCrowdyAuthentication* Self = WeakThis.Get();
 				if (!Self) return;
+				if (Self->AbandonStaleSignIn(Generation, OnError)) return;
 				if (Result.bOk)
 				{
 					Self->BeginMintPipeline(Result.SessionToken, Result.SessionGameTokenID, Result.UserID,
@@ -529,7 +547,8 @@ void UCrowdyAuthentication::BeginSocialSignIn(const FString& Provider, FOnAuthSu
 	// The reserved port is live from here on, so every path out of the resolve has to clear the pending flag or the
 	// next sign-in is refused as "already in progress" for the rest of the session.
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
-	WithAppEndpointResolved([WeakThis, Provider, RedirectUri, OnSuccess, OnError](FCrowdyCppClient& Client)
+	const int32 Generation = SignInGeneration;
+	WithAppEndpointResolved([WeakThis, Generation, Provider, RedirectUri, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
 		UCrowdyAuthentication* Issuer = WeakThis.Get();
 		if (!Issuer)
@@ -537,10 +556,11 @@ void UCrowdyAuthentication::BeginSocialSignIn(const FString& Provider, FOnAuthSu
 			return;
 		}
 		Client.SocialLoginStart(Provider, RedirectUri, Issuer->GuardSession<FCrowdyCppJsonValueResult>(
-			[WeakThis, Provider, OnSuccess, OnError](FCrowdyCppJsonValueResult Result)
+			[WeakThis, Generation, Provider, OnSuccess, OnError](FCrowdyCppJsonValueResult Result)
 			{
 				UCrowdyAuthentication* Self = WeakThis.Get();
 				if (!Self) return;
+				if (Self->AbandonStaleSignIn(Generation, OnError)) return;
 
 				FString AuthorizeUrl;
 				FString State;
@@ -620,15 +640,17 @@ void UCrowdyAuthentication::CompleteSocialLogin(const FString& Provider, const F
                                                 FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
-	WithAppEndpointResolved([WeakThis, Provider, Code, State, OnSuccess, OnError](FCrowdyCppClient& Client)
+	const int32 Generation = SignInGeneration;
+	WithAppEndpointResolved([WeakThis, Generation, Provider, Code, State, OnSuccess, OnError](FCrowdyCppClient& Client)
 	{
 		UCrowdyAuthentication* Issuer = WeakThis.Get();
 		if (!Issuer) return;
 		Client.SocialLoginComplete(Provider, Code, State, Issuer->GuardSession<FCrowdyCppAuthResult>(
-			[WeakThis, OnSuccess, OnError](FCrowdyCppAuthResult Result)
+			[WeakThis, Generation, OnSuccess, OnError](FCrowdyCppAuthResult Result)
 			{
 				UCrowdyAuthentication* Self = WeakThis.Get();
 				if (!Self) return;
+				if (Self->AbandonStaleSignIn(Generation, OnError)) return;
 				if (Result.bOk)
 				{
 					Self->BeginMintPipeline(Result.SessionToken, Result.SessionGameTokenID, Result.UserID,
@@ -1073,11 +1095,16 @@ void UCrowdyAuthentication::ClaimFreeAccess(FOnAuthSuccess OnSuccess, FOnAuthErr
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetStringField(TEXT("appId"), LexToString(GameSession->GetAppID()));
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	const int32 Generation = SignInGeneration;
 	Client->RunOp(ECrowdyCppApiDomain::AppAccess, TEXT("ClaimFreeAppAccess"), Variables, GuardSession<FCrowdyCppJsonResult>(
-		[WeakThis, OnSuccess, OnError](FCrowdyCppJsonResult Result)
+		[WeakThis, Generation, OnSuccess, OnError](FCrowdyCppJsonResult Result)
 		{
 			UCrowdyAuthentication* Self = WeakThis.Get();
 			if (!Self)
+			{
+				return;
+			}
+			if (Self->AbandonStaleSignIn(Generation, OnError))
 			{
 				return;
 			}
@@ -1299,15 +1326,17 @@ void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSucces
 
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
 	++CppRotationsInFlight;
+	const int32 Generation = SignInGeneration;
 	Client->MintAppToken(AppID, GuardSession<FCrowdyCppAppTokenResult>(
-		[WeakThis, Flow, OnSuccess, OnError](FCrowdyCppAppTokenResult Result)
+		[WeakThis, Generation, Flow, OnSuccess, OnError](FCrowdyCppAppTokenResult Result)
 		{
 			UCrowdyAuthentication* Self = WeakThis.Get();
 			if (!Self) return;
 			--Self->CppRotationsInFlight;
+			if (Self->AbandonStaleSignIn(Generation, OnError)) return;
 			if (Result.bOk)
 			{
-				ApplyRuntimeGate(Self->GameSession, Result);
+				ApplyRuntimeGate(Self->GameSession, Result, Self->GatePauseReason);
 				Self->ApplyAppTokenAndFinish(MakeAppTokenFields(Result), Flow, OnSuccess);
 				return;
 			}
@@ -1369,18 +1398,20 @@ void UCrowdyAuthentication::DispatchRefresh()
 
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
 	++CppRotationsInFlight;
+	const int32 Generation = SignInGeneration;
 	Client->RefreshAppToken(CurrentServerIp4, CurrentServerClientPort, GuardSession<FCrowdyCppAppTokenResult>(
-		[WeakThis, bNamedCurrentServer](FCrowdyCppAppTokenResult Result)
+		[WeakThis, Generation, bNamedCurrentServer](FCrowdyCppAppTokenResult Result)
 		{
 			UCrowdyAuthentication* Self = WeakThis.Get();
 			if (!Self) return;
 			// Cleared before the re-mint below, so the debounce does not refuse the recovery it is asking for.
 			--Self->CppRotationsInFlight;
+			if (Self->AbandonStaleSignIn(Generation, FOnAuthError())) return;
 			if (Result.bOk)
 			{
 				// A rotation that got through clears the refusal run, so only CONSECUTIVE refusals count.
 				Self->ServerNamedRefusals = 0;
-				ApplyRuntimeGate(Self->GameSession, Result);
+				ApplyRuntimeGate(Self->GameSession, Result, Self->GatePauseReason);
 				Self->ApplyAppTokenAndFinish(MakeAppTokenFields(Result), EAuthFlow::Refresh, FOnAuthSuccess());
 				return;
 			}
@@ -1435,6 +1466,19 @@ void UCrowdyAuthentication::DispatchRefresh()
 				TEXT("[CrowdyAuth] refreshAppToken failed (%s); re-minting from session."), *Result.ErrorMessage);
 			Self->DispatchMint(EAuthFlow::Refresh, FOnAuthSuccess(), FOnAuthError());
 		}));
+}
+
+bool UCrowdyAuthentication::AbandonStaleSignIn(int32 Generation, const FOnAuthError& OnError)
+{
+	if (Generation == SignInGeneration)
+	{
+		return false;
+	}
+
+	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
+		TEXT("[CrowdyAuth] Dropped a sign-in answer that arrived after sign-out."));
+	OnError.ExecuteIfBound(TEXT("Signed out before sign-in finished."));
+	return true;
 }
 
 void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& Token, EAuthFlow Flow, FOnAuthSuccess OnSuccess)
@@ -1723,6 +1767,13 @@ void UCrowdyAuthentication::CancelProactiveRefresh()
 
 FString UCrowdyAuthentication::GetInstanceSuffix() const
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	if (!InstanceSuffixForTest.IsEmpty())
+	{
+		return InstanceSuffixForTest;
+	}
+#endif
+
 	// Under editor PIE each client runs in its own GameInstance but shares ProjectSavedDir with the
 	// others, so an unsuffixed vault would be read/written by every window and all would restore the
 	// same account. PIEInstance is the per-client discriminator. Standalone/packaged (GIsEditor==false)
@@ -1827,7 +1878,15 @@ bool UCrowdyAuthentication::RestoreSession(FOnAuthSuccess OnSuccess, FOnAuthErro
 
 void UCrowdyAuthentication::ClearSavedSession()
 {
+	++SignInGeneration;
 	CancelProactiveRefresh();
+
+	// A browser sign-in armed for the account that signed out must not complete into the next one.
+	bLoopbackFlowPending = false;
+	if (LoopbackServer.IsValid())
+	{
+		LoopbackServer->Stop();
+	}
 
 	FCrowdySecretFile::Delete(GetAuthVaultPath());
 
