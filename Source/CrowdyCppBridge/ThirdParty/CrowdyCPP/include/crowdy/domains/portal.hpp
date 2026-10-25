@@ -53,6 +53,13 @@ class PortalAPI : public DomainBase {
   static constexpr std::string_view kAppTokenFields =
       "token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl runtimeGate { status reason }";
 
+  /// What every org token starts with: an organization's server credential, never a device's.
+  static constexpr std::string_view kOrgTokenPrefix = "cko_";
+  static constexpr const char* kExchangeManagedPlayerAssertion =
+      "mutation ExchangeManagedPlayerAssertion($input: ExchangeManagedPlayerAssertionInput!) {"
+      " exchangeManagedPlayerAssertion(input: $input) {"
+      " token gameTokenId appId expiresAt gameApiUrl gameApiWsUrl discoveryUrl launchUrl runtimeGate { status reason } } }";
+
   /// Native/direct mint: exchange the identity session token for an
   /// app-scoped gameplay token. The token is NOT stored on this client —
   /// build a per-game client with it. Free/open apps auto-grant access; paid
@@ -214,6 +221,58 @@ class PortalAPI : public DomainBase {
           }
           cb(std::move(out), r);
         });
+  }
+
+  /// Org-managed players: store an app token the player's organization minted for
+  /// it, so this client plays with it and refresh() rotates it. The organization's server
+  /// calls mintManagedPlayerToken with its org token and hands the response to the player's
+  /// device, which passes it here. The token refreshes until the sign-in's lifetime (the
+  /// organization's setting) ends; then the device asks its organization again. A refresh is
+  /// also refused with ORG_LEGAL_ACCEPTANCE_REQUIRED (graphql::orgLegalAcceptanceRequiredOf())
+  /// while the organization has not accepted the current Org-Managed Players Addendum.
+  ///
+  /// Refuses an empty token and an org token (`cko_...`) with Errc::InvalidArgument, storing
+  /// nothing: an org token is the organization's server credential and signs in any of its
+  /// players, so a device must never hold one.
+  Status adoptAppToken(const AppTokenResponse& response) const {
+    if (response.token.empty() || response.token.rfind(kOrgTokenPrefix, 0) == 0) {
+      return Errc::InvalidArgument;
+    }
+    auth_->setToken(response.token);
+    return {};
+  }
+
+  /// Org-managed players: trade an assertion the player's organization signed for
+  /// the player's app token, and store it as adoptAppToken() does. Public: needs no session
+  /// and no org token. Each assertion works once; a refusal is ASSERTION_REJECTED with the
+  /// failed check in extensions.reason (graphql::assertionRejectedOf()). Resending the same
+  /// assertion cannot succeed. A valid assertion is refused with ORG_LEGAL_ACCEPTANCE_REQUIRED
+  /// while the organization has not accepted the current Org-Managed Players Addendum.
+  AppTokenResponse exchangeManagedPlayerAssertion(std::string_view appId,
+                                                  std::string_view assertion) const {
+    graphql::JVal vars;
+    vars["input"]["appId"] = appId;
+    vars["input"]["assertion"] = assertion;
+    auto r = AppTokenResponse::fromJson(execUnwrap(kExchangeManagedPlayerAssertion, vars));
+    if (!r.token.empty()) auth_->setToken(r.token);
+    return r;
+  }
+
+  void exchangeManagedPlayerAssertionAsync(
+      std::string_view appId, std::string_view assertion,
+      std::function<void(graphql::GraphQLOutcome, AppTokenResponse)> cb) const {
+    graphql::JVal vars;
+    vars["input"]["appId"] = appId;
+    vars["input"]["assertion"] = assertion;
+    execUnwrapAsync(kExchangeManagedPlayerAssertion, vars, {},
+                    [auth = auth_, cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      AppTokenResponse r{};
+                      if (out.ok()) {
+                        r = AppTokenResponse::fromJson(out.data);
+                        if (!r.token.empty()) auth->setToken(r.token);
+                      }
+                      cb(std::move(out), r);
+                    });
   }
 
   /// A begun portal entry: send the player to `url`; keep `verifier` (and

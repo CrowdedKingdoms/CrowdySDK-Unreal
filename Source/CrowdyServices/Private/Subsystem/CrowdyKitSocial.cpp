@@ -786,7 +786,7 @@ FString UCrowdyKitSocial::DescribeChatResult(ECrowdyKitChatResult Result)
 	switch (Result)
 	{
 	case ECrowdyKitChatResult::Sent:
-		return TEXT("The message left this client. The server delivers it to the channel's members and drops it from a player who is not one, without telling the sender.");
+		return TEXT("The message left this client. The server delivers it to the channel's members; a refusal arrives later on On Send Refused.");
 	case ECrowdyKitChatResult::EmptyText:
 		return TEXT("There is no text to send.");
 	case ECrowdyKitChatResult::TooLong:

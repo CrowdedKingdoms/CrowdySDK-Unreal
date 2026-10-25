@@ -116,6 +116,9 @@ class Connection {
                                      Bytes frame, std::uint16_t frameId, std::uint8_t codec = 0,
                                      std::uint8_t distance = 1,
                                      wire::DecayRate decay = wire::DecayRate::None);
+  /// Proximity text (opcode 136). Needs the session's use_text_chat for the app (Game API
+  /// v2.55.0: every tier that grants access has it unless the app took it away); without it
+  /// the server answers ErrorCode::Unauthorized.
   Result<std::uint8_t> sendText(const SpatialSend& p) {
     return sendLongSpatial(wire::MessageType::ClientTextPacket, p);
   }
@@ -128,10 +131,12 @@ class Connection {
   }
   /// Direct actor-to-actor message: chunk + uuid address the TARGET actor.
   /// Fire-and-forget (no echo); embed sender identity in the payload if the
-  /// recipient needs it.
+  /// recipient needs it. Needs the session's use_direct_messages for the app (Game API
+  /// v2.55.0); without it the server answers ErrorCode::Unauthorized.
   Result<std::uint8_t> sendSingleActorMessage(const wire::ChunkCoord& targetChunk,
                                               const core::ActorUuid& targetUuid, Bytes payload);
-  /// Publish to a channel (requires membership + send_messages).
+  /// Publish to a channel (requires membership + send_messages, and from Game API v2.55.0
+  /// the session's use_text_chat for the channel's app; Unauthorized otherwise).
   Result<std::uint8_t> sendChannelMessage(std::int64_t channelId, const core::ActorUuid& uuid,
                                           Bytes payload);
   /// Channel audio (opcode 35, Buddy v0.37.0): opcode 17's layout and signing with its own
@@ -145,7 +150,7 @@ class Connection {
   /// Publish to a channel so that only members with a live actor in this
   /// connection's app within maxDistance chunks of `origin` receive it (Euclidean
   /// between chunk coordinates, boundary included; 0..2147483647; Buddy v0.35.0).
-  /// Members receive an ordinary channel notification. Same send right as
+  /// Members receive an ordinary channel notification. Same send right and use_text_chat as
   /// sendChannelMessage; a refusal arrives as a GenericError for the returned
   /// sequence. InvalidArgument for a distance over wire::channel_ranged::kMaxDistance.
   Result<std::uint8_t> sendRangedChannelMessage(std::int64_t channelId, const core::ActorUuid& uuid,

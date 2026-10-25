@@ -91,6 +91,41 @@ struct FCrowdyCppConnectionRequest
 	TFunction<void()> ReportTokenRejected;
 };
 
+/** A send the realtime server refused, and what it was. The server names only a one-byte sequence, so on a busy connection this can name the wrong send: show it, do not act on it. */
+USTRUCT(BlueprintType)
+struct CROWDYNET_API FCrowdySendRefusal
+{
+	GENERATED_BODY()
+
+	/** The server's error code, such as 7 for Unauthorized. */
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy|Realtime")
+	int32 Code = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy|Realtime")
+	FString CodeName;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy|Realtime")
+	bool bChannelMessage = false;
+
+	/** The channel the refused message was published to; 0 for a message that was not a channel message. */
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy|Realtime")
+	int64 ChannelId = 0;
+
+	/** The refused message's type on the wire, such as 142 for a message to one actor. */
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy|Realtime")
+	int32 MessageType = 0;
+
+	/** What was refused, in words: "a channel message", "a message to one actor". */
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy|Realtime")
+	FString What;
+
+	/** What to do about it, in words; empty when there is nothing more to say than the code. */
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy|Realtime")
+	FString Remedy;
+};
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCrowdySendRefused, const FCrowdySendRefusal&, Refusal);
+
 /**
  * Owns the replication connection the running game sends its UDP traffic through, in both directions.
  *
@@ -119,6 +154,21 @@ public:
 
 	/** Resolve the host from any object with a world. Null outside a game instance. */
 	static UCrowdyCppReplicationSubsystem* Get(const UObject* WorldContextObject);
+
+	/**
+	 * Fires on the game thread when the realtime server refuses a send this client made, such as a channel message from a player
+	 * whose access tier lacks use_text_chat. The send had already left, so this is the only sign it went nowhere. The same code,
+	 * message type and channel is told at most once a second.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy|Realtime")
+	FOnCrowdySendRefused OnSendRefused;
+
+	/** A refused send as On Send Refused reports it, or false when the server's frame names no send on record. */
+	static bool DescribeSendRefusal(const struct FCrowdyCppSendError& Error, FCrowdySendRefusal& OutRefusal);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	bool AdmitRefusalForTest(const FCrowdySendRefusal& Refusal, double Now) { return AdmitRefusal(Refusal, Now); }
+#endif
 
 	/**
 	 * Install the connection to route through, or clear it by passing null. Disposes whatever was installed before,
@@ -269,6 +319,11 @@ private:
 	 * sequence alone is not something a reader can trace back to a call site.
 	 */
 	void ReportSendError(const struct FCrowdyCppSendError& Error);
+
+	/** Whether a refusal is told now: once a second for the same code, message type and channel, and at most 64 of them a second. */
+	bool AdmitRefusal(const FCrowdySendRefusal& Refusal, double Now);
+	TSet<uint64> RefusalsThisWindow;
+	double RefusalWindowStartedSeconds = 0.0;
 
 	/**
 	 * The server repeats its paused-app error while the app is paused and says nothing when it ends. The pause it set
