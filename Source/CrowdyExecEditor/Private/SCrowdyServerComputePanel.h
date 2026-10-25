@@ -5,6 +5,7 @@
 #include "CrowdyExecDeveloperApi.h"
 #include "CrowdyExecRevisions.h"
 #include "UI/CrowdyStudioWidgets.h"
+#include "UObject/SoftObjectPath.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -21,6 +22,29 @@ namespace CrowdyServerComputePage
 {
 	/** Why removing a type must leave its crate folder, or empty when the folder may be deleted: it must exist, be the type's own (valid Type Name, not shared) directly inside ServerDirectory, and hold no link. */
 	FText WhyCrateFolderStays(const FString& TypeName, const FString& CrateDirectory, const FString& ServerDirectory, bool bSharedTypeName);
+
+	struct FRemovalEffects
+	{
+		/** The type was named by the Game Kit World or Game Kit Actor Starters setting, which no longer names it. */
+		bool bSettingsCleared = false;
+		/** Why the Server Code folder is still there or could not be deleted; empty when it was deleted or never existed. */
+		FText FolderProblem;
+	};
+
+	/** What follows deleting a type's definition asset, whether from the page or from -op=removetype: takes the asset out of the Game Kit World and Game Kit Actor Starters settings (saving the project's config unless bSaveSettings is false), then deletes the type's Server Code folder when bDeleteFolder is, which the caller sets from WhyCrateFolderStays being empty. Type and ShownFolder are for the messages. */
+	FRemovalEffects FinishRemoval(const FText& Type, const FString& TypeName, const FSoftObjectPath& Asset, const FString& CrateDirectory, const FString& ServerDirectory,
+		bool bSharedTypeName, const FString& ShownFolder, bool bDeleteFolder, bool bSaveSettings = true);
+
+	/** The Activity tab's windows, in minutes as the stats query takes them. */
+	inline const TCHAR* const WindowHour = TEXT("60");
+	inline const TCHAR* const WindowDay = TEXT("1440");
+	inline const TCHAR* const WindowWeek = TEXT("10080");
+
+	/** The Activity window named hour, day or week, as the tab stores it; empty for any other name. */
+	FString FindActivityWindow(const FString& Name);
+
+	/** The most verbose level the Logs tab's filter shows (0 error, 1 warning, 2 info), -1 for the filter all, which sets no limit. False, with OutMaxLevel -1, for a name that is not one of all, info, warnings or errors. */
+	bool FindLogMaxLevel(const FString& Filter, int32& OutMaxLevel);
 
 	/** Who can read an instance, as a type row says it for the definition's Readable By. */
 	FText ReadableByPhrase(ECrowdyServerObjectVisibility Visibility);

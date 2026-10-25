@@ -805,6 +805,45 @@ TArray<UCrowdyServerObjectDefinition*> CrowdyExecDeploy::FindProjectDefinitions(
 	return Definitions;
 }
 
+TArray<FName> CrowdyExecDeploy::FindReferencers(const UCrowdyServerObjectDefinition& Definition, const TSet<FName>& Ignored)
+{
+	const FName Own = Definition.GetPackage()->GetFName();
+	TArray<FName> Referencers;
+	IAssetRegistry::GetChecked().GetReferencers(Own, Referencers);
+	Referencers.RemoveAll([&Ignored, Own](FName Referencer) { return Referencer == Own || Ignored.Contains(Referencer); });
+	return Referencers;
+}
+
+TArray<UObject*> CrowdyExecDeploy::TakeUnusedRedirectors(const UCrowdyServerObjectDefinition& Definition, TArray<FName>& Referencers, TArray<FName>& OutUsed)
+{
+	IAssetRegistry& Registry = IAssetRegistry::GetChecked();
+	const FSoftObjectPath Own(&Definition);
+	TArray<UObject*> Unused;
+	TArray<FName> Taken;
+	for (const FName Referencer : Referencers)
+	{
+		TArray<FAssetData> Assets;
+		Registry.GetAssetsByPackageName(Referencer, Assets);
+		if (Assets.Num() != 1 || !Assets[0].IsRedirector() || Registry.GetRedirectedObjectPath(Assets[0].GetSoftObjectPath()) != Own)
+		{
+			continue;
+		}
+		TArray<FName> Users;
+		Registry.GetReferencers(Referencer, Users);
+		Users.Remove(Referencer);
+		UObject* Redirector = Users.IsEmpty() ? Assets[0].GetAsset() : nullptr;
+		if (!Redirector)
+		{
+			OutUsed.Add(Referencer);
+			continue;
+		}
+		Unused.Add(Redirector);
+		Taken.Add(Referencer);
+	}
+	Referencers.RemoveAll([&Taken](FName Referencer) { return Taken.Contains(Referencer); });
+	return Unused;
+}
+
 CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerObjectDefinition& Definition, const FString& CrateDirectory)
 {
 	using namespace CrowdyExecDeployDetail;

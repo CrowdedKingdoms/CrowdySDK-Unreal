@@ -36,7 +36,7 @@ namespace
 		return Fields;
 	}
 
-	TMap<FName, double>& RefusalLogTimes()
+	TMap<FName, double>& FieldRefusalLogTimes()
 	{
 		static TMap<FName, double> LastLoggedSeconds;
 		return LastLoggedSeconds;
@@ -104,7 +104,7 @@ namespace
 
 	bool ShouldLogRefusal(const FName FieldName)
 	{
-		TMap<FName, double>& LastLoggedSeconds = RefusalLogTimes();
+		TMap<FName, double>& LastLoggedSeconds = FieldRefusalLogTimes();
 
 		const double Now = FPlatformTime::Seconds();
 		if (const double* Last = LastLoggedSeconds.Find(FieldName))
@@ -490,7 +490,7 @@ bool IsReloadRebindInstalledForTest()
 
 void ResetRefusalLogThrottleForTest()
 {
-	RefusalLogTimes().Reset();
+	FieldRefusalLogTimes().Reset();
 }
 #endif
 

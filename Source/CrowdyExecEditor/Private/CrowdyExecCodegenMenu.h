@@ -82,6 +82,9 @@ namespace CrowdyExecCodegenMenu
 	/** Says so in a dialog and returns true when another of the project's definitions has this one's Type Name. */
 	bool RefuseSharedTypeName(const UCrowdyServerObjectDefinition& Definition);
 
+	/** Reads the project's types once, then refuses, as RefuseSharedTypeName does, each of Definitions whose Type Name another definition has; returns the rest. */
+	TArray<UCrowdyServerObjectDefinition*> RemoveSharedTypeNames(TConstArrayView<UCrowdyServerObjectDefinition*> Definitions);
+
 	/** Gets a dialog's category, buttons, default button and message, and returns the button pressed. */
 	using FDialogAnswer = TFunction<EAppReturnType::Type(EAppMsgCategory, EAppMsgType::Type, EAppReturnType::Type, const FText&)>;
 

@@ -3,6 +3,7 @@
 #include "Algo/Find.h"
 #include "Algo/Reverse.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "CrowdyExecDeploy.h"
 #include "CrowdyGameKitTypes.h"
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerObjectDefinition.h"
@@ -834,9 +835,7 @@ bool CrowdyGameKitStarters::RemoveStarter(const FString& TypeName, TConstArrayVi
 			OutError = FString::Printf(TEXT("%s is read-only (checked in?); make it writable, then remove again; nothing was removed"), *FileName);
 			return false;
 		}
-		TArray<FName> Referencers;
-		IAssetRegistry::GetChecked().GetReferencers(Definition->GetPackage()->GetFName(), Referencers);
-		Referencers.RemoveAll([&PlanPackages](FName Referencer) { return PlanPackages.Contains(Referencer); });
+		const TArray<FName> Referencers = CrowdyExecDeploy::FindReferencers(*Definition, PlanPackages);
 		if (!Referencers.IsEmpty())
 		{
 			OutError = FString::Printf(TEXT("%s is used by %s; remove those uses first; nothing was removed"), *PackageName,

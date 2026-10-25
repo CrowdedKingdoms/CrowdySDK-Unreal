@@ -1213,7 +1213,10 @@ UCrowdyServerObjectDefinition* CrowdyServerObjectSpec::CreateAsset(const UCrowdy
 	}
 	if (FPackageName::DoesPackageExist(PackageName) || FindPackage(nullptr, *PackageName))
 	{
-		OutError = FString::Printf(TEXT("%s already exists; move or delete it, or choose another -path"), *PackageName);
+		const FString AssetName = FPackageName::GetShortName(PackageName);
+		const UCrowdyServerObjectDefinition* Taken = LoadObject<UCrowdyServerObjectDefinition>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackageName, *AssetName), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		OutError = Taken ? FString::Printf(TEXT("The asset name %s is taken by %s (%s); pass -path= to put %s somewhere else"), *AssetName, *Taken->TypeName, *PackageName, *Candidate.TypeName)
+			: FString::Printf(TEXT("%s already exists; move or delete it, or choose another -path"), *PackageName);
 		return nullptr;
 	}
 	UPackage* Package = CreatePackage(*PackageName);

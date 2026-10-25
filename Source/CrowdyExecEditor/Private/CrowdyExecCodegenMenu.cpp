@@ -785,15 +785,20 @@ namespace CrowdyExecCodegenMenu
 		return Lines.IsEmpty() ? LOCTEXT("NothingToGenerate", "Every type's server code is up to date.") : FText::Join(FText::FromString(TEXT("\n")), Lines);
 	}
 
-	/** Refuses, as the Server Code tab does, a definition whose Type Name another definition also has, since both would write one crate folder. True when refused. */
-	bool RefuseSharedTypeName(const UCrowdyServerObjectDefinition& Definition)
+	/** Reads the project's types again, since its list may predate a duplicate or a Type Name edit. */
+	void RefreshProjectTypes()
 	{
 		FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
-		// The project's list may predate a duplicate or a Type Name edit.
 		if (!Compute.IsBusy())
 		{
 			Compute.RefreshTypes();
 		}
+	}
+
+	/** Says so in a dialog and returns true when the service's list of the project's types shows another definition with this one's Type Name. */
+	bool ReportSharedTypeName(const UCrowdyServerObjectDefinition& Definition)
+	{
+		FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
 		if (!Compute.IsSharedTypeName(Definition.TypeName))
 		{
 			return false;
@@ -809,6 +814,27 @@ namespace CrowdyExecCodegenMenu
 		return true;
 	}
 
+	/** Refuses, as the Server Code tab does, a definition whose Type Name another definition also has, since both would write one crate folder. True when refused. */
+	bool RefuseSharedTypeName(const UCrowdyServerObjectDefinition& Definition)
+	{
+		RefreshProjectTypes();
+		return ReportSharedTypeName(Definition);
+	}
+
+	TArray<UCrowdyServerObjectDefinition*> RemoveSharedTypeNames(TConstArrayView<UCrowdyServerObjectDefinition*> Definitions)
+	{
+		RefreshProjectTypes();
+		TArray<UCrowdyServerObjectDefinition*> Kept;
+		for (UCrowdyServerObjectDefinition* Definition : Definitions)
+		{
+			if (!ReportSharedTypeName(*Definition))
+			{
+				Kept.Add(Definition);
+			}
+		}
+		return Kept;
+	}
+
 	void ExecuteGenerate(const FToolMenuContext& MenuContext)
 	{
 		const UContentBrowserAssetContextMenuContext* Context = UContentBrowserAssetContextMenuContext::FindContextWithAssets(MenuContext);
@@ -816,12 +842,9 @@ namespace CrowdyExecCodegenMenu
 		{
 			return;
 		}
-		for (UCrowdyServerObjectDefinition* Definition : Context->LoadSelectedObjects<UCrowdyServerObjectDefinition>())
+		for (UCrowdyServerObjectDefinition* Definition : RemoveSharedTypeNames(Context->LoadSelectedObjects<UCrowdyServerObjectDefinition>()))
 		{
-			if (!RefuseSharedTypeName(*Definition))
-			{
-				GenerateServerCode(*Definition);
-			}
+			GenerateServerCode(*Definition);
 		}
 	}
 

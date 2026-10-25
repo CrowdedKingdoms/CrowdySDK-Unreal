@@ -704,6 +704,7 @@ public:
 	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditUndo() override;
+#endif
 
 	/**
 	 * Gives every action row that names a Sequence the two bank slots it needs, appending the clip to
@@ -720,10 +721,14 @@ public:
 	 *
 	 * Deliberately a button rather than something PostEditChangeProperty does. It writes a second asset,
 	 * and an author who has just typed a clip name has not necessarily decided to grow the bank.
+	 *
+	 * Callable from an editor script. It writes assets, so outside the editor, or while a game or Play In
+	 * Editor session is running, it only logs and does nothing.
 	 */
-	UFUNCTION(CallInEditor, Category="Crowdy Mass|Anim|Bank", meta=(DisplayName="Sync Actions Into Bank"))
+	UFUNCTION(BlueprintCallable, CallInEditor, Category="Crowdy Mass|Anim|Bank", meta=(DisplayName="Sync Actions Into Bank"))
 	void SyncActionsIntoBank();
 
+#if WITH_EDITOR
 	// What the sync above would do to CurrentBank, without writing anything. The rules live here and the
 	// button is the commit, so what a caller can check ahead of time and what actually happens cannot
 	// disagree.
