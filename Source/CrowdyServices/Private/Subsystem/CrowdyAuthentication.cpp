@@ -743,11 +743,13 @@ void UCrowdyAuthentication::BeginLinkIdentity(const FString& Provider, FOnIdenti
 	}
 
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	const int32 Generation = SignInGeneration;
 	Client->SocialLoginStart(Provider, RedirectUri, GuardSession<FCrowdyCppJsonValueResult>(
-		[WeakThis, Provider, OnResult, OnError](FCrowdyCppJsonValueResult Result)
+		[WeakThis, Generation, Provider, OnResult, OnError](FCrowdyCppJsonValueResult Result)
 		{
 			UCrowdyAuthentication* Self = WeakThis.Get();
 			if (!Self) return;
+			if (Self->AbandonStaleSignIn(Generation, OnError)) return;
 
 			FString AuthorizeUrl;
 			FString State;

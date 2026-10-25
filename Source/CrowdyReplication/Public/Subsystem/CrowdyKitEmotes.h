@@ -18,8 +18,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_FiveParams(FCrowdyKitOnEmote, AActor*, Sender
  *
  * It rides the Game Kit's client event 101 with a JSON body of the emote and the target's uuid, so players on
  * CrowdyCPP, CrowdyJS and CrowdyPy see each other's emotes. It is view state: nothing here is kept or checked, and
- * a game that must trust an emote asks a Server Object instead. Inbound emotes share one budget, set by the
- * crowdy.kit.emotes.maxpersecond and crowdy.kit.emotes.burst console variables; the rest are dropped.
+ * a game that must trust an emote asks a Server Object instead. Each sender has its own small budget (the
+ * crowdy.kit.emotes.persender.maxpersecond and crowdy.kit.emotes.persender.burst console variables), and all
+ * senders share one overall budget (crowdy.kit.emotes.maxpersecond and crowdy.kit.emotes.burst); the rest are dropped.
+ * The sender id is what the sender's client claims, so a peer that forges a player's id can use up that player's own
+ * budget; the shared budget still caps everyone together.
  */
 UCLASS(BlueprintType, meta = (DisplayName = "Crowdy Kit Emotes"))
 class CROWDYREPLICATION_API UCrowdyKitEmotes : public UWorldSubsystem
@@ -69,20 +72,44 @@ public:
 	/** What the event subscription calls: takes a client event's sender and state and passes them to ReceiveEmote. */
 	void HandleDelivery(const FCrowdyDelivery& Delivery);
 
+	/** The most senders that keep a budget at once; past it the least recently seen sender's budget is dropped. */
+	static constexpr int32 MaxEmoteSenders = 256;
+
+	bool TryAdmitForTest(const FCrowdyActorId& Sender, const double Now) { return TryAdmit(Sender, Now); }
 	bool TryAdmitEmoteForTest(const double Now) { return TryAdmitEmote(Now); }
+	bool TryAdmitSenderForTest(const FCrowdyActorId& Sender, const double Now) { return TryAdmitSender(Sender, Now); }
 	int32 NumEmotesDroppedForTest() const { return EmotesDropped; }
+	int32 NumSenderBucketsForTest() const { return SenderBuckets.Num(); }
 
 private:
 
+	struct FEmoteSenderBucket
+	{
+		double Tokens = 0.0;
+		double At = 0.0;
+	};
+
 	bool ResolveTargetUuid(AActor* Target, FString& OutTargetUuid, FString& Reason) const;
+
+	/** Admits an emote past Sender's own budget and then the shared one; a shared refusal gives Sender its token back. */
+	bool TryAdmit(const FCrowdyActorId& Sender, double Now);
+
+	/** Removes the sender seen longest ago, keeping the table's allocation. */
+	void EvictStalestSender();
 
 	/** Takes one token from the shared budget, refilled at the CVar rate up to the CVar burst. False, and counted, when the budget is empty. */
 	bool TryAdmitEmote(double Now);
 
+	/** Takes one token from Sender's own budget, refilled at the per-sender CVar rate up to the per-sender burst. False, and counted, when it is empty. */
+	bool TryAdmitSender(const FCrowdyActorId& Sender, double Now);
+
 	FCrowdySubscription EmoteSubscription;
+
+	TMap<FCrowdyActorId, FEmoteSenderBucket> SenderBuckets;
 
 	double EmoteTokens = 0.0;
 	double EmoteTokensAt = 0.0;
 	int32 EmotesDropped = 0;
 	bool bReportedEmoteFlood = false;
+	bool bReportedSenderFlood = false;
 };

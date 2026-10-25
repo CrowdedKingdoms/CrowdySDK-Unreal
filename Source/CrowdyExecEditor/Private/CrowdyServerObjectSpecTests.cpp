@@ -719,6 +719,25 @@ bool FCrowdyServerObjectSpecNewTypePathTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectSpecTakenAssetNameTest, "CrowdySDK.CrowdyExecEditor.ServerObjectSpec.Refuses.AssetNameTakenByAnotherType", CrowdyServerObjectSpecTest::TestFlags)
+bool FCrowdyServerObjectSpecTakenAssetNameTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectSpecTest;
+	const FString ContentPath = FString::Printf(TEXT("/Game/CrowdySpecTestScratch/%s"), *FGuid::NewGuid().ToString());
+	const FString PackageName = ContentPath / TEXT("CSO_TipJar");
+	UPackage* Package = CreatePackage(*PackageName);
+	FDefinitionPtr Holder(NewObject<UCrowdyServerObjectDefinition>(Package, TEXT("CSO_TipJar"), RF_Public | RF_Standalone));
+	Holder->TypeName = TEXT("tip_jar");
+	FDefinitionPtr Candidate = NewDefinition(TEXT("tip__jar"));
+	Candidate->State = FCrowdyExecTestRecord::StaticStruct();
+	FString Error;
+	TestNull(TEXT("a type whose asset name another type's asset has makes no asset"), CrowdyServerObjectSpec::CreateAsset(*Candidate, ContentPath, Error));
+	TestEqualSensitive(TEXT("and the error names the holder and the way out"), Error,
+		FString::Printf(TEXT("The asset name CSO_TipJar is taken by tip_jar (%s); pass -path= to put tip__jar somewhere else"), *PackageName));
+	Holder->ClearFlags(RF_Standalone);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectSpecFailedEditRestoresTest, "CrowdySDK.CrowdyExecEditor.ServerObjectSpec.EditThatFailsPutsTheTypeBack", CrowdyServerObjectSpecTest::TestFlags)
 bool FCrowdyServerObjectSpecFailedEditRestoresTest::RunTest(const FString& Parameters)
 {

@@ -160,7 +160,8 @@ public:
 	// Spatial grid (game plane, app-admin). Grids are world regions that voxel/runtime permissions
 	// are scoped to. Discovered by scanning a chunk region; there is no list-all query.
 	void FetchNearbyGrids(int64 InUserId, int64 LowX, int64 LowY, int64 LowZ, int64 HighX, int64 HighY, int64 HighZ);
-	void CreateGrid(int64 C1X, int64 C1Y, int64 C1Z, int64 C2X, int64 C2Y, int64 C2Z);
+	// OnCreated receives the new grid's id when the server created it.
+	void CreateGrid(int64 C1X, int64 C1Y, int64 C1Z, int64 C2X, int64 C2Y, int64 C2Z, TFunction<void(int64 /*GridId*/)> OnCreated = TFunction<void(int64)>());
 	void FetchGridPermissionLimits(int64 GridId);
 	void SetGridPermissionLimits(int64 GridId, const TArray<FString>& PermissionKeys);
 	void FetchGridGroupGrants(int64 GridId, int64 GroupId);
@@ -185,6 +186,8 @@ public:
 	// status line carries the reason and Refresh is the retry.
 	void EnsureAccessListsLoaded();
 	void FetchFeatures();
+	// True for 1 to 64 letters, digits, underscores, hyphens and dots: the keys DefineFeature sends.
+	static bool IsFeatureKey(const FString& FeatureKey);
 	void DefineFeature(const FString& FeatureKey, const FString& Description);
 	void FetchTierFeatures();
 	// Read-only list of the app's access tiers, so the tier-feature grant can use a tier dropdown instead of a
@@ -207,7 +210,8 @@ public:
 
 	// Selection
 	void SelectOrg(int64 OrgId);
-	void SelectApp(int64 AppId);
+	// bPersist false selects for this controller only, leaving the app the editor reopens on untouched.
+	void SelectApp(int64 AppId, bool bPersist = true);
 
 	int64 GetSelectedOrgId() const { return SelectedOrgId; }
 	int64 GetSelectedAppId() const { return SelectedAppId; }

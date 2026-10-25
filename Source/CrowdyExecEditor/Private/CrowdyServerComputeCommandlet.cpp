@@ -1,6 +1,8 @@
 #include "CrowdyServerComputeCommandlet.h"
 
+#include "Algo/Transform.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "AssetToolsModule.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Containers/Ticker.h"
 #include "CoreGlobals.h"
@@ -14,19 +16,25 @@
 #include "CrowdyExecRevisions.h"
 #include "CrowdyGameKitStarters.h"
 #include "CrowdyServerCodeFiles.h"
+#include "CrowdyServerComputeService.h"
 #include "CrowdyServerComputeSettings.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectSpec.h"
 #include "CrowdyStudioModule.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
+#include "IAssetTools.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "ObjectTools.h"
 #include "Policies/PrettyJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
+#include "SCrowdyServerComputePanel.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/Class.h"
 #include "UObject/Package.h"
@@ -38,7 +46,9 @@ namespace CrowdyServerComputeCommandletDetail
 	namespace Dev = CrowdyExecDeveloper;
 
 	const TCHAR* const Usage = TEXT("-run=CrowdyServerCompute -op=status | versions | changes | deploy -yes [-batch=N] [-rebuild] | starters -yes [-batch=N] | activate -version=N -yes | disable -type=T -yes")
-		TEXT(" | enable [-type=T] -yes (without -type, the whole app) | restart -type=T -yes | instances | call -type=T -fn=F [-key=K] [-inputs=<json or @file>] -yes | logs [-type=T] [-flow=F] [-limit=N] | stats [-type=T]")
+		TEXT(" | enable [-type=T] -yes (without -type, the whole app) | restart [-type=T] -yes (without -type, every type with an instance running other code than the active version's; it stops every running instance of those types, and without -yes it only lists them) | instances")
+		TEXT(" | call -type=T -fn=F [-key=K] [-inputs=<json or @file>] -yes")
+		TEXT(" | logs [-type=T] [-flow=F] [-level=all|info|warnings|errors] [-limit=N] [-before=<the nextBefore of the previous page>] | stats [-type=T] [-window=hour|day|week]")
 		TEXT(" | grant -player=<user id> -bundle=<json or @file> [-xp=N] [-ref=R] -yes | deposit -player=<user id> -bundle=<json or @file> [-ref=R] -yes (in-game soft currency, never real money)")
 		TEXT(" | addstarter -starter=world|matchmaker|session|leaderboard|player|market|npcs|minigame|tactics|director|instance|territory|zone|deck|arena|race|ball [-config=<json or @file>]")
 		TEXT(" | removestarter -starter=world|matchmaker|session|leaderboard|player|market|npcs|minigame|tactics|director|instance|territory|zone|deck|arena|race|ball -yes")
@@ -47,8 +57,10 @@ namespace CrowdyServerComputeCommandletDetail
 		TEXT(" | exporttype [-type=T] [-spec=<file>] (a type's settings as a JSON spec, in the result's definition and in the file; without -type, a new type's template)")
 		TEXT(" | newtype -spec=<json or @file> [-path=/Game/ServerObjects] (makes a type from a spec, or refuses with every problem and makes nothing)")
 		TEXT(" | edittype -type=T -spec=<json or @file> [-yes] (replaces a type's settings with a spec that holds all of them; without -yes it only reports what would change)")
+		TEXT(" | removetype -type=T [-yes] (removes an ordinary type: its definition, its Server Code folder if the SDK generated it, and its Game Kit settings; refuses a Game Kit starter, which removestarter takes, and a definition other assets use; without -yes it only says what it would remove)")
+		TEXT(" | renametype -type=T -to=/Game/Path/NewAssetName [-yes] (moves or renames the definition asset as the Content Browser does, and its Server Code folder follows; not the Type Name, which edittype refuses to change; without -yes it only says what it would move)")
 		TEXT(" | batch -ops=<file> (one op's arguments per line, # comments; add -batchcontinue to a line to go on after its failure), and -out=<file> for a JSON result")
-		TEXT("; generate, newtype, edittype, addstarter and removestarter refuse while an Unreal Editor is running, which would save its own copy over them: close it, or pass -editoropen to write anyway");
+		TEXT("; generate, newtype, edittype, addstarter, removestarter, removetype and renametype refuse while an Unreal Editor is running, which would save its own copy over them: close it, or pass -editoropen to write anyway");
 
 	const TCHAR* const ConfirmError = TEXT("This changes the app's live server code or what it holds; pass -yes to confirm.");
 
@@ -842,27 +854,100 @@ namespace CrowdyServerComputeCommandletDetail
 		RunSwitch(Run, true);
 	}
 
+	void OnRestarted(const FRunRef& Run, const CrowdyServerComputeMove::FRestarted& Restarted)
+	{
+		int32 Stopped = 0;
+		TArray<TSharedPtr<FJsonValue>> Rows;
+		for (const Dev::FRestart& Done : Restarted.Done)
+		{
+			const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+			Row->SetStringField(TEXT("nodeType"), Done.NodeType);
+			Row->SetNumberField(TEXT("stopped"), Done.Stopped);
+			Rows.Add(MakeShared<FJsonValueObject>(Row));
+			Stopped += Done.Stopped;
+			Step(FString::Printf(TEXT("%s: %d running instances stopped; each starts again on the active version at its next call"), *Done.NodeType, Done.Stopped));
+		}
+		Step(FString::Printf(TEXT("%d running instances stopped in all"), Stopped));
+		Run->Result->SetNumberField(TEXT("stopped"), Stopped);
+		Run->Result->SetArrayField(TEXT("restarted"), Rows);
+		Run->Result->SetArrayField(TEXT("failed"), StringValues(Restarted.Failed));
+		if (!Restarted.Failed.IsEmpty())
+		{
+			Fail(Run, FString::Printf(TEXT("Could not move every type's running instances: %s"), *FString::Join(Restarted.Failed, TEXT("; "))), Restarted.FailedCode);
+			return;
+		}
+		Succeed(Run);
+	}
+
+	void RestartTypesOf(const FRunRef& Run, TArray<FString> Types)
+	{
+		SendingChange(*Run);
+		CrowdyServerComputeMove::RestartTypes(*Run->Client, MoveTemp(Types), [Run](const CrowdyServerComputeMove::FRestarted& Restarted) { OnRestarted(Run, Restarted); });
+	}
+
+	void RestartThoseOnEarlierVersion(const FRunRef& Run, const TArray<Dev::FVersion>& Versions, const Dev::TResult<TArray<Dev::FInstance>>& Instances)
+	{
+		if (!Instances.bOk)
+		{
+			FailWith(Run, Instances.Error);
+			return;
+		}
+		TArray<FString> Types;
+		int32 Running = 0;
+		FString Problem;
+		if (!CrowdyServerComputeMove::FindTypesOnEarlierVersion(Versions, Instances.Value, FDateTime::UtcNow(), Types, Running, Problem))
+		{
+			Fail(Run, Problem);
+			return;
+		}
+		Run->Result->SetArrayField(TEXT("types"), StringValues(Types));
+		Run->Result->SetNumberField(TEXT("running"), Running);
+		if (Types.IsEmpty())
+		{
+			Run->Result->SetNumberField(TEXT("stopped"), 0);
+			Step(TEXT("no type has an instance still running an earlier version"));
+			Succeed(Run);
+			return;
+		}
+		Step(CrowdyServerComputeMove::DescribeMove(Types, Running));
+		const TArray<Dev::FInstance> Stopping = CrowdyServerComputeMove::FindInstancesToStop(Instances.Value, Types);
+		const FString Stops = CrowdyServerComputeMove::DescribeInstancesToStop(Stopping);
+		Run->Result->SetNumberField(TEXT("stopping"), Stopping.Num());
+		Step(Stops);
+		if (!FParse::Param(*Run->Params, TEXT("yes")))
+		{
+			Run->Result->SetNumberField(TEXT("stopped"), 0);
+			Fail(Run, FString::Printf(TEXT("%s\nNothing was stopped. Pass -yes to confirm."), *Stops));
+			return;
+		}
+		RestartTypesOf(Run, MoveTemp(Types));
+	}
+
+	/** With -type=T and -yes, moves that type's running instances to the active version; without -type, every type with an instance running other code than the active version's, listing what it would stop unless -yes. */
 	void RunRestart(const FRunRef& Run)
 	{
 		FString Type;
-		if (!FParse::Value(*Run->Params, TEXT("-type="), Type) || Type.IsEmpty())
+		FParse::Value(*Run->Params, TEXT("-type="), Type);
+		Run->Result->SetStringField(TEXT("type"), Type);
+		if (!Type.IsEmpty() && !FParse::Param(*Run->Params, TEXT("yes")))
 		{
-			Fail(Run, TEXT("restart needs -type=T, the Server Object type whose running instances move to the active version"));
+			Fail(Run, ConfirmError);
 			return;
 		}
-		Run->Result->SetStringField(TEXT("type"), Type);
-		Step(FString::Printf(TEXT("moving %s's running instances to the active version"), *Type));
-		SendingChange(*Run);
-		Run->Client->RestartType(Type, [Run](const Dev::TResult<Dev::FRestart>& Answer)
+		if (!Type.IsEmpty())
 		{
-			if (!Answer.bOk)
+			Step(FString::Printf(TEXT("moving %s's running instances to the active version"), *Type));
+			RestartTypesOf(Run, {Type});
+			return;
+		}
+		Run->Client->Versions([Run](const Dev::TResult<TArray<Dev::FVersion>>& Versions)
+		{
+			if (!Versions.bOk)
 			{
-				FailWith(Run, Answer.Error);
+				FailWith(Run, Versions.Error);
 				return;
 			}
-			Run->Result->SetNumberField(TEXT("stopped"), Answer.Value.Stopped);
-			Step(FString::Printf(TEXT("%s: %d running instances stopped; each starts again on the active version at its next call"), *Answer.Value.NodeType, Answer.Value.Stopped));
-			Succeed(Run);
+			Run->Client->Instances([Run, Known = Versions.Value](const Dev::TResult<TArray<Dev::FInstance>>& Instances) { RestartThoseOnEarlierVersion(Run, Known, Instances); });
 		});
 	}
 
@@ -877,8 +962,8 @@ namespace CrowdyServerComputeCommandletDetail
 		return Found ? *Found : nullptr;
 	}
 
-	/** The project's one type called Type; null, with the run failed, when there is none (the known types are named) or another type spells its name alike. */
-	UCrowdyServerObjectDefinition* RequireProjectType(const FRunRef& Run, TConstArrayView<UCrowdyServerObjectDefinition*> Project, const FString& Type)
+	/** The project's one type called Type; null, with the run failed, when there is none (the known types are named) or another type spells its name alike, unless bAllowSharedName, which still refuses two types spelling it exactly alike. */
+	UCrowdyServerObjectDefinition* RequireProjectType(const FRunRef& Run, TConstArrayView<UCrowdyServerObjectDefinition*> Project, const FString& Type, bool bAllowSharedName = false)
 	{
 		UCrowdyServerObjectDefinition* const* Found = Project.FindByPredicate([&Type](const UCrowdyServerObjectDefinition* Each) { return Each->TypeName.Equals(Type, ESearchCase::CaseSensitive); });
 		if (!Found)
@@ -887,9 +972,9 @@ namespace CrowdyServerComputeCommandletDetail
 				*FString::JoinBy(Project, TEXT(", "), [](const UCrowdyServerObjectDefinition* Each) { return Each->TypeName; })));
 			return nullptr;
 		}
-		const bool bShared = Project.ContainsByPredicate([Found](const UCrowdyServerObjectDefinition* Each)
+		const bool bShared = Project.ContainsByPredicate([Found, bAllowSharedName](const UCrowdyServerObjectDefinition* Each)
 		{
-			return Each != *Found && Each->TypeName.Equals((*Found)->TypeName, ESearchCase::IgnoreCase);
+			return Each != *Found && Each->TypeName.Equals((*Found)->TypeName, bAllowSharedName ? ESearchCase::CaseSensitive : ESearchCase::IgnoreCase);
 		});
 		if (bShared)
 		{
@@ -1066,6 +1151,194 @@ namespace CrowdyServerComputeCommandletDetail
 		Run->Result->SetBoolField(TEXT("gameKitActorStartersChanged"), CrowdyServerObjectSpec::SyncActorStarters(*Existing));
 		Run->Result->SetStringField(TEXT("note"), FString::Printf(TEXT("Run -op=generate -type=%s next to bring the server code in line; with -yes it keeps the old server names of renamed List values, so saved data carries over."), *Type));
 		Step(FString::Printf(TEXT("saved %s"), *Existing->GetPathName()));
+		Succeed(Run);
+	}
+
+	/** Writes to the project, not the app. Without -yes it says what it would remove and fails, as removestarter does. */
+	void RunRemoveType(const FRunRef& Run)
+	{
+		FString Type;
+		FParse::Value(*Run->Params, TEXT("-type="), Type);
+		Run->Result->SetStringField(TEXT("type"), Type);
+		Run->Result->SetBoolField(TEXT("removed"), false);
+		if (Type.IsEmpty())
+		{
+			Fail(Run, TEXT("removetype needs -type=T, the Server Object type to remove from the project"));
+			return;
+		}
+		const TArray<UCrowdyServerObjectDefinition*> Project = LoadProjectTypes();
+		UCrowdyServerObjectDefinition* Definition = RequireProjectType(Run, Project, Type, true);
+		if (!Definition)
+		{
+			return;
+		}
+		const FString NotInGame = UCrowdyServerComputeCommandlet::FindNotInGameProblem(Definition->GetPackage()->GetName(), TEXT("removed"));
+		if (!NotInGame.IsEmpty())
+		{
+			Fail(Run, NotInGame);
+			return;
+		}
+		const FString ServerDirectory = CrowdyExecCodegen::GetServerDirectory();
+		const FString CrateDirectory = CrowdyExecCodegen::GetCrateDirectory(*Definition);
+		const bool bShared = Project.ContainsByPredicate([Definition](const UCrowdyServerObjectDefinition* Each) { return Each != Definition && Each->TypeName.Equals(Definition->TypeName, ESearchCase::IgnoreCase); });
+		const bool bFolderExists = IFileManager::Get().DirectoryExists(*CrateDirectory);
+		const FString FolderStays = bFolderExists ? CrowdyServerComputePage::WhyCrateFolderStays(Type, CrateDirectory, ServerDirectory, bShared).ToString() : FString();
+		FString ShownFolder = CrateDirectory;
+		FPaths::MakePathRelativeTo(ShownFolder, *FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()));
+		const FString AssetPath = Definition->GetPathName();
+		const FString PackageName = Definition->GetPackage()->GetName();
+		TArray<FName> Referencers = CrowdyExecDeploy::FindReferencers(*Definition, TSet<FName>());
+		TArray<FName> UsedRedirectors;
+		const TArray<UObject*> Redirectors = CrowdyExecDeploy::TakeUnusedRedirectors(*Definition, Referencers, UsedRedirectors);
+		TArray<FString> ReferencerNames;
+		Algo::Transform(Referencers, ReferencerNames, [](FName Referencer) { return Referencer.ToString(); });
+		Run->Result->SetStringField(TEXT("asset"), PackageName);
+		Run->Result->SetStringField(TEXT("folder"), ShownFolder);
+		Run->Result->SetField(TEXT("folderKept"), StringOrNull(FolderStays));
+		Run->Result->SetArrayField(TEXT("referencers"), StringValues(ReferencerNames));
+		const FString Problem = UCrowdyServerComputeCommandlet::FindRemoveTypeProblem(*Definition, Referencers, UsedRedirectors);
+		if (!Problem.IsEmpty())
+		{
+			Fail(Run, Problem);
+			return;
+		}
+		if (!Redirectors.IsEmpty())
+		{
+			Step(FString::Printf(TEXT("%d redirector%s that pointed at it will be deleted with it"), Redirectors.Num(), Redirectors.Num() == 1 ? TEXT("") : TEXT("s")));
+		}
+		const FString Plan = UCrowdyServerComputeCommandlet::DescribeRemoveType(Type, PackageName, bFolderExists ? ShownFolder : FString(), FolderStays);
+		Step(Plan);
+		if (!FParse::Param(*Run->Params, TEXT("yes")))
+		{
+			Fail(Run, FString::Printf(TEXT("%s; nothing was removed. Pass -yes to confirm."), *Plan));
+			return;
+		}
+		if (RefuseWhileEditorOpen(Run))
+		{
+			return;
+		}
+		const TArray<UObject*> ToDelete = {Definition};
+		if (ObjectTools::DeleteObjectsUnchecked(ToDelete) != 1)
+		{
+			Fail(Run, FString::Printf(TEXT("could not delete %s (read-only, or in use?); nothing was removed"), *PackageName));
+			return;
+		}
+		const FString NotDeleted = UCrowdyServerComputeCommandlet::FindNotDeletedProblem(PackageName, [](const FString& Package) { return FPackageName::DoesPackageExist(Package); });
+		if (!NotDeleted.IsEmpty())
+		{
+			Fail(Run, NotDeleted);
+			return;
+		}
+		Run->Result->SetBoolField(TEXT("removed"), true);
+		const CrowdyServerComputePage::FRemovalEffects Effects = CrowdyServerComputePage::FinishRemoval(FText::FromString(Type), Type, FSoftObjectPath(AssetPath), CrateDirectory,
+			ServerDirectory, bShared, ShownFolder, FolderStays.IsEmpty());
+		const bool bRedirectorsFailed = !Redirectors.IsEmpty() && ObjectTools::DeleteObjectsUnchecked(Redirectors) != Redirectors.Num();
+		const bool bFolderFailed = bFolderExists && FolderStays.IsEmpty() && !Effects.FolderProblem.IsEmpty();
+		Run->Result->SetBoolField(TEXT("gameKitSettingsCleared"), Effects.bSettingsCleared);
+		Run->Result->SetBoolField(TEXT("folderDeleted"), bFolderExists && FolderStays.IsEmpty() && !bFolderFailed);
+		Run->Result->SetStringField(TEXT("note"), TEXT("If the live version runs it, it keeps running on the server until your next deploy, which removes it."));
+		Step(FString::Printf(TEXT("removed %s's definition %s%s"), *Type, *PackageName, FolderStays.IsEmpty() ? TEXT("") : *FString::Printf(TEXT("; its Server Code folder was left: %s"), *FolderStays)));
+		if (bFolderFailed)
+		{
+			Fail(Run, Effects.FolderProblem.ToString());
+			return;
+		}
+		if (bRedirectorsFailed)
+		{
+			Fail(Run, FString::Printf(TEXT("Removed %s's definition, but could not delete the redirectors that pointed at it; delete them in the Content Browser"), *Type));
+			return;
+		}
+		Succeed(Run);
+	}
+
+	/** Writes to the project, not the app. Moves or renames the definition asset as the Content Browser does; the Type Name stays. */
+	void RunRenameType(const FRunRef& Run)
+	{
+		FString Type;
+		FString To;
+		FParse::Value(*Run->Params, TEXT("-type="), Type);
+		FParse::Value(*Run->Params, TEXT("-to="), To);
+		Run->Result->SetStringField(TEXT("type"), Type);
+		Run->Result->SetStringField(TEXT("to"), To);
+		Run->Result->SetBoolField(TEXT("renamed"), false);
+		if (Type.IsEmpty() || To.IsEmpty())
+		{
+			Fail(Run, TEXT("renametype needs -type=T and -to=/Game/Path/NewAssetName; it moves the definition asset and leaves the Type Name alone, which -op=edittype refuses to change"));
+			return;
+		}
+		UCrowdyServerObjectDefinition* Definition = RequireProjectType(Run, LoadProjectTypes(), Type);
+		if (!Definition)
+		{
+			return;
+		}
+		const FString From = Definition->GetPackage()->GetName();
+		Run->Result->SetStringField(TEXT("from"), From);
+		const FString NotInGame = UCrowdyServerComputeCommandlet::FindNotInGameProblem(From, TEXT("moved"));
+		if (!NotInGame.IsEmpty())
+		{
+			Fail(Run, NotInGame);
+			return;
+		}
+		const FString Problem = UCrowdyServerComputeCommandlet::FindRenameProblem(To, From, [](const FString& Package) { return FPackageName::DoesPackageExist(Package) || FindPackage(nullptr, *Package) != nullptr; });
+		if (!Problem.IsEmpty())
+		{
+			Fail(Run, Problem);
+			return;
+		}
+		const FString Plan = UCrowdyServerComputeCommandlet::DescribeRenameType(Type, From, To);
+		Step(Plan);
+		if (!FParse::Param(*Run->Params, TEXT("yes")))
+		{
+			Fail(Run, FString::Printf(TEXT("%s; nothing was moved. Pass -yes to confirm."), *Plan));
+			return;
+		}
+		if (RefuseWhileEditorOpen(Run))
+		{
+			return;
+		}
+		const FString ServerDirectory = CrowdyExecCodegen::GetServerDirectory();
+		const FString CrateDirectory = CrowdyExecCodegen::GetCrateDirectory(*Definition);
+		const FString OldPath = Definition->GetPathName();
+		const bool bHadCrate = !CrowdyExecCodegen::ReadCrateDefinition(CrateDirectory).IsEmpty();
+		UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
+		const bool bNamedWorld = Settings->GameKitWorld == FSoftObjectPath(OldPath);
+		const bool bNamedActors = Settings->GameKitActorStarters.Contains(FSoftObjectPath(OldPath));
+		const TArray<FAssetRenameData> Renames = {FAssetRenameData(Definition, FPackageName::GetLongPackagePath(To), FPackageName::GetShortName(To))};
+		if (!FAssetToolsModule::GetModule().Get().RenameAssets(Renames))
+		{
+			Fail(Run, FString::Printf(TEXT("the editor's rename of %s to %s did not go through; the reason is in the log above"), *From, *To));
+			return;
+		}
+		Run->Result->SetBoolField(TEXT("renamed"), true);
+		const FString NewPath = Definition->GetPathName();
+		Run->Result->SetStringField(TEXT("asset"), NewPath);
+		Run->Result->SetBoolField(TEXT("redirectorLeft"), FPackageName::DoesPackageExist(From));
+		if (bHadCrate && !CrowdyExecCodegen::ReadCrateDefinition(CrateDirectory).Equals(NewPath, ESearchCase::IgnoreCase))
+		{
+			CrowdyExecCodegen::RetagCrates(ServerDirectory, OldPath, NewPath);
+		}
+		const bool bCrateFollows = !bHadCrate || CrowdyExecCodegen::ReadCrateDefinition(CrateDirectory).Equals(NewPath, ESearchCase::IgnoreCase);
+		Run->Result->SetBoolField(TEXT("crateFollows"), bCrateFollows);
+		if (bNamedWorld)
+		{
+			Settings->GameKitWorld = FSoftObjectPath(NewPath);
+		}
+		if (bNamedActors)
+		{
+			Settings->GameKitActorStarters.Remove(FSoftObjectPath(OldPath));
+			Settings->GameKitActorStarters.AddUnique(FSoftObjectPath(NewPath));
+		}
+		if (bNamedWorld || bNamedActors)
+		{
+			Settings->TryUpdateDefaultConfigFile();
+		}
+		Run->Result->SetBoolField(TEXT("gameKitSettingsUpdated"), bNamedWorld || bNamedActors);
+		Step(FString::Printf(TEXT("%s's definition is now %s"), *Type, *NewPath));
+		if (!bCrateFollows)
+		{
+			Fail(Run, FString::Printf(TEXT("The definition moved, but %s still names %s; run -op=generate -type=%s to write it again"), *CrateDirectory, *OldPath, *Type));
+			return;
+		}
 		Succeed(Run);
 	}
 
@@ -1284,6 +1557,8 @@ namespace CrowdyServerComputeCommandletDetail
 				Line.Flow.IsEmpty() ? TEXT("-") : *Line.Flow, *Line.Text));
 		}
 		Run->Result->SetArrayField(TEXT("lines"), Rows);
+		// The oldest line's id pages back: pass it as -before= for the lines older than this page.
+		Run->Result->SetField(TEXT("nextBefore"), StringOrNull(Answer.Value.IsEmpty() ? FString() : Answer.Value.Last().Id));
 		Step(FString::Printf(TEXT("%d log lines, newest first"), Rows.Num()));
 		Succeed(Run);
 	}
@@ -1294,9 +1569,18 @@ namespace CrowdyServerComputeCommandletDetail
 		FParse::Value(*Run->Params, TEXT("-type="), Query.NodeType);
 		FParse::Value(*Run->Params, TEXT("-flow="), Query.Flow);
 		FParse::Value(*Run->Params, TEXT("-limit="), Query.Limit);
+		FParse::Value(*Run->Params, TEXT("-before="), Query.Before);
+		FString Error;
+		if (!UCrowdyServerComputeCommandlet::ReadLogLevel(Run->Params, Query.MaxLevel, Error))
+		{
+			Fail(Run, Error);
+			return;
+		}
 		Run->Result->SetStringField(TEXT("type"), Query.NodeType);
 		Run->Result->SetStringField(TEXT("flow"), Query.Flow);
 		Run->Result->SetNumberField(TEXT("limit"), Query.Limit);
+		Run->Result->SetField(TEXT("before"), StringOrNull(Query.Before));
+		Run->Result->SetNumberField(TEXT("maxLevel"), Query.MaxLevel);
 		Run->Client->Logs(Query, [Run](const Dev::TResult<TArray<Dev::FLogLine>>& Answer) { OnLogs(Run, Answer); });
 	}
 
@@ -1334,8 +1618,16 @@ namespace CrowdyServerComputeCommandletDetail
 	{
 		FString Type;
 		FParse::Value(*Run->Params, TEXT("-type="), Type);
+		int32 Minutes = 0;
+		FString Error;
+		if (!UCrowdyServerComputeCommandlet::ReadStatsWindow(Run->Params, Minutes, Error))
+		{
+			Fail(Run, Error);
+			return;
+		}
 		Run->Result->SetStringField(TEXT("type"), Type);
-		Run->Client->EndpointStats(Type, 0, [Run](const Dev::TResult<TArray<Dev::FEndpointStat>>& Answer) { OnStats(Run, Answer); });
+		Run->Result->SetNumberField(TEXT("windowMinutes"), Minutes);
+		Run->Client->EndpointStats(Type, Minutes, [Run](const Dev::TResult<TArray<Dev::FEndpointStat>>& Answer) { OnStats(Run, Answer); });
 	}
 
 	struct FOperation
@@ -1343,7 +1635,7 @@ namespace CrowdyServerComputeCommandletDetail
 		const TCHAR* Name;
 		void (*Start)(const FRunRef&);
 		double TimeoutSeconds;
-		/** Replaces or switches the app's live server code, so it runs only with -yes. */
+		/** Replaces or switches the app's live server code, so it runs only with -yes; restart checks -yes itself, to list what it would stop first. */
 		bool bChangesLiveCode;
 	};
 
@@ -1356,7 +1648,7 @@ namespace CrowdyServerComputeCommandletDetail
 		{TEXT("activate"), &RunActivate, ChangeTimeoutSeconds, true},
 		{TEXT("disable"), &RunDisable, ChangeTimeoutSeconds, true},
 		{TEXT("enable"), &RunEnable, ChangeTimeoutSeconds, true},
-		{TEXT("restart"), &RunRestart, ChangeTimeoutSeconds, true},
+		{TEXT("restart"), &RunRestart, ChangeTimeoutSeconds, false},
 		{TEXT("instances"), &RunInstances, ShortTimeoutSeconds, false},
 		{TEXT("call"), &RunCall, ChangeTimeoutSeconds, true},
 		{TEXT("grant"), &RunGrant, ChangeTimeoutSeconds, true},
@@ -1390,7 +1682,9 @@ namespace CrowdyServerComputeCommandletDetail
 		{TEXT("whoami"), &RunWhoami},
 		{TEXT("exporttype"), &RunExportType},
 		{TEXT("newtype"), &RunNewType},
-		{TEXT("edittype"), &RunEditType}};
+		{TEXT("edittype"), &RunEditType},
+		{TEXT("removetype"), &RunRemoveType},
+		{TEXT("renametype"), &RunRenameType}};
 
 	const TCHAR* const BatchOperation = TEXT("batch");
 
@@ -1597,6 +1891,106 @@ FString UCrowdyServerComputeCommandlet::FindEditorOpenProblem(const FString& Par
 		return FString();
 	}
 	return TEXT("An Unreal Editor is running. Close it first: it holds this project's Server Object types in memory and would save its own copy over what this op writes. Pass -editoropen to write anyway.");
+}
+
+FString UCrowdyServerComputeCommandlet::FindNotInGameProblem(const FString& Package, const TCHAR* Action)
+{
+	if (Package.StartsWith(TEXT("/Game/"), ESearchCase::CaseSensitive))
+	{
+		return FString();
+	}
+	return FString::Printf(TEXT("only a project type under /Game/ can be %s here"), Action);
+}
+
+FString UCrowdyServerComputeCommandlet::FindRemoveTypeProblem(const UCrowdyServerObjectDefinition& Definition, TConstArrayView<FName> Referencers, TConstArrayView<FName> UsedRedirectors)
+{
+	if (Definition.IsGameKitStarter())
+	{
+		return FString::Printf(TEXT("%s is a Game Kit starter, and removing one takes the starters that need it with it; use -op=removestarter -starter=%s"), *Definition.TypeName, *Definition.TypeName);
+	}
+	if (Referencers.IsEmpty())
+	{
+		return FString();
+	}
+	const FString Redirectors = UsedRedirectors.IsEmpty() ? FString()
+		: FString::Printf(TEXT("; the redirectors %s point to it and are still used, so fix up redirectors in the Content Browser first"), *FString::JoinBy(UsedRedirectors, TEXT(", "), [](FName Redirector) { return Redirector.ToString(); }));
+	return FString::Printf(TEXT("%s's definition %s is used by %s; remove those uses first%s; nothing was removed"), *Definition.TypeName, *Definition.GetPackage()->GetName(),
+		*FString::JoinBy(Referencers, TEXT(", "), [](FName Referencer) { return Referencer.ToString(); }), *Redirectors);
+}
+
+FString UCrowdyServerComputeCommandlet::FindNotDeletedProblem(const FString& Package, TFunctionRef<bool(const FString&)> Exists)
+{
+	return Exists(Package) ? FString(TEXT("the definition could not be deleted; nothing else was removed")) : FString();
+}
+
+FString UCrowdyServerComputeCommandlet::DescribeRemoveType(const FString& TypeName, const FString& AssetPackage, const FString& ShownFolder, const FString& FolderStays)
+{
+	if (ShownFolder.IsEmpty())
+	{
+		return FString::Printf(TEXT("This removes %s: its definition %s (it has no Server Code folder)"), *TypeName, *AssetPackage);
+	}
+	if (FolderStays.IsEmpty())
+	{
+		return FString::Printf(TEXT("This removes %s: its definition %s and its Server Code folder %s"), *TypeName, *AssetPackage, *ShownFolder);
+	}
+	return FString::Printf(TEXT("This removes %s: its definition %s only; its Server Code folder %s is left as it is: %s"), *TypeName, *AssetPackage, *ShownFolder, *FolderStays);
+}
+
+FString UCrowdyServerComputeCommandlet::FindRenameProblem(const FString& To, const FString& CurrentPackage, TFunctionRef<bool(const FString&)> IsTaken)
+{
+	if (!To.StartsWith(TEXT("/Game/"), ESearchCase::CaseSensitive))
+	{
+		return FString::Printf(TEXT("-to is \"%s\"; the asset stays inside the project, so it must start with /Game/ and end with the new asset name, as /Game/ServerObjects/CSO_TipJar"), *To);
+	}
+	FText Reason;
+	if (!FPackageName::IsValidLongPackageName(To, false, &Reason))
+	{
+		return FString::Printf(TEXT("%s is not a package an asset can have: %s"), *To, *Reason.ToString());
+	}
+	if (To.Equals(CurrentPackage, ESearchCase::IgnoreCase))
+	{
+		return FString::Printf(TEXT("The definition is already at %s"), *CurrentPackage);
+	}
+	if (IsTaken(To))
+	{
+		return FString::Printf(TEXT("%s already exists; choose another -to"), *To);
+	}
+	return FString();
+}
+
+FString UCrowdyServerComputeCommandlet::DescribeRenameType(const FString& TypeName, const FString& From, const FString& To)
+{
+	return FString::Printf(TEXT("This moves %s's definition from %s to %s; its Server Code folder follows, and its Type Name stays %s"), *TypeName, *From, *To, *TypeName);
+}
+
+bool UCrowdyServerComputeCommandlet::ReadLogLevel(const FString& Params, int32& OutMaxLevel, FString& OutError)
+{
+	OutMaxLevel = -1;
+	FString Level;
+	if (!FParse::Value(*Params, TEXT("-level="), Level) || CrowdyServerComputePage::FindLogMaxLevel(Level, OutMaxLevel))
+	{
+		return true;
+	}
+	OutError = FString::Printf(TEXT("-level=%s is not one of all, info, warnings or errors, the Logs tab's filters"), *Level);
+	return false;
+}
+
+bool UCrowdyServerComputeCommandlet::ReadStatsWindow(const FString& Params, int32& OutMinutes, FString& OutError)
+{
+	OutMinutes = 0;
+	FString Window;
+	if (!FParse::Value(*Params, TEXT("-window="), Window))
+	{
+		return true;
+	}
+	const FString Minutes = CrowdyServerComputePage::FindActivityWindow(Window);
+	OutMinutes = FCString::Atoi(*Minutes);
+	if (!Minutes.IsEmpty())
+	{
+		return true;
+	}
+	OutError = FString::Printf(TEXT("-window=%s is not one of hour, day or week, the Activity tab's windows"), *Window);
+	return false;
 }
 
 const TCHAR* UCrowdyServerComputeCommandlet::GetUsage()

@@ -576,6 +576,48 @@ bool FCrowdyExecCodegenMenuSharedTypeNameTest::RunTest(const FString& Parameters
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuSelectionSharedNamesTest, "CrowdySDK.CrowdyExecEditor.CodegenMenuChecksSharedTypeNamesOncePerSelection", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecCodegenMenuSelectionSharedNamesTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
+	if (!TestFalse(TEXT("no deploy runs, so the project's types are read again"), Compute.IsBusy()))
+	{
+		return false;
+	}
+	const FString Root = FString::Printf(TEXT("/Temp/CrowdyExecCodegenMenuTests/%s"), *FGuid::NewGuid().ToString());
+	const auto MakeAsset = [&Root](const TCHAR* Name, const TCHAR* TypeName)
+	{
+		UPackage* Package = CreatePackage(*FString::Printf(TEXT("%s/%s"), *Root, Name));
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition(NewObject<UCrowdyServerObjectDefinition>(Package, Name, RF_Public));
+		Definition->TypeName = TypeName;
+		return Definition;
+	};
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> SharedA = MakeAsset(TEXT("DA_SelA"), TEXT("ck_menu_sel_shared"));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> SharedB = MakeAsset(TEXT("DA_SelB"), TEXT("ck_menu_sel_shared"));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Own = MakeAsset(TEXT("DA_SelC"), TEXT("ck_menu_sel_own"));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Other = MakeAsset(TEXT("DA_SelD"), TEXT("ck_menu_sel_other"));
+	const TArray<UCrowdyServerObjectDefinition*> Selection = {SharedA.Get(), Own.Get(), SharedB.Get(), Other.Get()};
+	FScriptedDialogs Dialogs;
+	const uint32 Before = Compute.GetDataGeneration();
+	const TArray<UCrowdyServerObjectDefinition*> Kept = CrowdyExecCodegenMenu::RemoveSharedTypeNames(Selection);
+	TestEqual(TEXT("four definitions read the project's types once"), static_cast<int32>(Compute.GetDataGeneration() - Before), 1);
+	if (TestEqual(TEXT("the two that share a Type Name are refused"), Kept.Num(), 2))
+	{
+		TestTrue(TEXT("the others are kept, in order"), Kept[0] == Own.Get() && Kept[1] == Other.Get());
+	}
+	if (TestEqual(TEXT("each refusal is one message"), Dialogs.Messages.Num(), 2))
+	{
+		TestEqualSensitive(TEXT("naming the other definition"), Dialogs.Messages[0], FString::Printf(TEXT("%s %s uses it too."), *CrowdyServerCodeFiles::SharedTypeNameProblem().ToString(), *SharedB->GetPathName()));
+	}
+	for (UCrowdyServerObjectDefinition* Each : Selection)
+	{
+		Each->SetFlags(RF_Transient);
+	}
+	Compute.RefreshTypes();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuForeignCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenMenuRefusesFolderItDidNotGenerate", CrowdyExecCodegenMenuTests::TestFlags)
 bool FCrowdyExecCodegenMenuForeignCrateTest::RunTest(const FString& Parameters)
 {

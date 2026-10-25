@@ -41,6 +41,18 @@ namespace
 		TEXT("How many inbound emotes may arrive at once before the per-second budget applies (default 16)."),
 		ECVF_Default);
 
+	TAutoConsoleVariable<float> CVarCrowdyKitEmotesSenderMaxPerSecond(
+		TEXT("crowdy.kit.emotes.persender.maxpersecond"),
+		4.0f,
+		TEXT("How many inbound emotes per second are read from one sender (default 4). The shared budget still caps all senders together."),
+		ECVF_Default);
+
+	TAutoConsoleVariable<int32> CVarCrowdyKitEmotesSenderBurst(
+		TEXT("crowdy.kit.emotes.persender.burst"),
+		4,
+		TEXT("How many inbound emotes one sender may send at once before its per-second budget applies (default 4)."),
+		ECVF_Default);
+
 	void AppendKitEmoteAscii(TArray<uint8>& Out, const ANSICHAR* Text)
 	{
 		for (const ANSICHAR* Cursor = Text; *Cursor; ++Cursor)
@@ -374,13 +386,86 @@ void UCrowdyKitEmotes::HandleDelivery(const FCrowdyDelivery& Delivery)
 		return;
 	}
 
-	// The sender id is self-claimed, so the budget is shared by every sender rather than kept per sender.
-	if (!TryAdmitEmote(FPlatformTime::Seconds()))
+	// The sender id is self-claimed, so a forger can rotate it: the shared budget stays as the cap over every sender.
+	const FCrowdyActorId& Sender = Delivery.HeaderActorId();
+	const double Now = FPlatformTime::Seconds();
+	if (!TryAdmit(Sender, Now))
 	{
 		return;
 	}
 
-	ReceiveEmote(Delivery.HeaderActorId(), Delivery.PayloadBytes);
+	ReceiveEmote(Sender, Delivery.PayloadBytes);
+}
+
+bool UCrowdyKitEmotes::TryAdmit(const FCrowdyActorId& Sender, const double Now)
+{
+	if (!TryAdmitSender(Sender, Now))
+	{
+		return false;
+	}
+
+	if (TryAdmitEmote(Now))
+	{
+		return true;
+	}
+
+	if (FEmoteSenderBucket* Bucket = SenderBuckets.Find(Sender))
+	{
+		Bucket->Tokens += 1.0;
+	}
+	return false;
+}
+
+void UCrowdyKitEmotes::EvictStalestSender()
+{
+	FCrowdyActorId Stalest;
+	double StalestAt = TNumericLimits<double>::Max();
+	for (const TPair<FCrowdyActorId, FEmoteSenderBucket>& Pair : SenderBuckets)
+	{
+		if (Pair.Value.At < StalestAt)
+		{
+			StalestAt = Pair.Value.At;
+			Stalest = Pair.Key;
+		}
+	}
+	SenderBuckets.Remove(Stalest);
+}
+
+bool UCrowdyKitEmotes::TryAdmitSender(const FCrowdyActorId& Sender, const double Now)
+{
+	const double Rate = FMath::Max(0.0, static_cast<double>(CVarCrowdyKitEmotesSenderMaxPerSecond.GetValueOnAnyThread()));
+	const double Burst = FMath::Max(1, CVarCrowdyKitEmotesSenderBurst.GetValueOnAnyThread());
+
+	FEmoteSenderBucket* Bucket = SenderBuckets.Find(Sender);
+	if (Bucket)
+	{
+		Bucket->Tokens = FMath::Min(Burst, Bucket->Tokens + FMath::Max(0.0, Now - Bucket->At) * Rate);
+		Bucket->At = Now;
+	}
+	else
+	{
+		if (SenderBuckets.Num() >= MaxEmoteSenders)
+		{
+			EvictStalestSender();
+		}
+		Bucket = &SenderBuckets.Add(Sender, FEmoteSenderBucket{ Burst, Now });
+	}
+
+	if (Bucket->Tokens >= 1.0)
+	{
+		Bucket->Tokens -= 1.0;
+		return true;
+	}
+
+	++EmotesDropped;
+	if (!bReportedSenderFlood)
+	{
+		bReportedSenderFlood = true;
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyKitEmotes] Dropping inbound emotes from a sender over its own budget of %.0f per second (burst %.0f). Raise crowdy.kit.emotes.persender.maxpersecond or crowdy.kit.emotes.persender.burst if this is expected traffic. Reported once; later drops are only counted."),
+			Rate, Burst);
+	}
+	return false;
 }
 
 bool UCrowdyKitEmotes::TryAdmitEmote(const double Now)

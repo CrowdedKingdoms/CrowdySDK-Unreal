@@ -27,7 +27,7 @@
 		{ "Name": "CrowdyExecNodes",    "Type": "UncookedOnly", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyMassNodes",    "Type": "UncookedOnly", "LoadingPhase": "Default" },
 		{ "Name": "CrowdySDKEditor",    "Type": "Editor",  "LoadingPhase": "PostEngineInit" },
-		{ "Name": "CrowdyStudio",       "Type": "Editor",  "LoadingPhase": "PostEngineInit" },
+		{ "Name": "CrowdyStudio",       "Type": "Editor",  "LoadingPhase": "Default" },
 		{ "Name": "CrowdyExecEditor",   "Type": "Editor",  "LoadingPhase": "Default" }
 	],
 	"Plugins": [

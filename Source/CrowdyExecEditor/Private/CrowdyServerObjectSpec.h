@@ -53,7 +53,7 @@ namespace CrowdyServerObjectSpec
 	/** The package ContentPath/CSO_<TypeName in Pascal case> that CreateAsset would make. */
 	FString MakePackageName(const FString& ContentPath, const UCrowdyServerObjectDefinition& Definition);
 
-	/** Creates, bakes and saves a new asset holding Candidate's settings. Null, with OutError and nothing saved or left in memory, when ContentPath is not under /Game/, the package name is invalid or taken, or the asset does not bake or save. */
+	/** Creates, bakes and saves a new asset holding Candidate's settings. Null, with OutError and nothing saved or left in memory, when ContentPath is not under /Game/, the package name is invalid or taken (by another definition, the error names its Type Name), or the asset does not bake or save. */
 	UCrowdyServerObjectDefinition* CreateAsset(const UCrowdyServerObjectDefinition& Candidate, const FString& ContentPath, FString& OutError);
 
 	/** Saves the package Definition lives in. */

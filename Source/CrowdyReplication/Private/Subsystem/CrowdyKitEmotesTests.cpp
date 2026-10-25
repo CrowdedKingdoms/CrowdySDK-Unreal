@@ -418,4 +418,151 @@ bool FCrowdyKitEmotesBudgetRefillsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitEmotesSenderBudgetTest,
+	"CrowdySDK.Replication.KitEmotes.OneSenderCannotSilenceAnother", KitEmotesTestFlags)
+bool FCrowdyKitEmotesSenderBudgetTest::RunTest(const FString& Parameters)
+{
+	AddExpectedMessagePlain(TEXT("from a sender over its own budget"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	const IConsoleVariable* BurstVariable = IConsoleManager::Get().FindConsoleVariable(TEXT("crowdy.kit.emotes.persender.burst"));
+	if (!TestNotNull(TEXT("the per-sender burst is a console variable"), BurstVariable))
+	{
+		return false;
+	}
+	const int32 Burst = BurstVariable->GetInt();
+
+	TStrongObjectPtr<UCrowdyKitEmotes> Emotes(NewObject<UCrowdyKitEmotes>(GetTransientPackage()));
+	const FCrowdyActorId Flooder = FCrowdyActorId::FromAnsiLiteral("0123456789abcdef0123456789abcdef");
+	const FCrowdyActorId Bystander = FCrowdyActorId::FromAnsiLiteral("fedcba9876543210fedcba9876543210");
+
+	constexpr double Start = 1000.0;
+	int32 Admitted = 0;
+	while (Admitted < Burst + 1 && Emotes->TryAdmitSenderForTest(Flooder, Start))
+	{
+		++Admitted;
+	}
+	TestEqual(TEXT("one sender is admitted its burst and no more at one instant"), Admitted, Burst);
+	TestFalse(TEXT("then it is refused"), Emotes->TryAdmitSenderForTest(Flooder, Start));
+	TestEqual(TEXT("and the refusals are counted"), Emotes->NumEmotesDroppedForTest(), 2);
+
+	TestTrue(TEXT("a second sender is still admitted"), Emotes->TryAdmitSenderForTest(Bystander, Start));
+	TestTrue(TEXT("a second later the first sender is admitted again"), Emotes->TryAdmitSenderForTest(Flooder, Start + 1.0));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitEmotesSenderTableIsBoundedTest,
+	"CrowdySDK.Replication.KitEmotes.SenderTableIsBounded", KitEmotesTestFlags)
+bool FCrowdyKitEmotesSenderTableIsBoundedTest::RunTest(const FString& Parameters)
+{
+	TStrongObjectPtr<UCrowdyKitEmotes> Emotes(NewObject<UCrowdyKitEmotes>(GetTransientPackage()));
+
+	int32 Largest = 0;
+	for (int32 Index = 0; Index < UCrowdyKitEmotes::MaxEmoteSenders * 4; ++Index)
+	{
+		TestTrue(TEXT("a sender seen for the first time is admitted"),
+			Emotes->TryAdmitSenderForTest(FCrowdyActorId::FromGuid(FGuid(Index + 1, 2, 3, 4)), 1000.0));
+		Largest = FMath::Max(Largest, Emotes->NumSenderBucketsForTest());
+	}
+
+	TestTrue(TEXT("the table is filled up to its cap"), Largest == UCrowdyKitEmotes::MaxEmoteSenders);
+	TestTrue(TEXT("and never past it"), Emotes->NumSenderBucketsForTest() <= UCrowdyKitEmotes::MaxEmoteSenders);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitEmotesSharedRefusalRefundsTest,
+	"CrowdySDK.Replication.KitEmotes.SharedRefusalRefundsTheSender", KitEmotesTestFlags)
+bool FCrowdyKitEmotesSharedRefusalRefundsTest::RunTest(const FString& Parameters)
+{
+	AddExpectedMessagePlain(TEXT("Dropping inbound emotes over the budget"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	const IConsoleVariable* SharedBurstVariable = IConsoleManager::Get().FindConsoleVariable(TEXT("crowdy.kit.emotes.burst"));
+	const IConsoleVariable* SenderBurstVariable = IConsoleManager::Get().FindConsoleVariable(TEXT("crowdy.kit.emotes.persender.burst"));
+	if (!TestNotNull(TEXT("the shared burst is a console variable"), SharedBurstVariable)
+		|| !TestNotNull(TEXT("the per-sender burst is a console variable"), SenderBurstVariable))
+	{
+		return false;
+	}
+	const int32 SharedBurst = SharedBurstVariable->GetInt();
+	const int32 SenderBurst = SenderBurstVariable->GetInt();
+
+	TStrongObjectPtr<UCrowdyKitEmotes> Emotes(NewObject<UCrowdyKitEmotes>(GetTransientPackage()));
+	const FCrowdyActorId Sender = KitEmotesTestSender();
+
+	constexpr double Start = 1000.0;
+	int32 Drained = 0;
+	while (Drained < SharedBurst + 1 && Emotes->TryAdmitEmoteForTest(Start))
+	{
+		++Drained;
+	}
+	TestEqual(TEXT("the shared budget is emptied"), Drained, SharedBurst);
+
+	for (int32 Index = 0; Index < SenderBurst + 3; ++Index)
+	{
+		TestFalse(TEXT("the shared budget refuses the sender's emote"), Emotes->TryAdmitForTest(Sender, Start));
+	}
+
+	int32 Admitted = 0;
+	while (Admitted < SenderBurst + 1 && Emotes->TryAdmitSenderForTest(Sender, Start))
+	{
+		++Admitted;
+	}
+	TestEqual(TEXT("emotes the shared budget dropped cost the sender nothing"), Admitted, SenderBurst);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitEmotesFullTableEvictsStalestTest,
+	"CrowdySDK.Replication.KitEmotes.FullTableEvictsTheStalestSender", KitEmotesTestFlags)
+bool FCrowdyKitEmotesFullTableEvictsStalestTest::RunTest(const FString& Parameters)
+{
+	AddExpectedMessagePlain(TEXT("from a sender over its own budget"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	const IConsoleVariable* BurstVariable = IConsoleManager::Get().FindConsoleVariable(TEXT("crowdy.kit.emotes.persender.burst"));
+	if (!TestNotNull(TEXT("the per-sender burst is a console variable"), BurstVariable))
+	{
+		return false;
+	}
+	const int32 Burst = BurstVariable->GetInt();
+
+	TStrongObjectPtr<UCrowdyKitEmotes> Emotes(NewObject<UCrowdyKitEmotes>(GetTransientPackage()));
+
+	// Steps are tiny so the refill between them stays far under one token.
+	constexpr double Start = 1000.0;
+	constexpr double Step = 0.00001;
+	const auto SenderAt = [](const int32 Index) { return FCrowdyActorId::FromGuid(FGuid(Index + 1, 2, 3, 4)); };
+
+	for (int32 Index = 0; Index < UCrowdyKitEmotes::MaxEmoteSenders; ++Index)
+	{
+		Emotes->TryAdmitSenderForTest(SenderAt(Index), Start + Index * Step);
+	}
+	TestEqual(TEXT("the table is full"), Emotes->NumSenderBucketsForTest(), UCrowdyKitEmotes::MaxEmoteSenders);
+
+	const int32 Newest = UCrowdyKitEmotes::MaxEmoteSenders - 1;
+	const double NewestAt = Start + Newest * Step;
+	int32 Drained = 0;
+	while (Drained < Burst + 1 && Emotes->TryAdmitSenderForTest(SenderAt(Newest), NewestAt))
+	{
+		++Drained;
+	}
+
+	const double Later = Start + 0.003;
+	TestTrue(TEXT("a new sender is admitted"), Emotes->TryAdmitSenderForTest(SenderAt(UCrowdyKitEmotes::MaxEmoteSenders), Later));
+	TestEqual(TEXT("without growing the table"), Emotes->NumSenderBucketsForTest(), UCrowdyKitEmotes::MaxEmoteSenders);
+	TestFalse(TEXT("the newest sender keeps its spent budget"), Emotes->TryAdmitSenderForTest(SenderAt(Newest), Later));
+
+	int32 Fresh = 0;
+	while (Fresh < Burst + 1 && Emotes->TryAdmitSenderForTest(SenderAt(0), Later))
+	{
+		++Fresh;
+	}
+	TestEqual(TEXT("the stalest sender was dropped, so it starts with a full burst"), Fresh, Burst);
+
+	int32 Kept = 0;
+	while (Kept < Burst + 1 && Emotes->TryAdmitSenderForTest(SenderAt(2), Later))
+	{
+		++Kept;
+	}
+	TestEqual(TEXT("a sender seen more recently keeps the burst it already spent"), Kept, Burst - 1);
+	return true;
+}
+
 #endif

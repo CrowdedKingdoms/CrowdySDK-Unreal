@@ -81,19 +81,6 @@ namespace CrowdyComputeUI
 		return Tab == TabSettings ? 4 : 0;
 	}
 
-	int32 MaxLevelFor(const FString& Level)
-	{
-		if (Level == TEXT("errors"))
-		{
-			return 0;
-		}
-		if (Level == TEXT("warnings"))
-		{
-			return 1;
-		}
-		return Level == TEXT("info") ? 2 : -1;
-	}
-
 	EBadgeTone ToneForLevel(int32 Level)
 	{
 		switch (Level)
@@ -118,11 +105,11 @@ namespace CrowdyComputeUI
 
 	FText WindowPhrase(const FString& Window)
 	{
-		if (Window == TEXT("1440"))
+		if (Window == CrowdyServerComputePage::WindowDay)
 		{
 			return LOCTEXT("WindowDay", "in the last day");
 		}
-		return Window == TEXT("10080") ? LOCTEXT("WindowWeek", "in the last week") : LOCTEXT("WindowHour", "in the last hour");
+		return Window == CrowdyServerComputePage::WindowWeek ? LOCTEXT("WindowWeek", "in the last week") : LOCTEXT("WindowHour", "in the last hour");
 	}
 
 	FText Unknown()
@@ -509,6 +496,64 @@ FText CrowdyServerComputePage::WhyCrateFolderStays(const FString& TypeName, cons
 	return FText::GetEmpty();
 }
 
+FString CrowdyServerComputePage::FindActivityWindow(const FString& Name)
+{
+	if (Name.Equals(TEXT("hour"), ESearchCase::CaseSensitive))
+	{
+		return WindowHour;
+	}
+	if (Name.Equals(TEXT("day"), ESearchCase::CaseSensitive))
+	{
+		return WindowDay;
+	}
+	return Name.Equals(TEXT("week"), ESearchCase::CaseSensitive) ? FString(WindowWeek) : FString();
+}
+
+bool CrowdyServerComputePage::FindLogMaxLevel(const FString& Filter, int32& OutMaxLevel)
+{
+	if (Filter == TEXT("errors"))
+	{
+		OutMaxLevel = 0;
+		return true;
+	}
+	if (Filter == TEXT("warnings"))
+	{
+		OutMaxLevel = 1;
+		return true;
+	}
+	if (Filter == TEXT("info"))
+	{
+		OutMaxLevel = 2;
+		return true;
+	}
+	OutMaxLevel = -1;
+	return Filter == TEXT("all");
+}
+
+CrowdyServerComputePage::FRemovalEffects CrowdyServerComputePage::FinishRemoval(const FText& Type, const FString& TypeName, const FSoftObjectPath& Asset, const FString& CrateDirectory,
+	const FString& ServerDirectory, bool bSharedTypeName, const FString& ShownFolder, bool bDeleteFolder, bool bSaveSettings)
+{
+	FRemovalEffects Effects;
+	// Without its world the project deploys under the SDK's root again, which Get Players Online then reads.
+	UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
+	const bool bNamedActors = Settings->GameKitActorStarters.Remove(Asset) > 0;
+	const bool bNamedWorld = Settings->GameKitWorld == Asset;
+	if (bNamedWorld)
+	{
+		Settings->GameKitWorld.Reset();
+	}
+	Effects.bSettingsCleared = bNamedWorld || bNamedActors;
+	if (Effects.bSettingsCleared && bSaveSettings)
+	{
+		Settings->TryUpdateDefaultConfigFile();
+	}
+	if (bDeleteFolder)
+	{
+		Effects.FolderProblem = CrowdyComputeUI::DeleteCrateFolder(Type, TypeName, CrateDirectory, ServerDirectory, bSharedTypeName, ShownFolder);
+	}
+	return Effects;
+}
+
 SCrowdyServerComputePanel::~SCrowdyServerComputePanel()
 {
 	if (const TSharedPtr<FCrowdyServerComputeService> Pinned = Service.Pin())
@@ -521,7 +566,7 @@ void SCrowdyServerComputePanel::Construct(const FArguments& InArgs)
 {
 	ActiveTab = CrowdyComputeUI::TabOverview;
 	LogLevel = TEXT("all");
-	StatsWindow = TEXT("60");
+	StatsWindow = CrowdyServerComputePage::WindowHour;
 
 	FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
 	Service = Compute.AsWeak();
@@ -1022,7 +1067,7 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::BuildActivityTab()
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(10.f, 0.f, 0.f, 0.f)
 				[
 					CrowdyStudioWidgets::SegmentedEnum(
-						{ TEXT("60"), TEXT("1440"), TEXT("10080") },
+						{ CrowdyServerComputePage::WindowHour, CrowdyServerComputePage::WindowDay, CrowdyServerComputePage::WindowWeek },
 						{ LOCTEXT("LastHour", "Last hour"), LOCTEXT("LastDay", "Last day"), LOCTEXT("LastWeek", "Last week") },
 						TAttribute<FString>::CreateLambda([this]() { return StatsWindow; }),
 						[this](const FString& Window) { StatsWindow = Window; RefreshStats(); })
@@ -1976,7 +2021,7 @@ void SCrowdyServerComputePanel::RefreshLogs(bool bOlder)
 		LogQuery = CrowdyExecDeveloper::FLogQuery();
 		LogQuery.NodeType = LogTypeBox->GetText().ToString().TrimStartAndEnd();
 		LogQuery.Flow = LogFlow;
-		LogQuery.MaxLevel = CrowdyComputeUI::MaxLevelFor(LogLevel);
+		CrowdyServerComputePage::FindLogMaxLevel(LogLevel, LogQuery.MaxLevel);
 		LogQuery.Limit = CrowdyComputeUI::LogPageSize;
 	}
 	CrowdyExecDeveloper::FLogQuery Query = LogQuery;
@@ -2410,19 +2455,8 @@ FReply SCrowdyServerComputePanel::OnRemoveTypeClicked(FString TypeName, FString 
 	{
 		return FReply::Handled();
 	}
-	// Without its world the project deploys under the SDK's root again, which Get Players Online then reads.
-	UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
-	const bool bNamedActors = Settings->GameKitActorStarters.Remove(FSoftObjectPath(AssetPath)) > 0;
-	const bool bNamedWorld = Settings->GameKitWorld == FSoftObjectPath(AssetPath);
-	if (bNamedWorld)
-	{
-		Settings->GameKitWorld.Reset();
-	}
-	if (bNamedWorld || bNamedActors)
-	{
-		Settings->TryUpdateDefaultConfigFile();
-	}
-	const FText FolderError = FolderStays.IsEmpty() ? CrowdyComputeUI::DeleteCrateFolder(Type, TypeName, CrateDirectory, ServerDirectory, bShared, ShownFolder) : FText::GetEmpty();
+	const CrowdyServerComputePage::FRemovalEffects Effects = CrowdyServerComputePage::FinishRemoval(Type, TypeName, FSoftObjectPath(AssetPath), CrateDirectory, ServerDirectory, bShared, ShownFolder, FolderStays.IsEmpty());
+	const FText FolderError = FolderStays.IsEmpty() ? Effects.FolderProblem : FText::GetEmpty();
 	SetError(CrowdyComputeUI::ErrorRemove, FolderError);
 	// Closing the definition's editor kept its unsaved code edits; with their files gone they would only haunt later prompts.
 	if (FolderStays.IsEmpty() && FolderError.IsEmpty())

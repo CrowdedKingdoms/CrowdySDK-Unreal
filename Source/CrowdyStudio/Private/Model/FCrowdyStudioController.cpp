@@ -1804,7 +1804,7 @@ namespace
 	}
 }
 
-void FCrowdyStudioController::CreateGrid(int64 C1X, int64 C1Y, int64 C1Z, int64 C2X, int64 C2Y, int64 C2Z)
+void FCrowdyStudioController::CreateGrid(int64 C1X, int64 C1Y, int64 C1Z, int64 C2X, int64 C2Y, int64 C2Z, TFunction<void(int64)> OnCreated)
 {
 	if (SelectedAppId == 0)
 	{
@@ -1831,13 +1831,17 @@ void FCrowdyStudioController::CreateGrid(int64 C1X, int64 C1Y, int64 C1Z, int64 
 	Variables->SetObjectField(TEXT("input"), Input);
 
 	SendGame(ECrowdyCppApiDomain::GameApps, TEXT("CreateGrid"), Variables,
-		[this](const TSharedPtr<FJsonObject>& Envelope)
+		[this, OnCreated = MoveTemp(OnCreated)](const TSharedPtr<FJsonObject>& Envelope)
 		{
 			FStudioGrid Created;
 			FString GridError;
 			if (CrowdyStudioGql::ParseCreateGrid(Envelope, Created, GridError))
 			{
 				SetStatus(FString::Printf(TEXT("Created grid #%lld."), Created.GridId), false);
+				if (OnCreated)
+				{
+					OnCreated(Created.GridId);
+				}
 			}
 			else
 			{
@@ -2104,6 +2108,15 @@ void FCrowdyStudioController::FetchFeatures()
 		[this]() { ReleaseAccessRead(); });
 }
 
+bool FCrowdyStudioController::IsFeatureKey(const FString& FeatureKey)
+{
+	// The same shape a Server Object function's Required Feature accepts, so every key defined here can be required.
+	return !FeatureKey.IsEmpty() && FeatureKey.Len() <= 64 && Algo::AllOf(FeatureKey, [](TCHAR Char)
+	{
+		return (Char < 128 && FChar::IsAlnum(Char)) || Char == TEXT('_') || Char == TEXT('-') || Char == TEXT('.');
+	});
+}
+
 void FCrowdyStudioController::DefineFeature(const FString& FeatureKey, const FString& Description)
 {
 	if (SelectedAppId == 0 || FeatureKey.IsEmpty())
@@ -2111,12 +2124,7 @@ void FCrowdyStudioController::DefineFeature(const FString& FeatureKey, const FSt
 		SetStatus(TEXT("A feature needs an app and a feature key."), true);
 		return;
 	}
-	// The same shape a Server Object function's Required Feature accepts, so every key defined here can be required.
-	const bool bKeyShape = FeatureKey.Len() <= 64 && Algo::AllOf(FeatureKey, [](TCHAR Char)
-	{
-		return (Char < 128 && FChar::IsAlnum(Char)) || Char == TEXT('_') || Char == TEXT('-') || Char == TEXT('.');
-	});
-	if (!bKeyShape)
+	if (!IsFeatureKey(FeatureKey))
 	{
 		SetStatus(TEXT("A feature key is 1 to 64 letters, digits, underscores, hyphens and dots."), true);
 		return;
@@ -2305,7 +2313,7 @@ void FCrowdyStudioController::SelectOrg(int64 OrgId)
 	PersistSelection();
 }
 
-void FCrowdyStudioController::SelectApp(int64 AppId)
+void FCrowdyStudioController::SelectApp(int64 AppId, bool bPersist)
 {
 	SelectedAppId = AppId;
 
@@ -2314,7 +2322,10 @@ void FCrowdyStudioController::SelectApp(int64 AppId)
 	{
 		SelectedOrgId = App->OrgId;
 	}
-	PersistSelection();
+	if (bPersist)
+	{
+		PersistSelection();
+	}
 
 	// A new app invalidates the previous app's game token and endpoint; AnnounceAppContext re-mints.
 	ClearAppToken();

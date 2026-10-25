@@ -55,6 +55,12 @@ namespace CrowdyExecDeploy
 	/** Every Server Object definition asset in the project but the SDK's root, loaded, sorted by type name. */
 	TArray<UCrowdyServerObjectDefinition*> FindProjectDefinitions();
 
+	/** The packages other than Ignored (and Definition's own) that reference Definition's package, hard or soft, by the asset registry. */
+	TArray<FName> FindReferencers(const UCrowdyServerObjectDefinition& Definition, const TSet<FName>& Ignored);
+
+	/** Takes out of Referencers, and returns loaded, the redirectors that point at Definition and that nothing else references, so deleting them with it leaves nothing dangling. A redirector something else still uses stays in Referencers and is added to OutUsed. */
+	TArray<UObject*> TakeUnusedRedirectors(const UCrowdyServerObjectDefinition& Definition, TArray<FName>& Referencers, TArray<FName>& OutUsed);
+
 	/** Where a type's crate is on disk and whether it matches what Generate Server Code would write now. */
 	FTypeState InspectType(const UCrowdyServerObjectDefinition& Definition, const FString& CrateDirectory);
 
