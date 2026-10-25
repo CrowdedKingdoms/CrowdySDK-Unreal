@@ -33,9 +33,14 @@ public:
 	/** Opens the prompt to look at: Accept and Decline only close it, and nothing is recorded. */
 	void ShowPreview();
 
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Stands in for the game instance's authentication subsystem on an instance built outside a collection. */
+	TWeakObjectPtr<UCrowdyAuthentication> AuthenticationForTest;
+#endif
+
 private:
 	UCrowdyAuthentication* GetAuthentication() const;
-	void OpenPrompt(bool bInPreview);
+	bool OpenPrompt(bool bInPreview);
 	void HandleAccept();
 	void HandleDecline();
 	void ClosePrompt();

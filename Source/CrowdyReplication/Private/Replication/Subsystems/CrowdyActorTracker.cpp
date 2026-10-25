@@ -350,6 +350,14 @@ void UCrowdyActorTracker::HandleActorLeftDelivery(const FCrowdyDelivery& Deliver
 void UCrowdyActorTracker::Configure(const int32 InMaxTrackedActors, const int32 InMaxUpdatesPerBatch, const float InMaxBatchWaitTime,
                                     const float InActorTimeoutThreshold)
 {
+	// Shard workers read the sets and limits without a lock, so they cannot be replaced once the queues exist.
+	if (!UpdateQueues.IsEmpty())
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[Crowdy Actor Tracker]: Configure was ignored because the tracker is already running. Set these values in the map profile or the developer settings instead."));
+		return;
+	}
+
 	// Clamped here because this is the only way these are set, from Blueprint and from the map profile alike, and
 	// the ranges declared on the config struct are a details panel hint that ini text and Blueprint both bypass.
 	// None of these have a meaningful value at or below zero: a tracked actor capacity of zero divides by zero on
@@ -594,14 +602,20 @@ bool UCrowdyActorTracker::ScheduleShardTask(const int32 ShardIndex)
 	}
 
 	TArray<TFunction<void()>> Tasks;
-	Tasks.Add([this, ShardIndex]()
+	Tasks.Add([WeakThis = TWeakObjectPtr<UCrowdyActorTracker>(this), ShardIndex]()
 	{
+		// Held for the whole task, so a consumer that outlives the shutdown wait cannot touch a collected tracker.
+		const TStrongObjectPtr<UCrowdyActorTracker> Pinned = WeakThis.Pin();
+		if (!Pinned.IsValid())
+			return;
+
+		UCrowdyActorTracker* Self = Pinned.Get();
 		CrowdyShardScheduling::RunShardConsumer(
-			ShardStates[ShardIndex],
-			[this, ShardIndex]() { ProcessQueue(ShardIndex); },
-			[this, ShardIndex]() { return !UpdateQueues[ShardIndex]->IsEmpty(); },
-			[this, ShardIndex]() { return ScheduleShardTask(ShardIndex); },
-			[this]() { ShardTasksInFlight.fetch_sub(1, std::memory_order_acq_rel); });
+			Self->ShardStates[ShardIndex],
+			[Self, ShardIndex]() { Self->ProcessQueue(ShardIndex); },
+			[Self, ShardIndex]() { return !Self->UpdateQueues[ShardIndex]->IsEmpty(); },
+			[Self, ShardIndex]() { return Self->ScheduleShardTask(ShardIndex); },
+			[Self]() { Self->ShardTasksInFlight.fetch_sub(1, std::memory_order_acq_rel); });
 	});
 
 	const bool bScheduled = CrowdyShardScheduling::ScheduleShardConsumer(

@@ -868,4 +868,28 @@ bool FCrowdyExecRevisionsPlanTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Rebuild All reuses nothing, so an unchanged crate is built again.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecRevisionsRebuildAllTest, "CrowdySDK.CrowdyExecEditor.RebuildAllReusesNothing", CrowdyExecRevisionsTest::TestFlags)
+bool FCrowdyExecRevisionsRebuildAllTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecRevisionsTest;
+	CrowdyExecDeveloper::FVersion Live;
+	Live.ManifestJson = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"d_root\"},\"t_a\":{\"kind\":\"hub\",\"digest\":\"d_a\"}}}");
+	const TArray<CrowdyExecDeveloper::FVersion> Versions{Live};
+	const FBuildCrate Crate = MakeCrate(TEXT("t_a"), TEXT("fn a() {}\n"));
+	const TArray<FBuildCrate> Crates{Crate};
+	auto HistoryFor = [&Crate](const FString&) { return TArray<FRevision>{MakeRevision(Crate, TEXT("d_a"), 1)}; };
+
+	const CrowdyExecBuildAndDeploy::FPlan Reusing = CrowdyExecBuildAndDeploy::MakePlan(Crates, CrowdyExecBuildAndDeploy::DigestsToReuse(Versions, true, false), HistoryFor);
+	TestEqual(TEXT("an unchanged crate the app holds is reused"), Reusing.Reused.FindRef(TEXT("t_a")), FString(TEXT("d_a")));
+	TestTrue(TEXT("and nothing is built"), Reusing.Builds.IsEmpty());
+
+	const CrowdyExecBuildAndDeploy::FPlan Rebuilding = CrowdyExecBuildAndDeploy::MakePlan(Crates, CrowdyExecBuildAndDeploy::DigestsToReuse(Versions, true, true), HistoryFor);
+	TestTrue(TEXT("Rebuild All reuses nothing"), Rebuilding.Reused.IsEmpty());
+	TestTrue(TEXT("and builds the crate"), Rebuilding.Builds.Num() == 1 && Rebuilding.Builds[0].Num() == 1 && Rebuilding.Builds[0][0].Name == TEXT("t_a"));
+
+	TestTrue(TEXT("versions that could not be read reuse nothing"), CrowdyExecBuildAndDeploy::DigestsToReuse(Versions, false, false).IsEmpty());
+	return true;
+}
+
 #endif

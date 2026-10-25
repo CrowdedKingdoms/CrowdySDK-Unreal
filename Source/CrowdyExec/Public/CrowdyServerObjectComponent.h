@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Containers/Ticker.h"
 #include "Engine/TimerHandle.h"
 #include "CrowdyServerObject.h"
 #include "Queries/Data/Teams/Types/FCrowdyTeamMembership.h"
@@ -210,14 +211,15 @@ private:
 	/** The Instance Id the source last gave, so an unchanged value does not rejoin. */
 	FString SourceValue;
 
-	/** Starts the position reports on a world timer while Held is Ready, or stops them; the component's own tick stays the user's. */
+	/** Starts the position reports on the core ticker while Held is Ready, or stops them; the core ticker keeps running while the game is paused, and the component's own tick stays the user's. */
 	void SetPositionArmed(bool bArmed);
 
 	/** Finds the Position Function's inputs and reply and their X and Y once, so a report writes and reads them without a name search. */
 	bool ResolvePositionAxes();
 
-	/** One timer fire: sends the owner's location unless a report is out, the owner stands still, or a refusal holds reports. */
+	/** One ticker fire: sends the owner's location unless a report is out, the owner stands still, or a refusal holds reports. */
 	void ReportPosition();
+	bool TickPosition(float DeltaSeconds);
 	void HandlePositionAnswer(uint32 Serial, const FVector& Sent, const FCrowdyServerCallResult& Result);
 
 	/** Whether PositionReport says this owner is the one to report right now. */
@@ -231,7 +233,7 @@ private:
 	static constexpr double PositionStillSeconds = 1.0;
 	static constexpr double PositionCodedRefusalSeconds = 5.0;
 
-	FTimerHandle PositionTimer;
+	FTSTicker::FDelegateHandle PositionTicker;
 	FName PositionFunction;
 	UPROPERTY(Transient)
 	FInstancedStruct PositionInputs;
@@ -319,5 +321,8 @@ private:
 
 	/** The clock of a component outside a world, which has no world time to report by. */
 	double PositionTimeForTest = 0.0;
+
+	/** Lets a component outside a world arm its position ticker. */
+	bool bPositionTickerForTest = false;
 #endif
 };

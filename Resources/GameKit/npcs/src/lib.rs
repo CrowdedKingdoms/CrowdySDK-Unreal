@@ -17,7 +17,9 @@
 //! It speaks the kit protocol (`ckx_sdk::kit`): public property changes go out on the `area`
 //! topic as `delta`s once a second, `snapshot { topic: "area" }` answers every container's
 //! public view, changes may carry an `action_id`, and refusals carry `kit:<code>:` codes.
-//! Actors are shown with [`ActorState`] (`kit::wire`).
+//! Actors are shown with [`ActorState`] (`kit::wire`), at the height the seed's `z` gives (chunks,
+//! default 0): players within 1 chunk of it count as in the area. The area keeps the height it
+//! was made with.
 
 use std::collections::BTreeMap;
 
@@ -38,6 +40,8 @@ const MOBS: u64 = 6;
 /// Distances are in chunks, speeds in chunks a second.
 const AGGRO: f64 = 2.5;
 const LEASH: f64 = 6.0;
+/// How far from the area's middle each mob's home is: an idle mob wanders a chunk beyond it, and a player beside it must still be inside the scan.
+const HOME_RADIUS: f64 = 1.5;
 const MOB_SPEED: f64 = 0.5;
 const NPC_SPEED: f64 = 0.25;
 const PET_SPEED: f64 = 1.0;
@@ -132,6 +136,30 @@ fn toward(from: (f64, f64), to: (f64, f64), step: f64) -> (f64, f64) {
     (from.0 + (to.0 - from.0) * step / d, from.1 + (to.1 - from.1) * step / d)
 }
 
+/// Where mob `i` of the ring lives: `HOME_RADIUS` from the middle of the area's centre chunk.
+fn home_of(center: (i64, i64), i: u64) -> (f64, f64) {
+    let angle = i as f64 * std::f64::consts::TAU / MOBS as f64;
+    (center.0 as f64 + 0.5 + HOME_RADIUS * angle.cos(), center.1 as f64 + 0.5 + HOME_RADIUS * angle.sin())
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Config {
+    /// The ground's height in chunks: players within 1 of it count, and the actors stand on it.
+    z: i64,
+}
+
+fn config(seed: &[u8]) -> Result<Config> {
+    if seed.is_empty() {
+        return Ok(Config::default());
+    }
+    let config: Config = serde_json::from_slice(seed).map_err(|e| Error::new(format!("seed is not a JSON config: {e}")))?;
+    if !(-KEY_LIMIT..=KEY_LIMIT).contains(&config.z) {
+        return Err(kit::error(codes::BAD_REQUEST, "z is a height in chunks, within 4294967296 of 0"));
+    }
+    Ok(config)
+}
+
 fn short_text(what: &str, s: &str, max: usize) -> Result<String> {
     let t = s.trim();
     if t.is_empty() || t.chars().count() > max {
@@ -149,6 +177,9 @@ pub struct Area {
     /// Snapshots from the y-up starter lack this and start again.
     #[serde(default)]
     pub z_up: bool,
+    /// The ground's height in chunks, kept with the area; areas saved before it stand at 0.
+    #[serde(default)]
+    pub z: i64,
     pub ticks: u64,
     pub night: bool,
     pub aggro_scale: f64,
@@ -169,6 +200,7 @@ impl Area {
             model: Model::new(),
             center,
             z_up: true,
+            z: 0,
             ticks: 0,
             night: false,
             aggro_scale: 1.0,
@@ -177,8 +209,7 @@ impl Area {
         };
         let (cx, cy) = (center.0 as f64 + 0.5, center.1 as f64 + 0.5);
         for i in 0..MOBS {
-            let angle = i as f64 * std::f64::consts::TAU / MOBS as f64;
-            let home = (cx + 3.0 * angle.cos(), cy + 3.0 * angle.sin());
+            let home = home_of(center, i);
             let id = area.model.create(&area.schema, "Mob", None)?;
             for (k, v) in [("x", home.0), ("y", home.1), ("home_x", home.0), ("home_y", home.1)] {
                 area.model.set(&area.schema, id, k, v)?;
@@ -206,6 +237,23 @@ impl Area {
     pub fn key(&self) -> String {
         let half = AREA_CHUNKS / 2;
         format!("{},{}", (self.center.0 - half) / AREA_CHUNKS, (self.center.1 - half) / AREA_CHUNKS)
+    }
+
+    /// A saved area whose mobs live on another ring gets their homes moved onto this one; nothing else in it changes.
+    fn rehome(&mut self) -> Result<()> {
+        let ids: Vec<u64> = self.model.of_type("Mob").collect();
+        let Some(&first) = ids.first() else { return Ok(()) };
+        let middle = (self.center.0 as f64 + 0.5, self.center.1 as f64 + 0.5);
+        let home = (self.model.get_f64(&self.schema, first, "home_x")?, self.model.get_f64(&self.schema, first, "home_y")?);
+        if (dist(home, middle) - HOME_RADIUS).abs() < 0.01 {
+            return Ok(());
+        }
+        for (i, id) in ids.into_iter().enumerate() {
+            let home = home_of(self.center, i as u64);
+            self.model.set(&self.schema, id, "home_x", home.0)?;
+            self.model.set(&self.schema, id, "home_y", home.1)?;
+        }
+        Ok(())
     }
 
     fn pos(&self, id: u64) -> Result<(f64, f64)> {
@@ -408,10 +456,10 @@ impl Area {
     fn scan(&mut self, ctx: &Ctx) {
         let mut players = BTreeMap::new();
         for dy in SCAN_Y_OFFSETS {
-            match ctx.world().actors_near(ChunkPos::new(self.center.0, self.center.1 + dy, 0), 3, 1) {
+            match ctx.world().actors_near(ChunkPos::new(self.center.0, self.center.1 + dy, self.z), 3, 1) {
                 Ok(actors) => {
                     players.extend(actors.into_iter().filter_map(|a| {
-                        if a.chunk.z.abs() > 1 {
+                        if (a.chunk.z - self.z).abs() > 1 {
                             return None;
                         }
                         Some((a.player?, (a.chunk.x as f64 + 0.5, a.chunk.y as f64 + 0.5)))
@@ -434,7 +482,7 @@ impl Area {
         for type_name in ["Mob", "Npc", "Pet"] {
             for id in self.model.of_type(type_name) {
                 let (x, y) = self.pos(id)?;
-                let mut state = ActorState::new(&type_name.to_lowercase(), id, x, 0.0);
+                let mut state = ActorState::new(&type_name.to_lowercase(), id, x, self.z as f64);
                 state.y = y;
                 match type_name {
                     "Mob" => {
@@ -494,8 +542,9 @@ impl AreaHub {
 }
 
 impl Hub for AreaHub {
-    fn spawn(ctx: &Ctx, _seed: &[u8]) -> Result<Self> {
-        let area = Area::new(&ctx.key)?;
+    fn spawn(ctx: &Ctx, seed: &[u8]) -> Result<Self> {
+        let mut area = Area::new(&ctx.key)?;
+        area.z = config(seed)?.z;
         ctx.timer_every("tick", TICK_MS)?;
         // The root hub's key is empty. Without a `world` type (or leave to call it) the area
         // runs without day and night.
@@ -511,6 +560,7 @@ impl Hub for AreaHub {
         if !hub.area.z_up {
             hub.area = Area::new(&ctx.key)?;
         }
+        hub.area.rehome()?;
         Ok(hub)
     }
 
@@ -769,6 +819,82 @@ mod tests {
         hub.advance(TICK_MS).unwrap();
         assert_eq!(hub.hub().area.players.get(&7), Some(&(22.5, 33.5)));
         assert_eq!(hub.hub().area.players.get(&8), None, "too high to be in the area");
+    }
+
+    #[test]
+    fn a_seed_z_sets_the_height_the_scan_and_the_actors_use_and_the_area_keeps_it() {
+        let mut hub = TestHub::<AreaHub>::spawn_with("npcs", "5,7", br#"{"z":30}"#).unwrap();
+        hub.answer_node("world.actors_radius", |body| {
+            let y: i64 = body["y"].as_str().unwrap().parse().unwrap();
+            let actors = if y == 30 + 3 {
+                vec![
+                    json!({ "uuid": "p7", "userId": "7", "chunkX": "22", "chunkY": y.to_string(), "chunkZ": "31" }),
+                    json!({ "uuid": "p8", "userId": "8", "chunkX": "22", "chunkY": y.to_string(), "chunkZ": "28" }),
+                ]
+            } else {
+                vec![]
+            };
+            Ok(json!({ "actors": actors }))
+        });
+        hub.advance(TICK_MS).unwrap();
+        let scans: Vec<Value> = hub.node_requests().into_iter().filter(|(op, _)| op == "world.actors_radius").map(|(_, b)| b).collect();
+        assert_eq!(scans.len(), SCAN_Y_OFFSETS.len());
+        assert!(scans.iter().all(|b| b["z"].as_str() == Some("30")), "{scans:?}");
+        assert_eq!(hub.hub().area.players.get(&7), Some(&(22.5, 33.5)));
+        assert_eq!(hub.hub().area.players.get(&8), None, "2 chunks below the height");
+        assert!(hub.hub().area.actor_states().unwrap().iter().all(|(_, s)| s.z == 30.0));
+        let saved = hub.persist().unwrap();
+        drop(hub);
+        let later = TestHub::<AreaHub>::load("npcs", "5,7", &saved, 1).unwrap();
+        assert_eq!(later.hub().area.z, 30, "a reloaded area keeps its height");
+        drop(later);
+        assert_eq!(TestHub::<AreaHub>::spawn("npcs", "5,7").unwrap().hub().area.z, 0, "no seed, height 0");
+        for bad in [&br#"{"z":4294967297}"#[..], br#"{"z":-9223372036854775808}"#, br#"{"z":"high"}"#, b"not json"] {
+            assert!(TestHub::<AreaHub>::spawn_with("npcs", "5,7", bad).is_err(), "{}", String::from_utf8_lossy(bad));
+        }
+    }
+
+    #[test]
+    fn mobs_stay_where_the_scan_counts_a_player_beside_them_and_one_is_always_near_the_middle() {
+        let mut a = area();
+        let (px, py) = (a.center.0 as f64 + 0.5, a.center.1 as f64 + 0.5);
+        let show = SHOW_DISTANCE as i64;
+        for tick in 1..=400u64 {
+            a.ticks = tick;
+            a.step_mobs(tick * TICK_MS, TICK_MS as f64 / 1_000.0).unwrap();
+            if tick <= 40 {
+                continue;
+            }
+            let mobs: Vec<(f64, f64)> = a.model.of_type("Mob").map(|id| a.pos(id).unwrap()).collect();
+            let scanned = |m: &(f64, f64)| (m.0 - px).abs() + REACH < 4.0 && (m.1 - py).abs() + REACH < 5.0;
+            assert!(mobs.iter().all(scanned), "tick {tick}: a mob is past what the scan counts: {mobs:?}");
+            let in_view = |m: &&(f64, f64)| (m.0.floor() as i64 - a.center.0).abs() <= show && (m.1.floor() as i64 - a.center.1).abs() <= show;
+            assert!(mobs.iter().any(|m| in_view(&m)), "tick {tick}: no mob in view of the middle: {mobs:?}");
+            assert!(mobs.iter().any(|m| dist(*m, (px, py)) <= AGGRO), "tick {tick}: no mob within aggro of the middle: {mobs:?}");
+        }
+    }
+
+    #[test]
+    fn a_saved_area_with_mobs_homed_on_another_ring_moves_their_homes_and_keeps_its_pets() {
+        let mut a = area();
+        let middle = (a.center.0 as f64 + 0.5, a.center.1 as f64 + 0.5);
+        let ids: Vec<u64> = a.model.of_type("Mob").collect();
+        for (i, id) in ids.iter().enumerate() {
+            let angle = i as f64 * std::f64::consts::TAU / MOBS as f64;
+            a.model.set(&a.schema, *id, "home_x", middle.0 + 3.0 * angle.cos()).unwrap();
+            a.model.set(&a.schema, *id, "home_y", middle.1 + 3.0 * angle.sin()).unwrap();
+        }
+        a.players.insert(7, middle);
+        a.adopt(7, "cat", "Mog").unwrap();
+        let old = encode(&a).unwrap();
+        let hub = TestHub::<AreaHub>::load("npcs", "10,-4", &old, 1).unwrap();
+        let a = &hub.hub().area;
+        for (i, id) in a.model.of_type("Mob").enumerate() {
+            let home = (a.model.get_f64(&a.schema, id, "home_x").unwrap(), a.model.get_f64(&a.schema, id, "home_y").unwrap());
+            assert!(dist(home, home_of(a.center, i as u64)) < 1e-9, "mob {i}");
+            assert!((dist(home, middle) - HOME_RADIUS).abs() < 1e-9, "mob {i}");
+        }
+        assert_eq!(a.pets_of(7).len(), 1, "the pet survives");
     }
 
     #[test]

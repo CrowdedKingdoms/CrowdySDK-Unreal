@@ -662,6 +662,9 @@ private:
 	TCrowdyRecordMap<FCrowdyServerRecord> PagedRecords;
 	/** Shared, so a watcher that stops watching during an announcement does not destroy the delegate running it. */
 	TCrowdyRecordMap<TSharedRef<FOnCrowdyServerValuesChanged>> RecordWatchers;
+	/** The announcement of record changes running now, or 0: a watcher added during one has had its catch-up and skips the rest of it. */
+	uint32 ActiveNotify = 0;
+	uint32 NotifyCount = 0;
 	/** The last id of the last page read; the next page starts after it. */
 	FString PageAfter;
 	/** The first page's, which a read keeps: pushes above its seq are replayed over the later pages. */

@@ -287,23 +287,6 @@ namespace CrowdyServerComputeCommandletDetail
 		return CrowdyExecDeploy::AssembleProject(OutDefinitions, [](const UCrowdyServerObjectDefinition& Definition) { return CrowdyExecCodegen::GetCrateDirectory(Definition); });
 	}
 
-	// -inputs= and -config= are JSON, or @<file> holding it, since a shell mangles quotes.
-	bool ReadJson(const FString& Params, const TCHAR* Switch, FString& OutJson, FString& OutError)
-	{
-		FParse::Value(*Params, Switch, OutJson, false);
-		if (!OutJson.StartsWith(TEXT("@")))
-		{
-			return true;
-		}
-		const FString Path = FPaths::ConvertRelativePathToFull(FPaths::LaunchDir(), OutJson.RightChop(1));
-		if (!FFileHelper::LoadFileToString(OutJson, *Path))
-		{
-			OutError = FString::Printf(TEXT("could not read the %s file %s"), Switch, *Path);
-			return false;
-		}
-		return true;
-	}
-
 	/** Writes to the project, not the app, so it needs no connection and no -yes. */
 	void AddStarter(const FRunRef& Run)
 	{
@@ -312,7 +295,7 @@ namespace CrowdyServerComputeCommandletDetail
 		Run->Result->SetStringField(TEXT("starter"), Starter);
 		FString Config;
 		FString Error;
-		if (!ReadJson(Run->Params, TEXT("-config="), Config, Error))
+		if (!UCrowdyServerComputeCommandlet::ReadJsonSwitch(Run->Params, TEXT("-config="), Config, Error))
 		{
 			Fail(Run, Error);
 			return;
@@ -535,7 +518,7 @@ namespace CrowdyServerComputeCommandletDetail
 		}
 		// -rebuild builds every crate, for code that should pick up the platform's current toolchain.
 		const bool bRebuild = FParse::Param(*Run->Params, TEXT("rebuild"));
-		const TSet<FString> Uploaded = Versions.bOk && !bRebuild ? CrowdyExecRevisions::UploadedDigests(Versions.Value) : TSet<FString>();
+		const TSet<FString> Uploaded = CrowdyExecBuildAndDeploy::DigestsToReuse(Versions.Value, Versions.bOk, bRebuild);
 		CrowdyExecBuildAndDeploy::FPlan Plan = CrowdyExecBuildAndDeploy::MakePlan(Run->Sending.Crates, Uploaded,
 			[&Run](const FString& CrateName) { return LoadHistoryOrWarn(CrateName, Run->CrateDirectories.FindRef(CrateName)); }, CratesPerBuild(*Run));
 		BuildAndDeploy(Run, MoveTemp(Plan), Run->Sending.ManifestJson, LiveOf(Versions));
@@ -793,7 +776,7 @@ namespace CrowdyServerComputeCommandletDetail
 		}
 		FString BundleJson;
 		FString Error;
-		if (!ReadJson(Run->Params, TEXT("-bundle="), BundleJson, Error))
+		if (!UCrowdyServerComputeCommandlet::ReadJsonSwitch(Run->Params, TEXT("-bundle="), BundleJson, Error))
 		{
 			Fail(Run, Error);
 			return;
@@ -885,7 +868,7 @@ namespace CrowdyServerComputeCommandletDetail
 		FInstancedStruct Inputs;
 		FString InputsJson;
 		FString Error;
-		if (!ReadJson(Run->Params, TEXT("-inputs="), InputsJson, Error) || !CrowdyExecDeveloperCall::InputsFromJson(*Function, InputsJson, Inputs, Error, Definition))
+		if (!UCrowdyServerComputeCommandlet::ReadJsonSwitch(Run->Params, TEXT("-inputs="), InputsJson, Error) || !CrowdyExecDeveloperCall::InputsFromJson(*Function, InputsJson, Inputs, Error, Definition))
 		{
 			Fail(Run, Error);
 			return;
@@ -1241,6 +1224,35 @@ bool UCrowdyServerComputeCommandlet::ParseBatchLines(const FString& Text, TArray
 	if (OutLines.IsEmpty())
 	{
 		OutError = TEXT("the ops file holds no operations");
+		return false;
+	}
+	return true;
+}
+
+bool UCrowdyServerComputeCommandlet::ReadJsonSwitch(const FString& Params, const TCHAR* Switch, FString& OutJson, FString& OutError)
+{
+	FParse::Value(*Params, Switch, OutJson, false);
+	if (!OutJson.StartsWith(TEXT("@")))
+	{
+		return true;
+	}
+	FString RelativePath = OutJson.RightChop(1);
+	if (OutJson.StartsWith(TEXT("@\"")))
+	{
+		// -inputs=@"C:\My Game\f.json": the value does not open with a quote, so FParse stops at the first space.
+		const FString Marker = FString(Switch) + TEXT("@\"");
+		const int32 Start = Params.Find(Marker, ESearchCase::IgnoreCase);
+		const int32 PathStart = Start + Marker.Len();
+		const int32 End = Start == INDEX_NONE ? INDEX_NONE : Params.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, PathStart);
+		if (End != INDEX_NONE)
+		{
+			RelativePath = Params.Mid(PathStart, End - PathStart);
+		}
+	}
+	const FString Path = FPaths::ConvertRelativePathToFull(FPaths::LaunchDir(), RelativePath);
+	if (!FFileHelper::LoadFileToString(OutJson, *Path))
+	{
+		OutError = FString::Printf(TEXT("could not read the %s file %s"), Switch, *Path);
 		return false;
 	}
 	return true;

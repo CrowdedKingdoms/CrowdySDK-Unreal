@@ -36,13 +36,17 @@ public:
 	/**
 	 * How many players are in the app's world, held by the app's root: the Game Kit's world when the Game Kit World setting
 	 * names one, else the root Server Object the Crowdy SDK deploys with a project's types.
-	 * Owner follows it from the first call until Owner is destroyed. False, with 0, until the count first arrives.
+	 * Owner follows it from the first call until Owner is destroyed. False, with 0, until the count first arrives, and for good
+	 * when the Game Kit's world sends none, as a world deployed from the platform's own starter pack does not.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", meta = (DefaultToSelf = "Owner"))
 	static bool GetPlayersOnline(UObject* Owner, int32& PlayersOnline);
 
 	/** The definition the Game Kit World setting names, loaded on first use; null when the setting is empty or names no Game Kit starter. */
 	static UCrowdyServerObjectDefinition* GetGameKitWorldDefinition();
+
+	/** The player count of the Game Kit world Target holds; false, with 0, before it is Ready, and with bUnsent set when its snapshot carries no count. */
+	static bool ReadKitWorldOnline(const UObject* Target, const UCrowdyServerObjectDefinition* World, int32& Online, bool& bUnsent);
 
 	/** The root Server Object's definition, CSO_PlayersOnline in the Crowdy SDK's content: Players Online is its one variable. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")

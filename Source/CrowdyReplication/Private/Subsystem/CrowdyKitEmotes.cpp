@@ -13,6 +13,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
+#include "HAL/IConsoleManager.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Kismet/GameplayStatics.h"
 #include "Messages/GameObjects/FKitEventRequest.h"
@@ -28,6 +29,18 @@
 
 namespace
 {
+	TAutoConsoleVariable<float> CVarCrowdyKitEmotesMaxPerSecond(
+		TEXT("crowdy.kit.emotes.maxpersecond"),
+		64.0f,
+		TEXT("How many inbound emotes per second are read, shared by every sender (default 64). Emotes over the budget are dropped before they are parsed."),
+		ECVF_Default);
+
+	TAutoConsoleVariable<int32> CVarCrowdyKitEmotesBurst(
+		TEXT("crowdy.kit.emotes.burst"),
+		16,
+		TEXT("How many inbound emotes may arrive at once before the per-second budget applies (default 16)."),
+		ECVF_Default);
+
 	void AppendKitEmoteAscii(TArray<uint8>& Out, const ANSICHAR* Text)
 	{
 		for (const ANSICHAR* Cursor = Text; *Cursor; ++Cursor)
@@ -361,7 +374,38 @@ void UCrowdyKitEmotes::HandleDelivery(const FCrowdyDelivery& Delivery)
 		return;
 	}
 
+	// The sender id is self-claimed, so the budget is shared by every sender rather than kept per sender.
+	if (!TryAdmitEmote(FPlatformTime::Seconds()))
+	{
+		return;
+	}
+
 	ReceiveEmote(Delivery.HeaderActorId(), Delivery.PayloadBytes);
+}
+
+bool UCrowdyKitEmotes::TryAdmitEmote(const double Now)
+{
+	const double Rate = FMath::Max(0.0, static_cast<double>(CVarCrowdyKitEmotesMaxPerSecond.GetValueOnAnyThread()));
+	const double Burst = FMath::Max(1, CVarCrowdyKitEmotesBurst.GetValueOnAnyThread());
+
+	EmoteTokens = FMath::Min(Burst, EmoteTokens + FMath::Max(0.0, Now - EmoteTokensAt) * Rate);
+	EmoteTokensAt = Now;
+
+	if (EmoteTokens >= 1.0)
+	{
+		EmoteTokens -= 1.0;
+		return true;
+	}
+
+	++EmotesDropped;
+	if (!bReportedEmoteFlood)
+	{
+		bReportedEmoteFlood = true;
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyKitEmotes] Dropping inbound emotes over the budget of %.0f per second (burst %.0f). Raise crowdy.kit.emotes.maxpersecond or crowdy.kit.emotes.burst if this is expected traffic. Reported once; later drops are only counted."),
+			Rate, Burst);
+	}
+	return false;
 }
 
 void UCrowdyKitEmotes::ReceiveEmote(const FCrowdyActorId& Sender, const TConstArrayView<uint8> Body)

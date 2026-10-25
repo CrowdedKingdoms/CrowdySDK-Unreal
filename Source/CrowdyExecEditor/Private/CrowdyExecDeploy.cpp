@@ -8,6 +8,7 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Containers/StringConv.h"
 #include "CrowdyExecCodegen.h"
+#include "CrowdyGameKitStarters.h"
 #include "CrowdyRustSyntaxMarshaller.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLibrary.h"
@@ -335,10 +336,11 @@ namespace CrowdyExecDeployDetail
 		return Definition.IsGameKitStarter() ? Definition.KitConfig.TrimStartAndEnd() : FString();
 	}
 
-	bool IsJsonObject(const FString& Text)
+	TSharedPtr<FJsonObject> ParseJsonObject(const FString& Text)
 	{
 		TSharedPtr<FJsonObject> Object;
-		return FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Object) && Object.IsValid();
+		FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Object);
+		return Object;
 	}
 
 	/** Adds "calls" when the type calls others (["*"] for any type) and "scopes" when it asks for platform data; a type with neither gets nothing. */
@@ -439,6 +441,26 @@ namespace CrowdyExecDeployDetail
 		}
 	}
 
+	/** A starter that rolls or shuffles from a Config secret has predictable results for players when the secret is missing. */
+	void AddKitSecretWarnings(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions, TArray<FString>& OutWarnings)
+	{
+		for (const UCrowdyServerObjectDefinition* Definition : Definitions)
+		{
+			const CrowdyGameKitStarters::FStarter* Starter = Definition && Definition->IsGameKitStarter() ? CrowdyGameKitStarters::FindStarter(Definition->TypeName) : nullptr;
+			if (!Starter || !Starter->bMakesSecret)
+			{
+				continue;
+			}
+			const FString Seed = SeedOf(*Definition);
+			if (CrowdyGameKitStarters::HasConfigSecret(Seed) || !CrowdyGameKitStarters::FindConfigProblem(Definition->TypeName, Seed).IsEmpty())
+			{
+				continue;
+			}
+			OutWarnings.Add(FString::Printf(TEXT("%s: its Config has no secret, so a player can work out loot rolls and deals before they happen; add {\"secret\": \"<a long random string>\"} to its Config"),
+				*DisplayName(*Definition)));
+		}
+	}
+
 	/** A starter's crate is its own Rust as Add starter copied it, never generated: it needs its Cargo.toml and src/lib.rs, and a Config that is a JSON object. */
 	CrowdyExecDeploy::FTypeState InspectStarter(const UCrowdyServerObjectDefinition& Definition, const FString& CrateDirectory, CrowdyExecDeploy::FTypeState State)
 	{
@@ -449,9 +471,15 @@ namespace CrowdyExecDeployDetail
 			return WithProblem(State, ECrateState::Invalid, FString::Join(Errors, TEXT("; ")));
 		}
 		const FString Seed = SeedOf(Definition);
-		if (!Seed.IsEmpty() && !IsJsonObject(Seed))
+		const TSharedPtr<FJsonObject> Config = Seed.IsEmpty() ? nullptr : ParseJsonObject(Seed);
+		if (!Seed.IsEmpty() && !Config.IsValid())
 		{
 			return WithProblem(State, ECrateState::Invalid, TEXT("its Game Kit Config is not a JSON object; correct it, or empty it to keep the starter's defaults"));
+		}
+		const FString ConfigProblem = Config.IsValid() ? CrowdyGameKitStarters::FindConfigProblem(Definition.TypeName, Seed) : FString();
+		if (!ConfigProblem.IsEmpty())
+		{
+			return WithProblem(State, ECrateState::Invalid, FString::Printf(TEXT("its Game Kit Config has %s; correct it, or remove the key to keep the starter's default"), *ConfigProblem));
 		}
 		for (const TCHAR* const Path : {CargoPath, StarterLibPath})
 		{
@@ -1006,6 +1034,7 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 	AddKitParentProblems(Definitions, Project.Problems);
 	AddGameKitWorldWarning(KitRoots.IsEmpty() ? nullptr : KitRoots[0], Project.Warnings);
 	AddKitBoardWarnings(Definitions, Project.Warnings);
+	AddKitSecretWarnings(Definitions, Project.Warnings);
 	FString LimitProblem;
 	if (!CheckBuildLimits(Project.Crates, LimitProblem))
 	{

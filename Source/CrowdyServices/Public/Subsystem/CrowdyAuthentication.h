@@ -364,9 +364,16 @@ public:
 	/** Sends a refresh past RefreshAppToken's in-flight check, so a test can put one behind a sign-in. */
 	void RefreshForTest() { DispatchRefresh(); }
 
+	/** Keeps the session vault and the legacy slot a test touches apart from the real ones. */
+	void SetInstanceSuffixForTest(const FString& Suffix) { InstanceSuffixForTest = Suffix; }
+
 	bool IsRotationTimerArmedForTest() const { return RefreshTickerHandle.IsValid(); }
 	int32 GetRotationRetriesUsedForTest() const { return RotationRetriesUsed; }
 	int32 GetServerNamedRefusalsForTest() const { return ServerNamedRefusals; }
+
+	/** Stands in for a browser sign-in that has reserved its loopback port and is waiting to be armed. */
+	void SetLoopbackFlowPendingForTest(bool bPending) { bLoopbackFlowPending = bPending; }
+	bool IsInteractiveSignInBusyForTest() const { return IsInteractiveSignInBusy(); }
 #endif
 
 private:
@@ -403,7 +410,17 @@ private:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	TWeakPtr<FCrowdyCppClient> ClientForTest;
+	FString InstanceSuffixForTest;
 #endif
+
+	/** Bumped on logout; a sign-in or mint that began under an earlier value answers after the player signed out. */
+	int32 SignInGeneration = 0;
+
+	/** Answers only OnError and returns true when the player signed out since Generation was read, so the answer is dropped. */
+	bool AbandonStaleSignIn(int32 Generation, const FOnAuthError& OnError);
+
+	/** The reason of the pause the last token answer set, so an answer with no gate lifts only that pause. */
+	FString GatePauseReason;
 
 	UPROPERTY()
 	UCrowdyGameSession* GameSession = nullptr;

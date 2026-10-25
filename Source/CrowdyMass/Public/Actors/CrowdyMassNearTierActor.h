@@ -6,6 +6,7 @@
 #include "CrowdyMassNearTierActor.generated.h"
 
 class UCrowdyMassNearTierComponent;
+class UPrimitiveComponent;
 class USkeletalMeshComponent;
 
 namespace CrowdyMassNearTier
@@ -39,6 +40,13 @@ namespace CrowdyMassNearTier
 	 * the shell's own mesh wins among them.
 	 */
 	CROWDYMASS_API USkeletalMeshComponent* ChooseActionMesh(const AActor& Actor);
+
+	/**
+	 * Whether a shell component takes the entity's trace collision. The action mesh does, and so does any
+	 * component tagged CrowdyTraceCollision, so a hand-made hit box keeps answering traces. Everything else
+	 * on the shell, such as a held weapon or a hat, is left exactly as authored and is not hittable.
+	 */
+	CROWDYMASS_API bool ShouldCarryTraceCollision(const UPrimitiveComponent& Primitive, const USkeletalMeshComponent* ActionMesh);
 }
 
 /**

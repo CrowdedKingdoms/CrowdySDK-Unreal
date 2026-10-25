@@ -37,6 +37,10 @@ struct CROWDYEXEC_API FCrowdyKitWorldConditions
 	/** Players in the app's world, as the platform reports them to the root; Get Players Online reads it. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Kit")
 	int32 Online = 0;
+
+	/** False when the world's snapshot carries no player count: a world deployed from the platform's own starter pack sends none. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Kit")
+	bool bHasOnline = false;
 };
 
 /** One resource node of the world: what it holds, and when an emptied one grows back. */

@@ -5702,6 +5702,51 @@ bool FCrowdyServerObjectRedialRefusedForGoodFailsTheObjectsTest::RunTest(const F
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectRedialRefusedWhilePausedSaysPausedTest,
+	"CrowdySDK.CrowdyExec.RedialRefusedWhilePausedSaysPaused", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectRedialRefusedWhilePausedSaysPausedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	const FString Paused = TEXT("{\"errors\":[{\"message\":\"app 42 is paused: its organization has no funds (insufficient_funds)\",\"extensions\":{\"code\":\"FORBIDDEN\"}}],\"data\":null}");
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, ConnectAnswer);
+	Script.Emplace(200, Paused);
+	Script.Emplace(200, Paused);
+	Rig.Client->SetTestResponseScript(MoveTemp(Script));
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = Rig.AcquireReady(Owner.Get(), Boss(3000, false, ECrowdyExecTestPhase::Calm), 5);
+	if (!Object)
+	{
+		return false;
+	}
+	Rig.Client->TestExecCloseFromServer(1006, false);
+	const bool bRefused = Rig.PumpUntil([&Rig]()
+	{
+		Rig.Subsystem->TickForTest(0.1f);
+		const FCrowdyNativeExecConnection* Connection = Rig.Subsystem->GetConnection();
+		return Connection && !Connection->GetRefusal().IsEmpty();
+	});
+	if (!TestTrue(TEXT("the redial is refused by the paused app"), bRefused))
+	{
+		return false;
+	}
+	TestTrue(TEXT("the socket is down"), !Rig.Subsystem->GetConnection()->IsConnected());
+
+	FCrowdyNativeExecReply ClientGaveUp;
+	ClientGaveUp.Status = ECrowdyNativeExecStatus::DeadlineExceeded;
+	ClientGaveUp.bNoReply = true;
+	const FCrowdyServerCallResult Call = Object->MakeCallResultForTest(AttackFunction, ClientGaveUp);
+	TestEqual(TEXT("a call that got no answer while the redial is refused as paused says Paused"), Call.Outcome, ECrowdyServerCallOutcome::Paused);
+	TestTrue(TEXT("and can be retried"), Call.bRetryable);
+	TestTrue(FString::Printf(TEXT("with the platform's words (%s)"), *Call.Reason), Call.Reason.Contains(TEXT("app 42 is paused"), ESearchCase::CaseSensitive));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectPlayersOnlineReasonIsNotedPerGameInstanceTest,
 	"CrowdySDK.CrowdyExec.PlayersOnlineReasonIsNotedPerGameInstance", CrowdyServerObjectTests::TestFlags)
 bool FCrowdyServerObjectPlayersOnlineReasonIsNotedPerGameInstanceTest::RunTest(const FString& Parameters)

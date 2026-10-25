@@ -370,7 +370,153 @@ bool FCrowdyGameKitAssembleTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitPlanAddTest, "CrowdySDK.CrowdyExecEditor.GameKit.PlanAddBringsWhatAStarterNeeds", CrowdyGameKitStartersTest::TestFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitWorldConfigTest, "CrowdySDK.CrowdyExecEditor.GameKit.WorldConfigWithWrongTypesIsAProblem", CrowdyGameKitStartersTest::TestFlags)
+bool FCrowdyGameKitWorldConfigTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyGameKitStartersTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> World = MakeStarter(*this, TEXT("world"));
+	if (!World)
+	{
+		return false;
+	}
+	// world's folder is taken, so a Config AddStarter lets through stops at "already exists" before anything is written.
+	const FStarterFolder Folder;
+	if (!TestTrue(TEXT("world's crate is copied"), Folder.CopyStarter(TEXT("world"))))
+	{
+		return false;
+	}
+	auto DirectoryFor = [&Folder](const UCrowdyServerObjectDefinition& Definition) { return FPaths::Combine(Folder.Path, Definition.TypeName); };
+
+	for (const TCHAR* Bad : {TEXT("{\"nodes\":\"many\"}"), TEXT("{\"day_ms\":-1}"), TEXT("{\"nodes\":1.5}"), TEXT("{\"nodes\":70000}"), TEXT("{\"node_amount\":null}"), TEXT("{\"regrow_ms\":true}"),
+		TEXT("{\"nodes\":3.0}"), TEXT("{\"day_ms\":6e5}"), TEXT("{\"day_ms\":6E+5}"), TEXT("{\"regrow_ms\":-0}"), TEXT("{\"node_amount\":99999999999999999999}")})
+	{
+		World->KitConfig = Bad;
+		const CrowdyExecDeploy::FProjectDeploy Project = CrowdyExecDeploy::AssembleProject({World.Get()}, DirectoryFor);
+		TestTrue(FString::Printf(TEXT("%s is a deploy problem (%s)"), Bad, *FString::Join(Project.Problems, TEXT(" | "))),
+			Project.Problems.Num() == 1 && Project.Problems[0].StartsWith(TEXT("world: its Game Kit Config has "), ESearchCase::CaseSensitive) && Project.Problems[0].Contains(TEXT("whole number")));
+
+		TArray<FString> Added;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("%s is refused by Add starter"), Bad), CrowdyGameKitStarters::AddStarter(TEXT("world"), {}, Folder.Path, Added, Error, Bad));
+		TestTrue(FString::Printf(TEXT("saying which key (%s)"), *Error), Error.Contains(TEXT("whole number")) && Added.IsEmpty());
+	}
+
+	for (const TCHAR* Good : {TEXT("{\"nodes\":3}"), TEXT("{\"nodes\":0,\"day_ms\":600000,\"node_amount\":4294967295,\"regrow_ms\":1000,\"unknown\":\"x\"}"), TEXT("{\"Nodes\":\"x\",\"DAY_MS\":1.5}"), TEXT("{\"extra\":{\"nodes\":1.5,\"a\":[1.5]},\"day_ms\":600000}")})
+	{
+		World->KitConfig = Good;
+		TestEqualSensitive(FString::Printf(TEXT("%s is no problem to deploy"), Good), FString::Join(CrowdyExecDeploy::AssembleProject({World.Get()}, DirectoryFor).Problems, TEXT(" | ")), FString());
+
+		TArray<FString> Added;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("%s passes the Config check, then meets world's taken folder"), Good), CrowdyGameKitStarters::AddStarter(TEXT("world"), {}, Folder.Path, Added, Error, Good));
+		TestTrue(FString::Printf(TEXT("(%s)"), *Error), Error.Contains(TEXT("already exists")) && !Error.Contains(TEXT("whole number")));
+	}
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Npcs = MakeStarter(*this, TEXT("npcs"));
+	if (!Npcs || !TestTrue(TEXT("npcs' crate is copied"), Folder.CopyStarter(TEXT("npcs"))))
+	{
+		return false;
+	}
+	World->KitConfig.Reset();
+	auto NpcsProblems = [&](const TCHAR* Config)
+	{
+		Npcs->KitConfig = Config;
+		return FString::Join(CrowdyExecDeploy::AssembleProject({World.Get(), Npcs.Get()}, DirectoryFor).Problems, TEXT(" | "));
+	};
+	for (const TCHAR* Height : {TEXT("{\"z\":-30}"), TEXT("{\"z\":30}"), TEXT("{\"z\":0}"), TEXT("{\"z\":-4294967296}"), TEXT("{\"z\":4294967296}")})
+	{
+		TestEqualSensitive(FString::Printf(TEXT("%s is no problem to deploy"), Height), NpcsProblems(Height), FString());
+	}
+	for (const TCHAR* Bad : {TEXT("{\"z\":1.5}"), TEXT("{\"z\":-1.5}"), TEXT("{\"z\":-0}"), TEXT("{\"z\":1e2}"), TEXT("{\"z\":4294967297}"), TEXT("{\"z\":-4294967297}"), TEXT("{\"z\":-9223372036854775808}"), TEXT("{\"z\":\"5\"}")})
+	{
+		const FString Problems = NpcsProblems(Bad);
+		TestTrue(FString::Printf(TEXT("%s is a deploy problem (%s)"), Bad, *Problems),
+			Problems.StartsWith(TEXT("npcs: its Game Kit Config has "), ESearchCase::CaseSensitive) && Problems.Contains(TEXT("whole number from -4294967296 to 4294967296")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitSecretWarningTest, "CrowdySDK.CrowdyExecEditor.GameKit.DeployWarnsOfAStarterWithNoSecret", CrowdyGameKitStartersTest::TestFlags)
+bool FCrowdyGameKitSecretWarningTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyGameKitStartersTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> World = MakeStarter(*this, TEXT("world"));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Player = MakeStarter(*this, TEXT("player"));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Deck = MakeStarter(*this, TEXT("deck"));
+	if (!World || !Player || !Deck)
+	{
+		return false;
+	}
+	auto DirectoryFor = [](const UCrowdyServerObjectDefinition& Definition) { return FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("GameKitTests"), Definition.TypeName); };
+	auto Warns = [&](const TCHAR* Type)
+	{
+		const FString Start = FString(Type) + TEXT(": its Config has no secret");
+		return CrowdyExecDeploy::AssembleProject({World.Get(), Player.Get(), Deck.Get()}, DirectoryFor).Warnings.ContainsByPredicate([&Start](const FString& Warning)
+		{
+			return Warning.StartsWith(Start, ESearchCase::CaseSensitive);
+		});
+	};
+
+	TestTrue(TEXT("a player with no Config is warned of"), Warns(TEXT("player")));
+	TestTrue(TEXT("and so is a deck"), Warns(TEXT("deck")));
+	TestFalse(TEXT("a world, which has no secret to make, is not"), Warns(TEXT("world")));
+
+	auto Refuses = [&](const TCHAR* Type)
+	{
+		const FString Start = FString(Type) + TEXT(": its Game Kit Config has \"secret\"");
+		return CrowdyExecDeploy::AssembleProject({World.Get(), Player.Get(), Deck.Get()}, DirectoryFor).Problems.ContainsByPredicate([&Start](const FString& Problem)
+		{
+			return Problem.StartsWith(Start, ESearchCase::CaseSensitive);
+		});
+	};
+
+	// The server code reads keys with case, so Secret is no secret.
+	for (const TCHAR* NoSecret : {TEXT("{}"), TEXT("{\"secret\":\"\"}"), TEXT("{\"Secret\":\"x\"}"), TEXT("{\"Secret\":5}"), TEXT("{\"other\":\"x\"}")})
+	{
+		Player->KitConfig = NoSecret;
+		Deck->KitConfig = NoSecret;
+		TestTrue(FString::Printf(TEXT("a player with %s is warned of"), NoSecret), Warns(TEXT("player")));
+		TestTrue(FString::Printf(TEXT("and so is a deck with %s"), NoSecret), Warns(TEXT("deck")));
+		TestFalse(FString::Printf(TEXT("a player with %s is no problem"), NoSecret), Refuses(TEXT("player")));
+		TestFalse(FString::Printf(TEXT("nor a deck with %s"), NoSecret), Refuses(TEXT("deck")));
+	}
+
+	for (const TCHAR* NotText : {TEXT("{\"secret\":5}"), TEXT("{\"secret\":null}"), TEXT("{\"secret\":{\"a\":1}}"), TEXT("{\"x\":[1],\"secret\":true}")})
+	{
+		Player->KitConfig = NotText;
+		Deck->KitConfig = NotText;
+		TestTrue(FString::Printf(TEXT("a player with %s is a deploy problem"), NotText), Refuses(TEXT("player")));
+		TestTrue(FString::Printf(TEXT("and so is a deck with %s"), NotText), Refuses(TEXT("deck")));
+		TestFalse(FString::Printf(TEXT("a player with %s is not also warned of"), NotText), Warns(TEXT("player")));
+	}
+
+	Player->KitConfig = TEXT(" {\"secret\":\"x\"} ");
+	Deck->KitConfig = TEXT("{}");
+	TestFalse(TEXT("a player with a secret is not"), Warns(TEXT("player")));
+	TestTrue(TEXT("while a deck without one still is"), Warns(TEXT("deck")));
+	Deck->KitConfig = TEXT("{\"secret\":\"x\",\"turn_ms\":1000}");
+	TestFalse(TEXT("a deck with a secret among other keys is not"), Warns(TEXT("deck")));
+	TestFalse(TEXT("a world is still not"), Warns(TEXT("world")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitStartersPinSdkTest, "CrowdySDK.CrowdyExecEditor.GameKit.StartersPinTheTemplatesSdk", CrowdyGameKitStartersTest::TestFlags)
+bool FCrowdyGameKitStartersPinSdkTest::RunTest(const FString& Parameters)
+{
+	const FString Pin = FString::Printf(TEXT("ckx-sdk = \"%s\""), CrowdyExecCodegen::CkxSdkVersion);
+	for (const CrowdyGameKitStarters::FStarter& Starter : CrowdyGameKitStarters::GetStarters())
+	{
+		FString Cargo;
+		if (!TestTrue(FString::Printf(TEXT("%s's Cargo.toml is read"), Starter.TypeName), FFileHelper::LoadFileToString(Cargo, *(CrowdyGameKitStarters::GetCrateSource(Starter) / TEXT("Cargo.toml")))))
+		{
+			continue;
+		}
+		TestTrue(FString::Printf(TEXT("%s pins the same ckx-sdk as a new type's crate: %s"), Starter.TypeName, *Pin), Cargo.Contains(Pin, ESearchCase::CaseSensitive));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitPlanAddTest,"CrowdySDK.CrowdyExecEditor.GameKit.PlanAddBringsWhatAStarterNeeds", CrowdyGameKitStartersTest::TestFlags)
 bool FCrowdyGameKitPlanAddTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyGameKitStartersTest;
@@ -1049,6 +1195,7 @@ bool FCrowdyGameKitPresenceFlagTest::RunTest(const FString& Parameters)
 		{TEXT("director"), FCrowdyKitDirectorState::StaticStruct(), TEXT("Wave"), TEXT("bHasWave"), TEXT("wave"), TEXT("has_wave")},
 		{TEXT("zone"), FCrowdyKitZoneState::StaticStruct(), TEXT("Stage"), TEXT("bHasStage"), TEXT("stage"), TEXT("has_stage")},
 		{TEXT("deck"), FCrowdyKitDeckState::StaticStruct(), TEXT("Suit"), TEXT("bHasSuit"), TEXT("suit"), TEXT("has_suit")},
+		{TEXT("world"), FCrowdyKitWorldConditions::StaticStruct(), TEXT("Online"), TEXT("bHasOnline"), TEXT("online"), TEXT("has_online")},
 		{TEXT("director"), FCrowdyKitDirectorEvent::StaticStruct(), TEXT("Type"), TEXT("bHasType"), TEXT("type"), TEXT("has_type")},
 		{TEXT("territory"), FCrowdyKitTerritoryEvent::StaticStruct(), TEXT("Type"), TEXT("bHasType"), TEXT("type"), TEXT("has_type")},
 		{TEXT("zone"), FCrowdyKitZoneEvent::StaticStruct(), TEXT("Type"), TEXT("bHasType"), TEXT("type"), TEXT("has_type")},
@@ -1076,6 +1223,7 @@ bool FCrowdyGameKitPresenceFlagTest::RunTest(const FString& Parameters)
 	}
 	TestFalse(TEXT("a state starts with no wave"), FCrowdyKitDirectorState().bHasWave);
 	TestFalse(TEXT("and no stage"), FCrowdyKitZoneState().bHasStage);
+	TestFalse(TEXT("a world starts with no player count"), FCrowdyKitWorldConditions().bHasOnline);
 	TestFalse(TEXT("an event starts with no known type"), FCrowdyKitDirectorEvent().bHasType || FCrowdyKitTerritoryEvent().bHasType || FCrowdyKitZoneEvent().bHasType || FCrowdyKitArenaEvent().bHasType
 		|| FCrowdyKitRaceEvent().bHasType || FCrowdyKitBallEvent().bHasType);
 	TestFalse(TEXT("a timing starts with no known stage, and a ball game with no winner"), FCrowdyKitRaceEvent().bHasStage || FCrowdyKitBallState().bHasWinner || FCrowdyKitBallEvent().bHasWinner);

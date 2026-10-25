@@ -13,9 +13,10 @@
 //! more than 1 chunk above or below the circle's height, or more than 10 chunks from its centre on
 //! either ground axis, count as outside, so its first circle is at most 10.
 //!
-//! A scan costs one read per probe: 21 at a radius of 10, falling to 1 as the circle shrinks. A
-//! scan whose reads fail changes nothing; the next good one wears players down for the time since
-//! the last good one, at most 5 scan periods.
+//! A scan costs one read per probe: 21 at a radius of 10, falling to 1 as the circle shrinks, and
+//! runs every `scan_ms` (2 seconds by default, never under 250 ms). A scan whose reads fail
+//! changes nothing; the next good one wears players down for the time since the last good one,
+//! at most 5 scan periods.
 //!
 //! Endpoints: `join`, `start` (the first to join, or a developer), `state` (anyone). Topic
 //! `zone`: `snapshot` messages each scan, `event` messages (`type`: `warning`, `shrinking`,
@@ -56,6 +57,7 @@ pub struct ZoneConfig {
     pub hp: i64,
     /// What a second outside the circle costs.
     pub damage_per_sec: i64,
+    /// Milliseconds between scans, which also wear down the players outside (at least 250).
     pub scan_ms: u64,
     pub players_max: usize,
 }
@@ -73,7 +75,7 @@ impl Default for ZoneConfig {
             ],
             hp: 100,
             damage_per_sec: 5,
-            scan_ms: 1_000,
+            scan_ms: 2_000,
             players_max: 64,
         }
     }
@@ -485,6 +487,9 @@ mod tests {
         Seen { player, uuid: format!("u{player}"), x, y, z: 0.5, precise: true }
     }
 
+    /// The default seed, a scan each second: the tests below count seconds.
+    const EVERY_SECOND: &[u8] = br#"{"scan_ms":1000}"#;
+
     type World = Rc<RefCell<Vec<(u64, i64, i64, i64)>>>;
 
     /// Answers `world.actors_radius` with the players in `world` (player, x, y, z, z up) within
@@ -573,7 +578,7 @@ mod tests {
 
     #[test]
     fn the_zone_hub_probes_around_its_centre_and_publishes_each_scan() {
-        let (mut hub, world) = started(b"");
+        let (mut hub, world) = started(EVERY_SECOND);
         world.borrow_mut().extend([(1, 0, 0, 0), (2, 9, 9, 0)]);
         hub.advance(1_000).unwrap();
         assert_eq!(reads(&hub), 21, "3 columns by 7 rows at the default radius of 10");
@@ -588,8 +593,33 @@ mod tests {
     }
 
     #[test]
+    fn a_scan_runs_every_two_seconds_unless_the_seed_says_otherwise() {
+        assert_eq!(ZoneConfig::default().scan_ms, 2_000);
+        let (mut hub, _world) = started(b"");
+        hub.advance(1_000).unwrap();
+        assert_eq!(reads(&hub), 0, "no scan in the first second");
+        hub.advance(1_000).unwrap();
+        assert_eq!(reads(&hub), 21, "one scan's reads after two");
+    }
+
+    #[test]
+    fn the_scan_period_does_not_change_what_a_second_outside_costs() {
+        let end_hp = |scan_ms: u64| {
+            let mut zone = Zone::new(ZoneConfig { scan_ms, ..ZoneConfig::default() });
+            zone.join(1).unwrap();
+            zone.join(2).unwrap();
+            zone.start(0).unwrap();
+            for now in (scan_ms..=10_000).step_by(scan_ms as usize) {
+                zone.scan(&[seen(1, 0.5, 0.5)], now);
+            }
+            zone.players[1].hp
+        };
+        assert_eq!((end_hp(1_000), end_hp(2_000)), (50, 50), "10 seconds outside at 5 a second");
+    }
+
+    #[test]
     fn a_player_above_or_below_the_height_band_is_outside() {
-        let (mut hub, world) = started(br#"{"z":5}"#);
+        let (mut hub, world) = started(br#"{"z":5,"scan_ms":1000}"#);
         // A probe's xz reach of 3 also reaches heights 2 to 8; the hub keeps only 4 to 6.
         world.borrow_mut().extend([(1, 0, 0, 6), (2, 0, 0, 7)]);
         hub.advance(1_000).unwrap();
@@ -606,7 +636,7 @@ mod tests {
     fn the_probes_cover_the_circle_to_its_edge_on_both_ground_axes() {
         // Centre (0.5, 0.5), radius 10: a chunk's centre 10 away on either axis is on the edge.
         for (x, y) in [(0, 10), (0, -10), (10, 0), (-10, 0)] {
-            let (mut hub, world) = started(b"");
+            let (mut hub, world) = started(EVERY_SECOND);
             world.borrow_mut().extend([(1, 0, 0, 0), (2, x, y, 0)]);
             hub.advance(1_000).unwrap();
             let view: ZoneView = hub.call_typed(Caller::Player(1), "state", &()).unwrap();
@@ -631,7 +661,7 @@ mod tests {
 
     #[test]
     fn the_circles_realtime_event_is_at_its_centre_with_z_its_height() {
-        let (mut hub, _world) = started(br#"{"center":[3.5,-7.5],"z":2}"#);
+        let (mut hub, _world) = started(br#"{"center":[3.5,-7.5],"z":2,"scan_ms":1000}"#);
         hub.advance(1_000).unwrap();
         let emitted = hub.emitted();
         assert!(!emitted.is_empty());
@@ -672,7 +702,7 @@ mod tests {
 
     #[test]
     fn a_client_written_state_cannot_put_a_player_inside_the_circle() {
-        let (mut hub, _world) = started(b"");
+        let (mut hub, _world) = started(EVERY_SECOND);
         let forged = base64(&encode(&ActorState::new("player", 1, 0.5, 0.5)).unwrap());
         hub.answer_node("world.actors_radius", move |_| {
             Ok(json!({ "actors": [{ "uuid": "u1", "userId": "1", "chunkX": "9", "chunkY": "9", "chunkZ": "0", "stateBase64": forged }] }))
@@ -684,7 +714,7 @@ mod tests {
 
     #[test]
     fn a_scan_that_could_not_read_carries_its_damage_to_the_next_good_one() {
-        let mut hub = TestHub::<ZoneHub>::spawn_with("zone", "match-1", br#"{"hp":100,"damage_per_sec":10}"#).unwrap();
+        let mut hub = TestHub::<ZoneHub>::spawn_with("zone", "match-1", br#"{"hp":100,"damage_per_sec":10,"scan_ms":1000}"#).unwrap();
         let fail = Rc::new(Cell::new(false));
         let world = world_failing(&hub, fail.clone());
         let _: bool = hub.call_typed(Caller::Player(1), "join", &()).unwrap();

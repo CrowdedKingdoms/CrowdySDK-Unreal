@@ -108,9 +108,9 @@ namespace CrowdyServerObjectTests
 	}
 
 	/** A push on Topic of instance Key, as the server's publish sends it. */
-	inline TArray<uint8> TopicPushFrame(const FString& Key, const FString& Topic, const TArray<uint8>& Payload)
+	inline TArray<uint8> TopicPushFrame(const FString& Key, const FString& Topic, const TArray<uint8>& Payload, const TCHAR* OfType = TypeName)
 	{
-		const FTCHARToUTF8 Type(TypeName);
+		const FTCHARToUTF8 Type(OfType);
 		const FTCHARToUTF8 InstanceKey(*Key);
 		const FTCHARToUTF8 TopicText(*Topic);
 		TArray<uint8> Frame = {0x82, static_cast<uint8>(Type.Length())};

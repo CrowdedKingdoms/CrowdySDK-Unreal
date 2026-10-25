@@ -377,7 +377,7 @@ double UCrowdyServerObjectComponent::PositionNow() const
 		return PositionTimeForTest;
 	}
 #endif
-	return World ? World->GetTimeSeconds() : 0.0;
+	return World ? World->GetRealTimeSeconds() : 0.0;
 }
 
 bool UCrowdyServerObjectComponent::ResolvePositionAxes()
@@ -415,8 +415,6 @@ bool UCrowdyServerObjectComponent::ResolvePositionAxes()
 
 void UCrowdyServerObjectComponent::SetPositionArmed(bool bArmed)
 {
-	UWorld* World = GetWorld();
-	FTimerManager* Timers = World ? &World->GetTimerManager() : nullptr;
 	if (!bArmed)
 	{
 		ReleasePositionClaim();
@@ -428,10 +426,8 @@ void UCrowdyServerObjectComponent::SetPositionArmed(bool bArmed)
 		PositionInX = nullptr;
 		PositionInY = nullptr;
 		PositionInputs.Reset();
-		if (Timers && PositionTimer.IsValid())
-		{
-			Timers->ClearTimer(PositionTimer);
-		}
+		FTSTicker::RemoveTicker(PositionTicker);
+		PositionTicker.Reset();
 		return;
 	}
 	if (!ResolvePositionAxes())
@@ -439,11 +435,21 @@ void UCrowdyServerObjectComponent::SetPositionArmed(bool bArmed)
 		return;
 	}
 	PositionPawn = Cast<APawn>(GetOwner());
-	if (!Timers || Timers->IsTimerActive(PositionTimer))
+	bool bCanTick = GetWorld() != nullptr;
+#if WITH_DEV_AUTOMATION_TESTS
+	bCanTick |= bPositionTickerForTest;
+#endif
+	if (!bCanTick || PositionTicker.IsValid())
 	{
 		return;
 	}
-	Timers->SetTimer(PositionTimer, FTimerDelegate::CreateUObject(this, &UCrowdyServerObjectComponent::ReportPosition), PositionPeriod, true);
+	PositionTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCrowdyServerObjectComponent::TickPosition), PositionPeriod);
+}
+
+bool UCrowdyServerObjectComponent::TickPosition(float DeltaSeconds)
+{
+	ReportPosition();
+	return true;
 }
 
 bool UCrowdyServerObjectComponent::ShouldReportOwner() const

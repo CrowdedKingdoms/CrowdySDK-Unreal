@@ -751,6 +751,10 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::BuildPageHeader()
 					})
 				]
 			]
+		]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top).Padding(1.f, 0.f, 0.f, 0.f)
+		[
+			MakeDeployMenu()
 		];
 }
 
@@ -1481,6 +1485,47 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeMenu(const FString& TypeN
 		];
 }
 
+TSharedRef<SWidget> SCrowdyServerComputePanel::MakeDeployMenu()
+{
+	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
+	TSharedPtr<SComboButton> Button;
+	TSharedRef<SVerticalBox> Items = SNew(SVerticalBox);
+	SAssignNew(Button, SComboButton)
+		.ButtonStyle(&Style, "Crowdy.Button.Primary")
+		.ContentPadding(FMargin(6.f, 5.f))
+		.HasDownArrow(false)
+		.IsEnabled(this, &SCrowdyServerComputePanel::CanRebuildAll)
+		.ToolTipText(LOCTEXT("DeployMoreTip", "More ways to deploy"))
+		.ButtonContent()
+		[
+			CrowdyStudioWidgets::Icon(TEXT("chevron-down"), 14.f, FSlateColor::UseForeground())
+		]
+		.MenuContent()
+		[
+			SNew(SBorder).BorderImage(Style.GetBrush("Crowdy.Card")).Padding(4.f)
+			[
+				Items
+			]
+		];
+	const TWeakPtr<SComboButton> WeakButton = Button;
+	Items->AddSlot().AutoHeight()
+	[
+		SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Ghost").ContentPadding(FMargin(12.f, 6.f)).HAlign(HAlign_Left)
+		.ToolTipText(LOCTEXT("RebuildAllTip", "Builds every type's server code again, so types whose code did not change pick up the platform's current SDK and toolchain."))
+		.IsEnabled(this, &SCrowdyServerComputePanel::CanRebuildAll)
+		.OnClicked_Lambda([this, WeakButton]()
+		{
+			if (const TSharedPtr<SComboButton> Pinned = WeakButton.Pin())
+			{
+				Pinned->SetIsOpen(false);
+			}
+			return OnRebuildAllClicked();
+		})
+		[ SNew(STextBlock).Text(LOCTEXT("RebuildAll", "Rebuild All and Deploy")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 10)).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextPrimary())) ]
+	];
+	return Button.ToSharedRef();
+}
+
 TSharedRef<SWidget> SCrowdyServerComputePanel::MakeAddStarterMenu()
 {
 	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
@@ -2148,6 +2193,16 @@ FReply SCrowdyServerComputePanel::OnDeployClicked()
 	return FReply::Handled();
 }
 
+FReply SCrowdyServerComputePanel::OnRebuildAllClicked()
+{
+	if (RenewIfStale() || !CanRebuildAll())
+	{
+		return FReply::Handled();
+	}
+	FCrowdyServerComputeService::Get().Deploy(true);
+	return FReply::Handled();
+}
+
 FReply SCrowdyServerComputePanel::OnDeployStartersClicked()
 {
 	if (RenewIfStale() || !IsIdle())
@@ -2387,6 +2442,11 @@ bool SCrowdyServerComputePanel::IsIdle() const
 bool SCrowdyServerComputePanel::CanDeploy() const
 {
 	return IsIdle() && FCrowdyServerComputeService::Get().CanDeploy();
+}
+
+bool SCrowdyServerComputePanel::CanRebuildAll() const
+{
+	return IsIdle() && FCrowdyServerComputeService::Get().CanRebuildAll();
 }
 
 bool SCrowdyServerComputePanel::CanSwitch() const

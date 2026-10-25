@@ -37,6 +37,12 @@ namespace CrowdyGameKitStarters
 	/** The Config Add starter saves: Config trimmed, or for a starter that makes a secret and was given none, a fresh random one. */
 	FString ConfigToAdd(const FStarter& Starter, const FString& Config);
 
+	/** What in Config, the JSON text of the starter TypeName's Config object, its server code would refuse to start on: a key that is not a whole number within its range, or a secret that is not text. Keys match with case, as the server code reads them. Empty when nothing is wrong or the starter checks nothing. */
+	FString FindConfigProblem(const FString& TypeName, const FString& Config);
+
+	/** Whether Config, a starter's Config text, has a secret its server code reads: non-empty text under exactly the key "secret". */
+	bool HasConfigSecret(const FString& Config);
+
 	/** Whether Definition is a starter whose server code takes Function from the app's developers only, whatever Callable By its asset was saved with. */
 	bool IsDeveloperOnly(const UCrowdyServerObjectDefinition& Definition, const FCrowdyServerFunction& Function);
 

@@ -79,6 +79,8 @@ void UCrowdyAccount_ChangePassword::Send(UCrowdyAuthentication& Auth, const FOnA
 	const FOnAccountError& Failed)
 {
 	Auth.ChangePassword(CurrentPassword, NewPassword, Done, Failed);
+	CurrentPassword.Empty();
+	NewPassword.Empty();
 }
 
 UCrowdyAccount_AddPassword* UCrowdyAccount_AddPassword::AddPassword(UObject* WorldContextObject, const FString& NewPassword)
@@ -94,6 +96,7 @@ void UCrowdyAccount_AddPassword::Send(UCrowdyAuthentication& Auth, const FOnAcco
 	const FOnAccountError& Failed)
 {
 	Auth.AddPassword(NewPassword, Done, Failed);
+	NewPassword.Empty();
 }
 
 UCrowdyAccount_DeleteAccount* UCrowdyAccount_DeleteAccount::DeleteAccount(UObject* WorldContextObject)

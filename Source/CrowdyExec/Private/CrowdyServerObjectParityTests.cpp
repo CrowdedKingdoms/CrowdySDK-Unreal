@@ -277,6 +277,45 @@ bool FCrowdyServerObjectParityWatchRecordTest::RunTest(const FString& Parameters
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectParityWatchRecordFromRecordsHandlerRunsOnceTest,
+	"CrowdySDK.CrowdyExec.ServerObjectParity.WatchRecordFromRecordsHandlerRunsOnce", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectParityWatchRecordFromRecordsHandlerRunsOnceTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectParityTests;
+	FRig Rig(*this);
+	if (!UseParityRecords(Rig))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = Rig.Acquire(Rig.InstanceId, Owner.Get());
+	if (!Object)
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectParityListener> First = MakeParityListener();
+	TStrongObjectPtr<UCrowdyServerObjectParityListener> Second = MakeParityListener();
+	Object->K2_WatchRecord(TEXT("a"), ParityRecordEventOf(First.Get()));
+	ParityApply(Object, ParityRecord(TEXT("a"), 10, TEXT("x")));
+
+	const FDelegateHandle Handler = Object->OnRecordsChanged.AddLambda([Object, &Second](UCrowdyServerObject*, TConstArrayView<FString>, TConstArrayView<FString>, TConstArrayView<TBitArray<>>)
+	{
+		Object->K2_WatchRecord(TEXT("a"), ParityRecordEventOf(Second.Get()));
+	});
+	ParityApply(Object, ParityRecord(TEXT("a"), 11, TEXT("x")));
+	Object->OnRecordsChanged.Remove(Handler);
+
+	TestEqual(TEXT("the existing watcher ran for the change"), First->WatchedRecordIds.Num(), 2);
+	if (!TestEqual(TEXT("a watcher added by a records handler runs once for that change: its catch-up"), Second->WatchedRecordIds.Num(), 1))
+	{
+		return false;
+	}
+	ParityApply(Object, ParityRecord(TEXT("a"), 12, TEXT("x")));
+	TestEqual(TEXT("and runs for the next change"), Second->WatchedRecordIds.Num(), 2);
+	TestEqual(TEXT("which the existing watcher sees too"), First->WatchedRecordIds.Num(), 3);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectParityWatchRecordDestroyedWatcherTest,
 	"CrowdySDK.CrowdyExec.ServerObjectParity.WatchRecordDropsAWatcherWhoseObjectIsGone", CrowdyServerObjectTests::TestFlags)
 bool FCrowdyServerObjectParityWatchRecordDestroyedWatcherTest::RunTest(const FString& Parameters)

@@ -80,8 +80,10 @@ public:
 
 	/** True when every type is ready and a deploy would change what runs (or what runs is not known). */
 	bool CanDeploy() const;
-	/** Asks first, naming what it adds, changes and removes, then builds and deploys every type and records their revisions. False when it did not start. */
-	bool Deploy();
+	/** True when the types are ready, even when nothing changed: a rebuild still gives unchanged types the platform's current SDK and toolchain. */
+	bool CanRebuildAll() const;
+	/** Asks first, naming what it adds, changes and removes, then builds and deploys every type and records their revisions. With bRebuildAll no type's earlier build is reused. False when it did not start. */
+	bool Deploy(bool bRebuildAll = false);
 	/** Asks first, naming the types the active version runs, then deploys the platform's example types in place of it. */
 	bool DeployStarters();
 	/** A deploy, or another change to the live app, is under way. */
