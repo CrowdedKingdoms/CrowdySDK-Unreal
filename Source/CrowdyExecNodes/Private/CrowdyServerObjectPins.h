@@ -27,6 +27,9 @@ struct FCrowdyServerValuePin
 	/** A variable in Visible to Players, which players receive; inputs and outputs always are. */
 	bool bVisible = true;
 
+	/** For a Game Kit starter's presence flag (bHasWave), the variable whose changes report it (Wave); None otherwise. */
+	FName ChangesWith;
+
 	/** Why the value has no pin; empty when it has one. */
 	FText Refusal;
 

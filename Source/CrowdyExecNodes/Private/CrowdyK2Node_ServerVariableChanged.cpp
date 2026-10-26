@@ -70,6 +70,13 @@ void UCrowdyK2Node_ServerVariableChanged::ExpandNode(FKismetCompilerContext& Com
 		BreakAllNodeLinks();
 		return;
 	}
+	if (!Variable.ChangesWith.IsNone())
+	{
+		CompilerContext.MessageLog.Error(*FText::Format(LOCTEXT("ChangesWith", "@@: {0} changes together with {1}, so this node never runs. Use On {1} Changed and read {0} there."),
+			FText::FromName(Variable.Name), FText::FromName(Variable.ChangesWith)).ToString(), this);
+		BreakAllNodeLinks();
+		return;
+	}
 
 	// The handler is a custom event named after this node's GUID, so two nodes on one variable stay two bindings.
 	UK2Node_CustomEvent* Handler = CompilerContext.SpawnIntermediateNode<UK2Node_CustomEvent>(this, SourceGraph);

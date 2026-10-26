@@ -1259,9 +1259,12 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeVariable(IDetailLayout
 	}
 	else
 	{
+		const bool bStarter = Current->IsGameKitStarter();
 		VisibleWidget = SNew(SCheckBox)
-			.ToolTipText(LOCTEXT("VisibleToPlayersToolTip", "Players can read and watch this variable. Off, it stays on the server."))
-			.IsChecked(Current->WatchedFields.Contains(Name) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+			.IsEnabled(!bStarter)
+			.ToolTipText(bStarter ? LOCTEXT("StarterVisibleToPlayersToolTip", "A Game Kit starter sends players its whole State, and each Owner Value only to its own player.")
+				: LOCTEXT("VisibleToPlayersToolTip", "Players can read and watch this variable. Off, it stays on the server."))
+			.IsChecked(bStarter || Current->WatchedFields.Contains(Name) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
 			.OnCheckStateChanged_Lambda([this, Name](ECheckBoxState State) { SetVisibleToPlayers(Name, State == ECheckBoxState::Checked); });
 	}
 	Category.AddCustomRow(LOCTEXT("VisibleToPlayers", "Visible to Players"))

@@ -2,6 +2,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "CrowdyGameKitTypes.h"
 #include "CrowdyServerComputeService.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "HAL/FileManager.h"
@@ -488,6 +489,35 @@ bool FCrowdyServerComputeInstancesPhraseTest::RunTest(const FString& Parameters)
 	TestEqualSensitive(TEXT("equal bounds name one count"), InstancesPhrase(4, 4).ToString(), FString(TEXT("4 instances")));
 	TestEqualSensitive(TEXT("a single instance is singular"), InstancesPhrase(1, 1).ToString(), FString(TEXT("1 instance")));
 	TestEqualSensitive(TEXT("a Max below Min reads as the Min"), InstancesPhrase(3, 2).ToString(), FString(TEXT("3 instances")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerComputeVisibleVariablesTest, "CrowdySDK.CrowdyExecEditor.ServerComputeStarterCountsItsWholeState", CrowdyServerComputePageTest::TestFlags)
+bool FCrowdyServerComputeVisibleVariablesTest::RunTest(const FString& Parameters)
+{
+	UCrowdyServerObjectDefinition* Definition = NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage());
+	Definition->State = FCrowdyKitQueueCounts::StaticStruct();
+	Definition->WatchedFields = {TEXT("Waiting")};
+	TestEqual(TEXT("an own type counts the variables ticked Visible to Players"), CrowdyServerComputePage::CountVisibleVariables(*Definition), 1);
+
+	Definition->CodeSource = ECrowdyServerCodeSource::GameKitStarter;
+	Definition->KitStateTopic = TEXT("queue");
+	Definition->TypeName = TEXT("matchmaker");
+	Definition->WatchedFields.Reset();
+	TArray<FString> Errors;
+	TestTrue(TEXT("the matchmaker bakes"), Definition->Bake(Errors));
+	TestEqual(TEXT("a starter counts every variable of its State"), CrowdyServerComputePage::CountVisibleVariables(*Definition), 3);
+
+	Definition->KitOwnerValues = {{TEXT("forming"), TEXT("forming"), TEXT("Forming")}};
+	TestEqual(TEXT("but not an Owner Value, which only its own player reads"), CrowdyServerComputePage::CountVisibleVariables(*Definition), 2);
+
+	UCrowdyServerObjectDefinition* World = NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage());
+	World->State = FCrowdyKitWorldConditions::StaticStruct();
+	World->CodeSource = ECrowdyServerCodeSource::GameKitStarter;
+	World->KitStateTopic = TEXT("world");
+	World->TypeName = TEXT("world");
+	TestTrue(TEXT("the world bakes"), World->Bake(Errors));
+	TestEqual(TEXT("bHasOnline rides with Online, so it is no variable of its own"), CrowdyServerComputePage::CountVisibleVariables(*World), 5);
 	return true;
 }
 
