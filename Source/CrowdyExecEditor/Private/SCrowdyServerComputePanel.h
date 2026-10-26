@@ -27,6 +27,8 @@ namespace CrowdyServerComputePage
 	{
 		/** The type was named by the Game Kit World or Game Kit Actor Starters setting, which no longer names it. */
 		bool bSettingsCleared = false;
+		/** False when those settings changed but the project's config file could not be written, so it still names the type. */
+		bool bSettingsSaved = true;
 		/** Why the Server Code folder is still there or could not be deleted; empty when it was deleted or never existed. */
 		FText FolderProblem;
 	};

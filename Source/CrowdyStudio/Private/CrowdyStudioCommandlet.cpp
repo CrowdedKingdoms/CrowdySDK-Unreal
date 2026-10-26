@@ -15,6 +15,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "Model/CrowdyStudioTypes.h"
 #include "Model/FCrowdyStudioController.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -29,18 +30,18 @@ namespace CrowdyStudioCommandletDetail
 		TEXT(" | grantfeature [-app=<id>] -tier=<id from features> -key=<key> -yes | revokefeature [-app=<id>] -tier=<id> -key=<key> -yes")
 		TEXT(" | teams [-app=<id>] (the app's teams and team policy) | createteam [-app=<id>] -name=<text> [-description=<text>] [-policy=open|request|invite|admin, default open] -yes")
 		TEXT(" | channels [-app=<id>] (the app's channels and channel policy) | createchannel [-app=<id>] -name=<text> [-description=<text>] [-policy=open|request|invite|admin, default the app's] [-memberscansend=true|false, default true] -yes")
-		TEXT(" | grids [-app=<id>] -low=\"x,y,z\" -high=\"x,y,z\" [-user=<id>, default the signed-in user] (the grids in that chunk region and the permission keys a grid can grant)")
-		TEXT(" | creategrid [-app=<id>] -corner1=\"x,y,z\" -corner2=\"x,y,z\" -yes")
-		TEXT(" | grantgrid | revokegrid [-app=<id>] -grid=<id> -user=<id> or -group=<id> [-role=<id>] -keys=\"a,b\" (revokegrid also takes -all in place of -keys) -yes")
+		TEXT(" | grids [-app=<id>] -low=x,y,z -high=x,y,z [-user=<id>, default the signed-in user] (the grids in that chunk region and the permission keys a grid can grant)")
+		TEXT(" | creategrid [-app=<id>] -corner1=x,y,z -corner2=x,y,z -yes")
+		TEXT(" | grantgrid | revokegrid [-app=<id>] -grid=<id> -user=<id> or -group=<id> [-role=<id>] -keys=a,b (revokegrid also takes -all in place of -keys) -yes")
 		TEXT(" | groupdetail [-app=<id>] -kind=team|channel -group=<id> (the group's members and roles)")
 		TEXT(" | addmember | removemember [-app=<id>] -kind=team|channel -group=<id> -user=<id> -yes")
-		TEXT(" | setroles [-app=<id>] -kind=team|channel -group=<id> -user=<id> -roles=\"1,2\" or -noroles -yes")
-		TEXT(" | createrole [-app=<id>] -kind=team|channel -group=<id> -name=<text> [-perms=\"manage_members,manage_roles,manage_group,send_messages\"] [-rank=<number>] -yes")
-		TEXT(" | updaterole [-app=<id>] -kind=team|channel -group=<id> -role=<id> [-name=<text>] [-perms=\"a,b\" or -noperms] [-rank=<number>] -yes | deleterole [-app=<id>] -kind=team|channel -group=<id> -role=<id> -yes")
+		TEXT(" | setroles [-app=<id>] -kind=team|channel -group=<id> -user=<id> -roles=1,2 or -noroles -yes")
+		TEXT(" | createrole [-app=<id>] -kind=team|channel -group=<id> -name=<text> [-perms=manage_group,manage_members,manage_roles,invite_members, and for a channel send_messages] [-rank=<number>] -yes")
+		TEXT(" | updaterole [-app=<id>] -kind=team|channel -group=<id> -role=<id> [-name=<text>] [-perms=a,b or -noperms] [-rank=<number>] -yes | deleterole [-app=<id>] -kind=team|channel -group=<id> -role=<id> -yes")
 		TEXT(" | updategroup [-app=<id>] -kind=team|channel -group=<id> [-name=<text>] [-description=<text>] [-policy=open|request|invite|admin] -yes | deletegroup [-app=<id>] -kind=team|channel -group=<id> -yes")
 		TEXT(" | setteampolicy | setchannelpolicy [-app=<id>] [-creation=admin|member|anyone] [-membership=open|request|invite|admin] [-maxmembers=<n, 0 unlimited>] [-maxgroupsperuser=<n, 0 unlimited>] -yes")
-		TEXT(" | gridlimits [-app=<id>] -grid=<id> -keys=\"a,b\" or -nolimit -yes | gridgrants [-app=<id>] -grid=<id> -group=<id> | gridpermissions [-app=<id>] -grid=<id> [-user=<id>, default the signed-in user]")
-		TEXT(", -app defaulting to the project's synced AppID, and -out=<file> for a JSON result. Quote a value with spaces or commas. Every operation that changes something does nothing without -yes.");
+		TEXT(" | gridlimits [-app=<id>] -grid=<id> -keys=a,b or -nolimit -yes | gridgrants [-app=<id>] -grid=<id> -group=<id> | gridpermissions [-app=<id>] -grid=<id> [-user=<id>, default the signed-in user]")
+		TEXT(", -app defaulting to the project's synced AppID, and -out=<file> for a JSON result. Quote a value with spaces; write a list without spaces, a,b. Every operation that changes something does nothing without -yes.");
 
 	const TCHAR* const SignInMessage = TEXT("Sign in to Crowdy Studio on this machine first");
 
@@ -96,10 +97,11 @@ namespace CrowdyStudioCommandletDetail
 			*Settings.DiscoveryUrl, *Settings.GameApiHttpUrl, *Settings.GameApiWsUrl);
 	}
 
-	bool ReadSwitch(const FString& Params, const TCHAR* Name, FString& OutValue)
+	/** Read through commas and brackets: the engine drops the quotes around a value without spaces, so -name="Red,Blue" arrives as -name=Red,Blue. */
+	bool ReadSwitch(const FString& Params, const TCHAR* Name, FString& OutValue, const TCHAR** OutEnd = nullptr)
 	{
 		OutValue.Reset();
-		FParse::Value(*Params, *FString::Printf(TEXT("-%s="), Name), OutValue);
+		FParse::Value(*Params, *FString::Printf(TEXT("-%s="), Name), OutValue, false, OutEnd);
 		OutValue.TrimStartAndEndInline();
 		return !OutValue.IsEmpty();
 	}
@@ -140,7 +142,7 @@ namespace CrowdyStudioCommandletDetail
 		return !ReadSwitch(Params, Name, Text) || ReadId(Params, Name, OutId, OutError, Source);
 	}
 
-	/** Three whole numbers; the list switches need quotes because an unquoted value stops at its first comma. */
+	/** Three whole numbers, x,y,z. */
 	bool ReadChunk(const FString& Params, const TCHAR* Name, FStudioChunk& OutChunk, FString& OutError)
 	{
 		FString Text;
@@ -162,7 +164,7 @@ namespace CrowdyStudioCommandletDetail
 		}
 		if (!bValid)
 		{
-			OutError = FString::Printf(TEXT("-%s=%s is not three chunk coordinates; write -%s=\"x,y,z\" with whole numbers, in quotes"), Name, *Text, Name);
+			OutError = FString::Printf(TEXT("-%s=%s is not three chunk coordinates; write -%s=x,y,z with whole numbers and no spaces"), Name, *Text, Name);
 			return false;
 		}
 		OutChunk.X = Axes[0];
@@ -171,31 +173,25 @@ namespace CrowdyStudioCommandletDetail
 		return true;
 	}
 
-	/** True when the switch's value was cut at an unquoted comma, so the rest of the list would be dropped silently. */
-	bool IsCutAtComma(const FString& Params, const TCHAR* Name, const FString& Value)
-	{
-		const FString Match = FString::Printf(TEXT("-%s="), Name);
-		const int32 At = Params.Find(Match, ESearchCase::IgnoreCase);
-		if (At == INDEX_NONE)
-		{
-			return false;
-		}
-		const int32 ValueAt = At + Match.Len();
-		return Params.IsValidIndex(ValueAt + Value.Len()) && Params[ValueAt] != TEXT('"') && Params[ValueAt + Value.Len()] == TEXT(',');
-	}
-
 	/** A comma list, trimmed and without repeats; empty when the switch is absent. */
 	bool ReadList(const FString& Params, const TCHAR* Name, TArray<FString>& OutItems, FString& OutError)
 	{
 		FString Text;
 		OutItems.Reset();
-		if (!ReadSwitch(Params, Name, Text))
+		const TCHAR* End = nullptr;
+		if (!ReadSwitch(Params, Name, Text, &End))
 		{
 			return true;
 		}
-		if (IsCutAtComma(Params, Name, Text))
+		const bool bQuoted = End && End > *Params && End[-1] == TEXT('"');
+		while (End && FChar::IsWhitespace(*End))
 		{
-			OutError = FString::Printf(TEXT("-%s=%s... was cut at a comma; write -%s=\"a,b\" in quotes"), Name, *Text, Name);
+			++End;
+		}
+		// A space beside a comma ends an unquoted list there, and the rest would be dropped silently.
+		if (!bQuoted && (Text.EndsWith(TEXT(",")) || (End && *End == TEXT(','))))
+		{
+			OutError = FString::Printf(TEXT("-%s=%s ends at a space; write the list without spaces, -%s=a,b"), Name, *Text, Name);
 			return false;
 		}
 		TArray<FString> Parts;
@@ -240,12 +236,6 @@ namespace CrowdyStudioCommandletDetail
 		return true;
 	}
 
-	bool IsGroupPermission(const FString& Key)
-	{
-		static const TCHAR* const Keys[] = { TEXT("manage_members"), TEXT("manage_roles"), TEXT("manage_group"), TEXT("send_messages") };
-		return Algo::AnyOf(Keys, [&Key](const TCHAR* Name) { return Key.Equals(Name, ESearchCase::CaseSensitive); });
-	}
-
 	bool IsCreationPolicy(const FString& Policy)
 	{
 		static const TCHAR* const Policies[] = { TEXT("admin"), TEXT("member"), TEXT("anyone") };
@@ -287,11 +277,13 @@ namespace CrowdyStudioCommandletDetail
 		{
 			return false;
 		}
+		const TArray<FStudioGroupPermission> Known = GetGroupPermissions(Out.bChannel);
 		for (const FString& Perm : Out.Perms)
 		{
-			if (!IsGroupPermission(Perm))
+			if (!Known.ContainsByPredicate([&Perm](const FStudioGroupPermission& Each) { return Each.Key.Equals(Perm, ESearchCase::CaseSensitive); }))
 			{
-				OutError = FString::Printf(TEXT("-perms has %s, which is not a group permission; use manage_members, manage_roles, manage_group or send_messages"), *Perm);
+				OutError = FString::Printf(TEXT("-perms has %s, which is not a %s permission; use %s"), *Perm, Out.bChannel ? TEXT("channel") : TEXT("team"),
+					*FString::JoinBy(Known, TEXT(", "), [](const FStudioGroupPermission& Each) { return Each.Key; }));
 				return false;
 			}
 		}

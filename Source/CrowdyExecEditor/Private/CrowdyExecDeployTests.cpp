@@ -2,24 +2,31 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "AssetRegistry/IAssetRegistry.h"
 #include "CrowdyExecCodegen.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLibrary.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "UObject/ObjectRedirector.h"
 #include "UObject/Package.h"
+#include "UObject/SavePackage.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UObjectGlobals.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 namespace CrowdyExecDeployTest
 {
@@ -1199,6 +1206,124 @@ bool FCrowdyExecDeployInspectLibraryTest::RunTest(const FString& Parameters)
 	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeManifestDefinition(TEXT("save_bound"), 1, 5000);
 	const CrowdyExecDeploy::FTypeState HubState = CrowdyExecDeploy::InspectType(*Hub, FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("CrowdyExecDeployTests"), TEXT("no_such_crate")));
 	TestTrue(TEXT("a Server Object's are"), HubState.Problem.Contains(TEXT("Save Interval must be 5 to 60 seconds")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployReadOnlySettingsTest, "CrowdySDK.CrowdyExecEditor.DeployRefusesAChangeToReadOnlyGameKitSettings", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployReadOnlySettingsTest::RunTest(const FString& Parameters)
+{
+	UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
+	const FSoftObjectPath SavedWorld = Settings->GameKitWorld;
+	const TArray<FSoftObjectPath> SavedStarters = Settings->GameKitActorStarters;
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	const FString Folder = FPaths::ConvertRelativePathToFull(FPaths::ProjectIntermediateDir() / TEXT("CrowdyExecDeployTests") / FGuid::NewGuid().ToString());
+	const FString Ini = Folder / TEXT("DefaultGame.ini");
+	ON_SCOPE_EXIT
+	{
+		Settings->GameKitWorld = SavedWorld;
+		Settings->GameKitActorStarters = SavedStarters;
+		PlatformFile.SetReadOnly(*Ini, false);
+		PlatformFile.DeleteDirectoryRecursively(*Folder);
+		PlatformFile.DeleteDirectory(*FPaths::GetPath(Folder));
+	};
+
+	TestTrue(TEXT("an ini that does not exist yet can be written"), CrowdyExecDeploy::FindReadOnlySettingsProblem(Ini).IsEmpty());
+	if (!TestTrue(TEXT("the ini is written"), FFileHelper::SaveStringToFile(TEXT("[/Script/CrowdyReplication.CrowdySDKDeveloperSettings]\n"), *Ini)))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a writable ini can be written"), CrowdyExecDeploy::FindReadOnlySettingsProblem(Ini).IsEmpty());
+	if (!TestTrue(TEXT("the ini is made read-only"), PlatformFile.SetReadOnly(*Ini, true)))
+	{
+		return false;
+	}
+	TestEqualSensitive(TEXT("a read-only ini is named, with the way out"), CrowdyExecDeploy::FindReadOnlySettingsProblem(Ini),
+		FString::Printf(TEXT("%s is read-only (checked in?), and this changes the Game Kit settings it holds; make it writable, then run again; nothing was changed"), *Ini));
+
+	const FSoftObjectPath Named(TEXT("/Game/CrowdyDeployTest/CSO_Named.CSO_Named"));
+	const FSoftObjectPath Other(TEXT("/Game/CrowdyDeployTest/CSO_Other.CSO_Other"));
+	Settings->GameKitWorld = Named;
+	Settings->GameKitActorStarters = {Other};
+	TestFalse(TEXT("moving the Game Kit World's definition is refused"), CrowdyExecDeploy::FindReadOnlySettingsProblemFor(Named, Ini).IsEmpty());
+	Settings->GameKitWorld.Reset();
+	Settings->GameKitActorStarters = {Other, Named};
+	TestFalse(TEXT("so is moving a Game Kit Actor Starter"), CrowdyExecDeploy::FindReadOnlySettingsProblemFor(Named, Ini).IsEmpty());
+	Settings->GameKitActorStarters = {Other};
+	TestTrue(TEXT("a definition the settings do not name changes nothing in them"), CrowdyExecDeploy::FindReadOnlySettingsProblemFor(Named, Ini).IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployUnusedRedirectorsTest, "CrowdySDK.CrowdyExecEditor.DeployTakesOnlyRedirectorsNothingElseUses", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployUnusedRedirectorsTest::RunTest(const FString& Parameters)
+{
+	IAssetRegistry& Registry = IAssetRegistry::GetChecked();
+	// A run that crashed would otherwise leave its definitions in the project, where a deploy would send them.
+	IFileManager::Get().DeleteDirectory(*FPackageName::LongPackageNameToFilename(TEXT("/Game/CrowdyRedirectorTest")), false, true);
+	const FString Root = FString::Printf(TEXT("/Game/CrowdyRedirectorTest/%s"), *FGuid::NewGuid().ToString());
+	TArray<UObject*> Made;
+	TArray<FString> Files;
+	ON_SCOPE_EXIT
+	{
+		for (UObject* Object : Made)
+		{
+			Registry.AssetDeleted(Object);
+			Object->ClearFlags(RF_Public | RF_Standalone);
+			Object->MarkAsGarbage();
+		}
+		for (const FString& File : Files)
+		{
+			IFileManager::Get().Delete(*File, false, true, true);
+		}
+		IFileManager::Get().DeleteDirectory(*FPackageName::LongPackageNameToFilename(Root), false, true);
+		IFileManager::Get().DeleteDirectory(*FPaths::GetPath(FPackageName::LongPackageNameToFilename(Root)), false, false);
+	};
+	const auto Save = [this, &Files](UObject* Object)
+	{
+		const FString File = FPackageName::LongPackageNameToFilename(Object->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+		FSavePackageArgs Args;
+		Args.TopLevelFlags = RF_Public | RF_Standalone;
+		Files.Add(File);
+		return TestTrue(FString::Printf(TEXT("%s is saved"), *Object->GetName()), UPackage::SavePackage(Object->GetPackage(), Object, *File, Args));
+	};
+	const auto MakeDefinition = [&Root](const TCHAR* Name)
+	{
+		UCrowdyServerObjectDefinition* Definition = NewObject<UCrowdyServerObjectDefinition>(CreatePackage(*(Root / Name)), Name, RF_Public | RF_Standalone);
+		Definition->TypeName = FString(Name).ToLower();
+		return Definition;
+	};
+	const auto MakeRedirector = [&Root](const TCHAR* Name, UObject* Destination)
+	{
+		UObjectRedirector* Redirector = NewObject<UObjectRedirector>(CreatePackage(*(Root / Name)), Name, RF_Public | RF_Standalone);
+		Redirector->DestinationObject = Destination;
+		return Redirector;
+	};
+
+	UCrowdyServerObjectDefinition* Alone = MakeDefinition(TEXT("CSO_Alone"));
+	UObjectRedirector* Unused = MakeRedirector(TEXT("CSO_AloneOld"), Alone);
+	UCrowdyServerObjectDefinition* Shared = MakeDefinition(TEXT("CSO_Shared"));
+	UObjectRedirector* Used = MakeRedirector(TEXT("CSO_SharedOld"), Shared);
+	UObjectRedirector* User = MakeRedirector(TEXT("CSO_SharedOlder"), Used);
+	Made = {Alone, Unused, Shared, Used, User};
+	if (!Save(Alone) || !Save(Unused) || !Save(Shared) || !Save(Used) || !Save(User))
+	{
+		return false;
+	}
+	Registry.ScanFilesSynchronous(Files, true);
+
+	TArray<FName> AloneReferencers = CrowdyExecDeploy::FindReferencers(*Alone, TSet<FName>());
+	TArray<FName> AloneUsed;
+	const TArray<UObject*> AloneTaken = CrowdyExecDeploy::TakeUnusedRedirectors(*Alone, AloneReferencers, AloneUsed);
+	TestTrue(TEXT("a redirector nothing uses is taken, to be deleted with the definition"), AloneTaken.Num() == 1 && AloneTaken[0] == Unused);
+	TestEqual(TEXT("and leaves no referencer to refuse the removal"), AloneReferencers.Num(), 0);
+	TestEqual(TEXT("nor a used redirector"), AloneUsed.Num(), 0);
+
+	TArray<FName> SharedReferencers = CrowdyExecDeploy::FindReferencers(*Shared, TSet<FName>());
+	TArray<FName> SharedUsed;
+	const TArray<UObject*> SharedTaken = CrowdyExecDeploy::TakeUnusedRedirectors(*Shared, SharedReferencers, SharedUsed);
+	const FName UsedPackage = Used->GetPackage()->GetFName();
+	TestEqual(TEXT("a redirector something else uses is not taken"), SharedTaken.Num(), 0);
+	TestTrue(TEXT("it stays a referencer"), SharedReferencers.Contains(UsedPackage));
+	TestTrue(TEXT("and is named as used"), SharedUsed.Num() == 1 && SharedUsed[0] == UsedPackage);
 	return true;
 }
 

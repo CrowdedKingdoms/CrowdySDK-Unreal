@@ -48,6 +48,56 @@ namespace CrowdyExecBuildAndDeployDetail
 		}
 	}
 
+	void SendDeploy(const FRunRef& Run, const FString& Manifest)
+	{
+		if (Run->Callbacks.OnFinalDeploy)
+		{
+			Run->Callbacks.OnFinalDeploy();
+		}
+		const int32 Last = Run->Plan.Builds.Num() - 1;
+		const FString BuildId = Last >= 0 ? Run->Outcome.Builds[Last].BuildId : FString();
+		Run->Client->Deploy(Manifest, BuildId, [Run](const TResult<int32>& Deployed)
+		{
+			if (!Deployed.bOk)
+			{
+				Finish(Run, EStep::DeployFailed, Deployed.Error);
+				return;
+			}
+			Run->Outcome.Version = Deployed.Value;
+			Finish(Run, EStep::Deployed);
+		});
+	}
+
+	// Once a deploy removes a type, its running Server Objects stay on the server and a restart can no longer name it, so they are stopped while it is still live.
+	void StopRemovedThenDeploy(const FRunRef& Run, const FString& Manifest, const FString& ActiveManifest)
+	{
+		const TArray<FString> Removed = FindRemovedTypes(ActiveManifest, Run->ManifestJson);
+		if (Removed.IsEmpty())
+		{
+			SendDeploy(Run, Manifest);
+			return;
+		}
+		const TSharedRef<int32> Waiting = MakeShared<int32>(Removed.Num());
+		for (const FString& TypeName : Removed)
+		{
+			Run->Client->RestartType(TypeName, [Run, Manifest, TypeName, Waiting](const TResult<FRestart>& Restarted)
+			{
+				if (Restarted.bOk)
+				{
+					Run->Outcome.StoppedRemoved.Add(TypeName);
+				}
+				else
+				{
+					Run->Outcome.StopRemovedFailed.Add(FString::Printf(TEXT("%s: %s"), *TypeName, *Restarted.Error.Message));
+				}
+				if (--*Waiting == 0)
+				{
+					SendDeploy(Run, Manifest);
+				}
+			});
+		}
+	}
+
 	void DeployAll(const FRunRef& Run)
 	{
 		TMap<FString, FString> Digests = Run->Plan.Reused;
@@ -65,20 +115,20 @@ namespace CrowdyExecBuildAndDeployDetail
 			Finish(Run, EStep::DeployFailed, Problem(TEXT("The manifest could not be read to name the stored modules")));
 			return;
 		}
-		if (Run->Callbacks.OnFinalDeploy)
+		// A split deploy has just read what is active; otherwise it is read now, since the caller's copy may predate another deploy.
+		if (!Run->StagingFrom.IsEmpty())
 		{
-			Run->Callbacks.OnFinalDeploy();
+			StopRemovedThenDeploy(Run, Manifest, Run->StagingFrom);
+			return;
 		}
-		const FString BuildId = Last >= 0 ? Run->Outcome.Builds[Last].BuildId : FString();
-		Run->Client->Deploy(Manifest, BuildId, [Run](const TResult<int32>& Deployed)
+		Run->Client->Versions([Run, Manifest](const TResult<TArray<FVersion>>& Versions)
 		{
-			if (!Deployed.bOk)
+			const TOptional<FLive> Active = Versions.bOk ? FindLive(Versions.Value) : TOptional<FLive>();
+			if (!Active.IsSet() && Run->Live.ManifestJson.IsEmpty())
 			{
-				Finish(Run, EStep::DeployFailed, Deployed.Error);
-				return;
+				Run->Outcome.StopRemovedFailed.Add(FString::Printf(TEXT("the active version could not be read (%s), so no type it runs was stopped"), *Versions.Error.Message));
 			}
-			Run->Outcome.Version = Deployed.Value;
-			Finish(Run, EStep::Deployed);
+			StopRemovedThenDeploy(Run, Manifest, Active.IsSet() ? Active->ManifestJson : Run->Live.ManifestJson);
 		});
 	}
 
@@ -254,6 +304,25 @@ FString CrowdyExecBuildAndDeploy::FindPlanProblem(const FPlan& Plan, const FStri
 	FString Problem;
 	CrowdyExecDeploy::MakeStagingManifest(Live->ManifestJson, ManifestJson, {}, Problem);
 	return Problem;
+}
+
+TArray<FString> CrowdyExecBuildAndDeploy::FindRemovedTypes(const FString& LiveManifest, const FString& Manifest)
+{
+	TArray<CrowdyExecRevisions::FLiveType> Live;
+	TArray<CrowdyExecRevisions::FLiveType> Next;
+	if (LiveManifest.IsEmpty() || !CrowdyExecRevisions::ParseManifest(LiveManifest, Live) || !CrowdyExecRevisions::ParseManifest(Manifest, Next))
+	{
+		return {};
+	}
+	TArray<FString> Removed;
+	for (const CrowdyExecRevisions::FLiveType& Type : Live)
+	{
+		if (!Next.ContainsByPredicate([&Type](const CrowdyExecRevisions::FLiveType& Each) { return Each.TypeName.Equals(Type.TypeName, ESearchCase::CaseSensitive); }))
+		{
+			Removed.Add(Type.TypeName);
+		}
+	}
+	return Removed;
 }
 
 void CrowdyExecBuildAndDeploy::Run(const TSharedRef<CrowdyExecDeveloper::FClient>& Client, FPlan Plan, FString ManifestJson, FLive Live, FCallbacks Callbacks,

@@ -970,6 +970,68 @@ bool FCrowdyExecSplitDeployTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// The platform leaves a removed type's Server Objects running, and a restart cannot name the type once it is gone, so the deploy stops them first.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployStopsRemovedTest, "CrowdySDK.CrowdyExecEditor.DeployStopsTheTypesItRemovesFirst", CrowdyExecDeveloperApiTests::TestFlags)
+bool FCrowdyExecDeployStopsRemovedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeveloperApiTests;
+	const FString LiveWithOld = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"dr\",\"client\":true},\"old\":{\"kind\":\"hub\",\"parent\":\"root\",\"digest\":\"do\",\"client\":true}}}");
+	TestEqual(TEXT("a type the live version runs and the deploy leaves out is removed"), CrowdyExecBuildAndDeploy::FindRemovedTypes(LiveWithOld, SplitManifest), TArray<FString>({TEXT("old")}));
+	TestTrue(TEXT("a type both run is not"), CrowdyExecBuildAndDeploy::FindRemovedTypes(SplitLive, SplitManifest).IsEmpty());
+	const FString LiveWithAlphaCapital = FString(SplitManifest).Replace(TEXT("\"alpha\":{"), TEXT("\"Alpha\":{"), ESearchCase::CaseSensitive);
+	TestEqual(TEXT("a Type Name differing only in case is another type, and is removed"), CrowdyExecBuildAndDeploy::FindRemovedTypes(LiveWithAlphaCapital, SplitManifest), TArray<FString>({TEXT("Alpha")}));
+	TestTrue(TEXT("with nothing live, nothing is removed"), CrowdyExecBuildAndDeploy::FindRemovedTypes(FString(), SplitManifest).IsEmpty());
+	TestTrue(TEXT("nor when the deploy's manifest cannot be read"), CrowdyExecBuildAndDeploy::FindRemovedTypes(LiveWithOld, TEXT("not json")).IsEmpty());
+
+	FRig Rig;
+	if (!TestTrue(TEXT("the rig is made"), Rig.IsValid()))
+	{
+		return false;
+	}
+	TArray<TPair<int32, FString>> Responses;
+	Responses.Emplace(200, ActiveAnswer(10, *LiveWithOld));
+	Responses.Emplace(200, TEXT("{\"data\":{\"execRestartType\":{\"nodeType\":\"old\",\"stopped\":2}}}"));
+	Responses.Emplace(200, DeployAnswer(12));
+	Responses.Emplace(200, ActiveAnswer(12, *LiveWithOld));
+	Responses.Emplace(200, TEXT("{\"errors\":[{\"message\":\"app 1 has no node type `old`\",\"extensions\":{\"code\":\"NOT_FOUND\"}}]}"));
+	Responses.Emplace(200, DeployAnswer(13));
+	Rig.ScriptWithStatus(MoveTemp(Responses));
+
+	// The caller's copy of what is live predates another deploy, which added old; the deploy goes by the version active now.
+	CrowdyExecBuildAndDeploy::FPlan Plan;
+	Plan.Reused.Add(TEXT("alpha"), TEXT("da"));
+	const CrowdyExecBuildAndDeploy::FLive Live = LiveVersion(9);
+	const TSharedRef<FRunCapture> Stopped = MakeShared<FRunCapture>();
+	CrowdyExecBuildAndDeploy::Run(Rig.Client.ToSharedRef(), Plan, SplitManifest, Live, CaptureRun(Rig, Stopped), 60.f, 0.f);
+	if (!TestTrue(TEXT("the deploy ends"), Rig.PumpUntil([Stopped] { return Stopped->bDone; })))
+	{
+		return false;
+	}
+	TestTrue(FString::Printf(TEXT("it deployed (%s)"), *Stopped->Outcome.Error.Message), Stopped->Outcome.Step == CrowdyExecBuildAndDeploy::EStep::Deployed);
+	TestEqual(TEXT("the removed type's Server Objects were stopped"), Stopped->Outcome.StoppedRemoved, TArray<FString>({TEXT("old")}));
+	TestTrue(TEXT("with nothing refused"), Stopped->Outcome.StopRemovedFailed.IsEmpty());
+	if (TestEqual(TEXT("the active version read, one restart, then the deploy"), Rig.SentBodies->Num(), 3))
+	{
+		TestEqual(TEXT("the active version is read first"), ReadSent((*Rig.SentBodies)[0]).Operation, FString(TEXT("ExecVersions")));
+		const FSent Restart = ReadSent((*Rig.SentBodies)[1]);
+		TestEqual(TEXT("the restart goes before the deploy"), Restart.Operation, FString(TEXT("ExecRestartType")));
+		TestTrue(TEXT("naming the removed type"), Restart.Variables.IsValid() && Restart.Variables->GetStringField(TEXT("nodeType")) == TEXT("old"));
+		TestEqual(TEXT("the deploy follows"), ReadSent((*Rig.SentBodies)[2]).Operation, FString(TEXT("ExecDeploy")));
+	}
+
+	const TSharedRef<FRunCapture> Refused = MakeShared<FRunCapture>();
+	CrowdyExecBuildAndDeploy::Run(Rig.Client.ToSharedRef(), Plan, SplitManifest, Live, CaptureRun(Rig, Refused), 60.f, 0.f);
+	if (!TestTrue(TEXT("the second deploy ends"), Rig.PumpUntil([Refused] { return Refused->bDone; })))
+	{
+		return false;
+	}
+	TestEqual(TEXT("a refused stop does not hold the deploy back"), Refused->Outcome.Version, 13);
+	TestTrue(TEXT("nothing is said to be stopped"), Refused->Outcome.StoppedRemoved.IsEmpty());
+	TestTrue(FString::Printf(TEXT("the refusal names the type and why (%s)"), *FString::Join(Refused->Outcome.StopRemovedFailed, TEXT("; "))),
+		Refused->Outcome.StopRemovedFailed.Num() == 1 && Refused->Outcome.StopRemovedFailed[0].StartsWith(TEXT("old: ")) && Refused->Outcome.StopRemovedFailed[0].Contains(TEXT("no node type")));
+	return true;
+}
+
 // A failed build deploys nothing, even when the build before it succeeded.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecSplitDeployFailedBuildTest, "CrowdySDK.CrowdyExecEditor.DeploySplitFailedBuildDeploysNothing", CrowdyExecDeveloperApiTests::TestFlags)
 bool FCrowdyExecSplitDeployFailedBuildTest::RunTest(const FString& Parameters)
@@ -1018,9 +1080,11 @@ bool FCrowdyExecSplitDeployOneOrNoBuildTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TArray<TPair<int32, FString>> Responses;
+	Responses.Emplace(200, ActiveAnswer(9, SplitLive));
 	Responses.Emplace(200, DeployAnswer(12));
 	Responses.Emplace(200, BuildStarted(TEXT("b-3")));
 	Responses.Emplace(200, BuildEnded(TEXT("b-3"), TEXT("succeeded"), TEXT("alpha"), TEXT("da")));
+	Responses.Emplace(200, ActiveAnswer(9, SplitLive));
 	Responses.Emplace(200, DeployAnswer(13));
 	Rig.ScriptWithStatus(MoveTemp(Responses));
 
@@ -1033,9 +1097,10 @@ bool FCrowdyExecSplitDeployOneOrNoBuildTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TestEqual(TEXT("it deployed"), First->Outcome.Version, 12);
-	if (TestEqual(TEXT("with one request"), Rig.SentBodies->Num(), 1))
+	if (TestEqual(TEXT("with the active version read, then the deploy"), Rig.SentBodies->Num(), 2))
 	{
-		const FSent Sent = ReadSent((*Rig.SentBodies)[0]);
+		TestEqual(TEXT("the active version is read first"), ReadSent((*Rig.SentBodies)[0]).Operation, FString(TEXT("ExecVersions")));
+		const FSent Sent = ReadSent((*Rig.SentBodies)[1]);
 		TestEqual(TEXT("a deploy"), Sent.Operation, FString(TEXT("ExecDeploy")));
 		TestTrue(TEXT("naming no build"), Sent.Input.IsValid() && !Sent.Input->HasField(TEXT("buildId")));
 		TestEqual(TEXT("the reused crate by its digest"), FieldOf(SentType(Sent, TEXT("alpha")), TEXT("digest")), FString(TEXT("da")));
@@ -1051,7 +1116,7 @@ bool FCrowdyExecSplitDeployOneOrNoBuildTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("it deployed"), Second->Outcome.Version, 13);
 	TestTrue(TEXT("with no staging deploy"), Second->Outcome.StagedVersions.IsEmpty());
-	if (TestEqual(TEXT("with three more requests"), Rig.SentBodies->Num(), 4))
+	if (TestEqual(TEXT("with four more requests"), Rig.SentBodies->Num(), 6))
 	{
 		const FSent Sent = ReadSent(Rig.SentBodies->Last());
 		TestEqual(TEXT("the manifest is sent exactly as made"), FieldOf(Sent.Input, TEXT("manifestJson")), FString(SplitManifest));

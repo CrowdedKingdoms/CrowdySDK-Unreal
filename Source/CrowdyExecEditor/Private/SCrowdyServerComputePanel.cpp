@@ -545,7 +545,7 @@ CrowdyServerComputePage::FRemovalEffects CrowdyServerComputePage::FinishRemoval(
 	Effects.bSettingsCleared = bNamedWorld || bNamedActors;
 	if (Effects.bSettingsCleared && bSaveSettings)
 	{
-		Settings->TryUpdateDefaultConfigFile();
+		Effects.bSettingsSaved = Settings->TryUpdateDefaultConfigFile();
 	}
 	if (bDeleteFolder)
 	{
@@ -2410,6 +2410,13 @@ FReply SCrowdyServerComputePanel::OnRemoveTypeClicked(FString TypeName, FString 
 		return FReply::Handled();
 	}
 
+	const FString SettingsProblem = CrowdyExecDeploy::FindReadOnlySettingsProblemFor(FSoftObjectPath(AssetPath));
+	if (!SettingsProblem.IsEmpty())
+	{
+		SetError(CrowdyComputeUI::ErrorRemove, FText::FromString(SettingsProblem));
+		return FReply::Handled();
+	}
+
 	const FString ProjectDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
 	const FString ServerDirectory = CrowdyExecCodegen::GetServerDirectory();
 	const FString CrateDirectory = Compute.GetCrateDirectory(TypeName);
@@ -2457,7 +2464,9 @@ FReply SCrowdyServerComputePanel::OnRemoveTypeClicked(FString TypeName, FString 
 	}
 	const CrowdyServerComputePage::FRemovalEffects Effects = CrowdyServerComputePage::FinishRemoval(Type, TypeName, FSoftObjectPath(AssetPath), CrateDirectory, ServerDirectory, bShared, ShownFolder, FolderStays.IsEmpty());
 	const FText FolderError = FolderStays.IsEmpty() ? Effects.FolderProblem : FText::GetEmpty();
-	SetError(CrowdyComputeUI::ErrorRemove, FolderError);
+	const FText SettingsError = Effects.bSettingsSaved ? FText::GetEmpty() : FText::Format(LOCTEXT("RemoveSettingsNotSaved",
+		"Removed {0}'s definition, but the project's DefaultGame.ini could not be written, so its Game Kit settings still name it; make the file writable and remove that line."), Type);
+	SetError(CrowdyComputeUI::ErrorRemove, FolderError.IsEmpty() ? SettingsError : FolderError);
 	// Closing the definition's editor kept its unsaved code edits; with their files gone they would only haunt later prompts.
 	if (FolderStays.IsEmpty() && FolderError.IsEmpty())
 	{

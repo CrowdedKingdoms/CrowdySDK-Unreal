@@ -21,6 +21,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 namespace CrowdyExecDeployDetail
 {
@@ -842,6 +843,23 @@ TArray<UObject*> CrowdyExecDeploy::TakeUnusedRedirectors(const UCrowdyServerObje
 	}
 	Referencers.RemoveAll([&Taken](FName Referencer) { return Taken.Contains(Referencer); });
 	return Unused;
+}
+
+FString CrowdyExecDeploy::FindReadOnlySettingsProblem(const FString& ConfigFile)
+{
+	const FString File = FPaths::ConvertRelativePathToFull(ConfigFile.IsEmpty() ? GetDefault<UCrowdySDKDeveloperSettings>()->GetDefaultConfigFilename() : ConfigFile);
+	if (!FPaths::FileExists(File) || !IFileManager::Get().IsReadOnly(*File))
+	{
+		return FString();
+	}
+	return FString::Printf(TEXT("%s is read-only (checked in?), and this changes the Game Kit settings it holds; make it writable, then run again; nothing was changed"), *File);
+}
+
+FString CrowdyExecDeploy::FindReadOnlySettingsProblemFor(const FSoftObjectPath& Asset, const FString& ConfigFile)
+{
+	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+	const bool bNamed = Settings->GameKitWorld == Asset || Settings->GameKitActorStarters.Contains(Asset);
+	return bNamed ? FindReadOnlySettingsProblem(ConfigFile) : FString();
 }
 
 CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerObjectDefinition& Definition, const FString& CrateDirectory)
