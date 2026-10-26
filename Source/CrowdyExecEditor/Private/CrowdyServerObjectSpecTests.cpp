@@ -489,6 +489,9 @@ bool FCrowdyServerObjectSpecKitConfigTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyServerObjectSpecTest;
 	ExpectError(*this, ReadErrors(*this, TEXT(R"({"CodeSource": "GameKitStarter", "KitConfig": "not json"})")), TEXT("KitConfig is not a JSON object"));
+	const TArray<FString> Errors = ReadErrors(*this, TEXT(R"({"CodeSource": "GameKitStarter", "KitConfig": "{\"secret\": \"hunter2\""})"));
+	ExpectError(*this, Errors, TEXT("KitConfig is not a JSON object"));
+	TestFalse(TEXT("the error leaves the Config out, since it may hold the starter's secret"), HasError(Errors, TEXT("hunter2")));
 	return true;
 }
 

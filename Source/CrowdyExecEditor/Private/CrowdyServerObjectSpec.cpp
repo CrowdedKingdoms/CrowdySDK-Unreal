@@ -1016,7 +1016,8 @@ namespace CrowdyServerObjectSpecDetail
 		TSharedPtr<FJsonObject> Object;
 		if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Config), Object) || !Object)
 		{
-			Errors.Add(FString::Printf(TEXT("KitConfig is not a JSON object: %s"), *Config));
+			// Not the Config itself: it may hold the starter's secret, and this lands in logs.
+			Errors.Add(TEXT("KitConfig is not a JSON object"));
 			return;
 		}
 		const FString Problem = CrowdyGameKitStarters::FindConfigProblem(Definition.TypeName, Config);
