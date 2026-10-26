@@ -5,23 +5,21 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.20.0** (Unreal Engine 5.8). See the
+**Current version: 2.21.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
-**New in 2.20.0:** Server Objects ask for more platform data, set server limits, send and hear
-messages, and share code through Server Function Libraries; a refused call says why. Players can
-reset, change or add a password, sign out everywhere, delete their account, read and set player
-names, and claim free access, and Crowdy Studio has an Account page for your own account. **After
-updating, run Generate Server Code on every Server Object type with a timer or a player event before
-you deploy**: their generated code changed, and Server Compute refuses to deploy until it is
-regenerated. Until the
-docs site's next update these pages are on the dev docs:
-[Server Function Libraries](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/server-function-libraries),
-[Server messages](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/write-server-logic#send-a-message),
-[Account settings](https://docs.dev.crowdedkingdoms.com/unreal-sdk/services/authentication#account-settings) and
-[Player Names](https://docs.dev.crowdedkingdoms.com/unreal-sdk/services/player-names).
+**New in 2.21.0:** the Game Kit starters: add the platform's ready-made world, matchmaking,
+sessions, leaderboards, player and market, NPCs, game modes, card tables, arenas, races and ball
+games to a project as ordinary Server Object types, with Find Match, kit actors, parties, guilds,
+chat rooms, emotes and spectating. Deploys go in parts when a project is large and stop the types
+they remove; the editor, Server Compute and Crowdy Studio can be driven from a shell; CrowdyCPP
+0.73.0. **After updating, run Generate Server Code on every Server Object type before you deploy**:
+generated crates now pin ckx-sdk 0.12.1, and Server Compute refuses to deploy a crate generated
+before. Until the docs site's next update these pages are on the dev docs:
+[Use the Game Kit starters](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/use-game-kit-starters) and
+[Play together](https://docs.dev.crowdedkingdoms.com/unreal-sdk/services/play-together).
 
 Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkingdoms.com/unreal-sdk/intro)**
 
