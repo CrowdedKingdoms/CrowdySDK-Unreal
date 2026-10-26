@@ -809,6 +809,36 @@ void UCrowdyMassNearTierComponent::ApplyTraceCollisionFromBoundEntity(const FMas
 		TraceCollision->ResponseToChannels);
 }
 
+namespace
+{
+	// Only the QUERY half is decided here. Whether the component also simulates or probes is the
+	// owner's own business and is carried through untouched, so switching an entity's trace collision
+	// off does not quietly disable its physics as well.
+	void WriteNearTierQueryCollision(UPrimitiveComponent& Primitive, const bool bEnable,
+		const ECollisionChannel ObjectType, const FCollisionResponseContainer& Responses)
+	{
+		// Read off the body instance without the owner check, because that check reports NoCollision for
+		// every component of an actor whose collision is switched off, whatever the component itself holds.
+		// The write below goes to the body instance either way, so reading the masked value and writing it
+		// back would strip the physics and probe bits from a pooled shell for good.
+		const ECollisionEnabled::Type Current = Primitive.BodyInstance.GetCollisionEnabled(/*bCheckOwner=*/false);
+		const ECollisionEnabled::Type Desired = CollisionEnabledFromFlags(bEnable,
+			CollisionEnabledHasPhysics(Current), CollisionEnabledHasProbe(Current));
+		if (Desired != Current)
+		{
+			Primitive.SetCollisionEnabled(Desired);
+		}
+
+		if (!bEnable)
+		{
+			return;
+		}
+
+		Primitive.SetCollisionObjectType(ObjectType);
+		Primitive.SetCollisionResponseToChannels(Responses);
+	}
+}
+
 void UCrowdyMassNearTierComponent::ApplyTraceCollisionFromFragment(const bool bEnable,
 	const ECollisionChannel ObjectType, const FCollisionResponseContainer& Responses)
 {
@@ -829,66 +859,61 @@ void UCrowdyMassNearTierComponent::ApplyTraceCollisionFromFragment(const bool bE
 		return;
 	}
 
-	bHasAppliedTraceCollision = true;
-	bAppliedTraceCollisionEnabled = bEnable;
-	AppliedTraceObjectType = ObjectType;
-	AppliedTraceResponses = Responses;
+	const USkeletalMeshComponent* TraceMesh = CrowdyMassNearTier::ChooseActionMesh(*Owner);
 
 	TInlineComponentArray<UPrimitiveComponent*> Primitives(Owner);
 	for (UPrimitiveComponent* Primitive : Primitives)
 	{
-		if (!::IsValid(Primitive))
+		if (!::IsValid(Primitive) || !CrowdyMassNearTier::ShouldCarryTraceCollision(*Primitive, TraceMesh))
 		{
 			continue;
 		}
 
-		// Only the QUERY half is decided here. Whether the component also simulates or probes is the
-		// owner's own business and is carried through untouched, so switching an entity's trace collision
-		// off does not quietly disable its physics as well.
-		//
-		// Read off the body instance without the owner check, because that check reports NoCollision for
-		// every component of an actor whose collision is switched off, whatever the component itself holds.
-		// The write below goes to the body instance either way, so reading the masked value and writing it
-		// back would strip the physics and probe bits from a pooled shell for good.
-		const ECollisionEnabled::Type Current = Primitive->BodyInstance.GetCollisionEnabled(/*bCheckOwner=*/false);
-		const ECollisionEnabled::Type Desired = CollisionEnabledFromFlags(bEnable,
-			CollisionEnabledHasPhysics(Current), CollisionEnabledHasProbe(Current));
-		if (Desired != Current)
-		{
-			Primitive->SetCollisionEnabled(Desired);
-		}
-
-		if (!bEnable)
-		{
-			continue;
-		}
-
-		Primitive->SetCollisionObjectType(ObjectType);
-		Primitive->SetCollisionResponseToChannels(Responses);
+		AppliedTraceComponents.AddUnique(Primitive);
+		WriteNearTierQueryCollision(*Primitive, bEnable, ObjectType, Responses);
 	}
+
+	// Not latched while a skeletal mesh is still waiting on its asset, so the next push tries again once it has loaded.
+	if (!TraceMesh && Owner->FindComponentByClass<USkeletalMeshComponent>())
+	{
+		return;
+	}
+
+	bHasAppliedTraceCollision = true;
+	bAppliedTraceCollisionEnabled = bEnable;
+	AppliedTraceObjectType = ObjectType;
+	AppliedTraceResponses = Responses;
 }
 
 void UCrowdyMassNearTierComponent::ClearAppliedTraceCollision()
 {
-	if (!bHasAppliedTraceCollision)
+	if (AppliedTraceComponents.IsEmpty())
 	{
 		return;
 	}
 
+	// The exact inverse of the push, over the very components it wrote to: the query bit comes back off and
+	// the physics and probe bits are left as they were found. Symmetrical on purpose, so an actor that has
+	// stopped standing for an entity stops answering as that entity in the same step it stops following it.
+	// The object type and responses are left where they are because a component with no query collision is
+	// not asked about either, and the next occupant overwrites them on its bind.
+	//
 	// An actor on its way out takes its collision with it, and its components are unregistering, so there
 	// is nothing to take back and nobody left to observe it.
 	const AActor* Owner = GetOwner();
-	if (!Owner || Owner->IsActorBeingDestroyed())
+	if (Owner && !Owner->IsActorBeingDestroyed())
 	{
-		return;
+		for (const TWeakObjectPtr<UPrimitiveComponent>& Applied : AppliedTraceComponents)
+		{
+			if (UPrimitiveComponent* Primitive = Applied.Get())
+			{
+				WriteNearTierQueryCollision(*Primitive, /*bEnable=*/false, AppliedTraceObjectType, AppliedTraceResponses);
+			}
+		}
 	}
 
-	// The exact inverse of the push, through the same walk over the same components: the query bit comes
-	// back off and the physics and probe bits are left as they were found. Symmetrical on purpose, so an
-	// actor that has stopped standing for an entity stops answering as that entity in the same step it
-	// stops following it. The object type and responses are left where they are because a component with
-	// no query collision is not asked about either, and the next occupant overwrites them on its bind.
-	ApplyTraceCollisionFromFragment(/*bEnable=*/false, AppliedTraceObjectType, AppliedTraceResponses);
+	AppliedTraceComponents.Reset();
+	bHasAppliedTraceCollision = false;
 }
 
 void UCrowdyMassNearTierComponent::PlayActionFromFragment(const int32 InActionId, const float InPlayRate,

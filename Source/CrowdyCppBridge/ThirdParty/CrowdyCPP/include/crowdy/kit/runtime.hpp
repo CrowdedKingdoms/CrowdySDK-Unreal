@@ -61,7 +61,7 @@ class KitRuntime {
   KitRuntime& operator=(const KitRuntime&) = delete;
 
   const std::string& appId() const;
-  /// The connection, opened on first use; null without an exec client or once access ended.
+  /// The connection, opened on first use; null without an exec client, once access ended, or after close().
   std::shared_ptr<domains::ExecConnection> connection();
   /// The player's id from the options or setPlayerId; empty when unknown.
   std::string playerId() const;
@@ -92,7 +92,9 @@ class KitRuntime {
   std::uint64_t after(long delayMs, std::function<void()> fn);
   void cancel(std::uint64_t timer);
 
-  /// Closes the connection the kit opened (not one it was given) and stops its timer.
+  /// Drops the kit's subscriptions and the listeners it added on the connection, and runs every
+  /// queued callback once with Unavailable ("the kit is closed"). Closes the connection the kit
+  /// opened (not one it was given). A later call or subscribe fails the same way.
   void close();
 
  private:

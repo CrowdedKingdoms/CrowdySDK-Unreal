@@ -4,6 +4,7 @@
 #include "CrowdyExecInternal.h"
 #include "CrowdyExecLog.h"
 #include "CrowdyNativeExec.h"
+#include "CrowdyNativeKit.h"
 #include "CrowdyServerObject.h"
 #include "CrowdyServerObjectComponent.h"
 #include "CrowdyServerObjectDefinition.h"
@@ -14,6 +15,7 @@
 #include "Engine/World.h"
 #include "HAL/PlatformTime.h"
 #include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h"
+#include "Replication/Subsystems/CrowdyKitActorClasses.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Subsystem/CrowdySDKSubsystem.h"
 #include "Subsystem/CrowdyTeams.h"
@@ -38,6 +40,30 @@ namespace
 		}
 		return true;
 	}
+
+	// The classes the project's starters draw their actors as, loaded now so the first wolf seen does not wait on a load.
+	void CrowdyServerObjectLoadKitActorClasses(TArray<TObjectPtr<UClass>>& Held)
+	{
+		CrowdyKitActorClasses::Reset();
+		Held.Reset();
+		for (const FSoftObjectPath& Path : GetDefault<UCrowdySDKDeveloperSettings>()->GameKitActorStarters)
+		{
+			const UCrowdyServerObjectDefinition* Definition = Cast<UCrowdyServerObjectDefinition>(Path.TryLoad());
+			if (!Definition)
+			{
+				UE_LOG(LogCrowdyExec, Warning, TEXT("Game Kit Actor Starters names %s, which is not a Server Object definition, so its actors are not drawn."), *Path.ToString());
+				continue;
+			}
+			for (const TPair<FName, TSoftClassPtr<AActor>>& Kind : Definition->KitActors)
+			{
+				if (UClass* Loaded = Kind.Value.LoadSynchronous())
+				{
+					Held.Add(Loaded);
+				}
+				CrowdyKitActorClasses::Set(Kind.Key, Kind.Value);
+			}
+		}
+	}
 }
 
 void UCrowdyServerObjectSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -59,6 +85,7 @@ void UCrowdyServerObjectSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 		Teams->OnMyTeamsCacheChanged.AddDynamic(this, &UCrowdyServerObjectSubsystem::HandleMyTeamsChanged);
 	}
 
+	CrowdyServerObjectLoadKitActorClasses(KitActorClasses);
 	LastTickSeconds = FPlatformTime::Seconds();
 	TickHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCrowdyServerObjectSubsystem::TickFromTicker), 0.1f);
 	PreLoadMapHandle = FCoreUObjectDelegates::PreLoadMapWithContext.AddUObject(this, &UCrowdyServerObjectSubsystem::HandlePreLoadMap);
@@ -172,7 +199,13 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 		OutError = FString::Printf(TEXT("%s is closed to players: only server code and developer tools reach it"), *Definition->TypeName);
 		return nullptr;
 	}
-	const FString UsedId = Definition->HasOnlyOneInstance() ? Definition->GetOnlyInstanceId() : InstanceId;
+	const int64 UserId = Definition->IsKeyedByPlayer() && InstanceId.IsEmpty() ? GetSignedInUserId() : 0;
+	if (Definition->IsKeyedByPlayer() && InstanceId.IsEmpty() && UserId <= 0)
+	{
+		OutError = FString::Printf(TEXT("Nobody is signed in yet, so %s has no player to read: sign in first, or give a player's user id as the Instance Id"), *Definition->TypeName);
+		return nullptr;
+	}
+	const FString UsedId = Definition->HasOnlyOneInstance() ? Definition->GetOnlyInstanceId() : UserId > 0 ? LexToString(UserId) : InstanceId;
 	// The root's and a library's only Instance Id is empty, which no other instance may have.
 	if (!Definition->HasOnlyOneInstance() && !IsValidServerObjectInstanceId(UsedId))
 	{
@@ -344,6 +377,26 @@ void UCrowdyServerObjectSubsystem::Release(UCrowdyServerObject* Object, const UO
 FCrowdyNativeExecConnection* UCrowdyServerObjectSubsystem::GetConnection() const
 {
 	return bConnected ? Connection.Get() : nullptr;
+}
+
+FCrowdyNativeKit* UCrowdyServerObjectSubsystem::GetKit()
+{
+	FCrowdyNativeExecConnection* Open = GetConnection();
+	if (!Open || bKitFailed)
+	{
+		return nullptr;
+	}
+	if (Kit.IsValid())
+	{
+		return Kit.Get();
+	}
+	UCrowdyCppClientSubsystem* Host = GetClientHost();
+	FCrowdyCppClient* Client = Host ? Host->GetExistingClient() : nullptr;
+	Kit = Client ? Client->CreateGameKit(DialedAppId, *Open, GetSignedInUserId()) : nullptr;
+	bKitFailed = !Kit.IsValid();
+	KitsMade += Kit.IsValid() ? 1 : 0;
+	UE_CLOG(bKitFailed, LogCrowdyExec, Warning, TEXT("The Game Kit could not be started on the Server Object connection, so Game Kit starters wait for the next connection"));
+	return Kit.Get();
 }
 
 void UCrowdyServerObjectSubsystem::Ping(TFunction<void(bool bOk, float RoundTripMs, const FString& Reason)> OnDone)
@@ -588,6 +641,7 @@ void UCrowdyServerObjectSubsystem::EnsureConnection()
 	}
 	DialedClient = Client;
 	DialedAppId = Session->GetAppID();
+	DialedUserId = Session->GetUserID();
 	DialedType = First->GetDefinition()->TypeName;
 	bDialedWithType = !Options.NodeType.IsEmpty();
 
@@ -685,11 +739,13 @@ void UCrowdyServerObjectSubsystem::HandleConnectDone(bool bOk, const FString& Er
 			continue;
 		}
 		Object->DropMessageSubscriptions(false);
-		if (Object->SubscribeHandle == 0)
+		const bool bSubscribed = Object->SubscribeHandle != 0 || Object->CollectionHandle != 0;
+		Object->SubscribeHandle = 0;
+		Object->CollectionHandle = 0;
+		if (!bSubscribed)
 		{
 			continue;
 		}
-		Object->SubscribeHandle = 0;
 		Object->bSubscribeConfirmed = false;
 		if (Object->GetStatus() != ECrowdyServerObjectStatus::Failed)
 		{
@@ -807,9 +863,17 @@ void UCrowdyServerObjectSubsystem::CloseConnection(const TCHAR* Why)
 	bTracedDrop = false;
 	DialedClient = nullptr;
 	DialedAppId = 0;
+	DialedUserId = 0;
 	bConnected = false;
 	bConnecting = false;
 	RecentPings.Reset();
+	// The kit rides the connection, so it ends first and its calls complete before the connection's.
+	const TSharedPtr<FCrowdyNativeKit> ClosingKit = MoveTemp(Kit);
+	bKitFailed = false;
+	if (ClosingKit.IsValid())
+	{
+		ClosingKit->Close();
+	}
 	if (Closing.IsValid())
 	{
 		Closing->Close();
@@ -846,6 +910,7 @@ void UCrowdyServerObjectSubsystem::HandleLogin(bool bSuccess, FString Message)
 	{
 		return;
 	}
+	HandleSignedInPlayerChanged();
 	// A listener's sign-in handling may add or remove listeners, so it runs over a copy.
 	for (const TWeakObjectPtr<UCrowdyServerObjectComponent>& Listener : SignInListeners.Array())
 	{
@@ -856,6 +921,25 @@ void UCrowdyServerObjectSubsystem::HandleLogin(bool bSuccess, FString Message)
 			continue;
 		}
 		Component->HandleLogin(bSuccess);
+	}
+}
+
+void UCrowdyServerObjectSubsystem::HandleSignedInPlayerChanged()
+{
+	if (!Connection.IsValid() || DialedUserId == GetSignedInUserId())
+	{
+		return;
+	}
+	// The connection carries the last player's token, so a read for this one would run as them.
+	CloseConnection(TEXT(" (another player signed in)"));
+	ConnectRetryIn = 0.f;
+	FailedDialTypes.Reset();
+	for (UCrowdyServerObject* Object : SnapshotObjects())
+	{
+		if (Object)
+		{
+			Object->HandleSignedInPlayerChanged();
+		}
 	}
 }
 

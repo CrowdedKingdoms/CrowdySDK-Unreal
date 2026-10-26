@@ -92,6 +92,60 @@ namespace CrowdyServerComputeServiceDetail
 	{
 		return Color.Equals(FCrowdyStudioStyle::Success());
 	}
+
+	struct FPendingRestarts
+	{
+		int32 Waiting = 0;
+		CrowdyServerComputeMove::FRestarted Restarted;
+		TFunction<void(const CrowdyServerComputeMove::FRestarted&)> OnDone;
+	};
+
+	/** A version's creation time is the server's clock and an instance's age is measured on this machine's. */
+	constexpr double ClockSkewSeconds = 60.0;
+
+	bool RunsOtherCodeThan(const CrowdyExecRevisions::FLiveType& Type, TConstArrayView<CrowdyExecRevisions::FLiveType> Before)
+	{
+		const CrowdyExecRevisions::FLiveType* Old = Before.FindByPredicate([&Type](const CrowdyExecRevisions::FLiveType& Other) { return Other.TypeName == Type.TypeName; });
+		const bool bSameCode = Old && !Old->Digest.IsEmpty() && Old->Digest.Equals(Type.Digest, ESearchCase::CaseSensitive);
+		return !bSameCode || Old->SaveIntervalMs != Type.SaveIntervalMs || Old->IdleTimeoutMs != Type.IdleTimeoutMs;
+	}
+
+	/** The version's types, parsed once; null when its manifest cannot be read. */
+	const TArray<CrowdyExecRevisions::FLiveType>* FindManifestTypes(const CrowdyExecDeveloper::FVersion& Version, TMap<int32, TArray<CrowdyExecRevisions::FLiveType>>& Parsed)
+	{
+		if (const TArray<CrowdyExecRevisions::FLiveType>* Known = Parsed.Find(Version.Version))
+		{
+			return Known;
+		}
+		TArray<CrowdyExecRevisions::FLiveType> Types;
+		return CrowdyExecRevisions::ParseManifest(Version.ManifestJson, Types) ? &Parsed.Add(Version.Version, MoveTemp(Types)) : nullptr;
+	}
+
+	/** The newest version before Active that existed when an instance started: the code it was placed with. Null when it started before every one of them. */
+	const CrowdyExecDeveloper::FVersion* FindVersionRunningAt(TConstArrayView<CrowdyExecDeveloper::FVersion> Versions, const CrowdyExecDeveloper::FVersion& Active, const FDateTime& Started)
+	{
+		const CrowdyExecDeveloper::FVersion* Found = nullptr;
+		for (const CrowdyExecDeveloper::FVersion& Version : Versions)
+		{
+			const bool bCandidate = Version.Version < Active.Version && Version.CreatedAt <= Started;
+			Found = bCandidate && (!Found || Version.Version > Found->Version) ? &Version : Found;
+		}
+		return Found;
+	}
+
+	FString AgeText(double Milliseconds)
+	{
+		const int64 Seconds = static_cast<int64>(Milliseconds / 1000.0);
+		if (Seconds < 120)
+		{
+			return FString::Printf(TEXT("%llds"), Seconds);
+		}
+		if (Seconds < 2 * 3600)
+		{
+			return FString::Printf(TEXT("%lldm"), Seconds / 60);
+		}
+		return Seconds < 2 * 86400 ? FString::Printf(TEXT("%lldh"), Seconds / 3600) : FString::Printf(TEXT("%lldd"), Seconds / 86400);
+	}
 }
 
 TArray<FString> CrowdyServerComputeMove::TypesOnPreviousVersion(TConstArrayView<CrowdyExecDeveloper::FInstance> Before, TConstArrayView<CrowdyExecDeveloper::FInstance> After,
@@ -118,6 +172,137 @@ TArray<FString> CrowdyServerComputeMove::TypesOnPreviousVersion(TConstArrayView<
 		++OutRunning;
 	}
 	return Types;
+}
+
+bool CrowdyServerComputeMove::FindTypesOnEarlierVersion(TConstArrayView<CrowdyExecDeveloper::FVersion> Versions, TConstArrayView<CrowdyExecDeveloper::FInstance> Instances,
+	const FDateTime& Now, TArray<FString>& OutTypes, int32& OutRunning, FString& OutProblem)
+{
+	using namespace CrowdyServerComputeServiceDetail;
+	OutTypes.Reset();
+	OutRunning = 0;
+	const CrowdyExecDeveloper::FVersion* Active = Versions.FindByPredicate([](const CrowdyExecDeveloper::FVersion& Version) { return Version.bActive; });
+	if (!Active)
+	{
+		return true;
+	}
+	const CrowdyExecDeveloper::FVersion* Newest = Active;
+	const CrowdyExecDeveloper::FVersion* Previous = nullptr;
+	for (const CrowdyExecDeveloper::FVersion& Version : Versions)
+	{
+		Newest = Version.Version > Newest->Version ? &Version : Newest;
+		Previous = Version.Version < Active->Version && (!Previous || Version.Version > Previous->Version) ? &Version : Previous;
+	}
+	if (Newest != Active)
+	{
+		OutProblem = FString::Printf(TEXT("The active version %d is not the newest (%d); the app was rolled back, so which instances run older code cannot be told. Restart each type with -type=T."), Active->Version, Newest->Version);
+		return false;
+	}
+	if (!Previous)
+	{
+		return true;
+	}
+	const auto Unreadable = [&OutProblem, Active](const CrowdyExecDeveloper::FVersion& Other)
+	{
+		OutProblem = FString::Printf(TEXT("Version %d or %d has a manifest or creation time that cannot be read, so which instances run an earlier version is not known"), Active->Version, Other.Version);
+		return false;
+	};
+	TArray<CrowdyExecRevisions::FLiveType> After;
+	if (!CrowdyExecRevisions::ParseManifest(Active->ManifestJson, After) || Active->CreatedAt == FDateTime())
+	{
+		return Unreadable(*Previous);
+	}
+	TMap<int32, TArray<CrowdyExecRevisions::FLiveType>> Parsed;
+	const FDateTime NewerThan = Active->CreatedAt + FTimespan::FromSeconds(ClockSkewSeconds);
+	for (const CrowdyExecDeveloper::FInstance& Placed : Instances)
+	{
+		const FDateTime Started = Now - FTimespan::FromMilliseconds(Placed.SinceMs);
+		const CrowdyExecRevisions::FLiveType* Current = After.FindByPredicate([&Placed](const CrowdyExecRevisions::FLiveType& Type) { return Type.TypeName == Placed.NodeType; });
+		if (Placed.Phase != TEXT("running") || Started >= NewerThan || !Current)
+		{
+			continue;
+		}
+		const CrowdyExecDeveloper::FVersion* Began = FindVersionRunningAt(Versions, *Active, Started);
+		bool bDiffers = true;
+		if (Began)
+		{
+			const TArray<CrowdyExecRevisions::FLiveType>* Before = Began->CreatedAt == FDateTime() ? nullptr : FindManifestTypes(*Began, Parsed);
+			if (!Before)
+			{
+				return Unreadable(*Began);
+			}
+			bDiffers = RunsOtherCodeThan(*Current, *Before);
+		}
+		if (bDiffers)
+		{
+			OutTypes.AddUnique(Placed.NodeType);
+			++OutRunning;
+		}
+	}
+	return true;
+}
+
+TArray<CrowdyExecDeveloper::FInstance> CrowdyServerComputeMove::FindInstancesToStop(TConstArrayView<CrowdyExecDeveloper::FInstance> Instances, TConstArrayView<FString> TypeNames)
+{
+	TArray<CrowdyExecDeveloper::FInstance> Stopping;
+	for (const FString& TypeName : TypeNames)
+	{
+		for (const CrowdyExecDeveloper::FInstance& Placed : Instances)
+		{
+			const bool bLive = Placed.Phase == TEXT("running") || Placed.Phase == TEXT("starting");
+			if (bLive && Placed.NodeType == TypeName)
+			{
+				Stopping.Add(Placed);
+			}
+		}
+	}
+	return Stopping;
+}
+
+FString CrowdyServerComputeMove::DescribeInstancesToStop(TConstArrayView<CrowdyExecDeveloper::FInstance> Stopping)
+{
+	TArray<FString> Lines;
+	Lines.Add(FString::Printf(TEXT("This stops %d running instance%s, those already on the active version included:"), Stopping.Num(), Stopping.Num() == 1 ? TEXT("") : TEXT("s")));
+	for (const CrowdyExecDeveloper::FInstance& Instance : Stopping)
+	{
+		Lines.Add(FString::Printf(TEXT("%s %s: %s, %s old"), *Instance.NodeType, *Instance.InstanceId, *Instance.Phase, *CrowdyServerComputeServiceDetail::AgeText(Instance.SinceMs)));
+	}
+	return FString::Join(Lines, TEXT("\n"));
+}
+
+FString CrowdyServerComputeMove::DescribeMove(TConstArrayView<FString> Types, int32 Running)
+{
+	return FString::Printf(TEXT("moving %d running instances of %s to the active version; instances started within a minute of the deploy are moved as well"), Running, *FString::Join(Types, TEXT(", ")));
+}
+
+void CrowdyServerComputeMove::RestartTypes(CrowdyExecDeveloper::FClient& Client, TArray<FString> TypeNames, TFunction<void(const FRestarted&)> OnDone)
+{
+	if (TypeNames.IsEmpty())
+	{
+		OnDone(FRestarted());
+		return;
+	}
+	const TSharedRef<CrowdyServerComputeServiceDetail::FPendingRestarts> Pending = MakeShared<CrowdyServerComputeServiceDetail::FPendingRestarts>();
+	Pending->Waiting = TypeNames.Num();
+	Pending->OnDone = MoveTemp(OnDone);
+	for (const FString& TypeName : TypeNames)
+	{
+		Client.RestartType(TypeName, [Pending, TypeName](const CrowdyExecDeveloper::TResult<CrowdyExecDeveloper::FRestart>& Result)
+		{
+			if (Result.bOk)
+			{
+				Pending->Restarted.Done.Add(Result.Value);
+			}
+			else
+			{
+				Pending->Restarted.FailedCode = Pending->Restarted.Failed.IsEmpty() ? Result.Error.Code : Pending->Restarted.FailedCode;
+				Pending->Restarted.Failed.Add(FString::Printf(TEXT("%s: %s"), *TypeName, *Result.Error.Message));
+			}
+			if (--Pending->Waiting == 0)
+			{
+				Pending->OnDone(Pending->Restarted);
+			}
+		});
+	}
 }
 
 FCrowdyServerComputeService& FCrowdyServerComputeService::Get()
@@ -302,42 +487,31 @@ bool FCrowdyServerComputeService::RestartTypes(TArray<FString> TypeNames)
 	{
 		return false;
 	}
-	struct FRestarts
-	{
-		int32 Waiting = 0;
-		int32 Stopped = 0;
-		TArray<FString> Failed;
-	};
-	const TSharedRef<FRestarts> Restarts = MakeShared<FRestarts>();
-	Restarts->Waiting = TypeNames.Num();
 	SetDeployMessage(LOCTEXT("Restarting", "Moving running Server Objects to the active version..."), FCrowdyStudioStyle::TextSecondary());
 	TWeakPtr<FCrowdyServerComputeService> WeakThis = AsShared();
-	for (const FString& TypeName : TypeNames)
+	CrowdyServerComputeMove::RestartTypes(*Client, MoveTemp(TypeNames), [WeakThis](const CrowdyServerComputeMove::FRestarted& Restarted)
 	{
-		Client->RestartType(TypeName, [WeakThis, Restarts, TypeName](const CrowdyExecDeveloper::TResult<CrowdyExecDeveloper::FRestart>& Result)
+		const TSharedPtr<FCrowdyServerComputeService> Self = WeakThis.Pin();
+		if (!Self)
 		{
-			Restarts->Stopped += Result.bOk ? Result.Value.Stopped : 0;
-			if (!Result.bOk)
-			{
-				Restarts->Failed.Add(FString::Printf(TEXT("%s: %s"), *TypeName, *Result.Error.Message));
-			}
-			const TSharedPtr<FCrowdyServerComputeService> Self = WeakThis.Pin();
-			if (--Restarts->Waiting > 0 || !Self)
-			{
-				return;
-			}
-			Self->EndAction();
-			Self->RefreshInstances();
-			if (!Restarts->Failed.IsEmpty())
-			{
-				Self->SetDeployMessage(FText::Format(LOCTEXT("RestartFailed", "Could not move every type's running Server Objects: {0}"),
-					FText::FromString(FString::Join(Restarts->Failed, TEXT("; ")))), FCrowdyStudioStyle::Danger());
-				return;
-			}
-			Self->SetDeployMessage(FText::Format(LOCTEXT("Restarted", "{0} running Server {0}|plural(one=Object,other=Objects) stopped; each starts again on the active version at its next call."),
-				Restarts->Stopped), FCrowdyStudioStyle::Success());
-		});
-	}
+			return;
+		}
+		Self->EndAction();
+		Self->RefreshInstances();
+		if (!Restarted.Failed.IsEmpty())
+		{
+			Self->SetDeployMessage(FText::Format(LOCTEXT("RestartFailed", "Could not move every type's running Server Objects: {0}"),
+				FText::FromString(FString::Join(Restarted.Failed, TEXT("; ")))), FCrowdyStudioStyle::Danger());
+			return;
+		}
+		int32 Stopped = 0;
+		for (const CrowdyExecDeveloper::FRestart& Done : Restarted.Done)
+		{
+			Stopped += Done.Stopped;
+		}
+		Self->SetDeployMessage(FText::Format(LOCTEXT("Restarted", "{0} running Server {0}|plural(one=Object,other=Objects) stopped; each starts again on the active version at its next call."),
+			Stopped), FCrowdyStudioStyle::Success());
+	});
 	return true;
 }
 
@@ -592,7 +766,12 @@ bool FCrowdyServerComputeService::CanDeploy() const
 	return !IsBusy() && Client && Project.Problems.IsEmpty() && (CrowdyExecRevisions::HasChanges(Changes) || !bLiveKnown);
 }
 
-bool FCrowdyServerComputeService::Deploy()
+bool FCrowdyServerComputeService::CanRebuildAll() const
+{
+	return !IsBusy() && Client && Project.Problems.IsEmpty();
+}
+
+bool FCrowdyServerComputeService::Deploy(bool bRebuildAll)
 {
 	using namespace CrowdyServerComputeServiceDetail;
 	if (IsBusy() || RenewClientIfStale())
@@ -600,7 +779,7 @@ bool FCrowdyServerComputeService::Deploy()
 		return false;
 	}
 	RefreshTypes();
-	if (!CanDeploy())
+	if (bRebuildAll ? !CanRebuildAll() : !CanDeploy())
 	{
 		return false;
 	}
@@ -626,9 +805,28 @@ bool FCrowdyServerComputeService::Deploy()
 			Lines.Add(FText::FromString(KindSentence));
 		}
 	}
-	if (!CrowdyExecRevisions::HasChanges(Changes))
+	const bool bLiveKnown = bVersionsLoaded && VersionsError.IsEmpty();
+	if (!CrowdyExecRevisions::HasChanges(Changes) && !(bRebuildAll && bLiveKnown))
 	{
 		Lines.Add(LOCTEXT("ConfirmNotKnown", "What the app runs now could not be read, so what this changes is not known."));
+	}
+	CrowdyExecBuildAndDeploy::FPlan Plan = CrowdyExecBuildAndDeploy::MakePlan(Project.Crates,
+		CrowdyExecBuildAndDeploy::DigestsToReuse(Versions, bLiveKnown, bRebuildAll), [this](const FString& CrateName) { return GetHistory(CrateName); });
+	if (bRebuildAll)
+	{
+		Lines.Add(LOCTEXT("ConfirmRebuildAll", "Every type's server code is built again, including types whose code did not change."));
+	}
+	if (!Plan.Reused.IsEmpty())
+	{
+		TArray<FString> Names;
+		Plan.Reused.GetKeys(Names);
+		Names.Sort();
+		Lines.Add(FText::Format(LOCTEXT("ConfirmReused", "The server code of {0} is as it was deployed before, so it is not built again."), FText::FromString(FString::Join(Names, TEXT(", ")))));
+	}
+	if (Plan.Builds.Num() > 1)
+	{
+		Lines.Add(FText::Format(LOCTEXT("ConfirmSplit", "The server code is built in {0} parts. Each part but the last is first stored by a version that runs what runs now, so the version history gains {1} more {1}|plural(one=version,other=versions)."),
+			Plan.Builds.Num(), Plan.Builds.Num() - 1));
 	}
 	const TArray<FString> Unsaved = CrowdyServerCodeEdits::UnsavedFiles();
 	if (!Unsaved.IsEmpty())
@@ -659,7 +857,13 @@ bool FCrowdyServerComputeService::Deploy()
 			SendingChanged.Add(Change.TypeName);
 		}
 	}
-	StartBuild(Project.Crates, Project.ManifestJson, true);
+	if (!StartDeploy(MoveTemp(Plan), Project.ManifestJson, true))
+	{
+		Sending = CrowdyExecDeploy::FProjectDeploy();
+		SendingDirectories.Reset();
+		SendingChanged.Reset();
+		return false;
+	}
 	return true;
 }
 
@@ -709,19 +913,31 @@ bool FCrowdyServerComputeService::DeployStarters()
 			Self->FinishDeploy(ErrorText(LOCTEXT("StartersFailed", "Could not fetch the starter pack"), Result.Error), FCrowdyStudioStyle::Danger());
 			return;
 		}
-		TArray<CrowdyExecDeveloper::FBuildCrate> Crates;
-		for (const CrowdyExecDeveloper::FStarter& Starter : Result.Value.Starters)
-		{
-			Crates.Add(Starter.Crate);
-		}
-		Self->StartBuild(Crates, Result.Value.ManifestJson, false);
+		Self->StartDeploy(CrowdyExecBuildAndDeploy::MakePlan(Result.Value.GetCrates(), TSet<FString>(), [](const FString&) { return TArray<CrowdyExecRevisions::FRevision>(); }),
+			Result.Value.ManifestJson, false);
 	});
 	return true;
 }
 
-void FCrowdyServerComputeService::StartBuild(const TArray<CrowdyExecDeveloper::FBuildCrate>& Crates, const FString& ManifestJson, bool bRecord)
+TOptional<CrowdyExecBuildAndDeploy::FLive> FCrowdyServerComputeService::GetLive() const
+{
+	if (!bVersionsLoaded || !VersionsError.IsEmpty())
+	{
+		return {};
+	}
+	return CrowdyExecBuildAndDeploy::FindLive(Versions);
+}
+
+bool FCrowdyServerComputeService::StartDeploy(CrowdyExecBuildAndDeploy::FPlan Plan, const FString& ManifestJson, bool bRecord)
 {
 	using namespace CrowdyServerComputeServiceDetail;
+	const TOptional<CrowdyExecBuildAndDeploy::FLive> Live = GetLive();
+	const FString PlanProblem = CrowdyExecBuildAndDeploy::FindPlanProblem(Plan, ManifestJson, Live);
+	if (!PlanProblem.IsEmpty())
+	{
+		FinishDeploy(FText::FromString(PlanProblem), FCrowdyStudioStyle::Danger());
+		return false;
+	}
 	bBusy = true;
 	++MoveRequest;
 	TypesToMove.Reset();
@@ -729,104 +945,124 @@ void FCrowdyServerComputeService::StartBuild(const TArray<CrowdyExecDeveloper::F
 	BuildStartSeconds = FPlatformTime::Seconds();
 	BuildLog.Reset();
 	bLastBuildFailed = false;
-	SetDeployMessage(LOCTEXT("SendingBuild", "Sending the server code..."), FCrowdyStudioStyle::TextSecondary());
-	TWeakPtr<FCrowdyServerComputeService> WeakThis = AsShared();
-	Client->Build(Crates, [WeakThis, ManifestJson, bRecord](const CrowdyExecDeveloper::TResult<CrowdyExecDeveloper::FBuild>& Result)
-	{
-		const TSharedPtr<FCrowdyServerComputeService> Self = WeakThis.Pin();
-		if (!Self)
-		{
-			return;
-		}
-		if (!Result.bOk)
-		{
-			Self->FinishDeploy(ErrorText(LOCTEXT("BuildFailedToStart", "The build could not start"), Result.Error), FCrowdyStudioStyle::Danger());
-			return;
-		}
-		Self->SetDeployMessage(LOCTEXT("Building", "Building on the server... {0} s"), FCrowdyStudioStyle::TextSecondary(), true);
-		Self->Client->WaitForBuild(Result.Value.BuildId,
-			[WeakThis, ManifestJson, bRecord](const CrowdyExecDeveloper::TResult<CrowdyExecDeveloper::FBuild>& Finished)
-			{
-				if (const TSharedPtr<FCrowdyServerComputeService> Service = WeakThis.Pin())
-				{
-					Service->OnBuildFinished(Finished, ManifestJson, bRecord);
-				}
-			},
-			[WeakThis](const CrowdyExecDeveloper::FBuild& Build)
-			{
-				const TSharedPtr<FCrowdyServerComputeService> Service = WeakThis.Pin();
-				if (!Service)
-				{
-					return;
-				}
-				const FText Progress = Build.Status == TEXT("queued") ? LOCTEXT("BuildQueued", "Waiting for a builder... {0} s") : LOCTEXT("BuildRunning", "Building on the server... {0} s");
-				Service->SetDeployMessage(Progress, FCrowdyStudioStyle::TextSecondary(), true);
-			});
-	});
-}
-
-void FCrowdyServerComputeService::OnBuildFinished(const CrowdyExecDeveloper::TResult<CrowdyExecDeveloper::FBuild>& Result, const FString& ManifestJson, bool bRecord)
-{
-	using namespace CrowdyServerComputeServiceDetail;
-	if (!Result.bOk)
-	{
-		FinishDeploy(ErrorText(LOCTEXT("BuildLost", "Could not follow the build"), Result.Error), FCrowdyStudioStyle::Danger());
-		return;
-	}
-	BuildLog = Result.Value.Log;
-	bLastBuildFailed = !Result.Value.IsSucceeded();
-	if (bLastBuildFailed)
-	{
-		FinishDeploy(LOCTEXT("BuildFailed", "The build failed. See the build output below."), FCrowdyStudioStyle::Danger());
-		return;
-	}
-
-	SetDeployMessage(LOCTEXT("Deploying", "Deploying..."), FCrowdyStudioStyle::TextSecondary());
-	const TArray<CrowdyExecDeveloper::FBuildArtifact> Artifacts = Result.Value.Artifacts;
+	SetDeployMessage(Plan.Builds.IsEmpty() ? LOCTEXT("Deploying", "Deploying...") : LOCTEXT("SendingBuild", "Sending the server code..."), FCrowdyStudioStyle::TextSecondary());
 	TWeakPtr<FCrowdyServerComputeService> WeakThis = AsShared();
 	// Asked just before the deploy and not waited for: an instance placed after it has a higher epoch.
 	const TSharedRef<FDeploySnapshot> Before = MakeShared<FDeploySnapshot>();
-	Client->Instances([Before](const CrowdyExecDeveloper::TResult<TArray<CrowdyExecDeveloper::FInstance>>& Answer)
+	CrowdyExecBuildAndDeploy::FCallbacks Callbacks;
+	Callbacks.OnBuild = [WeakThis](int32 Index, int32 Count, const CrowdyExecDeveloper::FBuild& Build)
 	{
-		Before->bAnswered = true;
-		Before->bKnown = Answer.bOk;
-		Before->Instances = Answer.bOk ? Answer.Value : TArray<CrowdyExecDeveloper::FInstance>();
-		const TFunction<void()> Then = MoveTemp(Before->OnAnswered);
-		if (Then)
+		const TSharedPtr<FCrowdyServerComputeService> Service = WeakThis.Pin();
+		if (!Service)
 		{
-			Then();
+			return;
 		}
-	});
-	Client->Deploy(ManifestJson, Result.Value.BuildId, [WeakThis, Artifacts, bRecord, Before](const CrowdyExecDeveloper::TResult<int32>& Deployed)
+		const bool bQueued = Build.Status == TEXT("queued");
+		const FText Progress = Count < 2
+			? (bQueued ? LOCTEXT("BuildQueued", "Waiting for a builder... {0} s") : LOCTEXT("BuildRunning", "Building on the server... {0} s"))
+			: FText::Format(bQueued ? LOCTEXT("BuildPartQueued", "Part {1} of {2}: waiting for a builder... {0} s") : LOCTEXT("BuildPartRunning", "Part {1} of {2}: building on the server... {0} s"),
+				FText::FromString(TEXT("{0}")), Index + 1, Count);
+		Service->SetDeployMessage(Progress, FCrowdyStudioStyle::TextSecondary(), true);
+	};
+	Callbacks.OnDeploying = [WeakThis]()
 	{
 		if (const TSharedPtr<FCrowdyServerComputeService> Service = WeakThis.Pin())
 		{
-			Service->OnDeployed(Deployed, Artifacts, bRecord, Before);
+			Service->SetDeployMessage(LOCTEXT("Deploying", "Deploying..."), FCrowdyStudioStyle::TextSecondary());
 		}
-	});
+	};
+	Callbacks.OnFinalDeploy = [WeakThis, Before]()
+	{
+		const TSharedPtr<FCrowdyServerComputeService> Service = WeakThis.Pin();
+		if (!Service)
+		{
+			return;
+		}
+		Service->Client->Instances([Before](const CrowdyExecDeveloper::TResult<TArray<CrowdyExecDeveloper::FInstance>>& Answer)
+		{
+			Before->bAnswered = true;
+			Before->bKnown = Answer.bOk;
+			Before->Instances = Answer.bOk ? Answer.Value : TArray<CrowdyExecDeveloper::FInstance>();
+			const TFunction<void()> Then = MoveTemp(Before->OnAnswered);
+			if (Then)
+			{
+				Then();
+			}
+		});
+	};
+	Callbacks.OnDone = [WeakThis, bRecord, Before](const CrowdyExecBuildAndDeploy::FOutcome& Outcome)
+	{
+		if (const TSharedPtr<FCrowdyServerComputeService> Service = WeakThis.Pin())
+		{
+			Service->OnDeployDone(Outcome, bRecord, Before);
+		}
+	};
+	CrowdyExecBuildAndDeploy::Run(Client.ToSharedRef(), MoveTemp(Plan), ManifestJson, Live.Get(CrowdyExecBuildAndDeploy::FLive()), MoveTemp(Callbacks));
+	return true;
 }
 
-void FCrowdyServerComputeService::OnDeployed(const CrowdyExecDeveloper::TResult<int32>& Deployed, const TArray<CrowdyExecDeveloper::FBuildArtifact>& Artifacts, bool bRecord,
-	TSharedRef<FDeploySnapshot> Before)
+void FCrowdyServerComputeService::OnDeployDone(const CrowdyExecBuildAndDeploy::FOutcome& Outcome, bool bRecord, TSharedRef<FDeploySnapshot> Before)
 {
 	using namespace CrowdyServerComputeServiceDetail;
-	if (!Deployed.bOk)
+	using CrowdyExecBuildAndDeploy::EStep;
+	BuildLog = Outcome.Builds.IsEmpty() ? FString() : Outcome.Builds.Last().Log;
+	bLastBuildFailed = Outcome.Step == EStep::BuildFailed;
+	FText Unchanged;
+	if (Outcome.Step == EStep::DeployFailed && Outcome.Error.bNoAnswer)
 	{
-		FinishDeploy(ErrorText(LOCTEXT("DeployFailed", "Built, but the deploy failed"), Deployed.Error), FCrowdyStudioStyle::Danger());
+		Unchanged = LOCTEXT("DeployMayApply", " It had no answer, so it may still apply; refresh to see the active version.");
+	}
+	else if (Outcome.RestoredVersion > 0)
+	{
+		Unchanged = FText::Format(LOCTEXT("LiveRestored", " Version {0} is active again, as before the deploy."), VersionNumber(Outcome.RestoredVersion));
+	}
+	else if (!Outcome.StagedVersions.IsEmpty())
+	{
+		Unchanged = FText::Format(LOCTEXT("StagedActive", " Version {0} is active: it runs what ran before the deploy, plus stand-ins nothing calls."), VersionNumber(Outcome.StagedVersions.Last()));
+	}
+	switch (Outcome.Step)
+	{
+	case EStep::BuildNotStarted:
+		FinishDeploy(ErrorText(LOCTEXT("BuildFailedToStart", "The build could not start"), Outcome.Error), FCrowdyStudioStyle::Danger());
 		return;
+	case EStep::BuildLost:
+		FinishDeploy(ErrorText(LOCTEXT("BuildLost", "Could not follow the build"), Outcome.Error), FCrowdyStudioStyle::Danger());
+		return;
+	case EStep::BuildFailed:
+		FinishDeploy(LOCTEXT("BuildFailed", "The build failed. See the build output below."), FCrowdyStudioStyle::Danger());
+		return;
+	case EStep::StagingFailed:
+	case EStep::DeployFailed:
+	{
+		const FText StoppedFirst = Outcome.StoppedRemoved.IsEmpty() ? FText::GetEmpty() : FText::Format(LOCTEXT("StoppedBeforeFailure",
+			" The running Server Objects of {0} were stopped just before; they start again at their next call."), FText::FromString(FString::Join(Outcome.StoppedRemoved, TEXT(", "))));
+		FinishDeploy(FText::Format(LOCTEXT("DeployFailedAfterStops", "{0}{1}{2}"), Outcome.Step == EStep::StagingFailed
+			? ErrorText(LOCTEXT("StagingFailed", "Built, but storing the builds failed"), Outcome.Error)
+			: ErrorText(LOCTEXT("DeployFailed", "Built, but the deploy failed"), Outcome.Error), Unchanged, StoppedFirst), FCrowdyStudioStyle::Danger());
+		if (!Outcome.StagedVersions.IsEmpty() || Outcome.Error.bNoAnswer)
+		{
+			RefreshStatus();
+			RefreshVersions();
+		}
+		return;
+	}
+	case EStep::Deployed:
+		break;
 	}
 	TArray<FString> RecordErrors;
 	if (bRecord)
 	{
-		CrowdyExecRevisions::RecordDeploy(Sending, Artifacts, Deployed.Value, FDateTime::UtcNow(), GetDefault<UCrowdyServerComputeSettings>()->GetRevisionsToKeep(),
+		CrowdyExecRevisions::RecordDeploy(Sending, Outcome.Artifacts, Outcome.Version, FDateTime::UtcNow(), GetDefault<UCrowdyServerComputeSettings>()->GetRevisionsToKeep(),
 			[this](const FString& TypeName) { return SendingDirectories.FindRef(TypeName); }, RecordErrors);
 	}
 	Sending = CrowdyExecDeploy::FProjectDeploy();
 	SendingDirectories.Reset();
-	const FText DeployedLine = FText::Format(LOCTEXT("Deployed", "Deployed as version {0}."), VersionNumber(Deployed.Value));
+	const FText Deployed = FText::Format(LOCTEXT("Deployed", "Deployed as version {0}."), VersionNumber(Outcome.Version));
+	const FText DeployedLine = Outcome.StopRemovedFailed.IsEmpty() ? Deployed : FText::Format(LOCTEXT("DeployedRemovedStillRunning",
+		"{0} The running Server Objects of a type it removes could not be stopped first, and stay running on the server: {1}"), Deployed, FText::FromString(FString::Join(Outcome.StopRemovedFailed, TEXT("; "))));
 	if (RecordErrors.IsEmpty())
 	{
-		FinishDeploy(DeployedLine, FCrowdyStudioStyle::Success());
+		FinishDeploy(DeployedLine, Outcome.StopRemovedFailed.IsEmpty() ? FCrowdyStudioStyle::Success() : FCrowdyStudioStyle::Warning());
 	}
 	else
 	{

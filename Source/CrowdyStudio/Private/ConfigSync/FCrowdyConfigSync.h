@@ -12,16 +12,25 @@
  * of hand-copying ids and URLs into DefaultGame.ini. It also owns the small bit of backend
  * selection (Dev/Prod/Custom) that the Sign In page exposes.
  */
+class UCrowdySDKDeveloperSettings;
+
 class FCrowdyConfigSync
 {
 public:
 
+	static constexpr const TCHAR* WriteFailedMessage = TEXT("Could not write Config/DefaultGame.ini (is it read-only or checked out?)");
+
 	// Writes the chosen app's id, its org, and the game endpoints. The game endpoints come from the
 	// app's own routing (gameApiUrl), which is where clients actually connect. The management URL is
 	// not written here; it is owned by the backend selector (GetBackendMode / SetBackendMode).
-	static void ApplyAppToSettings(const FStudioApp& App);
+	// Returns false when the settings could not be saved to Config/DefaultGame.ini.
+	static bool ApplyAppToSettings(const FStudioApp& App);
+
+	// The in-memory half of ApplyAppToSettings: sets the same fields on Settings and saves nothing.
+	static void ApplyAppToObject(UCrowdySDKDeveloperSettings& Settings, const FStudioApp& App);
 
 	static FStudioSettingsSnapshot ReadCurrentSettings();
+	static FStudioSettingsSnapshot ReadSettings(const UCrowdySDKDeveloperSettings& Settings);
 
 	// What ApplyAppToSettings would leave the settings as, without writing anything. The Project
 	// page shows this against ReadCurrentSettings as a before/after diff, so the displayed diff and

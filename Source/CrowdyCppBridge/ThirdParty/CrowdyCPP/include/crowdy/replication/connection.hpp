@@ -116,6 +116,9 @@ class Connection {
                                      Bytes frame, std::uint16_t frameId, std::uint8_t codec = 0,
                                      std::uint8_t distance = 1,
                                      wire::DecayRate decay = wire::DecayRate::None);
+  /// Proximity text (opcode 136). Needs the session's use_text_chat for the app (Game API
+  /// v2.55.0: every tier that grants access has it unless the app took it away); without it
+  /// the server answers ErrorCode::Unauthorized.
   Result<std::uint8_t> sendText(const SpatialSend& p) {
     return sendLongSpatial(wire::MessageType::ClientTextPacket, p);
   }
@@ -128,10 +131,12 @@ class Connection {
   }
   /// Direct actor-to-actor message: chunk + uuid address the TARGET actor.
   /// Fire-and-forget (no echo); embed sender identity in the payload if the
-  /// recipient needs it.
+  /// recipient needs it. Needs the session's use_direct_messages for the app (Game API
+  /// v2.55.0); without it the server answers ErrorCode::Unauthorized.
   Result<std::uint8_t> sendSingleActorMessage(const wire::ChunkCoord& targetChunk,
                                               const core::ActorUuid& targetUuid, Bytes payload);
-  /// Publish to a channel (requires membership + send_messages).
+  /// Publish to a channel (requires membership + send_messages, and from Game API v2.55.0
+  /// the session's use_text_chat for the channel's app; Unauthorized otherwise).
   Result<std::uint8_t> sendChannelMessage(std::int64_t channelId, const core::ActorUuid& uuid,
                                           Bytes payload);
   /// Channel audio (opcode 35, Buddy v0.37.0): opcode 17's layout and signing with its own
@@ -145,7 +150,7 @@ class Connection {
   /// Publish to a channel so that only members with a live actor in this
   /// connection's app within maxDistance chunks of `origin` receive it (Euclidean
   /// between chunk coordinates, boundary included; 0..2147483647; Buddy v0.35.0).
-  /// Members receive an ordinary channel notification. Same send right as
+  /// Members receive an ordinary channel notification. Same send right and use_text_chat as
   /// sendChannelMessage; a refusal arrives as a GenericError for the returned
   /// sequence. InvalidArgument for a distance over wire::channel_ranged::kMaxDistance.
   Result<std::uint8_t> sendRangedChannelMessage(std::int64_t channelId, const core::ActorUuid& uuid,
@@ -175,6 +180,10 @@ class Connection {
     std::optional<wire::ErrorCode> error;
     /// Server epoch millis from the echo (when acknowledged).
     std::int64_t serverEpochMs = 0;
+    /// Set when an echoed send's wait ended because a new session was established
+    /// (a reassignment) before the echo came: the echo went to the session the
+    /// connection left. `*AndWait` resends then; waitForSequence never sets it.
+    bool sessionChanged = false;
   };
 
   /// Wait (pumping/polling internally; handlers still fire normally) until a
@@ -185,6 +194,20 @@ class Connection {
   WaitOutcome waitForSequence(std::uint8_t sequence, const core::ActorUuid& uuid, int timeoutMs);
 
   /// Send an actor update and wait for its echo or error.
+  ///
+  /// Every `*AndWait` times its wait from when the send has left, and retries
+  /// the first awaited send of a session (the first connect, and each
+  /// reassignment: COMMAND_RECONNECT, a drain move, the watchdog) once, with a
+  /// fresh sequence, when it is refused `Unauthorized` or, for the actor and
+  /// voxel updates the server echoes, when its echo times out. That is how a
+  /// realtime server older than v0.42.0 answers a session's first message;
+  /// v0.42.0 holds it until the session's permissions load instead. Text has
+  /// no echo and succeeds by timing out, so its timeout is never retried.
+  ///
+  /// An actor or voxel update still waiting when the connection is reassigned is
+  /// resent, with a fresh sequence, as soon as the new session is connected,
+  /// rather than at its timeout: its echo went to the session it left. That is
+  /// the send's one retry.
   WaitOutcome sendActorUpdateAndWait(const SpatialSend& p, int timeoutMs = 5000);
   /// Send a voxel update and wait for its echo or error.
   WaitOutcome sendVoxelUpdateAndWait(const wire::ChunkCoord& chunk, const core::ActorUuid& uuid,
@@ -196,6 +219,11 @@ class Connection {
   /// Send a text packet and wait for a correlated error (no echo exists; a
   /// clean timeout means accepted).
   WaitOutcome sendTextAndWait(const SpatialSend& p, int timeoutMs = 1500);
+
+  /// How many sessions this connection has started: the first connect and every
+  /// reassignment count one. An awaited send compares it with the epoch of its
+  /// last answered send to know it is the first of a session.
+  std::uint64_t sessionEpoch() const { return sessionEpoch_.load(std::memory_order_acquire); }
 
   // ----- Receive-side --------------------------------------------------------
 
@@ -383,6 +411,21 @@ class Connection {
   /// Set when onEventsReady fired; poll() clears it before draining, so an
   /// event queued during or after a drain signals again.
   std::atomic<bool> eventsSignalled_{false};
+
+  /// Send once, wait, and retry once: a session's first awaited send, or an echoed
+  /// send that waited across a reassignment (see sendActorUpdateAndWait). `send`
+  /// allocates a fresh sequence per call.
+  template <class Send>
+  WaitOutcome sendAndWait(Send&& send, const core::ActorUuid& uuid, int timeoutMs, bool echoed);
+
+  /// waitForSequence, ending early with `sessionChanged` when `endOnNewSession` and
+  /// a new session is connected while it waits.
+  WaitOutcome awaitSequence(std::uint8_t sequence, const core::ActorUuid& uuid, int timeoutMs,
+                            bool endOnNewSession);
+
+  std::atomic<std::uint64_t> sessionEpoch_{0};
+  /// The session epoch of the last awaited send that was answered (poll-thread only).
+  std::uint64_t confirmedEpoch_ = ~std::uint64_t{0};
 
   // One in-flight AndWait at a time (poll-thread only).
   struct PendingWait {

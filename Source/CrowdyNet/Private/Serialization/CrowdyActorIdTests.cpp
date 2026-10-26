@@ -246,7 +246,7 @@ bool FCrowdyActorIdEqualityTest::RunTest(const FString& Parameters)
 }
 
 // The FGuid is a local lookup key derived from the octets, and every system that indexes actors by it depends
-// on the derivation staying exactly what it is. This pins it, including the part of it that is lossy.
+// on the derivation staying exactly what it is for a hexadecimal id. This pins it, and that any other id keys apart.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyActorIdGuidDerivationTest,
 	"CrowdySDK.Wire.ActorIdGuidDerivationIsUnchanged", CrowdyActorIdTestFlags)
 bool FCrowdyActorIdGuidDerivationTest::RunTest(const FString& Parameters)
@@ -272,50 +272,49 @@ bool FCrowdyActorIdGuidDerivationTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("empty text derives no key"),
 		USerializationFunctionLibrary::ToGuid(FString()), FGuid());
 
-	// The lossy part, pinned deliberately: a component holding anything outside the hexadecimal alphabet reads
-	// as the largest value, so two ids that differ only there derive the same key and compare equal. The
-	// octets still tell them apart; anything that changes this changes every derived key in the project.
+	// A server-driven actor may be named by any 32 octets, such as a Game Kit mob's "M10,-4@3" padded out, so ids that
+	// differ only outside the hexadecimal alphabet must not share a key, or every such actor would be one actor.
 	const FCrowdyActorId NonHexA = FCrowdyActorId::FromAnsiLiteral("ZZZZZZZZ0123456789abcdef01234567");
 	const FCrowdyActorId NonHexB = FCrowdyActorId::FromAnsiLiteral("YYYYYYYY0123456789abcdef01234567");
 
 	TestTrue(TEXT("the two ids are genuinely different"), NonHexA != NonHexB);
-	TestEqual(TEXT("but a non-hexadecimal component collapses them onto the same key"),
-		USerializationFunctionLibrary::ToGuid(NonHexA), USerializationFunctionLibrary::ToGuid(NonHexB));
+	TestNotEqual(TEXT("and so are their keys"), USerializationFunctionLibrary::ToGuid(NonHexA), USerializationFunctionLibrary::ToGuid(NonHexB));
+	TestEqual(TEXT("the same octets always derive the same key"), USerializationFunctionLibrary::ToGuid(NonHexA),
+		USerializationFunctionLibrary::ToGuid(FCrowdyActorId::FromAnsiLiteral("ZZZZZZZZ0123456789abcdef01234567")));
+	TestTrue(TEXT("a key that names an actor"), USerializationFunctionLibrary::ToGuid(NonHexA).IsValid());
 
 	return true;
 }
 
-// A component is judged after all eight of its octets rather than at the first one outside the alphabet, so
-// where the bad octet sits must not change the answer. Only the component holding it may be affected, and it
-// must read as the largest value wherever in that component it appears.
+// One octet outside the alphabet, wherever it sits, makes the whole id key on all 32 octets, so ids that differ
+// in any one octet key apart and none of them takes the key of the hexadecimal id it came from.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyActorIdGuidRejectsAtAnyPositionTest,
-	"CrowdySDK.Wire.ActorIdGuidRejectsANonHexOctetAtAnyPosition", CrowdyActorIdTestFlags)
+	"CrowdySDK.Wire.ActorIdGuidKeysANonHexIdOnAllItsOctets", CrowdyActorIdTestFlags)
 bool FCrowdyActorIdGuidRejectsAtAnyPositionTest::RunTest(const FString& Parameters)
 {
-	const FGuid Expected(0x01234567, 0xFFFFFFFF, 0x01234567, 0x89abcdef);
+	const FGuid Hex = USerializationFunctionLibrary::ToGuid(FCrowdyActorId::FromAnsiLiteral("0123456789abcdef0123456789abcdef"));
+	TSet<FGuid> Keys;
 
-	for (int32 Position = 0; Position < 8; ++Position)
+	for (int32 Position = 0; Position < FCrowdyActorId::NumOctets; ++Position)
 	{
 		char Text[FCrowdyActorId::NumOctets + 1] = "0123456789abcdef0123456789abcdef";
-
-		// The second component, so a component either side of it is left hexadecimal and can show that the
-		// rejection stayed where it belongs instead of spreading.
-		Text[8 + Position] = 'Z';
+		Text[Position] = 'Z';
 
 		const FGuid Key = USerializationFunctionLibrary::ToGuid(FCrowdyActorId::FromAnsiLiteral(Text));
-
-		TestEqual(FString::Printf(TEXT("a non-hexadecimal octet at position %d rejects its whole component"),
-			Position), Key, Expected);
+		TestNotEqual(FString::Printf(TEXT("a non-hexadecimal octet at position %d keys apart from the hexadecimal id"), Position), Key, Hex);
+		Keys.Add(Key);
 	}
+	TestEqual(TEXT("and every position gives its own key"), Keys.Num(), FCrowdyActorId::NumOctets);
 
-	// One octet outside the alphabet in each of two components rejects both, not just the first reached.
-	char Both[FCrowdyActorId::NumOctets + 1] = "0123456789abcdef0123456789abcdef";
-	Both[3] = 'Z';
-	Both[20] = 'Z';
-
-	TestEqual(TEXT("a bad octet in two components rejects both"),
-		USerializationFunctionLibrary::ToGuid(FCrowdyActorId::FromAnsiLiteral(Both)),
-		FGuid(0xFFFFFFFF, 0x89abcdef, 0xFFFFFFFF, 0x89abcdef));
+	// A Game Kit hub's actors are short text padded out, differing in a digit or two; each must stay its own actor.
+	auto KitId = [](const ANSICHAR* Text)
+	{
+		TArray<uint8> Octets;
+		Octets.SetNumZeroed(FCrowdyActorId::NumOctets);
+		FMemory::Memcpy(Octets.GetData(), Text, FCStringAnsi::Strlen(Text));
+		return FCrowdyActorId::FromOctets(Octets);
+	};
+	TestNotEqual(TEXT("two kit mobs key apart"), USerializationFunctionLibrary::ToGuid(KitId("M10,-4@3")), USerializationFunctionLibrary::ToGuid(KitId("M10,-4@4")));
 
 	return true;
 }
@@ -341,10 +340,10 @@ bool FCrowdyActorIdGuidFromNonTextOctetsTest::RunTest(const FString& Parameters)
 
 	const FCrowdyActorId Id = FCrowdyActorId::FromOctets(Octets);
 
-	// The first three components are hexadecimal and read as themselves. The last holds octets outside the
-	// hexadecimal alphabet, and a component that is not hexadecimal reads as the largest value there is.
-	TestEqual(TEXT("the key comes off the octets as the alphabet describes"),
-		USerializationFunctionLibrary::ToGuid(Id), FGuid(0x01234567, 0x89abcdef, 0x01234567, 0xFFFFFFFF));
+	// Octets outside the hexadecimal alphabet key the id on all of them, read as octets: the same octets again give the same key.
+	const FGuid Key = USerializationFunctionLibrary::ToGuid(Id);
+	TestTrue(TEXT("the key comes off the octets"), Key.IsValid() && Key == USerializationFunctionLibrary::ToGuid(FCrowdyActorId::FromOctets(Octets)));
+	TestNotEqual(TEXT("not off the hexadecimal digits it does have"), Key, FGuid(0x01234567, 0x89abcdef, 0x01234567, 0xFFFFFFFF));
 
 	// The same octets read as text do not come back. An octet that cannot begin a UTF-8 sequence becomes
 	// one replacement character, and the continuation octets behind it are consumed into that same

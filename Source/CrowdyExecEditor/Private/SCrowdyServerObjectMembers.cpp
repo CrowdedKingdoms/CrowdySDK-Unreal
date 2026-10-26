@@ -218,7 +218,7 @@ TArray<SCrowdyServerObjectMembers::FItemPtr> SCrowdyServerObjectMembers::BuildRo
 		Item->Label = FText::FromName(Name);
 		Item->TypeColor = PinColor(PinType);
 		Item->Detail = UEdGraphSchema_K2::TypeToText(PinType);
-		Item->bVisibleToPlayers = Current->WatchedFields.Contains(Name);
+		Item->bVisibleToPlayers = Current->IsGameKitStarter() || Current->WatchedFields.Contains(Name);
 		Item->Problem = ProblemsFor(Errors, {StateName + TEXT(".") + Name.ToString() + TEXT(":")});
 		Variables->Children.Add(Item);
 	};
@@ -620,14 +620,17 @@ TSharedRef<SWidget> SCrowdyServerObjectMembers::MakeMemberRow(const FItemPtr& It
 	}
 	const FName Name = Item->Name;
 	const bool bVisible = Item->bVisibleToPlayers;
+	const UCrowdyServerObjectDefinition* Current = Definition.Get();
+	const bool bStarter = Current && Current->IsGameKitStarter();
 	Row->AddSlot()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
 		[
 			SNew(SButton)
 			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-			.ToolTipText(bVisible
-				? LOCTEXT("VisibleToolTip", "Visible to Players: players can read and watch it. Click to keep it on the server only.")
+			.IsEnabled(!bStarter)
+			.ToolTipText(bStarter ? LOCTEXT("StarterVisibleToolTip", "Visible to Players: a Game Kit starter sends players its whole State, and each Owner Value only to its own player.")
+				: bVisible ? LOCTEXT("VisibleToolTip", "Visible to Players: players can read and watch it. Click to keep it on the server only.")
 				: LOCTEXT("HiddenToolTip", "Server Only: players never see it. Click to make it visible to players."))
 			.OnClicked_Lambda([this, Name, bVisible]()
 			{

@@ -13,6 +13,7 @@ class UAnimMontage;
 class UCrowdyMassAnimSet;
 class UCrowdyMassEntitySubsystem;
 class UCrowdyMassServerRecordsSubsystem;
+class UPrimitiveComponent;
 class USkeletalMeshComponent;
 struct FCrowdyMassEntityTarget;
 struct FMassEntityManager;
@@ -309,6 +310,7 @@ public:
 
 private:
 	friend struct FCrowdyMassServerRecordsTestAccess;
+	friend struct FCrowdyMassNearTierTraceCollisionTestAccess;
 
 	DECLARE_FUNCTION(execGetServerValue);
 
@@ -424,6 +426,9 @@ private:
 	bool bAppliedTraceCollisionEnabled = false;
 	TEnumAsByte<ECollisionChannel> AppliedTraceObjectType = ECC_WorldDynamic;
 	FCollisionResponseContainer AppliedTraceResponses;
+
+	// Every component a push has written to since the last clear, so a clear undoes exactly those.
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> AppliedTraceComponents;
 
 	TWeakObjectPtr<const UCrowdyMassAnimSet> ResolvedAnimSet;
 	TWeakObjectPtr<USkeletalMeshComponent> ActionMesh;

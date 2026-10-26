@@ -166,13 +166,248 @@ class OrganizationsAPI : public detail::AdminDomain {
                     two("orgTokenId", graphql::JVal(orgTokenId), "input", input), {},
                     std::move(cb));
   }
-  graphql::Json revokeToken(std::string_view orgTokenId) const {
+  /// Revoke an org token. `endSessions` also ends every session the token signed org-managed
+  /// players in with, so their devices stop now rather than at their sessions' end.
+  graphql::Json revokeToken(std::string_view orgTokenId, bool endSessions = false) const {
     return execUnwrap(gen::organizations::kRevokeOrgTokenDocument,
-                      one("orgTokenId", graphql::JVal(orgTokenId)));
+                      revokeVars(orgTokenId, endSessions));
   }
   void revokeTokenAsync(std::string_view orgTokenId, graphql::GraphQLCallback cb) const {
+    revokeTokenAsync(orgTokenId, false, std::move(cb));
+  }
+  void revokeTokenAsync(std::string_view orgTokenId, bool endSessions,
+                        graphql::GraphQLCallback cb) const {
     execUnwrapAsync(gen::organizations::kRevokeOrgTokenDocument,
-                    one("orgTokenId", graphql::JVal(orgTokenId)), {}, std::move(cb));
+                    revokeVars(orgTokenId, endSessions), {}, std::move(cb));
+  }
+
+ private:
+  graphql::JVal revokeVars(std::string_view orgTokenId, bool endSessions) const {
+    graphql::JVal vars = one("orgTokenId", graphql::JVal(orgTokenId));
+    if (endSessions) vars["endSessions"] = true;
+    return vars;
+  }
+};
+
+/// client.admin().managedPlayers() — org-managed players: an organization's own
+/// players, signed in by the organization instead of with a Crowded Kingdoms password. Its
+/// server mints a player's app token with an org token (`mintManagedPlayerToken`, scope
+/// `players:mint`), or its sign-in service signs an assertion the device trades
+/// (portal().exchangeManagedPlayerAssertion()); the device stores the result with
+/// portal().adoptAppToken(). This SDK has no wrapper for the org-token mint, on purpose: an
+/// org token signs in any of the organization's players and stays on its server.
+///
+/// These are the organization's administration: an org admin's session with
+/// `manage_players` (from the organization's server, an org token with `players:manage`
+/// also works for the six player operations).
+///
+/// The Org-Managed Players Addendum (ck-api v2.53.0): before any of the organization's
+/// players is created or signed in, an admin of the organization accepts it in Studio. Until
+/// then sign-ins (both ways), refreshes and provision() answer ORG_LEGAL_ACCEPTANCE_REQUIRED
+/// (graphql::orgLegalAcceptanceRequiredOf()); settings() reports where the organization
+/// stands. This SDK has no wrapper for the acceptance, on purpose: it binds the organization,
+/// so a person makes it, in Studio. A tier that does not serve org-managed players answers
+/// FEATURE_DISABLED to every field.
+class ManagedPlayersAPI : public detail::AdminDomain {
+ public:
+  using detail::AdminDomain::AdminDomain;
+
+  /// The organization's players in the order they were created, a page at a time (`first`
+  /// defaults to 50, at most 200; 0 sends none). `search` matches the start of an external id
+  /// (exactly) or of a gamertag (any case). Pass `nextCursor` back as `after`.
+  graphql::Json list(std::string_view orgId, std::string_view search = {}, int first = 0,
+                     std::string_view after = {}) const {
+    return execUnwrap(gen::managedPlayers::kManagedPlayersIsolatedDocument,
+                      listVars(orgId, search, first, after));
+  }
+  void listAsync(std::string_view orgId, std::string_view search, int first,
+                 std::string_view after, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kManagedPlayersIsolatedDocument,
+                    listVars(orgId, search, first, after), {}, std::move(cb));
+  }
+  /// One player by the id the organization knows it by, or null.
+  graphql::Json get(std::string_view orgId, std::string_view externalId) const {
+    return execUnwrap(gen::managedPlayers::kManagedPlayerIsolatedDocument,
+                      playerVars(orgId, externalId));
+  }
+  void getAsync(std::string_view orgId, std::string_view externalId,
+                graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kManagedPlayerIsolatedDocument,
+                    playerVars(orgId, externalId), {}, std::move(cb));
+  }
+  /// Create players ahead of their first sign-in (`{ orgId, players: [{ externalId,
+  /// gamertag? }] }`, up to 500 a call; much faster than first sign-ins one at a time). A
+  /// player that already exists is left as it is and counted in `existing`.
+  graphql::Json provision(const graphql::JVal& input) const {
+    return execUnwrap(gen::managedPlayers::kProvisionManagedPlayersIsolatedDocument,
+                      one("input", input));
+  }
+  void provisionAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kProvisionManagedPlayersIsolatedDocument,
+                    one("input", input), {}, std::move(cb));
+  }
+  /// Rename a player, or disable or enable it (`{ orgId, externalId, gamertag?,
+  /// disambiguation?, disabled? }`). Disabling ends every session the player has and refuses
+  /// its sign-ins until enabled again.
+  graphql::Json update(const graphql::JVal& input) const {
+    return execUnwrap(gen::managedPlayers::kUpdateManagedPlayerIsolatedDocument,
+                      one("input", input));
+  }
+  void updateAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kUpdateManagedPlayerIsolatedDocument,
+                    one("input", input), {}, std::move(cb));
+  }
+  /// End every session of a player now (sign it out everywhere); it can sign in again.
+  graphql::Json endSessions(std::string_view orgId, std::string_view externalId) const {
+    return execUnwrap(gen::managedPlayers::kEndManagedPlayerSessionsIsolatedDocument,
+                      playerVars(orgId, externalId));
+  }
+  void endSessionsAsync(std::string_view orgId, std::string_view externalId,
+                        graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kEndManagedPlayerSessionsIsolatedDocument,
+                    playerVars(orgId, externalId), {}, std::move(cb));
+  }
+  /// Delete a player (CrowdyJS `delete`): its sessions end and its account is scrubbed; the
+  /// external id is free again, so a later sign-in with it creates a new player. Since Game
+  /// API v2.54.0 its player-side content is erased within minutes (usage and billing records
+  /// and world edits stay), and a legal hold on the player or its organization refuses the
+  /// delete with LEGAL_HOLD; the player stays as it was.
+  graphql::Json remove(std::string_view orgId, std::string_view externalId) const {
+    return execUnwrap(gen::managedPlayers::kDeleteManagedPlayerIsolatedDocument,
+                      playerVars(orgId, externalId));
+  }
+  void removeAsync(std::string_view orgId, std::string_view externalId,
+                   graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kDeleteManagedPlayerIsolatedDocument,
+                    playerVars(orgId, externalId), {}, std::move(cb));
+  }
+  /// Whether an operator turned managed players on for the organization, and its limits; and
+  /// where it stands on the Org-Managed Players Addendum (`termsVersion`, `termsUrl`,
+  /// `termsAccepted`, the latest acceptance, and `viewerMayAcceptTerms`: whether the signed-in
+  /// user is an admin of the organization who may accept it, in Studio).
+  graphql::Json settings(std::string_view orgId) const {
+    return execUnwrap(gen::managedPlayers::kOrgManagedPlayerSettingsIsolatedDocument,
+                      one("orgId", graphql::JVal(orgId)));
+  }
+  void settingsAsync(std::string_view orgId, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kOrgManagedPlayerSettingsIsolatedDocument,
+                    one("orgId", graphql::JVal(orgId)), {}, std::move(cb));
+  }
+  /// The organization's assertion signing keys, revoked ones included.
+  graphql::Json signingKeys(std::string_view orgId) const {
+    return execUnwrap(gen::managedPlayers::kOrgSigningKeysIsolatedDocument,
+                      one("orgId", graphql::JVal(orgId)));
+  }
+  void signingKeysAsync(std::string_view orgId, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kOrgSigningKeysIsolatedDocument,
+                    one("orgId", graphql::JVal(orgId)), {}, std::move(cb));
+  }
+  /// Refusal text of registerSigningKey for a JWK with private members.
+  static constexpr const char* kPrivateJwkRefusal =
+      "registerSigningKey: the JWK carries a private member; register the PUBLIC key only";
+  /// Register a PUBLIC key the organization's sign-in service signs assertions with (`{ orgId,
+  /// kid, algorithm: EdDSA | ES256 | RS256, publicJwk, issuer, audience?, appIds?, label? }`).
+  /// `publicJwk` may be the JWK object or its JSON text. A JWK with private members is refused
+  /// before any request (the API refuses it too), so the private key never leaves the
+  /// machine: blocking as a graphql::CrowdyError with code "INVALID_ARGUMENT" (an empty result
+  /// in a CROWDY_NO_EXCEPTIONS build), async as an outcome with status Errc::InvalidArgument.
+  graphql::Json registerSigningKey(const graphql::JVal& input) const {
+    graphql::JVal sent = withJwkText(input);
+    if (carriesPrivateJwkMember(sent)) {
+#ifndef CROWDY_NO_EXCEPTIONS
+      throw graphql::CrowdyError("INVALID_ARGUMENT", kPrivateJwkRefusal);
+#else
+      return {};
+#endif
+    }
+    return execUnwrap(gen::managedPlayers::kRegisterOrgSigningKeyIsolatedDocument,
+                      one("input", sent));
+  }
+  void registerSigningKeyAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
+    graphql::JVal sent = withJwkText(input);
+    if (carriesPrivateJwkMember(sent)) {
+      graphql::GraphQLOutcome out;
+      out.status = Errc::InvalidArgument;
+      out.kind = graphql::GraphQLErrorKind::Protocol;
+      out.errorMessage = kPrivateJwkRefusal;
+      deliverAsync(std::move(out), std::move(cb));
+      return;
+    }
+    execUnwrapAsync(gen::managedPlayers::kRegisterOrgSigningKeyIsolatedDocument,
+                    one("input", sent), {}, std::move(cb));
+  }
+  /// Revoke a signing key: assertions it signed are refused from now on.
+  graphql::Json revokeSigningKey(std::string_view orgId, std::string_view keyId) const {
+    return execUnwrap(gen::managedPlayers::kRevokeOrgSigningKeyIsolatedDocument,
+                      two("orgId", graphql::JVal(orgId), "keyId", graphql::JVal(keyId)));
+  }
+  void revokeSigningKeyAsync(std::string_view orgId, std::string_view keyId,
+                             graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kRevokeOrgSigningKeyIsolatedDocument,
+                    two("orgId", graphql::JVal(orgId), "keyId", graphql::JVal(keyId)), {},
+                    std::move(cb));
+  }
+  /// The app's `{ appId, managedPlayerModsEnabled }`: whether the organization pays for its
+  /// managed players' mods in it (null for an app the caller cannot see). Off, their mods,
+  /// Crowdy Studio writes and Studio agent use are refused with MANAGED_PLAYER_NOT_ALLOWED.
+  graphql::Json appModsEnabled(std::string_view appId) const {
+    return execUnwrap(gen::managedPlayers::kAppManagedPlayerModsIsolatedDocument,
+                      one("appId", graphql::JVal(appId)));
+  }
+  void appModsEnabledAsync(std::string_view appId, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kAppManagedPlayerModsIsolatedDocument,
+                    one("appId", graphql::JVal(appId)), {}, std::move(cb));
+  }
+  /// Switch the organization paying for its managed players' mods in the app on or off
+  /// (`manage_billing` on the app).
+  graphql::Json setAppMods(std::string_view appId, bool enabled) const {
+    return execUnwrap(gen::managedPlayers::kSetAppManagedPlayerModsIsolatedDocument,
+                      two("appId", graphql::JVal(appId), "enabled", graphql::JVal(enabled)));
+  }
+  void setAppModsAsync(std::string_view appId, bool enabled, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::managedPlayers::kSetAppManagedPlayerModsIsolatedDocument,
+                    two("appId", graphql::JVal(appId), "enabled", graphql::JVal(enabled)), {},
+                    std::move(cb));
+  }
+
+  /// The JWK members only a private key has (RFC 7518); the API refuses a key with any.
+  static bool carriesPrivateJwkMember(const graphql::JVal& input) {
+    if (!input.isObject()) return false;
+    auto it = input.obj().find("publicJwk");
+    if (it == input.obj().end()) return false;
+    const std::string* text = it->second.asStringPtr();
+    if (!text) return false;
+    graphql::Json jwk = graphql::Json::parse(*text);
+    if (!jwk.isObject()) return false;
+    bool found = false;
+    jwk.forEachMember([&found](std::string_view key, const graphql::Json&) {
+      for (std::string_view member : {"d", "p", "q", "dp", "dq", "qi", "oth", "k"}) {
+        if (key == member) found = true;
+      }
+    });
+    return found;
+  }
+
+ private:
+  graphql::JVal listVars(std::string_view orgId, std::string_view search, int first,
+                         std::string_view after) const {
+    graphql::JVal vars = one("orgId", graphql::JVal(orgId));
+    if (!search.empty()) vars["search"] = search;
+    if (first > 0) vars["first"] = first;
+    if (!after.empty()) vars["after"] = after;
+    return vars;
+  }
+  graphql::JVal playerVars(std::string_view orgId, std::string_view externalId) const {
+    return two("orgId", graphql::JVal(orgId), "externalId", graphql::JVal(externalId));
+  }
+  /// `publicJwk` as the JSON text the schema takes, when it was given as an object.
+  static graphql::JVal withJwkText(const graphql::JVal& input) {
+    graphql::JVal sent = input;
+    if (sent.isObject()) {
+      auto it = sent.obj().find("publicJwk");
+      if (it != sent.obj().end() && it->second.isObject()) it->second = it->second.dump();
+    }
+    return sent;
   }
 };
 
@@ -1051,6 +1286,7 @@ class AdminAPI {
   explicit AdminAPI(std::shared_ptr<graphql::GraphQLClient> management,
                     GameAppsAPI* gameApps = nullptr)
       : organizations_(management),
+        managedPlayers_(management),
         apps_(management),
         appAccess_(management),
         billing_(management),
@@ -1061,6 +1297,8 @@ class AdminAPI {
         grids_(gameApps) {}
 
   OrganizationsAPI& organizations() { return organizations_; }
+  /// Org-managed players: the organization's own players and signing keys.
+  ManagedPlayersAPI& managedPlayers() { return managedPlayers_; }
   AppsAPI& apps() { return apps_; }
   AppAccessAPI& appAccess() { return appAccess_; }
   BillingAPI& billing() { return billing_; }
@@ -1074,6 +1312,7 @@ class AdminAPI {
 
  private:
   OrganizationsAPI organizations_;
+  ManagedPlayersAPI managedPlayers_;
   AppsAPI apps_;
   AppAccessAPI appAccess_;
   BillingAPI billing_;

@@ -167,6 +167,11 @@ namespace CrowdyNativeExec
 	}
 }
 
+std::shared_ptr<crowdy::domains::ExecConnection> FCrowdyNativeExecAccess::Connection(const FCrowdyNativeExecConnection& Wrapped)
+{
+	return Wrapped.Impl->bClosed ? nullptr : Wrapped.Impl->Connection;
+}
+
 FCrowdyNativeExecConnection::FCrowdyNativeExecConnection(TSharedRef<FImpl> InImpl)
 	: Impl(MoveTemp(InImpl))
 {

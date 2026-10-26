@@ -1507,6 +1507,151 @@ bool FCrowdyServerErrorWithNoSendIsUnattributedTest::RunTest(const FString& Para
 	return true;
 }
 
+// A refused channel message says which channel it was for, so a game can tell the player which chat went nowhere.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRefusedChannelMessageNamesItsChannelTest,
+	"CrowdySDK.Transport.RefusedChannelMessageNamesItsChannel",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+bool FCrowdyRefusedChannelMessageNamesItsChannelTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FConnectedFixture Fixture;
+	if (!TestTrue(TEXT("the fixture connects"), Fixture.Open()))
+	{
+		return false;
+	}
+
+	bool bReported = false;
+	FCrowdyCppSendError Captured;
+	FCrowdyCppReplicationHandlers Handlers;
+	Handlers.OnError = [&bReported, &Captured](const FCrowdyCppSendError& Error)
+	{
+		Captured = Error;
+		Captured.SendUuid = TArrayView<const uint8>();
+		bReported = true;
+	};
+	Fixture.Connection->SetHandlers(Handlers);
+
+	constexpr int64 PartyChannel = 812;
+	FString SendError;
+	const TArray<uint8> Payload = {0x68, 0x69};
+	if (!TestTrue(TEXT("a channel message is accepted"), Fixture.Connection->SendChannelMessage(PartyChannel, GoldenUuidView(), Payload, SendError)))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	const TArray<uint8> OnTheWire = Fixture.Server.Receive();
+	if (!TestTrue(TEXT("the send reached the stand-in server"), OnTheWire.Num() > 0))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	constexpr uint8 Unauthorized = 7;
+	const TArray<uint8> ErrorFrame = {static_cast<uint8>(ECrowdyMessageType::GENERIC_ERROR_MESSAGE), OnTheWire.Last(), Unauthorized};
+	TestTrue(TEXT("an error frame naming that sequence was pushed"), Fixture.Server.SendToClient(ErrorFrame));
+	const bool bDelivered = WaitUntil([&Fixture, &bReported]()
+	{
+		Fixture.Connection->Poll();
+		return bReported;
+	});
+	if (!TestTrue(TEXT("the error frame is delivered"), bDelivered))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	TestTrue(TEXT("the error is attributed to the channel message"), Captured.bAttributed && Captured.bSendWasChannel);
+	TestEqual(TEXT("and names its channel"), Captured.SendChannelId, PartyChannel);
+	TestEqual(TEXT("and its message type"), static_cast<int32>(Captured.SendOpcode), static_cast<int32>(ECrowdyMessageType::CHANNEL_MESSAGE_REQUEST));
+
+	Fixture.Shut();
+	return true;
+}
+
+// What On Send Refused reports: what was refused in words, and for Unauthorized which permission the app is missing.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySendRefusalSaysWhatAndWhyTest,
+	"CrowdySDK.Transport.SendRefusalSaysWhatAndWhy",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+bool FCrowdySendRefusalSaysWhatAndWhyTest::RunTest(const FString& Parameters)
+{
+	constexpr uint8 Unauthorized = 7;
+	constexpr uint8 InvalidRequest = 15;
+	FCrowdySendRefusal Refusal;
+
+	FCrowdyCppSendError Unknown;
+	Unknown.ErrorCode = Unauthorized;
+	TestFalse(TEXT("a frame naming no send on record is not reported"), UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Unknown, Refusal));
+
+	FCrowdyCppSendError Channel;
+	Channel.ErrorCode = Unauthorized;
+	Channel.bAttributed = true;
+	Channel.bSendWasChannel = true;
+	Channel.SendChannelId = 812;
+	Channel.SendOpcode = static_cast<uint8>(ECrowdyMessageType::CHANNEL_MESSAGE_REQUEST);
+	if (!TestTrue(TEXT("a refused channel message is reported"), UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Channel, Refusal)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("with its code"), Refusal.Code, static_cast<int32>(Unauthorized));
+	TestEqual(TEXT("by name"), Refusal.CodeName, FString(TEXT("Unauthorized")));
+	TestTrue(TEXT("as a channel message"), Refusal.bChannelMessage && Refusal.What == TEXT("a channel message"));
+	TestEqual(TEXT("on its channel"), Refusal.ChannelId, static_cast<int64>(812));
+	TestTrue(TEXT("naming the permission it needs"), Refusal.Remedy.Contains(TEXT("use_text_chat")));
+
+	FCrowdyCppSendError Direct;
+	Direct.ErrorCode = Unauthorized;
+	Direct.bAttributed = true;
+	Direct.SendChannelId = 99;
+	Direct.SendOpcode = static_cast<uint8>(ECrowdyMessageType::SINGLE_ACTOR_MESSAGE);
+	UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Direct, Refusal);
+	TestEqual(TEXT("a message to one actor says so"), Refusal.What, FString(TEXT("a message to one actor")));
+	TestEqual(TEXT("and has no channel, whatever the record held"), Refusal.ChannelId, static_cast<int64>(0));
+	TestTrue(TEXT("and needs use_direct_messages"), Refusal.Remedy.Contains(TEXT("use_direct_messages")));
+
+	FCrowdyCppSendError Text = Direct;
+	Text.SendOpcode = static_cast<uint8>(ECrowdyMessageType::CLIENT_TEXT_PACKET);
+	UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Text, Refusal);
+	TestTrue(TEXT("proximity text needs use_text_chat"), Refusal.What == TEXT("proximity text") && Refusal.Remedy.Contains(TEXT("use_text_chat")));
+
+	FCrowdyCppSendError Other = Channel;
+	Other.ErrorCode = InvalidRequest;
+	UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Other, Refusal);
+	TestTrue(TEXT("another code names no permission"), Refusal.Remedy.IsEmpty() && Refusal.CodeName == TEXT("InvalidRequest"));
+	return true;
+}
+
+// A refusal repeated on every send is told once a second, so a listener that shows it is not run per datagram.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySendRefusalRepeatsAreToldOnceTest,
+	"CrowdySDK.Transport.SendRefusalRepeatsAreToldOnce",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+bool FCrowdySendRefusalRepeatsAreToldOnceTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<UGameInstance> OuterInstance(NewObject<UGameInstance>(GetTransientPackage()));
+	const TStrongObjectPtr<UCrowdyCppReplicationSubsystem> Subsystem(NewObject<UCrowdyCppReplicationSubsystem>(OuterInstance.Get()));
+	FCrowdySendRefusal Chat;
+	Chat.Code = 7;
+	Chat.MessageType = 17;
+	Chat.ChannelId = 812;
+	FCrowdySendRefusal OtherChannel = Chat;
+	OtherChannel.ChannelId = 813;
+
+	TestTrue(TEXT("the first refusal is told"), Subsystem->AdmitRefusalForTest(Chat, 100.0));
+	TestFalse(TEXT("its repeat within the second is not"), Subsystem->AdmitRefusalForTest(Chat, 100.4));
+	TestTrue(TEXT("another channel's is"), Subsystem->AdmitRefusalForTest(OtherChannel, 100.5));
+	TestTrue(TEXT("and the first is told again a second later"), Subsystem->AdmitRefusalForTest(Chat, 101.1));
+
+	int32 Told = 0;
+	for (int32 Index = 0; Index < 100; ++Index)
+	{
+		FCrowdySendRefusal Distinct = Chat;
+		Distinct.ChannelId = 1000 + Index;
+		Told += Subsystem->AdmitRefusalForTest(Distinct, 101.2) ? 1 : 0;
+	}
+	TestEqual(TEXT("distinct refusals are capped within a second"), Told, 63);
+	return true;
+}
+
 // The heartbeat is the one message whose whole point is that it carries nothing after the header, and the transport
 // refuses a heartbeat that carries a payload rather than trimming it. So this asserts the shape at the seam the
 // transport actually reads: the split of the serialized message, and then acceptance by the real send path.

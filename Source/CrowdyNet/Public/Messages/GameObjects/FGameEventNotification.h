@@ -1,6 +1,7 @@
 #pragma once
 #include "CrowdyNetLog.h"
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
+#include "Core/UDP/CrowdyKitEvents.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
 #include "Messages/GameObjects/FGameEventBody.h"
@@ -79,6 +80,17 @@ struct FGameEventNotification : FGameEventBody
 		}
 
 		Offset += sizeof(EventType);
+
+		// A kit event is not a CrowdyEvent struct: its state is the rest of the message, with no length in front
+		// of it, so it is handed on as bytes and never offered to the struct decoder.
+		if (Frame.Opcode == static_cast<uint8>(ECrowdyMessageType::CLIENT_EVENT_NOTIFICATION)
+			&& CrowdyKitEvent::HasBareState(EventType))
+		{
+			StateView = Data.Slice(Offset, Data.Num() - Offset);
+			StateSize = StateView.Num();
+			State.Reset();
+			return true;
+		}
 
 		if (!USerializationFunctionLibrary::DeserializeValue(Data, StateSize, Offset))
 		{

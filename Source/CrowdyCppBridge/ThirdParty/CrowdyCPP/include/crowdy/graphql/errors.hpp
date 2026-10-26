@@ -102,8 +102,8 @@ struct GraphQLErrorDetail {
   /// extensions.blockedUntil (ISO-8601) on ACCOUNT_BLOCKED for a timed block; empty
   /// elsewhere, and while a block lasts until lifted.
   std::string blockedUntil;
-  /// extensions.reason on APP_PAUSED (why the app's runtime gate is not ACTIVE);
-  /// empty elsewhere.
+  /// extensions.reason on APP_PAUSED (why the app's runtime gate is not ACTIVE) and on
+  /// ASSERTION_REJECTED (the check that failed); empty elsewhere.
   std::string reason;
   /// extensions.requiredMicrousd / spendableMicrousd on INPUT_LOG_FUNDS_NEEDED:
   /// the balance turning replay logging on needs, and what the org wallet can
@@ -128,6 +128,18 @@ inline constexpr std::string_view kAccountBlockedCode = "ACCOUNT_BLOCKED";
 /// extensions.code for a user a channel or team has banned (HTTP 403), on a join, a
 /// request, an add or an invite; see groupMemberBannedOf().
 inline constexpr std::string_view kGroupMemberBannedCode = "GROUP_MEMBER_BANNED";
+/// extensions.code for something an org-managed player cannot do (HTTP 403): it has no
+/// wallet, and its mods are refused where its organization has not switched them on for the
+/// app; see managedPlayerNotAllowedOf().
+inline constexpr std::string_view kManagedPlayerNotAllowedCode = "MANAGED_PLAYER_NOT_ALLOWED";
+/// extensions.code for a refused org-signed player assertion (HTTP 401), with the failed
+/// check in extensions.reason; see assertionRejectedOf().
+inline constexpr std::string_view kAssertionRejectedCode = "ASSERTION_REJECTED";
+/// extensions.code for "the player's organization has not accepted the current Org-Managed
+/// Players Addendum" (HTTP 403), on an org-managed player's sign-in and refresh and on
+/// provisioning; see orgLegalAcceptanceRequiredOf().
+inline constexpr std::string_view kOrgLegalAcceptanceRequiredCode =
+    "ORG_LEGAL_ACCEPTANCE_REQUIRED";
 /// extensions.code for an input-log read that cannot be served right now (the log
 /// is unreachable); retryable with the same cursor.
 inline constexpr std::string_view kInputLogTemporarilyUnavailableCode =
@@ -203,6 +215,36 @@ inline std::optional<AccountBlocked> accountBlockedOf(const std::vector<GraphQLE
 /// lifts it.
 inline bool groupMemberBannedOf(const std::vector<GraphQLErrorDetail>& errors) {
   return errorWithCode(errors, kGroupMemberBannedCode) != nullptr;
+}
+
+/// True when an org-managed player was refused with MANAGED_PLAYER_NOT_ALLOWED: a wallet, or a
+/// mod, a Crowdy Studio write or the Studio agent in an app whose organization has not switched
+/// its managed players' mods on. Not fixed by retrying.
+inline bool managedPlayerNotAllowedOf(const std::vector<GraphQLErrorDetail>& errors) {
+  return errorWithCode(errors, kManagedPlayerNotAllowedCode) != nullptr;
+}
+
+/// An ASSERTION_REJECTED refusal from portal().exchangeManagedPlayerAssertion(). `reason` is
+/// the check that failed (extensions.reason: for example `expired`, `replayed`, `signature`,
+/// `audience` or `unknown_key`). Resending the same assertion cannot succeed; ask the
+/// organization's sign-in service for a new one.
+struct AssertionRejected {
+  std::string reason;
+};
+inline std::optional<AssertionRejected> assertionRejectedOf(
+    const std::vector<GraphQLErrorDetail>& errors) {
+  const GraphQLErrorDetail* e = errorWithCode(errors, kAssertionRejectedCode);
+  if (!e) return std::nullopt;
+  return AssertionRejected{e->reason};
+}
+
+/// True when the player's organization has not accepted the current Org-Managed Players
+/// Addendum (ORG_LEGAL_ACCEPTANCE_REQUIRED, ck-api v2.53.0): it signs no player in, provisions
+/// none, and its players' tokens do not refresh. Neither the player nor the organization's
+/// server can fix it: an admin of the organization accepts it in Studio. Not fixed by
+/// retrying. Mirrors CrowdyJS orgLegalAcceptanceRequiredOf.
+inline bool orgLegalAcceptanceRequiredOf(const std::vector<GraphQLErrorDetail>& errors) {
+  return errorWithCode(errors, kOrgLegalAcceptanceRequiredCode) != nullptr;
 }
 
 /// True when an input-log read failed in a way worth repeating with the SAME cursor

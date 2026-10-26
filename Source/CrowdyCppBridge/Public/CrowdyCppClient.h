@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CrowdyNativeExec.h"
+#include "CrowdyNativeKit.h"
 #include "Dom/JsonObject.h"
 #include "Misc/Optional.h"
 #include "Templates/Function.h"
@@ -686,6 +687,13 @@ public:
 	 */
 	TSharedPtr<FCrowdyNativeExecConnection> CreateExecConnection(int64 AppId, const FCrowdyNativeExecOptions& Options,
 		TFunction<FString()> ResolveAppToken);
+
+	/**
+	 * The platform's Game Kit over Connection, one this client made, so the kit's calls share its socket and the gateway's
+	 * limit. Returns null when the client or the connection is closed. The kit never closes the connection; make a new
+	 * kit when the connection is replaced. Closing the client closes every kit it made.
+	 */
+	TSharedPtr<FCrowdyNativeKit> CreateGameKit(int64 AppId, const FCrowdyNativeExecConnection& Connection, int64 PlayerId);
 
 #if WITH_DEV_AUTOMATION_TESTS
 	// Test-only WebSocket driving, for a client from MakeForTest: it has no socket, and these play the server by

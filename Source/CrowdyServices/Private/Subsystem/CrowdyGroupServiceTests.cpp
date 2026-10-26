@@ -36,7 +36,7 @@ namespace
 	constexpr EAutomationTestFlags GroupServiceTestFlags =
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
 
-	struct FRoutedOperation
+	struct FGroupRoutedOperation
 	{
 		ECrowdyCppApiDomain Domain;
 		const TCHAR* OperationName;
@@ -44,7 +44,7 @@ namespace
 
 	// Every operation UCrowdyTeams and UCrowdyChannels issue, including the ones only the reliable-RPC channel
 	// bootstrap reaches (Channels, MyChannels, JoinChannel, CreateChannel).
-	const FRoutedOperation kRoutedOperations[] =
+	const FGroupRoutedOperation kGroupRoutedOperations[] =
 	{
 		{ ECrowdyCppApiDomain::Teams, TEXT("MyTeams") },
 		{ ECrowdyCppApiDomain::Teams, TEXT("Team") },
@@ -102,7 +102,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGroupServiceOperationsResolveTest,
 	"CrowdySDK.CrowdyServices.GroupOperationsResolve", GroupServiceTestFlags)
 bool FCrowdyGroupServiceOperationsResolveTest::RunTest(const FString& Parameters)
 {
-	for (const FRoutedOperation& Op : kRoutedOperations)
+	for (const FGroupRoutedOperation& Op : kGroupRoutedOperations)
 	{
 		const TSharedPtr<FCrowdyCppClient> Client = FCrowdyCppClient::MakeForTest(TEXT("{\"data\":{}}"), 200);
 		if (!TestTrue(FString::Printf(TEXT("test client constructs for %s"), Op.OperationName), Client.IsValid()))

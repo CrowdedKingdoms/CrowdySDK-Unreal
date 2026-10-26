@@ -1,13 +1,19 @@
 #include "SCrowdyServerComputePanel.h"
 
 #include "CrowdyExecCodegen.h"
+#include "CrowdyExecCodegenMenu.h"
+#include "CrowdyExecDeploy.h"
+#include "CrowdyExecInternal.h"
+#include "CrowdyGameKitStarters.h"
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerComputeService.h"
 #include "CrowdyServerComputeSettings.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "SCrowdyExecDeveloperCall.h"
 #include "Algo/Count.h"
 #include "Editor.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Notifications/NotificationManager.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/MessageDialog.h"
@@ -34,6 +40,7 @@
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/Layout/SWrapBox.h"
+#include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/Text/STextBlock.h"
@@ -75,19 +82,6 @@ namespace CrowdyComputeUI
 		return Tab == TabSettings ? 4 : 0;
 	}
 
-	int32 MaxLevelFor(const FString& Level)
-	{
-		if (Level == TEXT("errors"))
-		{
-			return 0;
-		}
-		if (Level == TEXT("warnings"))
-		{
-			return 1;
-		}
-		return Level == TEXT("info") ? 2 : -1;
-	}
-
 	EBadgeTone ToneForLevel(int32 Level)
 	{
 		switch (Level)
@@ -112,11 +106,11 @@ namespace CrowdyComputeUI
 
 	FText WindowPhrase(const FString& Window)
 	{
-		if (Window == TEXT("1440"))
+		if (Window == CrowdyServerComputePage::WindowDay)
 		{
 			return LOCTEXT("WindowDay", "in the last day");
 		}
-		return Window == TEXT("10080") ? LOCTEXT("WindowWeek", "in the last week") : LOCTEXT("WindowHour", "in the last hour");
+		return Window == CrowdyServerComputePage::WindowWeek ? LOCTEXT("WindowWeek", "in the last week") : LOCTEXT("WindowHour", "in the last hour");
 	}
 
 	FText Unknown()
@@ -472,6 +466,17 @@ FText CrowdyServerComputePage::InstancesPhrase(int32 MinInstances, int32 MaxInst
 	return FText::Format(LOCTEXT("MetaInstanceRange", "{0} to {1} instances"), MinInstances, MaxInstances);
 }
 
+int32 CrowdyServerComputePage::CountVisibleVariables(const UCrowdyServerObjectDefinition& Definition)
+{
+	FString Error;
+	const FCrowdyExecLayout* Layout = Definition.IsGameKitStarter() ? Definition.ResolveLayout(Error) : nullptr;
+	if (!Layout || Layout->StateStruct == INDEX_NONE)
+	{
+		return Definition.WatchedFields.Num();
+	}
+	return FMath::Max(Layout->Structs[Layout->StateStruct].Fields.Num() - Definition.KitOwnerValues.Num(), 0);
+}
+
 FText CrowdyServerComputePage::WhyCrateFolderStays(const FString& TypeName, const FString& CrateDirectory, const FString& ServerDirectory, bool bSharedTypeName)
 {
 	if (bSharedTypeName)
@@ -496,20 +501,69 @@ FText CrowdyServerComputePage::WhyCrateFolderStays(const FString& TypeName, cons
 	{
 		return LOCTEXT("FolderNotGenerated", "Its Server Code folder holds server code the Crowdy SDK did not generate, so it is left as it is.");
 	}
-	bool bLink = FileManager.IsSymlink(*CrateDirectory);
-	if (!bLink)
-	{
-		FileManager.IterateDirectoryRecursively(*CrateDirectory, [&FileManager, &bLink](const TCHAR* Path, bool)
-		{
-			bLink = FileManager.IsSymlink(Path);
-			return !bLink;
-		});
-	}
-	if (bLink)
+	if (CrowdyServerCodeFiles::HoldsLink(CrateDirectory))
 	{
 		return LOCTEXT("FolderHasLink", "Its Server Code folder is, or holds, a link to somewhere else, and deleting it could delete what the link points to; it is left as it is, so delete it by hand.");
 	}
 	return FText::GetEmpty();
+}
+
+FString CrowdyServerComputePage::FindActivityWindow(const FString& Name)
+{
+	if (Name.Equals(TEXT("hour"), ESearchCase::CaseSensitive))
+	{
+		return WindowHour;
+	}
+	if (Name.Equals(TEXT("day"), ESearchCase::CaseSensitive))
+	{
+		return WindowDay;
+	}
+	return Name.Equals(TEXT("week"), ESearchCase::CaseSensitive) ? FString(WindowWeek) : FString();
+}
+
+bool CrowdyServerComputePage::FindLogMaxLevel(const FString& Filter, int32& OutMaxLevel)
+{
+	if (Filter == TEXT("errors"))
+	{
+		OutMaxLevel = 0;
+		return true;
+	}
+	if (Filter == TEXT("warnings"))
+	{
+		OutMaxLevel = 1;
+		return true;
+	}
+	if (Filter == TEXT("info"))
+	{
+		OutMaxLevel = 2;
+		return true;
+	}
+	OutMaxLevel = -1;
+	return Filter == TEXT("all");
+}
+
+CrowdyServerComputePage::FRemovalEffects CrowdyServerComputePage::FinishRemoval(const FText& Type, const FString& TypeName, const FSoftObjectPath& Asset, const FString& CrateDirectory,
+	const FString& ServerDirectory, bool bSharedTypeName, const FString& ShownFolder, bool bDeleteFolder, bool bSaveSettings)
+{
+	FRemovalEffects Effects;
+	// Without its world the project deploys under the SDK's root again, which Get Players Online then reads.
+	UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
+	const bool bNamedActors = Settings->GameKitActorStarters.Remove(Asset) > 0;
+	const bool bNamedWorld = Settings->GameKitWorld == Asset;
+	if (bNamedWorld)
+	{
+		Settings->GameKitWorld.Reset();
+	}
+	Effects.bSettingsCleared = bNamedWorld || bNamedActors;
+	if (Effects.bSettingsCleared && bSaveSettings)
+	{
+		Effects.bSettingsSaved = Settings->TryUpdateDefaultConfigFile();
+	}
+	if (bDeleteFolder)
+	{
+		Effects.FolderProblem = CrowdyComputeUI::DeleteCrateFolder(Type, TypeName, CrateDirectory, ServerDirectory, bSharedTypeName, ShownFolder);
+	}
+	return Effects;
 }
 
 SCrowdyServerComputePanel::~SCrowdyServerComputePanel()
@@ -524,7 +578,7 @@ void SCrowdyServerComputePanel::Construct(const FArguments& InArgs)
 {
 	ActiveTab = CrowdyComputeUI::TabOverview;
 	LogLevel = TEXT("all");
-	StatsWindow = TEXT("60");
+	StatsWindow = CrowdyServerComputePage::WindowHour;
 
 	FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
 	Service = Compute.AsWeak();
@@ -726,6 +780,21 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::BuildPageHeader()
 				[ SNew(STextBlock).Text(LOCTEXT("Refresh", "Refresh")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 9)).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary())) ]
 			]
 		]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top).Padding(8.f, 0.f, 0.f, 0.f)
+		[
+			SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Secondary").ContentPadding(FMargin(9.f, 5.f))
+			.IsEnabled(this, &SCrowdyServerComputePanel::CanGenerate)
+			.ToolTipText(LOCTEXT("GenerateTip", "Generates the server code of every type that is out of date or has none yet, asking what a single Generate asks, then saves the definitions it changed."))
+			.OnClicked(this, &SCrowdyServerComputePanel::OnGenerateClicked)
+			[
+				SNew(STextBlock).Font(FCoreStyle::GetDefaultFontStyle("Regular", 9)).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextSecondary()))
+				.Text_Lambda([this]()
+				{
+					const int32 Count = CountToGenerate();
+					return Count > 0 ? FText::Format(LOCTEXT("GenerateCount", "Generate  {0}"), FText::AsNumber(Count)) : LOCTEXT("Generate", "Generate");
+				})
+			]
+		]
 		// In the title row so it stays in reach however long the type list grows.
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top).Padding(8.f, 0.f, 0.f, 0.f)
 		[
@@ -755,6 +824,10 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::BuildPageHeader()
 					})
 				]
 			]
+		]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top).Padding(1.f, 0.f, 0.f, 0.f)
+		[
+			MakeDeployMenu()
 		];
 }
 
@@ -780,6 +853,10 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::BuildOverviewTab()
 								return Line.IsEmpty() ? LOCTEXT("DeployExplain", "Deploy builds every type's server code on the server and makes it the app's live version. Players use it at once.") : Line;
 							})
 							.ColorAndOpacity_Lambda([this]() { return GetDeployLine().IsEmpty() ? FSlateColor(FCrowdyStudioStyle::TextSecondary()) : GetDeployLineColor(); })
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 6.f, 0.f)
+						[
+							MakeAddStarterMenu()
 						]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 						[
@@ -1002,7 +1079,7 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::BuildActivityTab()
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(10.f, 0.f, 0.f, 0.f)
 				[
 					CrowdyStudioWidgets::SegmentedEnum(
-						{ TEXT("60"), TEXT("1440"), TEXT("10080") },
+						{ CrowdyServerComputePage::WindowHour, CrowdyServerComputePage::WindowDay, CrowdyServerComputePage::WindowWeek },
 						{ LOCTEXT("LastHour", "Last hour"), LOCTEXT("LastDay", "Last day"), LOCTEXT("LastWeek", "Last week") },
 						TAttribute<FString>::CreateLambda([this]() { return StatsWindow; }),
 						[this](const FString& Window) { StatsWindow = Window; RefreshStats(); })
@@ -1290,6 +1367,11 @@ int32 SCrowdyServerComputePanel::CountPendingTypes() const
 	}));
 }
 
+int32 SCrowdyServerComputePanel::CountToGenerate() const
+{
+	return static_cast<int32>(Algo::CountIf(FCrowdyServerComputeService::Get().GetProject().Types, &CrowdyExecDeploy::NeedsGenerating));
+}
+
 TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeRow(const CrowdyExecDeploy::FTypeState& Type)
 {
 	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
@@ -1427,6 +1509,11 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeRunningSwitch(const FString& 
 TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeMenu(const FString& TypeName, const FString& AssetPath)
 {
 	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
+	// An own type that only shares the starter's name has no grant or deposit to open.
+	const UCrowdyServerObjectDefinition* Definition = Cast<UCrowdyServerObjectDefinition>(FSoftObjectPath(AssetPath).ResolveObject());
+	const CrowdyGameKitStarters::FStarter* Starter = Definition && Definition->IsGameKitStarter() ? CrowdyGameKitStarters::FindStarter(TypeName) : nullptr;
+	const bool bSoftCurrency = Starter && Starter->DeveloperMethods.ContainsByPredicate([](const TCHAR* Method) { return FCString::Strcmp(Method, TEXT("deposit")) == 0; });
+	const EVisibility SoftCurrencyVisibility = bSoftCurrency ? EVisibility::Visible : EVisibility::Collapsed;
 	return SNew(SComboButton)
 		.ButtonStyle(&Style, "Crowdy.Button.Ghost")
 		.ContentPadding(FMargin(7.f, 3.f))
@@ -1451,6 +1538,22 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeMenu(const FString& TypeN
 				+ SVerticalBox::Slot().AutoHeight()
 				[
 					SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Ghost").ContentPadding(FMargin(12.f, 6.f)).HAlign(HAlign_Left)
+					.Visibility(SoftCurrencyVisibility)
+					.ToolTipText(LOCTEXT("GrantTip", "Gives one player in-game soft currency and items as a reward, counting toward their quests and achievements, on the live app now. Soft currency is game state, never real money."))
+					.OnClicked(this, &SCrowdyServerComputePanel::OnSoftCurrencyClicked, AssetPath, FString(TEXT("grant")))
+					[ SNew(STextBlock).Text(LOCTEXT("Grant", "Grant soft currency...")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 10)).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextPrimary())) ]
+				]
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Ghost").ContentPadding(FMargin(12.f, 6.f)).HAlign(HAlign_Left)
+					.Visibility(SoftCurrencyVisibility)
+					.ToolTipText(LOCTEXT("DepositTip", "Puts in-game soft currency and items into one player's hub on the live app now, counting nothing, such as to restore what a bug took. Soft currency is game state, never real money."))
+					.OnClicked(this, &SCrowdyServerComputePanel::OnSoftCurrencyClicked, AssetPath, FString(TEXT("deposit")))
+					[ SNew(STextBlock).Text(LOCTEXT("Deposit", "Deposit soft currency...")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 10)).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextPrimary())) ]
+				]
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Ghost").ContentPadding(FMargin(12.f, 6.f)).HAlign(HAlign_Left)
 					.ToolTipText(LOCTEXT("RemoveTypeTip", "Deletes the definition and, when it is the type's own, its Server Code folder. The type keeps running on the server until a deploy removes it."))
 					.IsEnabled(this, &SCrowdyServerComputePanel::IsIdle)
 					.OnClicked(this, &SCrowdyServerComputePanel::OnRemoveTypeClicked, TypeName, AssetPath)
@@ -1458,6 +1561,127 @@ TSharedRef<SWidget> SCrowdyServerComputePanel::MakeTypeMenu(const FString& TypeN
 				]
 			]
 		];
+}
+
+TSharedRef<SWidget> SCrowdyServerComputePanel::MakeDeployMenu()
+{
+	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
+	TSharedPtr<SComboButton> Button;
+	TSharedRef<SVerticalBox> Items = SNew(SVerticalBox);
+	SAssignNew(Button, SComboButton)
+		.ButtonStyle(&Style, "Crowdy.Button.Primary")
+		.ContentPadding(FMargin(6.f, 5.f))
+		.HasDownArrow(false)
+		.IsEnabled(this, &SCrowdyServerComputePanel::CanRebuildAll)
+		.ToolTipText(LOCTEXT("DeployMoreTip", "More ways to deploy"))
+		.ButtonContent()
+		[
+			CrowdyStudioWidgets::Icon(TEXT("chevron-down"), 14.f, FSlateColor::UseForeground())
+		]
+		.MenuContent()
+		[
+			SNew(SBorder).BorderImage(Style.GetBrush("Crowdy.Card")).Padding(4.f)
+			[
+				Items
+			]
+		];
+	const TWeakPtr<SComboButton> WeakButton = Button;
+	Items->AddSlot().AutoHeight()
+	[
+		SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Ghost").ContentPadding(FMargin(12.f, 6.f)).HAlign(HAlign_Left)
+		.ToolTipText(LOCTEXT("RebuildAllTip", "Builds every type's server code again, so types whose code did not change pick up the platform's current SDK and toolchain."))
+		.IsEnabled(this, &SCrowdyServerComputePanel::CanRebuildAll)
+		.OnClicked_Lambda([this, WeakButton]()
+		{
+			if (const TSharedPtr<SComboButton> Pinned = WeakButton.Pin())
+			{
+				Pinned->SetIsOpen(false);
+			}
+			return OnRebuildAllClicked();
+		})
+		[ SNew(STextBlock).Text(LOCTEXT("RebuildAll", "Rebuild All and Deploy")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 10)).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextPrimary())) ]
+	];
+	return Button.ToSharedRef();
+}
+
+TSharedRef<SWidget> SCrowdyServerComputePanel::MakeAddStarterMenu()
+{
+	const ISlateStyle& Style = FCrowdyStudioStyle::Get();
+	TSharedRef<SVerticalBox> Items = SNew(SVerticalBox);
+	for (const CrowdyGameKitStarters::FStarter& Starter : CrowdyGameKitStarters::GetStarters())
+	{
+		Items->AddSlot().AutoHeight()
+		[
+			SNew(SButton).ButtonStyle(&Style, "Crowdy.Button.Ghost").ContentPadding(FMargin(12.f, 6.f)).HAlign(HAlign_Left)
+			.ToolTipText(FText::FromString(Starter.Description))
+			.IsEnabled(this, &SCrowdyServerComputePanel::IsIdle)
+			.OnClicked(this, &SCrowdyServerComputePanel::OnAddStarterClicked, FString(Starter.TypeName))
+			[ SNew(STextBlock).Text(FText::FromString(Starter.TypeName)).Font(FCoreStyle::GetDefaultFontStyle("Regular", 10)).ColorAndOpacity(FSlateColor(FCrowdyStudioStyle::TextPrimary())) ]
+		];
+	}
+	return SNew(SComboButton)
+		.ButtonStyle(&Style, "Crowdy.Button.Ghost")
+		.ContentPadding(FMargin(8.f, 4.f))
+		.ToolTipText(LOCTEXT("AddStarterTip", "Adds one of the Game Kit's starters to the project as a Server Object type: its Rust under Server and its definition, ready to change and deploy with your own types"))
+		.ButtonContent()
+		[
+			CrowdyComputeUI::QuietLabel(LOCTEXT("AddStarter", "Add starter"))
+		]
+		.MenuContent()
+		[
+			SNew(SBorder).BorderImage(Style.GetBrush("Crowdy.Card")).Padding(4.f)
+			[
+				Items
+			]
+		];
+}
+
+FReply SCrowdyServerComputePanel::OnAddStarterClicked(FString TypeName)
+{
+	if (!IsIdle())
+	{
+		return FReply::Handled();
+	}
+	const TArray<UCrowdyServerObjectDefinition*> Found = CrowdyExecDeploy::FindProjectDefinitions();
+	const TArray<const UCrowdyServerObjectDefinition*> Project(Found);
+	FString Problem;
+	const TArray<const CrowdyGameKitStarters::FStarter*> Plan = CrowdyGameKitStarters::PlanAdd(TypeName, Project, Problem);
+	if (!Problem.IsEmpty())
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Problem), LOCTEXT("AddStarterTitle", "Add starter"));
+		return FReply::Handled();
+	}
+	if (Plan.IsEmpty())
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::Format(LOCTEXT("StarterThere", "The project already has the {0} starter."), FText::FromString(TypeName)),
+			LOCTEXT("AddStarterTitle", "Add starter"));
+		return FReply::Handled();
+	}
+	TArray<FString> Names;
+	for (const CrowdyGameKitStarters::FStarter* Starter : Plan)
+	{
+		Names.Add(Starter->TypeName);
+	}
+	if (!CrowdyComputeUI::Confirm(FText::Format(LOCTEXT("ConfirmAddStarter", "Adds {0} to the project as Server Object types: each one's Rust under Server/<Type Name>, which you can change, and its definition under {1}. With world, world is the app's root from the next deploy in place of the Crowdy SDK's: your own types run under it, and Get Players Online reads it."),
+		FText::FromString(FString::Join(Names, TEXT(", "))), FText::FromString(CrowdyGameKitStarters::ContentPath)), LOCTEXT("AddStarterTitle", "Add starter")))
+	{
+		return FReply::Handled();
+	}
+	TArray<FString> Added;
+	FString Error;
+	const bool bAdded = CrowdyGameKitStarters::AddStarter(TypeName, Project, CrowdyExecCodegen::GetServerDirectory(), Added, Error);
+	FCrowdyServerComputeService::Get().RequestRefreshTypes();
+	if (!bAdded)
+	{
+		const FText AddedText = Added.IsEmpty() ? LOCTEXT("NothingAdded", "Nothing was added.")
+			: FText::Format(LOCTEXT("SomeAdded", "Added before it stopped: {0}."), FText::FromString(FString::Join(Added, TEXT(", "))));
+		FMessageDialog::Open(EAppMsgType::Ok, FText::Format(LOCTEXT("AddStarterFailed", "{0}\n\n{1}"), FText::FromString(Error), AddedText), LOCTEXT("AddStarterTitle", "Add starter"));
+		return FReply::Handled();
+	}
+	FNotificationInfo Info(FText::Format(LOCTEXT("StarterAdded", "Added {0}; deploy to run them"), FText::FromString(FString::Join(Added, TEXT(", ")))));
+	Info.ExpireDuration = 8.0f;
+	FSlateNotificationManager::Get().AddNotification(Info);
+	return FReply::Handled();
 }
 
 FText SCrowdyServerComputePanel::MakeTypeMeta(const UCrowdyServerObjectDefinition* Definition, const FString& TypeName) const
@@ -1472,7 +1696,11 @@ FText SCrowdyServerComputePanel::MakeTypeMeta(const UCrowdyServerObjectDefinitio
 	{
 		Parts.Add(FText::Format(LOCTEXT("MetaFunctions", "{0} {0}|plural(one=function,other=functions)"), Definition->Functions.Num()).ToString());
 		Parts.Add(bLibrary ? CrowdyServerComputePage::InstancesPhrase(Definition->MinInstances, Definition->MaxInstances).ToString()
-			: FText::Format(LOCTEXT("MetaWatched", "{0} {0}|plural(one=variable,other=variables) visible to players"), Definition->WatchedFields.Num()).ToString());
+			: FText::Format(LOCTEXT("MetaWatched", "{0} {0}|plural(one=variable,other=variables) visible to players"), CrowdyServerComputePage::CountVisibleVariables(*Definition)).ToString());
+		if (!bLibrary && Definition->IsGameKitStarter() && !Definition->KitOwnerValues.IsEmpty())
+		{
+			Parts.Add(FText::Format(LOCTEXT("MetaOwnerValues", "{0} read only by the player {0}|plural(one=it belongs,other=they belong) to"), Definition->KitOwnerValues.Num()).ToString());
+		}
 		if (!Definition->IsReachableByPlayers())
 		{
 			Parts.Add(LOCTEXT("MetaClosed", "closed to players: only server code and developer tools reach it").ToString());
@@ -1809,7 +2037,7 @@ void SCrowdyServerComputePanel::RefreshLogs(bool bOlder)
 		LogQuery = CrowdyExecDeveloper::FLogQuery();
 		LogQuery.NodeType = LogTypeBox->GetText().ToString().TrimStartAndEnd();
 		LogQuery.Flow = LogFlow;
-		LogQuery.MaxLevel = CrowdyComputeUI::MaxLevelFor(LogLevel);
+		CrowdyServerComputePage::FindLogMaxLevel(LogLevel, LogQuery.MaxLevel);
 		LogQuery.Limit = CrowdyComputeUI::LogPageSize;
 	}
 	CrowdyExecDeveloper::FLogQuery Query = LogQuery;
@@ -2037,6 +2265,20 @@ FText SCrowdyServerComputePanel::GetMoveLine() const
 		Running, FText::FromString(FString::Join(Types, TEXT(", "))));
 }
 
+FReply SCrowdyServerComputePanel::OnGenerateClicked()
+{
+	if (!CanGenerate())
+	{
+		return FReply::Handled();
+	}
+	const CrowdyExecCodegenMenu::FGenerateAllResult Result = CrowdyExecCodegenMenu::GenerateAllInProject(CrowdyExecCodegenMenu::EGenerateAnswers::Dialogs);
+	FCrowdyServerComputeService::Get().RefreshTypes();
+	FNotificationInfo Info(CrowdyExecCodegenMenu::DescribeGenerateAll(Result));
+	Info.ExpireDuration = Result.Refused.IsEmpty() && !Result.bSaveFailed ? 8.0f : 15.0f;
+	FSlateNotificationManager::Get().AddNotification(Info);
+	return FReply::Handled();
+}
+
 FReply SCrowdyServerComputePanel::OnDeployClicked()
 {
 	if (RenewIfStale() || !CanDeploy())
@@ -2044,6 +2286,16 @@ FReply SCrowdyServerComputePanel::OnDeployClicked()
 		return FReply::Handled();
 	}
 	FCrowdyServerComputeService::Get().Deploy();
+	return FReply::Handled();
+}
+
+FReply SCrowdyServerComputePanel::OnRebuildAllClicked()
+{
+	if (RenewIfStale() || !CanRebuildAll())
+	{
+		return FReply::Handled();
+	}
+	FCrowdyServerComputeService::Get().Deploy(true);
 	return FReply::Handled();
 }
 
@@ -2095,6 +2347,61 @@ FReply SCrowdyServerComputePanel::OnOpenDefinitionClicked(FString AssetPath)
 	return FReply::Handled();
 }
 
+FReply SCrowdyServerComputePanel::OnSoftCurrencyClicked(FString AssetPath, FString Method)
+{
+	FSlateApplication::Get().DismissAllMenus();
+	UCrowdyServerObjectDefinition* Definition = Cast<UCrowdyServerObjectDefinition>(FSoftObjectPath(AssetPath).TryLoad());
+	const FCrowdyServerFunction* Function = Definition && Definition->IsGameKitStarter() ? Definition->Functions.FindByPredicate([&Method](const FCrowdyServerFunction& Each)
+	{
+		return Each.GetMethodName().Equals(Method, ESearchCase::CaseSensitive);
+	}) : nullptr;
+	if (!Function)
+	{
+		SetError(CrowdyComputeUI::ErrorRemove, FText::Format(LOCTEXT("NoSoftCurrency", "{0} is no player starter with {1}; add the player starter to grant and deposit soft currency."),
+			FText::FromString(FSoftObjectPath(AssetPath).GetLongPackageName()), FText::FromString(Method)));
+		return FReply::Handled();
+	}
+	SCrowdyExecDeveloperCall::Open(*Definition, Function->Name);
+	return FReply::Handled();
+}
+
+void SCrowdyServerComputePanel::RemoveStarter(const FString& TypeName)
+{
+	FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
+	const TArray<UCrowdyServerObjectDefinition*> Project = CrowdyExecDeploy::FindProjectDefinitions();
+	FString Problem;
+	const TArray<UCrowdyServerObjectDefinition*> Plan = CrowdyGameKitStarters::PlanRemove(TypeName, Project, Problem);
+	if (!Problem.IsEmpty())
+	{
+		SetError(CrowdyComputeUI::ErrorRemove, FText::FromString(Problem));
+		return;
+	}
+	// A starter's folder is its own crate, not generated code, and a starter others run under or call goes with them, as -op=removestarter does.
+	const FString ServerDirectory = CrowdyExecCodegen::GetServerDirectory();
+	const FText Names = FText::FromString(FString::JoinBy(Plan, TEXT(", "), [](const UCrowdyServerObjectDefinition* Each) { return Each->TypeName; }));
+	TArray<FText> Lines;
+	Lines.Add(FText::Format(LOCTEXT("ConfirmRemoveStarters", "Remove the Game Kit starters {0} from this project?"), Names));
+	Lines.Add(FText::Format(LOCTEXT("ConfirmRemoveStartersFiles", "This deletes their definitions under {0} and their Server Code folders under Server, edits to their Rust included, and clears the Game Kit World setting if it names one of them."),
+		FText::FromString(CrowdyGameKitStarters::ContentPath)));
+	for (const UCrowdyServerObjectDefinition* Each : Plan)
+	{
+		Lines.Add(CrowdyComputeUI::RemoveServerEffect(FText::FromString(Each->TypeName), Compute.GetAppTarget(), Compute.FindChange(Each->TypeName)));
+	}
+	if (!CrowdyComputeUI::Confirm(FText::Join(FText::FromString(TEXT("\n\n")), Lines), FText::Format(LOCTEXT("ConfirmRemoveStartersTitle", "Remove {0}"), Names)))
+	{
+		return;
+	}
+	TArray<FString> Removed;
+	FString Error;
+	const bool bRemoved = CrowdyGameKitStarters::RemoveStarter(TypeName, CrowdyExecDeploy::FindProjectDefinitions(), ServerDirectory, Removed, Error);
+	SetError(CrowdyComputeUI::ErrorRemove, bRemoved ? FText::GetEmpty() : FText::FromString(Error));
+	for (const FString& Each : Removed)
+	{
+		CrowdyServerCodeEdits::ForgetUnder(FPaths::Combine(ServerDirectory, Each));
+	}
+	Compute.RefreshTypes();
+}
+
 FReply SCrowdyServerComputePanel::OnRemoveTypeClicked(FString TypeName, FString AssetPath)
 {
 	FSlateApplication::Get().DismissAllMenus();
@@ -2111,6 +2418,18 @@ FReply SCrowdyServerComputePanel::OnRemoveTypeClicked(FString TypeName, FString 
 	if (!Definition.IsValid() || !Definition->TypeName.Equals(TypeName, ESearchCase::CaseSensitive))
 	{
 		SetError(CrowdyComputeUI::ErrorRemove, FText::Format(LOCTEXT("RemoveStale", "{1} is no longer the definition of {0}, so nothing was removed. The list is read again; try once more from it."), Type, Asset));
+		return FReply::Handled();
+	}
+	if (Definition->IsGameKitStarter())
+	{
+		RemoveStarter(TypeName);
+		return FReply::Handled();
+	}
+
+	const FString SettingsProblem = CrowdyExecDeploy::FindReadOnlySettingsProblemFor(FSoftObjectPath(AssetPath));
+	if (!SettingsProblem.IsEmpty())
+	{
+		SetError(CrowdyComputeUI::ErrorRemove, FText::FromString(SettingsProblem));
 		return FReply::Handled();
 	}
 
@@ -2159,8 +2478,11 @@ FReply SCrowdyServerComputePanel::OnRemoveTypeClicked(FString TypeName, FString 
 	{
 		return FReply::Handled();
 	}
-	const FText FolderError = FolderStays.IsEmpty() ? CrowdyComputeUI::DeleteCrateFolder(Type, TypeName, CrateDirectory, ServerDirectory, bShared, ShownFolder) : FText::GetEmpty();
-	SetError(CrowdyComputeUI::ErrorRemove, FolderError);
+	const CrowdyServerComputePage::FRemovalEffects Effects = CrowdyServerComputePage::FinishRemoval(Type, TypeName, FSoftObjectPath(AssetPath), CrateDirectory, ServerDirectory, bShared, ShownFolder, FolderStays.IsEmpty());
+	const FText FolderError = FolderStays.IsEmpty() ? Effects.FolderProblem : FText::GetEmpty();
+	const FText SettingsError = Effects.bSettingsSaved ? FText::GetEmpty() : FText::Format(LOCTEXT("RemoveSettingsNotSaved",
+		"Removed {0}'s definition, but the project's DefaultGame.ini could not be written, so its Game Kit settings still name it; make the file writable and remove that line."), Type);
+	SetError(CrowdyComputeUI::ErrorRemove, FolderError.IsEmpty() ? SettingsError : FolderError);
 	// Closing the definition's editor kept its unsaved code edits; with their files gone they would only haunt later prompts.
 	if (FolderStays.IsEmpty() && FolderError.IsEmpty())
 	{
@@ -2211,9 +2533,19 @@ bool SCrowdyServerComputePanel::IsIdle() const
 	return !FCrowdyServerComputeService::Get().IsBusy();
 }
 
+bool SCrowdyServerComputePanel::CanGenerate() const
+{
+	return IsIdle() && CountToGenerate() > 0;
+}
+
 bool SCrowdyServerComputePanel::CanDeploy() const
 {
 	return IsIdle() && FCrowdyServerComputeService::Get().CanDeploy();
+}
+
+bool SCrowdyServerComputePanel::CanRebuildAll() const
+{
+	return IsIdle() && FCrowdyServerComputeService::Get().CanRebuildAll();
 }
 
 bool SCrowdyServerComputePanel::CanSwitch() const

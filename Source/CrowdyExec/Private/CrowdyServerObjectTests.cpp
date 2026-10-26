@@ -13,6 +13,7 @@
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLibrary.h"
 #include "CrowdyServerObjectLink.h"
+#include "CrowdyServerObjectShared.h"
 #include "CrowdyServerObjectSubsystem.h"
 #include "CrowdyServerObjectTestRig.h"
 #include "Engine/GameInstance.h"
@@ -4868,6 +4869,37 @@ bool FCrowdyServerObjectFixOnlyOneSignInTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectComponentKeyedByPlayerTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.EmptyInstanceIdOfAPlayerStarterWaitsForSignIn", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectComponentKeyedByPlayerTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	Rig.Definition->CodeSource = ECrowdyServerCodeSource::GameKitStarter;
+	Rig.Definition->bKitKeyedByPlayer = true;
+	TStrongObjectPtr<UCrowdyServerObjectComponent> Component = MakeRigComponent(Rig, ECrowdyServerObjectInstanceMode::InstanceId);
+	TStrongObjectPtr<UCrowdyServerObjectTestListener> Listener = MakeListener();
+	Component->OnStatusChanged.AddDynamic(Listener.Get(), &UCrowdyServerObjectTestListener::HandleStatus);
+	FString Error;
+	TestTrue(TEXT("a starter keyed by player with no Instance Id has none before sign-in"), Component->ResolveInstanceId(Error).IsEmpty());
+	TestTrue(FString::Printf(TEXT("because nobody is signed in (%s)"), *Error), Error.StartsWith(TEXT("Nobody is signed in yet")));
+	FCrowdyServerObjectComponentTestAccess::Join(*Component);
+	TestNull(TEXT("so it holds nothing yet"), Component->GetServerObject());
+	TestTrue(FString::Printf(TEXT("and waits for the sign-in rather than failing (got %s)"), *StatusNames(Listener->StatusEvents)), Listener->StatusEvents.IsEmpty());
+	TestEqualSensitive(TEXT("saying so"), Component->GetFailureReason(), FString(CrowdyServerObjectShared::WaitingForSignIn));
+
+	Component->InstanceId = TEXT("42");
+	TestEqualSensitive(TEXT("a typed Instance Id is still that player's"), Component->ResolveInstanceId(Error), FString(TEXT("42")));
+	Component->InstanceId.Reset();
+	Rig.Definition->bKitKeyedByPlayer = false;
+	TestTrue(TEXT("a starter not keyed by player still needs an Instance Id"), Component->ResolveInstanceId(Error).IsEmpty() && Error.StartsWith(TEXT("Set an Instance Id")));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectFixOnlyOneAcquireTest,
 	"CrowdySDK.CrowdyExec.ServerObjectFixes.OnlyOneInstanceAcquireUsesTheOnlyInstance", CrowdyServerObjectTests::TestFlags)
 bool FCrowdyServerObjectFixOnlyOneAcquireTest::RunTest(const FString& Parameters)
@@ -5011,6 +5043,15 @@ bool FCrowdyServerObjectRootNotDeployedTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("naming the type as not deployed (%s)"), *Object->GetFailureReason()), Object->GetFailureReason().Contains(TEXT("is not deployed on the server")));
 	Rig.Tick(2.f);
 	TestTrue(TEXT("and reads again within seconds"), Rig.SentAny(KindCall, TEXT("read")));
+
+	FCrowdyNativeExecReply AbsentType;
+	AbsentType.Status = ECrowdyNativeExecStatus::Denied;
+	AbsentType.Message = TEXT("clients may not subscribe to that type");
+	TestEqualSensitive(TEXT("a watch refused because the active version lacks the type names it as not deployed"), Object->WaitingReasonForTest(AbsentType, false),
+		FString::Printf(TEXT("%s is not deployed on the server"), *Rig.Definition->TypeName));
+	FCrowdyNativeExecReply OtherDenial = AbsentType;
+	OtherDenial.Message = TEXT("clients may not subscribe to that topic");
+	TestTrue(TEXT("another denial still says the server refused"), Object->WaitingReasonForTest(OtherDenial, false).StartsWith(TEXT("The server refused to let this player watch"), ESearchCase::CaseSensitive));
 	return true;
 }
 
@@ -5519,6 +5560,67 @@ bool FCrowdyServerObjectSwitchedOffConnectSaysPausedTest::RunTest(const FString&
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectPauseStatusesArePausedTest,
+	"CrowdySDK.CrowdyExec.PauseStatusesArePaused", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectPauseStatusesArePausedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	TestTrue(TEXT("a connect refused as APP_PAUSED is recognised by its code"), CrowdyServerObjectDetail::IsSwitchedOffText(TEXT("over budget (APP_PAUSED)")));
+	TestTrue(TEXT("so is APP_DISABLED"), CrowdyServerObjectDetail::IsSwitchedOffText(TEXT("off (APP_DISABLED)")));
+	TestTrue(TEXT("and TYPE_DISABLED"), CrowdyServerObjectDetail::IsSwitchedOffText(TEXT("test_boss is off (TYPE_DISABLED)")));
+	TestFalse(TEXT("but not FORBIDDEN alone"), CrowdyServerObjectDetail::IsSwitchedOffText(TEXT("bad token (FORBIDDEN)")));
+
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = Rig.Acquire(Rig.InstanceId, Owner.Get());
+	FSentFrame Subscribe;
+	FSentFrame Read;
+	if (!Object || !Rig.Open() || !TestTrue(TEXT("the object subscribes"), Rig.WaitForFrame(KindSubscribe, TEXT("state"), Subscribe))
+		|| !TestTrue(TEXT("and reads"), Rig.WaitForFrame(KindCall, TEXT("read"), Read)))
+	{
+		return false;
+	}
+	Rig.Reply(Subscribe.Rid, ECrowdyNativeExecStatus::Ok, {});
+	Rig.Reply(Read.Rid, ECrowdyNativeExecStatus::TypeDisabled, Utf8Bytes(TEXT("`test_boss` is off")));
+	Rig.PumpFor(0.1);
+	TestEqual(TEXT("a read refused as TypeDisabled keeps waiting"), Object->GetStatus(), ECrowdyServerObjectStatus::Connecting);
+	TestEqualSensitive(TEXT("and says why"), Object->GetFailureReason(), FString(TEXT("The server is switched off or paused, so this Server Object waits: `test_boss` is off")));
+
+	Rig.Tick(1.f);
+	FSentFrame Reread;
+	if (!TestTrue(TEXT("the refused read is retried"), Rig.WaitForFrame(KindCall, TEXT("read"), Reread)))
+	{
+		return false;
+	}
+	Rig.Reply(Reread.Rid, ECrowdyNativeExecStatus::Ok, Rig.ReadMessage(5, Boss(3000, false, ECrowdyExecTestPhase::Calm)));
+	if (!TestTrue(TEXT("a good read makes the object Ready"), Rig.PumpUntil([Object]() { return Object->GetStatus() == ECrowdyServerObjectStatus::Ready; })))
+	{
+		return false;
+	}
+
+	const ECrowdyNativeExecStatus Statuses[] = {ECrowdyNativeExecStatus::AppPaused, ECrowdyNativeExecStatus::AppDisabled, ECrowdyNativeExecStatus::TypeDisabled};
+	for (const ECrowdyNativeExecStatus Status : Statuses)
+	{
+		FCallSpy Call;
+		Object->Call(AttackFunction, AttackParams(10), Call.OnDone());
+		if (!AnswerMemberCall(Rig, AttackMethod, Status, Utf8Bytes(TEXT("off for now")), Call))
+		{
+			return false;
+		}
+		const FCrowdyServerCallResult& Result = (*Call.Results)[0];
+		const int32 Wire = static_cast<int32>(Status);
+		TestEqual(FString::Printf(TEXT("status %d is Paused"), Wire), Result.Outcome, ECrowdyServerCallOutcome::Paused);
+		TestTrue(FString::Printf(TEXT("status %d is retryable"), Wire), Result.bRetryable);
+		TestEqualSensitive(FString::Printf(TEXT("status %d has the platform's words"), Wire), Result.Reason,
+			FString(TEXT("The server is switched off or paused, so it refused the call to AttackBoss: off for now")));
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectGatewayRefusedForGoodFailsWithoutRediallingTest,
 	"CrowdySDK.CrowdyExec.GatewayRefusedForGoodFailsWithoutRedialling", CrowdyServerObjectTests::TestFlags)
 bool FCrowdyServerObjectGatewayRefusedForGoodFailsWithoutRediallingTest::RunTest(const FString& Parameters)
@@ -5597,6 +5699,51 @@ bool FCrowdyServerObjectRedialRefusedForGoodFailsTheObjectsTest::RunTest(const F
 	TestEqual(TEXT("but the redial waits out the backoff"), DialsOf(Rig), 1);
 	Rig.Tick(1.1f, 0.1f);
 	TestTrue(TEXT("and then dials"), Rig.PumpUntil([&Rig]() { return DialsOf(Rig) >= 2; }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectRedialRefusedWhilePausedSaysPausedTest,
+	"CrowdySDK.CrowdyExec.RedialRefusedWhilePausedSaysPaused", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectRedialRefusedWhilePausedSaysPausedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	FRig Rig(*this);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	const FString Paused = TEXT("{\"errors\":[{\"message\":\"app 42 is paused: its organization has no funds (insufficient_funds)\",\"extensions\":{\"code\":\"FORBIDDEN\"}}],\"data\":null}");
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, ConnectAnswer);
+	Script.Emplace(200, Paused);
+	Script.Emplace(200, Paused);
+	Rig.Client->SetTestResponseScript(MoveTemp(Script));
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = Rig.AcquireReady(Owner.Get(), Boss(3000, false, ECrowdyExecTestPhase::Calm), 5);
+	if (!Object)
+	{
+		return false;
+	}
+	Rig.Client->TestExecCloseFromServer(1006, false);
+	const bool bRefused = Rig.PumpUntil([&Rig]()
+	{
+		Rig.Subsystem->TickForTest(0.1f);
+		const FCrowdyNativeExecConnection* Connection = Rig.Subsystem->GetConnection();
+		return Connection && !Connection->GetRefusal().IsEmpty();
+	});
+	if (!TestTrue(TEXT("the redial is refused by the paused app"), bRefused))
+	{
+		return false;
+	}
+	TestTrue(TEXT("the socket is down"), !Rig.Subsystem->GetConnection()->IsConnected());
+
+	FCrowdyNativeExecReply ClientGaveUp;
+	ClientGaveUp.Status = ECrowdyNativeExecStatus::DeadlineExceeded;
+	ClientGaveUp.bNoReply = true;
+	const FCrowdyServerCallResult Call = Object->MakeCallResultForTest(AttackFunction, ClientGaveUp);
+	TestEqual(TEXT("a call that got no answer while the redial is refused as paused says Paused"), Call.Outcome, ECrowdyServerCallOutcome::Paused);
+	TestTrue(TEXT("and can be retried"), Call.bRetryable);
+	TestTrue(FString::Printf(TEXT("with the platform's words (%s)"), *Call.Reason), Call.Reason.Contains(TEXT("app 42 is paused"), ESearchCase::CaseSensitive));
 	return true;
 }
 

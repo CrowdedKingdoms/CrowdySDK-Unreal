@@ -16,10 +16,12 @@
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectDefinitionCustomization.h"
 #include "CrowdyStudioModule.h"
+#include "GameDelegates.h"
 #include "IAssetTools.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "Kismet2/StructureEditorUtils.h"
 #include "Misc/MessageDialog.h"
+#include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
 #include "SCrowdyServerComputePanel.h"
@@ -33,6 +35,7 @@
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 #define LOCTEXT_NAMESPACE "CrowdyExecEditor"
 
@@ -182,6 +185,21 @@ namespace CrowdyExecEditorModule
 		}
 		return bRepaired;
 	}
+
+	/** A packaged game reads the definitions the Game Kit World and Game Kit Actor Starters settings name, which nothing else may reference. */
+	void CookGameKitWorld(TConstArrayView<const ITargetPlatform*>, TArray<FName>& PackagesToCook, TArray<FName>&)
+	{
+		const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+		TArray<FSoftObjectPath> Named = Settings->GameKitActorStarters;
+		Named.Add(Settings->GameKitWorld);
+		for (const FSoftObjectPath& Path : Named)
+		{
+			if (!Path.IsNull() && FPackageName::DoesPackageExist(Path.GetLongPackageName()))
+			{
+				PackagesToCook.AddUnique(Path.GetLongPackageFName());
+			}
+		}
+	}
 }
 
 // A Blueprint struct edit, a package reload and a reinstance all replace struct fields, so every resolved field table goes stale.
@@ -194,6 +212,7 @@ public:
 		ObjectsReplacedHandle = FCoreUObjectDelegates::OnObjectsReplaced.AddRaw(this, &FCrowdyExecEditorModule::HandleObjectsReplaced);
 		AssetRenamedHandle = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(CrowdyExecEditorModule::AssetRegistryName).Get().OnAssetRenamed().AddRaw(this, &FCrowdyExecEditorModule::HandleAssetRenamed);
 		PackageSavedHandle = UPackage::PackageSavedWithContextEvent.AddRaw(this, &FCrowdyExecEditorModule::HandlePackageSaved);
+		ModifyCookHandle = FGameDelegates::Get().GetModifyCookDelegate().AddStatic(&CrowdyExecEditorModule::CookGameKitWorld);
 		UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FCrowdyExecEditorModule::RegisterMenus));
 		CrowdyStudioExtraPages::RegisterPage(CrowdyExecEditorModule::ServerComputePageId, LOCTEXT("ServerComputeGroup", "COMPUTE"),
 			LOCTEXT("ServerComputePage", "Server Compute"), TEXT("server"),
@@ -247,6 +266,7 @@ public:
 		FCoreUObjectDelegates::OnPackageReloaded.Remove(PackageReloadedHandle);
 		FCoreUObjectDelegates::OnObjectsReplaced.Remove(ObjectsReplacedHandle);
 		UPackage::PackageSavedWithContextEvent.Remove(PackageSavedHandle);
+		FGameDelegates::Get().GetModifyCookDelegate().Remove(ModifyCookHandle);
 		if (IAssetRegistry* AssetRegistry = IAssetRegistry::Get())
 		{
 			AssetRegistry->OnAssetRenamed().Remove(AssetRenamedHandle);
@@ -338,6 +358,7 @@ private:
 	FDelegateHandle ObjectsReplacedHandle;
 	FDelegateHandle AssetRenamedHandle;
 	FDelegateHandle PackageSavedHandle;
+	FDelegateHandle ModifyCookHandle;
 	CrowdyExecCodegenMenu::FPendingRetags PendingRetags;
 };
 

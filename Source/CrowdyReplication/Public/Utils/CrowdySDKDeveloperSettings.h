@@ -173,6 +173,16 @@ public:
 		meta=(DisplayName="Server Object Open Timeout (seconds)", ClampMin="1.0", ClampMax="60.0"))
 	float ServerObjectOpenTimeoutSeconds = 10.0f;
 
+	/** The project's Game Kit world Server Object, which Add starter in Server Compute sets: while set, world is the app's root and Get Players Online reads it. Empty uses the Crowdy SDK's own root. */
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Developer|Server Objects",
+		meta=(DisplayName="Game Kit World", AllowedClasses="/Script/CrowdyExec.CrowdyServerObjectDefinition"))
+	FSoftObjectPath GameKitWorld;
+
+	/** The project's Game Kit starters whose actors players see, such as npcs: their Kit Actors give each kind of actor its class. A starter is listed here while its Kit Actors has a kind. */
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Developer|Server Objects",
+		meta=(DisplayName="Game Kit Actor Starters", AllowedClasses="/Script/CrowdyExec.CrowdyServerObjectDefinition"))
+	TArray<FSoftObjectPath> GameKitActorStarters;
+
 	/** The call timeout in milliseconds, clamped to the setting's range so a hand-edited ini cannot ask for less than a call may take. */
 	int32 GetServerObjectCallTimeoutMs() const { return FMath::RoundToInt(FMath::Clamp(ServerObjectCallTimeoutSeconds, MinServerObjectCallTimeoutSeconds, 120.0f) * 1000.0f); }
 

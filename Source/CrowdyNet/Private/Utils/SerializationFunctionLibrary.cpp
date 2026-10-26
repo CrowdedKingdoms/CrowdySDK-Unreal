@@ -8,6 +8,7 @@
 #include "Utils/CrowdyPodCopyPlan.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"
 #include "HAL/PlatformTime.h"
+#include "Hash/xxhash.h"
 #include "Misc/Guid.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
@@ -198,9 +199,8 @@ FGuid USerializationFunctionLibrary::ToGuid(const FCrowdyActorId& ActorId)
 	// Runs once per received actor update, so it stays scoped and stays branch-free over the 32 octets.
 	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_ToGuid);
 
-	// An id that was never filled in addresses no actor, so it derives no key. Without this it would
-	// derive the same key every id outside the hexadecimal alphabet derives, and that key reports itself
-	// as valid, so "no actor" would be indistinguishable from an id a sender chose.
+	// An id that was never filled in addresses no actor, so it derives no key rather than a valid one hashed
+	// from 32 zero octets that would be indistinguishable from an id a sender chose.
 	if (!ActorId.IsSet())
 	{
 		return FGuid();
@@ -225,14 +225,11 @@ FGuid USerializationFunctionLibrary::ToGuid(const FCrowdyActorId& ActorId)
 
 	static constexpr FHexDigitTable HexDigits{};
 
-	// A component holding anything but hexadecimal reads as the largest value, so two ids that differ
-	// only outside the hexadecimal alphabet derive the same key. The 32 octets remain what tells them
-	// apart; this is a local lookup key and nothing more. A component is judged after all eight octets
-	// rather than at the first bad one, which reads the same because every rejection is the same value.
-	auto ParseHex = [](const uint8* Octets, const int32 Len) -> uint32
+	// A component is judged after all eight octets rather than at the first bad one, which reads the same.
+	uint32 Seen = 0;
+	auto ParseHex = [&Seen](const uint8* Octets, const int32 Len) -> uint32
 	{
 		uint32 Result = 0;
-		uint32 Seen = 0;
 
 		for (int32 i = 0; i < Len; ++i)
 		{
@@ -241,15 +238,23 @@ FGuid USerializationFunctionLibrary::ToGuid(const FCrowdyActorId& ActorId)
 			Result = (Result << 4) | (Value & 0xFu);
 		}
 
-		return Seen >= FHexDigitTable::NotAHexDigit ? UINT32_MAX : Result;
+		return Result;
 	};
 
 	const uint32 A = ParseHex(ActorId.Octets, 8);
 	const uint32 B = ParseHex(ActorId.Octets + 8, 8);
 	const uint32 C = ParseHex(ActorId.Octets + 16, 8);
 	const uint32 D = ParseHex(ActorId.Octets + 24, 8);
+	if (Seen < FHexDigitTable::NotAHexDigit)
+	{
+		return FGuid(A, B, C, D);
+	}
 
-	return FGuid(A, B, C, D);
+	// Any 32 octets may name an actor (a Game Kit hub's mob is the text "M10,-4@3" padded out), so an id outside the
+	// hexadecimal alphabet keys on a hash of all of them rather than on digits it does not have.
+	const FXxHash128 Hash = FXxHash128::HashBuffer(ActorId.Octets, sizeof(ActorId.Octets));
+	return FGuid(static_cast<uint32>(Hash.HashHigh >> 32), static_cast<uint32>(Hash.HashHigh), static_cast<uint32>(Hash.HashLow >> 32),
+		static_cast<uint32>(Hash.HashLow));
 }
 
 FGuid USerializationFunctionLibrary::ToGuid(const FString& String)

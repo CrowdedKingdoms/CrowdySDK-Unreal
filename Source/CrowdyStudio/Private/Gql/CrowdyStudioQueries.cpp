@@ -109,6 +109,8 @@ namespace
 
 	void ReadGroupPolicy(const TSharedPtr<FJsonObject>& Node, FStudioGroupPolicy& Out)
 	{
+		// A null cap is unlimited, 0 here; reading into the cached policy would keep the old cap.
+		Out = FStudioGroupPolicy();
 		Out.AppId = ReadId(Node, TEXT("appId"));
 		Node->TryGetStringField(TEXT("groupType"), Out.GroupType);
 		Node->TryGetStringField(TEXT("creationPolicy"), Out.CreationPolicy);

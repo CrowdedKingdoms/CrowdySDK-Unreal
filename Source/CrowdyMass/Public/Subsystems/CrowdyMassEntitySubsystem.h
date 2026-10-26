@@ -1404,6 +1404,11 @@ public:
 	{
 		return GetSpatialGridCellsForSphere(Origin, Radius, MaxCells, OutCells);
 	}
+	bool GetSpatialGridCellsForRayForTest(const FVector& Start, const FVector& End, const float QueryRadius, const int32 MaxCells, TArray<FIntVector>& OutCells) const
+	{
+		return GetSpatialGridCellsForRay(Start, End, QueryRadius, MaxCells, OutCells);
+	}
+	int32 NumRaySeenCellsForTest() const { return ScratchRaySeenCells.Num(); }
 	void UpdateSpatialGridEntityForTest(const FMassEntityHandle Entity, const FVector& Origin, const float Radius)
 	{
 		UpdateSpatialGridEntity(Entity, Origin, Radius);
@@ -2198,7 +2203,10 @@ private:
 	/** Ceiling on the swept radius one remote update may claim, since that radius is derived from wire data. */
 	float GetSpatialGridMaxEntitySweepRadius() const;
 	float GetSpatialGridDebugTwoDimensionalHeightPadding() const;
-	FIntVector GetSpatialGridCell(const FVector& Location) const;
+	/** False when Location is not finite or its cell, widened by RadiusCells, would leave the int range. */
+	bool TryGetSpatialGridCell(const FVector& Location, double RadiusCells, FIntVector& OutCell) const;
+	/** False when Radius is not finite or covers more than MaxCells cells along one axis. */
+	bool TryGetSpatialGridRadiusCells(float Radius, int32 MaxCells, int32& OutRadiusCells) const;
 	FBox GetSpatialGridDebugCellBounds(const FIntVector& Cell, const FVector& Start, const FVector& End) const;
 	/** False, with no cells, when the box around the sphere would exceed MaxCells or its input is not finite. */
 	bool GetSpatialGridCellsForSphere(const FVector& Origin, float Radius, int32 MaxCells, TArray<FIntVector>& OutCells) const;

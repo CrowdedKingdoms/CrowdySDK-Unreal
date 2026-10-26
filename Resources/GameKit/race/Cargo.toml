@@ -1,0 +1,14 @@
+[package]
+name = "race"
+description = "Starter: a race over a course of gates with a countdown, laps, splits, places and the winner's ghost, and a warden on the positions clients report (world metres, z up)"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ckx-sdk = "0.12.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

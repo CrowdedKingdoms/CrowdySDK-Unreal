@@ -4,8 +4,10 @@
 
 #include "Actors/CrowdyMassNearTierActor.h"
 #include "Assets/CrowdyMassAnimSet.h"
+#include "Components/BoxComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Fragments/CrowdyMassAnimFragments.h"
@@ -798,6 +800,182 @@ bool FCrowdyMassNearTierActionMeshMustHaveAnAssetTest::RunTest(const FString& Pa
 	TestSamePtr(TEXT("and the shell's own mesh wins once it has an asset of its own"),
 		CrowdyMassNearTier::ChooseActionMesh(*Shell), static_cast<USkeletalMeshComponent*>(Shell->Mesh.Get()));
 
+	return true;
+}
+
+struct FCrowdyMassNearTierTraceCollisionTestAccess
+{
+	static void Apply(UCrowdyMassNearTierComponent& View, const bool bEnable)
+	{
+		View.ApplyTraceCollisionFromFragment(bEnable, ECC_Pawn, FCollisionResponseContainer::GetDefaultResponseContainer());
+	}
+
+	static void Clear(UCrowdyMassNearTierComponent& View) { View.ClearAppliedTraceCollision(); }
+
+	static bool HasApplied(const UCrowdyMassNearTierComponent& View) { return View.bHasAppliedTraceCollision; }
+};
+
+/**
+ * Only the mesh that draws the character, and a component tagged CrowdyTraceCollision, answer traces as the entity.
+ *
+ * A held weapon or a hat is part of the picture and not part of the body, so giving it query collision would let
+ * a shot at the decoration count as a hit on the entity.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassNearTierTraceCollisionStaysOffDecorationTest,
+	"CrowdySDK.Mass.NearTierTraceCollisionStaysOffDecoration", CrowdyMassNearTierViewTestFlags)
+bool FCrowdyMassNearTierTraceCollisionStaysOffDecorationTest::RunTest(const FString& Parameters)
+{
+	using FFixture = FCrowdyMassNearTierViewTestFixture;
+	using FAccess = FCrowdyMassNearTierTraceCollisionTestAccess;
+
+	const TStrongObjectPtr<ACrowdyMassNearTierActor> Shell(FFixture::MakeShell());
+	UCrowdyMassNearTierComponent* View = Shell->NearTier;
+	if (!TestNotNull(TEXT("the shell carries a near tier view"), View))
+	{
+		return false;
+	}
+
+	USkeletalMeshComponent* Mesh = Shell->Mesh;
+	UStaticMeshComponent* Decoration = NewObject<UStaticMeshComponent>(Shell.Get(), TEXT("HeldWeapon"));
+	UBoxComponent* HitBox = NewObject<UBoxComponent>(Shell.Get(), TEXT("HitBox"));
+	HitBox->ComponentTags.Add(TEXT("CrowdyTraceCollision"));
+	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Decoration->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	HitBox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Mesh->SetSkinnedAssetAndUpdate(FFixture::MakeStandInAsset(Shell.Get()));
+
+	FAccess::Apply(*View, true);
+	TestTrue(TEXT("the mesh that draws the character answers traces"),
+		CollisionEnabledHasQuery(Mesh->BodyInstance.GetCollisionEnabled(false)));
+	TestTrue(TEXT("a decoration is left as authored"), Decoration->BodyInstance.GetCollisionEnabled(false) == ECollisionEnabled::NoCollision);
+	TestTrue(TEXT("a component tagged to opt in answers traces"),
+		CollisionEnabledHasQuery(HitBox->BodyInstance.GetCollisionEnabled(false)));
+
+	FAccess::Clear(*View);
+	TestFalse(TEXT("clearing takes the mesh's query collision back off"),
+		CollisionEnabledHasQuery(Mesh->BodyInstance.GetCollisionEnabled(false)));
+	TestFalse(TEXT("and the tagged component's"),
+		CollisionEnabledHasQuery(HitBox->BodyInstance.GetCollisionEnabled(false)));
+	TestTrue(TEXT("and still leaves the decoration alone"), Decoration->BodyInstance.GetCollisionEnabled(false) == ECollisionEnabled::NoCollision);
+	return true;
+}
+
+/**
+ * A shell whose mesh has no asset yet has nothing to take trace collision, and must not remember having pushed it.
+ *
+ * Latching the push would leave the mesh without query collision for the rest of the promotion once its asset loaded.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassNearTierTraceCollisionRetriesUntilTheMeshHasAnAssetTest,
+	"CrowdySDK.Mass.NearTierTraceCollisionRetriesUntilTheMeshHasAnAsset", CrowdyMassNearTierViewTestFlags)
+bool FCrowdyMassNearTierTraceCollisionRetriesUntilTheMeshHasAnAssetTest::RunTest(const FString& Parameters)
+{
+	using FFixture = FCrowdyMassNearTierViewTestFixture;
+	using FAccess = FCrowdyMassNearTierTraceCollisionTestAccess;
+
+	const TStrongObjectPtr<ACrowdyMassNearTierActor> Shell(FFixture::MakeShell());
+	UCrowdyMassNearTierComponent* View = Shell->NearTier;
+	if (!TestNotNull(TEXT("the shell carries a near tier view"), View))
+	{
+		return false;
+	}
+
+	USkeletalMeshComponent* Mesh = Shell->Mesh;
+	UBoxComponent* HitBox = NewObject<UBoxComponent>(Shell.Get(), TEXT("HitBox"));
+	HitBox->ComponentTags.Add(TEXT("CrowdyTraceCollision"));
+	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	HitBox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	FAccess::Apply(*View, true);
+	TestFalse(TEXT("with no asset on the mesh nothing is remembered as applied"), FAccess::HasApplied(*View));
+	TestFalse(TEXT("and the mesh is not pushed"), CollisionEnabledHasQuery(Mesh->BodyInstance.GetCollisionEnabled(false)));
+	TestTrue(TEXT("though a tagged component does not wait for it"), CollisionEnabledHasQuery(HitBox->BodyInstance.GetCollisionEnabled(false)));
+
+	Mesh->SetSkinnedAssetAndUpdate(FFixture::MakeStandInAsset(Shell.Get()));
+	FAccess::Apply(*View, true);
+	TestTrue(TEXT("a later push with the same values still lands"), FAccess::HasApplied(*View));
+	TestTrue(TEXT("on the mesh"), CollisionEnabledHasQuery(Mesh->BodyInstance.GetCollisionEnabled(false)));
+	return true;
+}
+
+/**
+ * A component tagged CrowdyTraceCollision answers traces whether or not the shell has a skinned mesh to draw.
+ *
+ * A shell whose only hit target is a tagged box, or one with no skeletal mesh at all, would otherwise never be hittable.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassNearTierTraceCollisionReachesTaggedComponentsWithoutAMeshTest,
+	"CrowdySDK.Mass.NearTierTraceCollisionReachesTaggedComponentsWithoutAMesh", CrowdyMassNearTierViewTestFlags)
+bool FCrowdyMassNearTierTraceCollisionReachesTaggedComponentsWithoutAMeshTest::RunTest(const FString& Parameters)
+{
+	using FFixture = FCrowdyMassNearTierViewTestFixture;
+	using FAccess = FCrowdyMassNearTierTraceCollisionTestAccess;
+
+	const TStrongObjectPtr<ACrowdyMassNearTierActor> Shell(FFixture::MakeShell());
+	UCrowdyMassNearTierComponent* View = Shell->NearTier;
+	if (!TestNotNull(TEXT("the shell carries a near tier view"), View))
+	{
+		return false;
+	}
+
+	UBoxComponent* HitBox = NewObject<UBoxComponent>(Shell.Get(), TEXT("HitBox"));
+	HitBox->ComponentTags.Add(TEXT("CrowdyTraceCollision"));
+	HitBox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Shell->Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	FAccess::Apply(*View, true);
+	TestTrue(TEXT("a shell whose mesh has no skinned asset still has its tagged box hittable"),
+		CollisionEnabledHasQuery(HitBox->BodyInstance.GetCollisionEnabled(false)));
+	TestFalse(TEXT("while the mesh with nothing to draw stays out of it"),
+		CollisionEnabledHasQuery(Shell->Mesh->BodyInstance.GetCollisionEnabled(false)));
+
+	FAccess::Clear(*View);
+	TestFalse(TEXT("and clearing takes the box's query collision back off even though no mesh ever resolved"),
+		CollisionEnabledHasQuery(HitBox->BodyInstance.GetCollisionEnabled(false)));
+
+	AActor* Bare = NewObject<AActor>(GetTransientPackage(), NAME_None, RF_Transient);
+	const TStrongObjectPtr<AActor> BareHolder(Bare);
+	UCrowdyMassNearTierComponent* BareView = NewObject<UCrowdyMassNearTierComponent>(Bare);
+	UBoxComponent* BareBox = NewObject<UBoxComponent>(Bare, TEXT("BareBox"));
+	BareBox->ComponentTags.Add(TEXT("CrowdyTraceCollision"));
+	BareBox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	FAccess::Apply(*BareView, true);
+	TestTrue(TEXT("an actor with no skeletal mesh at all gets its tagged box hittable"),
+		CollisionEnabledHasQuery(BareBox->BodyInstance.GetCollisionEnabled(false)));
+	TestTrue(TEXT("and remembers it, since no mesh is coming to retry for"), FAccess::HasApplied(*BareView));
+	return true;
+}
+
+/**
+ * Clearing undoes what the push wrote to, not what would be chosen again now.
+ *
+ * A mesh that lost its asset after the push is no longer the action mesh, so a clear that re-chose would leave it hittable.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassNearTierTraceCollisionClearUndoesWhatWasPushedTest,
+	"CrowdySDK.Mass.NearTierTraceCollisionClearUndoesWhatWasPushed", CrowdyMassNearTierViewTestFlags)
+bool FCrowdyMassNearTierTraceCollisionClearUndoesWhatWasPushedTest::RunTest(const FString& Parameters)
+{
+	using FFixture = FCrowdyMassNearTierViewTestFixture;
+	using FAccess = FCrowdyMassNearTierTraceCollisionTestAccess;
+
+	const TStrongObjectPtr<ACrowdyMassNearTierActor> Shell(FFixture::MakeShell());
+	UCrowdyMassNearTierComponent* View = Shell->NearTier;
+	if (!TestNotNull(TEXT("the shell carries a near tier view"), View))
+	{
+		return false;
+	}
+
+	USkeletalMeshComponent* Mesh = Shell->Mesh;
+	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Mesh->SetSkinnedAssetAndUpdate(FFixture::MakeStandInAsset(Shell.Get()));
+
+	FAccess::Apply(*View, true);
+	TestTrue(TEXT("the mesh answers traces"), CollisionEnabledHasQuery(Mesh->BodyInstance.GetCollisionEnabled(false)));
+
+	Mesh->SetSkinnedAssetAndUpdate(nullptr);
+	FAccess::Clear(*View);
+	TestFalse(TEXT("clearing after the mesh lost its asset still takes its query collision back off"),
+		CollisionEnabledHasQuery(Mesh->BodyInstance.GetCollisionEnabled(false)));
+	TestFalse(TEXT("and forgets the push, so the next one is not skipped as unchanged"), FAccess::HasApplied(*View));
 	return true;
 }
 

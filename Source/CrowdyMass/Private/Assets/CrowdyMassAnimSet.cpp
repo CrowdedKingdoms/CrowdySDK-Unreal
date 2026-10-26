@@ -7,6 +7,8 @@
 #include "UObject/UObjectGlobals.h"
 
 #if WITH_EDITOR
+#include "Engine/Engine.h"
+#include "Engine/World.h"
 #include "Misc/DataValidation.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
 #include "UObject/UnrealType.h"
@@ -1464,8 +1466,33 @@ static TArray<FAnimSequenceTransformProviderSequence>* CrowdyMassFindProviderSeq
 	return ArrayProperty->ContainerPtrToValuePtr<TArray<FAnimSequenceTransformProviderSequence>>(&Provider);
 }
 
+namespace
+{
+	bool IsGameOrPieWorldRunning()
+	{
+		if (!GEngine)
+		{
+			return false;
+		}
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			if (Context.WorldType == EWorldType::Game || Context.WorldType == EWorldType::PIE)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+}
+
 void UCrowdyMassAnimSet::SyncActionsIntoBank()
 {
+	if (IsGameOrPieWorldRunning())
+	{
+		UE_LOG(LogCrowdyMass, Warning, TEXT("CrowdyMassAnimSet %s: Sync Actions Into Bank edits assets, so it does nothing while a game or Play In Editor session is running. Stop the session and run it again."), *GetName());
+		return;
+	}
+
 	if (Bank.IsNull())
 	{
 		UE_LOG(LogCrowdyMass, Warning, TEXT("CrowdyMassAnimSet %s: Sync Actions Into Bank needs a Bank, and none is set. Point it at the same transform provider the mesh description for this crowd uses."), *GetName());
@@ -1747,5 +1774,10 @@ void UCrowdyMassAnimSet::ComputeActionBankSync(const TArray<FAnimSequenceTransfo
 		OutSync.bPairsChanged = true;
 		++OutSync.ChangedPairCount;
 	}
+}
+#else
+void UCrowdyMassAnimSet::SyncActionsIntoBank()
+{
+	UE_LOG(LogCrowdyMass, Warning, TEXT("CrowdyMassAnimSet %s: Sync Actions Into Bank only runs in the editor."), *GetName());
 }
 #endif

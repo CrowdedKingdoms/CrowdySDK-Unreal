@@ -4,6 +4,7 @@
 #include "CrowdyReplicationLog.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Replication/State/FCrowdyRepLayout.h" // FCrowdyRepLayout, FCrowdyRepProperty
+#include "HAL/IConsoleManager.h"
 #include "UObject/Class.h"          // UFunction, UClass
 #include "UObject/UObjectGlobals.h"
 
@@ -201,6 +202,56 @@ int64 UCrowdyBakedRegistry::FindRepLayoutHash(const UClass* Class)
 
 	return Registry->FindRepLayoutHash(FSoftClassPath(const_cast<UClass*>(Class)));
 }
+
+#if !UE_BUILD_SHIPPING
+namespace
+{
+	void DumpBakedRegistry()
+	{
+		const UCrowdyBakedRegistry* Registry = UCrowdyBakedRegistry::Get();
+		if (!Registry)
+		{
+			UE_LOG(LogCrowdyReplication, Display, TEXT("[CrowdyBakedRegistry] No baked registry is loaded."));
+			return;
+		}
+
+		UE_LOG(LogCrowdyReplication, Display, TEXT("[CrowdyBakedRegistry] %s: %d persistent structs, %d singleton structs, %d layouts, %d state properties, %d events."),
+			*Registry->GetPathName(), Registry->PersistentStructs.Num(), Registry->SingletonStructs.Num(),
+			Registry->RepLayoutHashes.Num(), Registry->RepProperties.Num(), Registry->RpcFunctions.Num());
+
+		for (const FSoftObjectPath& Path : Registry->PersistentStructs)
+		{
+			UE_LOG(LogCrowdyReplication, Display, TEXT("[CrowdyBakedRegistry] Persistent struct %s"), *Path.ToString());
+		}
+		for (const FSoftObjectPath& Path : Registry->SingletonStructs)
+		{
+			UE_LOG(LogCrowdyReplication, Display, TEXT("[CrowdyBakedRegistry] Singleton struct %s"), *Path.ToString());
+		}
+		for (const FCrowdyBakedRepLayoutHash& Entry : Registry->RepLayoutHashes)
+		{
+			UE_LOG(LogCrowdyReplication, Display, TEXT("[CrowdyBakedRegistry] Layout class=%s hash=%lld"), *Entry.ClassPath.ToString(), Entry.LayoutHash);
+		}
+		for (const FCrowdyBakedRepProperty& Entry : Registry->RepProperties)
+		{
+			UE_LOG(LogCrowdyReplication, Display, TEXT("[CrowdyBakedRegistry] State class=%s property=%s id=%lld order=%d ownerOnly=%d manualDirty=%d heartbeat=%d onRep=%s"),
+				*Entry.OwnerClassPath.ToString(), *Entry.PropertyName.ToString(), Entry.PropertyID, Entry.LayoutOrder,
+				Entry.bOwnerOnly, Entry.bManualDirty, Entry.bHeartbeat, *Entry.OnRepFunctionName.ToString());
+		}
+		for (const FCrowdyBakedRpcFunction& Entry : Registry->RpcFunctions)
+		{
+			UE_LOG(LogCrowdyReplication, Display, TEXT("[CrowdyBakedRegistry] Event class=%s function=%s id=%lld recipient=%s decay=%s distance=%s channel=%s pod=%d action=%d replicated=%d"),
+				*Entry.ClassPath.ToString(), *Entry.FunctionName.ToString(), Entry.FunctionID,
+				*UEnum::GetValueAsString(Entry.Recipient), *UEnum::GetValueAsString(Entry.DecayRate), *UEnum::GetValueAsString(Entry.Distance),
+				*Entry.ChannelName, Entry.bParamsPOD, Entry.bIsAction, Entry.bIsReplicated);
+		}
+	}
+
+	FAutoConsoleCommand DumpBakedRegistryCommand(
+		TEXT("crowdy.registry.dump"),
+		TEXT("Logs every entry of the baked registry, one line each: persistent and singleton structs, layout hashes, CrowdyState properties and CrowdyEvent functions with their ids."),
+		FConsoleCommandDelegate::CreateStatic(&DumpBakedRegistry));
+}
+#endif
 
 void UCrowdyBakedRegistry::MakeBakedRepProperties(
 	const FCrowdyRepLayout& Layout, const FSoftClassPath& OwnerClassPath, TArray<FCrowdyBakedRepProperty>& OutProps)

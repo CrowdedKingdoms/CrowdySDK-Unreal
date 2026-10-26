@@ -4,6 +4,7 @@
 #include "StructUtils/InstancedStruct.h"
 #include "Templates/Function.h"
 
+class FBoolProperty;
 class FProperty;
 struct FCrowdyExecLayout;
 class UCrowdyServerObjectDefinition;
@@ -58,6 +59,32 @@ struct FCrowdyExecStateHeader
 {
 	uint64 Epoch = 0;
 	uint64 Seq = 0;
+};
+
+/** What a Game Kit hub's message on a topic is. */
+enum class ECrowdyExecKitKind : uint8
+{
+	Snapshot,
+	Delta,
+	Changed,
+	Event
+};
+
+/** A Game Kit message's reserved keys; the hub's own data sits beside them in the same map. */
+struct FCrowdyExecKitHeader
+{
+	uint64 Epoch = 0;
+	uint64 Seq = 0;
+	ECrowdyExecKitKind Kind = ECrowdyExecKitKind::Snapshot;
+};
+
+/** One member a Game Kit collection message carried: its props in the Record struct, or that it was removed. */
+struct FCrowdyExecKitMember
+{
+	/** The member's id as decimal text, which is its record id. */
+	FString Id;
+	FInstancedStruct Values;
+	bool bRemoved = false;
 };
 
 /** The members keys of a read reply or state push. A key the message did not carry keeps its default and its bHas flag stays false. */
@@ -225,6 +252,9 @@ namespace CrowdyExec
 	/** The characters a default server name keeps from an authored name: ASCII letters, digits and underscores. */
 	FString KeepNameCharacters(const FString& Authored);
 
+	/** tip_jar becomes TipJar. */
+	CROWDYEXEC_API FString PascalCase(const FString& SnakeName);
+
 	/** Whether A and B match once KeepNameCharacters is applied to both, ignoring case, without building either. */
 	CROWDYEXEC_API bool SameKeptName(FStringView A, FStringView B);
 
@@ -257,6 +287,30 @@ namespace CrowdyExec
 
 	/** Reads only the epoch and seq of a read reply or state push, skipping the fields, so they can be checked before a decode. */
 	bool ReadStateHeader(TConstArrayView<uint8> Bytes, FCrowdyExecStateHeader& OutHeader, FString& OutError);
+
+	/** The version of the Game Kit's message shapes this client reads. */
+	constexpr int32 KitProtocolVersion = 1;
+
+	/** Reads a Game Kit message's v, epoch, seq and kind, skipping the hub's data; a message of another version is refused. */
+	bool ReadKitHeader(TConstArrayView<uint8> Bytes, FCrowdyExecKitHeader& OutHeader, FString& OutError);
+
+	/** Decodes a Game Kit snapshot into State, a whole State: what it leaves out takes the definition's values. On failure State is untouched. */
+	bool DecodeKitSnapshot(const UCrowdyServerObjectDefinition& Definition, TConstArrayView<uint8> Bytes, void* State,
+		FCrowdyExecStateHeader& OutHeader, FString& OutError);
+
+	/**
+	 * Reads a Game Kit collection message: a snapshot's members, leaving out those marked removed, or a delta's one member.
+	 * Each member's props fill the Record struct from its defaults, since a member carries all of them, and its id fills the struct's
+	 * id field when it has one. On failure Out is untouched.
+	 */
+	bool DecodeKitCollection(const UCrowdyServerObjectDefinition& Definition, TConstArrayView<uint8> Bytes, FCrowdyExecKitHeader& OutHeader,
+		TArray<FCrowdyExecKitMember>& OutMembers, FString& OutError);
+
+	/** Reads a Game Kit changed message's who, the user ids it names, and what, the name of the value that changed for them. */
+	bool ReadKitChanged(TConstArrayView<uint8> Bytes, TArray<int64>& OutWho, FString& OutWhat, FString& OutError);
+
+	/** Decodes a Game Kit answer into one variable of State, Variable, a property of the definition's State struct, starting from its default; on failure State is untouched. */
+	bool DecodeKitVariable(const UCrowdyServerObjectDefinition& Definition, const FProperty& Variable, TConstArrayView<uint8> Bytes, void* State, FString& OutError);
 
 	/** Server text made safe for one line: at most MaxChars characters, control and direction-override characters replaced, a cut marked. */
 	FString SafeText(const FString& Text, int32 MaxChars);
@@ -318,6 +372,8 @@ struct FCrowdyExecField
 	bool bWatched = false;
 	/** Sent only to the record's owner or team, for a type that holds a record per entity. */
 	bool bRestricted = false;
+	/** The struct's bool that says whether this field arrived with a value, when it pairs one; null otherwise. */
+	const FBoolProperty* Presence = nullptr;
 };
 
 struct FCrowdyExecStruct
@@ -325,6 +381,8 @@ struct FCrowdyExecStruct
 	const UScriptStruct* Struct = nullptr;
 	FString DisplayName;
 	TArray<FCrowdyExecField> Fields;
+	/** Whether any field has a Presence flag. */
+	bool bHasPresence = false;
 };
 
 struct FCrowdyExecEnum
@@ -341,6 +399,8 @@ struct FCrowdyExecLayout
 	TArray<FCrowdyExecEnum> Enums;
 	TArray<FCrowdyExecType> Types;
 	int32 StateStruct = INDEX_NONE;
+	/** The struct a record holds: a Game Kit starter's Record struct, else the State. */
+	int32 RecordStruct = INDEX_NONE;
 
 	CROWDYEXEC_API int32 FindStruct(const UScriptStruct* Struct) const;
 };

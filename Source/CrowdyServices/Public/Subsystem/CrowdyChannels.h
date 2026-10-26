@@ -171,6 +171,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Transport")
 	void PublishChannelMessage(int64 ChannelId, const TArray<uint8>& Payload);
 
+	/** Publishes as SenderUuid instead of the session's uuid, which is empty until the player's entity resolves. */
+	void PublishChannelMessageAs(int64 ChannelId, const FString& SenderUuid, const TArray<uint8>& Payload);
+
+	/** Whether a message can be published now: the game session exists and the realtime connection is routing. */
+	bool CanPublishChannelMessage() const;
+
+	/** Asks for the signed-in player's channels; the cache change event carries the answer. */
+	void RefreshMyChannels();
+
 	// Joins all channels referenced by Multicast CrowdyEvents (by name, resolved against the app's
 	// channel list) plus the default session channel, then flushes queued reliable sends. Idempotent
 	// and safe to call again on reconnect; the SDK calls it once the UDP connection comes up.

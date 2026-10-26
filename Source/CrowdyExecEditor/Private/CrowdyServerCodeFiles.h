@@ -85,6 +85,9 @@ namespace CrowdyServerCodeFiles
 	/** A Type Name the server accepts: lowercase letters, digits and underscores, starting with a letter, at most 48 characters. */
 	bool IsValidTypeName(const FString& TypeName);
 
+	/** Whether Directory is, or holds anywhere under it, a link: deleting it would also delete what the link points to. */
+	bool HoldsLink(const FString& Directory);
+
 	/** A Type Name made from an asset's name: CSO_SbxCounter gives sbx_counter; a DA_ prefix is dropped too. Empty when nothing usable is left. */
 	FString SuggestTypeName(const FString& AssetName);
 

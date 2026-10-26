@@ -174,9 +174,26 @@ void CrowdyServerObjectPins::GatherVariables(const UCrowdyServerObjectDefinition
 	{
 		return Definition->FindVariable(Name) == Property;
 	}, Out);
+	const bool bStarter = Definition && Definition->IsGameKitStarter();
 	for (FCrowdyServerValuePin& Variable : Out)
 	{
-		Variable.bVisible = Definition->WatchedFields.Contains(Variable.Name);
+		// A starter's snapshot carries its whole State.
+		Variable.bVisible = bStarter || Definition->WatchedFields.Contains(Variable.Name);
+	}
+	FString Error;
+	const FCrowdyExecLayout* Layout = bStarter ? Definition->ResolveLayout(Error) : nullptr;
+	if (!Layout || Layout->StateStruct == INDEX_NONE)
+	{
+		return;
+	}
+	for (const FCrowdyExecField& Field : Layout->Structs[Layout->StateStruct].Fields)
+	{
+		FCrowdyServerValuePin* Flag = Field.Presence ? Out.FindByPredicate([&Field](const FCrowdyServerValuePin& Variable) { return Variable.Property == Field.Presence; }) : nullptr;
+		const FCrowdyServerValuePin* Value = Flag ? Out.FindByPredicate([Layout, &Field](const FCrowdyServerValuePin& Variable) { return Variable.Property == Layout->Types[Field.Type].Property; }) : nullptr;
+		if (Value)
+		{
+			Flag->ChangesWith = Value->Name;
+		}
 	}
 }
 
@@ -212,7 +229,7 @@ void CrowdyServerObjectPins::RefuseClashes(TArray<FCrowdyServerValuePin>& Values
 	TArray<FName> Taken = {UEdGraphSchema_K2::PN_Execute, UEdGraphSchema_K2::PN_Then, UEdGraphSchema_K2::PN_Self, CrowdyServerObjectNodePins::InstanceId,
 		CrowdyServerObjectNodePins::TeamId, CrowdyServerObjectNodePins::Changed, CrowdyServerObjectNodePins::Received, CrowdyServerObjectNodePins::HasValues, CrowdyServerCallPins::FunctionPicker, CrowdyServerCallPins::OnSuccess,
 		CrowdyServerCallPins::OnFailed, CrowdyServerCallPins::Outcome, CrowdyServerCallPins::Reason, CrowdyServerCallPins::Retryable,
-		CrowdyServerCallPins::Timeout};
+		CrowdyServerCallPins::Code, CrowdyServerCallPins::Timeout};
 	for (const FCrowdyServerValuePin& Value : Values)
 	{
 		if (Value.bOptional)

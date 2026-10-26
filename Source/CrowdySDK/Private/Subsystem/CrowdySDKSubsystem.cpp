@@ -164,14 +164,19 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// Avatars, teams and channels issue their own calls on the shared API client and need nothing injected.
 	// Inbound channel notifications (type 18) flow through the service registry directly to UCrowdyChannels.
 	CrowdyAuth->InjectDependencies(GameSession);
+	BindAuthentication(CrowdyAuth);
+}
 
-	CrowdyAuth->OnLogin.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthLogin);
-	CrowdyAuth->OnLoginFailed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthLoginFailed);
-	CrowdyAuth->OnRegister.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthRegister);
-	CrowdyAuth->OnRegisterFailed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthRegisterFailed);
-	CrowdyAuth->OnSessionRestored.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthSessionRestored);
-	CrowdyAuth->OnAppTokenRefreshed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAppTokenRefreshed);
-	CrowdyAuth->OnServerSessionEnded.AddWeakLambda(this, [this]() { Logout(); });
+void UCrowdySDKSubsystem::BindAuthentication(UCrowdyAuthentication* Auth)
+{
+	Auth->OnLogin.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthLogin);
+	Auth->OnLoginFailed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthLoginFailed);
+	Auth->OnRegister.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthRegister);
+	Auth->OnRegisterFailed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthRegisterFailed);
+	Auth->OnSessionRestored.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthSessionRestored);
+	Auth->OnSessionRestoreFailed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAuthSessionRestoreFailed);
+	Auth->OnAppTokenRefreshed.AddDynamic(this, &UCrowdySDKSubsystem::HandleAppTokenRefreshed);
+	Auth->OnServerSessionEnded.AddWeakLambda(this, [this]() { Logout(); });
 }
 
 void UCrowdySDKSubsystem::Deinitialize()
@@ -1009,6 +1014,11 @@ void UCrowdySDKSubsystem::HandleAuthSessionRestored(FCrowdyAuthResult Result)
 
 	// A restored session is a signed-in player; surface it on the same delegate.
 	OnLogin.Broadcast(true, FString());
+}
+
+void UCrowdySDKSubsystem::HandleAuthSessionRestoreFailed(FString Message)
+{
+	OnLogin.Broadcast(false, Message);
 }
 
 void UCrowdySDKSubsystem::HandleAppTokenRefreshed()

@@ -658,6 +658,20 @@ namespace CrowdyExecDeveloper
 		return NewClient;
 	}
 
+	TArray<FBuildCrate> FStarterPack::GetCrates() const
+	{
+		TArray<FBuildCrate> Crates;
+		for (const FStarter& Starter : Starters)
+		{
+			const bool bListed = Crates.ContainsByPredicate([&Starter](const FBuildCrate& Crate) { return Crate.Name.Equals(Starter.Crate.Name, ESearchCase::CaseSensitive); });
+			if (!bListed)
+			{
+				Crates.Add(Starter.Crate);
+			}
+		}
+		return Crates;
+	}
+
 	void FClient::Starters(TFunction<void(const TResult<FStarterPack>&)> OnDone)
 	{
 		CrowdyExecDevApi::RunObject<FStarterPack>(Client, TEXT("ExecStarters"), TEXT("execStarters"),
@@ -717,7 +731,7 @@ namespace CrowdyExecDeveloper
 	{
 		const TSharedRef<FJsonObject> Input = CrowdyExecDevApi::AppVariables(AppId);
 		Input->SetStringField(TEXT("manifestJson"), ManifestJson);
-		Input->SetStringField(TEXT("buildId"), BuildId);
+		CrowdyExecDevApi::SetStringIfSet(*Input, TEXT("buildId"), BuildId);
 		Input->SetArrayField(TEXT("artifacts"), TArray<TSharedPtr<FJsonValue>>());
 
 		CrowdyExecDevApi::RunObject<int32>(Client, TEXT("ExecDeploy"), TEXT("execDeploy"),

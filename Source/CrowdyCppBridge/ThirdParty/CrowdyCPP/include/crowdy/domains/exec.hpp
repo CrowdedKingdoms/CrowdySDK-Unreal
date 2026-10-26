@@ -49,6 +49,12 @@ enum class ExecStatus : std::uint8_t {
   Internal = 9,
   Trapped = 10,
   BadRequest = 11,
+  /// The app is paused by billing. Not retryable.
+  AppPaused = 12,
+  /// The whole app is switched off.
+  AppDisabled = 13,
+  /// This node type is switched off.
+  TypeDisabled = 14,
   Unknown = 255,
 };
 
@@ -207,15 +213,18 @@ class ExecConnection {
   void unsubscribe(std::uint64_t handle);
   void ping(ExecReplyCallback done);
 
-  /// Called with the new host after every reconnect.
-  void onReconnect(std::function<void(std::string host)> listener);
+  /// Called with the new host after every reconnect. The id removes it (`removeListener`).
+  std::uint64_t onReconnect(std::function<void(std::string host)> listener);
   /// Called once, with the host's reason, when the host closes the connection because the
   /// player's access ended (close code kExecCloseAccessEnded: suspended, revoked, signed out
   /// or blocked). The connection is closed for good then and does not reconnect: calls in
   /// flight fail `Denied` with the reason, later ones `Unavailable`. Tell the player, and
   /// connect again only once they hold access again, with a fresh connect token
   /// (`ExecAPI::connect` mints one; the host refuses one minted before the cut for 90 s).
-  void onAccessEnded(std::function<void(std::string reason)> listener);
+  /// The id removes it (`removeListener`).
+  std::uint64_t onAccessEnded(std::function<void(std::string reason)> listener);
+  /// Stops the listener `onReconnect` or `onAccessEnded` returned. An unknown id does nothing.
+  void removeListener(std::uint64_t id);
 
   std::string host() const;
   bool connected() const;
