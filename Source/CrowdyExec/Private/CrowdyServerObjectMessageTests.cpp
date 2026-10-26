@@ -113,11 +113,11 @@ namespace CrowdyServerObjectMessageTests
 		return true;
 	}
 
-	/** Acknowledges every subscribe of Topic sent so far, then forgets all the frames sent. */
-	void AckEvery(FRig& Rig, const FString& Topic)
+	/** Acknowledges every subscribe of TopicName sent so far, then forgets all the frames sent. */
+	void AckEvery(FRig& Rig, const FString& TopicName)
 	{
 		Rig.PumpFor(0.2);
-		for (int32 Index = Rig.FindFrame(KindSubscribe, Topic); Index != INDEX_NONE; Index = Rig.FindFrame(KindSubscribe, Topic))
+		for (int32 Index = Rig.FindFrame(KindSubscribe, TopicName); Index != INDEX_NONE; Index = Rig.FindFrame(KindSubscribe, TopicName))
 		{
 			Rig.Reply(Rig.Sent[Index].Rid, ECrowdyNativeExecStatus::Ok, {});
 			Rig.Sent.RemoveAt(Index);

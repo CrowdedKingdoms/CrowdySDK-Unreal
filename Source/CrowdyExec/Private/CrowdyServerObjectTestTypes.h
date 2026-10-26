@@ -370,6 +370,7 @@ public:
 	TArray<ECrowdyServerCallOutcome> FailedOutcomes;
 	TArray<FString> FailedReasons;
 	TArray<bool> FailedRetryable;
+	TArray<FName> FailedCodes;
 	TArray<int32> IntValues;
 	TArray<bool> HasValues;
 	TArray<FCrowdyExecTestHit> HitValues;
@@ -437,18 +438,19 @@ public:
 	}
 
 	UFUNCTION()
-	void HandleSuccess(const FInstancedStruct& Outputs, ECrowdyServerCallOutcome Outcome, const FString& Reason, bool bRetryable)
+	void HandleSuccess(const FInstancedStruct& Outputs, ECrowdyServerCallOutcome Outcome, const FString& Reason, bool bRetryable, FName Code)
 	{
 		SuccessOutputs.Add(Outputs);
 		SuccessOutcomes.Add(Outcome);
 	}
 
 	UFUNCTION()
-	void HandleFailed(const FInstancedStruct& Outputs, ECrowdyServerCallOutcome Outcome, const FString& Reason, bool bRetryable)
+	void HandleFailed(const FInstancedStruct& Outputs, ECrowdyServerCallOutcome Outcome, const FString& Reason, bool bRetryable, FName Code)
 	{
 		FailedOutcomes.Add(Outcome);
 		FailedReasons.Add(Reason);
 		FailedRetryable.Add(bRetryable);
+		FailedCodes.Add(Code);
 	}
 
 	TArray<FInstancedStruct> MessagePayloads;
@@ -498,5 +500,39 @@ public:
 	void HandleAccessEnded(const FString& Reason, const FString& BlockedUntil)
 	{
 		Reasons.Add(Reason);
+	}
+};
+
+/** Records each pin of Find Match that fires, as a Blueprint graph bound to them would. */
+UCLASS(Transient)
+class UCrowdyKitMatchTestListener : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	TArray<FString> Pins;
+
+	UFUNCTION()
+	void HandleQueued(const TArray<int64>& Players, const TArray<int64>& Accepted, const FString& SessionId, FName Code, const FString& Reason)
+	{
+		Pins.Add(TEXT("Queued"));
+	}
+
+	UFUNCTION()
+	void HandleProposed(const TArray<int64>& Players, const TArray<int64>& Accepted, const FString& SessionId, FName Code, const FString& Reason)
+	{
+		Pins.Add(FString::Printf(TEXT("Proposed %d/%d"), Accepted.Num(), Players.Num()));
+	}
+
+	UFUNCTION()
+	void HandleMatched(const TArray<int64>& Players, const TArray<int64>& Accepted, const FString& SessionId, FName Code, const FString& Reason)
+	{
+		Pins.Add(TEXT("Matched ") + SessionId);
+	}
+
+	UFUNCTION()
+	void HandleFailed(const TArray<int64>& Players, const TArray<int64>& Accepted, const FString& SessionId, FName Code, const FString& Reason)
+	{
+		Pins.Add(TEXT("Failed ") + Code.ToString());
 	}
 };

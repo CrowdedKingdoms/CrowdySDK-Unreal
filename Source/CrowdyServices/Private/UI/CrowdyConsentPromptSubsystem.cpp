@@ -39,6 +39,13 @@ void UCrowdyConsentPromptSubsystem::Initialize(FSubsystemCollectionBase& Collect
 
 UCrowdyAuthentication* UCrowdyConsentPromptSubsystem::GetAuthentication() const
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	if (UCrowdyAuthentication* Override = AuthenticationForTest.Get())
+	{
+		return Override;
+	}
+#endif
+
 	const UGameInstance* GameInstance = GetGameInstance();
 	return GameInstance ? GameInstance->GetSubsystem<UCrowdyAuthentication>() : nullptr;
 }
@@ -68,7 +75,26 @@ void UCrowdyConsentPromptSubsystem::HandleLegalAcceptanceRequired()
 		return;
 	}
 
-	OpenPrompt(false);
+	if (OpenPrompt(false))
+	{
+		return;
+	}
+
+	// With no UI here and no other listener to ask the player, the held sign-in would wait forever.
+	UCrowdyAuthentication* Authentication = GetAuthentication();
+	if (!Authentication)
+	{
+		return;
+	}
+	const TArray<UObject*> Listeners = Authentication->OnLegalAcceptanceRequired.GetAllObjects();
+	if (Listeners.Num() != 1 || Listeners[0] != this)
+	{
+		return;
+	}
+
+	UE_LOG(LogCrowdyServices, Warning,
+		TEXT("[CrowdyAuth] This process has no UI to ask the player for consent; failing the held sign-in."));
+	Authentication->DeclineLegalAcceptance();
 }
 
 void UCrowdyConsentPromptSubsystem::ShowPreview()
@@ -85,13 +111,13 @@ void UCrowdyConsentPromptSubsystem::ShowPreview()
 	OpenPrompt(true);
 }
 
-void UCrowdyConsentPromptSubsystem::OpenPrompt(bool bInPreview)
+bool UCrowdyConsentPromptSubsystem::OpenPrompt(bool bInPreview)
 {
 	UGameInstance* GameInstance = GetGameInstance();
 	UGameViewportClient* ViewportClient = GameInstance ? GameInstance->GetGameViewportClient() : nullptr;
 	if (!ViewportClient || !FSlateApplication::IsInitialized() || !FApp::CanEverRender())
 	{
-		return;
+		return false;
 	}
 
 	Prompt = SNew(SCrowdyConsentPrompt)
@@ -113,6 +139,7 @@ void UCrowdyConsentPromptSubsystem::OpenPrompt(bool bInPreview)
 	SlateApp.ReleaseAllPointerCapture();
 	PreviousFocus = SlateApp.GetUserFocusedWidget(0);
 	SlateApp.SetUserFocus(0, Prompt->GetInitialFocus(), EFocusCause::SetDirectly);
+	return true;
 }
 
 void UCrowdyConsentPromptSubsystem::HandleAccept()

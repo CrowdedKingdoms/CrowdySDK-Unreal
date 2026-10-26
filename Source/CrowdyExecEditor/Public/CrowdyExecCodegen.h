@@ -7,6 +7,9 @@ class UCrowdyServerObjectDefinition;
 /** Writes a Server Object type's server code: a Rust crate whose types and glue come from its definition. */
 namespace CrowdyExecCodegen
 {
+	/** The ckx-sdk version a generated crate's Cargo.toml pins. */
+	inline constexpr const TCHAR* CkxSdkVersion = TEXT("0.12.1");
+
 	struct FGeneratedFile
 	{
 		/** Relative to the crate folder, with forward slashes: Cargo.toml, src/lib.rs, src/types.rs, src/logic.rs. */

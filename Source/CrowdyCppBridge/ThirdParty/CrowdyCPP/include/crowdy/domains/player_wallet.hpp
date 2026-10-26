@@ -27,7 +27,9 @@ class PlayerWalletAPI : public DomainBase {
     runAsync("PlayerWalletBalance", {}, std::move(cb));
   }
 
-  /// The caller's wallet ledger, newest first.
+  /// The caller's wallet ledger, newest first. Usage charges are its `usage_debit` entries:
+  /// one per app, dimension and period each time that period's usage costs more, the app's
+  /// markup included.
   graphql::Json transactions(const graphql::JVal& options = graphql::JVal()) const {
     return run("PlayerWalletTransactions", options);
   }
@@ -36,10 +38,14 @@ class PlayerWalletAPI : public DomainBase {
     runAsync("PlayerWalletTransactions", options, std::move(cb));
   }
 
-  /// The caller's posted hourly usage charges (platform vs markup split).
+  /// The caller's hourly usage charges from the cents-era billing, which the lossless ledger
+  /// replaced: nothing is added to this list any more.
+  /// @deprecated Read transactions(): its `usage_debit` entries are the usage charges. Kept
+  /// as a doc deprecation rather than [[deprecated]], so a -Werror build still compiles.
   graphql::Json charges(const graphql::JVal& options = graphql::JVal()) const {
     return run("PlayerUsageCharges", options);
   }
+  /// @deprecated Read transactionsAsync(), as for charges().
   void chargesAsync(const graphql::JVal& options,
                     graphql::GraphQLCallback cb) const {
     runAsync("PlayerUsageCharges", options, std::move(cb));

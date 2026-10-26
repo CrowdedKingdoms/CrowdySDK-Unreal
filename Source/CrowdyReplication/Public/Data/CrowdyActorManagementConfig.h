@@ -32,6 +32,10 @@ struct FCrowdyActorManagementConfigStruct
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))
 	float ActorTimeoutThreshold = 12.0f;
 
+	/** Seconds of silence before a Game Kit starter's actor, such as a mob, leaves. Its hub shows it several times a second while anyone is near and stops when it goes down, so this is how fast a downed mob leaves. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0.25))
+	float KitActorTimeout = 1.0f;
+
 	/**
 	 * How many network-received actors may be tracked at once. Ids past this are not tracked at all
 	 * until an existing one times out, so the surplus simply does not appear.

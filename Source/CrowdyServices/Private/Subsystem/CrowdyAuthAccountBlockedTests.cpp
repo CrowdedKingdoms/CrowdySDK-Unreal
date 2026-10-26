@@ -375,4 +375,63 @@ bool FCrowdyAccessRefusalOtherRefusalRetriesTest::RunTest(const FString& Paramet
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRuntimeGateAnswerWithNoGateClearsPauseTest,
+	"CrowdySDK.Auth.RuntimeGate.AnswerWithNoGateClearsPause", BlockedTestFlags)
+
+bool FCrowdyRuntimeGateAnswerWithNoGateClearsPauseTest::RunTest(const FString& Parameters)
+{
+	FBlockedRig Rig(0);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	const auto MintAnswerWith = [](const TCHAR* Gate)
+	{
+		return FString::Printf(
+			TEXT("{\"data\":{\"mintAppToken\":{\"token\":\"app-xyz\",\"gameTokenId\":\"5150\",\"appId\":\"31337\","
+				"\"expiresAt\":\"2099-01-01T00:00:00Z\",\"gameApiUrl\":\"https://game.test\","
+				"\"gameApiWsUrl\":\"wss://game.test\",\"launchUrl\":\"https://launch.test\"%s}}}"), Gate);
+	};
+
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, MintAnswerWith(TEXT(",\"runtimeGate\":{\"status\":\"DENIED\",\"reason\":\"x\"}")));
+	Script.Emplace(200, MintAnswerWith(TEXT("")));
+	Rig.Client->SetTestResponseScript(MoveTemp(Script));
+
+	Rig.Mint();
+	Rig.Drain();
+	if (!TestTrue(TEXT("a denied gate pauses the app"), Rig.Session->IsAppPaused()))
+	{
+		return false;
+	}
+
+	Rig.Mint();
+	Rig.Drain();
+	TestFalse(TEXT("a later answer with no gate lifts the pause"), Rig.Session->IsAppPaused());
+	TestTrue(TEXT("and its reason"), Rig.Session->GetAppPausedReason().IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRuntimeGateNoGateAnswerKeepsAPauseRaisedElsewhereTest,
+	"CrowdySDK.Auth.RuntimeGate.NoGateAnswerKeepsAPauseRaisedElsewhere", BlockedTestFlags)
+
+bool FCrowdyRuntimeGateNoGateAnswerKeepsAPauseRaisedElsewhereTest::RunTest(const FString& Parameters)
+{
+	FBlockedRig Rig(0);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	// The reason the realtime connection sets when the server reports the app paused.
+	Rig.Session->SetAppPaused(true, TEXT("the app is paused"));
+
+	Rig.Mint();
+	Rig.Drain();
+	TestTrue(TEXT("a mint with no gate leaves a pause the realtime server raised"), Rig.Session->IsAppPaused());
+	TestEqual(TEXT("with its reason"), Rig.Session->GetAppPausedReason(), TEXT("the app is paused"));
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

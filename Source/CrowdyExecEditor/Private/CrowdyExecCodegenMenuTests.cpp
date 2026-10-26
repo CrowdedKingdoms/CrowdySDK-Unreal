@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "CrowdyExecCodegenMenu.h"
+#include "CrowdyExecDeploy.h"
 #include "CrowdyExecEditorTestTypes.h"
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerComputeService.h"
@@ -575,6 +576,48 @@ bool FCrowdyExecCodegenMenuSharedTypeNameTest::RunTest(const FString& Parameters
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuSelectionSharedNamesTest, "CrowdySDK.CrowdyExecEditor.CodegenMenuChecksSharedTypeNamesOncePerSelection", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecCodegenMenuSelectionSharedNamesTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FCrowdyServerComputeService& Compute = FCrowdyServerComputeService::Get();
+	if (!TestFalse(TEXT("no deploy runs, so the project's types are read again"), Compute.IsBusy()))
+	{
+		return false;
+	}
+	const FString Root = FString::Printf(TEXT("/Temp/CrowdyExecCodegenMenuTests/%s"), *FGuid::NewGuid().ToString());
+	const auto MakeAsset = [&Root](const TCHAR* Name, const TCHAR* TypeName)
+	{
+		UPackage* Package = CreatePackage(*FString::Printf(TEXT("%s/%s"), *Root, Name));
+		TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition(NewObject<UCrowdyServerObjectDefinition>(Package, Name, RF_Public));
+		Definition->TypeName = TypeName;
+		return Definition;
+	};
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> SharedA = MakeAsset(TEXT("DA_SelA"), TEXT("ck_menu_sel_shared"));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> SharedB = MakeAsset(TEXT("DA_SelB"), TEXT("ck_menu_sel_shared"));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Own = MakeAsset(TEXT("DA_SelC"), TEXT("ck_menu_sel_own"));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Other = MakeAsset(TEXT("DA_SelD"), TEXT("ck_menu_sel_other"));
+	const TArray<UCrowdyServerObjectDefinition*> Selection = {SharedA.Get(), Own.Get(), SharedB.Get(), Other.Get()};
+	FScriptedDialogs Dialogs;
+	const uint32 Before = Compute.GetDataGeneration();
+	const TArray<UCrowdyServerObjectDefinition*> Kept = CrowdyExecCodegenMenu::RemoveSharedTypeNames(Selection);
+	TestEqual(TEXT("four definitions read the project's types once"), static_cast<int32>(Compute.GetDataGeneration() - Before), 1);
+	if (TestEqual(TEXT("the two that share a Type Name are refused"), Kept.Num(), 2))
+	{
+		TestTrue(TEXT("the others are kept, in order"), Kept[0] == Own.Get() && Kept[1] == Other.Get());
+	}
+	if (TestEqual(TEXT("each refusal is one message"), Dialogs.Messages.Num(), 2))
+	{
+		TestEqualSensitive(TEXT("naming the other definition"), Dialogs.Messages[0], FString::Printf(TEXT("%s %s uses it too."), *CrowdyServerCodeFiles::SharedTypeNameProblem().ToString(), *SharedB->GetPathName()));
+	}
+	for (UCrowdyServerObjectDefinition* Each : Selection)
+	{
+		Each->SetFlags(RF_Transient);
+	}
+	Compute.RefreshTypes();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMenuForeignCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenMenuRefusesFolderItDidNotGenerate", CrowdyExecCodegenMenuTests::TestFlags)
 bool FCrowdyExecCodegenMenuForeignCrateTest::RunTest(const FString& Parameters)
 {
@@ -864,6 +907,291 @@ bool FCrowdyExecCodegenMenuRootTest::RunTest(const FString& Parameters)
 			Dialogs.Messages.Num() == 1 && Dialogs.Messages[0].Contains(TEXT("choose another Type Name"), ESearchCase::CaseSensitive));
 	}
 	TestFalse(TEXT("and no folder is written"), IFileManager::Get().DirectoryExists(*CrateOf(Server, TEXT("root"))));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecGenerateAllStaleTest, "CrowdySDK.CrowdyExecEditor.GenerateAll.GeneratesOnlyStaleTypes", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecGenerateAllStaleTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	using CrowdyExecDeploy::ECrateState;
+	FServerFolder Server;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Stale = MakeTipJar();
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Fresh = MakeTipJar();
+	Fresh->TypeName = TEXT("tip_jar_fresh");
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Missing = MakeTipJar();
+	Missing->TypeName = TEXT("tip_jar_missing");
+	{
+		FScriptedDialogs Dialogs;
+		if (!TestTrue(TEXT("a type is generated"), CrowdyExecCodegenMenu::GenerateServerCode(*Stale, Server.Path))
+			|| !TestTrue(TEXT("and another"), CrowdyExecCodegenMenu::GenerateServerCode(*Fresh, Server.Path)))
+		{
+			return false;
+		}
+	}
+	AddFunction(*Stale, TEXT("Clear"));
+	const auto StateOf = [&Server](const UCrowdyServerObjectDefinition& Definition)
+	{
+		return CrowdyExecDeploy::InspectType(Definition, CrateOf(Server, *Definition.TypeName)).State;
+	};
+	if (!TestTrue(TEXT("a type with a new function is out of date"), StateOf(*Stale) == ECrateState::OutOfDate)
+		|| !TestTrue(TEXT("a type generated since its last change is up to date"), StateOf(*Fresh) == ECrateState::UpToDate)
+		|| !TestTrue(TEXT("a type never generated has none"), StateOf(*Missing) == ECrateState::NotGenerated))
+	{
+		return false;
+	}
+
+	const TArray<UCrowdyServerObjectDefinition*> Definitions = {Stale.Get(), Fresh.Get(), Missing.Get()};
+	const CrowdyExecCodegenMenu::FGenerateAllResult Result = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Refuse);
+	TestEqualSensitive(TEXT("only the out of date type and the one with no code are written"), FString::Join(Result.Generated, TEXT(",")), FString(TEXT("tip_jar,tip_jar_missing")));
+	TestTrue(TEXT("nothing is refused"), Result.Refused.IsEmpty());
+	TestFalse(TEXT("and the run was not stopped"), Result.bCancelled);
+	TestTrue(TEXT("the out of date type is current now"), StateOf(*Stale) == ECrateState::UpToDate);
+	TestTrue(TEXT("and so is the one that had no code"), StateOf(*Missing) == ECrateState::UpToDate);
+	if (TestEqual(TEXT("the one question left over is a note, not a refusal"), Result.Notes.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("on the type that lacks the function in its logic.rs"), Result.Notes[0].TypeName, FString(TEXT("tip_jar")));
+		TestTrue(FString::Printf(TEXT("naming it (%s)"), *Result.Notes[0].Text), Result.Notes[0].Text.StartsWith(TEXT("logic.rs is missing clear"), ESearchCase::CaseSensitive));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecGenerateAllQuestionTest, "CrowdySDK.CrowdyExecEditor.GenerateAll.AQuestionRefusesWithoutYes", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecGenerateAllQuestionTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	// A definition outside the transient package, so its crate records it and a Type Name change finds the old folder.
+	UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Temp/CrowdyExecCodegenMenuTests/%s/DA_GenerateAll"), *FGuid::NewGuid().ToString()));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition(NewObject<UCrowdyServerObjectDefinition>(Package, TEXT("DA_GenerateAll"), RF_Transient));
+	Definition->TypeName = TEXT("ck_all_old");
+	Definition->State = FCrowdyExecTestKinds::StaticStruct();
+	FCrowdyServerFunction& Echo = Definition->Functions.AddDefaulted_GetRef();
+	Echo.Name = TEXT("Echo");
+	Echo.Params = FCrowdyExecTestKinds::StaticStruct();
+	Echo.Reply = FCrowdyExecTestKinds::StaticStruct();
+	const FString Old = CrateOf(Server, TEXT("ck_all_old"));
+	const FString New = CrateOf(Server, TEXT("ck_all_new"));
+	{
+		FScriptedDialogs Dialogs;
+		if (!TestTrue(TEXT("the code is generated under the old Type Name"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path)))
+		{
+			return false;
+		}
+	}
+	const FString Logic = LoadLogic(Old) + TEXT("// the developer's server code\n");
+	FFileHelper::SaveStringToFile(Logic, *FPaths::Combine(Old, TEXT("src/logic.rs")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	Definition->TypeName = TEXT("ck_all_new");
+	const TArray<UCrowdyServerObjectDefinition*> Definitions = {Definition.Get()};
+
+	const CrowdyExecCodegenMenu::FGenerateAllResult Refused = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Refuse);
+	TestTrue(TEXT("without -yes nothing is generated"), Refused.Generated.IsEmpty());
+	if (TestEqual(TEXT("the type is refused"), Refused.Refused.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("by name"), Refused.Refused[0].TypeName, FString(TEXT("ck_all_new")));
+		TestTrue(FString::Printf(TEXT("with the question as the reason (%s)"), *Refused.Refused[0].Text),
+			Refused.Refused[0].Text.StartsWith(TEXT("The Type Name changed from ck_all_old to ck_all_new since the server code was last generated."), ESearchCase::CaseSensitive));
+	}
+	TestFalse(TEXT("a run without a window does not stop at a refusal"), Refused.bCancelled);
+	TestEqualSensitive(TEXT("the old folder keeps the developer's code"), LoadLogic(Old), Logic);
+	TestFalse(TEXT("and no new folder is made"), IFileManager::Get().DirectoryExists(*New));
+
+	const CrowdyExecCodegenMenu::FGenerateAllResult Moved = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Yes);
+	TestEqualSensitive(TEXT("with -yes the type is generated"), FString::Join(Moved.Generated, TEXT(",")), FString(TEXT("ck_all_new")));
+	TestTrue(TEXT("and nothing is refused"), Moved.Refused.IsEmpty());
+	TestTrue(TEXT("or left unanswered"), Moved.Notes.IsEmpty());
+	TestFalse(TEXT("the old folder is moved away"), IFileManager::Get().DirectoryExists(*Old));
+	TestEqualSensitive(TEXT("to the new Type Name, with the developer's code"), LoadLogic(New), Logic);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecGenerateAllNamedTypeTest, "CrowdySDK.CrowdyExecEditor.GenerateAll.ANamedTypeIsGeneratedEvenWhenUpToDate", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecGenerateAllNamedTypeTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Named = MakeTipJar();
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Stale = MakeTipJar();
+	Stale->TypeName = TEXT("tip_jar_stale");
+	{
+		FScriptedDialogs Dialogs;
+		if (!TestTrue(TEXT("a type is generated"), CrowdyExecCodegenMenu::GenerateServerCode(*Named, Server.Path))
+			|| !TestTrue(TEXT("and another"), CrowdyExecCodegenMenu::GenerateServerCode(*Stale, Server.Path)))
+		{
+			return false;
+		}
+	}
+	AddFunction(*Stale, TEXT("Clear"));
+	TestTrue(TEXT("the first is up to date"), CrowdyExecDeploy::InspectType(*Named, CrateOf(Server, TEXT("tip_jar"))).State == CrowdyExecDeploy::ECrateState::UpToDate);
+
+	const TArray<UCrowdyServerObjectDefinition*> Definitions = {Named.Get(), Stale.Get()};
+	const CrowdyExecCodegenMenu::FGenerateAllResult Result = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Refuse, TEXT("tip_jar"));
+	TestEqualSensitive(TEXT("the named type is generated and the stale one left alone"), FString::Join(Result.Generated, TEXT(",")), FString(TEXT("tip_jar")));
+	TestTrue(TEXT("nothing is refused"), Result.Refused.IsEmpty());
+
+	const CrowdyExecCodegenMenu::FGenerateAllResult Unknown = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Refuse, TEXT("nope"));
+	TestTrue(TEXT("an unknown type generates nothing"), Unknown.Generated.IsEmpty());
+	if (TestEqual(TEXT("and is refused"), Unknown.Refused.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("naming the known types"), Unknown.Refused[0].Text, FString(TEXT("No Server Object type is named nope in the project. The types are: tip_jar, tip_jar_stale")));
+	}
+
+	const CrowdyExecCodegenMenu::FGenerateAllResult Gaps = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Refuse, TEXT("tip_jar_stale"));
+	TestEqualSensitive(TEXT("the stale type is generated when named"), FString::Join(Gaps.Generated, TEXT(",")), FString(TEXT("tip_jar_stale")));
+	if (TestEqual(TEXT("and its logic file's gap is reported"), Gaps.LogicGaps.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("the missing function"), FString::Join(Gaps.LogicGaps[0].Missing, TEXT(",")), FString(TEXT("clear")));
+		TestFalse(TEXT("without stubs added"), Gaps.LogicGaps[0].bStubsAdded);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecGenerateAllSkippedTest, "CrowdySDK.CrowdyExecEditor.GenerateAll.TypesThatNeedTheDeveloperAreSkippedNotRefused", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecGenerateAllSkippedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Stale = MakeTipJar();
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Broken = MakeTipJar();
+	Broken->TypeName = TEXT("tip_jar_broken");
+	Broken->SaveIntervalSeconds = 1;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> NoFile = MakeTipJar();
+	NoFile->TypeName = TEXT("tip_jar_own");
+	NoFile->CodeSource = ECrowdyServerCodeSource::OwnFile;
+	const TArray<UCrowdyServerObjectDefinition*> Definitions = {Stale.Get(), Broken.Get(), NoFile.Get()};
+
+	const CrowdyExecCodegenMenu::FGenerateAllResult Result = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Refuse);
+	TestEqualSensitive(TEXT("the type that can be written is"), FString::Join(Result.Generated, TEXT(",")), FString(TEXT("tip_jar")));
+	TestTrue(TEXT("nothing is refused, so the run succeeds"), Result.Refused.IsEmpty());
+	if (TestEqual(TEXT("the two that need the developer are skipped"), Result.Skipped.Num(), 2))
+	{
+		TestEqualSensitive(TEXT("a definition that does not bake"), Result.Skipped[0].TypeName, FString(TEXT("tip_jar_broken")));
+		TestTrue(FString::Printf(TEXT("with its reason (%s)"), *Result.Skipped[0].Text), Result.Skipped[0].Text.StartsWith(TEXT("Save Interval must be 5 to 60 seconds"), ESearchCase::CaseSensitive));
+		TestEqualSensitive(TEXT("a My Own File type with no Logic File"), Result.Skipped[1].TypeName, FString(TEXT("tip_jar_own")));
+		TestTrue(FString::Printf(TEXT("with its reason (%s)"), *Result.Skipped[1].Text), Result.Skipped[1].Text.StartsWith(TEXT("Code Source is My Own File but no file is chosen"), ESearchCase::CaseSensitive));
+	}
+
+	const CrowdyExecCodegenMenu::FGenerateAllResult Again = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Refuse);
+	TestTrue(TEXT("a second run writes nothing, so the skipped types do not come back as work"), Again.Generated.IsEmpty() && Again.Refused.IsEmpty());
+	TestEqual(TEXT("and skips the same two"), Again.Skipped.Num(), 2);
+
+	const CrowdyExecCodegenMenu::FGenerateAllResult Named = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Refuse, TEXT("tip_jar_broken"));
+	TestTrue(TEXT("a named type that does not bake is refused, not skipped"), Named.Skipped.IsEmpty() && Named.Refused.Num() == 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecGenerateAllClipboardTest, "CrowdySDK.CrowdyExecEditor.GenerateAll.AHeadlessRunLeavesTheClipboardAlone", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecGenerateAllClipboardTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeTipJar();
+	const FString Crate = CrateOf(Server, TEXT("tip_jar"));
+	const FString LogicFile = CrowdyExecCodegen::GetLogicFile(*Definition, Crate);
+	{
+		FScriptedDialogs Dialogs;
+		if (!TestTrue(TEXT("the first Generate writes the crate"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path)))
+		{
+			return false;
+		}
+	}
+	const FString Generated = LoadLogic(Crate);
+	const int32 Impl = Generated.Find(TEXT("impl Functions for "), ESearchCase::CaseSensitive);
+	const int32 Open = Impl == INDEX_NONE ? INDEX_NONE : Generated.Find(TEXT("{"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Impl);
+	if (!TestTrue(TEXT("the generated logic.rs has its impl block"), Open != INDEX_NONE))
+	{
+		return false;
+	}
+	FFileHelper::SaveStringToFile(Generated.Left(Open + 1) + TEXT("\n    my_macro!(tip);") + Generated.Mid(Open + 1), *LogicFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	AddFunction(*Definition, TEXT("Clear"));
+
+	FString Clipboard;
+	FPlatformApplicationMisc::ClipboardPaste(Clipboard);
+	FPlatformApplicationMisc::ClipboardCopy(TEXT("clipboard before the run"));
+	const TArray<UCrowdyServerObjectDefinition*> Definitions = {Definition.Get()};
+	const CrowdyExecCodegenMenu::FGenerateAllResult Result = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Refuse);
+	FString Copied;
+	FPlatformApplicationMisc::ClipboardPaste(Copied);
+	FPlatformApplicationMisc::ClipboardCopy(*Clipboard);
+	TestEqualSensitive(TEXT("the run left the clipboard as it was"), Copied, FString(TEXT("clipboard before the run")));
+	TestEqualSensitive(TEXT("and wrote the type"), FString::Join(Result.Generated, TEXT(",")), FString(TEXT("tip_jar")));
+	if (TestEqual(TEXT("the functions it could not add are in the notes"), Result.Notes.Num(), 1))
+	{
+		TestTrue(FString::Printf(TEXT("with their text (%s)"), *Result.Notes[0].Text), Result.Notes[0].Text.Contains(TEXT("fn clear("), ESearchCase::CaseSensitive));
+		TestFalse(TEXT("and no claim that they are on the clipboard"), Result.Notes[0].Text.Contains(TEXT("on the clipboard"), ESearchCase::CaseSensitive));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecGenerateAllOwnLogicInOldFolderTest, "CrowdySDK.CrowdyExecEditor.GenerateAll.YesDoesNotMoveAFolderHoldingTheOwnLogicFile", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecGenerateAllOwnLogicInOldFolderTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Temp/CrowdyExecCodegenMenuTests/%s/DA_OwnLogic"), *FGuid::NewGuid().ToString()));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition(NewObject<UCrowdyServerObjectDefinition>(Package, TEXT("DA_OwnLogic"), RF_Transient));
+	Definition->TypeName = TEXT("ck_own_old");
+	Definition->State = FCrowdyExecTestKinds::StaticStruct();
+	FCrowdyServerFunction& Echo = Definition->Functions.AddDefaulted_GetRef();
+	Echo.Name = TEXT("Echo");
+	Echo.Params = FCrowdyExecTestKinds::StaticStruct();
+	Echo.Reply = FCrowdyExecTestKinds::StaticStruct();
+	Definition->CodeSource = ECrowdyServerCodeSource::OwnFile;
+	const FString Old = CrateOf(Server, TEXT("ck_own_old"));
+	const FString New = CrateOf(Server, TEXT("ck_own_new"));
+	const FString InsideOld = FPaths::Combine(Old, TEXT("src/own_logic.rs"));
+	Definition->LogicFile.FilePath = InsideOld;
+	{
+		FScriptedDialogs Dialogs;
+		if (!TestTrue(TEXT("the crate is generated under the old Type Name"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path)))
+		{
+			return false;
+		}
+	}
+	FFileHelper::SaveStringToFile(TEXT("// the developer's own code\n"), *InsideOld, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	Definition->TypeName = TEXT("ck_own_new");
+	const TArray<UCrowdyServerObjectDefinition*> Definitions = {Definition.Get()};
+
+	const CrowdyExecCodegenMenu::FGenerateAllResult Kept = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Yes);
+	TestTrue(TEXT("-yes does not generate a type whose Logic File is in the folder it would move"), Kept.Generated.IsEmpty());
+	if (TestEqual(TEXT("it is refused"), Kept.Refused.Num(), 1))
+	{
+		TestTrue(FString::Printf(TEXT("with the question as the reason (%s)"), *Kept.Refused[0].Text),
+			Kept.Refused[0].Text.StartsWith(TEXT("The Type Name changed from ck_own_old to ck_own_new"), ESearchCase::CaseSensitive));
+	}
+	TestTrue(TEXT("the old folder and the Logic File stay"), IFileManager::Get().DirectoryExists(*Old) && FPaths::FileExists(InsideOld));
+	TestFalse(TEXT("and no new folder is made"), IFileManager::Get().DirectoryExists(*New));
+
+	const FString Outside = FPaths::Combine(FPaths::GetPath(Server.Path), TEXT("outside_logic.rs"));
+	FFileHelper::SaveStringToFile(TEXT("// the developer's own code\n"), *Outside, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	Definition->LogicFile.FilePath = Outside;
+	const CrowdyExecCodegenMenu::FGenerateAllResult Moved = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Yes);
+	TestEqualSensitive(TEXT("with the Logic File elsewhere -yes moves the folder and generates"), FString::Join(Moved.Generated, TEXT(",")), FString(TEXT("ck_own_new")));
+	TestFalse(TEXT("the old folder is gone"), IFileManager::Get().DirectoryExists(*Old));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecGenerateAllIdentityNotesTest, "CrowdySDK.CrowdyExecEditor.GenerateAll.NamesThatChangeTypeAreInTheNotes", CrowdyExecCodegenMenuTests::TestFlags)
+bool FCrowdyExecGenerateAllIdentityNotesTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecCodegenMenuTests;
+	FServerFolder Server;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Definition = MakeTipJar();
+	{
+		FScriptedDialogs Dialogs;
+		if (!TestTrue(TEXT("the reply sharing the State's struct is generated"), CrowdyExecCodegenMenu::GenerateServerCode(*Definition, Server.Path)))
+		{
+			return false;
+		}
+	}
+	Definition->Functions[0].ReplyList.SetValueInt32(TEXT("Total"), 7);
+	const TArray<UCrowdyServerObjectDefinition*> Definitions = {Definition.Get()};
+	const CrowdyExecCodegenMenu::FGenerateAllResult Result = CrowdyExecCodegenMenu::GenerateAll(Definitions, Server.Path, CrowdyExecCodegenMenu::EGenerateAnswers::Refuse);
+	TestEqualSensitive(TEXT("the type is generated"), FString::Join(Result.Generated, TEXT(",")), FString(TEXT("tip_jar")));
+	if (TestEqual(TEXT("and the names that now stand for another type are in the notes"), Result.Notes.Num(), 1))
+	{
+		TestTrue(FString::Printf(TEXT("naming the reply (%s)"), *Result.Notes[0].Text), Result.Notes[0].Text.StartsWith(TEXT("TipReply is now its own struct"), ESearchCase::CaseSensitive));
+	}
 	return true;
 }
 

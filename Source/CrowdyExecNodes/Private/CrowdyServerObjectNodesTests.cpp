@@ -6,6 +6,7 @@
 #include "BlueprintNodeSpawner.h"
 #include "CrowdyExecNodesSpawn.h"
 #include "CrowdyExecNodesTestTypes.h"
+#include "CrowdyGameKitTypes.h"
 #include "CrowdyK2Node_CallServerFunction.h"
 #include "CrowdyK2Node_GetServerState.h"
 #include "CrowdyK2Node_GetServerVariable.h"
@@ -938,16 +939,16 @@ bool FCrowdyServerObjectNodesStatusPinsTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("then On Success"), Outputs[1]->PinName, CrowdyServerCallPins::OnSuccess);
 	TestEqual(TEXT("then On Failed"), Outputs[2]->PinName, CrowdyServerCallPins::OnFailed);
 	const int32 IntIndex = Outputs.IndexOfByPredicate([](const UEdGraphPin* Pin) { return Pin->PinName == FName(TEXT("Int")); });
-	const int32 First = Outputs.Num() - 3;
+	const TArray<FName> Status = {CrowdyServerCallPins::Outcome, CrowdyServerCallPins::Reason, CrowdyServerCallPins::Retryable, CrowdyServerCallPins::Code};
+	const int32 First = Outputs.Num() - Status.Num();
 	TestTrue(TEXT("the function's outputs follow On Failed and come before the status pins"), IntIndex >= 3 && IntIndex < First);
 
-	const TArray<FName> Status = {CrowdyServerCallPins::Outcome, CrowdyServerCallPins::Reason, CrowdyServerCallPins::Retryable};
 	for (int32 Index = 0; Index < Outputs.Num(); ++Index)
 	{
 		const bool bStatus = Index >= First;
 		if (bStatus)
 		{
-			TestEqual(TEXT("the last three outputs are Outcome, Reason, Retryable in order"), Outputs[Index]->PinName, Status[Index - First]);
+			TestEqual(TEXT("the last four outputs are Outcome, Reason, Retryable, Code in order"), Outputs[Index]->PinName, Status[Index - First]);
 			TestFalse(Outputs[Index]->PinName.ToString() + TEXT(" has a tooltip"), Outputs[Index]->PinToolTip.IsEmpty());
 		}
 		TestEqual(Outputs[Index]->PinName.ToString() + TEXT(" is advanced exactly when it is a status pin"), Outputs[Index]->bAdvancedView, bStatus);
@@ -1010,6 +1011,7 @@ bool FCrowdyServerObjectNodesTimeoutPinTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Timeout is advanced"), Timeout->bAdvancedView);
 	TestEqual(TEXT("and starts at 0, which uses the project's call timeout"), FCString::Atof(*Timeout->DefaultValue), 0.f);
 	TestFalse(TEXT("and has a tooltip"), Timeout->PinToolTip.IsEmpty());
+	TestEqualSensitive(TEXT("and is labelled Timeout when no input clashes"), Timeout->GetDisplayName().ToString(), FString(TEXT("Timeout")));
 	TestTrue(TEXT("the node hides its advanced pins until expanded"), Call->AdvancedPinDisplay == ENodeAdvancedPins::Hidden);
 	for (const UEdGraphPin* Pin : Call->Pins)
 	{
@@ -1124,6 +1126,11 @@ bool FCrowdyServerObjectNodesTimeoutClashTest::RunTest(const FString& Parameters
 	const UEdGraphPin* Input = Call->FindPin(TEXT("Timeout"), EGPD_Input);
 	const UEdGraphPin* Own = Call->FindPin(CrowdyServerCallPins::Timeout, EGPD_Input);
 	TestTrue(TEXT("the input and the node's own Timeout are two pins"), Input && Own && Input != Own && !Input->bAdvancedView && Own->bAdvancedView);
+	if (Input && Own)
+	{
+		TestEqualSensitive(TEXT("the node's own pin is labelled Call Timeout beside the input"), Own->GetDisplayName().ToString(), FString(TEXT("Call Timeout")));
+		TestNotEqual(TEXT("so the two pins show different labels"), Own->GetDisplayName().ToString(), Input->GetDisplayName().ToString());
+	}
 	return true;
 }
 
@@ -1319,6 +1326,55 @@ bool FCrowdyServerObjectNodesHiddenVariableTest::RunTest(const FString& Paramete
 	int32 ErrorCount = 0;
 	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
 	TestTrue(TEXT("a node on a hidden variable is a compile error naming it"), AnyContains(Errors, TEXT("Big is not Visible to Players")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesStarterVariablesTest, "CrowdySDK.Editor.ServerObjectNodes.StarterVariablesReachPlayers", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesStarterVariablesTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	Definition->CodeSource = ECrowdyServerCodeSource::GameKitStarter;
+	Definition->WatchedFields.Reset();
+
+	TArray<FCrowdyServerObjectMenuEntry> Entries;
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(Definition, Entries);
+	TestTrue(TEXT("a starter's snapshot carries its whole State, so the menu offers Get for each variable"), Entries.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry)
+	{
+		return Entry.Member == TEXT("Int") && Entry.NodeClass == UCrowdyK2Node_GetServerVariable::StaticClass();
+	}));
+
+	FCompileRig Rig = MakeActorBlueprint();
+	UCrowdyK2Node_ServerVariableChanged* Changed = AddNode<UCrowdyK2Node_ServerVariableChanged>(Rig.Graph, Definition, TEXT("Int"));
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Changed, UEdGraphSchema_K2::PN_Execute);
+
+	int32 ErrorCount = 0;
+	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
+	TestFalse(TEXT("On Changed on a starter's variable is no Visible to Players error"), AnyContains(Errors, TEXT("is not Visible to Players")));
+
+	UCrowdyServerObjectDefinition* World = NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage());
+	World->State = FCrowdyKitWorldConditions::StaticStruct();
+	World->CodeSource = ECrowdyServerCodeSource::GameKitStarter;
+	World->KitStateTopic = TEXT("world");
+	World->bOnlyOneInstance = true;
+	World->TypeName = TEXT("world");
+	TArray<FString> BakeErrors;
+	TestTrue(TEXT("the world bakes"), World->Bake(BakeErrors));
+	Entries.Reset();
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(World, Entries);
+	auto Offers = [&Entries](const TCHAR* Member, UClass* NodeClass)
+	{
+		return Entries.ContainsByPredicate([Member, NodeClass](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.Member == Member && Entry.NodeClass == NodeClass; });
+	};
+	TestTrue(TEXT("a presence flag can be read"), Offers(TEXT("bHasOnline"), UCrowdyK2Node_GetServerVariable::StaticClass()));
+	TestFalse(TEXT("but has no On Changed of its own, since its changes are reported as its value's"), Offers(TEXT("bHasOnline"), UCrowdyK2Node_ServerVariableChanged::StaticClass()));
+	TestTrue(TEXT("its value has one"), Offers(TEXT("Online"), UCrowdyK2Node_ServerVariableChanged::StaticClass()));
+
+	FCompileRig FlagRig = MakeActorBlueprint();
+	UCrowdyK2Node_ServerVariableChanged* FlagChanged = AddNode<UCrowdyK2Node_ServerVariableChanged>(FlagRig.Graph, World, TEXT("bHasOnline"));
+	Link(FlagRig.BeginPlay, UEdGraphSchema_K2::PN_Then, FlagChanged, UEdGraphSchema_K2::PN_Execute);
+	const TArray<FString> FlagErrors = Compile(FlagRig.Blueprint, ErrorCount);
+	TestTrue(TEXT("a pasted On Changed on the flag says which node to use"), AnyContains(FlagErrors, TEXT("bHasOnline changes together with Online")));
 	return true;
 }
 

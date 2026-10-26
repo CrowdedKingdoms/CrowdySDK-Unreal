@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Containers/Ticker.h"
 #include "Engine/TimerHandle.h"
 #include "CrowdyServerObject.h"
 #include "Queries/Data/Teams/Types/FCrowdyTeamMembership.h"
@@ -10,6 +11,11 @@
 class UCrowdyEntityComponent;
 class UCrowdyServerObjectDefinition;
 class UCrowdyServerObjectSubsystem;
+class APawn;
+class FDoubleProperty;
+
+/** Location is in Unreal units, at the owner's height. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCrowdyPositionKept, FVector, Location);
 
 UENUM(BlueprintType)
 enum class ECrowdyServerObjectInstanceMode : uint8
@@ -26,6 +32,17 @@ enum class ECrowdyServerObjectInstanceMode : uint8
 	FromServerValue UMETA(DisplayName = "From Server Value"),
 	/** The area this actor stands in, by the definition's Area Size, followed as the actor moves. */
 	ThisActorsArea UMETA(DisplayName = "This Actor's Area")
+};
+
+/** Which actor a Crowdy Server Object component reports to a starter that tracks players. */
+UENUM(BlueprintType)
+enum class ECrowdyPositionReport : uint8
+{
+	/** The owner when it is a pawn this game's player controls. */
+	PlayerPawn UMETA(DisplayName = "Player Pawn"),
+	/** This actor wherever it is, for an owner that stands in for the player. */
+	ThisActor UMETA(DisplayName = "This Actor"),
+	Off
 };
 
 /** Which instance of the Source Definition a From Server Value component reads. */
@@ -56,6 +73,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object")
 	ECrowdyServerObjectInstanceMode InstanceMode = ECrowdyServerObjectInstanceMode::InstanceId;
 
+	/** Left empty on a Game Kit starter keyed by player, such as player, it is the signed-in player's own. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (EditCondition = "InstanceMode == ECrowdyServerObjectInstanceMode::InstanceId", EditConditionHides))
 	FString InstanceId;
 
@@ -84,6 +102,18 @@ public:
 	/** Object is None when it could not be joined; Get Failure Reason says why. */
 	UPROPERTY(BlueprintAssignable, Category = "Server Object")
 	FCrowdyServerStatusChanged OnStatusChanged;
+
+	/** Sends an actor's location to a starter that tracks players (its Position Function) while the Server Object is Ready. By default only the pawn this game's player controls is reported, and only by one component per Server Object. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Server Object|Position")
+	ECrowdyPositionReport PositionReport = ECrowdyPositionReport::PlayerPawn;
+
+	/** Moves the owner by the correction the server made when it cut a move short or refused it, keeping the owner's height and any movement made since the report. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Server Object|Position")
+	bool bSnapToKeptPosition = true;
+
+	/** The server kept another position than the one reported; Location is the owner's location with that correction applied (the owner is moved there when Snap To Kept Position is on). */
+	UPROPERTY(BlueprintAssignable, Category = "Server Object|Position")
+	FOnCrowdyPositionKept OnPositionKept;
 
 	/** The Server Object this component holds, or None before it joins one or after it could not. */
 	UFUNCTION(BlueprintPure, Category = "Server Object")
@@ -131,6 +161,7 @@ private:
 	friend struct FCrowdyServerObjectComponentTestAccess;
 	friend struct FCrowdyServerObjectRecordsTestAccess;
 	friend struct FCrowdyServerObjectMessageTestAccess;
+	friend struct FCrowdyServerObjectPositionTestAccess;
 	friend class UCrowdyServerObjectSubsystem;
 
 	void Join();
@@ -180,6 +211,51 @@ private:
 	/** The Instance Id the source last gave, so an unchanged value does not rejoin. */
 	FString SourceValue;
 
+	/** Starts the position reports on the core ticker while Held is Ready, or stops them; the core ticker keeps running while the game is paused, and the component's own tick stays the user's. */
+	void SetPositionArmed(bool bArmed);
+
+	/** Finds the Position Function's inputs and reply and their X and Y once, so a report writes and reads them without a name search. */
+	bool ResolvePositionAxes();
+
+	/** One ticker fire: sends the owner's location unless a report is out, the owner stands still, or a refusal holds reports. */
+	void ReportPosition();
+	bool TickPosition(float DeltaSeconds);
+	void HandlePositionAnswer(uint32 Serial, const FVector& Sent, const FCrowdyServerCallResult& Result);
+
+	/** Whether PositionReport says this owner is the one to report right now. */
+	bool ShouldReportOwner() const;
+
+	/** Lets another component on the same Server Object report, when this one was the reporter. */
+	void ReleasePositionClaim();
+	double PositionNow() const;
+
+	static constexpr double PositionRefusalSeconds = 1.0;
+	static constexpr double PositionStillSeconds = 1.0;
+	static constexpr double PositionCodedRefusalSeconds = 5.0;
+
+	FTSTicker::FDelegateHandle PositionTicker;
+	FName PositionFunction;
+	UPROPERTY(Transient)
+	FInstancedStruct PositionInputs;
+	const FDoubleProperty* PositionInX = nullptr;
+	const FDoubleProperty* PositionInY = nullptr;
+	const FDoubleProperty* PositionReplyX = nullptr;
+	const FDoubleProperty* PositionReplyY = nullptr;
+	const UScriptStruct* PositionReplyStruct = nullptr;
+	uint32 PositionGeneration = 0;
+	uint32 PositionSerial = 0;
+	TWeakObjectPtr<const APawn> PositionPawn;
+	bool bPositionInFlight = false;
+	bool bPositionSent = false;
+
+	/** Whether the hold follows a coded refusal, which a change of the State shortens to the plain hold. */
+	bool bPositionHoldCoded = false;
+	double PositionRefusedAt = 0.0;
+	float PositionPeriod = 0.2f;
+	double PositionSentAt = 0.0;
+	double PositionHoldUntil = 0.0;
+	FVector PositionLast = FVector::ZeroVector;
+
 	bool bTeamsBound = false;
 	float TeamsRetryIn = 0.f;
 	int32 TeamsRequests = 0;
@@ -198,6 +274,9 @@ private:
 
 	/** From Server Value, unless the type has Only One Instance. */
 	bool FollowsSourceValue() const;
+
+	/** Signed-In Player, or a Game Kit starter keyed by player with no Instance Id, which is the signed-in player's own. */
+	bool FollowsSignedInPlayer() const;
 
 	/** This Actor's Area's Instance Id, or empty with OutError saying why. */
 	FString ResolveAreaKey(FString& OutError) const;
@@ -239,5 +318,11 @@ private:
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Stands in for the game instance's Server Objects, which a component outside a world cannot find. */
 	TWeakObjectPtr<UCrowdyServerObjectSubsystem> ServerObjectsForTest;
+
+	/** The clock of a component outside a world, which has no world time to report by. */
+	double PositionTimeForTest = 0.0;
+
+	/** Lets a component outside a world arm its position ticker. */
+	bool bPositionTickerForTest = false;
 #endif
 };

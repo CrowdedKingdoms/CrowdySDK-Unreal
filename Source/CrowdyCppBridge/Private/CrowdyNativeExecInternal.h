@@ -19,3 +19,9 @@ namespace CrowdyNativeExec
 
 	FCrowdyNativeExecReply ReplyFrom(const crowdy::domains::ExecReply& Reply);
 }
+
+struct FCrowdyNativeExecAccess
+{
+	// The CrowdyCPP connection underneath, null once it is closed.
+	static std::shared_ptr<crowdy::domains::ExecConnection> Connection(const FCrowdyNativeExecConnection& Wrapped);
+};

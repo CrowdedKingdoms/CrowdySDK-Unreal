@@ -1680,7 +1680,7 @@ namespace CrowdyExecCodegenDetail
 			return false;
 		}
 		Out = FString::Printf(TEXT("// The %s %s's structs, %s. Regenerate it; do not edit.\n"),
-			IsLibrary() ? TEXT("Server Function Library") : TEXT("Server Object type"), *Definition.TypeName, GeneratedMarker);
+			IsLibrary() ? TEXT("Server Function Library") : TEXT("Server Object type"), *EscapeRustText(Definition.TypeName), GeneratedMarker);
 		Out += TEXT("use serde::{Deserialize, Serialize};\nuse std::collections::{BTreeMap, BTreeSet};\n\n");
 		Out += FString::Join(Items, TEXT("\n"));
 		return true;
@@ -1689,7 +1689,7 @@ namespace CrowdyExecCodegenDetail
 	FString FCodegen::CargoFile() const
 	{
 		FString Text = TEXT("[package]\n");
-		Text += FString::Printf(TEXT("name = \"%s\"\n"), *Definition.TypeName);
+		Text += FString::Printf(TEXT("name = \"%s\"\n"), *TomlEscape(Definition.TypeName));
 		Text += TEXT("version = \"0.1.0\"\n")
 			TEXT("edition = \"2024\"\n")
 			TEXT("\n");
@@ -1701,9 +1701,9 @@ namespace CrowdyExecCodegenDetail
 		Text += TEXT("[lib]\n")
 			TEXT("crate-type = [\"cdylib\"]\n")
 			TEXT("\n")
-			TEXT("[dependencies]\n")
-			TEXT("ckx-sdk = \"0.7.0\"\n")
-			TEXT("serde = { version = \"1\", features = [\"derive\"] }\n");
+			TEXT("[dependencies]\n");
+		Text += FString::Printf(TEXT("ckx-sdk = \"%s\"\n"), CrowdyExecCodegen::CkxSdkVersion);
+		Text += TEXT("serde = { version = \"1\", features = [\"derive\"] }\n");
 		return Text;
 	}
 
@@ -1817,7 +1817,7 @@ namespace CrowdyExecCodegenDetail
 
 	void FCodegen::AppendDispatch(FString& Text, const FFunctionInfo& Function) const
 	{
-		Text += FString::Printf(TEXT("            \"%s\" => {\n"), *Function.Method);
+		Text += FString::Printf(TEXT("            \"%s\" => {\n"), *EscapeRustText(Function.Method));
 		Text += TEXT("                ") + AuthorizeLine(Function.WhoCanCall) + TEXT("\n");
 		if (!Function.RequiredFeature.IsEmpty())
 		{
@@ -3115,7 +3115,7 @@ namespace CrowdyExecCodegenDetail
 			TEXT("    }\n");
 		for (const FMessageInfo& Message : MessageInfos)
 		{
-			Text += FString::Printf(TEXT("\n    /// %s: sent to everyone listening once the handler that sends it succeeds.\n"), *Message.Name);
+			Text += FString::Printf(TEXT("\n    /// %s: sent to everyone listening once the handler that sends it succeeds.\n"), *EscapeRustText(Message.Name));
 			if (Message.Payload.IsEmpty())
 			{
 				Text += FString::Printf(TEXT("    pub fn send_%s() -> Result<()> {\n        queue(%s, vec![0xc0])\n    }\n"), *Message.Topic, *Message.Constant);
@@ -3134,8 +3134,10 @@ namespace CrowdyExecCodegenDetail
 			Inputs.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(", inputs: &%s"), *Inputs), Outputs.IsEmpty() ? TEXT("()") : *Outputs);
 		Text += Inputs.IsEmpty() ? TEXT("") : TEXT("    let payload = encode(inputs)?;\n");
 		// The callee's error follows its name, so a callee's refusal never reads as the caller's own.
-		const FString Call = FString::Printf(TEXT("ctx.call(\"%s\", %s, \"%s\", %s).map_err(|error| Error::new(&format!(\"%s.%s failed: {error}\")))?"), *TypeName, bKeyless ? TEXT("\"\"") : TEXT("key"), *Method,
-			Inputs.IsEmpty() ? TEXT("&[0x80]") : TEXT("&payload"), *TypeName, *Method);
+		const FString SafeType = EscapeRustText(TypeName);
+		const FString SafeMethod = EscapeRustText(Method);
+		const FString Call = FString::Printf(TEXT("ctx.call(\"%s\", %s, \"%s\", %s).map_err(|error| Error::new(&format!(\"%s.%s failed: {error}\")))?"), *SafeType, bKeyless ? TEXT("\"\"") : TEXT("key"), *SafeMethod,
+			Inputs.IsEmpty() ? TEXT("&[0x80]") : TEXT("&payload"), *SafeType, *SafeMethod);
 		if (Outputs.IsEmpty())
 		{
 			return Text + TEXT("    ") + Call + TEXT(";\n    Ok(())\n}\n");
@@ -4564,7 +4566,7 @@ namespace CrowdyExecCodegenDetail
 	FString FCodegen::RecordsLibFile() const
 	{
 		FString Text = FString::Printf(TEXT("// The Server Object type %s's glue, %s. Regenerate it; do not edit.\n"),
-			*Definition.TypeName, GeneratedMarker);
+			*EscapeRustText(Definition.TypeName), GeneratedMarker);
 		Text += FString::Printf(TEXT("// Your code goes in logic.rs, which implements Functions on Records: a %s for each entity.\n"), *StateName());
 		Text += TEXT("#![allow(non_snake_case, non_camel_case_types, dead_code, unused_imports, unused_variables)]\n")
 			TEXT("\n")
@@ -4644,7 +4646,7 @@ namespace CrowdyExecCodegenDetail
 	FString FCodegen::LibraryLibFile() const
 	{
 		FString Text = FString::Printf(TEXT("// The Server Function Library %s's glue, %s. Regenerate it; do not edit.\n"),
-			*Definition.TypeName, GeneratedMarker);
+			*EscapeRustText(Definition.TypeName), GeneratedMarker);
 		Text += FString::Printf(TEXT("// Your code goes in logic.rs, which implements Functions on %s. A library saves nothing between calls.\n"), *LibraryName);
 		Text += TEXT("#![allow(non_snake_case, non_camel_case_types, dead_code, unused_imports, unused_variables)]\n")
 			TEXT("\n")
@@ -4679,7 +4681,7 @@ namespace CrowdyExecCodegenDetail
 			return RecordsLibFile();
 		}
 		FString Text = FString::Printf(TEXT("// The Server Object type %s's glue, %s. Regenerate it; do not edit.\n"),
-			*Definition.TypeName, GeneratedMarker);
+			*EscapeRustText(Definition.TypeName), GeneratedMarker);
 		Text += FString::Printf(TEXT("// Your code goes in logic.rs, which implements Functions on %s.\n"), *StateName());
 		Text += TEXT("#![allow(non_snake_case, non_camel_case_types, dead_code, unused_imports, unused_variables)]\n")
 			TEXT("\n")
@@ -4713,7 +4715,7 @@ namespace CrowdyExecCodegenDetail
 		TArray<CrowdyExecCodegen::FLogicStub> Stubs;
 		for (const FFunctionInfo& Function : FunctionInfos)
 		{
-			const FString Body = FString::Printf(TEXT(" {\n        Err(Error::new(\"%s is not written yet\"))\n    }\n"), *Function.Method);
+			const FString Body = FString::Printf(TEXT(" {\n        Err(Error::new(\"%s is not written yet\"))\n    }\n"), *EscapeRustText(Function.Method));
 			Stubs.Add({Function.Ident, TEXT("    ") + FunctionSignature(Function) + Body});
 		}
 		// A timer or event runs on its own, so its stub succeeds rather than fail every time it fires.
@@ -4727,7 +4729,7 @@ namespace CrowdyExecCodegenDetail
 	FString FCodegen::LogicFile() const
 	{
 		FString Text = FString::Printf(TEXT("// Your server code for the %s %s. The generator writes this file once and never again.\n"),
-			IsLibrary() ? TEXT("Server Function Library") : TEXT("Server Object type"), *Definition.TypeName);
+			IsLibrary() ? TEXT("Server Function Library") : TEXT("Server Object type"), *EscapeRustText(Definition.TypeName));
 		Text += TEXT("use crate::*;\nuse ckx_sdk::prelude::*;\n\n");
 		Text += FString::Printf(TEXT("impl Functions for %s {\n"), *LogicTarget());
 		TArray<FString> Bodies;
@@ -5360,6 +5362,12 @@ bool CrowdyExecCodegen::Generate(const UCrowdyServerObjectDefinition& Definition
 {
 	using namespace CrowdyExecCodegenDetail;
 	OutCrate = FGeneratedCrate();
+	if (Definition.IsGameKitStarter())
+	{
+		OutError = FString::Printf(TEXT("%s is a Game Kit starter: its server code is the starter's own Rust in %s/src/lib.rs, which Generate never writes; edit that file"),
+			*Definition.TypeName, *GetCrateDirectory(Definition));
+		return false;
+	}
 	const FCrowdyExecLayout* Layout = Definition.ResolveLayout(OutError);
 	if (!Layout)
 	{
@@ -5645,7 +5653,8 @@ FString CrowdyExecCodegen::GetLogicFile(const UCrowdyServerObjectDefinition& Def
 {
 	if (!HasOwnLogicFile(Definition))
 	{
-		return FPaths::ConvertRelativePathToFull(FPaths::Combine(CrateDirectory, TEXT("src/logic.rs")));
+		// A Game Kit starter's Server Functions are the starter's own lib.rs.
+		return FPaths::ConvertRelativePathToFull(FPaths::Combine(CrateDirectory, Definition.IsGameKitStarter() ? TEXT("src/lib.rs") : TEXT("src/logic.rs")));
 	}
 	const FString& Own = Definition.LogicFile.FilePath;
 	if (Own.IsEmpty())

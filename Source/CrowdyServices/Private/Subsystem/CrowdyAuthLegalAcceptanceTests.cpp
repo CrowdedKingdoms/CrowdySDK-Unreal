@@ -4,10 +4,16 @@
 
 #include "CrowdyCppClient.h"
 #include "Engine/GameInstance.h"
+#include "HAL/FileManager.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Subsystem/CrowdyAuthDevCommands.h"
 #include "Subsystem/CrowdyAuthentication.h"
 #include "Subsystem/CrowdyGameSession.h"
+#include "UI/CrowdyConsentPromptSubsystem.h"
 #include "UObject/StrongObjectPtr.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 // A token refused until the player records their consent holds the flow that asked for it instead of failing it, and
 // the player's answer decides how it ends. Everything here runs against a scripted client, so the only network the
@@ -30,6 +36,23 @@ namespace
 		"{\"data\":{\"mintAppToken\":{\"token\":\"app-xyz\",\"gameTokenId\":\"5150\",\"appId\":\"31337\","
 		"\"expiresAt\":\"2099-01-01T00:00:00Z\",\"gameApiUrl\":\"https://game.test\","
 		"\"gameApiWsUrl\":\"wss://game.test\",\"launchUrl\":\"https://launch.test\"}}}");
+
+	/** Sets bShowConsentPrompt for its lifetime, then restores it. */
+	struct FConsentPromptSettingScope
+	{
+		UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
+		bool bPrevious = Settings->bShowConsentPrompt;
+
+		explicit FConsentPromptSettingScope(bool bShow)
+		{
+			Settings->bShowConsentPrompt = bShow;
+		}
+
+		~FConsentPromptSettingScope()
+		{
+			Settings->bShowConsentPrompt = bPrevious;
+		}
+	};
 
 	/** An authentication subsystem with a stored session token, whose every call is answered by a scripted client. */
 	struct FConsentRig
@@ -365,5 +388,341 @@ bool FCrowdyAuthLegalDocumentsAreListedTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthHeadlessProcessFailsTheHeldSignInTest,
+	"CrowdySDK.Auth.HeadlessProcessFailsTheHeldSignIn", ConsentTestFlags)
+
+bool FCrowdyAuthHeadlessProcessFailsTheHeldSignInTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(1);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	// The game instance has no viewport, so the prompt cannot open; it is the only listener, so nobody else can ask.
+	const FConsentPromptSettingScope ShowPrompt(true);
+	const TStrongObjectPtr<UCrowdyConsentPromptSubsystem> Prompt(
+		NewObject<UCrowdyConsentPromptSubsystem>(Rig.Instance.Get()));
+	Prompt->AuthenticationForTest = Rig.Auth.Get();
+	Rig.Auth->OnLegalAcceptanceRequired.RemoveAll(Rig.Listener.Get());
+	Rig.Auth->OnLegalAcceptanceRequired.AddDynamic(Prompt.Get(), &UCrowdyConsentPromptSubsystem::HandleLegalAcceptanceRequired);
+
+	Rig.Mint();
+	Rig.Drain();
+
+	TestEqual(TEXT("the held sign-in fails"), Rig.Listener->FlowErrors.Num(), 1);
+	TestEqual(TEXT("and announces it"), Rig.Listener->LoginFailures.Num(), 1);
+	TestFalse(TEXT("nothing is held any more"), Rig.Auth->IsLegalAcceptancePending());
+	TestEqual(TEXT("which is announced once"), Rig.Listener->LegalAcceptanceEnds, 1);
+	TestEqual(TEXT("the sign-in never succeeded"), Rig.Listener->FlowSuccesses, 0);
+
+	Rig.Auth->OnLegalAcceptanceRequired.RemoveAll(Prompt.Get());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthHeadlessProcessKeepsTheHoldForAnotherListenerTest,
+	"CrowdySDK.Auth.HeadlessProcessKeepsTheHoldForAnotherListener", ConsentTestFlags)
+
+bool FCrowdyAuthHeadlessProcessKeepsTheHoldForAnotherListenerTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(1);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	// The rig's listener stays bound, standing in for a game that shows its own consent screen.
+	const FConsentPromptSettingScope ShowPrompt(true);
+	const TStrongObjectPtr<UCrowdyConsentPromptSubsystem> Prompt(
+		NewObject<UCrowdyConsentPromptSubsystem>(Rig.Instance.Get()));
+	Prompt->AuthenticationForTest = Rig.Auth.Get();
+	Rig.Auth->OnLegalAcceptanceRequired.AddDynamic(Prompt.Get(), &UCrowdyConsentPromptSubsystem::HandleLegalAcceptanceRequired);
+
+	Rig.Mint();
+	Rig.Drain();
+
+	TestEqual(TEXT("the other listener is asked"), Rig.Listener->LegalAcceptanceRequests, 1);
+	TestTrue(TEXT("the sign-in stays held"), Rig.Auth->IsLegalAcceptancePending());
+	TestEqual(TEXT("it has not failed"), Rig.Listener->FlowErrors.Num(), 0);
+	TestEqual(TEXT("nor announced a failure"), Rig.Listener->LoginFailures.Num(), 0);
+
+	Rig.Auth->OnLegalAcceptanceRequired.RemoveAll(Prompt.Get());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthMintCompletingAfterLogoutIsDroppedTest,
+	"CrowdySDK.Auth.MintCompletingAfterLogoutIsDropped", ConsentTestFlags)
+
+bool FCrowdyAuthMintCompletingAfterLogoutIsDroppedTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	// Logout deletes the saved session, so this instance gets a vault and a slot of its own.
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-stale-mint"));
+
+	Rig.Mint();
+	Rig.Auth->ClearSavedSession();
+	Rig.Drain();
+
+	TestEqual(TEXT("no login failure is broadcast into the next sign-in"), Rig.Listener->LoginFailures.Num(), 0);
+	TestEqual(TEXT("the sign-in does not succeed"), Rig.Listener->FlowSuccesses, 0);
+	TestEqual(TEXT("nor announce a login"), Rig.Listener->Logins, 0);
+	TestEqual(TEXT("it fails once instead"), Rig.Listener->FlowErrors.Num(), 1);
+	TestTrue(TEXT("the game token is unchanged"),
+		Rig.Session->GetGameToken().Equals(TEXT("app-old"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("no rotation is armed"), Rig.Auth->IsRotationTimerArmedForTest());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthMintAfterConsentCompletingAfterLogoutIsDroppedTest,
+	"CrowdySDK.Auth.MintAfterConsentCompletingAfterLogoutIsDropped", ConsentTestFlags)
+
+bool FCrowdyAuthMintAfterConsentCompletingAfterLogoutIsDroppedTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(1);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-stale-remint"));
+
+	Rig.Mint();
+	Rig.Drain();
+	if (!TestTrue(TEXT("the sign-in is held"), Rig.Auth->IsLegalAcceptancePending()))
+	{
+		return false;
+	}
+
+	// One poll answers the consent and sends the re-mint, which is then still in flight when the player signs out.
+	Rig.Consent();
+	Rig.Client->Poll();
+	if (!TestEqual(TEXT("the re-mint is in flight"), Rig.Client->NumPendingRequests(), 1))
+	{
+		return false;
+	}
+
+	Rig.Auth->ClearSavedSession();
+	Rig.Drain();
+
+	TestEqual(TEXT("no login failure is broadcast into the next sign-in"), Rig.Listener->LoginFailures.Num(), 0);
+	TestEqual(TEXT("the sign-in does not succeed"), Rig.Listener->FlowSuccesses, 0);
+	TestEqual(TEXT("nor announce a login"), Rig.Listener->Logins, 0);
+	TestEqual(TEXT("it fails once instead"), Rig.Listener->FlowErrors.Num(), 1);
+	TestTrue(TEXT("the game token is unchanged"),
+		Rig.Session->GetGameToken().Equals(TEXT("app-old"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("no rotation is armed"), Rig.Auth->IsRotationTimerArmedForTest());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthLogoutEndsABrowserSignInTest,
+	"CrowdySDK.Auth.LogoutEndsABrowserSignIn", ConsentTestFlags)
+
+bool FCrowdyAuthLogoutEndsABrowserSignInTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-logout-browser"));
+	Rig.Auth->SetLoopbackFlowPendingForTest(true);
+	if (!TestTrue(TEXT("a browser sign-in is under way"), Rig.Auth->IsInteractiveSignInBusyForTest()))
+	{
+		return false;
+	}
+
+	Rig.Auth->ClearSavedSession();
+
+	TestFalse(TEXT("signing out ends it"), Rig.Auth->IsInteractiveSignInBusyForTest());
+	TestEqual(TEXT("without announcing a failure"), Rig.Listener->LoginFailures.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthLinkStartAnsweringAfterLogoutIsDroppedTest,
+	"CrowdySDK.Auth.LinkStartAnsweringAfterLogoutIsDropped", ConsentTestFlags)
+
+bool FCrowdyAuthLinkStartAnsweringAfterLogoutIsDroppedTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-link-after-logout"));
+
+	// An unusable authorize URL, so a start answer that is wrongly acted on ends in a different error and never opens a browser.
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, FString(TEXT("{\"data\":{\"socialLoginStart\":{\"authorizeUrl\":\"ftp://id.test/auth\",\"state\":\"csrf-1\"}}}")));
+	Rig.Client->SetTestResponseScript(MoveTemp(Script));
+
+	FOnAuthError OnError;
+	OnError.BindDynamic(Rig.Listener.Get(), &UCrowdyAuthTestListener::HandleFlowError);
+	Rig.Auth->BeginLinkIdentity(TEXT("google"), FOnIdentityLinked(), OnError);
+	if (!TestEqual(TEXT("the link start is in flight"), Rig.Client->NumPendingRequests(), 1))
+	{
+		return false;
+	}
+
+	Rig.Auth->ClearSavedSession();
+	Rig.Drain();
+
+	TestEqual(TEXT("the link fails once"), Rig.Listener->FlowErrors.Num(), 1);
+	TestTrue(TEXT("because the player signed out"),
+		Rig.Listener->FlowErrors.Num() == 1 && Rig.Listener->FlowErrors[0].Contains(TEXT("Signed out")));
+	TestFalse(TEXT("no browser sign-in is left armed"), Rig.Auth->IsInteractiveSignInBusyForTest());
+
+	return true;
+}
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+namespace
+{
+	/** Sets the developer settings' app id for its lifetime, then restores it. 0 skips app discovery, so a sign-in's first request is the sign-in. */
+	struct FAppIdSettingScope
+	{
+		UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
+		int64 Previous = Settings->AppID;
+
+		explicit FAppIdSettingScope(int64 AppId)
+		{
+			Settings->AppID = AppId;
+		}
+
+		~FAppIdSettingScope()
+		{
+			Settings->AppID = Previous;
+		}
+	};
+
+	/** Reads a credentials file holding Content, then deletes it. */
+	bool ReadCredentialsFrom(const FString& Content, FString& Email, FString& Password, FString& Error)
+	{
+		const FString Path = FPaths::CreateTempFilename(*FPaths::ProjectSavedDir(), TEXT("CrowdyAuthDev"), TEXT(".json"));
+		FFileHelper::SaveStringToFile(Content, *Path);
+		const bool bRead = CrowdyAuthDev::ReadCredentialsFile(Path, Email, Password, Error);
+		IFileManager::Get().Delete(*Path);
+		return bRead;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthDevCredentialsFileRefusalsTest,
+	"CrowdySDK.Auth.DevCredentialsFileRefusals", ConsentTestFlags)
+
+bool FCrowdyAuthDevCredentialsFileRefusalsTest::RunTest(const FString& Parameters)
+{
+	const FString Secret = TEXT("hunter2-test");
+	FString Email;
+	FString Password;
+	FString Error;
+
+	TestFalse(TEXT("a missing file is refused"), CrowdyAuthDev::ReadCredentialsFile(
+		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CrowdyAuthDev-no-such-file.json")), Email, Password, Error));
+	TestFalse(TEXT("with a reason"), Error.IsEmpty());
+
+	TestFalse(TEXT("text that is not JSON is refused"), ReadCredentialsFrom(TEXT("not json {"), Email, Password, Error));
+	TestTrue(TEXT("and says so"), Error.Contains(TEXT("not a JSON")));
+
+	TestFalse(TEXT("a file with no password is refused"),
+		ReadCredentialsFrom(TEXT("{\"email\":\"a@example.test\"}"), Email, Password, Error));
+	TestTrue(TEXT("and names the password"), Error.Contains(TEXT("password")));
+	TestTrue(TEXT("nothing is handed back"), Email.IsEmpty() && Password.IsEmpty());
+
+	TestFalse(TEXT("a file with an empty password is refused"),
+		ReadCredentialsFrom(TEXT("{\"email\":\"a@example.test\",\"password\":\"\"}"), Email, Password, Error));
+
+	TestFalse(TEXT("a file with no email is refused"),
+		ReadCredentialsFrom(FString::Printf(TEXT("{\"password\":\"%s\"}"), *Secret), Email, Password, Error));
+	TestTrue(TEXT("and names the email"), Error.Contains(TEXT("email")));
+	TestFalse(TEXT("without echoing the password"), Error.Contains(Secret));
+	TestTrue(TEXT("nothing is handed back"), Email.IsEmpty() && Password.IsEmpty());
+
+	TestTrue(TEXT("a complete file reads"), ReadCredentialsFrom(
+		FString::Printf(TEXT("{\"email\":\"a@example.test\",\"password\":\"%s\"}"), *Secret), Email, Password, Error));
+	TestEqual(TEXT("the email"), Email, TEXT("a@example.test"));
+	TestEqual(TEXT("the password"), Password, Secret);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthDevSignInReachesLoginTest,
+	"CrowdySDK.Auth.DevSignInReachesLogin", ConsentTestFlags)
+
+bool FCrowdyAuthDevSignInReachesLoginTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	const FAppIdSettingScope NoDiscovery(0);
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-dev-signin"));
+
+	// The mint after it is answered by the rig's canned answer.
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, FString(TEXT(
+		"{\"data\":{\"login\":{\"token\":\"session-dev\",\"gameTokenId\":\"902\",\"user\":{\"userId\":\"9001\"}}}}")));
+	Rig.Client->SetTestResponseScript(MoveTemp(Script));
+
+	CrowdyAuthDev::SignIn(*Rig.Auth, TEXT("a@example.test"), TEXT("hunter2-test"));
+	Rig.Drain();
+
+	TestEqual(TEXT("the sign-in announces a login"), Rig.Listener->Logins, 1);
+	TestEqual(TEXT("and no failure"), Rig.Listener->LoginFailures.Num(), 0);
+	TestEqual(TEXT("as the account the server named"), Rig.Session->GetUserID(), static_cast<int64>(9001));
+	TestTrue(TEXT("holding the session the server issued"),
+		Rig.Session->GetSessionToken().Equals(TEXT("session-dev"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and the minted app token"),
+		Rig.Session->GetGameToken().Equals(TEXT("app-xyz"), ESearchCase::CaseSensitive));
+
+	Rig.Auth->ClearSavedSession();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthDevStatusNamesNoTokenTest,
+	"CrowdySDK.Auth.DevStatusNamesNoToken", ConsentTestFlags)
+
+bool FCrowdyAuthDevStatusNamesNoTokenTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	Rig.Session->SetAppTokenExpiresAt(TEXT("2099-01-01T00:00:00Z"));
+
+	const FString Line = CrowdyAuthDev::DescribeStatus(*Rig.Auth, *Rig.Session);
+	TestTrue(TEXT("signed in"), Line.Contains(TEXT("SignedIn=true")));
+	TestTrue(TEXT("the user"), Line.Contains(TEXT("UserID=7781")));
+	TestTrue(TEXT("the app token is reported held"), Line.Contains(TEXT("AppToken=set")));
+	TestTrue(TEXT("with its expiry"), Line.Contains(TEXT("ExpiresAt=2099-01-01T00:00:00Z")));
+	TestTrue(TEXT("not paused"), Line.Contains(TEXT("AppPaused=false")));
+	TestFalse(TEXT("no app token text"), Line.Contains(TEXT("app-old")));
+	TestFalse(TEXT("no session token text"), Line.Contains(TEXT("session-abc")));
+
+	Rig.Session->SetAppPaused(true, TEXT("out of funds"));
+	TestTrue(TEXT("a pause carries its reason"),
+		CrowdyAuthDev::DescribeStatus(*Rig.Auth, *Rig.Session).Contains(TEXT("AppPaused=true (out of funds)")));
+
+	Rig.Session->SetGameToken(FString());
+	Rig.Session->SetAppPaused(false, FString());
+	const FString SignedOut = CrowdyAuthDev::DescribeStatus(*Rig.Auth, *Rig.Session);
+	TestTrue(TEXT("without an app token it is not signed in"), SignedOut.Contains(TEXT("SignedIn=false")));
+	TestTrue(TEXT("and the token is reported unset"), SignedOut.Contains(TEXT("AppToken=unset")));
+
+	return true;
+}
+#endif
 
 #endif // WITH_DEV_AUTOMATION_TESTS

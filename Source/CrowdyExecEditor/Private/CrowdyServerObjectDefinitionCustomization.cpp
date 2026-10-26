@@ -49,6 +49,7 @@ namespace CrowdyServerObjectDefinitionCustomizationDetail
 	const FName ServerFunctionsCategory(TEXT("Server Functions"));
 	const FName ServerMessagesCategory(TEXT("Server Messages"));
 	const FName ServerCodeCategory(TEXT("Server Code"));
+	const FName GameKitCategory(TEXT("Game Kit"));
 	const FName ServerNamesCategory(TEXT("Server Names"));
 	const FName BakedCategory(TEXT("Baked"));
 	const FName AdvancedCategory(TEXT("Advanced"));
@@ -602,12 +603,17 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeDetails(IDetailLayoutB
 	Utilities = DetailBuilder.GetPropertyUtilities();
 	bBuiltPerEntity = Definition.IsValid() && Definition->Holds == ECrowdyServerObjectHolds::RecordPerEntity;
 	bBuiltLibrary = Definition.IsValid() && Definition->IsFunctionLibrary();
+	bBuiltKit = Definition.IsValid() && Definition->IsGameKitStarter();
 	if (Definition.IsValid())
 	{
 		DetailBuilder.HideProperty(OwnerHandle);
 		DetailBuilder.HideProperty(TeamHandle);
 	}
 	DetailBuilder.HideCategory(ServerCodeCategory);
+	if (!bBuiltKit)
+	{
+		DetailBuilder.HideCategory(GameKitCategory);
+	}
 	DetailBuilder.RegisterInstancedCustomPropertyTypeLayout(FCrowdyServerTimer::StaticStruct()->GetFName(),
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCrowdyServerTimerCustomization::MakeInstance));
 
@@ -628,6 +634,7 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeDetails(IDetailLayoutB
 		DetailBuilder.HideCategory(ListenToCategory);
 		DetailBuilder.HideCategory(ServerLimitsCategory);
 		DetailBuilder.HideCategory(ScalingCategory);
+		DetailBuilder.HideCategory(GameKitCategory);
 		if (Selection->Kind == FCrowdyServerObjectSelection::EKind::Function)
 		{
 			CustomizeFunction(DetailBuilder, Selection->Function);
@@ -732,7 +739,12 @@ IDetailPropertyRow* FCrowdyServerObjectDefinitionCustomization::AddStateRows(IDe
 	{
 		ServerObject.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, StateList)));
 	}
-	IDetailPropertyRow* WatchedRow = bFollowSelection ? nullptr : &ServerObject.AddProperty(WatchedHandle);
+	// A Game Kit starter's snapshot carries every variable, so there is nothing to pick.
+	if (bBuiltKit)
+	{
+		DetailBuilder.HideProperty(WatchedHandle);
+	}
+	IDetailPropertyRow* WatchedRow = bFollowSelection || bBuiltKit ? nullptr : &ServerObject.AddProperty(WatchedHandle);
 	ServerObject.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, SaveIntervalSeconds)));
 	ServerObject.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, IdleTimeoutSeconds)));
 	return WatchedRow;
@@ -762,7 +774,16 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeFunction(IDetailLayout
 			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 		]);
 	Category.AddProperty(Function->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, Name)));
-	Category.AddProperty(Function->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, WhoCanCall)));
+	// A Game Kit starter's server code decides who may call it and how often; whether a call is sent once is the caller's side.
+	const bool bKit = Current->IsGameKitStarter();
+	if (bKit)
+	{
+		Category.AddProperty(Function->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, bSendOnce)));
+	}
+	else
+	{
+		Category.AddProperty(Function->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, WhoCanCall)));
+	}
 	const TWeakObjectPtr<const UCrowdyServerObjectDefinition> Weak = Current;
 	Category.AddCustomRow(LOCTEXT("CallerNeedsMembersSearch", "Callable By Members From"))
 		.Visibility(TAttribute<EVisibility>::CreateLambda([Weak, Index]()
@@ -795,9 +816,12 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeFunction(IDetailLayout
 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 			]
 		];
-	Category.AddProperty(Function->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, RequiredFeature)));
+	if (!bKit)
+	{
+		Category.AddProperty(Function->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, RequiredFeature)));
+	}
 	const TSharedPtr<IPropertyHandle> Cooldown = Function->GetChildHandle(GET_MEMBER_NAME_CHECKED(FCrowdyServerFunction, CooldownSeconds));
-	if (Cooldown.IsValid())
+	if (!bKit && Cooldown.IsValid())
 	{
 		CrowdyServerObjectRows::ShowSeconds(Category.AddProperty(Cooldown), Cooldown.ToSharedRef());
 	}
@@ -845,7 +869,7 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeFunction(IDetailLayout
 		.Visibility(TAttribute<EVisibility>::CreateLambda([Weak, Index]()
 		{
 			const UCrowdyServerObjectDefinition* Live = Weak.Get();
-			return Live && Live->Functions.IsValidIndex(Index) && CrowdyExecDeveloperCall::IsForDevelopers(Live->Functions[Index]) ? EVisibility::Visible : EVisibility::Collapsed;
+			return Live && Live->Functions.IsValidIndex(Index) && CrowdyExecDeveloperCall::IsForDevelopers(*Live, Live->Functions[Index]) ? EVisibility::Visible : EVisibility::Collapsed;
 		}))
 		.ValueContent()
 		[
@@ -1051,7 +1075,18 @@ void FCrowdyServerObjectDefinitionCustomization::AddObjectCategories(IDetailLayo
 		return Category;
 	};
 	// A Server Function Library has only the platform data, Can Call, Scaling and Server Limits; HideLibraryRules hides the rest.
-	if (!bBuiltLibrary)
+	// A Game Kit starter's server code decides who reads it and who belongs to it, so it has only Only One Instance of these.
+	if (!bBuiltLibrary && bBuiltKit)
+	{
+		AddCategory(AccessCategory, LOCTEXT("AccessCategory", "Access"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnlyOneInstance)});
+		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Visibility));
+		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Holds));
+		for (const FName Category : {MembersCategory, RecordsCategory, AreasCategory, TimersCategory})
+		{
+			DetailBuilder.HideCategory(Category);
+		}
+	}
+	else if (!bBuiltLibrary)
 	{
 		AddCategory(AccessCategory, LOCTEXT("AccessCategory", "Access"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, Visibility),
 			GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bOnlyOneInstance)});
@@ -1099,7 +1134,7 @@ void FCrowdyServerObjectDefinitionCustomization::AddObjectCategories(IDetailLayo
 	{
 		PlatformData.AddProperty(DetailBuilder.GetProperty(Scope));
 	}
-	if (!bBuiltLibrary)
+	if (!bBuiltLibrary && !bBuiltKit)
 	{
 		AddCategory(MembersCategory, LOCTEXT("MembersCategory", "Members"), {GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MembersFrom),
 			GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, MaxMembers), GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, bShowMembers),
@@ -1224,9 +1259,12 @@ void FCrowdyServerObjectDefinitionCustomization::CustomizeVariable(IDetailLayout
 	}
 	else
 	{
+		const bool bStarter = Current->IsGameKitStarter();
 		VisibleWidget = SNew(SCheckBox)
-			.ToolTipText(LOCTEXT("VisibleToPlayersToolTip", "Players can read and watch this variable. Off, it stays on the server."))
-			.IsChecked(Current->WatchedFields.Contains(Name) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+			.IsEnabled(!bStarter)
+			.ToolTipText(bStarter ? LOCTEXT("StarterVisibleToPlayersToolTip", "A Game Kit starter sends players its whole State, and each Owner Value only to its own player.")
+				: LOCTEXT("VisibleToPlayersToolTip", "Players can read and watch this variable. Off, it stays on the server."))
+			.IsChecked(bStarter || Current->WatchedFields.Contains(Name) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
 			.OnCheckStateChanged_Lambda([this, Name](ECheckBoxState State) { SetVisibleToPlayers(Name, State == ECheckBoxState::Checked); });
 	}
 	Category.AddCustomRow(LOCTEXT("VisibleToPlayers", "Visible to Players"))
@@ -1640,9 +1678,10 @@ bool FCrowdyServerObjectDefinitionCustomization::HandleDeferredRefresh(float Del
 	{
 		return false;
 	}
-	if ((Current->Holds == ECrowdyServerObjectHolds::RecordPerEntity) != bBuiltPerEntity || Current->IsFunctionLibrary() != bBuiltLibrary)
+	if ((Current->Holds == ECrowdyServerObjectHolds::RecordPerEntity) != bBuiltPerEntity || Current->IsFunctionLibrary() != bBuiltLibrary
+		|| Current->IsGameKitStarter() != bBuiltKit)
 	{
-		// The rows are built differently for a record per entity and for a library, so they are made again.
+		// The rows are built differently for a record per entity, a library and a Game Kit starter, so they are made again.
 		if (const TSharedPtr<IPropertyUtilities> Pinned = Utilities.Pin())
 		{
 			Pinned->RequestRefresh();

@@ -12,6 +12,7 @@
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/PropertyOptional.h"
 #include "UObject/UnrealType.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
@@ -26,6 +27,23 @@ FString CrowdyExec::KeepNameCharacters(const FString& Authored)
 		{
 			Name.AppendChar(Char);
 		}
+	}
+	return Name;
+}
+
+FString CrowdyExec::PascalCase(const FString& SnakeName)
+{
+	FString Name;
+	bool bWordStart = true;
+	for (const TCHAR Char : KeepNameCharacters(SnakeName))
+	{
+		if (Char == '_')
+		{
+			bWordStart = true;
+			continue;
+		}
+		Name.AppendChar(bWordStart && Char >= 'a' && Char <= 'z' ? static_cast<TCHAR>(Char - 'a' + 'A') : Char);
+		bWordStart = false;
 	}
 	return Name;
 }
@@ -127,7 +145,8 @@ const TCHAR* const UCrowdyServerObjectDefinition::RootTypeName = TEXT("root");
 
 FString UCrowdyServerObjectDefinition::GetOnlyInstanceId() const
 {
-	return IsFunctionLibrary() || TypeName.Equals(RootTypeName, ESearchCase::CaseSensitive) ? FString() : FString(OnlyInstanceId);
+	// A Game Kit hub with one instance, such as world, is reached by the empty key.
+	return IsFunctionLibrary() || IsGameKitStarter() || TypeName.Equals(RootTypeName, ESearchCase::CaseSensitive) ? FString() : FString(OnlyInstanceId);
 }
 
 namespace
@@ -159,24 +178,7 @@ namespace
 	}
 
 	using CrowdyExec::KeepNameCharacters;
-
-	/** tip_jar becomes TipJar. */
-	FString PascalCase(const FString& SnakeName)
-	{
-		FString Name;
-		bool bWordStart = true;
-		for (const TCHAR Char : KeepNameCharacters(SnakeName))
-		{
-			if (Char == '_')
-			{
-				bWordStart = true;
-				continue;
-			}
-			Name.AppendChar(bWordStart && IsLowerAscii(Char) ? static_cast<TCHAR>(Char - 'a' + 'A') : Char);
-			bWordStart = false;
-		}
-		return Name;
-	}
+	using CrowdyExec::PascalCase;
 
 	/** AttackBoss becomes attack_boss. */
 	FString SnakeCase(const FString& Source)
@@ -199,6 +201,13 @@ namespace
 			Snake.AppendChar(IsUpperAscii(Char) ? static_cast<TCHAR>(Char - 'A' + 'a') : Char);
 		}
 		return Snake;
+	}
+
+	/** A Game Kit starter's field as its hub names it: TimeOfDay becomes time_of_day, and a bool's bReady becomes ready. */
+	FString KitFieldName(const FProperty* Property, const FString& Authored)
+	{
+		const bool bBoolPrefix = Property->IsA<FBoolProperty>() && Authored.Len() > 1 && Authored[0] == 'b' && IsUpperAscii(Authored[1]);
+		return SnakeCase(bBoolPrefix ? Authored.RightChop(1) : Authored);
 	}
 
 	FString AuthoredMethodName(const FCrowdyServerFunction& Function)
@@ -361,6 +370,39 @@ namespace
 		}
 	}
 
+	/** Struct's travelling bool called bHas<Authored>, which records whether the field Authored arrived with a value; null when there is none. */
+	const FBoolProperty* FindPresenceFlag(const UStruct* Struct, const FString& Authored)
+	{
+		const FString FlagName = TEXT("bHas") + Authored;
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			const FBoolProperty* Flag = CastField<FBoolProperty>(*It);
+			if (Flag && CrowdyExec::IsTravellingProperty(Flag) && It.GetStruct()->GetAuthoredNameForField(Flag).Equals(FlagName, ESearchCase::CaseSensitive))
+			{
+				return Flag;
+			}
+		}
+		return nullptr;
+	}
+
+	/** Whether Property is a bHas<X> bool beside a travelling field X, which makes it a presence flag and no field of its own. */
+	bool IsPresenceFlag(const UStruct* Struct, const FProperty* Property, const FString& Authored)
+	{
+		if (!Property->IsA<FBoolProperty>() || Authored.Len() <= 4 || !Authored.StartsWith(TEXT("bHas"), ESearchCase::CaseSensitive))
+		{
+			return false;
+		}
+		const FString Value = Authored.RightChop(4);
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			if (*It != Property && CrowdyExec::IsTravellingProperty(*It) && It.GetStruct()->GetAuthoredNameForField(*It).Equals(Value, ESearchCase::CaseSensitive))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** Walks the structs a definition reaches, collecting their field tables and the enums they use. */
 	struct FTableBuilder
 	{
@@ -463,11 +505,16 @@ namespace
 						continue;
 					}
 					const FString Authored = Declarer->GetAuthoredNameForField(Property);
+					const bool bKit = Definition.IsGameKitStarter();
+					if (bKit && IsPresenceFlag(Struct, Property, Authored))
+					{
+						continue;
+					}
 					const FString FieldPath = StructName + TEXT(".") + Authored;
 					const FGuid PropertyGuid = Declarer->ArePropertyGuidsAvailable() ? Declarer->FindPropertyGuidFromName(Property->GetFName()) : FGuid();
 					FString ServerName = Out.List.IsEmpty() ? FindFieldOverride(Struct, Declarer, Authored) : FindListValueOverride(Out.List, PropertyGuid);
 					const bool bOverridden = !ServerName.IsEmpty();
-					ServerName = bOverridden ? ServerName : KeepNameCharacters(Authored);
+					ServerName = bOverridden ? ServerName : bKit ? KitFieldName(Property, Authored) : KeepNameCharacters(Authored);
 					if (!IsServerName(ServerName, 64, false))
 					{
 						Errors.Add(FString::Printf(TEXT("%s: '%s' cannot be its server name, which must be letters, digits and underscores, not start with a digit, and be at most 64 characters; %s"),
@@ -484,11 +531,21 @@ namespace
 					Field.ServerName = ServerName;
 					Field.Property = Property->GetFName();
 					Field.PropertyGuid = PropertyGuid;
+					const FBoolProperty* Presence = bKit ? FindPresenceFlag(Struct, Authored) : nullptr;
+					Field.PresenceProperty = Presence ? Presence->GetFName() : NAME_None;
+					// A collection member carries all its props.
 					if (!bState)
 					{
+						Field.bWatched = Definition.HasKitCollection() && Struct == Definition.KitRecord;
 						continue;
 					}
 					StateFields.Add(FName(*Authored));
+					// A starter's snapshot carries its whole State.
+					if (Definition.IsGameKitStarter())
+					{
+						Field.bWatched = true;
+						continue;
+					}
 					if (!Definition.WatchedFields.Contains(FName(*Authored)))
 					{
 						continue;
@@ -553,7 +610,7 @@ namespace
 						ServerName = Override.ServerName;
 					}
 				}
-				ServerName = ServerName.IsEmpty() ? KeepNameCharacters(Authored) : ServerName;
+				ServerName = !ServerName.IsEmpty() ? ServerName : Definition.IsGameKitStarter() ? SnakeCase(Authored) : KeepNameCharacters(Authored);
 				const FString ValuePath = Enum->GetName() + TEXT(".") + Authored;
 				if (!IsServerName(ServerName, 64, false))
 				{
@@ -605,6 +662,99 @@ namespace
 			Errors.Add(TEXT("Max Instances must be at least Min Instances."));
 		}
 #endif
+	}
+
+	bool HasDoubleField(const UScriptStruct* Struct, FName Name)
+	{
+		return CastField<FDoubleProperty>(CrowdyExec::FindTravellingField(Struct, Name)) != nullptr;
+	}
+
+	/** The Position Function must be a repeatable call whose inputs, and reply when it has one, carry the ground position as doubles X and Y. */
+	void CheckPositionFunction(const UCrowdyServerObjectDefinition& Definition, TArray<FString>& Errors)
+	{
+		if (Definition.KitPositionFunction.IsNone())
+		{
+			return;
+		}
+		const FString Name = Definition.KitPositionFunction.ToString();
+		const FCrowdyServerFunction* Function = Definition.Functions.FindByPredicate([&Definition](const FCrowdyServerFunction& Candidate)
+		{
+			return Candidate.Name == Definition.KitPositionFunction;
+		});
+		if (!Function)
+		{
+			Errors.Add(FString::Printf(TEXT("Position Function '%s' is not a function of this starter"), *Name));
+			return;
+		}
+		if (Function->bSendOnce)
+		{
+			Errors.Add(FString::Printf(TEXT("Position Function %s is Send Once, which would run only the first report; turn Send Once off"), *Name));
+		}
+		const UScriptStruct* Inputs = Function->GetParamsStruct();
+		if (!Inputs || !HasDoubleField(Inputs, TEXT("X")) || !HasDoubleField(Inputs, TEXT("Y")))
+		{
+			Errors.Add(FString::Printf(TEXT("Position Function %s needs inputs with double variables X and Y: the position in metres"), *Name));
+		}
+		const UScriptStruct* Reply = Function->GetReplyStruct();
+		if (Reply && (!HasDoubleField(Reply, TEXT("X")) || !HasDoubleField(Reply, TEXT("Y"))))
+		{
+			Errors.Add(FString::Printf(TEXT("Position Function %s must reply with nothing or with double variables X and Y: the position the server kept"), *Name));
+		}
+	}
+
+	/** A starter's server code decides who reads and calls it, so only what the Game Kit's protocol carries may be set. */
+	void CheckGameKitStarter(const UCrowdyServerObjectDefinition& Definition, TArray<FString>& Errors)
+	{
+		if (!Definition.IsGameKitStarter())
+		{
+			return;
+		}
+		if (Definition.IsFunctionLibrary())
+		{
+			Errors.Add(TEXT("A Game Kit starter is a Server Object, not a Server Function Library"));
+		}
+		if (!Definition.KitStateTopic.IsEmpty() && !IsServerName(Definition.KitStateTopic, 64, true))
+		{
+			Errors.Add(FString::Printf(TEXT("State Topic '%s' must be lowercase letters, digits and underscores, starting with a letter"), *Definition.KitStateTopic));
+		}
+		const FString& Collection = Definition.KitCollectionTopic;
+		if (!Collection.IsEmpty() && !IsServerName(Collection, 64, true))
+		{
+			Errors.Add(FString::Printf(TEXT("Collection Topic '%s' must be lowercase letters, digits and underscores, starting with a letter"), *Collection));
+		}
+		if (Collection.IsEmpty() != !Definition.KitRecord)
+		{
+			Errors.Add(TEXT("A Collection Topic needs a Record Struct, and a Record Struct a Collection Topic"));
+		}
+		if (!Collection.IsEmpty() && (Collection.Equals(Definition.KitStateTopic, ESearchCase::CaseSensitive) || Definition.FindMessageByTopic(Collection)))
+		{
+			Errors.Add(FString::Printf(TEXT("Collection Topic '%s' is also the State Topic or a message's topic"), *Collection));
+		}
+		if (Definition.KitRecord && Definition.KitRecord == Definition.GetStateStruct())
+		{
+			Errors.Add(TEXT("The Record Struct must differ from the State struct"));
+		}
+		if (!Definition.KitOwnerValues.IsEmpty() && Definition.KitStateTopic.IsEmpty())
+		{
+			Errors.Add(TEXT("Owner Values need a State Topic: they are read after the State and kept beside it"));
+		}
+		for (const FCrowdyKitOwnerValue& Owned : Definition.KitOwnerValues)
+		{
+			if (!IsServerName(Owned.Method, 64, true) || !IsServerName(Owned.What, 64, true))
+			{
+				Errors.Add(FString::Printf(TEXT("Owner Value %s needs a Method and a What of lowercase letters, digits and underscores, starting with a letter"), *Owned.Variable.ToString()));
+			}
+			if (!Definition.FindVariable(Owned.Variable))
+			{
+				Errors.Add(FString::Printf(TEXT("Owner Value %s is not a variable of the State"), *Owned.Variable.ToString()));
+			}
+		}
+		CheckPositionFunction(Definition, Errors);
+		if (Definition.Visibility != ECrowdyServerObjectVisibility::Public || Definition.Holds != ECrowdyServerObjectHolds::OneSet
+			|| Definition.MembersFrom != ECrowdyServerMembersSource::None)
+		{
+			Errors.Add(TEXT("A Game Kit starter keeps one set of variables, Readable By Every Player, with no Members From: its server code decides who reads it"));
+		}
 	}
 
 	void CheckMembers(const UCrowdyServerObjectDefinition& Definition, TArray<FString>& Errors)
@@ -1315,6 +1465,11 @@ bool UCrowdyServerObjectDefinition::IsReachableByPlayers() const
 	{
 		return bPlayerCallable;
 	}
+	// Who may call and read a starter is its server code's choice.
+	if (IsGameKitStarter())
+	{
+		return true;
+	}
 	// Records reach players without a watched variable: each carries its entity, owner and team.
 	return bPlayerCallable || !WatchedFields.IsEmpty() || Holds == ECrowdyServerObjectHolds::RecordPerEntity || MembersFrom != ECrowdyServerMembersSource::None
 		|| bOnPlayerJoined || bOnPlayerLeft || HasPlayerMessages();
@@ -1347,6 +1502,7 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 	}
 	const bool bLibrary = IsFunctionLibrary();
 	CheckLibrary(*this, OutErrors);
+	CheckGameKitStarter(*this, OutErrors);
 	CheckMembers(*this, OutErrors);
 	CheckRecords(*this, OutErrors);
 #if WITH_EDITORONLY_DATA
@@ -1380,6 +1536,10 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 	if (StateStruct)
 	{
 		Builder.Structs.Add(StateStruct);
+	}
+	if (HasKitCollection())
+	{
+		Builder.Structs.AddUnique(KitRecord);
 	}
 	TSet<FString> Methods;
 	for (const FCrowdyServerFunction& Function : Functions)
@@ -1451,7 +1611,7 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 	{
 		Builder.BakeEnum(Enum, OutEnums.AddDefaulted_GetRef());
 	}
-	const TConstArrayView<FName> Visible = bLibrary ? TConstArrayView<FName>() : TConstArrayView<FName>(WatchedFields);
+	const TConstArrayView<FName> Visible = bLibrary || IsGameKitStarter() ? TConstArrayView<FName>() : TConstArrayView<FName>(WatchedFields);
 	for (const FName& Watched : Visible)
 	{
 		if (!Builder.WatchedFound.Contains(Watched))
@@ -1570,6 +1730,31 @@ void UCrowdyServerObjectDefinition::PostEditChangeProperty(FPropertyChangedEvent
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 	TArray<FString> Errors;
 	Bake(Errors);
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UCrowdyServerObjectDefinition, KitActors))
+	{
+		SyncGameKitActorStarters();
+	}
+}
+
+void UCrowdyServerObjectDefinition::SyncGameKitActorStarters() const
+{
+	// A packaged game draws only the starters this setting lists, and cooks them for it.
+	UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
+	const FSoftObjectPath Path(this);
+	const bool bListed = Settings->GameKitActorStarters.Contains(Path);
+	if (bListed == !KitActors.IsEmpty())
+	{
+		return;
+	}
+	if (bListed)
+	{
+		Settings->GameKitActorStarters.Remove(Path);
+	}
+	else
+	{
+		Settings->GameKitActorStarters.Add(Path);
+	}
+	Settings->TryUpdateDefaultConfigFile();
 }
 
 EDataValidationResult UCrowdyServerObjectDefinition::IsDataValid(FDataValidationContext& Context) const

@@ -3,6 +3,7 @@
 #include "Containers/StringConv.h"
 #include "CrowdyExecInternal.h"
 #include "CrowdyServerObjectDefinition.h"
+#include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "SCrowdyServerCodeTab.h"
@@ -247,6 +248,21 @@ CrowdyServerCodeFiles::ETypeNameProblem CrowdyServerCodeFiles::CheckTypeName(con
 bool CrowdyServerCodeFiles::IsValidTypeName(const FString& TypeName)
 {
 	return CheckTypeName(TypeName) == ETypeNameProblem::None;
+}
+
+bool CrowdyServerCodeFiles::HoldsLink(const FString& Directory)
+{
+	IFileManager& FileManager = IFileManager::Get();
+	bool bLink = FileManager.IsSymlink(*Directory);
+	if (!bLink)
+	{
+		FileManager.IterateDirectoryRecursively(*Directory, [&FileManager, &bLink](const TCHAR* Path, bool)
+		{
+			bLink = FileManager.IsSymlink(Path);
+			return !bLink;
+		});
+	}
+	return bLink;
 }
 
 FString CrowdyServerCodeFiles::SuggestTypeName(const FString& AssetName)

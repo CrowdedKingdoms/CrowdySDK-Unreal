@@ -20,6 +20,10 @@ namespace CrowdyStudioAuth
 	// mint an app-scoped token first (see FetchAppChannelNames). Exported so CrowdySDKEditor can read it.
 	CROWDYSTUDIO_API FString GetSignedInToken();
 
+	// Who the stored sign-in belongs to, never the token itself. OutScope is the ECrowdyStudioAuthScope value
+	// (1 = session, 2 = organization token); OutUserId is 0 for an organization token. False when not signed in.
+	CROWDYSTUDIO_API bool GetSignedInIdentity(int32& OutScope, int64& OutUserId);
+
 	// Fetches the app's channel names for the Blueprint channel picker. Channels live on the Game API,
 	// which only accepts an app-scoped token, so this mints one from the signed-in session token (like
 	// the console does) and then queries channels the session token alone is rejected. Async; OnDone

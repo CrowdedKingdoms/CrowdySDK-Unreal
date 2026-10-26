@@ -1,5 +1,6 @@
 #include "CrowdyServerObjectComponent.h"
 
+#include "CrowdyExecInternal.h"
 #include "CrowdyExecLog.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLibrary.h"
@@ -8,6 +9,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/Pawn.h"
 #include "TimerManager.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Subsystem/CrowdyGameSession.h"
@@ -43,6 +45,11 @@ namespace CrowdyServerObjectComponentDetail
 		bool bAlready = false;
 		Warned.Add(TObjectKey<UClass>(Owner ? Owner->GetClass() : nullptr), &bAlready);
 		return !bAlready;
+	}
+
+	const FDoubleProperty* FindPositionAxis(const UScriptStruct* Struct, FName Axis)
+	{
+		return CastField<FDoubleProperty>(CrowdyExec::FindTravellingField(Struct, Axis));
 	}
 
 	FString WaitingForVariable(FName Variable)
@@ -158,13 +165,15 @@ FString UCrowdyServerObjectComponent::ResolveInstanceId(FString& OutError) const
 	switch (InstanceMode)
 	{
 	case ECrowdyServerObjectInstanceMode::InstanceId:
-	{
-		if (InstanceId.IsEmpty())
+		if (!FollowsSignedInPlayer())
 		{
-			OutError = TEXT("Set an Instance Id on the Crowdy Server Object component");
+			if (InstanceId.IsEmpty())
+			{
+				OutError = TEXT("Set an Instance Id on the Crowdy Server Object component");
+			}
+			return InstanceId;
 		}
-		return InstanceId;
-	}
+		[[fallthrough]];
 	case ECrowdyServerObjectInstanceMode::SignedInPlayer:
 	{
 		const int64 UserId = CrowdyServerObjectComponentDetail::FindSignedInUserId(GetWorld());
@@ -359,6 +368,199 @@ void UCrowdyServerObjectComponent::FollowRecordId()
 	RecordHandle = Watch;
 }
 
+double UCrowdyServerObjectComponent::PositionNow() const
+{
+	const UWorld* World = GetWorld();
+#if WITH_DEV_AUTOMATION_TESTS
+	if (!World)
+	{
+		return PositionTimeForTest;
+	}
+#endif
+	return World ? World->GetRealTimeSeconds() : 0.0;
+}
+
+bool UCrowdyServerObjectComponent::ResolvePositionAxes()
+{
+	PositionInX = nullptr;
+	PositionInY = nullptr;
+	PositionReplyX = nullptr;
+	PositionReplyY = nullptr;
+	PositionReplyStruct = nullptr;
+	PositionInputs.Reset();
+	const UCrowdyServerObjectDefinition* Held = Object ? Object->GetDefinition() : nullptr;
+	if (!Held || !Held->ReportsPosition())
+	{
+		return false;
+	}
+	const FCrowdyServerFunction* Function = Held->FindFunction(Held->KitPositionFunction);
+	const UScriptStruct* Inputs = Function ? Function->GetParamsStruct() : nullptr;
+	PositionInX = CrowdyServerObjectComponentDetail::FindPositionAxis(Inputs, TEXT("X"));
+	PositionInY = CrowdyServerObjectComponentDetail::FindPositionAxis(Inputs, TEXT("Y"));
+	if (!PositionInX || !PositionInY)
+	{
+		PositionInX = nullptr;
+		PositionInY = nullptr;
+		return false;
+	}
+	PositionFunction = Held->KitPositionFunction;
+	PositionPeriod = 1.f / FMath::Clamp(Held->KitPositionRate, 1.f, 10.f);
+	PositionGeneration = CrowdyExec::GetStructGeneration();
+	Function->InitializeParams(PositionInputs);
+	PositionReplyStruct = Function->GetReplyStruct();
+	PositionReplyX = CrowdyServerObjectComponentDetail::FindPositionAxis(PositionReplyStruct, TEXT("X"));
+	PositionReplyY = CrowdyServerObjectComponentDetail::FindPositionAxis(PositionReplyStruct, TEXT("Y"));
+	return PositionInputs.IsValid();
+}
+
+void UCrowdyServerObjectComponent::SetPositionArmed(bool bArmed)
+{
+	if (!bArmed)
+	{
+		ReleasePositionClaim();
+		bPositionInFlight = false;
+		bPositionSent = false;
+		bPositionHoldCoded = false;
+		PositionHoldUntil = 0.0;
+		++PositionSerial;
+		PositionInX = nullptr;
+		PositionInY = nullptr;
+		PositionInputs.Reset();
+		FTSTicker::RemoveTicker(PositionTicker);
+		PositionTicker.Reset();
+		return;
+	}
+	if (!ResolvePositionAxes())
+	{
+		return;
+	}
+	PositionPawn = Cast<APawn>(GetOwner());
+	bool bCanTick = GetWorld() != nullptr;
+#if WITH_DEV_AUTOMATION_TESTS
+	bCanTick |= bPositionTickerForTest;
+#endif
+	if (!bCanTick || PositionTicker.IsValid())
+	{
+		return;
+	}
+	PositionTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCrowdyServerObjectComponent::TickPosition), PositionPeriod);
+}
+
+bool UCrowdyServerObjectComponent::TickPosition(float DeltaSeconds)
+{
+	ReportPosition();
+	return true;
+}
+
+bool UCrowdyServerObjectComponent::ShouldReportOwner() const
+{
+	if (PositionReport != ECrowdyPositionReport::PlayerPawn)
+	{
+		return PositionReport == ECrowdyPositionReport::ThisActor;
+	}
+	const APawn* Pawn = PositionPawn.Get();
+	return Pawn && Pawn->IsLocallyControlled() && Pawn->IsPlayerControlled();
+}
+
+void UCrowdyServerObjectComponent::ReleasePositionClaim()
+{
+	if (Object && Object->PositionReporter.Get() == this)
+	{
+		Object->PositionReporter.Reset();
+	}
+}
+
+void UCrowdyServerObjectComponent::ReportPosition()
+{
+	UCrowdyServerObject* Held = Object;
+	const AActor* Owner = GetOwner();
+	if (!Held || !Owner || bPositionInFlight || !PositionInX || Held->GetStatus() != ECrowdyServerObjectStatus::Ready)
+	{
+		return;
+	}
+	if (!ShouldReportOwner())
+	{
+		ReleasePositionClaim();
+		return;
+	}
+	if (PositionGeneration != CrowdyExec::GetStructGeneration() && !ResolvePositionAxes())
+	{
+		return;
+	}
+	const UObject* Reporter = Held->PositionReporter.Get();
+	if (Reporter && Reporter != this)
+	{
+		return;
+	}
+	const double Now = PositionNow();
+	const FVector Location = Owner->GetActorLocation();
+	const bool bStill = bPositionSent && FVector::DistSquared(Location, PositionLast) < 1.0;
+	if (Now < PositionHoldUntil || (bStill && Now - PositionSentAt < PositionStillSeconds))
+	{
+		return;
+	}
+
+	// The call encodes the inputs before it returns, and may answer before it does.
+	PositionInX->SetPropertyValue_InContainer(PositionInputs.GetMutableMemory(), Location.X / 100.0);
+	PositionInY->SetPropertyValue_InContainer(PositionInputs.GetMutableMemory(), Location.Y / 100.0);
+	Held->PositionReporter = this;
+	bPositionInFlight = true;
+	bPositionSent = true;
+	PositionSentAt = Now;
+	PositionLast = Location;
+	const uint32 Serial = ++PositionSerial;
+	Held->Call(PositionFunction, PositionInputs, [Weak = TWeakObjectPtr<UCrowdyServerObjectComponent>(this), Serial, Location](const FCrowdyServerCallResult& Result)
+	{
+		if (UCrowdyServerObjectComponent* Self = Weak.Get())
+		{
+			Self->HandlePositionAnswer(Serial, Location, Result);
+		}
+	}, FMath::Max(1.f, 3.f * PositionPeriod));
+}
+
+void UCrowdyServerObjectComponent::HandlePositionAnswer(uint32 Serial, const FVector& Sent, const FCrowdyServerCallResult& Result)
+{
+	if (Serial != PositionSerial)
+	{
+		return;
+	}
+	bPositionInFlight = false;
+	bPositionHoldCoded = false;
+	if (!Result.IsSuccess())
+	{
+		bPositionHoldCoded = !Result.Code.IsNone() && !Result.bRetryable;
+		PositionRefusedAt = PositionNow();
+		PositionHoldUntil = PositionRefusedAt + (bPositionHoldCoded ? PositionCodedRefusalSeconds : PositionRefusalSeconds);
+		return;
+	}
+	AActor* Owner = GetOwner();
+	if (!Owner || !PositionReplyX || !PositionReplyY || Result.Reply.GetScriptStruct() != PositionReplyStruct)
+	{
+		return;
+	}
+	const double KeptX = PositionReplyX->GetPropertyValue_InContainer(Result.Reply.GetMemory()) * 100.0;
+	const double KeptY = PositionReplyY->GetPropertyValue_InContainer(Result.Reply.GetMemory()) * 100.0;
+	if (!FMath::IsFinite(KeptX) || !FMath::IsFinite(KeptY))
+	{
+		return;
+	}
+	const double CutX = KeptX - Sent.X;
+	const double CutY = KeptY - Sent.Y;
+	if (!(FMath::Square(CutX) + FMath::Square(CutY) > 25.0))
+	{
+		return;
+	}
+	// The correction, not the point: the owner may have moved while the answer was on its way.
+	FVector Corrected = Owner->GetActorLocation();
+	Corrected.X += CutX;
+	Corrected.Y += CutY;
+	if (bSnapToKeptPosition)
+	{
+		Owner->SetActorLocation(Corrected, false, nullptr, ETeleportType::TeleportPhysics);
+	}
+	OnPositionKept.Broadcast(Corrected);
+}
+
 void UCrowdyServerObjectComponent::BeginPlay()
 {
 	Super::BeginPlay();
@@ -440,7 +642,7 @@ void UCrowdyServerObjectComponent::Join()
 	}
 
 	// Not a failure: it joins when the player signs in, their teams arrive or the source variable is set.
-	const bool bSignInWait = InstanceMode == ECrowdyServerObjectInstanceMode::SignedInPlayer;
+	const bool bSignInWait = FollowsSignedInPlayer();
 	const bool bSourceWait = FollowsSourceValue() && !SourceVariable.IsNone() && SourceValue.IsEmpty();
 	if (!Error.IsEmpty() && (bSignInWait || bTeamsWait || bSourceWait))
 	{
@@ -505,6 +707,7 @@ void UCrowdyServerObjectComponent::Join()
 	// A shared object that is already Ready sends no status change of its own.
 	if (Acquired->GetStatus() == ECrowdyServerObjectStatus::Ready)
 	{
+		SetPositionArmed(true);
 		OnStatusChanged.Broadcast(Acquired, ECrowdyServerObjectStatus::Ready);
 	}
 }
@@ -517,6 +720,7 @@ void UCrowdyServerObjectComponent::Leave()
 		return;
 	}
 
+	SetPositionArmed(false);
 	Object = nullptr;
 	MessageBindings.Unfollow();
 	Held->OnStatusChanged.Remove(StatusHandle);
@@ -725,7 +929,7 @@ void UCrowdyServerObjectComponent::HandleSignedIn()
 	}
 
 	// A different account may have signed in, so the signed-in player's object is always joined again.
-	const bool bPerPlayer = InstanceMode == ECrowdyServerObjectInstanceMode::SignedInPlayer && !bOnlyOne;
+	const bool bPerPlayer = FollowsSignedInPlayer() && !bOnlyOne;
 	const ECrowdyServerObjectStatus Status = Object ? Object->GetStatus() : ECrowdyServerObjectStatus::Failed;
 	if (bPerPlayer || Status == ECrowdyServerObjectStatus::Failed || Status == ECrowdyServerObjectStatus::Released)
 	{
@@ -761,6 +965,7 @@ void UCrowdyServerObjectComponent::HandleStatus(UCrowdyServerObject* InObject, E
 	{
 		return;
 	}
+	SetPositionArmed(Status == ECrowdyServerObjectStatus::Ready);
 	OnStatusChanged.Broadcast(InObject, Status);
 }
 
@@ -769,6 +974,11 @@ void UCrowdyServerObjectComponent::HandleVariables(UCrowdyServerObject* InObject
 	if (InObject != Object)
 	{
 		return;
+	}
+	if (bPositionHoldCoded)
+	{
+		bPositionHoldCoded = false;
+		PositionHoldUntil = FMath::Max(PositionNow(), PositionRefusedAt + PositionRefusalSeconds);
 	}
 	if (Previous && HoldsOwnRecord(InObject))
 	{
@@ -798,6 +1008,12 @@ void UCrowdyServerObjectComponent::HandleMessage(UCrowdyServerObject* InObject, 
 	{
 		MessageBindings.Notify(Object, Message, Payload);
 	}
+}
+
+bool UCrowdyServerObjectComponent::FollowsSignedInPlayer() const
+{
+	const bool bPlayersOwn = InstanceMode == ECrowdyServerObjectInstanceMode::InstanceId && InstanceId.IsEmpty() && Definition && Definition->IsKeyedByPlayer();
+	return InstanceMode == ECrowdyServerObjectInstanceMode::SignedInPlayer || bPlayersOwn;
 }
 
 FString UCrowdyServerObjectComponent::GetFailureReason() const

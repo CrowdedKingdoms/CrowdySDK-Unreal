@@ -4,6 +4,7 @@
 #include "CrowdyExecCodegen.h"
 
 class UCrowdyServerObjectDefinition;
+class UPackage;
 
 namespace CrowdyExecCodegenMenu
 {
@@ -19,8 +20,70 @@ namespace CrowdyExecCodegenMenu
 	/** The same, with ServerDirectory in place of the project's Server folder. */
 	bool GenerateServerCode(UCrowdyServerObjectDefinition& Definition, const FString& ServerDirectory);
 
+	/** How Generate All answers what a single Generate asks. */
+	enum class EGenerateAnswers : uint8
+	{
+		/** In dialogs, one after another. Declining a question stops the run. */
+		Dialogs,
+		/** Without a window: a question refuses its type, which the result names with the question as the reason. */
+		Refuse,
+		/** Without a window: a question whose yes keeps saved data and deletes nothing is answered yes; any other refuses its type. */
+		Yes
+	};
+
+	struct FTypeMessage
+	{
+		FString TypeName;
+		FString Text;
+	};
+
+	/** How a type's logic file falls short of its functions after Generate, by function name. */
+	struct FTypeLogicGaps
+	{
+		FString TypeName;
+		FString LogicFile;
+		/** Functions the type has that the logic file does not define. */
+		TArray<FString> Missing;
+		/** Functions the logic file defines that the type no longer has. */
+		TArray<FString> Leftover;
+		/** Empty versions of Missing were written into the logic file. */
+		bool bStubsAdded = false;
+	};
+
+	struct FGenerateAllResult
+	{
+		/** Type Names whose server code was written. */
+		TArray<FString> Generated;
+		/** Types that were out of date or had none and were not written, each with why. */
+		TArray<FTypeMessage> Refused;
+		/** Types a run over every type left alone because they need the developer first, each with why: a definition that does not bake, or a My Own File Logic File that is not chosen or does not exist. */
+		TArray<FTypeMessage> Skipped;
+		/** What Generate still said about a type it wrote, such as a logic file that lacks functions or names that now stand for another type. */
+		TArray<FTypeMessage> Notes;
+		/** The logic file gaps Generate found in the types it wrote. */
+		TArray<FTypeLogicGaps> LogicGaps;
+		/** Definition packages the run changed that had no unsaved edits before it. */
+		TArray<UPackage*> Dirtied;
+		/** The developer declined a question, so the types after it were left alone. */
+		bool bCancelled = false;
+		/** Dirtied packages that could not be saved. */
+		bool bSaveFailed = false;
+	};
+
+	/** Generates, as GenerateServerCode(Definition, ServerDirectory) does, each of Definitions whose server code is out of date or missing, and skips Game Kit starters and up-to-date types. With OnlyType, generates just that type, up to date or not, refuses it when it does not bake, and refuses with the known Type Names when there is none; without it, a type that needs the developer is listed in Skipped. A run that is not in Dialogs mode never touches the clipboard. Does not save the definitions. */
+	FGenerateAllResult GenerateAll(TConstArrayView<UCrowdyServerObjectDefinition*> Definitions, const FString& ServerDirectory, EGenerateAnswers Answers, const FString& OnlyType = FString());
+
+	/** GenerateAll for the project's definitions and Server folder, then saves the definition packages it changed. */
+	FGenerateAllResult GenerateAllInProject(EGenerateAnswers Answers, const FString& OnlyType = FString());
+
+	/** What a run did, for a notice: what was written, then each type that was not and why. */
+	FText DescribeGenerateAll(const FGenerateAllResult& Result);
+
 	/** Says so in a dialog and returns true when another of the project's definitions has this one's Type Name. */
 	bool RefuseSharedTypeName(const UCrowdyServerObjectDefinition& Definition);
+
+	/** Reads the project's types once, then refuses, as RefuseSharedTypeName does, each of Definitions whose Type Name another definition has; returns the rest. */
+	TArray<UCrowdyServerObjectDefinition*> RemoveSharedTypeNames(TConstArrayView<UCrowdyServerObjectDefinition*> Definitions);
 
 	/** Gets a dialog's category, buttons, default button and message, and returns the button pressed. */
 	using FDialogAnswer = TFunction<EAppReturnType::Type(EAppMsgCategory, EAppMsgType::Type, EAppReturnType::Type, const FText&)>;

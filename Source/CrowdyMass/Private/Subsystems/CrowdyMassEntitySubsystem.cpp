@@ -1188,7 +1188,12 @@ bool UCrowdyMassEntitySubsystem::ForEachTraceCandidateCell(
 	const bool bUse3D = GetSpatialGridMode() == ECrowdyMassSpatialGridMode::ThreeDimensional;
 	const int32 ClampedMaxCells = GetSpatialGridMaxRayCells();
 	const float CombinedQueryRadius = FMath::Max(GetSpatialGridTraceQueryRadius(), QueryRadius);
-	const int32 RadiusCells = FMath::Max(FMath::CeilToInt(FMath::Max(CombinedQueryRadius, 0.0f) / CellSize), 0);
+	int32 RadiusCells = 0;
+	if (!TryGetSpatialGridRadiusCells(CombinedQueryRadius, ClampedMaxCells, RadiusCells))
+	{
+		return false;
+	}
+
 	if (RadiusCells > 0)
 	{
 		// The visitor is called while this array is being walked, so it must not reach any call that
@@ -1211,8 +1216,23 @@ bool UCrowdyMassEntitySubsystem::ForEachTraceCandidateCell(
 	}
 
 	constexpr bool bTraversalIsEntrySorted = true;
-	const FIntVector StartCell = GetSpatialGridCell(Start);
-	const FIntVector EndCell = GetSpatialGridCell(End);
+	FIntVector StartCell;
+	FIntVector EndCell;
+	if (!TryGetSpatialGridCell(Start, 0.0, StartCell) || !TryGetSpatialGridCell(End, 0.0, EndCell))
+	{
+		return false;
+	}
+
+	// Refused before the first visit: a walk cut short after visiting cells would read as a grid answer and miss every entity past the cut.
+	const double CellsToWalk = FMath::Abs(static_cast<double>(EndCell.X) - StartCell.X)
+		+ FMath::Abs(static_cast<double>(EndCell.Y) - StartCell.Y)
+		+ (bUse3D ? FMath::Abs(static_cast<double>(EndCell.Z) - StartCell.Z) : 0.0)
+		+ 1.0;
+	if (CellsToWalk > ClampedMaxCells)
+	{
+		return false;
+	}
+
 	const FVector Delta = End - Start;
 	const double SegmentLength = Delta.Size();
 	const FVector TraceDirection = Delta.GetSafeNormal();
@@ -1222,6 +1242,7 @@ bool UCrowdyMassEntitySubsystem::ForEachTraceCandidateCell(
 	TSet<FIntVector>& SeenCells = ScratchTraversalSeenCells;
 	SeenCells.Reset();
 	TArray<FCrowdyMassTraceCandidateCell>& StepCells = ScratchTraversalCells;
+	bool bCapReached = false;
 
 	auto VisitExpandedCells = [&](const FIntVector& CenterCell, const float CenterEntryDistance)
 	{
@@ -1243,6 +1264,7 @@ bool UCrowdyMassEntitySubsystem::ForEachTraceCandidateCell(
 
 					if (OutVisitedCellCount >= ClampedMaxCells)
 					{
+						bCapReached = true;
 						return false;
 					}
 
@@ -1280,7 +1302,7 @@ bool UCrowdyMassEntitySubsystem::ForEachTraceCandidateCell(
 
 	if (!VisitExpandedCells(StartCell, 0.0f))
 	{
-		return true;
+		return !bCapReached;
 	}
 
 	if (StartCell == EndCell || SegmentLength <= UE_KINDA_SMALL_NUMBER)
@@ -1336,7 +1358,7 @@ bool UCrowdyMassEntitySubsystem::ForEachTraceCandidateCell(
 	{
 		if (++Steps > MaxSteps)
 		{
-			return true;
+			return false;
 		}
 
 		const double NextT = FMath::Min(TMaxX, FMath::Min(TMaxY, TMaxZ));
@@ -1360,7 +1382,7 @@ bool UCrowdyMassEntitySubsystem::ForEachTraceCandidateCell(
 		const float CellEntryDistance = static_cast<float>(FMath::Clamp(NextT, 0.0, 1.0) * SegmentLength);
 		if (!VisitExpandedCells(CurrentCell, CellEntryDistance))
 		{
-			return true;
+			return !bCapReached;
 		}
 	}
 
@@ -4524,16 +4546,45 @@ float UCrowdyMassEntitySubsystem::GetSpatialGridDebugTwoDimensionalHeightPadding
 	return Settings ? FMath::Max(Settings->SpatialGridDebugTwoDimensionalHeightPadding, 0.0f) : 0.0f;
 }
 
-FIntVector UCrowdyMassEntitySubsystem::GetSpatialGridCell(const FVector& Location) const
+bool UCrowdyMassEntitySubsystem::TryGetSpatialGridCell(const FVector& Location, const double RadiusCells, FIntVector& OutCell) const
 {
-	const float CellSize = GetSpatialGridCellSize();
-	const int32 X = FMath::FloorToInt(Location.X / CellSize);
-	const int32 Y = FMath::FloorToInt(Location.Y / CellSize);
-	const int32 Z = GetSpatialGridMode() == ECrowdyMassSpatialGridMode::ThreeDimensional
-		? FMath::FloorToInt(Location.Z / CellSize)
-		: 0;
+	if (Location.ContainsNaN())
+	{
+		return false;
+	}
 
-	return FIntVector(X, Y, Z);
+	const double CellSize = GetSpatialGridCellSize();
+	const bool bUse3D = GetSpatialGridMode() == ECrowdyMassSpatialGridMode::ThreeDimensional;
+	const double X = FMath::FloorToDouble(Location.X / CellSize);
+	const double Y = FMath::FloorToDouble(Location.Y / CellSize);
+	const double Z = bUse3D ? FMath::FloorToDouble(Location.Z / CellSize) : 0.0;
+
+	// The walk steps one cell past each end and the radius widens every cell, so the margin keeps both inside int32.
+	const double Limit = static_cast<double>(MAX_int32) - RadiusCells - 2.0;
+	if (FMath::Abs(X) > Limit || FMath::Abs(Y) > Limit || FMath::Abs(Z) > Limit)
+	{
+		return false;
+	}
+
+	OutCell = FIntVector(static_cast<int32>(X), static_cast<int32>(Y), static_cast<int32>(Z));
+	return true;
+}
+
+bool UCrowdyMassEntitySubsystem::TryGetSpatialGridRadiusCells(const float Radius, const int32 MaxCells, int32& OutRadiusCells) const
+{
+	if (!FMath::IsFinite(Radius))
+	{
+		return false;
+	}
+
+	const double Cells = FMath::CeilToDouble(FMath::Max(static_cast<double>(Radius), 0.0) / GetSpatialGridCellSize());
+	if (Cells > MaxCells)
+	{
+		return false;
+	}
+
+	OutRadiusCells = static_cast<int32>(Cells);
+	return true;
 }
 
 FBox UCrowdyMassEntitySubsystem::GetSpatialGridDebugCellBounds(const FIntVector& Cell, const FVector& Start, const FVector& End) const
@@ -4572,7 +4623,7 @@ bool UCrowdyMassEntitySubsystem::GetSpatialGridCellsForSphere(const FVector& Ori
 	// Sized in doubles before anything is added, so a huge radius or position is refused rather than enumerated or overflowed.
 	const double CellSize = GetSpatialGridCellSize();
 	const bool bUse3D = GetSpatialGridMode() == ECrowdyMassSpatialGridMode::ThreeDimensional;
-	// A true division per axis, as GetSpatialGridCell does; a vector divide multiplies by the reciprocal and can land a boundary one cell off.
+	// A true division per axis, as TryGetSpatialGridCell does; a vector divide multiplies by the reciprocal and can land a boundary one cell off.
 	auto CellOf = [CellSize](const double Coordinate) { return FMath::FloorToDouble(Coordinate / CellSize); };
 	const FVector Low(CellOf(Origin.X - ClampedRadius), CellOf(Origin.Y - ClampedRadius), bUse3D ? CellOf(Origin.Z - ClampedRadius) : 0.0);
 	const FVector High(CellOf(Origin.X + ClampedRadius), CellOf(Origin.Y + ClampedRadius), bUse3D ? CellOf(Origin.Z + ClampedRadius) : 0.0);
@@ -4605,9 +4656,25 @@ bool UCrowdyMassEntitySubsystem::GetSpatialGridCellsForRay(const FVector& Start,
 	const float CellSize = GetSpatialGridCellSize();
 	const bool bUse3D = GetSpatialGridMode() == ECrowdyMassSpatialGridMode::ThreeDimensional;
 	const int32 ClampedMaxCells = FMath::Max(MaxCells, 1);
-	const int32 RadiusCells = FMath::Max(FMath::CeilToInt(FMath::Max(QueryRadius, 0.0f) / CellSize), 0);
-	const FIntVector StartCell = GetSpatialGridCell(Start);
-	const FIntVector EndCell = GetSpatialGridCell(End);
+	int32 RadiusCells = 0;
+	FIntVector StartCell;
+	FIntVector EndCell;
+	if (!TryGetSpatialGridRadiusCells(QueryRadius, ClampedMaxCells, RadiusCells)
+		|| !TryGetSpatialGridCell(Start, RadiusCells, StartCell)
+		|| !TryGetSpatialGridCell(End, RadiusCells, EndCell))
+	{
+		return false;
+	}
+
+	// The walk touches at least this many cells at any radius, so a ray past the ceiling is refused before any cell is added.
+	const double CellsToWalk = FMath::Abs(static_cast<double>(EndCell.X) - StartCell.X)
+		+ FMath::Abs(static_cast<double>(EndCell.Y) - StartCell.Y)
+		+ (bUse3D ? FMath::Abs(static_cast<double>(EndCell.Z) - StartCell.Z) : 0.0)
+		+ 1.0;
+	if (CellsToWalk > ClampedMaxCells)
+	{
+		return false;
+	}
 
 	// Kept across calls and reset here; see the scratch members' declaration. Not reserved, because the
 	// cell ceiling is thousands and a real ray touches a handful.
@@ -4702,11 +4769,11 @@ bool UCrowdyMassEntitySubsystem::GetSpatialGridCellsForRay(const FVector& Start,
 		ConfigureAxis(Start.Z, Delta.Z, StartCell.Z, StepZ, TMaxZ, TDeltaZ);
 	}
 
-	const int32 MaxSteps = FMath::Abs(EndCell.X - StartCell.X)
-		+ FMath::Abs(EndCell.Y - StartCell.Y)
-		+ (bUse3D ? FMath::Abs(EndCell.Z - StartCell.Z) : 0)
+	const int64 MaxSteps = FMath::Abs(static_cast<int64>(EndCell.X) - StartCell.X)
+		+ FMath::Abs(static_cast<int64>(EndCell.Y) - StartCell.Y)
+		+ (bUse3D ? FMath::Abs(static_cast<int64>(EndCell.Z) - StartCell.Z) : 0)
 		+ 3;
-	int32 Steps = 0;
+	int64 Steps = 0;
 
 	while (CurrentCell != EndCell)
 	{

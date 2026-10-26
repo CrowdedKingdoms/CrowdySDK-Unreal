@@ -70,6 +70,11 @@ public:
 	// registrations themselves are untouched.
 	void ClearConflicts();
 
+	// The id an event struct is registered under: Override when one is given and usable, else the path hash kept off the
+	// platform's reserved numbers. An override of a reserved number is refused with an error and the hash is used; a hash
+	// moved off a reserved number is reported once, as a warning naming both.
+	static FCrowdyTypeID ResolveEventID(const UScriptStruct* Struct, TOptional<int32> Override = TOptional<int32>());
+
 	// Registers with the ID resolver (collision overrides) or the path hash.
 	// No-op when the struct is already registered.
 	void RegisterStructAuto(UScriptStruct* Struct);

@@ -8,6 +8,7 @@
 #include "Misc/DateTime.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
+#include "Misc/ScopeExit.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/Timespan.h"
 #include "StructUtils/InstancedStruct.h"
@@ -310,6 +311,8 @@ namespace
 		int32 Elements = 0;
 		/** Set when a new name was read as None because the budget is spent; a map or set drops the entry it keys. */
 		bool bSkippedName = false;
+		/** A Game Kit starter's hub: its nil (an empty Rust Option, which Blueprint has no type for) keeps the field's default, and its bare value fills a one-field reply. */
+		bool bGameKit = false;
 	};
 
 	/** An enum name this client does not know leaves the value unwritten; the caller keeps the default or drops the entry. */
@@ -414,6 +417,7 @@ namespace
 	}
 
 	ERead ReadEntry(FCodecContext& Ctx, int32 TypeIndex, void* Address, FCrowdyExecReader& Reader, int32 Depth);
+	ERead ReadEntryWithToken(FCodecContext& Ctx, int32 TypeIndex, void* Address, FCrowdyExecReader& Reader, const FCrowdyExecToken& Token, int32 Depth);
 	bool ReadWithToken(FCodecContext& Ctx, int32 TypeIndex, void* Address, FCrowdyExecReader& Reader, const FCrowdyExecToken& Token, int32 Depth);
 
 	const FCrowdyExecField* FindField(const FCrowdyExecStruct& Struct, const FCrowdyExecToken& Key)
@@ -426,6 +430,40 @@ namespace
 			}
 		}
 		return nullptr;
+	}
+
+	/** Reads a struct field's value; a field with a presence flag sets it to whether the value arrived or was nil. */
+	ERead ReadFieldWithToken(FCodecContext& Ctx, const FCrowdyExecField& Field, void* Container, FCrowdyExecReader& Reader, const FCrowdyExecToken& Token, int32 Depth)
+	{
+		void* FieldAddress = Ctx.Layout.Types[Field.Type].Property->ContainerPtrToValuePtr<void>(Container);
+		const ERead Result = ReadEntryWithToken(Ctx, Field.Type, FieldAddress, Reader, Token, Depth);
+		if (Field.Presence && Result != ERead::Failed)
+		{
+			Field.Presence->SetPropertyValue_InContainer(Container, Result == ERead::Written && Token.Type != ECrowdyExecToken::Nil);
+		}
+		return Result;
+	}
+
+	ERead ReadField(FCodecContext& Ctx, const FCrowdyExecField& Field, void* Container, FCrowdyExecReader& Reader, int32 Depth)
+	{
+		FCrowdyExecToken Token;
+		if (!Reader.Next(Token, Ctx.Reason))
+		{
+			return ERead::Failed;
+		}
+		return ReadFieldWithToken(Ctx, Field, Container, Reader, Token, Depth);
+	}
+
+	/** A whole struct body that leaves a field out has no value for it, so the field's presence flag reads false. */
+	void ClearAbsentPresence(const FCrowdyExecStruct& Struct, const TBitArray<>& Named, void* Address)
+	{
+		for (int32 Index = 0; Index < Struct.Fields.Num(); ++Index)
+		{
+			if (Struct.Fields[Index].Presence && !Named[Index])
+			{
+				Struct.Fields[Index].Presence->SetPropertyValue_InContainer(Address, false);
+			}
+		}
 	}
 
 	bool ReadStructBody(FCodecContext& Ctx, int32 StructIndex, void* Address, FCrowdyExecReader& Reader, int32 Count, int32 Depth,
@@ -471,8 +509,7 @@ namespace
 				continue;
 			}
 			Ctx.Field = Field;
-			void* FieldAddress = Ctx.Layout.Types[Field->Type].Property->ContainerPtrToValuePtr<void>(Address);
-			const ERead Result = ReadEntry(Ctx, Field->Type, FieldAddress, Reader, Depth + 1);
+			const ERead Result = ReadField(Ctx, *Field, Address, Reader, Depth + 1);
 			if (Result == ERead::Failed)
 			{
 				Ctx.Path = TEXT(".") + Field->Name + Ctx.Path;
@@ -487,7 +524,56 @@ namespace
 				(*OutWritten)[FieldIndex] = true;
 			}
 		}
+		// A watched-only body is a read or a push that merges, where a missing field means unchanged.
+		if (Struct.bHasPresence && !bWatchedOnly)
+		{
+			ClearAbsentPresence(Struct, Named, Address);
+		}
 		return true;
+	}
+
+	/** A Game Kit hub sends a Rust tuple, such as an order book's (price, count), as an array: its values fill the struct's fields in order. */
+	bool ReadTuple(FCodecContext& Ctx, int32 StructIndex, void* Address, FCrowdyExecReader& Reader, int32 Count, int32 Depth)
+	{
+		if (Depth > CrowdyExec::MaxDepth)
+		{
+			return Ctx.Fail(DepthError());
+		}
+		const FCrowdyExecStruct& Struct = Ctx.Layout.Structs[StructIndex];
+		if (Count != Struct.Fields.Num())
+		{
+			return Ctx.Fail(FString::Printf(TEXT("%d values for %s, which has %d fields"), Count, *Struct.DisplayName, Struct.Fields.Num()));
+		}
+		TGuardValue<const FCrowdyExecStruct*> StructGuard(Ctx.Struct, &Struct);
+		TGuardValue<const FCrowdyExecField*> FieldGuard(Ctx.Field, nullptr);
+		for (const FCrowdyExecField& Field : Struct.Fields)
+		{
+			Ctx.Field = &Field;
+			if (ReadField(Ctx, Field, Address, Reader, Depth + 1) == ERead::Failed)
+			{
+				Ctx.Path = TEXT(".") + Field.Name + Ctx.Path;
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** A Game Kit hub may answer with one bare value, such as a harvest's count, which fills a reply of one field, or with nil (an empty Rust Option), which leaves the reply at its defaults. */
+	bool ReadBareValue(FCodecContext& Ctx, int32 StructIndex, void* Address, FCrowdyExecReader& Reader, const FCrowdyExecToken& Token)
+	{
+		if (Ctx.bGameKit && Token.Type == ECrowdyExecToken::Nil)
+		{
+			return true;
+		}
+		const FCrowdyExecStruct& Struct = Ctx.Layout.Structs[StructIndex];
+		if (!Ctx.bGameKit || Struct.Fields.Num() != 1)
+		{
+			return Ctx.FailExpected(TEXT("a map"), Token);
+		}
+		const FCrowdyExecField& Field = Struct.Fields[0];
+		TGuardValue<const FCrowdyExecStruct*> StructGuard(Ctx.Struct, &Struct);
+		TGuardValue<const FCrowdyExecField*> FieldGuard(Ctx.Field, &Field);
+		return ReadFieldWithToken(Ctx, Field, Address, Reader, Token, 2) != ERead::Failed;
 	}
 
 	bool ReadEngineStruct(FCodecContext& Ctx, ECrowdyExecKind Kind, void* Address, FCrowdyExecReader& Reader, const FCrowdyExecToken& Token, int32 Depth)
@@ -839,7 +925,7 @@ namespace
 		const FCrowdyExecType& Type = Ctx.Layout.Types[TypeIndex];
 		if (Token.Type == ECrowdyExecToken::Nil && Type.Kind != ECrowdyExecKind::Optional)
 		{
-			return Ctx.Fail(TEXT("nil is accepted only for an optional field"));
+			return Ctx.bGameKit || Ctx.Fail(TEXT("nil is accepted only for an optional field"));
 		}
 		if (IsIntegerKind(Type.Kind))
 		{
@@ -848,6 +934,12 @@ namespace
 			if (Type.Kind == ECrowdyExecKind::UInt64 && Token.Type == ECrowdyExecToken::UInt)
 			{
 				Numeric->SetIntPropertyValue(Address, Token.UInt);
+				return true;
+			}
+			// A Game Kit hub's u64 saturates at its maximum to mean out of reach, which an int64 field keeps as its own maximum.
+			if (Ctx.bGameKit && Type.Kind == ECrowdyExecKind::Int64 && Token.Type == ECrowdyExecToken::UInt && Token.UInt > static_cast<uint64>(MAX_int64))
+			{
+				Numeric->SetIntPropertyValue(Address, MAX_int64);
 				return true;
 			}
 			int64 Value = 0;
@@ -882,6 +974,10 @@ namespace
 		case ECrowdyExecKind::Enum:
 			return ReadEnum(Ctx, Type, Address, Token) != ERead::Failed;
 		case ECrowdyExecKind::Struct:
+			if (Ctx.bGameKit && Token.Type == ECrowdyExecToken::Array)
+			{
+				return ReadTuple(Ctx, Type.Target, Address, Reader, Token.Count, Depth);
+			}
 			if (Token.Type != ECrowdyExecToken::Map)
 			{
 				return Ctx.FailExpected(TEXT("a map"), Token);
@@ -998,6 +1094,11 @@ namespace
 				continue;
 			}
 			Writer.String(Field.Key);
+			if (Field.Presence && !Field.Presence->GetPropertyValue_InContainer(Address))
+			{
+				Writer.Nil();
+				continue;
+			}
 			const void* FieldAddress = Ctx.Layout.Types[Field.Type].Property->ContainerPtrToValuePtr<void>(Address);
 			if (!WriteValue(Ctx, Field.Type, FieldAddress, Writer, Depth + 1))
 			{
@@ -1333,6 +1434,11 @@ namespace
 		const FName ByGuid = Field.PropertyGuid.IsValid() ? Struct->FindPropertyNameFromGuid(Field.PropertyGuid) : NAME_None;
 		const FProperty* Found = ByGuid.IsNone() ? nullptr : FindFProperty<FProperty>(Struct, ByGuid);
 		return Found ? Found : FindFProperty<FProperty>(Struct, Field.Property);
+	}
+
+	int32 CountPresenceFlags(const FCrowdyExecBakedStruct& Baked)
+	{
+		return Algo::CountIf(Baked.Fields, [](const FCrowdyExecBakedField& Field) { return !Field.PresenceProperty.IsNone(); });
 	}
 
 	/** Each baked value still has its enumerator, and that enumerator still has the baked value. */
@@ -2395,7 +2501,7 @@ bool CrowdyExec::BuildLayout(const UCrowdyServerObjectDefinition& Definition, FC
 		{
 			Travelling += IsTravellingProperty(*It) ? 1 : 0;
 		}
-		if (Travelling != Baked.Fields.Num())
+		if (Travelling != Baked.Fields.Num() + CountPresenceFlags(Baked))
 		{
 			OutError = FString::Printf(TEXT("%s has changed since %s was saved; save the definition again"), *StructName, *Definition.GetName());
 			return false;
@@ -2413,6 +2519,16 @@ bool CrowdyExec::BuildLayout(const UCrowdyServerObjectDefinition& Definition, FC
 			Field.Key = ToUtf8(BakedField.ServerName);
 			Field.bWatched = BakedField.bWatched;
 			Field.bRestricted = BakedField.Audience != ECrowdyServerFieldAudience::Everyone;
+			if (!BakedField.PresenceProperty.IsNone())
+			{
+				Field.Presence = FindFProperty<FBoolProperty>(Resolved, BakedField.PresenceProperty);
+				if (!Field.Presence)
+				{
+					OutError = FString::Printf(TEXT("%s has no field %s any more; save %s again"), *StructName, *BakedField.PresenceProperty.ToString(), *Definition.GetName());
+					return false;
+				}
+				Out.Structs[StructIndex].bHasPresence = true;
+			}
 			FString TypeError;
 			if (!ResolveType(Out, Property, Field.Type, TypeError))
 			{
@@ -2423,6 +2539,7 @@ bool CrowdyExec::BuildLayout(const UCrowdyServerObjectDefinition& Definition, FC
 		}
 	}
 	Out.StateStruct = Out.FindStruct(Definition.GetStateStruct());
+	Out.RecordStruct = Out.FindStruct(Definition.GetRecordStruct());
 	return true;
 }
 
@@ -2492,11 +2609,12 @@ bool CrowdyExec::Decode(const UCrowdyServerObjectDefinition& Definition, const U
 		Definition.InitializeValues(&Struct, Decoded);
 	}
 	FCodecContext Ctx(*Layout);
+	Ctx.bGameKit = Definition.IsGameKitStarter();
 	FCrowdyExecReader Reader(Bytes);
 	FCrowdyExecToken Token;
 	const bool bRead = Reader.Next(Token, Ctx.Reason)
-		&& (Token.Type == ECrowdyExecToken::Map || Ctx.FailExpected(TEXT("a map"), Token))
-		&& ReadStructBody(Ctx, StructIndex, Decoded.GetMutableMemory(), Reader, Token.Count, 1)
+		&& (Token.Type == ECrowdyExecToken::Map ? ReadStructBody(Ctx, StructIndex, Decoded.GetMutableMemory(), Reader, Token.Count, 1)
+			: ReadBareValue(Ctx, StructIndex, Decoded.GetMutableMemory(), Reader, Token))
 		&& (Reader.AtEnd() || Ctx.Fail(TEXT("unexpected bytes after the message")));
 	if (!bRead)
 	{
@@ -2523,6 +2641,471 @@ bool CrowdyExec::ReadStateHeader(TConstArrayView<uint8> Bytes, FCrowdyExecStateH
 		return false;
 	}
 	OutHeader = Header;
+	return true;
+}
+
+namespace
+{
+	bool ReadKitKind(FCrowdyExecReader& Reader, ECrowdyExecKitKind& OutKind, FString& OutError)
+	{
+		FCrowdyExecToken Value;
+		if (!Reader.Next(Value, OutError))
+		{
+			return false;
+		}
+		// In ECrowdyExecKitKind order.
+		const ANSICHAR* const KindNames[] = {"snapshot", "delta", "changed", "event"};
+		for (int32 Index = 0; Value.Type == ECrowdyExecToken::String && Index < UE_ARRAY_COUNT(KindNames); ++Index)
+		{
+			if (KeyIs(Value, KindNames[Index]))
+			{
+				OutKind = static_cast<ECrowdyExecKitKind>(Index);
+				return true;
+			}
+		}
+		OutError = Value.Type == ECrowdyExecToken::String ? FString(TEXT("a message kind this client does not read")) : ExpectedText(TEXT("a message kind"), Value);
+		return false;
+	}
+}
+
+bool CrowdyExec::ReadKitHeader(TConstArrayView<uint8> Bytes, FCrowdyExecKitHeader& OutHeader, FString& OutError)
+{
+	if (Bytes.Num() > MaxPayloadBytes)
+	{
+		OutError = FString::Printf(TEXT("the message is %d bytes, over the limit of %d"), Bytes.Num(), MaxPayloadBytes);
+		return false;
+	}
+	FCrowdyExecReader Reader(Bytes);
+	FCrowdyExecToken Message;
+	if (!Reader.Next(Message, OutError))
+	{
+		return false;
+	}
+	if (Message.Type != ECrowdyExecToken::Map)
+	{
+		OutError = ExpectedText(TEXT("a map"), Message);
+		return false;
+	}
+	FCrowdyExecKitHeader Header;
+	uint64 Version = 0;
+	// v, epoch, seq and kind, each read once.
+	bool bSeen[4] = {};
+	for (int32 Index = 0; Index < Message.Count; ++Index)
+	{
+		FCrowdyExecToken Key;
+		if (!Reader.Next(Key, OutError))
+		{
+			return false;
+		}
+		if (Key.Type != ECrowdyExecToken::String)
+		{
+			OutError = ExpectedText(TEXT("a field name"), Key);
+			return false;
+		}
+		const int32 Which = KeyIs(Key, "v") ? 0 : KeyIs(Key, "epoch") ? 1 : KeyIs(Key, "seq") ? 2 : KeyIs(Key, "kind") ? 3 : INDEX_NONE;
+		if (Which != INDEX_NONE && bSeen[Which])
+		{
+			OutError = TEXT("a reserved key appears twice");
+			return false;
+		}
+		const bool bRead = Which == 0 ? ReadHeaderValue(Reader, Version, OutError)
+			: Which == 1 ? ReadHeaderValue(Reader, Header.Epoch, OutError)
+			: Which == 2 ? ReadHeaderValue(Reader, Header.Seq, OutError)
+			: Which == 3 ? ReadKitKind(Reader, Header.Kind, OutError)
+			: Reader.Skip(MaxDepth, OutError);
+		if (!bRead)
+		{
+			return false;
+		}
+		if (Which != INDEX_NONE)
+		{
+			bSeen[Which] = true;
+		}
+	}
+	if (!Reader.AtEnd())
+	{
+		OutError = TEXT("unexpected bytes after the message");
+		return false;
+	}
+	if (!bSeen[0] || !bSeen[1] || !bSeen[2] || !bSeen[3])
+	{
+		OutError = TEXT("the message is not a Game Kit message: it lacks v, epoch, seq or kind");
+		return false;
+	}
+	if (Version != static_cast<uint64>(KitProtocolVersion))
+	{
+		OutError = FString::Printf(TEXT("a Game Kit message of version %llu, which this client does not read"), Version);
+		return false;
+	}
+	OutHeader = Header;
+	return true;
+}
+
+bool CrowdyExec::DecodeKitSnapshot(const UCrowdyServerObjectDefinition& Definition, TConstArrayView<uint8> Bytes, void* State,
+	FCrowdyExecStateHeader& OutHeader, FString& OutError)
+{
+	const UScriptStruct* StateStruct = Definition.GetStateStruct();
+	if (!StateStruct)
+	{
+		OutError = FString::Printf(TEXT("%s has no State struct"), *Definition.GetName());
+		return false;
+	}
+	FCrowdyExecKitHeader Header;
+	if (!ReadKitHeader(Bytes, Header, OutError))
+	{
+		return false;
+	}
+	if (Header.Kind != ECrowdyExecKitKind::Snapshot)
+	{
+		OutError = TEXT("the message is not a snapshot");
+		return false;
+	}
+	// The reserved keys are no field of the State, so the decode skips them as it skips any key the State lacks.
+	if (!Decode(Definition, *StateStruct, Bytes, State, OutError))
+	{
+		return false;
+	}
+	OutHeader.Epoch = Header.Epoch;
+	OutHeader.Seq = Header.Seq;
+	return true;
+}
+
+bool CrowdyExec::ReadKitChanged(TConstArrayView<uint8> Bytes, TArray<int64>& OutWho, FString& OutWhat, FString& OutError)
+{
+	FCrowdyExecKitHeader Header;
+	if (!ReadKitHeader(Bytes, Header, OutError))
+	{
+		return false;
+	}
+	FCrowdyExecReader Reader(Bytes);
+	FCrowdyExecToken Message;
+	Reader.Next(Message, OutError);
+	TArray<int64> Who;
+	FString What;
+	bool bWho = false;
+	bool bWhat = false;
+	for (int32 Index = 0; Index < Message.Count; ++Index)
+	{
+		FCrowdyExecToken Key;
+		FCrowdyExecToken Value;
+		if (!Reader.Next(Key, OutError))
+		{
+			return false;
+		}
+		if (Key.Type != ECrowdyExecToken::String || (!KeyIs(Key, "who") && !KeyIs(Key, "what")))
+		{
+			if (!Reader.Skip(MaxDepth, OutError))
+			{
+				return false;
+			}
+			continue;
+		}
+		if (!Reader.Next(Value, OutError))
+		{
+			return false;
+		}
+		const bool bWhoKey = KeyIs(Key, "who");
+		if (bWhoKey ? bWho : bWhat)
+		{
+			OutError = TEXT("who or what appears twice");
+			return false;
+		}
+		if (bWhoKey)
+		{
+			if (!ReadEnvelopeMemberList(Reader, Value, Who, OutError))
+			{
+				return false;
+			}
+			bWho = true;
+			continue;
+		}
+		if (Value.Type != ECrowdyExecToken::String)
+		{
+			OutError = ExpectedText(TEXT("a name"), Value);
+			return false;
+		}
+		What = FromUtf8(Value.Data, Value.Count);
+		bWhat = true;
+	}
+	if (!bWho || !bWhat)
+	{
+		OutError = TEXT("a changed message carries who and what");
+		return false;
+	}
+	OutWho = MoveTemp(Who);
+	OutWhat = MoveTemp(What);
+	return true;
+}
+
+bool CrowdyExec::DecodeKitVariable(const UCrowdyServerObjectDefinition& Definition, const FProperty& Variable, TConstArrayView<uint8> Bytes, void* State, FString& OutError)
+{
+	if (Bytes.Num() > MaxPayloadBytes)
+	{
+		OutError = FString::Printf(TEXT("the answer is %d bytes, over the limit of %d"), Bytes.Num(), MaxPayloadBytes);
+		return false;
+	}
+	const FCrowdyExecLayout* Layout = Definition.ResolveLayout(OutError);
+	if (!Layout || Layout->StateStruct == INDEX_NONE)
+	{
+		OutError = Layout ? FString::Printf(TEXT("%s has no State struct"), *Definition.GetName()) : OutError;
+		return false;
+	}
+	const FCrowdyExecStruct& StateLayout = Layout->Structs[Layout->StateStruct];
+	const FCrowdyExecField* Field = StateLayout.Fields.FindByPredicate([Layout, &Variable](const FCrowdyExecField& Each) { return Layout->Types[Each.Type].Property == &Variable; });
+	if (!Field)
+	{
+		OutError = FString::Printf(TEXT("%s is not a variable of %s"), *Variable.GetAuthoredName(), *StateLayout.DisplayName);
+		return false;
+	}
+	FCodecContext Ctx(*Layout);
+	Ctx.bGameKit = true;
+	TGuardValue<const FCrowdyExecStruct*> StructGuard(Ctx.Struct, &StateLayout);
+	TGuardValue<const FCrowdyExecField*> FieldGuard(Ctx.Field, Field);
+	// Read into a fresh value of the variable's own, so a failed answer leaves the State as it was.
+	void* Fresh = FMemory::Malloc(Variable.GetSize(), Variable.GetMinAlignment());
+	Variable.InitializeValue(Fresh);
+	ON_SCOPE_EXIT
+	{
+		Variable.DestroyValue(Fresh);
+		FMemory::Free(Fresh);
+	};
+	FCrowdyExecReader Reader(Bytes);
+	FCrowdyExecToken Answer;
+	ERead Result = ERead::Failed;
+	const bool bRead = Reader.Next(Answer, Ctx.Reason) && (Result = ReadEntryWithToken(Ctx, Field->Type, Fresh, Reader, Answer, 2)) != ERead::Failed
+		&& (Reader.AtEnd() || Ctx.Fail(TEXT("unexpected bytes after the answer")));
+	if (!bRead)
+	{
+		OutError = Ctx.Error(StateLayout.DisplayName + TEXT(".") + Field->Name);
+		return false;
+	}
+	Variable.CopySingleValue(Variable.ContainerPtrToValuePtr<void>(State), Fresh);
+	if (Field->Presence)
+	{
+		Field->Presence->SetPropertyValue_InContainer(State, Result == ERead::Written && Answer.Type != ECrowdyExecToken::Nil);
+	}
+	return true;
+}
+
+namespace
+{
+	struct FKitMemberRead
+	{
+		FCrowdyExecKitMember Member;
+		bool bId = false;
+		bool bProps = false;
+		bool bRemoved = false;
+	};
+
+	const FCrowdyExecField* FindKitRecordField(const FCodecContext& Ctx, const TCHAR* ServerName)
+	{
+		return Ctx.Layout.Structs[Ctx.Layout.RecordStruct].Fields.FindByPredicate([ServerName](const FCrowdyExecField& Each)
+		{
+			return FCString::Strcmp(*Each.Name, ServerName) == 0;
+		});
+	}
+
+	bool ReadKitRecordField(FCodecContext& Ctx, const FCrowdyExecField& Field, FCrowdyExecReader& Reader, const FCrowdyExecToken& Value, int32 Depth,
+		FCrowdyExecKitMember& Out)
+	{
+		TGuardValue<const FCrowdyExecStruct*> StructGuard(Ctx.Struct, &Ctx.Layout.Structs[Ctx.Layout.RecordStruct]);
+		TGuardValue<const FCrowdyExecField*> FieldGuard(Ctx.Field, &Field);
+		return ReadFieldWithToken(Ctx, Field, Out.Values.GetMutableMemory(), Reader, Value, Depth + 1) != ERead::Failed;
+	}
+
+	/** A member's id is a whole number, kept as its decimal text; it also fills the Record struct's id field when it has one. */
+	bool ReadKitMemberId(FCodecContext& Ctx, FCrowdyExecReader& Reader, int32 Depth, FCrowdyExecKitMember& Out)
+	{
+		FCrowdyExecToken Value;
+		if (!Reader.Next(Value, Ctx.Reason))
+		{
+			return false;
+		}
+		if (Value.Type != ECrowdyExecToken::UInt && Value.Type != ECrowdyExecToken::Int)
+		{
+			return Ctx.FailExpected(TEXT("a member id"), Value);
+		}
+		Out.Id = Value.Type == ECrowdyExecToken::UInt ? FString::Printf(TEXT("%llu"), Value.UInt) : FString::Printf(TEXT("%lld"), Value.Int);
+		const FCrowdyExecField* Field = FindKitRecordField(Ctx, TEXT("id"));
+		return !Field || ReadKitRecordField(Ctx, *Field, Reader, Value, Depth, Out);
+	}
+
+	/** A member's type_name, such as Mob, fills the Record struct's type_name field when it has one, as a collection of several shapes does. */
+	bool ReadKitMemberTypeName(FCodecContext& Ctx, FCrowdyExecReader& Reader, int32 Depth, FCrowdyExecKitMember& Out)
+	{
+		const FCrowdyExecField* Field = FindKitRecordField(Ctx, TEXT("type_name"));
+		if (!Field)
+		{
+			return Reader.Skip(CrowdyExec::MaxDepth - Depth, Ctx.Reason);
+		}
+		FCrowdyExecToken Value;
+		return Reader.Next(Value, Ctx.Reason) && ReadKitRecordField(Ctx, *Field, Reader, Value, Depth, Out);
+	}
+
+	/** Reads Key's value into Read when Key is id, type_name, props or removed, id, props and removed at most once; skips any other key's value. Depth is the member map's. */
+	bool ReadKitMemberKey(FCodecContext& Ctx, FCrowdyExecReader& Reader, const FCrowdyExecToken& Key, int32 Depth, FKitMemberRead& Read)
+	{
+		const bool bId = KeyIs(Key, "id");
+		const bool bProps = KeyIs(Key, "props");
+		const bool bRemoved = KeyIs(Key, "removed");
+		if ((bId && Read.bId) || (bProps && Read.bProps) || (bRemoved && Read.bRemoved))
+		{
+			return Ctx.Fail(FString::Printf(TEXT("the member key %s appears twice"), *FromUtf8(Key.Data, Key.Count)));
+		}
+		Read.bId |= bId;
+		Read.bProps |= bProps;
+		Read.bRemoved |= bRemoved;
+		FCrowdyExecToken Value;
+		bool bHas = false;
+		if (bId)
+		{
+			return ReadKitMemberId(Ctx, Reader, Depth, Read.Member);
+		}
+		if (KeyIs(Key, "type_name"))
+		{
+			return ReadKitMemberTypeName(Ctx, Reader, Depth, Read.Member);
+		}
+		if (bRemoved)
+		{
+			return Reader.Next(Value, Ctx.Reason) && ReadEnvelopeFlag(Value, Read.Member.bRemoved, bHas, Ctx.Reason);
+		}
+		// A removed member's props are nil.
+		if (bProps)
+		{
+			return Reader.Next(Value, Ctx.Reason) && (Value.Type == ECrowdyExecToken::Nil
+				|| ((Value.Type == ECrowdyExecToken::Map || Ctx.FailExpected(TEXT("a map of props"), Value))
+					&& ReadStructBody(Ctx, Ctx.Layout.RecordStruct, Read.Member.Values.GetMutableMemory(), Reader, Value.Count, Depth + 1)));
+		}
+		return Reader.Skip(CrowdyExec::MaxDepth - Depth, Ctx.Reason);
+	}
+
+	bool FinishKitMember(FCodecContext& Ctx, const FKitMemberRead& Read)
+	{
+		if (!Read.bId)
+		{
+			return Ctx.Fail(TEXT("a member carries no id"));
+		}
+		return Read.Member.bRemoved || Read.bProps || Ctx.Fail(FString::Printf(TEXT("member %s carries no props"), *Read.Member.Id));
+	}
+
+	/** A snapshot's containers: every member it holds, each a map of id, type_name, props and removed. */
+	bool ReadKitContainers(FCodecContext& Ctx, FCrowdyExecReader& Reader, const FInstancedStruct& Defaults, TArray<FCrowdyExecKitMember>& Out)
+	{
+		FCrowdyExecToken List;
+		if (!Reader.Next(List, Ctx.Reason))
+		{
+			return false;
+		}
+		if (List.Type != ECrowdyExecToken::Array)
+		{
+			return Ctx.FailExpected(TEXT("an array of members"), List);
+		}
+		if (!CountElements(Ctx, List.Count))
+		{
+			return false;
+		}
+		// The reader refused a count over MaxElements or over the bytes left, so this reserve is bounded.
+		Out.Reset(List.Count);
+		for (int32 Index = 0; Index < List.Count; ++Index)
+		{
+			FCrowdyExecToken Entry;
+			if (!Reader.Next(Entry, Ctx.Reason))
+			{
+				return false;
+			}
+			if (Entry.Type != ECrowdyExecToken::Map)
+			{
+				return Ctx.FailExpected(TEXT("a member"), Entry);
+			}
+			FKitMemberRead Read;
+			Read.Member.Values = Defaults;
+			for (int32 KeyIndex = 0; KeyIndex < Entry.Count; ++KeyIndex)
+			{
+				FCrowdyExecToken Key;
+				const bool bKey = Reader.Next(Key, Ctx.Reason) && (Key.Type == ECrowdyExecToken::String || Ctx.FailExpected(TEXT("a member key"), Key));
+				if (!bKey || !ReadKitMemberKey(Ctx, Reader, Key, 3, Read))
+				{
+					return false;
+				}
+			}
+			if (!FinishKitMember(Ctx, Read))
+			{
+				return false;
+			}
+			if (!Read.Member.bRemoved)
+			{
+				Out.Add(MoveTemp(Read.Member));
+			}
+		}
+		return true;
+	}
+}
+
+bool CrowdyExec::DecodeKitCollection(const UCrowdyServerObjectDefinition& Definition, TConstArrayView<uint8> Bytes, FCrowdyExecKitHeader& OutHeader,
+	TArray<FCrowdyExecKitMember>& OutMembers, FString& OutError)
+{
+	FCrowdyExecKitHeader Header;
+	if (!ReadKitHeader(Bytes, Header, OutError))
+	{
+		return false;
+	}
+	if (Header.Kind != ECrowdyExecKitKind::Snapshot && Header.Kind != ECrowdyExecKitKind::Delta)
+	{
+		OutError = TEXT("the message is not a snapshot or a delta");
+		return false;
+	}
+	const FCrowdyExecLayout* Layout = Definition.ResolveLayout(OutError);
+	if (!Layout)
+	{
+		return false;
+	}
+	const UScriptStruct* RecordStruct = Definition.HasKitCollection() ? Definition.GetRecordStruct() : nullptr;
+	if (!RecordStruct || Layout->RecordStruct == INDEX_NONE || Layout->Structs[Layout->RecordStruct].Struct != RecordStruct)
+	{
+		OutError = FString::Printf(TEXT("%s has no Record struct for its collection; save it again"), *Definition.GetName());
+		return false;
+	}
+	FInstancedStruct Defaults;
+	Definition.InitializeValues(RecordStruct, Defaults);
+	FCodecContext Ctx(*Layout);
+	Ctx.bGameKit = true;
+	FCrowdyExecReader Reader(Bytes);
+	FCrowdyExecToken Message;
+	const bool bSnapshot = Header.Kind == ECrowdyExecKitKind::Snapshot;
+	// A delta is one member whose keys sit beside the reserved ones, which it skips.
+	FKitMemberRead Delta;
+	Delta.Member.Values = Defaults;
+	TArray<FCrowdyExecKitMember> Members;
+	bool bContainers = false;
+	bool bRead = Reader.Next(Message, Ctx.Reason) && (Message.Type == ECrowdyExecToken::Map || Ctx.FailExpected(TEXT("a map"), Message));
+	for (int32 Index = 0; bRead && Index < Message.Count; ++Index)
+	{
+		FCrowdyExecToken Key;
+		bRead = Reader.Next(Key, Ctx.Reason) && (Key.Type == ECrowdyExecToken::String || Ctx.FailExpected(TEXT("a field name"), Key));
+		const bool bContainersKey = bRead && bSnapshot && KeyIs(Key, "containers");
+		if (bContainersKey)
+		{
+			bRead = (!bContainers || Ctx.Fail(TEXT("containers appears twice"))) && ReadKitContainers(Ctx, Reader, Defaults, Members);
+			bContainers = true;
+		}
+		else if (bRead)
+		{
+			bRead = bSnapshot ? Reader.Skip(MaxDepth - 1, Ctx.Reason) : ReadKitMemberKey(Ctx, Reader, Key, 1, Delta);
+		}
+	}
+	bRead = bRead && (Reader.AtEnd() || Ctx.Fail(TEXT("unexpected bytes after the message")))
+		&& (bSnapshot ? bContainers || Ctx.Fail(TEXT("the snapshot carries no containers")) : FinishKitMember(Ctx, Delta));
+	if (!bRead)
+	{
+		OutError = Ctx.Error(Layout->Structs[Layout->RecordStruct].DisplayName);
+		return false;
+	}
+	if (!bSnapshot)
+	{
+		Members.Add(MoveTemp(Delta.Member));
+	}
+	OutHeader = Header;
+	OutMembers = MoveTemp(Members);
 	return true;
 }
 

@@ -2,23 +2,31 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "AssetRegistry/IAssetRegistry.h"
 #include "CrowdyExecCodegen.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLibrary.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "UObject/ObjectRedirector.h"
 #include "UObject/Package.h"
+#include "UObject/SavePackage.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UObjectGlobals.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 namespace CrowdyExecDeployTest
 {
@@ -454,6 +462,7 @@ bool FCrowdyExecDeployInspectTest::RunTest(const FString& Parameters)
 	IFileManager::Get().Delete(*LogicFile);
 	const CrowdyExecDeploy::FTypeState NoLogic = CrowdyExecDeploy::InspectType(*Definition, Directory);
 	TestState(*this, TEXT("a type without logic.rs is not generated"), NoLogic, ECrateState::NotGenerated);
+	TestTrue(TEXT("and Generate can write it"), !NoLogic.bNeedsDeveloper && CrowdyExecDeploy::NeedsGenerating(NoLogic));
 	TestTrue(FString::Printf(TEXT("the problem names logic.rs (%s)"), *NoLogic.Problem), NoLogic.Problem.Contains(TEXT("logic.rs")));
 	SaveText(Logic + TEXT("// the user's own code\n"), LogicFile);
 	TestState(*this, TEXT("an edited logic.rs is the user's and keeps the type up to date"), CrowdyExecDeploy::InspectType(*Definition, Directory), ECrateState::UpToDate);
@@ -537,9 +546,7 @@ bool FCrowdyExecDeployLimitsTest::RunTest(const FString& Parameters)
 	using namespace CrowdyExecDeployTest;
 	constexpr int32 TwoMegabytes = 2 * 1024 * 1024;
 	FString Problem;
-	TestTrue(TEXT("16 crates are allowed"), CrowdyExecDeploy::CheckBuildLimits(MakeCrates(16, 1, 1), Problem));
-	TestFalse(TEXT("17 crates are refused"), CrowdyExecDeploy::CheckBuildLimits(MakeCrates(17, 1, 1), Problem));
-	TestTrue(FString::Printf(TEXT("the crate refusal names the platform's root Server Object type (%s)"), *Problem), Problem.Contains(TEXT("the platform's root Server Object type")));
+	TestTrue(TEXT("more crates than one build takes are allowed: a deploy splits them"), CrowdyExecDeploy::CheckBuildLimits(MakeCrates(40, 1, 1), Problem));
 
 	Problem.Reset();
 	TestTrue(TEXT("64 files in a crate are allowed"), CrowdyExecDeploy::CheckBuildLimits(MakeCrates(2, 64, 1), Problem));
@@ -547,10 +554,162 @@ bool FCrowdyExecDeployLimitsTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("the file refusal names the crate (%s)"), *Problem), Problem.Contains(TEXT("crate_0")));
 
 	Problem.Reset();
-	TestTrue(TEXT("2 MB of source is allowed"), CrowdyExecDeploy::CheckBuildLimits(MakeCrates(1, 1, TwoMegabytes), Problem));
-	TestFalse(TEXT("one byte over 2 MB is refused"), CrowdyExecDeploy::CheckBuildLimits(MakeCrates(1, 1, TwoMegabytes + 1), Problem));
-	TestFalse(TEXT("2 MB spread over two crates plus one byte is refused"), CrowdyExecDeploy::CheckBuildLimits(MakeCrates(2, 1, TwoMegabytes / 2 + 1), Problem));
-	TestTrue(FString::Printf(TEXT("the size refusal names the limit (%s)"), *Problem), Problem.Contains(TEXT("2 MB")));
+	TestTrue(TEXT("2 MB of source in a crate is allowed"), CrowdyExecDeploy::CheckBuildLimits(MakeCrates(1, 1, TwoMegabytes), Problem));
+	TestTrue(TEXT("more than 2 MB over several crates is allowed"), CrowdyExecDeploy::CheckBuildLimits(MakeCrates(3, 1, TwoMegabytes / 2 + 1), Problem));
+	TestFalse(TEXT("one byte over 2 MB in a crate is refused"), CrowdyExecDeploy::CheckBuildLimits(MakeCrates(1, 1, TwoMegabytes + 1), Problem));
+	TestTrue(FString::Printf(TEXT("the size refusal names the crate and the limit (%s)"), *Problem), Problem.Contains(TEXT("crate_0")) && Problem.Contains(TEXT("2 MB")));
+	return true;
+}
+
+// Crates go into builds in order, starting a new one at the crate count or the source size a build takes.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeploySplitIntoBuildsTest, "CrowdySDK.CrowdyExecEditor.DeploySplitIntoBuilds", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeploySplitIntoBuildsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	constexpr int32 OneMegabyte = 1024 * 1024;
+	auto Sizes = [](const TArray<TArray<FBuildCrate>>& Builds)
+	{
+		TArray<int32> Counts;
+		for (const TArray<FBuildCrate>& Build : Builds)
+		{
+			Counts.Add(Build.Num());
+		}
+		return Counts;
+	};
+	TestEqual(TEXT("16 crates are one build"), Sizes(CrowdyExecDeploy::SplitIntoBuilds(MakeCrates(16, 1, 1))), TArray<int32>({16}));
+	TestEqual(TEXT("17 crates are two"), Sizes(CrowdyExecDeploy::SplitIntoBuilds(MakeCrates(17, 1, 1))), TArray<int32>({16, 1}));
+	TestEqual(TEXT("33 crates are three"), Sizes(CrowdyExecDeploy::SplitIntoBuilds(MakeCrates(33, 1, 1))), TArray<int32>({16, 16, 1}));
+	TestEqual(TEXT("a smaller build size is kept to"), Sizes(CrowdyExecDeploy::SplitIntoBuilds(MakeCrates(15, 1, 1), 8)), TArray<int32>({8, 7}));
+	TestEqual(TEXT("a build size past the platform's is brought down to 16"), Sizes(CrowdyExecDeploy::SplitIntoBuilds(MakeCrates(17, 1, 1), 40)), TArray<int32>({16, 1}));
+	TestEqual(TEXT("two crates of 1 MB fill a build's 2 MB"), Sizes(CrowdyExecDeploy::SplitIntoBuilds(MakeCrates(3, 1, OneMegabyte))), TArray<int32>({2, 1}));
+	TestEqual(TEXT("a crate past what is left starts a build"), Sizes(CrowdyExecDeploy::SplitIntoBuilds(MakeCrates(2, 1, OneMegabyte + 1))), TArray<int32>({1, 1}));
+	TestTrue(TEXT("no crates are no builds"), CrowdyExecDeploy::SplitIntoBuilds(TArray<FBuildCrate>()).IsEmpty());
+	const TArray<TArray<FBuildCrate>> Ordered = CrowdyExecDeploy::SplitIntoBuilds(MakeCrates(17, 1, 1));
+	TestTrue(TEXT("crates keep their order"), Ordered.Num() == 2 && Ordered[0][0].Name == TEXT("crate_0") && Ordered[1][0].Name == TEXT("crate_16"));
+	return true;
+}
+
+namespace CrowdyExecDeployTest
+{
+	TSharedPtr<FJsonObject> ParsedType(const FString& ManifestJson, const TCHAR* Name)
+	{
+		TSharedPtr<FJsonObject> Manifest;
+		const TSharedPtr<FJsonObject>* Types = nullptr;
+		const TSharedPtr<FJsonObject>* Type = nullptr;
+		if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(ManifestJson), Manifest) || !Manifest.IsValid()
+			|| !Manifest->TryGetObjectField(TEXT("types"), Types) || !(*Types)->TryGetObjectField(Name, Type))
+		{
+			return nullptr;
+		}
+		return *Type;
+	}
+
+	FString ParsedField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field)
+	{
+		FString Value;
+		if (Object.IsValid())
+		{
+			Object->TryGetStringField(Field, Value);
+		}
+		return Value;
+	}
+
+	FString ParsedRoot(const FString& ManifestJson)
+	{
+		TSharedPtr<FJsonObject> Manifest;
+		FString Root;
+		if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(ManifestJson), Manifest) && Manifest.IsValid())
+		{
+			Manifest->TryGetStringField(TEXT("root"), Root);
+		}
+		return Root;
+	}
+}
+
+// A type whose crate has a digest is named by it and loses its crate; two types of one crate both are; the rest keep every field.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployNameByDigestTest, "CrowdySDK.CrowdyExecEditor.DeployNameByDigest", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployNameByDigestTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const FString Manifest = TEXT("{\"root\":\"world\",\"types\":{\"world\":{\"kind\":\"hub\",\"crate\":\"world\",\"client\":true,\"persist_every_ms\":10000},")
+		TEXT("\"race\":{\"kind\":\"hub\",\"parent\":\"world\",\"crate\":\"racing\",\"client\":true},\"ball\":{\"kind\":\"hub\",\"parent\":\"world\",\"crate\":\"racing\",\"client\":true},")
+		TEXT("\"deck\":{\"kind\":\"hub\",\"parent\":\"world\",\"crate\":\"deck\",\"client\":true}}}");
+	TMap<FString, FString> Digests;
+	Digests.Add(TEXT("world"), TEXT("dw"));
+	Digests.Add(TEXT("racing"), TEXT("dr"));
+	const FString Named = CrowdyExecDeploy::NameByDigest(Manifest, Digests);
+	TestEqual(TEXT("the root keeps its name"), ParsedRoot(Named), FString(TEXT("world")));
+	TestEqual(TEXT("a crate with a digest is named by it"), ParsedField(ParsedType(Named, TEXT("world")), TEXT("digest")), FString(TEXT("dw")));
+	TestTrue(TEXT("and no longer by its crate"), ParsedField(ParsedType(Named, TEXT("world")), TEXT("crate")).IsEmpty());
+	TestTrue(TEXT("its numbers stay whole"), Named.Contains(TEXT("\"persist_every_ms\":10000")) && !Named.Contains(TEXT("10000.")));
+	TestEqual(TEXT("both types of a shared crate are named by its digest: race"), ParsedField(ParsedType(Named, TEXT("race")), TEXT("digest")), FString(TEXT("dr")));
+	TestEqual(TEXT("and ball"), ParsedField(ParsedType(Named, TEXT("ball")), TEXT("digest")), FString(TEXT("dr")));
+	TestEqual(TEXT("a type keeps its parent"), ParsedField(ParsedType(Named, TEXT("ball")), TEXT("parent")), FString(TEXT("world")));
+	TestEqual(TEXT("a crate with no digest keeps its crate"), ParsedField(ParsedType(Named, TEXT("deck")), TEXT("crate")), FString(TEXT("deck")));
+	TestTrue(TEXT("and gets no digest"), ParsedField(ParsedType(Named, TEXT("deck")), TEXT("digest")).IsEmpty());
+	TestEqualSensitive(TEXT("with no digests a manifest comes back byte for byte"), CrowdyExecDeploy::NameByDigest(Manifest, {}), Manifest);
+	FString Golden;
+	if (TestTrue(TEXT("the golden project manifest is there"), FFileHelper::LoadFileToString(Golden, *GetManifestGoldenPath())))
+	{
+		Golden.TrimEndInline();
+		TestEqualSensitive(TEXT("and so does the golden project manifest"), CrowdyExecDeploy::NameByDigest(Golden, {}), Golden);
+	}
+	TestTrue(TEXT("text that is not a manifest gives nothing"), CrowdyExecDeploy::NameByDigest(TEXT("not json"), Digests).IsEmpty());
+	TestTrue(TEXT("a manifest with no types gives nothing"), CrowdyExecDeploy::NameByDigest(TEXT("{\"root\":\"world\"}"), Digests).IsEmpty());
+	return true;
+}
+
+// A staging manifest is the live one as it is plus a stand-in per crate under its root; with nothing live the first stand-in is the root.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployStagingManifestTest, "CrowdySDK.CrowdyExecEditor.DeployStagingManifest", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployStagingManifestTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyExecDeployTest;
+	const FString Live = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"dr\",\"client\":true},")
+		TEXT("\"sbx_counter\":{\"kind\":\"hub\",\"parent\":\"root\",\"digest\":\"dc\",\"client\":true,\"persist_every_ms\":5000}}}");
+	const TArray<FBuildCrate> Crates = MakeCrates(2, 1, 1);
+	FString Problem;
+	const FString Staging = CrowdyExecDeploy::MakeStagingManifest(Live, FString(), Crates, Problem);
+	TestEqual(TEXT("the live root stays the root"), ParsedRoot(Staging), FString(TEXT("root")));
+	TestEqual(TEXT("a live type runs as it did"), ParsedField(ParsedType(Staging, TEXT("sbx_counter")), TEXT("digest")), FString(TEXT("dc")));
+	TestTrue(TEXT("with its numbers whole"), Staging.Contains(TEXT("\"persist_every_ms\":5000")));
+	const TSharedPtr<FJsonObject> StandIn = ParsedType(Staging, TEXT("ck_staged_crate_1"));
+	TestEqual(TEXT("each crate has a stand-in naming it"), ParsedField(StandIn, TEXT("crate")), FString(TEXT("crate_1")));
+	TestEqual(TEXT("a stand-in is a hub"), ParsedField(StandIn, TEXT("kind")), FString(TEXT("hub")));
+	TestEqual(TEXT("under the live root"), ParsedField(StandIn, TEXT("parent")), FString(TEXT("root")));
+	TestTrue(TEXT("that players cannot reach"), StandIn.IsValid() && StandIn->HasTypedField<EJson::Boolean>(TEXT("client")) && !StandIn->GetBoolField(TEXT("client")));
+	TestTrue(TEXT("the first crate has one too"), ParsedType(Staging, TEXT("ck_staged_crate_0")).IsValid());
+
+	const FString FromNothing = CrowdyExecDeploy::MakeStagingManifest(FString(), FString(), Crates, Problem);
+	TestEqual(TEXT("with nothing live the first stand-in is the root"), ParsedRoot(FromNothing), FString(TEXT("ck_staged_crate_0")));
+	TestTrue(TEXT("with no parent"), ParsedField(ParsedType(FromNothing, TEXT("ck_staged_crate_0")), TEXT("parent")).IsEmpty());
+	TestEqual(TEXT("and the next under it"), ParsedField(ParsedType(FromNothing, TEXT("ck_staged_crate_1")), TEXT("parent")), FString(TEXT("ck_staged_crate_0")));
+	TestTrue(TEXT("a live manifest that does not read gives nothing"), CrowdyExecDeploy::MakeStagingManifest(TEXT("{\"root\":"), FString(), Crates, Problem).IsEmpty());
+	TestFalse(TEXT("and says why"), Problem.IsEmpty());
+
+	// The platform lists a live seed only as its size; the deploy's seed of that size keeps it, any other stops the staging.
+	const FString Seed = FBase64::Encode(TEXT("{\"rounds\":3}"));
+	const FString SeededLive = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"dr\",\"client\":true,\"seed_bytes\":null},")
+		TEXT("\"session\":{\"kind\":\"hub\",\"parent\":\"root\",\"digest\":\"ds\",\"client\":true,\"seed_bytes\":12}}}");
+	const FString Deploying = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"session\":{\"kind\":\"hub\",\"parent\":\"root\",\"crate\":\"session\",\"seed_b64\":\"%s\"}}}"), *Seed);
+	Problem.Reset();
+	const FString Kept = CrowdyExecDeploy::MakeStagingManifest(SeededLive, Deploying, Crates, Problem);
+	TestEqualSensitive(TEXT("a live seed is kept from the deploy's seed of its size"), ParsedField(ParsedType(Kept, TEXT("session")), TEXT("seed_b64")), Seed);
+	TestFalse(TEXT("and its size is not sent"), Kept.Contains(TEXT("seed_bytes")));
+	TestTrue(TEXT("with no problem"), Problem.IsEmpty());
+	const FString OtherSize = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"session\":{\"kind\":\"hub\",\"crate\":\"session\",\"seed_b64\":\"%s\"}}}"), *FBase64::Encode(TEXT("{\"rounds\":30}")));
+	TestTrue(TEXT("a deploy seed of another size cannot stand in for it"), CrowdyExecDeploy::MakeStagingManifest(SeededLive, OtherSize, Crates, Problem).IsEmpty());
+	TestTrue(FString::Printf(TEXT("the problem names the type (%s)"), *Problem), Problem.Contains(TEXT("session")));
+	Problem.Reset();
+	TestTrue(TEXT("nor can a deploy without the type"), CrowdyExecDeploy::MakeStagingManifest(SeededLive, FString(), Crates, Problem).IsEmpty() && !Problem.IsEmpty());
+
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Taken = MakeDefinition(*this, TEXT("ck_staged_shop"));
+	if (Taken)
+	{
+		FTempFolder Folder;
+		const CrowdyExecDeploy::FTypeState State = CrowdyExecDeploy::InspectType(*Taken, FPaths::Combine(Folder.Path, TEXT("ck_staged_shop")));
+		TestState(*this, TEXT("a Type Name starting with the stand-ins' prefix is refused"), State, ECrateState::Invalid);
+		TestTrue(FString::Printf(TEXT("saying why (%s)"), *State.Problem), State.Problem.Contains(TEXT("stand-ins")));
+	}
 	return true;
 }
 
@@ -653,8 +812,8 @@ bool FCrowdyExecDeployAssembleDropsRecordTest::RunTest(const FString& Parameters
 		return false;
 	}
 	TestEqualSensitive(TEXT("the platform gets only package, lib and dependencies, as before the record"), Cargo->Content,
-		FString(TEXT("[package]\nname = \"deploy_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n")
-			TEXT("[dependencies]\nckx-sdk = \"0.7.0\"\nserde = { version = \"1\", features = [\"derive\"] }\n")));
+		FString::Printf(TEXT("[package]\nname = \"deploy_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n")
+			TEXT("[dependencies]\nckx-sdk = \"%s\"\nserde = { version = \"1\", features = [\"derive\"] }\n"), CrowdyExecCodegen::CkxSdkVersion));
 
 	TestEqualSensitive(TEXT("CRLF lines and a record as the last section"),
 		CrowdyExecCodegen::WithoutCrateDefinition(TEXT("[package]\r\nname = \"x\"\r\n\r\n[package.metadata.crowdy]\r\ndefinition = \"/Game/A.A\"\r\n")),
@@ -690,6 +849,7 @@ bool FCrowdyExecDeployInspectOwnLogicTest::RunTest(const FString& Parameters)
 	TestState(*this, TEXT("a missing Logic File is not generated"), Missing, ECrateState::NotGenerated);
 	TestTrue(FString::Printf(TEXT("the problem names the Logic File (%s)"), *Missing.Problem), Missing.Problem.Contains(OwnLogic));
 	TestTrue(FString::Printf(TEXT("the problem says to choose a file or switch to Generated (%s)"), *Missing.Problem), Missing.Problem.Contains(TEXT("switch Code Source to Generated")));
+	TestTrue(TEXT("it waits on the developer, so Generate has nothing to do for it"), Missing.bNeedsDeveloper && !CrowdyExecDeploy::NeedsGenerating(Missing));
 
 	SaveText(TEXT("// the crate's own copy, not used while a Logic File is set\n"), FPaths::Combine(Directory, LogicPath));
 	TestState(*this, TEXT("a logic.rs in the crate does not stand in for a missing Logic File"), CrowdyExecDeploy::InspectType(*Definition, Directory), ECrateState::NotGenerated);
@@ -721,6 +881,7 @@ bool FCrowdyExecDeployInspectNoFileChosenTest::RunTest(const FString& Parameters
 	const CrowdyExecDeploy::FTypeState Unchosen = CrowdyExecDeploy::InspectType(*Definition, Directory);
 	TestState(*this, TEXT("My Own File with no file chosen is not generated"), Unchosen, ECrateState::NotGenerated);
 	TestEqualSensitive(TEXT("the problem says no file is chosen and how to fix it"), Unchosen.Problem, Expected);
+	TestTrue(TEXT("it waits on the developer, so Generate has nothing to do for it"), Unchosen.bNeedsDeveloper && !CrowdyExecDeploy::NeedsGenerating(Unchosen));
 
 	auto DirectoryFor = [&Folder](const UCrowdyServerObjectDefinition& Def) { return FPaths::Combine(Folder.Path, Def.TypeName); };
 	const CrowdyExecDeploy::FProjectDeploy Project = CrowdyExecDeploy::AssembleProject({Definition.Get()}, DirectoryFor);
@@ -846,6 +1007,20 @@ bool FCrowdyExecDeployAssembleGuardsTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("a file past the source limit is named before it is read (%s)"), *FString::Join(Oversized.Problems, TEXT(" | "))),
 		Oversized.Problems.ContainsByPredicate([](const FString& Problem) { return Problem.Contains(TEXT("big.rs")) && Problem.Contains(TEXT("2 MB")); }));
 	TestEqual(TEXT("a type with a file past the limit sends no crate"), Oversized.Crates.Num(), 1);
+
+	// Each crate has the limit to itself, so two crates of 1.5 MB are one project, built in two builds.
+	SaveText(FString::ChrN(1536 * 1024, TEXT('a')), FPaths::Combine(Directory, TEXT("src/big.rs")));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Second = MakeDefinition(*this, TEXT("deploy_second"));
+	const FString SecondDirectory = FPaths::Combine(Folder.Path, TEXT("deploy_second"));
+	CrowdyExecCodegen::FGeneratedCrate SecondCrate;
+	if (!Second || !WriteGenerated(*this, *Second, SecondDirectory, SecondCrate))
+	{
+		return false;
+	}
+	SaveText(FString::ChrN(1536 * 1024, TEXT('b')), FPaths::Combine(SecondDirectory, TEXT("src/big.rs")));
+	const CrowdyExecDeploy::FProjectDeploy Large = CrowdyExecDeploy::AssembleProject({Fixture.Get(), Second.Get()}, DirectoryFor);
+	TestEqualSensitive(TEXT("a project past 2 MB in all has no problem when each crate fits a build"), FString::Join(Large.Problems, TEXT(" | ")), FString());
+	TestEqual(TEXT("and sends both crates and the root"), Large.Crates.Num(), 3);
 	return true;
 }
 
@@ -1031,6 +1206,124 @@ bool FCrowdyExecDeployInspectLibraryTest::RunTest(const FString& Parameters)
 	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Hub = MakeManifestDefinition(TEXT("save_bound"), 1, 5000);
 	const CrowdyExecDeploy::FTypeState HubState = CrowdyExecDeploy::InspectType(*Hub, FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("CrowdyExecDeployTests"), TEXT("no_such_crate")));
 	TestTrue(TEXT("a Server Object's are"), HubState.Problem.Contains(TEXT("Save Interval must be 5 to 60 seconds")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployReadOnlySettingsTest, "CrowdySDK.CrowdyExecEditor.DeployRefusesAChangeToReadOnlyGameKitSettings", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployReadOnlySettingsTest::RunTest(const FString& Parameters)
+{
+	UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
+	const FSoftObjectPath SavedWorld = Settings->GameKitWorld;
+	const TArray<FSoftObjectPath> SavedStarters = Settings->GameKitActorStarters;
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	const FString Folder = FPaths::ConvertRelativePathToFull(FPaths::ProjectIntermediateDir() / TEXT("CrowdyExecDeployTests") / FGuid::NewGuid().ToString());
+	const FString Ini = Folder / TEXT("DefaultGame.ini");
+	ON_SCOPE_EXIT
+	{
+		Settings->GameKitWorld = SavedWorld;
+		Settings->GameKitActorStarters = SavedStarters;
+		PlatformFile.SetReadOnly(*Ini, false);
+		PlatformFile.DeleteDirectoryRecursively(*Folder);
+		PlatformFile.DeleteDirectory(*FPaths::GetPath(Folder));
+	};
+
+	TestTrue(TEXT("an ini that does not exist yet can be written"), CrowdyExecDeploy::FindReadOnlySettingsProblem(Ini).IsEmpty());
+	if (!TestTrue(TEXT("the ini is written"), FFileHelper::SaveStringToFile(TEXT("[/Script/CrowdyReplication.CrowdySDKDeveloperSettings]\n"), *Ini)))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a writable ini can be written"), CrowdyExecDeploy::FindReadOnlySettingsProblem(Ini).IsEmpty());
+	if (!TestTrue(TEXT("the ini is made read-only"), PlatformFile.SetReadOnly(*Ini, true)))
+	{
+		return false;
+	}
+	TestEqualSensitive(TEXT("a read-only ini is named, with the way out"), CrowdyExecDeploy::FindReadOnlySettingsProblem(Ini),
+		FString::Printf(TEXT("%s is read-only (checked in?), and this changes the Game Kit settings it holds; make it writable, then run again; nothing was changed"), *Ini));
+
+	const FSoftObjectPath Named(TEXT("/Game/CrowdyDeployTest/CSO_Named.CSO_Named"));
+	const FSoftObjectPath Other(TEXT("/Game/CrowdyDeployTest/CSO_Other.CSO_Other"));
+	Settings->GameKitWorld = Named;
+	Settings->GameKitActorStarters = {Other};
+	TestFalse(TEXT("moving the Game Kit World's definition is refused"), CrowdyExecDeploy::FindReadOnlySettingsProblemFor(Named, Ini).IsEmpty());
+	Settings->GameKitWorld.Reset();
+	Settings->GameKitActorStarters = {Other, Named};
+	TestFalse(TEXT("so is moving a Game Kit Actor Starter"), CrowdyExecDeploy::FindReadOnlySettingsProblemFor(Named, Ini).IsEmpty());
+	Settings->GameKitActorStarters = {Other};
+	TestTrue(TEXT("a definition the settings do not name changes nothing in them"), CrowdyExecDeploy::FindReadOnlySettingsProblemFor(Named, Ini).IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployUnusedRedirectorsTest, "CrowdySDK.CrowdyExecEditor.DeployTakesOnlyRedirectorsNothingElseUses", CrowdyExecDeployTest::TestFlags)
+bool FCrowdyExecDeployUnusedRedirectorsTest::RunTest(const FString& Parameters)
+{
+	IAssetRegistry& Registry = IAssetRegistry::GetChecked();
+	// A run that crashed would otherwise leave its definitions in the project, where a deploy would send them.
+	IFileManager::Get().DeleteDirectory(*FPackageName::LongPackageNameToFilename(TEXT("/Game/CrowdyRedirectorTest")), false, true);
+	const FString Root = FString::Printf(TEXT("/Game/CrowdyRedirectorTest/%s"), *FGuid::NewGuid().ToString());
+	TArray<UObject*> Made;
+	TArray<FString> Files;
+	ON_SCOPE_EXIT
+	{
+		for (UObject* Object : Made)
+		{
+			Registry.AssetDeleted(Object);
+			Object->ClearFlags(RF_Public | RF_Standalone);
+			Object->MarkAsGarbage();
+		}
+		for (const FString& File : Files)
+		{
+			IFileManager::Get().Delete(*File, false, true, true);
+		}
+		IFileManager::Get().DeleteDirectory(*FPackageName::LongPackageNameToFilename(Root), false, true);
+		IFileManager::Get().DeleteDirectory(*FPaths::GetPath(FPackageName::LongPackageNameToFilename(Root)), false, false);
+	};
+	const auto Save = [this, &Files](UObject* Object)
+	{
+		const FString File = FPackageName::LongPackageNameToFilename(Object->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+		FSavePackageArgs Args;
+		Args.TopLevelFlags = RF_Public | RF_Standalone;
+		Files.Add(File);
+		return TestTrue(FString::Printf(TEXT("%s is saved"), *Object->GetName()), UPackage::SavePackage(Object->GetPackage(), Object, *File, Args));
+	};
+	const auto MakeDefinition = [&Root](const TCHAR* Name)
+	{
+		UCrowdyServerObjectDefinition* Definition = NewObject<UCrowdyServerObjectDefinition>(CreatePackage(*(Root / Name)), Name, RF_Public | RF_Standalone);
+		Definition->TypeName = FString(Name).ToLower();
+		return Definition;
+	};
+	const auto MakeRedirector = [&Root](const TCHAR* Name, UObject* Destination)
+	{
+		UObjectRedirector* Redirector = NewObject<UObjectRedirector>(CreatePackage(*(Root / Name)), Name, RF_Public | RF_Standalone);
+		Redirector->DestinationObject = Destination;
+		return Redirector;
+	};
+
+	UCrowdyServerObjectDefinition* Alone = MakeDefinition(TEXT("CSO_Alone"));
+	UObjectRedirector* Unused = MakeRedirector(TEXT("CSO_AloneOld"), Alone);
+	UCrowdyServerObjectDefinition* Shared = MakeDefinition(TEXT("CSO_Shared"));
+	UObjectRedirector* Used = MakeRedirector(TEXT("CSO_SharedOld"), Shared);
+	UObjectRedirector* User = MakeRedirector(TEXT("CSO_SharedOlder"), Used);
+	Made = {Alone, Unused, Shared, Used, User};
+	if (!Save(Alone) || !Save(Unused) || !Save(Shared) || !Save(Used) || !Save(User))
+	{
+		return false;
+	}
+	Registry.ScanFilesSynchronous(Files, true);
+
+	TArray<FName> AloneReferencers = CrowdyExecDeploy::FindReferencers(*Alone, TSet<FName>());
+	TArray<FName> AloneUsed;
+	const TArray<UObject*> AloneTaken = CrowdyExecDeploy::TakeUnusedRedirectors(*Alone, AloneReferencers, AloneUsed);
+	TestTrue(TEXT("a redirector nothing uses is taken, to be deleted with the definition"), AloneTaken.Num() == 1 && AloneTaken[0] == Unused);
+	TestEqual(TEXT("and leaves no referencer to refuse the removal"), AloneReferencers.Num(), 0);
+	TestEqual(TEXT("nor a used redirector"), AloneUsed.Num(), 0);
+
+	TArray<FName> SharedReferencers = CrowdyExecDeploy::FindReferencers(*Shared, TSet<FName>());
+	TArray<FName> SharedUsed;
+	const TArray<UObject*> SharedTaken = CrowdyExecDeploy::TakeUnusedRedirectors(*Shared, SharedReferencers, SharedUsed);
+	const FName UsedPackage = Used->GetPackage()->GetFName();
+	TestEqual(TEXT("a redirector something else uses is not taken"), SharedTaken.Num(), 0);
+	TestTrue(TEXT("it stays a referencer"), SharedReferencers.Contains(UsedPackage));
+	TestTrue(TEXT("and is named as used"), SharedUsed.Num() == 1 && SharedUsed[0] == UsedPackage);
 	return true;
 }
 

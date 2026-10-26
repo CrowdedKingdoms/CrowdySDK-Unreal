@@ -1,6 +1,7 @@
 #include "Actors/CrowdyMassNearTierActor.h"
 
 #include "Components/CrowdyMassNearTierComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "CrowdyMassLog.h"
@@ -72,6 +73,12 @@ namespace CrowdyMassNearTier
 		}
 
 		return FirstWithAsset;
+	}
+
+	bool ShouldCarryTraceCollision(const UPrimitiveComponent& Primitive, const USkeletalMeshComponent* ActionMesh)
+	{
+		static const FName TraceCollisionTag(TEXT("CrowdyTraceCollision"));
+		return &Primitive == ActionMesh || Primitive.ComponentHasTag(TraceCollisionTag);
 	}
 }
 

@@ -2,6 +2,7 @@
 
 #include "CrowdyCppBridge.h"
 #include "CrowdyNativeExecInternal.h"
+#include "CrowdyNativeKitInternal.h"
 #include "Async/Async.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
@@ -54,11 +55,13 @@ namespace
 		int32 Retries = 0;
 	};
 
-	// Which refusals a request may be sent again after: none, or any the platform says to retry.
+	// Which refusals a request may be sent again after: none, or any the platform says to retry. Idempotent is a call
+	// that is not a query but that sending twice cannot apply twice (a sign-in, a token mint or refresh).
 	enum class EBusyRetryKind : uint8
 	{
 		None,
-		Query
+		Query,
+		Idempotent
 	};
 
 	// Everything needed to send one request again, unchanged, after the platform refused it.
@@ -73,6 +76,14 @@ namespace
 		int32 OpSlot = INDEX_NONE;
 		ECrowdyCppTokenPlane Plane = ECrowdyCppTokenPlane::Game;
 		EBusyRetryKind Kind = EBusyRetryKind::None;
+
+		// A sign-in carries no bearer, so each send of it installs none instead of the plane's token.
+		bool bAnonymous = false;
+
+		// The bearer a token call was issued under. A later send under a different bearer would act for another
+		// account, so it delivers Refusal, the answer that parked the call, instead.
+		TOptional<FString> IssuedBearer;
+		std::optional<crowdy::graphql::GraphQLOutcome> Refusal;
 	};
 
 	// Every request issued on one client and not yet completed, keyed by the handle its caller was given.
@@ -522,6 +533,9 @@ struct FCrowdyCppClient::FImpl
 	// Every ck-exec connection made here, closed with the client before its completion pump shuts.
 	TArray<TWeakPtr<FCrowdyNativeExecConnection>> ExecConnections;
 
+	// Every Game Kit made here, closed before the connections they ride.
+	TArray<TWeakPtr<FCrowdyNativeKit>> GameKits;
+
 	// Held by every dial, and cleared on Close, so a dial queued behind the close issues nothing.
 	struct FExecDialOwner
 	{
@@ -550,6 +564,16 @@ struct FCrowdyCppClient::FImpl
 
 	void CloseExecConnections()
 	{
+		TArray<TWeakPtr<FCrowdyNativeKit>> Kits = MoveTemp(GameKits);
+		GameKits.Reset();
+		for (const TWeakPtr<FCrowdyNativeKit>& Weak : Kits)
+		{
+			if (const TSharedPtr<FCrowdyNativeKit> Live = Weak.Pin())
+			{
+				Live->Close();
+			}
+		}
+
 		ExecDialOwner->Owner = nullptr;
 		TArray<TWeakPtr<FCrowdyNativeExecConnection>> Closing = MoveTemp(ExecConnections);
 		ExecConnections.Reset();
@@ -576,13 +600,18 @@ struct FCrowdyCppClient::FImpl
 	// Send again every queued request whose backoff has run out. Called from Poll().
 	void SendDueRetries();
 
+	const FString& TokenFor(ECrowdyCppTokenPlane Plane) const
+	{
+		return Plane == ECrowdyCppTokenPlane::Management ? ManagementToken : GameToken;
+	}
+
 	void ApplyToken(ECrowdyCppTokenPlane Plane)
 	{
 		if (!Client)
 		{
 			return;
 		}
-		const FString& Token = Plane == ECrowdyCppTokenPlane::Management ? ManagementToken : GameToken;
+		const FString& Token = TokenFor(Plane);
 		if (Token.IsEmpty())
 		{
 			// Every operation this facade issues is authenticated, so an empty bearer is a wiring mistake rather
@@ -898,7 +927,7 @@ namespace
 
 	TAutoConsoleVariable<int32> CVarRetryBusy(
 		TEXT("crowdy.net.retry.busy"), 1,
-		TEXT("Sends an SDK query again, up to 3 times with backoff, when the platform refuses it and says to retry (blame PLATFORM, retryable). 0 hands every refusal straight to the caller."),
+		TEXT("Sends an SDK query, a password sign-in or an app-token mint or refresh again, up to 3 times with backoff, when the platform refuses it and says to retry (blame PLATFORM, retryable). 0 hands every refusal straight to the caller."),
 		ECVF_Default);
 
 	// Whether Out is a refusal a request of this kind may send again; CrowdyCPP reads a missing retryable as true.
@@ -942,6 +971,10 @@ namespace
 			return false;
 		}
 		Retry->DueSeconds = FPlatformTime::Seconds() + Delay.GetValue();
+		if (Retry->IssuedBearer.IsSet())
+		{
+			Retry->Refusal = Out;
+		}
 		Registry.WaitingRetries.Add(Retry);
 		return true;
 	}
@@ -1129,13 +1162,41 @@ namespace
 		return Result;
 	}
 
+	// How an auth call is sent again after the platform refuses it. Empty Send leaves the call un-retried.
+	struct FAuthRetry
+	{
+		TFunction<bool(const TSharedRef<FBusyRetry>&)> Send;
+		ECrowdyCppTokenPlane Plane = ECrowdyCppTokenPlane::Game;
+		bool bAnonymous = false;
+		TOptional<FString> IssuedBearer;
+	};
+
+	// ImplType is the client's private implementation, deduced so this free function never names it.
+	template <typename ImplType>
+	FAuthRetry MakeAuthRetry(ImplType* Impl, ECrowdyCppTokenPlane Plane, bool bAnonymous = false)
+	{
+		FAuthRetry Retry;
+		if (Impl)
+		{
+			Retry.Send = [Impl](const TSharedRef<FBusyRetry>& Request) { return Impl->SendRetryable(Request); };
+			Retry.Plane = Plane;
+			Retry.bAnonymous = bAnonymous;
+			if (!bAnonymous)
+			{
+				Retry.IssuedBearer = Impl->TokenFor(Plane);
+			}
+		}
+		return Retry;
+	}
+
 	// Shared body for every auth-surface call. The three shapes differ only in which twin is invoked and how its
 	// payload maps to an Unreal result, so both ride in as callables and everything else (exactly-once delivery,
 	// the not-available guard, containing a throw at issue time and again inside the completion) is written once.
 	// PayloadType is the twin's second callback argument: the typed response, or the raw JSON for the untyped ops.
 	template <typename ResultType, typename PayloadType, typename InvokeFn, typename MapFn>
 	FCrowdyCppRequestHandle RunAuthOp(crowdy::CrowdyClient* Client, const TSharedPtr<FRequestRegistry>& Registry,
-		const TCHAR* Label, TFunction<void(ResultType)> OnDone, InvokeFn Invoke, MapFn Map)
+		const TCHAR* Label, TFunction<void(ResultType)> OnDone, InvokeFn Invoke, MapFn Map,
+		FAuthRetry Policy = FAuthRetry())
 	{
 		ResultType Canceled;
 		Canceled.ErrorMessage = FCrowdyCppClient::CanceledErrorMessage();
@@ -1183,6 +1244,30 @@ namespace
 					UE_LOG(LogCrowdyCpp, Warning, TEXT("A %s completion threw while reporting a failure"), Label);
 				}
 			};
+
+		if (Policy.Send)
+		{
+			// The twin hands its payload back beside the outcome, which a re-send queue does not carry, so each send
+			// leaves the payload in a slot the delivery reads.
+			const TSharedRef<FBusyRetry> Retry = MakeBusyRetry(Issued, Policy.Plane, EBusyRetryKind::Idempotent);
+			const TSharedRef<PayloadType> Payload = MakeShared<PayloadType>();
+			Retry->bAnonymous = Policy.bAnonymous;
+			Retry->IssuedBearer = Policy.IssuedBearer;
+			Retry->Send =[Invoke, Payload](crowdy::CrowdyClient& Sending, crowdy::graphql::GraphQLCallback Done)
+			{
+				Invoke(Sending, [Payload, Done = std::move(Done)](crowdy::graphql::GraphQLOutcome Out, PayloadType Value)
+				{
+					*Payload = std::move(Value);
+					Done(std::move(Out));
+				});
+			};
+			Retry->Deliver = [Cb, Payload](crowdy::graphql::GraphQLOutcome Out)
+			{
+				Cb(std::move(Out), *Payload);
+			};
+			Policy.Send(Retry);
+			return Issued.Handle;
+		}
 
 		const CrowdyCppTransport::FHandOffScope HandOff(*Issued.HandOffSeconds);
 		try
@@ -1478,6 +1563,25 @@ namespace
 		return Domain;
 	}
 
+	// Whether a normalised entry is a non-empty run of lower-case letters, digits, dots and hyphens.
+	bool IsPlainDomain(const FString& Domain)
+	{
+		if (Domain.IsEmpty())
+		{
+			return false;
+		}
+		for (const TCHAR Character : Domain)
+		{
+			const bool bPlain = (Character >= TEXT('a') && Character <= TEXT('z'))
+				|| (Character >= TEXT('0') && Character <= TEXT('9')) || Character == TEXT('.') || Character == TEXT('-');
+			if (!bPlain)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
 	// Whether a gateway's host is one of the allowed domains or a subdomain of one.
 	bool IsAllowedGatewayHost(const std::string& GatewayUrl, const TArray<FString>& AllowedDomains)
 	{
@@ -1490,6 +1594,12 @@ namespace
 		for (const FString& Entry : AllowedDomains)
 		{
 			const FString Domain = NormalizeGatewayDomain(Entry);
+			if (!IsPlainDomain(Domain))
+			{
+				UE_LOG(LogCrowdyCpp, Warning,
+					TEXT("The Allowed Exec Gateway Domains entry '%s' is not a domain name (it reads as '%s'), so it can allow nothing."),
+					*Entry, *Domain);
+			}
 			if (!Domain.IsEmpty() && (HostText == Domain || HostText.EndsWith(TEXT(".") + Domain, ESearchCase::CaseSensitive)))
 			{
 				return true;
@@ -1556,7 +1666,13 @@ namespace
 
 bool FCrowdyCppClient::FImpl::SendRetryable(const TSharedRef<FBusyRetry>& Retry)
 {
-	crowdy::CrowdyClient* Raw = Use(Retry->Plane);
+	if (Retry->Refusal.has_value() && !TokenFor(Retry->Plane).Equals(*Retry->IssuedBearer, ESearchCase::CaseSensitive))
+	{
+		Retry->Deliver(std::move(*Retry->Refusal));
+		return false;
+	}
+
+	crowdy::CrowdyClient* Raw = Retry->bAnonymous ? UseBearer(EBearerChoice::None) : Use(Retry->Plane);
 	if (!Raw)
 	{
 		Retry->Deliver(UnsentOutcome("CrowdyCPP client is not available"));
@@ -2338,7 +2454,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::SignInWithPassword(const FString& Emai
 		{
 			Client.auth().loginAsync(EmailStr, PasswordStr, std::move(Cb));
 		},
-		&MapAuthResponse);
+		&MapAuthResponse, MakeAuthRetry(Impl.Get(), ECrowdyCppTokenPlane::Management, true));
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::RegisterWithPassword(const FString& Email, const FString& Password,
@@ -2607,7 +2723,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::MintAppToken(int64 AppId,
 		{
 			Client.portal().mintAppTokenAsync(AppIdStr, std::move(Cb));
 		},
-		&MapAppTokenResponse);
+		&MapAppTokenResponse, MakeAuthRetry(Impl.Get(), ECrowdyCppTokenPlane::Management));
 }
 
 FString FCrowdyCppClient::GetApiEndpoint() const
@@ -2852,7 +2968,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RefreshAppToken(TFunction<void(FCrowdy
 			// the next per-call install overwrites anyway. Which plane the new token belongs to is the owner's call.
 			Client.portal().refreshAsync(std::move(Cb), false);
 		},
-		&MapAppTokenResponse);
+		&MapAppTokenResponse, MakeAuthRetry(Impl.Get(), ECrowdyCppTokenPlane::Game));
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::RefreshAppToken(const FString& CurrentServerIp4,
@@ -2876,7 +2992,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RefreshAppToken(const FString& Current
 			// install=false for the same reason as the no-server form above.
 			Client.portal().refreshAsync(Ip4, CurrentServerClientPort, std::move(Cb), false);
 		},
-		&MapAppTokenResponse);
+		&MapAppTokenResponse, MakeAuthRetry(Impl.Get(), ECrowdyCppTokenPlane::Game));
 }
 
 FCrowdyCppSubscriptionHandle FCrowdyCppClient::Subscribe(const FString& Document,
@@ -3194,6 +3310,23 @@ TSharedPtr<FCrowdyNativeExecConnection> FCrowdyCppClient::CreateExecConnection(i
 		UE_LOG(LogCrowdyCpp, Warning, TEXT("Creating a ck-exec connection threw a non-standard exception"));
 	}
 	return nullptr;
+}
+
+TSharedPtr<FCrowdyNativeKit> FCrowdyCppClient::CreateGameKit(int64 AppId, const FCrowdyNativeExecConnection& Connection, int64 PlayerId)
+{
+	if (!Impl || !Impl->IsUsable())
+	{
+		return nullptr;
+	}
+	TSharedPtr<FCrowdyNativeKit> Kit = CrowdyNativeKit::Make(*Impl->Client, std::to_string(AppId), FCrowdyNativeExecAccess::Connection(Connection),
+		PlayerId > 0 ? std::to_string(PlayerId) : std::string());
+	if (!Kit)
+	{
+		return nullptr;
+	}
+	Impl->GameKits.RemoveAll([](const TWeakPtr<FCrowdyNativeKit>& Weak) { return !Weak.IsValid(); });
+	Impl->GameKits.Add(Kit);
+	return Kit;
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

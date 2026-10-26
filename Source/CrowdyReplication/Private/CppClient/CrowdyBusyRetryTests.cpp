@@ -508,4 +508,162 @@ bool FCrowdyCppBusyRetryDelayTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// A password sign-in refused as busy is sent again with no bearer, however many tokens the client holds.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppBusyRetryLoginRecoversTest,
+	"CrowdySDK.CrowdyCpp.BusyRetry.LoginRecoversAfterBusy", CrowdyBusyRetryTestSupport::BusyRetryTestFlags)
+bool FCrowdyCppBusyRetryLoginRecoversTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyBusyRetryTestSupport;
+
+	int32 Sends = 0;
+	const TSharedPtr<FCrowdyCppClient> Client = MakeClient(Sends);
+	if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
+	{
+		return false;
+	}
+	Client->SetManagementToken(TEXT("session-abc"));
+	Client->SetTestResponseScript({ TPair<int32, FString>(200, BusyBody()),
+		TPair<int32, FString>(200, TEXT("{\"data\":{\"login\":{\"token\":\"session-new\",\"gameTokenId\":\"902\","
+			"\"user\":{\"userId\":\"7781\",\"email\":\"player@example.test\",\"gamertag\":\"Tagged\"}}}}")) });
+
+	int32 Delivered = 0;
+	FCrowdyCppAuthResult Last;
+	Client->SignInWithPassword(TEXT("player@example.test"), TEXT("secret"),
+		[&Delivered, &Last](FCrowdyCppAuthResult Result)
+		{
+			++Delivered;
+			Last = MoveTemp(Result);
+		});
+	PollUntil(Client, [&Delivered] { return Delivered > 0; });
+
+	TestEqual(TEXT("the caller hears once"), Delivered, 1);
+	TestTrue(TEXT("and hears the sign-in"), Last.bOk);
+	TestEqual(TEXT("with the session token"), Last.SessionToken, FString(TEXT("session-new")));
+	TestEqual(TEXT("it was sent twice"), Sends, 2);
+	const FCrowdyCppOpStats Op = FindOpStats(Client, TEXT("login"));
+	TestEqual(TEXT("one request recovered"), Op.RecoveredByRetry, 1);
+
+	FString Url;
+	FString Authorization;
+	if (TestTrue(TEXT("a request reached the transport"), Client->GetLastTestRequest(Url, Authorization)))
+	{
+		TestEqual(TEXT("the re-send carries no bearer"), Authorization, FString());
+	}
+	return true;
+}
+
+// A token mint refused as busy is sent again under the session bearer it needs.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppBusyRetryMintRetriesTest,
+	"CrowdySDK.CrowdyCpp.BusyRetry.MintRetriesUnderManagementBearer", CrowdyBusyRetryTestSupport::BusyRetryTestFlags)
+bool FCrowdyCppBusyRetryMintRetriesTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyBusyRetryTestSupport;
+
+	int32 Sends = 0;
+	const TSharedPtr<FCrowdyCppClient> Client = MakeClient(Sends);
+	if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
+	{
+		return false;
+	}
+	Client->SetManagementToken(TEXT("session-abc"));
+	Client->SetTestResponseScript({ TPair<int32, FString>(200, BusyBody()),
+		TPair<int32, FString>(200, TEXT("{\"data\":{\"mintAppToken\":{\"token\":\"app-xyz\",\"gameTokenId\":\"5150\","
+			"\"appId\":\"31337\",\"expiresAt\":\"2099-01-01T00:00:00Z\",\"gameApiUrl\":\"https://game.test\","
+			"\"gameApiWsUrl\":\"wss://game.test\",\"launchUrl\":\"https://launch.test\"}}}")) });
+
+	int32 Delivered = 0;
+	FCrowdyCppAppTokenResult Last;
+	Client->MintAppToken(31337, [&Delivered, &Last](FCrowdyCppAppTokenResult Result)
+	{
+		++Delivered;
+		Last = MoveTemp(Result);
+	});
+	PollUntil(Client, [&Delivered] { return Delivered > 0; });
+
+	TestEqual(TEXT("the caller hears once"), Delivered, 1);
+	TestTrue(TEXT("and hears the token"), Last.bOk);
+	TestEqual(TEXT("with the app token"), Last.AppToken, FString(TEXT("app-xyz")));
+	TestEqual(TEXT("it was sent twice"), Sends, 2);
+
+	FString Url;
+	FString Authorization;
+	if (TestTrue(TEXT("a request reached the transport"), Client->GetLastTestRequest(Url, Authorization)))
+	{
+		TestEqual(TEXT("the re-send carries the session bearer"), Authorization, FString(TEXT("Bearer session-abc")));
+	}
+	return true;
+}
+
+// A refresh waiting out a busy refusal is not sent again once the game token it was issued under has been replaced:
+// it would rotate whoever holds the new token.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppBusyRetryRefreshDroppedWhenTheTokenChangedTest,
+	"CrowdySDK.CrowdyCpp.BusyRetry.RefreshRetryDroppedWhenTheTokenChanged", CrowdyBusyRetryTestSupport::BusyRetryTestFlags)
+bool FCrowdyCppBusyRetryRefreshDroppedWhenTheTokenChangedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyBusyRetryTestSupport;
+
+	int32 Sends = 0;
+	const TSharedPtr<FCrowdyCppClient> Client = MakeClient(Sends);
+	if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
+	{
+		return false;
+	}
+	Client->SetGameToken(TEXT("game-a"));
+	Client->SetTestResponseScript(Repeat(BusyBody(), 2));
+
+	int32 Delivered = 0;
+	FCrowdyCppAppTokenResult Last;
+	Client->RefreshAppToken([&Delivered, &Last](FCrowdyCppAppTokenResult Result)
+	{
+		++Delivered;
+		Last = MoveTemp(Result);
+	});
+	Client->Poll();
+	if (!TestEqual(TEXT("the refusal is parked for a retry"), Client->NumTestWaitingRetries(), 1))
+	{
+		return false;
+	}
+
+	Client->SetGameToken(TEXT("game-b"));
+	PollUntil(Client, [&Delivered] { return Delivered > 0; });
+
+	TestEqual(TEXT("the caller hears once"), Delivered, 1);
+	TestFalse(TEXT("as a failure"), Last.bOk);
+	TestEqual(TEXT("the refresh was sent once"), Sends, 1);
+	TestEqual(TEXT("nothing waits to retry"), Client->NumTestWaitingRetries(), 0);
+	return true;
+}
+
+// Registering twice could make two accounts, so a busy refusal of it reaches the caller at once.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppBusyRetryRegisterNotRetriedTest,
+	"CrowdySDK.CrowdyCpp.BusyRetry.RegisterNotRetried", CrowdyBusyRetryTestSupport::BusyRetryTestFlags)
+bool FCrowdyCppBusyRetryRegisterNotRetriedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyBusyRetryTestSupport;
+
+	int32 Sends = 0;
+	const TSharedPtr<FCrowdyCppClient> Client = MakeClient(Sends);
+	if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
+	{
+		return false;
+	}
+	Client->SetTestResponseScript(Repeat(BusyBody(), 1));
+
+	int32 Delivered = 0;
+	FCrowdyCppAuthResult Last;
+	Client->RegisterWithPassword(TEXT("player@example.test"), TEXT("secret"), FString(),
+		[&Delivered, &Last](FCrowdyCppAuthResult Result)
+		{
+			++Delivered;
+			Last = MoveTemp(Result);
+		});
+	Client->Poll();
+
+	TestEqual(TEXT("the refusal reaches the caller at once"), Delivered, 1);
+	TestFalse(TEXT("as a failure"), Last.bOk);
+	TestEqual(TEXT("it was sent once"), Sends, 1);
+	TestEqual(TEXT("nothing waits to retry"), Client->NumTestWaitingRetries(), 0);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

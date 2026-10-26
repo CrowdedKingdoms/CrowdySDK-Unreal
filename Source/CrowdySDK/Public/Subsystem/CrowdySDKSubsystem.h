@@ -381,7 +381,14 @@ public:
 	
 	void SendMessage(const ICrowdyMessage& Message) const;
 
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Binds the sign-in forwarding on an authentication subsystem built outside a subsystem collection. */
+	void BindAuthenticationForTest(UCrowdyAuthentication* Auth) { BindAuthentication(Auth); }
+#endif
+
 private:
+
+	void BindAuthentication(UCrowdyAuthentication* Auth);
 
 	/** Kept out of line so the templated overload above does not pull the log category into every consumer. */
 	static void WarnNoRegistry(FName SubscriberName);
@@ -446,6 +453,10 @@ private:
 	 *  the re-minted app token and forwards success on OnLogin. */
 	UFUNCTION()
 	void HandleAuthSessionRestored(FCrowdyAuthResult Result);
+
+	/** Called by UCrowdyAuthentication::OnSessionRestoreFailed to forward failure on OnLogin. */
+	UFUNCTION()
+	void HandleAuthSessionRestoreFailed(FString Message);
 
 	/** Called by UCrowdyAuthentication::OnAppTokenRefreshed after a token rotation
 	 *  re-requests UDP access so the new app token re-assigns the Buddy session. */

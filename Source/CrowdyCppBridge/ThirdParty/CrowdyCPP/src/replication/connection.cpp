@@ -78,6 +78,8 @@ Connection::Stats Connection::stats() const {
 void Connection::setState(ConnState next) {
   const ConnState prev = state_.exchange(next, std::memory_order_acq_rel);
   if (prev == next) return;
+  // A session starts with its assignment: the first connect and each reassignment.
+  if (next == ConnState::Connecting) sessionEpoch_.fetch_add(1, std::memory_order_acq_rel);
   Event e;
   e.kind = Event::Kind::Status;
   e.statusValue = next;
@@ -720,6 +722,12 @@ std::size_t Connection::pump(int timeoutMs) {
 
 Connection::WaitOutcome Connection::waitForSequence(std::uint8_t sequence,
                                                     const core::ActorUuid& uuid, int timeoutMs) {
+  return awaitSequence(sequence, uuid, timeoutMs, /*endOnNewSession=*/false);
+}
+
+Connection::WaitOutcome Connection::awaitSequence(std::uint8_t sequence,
+                                                  const core::ActorUuid& uuid, int timeoutMs,
+                                                  bool endOnNewSession) {
   // Nothing can be echoed that has not left; the wait starts with the wire
   // caught up to the sends made so far.
   (void)flushSends();
@@ -728,21 +736,57 @@ Connection::WaitOutcome Connection::waitForSequence(std::uint8_t sequence,
   pendingWait_.sequence = sequence;
   pendingWait_.uuid = uuid;
 
+  const std::uint64_t epoch = sessionEpoch();
   const std::int64_t deadline = clock_.monotonicMillis() + timeoutMs;
   while (!pendingWait_.done && clock_.monotonicMillis() < deadline) {
     if (config_.manualPump) pump(5);
     if (poll() == 0 && !config_.manualPump) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
+    // A reassignment's session, once connected, will not carry this echo: it
+    // went to the session the connection left.
+    if (endOnNewSession && !pendingWait_.done && sessionEpoch() != epoch &&
+        state() == ConnState::Connected) {
+      pendingWait_.outcome.sessionChanged = true;
+      break;
+    }
   }
   pendingWait_.active = false;
   return pendingWait_.outcome;
 }
 
-Connection::WaitOutcome Connection::sendActorUpdateAndWait(const SpatialSend& p, int timeoutMs) {
-  auto seq = sendActorUpdate(p);
+namespace {
+
+/// How a session's first message fails on a realtime server that does not hold it.
+bool isFirstSendFailure(const Connection::WaitOutcome& outcome, bool echoed) {
+  if (outcome.error) return *outcome.error == wire::ErrorCode::Unauthorized;
+  return echoed && !outcome.acknowledged;
+}
+
+}  // namespace
+
+template <class Send>
+Connection::WaitOutcome Connection::sendAndWait(Send&& send, const core::ActorUuid& uuid,
+                                                int timeoutMs, bool echoed) {
+  const std::uint64_t epoch = sessionEpoch_.load(std::memory_order_acquire);
+  std::uint64_t sentEpoch = epoch;  // the session the answered attempt went to
+  auto seq = send();
   if (!seq.ok()) return WaitOutcome{};
-  return waitForSequence(seq.value(), p.uuid, timeoutMs);
+  WaitOutcome outcome = awaitSequence(seq.value(), uuid, timeoutMs, /*endOnNewSession=*/echoed);
+  if (outcome.sessionChanged ||
+      (epoch != confirmedEpoch_ && isFirstSendFailure(outcome, echoed))) {
+    sentEpoch = sessionEpoch_.load(std::memory_order_acquire);
+    auto retry = send();
+    if (retry.ok()) outcome = awaitSequence(retry.value(), uuid, timeoutMs, false);
+  }
+  // A send the server does not echo succeeds by timing out, and that answers for
+  // the session as well as an echo would.
+  if (outcome.acknowledged || (!echoed && !outcome.error)) confirmedEpoch_ = sentEpoch;
+  return outcome;
+}
+
+Connection::WaitOutcome Connection::sendActorUpdateAndWait(const SpatialSend& p, int timeoutMs) {
+  return sendAndWait([&] { return sendActorUpdate(p); }, p.uuid, timeoutMs, /*echoed=*/true);
 }
 
 Connection::WaitOutcome Connection::sendVoxelUpdateAndWait(const wire::ChunkCoord& chunk,
@@ -752,17 +796,15 @@ Connection::WaitOutcome Connection::sendVoxelUpdateAndWait(const wire::ChunkCoor
                                                            Bytes voxelState,
                                                            std::uint8_t distance,
                                                            wire::DecayRate decay, int timeoutMs) {
-  auto seq = sendVoxelUpdate(chunk, uuid, x, y, z, voxelType, voxelState, distance, decay);
-  if (!seq.ok()) return WaitOutcome{};
-  return waitForSequence(seq.value(), uuid, timeoutMs);
+  return sendAndWait(
+      [&] { return sendVoxelUpdate(chunk, uuid, x, y, z, voxelType, voxelState, distance, decay); },
+      uuid, timeoutMs, /*echoed=*/true);
 }
 
 Connection::WaitOutcome Connection::sendTextAndWait(const SpatialSend& p, int timeoutMs) {
-  auto seq = sendText(p);
-  if (!seq.ok()) return WaitOutcome{};
   // Text has no self-echo: a clean timeout (acknowledged=false, no error)
   // means the send was accepted as far as the wire can tell.
-  return waitForSequence(seq.value(), p.uuid, timeoutMs);
+  return sendAndWait([&] { return sendText(p); }, p.uuid, timeoutMs, /*echoed=*/false);
 }
 
 std::size_t Connection::poll(std::size_t maxEvents) {

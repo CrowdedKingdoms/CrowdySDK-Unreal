@@ -145,6 +145,9 @@ private:
 	/** Whether the type was a Server Function Library when the rows were built, so a change of Kind rebuilds them. */
 	bool bBuiltLibrary = false;
 
+	/** Whether the type was a Game Kit starter when the rows were built. */
+	bool bBuiltKit = false;
+
 	/** The Type Name as stored on the definition, which may differ from what is being typed. */
 	FString StoredTypeName;
 	FString SuggestedTypeName;

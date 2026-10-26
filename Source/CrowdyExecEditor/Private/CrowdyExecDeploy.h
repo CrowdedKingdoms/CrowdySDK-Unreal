@@ -27,13 +27,25 @@ namespace CrowdyExecDeploy
 		ECrateState State = ECrateState::NotGenerated;
 		/** Why it cannot be built, for any state but UpToDate. */
 		FString Problem;
+		/** Its crate is the starter's own Rust, which Generate Server Code never writes. */
+		bool bGameKitStarter = false;
+		/** NotGenerated until the developer chooses or makes the My Own File Logic File, which generating cannot do. */
+		bool bNeedsDeveloper = false;
 	};
+
+	/** True when Generate Server Code would bring the type's crate up to date: it is out of date or has none, and is not a Game Kit starter or waiting on the developer. */
+	inline bool NeedsGenerating(const FTypeState& Type)
+	{
+		return !Type.bGameKitStarter && !Type.bNeedsDeveloper && (Type.State == ECrateState::OutOfDate || Type.State == ECrateState::NotGenerated);
+	}
 
 	struct FProjectDeploy
 	{
 		TArray<FTypeState> Types;
 		TArray<CrowdyExecDeveloper::FBuildCrate> Crates;
 		FString ManifestJson;
+		/** The type the others run under: RootTypeName, or the project's Game Kit root (world), whose crate is one of the project's. */
+		FString Root = RootTypeName;
 		/** Everything that stops a build; empty when the deploy can go ahead. */
 		TArray<FString> Problems;
 		/** What may go wrong after the deploy without stopping it, such as platform data the code uses without asking for it. */
@@ -43,13 +55,34 @@ namespace CrowdyExecDeploy
 	/** Every Server Object definition asset in the project but the SDK's root, loaded, sorted by type name. */
 	TArray<UCrowdyServerObjectDefinition*> FindProjectDefinitions();
 
+	/** The packages other than Ignored (and Definition's own) that reference Definition's package, hard or soft, by the asset registry. */
+	TArray<FName> FindReferencers(const UCrowdyServerObjectDefinition& Definition, const TSet<FName>& Ignored);
+
+	/** Takes out of Referencers, and returns loaded, the redirectors that point at Definition and that nothing else references, so deleting them with it leaves nothing dangling. A redirector something else still uses stays in Referencers and is added to OutUsed. */
+	TArray<UObject*> TakeUnusedRedirectors(const UCrowdyServerObjectDefinition& Definition, TArray<FName>& Referencers, TArray<FName>& OutUsed);
+
+	/** Why the Game Kit settings cannot be saved: ConfigFile, by default the ini that holds them, is read-only, and the engine would keep the change in memory only. Empty when it can be written. */
+	FString FindReadOnlySettingsProblem(const FString& ConfigFile = FString());
+
+	/** FindReadOnlySettingsProblem, only when the Game Kit settings name Asset, so moving or deleting it changes them. */
+	FString FindReadOnlySettingsProblemFor(const FSoftObjectPath& Asset, const FString& ConfigFile = FString());
+
 	/** Where a type's crate is on disk and whether it matches what Generate Server Code would write now. */
 	FTypeState InspectType(const UCrowdyServerObjectDefinition& Definition, const FString& CrateDirectory);
+
+	/** The type Definition runs under: a Game Kit starter's Parent when Definitions has a type of that name, else Root. */
+	FString ParentOf(const UCrowdyServerObjectDefinition& Definition, TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions, const FString& Root);
+
+	/** A Game Kit starter's Config as its manifest seed_b64; empty for an empty Config and for every other type. */
+	FString SeedB64Of(const UCrowdyServerObjectDefinition& Definition);
+
+	/** The Game Kit starter with no Parent, which is the app's root in the SDK's place (world); null when there is none. */
+	const UCrowdyServerObjectDefinition* FindKitRoot(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions);
 
 	/** The crate of the root type, generated from the SDK's Players Online definition and never on disk; no files when that does not load or generate. */
 	CrowdyExecDeveloper::FBuildCrate MakeRootCrate();
 
-	/** The manifest for Definitions under the root: each a hub (or a spoke for a Server Function Library) named by its type, open to players when they can reach it, with its save interval and idle timeout (a library: its replicas, concurrency and max_replicas), the types it Can Call (["*"] for any), its scopes and the server limits it changes. Deterministic. */
+	/** The manifest for Definitions under the root: each a hub (or a spoke for a Server Function Library) named by its type, open to players when they can reach it, with its save interval and idle timeout (a library: its replicas, concurrency and max_replicas), the types it Can Call (["*"] for any), its scopes and the server limits it changes. Deterministic. With a Game Kit root, that starter is the root and the SDK's is left out; a starter runs under its Parent when the project has it and carries its Config as its seed. */
 	FString MakeManifest(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions);
 
 	/** A per-type limit the platform enforces, in manifest units. */
@@ -90,10 +123,22 @@ namespace CrowdyExecDeploy
 	/** A warning for each scope the crate's code calls into without its definition asking for it. A call reached another way, such as through ctx.node or a variable holding ctx.world(), is not seen. */
 	TArray<FString> FindScopeWarnings(const UCrowdyServerObjectDefinition& Definition, const CrowdyExecDeveloper::FBuildCrate& Crate);
 
-	/** Reads every definition's crate from CrateDirectoryFor(definition), adds the root crate and the manifest, and lists every problem and warning. */
+	/** Reads every definition's crate from CrateDirectoryFor(definition), adds the root crate and the manifest, and lists every problem and warning. Any number of crates; a deploy splits them into builds. */
 	FProjectDeploy AssembleProject(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions,
 		TFunctionRef<FString(const UCrowdyServerObjectDefinition&)> CrateDirectoryFor);
 
-	/** The platform's build limits, checked before sending: at most 16 crates, 64 files a crate, 2 MB of source in all. */
+	/** The platform's limits on one crate, checked before sending: 64 files and 2 MB of source, what one build takes. */
 	bool CheckBuildLimits(TConstArrayView<CrowdyExecDeveloper::FBuildCrate> Crates, FString& OutProblem);
+
+	/** Crates in order, split into the builds the platform takes: at most MaxCratesPerBuild (16 at most) and 2 MB of source each. */
+	TArray<TArray<CrowdyExecDeveloper::FBuildCrate>> SplitIntoBuilds(TConstArrayView<CrowdyExecDeveloper::FBuildCrate> Crates, int32 MaxCratesPerBuild = 16);
+
+	/** ManifestJson with each type whose crate Digests has (crate name to digest) named by that module digest instead; empty when it is not a manifest. */
+	FString NameByDigest(const FString& ManifestJson, const TMap<FString, FString>& Digests);
+
+	/** The type name prefix of the stand-ins a staging manifest adds. */
+	inline const TCHAR* const StagingTypePrefix = TEXT("ck_staged_");
+
+	/** A manifest that stores Crates' modules on the platform without changing what runs: the live manifest's types as they are, plus a stand-in hub per crate that players cannot reach and nothing calls (with nothing live, the first is the root). A live seed, which the platform gives back only as seed_bytes, is taken from DeployManifestJson's type of that name at that size. Empty with OutProblem when LiveManifestJson is not a manifest or a live seed cannot be kept. */
+	FString MakeStagingManifest(const FString& LiveManifestJson, const FString& DeployManifestJson, TConstArrayView<CrowdyExecDeveloper::FBuildCrate> Crates, FString& OutProblem);
 }

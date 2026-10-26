@@ -40,7 +40,7 @@ public:
 
 	/** Offers to save unsaved edits, then writes the type's server code. Never replaces the logic file; it can offer to add the functions the file lacks. */
 	void Generate();
-	bool CanGenerate() const { return WriteBlockReason.IsEmpty(); }
+	bool CanGenerate() const { return WriteBlockReason.IsEmpty() && !bKitStarter; }
 	FText GetGenerateToolTip() const;
 	/** Why Save and Generate are off, empty when they are allowed. */
 	const FText& GetWriteBlockReason() const { return WriteBlockReason; }
@@ -232,6 +232,8 @@ private:
 	bool bFileExists = false;
 	bool bFileReadable = false;
 	bool bOwnFile = false;
+	/** A Game Kit starter: its code is the starter's lib.rs, never generated, and Code Source is not a choice. */
+	bool bKitStarter = false;
 	bool bDirty = false;
 	/** Restored unsaved edits whose file changed on disk after they were made. */
 	bool bStale = false;

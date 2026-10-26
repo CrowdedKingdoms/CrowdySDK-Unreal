@@ -87,24 +87,30 @@ void FCrowdyStudioController::Initialize()
 		SelectedAppId = User->LastAppId;
 	}
 
+	RestoreSavedSignIn();
+}
+
+bool FCrowdyStudioController::RestoreSavedSignIn()
+{
 	FString Saved;
 	int32 SavedScope = 0;
 	int64 SavedUserId = 0;
-	if (FCrowdyTokenVault::Load(Saved, SavedScope, SavedUserId) && !Saved.IsEmpty())
+	if (!FCrowdyTokenVault::Load(Saved, SavedScope, SavedUserId) || Saved.IsEmpty())
 	{
-		// A remembered SESSION token is mint-capable, so restore it as session-scoped and run the same
-		// tail as a fresh sign-in - that fetches apps and, via AnnounceAppContext, mints the app token
-		// for the remembered app. Without this the token would be treated as an org token (which cannot
-		// mint), so game-plane authoring would wrongly demand a re-sign-in after every editor launch.
-		if (SavedScope == static_cast<int32>(ECrowdyStudioAuthScope::Session))
-		{
-			FinishSessionSignIn(Saved, SavedUserId, TEXT("Restored signed-in session."));
-		}
-		else
-		{
-			SignInWithToken(Saved);
-		}
+		return false;
 	}
+
+	// A remembered SESSION token is mint-capable, so restore it as session-scoped and run the same
+	// tail as a fresh sign-in - that fetches apps and, via AnnounceAppContext, mints the app token
+	// for the remembered app. Without this the token would be treated as an org token (which cannot
+	// mint), so game-plane authoring would wrongly demand a re-sign-in after every editor launch.
+	if (SavedScope == static_cast<int32>(ECrowdyStudioAuthScope::Session))
+	{
+		FinishSessionSignIn(Saved, SavedUserId, TEXT("Restored signed-in session."));
+		return true;
+	}
+	SignInWithToken(Saved);
+	return true;
 }
 
 
@@ -146,7 +152,10 @@ void FCrowdyStudioController::SignInWithToken(const FString& OrgToken)
 			AuthToken.Empty();
 			AuthScope = ECrowdyStudioAuthScope::None;
 			bSignedIn = false;
-			FCrowdyTokenVault::Clear();
+			if (bLastFailureWasRejection)
+			{
+				FCrowdyTokenVault::Clear();
+			}
 			OnSignInStateChanged.Broadcast();
 		});
 }
@@ -170,6 +179,12 @@ FString FCrowdyStudioController::DescribeApiFailure(const FString& ErrorMessage,
 		return TEXT("Permission denied (HTTP 403). Your account may lack access to this app.");
 	}
 	return ErrorMessage;
+}
+
+bool FCrowdyStudioController::IsCredentialRejection(const FString& ErrorMessage, const FString& ErrorCode)
+{
+	return ErrorCode.Equals(TEXT("UNAUTHENTICATED"), ESearchCase::CaseSensitive)
+		|| ErrorMessage.Contains(TEXT("HTTP 401")) || ErrorMessage.Contains(TEXT("HTTP 403"));
 }
 
 TSharedPtr<FCrowdyCppClient> FCrowdyStudioController::ResolveApiClient(const TCHAR* OperationName)
@@ -1099,27 +1114,39 @@ void FCrowdyStudioController::FetchApp(int64 AppId)
 			}
 
 			OnAppsChanged.Broadcast();
-			FetchAppDiscovery(Detail->AppId);
+			FetchAppDiscovery({ Detail->AppId });
 		});
 }
 
-void FCrowdyStudioController::FetchAppDiscovery(int64 AppId)
+void FCrowdyStudioController::FetchAppDiscovery(const TArray<int64>& AppIds)
 {
+	if (AppIds.IsEmpty())
+	{
+		return;
+	}
+
 	TArray<TSharedPtr<FJsonValue>> Ids;
-	Ids.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%lld"), AppId)));
+	for (const int64 AppId : AppIds)
+	{
+		Ids.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%lld"), AppId)));
+	}
 	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetArrayField(TEXT("appIds"), Ids);
 
 	SendManagement(ECrowdyCppApiDomain::Apps, TEXT("AppDiscovery"), Variables,
-		[this, AppId](const TSharedPtr<FJsonObject>& Envelope)
+		[this, AppIds](const TSharedPtr<FJsonObject>& Envelope)
 		{
+			bool bChanged = false;
 			for (TSharedPtr<FStudioApp>& Existing : Apps)
 			{
-				if (Existing->AppId == AppId && CrowdyStudioGql::ParseAppDiscovery(Envelope, AppId, *Existing))
+				if (AppIds.Contains(Existing->AppId))
 				{
-					OnAppsChanged.Broadcast();
-					return;
+					bChanged |= CrowdyStudioGql::ParseAppDiscovery(Envelope, Existing->AppId, *Existing);
 				}
+			}
+			if (bChanged)
+			{
+				OnAppsChanged.Broadcast();
 			}
 		},
 		TFunction<void()>(), /*bReportErrors*/ false);
@@ -1178,7 +1205,11 @@ void FCrowdyStudioController::SyncConfig()
 		return;
 	}
 
-	FCrowdyConfigSync::ApplyAppToSettings(*App);
+	if (!FCrowdyConfigSync::ApplyAppToSettings(*App))
+	{
+		SetStatus(FCrowdyConfigSync::WriteFailedMessage, true);
+		return;
+	}
 	const int32 LiveSessions = FCrowdyConfigSync::ApplyToRunningSessions();
 
 	SetStatus(LiveSessions > 0
@@ -1773,7 +1804,7 @@ namespace
 	}
 }
 
-void FCrowdyStudioController::CreateGrid(int64 C1X, int64 C1Y, int64 C1Z, int64 C2X, int64 C2Y, int64 C2Z)
+void FCrowdyStudioController::CreateGrid(int64 C1X, int64 C1Y, int64 C1Z, int64 C2X, int64 C2Y, int64 C2Z, TFunction<void(int64)> OnCreated)
 {
 	if (SelectedAppId == 0)
 	{
@@ -1800,13 +1831,17 @@ void FCrowdyStudioController::CreateGrid(int64 C1X, int64 C1Y, int64 C1Z, int64 
 	Variables->SetObjectField(TEXT("input"), Input);
 
 	SendGame(ECrowdyCppApiDomain::GameApps, TEXT("CreateGrid"), Variables,
-		[this](const TSharedPtr<FJsonObject>& Envelope)
+		[this, OnCreated = MoveTemp(OnCreated)](const TSharedPtr<FJsonObject>& Envelope)
 		{
 			FStudioGrid Created;
 			FString GridError;
 			if (CrowdyStudioGql::ParseCreateGrid(Envelope, Created, GridError))
 			{
 				SetStatus(FString::Printf(TEXT("Created grid #%lld."), Created.GridId), false);
+				if (OnCreated)
+				{
+					OnCreated(Created.GridId);
+				}
 			}
 			else
 			{
@@ -2073,6 +2108,15 @@ void FCrowdyStudioController::FetchFeatures()
 		[this]() { ReleaseAccessRead(); });
 }
 
+bool FCrowdyStudioController::IsFeatureKey(const FString& FeatureKey)
+{
+	// The same shape a Server Object function's Required Feature accepts, so every key defined here can be required.
+	return !FeatureKey.IsEmpty() && FeatureKey.Len() <= 64 && Algo::AllOf(FeatureKey, [](TCHAR Char)
+	{
+		return (Char < 128 && FChar::IsAlnum(Char)) || Char == TEXT('_') || Char == TEXT('-') || Char == TEXT('.');
+	});
+}
+
 void FCrowdyStudioController::DefineFeature(const FString& FeatureKey, const FString& Description)
 {
 	if (SelectedAppId == 0 || FeatureKey.IsEmpty())
@@ -2080,12 +2124,7 @@ void FCrowdyStudioController::DefineFeature(const FString& FeatureKey, const FSt
 		SetStatus(TEXT("A feature needs an app and a feature key."), true);
 		return;
 	}
-	// The same shape a Server Object function's Required Feature accepts, so every key defined here can be required.
-	const bool bKeyShape = FeatureKey.Len() <= 64 && Algo::AllOf(FeatureKey, [](TCHAR Char)
-	{
-		return (Char < 128 && FChar::IsAlnum(Char)) || Char == TEXT('_') || Char == TEXT('-') || Char == TEXT('.');
-	});
-	if (!bKeyShape)
+	if (!IsFeatureKey(FeatureKey))
 	{
 		SetStatus(TEXT("A feature key is 1 to 64 letters, digits, underscores, hyphens and dots."), true);
 		return;
@@ -2274,7 +2313,7 @@ void FCrowdyStudioController::SelectOrg(int64 OrgId)
 	PersistSelection();
 }
 
-void FCrowdyStudioController::SelectApp(int64 AppId)
+void FCrowdyStudioController::SelectApp(int64 AppId, bool bPersist)
 {
 	SelectedAppId = AppId;
 
@@ -2283,7 +2322,10 @@ void FCrowdyStudioController::SelectApp(int64 AppId)
 	{
 		SelectedOrgId = App->OrgId;
 	}
-	PersistSelection();
+	if (bPersist)
+	{
+		PersistSelection();
+	}
 
 	// A new app invalidates the previous app's game token and endpoint; AnnounceAppContext re-mints.
 	ClearAppToken();
@@ -2385,6 +2427,7 @@ void FCrowdyStudioController::IssueOperation(ECrowdyCppApiDomain Domain, const T
 		}
 		// Not a cancellation: the client simply couldn't be built.
 		bLastFailureWasCanceled = false;
+		bLastFailureWasRejection = false;
 		if (OnFailure)
 		{
 			OnFailure();
@@ -2424,6 +2467,7 @@ void FCrowdyStudioController::IssueOperation(ECrowdyCppApiDomain Domain, const T
 					Self->SetStatus(Error, true);
 				}
 				Self->bLastFailureWasCanceled = bWasCanceled;
+				Self->bLastFailureWasRejection = IsCredentialRejection(Result.ErrorMessage, Result.ErrorCode);
 				if (OnFailure)
 				{
 					OnFailure();

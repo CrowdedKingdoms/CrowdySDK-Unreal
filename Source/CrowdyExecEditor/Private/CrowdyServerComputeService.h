@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
+#include "CrowdyExecBuildAndDeploy.h"
 #include "CrowdyExecDeploy.h"
 #include "CrowdyExecDeveloperApi.h"
 #include "CrowdyExecRevisions.h"
@@ -14,6 +15,32 @@ namespace CrowdyServerComputeMove
 	/** The types in ChangedTypes with an instance running in After that was already placed in Before (the same node type, key and epoch), so it runs the version before a deploy; a placement since has a higher epoch. OutRunning counts those instances. */
 	TArray<FString> TypesOnPreviousVersion(TConstArrayView<CrowdyExecDeveloper::FInstance> Before, TConstArrayView<CrowdyExecDeveloper::FInstance> After,
 		TConstArrayView<FString> ChangedTypes, int32& OutRunning);
+
+	/** Without a record from before a deploy: the types with a running instance whose code differs from the active version's (new, or other code, save interval or idle timeout; no digest counts as different). An instance's code is that of the newest earlier version created by the time it started, and an instance started within a minute after the active version was created counts as older, since the creation time is the server's clock. OutRunning counts the instances that differ. False with OutProblem when a manifest or creation time cannot be read, or when the active version is not the newest, since a rollback leaves no way to tell which instances run older code. */
+	bool FindTypesOnEarlierVersion(TConstArrayView<CrowdyExecDeveloper::FVersion> Versions, TConstArrayView<CrowdyExecDeveloper::FInstance> Instances, const FDateTime& Now,
+		TArray<FString>& OutTypes, int32& OutRunning, FString& OutProblem);
+
+	/** What the restart of TypeNames stops: every running or starting instance of those types, in the order of the types, those already on the active version included. */
+	TArray<CrowdyExecDeveloper::FInstance> FindInstancesToStop(TConstArrayView<CrowdyExecDeveloper::FInstance> Instances, TConstArrayView<FString> TypeNames);
+
+	/** One line each for Stopping, with its Instance Id, phase and age, under a count; what a restart without -yes says before it stops anything. */
+	FString DescribeInstancesToStop(TConstArrayView<CrowdyExecDeveloper::FInstance> Stopping);
+
+	/** The step line before types are moved: how many instances, of which types, and that those started near the deploy are moved too. */
+	FString DescribeMove(TConstArrayView<FString> Types, int32 Running);
+
+	struct FRestarted
+	{
+		/** The platform's answer for each type it restarted. */
+		TArray<CrowdyExecDeveloper::FRestart> Done;
+		/** "type: why" for each type it refused. */
+		TArray<FString> Failed;
+		/** The platform's error code of the first refusal; empty when it gave none. */
+		FString FailedCode;
+	};
+
+	/** Moves each of TypeNames' running instances to the active version, one request each, and calls OnDone once when every answer is in. */
+	void RestartTypes(CrowdyExecDeveloper::FClient& Client, TArray<FString> TypeNames, TFunction<void(const FRestarted&)> OnDone);
 }
 
 /** The editor's one link to Server Compute, shared by the Server Compute page and every definition asset: the app's live status and versions, what changed since, and deploys. */
@@ -79,8 +106,10 @@ public:
 
 	/** True when every type is ready and a deploy would change what runs (or what runs is not known). */
 	bool CanDeploy() const;
-	/** Asks first, naming what it adds, changes and removes, then builds and deploys every type and records their revisions. False when it did not start. */
-	bool Deploy();
+	/** True when the types are ready, even when nothing changed: a rebuild still gives unchanged types the platform's current SDK and toolchain. */
+	bool CanRebuildAll() const;
+	/** Asks first, naming what it adds, changes and removes, then builds and deploys every type and records their revisions. With bRebuildAll no type's earlier build is reused. False when it did not start. */
+	bool Deploy(bool bRebuildAll = false);
 	/** Asks first, naming the types the active version runs, then deploys the platform's example types in place of it. */
 	bool DeployStarters();
 	/** A deploy, or another change to the live app, is under way. */
@@ -116,8 +145,10 @@ private:
 	void RefreshStatus();
 	void RefreshVersions();
 	void Recompare();
-	void StartBuild(const TArray<CrowdyExecDeveloper::FBuildCrate>& Crates, const FString& ManifestJson, bool bRecord);
-	void OnBuildFinished(const CrowdyExecDeveloper::TResult<CrowdyExecDeveloper::FBuild>& Result, const FString& ManifestJson, bool bRecord);
+	/** The active version as last read (Version 0: nothing live); unset when the versions or its manifest are not known. */
+	TOptional<CrowdyExecBuildAndDeploy::FLive> GetLive() const;
+	/** Starts Plan; false with the reason on the deploy line when it cannot be deployed over what is live (CrowdyExecBuildAndDeploy::FindPlanProblem). */
+	bool StartDeploy(CrowdyExecBuildAndDeploy::FPlan Plan, const FString& ManifestJson, bool bRecord);
 	/** The instances read as a deploy is sent; the move offer after the deploy waits for its answer. */
 	struct FDeploySnapshot
 	{
@@ -127,7 +158,7 @@ private:
 		TFunction<void()> OnAnswered;
 	};
 
-	void OnDeployed(const CrowdyExecDeveloper::TResult<int32>& Deployed, const TArray<CrowdyExecDeveloper::FBuildArtifact>& Artifacts, bool bRecord, TSharedRef<FDeploySnapshot> Before);
+	void OnDeployDone(const CrowdyExecBuildAndDeploy::FOutcome& Outcome, bool bRecord, TSharedRef<FDeploySnapshot> Before);
 	void SetDeployMessage(const FText& Message, const FLinearColor& Color, bool bCountSeconds = false);
 	void FinishDeploy(const FText& Message, const FLinearColor& Color);
 	FText GetReadinessHint() const;

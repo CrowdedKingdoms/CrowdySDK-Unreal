@@ -5,6 +5,7 @@
 #include "CrowdyServerObjectDefinition.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"
@@ -210,6 +211,14 @@ namespace CrowdyExecRevisionsDetail
 		{
 			OutWhat.Add(TEXT("player access"));
 		}
+		// The platform's versions give a live seed only as its size, seed_bytes.
+		const FString Seed = CrowdyExecDeploy::SeedB64Of(*Definition);
+		const bool bSeedDiffers = Live.SeedB64.IsEmpty() ? static_cast<int64>(FBase64::GetDecodedDataSize(Seed)) != Live.Numbers.FindRef(TEXT("seed_bytes"))
+			: !Seed.Equals(Live.SeedB64, ESearchCase::CaseSensitive);
+		if (bSeedDiffers)
+		{
+			OutWhat.Add(TEXT("config"));
+		}
 		for (const CrowdyExecDeploy::FServerLimit& Limit : CrowdyExecDeploy::LimitsOf(*Definition))
 		{
 			const int64* LiveValue = Live.Numbers.Find(Limit.Field);
@@ -222,8 +231,10 @@ namespace CrowdyExecRevisionsDetail
 		}
 	}
 
+	/** Parent is the type it runs under in this deploy, empty for the root. */
 	CrowdyExecRevisions::EChange CompareType(const CrowdyExecDeploy::FTypeState& Type, const CrowdyExecDeveloper::FBuildCrate* Crate, const UCrowdyServerObjectDefinition* Definition,
-		TConstArrayView<CrowdyExecRevisions::FLiveType> LiveTypes, TFunctionRef<TArray<FRevision>(const FString& TypeName)> HistoryFor, CrowdyExecRevisions::FTypeChange& Change)
+		const FString& Parent, TConstArrayView<CrowdyExecRevisions::FLiveType> LiveTypes, TFunctionRef<TArray<FRevision>(const FString& TypeName)> HistoryFor,
+		CrowdyExecRevisions::FTypeChange& Change)
 	{
 		using CrowdyExecRevisions::EChange;
 		if (Type.State != CrowdyExecDeploy::ECrateState::UpToDate || !Crate)
@@ -238,6 +249,11 @@ namespace CrowdyExecRevisionsDetail
 		const TArray<FRevision> History = HistoryFor(Type.TypeName);
 		Change.LiveRevision = FindRevisionWithDigest(History, Live->Digest);
 		AddSettingChanges(Definition, *Live, Change);
+		// A manifest that names no parent does not say, as for the settings above.
+		if (!Live->Parent.IsEmpty() && !IsSameText(Live->Parent, Parent))
+		{
+			Change.What.Add(TEXT("parent"));
+		}
 		if (Change.LiveRevision == INDEX_NONE)
 		{
 			return EChange::Unknown;
@@ -521,6 +537,8 @@ bool CrowdyExecRevisions::ParseManifest(const FString& ManifestJson, TArray<FLiv
 		Live.IdleTimeoutMs = ReadMs(**Type, TEXT("evict_after_ms"));
 		(*Type)->TryGetBoolField(TEXT("client"), Live.bClient);
 		(*Type)->TryGetStringArrayField(TEXT("scopes"), Live.Scopes);
+		(*Type)->TryGetStringField(TEXT("seed_b64"), Live.SeedB64);
+		(*Type)->TryGetStringField(TEXT("parent"), Live.Parent);
 		Algo::Sort(Live.Scopes);
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : (*Type)->Values)
 		{
@@ -533,6 +551,37 @@ bool CrowdyExecRevisions::ParseManifest(const FString& ManifestJson, TArray<FLiv
 	}
 	Algo::Sort(OutTypes, [](const FLiveType& A, const FLiveType& B) { return A.TypeName.Compare(B.TypeName, ESearchCase::CaseSensitive) < 0; });
 	return true;
+}
+
+TSet<FString> CrowdyExecRevisions::UploadedDigests(TConstArrayView<CrowdyExecDeveloper::FVersion> Versions)
+{
+	TSet<FString> Digests;
+	TArray<FLiveType> Types;
+	for (const CrowdyExecDeveloper::FVersion& Version : Versions)
+	{
+		ParseManifest(Version.ManifestJson, Types);
+		for (const FLiveType& Type : Types)
+		{
+			if (!Type.Digest.IsEmpty())
+			{
+				Digests.Add(Type.Digest);
+			}
+		}
+	}
+	return Digests;
+}
+
+FString CrowdyExecRevisions::FindUploadedDigest(TConstArrayView<FRevision> History, const CrowdyExecDeveloper::FBuildCrate& Crate, const TSet<FString>& Uploaded)
+{
+	using namespace CrowdyExecRevisionsDetail;
+	const FString Print = Fingerprint(Crate.Files);
+	const FRevision* Revision = History.FindByPredicate([&Print](const FRevision& Candidate) { return IsSameText(Candidate.Fingerprint, Print); });
+	if (!Revision)
+	{
+		return FString();
+	}
+	const FString* Digest = Revision->Digests.FindByPredicate([&Uploaded](const FString& Candidate) { return Uploaded.Contains(Candidate); });
+	return Digest ? *Digest : FString();
 }
 
 TArray<CrowdyExecRevisions::FTypeChange> CrowdyExecRevisions::Compare(const CrowdyExecDeploy::FProjectDeploy& Project, TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions,
@@ -563,9 +612,13 @@ TArray<CrowdyExecRevisions::FTypeChange> CrowdyExecRevisions::Compare(const Crow
 		{
 			return Candidate && IsSameText(Candidate->TypeName, Type.TypeName);
 		});
-		Change.Change = CompareType(Type, Crate, Definition ? *Definition : nullptr, LiveTypes, HistoryFor, Change);
+		const bool bRoot = IsSameText(Type.TypeName, Project.Root);
+		const FString Parent = bRoot ? FString() : Definition ? CrowdyExecDeploy::ParentOf(**Definition, Definitions, Project.Root) : Project.Root;
+		Change.Change = CompareType(Type, Crate, Definition ? *Definition : nullptr, Parent, LiveTypes, HistoryFor, Change);
 	}
-	if (bLiveKnown && bReadable)
+	// With a Game Kit root the SDK's root is not sent, so a live one is listed as removed below.
+	const bool bSdkRoot = IsSameText(Project.Root, CrowdyExecDeploy::RootTypeName);
+	if (bLiveKnown && bReadable && bSdkRoot)
 	{
 		AddRootChange(Project, FindLiveType(LiveTypes, CrowdyExecDeploy::RootTypeName), LiveVersion, HistoryFor, Changes);
 	}
@@ -580,7 +633,7 @@ TArray<CrowdyExecRevisions::FTypeChange> CrowdyExecRevisions::Compare(const Crow
 	for (const FLiveType& LiveType : LiveTypes)
 	{
 		const bool bInProject = Project.Types.ContainsByPredicate([&LiveType](const CrowdyExecDeploy::FTypeState& Type) { return IsSameText(Type.TypeName, LiveType.TypeName); });
-		if (bInProject || IsSameText(LiveType.TypeName, CrowdyExecDeploy::RootTypeName))
+		if (bInProject || (bSdkRoot && IsSameText(LiveType.TypeName, CrowdyExecDeploy::RootTypeName)))
 		{
 			continue;
 		}

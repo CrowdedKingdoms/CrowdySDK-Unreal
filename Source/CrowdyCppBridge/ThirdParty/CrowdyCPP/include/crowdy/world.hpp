@@ -35,7 +35,7 @@ class ActorClient {
     return conn_->sendActorUpdate({chunk_, uuid_, state, distance, decay});
   }
 
-  /// Proximity text to everyone nearby.
+  /// Proximity text to everyone nearby (needs use_text_chat; Unauthorized otherwise).
   Result<std::uint8_t> sendText(std::string_view text, std::uint8_t distance = 8) {
     return conn_->sendText({chunk_, uuid_, asBytes(text), distance, wire::DecayRate::None});
   }
@@ -48,7 +48,7 @@ class ActorClient {
 
   /// Direct message to one other actor (you supply its uuid + current chunk;
   /// fire-and-forget, no echo — embed your identity in the payload if the
-  /// recipient needs it).
+  /// recipient needs it). Needs use_direct_messages; Unauthorized otherwise.
   Result<std::uint8_t> sendToActor(const core::ActorUuid& targetUuid,
                                    const wire::ChunkCoord& targetChunk, Bytes payload) {
     return conn_->sendSingleActorMessage(targetChunk, targetUuid, payload);

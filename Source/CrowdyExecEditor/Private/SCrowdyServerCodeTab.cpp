@@ -111,7 +111,15 @@ namespace SCrowdyServerCodeTabDetail
 
 	FText SourceLabel(ECrowdyServerCodeSource Source)
 	{
-		return Source == ECrowdyServerCodeSource::OwnFile ? LOCTEXT("SourceOwnFile", "My Own File") : LOCTEXT("SourceGenerated", "Generated");
+		switch (Source)
+		{
+		case ECrowdyServerCodeSource::OwnFile:
+			return LOCTEXT("SourceOwnFile", "My Own File");
+		case ECrowdyServerCodeSource::GameKitStarter:
+			return LOCTEXT("SourceGameKitStarter", "Game Kit Starter");
+		default:
+			return LOCTEXT("SourceGenerated", "Generated");
+		}
 	}
 
 	int32 CountLines(const FString& Text)
@@ -351,7 +359,12 @@ TSharedRef<SWidget> SCrowdyServerCodeTab::MakeHeader()
 				.OptionsSource(&SourceItems)
 				.OnGenerateWidget(this, &SCrowdyServerCodeTab::MakeSourceRow)
 				.OnSelectionChanged(this, &SCrowdyServerCodeTab::HandleSourcePicked)
-				.ToolTipText(LOCTEXT("SourceToolTip", "Where this type's Server Functions come from: the logic.rs Generate writes once and never replaces, or a .rs file of your own"))
+				.IsEnabled_Lambda([this]() { return !bKitStarter; })
+				.ToolTipText_Lambda([this]()
+				{
+					return bKitStarter ? LOCTEXT("SourceKitToolTip", "A Game Kit starter's Server Functions are its own Rust, src/lib.rs, which Add starter in Server Compute copied")
+						: LOCTEXT("SourceToolTip", "Where this type's Server Functions come from: the logic.rs Generate writes once and never replaces, or a .rs file of your own");
+				})
 				[
 					SNew(STextBlock)
 					.Text(this, &SCrowdyServerCodeTab::GetSourceText)
@@ -735,6 +748,7 @@ void SCrowdyServerCodeTab::HandleDefinitionChanged()
 	if (LogicPathOf(*Current).Equals(LoadedPath, ESearchCase::CaseSensitive))
 	{
 		bOwnFile = CrowdyExecCodegen::HasOwnLogicFile(*Current);
+		bKitStarter = Current->IsGameKitStarter();
 		RefreshState();
 		RefreshExpected();
 		return;
@@ -789,6 +803,10 @@ void SCrowdyServerCodeTab::Generate()
 
 FText SCrowdyServerCodeTab::GetGenerateToolTip() const
 {
+	if (bKitStarter)
+	{
+		return LOCTEXT("GenerateKitToolTip", "A Game Kit starter's server code is its own Rust, which Generate never writes; edit src/lib.rs here");
+	}
 	return WriteBlockReason.IsEmpty() ? LOCTEXT("GenerateToolTip", "Writes this type's server code under Server/<Type Name>; your logic file is never replaced, but Generate can offer to add the functions it lacks") : WriteBlockReason;
 }
 
@@ -875,6 +893,7 @@ void SCrowdyServerCodeTab::RefreshCached()
 	bTypeNameValid = CrowdyServerCodeFiles::IsValidTypeName(CachedTypeName);
 	bSharedTypeName = IsTypeNameShared();
 	bOwnFile = CrowdyExecCodegen::HasOwnLogicFile(*Current);
+	bKitStarter = Current->IsGameKitStarter();
 	// Kept in step with the definition, so picking the other source after an undo still counts as a change.
 	if (SourceCombo.IsValid())
 	{
@@ -1013,6 +1032,7 @@ void SCrowdyServerCodeTab::Reload()
 		return;
 	}
 	bOwnFile = CrowdyExecCodegen::HasOwnLogicFile(*Current);
+	bKitStarter = Current->IsGameKitStarter();
 	LoadedPath = LogicPathOf(*Current);
 	ShownPath = ShownPathOf(LoadedPath);
 	const CrowdyServerCodeFiles::FDiskText OnDisk = LoadedPath.IsEmpty() ? CrowdyServerCodeFiles::FDiskText() : CrowdyServerCodeFiles::Read(LoadedPath);
@@ -1530,7 +1550,7 @@ FText SCrowdyServerCodeTab::GetCompareText() const
 
 FText SCrowdyServerCodeTab::GetSourceText() const
 {
-	return SCrowdyServerCodeTabDetail::SourceLabel(bOwnFile ? ECrowdyServerCodeSource::OwnFile : ECrowdyServerCodeSource::Generated);
+	return SCrowdyServerCodeTabDetail::SourceLabel(bKitStarter ? ECrowdyServerCodeSource::GameKitStarter : bOwnFile ? ECrowdyServerCodeSource::OwnFile : ECrowdyServerCodeSource::Generated);
 }
 
 int32 SCrowdyServerCodeTab::GetCodeViewIndex() const

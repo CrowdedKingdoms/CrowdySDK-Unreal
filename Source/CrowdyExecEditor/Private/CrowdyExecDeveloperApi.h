@@ -141,6 +141,9 @@ namespace CrowdyExecDeveloper
 		/** Deployable as it is, together with the build of every starter's crate. */
 		FString ManifestJson;
 		TArray<FStarter> Starters;
+
+		/** Each crate once, in the starters' order: a crate that serves two node types, such as racing for race and ball, is listed by both. */
+		TArray<FBuildCrate> GetCrates() const;
 	};
 
 	struct FError
@@ -179,7 +182,7 @@ namespace CrowdyExecDeveloper
 		void WaitForBuild(const FString& BuildId, TFunction<void(const TResult<FBuild>&)> OnDone,
 			TFunction<void(const FBuild&)> OnProgress = nullptr, float PollSeconds = 3.f, float TimeoutSeconds = 600.f);
 
-		/** Makes ManifestJson, naming crates of the build BuildId, the app's active version. Answers the new version number. */
+		/** Makes ManifestJson, naming crates of the build BuildId and modules the app holds by digest, the app's active version; an empty BuildId sends none. Answers the new version number. */
 		void Deploy(const FString& ManifestJson, const FString& BuildId, TFunction<void(const TResult<int32>&)> OnDone);
 		void Versions(TFunction<void(const TResult<TArray<FVersion>>&)> OnDone);
 		void ActivateVersion(int32 Version, TFunction<void(const TResult<FAppStatus>&)> OnDone);

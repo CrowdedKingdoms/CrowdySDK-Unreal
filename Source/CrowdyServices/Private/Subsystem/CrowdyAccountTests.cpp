@@ -8,6 +8,7 @@
 #include "Misc/AutomationTest.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Subsystem/AsyncActions/CrowdyAccountActions.h"
 #include "Subsystem/CrowdyAuthentication.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Subsystem/CrowdyPlayers.h"
@@ -283,6 +284,43 @@ bool FCrowdyAccountWrongPasswordTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAccountPasswordIsClearedAfterSendTest, "CrowdySDK.Account.PasswordIsClearedAfterSend",
+	AccountTestFlags)
+
+bool FCrowdyAccountPasswordIsClearedAfterSendTest::RunTest(const FString& Parameters)
+{
+	FAccountRig Rig(TEXT("{\"data\":{\"changePassword\":true}}"));
+	if (!TestTrue(TEXT("the test client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, FString(TEXT("{\"data\":{\"changePassword\":true}}")));
+	Script.Emplace(200, FString(TEXT("{\"data\":{\"setInitialPassword\":true}}")));
+	Rig.Client->SetTestResponseScript(MoveTemp(Script));
+
+	const TStrongObjectPtr<UCrowdyAccount_ChangePassword> Change(NewObject<UCrowdyAccount_ChangePassword>());
+	Change->CurrentPassword = TEXT("current-pw-1");
+	Change->NewPassword = TEXT("changed-pw-2");
+	Change->Send(*Rig.Auth, Rig.Done(), Rig.Failed());
+	Rig.Drain();
+
+	TestTrue(TEXT("the change carried the new password"), Rig.LastBody().Contains(TEXT("changed-pw-2")));
+	TestTrue(TEXT("the current password is gone"), Change->CurrentPassword.IsEmpty());
+	TestTrue(TEXT("and the new one"), Change->NewPassword.IsEmpty());
+
+	const TStrongObjectPtr<UCrowdyAccount_AddPassword> Add(NewObject<UCrowdyAccount_AddPassword>());
+	Add->NewPassword = TEXT("added-pw-3");
+	Add->Send(*Rig.Auth, Rig.Done(), Rig.Failed());
+	Rig.Drain();
+
+	TestTrue(TEXT("the add carried the password"), Rig.LastBody().Contains(TEXT("added-pw-3")));
+	TestTrue(TEXT("and it is gone from the action"), Add->NewPassword.IsEmpty());
+	TestEqual(TEXT("both calls were answered"), Rig.Listener->Dones, 2);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAccountNoSessionSendsNothingTest, "CrowdySDK.Account.NoSessionSendsNothing",
 	AccountTestFlags)
 
@@ -385,6 +423,38 @@ bool FCrowdyAccountClaimRefusedByRevokeTest::RunTest(const FString& Parameters)
 
 	TestEqual(TEXT("it failed"), Rig.AuthListener->FlowErrors.Num(), 1);
 	TestEqual(TEXT("without signing in"), Rig.AuthListener->Logins, 0);
+	TestTrue(TEXT("and no token was minted"), Rig.Session->GetGameToken().IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAccountClaimAnsweringAfterLogoutIsDroppedTest,
+	"CrowdySDK.Account.ClaimAnsweringAfterLogoutIsDropped", AccountTestFlags)
+
+bool FCrowdyAccountClaimAnsweringAfterLogoutIsDroppedTest::RunTest(const FString& Parameters)
+{
+	FAccountRig Rig(AccountMintAnswer);
+	if (!TestTrue(TEXT("the test client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	// Logout deletes the saved session, so this instance gets a vault and a slot of its own.
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-stale-claim"));
+	Rig.Session->SetGameToken(FString());
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, AccessRowAnswer(TEXT("claimFreeAppAccess"), TEXT("active")));
+	Rig.Client->SetTestResponseScript(MoveTemp(Script));
+
+	FOnAuthSuccess OnSuccess;
+	OnSuccess.BindDynamic(Rig.AuthListener.Get(), &UCrowdyAuthTestListener::HandleFlowSuccess);
+	FOnAuthError OnError;
+	OnError.BindDynamic(Rig.AuthListener.Get(), &UCrowdyAuthTestListener::HandleFlowError);
+	Rig.Auth->ClaimFreeAccess(OnSuccess, OnError);
+	Rig.Auth->ClearSavedSession();
+	Rig.Drain();
+
+	TestEqual(TEXT("the claim does not succeed"), Rig.AuthListener->FlowSuccesses, 0);
+	TestEqual(TEXT("nor sign in"), Rig.AuthListener->Logins, 0);
+	TestEqual(TEXT("it fails once instead"), Rig.AuthListener->FlowErrors.Num(), 1);
 	TestTrue(TEXT("and no token was minted"), Rig.Session->GetGameToken().IsEmpty());
 	return true;
 }

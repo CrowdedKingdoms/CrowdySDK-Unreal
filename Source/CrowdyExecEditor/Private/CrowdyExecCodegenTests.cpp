@@ -1834,6 +1834,22 @@ bool FCrowdyExecCodegenNoMessagesTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenMessageNameEscapedTest, "CrowdySDK.CrowdyExecEditor.CodegenMessageNameCannotBreakOutOfItsComment", CrowdyCodegenTest::TestFlags)
+bool FCrowdyExecCodegenMessageNameEscapedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCodegenTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Sender = MakeSenderOf(TEXT("ck_exec_evil_name"), {TEXT("Evil\npub fn injected() {}")});
+	Sender->Messages[0].ServerName = TEXT("evil");
+	FString Lib;
+	if (!GenerateLib(*this, *Sender, Lib))
+	{
+		return false;
+	}
+	TestFalse(TEXT("a newline in a message name does not start a line of Rust"), HasText(Lib, TEXT("\npub fn injected() {}")));
+	TestTrue(TEXT("the name is written escaped inside its doc comment"), HasText(Lib, TEXT("    /// Evil\\u{A}pub fn injected() {}: sent to everyone listening")));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecCodegenListenCrateTest, "CrowdySDK.CrowdyExecEditor.CodegenListenMatchesLocalCheckCrate", CrowdyCodegenTest::TestFlags)
 bool FCrowdyExecCodegenListenCrateTest::RunTest(const FString& Parameters)
 {
@@ -2687,7 +2703,7 @@ bool FCrowdyExecCodegenLibraryCrateTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a Server Only function is refused to players"),
 		HasText(Lib, TEXT("            \"ping\" => {\n                authorize(ctx, &call, false)?;\n                Functions::ping(&mut Library, ctx, &call).map(|()| vec![0xc0])\n            }\n")));
 	TestTrue(TEXT("the trait asks for the two functions only"), HasText(Lib, TEXT("pub trait Functions {\n    fn add(&mut self, ctx: &Ctx, call: &Call<'_>, params: AddParams) -> Result<AddReply>;\n    fn ping(&mut self, ctx: &Ctx, call: &Call<'_>) -> Result<()>;\n}\n")));
-	TestTrue(TEXT("the Cargo pin is the platform's"), HasText(Cargo, TEXT("ckx-sdk = \"0.7.0\"\n")));
+	TestTrue(TEXT("the Cargo pin is the platform's"), HasText(Cargo, *FString::Printf(TEXT("ckx-sdk = \"%s\"\n"), CrowdyExecCodegen::CkxSdkVersion)));
 	TestEqual(TEXT("logic.rs has the two functions and nothing else"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Missing.Num(), 0);
 	TestEqual(TEXT("with no leftover"), CrowdyExecCodegen::FindLogicGaps(Crate, Logic).Leftover.Num(), 0);
 	TestEqual(TEXT("and the stubs ask for the two"), Crate.Stubs.Num(), 2);

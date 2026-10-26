@@ -5,6 +5,7 @@
 #include "CrowdyExecDeveloperApi.h"
 #include "CrowdyExecRevisions.h"
 #include "UI/CrowdyStudioWidgets.h"
+#include "UObject/SoftObjectPath.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -22,11 +23,39 @@ namespace CrowdyServerComputePage
 	/** Why removing a type must leave its crate folder, or empty when the folder may be deleted: it must exist, be the type's own (valid Type Name, not shared) directly inside ServerDirectory, and hold no link. */
 	FText WhyCrateFolderStays(const FString& TypeName, const FString& CrateDirectory, const FString& ServerDirectory, bool bSharedTypeName);
 
+	struct FRemovalEffects
+	{
+		/** The type was named by the Game Kit World or Game Kit Actor Starters setting, which no longer names it. */
+		bool bSettingsCleared = false;
+		/** False when those settings changed but the project's config file could not be written, so it still names the type. */
+		bool bSettingsSaved = true;
+		/** Why the Server Code folder is still there or could not be deleted; empty when it was deleted or never existed. */
+		FText FolderProblem;
+	};
+
+	/** What follows deleting a type's definition asset, whether from the page or from -op=removetype: takes the asset out of the Game Kit World and Game Kit Actor Starters settings (saving the project's config unless bSaveSettings is false), then deletes the type's Server Code folder when bDeleteFolder is, which the caller sets from WhyCrateFolderStays being empty. Type and ShownFolder are for the messages. */
+	FRemovalEffects FinishRemoval(const FText& Type, const FString& TypeName, const FSoftObjectPath& Asset, const FString& CrateDirectory, const FString& ServerDirectory,
+		bool bSharedTypeName, const FString& ShownFolder, bool bDeleteFolder, bool bSaveSettings = true);
+
+	/** The Activity tab's windows, in minutes as the stats query takes them. */
+	inline const TCHAR* const WindowHour = TEXT("60");
+	inline const TCHAR* const WindowDay = TEXT("1440");
+	inline const TCHAR* const WindowWeek = TEXT("10080");
+
+	/** The Activity window named hour, day or week, as the tab stores it; empty for any other name. */
+	FString FindActivityWindow(const FString& Name);
+
+	/** The most verbose level the Logs tab's filter shows (0 error, 1 warning, 2 info), -1 for the filter all, which sets no limit. False, with OutMaxLevel -1, for a name that is not one of all, info, warnings or errors. */
+	bool FindLogMaxLevel(const FString& Filter, int32& OutMaxLevel);
+
 	/** Who can read an instance, as a type row says it for the definition's Readable By. */
 	FText ReadableByPhrase(ECrowdyServerObjectVisibility Visibility);
 
 	/** How many instances a Server Function Library runs, as a type row says it: 1 to 4 instances, or 4 instances when the two are equal. */
 	FText InstancesPhrase(int32 MinInstances, int32 MaxInstances);
+
+	/** How many variables every player who reads the type receives, as a type row counts them: a Game Kit starter sends its whole State but its Owner Values, which only their own player reads. */
+	int32 CountVisibleVariables(const UCrowdyServerObjectDefinition& Definition);
 
 	struct FChangeBadge
 	{
@@ -87,6 +116,8 @@ private:
 	void FillTypeDetail();
 	/** How many types the next deploy adds, changes or removes. */
 	int32 CountPendingTypes() const;
+	/** How many types Generate would write: out of date, or with no server code yet. */
+	int32 CountToGenerate() const;
 	/** Running or Switched off, with its switch, for a type the live version runs; nothing otherwise. */
 	TSharedRef<SWidget> MakeRunningSwitch(const FString& TypeName);
 	TSharedRef<SWidget> MakeTypeMenu(const FString& TypeName, const FString& AssetPath);
@@ -117,11 +148,22 @@ private:
 	FReply OnRefreshClicked();
 	FReply OnSwitchClicked(FString TypeName, bool bEnable);
 	FReply OnSwitchAppOnClicked();
+	FReply OnGenerateClicked();
 	FReply OnDeployClicked();
+	FReply OnRebuildAllClicked();
+	/** The arrow beside Deploy, opening Rebuild All and Deploy. */
+	TSharedRef<SWidget> MakeDeployMenu();
 	FReply OnDeployStartersClicked();
+	/** The Game Kit starters, each adding itself and the starters it needs to the project. */
+	TSharedRef<SWidget> MakeAddStarterMenu();
+	FReply OnAddStarterClicked(FString TypeName);
 	FReply OnMakeActiveClicked(int32 Version);
 	FReply OnOpenDefinitionClicked(FString AssetPath);
+	/** Opens Call as Developer on the player starter's grant or deposit. */
+	FReply OnSoftCurrencyClicked(FString AssetPath, FString Method);
 	FReply OnRemoveTypeClicked(FString TypeName, FString AssetPath);
+	// Remove from project for a Game Kit starter: the starters that go with it, their folders and definitions, as -op=removestarter.
+	void RemoveStarter(const FString& TypeName);
 	FReply OnShowCallClicked(FString Flow);
 	FReply OnClearCallClicked();
 	FReply OnLoadOlderClicked();
@@ -137,7 +179,9 @@ private:
 
 	/** No deploy or other change to the live app is waiting on the platform. */
 	bool IsIdle() const;
+	bool CanGenerate() const;
 	bool CanDeploy() const;
+	bool CanRebuildAll() const;
 	bool CanSwitch() const;
 
 	/** The service this page listens to, held weakly so a page outliving it never touches it. */

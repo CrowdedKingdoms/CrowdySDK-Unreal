@@ -120,7 +120,10 @@ void UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(const UCrowdyServerObject
 			continue;
 		}
 		Out.Add({UCrowdyK2Node_GetServerVariable::StaticClass(), Variable.Name, Variable.Id, UCrowdyK2Node_GetServerVariable::MakeTitle(Variable.Name, Asset)});
-		Out.Add({UCrowdyK2Node_ServerVariableChanged::StaticClass(), Variable.Name, Variable.Id, UCrowdyK2Node_ServerVariableChanged::MakeTitle(Variable.Name, Asset)});
+		if (Variable.ChangesWith.IsNone())
+		{
+			Out.Add({UCrowdyK2Node_ServerVariableChanged::StaticClass(), Variable.Name, Variable.Id, UCrowdyK2Node_ServerVariableChanged::MakeTitle(Variable.Name, Asset)});
+		}
 	}
 
 	AddCalls();

@@ -8,17 +8,26 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Containers/StringConv.h"
 #include "CrowdyExecCodegen.h"
+#include "CrowdyGameKitStarters.h"
 #include "CrowdyRustSyntaxMarshaller.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLibrary.h"
 #include "HAL/FileManager.h"
+#include "Dom/JsonObject.h"
+#include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 namespace CrowdyExecDeployDetail
 {
 	const TCHAR* const CargoPath = TEXT("Cargo.toml");
 	const TCHAR* const LogicPath = TEXT("src/logic.rs");
+	const TCHAR* const StarterLibPath = TEXT("src/lib.rs");
 	const TCHAR* const NoLogicFileChosen = TEXT("Code Source is My Own File but no file is chosen; choose one, or switch Code Source to Generated");
 
 	constexpr int32 MaxCrates = 16;
@@ -112,12 +121,30 @@ namespace CrowdyExecDeployDetail
 		return FTCHARToUTF8(*Content).Length();
 	}
 
+	int64 SourceBytesOfCrate(const CrowdyExecDeveloper::FBuildCrate& Crate)
+	{
+		int64 Bytes = 0;
+		for (const CrowdyExecDeveloper::FBuildFile& File : Crate.Files)
+		{
+			Bytes += SourceBytesOf(File.Content);
+		}
+		return Bytes;
+	}
+
+	FString Condensed(const TSharedRef<FJsonObject>& Object)
+	{
+		FString Json;
+		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Json);
+		FJsonSerializer::Serialize(Object, Writer);
+		return Json;
+	}
+
 	/** Loads a file only when its size fits what is left of the source limit, and takes its size from it. */
 	bool LoadWithinBudget(const FString& Path, int64& InOutBudget, FString& OutContent, FString& OutProblem)
 	{
 		if (IFileManager::Get().FileSize(*Path) > InOutBudget)
 		{
-			OutProblem = FString::Printf(TEXT("%s takes the server code past 2 MB of source; one deploy builds at most 2 MB"), *Path);
+			OutProblem = FString::Printf(TEXT("%s takes its type's server code past 2 MB of source; one build takes at most 2 MB"), *Path);
 			return false;
 		}
 		if (!FFileHelper::LoadFileToString(OutContent, *Path))
@@ -284,10 +311,43 @@ namespace CrowdyExecDeployDetail
 		return Names;
 	}
 
-	/** Adds "calls" when the type calls others (["*"] for any type) and "scopes" when it asks for platform data; a type with neither gets nothing. */
-	void AppendCallsAndScopes(FStringBuilderBase& Json, const UCrowdyServerObjectDefinition& Definition)
+	/** The Can Call and Listen To types, and for a Game Kit starter each of its Calls the project has, sorted, each once. */
+	TArray<FString> CalledTypeNames(const UCrowdyServerObjectDefinition& Definition, TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions)
 	{
-		const TArray<FString> Calls = Definition.bCanCallAnyType ? TArray<FString>{TEXT("*")} : CallableTypeNames(Definition);
+		TArray<FString> Names = CallableTypeNames(Definition);
+		if (!Definition.IsGameKitStarter())
+		{
+			return Names;
+		}
+		for (const FString& Called : Definition.KitCalls)
+		{
+			if (!Called.Equals(Definition.TypeName, ESearchCase::CaseSensitive) && FindSameName(Definitions, Called) != INDEX_NONE)
+			{
+				Names.Add(Called);
+			}
+		}
+		Algo::Sort(Names, &IsBefore);
+		Names.SetNum(Algo::Unique(Names, [](const FString& A, const FString& B) { return A.Equals(B, ESearchCase::CaseSensitive); }));
+		return Names;
+	}
+
+	/** A starter's Config, trimmed; empty for every other type. */
+	FString SeedOf(const UCrowdyServerObjectDefinition& Definition)
+	{
+		return Definition.IsGameKitStarter() ? Definition.KitConfig.TrimStartAndEnd() : FString();
+	}
+
+	TSharedPtr<FJsonObject> ParseJsonObject(const FString& Text)
+	{
+		TSharedPtr<FJsonObject> Object;
+		FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Object);
+		return Object;
+	}
+
+	/** Adds "calls" when the type calls others (["*"] for any type) and "scopes" when it asks for platform data; a type with neither gets nothing. */
+	void AppendCallsAndScopes(FStringBuilderBase& Json, const UCrowdyServerObjectDefinition& Definition, TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions)
+	{
+		const TArray<FString> Calls = Definition.bCanCallAnyType ? TArray<FString>{TEXT("*")} : CalledTypeNames(Definition, Definitions);
 		if (!Calls.IsEmpty())
 		{
 			Json.Appendf(TEXT(",\"calls\":[\"%s\"]"), *FString::Join(Calls, TEXT("\",\"")));
@@ -297,6 +357,141 @@ namespace CrowdyExecDeployDetail
 		{
 			Json.Appendf(TEXT(",\"scopes\":[\"%s\"]"), *FString::Join(Scopes, TEXT("\",\"")));
 		}
+	}
+
+	/** Calls and scopes, a starter's seed, the server limits a type changes, and the end of its entry. */
+	void AppendTypeTail(FStringBuilderBase& Json, const UCrowdyServerObjectDefinition& Definition, TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions)
+	{
+		AppendCallsAndScopes(Json, Definition, Definitions);
+		const FString Seed = CrowdyExecDeploy::SeedB64Of(Definition);
+		if (!Seed.IsEmpty())
+		{
+			Json.Appendf(TEXT(",\"seed_b64\":\"%s\""), *Seed);
+		}
+		for (const CrowdyExecDeploy::FServerLimit& Limit : CrowdyExecDeploy::LimitsOf(Definition))
+		{
+			if (Limit.Value != Limit.Default)
+			{
+				Json.Appendf(TEXT(",\"%s\":%lld"), Limit.Field, Limit.Value);
+			}
+		}
+		Json.AppendChar(TEXT('}'));
+	}
+
+	/** The platform refuses a type under a Server Function Library, and Parents that run in a circle. */
+	void AddKitParentProblems(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions, TArray<FString>& OutProblems)
+	{
+		for (const UCrowdyServerObjectDefinition* Definition : Definitions)
+		{
+			if (!Definition || !Definition->IsGameKitStarter() || Definition->KitParent.IsEmpty())
+			{
+				continue;
+			}
+			const int32 Parent = FindSameName(Definitions, Definition->KitParent);
+			if (Parent != INDEX_NONE && Definitions[Parent]->IsFunctionLibrary())
+			{
+				OutProblems.Add(FString::Printf(TEXT("%s: its Parent %s is a Server Function Library; a type runs under a Server Object"), *DisplayName(*Definition), *Definition->KitParent));
+			}
+			TArray<FString> Chain = {Definition->TypeName};
+			for (const UCrowdyServerObjectDefinition* Next = Definition; Next && Next->IsGameKitStarter() && !Next->KitParent.IsEmpty() && Chain.Num() <= Definitions.Num();)
+			{
+				const int32 Found = FindSameName(Definitions, Next->KitParent);
+				Next = Found == INDEX_NONE ? nullptr : Definitions[Found];
+				if (Next && Next == Definition)
+				{
+					OutProblems.Add(FString::Printf(TEXT("%s: its Parents run in a circle (%s); give one of them another Parent"), *DisplayName(*Definition), *FString::Join(Chain, TEXT(", "))));
+					break;
+				}
+				Chain.Add(Next ? Next->TypeName : FString());
+			}
+		}
+	}
+
+	/** Get Players Online reads the type the Game Kit World setting names, so it must be the root this deploy sends. */
+	void AddGameKitWorldWarning(const UCrowdyServerObjectDefinition* KitRoot, TArray<FString>& OutWarnings)
+	{
+		const UCrowdyServerObjectDefinition* Named = UCrowdyServerObjectLibrary::GetGameKitWorldDefinition();
+		if (Named == KitRoot)
+		{
+			return;
+		}
+		OutWarnings.Add(KitRoot
+			? FString::Printf(TEXT("Get Players Online reads %s, but this deploy's root is %s; set Game Kit World to %s in Project Settings, Crowdy SDK"),
+				Named ? *Named->GetPathName() : TEXT("the Crowdy SDK's root"), *KitRoot->TypeName, *KitRoot->GetPathName())
+			: FString::Printf(TEXT("Get Players Online reads %s, which this deploy does not make the root; clear Game Kit World in Project Settings, Crowdy SDK"), *Named->GetPathName()));
+	}
+
+	/** A starter whose Config names a board posts its scores to a leaderboard of that name, which the project must have. */
+	void AddKitBoardWarnings(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions, TArray<FString>& OutWarnings)
+	{
+		if (FindSameName(Definitions, TEXT("leaderboard")) != INDEX_NONE)
+		{
+			return;
+		}
+		for (const UCrowdyServerObjectDefinition* Definition : Definitions)
+		{
+			TSharedPtr<FJsonObject> Config;
+			FString Board;
+			const FString Seed = Definition ? SeedOf(*Definition) : FString();
+			if (Seed.IsEmpty() || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Seed), Config) || !Config.IsValid() || !Config->TryGetStringField(TEXT("board"), Board) || Board.IsEmpty())
+			{
+				continue;
+			}
+			OutWarnings.Add(FString::Printf(TEXT("%s: its Config posts scores to the board %s, but the project has no leaderboard, so they go nowhere; add the leaderboard starter"),
+				*DisplayName(*Definition), *Board));
+		}
+	}
+
+	/** A starter that rolls or shuffles from a Config secret has predictable results for players when the secret is missing. */
+	void AddKitSecretWarnings(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions, TArray<FString>& OutWarnings)
+	{
+		for (const UCrowdyServerObjectDefinition* Definition : Definitions)
+		{
+			const CrowdyGameKitStarters::FStarter* Starter = Definition && Definition->IsGameKitStarter() ? CrowdyGameKitStarters::FindStarter(Definition->TypeName) : nullptr;
+			if (!Starter || !Starter->bMakesSecret)
+			{
+				continue;
+			}
+			const FString Seed = SeedOf(*Definition);
+			if (CrowdyGameKitStarters::HasConfigSecret(Seed) || !CrowdyGameKitStarters::FindConfigProblem(Definition->TypeName, Seed).IsEmpty())
+			{
+				continue;
+			}
+			OutWarnings.Add(FString::Printf(TEXT("%s: its Config has no secret, so a player can work out loot rolls and deals before they happen; add {\"secret\": \"<a long random string>\"} to its Config"),
+				*DisplayName(*Definition)));
+		}
+	}
+
+	/** A starter's crate is its own Rust as Add starter copied it, never generated: it needs its Cargo.toml and src/lib.rs, and a Config that is a JSON object. */
+	CrowdyExecDeploy::FTypeState InspectStarter(const UCrowdyServerObjectDefinition& Definition, const FString& CrateDirectory, CrowdyExecDeploy::FTypeState State)
+	{
+		using CrowdyExecDeploy::ECrateState;
+		TArray<FString> Errors;
+		if (Definition.BakedStructs.IsEmpty() && !const_cast<UCrowdyServerObjectDefinition&>(Definition).Bake(Errors))
+		{
+			return WithProblem(State, ECrateState::Invalid, FString::Join(Errors, TEXT("; ")));
+		}
+		const FString Seed = SeedOf(Definition);
+		const TSharedPtr<FJsonObject> Config = Seed.IsEmpty() ? nullptr : ParseJsonObject(Seed);
+		if (!Seed.IsEmpty() && !Config.IsValid())
+		{
+			return WithProblem(State, ECrateState::Invalid, TEXT("its Game Kit Config is not a JSON object; correct it, or empty it to keep the starter's defaults"));
+		}
+		const FString ConfigProblem = Config.IsValid() ? CrowdyGameKitStarters::FindConfigProblem(Definition.TypeName, Seed) : FString();
+		if (!ConfigProblem.IsEmpty())
+		{
+			return WithProblem(State, ECrateState::Invalid, FString::Printf(TEXT("its Game Kit Config has %s; correct it, or remove the key to keep the starter's default"), *ConfigProblem));
+		}
+		for (const TCHAR* const Path : {CargoPath, StarterLibPath})
+		{
+			const FString File = FPaths::Combine(CrateDirectory, Path);
+			if (!FPaths::FileExists(File))
+			{
+				return WithProblem(State, ECrateState::NotGenerated, FString::Printf(TEXT("its server code is missing %s; restore it, or remove the type in Server Compute and add the starter again"), *File));
+			}
+		}
+		State.State = ECrateState::UpToDate;
+		return State;
 	}
 
 	struct FPlatformScope
@@ -611,15 +806,76 @@ TArray<UCrowdyServerObjectDefinition*> CrowdyExecDeploy::FindProjectDefinitions(
 	return Definitions;
 }
 
+TArray<FName> CrowdyExecDeploy::FindReferencers(const UCrowdyServerObjectDefinition& Definition, const TSet<FName>& Ignored)
+{
+	const FName Own = Definition.GetPackage()->GetFName();
+	TArray<FName> Referencers;
+	IAssetRegistry::GetChecked().GetReferencers(Own, Referencers);
+	Referencers.RemoveAll([&Ignored, Own](FName Referencer) { return Referencer == Own || Ignored.Contains(Referencer); });
+	return Referencers;
+}
+
+TArray<UObject*> CrowdyExecDeploy::TakeUnusedRedirectors(const UCrowdyServerObjectDefinition& Definition, TArray<FName>& Referencers, TArray<FName>& OutUsed)
+{
+	IAssetRegistry& Registry = IAssetRegistry::GetChecked();
+	const FSoftObjectPath Own(&Definition);
+	TArray<UObject*> Unused;
+	TArray<FName> Taken;
+	for (const FName Referencer : Referencers)
+	{
+		TArray<FAssetData> Assets;
+		Registry.GetAssetsByPackageName(Referencer, Assets);
+		if (Assets.Num() != 1 || !Assets[0].IsRedirector() || Registry.GetRedirectedObjectPath(Assets[0].GetSoftObjectPath()) != Own)
+		{
+			continue;
+		}
+		TArray<FName> Users;
+		Registry.GetReferencers(Referencer, Users);
+		Users.Remove(Referencer);
+		UObject* Redirector = Users.IsEmpty() ? Assets[0].GetAsset() : nullptr;
+		if (!Redirector)
+		{
+			OutUsed.Add(Referencer);
+			continue;
+		}
+		Unused.Add(Redirector);
+		Taken.Add(Referencer);
+	}
+	Referencers.RemoveAll([&Taken](FName Referencer) { return Taken.Contains(Referencer); });
+	return Unused;
+}
+
+FString CrowdyExecDeploy::FindReadOnlySettingsProblem(const FString& ConfigFile)
+{
+	const FString File = FPaths::ConvertRelativePathToFull(ConfigFile.IsEmpty() ? GetDefault<UCrowdySDKDeveloperSettings>()->GetDefaultConfigFilename() : ConfigFile);
+	if (!FPaths::FileExists(File) || !IFileManager::Get().IsReadOnly(*File))
+	{
+		return FString();
+	}
+	return FString::Printf(TEXT("%s is read-only (checked in?), and this changes the Game Kit settings it holds; make it writable, then run again; nothing was changed"), *File);
+}
+
+FString CrowdyExecDeploy::FindReadOnlySettingsProblemFor(const FSoftObjectPath& Asset, const FString& ConfigFile)
+{
+	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+	const bool bNamed = Settings->GameKitWorld == Asset || Settings->GameKitActorStarters.Contains(Asset);
+	return bNamed ? FindReadOnlySettingsProblem(ConfigFile) : FString();
+}
+
 CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerObjectDefinition& Definition, const FString& CrateDirectory)
 {
 	using namespace CrowdyExecDeployDetail;
 	FTypeState State;
 	State.TypeName = Definition.TypeName;
 	State.AssetPath = Definition.GetPathName();
+	State.bGameKitStarter = Definition.IsGameKitStarter();
 	if (Definition.TypeName.Equals(RootTypeName, ESearchCase::CaseSensitive))
 	{
 		return WithProblem(State, ECrateState::Invalid, TEXT("root is the name of the platform's root Server Object type; choose another Type Name"));
+	}
+	if (Definition.TypeName.StartsWith(StagingTypePrefix, ESearchCase::IgnoreCase))
+	{
+		return WithProblem(State, ECrateState::Invalid, FString::Printf(TEXT("Type Names starting %s are kept for the stand-ins a deploy in parts stores its builds with; choose another Type Name"), StagingTypePrefix));
 	}
 	const int64 SaveIntervalMs = static_cast<int64>(Definition.SaveIntervalSeconds) * 1000;
 	if (!Definition.IsFunctionLibrary() && (SaveIntervalMs < MinSaveIntervalMs || SaveIntervalMs > MaxSaveIntervalMs))
@@ -630,6 +886,10 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 	if (!Definition.IsFunctionLibrary() && (IdleTimeoutMs < MinIdleTimeoutMs || IdleTimeoutMs > MaxIdleTimeoutMs))
 	{
 		return WithProblem(State, ECrateState::Invalid, TEXT("Idle Timeout must be 1 to 1800 seconds"));
+	}
+	if (Definition.IsGameKitStarter())
+	{
+		return InspectStarter(Definition, CrateDirectory, MoveTemp(State));
 	}
 	CrowdyExecCodegen::FGeneratedCrate Crate;
 	FString Problem;
@@ -644,6 +904,7 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 	const FString Logic = CrowdyExecCodegen::GetLogicFile(Definition, CrateDirectory);
 	if (Logic.IsEmpty())
 	{
+		State.bNeedsDeveloper = true;
 		return WithProblem(State, ECrateState::NotGenerated, NoLogicFileChosen);
 	}
 	for (const CrowdyExecCodegen::FGeneratedFile& File : Crate.Files)
@@ -665,7 +926,8 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 	}
 	if (!FPaths::FileExists(Logic))
 	{
-		const FString Missing = CrowdyExecCodegen::HasOwnLogicFile(Definition)
+		State.bNeedsDeveloper = CrowdyExecCodegen::HasOwnLogicFile(Definition);
+		const FString Missing = State.bNeedsDeveloper
 			? FString::Printf(TEXT("its Logic File %s does not exist; choose an existing file, or switch Code Source to Generated"), *Logic)
 			: FString::Printf(TEXT("its server code is missing %s; write it with Generate Server Code"), *Logic);
 		return WithProblem(State, ECrateState::NotGenerated, Missing);
@@ -701,18 +963,35 @@ FString CrowdyExecDeploy::MakeManifest(TConstArrayView<const UCrowdyServerObject
 	using namespace CrowdyExecDeployDetail;
 	TArray<const UCrowdyServerObjectDefinition*> Sorted = Definitions.FilterByPredicate([](const UCrowdyServerObjectDefinition* Definition) { return Definition != nullptr; });
 	Algo::Sort(Sorted, [](const UCrowdyServerObjectDefinition* A, const UCrowdyServerObjectDefinition* B) { return IsBefore(A->TypeName, B->TypeName); });
+	const UCrowdyServerObjectDefinition* const KitRoot = FindKitRoot(Sorted);
+	const FString Root = KitRoot ? KitRoot->TypeName : FString(RootTypeName);
 	TStringBuilder<1024> Json;
-	// Open to players, who read and follow its Players Online.
-	Json.Appendf(TEXT("{\"root\":\"%s\",\"types\":{\"%s\":{\"kind\":\"hub\",\"crate\":\"%s\",\"client\":true}"), RootTypeName, RootTypeName, RootTypeName);
+	if (KitRoot)
+	{
+		// The root is never idle, so it has no idle timeout.
+		Json.Appendf(TEXT("{\"root\":\"%s\",\"types\":{\"%s\":{\"kind\":\"hub\",\"crate\":\"%s\",\"client\":true,\"persist_every_ms\":%lld"),
+			*Root, *Root, *Root, static_cast<int64>(KitRoot->SaveIntervalSeconds) * 1000);
+		AppendTypeTail(Json, *KitRoot, Sorted);
+	}
+	else
+	{
+		// Open to players, who read and follow its Players Online.
+		Json.Appendf(TEXT("{\"root\":\"%s\",\"types\":{\"%s\":{\"kind\":\"hub\",\"crate\":\"%s\",\"client\":true}"), RootTypeName, RootTypeName, RootTypeName);
+	}
 	for (const UCrowdyServerObjectDefinition* Definition : Sorted)
 	{
+		if (Definition == KitRoot)
+		{
+			continue;
+		}
 		const TCHAR* const Name = *Definition->TypeName;
 		const TCHAR* const Client = Definition->IsReachableByPlayers() ? TEXT("true") : TEXT("false");
+		const FString Parent = ParentOf(*Definition, Sorted, Root);
 		if (Definition->IsFunctionLibrary())
 		{
 			const FScaling Scaling = ScalingOf(*Definition);
 			Json.Appendf(TEXT(",\"%s\":{\"kind\":\"spoke\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":%s,\"replicas\":%d,\"concurrency\":%d"),
-				Name, RootTypeName, Name, Client, Scaling.Replicas, Scaling.Concurrency);
+				Name, *Parent, Name, Client, Scaling.Replicas, Scaling.Concurrency);
 			if (Scaling.MaxReplicas > Scaling.Replicas)
 			{
 				Json.Appendf(TEXT(",\"max_replicas\":%d"), Scaling.MaxReplicas);
@@ -721,20 +1000,40 @@ FString CrowdyExecDeploy::MakeManifest(TConstArrayView<const UCrowdyServerObject
 		else
 		{
 			Json.Appendf(TEXT(",\"%s\":{\"kind\":\"hub\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":%s,\"persist_every_ms\":%lld,\"evict_after_ms\":%lld"),
-				Name, RootTypeName, Name, Client, static_cast<int64>(Definition->SaveIntervalSeconds) * 1000, static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000);
+				Name, *Parent, Name, Client, static_cast<int64>(Definition->SaveIntervalSeconds) * 1000, static_cast<int64>(Definition->IdleTimeoutSeconds) * 1000);
 		}
-		AppendCallsAndScopes(Json, *Definition);
-		for (const FServerLimit& Limit : LimitsOf(*Definition))
-		{
-			if (Limit.Value != Limit.Default)
-			{
-				Json.Appendf(TEXT(",\"%s\":%lld"), Limit.Field, Limit.Value);
-			}
-		}
-		Json.AppendChar(TEXT('}'));
+		AppendTypeTail(Json, *Definition, Sorted);
 	}
 	Json.Append(TEXT("}}"));
 	return FString(Json.ToView());
+}
+
+FString CrowdyExecDeploy::ParentOf(const UCrowdyServerObjectDefinition& Definition, TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions, const FString& Root)
+{
+	const FString& Parent = Definition.KitParent;
+	const bool bHasParent = Definition.IsGameKitStarter() && !Parent.IsEmpty() && !Parent.Equals(Definition.TypeName, ESearchCase::CaseSensitive)
+		&& CrowdyExecDeployDetail::FindSameName(Definitions, Parent) != INDEX_NONE;
+	return bHasParent ? Parent : Root;
+}
+
+FString CrowdyExecDeploy::SeedB64Of(const UCrowdyServerObjectDefinition& Definition)
+{
+	const FString Seed = CrowdyExecDeployDetail::SeedOf(Definition);
+	if (Seed.IsEmpty())
+	{
+		return FString();
+	}
+	const FTCHARToUTF8 Utf8(*Seed);
+	return FBase64::Encode(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
+}
+
+const UCrowdyServerObjectDefinition* CrowdyExecDeploy::FindKitRoot(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions)
+{
+	const UCrowdyServerObjectDefinition* const* Found = Definitions.FindByPredicate([](const UCrowdyServerObjectDefinition* Definition)
+	{
+		return Definition && Definition->IsGameKitStarter() && Definition->KitParent.IsEmpty();
+	});
+	return Found ? *Found : nullptr;
 }
 
 CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions,
@@ -742,16 +1041,28 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 {
 	using namespace CrowdyExecDeployDetail;
 	FProjectDeploy Project;
-	const CrowdyExecDeveloper::FBuildCrate& Root = Project.Crates.Add_GetRef(MakeRootCrate());
-	if (Root.Files.IsEmpty())
+	TArray<const UCrowdyServerObjectDefinition*> KitRoots = Definitions.FilterByPredicate([](const UCrowdyServerObjectDefinition* Definition)
 	{
-		Project.Problems.Add(FString::Printf(TEXT("The Crowdy SDK's root Server Object, %s, did not load or does not generate; reinstall the Crowdy SDK"),
-			UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath));
+		return Definition && Definition->IsGameKitStarter() && Definition->KitParent.IsEmpty();
+	});
+	Algo::Sort(KitRoots, [](const UCrowdyServerObjectDefinition* A, const UCrowdyServerObjectDefinition* B) { return IsBefore(A->TypeName, B->TypeName); });
+	if (KitRoots.Num() > 1)
+	{
+		Project.Problems.Add(FString::Printf(TEXT("Game Kit starters %s and %s both have no Parent, and an app has one root; give one of them a Parent"),
+			*DisplayName(*KitRoots[0]), *DisplayName(*KitRoots[1])));
 	}
-	int64 Budget = MaxSourceBytes;
-	for (const CrowdyExecDeveloper::FBuildFile& File : Root.Files)
+	if (!KitRoots.IsEmpty())
 	{
-		Budget -= SourceBytesOf(File.Content);
+		Project.Root = KitRoots[0]->TypeName;
+	}
+	else
+	{
+		const CrowdyExecDeveloper::FBuildCrate& Root = Project.Crates.Add_GetRef(MakeRootCrate());
+		if (Root.Files.IsEmpty())
+		{
+			Project.Problems.Add(FString::Printf(TEXT("The Crowdy SDK's root Server Object, %s, did not load or does not generate; reinstall the Crowdy SDK"),
+				UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath));
+		}
 	}
 	for (const UCrowdyServerObjectDefinition* Definition : Definitions)
 	{
@@ -768,6 +1079,7 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 		}
 		FString ReadProblem;
 		CrowdyExecDeveloper::FBuildCrate Crate;
+		int64 Budget = MaxSourceBytes;
 		if (!ReadCrate(Definition->TypeName, Directory, Budget, Crate, ReadProblem) || !UseOwnLogicFile(*Definition, Directory, Budget, Crate, ReadProblem))
 		{
 			Project.Problems.Add(FString::Printf(TEXT("%s: %s"), *DisplayName(*Definition), *ReadProblem));
@@ -779,6 +1091,10 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 	}
 	AddDuplicateProblems(Definitions, Project.Problems);
 	AddSharedLogicFileProblems(Definitions, CrateDirectoryFor, Project.Problems);
+	AddKitParentProblems(Definitions, Project.Problems);
+	AddGameKitWorldWarning(KitRoots.IsEmpty() ? nullptr : KitRoots[0], Project.Warnings);
+	AddKitBoardWarnings(Definitions, Project.Warnings);
+	AddKitSecretWarnings(Definitions, Project.Warnings);
 	FString LimitProblem;
 	if (!CheckBuildLimits(Project.Crates, LimitProblem))
 	{
@@ -791,13 +1107,6 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 bool CrowdyExecDeploy::CheckBuildLimits(TConstArrayView<CrowdyExecDeveloper::FBuildCrate> Crates, FString& OutProblem)
 {
 	using namespace CrowdyExecDeployDetail;
-	if (Crates.Num() > MaxCrates)
-	{
-		OutProblem = FString::Printf(TEXT("One deploy builds at most %d pieces of server code (the platform's root Server Object type and %d of yours); this one has %d"),
-			MaxCrates, MaxCrates - 1, Crates.Num());
-		return false;
-	}
-	int64 SourceBytes = 0;
 	for (const CrowdyExecDeveloper::FBuildCrate& Crate : Crates)
 	{
 		if (Crate.Files.Num() > MaxFilesPerCrate)
@@ -805,15 +1114,134 @@ bool CrowdyExecDeploy::CheckBuildLimits(TConstArrayView<CrowdyExecDeveloper::FBu
 			OutProblem = FString::Printf(TEXT("%s's server code has %d files; each type's server code can have at most %d"), *Crate.Name, Crate.Files.Num(), MaxFilesPerCrate);
 			return false;
 		}
-		for (const CrowdyExecDeveloper::FBuildFile& File : Crate.Files)
+		const int64 SourceBytes = SourceBytesOfCrate(Crate);
+		if (SourceBytes > MaxSourceBytes)
 		{
-			SourceBytes += FTCHARToUTF8(*File.Content).Length();
+			OutProblem = FString::Printf(TEXT("%s's server code is %.2f MB; one build takes at most 2 MB of source"), *Crate.Name, static_cast<double>(SourceBytes) / (1024.0 * 1024.0));
+			return false;
 		}
 	}
-	if (SourceBytes > MaxSourceBytes)
-	{
-		OutProblem = FString::Printf(TEXT("The server code is %.2f MB in all; one deploy builds at most 2 MB of source"), static_cast<double>(SourceBytes) / (1024.0 * 1024.0));
-		return false;
-	}
 	return true;
+}
+
+TArray<TArray<CrowdyExecDeveloper::FBuildCrate>> CrowdyExecDeploy::SplitIntoBuilds(TConstArrayView<CrowdyExecDeveloper::FBuildCrate> Crates, int32 MaxCratesPerBuild)
+{
+	using namespace CrowdyExecDeployDetail;
+	const int32 PerBuild = FMath::Clamp(MaxCratesPerBuild, 1, MaxCrates);
+	TArray<TArray<CrowdyExecDeveloper::FBuildCrate>> Builds;
+	int64 BuildBytes = 0;
+	for (const CrowdyExecDeveloper::FBuildCrate& Crate : Crates)
+	{
+		const int64 CrateBytes = SourceBytesOfCrate(Crate);
+		if (Builds.IsEmpty() || Builds.Last().Num() >= PerBuild || BuildBytes + CrateBytes > MaxSourceBytes)
+		{
+			Builds.AddDefaulted();
+			BuildBytes = 0;
+		}
+		Builds.Last().Add(Crate);
+		BuildBytes += CrateBytes;
+	}
+	return Builds;
+}
+
+FString CrowdyExecDeploy::NameByDigest(const FString& ManifestJson, const TMap<FString, FString>& Digests)
+{
+	using namespace CrowdyExecDeployDetail;
+	TSharedPtr<FJsonObject> Manifest;
+	const TSharedPtr<FJsonObject>* Types = nullptr;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(ManifestJson), Manifest) || !Manifest.IsValid() || !Manifest->TryGetObjectField(TEXT("types"), Types))
+	{
+		return FString();
+	}
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Type : (*Types)->Values)
+	{
+		const TSharedPtr<FJsonObject>* Fields = nullptr;
+		FString Crate;
+		if (!Type.Value->TryGetObject(Fields) || !(*Fields)->TryGetStringField(TEXT("crate"), Crate))
+		{
+			continue;
+		}
+		if (const FString* Digest = Digests.Find(Crate))
+		{
+			(*Fields)->RemoveField(TEXT("crate"));
+			(*Fields)->SetStringField(TEXT("digest"), *Digest);
+		}
+	}
+	return Condensed(Manifest.ToSharedRef());
+}
+
+FString CrowdyExecDeploy::MakeStagingManifest(const FString& LiveManifestJson, const FString& DeployManifestJson, TConstArrayView<CrowdyExecDeveloper::FBuildCrate> Crates,
+	FString& OutProblem)
+{
+	using namespace CrowdyExecDeployDetail;
+	TSharedPtr<FJsonObject> Manifest;
+	if (LiveManifestJson.IsEmpty())
+	{
+		Manifest = MakeShared<FJsonObject>();
+		Manifest->SetObjectField(TEXT("types"), MakeShared<FJsonObject>());
+	}
+	else if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(LiveManifestJson), Manifest) || !Manifest.IsValid())
+	{
+		OutProblem = TEXT("The active version's manifest could not be read, so the builds could not be stored before the deploy");
+		return FString();
+	}
+	const TSharedPtr<FJsonObject>* Types = nullptr;
+	if (!Manifest->TryGetObjectField(TEXT("types"), Types))
+	{
+		OutProblem = TEXT("The active version's manifest names no types, so the builds could not be stored before the deploy");
+		return FString();
+	}
+	TSharedPtr<FJsonObject> Deploying;
+	const TSharedPtr<FJsonObject>* DeployingTypes = nullptr;
+	if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(DeployManifestJson), Deploying) && Deploying.IsValid())
+	{
+		Deploying->TryGetObjectField(TEXT("types"), DeployingTypes);
+	}
+	// The platform gives a live seed back only as its size, so a seed this deploy sends at that size stands in for it.
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Type : (*Types)->Values)
+	{
+		const TSharedPtr<FJsonObject>* Fields = nullptr;
+		int64 SeedBytes = 0;
+		if (!Type.Value->TryGetObject(Fields))
+		{
+			continue;
+		}
+		(*Fields)->TryGetNumberField(TEXT("seed_bytes"), SeedBytes);
+		(*Fields)->RemoveField(TEXT("seed_bytes"));
+		if (SeedBytes <= 0 || (*Fields)->HasField(TEXT("seed_b64")))
+		{
+			continue;
+		}
+		const TSharedPtr<FJsonObject>* Sent = nullptr;
+		FString Seed;
+		if (!DeployingTypes || !(*DeployingTypes)->TryGetObjectField(Type.Key, Sent) || !(*Sent)->TryGetStringField(TEXT("seed_b64"), Seed)
+			|| static_cast<int64>(FBase64::GetDecodedDataSize(Seed)) != SeedBytes)
+		{
+			OutProblem = FString::Printf(TEXT("This deploy is built in parts, each first stored by a version that runs what runs now, but the platform does not give back %s's live spawn seed (Config) and this deploy's differs, so that version could not keep it; deploy %s's Config change on its own first"),
+				*Type.Key, *Type.Key);
+			return FString();
+		}
+		(*Fields)->SetStringField(TEXT("seed_b64"), Seed);
+	}
+	FString Root;
+	Manifest->TryGetStringField(TEXT("root"), Root);
+	for (const CrowdyExecDeveloper::FBuildCrate& Crate : Crates)
+	{
+		const FString StandIn = StagingTypePrefix + Crate.Name;
+		const TSharedRef<FJsonObject> Fields = MakeShared<FJsonObject>();
+		Fields->SetStringField(TEXT("kind"), TEXT("hub"));
+		if (Root.IsEmpty())
+		{
+			Root = StandIn;
+			Manifest->SetStringField(TEXT("root"), Root);
+		}
+		else
+		{
+			Fields->SetStringField(TEXT("parent"), Root);
+		}
+		Fields->SetStringField(TEXT("crate"), Crate.Name);
+		Fields->SetBoolField(TEXT("client"), false);
+		(*Types)->SetObjectField(StandIn, Fields);
+	}
+	return Condensed(Manifest.ToSharedRef());
 }

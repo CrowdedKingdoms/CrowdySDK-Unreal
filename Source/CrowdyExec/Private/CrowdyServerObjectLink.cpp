@@ -105,8 +105,16 @@ FString UCrowdyServerObjectLink::ResolveInstanceId(FString& OutError, const TArr
 	}
 	if (Find == ECrowdyServerObjectFind::InstanceId)
 	{
-		// The root and a Server Function Library have one instance, and its Instance Id is empty.
-		if (InstanceId.IsEmpty() && !(Definition && Definition->HasOnlyOneInstance()))
+		// The root and a Server Function Library have one instance, and its Instance Id is empty; a starter keyed by player takes empty as the signed-in player.
+		const bool bOnlyOne = Definition && Definition->HasOnlyOneInstance();
+		const bool bSignedInPlayers = InstanceId.IsEmpty() && !bOnlyOne && Definition && Definition->IsKeyedByPlayer();
+		const UCrowdyServerObjectSubsystem* Subsystem = GetSubsystem();
+		if (bSignedInPlayers && (!Subsystem || Subsystem->GetSignedInUserId() <= 0))
+		{
+			OutError = CrowdyServerObjectShared::WaitingForSignIn;
+			return FString();
+		}
+		if (InstanceId.IsEmpty() && !bOnlyOne && !bSignedInPlayers)
 		{
 			OutError = TEXT("Set an Instance Id to find the Server Object by");
 		}
@@ -190,7 +198,9 @@ void UCrowdyServerObjectLink::HandleSignedIn()
 	}
 	// A different account may have signed in, so the signed-in player's object is always joined again.
 	const ECrowdyServerObjectStatus Status = Object ? Object->GetStatus() : ECrowdyServerObjectStatus::Failed;
-	if (Find == ECrowdyServerObjectFind::SignedInPlayer || Status == ECrowdyServerObjectStatus::Failed || Status == ECrowdyServerObjectStatus::Released)
+	const bool bSignedInPlayers = Find == ECrowdyServerObjectFind::SignedInPlayer
+		|| (Find == ECrowdyServerObjectFind::InstanceId && InstanceId.IsEmpty() && Definition && Definition->IsKeyedByPlayer());
+	if (bSignedInPlayers || Status == ECrowdyServerObjectStatus::Failed || Status == ECrowdyServerObjectStatus::Released)
 	{
 		Join();
 	}

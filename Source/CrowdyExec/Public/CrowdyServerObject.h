@@ -10,6 +10,7 @@
 class UCrowdyServerObject;
 class UCrowdyServerObjectDefinition;
 class UCrowdyServerObjectSubsystem;
+struct FCrowdyExecKitMember;
 struct FCrowdyExecRecordUpdate;
 struct FCrowdyExecStateHeader;
 struct FCrowdyNativeExecPush;
@@ -18,7 +19,7 @@ struct FCrowdyNativeExecReply;
 /** Fields names the watched values that changed, by their server names. */
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCrowdyServerValuesChanged, UCrowdyServerObject* /*Object*/, TConstArrayView<FString> /*Fields*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCrowdyServerObjectStatusChanged, UCrowdyServerObject* /*Object*/, ECrowdyServerObjectStatus /*Status*/);
-/** The ids of the records that are new or changed, then of those removed, then each changed record's changed State fields by index (see GetFieldVariableNames), in ChangedIds' order. */
+/** The ids of the records that are new or changed, then of those removed, then each changed record's changed fields by index (see GetFieldVariableNames), in ChangedIds' order. */
 DECLARE_MULTICAST_DELEGATE_FourParams(FOnCrowdyServerRecordsChanged, UCrowdyServerObject* /*Object*/, TConstArrayView<FString> /*ChangedIds*/, TConstArrayView<FString> /*RemovedIds*/,
 	TConstArrayView<TBitArray<>> /*ChangedFields*/);
 /** A message the server code sent to everyone listening, with its payload in the message's struct; empty for a message with no payload. */
@@ -158,6 +159,9 @@ public:
 
 	const FString& GetInstanceId() const { return InstanceId; }
 	ECrowdyServerObjectStatus GetStatus() const { return Status; }
+
+	/** The user id of the player signed in on this object's game instance, as a starter's player lists hold it; 0 when nobody is signed in. */
+	int64 GetSignedInUserId() const;
 	/** Why it Failed, or, while Connecting or Ready, why the connection or the last read or subscribe failed; it is retried. */
 	const FString& GetFailureReason() const { return FailureReason; }
 
@@ -181,14 +185,17 @@ public:
 
 	FOnCrowdyServerObjectStatusChanged OnStatusChanged;
 
-	/** Fields, by server name, as the names Get Server Value finds; names that are not variables, such as Members, stay as they are. */
-	TArray<FString> ToVariableNames(TConstArrayView<FString> Fields) const;
+	/** Fields, by server name, as the names Get Server Value finds; names that are not variables, such as Members, stay as they are. bRecord names a record's fields. */
+	TArray<FString> ToVariableNames(TConstArrayView<FString> Fields, bool bRecord = false) const;
 
 	/** Handlers bound to one variable of this object; dropped when it is given back. */
 	FCrowdyServerVariableBindings& GetVariableBindings() { return VariableBindings; }
 
 	/** Handlers bound to one message of this object; dropped when it is given back. */
 	FCrowdyServerMessageBindings& GetMessageBindings() { return MessageBindings; }
+
+	/** The component that sends the player's position for this object, so two holders never double the reports; set by that component, released when it stops. */
+	TWeakObjectPtr<const UObject> PositionReporter;
 
 	/** While a change is announced, the latest binding serial when it began; bindings made later already ran when bound. */
 	uint64 GetAnnouncedSerial() const { return AnnouncedSerial; }
@@ -204,8 +211,8 @@ public:
 	uint32 NumMessageSubscribesForTest() const { return MessageAttempt; }
 	bool IsRecordWatchedForTest(const FString& Id) const { return IsRecordWatched(Id); }
 
-	/** The result a call of Function gets from Reply, as the platform's answer would give it. */
-	FCrowdyServerCallResult MakeCallResultForTest(FName Function, const FCrowdyNativeExecReply& Reply) const;
+	/** The result a call of Function gets from Reply, as the platform's answer would give it; Code is a Game Kit refusal's. */
+	FCrowdyServerCallResult MakeCallResultForTest(FName Function, const FCrowdyNativeExecReply& Reply, const FString& Code = FString()) const;
 
 	/** The reason a refused read (or watch) gives while it retries; empty when it gives none. */
 	FString WaitingReasonForTest(const FCrowdyNativeExecReply& Reply, bool bRead) const;
@@ -286,7 +293,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
 	bool IsLeader() const { return bIsLeader; }
 
-	/** Whether the definition keeps a record per entity rather than one set of variables. */
+	/** Whether the definition keeps a record per entity, or is a Game Kit starter with a collection, rather than only one set of variables. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
 	bool HoldsRecords() const;
 
@@ -303,7 +310,7 @@ public:
 	/** After every read, push or changes that changed or removed records. */
 	FOnCrowdyServerRecordsChanged OnRecordsChanged;
 
-	/** For each State field by index, its name as Get Server Value takes it when it is watched, else empty. */
+	/** For each field of a record by index, its name as Get Server Value takes it when it is watched, else empty. */
 	void GetFieldVariableNames(TArray<FString>& OutNames) const;
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -322,7 +329,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects", DisplayName = "Stop Watching Record")
 	void K2_UnwatchRecord(const FString& RecordId, FCrowdyServerRecordEvent Event);
 
-	/** For a Server Object that holds a record per entity: the record Id's variables, owner's user id and team. False when there is no such record or the object is not Ready. */
+	/** For a Server Object that holds a record per entity, or a Game Kit starter's collection member by its id: the record Id's variables, owner's user id and team. False when there is no such record or the object is not Ready. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects", DisplayName = "Find Record")
 	bool K2_FindRecord(const FString& Id, FInstancedStruct& Values, int64& Owner, FString& Team) const;
 
@@ -468,14 +475,25 @@ private:
 
 	/** Routes a push by its topic: the watched values, or a message. */
 	void HandlePush(const FCrowdyNativeExecPush& Push);
+	/** Routes a Game Kit starter's push by its kind: a snapshot of the State Topic, or an event. */
+	void HandleKitPush(const FCrowdyNativeExecPush& Push);
 	void ReceiveMessage(const FCrowdyNativeExecPush& Push);
 	void AnnounceMessage(FName Message, const FInstancedStruct& Payload);
 
 	/** Announces the messages that arrived during a read, once it is done and the pushes it held are applied. */
 	void FlushPendingMessages();
 
+	/** A message received while values were being read; it is announced once the reads that were out when it arrived have ended. */
+	struct FHeldMessage
+	{
+		FName Name;
+		FInstancedStruct Payload;
+		/** The next read ticket when it arrived: reads with an older ticket must end first. */
+		uint32 Barrier = 0;
+	};
+
 	/** Messages received while the values were being read, oldest first; they may not overtake the state they describe. */
-	TArray<TPair<FName, FInstancedStruct>> PendingMessages;
+	TArray<FHeldMessage> PendingMessages;
 
 	/** Messages already warned about as heard only by other Server Object types. */
 	TSet<FName> ServerOnlyWarned;
@@ -510,6 +528,8 @@ private:
 		float TimeoutSeconds = 0.f;
 		float ElapsedSeconds = 0.f;
 		int32 Attempts = 0;
+		/** Sent with an action id, so a Game Kit starter runs it once however often it is sent. */
+		bool bSendOnce = false;
 		bool bInFlight = false;
 		/** Canceled by a connection closed elsewhere; completed on the next Tick, never inline. */
 		bool bConnectionClosed = false;
@@ -521,7 +541,8 @@ private:
 	/** Sends the read, or the next page of a read of records; schedules a refresh when there is no connection. */
 	void SendRead();
 	void HandleSubscribeDone(uint32 Attempt, const FCrowdyNativeExecReply& Reply);
-	void HandleReadDone(const FCrowdyNativeExecReply& Reply);
+	/** Code is a Game Kit starter's refusal code, empty for every other type. */
+	void HandleReadDone(const FCrowdyNativeExecReply& Reply, const FString& Code);
 	/** Clears a reason and backoff the last good read makes stale. */
 	void NoteGoodRead();
 	void HandleRecordsPage(const FCrowdyNativeExecReply& Reply);
@@ -540,7 +561,7 @@ private:
 	/** Fails the object for a permanent cause, as a refused read would; otherwise asks again after the refresh backoff. */
 	void HandleChangesFailure(const FCrowdyNativeExecReply& Reply);
 	/** Why a refusal will not change on retry, or empty when retrying may help. */
-	FString PermanentRefusal(const FCrowdyNativeExecReply& Reply, const TCHAR* Verb) const;
+	FString PermanentRefusal(const FCrowdyNativeExecReply& Reply, const TCHAR* Verb, const FString& Code = FString()) const;
 	/** The team of the first record, by id, the signed-in player owns; empty when they own none. */
 	FString FindOwnTeam() const;
 	/** Whether a listener watches record Id, so its changed names are worth collecting. */
@@ -553,22 +574,60 @@ private:
 	void NotifyRecords(const TArray<FString>& Changed, const TArray<TBitArray<>>& ChangedFields, const TArray<FString>& Removed,
 		const TArray<TPair<FString, TArray<FString>>>& Watched);
 	/** A refused read or subscribe: fails the object for a permanent cause, otherwise retries. */
-	void HandleRefreshFailure(const FCrowdyNativeExecReply& Reply, bool bRead);
+	void HandleRefreshFailure(const FCrowdyNativeExecReply& Reply, bool bRead, const FString& Code = FString());
 	void ScheduleRefresh(const FCrowdyNativeExecReply& Reply);
 	void ReceivePush(const TArray<uint8>& Payload);
 	void ApplyPush(const TArray<uint8>& Payload);
+	void ApplyKitSnapshot(const TArray<uint8>& Payload);
 	void ReplayBufferedPushes();
 
-	/** Names the watched fields that differ between Before and After, or every watched field when Before is null. */
-	void CollectWatchedFields(const void* Before, const void* After, TArray<FString>& OutFields) const;
+	/** Subscribes to a Game Kit starter's Collection Topic if not yet, then reads its members. */
+	void RefreshCollection();
+	void RequestCollectionRead();
+	void HandleCollectionSubscribeDone(uint32 Attempt, const FCrowdyNativeExecReply& Reply);
+	void HandleCollectionReadDone(const FCrowdyNativeExecReply& Reply, const FString& Code);
+	/** Holds a collection push while the members are read, else applies it in seq order. */
+	void ReceiveCollectionPush(const TArray<uint8>& Payload);
+	void ApplyCollectionPush(const TArray<uint8>& Payload);
+	/** Replaces the records with Changes when bWhole, else applies each over them; announces what changed when bAnnounce. */
+	void ApplyCollection(TArray<FCrowdyExecKitMember>& Changes, bool bWhole, bool bAnnounce);
+	/** Announces every record held, for an object that just became Ready. */
+	void AnnounceHeldRecords();
+
+	/** Whether this object reads its definition's Owner Values: on a starter that has them, and when it is Keyed By Player only on the signed-in player's own. */
+	bool ReadsOwnerValues() const;
+	/** Whether every Owner Value this object reads has been read since it last started. */
+	bool HasReadOwnerValues() const;
+	/** Reads Owner Value Index, or marks it to be read again when a read of it is in flight. */
+	void RequestOwnerValue(int32 Index);
+	void HandleOwnerValueDone(int32 Index, const FCrowdyNativeExecReply& Reply, const FString& Code);
+	/** Whether Index and every per-value array fit the definition's Owner Values. */
+	bool HoldsOwnerRead(int32 Index) const;
+	/** Marks the Owner Values a changed message names for the signed-in player to be read on the next tick, so a burst of them is read once. */
+	void ReceiveKitChanged(const TArray<uint8>& Payload);
+	/** Reads the Owner Values marked since the last tick. */
+	void SendWantedOwnerReads();
+	/** Copies each Owner Value from From into To, two States: a snapshot carries none of them. */
+	void KeepOwnerValues(const void* From, void* To) const;
+	/** Puts the Owner Values back to their defaults, which a sign-out or refusal must not leave behind. */
+	void ResetOwnerValues();
+	/** Another player signed in on this connection: drops the Owner Values read for the last one, announces them, and ignores their reads still out. */
+	void HandleSignedInPlayerChanged();
+
+	/** The ticket of the oldest read of the State or an Owner Value in flight, or MAX_uint32 when none is. */
+	uint32 OldestReadInFlight() const;
+
+	/** Names the watched fields that differ between Before and After, or every watched field when Before is null; bRecord compares a record's fields, bSkipOwnerValues leaves out the Owner Values. */
+	void CollectWatchedFields(const void* Before, const void* After, TArray<FString>& OutFields, bool bRecord = false, bool bSkipOwnerValues = false) const;
 
 	void TickCalls(float DeltaSeconds);
 	void CompleteCall(uint32 CallId, const FCrowdyServerCallResult& Result);
 	void TraceAnswered(const FPendingCall& Pending, ECrowdyServerCallOutcome Outcome) const;
 	void SendDueCalls();
 	void SendCall(uint32 CallId);
-	void HandleCallDone(uint32 CallId, const FCrowdyNativeExecReply& Reply);
-	FCrowdyServerCallResult MakeCallResult(const FPendingCall& Pending, const FCrowdyNativeExecReply& Reply) const;
+	/** Code is a Game Kit starter's refusal code, empty for every other answer. */
+	void HandleCallDone(uint32 CallId, const FCrowdyNativeExecReply& Reply, const FString& Code);
+	FCrowdyServerCallResult MakeCallResult(const FPendingCall& Pending, const FCrowdyNativeExecReply& Reply, const FString& Code) const;
 	/** Whether a successful answer to Pending must be followed by a read of Is Member and Is Leader. */
 	bool ReadsMembershipAfter(const FPendingCall& Pending) const;
 	/** Reads again after an answer that changed membership the server does not push, or after a crash rolled the values back. */
@@ -603,6 +662,9 @@ private:
 	TCrowdyRecordMap<FCrowdyServerRecord> PagedRecords;
 	/** Shared, so a watcher that stops watching during an announcement does not destroy the delegate running it. */
 	TCrowdyRecordMap<TSharedRef<FOnCrowdyServerValuesChanged>> RecordWatchers;
+	/** The announcement of record changes running now, or 0: a watcher added during one has had its catch-up and skips the rest of it. */
+	uint32 ActiveNotify = 0;
+	uint32 NotifyCount = 0;
 	/** The last id of the last page read; the next page starts after it. */
 	FString PageAfter;
 	/** The first page's, which a read keeps: pushes above its seq are replayed over the later pages. */
@@ -629,4 +691,35 @@ private:
 	bool bChangesWanted = false;
 	bool bChangesFirstPage = true;
 	FString OwnTeam;
+
+	/** A Game Kit starter's Collection Topic: its subscription, the position its members were applied at, and the pushes held during a read. */
+	uint64 CollectionHandle = 0;
+	uint64 CollectionEpoch = 0;
+	uint64 CollectionSeq = 0;
+	uint32 CollectionAttempt = 0;
+	TArray<TArray<uint8>> CollectionPushes;
+	int64 CollectionBytes = 0;
+	bool bCollectionRead = false;
+	bool bCollectionReadInFlight = false;
+	bool bCollectionReadAgain = false;
+	/** A Game Kit starter's State or collection last failed to subscribe or read, so a good read of the other keeps the backoff and the reason. */
+	bool bKitStateFailing = false;
+	bool bCollectionFailing = false;
+
+	/** By Owner Value: a read is in flight, another is due once it answers, one has been read, and the last one failed, which keeps the backoff and the reason. */
+	TBitArray<> OwnerReadsInFlight;
+	TBitArray<> OwnerReadsAgain;
+	TBitArray<> OwnerReadsDone;
+	TBitArray<> OwnerReadsFailing;
+	/** By Owner Value: a changed message asked for it since the last tick. */
+	TBitArray<> OwnerReadsWanted;
+	/** The signed-in player the Owner Values held were read for; another player signing in drops them. */
+	int64 OwnerValuesUserId = 0;
+	/** Raised when the Owner Values are dropped, so an answer to a read sent before is ignored. */
+	uint32 OwnerReadEra = 0;
+
+	/** The ticket the next read of the State or an Owner Value takes, and the tickets of those in flight. */
+	uint32 ReadTickets = 0;
+	uint32 StateReadTicket = 0;
+	TArray<uint32> OwnerReadTickets;
 };
