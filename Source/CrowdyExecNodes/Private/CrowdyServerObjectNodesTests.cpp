@@ -6,6 +6,7 @@
 #include "BlueprintNodeSpawner.h"
 #include "CrowdyExecNodesSpawn.h"
 #include "CrowdyExecNodesTestTypes.h"
+#include "CrowdyGameKitTypes.h"
 #include "CrowdyK2Node_CallServerFunction.h"
 #include "CrowdyK2Node_GetServerState.h"
 #include "CrowdyK2Node_GetServerVariable.h"
@@ -1325,6 +1326,55 @@ bool FCrowdyServerObjectNodesHiddenVariableTest::RunTest(const FString& Paramete
 	int32 ErrorCount = 0;
 	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
 	TestTrue(TEXT("a node on a hidden variable is a compile error naming it"), AnyContains(Errors, TEXT("Big is not Visible to Players")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesStarterVariablesTest, "CrowdySDK.Editor.ServerObjectNodes.StarterVariablesReachPlayers", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesStarterVariablesTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	Definition->CodeSource = ECrowdyServerCodeSource::GameKitStarter;
+	Definition->WatchedFields.Reset();
+
+	TArray<FCrowdyServerObjectMenuEntry> Entries;
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(Definition, Entries);
+	TestTrue(TEXT("a starter's snapshot carries its whole State, so the menu offers Get for each variable"), Entries.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry)
+	{
+		return Entry.Member == TEXT("Int") && Entry.NodeClass == UCrowdyK2Node_GetServerVariable::StaticClass();
+	}));
+
+	FCompileRig Rig = MakeActorBlueprint();
+	UCrowdyK2Node_ServerVariableChanged* Changed = AddNode<UCrowdyK2Node_ServerVariableChanged>(Rig.Graph, Definition, TEXT("Int"));
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Changed, UEdGraphSchema_K2::PN_Execute);
+
+	int32 ErrorCount = 0;
+	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
+	TestFalse(TEXT("On Changed on a starter's variable is no Visible to Players error"), AnyContains(Errors, TEXT("is not Visible to Players")));
+
+	UCrowdyServerObjectDefinition* World = NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage());
+	World->State = FCrowdyKitWorldConditions::StaticStruct();
+	World->CodeSource = ECrowdyServerCodeSource::GameKitStarter;
+	World->KitStateTopic = TEXT("world");
+	World->bOnlyOneInstance = true;
+	World->TypeName = TEXT("world");
+	TArray<FString> BakeErrors;
+	TestTrue(TEXT("the world bakes"), World->Bake(BakeErrors));
+	Entries.Reset();
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(World, Entries);
+	auto Offers = [&Entries](const TCHAR* Member, UClass* NodeClass)
+	{
+		return Entries.ContainsByPredicate([Member, NodeClass](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.Member == Member && Entry.NodeClass == NodeClass; });
+	};
+	TestTrue(TEXT("a presence flag can be read"), Offers(TEXT("bHasOnline"), UCrowdyK2Node_GetServerVariable::StaticClass()));
+	TestFalse(TEXT("but has no On Changed of its own, since its changes are reported as its value's"), Offers(TEXT("bHasOnline"), UCrowdyK2Node_ServerVariableChanged::StaticClass()));
+	TestTrue(TEXT("its value has one"), Offers(TEXT("Online"), UCrowdyK2Node_ServerVariableChanged::StaticClass()));
+
+	FCompileRig FlagRig = MakeActorBlueprint();
+	UCrowdyK2Node_ServerVariableChanged* FlagChanged = AddNode<UCrowdyK2Node_ServerVariableChanged>(FlagRig.Graph, World, TEXT("bHasOnline"));
+	Link(FlagRig.BeginPlay, UEdGraphSchema_K2::PN_Then, FlagChanged, UEdGraphSchema_K2::PN_Execute);
+	const TArray<FString> FlagErrors = Compile(FlagRig.Blueprint, ErrorCount);
+	TestTrue(TEXT("a pasted On Changed on the flag says which node to use"), AnyContains(FlagErrors, TEXT("bHasOnline changes together with Online")));
 	return true;
 }
 

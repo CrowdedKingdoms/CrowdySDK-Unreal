@@ -54,6 +54,9 @@ namespace CrowdyServerComputePage
 	/** How many instances a Server Function Library runs, as a type row says it: 1 to 4 instances, or 4 instances when the two are equal. */
 	FText InstancesPhrase(int32 MinInstances, int32 MaxInstances);
 
+	/** How many variables every player who reads the type receives, as a type row counts them: a Game Kit starter sends its whole State but its Owner Values, which only their own player reads. */
+	int32 CountVisibleVariables(const UCrowdyServerObjectDefinition& Definition);
+
 	struct FChangeBadge
 	{
 		FText Label;

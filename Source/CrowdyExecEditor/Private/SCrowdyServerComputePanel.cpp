@@ -3,6 +3,7 @@
 #include "CrowdyExecCodegen.h"
 #include "CrowdyExecCodegenMenu.h"
 #include "CrowdyExecDeploy.h"
+#include "CrowdyExecInternal.h"
 #include "CrowdyGameKitStarters.h"
 #include "CrowdyServerCodeFiles.h"
 #include "CrowdyServerComputeService.h"
@@ -463,6 +464,17 @@ FText CrowdyServerComputePage::InstancesPhrase(int32 MinInstances, int32 MaxInst
 		return FText::Format(LOCTEXT("MetaInstances", "{0} {0}|plural(one=instance,other=instances)"), MinInstances);
 	}
 	return FText::Format(LOCTEXT("MetaInstanceRange", "{0} to {1} instances"), MinInstances, MaxInstances);
+}
+
+int32 CrowdyServerComputePage::CountVisibleVariables(const UCrowdyServerObjectDefinition& Definition)
+{
+	FString Error;
+	const FCrowdyExecLayout* Layout = Definition.IsGameKitStarter() ? Definition.ResolveLayout(Error) : nullptr;
+	if (!Layout || Layout->StateStruct == INDEX_NONE)
+	{
+		return Definition.WatchedFields.Num();
+	}
+	return FMath::Max(Layout->Structs[Layout->StateStruct].Fields.Num() - Definition.KitOwnerValues.Num(), 0);
 }
 
 FText CrowdyServerComputePage::WhyCrateFolderStays(const FString& TypeName, const FString& CrateDirectory, const FString& ServerDirectory, bool bSharedTypeName)
@@ -1684,7 +1696,11 @@ FText SCrowdyServerComputePanel::MakeTypeMeta(const UCrowdyServerObjectDefinitio
 	{
 		Parts.Add(FText::Format(LOCTEXT("MetaFunctions", "{0} {0}|plural(one=function,other=functions)"), Definition->Functions.Num()).ToString());
 		Parts.Add(bLibrary ? CrowdyServerComputePage::InstancesPhrase(Definition->MinInstances, Definition->MaxInstances).ToString()
-			: FText::Format(LOCTEXT("MetaWatched", "{0} {0}|plural(one=variable,other=variables) visible to players"), Definition->WatchedFields.Num()).ToString());
+			: FText::Format(LOCTEXT("MetaWatched", "{0} {0}|plural(one=variable,other=variables) visible to players"), CrowdyServerComputePage::CountVisibleVariables(*Definition)).ToString());
+		if (!bLibrary && Definition->IsGameKitStarter() && !Definition->KitOwnerValues.IsEmpty())
+		{
+			Parts.Add(FText::Format(LOCTEXT("MetaOwnerValues", "{0} read only by the player {0}|plural(one=it belongs,other=they belong) to"), Definition->KitOwnerValues.Num()).ToString());
+		}
 		if (!Definition->IsReachableByPlayers())
 		{
 			Parts.Add(LOCTEXT("MetaClosed", "closed to players: only server code and developer tools reach it").ToString());
