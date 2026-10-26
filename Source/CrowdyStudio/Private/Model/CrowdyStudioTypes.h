@@ -3,6 +3,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Queries/Data/Channels/Types/FCrowdyChannelPermissions.h"
+#include "Queries/Data/Teams/Types/FCrowdyTeamPermissions.h"
 
 // Plain editor-side records the console works with. They mirror the GraphQL response
 // shapes closely enough that swapping to generated codegen stays a field-by-field copy.
@@ -127,8 +129,7 @@ struct FStudioGroupMember
 	TArray<int64> RoleIds;
 };
 
-// One role of a team or channel. Permissions are the group-management keys this role grants (from the
-// FIXED group-permission set: manage_members, manage_roles, manage_group, send_messages). System roles
+// One role of a team or channel. Permissions are the keys this role grants, from GetGroupPermissions. System roles
 // (e.g. the built-in leader) cannot be renamed, re-ranked, or deleted.
 struct FStudioGroupRole
 {
@@ -138,6 +139,27 @@ struct FStudioGroupRole
 	bool bIsSystem = false;
 	TArray<FString> Permissions;
 };
+
+// A permission a team role or a channel role can grant: the key the server takes, and its caption.
+struct FStudioGroupPermission
+{
+	FString Key;
+	FText Label;
+};
+
+// Every permission a team role can grant, or with bChannel a channel role; only a channel has send_messages.
+inline TArray<FStudioGroupPermission> GetGroupPermissions(bool bChannel)
+{
+	const UEnum* Enum = bChannel ? StaticEnum<ECrowdyChannelPermission>() : StaticEnum<ECrowdyTeamPermission>();
+	TArray<FStudioGroupPermission> Permissions;
+	for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+	{
+		const uint8 Value = static_cast<uint8>(Enum->GetValueByIndex(Index));
+		const FString Key = bChannel ? FCrowdyChannelPermissions::ToKey(static_cast<ECrowdyChannelPermission>(Value)) : FCrowdyTeamPermissions::ToKey(static_cast<ECrowdyTeamPermission>(Value));
+		Permissions.Add({Key, Enum->GetDisplayNameTextByIndex(Index)});
+	}
+	return Permissions;
+}
 
 // A chunk address. Each axis is the BigInt scalar on the wire (a signed 64-bit decimal string);
 // +1 on an axis is one chunk (16 voxels) further along it.

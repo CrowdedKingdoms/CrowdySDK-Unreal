@@ -1033,15 +1033,19 @@ void FCrowdyServerComputeService::OnDeployDone(const CrowdyExecBuildAndDeploy::F
 		return;
 	case EStep::StagingFailed:
 	case EStep::DeployFailed:
-		FinishDeploy(FText::Format(LOCTEXT("DeployFailedAfter", "{0}{1}"), Outcome.Step == EStep::StagingFailed
+	{
+		const FText StoppedFirst = Outcome.StoppedRemoved.IsEmpty() ? FText::GetEmpty() : FText::Format(LOCTEXT("StoppedBeforeFailure",
+			" The running Server Objects of {0} were stopped just before; they start again at their next call."), FText::FromString(FString::Join(Outcome.StoppedRemoved, TEXT(", "))));
+		FinishDeploy(FText::Format(LOCTEXT("DeployFailedAfterStops", "{0}{1}{2}"), Outcome.Step == EStep::StagingFailed
 			? ErrorText(LOCTEXT("StagingFailed", "Built, but storing the builds failed"), Outcome.Error)
-			: ErrorText(LOCTEXT("DeployFailed", "Built, but the deploy failed"), Outcome.Error), Unchanged), FCrowdyStudioStyle::Danger());
+			: ErrorText(LOCTEXT("DeployFailed", "Built, but the deploy failed"), Outcome.Error), Unchanged, StoppedFirst), FCrowdyStudioStyle::Danger());
 		if (!Outcome.StagedVersions.IsEmpty() || Outcome.Error.bNoAnswer)
 		{
 			RefreshStatus();
 			RefreshVersions();
 		}
 		return;
+	}
 	case EStep::Deployed:
 		break;
 	}
@@ -1053,10 +1057,12 @@ void FCrowdyServerComputeService::OnDeployDone(const CrowdyExecBuildAndDeploy::F
 	}
 	Sending = CrowdyExecDeploy::FProjectDeploy();
 	SendingDirectories.Reset();
-	const FText DeployedLine = FText::Format(LOCTEXT("Deployed", "Deployed as version {0}."), VersionNumber(Outcome.Version));
+	const FText Deployed = FText::Format(LOCTEXT("Deployed", "Deployed as version {0}."), VersionNumber(Outcome.Version));
+	const FText DeployedLine = Outcome.StopRemovedFailed.IsEmpty() ? Deployed : FText::Format(LOCTEXT("DeployedRemovedStillRunning",
+		"{0} The running Server Objects of a type it removes could not be stopped first, and stay running on the server: {1}"), Deployed, FText::FromString(FString::Join(Outcome.StopRemovedFailed, TEXT("; "))));
 	if (RecordErrors.IsEmpty())
 	{
-		FinishDeploy(DeployedLine, FCrowdyStudioStyle::Success());
+		FinishDeploy(DeployedLine, Outcome.StopRemovedFailed.IsEmpty() ? FCrowdyStudioStyle::Success() : FCrowdyStudioStyle::Warning());
 	}
 	else
 	{

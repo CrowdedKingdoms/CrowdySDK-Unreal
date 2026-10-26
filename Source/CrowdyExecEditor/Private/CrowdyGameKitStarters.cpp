@@ -736,6 +736,21 @@ bool CrowdyGameKitStarters::AddStarter(const FString& TypeName, TConstArrayView<
 			return false;
 		}
 	}
+	const auto WritesSettings = [](const FStarter* Starter)
+	{
+		if (FCString::Strlen(Starter->Parent) == 0)
+		{
+			return true;
+		}
+		const UCrowdyServerObjectDefinition* Made = MakeDefinition(*Starter, GetTransientPackage(), NAME_None, RF_Transient);
+		return Made && !Made->KitActors.IsEmpty();
+	};
+	const FString SettingsProblem = CrowdyExecDeploy::FindReadOnlySettingsProblem();
+	if (!SettingsProblem.IsEmpty() && Plan.ContainsByPredicate(WritesSettings))
+	{
+		OutError = SettingsProblem;
+		return false;
+	}
 	for (const FStarter* Starter : Plan)
 	{
 		UCrowdyServerObjectDefinition* Saved = nullptr;
@@ -854,6 +869,15 @@ bool CrowdyGameKitStarters::RemoveStarter(const FString& TypeName, TConstArrayVi
 	{
 		TypeNames.Add(Definition->TypeName);
 		Paths.Add(FSoftObjectPath(Definition));
+	}
+	for (const FSoftObjectPath& Path : Paths)
+	{
+		const FString SettingsProblem = CrowdyExecDeploy::FindReadOnlySettingsProblemFor(Path);
+		if (!SettingsProblem.IsEmpty())
+		{
+			OutError = SettingsProblem;
+			return false;
+		}
 	}
 
 	const FString Again = TEXT("; run -op=removestarter again to finish");

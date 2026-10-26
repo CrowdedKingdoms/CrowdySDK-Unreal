@@ -61,6 +61,12 @@ namespace CrowdyExecDeploy
 	/** Takes out of Referencers, and returns loaded, the redirectors that point at Definition and that nothing else references, so deleting them with it leaves nothing dangling. A redirector something else still uses stays in Referencers and is added to OutUsed. */
 	TArray<UObject*> TakeUnusedRedirectors(const UCrowdyServerObjectDefinition& Definition, TArray<FName>& Referencers, TArray<FName>& OutUsed);
 
+	/** Why the Game Kit settings cannot be saved: ConfigFile, by default the ini that holds them, is read-only, and the engine would keep the change in memory only. Empty when it can be written. */
+	FString FindReadOnlySettingsProblem(const FString& ConfigFile = FString());
+
+	/** FindReadOnlySettingsProblem, only when the Game Kit settings name Asset, so moving or deleting it changes them. */
+	FString FindReadOnlySettingsProblemFor(const FSoftObjectPath& Asset, const FString& ConfigFile = FString());
+
 	/** Where a type's crate is on disk and whether it matches what Generate Server Code would write now. */
 	FTypeState InspectType(const UCrowdyServerObjectDefinition& Definition, const FString& CrateDirectory);
 

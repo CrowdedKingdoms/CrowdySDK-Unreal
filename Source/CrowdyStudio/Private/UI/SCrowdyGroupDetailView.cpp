@@ -23,23 +23,6 @@
 
 #define LOCTEXT_NAMESPACE "CrowdyStudio"
 
-namespace
-{
-	// The FIXED group-management permission set (NOT the runtime permission catalog). A role grants
-	// some subset of these; the labels are the plain-language captions shown beside each checkbox.
-	struct FGroupPermInfo { const TCHAR* Key; const TCHAR* Label; };
-	const TArray<FGroupPermInfo>& GroupPermCatalog()
-	{
-		static const TArray<FGroupPermInfo> Perms = {
-			{ TEXT("manage_members"), TEXT("Manage members") },
-			{ TEXT("manage_roles"),   TEXT("Manage roles") },
-			{ TEXT("manage_group"),   TEXT("Manage group") },
-			{ TEXT("send_messages"),  TEXT("Send messages") },
-		};
-		return Perms;
-	}
-}
-
 void SCrowdyGroupDetailView::Construct(const FArguments& InArgs)
 {
 	Controller = InArgs._Controller;
@@ -321,7 +304,7 @@ TSharedRef<SWidget> SCrowdyGroupDetailView::BuildPermChecklist(TSet<FString>* Ba
 {
 	TSharedRef<SWrapBox> Wrap = SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(10.0f, 6.0f));
 
-	for (const FGroupPermInfo& Perm : GroupPermCatalog())
+	for (const FStudioGroupPermission& Perm : GetGroupPermissions(Kind == ECrowdyGroupKind::Channel))
 	{
 		const FString Key = Perm.Key;
 		Wrap->AddSlot()
@@ -333,7 +316,7 @@ TSharedRef<SWidget> SCrowdyGroupDetailView::BuildPermChecklist(TSet<FString>* Ba
 				if (NewState == ECheckBoxState::Checked) { Backing->Add(Key); }
 				else { Backing->Remove(Key); }
 			})
-			[ SNew(STextBlock).Text(FText::FromString(Perm.Label)).TextStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Text.Body") ]
+			[ SNew(STextBlock).Text(Perm.Label).TextStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Text.Body") ]
 		];
 	}
 

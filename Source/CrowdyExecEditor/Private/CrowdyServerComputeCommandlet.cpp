@@ -561,6 +561,20 @@ namespace CrowdyServerComputeCommandletDetail
 		}
 		Run->Result->SetArrayField(TEXT("stagedVersions"), Staged);
 		Run->Result->SetNumberField(TEXT("restoredVersion"), Outcome.RestoredVersion);
+		Run->Result->SetArrayField(TEXT("stoppedRemoved"), StringValues(Outcome.StoppedRemoved));
+		Run->Result->SetArrayField(TEXT("stopRemovedFailed"), StringValues(Outcome.StopRemovedFailed));
+		if (!Outcome.StoppedRemoved.IsEmpty() && Outcome.Step == EStep::Deployed)
+		{
+			Step(FString::Printf(TEXT("stopped the running Server Objects of %s first, which this deploy removes; one a player calls before the deploy lands starts again and stays running"), *FString::Join(Outcome.StoppedRemoved, TEXT(", "))));
+		}
+		if (!Outcome.StoppedRemoved.IsEmpty() && Outcome.Step != EStep::Deployed)
+		{
+			Step(FString::Printf(TEXT("the running Server Objects of %s were stopped just before the deploy failed; they start again at their next call"), *FString::Join(Outcome.StoppedRemoved, TEXT(", "))));
+		}
+		if (!Outcome.StopRemovedFailed.IsEmpty())
+		{
+			UE_LOG(LogCrowdyExec, Warning, TEXT("Server Compute: could not stop the running Server Objects of a type this deploy removes; they stay running on the server: %s"), *FString::Join(Outcome.StopRemovedFailed, TEXT("; ")));
+		}
 		FString Unchanged;
 		if (Outcome.Step == EStep::DeployFailed && Outcome.Error.bNoAnswer)
 		{
@@ -661,6 +675,8 @@ namespace CrowdyServerComputeCommandletDetail
 			Step(TEXT("every build succeeded; deploying"));
 			SendingChange(*Run);
 		};
+		// Staging and the stops of removed types come first, so the deploy itself gets a whole wait of its own.
+		Callbacks.OnFinalDeploy = [Run]() { SendingChange(*Run); };
 		Callbacks.OnDone = [Run](const CrowdyExecBuildAndDeploy::FOutcome& Outcome) { OnDeployDone(Run, Outcome); };
 		CrowdyExecBuildAndDeploy::Run(Run->Client.ToSharedRef(), MoveTemp(Plan), ManifestJson, Live.Get(CrowdyExecBuildAndDeploy::FLive()), MoveTemp(Callbacks),
 			static_cast<float>(BuildTimeoutSeconds));
@@ -1217,6 +1233,12 @@ namespace CrowdyServerComputeCommandletDetail
 		{
 			return;
 		}
+		const FString SettingsProblem = CrowdyExecDeploy::FindReadOnlySettingsProblemFor(FSoftObjectPath(AssetPath));
+		if (!SettingsProblem.IsEmpty())
+		{
+			Fail(Run, SettingsProblem);
+			return;
+		}
 		const TArray<UObject*> ToDelete = {Definition};
 		if (ObjectTools::DeleteObjectsUnchecked(ToDelete) != 1)
 		{
@@ -1246,6 +1268,11 @@ namespace CrowdyServerComputeCommandletDetail
 		if (bRedirectorsFailed)
 		{
 			Fail(Run, FString::Printf(TEXT("Removed %s's definition, but could not delete the redirectors that pointed at it; delete them in the Content Browser"), *Type));
+			return;
+		}
+		if (!Effects.bSettingsSaved)
+		{
+			Fail(Run, FString::Printf(TEXT("Removed %s's definition, but Config/DefaultGame.ini could not be written, so its Game Kit settings still name it; make the file writable and remove that line"), *Type));
 			return;
 		}
 		Succeed(Run);
@@ -1303,9 +1330,29 @@ namespace CrowdyServerComputeCommandletDetail
 		UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
 		const bool bNamedWorld = Settings->GameKitWorld == FSoftObjectPath(OldPath);
 		const bool bNamedActors = Settings->GameKitActorStarters.Contains(FSoftObjectPath(OldPath));
+		const FString SettingsProblem = CrowdyExecDeploy::FindReadOnlySettingsProblemFor(FSoftObjectPath(OldPath));
+		if (!SettingsProblem.IsEmpty())
+		{
+			Fail(Run, SettingsProblem);
+			return;
+		}
+		// The editor asks before moving an asset a settings object names, which stops a run without a window; this op moves the settings itself below.
+		Settings->GameKitActorStarters.Remove(FSoftObjectPath(OldPath));
+		if (bNamedWorld)
+		{
+			Settings->GameKitWorld.Reset();
+		}
 		const TArray<FAssetRenameData> Renames = {FAssetRenameData(Definition, FPackageName::GetLongPackagePath(To), FPackageName::GetShortName(To))};
 		if (!FAssetToolsModule::GetModule().Get().RenameAssets(Renames))
 		{
+			if (bNamedWorld)
+			{
+				Settings->GameKitWorld = FSoftObjectPath(OldPath);
+			}
+			if (bNamedActors)
+			{
+				Settings->GameKitActorStarters.Add(FSoftObjectPath(OldPath));
+			}
 			Fail(Run, FString::Printf(TEXT("the editor's rename of %s to %s did not go through; the reason is in the log above"), *From, *To));
 			return;
 		}
@@ -1325,18 +1372,19 @@ namespace CrowdyServerComputeCommandletDetail
 		}
 		if (bNamedActors)
 		{
-			Settings->GameKitActorStarters.Remove(FSoftObjectPath(OldPath));
 			Settings->GameKitActorStarters.AddUnique(FSoftObjectPath(NewPath));
 		}
-		if (bNamedWorld || bNamedActors)
-		{
-			Settings->TryUpdateDefaultConfigFile();
-		}
-		Run->Result->SetBoolField(TEXT("gameKitSettingsUpdated"), bNamedWorld || bNamedActors);
+		const bool bSettingsSaved = !(bNamedWorld || bNamedActors) || Settings->TryUpdateDefaultConfigFile();
+		Run->Result->SetBoolField(TEXT("gameKitSettingsUpdated"), (bNamedWorld || bNamedActors) && bSettingsSaved);
 		Step(FString::Printf(TEXT("%s's definition is now %s"), *Type, *NewPath));
 		if (!bCrateFollows)
 		{
 			Fail(Run, FString::Printf(TEXT("The definition moved, but %s still names %s; run -op=generate -type=%s to write it again"), *CrateDirectory, *OldPath, *Type));
+			return;
+		}
+		if (!bSettingsSaved)
+		{
+			Fail(Run, FString::Printf(TEXT("The definition moved, but Config/DefaultGame.ini could not be written, so its Game Kit settings still name %s; make the file writable and change that line to %s"), *OldPath, *NewPath));
 			return;
 		}
 		Succeed(Run);

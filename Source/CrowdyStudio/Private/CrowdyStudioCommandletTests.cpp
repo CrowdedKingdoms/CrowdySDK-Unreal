@@ -291,6 +291,9 @@ bool FCrowdyStudioCommandletParsesGroupsTest::RunTest(const FString& /*Parameter
 	TestEqual(TEXT("the name keeps its space"), Request.Name, FString(TEXT("Red Team")));
 	TestEqual(TEXT("the description keeps its comma"), Request.Description, FString(TEXT("A team, of reds")));
 	TestEqual(TEXT("the policy is lower-cased"), Request.Policy, FString(TEXT("invite")));
+	TestTrue(TEXT("a name a shell passed without its quotes parses"), Accepts(TEXT("-op=createteam -name=Raiders(EU),West -description=a,b"), Request));
+	TestEqual(TEXT("the name keeps its bracket and comma"), Request.Name, FString(TEXT("Raiders(EU),West")));
+	TestEqual(TEXT("so does the description"), Request.Description, FString(TEXT("a,b")));
 
 	TestTrue(TEXT("createteam without -policy parses"), Accepts(TEXT("-op=createteam -name=Red"), Request));
 	TestEqual(TEXT("a team defaults to open membership, as the Teams page does"), Request.Policy, FString(TEXT("open")));
@@ -333,7 +336,7 @@ bool FCrowdyStudioCommandletParsesGridsTest::RunTest(const FString& /*Parameters
 
 	TestTrue(TEXT("grids without -low names -low"), RefusesWith(TEXT("-op=grids -high=\"1,1,1\""), TEXT("-low"), TEXT("required")));
 	TestTrue(TEXT("grids without -high names -high"), RefusesWith(TEXT("-op=grids -low=\"1,1,1\""), TEXT("-high"), TEXT("required")));
-	TestTrue(TEXT("an unquoted triple is cut at its comma and refused"), RefusesWith(TEXT("-op=grids -low=0,0,0 -high=\"1,1,1\""), TEXT("-low"), TEXT("in quotes")));
+	TestTrue(TEXT("an unquoted triple is read whole, as a shell delivers a quoted one"), Accepts(TEXT("-op=grids -low=-4,0,12 -high=1,1,1"), Request) && Request.Low.X == -4 && Request.Low.Z == 12);
 	TestTrue(TEXT("two coordinates are refused"), RefusesWith(TEXT("-op=grids -low=\"1,1\" -high=\"1,1,1\""), TEXT("-low"), TEXT("x,y,z")));
 	TestTrue(TEXT("a fractional coordinate is refused"), RefusesWith(TEXT("-op=grids -low=\"1,1.5,1\" -high=\"1,1,1\""), TEXT("-low"), TEXT("whole numbers")));
 	TestTrue(TEXT("an empty coordinate is refused"), RefusesWith(TEXT("-op=creategrid -corner1=\"1,,1\" -corner2=\"1,1,1\""), TEXT("-corner1"), TEXT("whole numbers")));
@@ -371,7 +374,11 @@ bool FCrowdyStudioCommandletParsesGridGrantsTest::RunTest(const FString& /*Param
 	TestTrue(TEXT("a grant without -keys names -keys"), RefusesWith(TEXT("-op=grantgrid -grid=4 -user=9"), TEXT("-keys"), TEXT("to grant")));
 	TestTrue(TEXT("a revoke with neither -keys nor -all is refused"), RefusesWith(TEXT("-op=revokegrid -grid=4 -user=9"), TEXT("-keys"), TEXT("-all revokes every grant")));
 	TestTrue(TEXT("a revoke with both -keys and -all is refused"), RefusesWith(TEXT("-op=revokegrid -grid=4 -user=9 -keys=\"a\" -all"), TEXT("-keys"), TEXT("not both")));
-	TestTrue(TEXT("an unquoted key list is cut at its comma and refused"), RefusesWith(TEXT("-op=grantgrid -grid=4 -user=9 -keys=a,b"), TEXT("-keys"), TEXT("in quotes")));
+	TestTrue(TEXT("an unquoted key list is read whole"), Accepts(TEXT("-op=grantgrid -grid=4 -user=9 -keys=a,b"), Request) && Request.Keys.Num() == 2);
+	TestTrue(TEXT("an unquoted key list broken by a space is refused, not cut"), RefusesWith(TEXT("-op=grantgrid -grid=4 -user=9 -keys=a, b"), TEXT("-keys"), TEXT("ends at a space")));
+	TestTrue(TEXT("so is one with the space before the comma"), RefusesWith(TEXT("-op=grantgrid -grid=4 -user=9 -keys=a ,b"), TEXT("-keys"), TEXT("ends at a space")));
+	TestTrue(TEXT("a quoted list with spaces is read whole"), Accepts(TEXT("-op=grantgrid -grid=4 -user=9 -keys=\"a , b\""), Request) && Request.Keys.Num() == 2);
+	TestTrue(TEXT("a quoted list may end in a comma"), Accepts(TEXT("-op=grantgrid -grid=4 -user=9 -keys=\"a,b, \""), Request) && Request.Keys.Num() == 2);
 	TestTrue(TEXT("a key over 64 characters is refused"), RefusesWith(FString::Printf(TEXT("-op=grantgrid -grid=4 -user=9 -keys=%s"), *FString::ChrN(65, TEXT('a'))), TEXT("-keys"), TEXT("64")));
 	TestTrue(TEXT("a non-numeric -group names -group"), Refuses(TEXT("-op=grantgrid -grid=4 -group=red -keys=\"a\""), TEXT("-group")));
 	return true;
@@ -431,7 +438,7 @@ bool FCrowdyStudioCommandletParsesMembersTest::RunTest(const FString& /*Paramete
 	TestTrue(TEXT("setroles with both is refused"), RefusesWith(TEXT("-op=setroles -kind=team -group=3 -user=9 -roles=\"3\" -noroles"), TEXT("-roles"), TEXT("not both")));
 	TestTrue(TEXT("a role entry that is not an id is refused"), RefusesWith(TEXT("-op=setroles -kind=team -group=3 -user=9 -roles=\"3,lead\""), TEXT("-roles"), TEXT("not a role id")));
 	TestTrue(TEXT("a zero role id is refused"), RefusesWith(TEXT("-op=setroles -kind=team -group=3 -user=9 -roles=\"0\""), TEXT("-roles"), TEXT("not a role id")));
-	TestTrue(TEXT("an unquoted role list is cut at its comma and refused"), RefusesWith(TEXT("-op=setroles -kind=team -group=3 -user=9 -roles=3,4"), TEXT("-roles"), TEXT("in quotes")));
+	TestTrue(TEXT("an unquoted role list is read whole"), Accepts(TEXT("-op=setroles -kind=team -group=3 -user=9 -roles=3,4"), Request) && Request.RoleIds.Num() == 2);
 	return true;
 }
 
@@ -440,7 +447,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioCommandletParsesRolesTest, "Crowdy
 bool FCrowdyStudioCommandletParsesRolesTest::RunTest(const FString& /*Parameters*/)
 {
 	FCrowdyStudioCommandRequest Request;
-	TestTrue(TEXT("createrole parses"), Accepts(TEXT("-op=createrole -kind=team -group=3 -name=\"Field Officer\" -perms=\"manage_members, send_messages\" -rank=5"), Request));
+	TestTrue(TEXT("createrole parses"), Accepts(TEXT("-op=createrole -kind=team -group=3 -name=\"Field Officer\" -perms=\"manage_members, invite_members\" -rank=5"), Request));
 	TestEqual(TEXT("the name keeps its space"), Request.Name, FString(TEXT("Field Officer")));
 	TestEqual(TEXT("both permissions are read"), Request.Perms.Num(), 2);
 	TestEqual(TEXT("the rank is read"), Request.Rank, 5);
@@ -458,10 +465,13 @@ bool FCrowdyStudioCommandletParsesRolesTest::RunTest(const FString& /*Parameters
 	TestTrue(TEXT("deleterole parses"), Accepts(TEXT("-op=deleterole -kind=team -group=3 -role=11"), Request));
 
 	TestTrue(TEXT("createrole without -name names -name"), RefusesWith(TEXT("-op=createrole -kind=team -group=3"), TEXT("-name"), TEXT("required")));
-	TestTrue(TEXT("a permission outside the group set is refused"), RefusesWith(TEXT("-op=createrole -kind=team -group=3 -name=Scout -perms=\"fly\""), TEXT("-perms"), TEXT("not a group permission")));
+	TestTrue(TEXT("a permission outside the team set is refused"), RefusesWith(TEXT("-op=createrole -kind=team -group=3 -name=Scout -perms=\"fly\""), TEXT("-perms"), TEXT("not a team permission")));
+	TestTrue(TEXT("a team has no send_messages, and the refusal lists what a team has"), RefusesWith(TEXT("-op=createrole -kind=team -group=3 -name=Scout -perms=\"send_messages\""), TEXT("send_messages"),
+		TEXT("use manage_group, manage_members, manage_roles, invite_members")));
+	TestTrue(TEXT("a channel has send_messages"), Accepts(TEXT("-op=createrole -kind=channel -group=3 -name=Scout -perms=\"send_messages,invite_members\""), Request));
 	TestTrue(TEXT("a rank that is not a number is refused"), RefusesWith(TEXT("-op=createrole -kind=team -group=3 -name=Scout -rank=high"), TEXT("-rank"), TEXT("whole number")));
-	TestTrue(TEXT("-perms and -noperms together are refused"), RefusesWith(TEXT("-op=createrole -kind=team -group=3 -name=Scout -perms=\"send_messages\" -noperms"), TEXT("-perms"), TEXT("not both")));
-	TestTrue(TEXT("an unquoted permission list is cut at its comma and refused"), RefusesWith(TEXT("-op=createrole -kind=team -group=3 -name=Scout -perms=send_messages,manage_group"), TEXT("-perms"), TEXT("in quotes")));
+	TestTrue(TEXT("-perms and -noperms together are refused"), RefusesWith(TEXT("-op=createrole -kind=team -group=3 -name=Scout -perms=\"invite_members\" -noperms"), TEXT("-perms"), TEXT("not both")));
+	TestTrue(TEXT("an unquoted permission list is read whole"), Accepts(TEXT("-op=createrole -kind=team -group=3 -name=Scout -perms=invite_members,manage_group"), Request) && Request.Perms.Num() == 2);
 	TestTrue(TEXT("updaterole without -role names -role"), RefusesWith(TEXT("-op=updaterole -kind=team -group=3 -rank=1"), TEXT("-role"), TEXT("required")));
 	TestTrue(TEXT("updaterole with nothing to change is refused"), RefusesWith(TEXT("-op=updaterole -kind=team -group=3 -role=11"), TEXT("-name"), TEXT("at least one")));
 	TestTrue(TEXT("deleterole without -role names -role"), RefusesWith(TEXT("-op=deleterole -kind=team -group=3"), TEXT("-role"), TEXT("required")));
@@ -536,7 +546,7 @@ bool FCrowdyStudioCommandletParsesGridDetailTest::RunTest(const FString& /*Param
 	TestTrue(TEXT("gridlimits without -grid names -grid"), RefusesWith(TEXT("-op=gridlimits -nolimit"), TEXT("-grid"), TEXT("required")));
 	TestTrue(TEXT("gridlimits with neither -keys nor -nolimit is refused"), RefusesWith(TEXT("-op=gridlimits -grid=5"), TEXT("-keys"), TEXT("-nolimit is required")));
 	TestTrue(TEXT("gridlimits with both is refused"), RefusesWith(TEXT("-op=gridlimits -grid=5 -keys=\"a\" -nolimit"), TEXT("-keys"), TEXT("not both")));
-	TestTrue(TEXT("an unquoted key list is cut at its comma and refused"), RefusesWith(TEXT("-op=gridlimits -grid=5 -keys=a,b"), TEXT("-keys"), TEXT("in quotes")));
+	TestTrue(TEXT("an unquoted key list is read whole"), Accepts(TEXT("-op=gridlimits -grid=5 -keys=a,b"), Request) && Request.Keys.Num() == 2);
 	TestTrue(TEXT("gridgrants without -group names -group"), RefusesWith(TEXT("-op=gridgrants -grid=5"), TEXT("-group"), TEXT("required")));
 	TestTrue(TEXT("gridpermissions with a non-numeric -user names -user"), Refuses(TEXT("-op=gridpermissions -grid=5 -user=me"), TEXT("-user")));
 	return true;
@@ -839,18 +849,18 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioCommandletReportsADifferingRoleTes
 
 bool FCrowdyStudioCommandletReportsADifferingRoleTest::RunTest(const FString& /*Parameters*/)
 {
-	const FStudioGroupRole Existing = ExistingRole(3, TEXT("Scout"), 2, { TEXT("send_messages"), TEXT("manage_members") });
+	const FStudioGroupRole Existing = ExistingRole(3, TEXT("Scout"), 2, { TEXT("invite_members"), TEXT("manage_members") });
 	FCrowdyStudioCommandRequest Request;
 
-	Accepts(TEXT("-op=createrole -kind=team -group=9 -name=Scout -perms=\"manage_members,send_messages\" -rank=2"), Request);
+	Accepts(TEXT("-op=createrole -kind=team -group=9 -name=Scout -perms=\"manage_members,invite_members\" -rank=2"), Request);
 	TestTrue(TEXT("the same permissions in another order and the same rank match"), UCrowdyStudioCommandlet::FindRoleDifference(Request, Existing).IsEmpty());
 
 	Accepts(TEXT("-op=createrole -kind=team -group=9 -name=Scout"), Request);
 	TestTrue(TEXT("a role that gave no permissions and no rank asks for nothing to compare"), UCrowdyStudioCommandlet::FindRoleDifference(Request, Existing).IsEmpty());
 
-	Accepts(TEXT("-op=createrole -kind=team -group=9 -name=Scout -perms=\"send_messages\""), Request);
+	Accepts(TEXT("-op=createrole -kind=team -group=9 -name=Scout -perms=\"invite_members\""), Request);
 	const FString Perms = UCrowdyStudioCommandlet::FindRoleDifference(Request, Existing);
-	TestTrue(TEXT("other permissions are named with both sets"), Perms.Contains(TEXT("permissions are \"send_messages, manage_members\", not \"send_messages\"")));
+	TestTrue(TEXT("other permissions are named with both sets"), Perms.Contains(TEXT("permissions are \"invite_members, manage_members\", not \"invite_members\"")));
 	TestFalse(TEXT("and the matching rank is not"), Perms.Contains(TEXT("rank")));
 	TestTrue(TEXT("it points at updaterole for this role"), Perms.Contains(TEXT("-op=updaterole -kind=team -group=9 -role=3")));
 

@@ -35,6 +35,9 @@ namespace CrowdyExecBuildAndDeploy
 	/** Why Plan cannot be deployed over Live, checked before anything is built; empty when it can. */
 	FString FindPlanProblem(const FPlan& Plan, const FString& ManifestJson, const TOptional<FLive>& Live);
 
+	/** The node types LiveManifest runs that Manifest leaves out, so a deploy of Manifest removes them; empty when either cannot be read. */
+	TArray<FString> FindRemovedTypes(const FString& LiveManifest, const FString& Manifest);
+
 	enum class EStep : uint8
 	{
 		Deployed,
@@ -62,6 +65,10 @@ namespace CrowdyExecBuildAndDeploy
 		TArray<CrowdyExecDeveloper::FBuild> Builds;
 		/** Each crate's module: those built and those reused. */
 		TArray<CrowdyExecDeveloper::FBuildArtifact> Artifacts;
+		/** The types the deploy removes whose running Server Objects were stopped just before it. */
+		TArray<FString> StoppedRemoved;
+		/** "type: why" for each removed type whose Server Objects could not be stopped; they stay running on the server. */
+		TArray<FString> StopRemovedFailed;
 	};
 
 	struct FCallbacks
@@ -75,7 +82,7 @@ namespace CrowdyExecBuildAndDeploy
 		TFunction<void(const FOutcome& Outcome)> OnDone;
 	};
 
-	/** Runs every build of Plan first, so a failed one deploys nothing. Then, for each build but the last: a staging deploy of the live version's types plus a stand-in per crate, which stores its modules, and the live version made active again. Then deploys ManifestJson with every reused and stored module named by digest and the last build's crates by name. Staging refuses when the active version is no longer Live. OnDone is called once. */
+	/** Runs every build of Plan first, so a failed one deploys nothing. Then, for each build but the last: a staging deploy of the live version's types plus a stand-in per crate, which stores its modules, and the live version made active again. Then stops the running Server Objects of the types the deploy removes from the version active at that moment (read again for a deploy in one part), which the platform would leave running, and deploys ManifestJson with every reused and stored module named by digest and the last build's crates by name. Staging refuses when the active version is no longer Live. OnDone is called once. */
 	void Run(const TSharedRef<CrowdyExecDeveloper::FClient>& Client, FPlan Plan, FString ManifestJson, FLive Live, FCallbacks Callbacks,
 		float BuildTimeoutSeconds = 600.f, float PollSeconds = 3.f);
 }

@@ -219,4 +219,27 @@ bool FCrowdyProjectPageParsesAppDiscoveryTest::RunTest(const FString& /*Paramete
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioGqlUnlimitedCapTest,
+	"CrowdySDK.CrowdyStudio.Gql.AnUnlimitedGroupCapClearsTheOldCap", CrowdyProjectPageTestFlags)
+
+bool FCrowdyStudioGqlUnlimitedCapTest::RunTest(const FString& /*Parameters*/)
+{
+	const TSharedPtr<FJsonObject> Policy = MakeShared<FJsonObject>();
+	Policy->SetStringField(TEXT("creationPolicy"), TEXT("admin"));
+	Policy->SetStringField(TEXT("defaultMembershipPolicy"), TEXT("invite"));
+	Policy->SetField(TEXT("maxMembers"), MakeShared<FJsonValueNull>());
+	Policy->SetField(TEXT("maxGroupsPerUser"), MakeShared<FJsonValueNull>());
+	const TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetObjectField(TEXT("setTeamPolicy"), Policy);
+
+	FStudioGroupPolicy Cached;
+	Cached.MaxMembers = 50;
+	Cached.MaxGroupsPerUser = 3;
+	TestTrue(TEXT("The policy is read"), CrowdyStudioGql::ParseGroupPolicy(CrowdyStudioGql::WrapDataEnvelope(Data), TEXT("setTeamPolicy"), Cached));
+	TestEqual(TEXT("A null max members is unlimited, not the cap it had"), Cached.MaxMembers, 0);
+	TestEqual(TEXT("So is a null max per user"), Cached.MaxGroupsPerUser, 0);
+	TestEqual(TEXT("The policies are read"), Cached.DefaultMembershipPolicy, FString(TEXT("invite")));
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
