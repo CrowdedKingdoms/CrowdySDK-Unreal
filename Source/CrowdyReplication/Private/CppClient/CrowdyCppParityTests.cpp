@@ -69,7 +69,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppVendoredVersionTest,
 	"CrowdySDK.CrowdyCpp.VendoredVersion", CrowdyCppParityTestFlags)
 bool FCrowdyCppVendoredVersionTest::RunTest(const FString& Parameters)
 {
-	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.70.0");
+	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.73.0");
 
 	// Each SDK branch vendors its own tier, so the tier VENDOR.txt records must be the one actually compiled in.
 	const FString CompiledCrowdyCppTier = UTF8_TO_TCHAR(crowdy::kDefaultTier);

@@ -180,6 +180,10 @@ class Connection {
     std::optional<wire::ErrorCode> error;
     /// Server epoch millis from the echo (when acknowledged).
     std::int64_t serverEpochMs = 0;
+    /// Set when an echoed send's wait ended because a new session was established
+    /// (a reassignment) before the echo came: the echo went to the session the
+    /// connection left. `*AndWait` resends then; waitForSequence never sets it.
+    bool sessionChanged = false;
   };
 
   /// Wait (pumping/polling internally; handlers still fire normally) until a
@@ -190,6 +194,20 @@ class Connection {
   WaitOutcome waitForSequence(std::uint8_t sequence, const core::ActorUuid& uuid, int timeoutMs);
 
   /// Send an actor update and wait for its echo or error.
+  ///
+  /// Every `*AndWait` times its wait from when the send has left, and retries
+  /// the first awaited send of a session (the first connect, and each
+  /// reassignment: COMMAND_RECONNECT, a drain move, the watchdog) once, with a
+  /// fresh sequence, when it is refused `Unauthorized` or, for the actor and
+  /// voxel updates the server echoes, when its echo times out. That is how a
+  /// realtime server older than v0.42.0 answers a session's first message;
+  /// v0.42.0 holds it until the session's permissions load instead. Text has
+  /// no echo and succeeds by timing out, so its timeout is never retried.
+  ///
+  /// An actor or voxel update still waiting when the connection is reassigned is
+  /// resent, with a fresh sequence, as soon as the new session is connected,
+  /// rather than at its timeout: its echo went to the session it left. That is
+  /// the send's one retry.
   WaitOutcome sendActorUpdateAndWait(const SpatialSend& p, int timeoutMs = 5000);
   /// Send a voxel update and wait for its echo or error.
   WaitOutcome sendVoxelUpdateAndWait(const wire::ChunkCoord& chunk, const core::ActorUuid& uuid,
@@ -201,6 +219,11 @@ class Connection {
   /// Send a text packet and wait for a correlated error (no echo exists; a
   /// clean timeout means accepted).
   WaitOutcome sendTextAndWait(const SpatialSend& p, int timeoutMs = 1500);
+
+  /// How many sessions this connection has started: the first connect and every
+  /// reassignment count one. An awaited send compares it with the epoch of its
+  /// last answered send to know it is the first of a session.
+  std::uint64_t sessionEpoch() const { return sessionEpoch_.load(std::memory_order_acquire); }
 
   // ----- Receive-side --------------------------------------------------------
 
@@ -388,6 +411,21 @@ class Connection {
   /// Set when onEventsReady fired; poll() clears it before draining, so an
   /// event queued during or after a drain signals again.
   std::atomic<bool> eventsSignalled_{false};
+
+  /// Send once, wait, and retry once: a session's first awaited send, or an echoed
+  /// send that waited across a reassignment (see sendActorUpdateAndWait). `send`
+  /// allocates a fresh sequence per call.
+  template <class Send>
+  WaitOutcome sendAndWait(Send&& send, const core::ActorUuid& uuid, int timeoutMs, bool echoed);
+
+  /// waitForSequence, ending early with `sessionChanged` when `endOnNewSession` and
+  /// a new session is connected while it waits.
+  WaitOutcome awaitSequence(std::uint8_t sequence, const core::ActorUuid& uuid, int timeoutMs,
+                            bool endOnNewSession);
+
+  std::atomic<std::uint64_t> sessionEpoch_{0};
+  /// The session epoch of the last awaited send that was answered (poll-thread only).
+  std::uint64_t confirmedEpoch_ = ~std::uint64_t{0};
 
   // One in-flight AndWait at a time (poll-thread only).
   struct PendingWait {
