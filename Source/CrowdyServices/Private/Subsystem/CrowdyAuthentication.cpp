@@ -2,12 +2,14 @@
 #include "CrowdyServicesLog.h"
 #include "CrowdyCppClient.h"
 #include "Subsystem/CrowdyAuthPayloads.h"
+#include "Subsystem/CrowdyAuthSessionSwitch.h"
 #include "Subsystem/Data/CrowdyAuthSaveGame.h"
 #include "Auth/FCrowdyLoopbackAuthServer.h"
 #include "Security/FCrowdySecretFile.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/CommandLine.h"
 #include "Misc/DateTime.h"
 #include "Misc/Paths.h"
 #include "Kismet/GameplayStatics.h"
@@ -1778,8 +1780,8 @@ FString UCrowdyAuthentication::GetInstanceSuffix() const
 
 	// Under editor PIE each client runs in its own GameInstance but shares ProjectSavedDir with the
 	// others, so an unsuffixed vault would be read/written by every window and all would restore the
-	// same account. PIEInstance is the per-client discriminator. Standalone/packaged (GIsEditor==false)
-	// and editor non-PIE worlds return "" so the path stays byte-identical to before this change.
+	// same account. PIEInstance is the per-client discriminator. Every other process uses -crowdysession,
+	// or no suffix when the switch is absent.
 	if (GIsEditor)
 	{
 		if (const UGameInstance* GI = GetGameInstance())
@@ -1793,7 +1795,20 @@ FString UCrowdyAuthentication::GetInstanceSuffix() const
 			}
 		}
 	}
-	return FString();
+
+	// Resolved once: the command line is fixed for the process and a refused name must warn once, not per save.
+	static const FString SwitchSuffix = []()
+	{
+		bool bRefused = false;
+		const FString Suffix = CrowdySessionSuffixFromCommandLine(FCommandLine::Get(), &bRefused);
+		if (bRefused)
+		{
+			UE_LOG(LogCrowdyServices, Warning,
+				TEXT("[CrowdyAuth] Ignoring -crowdysession: the name must be 1 to 32 characters of A-Z a-z 0-9 - _. Using a separate session, not the default one."));
+		}
+		return Suffix;
+	}();
+	return SwitchSuffix;
 }
 
 // DPAPI-encrypted session vault. Holds only the long-lived, mint-capable SESSION token;
