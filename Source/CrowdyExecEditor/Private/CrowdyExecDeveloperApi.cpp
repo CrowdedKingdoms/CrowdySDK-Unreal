@@ -69,9 +69,9 @@ namespace CrowdyExecDevApi
 			return Value.IsValid() ? Value->AsString() : FString();
 		}
 
-		bool Flag(const TCHAR* Field)
+		bool Flag(const TCHAR* Field, bool bNullable = false)
 		{
-			const TSharedPtr<FJsonValue> Value = Get(Field, EJson::Boolean, false);
+			const TSharedPtr<FJsonValue> Value = Get(Field, EJson::Boolean, bNullable);
 			return Value.IsValid() && Value->AsBool();
 		}
 
@@ -270,6 +270,7 @@ namespace CrowdyExecDevApi
 		Out.HeldBack = Reader.String(TEXT("heldBack"), true);
 		Out.Epoch = Reader.BigInt(TEXT("epoch"));
 		Out.SinceMs = Reader.Number(TEXT("sinceMs"));
+		Out.bOrphaned = Reader.Flag(TEXT("orphaned"), true);
 	}
 
 	void ReadLogLine(FAnswerReader& Reader, FLogLine& Out)
