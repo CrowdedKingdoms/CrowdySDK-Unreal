@@ -5,10 +5,17 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.21.0** (Unreal Engine 5.8). See the
+**Current version: 2.21.1** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
+
+**New in 2.21.1:** `-crowdysession=<name>` gives a packaged client its own saved session, so two
+clients sharing a Saved folder can sign in as different accounts; the platform now stops a removed
+Server Object type itself, so a deploy no longer restarts those types first and its result drops
+`stoppedRemoved` and `stopRemovedFailed`; `-op=instances` shows `orphaned`; the Blueprint sign-in
+examples start from the Game Mode, since a Game Instance's Event Init runs before the SDK's
+subsystems exist; CrowdyCPP 0.74.0.
 
 **New in 2.21.0:** the Game Kit starters: add the platform's ready-made world, matchmaking,
 sessions, leaderboards, player and market, NPCs, game modes, card tables, arenas, races and ball
