@@ -314,7 +314,7 @@ bool FCrowdyExecDeveloperAnswersTest::RunTest(const FString& Parameters)
 		TEXT("{\"data\":{\"execAppStatus\":{\"activeVersion\":null,\"disabled\":false,\"disabledTypes\":[\"sbx_locker\"],\"budgetPaused\":true}}}"),
 		TEXT("{\"data\":{\"execLogs\":[{\"id\":\"l-2\",\"nodeType\":\"sbx_counter\",\"key\":\"village\",\"level\":2,\"host\":\"h1\",\"at\":\"2026-09-29T10:02:00Z\",\"text\":\"add 1 by Ada\",\"flow\":\"0123456789abcdef0123456789abcdef\"},{\"id\":\"l-1\",\"nodeType\":\"sbx_counter\",\"key\":\"village\",\"level\":3,\"host\":\"h1\",\"at\":\"2026-09-29T10:01:00Z\",\"text\":\"started\",\"flow\":null}]}}"),
 		TEXT("{\"data\":{\"execEndpointStats\":[{\"nodeType\":\"sbx_counter\",\"method\":\"add\",\"calls\":10,\"appErrors\":1,\"busy\":2,\"denied\":0,\"deadlineExceeded\":0,\"otherErrors\":0,\"timedCalls\":8,\"latencyMsAvg\":1.5,\"latencyMsMax\":4,\"firstMinute\":\"2026-09-29T10:00:00Z\",\"lastMinute\":\"2026-09-29T10:05:00Z\"},{\"nodeType\":\"sbx_counter\",\"method\":\"$spawn\",\"calls\":1,\"appErrors\":0,\"busy\":0,\"denied\":1,\"deadlineExceeded\":0,\"otherErrors\":0,\"timedCalls\":0,\"latencyMsAvg\":null,\"latencyMsMax\":null,\"firstMinute\":\"2026-09-29T10:00:00Z\",\"lastMinute\":\"2026-09-29T10:00:00Z\"}]}}"),
-		TEXT("{\"data\":{\"execInstances\":[{\"instanceId\":\"i-1\",\"nodeType\":\"sbx_counter\",\"key\":\"village\",\"kind\":\"hub\",\"phase\":\"idle\",\"host\":null,\"epoch\":5,\"sinceMs\":1200,\"heldBack\":null}]}}"),
+		TEXT("{\"data\":{\"execInstances\":[{\"instanceId\":\"i-1\",\"nodeType\":\"sbx_counter\",\"key\":\"village\",\"kind\":\"hub\",\"phase\":\"idle\",\"host\":null,\"epoch\":5,\"sinceMs\":1200,\"heldBack\":null,\"orphaned\":true},{\"instanceId\":\"i-2\",\"nodeType\":\"sbx_counter\",\"key\":\"town\",\"kind\":\"hub\",\"phase\":\"running\",\"host\":\"h1\",\"epoch\":6,\"sinceMs\":10,\"heldBack\":null,\"orphaned\":false},{\"instanceId\":\"i-3\",\"nodeType\":\"sbx_counter\",\"key\":\"city\",\"kind\":\"hub\",\"phase\":\"running\",\"host\":\"h1\",\"epoch\":7,\"sinceMs\":10,\"heldBack\":null,\"orphaned\":null}]}}"),
 		TEXT("{\"data\":{\"execStarters\":{\"manifestJson\":\"{\\\"root\\\":\\\"world\\\"}\",\"starters\":[{\"crate\":\"world\",\"nodeType\":\"world\",\"description\":\"The root.\",\"files\":[{\"path\":\"src/lib.rs\",\"content\":\"// world\"}]}]}}}"),
 	});
 
@@ -385,10 +385,13 @@ bool FCrowdyExecDeveloperAnswersTest::RunTest(const FString& Parameters)
 	const TSharedRef<TCapture<TArray<FInstance>>> Instances = MakeShared<TCapture<TArray<FInstance>>>();
 	Rig.Client->Instances(Into(Instances));
 	if (TestTrue(TEXT("the instances are answered"), Await(Rig, Instances)) && TestTrue(Instances->Result.Error.Message, Instances->Result.bOk)
-		&& TestEqual(TEXT("one instance"), Instances->Result.Value.Num(), 1))
+		&& TestEqual(TEXT("three instances"), Instances->Result.Value.Num(), 3))
 	{
 		TestTrue(TEXT("an idle instance has no host"), Instances->Result.Value[0].Host.IsEmpty());
 		TestEqual(TEXT("epoch"), Instances->Result.Value[0].Epoch, static_cast<int64>(5));
+		TestTrue(TEXT("an instance of a type the active version leaves out is orphaned"), Instances->Result.Value[0].bOrphaned);
+		TestFalse(TEXT("one of a deployed type is not"), Instances->Result.Value[1].bOrphaned);
+		TestFalse(TEXT("nor is one from a manager that does not say"), Instances->Result.Value[2].bOrphaned);
 	}
 
 	const TSharedRef<TCapture<FStarterPack>> Pack = MakeShared<TCapture<FStarterPack>>();
@@ -970,65 +973,39 @@ bool FCrowdyExecSplitDeployTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// The platform leaves a removed type's Server Objects running, and a restart cannot name the type once it is gone, so the deploy stops them first.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployStopsRemovedTest, "CrowdySDK.CrowdyExecEditor.DeployStopsTheTypesItRemovesFirst", CrowdyExecDeveloperApiTests::TestFlags)
-bool FCrowdyExecDeployStopsRemovedTest::RunTest(const FString& Parameters)
+// The platform stops a removed type's Server Objects when the deploy lands, so the deploy sends no restart and reads no version first.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyExecDeployLeavesRemovedTypesTest, "CrowdySDK.CrowdyExecEditor.DeployLeavesRemovedTypesToTheServer", CrowdyExecDeveloperApiTests::TestFlags)
+bool FCrowdyExecDeployLeavesRemovedTypesTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyExecDeveloperApiTests;
-	const FString LiveWithOld = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"dr\",\"client\":true},\"old\":{\"kind\":\"hub\",\"parent\":\"root\",\"digest\":\"do\",\"client\":true}}}");
-	TestEqual(TEXT("a type the live version runs and the deploy leaves out is removed"), CrowdyExecBuildAndDeploy::FindRemovedTypes(LiveWithOld, SplitManifest), TArray<FString>({TEXT("old")}));
-	TestTrue(TEXT("a type both run is not"), CrowdyExecBuildAndDeploy::FindRemovedTypes(SplitLive, SplitManifest).IsEmpty());
-	const FString LiveWithAlphaCapital = FString(SplitManifest).Replace(TEXT("\"alpha\":{"), TEXT("\"Alpha\":{"), ESearchCase::CaseSensitive);
-	TestEqual(TEXT("a Type Name differing only in case is another type, and is removed"), CrowdyExecBuildAndDeploy::FindRemovedTypes(LiveWithAlphaCapital, SplitManifest), TArray<FString>({TEXT("Alpha")}));
-	TestTrue(TEXT("with nothing live, nothing is removed"), CrowdyExecBuildAndDeploy::FindRemovedTypes(FString(), SplitManifest).IsEmpty());
-	TestTrue(TEXT("nor when the deploy's manifest cannot be read"), CrowdyExecBuildAndDeploy::FindRemovedTypes(LiveWithOld, TEXT("not json")).IsEmpty());
-
 	FRig Rig;
 	if (!TestTrue(TEXT("the rig is made"), Rig.IsValid()))
 	{
 		return false;
 	}
 	TArray<TPair<int32, FString>> Responses;
-	Responses.Emplace(200, ActiveAnswer(10, *LiveWithOld));
-	Responses.Emplace(200, TEXT("{\"data\":{\"execRestartType\":{\"nodeType\":\"old\",\"stopped\":2}}}"));
 	Responses.Emplace(200, DeployAnswer(12));
-	Responses.Emplace(200, ActiveAnswer(12, *LiveWithOld));
-	Responses.Emplace(200, TEXT("{\"errors\":[{\"message\":\"app 1 has no node type `old`\",\"extensions\":{\"code\":\"NOT_FOUND\"}}]}"));
-	Responses.Emplace(200, DeployAnswer(13));
 	Rig.ScriptWithStatus(MoveTemp(Responses));
 
-	// The caller's copy of what is live predates another deploy, which added old; the deploy goes by the version active now.
 	CrowdyExecBuildAndDeploy::FPlan Plan;
 	Plan.Reused.Add(TEXT("alpha"), TEXT("da"));
-	const CrowdyExecBuildAndDeploy::FLive Live = LiveVersion(9);
-	const TSharedRef<FRunCapture> Stopped = MakeShared<FRunCapture>();
-	CrowdyExecBuildAndDeploy::Run(Rig.Client.ToSharedRef(), Plan, SplitManifest, Live, CaptureRun(Rig, Stopped), 60.f, 0.f);
-	if (!TestTrue(TEXT("the deploy ends"), Rig.PumpUntil([Stopped] { return Stopped->bDone; })))
+	CrowdyExecBuildAndDeploy::FLive Live;
+	Live.Version = 10;
+	Live.ManifestJson = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"dr\",\"client\":true},\"old\":{\"kind\":\"hub\",\"parent\":\"root\",\"digest\":\"do\",\"client\":true}}}");
+	const TSharedRef<FRunCapture> Capture = MakeShared<FRunCapture>();
+	CrowdyExecBuildAndDeploy::Run(Rig.Client.ToSharedRef(), Plan, SplitManifest, Live, CaptureRun(Rig, Capture), 60.f, 0.f);
+	if (!TestTrue(TEXT("the deploy ends"), Rig.PumpUntil([Capture] { return Capture->bDone; })))
 	{
 		return false;
 	}
-	TestTrue(FString::Printf(TEXT("it deployed (%s)"), *Stopped->Outcome.Error.Message), Stopped->Outcome.Step == CrowdyExecBuildAndDeploy::EStep::Deployed);
-	TestEqual(TEXT("the removed type's Server Objects were stopped"), Stopped->Outcome.StoppedRemoved, TArray<FString>({TEXT("old")}));
-	TestTrue(TEXT("with nothing refused"), Stopped->Outcome.StopRemovedFailed.IsEmpty());
-	if (TestEqual(TEXT("the active version read, one restart, then the deploy"), Rig.SentBodies->Num(), 3))
+	TestTrue(FString::Printf(TEXT("it deployed (%s)"), *Capture->Outcome.Error.Message), Capture->Outcome.Step == CrowdyExecBuildAndDeploy::EStep::Deployed);
+	TestEqual(TEXT("as the version the platform made"), Capture->Outcome.Version, 12);
+	TestFalse(TEXT("no restart of the removed type is sent"), Rig.SentBodies->ContainsByPredicate([](const FString& Body) { return ReadSent(Body).Operation == TEXT("ExecRestartType"); }));
+	TestFalse(TEXT("no version is read first"), Rig.SentBodies->ContainsByPredicate([](const FString& Body) { return ReadSent(Body).Operation == TEXT("ExecVersions"); }));
+	if (TestEqual(TEXT("the deploy is the only request"), Rig.SentBodies->Num(), 1))
 	{
-		TestEqual(TEXT("the active version is read first"), ReadSent((*Rig.SentBodies)[0]).Operation, FString(TEXT("ExecVersions")));
-		const FSent Restart = ReadSent((*Rig.SentBodies)[1]);
-		TestEqual(TEXT("the restart goes before the deploy"), Restart.Operation, FString(TEXT("ExecRestartType")));
-		TestTrue(TEXT("naming the removed type"), Restart.Variables.IsValid() && Restart.Variables->GetStringField(TEXT("nodeType")) == TEXT("old"));
-		TestEqual(TEXT("the deploy follows"), ReadSent((*Rig.SentBodies)[2]).Operation, FString(TEXT("ExecDeploy")));
+		TestEqual(TEXT("and it is the deploy"), ReadSent((*Rig.SentBodies)[0]).Operation, FString(TEXT("ExecDeploy")));
 	}
-
-	const TSharedRef<FRunCapture> Refused = MakeShared<FRunCapture>();
-	CrowdyExecBuildAndDeploy::Run(Rig.Client.ToSharedRef(), Plan, SplitManifest, Live, CaptureRun(Rig, Refused), 60.f, 0.f);
-	if (!TestTrue(TEXT("the second deploy ends"), Rig.PumpUntil([Refused] { return Refused->bDone; })))
-	{
-		return false;
-	}
-	TestEqual(TEXT("a refused stop does not hold the deploy back"), Refused->Outcome.Version, 13);
-	TestTrue(TEXT("nothing is said to be stopped"), Refused->Outcome.StoppedRemoved.IsEmpty());
-	TestTrue(FString::Printf(TEXT("the refusal names the type and why (%s)"), *FString::Join(Refused->Outcome.StopRemovedFailed, TEXT("; "))),
-		Refused->Outcome.StopRemovedFailed.Num() == 1 && Refused->Outcome.StopRemovedFailed[0].StartsWith(TEXT("old: ")) && Refused->Outcome.StopRemovedFailed[0].Contains(TEXT("no node type")));
 	return true;
 }
 
@@ -1080,11 +1057,9 @@ bool FCrowdyExecSplitDeployOneOrNoBuildTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TArray<TPair<int32, FString>> Responses;
-	Responses.Emplace(200, ActiveAnswer(9, SplitLive));
 	Responses.Emplace(200, DeployAnswer(12));
 	Responses.Emplace(200, BuildStarted(TEXT("b-3")));
 	Responses.Emplace(200, BuildEnded(TEXT("b-3"), TEXT("succeeded"), TEXT("alpha"), TEXT("da")));
-	Responses.Emplace(200, ActiveAnswer(9, SplitLive));
 	Responses.Emplace(200, DeployAnswer(13));
 	Rig.ScriptWithStatus(MoveTemp(Responses));
 
@@ -1097,10 +1072,9 @@ bool FCrowdyExecSplitDeployOneOrNoBuildTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TestEqual(TEXT("it deployed"), First->Outcome.Version, 12);
-	if (TestEqual(TEXT("with the active version read, then the deploy"), Rig.SentBodies->Num(), 2))
+	if (TestEqual(TEXT("with the deploy alone"), Rig.SentBodies->Num(), 1))
 	{
-		TestEqual(TEXT("the active version is read first"), ReadSent((*Rig.SentBodies)[0]).Operation, FString(TEXT("ExecVersions")));
-		const FSent Sent = ReadSent((*Rig.SentBodies)[1]);
+		const FSent Sent = ReadSent((*Rig.SentBodies)[0]);
 		TestEqual(TEXT("a deploy"), Sent.Operation, FString(TEXT("ExecDeploy")));
 		TestTrue(TEXT("naming no build"), Sent.Input.IsValid() && !Sent.Input->HasField(TEXT("buildId")));
 		TestEqual(TEXT("the reused crate by its digest"), FieldOf(SentType(Sent, TEXT("alpha")), TEXT("digest")), FString(TEXT("da")));
@@ -1116,7 +1090,7 @@ bool FCrowdyExecSplitDeployOneOrNoBuildTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("it deployed"), Second->Outcome.Version, 13);
 	TestTrue(TEXT("with no staging deploy"), Second->Outcome.StagedVersions.IsEmpty());
-	if (TestEqual(TEXT("with four more requests"), Rig.SentBodies->Num(), 6))
+	if (TestEqual(TEXT("with three more requests"), Rig.SentBodies->Num(), 4))
 	{
 		const FSent Sent = ReadSent(Rig.SentBodies->Last());
 		TestEqual(TEXT("the manifest is sent exactly as made"), FieldOf(Sent.Input, TEXT("manifestJson")), FString(SplitManifest));

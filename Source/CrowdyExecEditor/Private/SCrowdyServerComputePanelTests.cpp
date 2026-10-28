@@ -230,6 +230,11 @@ bool FCrowdyServerComputeMoveOfferTest::RunTest(const FString& Parameters)
 
 	Types = CrowdyServerComputeMove::TypesOnPreviousVersion({}, Before, Changed, Running);
 	TestTrue(TEXT("with nothing known from before, nothing is offered"), Types.IsEmpty() && Running == 0);
+
+	FInstance Orphan = Make(TEXT("sbx_a"), TEXT("k1"), 3, TEXT("running"));
+	Orphan.bOrphaned = true;
+	Types = CrowdyServerComputeMove::TypesOnPreviousVersion(Before, {Orphan}, Changed, Running);
+	TestTrue(TEXT("an orphaned instance is not offered"), Types.IsEmpty() && Running == 0);
 	return true;
 }
 
@@ -282,6 +287,10 @@ bool FCrowdyServerComputeEarlierVersionTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("the first version has nothing before it"), CrowdyServerComputeMove::FindTypesOnEarlierVersion({Versions[1]}, Instances, Now, Types, Running, Problem) && Types.IsEmpty() && Running == 0);
 	TestTrue(TEXT("nothing live has nothing to move"), CrowdyServerComputeMove::FindTypesOnEarlierVersion({Versions[0]}, Instances, Now, Types, Running, Problem) && Types.IsEmpty());
+
+	FInstance Orphan = MakeInstance(TEXT("sbx_a"), TEXT("orphan"), TEXT("running"), 2.0);
+	Orphan.bOrphaned = true;
+	TestTrue(TEXT("an orphaned instance is not named"), CrowdyServerComputeMove::FindTypesOnEarlierVersion(Versions, {Orphan}, Now, Types, Running, Problem) && Types.IsEmpty() && Running == 0);
 
 	const TArray<FVersion> Unreadable = {MakeVersion(1, false, 5.0, TEXT("not json")), Versions[1]};
 	TestFalse(TEXT("a manifest that is not JSON cannot be compared"), CrowdyServerComputeMove::FindTypesOnEarlierVersion(Unreadable, Instances, Now, Types, Running, Problem));
@@ -372,6 +381,10 @@ bool FCrowdyServerComputeRestartStopsEveryInstanceTest::RunTest(const FString& P
 		FString(TEXT("This stops 3 running instances, those already on the active version included:\nsbx_a i1: running, 2h old\nsbx_a i2: running, 10m old\nsbx_b i4: starting, 30s old")));
 	TestEqualSensitive(TEXT("one instance is singular"), CrowdyServerComputeMove::DescribeInstancesToStop({Instances[4]}),
 		FString(TEXT("This stops 1 running instance, those already on the active version included:\nsbx_c i5: running, 60s old")));
+
+	FInstance Orphan = MakeInstance(TEXT("sbx_a"), TEXT("i6"), TEXT("running"), 60.0);
+	Orphan.bOrphaned = true;
+	TestTrue(TEXT("an orphaned instance, whose type the active version does not deploy, is never picked to stop"), CrowdyServerComputeMove::FindInstancesToStop({Orphan}, {TEXT("sbx_a")}).IsEmpty());
 	return true;
 }
 
