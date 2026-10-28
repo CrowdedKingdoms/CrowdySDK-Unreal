@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: b7e0fae459d75267abeae3c544159b7d457ef94cafee1197e6637f9c54926a74
-// operations sha256: 30af340f4bc49c73e42b1cc4ef1696c4c1396e756d97ef0b9611c440b98e5b34
+// schema.gql sha256: 11f7ed4c2f701b945624c6a3f88d15396b173a6cf9a7d898a99443f6e7212b0a
+// operations sha256: 1fa6d94f45f3575f1b85c0968e2d54802372180fe18acce9efb8813daa492c88
 
 #pragma once
 
@@ -4590,6 +4590,7 @@ query ExecInstances($appId: BigInt!) {
     epoch
     sinceMs
     heldBack
+    orphaned
   }
 }
 
@@ -5054,6 +5055,7 @@ inline constexpr std::string_view kExecInstancesIsolatedDocument = R"gql(query E
     epoch
     sinceMs
     heldBack
+    orphaned
   }
 })gql";
 inline constexpr std::string_view kExecInstancesOperationName = "ExecInstances";
