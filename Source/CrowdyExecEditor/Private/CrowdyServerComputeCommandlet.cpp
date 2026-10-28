@@ -561,20 +561,6 @@ namespace CrowdyServerComputeCommandletDetail
 		}
 		Run->Result->SetArrayField(TEXT("stagedVersions"), Staged);
 		Run->Result->SetNumberField(TEXT("restoredVersion"), Outcome.RestoredVersion);
-		Run->Result->SetArrayField(TEXT("stoppedRemoved"), StringValues(Outcome.StoppedRemoved));
-		Run->Result->SetArrayField(TEXT("stopRemovedFailed"), StringValues(Outcome.StopRemovedFailed));
-		if (!Outcome.StoppedRemoved.IsEmpty() && Outcome.Step == EStep::Deployed)
-		{
-			Step(FString::Printf(TEXT("stopped the running Server Objects of %s first, which this deploy removes; one a player calls before the deploy lands starts again and stays running"), *FString::Join(Outcome.StoppedRemoved, TEXT(", "))));
-		}
-		if (!Outcome.StoppedRemoved.IsEmpty() && Outcome.Step != EStep::Deployed)
-		{
-			Step(FString::Printf(TEXT("the running Server Objects of %s were stopped just before the deploy failed; they start again at their next call"), *FString::Join(Outcome.StoppedRemoved, TEXT(", "))));
-		}
-		if (!Outcome.StopRemovedFailed.IsEmpty())
-		{
-			UE_LOG(LogCrowdyExec, Warning, TEXT("Server Compute: could not stop the running Server Objects of a type this deploy removes; they stay running on the server: %s"), *FString::Join(Outcome.StopRemovedFailed, TEXT("; ")));
-		}
 		FString Unchanged;
 		if (Outcome.Step == EStep::DeployFailed && Outcome.Error.bNoAnswer)
 		{
@@ -675,7 +661,7 @@ namespace CrowdyServerComputeCommandletDetail
 			Step(TEXT("every build succeeded; deploying"));
 			SendingChange(*Run);
 		};
-		// Staging and the stops of removed types come first, so the deploy itself gets a whole wait of its own.
+		// Staging comes first, so the deploy itself gets a whole wait of its own.
 		Callbacks.OnFinalDeploy = [Run]() { SendingChange(*Run); };
 		Callbacks.OnDone = [Run](const CrowdyExecBuildAndDeploy::FOutcome& Outcome) { OnDeployDone(Run, Outcome); };
 		CrowdyExecBuildAndDeploy::Run(Run->Client.ToSharedRef(), MoveTemp(Plan), ManifestJson, Live.Get(CrowdyExecBuildAndDeploy::FLive()), MoveTemp(Callbacks),
@@ -1566,9 +1552,11 @@ namespace CrowdyServerComputeCommandletDetail
 			Row->SetField(TEXT("heldBack"), StringOrNull(Instance.HeldBack));
 			Row->SetStringField(TEXT("epoch"), LexToString(Instance.Epoch));
 			Row->SetNumberField(TEXT("sinceMs"), Instance.SinceMs);
+			Row->SetBoolField(TEXT("orphaned"), Instance.bOrphaned);
 			Rows.Add(MakeShared<FJsonValueObject>(Row));
-			Step(FString::Printf(TEXT("%s %s: %s, epoch %lld%s"), *Instance.NodeType, *Instance.Key, *Instance.Phase, Instance.Epoch,
-				Instance.HeldBack.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(", held back: %s"), *Instance.HeldBack)));
+			Step(FString::Printf(TEXT("%s %s: %s, epoch %lld%s%s"), *Instance.NodeType, *Instance.Key, *Instance.Phase, Instance.Epoch,
+				Instance.HeldBack.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(", held back: %s"), *Instance.HeldBack),
+				Instance.bOrphaned ? TEXT(", not in the active version") : TEXT("")));
 		}
 		Run->Result->SetArrayField(TEXT("instances"), Rows);
 		Step(FString::Printf(TEXT("%d instances placed"), Rows.Num()));

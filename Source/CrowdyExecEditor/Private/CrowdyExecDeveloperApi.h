@@ -88,6 +88,8 @@ namespace CrowdyExecDeveloper
 		FString HeldBack;
 		int64 Epoch = 0;
 		double SinceMs = 0.0;
+		/** The active version does not deploy this instance's node type: it is stopped and keeps its saved state. */
+		bool bOrphaned = false;
 	};
 
 	struct FLogLine

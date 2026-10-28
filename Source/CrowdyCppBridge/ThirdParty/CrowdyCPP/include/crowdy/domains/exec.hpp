@@ -570,7 +570,11 @@ class ExecAPI : public DomainBase {
   /// call; filter by it with `query.flow`. Requires `view_compute_diagnostics`.
   graphql::Json logs(std::string appId, const ExecLogsQuery& query = {}) const;
   void logsAsync(std::string appId, const ExecLogsQuery& query, graphql::GraphQLCallback done) const;
-  /// What the manager has placed (`execInstances`). Requires `view_compute_diagnostics`.
+  /// What the manager has placed (`execInstances`): `{ instanceId, nodeType, key, kind,
+  /// phase, host, epoch, sinceMs, heldBack, orphaned }`. `orphaned` is true when the
+  /// instance's node type is not in the app's active version (a deploy or a rollback dropped
+  /// the type and stopped it; it keeps its saved state), null from a manager older than
+  /// ck-exec 0.19; selecting it needs ck-api v2.58.0. Requires `view_compute_diagnostics`.
   graphql::Json instances(std::string appId) const;
   void instancesAsync(std::string appId, graphql::GraphQLCallback done) const;
   /// The app's versions, newest first (`execVersions`): `{ version, createdBy, createdAt,
@@ -592,19 +596,23 @@ class ExecAPI : public DomainBase {
   /// (`execAppStatus`). Requires `view_compute_diagnostics`.
   graphql::Json status(std::string appId) const;
   void statusAsync(std::string appId, graphql::GraphQLCallback done) const;
-  /// Make an earlier version active again, a rollback (`execActivateVersion`);
-  /// instances pick it up when they next start. Requires `manage_compute`.
+  /// Make an earlier version active again, a rollback (`execActivateVersion`). As after
+  /// a deploy, instances of the types it keeps pick it up when they next start, and those
+  /// of a type it lacks are persisted and stopped at once; a type it lacks leaves the
+  /// switched-off list. Requires `manage_compute`.
   graphql::Json activateVersion(std::string appId, int version) const;
   void activateVersionAsync(std::string appId, int version, graphql::GraphQLCallback done) const;
   /// The kill switch, for the whole app or one node type (`execSetEnabled`). Off:
   /// nothing of it is placed, what runs is persisted and stopped, calls are refused
-  /// with `Denied`. Requires `manage_compute`.
+  /// with `Denied`. A type's switch lasts while the active version deploys the type: a
+  /// deploy or a rollback that drops the type drops its switch. Requires `manage_compute`.
   graphql::Json setEnabled(std::string appId, bool enabled, std::string nodeType = {}) const;
   void setEnabledAsync(std::string appId, bool enabled, std::string nodeType, graphql::GraphQLCallback done) const;
   /// Move one node type's running instances to the app's active version
   /// (`execRestartType`): each is persisted and stopped, and starts again on the
-  /// active version at its next call. A deploy changes what NEW instances run; this
-  /// moves the running ones without switching the type off. `{ nodeType, stopped }`,
+  /// active version at its next call. A deploy changes what NEW instances run, and stops
+  /// those of a type it drops itself; this moves the running ones of a type it keeps
+  /// without switching the type off. `{ nodeType, stopped }`,
   /// the instances it stopped. Requires `manage_compute`.
   graphql::Json restartType(std::string appId, std::string nodeType) const;
   void restartTypeAsync(std::string appId, std::string nodeType, graphql::GraphQLCallback done) const;
