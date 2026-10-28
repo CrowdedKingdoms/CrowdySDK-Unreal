@@ -164,7 +164,7 @@ TArray<FString> CrowdyServerComputeMove::TypesOnPreviousVersion(TConstArrayView<
 	TArray<FString> Types;
 	for (const CrowdyExecDeveloper::FInstance& Instance : After)
 	{
-		if (Instance.Phase != TEXT("running") || !ChangedTypes.Contains(Instance.NodeType) || !Placed.Contains(PlacementOf(Instance)))
+		if (Instance.bOrphaned || Instance.Phase != TEXT("running") || !ChangedTypes.Contains(Instance.NodeType) || !Placed.Contains(PlacementOf(Instance)))
 		{
 			continue;
 		}
@@ -217,7 +217,7 @@ bool CrowdyServerComputeMove::FindTypesOnEarlierVersion(TConstArrayView<CrowdyEx
 	{
 		const FDateTime Started = Now - FTimespan::FromMilliseconds(Placed.SinceMs);
 		const CrowdyExecRevisions::FLiveType* Current = After.FindByPredicate([&Placed](const CrowdyExecRevisions::FLiveType& Type) { return Type.TypeName == Placed.NodeType; });
-		if (Placed.Phase != TEXT("running") || Started >= NewerThan || !Current)
+		if (Placed.bOrphaned || Placed.Phase != TEXT("running") || Started >= NewerThan || !Current)
 		{
 			continue;
 		}
@@ -249,7 +249,7 @@ TArray<CrowdyExecDeveloper::FInstance> CrowdyServerComputeMove::FindInstancesToS
 		for (const CrowdyExecDeveloper::FInstance& Placed : Instances)
 		{
 			const bool bLive = Placed.Phase == TEXT("running") || Placed.Phase == TEXT("starting");
-			if (bLive && Placed.NodeType == TypeName)
+			if (!Placed.bOrphaned && bLive && Placed.NodeType == TypeName)
 			{
 				Stopping.Add(Placed);
 			}
@@ -437,7 +437,7 @@ int32 FCrowdyServerComputeService::CountRunning(const FString& TypeName) const
 	int32 Count = 0;
 	for (const CrowdyExecDeveloper::FInstance& Instance : Instances)
 	{
-		const bool bLive = Instance.Phase == TEXT("running") || Instance.Phase == TEXT("starting");
+		const bool bLive = !Instance.bOrphaned && (Instance.Phase == TEXT("running") || Instance.Phase == TEXT("starting"));
 		Count += bLive && Instance.NodeType.Equals(TypeName, ESearchCase::CaseSensitive) ? 1 : 0;
 	}
 	return Count;
@@ -1034,11 +1034,9 @@ void FCrowdyServerComputeService::OnDeployDone(const CrowdyExecBuildAndDeploy::F
 	case EStep::StagingFailed:
 	case EStep::DeployFailed:
 	{
-		const FText StoppedFirst = Outcome.StoppedRemoved.IsEmpty() ? FText::GetEmpty() : FText::Format(LOCTEXT("StoppedBeforeFailure",
-			" The running Server Objects of {0} were stopped just before; they start again at their next call."), FText::FromString(FString::Join(Outcome.StoppedRemoved, TEXT(", "))));
-		FinishDeploy(FText::Format(LOCTEXT("DeployFailedAfterStops", "{0}{1}{2}"), Outcome.Step == EStep::StagingFailed
+		FinishDeploy(FText::Format(LOCTEXT("DeployFailedLine", "{0}{1}"), Outcome.Step == EStep::StagingFailed
 			? ErrorText(LOCTEXT("StagingFailed", "Built, but storing the builds failed"), Outcome.Error)
-			: ErrorText(LOCTEXT("DeployFailed", "Built, but the deploy failed"), Outcome.Error), Unchanged, StoppedFirst), FCrowdyStudioStyle::Danger());
+			: ErrorText(LOCTEXT("DeployFailed", "Built, but the deploy failed"), Outcome.Error), Unchanged), FCrowdyStudioStyle::Danger());
 		if (!Outcome.StagedVersions.IsEmpty() || Outcome.Error.bNoAnswer)
 		{
 			RefreshStatus();
@@ -1058,16 +1056,14 @@ void FCrowdyServerComputeService::OnDeployDone(const CrowdyExecBuildAndDeploy::F
 	Sending = CrowdyExecDeploy::FProjectDeploy();
 	SendingDirectories.Reset();
 	const FText Deployed = FText::Format(LOCTEXT("Deployed", "Deployed as version {0}."), VersionNumber(Outcome.Version));
-	const FText DeployedLine = Outcome.StopRemovedFailed.IsEmpty() ? Deployed : FText::Format(LOCTEXT("DeployedRemovedStillRunning",
-		"{0} The running Server Objects of a type it removes could not be stopped first, and stay running on the server: {1}"), Deployed, FText::FromString(FString::Join(Outcome.StopRemovedFailed, TEXT("; "))));
 	if (RecordErrors.IsEmpty())
 	{
-		FinishDeploy(DeployedLine, Outcome.StopRemovedFailed.IsEmpty() ? FCrowdyStudioStyle::Success() : FCrowdyStudioStyle::Warning());
+		FinishDeploy(Deployed, FCrowdyStudioStyle::Success());
 	}
 	else
 	{
 		FinishDeploy(FText::Format(LOCTEXT("DeployedNotRecorded", "{0} Its record could not be saved, so its changes cannot be compared: {1}"),
-			DeployedLine, FText::FromString(FString::Join(RecordErrors, TEXT("; ")))), FCrowdyStudioStyle::Warning());
+			Deployed, FText::FromString(FString::Join(RecordErrors, TEXT("; ")))), FCrowdyStudioStyle::Warning());
 	}
 	TArray<FString> ChangedTypes = bRecord ? MoveTemp(SendingChanged) : TArray<FString>();
 	SendingChanged.Reset();
