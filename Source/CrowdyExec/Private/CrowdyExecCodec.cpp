@@ -2583,6 +2583,12 @@ bool CrowdyExec::Encode(const UCrowdyServerObjectDefinition& Definition, const U
 bool CrowdyExec::Decode(const UCrowdyServerObjectDefinition& Definition, const UScriptStruct& Struct, TConstArrayView<uint8> Bytes,
 	void* Value, FString& OutError, const void* Defaults)
 {
+	return DecodeWritten(Definition, Struct, Bytes, Value, nullptr, OutError, Defaults);
+}
+
+bool CrowdyExec::DecodeWritten(const UCrowdyServerObjectDefinition& Definition, const UScriptStruct& Struct, TConstArrayView<uint8> Bytes,
+	void* Value, TBitArray<>* OutWritten, FString& OutError, const void* Defaults)
+{
 	if (Bytes.Num() > MaxPayloadBytes)
 	{
 		OutError = FString::Printf(TEXT("%s: the message is %d bytes, over the limit of %d"), *NameIn(Definition, &Struct), Bytes.Num(), MaxPayloadBytes);
@@ -2610,10 +2616,14 @@ bool CrowdyExec::Decode(const UCrowdyServerObjectDefinition& Definition, const U
 	}
 	FCodecContext Ctx(*Layout);
 	Ctx.bGameKit = Definition.IsGameKitStarter();
+	if (OutWritten)
+	{
+		OutWritten->Init(false, Layout->Structs[StructIndex].Fields.Num());
+	}
 	FCrowdyExecReader Reader(Bytes);
 	FCrowdyExecToken Token;
 	const bool bRead = Reader.Next(Token, Ctx.Reason)
-		&& (Token.Type == ECrowdyExecToken::Map ? ReadStructBody(Ctx, StructIndex, Decoded.GetMutableMemory(), Reader, Token.Count, 1)
+		&& (Token.Type == ECrowdyExecToken::Map ? ReadStructBody(Ctx, StructIndex, Decoded.GetMutableMemory(), Reader, Token.Count, 1, nullptr, false, OutWritten)
 			: ReadBareValue(Ctx, StructIndex, Decoded.GetMutableMemory(), Reader, Token))
 		&& (Reader.AtEnd() || Ctx.Fail(TEXT("unexpected bytes after the message")));
 	if (!bRead)
@@ -2742,7 +2752,7 @@ bool CrowdyExec::ReadKitHeader(TConstArrayView<uint8> Bytes, FCrowdyExecKitHeade
 }
 
 bool CrowdyExec::DecodeKitSnapshot(const UCrowdyServerObjectDefinition& Definition, TConstArrayView<uint8> Bytes, void* State,
-	FCrowdyExecStateHeader& OutHeader, FString& OutError)
+	FCrowdyExecStateHeader& OutHeader, FString& OutError, TBitArray<>* OutCarried)
 {
 	const UScriptStruct* StateStruct = Definition.GetStateStruct();
 	if (!StateStruct)
@@ -2761,7 +2771,7 @@ bool CrowdyExec::DecodeKitSnapshot(const UCrowdyServerObjectDefinition& Definiti
 		return false;
 	}
 	// The reserved keys are no field of the State, so the decode skips them as it skips any key the State lacks.
-	if (!Decode(Definition, *StateStruct, Bytes, State, OutError))
+	if (!DecodeWritten(Definition, *StateStruct, Bytes, State, OutCarried, OutError))
 	{
 		return false;
 	}

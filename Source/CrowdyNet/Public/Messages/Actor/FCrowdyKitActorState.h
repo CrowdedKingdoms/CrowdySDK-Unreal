@@ -22,9 +22,13 @@ struct CROWDYNET_API FCrowdyKitActorState
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Kit")
 	int64 Id = 0;
 
-	/** Where it is in the world. */
+	/** Where it is in the world, in units: Chunk Position times the session's chunk size. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Kit")
 	FVector Location = FVector::ZeroVector;
+
+	/** Where its hub puts it, in chunks. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Kit")
+	FVector ChunkPosition = FVector::ZeroVector;
 
 	/** Which way it faces: the hub's yaw, in degrees, and zero when the hub gives none. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Kit")
@@ -55,7 +59,7 @@ struct CROWDYNET_API FCrowdyKitActorState
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Game Kit")
 	FString InstanceId;
 
-	/** Unreal units per chunk: the platform's chunk is 16 blocks of 100 units. */
+	/** Unreal units per chunk where no session gives one: the platform's chunk is 16 blocks of 100 units. A decoded Location uses it until the world's kit actors place it. */
 	static constexpr double ChunkWorldSize = 1600.0;
 
 	static FCrowdyKitActorState FromNative(const FCrowdyNativeKitActorState& Native);

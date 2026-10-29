@@ -305,6 +305,7 @@ bool FCrowdyMessageFieldsActorNotificationKitActorTest::RunTest(const FString& P
 	TestEqual(TEXT("its kind"), Kit->Kind, Mob);
 	TestEqual(TEXT("its id in the hub"), Kit->Id, static_cast<int64>(3));
 	TestEqual(TEXT("where it is, chunks turned into units"), Kit->Location, FVector(1.5, 0.0, -2.0) * FCrowdyKitActorState::ChunkWorldSize);
+	TestEqual(TEXT("and the chunks it came as"), Kit->ChunkPosition, FVector(1.5, 0.0, -2.0));
 	TestTrue(TEXT("its health"), Kit->bHasHp && Kit->Hp == 40 && Kit->MaxHp == 100);
 	TestEqual(TEXT("its mode"), Kit->Mode, FString(TEXT("chase")));
 	TestTrue(TEXT("no owner, name or yaw it did not give"), Kit->Owner == 0 && Kit->Name.IsEmpty() && Kit->Rotation.IsZero());

@@ -8,8 +8,9 @@
 //!
 //! Endpoints (players): `join`, `start` (the first to join, or a developer), `build { x, z }`,
 //! `hit { enemy }`, `state` (anyone). It speaks the kit protocol (`ckx_sdk::kit`): the `encounter`
-//! topic carries the encounter as `snapshot` messages once a second while it runs, and `event`
-//! messages (`type`: `wave_started`, `wave_cleared`, `boss_phase`, `won`, `lost`) as they happen;
+//! topic carries the encounter as `snapshot` messages once a second while it runs (and on the next
+//! tick after a build or hit), and `event` messages (`type`: `wave_started`, `wave_cleared`,
+//! `boss_phase`, `won`, `lost`) as they happen;
 //! `snapshot { topic: "encounter" }` answers it; changes may carry an `action_id`; refusals carry
 //! `kit:<code>:` codes.
 //!
@@ -172,6 +173,9 @@ pub struct Encounter {
     /// Events since they were last published.
     #[serde(skip)]
     pub events: Vec<serde_json::Value>,
+    /// A build or hit changed the state since the last snapshot; the next tick publishes one.
+    #[serde(skip)]
+    pub dirty: bool,
 }
 
 fn manhattan(a: (i32, i32), b: (i32, i32)) -> i32 {
@@ -477,14 +481,25 @@ impl EncounterHub {
             }
             other => return Err(Error::unknown_method(other)),
         };
+        if self.encounter.phase == Phase::Running && matches!(call.method, "build" | "hit") {
+            self.encounter.dirty = true;
+            self.publish_events(ctx)?;
+            return out;
+        }
         self.publish(ctx, now)?;
         out
     }
 
-    fn publish(&mut self, ctx: &Ctx, now: u64) -> Result<()> {
+    fn publish_events(&mut self, ctx: &Ctx) -> Result<()> {
         for e in std::mem::take(&mut self.encounter.events) {
             self.kit.event(ctx, TOPIC, &e)?;
         }
+        Ok(())
+    }
+
+    fn publish(&mut self, ctx: &Ctx, now: u64) -> Result<()> {
+        self.publish_events(ctx)?;
+        self.encounter.dirty = false;
         self.kit.snapshot(ctx, TOPIC, &self.encounter.view(now))
     }
 }
@@ -531,7 +546,7 @@ impl Hub for EncounterHub {
             ctx.cancel_timer("tick");
             ctx.persist_now();
         }
-        if ended || !self.encounter.events.is_empty() || self.encounter.ticks.is_multiple_of(PUBLISH_EVERY) {
+        if ended || self.encounter.dirty || !self.encounter.events.is_empty() || self.encounter.ticks.is_multiple_of(PUBLISH_EVERY) {
             self.publish(ctx, now)?;
         }
         Ok(())
@@ -598,6 +613,29 @@ mod tests {
         assert_eq!(e.phase, Phase::Won, "base {} gold {}", e.base_hp, e.gold);
         assert!(e.events.iter().any(|x| x["type"] == "boss_phase"));
         assert!(e.events.iter().any(|x| x["type"] == "wave_cleared"));
+    }
+
+    #[test]
+    fn a_hit_or_build_publishes_no_snapshot_and_the_next_tick_does() {
+        #[derive(Deserialize)]
+        struct K {
+            kind: MessageKind,
+        }
+        let mut hub = TestHub::<EncounterHub>::spawn("director", "gate").unwrap();
+        let _: bool = hub.call_typed(Caller::Player(1), "join", &()).unwrap();
+        let _: bool = hub.call_typed(Caller::Player(1), "start", &()).unwrap();
+        hub.advance(4_000).unwrap();
+        let snapshots = |hub: &TestHub<EncounterHub>| {
+            hub.published().iter().filter(|(_, b)| decode::<K>(b).unwrap().kind == MessageKind::Snapshot).count()
+        };
+        let view: EncounterView = hub.call_typed(Caller::Player(1), "state", &()).unwrap();
+        let enemy = view.enemies.first().expect("the first wave is out").id;
+        let before = snapshots(&hub);
+        let _: i64 = hub.call_typed(Caller::Player(1), "hit", &serde_json::json!({ "enemy": enemy })).unwrap();
+        let _: i64 = hub.call_typed(Caller::Player(1), "build", &serde_json::json!({ "x": 5, "z": 1 })).unwrap();
+        assert_eq!(snapshots(&hub), before);
+        hub.advance(TICK_MS).unwrap();
+        assert!(snapshots(&hub) > before);
     }
 
     #[test]

@@ -1502,7 +1502,8 @@ namespace CrowdyServerComputeCommandletDetail
 		FString Key;
 		FString FunctionName;
 		FParse::Value(*Run->Params, TEXT("-type="), Type);
-		FParse::Value(*Run->Params, TEXT("-key="), Key);
+		// Up to the next space: an Instance Id such as an area's "x,y" holds commas.
+		FParse::Value(*Run->Params, TEXT("-key="), Key, false);
 		FParse::Value(*Run->Params, TEXT("-fn="), FunctionName);
 		if (Type.IsEmpty() || FunctionName.IsEmpty())
 		{
@@ -1516,9 +1517,9 @@ namespace CrowdyServerComputeCommandletDetail
 			Fail(Run, Definition ? FString::Printf(TEXT("%s has no Server Function %s"), *Type, *FunctionName) : FString::Printf(TEXT("the project has no Server Object type %s"), *Type));
 			return;
 		}
-		if (!CrowdyExecDeveloperCall::IsForDevelopers(*Definition, *Function))
+		if (!CrowdyExecDeveloperCall::IsForDevelopers(*Definition, *Function) && !CrowdyGameKitStarters::IsPlayerRead(*Definition, *Function))
 		{
-			Fail(Run, FString::Printf(TEXT("%s is Callable By players; call it from a game. Only Server Only and Developers Only functions are called here."), *FunctionName));
+			Fail(Run, FString::Printf(TEXT("%s is Callable By players; call it from a game. Only Server Only and Developers Only functions, and a starter's read-only player functions, are called here."), *FunctionName));
 			return;
 		}
 		FInstancedStruct Inputs;

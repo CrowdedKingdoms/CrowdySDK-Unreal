@@ -346,7 +346,7 @@ private:
 	TMap<FGuid, double> KitLastUpdateTimes;
 	float KitSweepElapsed = 0.0f;
 
-	// Under LastUpdateLock: notes each update's actor as heard at Now, a kit actor in its own map.
+	// Under LastUpdateLock: notes each update's actor as heard at Now, a kit actor in its own map, by what it appeared as.
 	void NoteHeardLocked(TConstArrayView<FCrowdyActorUpdate> Updates, double Now);
 	void CheckKitTimeouts();
 

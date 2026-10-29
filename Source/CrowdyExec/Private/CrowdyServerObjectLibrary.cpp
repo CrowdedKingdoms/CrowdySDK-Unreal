@@ -618,8 +618,8 @@ bool UCrowdyServerObjectLibrary::ReadServerVariableInto(const UObject* Target, c
 	const UCrowdyServerObjectComponent* Component = Cast<UCrowdyServerObjectComponent>(Holder.Owner);
 	const UCrowdyServerObject* Read = Component ? Component->GetReadObject() : Holder.Object;
 	const FInstancedStruct* Values = Read ? Read->FindValues(Holder.RecordId) : nullptr;
-	// Before its first read the object holds the defaults, which are no answer from the server.
-	const bool bReady = Read && Read->GetStatus() == ECrowdyServerObjectStatus::Ready;
+	// Before its first read the object holds the defaults, which are no answer from the server, as does an Owner Value it never reads.
+	const bool bReady = Read && Read->GetStatus() == ECrowdyServerObjectStatus::Ready && (Holder.RecordId || !Read->IsUnreadOwnerValue(Variable));
 	return ReadReadyValueInto(Values, bReady, Variable, DestProperty, Dest);
 }
 

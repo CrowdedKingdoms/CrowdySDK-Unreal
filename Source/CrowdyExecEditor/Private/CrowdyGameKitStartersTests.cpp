@@ -436,6 +436,54 @@ bool FCrowdyGameKitWorldConfigTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitConfigIdCaseTest, "CrowdySDK.CrowdyExecEditor.GameKit.ConfigIdsDifferingOnlyByCaseAreAProblem", CrowdyGameKitStartersTest::TestFlags)
+bool FCrowdyGameKitConfigIdCaseTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyGameKitStartersTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> World = MakeStarter(*this, TEXT("world"));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Player = MakeStarter(*this, TEXT("player"));
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Market = MakeStarter(*this, TEXT("market"));
+	const FStarterFolder Folder;
+	if (!World || !Player || !Market || !TestTrue(TEXT("the crates are copied"), Folder.CopyStarter(TEXT("world")) && Folder.CopyStarter(TEXT("player")) && Folder.CopyStarter(TEXT("market"))))
+	{
+		return false;
+	}
+	auto DirectoryFor = [&Folder](const UCrowdyServerObjectDefinition& Definition) { return FPaths::Combine(Folder.Path, Definition.TypeName); };
+	auto Problems = [&](UCrowdyServerObjectDefinition& Starter, const TCHAR* Config)
+	{
+		Starter.KitConfig = Config;
+		return FString::Join(CrowdyExecDeploy::AssembleProject({World.Get(), Player.Get(), Market.Get()}, DirectoryFor).Problems, TEXT(" | "));
+	};
+
+	const TCHAR* const BadPlayer[] = {
+		TEXT("{\"items\":[{\"id\":\"Ore\"},{\"id\":\"ore\"}]}"),
+		TEXT("{\"currencies\":[\"Gold\",\"gold\"]}"),
+		TEXT("{\"start\":{\"items\":{\"Ore\":1,\"ore\":2}}}"),
+		TEXT("{\"production\":{\"capacity\":{\"Wood\":1,\"wood\":2}}}"),
+	};
+	for (const TCHAR* Bad : BadPlayer)
+	{
+		const FString Found = Problems(*Player, Bad);
+		TestTrue(FString::Printf(TEXT("%s is a deploy problem (%s)"), Bad, *Found), Found.Contains(TEXT("player: its Game Kit Config has two ")) && Found.Contains(TEXT("differ only by case")));
+
+		TArray<FString> Added;
+		FString Error;
+		TestFalse(FString::Printf(TEXT("%s is refused by Add starter"), Bad), CrowdyGameKitStarters::AddStarter(TEXT("player"), {}, Folder.Path, Added, Error, Bad));
+		TestTrue(FString::Printf(TEXT("saying so (%s)"), *Error), Error.Contains(TEXT("differ only by case")) && Added.IsEmpty());
+	}
+	Player->KitConfig.Reset();
+
+	const FString Found = Problems(*Market, TEXT("{\"book_items\":[\"Ore\",\"ore\"]}"));
+	TestTrue(FString::Printf(TEXT("a market's book items differing by case are a deploy problem (%s)"), *Found), Found.Contains(TEXT("market: its Game Kit Config has two item ids")));
+	Market->KitConfig.Reset();
+
+	for (const TCHAR* Good : {TEXT("{\"items\":[{\"id\":\"ore\"},{\"id\":\"ore\"}]}"), TEXT("{\"currencies\":[\"gold\",\"gems\"]}"), TEXT("{\"currencies\":[\"Ore\"],\"items\":[{\"id\":\"ore\"}]}")})
+	{
+		TestFalse(FString::Printf(TEXT("%s is not a case problem"), Good), Problems(*Player, Good).Contains(TEXT("differ only by case")));
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitSecretWarningTest, "CrowdySDK.CrowdyExecEditor.GameKit.DeployWarnsOfAStarterWithNoSecret", CrowdyGameKitStartersTest::TestFlags)
 bool FCrowdyGameKitSecretWarningTest::RunTest(const FString& Parameters)
 {
@@ -731,6 +779,31 @@ bool FCrowdyGameKitDeveloperMethodsTest::RunTest(const FString& Parameters)
 	}
 	Configure->WhoCanCall = ECrowdyServerFunctionCaller::Players;
 	TestTrue(TEXT("an asset saved before it said Developers Only is still called as the developer"), CrowdyExecDeveloperCall::IsForDevelopers(*Saved, *Configure));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitPlayerReadsTest, "CrowdySDK.CrowdyExecEditor.GameKit.PlayerReadsAreReadOnlyPlayersFunctions", CrowdyGameKitStartersTest::TestFlags)
+bool FCrowdyGameKitPlayerReadsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyGameKitStartersTest;
+	const TStrongObjectPtr<UCrowdyServerObjectDefinition> Npcs = MakeStarter(*this, TEXT("npcs"));
+	if (!Npcs)
+	{
+		return false;
+	}
+	auto Find = [&Npcs](const TCHAR* Method) { return Npcs->Functions.FindByPredicate([Method](const FCrowdyServerFunction& Function) { return Function.GetMethodName() == Method; }); };
+	const FCrowdyServerFunction* State = Find(TEXT("state"));
+	const FCrowdyServerFunction* Pets = Find(TEXT("pets"));
+	if (!TestNotNull(TEXT("npcs has state"), State) || !TestNotNull(TEXT("npcs has pets"), Pets))
+	{
+		return false;
+	}
+	TestTrue(TEXT("an area's state is a player read"), CrowdyGameKitStarters::IsPlayerRead(*Npcs, *State));
+	TestFalse(TEXT("and still Callable By players"), CrowdyExecDeveloperCall::IsForDevelopers(*Npcs, *State));
+	TestFalse(TEXT("pets reads the caller's own, so it is not"), CrowdyGameKitStarters::IsPlayerRead(*Npcs, *Pets));
+
+	Npcs->CodeSource = ECrowdyServerCodeSource::Generated;
+	TestFalse(TEXT("a project's own type named npcs reads nothing for a developer"), CrowdyGameKitStarters::IsPlayerRead(*Npcs, *State));
 	return true;
 }
 
