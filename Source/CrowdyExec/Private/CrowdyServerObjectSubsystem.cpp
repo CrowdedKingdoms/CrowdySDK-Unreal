@@ -186,7 +186,7 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 {
 	if (!Definition)
 	{
-		OutError = TEXT("Acquire needs a Server Object definition");
+		OutError = TEXT("Get Server Object needs a Definition");
 		return nullptr;
 	}
 	if (!Definition->ResolveLayout(OutError))
@@ -209,12 +209,12 @@ UCrowdyServerObject* UCrowdyServerObjectSubsystem::Acquire(UCrowdyServerObjectDe
 	// The root's and a library's only Instance Id is empty, which no other instance may have.
 	if (!Definition->HasOnlyOneInstance() && !IsValidServerObjectInstanceId(UsedId))
 	{
-		OutError = TEXT("An Instance Id must be 1 to 256 bytes with no control characters");
+		OutError = UsedId.IsEmpty() ? TEXT("Instance Id is empty; give the id of the instance to get") : TEXT("An Instance Id must be 1 to 256 bytes with no control characters");
 		return nullptr;
 	}
 	if (!Owner)
 	{
-		OutError = TEXT("Acquire needs an owner");
+		OutError = TEXT("Get Server Object needs an Owner");
 		return nullptr;
 	}
 	OutError.Reset();

@@ -92,7 +92,7 @@ void UCrowdyActorManager::Initialize(FSubsystemCollectionBase& Collection)
 
 	if (!LoadConfig())
 	{
-		UE_LOG(LogCrowdyReplication, Error, TEXT("[Crowdy Actor Manager]: Failed to load config due to incorrect params or disabled by choice."));
+		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log, TEXT("[Crowdy Actor Manager]: Not started: actor tracking is disabled for this map, or its backend was refused (any cause is logged separately as a warning)."));
 		return;
 	}
 
@@ -480,7 +480,7 @@ UClass* UCrowdyActorManager::ResolveEntityClass(const FGuid& UUID, const FInstan
 			// has never loaded lands here and would otherwise sit invisible in PendingActivations with
 			// nothing naming the cause. Preloading the entity class set is what closes this.
 			UE_LOG(LogCrowdyReplication, Warning,
-				TEXT("[Crowdy SDK][ActorManager]: entity %s named class id %u, which this client cannot resolve to a loaded class. It will fall back to the state struct, which cannot tell two classes sharing one struct apart. Preload the entity class or give it a ClassIDOverride."),
+				TEXT("[Crowdy SDK][ActorManager]: entity %s named class id %u, which this client cannot resolve to a loaded class. It will fall back to the state struct, which cannot tell two classes sharing one struct apart. Add the entity class to Project Settings > Plugins > Crowdy SDK > Replication > Preloaded Entity Classes."),
 				*UUID.ToString(), ClassID);
 		}
 	}

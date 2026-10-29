@@ -339,6 +339,26 @@ namespace
 		return FString();
 	}
 
+	// The authored custom event or function entry node that generates FunctionName, or null for a
+	// function that has no node in these graphs.
+	UEdGraphNode* FindEventHandlerNode(const TArray<UEdGraph*>& Graphs, FName FunctionName)
+	{
+		for (const UEdGraph* Graph : Graphs)
+		{
+			if (!Graph) continue;
+
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node);
+				if (CustomEvent && CustomEvent->CustomFunctionName == FunctionName) return Node;
+
+				const UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(Node);
+				if (Entry && GetFunctionEntryName(Entry) == FunctionName) return Node;
+			}
+		}
+		return nullptr;
+	}
+
 	bool HasReplicatedCompileError(const UFunction* Function)
 	{
 		return Function && Function->HasAnyFunctionFlags(
@@ -353,6 +373,9 @@ namespace
 		FString Decay;
 		FString Distance;
 		FString Channel;
+
+		// The authored event node, so a message about this event can link to it.
+		UK2Node_CustomEvent* Node = nullptr;
 
 		// Whether the author ticked Is A One-Shot Action. Valueless, so it is a flag here rather than a
 		// string: what matters is that the key reaches the compiled function, since that is the only place
@@ -790,6 +813,32 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 			if (NodeMeta.HasMetaData(FName(CrowdyRpcMetaKeys::Channel)))
 				Info.Channel = NodeMeta.GetMetaData(FName(CrowdyRpcMetaKeys::Channel));
 			Info.bIsAction = UCrowdyBlueprintCompilerExtension::DeclaresOneShotAction(NodeMeta);
+			Info.Node = CustomEvent;
+
+			if (!IsRecognisedCrowdyRecipient(Info.Recipient))
+			{
+				CompilationContext.MessageLog.Warning(
+					*FString::Printf(
+						TEXT("[CrowdySDK] Crowdy Replicated event @@ has an unrecognized Recipient '%s', so it uses Spatial Multicast."),
+						*Info.Recipient),
+					CustomEvent);
+			}
+			if (!IsRecognisedCrowdyRoutingValue<ECrowdyDecayRate>(Info.Decay))
+			{
+				CompilationContext.MessageLog.Warning(
+					*FString::Printf(
+						TEXT("[CrowdySDK] Crowdy Replicated event @@ has an unrecognized Decay Rate '%s', so the default is used."),
+						*Info.Decay),
+					CustomEvent);
+			}
+			if (!IsRecognisedCrowdyRoutingValue<ECrowdyReplicationDistance>(Info.Distance))
+			{
+				CompilationContext.MessageLog.Warning(
+					*FString::Printf(
+						TEXT("[CrowdySDK] Crowdy Replicated event @@ has an unrecognized Replication Distance '%s', so the default is used."),
+						*Info.Distance),
+					CustomEvent);
+			}
 
 			ReplicatedEvents.Add(CustomEvent->CustomFunctionName, Info);
 		}
@@ -827,18 +876,17 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 						if (!Problem.IsEmpty())
 						{
 							const FString Message = FString::Printf(
-								TEXT("[CrowdySDK] Replicated event '%s' %s."),
-								*Function->GetName(), *Problem);
+								TEXT("[CrowdySDK] Replicated event @@ %s."), *Problem);
 
 							if (HasReplicatedCompileError(Function))
 							{
-								CompilationContext.MessageLog.Error(*Message);
+								CompilationContext.MessageLog.Error(*Message, Info->Node);
 							}
 							else
 							{
-								CompilationContext.MessageLog.Warning(*FString::Printf(
-									TEXT("%s It will not replicate correctly."),
-									*Message));
+								CompilationContext.MessageLog.Warning(
+									*FString::Printf(TEXT("%s It will not replicate correctly."), *Message),
+									Info->Node);
 							}
 						}
 
@@ -861,9 +909,9 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 							if (!UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(
 								ResolveCrowdyRecipient(Info->Recipient)))
 							{
-								CompilationContext.MessageLog.Warning(*FString::Printf(
-									TEXT("[CrowdySDK] Crowdy Replicated event '%s' is ticked Is A One-Shot Action, but its Recipient delivers it to one named machine, which holds the entity as a real actor and runs this body. No client drawing the entity as one of a crowd receives it, so the declaration starts no action. Set Recipient to Spatial Multicast or Multicast, or untick Is A One-Shot Action."),
-									*Function->GetName()));
+								CompilationContext.MessageLog.Warning(
+									TEXT("[CrowdySDK] Crowdy Replicated event @@ is ticked Is A One-Shot Action, but its Recipient delivers it to one named machine, which holds the entity as a real actor and runs this body. No client drawing the entity as one of a crowd receives it, so the declaration starts no action. Set Recipient to Spatial Multicast or Multicast, or untick Is A One-Shot Action."),
+									Info->Node);
 							}
 							else
 							{
@@ -871,9 +919,11 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 									CrowdyAuthoringContributions::DescribeActionEventProblem(Function);
 								if (!ActionProblem.IsEmpty())
 								{
-									CompilationContext.MessageLog.Warning(*FString::Printf(
-										TEXT("[CrowdySDK] Crowdy Replicated event '%s' is ticked Is A One-Shot Action, but %s"),
-										*Function->GetName(), *ActionProblem));
+									CompilationContext.MessageLog.Warning(
+										*FString::Printf(
+											TEXT("[CrowdySDK] Crowdy Replicated event @@ is ticked Is A One-Shot Action, but %s"),
+											*ActionProblem),
+										Info->Node);
 								}
 							}
 						}
@@ -886,9 +936,9 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 				}
 				else
 				{
-					CompilationContext.MessageLog.Warning(*FString::Printf(
-						TEXT("[CrowdySDK] Could not install the replication gate for event '%s'; it will not auto-replicate."),
-						*FunctionName.ToString()));
+					CompilationContext.MessageLog.Warning(
+						TEXT("[CrowdySDK] Could not install the replication gate for event @@; it will not auto-replicate."),
+						Info->Node);
 				}
 			}
 		}
@@ -904,22 +954,22 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 		{
 			if (GatedEvents.Contains(Marked.Key)) continue;
 
-			CompilationContext.MessageLog.Error(*FString::Printf(
-				TEXT("[CrowdySDK] Crowdy Replicated event '%s' reached no compiled entry, so it has NO dispatch gate: calling it runs its body locally and sends nothing, on every machine, with no error at runtime. A stale marker from an earlier compile is why it still reads as replicated. Check the event is reachable and named as declared, then compile and save."),
-				*Marked.Key.ToString()));
+			CompilationContext.MessageLog.Error(
+				TEXT("[CrowdySDK] Crowdy Replicated event @@ reached no compiled entry, so it has NO dispatch gate: calling it runs its body locally and sends nothing, on every machine, with no error at runtime. A stale marker from an earlier compile is why it still reads as replicated. Check the event is reachable and named as declared, then compile and save."),
+				Marked.Value.Node);
 		}
 
 		// To the OUTPUT log, not the message log, and this is the point of it: a compiler message is only
 		// visible in the Compiler Results panel of whoever happened to be looking, while the question "did
 		// this extension run for this Blueprint, and what did it gate" needs answering from a log file after
 		// the fact. Only Blueprints that mark an event print, so this is quiet on everything else.
-		UE_LOG(LogCrowdyNodes, Display,
+		UE_LOG(LogCrowdyNodes, Verbose,
 			TEXT("[CrowdySDK] '%s': %d Crowdy Replicated event(s) marked, %d gated."),
 			*Blueprint->GetName(), ReplicatedEvents.Num(), GatedEvents.Num());
 
 		for (const TPair<FName, FCrowdyReplicatedEventMeta>& Marked : ReplicatedEvents)
 		{
-			UE_LOG(LogCrowdyNodes, Display, TEXT("[CrowdySDK]   '%s' recipient='%s' gate=%s"),
+			UE_LOG(LogCrowdyNodes, Verbose, TEXT("[CrowdySDK]   '%s' recipient='%s' gate=%s"),
 				*Marked.Key.ToString(),
 				Marked.Value.Recipient.IsEmpty() ? TEXT("<default>") : *Marked.Value.Recipient,
 				GatedEvents.Contains(Marked.Key) ? TEXT("installed") : TEXT("NOT INSTALLED"));
@@ -930,7 +980,7 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 		// A Crowdy entity Blueprint that marked nothing. Said so that "the extension ran and found no marked
 		// events" can be told from "the extension never ran", which are the same silence otherwise, and the
 		// difference between an authoring mistake and a broken editor module.
-		UE_LOG(LogCrowdyNodes, Display,
+		UE_LOG(LogCrowdyNodes, Verbose,
 			TEXT("[CrowdySDK] '%s': no Crowdy Replicated events marked on any custom event node."),
 			*Blueprint->GetName());
 	}
@@ -954,9 +1004,11 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 			const FString Problem = DescribeHandlerSignatureProblem(Function);
 			if (Problem.IsEmpty()) continue;
 
-			CompilationContext.MessageLog.Warning(*FString::Printf(
-				TEXT("[CrowdySDK] Event handler '%s' %s. It will never be invoked at runtime."),
-				*Function->GetName(), *Problem));
+			UEdGraphNode* HandlerNode = FindEventHandlerNode(SourceGraphs, Function->GetFName());
+			const FString Subject = HandlerNode ? FString(TEXT("@@")) : FString::Printf(TEXT("'%s'"), *Function->GetName());
+			CompilationContext.MessageLog.Warning(
+				*FString::Printf(TEXT("[CrowdySDK] Event handler %s %s. It will never be invoked at runtime."), *Subject, *Problem),
+				HandlerNode);
 		}
 
 		// A CrowdyState-replicated VARIABLE whose type this plane cannot carry must hard-fail the

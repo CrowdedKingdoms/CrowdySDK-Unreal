@@ -158,7 +158,7 @@ public:
 	 *               occupies in UTF-8; anything else yields an invalid guid rather than a partial read.
 	 * @return The key, or an invalid guid when the text is not an actor id.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Serialization Function Library")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Serialization")
 	static FGuid ToGuid(const FString& String);
 
 	/**
@@ -182,9 +182,9 @@ public:
 	 * @param VoxelX The x-coordinate of the voxel within the chunk.
 	 * @param VoxelY The y-coordinate of the voxel within the chunk.
 	 * @param VoxelZ The z-coordinate of the voxel within the chunk.
-	 * @return A unique integer identifier representing the voxel.
+	 * @return The SHA-256 hash of the coordinates as a hexadecimal string, which identifies the voxel.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Serialization Function Library")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Serialization")
 	static FString GenerateVoxelID(int64 ChunkX, int64 ChunkY, int64 ChunkZ, int32 VoxelX, int32 VoxelY, int32 VoxelZ);
 	
 	/**

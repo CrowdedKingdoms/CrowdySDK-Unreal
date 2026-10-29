@@ -127,12 +127,20 @@ void SCrowdySignInView::Construct(const FArguments& InArgs)
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
 		[
 			CrowdyStudioWidgets::Field(LOCTEXT("EmailLabel", "Email"),
-				SAssignNew(EmailBox, SEditableTextBox).Style(&Style, "Crowdy.Input").HintText(LOCTEXT("EmailHint", "you@studio.com")))
+				SAssignNew(EmailBox, SEditableTextBox).Style(&Style, "Crowdy.Input").HintText(LOCTEXT("EmailHint", "you@studio.com"))
+					.OnTextCommitted_Lambda([this](const FText&, ETextCommit::Type CommitType)
+					{
+						if (CommitType == ETextCommit::OnEnter) OnLoginClicked();
+					}))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 14.0f)
 		[
 			CrowdyStudioWidgets::Field(LOCTEXT("PasswordLabel", "Password"),
-				SAssignNew(PasswordBox, SEditableTextBox).Style(&Style, "Crowdy.Input").IsPassword(true).HintText(LOCTEXT("PasswordHint", "Password")))
+				SAssignNew(PasswordBox, SEditableTextBox).Style(&Style, "Crowdy.Input").IsPassword(true).HintText(LOCTEXT("PasswordHint", "Password"))
+					.OnTextCommitted_Lambda([this](const FText&, ETextCommit::Type CommitType)
+					{
+						if (CommitType == ETextCommit::OnEnter) OnLoginClicked();
+					}))
 		]
 		+ SVerticalBox::Slot().AutoHeight()
 		[
@@ -185,7 +193,11 @@ void SCrowdySignInView::Construct(const FArguments& InArgs)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
 				[
 					CrowdyStudioWidgets::Field(LOCTEXT("OrgTokenLabel", "Organization token"),
-						SAssignNew(TokenBox, SEditableTextBox).Style(&Style, "Crowdy.Input").IsPassword(true).HintText(LOCTEXT("OrgTokenHint", "Paste a manage_* org token")),
+						SAssignNew(TokenBox, SEditableTextBox).Style(&Style, "Crowdy.Input").IsPassword(true).HintText(LOCTEXT("OrgTokenHint", "Paste a manage_* org token"))
+						.OnTextCommitted_Lambda([this](const FText&, ETextCommit::Type CommitType)
+						{
+							if (CommitType == ETextCommit::OnEnter) OnSignInWithTokenClicked();
+						}),
 						LOCTEXT("OrgTokenHelp", "Management-only access. A session sign-in (email, provider, or link) is required for game-plane authoring (teams, channels, grid)."))
 				]
 				+ SVerticalBox::Slot().AutoHeight()

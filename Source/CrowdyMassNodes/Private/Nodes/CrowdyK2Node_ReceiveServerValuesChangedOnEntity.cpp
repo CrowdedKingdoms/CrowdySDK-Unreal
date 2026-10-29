@@ -51,8 +51,12 @@ void UCrowdyK2Node_ReceiveServerValuesChangedOnEntity::AllocateDefaultPins()
 
 	UEdGraphPin* BindPin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Execute);
 	BindPin->PinFriendlyName = LOCTEXT("BindPinLabel", "Bind");
+	BindPin->PinToolTip = LOCTEXT("BindPinTooltip",
+		"Start listening for server value changes on crowd entities. The binding belongs to this object and stops when it is destroyed.").ToString();
 	UEdGraphPin* UnbindPin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, Unbind);
 	UnbindPin->PinFriendlyName = LOCTEXT("UnbindPinLabel", "Unbind");
+	UnbindPin->PinToolTip = LOCTEXT("UnbindPinTooltip",
+		"Stop listening. Doing nothing is also fine: the binding is dropped when this object or its world goes.").ToString();
 
 	UEdGraphPin* ClassPin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Class, AActor::StaticClass(), EntityClass);
 	ClassPin->PinFriendlyName = LOCTEXT("ClassPinLabel", "Entity Class");
@@ -60,11 +64,16 @@ void UCrowdyK2Node_ReceiveServerValuesChangedOnEntity::AllocateDefaultPins()
 
 	UEdGraphPin* ThenPin = CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, Then);
 	ThenPin->PinFriendlyName = LOCTEXT("ThenPinLabel", "Then");
+	ThenPin->PinToolTip = LOCTEXT("ThenPinTooltip",
+		"Continues as soon as the bind or unbind is done, so several of these can be chained.").ToString();
 	UEdGraphPin* OnChangedPin = CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, OnChanged);
 	OnChangedPin->PinFriendlyName = LOCTEXT("OnChangedPinLabel", "On Changed");
+	OnChangedPin->PinToolTip = LOCTEXT("OnChangedPinTooltip", "Fires when any watched server value on a matching entity changes.").ToString();
 
 	UEdGraphPin* TargetPin = CreatePin(EGPD_Output, TargetPinType(), Target);
 	TargetPin->PinFriendlyName = LOCTEXT("TargetPinLabel", "Target");
+	TargetPin->PinToolTip = LOCTEXT("TargetPinTooltip",
+		"The entity whose server values changed. Valid for this call; it does not survive that entity being respawned.").ToString();
 	UEdGraphPin* ChangedPin = CreatePin(EGPD_Output, ChangedPinType(), Changed);
 	ChangedPin->PinToolTip = LOCTEXT("ChangedPinTooltip", "The variables that changed, as Get Server Value takes them. Empty when the entity's record was removed.").ToString();
 

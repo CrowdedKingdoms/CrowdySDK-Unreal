@@ -256,7 +256,7 @@ bool FCrowdyExecRulesTimersTest::RunTest(const FString& Parameters)
 	using namespace CrowdyExecRulesTests;
 	TStrongObjectPtr<UCrowdyServerObjectDefinition> Unnamed = NewDefinition();
 	AddTimer(*Unnamed, NAME_None);
-	TestRefuses(*this, *Unnamed, TEXT("Timers: a timer has no Name"));
+	TestRefuses(*this, *Unnamed, TEXT("Timers: timer 1 has no Name; type one"));
 
 	TStrongObjectPtr<UCrowdyServerObjectDefinition> Unwritable = NewDefinition();
 	AddTimer(*Unwritable, TEXT("9Lives"));
@@ -314,8 +314,12 @@ bool FCrowdyExecRulesFunctionLimitsTest::RunTest(const FString& Parameters)
 	Session.Name = TEXT("RulesSession");
 	Session.ServerName = TEXT("on_session");
 	Reserved->Functions.AddDefaulted_GetRef().Name = TEXT("Read");
-	TestRefuses(*this, *Reserved, FString::Printf(TEXT("Function %s: 'on_session' is reserved"), *Named(TEXT("RulesSession"))));
-	TestRefuses(*this, *Reserved, FString::Printf(TEXT("Function %s: 'read' is reserved"), *Named(TEXT("Read"))));
+	TestRefuses(*this, *Reserved, FString::Printf(TEXT("Function %s: 'on_session' is reserved; rename the function or set its Server Name"), *Named(TEXT("RulesSession"))));
+	TestRefuses(*this, *Reserved, FString::Printf(TEXT("Function %s: 'read' is reserved; rename the function or set its Server Name"), *Named(TEXT("Read"))));
+
+	TStrongObjectPtr<UCrowdyServerObjectDefinition> Unnamed = NewDefinition();
+	Unnamed->Functions.AddDefaulted();
+	TestRefuses(*this, *Unnamed, FString::Printf(TEXT("Function %d has no Name; type one"), Unnamed->Functions.Num()));
 
 	TStrongObjectPtr<UCrowdyServerObjectDefinition> Slow = NewDefinition();
 	const FString TooLong = FString::Printf(TEXT("Function %s: Cooldown must be at most 2592000 seconds"), *Named(TEXT("Hit")));

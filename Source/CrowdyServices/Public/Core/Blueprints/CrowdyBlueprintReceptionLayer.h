@@ -29,10 +29,10 @@ class CROWDYSERVICES_API UCrowdyBlueprintReceptionLayer : public UObject
 	
 public:
 	
-	UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Crowdy SDK|Reception Layer|Actor Updates")
+	UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Crowdy SDK|Reception Layer|Game Events")
 	FOnGameEventNotificationReceived OnEventNotificationReceived;
 
-	UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Crowdy SDK|Reception Layer|Game Events")
+	UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Crowdy SDK|Reception Layer|Actor Updates")
 	FOnActorUpdateReceived OnActorUpdateReceived;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Crowdy SDK|Reception Layer")

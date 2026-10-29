@@ -1793,7 +1793,7 @@ namespace CrowdyServerComputeCommandletDetail
 		const FOperation* Operation = FindOperation(OperationName);
 		if (!Operation)
 		{
-			Fail(Run, FString::Printf(TEXT("Unknown operation '%s'. Usage: %s"), *OperationName, Usage));
+			Fail(Run, OperationName.IsEmpty() ? FString::Printf(TEXT("No -op given. Usage: %s"), Usage) : FString::Printf(TEXT("Unknown operation '%s'. Usage: %s"), *OperationName, Usage));
 			return Finish(Run);
 		}
 		if (Operation->bChangesLiveCode && !FParse::Param(*Params, TEXT("yes")))

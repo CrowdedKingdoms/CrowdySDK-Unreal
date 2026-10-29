@@ -156,6 +156,7 @@ namespace CrowdyMassDerivation
 
 namespace
 {
+#if !UE_BUILD_SHIPPING
 bool TryGetAnimationMinScreenSize(const UInstancedSkinnedMeshComponent* Component, float& OutAnimationMinScreenSize)
 {
 	if (!Component)
@@ -192,8 +193,7 @@ void LogSkinnedMeshShadowDiagnostics(UWorld* World)
 	const IConsoleVariable* VirtualShadowCacheCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.Cache"));
 	const IConsoleVariable* VirtualShadowDeformableInvalidateCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.Cache.DeformableMeshesInvalidate"));
 
-	UE_LOG(LogCrowdyMass, Warning, TEXT("==================== CROWDY MASS SHADOW DIAGNOSTICS BEGIN ===================="));
-	UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassShadowDiag] World='%s' ForceRefPose=%d AnimationBounds=%d SkinningTransformProviders=%d SkinningAsyncUpdate=%d SkinningForceFullUpload=%d DefaultAnimationMinScreenSize=%.3f VirtualShadow=%d VirtualShadowCache=%d VirtualShadowDeformableInvalidate=%d"),
+	UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassShadowDiag] World='%s' ForceRefPose=%d AnimationBounds=%d SkinningTransformProviders=%d SkinningAsyncUpdate=%d SkinningForceFullUpload=%d DefaultAnimationMinScreenSize=%.3f VirtualShadow=%d VirtualShadowCache=%d VirtualShadowDeformableInvalidate=%d"),
 		*GetNameSafe(World),
 		ForceRefPoseCVar ? ForceRefPoseCVar->GetInt() : INDEX_NONE,
 		AnimationBoundsCVar ? AnimationBoundsCVar->GetInt() : INDEX_NONE,
@@ -220,7 +220,7 @@ void LogSkinnedMeshShadowDiagnostics(UWorld* World)
 		float AnimationMinScreenSize = 0.0f;
 		const bool bHasAnimationMinScreenSize = TryGetAnimationMinScreenSize(Component, AnimationMinScreenSize);
 
-		UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassShadowDiag] ISKMC[%d] Component='%s' Owner='%s' Instances=%d Asset='%s' Provider='%s' ProviderClass='%s' ProviderEnabled=%d ProviderCompiling=%d UniqueAnimations=%u AnimationMinScreenSize=%s CastShadow=%d DynamicShadow=%d HiddenShadow=%d CapsuleDirectShadow=%d CapsuleIndirectShadow=%d RenderStatic=%d UseScreenRenderStateForUpdate=%d UpdateRateOptimizations=%d VisibilityBasedAnimTickOption=%d Mobility=%d"),
+		UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassShadowDiag] ISKMC[%d] Component='%s' Owner='%s' Instances=%d Asset='%s' Provider='%s' ProviderClass='%s' ProviderEnabled=%d ProviderCompiling=%d UniqueAnimations=%u AnimationMinScreenSize=%s CastShadow=%d DynamicShadow=%d HiddenShadow=%d CapsuleDirectShadow=%d CapsuleIndirectShadow=%d RenderStatic=%d UseScreenRenderStateForUpdate=%d UpdateRateOptimizations=%d VisibilityBasedAnimTickOption=%d Mobility=%d"),
 			ComponentCount,
 			*GetPathNameSafe(Component),
 			*GetNameSafe(Component->GetOwner()),
@@ -246,10 +246,8 @@ void LogSkinnedMeshShadowDiagnostics(UWorld* World)
 
 	if (ComponentCount == 0)
 	{
-		UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassShadowDiag] No UInstancedSkinnedMeshComponent instances found in world '%s'."), *GetNameSafe(World));
+		UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassShadowDiag] No UInstancedSkinnedMeshComponent instances found in world '%s'."), *GetNameSafe(World));
 	}
-
-	UE_LOG(LogCrowdyMass, Warning, TEXT("===================== CROWDY MASS SHADOW DIAGNOSTICS END ====================="));
 }
 
 FAutoConsoleCommandWithWorld CmdCrowdyMassLogSkinnedMeshShadowDiagnostics(
@@ -267,8 +265,6 @@ void RecreateSkinnedMeshRenderState(UWorld* World)
 	int32 ComponentCount = 0;
 	int32 ReadyComponentCount = 0;
 	int32 RecreatedComponentCount = 0;
-
-	UE_LOG(LogCrowdyMass, Warning, TEXT("==================== CROWDY MASS ISKMC RENDER STATE RECREATE BEGIN ===================="));
 
 	for (TObjectIterator<UInstancedSkinnedMeshComponent> ComponentIt; ComponentIt; ++ComponentIt)
 	{
@@ -296,7 +292,7 @@ void RecreateSkinnedMeshRenderState(UWorld* World)
 		Component->MarkRenderStateDirty();
 		++RecreatedComponentCount;
 
-		UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassISKMCRecreate] Component='%s' Owner='%s' Instances=%d Provider='%s' ProviderClass='%s' ProviderEnabled=%d ProviderCompiling=%d UniqueAnimations=%u Ready=%d"),
+		UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassISKMCRecreate] Component='%s' Owner='%s' Instances=%d Provider='%s' ProviderClass='%s' ProviderEnabled=%d ProviderCompiling=%d UniqueAnimations=%u Ready=%d"),
 			*GetPathNameSafe(Component),
 			*GetNameSafe(Component->GetOwner()),
 			Component->GetInstanceCount(),
@@ -308,13 +304,11 @@ void RecreateSkinnedMeshRenderState(UWorld* World)
 			bProviderReady ? 1 : 0);
 	}
 
-	UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassISKMCRecreate] World='%s' Components=%d ReadyComponents=%d RecreatedComponents=%d"),
+	UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassISKMCRecreate] World='%s' Components=%d ReadyComponents=%d RecreatedComponents=%d"),
 		*GetNameSafe(World),
 		ComponentCount,
 		ReadyComponentCount,
 		RecreatedComponentCount);
-
-	UE_LOG(LogCrowdyMass, Warning, TEXT("===================== CROWDY MASS ISKMC RENDER STATE RECREATE END ====================="));
 }
 
 FAutoConsoleCommandWithWorld CmdCrowdyMassRecreateSkinnedMeshRenderState(
@@ -337,8 +331,7 @@ void ForceSkinnedMeshAlwaysAnimate(UWorld* World)
 
 	int32 ComponentCount = 0;
 
-	UE_LOG(LogCrowdyMass, Warning, TEXT("==================== CROWDY MASS FORCE ISKMC ALWAYS ANIMATE BEGIN ===================="));
-	UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassISKMCAlwaysAnimate] World='%s' ForceRefPose=%d AnimationBounds=%d SkinningTransformProviders=%d SkinningForceFullUpload=%d DefaultAnimationMinScreenSize=%.3f"),
+	UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassISKMCAlwaysAnimate] World='%s' ForceRefPose=%d AnimationBounds=%d SkinningTransformProviders=%d SkinningForceFullUpload=%d DefaultAnimationMinScreenSize=%.3f"),
 		*GetNameSafe(World),
 		ForceRefPoseCVar ? ForceRefPoseCVar->GetInt() : INDEX_NONE,
 		AnimationBoundsCVar ? AnimationBoundsCVar->GetInt() : INDEX_NONE,
@@ -366,7 +359,7 @@ void ForceSkinnedMeshAlwaysAnimate(UWorld* World)
 		float CurrentAnimationMinScreenSize = 0.0f;
 		const bool bHasCurrentAnimationMinScreenSize = TryGetAnimationMinScreenSize(Component, CurrentAnimationMinScreenSize);
 
-		UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassISKMCAlwaysAnimate] Component='%s' Owner='%s' Instances=%d Asset='%s' Provider='%s' ProviderClass='%s' ProviderEnabled=%d ProviderCompiling=%d UniqueAnimations=%u PreviousAnimationMinScreenSize=%s CurrentAnimationMinScreenSize=%s"),
+		UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassISKMCAlwaysAnimate] Component='%s' Owner='%s' Instances=%d Asset='%s' Provider='%s' ProviderClass='%s' ProviderEnabled=%d ProviderCompiling=%d UniqueAnimations=%u PreviousAnimationMinScreenSize=%s CurrentAnimationMinScreenSize=%s"),
 			*GetPathNameSafe(Component),
 			*GetNameSafe(Component->GetOwner()),
 			Component->GetInstanceCount(),
@@ -380,10 +373,9 @@ void ForceSkinnedMeshAlwaysAnimate(UWorld* World)
 			bHasCurrentAnimationMinScreenSize ? *FString::Printf(TEXT("%.3f"), CurrentAnimationMinScreenSize) : TEXT("Unavailable"));
 	}
 
-	UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassISKMCAlwaysAnimate] World='%s' Components=%d"),
+	UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassISKMCAlwaysAnimate] World='%s' Components=%d"),
 		*GetNameSafe(World),
 		ComponentCount);
-	UE_LOG(LogCrowdyMass, Warning, TEXT("===================== CROWDY MASS FORCE ISKMC ALWAYS ANIMATE END ====================="));
 }
 
 FAutoConsoleCommandWithWorld CmdCrowdyMassForceSkinnedMeshAlwaysAnimate(
@@ -445,8 +437,6 @@ void LogRepresentationAnimationDiagnostics(UWorld* World)
 	TMap<int32, int32> RepresentationCounts;
 	TMap<int32, int32> LODCounts;
 	TMap<int32, int32> DescHandleCounts;
-
-	UE_LOG(LogCrowdyMass, Warning, TEXT("==================== CROWDY MASS REPRESENTATION ANIMATION DIAGNOSTICS BEGIN ===================="));
 
 	for (const FMassEntityHandle Entity : Entities)
 	{
@@ -518,7 +508,7 @@ void LogRepresentationAnimationDiagnostics(UWorld* World)
 				? TransformFragment->GetTransform().GetLocation().ToCompactString()
 				: FString(TEXT("Missing"));
 
-			UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassRepAnimDiag] Sample[%d] UUID='%s' Rep='%s' PrevRep='%s' LOD=%d PrevLOD=%d Visibility=%d LODSignificance=%.3f DescHandle=%d Seq=%d Pos=%.3f PlayRate=%.3f Velocity=%.2f Location='%s'"),
+			UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassRepAnimDiag] Sample[%d] UUID='%s' Rep='%s' PrevRep='%s' LOD=%d PrevLOD=%d Visibility=%d LODSignificance=%.3f DescHandle=%d Seq=%d Pos=%.3f PlayRate=%.3f Velocity=%.2f Location='%s'"),
 				ValidEntities,
 				*UUID.ToString(),
 				RepresentationFragment ? GetMassRepresentationTypeName(RepresentationFragment->CurrentRepresentation) : TEXT("Missing"),
@@ -536,7 +526,7 @@ void LogRepresentationAnimationDiagnostics(UWorld* World)
 		}
 	}
 
-	UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassRepAnimDiag] World='%s' TrackedEntities=%d ValidEntities=%d AnimationFragments=%d RepresentationFragments=%d LODFragments=%d VelocityFragments=%d Skinned=%d Actor=%d None=%d InvalidSkinnedDesc=%d"),
+	UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassRepAnimDiag] World='%s' TrackedEntities=%d ValidEntities=%d AnimationFragments=%d RepresentationFragments=%d LODFragments=%d VelocityFragments=%d Skinned=%d Actor=%d None=%d InvalidSkinnedDesc=%d"),
 		*GetNameSafe(World),
 		Entities.Num(),
 		ValidEntities,
@@ -558,7 +548,7 @@ void LogRepresentationAnimationDiagnostics(UWorld* World)
 			for (int32 MeshDescIndex = 0; MeshDescIndex < Desc.Meshes.Num(); ++MeshDescIndex)
 			{
 				const FMassSkinnedMeshInstanceVisualizationMeshDesc& MeshDesc = Desc.Meshes[MeshDescIndex];
-				UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassRepAnimDiag] MeshInfo[%d] Mesh[%d] Asset='%s' Provider='%s' MinSig=%.3f MaxSig=%.3f AnimationMinScreenSize=%.3f CastShadows=%d"),
+				UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassRepAnimDiag] MeshInfo[%d] Mesh[%d] Asset='%s' Provider='%s' MinSig=%.3f MaxSig=%.3f AnimationMinScreenSize=%.3f CastShadows=%d"),
 					MeshInfoIndex,
 					MeshDescIndex,
 					*GetPathNameSafe(MeshDesc.Asset),
@@ -573,7 +563,7 @@ void LogRepresentationAnimationDiagnostics(UWorld* World)
 
 	for (const TPair<int32, int32>& Pair : RepresentationCounts)
 	{
-		UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassRepAnimDiag] Representation '%s'(%d) = %d entities"),
+		UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassRepAnimDiag] Representation '%s'(%d) = %d entities"),
 			GetMassRepresentationTypeName(static_cast<EMassRepresentationType>(Pair.Key)),
 			Pair.Key,
 			Pair.Value);
@@ -581,17 +571,17 @@ void LogRepresentationAnimationDiagnostics(UWorld* World)
 
 	for (const TPair<int32, int32>& Pair : LODCounts)
 	{
-		UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassRepAnimDiag] LOD %d = %d entities"), Pair.Key, Pair.Value);
+		UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassRepAnimDiag] LOD %d = %d entities"), Pair.Key, Pair.Value);
 	}
 
 	for (const TPair<int32, int32>& Pair : DescHandleCounts)
 	{
-		UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassRepAnimDiag] SkinnedDescHandle %d = %d entities"), Pair.Key, Pair.Value);
+		UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassRepAnimDiag] SkinnedDescHandle %d = %d entities"), Pair.Key, Pair.Value);
 	}
 
 	for (const TPair<int32, int32>& Pair : SequenceCounts)
 	{
-		UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassRepAnimDiag] Sequence %d = %d entities"), Pair.Key, Pair.Value);
+		UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassRepAnimDiag] Sequence %d = %d entities"), Pair.Key, Pair.Value);
 	}
 
 	for (TObjectIterator<UInstancedSkinnedMeshComponent> ComponentIt; ComponentIt; ++ComponentIt)
@@ -616,7 +606,7 @@ void LogRepresentationAnimationDiagnostics(UWorld* World)
 				? ProviderSequences[SequenceIndex].Sequence.Get()
 				: nullptr;
 
-			UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassRepAnimDiag] Component='%s' Asset='%s' Provider='%s' Sequence=%d SequenceAsset='%s' Entities=%d"),
+			UE_LOG(LogCrowdyMass, Display, TEXT("[CrowdyMassRepAnimDiag] Component='%s' Asset='%s' Provider='%s' Sequence=%d SequenceAsset='%s' Entities=%d"),
 				*GetNameSafe(Component),
 				*GetPathNameSafe(Component->GetSkinnedAsset()),
 				*GetNameSafe(AnimProvider),
@@ -625,14 +615,13 @@ void LogRepresentationAnimationDiagnostics(UWorld* World)
 				Pair.Value);
 		}
 	}
-
-	UE_LOG(LogCrowdyMass, Warning, TEXT("===================== CROWDY MASS REPRESENTATION ANIMATION DIAGNOSTICS END ====================="));
 }
 
 FAutoConsoleCommandWithWorld CmdCrowdyMassLogRepresentationAnimationDiagnostics(
 	TEXT("CrowdyMass.LogRepresentationAnimationDiagnostics"),
 	TEXT("Logs Mass representation, LOD, velocity, and animation state for Crowdy remote entities."),
 	FConsoleCommandWithWorldDelegate::CreateStatic(&LogRepresentationAnimationDiagnostics));
+#endif
 
 float GetSpatialGridCellEntryDistance(const FBox& Bounds, const FVector& Start, const FVector& TraceDirection)
 {

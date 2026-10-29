@@ -261,6 +261,9 @@ namespace CrowdyExec
 	/** Struct's travelling field called Name, compared by SameKeptName; null when there is none. */
 	CROWDYEXEC_API const FProperty* FindTravellingField(const UStruct* Struct, FName Name);
 
+	/** Why Definition has no function called Function, naming the ones it has. */
+	FString UnknownFunctionReason(const UCrowdyServerObjectDefinition& Definition, FName Function);
+
 	uint32 GetStructGeneration();
 
 	/**

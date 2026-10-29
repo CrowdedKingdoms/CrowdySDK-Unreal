@@ -53,7 +53,7 @@ public:
 	 * Register a pool for the given actor class. Spawns PoolSize actors immediately.
 	 * Calling this more than once for the same class is a no-op.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Actor Pool")
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Actor Pool")
 	void RegisterPool(const FCrowdyPoolConfig& Config);
 
 	/**

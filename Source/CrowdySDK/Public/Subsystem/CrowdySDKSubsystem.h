@@ -59,78 +59,85 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	
-	UPROPERTY(BlueprintAssignable, Category = "CrowdySDK|Authentication")
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Authentication")
 	FOnLogin OnLogin;
 	
-	UPROPERTY(BlueprintAssignable, Category = "CrowdySDK|Authentication")
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Authentication")
 	FOnRegister OnRegister;
 	
-	UPROPERTY(BlueprintAssignable, Category = "CrowdySDK|Authentication")
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Authentication")
 	FOnLogout OnLogout;
 	
-	UPROPERTY(BlueprintAssignable, Category = "CrowdySDK|Authentication", meta=(DisplayName="On UDP Address Notify"))
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Authentication", meta=(DisplayName="On UDP Address Notify"))
 	FOnUDPAddressNotify OnUDPAddressNotify;
 	
-	UPROPERTY(BlueprintAssignable, Category = "CrowdySDK|Authentication")
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Authentication")
 	FOnVersionInfo OnVersionInfo;
 	
-	UPROPERTY(BlueprintAssignable, Category = "CrowdySDK|Connection", meta=(DisplayName="On UDP Connection Success"))
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Connection", meta=(DisplayName="On UDP Connection Success"))
 	FOnUDPConnectionSuccess OnUDPConnectionSuccess;
 	
-	UPROPERTY(BlueprintAssignable, Category = "CrowdySDK|Connection", meta=(DisplayName="On UDP Timed Out"))
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Connection", meta=(DisplayName="On UDP Timed Out"))
 	FOnUDPTimedOut OnUDPTimedOut;
 	
-	UPROPERTY(BlueprintAssignable, Category= "CrowdySDK|Permissions")
+	UPROPERTY(BlueprintAssignable, Category= "Crowdy SDK|Permissions")
 	FOnTeleportPermission OnTeleportPermission;
 	
-	UPROPERTY(BlueprintAssignable, Category = "CrowdySDK|HUD", meta=(DisplayName="Crowdy HUD Ready"))
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|HUD", meta=(DisplayName="Crowdy HUD Ready"))
 	FOnCrowdyHUDReady OnCrowdyHUDReady;
 	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication")
 	void Login(const FString Email, const FString Password) const;
 	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication")
 	void Register(const FString Email, const FString Password) const;
 
 	/** Magic-link step 2 complete sign-in with the one-time token. Result on OnLogin.
 	 *  Pair with UCrowdyAuthentication::RequestLoginLink (step 1). */
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication")
 	void CompleteLoginLink(const FString Token) const;
 
 	/** One-call magic-link sign-in: opens a loopback listener, requests the email link, and
 	 *  completes automatically when the user clicks it. Result on OnLogin. */
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication")
 	void BeginMagicLinkSignIn(const FString Email) const;
 
 	/** One-call social (OAuth) sign-in via a loopback listener + system browser. Provider comes
 	 *  from UCrowdyAuthentication::GetAvailableLoginProviders (e.g. "google"). Result on OnLogin. */
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication")
 	void BeginSocialSignIn(const FString Provider) const;
 
 	/** Manually rotate the app-scoped token (also happens automatically before expiry). */
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication")
 	void RefreshAppToken() const;
 
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication")
 	void Logout() const;
 
 	/** Stops a sign-in that has not finished and keeps the saved session; does nothing once signed in. */
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication")
 	void CancelSignIn() const;
 
-	// Kept for existing call sites; it no longer has to do anything. The shared API client re-reads both
-	// endpoints from UCrowdySDKDeveloperSettings every time it is resolved and rebuilds itself when they
-	// change, so a CrowdyStudio Config Sync already reaches a running PIE session on its own.
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Network")
+	/**
+	 * @deprecated Remove the call. Nothing replaces it.
+	 *
+	 * Does nothing. The shared API client re-reads both endpoints from the developer settings every time it is
+	 * resolved and rebuilds itself when they change, so a settings change already reaches a running session.
+	 */
+	UE_DEPRECATED(5.8, "Remove the call. The API client re-reads the endpoints from the developer settings on its own, so this does nothing.")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Configuration",
+		meta=(DisplayName="Reload Endpoints From Settings (Deprecated)",
+		      DeprecatedFunction,
+		      DeprecationMessage="Remove this node. The API client re-reads the endpoints from the developer settings on its own, so this does nothing."))
 	void ReloadEndpointsFromSettings();
 
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Configuration")
 	void SetGameSessionInfo(const FGameSessionInfo GameSessionInfo);
-	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication", meta=(DisplayName="Request UDP Access"))
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection", meta=(DisplayName="Request UDP Access"))
 	void RequestUDPAccess() const;
-	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection")
 	void RequestVersionInfo() const;
 	
 	/**
@@ -140,7 +147,7 @@ public:
 	 * the name every datacenter answers to.
 	 */
 	UE_DEPRECATED(5.8, "Use SetGameApiUrl for the gameplay endpoint, or SetDiscoveryUrl for the shared origin.")
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication",
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication",
 		meta=(DisplayName="Set Query Endpoint (Deprecated)",
 		      DeprecatedFunction,
 		      DeprecationMessage="Use Set Game Api Url for the gameplay endpoint, or Set Discovery Url for the shared origin."))
@@ -149,19 +156,19 @@ public:
 	/** Stores the shared origin for this session: the name every datacenter answers, used to resolve where an app
 	 *  lives and to sign in. Only the Custom backend reads it; Dev and Production resolve to their own built-in
 	 *  hosts, and the call warns when it cannot take effect. */
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Configuration")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Configuration")
 	void SetDiscoveryUrl(const FString InUrl) const;
 
 	/** Stores the Game API HTTP endpoint for this session. This names one datacenter's instance, so it is normally
 	 *  resolved from the shared origin rather than set by hand. */
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Configuration")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Configuration")
 	void SetGameApiUrl(const FString InHttpUrl) const;
 	
 	/**
 	 * Returns the current UDP connection state. Poll this to drive connection
 	 * indicators in your UI no delegates or event subscriptions required.
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "CrowdySDK|Connection",
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Connection",
 		meta=(DisplayName="Get UDP Connection State"))
 	EUDPConnectionState GetUDPConnectionState() const;
 
@@ -173,7 +180,7 @@ public:
 	 * is now started automatically when the connection comes up, so calling this has no effect at all.
 	 */
 	UE_DEPRECATED(5.8, "Remove the call. The round-trip ping starts automatically when the connection comes up, and the connection tracks its own liveness.")
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Connection",
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection",
 		meta=(DisplayName="Start UDP Timeout Monitoring (Deprecated)",
 		      DeprecatedFunction,
 		      DeprecationMessage="Remove this node. The round-trip ping now starts automatically when the connection comes up, and the connection tracks its own liveness using 'UDP Timeout (seconds)' in Project Settings."))
@@ -186,7 +193,7 @@ public:
 	 * watched for silence, which is not something a caller starts or stops.
 	 */
 	UE_DEPRECATED(5.8, "Remove the call unless you specifically want to stop the latency ping; it has never affected connection liveness.")
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Connection",
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection",
 		meta=(DisplayName="Stop UDP Timeout Monitoring (Deprecated)",
 		      DeprecatedFunction,
 		      DeprecationMessage="Remove this node unless you specifically want to stop the latency ping. It has never affected connection liveness."))
@@ -197,10 +204,10 @@ public:
 	 * stop traffic: the connection is owned by the transport and recovers on its own, and interrupting a recovery
 	 * already under way is not something a caller should be able to do by asking the UI to show a disconnect.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Connection")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection")
 	void StopNetworkOperations() const;
 	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Connection")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection")
 	void ToggleNetworkMessageProcessing() const;
 	
 	/**
@@ -212,7 +219,7 @@ public:
 	 * unchanged.
 	 */
 	UE_DEPRECATED(5.8, "Remove the call. The connection tracks its own liveness, so this does nothing.")
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Connection",
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection",
 		meta=(DisplayName="Trigger UDP Heartbeat (Deprecated)",
 		      DeprecatedFunction,
 		      DeprecationMessage="Remove this node. The connection tracks its own liveness, so this does nothing."))
@@ -236,7 +243,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category="CrowdySDK|Communication")
 	void ToggleOwnerEcho(bool bEnable) const;
 	
-	UFUNCTION(BlueprintCallable, Category="CrowdySDK|Permissions")
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Permissions")
 	void RequestTeleportPermission(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ, const int32 VoxelX,
 	                               const int32 VoxelY, const int32 VoxelZ) const;
 	
@@ -248,13 +255,23 @@ public:
 	 * existing Blueprint graph that calls it keeps working unchanged.
 	 */
 	UE_DEPRECATED(5.8, "Remove the call. A system keeps a subscription handle for as long as it wants messages, and delivery stops when that handle is destroyed with its owner.")
-	UFUNCTION(BlueprintCallable, Category="CrowdySDK|Reception Layer",
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Reception Layer",
 		meta=(DisplayName="Deregister All Reception Layers (Deprecated)",
 		      DeprecatedFunction,
 		      DeprecationMessage="Remove this node. A system now keeps a subscription handle for as long as it wants to receive messages, and delivery stops automatically when that handle is destroyed along with its owner. There is nothing left to release in bulk, so this does nothing."))
 	void DeregisterAllReceptionLayers();
 	
-	UFUNCTION(BlueprintCallable, Category="CrowdySDK|Subsystem")
+	/**
+	 * @deprecated Remove the call. Nothing replaces it.
+	 *
+	 * The size is only quoted in the warning logged when an actor update fails to decode; it does not change how
+	 * updates are decoded.
+	 */
+	UE_DEPRECATED(5.8, "Remove the call. The size only appears in a decode-failure warning and does not change how updates are decoded.")
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Subsystem",
+		meta=(DisplayName="Set Expected Actor Update State Size (Deprecated)",
+		      DeprecatedFunction,
+		      DeprecationMessage="Remove this node. The size only appears in a decode-failure warning and does not change how updates are decoded."))
 	void SetExpectedActorUpdateStateSize(const int32 InSize) const;
 	
 	/**
@@ -277,7 +294,7 @@ public:
 	 * Say an actor is still present without restating its state. Costs the spatial header alone, so an actor that
 	 * has not changed can stay present for a fraction of what repeating its full state would cost.
 	 */
-	UFUNCTION(BlueprintCallable, Category="CrowdySDK|Replication|Actor Updates")
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Replication|Actor Updates")
 	void DispatchActorHeartbeat(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
 	                            const FString& InstigatorID);
 
@@ -285,7 +302,7 @@ public:
 	 * Dispatch a game event. The EventPayload pin accepts any struct type directly.
 	 * Target/TargetID address the event; Everyone broadcasts (legacy behavior).
 	 */
-	UFUNCTION(BlueprintCallable, CustomThunk, Category="CrowdySDK|Replication|Events",
+	UFUNCTION(BlueprintCallable, CustomThunk, Category="Crowdy SDK|Replication|Events",
 		meta=(DisplayName="Dispatch Game Event", CustomStructureParam="EventPayload", AutoCreateRefTerm="TargetID"))
 	void K2_DispatchGameEvent(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
 	                          const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance,
@@ -435,10 +452,7 @@ private:
 	FTimerHandle PingMessageTimerHandle;
 	FTimerHandle HostPollTimerHandle;
 	bool bIsRegistered = false;
-	
-	UPROPERTY()
-	int32 ExpectedActorUpdateStateSize = 300;
-	
+
 	UFUNCTION()
 	void HandleAuthLogin(FCrowdyAuthResult Result);
 

@@ -1006,13 +1006,14 @@ namespace
 		static const FString EventHandlers[] = {TEXT("on_player_joined"), TEXT("on_player_left")};
 		static const FString Unwritable[] = {TEXT("self"), TEXT("super"), TEXT("crate")};
 		TSet<FString> Seen;
-		for (const FCrowdyServerTimer& Timer : Definition.Timers)
+		for (int32 TimerIndex = 0; TimerIndex < Definition.Timers.Num(); ++TimerIndex)
 		{
+			const FCrowdyServerTimer& Timer = Definition.Timers[TimerIndex];
 			const FString Name = Timer.Name.ToString();
 			const FString Handler = SnakeCase(Name);
 			if (Timer.Name.IsNone())
 			{
-				Errors.Add(TEXT("Timers: a timer has no Name"));
+				Errors.Add(FString::Printf(TEXT("Timers: timer %d has no Name; type one"), TimerIndex + 1));
 			}
 			else if (!IsServerName(Handler, 64, true) || MakeArrayView(Unwritable).Contains(Handler))
 			{
@@ -1109,15 +1110,16 @@ namespace
 		}
 		TSet<FString> Topics;
 		TSet<FName> Names;
-		for (const FCrowdyServerMessage& Message : Definition.Messages)
+		for (int32 MessageIndex = 0; MessageIndex < Definition.Messages.Num(); ++MessageIndex)
 		{
+			const FCrowdyServerMessage& Message = Definition.Messages[MessageIndex];
 			const FString Topic = CheckedTopic(Message);
 			const FString Name = Message.Name.ToString();
 			bool bNameTaken = false;
 			Names.Add(Message.Name, &bNameTaken);
 			if (Message.Name.IsNone())
 			{
-				Errors.Add(TEXT("Messages: a message has no Name"));
+				Errors.Add(FString::Printf(TEXT("Messages: message %d has no Name; type one"), MessageIndex + 1));
 			}
 			else if (bNameTaken)
 			{
@@ -1418,6 +1420,24 @@ const FCrowdyServerFunction* UCrowdyServerObjectDefinition::FindFunction(FName N
 	return GetMemberFunctions().FindByPredicate(Named);
 }
 
+FString CrowdyExec::UnknownFunctionReason(const UCrowdyServerObjectDefinition& Definition, FName Function)
+{
+	TArray<FString> Names;
+	for (const FCrowdyServerFunction& Own : Definition.Functions)
+	{
+		Names.Add(Own.Name.ToString());
+	}
+	if (!Definition.IsFunctionLibrary() && Definition.MembersFrom == ECrowdyServerMembersSource::ThisObject)
+	{
+		for (const FCrowdyServerFunction& Member : UCrowdyServerObjectDefinition::GetMemberFunctions())
+		{
+			Names.Add(Member.Name.ToString());
+		}
+	}
+	const FString Known = Names.IsEmpty() ? FString(TEXT("it has no functions")) : FString::Printf(TEXT("its functions are %s"), *FString::Join(Names, TEXT(", ")));
+	return FString::Printf(TEXT("%s has no function named %s; %s"), *Definition.TypeName, *Function.ToString(), *Known);
+}
+
 TConstArrayView<FCrowdyServerFunction> UCrowdyServerObjectDefinition::GetMemberFunctions()
 {
 	static const TArray<FCrowdyServerFunction> MemberFunctions = []()
@@ -1542,17 +1562,22 @@ bool UCrowdyServerObjectDefinition::BuildTables(TArray<FCrowdyExecBakedStruct>& 
 		Builder.Structs.AddUnique(KitRecord);
 	}
 	TSet<FString> Methods;
-	for (const FCrowdyServerFunction& Function : Functions)
+	for (int32 FunctionIndex = 0; FunctionIndex < Functions.Num(); ++FunctionIndex)
 	{
+		const FCrowdyServerFunction& Function = Functions[FunctionIndex];
 		const FString Method = CheckedMethodName(Function);
-		if (!IsServerName(Method, 64, true))
+		if (Function.Name.IsNone() && Function.ServerName.IsEmpty())
+		{
+			OutErrors.Add(FString::Printf(TEXT("Function %d has no Name; type one"), FunctionIndex + 1));
+		}
+		else if (!IsServerName(Method, 64, true))
 		{
 			OutErrors.Add(FString::Printf(TEXT("Function %s: '%s' cannot be its server name, which must be lowercase letters, digits and underscores, start with a letter, and be at most 64 characters"),
 				*Function.Name.ToString(), *Method));
 		}
 		else if (CrowdyExec::IsReservedMethodName(Method, false))
 		{
-			OutErrors.Add(FString::Printf(TEXT("Function %s: '%s' is reserved"), *Function.Name.ToString(), *Method));
+			OutErrors.Add(FString::Printf(TEXT("Function %s: '%s' is reserved; rename the function or set its Server Name"), *Function.Name.ToString(), *Method));
 		}
 		else if (Methods.Contains(Method))
 		{

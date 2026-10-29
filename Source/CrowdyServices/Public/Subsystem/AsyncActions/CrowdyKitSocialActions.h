@@ -68,7 +68,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_CreateParty : public UCrowdyKitSocialG
 public:
 	/** Creates the party: an invite-only team named party:Name and its chat channel. The caller leads it. Fails when either cannot be created, for example when the name is taken. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Create Party")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Create Party")
 	static UCrowdyKitSocial_CreateParty* CreateParty(UObject* WorldContextObject, const FString& Name);
 
 protected:
@@ -86,7 +86,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_FindParty : public UCrowdyKitSocialGro
 public:
 	/** Finds the party named exactly Name. Fails with Not Found when there is none. Anyone can create a team with the name first, so check Owner User Id is the player you expect. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Find Party")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Find Party")
 	static UCrowdyKitSocial_FindParty* FindParty(UObject* WorldContextObject, const FString& Name);
 
 protected:
@@ -104,7 +104,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_InviteToParty : public UCrowdyKitSocia
 public:
 	/** Adds the user to the party's team and chat channel. Needs the manage members permission on the party. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Invite To Party")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Invite To Party")
 	static UCrowdyKitSocial_InviteToParty* InviteToParty(UObject* WorldContextObject, const FCrowdyKitGroup& Group, int64 UserId);
 
 protected:
@@ -123,7 +123,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_JoinParty : public UCrowdyKitSocialGro
 public:
 	/** Joins the party's team and chat channel as the signed-in player. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Join Party")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Join Party")
 	static UCrowdyKitSocial_JoinParty* JoinParty(UObject* WorldContextObject, const FCrowdyKitGroup& Group);
 
 protected:
@@ -141,7 +141,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_LeaveParty : public UCrowdyKitSocialGr
 public:
 	/** Leaves the party's chat channel, then its team. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Leave Party")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Leave Party")
 	static UCrowdyKitSocial_LeaveParty* LeaveParty(UObject* WorldContextObject, const FCrowdyKitGroup& Group);
 
 protected:
@@ -159,7 +159,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_GetPartyMembers : public UCrowdyKitSoc
 public:
 	/** Lists the party's members. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Get Party Members")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Get Party Members")
 	static UCrowdyKitSocial_GetPartyMembers* GetPartyMembers(UObject* WorldContextObject, const FCrowdyKitGroup& Group);
 
 protected:
@@ -174,7 +174,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_CreateGuild : public UCrowdyKitSocialG
 public:
 	/** Creates the guild: a team named guild:Name under the membership policy, and its chat channel. The caller leads it. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Create Guild")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Create Guild")
 	static UCrowdyKitSocial_CreateGuild* CreateGuild(UObject* WorldContextObject, const FString& Name,
 		ECrowdyTeamMembershipPolicy MembershipPolicy = ECrowdyTeamMembershipPolicy::Request);
 
@@ -194,7 +194,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_FindGuild : public UCrowdyKitSocialGro
 public:
 	/** Finds the guild named exactly Name. Fails with Not Found when there is none. Anyone can create a team with the name first, so check Owner User Id is the player you expect. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Find Guild")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Find Guild")
 	static UCrowdyKitSocial_FindGuild* FindGuild(UObject* WorldContextObject, const FString& Name);
 
 protected:
@@ -212,7 +212,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_JoinGuild : public UCrowdyKitSocialGro
 public:
 	/** Asks to join the guild's team. A member with the manage members permission accepts the request with Accept Into Guild. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Join Guild")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Join Guild")
 	static UCrowdyKitSocial_JoinGuild* JoinGuild(UObject* WorldContextObject, const FCrowdyKitGroup& Group);
 
 protected:
@@ -230,7 +230,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_AcceptIntoGuild : public UCrowdyKitSoc
 public:
 	/** Approves the user's join request on the guild's team and adds them to its chat channel. Needs the manage members permission. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Accept Into Guild")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Accept Into Guild")
 	static UCrowdyKitSocial_AcceptIntoGuild* AcceptIntoGuild(UObject* WorldContextObject, const FCrowdyKitGroup& Group, int64 UserId);
 
 protected:
@@ -249,7 +249,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_GetGuildRoster : public UCrowdyKitSoci
 public:
 	/** Lists the guild's members, with those still awaiting a decision on their join request. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Get Guild Roster")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Get Guild Roster")
 	static UCrowdyKitSocial_GetGuildRoster* GetGuildRoster(UObject* WorldContextObject, const FCrowdyKitGroup& Group);
 
 protected:
@@ -264,7 +264,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_PromoteInGuild : public UCrowdyKitSoci
 public:
 	/** Replaces the member's roles in the guild with Role Ids. Needs the manage roles permission. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Promote In Guild")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Promote In Guild")
 	static UCrowdyKitSocial_PromoteInGuild* PromoteInGuild(UObject* WorldContextObject, const FCrowdyKitGroup& Group,
 		int64 UserId, const TArray<int64>& RoleIds);
 
@@ -285,7 +285,7 @@ class CROWDYSERVICES_API UCrowdyKitSocial_FindOrCreateChatRoom : public UCrowdyK
 public:
 	/** Finds the chat room named exactly Name, or creates it, and joins it unless the player is already in. The first player to create a room owns it, so any player can claim a name first. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Find Or Create Chat Room")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Find Or Create Chat Room")
 	static UCrowdyKitSocial_FindOrCreateChatRoom* FindOrCreateChatRoom(UObject* WorldContextObject, const FString& Name);
 
 protected:
@@ -306,7 +306,7 @@ public:
 	 * grant access and update_voxel_data. Needs grid admin rights on the app, so it fails for a player who has none.
 	 */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "PermissionKeys"),
-		Category = "Crowdy|Game Kit|Social", DisplayName = "Claim Guild Territory")
+		Category = "Crowdy SDK|Game Kit|Social", DisplayName = "Claim Guild Territory")
 	static UCrowdyKitSocial_ClaimGuildTerritory* ClaimGuildTerritory(UObject* WorldContextObject, const FCrowdyKitGroup& Group,
 		int64 GridId, const TArray<FString>& PermissionKeys, int64 RoleId = 0);
 

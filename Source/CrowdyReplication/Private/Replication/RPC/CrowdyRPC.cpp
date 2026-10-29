@@ -3,6 +3,7 @@
 #include "Core/CrowdyCategory/FCrowdyTypeIDGenerator.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "Replication/CrowdyBoundedMemoryReader.h"
+#include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/RPC/FCrowdyEventParams.h"
 #include "Replication/RPC/CrowdyReplicatedEventLibrary.h"
 #include "Replication/RPC/ICrowdyEventSource.h"
@@ -93,9 +94,10 @@ namespace
 
 	// Maps a routing meta string (the enumerator name the macro stringized, e.g.
 	// "OwningClient") to its enum value. GetValueByNameString resolves both the
-	// short and the namespaced spelling; anything unrecognized keeps the default.
+	// short and the namespaced spelling; a non-empty value that does not resolve
+	// keeps the default and warns once, naming the valid values.
 	template <typename TEnum>
-	TEnum ResolveMetaEnum(const FString& MetaValue, TEnum DefaultValue)
+	TEnum ResolveMetaEnum(const UFunction* Fn, const TCHAR* MetaKey, const FString& MetaValue, TEnum DefaultValue)
 	{
 		if (MetaValue.IsEmpty())
 		{
@@ -103,11 +105,29 @@ namespace
 		}
 		const UEnum* EnumType = StaticEnum<TEnum>();
 		const int64 Value = EnumType ? EnumType->GetValueByNameString(MetaValue) : INDEX_NONE;
-		return Value == INDEX_NONE ? DefaultValue : static_cast<TEnum>(Value);
+		if (Value != INDEX_NONE)
+		{
+			return static_cast<TEnum>(Value);
+		}
+
+		FString ValidNames;
+		for (int32 Index = 0; EnumType && Index < EnumType->NumEnums(); ++Index)
+		{
+			const FString Name = EnumType->GetNameStringByIndex(Index);
+			if (Name.EndsWith(TEXT("_MAX")))
+			{
+				continue;
+			}
+			ValidNames += ValidNames.IsEmpty() ? Name : FString(TEXT(", ")) + Name;
+		}
+		UE_LOG(LogCrowdyRPC, Warning,
+			TEXT("'%s' has an unrecognized %s value '%s', so the default is used. Valid values: %s."),
+			*GetPathNameSafe(Fn), MetaKey, *MetaValue, *ValidNames);
+		return DefaultValue;
 	}
 
 	ECrowdyEventRecipient ResolveCrowdyRecipientMetaEnum(
-		const FString& MetaValue, ECrowdyEventRecipient DefaultValue)
+		const UFunction* Fn, const FString& MetaValue, ECrowdyEventRecipient DefaultValue)
 	{
 		if (MetaValue.Equals(TEXT("OwningPlayer"), ESearchCase::IgnoreCase)
 			|| MetaValue.Equals(TEXT("Owning Player"), ESearchCase::IgnoreCase))
@@ -115,7 +135,7 @@ namespace
 			return ECrowdyEventRecipient::OwningClient;
 		}
 
-		return ResolveMetaEnum(MetaValue, DefaultValue);
+		return ResolveMetaEnum(Fn, CrowdyRpcMetaKeys::Recipient, MetaValue, DefaultValue);
 	}
 
 	// Constructs only the parameter slots of a frame. A C++ UFUNCTION has nothing but
@@ -454,7 +474,7 @@ namespace
 	}
 
 	// Reverses EncodeObjectArray. The count is untrusted, so a negative or oversized value sets the
-	// archive error and decodes nothing  DeserializeParams then drops the whole call. The bound also
+	// archive error and decodes nothing: DeserializeParams then drops the whole call. The bound also
 	// guards FScriptArrayHelper::EmptyAndAddValues, which asserts on a negative count.
 	void DecodeObjectArray(FArrayProperty* ArrayProp, void* ValuePtr, FArchive& Ar)
 	{
@@ -732,7 +752,7 @@ bool FCrowdyRPC::IsSupportedParamType(const FProperty* Prop)
 	// Containers ride the same SerializeItem path as long as every inner type does, so a
 	// container is supported iff its element (and, for a map, key + value) types are. This
 	// recurses, but Unreal reflection forbids nested containers, so in practice the inner is
-	// always a leaf. A TArray may also carry object references  including TArray<UObject*> 
+	// always a leaf. A TArray may also carry object references  including TArray<UObject*>,
 	// because the object-array codec walks each element through the identity codec. Sets and
 	// maps of objects stay rejected (object key/value hashing is out of scope), so they keep the
 	// object-inner guard.
@@ -804,34 +824,34 @@ FString FCrowdyRPC::DescribeSignatureProblem(const UFunction* Fn)
 		}
 
 		// A return value or a non-const output reference would have to travel back to
-		// the caller, which a fire-and-forget network call cannot do  reject both so
+		// the caller, which a fire-and-forget network call cannot do: reject both so
 		// the author does not expect a result that never arrives.
 		if (Prop->HasAnyPropertyFlags(CPF_ReturnParm))
 		{
-			return TEXT("returns a value  CrowdyEvents are one-way and cannot return data");
+			return TEXT("returns a value: CrowdyEvents are one-way and cannot return data");
 		}
 		// A const reference is tagged CPF_OutParm by reflection but cannot return data, so it is
 		// a legitimate input; only a non-const out param is a true output the call cannot honour.
 		if (Prop->HasAnyPropertyFlags(CPF_OutParm) && !Prop->HasAnyPropertyFlags(CPF_ConstParm))
 		{
 			return FString::Printf(
-				TEXT("parameter '%s' is an output (non-const reference)  CrowdyEvents cannot pass data back to the caller"),
+				TEXT("parameter '%s' is an output (non-const reference): CrowdyEvents cannot pass data back to the caller"),
 				*Prop->GetName());
 		}
 		if (!IsSupportedParamType(Prop))
 		{
 			// A set or map whose key or value is an object reference is a deliberate limitation
-			// (object identity hashing is out of scope), so name it specifically  a TArray of the
+			// (object identity hashing is out of scope), so name it specifically: a TArray of the
 			// same references is supported, only the set/map form is not.
 			if (IsObjectSetOrMap(Prop))
 			{
 				return FString::Printf(
 					TEXT("parameter '%s' is a set or map of object references, which CrowdyEvents do not ")
-					TEXT("support  use a TArray of object references instead"),
+					TEXT("support: use a TArray of object references instead"),
 					*Prop->GetName());
 			}
 			return FString::Printf(
-				TEXT("parameter '%s' has unsupported type '%s'  CrowdyEvents carry primitives, enums, ")
+				TEXT("parameter '%s' has unsupported type '%s': CrowdyEvents carry primitives, enums, ")
 				TEXT("structs, object and class references, and arrays of any of these (sets and maps of ")
 				TEXT("objects, interfaces, and delegates are not supported)"),
 				*Prop->GetName(), *Prop->GetCPPType());
@@ -930,7 +950,7 @@ FCrowdyFnInfo FCrowdyRPC::BuildFnInfo(UFunction* Fn)
 	}
 
 	// FunctionID and the POD flag are pure reflection over the signature and exist
-	// in every build, so they are always computed live  the inbound resolver key
+	// in every build, so they are always computed live: the inbound resolver key
 	// and the wire id never depend on the baked asset being loaded.
 	Info.FunctionID = ComputeFunctionID(Fn);
 	Info.bParamsPOD = ComputeParamsPOD(Fn);
@@ -939,9 +959,9 @@ FCrowdyFnInfo FCrowdyRPC::BuildFnInfo(UFunction* Fn)
 	// them live where metadata exists; otherwise from the baked snapshot. Either
 	// source leaves the API defaults in place for a function with no routing meta.
 #if WITH_METADATA
-	Info.Recipient = ResolveCrowdyRecipientMetaEnum(Fn->GetMetaData(CrowdyRpcMetaKeys::Recipient), Info.Recipient);
-	Info.DecayRate = ResolveMetaEnum(Fn->GetMetaData(CrowdyRpcMetaKeys::Decay), Info.DecayRate);
-	Info.Distance  = ResolveMetaEnum(Fn->GetMetaData(CrowdyRpcMetaKeys::Distance), Info.Distance);
+	Info.Recipient = ResolveCrowdyRecipientMetaEnum(Fn, Fn->GetMetaData(CrowdyRpcMetaKeys::Recipient), Info.Recipient);
+	Info.DecayRate = ResolveMetaEnum(Fn, CrowdyRpcMetaKeys::Decay, Fn->GetMetaData(CrowdyRpcMetaKeys::Decay), Info.DecayRate);
+	Info.Distance  = ResolveMetaEnum(Fn, CrowdyRpcMetaKeys::Distance, Fn->GetMetaData(CrowdyRpcMetaKeys::Distance), Info.Distance);
 	Info.ChannelName = Fn->GetMetaData(CrowdyRpcMetaKeys::Channel);
 	Info.bIsAction = Fn->HasMetaData(CrowdyRpcMetaKeys::Action);
 #else
@@ -1051,7 +1071,7 @@ void FCrowdyRPC::SerializeParams(const UFunction* Fn, const void* Frame, TArray<
 	}
 
 	// Persistent FMemoryWriter  the same archive configuration the event-payload
-	// path (SerializeEventState) uses  so a struct serialized here is byte-identical
+	// path (SerializeEventState) uses, so a struct serialized here is byte-identical
 	// to the same struct serialized as an event payload.
 	FMemoryWriter Writer(OutBlob, /*bIsPersistent=*/true);
 
@@ -1378,8 +1398,8 @@ bool FCrowdyRPC::DispatchOrReplayBlueprintCall(UObject* Self, UFunction* EventFn
 	FOutParmRec* OutParms)
 {
 	// This invocation is the replay of a received call when ApplyCall armed the scope for
-	// exactly this object and function. Consume it and run the body. Anything else  including
-	// a recursive call or the same event on another entity from within a replayed body  falls
+	// exactly this object and function. Consume it and run the body. Anything else, including
+	// a recursive call or the same event on another entity from within a replayed body, falls
 	// through and originates a fresh network call.
 	if (Self && Self == ReplayObject && EventFn == ReplayFunction)
 	{
@@ -1458,7 +1478,7 @@ void FCrowdyRPC::DeliverLoopback(UWorld* World, const FCrowdyRpcCall& Call)
 	}
 
 	// Hold the guard across the whole replay so a replicated event the body issues is sent
-	// normally but does not start a second loopback  that bound is what prevents the cascade.
+	// normally but does not start a second loopback: that bound is what prevents the cascade.
 	TGuardValue<bool> LoopbackGuard(bLoopbackDelivering, true);
 	Router->ReceiveLoopbackCall(Call);
 }
@@ -1480,7 +1500,7 @@ void FCrowdyRPC::RouteOverWire(UCrowdyEntitySubsystem* EntitySubsystem, const AA
 	}
 
 	// FCrowdyRpcCall is an ordinary USTRUCT payload, so it rides the existing event
-	// transport unchanged  including the StateBytes fragmentation that splits an
+	// transport unchanged, including the StateBytes fragmentation that splits an
 	// oversized ParamBlob across datagrams.
 	// Sent from a view of Call rather than a copy of it into an FInstancedStruct: the send is synchronous,
 	// so Call outlives it, and the parameter blob is not duplicated to put it on the wire.
@@ -1500,11 +1520,11 @@ void FCrowdyRPC::RouteOverChannel(UCrowdyEntitySubsystem* EntitySubsystem, const
 	EncodeChannelRpc(Call, /*Flags*/0, ChannelPayload);
 
 	// The channel caps the payload at CrowdyChannelPayloadMaxBytes. Fail loudly rather than let the
-	// transport truncate it  registration already rejects a call whose fixed params can never fit.
+	// transport truncate it: registration already rejects a call whose fixed params can never fit.
 	if (ChannelPayload.Num() > CrowdyChannelPayloadMaxBytes)
 	{
 		UE_LOG(LogCrowdyRPC, Error,
-			TEXT("[CrowdyRPC] Reliable '%s' dropped  encoded payload is %d bytes, over the %d-byte channel limit."),
+			TEXT("[CrowdyRPC] Reliable '%s' dropped: encoded payload is %d bytes, over the %d-byte channel limit."),
 			*GetNameSafe(Fn), ChannelPayload.Num(), CrowdyChannelPayloadMaxBytes);
 		return;
 	}
@@ -1802,13 +1822,26 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 	if (Decision.Route == ECrowdyRpcRoute::Reject)
 	{
 		// SpatialMulticast (also the unannotated default) has no location on a non-spatial participant. Consume
-		// the call (return true) so a Blueprint caller does NOT run the body as a local fallback  the author must
+		// the call (return true) so a Blueprint caller does NOT run the body as a local fallback: the author must
 		// pick a channel-based recipient.
 		UE_LOG(LogCrowdyRPC, Error,
 			TEXT("SerializeAndRoute: '%s' on non-spatial participant '%s' uses SpatialMulticast, which has no "
 				 "location; set CrowdyRecipient=Multicast or Host. Dropping."),
 			*Fn->GetName(), *GetNameSafe(Obj->GetClass()));
 		return true;
+	}
+
+	const bool bBroadcastRecipient = Info.Recipient == ECrowdyEventRecipient::Multicast
+		|| Info.Recipient == ECrowdyEventRecipient::SpatialMulticast;
+	if (ContextActor && !EntityID.IsValid() && bBroadcastRecipient && ShouldLogRpcDrop(Info.FunctionID))
+	{
+		const bool bHasComponent = ContextActor->FindComponentByClass<UCrowdyEntityComponent>() != nullptr;
+		UE_LOG(LogCrowdyRPC, Warning,
+			TEXT("'%s' was called on '%s', which has no registered Crowdy entity, so no other client receives it. %s"),
+			*Fn->GetName(), *ContextActor->GetName(),
+			bHasComponent
+				? TEXT("Its Crowdy Entity Component has not registered yet (a pawn registers on possession); call after On Crowdy Ownership Assigned.")
+				: TEXT("Add a Crowdy Entity Component."));
 	}
 
 	if (IsRpcTraceEnabled())
@@ -1854,7 +1887,7 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 		else
 		{
 			UE_LOG(LogCrowdyRPC, Warning,
-				TEXT("SerializeAndRoute: Run-On-Host '%s' dropped  the host's avatar is not in range, so its chunk is unknown."),
+				TEXT("SerializeAndRoute: Run-On-Host '%s' dropped: the host's avatar is not in range, so its chunk is unknown."),
 				*Fn->GetName());
 		}
 		break;

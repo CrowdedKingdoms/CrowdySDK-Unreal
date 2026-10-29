@@ -14,11 +14,14 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Model/CrowdyStudioTypes.h"
 #include "Model/FCrowdyStudioController.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "UObject/Class.h"
+#include "Utils/CrowdyBakedRegistry.h"
 
 namespace CrowdyStudioCommandletDetail
 {
@@ -41,6 +44,7 @@ namespace CrowdyStudioCommandletDetail
 		TEXT(" | updategroup [-app=<id>] -kind=team|channel -group=<id> [-name=<text>] [-description=<text>] [-policy=open|request|invite|admin] -yes | deletegroup [-app=<id>] -kind=team|channel -group=<id> -yes")
 		TEXT(" | setteampolicy | setchannelpolicy [-app=<id>] [-creation=admin|member|anyone] [-membership=open|request|invite|admin] [-maxmembers=<n, 0 unlimited>] [-maxgroupsperuser=<n, 0 unlimited>] -yes")
 		TEXT(" | gridlimits [-app=<id>] -grid=<id> -keys=a,b or -nolimit -yes | gridgrants [-app=<id>] -grid=<id> -group=<id> | gridpermissions [-app=<id>] -grid=<id> [-user=<id>, default the signed-in user]")
+		TEXT(" | registry [-class=<substring>] [-norebuild] [-yes] [-editoropen] (rebuilds the baked Crowdy registry in memory as Tools > Rebuild Crowdy Registry does, then lists each entity class with its CrowdyEvent routing and CrowdyState flags; -norebuild reads the saved asset instead; creating a missing asset needs -yes and no Unreal Editor running unless -editoropen)")
 		TEXT(", -app defaulting to the project's synced AppID, and -out=<file> for a JSON result. Quote a value with spaces; write a list without spaces, a,b. Every operation that changes something does nothing without -yes.");
 
 	const TCHAR* const SignInMessage = TEXT("Sign in to Crowdy Studio on this machine first");
@@ -2160,9 +2164,147 @@ namespace CrowdyStudioCommandletDetail
 		return true;
 	}
 
+	constexpr double RebuildTimeoutSeconds = 900.0;
+
+	template <typename TEnum>
+	FString EnumName(TEnum Value)
+	{
+		const UEnum* Enum = StaticEnum<TEnum>();
+		return Enum ? Enum->GetNameStringByValue(static_cast<int64>(Value)) : IdText(static_cast<int64>(Value));
+	}
+
+	TSharedRef<FJsonValue> MakeEventRow(const FCrowdyBakedRpcFunction& Fn)
+	{
+		const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+		Row->SetStringField(TEXT("name"), Fn.FunctionName.ToString());
+		Row->SetStringField(TEXT("functionId"), IdText(Fn.FunctionID));
+		Row->SetStringField(TEXT("recipient"), EnumName(Fn.Recipient));
+		Row->SetStringField(TEXT("decay"), EnumName(Fn.DecayRate));
+		Row->SetStringField(TEXT("distance"), EnumName(Fn.Distance));
+		Row->SetStringField(TEXT("channel"), Fn.ChannelName);
+		Row->SetBoolField(TEXT("paramsPod"), Fn.bParamsPOD);
+		Row->SetBoolField(TEXT("action"), Fn.bIsAction);
+		Row->SetBoolField(TEXT("replicated"), Fn.bIsReplicated);
+		return MakeShared<FJsonValueObject>(Row);
+	}
+
+	TSharedRef<FJsonValue> MakeStateRow(const FCrowdyBakedRepProperty& Prop)
+	{
+		const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+		Row->SetStringField(TEXT("name"), Prop.PropertyName.ToString());
+		Row->SetStringField(TEXT("propertyId"), IdText(Prop.PropertyID));
+		Row->SetNumberField(TEXT("layoutOrder"), Prop.LayoutOrder);
+		Row->SetBoolField(TEXT("ownerOnly"), Prop.bOwnerOnly);
+		Row->SetBoolField(TEXT("manualDirty"), Prop.bManualDirty);
+		Row->SetBoolField(TEXT("heartbeat"), Prop.bHeartbeat);
+		Row->SetStringField(TEXT("onRep"), Prop.OnRepFunctionName.IsNone() ? FString() : Prop.OnRepFunctionName.ToString());
+		return MakeShared<FJsonValueObject>(Row);
+	}
+
+	void PrintRegistry(const FJsonObject& Body)
+	{
+		for (const TSharedPtr<FJsonValue>& ClassValue : Body.GetArrayField(TEXT("classes")))
+		{
+			const TSharedPtr<FJsonObject> Class = ClassValue->AsObject();
+			Step(FString::Printf(TEXT("%s (layout hash %s)"), *Class->GetStringField(TEXT("classPath")), *Class->GetStringField(TEXT("layoutHash"))));
+			for (const TSharedPtr<FJsonValue>& EventValue : Class->GetArrayField(TEXT("events")))
+			{
+				const TSharedPtr<FJsonObject> Event = EventValue->AsObject();
+				Step(FString::Printf(TEXT("  event %s: recipient %s, decay %s, distance %s%s"), *Event->GetStringField(TEXT("name")), *Event->GetStringField(TEXT("recipient")),
+					*Event->GetStringField(TEXT("decay")), *Event->GetStringField(TEXT("distance")), Event->GetBoolField(TEXT("replicated")) ? TEXT(", replicated") : TEXT("")));
+			}
+			for (const TSharedPtr<FJsonValue>& StateValue : Class->GetArrayField(TEXT("state")))
+			{
+				const TSharedPtr<FJsonObject> State = StateValue->AsObject();
+				TArray<FString> Flags;
+				for (const TCHAR* Flag : { TEXT("ownerOnly"), TEXT("manualDirty"), TEXT("heartbeat") })
+				{
+					if (State->GetBoolField(Flag))
+					{
+						Flags.Add(Flag);
+					}
+				}
+				const FString OnRep = State->GetStringField(TEXT("onRep"));
+				if (!OnRep.IsEmpty())
+				{
+					Flags.Add(FString::Printf(TEXT("onRep %s"), *OnRep));
+				}
+				Step(FString::Printf(TEXT("  state %s: %s"), *State->GetStringField(TEXT("name")), Flags.IsEmpty() ? TEXT("no flags") : *FString::Join(Flags, TEXT(", "))));
+			}
+		}
+		Step(FString::Printf(TEXT("%d class(es), %d event(s), %d state propertie(s)"), static_cast<int32>(Body.GetNumberField(TEXT("classCount"))),
+			static_cast<int32>(Body.GetNumberField(TEXT("eventCount"))), static_cast<int32>(Body.GetNumberField(TEXT("stateCount")))));
+	}
+
+	/** In a commandlet the baker updates the asset in memory and writes it to disk only when no file exists yet, so only that case needs -yes. */
+	bool RunRegistry(FRun& Run)
+	{
+		const FCrowdyStudioCommandRequest& Request = Run.Request;
+		bool bRebuilt = false;
+		if (!Request.bNoRebuild)
+		{
+			if (!CrowdyStudioRegistry::HasRebuildHook())
+			{
+				Run.Error = TEXT("The registry baker (CrowdySDKEditor) is not loaded; pass -norebuild to read the saved registry asset");
+				return false;
+			}
+			const bool bCreating = !FPackageName::DoesPackageExist(FString(CrowdyBakedRegistryPaths::PackagePath));
+			if (bCreating)
+			{
+				Step(FString::Printf(TEXT("%s the baked registry asset %s"), Request.bYes ? TEXT("creating") : TEXT("would create"), CrowdyBakedRegistryPaths::PackagePath));
+				if (!Request.bYes)
+				{
+					Run.Error = TEXT("The project has no baked registry asset yet and a rebuild creates it; pass -yes to confirm, or -norebuild to change nothing.");
+					return false;
+				}
+				if (!Request.bEditorOpen && FPlatformProcess::IsApplicationRunning(TEXT("UnrealEditor")))
+				{
+					Run.Error = TEXT("An Unreal Editor is running and may hold the registry asset. Close it first, or pass -editoropen to write anyway.");
+					return false;
+				}
+			}
+			Step(TEXT("rebuilding the baked registry"));
+			const TSharedRef<bool> bDone = MakeShared<bool>(false);
+			CrowdyStudioRegistry::RequestRebuild([bDone]() { *bDone = true; });
+			if (!Pump([bDone]() { return *bDone; }, RebuildTimeoutSeconds))
+			{
+				Run.Error = TEXT("The registry rebuild did not finish in time");
+				return false;
+			}
+			if (bCreating && !FPackageName::DoesPackageExist(FString(CrowdyBakedRegistryPaths::PackagePath)))
+			{
+				Run.Error = TEXT("The registry was rebuilt but its asset could not be saved; see LogCrowdyEditor in the log");
+				return false;
+			}
+			bRebuilt = true;
+		}
+
+		UCrowdyBakedRegistry::InvalidateCache();
+		const UCrowdyBakedRegistry* Registry = UCrowdyBakedRegistry::Get();
+		if (!Registry)
+		{
+			Run.Error = TEXT("There is no baked registry asset; run -op=registry without -norebuild (and -yes) to create it");
+			return false;
+		}
+		Run.Result->SetStringField(TEXT("asset"), Registry->GetPathName());
+		Run.Result->SetBoolField(TEXT("rebuilt"), bRebuilt);
+		const TSharedRef<FJsonObject> Body = UCrowdyStudioCommandlet::BuildRegistryJson(*Registry, Request.ClassFilter);
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : Body->Values)
+		{
+			Run.Result->SetField(Field.Key, Field.Value);
+		}
+		Step(FString::Printf(TEXT("%s %s"), bRebuilt ? TEXT("rebuilt in memory:") : TEXT("saved asset:"), *Registry->GetPathName()));
+		PrintRegistry(*Body);
+		return true;
+	}
+
 	bool Execute(FRun& Run)
 	{
 		const FString& Op = Run.Request.Op;
+		if (Op == TEXT("registry"))
+		{
+			return RunRegistry(Run);
+		}
 		if (Op == TEXT("groupdetail"))
 		{
 			return RunGroupDetail(Run);
@@ -2326,6 +2468,12 @@ bool UCrowdyStudioCommandlet::ParseRequest(const FString& Params, FCrowdyStudioC
 	if (OutRequest.Op == TEXT("sync"))
 	{
 		return ReadId(Params, TEXT("app"), OutRequest.AppId, OutError);
+	}
+	if (OutRequest.Op == TEXT("registry"))
+	{
+		ReadSwitch(Params, TEXT("class"), OutRequest.ClassFilter);
+		OutRequest.bNoRebuild = FParse::Param(*Params, TEXT("norebuild"));
+		return true;
 	}
 	if (OutRequest.Op == TEXT("createapp"))
 	{
@@ -2562,4 +2710,73 @@ TSharedPtr<FStudioApp> UCrowdyStudioCommandlet::FindApp(const TArray<TSharedPtr<
 FStudioSettingsSnapshot UCrowdyStudioCommandlet::ProposeSync(const FStudioApp& App)
 {
 	return FCrowdyConfigSync::BuildProposedSettings(App);
+}
+
+TSharedRef<FJsonObject> UCrowdyStudioCommandlet::BuildRegistryJson(const UCrowdyBakedRegistry& Registry, const FString& ClassFilter)
+{
+	using namespace CrowdyStudioCommandletDetail;
+	TMap<FString, TArray<const FCrowdyBakedRpcFunction*>> Events;
+	TMap<FString, TArray<const FCrowdyBakedRepProperty*>> States;
+	TMap<FString, int64> LayoutHashes;
+	TSet<FString> ClassPaths;
+	for (const FCrowdyBakedRpcFunction& Fn : Registry.RpcFunctions)
+	{
+		const FString ClassPath = Fn.ClassPath.ToString();
+		Events.FindOrAdd(ClassPath).Add(&Fn);
+		ClassPaths.Add(ClassPath);
+	}
+	for (const FCrowdyBakedRepProperty& Prop : Registry.RepProperties)
+	{
+		const FString ClassPath = Prop.OwnerClassPath.ToString();
+		States.FindOrAdd(ClassPath).Add(&Prop);
+		ClassPaths.Add(ClassPath);
+	}
+	for (const FCrowdyBakedRepLayoutHash& Hash : Registry.RepLayoutHashes)
+	{
+		LayoutHashes.Add(Hash.ClassPath.ToString(), Hash.LayoutHash);
+	}
+
+	TArray<FString> Sorted = ClassPaths.Array();
+	Sorted.Sort();
+	TArray<TSharedPtr<FJsonValue>> Classes;
+	int32 EventCount = 0;
+	int32 StateCount = 0;
+	for (const FString& ClassPath : Sorted)
+	{
+		if (!ClassFilter.IsEmpty() && !ClassPath.Contains(ClassFilter))
+		{
+			continue;
+		}
+		TArray<const FCrowdyBakedRpcFunction*> ClassEvents = Events.FindRef(ClassPath);
+		ClassEvents.Sort([](const FCrowdyBakedRpcFunction& A, const FCrowdyBakedRpcFunction& B) { return A.FunctionName.LexicalLess(B.FunctionName); });
+		TArray<const FCrowdyBakedRepProperty*> ClassStates = States.FindRef(ClassPath);
+		ClassStates.Sort([](const FCrowdyBakedRepProperty& A, const FCrowdyBakedRepProperty& B) { return A.LayoutOrder < B.LayoutOrder; });
+
+		TArray<TSharedPtr<FJsonValue>> EventRows;
+		for (const FCrowdyBakedRpcFunction* Fn : ClassEvents)
+		{
+			EventRows.Add(MakeEventRow(*Fn));
+		}
+		TArray<TSharedPtr<FJsonValue>> StateRows;
+		for (const FCrowdyBakedRepProperty* Prop : ClassStates)
+		{
+			StateRows.Add(MakeStateRow(*Prop));
+		}
+		EventCount += EventRows.Num();
+		StateCount += StateRows.Num();
+
+		const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+		Row->SetStringField(TEXT("classPath"), ClassPath);
+		Row->SetStringField(TEXT("layoutHash"), IdText(LayoutHashes.FindRef(ClassPath)));
+		Row->SetArrayField(TEXT("events"), EventRows);
+		Row->SetArrayField(TEXT("state"), StateRows);
+		Classes.Add(MakeShared<FJsonValueObject>(Row));
+	}
+
+	const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetNumberField(TEXT("classCount"), Classes.Num());
+	Result->SetNumberField(TEXT("eventCount"), EventCount);
+	Result->SetNumberField(TEXT("stateCount"), StateCount);
+	Result->SetArrayField(TEXT("classes"), Classes);
+	return Result;
 }

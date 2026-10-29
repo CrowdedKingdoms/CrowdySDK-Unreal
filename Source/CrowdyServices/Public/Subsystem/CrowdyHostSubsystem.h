@@ -33,22 +33,21 @@ public:
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	
 	
-	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Host Subsystem|Events")
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Host|Events")
 	FOnCrowdyHostElected OnHostElected;
 	
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Host Subsystem|Data")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Host")
 	FGuid GetHostID() const;
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Host Subsystem|Data")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Host")
 	bool IsHostSet() const {return IsValid(GameSession) && GameSession->GetHostID().IsValid();}
 
-	// ── Host tracking ──────────────────────────────────────────────────────
 	/** Called by the SDK when a GameHost response arrives. Thread-safe.
-	 *  Broadcasts OnHostSet on the game thread whenever the host changes. */
+	 *  Broadcasts OnHostElected on the game thread whenever the host changes. */
 	void SetHostUserID(const int64 InHostUserID);
 
 	/** Returns the user ID of the current game host (0 if not yet known). */
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session",
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Host",
 		meta=(DisplayName="Get Host User ID"))
 	int64 GetHostUserID() const
 	{
@@ -59,7 +58,7 @@ public:
 	 * Returns true when the local user IS the current game host.
 	 * Safe to call from any thread and from Blueprint.
 	 */
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session",
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Host",
 		meta=(DisplayName="Is Host"))
 	bool IsHost() const
 	{

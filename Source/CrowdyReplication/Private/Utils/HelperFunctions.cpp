@@ -3,6 +3,8 @@
 
 #include "Utils/HelperFunctions.h"
 #include "CrowdyReplicationLog.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Subsystem/CrowdyGameSession.h"
 
 
@@ -14,17 +16,29 @@ void UHelperFunctions::GetChunkCoordinateAtLocation(UObject* WorldContextObject,
 		UE_LOG(LogCrowdyReplication, Error, TEXT("[HelperFunctions]: WorldContextObject is null."));
 		return;
 	}
-	
+
 	const UWorld* World = WorldContextObject->GetWorld();
-	
+
 	if (!IsValid(World))
 	{
 		UE_LOG(LogCrowdyReplication, Error, TEXT("[HelperFunctions]: World is null."));
 		return;
 	}
 
-	const TObjectPtr<UCrowdyGameSession> GameSession = World->GetGameInstance()->GetSubsystem<UCrowdyGameSession>();
-	
+	const UGameInstance* GameInstance = World->GetGameInstance();
+	if (!GameInstance)
+	{
+		UE_LOG(LogCrowdyReplication, Warning, TEXT("[HelperFunctions]: The world has no game instance, so the chunk coordinate was not computed."));
+		return;
+	}
+
+	const UCrowdyGameSession* GameSession = GameInstance->GetSubsystem<UCrowdyGameSession>();
+	if (!GameSession)
+	{
+		UE_LOG(LogCrowdyReplication, Warning, TEXT("[HelperFunctions]: The Crowdy game session subsystem is unavailable, so the chunk coordinate was not computed."));
+		return;
+	}
+
 	const double ChunkSize = GameSession->GetChunkSize();
 	
 	ChunkX = static_cast<int64>(FMath::FloorToDouble(WorldLocation.X / ChunkSize));

@@ -1564,7 +1564,7 @@ void UCrowdyServerObject::CallWith(FName Function, const UScriptStruct* GivenStr
 	const FCrowdyServerFunction* Found = Definition->FindFunction(Function);
 	if (!Found)
 	{
-		Refuse(ECrowdyServerCallOutcome::BadRequest, FString::Printf(TEXT("%s has no function named %s"), *Definition->TypeName, *Function.ToString()));
+		Refuse(ECrowdyServerCallOutcome::BadRequest, CrowdyExec::UnknownFunctionReason(*Definition, Function));
 		return;
 	}
 	const UScriptStruct* ParamsStruct = Found->GetParamsStruct();
@@ -1572,7 +1572,7 @@ void UCrowdyServerObject::CallWith(FName Function, const UScriptStruct* GivenStr
 	{
 		const FString List = Found->GetParamsListName();
 		Refuse(ECrowdyServerCallOutcome::BadRequest, ParamsStruct
-			? FString::Printf(TEXT("%s takes %s params"), *Function.ToString(), List.IsEmpty() ? *CrowdyExec::DisplayName(ParamsStruct) : *List)
+			? FString::Printf(TEXT("%s takes %s params; build them with Make Inputs"), *Function.ToString(), List.IsEmpty() ? *CrowdyExec::DisplayName(ParamsStruct) : *List)
 			: FString::Printf(TEXT("%s takes no params"), *Function.ToString()));
 		return;
 	}

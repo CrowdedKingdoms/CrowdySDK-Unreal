@@ -879,12 +879,14 @@ TSharedRef<SWidget> SCrowdyRegistryInspector::MakeFunctionEntry(const FCrowdyRpc
 	if (Fn->bParamsPOD)
 	{
 		Header->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(10.0f, 0.0f, 0.0f, 0.0f)
-		[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagPOD", "POD"), CrowdyStudioWidgets::EBadgeTone::Success) ];
+		[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagPOD", "POD"), CrowdyStudioWidgets::EBadgeTone::Success,
+			LOCTEXT("FlagPODTip", "Every input parameter is plain data, so the event skips parameter setup and teardown.")) ];
 	}
 	if (Fn->bReplicated)
 	{
 		Header->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(6.0f, 0.0f, 0.0f, 0.0f)
-		[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagRepl", "REPL"), CrowdyStudioWidgets::EBadgeTone::Info) ];
+		[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagRepl", "REPL"), CrowdyStudioWidgets::EBadgeTone::Info,
+			LOCTEXT("FlagReplTip", "A Blueprint event marked Crowdy Replicates.")) ];
 	}
 
 	// Expanded body: details stacked vertically as "Label : value" rows, inside an inset panel.
@@ -941,12 +943,14 @@ TSharedRef<SWidget> SCrowdyRegistryInspector::MakeRepPropertyEntry(const FCrowdy
 	if (Prop->bOwnerOnly)
 	{
 		Header->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(10.0f, 0.0f, 0.0f, 0.0f)
-		[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagOwnerOnly", "OWNER"), CrowdyStudioWidgets::EBadgeTone::Info) ];
+		[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagOwnerOnly", "OWNER"), CrowdyStudioWidgets::EBadgeTone::Info,
+			LOCTEXT("FlagOwnerOnlyTip", "Delivered only to the owning client, never on the spatial multicast.")) ];
 	}
 	if (Prop->bManualDirty)
 	{
 		Header->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(6.0f, 0.0f, 0.0f, 0.0f)
-		[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagManual", "MANUAL"), CrowdyStudioWidgets::EBadgeTone::Warning) ];
+		[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagManual", "MANUAL"), CrowdyStudioWidgets::EBadgeTone::Warning,
+			LOCTEXT("FlagManualTip", "Skipped by the per-tick change check; sent only when explicitly marked dirty.")) ];
 	}
 
 	// Expanded body: details stacked vertically as "Label : value" rows, inside an inset panel.
@@ -1054,12 +1058,14 @@ TSharedRef<SWidget> SCrowdyRegistryInspector::MakeTableRpcRow(const FCrowdyRpcRo
 		if (Fn->bParamsPOD)
 		{
 			FlagBox->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
-			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagPOD", "POD"), CrowdyStudioWidgets::EBadgeTone::Success) ];
+			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagPOD", "POD"), CrowdyStudioWidgets::EBadgeTone::Success,
+				LOCTEXT("FlagPODTip", "Every input parameter is plain data, so the event skips parameter setup and teardown.")) ];
 		}
 		if (Fn->bReplicated)
 		{
 			FlagBox->AddSlot().AutoWidth()
-			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagRepl", "REPL"), CrowdyStudioWidgets::EBadgeTone::Info) ];
+			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagRepl", "REPL"), CrowdyStudioWidgets::EBadgeTone::Info,
+				LOCTEXT("FlagReplTip", "A Blueprint event marked Crowdy Replicates.")) ];
 		}
 		Flags = FlagBox;
 	}
@@ -1100,12 +1106,14 @@ TSharedRef<SWidget> SCrowdyRegistryInspector::MakeTableRepRow(const FCrowdyRepPr
 		if (Prop->bOwnerOnly)
 		{
 			FlagBox->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
-			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagOwnerOnly", "OWNER"), CrowdyStudioWidgets::EBadgeTone::Info) ];
+			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagOwnerOnly", "OWNER"), CrowdyStudioWidgets::EBadgeTone::Info,
+				LOCTEXT("FlagOwnerOnlyTip", "Delivered only to the owning client, never on the spatial multicast.")) ];
 		}
 		if (Prop->bManualDirty)
 		{
 			FlagBox->AddSlot().AutoWidth()
-			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagManual", "MANUAL"), CrowdyStudioWidgets::EBadgeTone::Warning) ];
+			[ CrowdyStudioWidgets::Badge(LOCTEXT("FlagManual", "MANUAL"), CrowdyStudioWidgets::EBadgeTone::Warning,
+				LOCTEXT("FlagManualTip", "Skipped by the per-tick change check; sent only when explicitly marked dirty.")) ];
 		}
 		Flags = FlagBox;
 	}

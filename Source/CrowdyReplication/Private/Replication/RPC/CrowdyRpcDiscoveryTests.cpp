@@ -68,6 +68,38 @@ bool FCrowdyRpcRoutingMetaResolvedTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// A routing meta value that names no enumerator keeps the default and warns once per function: the cache means a
+// second lookup does not build, and so does not warn, again.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcUnrecognizedRecipientWarnsOnceTest,
+	"CrowdySDK.RPC.UnrecognizedRecipientWarnsOnce", CrowdyRpcDiscoveryTestFlags)
+bool FCrowdyRpcUnrecognizedRecipientWarnsOnceTest::RunTest(const FString& Parameters)
+{
+	UFunction* NoArgs = UCrowdyRpcTestTarget::StaticClass()->FindFunctionByName(TEXT("NoArgs_Implementation"));
+	TestNotNull(TEXT("NoArgs resolved"), NoArgs);
+	if (!NoArgs)
+	{
+		return false;
+	}
+
+#if WITH_METADATA
+	NoArgs->SetMetaData(CrowdyRpcMetaKeys::Recipient, TEXT("Nonsense"));
+	FCrowdyRPC::InvalidateFnInfoCache();
+	AddExpectedMessagePlain(TEXT("unrecognized CrowdyRecipient value 'Nonsense'"),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	const FCrowdyFnInfo First = FCrowdyRPC::GetFnInfo(NoArgs);
+	const FCrowdyFnInfo Second = FCrowdyRPC::GetFnInfo(NoArgs);
+	TestTrue(TEXT("unrecognized recipient resolves to the default"),
+		First.Recipient == ECrowdyEventRecipient::SpatialMulticast);
+	TestTrue(TEXT("the cached lookup agrees"), Second.Recipient == First.Recipient);
+
+	NoArgs->RemoveMetaData(CrowdyRpcMetaKeys::Recipient);
+	FCrowdyRPC::InvalidateFnInfoCache();
+#endif
+
+	return true;
+}
+
 // Deliverable 3 + parity exit test: baking a function and reading it back through
 // the runtime lookup yields the same id/routing/POD the runtime computes live.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcBakedRoundTripTest,

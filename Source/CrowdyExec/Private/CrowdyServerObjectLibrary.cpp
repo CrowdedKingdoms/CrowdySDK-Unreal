@@ -15,6 +15,7 @@
 #include "GameFramework/Actor.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "UObject/EnumProperty.h"
+#include "UObject/ObjectKey.h"
 #include "UObject/PropertyOptional.h"
 #include "UObject/ScriptMacros.h"
 #include "UObject/UnrealType.h"
@@ -364,9 +365,28 @@ namespace CrowdyServerObjectLibraryDetail
 		return Holder.Owner ? Cast<UCrowdyServerObjectSubsystem>(Holder.Owner->GetOuter()) : nullptr;
 	}
 
+	/** True when Values' struct has no value called Name, warned about once per struct and name. */
+	bool WarnUnknownValue(const FInstancedStruct& Values, FName Name)
+	{
+		const UScriptStruct* Struct = Values.GetScriptStruct();
+		if (!Struct || UCrowdyServerObjectLibrary::FindServerValue(Values, Name))
+		{
+			return false;
+		}
+		static TSet<TPair<FObjectKey, FName>> Warned;
+		bool bAlreadyWarned = false;
+		Warned.Add(TPair<FObjectKey, FName>(FObjectKey(Struct), Name), &bAlreadyWarned);
+		UE_CLOG(!bAlreadyWarned, LogCrowdyExec, Warning, TEXT("'%s' is not a value of %s; names are matched ignoring case, spaces and punctuation."), *Name.ToString(), *Struct->GetName());
+		return true;
+	}
+
 	/** A non-optional value that does not fit the pin reading it, warned about once per variable. */
 	void WarnUnfitValue(const FInstancedStruct& Values, FName Name, const FProperty* DestProperty)
 	{
+		if (WarnUnknownValue(Values, Name))
+		{
+			return;
+		}
 		static TSet<FName> Warned;
 		const FProperty* Field = UCrowdyServerObjectLibrary::FindServerValue(Values, Name);
 		if (!Field || !DestProperty || CastField<FOptionalProperty>(Field) || Warned.Contains(Name))
@@ -400,7 +420,7 @@ namespace CrowdyServerObjectLibraryDetail
 		}
 		if (!Definition->FindFunction(Function))
 		{
-			Refuse(ECrowdyServerCallOutcome::BadRequest, FString::Printf(TEXT("%s has no function named %s"), *Definition->TypeName, *Function.ToString()));
+			Refuse(ECrowdyServerCallOutcome::BadRequest, CrowdyExec::UnknownFunctionReason(*Definition, Function));
 			return;
 		}
 		const UGameInstance* GameInstance = FindGameInstance(WorldContextObject);
@@ -742,6 +762,10 @@ DEFINE_FUNCTION(UCrowdyServerObjectLibrary::execSetServerValue)
 	bool bSet = false;
 	P_NATIVE_BEGIN;
 	bSet = SetServerValueFrom(Values, Name, ValueProperty, Value);
+	if (!bSet)
+	{
+		CrowdyServerObjectLibraryDetail::WarnUnknownValue(Values, Name);
+	}
 	P_NATIVE_END;
 	*(bool*)RESULT_PARAM = bSet;
 }
