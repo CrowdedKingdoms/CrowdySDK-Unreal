@@ -5,7 +5,8 @@
 //! What differs: chunks are z up, as the Unreal SDK sends them (Unreal X, Y, Z over 1600), so the
 //! config's `center` is ground `[x, y]` and `z` its height, the probes are laid in rows along
 //! ground y and read only the rows the circle's radius needs now, realtime event 98 carries
-//! `centerX` and `centerY`, and snapshots from the platform's y-up starter start again.
+//! `centerX`, `centerY` and `centerZ` (the last two both the ground y, for either reader), and
+//! snapshots from the platform's y-up starter start again.
 //!
 //! The hub reads where players are with the node API (scope `world.read`): a client never says
 //! it is inside the circle. A player's position is the chunk the platform tracks, to one chunk
@@ -120,7 +121,7 @@ fn span(center: f64, radius: f64) -> (i64, i64) {
     (((center - radius).floor() as i64).max(c - REACH), ((center + radius).floor() as i64).min(c + REACH))
 }
 
-/// The circle's realtime event 98, z up: its centre on the ground is `centerX`, `centerY`.
+/// The circle's realtime event 98, z up: its centre on the ground is `centerX`, `centerY`, and `centerZ` repeats `centerY` for readers that name the ground axis z.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ZoneChange {
@@ -130,6 +131,7 @@ pub struct ZoneChange {
     pub radius_now: f64,
     pub center_x: f64,
     pub center_y: f64,
+    pub center_z: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -390,6 +392,7 @@ impl ZoneHub {
             radius_now: f64::from(self.zone.circle.radius(now)),
             center_x: c.center.0,
             center_y: c.center.1,
+            center_z: c.center.1,
         };
         let at = ChunkPos::new(c.center.0.floor() as i64, c.center.1.floor() as i64, c.z);
         let actor = actor_id(&format!("zone:{}", ctx.key));
@@ -669,7 +672,7 @@ mod tests {
         assert_eq!(ChunkPos::new(n(10), n(18), n(26)), ChunkPos::new(3, -8, 2));
         let body: Value = serde_json::from_slice(&emitted[0][72..]).unwrap();
         assert_eq!((body["centerX"].as_f64(), body["centerY"].as_f64()), (Some(3.5), Some(-7.5)));
-        assert!(body.get("centerZ").is_none());
+        assert_eq!(body["centerZ"].as_f64(), Some(-7.5));
         let view: ZoneView = hub.call_typed(Caller::Player(1), "state", &()).unwrap();
         assert_eq!(view.center, (3.5, -7.5));
     }

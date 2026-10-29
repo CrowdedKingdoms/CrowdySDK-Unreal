@@ -351,6 +351,19 @@ public:
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
 	bool IsSignedIn() const;
 
+	/**
+	 * Stops a sign-in that has not finished: a restore, a password sign-in, an email link or social sign-in waiting for
+	 * the browser, or one held for the terms. Only its OnError answers, with "Sign-in cancelled.". A cancelled restore keeps
+	 * the saved session for the next launch; a new sign-in that already got its session is signed out of it on the server
+	 * and not kept. Does nothing once signed in.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
+	void CancelSignIn();
+
+	/** True while a sign-in has started and not yet finished, failed or been cancelled. Show a Cancel button on it. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
+	bool IsSignInPending() const;
+
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Runs the sign-in's last step, as a sign-in or a token refresh, with Teams standing in for the game instance's. */
 	void ApplyAppTokenForTest(const FCrowdyAppTokenFields& Token, bool bRefresh, UCrowdyTeams* Teams);
@@ -383,6 +396,7 @@ private:
 		Login,
 		Register,
 		MagicLink,
+		LinkRequest, // sends the email link only; not a sign-in of its own
 		Social,
 		Restore,
 		Refresh,   // proactive rotation or reactive recovery; no per-call delegate
@@ -413,11 +427,32 @@ private:
 	FString InstanceSuffixForTest;
 #endif
 
-	/** Bumped on logout; a sign-in or mint that began under an earlier value answers after the player signed out. */
+	/** Bumped on logout and on CancelSignIn; a sign-in or mint that began under an earlier value answers too late. */
 	int32 SignInGeneration = 0;
+
+	/** What a too-late answer tells its caller: set with every generation bump, to signed out or cancelled. */
+	const TCHAR* StaleSignInMessage = nullptr;
 
 	/** Answers only OnError and returns true when the player signed out since Generation was read, so the answer is dropped. */
 	bool AbandonStaleSignIn(int32 Generation, const FOnAuthError& OnError);
+
+	/** Player sign-ins started and not yet finished or failed; a refresh is not one. Zeroed when the generation moves. */
+	int32 PendingSignIns = 0;
+
+	/** Counts down one pending sign-in when a flow that is not a refresh succeeds or fails. */
+	void EndPendingSignIn(EAuthFlow Flow);
+
+	/** A pending sign-in other than a restore saved its new session, replacing whatever was saved before. */
+	bool bPendingSignInSavedSession = false;
+
+	/** Set while CancelSignIn answers its callers, so a cancel fires no failure event, as a sign-out fires none. */
+	bool bCancellingSignIn = false;
+
+	/** Deletes the saved session from disk, the legacy plaintext slot included. */
+	void DeleteSavedSessionFiles();
+
+	/** CompleteLoginLink without counting a new sign-in, for the email link's own browser callback. */
+	void FinishLoginLink(const FString& Token, FOnAuthSuccess OnSuccess, FOnAuthError OnError);
 
 	/** The reason of the pause the last token answer set, so an answer with no gate lifts only that pause. */
 	FString GatePauseReason;

@@ -114,6 +114,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
 	void Logout() const;
 
+	/** Stops a sign-in that has not finished and keeps the saved session; does nothing once signed in. */
+	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Authentication")
+	void CancelSignIn() const;
+
 	// Kept for existing call sites; it no longer has to do anything. The shared API client re-reads both
 	// endpoints from UCrowdySDKDeveloperSettings every time it is resolved and rebuilds itself when they
 	// change, so a CrowdyStudio Config Sync already reaches a running PIE session on its own.

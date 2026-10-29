@@ -260,6 +260,12 @@ void UCrowdySDKSubsystem::RefreshAppToken() const
 		Auth->RefreshAppToken();
 }
 
+void UCrowdySDKSubsystem::CancelSignIn() const
+{
+	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+		Auth->CancelSignIn();
+}
+
 void UCrowdySDKSubsystem::Logout() const
 {
 	// End the session on the server first, while its token is still installed, then forget the durable credential:

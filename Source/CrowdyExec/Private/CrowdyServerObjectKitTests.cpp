@@ -2648,6 +2648,174 @@ bool FCrowdyGameKitStarterOwnerValueChecks::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace CrowdyServerObjectKitTests
+{
+	/** A profile snapshot of MessageEpoch; a Gold of 0 or more also carries the wallet, as a hub that sends an Owner Value's variable in its snapshot does. */
+	TArray<uint8> ProfileOf(FRig& Rig, uint64 MessageEpoch, uint64 Seq, int32 Level, int64 Gold = -1)
+	{
+		FCrowdyKitPlayerState Value;
+		Value.Player = Me;
+		Value.Level = Level;
+		TArray<FString> Fields{TEXT("player"), TEXT("level"), TEXT("achievements"), TEXT("quests_done")};
+		if (Gold >= 0)
+		{
+			Value.Wallet.Balances.Add(TEXT("gold"), Gold);
+			Fields.Add(TEXT("wallet"));
+		}
+		return KitMessage(MessageEpoch, Seq, "snapshot", Rig.Encode(Value, Fields));
+	}
+
+	/** Reads Variable of Object as the Get node does, into Out; true when it has a value. */
+	bool ReadPlayerVariable(FRig& Rig, const UCrowdyServerObject* Object, FName Variable, FCrowdyKitPlayerState& Out)
+	{
+		const FProperty* Property = FCrowdyKitPlayerState::StaticStruct()->FindPropertyByName(Variable);
+		return Rig.Test.TestNotNull(FString::Printf(TEXT("the player's State has %s"), *Variable.ToString()), Property)
+			&& UCrowdyServerObjectLibrary::ReadServerVariableInto(Object, Rig.Definition.Get(), Variable, Property, Property->ContainerPtrToValuePtr<void>(&Out));
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitStarterSnapshotBeforeReadyIsAnnouncedOnce,
+	"CrowdySDK.CrowdyExec.GameKitStarter.SnapshotBeforeReadyIsAnnouncedOnce", CrowdyServerObjectTests::TestFlags)
+
+bool FCrowdyGameKitStarterSnapshotBeforeReadyIsAnnouncedOnce::RunTest(const FString& Parameters)
+{
+	FRig Rig(*this);
+	if (!Rig.IsValid() || !MakeKitPlayer(Rig, true))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = AcquirePlayer(Rig, Owner.Get(), Rig.InstanceId);
+	FSentFrame WalletRead;
+	FSentFrame InventoryRead;
+	if (!Object || !Rig.WaitForFrame(KindCall, TEXT("wallet"), WalletRead) || !Rig.WaitForFrame(KindCall, TEXT("inventory"), InventoryRead))
+	{
+		return false;
+	}
+	TSharedRef<int32> Calls = MakeShared<int32>(0);
+	TSharedRef<int32> LevelCalls = MakeShared<int32>(0);
+	Object->WatchValues(FOnCrowdyServerValuesChanged::FDelegate::CreateLambda([Calls, LevelCalls](UCrowdyServerObject*, TConstArrayView<FString> Fields)
+	{
+		++*Calls;
+		*LevelCalls += Fields.Contains(TEXT("level")) ? 1 : 0;
+	}));
+	Rig.PushTopic(PlayerTopic, ProfileOf(Rig, Epoch, 2, 4));
+	if (!TestTrue(TEXT("a snapshot pushed while the Owner Values are read is applied"), Rig.PumpUntil([Object]() { return PlayerOf(*Object)->Level == 4; })))
+	{
+		return false;
+	}
+	TestTrue(TEXT("while the object stays Connecting"), Object->GetStatus() == ECrowdyServerObjectStatus::Connecting);
+	TestEqual(TEXT("and announces nothing before it is Ready"), *Calls, 0);
+	Rig.Reply(WalletRead.Rid, ECrowdyNativeExecStatus::Ok, Wallet(Rig, 100));
+	Rig.Reply(InventoryRead.Rid, ECrowdyNativeExecStatus::Ok, Rig.Encode(FCrowdyKitInventory()));
+	if (!TestTrue(TEXT("the Owner Values make it Ready"), Rig.PumpUntil([Object]() { return Object->GetStatus() == ECrowdyServerObjectStatus::Ready; })))
+	{
+		return false;
+	}
+	Rig.PumpFor(0.1);
+	TestEqual(TEXT("which announces the values once"), *Calls, 1);
+	TestEqual(TEXT("the pushed level among them"), *LevelCalls, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitStarterNewEpochSnapshotReadsOwnerValues,
+	"CrowdySDK.CrowdyExec.GameKitStarter.NewEpochSnapshotReadsOwnerValues", CrowdyServerObjectTests::TestFlags)
+
+bool FCrowdyGameKitStarterNewEpochSnapshotReadsOwnerValues::RunTest(const FString& Parameters)
+{
+	FRig Rig(*this);
+	if (!Rig.IsValid() || !MakeKitPlayer(Rig, true))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = AcquirePlayerReady(Rig, Owner.Get(), 100);
+	if (!Object)
+	{
+		return false;
+	}
+	Rig.Sent.Reset();
+	Rig.PushTopic(PlayerTopic, ProfileOf(Rig, Epoch, 2, 4));
+	if (!TestTrue(TEXT("a snapshot of the same epoch arrives"), Rig.PumpUntil([Object]() { return PlayerOf(*Object)->Level == 4; })))
+	{
+		return false;
+	}
+	TestFalse(TEXT("and reads no Owner Value"), Rig.SentAnyCall());
+	Rig.PushTopic(PlayerTopic, ProfileOf(Rig, Epoch + 1, 1, 5));
+	FSentFrame WalletRead;
+	FSentFrame InventoryRead;
+	if (!TestTrue(TEXT("a snapshot of a new epoch, a restarted hub, arrives"), Rig.PumpUntil([Object]() { return PlayerOf(*Object)->Level == 5; }))
+		|| !TestTrue(TEXT("and reads the wallet again"), Rig.WaitForFrame(KindCall, TEXT("wallet"), WalletRead))
+		|| !TestTrue(TEXT("and the inventory"), Rig.WaitForFrame(KindCall, TEXT("inventory"), InventoryRead)))
+	{
+		return false;
+	}
+	TestEqual(TEXT("keeping the last wallet meanwhile"), PlayerOf(*Object)->Wallet.Balances.FindRef(TEXT("gold")), int64(100));
+	Rig.Reply(WalletRead.Rid, ECrowdyNativeExecStatus::Ok, Wallet(Rig, 70));
+	Rig.Reply(InventoryRead.Rid, ECrowdyNativeExecStatus::Ok, Rig.Encode(FCrowdyKitInventory()));
+	TestTrue(TEXT("until the restarted hub's wallet arrives"), Rig.PumpUntil([Object]() { return PlayerOf(*Object)->Wallet.Balances.FindRef(TEXT("gold")) == 70; }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitStarterAnotherPlayersOwnerValuesHaveNoValue,
+	"CrowdySDK.CrowdyExec.GameKitStarter.AnotherPlayersOwnerValuesHaveNoValue", CrowdyServerObjectTests::TestFlags)
+
+bool FCrowdyGameKitStarterAnotherPlayersOwnerValuesHaveNoValue::RunTest(const FString& Parameters)
+{
+	FRig Rig(*this);
+	if (!Rig.IsValid() || !MakeKitPlayer(Rig, true))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	Rig.InstanceId = LexToString(Rival);
+	UCrowdyServerObject* Other = AcquirePlayer(Rig, Owner.Get(), Rig.InstanceId);
+	if (!Other || !TestTrue(TEXT("another player's profile makes it Ready"), Rig.PumpUntil([Other]() { return Other->GetStatus() == ECrowdyServerObjectStatus::Ready; })))
+	{
+		return false;
+	}
+	FCrowdyKitPlayerState Read;
+	TestTrue(TEXT("their profile has a value"), ReadPlayerVariable(Rig, Other, TEXT("Level"), Read) && Read.Level == 3);
+	TestFalse(TEXT("their wallet, which is never read, has none"), ReadPlayerVariable(Rig, Other, TEXT("Wallet"), Read));
+	TestTrue(TEXT("as the object says of it"), Other->IsUnreadOwnerValue(TEXT("Wallet")));
+	TestFalse(TEXT("and not of the profile"), Other->IsUnreadOwnerValue(TEXT("Level")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitStarterSnapshotCarryingAnOwnerValueWins,
+	"CrowdySDK.CrowdyExec.GameKitStarter.SnapshotCarryingAnOwnerValueWins", CrowdyServerObjectTests::TestFlags)
+
+bool FCrowdyGameKitStarterSnapshotCarryingAnOwnerValueWins::RunTest(const FString& Parameters)
+{
+	FRig Rig(*this);
+	if (!Rig.IsValid() || !MakeKitPlayer(Rig, true))
+	{
+		return false;
+	}
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	UCrowdyServerObject* Object = AcquirePlayerReady(Rig, Owner.Get(), 100);
+	if (!Object)
+	{
+		return false;
+	}
+	TSharedRef<TArray<FString>> Heard = MakeShared<TArray<FString>>();
+	Object->WatchValues(FOnCrowdyServerValuesChanged::FDelegate::CreateLambda([Heard](UCrowdyServerObject*, TConstArrayView<FString> Fields) { Heard->Append(Fields.GetData(), Fields.Num()); }));
+	Rig.PumpFor(0.1);
+	Heard->Reset();
+	Rig.PushTopic(PlayerTopic, ProfileOf(Rig, Epoch, 2, 4, 250));
+	TestTrue(TEXT("a snapshot that carries the wallet sets it"), Rig.PumpUntil([Object]() { return PlayerOf(*Object)->Wallet.Balances.FindRef(TEXT("gold")) == 250; }));
+	TestTrue(TEXT("announcing it"), Heard->Contains(TEXT("wallet")));
+	Rig.PushTopic(PlayerTopic, ProfileOf(Rig, Epoch, 3, 5));
+	if (!TestTrue(TEXT("a later snapshot without it arrives"), Rig.PumpUntil([Object]() { return PlayerOf(*Object)->Level == 5; })))
+	{
+		return false;
+	}
+	TestEqual(TEXT("and keeps the wallet it carried"), PlayerOf(*Object)->Wallet.Balances.FindRef(TEXT("gold")), int64(250));
+	FCrowdyKitPlayerState Read;
+	TestTrue(TEXT("which the signed-in player's own object reads as a value"), ReadPlayerVariable(Rig, Object, TEXT("Wallet"), Read) && Read.Wallet.Balances.FindRef(TEXT("gold")) == 250);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameKitStarterHasFlagTracksAnOptionalIndex,
 	"CrowdySDK.CrowdyExec.GameKitStarter.HasFlagTracksAnOptionalIndex", CrowdyServerObjectTests::TestFlags)
 
