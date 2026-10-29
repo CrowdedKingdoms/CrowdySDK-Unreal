@@ -149,6 +149,19 @@ void FCrowdyLoopbackAuthServer::Stop()
 	// Router + BoundPort kept: the loopback port is sticky and reused on the next Start.
 }
 
+void FCrowdyLoopbackAuthServer::Cancel(const FString& Message)
+{
+	// A consumed flow is already a call in flight, which answers for itself; the deferred stop takes the route down.
+	if (!bRouteBound || bConsumed)
+	{
+		return;
+	}
+	// Stop unbinds the callback, and the callback may start the next flow on this server, so it runs last.
+	const FOnLoopbackError Notify = OnError;
+	Stop();
+	Notify.ExecuteIfBound(Message);
+}
+
 bool FCrowdyLoopbackAuthServer::HandleCallback(const FHttpServerRequest& Request,
                                                const FHttpResultCallback& OnComplete)
 {
@@ -208,11 +221,10 @@ bool FCrowdyLoopbackAuthServer::OnTimeout(float)
 	// also try to remove it.
 	TimeoutHandle.Reset();
 
-	if (!bConsumed)
-	{
-		OnError.ExecuteIfBound(TEXT("Sign-in timed out. Please try again."));
-	}
+	// Stopped before the callback runs, so a handler that retries or cancels finds no flow armed.
+	const FOnLoopbackError Notify = bConsumed ? FOnLoopbackError() : OnError;
 	Stop();
+	Notify.ExecuteIfBound(TEXT("Sign-in timed out. Please try again."));
 	return false;
 }
 

@@ -77,6 +77,9 @@ static void ApplyRuntimeGate(UCrowdyGameSession* Session, const FCrowdyCppAppTok
 static const TCHAR* const HeldFlowSupersededMessage =
 	TEXT("A newer sign-in replaced the one waiting for the terms and the age confirmation.");
 
+static const TCHAR* const SignedOutMessage = TEXT("Signed out before sign-in finished.");
+static const TCHAR* const SignInCancelledMessage = TEXT("Sign-in cancelled.");
+
 void UCrowdyAuthentication::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -286,6 +289,7 @@ void UCrowdyAuthentication::WithAppEndpointResolved(TFunction<void(FCrowdyCppCli
 void UCrowdyAuthentication::Login(const FString& Email, const FString& Password,
                                   FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
+	++PendingSignIns;
 	FailHeldConsentFlow(HeldFlowSupersededMessage);
 
 	// This subsystem and the client host share the game instance's lifetime, so a completion cannot arrive after
@@ -319,6 +323,7 @@ void UCrowdyAuthentication::Login(const FString& Email, const FString& Password,
 void UCrowdyAuthentication::Register(const FString& Email, const FString& Password,
                                      FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
+	++PendingSignIns;
 	FailHeldConsentFlow(HeldFlowSupersededMessage);
 
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
@@ -371,10 +376,16 @@ void UCrowdyAuthentication::RequestLoginLink(const FString& Email, const FString
 					OnError.ExecuteIfBound(Result.bOk ? TEXT("Malformed requestLoginLink response") : Result.ErrorMessage);
 				}
 			}));
-	}, EAuthFlow::MagicLink, OnError);
+	}, EAuthFlow::LinkRequest, OnError);
 }
 
 void UCrowdyAuthentication::CompleteLoginLink(const FString& Token, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
+{
+	++PendingSignIns;
+	FinishLoginLink(Token, OnSuccess, OnError);
+}
+
+void UCrowdyAuthentication::FinishLoginLink(const FString& Token, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
 	FailHeldConsentFlow(HeldFlowSupersededMessage);
 
@@ -406,6 +417,7 @@ void UCrowdyAuthentication::CompleteLoginLink(const FString& Token, FOnAuthSucce
 
 void UCrowdyAuthentication::BeginMagicLinkSignIn(const FString& Email, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
+	++PendingSignIns;
 	if (Email.IsEmpty())
 	{
 		FailFlow(TEXT("Email is required"), EAuthFlow::MagicLink, OnError);
@@ -429,11 +441,11 @@ void UCrowdyAuthentication::BeginMagicLinkSignIn(const FString& Email, FOnAuthSu
 	}
 
 	// On the loopback callback (game thread, from the HttpServer ticker) feed the captured token
-	// into the shared completion path. CompleteLoginLink runs the MagicLink flow -> mint -> OnLogin.
+	// into the shared completion path. FinishLoginLink runs the MagicLink flow -> mint -> OnLogin.
 	FOnLoopbackToken OnTokenCaptured;
 	OnTokenCaptured.BindLambda([this, OnSuccess, OnError](const FString& Token)
 	{
-		CompleteLoginLink(Token, OnSuccess, OnError);
+		FinishLoginLink(Token, OnSuccess, OnError);
 	});
 
 	FOnLoopbackError OnListenerError;
@@ -465,11 +477,14 @@ void UCrowdyAuthentication::BeginMagicLinkSignIn(const FString& Email, FOnAuthSu
 	}
 
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	const int32 Generation = SignInGeneration;
 	Client->RequestLoginLink(Email, RedirectUri, GuardSession<FCrowdyCppJsonValueResult>(
-		[WeakThis, OnError](FCrowdyCppJsonValueResult Result)
+		[WeakThis, Generation, OnError](FCrowdyCppJsonValueResult Result)
 		{
 			UCrowdyAuthentication* Self = WeakThis.Get();
 			if (!Self) return;
+			// A cancel already answered this flow, and a sign-out stopped its listener.
+			if (Generation != Self->SignInGeneration) return;
 
 			bool bSent = false;
 			if (!Result.bOk || !ReadLoginLinkPayload(Result.Value, bSent))
@@ -513,6 +528,7 @@ void UCrowdyAuthentication::GetAvailableLoginProviders(FOnLoginProvidersReceived
 
 void UCrowdyAuthentication::BeginSocialSignIn(const FString& Provider, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
+	++PendingSignIns;
 	if (Provider.IsEmpty())
 	{
 		FailFlow(TEXT("A provider is required"), EAuthFlow::Social, OnError);
@@ -1140,6 +1156,7 @@ void UCrowdyAuthentication::ClaimFreeAccess(FOnAuthSuccess OnSuccess, FOnAuthErr
 				OnSuccess.ExecuteIfBound(SignedIn);
 				return;
 			}
+			++Self->PendingSignIns;
 			Self->DispatchMint(EAuthFlow::Login, OnSuccess, OnError);
 		}));
 }
@@ -1292,6 +1309,10 @@ void UCrowdyAuthentication::BeginMintPipeline(const FString& SessionToken, int64
 	// Persist the SESSION token only (durable, mint-capable). The app token is
 	// short-lived and stays in memory.
 	SaveSession(SessionToken, SessionGameTokenID, UserID);
+	if (Flow != EAuthFlow::Restore)
+	{
+		bPendingSignInSavedSession = true;
+	}
 
 	DispatchMint(Flow, OnSuccess, OnError);
 }
@@ -1480,13 +1501,67 @@ bool UCrowdyAuthentication::AbandonStaleSignIn(int32 Generation, const FOnAuthEr
 	}
 
 	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
-		TEXT("[CrowdyAuth] Dropped a sign-in answer that arrived after sign-out."));
-	OnError.ExecuteIfBound(TEXT("Signed out before sign-in finished."));
+		TEXT("[CrowdyAuth] Dropped a sign-in answer that arrived after sign-out or a cancel."));
+	OnError.ExecuteIfBound(StaleSignInMessage);
 	return true;
+}
+
+void UCrowdyAuthentication::EndPendingSignIn(EAuthFlow Flow)
+{
+	if (Flow == EAuthFlow::Refresh || Flow == EAuthFlow::LinkRequest)
+	{
+		return;
+	}
+	// A failure reported after a cancel or sign-out zeroed the count must not take it below zero.
+	PendingSignIns = FMath::Max(0, PendingSignIns - 1);
+	bPendingSignInSavedSession = false;
+}
+
+bool UCrowdyAuthentication::IsSignInPending() const
+{
+	return PendingSignIns > 0 && !IsSignedIn();
+}
+
+void UCrowdyAuthentication::CancelSignIn()
+{
+	if (!IsSignInPending())
+	{
+		return;
+	}
+
+	// Zeroed before any caller is answered, so a handler that starts a new sign-in is counted.
+	++SignInGeneration;
+	StaleSignInMessage = SignInCancelledMessage;
+	PendingSignIns = 0;
+
+	// A new sign-in saved its session before minting, over the previous one, and nobody chose to keep it. A restore's
+	// session stays installed, so a later Logout can still end it on the server.
+	if (bPendingSignInSavedSession)
+	{
+		bPendingSignInSavedSession = false;
+		EndServerSession();
+		DeleteSavedSessionFiles();
+		if (GameSession)
+		{
+			GameSession->SetSessionToken(FString());
+		}
+		PublishTokensToCppClient();
+	}
+
+	// A browser wait and a held flow answer now; a call in flight answers when it lands, through AbandonStaleSignIn.
+	TGuardValue<bool> Cancelling(bCancellingSignIn, true);
+	bLoopbackFlowPending = false;
+	if (LoopbackServer.IsValid())
+	{
+		LoopbackServer->Cancel(SignInCancelledMessage);
+	}
+	FailHeldConsentFlow(SignInCancelledMessage);
 }
 
 void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& Token, EAuthFlow Flow, FOnAuthSuccess OnSuccess)
 {
+	EndPendingSignIn(Flow);
+
 	// The mint returns gameApiUrl as a bare host; the Game API GraphQL lives at /graphql, so
 	// normalize once and adopt that as the per-app Game endpoint (else every Game-API POST 404s).
 	const FString GameApiGraphqlUrl = EnsureGameApiGraphqlPath(Token.GameApiUrl);
@@ -1555,6 +1630,7 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& 
 	{
 	case EAuthFlow::Login:
 	case EAuthFlow::MagicLink:
+	case EAuthFlow::LinkRequest:
 	case EAuthFlow::Social:
 		OnLogin.Broadcast(Result);
 		break;
@@ -1593,12 +1669,18 @@ void UCrowdyAuthentication::FailFlow(const FString& Message, EAuthFlow Flow, FOn
 {
 	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] sign-in/mint failed: %s"), *Message);
 
+	EndPendingSignIn(Flow);
 	OnError.ExecuteIfBound(Message);
+	if (bCancellingSignIn)
+	{
+		return;
+	}
 
 	switch (Flow)
 	{
 	case EAuthFlow::Login:
 	case EAuthFlow::MagicLink:
+	case EAuthFlow::LinkRequest:
 	case EAuthFlow::Social:
 		OnLoginFailed.Broadcast(Message);
 		break;
@@ -1885,6 +1967,7 @@ bool UCrowdyAuthentication::RestoreSession(FOnAuthSuccess OnSuccess, FOnAuthErro
 	UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log,
 		TEXT("[CrowdyAuth] Restoring session. UserID=%lld"), Save->UserID);
 
+	++PendingSignIns;
 	FailHeldConsentFlow(HeldFlowSupersededMessage);
 
 	// Restore re-mints a fresh app token from the persisted session token, then the
@@ -1895,7 +1978,11 @@ bool UCrowdyAuthentication::RestoreSession(FOnAuthSuccess OnSuccess, FOnAuthErro
 
 void UCrowdyAuthentication::ClearSavedSession()
 {
+	// Zeroed before any caller is answered, so a handler that starts a new sign-in is counted.
 	++SignInGeneration;
+	StaleSignInMessage = SignedOutMessage;
+	PendingSignIns = 0;
+	bPendingSignInSavedSession = false;
 	CancelProactiveRefresh();
 
 	// A browser sign-in armed for the account that signed out must not complete into the next one.
@@ -1905,17 +1992,22 @@ void UCrowdyAuthentication::ClearSavedSession()
 		LoopbackServer->Stop();
 	}
 
+	DeleteSavedSessionFiles();
+
+	// Last, so a handler that signs in again finds the credential already gone.
+	FailHeldConsentFlow(TEXT("Signed out before the terms and the age confirmation were accepted."));
+}
+
+void UCrowdyAuthentication::DeleteSavedSessionFiles()
+{
 	FCrowdySecretFile::Delete(GetAuthVaultPath());
 
-	// Also remove any legacy plaintext slot so logout fully forgets the credential.
+	// Also remove any legacy plaintext slot so the credential is fully forgotten.
 	const FString LegacySlot = GetLegacyAuthSlotName();
 	if (UGameplayStatics::DoesSaveGameExist(LegacySlot, AuthUserIndex))
 	{
 		UGameplayStatics::DeleteGameInSlot(LegacySlot, AuthUserIndex);
 	}
-
-	// Last, so a handler that signs in again finds the credential already gone.
-	FailHeldConsentFlow(TEXT("Signed out before the terms and the age confirmation were accepted."));
 }
 
 void UCrowdyAuthentication::SaveSession(const FString& SessionToken, int64 SessionGameTokenID, int64 UserID) const
