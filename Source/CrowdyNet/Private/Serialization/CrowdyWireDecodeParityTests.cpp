@@ -7,9 +7,14 @@
 #include "Messages/Actor/FActorUpdateNotificationMessage.h"
 #include "Messages/Channels/FChannelMessages.h"
 #include "Messages/Communication/FClientAudioNotification.h"
+#include "Messages/Communication/FClientAudioPacketMessageRequest.h"
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Messages/GameObjects/FServerEventNotification.h"
 #include "Messages/Voxel/FVoxelUpdateNotificationMessage.h"
+
+THIRD_PARTY_INCLUDES_START
+#include "crowdy/media/voice_frames.hpp"
+THIRD_PARTY_INCLUDES_END
 
 namespace
 {
@@ -1180,62 +1185,74 @@ bool FCrowdyWireActorForgedStateLengthOverflowTest::RunTest(const FString& Param
 	return true;
 }
 
-// The audio frame loop reads a per-frame size straight off the wire and, like the actor state length,
-// bounds it with a subtraction rather than an addition so a huge declared size cannot wrap the check.
-// FClientAudioNotification has three fields ahead of the frame count (sample rate, channel count, then
-// the count itself), so the forged frame size sits after all three.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyWireAudioForgedFrameSizeOverflowTest,
-	"CrowdySDK.Wire.AudioForgedFrameSizeOverflow", CrowdyWireDecodeParityTestFlags)
-bool FCrowdyWireAudioForgedFrameSizeOverflowTest::RunTest(const FString& Parameters)
+// A voice packet is opaque to the network layer: what the vendored voice writer produces is what a
+// notification hands back, and what a request sends is a packet the vendored voice reader accepts.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyWireVoicePacketParityTest,
+	"CrowdySDK.Wire.VoicePacketParity", CrowdyWireDecodeParityTestFlags)
+bool FCrowdyWireVoicePacketParityTest::RunTest(const FString& Parameters)
 {
-	TArray<uint8> ForgedPayload;
-	ForgedPayload.Append(USerializationFunctionLibrary::SerializeValue<int32>(48000)); // sample rate
-	ForgedPayload.Append(USerializationFunctionLibrary::SerializeValue<int32>(2));     // channel count
-	ForgedPayload.Append(USerializationFunctionLibrary::SerializeValue<int32>(1));     // frame count
-	ForgedPayload.Append(USerializationFunctionLibrary::SerializeValue<int32>(MAX_int32)); // forged frame size
-
-	const TArray<uint8> ForgedDatagram = BuildWireDecodeParityDatagram(
-		ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION, ForgedPayload,
-		1, 1, 1, 1, ECrowdyReplicationDistance::One_Chunk, ECrowdyDecayRate::No_Decay, 1, 1);
-	const TArray<uint8> ForgedStripped = StripWireDecodeParityOpcode(ForgedDatagram);
-
-	FClientAudioNotification Forged;
-	TestFalse(TEXT("the audio decoder refuses a declared frame size that would overflow the bound"),
-		CrowdyWireParity::DecodeStrippedPayload(Forged, ForgedStripped));
-
 	const TArray<uint8> FrameBytes = MakeWireDecodeParityPattern(6);
 
-	TArray<uint8> WellFormedPayload;
-	WellFormedPayload.Append(USerializationFunctionLibrary::SerializeValue<int32>(48000));
-	WellFormedPayload.Append(USerializationFunctionLibrary::SerializeValue<int32>(2));
-	WellFormedPayload.Append(USerializationFunctionLibrary::SerializeValue<int32>(1));
-	WellFormedPayload.Append(USerializationFunctionLibrary::SerializeValue<int32>(FrameBytes.Num()));
-	WellFormedPayload.Append(FrameBytes);
+	crowdy::media::VoiceHeader Header;
+	Header.codec = static_cast<uint8>(crowdy::media::VoiceCodec::Opus);
+	Header.seq = 4242;
+	Header.timestamp = 960000;
+	Header.frameMs = 20;
+	Header.flags = crowdy::media::VoiceFlag::kSpurtStart;
 
-	const TArray<uint8> WellFormedDatagram = BuildWireDecodeParityDatagram(
-		ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION, WellFormedPayload,
-		1, 1, 1, 1, ECrowdyReplicationDistance::One_Chunk, ECrowdyDecayRate::No_Decay, 1, 1);
-	const TArray<uint8> WellFormedStripped = StripWireDecodeParityOpcode(WellFormedDatagram);
-
-	FClientAudioNotification WellFormed;
-	if (!TestTrue(TEXT("the audio decoder still accepts a well-formed single frame"),
-		CrowdyWireParity::DecodeStrippedPayload(WellFormed, WellFormedStripped)))
+	const std::vector<std::uint8_t> Packet = crowdy::media::encodeVoicePacket(Header,
+		std::span<const std::uint8_t>(FrameBytes.GetData(), static_cast<std::size_t>(FrameBytes.Num())));
+	if (!TestEqual(TEXT("the vendored writer produced the header and the frame"),
+		static_cast<int32>(Packet.size()), static_cast<int32>(crowdy::media::kVoiceHeaderBytes) + FrameBytes.Num()))
 	{
 		return false;
 	}
 
-	TestEqual(TEXT("well-formed frame count"), WellFormed.Frames.Num(), 1);
-	if (WellFormed.Frames.Num() == 1)
+	const TArray<uint8> Payload(Packet.data(), static_cast<int32>(Packet.size()));
+	const TArray<uint8> Datagram = BuildWireDecodeParityDatagram(
+		ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION, Payload,
+		1, 1, 1, 1, ECrowdyReplicationDistance::One_Chunk, ECrowdyDecayRate::No_Decay, 1, 1);
+	const TArray<uint8> Stripped = StripWireDecodeParityOpcode(Datagram);
+
+	FClientAudioNotification Notification;
+	if (!TestTrue(TEXT("a packet the vendored writer produced decodes as a notification"),
+		CrowdyWireParity::DecodeStrippedPayload(Notification, Stripped)))
 	{
-		TestEqual(TEXT("well-formed frame size"), WellFormed.Frames[0].FrameSize, FrameBytes.Num());
-		TestEqual(TEXT("well-formed frame bytes"), WellFormed.Frames[0].AudioData.Num(), FrameBytes.Num());
-		if (WellFormed.Frames[0].AudioData.Num() == FrameBytes.Num())
-		{
-			TestTrue(TEXT("well-formed frame contents"),
-				FMemory::Memcmp(WellFormed.Frames[0].AudioData.GetData(), FrameBytes.GetData(),
-					FrameBytes.Num()) == 0);
-		}
+		return false;
 	}
+
+	TestTrue(TEXT("the notification payload is that packet, octet for octet"), Notification.Payload == Payload);
+
+	const std::optional<crowdy::media::VoicePacket> Read = crowdy::media::decodeVoicePacket(
+		std::span<const std::uint8_t>(Notification.Payload.GetData(), static_cast<std::size_t>(Notification.Payload.Num())));
+	if (TestTrue(TEXT("and the vendored reader accepts what the notification carries"), Read.has_value()))
+	{
+		TestEqual(TEXT("the sequence survives"), static_cast<int32>(Read->header.seq), 4242);
+		TestEqual(TEXT("the timestamp survives"), static_cast<int64>(Read->header.timestamp), static_cast<int64>(960000));
+		TestEqual(TEXT("the frame survives"), static_cast<int32>(Read->frame.size()), FrameBytes.Num());
+	}
+
+	FClientAudioPacketMessageRequest Request;
+	Request.UUID = CrowdyWireParity::GoldenActorId();
+	Request.Payload = Payload;
+	const TArray<uint8> Sent = Request.Serialize();
+	if (TestEqual(TEXT("a request is the message header and the packet"),
+		Sent.Num(), CrowdySpatialHeader::Size + Payload.Num()))
+	{
+		TestTrue(TEXT("and the octets behind the header are the packet the vendored reader parses"),
+			FMemory::Memcmp(Sent.GetData() + CrowdySpatialHeader::Size, Payload.GetData(), Payload.Num()) == 0);
+	}
+
+	const std::vector<std::uint8_t> LargestFrame(crowdy::media::kMaxVoiceFrameBytes, 0x7e);
+	const std::vector<std::uint8_t> LargestPacket = crowdy::media::encodeVoicePacket(Header,
+		std::span<const std::uint8_t>(LargestFrame.data(), LargestFrame.size()));
+	const TArray<uint8> LargestDatagram = BuildWireDecodeParityDatagram(
+		ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION, TArray<uint8>(LargestPacket.data(), static_cast<int32>(LargestPacket.size())),
+		1, 1, 1, 1, ECrowdyReplicationDistance::One_Chunk, ECrowdyDecayRate::No_Decay, 1, 1);
+
+	FClientAudioNotification Largest;
+	TestTrue(TEXT("the largest packet the vendored writer produces is accepted"),
+		CrowdyWireParity::DecodeStrippedPayload(Largest, StripWireDecodeParityOpcode(LargestDatagram)));
 
 	return true;
 }

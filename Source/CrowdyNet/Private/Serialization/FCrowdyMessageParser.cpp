@@ -20,7 +20,9 @@
 
 THIRD_PARTY_INCLUDES_START
 #include "crowdy/media/video_frames.hpp"
+#include "crowdy/media/voice_frames.hpp"
 #include "crowdy/wire/codec.hpp"
+#include "crowdy/wire/protocol.hpp"
 THIRD_PARTY_INCLUDES_END
 
 namespace
@@ -88,6 +90,15 @@ namespace
 		"The video fragment header's fields no longer sit end to end from its first octet.");
 	static_assert(CrowdyVideoFragment::CountOffset + 1 == CrowdyVideoFragment::HeaderBytes,
 		"A video fragment's body no longer starts where the last header field ends.");
+
+	// The public audio message header cannot include a crowdy:: header either, so the payload ceiling it
+	// refuses above is checked against the protocol's here, and against the voice header plus its largest frame.
+	static_assert(CrowdyAudioPacket::MaxPayloadBytes
+			== static_cast<int32>(crowdy::wire::kMaxLongSpatialPayload),
+		"An audio payload is no longer refused above the octets a signed datagram carries.");
+	static_assert(CrowdyAudioPacket::MaxPayloadBytes
+			== static_cast<int32>(crowdy::media::kVoiceHeaderBytes + crowdy::media::kMaxVoiceFrameBytes),
+		"An audio payload is no longer the voice header plus the largest voice frame.");
 }
 
 FCrowdyMessageParser::FCrowdyMessageParser(FCrowdyServiceRegistry* InServiceRegistry,

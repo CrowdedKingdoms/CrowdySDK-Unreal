@@ -10,8 +10,12 @@ public class CrowdyVoice : ModuleRules
         PublicDependencyModuleNames.AddRange(new string[]
         {
             "Core", "CoreUObject", "Engine",
-            "CrowdyNet",
-            "libOpus", "UELibSampleRate", "AudioCapture", "AudioCaptureCore", "AudioMixer", "Voice",
+            "CKSharedTypes", "CrowdyNet",
+        });
+
+        PrivateDependencyModuleNames.AddRange(new string[]
+        {
+            "CrowdyCppBridge", "AudioCaptureCore", "UELibSampleRate",
         });
     }
 }

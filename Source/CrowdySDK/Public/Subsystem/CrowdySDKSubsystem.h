@@ -3,6 +3,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Core/Audio/VoiceChat/CrowdyVoiceMicState.h"
+#include "Core/Audio/VoiceChat/CrowdyVoiceSettings.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "CrowdyCppClient.h"
 #include "Internal/FCrowdyServiceRegistry.h"
@@ -19,6 +21,7 @@ class UCrowdyPersistenceSubsystem;
 // Structs
 struct FCrowdyUDPEndpoint;
 struct FGameSessionInfo;
+struct FWorldInitializationValues;
 
 // Interfaces
 class ICrowdyMessage;
@@ -26,12 +29,12 @@ class ICrowdyMessage;
 // Core Classes
 class FCrowdyServiceRegistry;
 class FCrowdyMessageParser;
-class FVoiceChatService;
 
 // Unreal Subsystems
 class UCrowdyWorkerThreadsSubsystem;
 class UCrowdyGameSession;
 class UVoiceChatSubsystem;
+class UWorld;
 
 // The second parameter is a human-readable message, empty on success and carrying the failure reason
 // otherwise. It must never carry a token: these are BlueprintAssignable, so anything put here can be
@@ -45,6 +48,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPConnectionSuccess);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPTimedOut);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTeleportPermission, bool, bAllowed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCrowdyHUDReady);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnVoiceMicStateChanged, ECrowdyVoiceMicState, State);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnVoiceSpeakerTalking, FString, SpeakerUuid, bool, bTalking);
 
 /**
  *
@@ -225,24 +230,42 @@ public:
 		      DeprecationMessage="Remove this node. The connection tracks its own liveness, so this does nothing."))
 	void TriggerUdpHeartbeat() const;
 	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Communication")
+	/** Opens your microphone and sends your voice to nearby players while you speak. Stays on across map changes until Stop Voice Chat. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void StartVoiceChat();
-	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Communication")
+
+	/** Closes your microphone. Other players see you stop talking. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void StopVoiceChat();
-	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Communication")
+
+	/** Plays other players' voices. Off until called, and kept across map changes. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void PlayVoiceChat();
-	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Communication")
+
+	/** Stops playing other players' voices. On Voice Speaker Talking keeps firing. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void MuteVoiceChat();
-	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Communication")
+
+	/** Seconds a player may be silent before their voice stream is released (at least 0.5, default 2). */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void SetVoiceChatStreamTimeoutThreshold(const float InSeconds);
-	
-	UFUNCTION(BlueprintCallable, Category="CrowdySDK|Communication")
-	void ToggleOwnerEcho(bool bEnable) const;
-	
+
+	/** Plays your own voice back to you as other players hear it, to test your microphone. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void ToggleOwnerEcho(bool bEnable);
+
+	/** What your microphone is doing for voice chat in the current map. Capturing means it is live, not that you are speaking: silence is not sent. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
+	ECrowdyVoiceMicState GetVoiceMicState() const;
+
+	/** Fires when your microphone state changes, including Off and back to Starting as a map change reopens it. */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Voice")
+	FOnVoiceMicStateChanged OnVoiceMicStateChanged;
+
+	/** Fires when a player starts or stops talking: their voice rose above the silence gate, or stayed below it for about 0.3 s. Speaker Uuid is that player's actor id. */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Voice")
+	FOnVoiceSpeakerTalking OnVoiceSpeakerTalking;
+
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Permissions")
 	void RequestTeleportPermission(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ, const int32 VoxelX,
 	                               const int32 VoxelY, const int32 VoxelZ) const;
@@ -434,13 +457,7 @@ private:
 	UCrowdyUDPSubsystem* UdpSubsystem;
 	
 	UPROPERTY()
-	UVoiceChatSubsystem* VoiceChatSubsystem;
-	
-	UPROPERTY()
 	UCrowdyPersistenceSubsystem* PersistenceSubsystem;
-	
-	// Internal Service References
-	FVoiceChatService* VoiceChatService;
 
 	// UDP Messaging
 	FCrowdyServiceRegistry* ServiceRegistry;
@@ -514,7 +531,28 @@ private:
 	 *  is never left without an answer. */
 	void FailTeleportPermission(const FString& Reason) const;
 
-	bool ValidateVoiceChatSubsystem();
+	/** The current map's voice chat, bound to this subsystem; warns once and answers null when there is none. */
+	UVoiceChatSubsystem* ResolveVoiceChat();
+
+	/** Moves the voice events and settings onto the given map's voice chat. */
+	void BindVoiceChat(UVoiceChatSubsystem* VoiceChat);
+
+	void HandlePostWorldInitialization(UWorld* World, FWorldInitializationValues Values);
+	void HandleVoiceMicStateChanged(ECrowdyVoiceMicState State);
+	void HandleVoiceSpeakerTalking(const FString& SpeakerUuid, bool bTalking);
+
+	// Voice chat lives in each map; its settings live here so they carry over to the next one.
+	TWeakObjectPtr<UVoiceChatSubsystem> BoundVoiceChat;
+	FDelegateHandle VoiceMicStateHandle;
+	FDelegateHandle VoiceTalkingHandle;
+	FDelegateHandle PostWorldInitHandle;
+	FCrowdyVoiceSettings VoiceSettings;
+
+	// An in-range value, so the first out-of-range request always warns.
+	float LastWarnedVoiceTimeoutSeconds = FCrowdyVoiceSettings::MinStreamTimeoutSeconds;
+	ECrowdyVoiceMicState RelayedVoiceMicState = ECrowdyVoiceMicState::Off;
+	bool bWarnedNoVoiceChat = false;
+
 	bool TryLoadConfiguration();
 
 	/** Starts the repeating GameHost poll. Safe to call from any thread: the timer registration runs

@@ -122,49 +122,23 @@ bool FCrowdySharedBodyDeclaredLengthTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// The audio layout is the one exception, and the reason is that its frame type now carries a length
-// field that only the receive path fills in. The encoder has to write the octets it is actually
-// appending, or a frame whose audio was replaced would advertise the length of the audio it replaced.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySharedBodyAudioLengthTest,
-	"CrowdySDK.Wire.SharedBodyAudioDeclaresTheOctetsItSends", CrowdySharedBodyTestFlags)
-bool FCrowdySharedBodyAudioLengthTest::RunTest(const FString& Parameters)
+// An audio request adds nothing of its own to the wire: the payload goes out verbatim behind the
+// message header, with no length, count or format fields around it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySharedBodyAudioPayloadTest,
+	"CrowdySDK.Wire.SharedBodyAudioIsTheOpaquePayloadAlone", CrowdySharedBodyTestFlags)
+bool FCrowdySharedBodyAudioPayloadTest::RunTest(const FString& Parameters)
 {
 	FClientAudioPacketMessageRequest Message;
 	Message.UUID = CrowdyWireParity::GoldenActorId();
-	Message.SampleRate = 48000;
-	Message.NumChannels = 2;
-
-	FCrowdyAudioFrame Frame;
-	Frame.AudioData = { 0xd1, 0xd2, 0xd3 };
-
-	// A length left over from somewhere else. The encoder must ignore it.
-	Frame.FrameSize = 99;
-	Message.Frames.Add(Frame);
+	Message.Payload = { 0x01, 0x01, 0x07, 0x00, 0xd1, 0xd2, 0xd3 };
 
 	const TArray<uint8> Body = SharedBodyOf(Message);
+	TestTrue(TEXT("an audio body is exactly the payload, octet for octet"),
+		SharedBodyOctetsEqual(Body, Message.Payload));
 
-	// Sample rate, channel count, frame count, then this frame's own length and its octets.
-	const int32 ExpectedLength = 4 * static_cast<int32>(sizeof(int32)) + Frame.AudioData.Num();
-	TestEqual(TEXT("an audio body is the header fields, the frame length and the audio"), Body.Num(),
-		ExpectedLength);
-
-	if (Body.Num() == ExpectedLength)
-	{
-		int32 SampleRate = 0;
-		int32 NumChannels = 0;
-		int32 FrameCount = 0;
-		int32 DeclaredFrameLength = 0;
-		FMemory::Memcpy(&SampleRate, Body.GetData(), sizeof(int32));
-		FMemory::Memcpy(&NumChannels, Body.GetData() + 4, sizeof(int32));
-		FMemory::Memcpy(&FrameCount, Body.GetData() + 8, sizeof(int32));
-		FMemory::Memcpy(&DeclaredFrameLength, Body.GetData() + 12, sizeof(int32));
-
-		TestEqual(TEXT("the sample rate is first"), SampleRate, 48000);
-		TestEqual(TEXT("the channel count is second"), NumChannels, 2);
-		TestEqual(TEXT("the frame count is third"), FrameCount, 1);
-		TestEqual(TEXT("and a frame declares the octets that follow it, not the length it arrived with"),
-			DeclaredFrameLength, 3);
-	}
+	Message.Payload.Reset();
+	TestEqual(TEXT("and an empty payload leaves the header alone on the wire"),
+		Message.Serialize().Num(), CrowdySpatialHeader::Size);
 
 	return true;
 }
@@ -261,15 +235,7 @@ bool FCrowdySharedBodyRoundTripTest::RunTest(const FString& Parameters)
 		FClientAudioPacketMessageRequest Request;
 		Request.UUID = CrowdyWireParity::GoldenActorId();
 		Request.AppID = 21;
-		Request.SampleRate = 24000;
-		Request.NumChannels = 1;
-
-		FCrowdyAudioFrame First;
-		First.AudioData = { 0x01, 0x02, 0x03 };
-		FCrowdyAudioFrame Second;
-		Second.AudioData = { 0x04, 0x05 };
-		Request.Frames.Add(First);
-		Request.Frames.Add(Second);
+		Request.Payload = { 0x01, 0x01, 0x07, 0x00, 0xc0, 0x03, 0x00, 0x00, 0x14, 0x01, 0x04, 0x05 };
 
 		const TArray<uint8> Datagram = SharedBodyStrippedDatagram(Request, 3);
 
@@ -277,17 +243,9 @@ bool FCrowdySharedBodyRoundTripTest::RunTest(const FString& Parameters)
 		if (TestTrue(TEXT("a voice packet a request wrote decodes as a notification"),
 			CrowdyWireParity::DecodeStrippedPayload(Notification, Datagram)))
 		{
-			TestEqual(TEXT("sample rate survives"), Notification.SampleRate, 24000);
-			TestEqual(TEXT("channel count survives"), Notification.NumChannels, 1);
-			if (TestEqual(TEXT("both frames survive"), Notification.Frames.Num(), 2))
-			{
-				TestEqual(TEXT("the first frame reports the length it was sent with"),
-					Notification.Frames[0].FrameSize, First.AudioData.Num());
-				TestTrue(TEXT("and its audio"), Notification.Frames[0].AudioData == First.AudioData);
-				TestEqual(TEXT("the second frame reports the length it was sent with"),
-					Notification.Frames[1].FrameSize, Second.AudioData.Num());
-				TestTrue(TEXT("and its audio"), Notification.Frames[1].AudioData == Second.AudioData);
-			}
+			TestTrue(TEXT("the payload survives octet for octet"), Notification.Payload == Request.Payload);
+			TestEqual(TEXT("and so does the actor id in the header"), Notification.UUID, Request.UUID);
+			TestEqual(TEXT("and the app id"), Notification.AppID, Request.AppID);
 		}
 	}
 

@@ -7,8 +7,8 @@
 #include "GameFramework/Pawn.h"
 #include "Utils/HelperFunctions.h"
 #include "Core/Audio/VoiceChat/VoiceChatSubsystem.h"
-#include "Core/Audio/VoiceChat/Service/FVoiceChatService.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Engine/World.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Messages/FPingTestMessage.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
@@ -121,8 +121,15 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	}
 		
 
+	// Voice chat is per map: follow each new world of this game instance, starting with the current one.
+	PostWorldInitHandle = FWorldDelegates::OnPostWorldInitialization.AddUObject(
+		this, &UCrowdySDKSubsystem::HandlePostWorldInitialization);
+	if (UVoiceChatSubsystem* VoiceChat = World->GetSubsystem<UVoiceChatSubsystem>())
+	{
+		BindVoiceChat(VoiceChat);
+	}
+
 	// Create anything that may depend on world/online/sockets
-	VoiceChatService       = new FVoiceChatService(ServiceRegistry, GameSession, [this](const ICrowdyMessage& Msg) { SendMessage(Msg); });
 	PersistenceSubsystem->InitialSetup(GetGameInstance()->GetSubsystem<UCrowdySDKBridgeSubsystem>(), GameSession);
 	
 	auto LogNull = [](const TCHAR* Name)
@@ -136,7 +143,6 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	bFailed |= !IsValid(WorkerThreadsSubsystem) && (LogNull(TEXT("WorkerThreadsSubsystem")), true);
 	bFailed |= !IsValid(UdpSubsystem) && (LogNull(TEXT("UdpSubsystem")), true);
 	bFailed |= !IsValid(GameSession) && (LogNull(TEXT("GameSession")), true);
-	bFailed |= !VoiceChatService && (LogNull(TEXT("VoiceChatService")), true);
 
 	if (bFailed) return;
 
@@ -185,6 +191,9 @@ void UCrowdySDKSubsystem::Deinitialize()
 	// manager (UWorld::GetTimerManager forwards to it for a Game/PIE world), so it survives level travel without a
 	// per-world re-arm; clearing it here on GameInstance teardown is enough.
 	StopHostPolling();
+
+	FWorldDelegates::OnPostWorldInitialization.Remove(PostWorldInitHandle);
+	BindVoiceChat(nullptr);
 
 	if (UCrowdySDKBridgeSubsystem* B = GetGameInstance()->GetSubsystem<UCrowdySDKBridgeSubsystem>())
 	{
@@ -603,37 +612,73 @@ void UCrowdySDKSubsystem::TriggerUdpHeartbeat() const
 
 void UCrowdySDKSubsystem::StartVoiceChat()
 {
-	if (ValidateVoiceChatSubsystem())
-		VoiceChatSubsystem->StartVoiceChat();
+	VoiceSettings.bMicWanted = true;
+	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
+	{
+		VoiceChat->StartVoiceChat();
+	}
 }
 
 void UCrowdySDKSubsystem::StopVoiceChat()
 {
-	if (ValidateVoiceChatSubsystem())
-		VoiceChatSubsystem->StopVoiceChat();
+	VoiceSettings.bMicWanted = false;
+	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
+	{
+		VoiceChat->StopVoiceChat();
+	}
 }
 
 void UCrowdySDKSubsystem::PlayVoiceChat()
 {
-	if (ValidateVoiceChatSubsystem())
-		VoiceChatSubsystem->PlayVoiceChat();
+	VoiceSettings.bPlaying = true;
+	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
+	{
+		VoiceChat->PlayVoiceChat();
+	}
 }
 
 void UCrowdySDKSubsystem::MuteVoiceChat()
 {
-	if (ValidateVoiceChatSubsystem())
-		VoiceChatSubsystem->MuteVoiceChat();
+	VoiceSettings.bPlaying = false;
+	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
+	{
+		VoiceChat->MuteVoiceChat();
+	}
 }
 
 void UCrowdySDKSubsystem::SetVoiceChatStreamTimeoutThreshold(const float InSeconds)
 {
-	if (ValidateVoiceChatSubsystem())
-		VoiceChatSubsystem->SetStreamTimeoutThreshold(InSeconds);
+	// Clamped once here, so each map receives a value in range and the warning is not repeated per map.
+	const float Seconds = FCrowdyVoiceSettings::ClampStreamTimeout(InSeconds);
+	UE_CLOG(Seconds != InSeconds && InSeconds != LastWarnedVoiceTimeoutSeconds, LogCrowdySDK, Warning,
+		TEXT("Voice chat stream timeout %.2f s is outside %.1f to %.0f s; using %.2f s."),
+		InSeconds, FCrowdyVoiceSettings::MinStreamTimeoutSeconds, FCrowdyVoiceSettings::MaxStreamTimeoutSeconds, Seconds);
+	if (Seconds != InSeconds)
+	{
+		LastWarnedVoiceTimeoutSeconds = InSeconds;
+	}
+
+	VoiceSettings.StreamTimeoutSeconds = Seconds;
+	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
+	{
+		VoiceChat->SetStreamTimeoutThreshold(Seconds);
+	}
 }
 
-void UCrowdySDKSubsystem::ToggleOwnerEcho(const bool bEnable) const
+void UCrowdySDKSubsystem::ToggleOwnerEcho(const bool bEnable)
 {
-	VoiceChatService->ToggleOwnerEcho(bEnable);
+	VoiceSettings.bOwnerEcho = bEnable;
+	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
+	{
+		VoiceChat->SetOwnerEcho(bEnable);
+	}
+}
+
+ECrowdyVoiceMicState UCrowdySDKSubsystem::GetVoiceMicState() const
+{
+	const UWorld* World = GetWorld();
+	const UVoiceChatSubsystem* VoiceChat = World ? World->GetSubsystem<UVoiceChatSubsystem>() : nullptr;
+	return VoiceChat ? VoiceChat->GetMicState() : ECrowdyVoiceMicState::Off;
 }
 
 void UCrowdySDKSubsystem::RequestTeleportPermission(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
@@ -1126,21 +1171,73 @@ void UCrowdySDKSubsystem::FailTeleportPermission(const FString& Reason) const
 	}, LowLevelTasks::ETaskPriority::Normal, UE::Tasks::EExtendedTaskPriority::GameThreadNormalPri);
 }
 
-bool UCrowdySDKSubsystem::ValidateVoiceChatSubsystem()
+UVoiceChatSubsystem* UCrowdySDKSubsystem::ResolveVoiceChat()
 {
-	if (IsValid(VoiceChatSubsystem))
+	const UWorld* World = GetWorld();
+	UVoiceChatSubsystem* VoiceChat = World ? World->GetSubsystem<UVoiceChatSubsystem>() : nullptr;
+	if (!VoiceChat)
 	{
-		return true;
+		UE_CLOG(!bWarnedNoVoiceChat, LogCrowdySDK, Warning,
+			TEXT("Voice chat has no game map to run in yet; the request is kept and applied when one loads."));
+		bWarnedNoVoiceChat = true;
+		return nullptr;
 	}
 
-	if (const UWorld* World = GetWorld())
+	if (VoiceChat != BoundVoiceChat.Get())
 	{
-		VoiceChatSubsystem = World->GetSubsystem<UVoiceChatSubsystem>();
+		BindVoiceChat(VoiceChat);
+	}
+	return VoiceChat;
+}
+
+void UCrowdySDKSubsystem::BindVoiceChat(UVoiceChatSubsystem* VoiceChat)
+{
+	if (UVoiceChatSubsystem* Previous = BoundVoiceChat.Get())
+	{
+		Previous->OnMicStateChanged.Remove(VoiceMicStateHandle);
+		Previous->OnSpeakerTalking.Remove(VoiceTalkingHandle);
+	}
+	BoundVoiceChat = VoiceChat;
+	VoiceMicStateHandle.Reset();
+	VoiceTalkingHandle.Reset();
+	if (!VoiceChat)
+	{
+		return;
 	}
 
-	VoiceChatSubsystem->InitializeVoiceChatSubsystem(VoiceChatService);
-	VoiceChatService->SetVoiceChatManagerReference(VoiceChatSubsystem);
-	return IsValid(VoiceChatSubsystem);
+	bWarnedNoVoiceChat = false;
+	VoiceMicStateHandle = VoiceChat->OnMicStateChanged.AddUObject(this, &UCrowdySDKSubsystem::HandleVoiceMicStateChanged);
+	VoiceTalkingHandle = VoiceChat->OnSpeakerTalking.AddUObject(this, &UCrowdySDKSubsystem::HandleVoiceSpeakerTalking);
+	VoiceSettings.ApplyTo(*VoiceChat);
+	HandleVoiceMicStateChanged(VoiceChat->GetMicState());
+}
+
+void UCrowdySDKSubsystem::HandlePostWorldInitialization(UWorld* World, const FWorldInitializationValues)
+{
+	if (!World || World->GetGameInstance() != GetGameInstance())
+	{
+		return;
+	}
+
+	if (UVoiceChatSubsystem* VoiceChat = World->GetSubsystem<UVoiceChatSubsystem>())
+	{
+		BindVoiceChat(VoiceChat);
+	}
+}
+
+void UCrowdySDKSubsystem::HandleVoiceMicStateChanged(const ECrowdyVoiceMicState State)
+{
+	if (State == RelayedVoiceMicState)
+	{
+		return;
+	}
+	RelayedVoiceMicState = State;
+	OnVoiceMicStateChanged.Broadcast(State);
+}
+
+void UCrowdySDKSubsystem::HandleVoiceSpeakerTalking(const FString& SpeakerUuid, const bool bTalking)
+{
+	OnVoiceSpeakerTalking.Broadcast(SpeakerUuid, bTalking);
 }
 
 bool UCrowdySDKSubsystem::TryLoadConfiguration()

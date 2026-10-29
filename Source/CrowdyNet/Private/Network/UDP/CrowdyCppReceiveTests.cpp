@@ -246,23 +246,12 @@ namespace CrowdyReceiveTestSupport
 			FInboundCase& Case = Cases.AddDefaulted_GetRef();
 			Case.Type = ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION;
 			Case.Name = TEXT("audio notification");
-			AppendInt32(Case.Payload, 48000);
-			AppendInt32(Case.Payload, 2);
-			AppendInt32(Case.Payload, 2);
-			AppendInt32(Case.Payload, 3);
-			Case.Payload.Append({0xd1, 0xd2, 0xd3});
-			AppendInt32(Case.Payload, 2);
-			Case.Payload.Append({0xd4, 0xd5});
+			// A voice packet: version 1, Opus, seq 7, timestamp 960, 20 ms, spurt start, then a three octet frame.
+			Case.Payload.Append({0x01, 0x01, 0x07, 0x00, 0xc0, 0x03, 0x00, 0x00, 0x14, 0x01, 0xd1, 0xd2, 0xd3});
 			Case.Describe = [](const ICrowdyMessage& Message)
 			{
 				const auto& Audio = static_cast<const FClientAudioNotification&>(Message);
-				FString Frames;
-				for (const FCrowdyAudioFrame& Frame : Audio.Frames)
-				{
-					Frames += FString::Printf(TEXT("[%d:%s]"), Frame.FrameSize, *DescribeBytes(Frame.AudioData));
-				}
-				return FString::Printf(TEXT("%s rate=%d channels=%d frames=%s"), *DescribeBase(Message),
-					Audio.SampleRate, Audio.NumChannels, *Frames);
+				return FString::Printf(TEXT("%s payload=%s"), *DescribeBase(Message), *DescribeBytes(Audio.Payload));
 			};
 		}
 
