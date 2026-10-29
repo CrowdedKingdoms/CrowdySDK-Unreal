@@ -43,6 +43,7 @@ public class CrowdyCppBridge : ModuleRules
 		// client's constructor falls back to the provider whose every primitive
 		// fails, so signing would break silently rather than fail to build.
 		PrivateDefinitions.Add("CROWDY_HAS_OPENSSL=1");
+		PrivateDefinitions.Add("CROWDY_HAS_OPUS=1");
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
@@ -58,7 +59,8 @@ public class CrowdyCppBridge : ModuleRules
 			// CKSharedTypes for the shared JSON nesting-depth guard.
 			"HTTP",
 			"WebSockets",
-			"CKSharedTypes"
+			"CKSharedTypes",
+			"libOpus"
 		});
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
