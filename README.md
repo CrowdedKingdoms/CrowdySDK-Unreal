@@ -5,10 +5,17 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.21.1** (Unreal Engine 5.8). See the
+**Current version: 2.21.2** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
+
+**New in 2.21.2:** `CancelSignIn` and `IsSignInPending` stop a sign-in that has not finished
+without signing out, so a cancelled restore keeps the saved session; Game Kit fixes: read kit
+actors with Get Kit Actor Count and Get Kit Actor, kit actors placed by the session's chunk size,
+a starter's On Changed runs once at Ready, another player's Owner Values report no value, case-only
+duplicate Config ids are refused, malformed kit actor updates are dropped, and `-op=call` reaches a
+starter's read-only player functions.
 
 **New in 2.21.1:** `-crowdysession=<name>` gives a packaged client its own saved session, so two
 clients sharing a Saved folder can sign in as different accounts; the platform now stops a removed
