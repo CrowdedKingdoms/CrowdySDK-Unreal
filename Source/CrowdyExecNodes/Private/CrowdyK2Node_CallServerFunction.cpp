@@ -131,9 +131,11 @@ void UCrowdyK2Node_CallServerFunction::AllocateDefaultPins()
 		CreateValuePins(EGPD_Output, Output);
 	}
 
-	UEdGraphPin* Outcome = CreateAdvancedOutput(UEdGraphSchema_K2::PC_Byte, StaticEnum<ECrowdyServerCallOutcome>(), CrowdyServerCallPins::Outcome, LOCTEXT("OutcomeTooltip", "How the call ended."));
+	UEdGraphPin* Outcome = CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Byte, StaticEnum<ECrowdyServerCallOutcome>(), CrowdyServerCallPins::Outcome);
+	Outcome->PinToolTip = LOCTEXT("OutcomeTooltip", "How the call ended.").ToString();
 	Outcome->PinFriendlyName = LOCTEXT("OutcomePin", "Outcome");
-	UEdGraphPin* Reason = CreateAdvancedOutput(UEdGraphSchema_K2::PC_String, nullptr, CrowdyServerCallPins::Reason, LOCTEXT("ReasonTooltip", "Why the call failed; empty on success."));
+	UEdGraphPin* Reason = CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_String, CrowdyServerCallPins::Reason);
+	Reason->PinToolTip = LOCTEXT("ReasonTooltip", "Why the call failed; empty on success.").ToString();
 	Reason->PinFriendlyName = LOCTEXT("ReasonPin", "Reason");
 	UEdGraphPin* Retryable = CreateAdvancedOutput(UEdGraphSchema_K2::PC_Boolean, nullptr, CrowdyServerCallPins::Retryable, LOCTEXT("RetryableTooltip", "Whether calling again may succeed."));
 	Retryable->PinFriendlyName = LOCTEXT("RetryablePin", "Retryable");

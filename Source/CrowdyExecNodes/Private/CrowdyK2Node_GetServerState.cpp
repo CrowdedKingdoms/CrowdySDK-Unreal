@@ -22,7 +22,7 @@ void UCrowdyK2Node_GetServerState::AllocateDefaultPins()
 	{
 		CreateValuePins(EGPD_Output, Variable);
 	}
-	CreateReadyPin(CrowdyServerObjectNodePins::HasValues, FGuid());
+	CreateReadyPin(CrowdyServerObjectNodePins::HasValues, FGuid(), LOCTEXT("ReadyPin", "Is Ready"));
 	Super::AllocateDefaultPins();
 }
 

@@ -33,8 +33,10 @@ public:
 	 * @param bDeep  Load every Blueprint and User Defined Struct via the asset
 	 *               registry first, so assets never opened this session are
 	 *               captured. Heavier; used by the manual menu action.
+	 * @param bNotify  Shows an editor toast with the outcome. Only the interactive menu action sets it.
+	 * @return false when the baked asset could not be created or saved.
 	 */
-	static void Rebuild(bool bDeep);
+	static bool Rebuild(bool bDeep, bool bNotify = false);
 
 	/**
 	 * Interactive deep rebuild for the CrowdyStudio Registry page button. Rebuild(true) force-loads
@@ -79,10 +81,10 @@ private:
 	static void GatherTaggedAssets(TArray<FAssetData>& OutAssets);
 
 	// Shared tail of a rebuild: sweep loaded objects into the asset, save, invalidate the cache,
-	// then invoke OnComplete. Runs on the game thread.
-	static void FinishRebuild(TFunction<void()> OnComplete);
+	// then invoke OnComplete. Runs on the game thread. Returns false when the asset could not be created or saved.
+	static bool FinishRebuild(TFunction<void()> OnComplete, bool bNotify = false);
 
-	static void SaveAsset(UCrowdyBakedRegistry* Registry);
+	static bool SaveAsset(UCrowdyBakedRegistry* Registry);
 
 	static void OnStartup();
 

@@ -188,3 +188,15 @@ struct FCrowdyExecNodesTestRefused
 	UPROPERTY()
 	int32 Fine = 0;
 };
+
+USTRUCT()
+struct FCrowdyExecNodesTestToolTips
+{
+	GENERATED_BODY()
+
+	UPROPERTY(meta = (ToolTip = "How hard the hit lands."))
+	int32 Damage = 0;
+
+	UPROPERTY()
+	int32 Plain = 0;
+};

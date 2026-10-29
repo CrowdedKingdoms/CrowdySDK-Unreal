@@ -36,7 +36,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CrowdySDK|HUD|Widgets", meta =(DisplayName="Widget Set Config"))
 	UCrowdyWidgetSet* WidgetSetConfig = nullptr;
 	
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|HUD")
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|HUD")
 	void InitializeCrowdyWidgets();
 
 private:
@@ -47,11 +47,11 @@ private:
 	UPROPERTY(Transient)
 	UUserWidget* CrowdyHUD = nullptr;
 
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|HUD")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|HUD")
 	void ToggleWidget(TSubclassOf<UUserWidget> WidgetClass, const ECrowdyUILayer Layer, const bool HideOtherWidgetsInLayer = true, ECrowdyInputMode
 	                  EnteringInputMode = ECrowdyInputMode::Game, ECrowdyInputMode ExitingInputMode = ECrowdyInputMode::Game, bool
 	                  bChangeInputMode = true);
 	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|HUD")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|HUD")
 	UUserWidget* GetWidget(TSubclassOf<UUserWidget> WidgetClass);
 };

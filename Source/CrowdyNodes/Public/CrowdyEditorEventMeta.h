@@ -62,6 +62,22 @@ inline ECrowdyEventRecipient ResolveCrowdyRecipient(const FString& RecipientMeta
 		: static_cast<ECrowdyEventRecipient>(Value);
 }
 
+// True when a routing metadata value is unset or names an enumerator of TEnum. A set value that is not
+// recognised falls back to the runtime default, so a caller with a node to point at reports it.
+template <typename TEnum>
+bool IsRecognisedCrowdyRoutingValue(const FString& MetaValue)
+{
+	const UEnum* EnumType = StaticEnum<TEnum>();
+	return MetaValue.IsEmpty() || (EnumType && EnumType->GetValueByNameString(MetaValue) != INDEX_NONE);
+}
+
+inline bool IsRecognisedCrowdyRecipient(const FString& RecipientMetaValue)
+{
+	return RecipientMetaValue.Equals(TEXT("OwningPlayer"), ESearchCase::IgnoreCase)
+		|| RecipientMetaValue.Equals(TEXT("Owning Player"), ESearchCase::IgnoreCase)
+		|| IsRecognisedCrowdyRoutingValue<ECrowdyEventRecipient>(RecipientMetaValue);
+}
+
 // The recipient a Crowdy replicated custom event node carries, read off the node's own user-declared
 // metadata rather than off the generated function: a node in the Blueprint being compiled has not been
 // stamped yet at ProcessBlueprintCompiled time, so the function's metadata is not readable there.

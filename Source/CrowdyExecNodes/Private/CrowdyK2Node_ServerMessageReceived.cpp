@@ -96,8 +96,8 @@ bool UCrowdyK2Node_ServerMessageReceived::CheckMessage(FKismetCompilerContext& C
 	}
 	if (!Message->bPlayersCanListen)
 	{
-		CompilerContext.MessageLog.Error(*FText::Format(LOCTEXT("NotHeardByPlayers", "@@: {0} is heard only by other Server Object types; turn on Players Can Listen"),
-			FText::FromName(Member)).ToString(), this);
+		CompilerContext.MessageLog.Error(*FText::Format(LOCTEXT("NotHeardByPlayers", "@@: {0} is heard only by other Server Object types; turn on Players Can Listen, a setting of message {0} in the definition asset {1}"),
+			FText::FromName(Member), GetAssetName()).ToString(), this);
 		return false;
 	}
 	GatherPayloadValues(Out);

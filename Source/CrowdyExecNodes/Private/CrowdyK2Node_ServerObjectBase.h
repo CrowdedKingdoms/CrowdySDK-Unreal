@@ -87,8 +87,8 @@ protected:
 	/** Value's pin, and its Has Value pin for an optional. Null when Value has no pin. */
 	UEdGraphPin* CreateValuePins(EEdGraphPinDirection Direction, const FCrowdyServerValuePin& Value);
 
-	/** An advanced Boolean output, false until the server has sent the object's values. */
-	UEdGraphPin* CreateReadyPin(FName Name, const FGuid& Id);
+	/** An advanced Boolean output labelled FriendlyName, false until the server has sent the object's values. */
+	UEdGraphPin* CreateReadyPin(FName Name, const FGuid& Id, const FText& FriendlyName);
 
 	/** An output hidden until the node's advanced pins are expanded. */
 	UEdGraphPin* CreateAdvancedOutput(FName Category, UObject* SubCategoryObject, FName Name, const FText& Tooltip);

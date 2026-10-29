@@ -86,7 +86,7 @@ public:
 	virtual void Deinitialize() override;
 
 	/** A chat message from a party, guild or chat room of this kit. The sender uuid is what the sender's client claims, not proven. */
-	UPROPERTY(BlueprintAssignable, Category = "Crowdy|Game Kit|Social")
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Kit|Social")
 	FOnCrowdyKitChatMessage OnChatMessage;
 
 	/** Creates the party's team (invite only) and its chat channel; the caller leads the team. Fails when either cannot be created. */
@@ -135,10 +135,10 @@ public:
 	static TArray<FString> DefaultTerritoryPermissionKeys();
 
 	/** Sends Text, as UTF-8 of at most 1024 bytes, to the group's chat channel. Nothing is sent unless the result is Sent. Sent means the message left this client: the server delivers it to the channel's members, and a refusal (a player who is not one, or whose access tier lacks use_text_chat) arrives later on the realtime subsystem's On Send Refused. */
-	UFUNCTION(BlueprintCallable, Category = "Crowdy|Game Kit|Social", meta = (ExpandEnumAsExecs = "ReturnValue"))
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Kit|Social", meta = (ExpandEnumAsExecs = "ReturnValue"))
 	ECrowdyKitChatResult SendChat(const FCrowdyKitGroup& Group, const FString& Text);
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy|Game Kit|Social")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Kit|Social")
 	static FString DescribeChatResult(ECrowdyKitChatResult Result);
 
 	/** The verdict on a send before it goes out; pure so every refusal can be checked without a connection. */

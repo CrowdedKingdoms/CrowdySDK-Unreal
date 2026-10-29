@@ -130,7 +130,7 @@ bool FCrowdyServerObjectDefinitionMethodNamesTest::RunTest(const FString& Parame
 	TArray<FString> Errors;
 	Definition->BuildTables(Structs, Enums, Errors);
 	TestTrue(FString::Printf(TEXT("checks judge the name as it is now, not the baked one (got: %s)"), *FString::Join(Errors, TEXT(" | "))),
-		Errors.Contains(TEXT("Function Read: 'read' is reserved")));
+		Errors.Contains(TEXT("Function Read: 'read' is reserved; rename the function or set its Server Name")));
 #endif
 	return true;
 }

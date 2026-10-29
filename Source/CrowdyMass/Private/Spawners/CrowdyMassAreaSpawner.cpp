@@ -66,21 +66,26 @@ int32 ACrowdyMassAreaSpawner::SpawnEntities()
 	// Loaded once rather than per entity, and recorded on each one. Without a class an entity is live and
 	// traceable but no event can be sent to it, and the refusal reads as "not learned yet" forever.
 	UClass* ResolvedEntityClass = EntityClass.IsNull() ? nullptr : EntityClass.LoadSynchronous();
-	UE_CLOG(EntityClass.IsNull(), LogCrowdyMass, Verbose,
+	UE_CLOG(EntityClass.IsNull() && !bToldNoEntityClass, LogCrowdyMass, Log,
 		TEXT("[CrowdyMassAreaSpawner] '%s' has no Entity Class set, so its entities record none and no Crowdy event can be sent to them."),
 		*GetName());
+	bToldNoEntityClass |= EntityClass.IsNull();
 
 	for (const FTransform& SpawnTransform : SpawnTransforms)
 	{
 		const FGuid UUID = FGuid::NewGuid();
 		const FMassEntityHandle Entity = CrowdyMassSubsystem->SpawnRemoteEntity(
 			UUID, SpawnTransform, FInstancedStruct(), ResolvedEntityClass);
-		if (Entity.IsValid())
+		if (!Entity.IsValid())
 		{
-			SpawnedUUIDs.Add(UUID);
-			SpawnedEntities.Add(Entity);
-			++SpawnedCount;
+			UE_LOG(LogCrowdyMass, Warning, TEXT("[CrowdyMassAreaSpawner] '%s' stopped spawning: %d of %d entities were not spawned. Usually no Remote Entity Config resolves, or the Mass spawner subsystem is unavailable."),
+				*GetName(), SpawnTransforms.Num() - SpawnedCount, SpawnTransforms.Num());
+			break;
 		}
+
+		SpawnedUUIDs.Add(UUID);
+		SpawnedEntities.Add(Entity);
+		++SpawnedCount;
 	}
 
 	return SpawnedCount;

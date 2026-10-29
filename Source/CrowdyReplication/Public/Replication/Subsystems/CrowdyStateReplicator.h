@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "Replication/State/FCrowdyStateDelta.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "UObject/ObjectKey.h"
 #include "CrowdyStateReplicator.generated.h"
 
 class UCrowdyAutoRegistry;
@@ -384,6 +385,9 @@ private:
 	};
 
 	TArray<FCrowdyPendingHostPush> PendingHostPushes;
+
+	// Class and property pairs already warned about as unknown, so a per-frame misuse warns once per world.
+	TSet<TPair<FObjectKey, FName>> WarnedUnknownStateProperties;
 
 	// Every registered HostOwned entity id, maintained regardless of local host status: a non-host still records
 	// the id so a later promotion (HandleHostChanged) can start tracking it, and a demotion can stop tracking it.

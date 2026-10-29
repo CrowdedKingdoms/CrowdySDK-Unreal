@@ -5,6 +5,9 @@
 #include "Model/CrowdyStudioTypes.h"
 #include "CrowdyStudioCommandlet.generated.h"
 
+class FJsonObject;
+class UCrowdyBakedRegistry;
+
 /** One parsed command line of the Crowdy Studio commandlet. */
 struct FCrowdyStudioCommandRequest
 {
@@ -53,6 +56,10 @@ struct FCrowdyStudioCommandRequest
 	bool bYes = false;
 	/** -editoropen: write the project settings even while an Unreal Editor is running. */
 	bool bEditorOpen = false;
+	/** -class: registry lists only the classes whose path contains this; empty lists all. */
+	FString ClassFilter;
+	/** -norebuild: registry reads the saved baked registry instead of rebuilding it first. */
+	bool bNoRebuild = false;
 };
 
 /**
@@ -131,4 +138,7 @@ public:
 
 	/** What Sync to project leaves the settings as for this app, without writing anything. */
 	static FStudioSettingsSnapshot ProposeSync(const FStudioApp& App);
+
+	/** The registry operation's result fields: counts and one entry per class whose path contains ClassFilter (all when empty), with its CrowdyEvent routing and CrowdyState flags as baked. */
+	static TSharedRef<FJsonObject> BuildRegistryJson(const UCrowdyBakedRegistry& Registry, const FString& ClassFilter);
 };

@@ -24,12 +24,12 @@ class CROWDYSERVICES_API ICrowdyHUD
 	// Add interface functions to this class. This is the class that will be inherited to implement this interface.
 public:
 	
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|HUD", meta=(DisplayName="Execute Crowdy UI Command"))
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|HUD", meta=(DisplayName="Execute Crowdy UI Command"))
 	void ExecuteUICommand(FGameplayTag Command, bool bHideOtherWidgetsInLayer = false, bool bChangeInputMode = true);
 	
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|HUD", meta=(DisplayName="Get Widget Reference"))
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|HUD", meta=(DisplayName="Get Widget Reference"))
 	UUserWidget* GetWidgetReference(TSubclassOf<UUserWidget> WidgetClass);
 	
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|HUD", meta=(DisplayName="Toggle Layer Visibility"))
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|HUD", meta=(DisplayName="Toggle Layer Visibility"))
 	void ToggleLayerVisibility(ECrowdyUILayer Layer, bool bVisible = false);
 };

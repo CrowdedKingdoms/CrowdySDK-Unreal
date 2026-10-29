@@ -800,7 +800,6 @@ struct FCrowdyCppClient::FImpl
 
 namespace
 {
-	// Length-bounded UTF-8 conversion so an embedded NUL never truncates the value.
 	/**
 	 * The one error out of a GraphQL errors array that a caller should be told about.
 	 *

@@ -47,7 +47,7 @@ namespace CrowdyStudioWidgets
 	CROWDYSTUDIO_API TSharedRef<SWidget> GroupLabel(const FText& Text);
 
 	// A coloured status pill.
-	CROWDYSTUDIO_API TSharedRef<SWidget> Badge(const FText& Label, EBadgeTone Tone);
+	CROWDYSTUDIO_API TSharedRef<SWidget> Badge(const FText& Label, EBadgeTone Tone, const FText& Tooltip = FText::GetEmpty());
 
 	// Maps an app/environment/group status string (LIVE/DRAFT/ARCHIVED/...) to a badge tone.
 	CROWDYSTUDIO_API EBadgeTone ToneForStatus(const FString& Status);

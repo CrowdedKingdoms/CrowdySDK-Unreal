@@ -268,7 +268,7 @@ void UCrowdyEventRouter::Initialize(FSubsystemCollectionBase& Collection)
 
     if (!LoadConfig())
     {
-        UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEventRouter]: Failed to load config due to incorrect params or disabled by choice."));
+        UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log, TEXT("[CrowdyEventRouter]: Not started: networking is disabled for this map or no map profile resolves."));
         return;
     }
 

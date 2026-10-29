@@ -862,7 +862,9 @@ void UCrowdySDKSubsystem::DispatchGameEventView_Internal(const int64 ChunkX, con
 	FCrowdyTypeID EventID;
 	if (!UEventPayloadRegistry::Get()->GetID(PayloadStruct, EventID))
 	{
-		UE_LOG(LogCrowdySDK, Error, TEXT("Event Payload not registered. %s"), *GetNameSafe(PayloadStruct));
+		UE_LOG(LogCrowdySDK, Error,
+			TEXT("Event payload '%s' has no wire id, so the event was not sent. An event struct is registered when a handler subscribes to it (a reception layer's Supported Events, or SubscribeToEventPayload). If two structs share an id, give one an explicit TypeID via IDOverrides in CrowdySDKDeveloperSettings (Project Settings, Plugins, Crowdy SDK)."),
+			*GetNameSafe(PayloadStruct));
 		return;
 	}
 
@@ -915,7 +917,8 @@ void UCrowdySDKSubsystem::DispatchSingleActorMessage_Internal(const int64 ChunkX
 		FCrowdyTypeID EventID;
 		if (!UEventPayloadRegistry::Get()->GetID(Payload.GetScriptStruct(), EventID))
 		{
-			UE_LOG(LogCrowdySDK, Error, TEXT("Single-actor payload not registered. %s"),
+			UE_LOG(LogCrowdySDK, Error,
+				TEXT("Single-actor payload '%s' has no wire id, so the message was not sent. An event struct is registered when a handler subscribes to it (a reception layer's Supported Events, or SubscribeToEventPayload). If two structs share an id, give one an explicit TypeID via IDOverrides in CrowdySDKDeveloperSettings (Project Settings, Plugins, Crowdy SDK)."),
 				*GetNameSafe(Payload.GetScriptStruct()));
 			return;
 		}

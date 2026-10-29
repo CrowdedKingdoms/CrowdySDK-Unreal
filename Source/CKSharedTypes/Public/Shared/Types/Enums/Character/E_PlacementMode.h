@@ -11,9 +11,9 @@ enum class E_PlacementMode : uint8
 	VLO			UMETA(DisplayName = "Placing Voxel Like Object"),
 	StaticMesh	UMETA(DisplayName = "Placing Static Mesh"),
 	ActorBP		UMETA(DisplayName = "Placing Actor Blueprint"),
-	Delete      UMETA(DisaplyName = "Delete Voxel/VLO/Object"),
-	VoxelSphere UMETA(DisaplyName = "VPL | Voxel Sphere"),
-	VoxelBox    UMETA(DisaplyName = "VPL | Voxel Box"),
-	DeleteVoxelSphere UMETA(DisaplyName = "VPL | Delete Voxel Sphere"),
-	DeleteVoxelBox    UMETA(DisaplyName = "VPL | Delete Voxel Box")
+	Delete      UMETA(DisplayName = "Delete Voxel/VLO/Object"),
+	VoxelSphere UMETA(DisplayName = "VPL | Voxel Sphere"),
+	VoxelBox    UMETA(DisplayName = "VPL | Voxel Box"),
+	DeleteVoxelSphere UMETA(DisplayName = "VPL | Delete Voxel Sphere"),
+	DeleteVoxelBox    UMETA(DisplayName = "VPL | Delete Voxel Box")
 };

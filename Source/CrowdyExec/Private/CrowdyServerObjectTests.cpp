@@ -56,6 +56,7 @@ bool FCrowdyServerObjectAcquireTwiceSharesOneObjectTest::RunTest(const FString& 
 	TestTrue(TEXT("the object carries its definition"), Shared->GetDefinition() == Rig.Definition.Get());
 
 	const FString BadId = TEXT("An Instance Id must be 1 to 256 bytes with no control characters");
+	const FString EmptyId = TEXT("Instance Id is empty; give the id of the instance to get");
 	const FString Longest = FString::ChrN(256, TEXT('a'));
 	const FString TooLong = FString::ChrN(257, TEXT('a'));
 	const FString WideTooLong = FString::ChrN(129, static_cast<TCHAR>(0xE9));
@@ -66,13 +67,13 @@ bool FCrowdyServerObjectAcquireTwiceSharesOneObjectTest::RunTest(const FString& 
 		UCrowdyServerObject* Refused = Rig.Subsystem->Acquire(Rig.Definition.Get(), Id, First.Get(), Error);
 		TestTrue(FString::Printf(TEXT("an Instance Id of %d characters (%d UTF-8 bytes) is refused"), Id.Len(), FTCHARToUTF8(*Id, Id.Len()).Length()),
 			Refused == nullptr);
-		TestEqualSensitive(TEXT("the Instance Id refusal says what a valid one is"), Error, BadId);
+		TestEqualSensitive(TEXT("the Instance Id refusal says what a valid one is"), Error, Id.IsEmpty() ? EmptyId : BadId);
 	}
 	TestTrue(TEXT("an Instance Id of exactly 256 bytes is accepted"), Rig.Acquire(Longest, First.Get()) != nullptr);
 
 	FString Error;
 	TestTrue(TEXT("an acquire without an owner is refused"), Rig.Subsystem->Acquire(Rig.Definition.Get(), TEXT("m1"), nullptr, Error) == nullptr);
-	TestEqualSensitive(TEXT("the refusal says an owner is needed"), Error,FString(TEXT("Acquire needs an owner")));
+	TestEqualSensitive(TEXT("the refusal says an owner is needed"), Error, FString(TEXT("Get Server Object needs an Owner")));
 	Error.Reset();
 	TestTrue(TEXT("an acquire without a definition is refused"), Rig.Subsystem->Acquire(nullptr, TEXT("m1"), First.Get(), Error) == nullptr);
 	TestFalse(TEXT("the missing-definition refusal says why"), Error.IsEmpty());
@@ -547,10 +548,12 @@ bool FCrowdyServerObjectCallRefusalsSendNothingTest::RunTest(const FString& Para
 	if (TestEqual(TEXT("an unknown function is refused before Call returns"), Unknown.Num(), 1))
 	{
 		TestEqual(TEXT("as BadRequest"), static_cast<int32>((*Unknown.Results)[0].Outcome), static_cast<int32>(ECrowdyServerCallOutcome::BadRequest));
-		TestEqualSensitive(TEXT("naming the missing function"), (*Unknown.Results)[0].Reason, FString(TEXT("test_boss has no function named Nope")));
+		const FString& Reason = (*Unknown.Results)[0].Reason;
+		TestTrue(TEXT("naming the missing function"), Reason.StartsWith(TEXT("test_boss has no function named Nope; "), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("and the functions it has"), Reason.Contains(AttackFunction, ESearchCase::CaseSensitive));
 	}
 
-	const FString WrongParams = TEXT("AttackBoss takes FCrowdyServerObjectTestAttackParams params");
+	const FString WrongParams = TEXT("AttackBoss takes FCrowdyServerObjectTestAttackParams params; build them with Make Inputs");
 	FCallSpy Wrong;
 	Object->Call(AttackFunction, FInstancedStruct::Make(Boss(1, false, ECrowdyExecTestPhase::Calm)), Wrong.OnDone());
 	if (TestEqual(TEXT("params of the wrong struct are refused before Call returns"), Wrong.Num(), 1))
@@ -1555,7 +1558,7 @@ bool FCrowdyServerObjectListCallTest::RunTest(const FString& Parameters)
 	Object->Call(AttackFunction, AttackParams(10), Wrong.OnDone());
 	if (TestEqual(TEXT("a struct for a List is refused before Call returns"), Wrong.Num(), 1))
 	{
-		TestEqualSensitive(TEXT("naming the List the function takes"), (*Wrong.Results)[0].Reason, FString(TEXT("AttackBoss takes AttackBossParams params")));
+		TestEqualSensitive(TEXT("naming the List the function takes"), (*Wrong.Results)[0].Reason, FString(TEXT("AttackBoss takes AttackBossParams params; build them with Make Inputs")));
 	}
 	TestNull(TEXT("an unknown function has no params to hand out"), Object->MakeParams(TEXT("Nope")).GetPropertyBagStruct());
 
@@ -2211,7 +2214,7 @@ bool FCrowdyServerObjectBlueprintCallServerFunctionRefusalsTest::RunTest(const F
 	if (TestEqual(TEXT("an unknown function fires On Failed during Activate"), Unknown->FailedOutcomes.Num(), 1))
 	{
 		TestEqual(TEXT("as BadRequest"), static_cast<int32>(Unknown->FailedOutcomes[0]), static_cast<int32>(ECrowdyServerCallOutcome::BadRequest));
-		TestEqualSensitive(TEXT("naming the missing function"), Unknown->FailedReasons[0], FString(TEXT("test_boss has no function named Nope")));
+		TestTrue(TEXT("naming the missing function"), Unknown->FailedReasons[0].StartsWith(TEXT("test_boss has no function named Nope; "), ESearchCase::CaseSensitive));
 		TestFalse(TEXT("not retryable"), Unknown->FailedRetryable[0]);
 	}
 
@@ -5151,7 +5154,7 @@ bool FCrowdyServerObjectOtherEmptyIdTest::RunTest(const FString& Parameters)
 	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
 	FString Error;
 	TestNull(TEXT("an empty Instance Id is refused"), Rig.Subsystem->Acquire(Rig.Definition.Get(), FString(), Owner.Get(), Error));
-	TestTrue(FString::Printf(TEXT("saying why (%s)"), *Error), Error.Contains(TEXT("1 to 256 bytes")));
+	TestTrue(FString::Printf(TEXT("saying why (%s)"), *Error), Error.Contains(TEXT("Instance Id is empty")));
 	UCrowdyServerObjectLink* Link = Rig.Subsystem->FindLink(Owner.Get(), Rig.Definition.Get(), ECrowdyServerObjectFind::InstanceId, FString(), 0);
 	TestTrue(TEXT("and a Link without one waits for it"), Link && !Link->GetServerObject() && Link->GetFailureReason().Contains(TEXT("Set an Instance Id")));
 	return true;
@@ -5202,6 +5205,74 @@ bool FCrowdyServerObjectFixUnfitReadWarnsTest::RunTest(const FString& Parameters
 	TestFalse(TEXT("a value too large for its pin is not read"), UCrowdyServerObjectLibrary::ReadServerVariableInto(Object, Rig.Definition.Get(), TEXT("UInt64Value"), IntPin, &Read));
 	TestEqual(TEXT("and leaves the pin at its default"), Read, 0);
 	TestFalse(TEXT("nor the second time"), UCrowdyServerObjectLibrary::ReadServerVariableInto(Object, Rig.Definition.Get(), TEXT("UInt64Value"), IntPin, &Read));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectFixUnknownValueNameWarnsTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.UnknownValueNameWarnsOncePerStructAndName", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectFixUnknownValueNameWarnsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	const FString Name = TEXT("NoSuchValue") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	AddExpectedMessagePlain(FString::Printf(TEXT("'%s' is not a value of CrowdyServerObjectTestIntegers; names are matched ignoring case, spaces and punctuation."), *Name),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	AddExpectedMessagePlain(FString::Printf(TEXT("'%s' is not a value of CrowdyServerObjectTestByteEnum"), *Name),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	FThunkLocals Set(TEXT("SetServerValue"));
+	Set.Param<FInstancedStruct>(TEXT("Values")) = FInstancedStruct::Make(FCrowdyServerObjectTestIntegers());
+	Set.Param<FName>(TEXT("Name")) = FName(*Name);
+	Set.Param<int32>(TEXT("Value")) = 1;
+	TestFalse(TEXT("Set Server Value refuses a name the struct lacks"), RunThunk(TEXT("SetServerValue"), Set.Memory.GetData()));
+	TestFalse(TEXT("and refuses it the second time"), RunThunk(TEXT("SetServerValue"), Set.Memory.GetData()));
+
+	FThunkLocals Get(TEXT("GetServerValue"));
+	Get.Param<FInstancedStruct>(TEXT("Values")) = FInstancedStruct::Make(FCrowdyServerObjectTestIntegers());
+	Get.Param<FName>(TEXT("Name")) = FName(*Name);
+	TestFalse(TEXT("Get Server Value refuses the same name"), RunThunk(TEXT("GetServerValue"), Get.Memory.GetData()));
+	TestFalse(TEXT("and the second time"), RunThunk(TEXT("GetServerValue"), Get.Memory.GetData()));
+
+	const FInstancedStruct Integers = FInstancedStruct::Make(FCrowdyServerObjectTestIntegers());
+	int32 Read = 5;
+	TestFalse(TEXT("a read of it by name refuses it too"), UCrowdyServerObjectLibrary::ReadReadyValueInto(&Integers, true, FName(*Name), Get.Function->FindPropertyByName(TEXT("Value")), &Read));
+	TestEqual(TEXT("leaving the pin at its default"), Read, 0);
+
+	Get.Param<FInstancedStruct>(TEXT("Values")) = FInstancedStruct::Make(FCrowdyServerObjectTestByteEnum());
+	TestFalse(TEXT("another struct lacking the name is refused"), RunThunk(TEXT("GetServerValue"), Get.Memory.GetData()));
+	TestFalse(TEXT("and the second time"), RunThunk(TEXT("GetServerValue"), Get.Memory.GetData()));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectFixKnownValueNameDoesNotWarnTest,
+	"CrowdySDK.CrowdyExec.ServerObjectFixes.NamedValueWithNoValueYetDoesNotWarn", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyServerObjectFixKnownValueNameDoesNotWarnTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	struct FUnknownValueLines : public FOutputDevice
+	{
+		FUnknownValueLines() { GLog->AddOutputDevice(this); }
+		virtual ~FUnknownValueLines() override { GLog->RemoveOutputDevice(this); }
+		virtual void Serialize(const TCHAR* Line, ELogVerbosity::Type Verbosity, const FName& Category) override
+		{
+			Count += FCString::Strstr(Line, TEXT("is not a value of")) ? 1 : 0;
+		}
+		virtual bool CanBeUsedOnMultipleThreads() const override { return true; }
+		int32 Count = 0;
+	};
+	FUnknownValueLines Lines;
+
+	FThunkLocals Get(TEXT("GetServerValue"));
+	Get.Param<FInstancedStruct>(TEXT("Values")) = FInstancedStruct::Make(FCrowdyServerObjectTestIntegers());
+	Get.Param<FName>(TEXT("Name")) = TEXT("OptionalValue");
+	RunThunk(TEXT("GetServerValue"), Get.Memory.GetData());
+	Get.Param<FName>(TEXT("Name")) = TEXT("int32 value");
+	TestTrue(TEXT("a name differing in case and spaces still finds its value"), RunThunk(TEXT("GetServerValue"), Get.Memory.GetData()));
+
+	const FInstancedStruct Integers = FInstancedStruct::Make(FCrowdyServerObjectTestIntegers());
+	int32 Read = 5;
+	TestFalse(TEXT("a named value is not read before the server has answered"), UCrowdyServerObjectLibrary::ReadReadyValueInto(&Integers, false, TEXT("Int32Value"), Get.Function->FindPropertyByName(TEXT("Value")), &Read));
+	UCrowdyServerObjectLibrary::ReadReadyValueInto(&Integers, true, TEXT("OptionalValue"), Get.Function->FindPropertyByName(TEXT("Value")), &Read);
+	TestEqual(TEXT("no read of a real value name warns that it is unknown"), Lines.Count, 0);
 	return true;
 }
 

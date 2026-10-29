@@ -9,6 +9,9 @@
 #include "Queries/Data/Avatar/Types/FCrowdyAppAvatarState.h"
 #include "Queries/Data/Avatar/Types/FCrowdyAvatar.h"
 #include "Queries/Data/Avatar/Types/FCrowdyAvatarError.h"
+#include "Subsystem/CrowdyPersistenceSubsystem.h"
+#include "UObject/ObjectRedirector.h"
+#include "UObject/Package.h"
 
 // Avatars, the two host checks and the persistence pull no longer carry their own GraphQL text: they name an
 // operation and let FCrowdyCppClient::RunOp resolve it against the vendored CrowdyCPP generated tables. This file
@@ -404,6 +407,32 @@ bool FCrowdyAvatarVariableShapeTest::RunTest(const FString& Parameters)
 	// A public-only update must not name privateState at all: naming it with an empty value would clear it.
 	TestTrue(TEXT("a public-only update carries publicState"), (*StateWrapped)->HasField(TEXT("publicState")));
 	TestFalse(TEXT("and leaves privateState unnamed"), (*StateWrapped)->HasField(TEXT("privateState")));
+
+	return true;
+}
+
+// A level-placed actor is stored under its path, and a PIE world prefixes that path where a packaged build does not.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPersistenceInstanceKeyStripsPIEPrefixTest,
+	"CrowdySDK.CrowdyServices.PersistenceInstanceKeyStripsPIEPrefix", ServiceTestFlags)
+bool FCrowdyPersistenceInstanceKeyStripsPIEPrefixTest::RunTest(const FString& Parameters)
+{
+	UPackage* PlainPackage = CreatePackage(TEXT("/Temp/PersistKeyMap"));
+	UPackage* PIEPackage = CreatePackage(TEXT("/Temp/UEDPIE_0_PersistKeyMap"));
+	if (!TestNotNull(TEXT("both packages exist"), PlainPackage) || !TestNotNull(TEXT("both packages exist"), PIEPackage))
+	{
+		return false;
+	}
+
+	const FName SubjectName = MakeUniqueObjectName(PlainPackage, UObjectRedirector::StaticClass(), TEXT("Subject"));
+	const UObject* Plain = NewObject<UObjectRedirector>(PlainPackage, SubjectName, RF_Transient);
+	const UObject* InPIE = NewObject<UObjectRedirector>(PIEPackage, SubjectName, RF_Transient);
+
+	const FString PlainKey = UCrowdyPersistenceSubsystem::DeriveInstanceKey(Plain);
+	const FString PIEKey = UCrowdyPersistenceSubsystem::DeriveInstanceKey(InPIE);
+
+	TestTrue(TEXT("the PIE object really has a PIE path"), InPIE->GetPathName().Contains(TEXT("UEDPIE_0_")));
+	TestEqual(TEXT("the plain path is the key"), PlainKey, Plain->GetPathName());
+	TestEqual(TEXT("a PIE path and the plain path derive the same key"), PIEKey, PlainKey);
 
 	return true;
 }

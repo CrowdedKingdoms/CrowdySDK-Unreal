@@ -22,6 +22,8 @@
 #include "Engine/Blueprint.h"
 #include "StructUtils/UserDefinedStruct.h"
 #include "ToolMenus.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
@@ -143,7 +145,7 @@ void UCrowdyRegistryBaker::OnStartup()
 				"does this automatically at cook time, so you normally never need this: "
 				"it's here for inspecting the baked asset in-editor."),
 			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([] { UCrowdyRegistryBaker::Rebuild(/*bDeep*/true); })));
+			FUIAction(FExecuteAction::CreateLambda([] { UCrowdyRegistryBaker::Rebuild(/*bDeep*/true, /*bNotify*/true); })));
 	}
 
 	// First-run convenience: a project with no asset yet gets a populated one, so
@@ -155,12 +157,12 @@ void UCrowdyRegistryBaker::OnStartup()
 
 // Rebuild
 
-void UCrowdyRegistryBaker::Rebuild(bool bDeep)
+bool UCrowdyRegistryBaker::Rebuild(bool bDeep, bool bNotify)
 {
 	if (bDeep)
 		LoadAllTaggedAssets();
 
-	FinishRebuild(nullptr);
+	return FinishRebuild(nullptr, bNotify);
 }
 
 void UCrowdyRegistryBaker::RebuildAsync(TFunction<void()> OnComplete)
@@ -216,15 +218,31 @@ void UCrowdyRegistryBaker::RebuildAsync(TFunction<void()> OnComplete)
 		FStreamableManager::AsyncLoadHighPriority);
 }
 
-void UCrowdyRegistryBaker::FinishRebuild(TFunction<void()> OnComplete)
+bool UCrowdyRegistryBaker::FinishRebuild(TFunction<void()> OnComplete, bool bNotify)
 {
+	const auto ShowToast = [bNotify](const FText& Text, bool bSuccess)
+	{
+		if (!bNotify) return;
+
+		FNotificationInfo Info(Text);
+		Info.ExpireDuration = bSuccess ? 4.0f : 8.0f;
+		Info.bUseSuccessFailIcons = true;
+		TSharedPtr<SNotificationItem> Item = FSlateNotificationManager::Get().AddNotification(Info);
+		if (Item.IsValid())
+			Item->SetCompletionState(bSuccess ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
+	};
+
+	const FText FailureText = LOCTEXT("RebuildFailedToast",
+		"Could not save the Crowdy registry; see the Output Log (LogCrowdyEditor).");
+
 	UCrowdyBakedRegistry* Registry = ResolveOrCreateAsset();
 	if (!Registry)
 	{
 		UE_LOG(LogCrowdyEditor, Warning,
 			TEXT("[CrowdyRegistryBaker] Could not resolve or create the baked registry asset."));
+		ShowToast(FailureText, false);
 		if (OnComplete) OnComplete();
-		return;
+		return false;
 	}
 
 	PopulateFromLoadedObjects(Registry);
@@ -237,8 +255,7 @@ void UCrowdyRegistryBaker::FinishRebuild(TFunction<void()> OnComplete)
 	// the cook something to load).
 	const bool bExistsOnDisk =
 		FPackageName::DoesPackageExist(FString(CrowdyBakedRegistryPaths::PackagePath));
-	if (!IsRunningCommandlet() || !bExistsOnDisk)
-		SaveAsset(Registry);
+	const bool bSaved = (IsRunningCommandlet() && bExistsOnDisk) || SaveAsset(Registry);
 
 	// Editor/PIE reads live metadata, but drop any stale cache for good measure.
 	UCrowdyBakedRegistry::InvalidateCache();
@@ -250,7 +267,15 @@ void UCrowdyRegistryBaker::FinishRebuild(TFunction<void()> OnComplete)
 		Registry->RpcFunctions.Num(),
 		Registry->RepProperties.Num(), Registry->RepLayoutHashes.Num());
 
+	ShowToast(bSaved
+		? FText::Format(LOCTEXT("RebuildDoneToast",
+			"Crowdy registry rebuilt: {0} persistent + {1} singleton structs, {2} RPC functions, {3} replicated properties."),
+			Registry->PersistentStructs.Num(), Registry->SingletonStructs.Num(),
+			Registry->RpcFunctions.Num(), Registry->RepProperties.Num())
+		: FailureText, bSaved);
+
 	if (OnComplete) OnComplete();
+	return bSaved;
 }
 
 void UCrowdyRegistryBaker::UpdateForClass(UClass* Class)
@@ -522,12 +547,12 @@ UCrowdyBakedRegistry* UCrowdyRegistryBaker::ResolveOrCreateAsset()
 	return Asset;
 }
 
-void UCrowdyRegistryBaker::SaveAsset(UCrowdyBakedRegistry* Registry)
+bool UCrowdyRegistryBaker::SaveAsset(UCrowdyBakedRegistry* Registry)
 {
-	if (!Registry) return;
+	if (!Registry) return false;
 
 	UPackage* Package = Registry->GetPackage();
-	if (!Package) return;
+	if (!Package) return false;
 	Package->MarkPackageDirty();
 
 	const FString FileName = FPackageName::LongPackageNameToFilename(
@@ -541,7 +566,10 @@ void UCrowdyRegistryBaker::SaveAsset(UCrowdyBakedRegistry* Registry)
 	{
 		UE_LOG(LogCrowdyEditor, Warning,
 			TEXT("[CrowdyRegistryBaker] Failed to save baked registry to '%s'."), *FileName);
+		return false;
 	}
+
+	return true;
 }
 
 #undef LOCTEXT_NAMESPACE
