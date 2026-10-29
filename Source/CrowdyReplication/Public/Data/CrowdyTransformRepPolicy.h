@@ -7,6 +7,8 @@
 #include "Data/TInterpolatedField.h"
 #include "CrowdyTransformRepPolicy.generated.h"
 
+class UCrowdyKitActorSubsystem;
+
 /**
  * The policy the actor pool backend uses when a profile names none: applies the SDK's FCrowdyActorState
  * (location and rotation) to a pooled actor. Each slot keeps a ring of timestamped samples and renders the
@@ -26,6 +28,9 @@ public:
 	virtual void OnInstanceDeactivated(int32 SlotId) override;
 
 private:
+	// Where this world's kit actors are placed; empty where no Game Kit starter is listed.
+	TWeakObjectPtr<const UCrowdyKitActorSubsystem> KitActors;
+
 	// Indexed by the SlotId the pool assigns.
 	TArray<TInterpolatedField<FVector>> Positions;
 	TArray<TInterpolatedField<FRotator>> Rotations;

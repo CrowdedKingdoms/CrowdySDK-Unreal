@@ -8,7 +8,8 @@ FCrowdyKitActorState FCrowdyKitActorState::FromNative(const FCrowdyNativeKitActo
 	// Found rather than added: the kinds a project draws are already names, from its starters' Kit Actors, and any peer chooses the rest.
 	State.Kind = FName(*Native.Kind, FNAME_Find);
 	State.Id = Native.Id;
-	State.Location = FVector(Native.X, Native.Y, Native.Z) * ChunkWorldSize;
+	State.ChunkPosition = FVector(Native.X, Native.Y, Native.Z);
+	State.Location = State.ChunkPosition * ChunkWorldSize;
 	State.Rotation = FRotator(0.0, Native.Yaw.Get(0.0), 0.0);
 	State.bHasHp = Native.Hp.IsSet();
 	State.Hp = Native.Hp.Get(0);

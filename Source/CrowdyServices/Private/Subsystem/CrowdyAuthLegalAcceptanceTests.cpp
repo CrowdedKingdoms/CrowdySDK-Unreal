@@ -723,6 +723,227 @@ bool FCrowdyAuthDevStatusNamesNoTokenTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+namespace
+{
+	const TCHAR* const PasswordSignInAnswer =
+		TEXT("{\"data\":{\"login\":{\"token\":\"session-new\",\"gameTokenId\":\"903\",\"user\":{\"userId\":\"9002\"}}}}");
+
+	const TCHAR* const PasswordRefusal = TEXT(
+		"{\"errors\":[{\"message\":\"Wrong email or password.\","
+		"\"extensions\":{\"code\":\"INVALID_CREDENTIALS\"}}],\"data\":null}");
+
+	/** A password sign-in from a signed-out start, answered by Script, with its delegates on the rig's listener. */
+	void SignInWithPassword(FConsentRig& Rig, TArray<TPair<int32, FString>> Script)
+	{
+		Rig.Session->SetGameToken(FString());
+		Rig.Client->SetTestResponseScript(MoveTemp(Script));
+		FOnAuthSuccess OnSuccess;
+		OnSuccess.BindDynamic(Rig.Listener.Get(), &UCrowdyAuthTestListener::HandleFlowSuccess);
+		FOnAuthError OnError;
+		OnError.BindDynamic(Rig.Listener.Get(), &UCrowdyAuthTestListener::HandleFlowError);
+		Rig.Auth->Login(TEXT("a@example.test"), TEXT("hunter2-test"), OnSuccess, OnError);
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthCancelSignInDropsAPasswordSignInTest,
+	"CrowdySDK.Auth.CancelSignInDropsAPasswordSignIn", ConsentTestFlags)
+
+bool FCrowdyAuthCancelSignInDropsAPasswordSignInTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	const FAppIdSettingScope NoDiscovery(0);
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-cancel-password"));
+
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, FString(PasswordSignInAnswer));
+	SignInWithPassword(Rig, MoveTemp(Script));
+	if (!TestTrue(TEXT("the sign-in is pending"), Rig.Auth->IsSignInPending()))
+	{
+		return false;
+	}
+
+	Rig.Auth->CancelSignIn();
+	TestFalse(TEXT("a cancel ends it at once"), Rig.Auth->IsSignInPending());
+	Rig.Drain();
+
+	TestEqual(TEXT("the server's late answer does not sign the player in"), Rig.Listener->FlowSuccesses, 0);
+	TestEqual(TEXT("nor announce a login"), Rig.Listener->Logins, 0);
+	TestFalse(TEXT("the player is not signed in"), Rig.Auth->IsSignedIn());
+	TestTrue(TEXT("the caller hears once that it was cancelled"),
+		Rig.Listener->FlowErrors.Num() == 1 && Rig.Listener->FlowErrors[0] == TEXT("Sign-in cancelled."));
+	TestFalse(TEXT("the late answer's session is not installed"),
+		Rig.Session->GetSessionToken().Equals(TEXT("session-new"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("nor saved"), Rig.Auth->HasSavedSession());
+
+	Rig.Auth->ClearSavedSession();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthCancelSignInKeepsTheSavedSessionTest,
+	"CrowdySDK.Auth.CancelSignInKeepsTheSavedSession", ConsentTestFlags)
+
+bool FCrowdyAuthCancelSignInKeepsTheSavedSessionTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	const FAppIdSettingScope NoDiscovery(0);
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-cancel-keeps"));
+
+	// A first sign-in saves a session, then the game starts again signed out.
+	TArray<TPair<int32, FString>> SignIn;
+	SignIn.Emplace(200, FString(PasswordSignInAnswer));
+	SignInWithPassword(Rig, MoveTemp(SignIn));
+	Rig.Drain();
+	if (!TestTrue(TEXT("the first sign-in saved its session"), Rig.Auth->HasSavedSession()))
+	{
+		return false;
+	}
+	Rig.Session->SetGameToken(FString());
+
+	// The restore's mint is held for the terms, so it stays pending until the player answers or cancels.
+	TArray<TPair<int32, FString>> Held;
+	Held.Emplace(403, FString(ConsentRefusal));
+	Rig.Client->SetTestResponseScript(MoveTemp(Held));
+	FOnAuthError OnError;
+	OnError.BindDynamic(Rig.Listener.Get(), &UCrowdyAuthTestListener::HandleFlowError);
+	Rig.Auth->RestoreSession(FOnAuthSuccess(), OnError);
+	Rig.Drain();
+	if (!TestTrue(TEXT("the restore is held for the terms"), Rig.Auth->IsLegalAcceptancePending())
+		|| !TestTrue(TEXT("and still pending"), Rig.Auth->IsSignInPending()))
+	{
+		return false;
+	}
+
+	Rig.Auth->CancelSignIn();
+
+	TestTrue(TEXT("the saved session is kept"), Rig.Auth->HasSavedSession());
+	TestFalse(TEXT("the hold is released"), Rig.Auth->IsLegalAcceptancePending());
+	TestFalse(TEXT("nothing is pending"), Rig.Auth->IsSignInPending());
+	TestTrue(TEXT("the restore's caller hears it was cancelled"),
+		Rig.Listener->FlowErrors.Num() == 1 && Rig.Listener->FlowErrors[0] == TEXT("Sign-in cancelled."));
+	TestTrue(TEXT("the restore's session stays installed, so a later Logout can end it on the server"),
+		Rig.Session->GetSessionToken().Equals(TEXT("session-new"), ESearchCase::CaseSensitive));
+
+	Rig.Auth->ClearSavedSession();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthCancelSignInForgetsANewSessionTest,
+	"CrowdySDK.Auth.CancelSignInForgetsANewSession", ConsentTestFlags)
+
+bool FCrowdyAuthCancelSignInForgetsANewSessionTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	const FAppIdSettingScope NoDiscovery(0);
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-cancel-forgets"));
+
+	// The server accepts the password, so the new session is saved, then holds the mint for the terms.
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, FString(PasswordSignInAnswer));
+	Script.Emplace(403, FString(ConsentRefusal));
+	SignInWithPassword(Rig, MoveTemp(Script));
+	Rig.Drain();
+	if (!TestTrue(TEXT("the sign-in is held for the terms"), Rig.Auth->IsLegalAcceptancePending())
+		|| !TestTrue(TEXT("with its new session saved"), Rig.Auth->HasSavedSession()))
+	{
+		return false;
+	}
+
+	Rig.Auth->CancelSignIn();
+	Rig.Drain();
+
+	TestFalse(TEXT("the session the player cancelled is not kept for the next launch"), Rig.Auth->HasSavedSession());
+	TestTrue(TEXT("nor held in memory"), Rig.Session->GetSessionToken().IsEmpty());
+	TestTrue(TEXT("the caller hears once that it was cancelled"),
+		Rig.Listener->FlowErrors.Num() == 1 && Rig.Listener->FlowErrors[0] == TEXT("Sign-in cancelled."));
+	TestEqual(TEXT("and no failure event is broadcast, as after a sign-out"), Rig.Listener->LoginFailures.Num(), 0);
+	TestFalse(TEXT("nothing is pending"), Rig.Auth->IsSignInPending());
+
+	Rig.Auth->ClearSavedSession();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthSignInPendingFollowsTheFlowTest,
+	"CrowdySDK.Auth.SignInPendingFollowsTheFlow", ConsentTestFlags)
+
+bool FCrowdyAuthSignInPendingFollowsTheFlowTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	const FAppIdSettingScope NoDiscovery(0);
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-pending-follows"));
+
+	TArray<TPair<int32, FString>> Refused;
+	Refused.Emplace(401, FString(PasswordRefusal));
+	SignInWithPassword(Rig, MoveTemp(Refused));
+	TestTrue(TEXT("a sign-in is pending while it runs"), Rig.Auth->IsSignInPending());
+	Rig.Drain();
+	TestEqual(TEXT("the refused sign-in fails"), Rig.Listener->FlowErrors.Num(), 1);
+	TestFalse(TEXT("and is no longer pending"), Rig.Auth->IsSignInPending());
+
+	TArray<TPair<int32, FString>> SignIn;
+	SignIn.Emplace(200, FString(PasswordSignInAnswer));
+	SignInWithPassword(Rig, MoveTemp(SignIn));
+	Rig.Drain();
+	if (!TestTrue(TEXT("the next sign-in succeeds"), Rig.Auth->IsSignedIn()))
+	{
+		return false;
+	}
+
+	// Losing the app token later must not bring back a sign-in that already finished.
+	Rig.Session->SetGameToken(FString());
+	TestFalse(TEXT("a finished sign-in is not pending"), Rig.Auth->IsSignInPending());
+
+	Rig.Auth->ClearSavedSession();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthCancelSignInLeavesASignedInPlayerTest,
+	"CrowdySDK.Auth.CancelSignInLeavesASignedInPlayer", ConsentTestFlags)
+
+bool FCrowdyAuthCancelSignInLeavesASignedInPlayerTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("the rig starts signed in"), Rig.Auth->IsSignedIn()))
+	{
+		return false;
+	}
+	const FAppIdSettingScope NoDiscovery(0);
+
+	// A second sign-in while signed in, still in flight when the game cancels.
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(401, FString(PasswordRefusal));
+	Rig.Client->SetTestResponseScript(MoveTemp(Script));
+	Rig.Auth->Login(TEXT("a@example.test"), TEXT("hunter2-test"), FOnAuthSuccess(), FOnAuthError());
+	TestFalse(TEXT("a signed-in player has no sign-in pending"), Rig.Auth->IsSignInPending());
+
+	Rig.Auth->CancelSignIn();
+
+	TestTrue(TEXT("still signed in"), Rig.Auth->IsSignedIn());
+	TestTrue(TEXT("with the session token in place"),
+		Rig.Session->GetSessionToken().Equals(TEXT("session-abc"), ESearchCase::CaseSensitive));
+	Rig.Drain();
+	return true;
+}
 #endif
 
 #endif // WITH_DEV_AUTOMATION_TESTS

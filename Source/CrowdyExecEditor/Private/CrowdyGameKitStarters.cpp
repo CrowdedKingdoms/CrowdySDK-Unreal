@@ -473,6 +473,129 @@ namespace CrowdyGameKitStartersDetail
 		return Number >= Limit.Min && Number <= Limit.Max;
 	}
 
+	/** A Config key whose value holds ids the SDK keeps as map keys: the member keys of an object, or the text (or each text of a list) under it. */
+	struct FIdSlot
+	{
+		const TCHAR* Key;
+		const TCHAR* Kind;
+		bool bMemberKeys;
+	};
+
+	const FIdSlot IdSlots[] = {
+		{TEXT("items"), TEXT("item"), true},
+		{TEXT("inputs"), TEXT("item"), true},
+		{TEXT("outputs"), TEXT("item"), true},
+		{TEXT("capacity"), TEXT("item"), true},
+		{TEXT("item"), TEXT("item"), false},
+		{TEXT("book_items"), TEXT("item"), false},
+		{TEXT("currency"), TEXT("currency"), true},
+		{TEXT("currencies"), TEXT("currency"), false},
+		{TEXT("factions"), TEXT("faction"), false},
+		{TEXT("client_counters"), TEXT("counter"), false},
+		{TEXT("counter"), TEXT("counter"), false},
+		{TEXT("pity_within"), TEXT("pity group"), true},
+		{TEXT("pity_group"), TEXT("pity group"), false},
+	};
+
+	/** Walks a Config reading keys with case, as the server code does (a JSON object would merge keys that differ only by case), and notes the first two ids of one kind that differ only by case. */
+	struct FIdCaseScan
+	{
+		TJsonReader<>& Reader;
+		TMap<FString, FString> Seen;
+		FString Problem;
+
+		explicit FIdCaseScan(TJsonReader<>& InReader)
+			: Reader(InReader)
+		{
+		}
+
+		static const FIdSlot* FindSlot(const FString& Key)
+		{
+			return Algo::FindByPredicate(IdSlots, [&Key](const FIdSlot& Slot) { return Key.Equals(Slot.Key, ESearchCase::CaseSensitive); });
+		}
+
+		void Add(const FIdSlot* Slot, const FString& Id)
+		{
+			if (!Slot || !Problem.IsEmpty())
+			{
+				return;
+			}
+			const FString* First = Seen.Find(FString(Slot->Kind) + TEXT(":") + Id.ToLower());
+			if (!First)
+			{
+				Seen.Add(FString(Slot->Kind) + TEXT(":") + Id.ToLower(), Id);
+				return;
+			}
+			if (!First->Equals(Id, ESearchCase::CaseSensitive))
+			{
+				Problem = FString::Printf(TEXT("two %s ids that differ only by case (\"%s\" and \"%s\"), which the SDK reads as one"), Slot->Kind, **First, *Id);
+			}
+		}
+
+		void ReadValue(EJsonNotation Notation, const FString& Key)
+		{
+			const FIdSlot* Slot = FindSlot(Key);
+			if (Notation == EJsonNotation::String)
+			{
+				Add(Slot, Reader.GetValueAsString());
+			}
+			else if (Notation == EJsonNotation::ObjectStart)
+			{
+				ReadObject(Key, Slot && Slot->bMemberKeys, false);
+			}
+			else if (Notation == EJsonNotation::ArrayStart)
+			{
+				ReadArray(Key);
+			}
+		}
+
+		void ReadArray(const FString& Key)
+		{
+			EJsonNotation Notation;
+			while (Reader.ReadNext(Notation) && Notation != EJsonNotation::ArrayEnd && Notation != EJsonNotation::Error)
+			{
+				if (Notation == EJsonNotation::ObjectStart)
+				{
+					ReadObject(Key, false, Key.Equals(TEXT("items"), ESearchCase::CaseSensitive));
+					continue;
+				}
+				ReadValue(Notation, Key);
+			}
+		}
+
+		void ReadObject(const FString& Key, bool bMemberKeys, bool bCatalogEntry)
+		{
+			const FIdSlot* Slot = FindSlot(Key);
+			EJsonNotation Notation;
+			while (Reader.ReadNext(Notation) && Notation != EJsonNotation::ObjectEnd && Notation != EJsonNotation::Error)
+			{
+				const FString Member = Reader.GetIdentifier();
+				if (bMemberKeys)
+				{
+					Add(Slot, Member);
+				}
+				if (bCatalogEntry && Notation == EJsonNotation::String && Member.Equals(TEXT("id"), ESearchCase::CaseSensitive))
+				{
+					Add(Slot, Reader.GetValueAsString());
+				}
+				ReadValue(Notation, Member);
+			}
+		}
+	};
+
+	FString FindIdCaseProblem(const FString& Config)
+	{
+		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Config);
+		EJsonNotation Notation;
+		if (!Reader->ReadNext(Notation) || Notation != EJsonNotation::ObjectStart)
+		{
+			return FString();
+		}
+		FIdCaseScan Scan(*Reader);
+		Scan.ReadObject(FString(), false, false);
+		return Scan.Problem;
+	}
+
 	bool CopyCrate(const CrowdyGameKitStarters::FStarter& Starter, const FString& Directory, FString& OutError)
 	{
 		const FString Source = CrowdyGameKitStarters::GetCrateSource(Starter);
@@ -537,7 +660,7 @@ TConstArrayView<CrowdyGameKitStarters::FStarter> CrowdyGameKitStarters::GetStart
 			TEXT("world"), {TEXT("player")}},
 		{TEXT("npcs"), TEXT("CSO_Kit_Npcs"),
 			TEXT("An area's mobs, NPCs and pets, one area per Instance Id (its x,y on a grid of 4 by 4 chunks, as This Actor's Area gives it): mobs that chase and take players' hits, NPCs that walk and talk, and players' pets. They are shown to players near them as actors at height 0, drawn as the classes in Kit Actors."),
-			TEXT("world"), {TEXT("world")}},
+			TEXT("world"), {TEXT("world")}, {}, {}, false, {TEXT("state")}},
 		{TEXT("minigame"), TEXT("CSO_Kit_Minigame"),
 			TEXT("A duel, one per Instance Id (a table): two players each throw a hand that stays hidden until both are in or the round's time runs out, and the first to win a majority of the rounds wins. Rock, paper, scissors is the game; replace its hands and rule with yours."),
 			TEXT("world")},
@@ -605,7 +728,7 @@ FString CrowdyGameKitStarters::FindConfigProblem(const FString& TypeName, const 
 			return FString::Printf(TEXT("\"%s\" set to something other than a whole number from %lld to %lld"), Limit.Key, Limit.Min, Limit.Max);
 		}
 	}
-	return FString();
+	return FindIdCaseProblem(Config);
 }
 
 bool CrowdyGameKitStarters::HasConfigSecret(const FString& Config)
@@ -620,6 +743,12 @@ bool CrowdyGameKitStarters::IsDeveloperOnly(const UCrowdyServerObjectDefinition&
 {
 	const FStarter* Starter = Definition.IsGameKitStarter() ? FindStarter(Definition.TypeName) : nullptr;
 	return Starter && Starter->DeveloperMethods.ContainsByPredicate([&Function](const TCHAR* Method) { return Function.ServerName.Equals(Method, ESearchCase::CaseSensitive); });
+}
+
+bool CrowdyGameKitStarters::IsPlayerRead(const UCrowdyServerObjectDefinition& Definition, const FCrowdyServerFunction& Function)
+{
+	const FStarter* Starter = Definition.IsGameKitStarter() ? FindStarter(Definition.TypeName) : nullptr;
+	return Starter && Starter->PlayerReads.ContainsByPredicate([&Function](const TCHAR* Method) { return Function.GetMethodName().Equals(Method, ESearchCase::CaseSensitive); });
 }
 
 UCrowdyServerObjectDefinition* CrowdyGameKitStarters::MakeDefinition(const FStarter& Starter, UObject* Outer, FName Name, EObjectFlags Flags)

@@ -59,6 +59,12 @@ void UCrowdyK2Node_GetServerState::ExpandNode(FKismetCompilerContext& CompilerCo
 	}
 	TArray<FCrowdyServerValuePin> Variables;
 	GatherVisibleVariables(Variables);
+	if (Variables.IsEmpty())
+	{
+		CompilerContext.MessageLog.Error(*FText::Format(LOCTEXT("NoStateValues", "@@: {0} has no variables visible to players, so there is nothing to get."), GetAssetName()).ToString(), this);
+		BreakAllNodeLinks();
+		return;
+	}
 	bool bAllPins = true;
 	for (const FCrowdyServerValuePin& Variable : Variables)
 	{

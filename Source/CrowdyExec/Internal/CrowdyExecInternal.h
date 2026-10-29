@@ -294,9 +294,13 @@ namespace CrowdyExec
 	/** Reads a Game Kit message's v, epoch, seq and kind, skipping the hub's data; a message of another version is refused. */
 	bool ReadKitHeader(TConstArrayView<uint8> Bytes, FCrowdyExecKitHeader& OutHeader, FString& OutError);
 
-	/** Decodes a Game Kit snapshot into State, a whole State: what it leaves out takes the definition's values. On failure State is untouched. */
+	/** Decode, also marking in OutWritten, when not null, each of Struct's fields by index that Bytes gave a value. */
+	bool DecodeWritten(const UCrowdyServerObjectDefinition& Definition, const UScriptStruct& Struct, TConstArrayView<uint8> Bytes,
+		void* Value, TBitArray<>* OutWritten, FString& OutError, const void* Defaults = nullptr);
+
+	/** Decodes a Game Kit snapshot into State, a whole State: what it leaves out takes the definition's values. On failure State is untouched. OutCarried marks the State fields it carried. */
 	bool DecodeKitSnapshot(const UCrowdyServerObjectDefinition& Definition, TConstArrayView<uint8> Bytes, void* State,
-		FCrowdyExecStateHeader& OutHeader, FString& OutError);
+		FCrowdyExecStateHeader& OutHeader, FString& OutError, TBitArray<>* OutCarried = nullptr);
 
 	/**
 	 * Reads a Game Kit collection message: a snapshot's members, leaving out those marked removed, or a delta's one member.

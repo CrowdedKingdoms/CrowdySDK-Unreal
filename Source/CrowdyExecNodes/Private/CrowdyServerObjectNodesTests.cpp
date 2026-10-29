@@ -650,7 +650,38 @@ bool FCrowdyServerObjectNodesLibraryStateTest::RunTest(const FString& Parameters
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMenuTest, "CrowdySDK.Editor.ServerObjectNodes.MenuPerAsset", CrowdyServerObjectNodesTests::Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesEmptyStateTest, "CrowdySDK.Editor.ServerObjectNodes.GetStateOfAnEmptyStateIsNotOfferedAndFailsCompile", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesEmptyStateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeDefinition(TEXT("DA_EmptyState"), GetTransientPackage());
+	Definition->TypeName = TEXT("empty_state");
+	FCrowdyServerFunction& Echo = Definition->Functions.AddDefaulted_GetRef();
+	Echo.Name = TEXT("Echo");
+
+	TArray<FCrowdyServerObjectMenuEntry> Entries;
+	UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(Definition, Entries);
+	const bool bOffersState = Entries.ContainsByPredicate([](const FCrowdyServerObjectMenuEntry& Entry) { return Entry.NodeClass == UCrowdyK2Node_GetServerState::StaticClass(); });
+	TestFalse(TEXT("Get Server State is not offered for a State with no variables"), bOffersState);
+
+	FCompileRig Rig = MakeActorBlueprint();
+	UEdGraphNode* State = CrowdyExecNodesSpawn::SpawnServerState(Rig.Graph, Definition, FVector2D::ZeroVector);
+	if (!TestNotNull(TEXT("a node placed anyway is still created"), State))
+	{
+		return false;
+	}
+	UK2Node_CallFunction* Print = AddPrint(Rig.Graph);
+	Link(Rig.BeginPlay, UEdGraphSchema_K2::PN_Then, Print, UEdGraphSchema_K2::PN_Execute);
+	Link(State, CrowdyServerObjectNodePins::HasValues, Print, TEXT("bPrintToScreen"));
+
+	int32 ErrorCount = 0;
+	const TArray<FString> Errors = Compile(Rig.Blueprint, ErrorCount);
+	const FString Expected = FString::Printf(TEXT("%s has no variables visible to players"), *Definition->GetName());
+	TestTrue(TEXT("the placed node is a compile error that says why"), AnyContains(Errors, *Expected));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesMenuTest,"CrowdySDK.Editor.ServerObjectNodes.MenuPerAsset", CrowdyServerObjectNodesTests::Flags)
 bool FCrowdyServerObjectNodesMenuTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyServerObjectNodesTests;

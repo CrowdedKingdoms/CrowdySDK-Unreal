@@ -60,6 +60,9 @@ public:
 	/** Unbind the route, cancel timers, clear the per-flow state. Keeps the bound port for reuse. */
 	void Stop();
 
+	/** Stop, then tell an armed flow why through its error callback. Does nothing when no flow is armed. */
+	void Cancel(const FString& Message);
+
 	bool IsActive() const { return bRouteBound; }
 
 private:
