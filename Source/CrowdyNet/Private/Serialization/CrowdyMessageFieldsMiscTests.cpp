@@ -180,29 +180,28 @@ bool FCrowdyMessageFieldsVoxelNotificationTest::RunTest(const FString& Parameter
 	return true;
 }
 
-// FClientAudioNotification: metadata, SampleRate, NumChannels, FrameCount, then FrameCount frames of
-// [FrameSize][AudioData]. The frame loop has two distinct failure shapes worth pinning: a short read on
-// a frame's own FrameSize field breaks the loop and still returns true with fewer frames than declared,
-// while a FrameSize that overruns the remaining bytes rejects the whole message.
+// FClientAudioNotification: metadata, then every remaining body octet as one opaque payload, then the
+// trailer. The decoder refuses an empty payload and one above the datagram ceiling.
 IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FCrowdyMessageFieldsClientAudioNotificationTest,
 	FCrowdyMessageFieldsMiscNoisyTest, "CrowdySDK.Wire.FieldsFClientAudioNotification",
 	CrowdyMessageFieldsMiscTestFlags)
 bool FCrowdyMessageFieldsClientAudioNotificationTest::RunTest(const FString& Parameters)
 {
 	const FString Uuid = TEXT("11112222333344445555666677778888");
+	const TArray<uint8> AudioPayload = { 1, 1, 7, 0, 0xc0, 3, 0, 0, 20, 1, 0xd1, 0xd2, 0xd3 };
 
-	TArray<uint8> Full = BuildCrowdyMetadataHeaderBytes(777, 10, 20, -30,
-		ECrowdyReplicationDistance::Four_Chunks, ECrowdyDecayRate::No_Decay, false, Uuid);
-	Full.Append(USerializationFunctionLibrary::SerializeValue<int32>(48000)); // SampleRate
-	Full.Append(USerializationFunctionLibrary::SerializeValue<int32>(2));     // NumChannels
-	Full.Append(USerializationFunctionLibrary::SerializeValue<int32>(2));     // FrameCount
-	Full.Append(USerializationFunctionLibrary::SerializeValue<int32>(3));     // Frame 0 FrameSize
-	Full.Append(TArray<uint8>({ 1, 2, 3 }));                                  // Frame 0 AudioData
-	Full.Append(USerializationFunctionLibrary::SerializeValue<int32>(2));     // Frame 1 FrameSize
-	Full.Append(TArray<uint8>({ 9, 8 }));                                     // Frame 1 AudioData
-	AppendCrowdyTrailerBytes(Full, 999, 5);
+	auto BuildFrame = [&Uuid](const TArray<uint8>& Body)
+	{
+		TArray<uint8> Data = BuildCrowdyMetadataHeaderBytes(777, 10, 20, -30,
+			ECrowdyReplicationDistance::Four_Chunks, ECrowdyDecayRate::No_Decay, false, Uuid);
+		Data.Append(Body);
+		AppendCrowdyTrailerBytes(Data, 999, 5);
+		return Data;
+	};
 
-	// Positive acceptance: every field the body sets, decoded from a well-formed 101-byte frame.
+	const TArray<uint8> Full = BuildFrame(AudioPayload);
+
+	// Positive acceptance: every field the body sets, decoded from a well-formed 89-byte frame.
 	{
 		FClientAudioNotification Message;
 		if (!TestTrue(TEXT("a well-formed audio notification decodes"),
@@ -224,27 +223,8 @@ bool FCrowdyMessageFieldsClientAudioNotificationTest::RunTest(const FString& Par
 		TestEqual(TEXT("Timestamp"), Message.Timestamp, static_cast<int64>(999));
 		TestEqual(TEXT("SequenceNumber"), static_cast<int32>(Message.SequenceNumber), 5);
 
-		TestEqual(TEXT("SampleRate"), Message.SampleRate, 48000);
-		TestEqual(TEXT("NumChannels"), Message.NumChannels, 2);
-		if (TestEqual(TEXT("Frames.Num()"), Message.Frames.Num(), 2))
-		{
-			TestEqual(TEXT("Frame 0 FrameSize"), Message.Frames[0].FrameSize, 3);
-			TestEqual(TEXT("Frame 0 AudioData length"), Message.Frames[0].AudioData.Num(), 3);
-			if (Message.Frames[0].AudioData.Num() == 3)
-			{
-				const uint8 Expected0[] = { 1, 2, 3 };
-				TestTrue(TEXT("Frame 0 AudioData content"),
-					FMemory::Memcmp(Message.Frames[0].AudioData.GetData(), Expected0, 3) == 0);
-			}
-			TestEqual(TEXT("Frame 1 FrameSize"), Message.Frames[1].FrameSize, 2);
-			TestEqual(TEXT("Frame 1 AudioData length"), Message.Frames[1].AudioData.Num(), 2);
-			if (Message.Frames[1].AudioData.Num() == 2)
-			{
-				const uint8 Expected1[] = { 9, 8 };
-				TestTrue(TEXT("Frame 1 AudioData content"),
-					FMemory::Memcmp(Message.Frames[1].AudioData.GetData(), Expected1, 2) == 0);
-			}
-		}
+		TestTrue(TEXT("the whole body after the metadata is the payload, octet for octet"),
+			Message.Payload == AudioPayload);
 	}
 
 	// One byte short of the metadata minimum.
@@ -255,47 +235,46 @@ bool FCrowdyMessageFieldsClientAudioNotificationTest::RunTest(const FString& Par
 			CrowdyWireParity::DecodeStrippedPayload(Message, Prefix));
 	}
 
-	// The body is what the header and the trailer leave behind, so a prefix of the whole message loses
-	// nine bytes to the trailer as well: 87 bytes leaves a body of 11, one short of the 12 that
-	// SampleRate, NumChannels and FrameCount need between them.
+	// A frame with the metadata and the trailer and nothing between them carries no audio.
 	{
-		const TArray<uint8> Prefix(Full.GetData(), 87);
 		FClientAudioNotification Message;
-		TestFalse(TEXT("a body one octet short of the FrameCount field is rejected"),
-			CrowdyWireParity::DecodeStrippedPayload(Message, Prefix));
+		Message.Payload = AudioPayload;
+		TestFalse(TEXT("an empty payload is refused"),
+			CrowdyWireParity::DecodeStrippedPayload(Message, BuildFrame(TArray<uint8>())));
+		TestEqual(TEXT("and a refused decode leaves no payload behind"), Message.Payload.Num(), 0);
 	}
 
-	// FrameCount (=2) is readable at exactly a 12-octet body, but no bytes remain for any frame's own
-	// FrameSize field. The per-frame loop's floor check breaks rather than fails, so this is a positive
-	// decode with an empty Frames array despite FrameCount declaring 2 - a real quirk of today's code,
-	// pinned here rather than fixed.
+	// A body of one octet is the shortest payload there is.
 	{
-		const TArray<uint8> Prefix(Full.GetData(), 88);
 		FClientAudioNotification Message;
-		if (TestTrue(TEXT("a body with no room for a frame still decodes"),
-			CrowdyWireParity::DecodeStrippedPayload(Message, Prefix)))
+		if (TestTrue(TEXT("a one octet payload is accepted"),
+			CrowdyWireParity::DecodeStrippedPayload(Message, BuildFrame(TArray<uint8>({ 0x5a })))))
 		{
-			TestEqual(TEXT("Frames.Num() when no frame fits"), Message.Frames.Num(), 0);
+			TestEqual(TEXT("and it is that octet"), Message.Payload.Num(), 1);
 		}
 	}
 
-	// A frame whose declared FrameSize overruns the bytes actually left in the buffer rejects the whole
-	// message: FrameCount=1, FrameSize=10, but only 3 bytes of audio data follow.
+	// The ceiling is the octets a signed datagram carries after its header, and not one more.
 	{
-		TArray<uint8> Oversized = BuildCrowdyMetadataHeaderBytes(1, 1, 1, 1,
-			ECrowdyReplicationDistance::One_Chunk, ECrowdyDecayRate::No_Decay, false, Uuid);
-		Oversized.Append(USerializationFunctionLibrary::SerializeValue<int32>(8000));
-		Oversized.Append(USerializationFunctionLibrary::SerializeValue<int32>(1));
-		Oversized.Append(USerializationFunctionLibrary::SerializeValue<int32>(1));  // FrameCount
-		Oversized.Append(USerializationFunctionLibrary::SerializeValue<int32>(10)); // FrameSize, overruns
-		Oversized.Append(TArray<uint8>({ 1, 2, 3 }));                               // only 3 bytes follow
-		// The trailer has to be here or the body ends nine octets early and the decode fails while reading
-		// FrameCount, which would leave the frame-size bound this vector exists for untouched.
-		AppendCrowdyTrailerBytes(Oversized, 1, 1);
+		TArray<uint8> AtCeiling;
+		AtCeiling.SetNumUninitialized(CrowdyAudioPacket::MaxPayloadBytes);
+		for (int32 Index = 0; Index < AtCeiling.Num(); ++Index)
+		{
+			AtCeiling[Index] = static_cast<uint8>(Index);
+		}
 
-		FClientAudioNotification Message;
-		TestFalse(TEXT("a FrameSize that overruns the remaining bytes is rejected"),
-			CrowdyWireParity::DecodeStrippedPayload(Message, Oversized));
+		FClientAudioNotification Accepted;
+		if (TestTrue(TEXT("a payload at the datagram ceiling is accepted"),
+			CrowdyWireParity::DecodeStrippedPayload(Accepted, BuildFrame(AtCeiling))))
+		{
+			TestTrue(TEXT("and it arrives whole"), Accepted.Payload == AtCeiling);
+		}
+
+		AtCeiling.Add(0);
+		FClientAudioNotification Refused;
+		TestFalse(TEXT("a payload one octet over the datagram ceiling is refused"),
+			CrowdyWireParity::DecodeStrippedPayload(Refused, BuildFrame(AtCeiling)));
+		TestEqual(TEXT("and none of it is kept"), Refused.Payload.Num(), 0);
 	}
 
 	return true;

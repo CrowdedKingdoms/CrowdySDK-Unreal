@@ -21,31 +21,13 @@ struct FClientAudioPacketMessageRequest : FClientAudioBody
 
 	virtual TArray<uint8> Serialize() const override
 	{
-		TArray<uint8> Data = SerializeMetadata();
-		AppendBody(Data);
+		TArray<uint8> Data = SerializeMetadata(Payload.Num());
+		Data.Append(Payload);
 		return Data;
 	}
 
 	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
 		return false;
-	}
-
-	int32 GetAccumulatedMessageSize()
-	{
-		int32 Size = 0;
-
-		Size += sizeof(int64);           // MapID
-		Size += sizeof(int64) * 3;       // ChunkCoords
-		Size += 32;                      // actor id
-		Size += sizeof(int32);           // SampleRate
-		Size += sizeof(int32);           // NumChannels
-		Size += sizeof(int32);           // FrameCount
-		for (const FCrowdyAudioFrame& Frame : Frames)
-		{
-			Size += sizeof(int32);        // FrameSize field
-			Size += Frame.AudioData.Num();// Frame bytes
-		}
-		return Size;
 	}
 };

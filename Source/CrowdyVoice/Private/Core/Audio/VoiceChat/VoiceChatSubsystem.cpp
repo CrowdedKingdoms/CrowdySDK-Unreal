@@ -1,61 +1,135 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+﻿#include "Core/Audio/VoiceChat/VoiceChatSubsystem.h"
 
-#include "Core/Audio/VoiceChat/VoiceChatSubsystem.h"
+#include "Components/AudioComponent.h"
+#include "Core/Audio/Platform/CrowdyVoiceDeviceMonitor.h"
+#include "Core/Audio/VoiceChat/CrowdyVoiceMic.h"
+#include "Core/Audio/VoiceChat/CrowdyVoicePlayback.h"
+#include "Core/Audio/VoiceChat/CrowdyVoiceSettings.h"
+#include "Core/CrowdySDKBridgeSubsystem.h"
+#include "CrowdyCppVoice.h"
 #include "CrowdyVoiceLog.h"
-#include "FCircularBuffer.h"
-#include "Core/Audio/VoiceChat/Structures/FAudioChatTrack.h"
-#include "AudioCapture.h"
-#include "Core/Audio/Platform/AWinAudioDeviceMonitor.h"
-#include "Core/Audio/VoiceChat/Service/FVoiceChatService.h"
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
-#include "GameFramework/PlayerController.h"
-#include "GameFramework/Pawn.h"
-#include "Async/Async.h"
-#include "TimerManager.h"
+#include "HAL/PlatformTime.h"
+#include "Internal/FCrowdyServiceRegistry.h"
+#include "Kismet/GameplayStatics.h"
+#include "Messages/Actor/FActorLeftNotification.h"
+#include "Messages/Communication/FClientAudioNotification.h"
+#include "Messages/Communication/FClientAudioPacketMessageRequest.h"
+#include "Sound/SoundWaveProcedural.h"
+#include "Subsystem/CrowdyGameSession.h"
+
+namespace
+{
+	// Coalesces the burst of notifications one device change produces, and gives the new device time to settle.
+	constexpr int64 CrowdyVoiceRestartDelayMs = 500;
+
+	int64 CrowdyVoiceNowMs()
+	{
+		return static_cast<int64>(FPlatformTime::Seconds() * 1000.0);
+	}
+}
+
+/** The engine-free voice machinery of one world, plus the audio components behind it. */
+struct FCrowdyVoiceRuntime final : ICrowdyVoiceSpeakerOutput, ICrowdyVoiceFrameSink
+{
+	explicit FCrowdyVoiceRuntime(UVoiceChatSubsystem& InOwner)
+		: Owner(InOwner)
+		, Mic(MakeCrowdyVoiceEngineMicDevice(), *this)
+		, Playback(*this)
+	{
+	}
+
+	virtual void SendFrame(const TConstArrayView<int16> Frame, const bool bLast) override
+	{
+		Owner.SendFrame(Frame, bLast);
+	}
+
+	virtual void SkipFrames(const int32 Count) override
+	{
+		Encoder.Skip(Count);
+		Owner.Stats.SilentFramesSkipped += Count;
+	}
+
+	virtual void OpenSpeaker(const FString& SpeakerKey, const int32 SampleRate) override
+	{
+		Owner.OpenSpeakerStream(SpeakerKey, SampleRate);
+	}
+
+	virtual void PlaySpeaker(const FString& SpeakerKey, const TConstArrayView<int16> Pcm) override
+	{
+		Owner.QueueSpeakerAudio(SpeakerKey, Pcm);
+	}
+
+	virtual void CloseSpeaker(const FString& SpeakerKey) override
+	{
+		Owner.CloseSpeakerStream(SpeakerKey);
+	}
+
+	// Collected and broadcast once the update is over, so a listener never runs mid-update.
+	virtual void SpeakerTalking(const FString& SpeakerKey, const bool bTalking) override
+	{
+		TalkingChanges.Emplace(SpeakerKey, bTalking);
+	}
+
+	UVoiceChatSubsystem& Owner;
+	FCrowdyVoiceMic Mic;
+	FCrowdyVoicePlayback Playback;
+	FCrowdyCppVoiceEncoder Encoder;
+	FCrowdyVoiceDeviceMonitor Monitor;
+	FClientAudioPacketMessageRequest OutPacket;
+	TArray<TPair<FString, bool>> TalkingChanges;
+};
+
+bool UVoiceChatSubsystem::ShouldCreateSubsystem(UObject* Outer) const
+{
+	if (!Super::ShouldCreateSubsystem(Outer))
+	{
+		return false;
+	}
+
+	const UWorld* World = Outer ? Outer->GetWorld() : nullptr;
+	return World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE);
+}
 
 void UVoiceChatSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	
-	TargetNumChannels = 1;
-	TargetSampleRate = 48000;
-	AUDIO_CHUNK_SIZE = 960;
-	
-	CaptureBuffer = new FCircularBuffer(96000, 1, 2.0f);
-	AudioResampler = nullptr;
-	LastDeviceSampleRate = 0;
-	
+
+	// Null in the transient world the engine creates before any game instance exists.
+	const UWorld* World = GetWorld();
+	if (!World || !World->GetGameInstance())
+	{
+		UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Voice chat is inactive in a world with no game instance."));
+		return;
+	}
+
+	Runtime = MakePimpl<FCrowdyVoiceRuntime>(*this);
+	ConnectToSession();
 }
 
 void UVoiceChatSubsystem::Deinitialize()
 {
-	StopVoiceChat();
-	
-	if (CaptureBuffer)
+	AudioSubscription.Release();
+	ActorLeftSubscription.Release();
+
+	if (UCrowdyGameSession* GameSession = Session.Get())
 	{
-		delete CaptureBuffer;
-		CaptureBuffer = nullptr;
+		GameSession->OnOwnerUUIDUpdated.RemoveAll(this);
 	}
-	
+
+	if (Runtime)
 	{
-		FReadScopeLock Lock(StreamLock);
-		for (auto& StreamPair : SoundStreamMap)
-		{
-			FAudioChatTrack& AudioTrack = StreamPair.Value;
-			if (AudioTrack.PlaybackBuffer)
-			{
-				delete AudioTrack.PlaybackBuffer;
-				AudioTrack.PlaybackBuffer = nullptr;
-			}
-		}
+		Runtime->Mic.Stop();
+		Runtime->Playback.ForgetAll();
+		BroadcastChanges();
 	}
-	
-	if (AudioResampler)
-	{
-		src_delete(AudioResampler);
-		AudioResampler = nullptr;
-	}
-	
+
+	SpeakerStreams.Empty();
+	Runtime.Reset();
+	OnMicStateChanged.Clear();
+	OnSpeakerTalking.Clear();
+
 	Super::Deinitialize();
 }
 
@@ -64,582 +138,293 @@ TStatId UVoiceChatSubsystem::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(UVoiceChatSubsystem, STATGROUP_Tickables);
 }
 
+void UVoiceChatSubsystem::Tick(const float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+	if (!Runtime)
+	{
+		return;
+	}
+
+	if (!Session.IsValid() || !AudioSubscription.IsValid())
+	{
+		ConnectToSession();
+	}
+
+	const int64 NowMs = CrowdyVoiceNowMs();
+	if (Runtime->Monitor.ConsumeCaptureDeviceChange() && Runtime->Mic.GetState() != ECrowdyVoiceMicState::Off)
+	{
+		RestartAtMs = NowMs + CrowdyVoiceRestartDelayMs;
+	}
+
+	if (RestartAtMs != 0 && NowMs >= RestartAtMs)
+	{
+		RestartAtMs = 0;
+		Runtime->Mic.Restart(NowMs);
+	}
+
+	if (!Runtime->Monitor.IsWatching())
+	{
+		Runtime->Mic.RetryIfNoDevice(NowMs);
+	}
+
+	Runtime->Mic.Pump(NowMs);
+	Runtime->Playback.Update(NowMs, StreamTimeoutMs);
+
+	const FCrowdyCppVoiceReceiver& Receiver = Runtime->Playback.GetReceiver();
+	Stats.FramesConcealed = Receiver.GetConcealedFrames();
+	Stats.PacketsMalformed = Receiver.GetMalformedPackets();
+	Stats.Speakers = Runtime->Playback.NumSpeakers();
+	BroadcastChanges();
+}
+
 void UVoiceChatSubsystem::StartVoiceChat()
 {
-	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Starting Voice Chat"));
-	InitializeAudioCapture();
-	StartVoiceCapture();
-	bVoiceChatIsRunning = true;
+	if (!Runtime)
+	{
+		UE_LOG(LogCrowdyVoice, Warning, TEXT("Voice chat is not available in this world, so the microphone stays closed."));
+		return;
+	}
+
+	if (!Runtime->Encoder.IsValid())
+	{
+		Runtime->Mic.Fail(TEXT("Voice chat cannot encode audio on this platform, so the microphone stays closed."));
+		BroadcastChanges();
+		return;
+	}
+
+	Runtime->Mic.Start(CrowdyVoiceNowMs());
+	BroadcastChanges();
 }
 
 void UVoiceChatSubsystem::StopVoiceChat()
 {
-	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Stopping voice chat"));
-	StopVoiceCapture();
-	bVoiceChatIsRunning = false;
+	if (!Runtime)
+	{
+		return;
+	}
+
+	RestartAtMs = 0;
+	Runtime->Mic.Stop();
+	BroadcastChanges();
 }
 
 void UVoiceChatSubsystem::PlayVoiceChat()
 {
-	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Playing Voice chat"));
-	
-	bIsProcessingIncomingAudio = true;
-	
-	TickPlayback();
+	if (Runtime)
+	{
+		Runtime->Playback.SetPlaying(true);
+	}
 }
 
 void UVoiceChatSubsystem::MuteVoiceChat()
 {
-	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Muting voice chat"));
-	//OnAudioDataReceived.Clear();
-	bIsProcessingIncomingAudio = false;
-	
-	StopTicking();
+	if (Runtime)
+	{
+		Runtime->Playback.SetPlaying(false);
+	}
 }
 
 void UVoiceChatSubsystem::SetStreamTimeoutThreshold(const float InSeconds)
 {
-	StreamTimeoutThreshold = InSeconds;
+	const float Seconds = FCrowdyVoiceSettings::ClampStreamTimeout(InSeconds);
+	UE_CLOG(Seconds != InSeconds, LogCrowdyVoice, Warning,
+		TEXT("Voice chat stream timeout %.2f s is outside %.1f to %.0f s; using %.2f s."),
+		InSeconds, FCrowdyVoiceSettings::MinStreamTimeoutSeconds, FCrowdyVoiceSettings::MaxStreamTimeoutSeconds, Seconds);
+	StreamTimeoutMs = static_cast<int64>(Seconds * 1000.0f);
 }
 
-void UVoiceChatSubsystem::SetVoiceChatService(FVoiceChatService* InVoiceChatService)
+void UVoiceChatSubsystem::SetOwnerEcho(const bool bEnable)
 {
-	VoiceChatService = InVoiceChatService;
+	bOwnerEcho = bEnable;
 }
 
-void UVoiceChatSubsystem::Tick(float DeltaTime)
+ECrowdyVoiceMicState UVoiceChatSubsystem::GetMicState() const
 {
-	Super::Tick(DeltaTime);
+	return Runtime ? Runtime->Mic.GetState() : ECrowdyVoiceMicState::Off;
 }
 
-void UVoiceChatSubsystem::TickPlayback()
+bool UVoiceChatSubsystem::IsPlaying() const
 {
-	if (bIsTicking)
+	return Runtime && Runtime->Playback.IsPlaying();
+}
+
+void UVoiceChatSubsystem::ConnectToSession()
+{
+	const UWorld* World = GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	if (!GameInstance)
 	{
 		return;
 	}
 
-	bIsTicking = true;
-	
-	UE::Tasks::Launch(UE_SOURCE_LOCATION, [this]()
+	// Read once as well as subscribed to, because the id is normally settled before this world exists.
+	UCrowdyGameSession* GameSession = GameInstance->GetSubsystem<UCrowdyGameSession>();
+	if (GameSession && !Session.IsValid())
 	{
-		double LastTime = FPlatformTime::Seconds();
-		double LocalAccumulatedTime = 0.0;
-		constexpr double LocalTickInterval = 0.02; // ~60 FPS equivalent, adjust as needed
-		
-		while (bIsTicking)
-		{
-			bool bProcessedWork = false;
-			
-			const double CurrentTime = FPlatformTime::Seconds();
-			const double DeltaTime = CurrentTime - LastTime;
-			LastTime = CurrentTime;
-			
-			LocalAccumulatedTime += DeltaTime;
-			
-			if (LocalAccumulatedTime >= LocalTickInterval)
-			{
-				// Process audio playback
-				if (bIsProcessingIncomingAudio)
-				{
-					ManagePlaybackBuffer();
-					bProcessedWork = true;
-				}
-				
-				// Check for timed-out streams
-				CheckStreamTimeouts();
-				bProcessedWork = true;
-				
-				LocalAccumulatedTime -= LocalTickInterval;
-			}
-			
-			// Only sleep if no work was processed
-			if (!bProcessedWork)
-			{
-				FPlatformProcess::Sleep(0.001f); // 1ms
-			}
-		}
-	});
-}
-
-void UVoiceChatSubsystem::StopTicking()
-{
-	bIsTicking = false;
-}
-
-void UVoiceChatSubsystem::HandleIncomingAudio(TArray<float>&& IncomingAudioData, int32 SampleRate,
-                                              int32 NumChannels, FGuid PlayerID)
-{
-	
-	
-		bool bDoesStreamExist;
-		
-		{
-			FReadScopeLock Lock(StreamLock);
-			bDoesStreamExist = DoesPlayerStreamExist(PlayerID);
-		}
-		
-		if (!bDoesStreamExist)
-		{
-			UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("No stream found for PlayerID: %s, creating a new one."), *PlayerID.ToString());
-
-			AddPlayerStream(PlayerID, SampleRate);
-			return; // Return early if we don't have a stream for this player
-		}
-
-		// Get the player's stream
-		FAudioChatTrack* PlayerStream = GetPlayerStream(PlayerID);
-		if (PlayerStream && PlayerStream->PlaybackBuffer)
-		{
-			// Add audio data to the player's buffer
-			const float* AudioData = IncomingAudioData.GetData();
-
-			if (!PlayerStream->PlaybackBuffer->TryEnqueue(AudioData, IncomingAudioData.Num()))
-			{
-				UE_LOG(LogCrowdyVoice, Warning, TEXT("Failed to enqueue audio data for PlayerID: %s"), *PlayerID.ToString());
-			}
-
-			// Update last activity timestamp
-			{
-				FWriteScopeLock Lock(TimeLock);
-				LastUpdateTimes.Add(PlayerID, FPlatformTime::Seconds());
-			}
-			
-
-			//UE_LOG(LogVoiceChat, Log, TEXT("Updated last activity timestamp for PlayerID: %s"), *PlayerID);
-		}
-		else
-		{
-			UE_LOG(LogCrowdyVoice, Warning,
-				   TEXT("Player stream is invalid or playback buffer not initialized for PlayerID: %s"), *PlayerID.ToString());
-		}
-	
-
-	// For Audio-Notify icon
-	OnAudioNotify.Broadcast();
-}
-
-void UVoiceChatSubsystem::InitializeVoiceChatSubsystem(FVoiceChatService* InVoiceChatService)
-{
-	VoiceChatService = InVoiceChatService;
-	InitializeAudioCapture();
-	AudioDeviceMonitor = GetWorld()->SpawnActor<AWinAudioDeviceMonitor>();
-	AudioDeviceMonitor->OnAudioDeviceConnected.AddDynamic(this, &UVoiceChatSubsystem::HandleAudioDeviceConnection);
-	AudioDeviceMonitor->OnAudioDeviceDisconnected.AddDynamic(this, &UVoiceChatSubsystem::HandleAudioDeviceDisconnection);
-	RootActor = GetWorld()->GetFirstPlayerController()->GetPawn();
-}
-
-void UVoiceChatSubsystem::InitializeAudioCapture()
-{
-	AudioCaptureDevice = NewObject<UAudioCapture>(this);
-
-	if (AudioCaptureDevice)
-	{
-		AudioCaptureDevice->AddGeneratorDelegate(FOnAudioGenerate([this](const float* AudioData, int32 NumSamples)
-		{
-			HandleAudioGeneration(AudioData, NumSamples);
-		}));
-	}
-}
-
-void UVoiceChatSubsystem::StartVoiceCapture()
-{
-	if (!bIsCapturing && AudioCaptureDevice)
-	{
-		// Reset buffers
-		CaptureBuffer->Reset();
-
-		// Start the audio capture
-		bool bSuccess = AudioCaptureDevice->OpenDefaultAudioStream();
-
-		if (!bSuccess)
-		{
-			UE_LOG(LogCrowdyVoice, Error, TEXT("Failed to open default audio stream"));
-			return;
-		}
-
-		if (!AudioCaptureDevice->IsCapturingAudio())
-		{
-			AudioCaptureDevice->StartCapturingAudio();
-			bIsCapturing = true;
-			bIsProcessing = true;
-
-			// Start the processing thread
-			UE::Tasks::Launch(UE_SOURCE_LOCATION, [this]()
-			{
-				ProcessAudioDataThread();
-			}, LowLevelTasks::ETaskPriority::BackgroundLow);
-		}
-		UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Voice capture started"));
-	}
-}
-
-void UVoiceChatSubsystem::StopVoiceCapture()
-{
-	if (bIsCapturing && AudioCaptureDevice && AudioCaptureDevice->IsCapturingAudio())
-	{
-		// Stop the audio capture
-		AudioCaptureDevice->StopCapturingAudio();
-		bIsCapturing = false;
-		bIsProcessing = false;
-		AudioCaptureDevice = nullptr;
-		UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Voice capture stopped"));
-	}
-}
-
-void UVoiceChatSubsystem::HandleAudioGeneration(const float* AudioData, int32 NumSamples)
-{
-	if (!bIsCapturing)
-	{
-		return;
-	}
-	
-	// Get current device sample rate
-	const int32 DeviceSampleRate = AudioCaptureDevice->GetSampleRate();
-	const int32 DeviceChannels = AudioCaptureDevice->GetNumChannels();
-
-	// Calculate the time length of this audio chunk in seconds
-	const float ChunkTimeSeconds = static_cast<float>(NumSamples) / (DeviceSampleRate * DeviceChannels);
-
-	// Calculate the equivalent number of samples at our target rate (48kHz)
-	const int32 TargetNumSamples = FMath::RoundToInt(ChunkTimeSeconds * TargetSampleRate);
-
-	// First, convert to mono if necessary
-	const float* AudioToProcess = AudioData;
-	const int32 MonoSampleCount = NumSamples / DeviceChannels;
-
-	if (DeviceChannels > 1)
-	{
-		TArray<float> MonoAudio;
-		MonoAudio.Reserve(MonoSampleCount);
-
-		for (int32 i = 0; i < NumSamples; i += DeviceChannels)
-		{
-			float MonoSample = 0.0f;
-			for (int32 Channel = 0; Channel < DeviceChannels; ++Channel)
-			{
-				MonoSample += AudioData[i + Channel];
-			}
-			MonoSample /= DeviceChannels; // Average across all channels
-			MonoAudio.Add(MonoSample);
-		}
-
-		AudioToProcess = MonoAudio.GetData();
+		Session = GameSession;
+		HandleOwnerUUIDUpdated(GameSession->GetUUID());
+		GameSession->OnOwnerUUIDUpdated.AddUniqueDynamic(this, &UVoiceChatSubsystem::HandleOwnerUUIDUpdated);
 	}
 
-	// If the sample rate doesn't match our target, resample
-	if (DeviceSampleRate != TargetSampleRate)
-	{
-		// Check if we need to create or update the resampler
-		if (!AudioResampler || LastDeviceSampleRate != DeviceSampleRate)
-		{
-			// Create or recreate resampler with the right conversion ratio
-			if (AudioResampler)
-			{
-				src_delete(AudioResampler);
-			}
-
-			int Error;
-			AudioResampler = src_new(SRC_SINC_BEST_QUALITY, 1, &Error);
-			LastDeviceSampleRate = DeviceSampleRate;
-
-			if (Error != 0)
-			{
-				UE_LOG(LogCrowdyVoice, Error, TEXT("Failed to create resampler: %s"),
-				       UTF8_TO_TCHAR(src_strerror(Error)));
-				return;
-			}
-		}
-
-		// Prepare resampling
-		const double ResampleRatio = static_cast<double>(TargetSampleRate) / DeviceSampleRate;
-
-		TArray<float> ResampledAudio;
-		ResampledAudio.SetNumUninitialized(TargetNumSamples + 32); // Add padding
-
-		SRC_DATA SrcData;
-		SrcData.data_in = const_cast<float*>(AudioToProcess);
-		SrcData.data_out = ResampledAudio.GetData();
-		SrcData.input_frames = MonoSampleCount;
-		SrcData.output_frames = TargetNumSamples + 32;
-		SrcData.src_ratio = ResampleRatio;
-		SrcData.end_of_input = 0; // We're preserving state between calls
-
-		// Process with resampler state preservation for smooth transitions
-		int Error = src_process(AudioResampler, &SrcData);
-
-		if (Error != 0)
-		{
-			UE_LOG(LogCrowdyVoice, Error, TEXT("Resampling error: %s"),
-			       UTF8_TO_TCHAR(src_strerror(Error)));
-			return;
-		}
-
-		// Resize to actual output size
-		ResampledAudio.SetNum(SrcData.output_frames_gen);
-
-		// Add resampled data to buffer
-		if (CaptureBuffer && ResampledAudio.Num() > 0)
-		{
-			CaptureBuffer->TryEnqueue(ResampledAudio.GetData(), ResampledAudio.Num());
-		}
-	}
-	else
-	{
-		// Sample rate already matches target, add directly to buffer
-		if (CaptureBuffer)
-		{
-			CaptureBuffer->TryEnqueue(AudioToProcess, MonoSampleCount);
-		}
-	}
-}
-
-void UVoiceChatSubsystem::ProcessAudioDataThread() const
-{
-	TArray<float> AudioChunk;
-
-	while (bIsProcessing)
-	{
-		bool bProcessedAudio = false;
-		
-		// Lock for thread safety
-		{
-			// Check if we have enough data to process
-			if (CaptureBuffer && CaptureBuffer->GetAvailableDataSize() >= AUDIO_CHUNK_SIZE)
-			{
-				// Dequeue audio data for processing
-				if (CaptureBuffer->TryDequeue(AudioChunk, AUDIO_CHUNK_SIZE))
-				{
-					bProcessedAudio = true;
-					
-					// Broadcast audio data for networking or further processing
-					AsyncTask(ENamedThreads::GameThread, [this, AudioChunk]()
-					{
-						VoiceChatService->CompressAudioData(AudioChunk, TargetSampleRate, TargetNumChannels);
-					});
-				}
-			}
-		}
-		
-		// Only sleep if no audio was processed
-		if (!bProcessedAudio)
-		{
-			FPlatformProcess::Sleep(0.01f);
-		}
-	}
-}
-
-void UVoiceChatSubsystem::ManagePlaybackBuffer()
-{
-	// Process each stream
-	StreamsToProcess.Reset();
-
-	// Build list of streams to process
-	{
-		FReadScopeLock Lock(StreamLock);
-		for (auto& StreamPair : SoundStreamMap)
-		{
-			StreamsToProcess.Add(TPair<FGuid, FAudioChatTrack*>(StreamPair.Key, &StreamPair.Value));
-		}
-	}
-
-	// Process each stream
-	for (auto& StreamPair : StreamsToProcess)
-	{
-		ProcessPlayerStream(StreamPair.Value);
-	}
-}
-
-void UVoiceChatSubsystem::HandleAudioDeviceDisconnection(const FString& DeviceID)
-{
-	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Audio device disconnected: %s"), *DeviceID);
-	// Reset the voice chat state completely
-	bIsCapturing = false;
-	bIsProcessing = false;
-
-	// Make sure the audio device is properly released
-	if (AudioCaptureDevice)
-	{
-		if (AudioCaptureDevice->IsCapturingAudio())
-		{
-			AudioCaptureDevice->StopCapturingAudio();
-		}
-		AudioCaptureDevice = nullptr;
-	}
-}
-
-void UVoiceChatSubsystem::HandleAudioDeviceConnection(const FString& DeviceID)
-{
-	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Audio device connected: %s"), *DeviceID);
-
-	// automatic restart:
-	if (bVoiceChatIsRunning)
-	{
-		// Make sure we're starting from a clean state
-		StopVoiceChat();
-		// Wait a short time to ensure the device is ready
-		FTimerHandle RestartTimerHandle;
-		GetWorld()->GetTimerManager().SetTimer(
-			RestartTimerHandle,
-			[this]() { StartVoiceChat(); },
-			0.5f, // Half-second delay
-			false
-		);
-	}
-}
-
-bool UVoiceChatSubsystem::DoesPlayerStreamExist(const FGuid& PlayerID) const
-{
-	return SoundStreamMap.Contains(PlayerID);
-}
-
-FAudioChatTrack* UVoiceChatSubsystem::GetPlayerStream(const FGuid& PlayerID)
-{
-	FReadScopeLock Lock(StreamLock);
-	if (DoesPlayerStreamExist(PlayerID))
-	{
-		return &SoundStreamMap[PlayerID];
-	}
-	return nullptr;
-}
-
-void UVoiceChatSubsystem::AddPlayerStream(const FGuid& PlayerID, uint32 SampleRate)
-{
-	// Create a new audio track for this player
-	FAudioChatTrack NewTrack;
-
-	// Create a procedural sound wave
-	NewTrack.SoundWave = NewObject<USoundWaveProcedural>();
-	if (NewTrack.SoundWave)
-	{
-		NewTrack.SoundWave->SetSampleRate(SampleRate);
-		NewTrack.SoundWave->NumChannels = 1;
-		NewTrack.SoundWave->Duration = INDEFINITELY_LOOPING_DURATION;
-		NewTrack.SoundWave->SoundGroup = SOUNDGROUP_Voice;
-		NewTrack.SoundWave->bLooping = false;
-	}
-
-	// Create an audio component for playback
-	NewTrack.AudioComponent = NewObject<UAudioComponent>(RootActor);
-	if (NewTrack.AudioComponent)
-	{
-		NewTrack.AudioComponent->SetSound(NewTrack.SoundWave);
-		NewTrack.AudioComponent->bAutoActivate = true;
-		NewTrack.AudioComponent->RegisterComponent();
-	}
-
-	// Create a buffer for playback (2-second capacity)
-	NewTrack.PlaybackBuffer = new FCircularBuffer(SampleRate, 1, 2.0f);
-
-	// Add to map
-	{
-		FWriteScopeLock Lock(StreamLock);
-		SoundStreamMap.Add(PlayerID, NewTrack);
-		LastUpdateTimes.Add(PlayerID, FPlatformTime::Seconds());
-	}
-
-	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Added player %s to voice chat"), *PlayerID.ToString());
-}
-
-void UVoiceChatSubsystem::RemovePlayerStream(const FGuid& PlayerID)
-{
-	// Get the player's stream
-	if (const FAudioChatTrack* PlayerStream = GetPlayerStream(PlayerID))
-	{
-		// For Voice Chat Service
-		VoiceChatService->CleanupDecoder(PlayerID);
-		//OnStreamTimeout.Broadcast(PlayerID);
-
-		// Clean up resources
-		if (PlayerStream->AudioComponent)
-		{
-			PlayerStream->AudioComponent->Stop();
-			PlayerStream->AudioComponent->DestroyComponent();
-		}
-
-		if (PlayerStream->PlaybackBuffer)
-		{
-			delete PlayerStream->PlaybackBuffer;
-		}
-
-		// Remove from maps
-		{
-			FWriteScopeLock Lock(StreamLock);
-			SoundStreamMap.Remove(PlayerID);
-			LastUpdateTimes.Remove(PlayerID);
-		}
-
-		UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Removed player %s from voice chat"), *PlayerID.ToString());
-	}
-}
-
-void UVoiceChatSubsystem::ProcessPlayerStream(FAudioChatTrack* AudioTrack)
-{
-	if (!AudioTrack || !AudioTrack->PlaybackBuffer || !AudioTrack->SoundWave)
+	UCrowdySDKBridgeSubsystem* SdkBridge = GameInstance->GetSubsystem<UCrowdySDKBridgeSubsystem>();
+	if (AudioSubscription.IsValid() || !SdkBridge || !SdkBridge->ServiceRegistry)
 	{
 		return;
 	}
 
-	// Number of samples to read for this update
-	constexpr int32 MaxSamplesToRead = 960; // Adjust this for your needs
-	constexpr int32 MinSamplesToRead = 512; // Adjust this for your needs
+	Bridge = SdkBridge;
+	AudioSubscription = SdkBridge->ServiceRegistry->SubscribeToOpcode<FClientAudioNotification>(
+		ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION,
+		{ ECrowdySubscriptionRole::Observe, false, TEXT("CrowdyVoice") },
+		[this](const FClientAudioNotification& Notification, const FCrowdyDelivery&) { HandleAudio(Notification); });
+	ActorLeftSubscription = SdkBridge->ServiceRegistry->SubscribeToOpcode<FActorLeftNotification>(
+		ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION,
+		{ ECrowdySubscriptionRole::Observe, false, TEXT("CrowdyVoice") },
+		[this](const FActorLeftNotification& Notification, const FCrowdyDelivery&) { HandleActorLeft(Notification); });
 
-	const int32 AvailableSamples = AudioTrack->PlaybackBuffer->GetAvailableDataSize();
+	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Voice chat is receiving."));
+}
 
-	// Process if we have enough data
-	if (AvailableSamples >= MinSamplesToRead)
+void UVoiceChatSubsystem::HandleAudio(const FClientAudioNotification& Notification)
+{
+	if (!Runtime)
 	{
-		const int32 SamplesToRead = FMath::Min(AvailableSamples, MaxSamplesToRead);
+		return;
+	}
 
-		TArray<float> AudioChunk;
+	// The server returns a sender's own voice to it, which plays only as owner echo.
+	if (!bOwnerEcho && LocalSenderId.IsSet() && Notification.UUID == LocalSenderId)
+	{
+		return;
+	}
+	++Stats.PacketsReceived;
+	Runtime->Playback.Push(Notification.UUID.ToString(), Notification.Payload, CrowdyVoiceNowMs());
+}
 
-		if (AudioTrack->PlaybackBuffer->TryDequeue(AudioChunk, SamplesToRead))
-		{
-			// Convert float [-1.0f, 1.0f] to 16-bit PCM
-			TArray<int16> PCMInt16Data;
-			PCMInt16Data.SetNumUninitialized(AudioChunk.Num());
-
-			for (int32 i = 0; i < AudioChunk.Num(); ++i)
-			{
-				const float ClampedSample = FMath::Clamp(AudioChunk[i], -1.0f, 1.0f);
-				PCMInt16Data[i] = static_cast<int16>(ClampedSample * 32767.0f);
-			}
-
-			// Convert to uint8 buffer for QueueAudio
-			TArray<uint8> PCMData;
-			PCMData.SetNumUninitialized(PCMInt16Data.Num() * sizeof(int16));
-			FMemory::Memcpy(PCMData.GetData(), PCMInt16Data.GetData(), PCMData.Num());
-
-			// Queue to sound wave
-			AudioTrack->SoundWave->QueueAudio(PCMData.GetData(), PCMData.Num());
-
-			// Start playback if not playing
-			if (AudioTrack->AudioComponent && !AudioTrack->AudioComponent->IsPlaying())
-			{
-				AudioTrack->AudioComponent->Play();
-			}
-		}
+void UVoiceChatSubsystem::HandleActorLeft(const FActorLeftNotification& Notification)
+{
+	if (Runtime)
+	{
+		Runtime->Playback.Forget(Notification.UUID.ToString());
 	}
 }
 
-void UVoiceChatSubsystem::CheckStreamTimeouts()
+void UVoiceChatSubsystem::HandleOwnerUUIDUpdated(const FString NewUUID)
 {
-	// Current time
-	const double CurrentTime = FPlatformTime::Seconds();
-	TArray<FGuid> StreamsToRemove;
+	LocalSenderId = FCrowdyActorId::FromStringOrUnset(NewUUID);
+}
 
-	// Check each stream for timeout
-	for (auto& TimePair : LastUpdateTimes)
+void UVoiceChatSubsystem::SendFrame(const TConstArrayView<int16> Frame, const bool bLast)
+{
+	FCrowdyVoiceRuntime& Voice = *Runtime;
+	UCrowdyGameSession* GameSession = Session.Get();
+	const UCrowdySDKBridgeSubsystem* SdkBridge = Bridge.Get();
+	if (!GameSession || !SdkBridge || !SdkBridge->SendMessageFn || !LocalSenderId.IsSet())
 	{
-		if (CurrentTime - TimePair.Value > StreamTimeoutThreshold)
-		{
-			StreamsToRemove.Add(TimePair.Key);
-		}
+		// Keeps the stream's clock moving over the frames that could not be sent.
+		Voice.Encoder.Skip(1);
+		UE_CLOG(!bWarnedNoSend && CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log,
+			TEXT("Voice chat is capturing but drops frames until the session is connected and has an id."));
+		bWarnedNoSend = true;
+		return;
 	}
 
-	// Remove timed-out streams
-	for (const FGuid& PlayerID : StreamsToRemove)
+	if (!Voice.Encoder.Encode(Frame, bLast, Voice.OutPacket.Payload))
 	{
-		RemovePlayerStream(PlayerID);
+		UE_CLOG(!bWarnedEncode, LogCrowdyVoice, Warning, TEXT("Voice chat could not encode a microphone frame and dropped it."));
+		bWarnedEncode = true;
+		return;
 	}
+
+	const FInt64Vector Chunk = GameSession->GetPlayerCurrentChunkCoordinates();
+	Voice.OutPacket.AppID = GameSession->GetAppID();
+	Voice.OutPacket.ChunkX = Chunk.X;
+	Voice.OutPacket.ChunkY = Chunk.Y;
+	Voice.OutPacket.ChunkZ = Chunk.Z;
+	Voice.OutPacket.UUID = LocalSenderId;
+	SdkBridge->SendMessageFn(Voice.OutPacket);
+	++Stats.PacketsSent;
+}
+
+void UVoiceChatSubsystem::BroadcastChanges()
+{
+	if (!Runtime)
+	{
+		return;
+	}
+
+	const ECrowdyVoiceMicState MicState = Runtime->Mic.GetState();
+	if (MicState != BroadcastMicState)
+	{
+		BroadcastMicState = MicState;
+		OnMicStateChanged.Broadcast(MicState);
+	}
+
+	// Moved out first: a listener may stop or mute voice chat, which can queue more changes.
+	TArray<TPair<FString, bool>> Changes = MoveTemp(Runtime->TalkingChanges);
+	Runtime->TalkingChanges.Reset();
+	for (const TPair<FString, bool>& Change : Changes)
+	{
+		OnSpeakerTalking.Broadcast(Change.Key, Change.Value);
+	}
+}
+
+void UVoiceChatSubsystem::OpenSpeakerStream(const FString& SpeakerKey, const int32 SampleRate)
+{
+	if (SpeakerStreams.Contains(SpeakerKey) || SpeakerStreams.Num() >= FCrowdyCppVoiceReceiver::MaxSpeakers)
+	{
+		return;
+	}
+
+	USoundWaveProcedural* Wave = NewObject<USoundWaveProcedural>(this);
+	Wave->SetSampleRate(static_cast<uint32>(SampleRate));
+	Wave->NumChannels = 1;
+	Wave->Duration = INDEFINITELY_LOOPING_DURATION;
+	Wave->SoundGroup = SOUNDGROUP_Voice;
+	Wave->bLooping = false;
+
+	// Registered with the world rather than attached to any actor, so it plays whatever happens to the pawn.
+	UAudioComponent* Component = UGameplayStatics::CreateSound2D(this, Wave, 1.0f, 1.0f, 0.0f, nullptr, false, false);
+	UE_CLOG(!Component && CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log,
+		TEXT("Voice chat has no audio device to play %s on."), *SpeakerKey);
+
+	FCrowdyVoiceSpeakerStream& Stream = SpeakerStreams.Add(SpeakerKey);
+	Stream.Wave = Wave;
+	Stream.Component = Component;
+	Stream.SampleRate = SampleRate;
+}
+
+void UVoiceChatSubsystem::QueueSpeakerAudio(const FString& SpeakerKey, const TConstArrayView<int16> Pcm)
+{
+	FCrowdyVoiceSpeakerStream* Stream = SpeakerStreams.Find(SpeakerKey);
+	if (!Stream || !Stream->Wave || !IsValid(Stream->Component))
+	{
+		return;
+	}
+
+	// The newest frame is dropped when the queue is full: clearing it from here would race the audio thread.
+	const int32 FrameBytes = Pcm.Num() * static_cast<int32>(sizeof(int16));
+	const int32 QueuedBytes = Stream->Wave->GetAvailableAudioByteCount();
+	if (!FCrowdyVoiceQueuePolicy::Admit(QueuedBytes, FrameBytes, Stream->SampleRate, Stats))
+	{
+		return;
+	}
+	Stream->Wave->QueueAudio(reinterpret_cast<const uint8*>(Pcm.GetData()), FrameBytes);
+
+	if (!Stream->Component->IsPlaying() && FCrowdyVoiceQueuePolicy::ShouldStart(QueuedBytes + FrameBytes, Stream->SampleRate))
+	{
+		Stream->Component->Play();
+	}
+}
+
+void UVoiceChatSubsystem::CloseSpeakerStream(const FString& SpeakerKey)
+{
+	FCrowdyVoiceSpeakerStream Stream;
+	if (!SpeakerStreams.RemoveAndCopyValue(SpeakerKey, Stream) || !IsValid(Stream.Component))
+	{
+		return;
+	}
+	Stream.Component->Stop();
+	Stream.Component->DestroyComponent();
 }
