@@ -5,13 +5,14 @@
 
 THIRD_PARTY_INCLUDES_START
 #include "crowdy/kit/kit.hpp"
-#include "crowdy/kit/realtime.hpp"
 THIRD_PARTY_INCLUDES_END
 
 #include <cstdint>
 #include <cstring>
 #include <exception>
 #include <limits>
+#include <optional>
+#include <string_view>
 #include <utility>
 
 namespace
@@ -22,10 +23,26 @@ namespace
 		return std::string(Converted.Get(), static_cast<size_t>(Converted.Length()));
 	}
 
-	FString CrowdyNativeKitFromUtf8(const std::string& Value)
+	FString CrowdyNativeKitFromUtf8(const std::string_view Value)
 	{
 		const auto Converted = StringCast<TCHAR>(Value.data(), static_cast<int32>(Value.size()));
 		return FString(Converted.Length(), Converted.Get());
+	}
+
+	// An absent or non-numeric field leaves Out unset; false for a number that is not a whole value within int64.
+	bool CrowdyNativeKitReadWhole(const crowdy::graphql::Json& Value, TOptional<int64>& Out)
+	{
+		if (!Value.isNumber())
+		{
+			return true;
+		}
+		const std::optional<std::int64_t> Whole = Value.tryAsBigInt();
+		if (!Whole)
+		{
+			return false;
+		}
+		Out = static_cast<int64>(*Whole);
+		return true;
 	}
 
 	FCrowdyNativeKitReply CrowdyNativeKitRefusal(ECrowdyNativeExecStatus Status, const FString& Message)
@@ -340,29 +357,56 @@ namespace CrowdyNativeKit
 	{
 		try
 		{
-			const std::optional<crowdy::kit::KitActorState> State = crowdy::kit::decodeKitActorState(
+			// Read here rather than by CrowdyCPP's decoder, whose cast of a float id, hp or owner outside int64 is undefined.
+			const crowdy::graphql::Json State = crowdy::graphql::Json::fromMsgpack(
 				std::string_view(reinterpret_cast<const char*>(Bytes.GetData()), static_cast<size_t>(Bytes.Num())));
-			// Any peer can send one, so a kind no starter would name and a place no world holds are refused here.
+			const crowdy::graphql::Json Kind = State["kind"];
+			const crowdy::graphql::Json Mode = State["mode"];
+			const crowdy::graphql::Json Name = State["name"];
+			const crowdy::graphql::Json Yaw = State["yaw"];
+			const crowdy::graphql::Json IdValue = State["id"];
+			const std::optional<std::int64_t> Id = IdValue.isNumber() ? IdValue.tryAsBigInt() : std::nullopt;
+			if (!State.isObject() || !Kind.isString() || !Id || !State["x"].isNumber() || !State["z"].isNumber())
+			{
+				return false;
+			}
+			const double X = State["x"].asDouble();
+			const double Y = State["y"].asDouble();
+			const double Z = State["z"].asDouble();
+
+			// Any peer can send one, so a kind no starter would name, words no game would show and a place no world holds are refused here.
 			constexpr size_t MaxKindBytes = 64;
+			// A pet's name is up to 24 characters of any script, so up to 96 bytes of UTF-8.
+			constexpr size_t MaxNameBytes = 128;
+			constexpr size_t MaxModeBytes = 32;
 			constexpr double MaxChunks = 1.0e9;
 			const auto InWorld = [MaxChunks](const double Value) { return FMath::IsFinite(Value) && FMath::Abs(Value) <= MaxChunks; };
-			if (!State || State->kind.size() > MaxKindBytes || !InWorld(State->x) || !InWorld(State->y) || !InWorld(State->z)
-				|| (State->yaw && !FMath::IsFinite(*State->yaw)))
+			if (Kind.asStringView().size() > MaxKindBytes || (Name.isString() && Name.asStringView().size() > MaxNameBytes)
+				|| (Mode.isString() && Mode.asStringView().size() > MaxModeBytes)
+				|| !InWorld(X) || !InWorld(Y) || !InWorld(Z) || (Yaw.isNumber() && !FMath::IsFinite(Yaw.asDouble())))
+			{
+				return false;
+			}
+			TOptional<int64> Hp;
+			TOptional<int64> MaxHp;
+			TOptional<int64> Owner;
+			if (!CrowdyNativeKitReadWhole(State["hp"], Hp) || !CrowdyNativeKitReadWhole(State["max_hp"], MaxHp)
+				|| !CrowdyNativeKitReadWhole(State["owner"], Owner))
 			{
 				return false;
 			}
 			Out = FCrowdyNativeKitActorState();
-			Out.Kind = CrowdyNativeKitFromUtf8(State->kind);
-			Out.Id = State->id;
-			Out.X = State->x;
-			Out.Y = State->y;
-			Out.Z = State->z;
-			Out.Hp = State->hp ? TOptional<int64>(*State->hp) : TOptional<int64>();
-			Out.MaxHp = State->maxHp ? TOptional<int64>(*State->maxHp) : TOptional<int64>();
-			Out.Mode = State->mode ? TOptional<FString>(CrowdyNativeKitFromUtf8(*State->mode)) : TOptional<FString>();
-			Out.Owner = State->owner ? TOptional<int64>(*State->owner) : TOptional<int64>();
-			Out.Yaw = State->yaw ? TOptional<double>(*State->yaw) : TOptional<double>();
-			Out.Name = State->name ? TOptional<FString>(CrowdyNativeKitFromUtf8(*State->name)) : TOptional<FString>();
+			Out.Kind = CrowdyNativeKitFromUtf8(Kind.asStringView());
+			Out.Id = *Id;
+			Out.X = X;
+			Out.Y = Y;
+			Out.Z = Z;
+			Out.Hp = Hp;
+			Out.MaxHp = MaxHp;
+			Out.Mode = Mode.isString() ? TOptional<FString>(CrowdyNativeKitFromUtf8(Mode.asStringView())) : TOptional<FString>();
+			Out.Owner = Owner;
+			Out.Yaw = Yaw.isNumber() ? TOptional<double>(Yaw.asDouble()) : TOptional<double>();
+			Out.Name = Name.isString() ? TOptional<FString>(CrowdyNativeKitFromUtf8(Name.asStringView())) : TOptional<FString>();
 			return true;
 		}
 		catch (...)

@@ -108,12 +108,14 @@ void UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(const UCrowdyServerObject
 	TArray<FCrowdyServerValuePin> Variables;
 	CrowdyServerObjectPins::GatherVariables(Definition, Variables);
 	bool bStateHasPins = true;
+	bool bAnyVisible = false;
 	for (const FCrowdyServerValuePin& Variable : Variables)
 	{
 		if (!Variable.bVisible)
 		{
 			continue;
 		}
+		bAnyVisible = true;
 		bStateHasPins &= Variable.HasPin();
 		if (!Variable.HasPin())
 		{
@@ -136,7 +138,7 @@ void UCrowdyK2Node_ServerObjectBase::GatherMenuEntries(const UCrowdyServerObject
 		}
 	}
 
-	if (bStateHasPins)
+	if (bStateHasPins && bAnyVisible)
 	{
 		Out.Add({UCrowdyK2Node_GetServerState::StaticClass(), NAME_None, FGuid(), UCrowdyK2Node_GetServerState::MakeTitle(Asset)});
 	}

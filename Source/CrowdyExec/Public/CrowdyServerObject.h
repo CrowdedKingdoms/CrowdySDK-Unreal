@@ -307,6 +307,9 @@ public:
 	/** The variables, or with RecordId that record's values; null when that record is not there. */
 	const FInstancedStruct* FindValues(const FString* RecordId) const;
 
+	/** Whether Variable is an Owner Value this object does not read, such as another player's Wallet: it holds its default, not the server's value. */
+	bool IsUnreadOwnerValue(FName Variable) const;
+
 	/** After every read, push or changes that changed or removed records. */
 	FOnCrowdyServerRecordsChanged OnRecordsChanged;
 
@@ -600,6 +603,8 @@ private:
 	bool HasReadOwnerValues() const;
 	/** Reads Owner Value Index, or marks it to be read again when a read of it is in flight. */
 	void RequestOwnerValue(int32 Index);
+	/** Reads every Owner Value, when this object reads them. */
+	void RequestOwnerValues();
 	void HandleOwnerValueDone(int32 Index, const FCrowdyNativeExecReply& Reply, const FString& Code);
 	/** Whether Index and every per-value array fit the definition's Owner Values. */
 	bool HoldsOwnerRead(int32 Index) const;
@@ -607,8 +612,8 @@ private:
 	void ReceiveKitChanged(const TArray<uint8>& Payload);
 	/** Reads the Owner Values marked since the last tick. */
 	void SendWantedOwnerReads();
-	/** Copies each Owner Value from From into To, two States: a snapshot carries none of them. */
-	void KeepOwnerValues(const void* From, void* To) const;
+	/** Copies each Owner Value from From into To, two States, except those Carried marks by State field index: To's snapshot sent those itself. */
+	void KeepOwnerValues(const void* From, void* To, const TBitArray<>* Carried = nullptr) const;
 	/** Puts the Owner Values back to their defaults, which a sign-out or refusal must not leave behind. */
 	void ResetOwnerValues();
 	/** Another player signed in on this connection: drops the Owner Values read for the last one, announces them, and ignores their reads still out. */
@@ -617,8 +622,8 @@ private:
 	/** The ticket of the oldest read of the State or an Owner Value in flight, or MAX_uint32 when none is. */
 	uint32 OldestReadInFlight() const;
 
-	/** Names the watched fields that differ between Before and After, or every watched field when Before is null; bRecord compares a record's fields, bSkipOwnerValues leaves out the Owner Values. */
-	void CollectWatchedFields(const void* Before, const void* After, TArray<FString>& OutFields, bool bRecord = false, bool bSkipOwnerValues = false) const;
+	/** Names the watched fields that differ between Before and After, or every watched field when Before is null; bRecord compares a record's fields. */
+	void CollectWatchedFields(const void* Before, const void* After, TArray<FString>& OutFields, bool bRecord = false) const;
 
 	void TickCalls(float DeltaSeconds);
 	void CompleteCall(uint32 CallId, const FCrowdyServerCallResult& Result);

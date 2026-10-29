@@ -6,11 +6,12 @@
 #include "GameFramework/Actor.h"
 #include "Messages/Actor/FCrowdyKitActorState.h"
 #include "Replication/Executor/ActorUpdateExecutor.h"
+#include "Replication/Subsystems/CrowdyKitActorSubsystem.h"
 
 namespace
 {
 	// A player's actor state, or a Game Kit starter's actor, which a hub moves.
-	bool CrowdyTransformRepPolicyRead(const FInstancedStruct& State, FVector& OutLocation, FRotator& OutRotation)
+	bool CrowdyTransformRepPolicyRead(const FInstancedStruct& State, const UCrowdyKitActorSubsystem* KitActors, FVector& OutLocation, FRotator& OutRotation)
 	{
 		if (const FCrowdyActorState* Actor = State.GetPtr<FCrowdyActorState>())
 		{
@@ -20,7 +21,7 @@ namespace
 		}
 		if (const FCrowdyKitActorState* Kit = State.GetPtr<FCrowdyKitActorState>())
 		{
-			OutLocation = Kit->Location;
+			OutLocation = KitActors ? KitActors->PlaceInWorld(*Kit) : Kit->Location;
 			OutRotation = Kit->Rotation;
 			return true;
 		}
@@ -32,7 +33,16 @@ void UCrowdyTransformRepPolicy::OnInstanceActivated_Implementation(AActor* Actor
 {
 	FVector Location;
 	FRotator Rotation;
-	if (!Actor || !CrowdyTransformRepPolicyRead(InitialState, Location, Rotation))
+	if (!Actor)
+	{
+		return;
+	}
+	if (InitialState.GetScriptStruct() == FCrowdyKitActorState::StaticStruct())
+	{
+		const UWorld* World = Actor->GetWorld();
+		KitActors = World ? World->GetSubsystem<UCrowdyKitActorSubsystem>() : nullptr;
+	}
+	if (!CrowdyTransformRepPolicyRead(InitialState, KitActors.Get(), Location, Rotation))
 	{
 		return;
 	}
@@ -44,7 +54,7 @@ bool UCrowdyTransformRepPolicy::ExtractFields(const FInstancedStruct& State, int
 {
 	FVector Location;
 	FRotator Rotation;
-	if (!CrowdyTransformRepPolicyRead(State, Location, Rotation) || SlotId < 0)
+	if (!CrowdyTransformRepPolicyRead(State, KitActors.Get(), Location, Rotation) || SlotId < 0)
 	{
 		// Refusing makes the backend skip the update; a partial transform would be worse than none.
 		UE_CLOG(CrowdyReplicationTrace::Pool(), LogCrowdyReplication, Warning,

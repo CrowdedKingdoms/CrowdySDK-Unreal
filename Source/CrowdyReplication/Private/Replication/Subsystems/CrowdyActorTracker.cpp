@@ -865,9 +865,13 @@ bool UCrowdyActorTracker::IsKitActorUpdate(const FCrowdyActorUpdate& Update)
 
 void UCrowdyActorTracker::NoteHeardLocked(const TConstArrayView<FCrowdyActorUpdate> Updates, const double Now)
 {
+	// By what the actor appeared as, so an update forged in the other shape cannot put it under the other bound.
+	FReadScopeLock R(AppearedIdsLock);
 	for (const FCrowdyActorUpdate& Update : Updates)
 	{
-		(IsKitActorUpdate(Update) ? KitLastUpdateTimes : LastUpdateTimes).Add(Update.UUID, Now);
+		const FAppearedIds* Ids = AppearedIdsByUUID.Find(Update.UUID);
+		const bool bKitActor = Ids ? Ids->bKitActor : IsKitActorUpdate(Update);
+		(bKitActor ? KitLastUpdateTimes : LastUpdateTimes).Add(Update.UUID, Now);
 	}
 }
 
@@ -930,14 +934,23 @@ void UCrowdyActorTracker::CheckTimeouts()
 
 void UCrowdyActorTracker::RecordAppearances(const TArray<FCrowdyActorUpdate>& Appeared)
 {
-	FWriteScopeLock W(AppearedIdsLock);
+	{
+		FWriteScopeLock W(AppearedIdsLock);
+		for (const FCrowdyActorUpdate& Update : Appeared)
+		{
+			FAppearedIds& Ids = AppearedIdsByUUID.Add(Update.UUID);
+			Ids.ClassID = static_cast<FCrowdyClassID>(Update.ClassID);
+			Ids.PayloadTypeID = static_cast<FCrowdyTypeID>(Update.PayloadTypeID);
+			Ids.bKitActor = IsKitActorUpdate(Update);
+			Ids.WireId = Update.Message.IsValid() ? Update.Message->UUID : FCrowdyActorId();
+		}
+	}
+
+	// An update forged in the other shape before the appearance was recorded must not time the actor out later.
+	FWriteScopeLock W(LastUpdateLock);
 	for (const FCrowdyActorUpdate& Update : Appeared)
 	{
-		FAppearedIds& Ids = AppearedIdsByUUID.Add(Update.UUID);
-		Ids.ClassID = static_cast<FCrowdyClassID>(Update.ClassID);
-		Ids.PayloadTypeID = static_cast<FCrowdyTypeID>(Update.PayloadTypeID);
-		Ids.bKitActor = IsKitActorUpdate(Update);
-		Ids.WireId = Update.Message.IsValid() ? Update.Message->UUID : FCrowdyActorId();
+		(IsKitActorUpdate(Update) ? LastUpdateTimes : KitLastUpdateTimes).Remove(Update.UUID);
 	}
 }
 

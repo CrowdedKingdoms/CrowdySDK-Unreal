@@ -1359,7 +1359,7 @@ void FCrowdyServerVariableBindings::Call(const UCrowdyServerObject& Object, cons
 	}
 	if (HasValueParam)
 	{
-		HasValueParam->SetPropertyValue_InContainer(Params, bCopied);
+		HasValueParam->SetPropertyValue_InContainer(Params, bCopied && (bReadsRecord || !Object.IsUnreadOwnerValue(Binding.Variable)));
 	}
 	Handler->ProcessEvent(Function, Params);
 	CrowdyServerObjectDetail::DestroyParams(*Function, Params);
@@ -2132,9 +2132,10 @@ void UCrowdyServerObject::HandleReadDone(const FCrowdyNativeExecReply& Reply, co
 	FCrowdyExecStateHeader Header;
 	FCrowdyExecMembersView View;
 	TArray<FString> Carried;
+	TBitArray<> CarriedFields;
 	FString Error;
 	const bool bDecoded = Definition->IsGameKitStarter()
-		? CrowdyExec::DecodeKitSnapshot(*Definition, Reply.Payload, Read.GetMutableMemory(), Header, Error)
+		? CrowdyExec::DecodeKitSnapshot(*Definition, Reply.Payload, Read.GetMutableMemory(), Header, Error, &CarriedFields)
 		: CrowdyExec::DecodeState(*Definition, ECrowdyExecStateMessage::Read, Reply.Payload, Read.GetMutableMemory(), Header, Carried, Error, &View);
 	if (!bDecoded)
 	{
@@ -2149,7 +2150,7 @@ void UCrowdyServerObject::HandleReadDone(const FCrowdyNativeExecReply& Reply, co
 	const bool bKeptOwnerValues = Definition->IsGameKitStarter() && bSameShape && bSameOwner;
 	if (bKeptOwnerValues)
 	{
-		KeepOwnerValues(State.GetMemory(), Read.GetMutableMemory());
+		KeepOwnerValues(State.GetMemory(), Read.GetMutableMemory(), &CarriedFields);
 	}
 	if (!bSameOwner)
 	{
@@ -2157,7 +2158,7 @@ void UCrowdyServerObject::HandleReadDone(const FCrowdyNativeExecReply& Reply, co
 		OwnerReadsDone.Init(false, Definition->KitOwnerValues.Num());
 	}
 	TArray<FString> Changed;
-	CollectWatchedFields(bHasRead && bSameShape ? State.GetMemory() : nullptr, Read.GetMemory(), Changed, false, bKeptOwnerValues);
+	CollectWatchedFields(bHasRead && bSameShape ? State.GetMemory() : nullptr, Read.GetMemory(), Changed);
 	const CrowdyServerObjectDetail::FMemberFields MemberFields{Members, MemberCount, Leader, bOpenForJoining, bIsMember, bIsLeader};
 	View = CrowdyServerObjectDetail::KeepDefinedMemberKeys(*Definition, MoveTemp(View));
 	CrowdyServerObjectDetail::ApplyMemberView(MemberFields, View, true, !bHasRead, 0, Changed);
@@ -2170,13 +2171,7 @@ void UCrowdyServerObject::HandleReadDone(const FCrowdyNativeExecReply& Reply, co
 	bKitStateFailing = false;
 	NoteGoodRead();
 	// Every read of the State reads them again: a reconnect, a new epoch or a gap may have missed a changed message.
-	if (ReadsOwnerValues())
-	{
-		for (int32 Index = 0; Index < Definition->KitOwnerValues.Num(); ++Index)
-		{
-			RequestOwnerValue(Index);
-		}
-	}
+	RequestOwnerValues();
 	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s/%s read applied epoch=%llu seq=%llu changed=%s"), *Definition->TypeName,
 		CrowdyServerObjectDetail::TraceId(*Definition, InstanceId),
 		AppliedEpoch, AppliedSeq, *CrowdyServerObjectDetail::TraceNames(ToVariableNames(Changed)));
@@ -2534,7 +2529,8 @@ void UCrowdyServerObject::ApplyKitSnapshot(const TArray<uint8>& Payload)
 	const UScriptStruct* StateStruct = Definition->GetStateStruct();
 	FInstancedStruct Next;
 	Definition->InitializeValues(StateStruct, Next);
-	if (!StateStruct || State.GetScriptStruct() != StateStruct || !CrowdyExec::Decode(*Definition, *StateStruct, Payload, Next.GetMutableMemory(), Error))
+	TBitArray<> CarriedFields;
+	if (!StateStruct || State.GetScriptStruct() != StateStruct || !CrowdyExec::DecodeWritten(*Definition, *StateStruct, Payload, Next.GetMutableMemory(), &CarriedFields, Error))
 	{
 		RequestRead();
 		return;
@@ -2545,15 +2541,22 @@ void UCrowdyServerObject::ApplyKitSnapshot(const TArray<uint8>& Payload)
 		RequestRead();
 		return;
 	}
-	KeepOwnerValues(State.GetMemory(), Next.GetMutableMemory());
+	KeepOwnerValues(State.GetMemory(), Next.GetMutableMemory(), &CarriedFields);
 	TArray<FString> Changed;
-	CollectWatchedFields(State.GetMemory(), Next.GetMemory(), Changed, false, true);
+	CollectWatchedFields(State.GetMemory(), Next.GetMemory(), Changed);
+	const bool bNewEpoch = Header.Epoch != AppliedEpoch;
 	State = MoveTemp(Next);
 	AppliedEpoch = Header.Epoch;
 	AppliedSeq = Header.Seq;
 	UE_CLOG(CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("exec: %s/%s push applied epoch=%llu seq=%llu changed=%s"), *Definition->TypeName,
 		CrowdyServerObjectDetail::TraceId(*Definition, InstanceId), AppliedEpoch, AppliedSeq, *CrowdyServerObjectDetail::TraceNames(ToVariableNames(Changed)));
-	if (Changed.Num() > 0)
+	// A restarted hub sends no changed message for the Owner Values it holds.
+	if (bNewEpoch)
+	{
+		RequestOwnerValues();
+	}
+	// A starter still waiting for its records or Owner Values announces every value as it becomes Ready.
+	if (Changed.Num() > 0 && Status != ECrowdyServerObjectStatus::Connecting)
 	{
 		NotifyValues(Changed);
 	}
@@ -2924,6 +2927,28 @@ bool UCrowdyServerObject::HasReadOwnerValues() const
 	return !ReadsOwnerValues() || (OwnerReadsDone.Num() == Definition->KitOwnerValues.Num() && OwnerReadsDone.Find(false) == INDEX_NONE);
 }
 
+bool UCrowdyServerObject::IsUnreadOwnerValue(FName Variable) const
+{
+	if (!Definition || Definition->KitOwnerValues.IsEmpty() || ReadsOwnerValues())
+	{
+		return false;
+	}
+	const FProperty* Field = UCrowdyServerObjectLibrary::FindServerValue(State, Variable);
+	return Field && Definition->KitOwnerValues.ContainsByPredicate([this, Field](const FCrowdyKitOwnerValue& Owned) { return Definition->FindVariable(Owned.Variable) == Field; });
+}
+
+void UCrowdyServerObject::RequestOwnerValues()
+{
+	if (!ReadsOwnerValues())
+	{
+		return;
+	}
+	for (int32 Index = 0; Index < Definition->KitOwnerValues.Num(); ++Index)
+	{
+		RequestOwnerValue(Index);
+	}
+}
+
 void UCrowdyServerObject::RequestOwnerValue(int32 Index)
 {
 	const int32 Count = Definition->KitOwnerValues.Num();
@@ -3108,7 +3133,7 @@ void UCrowdyServerObject::SendWantedOwnerReads()
 	}
 }
 
-void UCrowdyServerObject::KeepOwnerValues(const void* From, void* To) const
+void UCrowdyServerObject::KeepOwnerValues(const void* From, void* To, const TBitArray<>* Carried) const
 {
 	FString Error;
 	const FCrowdyExecLayout* Layout = Definition->ResolveLayout(Error);
@@ -3120,8 +3145,14 @@ void UCrowdyServerObject::KeepOwnerValues(const void* From, void* To) const
 		{
 			continue;
 		}
-		Variable->CopyCompleteValue_InContainer(To, From);
 		const FCrowdyExecField* Field = StateFields ? StateFields->FindByPredicate([Layout, Variable](const FCrowdyExecField& Each) { return Layout->Types[Each.Type].Property == Variable; }) : nullptr;
+		// A hub whose snapshot carries the variable too sends a value newer than the one kept.
+		const int32 FieldIndex = Field ? static_cast<int32>(Field - StateFields->GetData()) : INDEX_NONE;
+		if (Carried && Carried->IsValidIndex(FieldIndex) && (*Carried)[FieldIndex])
+		{
+			continue;
+		}
+		Variable->CopyCompleteValue_InContainer(To, From);
 		if (Field && Field->Presence)
 		{
 			Field->Presence->SetPropertyValue_InContainer(To, Field->Presence->GetPropertyValue_InContainer(From));
@@ -3167,7 +3198,7 @@ void UCrowdyServerObject::HandleSignedInPlayerChanged()
 	}
 }
 
-void UCrowdyServerObject::CollectWatchedFields(const void* Before, const void* After, TArray<FString>& OutFields, bool bRecord, bool bSkipOwnerValues) const
+void UCrowdyServerObject::CollectWatchedFields(const void* Before, const void* After, TArray<FString>& OutFields, bool bRecord) const
 {
 	FString Error;
 	const FCrowdyExecLayout* Layout = Definition->ResolveLayout(Error);
@@ -3176,17 +3207,9 @@ void UCrowdyServerObject::CollectWatchedFields(const void* Before, const void* A
 	{
 		return;
 	}
-	TArray<const FProperty*, TInlineAllocator<4>> Skipped;
-	if (bSkipOwnerValues && Before)
-	{
-		for (const FCrowdyKitOwnerValue& Owned : Definition->KitOwnerValues)
-		{
-			Skipped.Add(Definition->FindVariable(Owned.Variable));
-		}
-	}
 	for (const FCrowdyExecField& Field : Layout->Structs[StructIndex].Fields)
 	{
-		if (!Field.bWatched || Skipped.Contains(Layout->Types[Field.Type].Property))
+		if (!Field.bWatched)
 		{
 			continue;
 		}

@@ -3,6 +3,7 @@
 #include "CoreGlobals.h"
 #include "CrowdyReplicationLog.h"
 #include "Data/CrowdyRenderingBackendTestTypes.h"
+#include "Engine/GameInstance.h"
 #include "Data/CrowdyTransformRepPolicy.h"
 #include "Messages/Actor/FCrowdyKitActorState.h"
 #include "Misc/AutomationTest.h"
@@ -13,6 +14,7 @@
 #include "Replication/Subsystems/CrowdyKitActorClasses.h"
 #include "Replication/Subsystems/CrowdyKitActorSubsystem.h"
 #include "StructUtils/InstancedStruct.h"
+#include "Subsystem/CrowdyGameSession.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
@@ -173,6 +175,38 @@ bool FCrowdyKitActorForgedUpdateTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitActorHeardAsItAppearedTest,
+	"CrowdySDK.ActorTracker.ActorIsHeardAsWhatItAppearedAs", CrowdyKitActorTestFlags)
+bool FCrowdyKitActorHeardAsItAppearedTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<UCrowdyActorTracker> Tracker(NewObject<UCrowdyActorTracker>(GetTransientPackage()));
+	Tracker->Configure(64, 8, 0.002f, 12.0f);
+	const FGuid Player = FGuid::NewGuid();
+	const FGuid Mob = FGuid::NewGuid();
+	const FGuid Arriving = FGuid::NewGuid();
+	FCrowdyActorUpdate PlayerAppeared = CrowdyKitActorTestUpdate(Player, FInstancedStruct());
+	PlayerAppeared.PayloadTypeID = 7;
+	Tracker->RecordAppearancesForTest({ PlayerAppeared, CrowdyKitActorTestUpdate(Mob, FInstancedStruct::Make(CrowdyKitActorTestMob(1, 100))) });
+
+	FCrowdyActorUpdate SdkUnderMob = PlayerAppeared;
+	SdkUnderMob.UUID = Mob;
+	const FInstancedStruct Kit = FInstancedStruct::Make(CrowdyKitActorTestMob(9, 1));
+	Tracker->NoteHeardForTest({ SdkUnderMob, CrowdyKitActorTestUpdate(Player, Kit), CrowdyKitActorTestUpdate(Arriving, Kit) }, 0.0);
+	TestTrue(TEXT("an SDK update under a kit actor's id keeps it on the kit actors' bound"), Tracker->IsHeardAsKitActorForTest(Mob));
+	TestEqual(TEXT("and out of the SDK actors' timeout"), Tracker->HeardAgeForTest(Mob), -1.0);
+	TestFalse(TEXT("a kit update under an SDK actor's id does not make it a kit actor"), Tracker->IsHeardAsKitActorForTest(Player));
+	TestTrue(TEXT("it stays on the SDK actors' timeout"), Tracker->HeardAgeForTest(Player) >= 0.0);
+	TestTrue(TEXT("an actor not yet appeared is heard by its update"), Tracker->IsHeardAsKitActorForTest(Arriving));
+
+	const FGuid Joining = FGuid::NewGuid();
+	Tracker->NoteHeardForTest({ CrowdyKitActorTestUpdate(Joining, Kit) }, 0.0);
+	FCrowdyActorUpdate JoiningAppeared = PlayerAppeared;
+	JoiningAppeared.UUID = Joining;
+	Tracker->RecordAppearancesForTest({ JoiningAppeared });
+	TestFalse(TEXT("a kit update forged before a player appeared does not keep it on the kit actors' bound"), Tracker->IsHeardAsKitActorForTest(Joining));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitActorTransformTest,
 	"CrowdySDK.ActorManager.KitActorMovesWithTheActorPool", CrowdyKitActorTestFlags)
 bool FCrowdyKitActorTransformTest::RunTest(const FString& Parameters)
@@ -215,6 +249,86 @@ bool FCrowdyKitActorFactsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a later update replaces it"), Seen->FindKitActor(Wolf) && Seen->FindKitActor(Wolf)->Hp == 70);
 	Seen->Forget(Wolf);
 	TestNull(TEXT("and one that left is no longer listed"), Seen->FindKitActor(Wolf));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitActorChunkSizeTest,
+	"CrowdySDK.ActorManager.KitActorIsPlacedByTheSessionsChunkSize", CrowdyKitActorTestFlags)
+bool FCrowdyKitActorChunkSizeTest::RunTest(const FString& Parameters)
+{
+	FCrowdyKitActorState Mob = CrowdyKitActorTestMob(3, 100);
+	Mob.ChunkPosition = FVector(1.5, 0.0, -2.0);
+	Mob.Location = Mob.ChunkPosition * FCrowdyKitActorState::ChunkWorldSize;
+	const FGuid Key = FGuid::NewGuid();
+
+	const TStrongObjectPtr<UCrowdyKitActorSubsystem> Plain(NewObject<UCrowdyKitActorSubsystem>(GetTransientPackage()));
+	Plain->TakeUpdates({ CrowdyKitActorTestUpdate(Key, FInstancedStruct::Make(Mob)) });
+	const FCrowdyKitActorState* Default = Plain->FindKitActor(Key);
+	if (!TestNotNull(TEXT("a kit actor is recorded with no session"), Default))
+	{
+		return false;
+	}
+	TestEqual(TEXT("with no session it is placed by the platform's chunk"), Default->Location, FVector(1.5, 0.0, -2.0) * 1600.0);
+
+	const TStrongObjectPtr<UGameInstance> Instance(NewObject<UGameInstance>(GetTransientPackage()));
+	const TStrongObjectPtr<UCrowdyGameSession> Session(NewObject<UCrowdyGameSession>(Instance.Get()));
+	Session->SetChunkSize(1600.0);
+	const TStrongObjectPtr<UCrowdyKitActorSubsystem> Seen(NewObject<UCrowdyKitActorSubsystem>(GetTransientPackage()));
+	Seen->UseSessionForTest(Session.Get());
+	Seen->TakeUpdates({ CrowdyKitActorTestUpdate(Key, FInstancedStruct::Make(Mob)) });
+	TestEqual(TEXT("the default chunk size gives the old place"), Seen->FindKitActor(Key)->Location, Mob.Location);
+
+	Session->SetChunkSize(100.0);
+	Seen->TakeUpdates({ CrowdyKitActorTestUpdate(Key, FInstancedStruct::Make(Mob)) });
+	TestEqual(TEXT("another chunk size moves it accordingly"), Seen->FindKitActor(Key)->Location, FVector(150.0, 0.0, -200.0));
+	TestEqual(TEXT("which Get Kit Actors lists"), Seen->GetKitActors(TEXT("mob"))[0].Location, FVector(150.0, 0.0, -200.0));
+	TestEqual(TEXT("and the chunks it came as are kept"), Seen->FindKitActor(Key)->ChunkPosition, Mob.ChunkPosition);
+	TestEqual(TEXT("the rendering backend places it the same"), Seen->PlaceInWorld(Mob), FVector(150.0, 0.0, -200.0));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitActorAccessorsTest,
+	"CrowdySDK.ActorManager.KitActorsAreReadByCountAndIndex", CrowdyKitActorTestFlags)
+bool FCrowdyKitActorAccessorsTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<UCrowdyKitActorSubsystem> Seen(NewObject<UCrowdyKitActorSubsystem>(GetTransientPackage()));
+	const FGuid Wolf = FGuid::NewGuid();
+	const FGuid Boar = FGuid::NewGuid();
+	const FGuid Bear = FGuid::NewGuid();
+	const FGuid Guide = FGuid::NewGuid();
+	FCrowdyKitActorState Npc = CrowdyKitActorTestMob(7, 0);
+	Npc.Kind = TEXT("npc");
+	Seen->TakeUpdates({ CrowdyKitActorTestUpdate(Wolf, FInstancedStruct::Make(CrowdyKitActorTestMob(1, 100))),
+		CrowdyKitActorTestUpdate(Boar, FInstancedStruct::Make(CrowdyKitActorTestMob(2, 90))),
+		CrowdyKitActorTestUpdate(Bear, FInstancedStruct::Make(CrowdyKitActorTestMob(3, 80))),
+		CrowdyKitActorTestUpdate(Guide, FInstancedStruct::Make(Npc)) });
+	TestEqual(TEXT("mobs are counted"), Seen->GetKitActorCount(TEXT("mob")), 3);
+	TestEqual(TEXT("so are npcs"), Seen->GetKitActorCount(TEXT("npc")), 1);
+	TestEqual(TEXT("None counts every kind"), Seen->GetKitActorCount(NAME_None), 4);
+	TestEqual(TEXT("a kind not seen counts none"), Seen->GetKitActorCount(TEXT("ball")), 0);
+
+	FCrowdyKitActorState Got;
+	TestTrue(TEXT("a mob is got at a valid index"), Seen->GetKitActor(TEXT("mob"), 2, Got));
+	TestTrue(TEXT("and it is a mob"), Got.Kind == TEXT("mob") && (Got.Id == 1 || Got.Id == 2 || Got.Id == 3));
+	TestFalse(TEXT("past the last is not found"), Seen->GetKitActor(TEXT("mob"), 3, Got));
+	TestEqual(TEXT("and gives an empty kit actor"), Got.Id, static_cast<int64>(0));
+	TestFalse(TEXT("a negative index is not found"), Seen->GetKitActor(TEXT("mob"), -1, Got));
+	TestFalse(TEXT("a kind not seen is not found"), Seen->GetKitActor(TEXT("ball"), 0, Got));
+	TestTrue(TEXT("None reaches the last of every kind"), Seen->GetKitActor(NAME_None, 3, Got));
+	TestFalse(TEXT("and not past it"), Seen->GetKitActor(NAME_None, 4, Got));
+
+	const TArray<FCrowdyKitActorState>& View = Seen->ViewKitActors(TEXT("mob"));
+	TestEqual(TEXT("the view holds the mobs in place"), View.Num(), 3);
+	TestTrue(TEXT("the same ones the key finds"), &View[0] == Seen->FindKitActor(Wolf) || &View[1] == Seen->FindKitActor(Wolf) || &View[2] == Seen->FindKitActor(Wolf));
+	TestEqual(TEXT("a kind not seen has an empty view"), Seen->ViewKitActors(TEXT("ball")).Num(), 0);
+
+	Seen->Forget(Wolf);
+	TestEqual(TEXT("one that left is not counted"), Seen->GetKitActorCount(TEXT("mob")), 2);
+	const FCrowdyKitActorState* Moved = Seen->FindKitActor(Bear);
+	TestTrue(TEXT("and the one that filled its place is still found by its key"), Moved && Moved->Id == 3);
+	Seen->Forget(Boar);
+	Seen->Forget(Bear);
+	TestEqual(TEXT("all gone leaves none"), Seen->GetKitActorCount(NAME_None), 1);
 	return true;
 }
 

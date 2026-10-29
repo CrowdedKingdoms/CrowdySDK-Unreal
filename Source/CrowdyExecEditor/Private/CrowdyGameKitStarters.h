@@ -24,6 +24,8 @@ namespace CrowdyGameKitStarters
 		TArray<const TCHAR*> OptionalCalls;
 		/** Its server code mixes a Config secret into what it shuffles or rolls, so Add starter given no Config writes a fresh one: players can see everything else it seeds from. */
 		bool bMakesSecret = false;
+		/** Players' methods that only read and take no player, so the command line may call them as the developer. */
+		TArray<const TCHAR*> PlayerReads;
 	};
 
 	/** Where Add starter saves the definitions it makes. */
@@ -37,7 +39,7 @@ namespace CrowdyGameKitStarters
 	/** The Config Add starter saves: Config trimmed, or for a starter that makes a secret and was given none, a fresh random one. */
 	FString ConfigToAdd(const FStarter& Starter, const FString& Config);
 
-	/** What in Config, the JSON text of the starter TypeName's Config object, its server code would refuse to start on: a key that is not a whole number within its range, or a secret that is not text. Keys match with case, as the server code reads them. Empty when nothing is wrong or the starter checks nothing. */
+	/** What in Config, the JSON text of the starter TypeName's Config object, its server code would refuse to start on: a key that is not a whole number within its range, a secret that is not text, or two ids of one kind that differ only by case. Keys match with case, as the server code reads them. Empty when nothing is wrong or the starter checks nothing. */
 	FString FindConfigProblem(const FString& TypeName, const FString& Config);
 
 	/** Whether Config, a starter's Config text, has a secret its server code reads: non-empty text under exactly the key "secret". */
@@ -45,6 +47,9 @@ namespace CrowdyGameKitStarters
 
 	/** Whether Definition is a starter whose server code takes Function from the app's developers only, whatever Callable By its asset was saved with. */
 	bool IsDeveloperOnly(const UCrowdyServerObjectDefinition& Definition, const FCrowdyServerFunction& Function);
+
+	/** Whether Definition is a starter whose Function is one of its PlayerReads. */
+	bool IsPlayerRead(const UCrowdyServerObjectDefinition& Definition, const FCrowdyServerFunction& Function);
 
 	/** A new definition of the starter, named Name in Outer and baked; null for a name the SDK has no starter for. */
 	UCrowdyServerObjectDefinition* MakeDefinition(const FStarter& Starter, UObject* Outer, FName Name, EObjectFlags Flags);
