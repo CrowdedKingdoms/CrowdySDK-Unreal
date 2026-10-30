@@ -752,7 +752,7 @@ bool FCrowdyExecDefinitionNamesTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a definition with bad names does not bake"), Broken->Bake(Errors));
 	const TArray<FString> Expected = {
 		TEXT("Type Name 'Bad-Name' must be lowercase letters, digits and underscores, start with a letter, and be at most 48 characters"),
-		TEXT("Function Read: 'read' is reserved"),
+		TEXT("Function Read: 'read' is reserved; rename the function or set its Server Name"),
 		TEXT("Function Timer: '$timer' cannot be its server name, which must be lowercase letters, digits and underscores, start with a letter, and be at most 64 characters"),
 		TEXT("Function Attack_Boss: another function is also named 'attack_boss'"),
 		TEXT("FCrowdyExecTestScalars.Level: another field of FCrowdyExecTestScalars is also named 'HEALTH'; server names must differ in more than case"),

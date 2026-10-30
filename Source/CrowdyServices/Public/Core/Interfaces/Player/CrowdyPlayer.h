@@ -24,9 +24,9 @@ class CROWDYSERVICES_API ICrowdyPlayer
 public:
 	
 	// Just dummy function, this will probably be filled with useful information about the player later
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|Player")
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|Player")
 	FName GetPlayerName();
 	
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|Player")
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|Player")
 	void InteractMessage(const FString& Message, const float Duration);
 };

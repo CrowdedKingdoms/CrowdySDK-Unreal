@@ -66,6 +66,7 @@ class CROWDYEXEC_API UCrowdyServerObjectComponent : public UActorComponent
 public:
 	UCrowdyServerObjectComponent();
 
+	/** The Server Object type this actor joins. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object")
 	TObjectPtr<UCrowdyServerObjectDefinition> Definition;
 
@@ -85,9 +86,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (EditCondition = "InstanceMode == ECrowdyServerObjectInstanceMode::FromServerValue", EditConditionHides))
 	TObjectPtr<UCrowdyServerObjectDefinition> SourceDefinition;
 
+	/** Which Server Object of the source type holds the variable that gives the Instance Id. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (EditCondition = "InstanceMode == ECrowdyServerObjectInstanceMode::FromServerValue", EditConditionHides))
 	ECrowdyServerObjectSourceInstance SourceInstance = ECrowdyServerObjectSourceInstance::SignedInPlayer;
 
+	/** The Instance Id of the source Server Object to read the variable from. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (EditCondition = "InstanceMode == ECrowdyServerObjectInstanceMode::FromServerValue && SourceInstance == ECrowdyServerObjectSourceInstance::InstanceId", EditConditionHides))
 	FString SourceInstanceId;
 
@@ -95,12 +98,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object", meta = (EditCondition = "InstanceMode == ECrowdyServerObjectInstanceMode::FromServerValue", EditConditionHides))
 	FName SourceVariable;
 
-	/** After every change of the watched variables, and once when they are first read. */
-	UPROPERTY(BlueprintAssignable, Category = "Server Object")
+	/** Runs with the names of the variables that changed, after every change of the watched variables and once when they are first read. */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects")
 	FCrowdyServerVariablesChanged OnVariablesChanged;
 
 	/** Object is None when it could not be joined; Get Failure Reason says why. */
-	UPROPERTY(BlueprintAssignable, Category = "Server Object")
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Server Objects")
 	FCrowdyServerStatusChanged OnStatusChanged;
 
 	/** Sends an actor's location to a starter that tracks players (its Position Function) while the Server Object is Ready. By default only the pawn this game's player controls is reported, and only by one component per Server Object. */
@@ -116,15 +119,15 @@ public:
 	FOnCrowdyPositionKept OnPositionKept;
 
 	/** The Server Object this component holds, or None before it joins one or after it could not. */
-	UFUNCTION(BlueprintPure, Category = "Server Object")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
 	UCrowdyServerObject* GetServerObject() const { return Object; }
 
 	/** Why there is no usable Server Object, or empty. */
-	UFUNCTION(BlueprintPure, Category = "Server Object")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
 	FString GetFailureReason() const;
 
 	/** The variables the server last sent: the Server Object's, or for a record per entity this actor's record. Their defaults until they are read. */
-	UFUNCTION(BlueprintPure, Category = "Server Object")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Server Objects")
 	FInstancedStruct GetVariables() const;
 
 	/** Whether the definition holds a record per entity, so the variables are this actor's record. */
@@ -137,7 +140,7 @@ public:
 	UCrowdyServerObject* GetReadObject() const;
 
 	/** Joins the Server Object again, after it Failed or after changing Definition or Instance Id. Ignored while it is joining. */
-	UFUNCTION(BlueprintCallable, Category = "Server Object")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Server Objects")
 	void Rejoin();
 
 	/** The Instance Id InstanceMode gives, or empty with OutError saying why. Only One Instance types always give theirs. */

@@ -142,9 +142,8 @@ public:
 	/**
 	 * Updates for actors already on screen, handed on once a frame.
 	 *
-	 * Fires on the game thread. It used to fire on a shard worker, which is why it was named for one; an
-	 * actor already being tracked is now routed straight from the receive path and never crosses a thread.
-	 * C++ only.
+	 * Fires on the game thread: an actor already being tracked is routed straight from the receive path and
+	 * never crosses a thread. C++ only.
 	 */
 	FOnTrackedActorUpdateBatch OnTrackedActorUpdates;
 

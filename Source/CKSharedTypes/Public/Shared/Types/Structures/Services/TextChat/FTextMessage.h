@@ -12,7 +12,7 @@ struct FTextMessage
 	uint8 Version = 1;
 	
 	UPROPERTY(BlueprintReadWrite, Category = "Text Message")
-	int64 UserID;
+	int64 UserID = 0;
 	
 	UPROPERTY(BlueprintReadWrite, Category = "Text Message")
 	FString Username;

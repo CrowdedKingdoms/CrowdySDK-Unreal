@@ -74,9 +74,9 @@ public:
 	ECrowdyReplicationDistance StateRelevanceDistance = ECrowdyReplicationDistance::Four_Chunks;
 
 	/**
-	 * Seconds between periodic CrowdyState keyframe heartbeats a redundant full re-send of every
+	 * Seconds between periodic CrowdyState keyframe heartbeats: a redundant full re-send of every
 	 * CrowdyHeartbeat-marked property so a late or packet-loss-desynced observer converges. Set to 0 to
-	 * DISABLE the heartbeat map-wide (on-change replication is unaffected; only the periodic baseline stops).
+	 * disable the heartbeat map-wide (on-change replication is unaffected; only the periodic baseline stops).
 	 * Only properties opted in with meta=(CrowdyHeartbeat) ride the heartbeat regardless of this value.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile",

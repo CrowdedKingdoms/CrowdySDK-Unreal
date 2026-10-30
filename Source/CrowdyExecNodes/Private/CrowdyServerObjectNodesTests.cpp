@@ -400,7 +400,64 @@ bool FCrowdyServerObjectNodesPinTypesTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesRefusalsTest, "CrowdySDK.Editor.ServerObjectNodes.Refusals", CrowdyServerObjectNodesTests::Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesReadyPinLabelTest, "CrowdySDK.Editor.ServerObjectNodes.ReadyPinsAreLabelledIsReady", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesReadyPinLabelTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeEveryTypeDefinition();
+	UEdGraph* Graph = MakeGraph();
+
+	const UCrowdyK2Node_GetServerVariable* Get = AddNode<UCrowdyK2Node_GetServerVariable>(Graph, Definition, TEXT("Int"));
+	const UEdGraphPin* Ready = Get->FindPin(CrowdyServerObjectPins::HasValuePinName(TEXT("Int")), EGPD_Output);
+	if (TestNotNull(TEXT("Get Server Variable keeps the ready pin's internal name"), Ready))
+	{
+		TestEqualSensitive(TEXT("which is still Int Has Value"), Ready->PinName.ToString(), FString(TEXT("Int Has Value")));
+		TestEqualSensitive(TEXT("and is labelled Is Ready beside the variable"), Ready->GetDisplayName().ToString(), FString(TEXT("Int Is Ready")));
+	}
+
+	const UCrowdyK2Node_GetServerVariable* Optional = AddNode<UCrowdyK2Node_GetServerVariable>(Graph, Definition, TEXT("MaybeInt"));
+	const UEdGraphPin* Has = Optional->FindPin(CrowdyServerObjectPins::HasValuePinName(TEXT("MaybeInt")), EGPD_Output);
+	if (TestNotNull(TEXT("an optional variable has its own Has Value pin"), Has))
+	{
+		TestFalse(TEXT("which is not labelled Is Ready"), Has->GetDisplayName().ToString().Contains(TEXT("Is Ready")));
+	}
+
+	const UCrowdyK2Node_GetServerState* State = AddNode<UCrowdyK2Node_GetServerState>(Graph, Definition, NAME_None);
+	const UEdGraphPin* StateReady = State->FindPin(CrowdyServerObjectNodePins::HasValues, EGPD_Output);
+	if (TestNotNull(TEXT("Get Server State keeps its ready pin's internal name"), StateReady))
+	{
+		TestEqualSensitive(TEXT("which is still Has Values"), StateReady->PinName.ToString(), FString(TEXT("Has Values")));
+		TestEqualSensitive(TEXT("and is labelled Is Ready"), StateReady->GetDisplayName().ToString(), FString(TEXT("Is Ready")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesFieldToolTipTest, "CrowdySDK.Editor.ServerObjectNodes.ValuePinsCarryTheirFieldToolTip", CrowdyServerObjectNodesTests::Flags)
+bool FCrowdyServerObjectNodesFieldToolTipTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectNodesTests;
+	UCrowdyServerObjectDefinition* Definition = MakeDefinition(TEXT("DA_ToolTips"));
+	Definition->TypeName = TEXT("tips_type");
+	Definition->State = FCrowdyExecNodesTestToolTips::StaticStruct();
+	Definition->WatchedFields = {TEXT("Damage"), TEXT("Plain")};
+	UEdGraph* Graph = MakeGraph();
+
+	const UCrowdyK2Node_GetServerState* State = AddNode<UCrowdyK2Node_GetServerState>(Graph, Definition, NAME_None);
+	const UCrowdyK2Node_GetServerVariable* Get = AddNode<UCrowdyK2Node_GetServerVariable>(Graph, Definition, TEXT("Damage"));
+	const UEdGraphPin* StateDamage = State->FindPin(TEXT("Damage"), EGPD_Output);
+	const UEdGraphPin* GetDamage = Get->FindPin(TEXT("Damage"), EGPD_Output);
+	const UEdGraphPin* StatePlain = State->FindPin(TEXT("Plain"), EGPD_Output);
+	if (!TestNotNull(TEXT("the pins exist"), StateDamage) || !TestNotNull(TEXT("on Get too"), GetDamage) || !TestNotNull(TEXT("and for the untipped field"), StatePlain))
+	{
+		return false;
+	}
+	TestEqualSensitive(TEXT("a field's ToolTip is its pin's on Get Server State"), StateDamage->PinToolTip, FString(TEXT("How hard the hit lands.")));
+	TestEqualSensitive(TEXT("and on Get Server Variable"), GetDamage->PinToolTip, FString(TEXT("How hard the hit lands.")));
+	TestTrue(TEXT("a field with none leaves its pin without one, not its display name"), StatePlain->PinToolTip.IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServerObjectNodesRefusalsTest,"CrowdySDK.Editor.ServerObjectNodes.Refusals", CrowdyServerObjectNodesTests::Flags)
 bool FCrowdyServerObjectNodesRefusalsTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyServerObjectNodesTests;
@@ -982,7 +1039,8 @@ bool FCrowdyServerObjectNodesStatusPinsTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("the last four outputs are Outcome, Reason, Retryable, Code in order"), Outputs[Index]->PinName, Status[Index - First]);
 			TestFalse(Outputs[Index]->PinName.ToString() + TEXT(" has a tooltip"), Outputs[Index]->PinToolTip.IsEmpty());
 		}
-		TestEqual(Outputs[Index]->PinName.ToString() + TEXT(" is advanced exactly when it is a status pin"), Outputs[Index]->bAdvancedView, bStatus);
+		const bool bAdvanced = Index >= First + 2;
+		TestEqual(Outputs[Index]->PinName.ToString() + TEXT(" is advanced exactly when it is Retryable or Code"), Outputs[Index]->bAdvancedView, bAdvanced);
 	}
 	TestTrue(TEXT("the node hides its advanced pins until expanded"), Call->AdvancedPinDisplay == ENodeAdvancedPins::Hidden);
 	return true;
@@ -1009,19 +1067,19 @@ bool FCrowdyServerObjectNodesStatusPinsSavedTest::RunTest(const FString& Paramet
 	Call->ReconstructNode();
 
 	TestTrue(TEXT("a node saved with no advanced pins becomes Hidden"), Call->AdvancedPinDisplay == ENodeAdvancedPins::Hidden);
-	auto CheckStatusPin = [this, Call](FName Name, const UEdGraphNode* Sink)
+	auto CheckStatusPin = [this, Call](FName Name, const UEdGraphNode* Sink, bool bAdvanced)
 	{
 		const UEdGraphPin* Pin = Call->FindPin(Name, EGPD_Output);
 		if (!TestNotNull(Name.ToString() + TEXT(" is still a pin"), Pin))
 		{
 			return;
 		}
-		TestTrue(Name.ToString() + TEXT(" is now advanced"), Pin->bAdvancedView);
+		TestEqual(Name.ToString() + TEXT(" is advanced as the node now declares it"), Pin->bAdvancedView, bAdvanced);
 		TestTrue(Name.ToString() + TEXT(" keeps its wire"), Pin->LinkedTo.Num() == 1 && Pin->LinkedTo[0]->GetOwningNode() == Sink);
 	};
-	CheckStatusPin(CrowdyServerCallPins::Outcome, Compare);
-	CheckStatusPin(CrowdyServerCallPins::Reason, Print);
-	CheckStatusPin(CrowdyServerCallPins::Retryable, Print);
+	CheckStatusPin(CrowdyServerCallPins::Outcome, Compare, false);
+	CheckStatusPin(CrowdyServerCallPins::Reason, Print, false);
+	CheckStatusPin(CrowdyServerCallPins::Retryable, Print, true);
 	return true;
 }
 

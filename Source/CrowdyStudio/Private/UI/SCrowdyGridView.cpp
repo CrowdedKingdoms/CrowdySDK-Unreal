@@ -74,11 +74,12 @@ void SCrowdyGridView::Construct(const FArguments& InArgs)
 			.OnTextChanged_Lambda([this](const FText&) { RefreshGridVisualization(); });
 	};
 
-	auto Btn = [&Style](const FText& Label, bool bPrimary, FOnClicked OnClick) -> TSharedRef<SWidget>
+	auto Btn = [&Style](const FText& Label, bool bPrimary, FOnClicked OnClick, const FText& Tooltip = FText::GetEmpty()) -> TSharedRef<SWidget>
 	{
 		return SNew(SButton)
 			.ButtonStyle(&Style, bPrimary ? "Crowdy.Button.Primary" : "Crowdy.Button.Secondary")
 			.ContentPadding(FMargin(12.0f, 6.0f))
+			.ToolTipText(Tooltip)
 			.OnClicked(OnClick)
 			[ SNew(STextBlock).Text(Label).Font(FCoreStyle::GetDefaultFontStyle("Bold", 9)).ColorAndOpacity(FSlateColor::UseForeground()) ];
 	};
@@ -308,7 +309,8 @@ void SCrowdyGridView::Construct(const FArguments& InArgs)
 						+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 						[ SNew(STextBlock).TextStyle(&Style, "Crowdy.Text.Subtle").Text(LOCTEXT("WhitelistPickerHint", "None checked = no limit (every key allowed).")) ]
 						+ SHorizontalBox::Slot().AutoWidth()
-						[ Btn(LOCTEXT("SetWhitelist", "Set Whitelist"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnSetWhitelistClicked)) ]
+						[ Btn(LOCTEXT("SetWhitelist", "Set Whitelist"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnSetWhitelistClicked),
+							LOCTEXT("SetWhitelistTip", "Replace the selected grid's whitelist with the checked keys. None checked means no limit.")) ]
 					]
 
 					// User grants.
@@ -321,9 +323,12 @@ void SCrowdyGridView::Construct(const FArguments& InArgs)
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 6.0f)
 					[
 						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)[ Btn(LOCTEXT("GrantUser", "Grant"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnGrantUserClicked)) ]
-						+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)[ Btn(LOCTEXT("RevokeUser", "Revoke"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnRevokeUserClicked)) ]
-						+ SHorizontalBox::Slot().AutoWidth()[ Btn(LOCTEXT("ReadUser", "Read"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnReadUserClicked)) ]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)[ Btn(LOCTEXT("GrantUser", "Grant"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnGrantUserClicked),
+							LOCTEXT("GrantUserTip", "Grant the checked permissions to this user on the selected grid.")) ]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)[ Btn(LOCTEXT("RevokeUser", "Revoke"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnRevokeUserClicked),
+							LOCTEXT("RevokeUserTip", "Revoke the checked permissions from this user on the selected grid. With none checked, revokes all of the user's grants on it.")) ]
+						+ SHorizontalBox::Slot().AutoWidth()[ Btn(LOCTEXT("ReadUser", "Read"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnReadUserClicked),
+							LOCTEXT("ReadUserTip", "Read this user's effective permissions on the grid.")) ]
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 14.0f)
 					[ SNew(STextBlock).AutoWrapText(true).TextStyle(&Style, "Crowdy.Text.Subtle").Text(this, &SCrowdyGridView::GetUserEffectiveLabel) ]
@@ -344,9 +349,12 @@ void SCrowdyGridView::Construct(const FArguments& InArgs)
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
 					[
 						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)[ Btn(LOCTEXT("AssignGroup", "Assign"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnAssignGroupClicked)) ]
-						+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)[ Btn(LOCTEXT("RevokeGroup", "Revoke"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnRevokeGroupClicked)) ]
-						+ SHorizontalBox::Slot().AutoWidth()[ Btn(LOCTEXT("ListGroupGrants", "List Grants"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnListGroupGrantsClicked)) ]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)[ Btn(LOCTEXT("AssignGroup", "Assign"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnAssignGroupClicked),
+							LOCTEXT("AssignGroupTip", "Grant the checked permissions to this group (or group role) on the selected grid.")) ]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)[ Btn(LOCTEXT("RevokeGroup", "Revoke"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnRevokeGroupClicked),
+							LOCTEXT("RevokeGroupTip", "Revoke the checked permissions from this group (or group role) on the selected grid. With none checked, revokes all of its grants on it.")) ]
+						+ SHorizontalBox::Slot().AutoWidth()[ Btn(LOCTEXT("ListGroupGrants", "List Grants"), false, FOnClicked::CreateSP(this, &SCrowdyGridView::OnListGroupGrantsClicked),
+							LOCTEXT("ListGroupGrantsTip", "List this group's grants on the selected grid.")) ]
 					]
 					+ SVerticalBox::Slot().AutoHeight()
 					[
@@ -529,10 +537,19 @@ FReply SCrowdyGridView::OnGrantUserClicked()
 
 FReply SCrowdyGridView::OnRevokeUserClicked()
 {
-	if (Controller.IsValid())
+	if (!Controller.IsValid())
 	{
-		Controller->RevokeGridPermissions(SelectedGridId(), ParseInt(UserIdBox), SelectionToKeys(Controller->GetRuntimePermissions(), UserKeysSelection));
+		return FReply::Handled();
 	}
+
+	const TArray<FString> Keys = SelectionToKeys(Controller->GetRuntimePermissions(), UserKeysSelection);
+	if (Keys.IsEmpty() && ParseInt(UserIdBox) != 0
+		&& FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("ConfirmRevokeAllUser", "Revoke ALL of this user's grants on this grid?")) != EAppReturnType::Yes)
+	{
+		return FReply::Handled();
+	}
+
+	Controller->RevokeGridPermissions(SelectedGridId(), ParseInt(UserIdBox), Keys);
 	return FReply::Handled();
 }
 
@@ -557,11 +574,20 @@ FReply SCrowdyGridView::OnAssignGroupClicked()
 
 FReply SCrowdyGridView::OnRevokeGroupClicked()
 {
-	if (Controller.IsValid())
+	if (!Controller.IsValid())
 	{
-		const int64 RoleId = ParseInt(GroupRoleBox);
-		Controller->RevokeGroupFromGrid(SelectedGridId(), ParseInt(GroupIdBox), RoleId != 0, RoleId, SelectionToKeys(Controller->GetRuntimePermissions(), GroupKeysSelection));
+		return FReply::Handled();
 	}
+
+	const TArray<FString> Keys = SelectionToKeys(Controller->GetRuntimePermissions(), GroupKeysSelection);
+	if (Keys.IsEmpty() && ParseInt(GroupIdBox) != 0
+		&& FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("ConfirmRevokeAllGroup", "Revoke ALL of this group's grants on this grid?")) != EAppReturnType::Yes)
+	{
+		return FReply::Handled();
+	}
+
+	const int64 RoleId = ParseInt(GroupRoleBox);
+	Controller->RevokeGroupFromGrid(SelectedGridId(), ParseInt(GroupIdBox), RoleId != 0, RoleId, Keys);
 	return FReply::Handled();
 }
 

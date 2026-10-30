@@ -79,7 +79,7 @@ FGuid UCrowdyHostSubsystem::GetHostID() const
 
 	if (!HostID.IsValid())
 	{
-		UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdySDK][HostSubsystem]: Host is not set yet."));
+		UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log, TEXT("[CrowdySDK][HostSubsystem]: Host is not set yet."));
 		return FGuid();
 	}
 

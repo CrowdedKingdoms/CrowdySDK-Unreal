@@ -10,11 +10,11 @@
 UENUM(BlueprintType)
 enum class ECrowdyTarget : uint8
 {
-	Everyone        = 0 UMETA(DisplayName = "Everyone"),         // legacy broadcast: the default, wire-compatible intent
-	Entity          = 1 UMETA(DisplayName = "Entity"),           // TargetID = entity NetID
-	Owner           = 2 UMETA(DisplayName = "Owner"),            // TargetID = player GUID; only that client dispatches
-	Host            = 3 UMETA(DisplayName = "Host"),             // only the elected host dispatches
-	AllExceptSender = 4 UMETA(DisplayName = "All Except Sender"),// everyone except the sending client
+	Everyone        = 0 UMETA(DisplayName = "Everyone", ToolTip = "Every client in range receives the event. The default."),
+	Entity          = 1 UMETA(DisplayName = "Entity", ToolTip = "Only handlers on the entity named by TargetID (its entity NetID) run."),
+	Owner           = 2 UMETA(DisplayName = "Owner", ToolTip = "Only the client named by TargetID (a player GUID) dispatches the event."),
+	Host            = 3 UMETA(DisplayName = "Host", ToolTip = "Only the elected host dispatches the event."),
+	AllExceptSender = 4 UMETA(DisplayName = "All Except Sender", ToolTip = "Every client in range except the one that sent the event."),
 };
 
 /**

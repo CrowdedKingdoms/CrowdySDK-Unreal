@@ -36,11 +36,11 @@ public:
 	virtual void Deinitialize() override;
 
 	/** Fires on the game thread for each emote that reaches this client. The sender, the target and the emote text are what the sender's client claims, not proven; treat the text as untrusted and map it through your own list before using it as an asset key. */
-	UPROPERTY(BlueprintAssignable, Category = "Crowdy|Game Kit|Emotes")
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Kit|Emotes")
 	FCrowdyKitOnEmote OnEmote;
 
 	/** The emotes subsystem of the world Context Object is in; None outside a game world. */
-	UFUNCTION(BlueprintPure, Category = "Crowdy|Game Kit|Emotes", meta = (WorldContext = "WorldContextObject", DisplayName = "Get Kit Emotes"))
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Kit|Emotes", meta = (WorldContext = "WorldContextObject", DisplayName = "Get Kit Emotes"))
 	static UCrowdyKitEmotes* GetKitEmotes(const UObject* WorldContextObject);
 
 	/**
@@ -50,7 +50,7 @@ public:
 	 * there is no local pawn, or Target is not a replicated actor this client has heard from. True means the connection
 	 * accepted it, not that anyone received it.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Crowdy|Game Kit|Emotes", meta = (WorldContext = "WorldContextObject", DisplayName = "Send Emote"))
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Kit|Emotes", meta = (WorldContext = "WorldContextObject", DisplayName = "Send Emote"))
 	static bool SendEmoteInWorld(const UObject* WorldContextObject, const FString& Emote, AActor* Target, FString& Reason);
 
 	/** The same send on this world's subsystem. */

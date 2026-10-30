@@ -13,7 +13,7 @@ USTRUCT(BlueprintType)
 struct CROWDYSERVICES_API FCrowdyAvatarList
 {
 	GENERATED_BODY()
-	UPROPERTY(BlueprintReadOnly, Category="Crowdy")
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars")
 	TArray<FCrowdyAvatar> Avatars;
 };
 
@@ -21,7 +21,7 @@ USTRUCT(BlueprintType)
 struct CROWDYSERVICES_API FCrowdyAppAvatarStateList
 {
 	GENERATED_BODY()
-	UPROPERTY(BlueprintReadOnly, Category="Crowdy")
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars")
 	TArray<FCrowdyAppAvatarState> AppStates;
 };
 

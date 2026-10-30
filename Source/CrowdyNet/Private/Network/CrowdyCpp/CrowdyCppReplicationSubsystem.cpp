@@ -1466,6 +1466,28 @@ bool UCrowdyCppReplicationSubsystem::IsPolling() const
 	return PollTickerHandle.IsValid();
 }
 
+bool UCrowdyCppReplicationSubsystem::AdmitSendRefusalLog()
+{
+	const double Now = FPlatformTime::Seconds();
+
+	int32 Suppressed = 0;
+	{
+		FScopeLock Lock(&SendRefusalLogMutex);
+		if (SendRefusalWindowStartedSeconds > 0.0 && Now - SendRefusalWindowStartedSeconds < 1.0)
+		{
+			++SendRefusalsSuppressedThisWindow;
+			return false;
+		}
+
+		Suppressed = SendRefusalsSuppressedThisWindow;
+		SendRefusalWindowStartedSeconds = Now;
+		SendRefusalsSuppressedThisWindow = 0;
+	}
+
+	UE_CLOG(Suppressed > 0, LogCrowdyNet, Warning, TEXT("%d further refused sends were not reported."), Suppressed);
+	return true;
+}
+
 ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrowdyMessage& Message)
 {
 	// Ahead of the connection check on purpose, so that a locally delivered crowd does not need a
@@ -1512,7 +1534,7 @@ ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrow
 	FString Error;
 	if (!CrowdyCppSend::SplitMessage(Message, Serialized, Frame, Error))
 	{
-		UE_LOG(LogCrowdyNet, Warning, TEXT("Dropped a %s: %s."), *Message.GetTypeName().ToString(), *Error);
+		UE_CLOG(AdmitSendRefusalLog(), LogCrowdyNet, Warning, TEXT("Dropped a %s: %s."), *Message.GetTypeName().ToString(), *Error);
 		return ECrowdyCppSendOutcome::Refused;
 	}
 
@@ -1523,7 +1545,7 @@ ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrow
 
 	if (!bAccepted)
 	{
-		UE_LOG(LogCrowdyNet, Warning, TEXT("The replication connection refused a %s: %s."),
+		UE_CLOG(AdmitSendRefusalLog(), LogCrowdyNet, Warning, TEXT("The replication connection refused a %s: %s."),
 			*Message.GetTypeName().ToString(), *Error);
 		return ECrowdyCppSendOutcome::Refused;
 	}

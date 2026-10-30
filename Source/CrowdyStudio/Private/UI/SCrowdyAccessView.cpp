@@ -2,6 +2,7 @@
 
 #include "UI/SCrowdyAccessView.h"
 
+#include "Misc/MessageDialog.h"
 #include "Model/FCrowdyStudioController.h"
 #include "Style/CrowdyStudioStyle.h"
 #include "Styling/CoreStyle.h"
@@ -411,8 +412,14 @@ TSharedRef<ITableRow> SCrowdyAccessView::MakeTierRow(TSharedPtr<FStudioAccessTie
 		.OnClicked_Lambda([this, TierId, Granted]()
 		{
 			if (!Controller.IsValid() || SelectedFeatureKey.IsEmpty() || IsAccessBusy()) { return FReply::Handled(); }
-			if (Granted()) { Controller->RevokeTierFeature(TierId, SelectedFeatureKey); }
-			else { Controller->GrantTierFeature(TierId, SelectedFeatureKey); }
+			if (!Granted())
+			{
+				Controller->GrantTierFeature(TierId, SelectedFeatureKey);
+				return FReply::Handled();
+			}
+			const EAppReturnType::Type Choice = FMessageDialog::Open(EAppMsgType::YesNo,
+				FText::Format(LOCTEXT("RevokeTierFeatureConfirm", "Revoke '{0}' from this tier? Players on this tier lose the feature."), FText::FromString(SelectedFeatureKey)));
+			if (Choice == EAppReturnType::Yes) { Controller->RevokeTierFeature(TierId, SelectedFeatureKey); }
 			return FReply::Handled();
 		})
 		[

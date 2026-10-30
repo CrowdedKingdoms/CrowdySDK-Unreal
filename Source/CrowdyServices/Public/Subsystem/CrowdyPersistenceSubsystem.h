@@ -20,24 +20,10 @@ struct CROWDYSERVICES_API FCrowdyWildcardStruct { GENERATED_BODY() };
 
 
 /**
- * UCrowdyPersistenceSubsystem
- *
  * Generic persistent state storage using the server's voxel grid.
- *
- * ── Storage layout ────────────────────────────────────────────────────────────
- *   One chunk per struct TYPE:  ChunkX = TypeID,  ChunkY = 0,  ChunkZ = 0
- *   One voxel per INSTANCE:     Vx = CRC32(InstanceKey) % 32767 + 1
- *   Singleton (no instance):    Vx = 0
- *
- * ── Push / Pull ───────────────────────────────────────────────────────────────
- *   Push:  UDP (FVoxelStateUpdateRequest): fast, low-latency.
- *          If UDP is not yet connected the push is queued and flushed on connect.
- *   Pull:  GraphQL getVoxelList: reads all instances for a struct type at once.
- *
- * ── Reliability ───────────────────────────────────────────────────────────────
- *   After each push the subsystem schedules a verification pull.
- *   If the voxel is not found on the server, the push is retried automatically
- *   (up to MaxPushRetries times, spaced PushVerifyDelaySeconds apart).
+ * One chunk per struct type (ChunkX = TypeID) and one voxel per instance (Vx = CRC32(InstanceKey) % 32767 + 1, 0 for singletons).
+ * Push goes over UDP and is queued until connected; pull reads every instance of a struct type through GraphQL.
+ * Each push is verified by a follow-up pull and retried up to MaxPushRetries times, PushVerifyDelaySeconds apart.
  */
 UCLASS(meta=(DisplayName="Crowdy Persistence Subsystem"))
 class CROWDYSERVICES_API UCrowdyPersistenceSubsystem
@@ -61,7 +47,7 @@ public:
 	 * Subject is the actor or object whose state is being pushed: used to derive
 	 * the instance key automatically. Pass nullptr for singleton types.
 	 */
-	UFUNCTION(BlueprintCallable, CustomThunk, Category="Crowdy|Persistence",
+	UFUNCTION(BlueprintCallable, CustomThunk, Category="Crowdy SDK|Persistence",
 		meta=(CustomStructureParam="State", AutoCreateRefTerm="State",
 		      DisplayName="Push State"))
 	void K2_PushState(const FCrowdyWildcardStruct& State, UObject* Subject);
@@ -74,7 +60,7 @@ public:
 	 * OnSuccess fires with OutState populated; OnFailure fires if the slot is
 	 * empty or a network error occurred.
 	 */
-	UFUNCTION(BlueprintCallable, CustomThunk, Category="Crowdy|Persistence",
+	UFUNCTION(BlueprintCallable, CustomThunk, Category="Crowdy SDK|Persistence",
 		meta=(CustomStructureParam="OutState",
 		      Latent, LatentInfo="LatentInfo",
 		      ExpandEnumAsExecs="Result",
@@ -122,11 +108,13 @@ public:
 	 *
 	 * Also cancels any pending pushes and verifications.
 	 *
-	 * ⚠ UDP must be connected for the messages to reach the server.
-	 *    Call this before logout/disconnect for guaranteed delivery.
+	 * UDP must be connected for the messages to reach the server, so call this before logout or disconnect.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Crowdy|Persistence")
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Persistence")
 	void ClearAllState();
+
+	/** The instance key a pushed or pulled subject is stored under. */
+	static FString DeriveInstanceKey(const UObject* Owner);
 
 private:
 
@@ -243,8 +231,6 @@ private:
 
 	void ScanAndRegisterStructs();
 	void RegisterPersistentStruct(UScriptStruct* Struct);
-
-	static FString DeriveInstanceKey(const UObject* Owner);
 
 	/** CRC32 hash of Key → Vx slot (1..32767). Returns 0 for empty keys (singletons). */
 	static int16 HashInstanceKey(const FString& Key);

@@ -1206,6 +1206,52 @@ bool FCrowdyStateNonHostPushIsNotHostSourcedTest::RunTest(const FString& Paramet
 	return true;
 }
 
+// A misspelt property name is reported once per class and name, however many times it is marked, and emits nothing.
+// The name is unique per run because the once-only memory outlives the test.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateMarkUnknownPropertyWarnsOnceTest,
+	"CrowdySDK.State.MarkUnknownPropertyWarnsOnce", CrowdyStateReplicatorTestFlags)
+bool FCrowdyStateMarkUnknownPropertyWarnsOnceTest::RunTest(const FString& Parameters)
+{
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	if (!TestNotNull(TEXT("registry created"), Registry))
+	{
+		return false;
+	}
+
+	const FGuid LocalPlayer = FGuid::NewGuid();
+	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, LocalPlayer);
+
+	UCrowdyEntitySubsystem* ES = MakeEntitySubsystem(LocalPlayer);
+	Rep->SetEntitySubsystemForTest(ES);
+	Rep->SetHostIDForTest(LocalPlayer);
+
+	int32 Emitted = 0;
+	Rep->DispatchHookForTests = [&Emitted](const FCrowdyStateDelta& /*Delta*/, bool /*bTargeted*/)
+	{
+		++Emitted;
+	};
+
+	ACrowdyStateHostOverrideActor* Target = NewObject<ACrowdyStateHostOverrideActor>();
+	if (!TestNotNull(TEXT("target created"), Target) || !TestNotNull(TEXT("target entity component present"), Target->Entity.Get()))
+	{
+		return false;
+	}
+	Target->Entity->HostOverride = ECrowdyHostOverride::Allow;
+
+	const FGuid Id = FGuid::NewGuid();
+	RegisterUntrackedProxy(ES, Id, Target);
+
+	const FName Misspelt(*FString::Printf(TEXT("NoSuchProperty_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+	AddExpectedMessagePlain(Misspelt.ToString(), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	Rep->MarkStateDirty(Id, Misspelt);
+	Rep->MarkStateDirty(Id, Misspelt);
+	Rep->RunReplicationLoopForTest();
+
+	TestEqual(TEXT("an unknown property emits nothing"), Emitted, 0);
+	return true;
+}
+
 // A (map off-switch) + the load-bearing invariant: with the map keyframe interval set to 0 the heartbeat is
 // suppressed map-wide even for CrowdyHeartbeat-marked properties, yet on-change replication is UNAFFECTED  a
 // changed property still ships on the next tick, as a non-keyframe delta. A regression that gated the diff on the

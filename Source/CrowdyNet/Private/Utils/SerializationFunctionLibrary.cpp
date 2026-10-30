@@ -466,7 +466,9 @@ bool USerializationFunctionLibrary::SerializeActorState(const FInstancedStruct& 
 
 	if (!UActorUpdatePayloadRegistry::Get()->GetID(StructType, TypeID))
 	{
-		UE_LOG(LogCrowdyNet, Error, TEXT("[SerializeActorState]: Failed to get ID for script struct"));
+		UE_LOG(LogCrowdyNet, Error,
+			TEXT("[SerializeActorState]: '%s' has no wire id, so the update was not sent. A state struct is registered when a StateExecutor returns it from GetStateStruct. If two structs share an id, give one an explicit TypeID via IDOverrides in CrowdySDKDeveloperSettings (Project Settings, Plugins, Crowdy SDK)."),
+			*GetNameSafe(StructType));
 		return false;
 	}
 
@@ -675,7 +677,9 @@ bool USerializationFunctionLibrary::SerializeEventState(const FInstancedStruct& 
 	FCrowdyTypeID TypeID;
 	if (!UEventPayloadRegistry::Get()->GetID(StructType, TypeID))
 	{
-		UE_LOG(LogCrowdyNet, Error, TEXT("[SerializeEventState]: Failed to get ID for script struct"));
+		UE_LOG(LogCrowdyNet, Error,
+			TEXT("[SerializeEventState]: '%s' has no wire id, so the event was not sent. An event struct is registered when a handler subscribes to it (a reception layer's Supported Events, or SubscribeToEventPayload). If two structs share an id, give one an explicit TypeID via IDOverrides in CrowdySDKDeveloperSettings (Project Settings, Plugins, Crowdy SDK)."),
+			*GetNameSafe(StructType));
 		return false;
 	}
 
@@ -750,7 +754,7 @@ bool USerializationFunctionLibrary::AppendEventState(const UScriptStruct* Struct
 			// an empty frame rather than being reported by the caller. It was filed under LogTemp, which
 			// is not the category anyone tailing this path is watching.
 			UE_LOG(LogCrowdyNet, Error,
-				TEXT("[AppendEventState]: Failed to get ID for InitialState struct"));
+				TEXT("[AppendEventState]: Failed to get ID for InitialState struct '%s'"), *GetNameSafe(InnerStructType));
 			return false;
 		}
 

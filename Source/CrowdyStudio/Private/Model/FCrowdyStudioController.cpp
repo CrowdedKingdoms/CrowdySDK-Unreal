@@ -28,6 +28,8 @@ namespace
 	static constexpr double MagicLinkTimeoutSeconds = 180.0;
 	static constexpr double SocialSignInTimeoutSeconds = 300.0;
 
+	const TCHAR* const ClientUnavailableMessage = TEXT("Could not reach Crowdy. Check the Backend chosen on the Sign In page and your network; details are in the Output Log (LogCrowdyStudio).");
+
 	// BigInt travels as a decimal string on the wire, never a JSON number.
 	void SetBigIntField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, int64 Value)
 	{
@@ -278,7 +280,7 @@ void FCrowdyStudioController::LoginWithEmail(const FString& Email, const FString
 	const TSharedPtr<FCrowdyCppClient> Client = ResolveApiClient(TEXT("login"));
 	if (!Client.IsValid())
 	{
-		SetStatus(TEXT("Authentication client unavailable."), true);
+		SetStatus(ClientUnavailableMessage, true);
 		return;
 	}
 
@@ -423,7 +425,7 @@ void FCrowdyStudioController::SignInWithSocial(const FString& Provider)
 		LoopbackServer->Stop();
 		// Clear the guard so the user can retry once the client is available.
 		bLoopbackFlowPending = false;
-		SetStatus(TEXT("Authentication client unavailable."), true);
+		SetStatus(ClientUnavailableMessage, true);
 		return;
 	}
 
@@ -522,7 +524,7 @@ void FCrowdyStudioController::CompleteSocialSignIn(const FString& Provider, cons
 	const TSharedPtr<FCrowdyCppClient> Client = ResolveApiClient(TEXT("socialLoginComplete"));
 	if (!Client.IsValid())
 	{
-		SetStatus(TEXT("Authentication client unavailable."), true);
+		SetStatus(ClientUnavailableMessage, true);
 		return;
 	}
 
@@ -596,7 +598,7 @@ void FCrowdyStudioController::SignInWithMagicLink(const FString& Email)
 		// Nothing will ever call back into the listener armed a moment ago, so drop it rather than let it linger
 		// until timeout.
 		LoopbackServer->Stop();
-		SetStatus(TEXT("Authentication client unavailable."), true);
+		SetStatus(ClientUnavailableMessage, true);
 		return;
 	}
 
@@ -672,7 +674,7 @@ void FCrowdyStudioController::CompleteMagicLink(const FString& Token, const FStr
 	const TSharedPtr<FCrowdyCppClient> Client = ResolveApiClient(TEXT("completeLoginLink"));
 	if (!Client.IsValid())
 	{
-		SetStatus(TEXT("Authentication client unavailable."), true);
+		SetStatus(ClientUnavailableMessage, true);
 		return;
 	}
 
@@ -841,7 +843,7 @@ void FCrowdyStudioController::RunAccountCall(const TCHAR* Doing,
 	const TSharedPtr<FCrowdyCppClient> Client = ResolveApiClient(TEXT("account"));
 	if (!Client.IsValid())
 	{
-		SetStatus(TEXT("Could not construct the API client; the operation was not sent."), true);
+		SetStatus(ClientUnavailableMessage, true);
 		return;
 	}
 
@@ -1984,9 +1986,14 @@ void FCrowdyStudioController::RevokeGroupFromGrid(int64 GridId, int64 GroupId, b
 
 void FCrowdyStudioController::FetchGridUserPermissions(int64 GridId, int64 InUserId)
 {
-	if (SelectedAppId == 0 || GridId == 0 || InUserId == 0)
+	if (SelectedAppId == 0 || GridId == 0)
 	{
-		SetStatus(TEXT("Select an app, grid, and user to read effective permissions."), true);
+		SetStatus(TEXT("Select an app and a grid to read effective permissions."), true);
+		return;
+	}
+	if (InUserId == 0)
+	{
+		SetStatus(TEXT("Enter a numeric user id."), true);
 		return;
 	}
 
@@ -2005,7 +2012,17 @@ void FCrowdyStudioController::FetchGridUserPermissions(int64 GridId, int64 InUse
 
 void FCrowdyStudioController::GrantGridPermissions(int64 GridId, int64 InUserId, const TArray<FString>& PermissionKeys)
 {
-	if (SelectedAppId == 0 || GridId == 0 || InUserId == 0 || PermissionKeys.Num() == 0)
+	if (SelectedAppId == 0 || GridId == 0)
+	{
+		SetStatus(TEXT("A user grant needs an app, grid, user, and at least one key."), true);
+		return;
+	}
+	if (InUserId == 0)
+	{
+		SetStatus(TEXT("Enter a numeric user id."), true);
+		return;
+	}
+	if (PermissionKeys.Num() == 0)
 	{
 		SetStatus(TEXT("A user grant needs an app, grid, user, and at least one key."), true);
 		return;
@@ -2031,9 +2048,14 @@ void FCrowdyStudioController::GrantGridPermissions(int64 GridId, int64 InUserId,
 
 void FCrowdyStudioController::RevokeGridPermissions(int64 GridId, int64 InUserId, const TArray<FString>& PermissionKeys)
 {
-	if (SelectedAppId == 0 || GridId == 0 || InUserId == 0)
+	if (SelectedAppId == 0 || GridId == 0)
 	{
-		SetStatus(TEXT("Select an app, grid, and user to revoke."), true);
+		SetStatus(TEXT("Select an app and a grid to revoke."), true);
+		return;
+	}
+	if (InUserId == 0)
+	{
+		SetStatus(TEXT("Enter a numeric user id."), true);
 		return;
 	}
 
@@ -2423,7 +2445,7 @@ void FCrowdyStudioController::IssueOperation(ECrowdyCppApiDomain Domain, const T
 		// Returning without doing so would leave a plan run waiting on a reply that can never arrive.
 		if (bReportErrors)
 		{
-			SetStatus(TEXT("Could not construct the API client; the operation was not sent."), true);
+			SetStatus(ClientUnavailableMessage, true);
 		}
 		// Not a cancellation: the client simply couldn't be built.
 		bLastFailureWasCanceled = false;
@@ -2678,7 +2700,7 @@ void FCrowdyStudioController::StartMint(bool bConsentAsked)
 	const TSharedPtr<FCrowdyCppClient> Client = ResolveApiClient(TEXT("mintAppToken"));
 	if (!Client.IsValid())
 	{
-		SetStatus(TEXT("Authentication client unavailable."), true);
+		SetStatus(ClientUnavailableMessage, true);
 		FinishMint(MintForAppId, false);
 		return;
 	}
@@ -2715,7 +2737,7 @@ void FCrowdyStudioController::StartMint(bool bConsentAsked)
 			}
 			if (Result.AppToken.IsEmpty())
 			{
-				Self->SetStatus(TEXT("The server minted an empty app token; treating it as unavailable."), true);
+				Self->SetStatus(TEXT("The server returned an empty access credential for this app, so it was not used. Try again, or sign in again."), true);
 				Self->FinishMint(MintForAppId, false);
 				return;
 			}

@@ -16,17 +16,17 @@ class CROWDYREPLICATION_API UHelperFunctions : public UBlueprintFunctionLibrary
 	GENERATED_BODY()
 public:
 	
-	UFUNCTION(BlueprintPure, Category = "CrowdySDK|Coordinates", meta = (DisplayName = "Get Chunk Coordinate At Location", WorldContext="WorldContextObject"))
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Coordinates", meta = (DisplayName = "Get Chunk Coordinate At Location", WorldContext="WorldContextObject"))
 	static void GetChunkCoordinateAtLocation(UObject* WorldContextObject, const FVector& WorldLocation, int64& ChunkX, int64& ChunkY, int64& ChunkZ);
 	
 	UE_DEPRECATED(5.8, TEXT("Use Get Chunk Coordinate At Location instead"))
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "CrowdySDK|Coordinates", meta = (DeprecatedFunction, DeprecationMessage = "Use Get Chunk Coordinate At Location instead"))
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Coordinates", meta = (DeprecatedFunction, DeprecationMessage = "Use Get Chunk Coordinate At Location instead"))
 	static void GetChunkCoordinatesAtWorldLocation(const FVector& WorldLocation, int64& ChunkX, int64& ChunkY, int64& ChunkZ);
 	
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "CrowdySDK|Coordinates")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Coordinates")
 	static void GetVoxelCoordinatesAtWorldLocation(const FVector& WorldLocation, int32& VoxelX, int32& VoxelY, int32& VoxelZ, const int32 ChunkSize = 1600);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "CrowdySDK|Identifiers")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Identifiers")
 	static FString GetNewUUID();
 	
 	// Turns Seed into a 128-bit FGuid that is the same on every client (unlike FGuid::NewGuid, which is
@@ -36,9 +36,9 @@ public:
 	// a player's entity id is derived from their user id this way, so changing the derivation changes every id
 	// already issued. Collisions are handled at the point ids enter the registry
 	// (UCrowdyEntitySubsystem::RegisterEntity), not by widening this hash.
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "CrowdySDK|Identifiers")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Identifiers")
 	static FGuid GetDeterministicID(const int64 Seed);
 	
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "CrowdySDK|Identifiers")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Identifiers")
 	static FGuid GetNewID();
 };

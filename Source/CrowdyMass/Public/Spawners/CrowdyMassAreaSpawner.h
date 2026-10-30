@@ -88,6 +88,7 @@ private:
 	TArray<FMassEntityHandle> SpawnedEntities;
 
 	bool bToldNoCrowdRows = false;
+	bool bToldNoEntityClass = false;
 
 	void BuildSpawnTransforms(TArray<FTransform>& OutTransforms) const;
 	bool ProjectSpawnLocationToGround(FVector& InOutLocation) const;

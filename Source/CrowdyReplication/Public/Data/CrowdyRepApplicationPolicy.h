@@ -21,7 +21,7 @@ public:
 	* Called once when an instance slot is activated.
 	* Use this to set the initial state on the actor.
 	*/
-	UFUNCTION(BlueprintNativeEvent, Category="Replication Policy")
+	UFUNCTION(BlueprintNativeEvent, Category="Crowdy SDK|Actor Pool")
 	void OnInstanceActivated(AActor* Actor, const FInstancedStruct& InitialState);
 	virtual void OnInstanceActivated_Implementation(AActor* Actor, const FInstancedStruct& InitialState) {}
 
@@ -29,13 +29,13 @@ public:
 	 * Extract interpolatable fields from a raw state struct.
 	 * Returns false if the struct type is wrong, the subsystem will skip the update.
 	 */
-	virtual bool ExtractFields(const FInstancedStruct& State, int64 ServerTimestampMs, int32 SlotId) PURE_VIRTUAL(UReplicationPolicy::ExtractFields, return false;);
+	virtual bool ExtractFields(const FInstancedStruct& State, int64 ServerTimestampMs, int32 SlotId) PURE_VIRTUAL(UCrowdyRepApplicationPolicy::ExtractFields, return false;);
 
 	/**
 	 * Apply interpolated data to an actor this frame.
 	 * SlotId is passed so you can read back from your own SoA buffers.
 	 */
-	virtual void ApplyToActor(AActor* Actor, int32 SlotId, int64 RenderTimeMs) PURE_VIRTUAL(UReplicationPolicy::ApplyToActor,);
+	virtual void ApplyToActor(AActor* Actor, int32 SlotId, int64 RenderTimeMs) PURE_VIRTUAL(UCrowdyRepApplicationPolicy::ApplyToActor,);
 
 	/**
 	 * Called when a slot is deactivated (UUID left).

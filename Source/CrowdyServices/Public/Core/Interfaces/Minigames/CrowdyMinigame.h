@@ -24,9 +24,9 @@ class CROWDYSERVICES_API ICrowdyMinigame
 public:
 	
 	// Just a dummy function, this will probably be filled with useful information about the minigame later
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|Minigame")
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|Minigame")
 	FName GetMinigameName();
 	
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|Minigame")
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|Minigame")
 	void JoinMinigame();
 };

@@ -123,13 +123,14 @@ TSharedRef<SWidget> CrowdyStudioWidgets::GroupLabel(const FText& Text)
 	return SNew(STextBlock).Text(Text).TextStyle(&FCrowdyStudioStyle::Get(), "Crowdy.Text.SectionLabel");
 }
 
-TSharedRef<SWidget> CrowdyStudioWidgets::Badge(const FText& Label, EBadgeTone Tone)
+TSharedRef<SWidget> CrowdyStudioWidgets::Badge(const FText& Label, EBadgeTone Tone, const FText& Tooltip)
 {
 	const FLinearColor Strong = StrongForTone(Tone);
 	FLinearColor Fill = Strong;
 	Fill.A = 0.16f;
 
 	return SNew(SBorder)
+		.ToolTipText(Tooltip)
 		.BorderImage(FCrowdyStudioStyle::Get().GetBrush("Crowdy.Pill"))
 		.BorderBackgroundColor(FSlateColor(Fill))
 		.Padding(FMargin(8.0f, 2.0f))

@@ -147,6 +147,10 @@ TSharedRef<SWidget> SCrowdyCreateAppDialog::BuildAppStep()
 		[
 			SAssignNew(NameBox, SEditableTextBox).Style(&Style, "Crowdy.Input")
 			.HintText(LOCTEXT("AppNameHint", "My Game"))
+			.OnTextCommitted_Lambda([this](const FText&, ETextCommit::Type CommitType)
+			{
+				if (CommitType == ETextCommit::OnEnter) OnContinueClicked();
+			})
 			.OnTextChanged_Lambda([this](const FText& T)
 			{
 				Error = FText::GetEmpty();

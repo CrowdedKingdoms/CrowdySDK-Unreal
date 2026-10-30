@@ -339,7 +339,7 @@ public:
 	/**
 	 * Returns true if a non-empty saved session exists on disk.
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Authentication")
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
 	bool HasSavedSession() const;
 
 	/**

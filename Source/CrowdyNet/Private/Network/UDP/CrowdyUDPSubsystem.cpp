@@ -49,8 +49,8 @@ FUDPNetworkStatistics UCrowdyUDPSubsystem::GetUDPNetworkStats() const
 		Stats.SendRecvRatio = static_cast<float>(Stats.BytesSent) / static_cast<float>(Stats.BytesReceived);
 	
 	if (Stats.TotalClientNotifiesSent > 0)
-		Stats.ClientNotifyLossPercentage = ((Stats.TotalClientNotifiesSent - Stats.TotalClientNotifiesReceived) /
-			static_cast<float>(Stats.TotalClientNotifiesSent)) * 100.0f;
+		Stats.ClientNotifyLossPercentage = FMath::Clamp(((Stats.TotalClientNotifiesSent - Stats.TotalClientNotifiesReceived) /
+			static_cast<float>(Stats.TotalClientNotifiesSent)) * 100.0f, 0.0f, 100.0f);
 	
 	return Stats;
 }

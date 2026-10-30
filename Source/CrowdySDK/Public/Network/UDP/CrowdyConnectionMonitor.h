@@ -36,10 +36,10 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	
-	UPROPERTY(BlueprintAssignable, Category = "CrowdySDK|Connection|Status")
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Connection|Status")
 	FOnConnectionStatusChange OnConnectionStateChanged;
 
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Connection|Status")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection|Status")
 	void InitConnectionMonitor();
 
 	// Binds the monitor's handlers to the given subsystems. InitConnectionMonitor resolves them from the game
@@ -47,7 +47,7 @@ public:
 	void AttachTo(UCrowdySDKSubsystem* Sdk, UCrowdyUDPSubsystem* Udp);
 
 	// The last state the monitor reported, for a HUD that polls instead of binding OnConnectionStateChanged.
-	UFUNCTION(BlueprintPure, Category = "CrowdySDK|Connection|Status")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Connection|Status")
 	ECrowdyReconnectState GetReconnectState() const { return ReconnectState; }
 
 private:
