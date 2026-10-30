@@ -36,6 +36,7 @@ struct FCrowdyVoiceRuntime final : ICrowdyVoiceSpeakerOutput, ICrowdyVoiceFrameS
 	explicit FCrowdyVoiceRuntime(UVoiceChatSubsystem& InOwner)
 		: Owner(InOwner)
 		, Mic(MakeCrowdyVoiceEngineMicDevice(), *this)
+		, Feed(*this)
 		, Playback(*this)
 	{
 	}
@@ -74,6 +75,7 @@ struct FCrowdyVoiceRuntime final : ICrowdyVoiceSpeakerOutput, ICrowdyVoiceFrameS
 
 	UVoiceChatSubsystem& Owner;
 	FCrowdyVoiceMic Mic;
+	FCrowdyVoiceFeed Feed;
 	FCrowdyVoicePlayback Playback;
 	FCrowdyCppVoiceEncoder Encoder;
 	FCrowdyVoiceDeviceMonitor Monitor;
@@ -120,6 +122,7 @@ void UVoiceChatSubsystem::Deinitialize()
 
 	if (Runtime)
 	{
+		Runtime->Feed.End();
 		Runtime->Mic.Stop();
 		Runtime->Playback.ForgetAll();
 		BroadcastChanges();
@@ -168,6 +171,12 @@ void UVoiceChatSubsystem::Tick(const float DeltaTime)
 		Runtime->Mic.RetryIfNoDevice(NowMs);
 	}
 
+	// A microphone that reopened by itself takes the stream over, so a fed spurt still open ends first.
+	const ECrowdyVoiceMicState MicState = Runtime->Mic.GetState();
+	if (MicState == ECrowdyVoiceMicState::Starting || MicState == ECrowdyVoiceMicState::Capturing)
+	{
+		Runtime->Feed.End();
+	}
 	Runtime->Mic.Pump(NowMs);
 	Runtime->Playback.Update(NowMs, StreamTimeoutMs);
 
@@ -193,6 +202,8 @@ void UVoiceChatSubsystem::StartVoiceChat()
 		return;
 	}
 
+	// A fed spurt ends first, so the microphone's frames start a spurt of their own.
+	Runtime->Feed.End();
 	Runtime->Mic.Start(CrowdyVoiceNowMs());
 	BroadcastChanges();
 }
@@ -237,6 +248,41 @@ void UVoiceChatSubsystem::SetStreamTimeoutThreshold(const float InSeconds)
 void UVoiceChatSubsystem::SetOwnerEcho(const bool bEnable)
 {
 	bOwnerEcho = bEnable;
+}
+
+void UVoiceChatSubsystem::SetDistance(const int32 Chunks)
+{
+	DistanceChunks = FCrowdyVoiceSettings::ClampDistance(Chunks);
+	UE_CLOG(DistanceChunks != Chunks, LogCrowdyVoice, Warning,
+		TEXT("Voice chat distance %d is outside 0 to %d chunks; using %d."), Chunks, FCrowdyVoiceSettings::MaxDistanceChunks, DistanceChunks);
+}
+
+bool UVoiceChatSubsystem::FeedVoicePcm(const TConstArrayView<int16> Samples)
+{
+	if (!Runtime || !Runtime->Encoder.IsValid())
+	{
+		return false;
+	}
+
+	const ECrowdyVoiceMicState MicState = Runtime->Mic.GetState();
+	if (MicState == ECrowdyVoiceMicState::Starting || MicState == ECrowdyVoiceMicState::Capturing)
+	{
+		return false;
+	}
+
+	Runtime->Feed.Push(Samples);
+	BroadcastChanges();
+	return true;
+}
+
+void UVoiceChatSubsystem::EndVoiceFeed()
+{
+	if (!Runtime)
+	{
+		return;
+	}
+	Runtime->Feed.End();
+	BroadcastChanges();
 }
 
 ECrowdyVoiceMicState UVoiceChatSubsystem::GetMicState() const
@@ -337,11 +383,22 @@ void UVoiceChatSubsystem::SendFrame(const TConstArrayView<int16> Frame, const bo
 		return;
 	}
 
-	const FInt64Vector Chunk = GameSession->GetPlayerCurrentChunkCoordinates();
+	// Between pawns (a respawn, the end of a map) the voice stays where the pawn last stood.
+	FInt64Vector Chunk;
+	if (GameSession->TryGetLocalPlayerChunk(GetWorld(), Chunk))
+	{
+		LastPawnChunk = Chunk;
+		bHasPawnChunk = true;
+	}
+	else
+	{
+		Chunk = bHasPawnChunk ? LastPawnChunk : GameSession->GetPlayerCurrentChunkCoordinates();
+	}
 	Voice.OutPacket.AppID = GameSession->GetAppID();
 	Voice.OutPacket.ChunkX = Chunk.X;
 	Voice.OutPacket.ChunkY = Chunk.Y;
 	Voice.OutPacket.ChunkZ = Chunk.Z;
+	Voice.OutPacket.ReplicationDistance = static_cast<ECrowdyReplicationDistance>(DistanceChunks);
 	Voice.OutPacket.UUID = LocalSenderId;
 	SdkBridge->SendMessageFn(Voice.OutPacket);
 	++Stats.PacketsSent;

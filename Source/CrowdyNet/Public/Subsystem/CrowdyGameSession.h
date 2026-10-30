@@ -7,6 +7,7 @@
 #include <atomic>
 #include "CrowdyGameSession.generated.h"
 
+class UWorld;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnOwnerUUIDUpdated, FString, NewOwnerUUID);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnHostIDUpdated, const FGuid&, NewHostID, const FGuid&, PreviousHostID);
@@ -279,7 +280,13 @@ public:
 	
 	UFUNCTION()
 	FInt64Vector GetPlayerCurrentChunkCoordinates() const {return GameSessionInfo.CurrentPlayerChunkCoordinates;}
-	
+
+	/** The chunk World's first local player's pawn stands in, where its spatial sends are addressed; the cached chunk when there is no pawn. */
+	FInt64Vector GetLocalPlayerChunk(const UWorld* World) const;
+
+	/** The chunk World's first local player's pawn stands in, or false with OutChunk untouched when there is no pawn. */
+	bool TryGetLocalPlayerChunk(const UWorld* World, FInt64Vector& OutChunk) const;
+
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetChunkSize(const double ChunkSize)
 	{

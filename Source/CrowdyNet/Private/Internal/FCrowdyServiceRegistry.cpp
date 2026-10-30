@@ -627,6 +627,7 @@ bool FCrowdyServiceRegistry::IsOpcodeEverParsed(const ECrowdyMessageType Message
 	case ECrowdyMessageType::VOXEL_UPDATE_NOTIFICATION:
 	case ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION:
 	case ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION:
+	case ECrowdyMessageType::CLIENT_TEXT_NOTIFICATION:
 	case ECrowdyMessageType::CLIENT_EVENT_NOTIFICATION:
 	case ECrowdyMessageType::SERVER_EVENT_NOTIFICATION:
 	case ECrowdyMessageType::GENERIC_SPATIAL_1:
