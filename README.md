@@ -5,10 +5,17 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.21.2** (Unreal Engine 5.8). See the
+**Current version: 2.22.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
+
+**New in 2.22.0:** voice chat rebuilt on the voice format the CrowdyJS and CrowdyCPP SDKs share
+(Opus with reordering and loss concealment; every player needs 2.22.0 or later for voice), with
+Get Voice Mic State, On Voice Mic State Changed and On Voice Speaker Talking; remote copies no
+longer flick away after a sender hitches; warnings where mistakes used to fail silently, fewer
+noisy logs, clearer messages, one Crowdy SDK palette category, Studio confirmations, and
+`-run=CrowdyStudio -op=registry` for checking markers from a shell.
 
 **New in 2.21.2:** `CancelSignIn` and `IsSignInPending` stop a sign-in that has not finished
 without signing out, so a cancelled restore keeps the saved session; Game Kit fixes: read kit
