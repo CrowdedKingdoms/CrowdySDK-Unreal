@@ -4,6 +4,9 @@
 #include "Subsystem/CrowdyGameSession.h"
 #include "CrowdyNetLog.h"
 #include "Async/TaskGraphInterfaces.h"
+#include "Engine/World.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 
 void UCrowdyGameSession::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -14,6 +17,31 @@ void UCrowdyGameSession::Initialize(FSubsystemCollectionBase& Collection)
 void UCrowdyGameSession::Deinitialize()
 {
 	Super::Deinitialize();
+}
+
+FInt64Vector UCrowdyGameSession::GetLocalPlayerChunk(const UWorld* World) const
+{
+	FInt64Vector Chunk = GameSessionInfo.CurrentPlayerChunkCoordinates;
+	TryGetLocalPlayerChunk(World, Chunk);
+	return Chunk;
+}
+
+bool UCrowdyGameSession::TryGetLocalPlayerChunk(const UWorld* World, FInt64Vector& OutChunk) const
+{
+	const APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
+	const APawn* Pawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+	const double ChunkSize = GameSessionInfo.ChunkSize;
+	if (!Pawn || ChunkSize <= 0.0)
+	{
+		return false;
+	}
+
+	const FVector Location = Pawn->GetActorLocation();
+	OutChunk = FInt64Vector(
+		static_cast<int64>(FMath::FloorToDouble(Location.X / ChunkSize)),
+		static_cast<int64>(FMath::FloorToDouble(Location.Y / ChunkSize)),
+		static_cast<int64>(FMath::FloorToDouble(Location.Z / ChunkSize)));
+	return true;
 }
 
 void UCrowdyGameSession::SetAppPaused(const bool bPaused, const FString& Reason)

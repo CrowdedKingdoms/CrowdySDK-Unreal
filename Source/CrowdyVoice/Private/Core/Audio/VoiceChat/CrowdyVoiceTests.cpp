@@ -154,6 +154,7 @@ namespace
 	struct FCrowdyVoiceTestVoiceChat
 	{
 		void SetStreamTimeoutThreshold(const float Seconds) { Calls.Add(FString::Printf(TEXT("timeout %.1f"), Seconds)); }
+		void SetDistance(const int32 Chunks) { Calls.Add(FString::Printf(TEXT("distance %d"), Chunks)); }
 		void SetOwnerEcho(const bool bEnable) { Calls.Add(FString::Printf(TEXT("echo %d"), bEnable ? 1 : 0)); }
 		void PlayVoiceChat() { Calls.Add(TEXT("play")); }
 		void MuteVoiceChat() { Calls.Add(TEXT("mute")); }
@@ -515,21 +516,23 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceSettingsTest,
 bool FCrowdyVoiceSettingsTest::RunTest(const FString& Parameters)
 {
 	FCrowdyVoiceSettings Settings;
+	TestEqual(TEXT("voice reaches the farthest the server relays by default"), Settings.DistanceChunks, FCrowdyVoiceSettings::MaxDistanceChunks);
 	Settings.StreamTimeoutSeconds = 3.0f;
+	Settings.DistanceChunks = 1;
 	Settings.bOwnerEcho = true;
 	Settings.bPlaying = true;
 	Settings.bMicWanted = true;
 
 	FCrowdyVoiceTestVoiceChat NextMap;
 	Settings.ApplyTo(NextMap);
-	const TArray<FString> Wanted = { TEXT("timeout 3.0"), TEXT("echo 1"), TEXT("play"), TEXT("start") };
-	TestEqual(TEXT("a mic that was on is started on the next map"), NextMap.Calls, Wanted);
+	const TArray<FString> Wanted = { TEXT("timeout 3.0"), TEXT("distance 1"), TEXT("echo 1"), TEXT("play"), TEXT("start") };
+	TestEqual(TEXT("a mic that was on is started on the next map, at the distance set"), NextMap.Calls, Wanted);
 
 	Settings.bMicWanted = false;
 	Settings.bPlaying = false;
 	FCrowdyVoiceTestVoiceChat AfterStop;
 	Settings.ApplyTo(AfterStop);
-	const TArray<FString> Stopped = { TEXT("timeout 3.0"), TEXT("echo 1"), TEXT("mute") };
+	const TArray<FString> Stopped = { TEXT("timeout 3.0"), TEXT("distance 1"), TEXT("echo 1"), TEXT("mute") };
 	TestEqual(TEXT("a mic that was stopped stays closed"), AfterStop.Calls, Stopped);
 	return true;
 }
@@ -545,6 +548,76 @@ bool FCrowdyVoiceTimeoutClampTest::RunTest(const FString& Parameters)
 		FCrowdyVoiceSettings::MaxStreamTimeoutSeconds);
 	TestEqual(TEXT("not a number reads as the minimum"), FCrowdyVoiceSettings::ClampStreamTimeout(std::numeric_limits<float>::quiet_NaN()),
 		FCrowdyVoiceSettings::MinStreamTimeoutSeconds);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceDistanceClampTest,
+	"CrowdySDK.CrowdyVoice.DistanceIsClamped", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceDistanceClampTest::RunTest(const FString& Parameters)
+{
+	TestEqual(TEXT("an in-range distance is kept"), FCrowdyVoiceSettings::ClampDistance(1), 1);
+	TestEqual(TEXT("the sender's own chunk is a distance"), FCrowdyVoiceSettings::ClampDistance(0), 0);
+	TestEqual(TEXT("a negative distance is raised to 0"), FCrowdyVoiceSettings::ClampDistance(-3), 0);
+	TestEqual(TEXT("past the server's reach is lowered to it"), FCrowdyVoiceSettings::ClampDistance(9), FCrowdyVoiceSettings::MaxDistanceChunks);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceFeedFramesTest,
+	"CrowdySDK.CrowdyVoice.FeedCutsFramesAcrossPushes", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceFeedFramesTest::RunTest(const FString& Parameters)
+{
+	FCrowdyVoiceTestFrameSink Out;
+	FCrowdyVoiceFeed Feed(Out);
+
+	TArray<int16> Samples;
+	Samples.SetNumUninitialized(FCrowdyVoiceMic::FrameSamples * 2 + 100);
+	for (int32 Index = 0; Index < Samples.Num(); ++Index)
+	{
+		Samples[Index] = CrowdyVoiceTestRampValue(Index);
+	}
+
+	const TConstArrayView<int16> All(Samples);
+	Feed.Push(All.Left(500));
+	TestEqual(TEXT("less than a frame sends nothing"), Out.Trace, FString());
+
+	Feed.Push(All.Mid(500, FCrowdyVoiceMic::FrameSamples * 2 - 400));
+	TestEqual(TEXT("each completed frame is sent, the remainder kept"), Out.Trace, FString(TEXT("FF")));
+	if (TestEqual(TEXT("two frames went out"), Out.Frames.Num(), 2))
+	{
+		TestEqual(TEXT("the second frame starts where the first ended"), Out.Frames[1].Samples[0],
+			CrowdyVoiceTestRampValue(FCrowdyVoiceMic::FrameSamples));
+	}
+	TestTrue(TEXT("a voiced feed is mid-spurt"), Feed.IsInSpurt());
+
+	Feed.End();
+	TestEqual(TEXT("ending sends the remainder, padded, as the last frame"), Out.Trace, FString(TEXT("FFL")));
+	if (TestEqual(TEXT("three frames went out"), Out.Frames.Num(), 3))
+	{
+		TestEqual(TEXT("the remainder's first sample is kept"), Out.Frames[2].Samples[0], CrowdyVoiceTestRampValue(FCrowdyVoiceMic::FrameSamples * 2));
+		TestEqual(TEXT("and past it the frame is silence"), Out.Frames[2].Samples[200], static_cast<int16>(0));
+	}
+	TestFalse(TEXT("the spurt is over"), Feed.IsInSpurt());
+
+	Feed.End();
+	TestEqual(TEXT("ending outside a spurt sends nothing"), Out.Trace, FString(TEXT("FFL")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceFeedGateTest,
+	"CrowdySDK.CrowdyVoice.FeedPassesTheSilenceGate", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceFeedGateTest::RunTest(const FString& Parameters)
+{
+	FCrowdyVoiceTestFrameSink Out;
+	FCrowdyVoiceFeed Feed(Out);
+
+	TArray<int16> Silence;
+	Silence.SetNumZeroed(FCrowdyVoiceMic::FrameSamples * 2);
+	Feed.Push(Silence);
+	TestEqual(TEXT("silence is skipped, not sent"), Out.Trace, FString(TEXT("SS")));
+	TestFalse(TEXT("and starts no spurt"), Feed.IsInSpurt());
+
+	Feed.End();
+	TestEqual(TEXT("ending a silent feed sends nothing"), Out.Trace, FString(TEXT("SS")));
 	return true;
 }
 

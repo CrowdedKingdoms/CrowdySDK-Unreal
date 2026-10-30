@@ -74,6 +74,20 @@ public:
 	/** Plays your own voice back to you, as the server returns it. */
 	void SetOwnerEcho(bool bEnable);
 
+	/** How far your voice reaches, in chunks around the chunk your pawn stands in: 0 is that chunk only, 8 (the default) the farthest the server relays. */
+	void SetDistance(int32 Chunks);
+	int32 GetDistance() const { return DistanceChunks; }
+
+	/**
+	 * Sends Samples, 48 kHz mono, as your voice, through the same silence gate, encoder and send path as the microphone.
+	 * Push in real time, about 960 samples every 20 ms: a larger push is sent at once. Refused, answering false, while
+	 * the microphone is starting or capturing, and in a world with no voice chat.
+	 */
+	bool FeedVoicePcm(TConstArrayView<int16> Samples);
+
+	/** Ends the talk spurt Feed Voice Pcm started, so listeners see you stop talking. */
+	void EndVoiceFeed();
+
 	ECrowdyVoiceMicState GetMicState() const;
 	bool IsCapturing() const { return GetMicState() == ECrowdyVoiceMicState::Capturing; }
 	bool IsPlaying() const;
@@ -117,10 +131,13 @@ private:
 
 	FCrowdyActorId LocalSenderId;
 	FCrowdyVoiceStats Stats;
+	FInt64Vector LastPawnChunk = FInt64Vector::ZeroValue;
 	int64 StreamTimeoutMs = 2000;
 	int64 RestartAtMs = 0;
+	int32 DistanceChunks = 8;
 	ECrowdyVoiceMicState BroadcastMicState = ECrowdyVoiceMicState::Off;
 	bool bOwnerEcho = false;
+	bool bHasPawnChunk = false;
 	bool bWarnedEncode = false;
 	bool bWarnedNoSend = false;
 };

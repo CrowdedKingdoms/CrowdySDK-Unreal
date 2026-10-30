@@ -1059,8 +1059,6 @@ bool FCrowdyRoutedSpatialParityTest::RunTest(const FString& Parameters)
 		Message.UUID = CrowdyWireParity::GoldenActorId();
 		Message.ReplicationDistance = ECrowdyReplicationDistance::Four_Chunks;
 		Message.DecayRate = ECrowdyDecayRate::No_Decay;
-		Message.UserID = 99;
-		Message.Username = TEXT("tester");
 		Message.Message = TEXT("hello");
 		RouteAndCompare(Message, TEXT("a text message"));
 	}
