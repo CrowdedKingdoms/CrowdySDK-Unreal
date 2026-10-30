@@ -5,10 +5,15 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.22.0** (Unreal Engine 5.8). See the
+**Current version: 2.23.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
+
+**New in 2.23.0:** nearby text chat: Send Proximity Text reaches the players within a distance of
+your pawn's chunk, and On Proximity Text Received hands you theirs, as plain UTF-8 that CrowdyJS and
+CrowdyCPP players share; Set Voice Chat Distance keeps voice local; voice and text are addressed to
+the chunk your pawn stands in; and `FeedVoicePcm` sends audio that is not the microphone.
 
 **New in 2.22.0:** voice chat rebuilt on the voice format the CrowdyJS and CrowdyCPP SDKs share
 (Opus with reordering and loss concealment; every player needs 2.22.0 or later for voice), with
@@ -16,31 +21,6 @@ Get Voice Mic State, On Voice Mic State Changed and On Voice Speaker Talking; re
 longer flick away after a sender hitches; warnings where mistakes used to fail silently, fewer
 noisy logs, clearer messages, one Crowdy SDK palette category, Studio confirmations, and
 `-run=CrowdyStudio -op=registry` for checking markers from a shell.
-
-**New in 2.21.2:** `CancelSignIn` and `IsSignInPending` stop a sign-in that has not finished
-without signing out, so a cancelled restore keeps the saved session; Game Kit fixes: read kit
-actors with Get Kit Actor Count and Get Kit Actor, kit actors placed by the session's chunk size,
-a starter's On Changed runs once at Ready, another player's Owner Values report no value, case-only
-duplicate Config ids are refused, malformed kit actor updates are dropped, and `-op=call` reaches a
-starter's read-only player functions.
-
-**New in 2.21.1:** `-crowdysession=<name>` gives a packaged client its own saved session, so two
-clients sharing a Saved folder can sign in as different accounts; the platform now stops a removed
-Server Object type itself, so a deploy no longer restarts those types first and its result drops
-`stoppedRemoved` and `stopRemovedFailed`; `-op=instances` shows `orphaned`; the Blueprint sign-in
-examples start from the Game Mode, since a Game Instance's Event Init runs before the SDK's
-subsystems exist; CrowdyCPP 0.74.0.
-
-**New in 2.21.0:** the Game Kit starters: add the platform's ready-made world, matchmaking,
-sessions, leaderboards, player and market, NPCs, game modes, card tables, arenas, races and ball
-games to a project as ordinary Server Object types, with Find Match, kit actors, parties, guilds,
-chat rooms, emotes and spectating. Deploys go in parts when a project is large and stop the types
-they remove; the editor, Server Compute and Crowdy Studio can be driven from a shell; CrowdyCPP
-0.73.0. **After updating, run Generate Server Code on every Server Object type before you deploy**:
-generated crates now pin ckx-sdk 0.12.1, and Server Compute refuses to deploy a crate generated
-before. Until the docs site's next update these pages are on the dev docs:
-[Use the Game Kit starters](https://docs.dev.crowdedkingdoms.com/unreal-sdk/exec/use-game-kit-starters) and
-[Play together](https://docs.dev.crowdedkingdoms.com/unreal-sdk/services/play-together).
 
 Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkingdoms.com/unreal-sdk/intro)**
 

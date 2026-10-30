@@ -34,6 +34,7 @@
 #include "Subsystem/CrowdyAvatars.h"
 #include "Subsystem/CrowdyTeams.h"
 #include "Subsystem/CrowdyChannels.h"
+#include "Subsystem/CrowdyProximityChat.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
 
 #include <atomic>
@@ -65,6 +66,11 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	if (UCrowdySDKBridgeSubsystem* BridgeSub = GetGameInstance()->GetSubsystem<UCrowdySDKBridgeSubsystem>())
 	{
 		BridgeSub->ServiceRegistry = ServiceRegistry;
+		// Started before this subsystem it found no registry; started after, it finds one and this does nothing.
+		if (UCrowdyProximityChat* ProximityChat = GetGameInstance()->GetSubsystem<UCrowdyProximityChat>())
+		{
+			ProximityChat->EnsureSubscription();
+		}
 		BridgeSub->DispatchActorUpdateFn = [this](int64 X, int64 Y, int64 Z, ECrowdyDecayRate D, ECrowdyReplicationDistance R, const FString& ID, const FInstancedStruct& State, FCrowdyClassID ClassID, bool bAsync)
 		{
 			DispatchActorUpdate(X, Y, Z, D, R, ID, State, ClassID, bAsync);
@@ -672,6 +678,24 @@ void UCrowdySDKSubsystem::ToggleOwnerEcho(const bool bEnable)
 	{
 		VoiceChat->SetOwnerEcho(bEnable);
 	}
+}
+
+void UCrowdySDKSubsystem::SetVoiceChatDistance(const int32 Chunks)
+{
+	const int32 Clamped = FCrowdyVoiceSettings::ClampDistance(Chunks);
+	UE_CLOG(Clamped != Chunks, LogCrowdySDK, Warning, TEXT("Voice chat distance %d is outside 0 to %d chunks; using %d."),
+		Chunks, FCrowdyVoiceSettings::MaxDistanceChunks, Clamped);
+
+	VoiceSettings.DistanceChunks = Clamped;
+	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
+	{
+		VoiceChat->SetDistance(Clamped);
+	}
+}
+
+int32 UCrowdySDKSubsystem::GetVoiceChatDistance() const
+{
+	return VoiceSettings.DistanceChunks;
 }
 
 ECrowdyVoiceMicState UCrowdySDKSubsystem::GetVoiceMicState() const
@@ -1336,26 +1360,12 @@ void UCrowdySDKSubsystem::StartConnectedSessionWork()
 
 void UCrowdySDKSubsystem::SendPingTestMessage()
 {
-	// The ping is a spatial self-echo: the server only relays it back to us when it is
-	// addressed to the chunk the server currently has us in. Derive that chunk live from the
-	// local player's pawn location (the same transform-derived chunk the actor-update path
-	// sends) instead of GameSession's cached CurrentPlayerChunkCoordinates, which is only
-	// refreshed from Blueprint and goes stale across a level transition, leaving the ping
-	// aimed at the previous level's chunk so no echo returns and the measured ping freezes.
-	FInt64Vector ChunkCoordinate = GameSession->GetPlayerCurrentChunkCoordinates();
-
-	const APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
-	APawn* LocalPawn = PC ? PC->GetPawn() : nullptr;
-	if (LocalPawn)
-	{
-		UHelperFunctions::GetChunkCoordinateAtLocation(
-			LocalPawn, LocalPawn->GetActorLocation(),
-			ChunkCoordinate.X, ChunkCoordinate.Y, ChunkCoordinate.Z);
-	}
+	// The ping is a spatial self-echo: the server only relays it back to us when it is addressed to the chunk the
+	// server currently has us in, which is the chunk the local pawn's actor updates name.
+	const FInt64Vector ChunkCoordinate = GameSession->GetLocalPlayerChunk(GetWorld());
 
 	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log,
-		TEXT("SendPingTestMessage: pawn=%s chunk=(%lld, %lld, %lld)"),
-		LocalPawn ? *LocalPawn->GetName() : TEXT("<none - using stale cache>"),
+		TEXT("SendPingTestMessage: chunk=(%lld, %lld, %lld)"),
 		ChunkCoordinate.X, ChunkCoordinate.Y, ChunkCoordinate.Z);
 
 	FPingTestMessage PingTestMessage;

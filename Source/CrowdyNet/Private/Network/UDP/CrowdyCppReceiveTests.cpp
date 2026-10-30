@@ -14,6 +14,7 @@
 #include "CrowdyCppVideo.h"
 #include "Messages/Communication/FClientAudioNotification.h"
 #include "Messages/Communication/FClientVideoNotification.h"
+#include "Messages/Communication/FTextMessageNotification.h"
 #include "Messages/FPingTestMessage.h"
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Messages/GameObjects/FServerEventNotification.h"
@@ -275,16 +276,15 @@ namespace CrowdyReceiveTestSupport
 		}
 
 		{
-			// The parser has no case for a text notification, so both paths produce the default message. The assertion
-			// is that they agree on that, which is what says the seam introduced no divergence of its own.
+			// Two-byte UTF-8 in the body, so a decoder that read it as single bytes would disagree with one that did not.
 			FInboundCase& Case = Cases.AddDefaulted_GetRef();
 			Case.Type = ECrowdyMessageType::CLIENT_TEXT_NOTIFICATION;
 			Case.Name = TEXT("text notification");
-			Case.Payload.Append({0xe1, 0xe2, 0xe3, 0xe4});
+			Case.Payload.Append({'h', 'i', ' ', 0xc3, 0xa9});
 			Case.Describe = [](const ICrowdyMessage& Message)
 			{
-				return FString::Printf(TEXT("type=%u name=%s"), static_cast<uint8>(Message.GetType()),
-					*Message.GetTypeName().ToString());
+				const auto& Text = static_cast<const FTextMessageNotification&>(Message);
+				return FString::Printf(TEXT("%s message=%s"), *DescribeBase(Message), *Text.Message);
 			};
 		}
 

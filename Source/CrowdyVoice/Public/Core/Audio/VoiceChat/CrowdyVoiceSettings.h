@@ -15,7 +15,16 @@ struct FCrowdyVoiceSettings
 		return FMath::Clamp(FMath::IsFinite(Seconds) ? Seconds : 0.0f, MinStreamTimeoutSeconds, MaxStreamTimeoutSeconds);
 	}
 
+	/** The farthest the server relays a voice packet, in chunks around the sender's. */
+	static constexpr int32 MaxDistanceChunks = 8;
+
+	static int32 ClampDistance(const int32 Chunks)
+	{
+		return FMath::Clamp(Chunks, 0, MaxDistanceChunks);
+	}
+
 	float StreamTimeoutSeconds = 2.0f;
+	int32 DistanceChunks = MaxDistanceChunks;
 	bool bPlaying = false;
 	bool bOwnerEcho = false;
 	bool bMicWanted = false;
@@ -24,6 +33,7 @@ struct FCrowdyVoiceSettings
 	void ApplyTo(TVoiceChat& VoiceChat) const
 	{
 		VoiceChat.SetStreamTimeoutThreshold(StreamTimeoutSeconds);
+		VoiceChat.SetDistance(DistanceChunks);
 		VoiceChat.SetOwnerEcho(bOwnerEcho);
 		if (bPlaying)
 		{
