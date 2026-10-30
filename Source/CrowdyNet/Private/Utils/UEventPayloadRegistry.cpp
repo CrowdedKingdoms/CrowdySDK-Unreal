@@ -90,9 +90,9 @@ void UEventPayloadRegistry::RegisterStruct(UScriptStruct* Struct, FCrowdyTypeID 
 	StructToID.Add(Struct, TypeID);
 	IDToName.Add(TypeID, FName(*Struct->GetName()));
 
-	UE_LOG(LogCrowdyNet, Warning,
-		TEXT("[EventPayloadRegistry] Registered '%s' -> TypeID=%d"),
-		*Struct->GetName(), TypeID);
+	UE_CLOG(CrowdyNetTrace::Serialize(), LogCrowdyNet, Log,
+		TEXT("[EventPayloadRegistry] Registered '%s' -> TypeID=%d | Path=%s"),
+		*Struct->GetName(), TypeID, *Struct->GetPathName());
 }
 
 void UEventPayloadRegistry::RecordConflict(const FCrowdyTypeID TypeID, const UScriptStruct* Incumbent, const UScriptStruct* Rejected)

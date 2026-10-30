@@ -115,6 +115,7 @@ struct CROWDYEXEC_API FCrowdyServerTimer
 {
 	GENERATED_BODY()
 
+	/** The timer's name; its function in logic.rs is this name in snake case. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timer")
 	FName Name;
 

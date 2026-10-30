@@ -5,10 +5,13 @@
 #include "ConfigSync/FCrowdyConfigSync.h"
 #include "CrowdyCppClient.h"
 #include "CrowdyStudioCommandlet.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Misc/AutomationTest.h"
 #include "Model/CrowdyStudioControllerTestAccess.h"
 #include "Settings/CrowdyStudioUserSettings.h"
 #include "UObject/StrongObjectPtr.h"
+#include "Utils/CrowdyBakedRegistry.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
 namespace
@@ -573,7 +576,8 @@ bool FCrowdyStudioCommandletUnknownOpPrintsUsageTest::RunTest(const FString& /*P
 		TEXT("-grid="), TEXT("-user="), TEXT("-group="), TEXT("-role="), TEXT("-keys="), TEXT("-all"),
 		TEXT("groupdetail"), TEXT("addmember"), TEXT("removemember"), TEXT("setroles"), TEXT("-roles="), TEXT("-noroles"), TEXT("createrole"), TEXT("-perms="), TEXT("-noperms"), TEXT("-rank="),
 		TEXT("updaterole"), TEXT("deleterole"), TEXT("-kind="), TEXT("updategroup"), TEXT("deletegroup"), TEXT("setteampolicy"), TEXT("setchannelpolicy"), TEXT("-creation="),
-		TEXT("-membership="), TEXT("-maxmembers="), TEXT("-maxgroupsperuser="), TEXT("gridlimits"), TEXT("-nolimit"), TEXT("gridgrants"), TEXT("gridpermissions") })
+		TEXT("-membership="), TEXT("-maxmembers="), TEXT("-maxgroupsperuser="), TEXT("gridlimits"), TEXT("-nolimit"), TEXT("gridgrants"), TEXT("gridpermissions"),
+		TEXT("registry"), TEXT("-class="), TEXT("-norebuild") })
 	{
 		TestTrue(FString::Printf(TEXT("the usage names %s"), Needle), Usage.Contains(Needle));
 	}
@@ -928,6 +932,96 @@ bool FCrowdyStudioCommandletFindsAnUnrevokedGroupGrantTest::RunTest(const FStrin
 	Accepts(TEXT("-op=revokegrid -grid=4 -group=8 -all"), Request);
 	TestTrue(TEXT("-all reports a whole-group grant still there"), UCrowdyStudioCommandlet::FindUnrevokedGroupGrant(Request, Grants).Contains(TEXT("still holds b")));
 	TestTrue(TEXT("-all with nothing left in its scope reports nothing"), UCrowdyStudioCommandlet::FindUnrevokedGroupGrant(Request, { GroupGrantOf(TEXT("a"), 2) }).IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioCommandletListsTheBakedRegistryTest, "CrowdySDK.Studio.RegistryListsBakedClasses", CrowdyStudioCommandletTestFlags)
+
+bool FCrowdyStudioCommandletListsTheBakedRegistryTest::RunTest(const FString& /*Parameters*/)
+{
+	FCrowdyStudioCommandRequest Request;
+	TestTrue(TEXT("registry takes -class and -norebuild"), Accepts(TEXT("-op=registry -class=Door -norebuild"), Request));
+	TestEqual(TEXT("the class filter is read"), Request.ClassFilter, FString(TEXT("Door")));
+	TestTrue(TEXT("-norebuild is read"), Request.bNoRebuild);
+	TestFalse(TEXT("registry changes nothing the request must confirm"), UCrowdyStudioCommandlet::NeedsConfirmation(Request));
+	TestTrue(TEXT("registry alone rebuilds"), Accepts(TEXT("-op=registry"), Request) && !Request.bNoRebuild && Request.ClassFilter.IsEmpty());
+
+	const TStrongObjectPtr<UCrowdyBakedRegistry> Registry(NewObject<UCrowdyBakedRegistry>(GetTransientPackage()));
+	const FSoftClassPath Door(TEXT("/Game/Test/BP_Door.BP_Door_C"));
+	const FSoftClassPath Lamp(TEXT("/Game/Test/BP_Lamp.BP_Lamp_C"));
+
+	FCrowdyBakedRpcFunction Slam;
+	Slam.ClassPath = Door;
+	Slam.FunctionName = TEXT("Slam");
+	Slam.FunctionID = 7;
+	Slam.Recipient = ECrowdyEventRecipient::OwningClient;
+	Slam.DecayRate = ECrowdyDecayRate::Linear_25;
+	Slam.Distance = ECrowdyReplicationDistance::Three_Chunks;
+	FCrowdyBakedRpcFunction Creak = Slam;
+	Creak.FunctionName = TEXT("Creak");
+	Creak.FunctionID = 8;
+	Creak.bIsReplicated = true;
+	FCrowdyBakedRpcFunction Flicker = Slam;
+	Flicker.ClassPath = Lamp;
+	Flicker.FunctionName = TEXT("Flicker");
+	Registry->RpcFunctions = { Slam, Creak, Flicker };
+
+	FCrowdyBakedRepProperty Open;
+	Open.OwnerClassPath = Door;
+	Open.PropertyName = TEXT("bOpen");
+	Open.PropertyID = 11;
+	Open.LayoutOrder = 1;
+	Open.bManualDirty = true;
+	Open.OnRepFunctionName = TEXT("OnRep_Open");
+	FCrowdyBakedRepProperty Angle = Open;
+	Angle.PropertyName = TEXT("Angle");
+	Angle.PropertyID = 12;
+	Angle.LayoutOrder = 0;
+	Angle.bManualDirty = false;
+	Angle.bOwnerOnly = true;
+	Angle.bHeartbeat = true;
+	Angle.OnRepFunctionName = NAME_None;
+	Registry->RepProperties = { Open, Angle };
+	FCrowdyBakedRepLayoutHash DoorHash;
+	DoorHash.ClassPath = Door;
+	DoorHash.LayoutHash = 99;
+	Registry->RepLayoutHashes.Add(DoorHash);
+
+	const TSharedRef<FJsonObject> All = UCrowdyStudioCommandlet::BuildRegistryJson(*Registry, FString());
+	TestEqual(TEXT("both classes are listed"), static_cast<int32>(All->GetNumberField(TEXT("classCount"))), 2);
+	TestEqual(TEXT("every event is counted"), static_cast<int32>(All->GetNumberField(TEXT("eventCount"))), 3);
+	TestEqual(TEXT("every state property is counted"), static_cast<int32>(All->GetNumberField(TEXT("stateCount"))), 2);
+	const TSharedPtr<FJsonObject> First = All->GetArrayField(TEXT("classes"))[0]->AsObject();
+	TestEqual(TEXT("classes are ordered by path"), First->GetStringField(TEXT("classPath")), Door.ToString());
+	TestEqual(TEXT("the class carries its layout hash"), First->GetStringField(TEXT("layoutHash")), FString(TEXT("99")));
+
+	const TArray<TSharedPtr<FJsonValue>>& Events = First->GetArrayField(TEXT("events"));
+	TestEqual(TEXT("the class lists its own events only"), Events.Num(), 2);
+	const TSharedPtr<FJsonObject> FirstEvent = Events[0]->AsObject();
+	TestEqual(TEXT("events are ordered by name"), FirstEvent->GetStringField(TEXT("name")), FString(TEXT("Creak")));
+	TestTrue(TEXT("the replicated flag is carried"), FirstEvent->GetBoolField(TEXT("replicated")));
+	const TSharedPtr<FJsonObject> SecondEvent = Events[1]->AsObject();
+	TestEqual(TEXT("the recipient is named"), SecondEvent->GetStringField(TEXT("recipient")), FString(TEXT("OwningClient")));
+	TestEqual(TEXT("the decay is named"), SecondEvent->GetStringField(TEXT("decay")), FString(TEXT("Linear_25")));
+	TestEqual(TEXT("the distance is named"), SecondEvent->GetStringField(TEXT("distance")), FString(TEXT("Three_Chunks")));
+	TestEqual(TEXT("the function id is a string"), SecondEvent->GetStringField(TEXT("functionId")), FString(TEXT("7")));
+
+	const TArray<TSharedPtr<FJsonValue>>& State = First->GetArrayField(TEXT("state"));
+	TestEqual(TEXT("the class lists its state properties"), State.Num(), 2);
+	const TSharedPtr<FJsonObject> FirstState = State[0]->AsObject();
+	TestEqual(TEXT("state is in layout order"), FirstState->GetStringField(TEXT("name")), FString(TEXT("Angle")));
+	TestTrue(TEXT("owner-only is carried"), FirstState->GetBoolField(TEXT("ownerOnly")));
+	TestTrue(TEXT("heartbeat is carried"), FirstState->GetBoolField(TEXT("heartbeat")));
+	TestFalse(TEXT("manual dirty is carried as false"), FirstState->GetBoolField(TEXT("manualDirty")));
+	const TSharedPtr<FJsonObject> SecondState = State[1]->AsObject();
+	TestTrue(TEXT("manual dirty is carried"), SecondState->GetBoolField(TEXT("manualDirty")));
+	TestEqual(TEXT("the OnRep function is named"), SecondState->GetStringField(TEXT("onRep")), FString(TEXT("OnRep_Open")));
+
+	const TSharedRef<FJsonObject> Filtered = UCrowdyStudioCommandlet::BuildRegistryJson(*Registry, TEXT("lamp"));
+	TestEqual(TEXT("the class filter ignores case and keeps one class"), static_cast<int32>(Filtered->GetNumberField(TEXT("classCount"))), 1);
+	TestEqual(TEXT("the filtered counts follow the kept class"), static_cast<int32>(Filtered->GetNumberField(TEXT("eventCount"))), 1);
+	TestEqual(TEXT("a class with no state has none listed"), static_cast<int32>(Filtered->GetNumberField(TEXT("stateCount"))), 0);
+	TestEqual(TEXT("a filter matching nothing lists no class"), static_cast<int32>(UCrowdyStudioCommandlet::BuildRegistryJson(*Registry, TEXT("zzz"))->GetNumberField(TEXT("classCount"))), 0);
 	return true;
 }
 

@@ -24,12 +24,12 @@ class CROWDYSERVICES_API ICrowdyUIRootWidget
 
 public:
 	
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|UI")
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|UI")
 	UUserWidget* PushToLayer(ECrowdyUILayer Layer,  bool bClearLayerFirst = false, TSubclassOf<UUserWidget> WidgetClass = nullptr);
 	
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|UI")
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|UI")
 	UUserWidget* PopFromLayer(ECrowdyUILayer Layer, bool bRemoveFromParent = true);
 	
-	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "CrowdySDK|UI")
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Crowdy SDK|UI")
 	UOverlay* GetLayer(ECrowdyUILayer Layer);
 };

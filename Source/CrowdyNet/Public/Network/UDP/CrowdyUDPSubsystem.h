@@ -36,45 +36,59 @@ struct FUDPNetworkStatistics
 {
 	GENERATED_BODY()
 	
+	/** Bytes sent in the last one-second window. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats")
 	int32 BytesSent = 0;
 	
+	/** Bytes received in the last one-second window. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats")
 	int32 BytesReceived = 0;
 	
+	/** UDP datagrams sent in the last one-second window. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats")
 	int32 DatagramsSent = 0;
 	
+	/** UDP datagrams received in the last one-second window. */
 	UPROPERTY(BlueprintReadOnly, Category= "Network Stats")
 	int32 DatagramsReceived = 0;
 	
+	/** Messages sent in the last one-second window. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats")
 	int32 MessagesSentPerSecond = 0;
 	
+	/** Messages received and decoded in the last one-second window. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats")
 	int32 MessagesReceivedPerSecond = 0;
 	
+	/** Bytes sent divided by bytes received in the last one-second window; 0 when nothing was received. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats")
 	float SendRecvRatio = 0.0f;
 	
+	/** Client event notifications sent since the session started or the stats were last reset. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats")
 	int32 TotalClientNotifiesSent = 0;
 	
+	/** Client event notifications received since the session started or the stats were last reset. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats")
 	int32 TotalClientNotifiesReceived = 0;
 	
-	UPROPERTY(BlueprintReadOnly, Category = "Network Stats", meta=(DisplayName="Dropped Client Notifies"))
+	/** Client event notifications sent minus received since the session started or the stats were last reset. Meaningful only in single-client loopback testing. */
+	UPROPERTY(BlueprintReadOnly, Category = "Network Stats", meta=(DisplayName="Client Notifies In Flight"))
 	int32 TotalPendingClientNotifies = 0;
 	
+	/** Percentage of sent client event notifications not yet received, from 0 to 100. Meaningful only in single-client loopback testing. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats", meta=(DisplayName="Client Notify Loss Percentage"))
 	float ClientNotifyLossPercentage = 0.0f;
 	
+	/** Round-trip time in milliseconds of the periodic self-echo ping, sent every 5 seconds; 0 until the first echo returns. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats")
 	int64 Ping = 0;
 
+	/** Messages sent since the session started or the stats were last reset. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats", meta=(DisplayName="Total Messages Sent"))
 	int64 TotalMessagesSent = 0;
 
+	/** Messages received since the session started or the stats were last reset. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network Stats", meta=(DisplayName="Total Messages Received"))
 	int64 TotalMessagesReceived = 0;
 
@@ -109,10 +123,10 @@ public:
 	UPROPERTY()
 	FUDPTimeout OnUDPTimeout;
 	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Network|UDP|Stats", meta=(DisplayName="Get UDP Network Stats"))
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Network|UDP|Stats", meta=(DisplayName="Get UDP Network Stats"))
 	FUDPNetworkStatistics GetUDPNetworkStats() const;
 	
-	UFUNCTION(BlueprintCallable, Category = "CrowdySDK|Network|UDP|Stats", meta=(DisplayName="Reset UDP Network Stats"))
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Network|UDP|Stats", meta=(DisplayName="Reset UDP Network Stats"))
 	void ResetUDPNetworkStats();
 	
 	// Call this where the parsing happens

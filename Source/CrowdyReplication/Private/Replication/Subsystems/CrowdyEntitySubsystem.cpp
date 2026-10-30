@@ -15,6 +15,50 @@
 #include "Utils/SerializationFunctionLibrary.h"
 #include "Utils/UCrowdyClassRegistry.h"
 
+namespace
+{
+	// A send dropped for want of a bridge repeats on every call for as long as networking is off, so the
+	// warning is limited to one line per interval across all send paths. Game-thread only.
+	constexpr double CrowdyDispatchDropWarnIntervalSeconds = 5.0;
+
+	bool ShouldLogDispatchDrop()
+	{
+		static double LastLoggedSeconds = -CrowdyDispatchDropWarnIntervalSeconds;
+
+		const double Now = FPlatformTime::Seconds();
+		if (Now - LastLoggedSeconds < CrowdyDispatchDropWarnIntervalSeconds)
+		{
+			return false;
+		}
+
+		LastLoggedSeconds = Now;
+		return true;
+	}
+
+	void WarnNetworkingUnavailable(const TCHAR* What)
+	{
+		if (!ShouldLogDispatchDrop())
+		{
+			return;
+		}
+
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: networking is disabled for this map (Map Profile > Enable Networking) or the SDK is not connected; %s dropped."),
+			What);
+	}
+
+	void WarnNullActor(const TCHAR* What, const TCHAR* Which)
+	{
+		if (!ShouldLogDispatchDrop())
+		{
+			return;
+		}
+
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: %s dropped: the %s actor is null or invalid."), What, Which);
+	}
+}
+
 void UCrowdyEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -516,9 +560,14 @@ void UCrowdyEntitySubsystem::DispatchGameEvent(const AActor* Context, FInstanced
 	const ECrowdyTarget Target, const AActor* TargetEntity,
 	const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance)
 {
-	if (!Bridge || !IsValid(Context))
+	if (!IsValid(Context))
 	{
-		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DispatchGameEvent — Bridge or context actor is null."));
+		WarnNullActor(TEXT("DispatchGameEvent"), TEXT("context"));
+		return;
+	}
+	if (!Bridge)
+	{
+		WarnNetworkingUnavailable(TEXT("DispatchGameEvent"));
 		return;
 	}
 
@@ -555,7 +604,7 @@ void UCrowdyEntitySubsystem::DispatchGameEventAt(const FVector& Location, FInsta
 {
 	if (!Bridge)
 	{
-		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DispatchGameEventAt - Bridge is null."));
+		WarnNetworkingUnavailable(TEXT("DispatchGameEventAt"));
 		return;
 	}
 
@@ -576,9 +625,14 @@ void UCrowdyEntitySubsystem::DispatchGameEventView(const AActor* Context, const 
 	const void* PayloadMemory, const ECrowdyTarget Target, const AActor* TargetEntity,
 	const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance)
 {
-	if (!Bridge || !IsValid(Context))
+	if (!IsValid(Context))
 	{
-		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DispatchGameEventView — Bridge or context actor is null."));
+		WarnNullActor(TEXT("DispatchGameEventView"), TEXT("context"));
+		return;
+	}
+	if (!Bridge)
+	{
+		WarnNetworkingUnavailable(TEXT("DispatchGameEventView"));
 		return;
 	}
 
@@ -593,7 +647,7 @@ void UCrowdyEntitySubsystem::DispatchGameEventViewAt(const FVector& Location, co
 {
 	if (!Bridge)
 	{
-		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DispatchGameEventViewAt - Bridge is null."));
+		WarnNetworkingUnavailable(TEXT("DispatchGameEventViewAt"));
 		return;
 	}
 
@@ -612,9 +666,14 @@ void UCrowdyEntitySubsystem::DispatchGameEventViewAt(const FVector& Location, co
 
 void UCrowdyEntitySubsystem::DispatchSingleActorMessage(const AActor* TargetActor, FInstancedStruct Payload)
 {
-	if (!Bridge || !IsValid(TargetActor))
+	if (!IsValid(TargetActor))
 	{
-		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DispatchSingleActorMessage — Bridge or target actor is null."));
+		WarnNullActor(TEXT("DispatchSingleActorMessage"), TEXT("target"));
+		return;
+	}
+	if (!Bridge)
+	{
+		WarnNetworkingUnavailable(TEXT("DispatchSingleActorMessage"));
 		return;
 	}
 
@@ -640,7 +699,7 @@ void UCrowdyEntitySubsystem::DispatchSingleActorMessageTo(const FGuid& TargetNet
 
 	if (!Bridge)
 	{
-		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DispatchSingleActorMessageTo - Bridge is null."));
+		WarnNetworkingUnavailable(TEXT("DispatchSingleActorMessageTo"));
 		return;
 	}
 
@@ -664,9 +723,8 @@ void UCrowdyEntitySubsystem::DispatchSingleActorMessageTo(const FGuid& TargetNet
 		return;
 	}
 
-	// GetChunkCoordinateAtLocation leaves its outputs untouched when it cannot resolve a world, so its
-	// precondition is checked here instead of addressing a message with whatever was on the stack. The
-	// zero seeds keep that true for any future path out of it as well.
+	// GetChunkCoordinateAtLocation yields zeros when it cannot resolve a world, so its precondition is
+	// checked here instead of addressing a message to chunk zero.
 	if (!IsValid(GetWorld()))
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
@@ -685,7 +743,7 @@ void UCrowdyEntitySubsystem::PublishReliableRpc(const FString& ChannelName, cons
 {
 	if (!Bridge)
 	{
-		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: PublishReliableRpc — Bridge is null; dropping."));
+		WarnNetworkingUnavailable(TEXT("PublishReliableRpc"));
 		return;
 	}
 
@@ -982,7 +1040,8 @@ void UCrowdyEntitySubsystem::HandleRemoteDestroy(const FCrowdyEntityDestroyEvent
 	const FCrowdyEntityRecord* Record = Records.Find(Event.EntityID);
 	if (!Record)
 	{
-		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: Entity %s already destroyed on remote destroy."),
+		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyEntitySubsystem]: Entity %s already destroyed on remote destroy."),
 			*Event.EntityID.ToString());
 		return;
 	}

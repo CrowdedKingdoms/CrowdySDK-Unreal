@@ -53,11 +53,11 @@ public:
 	float SmoothingIntervalOvershoot = 1.2f;
 
 	/** Shortest span a measured segment may be replayed over, so a burst of arrivals cannot make one snap. Does not apply to a duration a sender asked for outright, since a sender may legitimately want a snap. */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Remote Entities", meta=(DisplayName="Min Smoothing Duration", ClampMin="0.0", UIMin="0.0", Units="s", EditCondition="bAdaptiveSmoothing"))
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Remote Entities", meta=(DisplayName="Min Smoothing Duration", ClampMin="0.0", UIMin="0.0", Units="s", EditCondition="bAdaptiveSmoothing", ToolTip="Shortest span a measured segment may be replayed over. Ignored unless Adaptive Smoothing is on."))
 	float MinSmoothingDuration = 0.05f;
 
 	/** Longest span any segment may be replayed over, so neither a stalled sender nor a forged duration can leave an entity gliding or frozen for seconds. Applies to sender-declared durations as well. */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Remote Entities", meta=(DisplayName="Max Smoothing Duration", ClampMin="0.0", UIMin="0.0", Units="s"))
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Remote Entities", meta=(DisplayName="Max Smoothing Duration", ClampMin="0.0", UIMin="0.0", Units="s", ToolTip="Longest span any segment may be replayed over, including a duration a sender declared."))
 	float MaxSmoothingDuration = 0.5f;
 
 	/**
@@ -95,27 +95,27 @@ public:
 	int32 MaxNearTierActors = 50;
 
 	/** Enables the Crowdy Mass trace broad phase. When disabled, traces scan all tracked remote Mass entities. */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Enable Spatial Grid"))
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Enable Spatial Grid", ToolTip="Uses a spatial grid to narrow which remote entities a trace tests. When off, every trace scans all tracked remote entities and the grid settings below are unused."))
 	bool bEnableSpatialGrid = true;
 
 	/** Chooses whether the trace grid partitions X/Y only, or X/Y/Z. 2D is usually best for ground-based player crowds. */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Mode"))
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Mode", EditCondition="bEnableSpatialGrid", ToolTip="Whether the trace grid partitions X/Y only (2D) or X/Y/Z (3D). 2D is usually best for ground-based crowds."))
 	ECrowdyMassSpatialGridMode SpatialGridMode = ECrowdyMassSpatialGridMode::TwoDimensional;
 
 	/** Size of each spatial grid cell in centimeters. Smaller cells reduce candidates but make long traces visit more cells. */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Cell Size", ClampMin="100.0", UIMin="100.0", Units="cm"))
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Cell Size", ClampMin="100.0", UIMin="100.0", Units="cm", EditCondition="bEnableSpatialGrid", ToolTip="Size of each trace grid cell. Smaller cells give fewer candidates but make long traces visit more cells."))
 	float SpatialGridCellSize = 1600.0f;
 
 	/** Conservative radius used to place each remote entity into grid cells; exact mesh bounds and physics asset tests still decide hits. */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Entity Bounds Radius", ClampMin="0.0", UIMin="0.0", Units="cm", ToolTip="Broad-phase radius used to place remote Mass entities in the trace grid. Exact mesh bounds and physics asset tests still decide hits."))
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Entity Bounds Radius", ClampMin="0.0", UIMin="0.0", Units="cm", EditCondition="bEnableSpatialGrid", ToolTip="Broad-phase radius used to place remote Mass entities in the trace grid. Exact mesh bounds and physics asset tests still decide hits."))
 	float SpatialGridEntityBoundsRadius = 250.0f;
 
 	/** Extra radius around the line trace when collecting grid cells. Use this only as broad-phase padding. */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Trace Query Radius", ClampMin="0.0", UIMin="0.0", Units="cm", ToolTip="Extra radius around the ray when collecting grid cells. This is broad-phase only and should be conservative."))
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Trace Query Radius", ClampMin="0.0", UIMin="0.0", Units="cm", EditCondition="bEnableSpatialGrid", ToolTip="Extra radius around the ray when collecting grid cells. This is broad-phase only and should be conservative."))
 	float SpatialGridTraceQueryRadius = 0.0f;
 
 	/** Safety limit for cells visited by one trace or overlap, or covered by one remote entity, which is then placed with the largest radius that fits. */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Max Ray Cells", ClampMin="1", UIMin="1", ToolTip="Maximum grid cells one Crowdy Mass trace or overlap may visit (an overlap past it scans tracked entities instead), and the most one remote entity may cover; an entity that would cover more is placed with the largest radius that fits, so lowering this also shrinks how far a fast entity's placement reaches."))
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Max Ray Cells", ClampMin="1", UIMin="1", EditCondition="bEnableSpatialGrid", ToolTip="Maximum grid cells one Crowdy Mass trace or overlap may visit (an overlap past it scans tracked entities instead), and the most one remote entity may cover; an entity that would cover more is placed with the largest radius that fits, so lowering this also shrinks how far a fast entity's placement reaches."))
 	int32 SpatialGridMaxRayCells = 4096;
 
 	/**
@@ -126,7 +126,7 @@ public:
 	 * square of the distance. 12800 is eight cells at the default cell size, which covers any believable
 	 * movement in one update and bounds the box at a few hundred cells in 2D. Spatial Grid Max Ray Cells caps it in any mode.
 	 */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Max Entity Sweep Radius", ClampMin="0.0", UIMin="0.0", Units="cm", ToolTip="Ceiling on the swept radius one remote entity update may claim in the trace grid. The radius is derived from a wire-supplied position delta, so this is what stops a single forged jump enumerating an unbounded number of cells."))
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Trace", meta=(DisplayName="Spatial Grid Max Entity Sweep Radius", ClampMin="0.0", UIMin="0.0", Units="cm", EditCondition="bEnableSpatialGrid", ToolTip="Ceiling on the swept radius one remote entity update may claim in the trace grid. The radius is derived from a wire-supplied position delta, so this is what stops a single forged jump enumerating an unbounded number of cells."))
 	float SpatialGridMaxEntitySweepRadius = 12800.0f;
 
 	/**

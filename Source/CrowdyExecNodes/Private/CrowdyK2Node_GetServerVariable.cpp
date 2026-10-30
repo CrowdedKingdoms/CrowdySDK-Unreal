@@ -20,7 +20,7 @@ void UCrowdyK2Node_GetServerVariable::AllocateDefaultPins()
 	FCrowdyServerValuePin Variable;
 	if (FindMemberVariable(Variable) && CreateValuePins(EGPD_Output, Variable) && !Variable.bOptional)
 	{
-		CreateReadyPin(CrowdyServerObjectPins::HasValuePinName(Variable.Name), CrowdyServerObjectPins::HasValuePinId(Variable.Id));
+		CreateReadyPin(CrowdyServerObjectPins::HasValuePinName(Variable.Name), CrowdyServerObjectPins::HasValuePinId(Variable.Id), FText::Format(LOCTEXT("ReadyPin", "{0} Is Ready"), FText::FromName(Variable.Name)));
 	}
 	Super::AllocateDefaultPins();
 }

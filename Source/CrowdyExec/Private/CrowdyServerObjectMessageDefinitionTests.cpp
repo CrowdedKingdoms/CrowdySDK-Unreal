@@ -208,7 +208,7 @@ bool FCrowdyServerObjectMessageRefusalsTest::RunTest(const FString& Parameters)
 
 	TStrongObjectPtr<UCrowdyServerObjectDefinition> Unnamed = NewBoss();
 	Unnamed->Messages[0].Name = NAME_None;
-	TestRefuses(*this, *Unnamed, TEXT("Messages: a message has no Name"));
+	TestRefuses(*this, *Unnamed, TEXT("Messages: message 1 has no Name; type one"));
 
 	TStrongObjectPtr<UCrowdyServerObjectDefinition> State = NewBoss();
 	State->Messages[0].Name = TEXT("State");

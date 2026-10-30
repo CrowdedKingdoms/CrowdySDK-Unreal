@@ -307,26 +307,26 @@ enum class ECrowdyPermissions : uint8
 UENUM(BlueprintType, meta=(DisplayName="Decay Rate"))
 enum class ECrowdyDecayRate : uint8
 {
-    No_Decay = 0 UMETA(DisplayName = "No Decay"),
-    Exponential_Decay = 1 UMETA(DisplayName="Exponential Decay"),
-    Linear_50 = 2 UMETA(DisplayName = "Linear 50 Decay"),
-    Linear_25 = 3 UMETA(DisplayName= "Linear 25 Decay"),
-    Linear_10 = 4 UMETA(DisplayName= "Linear 10 Decay"),
-    Linear_5 = 5 UMETA(DisplayName= "Linear 5 Decay"),
+    No_Decay = 0 UMETA(DisplayName = "No Decay", ToolTip = "Every client within the distance receives every message."),
+    Exponential_Decay = 1 UMETA(DisplayName="Exponential Decay", ToolTip = "Each distance ring receives half the messages of the ring before it."),
+    Linear_50 = 2 UMETA(DisplayName = "Linear 50 Decay", ToolTip = "Delivery falls off linearly with distance; the furthest ring receives 50% of messages."),
+    Linear_25 = 3 UMETA(DisplayName= "Linear 25 Decay", ToolTip = "Delivery falls off linearly with distance; the furthest ring receives 25% of messages."),
+    Linear_10 = 4 UMETA(DisplayName= "Linear 10 Decay", ToolTip = "Delivery falls off linearly with distance; the furthest ring receives 10% of messages."),
+    Linear_5 = 5 UMETA(DisplayName= "Linear 5 Decay", ToolTip = "Delivery falls off linearly with distance; the furthest ring receives 5% of messages."),
 };
 
 UENUM(BlueprintType, meta=(DisplayName="Replication Distance"))
 enum class ECrowdyReplicationDistance : uint8
 {
-    None = 0 UMETA(DisplayName = "None"),
-    One_Chunk = 1 UMETA(DisplayName = "One Chunk"),
-    Two_Chunks = 2 UMETA(DisplayName = "Two Chunks"),
-    Three_Chunks = 3 UMETA(DisplayName = "Three Chunks"),
-    Four_Chunks = 4 UMETA(DisplayName = "Four Chunks"),
-    Five_Chunks = 5 UMETA(DisplayName = "Five Chunks"),
-    Six_Chunks = 6 UMETA(DisplayName = "Six Chunks"),
-    Seven_Chunks = 7 UMETA(DisplayName = "Seven Chunks"),
-    Eight_Chunks = 8 UMETA(DisplayName = "Eight Chunks"),
+    None = 0 UMETA(DisplayName = "None", ToolTip = "Only clients in the sender's own chunk."),
+    One_Chunk = 1 UMETA(DisplayName = "One Chunk", ToolTip = "Clients up to 1 chunk from the sender's chunk."),
+    Two_Chunks = 2 UMETA(DisplayName = "Two Chunks", ToolTip = "Clients up to 2 chunks from the sender's chunk."),
+    Three_Chunks = 3 UMETA(DisplayName = "Three Chunks", ToolTip = "Clients up to 3 chunks from the sender's chunk."),
+    Four_Chunks = 4 UMETA(DisplayName = "Four Chunks", ToolTip = "Clients up to 4 chunks from the sender's chunk."),
+    Five_Chunks = 5 UMETA(DisplayName = "Five Chunks", ToolTip = "Clients up to 5 chunks from the sender's chunk."),
+    Six_Chunks = 6 UMETA(DisplayName = "Six Chunks", ToolTip = "Clients up to 6 chunks from the sender's chunk."),
+    Seven_Chunks = 7 UMETA(DisplayName = "Seven Chunks", ToolTip = "Clients up to 7 chunks from the sender's chunk."),
+    Eight_Chunks = 8 UMETA(DisplayName = "Eight Chunks", ToolTip = "Clients up to 8 chunks from the sender's chunk. The maximum."),
 };
 
 /**
@@ -340,12 +340,8 @@ enum class ECrowdyReplicationDistance : uint8
 UENUM(BlueprintType)
 enum class ECrowdyEventRecipient : uint8
 {
-    // Everyone in range runs it, over the chunk-based spatial path (decay-thinned). The default.
-    SpatialMulticast UMETA(DisplayName = "Spatial Multicast"),
-    // Every member of the session channel runs it, over the channel transport: any distance, no decay.
-    Multicast        UMETA(DisplayName = "Multicast"),
-    // Only the client that owns the target entity runs it.
-    OwningClient     UMETA(DisplayName = "Owning Client"),
-    // Only the elected host runs it; the host may act on any entity it has locally.
-    Host             UMETA(DisplayName = "Host"),
+    SpatialMulticast UMETA(DisplayName = "Spatial Multicast", ToolTip = "Everyone in range runs it, over the chunk-based spatial path (decay-thinned). The default."),
+    Multicast        UMETA(DisplayName = "Multicast", ToolTip = "Every member of the session channel runs it, over the channel transport: any distance, no decay."),
+    OwningClient     UMETA(DisplayName = "Owning Client", ToolTip = "Only the client that owns the target entity runs it."),
+    Host             UMETA(DisplayName = "Host", ToolTip = "Only the elected host runs it; the host may act on any entity it has locally."),
 };

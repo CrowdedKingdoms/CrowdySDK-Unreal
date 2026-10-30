@@ -33,7 +33,7 @@ namespace
 FString ICrowdyPersistentOwner::GetPersistentKey_Implementation() const
 {
 	if (const UObject* Self = Cast<UObject>(this))
-		return Self->GetPathName();
+		return UWorld::RemovePIEPrefix(Self->GetPathName());
 	return TEXT("Unknown");
 }
 
@@ -204,10 +204,8 @@ FString UCrowdyPersistenceSubsystem::DeriveInstanceKey(const UObject* Subject)
 		}
 	}
 
-	// Priority 5: stable path name fallback
-	// Works for level-placed actors not registered with any of the above systems.
-	// Breaks if the actor is renamed in the editor between sessions.
-	return Subject->GetPathName();
+	// Path fallback for level-placed actors, PIE prefix stripped; World Partition cell paths still differ between PIE and cooked.
+	return UWorld::RemovePIEPrefix(Subject->GetPathName());
 }
 
 int16 UCrowdyPersistenceSubsystem::HashInstanceKey(const FString& Key)

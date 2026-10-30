@@ -107,14 +107,14 @@ public:
 	bool bAutoStart = true;
 
 	/** Starts beating the owner's position. Does nothing without a world and a Crowdy session, and a beat that cannot go out yet is sent as soon as it can. */
-	UFUNCTION(BlueprintCallable, Category = "Crowdy|Game Kit|Spectate")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Kit|Spectate")
 	void StartSpectating();
 
 	/** Stops beating. */
-	UFUNCTION(BlueprintCallable, Category = "Crowdy|Game Kit|Spectate")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Kit|Spectate")
 	void StopSpectating();
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy|Game Kit|Spectate")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Kit|Spectate")
 	bool IsSpectating() const { return Core.IsRunning(); }
 
 	virtual void BeginPlay() override;

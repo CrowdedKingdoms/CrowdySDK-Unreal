@@ -379,7 +379,7 @@ bool UCrowdyUtilities::GetCrowdyHasAuthority(const UObject* WorldContextObject)
 	const UCrowdyHostSubsystem* HostSubsystem = World->GetSubsystem<UCrowdyHostSubsystem>();
 	if (!IsValid(HostSubsystem))
 	{
-		UE_LOG(LogCrowdyServices, Error, TEXT("[CrowdyUtilities]: CrowdyHasAuthority — HostSubsystem is null."));
+		UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log, TEXT("[CrowdyUtilities]: CrowdyHasAuthority — HostSubsystem is null."));
 		return false;
 	}
 
@@ -396,10 +396,13 @@ bool UCrowdyUtilities::CrowdyIsConnectedToServer(UObject* WorldContextObject)
 	UWorld* World = CrowdyUtils::GetWorldChecked(WorldContextObject, TEXT("CrowdyIsConnectedToServer"));
 	if (!World) return false;
 
-	const UCrowdyUDPSubsystem* UDP = World->GetGameInstance()->GetSubsystem<UCrowdyUDPSubsystem>();
+	const UGameInstance* GameInstance = World->GetGameInstance();
+	if (!GameInstance) return false;
+
+	const UCrowdyUDPSubsystem* UDP = GameInstance->GetSubsystem<UCrowdyUDPSubsystem>();
 	if (!IsValid(UDP))
 	{
-		UE_LOG(LogCrowdyServices, Error, TEXT("[CrowdyUtilities]: CrowdyIsConnectedToServer — UCrowdyUDPSubsystem is null."));
+		UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log, TEXT("[CrowdyUtilities]: CrowdyIsConnectedToServer — UCrowdyUDPSubsystem is null."));
 		return false;
 	}
 
@@ -416,7 +419,7 @@ FGuid UCrowdyUtilities::CrowdyGetHostID(UObject* WorldContextObject, bool& bIsVa
 	const UCrowdyHostSubsystem* HostSubsystem = World->GetSubsystem<UCrowdyHostSubsystem>();
 	if (!IsValid(HostSubsystem))
 	{
-		UE_LOG(LogCrowdyServices, Error, TEXT("[CrowdyUtilities]: CrowdyGetHostID — HostSubsystem is null."));
+		UE_CLOG(CrowdyServicesTrace::Services(), LogCrowdyServices, Log, TEXT("[CrowdyUtilities]: CrowdyGetHostID — HostSubsystem is null."));
 		return {};
 	}
 

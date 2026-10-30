@@ -210,7 +210,17 @@ TSharedRef<SWidget> SCrowdyProjectView::BuildRail()
 				[
 					SNew(SBox).Visibility_Lambda([this]()
 					{
-						return (Controller.IsValid() && VisibleApps.Num() == 0 && !Controller->IsFetchingApps()) ? EVisibility::Visible : EVisibility::Collapsed;
+						return (Controller.IsValid() && VisibleApps.Num() == 0 && Controller->GetApps().Num() == 0 && !Controller->IsFetchingApps()) ? EVisibility::Visible : EVisibility::Collapsed;
+					})
+					[
+						CrowdyStudioWidgets::EmptyState(TEXT("apps"), LOCTEXT("NoAppsYet", "No apps yet.\nClick Create app to make your first one."))
+					]
+				]
+				+ SOverlay::Slot()
+				[
+					SNew(SBox).Visibility_Lambda([this]()
+					{
+						return (Controller.IsValid() && VisibleApps.Num() == 0 && Controller->GetApps().Num() > 0 && !Controller->IsFetchingApps()) ? EVisibility::Visible : EVisibility::Collapsed;
 					})
 					[
 						CrowdyStudioWidgets::EmptyState(TEXT("apps"), LOCTEXT("NoApps", "No apps match.\nClear the filters, or create one."))
@@ -501,7 +511,15 @@ TSharedRef<SWidget> SCrowdyProjectView::BuildHeaderCard()
 					Str([](const FStudioApp& A) { return A.Status; }),
 					[this](const FString& V)
 					{
-						if (const TSharedPtr<FStudioApp> A = SelectedApp()) { Controller->UpdateApp(A->AppId, FString(), TOptional<FString>(), V, FString()); }
+						const TSharedPtr<FStudioApp> A = SelectedApp();
+						if (!A.IsValid()) { return; }
+						if (V == TEXT("DRAFT") && A->Status == TEXT("LIVE")
+							&& FMessageDialog::Open(EAppMsgType::YesNo,
+								FText::Format(LOCTEXT("DraftConfirm", "Switch '{0}' to Draft? This unpublishes the app."), FText::FromString(A->Name))) != EAppReturnType::Yes)
+						{
+							return;
+						}
+						Controller->UpdateApp(A->AppId, FString(), TOptional<FString>(), V, FString());
 					},
 					CanManage)
 			]

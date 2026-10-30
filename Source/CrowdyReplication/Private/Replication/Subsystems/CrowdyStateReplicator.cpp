@@ -44,6 +44,20 @@ namespace
 	// Purely cosmetic: offsets the mirror actor from its source so both are visible side by side in PIE.
 	constexpr float CrowdyStateLoopbackMirrorOffsetX = 200.f;
 
+	void WarnUnknownStateProperty(TSet<TPair<FObjectKey, FName>>& Warned, const UClass* Class, FName PropertyName, const FGuid& EntityID)
+	{
+		bool bAlreadyWarned = false;
+		Warned.Add(TPair<FObjectKey, FName>(FObjectKey(Class), PropertyName), &bAlreadyWarned);
+		if (bAlreadyWarned)
+		{
+			return;
+		}
+
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyStateReplicator] MarkStateDirty on '%s' (class '%s', entity %s) ignored: no such CrowdyState property."),
+			*PropertyName.ToString(), *GetNameSafe(Class), *EntityID.ToString());
+	}
+
 	// DestroyValue every InitializeValue'd shadow slot, through the snapshotted properties rather than the
 	// registry's layout: the layout object may have been freed by a rescan, while these UClass-owned
 	// FProperty* stay valid across one. A null slot (a recompile left a hole) is skipped, never crashed.
@@ -592,9 +606,7 @@ void UCrowdyStateReplicator::MarkStateDirty(const FGuid& EntityID, FName Propert
 			}
 		}
 
-		UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
-			TEXT("[CrowdyStateReplicator] push on '%s' (entity %s) ignored: no such CrowdyState property."),
-			*PropertyName.ToString(), *EntityID.ToString());
+		WarnUnknownStateProperty(WarnedUnknownStateProperties, Actor->GetClass(), PropertyName, EntityID);
 		return;
 	}
 	FCrowdyOwnedEntityState& State = **Found;
@@ -638,9 +650,7 @@ void UCrowdyStateReplicator::MarkStateDirty(const FGuid& EntityID, FName Propert
 		return;
 	}
 
-	UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
-		TEXT("[CrowdyStateReplicator] MarkStateDirty on '%s' (entity %s) ignored: no such CrowdyState property."),
-		*PropertyName.ToString(), *EntityID.ToString());
+	WarnUnknownStateProperty(WarnedUnknownStateProperties, Participant->GetClass(), PropertyName, EntityID);
 }
 
 void UCrowdyStateReplicator::MarkAllStateDirty(const FGuid& EntityID)
@@ -1123,7 +1133,7 @@ void UCrowdyStateReplicator::ReplicationLoop()
 			if (Payload.Num() > CrowdyChannelPayloadMaxBytes)
 			{
 				UE_LOG(LogCrowdyReplication, Error,
-					TEXT("[CrowdyState] channel delta dropped  encoded payload is %d bytes for entity %s, over the %d-byte channel limit."),
+					TEXT("[CrowdyState] channel delta dropped: encoded payload is %d bytes for entity %s, over the %d-byte channel limit."),
 					Payload.Num(), *D.EntityID.ToString(), CrowdyChannelPayloadMaxBytes);
 				return;
 			}

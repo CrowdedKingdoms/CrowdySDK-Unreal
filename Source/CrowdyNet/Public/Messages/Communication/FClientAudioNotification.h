@@ -25,72 +25,30 @@ struct FClientAudioNotification : FClientAudioBody
 	
 	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
-		const TConstArrayView<uint8> Data = Frame.Body;
-		int32 Offset = 0;
+		Payload.Reset();
 
 		ApplyEnvelope(Frame);
 		if (!ApplyEnvelopeActorId(Frame))
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FClientAudioNotification::DecodePayload - the frame carries no actor id"));
+			UE_CLOG(CrowdyNetTrace::Serialize(), LogCrowdyNet, Log, TEXT("FClientAudioNotification::DecodePayload - the frame carries no actor id"));
 			return false;
 		}
 
-		// SampleRate
-		if (!USerializationFunctionLibrary::DeserializeValue(Data, SampleRate, Offset))
+		const TConstArrayView<uint8> Data = Frame.Body;
+		if (Data.Num() < 1)
 		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FClientAudioNotification::DecodePayload - SampleRate deserialization failed"));
-			return false;
-		}
-		Offset += sizeof(int32);
-		
-		if (!USerializationFunctionLibrary::DeserializeValue(Data, NumChannels, Offset))
-		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FClientAudioNotification::DecodePayload - NumChannels deserialization failed"));
-			return false;
-		}
-		Offset += sizeof(int32);
-		
-		int32 FrameCount = 0;
-		if (!USerializationFunctionLibrary::DeserializeValue(Data, FrameCount, Offset))
-		{
-			UE_LOG(LogCrowdyNet, Warning, TEXT("FClientAudioNotification::DecodePayload - FrameCount deserialization failed"));
-			return false;
-		}
-		Offset += sizeof(int32);
-		
-
-		if (FrameCount <= 0 || FrameCount > 100)
-		{
-			Frames.Empty();
+			UE_CLOG(CrowdyNetTrace::Serialize(), LogCrowdyNet, Log, TEXT("FClientAudioNotification::DecodePayload - the audio payload is empty"));
 			return false;
 		}
 
-		Frames.Empty(FrameCount);
-
-		for (int32 i = 0; i < FrameCount; ++i)
+		if (Data.Num() > CrowdyAudioPacket::MaxPayloadBytes)
 		{
-			if (Offset + sizeof(int32) > Data.Num())
-			{
-				break;
-			}
-
-			FCrowdyAudioFrame AudioFrame;
-			FMemory::Memcpy(&AudioFrame.FrameSize, Data.GetData() + Offset, sizeof(int32));
-			Offset += sizeof(int32);
-
-			// Written as a comparison against the bytes remaining rather than as an addition, because a
-			// large declared frame size would overflow the sum and produce a negative value that passes.
-			if (AudioFrame.FrameSize <= 0 || AudioFrame.FrameSize > Data.Num() - Offset)
-			{
-				return false;
-			}
-
-			AudioFrame.AudioData.SetNumUninitialized(AudioFrame.FrameSize);
-			FMemory::Memcpy(AudioFrame.AudioData.GetData(), Data.GetData() + Offset, AudioFrame.FrameSize);
-			Offset += AudioFrame.FrameSize;
-
-			Frames.Add(MoveTemp(AudioFrame));
+			UE_CLOG(CrowdyNetTrace::Serialize(), LogCrowdyNet, Log, TEXT("FClientAudioNotification::DecodePayload - the audio payload is %d octets, over the %d a datagram carries"),
+				Data.Num(), CrowdyAudioPacket::MaxPayloadBytes);
+			return false;
 		}
+
+		Payload.Append(Data.GetData(), Data.Num());
 		return true;
 	}
 };

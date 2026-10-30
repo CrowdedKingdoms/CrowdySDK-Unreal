@@ -160,7 +160,7 @@ public:
 	 * whose access tier lacks use_text_chat. The send had already left, so this is the only sign it went nowhere. The same code,
 	 * message type and channel is told at most once a second.
 	 */
-	UPROPERTY(BlueprintAssignable, Category = "Crowdy|Realtime")
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Realtime")
 	FOnCrowdySendRefused OnSendRefused;
 
 	/** A refused send as On Send Refused reports it, or false when the server's frame names no send on record. */
@@ -375,6 +375,13 @@ private:
 	 * per connection cycle instead of once per message.
 	 */
 	bool bWarnedAboutMissingConnection = false;
+
+	/** True for the first refused send in each one-second window, and reports how many the previous window left unlogged. Any thread. */
+	bool AdmitSendRefusalLog();
+
+	FCriticalSection SendRefusalLogMutex;
+	double SendRefusalWindowStartedSeconds = 0.0;
+	int32 SendRefusalsSuppressedThisWindow = 0;
 
 	/** Game thread only, so no lock: they are written by the injector and read by the poll on the same thread. */
 	FCrowdyMessageParser* ReceiveParser = nullptr;

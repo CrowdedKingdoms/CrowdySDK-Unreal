@@ -8,13 +8,13 @@ struct FOriginOffset
 {
 	GENERATED_BODY()
 	
-	UPROPERTY(Blueprintable, BlueprintReadWrite, Category="Orgin Offset")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Origin Offset")
 	int64 OffsetX;
 
-	UPROPERTY(Blueprintable, BlueprintReadWrite, Category="Orgin Offset")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Origin Offset")
 	int64 OffsetY;
 
-	UPROPERTY(Blueprintable, BlueprintReadWrite, Category="Orgin Offset")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Origin Offset")
 	int64 OffsetZ;
 
 	FOriginOffset():
