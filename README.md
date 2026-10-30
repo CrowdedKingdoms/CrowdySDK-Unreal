@@ -5,10 +5,15 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.22.0** (Unreal Engine 5.8). See the
+**Current version: 2.23.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
+
+**New in 2.23.0:** nearby text chat: Send Proximity Text reaches the players within a distance of
+your pawn's chunk, and On Proximity Text Received hands you theirs, as plain UTF-8 that CrowdyJS and
+CrowdyCPP players share; Set Voice Chat Distance keeps voice local; voice and text are addressed to
+the chunk your pawn stands in; and `FeedVoicePcm` sends audio that is not the microphone.
 
 **New in 2.22.0:** voice chat rebuilt on the voice format the CrowdyJS and CrowdyCPP SDKs share
 (Opus with reordering and loss concealment; every player needs 2.22.0 or later for voice), with
