@@ -68,9 +68,15 @@ private:
 	{
 		const int32 LastIndex = PhysicalIndex(Count - 1);
 		const int32 PrevIndex = PhysicalIndex(Count - 2);
-		
-		const float DeltaTime  = FMath::Max(static_cast<float>(Timestamps[LastIndex] - Timestamps[PrevIndex]) / 1000.f,
-			0.001f);
+		const int32 RecentGaps = FMath::Min(Count - 1, 4);
+		const int32 WindowStartIndex = PhysicalIndex(Count - 1 - RecentGaps);
+
+		// Two samples that arrive together after a sender hitch would otherwise multiply their step up to 200 times.
+		const float MeanSpacing = static_cast<float>(Timestamps[LastIndex] - Timestamps[WindowStartIndex]) / 1000.f / static_cast<float>(RecentGaps);
+		// With only two samples the mean is the newest gap itself, so a fresh pair needs a fixed floor instead.
+		const float MinSpacing = Count == 2 ? 0.05f : 0.001f;
+		const float DeltaTime = FMath::Max3(static_cast<float>(Timestamps[LastIndex] - Timestamps[PrevIndex]) / 1000.f,
+			MeanSpacing, MinSpacing);
 		
 		const float TimePast = FMath::Min(
 			static_cast<float>(RenderTimeMs - Timestamps[LastIndex]) / 1000.f,

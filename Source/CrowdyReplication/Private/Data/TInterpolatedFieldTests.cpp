@@ -34,4 +34,44 @@ bool FCrowdyInterpolatedFieldHoldsOldestSampleTest::RunTest(const FString& Param
 	return true;
 }
 
+// A sender that hitches can deliver its next two updates almost together. Extrapolating from that bunched pair at its
+// own 1 ms spacing projected its step up to 200 times, so a remote copy flicked far away for a frame.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyInterpolatedFieldBunchedPairTest,
+	"CrowdySDK.CrowdyReplication.InterpolatedFieldBunchedPairDoesNotSpike", CrowdyInterpolatedFieldTestFlags)
+bool FCrowdyInterpolatedFieldBunchedPairTest::RunTest(const FString& Parameters)
+{
+	TInterpolatedField<float, 8> Field;
+	for (int32 Step = 0; Step < 5; ++Step)
+	{
+		Field.Push(10.f * Step, 1000 + 50 * Step);
+	}
+	Field.Push(50.f, 1201);
+
+	const float Extrapolated = Field.Sample(1251, LerpFloat);
+	TestTrue(FString::Printf(TEXT("50 ms past a bunched pair stays near the newest sample (got %.1f)"), Extrapolated),
+		Extrapolated >= 50.f && Extrapolated <= 70.f);
+
+	TInterpolatedField<float, 8> Even;
+	for (int32 Step = 0; Step < 5; ++Step)
+	{
+		Even.Push(10.f * Step, 1000 + 50 * Step);
+	}
+	TestEqual(TEXT("CONTROL: evenly spaced samples still extrapolate at their own slope"), Even.Sample(1250, LerpFloat), 50.f);
+
+	TInterpolatedField<float, 2> FreshPair;
+	FreshPair.Push(0.f, 1000);
+	FreshPair.Push(10.f, 1001);
+	const float FromPair = FreshPair.Sample(1051, LerpFloat);
+	TestTrue(FString::Printf(TEXT("a bunched first pair does not spike either (got %.1f)"), FromPair), FromPair <= 20.f);
+
+	TInterpolatedField<float, 8> AfterIdle;
+	AfterIdle.Push(0.f, 0);
+	for (int32 Step = 0; Step < 5; ++Step)
+	{
+		AfterIdle.Push(10.f * Step, 3000 + 50 * Step);
+	}
+	TestEqual(TEXT("an old idle gap does not damp extrapolation once moving resumes"), AfterIdle.Sample(3250, LerpFloat), 50.f);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
