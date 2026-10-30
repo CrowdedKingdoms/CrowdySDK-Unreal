@@ -254,6 +254,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void ToggleOwnerEcho(bool bEnable);
 
+	/** How far your voice reaches, in chunks around the chunk your pawn stands in: 0 is that chunk only, 8 (the default) the farthest the server relays. Kept across map changes. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void SetVoiceChatDistance(int32 Chunks);
+
+	/** How far your voice reaches, in chunks. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
+	int32 GetVoiceChatDistance() const;
+
 	/** What your microphone is doing for voice chat in the current map. Capturing means it is live, not that you are speaking: silence is not sent. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
 	ECrowdyVoiceMicState GetVoiceMicState() const;

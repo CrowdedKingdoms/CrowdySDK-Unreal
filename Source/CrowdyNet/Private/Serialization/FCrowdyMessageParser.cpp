@@ -9,6 +9,7 @@
 #include "Messages/Channels/FChannelMessages.h"
 #include "Messages/Communication/FClientAudioNotification.h"
 #include "Messages/Communication/FClientVideoNotification.h"
+#include "Messages/Communication/FTextMessageNotification.h"
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Messages/GameObjects/FServerEventNotification.h"
 #include "Messages/GameObjects/FGameObjectActivationNotification.h"
@@ -266,6 +267,15 @@ TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::DecodeFram
 	case ECrowdyMessageType::CLIENT_VIDEO_NOTIFICATION:
 		{
 			TSharedRef<FClientVideoNotification> Message = MakeShared<FClientVideoNotification>();
+			if (!Message->DecodePayload(Frame))
+			{
+				return MakeShared<FDefaultMessage>();
+			}
+			return Message;
+		}
+	case ECrowdyMessageType::CLIENT_TEXT_NOTIFICATION:
+		{
+			TSharedRef<FTextMessageNotification> Message = MakeShared<FTextMessageNotification>();
 			if (!Message->DecodePayload(Frame))
 			{
 				return MakeShared<FDefaultMessage>();

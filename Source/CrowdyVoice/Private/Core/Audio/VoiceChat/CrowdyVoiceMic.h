@@ -104,11 +104,54 @@ public:
 };
 
 /**
- * The microphone state machine, the cut into 20 ms frames, and the silence gate. Game thread only.
- *
- * Silence is not sent: a talk spurt ends with a frame flagged last once the voice has stayed below the
- * gate for SilenceHangFrames, and silent frames after it are skipped until the voice returns.
+ * The silence gate over whole 20 ms frames. Silence is not sent: a talk spurt ends with a frame flagged last once the
+ * voice has stayed below the gate for SilenceHangFrames, and silent frames after it are skipped until the voice returns.
  */
+class FCrowdyVoiceSpurtGate
+{
+public:
+	/** Frames below the gate before a spurt ends: 300 ms. */
+	static constexpr int32 SilenceHangFrames = 15;
+
+	/** The gate as an RMS sample value: about -50 dBFS. */
+	static constexpr int32 SilenceRms = 104;
+
+	/** Sends or skips one whole frame. */
+	void Process(TConstArrayView<int16> Frame, ICrowdyVoiceFrameSink& Out);
+
+	/** Ends an open spurt with Frame, silencing its samples from Fill on; outside a spurt it only resets. */
+	void End(TArrayView<int16> Frame, int32 Fill, ICrowdyVoiceFrameSink& Out);
+
+	void Reset();
+	bool IsInSpurt() const { return bInSpurt; }
+
+private:
+	int32 SilentFrames = 0;
+	bool bInSpurt = false;
+};
+
+/** A voice source that is not the microphone: 48 kHz mono samples pushed from game code, cut and gated as the microphone's are. Game thread only. */
+class FCrowdyVoiceFeed
+{
+public:
+	explicit FCrowdyVoiceFeed(ICrowdyVoiceFrameSink& InOut);
+
+	/** Sends every whole frame Samples completes; a remainder waits for the next push. */
+	void Push(TConstArrayView<int16> Samples);
+
+	/** Ends the talk spurt and drops a partial frame. */
+	void End();
+
+	bool IsInSpurt() const { return Gate.IsInSpurt(); }
+
+private:
+	ICrowdyVoiceFrameSink& Out;
+	TArray<int16> Frame;
+	int32 FrameFill = 0;
+	FCrowdyVoiceSpurtGate Gate;
+};
+
+/** The microphone state machine and the cut into 20 ms frames, sent through the silence gate. Game thread only. */
 class FCrowdyVoiceMic
 {
 public:
@@ -122,11 +165,8 @@ public:
 
 	static constexpr int64 NoDeviceRetryMs = 2000;
 
-	/** Frames below the gate before a spurt ends: 300 ms. */
-	static constexpr int32 SilenceHangFrames = 15;
-
-	/** The gate as an RMS sample value: about -50 dBFS. */
-	static constexpr int32 SilenceRms = 104;
+	static constexpr int32 SilenceHangFrames = FCrowdyVoiceSpurtGate::SilenceHangFrames;
+	static constexpr int32 SilenceRms = FCrowdyVoiceSpurtGate::SilenceRms;
 
 	/** Queued frames beyond this after a hitch are discarded down to BacklogKeepFrames. */
 	static constexpr int32 MaxBacklogFrames = 10;
@@ -165,7 +205,6 @@ private:
 	void Open(int64 NowMs);
 	void CloseAndEndSpurt();
 	void TrimBacklog();
-	void ProcessFrame();
 	bool PullFrame();
 
 	TSharedPtr<FCrowdyVoiceCaptureSink, ESPMode::ThreadSafe> Sink;
@@ -175,7 +214,6 @@ private:
 	int64 OpenedAtMs = 0;
 	int64 LastAudioMs = 0;
 	int32 FrameFill = 0;
-	int32 SilentFrames = 0;
-	bool bInSpurt = false;
+	FCrowdyVoiceSpurtGate Gate;
 	ECrowdyVoiceMicState State = ECrowdyVoiceMicState::Off;
 };

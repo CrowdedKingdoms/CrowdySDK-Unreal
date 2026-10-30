@@ -39,14 +39,14 @@ namespace
 		}
 	}
 
-	bool CrowdyVoiceMicIsSilent(const TArray<int16>& Samples)
+	bool CrowdyVoiceMicIsSilent(const TConstArrayView<int16> Samples)
 	{
 		int64 SumOfSquares = 0;
 		for (const int16 Sample : Samples)
 		{
 			SumOfSquares += static_cast<int64>(Sample) * Sample;
 		}
-		const int64 Threshold = static_cast<int64>(FCrowdyVoiceMic::SilenceRms) * FCrowdyVoiceMic::SilenceRms;
+		const int64 Threshold = static_cast<int64>(FCrowdyVoiceSpurtGate::SilenceRms) * FCrowdyVoiceSpurtGate::SilenceRms;
 		return SumOfSquares < Threshold * Samples.Num();
 	}
 
@@ -282,6 +282,67 @@ void FCrowdyVoiceCaptureSink::PushPcm(const float* Samples, const int32 NumSampl
 	}
 }
 
+void FCrowdyVoiceSpurtGate::Process(const TConstArrayView<int16> Frame, ICrowdyVoiceFrameSink& Out)
+{
+	const bool bSilent = CrowdyVoiceMicIsSilent(Frame);
+	SilentFrames = bSilent ? FMath::Min(SilentFrames + 1, SilenceHangFrames) : 0;
+	if (!bInSpurt && bSilent)
+	{
+		Out.SkipFrames(1);
+		return;
+	}
+
+	const bool bEndsSpurt = SilentFrames >= SilenceHangFrames;
+	Out.SendFrame(Frame, bEndsSpurt);
+	bInSpurt = !bEndsSpurt;
+}
+
+void FCrowdyVoiceSpurtGate::End(const TArrayView<int16> Frame, const int32 Fill, ICrowdyVoiceFrameSink& Out)
+{
+	if (bInSpurt)
+	{
+		const int32 Start = FMath::Clamp(Fill, 0, Frame.Num());
+		FMemory::Memzero(Frame.GetData() + Start, (Frame.Num() - Start) * sizeof(int16));
+		Out.SendFrame(Frame, true);
+	}
+	Reset();
+}
+
+void FCrowdyVoiceSpurtGate::Reset()
+{
+	SilentFrames = 0;
+	bInSpurt = false;
+}
+
+FCrowdyVoiceFeed::FCrowdyVoiceFeed(ICrowdyVoiceFrameSink& InOut)
+	: Out(InOut)
+{
+	Frame.SetNumZeroed(FCrowdyVoiceMic::FrameSamples);
+}
+
+void FCrowdyVoiceFeed::Push(TConstArrayView<int16> Samples)
+{
+	while (!Samples.IsEmpty())
+	{
+		const int32 Take = FMath::Min(Samples.Num(), FCrowdyVoiceMic::FrameSamples - FrameFill);
+		FMemory::Memcpy(Frame.GetData() + FrameFill, Samples.GetData(), Take * sizeof(int16));
+		FrameFill += Take;
+		Samples.RightChopInline(Take);
+		if (FrameFill < FCrowdyVoiceMic::FrameSamples)
+		{
+			return;
+		}
+		FrameFill = 0;
+		Gate.Process(Frame, Out);
+	}
+}
+
+void FCrowdyVoiceFeed::End()
+{
+	Gate.End(Frame, FrameFill, Out);
+	FrameFill = 0;
+}
+
 FCrowdyVoiceMic::FCrowdyVoiceMic(TUniquePtr<ICrowdyVoiceMicDevice> InDevice, ICrowdyVoiceFrameSink& InOut)
 	: Device(MoveTemp(InDevice))
 	, Out(InOut)
@@ -370,7 +431,7 @@ void FCrowdyVoiceMic::Pump(const int64 NowMs)
 	TrimBacklog();
 	while (PullFrame())
 	{
-		ProcessFrame();
+		Gate.Process(Frame, Out);
 	}
 }
 
@@ -379,8 +440,7 @@ void FCrowdyVoiceMic::Fail(const TCHAR* Reason)
 	Device->Close();
 	Sink.Reset();
 	FrameFill = 0;
-	SilentFrames = 0;
-	bInSpurt = false;
+	Gate.Reset();
 	State = ECrowdyVoiceMicState::Error;
 	UE_LOG(LogCrowdyVoice, Warning, TEXT("%s"), Reason);
 }
@@ -389,8 +449,7 @@ void FCrowdyVoiceMic::Open(const int64 NowMs)
 {
 	const ECrowdyVoiceMicState Previous = State;
 	FrameFill = 0;
-	SilentFrames = 0;
-	bInSpurt = false;
+	Gate.Reset();
 	OpenedAtMs = NowMs;
 	LastAudioMs = NowMs;
 
@@ -428,18 +487,13 @@ void FCrowdyVoiceMic::CloseAndEndSpurt()
 		// Whatever was captured goes out, then the spurt ends on a padded or silent frame.
 		while (PullFrame())
 		{
-			ProcessFrame();
+			Gate.Process(Frame, Out);
 		}
-		if (bInSpurt)
-		{
-			FMemory::Memzero(Frame.GetData() + FrameFill, (FrameSamples - FrameFill) * sizeof(int16));
-			Out.SendFrame(Frame, true);
-		}
+		Gate.End(Frame, FrameFill, Out);
 	}
 	Sink.Reset();
 	FrameFill = 0;
-	SilentFrames = 0;
-	bInSpurt = false;
+	Gate.Reset();
 }
 
 void FCrowdyVoiceMic::TrimBacklog()
@@ -455,21 +509,6 @@ void FCrowdyVoiceMic::TrimBacklog()
 	FrameFill = 0;
 	Out.SkipFrames(Discarded);
 	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Voice chat skipped %d late microphone frames."), Discarded);
-}
-
-void FCrowdyVoiceMic::ProcessFrame()
-{
-	const bool bSilent = CrowdyVoiceMicIsSilent(Frame);
-	SilentFrames = bSilent ? FMath::Min(SilentFrames + 1, SilenceHangFrames) : 0;
-	if (!bInSpurt && bSilent)
-	{
-		Out.SkipFrames(1);
-		return;
-	}
-
-	const bool bEndsSpurt = SilentFrames >= SilenceHangFrames;
-	Out.SendFrame(Frame, bEndsSpurt);
-	bInSpurt = !bEndsSpurt;
 }
 
 bool FCrowdyVoiceMic::PullFrame()
