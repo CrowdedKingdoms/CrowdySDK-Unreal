@@ -436,6 +436,8 @@ public:
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Binds the sign-in forwarding on an authentication subsystem built outside a subsystem collection. */
 	void BindAuthenticationForTest(UCrowdyAuthentication* Auth) { BindAuthentication(Auth); }
+
+	void SetGameSessionForTest(UCrowdyGameSession* InGameSession) { GameSession = InGameSession; }
 #endif
 
 private:
