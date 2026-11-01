@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "Misc/AutomationTest.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
+#include "UObject/Package.h"
 
 namespace
 {

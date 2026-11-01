@@ -6,6 +6,7 @@
 #include "MassEntityManager.h"
 #include "Settings/CrowdyMassDeveloperSettings.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
+#include "UObject/Package.h"
 
 #include <limits>
 

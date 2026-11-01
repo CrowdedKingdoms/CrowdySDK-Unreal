@@ -17,6 +17,7 @@
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/PackageName.h"
 #include "Misc/StringOutputDevice.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 

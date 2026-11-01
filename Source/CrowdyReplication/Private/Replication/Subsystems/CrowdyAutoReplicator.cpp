@@ -4,6 +4,8 @@
 #include "Replication/Subsystems/CrowdyAutoReplicator.h"
 #include "CrowdyReplicationLog.h"
 
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Messages/Actor/FActorUpdateRequestMessage.h"
 #include "Replication/Interfaces/CrowdyReplicationSource.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"

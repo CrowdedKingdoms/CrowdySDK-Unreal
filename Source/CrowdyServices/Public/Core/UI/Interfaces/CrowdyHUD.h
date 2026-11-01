@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Blueprint/UserWidget.h"
 #include "GameplayTagContainer.h"
 #include "UObject/Interface.h"
 #include "CrowdyHUD.generated.h"

@@ -17,8 +17,8 @@ struct CROWDYNET_API FCrowdyAvatarError
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) ECrowdyAvatarErrorCode Code = ECrowdyAvatarErrorCode::Unknown;
-	UPROPERTY(BlueprintReadOnly) FString Message;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") ECrowdyAvatarErrorCode Code = ECrowdyAvatarErrorCode::Unknown;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") FString Message;
 
 	static FCrowdyAvatarError FromMessage(const FString& Msg)
 	{

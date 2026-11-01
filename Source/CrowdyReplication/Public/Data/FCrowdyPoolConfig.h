@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "CoreMinimal.h"
 #include "CrowdyActorPoolPolicy.h"
+#include "Templates/SubclassOf.h"
 #include "FCrowdyPoolConfig.generated.h"
 
 USTRUCT(BlueprintType)

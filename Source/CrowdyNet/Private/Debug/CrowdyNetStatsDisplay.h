@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "Misc/Build.h"
+
 // Registers the `stat crowdyudp` engine-stat overlay that draws the live FUDPNetworkStatistics
 // in the viewport, exactly like the engine's own `stat unit` / `stat fps`. Dev/debug/editor only
 // compiled out of Shipping builds.

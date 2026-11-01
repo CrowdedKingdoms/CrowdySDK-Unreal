@@ -4,6 +4,7 @@
 #include "Misc/AutomationTest.h"
 #include "Subsystem/CrowdyAuthentication.h"
 #include "Subsystem/CrowdyGameSession.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
 // IsSignedIn answers about this process, and the state it reads is the only part of that answer a test can reach

@@ -15,6 +15,7 @@
 #include "Target/CrowdyMassEntityTarget.h"
 #include "Target/CrowdyMassEntityTargetResolver.h"
 #include "Target/CrowdyMassEntityTargetTestTypes.h"
+#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 #include "Utils/UCrowdyClassRegistry.h"
 

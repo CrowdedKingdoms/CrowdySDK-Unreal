@@ -10,17 +10,17 @@ struct CROWDYNET_API FCrowdyChannelMember
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int64   ChannelMemberId = 0;
-	UPROPERTY(BlueprintReadOnly) int64   ChannelId       = 0;
-	UPROPERTY(BlueprintReadOnly) int64   UserId          = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int64   ChannelMemberId = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int64   ChannelId       = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int64   UserId          = 0;
 
 	/** "active" for a full member, "pending" while a join request is awaiting a decision. */
-	UPROPERTY(BlueprintReadOnly) FString Status;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FString Status;
 
 	/** Sorted by rank, lowest first. */
-	UPROPERTY(BlueprintReadOnly) TArray<FCrowdyChannelRole> Roles;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") TArray<FCrowdyChannelRole> Roles;
 
-	UPROPERTY(BlueprintReadOnly) FString CreatedAt;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FString CreatedAt;
 
 	static bool ParseFromJson(const TSharedPtr<FJsonObject>& Obj, FCrowdyChannelMember& Out)
 	{

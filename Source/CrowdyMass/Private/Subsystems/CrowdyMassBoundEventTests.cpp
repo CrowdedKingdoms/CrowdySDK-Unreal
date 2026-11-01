@@ -58,6 +58,7 @@ void UCrowdyMassBoundEventTestHandler::OnPlayOneShotWithOutput(const FCrowdyMass
 #include "Replication/RPC/FCrowdyRpcCall.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
 #include "Templates/SharedPointer.h"
+#include "UObject/Package.h"
 
 /**
  * Covers the observer's half of an event reaching a Blueprint: a handler bound to an object's reflected

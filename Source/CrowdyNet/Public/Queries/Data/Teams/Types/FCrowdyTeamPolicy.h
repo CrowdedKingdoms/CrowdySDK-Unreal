@@ -12,17 +12,17 @@ struct CROWDYNET_API FCrowdyTeamPolicy
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int64 AppId = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int64 AppId = 0;
 
-	UPROPERTY(BlueprintReadOnly) ECrowdyTeamCreationPolicy CreationPolicy = ECrowdyTeamCreationPolicy::Anyone;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") ECrowdyTeamCreationPolicy CreationPolicy = ECrowdyTeamCreationPolicy::Anyone;
 
-	UPROPERTY(BlueprintReadOnly) ECrowdyTeamMembershipPolicy DefaultMembershipPolicy = ECrowdyTeamMembershipPolicy::Open;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") ECrowdyTeamMembershipPolicy DefaultMembershipPolicy = ECrowdyTeamMembershipPolicy::Open;
 
 	/** Zero means the server set no cap. */
-	UPROPERTY(BlueprintReadOnly) int32 MaxMembers = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int32 MaxMembers = 0;
 
 	/** How many teams one user may belong to. Zero means the server set no cap. */
-	UPROPERTY(BlueprintReadOnly) int32 MaxTeamsPerUser = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int32 MaxTeamsPerUser = 0;
 
 	static bool ParseFromJson(const TSharedPtr<FJsonObject>& Obj, FCrowdyTeamPolicy& Out)
 	{

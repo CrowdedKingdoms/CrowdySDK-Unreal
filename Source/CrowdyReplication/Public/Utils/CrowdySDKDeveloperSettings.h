@@ -14,10 +14,10 @@ struct FCrowdyIDOverride
 {
 	GENERATED_BODY()
 	
-	UPROPERTY(EditAnywhere, meta=(DisplayName="Struct"))
+	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Type ID Overrides", meta=(DisplayName="Struct"))
 	TSoftObjectPtr<UScriptStruct> Struct;
 	
-	UPROPERTY(EditAnywhere, meta=(DisplayName="Override ID", ClampMin=0, ClampMax=65535))
+	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Type ID Overrides", meta=(DisplayName="Override ID", ClampMin=0, ClampMax=65535))
 	int32 OverrideID = 0;
 };
 
@@ -26,10 +26,10 @@ struct FCrowdyClassIDOverride
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, meta=(DisplayName="Entity Class"))
+	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Type ID Overrides", meta=(DisplayName="Entity Class"))
 	TSoftClassPtr<AActor> Class;
 
-	UPROPERTY(EditAnywhere, meta=(DisplayName="Override ID", ClampMin=1))
+	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Type ID Overrides", meta=(DisplayName="Override ID", ClampMin=1))
 	uint32 OverrideID = 0;
 };
 

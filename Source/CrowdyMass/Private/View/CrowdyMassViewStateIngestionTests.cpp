@@ -8,6 +8,7 @@
 #include "Fragments/CrowdyMassFragments.h"
 #include "MassCommonFragments.h"
 #include "MassEntityManager.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"

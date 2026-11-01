@@ -5,6 +5,7 @@
 
 #include "Data/CrowdyRenderingBackend.h"
 #include "Data/CrowdyRenderingBackendConfig.h"
+#include "Engine/World.h"
 #include "Messages/Actor/FCrowdyKitActorState.h"
 #include "Replication/Subsystems/CrowdyActorTracker.h"
 #include "Replication/Subsystems/CrowdyKitActorClasses.h"

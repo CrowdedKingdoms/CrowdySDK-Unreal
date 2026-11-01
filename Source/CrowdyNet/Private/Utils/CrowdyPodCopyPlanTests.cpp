@@ -13,6 +13,7 @@
 #include "StructUtils/UserDefinedStruct.h"
 #include "UObject/Class.h"
 #include "UObject/GCObjectScopeGuard.h"
+#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 #include "Utils/CrowdyPodCopyPlan.h"
 #include "Utils/SerializationFunctionLibrary.h"

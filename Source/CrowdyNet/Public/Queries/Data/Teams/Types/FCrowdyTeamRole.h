@@ -11,18 +11,18 @@ struct CROWDYNET_API FCrowdyTeamRole
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int64   TeamRoleId = 0;
-	UPROPERTY(BlueprintReadOnly) int64   TeamId     = 0;
-	UPROPERTY(BlueprintReadOnly) FString RoleName;
-	UPROPERTY(BlueprintReadOnly) int32   Rank       = 0;
-	UPROPERTY(BlueprintReadOnly) bool    bIsSystem  = false;
-	UPROPERTY(BlueprintReadOnly) FCrowdyTeamPermissions Permissions;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int64   TeamRoleId = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int64   TeamId     = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FString RoleName;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int32   Rank       = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") bool    bIsSystem  = false;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FCrowdyTeamPermissions Permissions;
 
 	/**
 	 * When the server returns this role nested inside a member it omits createdAt, so this is empty there and
 	 * filled only when the role came from the team's own role list.
 	 */
-	UPROPERTY(BlueprintReadOnly) FString CreatedAt;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FString CreatedAt;
 
 	bool HasPermission(ECrowdyTeamPermission Permission) const
 	{

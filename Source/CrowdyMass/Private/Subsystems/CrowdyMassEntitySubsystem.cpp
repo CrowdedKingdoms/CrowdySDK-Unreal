@@ -52,6 +52,7 @@
 #include "Target/CrowdyMassEntityTarget.h"
 #include "Target/CrowdyMassFieldAccess.h"
 #include "Templates/UnrealTemplate.h"
+#include "TimerManager.h"
 #include "Target/CrowdyMassEntityTargetResolver.h"
 #include "Traits/CrowdyMassAnimationTrait.h"
 #include "Traits/CrowdyMassRemoteEntityTrait.h"

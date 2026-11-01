@@ -10,6 +10,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/PackageName.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 

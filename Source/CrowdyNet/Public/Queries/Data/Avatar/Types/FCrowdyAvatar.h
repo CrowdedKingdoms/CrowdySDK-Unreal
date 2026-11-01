@@ -8,14 +8,14 @@ struct CROWDYNET_API FCrowdyAvatar
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int64   AvatarId    = 0;
-	UPROPERTY(BlueprintReadOnly) int64   UserId      = 0;
-	UPROPERTY(BlueprintReadOnly) FString Name;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") int64   AvatarId   = 0;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") int64   UserId     = 0;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") FString Name;
 	/** Base64-encoded binary state visible to all players. */
-	UPROPERTY(BlueprintReadOnly) FString PublicState;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") FString PublicState;
 	/** Base64-encoded binary state visible to the owner only. Empty for non-owner lookups. */
-	UPROPERTY(BlueprintReadOnly) FString PrivateState;
-	UPROPERTY(BlueprintReadOnly) FString CreatedAt;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") FString PrivateState;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") FString CreatedAt;
 
 	static bool ParseFromJson(const TSharedPtr<FJsonObject>& Obj, FCrowdyAvatar& Out)
 	{

@@ -21,8 +21,8 @@ struct CROWDYNET_API FCrowdyTeamError
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) ECrowdyTeamErrorCode Code = ECrowdyTeamErrorCode::Unknown;
-	UPROPERTY(BlueprintReadOnly) FString Message;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") ECrowdyTeamErrorCode Code = ECrowdyTeamErrorCode::Unknown;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FString Message;
 
 	static FCrowdyTeamError FromMessage(const FString& Msg)
 	{

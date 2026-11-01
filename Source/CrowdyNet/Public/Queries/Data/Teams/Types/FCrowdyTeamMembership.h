@@ -15,15 +15,15 @@ struct CROWDYNET_API FCrowdyTeamMembership
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FCrowdyTeam Team;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FCrowdyTeam Team;
 
 	/** Sorted by rank, lowest first. */
-	UPROPERTY(BlueprintReadOnly) TArray<FCrowdyTeamRole> Roles;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") TArray<FCrowdyTeamRole> Roles;
 
 	/** The effective permissions across every role held, as the server computed them. */
-	UPROPERTY(BlueprintReadOnly) FCrowdyTeamPermissions Permissions;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FCrowdyTeamPermissions Permissions;
 
-	UPROPERTY(BlueprintReadOnly) FString JoinedAt;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FString JoinedAt;
 
 	bool HasPermission(ECrowdyTeamPermission Permission) const
 	{

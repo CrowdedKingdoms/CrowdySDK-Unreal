@@ -15,15 +15,15 @@ struct CROWDYNET_API FCrowdyChannelMembership
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FCrowdyChannel Channel;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FCrowdyChannel Channel;
 
 	/** Sorted by rank, lowest first. */
-	UPROPERTY(BlueprintReadOnly) TArray<FCrowdyChannelRole> Roles;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") TArray<FCrowdyChannelRole> Roles;
 
 	/** The effective permissions across every role held, as the server computed them. */
-	UPROPERTY(BlueprintReadOnly) FCrowdyChannelPermissions Permissions;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FCrowdyChannelPermissions Permissions;
 
-	UPROPERTY(BlueprintReadOnly) FString JoinedAt;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FString JoinedAt;
 
 	bool HasPermission(ECrowdyChannelPermission Permission) const
 	{

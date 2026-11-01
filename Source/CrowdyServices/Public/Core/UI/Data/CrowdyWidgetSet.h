@@ -17,6 +17,6 @@ class CROWDYSERVICES_API UCrowdyWidgetSet : public UDataAsset
 	GENERATED_BODY()
 	
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta=(DisplayName="Widget Specifications"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|UI", meta=(DisplayName="Widget Specifications"))
 	TMap<FGameplayTag, FWidgetSpec> WidgetSpecMap;
 };

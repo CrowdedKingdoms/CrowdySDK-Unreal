@@ -3,6 +3,7 @@
 #include "Utils/CrowdyUtilities.h"
 
 #include "CrowdyServicesLog.h"
+#include "Engine/GameInstance.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Interfaces/CrowdyEntityComponentProvider.h"

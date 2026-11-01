@@ -7,6 +7,7 @@
 #include "Misc/AutomationTest.h"
 #include "Subsystem/CrowdyAuthentication.h"
 #include "Subsystem/CrowdyGameSession.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
 namespace

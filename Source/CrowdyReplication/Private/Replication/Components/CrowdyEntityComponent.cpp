@@ -3,6 +3,7 @@
 
 #include "TimerManager.h"
 #include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "Replication/Components/CrowdyBindingKeyProvider.h"

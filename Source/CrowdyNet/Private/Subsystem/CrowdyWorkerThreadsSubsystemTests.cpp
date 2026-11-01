@@ -6,6 +6,7 @@
 #include "HAL/Event.h"
 #include "HAL/PlatformProcess.h"
 #include "Subsystem/CrowdyWorkerThreadsSubsystem.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
 #include <atomic>

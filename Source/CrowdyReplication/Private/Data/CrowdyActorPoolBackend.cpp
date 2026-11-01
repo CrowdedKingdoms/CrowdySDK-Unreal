@@ -7,6 +7,7 @@
 #include "Data/CrowdyRepApplicationPolicy.h"
 #include "Data/CrowdyTransformRepPolicy.h"
 #include "Data/FCrowdyPoolConfig.h"
+#include "Engine/World.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Executor/ActorUpdateExecutor.h"
 #include "Replication/Subsystems/CrowdyActorPoolSubsystem.h"

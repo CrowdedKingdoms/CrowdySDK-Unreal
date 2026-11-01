@@ -13,7 +13,7 @@ USTRUCT(BlueprintType)
 struct FCrowdyTeamsResult
 {
 	GENERATED_BODY()
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Teams|Queries")
 	TArray<FCrowdyTeam> Teams;
 };
 
@@ -21,7 +21,7 @@ USTRUCT(BlueprintType)
 struct FCrowdyMyTeamsResult
 {
 	GENERATED_BODY()
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Teams|Queries")
 	TArray<FCrowdyTeamMembership> Memberships;
 };
 
@@ -29,7 +29,7 @@ USTRUCT(BlueprintType)
 struct FCrowdyTeamMembersResult
 {
 	GENERATED_BODY()
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Teams|Queries")
 	TArray<FCrowdyTeamMember> Members;
 };
 
@@ -37,7 +37,7 @@ USTRUCT(BlueprintType)
 struct FCrowdyTeamRolesResult
 {
 	GENERATED_BODY()
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Teams|Queries")
 	TArray<FCrowdyTeamRole> Roles;
 };
 
@@ -67,9 +67,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetMyTeams : public UBlueprintAsyncActionB
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FMyTeamsAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FMyTeamsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -93,9 +93,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetTeam : public UBlueprintAsyncActionBase
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FTeamAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FTeamAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -120,9 +120,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetTeams : public UBlueprintAsyncActionBas
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FTeamsAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FTeamsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -145,9 +145,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetTeamMembers : public UBlueprintAsyncAct
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FMembersAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FMembersAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -171,9 +171,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetTeamRoles : public UBlueprintAsyncActio
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FRolesAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FRolesAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -198,9 +198,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetTeamPolicy : public UBlueprintAsyncActi
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FPolicyAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FPolicyAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -224,9 +224,9 @@ class CROWDYSERVICES_API UCrowdyTeams_GetPendingJoinRequests : public UBlueprint
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FMembersAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Teams|Queries")
 	FMembersAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),

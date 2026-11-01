@@ -48,6 +48,7 @@ void UCrowdyMassActionSignatureTestTarget::DoublePlayRateAction(int32 ActionId, 
 #include "Replication/RPC/FCrowdyRpcCall.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
 #include "Templates/SharedPointer.h"
+#include "UObject/Package.h"
 #include <limits>
 
 // Covers the CrowdyMass half of the actor-class event route: which functions this subsystem claims a
