@@ -86,6 +86,9 @@ public:
 	void BindToTrackerForTest(UCrowdyActorTracker* Tracker) { BindToTracker(Tracker); }
 	void BindToEntitySubsystemForTest(UCrowdyEntitySubsystem* Entities) { BindToEntitySubsystem(Entities); }
 
+	// The dependency Initialize resolves before binding, for a test whose case reads it.
+	void SetEntitySubsystemForTest(UCrowdyEntitySubsystem* Entities) { EntitySubsystem = Entities; }
+
 	int32 AllocateSlotForTest(const FGuid& UUID) { return AllocateSlot(UUID); }
 	void ReleaseSlotForTest(const FGuid& UUID) { ReleaseSlot(UUID); }
 	void TickPendingActivationsForTest() { TickPendingActivations(); }
@@ -247,6 +250,11 @@ private:
 
 	UFUNCTION()
 	void OnEntityUnregistered(const FGuid& EntityID);
+
+	// A slot is set up for who owned the entity at the time: drawn as a proxy, or left undrawn as this client's own.
+	// When ownership moves to or from this client, the slot's next update sets it up again.
+	UFUNCTION()
+	void OnEntityOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& PreviousOwnerID);
 
 	/** Activates an inactive slot again with the class it was first activated with. */
 	void RetryInactiveSlot(int32 SlotId, const FGuid& UUID, const FInstancedStruct& State);

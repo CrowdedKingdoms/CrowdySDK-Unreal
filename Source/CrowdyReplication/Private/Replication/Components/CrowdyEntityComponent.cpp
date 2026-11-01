@@ -81,6 +81,9 @@ void UCrowdyEntityComponent::ClearIdentity()
 	ClassID    = CROWDY_INVALID_CLASS_ID;
 	UUIDString.Reset();
 	bIdentityInjected = false;
+	bSendsPresence = false;
+	bSpawnDataDelivered = false;
+	SpawnData.Reset();
 
 	// The actor owns nothing until it is handed a new identity, so drop any queued announcement and re-arm the
 	// one-shot: the next assignment announces again.
@@ -312,6 +315,45 @@ void UCrowdyEntityComponent::CompleteRegistration()
 	}
 }
 
+void UCrowdyEntityComponent::EnablePresence()
+{
+	if (Mode == ECrowdyEntityMode::Dynamic)
+		return;
+
+	bSendsPresence = true;
+	if (IsLocallyOwned())
+		StartPresence();
+}
+
+void UCrowdyEntityComponent::StartPresence()
+{
+	if (!IsValid(AutoReplicator))
+		AutoReplicator = GetWorld()->GetSubsystem<UCrowdyAutoReplicator>();
+	if (!IsValid(AutoReplicator))
+		return;
+
+	AutoReplicator->RegisterReplicationComponent(this, true);
+}
+
+void UCrowdyEntityComponent::SendPresence() const
+{
+	// The spawn event again, from where the entity is now: a client that joined after the first one gets the actor,
+	// its owner and its spawn data from it, and one that already has the entity ignores it.
+	UCrowdyEntitySubsystem* Entities = IsValid(EntitySubsystem) ? EntitySubsystem.Get() : ResolveEntitySubsystem();
+	if (IsValid(Entities) && IsValid(CachedOwner))
+		Entities->AnnounceSpawn(CachedOwner, SpawnData);
+}
+
+void UCrowdyEntityComponent::DeliverSpawnData(const FInstancedStruct& InitialState, const bool bIsLocal)
+{
+	if (bSpawnDataDelivered)
+		return;
+
+	bSpawnDataDelivered = true;
+	SpawnData = InitialState;
+	OnCrowdySpawned.Broadcast(InitialState, bIsLocal);
+}
+
 void UCrowdyEntityComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (bAwaitingPossession)
@@ -469,14 +511,23 @@ void UCrowdyEntityComponent::ApplyOwnershipReassignment(const FGuid& NewOwnerID,
 	Role    = NewRole;
 
 	// The Dynamic-mode continuous StateExecutor channel follows authority: the new owner joins the AutoReplicator,
-	// a client that just lost ownership leaves it. Static / event-only entities have no continuous channel to move.
+	// a client that just lost ownership leaves it. A spawned Static entity's presence sends move the same way.
 	if (Mode == ECrowdyEntityMode::Dynamic)
 	{
 		if (IsLocallyOwned())
 			StartReplication();
 		else
 			StopReplication();
+		return;
 	}
+
+	if (!bSendsPresence)
+		return;
+
+	if (IsLocallyOwned())
+		StartPresence();
+	else
+		StopReplication();
 }
 
 void UCrowdyEntityComponent::BroadcastOwnershipAssigned()
