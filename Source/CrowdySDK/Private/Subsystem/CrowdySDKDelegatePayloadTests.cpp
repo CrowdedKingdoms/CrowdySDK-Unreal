@@ -5,6 +5,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "Kismet/BlueprintAsyncActionBase.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectIterator.h"
 

@@ -6,6 +6,7 @@
 #include "Engine/World.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectKey.h"
+#include "UObject/Package.h"
 #include "crowdy/default_origin.hpp"
 
 namespace

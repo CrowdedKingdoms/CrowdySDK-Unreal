@@ -4,6 +4,7 @@
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "CrowdyReplicationLog.h"
 #include "Components/ActorComponent.h"
+#include "Engine/GameInstance.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "Replication/Components/CrowdyEntityComponent.h"

@@ -4,6 +4,7 @@
 
 #include "Replication/Executor/ActorUpdateExecutor.h"
 #include "StructUtils/InstancedStruct.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/SerializationFunctionLibrary.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"

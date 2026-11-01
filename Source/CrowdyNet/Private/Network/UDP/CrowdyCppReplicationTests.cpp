@@ -19,6 +19,7 @@
 #include "Network/UDP/CrowdyCppSendAdapter.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
 #include <atomic>

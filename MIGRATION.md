@@ -40,6 +40,7 @@ something was left out.
 | Host user id 0 ("no host": after sign-out, before the first election on a map, or a host poll answer naming user 0) became a valid-looking host id, and sign-out did not always clear the host. | It becomes an empty (invalid) host id, and sign-out clears the host at once. | Behaviour: C++ `UCrowdyHostSubsystem::SetHostUserID`, `UCrowdySDKSubsystem::Logout`; Blueprint `Is Host Set`, `Get Host ID`, `On Host Elected`. |
 | A packaged plugin (UAT BuildPlugin, which the SDK's package script uses) left out the plugin's `Config` folder, so `Config/DefaultCrowdySDK.ini` and the CoreRedirects the SDK carries for itself were missing from packaged installs. | The package includes `Config/`, `MIGRATION.md`, `README.md` and the license file. | Packaging: `Config/FilterPlugin.ini`. |
 | No migration file. | `MIGRATION.md` at the plugin root. | Docs. |
+| Building the plugin with UAT `BuildPlugin` (or the SDK's package script) failed: UHT requires an explicit `Category` on every editor- or Blueprint-exposed property when it builds a plugin that way, and 113 properties had none. The package script still reported success. | Every exposed property has a `Category`, so `BuildPlugin` builds the plugin; the package script stops with an error when UAT fails. | Packaging: headers in CrowdyNet, CrowdyReplication and CrowdyServices; `scripts/package-crowdy-sdk.ps1` (SDK repository only). |
 
 **Do this, in order**
 
@@ -77,6 +78,9 @@ after a level travel) fires `On Host Elected` with an invalid `PreviousHostID`; 
 as "a new session started". Before, both places carried a made-up, valid-looking host id that
 matched no player. A host poll answer that arrives while nobody is signed in, such as one still
 in flight at sign-out, is now ignored instead of electing a host for a signed-out client.
+Editor-only: the Teams and Channels permission structs' fields moved from the `Crowdy|Teams` and
+`Crowdy|Channels` categories to `Crowdy SDK|Teams` and `Crowdy SDK|Channels`, matching the rest of
+the SDK; this changes only how the editor groups them.
 
 **Verify**
 

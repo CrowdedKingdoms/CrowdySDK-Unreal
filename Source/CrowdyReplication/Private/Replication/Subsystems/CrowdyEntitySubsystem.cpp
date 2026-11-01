@@ -6,6 +6,8 @@
 #include "Core/FCrowdyTypeID.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
 #include "Engine/AssetManager.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Subsystem/CrowdyAutoRegistry.h"

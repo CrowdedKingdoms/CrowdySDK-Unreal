@@ -5,6 +5,7 @@
 
 #include "GameFramework/Actor.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/Package.h"
 #include "WorldPartition/ActorInstanceGuids.h"
 
 namespace

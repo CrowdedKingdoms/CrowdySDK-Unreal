@@ -6,6 +6,7 @@
 #include "Misc/AutomationTest.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Subsystem/CrowdyHostSubsystem.h"
+#include "UObject/Package.h"
 #include "Utils/HelperFunctions.h"
 
 namespace

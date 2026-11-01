@@ -3,6 +3,7 @@
 
 #include "Subsystem/CrowdyWorkerThreadsSubsystem.h"
 #include "CrowdyNetLog.h"
+#include "HAL/RunnableThread.h"
 #include <atomic>
 #include "Threading/FWorker.h"
 

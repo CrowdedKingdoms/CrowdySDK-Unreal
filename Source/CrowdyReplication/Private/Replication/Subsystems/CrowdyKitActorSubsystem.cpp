@@ -1,6 +1,7 @@
 #include "Replication/Subsystems/CrowdyKitActorSubsystem.h"
 
 #include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Replication/Components/CrowdyKitActorComponent.h"
 #include "Replication/Subsystems/CrowdyActorTracker.h"

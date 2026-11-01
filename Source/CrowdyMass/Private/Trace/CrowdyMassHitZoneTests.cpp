@@ -6,6 +6,7 @@
 #include "Fragments/CrowdyMassFragments.h"
 #include "Misc/AutomationTest.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
+#include "UObject/Package.h"
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"

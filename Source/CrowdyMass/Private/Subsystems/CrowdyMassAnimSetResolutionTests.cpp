@@ -5,6 +5,7 @@
 #include "Components/CrowdyMassAnimSetComponent.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Engine.h"
+#include "Engine/Level.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/World.h"

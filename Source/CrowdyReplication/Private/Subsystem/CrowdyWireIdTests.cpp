@@ -18,6 +18,7 @@
 #include "Serialization/MemoryWriter.h"
 #include "StructUtils/InstancedStruct.h"
 #include "UObject/GCObjectScopeGuard.h"
+#include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
 #include "Utils/SerializationFunctionLibrary.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"

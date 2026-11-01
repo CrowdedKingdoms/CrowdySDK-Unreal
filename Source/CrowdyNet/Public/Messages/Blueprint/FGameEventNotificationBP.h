@@ -9,21 +9,21 @@ struct FGameEventNotificationBP
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Messages")
 	int64 ChunkX;
 	
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Messages")
 	int64 ChunkY;
 	
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Messages")
 	int64 ChunkZ;
 	
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Messages")
 	FString UUID;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Messages")
 	FInstancedStruct Event;
 	
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Messages")
 	int64 Timestamp;
 };

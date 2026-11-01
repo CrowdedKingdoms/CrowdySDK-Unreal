@@ -1,5 +1,7 @@
 #include "Subsystem/AsyncActions/CrowdyChannelsWriteActions.h"
 #include "CrowdyServicesLog.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Subsystem/CrowdyChannels.h"
 
 static UCrowdyChannels* GetChannelsSubsystemW(const TWeakObjectPtr<UObject>& Ctx)

@@ -8,12 +8,12 @@ struct CROWDYNET_API FCrowdyAppAvatarState
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int64   AppId    = 0;
-	UPROPERTY(BlueprintReadOnly) int64   AvatarId = 0;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") int64   AppId   = 0;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") int64   AvatarId= 0;
 	/** Base64-encoded binary state for this app. Empty string means not set. Use DeserializeFromAvatarState to decode. */
-	UPROPERTY(BlueprintReadOnly) FString RawState;
-	UPROPERTY(BlueprintReadOnly) FString CreatedAt;
-	UPROPERTY(BlueprintReadOnly) FString UpdatedAt;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") FString RawState;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") FString CreatedAt;
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Avatars") FString UpdatedAt;
 
 	static bool ParseFromJson(const TSharedPtr<FJsonObject>& Obj, FCrowdyAppAvatarState& Out)
 	{

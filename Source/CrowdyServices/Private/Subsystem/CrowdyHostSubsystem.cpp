@@ -8,6 +8,8 @@
 #include "Utils/HelperFunctions.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Engine/GameInstance.h"
+#include "Engine/World.h"
+#include "Async/Async.h"
 #include "Dom/JsonObject.h"
 
 using namespace CrowdyServiceApi;

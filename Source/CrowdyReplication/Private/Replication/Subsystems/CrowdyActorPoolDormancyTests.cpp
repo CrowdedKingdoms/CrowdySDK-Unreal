@@ -10,6 +10,7 @@
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/State/CrowdyStateTestTarget.h"
 #include "Replication/Subsystems/CrowdyActorPoolSubsystem.h"
+#include "UObject/UObjectIterator.h"
 
 namespace
 {

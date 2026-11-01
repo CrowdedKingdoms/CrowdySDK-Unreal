@@ -4,6 +4,8 @@
 #include "Replication/Subsystems/CrowdyActorTracker.h"
 #include "CrowdyReplicationLog.h"
 
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "HAL/Event.h"
 #include "Messages/Actor/FActorLeftNotification.h"
 #include "Messages/Actor/FActorUpdateNotificationMessage.h"
@@ -15,6 +17,7 @@
 #include "Replication/Subsystems/CrowdyActorUpdateRouting.h"
 #include "Replication/Subsystems/CrowdyShardScheduling.h"
 #include "Subsystem/CrowdyWorkerThreadsSubsystem.h"
+#include "TimerManager.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/SerializationFunctionLibrary.h"
 #include "UObject/WeakObjectPtrTemplates.h"

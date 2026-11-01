@@ -11,6 +11,7 @@
 #include "Target/CrowdyMassEntityTargetResolver.h"
 #include "Target/CrowdyMassEntityTargetTestTypes.h"
 #include "Templates/SharedPointer.h"
+#include "UObject/Package.h"
 
 /**
  * That one entity is reachable by the same events whether this client holds it as an actor or as a row.

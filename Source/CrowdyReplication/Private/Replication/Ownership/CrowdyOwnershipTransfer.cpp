@@ -2,6 +2,7 @@
 #include "CrowdyReplicationLog.h"
 
 #include "Data/CrowdyEntityTypes.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"

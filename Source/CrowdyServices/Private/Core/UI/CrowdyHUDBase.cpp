@@ -7,6 +7,7 @@
 #include "Core/CrowdySDKBridgeSubsystem.h"
 #include "Blueprint/UserWidget.h"
 #include "Components/Overlay.h"
+#include "Engine/GameInstance.h"
 
 void ACrowdyHUDBase::ExecuteUICommand_Implementation(FGameplayTag Command, bool bHideOtherWidgetsInLayer, bool bChangeInputMode)
 {

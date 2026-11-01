@@ -11,6 +11,7 @@
 #include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
+#include "UObject/Package.h"
 
 // Covers the event router's spawn-wait defer queue caps and ICrowdyEntitySubscriber's event plane, without
 // pulling in a Mass entity: every case here uses only the router, the entity subsystem, and a plain RPC

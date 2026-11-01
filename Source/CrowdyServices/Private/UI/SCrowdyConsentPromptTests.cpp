@@ -12,6 +12,7 @@
 #include "UI/CrowdyBrandStyle.h"
 #include "UI/CrowdyConsentPromptSubsystem.h"
 #include "UI/SCrowdyConsentPrompt.h"
+#include "UObject/Package.h"
 #include "Widgets/Text/STextBlock.h"
 
 namespace CrowdyConsentPromptTestSupport
