@@ -10,6 +10,8 @@ gameplay state, voice, teams, channels, and avatars.
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
+**Upgrading? Read [MIGRATION.md](MIGRATION.md): every release from 2.24.0 lists what changed and the exact steps to migrate.**
+
 **New in 2.23.0:** nearby text chat: Send Proximity Text reaches the players within a distance of
 your pawn's chunk, and On Proximity Text Received hands you theirs, as plain UTF-8 that CrowdyJS and
 CrowdyCPP players share; Set Voice Chat Distance keeps voice local; voice and text are addressed to
