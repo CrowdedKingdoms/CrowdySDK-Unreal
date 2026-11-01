@@ -62,13 +62,14 @@ namespace
 		UCrowdyActorPoolSubsystem* Pool = nullptr;
 		UCrowdyEntitySubsystem* Entities = nullptr;
 		UCrowdyActorPoolBackend* Backend = nullptr;
+		UCrowdyActorPoolBackendConfig* Config = nullptr;
 
 		explicit FCrowdyPoolBackendFixture(UWorld* World)
 		{
 			Pool = NewObject<UCrowdyActorPoolSubsystem>(World);
 			Entities = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
 
-			UCrowdyActorPoolBackendConfig* Config = NewObject<UCrowdyActorPoolBackendConfig>(GetTransientPackage());
+			Config = NewObject<UCrowdyActorPoolBackendConfig>(GetTransientPackage());
 			Config->DefaultPoolSizePerClass = 1;
 			Config->MaxPoolSizePerClass = 1;
 
@@ -81,10 +82,11 @@ namespace
 			Backend->ActivateInstance(SlotId, UUID, ACrowdyStateHostOverrideActor::StaticClass(), FInstancedStruct());
 		}
 
-		// What FinishRemoteSpawn leaves behind: an actor of the entity's class registered as its remote proxy.
-		AActor* SpawnOrphan(UWorld* World, const FGuid& UUID) const
+		// What FinishRemoteSpawn leaves behind: an actor registered as the entity's remote proxy. Of the slot's class it
+		// is adopted outright; these cases use another class by default to reach the replace and at-cap paths.
+		AActor* SpawnOrphan(UWorld* World, const FGuid& UUID, UClass* OrphanClass = ACrowdyStateOverlapActor::StaticClass()) const
 		{
-			AActor* Orphan = World->SpawnActor<ACrowdyStateHostOverrideActor>();
+			AActor* Orphan = World->SpawnActor<AActor>(OrphanClass);
 
 			FCrowdyEntityRecord Record;
 			Record.NetID = UUID;
@@ -189,7 +191,7 @@ bool FCrowdyPoolSecuresActorBeforeOrphanTest::RunTest(const FString& Parameters)
 
 	AActor* SlotActor = Fixture.Backend->GetSlotActorForTest(0);
 	TestNotNull(TEXT("the slot holds an actor"), SlotActor);
-	TestTrue(TEXT("and it is a pool actor, not the orphan"), SlotActor != Orphan);
+	TestTrue(TEXT("and it is a pool actor, not the orphan of another class"), SlotActor != Orphan);
 	TestFalse(TEXT("the orphan is destroyed once a pool actor is secured"), IsValid(Orphan));
 	TestTrue(TEXT("the entity's record now names the pool actor"), Fixture.Entities->FindEntity(Entity) == SlotActor);
 	TestTrue(TEXT("the backend reports the slot active"), Fixture.Backend->IsInstanceActive(0));
@@ -410,9 +412,10 @@ bool FCrowdyOwnerProxyReleasedWithoutRecordTest::RunTest(const FString& Paramete
 	OwnerRecord.Participant = OwnedActor;
 	Fixture.Entities->RegisterEntity(OwnerRecord);
 
+	Fixture.Config->bRenderLocalOwner = true;
 	Fixture.Activate(0, Owned);
 	AActor* Proxy = Fixture.Backend->GetSlotActorForTest(0);
-	if (!TestTrue(TEXT("the owner entity is drawn by a pool actor"), IsValid(Proxy) && Proxy != OwnedActor))
+	if (!TestTrue(TEXT("with Render Local Owner on the owner entity is drawn by a pool actor"), IsValid(Proxy) && Proxy != OwnedActor))
 	{
 		return false;
 	}

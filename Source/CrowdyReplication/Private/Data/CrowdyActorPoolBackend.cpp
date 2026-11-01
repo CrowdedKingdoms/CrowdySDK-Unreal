@@ -4,10 +4,12 @@
 #include "CrowdyReplicationLog.h"
 
 #include "Data/CrowdyActorPoolBackendConfig.h"
+#include "Data/CrowdyActorPoolPolicy.h"
 #include "Data/CrowdyRepApplicationPolicy.h"
 #include "Data/CrowdyTransformRepPolicy.h"
 #include "Data/FCrowdyPoolConfig.h"
 #include "Engine/World.h"
+#include "GameFramework/Actor.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Executor/ActorUpdateExecutor.h"
 #include "Replication/Subsystems/CrowdyActorPoolSubsystem.h"
@@ -95,6 +97,7 @@ void UCrowdyActorPoolBackend::DeinitializeBackend()
 	SlotActors.Empty();
 	UnpooledSlots.Empty();
 	OwnerProxySlots.Empty();
+	SkippedOwnerSlots.Empty();
 }
 
 void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& InitialState)
@@ -111,6 +114,18 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 	const FCrowdyEntityRecord* ExistingRecord = EntitySubsystem->FindRecord(UUID);
 	const bool bOwnerEntity = ExistingRecord && ExistingRecord->Role == ECrowdyRole::Owner;
 
+	// The owner already has the real actor, so a copy driven by the server's echo of it is drawn only on request. A
+	// slot set up before this client took ownership lets go of its actor, which is now this client's to move.
+	if (bOwnerEntity && !(IsValid(PoolConfig) && PoolConfig->bRenderLocalOwner))
+	{
+		ReleaseSlotActor(SlotId, false);
+		SkippedOwnerSlots[SlotId] = true;
+		UE_CLOG(CrowdyReplicationTrace::Pool(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyActorPoolBackend]: Slot %d: entity %s is owned here, so no pooled copy is drawn (Render Local Owner is off)."),
+			SlotId, *UUID.ToString());
+		return;
+	}
+
 	EnsurePoolForClass(EntityClass);
 
 	// A previous actor still here means a missed deactivation; only a record naming that actor is dropped.
@@ -122,8 +137,14 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 		ReleaseSlotActor(SlotId, bClaimed);
 	}
 
+	// The actor the spawn event made is already this entity's body and holds what OnCrowdySpawned gave it, so it is
+	// adopted rather than swapped for a pool actor.
+	const FCrowdyEntityRecord* SpawnedRecord = bOwnerEntity ? nullptr : EntitySubsystem->FindRecord(UUID);
+	const AActor* Spawned = SpawnedRecord ? SpawnedRecord->GetActor() : nullptr;
+	const bool bAdoptSpawned = IsValid(Spawned) && Spawned->GetClass() == EntityClass;
+
 	// Secured before the orphan (the actor FinishRemoteSpawn made) is touched, so a refusal never costs it.
-	AActor* Actor = ActorPool->AcquireActor(EntityClass);
+	AActor* Actor = bAdoptSpawned ? nullptr : ActorPool->AcquireActor(EntityClass);
 
 	const FCrowdyEntityRecord* OrphanRecord = bOwnerEntity ? nullptr : EntitySubsystem->FindRecord(UUID);
 	const bool bHasOrphanRecord = OrphanRecord != nullptr;
@@ -137,12 +158,13 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 		return;
 	}
 
-	// At the cap the orphan is adopted with its own record, and destroyed rather than pooled on release.
+	// An adopted orphan keeps its own record and is never returned to the pool.
 	const bool bAdopted = !Actor;
 	const bool bReplacedOrphan = !bAdopted && IsValid(Orphan);
 	if (bAdopted)
 	{
 		Actor = Orphan;
+		CrowdyActorPool::DisableProxyMovement(Actor);
 	}
 	else if (bHasOrphanRecord)
 	{
@@ -178,6 +200,7 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 	SlotActors[SlotId] = Actor;
 	UnpooledSlots[SlotId] = bAdopted;
 	OwnerProxySlots[SlotId] = bOwnerEntity;
+	SkippedOwnerSlots[SlotId] = false;
 
 	UE_CLOG(CrowdyReplicationTrace::Pool(), LogCrowdyReplication, Log,
 		TEXT("[CrowdyActorPoolBackend]: Activated slot %d: entity %s, class %s, location %s, orphan replaced %s, adopted %s."),
@@ -216,7 +239,10 @@ void UCrowdyActorPoolBackend::DeactivateInstance(int32 SlotId, const FGuid& UUID
 
 bool UCrowdyActorPoolBackend::IsInstanceActive(const int32 SlotId) const
 {
-	return SlotActors.IsValidIndex(SlotId) && SlotActors[SlotId].IsValid() && IsSlotActorClaimed(SlotId);
+	if (!SlotActors.IsValidIndex(SlotId))
+		return false;
+
+	return SkippedOwnerSlots[SlotId] || (SlotActors[SlotId].IsValid() && IsSlotActorClaimed(SlotId));
 }
 
 bool UCrowdyActorPoolBackend::IsSlotActorClaimed(const int32 SlotId) const
@@ -231,6 +257,7 @@ void UCrowdyActorPoolBackend::ReleaseSlotActor(const int32 SlotId, const bool bC
 	SlotActors[SlotId] = nullptr;
 	UnpooledSlots[SlotId] = false;
 	OwnerProxySlots[SlotId] = false;
+	SkippedOwnerSlots[SlotId] = false;
 
 	// An actor whose record someone else removed is theirs to destroy; the pool prunes it once it is gone.
 	if (!IsValid(Actor) || !bClaimed) return;
@@ -269,6 +296,7 @@ void UCrowdyActorPoolBackend::EnsureSlotCapacity(int32 SlotId)
 	SlotActors.SetNum(SlotId + 1);
 	UnpooledSlots.SetNum(SlotId + 1, false);
 	OwnerProxySlots.SetNum(SlotId + 1, false);
+	SkippedOwnerSlots.SetNum(SlotId + 1, false);
 }
 
 void UCrowdyActorPoolBackend::EnsurePoolForClass(UClass* ActorClass)

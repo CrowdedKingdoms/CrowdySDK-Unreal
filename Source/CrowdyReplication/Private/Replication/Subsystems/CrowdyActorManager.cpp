@@ -107,6 +107,7 @@ void UCrowdyActorManager::BindToEntitySubsystem(UCrowdyEntitySubsystem* Entities
 	// Deferred activations fire when EntitySubsystem finishes processing a spawn event.
 	Entities->OnEntityRegistered.AddDynamic(this, &UCrowdyActorManager::OnEntityRegistered);
 	Entities->OnEntityUnregistered.AddDynamic(this, &UCrowdyActorManager::OnEntityUnregistered);
+	Entities->OnEntityOwnershipChanged.AddDynamic(this, &UCrowdyActorManager::OnEntityOwnershipChanged);
 }
 
 void UCrowdyActorManager::Deinitialize()
@@ -115,6 +116,7 @@ void UCrowdyActorManager::Deinitialize()
 	{
 		EntitySubsystem->OnEntityRegistered.RemoveDynamic(this, &UCrowdyActorManager::OnEntityRegistered);
 		EntitySubsystem->OnEntityUnregistered.RemoveDynamic(this, &UCrowdyActorManager::OnEntityUnregistered);
+		EntitySubsystem->OnEntityOwnershipChanged.RemoveDynamic(this, &UCrowdyActorManager::OnEntityOwnershipChanged);
 	}
 
 	UCrowdyActorTracker* CrowdyActorTracker = GetWorld()->GetSubsystem<UCrowdyActorTracker>();
@@ -348,6 +350,11 @@ void UCrowdyActorManager::ActivateSlot(const int32 SlotId, const FGuid& UUID, UC
 
 void UCrowdyActorManager::RetryInactiveSlot(const int32 SlotId, const FGuid& UUID, const FInstancedStruct& State)
 {
+	// A destroy event just took the slot's actor: a late update does not resurrect it. Left unstamped, so an entity
+	// that is still sending once the destroy is past is drawn again.
+	if (IsValid(EntitySubsystem) && EntitySubsystem->WasRecentlyDestroyed(UUID))
+		return;
+
 	UClass* EntityClass = SlotClasses[SlotId].Get();
 	if (!EntityClass)
 	{
@@ -537,9 +544,19 @@ void UCrowdyActorManager::HandleActorSpawned(FGuid UUID, FInstancedStruct Initia
 	}
 
 	const int32 SlotId = AllocateSlot(UUID);
+
+	// An update sent just before the entity's destroy event must not bring it back. The slot is held undrawn rather
+	// than refused, so an entity still sending once the destroy is a while past is drawn by its next update.
+	if (IsValid(EntitySubsystem) && EntitySubsystem->WasRecentlyDestroyed(UUID))
+	{
+		InactiveSlots[SlotId] = true;
+		SlotClasses[SlotId] = EntityClass;
+		SlotRetryEpochs[SlotId] = CapacityEpoch - 1;
+		return;
+	}
+
 	ActivateSlot(SlotId, UUID, EntityClass, InitialState);
 	ActiveBackend->ExtractUpdate(InitialState, GetEstimatedServerTimeMs(), SlotId);
-
 }
 
 void UCrowdyActorManager::HandleActorDestroyed(FGuid UUID, int32 ActorCount)
@@ -695,4 +712,19 @@ void UCrowdyActorManager::OnEntityUnregistered(const FGuid& EntityID)
 	if (!SlotPtr || InactiveSlots[*SlotPtr]) return;
 
 	InactiveSlots[*SlotPtr] = !ActiveBackend->IsInstanceActive(*SlotPtr);
+}
+
+void UCrowdyActorManager::OnEntityOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& PreviousOwnerID)
+{
+	if (!IsValid(EntitySubsystem) || !IsValid(ActiveBackend)) return;
+
+	// A hand-over between two other clients changes nothing about how this client draws the entity.
+	const FGuid LocalID = EntitySubsystem->GetLocalPlayerID();
+	if (!LocalID.IsValid() || (NewOwnerID != LocalID && PreviousOwnerID != LocalID)) return;
+
+	const int32* SlotPtr = UUIDToSlot.Find(NetID);
+	if (!SlotPtr) return;
+
+	InactiveSlots[*SlotPtr] = true;
+	SlotRetryEpochs[*SlotPtr] = CapacityEpoch - 1;
 }

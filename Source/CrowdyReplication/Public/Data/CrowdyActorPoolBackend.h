@@ -78,6 +78,9 @@ private:
 	/** Parallel to SlotActors: set where the slot's actor draws a locally owned entity and is never registered. */
 	TBitArray<> OwnerProxySlots;
 
+	/** Parallel to SlotActors: set where the slot is a locally owned entity left undrawn, which counts as active. */
+	TBitArray<> SkippedOwnerSlots;
+
 	void EnsureSlotCapacity(int32 SlotId);
 
 	/** Whether the slot's actor is still this slot's to release: an owner proxy, or an actor with a record. */
