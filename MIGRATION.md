@@ -27,7 +27,7 @@ Every release has the same subsections, in this order:
 A subsection with nothing to say is written as "None." so you never have to guess whether
 something was left out.
 
-## 2.24.0 (unreleased)
+## 2.24.0
 
 **Verdict.** No breaking change. Nothing is deprecated.
 
