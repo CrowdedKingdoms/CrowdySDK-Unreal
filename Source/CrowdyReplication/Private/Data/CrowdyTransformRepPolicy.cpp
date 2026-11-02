@@ -3,6 +3,7 @@
 #include "Data/CrowdyTransformRepPolicy.h"
 
 #include "CrowdyReplicationLog.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Messages/Actor/FCrowdyKitActorState.h"
 #include "Replication/Executor/ActorUpdateExecutor.h"

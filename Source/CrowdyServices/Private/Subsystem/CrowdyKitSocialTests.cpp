@@ -11,6 +11,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Subsystem/CrowdyChannels.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/HelperFunctions.h"
 

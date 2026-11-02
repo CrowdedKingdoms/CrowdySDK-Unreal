@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/HitResult.h"
 #include "Fragments/CrowdyMassFragments.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"

@@ -14,10 +14,10 @@ struct CROWDYNET_API FCrowdyTeamPermissions
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadWrite, Category="Crowdy|Teams") bool bManageTeam    = false;
-	UPROPERTY(BlueprintReadWrite, Category="Crowdy|Teams") bool bManageMembers = false;
-	UPROPERTY(BlueprintReadWrite, Category="Crowdy|Teams") bool bManageRoles   = false;
-	UPROPERTY(BlueprintReadWrite, Category="Crowdy|Teams") bool bInviteMembers = false;
+	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Teams") bool bManageTeam    = false;
+	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Teams") bool bManageMembers = false;
+	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Teams") bool bManageRoles   = false;
+	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Teams") bool bInviteMembers = false;
 
 	bool Has(ECrowdyTeamPermission Permission) const
 	{

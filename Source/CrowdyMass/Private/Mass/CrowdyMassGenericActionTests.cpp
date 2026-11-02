@@ -1,3 +1,5 @@
+#include "Misc/CoreMiscDefines.h"
+
 // WITH_METADATA as well as the automation flag, because half of what these assert is what the AUTHOR
 // declared: the CrowdyEvent marker, the action marker and the recipient are metadata, and a game target
 // still compiles automation tests while carrying none of it. There the same assertions would read false

@@ -1,3 +1,5 @@
+#include "Misc/Build.h"
+
 // Also gated on !UE_BUILD_SHIPPING, because these cases measure the dispatch proxy probe, whose whole
 // header and implementation live under that condition. The two conditions coincide unless a build forces
 // automation tests into a Shipping target, which is the configuration this guard exists for.

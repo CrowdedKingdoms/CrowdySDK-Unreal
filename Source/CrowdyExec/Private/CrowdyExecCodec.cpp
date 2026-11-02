@@ -19,6 +19,7 @@
 #include "UObject/SoftObjectPath.h"
 #include "UObject/SoftObjectPtr.h"
 #include "UObject/StructOnScope.h"
+#include "UObject/TextProperty.h"
 #include "UObject/UnrealType.h"
 #include <atomic>
 

@@ -7,43 +7,40 @@
 #include "GameFramework/PawnMovementComponent.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 
-namespace
+/**
+ * Remote proxies are positioned entirely by interpolated transforms
+ * (UCrowdyRepApplicationPolicy::ApplyToActor teleports them with
+ * SetActorLocationAndRotation each frame), so a live pawn/character movement
+ * component is pure overhead: it keeps running gravity and collision sweeps and
+ * fights the teleported transform. Crucially, SetActorTickEnabled(false) does NOT
+ * stop component ticks (a movement component owns its own tick function), so the
+ * tick has to be disabled explicitly here.
+ *
+ * UPawnMovementComponent is the common base of UCharacterMovementComponent and the
+ * generic pawn movement components, so iterating it covers both.
+ */
+void CrowdyActorPool::DisableProxyMovement(AActor* Actor)
 {
-	/**
-	 * Remote proxies are positioned entirely by interpolated transforms
-	 * (UCrowdyRepApplicationPolicy::ApplyToActor teleports them with
-	 * SetActorLocationAndRotation each frame), so a live pawn/character movement
-	 * component is pure overhead — it keeps running gravity and collision sweeps and
-	 * fights the teleported transform. Crucially, SetActorTickEnabled(false) does NOT
-	 * stop component ticks (a movement component owns its own tick function), so the
-	 * tick has to be disabled explicitly here.
-	 *
-	 * UPawnMovementComponent is the common base of UCharacterMovementComponent and the
-	 * generic pawn movement components, so iterating it covers both.
-	 */
-	void DisableProxyMovement(AActor* Actor)
+	if (!IsValid(Actor))
+		return;
+
+	TInlineComponentArray<UPawnMovementComponent*> MovementComponents;
+	Actor->GetComponents(MovementComponents);
+
+	for (UPawnMovementComponent* MoveComp : MovementComponents)
 	{
-		if (!IsValid(Actor))
-			return;
+		if (!IsValid(MoveComp))
+			continue;
 
-		TInlineComponentArray<UPawnMovementComponent*> MovementComponents;
-		Actor->GetComponents(MovementComponents);
+		MoveComp->StopMovementImmediately();
 
-		for (UPawnMovementComponent* MoveComp : MovementComponents)
-		{
-			if (!IsValid(MoveComp))
-				continue;
+		// MOVE_None makes the simulation a no-op even if something later re-enables
+		// the tick (e.g. a Blueprint SetMovementMode on the proxy).
+		if (UCharacterMovementComponent* CharacterMovement = Cast<UCharacterMovementComponent>(MoveComp))
+			CharacterMovement->DisableMovement();
 
-			MoveComp->StopMovementImmediately();
-
-			// MOVE_None makes the simulation a no-op even if something later re-enables
-			// the tick (e.g. a Blueprint SetMovementMode on the proxy).
-			if (UCharacterMovementComponent* CharacterMovement = Cast<UCharacterMovementComponent>(MoveComp))
-				CharacterMovement->DisableMovement();
-
-			MoveComp->SetComponentTickEnabled(false);
-			MoveComp->Deactivate();
-		}
+		MoveComp->SetComponentTickEnabled(false);
+		MoveComp->Deactivate();
 	}
 }
 
@@ -72,7 +69,7 @@ void UCrowdyActorPoolPolicy::OnActorPooled_Implementation(AActor* Actor)
 	// Proxies are driven by replicated transforms, not local movement. Strip movement
 	// simulation once at pool creation; it stays disabled across acquire/release because
 	// the actor-tick toggling in the activate/deactivate hooks never touches component ticks.
-	DisableProxyMovement(Actor);
+	CrowdyActorPool::DisableProxyMovement(Actor);
 }
 
 void UCrowdyActorPoolPolicy::OnActorActivated_Implementation(AActor* Actor, const FInstancedStruct& InitialState)

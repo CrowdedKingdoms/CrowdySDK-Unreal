@@ -1,3 +1,5 @@
+#include "Misc/Build.h"
+
 // Also gated on !UE_BUILD_SHIPPING, not because a test would run there, but because these cases construct
 // CrowdyMassDispatchProxy::FScopedDisableForTest, which only exists where the CVar-backed flag it toggles
 // does. The two conditions coincide unless a build forces automation tests into a Shipping target.
@@ -24,6 +26,7 @@
 #include "Templates/SharedPointer.h"
 #include "Templates/UnrealTemplate.h"
 #include "UObject/Class.h"
+#include "UObject/Package.h"
 #include "UObject/Script.h"
 
 /**

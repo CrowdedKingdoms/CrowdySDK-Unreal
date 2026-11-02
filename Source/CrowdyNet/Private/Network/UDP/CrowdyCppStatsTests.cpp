@@ -11,6 +11,7 @@
 #include "Network/UDP/CrowdyCppReplicationTestSupport.h"
 #include "Network/UDP/CrowdyUDPSubsystem.h"
 #include "Serialization/CrowdyWireParitySupport.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
 // These exercise the remap that feeds "stat crowdyudp" from the routed transport: the once-a-second sample

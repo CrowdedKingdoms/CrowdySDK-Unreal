@@ -1,6 +1,7 @@
 #include "Replication/State/CrowdyStateBlueprintLibrary.h"
 
 #include "CrowdyReplicationLog.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "UObject/ObjectKey.h"

@@ -2,6 +2,7 @@
 
 #include "Replication/Subsystems/CrowdyActorPoolSubsystem.h"
 #include "CrowdyReplicationLog.h"
+#include "Engine/World.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 
 void UCrowdyActorPoolSubsystem::Initialize(FSubsystemCollectionBase& Collection)

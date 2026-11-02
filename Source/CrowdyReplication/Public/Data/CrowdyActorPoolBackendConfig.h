@@ -6,6 +6,7 @@
 #include "CrowdyRenderingBackendConfig.h"
 #include "CrowdyActorPoolPolicy.h"
 #include "CrowdyRepApplicationPolicy.h"
+#include "Templates/SubclassOf.h"
 #include "CrowdyActorPoolBackendConfig.generated.h"
 
 /**
@@ -38,4 +39,11 @@ public:
 	/** The pool size is what is made up front; this is how far a class's pool may grow when all of it is in use. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Actor Pool Backend", meta=(ClampMin=1))
 	int32 MaxPoolSizePerClass = 256;
+
+	/**
+	 * Also draw a pooled copy of entities this client owns, driven by the server's echo of its own updates. Off by
+	 * default because the owner already has the real actor; turn it on to see the round trip on a single client.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Actor Pool Backend|Debug")
+	bool bRenderLocalOwner = false;
 };

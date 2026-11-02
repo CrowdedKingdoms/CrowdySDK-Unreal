@@ -13,6 +13,7 @@
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
 #include "Traits/CrowdyMassAnimationTrait.h"
 #include "UObject/EnumProperty.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
 // Covers CrowdyMass's own half of ICrowdyEntitySubscriber's state plane: binding a class's replicated

@@ -13,6 +13,7 @@
 #include "Misc/AutomationTest.h"
 #include "Subsystem/CrowdyChannels.h"
 #include "Subsystem/CrowdyTeams.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"

@@ -3,6 +3,7 @@
 
 #include "Core/Blueprints/CrowdyBlueprintReceptionLayer.h"
 #include "CrowdyServicesLog.h"
+#include "Engine/GameInstance.h"
 #include "Kismet/GameplayStatics.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"
 

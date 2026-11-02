@@ -30,6 +30,7 @@ void ACrowdyRpcActorTestTarget::ActorOwnerOnly_Implementation(int32 InValue)
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "UObject/Package.h"
 #include "UObject/Script.h"
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"

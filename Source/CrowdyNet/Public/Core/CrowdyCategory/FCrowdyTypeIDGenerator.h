@@ -3,6 +3,8 @@
 #include "Containers/StringConv.h"
 #include "Hash/CityHash.h"
 #include "Misc/Crc.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectPtr.h"
 #include "Core/FCrowdyTypeID.h"
 #include "Core/UDP/CrowdyKitEvents.h"
 

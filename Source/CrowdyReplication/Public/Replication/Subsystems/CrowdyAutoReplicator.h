@@ -100,6 +100,9 @@ struct FReplicationData
 	// against a default-constructed state that happens to match.
 	TArray<bool> bHasSent;
 
+	// True for a presence entry: no state is sent; every PresenceIntervalSeconds its source's SendPresence runs instead.
+	TArray<bool> bPresenceOnly;
+
 	int32 Count = 0;
 };
 
@@ -120,9 +123,21 @@ public:
 	virtual void Tick(float DeltaTime) override;
 	
 	// Component must implement ICrowdyReplicationSource
-	void RegisterReplicationComponent(UActorComponent* Component);
+	void RegisterReplicationComponent(UActorComponent* Component, bool bPresenceOnly = false);
 	void UnregisterReplicationComponent(UActorComponent* Component);
-	
+
+	// How long a player who joins later waits, at most, to see a presence entry's entity.
+	static constexpr float PresenceIntervalSeconds = 4.0f;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	bool IsRegisteredForTest(const UActorComponent* Component, bool& bOutPresenceOnly) const
+	{
+		const int32 Index = Data.Components.IndexOfByKey(Component);
+		bOutPresenceOnly = Index != INDEX_NONE && Data.bPresenceOnly[Index];
+		return Index != INDEX_NONE;
+	}
+#endif
+
 private:
 	
 	UCrowdySDKBridgeSubsystem* Bridge = nullptr;

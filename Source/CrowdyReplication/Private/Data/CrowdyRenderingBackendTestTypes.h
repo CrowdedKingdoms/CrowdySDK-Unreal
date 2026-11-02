@@ -131,6 +131,25 @@ public:
 	}
 };
 
+/** Counts OnCrowdySpawned broadcasts and keeps the last spawn data, so a test sees what an entity's body received. */
+UCLASS()
+class UCrowdySpawnDataListener : public UObject
+{
+	GENERATED_BODY()
+
+public:
+
+	int32 Calls = 0;
+	FInstancedStruct LastState;
+
+	UFUNCTION()
+	void OnSpawned(const FInstancedStruct& InitialState, bool bIsLocallyOwned)
+	{
+		++Calls;
+		LastState = InitialState;
+	}
+};
+
 /** A backend that reports it cannot draw anything with what it was given. */
 UCLASS()
 class UCrowdyRefusingBackend : public UCrowdyRenderingBackend

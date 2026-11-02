@@ -13,7 +13,7 @@ USTRUCT(BlueprintType)
 struct FCrowdyChannelsResult
 {
 	GENERATED_BODY()
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Channels|Queries")
 	TArray<FCrowdyChannel> Channels;
 };
 
@@ -21,7 +21,7 @@ USTRUCT(BlueprintType)
 struct FCrowdyMyChannelsResult
 {
 	GENERATED_BODY()
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Channels|Queries")
 	TArray<FCrowdyChannelMembership> Memberships;
 };
 
@@ -29,7 +29,7 @@ USTRUCT(BlueprintType)
 struct FCrowdyChannelMembersResult
 {
 	GENERATED_BODY()
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Channels|Queries")
 	TArray<FCrowdyChannelMember> Members;
 };
 
@@ -37,7 +37,7 @@ USTRUCT(BlueprintType)
 struct FCrowdyChannelRolesResult
 {
 	GENERATED_BODY()
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Channels|Queries")
 	TArray<FCrowdyChannelRole> Roles;
 };
 
@@ -67,9 +67,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetMyChannels : public UBlueprintAsyncA
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FMyChannelsAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FMyChannelsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -93,9 +93,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetChannel : public UBlueprintAsyncActi
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -120,9 +120,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetChannels : public UBlueprintAsyncAct
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelsAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelsAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -146,9 +146,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetChannelMembers : public UBlueprintAs
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelMembersAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelMembersAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -173,9 +173,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetChannelRoles : public UBlueprintAsyn
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelRolesAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelRolesAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -200,9 +200,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetChannelPolicy : public UBlueprintAsy
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelPolicyAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelPolicyAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
@@ -226,9 +226,9 @@ class CROWDYSERVICES_API UCrowdyChannels_GetPendingJoinRequests : public UBluepr
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelMembersAsyncResult OnSuccess;
-	UPROPERTY(BlueprintAssignable)
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Channels|Queries")
 	FChannelMembersAsyncResult OnError;
 
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),

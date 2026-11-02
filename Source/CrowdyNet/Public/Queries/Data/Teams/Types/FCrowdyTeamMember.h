@@ -10,17 +10,17 @@ struct CROWDYNET_API FCrowdyTeamMember
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int64   TeamMemberId = 0;
-	UPROPERTY(BlueprintReadOnly) int64   TeamId       = 0;
-	UPROPERTY(BlueprintReadOnly) int64   UserId       = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int64   TeamMemberId = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int64   TeamId       = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int64   UserId       = 0;
 
 	/** "active" for a full member, "pending" while a join request is awaiting a decision. */
-	UPROPERTY(BlueprintReadOnly) FString Status;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FString Status;
 
 	/** Sorted by rank, lowest first. */
-	UPROPERTY(BlueprintReadOnly) TArray<FCrowdyTeamRole> Roles;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") TArray<FCrowdyTeamRole> Roles;
 
-	UPROPERTY(BlueprintReadOnly) FString CreatedAt;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FString CreatedAt;
 
 	static bool ParseFromJson(const TSharedPtr<FJsonObject>& Obj, FCrowdyTeamMember& Out)
 	{

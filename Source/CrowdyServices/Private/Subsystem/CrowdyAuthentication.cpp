@@ -13,6 +13,7 @@
 #include "Misc/DateTime.h"
 #include "Misc/Paths.h"
 #include "Kismet/GameplayStatics.h"
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/EngineTypes.h"
 #include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h"

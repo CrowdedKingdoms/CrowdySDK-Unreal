@@ -1,5 +1,6 @@
 #include "Replication/State/CrowdyBitwiseCompare.h"
 
+#include "UObject/EnumProperty.h"
 #include "UObject/UnrealType.h"
 
 namespace CrowdyBitwiseCompare

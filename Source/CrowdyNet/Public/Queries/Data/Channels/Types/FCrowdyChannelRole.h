@@ -14,18 +14,18 @@ struct CROWDYNET_API FCrowdyChannelRole
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int64   ChannelRoleId = 0;
-	UPROPERTY(BlueprintReadOnly) int64   ChannelId     = 0;
-	UPROPERTY(BlueprintReadOnly) FString RoleName;
-	UPROPERTY(BlueprintReadOnly) int32   Rank          = 0;
-	UPROPERTY(BlueprintReadOnly) bool    bIsSystem     = false;
-	UPROPERTY(BlueprintReadOnly) FCrowdyChannelPermissions Permissions;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int64   ChannelRoleId = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int64   ChannelId     = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FString RoleName;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int32   Rank          = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") bool    bIsSystem     = false;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FCrowdyChannelPermissions Permissions;
 
 	/**
 	 * When the server returns this role nested inside a member it omits createdAt, so this is empty there and
 	 * filled only when the role came from the channel's own role list.
 	 */
-	UPROPERTY(BlueprintReadOnly) FString CreatedAt;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FString CreatedAt;
 
 	bool HasPermission(ECrowdyChannelPermission Permission) const
 	{
