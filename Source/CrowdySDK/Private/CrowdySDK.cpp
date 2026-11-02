@@ -6,6 +6,7 @@
 #include "CrowdyLog.h"
 #include "GameplayTagsManager.h"
 #include "Interfaces/IPluginManager.h"
+#include "Misc/Paths.h"
 
 #define LOCTEXT_NAMESPACE "FCrowdySDKModule"
 

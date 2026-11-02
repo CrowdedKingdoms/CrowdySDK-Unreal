@@ -10,14 +10,14 @@ struct CROWDYNET_API FCrowdyTeam
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int64   TeamId      = 0;
-	UPROPERTY(BlueprintReadOnly) int64   AppId       = 0;
-	UPROPERTY(BlueprintReadOnly) FString Name;
-	UPROPERTY(BlueprintReadOnly) FString Description;
-	UPROPERTY(BlueprintReadOnly) int64   OwnerUserId = 0;
-	UPROPERTY(BlueprintReadOnly) ECrowdyTeamMembershipPolicy MembershipPolicy = ECrowdyTeamMembershipPolicy::Open;
-	UPROPERTY(BlueprintReadOnly) FString Status;
-	UPROPERTY(BlueprintReadOnly) FString CreatedAt;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int64   TeamId      = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int64   AppId       = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FString Name;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FString Description;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") int64   OwnerUserId = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") ECrowdyTeamMembershipPolicy MembershipPolicy = ECrowdyTeamMembershipPolicy::Open;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FString Status;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Teams") FString CreatedAt;
 
 	static bool ParseFromJson(const TSharedPtr<FJsonObject>& Obj, FCrowdyTeam& Out)
 	{

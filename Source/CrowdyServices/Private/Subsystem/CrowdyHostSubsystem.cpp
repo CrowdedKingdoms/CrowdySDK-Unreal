@@ -8,6 +8,8 @@
 #include "Utils/HelperFunctions.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Engine/GameInstance.h"
+#include "Engine/World.h"
+#include "Async/Async.h"
 #include "Dom/JsonObject.h"
 
 using namespace CrowdyServiceApi;
@@ -88,6 +90,9 @@ FGuid UCrowdyHostSubsystem::GetHostID() const
 
 void UCrowdyHostSubsystem::SetHostUserID(const int64 InHostUserID)
 {
+	// A host poll answer that lands after sign-out must not elect a host for a client nobody is signed in to.
+	if (InHostUserID != 0 && IsValid(GameSession) && GameSession->GetUserID() == 0) return;
+
 	const int64 OldHostUserID = HostUserID.exchange(InHostUserID, std::memory_order_relaxed);
 
 	if (OldHostUserID == InHostUserID) return;
@@ -100,14 +105,24 @@ void UCrowdyHostSubsystem::SetHostUserID(const int64 InHostUserID)
 		UCrowdyHostSubsystem* Self = WeakThis.Get();
 		if (!IsValid(Self)) return;
 
-		const FGuid PreviousHostID = UHelperFunctions::GetDeterministicID(OldHostUserID);
-		const FGuid HostID = UHelperFunctions::GetDeterministicID(InHostUserID);
+		const FGuid PreviousHostID = HostIDForUser(OldHostUserID);
+		const FGuid HostID = HostIDForUser(InHostUserID);
 
 		if (IsValid(Self->GameSession))
 			Self->GameSession->SetHostID(HostID);
 
 		Self->OnHostElected.Broadcast(HostID, PreviousHostID);
 	});
+}
+
+FGuid UCrowdyHostSubsystem::HostIDForUser(const int64 UserID)
+{
+	if (UserID == 0)
+	{
+		return FGuid();
+	}
+
+	return UHelperFunctions::GetDeterministicID(UserID);
 }
 
 bool UCrowdyHostSubsystem::IsReady() const

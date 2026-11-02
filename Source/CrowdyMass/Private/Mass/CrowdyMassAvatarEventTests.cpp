@@ -15,6 +15,7 @@
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
+#include "UObject/Package.h"
 
 // Covers task 2.2's avatar layer (resolution against the tracker, the class-mismatch refusal) and the
 // two shipped events' wire encoding, plus the one end-to-end claim that spans 2.1 and 2.2 together: a

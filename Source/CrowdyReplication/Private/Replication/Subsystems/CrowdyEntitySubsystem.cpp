@@ -6,6 +6,8 @@
 #include "Core/FCrowdyTypeID.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
 #include "Engine/AssetManager.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
@@ -469,25 +471,44 @@ AActor* UCrowdyEntitySubsystem::SpawnEntity(const TSubclassOf<AActor> EntityClas
 		Component = AddStaticEntityComponent(Actor, EntityID, LocalPlayerID, ECrowdyRole::Owner, ClassID);
 
 	if (Component)
-		Component->OnCrowdySpawned.Broadcast(InitialState, true);
+	{
+		Component->EnablePresence();
+		Component->DeliverSpawnData(InitialState, true);
+	}
 
-	FCrowdyEntitySpawnEvent SpawnEvent;
-	SpawnEvent.EntityID       = EntityID;
-	SpawnEvent.OwnerID        = LocalPlayerID;
-	SpawnEvent.ClassID        = ClassID;
-	SpawnEvent.ClassPath      = EntityClass->GetPathName();
-	SpawnEvent.SpawnTransform = SpawnTransform;
-	SpawnEvent.InitialState   = InitialState;
-
-	FInstancedStruct Payload;
-	Payload.InitializeAs<FCrowdyEntitySpawnEvent>(SpawnEvent);
-	DispatchGameEvent(Actor, MoveTemp(Payload));
+	AnnounceSpawn(Actor, InitialState);
 
 	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
 		TEXT("[CrowdyEntitySubsystem]: Spawn dispatched: entity %s, class %s, location %s."),
 		*EntityID.ToString(), *EntityClass->GetName(), *SpawnTransform.GetLocation().ToString());
 
 	return Actor;
+}
+
+void UCrowdyEntitySubsystem::AnnounceSpawn(AActor* Actor, const FInstancedStruct& InitialState)
+{
+	// A spawn handler may already have destroyed the entity again.
+	const FGuid EntityID = FindEntityID(Actor);
+	const FCrowdyEntityRecord* Record = EntityID.IsValid() ? Records.Find(EntityID) : nullptr;
+	if (!IsValid(Actor) || !Record)
+		return;
+
+	FCrowdyEntitySpawnEvent SpawnEvent;
+	SpawnEvent.EntityID       = EntityID;
+	SpawnEvent.OwnerID        = Record->OwnerID;
+	SpawnEvent.ClassID        = UCrowdyClassRegistry::Get()->GetID(Actor->GetClass());
+	SpawnEvent.ClassPath      = Actor->GetClass()->GetPathName();
+	SpawnEvent.SpawnTransform = Actor->GetActorTransform();
+	SpawnEvent.InitialState   = InitialState;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	if (bCaptureAnnouncedSpawnsForTest)
+		AnnouncedSpawnsForTest.Add(SpawnEvent);
+#endif
+
+	FInstancedStruct Payload;
+	Payload.InitializeAs<FCrowdyEntitySpawnEvent>(SpawnEvent);
+	DispatchGameEvent(Actor, MoveTemp(Payload));
 }
 
 void UCrowdyEntitySubsystem::DestroyEntity(AActor* TargetEntity)
@@ -510,10 +531,15 @@ void UCrowdyEntitySubsystem::DestroyEntity(AActor* TargetEntity)
 	float Delay = 0.f;
 	if (UCrowdyEntityComponent* Component = TargetEntity->FindComponentByClass<UCrowdyEntityComponent>())
 	{
+		// Sending stops with the destroy rather than with the actor, so updates sent during Destroy Delay cannot
+		// draw the entity again on clients that already removed it.
+		Component->StopReplication();
 		Component->OnCrowdyDestroyed.Broadcast(true);
 		Delay = Component->DestroyDelay;
 	}
 
+	// Its owner may be another client whose repeated spawn is already on its way here.
+	RememberDestroyed(EntityID);
 	UnregisterEntity(EntityID);
 	DestroyAfterDelay(TargetEntity, Delay);
 }
@@ -867,6 +893,13 @@ void UCrowdyEntitySubsystem::HandleRemoteSpawn(const FCrowdyEntitySpawnEvent& Ev
 		return;
 	}
 
+	if (WasDestroyedWithin(Event.EntityID, DestroyedSpawnRefusedSeconds))
+	{
+		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyEntitySubsystem]: Spawn for entity %s ignored: it was destroyed moments ago."), *Event.EntityID.ToString());
+		return;
+	}
+
 	// This entity may already be registered: a rendering backend enrols one as soon as its position updates
 	// arrive, which is often before the spawn event that names its class. A spawn event is written by an ordinary
 	// peer and reaches every client, so what it may do to a record that already exists is limited to filling in
@@ -899,9 +932,16 @@ void UCrowdyEntitySubsystem::HandleRemoteSpawn(const FCrowdyEntitySpawnEvent& Ev
 
 		// Whether an actor still has to be spawned is a separate question from what the record says. An actor
 		// already standing for this id is the pooled proxy this branch was written for, and spawning again would
-		// give the entity two bodies.
-		if (IsValid(Existing->GetActor()))
+		// give the entity two bodies. That proxy arrived before this event, so it is handed the spawn data here.
+		if (AActor* ExistingActor = Existing->GetActor(); IsValid(ExistingActor))
 		{
+			UCrowdyEntityComponent* Component = Existing->Role == ECrowdyRole::RemoteProxy
+				? ExistingActor->FindComponentByClass<UCrowdyEntityComponent>() : nullptr;
+			if (Component)
+			{
+				Component->EnablePresence();
+				Component->DeliverSpawnData(Event.InitialState, false);
+			}
 			return;
 		}
 
@@ -1018,15 +1058,48 @@ void UCrowdyEntitySubsystem::FinishRemoteSpawn(const FCrowdyEntitySpawnEvent& Ev
 		Component = AddStaticEntityComponent(Actor, Event.EntityID, Event.OwnerID, ECrowdyRole::RemoteProxy, Event.ClassID);
 
 	if (Component)
-		Component->OnCrowdySpawned.Broadcast(Event.InitialState, false);
+	{
+		Component->EnablePresence();
+		Component->DeliverSpawnData(Event.InitialState, false);
+	}
 
 	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
 		TEXT("[CrowdyEntitySubsystem]: Spawn received: entity %s, class %s, location %s."),
 		*Event.EntityID.ToString(), *EntityClass->GetName(), *Event.SpawnTransform.GetLocation().ToString());
 }
 
+bool UCrowdyEntitySubsystem::WasRecentlyDestroyed(const FGuid& NetID) const
+{
+	return WasDestroyedWithin(NetID, RecentlyDestroyedSeconds);
+}
+
+bool UCrowdyEntitySubsystem::WasDestroyedWithin(const FGuid& NetID, const double Seconds) const
+{
+	const double* DestroyedAt = RecentlyDestroyed.Find(NetID);
+	return DestroyedAt && FPlatformTime::Seconds() < *DestroyedAt + Seconds;
+}
+
+void UCrowdyEntitySubsystem::RememberDestroyed(const FGuid& NetID)
+{
+	// A sweep at most once per short window keeps the map small without scanning it on every event.
+	const double Now = FPlatformTime::Seconds();
+	if (Now >= NextRecentlyDestroyedPrune)
+	{
+		for (auto It = RecentlyDestroyed.CreateIterator(); It; ++It)
+		{
+			if (It.Value() + DestroyedSpawnRefusedSeconds <= Now)
+				It.RemoveCurrent();
+		}
+		NextRecentlyDestroyedPrune = Now + RecentlyDestroyedSeconds;
+	}
+	RecentlyDestroyed.Add(NetID, Now);
+}
+
 void UCrowdyEntitySubsystem::HandleRemoteDestroy(const FCrowdyEntityDestroyEvent& Event)
 {
+	// Remembered even for an id this client never knew: a repeat of its spawn still in flight must not build it here.
+	RememberDestroyed(Event.EntityID);
+
 	// Destroyed before its class finished loading: the actor never existed
 	// here, so cancel the load and drop the pending spawn.
 	if (FPendingRemoteSpawn* Pending = PendingRemoteSpawns.Find(Event.EntityID))

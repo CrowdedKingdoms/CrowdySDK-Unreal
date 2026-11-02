@@ -33,7 +33,7 @@ struct FCrowdyActorUpdate
 	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Actor Update")
 	FGuid UUID;
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Actor Update")
 	FInstancedStruct State;
 
 	/**
@@ -54,18 +54,18 @@ struct FCrowdyActorUpdate
 	 */
 	CROWDYREPLICATION_API const FInstancedStruct& ResolveState() const;
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Actor Update")
 	int64 ServerTimestamp = 0;
 
 	// The entity class the sender named on the wire. Widened to int64 because the wire id is a uint32,
 	// which UHT cannot expose, and this struct crosses a dynamic delegate whose marshalling copies
 	// property by property: a plain C++ member here would be silently dropped in transit.
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Actor Update")
 	int64 ClassID = 0;
 
 	// The payload type id the sender's state blob led with, kept even when no struct is registered for it here.
 	// Widened from the wire's uint16 for the same reason as ClassID.
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Actor Update")
 	int32 PayloadTypeID = 0;
 };
 

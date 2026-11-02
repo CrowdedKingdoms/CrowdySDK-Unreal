@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "CoreMinimal.h"
+#include "Blueprint/UserWidget.h"
 #include "Core/UI/Enums/ECrowdyInputMode.h"
 #include "Core/UI/Enums/ECrowdyUILayer.h"
 #include "FWidgetSpec.generated.h"

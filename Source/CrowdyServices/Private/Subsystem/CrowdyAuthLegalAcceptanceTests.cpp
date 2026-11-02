@@ -12,6 +12,7 @@
 #include "Subsystem/CrowdyAuthentication.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "UI/CrowdyConsentPromptSubsystem.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 

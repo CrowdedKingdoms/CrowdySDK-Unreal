@@ -10,6 +10,7 @@
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyStateReplicator.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
+#include "UObject/Package.h"
 
 // Ownership-transfer coverage: the entity subsystem's ReassignOwnership (record re-point, role derivation,
 // compare-and-swap, entity-component cache sync) and the state replicator's HandleOwnershipChanged retrack

@@ -11,6 +11,7 @@
 #include "MassEntityManager.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
+#include "UObject/Package.h"
 
 // Covers what a crowd entity's avatar enrols as in the entity registry: the record it enrols under, the
 // two orderings a respawn produces, what an evicted avatar leaves behind, and the reclaim grace window.

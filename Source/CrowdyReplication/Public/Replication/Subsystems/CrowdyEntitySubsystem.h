@@ -59,6 +59,9 @@ class CROWDYREPLICATION_API UCrowdyEntitySubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
 
+	// Its presence sends announce the spawn again through AnnounceSpawn.
+	friend class UCrowdyEntityComponent;
+
 public:
 
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
@@ -104,6 +107,16 @@ public:
 
 	const FCrowdyEntityRecord* FindRecord(const FGuid& NetID) const;
 
+	// True for a short while after a peer's destroy event for NetID, so an update still in flight from before the
+	// destroy cannot bring the entity back as a proxy. Kept short because a forged destroy hides a live entity this long.
+	bool WasRecentlyDestroyed(const FGuid& NetID) const;
+	static constexpr double RecentlyDestroyedSeconds = 0.5;
+
+	// How long a spawn event for a destroyed id is refused. Spawn Entity never reuses an id, so such an event is a
+	// repeat sent before the destroy, which would otherwise rebuild an entity nothing ever removes again. An owner that
+	// never got the destroy keeps repeating, and its entity comes back after this long.
+	static constexpr double DestroyedSpawnRefusedSeconds = 10.0;
+
 	// True when this client is the entity's owner: the record names the local player AND its role says this client
 	// simulates and sends for it. Both are required because this answer authorizes creating server-side state bound
 	// to the id; a record that names the local player while its role says the entity is only mirrored here
@@ -134,6 +147,12 @@ public:
 	// Applies a decoded spawn event through the production handler, so a test can exercise what a peer's event is
 	// allowed to do to an existing record without standing up the transport that carried it.
 	void HandleRemoteSpawnForTest(const FCrowdyEntitySpawnEvent& Event) { HandleRemoteSpawn(Event); }
+	void HandleRemoteDestroyForTest(const FCrowdyEntityDestroyEvent& Event) { HandleRemoteDestroy(Event); }
+
+	// Off unless a test turns it on: then every spawn event this client announces is also kept here, so a test can
+	// read what went out without a transport.
+	bool bCaptureAnnouncedSpawnsForTest = false;
+	TArray<FCrowdyEntitySpawnEvent> AnnouncedSpawnsForTest;
 
 	// How many participant-to-id mappings are held. A mapping for a participant that has already been collected
 	// cannot be found by key, so this count is the only way to see one that was left behind.
@@ -286,6 +305,16 @@ private:
 	TMap<FGuid, FCrowdyEntityRecord> Records;
 	TMap<TObjectKey<UObject>, FGuid> ParticipantToID;
 	TMap<FGuid, FPendingRemoteSpawn> PendingRemoteSpawns;
+
+	// Platform seconds at which each remotely destroyed id was destroyed; pruned at most once per short window.
+	TMap<FGuid, double> RecentlyDestroyed;
+	double NextRecentlyDestroyedPrune = 0.0;
+
+	void RememberDestroyed(const FGuid& NetID);
+	bool WasDestroyedWithin(const FGuid& NetID, double Seconds) const;
+
+	// Sends the spawn event for an entity this client owns, from where its actor is now.
+	void AnnounceSpawn(AActor* Actor, const FInstancedStruct& InitialState);
 
 	UPROPERTY()
 	TObjectPtr<UCrowdyGameSession> GameSession;

@@ -4,6 +4,8 @@
 #include "Replication/Subsystems/CrowdyAutoReplicator.h"
 #include "CrowdyReplicationLog.h"
 
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Messages/Actor/FActorUpdateRequestMessage.h"
 #include "Replication/Interfaces/CrowdyReplicationSource.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
@@ -101,6 +103,7 @@ void UCrowdyAutoReplicator::Initialize(FSubsystemCollectionBase& Collection)
 	Data.NextKeyframeTimes.Reserve(ExpectedActor);
 	Data.NextHeartbeatTimes.Reserve(ExpectedActor);
 	Data.bHasSent.Reserve(ExpectedActor);
+	Data.bPresenceOnly.Reserve(ExpectedActor);
 
 	const UCrowdyMapProfile* Profile = UCrowdySDKDeveloperSettings::ResolveProfileForWorld(World);
 	bIsTicking = Profile && Profile->bUseAutoReplicator;
@@ -127,8 +130,9 @@ void UCrowdyAutoReplicator::ScheduleFirstSends(const int32 Index)
 	// A deterministic offset from the entry's own id rather than a random one, so two clients replaying the same
 	// session stagger the same way and a repro stays a repro.
 	const uint32 Spread = GetTypeHash(Data.UUIDs[Index]);
-	const double KeyframePhase = KeyframeIntervalSeconds > 0.0f
-		? (Spread % 1024) / 1024.0 * KeyframeIntervalSeconds : 0.0;
+	const float KeyframeInterval = Data.bPresenceOnly[Index] ? PresenceIntervalSeconds : KeyframeIntervalSeconds;
+	const double KeyframePhase = KeyframeInterval > 0.0f
+		? (Spread % 1024) / 1024.0 * KeyframeInterval : 0.0;
 	const double HeartbeatPhase = HeartbeatIntervalSeconds > 0.0f
 		? ((Spread >> 10) % 1024) / 1024.0 * HeartbeatIntervalSeconds : 0.0;
 
@@ -185,7 +189,7 @@ void UCrowdyAutoReplicator::Tick(float DeltaTime)
 	}
 }
 
-void UCrowdyAutoReplicator::RegisterReplicationComponent(UActorComponent* Component)
+void UCrowdyAutoReplicator::RegisterReplicationComponent(UActorComponent* Component, const bool bPresenceOnly)
 {
 	if (!IsValid(Component)) return;
 
@@ -227,6 +231,7 @@ void UCrowdyAutoReplicator::RegisterReplicationComponent(UActorComponent* Compon
 	Data.NextKeyframeTimes.Add(0.0);
 	Data.NextHeartbeatTimes.Add(0.0);
 	Data.bHasSent.Add(false);
+	Data.bPresenceOnly.Add(bPresenceOnly);
 	Data.Count++;
 
 	ScheduleFirstSends(Data.Count - 1);
@@ -253,6 +258,7 @@ void UCrowdyAutoReplicator::UnregisterReplicationComponent(UActorComponent* Comp
 		Data.NextKeyframeTimes.RemoveAtSwap(i);
 		Data.NextHeartbeatTimes.RemoveAtSwap(i);
 		Data.bHasSent.RemoveAtSwap(i);
+		Data.bPresenceOnly.RemoveAtSwap(i);
 		Data.Count--;
 		break;
 	}
@@ -274,6 +280,17 @@ void UCrowdyAutoReplicator::ReplicationLoop()
 			continue;
 
 		const ICrowdyReplicationSource* Comp = Data.Sources[i];
+
+		// A presence entry sends no state: on its own clock it says again that the entity exists, and costs one
+		// compare per tick in between. Counted from the scheduled time, so entries keep the stagger they registered with.
+		if (Data.bPresenceOnly[i])
+		{
+			if (Now < Data.NextKeyframeTimes[i])
+				continue;
+			Data.NextKeyframeTimes[i] = FMath::Max(Data.NextKeyframeTimes[i], Now) + PresenceIntervalSeconds;
+			Comp->SendPresence();
+			continue;
+		}
 
 		const AActor* Actor = Comp->GetReplicatedActor();
 		if (!IsValid(Actor))

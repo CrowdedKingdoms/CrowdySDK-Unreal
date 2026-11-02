@@ -26,8 +26,8 @@ struct CROWDYNET_API FCrowdyChannelError
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) ECrowdyChannelErrorCode Code = ECrowdyChannelErrorCode::Unknown;
-	UPROPERTY(BlueprintReadOnly) FString Message;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") ECrowdyChannelErrorCode Code = ECrowdyChannelErrorCode::Unknown;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FString Message;
 
 	static FCrowdyChannelError FromMessage(const FString& Msg)
 	{

@@ -27,4 +27,7 @@ public:
 	virtual const FString& GetReplicationUUID() const = 0;
 
 	virtual const FInstancedStruct& GetReplicatedState() const = 0;
+
+	// Called on a presence entry's slow clock in place of a state send: say again that the entity exists.
+	virtual void SendPresence() const {}
 };

@@ -5,6 +5,7 @@
 #include "Engine/GameInstance.h"
 #include "Messages/Communication/FTextMessageNotification.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
 namespace

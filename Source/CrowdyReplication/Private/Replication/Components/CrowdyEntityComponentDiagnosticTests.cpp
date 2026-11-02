@@ -5,6 +5,7 @@
 #include "Data/CrowdyEntityTypes.h"
 #include "GameFramework/Actor.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/Package.h"
 
 namespace
 {

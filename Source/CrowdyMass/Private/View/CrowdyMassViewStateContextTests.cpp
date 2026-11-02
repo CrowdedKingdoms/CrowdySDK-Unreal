@@ -6,6 +6,7 @@
 #include "Fragments/CrowdyMassFragments.h"
 #include "MassEntityManager.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
+#include "UObject/Package.h"
 
 // Covers the fragment memo in FCrowdyMassViewStateContext, which every registered view-state field
 // resolves its target through, so that several fields landing on one fragment cost one archetype and

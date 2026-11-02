@@ -7,6 +7,7 @@
 #include "Messages/Communication/FTextMessageRequest.h"
 #include "Serialization/CrowdyFrameSplit.h"
 #include "Subsystem/CrowdyGameSession.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/SerializationFunctionLibrary.h"
 

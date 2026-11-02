@@ -5,6 +5,7 @@
 #include "Animation/AnimationAsset.h"
 #include "Animation/AnimSequenceTransformProviderData.h"
 #include "Animation/AnimCompressionTypes.h"
+#include "Animation/Skeleton.h"
 #include "BoneIndices.h"
 #include "Components/InstancedSkinnedMeshComponent.h"
 #include "Components/PrimitiveComponent.h"

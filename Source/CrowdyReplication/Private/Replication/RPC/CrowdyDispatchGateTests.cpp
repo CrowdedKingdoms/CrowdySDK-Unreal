@@ -1,6 +1,8 @@
 // WITH_METADATA as well as the test guard: these cases build their fixtures by writing UFunction metadata,
 // and UField::SetMetaData does not exist without it. WITH_DEV_AUTOMATION_TESTS alone is still 1 in a
 // Development non-editor build, where this file would then fail to compile.
+#include "Misc/CoreMiscDefines.h"
+
 #if WITH_DEV_AUTOMATION_TESTS && WITH_METADATA
 
 #include "Misc/AutomationTest.h"

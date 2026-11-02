@@ -22,6 +22,7 @@
 #include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
+#include "UObject/Package.h"
 #include "Utils/UCrowdyClassRegistry.h"
 #include "Utils/UEventPayloadRegistry.h"
 

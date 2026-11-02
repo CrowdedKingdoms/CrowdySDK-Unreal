@@ -10,14 +10,14 @@ struct CROWDYNET_API FCrowdyChannel
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int64   ChannelId   = 0;
-	UPROPERTY(BlueprintReadOnly) int64   AppId       = 0;
-	UPROPERTY(BlueprintReadOnly) FString Name;
-	UPROPERTY(BlueprintReadOnly) FString Description;
-	UPROPERTY(BlueprintReadOnly) int64   OwnerUserId = 0;
-	UPROPERTY(BlueprintReadOnly) ECrowdyChannelMembershipPolicy MembershipPolicy = ECrowdyChannelMembershipPolicy::Open;
-	UPROPERTY(BlueprintReadOnly) FString Status;
-	UPROPERTY(BlueprintReadOnly) FString CreatedAt;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int64   ChannelId   = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int64   AppId       = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FString Name;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FString Description;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int64   OwnerUserId = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") ECrowdyChannelMembershipPolicy MembershipPolicy = ECrowdyChannelMembershipPolicy::Open;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FString Status;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") FString CreatedAt;
 
 	static bool ParseFromJson(const TSharedPtr<FJsonObject>& Obj, FCrowdyChannel& Out)
 	{

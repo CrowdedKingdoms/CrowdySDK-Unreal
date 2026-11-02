@@ -7,6 +7,7 @@
 #include "Mass/CrowdyMassActionEvents.h"
 #include "Misc/AutomationTest.h"
 #include "UObject/Class.h"
+#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 #include <limits>
 

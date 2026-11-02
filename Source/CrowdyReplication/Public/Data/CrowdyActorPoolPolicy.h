@@ -7,6 +7,14 @@
 #include "UObject/Object.h"
 #include "CrowdyActorPoolPolicy.generated.h"
 
+class AActor;
+
+namespace CrowdyActorPool
+{
+	/** Stops every pawn movement component on a proxy, whose transform comes only from replicated updates. */
+	CROWDYREPLICATION_API void DisableProxyMovement(AActor* Actor);
+}
+
 /**
  * Default actor-pool policy: hides pooled actors, shows them on activation, and strips
  * proxy movement. It is concrete and fully functional, so UCrowdyActorPoolBackendConfig

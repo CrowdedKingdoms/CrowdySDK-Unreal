@@ -42,9 +42,12 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Host")
 	bool IsHostSet() const {return IsValid(GameSession) && GameSession->GetHostID().IsValid();}
 
-	/** Called by the SDK when a GameHost response arrives. Thread-safe.
+	/** Called by the SDK on the game thread when a GameHost response arrives, and with 0 on sign-out.
 	 *  Broadcasts OnHostElected on the game thread whenever the host changes. */
 	void SetHostUserID(const int64 InHostUserID);
+
+	/** The host id for a user id; user id 0 means no host, which is the empty id rather than a hash of zero. */
+	static FGuid HostIDForUser(const int64 UserID);
 
 	/** Returns the user ID of the current game host (0 if not yet known). */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Host",
@@ -88,6 +91,10 @@ public:
 	 * (which only compares client-derived deterministic GUIDs). Call from the game thread.
 	 */
 	void CheckEntityIsHost(const AActor* Entity, TFunction<void(bool bSuccess, bool bIsHost)> Callback);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetGameSessionForTest(UCrowdyGameSession* InGameSession) { GameSession = InGameSession; }
+#endif
 
 private:
 

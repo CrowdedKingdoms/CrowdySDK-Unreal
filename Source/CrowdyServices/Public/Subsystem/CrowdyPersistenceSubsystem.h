@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "Engine/LatentActionManager.h"
+#include "Engine/TimerHandle.h"
+#include "Serialization/MemoryReader.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Core/UDP/Subscription/FCrowdySubscription.h"
 #include "Core/Persistence/EPullStateResult.h"

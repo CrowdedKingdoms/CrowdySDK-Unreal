@@ -12,18 +12,18 @@ struct CROWDYNET_API FCrowdyChannelPolicy
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int64 AppId = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int64 AppId = 0;
 
-	UPROPERTY(BlueprintReadOnly) ECrowdyChannelCreationPolicy CreationPolicy = ECrowdyChannelCreationPolicy::Anyone;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") ECrowdyChannelCreationPolicy CreationPolicy = ECrowdyChannelCreationPolicy::Anyone;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels")
 	ECrowdyChannelMembershipPolicy DefaultMembershipPolicy = ECrowdyChannelMembershipPolicy::Open;
 
 	/** Zero means the server set no cap. */
-	UPROPERTY(BlueprintReadOnly) int32 MaxMembers = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int32 MaxMembers = 0;
 
 	/** How many channels one user may belong to. Zero means the server set no cap. */
-	UPROPERTY(BlueprintReadOnly) int32 MaxChannelsPerUser = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Crowdy SDK|Channels") int32 MaxChannelsPerUser = 0;
 
 	static bool ParseFromJson(const TSharedPtr<FJsonObject>& Obj, FCrowdyChannelPolicy& Out)
 	{

@@ -1,5 +1,6 @@
 #include "Replication/State/CrowdyStateTestTarget.h"
 
+#include "Components/SceneComponent.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 
 // Discovery reads only the OnRep metadata value (the function name); the notify is not invoked until
@@ -41,6 +42,9 @@ ACrowdyStateHostOverrideActor::ACrowdyStateHostOverrideActor()
 	// readable off the actor via FindComponentByClass on both the send and receive paths.
 	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));
 	Entity->Mode = ECrowdyEntityMode::Static;
+
+	// A root, so the fixture has a place: the spawn cases read where it stands.
+	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
 }
 
 ACrowdyPlayerDerivedTestPawn::ACrowdyPlayerDerivedTestPawn()

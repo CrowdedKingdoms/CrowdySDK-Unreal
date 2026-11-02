@@ -15,12 +15,12 @@ struct CROWDYNET_API FCrowdyChannelPermissions
 	GENERATED_BODY()
 
 	/** Publish to the channel. Receiving is a property of membership and needs no permission. */
-	UPROPERTY(BlueprintReadWrite, Category="Crowdy|Channels") bool bSendMessages  = false;
+	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Channels") bool bSendMessages  = false;
 
-	UPROPERTY(BlueprintReadWrite, Category="Crowdy|Channels") bool bManageChannel = false;
-	UPROPERTY(BlueprintReadWrite, Category="Crowdy|Channels") bool bManageMembers = false;
-	UPROPERTY(BlueprintReadWrite, Category="Crowdy|Channels") bool bManageRoles   = false;
-	UPROPERTY(BlueprintReadWrite, Category="Crowdy|Channels") bool bInviteMembers = false;
+	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Channels") bool bManageChannel = false;
+	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Channels") bool bManageMembers = false;
+	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Channels") bool bManageRoles   = false;
+	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Channels") bool bInviteMembers = false;
 
 	bool Has(ECrowdyChannelPermission Permission) const
 	{

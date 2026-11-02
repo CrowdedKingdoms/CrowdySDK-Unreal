@@ -165,6 +165,24 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entity Component")
 	void StopReplication();
 
+	/**
+	 * Marks an entity spawned with Spawn Entity. One that is not Dynamic then sends its spawn again every few seconds
+	 * while this client owns it, so a player who joins later gets it too. Dynamic entities are found by their updates.
+	 */
+	void EnablePresence();
+
+	/** Broadcasts OnCrowdySpawned, once per identity, whichever of the spawn event and the first update came first. */
+	void DeliverSpawnData(const FInstancedStruct& InitialState, bool bIsLocal);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	// What BeginPlay resolves, for an editor world where it never runs; the auto replicator exists only in game and PIE worlds.
+	void SetAutoReplicatorForTest(UCrowdyAutoReplicator* InAutoReplicator)
+	{
+		AutoReplicator = InAutoReplicator;
+		CachedOwner = GetOwner();
+	}
+#endif
+
 	// Event channel
 
 	/**
@@ -383,6 +401,7 @@ public:
 	virtual AActor* GetReplicatedActor() const override { return CachedOwner; }
 	virtual const FString& GetReplicationUUID() const override { return UUIDString; }
 	virtual const FInstancedStruct& GetReplicatedState() const override;
+	virtual void SendPresence() const override;
 
 	// Component config settable from an owning actor's constructor;
 	// EditAnywhere keeps them tweakable on instances and Blueprint defaults.
@@ -495,6 +514,16 @@ private:
 	// True while a Player Derived pawn that began play unpossessed waits for its first controller.
 	bool bAwaitingPossession = false;
 
+	// Set by EnablePresence on an entity spawned with Spawn Entity; cleared with the identity.
+	bool bSendsPresence = false;
+
+	// True once OnCrowdySpawned has fired for this identity; cleared with it so a pooled actor gets the next one's.
+	bool bSpawnDataDelivered = false;
+
+	// The InitialState OnCrowdySpawned delivered, kept so a presence send repeats it for players who join later.
+	UPROPERTY(Transient)
+	FInstancedStruct SpawnData;
+
 #if WITH_DEV_AUTOMATION_TESTS
 	TWeakObjectPtr<UCrowdyEntitySubsystem> EntitySubsystemForTest;
 	TWeakObjectPtr<UCrowdyGameSession> GameSessionForTest;
@@ -520,6 +549,9 @@ private:
 
 	// Resolves, registers and starts the mode's channel; from BeginPlay, or from a deferred pawn's first possession.
 	void CompleteRegistration();
+
+	// Joins the auto replicator as a presence entry, which calls SendPresence on a slow fixed interval.
+	void StartPresence();
 
 	// One client has one account, so a newer Player Derived pawn takes the id from an earlier pawn still alive
 	// after unpossession (a respawn that lets the old pawn expire); the collision guard would refuse it otherwise.
@@ -557,6 +589,7 @@ private:
 	// Applied by UCrowdyEntitySubsystem::ReassignOwnership (a friend) after the entity record is re-pointed: syncs
 	// this component's cached OwnerID/Role and, for a Dynamic-mode entity, moves the continuous StateExecutor
 	// channel to follow authority (the new owner joins the AutoReplicator; a client that lost ownership leaves it).
+	// A spawned Static entity's presence sends follow authority the same way.
 	// It does not announce; the subsystem does that afterwards, via BroadcastOwnershipAssigned.
 	void ApplyOwnershipReassignment(const FGuid& NewOwnerID, ECrowdyRole NewRole);
 };

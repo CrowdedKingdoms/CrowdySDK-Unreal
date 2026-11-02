@@ -9,6 +9,7 @@
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Utils/CrowdyBakedRegistry.h"
 #include "UObject/Class.h"
+#include "UObject/Package.h"
 #include "UObject/SoftObjectPath.h"
 #include "UObject/UnrealType.h"
 

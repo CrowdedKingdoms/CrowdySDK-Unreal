@@ -1,6 +1,7 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "LatentActions.h"
+#include "Serialization/MemoryReader.h"
 #include "Core/Persistence/EPullStateResult.h"
 #include "Core/Persistence/ICrowdyPersistentOwner.h"
 

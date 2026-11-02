@@ -8,7 +8,9 @@
 #include "Utils/HelperFunctions.h"
 #include "Core/Audio/VoiceChat/VoiceChatSubsystem.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "TimerManager.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Messages/FPingTestMessage.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
@@ -293,6 +295,9 @@ void UCrowdySDKSubsystem::Logout() const
 
 	GameSession->ClearCurrentSessionData();
 	GameSession->SetAppPaused(false, FString());
+
+	// Cleared here at once: the per-world host subsystem may never have seen this host, and its own clear is queued.
+	GameSession->SetHostID(FGuid());
 
 	// Scrub the bearers the shared API client still holds. It reinstalls them from here on every resolve, so a call
 	// issued after this point would otherwise still go out as the account that just signed out.
@@ -1641,9 +1646,7 @@ void UCrowdySDKSubsystem::PollGameHost() const
 			}
 
 			// hostUserId is a BigInt, so it arrives as a decimal string. An answer that does not carry one has not
-			// named a host, and applying the zero it would otherwise parse to elects a user nobody is: the id
-			// still hashes to a valid-looking host GUID, so every client would see a host set and none would
-			// claim authority.
+			// named a host, so it leaves the current host in place rather than clearing it.
 			FString HostUserIdText;
 			if (!(*GameHost)->TryGetStringField(TEXT("hostUserId"), HostUserIdText))
 			{
