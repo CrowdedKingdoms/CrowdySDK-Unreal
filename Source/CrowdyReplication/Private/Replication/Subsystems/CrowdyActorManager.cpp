@@ -108,6 +108,29 @@ void UCrowdyActorManager::BindToEntitySubsystem(UCrowdyEntitySubsystem* Entities
 	Entities->OnEntityRegistered.AddDynamic(this, &UCrowdyActorManager::OnEntityRegistered);
 	Entities->OnEntityUnregistered.AddDynamic(this, &UCrowdyActorManager::OnEntityUnregistered);
 	Entities->OnEntityOwnershipChanged.AddDynamic(this, &UCrowdyActorManager::OnEntityOwnershipChanged);
+	Entities->SetActorManager(this);
+}
+
+void UCrowdyActorManager::HandleRemoteDestroyEvent(const FGuid& UUID)
+{
+	if (!IsValid(ActiveBackend)) return;
+
+	const int32* SlotPtr = UUIDToSlot.Find(UUID);
+	const int32 SlotId = SlotPtr ? *SlotPtr : INDEX_NONE;
+	if (!ActiveBackend->ReleaseDestroyedInstance(SlotId, UUID) || SlotId == INDEX_NONE) return;
+
+	// The slot keeps its class, so RetryInactiveSlot can draw it again after the destroy window.
+	InactiveSlots[SlotId] = true;
+	++CapacityEpoch;
+}
+
+void UCrowdyActorManager::ActivateParked(const FGuid& UUID, UClass* EntityClass)
+{
+	FPendingActivation Pending;
+	if (!IsValid(ActiveBackend) || !EntityClass || !PendingActivations.RemoveAndCopyValue(UUID, Pending)) return;
+
+	ActivateSlot(Pending.SlotId, UUID, EntityClass, Pending.InitialState);
+	ActiveBackend->ExtractUpdate(Pending.InitialState, GetEstimatedServerTimeMs(), Pending.SlotId);
 }
 
 void UCrowdyActorManager::Deinitialize()
