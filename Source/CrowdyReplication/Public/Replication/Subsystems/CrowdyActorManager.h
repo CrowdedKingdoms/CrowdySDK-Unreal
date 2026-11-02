@@ -42,6 +42,14 @@ public:
 	// The live backend, null when none initialized; a backend that refused to initialize is absent here and present in the profile.
 	UCrowdyRenderingBackend* GetActiveBackend() const { return ActiveBackend; }
 
+	// A destroy event arrived for UUID. A backend that stopped drawing it leaves the slot waiting for a later update,
+	// which draws it again only once the destroy is past, as an actor pool slot whose actor was destroyed does.
+	void HandleRemoteDestroyEvent(const FGuid& UUID);
+
+	// A spawn event named EntityClass for an entity the backend draws itself, so no actor registers to resolve an update
+	// parked while the class was unknown: it is activated here instead.
+	void ActivateParked(const FGuid& UUID, UClass* EntityClass);
+
 	void RegisterStateClass(UScriptStruct* Struct, TSubclassOf<AActor> ActorClass);
 
 	// A network update that arrived before the entity's spawn event was processed. Keyed by UUID;

@@ -1012,6 +1012,13 @@ public:
 	bool ApplyViewState(const FGuid& UUID, const FInstancedStruct& State);
 
 	/**
+	 * Lands a spawn event's data on UUID's entity: each property of State that a registered CrowdyState fragment
+	 * field (RegisterStateFragmentField) claims by name, declared as the type that field reads, goes through its
+	 * ingestor as a decoded delta's value would. Other properties are dropped. False when UUID names no entity yet.
+	 */
+	bool ApplySpawnState(const FGuid& UUID, const FInstancedStruct& State);
+
+	/**
 	 * One received payload applied whole: the view-state fields first, then the transform it carries.
 	 * False when UUID names no tracked entity.
 	 *

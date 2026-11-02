@@ -2629,6 +2629,42 @@ void UCrowdyMassEntitySubsystem::ApplyDecodedState(const FGuid& EntityUUID, cons
 	}
 }
 
+bool UCrowdyMassEntitySubsystem::ApplySpawnState(const FGuid& UUID, const FInstancedStruct& State)
+{
+	FMassEntityHandle Entity;
+	FMassEntityManager* EntityManager = GetMassEntityManager();
+	if (!EntityManager || !FindEntityByUUID(UUID, Entity) || !EntityManager->IsEntityValid(Entity))
+	{
+		return false;
+	}
+
+	const UScriptStruct* ScriptStruct = State.GetScriptStruct();
+	const void* StructMemory = State.GetMemory();
+	if (!ScriptStruct || !StructMemory)
+	{
+		return true;
+	}
+
+	// Resolved per call rather than cached per struct: a spawn event is rare. Indexed rather than iterated, because an
+	// ingestor may register a field, which appends to the array.
+	const TWeakObjectPtr<const UClass>* EntityClass = StateEntityClassByUUID.Find(UUID);
+	FCrowdyMassViewStateContext Context{*EntityManager, Entity, EntityClass ? EntityClass->Get() : nullptr};
+	const int32 RegistrationCount = StateFieldRegistrations.Num();
+	for (int32 RegistrationIndex = 0; RegistrationIndex < RegistrationCount; ++RegistrationIndex)
+	{
+		const FCrowdyMassStateFieldRegistration& Registration = *StateFieldRegistrations[RegistrationIndex];
+		const FProperty* Property = Registration.Match == ECrowdyMassStateFieldMatch::ByName
+			? ScriptStruct->FindPropertyByName(Registration.PropertyName) : nullptr;
+		if (!Property || !CrowdyMassPropertyMatchesStateFieldType(*Property, Registration.FieldType))
+		{
+			continue;
+		}
+
+		Registration.Ingestor(Property->ContainerPtrToValuePtr<void>(StructMemory), Context);
+	}
+	return true;
+}
+
 UCrowdyMassEntity* UCrowdyMassEntitySubsystem::GetOrCreateAvatar(const FGuid& UUID, const UClass* RequiredClass)
 {
 	FMassEntityHandle Entity;

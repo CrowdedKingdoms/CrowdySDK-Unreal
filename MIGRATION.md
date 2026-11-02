@@ -27,6 +27,59 @@ Every release has the same subsections, in this order:
 A subsection with nothing to say is written as "None." so you never have to guess whether
 something was left out.
 
+## Unreleased (after 2.24.0)
+
+**Verdict.** No breaking change. Nothing is deprecated.
+
+**Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate.
+
+**What changed**
+
+| Old | New | Kind |
+|---|---|---|
+| On a map drawn with the Crowdy Mass Rendering Backend, a Dynamic entity spawned with `Spawn Entity` was drawn on other clients as a crowd row and also as the actor its spawn event made, which never moved. | Mass is its only body: the spawn event spawns no actor for it there. Its `InitialState` reaches each Crowdy State fragment field registered with `RegisterStateFragmentField` whose name it carries as the type that field reads. `On Crowdy Spawned` does not fire for it on those clients. A Static entity keeps its actor. | Behaviour: C++ `UCrowdyEntitySubsystem`, `UCrowdyMassRenderingBackend`, `UCrowdyMassEntitySubsystem::ApplySpawnState` (new); Blueprint `On Crowdy Spawned`. |
+| A destroy event left a Mass-drawn entity's row until its updates stopped, about 5 seconds later. | The row goes with the destroy event. | Behaviour: C++ `UCrowdyActorManager::HandleRemoteDestroyEvent` (new), `UCrowdyRenderingBackend::ReleaseDestroyedInstance` (new). |
+| When a moving entity's first update arrived before its spawn event, the actor pool's copy kept an empty owner id. | The spawn event fills it in. | Behaviour: C++ `UCrowdyEntitySubsystem`; Blueprint `Get Owner ID`, `On Crowdy Spawned`. |
+| No hook for a crowd-row backend to receive spawn data or a destroy event. | `UCrowdyRenderingBackend::TakeSpawnData` and `ReleaseDestroyedInstance`, optional, doing nothing by default. | C++ API (new virtuals). |
+
+**Do this, in order**
+
+1. If a Mass map's game code reads a spawned entity's data in `On Crowdy Spawned`, move that read to a
+   Crowdy State fragment field: register it with `RegisterStateFragmentField` and give your
+   `InitialState` struct a property with the field's name and type.
+2. If you wrote a rendering backend that returns true from `DrawsEntitiesAsCrowdRows()`, override
+   `TakeSpawnData` to land spawn data on your representation and `ReleaseDestroyedInstance` to stop
+   drawing a destroyed entity. Bound anything you hold for an entity not drawn yet: spawn events can be
+   forged.
+
+**CoreRedirects.** None.
+
+**Blueprint assets.** To find Blueprints that bind `On Crowdy Spawned` on entity classes a Mass map
+can draw, search recursively with `grep -a`, and check the search with a control string that must match:
+
+```
+grep -r -a -l --include=*.uasset "OnCrowdySpawned" Content Plugins
+grep -r -a -l --include=*.uasset "CrowdyEntityComponent" Content Plugins
+```
+
+No re-save is needed.
+
+**Behaviour changes.** On a Mass map, other clients show a spawned moving entity as its row (and its
+near-tier shell up close) only, where they used to show a frozen actor at the spawn point as well; Crowdy
+Events aimed at it run on Mass's shared stand-in, as for any crowd entity. `On Crowdy Spawned` fires there
+only on the owner. Every client should run the same SDK version: an older client still draws the extra
+actor.
+
+**Verify**
+
+1. Build your project's editor target and confirm the log shows `Compile` and `Link` lines for the
+   CrowdySDK modules.
+2. With two clients on a Mass map, spawn a Dynamic entity on the first: the second shows one crowd row
+   for it and no actor, and your registered field's ingestor receives its spawn data once.
+3. Destroy it on the first: the row disappears on the second at once.
+
+**Removed in the next release.** None.
+
 ## 2.24.0
 
 **Verdict.** No breaking change. Nothing is deprecated.

@@ -87,6 +87,33 @@ public:
 	}
 };
 
+/** A recording backend that draws entities as crowd rows, as the Mass backend does, and records what it is handed for them. */
+UCLASS()
+class UCrowdyCrowdRowRecordingBackend : public UCrowdyRecordingBackend
+{
+	GENERATED_BODY()
+
+public:
+
+	TArray<FGuid> SpawnDataIDs;
+	TArray<FInstancedStruct> SpawnData;
+	TArray<TPair<int32, FGuid>> ReleasedOnDestroy;
+
+	virtual bool DrawsEntitiesAsCrowdRows() const override { return true; }
+
+	virtual void TakeSpawnData(const FGuid& UUID, const FInstancedStruct& InitialState) override
+	{
+		SpawnDataIDs.Add(UUID);
+		SpawnData.Add(InitialState);
+	}
+
+	virtual bool ReleaseDestroyedInstance(const int32 SlotId, const FGuid& UUID) override
+	{
+		ReleasedOnDestroy.Emplace(SlotId, UUID);
+		return SlotId != INDEX_NONE;
+	}
+};
+
 /** A recording backend that re-registers the entity inside ActivateInstance, as the actor pool does. */
 UCLASS()
 class UCrowdyRegisteringBackend : public UCrowdyRecordingBackend

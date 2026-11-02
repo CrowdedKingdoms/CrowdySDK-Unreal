@@ -5,11 +5,14 @@
 #include "Core/CrowdyCategory/FCrowdyTypeIDGenerator.h"
 #include "Core/FCrowdyTypeID.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
+#include "Data/CrowdyRenderingBackend.h"
 #include "Engine/AssetManager.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "GameFramework/Actor.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
+#include "Replication/Subsystems/CrowdyActorManager.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
@@ -939,6 +942,9 @@ void UCrowdyEntitySubsystem::HandleRemoteSpawn(const FCrowdyEntitySpawnEvent& Ev
 				? ExistingActor->FindComponentByClass<UCrowdyEntityComponent>() : nullptr;
 			if (Component)
 			{
+				// A proxy drawn before this event was given the record's owner while it was still unknown.
+				if (!Component->GetOwnerID().IsValid() && Existing->OwnerID.IsValid())
+					Component->AssignPooledIdentity(Event.EntityID, Existing->OwnerID, ECrowdyRole::RemoteProxy, Existing->ClassID);
 				Component->EnablePresence();
 				Component->DeliverSpawnData(Event.InitialState, false);
 			}
@@ -1035,8 +1041,37 @@ void UCrowdyEntitySubsystem::ReleaseRemoteStandIn(const FGuid& NetID)
 	UnregisterEntity(NetID);
 }
 
+void UCrowdyEntitySubsystem::SetActorManager(UCrowdyActorManager* Manager)
+{
+	ActorManager = Manager;
+}
+
+bool UCrowdyEntitySubsystem::HandSpawnToCrowdRows(const FCrowdyEntitySpawnEvent& Event, UClass* EntityClass) const
+{
+	UCrowdyRenderingBackend* Backend = ActorManager.IsValid() ? ActorManager->GetActiveBackend() : nullptr;
+	if (!IsValid(Backend) || !Backend->DrawsEntitiesAsCrowdRows())
+		return false;
+
+	// A Static entity sends no updates, so no row is ever drawn for it: its actor is its only body.
+	const UCrowdyEntityComponent* Template = Cast<UCrowdyEntityComponent>(
+		AActor::GetActorClassDefaultComponent(EntityClass, UCrowdyEntityComponent::StaticClass()));
+	if (!Template || Template->Mode != ECrowdyEntityMode::Dynamic)
+		return false;
+
+	Backend->TakeSpawnData(Event.EntityID, Event.InitialState);
+	ActorManager->ActivateParked(Event.EntityID, EntityClass);
+
+	UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+		TEXT("[CrowdyEntitySubsystem]: Spawn received: entity %s, class %s, drawn as a crowd row here, so no actor is spawned."),
+		*Event.EntityID.ToString(), *EntityClass->GetName());
+	return true;
+}
+
 void UCrowdyEntitySubsystem::FinishRemoteSpawn(const FCrowdyEntitySpawnEvent& Event, UClass* EntityClass)
 {
+	if (HandSpawnToCrowdRows(Event, EntityClass))
+		return;
+
 	// A non-actor stand-in may still hold this id (see HandleRemoteSpawn). It lets go here, immediately before the
 	// actor exists, rather than when the event arrived: the entity is never left answering to nothing while a
 	// class streams in, and the actor's own registration is not refused as a collision with the stand-in.
@@ -1099,6 +1134,10 @@ void UCrowdyEntitySubsystem::HandleRemoteDestroy(const FCrowdyEntityDestroyEvent
 {
 	// Remembered even for an id this client never knew: a repeat of its spawn still in flight must not build it here.
 	RememberDestroyed(Event.EntityID);
+
+	// A crowd row has no record here, so its backend is told directly.
+	if (ActorManager.IsValid())
+		ActorManager->HandleRemoteDestroyEvent(Event.EntityID);
 
 	// Destroyed before its class finished loading: the actor never existed
 	// here, so cancel the load and drop the pending spawn.

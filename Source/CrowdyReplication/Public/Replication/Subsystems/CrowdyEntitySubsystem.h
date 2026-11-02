@@ -12,6 +12,7 @@
 #include "CrowdyEntitySubsystem.generated.h"
 
 class FCrowdyServiceRegistry;
+class UCrowdyActorManager;
 class UCrowdyEntityComponent;
 class UCrowdyGameSession;
 class UCrowdySDKBridgeSubsystem;
@@ -291,6 +292,10 @@ public:
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Entity Subsystem|Events")
 	FOnCrowdyEntityOwnershipChanged OnEntityOwnershipChanged;
 
+	// The actor manager drawing this world's remote entities, set when it binds to this subsystem: spawn and destroy
+	// events consult its backend.
+	void SetActorManager(UCrowdyActorManager* Manager);
+
 private:
 
 	// Remote spawn whose class is still streaming in. A destroy event arriving
@@ -324,6 +329,8 @@ private:
 
 	UCrowdySDKBridgeSubsystem* Bridge = nullptr;
 
+	TWeakObjectPtr<UCrowdyActorManager> ActorManager;
+
 	// Single handle over both the spawn and destroy payload keys; released on Deinitialize.
 	FCrowdySubscription SpawnDestroySubscription;
 
@@ -346,6 +353,10 @@ private:
 
 	void OnRemoteSpawnClassLoaded(FGuid EntityID, FSoftClassPath ClassPath);
 	void FinishRemoteSpawn(const FCrowdyEntitySpawnEvent& Event, UClass* EntityClass);
+
+	// True when this world draws remote entities as crowd rows and EntityClass is a moving one: the rows are its only
+	// body here, so its spawn data went to the backend and no actor is spawned for it.
+	bool HandSpawnToCrowdRows(const FCrowdyEntitySpawnEvent& Event, UClass* EntityClass) const;
 
 	// Drops a non-actor stand-in registered for NetID (a crowd avatar enrolled from position updates before the
 	// spawn event that names the entity's class arrived), so the actor about to be spawned for that id can take
