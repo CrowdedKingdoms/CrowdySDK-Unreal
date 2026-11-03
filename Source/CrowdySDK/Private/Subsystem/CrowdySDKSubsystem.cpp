@@ -1357,9 +1357,9 @@ void UCrowdySDKSubsystem::StartConnectedSessionWork()
 		});
 	}
 
-	// Only once the player is signed in. A connection that comes up before sign-in leaves polling to the sign-in
-	// that follows, since login does not start it.
-	if (IsValid(GameSession) && GameSession->GetUserID() != 0)
+	// Only once the player is signed in, and only while the elected host is the Leader Source. A connection that comes
+	// up before sign-in leaves polling to the sign-in that follows, since login does not start it.
+	if (IsValid(GameSession) && GameSession->GetUserID() != 0 && UCrowdySDKDeveloperSettings::UsesElectedHost())
 		StartHostPolling();
 }
 

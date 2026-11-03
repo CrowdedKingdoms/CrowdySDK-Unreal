@@ -10,7 +10,7 @@ enum class ECrowdyRole : uint8
 	None UMETA(DisplayName="None"),        // not registered
 	Owner UMETA(DisplayName="Owner"),       // this client simulates and sends (like ROLE_Authority for this entity)
 	RemoteProxy UMETA(DisplayName="Remote Proxy"), // receives state/events from the network
-	HostOwned UMETA(DisplayName="Host Owned")   // owned by whoever is host (AI/world entities); reassigned on host migration
+	HostOwned UMETA(DisplayName="Host Owned")   // a World entity, written by the World owner if the Leader Source gives one
 };
 
 USTRUCT(BlueprintType)
@@ -21,7 +21,7 @@ struct FCrowdyEntityRecord
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Entity")
 	FGuid NetID;
 
-	// Guid::Zero for world-static entities. 
+	// Guid::Zero for world-static entities.
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Entity")
 	FGuid OwnerID;
 
@@ -40,4 +40,14 @@ struct FCrowdyEntityRecord
 
 	AActor* GetActor() const { return Cast<AActor>(Participant.Get()); }
 	UObject* GetParticipant() const { return Participant.Get(); }
+
+	// The one answer to "does this client write it": it owns the entity, or the entity is a World entity and this
+	// client is its World owner. An Owner record with no owner id was registered here before the local player id was
+	// known, so it is still this client's; one naming another player is not, whatever its role says.
+	static bool IsWrittenBy(const ECrowdyRole InRole, const FGuid& InOwnerID, const FGuid& PlayerID, const FGuid& WorldOwnerID)
+	{
+		if (InRole == ECrowdyRole::Owner)
+			return !InOwnerID.IsValid() || InOwnerID == PlayerID;
+		return InRole == ECrowdyRole::HostOwned && PlayerID.IsValid() && WorldOwnerID == PlayerID;
+	}
 };

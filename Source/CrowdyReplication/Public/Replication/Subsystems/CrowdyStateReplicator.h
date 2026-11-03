@@ -245,6 +245,7 @@ public:
 	}
 	int32 NumKnownHostOwnedForTest() const { return KnownHostOwnedIDs.Num(); }
 	bool IsTrackedForTest(const FGuid& Id) const { return OwnedEntities.Contains(Id); }
+	bool HasWarnedWorldEntityHasNoWriterForTest() const { return bWarnedWorldEntityHasNoWriter; }
 
 	// Loopback mirror test seams: exercise the spawn/guard logic directly without ReplicationLoop/Tick.
 	AActor* GetOrCreateLoopbackMirrorForTest(AActor* SourceActor, const FGuid& SourceEntityID)
@@ -324,10 +325,14 @@ private:
 	// entity must have a live actor with a rep layout. Returns true when a new owned entry was added.
 	bool TryTrackOwned(const FCrowdyEntityRecord& Record);
 
-	// Host resolution (test-overridable). ResolveHostID returns the injected id when set, else the session's
-	// host id; IsLocalHost is true when that host id is valid and equals the local player id (read live).
+	// Host resolution (test-overridable). ResolveHostID returns the injected id when set, else the World owner (the
+	// elected host under Leader Source Elected Host, none otherwise); IsLocalHost is true when it is this client.
 	FGuid ResolveHostID() const;
 	bool IsLocalHost() const;
+
+	// Warns once when state is marked dirty on a World entity that nothing writes (Leader Source is Server Object).
+	void WarnIfWorldEntityHasNoWriter(const FGuid& EntityID);
+	bool bWarnedWorldEntityHasNoWriter = false;
 
 	// Loop clock (test-overridable): the injected time when set, else the world time. A headless replicator has
 	// no world, so the override drives keyframe timing deterministically.

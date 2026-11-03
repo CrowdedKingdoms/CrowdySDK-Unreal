@@ -44,15 +44,11 @@ ownership-taking subsystem registration are deprecated: they keep working and wa
 | `Switch Crowdy Has Authority`, `Crowdy Has Authority` (is this client the elected host) | `Switch Is Crowdy Entity Locally Owned` on the entity or replicated subsystem you are about to write. Logic that only the host should run, with no entity to ask about, belongs in a Server Object. | Blueprint nodes; C++ `CrowdyHasAuthority`, `GetCrowdyHasAuthority` deprecated. |
 | `Register Replicated Subsystem` (Subsystem, Ownership) | `Register Crowdy Replicated Subsystem` (Subsystem). A replicated subsystem is always written by the elected host. | Blueprint node; C++ `UCrowdyReplicatedSubsystemLibrary::RegisterCrowdyReplicatedSubsystem` and `RegisterReplicatedSubsystemInto(Registry, Subsystem)` (new), the ownership-taking versions deprecated. |
 | Overriding `GetReplicatedOwnership()` on `UCrowdyReplicatedWorldSubsystem` or `UCrowdyReplicatedGameInstanceSubsystem` | Nothing to override: the bases no longer call it. | C++ virtual deprecated. |
-| On a map drawn with the Crowdy Mass Rendering Backend, a Dynamic entity spawned with `Spawn Entity` was drawn on other clients as a crowd row and also as the actor its spawn event made, which never moved. | Mass is its only body: the spawn event spawns no actor for it there. Its `InitialState` reaches each Crowdy State fragment field registered with `RegisterStateFragmentField` whose name it carries as the type that field reads. `On Crowdy Spawned` does not fire for it on those clients. A Static entity keeps its actor. | Behaviour: C++ `UCrowdyEntitySubsystem`, `UCrowdyMassRenderingBackend`, `UCrowdyMassEntitySubsystem::ApplySpawnState` (new); Blueprint `On Crowdy Spawned`. |
+| An elected host always existed. | `Leader Source` in Project Settings > Plugins > Crowdy SDK > Replication: `Elected Host (Deprecated)`, the default in this release, or `Server Object`, which turns the elected host off (no host polling, no writer for World entities or replicated subsystems, Host events dropped, each with a warning naming the setting). | Project setting, C++ `UCrowdySDKDeveloperSettings::LeaderSource`, `ECrowdyLeaderSource`, `UsesElectedHost()` (new). |
+| `UCrowdyEntitySubsystem::IsLocallyOwned(NetID)` was false for a World entity even on the host, while the component's `IsLocallyOwned` was true. | Both are true on the host. One rule, `FCrowdyEntityRecord::IsWrittenBy`, answers every ownership check; `UCrowdyEntitySubsystem::GetWorldOwnerID()` and `IsRecordLocallyOwned(Record)` expose it. An `Owning Client` event on a World entity now runs on the host instead of nowhere. | Behaviour and C++ API (new functions). || On a map drawn with the Crowdy Mass Rendering Backend, a Dynamic entity spawned with `Spawn Entity` was drawn on other clients as a crowd row and also as the actor its spawn event made, which never moved. | Mass is its only body: the spawn event spawns no actor for it there. Its `InitialState` reaches each Crowdy State fragment field registered with `RegisterStateFragmentField` whose name it carries as the type that field reads. `On Crowdy Spawned` does not fire for it on those clients. A Static entity keeps its actor. | Behaviour: C++ `UCrowdyEntitySubsystem`, `UCrowdyMassRenderingBackend`, `UCrowdyMassEntitySubsystem::ApplySpawnState` (new); Blueprint `On Crowdy Spawned`. |
 | A destroy event left a Mass-drawn entity's row until its updates stopped, about 5 seconds later. | The row goes with the destroy event. | Behaviour: C++ `UCrowdyActorManager::HandleRemoteDestroyEvent` (new), `UCrowdyRenderingBackend::ReleaseDestroyedInstance` (new). |
 | When a moving entity's first update arrived before its spawn event, the actor pool's copy kept an empty owner id. | The spawn event fills it in. | Behaviour: C++ `UCrowdyEntitySubsystem`; Blueprint `Get Owner ID`, `On Crowdy Spawned`. |
 | No hook for a crowd-row backend to receive spawn data or a destroy event. | `UCrowdyRenderingBackend::TakeSpawnData` and `ReleaseDestroyedInstance`, optional, doing nothing by default. | C++ API (new virtuals). |
-| The actor pool drew remote entities 100 ms behind the server's clock on every map, with no setting. | `Interpolation Delay` in the map profile's Remote Entities group, 100 by default. Mass-drawn rows ignore it. | Property (map profile, C++ `FCrowdyActorManagementConfigStruct::InterpolationDelayMs`, new). |
-| The map profile's Details panel listed every setting in one category, with Actor Management as a nested row. Labels: `Enable Networking`, `Use Auto Replicator`, `Replication Interval (Hertz)` (greyed out when movement was off, though Crowdy State still used it), `Send Actor State Only On Change`, `Use State Replicator`, `Use Crowdy Actor Tracker`. | Groups `Events`, `Remote Entities` (Actor Management's settings, tuning under Advanced), `Movement`, `Crowdy State`. Labels: `Handle Events and Spawns`, `Send Movement`, `Send Rate` (editable while either sender is on), `Send Only On Change`, `Replicate Crowdy State`, `Draw Remote Entities`, `Actor Timeout`. Property names are unchanged. | Details panel only. |
-| A map profile saved with settings that drop idle entities, or a Backend Config of another backend's class, said nothing until play. | Saving or validating the profile reports both as errors. | Editor validation (`UCrowdyMapProfile::IsDataValid`). |
-| `Crowdy Actor Management Config` data asset (nothing reads it at runtime). | Deprecated, hidden from the create menu; existing assets still load. Set the values on a map profile. | Asset class deprecated. |
-| No way to say which Backend Config class a rendering backend reads. | `UCrowdyRenderingBackend::GetBackendConfigClass()`, optional, null by default (no check). The actor pool and Mass backends return their config classes. | C++ API (new virtual). |
 | Assets carried no CrowdySDK save version. | A package that saves a `Crowdy Entity Component` records the `CrowdySDK` custom version, and the component saves `Owned By` and a Replicate Movement setting that nothing reads yet. Older SDKs warn on these packages (see Behaviour changes). | Asset format. |
 
 **Do this, in order**
@@ -75,11 +71,9 @@ ownership-taking subsystem registration are deprecated: they keep working and wa
    `TakeSpawnData` to land spawn data on your representation and `ReleaseDestroyedInstance` to stop
    drawing a destroyed entity. Bound anything you hold for an entity not drawn yet: spawn events can be
    forged.
-8. If you wrote a rendering backend with a config class of its own, override `GetBackendConfigClass()` to return
-   it, so a map profile that pairs your backend with another config is reported on save.
-9. If a map profile switches the SDK off with `Enable Networking` (now `Handle Events and Spawns`) alone,
-   also untick `Draw Remote Entities`, `Send Movement` and `Replicate Crowdy State`: the first switch never
-   stopped movement.
+8. Leave `Leader Source` at `Elected Host (Deprecated)` for now. If your code compares
+   `UCrowdyEntitySubsystem::IsLocallyOwned(NetID)` for a World entity against false on the host, it now reads
+   true there, as the component already did.
 
 **CoreRedirects.** None.
 
@@ -98,6 +92,10 @@ Blueprints that bind `On Crowdy Spawned` on entity classes a Mass map can draw; 
 **Behaviour changes.** An override of `GetReplicatedOwnership()` on a replicated subsystem base is no longer
 called: the subsystem is written by the elected host whatever it returned. Returning anything but Host was
 never supported.
+
+Under `Elected Host`, an `Owning Client` event on a World entity runs on the host instead of being dropped.
+Under `Server Object` there is no host at all: World entities and replicated subsystems are written by nobody,
+and the SDK warns once, naming the setting, when your code relies on a writer.
 
 On a Mass map, other clients show a spawned moving entity as its row (and its
 near-tier shell up close) only, where they used to show a frozen actor at the spawn point as well; Crowdy
@@ -121,8 +119,8 @@ cooked data is read against the component's current properties.
 3. Destroy it on the first: the row disappears on the second at once.
 4. Open an entity Blueprint: its `Crowdy Entity Component` shows `Owned By` and no `Ownership`, set to what
    the asset meant before (Player for a former Local Client).
-5. Open a map profile: it shows the Events, Remote Entities, Movement and Crowdy State groups with the
-   values it had before. Run Validate Assets on your profiles; any error it reports names the setting to fix.
+5. Project Settings > Plugins > Crowdy SDK > Replication shows `Leader Source` set to
+   `Elected Host (Deprecated)`.
 
 **Removed in the next release.** None. The deprecated items above are planned for removal in a later
 release, which will say so here first.
