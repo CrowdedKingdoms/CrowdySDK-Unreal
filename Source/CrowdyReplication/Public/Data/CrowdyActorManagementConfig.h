@@ -54,6 +54,10 @@ struct FCrowdyActorManagementConfigStruct
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0.001f, ClampMax = 0.1f))
 	float MaxBatchWaitTime = 0.005f;
 
+	/** How far behind the server's clock remote entities are drawn: longer hides late updates, and below one send interval (100 ms at 10 Hz) they overshoot and snap back. Mass-drawn rows ignore it. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0, UIMax = 500, Units = "ms"))
+	int32 InterpolationDelayMs = 100;
+
 	/**
 	 * How remote entities are drawn on this map. The actor-pool backend it starts on spawns pooled actors of
 	 * the entity's own class; point it at another UCrowdyRenderingBackend subclass to draw them some other way.

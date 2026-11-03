@@ -478,6 +478,7 @@ bool UCrowdyActorManager::LoadConfig()
 	}
 
 	SetBackend(Backend);
+	InterpolationDelayMs = Config.InterpolationDelayMs;
 
 	return true;
 }

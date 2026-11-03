@@ -48,6 +48,7 @@ ownership-taking subsystem registration are deprecated: they keep working and wa
 | A destroy event left a Mass-drawn entity's row until its updates stopped, about 5 seconds later. | The row goes with the destroy event. | Behaviour: C++ `UCrowdyActorManager::HandleRemoteDestroyEvent` (new), `UCrowdyRenderingBackend::ReleaseDestroyedInstance` (new). |
 | When a moving entity's first update arrived before its spawn event, the actor pool's copy kept an empty owner id. | The spawn event fills it in. | Behaviour: C++ `UCrowdyEntitySubsystem`; Blueprint `Get Owner ID`, `On Crowdy Spawned`. |
 | No hook for a crowd-row backend to receive spawn data or a destroy event. | `UCrowdyRenderingBackend::TakeSpawnData` and `ReleaseDestroyedInstance`, optional, doing nothing by default. | C++ API (new virtuals). |
+| The actor pool drew remote entities 100 ms behind the server's clock on every map, with no setting. | `Interpolation Delay Ms` on the map profile's Actor Management, 100 by default. Mass-drawn rows ignore it. | Property (map profile, C++ `FCrowdyActorManagementConfigStruct::InterpolationDelayMs`, new). |
 | Assets carried no CrowdySDK save version. | A package that saves a `Crowdy Entity Component` records the `CrowdySDK` custom version, and the component saves `Owned By` and a Replicate Movement setting that nothing reads yet. Older SDKs warn on these packages (see Behaviour changes). | Asset format. |
 
 **Do this, in order**
