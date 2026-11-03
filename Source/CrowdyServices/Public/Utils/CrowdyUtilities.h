@@ -108,14 +108,27 @@ public:
 	static UCrowdyEntityComponent* GetCrowdyEntityComponent(AActor* Actor);
 
 	/**
-	 * True when this client is the one that drives Entity: it owns the entity, or the entity is host-owned and
-	 * this client is the elected host. Use it to gate input, AI and any other logic that must run on exactly one
-	 * client. Returns false for an entity that is not registered, so an actor that is not a Crowdy entity is
-	 * never treated as locally controlled.
+	 * True when this client writes Entity's view state: it owns the entity, or the entity is Owned By World and this
+	 * client is the elected host. Entity is an entity actor or a replicated subsystem, so this is also a subsystem's
+	 * write gate. Use it to gate input, AI and any other logic that must run on exactly one client. False for anything
+	 * not registered.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entities",
-		meta=(DefaultToSelf="Entity",
-		      Keywords="Is Locally Controlled Owned Authority Crowdy Entity"))
+		meta=(DefaultToSelf="Entity", Keywords="Is Locally Owned Owner Write Crowdy Entity Subsystem"))
+	static bool IsCrowdyEntityLocallyOwned(UObject* Entity);
+
+	// The registry half of IsCrowdyEntityLocallyOwned: whether LocalPlayerID writes the entity Record describes.
+	static bool IsRecordLocallyOwned(const FCrowdyEntityRecord& Record, const FGuid& LocalPlayerID, const FGuid& HostID);
+
+	/** Exec-flow version: routes to True when this client writes Entity's view state, False otherwise. */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entities",
+		meta=(DefaultToSelf="Entity", ExpandBoolAsExecs="bIsLocallyOwned",
+		      Keywords="Switch Is Locally Owned Owner Write Crowdy Entity Subsystem"))
+	static void SwitchIsCrowdyEntityLocallyOwned(UObject* Entity, bool& bIsLocallyOwned);
+
+	UE_DEPRECATED(5.8, "Use IsCrowdyEntityLocallyOwned.")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entities",
+		meta=(DefaultToSelf="Entity", DeprecatedFunction, DeprecationMessage="Use Is Crowdy Entity Locally Owned."))
 	static bool IsCrowdyEntityLocallyControlled(AActor* Entity);
 
 
@@ -184,14 +197,16 @@ public:
 
 	// Session
 
-	/** Exec-flow version: routes to HasAuthority or DoesNotHaveAuthority. */
+	UE_DEPRECATED(5.8, "Use SwitchIsCrowdyEntityLocallyOwned on the entity or replicated subsystem; logic only the host should run belongs in a Server Object.")
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Session",
-		meta=(WorldContext="WorldContextObject", ExpandBoolAsExecs="bHasAuthority",
-		      Keywords="Switch Crowdy Has Authority Switch", DisplayName="Switch Crowdy Has Authority"))
+		meta=(WorldContext="WorldContextObject", ExpandBoolAsExecs="bHasAuthority", DisplayName="Switch Crowdy Has Authority",
+		      DeprecatedFunction, DeprecationMessage="Use Switch Is Crowdy Entity Locally Owned on the entity or replicated subsystem; logic only the host should run belongs in a Server Object."))
 	static void CrowdyHasAuthority(UObject* WorldContextObject, bool& bHasAuthority);
 
-	/*C++ overload/Boolean Version returns true when this client is the host. */
-	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Session", meta=(WorldContext="WorldContextObject", Keywords="Crowdy Has Authority", DisplayName="Crowdy Has Authority"))
+	UE_DEPRECATED(5.8, "Use IsCrowdyEntityLocallyOwned on the entity or replicated subsystem; logic only the host should run belongs in a Server Object.")
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Session",
+		meta=(WorldContext="WorldContextObject", DisplayName="Crowdy Has Authority",
+		      DeprecatedFunction, DeprecationMessage="Use Is Crowdy Entity Locally Owned on the entity or replicated subsystem; logic only the host should run belongs in a Server Object."))
 	static bool GetCrowdyHasAuthority(const UObject* WorldContextObject);
 
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Session",

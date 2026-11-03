@@ -164,10 +164,13 @@ bool FCrowdyForbiddenHasAuthorityIgnoresNearMissesTest::RunTest(const FString& P
 {
 	UFunction* GetActorLocationFn = AActor::StaticClass()->FindFunctionByName(
 		GET_FUNCTION_NAME_CHECKED(AActor, K2_GetActorLocation));
+	// The deprecated wrappers are still callable from Blueprints until they are removed, so they stay near misses.
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	UFunction* CrowdyHasAuthorityExecFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
 		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, CrowdyHasAuthority));
 	UFunction* GetCrowdyHasAuthorityFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
 		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, GetCrowdyHasAuthority));
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	if (!TestNotNull(TEXT("AActor::K2_GetActorLocation resolves"), GetActorLocationFn)
 		|| !TestNotNull(TEXT("UCrowdyUtilities::CrowdyHasAuthority resolves"), CrowdyHasAuthorityExecFn)

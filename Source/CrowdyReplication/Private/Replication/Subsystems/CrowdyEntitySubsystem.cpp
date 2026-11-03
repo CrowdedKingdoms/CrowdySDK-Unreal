@@ -405,6 +405,11 @@ FGuid UCrowdyEntitySubsystem::RegisterParticipant(UObject* Participant, const EC
 	return Record.NetID;
 }
 
+FGuid UCrowdyEntitySubsystem::RegisterParticipant(UObject* Participant)
+{
+	return RegisterParticipant(Participant, ECrowdyOwnership::Host);
+}
+
 void UCrowdyEntitySubsystem::UnregisterParticipant(UObject* Participant)
 {
 	check(IsInGameThread());
@@ -1132,6 +1137,17 @@ void UCrowdyEntitySubsystem::RememberDestroyed(const FGuid& NetID)
 
 void UCrowdyEntitySubsystem::HandleRemoteDestroy(const FCrowdyEntityDestroyEvent& Event)
 {
+	// A host-written singleton such as a replicated subsystem has a public id (its class path) and cannot be
+	// destroyed; a crowd row's stand-in is not an actor either, but it is a remote copy and is released as usual.
+	const FCrowdyEntityRecord* Existing = Records.Find(Event.EntityID);
+	if (Existing && Existing->Role == ECrowdyRole::HostOwned && Existing->GetParticipant() && !Existing->GetActor())
+	{
+		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyEntitySubsystem]: Destroy event for %s ignored: it names a host-written participant that is not an actor."),
+			*Event.EntityID.ToString());
+		return;
+	}
+
 	// Remembered even for an id this client never knew: a repeat of its spawn still in flight must not build it here.
 	RememberDestroyed(Event.EntityID);
 

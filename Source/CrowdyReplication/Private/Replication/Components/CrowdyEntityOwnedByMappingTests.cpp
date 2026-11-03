@@ -19,7 +19,9 @@
 #include "UObject/StrongObjectPtr.h"
 
 // Assets saved before Owned By and Replicate Movement existed get them mapped from Ownership and Mode, so every
-// entity resolves exactly as before; while Ownership and Mode are still the edited settings, a save keeps them in step.
+// entity resolves exactly as before. These cases write the deprecated Ownership on purpose: it is the old data.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyOwnedByTestFlags =
@@ -93,7 +95,7 @@ bool FCrowdyLegacySettingsMapTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("an authored Dynamic sends movement"), LocalDynamic.ReplicateMovement, ECrowdyReplicateMovement::On);
 
 	const FMapped HostStatic = Map(true, true, false, ECrowdyOwnership::Host, ECrowdyEntityMode::Static, Inherited);
-	TestEqual(TEXT("an authored Host is Auto: World when placed, Player when spawned, as before"), HostStatic.OwnedBy, ECrowdyOwnedBy::Auto);
+	TestEqual(TEXT("an authored Host is World: the host's when placed, the spawner's when spawned, as before"), HostStatic.OwnedBy, ECrowdyOwnedBy::World);
 	TestEqual(TEXT("an authored Static sends no movement, even on a pawn"), HostStatic.ReplicateMovement, ECrowdyReplicateMovement::Off);
 
 	const FMapped Untouched = Map(false, false, false, ECrowdyOwnership::LocalClient, ECrowdyEntityMode::Static, Inherited);
@@ -125,6 +127,9 @@ bool FCrowdyOwnedByResolutionTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Auto with a C++ Local Client is the player's"), C::ResolveOwnedBy(ECrowdyOwnedBy::Auto, ECrowdyOwnership::LocalClient, true), ECrowdyOwnedBy::Player);
 	TestEqual(TEXT("Auto placed in the level is the world's"), C::ResolveOwnedBy(ECrowdyOwnedBy::Auto, ECrowdyOwnership::Host, true), ECrowdyOwnedBy::World);
 	TestEqual(TEXT("Auto spawned during play is the spawner's"), C::ResolveOwnedBy(ECrowdyOwnedBy::Auto, ECrowdyOwnership::Host, false), ECrowdyOwnedBy::Player);
+	TestEqual(TEXT("World spawned during play is the spawner's too"), C::ResolveOwnedBy(ECrowdyOwnedBy::World, ECrowdyOwnership::Host, false), ECrowdyOwnedBy::Player);
+	TestEqual(TEXT("Player wins over a deprecated Host"), C::ResolveOwnedBy(ECrowdyOwnedBy::Player, ECrowdyOwnership::Host, true), ECrowdyOwnedBy::Player);
+	TestEqual(TEXT("World wins over a deprecated Local Client"), C::ResolveOwnedBy(ECrowdyOwnedBy::World, ECrowdyOwnership::LocalClient, true), ECrowdyOwnedBy::World);
 
 	TestTrue(TEXT("a character is a pawn with movement"), C::IsPawnWithMovement(ACharacter::StaticClass()));
 	TestTrue(TEXT("so is any pawn with a movement component"), C::IsPawnWithMovement(ADefaultPawn::StaticClass()));
@@ -180,7 +185,6 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyLegacySaveKeepsCppInheritanceTest,
 bool FCrowdyLegacySaveKeepsCppInheritanceTest::RunTest(const FString& Parameters)
 {
 	FCrowdyOwnedByTestWorld TestWorld;
-	FObjectSaveContextData SaveData;
 
 	// A component a C++ actor creates in its constructor: its archetype is that actor's default subobject.
 	ACrowdyStateOverlapActor* DynamicSource = TestWorld.World->SpawnActor<ACrowdyStateOverlapActor>();
@@ -206,39 +210,53 @@ bool FCrowdyLegacySaveKeepsCppInheritanceTest::RunTest(const FString& Parameters
 		StaticTarget->Entity->ReplicateMovement, ECrowdyReplicateMovement::Off);
 	TestEqual(TEXT("while its Ownership, left to the C++ default, stays inherited"),
 		StaticTarget->Entity->OwnedBy, ECrowdyOwnedBy::Auto);
-
-	DynamicSource->Entity->Ownership = ECrowdyOwnership::Host;
-	DynamicSource->Entity->PreSave(FObjectPreSaveContext(SaveData));
-	TestEqual(TEXT("a save of settings left to the C++ default keeps Owned By inherited"),
-		DynamicSource->Entity->OwnedBy, ECrowdyOwnedBy::Auto);
-	TestEqual(TEXT("and Replicate Movement"), DynamicSource->Entity->ReplicateMovement, ECrowdyReplicateMovement::Auto);
-
-	StaticSource->Entity->PreSave(FObjectPreSaveContext(SaveData));
-	TestEqual(TEXT("a save writes out a Static left to the C++ default, as a load does"),
-		StaticSource->Entity->ReplicateMovement, ECrowdyReplicateMovement::Off);
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyLegacySettingsFollowOnSaveTest,
-	"CrowdySDK.Entity.LegacySettingsFollowOnSave", CrowdyOwnedByTestFlags)
-bool FCrowdyLegacySettingsFollowOnSaveTest::RunTest(const FString& Parameters)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyOwnedBySaveRoundTripsTest,
+	"CrowdySDK.Entity.OwnedBySaveRoundTrips", CrowdyOwnedByTestFlags)
+bool FCrowdyOwnedBySaveRoundTripsTest::RunTest(const FString& Parameters)
 {
-	const TStrongObjectPtr<UCrowdyEntityComponent> Component(MakeComponent());
+	// Owned By is the edited setting now, so a save writes it as set and a load reads it back untouched.
+	const TStrongObjectPtr<UCrowdyEntityComponent> Source(MakeComponent());
+	Source->OwnedBy = ECrowdyOwnedBy::World;
+	Source->Ownership = ECrowdyOwnership::LocalClient;
+	const TStrongObjectPtr<UCrowdyEntityComponent> Target(MakeComponent());
+	LoadProperties(Target.Get(), SaveProperties(Source.Get()), FCrowdySDKCustomVersion::LatestVersion);
+	TestEqual(TEXT("Owned By loads as it was set, whatever the deprecated Ownership holds"), Target->OwnedBy, ECrowdyOwnedBy::World);
+
 	FObjectSaveContextData SaveData;
+	Source->Mode = ECrowdyEntityMode::Dynamic;
+	Source->PreSave(FObjectPreSaveContext(SaveData));
+	TestEqual(TEXT("and a save never rewrites it from the deprecated Ownership"), Source->OwnedBy, ECrowdyOwnedBy::World);
+	TestEqual(TEXT("while Replicate Movement still follows Mode, the setting people edit"), Source->ReplicateMovement, ECrowdyReplicateMovement::On);
 
-	Component->Ownership = ECrowdyOwnership::LocalClient;
-	Component->Mode = ECrowdyEntityMode::Dynamic;
-	Component->PreSave(FObjectPreSaveContext(SaveData));
-	TestEqual(TEXT("a save writes Owned By from the edited Ownership"), Component->OwnedBy, ECrowdyOwnedBy::Player);
-	TestEqual(TEXT("and Replicate Movement from the edited Mode"), Component->ReplicateMovement, ECrowdyReplicateMovement::On);
-
-	Component->Ownership = ECrowdyOwnership::Host;
-	Component->Mode = ECrowdyEntityMode::Static;
-	Component->PreSave(FObjectPreSaveContext(SaveData));
-	TestEqual(TEXT("an edit back is followed on the next save"), Component->OwnedBy, ECrowdyOwnedBy::Auto);
-	TestEqual(TEXT("for both fields"), Component->ReplicateMovement, ECrowdyReplicateMovement::Off);
+	TestEqual(TEXT("the deprecated Get Ownership reads World as Host"), Source->GetOwnership(), ECrowdyOwnership::Host);
+	Source->OwnedBy = ECrowdyOwnedBy::Player;
+	Source->Ownership = ECrowdyOwnership::Host;
+	TestEqual(TEXT("and Player as Local Client, whatever the stale field holds"), Source->GetOwnership(), ECrowdyOwnership::LocalClient);
 	return true;
 }
+
+#if WITH_EDITOR
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEditingOwnedByRetiresOwnershipTest,
+	"CrowdySDK.Entity.EditingOwnedByRetiresOwnership", CrowdyOwnedByTestFlags)
+bool FCrowdyEditingOwnedByRetiresOwnershipTest::RunTest(const FString& Parameters)
+{
+	// A component that once saved Local Client, set back to Auto in the Details panel, means what Auto says.
+	const TStrongObjectPtr<UCrowdyEntityComponent> Component(MakeComponent());
+	Component->Ownership = ECrowdyOwnership::LocalClient;
+	Component->OwnedBy = ECrowdyOwnedBy::Auto;
+
+	FProperty* OwnedByProperty = FindFProperty<FProperty>(UCrowdyEntityComponent::StaticClass(),
+		GET_MEMBER_NAME_CHECKED(UCrowdyEntityComponent, OwnedBy));
+	FPropertyChangedEvent Edit(OwnedByProperty);
+	Component->PostEditChangeProperty(Edit);
+	TestEqual(TEXT("an edit of Owned By retires the deprecated Ownership"),
+		UCrowdyEntityComponent::ResolveOwnedBy(Component->OwnedBy, Component->Ownership, true), ECrowdyOwnedBy::World);
+	return true;
+}
+#endif
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAddedComponentSendsNoMovementTest,
 	"CrowdySDK.Entity.AddedComponentSendsNoMovement", CrowdyOwnedByTestFlags)
@@ -255,5 +273,7 @@ bool FCrowdyAddedComponentSendsNoMovementTest::RunTest(const FString& Parameters
 			UCrowdyEntityComponent::IsPawnWithMovement(Character->GetClass())));
 	return true;
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif

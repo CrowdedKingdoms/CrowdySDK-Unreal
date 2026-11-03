@@ -29,7 +29,8 @@ something was left out.
 
 ## Unreleased (after 2.24.0)
 
-**Verdict.** No breaking change. Nothing is deprecated.
+**Verdict.** No breaking change. The entity component's Ownership setting, the host check nodes and the
+ownership-taking subsystem registration are deprecated: they keep working and warn when you compile.
 
 **Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate.
 
@@ -37,35 +38,58 @@ something was left out.
 
 | Old | New | Kind |
 |---|---|---|
+| `Ownership` on the `Crowdy Entity Component`: `Local Client` or `Host`. | `Owned By`: `Auto`, `Player` or `World`. Local Client is Player, Host is Auto. Auto is World for an actor placed in the level and Player for one spawned during play; World also belongs to the spawner on a spawned actor, as Host did. An asset saved earlier has Owned By set from its Ownership when it loads. A C++ constructor that still sets `Ownership` keeps its meaning while `OwnedBy` is `Auto`. | Property (Details panel, C++); `Ownership` deprecated. |
+| `Get Ownership` | `Get Owned By` (the property, read-only in Blueprint). | Blueprint node, C++ `GetOwnership()` deprecated. |
+| `Is Crowdy Entity Locally Controlled` (actors only) | `Is Crowdy Entity Locally Owned`, and the exec version `Switch Is Crowdy Entity Locally Owned`. Both take an entity actor or a replicated subsystem. | Blueprint nodes; C++ `UCrowdyUtilities::IsCrowdyEntityLocallyOwned`, `SwitchIsCrowdyEntityLocallyOwned` (new), `IsCrowdyEntityLocallyControlled` deprecated. |
+| `Switch Crowdy Has Authority`, `Crowdy Has Authority` (is this client the elected host) | `Switch Is Crowdy Entity Locally Owned` on the entity or replicated subsystem you are about to write. Logic that only the host should run, with no entity to ask about, belongs in a Server Object. | Blueprint nodes; C++ `CrowdyHasAuthority`, `GetCrowdyHasAuthority` deprecated. |
+| `Register Replicated Subsystem` (Subsystem, Ownership) | `Register Crowdy Replicated Subsystem` (Subsystem). A replicated subsystem is always written by the elected host. | Blueprint node; C++ `UCrowdyReplicatedSubsystemLibrary::RegisterCrowdyReplicatedSubsystem` and `RegisterReplicatedSubsystemInto(Registry, Subsystem)` (new), the ownership-taking versions deprecated. |
+| Overriding `GetReplicatedOwnership()` on `UCrowdyReplicatedWorldSubsystem` or `UCrowdyReplicatedGameInstanceSubsystem` | Nothing to override: the bases no longer call it. | C++ virtual deprecated. |
 | On a map drawn with the Crowdy Mass Rendering Backend, a Dynamic entity spawned with `Spawn Entity` was drawn on other clients as a crowd row and also as the actor its spawn event made, which never moved. | Mass is its only body: the spawn event spawns no actor for it there. Its `InitialState` reaches each Crowdy State fragment field registered with `RegisterStateFragmentField` whose name it carries as the type that field reads. `On Crowdy Spawned` does not fire for it on those clients. A Static entity keeps its actor. | Behaviour: C++ `UCrowdyEntitySubsystem`, `UCrowdyMassRenderingBackend`, `UCrowdyMassEntitySubsystem::ApplySpawnState` (new); Blueprint `On Crowdy Spawned`. |
 | A destroy event left a Mass-drawn entity's row until its updates stopped, about 5 seconds later. | The row goes with the destroy event. | Behaviour: C++ `UCrowdyActorManager::HandleRemoteDestroyEvent` (new), `UCrowdyRenderingBackend::ReleaseDestroyedInstance` (new). |
 | When a moving entity's first update arrived before its spawn event, the actor pool's copy kept an empty owner id. | The spawn event fills it in. | Behaviour: C++ `UCrowdyEntitySubsystem`; Blueprint `Get Owner ID`, `On Crowdy Spawned`. |
 | No hook for a crowd-row backend to receive spawn data or a destroy event. | `UCrowdyRenderingBackend::TakeSpawnData` and `ReleaseDestroyedInstance`, optional, doing nothing by default. | C++ API (new virtuals). |
-| Assets carried no CrowdySDK save version. | A package that saves a `Crowdy Entity Component` records the `CrowdySDK` custom version, and the component saves two more settings, not yet used. Nothing about how the component behaves changes; older SDKs warn on these packages (see Behaviour changes). | Asset format. |
+| Assets carried no CrowdySDK save version. | A package that saves a `Crowdy Entity Component` records the `CrowdySDK` custom version, and the component saves `Owned By` and a Replicate Movement setting that nothing reads yet. Older SDKs warn on these packages (see Behaviour changes). | Asset format. |
 
 **Do this, in order**
 
-1. If a Mass map's game code reads a spawned entity's data in `On Crowdy Spawned`, move that read to a
+1. In C++, replace `EntityComponent->Ownership = ECrowdyOwnership::LocalClient` with
+   `EntityComponent->OwnedBy = ECrowdyOwnedBy::Player`, and `ECrowdyOwnership::Host` with
+   `ECrowdyOwnedBy::World` (or delete the line: Auto already gives World for a placed actor). Replace
+   `GetOwnership()` reads with `OwnedBy`.
+2. Replace `Is Crowdy Entity Locally Controlled` with `Is Crowdy Entity Locally Owned`.
+3. Replace `Switch Crowdy Has Authority` and `Crowdy Has Authority` with `Switch Is Crowdy Entity Locally Owned`
+   or `Is Crowdy Entity Locally Owned` on the entity or replicated subsystem the gated code writes. In a
+   replicated subsystem, pass the subsystem itself.
+4. Replace `Register Replicated Subsystem` with `Register Crowdy Replicated Subsystem`, and in C++ drop the
+   `Ownership` argument from `RegisterReplicatedSubsystemInto`. Delete any `GetReplicatedOwnership()` override.
+5. Open and re-save the Blueprints the search below finds, so they stop warning.
+6. If a Mass map's game code reads a spawned entity's data in `On Crowdy Spawned`, move that read to a
    Crowdy State fragment field: register it with `RegisterStateFragmentField` and give your
    `InitialState` struct a property with the field's name and type.
-2. If you wrote a rendering backend that returns true from `DrawsEntitiesAsCrowdRows()`, override
+7. If you wrote a rendering backend that returns true from `DrawsEntitiesAsCrowdRows()`, override
    `TakeSpawnData` to land spawn data on your representation and `ReleaseDestroyedInstance` to stop
    drawing a destroyed entity. Bound anything you hold for an entity not drawn yet: spawn events can be
    forged.
 
 **CoreRedirects.** None.
 
-**Blueprint assets.** To find Blueprints that bind `On Crowdy Spawned` on entity classes a Mass map
-can draw, search recursively with `grep -a`, and check the search with a control string that must match:
+**Blueprint assets.** Search recursively with `grep -a`, and check the search with a control string that
+must match:
 
 ```
+grep -r -a -l --include=*.uasset -e "IsCrowdyEntityLocallyControlled" -e "CrowdyHasAuthority" -e "GetOwnership" -e "RegisterReplicatedSubsystem" Content Plugins
 grep -r -a -l --include=*.uasset "OnCrowdySpawned" Content Plugins
 grep -r -a -l --include=*.uasset "CrowdyEntityComponent" Content Plugins
 ```
 
-No re-save is needed.
+The first finds graphs using a deprecated node: replace it as above and re-save. The second finds
+Blueprints that bind `On Crowdy Spawned` on entity classes a Mass map can draw; they need no re-save.
 
-**Behaviour changes.** On a Mass map, other clients show a spawned moving entity as its row (and its
+**Behaviour changes.** An override of `GetReplicatedOwnership()` on a replicated subsystem base is no longer
+called: the subsystem is written by the elected host whatever it returned. Returning anything but Host was
+never supported.
+
+On a Mass map, other clients show a spawned moving entity as its row (and its
 near-tier shell up close) only, where they used to show a frozen actor at the spawn point as well; Crowdy
 Events aimed at it run on Mass's shared stand-in, as for any crowd entity. `On Crowdy Spawned` fires there
 only on the owner. Every client should run the same SDK version: an older client still draws the extra
@@ -85,8 +109,11 @@ cooked data is read against the component's current properties.
 2. With two clients on a Mass map, spawn a Dynamic entity on the first: the second shows one crowd row
    for it and no actor, and your registered field's ingestor receives its spawn data once.
 3. Destroy it on the first: the row disappears on the second at once.
+4. Open an entity Blueprint: its `Crowdy Entity Component` shows `Owned By` and no `Ownership`, set to what
+   the asset meant before (Player for a former Local Client).
 
-**Removed in the next release.** None.
+**Removed in the next release.** None. The deprecated items above are planned for removal in a later
+release, which will say so here first.
 
 ## 2.24.0
 

@@ -246,15 +246,44 @@ UCrowdyEntityComponent* UCrowdyUtilities::GetCrowdyEntityComponent(AActor* Actor
 	return Actor->FindComponentByClass<UCrowdyEntityComponent>();
 }
 
+bool UCrowdyUtilities::IsCrowdyEntityLocallyOwned(UObject* Entity)
+{
+	// An entity actor's component already answers this, its owning client or the elected host for a world entity,
+	// so the rule lives in one place. Resolving through GetCrowdyEntityComponent keeps the
+	// ICrowdyEntityComponentProvider indirection working here too. A component, animation instance or other object
+	// inside an actor, as Self from its own graph, asks about that actor.
+	AActor* Actor = Cast<AActor>(Entity);
+	if (!Actor && IsValid(Entity)) Actor = Entity->GetTypedOuter<AActor>();
+	if (const UCrowdyEntityComponent* Component = GetCrowdyEntityComponent(Actor))
+	{
+		return Component->GetNetID().IsValid() && Component->IsLocallyOwned();
+	}
+
+	// A replicated subsystem has no component; its registry record answers the same way.
+	const UWorld* World = IsValid(Entity) ? Entity->GetWorld() : nullptr;
+	const UCrowdyEntitySubsystem* Entities = World ? World->GetSubsystem<UCrowdyEntitySubsystem>() : nullptr;
+	const FCrowdyEntityRecord* Record = Entities ? Entities->FindRecord(Entities->FindEntityID(Entity)) : nullptr;
+	return Record && IsRecordLocallyOwned(*Record, Entities->GetLocalPlayerID(), Entities->GetHostID());
+}
+
+bool UCrowdyUtilities::IsRecordLocallyOwned(const FCrowdyEntityRecord& Record, const FGuid& LocalPlayerID,
+	const FGuid& HostID)
+{
+	if (Record.Role == ECrowdyRole::HostOwned)
+	{
+		return HostID.IsValid() && LocalPlayerID == HostID;
+	}
+	return Record.Role == ECrowdyRole::Owner && Record.OwnerID.IsValid() && Record.OwnerID == LocalPlayerID;
+}
+
+void UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned(UObject* Entity, bool& bIsLocallyOwned)
+{
+	bIsLocallyOwned = IsCrowdyEntityLocallyOwned(Entity);
+}
+
 bool UCrowdyUtilities::IsCrowdyEntityLocallyControlled(AActor* Entity)
 {
-	// The entity component already answers this for both ownership models - its owning client for a client-owned
-	// entity, the elected host for a host-owned world entity - so the rule lives in one place. Resolving through
-	// GetCrowdyEntityComponent keeps the ICrowdyEntityComponentProvider indirection working here too.
-	const UCrowdyEntityComponent* Component = GetCrowdyEntityComponent(Entity);
-
-	// An actor with no component, or one that never got an identity, is not locally controlled.
-	return Component && Component->GetNetID().IsValid() && Component->IsLocallyOwned();
+	return IsCrowdyEntityLocallyOwned(Entity);
 }
 
 // Entity State Checks
@@ -389,7 +418,9 @@ bool UCrowdyUtilities::GetCrowdyHasAuthority(const UObject* WorldContextObject)
 
 void UCrowdyUtilities::CrowdyHasAuthority(UObject* WorldContextObject, bool& bHasAuthority)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bHasAuthority = GetCrowdyHasAuthority(WorldContextObject);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 bool UCrowdyUtilities::CrowdyIsConnectedToServer(UObject* WorldContextObject)

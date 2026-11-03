@@ -26,10 +26,12 @@
 int32 UCrowdyEntityComponent::OwnershipStepCounter = 0;
 #endif
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 UCrowdyEntityComponent::UCrowdyEntityComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 // A class default or a C++ actor's default subobject: never loaded, so its Owned By and Replicate Movement are the
 // initializers, not values mapped from its own Ownership and Mode.
@@ -42,6 +44,7 @@ static bool IsUnmappedArchetype(const UObject* Archetype)
 		&& Outer->GetClass()->HasAnyClassFlags(CLASS_Native);
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void UCrowdyEntityComponent::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FCrowdySDKCustomVersion::GUID);
@@ -71,20 +74,38 @@ void UCrowdyEntityComponent::Serialize(FArchive& Ar)
 	MapLegacySettings(bOwnershipAuthored, bModeAuthored, IsUnmappedArchetype(Archetype), Ownership, Mode, OwnedBy,
 		ReplicateMovement);
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UCrowdyEntityComponent::PreSave(FObjectPreSaveContext SaveContext)
 {
 	Super::PreSave(SaveContext);
 
-	// Ownership and Mode are the settings people edit, so the saved Owned By and Replicate Movement follow them.
+	// Mode is still the setting people edit, so the saved Replicate Movement follows it; Owned By is edited directly.
 	const UCrowdyEntityComponent* Archetype = Cast<UCrowdyEntityComponent>(GetArchetype());
 	if (!Archetype) return;
 
-	OwnedBy = Archetype->OwnedBy;
+	ECrowdyOwnedBy UnusedOwnedBy = OwnedBy;
 	ReplicateMovement = Archetype->ReplicateMovement;
-	MapLegacySettings(Ownership != Archetype->Ownership, Mode != Archetype->Mode, IsUnmappedArchetype(Archetype),
-		Ownership, Mode, OwnedBy, ReplicateMovement);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	MapLegacySettings(false, Mode != Archetype->Mode, IsUnmappedArchetype(Archetype), Ownership, Mode, UnusedOwnedBy,
+		ReplicateMovement);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
+
+#if WITH_EDITOR
+void UCrowdyEntityComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// Choosing Owned By retires the deprecated Ownership, so Auto means what its tooltip says.
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UCrowdyEntityComponent, OwnedBy))
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Ownership = ECrowdyOwnership::Host;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+}
+#endif
 
 void UCrowdyEntityComponent::InitIdentity(const FGuid& InNetID, const FGuid& InOwnerID, const ECrowdyRole InRole, const uint32 InClassID)
 {
@@ -683,9 +704,10 @@ void UCrowdyEntityComponent::MapLegacySettings(const bool bOwnershipAuthored, co
 	const bool bArchetypeIsUnmapped, const ECrowdyOwnership InOwnership, const ECrowdyEntityMode InMode,
 	ECrowdyOwnedBy& InOutOwnedBy, ECrowdyReplicateMovement& InOutReplicateMovement)
 {
+	// An authored Host is written as World rather than Auto, so it never depends on what the archetype later says.
 	if (bOwnershipAuthored)
 	{
-		InOutOwnedBy = InOwnership == ECrowdyOwnership::LocalClient ? ECrowdyOwnedBy::Player : ECrowdyOwnedBy::Auto;
+		InOutOwnedBy = InOwnership == ECrowdyOwnership::LocalClient ? ECrowdyOwnedBy::Player : ECrowdyOwnedBy::World;
 	}
 	if (bModeAuthored)
 	{
@@ -704,11 +726,26 @@ void UCrowdyEntityComponent::MapLegacySettings(const bool bOwnershipAuthored, co
 ECrowdyOwnedBy UCrowdyEntityComponent::ResolveOwnedBy(const ECrowdyOwnedBy InOwnedBy, const ECrowdyOwnership InOwnership,
 	const bool bIsLevelPlaced)
 {
+	if (!bIsLevelPlaced) return ECrowdyOwnedBy::Player;
 	if (InOwnedBy != ECrowdyOwnedBy::Auto) return InOwnedBy;
 
 	// A component configured in a C++ constructor has no saved data to map, so its Ownership still speaks for it.
-	if (InOwnership == ECrowdyOwnership::LocalClient) return ECrowdyOwnedBy::Player;
-	return bIsLevelPlaced ? ECrowdyOwnedBy::World : ECrowdyOwnedBy::Player;
+	return InOwnership == ECrowdyOwnership::LocalClient ? ECrowdyOwnedBy::Player : ECrowdyOwnedBy::World;
+}
+
+void UCrowdyEntityComponent::DeriveOwner(const ECrowdyOwnedBy InResolvedOwnedBy, const FGuid& InLocalPlayerID,
+	ECrowdyRole& OutRole, FGuid& OutOwnerID)
+{
+	if (InResolvedOwnedBy == ECrowdyOwnedBy::Player)
+	{
+		OutRole = ECrowdyRole::Owner;
+		OutOwnerID = InLocalPlayerID;
+		return;
+	}
+
+	// The elected host writes it, so it carries no per-client owner id.
+	OutRole = ECrowdyRole::HostOwned;
+	OutOwnerID = FGuid();
 }
 
 bool UCrowdyEntityComponent::ResolveReplicatesMovement(const ECrowdyReplicateMovement InReplicateMovement,
@@ -817,7 +854,7 @@ void UCrowdyEntityComponent::ResolveIdentity()
 	}
 
 	// Whether the engine loaded this actor with its level. It decides both which identity an entity can share with
-	// other clients and, further down, whether authored Host ownership applies, so it is answered once here.
+	// other clients and, further down, whether Owned By World applies, so it is answered once here.
 	const bool bLevelPlaced = IsValid(CachedOwner) && CachedOwner->IsNetStartupActor();
 
 	if (bUseKey)
@@ -882,30 +919,32 @@ void UCrowdyEntityComponent::ResolveIdentity()
 
 	const FGuid LocalID = IsValid(EntitySubsystem) ? EntitySubsystem->GetLocalPlayerID() : FGuid();
 
-	// Only an actor authored into the level can be owned by the host: it is there on every client from the start.
+	// Only an actor authored into the level can belong to the world: it is there on every client from the start.
 	// Everything else reached this point by being spawned at runtime, and belongs to the client that spawned it.
 	// The engine's "loaded directly from the map" flag is the test, answered once above. It is set for every
 	// level-placed actor, in the editor and in a packaged build alike, before play begins, so the same asset
-	// resolves to the same authority everywhere. One edge to know about: an actor that turns off Net Load On Client
+	// resolves to the same owner everywhere. One edge to know about: an actor that turns off Net Load On Client
 	// is not flagged, so it is classified as runtime-spawned and owned by the client it exists on.
-	const ECrowdyOwnership Effective = ResolveEffectiveOwnership(Ownership, bLevelPlaced);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	const ECrowdyOwnedBy Resolved = ResolveOwnedBy(OwnedBy, Ownership, bLevelPlaced);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-	UE_CLOG(Effective != Ownership, LogCrowdyReplication, Verbose,
-		TEXT("[CrowdyEntityComponent]: '%s' is owned by this client - it was spawned at runtime, so its authored Host ownership does not apply (that setting is for actors placed in the level)."),
+	UE_CLOG(OwnedBy == ECrowdyOwnedBy::World && !bLevelPlaced, LogCrowdyReplication, Verbose,
+		TEXT("[CrowdyEntityComponent]: '%s' is owned by this client - it was spawned at runtime, so Owned By World does not apply (that setting is for actors placed in the level)."),
 		*GetNameSafe(CachedOwner));
 
-	DeriveAuthority(Effective, LocalID, Role, OwnerID);
+	DeriveOwner(Resolved, LocalID, Role, OwnerID);
 
-	// A Host-owned entity needs a deterministic NetID that every client computes identically (Stable policy, or a
-	// binding key); with any other policy the world entity would get a different id per client and never converge.
-	// The test is on the ownership actually applied, not on the authored value: an entity that resolved to this
-	// client has a per-client owner and needs no shared id, so warning on the authored value would be noise on
-	// every runtime spawn. Warn but continue; the injected-identity spawn paths are unaffected, since they never
-	// run identity resolution at all.
-	if (Effective == ECrowdyOwnership::Host && IdentityPolicy != ECrowdyIdentityPolicy::Stable && !bUseKey)
+	// A world entity needs a deterministic NetID that every client computes identically (Stable policy, or a
+	// binding key); with any other policy it would get a different id per client and never converge. The test is
+	// on the owner actually applied, not on the authored value: an entity that resolved to this client has a
+	// per-client owner and needs no shared id, so warning on the authored value would be noise on every runtime
+	// spawn. Warn but continue; the injected-identity spawn paths are unaffected, since they never run identity
+	// resolution at all.
+	if (Resolved != ECrowdyOwnedBy::Player && IdentityPolicy != ECrowdyIdentityPolicy::Stable && !bUseKey)
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyEntityComponent]: Ownership=Host on '%s' but IdentityPolicy is not Stable — world entities need a deterministic shared NetID; host authority may not converge across clients."),
+			TEXT("[CrowdyEntityComponent]: '%s' is Owned By World but IdentityPolicy is not Stable — world entities need a deterministic shared NetID; the host's writes may not converge across clients."),
 			*GetNameSafe(CachedOwner));
 	}
 }
@@ -1001,7 +1040,7 @@ void UCrowdyEntityComponent::ReportHostOwnedAutoRegisterSkipped()
 	const bool bLocalClientIsHost = bHostKnown && EntitySubsystem->GetLocalPlayerID() == HostID;
 
 	const FString Message = FString::Printf(
-		TEXT("[CrowdyEntityComponent]: '%s' is Dynamic with Auto Register on, but it is host-owned, so Auto Register did not start its state channel: Auto Register starts the channel only for an entity this client owns outright, and %s. Nothing goes out on the continuous channel for this entity until ownership is granted to a client or Start Replication is called on it. Set Ownership to Local Client if the client this actor lives on should simulate it, or call Start Replication on whichever client is the host."),
+		TEXT("[CrowdyEntityComponent]: '%s' is Dynamic with Auto Register on, but it is host-owned, so Auto Register did not start its state channel: Auto Register starts the channel only for an entity this client owns outright, and %s. Nothing goes out on the continuous channel for this entity until ownership is granted to a client or Start Replication is called on it. Set Owned By to Player if the client this actor lives on should simulate it, or call Start Replication on whichever client is the host."),
 		*GetNameSafe(GetOwner()), DescribeHostElectionState(bHostKnown, bLocalClientIsHost));
 
 #if WITH_DEV_AUTOMATION_TESTS
