@@ -2,9 +2,11 @@
 #include "CrowdyReplicationLog.h"
 
 #include "TimerManager.h"
+#include "Data/CrowdySDKCustomVersion.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PawnMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Replication/Components/CrowdyBindingKeyProvider.h"
 #include "Replication/Components/CrowdyEntityIdentity.h"
@@ -17,6 +19,7 @@
 #include "Utils/HelperFunctions.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"
 #include "Utils/UCrowdyClassRegistry.h"
+#include "UObject/ObjectSaveContext.h"
 #include "WorldPartition/ActorInstanceGuids.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -26,6 +29,61 @@ int32 UCrowdyEntityComponent::OwnershipStepCounter = 0;
 UCrowdyEntityComponent::UCrowdyEntityComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
+}
+
+// A class default or a C++ actor's default subobject: never loaded, so its Owned By and Replicate Movement are the
+// initializers, not values mapped from its own Ownership and Mode.
+static bool IsUnmappedArchetype(const UObject* Archetype)
+{
+	if (!Archetype || Archetype->HasAnyFlags(RF_ClassDefaultObject)) return true;
+
+	const UObject* Outer = Archetype->GetOuter();
+	return Archetype->HasAnyFlags(RF_DefaultSubObject) && Outer && Outer->HasAnyFlags(RF_ClassDefaultObject)
+		&& Outer->GetClass()->HasAnyClassFlags(CLASS_Native);
+}
+
+void UCrowdyEntityComponent::Serialize(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FCrowdySDKCustomVersion::GUID);
+
+	if (!Ar.IsLoading() || Ar.CustomVer(FCrowdySDKCustomVersion::GUID) >= FCrowdySDKCustomVersion::OwnedByAxis)
+	{
+		Super::Serialize(Ar);
+		return;
+	}
+
+	// An impossible value tells a field the saved data wrote apart from one it left to the archetype.
+	constexpr uint8 Unwritten = 0xFF;
+	const ECrowdyOwnership InheritedOwnership = Ownership;
+	const ECrowdyEntityMode InheritedMode = Mode;
+	Ownership = static_cast<ECrowdyOwnership>(Unwritten);
+	Mode = static_cast<ECrowdyEntityMode>(Unwritten);
+
+	Super::Serialize(Ar);
+
+	const bool bOwnershipAuthored = static_cast<uint8>(Ownership) != Unwritten;
+	const bool bModeAuthored = static_cast<uint8>(Mode) != Unwritten;
+	if (!bOwnershipAuthored) Ownership = InheritedOwnership;
+	if (!bModeAuthored) Mode = InheritedMode;
+
+	const UObject* Archetype = Ar.GetArchetypeFromLoader(this);
+	if (!Archetype) Archetype = GetArchetype();
+	MapLegacySettings(bOwnershipAuthored, bModeAuthored, IsUnmappedArchetype(Archetype), Ownership, Mode, OwnedBy,
+		ReplicateMovement);
+}
+
+void UCrowdyEntityComponent::PreSave(FObjectPreSaveContext SaveContext)
+{
+	Super::PreSave(SaveContext);
+
+	// Ownership and Mode are the settings people edit, so the saved Owned By and Replicate Movement follow them.
+	const UCrowdyEntityComponent* Archetype = Cast<UCrowdyEntityComponent>(GetArchetype());
+	if (!Archetype) return;
+
+	OwnedBy = Archetype->OwnedBy;
+	ReplicateMovement = Archetype->ReplicateMovement;
+	MapLegacySettings(Ownership != Archetype->Ownership, Mode != Archetype->Mode, IsUnmappedArchetype(Archetype),
+		Ownership, Mode, OwnedBy, ReplicateMovement);
 }
 
 void UCrowdyEntityComponent::InitIdentity(const FGuid& InNetID, const FGuid& InOwnerID, const ECrowdyRole InRole, const uint32 InClassID)
@@ -619,6 +677,52 @@ ECrowdyOwnership UCrowdyEntityComponent::ResolveEffectiveOwnership(const ECrowdy
 	// authored with. An actor spawned at runtime exists because this client spawned it, so this client owns it
 	// whatever the asset says; the clients that receive its spawn event get it as a remote proxy instead.
 	return bIsLevelPlaced ? InAuthoredOwnership : ECrowdyOwnership::LocalClient;
+}
+
+void UCrowdyEntityComponent::MapLegacySettings(const bool bOwnershipAuthored, const bool bModeAuthored,
+	const bool bArchetypeIsUnmapped, const ECrowdyOwnership InOwnership, const ECrowdyEntityMode InMode,
+	ECrowdyOwnedBy& InOutOwnedBy, ECrowdyReplicateMovement& InOutReplicateMovement)
+{
+	if (bOwnershipAuthored)
+	{
+		InOutOwnedBy = InOwnership == ECrowdyOwnership::LocalClient ? ECrowdyOwnedBy::Player : ECrowdyOwnedBy::Auto;
+	}
+	if (bModeAuthored)
+	{
+		InOutReplicateMovement = InMode == ECrowdyEntityMode::Dynamic
+			? ECrowdyReplicateMovement::On : ECrowdyReplicateMovement::Off;
+		return;
+	}
+
+	// An unmapped Auto would start a Static pawn sending movement, so that one inherited value is written out.
+	if (bArchetypeIsUnmapped && InMode == ECrowdyEntityMode::Static)
+	{
+		InOutReplicateMovement = ECrowdyReplicateMovement::Off;
+	}
+}
+
+ECrowdyOwnedBy UCrowdyEntityComponent::ResolveOwnedBy(const ECrowdyOwnedBy InOwnedBy, const ECrowdyOwnership InOwnership,
+	const bool bIsLevelPlaced)
+{
+	if (InOwnedBy != ECrowdyOwnedBy::Auto) return InOwnedBy;
+
+	// A component configured in a C++ constructor has no saved data to map, so its Ownership still speaks for it.
+	if (InOwnership == ECrowdyOwnership::LocalClient) return ECrowdyOwnedBy::Player;
+	return bIsLevelPlaced ? ECrowdyOwnedBy::World : ECrowdyOwnedBy::Player;
+}
+
+bool UCrowdyEntityComponent::ResolveReplicatesMovement(const ECrowdyReplicateMovement InReplicateMovement,
+	const ECrowdyEntityMode InMode, const bool bIsPawnWithMovement)
+{
+	if (InReplicateMovement != ECrowdyReplicateMovement::Auto) return InReplicateMovement == ECrowdyReplicateMovement::On;
+	if (InMode == ECrowdyEntityMode::Dynamic) return true;
+	return bIsPawnWithMovement;
+}
+
+bool UCrowdyEntityComponent::IsPawnWithMovement(const TSubclassOf<AActor> ActorClass)
+{
+	return ActorClass && ActorClass->IsChildOf<APawn>()
+		&& AActor::GetActorClassDefaultComponent<UPawnMovementComponent>(ActorClass) != nullptr;
 }
 
 bool UCrowdyEntityComponent::DoesOwnershipMatch(const ECrowdyRole OwnerRole, const FGuid& OwnerNetID,

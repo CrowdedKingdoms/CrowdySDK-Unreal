@@ -41,6 +41,7 @@ something was left out.
 | A destroy event left a Mass-drawn entity's row until its updates stopped, about 5 seconds later. | The row goes with the destroy event. | Behaviour: C++ `UCrowdyActorManager::HandleRemoteDestroyEvent` (new), `UCrowdyRenderingBackend::ReleaseDestroyedInstance` (new). |
 | When a moving entity's first update arrived before its spawn event, the actor pool's copy kept an empty owner id. | The spawn event fills it in. | Behaviour: C++ `UCrowdyEntitySubsystem`; Blueprint `Get Owner ID`, `On Crowdy Spawned`. |
 | No hook for a crowd-row backend to receive spawn data or a destroy event. | `UCrowdyRenderingBackend::TakeSpawnData` and `ReleaseDestroyedInstance`, optional, doing nothing by default. | C++ API (new virtuals). |
+| Assets carried no CrowdySDK save version. | A package that saves a `Crowdy Entity Component` records the `CrowdySDK` custom version, and the component saves two more settings, not yet used. Nothing about how the component behaves changes; older SDKs warn on these packages (see Behaviour changes). | Asset format. |
 
 **Do this, in order**
 
@@ -69,6 +70,13 @@ near-tier shell up close) only, where they used to show a frozen actor at the sp
 Events aimed at it run on Mass's shared stand-in, as for any crowd entity. `On Crowdy Spawned` fires there
 only on the owner. Every client should run the same SDK version: an older client still draws the extra
 actor.
+
+An asset with a `Crowdy Entity Component` that you save with this version still opens with 2.24.0 and
+earlier, but each such package logs `Package was saved with a custom version that is not present` there.
+A later release that raises this version will stop older SDKs from opening such packages at all, so going
+back to an older SDK after re-saving content needs those packages restored from version control. Upgrade
+everyone who shares the project's content together. Recook mods and downloadable content with this version:
+cooked data is read against the component's current properties.
 
 **Verify**
 

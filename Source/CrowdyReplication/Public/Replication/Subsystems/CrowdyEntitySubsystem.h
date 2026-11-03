@@ -150,6 +150,12 @@ public:
 	void HandleRemoteSpawnForTest(const FCrowdyEntitySpawnEvent& Event) { HandleRemoteSpawn(Event); }
 	void HandleRemoteDestroyForTest(const FCrowdyEntityDestroyEvent& Event) { HandleRemoteDestroy(Event); }
 
+	// The component given to a spawned actor whose class carries none.
+	UCrowdyEntityComponent* AddStaticEntityComponentForTest(AActor* Actor) const
+	{
+		return AddStaticEntityComponent(Actor, FGuid::NewGuid(), FGuid(), ECrowdyRole::RemoteProxy, 0);
+	}
+
 	// Off unless a test turns it on: then every spawn event this client announces is also kept here, so a test can
 	// read what went out without a transport.
 	bool bCaptureAnnouncedSpawnsForTest = false;
