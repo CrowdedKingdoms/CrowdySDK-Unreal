@@ -87,6 +87,7 @@ public:
 	// world subsystem brings up every other game world subsystem in the project, some of which assert
 	// outside a running game.
 	bool LoadConfigForTest() { return LoadConfig(); }
+	int64 GetInterpolationDelayMsForTest() const { return InterpolationDelayMs; }
 
 	// The production binding, so a case about which departure releases a slot exercises the wiring the game gets
 	// rather than a copy of it made in the test. A test that bound the delegates itself would keep passing with
@@ -151,7 +152,6 @@ private:
 	int64 BestOffsetMs = 0;
 	bool bHasInitialOffset = false;
 
-	UPROPERTY(EditDefaultsOnly, Category="Crowdy SDK|Crowdy Actor Manager")
 	int64 InterpolationDelayMs = 100;
 
 	struct FSlotEntry

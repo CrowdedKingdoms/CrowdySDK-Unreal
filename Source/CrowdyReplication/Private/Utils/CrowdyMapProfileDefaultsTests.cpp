@@ -409,6 +409,30 @@ bool FCrowdyBackendThatCannotInitializeIsRefusedTest::RunTest(const FString& Par
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyInterpolationDelayComesFromTheProfileTest,
+	"CrowdySDK.MapProfile.InterpolationDelayComesFromTheProfile",
+	CrowdyMapProfileDefaultsTestFlags)
+
+bool FCrowdyInterpolationDelayComesFromTheProfileTest::RunTest(const FString& Parameters)
+{
+	FCrowdyMapProfileScopedSettings ScopedSettings;
+	FCrowdyMapProfileScopedWorld Map(EWorldType::Game);
+
+	const TStrongObjectPtr<UCrowdyMapProfile> Profile(NewObject<UCrowdyMapProfile>());
+	Profile->ActorManagement.BackendClass = UCrowdyRecordingBackend::StaticClass();
+	ScopedSettings.Settings->DefaultProfile = Profile.Get();
+
+	TestEqual(TEXT("A profile that sets nothing keeps the 100 ms delay"), Profile->ActorManagement.InterpolationDelayMs, 100);
+
+	Profile->ActorManagement.InterpolationDelayMs = 250;
+	UCrowdyActorManager* Manager = NewObject<UCrowdyActorManager>(Map.World);
+
+	TestTrue(TEXT("The profile loads"), Manager->LoadConfigForTest());
+	TestEqual(TEXT("The actor manager draws with the profile's delay"), Manager->GetInterpolationDelayMsForTest(), int64(250));
+
+	return true;
+}
+
 /**
  * The shipped actor-pool backend is the one a profile that chose nothing now lands on. A missing config runs
  * on the shipped default (CrowdySDKShippedDefaultsTests covers that resolution); a config of another
