@@ -47,6 +47,9 @@ public:
 	 */
 	virtual bool DrawsEntitiesAsCrowdRows() const { return false; }
 
+	/** The Backend Config class this backend reads, so a map profile naming another is reported on save; null skips the check. */
+	virtual UClass* GetBackendConfigClass() const { return nullptr; }
+
 	/**
 	 * A new remote instance has become visible. Acquire whatever rendering resource
 	 * represents it (actor from pool, instanced mesh slot, etc.).

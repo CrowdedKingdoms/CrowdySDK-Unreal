@@ -15,6 +15,11 @@
 #include "Replication/Subsystems/CrowdyActorPoolSubsystem.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 
+UClass* UCrowdyActorPoolBackend::GetBackendConfigClass() const
+{
+	return UCrowdyActorPoolBackendConfig::StaticClass();
+}
+
 UCrowdyActorPoolBackendConfig* UCrowdyActorPoolBackend::ResolveConfig(UCrowdyRenderingBackendConfig* Config, UObject* Outer)
 {
 	// A config of another backend's class is an authoring mistake, logged rather than ensured so a packaged

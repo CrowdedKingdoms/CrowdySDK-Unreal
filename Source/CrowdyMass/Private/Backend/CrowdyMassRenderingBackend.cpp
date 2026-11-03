@@ -8,6 +8,11 @@
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
 
+UClass* UCrowdyMassRenderingBackend::GetBackendConfigClass() const
+{
+	return UCrowdyMassRenderingBackendConfig::StaticClass();
+}
+
 bool UCrowdyMassRenderingBackend::InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config)
 {
 	if (!ensureMsgf(IsValid(World), TEXT("[CrowdyMassRenderingBackend]: InitializeBackend called with a null world.")))

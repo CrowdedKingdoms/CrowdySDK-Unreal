@@ -41,6 +41,7 @@ public:
 	// A remote entity is a Mass entity here and no actor of its class is ever spawned for it, which is what
 	// makes a class's own Blueprint bodies run on a shared stand-in on an observer.
 	virtual bool DrawsEntitiesAsCrowdRows() const override { return true; }
+	virtual UClass* GetBackendConfigClass() const override;
 
 	virtual void ActivateInstance(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& InitialState) override;
 	virtual void DeactivateInstance(int32 SlotId, const FGuid& UUID) override;
