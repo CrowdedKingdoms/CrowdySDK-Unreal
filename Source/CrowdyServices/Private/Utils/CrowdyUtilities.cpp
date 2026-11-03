@@ -263,17 +263,13 @@ bool UCrowdyUtilities::IsCrowdyEntityLocallyOwned(UObject* Entity)
 	const UWorld* World = IsValid(Entity) ? Entity->GetWorld() : nullptr;
 	const UCrowdyEntitySubsystem* Entities = World ? World->GetSubsystem<UCrowdyEntitySubsystem>() : nullptr;
 	const FCrowdyEntityRecord* Record = Entities ? Entities->FindRecord(Entities->FindEntityID(Entity)) : nullptr;
-	return Record && IsRecordLocallyOwned(*Record, Entities->GetLocalPlayerID(), Entities->GetHostID());
+	return Record && Entities->IsRecordLocallyOwned(*Record);
 }
 
 bool UCrowdyUtilities::IsRecordLocallyOwned(const FCrowdyEntityRecord& Record, const FGuid& LocalPlayerID,
 	const FGuid& HostID)
 {
-	if (Record.Role == ECrowdyRole::HostOwned)
-	{
-		return HostID.IsValid() && LocalPlayerID == HostID;
-	}
-	return Record.Role == ECrowdyRole::Owner && Record.OwnerID.IsValid() && Record.OwnerID == LocalPlayerID;
+	return FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.OwnerID, LocalPlayerID, HostID);
 }
 
 void UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned(UObject* Entity, bool& bIsLocallyOwned)

@@ -223,6 +223,12 @@ FCrowdyCppClientConfig UCrowdySDKDeveloperSettings::MakeClientConfig() const
 	return Config;
 }
 
+bool UCrowdySDKDeveloperSettings::UsesElectedHost()
+{
+	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+	return Settings && Settings->LeaderSource == ECrowdyLeaderSource::ElectedHost;
+}
+
 bool UCrowdySDKDeveloperSettings::ProfileDrawsCrowdRows(const UCrowdyMapProfile* Profile)
 {
 	if (!Profile) return false;

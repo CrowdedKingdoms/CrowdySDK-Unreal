@@ -328,7 +328,7 @@ FGuid UCrowdyStateReplicator::ResolveHostID() const
 		return HostIDForTest;
 	}
 	UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
-	return ES ? ES->GetHostID() : FGuid();
+	return ES ? ES->GetWorldOwnerID() : FGuid();
 }
 
 bool UCrowdyStateReplicator::IsLocalHost() const
@@ -566,6 +566,7 @@ void UCrowdyStateReplicator::MarkStateDirty(const FGuid& EntityID, FName Propert
 		// explicit push path here and no auto-diff for host authority a second implicit mechanism racing this
 		// is what produces "host sets X, client re-sends Y" overwrites. The push encodes the property's CURRENT
 		// live value on the next tick and is stamped HostSourced only if we are host; it holds no shadow.
+		WarnIfWorldEntityHasNoWriter(EntityID);
 		AActor* Actor = EntitySubsystem.IsValid() ? EntitySubsystem->FindEntity(EntityID) : nullptr;
 		UCrowdyAutoRegistry* Registry = AutoRegistry.Get();
 		if (!Actor || !Registry)
@@ -651,6 +652,22 @@ void UCrowdyStateReplicator::MarkStateDirty(const FGuid& EntityID, FName Propert
 	}
 
 	WarnUnknownStateProperty(WarnedUnknownStateProperties, Participant->GetClass(), PropertyName, EntityID);
+}
+
+void UCrowdyStateReplicator::WarnIfWorldEntityHasNoWriter(const FGuid& EntityID)
+{
+	if (bWarnedWorldEntityHasNoWriter || UCrowdySDKDeveloperSettings::UsesElectedHost())
+		return;
+
+	const FCrowdyEntityRecord* Record = EntitySubsystem.IsValid() ? EntitySubsystem->FindRecord(EntityID) : nullptr;
+	if (!Record || Record->Role != ECrowdyRole::HostOwned)
+		return;
+
+	bWarnedWorldEntityHasNoWriter = true;
+	UE_LOG(LogCrowdyReplication, Warning,
+		TEXT("[CrowdyStateReplicator]: State was marked dirty on World entity %s, but Leader Source is Server Object, so no client writes World entities and every other client ignores the change. ")
+		TEXT("Keep a World entity's truth in a Server Object, or set Project Settings > Plugins > Crowdy SDK > Replication > Leader Source to Elected Host (Deprecated) to keep the elected host writing it."),
+		*EntityID.ToString());
 }
 
 void UCrowdyStateReplicator::MarkAllStateDirty(const FGuid& EntityID)

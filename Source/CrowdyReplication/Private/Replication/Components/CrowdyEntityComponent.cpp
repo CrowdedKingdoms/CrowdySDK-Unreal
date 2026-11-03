@@ -16,6 +16,7 @@
 #include "Replication/Subsystems/CrowdyStateReplicator.h"
 #include "Subsystem/CrowdyAutoRegistry.h" // complete type for the replicator header's inline test seam
 #include "Subsystem/CrowdyGameSession.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/HelperFunctions.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"
 #include "Utils/UCrowdyClassRegistry.h"
@@ -783,21 +784,12 @@ bool UCrowdyEntityComponent::DoesOwnershipMatch(const ECrowdyRole OwnerRole, con
 
 bool UCrowdyEntityComponent::IsLocallyOwned() const
 {
-	// LocalClient ownership: we own it iff we are its (local) owner.
-	if (Role == ECrowdyRole::Owner)
-	{
-		return true;
-	}
+	// Unregistered, there is no local player to compare against; the role alone is all there is.
+	if (!IsValid(EntitySubsystem))
+		return Role == ECrowdyRole::Owner;
 
-	// Host ownership: a world entity has no per-client owner id; whichever client is the elected host owns it.
-	// Fail closed when the host id is unknown (no host elected yet).
-	if (Role == ECrowdyRole::HostOwned && IsValid(EntitySubsystem))
-	{
-		const FGuid HostID = EntitySubsystem->GetHostID();
-		return HostID.IsValid() && EntitySubsystem->GetLocalPlayerID() == HostID;
-	}
-
-	return false;
+	return FCrowdyEntityRecord::IsWrittenBy(Role, OwnerID, EntitySubsystem->GetLocalPlayerID(),
+		EntitySubsystem->GetWorldOwnerID());
 }
 
 UCrowdyEntitySubsystem* UCrowdyEntityComponent::ResolveEntitySubsystem() const
@@ -828,6 +820,7 @@ void UCrowdyEntityComponent::SetCollaboratorsForTest(UCrowdyEntitySubsystem* InE
 {
 	EntitySubsystemForTest = InEntities;
 	GameSessionForTest = InSession;
+	EntitySubsystem = InEntities;
 }
 #endif
 
@@ -1035,13 +1028,16 @@ void UCrowdyEntityComponent::ReportHostOwnedAutoRegisterSkipped()
 
 	bHostOwnedAutoRegisterReported = true;
 
-	const FGuid HostID = IsValid(EntitySubsystem) ? EntitySubsystem->GetHostID() : FGuid();
+	const FGuid HostID = IsValid(EntitySubsystem) ? EntitySubsystem->GetWorldOwnerID() : FGuid();
 	const bool bHostKnown = HostID.IsValid();
 	const bool bLocalClientIsHost = bHostKnown && EntitySubsystem->GetLocalPlayerID() == HostID;
+	const TCHAR* HostState = UCrowdySDKDeveloperSettings::UsesElectedHost()
+		? DescribeHostElectionState(bHostKnown, bLocalClientIsHost)
+		: TEXT("Leader Source is Server Object, so no client writes World entities");
 
 	const FString Message = FString::Printf(
 		TEXT("[CrowdyEntityComponent]: '%s' is Dynamic with Auto Register on, but it is host-owned, so Auto Register did not start its state channel: Auto Register starts the channel only for an entity this client owns outright, and %s. Nothing goes out on the continuous channel for this entity until ownership is granted to a client or Start Replication is called on it. Set Owned By to Player if the client this actor lives on should simulate it, or call Start Replication on whichever client is the host."),
-		*GetNameSafe(GetOwner()), DescribeHostElectionState(bHostKnown, bLocalClientIsHost));
+		*GetNameSafe(GetOwner()), HostState);
 
 #if WITH_DEV_AUTOMATION_TESTS
 	++HostOwnedAutoRegisterReportCount;

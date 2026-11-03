@@ -122,10 +122,9 @@ public:
 	// never got the destroy keeps repeating, and its entity comes back after this long.
 	static constexpr double DestroyedSpawnRefusedSeconds = 10.0;
 
-	// True when this client is the entity's owner: the record names the local player AND its role says this client
-	// simulates and sends for it. Both are required because this answer authorizes creating server-side state bound
-	// to the id; a record that names the local player while its role says the entity is only mirrored here
-	// contradicts itself, and the safe reading of a contradiction is "not mine".
+	// True when this client writes the entity: its record names the local player with the Owner role, or it is a World
+	// entity and this client is the World owner. The same answer as Is Crowdy Entity Locally Owned and the component's
+	// Is Locally Owned.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
 	bool IsLocallyOwned(const FGuid& NetID) const;
 
@@ -135,6 +134,12 @@ public:
 	// Reads through to UCrowdyGameSession
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
 	FGuid GetHostID() const;
+
+	// The client that writes World entities: the elected host when Leader Source is Elected Host, otherwise none.
+	FGuid GetWorldOwnerID() const;
+
+	// Whether this client writes the entity: it owns it, or it is the World owner of a World entity.
+	bool IsRecordLocallyOwned(const FCrowdyEntityRecord& Record) const;
 
 	/** Normally seeded from the game session automatically; exposed for Blueprints that managed it manually. */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entity Subsystem")
@@ -168,6 +173,8 @@ public:
 	// How many participant-to-id mappings are held. A mapping for a participant that has already been collected
 	// cannot be found by key, so this count is the only way to see one that was left behind.
 	int32 GetParticipantMappingCountForTest() const { return ParticipantToID.Num(); }
+
+	bool HasWarnedParticipantHasNoWriterForTest() const { return bWarnedParticipantHasNoWriter; }
 #endif
 
 	//Networked entity lifecycle
@@ -280,7 +287,7 @@ public:
 	// Explicit ownership transfer (view plane). Re-points a registered entity's owner and re-derives its role, then
 	// broadcasts OnEntityOwnershipChanged so the state replicator re-tracks and the entity component syncs its cache
 	// and continuous channel. NewOwnerID: a valid player id makes it client-owned (Owner on that client,
-	// RemoteProxy elsewhere); an invalid (zero) id makes it host-owned (a world entity). ExpectedPreviousOwnerID,
+	// RemoteProxy elsewhere); an invalid (zero) id makes it a World entity. ExpectedPreviousOwnerID,
 	// when valid, is a compare-and-swap guard: the change is dropped when the record's current owner no longer
 	// matches, so a stale or duplicate grant is a no-op. This is the client-authoritative view plane - a
 	// convention, not an enforcement boundary; cheat-sensitive ownership belongs in server code (Server Objects).
@@ -353,6 +360,9 @@ private:
 
 	UFUNCTION()
 	void OnOwnerUUIDUpdated(FString NewUUID);
+
+	// Set once a replicated subsystem has been told nothing writes it, so the warning is not repeated per subsystem.
+	bool bWarnedParticipantHasNoWriter = false;
 
 	// Re-derives a LocalClient participant's owner-salted deterministic identity once the local player id arrives,
 	// re-registering it under the new NetID. Never touches actor entities (their identity is set at spawn).

@@ -445,7 +445,7 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
         }
         else if (Info.Recipient == ECrowdyEventRecipient::Host)
         {
-            const FGuid HostID = EntitySubsystem ? EntitySubsystem->GetHostID() : FGuid();
+            const FGuid HostID = EntitySubsystem ? EntitySubsystem->GetWorldOwnerID() : FGuid();
             const bool bIsLocalHost = HostID.IsValid() && HostID == LocalPlayerID;
             if (!bIsLocalHost)
             {
@@ -1027,10 +1027,24 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
     // dropped before touching the blob. (Our own echo including a targeted owner-only self-delivery was
     // already dropped above by SenderID.) A HostSourced delta falls through to apply and is then adopted (below)
     // so our own next diff does not revert the host's values.
-    const bool bWeOwnTarget = EntitySubsystem && EntitySubsystem->IsLocallyOwned(Delta.EntityID);
-    if (bWeOwnTarget)
+    const FCrowdyEntityRecord* WriterRecord = EntitySubsystem ? EntitySubsystem->FindRecord(Delta.EntityID) : nullptr;
+    const bool bWeOwnTarget = WriterRecord && EntitySubsystem->IsRecordLocallyOwned(*WriterRecord);
+    const bool bHostSourced = (Delta.Flags & CrowdyStateDeltaFlags::HostSourced) != 0;
+    if (WriterRecord && WriterRecord->Role == ECrowdyRole::HostOwned)
     {
-        const bool bHostSourced = (Delta.Flags & CrowdyStateDeltaFlags::HostSourced) != 0;
+        // A World entity takes only the host's delta, and with no elected host nothing writes it. Still precedence
+        // by convention: cheat-sensitive state belongs in Server Objects, not on this unenforced view plane.
+        if (!IsFromWorldOwner(bHostSourced))
+        {
+            ++StateParticipantStats.DroppedNotHostSourcedForWorld;
+            UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
+                TEXT("[CrowdyState] dropped delta for world entity %s: the sender %s does not write it."),
+                *Delta.EntityID.ToString(), *Delta.SenderID.ToString());
+            return;
+        }
+    }
+    else if (bWeOwnTarget)
+    {
         if (!bHostSourced)
         {
             ++StateParticipantStats.DroppedNotHostSourcedForOwned;
@@ -1057,26 +1071,6 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
                         *Delta.EntityID.ToString());
                     return;
                 }
-            }
-        }
-    }
-    else if (EntitySubsystem)
-    {
-        // World (host-owned) entities have no owner, so the bWeOwnTarget gate above never covers them (IsLocallyOwned
-        // is false for a HostOwned record on every client). Only the host may write world state: drop a non-HostSourced
-        // delta for a locally HostOwned entity. This closes the vector the Phase C untracked one-shot push opens (any
-        // client could otherwise write a shared world entity). Still precedence-by-convention (a forged HostSourced from
-        // a foreign client is honored) cheat-sensitive state belongs in server code (Server Objects), not on this unenforced view plane.
-        if (const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(Delta.EntityID))
-        {
-            const bool bHostSourced = (Delta.Flags & CrowdyStateDeltaFlags::HostSourced) != 0;
-            if (Record->Role == ECrowdyRole::HostOwned && !bHostSourced)
-            {
-                ++StateParticipantStats.DroppedNotHostSourcedForWorld;
-                UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
-                    TEXT("[CrowdyState] dropped non-host delta for host-owned world entity %s (sender=%s)."),
-                    *Delta.EntityID.ToString(), *Delta.SenderID.ToString());
-                return;
             }
         }
     }
@@ -1541,6 +1535,13 @@ void UCrowdyEventRouter::HandleDelivery(const FCrowdyDelivery& Delivery)
         InboundEvent.Target);
 
     DispatchEvent(InboundEvent);
+}
+
+bool UCrowdyEventRouter::IsFromWorldOwner(const bool bHostSourced) const
+{
+    // Clients learn of a new host at different times, so the host flag rather than the sender is what they can
+    // agree on while it changes.
+    return bHostSourced && UCrowdySDKDeveloperSettings::UsesElectedHost();
 }
 
 bool UCrowdyEventRouter::LoadConfig() const

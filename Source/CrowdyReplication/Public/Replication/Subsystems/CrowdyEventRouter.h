@@ -612,5 +612,8 @@ private:
 	void DeferEvent(const FCrowdyInboundEvent& Event, int32 RemainingAttempts, double DeferBudgetSeconds = 0.0);
 	void RetryDeferredEvents();
 
+	// Whether a World entity's delta comes from the client that writes World entities.
+	bool IsFromWorldOwner(bool bHostSourced) const;
+
 	bool LoadConfig() const;
 };

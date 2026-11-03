@@ -34,6 +34,7 @@
 #include "HAL/CriticalSection.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ScopeLock.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 DEFINE_LOG_CATEGORY(LogCrowdyRPC);
 
@@ -89,6 +90,19 @@ namespace
 		}
 
 		LastLoggedSeconds.Add(FunctionID, Now);
+		return true;
+	}
+
+	// True, after a rate-limited warning naming the setting, when a Host event has no host to go to at all.
+	bool WarnIfNoHostExists(const UFunction* Fn, int64 FunctionID)
+	{
+		if (UCrowdySDKDeveloperSettings::UsesElectedHost())
+			return false;
+
+		UE_CLOG(ShouldLogRpcDrop(FunctionID), LogCrowdyRPC, Warning,
+			TEXT("[CrowdyRPC] '%s' dropped - it is a Host event, but Leader Source is Server Object, so there is no host. ")
+			TEXT("Move host-only logic to a Server Object, or set Project Settings > Plugins > Crowdy SDK > Replication > Leader Source to Elected Host (Deprecated)."),
+			*GetNameSafe(Fn));
 		return true;
 	}
 
@@ -1554,7 +1568,7 @@ bool FCrowdyRPC::RouteFromEventSource(UObject* Obj, ICrowdyEventSource* Source, 
 	}
 
 	const FGuid LocalPlayerID = EntitySubsystem->GetLocalPlayerID();
-	const FGuid HostID = EntitySubsystem->GetHostID();
+	const FGuid HostID = EntitySubsystem->GetWorldOwnerID();
 	const bool bWeAreHost = HostID.IsValid() && HostID == LocalPlayerID;
 
 	// Speak only for an entity this client is the authority for: one it owns, or a world entity while it
@@ -1805,7 +1819,7 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 
 	const bool bWeOwnEntity = EntityID.IsValid() && EntitySubsystem->IsLocallyOwned(EntityID);
 
-	const FGuid HostID = EntitySubsystem->GetHostID();
+	const FGuid HostID = EntitySubsystem->GetWorldOwnerID();
 	const bool bWeAreHost = HostID.IsValid() && HostID == EntitySubsystem->GetLocalPlayerID();
 
 	// Loopback debug mode (crowdy.rpc.loopback) delivers the call to this client's own receive
@@ -1818,6 +1832,11 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 
 	const FCrowdyRpcRouteDecision Decision =
 		DecideRoute(Info.Recipient, bNonSpatial, EntityID.IsValid(), bWeOwnEntity, bWeAreHost);
+
+	if (Info.Recipient == ECrowdyEventRecipient::Host && WarnIfNoHostExists(Fn, Info.FunctionID))
+	{
+		return true;
+	}
 
 	if (Decision.Route == ECrowdyRpcRoute::Reject)
 	{
@@ -1947,7 +1966,7 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 	}
 
 	const FGuid LocalPlayerID = EntitySubsystem->GetLocalPlayerID();
-	const FGuid HostID = EntitySubsystem->GetHostID();
+	const FGuid HostID = EntitySubsystem->GetWorldOwnerID();
 	const bool bWeAreHost = HostID.IsValid() && HostID == LocalPlayerID;
 
 	// Where this client already holds a registration for the target, that record is the authority on who
@@ -1965,12 +1984,17 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 		}
 	}
 
-	const bool bWeOwnTarget = Resolved.IsOwnedBy(LocalPlayerID);
+	const bool bWeOwnTarget = FCrowdyEntityRecord::IsWrittenBy(Resolved.Role, Resolved.OwnerID, LocalPlayerID, HostID);
 
 	// A target names a place in the world, so every recipient is available to it and the policy is the
 	// same table the actor path reads.
 	const FCrowdyRpcRouteDecision Decision = DecideRoute(Info.Recipient, /*bNonSpatial=*/false,
 		/*bEntityValid=*/true, bWeOwnTarget, bWeAreHost);
+
+	if (Info.Recipient == ECrowdyEventRecipient::Host && WarnIfNoHostExists(Fn, Info.FunctionID))
+	{
+		return true;
+	}
 
 	// Loopback debug mode delivers the call to this client's own receive path below, which runs the body
 	// once, so the immediate local run is skipped rather than running it twice. The guard keeps a call

@@ -36,6 +36,14 @@ struct FCrowdyClassIDOverride
 class UCrowdyBakedRegistry;
 struct FCrowdyCppClientConfig;
 
+// Where the client that writes shared entities comes from.
+UENUM()
+enum class ECrowdyLeaderSource : uint8
+{
+	ServerObject UMETA(DisplayName="Server Object", ToolTip="No elected host. World entities have no writer on any client; keep their truth in Server Objects."),
+	ElectedHost UMETA(DisplayName="Elected Host (Deprecated)", ToolTip="The elected host writes World entities and replicated subsystems, as before. Removed in the next release."),
+};
+
 UENUM()
 enum class ECrowdyEnvironment : uint8
 {
@@ -272,6 +280,13 @@ public:
 		meta=(DisplayName="Class ID Collision Overrides",
 			  ToolTip="Leave empty unless the log reports: [CrowdyClassRegistry] ClassID collision"))
 	TArray<FCrowdyClassIDOverride> ClassIDOverrides;
+
+	/** Where the client that writes shared entities comes from. Server Object: no elected host, and World entities have no writer. Elected Host keeps the old behaviour and is removed in the next release. */
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Replication", meta=(DisplayName="Leader Source"))
+	ECrowdyLeaderSource LeaderSource = ECrowdyLeaderSource::ElectedHost;
+
+	/** True while Leader Source is Elected Host: the elected host is polled and writes World entities. */
+	static bool UsesElectedHost();
 
 	/**
 	 * Entity classes to load before the startup scan, so this client can resolve them off the wire.
