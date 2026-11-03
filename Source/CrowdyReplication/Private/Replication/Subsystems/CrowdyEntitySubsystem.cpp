@@ -48,7 +48,7 @@ namespace
 		}
 
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyEntitySubsystem]: networking is disabled for this map (Map Profile > Enable Networking) or the SDK is not connected; %s dropped."),
+			TEXT("[CrowdyEntitySubsystem]: networking is disabled for this map (Map Profile > Handle Events and Spawns) or the SDK is not connected; %s dropped."),
 			What);
 	}
 

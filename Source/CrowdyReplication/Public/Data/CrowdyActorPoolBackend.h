@@ -28,6 +28,7 @@ public:
 
 	virtual bool InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config) override;
 	virtual void DeinitializeBackend() override;
+	virtual UClass* GetBackendConfigClass() const override;
 
 	// The config this backend runs on: the one given, a transient default when none is, null when it is
 	// another backend's class.

@@ -48,7 +48,11 @@ ownership-taking subsystem registration are deprecated: they keep working and wa
 | A destroy event left a Mass-drawn entity's row until its updates stopped, about 5 seconds later. | The row goes with the destroy event. | Behaviour: C++ `UCrowdyActorManager::HandleRemoteDestroyEvent` (new), `UCrowdyRenderingBackend::ReleaseDestroyedInstance` (new). |
 | When a moving entity's first update arrived before its spawn event, the actor pool's copy kept an empty owner id. | The spawn event fills it in. | Behaviour: C++ `UCrowdyEntitySubsystem`; Blueprint `Get Owner ID`, `On Crowdy Spawned`. |
 | No hook for a crowd-row backend to receive spawn data or a destroy event. | `UCrowdyRenderingBackend::TakeSpawnData` and `ReleaseDestroyedInstance`, optional, doing nothing by default. | C++ API (new virtuals). |
-| The actor pool drew remote entities 100 ms behind the server's clock on every map, with no setting. | `Interpolation Delay Ms` on the map profile's Actor Management, 100 by default. Mass-drawn rows ignore it. | Property (map profile, C++ `FCrowdyActorManagementConfigStruct::InterpolationDelayMs`, new). |
+| The actor pool drew remote entities 100 ms behind the server's clock on every map, with no setting. | `Interpolation Delay` in the map profile's Remote Entities group, 100 by default. Mass-drawn rows ignore it. | Property (map profile, C++ `FCrowdyActorManagementConfigStruct::InterpolationDelayMs`, new). |
+| The map profile's Details panel listed every setting in one category, with Actor Management as a nested row. Labels: `Enable Networking`, `Use Auto Replicator`, `Replication Interval (Hertz)` (greyed out when movement was off, though Crowdy State still used it), `Send Actor State Only On Change`, `Use State Replicator`, `Use Crowdy Actor Tracker`. | Groups `Events`, `Remote Entities` (Actor Management's settings, tuning under Advanced), `Movement`, `Crowdy State`. Labels: `Handle Events and Spawns`, `Send Movement`, `Send Rate` (editable while either sender is on), `Send Only On Change`, `Replicate Crowdy State`, `Draw Remote Entities`, `Actor Timeout`. Property names are unchanged. | Details panel only. |
+| A map profile saved with settings that drop idle entities, or a Backend Config of another backend's class, said nothing until play. | Saving or validating the profile reports both as errors. | Editor validation (`UCrowdyMapProfile::IsDataValid`). |
+| `Crowdy Actor Management Config` data asset (nothing reads it at runtime). | Deprecated, hidden from the create menu; existing assets still load. Set the values on a map profile. | Asset class deprecated. |
+| No way to say which Backend Config class a rendering backend reads. | `UCrowdyRenderingBackend::GetBackendConfigClass()`, optional, null by default (no check). The actor pool and Mass backends return their config classes. | C++ API (new virtual). |
 | Assets carried no CrowdySDK save version. | A package that saves a `Crowdy Entity Component` records the `CrowdySDK` custom version, and the component saves `Owned By` and a Replicate Movement setting that nothing reads yet. Older SDKs warn on these packages (see Behaviour changes). | Asset format. |
 
 **Do this, in order**
@@ -71,6 +75,11 @@ ownership-taking subsystem registration are deprecated: they keep working and wa
    `TakeSpawnData` to land spawn data on your representation and `ReleaseDestroyedInstance` to stop
    drawing a destroyed entity. Bound anything you hold for an entity not drawn yet: spawn events can be
    forged.
+8. If you wrote a rendering backend with a config class of its own, override `GetBackendConfigClass()` to return
+   it, so a map profile that pairs your backend with another config is reported on save.
+9. If a map profile switches the SDK off with `Enable Networking` (now `Handle Events and Spawns`) alone,
+   also untick `Draw Remote Entities`, `Send Movement` and `Replicate Crowdy State`: the first switch never
+   stopped movement.
 
 **CoreRedirects.** None.
 
@@ -112,6 +121,8 @@ cooked data is read against the component's current properties.
 3. Destroy it on the first: the row disappears on the second at once.
 4. Open an entity Blueprint: its `Crowdy Entity Component` shows `Owned By` and no `Ownership`, set to what
    the asset meant before (Player for a former Local Client).
+5. Open a map profile: it shows the Events, Remote Entities, Movement and Crowdy State groups with the
+   values it had before. Run Validate Assets on your profiles; any error it reports names the setting to fix.
 
 **Removed in the next release.** None. The deprecated items above are planned for removal in a later
 release, which will say so here first.

@@ -16,24 +16,24 @@ struct FCrowdyActorManagementConfigStruct
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config")
+	/** Off: this map receives no other entity's movement and draws no remote entity. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Remote Entities", meta = (DisplayName = "Draw Remote Entities"))
 	bool bUseCrowdyActorTracker = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))
+	/** Also broadcast each update batch to the tracker's OnUpdatesGameThread, for a Blueprint listener. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker"))
 	bool bDispatchUpdatesOnGameThread = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))
+	/** Track this client's own entity as the server echoes it back, which proves the server is receiving you. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker"))
 	bool bEnableOwnerTracking = true;
 
-	// Seconds of silence before an entity is dropped on a guess. The server announces a real departure about
-	// five seconds after the last update, so this is the fallback for a departure that never arrives rather
-	// than the usual way an entity leaves. Twelve seconds matches the reaper the other Crowdy SDKs use. The
-	// sweep that enforces it runs on its own shorter period, so the actual wait stays near this value.
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))
+	/** Silence before a remote entity is dropped on a guess; the server normally announces a departure about 5 s after the last update. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker", Units = "s", DisplayName = "Actor Timeout"))
 	float ActorTimeoutThreshold = 12.0f;
 
-	/** Seconds of silence before a Game Kit starter's actor, such as a mob, leaves. Its hub shows it several times a second while anyone is near and stops when it goes down, so this is how fast a downed mob leaves. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0.25))
+	/** Silence before a Game Kit starter's actor, such as a downed mob, leaves. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0.25, Units = "s"))
 	float KitActorTimeout = 1.0f;
 
 	/**
@@ -45,18 +45,16 @@ struct FCrowdyActorManagementConfigStruct
 	 * set it above the largest crowd the game intends to show rather than near it. Locally spawned actors
 	 * do not count against it.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 1))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 1))
 	int32 MaxTrackedActors = 4096;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 1))
+	/** How many updates for not-yet-seen entities are batched off the game thread before they are handed over. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 1))
 	int32 MaxUpdatesPerBatch = 100;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0.001f, ClampMax = 0.1f))
+	/** The longest a batch of updates for not-yet-seen entities waits before it is handed over. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0.001f, ClampMax = 0.1f, Units = "s"))
 	float MaxBatchWaitTime = 0.005f;
-
-	/** How far behind the server's clock remote entities are drawn: longer hides late updates, and below one send interval (100 ms at 10 Hz) they overshoot and snap back. Mass-drawn rows ignore it. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0, UIMax = 500, Units = "ms"))
-	int32 InterpolationDelayMs = 100;
 
 	/**
 	 * How remote entities are drawn on this map. The actor-pool backend it starts on spawns pooled actors of
@@ -69,26 +67,28 @@ struct FCrowdyActorManagementConfigStruct
 	 * empty. A config of the wrong type, or a backend that cannot initialize, is refused with a warning
 	 * rather than installed.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker"))
 	TSubclassOf<UCrowdyRenderingBackend> BackendClass = UCrowdyActorPoolBackend::StaticClass();
 
 	/** Backend-specific settings. Set this to the matching config type for your chosen BackendClass. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Instanced, Category = "Crowdy SDK|Actor Management Config", meta = (EditCondition = "bUseCrowdyActorTracker"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Instanced, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker"))
 	TObjectPtr<UCrowdyRenderingBackendConfig> BackendConfig;
+
+	/** How far behind the server's clock remote entities are drawn: longer hides late updates, and below one send interval (100 ms at 10 Hz) they overshoot and snap back. Mass-drawn rows ignore it. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0, UIMax = 500, ForceUnits = "ms", DisplayName = "Interpolation Delay"))
+	int32 InterpolationDelayMs = 100;
 };
 
 
-/**
- * 
- */
-UCLASS(BlueprintType, Category = "Crowdy SDK|Data", meta = (DisplayName = "Crowdy Actor Management Config"))
+/** Deprecated: nothing reads this asset at runtime. Set these values on a Crowdy Map Profile's Remote Entities. */
+UCLASS(BlueprintType, HideDropdown, Category = "Crowdy SDK|Data", meta = (DisplayName = "Crowdy Actor Management Config (Deprecated)"))
 class CROWDYREPLICATION_API UCrowdyActorManagementConfig : public UDataAsset
 {
 	GENERATED_BODY()
 	
 public:
 	
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crowdy SDK|Actor Management Config")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Remote Entities")
 	FCrowdyActorManagementConfigStruct Config;
 	
 };
