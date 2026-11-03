@@ -51,7 +51,7 @@ ACrowdyPlayerDerivedTestPawn::ACrowdyPlayerDerivedTestPawn()
 {
 	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));
 	Entity->IdentityPolicy = ECrowdyIdentityPolicy::PlayerDerived;
-	Entity->Ownership = ECrowdyOwnership::LocalClient;
+	Entity->OwnedBy = ECrowdyOwnedBy::Player;
 	Entity->Mode = ECrowdyEntityMode::Static;
 	AutoPossessAI = EAutoPossessAI::Disabled;
 	AutoPossessPlayer = EAutoReceiveInput::Disabled;

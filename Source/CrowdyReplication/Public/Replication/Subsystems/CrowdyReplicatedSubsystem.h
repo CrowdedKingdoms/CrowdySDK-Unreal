@@ -32,9 +32,8 @@ public:
 
 protected:
 
-	// The authority axis this subsystem enrolls with. Host (the default) makes it a world singleton every client
-	// agrees on by class path. Override to change it. Not a UFUNCTION, so the header needs only a forward
-	// declaration of ECrowdyOwnership; the definition is in the .cpp, which has the complete enum.
+	// No longer called: a replicated subsystem is always written by the elected host.
+	UE_DEPRECATED(5.8, "Remove the override: a replicated subsystem is always written by the elected host.")
 	virtual ECrowdyOwnership GetReplicatedOwnership() const;
 };
 
@@ -61,6 +60,8 @@ public:
 
 protected:
 
+	// No longer called: a replicated subsystem is always written by the elected host.
+	UE_DEPRECATED(5.8, "Remove the override: a replicated subsystem is always written by the elected host.")
 	virtual ECrowdyOwnership GetReplicatedOwnership() const;
 
 private:

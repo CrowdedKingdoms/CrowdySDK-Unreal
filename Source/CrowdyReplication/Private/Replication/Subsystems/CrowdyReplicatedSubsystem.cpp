@@ -1,5 +1,6 @@
 #include "Replication/Subsystems/CrowdyReplicatedSubsystem.h"
 
+#include "CrowdyReplicationLog.h"
 #include "Engine/World.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
@@ -18,7 +19,13 @@ void UCrowdyReplicatedWorldSubsystem::Initialize(FSubsystemCollectionBase& Colle
 	Collection.InitializeDependency(UCrowdyEntitySubsystem::StaticClass());
 	Collection.InitializeDependency(UCrowdyStateReplicator::StaticClass());
 
-	UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystem(this, GetReplicatedOwnership());
+	UCrowdyReplicatedSubsystemLibrary::RegisterCrowdyReplicatedSubsystem(this);
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_CLOG(GetReplicatedOwnership() != ECrowdyOwnership::Host, LogCrowdyReplication, Warning,
+		TEXT("[CrowdyReplicatedSubsystem]: %s overrides GetReplicatedOwnership, which is no longer used: a replicated subsystem is always written by the elected host."),
+		*GetClass()->GetName());
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UCrowdyReplicatedWorldSubsystem::Deinitialize()
@@ -59,6 +66,12 @@ void UCrowdyReplicatedGameInstanceSubsystem::Initialize(FSubsystemCollectionBase
 
 	WorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddWeakLambda(
 		this, [this](UWorld* World, bool /*bSessionEnded*/, bool /*bCleanupResources*/) { HandleWorldCleanup(World); });
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_CLOG(GetReplicatedOwnership() != ECrowdyOwnership::Host, LogCrowdyReplication, Warning,
+		TEXT("[CrowdyReplicatedSubsystem]: %s overrides GetReplicatedOwnership, which is no longer used: a replicated subsystem is always written by the elected host."),
+		*GetClass()->GetName());
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UCrowdyReplicatedGameInstanceSubsystem::Deinitialize()
@@ -92,8 +105,7 @@ void UCrowdyReplicatedGameInstanceSubsystem::HandleWorldInitialized(UWorld* Worl
 		return;
 	}
 
-	UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(
-		World->GetSubsystem<UCrowdyEntitySubsystem>(), this, GetReplicatedOwnership());
+	UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(World->GetSubsystem<UCrowdyEntitySubsystem>(), this);
 }
 
 void UCrowdyReplicatedGameInstanceSubsystem::HandleWorldCleanup(UWorld* World)

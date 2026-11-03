@@ -117,7 +117,7 @@ namespace
 				TEXT("[CrowdySDK] @@ uses Unreal's Has Authority, which does not apply to a Crowdy entity - ")
 				TEXT("the elected host is a convention, not an enforced server, so this reads the wrong value ")
 				TEXT("on non-host clients. Use the Crowdy ownership test instead: ")
-				TEXT("UCrowdyEntityComponent::IsLocallyOwned, or UCrowdyUtilities::IsCrowdyEntityLocallyControlled."),
+				TEXT("Is Locally Owned on the Crowdy Entity Component, or Switch Is Crowdy Entity Locally Owned."),
 				AuthoredNode ? AuthoredNode : static_cast<UEdGraphNode*>(CallNode));
 		}
 

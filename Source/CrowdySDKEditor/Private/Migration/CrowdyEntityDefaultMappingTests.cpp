@@ -6,6 +6,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Blueprint/BlueprintSupport.h"
+#include "Data/CrowdySDKCustomVersion.h"
 #include "Editor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -17,6 +18,9 @@
 #include "UObject/Package.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
+
+// The comparison reads the deprecated Ownership on purpose: it is what the content meant before Owned By existed.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
 namespace CrowdyDefaultMapping
 {
@@ -87,13 +91,32 @@ namespace CrowdyDefaultMapping
 		return Result;
 	}
 
-	// Reports every entry that resolves differently under the replacement, unless it is a listed intended change.
-	int32 CompareEntries(FAutomationTestBase& Test, const TArray<FEntry>& Entries, const TCHAR* Kind,
+	// Whether the entry still carries what it meant before Owned By existed: a C++ default that does not set Owned By,
+	// or an asset saved before the save version recorded it. Anything else was authored with Owned By itself.
+	bool PredatesOwnedBy(const FEntry& Entry, const bool bNative)
+	{
+		if (bNative) return Entry.Component->OwnedBy == ECrowdyOwnedBy::Auto;
+
+		const FCustomVersion* Saved = Entry.Component->GetPackage()->GetLinkerCustomVersions().GetVersion(FCrowdySDKCustomVersion::GUID);
+		return !Saved || Saved->Version < FCrowdySDKCustomVersion::OwnedByAxis;
+	}
+
+	// Reports every entry that resolves differently under the replacement, unless it is a listed intended change, and
+	// returns how many it compared and how many differed.
+	FIntPoint CompareEntries(FAutomationTestBase& Test, const TArray<FEntry>& Entries, const TCHAR* Kind, const bool bNative,
 		const TMap<FString, FString>& IntendedChanges)
 	{
+		int32 Compared = 0;
 		int32 Changed = 0;
 		for (const FEntry& Entry : Entries)
 		{
+			if (!PredatesOwnedBy(Entry, bNative))
+			{
+				Test.AddInfo(FString::Printf(TEXT("%s [%s]: authored with Owned By, nothing to compare"), *Entry.Name, Kind));
+				continue;
+			}
+
+			++Compared;
 			const FResolution Today = ResolveToday(*Entry.Component);
 			const FResolution Replacement = ResolveReplacement(Entry);
 			Test.AddInfo(FString::Printf(TEXT("%s [%s]: %s"), *Entry.Name, Kind, *Today.ToString()));
@@ -109,7 +132,7 @@ namespace CrowdyDefaultMapping
 			Test.AddError(FString::Printf(TEXT("%s [%s] resolves differently: today %s, replacement %s"), *Entry.Name, Kind,
 				*Today.ToString(), *Replacement.ToString()));
 		}
-		return Changed;
+		return FIntPoint(Compared, Changed);
 	}
 
 	bool IsComparableClass(const UClass* Class)
@@ -306,6 +329,8 @@ namespace CrowdyDefaultMapping
 
 }
 
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 // Loading a project's content logs whatever errors that content has; only this test's own assertions fail it.
 class FCrowdyContentSweepTestBase : public FAutomationTestBase
 {
@@ -340,14 +365,15 @@ bool FCrowdyEntityDefaultMappingGuardTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	const int32 NativeChanged = CompareEntries(*this, Native, TEXT("C++"), IntendedChanges);
+	const FIntPoint NativeResult = CompareEntries(*this, Native, TEXT("C++"), true, IntendedChanges);
+	TestTrue(TEXT("some C++ entity classes still predate Owned By, so the comparison is not silently empty"), NativeResult.X > 0);
 
 	TArray<FEntry> Blueprints;
 	GatherBlueprints(Registry, GatherReferencers(Registry, GatherComponentPackages(Registry)), Blueprints, EntityClasses);
-	const int32 BlueprintChanged = CompareEntries(*this, Blueprints, TEXT("Blueprint"), IntendedChanges);
+	const FIntPoint BlueprintResult = CompareEntries(*this, Blueprints, TEXT("Blueprint"), false, IntendedChanges);
 
-	AddInfo(FString::Printf(TEXT("%d C++ and %d Blueprint entity components compared, %d and %d resolve differently"),
-		Native.Num(), Blueprints.Num(), NativeChanged, BlueprintChanged));
+	AddInfo(FString::Printf(TEXT("%d of %d C++ and %d of %d Blueprint entity components predate Owned By and were compared, %d and %d resolve differently"),
+		NativeResult.X, Native.Num(), BlueprintResult.X, Blueprints.Num(), NativeResult.Y, BlueprintResult.Y));
 	return true;
 }
 
@@ -366,9 +392,10 @@ bool FCrowdyEntityPlacedDefaultsSweepTest::RunTest(const FString& Parameters)
 
 	TArray<FEntry> Placed;
 	GatherPlaced(Registry, GatherReferencers(Registry, GatherComponentPackages(Registry)), Placed);
-	const int32 Changed = CompareEntries(*this, Placed, TEXT("placed"), {});
+	const FIntPoint Result = CompareEntries(*this, Placed, TEXT("placed"), false, {});
 
-	AddInfo(FString::Printf(TEXT("%d placed entity components compared, %d resolve differently"), Placed.Num(), Changed));
+	AddInfo(FString::Printf(TEXT("%d of %d placed entity components predate Owned By and were compared, %d resolve differently"),
+		Result.X, Placed.Num(), Result.Y));
 	return true;
 }
 

@@ -164,7 +164,7 @@ bool FCrowdyEntityHostOwnedAutoRegisterReportTest::RunTest(const FString& Parame
 	TestTrue(TEXT("the message names what this client knows about the host"),
 		Message.Contains(UCrowdyEntityComponent::DescribeHostElectionState(false, false)));
 	TestTrue(TEXT("the message names the consequence"), Message.Contains(TEXT("Nothing goes out on the continuous channel")));
-	TestTrue(TEXT("the message names what to set"), Message.Contains(TEXT("Set Ownership to Local Client")));
+	TestTrue(TEXT("the message names what to set"), Message.Contains(TEXT("Set Owned By to Player")));
 	TestTrue(TEXT("the message names the other way out"), Message.Contains(TEXT("call Start Replication")));
 	return true;
 }

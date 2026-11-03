@@ -59,17 +59,13 @@ enum class ECrowdyOwnership : uint8
 };
 
 // Which client owns an entity: the client that writes its view state.
-UENUM()
+UENUM(BlueprintType)
 enum class ECrowdyOwnedBy : uint8
 {
-	// World when placed in the level, Player when spawned during play.
-	Auto,
-	// The player whose client placed or spawned it.
-	Player,
-	// No client; its truth lives in Server Objects.
-	World,
-	// Whichever client currently leads the entity's scope.
-	Leader,
+	Auto UMETA(DisplayName="Auto", ToolTip="World when placed in the level, Player when spawned during play."),
+	Player UMETA(DisplayName="Player", ToolTip="The player whose client placed or spawned it."),
+	World UMETA(DisplayName="World", ToolTip="Placed in the level and written by the elected host; its truth belongs in Server Objects. An entity spawned during play belongs to its spawner instead."),
+	Leader UMETA(Hidden, DisplayName="Leader", ToolTip="Whichever client currently leads the entity's scope."),
 };
 
 // Whether an entity sends its movement every replication interval.
@@ -148,6 +144,9 @@ public:
 
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PreSave(FObjectPreSaveContext SaveContext) override;
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 	/**
 	 * Injects identity before BeginPlay so the component skips ID minting.
@@ -298,8 +297,17 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
 	ECrowdyEntityMode GetMode() const { return Mode; }
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
-	ECrowdyOwnership GetOwnership() const { return Ownership; }
+	UE_DEPRECATED(5.8, "Read OwnedBy instead: Local Client is Player, Host is Auto.")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component",
+		meta=(DeprecatedFunction, DeprecationMessage="Use Get Owned By instead: Local Client is Player, Host is Auto."))
+	ECrowdyOwnership GetOwnership() const
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		const bool bPlayer = OwnedBy == ECrowdyOwnedBy::Player
+			|| (OwnedBy == ECrowdyOwnedBy::Auto && Ownership == ECrowdyOwnership::LocalClient);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		return bPlayer ? ECrowdyOwnership::LocalClient : ECrowdyOwnership::Host;
+	}
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
 	ECrowdyHostOverride GetHostOverridePolicy() const { return HostOverride; }
@@ -324,8 +332,12 @@ public:
 		ECrowdyOwnership InOwnership, ECrowdyEntityMode InMode, ECrowdyOwnedBy& InOutOwnedBy,
 		ECrowdyReplicateMovement& InOutReplicateMovement);
 
-	// Who owns an entity with these settings: Player, World or Leader, never Auto.
+	// Who owns an entity with these settings: Player, World or Leader, never Auto. Only an entity placed in the level
+	// is there on every client from the start, so one spawned during play belongs to its spawner.
 	static ECrowdyOwnedBy ResolveOwnedBy(ECrowdyOwnedBy InOwnedBy, ECrowdyOwnership InOwnership, bool bIsLevelPlaced);
+
+	// The role and owner id for a resolved owner: Player is this client's; World and Leader are the elected host's.
+	static void DeriveOwner(ECrowdyOwnedBy InResolvedOwnedBy, const FGuid& InLocalPlayerID, ECrowdyRole& OutRole, FGuid& OutOwnerID);
 
 	// Whether an entity with these settings sends its movement; bIsPawnWithMovement is IsPawnWithMovement of its class.
 	static bool ResolveReplicatesMovement(ECrowdyReplicateMovement InReplicateMovement, ECrowdyEntityMode InMode,
@@ -462,28 +474,31 @@ public:
 	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component")
 	ECrowdyIdentityPolicy IdentityPolicy = ECrowdyIdentityPolicy::Stable;
 
-	// Authority axis: who owns and simulates this entity. Orthogonal to Mode and IdentityPolicy. Host (default):
-	// whichever client is currently host owns it (Role=HostOwned), which is what a level-placed world or AI entity
-	// wants so every client shares one authority. LocalClient: this client owns it (Role=Owner). This applies to
-	// level-placed actors; an actor spawned at runtime is always owned by the client that spawned it, whatever is
-	// set here. Consumed only on the self-resolving identity path; injected-identity spawns pass an explicit Role
-	// and ignore this.
-	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component")
-	ECrowdyOwnership Ownership = ECrowdyOwnership::Host;
-
-	// For a LocalClient-owned entity only: whether the elected host may override its CrowdyState as a super-user.
-	// Allow (default): host corrections are accepted and adopted. OwnerOnly: only the owner changes it. This is a
-	// coordination convention on the unenforced view plane, NOT a security boundary cheat-sensitive state belongs
-	// in server code (Server Objects). Hidden when Ownership==Host (a host-owned entity has no separate owner to protect).
-	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component",
-		meta=(EditCondition="Ownership == ECrowdyOwnership::LocalClient", EditConditionHides))
-	ECrowdyHostOverride HostOverride = ECrowdyHostOverride::Allow;
-
-	// Saved beside Ownership, which still decides ownership; kept in step with it on save and mapped from it on load.
-	UPROPERTY()
+	// Who owns this entity: the client that writes its view state. Consumed only on the self-resolving identity path;
+	// injected-identity spawns pass an explicit role and ignore it. An asset saved before this setting existed has it
+	// mapped from Ownership on load.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Entity Component",
+		meta=(ToolTip="Who owns this entity: the client that writes its view state. Auto: World when placed in the level, Player when spawned during play."))
 	ECrowdyOwnedBy OwnedBy = ECrowdyOwnedBy::Auto;
 
-	// Saved beside Mode, which still decides whether movement is sent; kept in step with it the same way.
+	// Read only while OwnedBy is Auto, so a component a C++ constructor configured with it keeps its meaning. Shown
+	// read-only exactly then, and visible so a construction-script rerun carries a placed instance's value.
+	UE_DEPRECATED(5.8, "Set OwnedBy instead: Local Client is Player, Host is Auto.")
+	UPROPERTY(VisibleAnywhere, Category="Crowdy SDK|Entity Component",
+		meta=(DeprecatedProperty, DeprecationMessage="Use Owned By instead: Local Client is Player, Host is Auto.",
+			EditCondition="OwnedBy == ECrowdyOwnedBy::Auto && Ownership == ECrowdyOwnership::LocalClient", EditConditionHides,
+			ToolTip="Deprecated. While Owned By is Auto, Local Client here makes the entity the player's. Set Owned By instead."))
+	ECrowdyOwnership Ownership = ECrowdyOwnership::Host;
+
+	// For a Player-owned entity only: whether the elected host may override its CrowdyState as a super-user.
+	// Allow (default): host corrections are accepted and adopted. OwnerOnly: only the owner changes it. This is a
+	// coordination convention on the unenforced view plane, NOT a security boundary cheat-sensitive state belongs
+	// in server code (Server Objects).
+	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component",
+		meta=(EditCondition="OwnedBy == ECrowdyOwnedBy::Player || (OwnedBy == ECrowdyOwnedBy::Auto && Ownership == ECrowdyOwnership::LocalClient)", EditConditionHides))
+	ECrowdyHostOverride HostOverride = ECrowdyHostOverride::Allow;
+
+	// Saved beside Mode, which still decides whether movement is sent; mapped from it on load.
 	UPROPERTY()
 	ECrowdyReplicateMovement ReplicateMovement = ECrowdyReplicateMovement::Auto;
 

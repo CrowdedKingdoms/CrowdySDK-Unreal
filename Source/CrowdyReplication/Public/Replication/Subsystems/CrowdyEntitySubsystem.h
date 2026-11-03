@@ -103,6 +103,10 @@ public:
 	// live participant (logged as an error naming both): an id that answers for someone else is worse than none.
 	FGuid RegisterParticipant(UObject* Participant, ECrowdyOwnership Ownership);
 
+	// Enrolls a singleton participant, such as a replicated subsystem, that the elected host writes: its NetID comes
+	// from its class path, the same on every client.
+	FGuid RegisterParticipant(UObject* Participant);
+
 	// Removes a participant previously enrolled via RegisterParticipant.
 	void UnregisterParticipant(UObject* Participant);
 
