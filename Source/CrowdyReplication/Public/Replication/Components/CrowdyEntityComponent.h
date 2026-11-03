@@ -58,6 +58,30 @@ enum class ECrowdyOwnership : uint8
 	Host UMETA(DisplayName="Host"),
 };
 
+// Which client owns an entity: the client that writes its view state.
+UENUM()
+enum class ECrowdyOwnedBy : uint8
+{
+	// World when placed in the level, Player when spawned during play.
+	Auto,
+	// The player whose client placed or spawned it.
+	Player,
+	// No client; its truth lives in Server Objects.
+	World,
+	// Whichever client currently leads the entity's scope.
+	Leader,
+};
+
+// Whether an entity sends its movement every replication interval.
+UENUM()
+enum class ECrowdyReplicateMovement : uint8
+{
+	// On for a pawn with a movement component, otherwise Off.
+	Auto,
+	On,
+	Off,
+};
+
 UENUM(BlueprintType)
 enum class ECrowdyHostOverride : uint8
 {
@@ -121,6 +145,9 @@ class CROWDYREPLICATION_API UCrowdyEntityComponent : public UActorComponent, pub
 public:
 
 	UCrowdyEntityComponent();
+
+	virtual void Serialize(FArchive& Ar) override;
+	virtual void PreSave(FObjectPreSaveContext SaveContext) override;
 
 	/**
 	 * Injects identity before BeginPlay so the component skips ID minting.
@@ -290,6 +317,24 @@ public:
 	// ResolveIdentity and the unit tests.
 	static ECrowdyOwnership ResolveEffectiveOwnership(ECrowdyOwnership InAuthoredOwnership, bool bIsLevelPlaced);
 
+	// Owned By and Replicate Movement for settings authored as Ownership and Mode. InOut values start as the
+	// archetype's and stay inherited unless this object authored the field; an unmapped archetype is a class default
+	// or a C++ default subobject, whose Auto still reads Ownership and Mode except for a Static pawn.
+	static void MapLegacySettings(bool bOwnershipAuthored, bool bModeAuthored, bool bArchetypeIsUnmapped,
+		ECrowdyOwnership InOwnership, ECrowdyEntityMode InMode, ECrowdyOwnedBy& InOutOwnedBy,
+		ECrowdyReplicateMovement& InOutReplicateMovement);
+
+	// Who owns an entity with these settings: Player, World or Leader, never Auto.
+	static ECrowdyOwnedBy ResolveOwnedBy(ECrowdyOwnedBy InOwnedBy, ECrowdyOwnership InOwnership, bool bIsLevelPlaced);
+
+	// Whether an entity with these settings sends its movement; bIsPawnWithMovement is IsPawnWithMovement of its class.
+	static bool ResolveReplicatesMovement(ECrowdyReplicateMovement InReplicateMovement, ECrowdyEntityMode InMode,
+		bool bIsPawnWithMovement);
+
+	// Whether ActorClass is a pawn with a movement component, Blueprint-added ones included. It walks the class's
+	// component templates, so resolve it once per class rather than per entity.
+	static bool IsPawnWithMovement(TSubclassOf<AActor> ActorClass);
+
 	// The engine's per-placement identity for Actor, or an invalid guid when it has none. This is the Stable
 	// identity seed. It is not a test for "was this actor placed in the level": the guid is editor-only data, and
 	// in the editor a runtime-spawned actor is given one too. AActor::IsNetStartupActor answers that question.
@@ -433,6 +478,14 @@ public:
 	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component",
 		meta=(EditCondition="Ownership == ECrowdyOwnership::LocalClient", EditConditionHides))
 	ECrowdyHostOverride HostOverride = ECrowdyHostOverride::Allow;
+
+	// Saved beside Ownership, which still decides ownership; kept in step with it on save and mapped from it on load.
+	UPROPERTY()
+	ECrowdyOwnedBy OwnedBy = ECrowdyOwnedBy::Auto;
+
+	// Saved beside Mode, which still decides whether movement is sent; kept in step with it the same way.
+	UPROPERTY()
+	ECrowdyReplicateMovement ReplicateMovement = ECrowdyReplicateMovement::Auto;
 
 	// Per-entity CrowdyState keyframe-heartbeat control. Inherit (default): this entity's CrowdyHeartbeat-marked
 	// properties ride the periodic heartbeat when the map enables it. Off: this entity never emits a keyframe

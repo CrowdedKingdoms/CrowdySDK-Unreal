@@ -1183,6 +1183,7 @@ UCrowdyEntityComponent* UCrowdyEntitySubsystem::AddStaticEntityComponent(AActor*
 	if (!IsValid(Component)) return nullptr;
 
 	Component->Mode = ECrowdyEntityMode::Static;
+	Component->ReplicateMovement = ECrowdyReplicateMovement::Off;
 	Component->InitIdentity(EntityID, EntityOwnerID, Role, ClassID);
 	Component->RegisterComponent();
 
