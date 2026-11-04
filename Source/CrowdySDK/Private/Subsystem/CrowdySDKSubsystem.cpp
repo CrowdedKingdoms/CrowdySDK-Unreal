@@ -89,7 +89,7 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		{
 			DispatchGameEventView_Internal(X, Y, Z, D, R, ID, PayloadStruct, PayloadMemory, Target, TargetID);
 		};
-		BridgeSub->DispatchSingleActorMessageFn = [this](int64 X, int64 Y, int64 Z, const FGuid& TargetActorID, FInstancedStruct Payload, bool bAsync)
+		BridgeSub->DispatchSingleActorMessageFn = [this](int64 X, int64 Y, int64 Z, const FCrowdyActorId& TargetActorID, FInstancedStruct Payload, bool bAsync)
 		{
 			DispatchSingleActorMessage_Internal(X, Y, Z, TargetActorID, MoveTemp(Payload), bAsync);
 		};
@@ -966,7 +966,7 @@ void UCrowdySDKSubsystem::DispatchGameEventView_Internal(const int64 ChunkX, con
 }
 
 void UCrowdySDKSubsystem::DispatchSingleActorMessage_Internal(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
-                                                              const FGuid& TargetActorID, FInstancedStruct EventPayload, const bool bAsync)
+                                                              const FCrowdyActorId& TargetActorID, FInstancedStruct EventPayload, const bool bAsync)
 {
 	auto BuildAndSend = [this,
 	ChunkX, ChunkY, ChunkZ,
@@ -986,7 +986,7 @@ void UCrowdySDKSubsystem::DispatchSingleActorMessage_Internal(const int64 ChunkX
 		Request.ReplicationDistance = ECrowdyReplicationDistance::None;
 
 		// UUID is the destination actor; the server delivers only to the client that owns it.
-		Request.UUID = FCrowdyActorId::FromGuid(TargetActorID);
+		Request.UUID = TargetActorID;
 
 		FCrowdyTypeID EventID;
 		if (!UEventPayloadRegistry::Get()->GetID(Payload.GetScriptStruct(), EventID))

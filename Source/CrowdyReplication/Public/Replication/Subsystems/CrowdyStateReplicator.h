@@ -301,6 +301,9 @@ private:
 	bool BuildOwnedState(const FGuid& EntityID, UObject* Participant, TUniquePtr<FCrowdyOwnedEntityState>& Out);
 	void InitShadow(FCrowdyOwnedEntityState& State, const FCrowdyRepLayout& Layout);
 
+	// Makes the participant's current values the baseline, so only later writes count as changes.
+	void SeedShadowFromLive(FCrowdyOwnedEntityState& State);
+
 	// Loopback (crowdy.state.loopback): returns the existing mirror for SourceEntityID, or spawns one. The
 	// mirror is a second instance of SourceActor's class, in the same world, registered with its OWN fresh
 	// NetID as ECrowdyRole::RemoteProxy and an INVALID OwnerID (never SourceActor's owner, and never

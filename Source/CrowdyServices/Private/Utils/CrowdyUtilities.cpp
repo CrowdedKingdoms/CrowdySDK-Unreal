@@ -299,8 +299,13 @@ void UCrowdyUtilities::SwitchIsCrowdyEntityPlayerControlled(UObject* WorldContex
 	}
 
 	// Dynamic entity component = active participant (local player avatar or bot driving a state channel)
-	if (const UCrowdyEntityComponent* Component = TargetActor->FindComponentByClass<UCrowdyEntityComponent>();
-		Component && Component->GetMode() == ECrowdyEntityMode::Dynamic)
+	const UCrowdyEntityComponent* Component = TargetActor->FindComponentByClass<UCrowdyEntityComponent>();
+	if (Component && Component->OwnedBy == ECrowdyOwnedBy::Leader)
+	{
+		return;
+	}
+
+	if (Component && Component->GetMode() == ECrowdyEntityMode::Dynamic)
 	{
 		bIsPlayerControlled = true;
 		return;

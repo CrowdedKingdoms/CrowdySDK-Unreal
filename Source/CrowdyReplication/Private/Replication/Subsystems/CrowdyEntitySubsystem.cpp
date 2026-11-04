@@ -13,6 +13,7 @@
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Subsystems/CrowdyActorManager.h"
+#include "Replication/Subsystems/CrowdyActorTracker.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
@@ -88,7 +89,7 @@ void UCrowdyEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// The session may already have a UUID
 	// so seed from it and then track future updates.
 	LocalPlayerID = GameSession->GetID();
-	GameSession->OnOwnerUUIDUpdated.AddDynamic(this, &UCrowdyEntitySubsystem::OnOwnerUUIDUpdated);
+	BindGameSession();
 
 	const UCrowdyMapProfile* Profile = UCrowdySDKDeveloperSettings::ResolveProfileForWorld(World);
 	if (!Profile || !Profile->bEnableNetworking)
@@ -110,6 +111,12 @@ void UCrowdyEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	}
 }
 
+void UCrowdyEntitySubsystem::BindGameSession()
+{
+	GameSession->OnOwnerUUIDUpdated.AddDynamic(this, &UCrowdyEntitySubsystem::OnOwnerUUIDUpdated);
+	GameSession->OnHostIDUpdated.AddDynamic(this, &UCrowdyEntitySubsystem::OnLeaderUpdated);
+}
+
 void UCrowdyEntitySubsystem::SubscribeToSpawnDestroy(FCrowdyServiceRegistry& Registry)
 {
 	const FCrowdySubscriptionKey Keys[] =
@@ -127,7 +134,10 @@ void UCrowdyEntitySubsystem::SubscribeToSpawnDestroy(FCrowdyServiceRegistry& Reg
 void UCrowdyEntitySubsystem::Deinitialize()
 {
 	if (IsValid(GameSession))
+	{
 		GameSession->OnOwnerUUIDUpdated.RemoveDynamic(this, &UCrowdyEntitySubsystem::OnOwnerUUIDUpdated);
+		GameSession->OnHostIDUpdated.RemoveDynamic(this, &UCrowdyEntitySubsystem::OnLeaderUpdated);
+	}
 	GameSession = nullptr;
 
 	for (auto& Pair : PendingRemoteSpawns)
@@ -344,9 +354,31 @@ bool UCrowdyEntitySubsystem::IsRecordLocallyOwned(const FCrowdyEntityRecord& Rec
 	return FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.OwnerID, LocalPlayerID, GetWriterID(Record));
 }
 
+void UCrowdyEntitySubsystem::MakeLeaderOwned(FCrowdyEntityRecord& Record) const
+{
+	Record.bLeaderOwned = true;
+	Record.OwnerID = GetHostID();
+	Record.Role = DeriveRole(Record, Record.OwnerID);
+}
+
+ECrowdyRole UCrowdyEntitySubsystem::DeriveRole(const FCrowdyEntityRecord& Record, const FGuid& NewOwnerID) const
+{
+	// A valid player id means a client owns it. With none, a Leader entity waits for the next Leader and anything
+	// else belongs to the world.
+	if (NewOwnerID.IsValid())
+		return NewOwnerID == LocalPlayerID ? ECrowdyRole::Owner : ECrowdyRole::RemoteProxy;
+	return Record.bLeaderOwned ? ECrowdyRole::RemoteProxy : ECrowdyRole::HostOwned;
+}
+
+bool UCrowdyEntitySubsystem::IsLocalLeader() const
+{
+	return LocalPlayerID.IsValid() && GetHostID() == LocalPlayerID;
+}
+
 void UCrowdyEntitySubsystem::SetLocalPlayerID(const FGuid& InLocalPlayerID)
 {
 	LocalPlayerID = InLocalPlayerID;
+	ReassignLeaderOwnedEntities();
 }
 
 void UCrowdyEntitySubsystem::OnOwnerUUIDUpdated(FString NewUUID)
@@ -370,6 +402,29 @@ void UCrowdyEntitySubsystem::OnOwnerUUIDUpdated(FString NewUUID)
 
 	for (const FGuid& OldNetID : StaleParticipantIDs)
 		RestampParticipantIdentity(OldNetID);
+
+	// A placed Leader entity usually registers before this client knows its own id, so it cannot have seen that it leads.
+	ReassignLeaderOwnedEntities();
+}
+
+void UCrowdyEntitySubsystem::OnLeaderUpdated(const FGuid& /*NewLeaderID*/, const FGuid& /*PreviousLeaderID*/)
+{
+	ReassignLeaderOwnedEntities();
+}
+
+void UCrowdyEntitySubsystem::ReassignLeaderOwnedEntities()
+{
+	// Collect-then-mutate: an ownership handler is free to register or destroy an entity.
+	TArray<FGuid> LeaderOwned;
+	for (const TPair<FGuid, FCrowdyEntityRecord>& Pair : Records)
+	{
+		if (Pair.Value.bLeaderOwned)
+			LeaderOwned.Add(Pair.Key);
+	}
+
+	// Read each time: a handler above may sign out, which clears the Leader.
+	for (const FGuid& NetID : LeaderOwned)
+		ReassignOwnership(NetID, GetHostID(), FGuid());
 }
 
 FGuid UCrowdyEntitySubsystem::RegisterParticipant(UObject* Participant, const ECrowdyOwnership Ownership)
@@ -465,6 +520,15 @@ AActor* UCrowdyEntitySubsystem::SpawnEntity(const TSubclassOf<AActor> EntityClas
 		return nullptr;
 	}
 
+	const UCrowdyEntityComponent* Defaults = AActor::GetActorClassDefaultComponent<UCrowdyEntityComponent>(EntityClass);
+	if (Defaults && Defaults->OwnedBy == ECrowdyOwnedBy::Leader && !IsLocalLeader())
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: SpawnEntity of %s refused: it is Owned By Leader, so only the client that leads may spawn it."),
+			*EntityClass->GetName());
+		return nullptr;
+	}
+
 	const uint32 ClassID = UCrowdyClassRegistry::Get()->GetID(EntityClass);
 
 	AActor* Actor = GetWorld()->SpawnActorDeferred<AActor>(EntityClass, SpawnTransform, nullptr, nullptr,
@@ -530,6 +594,15 @@ void UCrowdyEntitySubsystem::DestroyEntity(AActor* TargetEntity)
 	if (!EntityID.IsValid())
 	{
 		UE_LOG(LogCrowdyReplication, Error, TEXT("[CrowdyEntitySubsystem]: DestroyEntity — '%s' is not a registered entity."),
+			*GetNameSafe(TargetEntity));
+		return;
+	}
+
+	const FCrowdyEntityRecord* Record = Records.Find(EntityID);
+	if (Record && Record->bLeaderOwned && !IsRecordLocallyOwned(*Record))
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: DestroyEntity of '%s' refused: it is Owned By Leader, so only the client that leads may destroy it."),
 			*GetNameSafe(TargetEntity));
 		return;
 	}
@@ -775,7 +848,25 @@ void UCrowdyEntitySubsystem::DispatchSingleActorMessageTo(const FGuid& TargetNet
 	UHelperFunctions::GetChunkCoordinateAtLocation(this, Location, ChunkX, ChunkY, ChunkZ);
 
 	if (Bridge->DispatchSingleActorMessageFn)
-		Bridge->DispatchSingleActorMessageFn(ChunkX, ChunkY, ChunkZ, TargetNetID, MoveTemp(Payload), false);
+	{
+		const FCrowdyActorId TargetWireID = ResolveTargetWireId(TargetNetID, GetWorld()->GetSubsystem<UCrowdyActorTracker>());
+		Bridge->DispatchSingleActorMessageFn(ChunkX, ChunkY, ChunkZ, TargetWireID, MoveTemp(Payload), false);
+	}
+}
+
+FCrowdyActorId UCrowdyEntitySubsystem::ResolveTargetWireId(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const
+{
+	// A player's avatar always sends under its NetID, a Leader entity under its owner's id, and anything else under the
+	// id last heard, which follows the entity when it changes hands.
+	const FCrowdyEntityRecord* Record = Records.Find(NetID);
+	if (Record && Record->bLeaderOwned)
+		return FCrowdyActorId::ForOwner(NetID, Record->OwnerID);
+
+	FCrowdyActorId WireId = FCrowdyActorId::FromGuid(NetID);
+	const bool bAvatar = Record && Record->OwnerID == NetID;
+	if (Tracker && !bAvatar)
+		Tracker->FindWireId(NetID, WireId);
+	return WireId;
 }
 
 void UCrowdyEntitySubsystem::PublishReliableRpc(const FString& ChannelName, const TArray<uint8>& ChannelPayload)
@@ -827,8 +918,10 @@ void UCrowdyEntitySubsystem::ReassignOwnership(const FGuid& NetID, const FGuid& 
 	const FGuid PreviousOwnerID = Record->OwnerID;
 
 	// Compare-and-swap: a stale or duplicate grant whose expected previous owner no longer matches is dropped.
-	// Skipped when the caller passes an invalid expectation (a host-owned source has no per-client owner id).
-	if (ExpectedPreviousOwnerID.IsValid() && PreviousOwnerID != ExpectedPreviousOwnerID)
+	// Skipped when the caller passes an invalid expectation (a host-owned source has no per-client owner id), and
+	// for a proxy whose owner this client never learned (it missed the spawn event), so it has nothing to compare.
+	const bool bOwnerUnknown = Record->Role == ECrowdyRole::RemoteProxy && !PreviousOwnerID.IsValid();
+	if (ExpectedPreviousOwnerID.IsValid() && !bOwnerUnknown && PreviousOwnerID != ExpectedPreviousOwnerID)
 	{
 		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
 			TEXT("[CrowdyEntitySubsystem]: ReassignOwnership %s dropped — expected previous owner %s but current is %s."),
@@ -836,17 +929,12 @@ void UCrowdyEntitySubsystem::ReassignOwnership(const FGuid& NetID, const FGuid& 
 		return;
 	}
 
-	// Idempotent: re-applying the same owner (a duplicate grant) is a no-op.
-	if (PreviousOwnerID == NewOwnerID)
-		return;
+	const ECrowdyRole NewRole = DeriveRole(*Record, NewOwnerID);
 
-	// Re-derive the role from the new owner: a valid player id means a client owns it (Owner where we are that
-	// client, RemoteProxy elsewhere); an invalid id means it is host-owned (a world entity, no per-client owner).
-	ECrowdyRole NewRole;
-	if (NewOwnerID.IsValid())
-		NewRole = (NewOwnerID == LocalPlayerID) ? ECrowdyRole::Owner : ECrowdyRole::RemoteProxy;
-	else
-		NewRole = ECrowdyRole::HostOwned;
+	// Idempotent: re-applying the same owner (a duplicate grant) is a no-op. A Leader entity can keep its owner and
+	// change role, when this client learns its own id after the Leader's.
+	if (PreviousOwnerID == NewOwnerID && (!Record->bLeaderOwned || Record->Role == NewRole))
+		return;
 
 	Record->OwnerID = NewOwnerID;
 	Record->Role    = NewRole;
@@ -937,7 +1025,7 @@ void UCrowdyEntitySubsystem::HandleRemoteSpawn(const FCrowdyEntitySpawnEvent& Ev
 		// owner and re-derives the role along with it. A record whose role already says this client owns the entity
 		// is excluded even when its owner id is still empty - that is a participant enrolled before the local
 		// player id arrived, waiting for its own id, not a slot for a peer to name an owner in.
-		const bool bOwnerIsFillable = !Existing->OwnerID.IsValid() && Existing->Role != ECrowdyRole::Owner;
+		const bool bOwnerIsFillable = !Existing->OwnerID.IsValid() && Existing->Role != ECrowdyRole::Owner && !Existing->bLeaderOwned;
 		if (bOwnerIsFillable && Event.OwnerID.IsValid() && Event.OwnerID != LocalPlayerID)
 		{
 			Existing->OwnerID = Event.OwnerID;
@@ -1056,7 +1144,7 @@ void UCrowdyEntitySubsystem::SetActorManager(UCrowdyActorManager* Manager)
 	ActorManager = Manager;
 }
 
-bool UCrowdyEntitySubsystem::HandSpawnToCrowdRows(const FCrowdyEntitySpawnEvent& Event, UClass* EntityClass) const
+bool UCrowdyEntitySubsystem::HandSpawnToCrowdRows(const FCrowdyEntitySpawnEvent& Event, UClass* EntityClass)
 {
 	UCrowdyRenderingBackend* Backend = ActorManager.IsValid() ? ActorManager->GetActiveBackend() : nullptr;
 	if (!IsValid(Backend) || !Backend->DrawsEntitiesAsCrowdRows())
@@ -1068,6 +1156,14 @@ bool UCrowdyEntitySubsystem::HandSpawnToCrowdRows(const FCrowdyEntitySpawnEvent&
 	if (!Template || Template->Mode != ECrowdyEntityMode::Dynamic)
 		return false;
 
+	bool bAlreadyReported = true;
+	if (Template->OwnedBy == ECrowdyOwnedBy::Leader)
+		ReportedLeaderRowClasses.Add(TObjectKey<UClass>(EntityClass), &bAlreadyReported);
+
+	UE_CLOG(!bAlreadyReported, LogCrowdyReplication, Warning,
+		TEXT("[CrowdyEntitySubsystem]: '%s' is Owned By Leader and this map draws it as a crowd row, which a new Leader cannot take over: use an actor pool map, or Owned By Player."),
+		*EntityClass->GetName());
+
 	Backend->TakeSpawnData(Event.EntityID, Event.InitialState);
 	ActorManager->ActivateParked(Event.EntityID, EntityClass);
 
@@ -1077,8 +1173,22 @@ bool UCrowdyEntitySubsystem::HandSpawnToCrowdRows(const FCrowdyEntitySpawnEvent&
 	return true;
 }
 
+bool UCrowdyEntitySubsystem::RefusesLeaderBody(UClass* EntityClass) const
+{
+	const UCrowdyEntityComponent* Defaults = AActor::GetActorClassDefaultComponent<UCrowdyEntityComponent>(EntityClass);
+	return Defaults && Defaults->OwnedBy == ECrowdyOwnedBy::Leader && IsLocalLeader();
+}
+
 void UCrowdyEntitySubsystem::FinishRemoteSpawn(const FCrowdyEntitySpawnEvent& Event, UClass* EntityClass)
 {
+	if (RefusesLeaderBody(EntityClass))
+	{
+		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyEntitySubsystem]: Spawn event for %s ignored: this client leads and did not spawn it."),
+			*Event.EntityID.ToString());
+		return;
+	}
+
 	if (HandSpawnToCrowdRows(Event, EntityClass))
 		return;
 
@@ -1149,6 +1259,15 @@ void UCrowdyEntitySubsystem::HandleRemoteDestroy(const FCrowdyEntityDestroyEvent
 	{
 		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
 			TEXT("[CrowdyEntitySubsystem]: Destroy event for %s ignored: it names a host-written participant that is not an actor."),
+			*Event.EntityID.ToString());
+		return;
+	}
+
+	// The Leader's own destroy has already removed the record, so this one came from a client that does not write it.
+	if (Existing && Existing->bLeaderOwned && Existing->Role == ECrowdyRole::Owner)
+	{
+		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyEntitySubsystem]: Destroy event for %s ignored: this client leads and did not destroy it."),
 			*Event.EntityID.ToString());
 		return;
 	}

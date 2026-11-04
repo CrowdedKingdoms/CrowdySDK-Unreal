@@ -131,6 +131,14 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 		return;
 	}
 
+	if (!ExistingRecord && EntitySubsystem->RefusesLeaderBody(EntityClass))
+	{
+		UE_CLOG(CrowdyReplicationTrace::Pool(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyActorPoolBackend]: Slot %d: entity %s is not drawn: this client leads and never had it."),
+			SlotId, *UUID.ToString());
+		return;
+	}
+
 	EnsurePoolForClass(EntityClass);
 
 	// A previous actor still here means a missed deactivation; only a record naming that actor is dropped.
@@ -193,13 +201,16 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 			Record.ClassID = SpawnRecord->ClassID;
 		}
 
+		UCrowdyEntityComponent* Component = Actor->FindComponentByClass<UCrowdyEntityComponent>();
+		if (Component && Component->OwnedBy == ECrowdyOwnedBy::Leader)
+			EntitySubsystem->MakeLeaderOwned(Record);
 		EntitySubsystem->RegisterEntity(Record);
 
 		// Sync the entity component's fields so GetNetID()/GetRole() work on the actor.
 		// AssignPooledIdentity (not InitIdentity) because pre-warmed pool actors have
 		// already begun play; the RegisterEntity above is the backend-owned record.
-		if (UCrowdyEntityComponent* Component = Actor->FindComponentByClass<UCrowdyEntityComponent>())
-			Component->AssignPooledIdentity(UUID, Record.OwnerID, ECrowdyRole::RemoteProxy, Record.ClassID);
+		if (Component)
+			Component->AssignPooledIdentity(UUID, Record.OwnerID, Record.Role, Record.ClassID);
 	}
 
 	SlotActors[SlotId] = Actor;

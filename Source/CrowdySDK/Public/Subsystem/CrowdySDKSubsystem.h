@@ -382,7 +382,7 @@ public:
 	 *  delivers it only to the client that owns TargetActorID. UUID = TargetActorID, chunk = the
 	 *  target's chunk; distance/decay are unused. */
 	void DispatchSingleActorMessage_Internal(int64 ChunkX, int64 ChunkY, int64 ChunkZ,
-	                                          const FGuid& TargetActorID, FInstancedStruct EventPayload, bool bAsync);
+	                                          const FCrowdyActorId& TargetActorID, FInstancedStruct EventPayload, bool bAsync);
 
 	/**
 	 * Subscribing to inbound messages from outside this plugin.

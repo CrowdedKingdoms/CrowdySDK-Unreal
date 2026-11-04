@@ -21,6 +21,7 @@
 #include "Replication/Subsystems/CrowdyActorTracker.h"
 #include "Replication/Subsystems/CrowdyAutoReplicator.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
+#include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "StructUtils/InstancedStruct.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
@@ -159,6 +160,33 @@ bool FCrowdyPoolAdoptsSpawnEventActorTest::RunTest(const FString& Parameters)
 	Fixture.Activate(1, Other);
 	AActor* PoolActor = Fixture.Backend->GetSlotActorForTest(1);
 	TestTrue(TEXT("the pool actor is still free for the next entity"), IsValid(PoolActor) && PoolActor != Spawned);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPoolProxyOfLeaderEntityTest,
+	"CrowdySDK.CrowdyReplication.PoolProxyOfLeaderEntityNamesTheLeader", CrowdyAppearanceTestFlags)
+bool FCrowdyPoolProxyOfLeaderEntityTest::RunTest(const FString& Parameters)
+{
+	FCrowdyAppearanceTestWorld TestWorld;
+	const FCrowdyAppearanceFixture Fixture(TestWorld.World);
+
+	const FGuid Leader = FGuid::NewGuid();
+	Fixture.Entities->SetLocalPlayerID(FGuid::NewGuid());
+	Fixture.Entities->SetGameSessionForTest(MakeGameSession(Leader));
+
+	const FGuid Entity = FGuid::NewGuid();
+	Fixture.Backend->ActivateInstance(0, Entity, ACrowdyLeaderOwnedTestActor::StaticClass(), FInstancedStruct());
+
+	const FCrowdyEntityRecord* Record = Fixture.Entities->FindRecord(Entity);
+	if (!TestNotNull(TEXT("the pool registered the proxy"), Record))
+	{
+		return false;
+	}
+	TestTrue(TEXT("as a Leader entity"), Record->bLeaderOwned);
+	TestEqual(TEXT("owned by the Leader"), Record->OwnerID, Leader);
+
+	const UCrowdyEntityComponent* Component = Record->GetActor()->FindComponentByClass<UCrowdyEntityComponent>();
+	TestEqual(TEXT("and its component agrees"), Component->GetOwnerID(), Leader);
 	return true;
 }
 
@@ -635,6 +663,43 @@ bool FCrowdyCrowdRowMapSpawnsNoActorTest::RunTest(const FString& Parameters)
 	Fixture.Manager->SetBackend(NewObject<UCrowdyRecordingBackend>(GetTransientPackage()));
 	const FGuid Pooled = Fixture.ReceiveSpawn(ACrowdyStateOverlapActor::StaticClass(), 7.0);
 	TestTrue(TEXT("a moving entity on an actor map still gets its actor"), Fixture.HasActorFor(Pooled));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyLeaderClassOnRowsWarnsOnceTest,
+	"CrowdySDK.LeaderOwned.ACrowdRowMapSaysALeaderClassCannotBeTakenOver", CrowdyAppearanceTestFlags)
+bool FCrowdyLeaderClassOnRowsWarnsOnceTest::RunTest(const FString& Parameters)
+{
+	UCrowdyCrowdRowRecordingBackend* Rows = NewObject<UCrowdyCrowdRowRecordingBackend>(GetTransientPackage());
+	const FCrowdyCrowdRowFixture Fixture(Rows);
+
+	Fixture.ReceiveSpawn(ACrowdyStateOverlapActor::StaticClass(), 1.0);
+	TestEqual(TEXT("a Player class says nothing"), Fixture.Entities->GetReportedLeaderRowClassCountForTest(), 0);
+
+	Fixture.ReceiveSpawn(ACrowdyLeaderMovingTestActor::StaticClass(), 2.0);
+	Fixture.ReceiveSpawn(ACrowdyLeaderMovingTestActor::StaticClass(), 3.0);
+	TestEqual(TEXT("a Leader class is reported once"), Fixture.Entities->GetReportedLeaderRowClassCountForTest(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyLeadingClientRefusesPoolBodyTest,
+	"CrowdySDK.LeaderOwned.AnUpdateGivesTheLeaderNoBodyItNeverHad", CrowdyAppearanceTestFlags)
+bool FCrowdyLeadingClientRefusesPoolBodyTest::RunTest(const FString& Parameters)
+{
+	FCrowdyAppearanceTestWorld TestWorld;
+	const FCrowdyAppearanceFixture Fixture(TestWorld.World);
+	const FGuid Local = FGuid::NewGuid();
+	Fixture.Entities->SetLocalPlayerID(Local);
+	Fixture.Entities->SetGameSessionForTest(MakeGameSession(Local));
+
+	const FGuid Entity = FGuid::NewGuid();
+	Fixture.Backend->ActivateInstance(0, Entity, ACrowdyLeaderMovingTestActor::StaticClass(), FInstancedStruct());
+	TestNull(TEXT("the client that leads takes no pool actor for it"), Fixture.Entities->FindEntity(Entity));
+	TestFalse(TEXT("and the slot stays open"), Fixture.Backend->IsInstanceActive(0));
+
+	Fixture.Entities->SetGameSessionForTest(MakeGameSession(FGuid::NewGuid()));
+	Fixture.Backend->ActivateInstance(0, Entity, ACrowdyLeaderMovingTestActor::StaticClass(), FInstancedStruct());
+	TestNotNull(TEXT("a client that does not lead draws it"), Fixture.Entities->FindEntity(Entity));
 	return true;
 }
 

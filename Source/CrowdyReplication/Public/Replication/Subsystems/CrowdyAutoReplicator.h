@@ -136,6 +136,12 @@ public:
 		bOutPresenceOnly = Index != INDEX_NONE && Data.bPresenceOnly[Index];
 		return Index != INDEX_NONE;
 	}
+
+	FString GetSendIdForTest(const UActorComponent* Component) const
+	{
+		const int32 Index = Data.Components.IndexOfByKey(Component);
+		return Index != INDEX_NONE ? Data.UUIDs[Index] : FString();
+	}
 #endif
 
 private:

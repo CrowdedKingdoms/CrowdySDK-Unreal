@@ -15,6 +15,7 @@
 #include "Core/CrowdySDKBridgeSubsystem.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Replication/Subsystems/CrowdyActorUpdateRouting.h"
+#include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyShardScheduling.h"
 #include "Subsystem/CrowdyWorkerThreadsSubsystem.h"
 #include "TimerManager.h"
@@ -96,7 +97,14 @@ void UCrowdyActorTracker::Initialize(FSubsystemCollectionBase& Collection)
 	}
 		
 	SetupQueues();
-	
+
+	EntitySubsystem = Collection.InitializeDependency<UCrowdyEntitySubsystem>();
+	if (EntitySubsystem.IsValid())
+	{
+		EntitySubsystem->OnEntityOwnershipChanged.AddDynamic(this, &UCrowdyActorTracker::HandleEntityOwnerChanged);
+		EntitySubsystem->OnEntityUnregistered.AddDynamic(this, &UCrowdyActorTracker::HandleEntityUnregistered);
+	}
+
 	if (CrowdyBridge->ServiceRegistry)
 	{
 		ActorUpdateSubscription = CrowdyBridge->ServiceRegistry->SubscribeToAllPayloads(
@@ -130,6 +138,12 @@ void UCrowdyActorTracker::Deinitialize()
 	// this needs no lookup back through the bridge. See FCrowdyDelivery for the threading rules.
 	ActorUpdateSubscription.Release();
 	ActorLeftSubscription.Release();
+
+	if (UCrowdyEntitySubsystem* Entities = EntitySubsystem.Get())
+	{
+		Entities->OnEntityOwnershipChanged.RemoveDynamic(this, &UCrowdyActorTracker::HandleEntityOwnerChanged);
+		Entities->OnEntityUnregistered.RemoveDynamic(this, &UCrowdyActorTracker::HandleEntityUnregistered);
+	}
 
 	if (const UWorld* World = GetWorld())
 	{
@@ -219,7 +233,7 @@ void UCrowdyActorTracker::HandleActorUpdateDelivery(const FCrowdyDelivery& Deliv
 	const auto& AUN = Delivery.GetAs<FActorUpdateNotificationMessage>();
 
 	// A viewer has no avatar, so an avatar still shown under its id (a player who became a viewer) times out as usual.
-	if (AUN.bViewerBeat)
+	if (AUN.bViewerBeat || IsRetiredWireId(AUN.GUID, AUN.UUID))
 	{
 		return;
 	}
@@ -313,6 +327,13 @@ void UCrowdyActorTracker::HandleActorLeftDelivery(const FCrowdyDelivery& Deliver
 {
 	// Only the actor left opcode routes here, and only this decoder produces a message under it.
 	const FActorLeftNotification& Left = Delivery.GetAs<FActorLeftNotification>();
+
+	// The server retiring an id the entity does not send under says nothing about the entity.
+	FCrowdyActorId Held;
+	if (FindWireId(Left.GUID, Held) && Held != Left.UUID)
+	{
+		return;
+	}
 
 	const bool bWasTracked = ForgetTrackedActor(Left.GUID);
 
@@ -957,8 +978,42 @@ void UCrowdyActorTracker::RecordAppearances(const TArray<FCrowdyActorUpdate>& Ap
 	}
 }
 
+bool UCrowdyActorTracker::IsRetiredWireId(const FGuid& NetID, const FCrowdyActorId& WireId) const
+{
+	if (const FCrowdyActorId* Current = CurrentWireIds.IsEmpty() ? nullptr : CurrentWireIds.Find(NetID))
+	{
+		return *Current != WireId;
+	}
+
+	if (WireId.Octets[0] != FCrowdyActorId::OwnerTaggedMarker)
+	{
+		return false;
+	}
+
+	// A client that truly missed a move hears the new owner once the old id's departure lets go of it.
+	FReadScopeLock R(AppearedIdsLock);
+	const FAppearedIds* Held = AppearedIdsByUUID.Find(NetID);
+	return Held && Held->WireId.IsSet() && Held->WireId != WireId;
+}
+
+void UCrowdyActorTracker::HandleEntityOwnerChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& /*PreviousOwnerID*/)
+{
+	CurrentWireIds.Add(NetID, FCrowdyActorId::ForOwner(NetID, NewOwnerID));
+}
+
+void UCrowdyActorTracker::HandleEntityUnregistered(const FGuid& NetID)
+{
+	CurrentWireIds.Remove(NetID);
+}
+
 bool UCrowdyActorTracker::FindWireId(const FGuid& UUID, FCrowdyActorId& OutWireId) const
 {
+	if (const FCrowdyActorId* Moved = CurrentWireIds.Find(UUID))
+	{
+		OutWireId = *Moved;
+		return true;
+	}
+
 	FReadScopeLock R(AppearedIdsLock);
 	const FAppearedIds* Found = AppearedIdsByUUID.Find(UUID);
 	if (!Found || !Found->WireId.IsSet())

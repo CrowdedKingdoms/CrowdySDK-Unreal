@@ -28,6 +28,9 @@ struct FCrowdyEntityRecord
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Entity")
 	ECrowdyRole Role = ECrowdyRole::None;
 
+	// Owned By Leader: OwnerID follows the Leader, and is empty while there is none.
+	bool bLeaderOwned = false;
+
 	// Hash-derived class identity carried on spawn events.
 	// Not Blueprint-exposed (uint32).
 	UPROPERTY()

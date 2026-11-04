@@ -436,6 +436,31 @@ void UCrowdyStateReplicator::HandleOwnershipChanged(AActor* /*TargetEntity*/, co
 
 	// Re-track when we are now the authority: an Owner record always, a HostOwned record only while we are host.
 	TryTrackOwned(*Record);
+
+	// A new Leader may hold stale values, so it starts from what it has and sends only what it writes from here on.
+	const TUniquePtr<FCrowdyOwnedEntityState>* Tracked = Record->bLeaderOwned ? OwnedEntities.Find(NetID) : nullptr;
+	if (Tracked && Tracked->IsValid())
+	{
+		SeedShadowFromLive(**Tracked);
+	}
+}
+
+void UCrowdyStateReplicator::SeedShadowFromLive(FCrowdyOwnedEntityState& State)
+{
+	const UObject* Participant = State.Participant.Get();
+	if (!Participant || !State.bShadowInitialized)
+	{
+		return;
+	}
+
+	uint8* const Base = State.ShadowData.GetData();
+	for (int32 Index = 0; Index < State.ShadowProps.Num(); ++Index)
+	{
+		if (const FProperty* Property = State.ShadowProps[Index])
+		{
+			Property->CopyCompleteValue(Base + State.ShadowOffsets[Index], Property->ContainerPtrToValuePtr<void>(Participant));
+		}
+	}
 }
 
 bool UCrowdyStateReplicator::BuildOwnedState(const FGuid& EntityID, UObject* Participant,
@@ -854,6 +879,7 @@ AActor* UCrowdyStateReplicator::GetOrCreateLoopbackMirror(AActor* SourceActor, c
 	// to be a tracked owned entity at all); the sole realistic failure this can't protect against is no
 	// UCrowdyEntitySubsystem in this world, which the receive path's own deferred-retry-then-give-up already
 	// handles gracefully for a delta whose target never resolves.
+	Component->OwnedBy = ECrowdyOwnedBy::Player;
 	Mirror->FinishSpawning(MirrorTransform);
 
 	LoopbackMirrors.Add(SourceEntityID, Mirror);
