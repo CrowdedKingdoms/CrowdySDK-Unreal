@@ -64,7 +64,7 @@ enum class ECrowdyOwnedBy : uint8
 {
 	Auto UMETA(DisplayName="Auto", ToolTip="World when placed in the level, Player when spawned during play."),
 	Player UMETA(DisplayName="Player", ToolTip="The player whose client placed or spawned it."),
-	World UMETA(DisplayName="World", ToolTip="Placed in the level and written by the elected host; its truth belongs in Server Objects. An entity spawned during play belongs to its spawner instead."),
+	World UMETA(DisplayName="World", ToolTip="Placed in the level; no client writes it (the elected host does under Leader Source Elected Host), so its truth belongs in Server Objects. An entity spawned during play belongs to its spawner instead."),
 	Leader UMETA(Hidden, DisplayName="Leader", ToolTip="Whichever client currently leads the entity's scope."),
 };
 
@@ -336,7 +336,7 @@ public:
 	// is there on every client from the start, so one spawned during play belongs to its spawner.
 	static ECrowdyOwnedBy ResolveOwnedBy(ECrowdyOwnedBy InOwnedBy, ECrowdyOwnership InOwnership, bool bIsLevelPlaced);
 
-	// The role and owner id for a resolved owner: Player is this client's; World and Leader are the elected host's.
+	// The role and owner id for a resolved owner: Player is this client's; World and Leader are HostOwned, written by the World writer.
 	static void DeriveOwner(ECrowdyOwnedBy InResolvedOwnedBy, const FGuid& InLocalPlayerID, ECrowdyRole& OutRole, FGuid& OutOwnerID);
 
 	// Whether an entity with these settings sends its movement; bIsPawnWithMovement is IsPawnWithMovement of its class.

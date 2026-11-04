@@ -859,6 +859,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateHostAlreadyElectedTracksOnRegisterT
 	"CrowdySDK.State.HostAlreadyElectedTracksOnRegister", CrowdyStateReplicatorTestFlags)
 bool FCrowdyStateHostAlreadyElectedTracksOnRegisterTest::RunTest(const FString& Parameters)
 {
+	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
 	{

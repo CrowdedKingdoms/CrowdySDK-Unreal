@@ -93,14 +93,15 @@ namespace
 		return true;
 	}
 
-	// True, after a rate-limited warning naming the setting, when a Host event has no host to go to at all.
-	bool WarnIfNoHostExists(const UFunction* Fn, int64 FunctionID)
+	// True, after a rate-limited warning naming the setting, when a Host event has no host to go to at all: under
+	// Server Object a World actor never has one, and a replicated subsystem has none until its Leader is known.
+	bool WarnIfNoHostExists(const UFunction* Fn, int64 FunctionID, bool bLeaderKnown)
 	{
-		if (UCrowdySDKDeveloperSettings::UsesElectedHost())
+		if (UCrowdySDKDeveloperSettings::UsesElectedHost() || bLeaderKnown)
 			return false;
 
 		UE_CLOG(ShouldLogRpcDrop(FunctionID), LogCrowdyRPC, Warning,
-			TEXT("[CrowdyRPC] '%s' dropped - it is a Host event, but Leader Source is Server Object, so there is no host. ")
+			TEXT("[CrowdyRPC] '%s' dropped - it is a Host event, but Leader Source is Server Object: a World actor has no host, and a replicated subsystem's Host is the Leader, not known yet (the app's server code must be deployed). ")
 			TEXT("Move host-only logic to a Server Object, or set Project Settings > Plugins > Crowdy SDK > Replication > Leader Source to Elected Host (Deprecated)."),
 			*GetNameSafe(Fn));
 		return true;
@@ -1819,7 +1820,8 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 
 	const bool bWeOwnEntity = EntityID.IsValid() && EntitySubsystem->IsLocallyOwned(EntityID);
 
-	const FGuid HostID = EntitySubsystem->GetWorldOwnerID();
+	// A non-spatial participant is a replicated subsystem, whose Host is the Leader.
+	const FGuid HostID = bNonSpatial ? EntitySubsystem->GetHostID() : EntitySubsystem->GetWorldOwnerID();
 	const bool bWeAreHost = HostID.IsValid() && HostID == EntitySubsystem->GetLocalPlayerID();
 
 	// Loopback debug mode (crowdy.rpc.loopback) delivers the call to this client's own receive
@@ -1833,7 +1835,7 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 	const FCrowdyRpcRouteDecision Decision =
 		DecideRoute(Info.Recipient, bNonSpatial, EntityID.IsValid(), bWeOwnEntity, bWeAreHost);
 
-	if (Info.Recipient == ECrowdyEventRecipient::Host && WarnIfNoHostExists(Fn, Info.FunctionID))
+	if (Info.Recipient == ECrowdyEventRecipient::Host && WarnIfNoHostExists(Fn, Info.FunctionID, bNonSpatial && HostID.IsValid()))
 	{
 		return true;
 	}
@@ -1991,7 +1993,7 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 	const FCrowdyRpcRouteDecision Decision = DecideRoute(Info.Recipient, /*bNonSpatial=*/false,
 		/*bEntityValid=*/true, bWeOwnTarget, bWeAreHost);
 
-	if (Info.Recipient == ECrowdyEventRecipient::Host && WarnIfNoHostExists(Fn, Info.FunctionID))
+	if (Info.Recipient == ECrowdyEventRecipient::Host && WarnIfNoHostExists(Fn, Info.FunctionID, /*bLeaderKnown=*/false))
 	{
 		return true;
 	}
@@ -2065,7 +2067,7 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 			const bool bLogDrop = ShouldLogRpcDrop(Info.FunctionID);
 			UE_CLOG(bLogDrop, LogCrowdyRPC, Warning,
 				TEXT("[CrowdyRPC] '%s' dropped - it is owner-only and entity %s belongs to no client, so there is "
-					 "no client to deliver it to. A world entity is reached with CrowdyRecipient=Host."),
+					 "no client to deliver it to. A world entity is reached with CrowdyRecipient=Host only while Leader Source is Elected Host; under Server Object no client writes it."),
 				*Fn->GetName(), *Resolved.NetID.ToString());
 			break;
 		}

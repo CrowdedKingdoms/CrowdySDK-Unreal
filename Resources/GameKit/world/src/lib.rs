@@ -15,9 +15,10 @@
 //! hub, which takes 50 calls a second for the whole app: clients subscribe to its topics
 //! rather than polling `state`.
 //!
-//! The Crowdy SDK's copy of the `world-tick` starter: the conditions also carry `online`, the
-//! players in the app's world, published on the next tick after it changes, so a game reads the
-//! count from the `world` topic.
+//! The Crowdy SDK's copy of the `world-tick` starter: it answers `is_present { Player }` for other
+//! server code (1 present, 0 seen leaving, -1 not known), which the SDK's Leader scope asks about
+//! its Leader, and the conditions also carry `online`, the players in the app's world, published on
+//! the next tick after it changes, so a game reads the count from the `world` topic.
 
 use std::collections::BTreeMap;
 
@@ -257,7 +258,27 @@ pub struct WorldHub {
     pub kit: Publisher,
     #[serde(default)]
     pub receipts: Receipts,
+    /// Who this hub has heard join (true) or leave (false) since it started; not saved, because presence events are
+    /// lost when the hub moves, so a player missing here is not known rather than gone.
+    #[serde(skip)]
+    pub seen: BTreeMap<u64, bool>,
 }
+
+/// The Crowdy SDK's presence question: the Leader scope asks it about its Leader.
+#[derive(Deserialize)]
+struct PresenceQuery {
+    #[serde(rename = "Player")]
+    player: i64,
+}
+
+/// 1 present, 0 seen leaving, -1 not known.
+#[derive(Serialize)]
+struct PresenceReply {
+    #[serde(rename = "Presence")]
+    presence: i32,
+}
+
+const MAX_SEEN: usize = 100_000;
 
 fn developer(call: &Call<'_>) -> Result<u64> {
     call.developer().map_err(|_| kit::error(codes::FORBIDDEN, format!("`{}` is for the app's developers", call.method)))
@@ -334,6 +355,18 @@ impl Hub for WorldHub {
         let now = ctx.now_ms();
         match call.method {
             "state" => encode(&self.world.view(now)),
+            "is_present" => {
+                if call.player().is_ok() {
+                    return Err(Error::new("denied: players may not call this function"));
+                }
+                let query: PresenceQuery = call.decode()?;
+                let presence = match self.seen.get(&(query.player as u64)) {
+                    Some(true) => 1,
+                    Some(false) => 0,
+                    None => -1,
+                };
+                encode(&PresenceReply { presence })
+            }
             kit::SNAPSHOT_METHOD => match kit::snapshot_topic(&call, WORLD_TOPIC).as_str() {
                 WORLD_TOPIC => self.kit.snapshot_reply(ctx, WORLD_TOPIC, &self.world.conditions(now)),
                 NODES_TOPIC => self.kit.snapshot_reply(ctx, NODES_TOPIC, &self.world.node_collection()),
@@ -358,6 +391,16 @@ impl Hub for WorldHub {
 
     fn on_presence(&mut self, _ctx: &Ctx, presence: &Presence) -> Result<()> {
         self.world.online = presence.count;
+        // Joins last: a player who left and came back within one report is present.
+        for left in &presence.left {
+            self.seen.insert(left.player, false);
+        }
+        for joined in &presence.joined {
+            self.seen.insert(joined.player, true);
+        }
+        if self.seen.len() > MAX_SEEN {
+            self.seen.retain(|_, present| *present);
+        }
         Ok(())
     }
 }
@@ -473,6 +516,25 @@ mod tests {
         assert_eq!(conditions.last().map(|m| m.body.online), Some(3), "a new count is published on the next tick");
         let read: Message<Conditions> = hub.call_typed(Caller::Player(1), "snapshot", &json!({ "topic": WORLD_TOPIC })).unwrap();
         assert_eq!(read.body.online, 3);
+    }
+
+    #[test]
+    fn server_code_asks_whether_a_player_is_in_the_world() {
+        use ckx_sdk::testing::TestHub;
+        let mut hub = TestHub::<WorldHub>::spawn("world", "").unwrap();
+        let player = |id| PresencePlayer { player: id, actor: None };
+        hub.presence(&Presence { count: 1, joined: vec![player(7), player(8)], ..Default::default() }).unwrap();
+        hub.presence(&Presence { count: 1, left: vec![player(8)], ..Default::default() }).unwrap();
+        let ask = |hub: &mut TestHub<WorldHub>, id: i64| -> i32 {
+            let reply: serde_json::Value = hub.call_typed(Caller::Instance(1), "is_present", &json!({ "Player": id })).unwrap();
+            reply["Presence"].as_i64().unwrap() as i32
+        };
+        assert_eq!(ask(&mut hub, 7), 1, "joined");
+        assert_eq!(ask(&mut hub, 8), 0, "seen leaving");
+        assert_eq!(ask(&mut hub, 9), -1, "never heard of");
+        hub.presence(&Presence { count: 2, joined: vec![player(7)], left: vec![player(7)], ..Default::default() }).unwrap();
+        assert_eq!(ask(&mut hub, 7), 1, "left and came back within one report");
+        assert!(hub.call(Caller::Player(7), "is_present", &encode(&json!({ "Player": 7 })).unwrap()).is_err(), "players may not ask");
     }
 
     #[test]

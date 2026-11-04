@@ -701,6 +701,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateWorldEntityHostOnlyTest,
 	"CrowdySDK.State.WorldEntityHostOnly", CrowdyStateApplyTestFlags)
 bool FCrowdyStateWorldEntityHostOnlyTest::RunTest(const FString& Parameters)
 {
+	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
 	{

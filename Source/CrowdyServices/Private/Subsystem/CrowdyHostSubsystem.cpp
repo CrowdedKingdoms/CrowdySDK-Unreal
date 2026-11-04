@@ -168,6 +168,13 @@ void UCrowdyHostSubsystem::CheckEntityIsHost(const AActor* Entity, TFunction<voi
 	// NetID matches the local player's id is our own avatar: the one case amIGameHost answers
 	// authoritatively for this client.
 	const FGuid LocalPlayerNetID = EntitySubsystem->GetLocalPlayerID();
+	// Under Leader Source Server Object the server still elects a host of its own, but the host is the Leader.
+	if (EntityNetID == LocalPlayerNetID && !UCrowdySDKDeveloperSettings::UsesElectedHost())
+	{
+		const int64 LeaderUserID = GetHostUserID();
+		Callback(LeaderUserID != 0, LeaderUserID != 0 && IsValid(GameSession) && LeaderUserID == GameSession->GetUserID());
+		return;
+	}
 	if (EntityNetID == LocalPlayerNetID)
 	{
 		RequestAmIGameHost([Callback = MoveTemp(Callback)](bool bSuccess, bool bAmHost)

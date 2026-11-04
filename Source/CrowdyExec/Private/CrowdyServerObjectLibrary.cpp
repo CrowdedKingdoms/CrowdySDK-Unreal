@@ -583,6 +583,32 @@ UCrowdyServerObjectDefinition* UCrowdyServerObjectLibrary::GetPlayersOnlineDefin
 	return Loaded;
 }
 
+UCrowdyServerObjectDefinition* UCrowdyServerObjectLibrary::GetLeaderDefinition()
+{
+	static UCrowdyServerObjectDefinition* const Built = []() -> UCrowdyServerObjectDefinition*
+	{
+		UCrowdyServerObjectDefinition* Definition = NewObject<UCrowdyServerObjectDefinition>(GetTransientPackage(), TEXT("CrowdyLeader"));
+		Definition->TypeName = UCrowdyServerObjectDefinition::LeaderTypeName;
+		Definition->bOnlyOneInstance = true;
+		Definition->State = FCrowdyLeaderState::StaticStruct();
+		Definition->MembersFrom = ECrowdyServerMembersSource::ThisObject;
+		Definition->MaxMembers = 0;
+		Definition->bShowMembers = false;
+		FCrowdyServerTimer& Check = Definition->Timers.AddDefaulted_GetRef();
+		Check.Name = TEXT("CheckLeader");
+		Check.Seconds = 2.f;
+		TArray<FString> Errors;
+		if (!Definition->Bake(Errors))
+		{
+			UE_LOG(LogCrowdyExec, Error, TEXT("The Leader type did not bake, so there is no Server Object Leader: %s"), *FString::Join(Errors, TEXT("; ")));
+			return nullptr;
+		}
+		Definition->AddToRoot();
+		return Definition;
+	}();
+	return Built;
+}
+
 const FProperty* UCrowdyServerObjectLibrary::FindServerValue(const FInstancedStruct& Values, FName Name)
 {
 	return CrowdyExec::FindTravellingField(Values.GetScriptStruct(), Name);

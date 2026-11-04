@@ -445,7 +445,8 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
         }
         else if (Info.Recipient == ECrowdyEventRecipient::Host)
         {
-            const FGuid HostID = EntitySubsystem ? EntitySubsystem->GetWorldOwnerID() : FGuid();
+            // A replicated subsystem's Host is the Leader.
+            const FGuid HostID = EntitySubsystem ? EntitySubsystem->GetHostID() : FGuid();
             const bool bIsLocalHost = HostID.IsValid() && HostID == LocalPlayerID;
             if (!bIsLocalHost)
             {
@@ -1032,9 +1033,10 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
     const bool bHostSourced = (Delta.Flags & CrowdyStateDeltaFlags::HostSourced) != 0;
     if (WriterRecord && WriterRecord->Role == ECrowdyRole::HostOwned)
     {
-        // A World entity takes only the host's delta, and with no elected host nothing writes it. Still precedence
+        // A World entity takes only its writer's delta: the Leader's for a replicated subsystem, else the elected
+        // host's, and with no elected host nothing writes it. Still precedence
         // by convention: cheat-sensitive state belongs in Server Objects, not on this unenforced view plane.
-        if (!IsFromWorldOwner(bHostSourced))
+        if (!IsFromWorldOwner(*WriterRecord, bHostSourced))
         {
             ++StateParticipantStats.DroppedNotHostSourcedForWorld;
             UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
@@ -1537,11 +1539,11 @@ void UCrowdyEventRouter::HandleDelivery(const FCrowdyDelivery& Delivery)
     DispatchEvent(InboundEvent);
 }
 
-bool UCrowdyEventRouter::IsFromWorldOwner(const bool bHostSourced) const
+bool UCrowdyEventRouter::IsFromWorldOwner(const FCrowdyEntityRecord& Record, const bool bHostSourced) const
 {
-    // Clients learn of a new host at different times, so the host flag rather than the sender is what they can
-    // agree on while it changes.
-    return bHostSourced && UCrowdySDKDeveloperSettings::UsesElectedHost();
+    // Clients learn of a new host or Leader at different times, so the flag rather than the sender is what they can
+    // agree on while it changes. A replicated subsystem always has the Leader; anything else only an elected host.
+    return bHostSourced && (Record.IsReplicatedSubsystem() || UCrowdySDKDeveloperSettings::UsesElectedHost());
 }
 
 bool UCrowdyEventRouter::LoadConfig() const

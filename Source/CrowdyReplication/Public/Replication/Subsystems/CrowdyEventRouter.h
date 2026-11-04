@@ -28,6 +28,7 @@ struct FCrowdyRepLayout;
 struct FCrowdyRpcCall;
 struct FCrowdyStateDelta;
 struct FCrowdyDelivery;
+struct FCrowdyEntityRecord;
 
 /**
  * Ceilings and budgets for the queue of events waiting on an entity that has not registered yet. Every
@@ -612,8 +613,9 @@ private:
 	void DeferEvent(const FCrowdyInboundEvent& Event, int32 RemainingAttempts, double DeferBudgetSeconds = 0.0);
 	void RetryDeferredEvents();
 
-	// Whether a World entity's delta comes from the client that writes World entities.
-	bool IsFromWorldOwner(bool bHostSourced) const;
+	// Whether a World-owned entity's delta comes from the client that writes it: the Leader for a replicated
+	// subsystem, the World owner for anything else.
+	bool IsFromWorldOwner(const FCrowdyEntityRecord& Record, bool bHostSourced) const;
 
 	bool LoadConfig() const;
 };

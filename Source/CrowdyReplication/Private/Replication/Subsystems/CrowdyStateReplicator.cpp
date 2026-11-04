@@ -276,7 +276,7 @@ bool UCrowdyStateReplicator::TryTrackOwned(const FCrowdyEntityRecord& Record)
 	{
 		bTrackAsHostOwned = false;
 	}
-	else if (Record.Role == ECrowdyRole::HostOwned && IsLocalHost())
+	else if (Record.Role == ECrowdyRole::HostOwned && IsLocalHost(Record.IsReplicatedSubsystem()))
 	{
 		bTrackAsHostOwned = true;
 	}
@@ -321,19 +321,23 @@ bool UCrowdyStateReplicator::TryTrackOwned(const FCrowdyEntityRecord& Record)
 	return true;
 }
 
-FGuid UCrowdyStateReplicator::ResolveHostID() const
+FGuid UCrowdyStateReplicator::ResolveHostID(const bool bSubsystem) const
 {
 	if (bUseHostOverrideForTest)
 	{
 		return HostIDForTest;
 	}
 	UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
-	return ES ? ES->GetWorldOwnerID() : FGuid();
+	if (!ES)
+	{
+		return FGuid();
+	}
+	return bSubsystem ? ES->GetHostID() : ES->GetWorldOwnerID();
 }
 
-bool UCrowdyStateReplicator::IsLocalHost() const
+bool UCrowdyStateReplicator::IsLocalHost(const bool bSubsystem) const
 {
-	const FGuid Host = ResolveHostID();
+	const FGuid Host = ResolveHostID(bSubsystem);
 	if (!Host.IsValid())
 	{
 		return false;
@@ -660,7 +664,7 @@ void UCrowdyStateReplicator::WarnIfWorldEntityHasNoWriter(const FGuid& EntityID)
 		return;
 
 	const FCrowdyEntityRecord* Record = EntitySubsystem.IsValid() ? EntitySubsystem->FindRecord(EntityID) : nullptr;
-	if (!Record || Record->Role != ECrowdyRole::HostOwned)
+	if (!Record || Record->Role != ECrowdyRole::HostOwned || Record->IsReplicatedSubsystem())
 		return;
 
 	bWarnedWorldEntityHasNoWriter = true;
@@ -1002,7 +1006,7 @@ void UCrowdyStateReplicator::DrainPendingHostPushes(TArray<FCrowdyPendingLocalNo
 	// sign-in, and only a push emitted while we are host is stamped HostSourced.
 	UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
 	const FGuid SenderID = ES ? ES->GetLocalPlayerID() : LocalPlayerID;
-	const FGuid HostID = ResolveHostID();
+	const FGuid HostID = ResolveHostID(/*bSubsystem=*/false);
 	const bool bLocalIsHost = HostID.IsValid() && SenderID.IsValid() && HostID == SenderID;
 
 	// A push is queued only for an entity this client did not track at the time of the mark, but ownership can
@@ -1125,9 +1129,11 @@ void UCrowdyStateReplicator::ReplicationLoop()
 
 	// Host status is resolved live too (host id and local id both read live). Every delta we emit while we are
 	// the host is stamped HostSourced a precedence-by-convention hint; the receiver acts on it only for
-	// entities it owns (accept a host correction, drop a foreign non-host delta).
-	const FGuid HostID = ResolveHostID();
+	// entities it owns (accept a host correction, drop a foreign non-host delta). A subsystem's writer is the Leader.
+	const FGuid HostID = ResolveHostID(/*bSubsystem=*/false);
 	const bool bLocalIsHost = HostID.IsValid() && SenderID.IsValid() && HostID == SenderID;
+	const FGuid LeaderID = ResolveHostID(/*bSubsystem=*/true);
+	const bool bLocalIsLeader = LeaderID.IsValid() && SenderID.IsValid() && LeaderID == SenderID;
 	const double Now = GetLoopTimeSeconds();
 
 	// Routes a non-spatial (subsystem) participant's delta over the reliable channel: the test hook when bound,
@@ -1319,6 +1325,7 @@ void UCrowdyStateReplicator::ReplicationLoop()
 		}
 
 		const int64 ClassID = static_cast<int64>(State.ClassID);
+		const bool bHostSourced = State.bNonSpatial ? bLocalIsLeader : bLocalIsHost;
 
 		if (bAnySpatial)
 		{
@@ -1330,7 +1337,7 @@ void UCrowdyStateReplicator::ReplicationLoop()
 			Delta.EntityID = State.EntityID;
 			Delta.SenderID = SenderID;
 			Delta.LayoutHash = Layout.LayoutHash;
-			Delta.Flags = static_cast<uint8>((bLocalIsHost ? CrowdyStateDeltaFlags::HostSourced : 0)
+			Delta.Flags = static_cast<uint8>((bHostSourced ? CrowdyStateDeltaFlags::HostSourced : 0)
 				| (bEmitKeyframe ? CrowdyStateDeltaFlags::Keyframe : 0));
 			Delta.Blob = MoveTemp(Blob);
 			SentBytes += Delta.Blob.Num();
@@ -1426,7 +1433,7 @@ void UCrowdyStateReplicator::ReplicationLoop()
 				Delta.EntityID = State.EntityID;
 				Delta.SenderID = SenderID;
 				Delta.LayoutHash = Layout.LayoutHash;
-				Delta.Flags = static_cast<uint8>(bLocalIsHost ? CrowdyStateDeltaFlags::HostSourced : 0);
+				Delta.Flags = static_cast<uint8>(bHostSourced ? CrowdyStateDeltaFlags::HostSourced : 0);
 				Delta.Blob = MoveTemp(OoBlob);
 				SentBytes += Delta.Blob.Num();
 
