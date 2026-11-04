@@ -5,6 +5,7 @@
 #include "Data/CrowdyEntityTypes.h"
 #include "GameFramework/Actor.h"
 #include "Misc/AutomationTest.h"
+#include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "UObject/Package.h"
 
 namespace
@@ -130,6 +131,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityHostOwnedAutoRegisterReportTest,
 	"CrowdySDK.Entity.HostOwnedAutoRegisterReport", CrowdyEntityDiagnosticTestFlags)
 bool FCrowdyEntityHostOwnedAutoRegisterReportTest::RunTest(const FString& Parameters)
 {
+	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
 	using UEC = UCrowdyEntityComponent;
 
 	TestTrue(TEXT("Dynamic, Auto Register, host-owned is the case that goes quiet"),

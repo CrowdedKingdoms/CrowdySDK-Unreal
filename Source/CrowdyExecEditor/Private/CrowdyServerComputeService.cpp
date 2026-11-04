@@ -561,8 +561,9 @@ void FCrowdyServerComputeService::RefreshTypes()
 		Definitions.Add(Definition);
 		CrateDirectories.Add(Definition->TypeName, CrowdyExecCodegen::GetCrateDirectory(*Definition));
 	}
-	// The SDK's root has no definition in the project; its history sits beside the project's crates.
+	// The SDK's root and Leader have no definition in the project; their history sits beside the project's crates.
 	CrateDirectories.Add(CrowdyExecDeploy::RootTypeName, FPaths::Combine(CrowdyExecCodegen::GetServerDirectory(), CrowdyExecDeploy::RootTypeName));
+	CrateDirectories.Add(CrowdyExecDeploy::LeaderTypeName, FPaths::Combine(CrowdyExecCodegen::GetServerDirectory(), CrowdyExecDeploy::LeaderTypeName));
 	const double FoundSeconds = FPlatformTime::Seconds();
 	Project = CrowdyExecDeploy::AssembleProject(Found, [](const UCrowdyServerObjectDefinition& Definition)
 	{
@@ -786,7 +787,7 @@ bool FCrowdyServerComputeService::Deploy(bool bRebuildAll)
 	TArray<FText> Lines;
 	if (Project.Types.IsEmpty())
 	{
-		Lines.Add(FText::Format(LOCTEXT("ConfirmDeployRootOnly", "Deploying replaces the active server code of {0}. This project has no Server Object types, so only the Crowdy SDK's root (Players Online) is deployed."), GetAppTarget()));
+		Lines.Add(FText::Format(LOCTEXT("ConfirmDeployRootOnly", "Deploying replaces the active server code of {0}. This project has no Server Object types, so only the Crowdy SDK's own types are deployed: its root (Players Online) and its Leader."), GetAppTarget()));
 	}
 	else
 	{
@@ -1150,7 +1151,7 @@ FText FCrowdyServerComputeService::GetChangeSummary() const
 {
 	using namespace CrowdyServerComputeServiceDetail;
 	const int32 Sent = Project.Types.Num();
-	const FText Sends = Sent == 0 ? LOCTEXT("SendsRootOnly", "This project has no Server Object types, so deploying sends only the Crowdy SDK's root (Players Online).")
+	const FText Sends = Sent == 0 ? LOCTEXT("SendsRootOnly", "This project has no Server Object types, so deploying sends only the Crowdy SDK's own types: its root (Players Online) and its Leader.")
 		: FText::Format(LOCTEXT("SendsTypes", "Deploying sends the project's {0} {0}|plural(one=type,other=types)."), Sent);
 	if (!bVersionsLoaded || !VersionsError.IsEmpty())
 	{

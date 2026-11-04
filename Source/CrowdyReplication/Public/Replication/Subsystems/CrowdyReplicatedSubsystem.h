@@ -32,8 +32,8 @@ public:
 
 protected:
 
-	// No longer called: a replicated subsystem is always written by the elected host.
-	UE_DEPRECATED(5.8, "Remove the override: a replicated subsystem is always written by the elected host.")
+	// No longer called: a replicated subsystem is always written by the app's Leader (or elected host).
+	UE_DEPRECATED(5.8, "Remove the override: a replicated subsystem is always written by the app's Leader (or elected host).")
 	virtual ECrowdyOwnership GetReplicatedOwnership() const;
 };
 
@@ -60,8 +60,8 @@ public:
 
 protected:
 
-	// No longer called: a replicated subsystem is always written by the elected host.
-	UE_DEPRECATED(5.8, "Remove the override: a replicated subsystem is always written by the elected host.")
+	// No longer called: a replicated subsystem is always written by the app's Leader (or elected host).
+	UE_DEPRECATED(5.8, "Remove the override: a replicated subsystem is always written by the app's Leader (or elected host).")
 	virtual ECrowdyOwnership GetReplicatedOwnership() const;
 
 private:

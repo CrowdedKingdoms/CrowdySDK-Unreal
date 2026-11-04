@@ -142,6 +142,7 @@ const FProperty* CrowdyExec::FindTravellingField(const UStruct* Struct, FName Na
 
 const TCHAR* const UCrowdyServerObjectDefinition::OnlyInstanceId = TEXT("main");
 const TCHAR* const UCrowdyServerObjectDefinition::RootTypeName = TEXT("root");
+const TCHAR* const UCrowdyServerObjectDefinition::LeaderTypeName = TEXT("crowdy_leader");
 
 FString UCrowdyServerObjectDefinition::GetOnlyInstanceId() const
 {

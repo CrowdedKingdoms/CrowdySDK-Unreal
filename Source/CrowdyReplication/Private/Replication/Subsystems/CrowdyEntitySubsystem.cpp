@@ -334,9 +334,14 @@ FGuid UCrowdyEntitySubsystem::GetWorldOwnerID() const
 	return UCrowdySDKDeveloperSettings::UsesElectedHost() ? GetHostID() : FGuid();
 }
 
+FGuid UCrowdyEntitySubsystem::GetWriterID(const FCrowdyEntityRecord& Record) const
+{
+	return Record.IsReplicatedSubsystem() ? GetHostID() : GetWorldOwnerID();
+}
+
 bool UCrowdyEntitySubsystem::IsRecordLocallyOwned(const FCrowdyEntityRecord& Record) const
 {
-	return FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.OwnerID, LocalPlayerID, GetWorldOwnerID());
+	return FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.OwnerID, LocalPlayerID, GetWriterID(Record));
 }
 
 void UCrowdyEntitySubsystem::SetLocalPlayerID(const FGuid& InLocalPlayerID)
@@ -380,15 +385,6 @@ FGuid UCrowdyEntitySubsystem::RegisterParticipant(UObject* Participant, const EC
 	ECrowdyRole Role;
 	FGuid OwnerID;
 	UCrowdyEntityComponent::DeriveAuthority(Ownership, GetLocalPlayerID(), Role, OwnerID);
-
-	if (Role == ECrowdyRole::HostOwned && !UCrowdySDKDeveloperSettings::UsesElectedHost() && !bWarnedParticipantHasNoWriter)
-	{
-		bWarnedParticipantHasNoWriter = true;
-		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyEntitySubsystem]: '%s' registered as a replicated subsystem, but Leader Source is Server Object, so no client writes it yet and its state does not replicate. ")
-			TEXT("Set Project Settings > Plugins > Crowdy SDK > Replication > Leader Source to Elected Host (Deprecated) to keep the elected host writing it."),
-			*GetNameSafe(Participant));
-	}
 
 	// Host: world singleton keyed by class path - every client computes the same id, no salt.
 	// LocalClient: owner-salted so two clients' same-class participants get distinct ids.

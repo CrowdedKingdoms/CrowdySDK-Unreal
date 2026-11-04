@@ -325,10 +325,11 @@ private:
 	// entity must have a live actor with a rep layout. Returns true when a new owned entry was added.
 	bool TryTrackOwned(const FCrowdyEntityRecord& Record);
 
-	// Host resolution (test-overridable). ResolveHostID returns the injected id when set, else the World owner (the
-	// elected host under Leader Source Elected Host, none otherwise); IsLocalHost is true when it is this client.
-	FGuid ResolveHostID() const;
-	bool IsLocalHost() const;
+	// Writer resolution (test-overridable). ResolveHostID returns the injected id when set, else the writer of a
+	// World-owned entity of that kind: the Leader for a replicated subsystem, the World owner for anything else (both
+	// the elected host under Leader Source Elected Host); IsLocalHost is true when it is this client.
+	FGuid ResolveHostID(bool bSubsystem) const;
+	bool IsLocalHost(bool bSubsystem) const;
 
 	// Warns once when state is marked dirty on a World entity that nothing writes (Leader Source is Server Object).
 	void WarnIfWorldEntityHasNoWriter(const FGuid& EntityID);

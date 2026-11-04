@@ -44,6 +44,7 @@ void ACrowdyRpcActorTestTarget::ActorOwnerOnly_Implementation(int32 InValue)
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 // Subsystem RPC over the channel. These tests exercise a non-actor (subsystem)
 // participant on the RPC plane: the pure DecideRoute policy table (send-side identity + recipient routing), a
@@ -239,6 +240,27 @@ bool FCrowdyRpcSubsystemHostOnlyGatedByHostTest::RunTest(const FString& Paramete
 
 		TestEqual(TEXT("host runs the host-only subsystem RPC once"), Target->CallCount, 1);
 		TestEqual(TEXT("host applied the value"), Target->GotValue, 11);
+	}
+
+	// (c) Leader Source Server Object: the host store holds the Leader, and a subsystem's Host is the Leader.
+	{
+		UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
+		const ECrowdyLeaderSource Previous = Settings->LeaderSource;
+		Settings->LeaderSource = ECrowdyLeaderSource::ServerObject;
+		const FGuid LocalPlayer = FGuid::NewGuid();
+		UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(LocalPlayer);
+		Entities->SetGameSessionForTest(MakeGameSession(LocalPlayer));
+		UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
+
+		UCrowdyRpcSubsystemTestTarget* Target = NewObject<UCrowdyRpcSubsystemTestTarget>();
+		const FGuid EntityID = Entities->RegisterParticipant(Target, ECrowdyOwnership::Host);
+
+		const FCrowdyRpcCall Call = MakeRpcCall(TEXT("SubHostOnly_Implementation"),
+			&UCrowdyRpcSubsystemTestTarget::SubHostOnly_Implementation, 11, EntityID, FGuid::NewGuid());
+		Router->DispatchEvent(MakeInboundRpcEvent(Call, /*bTargeted=*/false));
+		Settings->LeaderSource = Previous;
+
+		TestEqual(TEXT("Server Object: the Leader runs the host-only subsystem RPC"), Target->CallCount, 1);
 	}
 
 	return true;

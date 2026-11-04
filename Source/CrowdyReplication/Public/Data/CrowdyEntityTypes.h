@@ -41,6 +41,13 @@ struct FCrowdyEntityRecord
 	AActor* GetActor() const { return Cast<AActor>(Participant.Get()); }
 	UObject* GetParticipant() const { return Participant.Get(); }
 
+	// A live participant that is not an actor: a replicated subsystem, whose World writer is the Leader.
+	bool IsReplicatedSubsystem() const
+	{
+		const UObject* Object = Participant.Get();
+		return Object && !Object->IsA<AActor>();
+	}
+
 	// The one answer to "does this client write it": it owns the entity, or the entity is a World entity and this
 	// client is its World owner. An Owner record with no owner id was registered here before the local player id was
 	// known, so it is still this client's; one naming another player is not, whatever its role says.

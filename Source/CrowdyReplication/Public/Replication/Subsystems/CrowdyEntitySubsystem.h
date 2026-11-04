@@ -103,7 +103,7 @@ public:
 	// live participant (logged as an error naming both): an id that answers for someone else is worse than none.
 	FGuid RegisterParticipant(UObject* Participant, ECrowdyOwnership Ownership);
 
-	// Enrolls a singleton participant, such as a replicated subsystem, that the elected host writes: its NetID comes
+	// Enrolls a singleton participant, such as a replicated subsystem, that the Leader writes: its NetID comes
 	// from its class path, the same on every client.
 	FGuid RegisterParticipant(UObject* Participant);
 
@@ -138,7 +138,11 @@ public:
 	// The client that writes World entities: the elected host when Leader Source is Elected Host, otherwise none.
 	FGuid GetWorldOwnerID() const;
 
-	// Whether this client writes the entity: it owns it, or it is the World owner of a World entity.
+	// The client that writes Record when it is World-owned: the Leader (the host store) for a replicated subsystem,
+	// the World owner for anything else. Under Elected Host both are the host.
+	FGuid GetWriterID(const FCrowdyEntityRecord& Record) const;
+
+	// Whether this client writes the entity: it owns it, or it is the writer of a World-owned one.
 	bool IsRecordLocallyOwned(const FCrowdyEntityRecord& Record) const;
 
 	/** Normally seeded from the game session automatically; exposed for Blueprints that managed it manually. */
@@ -173,8 +177,6 @@ public:
 	// How many participant-to-id mappings are held. A mapping for a participant that has already been collected
 	// cannot be found by key, so this count is the only way to see one that was left behind.
 	int32 GetParticipantMappingCountForTest() const { return ParticipantToID.Num(); }
-
-	bool HasWarnedParticipantHasNoWriterForTest() const { return bWarnedParticipantHasNoWriter; }
 #endif
 
 	//Networked entity lifecycle
@@ -360,9 +362,6 @@ private:
 
 	UFUNCTION()
 	void OnOwnerUUIDUpdated(FString NewUUID);
-
-	// Set once a replicated subsystem has been told nothing writes it, so the warning is not repeated per subsystem.
-	bool bWarnedParticipantHasNoWriter = false;
 
 	// Re-derives a LocalClient participant's owner-salted deterministic identity once the local player id arrives,
 	// re-registering it under the new NetID. Never touches actor entities (their identity is set at spawn).

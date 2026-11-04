@@ -487,6 +487,9 @@ public:
 	/** The platform's root type, every app's parent of the others; its one instance's Instance Id is empty. */
 	static const TCHAR* const RootTypeName;
 
+	/** The Crowdy SDK's Leader type, which every deploy carries; its members elect the player who writes replicated subsystems. */
+	static const TCHAR* const LeaderTypeName;
+
 	/** The Instance Id a type that HasOnlyOneInstance is reached by: empty for the root, a Server Function Library and a Game Kit starter, else Only Instance Id. */
 	FString GetOnlyInstanceId() const;
 

@@ -19,6 +19,26 @@
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
+
+// Sets the project's Leader Source for one test and puts the previous one back.
+struct FCrowdyScopedLeaderSource
+{
+	ECrowdyLeaderSource Previous;
+
+	explicit FCrowdyScopedLeaderSource(const ECrowdyLeaderSource Source)
+		: Previous(GetDefault<UCrowdySDKDeveloperSettings>()->LeaderSource)
+	{
+		Set(Source);
+	}
+
+	~FCrowdyScopedLeaderSource() { Set(Previous); }
+
+	static void Set(const ECrowdyLeaderSource Source)
+	{
+		GetMutableDefault<UCrowdySDKDeveloperSettings>()->LeaderSource = Source;
+	}
+};
 
 // UCrowdyAutoRegistry is a UGameInstanceSubsystem (ClassWithin=UGameInstance); a transient-package
 // NewObject trips a ClassWithin ensure, so outer it to a bare GameInstance.
