@@ -2,6 +2,7 @@
 #include "CrowdyReplicationLog.h"
 
 #include "TimerManager.h"
+#include "Data/CrowdyActorPoolPolicy.h"
 #include "Data/CrowdySDKCustomVersion.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -334,6 +335,15 @@ void UCrowdyEntityComponent::CompleteRegistration()
 		Record.Role    = Role;
 		Record.ClassID = ClassID;
 		Record.Participant = CachedOwner;
+		if (OwnedBy == ECrowdyOwnedBy::Leader)
+		{
+			EntitySubsystem->MakeLeaderOwned(Record);
+			OwnerID = Record.OwnerID;
+			Role    = Record.Role;
+
+			// Clients that learned the Leader after registering expect its own id from the start.
+			UUIDString = FCrowdyActorId::ForOwner(NetID, OwnerID).ToString();
+		}
 		EntitySubsystem->RegisterEntity(Record);
 	}
 
@@ -353,37 +363,7 @@ void UCrowdyEntityComponent::CompleteRegistration()
 	if (Mode == ECrowdyEntityMode::Dynamic)
 	{
 		AutoReplicator = GetWorld()->GetSubsystem<UCrowdyAutoReplicator>();
-
-		// No executor is no longer an error. The SDK ships one that snapshots the owner's transform, so a
-		// component set to Dynamic replicates on its own and the minimum setup for a replicated actor is
-		// this component alone. Assigning an executor stays fully supported and overrides this.
-		//
-		// Only safe because class identity now travels on every update: while the receiver derived an
-		// entity's class from its state struct, one shared default struct would have made every dynamic
-		// entity in a project resolve to a single class.
-		if (!IsValid(StateExecutor))
-		{
-			StateExecutor = NewObject<UCrowdyDefaultActorUpdateExecutor>(this);
-
-			UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
-				TEXT("[CrowdyEntityComponent]: Dynamic mode on '%s' with no StateExecutor assigned, using the SDK default, which replicates the actor's transform."),
-				*GetNameSafe(CachedOwner));
-		}
-
-		// Blueprint executors are unknown to the startup scan; the snapshot
-		// struct they declare gets registered when the component comes alive.
-		if (UScriptStruct* StateStruct = StateExecutor->GetStateStruct())
-		{
-			UActorUpdatePayloadRegistry::Get()->RegisterStructAuto(StateStruct);
-
-			if (UCrowdyActorManager* Manager = GetWorld()->GetSubsystem<UCrowdyActorManager>())
-				Manager->RegisterStateClass(StateStruct, GetOwner()->GetClass());
-		}
-		else
-		{
-			UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyEntityComponent]: StateExecutor '%s' on '%s' does not implement GetStateStruct — its snapshots cannot be serialized unless the struct is registered elsewhere."),
-				*GetNameSafe(StateExecutor), *GetNameSafe(CachedOwner));
-		}
+		PrepareStateExecutor();
 
 		if (bAutoRegister && Role == ECrowdyRole::Owner)
 			StartReplication();
@@ -392,6 +372,45 @@ void UCrowdyEntityComponent::CompleteRegistration()
 		// leaves BeginPlay sending nothing. Say so rather than letting a configured entity go quiet.
 		if (ShouldReportHostOwnedAutoRegister(Mode, bAutoRegister, Role))
 			ReportHostOwnedAutoRegisterSkipped();
+	}
+}
+
+void UCrowdyEntityComponent::PrepareStateExecutor()
+{
+	if (bStateExecutorPrepared)
+		return;
+
+	bStateExecutorPrepared = true;
+
+	// No executor is no longer an error. The SDK ships one that snapshots the owner's transform, so a
+	// component set to Dynamic replicates on its own and the minimum setup for a replicated actor is
+	// this component alone. Assigning an executor stays fully supported and overrides this.
+	//
+	// Only safe because class identity now travels on every update: while the receiver derived an
+	// entity's class from its state struct, one shared default struct would have made every dynamic
+	// entity in a project resolve to a single class.
+	if (!IsValid(StateExecutor))
+	{
+		StateExecutor = NewObject<UCrowdyDefaultActorUpdateExecutor>(this);
+
+		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
+			TEXT("[CrowdyEntityComponent]: Dynamic mode on '%s' with no StateExecutor assigned, using the SDK default, which replicates the actor's transform."),
+			*GetNameSafe(CachedOwner));
+	}
+
+	// Blueprint executors are unknown to the startup scan; the snapshot
+	// struct they declare gets registered when the component comes alive.
+	if (UScriptStruct* StateStruct = StateExecutor->GetStateStruct())
+	{
+		UActorUpdatePayloadRegistry::Get()->RegisterStructAuto(StateStruct);
+
+		if (UCrowdyActorManager* Manager = GetWorld()->GetSubsystem<UCrowdyActorManager>())
+			Manager->RegisterStateClass(StateStruct, GetOwner()->GetClass());
+	}
+	else
+	{
+		UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyEntityComponent]: StateExecutor '%s' on '%s' does not implement GetStateStruct — its snapshots cannot be serialized unless the struct is registered elsewhere."),
+			*GetNameSafe(StateExecutor), *GetNameSafe(CachedOwner));
 	}
 }
 
@@ -465,6 +484,8 @@ void UCrowdyEntityComponent::StartReplication()
 			*GetNameSafe(GetOwner()));
 		return;
 	}
+
+	PrepareStateExecutor();
 
 	if (!IsValid(AutoReplicator))
 		AutoReplicator = GetWorld()->GetSubsystem<UCrowdyAutoReplicator>();
@@ -547,7 +568,8 @@ void UCrowdyEntityComponent::RequestOwnership_Implementation(FGuid RequesterID)
 
 void UCrowdyEntityComponent::GrantOwnership_Implementation(FGuid NewOwnerID, FGuid PreviousOwnerID)
 {
-	if (!IsValid(EntitySubsystem) || !NetID.IsValid())
+	// A player's avatar never changes hands: its NetID is that player's id everywhere.
+	if (!IsValid(EntitySubsystem) || !NetID.IsValid() || OwnedBy == ECrowdyOwnedBy::Leader || NetID == PreviousOwnerID)
 		return;
 
 	// ReassignOwnership compare-and-swaps on PreviousOwnerID, so a stale or duplicate grant is dropped.
@@ -563,6 +585,14 @@ void UCrowdyEntityComponent::GrantOwnershipTo(const FGuid& NewOwnerID)
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
 			TEXT("[CrowdyEntityComponent]: GrantOwnershipTo on '%s' ignored — the entity is not registered."),
+			*GetNameSafe(GetOwner()));
+		return;
+	}
+
+	if (OwnedBy == ECrowdyOwnedBy::Leader)
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntityComponent]: GrantOwnershipTo on '%s' ignored — it is Owned By Leader, so its owner follows the Leader."),
 			*GetNameSafe(GetOwner()));
 		return;
 	}
@@ -590,14 +620,22 @@ void UCrowdyEntityComponent::ApplyOwnershipReassignment(const FGuid& NewOwnerID,
 	OwnerID = NewOwnerID;
 	Role    = NewRole;
 
+	// The server keeps an id for its first sender, so a new owner cannot send under the old one.
+	UUIDString = FCrowdyActorId::ForOwner(NetID, NewOwnerID).ToString();
+
+	if (IsLocallyOwned())
+		CrowdyActorPool::RestoreProxyMovement(GetOwner());
+
 	// The Dynamic-mode continuous StateExecutor channel follows authority: the new owner joins the AutoReplicator,
 	// a client that just lost ownership leaves it. A spawned Static entity's presence sends move the same way.
 	if (Mode == ECrowdyEntityMode::Dynamic)
 	{
-		if (IsLocallyOwned())
+		// Stopped either way: a client that stays the writer must still pick up the new id.
+		StopReplication();
+
+		// A Leader entity starts here as it would at BeginPlay on the client that led first.
+		if (IsLocallyOwned() && (bAutoRegister || OwnedBy != ECrowdyOwnedBy::Leader))
 			StartReplication();
-		else
-			StopReplication();
 		return;
 	}
 
@@ -727,6 +765,7 @@ void UCrowdyEntityComponent::MapLegacySettings(const bool bOwnershipAuthored, co
 ECrowdyOwnedBy UCrowdyEntityComponent::ResolveOwnedBy(const ECrowdyOwnedBy InOwnedBy, const ECrowdyOwnership InOwnership,
 	const bool bIsLevelPlaced)
 {
+	if (InOwnedBy == ECrowdyOwnedBy::Leader) return InOwnedBy;
 	if (!bIsLevelPlaced) return ECrowdyOwnedBy::Player;
 	if (InOwnedBy != ECrowdyOwnedBy::Auto) return InOwnedBy;
 
@@ -744,8 +783,8 @@ void UCrowdyEntityComponent::DeriveOwner(const ECrowdyOwnedBy InResolvedOwnedBy,
 		return;
 	}
 
-	// The elected host writes it, so it carries no per-client owner id.
-	OutRole = ECrowdyRole::HostOwned;
+	// A World entity carries no per-client owner id; a Leader entity gets one when it registers.
+	OutRole = InResolvedOwnedBy == ECrowdyOwnedBy::Leader ? ECrowdyRole::RemoteProxy : ECrowdyRole::HostOwned;
 	OutOwnerID = FGuid();
 }
 
@@ -937,7 +976,7 @@ void UCrowdyEntityComponent::ResolveIdentity()
 	if (Resolved != ECrowdyOwnedBy::Player && IdentityPolicy != ECrowdyIdentityPolicy::Stable && !bUseKey)
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyEntityComponent]: '%s' is Owned By World but IdentityPolicy is not Stable — world entities need a deterministic shared NetID; the host's writes may not converge across clients."),
+			TEXT("[CrowdyEntityComponent]: '%s' is Owned By World or Leader but IdentityPolicy is not Stable — it needs a deterministic shared NetID, or its writer's updates may not converge across clients. An entity spawned with Crowdy SpawnEntity gets one."),
 			*GetNameSafe(CachedOwner));
 	}
 }

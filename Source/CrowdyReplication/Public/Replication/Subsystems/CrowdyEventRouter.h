@@ -451,6 +451,9 @@ public:
 		// Non-host deltas for a locally host-owned world entity. Only the host writes world state, so anything
 		// climbing here is some other peer trying to.
 		int64 DroppedNotHostSourcedForWorld = 0;
+
+		// Deltas for a Leader entity from anyone but its owner, such as an old Leader's last ones after a hand-off.
+		int64 DroppedNotFromLeader = 0;
 	};
 
 	const FStateParticipantStats& GetStateParticipantStats() const { return StateParticipantStats; }

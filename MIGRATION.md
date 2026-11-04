@@ -65,6 +65,11 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 | `Crowdy Actor Management Config` data asset (nothing reads it at runtime). | Deprecated, hidden from the create menu; existing assets still load. Set the values on a map profile. | Asset class deprecated. |
 | No way to say which Backend Config class a rendering backend reads. | `UCrowdyRenderingBackend::GetBackendConfigClass()`, optional, null by default (no check). The actor pool and Mass backends return their config classes. | C++ API (new virtual). |
 | Assets carried no CrowdySDK save version. | A package that saves a `Crowdy Entity Component` records the `CrowdySDK` custom version, and the component saves `Owned By` and a Replicate Movement setting that nothing reads yet. Older SDKs warn on these packages (see Behaviour changes). | Asset format. |
+| An entity a client simulates for everyone needed the elected host. | `Owned By` `Leader`: the client that leads writes it, and the next Leader takes it over. Only the Leader spawns or destroys one, and ownership requests and grants on one are refused with a warning. On other clients its body stays where it stopped through a hand-off. For players who share a map, on an actor pool map. | Property value (new). |
+| A moving entity handed to another player vanished for everyone about 5 seconds later, because the server keeps an actor id for its first sender. | It keeps one body on every client, there and back. Each owner sends under an id of its own, made from the entity's id and the owner's. The entity's `NetID` does not change, so game code sees the same id. | Behaviour, wire: `FCrowdyActorId::ForOwner`, `TryReadOwnerTaggedNetID` (new). |
+| An `Owning Client` event on an entity that changed hands still went to the old owner. | It goes to the current owner. | Behaviour: C++ `UCrowdySDKBridgeSubsystem::DispatchSingleActorMessageFn` and `UCrowdySDKSubsystem::DispatchSingleActorMessage` take an `FCrowdyActorId` instead of an `FGuid`. |
+| A client that joined after a Player entity spawned could not take it: the grant was dropped, and its pool actor could not send. | The grant lands and the entity moves on from there. | Behaviour. |
+| A grant could move a player's avatar. | An avatar never changes hands: the grant is ignored. | Behaviour. |
 
 **Do this, in order**
 
@@ -98,6 +103,13 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
    `Server Object`, deploy the app's server code once and restart its root (see Requires). If your code compares
    `UCrowdyEntitySubsystem::IsLocallyOwned(NetID)` for a World entity against false on the host, it now reads
    true there, as the component already did.
+11. If you call `DispatchSingleActorMessageFn` or `DispatchSingleActorMessage` yourself, pass an `FCrowdyActorId`
+   (`FCrowdyActorId::FromGuid(NetID)`), or call `UCrowdyEntitySubsystem::DispatchSingleActorMessageTo`, which
+   finds the id the entity's owner sends under.
+12. To move an NPC that needs the navmesh or physics off the elected host, set its `Owned By` to `Leader` and
+   gate its simulation on `Is Crowdy Entity Locally Owned` each tick. Spawn it only where `Is Local Leader` is
+   true. For NPCs across maps or a large open world, use Game Kit's hub NPCs instead: one Leader serves the
+   whole app and writes only what it has a body for.
 
 **CoreRedirects.** None.
 
@@ -127,6 +139,16 @@ changed before it joined and is not `CrowdyHeartbeat`-marked) is not carried ove
 
 Under `Elected Host`, an `Owning Client` event on a World entity runs on the host instead of being dropped.
 
+Every client must run the same SDK version once entities change hands or use `Owned By` `Leader`: an older
+client reads an owner's id as a new entity, and draws a second body. Nothing changes for an entity that never
+changes hands. An entity that has changed hands keeps its owner's id, so a reconnecting owner may have sends
+refused until the server lets go of the old session.
+
+A Leader writes only what it spawned or already held, because a spawn event or update can be forged. A new
+Leader that never had an entity does not take it: other clients hold the body for 20 seconds and then release
+it. A body placed in the level stays where it stopped. A client that walks out of an entity's range holds it
+for those 20 seconds too, so count that when you size `Max Pool Size Per Class`.
+
 On a Mass map, other clients show a spawned moving entity as its row (and its
 near-tier shell up close) only, where they used to show a frozen actor at the spawn point as well; Crowdy
 Events aimed at it run on Mass's shared stand-in, as for any crowd entity. `On Crowdy Spawned` fires there
@@ -155,6 +177,11 @@ cooked data is read against the component's current properties.
 7. Under `Server Object`, with two clients signed in: `Get Leader User ID` gives the same user id on both,
    `Is Local Leader` is true on exactly one, and a replicated subsystem value the Leader changes reaches the
    other. Close the Leader's game: within seconds the other client leads.
+8. With two clients, spawn a moving entity on the first and grant it to the second: it keeps moving on the
+   first, with one body, and `Owning Client` events reach the second.
+9. Under `Server Object`, spawn an `Owned By` `Leader` entity on the Leader and close that client: the body
+   stops on the other client and moves on from there once that client leads, with `Is Crowdy Entity Locally
+   Owned` true.
 
 **Removed in the next release.** None. The deprecated items above are planned for removal in a later
 release, which will say so here first.

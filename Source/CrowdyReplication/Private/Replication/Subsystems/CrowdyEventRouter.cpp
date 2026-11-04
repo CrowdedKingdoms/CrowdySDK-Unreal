@@ -1045,6 +1045,15 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
             return;
         }
     }
+    else if (WriterRecord && WriterRecord->bLeaderOwned && WriterRecord->OwnerID.IsValid() && Delta.SenderID != WriterRecord->OwnerID)
+    {
+        // Checked before ownership: an old Leader's delta is still stamped host-sourced, which an owner would adopt.
+        ++StateParticipantStats.DroppedNotFromLeader;
+        UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
+            TEXT("[CrowdyState] dropped delta for Leader entity %s: the sender %s is not its owner %s."),
+            *Delta.EntityID.ToString(), *Delta.SenderID.ToString(), *WriterRecord->OwnerID.ToString());
+        return;
+    }
     else if (bWeOwnTarget)
     {
         if (!bHostSourced)

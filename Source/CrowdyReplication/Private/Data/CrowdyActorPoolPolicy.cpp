@@ -44,6 +44,28 @@ void CrowdyActorPool::DisableProxyMovement(AActor* Actor)
 	}
 }
 
+void CrowdyActorPool::RestoreProxyMovement(AActor* Actor)
+{
+	if (!IsValid(Actor))
+		return;
+
+	TInlineComponentArray<UPawnMovementComponent*> MovementComponents;
+	Actor->GetComponents(MovementComponents);
+
+	for (UPawnMovementComponent* MoveComp : MovementComponents)
+	{
+		// One still active was never a proxy's, and its movement mode is the game's.
+		if (!IsValid(MoveComp) || MoveComp->IsActive())
+			continue;
+
+		MoveComp->Activate(true);
+		MoveComp->SetComponentTickEnabled(true);
+
+		if (UCharacterMovementComponent* CharacterMovement = Cast<UCharacterMovementComponent>(MoveComp))
+			CharacterMovement->SetDefaultMovementMode();
+	}
+}
+
 void UCrowdyActorPoolPolicy::OnActorPooled_Implementation(AActor* Actor)
 {
 	if (!IsValid(Actor))

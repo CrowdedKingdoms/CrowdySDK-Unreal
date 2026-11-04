@@ -124,6 +124,7 @@ bool FCrowdyOwnedByResolutionTest::RunTest(const FString& Parameters)
 	using C = UCrowdyEntityComponent;
 
 	TestEqual(TEXT("an explicit Owned By is kept"), C::ResolveOwnedBy(ECrowdyOwnedBy::Leader, ECrowdyOwnership::LocalClient, true), ECrowdyOwnedBy::Leader);
+	TestEqual(TEXT("Leader spawned during play stays the Leader's"), C::ResolveOwnedBy(ECrowdyOwnedBy::Leader, ECrowdyOwnership::Host, false), ECrowdyOwnedBy::Leader);
 	TestEqual(TEXT("Auto with a C++ Local Client is the player's"), C::ResolveOwnedBy(ECrowdyOwnedBy::Auto, ECrowdyOwnership::LocalClient, true), ECrowdyOwnedBy::Player);
 	TestEqual(TEXT("Auto placed in the level is the world's"), C::ResolveOwnedBy(ECrowdyOwnedBy::Auto, ECrowdyOwnership::Host, true), ECrowdyOwnedBy::World);
 	TestEqual(TEXT("Auto spawned during play is the spawner's"), C::ResolveOwnedBy(ECrowdyOwnedBy::Auto, ECrowdyOwnership::Host, false), ECrowdyOwnedBy::Player);

@@ -48,6 +48,14 @@ void UCrowdyOwnershipTransfer::RequestOwnershipTransfer(UObject* /*WorldContextO
 	if (Component->IsLocallyOwned())
 		return;
 
+	if (Component->OwnedBy == ECrowdyOwnedBy::Leader)
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyOwnershipTransfer]: RequestOwnershipTransfer ignored: '%s' is Owned By Leader, so its owner follows the Leader."),
+			*GetNameSafe(TargetEntity));
+		return;
+	}
+
 	Component->RequestOwnership(ES->GetLocalPlayerID());
 }
 

@@ -65,7 +65,7 @@ enum class ECrowdyOwnedBy : uint8
 	Auto UMETA(DisplayName="Auto", ToolTip="World when placed in the level, Player when spawned during play."),
 	Player UMETA(DisplayName="Player", ToolTip="The player whose client placed or spawned it."),
 	World UMETA(DisplayName="World", ToolTip="Placed in the level; no client writes it (the elected host does under Leader Source Elected Host), so its truth belongs in Server Objects. An entity spawned during play belongs to its spawner instead."),
-	Leader UMETA(Hidden, DisplayName="Leader", ToolTip="Whichever client currently leads the entity's scope."),
+	Leader UMETA(DisplayName="Leader", ToolTip="Whichever client currently leads. For players who share a map, and NPCs that need navmesh or physics; only the Leader spawns or destroys one."),
 };
 
 // Whether an entity sends its movement every replication interval.
@@ -196,6 +196,9 @@ public:
 	 * while this client owns it, so a player who joins later gets it too. Dynamic entities are found by their updates.
 	 */
 	void EnablePresence();
+
+	// True for a body handed its identity by a spawn or the pool, false for one placed in the level.
+	bool HasInjectedIdentity() const { return bIdentityInjected; }
 
 	/** Broadcasts OnCrowdySpawned, once per identity, whichever of the spawn event and the first update came first. */
 	void DeliverSpawnData(const FInstancedStruct& InitialState, bool bIsLocal);
@@ -579,6 +582,8 @@ private:
 	// set the component registers nothing, so no listener can act on an actor that stands for no entity.
 	bool bPooledDormant = false;
 
+	bool bStateExecutorPrepared = false;
+
 	// True while a Player Derived pawn that began play unpossessed waits for its first controller.
 	bool bAwaitingPossession = false;
 
@@ -617,6 +622,9 @@ private:
 
 	// Resolves, registers and starts the mode's channel; from BeginPlay, or from a deferred pawn's first possession.
 	void CompleteRegistration();
+
+	// A pooled actor skips registration, so this also runs when one first takes ownership.
+	void PrepareStateExecutor();
 
 	// Joins the auto replicator as a presence entry, which calls SendPresence on a slow fixed interval.
 	void StartPresence();

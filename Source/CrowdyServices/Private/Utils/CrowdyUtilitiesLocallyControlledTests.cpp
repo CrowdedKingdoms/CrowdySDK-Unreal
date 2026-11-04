@@ -3,6 +3,8 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Data/CrowdyEntityTypes.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Misc/AutomationTest.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
@@ -12,6 +14,28 @@ namespace
 {
 	constexpr EAutomationTestFlags CrowdyUtilitiesTestFlags =
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyUtilitiesLeaderEntityNotPlayerTest,
+	"CrowdySDK.CrowdyServices.ALeaderEntityIsNotPlayerControlled", CrowdyUtilitiesTestFlags)
+bool FCrowdyUtilitiesLeaderEntityNotPlayerTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Editor, /*bInformEngineOfWorld=*/false);
+	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Editor);
+	Context.SetCurrentWorld(World);
+
+	AActor* Actor = World->SpawnActor<AActor>();
+	UCrowdyEntityComponent* Component = NewObject<UCrowdyEntityComponent>(Actor);
+	Component->RegisterComponent();
+	Component->Mode = ECrowdyEntityMode::Dynamic;
+	TestTrue(TEXT("a moving entity reads as a player's"), UCrowdyUtilities::IsCrowdyEntityPlayerControlled(Actor, Actor));
+
+	Component->OwnedBy = ECrowdyOwnedBy::Leader;
+	TestFalse(TEXT("one that follows the Leader does not"), UCrowdyUtilities::IsCrowdyEntityPlayerControlled(Actor, Actor));
+
+	GEngine->DestroyWorldContext(World);
+	World->DestroyWorld(/*bInformEngineOfWorld=*/false);
+	return true;
 }
 
 // The Blueprint "Is Crowdy Entity Locally Owned" helper is the gate game code puts in front of input, AI and anything

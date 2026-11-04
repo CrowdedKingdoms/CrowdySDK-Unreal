@@ -471,6 +471,24 @@ public:
 	TObjectPtr<UCrowdyEntityComponent> Entity;
 };
 
+/** The Owned By Leader fixture: its class default says so, as a Blueprint's would. */
+UCLASS(meta = (CrowdyTestFixture))
+class ACrowdyLeaderOwnedTestActor : public ACrowdyStateHostOverrideActor
+{
+	GENERATED_BODY()
+public:
+	ACrowdyLeaderOwnedTestActor();
+};
+
+/** An Owned By Leader entity that sends updates. */
+UCLASS(meta = (CrowdyTestFixture))
+class ACrowdyLeaderMovingTestActor : public ACrowdyLeaderOwnedTestActor
+{
+	GENERATED_BODY()
+public:
+	ACrowdyLeaderMovingTestActor();
+};
+
 /**
  * Player Derived fixture: a pawn carrying a Player Derived, LocalClient-owned entity component, with both
  * auto-possess modes off so a test decides when (and whether) it is possessed relative to BeginPlay.

@@ -13,6 +13,9 @@ namespace CrowdyActorPool
 {
 	/** Stops every pawn movement component on a proxy, whose transform comes only from replicated updates. */
 	CROWDYREPLICATION_API void DisableProxyMovement(AActor* Actor);
+
+	/** Gives pawn movement back to an actor that was a proxy, once this client writes its entity. */
+	CROWDYREPLICATION_API void RestoreProxyMovement(AActor* Actor);
 }
 
 /**

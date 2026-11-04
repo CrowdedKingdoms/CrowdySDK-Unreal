@@ -7,6 +7,7 @@
 #include "Data/CrowdyRenderingBackendConfig.h"
 #include "Engine/World.h"
 #include "Messages/Actor/FCrowdyKitActorState.h"
+#include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Subsystems/CrowdyActorTracker.h"
 #include "Replication/Subsystems/CrowdyKitActorClasses.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
@@ -37,6 +38,18 @@ namespace
 
 	static_assert(CrowdyPendingActivationEvictTicks > CrowdyPendingActivationWarnTicks,
 		"An entry has to be reported as stranded before it can be evicted, or the eviction is the first and only thing ever said about it.");
+
+	// Longer than the slowest Leader hand-off, about 10 s after the old Leader's last update.
+	constexpr double CrowdyLeaderHoldSeconds = 20.0;
+
+	bool CrowdyIsPlacedBody(const FCrowdyEntityRecord& Record)
+	{
+		const AActor* Actor = Record.GetActor();
+		const UCrowdyEntityComponent* Component = IsValid(Actor) ? Actor->FindComponentByClass<UCrowdyEntityComponent>() : nullptr;
+
+		// Spawned and pool bodies are handed their identity; a pool actor made before play also reads as net startup.
+		return Component && !Component->HasInjectedIdentity();
+	}
 
 	// Both park messages end with this, so an entry that cannot even name its own payload says why
 	// instead of printing an empty name and sending the reader after a struct that does not exist.
@@ -194,6 +207,9 @@ void UCrowdyActorManager::Tick(float DeltaTime)
 	ApplyPendingUpdates();
 	TickInterpolation();
 	TickPendingActivations();
+
+	if (!HeldUntilSeconds.IsEmpty())
+		TickHeldEntities(FPlatformTime::Seconds());
 }
 
 void UCrowdyActorManager::RegisterStateClass(UScriptStruct* Struct, TSubclassOf<AActor> ActorClass)
@@ -409,6 +425,11 @@ int32 UCrowdyActorManager::GetPendingActivationEvictTicksForTest()
 {
 	return CrowdyPendingActivationEvictTicks;
 }
+
+double UCrowdyActorManager::GetHoldSecondsForTest()
+{
+	return CrowdyLeaderHoldSeconds;
+}
 #endif
 
 void UCrowdyActorManager::ReleaseSlot(const FGuid& UUID)
@@ -546,8 +567,12 @@ void UCrowdyActorManager::HandleActorSpawned(FGuid UUID, FInstancedStruct Initia
 	if (!IsValid(ActiveBackend)) return;
 
 	// Slot already exists: duplicate tracker broadcast or cascade from a pool actor's own
-	// auto-replication. Ignore it: the entity is already active.
-	if (UUIDToSlot.Contains(UUID)) return;
+	// auto-replication. Ignore it: the entity is already active. A held entity is heard again here first.
+	if (UUIDToSlot.Contains(UUID))
+	{
+		HeldUntilSeconds.Remove(UUID);
+		return;
+	}
 
 	UClass* EntityClass = ResolveEntityClass(UUID, InitialState);
 
@@ -588,7 +613,35 @@ void UCrowdyActorManager::HandleActorDestroyed(FGuid UUID, int32 ActorCount)
 	// Drop any pending activation that never fired.
 	PendingActivations.Remove(UUID);
 
-	ReleaseSlot(UUID);
+	if (!TryHoldEntity(UUID))
+		ReleaseSlot(UUID);
+}
+
+bool UCrowdyActorManager::TryHoldEntity(const FGuid& UUID)
+{
+	const FCrowdyEntityRecord* Record = IsValid(EntitySubsystem) ? EntitySubsystem->FindRecord(UUID) : nullptr;
+	if (!Record || !Record->bLeaderOwned || Record->Role == ECrowdyRole::Owner)
+		return false;
+
+	// A placed body has nowhere to come back from, so it waits for as long as it takes.
+	HeldUntilSeconds.Add(UUID, CrowdyIsPlacedBody(*Record) ? MAX_dbl : FPlatformTime::Seconds() + CrowdyLeaderHoldSeconds);
+	return true;
+}
+
+void UCrowdyActorManager::TickHeldEntities(const double NowSeconds)
+{
+	TArray<FGuid, TInlineAllocator<8>> Expired;
+	for (const TPair<FGuid, double>& Pair : HeldUntilSeconds)
+	{
+		if (NowSeconds >= Pair.Value)
+			Expired.Add(Pair.Key);
+	}
+
+	for (const FGuid& UUID : Expired)
+	{
+		HeldUntilSeconds.Remove(UUID);
+		ReleaseSlot(UUID);
+	}
 }
 
 void UCrowdyActorManager::HandleActorLeft(const FCrowdyActorLeft& ActorLeft, int32 ActorCount)
@@ -729,6 +782,14 @@ void UCrowdyActorManager::OnEntityRegistered(const FGuid& EntityID)
 void UCrowdyActorManager::OnEntityUnregistered(const FGuid& EntityID)
 {
 	++CapacityEpoch;
+
+	// The tracker let go of a held entity when it went quiet, so nothing else would give its slot back.
+	if (HeldUntilSeconds.Remove(EntityID) > 0)
+	{
+		ReleaseSlot(EntityID);
+		return;
+	}
+
 	if (!IsValid(ActiveBackend)) return;
 
 	// A remote destroy can take the actor from an active slot; the slot is then activated again by a later update.
@@ -742,13 +803,22 @@ void UCrowdyActorManager::OnEntityOwnershipChanged(AActor* TargetEntity, const F
 {
 	if (!IsValid(EntitySubsystem) || !IsValid(ActiveBackend)) return;
 
-	// A hand-over between two other clients changes nothing about how this client draws the entity.
 	const FGuid LocalID = EntitySubsystem->GetLocalPlayerID();
-	if (!LocalID.IsValid() || (NewOwnerID != LocalID && PreviousOwnerID != LocalID)) return;
+	const bool bNowLocal = LocalID.IsValid() && NewOwnerID == LocalID;
+	if (bNowLocal)
+		HeldUntilSeconds.Remove(NetID);
+
+	// A hand-over between two other clients changes nothing about how this client draws the entity.
+	if (!LocalID.IsValid() || (!bNowLocal && PreviousOwnerID != LocalID)) return;
 
 	const int32* SlotPtr = UUIDToSlot.Find(NetID);
 	if (!SlotPtr) return;
 
-	InactiveSlots[*SlotPtr] = true;
-	SlotRetryEpochs[*SlotPtr] = CapacityEpoch - 1;
+	const int32 SlotId = *SlotPtr;
+	InactiveSlots[SlotId] = true;
+	SlotRetryEpochs[SlotId] = CapacityEpoch - 1;
+
+	// Waiting for an update would let old samples fight this client's own movement, and it may never hear one.
+	if (bNowLocal && SlotClasses[SlotId].IsValid() && !ActiveBackend->DrawsEntitiesAsCrowdRows())
+		ActivateSlot(SlotId, NetID, SlotClasses[SlotId].Get(), FInstancedStruct());
 }

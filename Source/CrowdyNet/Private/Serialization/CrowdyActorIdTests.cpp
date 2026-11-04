@@ -447,4 +447,44 @@ bool FCrowdyActorIdFromGuidTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyActorIdOwnerTaggedTest,
+	"CrowdySDK.Serialization.ActorIdForAnOwnerKeepsTheNetID", CrowdyActorIdTestFlags)
+bool FCrowdyActorIdOwnerTaggedTest::RunTest(const FString& Parameters)
+{
+	FRandomStream Stream(20261104);
+	for (int32 Trial = 0; Trial < 64; ++Trial)
+	{
+		const FGuid NetID(Stream.GetUnsignedInt(), Stream.GetUnsignedInt(), Stream.GetUnsignedInt(), Stream.GetUnsignedInt());
+		const FGuid Owner(Stream.GetUnsignedInt(), Stream.GetUnsignedInt(), Stream.GetUnsignedInt(), Stream.GetUnsignedInt());
+		const FGuid NextOwner(Stream.GetUnsignedInt(), Stream.GetUnsignedInt(), Stream.GetUnsignedInt(), Stream.GetUnsignedInt());
+
+		const FCrowdyActorId Id = FCrowdyActorId::ForOwner(NetID, Owner);
+
+		FGuid Read;
+		if (!TestTrue(TEXT("the NetID reads back"), Id.TryReadOwnerTaggedNetID(Read)) || !TestEqual(TEXT("exactly"), Read, NetID))
+		{
+			return false;
+		}
+		TestEqual(TEXT("every client keys the entity by its NetID"), USerializationFunctionLibrary::ToGuid(Id), NetID);
+		TestTrue(TEXT("every client derives the same id"), Id == FCrowdyActorId::ForOwner(NetID, Owner));
+		TestTrue(TEXT("each owner has its own, which the server needs"), Id != FCrowdyActorId::ForOwner(NetID, NextOwner));
+		TestTrue(TEXT("it is not the plain id"), Id != FCrowdyActorId::FromGuid(NetID));
+
+		// The component keeps the id as text, so the octets must survive it unchanged.
+		const FString Text = Id.ToString();
+		TestEqual(TEXT("as text it is 32 characters"), Text.Len(), FCrowdyActorId::NumOctets);
+		TestTrue(TEXT("and comes back the same"), FCrowdyActorId::FromStringOrUnset(Text) == Id);
+	}
+
+	FGuid Read;
+	const FGuid Plain = FGuid::NewGuid();
+	TestFalse(TEXT("a plain id is not one"), FCrowdyActorId::FromGuid(Plain).TryReadOwnerTaggedNetID(Read));
+	TestEqual(TEXT("and still keys on its digits"), USerializationFunctionLibrary::ToGuid(FCrowdyActorId::FromGuid(Plain)), Plain);
+
+	const FCrowdyActorId Malformed = FCrowdyActorId::FromAnsiLiteral("~bad id with spaces in it ......");
+	TestFalse(TEXT("a marker followed by anything else is not one"), Malformed.TryReadOwnerTaggedNetID(Read));
+	TestTrue(TEXT("and still keys on something"), USerializationFunctionLibrary::ToGuid(Malformed).IsValid());
+	return true;
+}
+
 #endif

@@ -47,6 +47,16 @@ ACrowdyStateHostOverrideActor::ACrowdyStateHostOverrideActor()
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
 }
 
+ACrowdyLeaderOwnedTestActor::ACrowdyLeaderOwnedTestActor()
+{
+	Entity->OwnedBy = ECrowdyOwnedBy::Leader;
+}
+
+ACrowdyLeaderMovingTestActor::ACrowdyLeaderMovingTestActor()
+{
+	Entity->Mode = ECrowdyEntityMode::Dynamic;
+}
+
 ACrowdyPlayerDerivedTestPawn::ACrowdyPlayerDerivedTestPawn()
 {
 	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));

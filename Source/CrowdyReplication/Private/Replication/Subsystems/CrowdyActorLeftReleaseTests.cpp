@@ -3,10 +3,12 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Data/CrowdyRenderingBackendTestTypes.h"
+#include "Messages/Actor/FActorUpdateNotificationMessage.h"
 #include "Misc/AutomationTest.h"
 #include "Replication/Subsystems/CrowdyActorDepartureTestSupport.h"
 #include "Replication/Subsystems/CrowdyActorManager.h"
 #include "Replication/Subsystems/CrowdyActorTracker.h"
+#include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/SerializationFunctionLibrary.h"
@@ -187,6 +189,176 @@ bool FCrowdyUntrackedLeaveReleasesNothingTest::RunTest(const FString& Parameters
 	TestFalse(TEXT("and the actor that is held keeps its slot"),
 		Fixture.Backend->DeactivatedSlots.Contains(HeldSlot));
 
+	return true;
+}
+
+// The server retires the old owner's id about 5 s after a move. That id's departure must not take the entity with it,
+// and anything the old owner still sends under it is only that owner finishing up.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMovedEntitySurvivesItsOldIdTest,
+	"CrowdySDK.Replication.MovedEntitySurvivesItsOldId", CrowdyActorLeftReleaseTestFlags)
+
+bool FCrowdyMovedEntitySurvivesItsOldIdTest::RunTest(const FString& Parameters)
+{
+	const FCrowdyActorLeftFixture Fixture;
+	if (!TestTrue(TEXT("a tracker, a manager and a backend were created"), Fixture.IsValid()))
+	{
+		return false;
+	}
+	Fixture.Tracker->SetupQueuesForTest();
+
+	const FGuid NetID = FGuid::NewGuid();
+	const FGuid NewOwner = FGuid::NewGuid();
+	const FCrowdyActorId OldId = FCrowdyActorId::FromGuid(NetID);
+	const FCrowdyActorId NewId = FCrowdyActorId::ForOwner(NetID, NewOwner);
+	const int32 Slot = Fixture.AddTrackedActor(NetID);
+
+	Fixture.Tracker->HandleEntityOwnerChangedForTest(NetID, NewOwner);
+
+	FCrowdyActorId Found;
+	TestTrue(TEXT("the entity's id is known"), Fixture.Tracker->FindWireId(NetID, Found));
+	TestTrue(TEXT("and a targeted message goes to its new owner's"), Found == NewId);
+
+	const auto Deliver = [&Fixture, &NetID](const FCrowdyActorId& Id)
+	{
+		const TSharedRef<FActorUpdateNotificationMessage, ESPMode::ThreadSafe> Message = MakeShared<FActorUpdateNotificationMessage, ESPMode::ThreadSafe>();
+		Message->GUID = NetID;
+		Message->UUID = Id;
+		const TSharedRef<const ICrowdyMessage, ESPMode::ThreadSafe> Shared = Message;
+		const FCrowdyDelivery Delivery(ECrowdyMessageType::ACTOR_UPDATE_NOTIFICATION, Message->GetPayloadKey(),
+			Message->GetPayload(), Message->GetPayloadBytes(), Shared);
+		Fixture.Tracker->HandleActorUpdateDeliveryForTest(Delivery);
+	};
+
+	Deliver(OldId);
+	TestEqual(TEXT("an update under the old id is dropped"), Fixture.Tracker->GetGatheredForTest().Num(), 0);
+	Deliver(NewId);
+	TestEqual(TEXT("an update under the new one is taken"), Fixture.Tracker->GetGatheredForTest().Num(), 1);
+
+	const TUniquePtr<FCrowdyActorTestDeliveryScope> OldLeft = CrowdyActorTestDeparture(OldId, ECrowdyActorLeftReason::SessionReleased);
+	const TUniquePtr<FCrowdyActorTestDeliveryScope> NewLeft = CrowdyActorTestDeparture(NewId, ECrowdyActorLeftReason::SessionReleased);
+	if (!TestTrue(TEXT("departure deliveries were built"), OldLeft.IsValid() && NewLeft.IsValid()))
+	{
+		return false;
+	}
+
+	Fixture.Tracker->HandleActorLeftDelivery(*OldLeft->Delivery);
+	TestEqual(TEXT("the old id leaving releases nothing"), Fixture.Backend->DeactivatedSlots.Num(), 0);
+
+	Fixture.Tracker->HandleActorLeftDelivery(*NewLeft->Delivery);
+	TestTrue(TEXT("the current id leaving releases the entity"), Fixture.Backend->DeactivatedSlots.Contains(Slot));
+
+	Fixture.Tracker->HandleEntityUnregisteredForTest(NetID);
+	Fixture.Tracker->MarkActorTrackedForTest(NetID);
+	Deliver(OldId);
+	TestEqual(TEXT("the move is forgotten with the entity"), Fixture.Tracker->GetGatheredForTest().Num(), 2);
+
+	Fixture.Tracker->ReleaseQueuesForTest();
+	return true;
+}
+
+// The targeted message follows the entity, except for an avatar, whose id nothing else can take over.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTargetedMessageFindsItsSenderTest,
+	"CrowdySDK.Replication.ATargetedMessageGoesToTheIdItsSenderUses", CrowdyActorLeftReleaseTestFlags)
+
+bool FCrowdyTargetedMessageFindsItsSenderTest::RunTest(const FString& Parameters)
+{
+	const FCrowdyActorLeftFixture Fixture;
+	const TStrongObjectPtr<UCrowdyEntitySubsystem> Entities(NewObject<UCrowdyEntitySubsystem>(GetTransientPackage()));
+	const UCrowdyActorTracker* Tracker = Fixture.Tracker.Get();
+
+	const auto Register = [&Entities, &Fixture](const FGuid& NetID, const FGuid& OwnerID, const bool bLeaderOwned)
+	{
+		FCrowdyEntityRecord Record;
+		Record.NetID = NetID;
+		Record.OwnerID = OwnerID;
+		Record.Role = ECrowdyRole::RemoteProxy;
+		Record.bLeaderOwned = bLeaderOwned;
+		Record.Participant = NewObject<UCrowdyRecordingBackend>(GetTransientPackage());
+		Entities->RegisterEntity(Record);
+		Fixture.Tracker->HandleEntityOwnerChangedForTest(NetID, FGuid::NewGuid());
+	};
+
+	const FGuid Moved = FGuid::NewGuid();
+	Register(Moved, FGuid::NewGuid(), false);
+	FCrowdyActorId Heard;
+	Tracker->FindWireId(Moved, Heard);
+	TestTrue(TEXT("an entity that changed hands is addressed by the id last heard"), Entities->ResolveTargetWireIdForTest(Moved, Tracker) == Heard);
+
+	const FGuid Avatar = FGuid::NewGuid();
+	Register(Avatar, Avatar, false);
+	TestTrue(TEXT("an avatar always by its NetID"), Entities->ResolveTargetWireIdForTest(Avatar, Tracker) == FCrowdyActorId::FromGuid(Avatar));
+
+	const FGuid Leader = FGuid::NewGuid();
+	const FGuid LeaderOwner = FGuid::NewGuid();
+	Register(Leader, LeaderOwner, true);
+	TestTrue(TEXT("a Leader entity by its owner's id"), Entities->ResolveTargetWireIdForTest(Leader, Tracker) == FCrowdyActorId::ForOwner(Leader, LeaderOwner));
+
+	const FGuid Unknown = FGuid::NewGuid();
+	TestTrue(TEXT("and one never heard by its NetID"), Entities->ResolveTargetWireIdForTest(Unknown, Tracker) == FCrowdyActorId::FromGuid(Unknown));
+	return true;
+}
+
+// Any client can make up an owner-tagged id that names someone else's entity, and the server will not stop it, since
+// it has never seen that id. So a client already hearing the entity holds on to the id it hears it under.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyInventedIdCannotSpeakForAnEntityTest,
+	"CrowdySDK.Replication.AnInventedIdCannotSpeakForAnEntity", CrowdyActorLeftReleaseTestFlags)
+
+bool FCrowdyInventedIdCannotSpeakForAnEntityTest::RunTest(const FString& Parameters)
+{
+	const FCrowdyActorLeftFixture Fixture;
+	if (!TestTrue(TEXT("a tracker, a manager and a backend were created"), Fixture.IsValid()))
+	{
+		return false;
+	}
+	Fixture.Tracker->SetupQueuesForTest();
+
+	const FGuid NetID = FGuid::NewGuid();
+	const FCrowdyActorId RealId = FCrowdyActorId::FromGuid(NetID);
+	const FCrowdyActorId Invented = FCrowdyActorId::ForOwner(NetID, FGuid::NewGuid());
+	const int32 Slot = Fixture.AddTrackedActor(NetID);
+
+	const TSharedRef<FActorUpdateNotificationMessage, ESPMode::ThreadSafe> Heard = MakeShared<FActorUpdateNotificationMessage, ESPMode::ThreadSafe>();
+	Heard->UUID = RealId;
+	TArray<FCrowdyActorUpdate> Appeared;
+	FCrowdyActorUpdate& First = Appeared.AddDefaulted_GetRef();
+	First.UUID = NetID;
+	First.Message = Heard;
+	Fixture.Tracker->RecordAppearancesForTest(Appeared);
+
+	const auto Deliver = [&Fixture, &NetID](const FCrowdyActorId& Id)
+	{
+		const TSharedRef<FActorUpdateNotificationMessage, ESPMode::ThreadSafe> Message = MakeShared<FActorUpdateNotificationMessage, ESPMode::ThreadSafe>();
+		Message->GUID = NetID;
+		Message->UUID = Id;
+		const TSharedRef<const ICrowdyMessage, ESPMode::ThreadSafe> Shared = Message;
+		const FCrowdyDelivery Delivery(ECrowdyMessageType::ACTOR_UPDATE_NOTIFICATION, Message->GetPayloadKey(),
+			Message->GetPayload(), Message->GetPayloadBytes(), Shared);
+		Fixture.Tracker->HandleActorUpdateDeliveryForTest(Delivery);
+	};
+
+	Deliver(Invented);
+	TestEqual(TEXT("its updates are dropped"), Fixture.Tracker->GetGatheredForTest().Num(), 0);
+	Deliver(RealId);
+	TestEqual(TEXT("and the real sender's are not"), Fixture.Tracker->GetGatheredForTest().Num(), 1);
+
+	const TUniquePtr<FCrowdyActorTestDeliveryScope> InventedLeft = CrowdyActorTestDeparture(Invented, ECrowdyActorLeftReason::SessionReleased);
+	const TUniquePtr<FCrowdyActorTestDeliveryScope> RealLeft = CrowdyActorTestDeparture(RealId, ECrowdyActorLeftReason::SessionReleased);
+	if (!TestTrue(TEXT("departure deliveries were built"), InventedLeft.IsValid() && RealLeft.IsValid()))
+	{
+		return false;
+	}
+
+	Fixture.Tracker->HandleActorLeftDelivery(*InventedLeft->Delivery);
+	TestEqual(TEXT("its departure releases nothing"), Fixture.Backend->DeactivatedSlots.Num(), 0);
+
+	// A client that really missed a move recovers the same way: the old id leaves, and the new one is heard fresh.
+	Fixture.Tracker->HandleActorLeftDelivery(*RealLeft->Delivery);
+	TestTrue(TEXT("the real id leaving releases the entity"), Fixture.Backend->DeactivatedSlots.Contains(Slot));
+	Fixture.Tracker->MarkActorTrackedForTest(NetID);
+	Deliver(FCrowdyActorId::ForOwner(NetID, FGuid::NewGuid()));
+	TestEqual(TEXT("after which an owner id is heard again"), Fixture.Tracker->GetGatheredForTest().Num(), 2);
+
+	Fixture.Tracker->ReleaseQueuesForTest();
 	return true;
 }
 

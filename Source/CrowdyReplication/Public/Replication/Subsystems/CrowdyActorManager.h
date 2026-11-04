@@ -101,6 +101,10 @@ public:
 	int32 AllocateSlotForTest(const FGuid& UUID) { return AllocateSlot(UUID); }
 	void ReleaseSlotForTest(const FGuid& UUID) { ReleaseSlot(UUID); }
 	void TickPendingActivationsForTest() { TickPendingActivations(); }
+	void TickHeldEntitiesForTest(const double NowSeconds) { TickHeldEntities(NowSeconds); }
+	bool IsEntityHeldForTest(const FGuid& UUID) const { return HeldUntilSeconds.Contains(UUID); }
+	bool HasSlotForTest(const FGuid& UUID) const { return UUIDToSlot.Contains(UUID); }
+	static double GetHoldSecondsForTest();
 
 	// So a test can tick past the eviction bound without naming a number of its own. A test that picks its own
 	// figure passes or fails on how the bound was last tuned rather than on the behaviour it is checking.
@@ -177,6 +181,9 @@ private:
 	/** Set inside ActivateSlot, whose own registration broadcast must not start another activation. */
 	bool bActivatingSlot = false;
 
+	// Leader entities the tracker let go of: each body stays where it stopped until it is heard again or this time passes.
+	TMap<FGuid, double> HeldUntilSeconds;
+
 	TMap<FGuid, int32> UUIDToSlot;
 	TMap<FGuid, FPendingActivation> PendingActivations;
 
@@ -208,6 +215,12 @@ private:
 	void EnqueueFromAnotherThread(const FCrowdyActorUpdate& Update);
 	void TickInterpolation();
 	void TickPendingActivations();
+
+	/** A departed writer of a Leader entity may be the Leader itself going, so its body waits for the next one. */
+	bool TryHoldEntity(const FGuid& UUID);
+
+	/** Silence past the wait means this client left the entity's range, or nothing is left to write it. */
+	void TickHeldEntities(double NowSeconds);
 
 	/** Subscribe to everything the tracker reports. The one place those delegates are bound. */
 	void BindToTracker(UCrowdyActorTracker* Tracker);
