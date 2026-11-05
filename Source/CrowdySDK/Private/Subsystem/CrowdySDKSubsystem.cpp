@@ -37,6 +37,7 @@
 #include "Subsystem/CrowdyTeams.h"
 #include "Subsystem/CrowdyChannels.h"
 #include "Subsystem/CrowdyProximityChat.h"
+#include "Subsystem/CrowdySafety.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
 
 #include <atomic>
@@ -1262,6 +1263,10 @@ void UCrowdySDKSubsystem::HandleVoiceMicStateChanged(const ECrowdyVoiceMicState 
 	}
 	RelayedVoiceMicState = State;
 	OnVoiceMicStateChanged.Broadcast(State);
+	if (UCrowdySafety* Safety = GetGameInstance()->GetSubsystem<UCrowdySafety>())
+	{
+		Safety->SetVoiceCapturing(State == ECrowdyVoiceMicState::Capturing);
+	}
 }
 
 void UCrowdySDKSubsystem::HandleVoiceSpeakerTalking(const FString& SpeakerUuid, const bool bTalking)
@@ -1308,6 +1313,11 @@ void UCrowdySDKSubsystem::OnUDPTimeout()
 void UCrowdySDKSubsystem::OnUDPConnectionSuccessful()
 {
 	OnUDPConnectionSuccess.Broadcast();
+
+	if (UCrowdySafety* Safety = GetGameInstance()->GetSubsystem<UCrowdySafety>())
+	{
+		Safety->RefreshRecordingState();
+	}
 
 	// The connection is up and the player is authenticated, so join the reliable-RPC channels now; any
 	// reliable sends queued before this flush once the joins complete. Idempotent across reconnects.

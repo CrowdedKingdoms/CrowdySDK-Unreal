@@ -11,6 +11,7 @@
 #include "crowdy/core/crypto.hpp"
 #include "crowdy/domains/domain_base.hpp"
 #include "crowdy/domains/types.hpp"
+#include "crowdy/generated/operations.hpp"
 
 /// Overworld portals & app-scoped tokens — client.portal(). Gameplay requires
 /// a short-lived APP-SCOPED token per app; an identity session token is not
@@ -27,6 +28,37 @@ struct PkcePair {
   Status status;
 
   bool ok() const { return status.ok(); }
+};
+
+/// A document the player accepted in the game: its id and the version shown
+/// (LegalDocument::documentId / version).
+struct AcceptedLegalDocument {
+  std::string documentId;
+  std::string version;
+};
+
+/// signInWithMinecraft()'s input (ck-api v2.60.0). Every field but parentalConfirmation is
+/// required.
+struct MinecraftSignInParams {
+  /// The app minecraftChallenge() was asked for.
+  std::string appId;
+  /// The Minecraft account name the game is signed in with (1-16 letters, digits and
+  /// underscores).
+  std::string username;
+  /// The challenge's serverId, after the game joined it through Mojang's session service.
+  std::string serverId;
+  /// From the game's own age screen: YYYY-MM-DD or YYYY-MM; the age is counted from the last
+  /// day of the month. Since ck-api v2.61.0 the year and month of the account's first admitted
+  /// sign-in decide its age from then on: a later sign-in's birthDate is not used.
+  std::string birthDate;
+  /// The country the player lives in, ISO 3166-1 alpha-2.
+  std::string country;
+  /// Under 18: the player confirms a parent or guardian agreed. Required true under 18;
+  /// ignored at 18 or over.
+  std::optional<bool> parentalConfirmation;
+  /// Every document AuthAPI::playerLegalDocuments() and appRequiredDocuments(appId) name, at
+  /// those versions, as the player accepted them in the game.
+  std::vector<AcceptedLegalDocument> acceptedDocuments;
 };
 
 /// The refresh selection, with and without the current replication server.
@@ -64,6 +96,16 @@ class PortalAPI : public DomainBase {
   /// app-scoped gameplay token. The token is NOT stored on this client —
   /// build a per-game client with it. Free/open apps auto-grant access; paid
   /// apps require an existing entitlement (FORBIDDEN otherwise).
+  ///
+  /// The player gate (ck-api v2.60.0) runs at every mint and refresh, in this order:
+  /// TERRITORY_NOT_SUPPORTED (graphql::territoryNotSupportedOf), AGE_REQUIRED
+  /// (graphql::ageRequiredOf; AuthAPI::recordPlayerAge), AGE_REQUIREMENT_NOT_MET
+  /// (graphql::ageRequirementNotMetOf), then the documents (graphql::legalAcceptanceRequiredOf).
+  /// A player under 18 is also refused SAFETY_LOG_REQUIRED (graphql::safetyLogRequiredOf) in an
+  /// app without the safety log, then SAFETY_MODERATOR_REQUIRED
+  /// (graphql::safetyModeratorRequiredOf, ck-api v2.61.0) in one whose organization has
+  /// appointed no safety moderator. None of them is fixed by retrying, and no refusal names an
+  /// age.
   AppTokenResponse mintAppToken(std::string_view appId) const {
     graphql::JVal vars;
     vars["input"]["appId"] = appId;
@@ -275,6 +317,70 @@ class PortalAPI : public DomainBase {
                     });
   }
 
+  // ----- Minecraft sign-in (ck-api v2.60.0) ------------------------------------
+  // For Crowded Kingdoms' own apps only (FORBIDDEN for any other app; FEATURE_DISABLED on a
+  // tier without it). The game signs in as a player the app's organization manages, so there
+  // is no Crowded Kingdoms account: the result is an app token, as mintManagedPlayerToken's,
+  // which refresh() rotates. Start the session with it as with any app token
+  // (crowdy::startGameSession).
+
+  /// Step 1: a one-time server id for the app, good for two minutes. The game then joins it
+  /// through Mojang's session service as the account it is signed in with (the request a
+  /// client makes to join any online-mode server). Ask for it yourself: never join a server id
+  /// something else hands you. Public; rate-limited per address.
+  MinecraftChallenge minecraftChallenge(std::string_view appId) const {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    return MinecraftChallenge::fromJson(execUnwrap(
+        gen::portal::documentFor(gen::portal::kMinecraftChallengeOperationName), vars,
+        gen::portal::kMinecraftChallengeOperationName));
+  }
+
+  void minecraftChallengeAsync(
+      std::string_view appId,
+      std::function<void(graphql::GraphQLOutcome, MinecraftChallenge)> cb) const {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    execUnwrapAsync(gen::portal::documentFor(gen::portal::kMinecraftChallengeOperationName), vars,
+                    gen::portal::kMinecraftChallengeOperationName,
+                    [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      MinecraftChallenge value{};
+                      if (out.ok()) value = MinecraftChallenge::fromJson(out.data);
+                      cb(std::move(out), value);
+                    });
+  }
+
+  /// Step 2, after the Mojang join: sign the player in and store the app token on this client,
+  /// as exchangeManagedPlayerAssertion() does. The accepted documents are recorded with method
+  /// IN_GAME. Refusals: MINECRAFT_VERIFICATION_FAILED (graphql::minecraftVerificationFailedOf;
+  /// start again from minecraftChallenge), MINECRAFT_VERIFICATION_UNAVAILABLE (retryable),
+  /// TERRITORY_NOT_SUPPORTED (the declared country, or the network's country or region),
+  /// AGE_REQUIREMENT_NOT_MET (it names no age, and since ck-api v2.61.0 the same Minecraft
+  /// account is then refused for 24 hours whatever it sends), LEGAL_ACCEPTANCE_REQUIRED (with
+  /// the missing documents) and ORG_LEGAL_ACCEPTANCE_REQUIRED. Public; rate-limited per address.
+  AppTokenResponse signInWithMinecraft(const MinecraftSignInParams& input) const {
+    auto r = AppTokenResponse::fromJson(execUnwrap(
+        gen::portal::documentFor(gen::portal::kSignInWithMinecraftOperationName),
+        minecraftVars(input), gen::portal::kSignInWithMinecraftOperationName));
+    if (!r.token.empty()) auth_->setToken(r.token);
+    return r;
+  }
+
+  void signInWithMinecraftAsync(
+      const MinecraftSignInParams& input,
+      std::function<void(graphql::GraphQLOutcome, AppTokenResponse)> cb) const {
+    execUnwrapAsync(gen::portal::documentFor(gen::portal::kSignInWithMinecraftOperationName),
+                    minecraftVars(input), gen::portal::kSignInWithMinecraftOperationName,
+                    [auth = auth_, cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      AppTokenResponse r{};
+                      if (out.ok()) {
+                        r = AppTokenResponse::fromJson(out.data);
+                        if (!r.token.empty()) auth->setToken(r.token);
+                      }
+                      cb(std::move(out), r);
+                    });
+  }
+
   /// A begun portal entry: send the player to `url`; keep `verifier` (and
   /// `state` for correlation) to pass to completeEntry() on the callback.
   struct PortalEntry {
@@ -460,6 +566,26 @@ class PortalAPI : public DomainBase {
   }
 
  private:
+  static graphql::JVal minecraftVars(const MinecraftSignInParams& input) {
+    graphql::JVal vars;
+    graphql::JVal& body = vars["input"];
+    body["appId"] = input.appId;
+    body["username"] = input.username;
+    body["serverId"] = input.serverId;
+    body["birthDate"] = input.birthDate;
+    body["country"] = input.country;
+    if (input.parentalConfirmation) body["parentalConfirmation"] = *input.parentalConfirmation;
+    graphql::JArray documents;
+    documents.reserve(input.acceptedDocuments.size());
+    for (const auto& document : input.acceptedDocuments) {
+      documents.push_back(graphql::JVal::object(
+          {{"documentId", graphql::JVal(document.documentId)},
+           {"version", graphql::JVal(document.version)}}));
+    }
+    body["acceptedDocuments"] = graphql::JVal(std::move(documents));
+    return vars;
+  }
+
   static void setScopes(
       graphql::JVal& input,
       const std::optional<std::vector<std::string>>& scopes) {

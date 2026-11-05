@@ -10,6 +10,7 @@
 #include "Dom/JsonValue.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/DateTime.h"
 #include "Misc/Paths.h"
 #include "Kismet/GameplayStatics.h"
@@ -76,7 +77,9 @@ static void ApplyRuntimeGate(UCrowdyGameSession* Session, const FCrowdyCppAppTok
 }
 
 static const TCHAR* const HeldFlowSupersededMessage =
-	TEXT("A newer sign-in replaced the one waiting for the terms and the age confirmation.");
+	TEXT("A newer sign-in replaced the one waiting for the player's answer.");
+
+static const TCHAR* const AgeLockSection = TEXT("CrowdySDK.Device");
 
 static const TCHAR* const SignedOutMessage = TEXT("Signed out before sign-in finished.");
 static const TCHAR* const SignInCancelledMessage = TEXT("Sign-in cancelled.");
@@ -1165,9 +1168,9 @@ void UCrowdyAuthentication::ClaimFreeAccess(FOnAuthSuccess OnSuccess, FOnAuthErr
 void UCrowdyAuthentication::RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority,
 	FOnLegalConsentsRecorded OnRecorded, FOnAuthError OnError)
 {
-	if (!bAcceptLegal || !bAttestAgeOfMajority)
+	if (!bAcceptLegal)
 	{
-		OnError.ExecuteIfBound(TEXT("Both the terms and the age confirmation have to be accepted."));
+		OnError.ExecuteIfBound(TEXT("The terms have to be accepted."));
 		return;
 	}
 	if (!GameSession || GameSession->GetSessionToken().IsEmpty())
@@ -1184,11 +1187,13 @@ void UCrowdyAuthentication::RecordPlayerConsents(bool bAcceptLegal, bool bAttest
 	}
 
 	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	const int32 Generation = SignInGeneration;
+	const FString AppId = bShownAppDocuments && GameSession ? LexToString(GameSession->GetAppID()) : FString();
 	Client->RecordPlayerConsents(bAcceptLegal, bAttestAgeOfMajority, GuardSession<FCrowdyCppBoolResult>(
-		[WeakThis, OnRecorded, OnError](FCrowdyCppBoolResult Result)
+		[WeakThis, OnRecorded, OnError, Generation](FCrowdyCppBoolResult Result)
 		{
 			UCrowdyAuthentication* Self = WeakThis.Get();
-			if (!Self)
+			if (!Self || Self->AbandonStaleSignIn(Generation, OnError))
 			{
 				return;
 			}
@@ -1198,28 +1203,210 @@ void UCrowdyAuthentication::RecordPlayerConsents(bool bAcceptLegal, bool bAttest
 				return;
 			}
 
-			if (!Self->HeldConsentFlow.IsSet())
+			Self->ResumeHeldFlow([&OnRecorded]() { OnRecorded.ExecuteIfBound(); });
+		}), AppId);
+}
+
+void UCrowdyAuthentication::ResumeHeldFlow(TFunctionRef<void()> OnAnswered)
+{
+	if (!HeldConsentFlow.IsSet())
+	{
+		OnAnswered();
+		return;
+	}
+
+	// Re-minted under the held flow, so the sign-in the player started is the one that completes.
+	const int32 Generation = SignInGeneration;
+	const FHeldConsentFlow Held = ReleaseHeldConsentFlow();
+	OnAnswered();
+	if (!AbandonStaleSignIn(Generation, Held.OnError))
+	{
+		DispatchMint(Held.Flow, Held.OnSuccess, Held.OnError);
+	}
+}
+
+void UCrowdyAuthentication::RequestLegalDocuments(FOnLegalDocuments OnDone)
+{
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	const int64 AppId = GameSession ? GameSession->GetAppID() : 0;
+	if (!Client)
+	{
+		OnDone.ExecuteIfBound(GetLegalDocuments());
+		return;
+	}
+
+	const auto ToDocuments = [](const FCrowdyCppLegalDocumentsResult& Result)
+	{
+		TArray<FCrowdyLegalDocument> Documents;
+		for (const FCrowdyCppLegalDocument& Listed : Result.Documents)
+		{
+			FCrowdyLegalDocument& Document = Documents.AddDefaulted_GetRef();
+			Document.Title = FText::FromString(Listed.Title);
+			Document.Url = Listed.Url;
+		}
+		return Documents;
+	};
+
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	bShownAppDocuments = false;
+	Client->ListLegalDocuments(FString(), [WeakThis, OnDone, AppId, ToDocuments](FCrowdyCppLegalDocumentsResult Platform)
+	{
+		UCrowdyAuthentication* Self = WeakThis.Get();
+		FCrowdyCppClient* Next = Self ? Self->ResolveAuthClient() : nullptr;
+		TArray<FCrowdyLegalDocument> Documents = Platform.bOk ? ToDocuments(Platform) : GetLegalDocuments();
+		if (!Next || AppId == 0)
+		{
+			OnDone.ExecuteIfBound(Documents);
+			return;
+		}
+
+		Next->ListLegalDocuments(LexToString(AppId), [WeakThis, OnDone, Documents, ToDocuments](FCrowdyCppLegalDocumentsResult App) mutable
+		{
+			if (UCrowdyAuthentication* Self = WeakThis.Get())
 			{
-				OnRecorded.ExecuteIfBound();
+				Self->bShownAppDocuments = App.bOk && App.Documents.Num() > 0;
+			}
+			Documents.Append(ToDocuments(App));
+			OnDone.ExecuteIfBound(Documents);
+		});
+	});
+}
+
+void UCrowdyAuthentication::RecordPlayerAge(int32 BirthYear, int32 BirthMonth, const FString& CountryCode,
+	bool bParentalConfirmation, FOnPlayerAgeRecorded OnRecorded, FOnAuthError OnError)
+{
+	if (BirthMonth < 1 || BirthMonth > 12 || BirthYear < 1900 || BirthYear > FDateTime::UtcNow().GetYear() || CountryCode.Len() != 2)
+	{
+		OnError.ExecuteIfBound(TEXT("Enter your date of birth and country."));
+		return;
+	}
+	if (IsAgeEntryLocked())
+	{
+		const FString Text = CrowdyCppPlayerRefusalText(CrowdyCppAgeRequirementNotMetCode, FString());
+		OnError.ExecuteIfBound(Text);
+		FailHeldConsentFlow(*Text);
+		return;
+	}
+	if (!GameSession || GameSession->GetSessionToken().IsEmpty())
+	{
+		OnError.ExecuteIfBound(TEXT("Sign in before recording your age."));
+		return;
+	}
+
+	FCrowdyCppClient* Client = ResolveAuthClient();
+	if (!Client)
+	{
+		OnError.ExecuteIfBound(TEXT("Authentication client unavailable."));
+		return;
+	}
+
+	TWeakObjectPtr<UCrowdyAuthentication> WeakThis(this);
+	const int32 Generation = SignInGeneration;
+	Client->RecordPlayerAge(FString::Printf(TEXT("%04d-%02d"), BirthYear, BirthMonth), CountryCode.ToUpper(), bParentalConfirmation,
+		GuardSession<FCrowdyCppBoolResult>([WeakThis, OnRecorded, OnError, Generation](FCrowdyCppBoolResult Result)
+		{
+			UCrowdyAuthentication* Self = WeakThis.Get();
+			if (!Self)
+			{
 				return;
 			}
 
-			// Re-minted under the held flow, so the sign-in the player started is the one that completes.
-			const FHeldConsentFlow Held = Self->ReleaseHeldConsentFlow();
-			OnRecorded.ExecuteIfBound();
-			Self->DispatchMint(Held.Flow, Held.OnSuccess, Held.OnError);
+			// The install answered, so the lock stands even when the player has since moved on.
+			if (Result.ErrorCode.Equals(CrowdyCppAgeRequirementNotMetCode, ESearchCase::CaseSensitive))
+			{
+				Self->LockAgeEntry();
+			}
+			if (Self->AbandonStaleSignIn(Generation, OnError))
+			{
+				return;
+			}
+
+			// An account that already has an age answers CONFLICT, which is what the hold was waiting for.
+			if (Result.bOk || Result.ErrorCode.Equals(CrowdyCppConflictCode, ESearchCase::CaseSensitive))
+			{
+				Self->ResumeHeldFlow([&OnRecorded]() { OnRecorded.ExecuteIfBound(); });
+				return;
+			}
+
+			// The server's wording of a refused date is not known to be free of an age, so it is never shown.
+			if (!CrowdyCppIsAccessRefusalCode(Result.ErrorCode))
+			{
+				OnError.ExecuteIfBound(Result.ErrorCode.IsEmpty() ? Result.ErrorMessage : FString(TEXT("Those details could not be saved.")));
+				return;
+			}
+
+			// The error goes first, so a screen can show it before the hold ends and closes it.
+			const FString Text = CrowdyCppPlayerRefusalText(Result.ErrorCode, Result.ErrorMessage);
+			Self->NoteAccessRefused(Result.ErrorCode, Text, FString());
+			OnError.ExecuteIfBound(Text);
+			Self->FailHeldConsentFlow(*Text);
+			Self->ForgetEndedSession();
 		}));
+}
+
+void UCrowdyAuthentication::DeclineAgeEntry()
+{
+	if (IsAgeEntryPending())
+	{
+		FailHeldConsentFlow(IsAgeEntryLocked() ? TEXT("You can't play this game.") : TEXT("Sign-in needs your date of birth and country."));
+	}
+}
+
+FString UCrowdyAuthentication::GetAgeLockKey() const
+{
+	return FString(TEXT("AgeEntryLockedUntil")) + GetInstanceSuffix();
+}
+
+void UCrowdyAuthentication::LockAgeEntry()
+{
+	LockAgeEntryFor(GetInstanceSuffix());
+}
+
+void UCrowdyAuthentication::LockAgeEntryFor(const FString& Suffix)
+{
+	if (GConfig)
+	{
+		GConfig->SetString(AgeLockSection, *(FString(TEXT("AgeEntryLockedUntil")) + Suffix), *(FDateTime::UtcNow() + FTimespan::FromHours(24)).ToIso8601(), GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+}
+
+void UCrowdyAuthentication::ClearAgeEntryLock()
+{
+	if (GConfig)
+	{
+		GConfig->RemoveKey(AgeLockSection, *GetAgeLockKey(), GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+}
+
+bool UCrowdyAuthentication::IsAgeEntryPending() const
+{
+	return HeldConsentFlow.IsSet() && HeldConsentFlow->bForAge;
+}
+
+bool UCrowdyAuthentication::IsAgeEntryLocked() const
+{
+	return IsAgeEntryLockedFor(GetInstanceSuffix());
+}
+
+bool UCrowdyAuthentication::IsAgeEntryLockedFor(const FString& Suffix)
+{
+	FString Stamp;
+	FDateTime Until;
+	return GConfig && GConfig->GetString(AgeLockSection, *(FString(TEXT("AgeEntryLockedUntil")) + Suffix), Stamp, GGameUserSettingsIni)
+		&& FDateTime::ParseIso8601(*Stamp, Until) && FDateTime::UtcNow() < Until;
 }
 
 void UCrowdyAuthentication::DeclineLegalAcceptance()
 {
 	// A held refresh only logs here, and its app token is left to expire.
-	FailHeldConsentFlow(TEXT("Sign-in needs the terms and the age confirmation."));
+	FailHeldConsentFlow(TEXT("Sign-in needs the terms to be accepted."));
 }
 
 bool UCrowdyAuthentication::IsLegalAcceptancePending() const
 {
-	return HeldConsentFlow.IsSet();
+	return HeldConsentFlow.IsSet() && !HeldConsentFlow->bForAge;
 }
 
 TArray<FCrowdyLegalDocument> UCrowdyAuthentication::GetLegalDocuments()
@@ -1233,20 +1420,14 @@ TArray<FCrowdyLegalDocument> UCrowdyAuthentication::GetLegalDocuments()
 	};
 
 	return {
-		Document(NSLOCTEXT("CrowdyAuthentication", "GameTerms", "Game Terms"),
-			TEXT("https://crowdedkingdoms.com/game-terms.html")),
-		Document(NSLOCTEXT("CrowdyAuthentication", "ApiTerms", "API Terms"),
-			TEXT("https://crowdedkingdoms.com/api-terms.html")),
-		Document(NSLOCTEXT("CrowdyAuthentication", "SdkTerms", "SDK Developer Terms"),
-			TEXT("https://crowdedkingdoms.com/sdk-terms.html")),
-		Document(NSLOCTEXT("CrowdyAuthentication", "BillingBasis", "Free Tier and Billing Basis"),
-			TEXT("https://crowdedkingdoms.com/billing-basis.html")),
-		Document(NSLOCTEXT("CrowdyAuthentication", "OverworldPrivacy", "Overworld Privacy Policy"),
-			TEXT("https://crowdedkingdoms.com/overworld-privacy.html")),
+		Document(NSLOCTEXT("CrowdyAuthentication", "PlayerTerms", "Player Terms"),
+			TEXT("https://crowdedkingdoms.com/player-terms.html")),
+		Document(NSLOCTEXT("CrowdyAuthentication", "PlayerPrivacy", "Player Privacy Policy"),
+			TEXT("https://crowdedkingdoms.com/player-privacy.html")),
 	};
 }
 
-void UCrowdyAuthentication::HoldForLegalAcceptance(EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
+void UCrowdyAuthentication::HoldFlow(bool bForAge, EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
 	const bool bAlreadyHeld = HeldConsentFlow.IsSet();
 
@@ -1258,14 +1439,30 @@ void UCrowdyAuthentication::HoldForLegalAcceptance(EAuthFlow Flow, FOnAuthSucces
 
 	// A newer refused sign-in takes over the hold: the player is still being asked, so nothing is announced.
 	TOptional<FHeldConsentFlow> Superseded = MoveTemp(HeldConsentFlow);
-	HeldConsentFlow = FHeldConsentFlow{Flow, OnSuccess, OnError};
+	HeldConsentFlow = FHeldConsentFlow{Flow, OnSuccess, OnError, bForAge};
 
-	UE_LOG(LogCrowdyServices, Warning,
-		TEXT("[CrowdyAuth] The server needs the player to accept the legal documents before it issues a gameplay token."));
+	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] The server needs %s before it issues a gameplay token."),
+		bForAge ? TEXT("the player's date of birth and country") : TEXT("the player to accept the legal documents"));
 	if (bAlreadyHeld)
 	{
 		FailFlow(HeldFlowSupersededMessage, Superseded->Flow, Superseded->OnError);
+		if (Superseded->bForAge == bForAge)
+		{
+			return;
+		}
+	}
+	if (bForAge)
+	{
+		if (bAlreadyHeld)
+		{
+			OnLegalAcceptanceEnded.Broadcast();
+		}
+		OnAgeRequired.Broadcast();
 		return;
+	}
+	if (bAlreadyHeld)
+	{
+		OnAgeEntryEnded.Broadcast();
 	}
 	OnLegalAcceptanceRequired.Broadcast();
 }
@@ -1285,6 +1482,11 @@ UCrowdyAuthentication::FHeldConsentFlow UCrowdyAuthentication::ReleaseHeldConsen
 {
 	FHeldConsentFlow Held = MoveTemp(HeldConsentFlow.GetValue());
 	HeldConsentFlow.Reset();
+	if (Held.bForAge)
+	{
+		OnAgeEntryEnded.Broadcast();
+		return Held;
+	}
 	OnLegalAcceptanceEnded.Broadcast();
 	return Held;
 }
@@ -1373,10 +1575,16 @@ void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSucces
 				Self->HoldForLegalAcceptance(Flow, OnSuccess, OnError);
 				return;
 			}
-
-			if (Self->NoteAccessRefused(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil))
+			if (Result.ErrorCode.Equals(CrowdyCppAgeRequiredCode, ESearchCase::CaseSensitive))
 			{
-				Self->FailFlow(Result.ErrorMessage, Flow, OnError);
+				Self->HoldForAge(Flow, OnSuccess, OnError);
+				return;
+			}
+
+			const FString RefusalText = CrowdyCppPlayerRefusalText(Result.ErrorCode, Result.ErrorMessage);
+			if (Self->NoteAccessRefused(Result.ErrorCode, RefusalText, Result.BlockedUntil))
+			{
+				Self->FailFlow(RefusalText, Flow, OnError);
 				return;
 			}
 
@@ -1458,9 +1666,14 @@ void UCrowdyAuthentication::DispatchRefresh()
 				Self->HoldForLegalAcceptance(EAuthFlow::Refresh, FOnAuthSuccess(), FOnAuthError());
 				return;
 			}
+			if (Result.ErrorCode.Equals(CrowdyCppAgeRequiredCode, ESearchCase::CaseSensitive))
+			{
+				Self->HoldForAge(EAuthFlow::Refresh, FOnAuthSuccess(), FOnAuthError());
+				return;
+			}
 
 			// Terminal as well: a re-mint is refused the same way.
-			if (Self->NoteAccessRefused(Result.ErrorCode, Result.ErrorMessage, Result.BlockedUntil))
+			if (Self->NoteAccessRefused(Result.ErrorCode, CrowdyCppPlayerRefusalText(Result.ErrorCode, Result.ErrorMessage), Result.BlockedUntil))
 			{
 				return;
 			}
@@ -1702,6 +1915,12 @@ bool UCrowdyAuthentication::NoteAccessRefused(const FString& ErrorCode, const FS
 	if (!CrowdyCppIsAccessRefusalCode(ErrorCode))
 	{
 		return false;
+	}
+
+	// The minimum a mint enforces can be higher than the one a recorded age passed.
+	if (ErrorCode.Equals(CrowdyCppAgeRequirementNotMetCode, ESearchCase::CaseSensitive))
+	{
+		LockAgeEntry();
 	}
 
 	bAccessRefused = true;
@@ -1996,7 +2215,7 @@ void UCrowdyAuthentication::ClearSavedSession()
 	DeleteSavedSessionFiles();
 
 	// Last, so a handler that signs in again finds the credential already gone.
-	FailHeldConsentFlow(TEXT("Signed out before the terms and the age confirmation were accepted."));
+	FailHeldConsentFlow(TEXT("Signed out before the player answered."));
 }
 
 void UCrowdyAuthentication::DeleteSavedSessionFiles()

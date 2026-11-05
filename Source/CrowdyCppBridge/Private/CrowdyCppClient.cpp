@@ -6,6 +6,7 @@
 #include "Async/Async.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Platform/CrowdyCppHttpTransport.h"
 #include "Platform/CrowdyCppWebSocketTransport.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
@@ -861,6 +862,7 @@ namespace
 			return;
 		}
 		OutResult.ErrorCode = Utf8ToFString(Error->code);
+		OutResult.ErrorReason = Utf8ToFString(Error->reason);
 		OutResult.Blame = Utf8ToFString(Error->blame);
 		OutResult.bRetryable = !OutResult.Blame.IsEmpty() && Error->retryable;
 		if (Error->retryAfterMs.has_value())
@@ -1407,6 +1409,7 @@ namespace
 		case ECrowdyCppApiDomain::Organizations: return organizations::documentFor(Op);
 		case ECrowdyCppApiDomain::CrowdyStudio:  return crowdyStudio::documentFor(Op);
 		case ECrowdyCppApiDomain::Teams:         return teams::documentFor(Op);
+		case ECrowdyCppApiDomain::Safety:        return safety::documentFor(Op);
 		case ECrowdyCppApiDomain::Channels:      return channels::documentFor(Op);
 		case ECrowdyCppApiDomain::Avatars:       return avatars::documentFor(Op);
 		case ECrowdyCppApiDomain::State:         return state::documentFor(Op);
@@ -1433,6 +1436,7 @@ namespace
 		{
 		case ECrowdyCppApiDomain::GameApps:
 		case ECrowdyCppApiDomain::CrowdyStudio:
+		case ECrowdyCppApiDomain::Safety:
 		case ECrowdyCppApiDomain::Teams:
 		case ECrowdyCppApiDomain::Channels:
 		case ECrowdyCppApiDomain::Avatars:
@@ -1469,6 +1473,10 @@ namespace
 
 		case ECrowdyCppApiDomain::Users:
 			if (Op == "UpdateUserState") { return ECrowdyCppTokenPlane::Game; }
+			break;
+
+		case ECrowdyCppApiDomain::Apps:
+			if (Op == "AppRecording") { return ECrowdyCppTokenPlane::Game; }
 			break;
 
 		case ECrowdyCppApiDomain::ServerStatus:
@@ -1748,6 +1756,37 @@ void FCrowdyCppClient::FImpl::SendDueRetries()
 			++Requests->OpSlots[Retry->OpSlot].Retries;
 		}
 	}
+}
+
+FString CrowdyCppDeviceId()
+{
+	static const TCHAR* const Section = TEXT("CrowdySDK.Device");
+	static const TCHAR* const Key = TEXT("DeviceId");
+
+	FString Id;
+	if (GConfig)
+	{
+		GConfig->GetString(Section, Key, Id, GGameUserSettingsIni);
+	}
+	if (!Id.IsEmpty())
+	{
+		return Id;
+	}
+
+	Id = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	if (GConfig)
+	{
+		GConfig->SetString(Section, Key, *Id, GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+	return Id;
+}
+
+bool CrowdyCppRequestNeedsDeviceId(FUtf8StringView Body)
+{
+	// Only the start of the body: a variable holding these words must not attach the id to another call.
+	const FUtf8StringView Start = Body.Left(128);
+	return Start.Contains(UTF8TEXTVIEW("mutation Register(")) || Start.Contains(UTF8TEXTVIEW("mutation RecordPlayerAge("));
 }
 
 bool CrowdyCppIsBusyRetryEnabled()
@@ -2589,17 +2628,134 @@ FCrowdyCppRequestHandle FCrowdyCppClient::UnlinkIdentity(const FString& Identity
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority,
-	TFunction<void(FCrowdyCppBoolResult)> OnDone)
+	TFunction<void(FCrowdyCppBoolResult)> OnDone, const FString& AppId)
 {
+	const std::string AppIdStr = std::string(TCHAR_TO_UTF8(*AppId));
 	return RunAuthOp<FCrowdyCppBoolResult, bool>(
 		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
 		TEXT("recordPlayerConsents"), MoveTemp(OnDone),
-		[bAcceptLegal, bAttestAgeOfMajority](crowdy::CrowdyClient& Client,
+		[bAcceptLegal, bAttestAgeOfMajority, AppIdStr](crowdy::CrowdyClient& Client,
 			std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
 		{
-			Client.auth().recordPlayerConsentsAsync(bAcceptLegal, bAttestAgeOfMajority, std::move(Cb));
+			if (AppIdStr.empty())
+			{
+				Client.auth().recordPlayerConsentsAsync(bAcceptLegal, bAttestAgeOfMajority, std::move(Cb));
+				return;
+			}
+			crowdy::domains::PlayerConsents Consents;
+			Consents.acceptLegal = bAcceptLegal;
+			Consents.appId = AppIdStr;
+			Client.auth().recordPlayerConsentsAsync(Consents, std::move(Cb));
 		},
 		&MapBool);
+}
+
+namespace
+{
+	FCrowdyCppLegalDocumentsResult MapLegalDocuments(const crowdy::graphql::GraphQLOutcome& Out,
+		const std::vector<crowdy::domains::LegalDocument>& Documents)
+	{
+		FCrowdyCppLegalDocumentsResult Result;
+		Result.bOk = Out.ok();
+		if (!Out.ok())
+		{
+			Result.ErrorMessage = OutcomeErrorMessage(Out);
+			return Result;
+		}
+		for (const crowdy::domains::LegalDocument& Document : Documents)
+		{
+			Result.Documents.Add({ Utf8ToFString(Document.title), Utf8ToFString(Document.url) });
+		}
+		return Result;
+	}
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::ListLegalDocuments(const FString& AppId,
+	TFunction<void(FCrowdyCppLegalDocumentsResult)> OnDone)
+{
+	const std::string AppIdStr = std::string(TCHAR_TO_UTF8(*AppId));
+	return RunAuthOp<FCrowdyCppLegalDocumentsResult, std::vector<crowdy::domains::LegalDocument>>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::None) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("legalDocuments"), MoveTemp(OnDone),
+		[AppIdStr](crowdy::CrowdyClient& Client,
+			std::function<void(crowdy::graphql::GraphQLOutcome, std::vector<crowdy::domains::LegalDocument>)> Cb)
+		{
+			if (AppIdStr.empty())
+			{
+				Client.auth().playerLegalDocumentsAsync(std::move(Cb));
+				return;
+			}
+			Client.auth().appRequiredDocumentsAsync(AppIdStr, std::move(Cb));
+		},
+		&MapLegalDocuments);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::ListDeveloperDocuments(TFunction<void(FCrowdyCppLegalDocumentsResult)> OnDone)
+{
+	return RunAuthOp<FCrowdyCppLegalDocumentsResult, std::vector<crowdy::domains::LegalDocument>>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::None) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("developerLegalDocuments"), MoveTemp(OnDone),
+		[](crowdy::CrowdyClient& Client,
+			std::function<void(crowdy::graphql::GraphQLOutcome, std::vector<crowdy::domains::LegalDocument>)> Cb)
+		{
+			Client.auth().developerLegalDocumentsAsync(std::move(Cb));
+		},
+		&MapLegalDocuments);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::HasDeveloperAcceptance(TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("developerLegalAcceptance"), MoveTemp(OnDone),
+		[](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().developerLegalAcceptanceAsync(std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::RecordDeveloperConsents(TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	return RunAuthOp<FCrowdyCppBoolResult, bool>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("recordDeveloperConsents"), MoveTemp(OnDone),
+		[](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, bool)> Cb)
+		{
+			Client.auth().recordDeveloperConsentsAsync(true, std::move(Cb));
+		},
+		&MapBool);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::RecordPlayerAge(const FString& BirthDate, const FString& Country,
+	bool bParentalConfirmation, TFunction<void(FCrowdyCppBoolResult)> OnDone)
+{
+	crowdy::domains::PlayerAgeInput Input;
+	Input.birthDate = std::string(TCHAR_TO_UTF8(*BirthDate));
+	Input.country = std::string(TCHAR_TO_UTF8(*Country));
+	if (bParentalConfirmation)
+	{
+		Input.parentalConfirmation = true;
+	}
+	return RunAuthOp<FCrowdyCppBoolResult, crowdy::domains::PlayerAge>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Management) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("recordPlayerAge"), MoveTemp(OnDone),
+		[Input](crowdy::CrowdyClient& Client, std::function<void(crowdy::graphql::GraphQLOutcome, crowdy::domains::PlayerAge)> Cb)
+		{
+			Client.auth().recordPlayerAgeAsync(Input, std::move(Cb));
+		},
+		[](const crowdy::graphql::GraphQLOutcome& Out, const crowdy::domains::PlayerAge&)
+		{
+			FCrowdyCppBoolResult Result;
+			Result.bOk = Out.ok();
+			Result.bValue = Out.ok();
+			if (!Out.ok())
+			{
+				Result.ErrorMessage = OutcomeErrorMessage(Out);
+				Result.ErrorCode = OutcomeErrorCode(Out);
+			}
+			return Result;
+		});
 }
 
 FCrowdyCppRequestHandle FCrowdyCppClient::RequestPasswordReset(const FString& Email,

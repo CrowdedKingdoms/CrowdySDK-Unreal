@@ -157,7 +157,7 @@ public:
 		meta=(DisplayName="Auto-Clear Persistent State on Shutdown"))
 	bool bAutoClearPersistentStateOnShutdown = false;
 
-	/** Show the built-in consent prompt when sign-in needs the player's agreement. Turn it off when the game draws its own consent UI by binding OnLegalAcceptanceRequired and calling RecordPlayerConsents. */
+	/** Show the built-in consent prompt when sign-in needs the player's agreement. Turn it off when the game draws its own consent and age UI by binding OnLegalAcceptanceRequired and OnAgeRequired and calling RecordPlayerConsents. */
 	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Developer|Authentication",
 		meta=(DisplayName="Show Consent Prompt"))
 	bool bShowConsentPrompt = true;

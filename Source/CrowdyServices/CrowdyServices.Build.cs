@@ -26,6 +26,7 @@ public class CrowdyServices : ModuleRules
 				"Json",
 				"JsonUtilities",
 				"Slate",
+				"InputCore",
 				"SlateCore",
 			}
 		);

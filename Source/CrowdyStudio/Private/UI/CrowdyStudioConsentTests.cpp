@@ -41,6 +41,26 @@ bool FCrowdyStudioConsentAsksOnRefusalTest::RunTest(const FString& /*Parameters*
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAsksForAnAgeTest,
+	"CrowdySDK.Studio.Consent.AsksForAnAgeOnlyOnItsRefusal", CrowdyStudioConsentTestFlags)
+
+bool FCrowdyStudioAsksForAnAgeTest::RunTest(const FString& /*Parameters*/)
+{
+	TestTrue(TEXT("The age refusal asks"), CrowdyStudioConsent::ShouldAskAge(MakeRefusal(CrowdyCppAgeRequiredCode), false));
+	TestFalse(TEXT("Once only"), CrowdyStudioConsent::ShouldAskAge(MakeRefusal(CrowdyCppAgeRequiredCode), true));
+	TestFalse(TEXT("A consent refusal is not an age refusal"),
+		CrowdyStudioConsent::ShouldAskAge(MakeRefusal(CrowdyCppLegalAcceptanceRequiredCode), false));
+	TestFalse(TEXT("And an age refusal is not a consent refusal"),
+		CrowdyStudioConsent::ShouldAskConsent(MakeRefusal(CrowdyCppAgeRequiredCode), false));
+	TestFalse(TEXT("A final refusal never asks"),
+		CrowdyStudioConsent::ShouldAskAge(MakeRefusal(CrowdyCppAgeRequirementNotMetCode), false));
+
+	FCrowdyCppAppTokenResult Minted = MakeRefusal(CrowdyCppAgeRequiredCode);
+	Minted.bOk = true;
+	TestFalse(TEXT("A successful mint never asks"), CrowdyStudioConsent::ShouldAskAge(Minted, false));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioConsentAsksOnceTest,
 	"CrowdySDK.Studio.Consent.RetriesOnlyOnce", CrowdyStudioConsentTestFlags)
 

@@ -20,6 +20,10 @@ public:
 	TArray<FString> LoginFailures;
 	int32 Refreshes = 0;
 	int32 ConsentsRecorded = 0;
+	int32 AgeRequests = 0;
+	int32 AgeEnds = 0;
+	int32 AgesRecorded = 0;
+	TArray<FString> AgeErrors;
 	TArray<FString> ConsentErrors;
 
 	UFUNCTION()
@@ -42,6 +46,29 @@ public:
 
 	UFUNCTION()
 	void HandleRefreshed() { ++Refreshes; }
+
+	TArray<FString> LegalDocumentTitles;
+
+	UFUNCTION()
+	void HandleLegalDocuments(const TArray<FCrowdyLegalDocument>& Documents)
+	{
+		for (const FCrowdyLegalDocument& Document : Documents)
+		{
+			LegalDocumentTitles.Add(Document.Title.ToString());
+		}
+	}
+
+	UFUNCTION()
+	void HandleAgeRequired() { ++AgeRequests; }
+
+	UFUNCTION()
+	void HandleAgeEnded() { ++AgeEnds; }
+
+	UFUNCTION()
+	void HandleAgeRecorded() { ++AgesRecorded; }
+
+	UFUNCTION()
+	void HandleAgeError(FString Message) { AgeErrors.Add(Message); }
 
 	UFUNCTION()
 	void HandleConsentRecorded() { ++ConsentsRecorded; }

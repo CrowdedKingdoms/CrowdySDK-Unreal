@@ -85,6 +85,44 @@ class CrowdyStudioGitHubAPI : public DomainBase {
     return mapFile(runInput("CrowdyStudioGitHubFile", std::move(input)));
   }
 
+  /// Up to 100 files at one commit (default: the mirror commit) in one operation against the
+  /// per-user GitHub budget. Paths that are not files there come back in `missing`; binary or
+  /// oversize blobs with no content.
+  studio::CrowdyStudioGitHubFiles getFiles(
+      const studio::CrowdyStudioGitHubFilesInput& input) const {
+    graphql::JVal body;
+    body["appId"] = input.appId;
+    body["projectId"] = input.projectId;
+    graphql::JArray paths;
+    paths.reserve(input.paths.size());
+    for (const auto& path : input.paths) paths.emplace_back(path);
+    body["paths"] = graphql::JVal(std::move(paths));
+    if (input.commitSha && !input.commitSha->empty()) body["commitSha"] = *input.commitSha;
+    return mapFiles(runInput("CrowdyStudioGitHubFiles", std::move(body)));
+  }
+
+  /// Up to 100 writes and deletions as ONE commit on top of `expectedCommitSha` (the project's
+  /// githubSha). The returned `commitSha` is the new githubSha.
+  studio::CrowdyStudioGitHubCommit commitFiles(
+      const studio::CrowdyStudioGitHubCommitFilesInput& input) const {
+    graphql::JVal body;
+    body["appId"] = input.appId;
+    body["projectId"] = input.projectId;
+    body["message"] = input.message;
+    body["expectedCommitSha"] = input.expectedCommitSha;
+    graphql::JArray changes;
+    changes.reserve(input.changes.size());
+    for (const auto& change : input.changes) {
+      graphql::JVal entry;
+      entry["path"] = change.path;
+      if (change.content) entry["content"] = *change.content;
+      if (change.remove) entry["delete"] = true;
+      changes.push_back(std::move(entry));
+    }
+    body["changes"] = graphql::JVal(std::move(changes));
+    return mapCommit(runInput("CrowdyStudioGitHubCommitFiles", std::move(body)));
+  }
+
   studio::CrowdyStudioGitHubFile putFile(
       const studio::CrowdyStudioGitHubPutFileInput& input) const {
     graphql::JVal body;
@@ -189,7 +227,39 @@ class CrowdyStudioGitHubAPI : public DomainBase {
     layout.client = optionalString(value["client"]);
     layout.assets = value["assets"].asString();
     layout.fromFile = value["fromFile"].asBool();
+    layout.kind = gen::crowdyStudioGitHubLayoutKindFromString(value["kind"].asStringView());
     return layout;
+  }
+
+  static std::vector<std::string> stringList(const graphql::Json& value) {
+    std::vector<std::string> out;
+    value.forEach([&](const graphql::Json& entry) { out.push_back(entry.asString()); });
+    return out;
+  }
+
+  static studio::CrowdyStudioGitHubFiles mapFiles(const graphql::Json& value) {
+    studio::CrowdyStudioGitHubFiles files;
+    files.commitSha = value["commitSha"].asString();
+    value["files"].forEach([&](const graphql::Json& entry) {
+      studio::CrowdyStudioGitHubFileContent file;
+      file.path = entry["path"].asString();
+      file.sha = entry["sha"].asString();
+      file.size = static_cast<int>(entry["size"].asInt64());
+      file.binary = entry["binary"].asBool();
+      file.content = optionalString(entry["content"]);
+      files.files.push_back(std::move(file));
+    });
+    files.missing = stringList(value["missing"]);
+    return files;
+  }
+
+  static studio::CrowdyStudioGitHubCommit mapCommit(const graphql::Json& value) {
+    studio::CrowdyStudioGitHubCommit commit;
+    commit.commitSha = value["commitSha"].asString();
+    commit.parentSha = value["parentSha"].asString();
+    commit.written = stringList(value["written"]);
+    commit.deleted = stringList(value["deleted"]);
+    return commit;
   }
 
   static studio::CrowdyStudioGitHubTree mapTree(const graphql::Json& value) {
