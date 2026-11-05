@@ -333,15 +333,20 @@ enum class ECrowdyReplicationDistance : uint8
  * Who runs a replicated CrowdyEvent, and over which transport. Spatial Multicast runs it on everyone
  * in range over the chunk-based path (decay-thinned, position-dependent). Multicast runs it on every
  * member of the session channel regardless of distance, over the channel transport: it ignores the
- * sender's chunk coordinates. OwningClient runs it only on the target entity's owner (a non-owner
- * routes a request to that owner); Host runs it only on the elected host (a non-host routes a request
- * to the host, and the host may act on any entity it has locally, regardless of ownership).
+ * sender's chunk coordinates. OwningClient runs it only on the client that writes the target entity
+ * (a non-owner routes a request to that client): the player who owns it, the Leader for an entity Owned
+ * By Leader, and the elected host for a World entity. Host is deprecated.
  */
 UENUM(BlueprintType)
 enum class ECrowdyEventRecipient : uint8
 {
     SpatialMulticast UMETA(DisplayName = "Spatial Multicast", ToolTip = "Everyone in range runs it, over the chunk-based spatial path (decay-thinned). The default."),
     Multicast        UMETA(DisplayName = "Multicast", ToolTip = "Every member of the session channel runs it, over the channel transport: any distance, no decay."),
-    OwningClient     UMETA(DisplayName = "Owning Client", ToolTip = "Only the client that owns the target entity runs it."),
-    Host             UMETA(DisplayName = "Host", ToolTip = "Only the elected host runs it; the host may act on any entity it has locally."),
+    OwningClient     UMETA(DisplayName = "Owning Client", ToolTip = "Only the client that writes the target entity runs it: its owner, the Leader for an entity Owned By Leader, the elected host for a World entity."),
+    Host UE_DEPRECATED(5.8, "Use OwningClient, or move logic only one machine should run to a Server Object.") UMETA(Hidden, DisplayName = "Host (Deprecated)", ToolTip = "Deprecated: use Owning Client, or move logic only one machine should run to a Server Object."),
 };
+
+// The one suppressed reference to the deprecated value, for the code that still has to route it.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+inline constexpr ECrowdyEventRecipient CrowdyDeprecatedHostRecipient = ECrowdyEventRecipient::Host;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

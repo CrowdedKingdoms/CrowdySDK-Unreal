@@ -1023,7 +1023,12 @@ bool UCrowdyCppReplicationSubsystem::DescribeSendRefusal(const FCrowdyCppSendErr
 	else if (Type == ECrowdyMessageType::SINGLE_ACTOR_MESSAGE)
 	{
 		OutRefusal.Remedy = TEXT("The player's access tier does not grant use_direct_messages, so the server refuses messages to one actor:"
-			" Owning Client and Host events, and owner-only CrowdyState.");
+			" Owning Client events that carry text, Host events, and owner-only CrowdyState. Players under 18 never hold it.");
+	}
+	else if (Type == ECrowdyMessageType::CLIENT_EVENT_NOTIFICATION)
+	{
+		OutRefusal.Remedy = TEXT("The player has no access in a grid covering the chunk this event was sent to. An Owning Client event is"
+			" sent to the chunk its target stands in, so the sender needs access there, not only where it stands.");
 	}
 	else if (Type == ECrowdyMessageType::CLIENT_VIDEO_PACKET)
 	{

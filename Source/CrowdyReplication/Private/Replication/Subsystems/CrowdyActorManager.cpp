@@ -818,7 +818,16 @@ void UCrowdyActorManager::OnEntityOwnershipChanged(AActor* TargetEntity, const F
 	InactiveSlots[SlotId] = true;
 	SlotRetryEpochs[SlotId] = CapacityEpoch - 1;
 
+	if (!bNowLocal) return;
+
+	// A crowd draws other clients' entities, so its row goes when the entity becomes this client's.
+	if (ActiveBackend->DrawsEntitiesAsCrowdRows())
+	{
+		ActiveBackend->DeactivateInstance(SlotId, NetID);
+		return;
+	}
+
 	// Waiting for an update would let old samples fight this client's own movement, and it may never hear one.
-	if (bNowLocal && SlotClasses[SlotId].IsValid() && !ActiveBackend->DrawsEntitiesAsCrowdRows())
+	if (SlotClasses[SlotId].IsValid())
 		ActivateSlot(SlotId, NetID, SlotClasses[SlotId].Get(), FInstancedStruct());
 }

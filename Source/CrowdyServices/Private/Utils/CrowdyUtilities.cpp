@@ -35,7 +35,7 @@ namespace CrowdyUtils
 		switch (Recipient)
 		{
 		case ECrowdyEventRecipient::OwningClient: return ECrowdyTarget::Owner;
-		case ECrowdyEventRecipient::Host:         return ECrowdyTarget::Host;
+		case CrowdyDeprecatedHostRecipient:       return ECrowdyTarget::Host;
 		// This legacy spatial-only send has no channel transport, so a channel Multicast falls back
 		// to everyone-in-range here, same as Spatial Multicast.
 		case ECrowdyEventRecipient::Multicast:

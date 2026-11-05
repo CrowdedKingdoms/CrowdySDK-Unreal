@@ -358,6 +358,15 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
     if (!Event.bTargetedDelivery && LocalPlayerID.IsValid() && Call.SenderID == LocalPlayerID)
         return;
 
+    // A call named for one client reaches every client in its region, or on its channel.
+    const bool bAddressed = Event.Target == ECrowdyTarget::Owner && Event.TargetID.IsValid();
+    if (bAddressed && Event.TargetID != LocalPlayerID)
+        return;
+
+    // Named for nobody, because the sender does not know who owns it: only the writer has anything to do.
+    if (Event.Target == ECrowdyTarget::Owner && !bAddressed && EntitySubsystem && !EntitySubsystem->IsLocallyOwned(Call.EntityID))
+        return;
+
     // Resolve the target as a PARTICIPANT, not strictly an actor: a non-actor participant (a subsystem enrolled
     // via RegisterParticipant) receives RPCs over the channel the same as an actor receives them over the wire.
     UObject* TargetParticipant = EntitySubsystem ? EntitySubsystem->FindParticipant(Call.EntityID) : nullptr;
@@ -377,6 +386,13 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
         UFunction* PendingFunction = AutoRegistry
             ? AutoRegistry->ResolveFunction(Call.ClassID, Call.FunctionID)
             : nullptr;
+
+        // Sent to whoever writes the entity, and that client holds it, so a client without it is someone else.
+        if (!Event.bTargetedDelivery && !bAddressed && PendingFunction && !IsOutOfAnActorsReach(PendingFunction)
+            && FCrowdyRPC::GetFnInfo(PendingFunction).Recipient == ECrowdyEventRecipient::OwningClient)
+        {
+            return;
+        }
 
         // No actor-side participant holds this id, but an entity that lives outside that registry still
         // might. Ask the registered subscriber before queueing: such an entity never registers there, so the
@@ -421,47 +437,46 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
 
     const FCrowdyFnInfo Info = FCrowdyRPC::GetFnInfo(Function);
 
-    // An owner-only or host-only event must run solely on the entity's owner / on the host. How that is
-    // guaranteed differs by participant kind:
-    //   - Actor: the server delivers it as a single-actor (targeted) message. A broadcast carrying such a
-    //     function is illegitimate (misuse or forgery) and is dropped. (unchanged behavior)
-    //   - Non-spatial participant (a subsystem): there is no single-actor transport for a non-actor, so an
-    //     owner/host-only event legitimately arrives as a channel broadcast. Gate it by identity so only the
-    //     intended client runs it. Precedence-by-convention, NOT enforced (a forged sender is honored)
-    //     cheat-sensitive state belongs in server code (Server Objects), not on this view plane.
-    const bool bIsActorParticipant = Cast<AActor>(TargetParticipant) != nullptr;
-    if (Info.Recipient == ECrowdyEventRecipient::OwningClient
-        || Info.Recipient == ECrowdyEventRecipient::Host)
+    // An owner-only event runs solely on the client that writes the entity: its routes reach other clients too, which
+    // are not named and drop it above. By convention, NOT enforced (a forged sender is honored): cheat-sensitive state
+    // belongs in server code (Server Objects).
+    if (Info.Recipient == ECrowdyEventRecipient::OwningClient && !Event.bLoopback
+        && (!EntitySubsystem || !EntitySubsystem->IsLocallyOwned(Call.EntityID)))
     {
-        if (bIsActorParticipant)
+        // The sender may hear of a change of owner first, so a call meant for this client waits to catch up.
+        if (Event.bTargetedDelivery || bAddressed)
         {
+            DeferEvent(Event, RemainingAttempts, CrowdyDeferQueue::ActionBudgetSeconds);
+            return;
+        }
+        UE_CLOG(FCrowdyRPC::IsRpcTraceEnabled(), LogCrowdyRPC, Verbose,
+            TEXT("[CrowdyRPC] owner-only event '%s' ignored - this client does not write entity %s."),
+            *Function->GetName(), *Call.EntityID.ToString());
+        return;
+    }
+
+    if (Info.Recipient == CrowdyDeprecatedHostRecipient)
+    {
+        if (Cast<AActor>(TargetParticipant))
+        {
+            // The server delivers a host-only event as a targeted send, so a broadcast of one is misuse or forgery.
             if (!Event.bTargetedDelivery)
             {
                 UE_LOG(LogCrowdyRPC, Warning,
-                    TEXT("[CrowdyEventRouter] RPC dropped — '%s' is owner/host-only but arrived as a broadcast, not a targeted send."),
+                    TEXT("[CrowdyEventRouter] RPC dropped — '%s' is host-only but arrived as a broadcast, not a targeted send."),
                     *Function->GetName());
                 return;
             }
         }
-        else if (Info.Recipient == ECrowdyEventRecipient::Host)
+        else
         {
-            // A replicated subsystem's Host is the Leader.
+            // A replicated subsystem's Host is the Leader, and its host-only events arrive on the channel.
             const FGuid HostID = EntitySubsystem ? EntitySubsystem->GetHostID() : FGuid();
             const bool bIsLocalHost = HostID.IsValid() && HostID == LocalPlayerID;
             if (!bIsLocalHost)
             {
                 UE_CLOG(FCrowdyRPC::IsRpcTraceEnabled(), LogCrowdyRPC, Verbose,
                     TEXT("[CrowdyRPC] host-only subsystem event '%s' ignored — this client is not the host."),
-                    *Function->GetName());
-                return;
-            }
-        }
-        else // OwningClient on a non-spatial participant
-        {
-            if (!EntitySubsystem || !EntitySubsystem->IsLocallyOwned(Call.EntityID))
-            {
-                UE_CLOG(FCrowdyRPC::IsRpcTraceEnabled(), LogCrowdyRPC, Verbose,
-                    TEXT("[CrowdyRPC] owner-only subsystem event '%s' ignored — this client does not own the participant."),
                     *Function->GetName());
                 return;
             }
@@ -542,15 +557,15 @@ bool UCrowdyEventRouter::DispatchCallToSubscriber(const FCrowdyRpcCall& Call, UF
 
     const FCrowdyFnInfo Info = FCrowdyRPC::GetFnInfo(Function);
 
-    // Owner-only and host-only calls reach their single recipient over the single-actor transport, which
-    // addresses an actor. The subscriber has just claimed this entity, meaning it holds it as data with no
-    // actor of its own, so a call carrying such a recipient is misuse or forgery either way, and running it
-    // on every client that received the broadcast is the one outcome that must not happen. Checked before
+    // Owner-only and host-only calls are for the client that writes the entity, which holds it as an actor.
+    // The subscriber has just claimed this entity, meaning it holds it as data with no actor of its own, so
+    // this client is not that one, and running the call on every client that received it is the one outcome
+    // that must not happen. Checked before
     // anything is resolved or decoded, because it depends only on the function and on that claim, both of
     // which are already settled. The caller that arrives here with a participant has applied its own
     // owner/host guards first, so this never reopens a decision that path already made.
     if (Info.Recipient == ECrowdyEventRecipient::OwningClient
-        || Info.Recipient == ECrowdyEventRecipient::Host)
+        || Info.Recipient == CrowdyDeprecatedHostRecipient)
     {
         const bool bReportDrop = CountUndeliverableCall();
         UE_CLOG(bReportDrop, LogCrowdyRPC, Warning,
@@ -1223,6 +1238,7 @@ void UCrowdyEventRouter::ReceiveLoopbackCall(const FCrowdyRpcCall& Call)
     FCrowdyInboundEvent Event;
     Event.Payload  = &Payload;
     Event.bTargetedDelivery = true;
+    Event.bLoopback = true;
     Event.Target   = ECrowdyTarget::Everyone;
     Event.SenderID = FGuid();
     Event.TargetID = FGuid();
@@ -1255,7 +1271,7 @@ void UCrowdyEventRouter::ReceiveLoopbackStateDelta(const FCrowdyStateDelta& Delt
     DispatchStateDelta(Event, CrowdyStateMaxSpawnWaitAttempts);
 }
 
-void UCrowdyEventRouter::ReceiveChannelRpcCall(const FCrowdyRpcCall& Call)
+void UCrowdyEventRouter::ReceiveChannelRpcCall(const FCrowdyRpcCall& Call, const FGuid& Addressee)
 {
     // A channel delivery is a multicast equivalent not a targeted single-actor send so the
     // broadcast echo-drop (by SenderID) and the owner/host-only guard both apply, exactly as for a
@@ -1268,8 +1284,8 @@ void UCrowdyEventRouter::ReceiveChannelRpcCall(const FCrowdyRpcCall& Call)
     Event.Payload  = &Payload;
     Event.bTargetedDelivery = false;
     Event.SenderID = Call.SenderID;
-    Event.Target   = ECrowdyTarget::Everyone;
-    Event.TargetID = FGuid();
+    Event.Target   = Addressee.IsValid() ? ECrowdyTarget::Owner : ECrowdyTarget::Everyone;
+    Event.TargetID = Addressee;
     Event.ReceivedAtSeconds = FPlatformTime::Seconds();
 
     DispatchRpcCall(Event, CrowdyRpcMaxSpawnWaitAttempts);

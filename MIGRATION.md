@@ -70,6 +70,15 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 | An `Owning Client` event on an entity that changed hands still went to the old owner. | It goes to the current owner. | Behaviour: C++ `UCrowdySDKBridgeSubsystem::DispatchSingleActorMessageFn` and `UCrowdySDKSubsystem::DispatchSingleActorMessage` take an `FCrowdyActorId` instead of an `FGuid`. |
 | A client that joined after a Player entity spawned could not take it: the grant was dropped, and its pool actor could not send. | The grant lands and the entity moves on from there. | Behaviour. |
 | A grant could move a player's avatar. | An avatar never changes hands: the grant is ignored. | Behaviour. |
+| `Host` in the Recipient dropdown and pin. | Hidden and deprecated: a saved value keeps routing as before, and warns. Use `Owning Client`, which reaches whichever client writes the entity, or move logic only one machine should run to a Server Object. | Enum value `ECrowdyEventRecipient::Host` deprecated. Blueprint compile warning; `CrowdyRecipient="Host"` warns once per function where the SDK reads metadata, the cook included. |
+| An `Owning Client` event on an entity that sends no movement, or one this client has not heard under its current id, went to an id nobody had sent and vanished with no message. | It goes over the session channel, named for the client that writes the entity. Every other client ignores it. A client that has not heard of the change of owner yet holds the call for up to 0.3 s. | Behaviour, wire: `CrowdyChannelRpcFlagAddressed`, and an optional `Addressee` on `FCrowdyRPC::EncodeChannelRpc`, `DecodeChannelRpc` and `UCrowdyEventRouter::ReceiveChannelRpcCall`. An older peer reads the call and ignores the addressee. |
+| An `Owning Client` event at a moving entity went as a direct message, was lost while the entity crossed a chunk border, and needed `use_direct_messages` on both players. | It goes as a spatial event around the entity, one chunk in every direction, named for the client that writes it. An event with a parameter that can hold text (`FString`, `FText`, or a container or struct holding one) stays a direct message, and is dropped with a warning rather than use the session channel. | Behaviour, wire: the event carries `ECrowdyTarget::Owner` and the client's id. C++: `UCrowdyEntitySubsystem::DispatchGameEventToClientAt`. |
+| A value converted for a `const` reference parameter of a `CROWDY_EVENT`, such as a string literal for a `const FString&`, was read after it was freed, so a packaged build could send garbage. | The call holds its own copy of every argument. | Bug fix. |
+| An `Owning Client` event reaching a client that does not write the entity ran there. | It runs only on the writer. | Behaviour. |
+| Under `Elected Host`, an `Owning Client` event on a World entity needed the host's avatar in range. | It goes over the session channel, named for the host. | Behaviour. |
+| A forged channel payload could ask a client to allocate up to 2 GB. | The call's size is checked against the bytes that arrived. | Bug fix. |
+| A crowd row kept the owner and role it was created with, and a stale row could speak for an entity this client no longer owned. | Rows follow ownership, sends from a row ask the entity registry, and a row is released when its entity becomes this client's. | Behaviour: C++ `UCrowdyActorManager`, `UCrowdyMassEntitySubsystem`, `ICrowdyEventSource` senders. |
+| `SendEvent` on the `Crowdy Entity Component`, with `ECrowdyEventScope`. | `Send Crowdy Event` (C++ `UCrowdyUtilities::SendCrowdyEvent`), which takes a Recipient. | Blueprint node and C++ function deprecated. |
 
 **Do this, in order**
 
@@ -110,6 +119,12 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
    gate its simulation on `Is Crowdy Entity Locally Owned` each tick. Spawn it only where `Is Local Leader` is
    true. For NPCs across maps or a large open world, use Game Kit's hub NPCs instead: one Leader serves the
    whole app and writes only what it has a body for.
+13. Replace `CrowdyRecipient="Host"` and the Host recipient in Blueprint with `OwningClient`, or move the logic to
+   a Server Object. On a replicated subsystem `OwningClient` is the same client. On a World entity it is the
+   elected host, and nobody under `Server Object`. Unlike Host, it never runs on the host for an entity a player
+   owns: it runs on that player.
+14. Replace `SendEvent(Payload, Everyone)` with `Send Crowdy Event` and `Spatial Multicast`, and `OwnerOnly` with
+   `Owning Client`.
 
 **CoreRedirects.** None.
 
@@ -117,7 +132,7 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 must match:
 
 ```
-grep -r -a -l --include=*.uasset -e "IsCrowdyEntityLocallyControlled" -e "CrowdyHasAuthority" -e "GetOwnership" -e "RegisterReplicatedSubsystem" Content Plugins
+grep -r -a -l --include=*.uasset -e "IsCrowdyEntityLocallyControlled" -e "CrowdyHasAuthority" -e "GetOwnership" -e "RegisterReplicatedSubsystem" -e "CrowdyRecipient" -e "SendEvent" Content Plugins
 grep -r -a -l --include=*.uasset "OnCrowdySpawned" Content Plugins
 grep -r -a -l --include=*.uasset "CrowdyEntityComponent" Content Plugins
 ```
@@ -138,6 +153,21 @@ changed before it joined and is not `CrowdyHeartbeat`-marked) is not carried ove
 `CrowdyHeartbeat`.
 
 Under `Elected Host`, an `Owning Client` event on a World entity runs on the host instead of being dropped.
+
+`Owning Client` limits who runs an event, not who can see it or who can send it. Its parameters reach every client
+within a chunk of the target, or on the session channel every client of the app, and any client can name any entity,
+so treat them as untrusted and keep private data in a Server Object. The session channel reaches the whole app and carries 1024 bytes at most, and an
+entity that sends no movement stays on it, so give anything frequent a Dynamic entity. A call around a change of
+owner can still be lost if it reaches the old owner by a targeted send.
+
+Each `Owning Client` call now costs a copy for every client near the target, so in a crowded area its traffic grows
+with the square of the players there. Keep it to occasional events. The sender needs `access` in a grid covering the
+target's chunk, so in an app that grants access zone by zone a call can be refused where it was not before. A
+reception layer sees calls named for other clients.
+
+An `Owning Client` event that carries text is a direct message: it can still be lost with no message while the entity
+crosses a chunk border, and players without `use_direct_messages` can neither send nor receive it. Move private text
+between players to a Server Function.
 
 Every client must run the same SDK version once entities change hands or use `Owned By` `Leader`: an older
 client reads an owner's id as a new entity, and draws a second body. Nothing changes for an entity that never
@@ -182,6 +212,9 @@ cooked data is read against the component's current properties.
 9. Under `Server Object`, spawn an `Owned By` `Leader` entity on the Leader and close that client: the body
    stops on the other client and moves on from there once that client leads, with `Is Crowdy Entity Locally
    Owned` true.
+10. Spawn a Static entity with `Owned By` `Leader` on the Leader and send it an `Owning Client` event from the other
+   client: its body runs on the Leader. The Recipient dropdown no longer offers Host, and a Blueprint event still
+   set to it warns when compiled.
 
 **Removed in the next release.** None. The deprecated items above are planned for removal in a later
 release, which will say so here first.

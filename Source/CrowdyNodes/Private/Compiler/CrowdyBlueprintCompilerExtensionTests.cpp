@@ -16,12 +16,19 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "GameFramework/Actor.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_CustomEvent.h"
 #include "K2Node_Knot.h"
 #include "K2Node_Self.h"
 #include "K2Node_Timeline.h"
 #include "K2Node_VariableGet.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/CrowdyUtilities.h"
 
@@ -340,7 +347,7 @@ bool FCrowdyCrowdRecipientCoversOnlyMulticastsTest::RunTest(const FString& Param
 	TestFalse(TEXT("an owning-client call lands only where the entity is a real actor"),
 		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(ECrowdyEventRecipient::OwningClient));
 	TestFalse(TEXT("a host call lands only where the entity is a real actor"),
-		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(ECrowdyEventRecipient::Host));
+		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(CrowdyDeprecatedHostRecipient));
 
 	// An author who never touched the recipient dropdown wrote a spatial multicast, because that is what
 	// the runtime defaults to. If an unset value read as out of scope here, the commonest event in a
@@ -753,6 +760,41 @@ bool FCrowdyCrowdRepresentationFollowsProfilesTest::RunTest(const FString& Param
 	TestFalse(TEXT("nor does one whose profile never chose a backend at all"),
 		CrowdyAuthoringContributions::IsCrowdRepresentationSelected());
 
+	return true;
+}
+
+// A Blueprint event set to the deprecated Host recipient says so when it compiles, and no other event does.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerHostRecipientWarnsTest,
+	"CrowdySDK.Compiler.HostRecipientWarns", CrowdyCompilerExtensionTestFlags)
+bool FCrowdyCompilerHostRecipientWarnsTest::RunTest(const FString& Parameters)
+{
+	const auto CountWarnings = [](const TCHAR* Recipient)
+	{
+		const FName Name = MakeUniqueObjectName(GetTransientPackage(), UBlueprint::StaticClass(), TEXT("CrowdyHostRecipientFixture"));
+		UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), GetTransientPackage(), Name, BPTYPE_Normal,
+			UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+
+		UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+		UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(Graph);
+		Event->CustomFunctionName = TEXT("Ping");
+		Event->GetUserDefinedMetaData().SetMetaData(FName(CrowdyRpcMetaKeys::Replicates), FString());
+		Event->GetUserDefinedMetaData().SetMetaData(FName(CrowdyRpcMetaKeys::Recipient), FString(Recipient));
+		Graph->AddNode(Event, false, false);
+		Event->CreateNewGuid();
+		Event->PostPlacedNewNode();
+		Event->AllocateDefaultPins();
+
+		FCompilerResultsLog Results;
+		Results.SetSilentMode(true);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection | EBlueprintCompileOptions::SkipSave, &Results);
+		return Results.Messages.FilterByPredicate([](const TSharedRef<FTokenizedMessage>& Message)
+		{
+			return Message->ToText().ToString().Contains(TEXT("deprecated Recipient Host"));
+		}).Num();
+	};
+
+	TestEqual(TEXT("Host warns"), CountWarnings(TEXT("Host")), 1);
+	TestEqual(TEXT("Owning Client does not"), CountWarnings(TEXT("OwningClient")), 0);
 	return true;
 }
 

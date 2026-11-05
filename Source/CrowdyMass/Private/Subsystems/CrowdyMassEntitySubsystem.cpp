@@ -693,6 +693,11 @@ void UCrowdyMassEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection
 		return;
 	}
 
+	if (UCrowdyEntitySubsystem* Entities = Collection.InitializeDependency<UCrowdyEntitySubsystem>())
+	{
+		Entities->OnEntityOwnershipChanged.AddDynamic(this, &UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged);
+	}
+
 	// Entities living as rows in a table are in no actor-side registry, so everything addressed to them
 	// resolves through this subsystem or not at all. This registration covers the two planes that arrive
 	// off the wire: the calls and the view state.
@@ -732,6 +737,11 @@ void UCrowdyMassEntitySubsystem::Deinitialize()
 		Router->UnregisterEntitySubscriber(TScriptInterface<ICrowdyEntitySubscriber>(this));
 	}
 	EventRouter.Reset();
+
+	if (UCrowdyEntitySubsystem* Entities = ResolveEntitySubsystem())
+	{
+		Entities->OnEntityOwnershipChanged.RemoveDynamic(this, &UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged);
+	}
 
 	// Before the cache is dropped, so this world leaves no entity record behind naming an avatar it is
 	// about to release. World subsystem teardown order is not fixed, so the registry may already be gone;
@@ -2792,6 +2802,24 @@ void UCrowdyMassEntitySubsystem::SetEntitySubsystemForTest(UCrowdyEntitySubsyste
 	EntitySubsystemForTest = InEntities;
 }
 #endif
+
+void UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& /*NewOwnerID*/, const FGuid& /*PreviousOwnerID*/)
+{
+	const UCrowdyEntitySubsystem* Entities = ResolveEntitySubsystem();
+	const FCrowdyEntityRecord* Record = Entities ? Entities->FindRecord(NetID) : nullptr;
+	FMassEntityManager* EntityManager = GetMassEntityManager();
+	FMassEntityHandle Entity;
+	if (!Record || !EntityManager || !FindEntityByUUID(NetID, Entity))
+	{
+		return;
+	}
+
+	if (FCrowdyRemoteIdentityFragment* Identity = EntityManager->GetFragmentDataPtr<FCrowdyRemoteIdentityFragment>(Entity))
+	{
+		Identity->OwnerID = Record->OwnerID;
+		Identity->Role = Record->Role;
+	}
+}
 
 void UCrowdyMassEntitySubsystem::RegisterAvatarParticipant(const FGuid& UUID, UCrowdyMassEntity* Avatar)
 {
