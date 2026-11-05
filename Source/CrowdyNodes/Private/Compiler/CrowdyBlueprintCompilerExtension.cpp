@@ -823,6 +823,12 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 						*Info.Recipient),
 					CustomEvent);
 			}
+			if (ResolveCrowdyRecipient(Info.Recipient) == CrowdyDeprecatedHostRecipient)
+			{
+				CompilationContext.MessageLog.Warning(
+					TEXT("[CrowdySDK] Crowdy Replicated event @@ uses the deprecated Recipient Host. Use Owning Client, or move logic only one machine should run to a Server Object."),
+					CustomEvent);
+			}
 			if (!IsRecognisedCrowdyRoutingValue<ECrowdyDecayRate>(Info.Decay))
 			{
 				CompilationContext.MessageLog.Warning(

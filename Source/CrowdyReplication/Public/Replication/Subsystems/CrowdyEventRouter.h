@@ -79,6 +79,9 @@ struct FCrowdyInboundEvent
 	// the broadcast-only echo-drop and authority check.
 	bool bTargetedDelivery = false;
 
+	// True for a call this client replayed through its own receive path, which runs wherever the sender is.
+	bool bLoopback = false;
+
 	// FPlatformTime::Seconds at which this event reached the router, stamped once at the entry point it
 	// arrived through. Age is measured from here, so an event that waits, retries and waits again is
 	// judged on how long it has existed rather than on how long since its last retry, which would slide
@@ -208,8 +211,8 @@ public:
 	// Receive entry for a reliable RPC delivered over the session channel. UCrowdyChannels decodes
 	// the channel payload and calls this; the call is dispatched like a spatial Multicast (the sender's
 	// own echo is dropped by SenderID, the body runs once on every other member) before this returns.
-	// Game thread only.
-	void ReceiveChannelRpcCall(const FCrowdyRpcCall& Call);
+	// A valid Addressee names the one client it is for. Game thread only.
+	void ReceiveChannelRpcCall(const FCrowdyRpcCall& Call, const FGuid& Addressee = FGuid());
 
 	// Receive entry for a CrowdyState delta delivered over the session channel (the non-spatial transport for
 	// subsystem participants). UCrowdyChannels discriminates the channel payload by its leading kind tag,

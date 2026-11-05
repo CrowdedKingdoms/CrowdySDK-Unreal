@@ -220,7 +220,9 @@ public:
 	 * State changes are plain events now handle them with meta=(CrowdyEvent)
 	 * functions on the owner.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entity Component")
+	UE_DEPRECATED(5.8, "Use UCrowdyUtilities::SendCrowdyEvent, which takes a recipient.")
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entity Component",
+		meta=(DeprecatedFunction, DeprecationMessage="Use Send Crowdy Event, which takes a Recipient."))
 	void SendEvent(const FInstancedStruct& Payload, ECrowdyEventScope Scope = ECrowdyEventScope::Everyone);
 
 	// CrowdyState manual-dirty push. A property marked meta=(CrowdyState, CrowdyManualDirty) is never

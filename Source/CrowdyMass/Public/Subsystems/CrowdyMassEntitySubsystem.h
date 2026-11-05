@@ -1337,6 +1337,7 @@ public:
 	// network in play.
 	// Defined in the .cpp so this header keeps its forward declaration of the subsystem rather than including it.
 	void SetEntitySubsystemForTest(UCrowdyEntitySubsystem* InEntities);
+	void HandleEntityOwnershipChangedForTest(const FGuid& NetID) { HandleEntityOwnershipChanged(nullptr, NetID, FGuid(), FGuid()); }
 
 	// Test seam: forces the avatar cache capacity, so the reclaim path stays exercised. In a real world
 	// the capacity follows the tracker and the cache cannot reach it, which is the point of the change
@@ -2058,6 +2059,10 @@ private:
 	// builds at startup has none, and neither does a headless fixture. Every call through it tolerates the
 	// absence, because an avatar with no record still receives events.
 	UCrowdyEntitySubsystem* ResolveEntitySubsystem() const;
+
+	// A row keeps a copy of its entity's owner and role, for processors that read it without the registry.
+	UFUNCTION()
+	void HandleEntityOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& PreviousOwnerID);
 
 	// Enrolls Avatar as this entity's participant in the SDK entity registry. Called when an avatar is
 	// minted, and only then.

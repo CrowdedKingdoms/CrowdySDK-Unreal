@@ -7,6 +7,7 @@
 #include "Replication/RPC/FCrowdyEventParams.h"
 #include "Replication/RPC/CrowdyReplicatedEventLibrary.h"
 #include "Replication/RPC/ICrowdyEventSource.h"
+#include "Replication/State/CrowdyTestFixture.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "Utils/CrowdyBakedRegistry.h"
@@ -150,7 +151,61 @@ namespace
 			return ECrowdyEventRecipient::OwningClient;
 		}
 
-		return ResolveMetaEnum(Fn, CrowdyRpcMetaKeys::Recipient, MetaValue, DefaultValue);
+		const ECrowdyEventRecipient Recipient = ResolveMetaEnum(Fn, CrowdyRpcMetaKeys::Recipient, MetaValue, DefaultValue);
+		UE_CLOG(Recipient == CrowdyDeprecatedHostRecipient && !CrowdyTestFixture::IsTestFixture(Fn->GetOwnerClass()), LogCrowdyRPC, Warning,
+			TEXT("'%s' uses CrowdyRecipient=\"Host\", which is deprecated. Use OwningClient, or move logic only one machine should run to a Server Object."),
+			*GetPathNameSafe(Fn));
+		return Recipient;
+	}
+
+	// A struct cannot contain itself by value, so this ends; the depth is there for a struct nested absurdly deep.
+	bool PropertyCanHoldText(const FProperty* Property, const int32 Depth = 0)
+	{
+		if (!Property || Depth > 8)
+			return false;
+		if (Property->IsA<FStrProperty>() || Property->IsA<FTextProperty>())
+			return true;
+		if (const FArrayProperty* Array = CastField<FArrayProperty>(Property))
+			return PropertyCanHoldText(Array->Inner, Depth + 1);
+		if (const FSetProperty* Set = CastField<FSetProperty>(Property))
+			return PropertyCanHoldText(Set->ElementProp, Depth + 1);
+		if (const FMapProperty* Map = CastField<FMapProperty>(Property))
+			return PropertyCanHoldText(Map->KeyProp, Depth + 1) || PropertyCanHoldText(Map->ValueProp, Depth + 1);
+
+		const FStructProperty* Struct = CastField<FStructProperty>(Property);
+		if (!Struct)
+			return false;
+		for (TFieldIterator<FProperty> It(Struct->Struct); It; ++It)
+		{
+			if (PropertyCanHoldText(*It, Depth + 1))
+				return true;
+		}
+		return false;
+	}
+
+	bool ComputeCarriesText(const UFunction* Fn)
+	{
+		for (TFieldIterator<FProperty> It(Fn); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+		{
+			if (!FCrowdyRPC::IsTrueOutputParam(*It) && PropertyCanHoldText(*It))
+				return true;
+		}
+		return false;
+	}
+
+	void WarnTextHasNoRoute(const UFunction* Fn, int64 FunctionID, const FGuid& NetID)
+	{
+		UE_CLOG(ShouldLogRpcDrop(FunctionID), LogCrowdyRPC, Warning,
+			TEXT("[CrowdyRPC] '%s' dropped - it carries text, so it goes only as a direct message, and this client has not heard the writer of entity %s under its current id. Private text between players belongs in a Server Function."),
+			*GetNameSafe(Fn), *NetID.ToString());
+	}
+
+	// One line for every route that finds nobody writing the entity.
+	void WarnNoOwner(const UFunction* Fn, int64 FunctionID, const FGuid& NetID)
+	{
+		UE_CLOG(ShouldLogRpcDrop(FunctionID), LogCrowdyRPC, Warning,
+			TEXT("[CrowdyRPC] '%s' dropped - it runs on the client that writes entity %s, and nobody does: a World entity has no writer under Leader Source Server Object, and a Leader's entity has none until the next Leader is known."),
+			*GetNameSafe(Fn), *NetID.ToString());
 	}
 
 	// Constructs only the parameter slots of a frame. A C++ UFUNCTION has nothing but
@@ -969,6 +1024,7 @@ FCrowdyFnInfo FCrowdyRPC::BuildFnInfo(UFunction* Fn)
 	// and the wire id never depend on the baked asset being loaded.
 	Info.FunctionID = ComputeFunctionID(Fn);
 	Info.bParamsPOD = ComputeParamsPOD(Fn);
+	Info.bCarriesText = ComputeCarriesText(Fn);
 
 	// Routing lives in meta=(...) keys, which are stripped from cooked builds. Read
 	// them live where metadata exists; otherwise from the baked snapshot. Either
@@ -1288,11 +1344,16 @@ bool FCrowdyRPC::DecodeCall(UFunction* Fn, const FCrowdyFnInfo& Info, const FCro
 	return bDecoded;
 }
 
-void FCrowdyRPC::EncodeChannelRpc(const FCrowdyRpcCall& Call, uint8 Flags, TArray<uint8>& OutPayload)
+void FCrowdyRPC::EncodeChannelRpc(const FCrowdyRpcCall& Call, uint8 Flags, TArray<uint8>& OutPayload, const FGuid& Addressee)
 {
 	OutPayload.Reset();
 
 	FMemoryWriter Writer(OutPayload, /*bIsPersistent=*/true);
+
+	if (Addressee.IsValid())
+	{
+		Flags |= CrowdyChannelRpcFlagAddressed;
+	}
 
 	uint8 Version = CrowdyChannelRpcVersion;
 	Writer << Version;
@@ -1306,9 +1367,16 @@ void FCrowdyRPC::EncodeChannelRpc(const FCrowdyRpcCall& Call, uint8 Flags, TArra
 	Writer << Mutable.SenderID;
 	Writer << Mutable.FunctionID;
 	Writer << Mutable.ParamBlob;
+
+	// Last, so a peer on an older SDK reads the call and ignores it.
+	if (Addressee.IsValid())
+	{
+		FGuid WireAddressee = Addressee;
+		Writer << WireAddressee;
+	}
 }
 
-bool FCrowdyRPC::DecodeChannelRpc(const TArray<uint8>& Payload, FCrowdyRpcCall& OutCall, uint8& OutFlags)
+bool FCrowdyRPC::DecodeChannelRpc(const TArray<uint8>& Payload, FCrowdyRpcCall& OutCall, uint8& OutFlags, FGuid* OutAddressee)
 {
 	if (Payload.Num() < 2)
 	{
@@ -1332,7 +1400,27 @@ bool FCrowdyRPC::DecodeChannelRpc(const TArray<uint8>& Payload, FCrowdyRpcCall& 
 	Reader << OutCall.EntityID;
 	Reader << OutCall.SenderID;
 	Reader << OutCall.FunctionID;
-	Reader << OutCall.ParamBlob;
+
+	// Bounded by hand: a bulk TArray load allocates the length it reads before it can see the bytes are not there.
+	int32 BlobSize = 0;
+	Reader << BlobSize;
+	const int64 Remaining = static_cast<int64>(Payload.Num()) - Reader.Tell();
+	if (Reader.IsError() || BlobSize < 0 || static_cast<int64>(BlobSize) > Remaining)
+	{
+		UE_LOG(LogCrowdyRPC, Warning, TEXT("DecodeChannelRpc: ran out of bytes decoding the call; dropping."));
+		return false;
+	}
+
+	OutCall.ParamBlob.SetNumUninitialized(BlobSize);
+	if (BlobSize > 0)
+	{
+		Reader.Serialize(OutCall.ParamBlob.GetData(), BlobSize);
+	}
+
+	if ((OutFlags & CrowdyChannelRpcFlagAddressed) && OutAddressee)
+	{
+		Reader << *OutAddressee;
+	}
 
 	if (Reader.IsError())
 	{
@@ -1524,7 +1612,7 @@ void FCrowdyRPC::RouteOverWire(UCrowdyEntitySubsystem* EntitySubsystem, const AA
 }
 
 void FCrowdyRPC::RouteOverChannel(UCrowdyEntitySubsystem* EntitySubsystem, const FCrowdyRpcCall& Call,
-	const UFunction* Fn, const FString& ChannelName)
+	const UFunction* Fn, const FString& ChannelName, const FGuid& Addressee)
 {
 	if (!EntitySubsystem)
 	{
@@ -1532,13 +1620,13 @@ void FCrowdyRPC::RouteOverChannel(UCrowdyEntitySubsystem* EntitySubsystem, const
 	}
 
 	TArray<uint8> ChannelPayload;
-	EncodeChannelRpc(Call, /*Flags*/0, ChannelPayload);
+	EncodeChannelRpc(Call, /*Flags*/0, ChannelPayload, Addressee);
 
 	// The channel caps the payload at CrowdyChannelPayloadMaxBytes. Fail loudly rather than let the
 	// transport truncate it: registration already rejects a call whose fixed params can never fit.
 	if (ChannelPayload.Num() > CrowdyChannelPayloadMaxBytes)
 	{
-		UE_LOG(LogCrowdyRPC, Error,
+		UE_CLOG(ShouldLogRpcDrop(Call.FunctionID), LogCrowdyRPC, Error,
 			TEXT("[CrowdyRPC] Reliable '%s' dropped: encoded payload is %d bytes, over the %d-byte channel limit."),
 			*GetNameSafe(Fn), ChannelPayload.Num(), CrowdyChannelPayloadMaxBytes);
 		return;
@@ -1572,16 +1660,19 @@ bool FCrowdyRPC::RouteFromEventSource(UObject* Obj, ICrowdyEventSource* Source, 
 	const FGuid HostID = EntitySubsystem->GetWorldOwnerID();
 	const bool bWeAreHost = HostID.IsValid() && HostID == LocalPlayerID;
 
-	// Speak only for an entity this client is the authority for: one it owns, or a world entity while it
-	// is the host. Sending for anything else would put this client's identity on another client's entity.
-	const FGuid OwnerID = Source->GetEventOwnerID();
-	const ECrowdyRole Role = Source->GetEventRole();
-	const bool bMaySpeakForEntity = Source->IsEventLocallyOwned()
-		|| (bWeAreHost && Role == ECrowdyRole::HostOwned);
+	// Speak only for an entity this client writes: one it owns, or a world entity while it is the host. Sending for
+	// anything else would put this client's identity on another client's entity. A source's own identity is a copy
+	// that can lag a change of owner, so the registry answers wherever it holds the entity.
+	const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntityID);
+	const FGuid OwnerID = Record ? Record->OwnerID : Source->GetEventOwnerID();
+	const ECrowdyRole Role = Record ? Record->Role : Source->GetEventRole();
+	const bool bMaySpeakForEntity = Record
+		? EntitySubsystem->IsLocallyOwned(EntityID)
+		: Source->IsEventLocallyOwned() || (bWeAreHost && Role == ECrowdyRole::HostOwned);
 	if (!bMaySpeakForEntity)
 	{
 		UE_LOG(LogCrowdyRPC, Warning,
-			TEXT("SerializeAndRoute: '%s' dropped - this client is not the authority for entity %s and may not send for it."),
+			TEXT("SerializeAndRoute: '%s' dropped - this client does not write entity %s and may not send for it."),
 			*Fn->GetName(), *EntityID.ToString());
 		return true;
 	}
@@ -1592,11 +1683,9 @@ bool FCrowdyRPC::RouteFromEventSource(UObject* Obj, ICrowdyEventSource* Source, 
 	// invalid one matches nobody, which would run the body a second time here.
 	Call.SenderID = OwnerID.IsValid() ? OwnerID : LocalPlayerID;
 
-	// Owner-only and host-only both reach their single recipient over the single-actor transport. That
-	// transport addresses a registered id plus a chunk, not an actor, so a source with no actor can use
-	// it just as well.
+	// Owner-only and host-only both reach one client, and neither needs an actor: both address a place and an id.
 	if (Info.Recipient == ECrowdyEventRecipient::OwningClient
-		|| Info.Recipient == ECrowdyEventRecipient::Host)
+		|| Info.Recipient == CrowdyDeprecatedHostRecipient)
 	{
 		FCrowdyRpcTarget Target;
 		Target.NetID = EntityID;
@@ -1606,8 +1695,7 @@ bool FCrowdyRPC::RouteFromEventSource(UObject* Obj, ICrowdyEventSource* Source, 
 		// The source's own position is carried when it has one. Only a send addressed to the region the
 		// entity itself stands in reads it, so a source that genuinely has no position right now can
 		// still be routed: a host-addressed send is addressed from where the HOST stands, and a call the
-		// model runs on this client goes nowhere at all. The one route that needs a position reports its
-		// own drop when there is none.
+		// model runs on this client goes nowhere at all.
 		FVector SourceLocation = FVector::ZeroVector;
 		if (Source->GetEventLocation(SourceLocation))
 		{
@@ -1683,10 +1771,9 @@ FCrowdyRpcRouteDecision FCrowdyRPC::DecideRoute(ECrowdyEventRecipient Recipient,
 	switch (Recipient)
 	{
 	case ECrowdyEventRecipient::OwningClient:
-		// Owner-only: run locally when we own the entity (or it is untracked, which makes us the authority).
-		// An actor delegates to the owner over the single-actor transport; a non-spatial participant has no
-		// single-actor transport, so it always announces over the channel and the receive gate keeps it to
-		// the intended owner.
+		// Owner-only: run locally when we own the entity (or it is untracked, which makes us its writer).
+		// An actor delegates to the owner; a non-spatial participant has no position, so it always announces over
+		// the channel and the receive gate keeps it to the intended owner.
 		if (bNonSpatial)
 		{
 			Decision.bRunLocally = bWeOwnEntity || !bEntityValid;
@@ -1700,11 +1787,11 @@ FCrowdyRpcRouteDecision FCrowdyRPC::DecideRoute(ECrowdyEventRecipient Recipient,
 		else
 		{
 			Decision.bRunLocally = false;
-			Decision.Route = ECrowdyRpcRoute::SingleActorToOwner;
+			Decision.Route = ECrowdyRpcRoute::SpatialToOwner;
 		}
 		break;
 
-	case ECrowdyEventRecipient::Host:
+	case CrowdyDeprecatedHostRecipient:
 		// Host-only: run locally when we are the host. An actor delegates to the host's avatar over the
 		// single-actor transport; a non-spatial participant announces over the channel and the receive gate
 		// keeps it to the host.
@@ -1735,7 +1822,7 @@ FCrowdyRpcRouteDecision FCrowdyRPC::DecideRoute(ECrowdyEventRecipient Recipient,
 	case ECrowdyEventRecipient::SpatialMulticast:
 	default:
 		// Spatial path (also the unannotated default). A non-spatial participant has no world location, so this
-		// is hard-rejected at send; the author must set CrowdyRecipient=Multicast or Host. An actor announces to
+		// is hard-rejected at send; the author must set CrowdyRecipient=Multicast or OwningClient. An actor announces to
 		// everyone in range (chunk-based, decay-thinned).
 		if (bNonSpatial)
 		{
@@ -1751,6 +1838,20 @@ FCrowdyRpcRouteDecision FCrowdyRPC::DecideRoute(ECrowdyEventRecipient Recipient,
 	}
 
 	return Decision;
+}
+
+ECrowdyRpcRoute FCrowdyRPC::DecideOwnerRoute(const bool bWorldEntity, const bool bWorldOwnerKnown,
+	const bool bLeaderWithoutOwner, const bool bNoRegionToReach, const bool bCarriesText)
+{
+	if ((bWorldEntity && !bWorldOwnerKnown) || bLeaderWithoutOwner)
+		return ECrowdyRpcRoute::NoOwner;
+	if (bCarriesText)
+	{
+		if (bWorldEntity)
+			return ECrowdyRpcRoute::SingleActorToHost;
+		return bNoRegionToReach ? ECrowdyRpcRoute::TextHasNoRoute : ECrowdyRpcRoute::SingleActorToOwner;
+	}
+	return bWorldEntity || bNoRegionToReach ? ECrowdyRpcRoute::OwnerOverSession : ECrowdyRpcRoute::SpatialToOwner;
 }
 
 bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnInfo& Info,
@@ -1832,10 +1933,20 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 	const bool bLoopback = IsLoopbackEnabled() && !bLoopbackDelivering;
 	const bool bReceivePathWillRun = bLoopback && EntityID.IsValid();
 
-	const FCrowdyRpcRouteDecision Decision =
+	FCrowdyRpcRouteDecision Decision =
 		DecideRoute(Info.Recipient, bNonSpatial, EntityID.IsValid(), bWeOwnEntity, bWeAreHost);
 
-	if (Info.Recipient == ECrowdyEventRecipient::Host && WarnIfNoHostExists(Fn, Info.FunctionID, bNonSpatial && HostID.IsValid()))
+	FGuid Writer;
+	if (Decision.Route == ECrowdyRpcRoute::SpatialToOwner)
+	{
+		const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntityID);
+		const bool bWorldEntity = Record && Record->Role == ECrowdyRole::HostOwned;
+		Decision.Route = DecideOwnerRoute(bWorldEntity, HostID.IsValid(),
+			Record && Record->bLeaderOwned && !Record->OwnerID.IsValid(), EntitySubsystem->IsWireIdUnheard(EntityID), Info.bCarriesText);
+		Writer = bWorldEntity ? HostID : Record ? EntitySubsystem->ResolveEventAddressee(EntityID, Record->OwnerID) : FGuid();
+	}
+
+	if (Info.Recipient == CrowdyDeprecatedHostRecipient && WarnIfNoHostExists(Fn, Info.FunctionID, bNonSpatial && HostID.IsValid()))
 	{
 		return true;
 	}
@@ -1847,7 +1958,7 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 		// pick a channel-based recipient.
 		UE_LOG(LogCrowdyRPC, Error,
 			TEXT("SerializeAndRoute: '%s' on non-spatial participant '%s' uses SpatialMulticast, which has no "
-				 "location; set CrowdyRecipient=Multicast or Host. Dropping."),
+				 "location; set CrowdyRecipient=Multicast or OwningClient. Dropping."),
 			*Fn->GetName(), *GetNameSafe(Obj->GetClass()));
 		return true;
 	}
@@ -1893,9 +2004,25 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 		RouteOverChannel(EntitySubsystem, Call, Fn, Info.ChannelName);
 		break;
 
-	case ECrowdyRpcRoute::SingleActorToOwner:
+	case ECrowdyRpcRoute::SpatialToOwner:
 		// Only reached for an actor whose owner is another client, so ContextActor is non-null.
+		EntitySubsystem->DispatchGameEventToClientAt(ContextActor->GetActorLocation(), FCrowdyRpcCall::StaticStruct(), &Call, Writer);
+		break;
+
+	case ECrowdyRpcRoute::SingleActorToOwner:
 		EntitySubsystem->DispatchSingleActorMessage(ContextActor, FInstancedStruct::Make(Call));
+		break;
+
+	case ECrowdyRpcRoute::TextHasNoRoute:
+		WarnTextHasNoRoute(Fn, Info.FunctionID, EntityID);
+		break;
+
+	case ECrowdyRpcRoute::OwnerOverSession:
+		RouteOverChannel(EntitySubsystem, Call, Fn, FString(), Writer);
+		break;
+
+	case ECrowdyRpcRoute::NoOwner:
+		WarnNoOwner(Fn, Info.FunctionID, EntityID);
 		break;
 
 	case ECrowdyRpcRoute::SingleActorToHost:
@@ -1971,12 +2098,13 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 	const FGuid HostID = EntitySubsystem->GetWorldOwnerID();
 	const bool bWeAreHost = HostID.IsValid() && HostID == LocalPlayerID;
 
-	// Where this client already holds a registration for the target, that record is the authority on who
-	// owns the entity and, where it holds an actor, on where the entity stands. What the caller resolved
-	// describes the same entity read from wherever its state lives, so preferring the record keeps the two
-	// from disagreeing about a decision the rest of this client already makes from the record.
+	// Where this client already holds a registration for the target, that record decides who owns the entity
+	// and, where it holds an actor, where the entity stands. What the caller resolved describes the same entity
+	// read from wherever its state lives, so preferring the record keeps the two from disagreeing about a
+	// decision the rest of this client already makes from the record.
 	FCrowdyRpcTarget Resolved = Target;
-	if (const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(Target.NetID))
+	const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(Target.NetID);
+	if (Record)
 	{
 		Resolved.OwnerID = Record->OwnerID;
 		Resolved.Role = Record->Role;
@@ -1990,10 +2118,17 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 
 	// A target names a place in the world, so every recipient is available to it and the policy is the
 	// same table the actor path reads.
-	const FCrowdyRpcRouteDecision Decision = DecideRoute(Info.Recipient, /*bNonSpatial=*/false,
+	FCrowdyRpcRouteDecision Decision = DecideRoute(Info.Recipient, /*bNonSpatial=*/false,
 		/*bEntityValid=*/true, bWeOwnTarget, bWeAreHost);
 
-	if (Info.Recipient == ECrowdyEventRecipient::Host && WarnIfNoHostExists(Fn, Info.FunctionID, /*bLeaderKnown=*/false))
+	if (Decision.Route == ECrowdyRpcRoute::SpatialToOwner)
+	{
+		Decision.Route = DecideOwnerRoute(Resolved.BelongsToNoClient(), HostID.IsValid(),
+			Record && Record->bLeaderOwned && !Record->OwnerID.IsValid(), EntitySubsystem->IsWireIdUnheard(Resolved.NetID) || !Resolved.HasLocation(),
+			Info.bCarriesText);
+	}
+
+	if (Info.Recipient == CrowdyDeprecatedHostRecipient && WarnIfNoHostExists(Fn, Info.FunctionID, /*bLeaderKnown=*/false))
 	{
 		return true;
 	}
@@ -2059,30 +2194,25 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 		RouteOverChannel(EntitySubsystem, Call, Fn, Info.ChannelName);
 		break;
 
+	case ECrowdyRpcRoute::OwnerOverSession:
+		RouteOverChannel(EntitySubsystem, Call, Fn, FString(), Resolved.BelongsToNoClient() ? HostID : Resolved.OwnerID);
+		break;
+
+	case ECrowdyRpcRoute::NoOwner:
+		WarnNoOwner(Fn, Info.FunctionID, Resolved.NetID);
+		break;
+
+	case ECrowdyRpcRoute::SpatialToOwner:
+		EntitySubsystem->DispatchGameEventToClientAt(Resolved.Location.GetValue(), FCrowdyRpcCall::StaticStruct(), &Call,
+			EntitySubsystem->ResolveEventAddressee(Resolved.NetID, Resolved.OwnerID));
+		break;
+
 	case ECrowdyRpcRoute::SingleActorToOwner:
-		// The server delivers a single-actor message for an id to the client that owns that id. A world
-		// entity is owned by no client, so such a message would be addressed to nobody and vanish.
-		if (Resolved.BelongsToNoClient())
-		{
-			const bool bLogDrop = ShouldLogRpcDrop(Info.FunctionID);
-			UE_CLOG(bLogDrop, LogCrowdyRPC, Warning,
-				TEXT("[CrowdyRPC] '%s' dropped - it is owner-only and entity %s belongs to no client, so there is "
-					 "no client to deliver it to. A world entity is reached with CrowdyRecipient=Host only while Leader Source is Elected Host; under Server Object no client writes it."),
-				*Fn->GetName(), *Resolved.NetID.ToString());
-			break;
-		}
-		// Addressed to the target's OWN id, from the chunk the target stands in.
-		if (!Resolved.HasLocation())
-		{
-			const bool bLogDrop = ShouldLogRpcDrop(Info.FunctionID);
-			UE_CLOG(bLogDrop, LogCrowdyRPC, Warning,
-				TEXT("[CrowdyRPC] '%s' dropped - it is addressed to the chunk entity %s stands in, and that "
-					 "position is not known right now."),
-				*Fn->GetName(), *Resolved.NetID.ToString());
-			break;
-		}
-		EntitySubsystem->DispatchSingleActorMessageTo(Resolved.NetID, Resolved.Location.GetValue(),
-			FInstancedStruct::Make(Call));
+		EntitySubsystem->DispatchSingleActorMessageTo(Resolved.NetID, Resolved.Location.GetValue(), FInstancedStruct::Make(Call));
+		break;
+
+	case ECrowdyRpcRoute::TextHasNoRoute:
+		WarnTextHasNoRoute(Fn, Info.FunctionID, Resolved.NetID);
 		break;
 
 	case ECrowdyRpcRoute::SingleActorToHost:

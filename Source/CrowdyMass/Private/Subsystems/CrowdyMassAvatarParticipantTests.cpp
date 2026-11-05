@@ -716,4 +716,31 @@ bool FCrowdyMassAvatarClassChangeReleasesAndRemintsTest::RunTest(const FString& 
 	return true;
 }
 
+// A row keeps a copy of its owner and role, so a change of owner has to reach it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassRowFollowsItsOwnerTest,
+	"CrowdySDK.Mass.RowFollowsItsOwner", CrowdyMassParticipantTestFlags)
+bool FCrowdyMassRowFollowsItsOwnerTest::RunTest(const FString& Parameters)
+{
+	FCrowdyMassParticipantTestFixture Fixture;
+
+	const FGuid UUID = FGuid::NewGuid();
+	const FGuid NewOwner = FGuid::NewGuid();
+	const FMassEntityHandle Row = Fixture.MakeUnsettledEntity(UUID);
+	Fixture.ArriveRecord(UUID, ECrowdyRole::RemoteProxy, NewOwner, Fixture.Subsystem);
+
+	Fixture.Subsystem->HandleEntityOwnershipChangedForTest(FGuid::NewGuid());
+	const FCrowdyRemoteIdentityFragment* Identity = Fixture.EntityManager->GetFragmentDataPtr<FCrowdyRemoteIdentityFragment>(Row);
+	if (!TestNotNull(TEXT("the row has an identity"), Identity))
+	{
+		return false;
+	}
+	TestFalse(TEXT("another entity's move leaves it alone"), Identity->OwnerID == NewOwner);
+
+	Fixture.Subsystem->HandleEntityOwnershipChangedForTest(UUID);
+	TestEqual(TEXT("its own move updates the owner"), Identity->OwnerID, NewOwner);
+	TestTrue(TEXT("and the role"), Identity->Role == ECrowdyRole::RemoteProxy);
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

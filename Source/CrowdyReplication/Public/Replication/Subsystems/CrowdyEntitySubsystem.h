@@ -191,6 +191,8 @@ public:
 	int32 GetParticipantMappingCountForTest() const { return ParticipantToID.Num(); }
 
 	FCrowdyActorId ResolveTargetWireIdForTest(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const { return ResolveTargetWireId(NetID, Tracker); }
+	bool IsWireIdUnheardForTest(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const { return IsWireIdUnheard(NetID, Tracker); }
+	FGuid ResolveEventAddresseeForTest(const FGuid& NetID, const FGuid& OwnerID, const UCrowdyActorTracker* Tracker) const { return ResolveEventAddressee(NetID, OwnerID, Tracker); }
 
 	int32 GetReportedLeaderRowClassCountForTest() const { return ReportedLeaderRowClasses.Num(); }
 #endif
@@ -260,6 +262,14 @@ public:
 		ECrowdyDecayRate DecayRate = ECrowdyDecayRate::No_Decay,
 		ECrowdyReplicationDistance ReplicationDistance = ECrowdyReplicationDistance::Eight_Chunks);
 
+	// An event for one client, sent to everyone within a chunk of Location and ignored by all but ClientID. The range is
+	// what makes it arrive: the chunk this client can see for a moving entity is always a moment behind.
+	void DispatchGameEventToClientAt(const FVector& Location, const UScriptStruct* PayloadStruct, const void* PayloadMemory, const FGuid& ClientID);
+
+	// Who to name on an event for this entity: OwnerID, unless the entity was heard under another owner's id, which means
+	// this client missed a move. Nobody is named then, and the receive gate lets only the real writer run it.
+	FGuid ResolveEventAddressee(const FGuid& NetID, const FGuid& OwnerID) const;
+
 private:
 
 	/**
@@ -290,6 +300,9 @@ public:
 	 * lets a caller address a chunk the destination is not standing in.
 	 */
 	void DispatchSingleActorMessageTo(const FGuid& TargetNetID, const FVector& Location, FInstancedStruct Payload);
+
+	// True when this client has not heard the entity under its current id, so it does not know what region to reach it in.
+	bool IsWireIdUnheard(const FGuid& NetID) const;
 
 	/**
 	 * Publishes an already-encoded reliable RPC payload over the named channel (empty = the app-wide
@@ -361,6 +374,9 @@ private:
 
 	// The id a targeted message addresses: the server delivers to whoever sends that id.
 	FCrowdyActorId ResolveTargetWireId(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const;
+
+	bool IsWireIdUnheard(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const;
+	FGuid ResolveEventAddressee(const FGuid& NetID, const FGuid& OwnerID, const UCrowdyActorTracker* Tracker) const;
 
 	UPROPERTY()
 	TObjectPtr<UCrowdyGameSession> GameSession;

@@ -776,6 +776,32 @@ void UCrowdyEntitySubsystem::DispatchGameEventViewAt(const FVector& Location, co
 			LocalPlayerID, PayloadStruct, PayloadMemory, Target, TargetID);
 }
 
+void UCrowdyEntitySubsystem::DispatchGameEventToClientAt(const FVector& Location, const UScriptStruct* PayloadStruct,
+	const void* PayloadMemory, const FGuid& ClientID)
+{
+	if (!Bridge)
+	{
+		WarnNetworkingUnavailable(TEXT("DispatchGameEventToClientAt"));
+		return;
+	}
+
+	// A NaN or an absurd magnitude has no chunk: the cast that derives one is undefined for it.
+	if (Location.ContainsNaN() || Location.GetAbsMax() > CrowdyMaxAddressableWorldCoordinate || !IsValid(GetWorld()))
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyEntitySubsystem]: DispatchGameEventToClientAt - no chunk can be derived from location %s; dropping."),
+			*Location.ToString());
+		return;
+	}
+
+	int64 ChunkX = 0, ChunkY = 0, ChunkZ = 0;
+	UHelperFunctions::GetChunkCoordinateAtLocation(this, Location, ChunkX, ChunkY, ChunkZ);
+
+	if (Bridge->DispatchGameEventViewFn)
+		Bridge->DispatchGameEventViewFn(ChunkX, ChunkY, ChunkZ, ECrowdyDecayRate::No_Decay, ECrowdyReplicationDistance::One_Chunk,
+			LocalPlayerID, PayloadStruct, PayloadMemory, ECrowdyTarget::Owner, ClientID);
+}
+
 void UCrowdyEntitySubsystem::DispatchSingleActorMessage(const AActor* TargetActor, FInstancedStruct Payload)
 {
 	if (!IsValid(TargetActor))
@@ -867,6 +893,33 @@ FCrowdyActorId UCrowdyEntitySubsystem::ResolveTargetWireId(const FGuid& NetID, c
 	if (Tracker && !bAvatar)
 		Tracker->FindWireId(NetID, WireId);
 	return WireId;
+}
+
+FGuid UCrowdyEntitySubsystem::ResolveEventAddressee(const FGuid& NetID, const FGuid& OwnerID) const
+{
+	const UWorld* World = GetWorld();
+	return ResolveEventAddressee(NetID, OwnerID, World ? World->GetSubsystem<UCrowdyActorTracker>() : nullptr);
+}
+
+FGuid UCrowdyEntitySubsystem::ResolveEventAddressee(const FGuid& NetID, const FGuid& OwnerID, const UCrowdyActorTracker* Tracker) const
+{
+	FCrowdyActorId Heard;
+	const bool bHeardAnotherOwner = Tracker && Tracker->FindWireId(NetID, Heard)
+		&& Heard.Octets[0] == FCrowdyActorId::OwnerTaggedMarker && Heard != FCrowdyActorId::ForOwner(NetID, OwnerID);
+	return bHeardAnotherOwner ? FGuid() : OwnerID;
+}
+
+bool UCrowdyEntitySubsystem::IsWireIdUnheard(const FGuid& NetID) const
+{
+	const UWorld* World = GetWorld();
+	return IsWireIdUnheard(NetID, World ? World->GetSubsystem<UCrowdyActorTracker>() : nullptr);
+}
+
+bool UCrowdyEntitySubsystem::IsWireIdUnheard(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const
+{
+	// An avatar's id never moves, and a client holds it only because it was heard.
+	const FCrowdyEntityRecord* Record = Records.Find(NetID);
+	return Tracker && Record && Record->OwnerID != NetID && !Tracker->HasHeardCurrentWireId(NetID);
 }
 
 void UCrowdyEntitySubsystem::PublishReliableRpc(const FString& ChannelName, const TArray<uint8>& ChannelPayload)

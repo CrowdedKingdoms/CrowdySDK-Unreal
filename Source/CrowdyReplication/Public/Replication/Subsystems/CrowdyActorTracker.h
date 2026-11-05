@@ -209,6 +209,9 @@ public:
 	// The 32 octets a tracked actor sends under: its owner's since it last changed hands, else those of its first update as they arrived. False if it is not tracked or none was kept.
 	bool FindWireId(const FGuid& UUID, FCrowdyActorId& OutWireId) const;
 
+	// Whether an update has arrived under the id the entity sends under now. The server delivers a targeted message to whoever sent that id, so until one has, a message to it may reach nobody.
+	bool HasHeardCurrentWireId(const FGuid& UUID) const;
+
 	// Whether Update is a Game Kit starter's actor rather than one of the SDK's own; the type id is read first, as it costs nothing.
 	static bool IsKitActorUpdate(const FCrowdyActorUpdate& Update);
 
@@ -340,7 +343,7 @@ private:
 
 	//Timeout
 	TMap<FGuid, double> LastUpdateTimes;
-	FRWLock LastUpdateLock;
+	mutable FRWLock LastUpdateLock;
 	FTimerHandle TimeoutTimerHandle;
 
 	// Game Kit actors, timed out apart on their own short bound, under LastUpdateLock as well. Swept from Tick after the
@@ -385,8 +388,14 @@ private:
 
 	TWeakObjectPtr<UCrowdyEntitySubsystem> EntitySubsystem;
 
+	struct FMovedWireId
+	{
+		FCrowdyActorId WireId;
+		bool bHeard = false;
+	};
+
 	// Entities that changed hands while this client watched. Never expired by time: a lagging old owner keeps sending.
-	TMap<FGuid, FCrowdyActorId> CurrentWireIds;
+	TMap<FGuid, FMovedWireId> CurrentWireIds;
 
 	// Written on the game thread before the appearance broadcast, since a listener resolves the class during it.
 	void RecordAppearances(const TArray<FCrowdyActorUpdate>& Appeared);

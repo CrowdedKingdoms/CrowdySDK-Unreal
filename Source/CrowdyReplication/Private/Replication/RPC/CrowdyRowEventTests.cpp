@@ -451,8 +451,8 @@ bool FCrowdyRowEventIncapableParticipantFallsThroughTest::RunTest(const FString&
 
 /**
  * The fall-through above must not become a way around the owner/host guards it now sits under. An
- * owner/host-only call arriving as a BROADCAST for an actor participant is refused by those guards, and
- * moving the fall-through above them would hand exactly those calls to the subscriber instead.
+ * owner-only call for an actor this client only draws is refused by those guards, and moving the
+ * fall-through above them would hand exactly those calls to the subscriber instead.
  *
  * Hoisting the fall-through over the owner/host guard block turns this red: the handler would run a call
  * that only one client was ever meant to run.
@@ -473,8 +473,7 @@ bool FCrowdyRowEventFallThroughStaysUnderTheOwnerGuardTest::RunTest(const FStrin
 	Fixture.Spy->ReceiverToOffer = nullptr;
 	Fixture.Spy->HandledFunction = Fn;
 
-	// An ACTOR participant, so the guard that applies is the one demanding a targeted single-actor
-	// delivery. A test actor needs no world here: nothing is ever invoked on it.
+	// An ACTOR participant another client owns. A test actor needs no world here: nothing is ever invoked on it.
 	const FGuid EntityID = FGuid::NewGuid();
 	ACrowdyRowEventTestActor* Participant = NewObject<ACrowdyRowEventTestActor>();
 	RegisterProxyParticipant(Fixture.Entities, EntityID, Participant);
@@ -485,8 +484,6 @@ bool FCrowdyRowEventFallThroughStaysUnderTheOwnerGuardTest::RunTest(const FStrin
 	Call.EntityID = EntityID;
 	Call.SenderID = FGuid::NewGuid();
 
-	// ReceiveChannelRpcCall delivers as a broadcast, which is exactly what an owner-only call must never
-	// arrive as.
 	Fixture.Router->ReceiveChannelRpcCall(Call);
 
 	TestEqual(TEXT("an owner-only broadcast never reaches the handler"),
@@ -496,6 +493,40 @@ bool FCrowdyRowEventFallThroughStaysUnderTheOwnerGuardTest::RunTest(const FStrin
 	TestEqual(TEXT("nor is it asked whether it holds the id"),
 		Fixture.Spy->IsEntityKnownCallCount, 0);
 	TestEqual(TEXT("nothing ran on the participant either"), Participant->CallCount, 0);
+
+	return true;
+}
+
+/**
+ * An owner-only call on the session channel reaches every client, so a client that holds the entity as a
+ * row, or not at all, has nothing to do: it neither reports a fault nor waits for the entity. A call
+ * declared on a non-actor still waits, because a replicated subsystem enrols late.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRowEventOwnerCallOnTheChannelIsNotAFaultTest,
+	"CrowdySDK.RowEvent.OwnerCallOnTheChannelIsNotAFault", CrowdyRowEventTestFlags)
+bool FCrowdyRowEventOwnerCallOnTheChannelIsNotAFaultTest::RunTest(const FString& Parameters)
+{
+	FCrowdyRowEventFixture Fixture;
+
+	UFunction* Fn = FCrowdyRowEventFixture::OwnerOnly();
+	if (!TestNotNull(TEXT("the actor's owner-only event resolved"), Fn))
+	{
+		return false;
+	}
+
+	Fixture.Spy->bKnowsEntity = true;
+	Fixture.Spy->ReceiverToOffer = nullptr;
+	Fixture.Spy->HandledFunction = Fn;
+
+	FCrowdyRpcCall Call = FCrowdyRPC::MarshalCall(Fn, FCrowdyRPC::GetFnInfo(Fn),
+		&ACrowdyRowEventTestActor::RowOwnerOnly_Implementation, 3);
+	Call.EntityID = FGuid::NewGuid();
+	Call.SenderID = FGuid::NewGuid();
+	Fixture.Router->ReceiveChannelRpcCall(Call);
+
+	TestEqual(TEXT("a row is not reported as undeliverable"), Fixture.Router->NumUndeliverableCallsForTest(), 0);
+	TestEqual(TEXT("the handler does not run it"), Fixture.Spy->HandleEntityEventCallCount, 0);
+	TestEqual(TEXT("and it does not wait for an entity"), Fixture.Router->NumDeferredForTest(), 0);
 
 	return true;
 }
@@ -528,7 +559,7 @@ bool FCrowdyRowEventUndeliverableIsThrottledTest::RunTest(const FString& Paramet
 
 	const FCrowdyFnInfo OwnerInfo = FCrowdyRPC::GetFnInfo(OwnerFn);
 
-	// One owner-only broadcast each for a run of entities, which is the shape a crowd produces: one
+	// One owner-only targeted send each for a run of entities, which is the shape a crowd produces: one
 	// refusal reason hit once per entity.
 	constexpr int32 NumRefused = 12;
 	for (int32 Index = 0; Index < NumRefused; ++Index)
@@ -537,7 +568,9 @@ bool FCrowdyRowEventUndeliverableIsThrottledTest::RunTest(const FString& Paramet
 			&ACrowdyRowEventTestActor::RowOwnerOnly_Implementation, Index);
 		Call.EntityID = FGuid::NewGuid();
 		Call.SenderID = FGuid::NewGuid();
-		Fixture.Router->ReceiveChannelRpcCall(Call);
+		FCrowdyScopedInboundEvent Targeted = FCrowdyRowEventFixture::MakeStaleEvent(Call);
+		Targeted.Event.bTargetedDelivery = true;
+		Fixture.Router->DispatchEvent(Targeted);
 	}
 
 	TestEqual(TEXT("every refused call is counted"),

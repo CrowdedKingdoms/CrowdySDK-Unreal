@@ -238,6 +238,11 @@ void UCrowdyActorTracker::HandleActorUpdateDelivery(const FCrowdyDelivery& Deliv
 		return;
 	}
 
+	if (FMovedWireId* Moved = CurrentWireIds.IsEmpty() ? nullptr : CurrentWireIds.Find(AUN.GUID))
+	{
+		Moved->bHeard = true;
+	}
+
 	FCrowdyActorUpdate Update;
 	Update.UUID = AUN.GUID;
 
@@ -980,9 +985,9 @@ void UCrowdyActorTracker::RecordAppearances(const TArray<FCrowdyActorUpdate>& Ap
 
 bool UCrowdyActorTracker::IsRetiredWireId(const FGuid& NetID, const FCrowdyActorId& WireId) const
 {
-	if (const FCrowdyActorId* Current = CurrentWireIds.IsEmpty() ? nullptr : CurrentWireIds.Find(NetID))
+	if (const FMovedWireId* Current = CurrentWireIds.IsEmpty() ? nullptr : CurrentWireIds.Find(NetID))
 	{
-		return *Current != WireId;
+		return Current->WireId != WireId;
 	}
 
 	if (WireId.Octets[0] != FCrowdyActorId::OwnerTaggedMarker)
@@ -998,7 +1003,7 @@ bool UCrowdyActorTracker::IsRetiredWireId(const FGuid& NetID, const FCrowdyActor
 
 void UCrowdyActorTracker::HandleEntityOwnerChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& /*PreviousOwnerID*/)
 {
-	CurrentWireIds.Add(NetID, FCrowdyActorId::ForOwner(NetID, NewOwnerID));
+	CurrentWireIds.Add(NetID, { FCrowdyActorId::ForOwner(NetID, NewOwnerID) });
 }
 
 void UCrowdyActorTracker::HandleEntityUnregistered(const FGuid& NetID)
@@ -1008,9 +1013,9 @@ void UCrowdyActorTracker::HandleEntityUnregistered(const FGuid& NetID)
 
 bool UCrowdyActorTracker::FindWireId(const FGuid& UUID, FCrowdyActorId& OutWireId) const
 {
-	if (const FCrowdyActorId* Moved = CurrentWireIds.Find(UUID))
+	if (const FMovedWireId* Moved = CurrentWireIds.Find(UUID))
 	{
-		OutWireId = *Moved;
+		OutWireId = Moved->WireId;
 		return true;
 	}
 
@@ -1023,6 +1028,20 @@ bool UCrowdyActorTracker::FindWireId(const FGuid& UUID, FCrowdyActorId& OutWireI
 
 	OutWireId = Found->WireId;
 	return true;
+}
+
+bool UCrowdyActorTracker::HasHeardCurrentWireId(const FGuid& UUID) const
+{
+	if (const FMovedWireId* Moved = CurrentWireIds.Find(UUID))
+	{
+		if (!Moved->bHeard)
+		{
+			return false;
+		}
+	}
+
+	FReadScopeLock R(LastUpdateLock);
+	return LastUpdateTimes.Contains(UUID);
 }
 
 FCrowdyClassID UCrowdyActorTracker::GetClassIDForUUID(const FGuid& UUID) const

@@ -24,6 +24,17 @@ void ACrowdyRpcActorTestTarget::ActorOwnerOnly_Implementation(int32 InValue)
 	++CallCount;
 }
 
+void ACrowdyRpcActorTestTarget::ActorHostOnly_Implementation(int32 InValue)
+{
+	GotValue = InValue;
+	++CallCount;
+}
+
+void UCrowdyRpcEventSourceTestTarget::SourceMulticast_Implementation(int32 InValue)
+{
+	++CallCount;
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
@@ -146,10 +157,10 @@ bool FCrowdyRpcSubsystemDecideRouteTableTest::RunTest(const FString& Parameters)
 	Check(TEXT("actor OwningClient untracked"), ECrowdyEventRecipient::OwningClient, false, /*valid*/false, /*own*/false, /*host*/false,
 		true, ECrowdyRpcRoute::None);
 	Check(TEXT("actor OwningClient non-owner"), ECrowdyEventRecipient::OwningClient, false, /*valid*/true, /*own*/false, /*host*/false,
-		false, ECrowdyRpcRoute::SingleActorToOwner);
-	Check(TEXT("actor Host host"), ECrowdyEventRecipient::Host, false, /*valid*/true, /*own*/false, /*host*/true,
+		false, ECrowdyRpcRoute::SpatialToOwner);
+	Check(TEXT("actor Host host"), CrowdyDeprecatedHostRecipient, false, /*valid*/true, /*own*/false, /*host*/true,
 		true, ECrowdyRpcRoute::None);
-	Check(TEXT("actor Host non-host"), ECrowdyEventRecipient::Host, false, /*valid*/true, /*own*/false, /*host*/false,
+	Check(TEXT("actor Host non-host"), CrowdyDeprecatedHostRecipient, false, /*valid*/true, /*own*/false, /*host*/false,
 		false, ECrowdyRpcRoute::SingleActorToHost);
 	Check(TEXT("actor Multicast"), ECrowdyEventRecipient::Multicast, false, /*valid*/true, /*own*/false, /*host*/false,
 		true, ECrowdyRpcRoute::Channel);
@@ -167,9 +178,9 @@ bool FCrowdyRpcSubsystemDecideRouteTableTest::RunTest(const FString& Parameters)
 		true, ECrowdyRpcRoute::Channel);
 	Check(TEXT("nonspatial OwningClient non-owner"), ECrowdyEventRecipient::OwningClient, true, /*valid*/true, /*own*/false, /*host*/false,
 		false, ECrowdyRpcRoute::Channel);
-	Check(TEXT("nonspatial Host host"), ECrowdyEventRecipient::Host, true, /*valid*/true, /*own*/false, /*host*/true,
+	Check(TEXT("nonspatial Host host"), CrowdyDeprecatedHostRecipient, true, /*valid*/true, /*own*/false, /*host*/true,
 		true, ECrowdyRpcRoute::Channel);
-	Check(TEXT("nonspatial Host non-host"), ECrowdyEventRecipient::Host, true, /*valid*/true, /*own*/false, /*host*/false,
+	Check(TEXT("nonspatial Host non-host"), CrowdyDeprecatedHostRecipient, true, /*valid*/true, /*own*/false, /*host*/false,
 		false, ECrowdyRpcRoute::Channel);
 
 	return true;
@@ -266,12 +277,58 @@ bool FCrowdyRpcSubsystemHostOnlyGatedByHostTest::RunTest(const FString& Paramete
 	return true;
 }
 
-// Regression: an owner/host-only RPC arriving as a BROADCAST for an ACTOR participant is still dropped (actor path
-// unchanged); the same call as a TARGETED single-actor send runs. Needs an editor world so the actor's ProcessEvent
-// fires.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcSubsystemActorOwnerHostBroadcastStillDroppedTest,
-	"CrowdySDK.RPC.SubsystemActorOwnerHostBroadcastStillDropped", CrowdyRpcSubsystemTestFlags)
-bool FCrowdyRpcSubsystemActorOwnerHostBroadcastStillDroppedTest::RunTest(const FString& Parameters)
+// An owner-only call runs on the client that writes the entity however it arrived, and on no other: a targeted send
+// can reach a client the entity has just left, and the session channel reaches everyone. Needs an editor world so the
+// actor's ProcessEvent fires.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcOwnerCallRunsOnlyOnTheOwnerTest,
+	"CrowdySDK.RPC.OwnerCallRunsOnlyOnTheOwner", CrowdyRpcSubsystemTestFlags)
+bool FCrowdyRpcOwnerCallRunsOnlyOnTheOwnerTest::RunTest(const FString& Parameters)
+{
+	const FGuid Local = FGuid::NewGuid();
+	UCrowdyAutoRegistry* Registry = MakeRpcRegistry();
+	UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(Local);
+	UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
+
+	FCrowdyRpcTestWorld TestWorld;
+	ACrowdyRpcActorTestTarget* Actor = TestWorld.Spawn<ACrowdyRpcActorTestTarget>();
+	if (!TestNotNull(TEXT("actor spawned into the editor world"), Actor))
+	{
+		return false;
+	}
+
+	const FGuid ProxyID = FGuid::NewGuid();
+	const FGuid OwnedID = FGuid::NewGuid();
+	RegisterProxyParticipant(Entities, ProxyID, Actor);
+	RegisterParticipantAs(Entities, OwnedID, Actor, ECrowdyRole::Owner, Local);
+
+	const auto Deliver = [&](const FGuid& EntityID, const bool bTargeted)
+	{
+		const FCrowdyRpcCall Call = MakeRpcCall(TEXT("ActorOwnerOnly_Implementation"),
+			&ACrowdyRpcActorTestTarget::ActorOwnerOnly_Implementation, 7, EntityID, FGuid::NewGuid());
+		Router->DispatchEvent(MakeInboundRpcEvent(Call, bTargeted));
+	};
+
+	Deliver(ProxyID, /*bTargeted=*/false);
+	TestEqual(TEXT("a broadcast does not run on a client that only draws the entity"), Actor->CallCount, 0);
+
+	Deliver(ProxyID, /*bTargeted=*/true);
+	TestEqual(TEXT("nor does a targeted send that reached one"), Actor->CallCount, 0);
+
+	Deliver(OwnedID, /*bTargeted=*/false);
+	TestEqual(TEXT("the session channel reaches the owner"), Actor->CallCount, 1);
+	TestEqual(TEXT("with the value sent"), Actor->GotValue, 7);
+
+	Deliver(OwnedID, /*bTargeted=*/true);
+	TestEqual(TEXT("and so does a targeted send"), Actor->CallCount, 2);
+
+	return true;
+}
+
+// The deprecated Host recipient keeps its rule on an actor: the server delivers it as a targeted send, so a broadcast
+// of one is misuse or forgery.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcActorHostBroadcastStillDroppedTest,
+	"CrowdySDK.RPC.ActorHostBroadcastStillDropped", CrowdyRpcSubsystemTestFlags)
+bool FCrowdyRpcActorHostBroadcastStillDroppedTest::RunTest(const FString& Parameters)
 {
 	UCrowdyAutoRegistry* Registry = MakeRpcRegistry();
 	UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(FGuid::NewGuid());
@@ -286,23 +343,14 @@ bool FCrowdyRpcSubsystemActorOwnerHostBroadcastStillDroppedTest::RunTest(const F
 
 	const FGuid EntityID = FGuid::NewGuid();
 	RegisterProxyParticipant(Entities, EntityID, Actor);
+	const FCrowdyRpcCall Call = MakeRpcCall(TEXT("ActorHostOnly_Implementation"),
+		&ACrowdyRpcActorTestTarget::ActorHostOnly_Implementation, 7, EntityID, FGuid::NewGuid());
 
-	// Broadcast owner-only to an actor: dropped by the actor branch (must arrive as a targeted send).
-	{
-		const FCrowdyRpcCall Call = MakeRpcCall(TEXT("ActorOwnerOnly_Implementation"),
-			&ACrowdyRpcActorTestTarget::ActorOwnerOnly_Implementation, 7, EntityID, FGuid::NewGuid());
-		Router->DispatchEvent(MakeInboundRpcEvent(Call, /*bTargeted=*/false));
-		TestEqual(TEXT("broadcast owner-only to an actor is dropped"), Actor->CallCount, 0);
-	}
+	Router->DispatchEvent(MakeInboundRpcEvent(Call, /*bTargeted=*/false));
+	TestEqual(TEXT("a broadcast host-only call is dropped"), Actor->CallCount, 0);
 
-	// The same call as a targeted single-actor send passes the gate and runs.
-	{
-		const FCrowdyRpcCall Call = MakeRpcCall(TEXT("ActorOwnerOnly_Implementation"),
-			&ACrowdyRpcActorTestTarget::ActorOwnerOnly_Implementation, 7, EntityID, FGuid::NewGuid());
-		Router->DispatchEvent(MakeInboundRpcEvent(Call, /*bTargeted=*/true));
-		TestEqual(TEXT("targeted owner-only to an actor runs once"), Actor->CallCount, 1);
-		TestEqual(TEXT("targeted owner-only applied the value"), Actor->GotValue, 7);
-	}
+	Router->DispatchEvent(MakeInboundRpcEvent(Call, /*bTargeted=*/true));
+	TestEqual(TEXT("the same call as a targeted send runs"), Actor->CallCount, 1);
 
 	return true;
 }
