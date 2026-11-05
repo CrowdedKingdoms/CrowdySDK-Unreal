@@ -1,12 +1,14 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "crowdy/domains/domain_base.hpp"
 #include "crowdy/domains/types.hpp"
+#include "crowdy/generated/enums.hpp"
 #include "crowdy/generated/operations.hpp"
 
 /// Authentication and account lifecycle — client.auth(). Passwordless:
@@ -14,6 +16,55 @@
 /// an identity SESSION token, stored on the shared auth state automatically.
 /// Gameplay tokens are minted separately via client.portal().
 namespace crowdy::domains {
+
+/// registerUser()'s full input (ck-api v2.60.0 adds the age and the country). Unset optional
+/// fields and empty strings are not sent.
+struct RegisterUserInput {
+  std::string email;
+  std::string password;
+  std::string gamertag;
+  /// The player agreed to the platform's current player documents (playerLegalDocuments).
+  std::optional<bool> acceptLegal;
+  /// The age-of-majority attestation, while the platform still uses it; ignored once it asks
+  /// for a birth date.
+  std::optional<bool> attestAgeOfMajority;
+  /// Birth date, YYYY-MM-DD (YYYY-MM is accepted too); only the year and month are kept. Sent
+  /// with `country`. A native client may leave both out and give them later with
+  /// recordPlayerAge().
+  std::string birthDate;
+  /// The country the player lives in, ISO 3166-1 alpha-2 (such as US).
+  std::string country;
+  /// Under 18: the player confirms a parent or guardian agreed. Required true under 18;
+  /// ignored at 18 or over.
+  std::optional<bool> parentalConfirmation;
+};
+
+/// A birth date, country and parental agreement, as recordPlayerAge() takes them.
+struct PlayerAgeInput {
+  /// YYYY-MM-DD (YYYY-MM is accepted too); only the year and month are kept, and the age is
+  /// counted from the last day of that month.
+  std::string birthDate;
+  /// The country the player lives in, ISO 3166-1 alpha-2 (such as US).
+  std::string country;
+  /// Under 18: the player confirms a parent or guardian agreed. Required true under 18;
+  /// ignored at 18 or over.
+  std::optional<bool> parentalConfirmation;
+};
+
+/// recordPlayerConsents()'s full input (ck-api v2.60.0).
+struct PlayerConsents {
+  /// Must be true: the player agreed to the documents shown.
+  bool acceptLegal = false;
+  /// Required true while the platform uses the age-of-majority attestation; ignored once
+  /// players give a birth date. Unset sends nothing.
+  std::optional<bool> attestAgeOfMajority;
+  /// The app whose own documents (appRequiredDocuments) the player also accepted; empty for
+  /// the platform's alone.
+  std::string appId;
+  /// How the player accepted: CLICKWRAP (the server's default) on a Crowded Kingdoms page or
+  /// an SDK form, IN_GAME on the app's own screen.
+  std::optional<gen::LegalAcceptanceMethod> method;
+};
 
 class AuthAPI : public DomainBase {
  public:
@@ -399,6 +450,160 @@ class AuthAPI : public DomainBase {
                     });
   }
 
+  // ----- Age, territory and per-app documents (ck-api v2.60.0) ------------------
+  // The gate on every gameplay mint and refresh checks the player's country (TERRITORY_NOT_
+  // SUPPORTED), then its age (AGE_REQUIRED, AGE_REQUIREMENT_NOT_MET), then its documents:
+  // the platform's player documents and, for that app, the app's own
+  // (LEGAL_ACCEPTANCE_REQUIRED, with the missing ones in extensions.missingDocuments). The
+  // graphql::*Of helpers in crowdy/graphql/errors.hpp read each refusal; the countries are
+  // client.platform().territoryPolicies().
+
+  /// Sign up with the full input: the documents, and the birth date, the country and (under
+  /// 18) the parental confirmation. A browser sign-up without the age is refused AGE_REQUIRED
+  /// once the platform admits players under 18; a native client may leave it out and call
+  /// recordPlayerAge() before its first gameplay token. An age under the minimum where the
+  /// player is, or a country Crowded Kingdoms does not serve, is refused before any account
+  /// exists (AGE_REQUIREMENT_NOT_MET, TERRITORY_NOT_SUPPORTED). Since ck-api v2.61.0 the age
+  /// refusal names no age, and for 24 hours the same client (address and user agent) is
+  /// refused it whatever it sends.
+  AuthResponse registerUser(const RegisterUserInput& input) const {
+    auto r = AuthResponse::fromJson(execUnwrap(kRegisterDocument, registerVars(input)));
+    if (!r.token.empty()) auth_->setToken(r.token);
+    return r;
+  }
+
+  void registerUserAsync(const RegisterUserInput& input,
+                         std::function<void(graphql::GraphQLOutcome, AuthResponse)> cb) const {
+    execUnwrapAsync(kRegisterDocument, registerVars(input), {},
+                    [auth = auth_, cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      AuthResponse value{};
+                      if (out.ok()) {
+                        value = AuthResponse::fromJson(out.data);
+                        if (!value.token.empty()) auth->setToken(value.token);
+                      }
+                      cb(std::move(out), value);
+                    });
+  }
+
+  /// Record the signed-in player's birth date, country and (under 18) parental confirmation,
+  /// for an account whose age is not known yet (me's ageBracket is "unknown"). Only the year and
+  /// month are kept. Returns the account's bracket and country. Ask on a neutral screen (no age
+  /// shown, the parental line only for a player under 18). CONFLICT when the account already
+  /// has an age; TERRITORY_NOT_SUPPORTED where Crowded Kingdoms does not serve (the declared
+  /// country, or the network's country or region); AGE_REQUIREMENT_NOT_MET under the
+  /// platform's youngest age. Since ck-api v2.61.0 that refusal names no age, the account is
+  /// deleted and erased as UsersAPI::deleteMyAccount does, and for 24 hours the same client
+  /// (address and user agent) is refused here and at sign-up whatever it sends: drop the
+  /// session and do not ask again. Session token.
+  PlayerAge recordPlayerAge(const PlayerAgeInput& input) const {
+    return PlayerAge::fromJson(execUnwrap(gen::auth::kRecordPlayerAgeDocument, ageVars(input)));
+  }
+
+  void recordPlayerAgeAsync(const PlayerAgeInput& input,
+                            std::function<void(graphql::GraphQLOutcome, PlayerAge)> cb) const {
+    execUnwrapAsync(gen::auth::kRecordPlayerAgeDocument, ageVars(input), {},
+                    [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      PlayerAge value{};
+                      if (out.ok()) value = PlayerAge::fromJson(out.data);
+                      cb(std::move(out), std::move(value));
+                    });
+  }
+
+  /// Store the player's acceptance of the platform's current player documents and, with
+  /// `appId`, of that app's own, recorded with the app and the method. Call it only after the
+  /// player accepted them in your own UI. Session token; repeating it is harmless.
+  bool recordPlayerConsents(const PlayerConsents& consents) const {
+    return execUnwrap(gen::auth::kRecordPlayerConsentsForDocument, consentsVars(consents))
+        .asBool();
+  }
+
+  void recordPlayerConsentsAsync(const PlayerConsents& consents,
+                                 std::function<void(graphql::GraphQLOutcome, bool)> cb) const {
+    execUnwrapAsync(gen::auth::kRecordPlayerConsentsForDocument, consentsVars(consents), {},
+                    [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      bool value = false;
+                      if (out.ok()) value = out.data.asBool();
+                      cb(std::move(out), value);
+                    });
+  }
+
+  /// playerLegalAcceptance() for the app about to be played: its own documents count too.
+  bool playerLegalAcceptance(std::string_view appId) const {
+    return execUnwrap(gen::auth::kPlayerLegalAcceptanceForDocument, appVars(appId)).asBool();
+  }
+
+  void playerLegalAcceptanceAsync(std::string_view appId,
+                                  std::function<void(graphql::GraphQLOutcome, bool)> cb) const {
+    execUnwrapAsync(gen::auth::kPlayerLegalAcceptanceForDocument, appVars(appId), {},
+                    [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      bool value = false;
+                      if (out.ok()) value = out.data.asBool();
+                      cb(std::move(out), value);
+                    });
+  }
+
+  /// The platform's documents every player accepts before playing, at the versions required
+  /// now. Show them, with the app's own (appRequiredDocuments), before recordPlayerConsents().
+  /// Public.
+  std::vector<LegalDocument> playerLegalDocuments() const {
+    return LegalDocument::listFromJson(legal(gen::auth::kPlayerLegalDocumentsOperationName));
+  }
+
+  void playerLegalDocumentsAsync(
+      std::function<void(graphql::GraphQLOutcome, std::vector<LegalDocument>)> cb) const {
+    legalAsync(gen::auth::kPlayerLegalDocumentsOperationName, graphql::JVal(), std::move(cb));
+  }
+
+  /// An app's own documents (its rules, an addendum), which its players accept on top of the
+  /// platform's before their next mint. Empty when the app requires none. Public.
+  std::vector<LegalDocument> appRequiredDocuments(std::string_view appId) const {
+    return LegalDocument::listFromJson(
+        legal(gen::auth::kAppRequiredDocumentsOperationName, appVars(appId)));
+  }
+
+  void appRequiredDocumentsAsync(
+      std::string_view appId,
+      std::function<void(graphql::GraphQLOutcome, std::vector<LegalDocument>)> cb) const {
+    legalAsync(gen::auth::kAppRequiredDocumentsOperationName, appVars(appId), std::move(cb));
+  }
+
+  /// The documents a developer accepts before creating or administering an organization. Only
+  /// an account of 18 or older may; empty while the platform asks developers for nothing beyond
+  /// the player documents. Public.
+  std::vector<LegalDocument> developerLegalDocuments() const {
+    return LegalDocument::listFromJson(legal(gen::auth::kDeveloperLegalDocumentsOperationName));
+  }
+
+  void developerLegalDocumentsAsync(
+      std::function<void(graphql::GraphQLOutcome, std::vector<LegalDocument>)> cb) const {
+    legalAsync(gen::auth::kDeveloperLegalDocumentsOperationName, graphql::JVal(), std::move(cb));
+  }
+
+  /// Whether the signed-in account has accepted the current developer documents. Session token.
+  bool developerLegalAcceptance() const {
+    return legal(gen::auth::kDeveloperLegalAcceptanceOperationName).asBool();
+  }
+
+  void developerLegalAcceptanceAsync(std::function<void(graphql::GraphQLOutcome, bool)> cb) const {
+    boolAsync(gen::auth::kDeveloperLegalAcceptanceOperationName, graphql::JVal(), std::move(cb));
+  }
+
+  /// Store the developer's acceptance of the current developer documents. Adults only: an
+  /// account with no age is refused AGE_REQUIRED and one under 18 AGE_REQUIREMENT_NOT_MET.
+  /// Session token; idempotent.
+  bool recordDeveloperConsents(bool acceptDeveloperTerms) const {
+    graphql::JVal vars;
+    vars["acceptDeveloperTerms"] = acceptDeveloperTerms;
+    return legal(gen::auth::kRecordDeveloperConsentsOperationName, vars).asBool();
+  }
+
+  void recordDeveloperConsentsAsync(bool acceptDeveloperTerms,
+                                    std::function<void(graphql::GraphQLOutcome, bool)> cb) const {
+    graphql::JVal vars;
+    vars["acceptDeveloperTerms"] = acceptDeveloperTerms;
+    boolAsync(gen::auth::kRecordDeveloperConsentsOperationName, vars, std::move(cb));
+  }
+
   bool confirmEmail(std::string_view token) const {
     graphql::JVal vars;
     vars["token"] = token;
@@ -587,6 +792,74 @@ class AuthAPI : public DomainBase {
   std::string getToken() const { return auth_->token(); }
 
  private:
+  static constexpr const char* kRegisterDocument =
+      "mutation Register($registerUserInput: RegisterUserInput!) {"
+      " register(registerUserInput: $registerUserInput) {"
+      " token gameTokenId user { userId email gamertag } } }";
+
+  static graphql::JVal registerVars(const RegisterUserInput& input) {
+    graphql::JVal vars;
+    graphql::JVal& body = vars["registerUserInput"];
+    body["email"] = input.email;
+    body["password"] = input.password;
+    if (!input.gamertag.empty()) body["gamertag"] = input.gamertag;
+    if (input.acceptLegal) body["acceptLegal"] = *input.acceptLegal;
+    if (input.attestAgeOfMajority) body["attestAgeOfMajority"] = *input.attestAgeOfMajority;
+    if (!input.birthDate.empty()) body["birthDate"] = input.birthDate;
+    if (!input.country.empty()) body["country"] = input.country;
+    if (input.parentalConfirmation) body["parentalConfirmation"] = *input.parentalConfirmation;
+    return vars;
+  }
+
+  static graphql::JVal ageVars(const PlayerAgeInput& input) {
+    graphql::JVal vars;
+    graphql::JVal& body = vars["input"];
+    body["birthDate"] = input.birthDate;
+    body["country"] = input.country;
+    if (input.parentalConfirmation) body["parentalConfirmation"] = *input.parentalConfirmation;
+    return vars;
+  }
+
+  static graphql::JVal consentsVars(const PlayerConsents& consents) {
+    graphql::JVal vars;
+    vars["acceptLegal"] = consents.acceptLegal;
+    if (consents.attestAgeOfMajority) vars["attestAgeOfMajority"] = *consents.attestAgeOfMajority;
+    if (!consents.appId.empty()) vars["appId"] = consents.appId;
+    if (consents.method) vars["method"] = gen::toString(*consents.method);
+    return vars;
+  }
+
+  static graphql::JVal appVars(std::string_view appId) {
+    graphql::JVal vars;
+    vars["appId"] = appId;
+    return vars;
+  }
+
+  graphql::Json legal(std::string_view operation,
+                      const graphql::JVal& vars = graphql::JVal()) const {
+    return execUnwrap(gen::auth::documentFor(operation), vars, operation);
+  }
+
+  void legalAsync(std::string_view operation, const graphql::JVal& vars,
+                  std::function<void(graphql::GraphQLOutcome, std::vector<LegalDocument>)> cb) const {
+    execUnwrapAsync(gen::auth::documentFor(operation), vars, operation,
+                    [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      std::vector<LegalDocument> value;
+                      if (out.ok()) value = LegalDocument::listFromJson(out.data);
+                      cb(std::move(out), std::move(value));
+                    });
+  }
+
+  void boolAsync(std::string_view operation, const graphql::JVal& vars,
+                 std::function<void(graphql::GraphQLOutcome, bool)> cb) const {
+    execUnwrapAsync(gen::auth::documentFor(operation), vars, operation,
+                    [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      bool value = false;
+                      if (out.ok()) value = out.data.asBool();
+                      cb(std::move(out), value);
+                    });
+  }
+
   std::shared_ptr<graphql::AuthState> auth_;
 };
 

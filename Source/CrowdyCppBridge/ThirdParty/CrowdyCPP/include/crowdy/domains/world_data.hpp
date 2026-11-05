@@ -606,8 +606,15 @@ class TeleportAPI : public DomainBase {
 /// keep one retention period of the app's recent traffic: graphql::inputLogFundsNeededOf).
 ///
 /// Game plane: call it on the app-scoped client for the app; an identity session token is
-/// refused. A player reads only the sessions and inputs they sent; a holder of manage_apps on
-/// the app reads every session. Inputs are kept for the input log's published retention, so
+/// refused. Every player reads the sessions and inputs they sent: on an app with the safety
+/// log, that is the player's own records (sessions() without a filter, then messages() for one
+/// of them). A moderator (moderate_safety: an appointed moderator or the organization's
+/// admins, ck-api v2.60.0) reads only the sessions an open or escalated safety report covers
+/// (client.moderation().reports(appId), each report's `sessions`; `filter.userId` narrows
+/// them). manage_apps reads every session and may filter by `userId` only on an app for adults
+/// (effective minimum age 18), and never a player under 18's (ck-api v2.61.0). Every read of
+/// another player's session is audited, and on an app that admits players under 18 every read
+/// is, the player's own included. Inputs are kept for the input log's published retention, so
 /// an old session can still be listed after its inputs are gone. INPUT_LOG_UNAVAILABLE on a
 /// deployment without input logging.
 ///
@@ -651,8 +658,9 @@ class InputLogAPI : public DomainBase {
 
   /// Recorded sessions of an app, newest first: an InputLogSessionConnection
   /// (`edges[].node`, `pageInfo.endCursor`, `totalCount`). `filter` is an
-  /// InputLogSessionFilter: `userId` (another user's needs manage_apps, else FORBIDDEN),
-  /// `from` / `to`, `messageType`. A node's `endReason` is `expired`, `revoked`,
+  /// InputLogSessionFilter: `userId` (another user's needs manage_apps on an app for adults,
+  /// or moderate_safety for a reported session; else FORBIDDEN), `from` / `to`, `messageType`.
+  /// Without a filter, a player lists its own sessions. A node's `endReason` is `expired`, `revoked`,
   /// `reconnect` or `released` as the client saw it; `logging_off` (replay logging was turned
   /// off), `shutdown` (the replication server recording it stopped; the client reconnects
   /// elsewhere, the session continues and its end is replaced) or `paused` (recording paused
@@ -694,8 +702,10 @@ class InputLogAPI : public DomainBase {
   /// set: a page can hold fewer than `first` inputs, or none, when it reached the server's
   /// time or scan limit; keep the previous cursor if one comes back null. `filter` is an
   /// InputLogMessageFilter: `from` / `to`, `messageTypes` (at most 64). NOT_FOUND for a
-  /// session that is not yours without manage_apps; BAD_USER_INPUT for a malformed cursor or,
-  /// from the Game API release after v2.40.2, a cursor from another session.
+  /// session that is not yours, unless an open or escalated report covers it and you hold
+  /// moderate_safety, or (ck-api v2.61.0) the app is for adults, the session is not a player
+  /// under 18's and you hold manage_apps; BAD_USER_INPUT for a malformed cursor or, from the
+  /// Game API release after v2.40.2, a cursor from another session.
   graphql::Json messages(std::string_view appId, std::string_view gameTokenId, int first = 50,
                          std::string_view after = {},
                          const graphql::JVal& filter = graphql::JVal()) const {

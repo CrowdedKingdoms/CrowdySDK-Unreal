@@ -174,6 +174,107 @@ struct AuthResponse {
   }
 };
 
+/// A document players (or developers) accept: playerLegalDocuments, appRequiredDocuments,
+/// developerLegalDocuments. `appId` is set for an app's own document and null for the
+/// platform's. Show the title and link, then record the player's acceptance of exactly these
+/// versions (AuthAPI::recordPlayerConsents, PortalAPI::signInWithMinecraft).
+struct LegalDocument {
+  std::string documentId;
+  std::string version;
+  std::string title;
+  std::string url;
+  NullableString appId;
+
+  static LegalDocument fromJson(const graphql::Json& j) {
+    LegalDocument d;
+    d.documentId = j["documentId"].asString();
+    d.version = j["version"].asString();
+    d.title = j["title"].asString();
+    d.url = j["url"].asString();
+    if (j["appId"].ok() && !j["appId"].isNull()) d.appId = j["appId"].asBigIntString();
+    return d;
+  }
+
+  static std::vector<LegalDocument> listFromJson(const graphql::Json& j) {
+    std::vector<LegalDocument> out;
+    j.forEach([&](graphql::Json d) { out.push_back(fromJson(d)); });
+    return out;
+  }
+};
+
+/// A country, or a region of one, that Crowded Kingdoms lists (territoryPolicies): `status`
+/// "blocked" refuses its players with TERRITORY_NOT_SUPPORTED, and `minAge` raises the
+/// youngest age admitted there. A country not listed is open at the platform's minimum. A
+/// country with a region listed is checked by region (ck-api v2.61.0): a connection from it
+/// whose region cannot be told is refused, and so is an organization's player there sent
+/// without a region.
+struct TerritoryPolicy {
+  std::string countryCode;    ///< ISO 3166-1 alpha-2
+  NullableString regionCode;  ///< ISO 3166-2 (such as UA-43); null on the country's own row
+  std::string status;         ///< "open" or "blocked"
+  int minAge = 13;
+
+  bool blocked() const { return status == "blocked"; }
+
+  static TerritoryPolicy fromJson(const graphql::Json& j) {
+    TerritoryPolicy p;
+    p.countryCode = j["countryCode"].asString();
+    p.regionCode = NullableString::fromJson(j["regionCode"]);
+    p.status = j["status"].asString();
+    p.minAge = static_cast<int>(j["minAge"].asInt64(13));
+    return p;
+  }
+};
+
+/// A one-time server id for PortalAPI::signInWithMinecraft (minecraftChallenge): 40 hex
+/// characters, good once, for one app, for two minutes.
+struct MinecraftChallenge {
+  std::string serverId;
+  std::string expiresAt;  ///< ISO-8601
+
+  static MinecraftChallenge fromJson(const graphql::Json& j) {
+    MinecraftChallenge c;
+    c.serverId = j["serverId"].asString();
+    c.expiresAt = j["expiresAt"].asString();
+    return c;
+  }
+};
+
+/// What an app's safety log records now (App.recording, ck-api v2.60.0): `enabled` (the log is
+/// on: text chat and direct messages are recorded), `voice` (voice and channel audio) and
+/// `video` (webcam video). While `voice` or `video` is true, show players a notice before they
+/// first speak or appear on camera, and an indicator while it stays true.
+struct AppRecording {
+  bool enabled = false;
+  bool voice = false;
+  bool video = false;
+
+  static AppRecording fromJson(const graphql::Json& j) {
+    AppRecording r;
+    r.enabled = j["enabled"].asBool();
+    r.voice = j["voice"].asBool();
+    r.video = j["video"].asBool();
+    return r;
+  }
+};
+
+/// The account after AuthAPI::recordPlayerAge. `ageBracket` is one of "unknown", "under_13",
+/// "13_15", "16_17" and "18_plus"; use it for the game's logic, never as text a player reads.
+struct PlayerAge {
+  std::string userId;
+  NullableString ageBracket;
+  /// The declared country (ISO 3166-1 alpha-2).
+  NullableString country;
+
+  static PlayerAge fromJson(const graphql::Json& j) {
+    PlayerAge a;
+    a.userId = j["userId"].asBigIntString();
+    a.ageBracket = NullableString::fromJson(j["ageBracket"]);
+    a.country = NullableString::fromJson(j["country"]);
+    return a;
+  }
+};
+
 /// Result of serverStatus.serverWithLeastClients — the Buddy-server
 /// assignment for native UDP (calling it also installs the UDP session
 /// server-side).

@@ -349,10 +349,10 @@ bool FCrowdyAuthAppliedTokenEndsAHeldRefreshTest::RunTest(const FString& Paramet
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthConsentNeedsBothAnswersTest,
-	"CrowdySDK.Auth.ConsentNeedsBothAnswers", ConsentTestFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthConsentNeedsTheTermsTest,
+	"CrowdySDK.Auth.ConsentNeedsTheTerms", ConsentTestFlags)
 
-bool FCrowdyAuthConsentNeedsBothAnswersTest::RunTest(const FString& Parameters)
+bool FCrowdyAuthConsentNeedsTheTermsTest::RunTest(const FString& Parameters)
 {
 	FConsentRig Rig(0);
 	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
@@ -360,10 +360,9 @@ bool FCrowdyAuthConsentNeedsBothAnswersTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	Rig.Consent(true, false);
 	Rig.Consent(false, true);
 
-	TestEqual(TEXT("each half-answer is refused"), Rig.Listener->ConsentErrors.Num(), 2);
+	TestEqual(TEXT("not accepting the terms is refused"), Rig.Listener->ConsentErrors.Num(), 1);
 	TestEqual(TEXT("nothing is reported recorded"), Rig.Listener->ConsentsRecorded, 0);
 	FString Url;
 	FString Authorization;
@@ -379,7 +378,7 @@ bool FCrowdyAuthLegalDocumentsAreListedTest::RunTest(const FString& Parameters)
 {
 	const TArray<FCrowdyLegalDocument> Documents = UCrowdyAuthentication::GetLegalDocuments();
 
-	TestEqual(TEXT("five documents"), Documents.Num(), 5);
+	TestEqual(TEXT("the player documents"), Documents.Num(), 2);
 	for (const FCrowdyLegalDocument& Document : Documents)
 	{
 		TestFalse(TEXT("each has a title"), Document.Title.IsEmpty());

@@ -17,6 +17,7 @@
 #include "crowdy/domains/groups.hpp"
 #include "crowdy/domains/grids.hpp"
 #include "crowdy/domains/portal.hpp"
+#include "crowdy/domains/safety.hpp"
 #include "crowdy/domains/server_status.hpp"
 #include "crowdy/domains/users.hpp"
 #include "crowdy/domains/world_data.hpp"
@@ -36,6 +37,7 @@ namespace crowdy {
 
 namespace domains {
 class AdminAPI;
+class ModerationAPI;
 }  // namespace domains
 namespace studio {
 #ifndef CROWDY_NO_EXCEPTIONS
@@ -226,6 +228,12 @@ class CrowdyClient {
   /// Grid claims and the app's player-code administration.
   domains::MarketplaceAPI& marketplace() { return *marketplace_; }
   domains::GameAppsAPI& gameApps() { return *gameApps_; }
+  /// Player safety in an app: who hears and sees the player, contacts, blocks, a parent's
+  /// consent, reports and the app's recording state (ck-api v2.60.0). App token.
+  domains::SafetyAPI& safety() { return *safety_; }
+  /// An app's safety reports, for its moderators (moderate_safety; identity session). The same
+  /// instance as admin().moderation().
+  domains::ModerationAPI& moderation();
 #ifndef CROWDY_NO_EXCEPTIONS
   /// Caller-owned, app-scoped Crowdy Studio projects and reusable files.
   /// Source remains owner-private; grid affinity never grants runtime authority.
@@ -389,6 +397,7 @@ class CrowdyClient {
   std::unique_ptr<domains::PlayerWalletAPI> playerWallet_;
   std::unique_ptr<domains::MarketplaceAPI> marketplace_;
   std::unique_ptr<domains::GameAppsAPI> gameApps_;
+  std::unique_ptr<domains::SafetyAPI> safety_;
 #ifndef CROWDY_NO_EXCEPTIONS
   std::unique_ptr<domains::CrowdyStudioAPI> crowdyStudio_;
   std::unique_ptr<domains::CrowdyStudioGitHubAPI> crowdyStudioGitHub_;

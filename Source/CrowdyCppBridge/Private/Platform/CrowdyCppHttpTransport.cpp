@@ -1,6 +1,7 @@
 #include "Platform/CrowdyCppHttpTransport.h"
 
 #include "CrowdyCppBridge.h"
+#include "CrowdyCppClient.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
 #include "HttpConstants.h"
@@ -263,6 +264,12 @@ namespace CrowdyCppTransport
 		for (const std::pair<std::string, std::string>& Header : Request.headers)
 		{
 			Built->SetHeader(FString(UTF8_TO_TCHAR(Header.first.c_str())), FString(UTF8_TO_TCHAR(Header.second.c_str())));
+		}
+
+		// The library has no per-request header, and these two are the only calls the platform wants the id on.
+		if (CrowdyCppRequestNeedsDeviceId(FUtf8StringView(reinterpret_cast<const UTF8CHAR*>(Request.body.data()), static_cast<int32>(Request.body.size()))))
+		{
+			Built->SetHeader(TEXT("x-ck-device-id"), CrowdyCppDeviceId());
 		}
 
 		// Send the body as raw bytes so the UTF-8 request payload is never

@@ -7,8 +7,8 @@
 #include "Widgets/SCompoundWidget.h"
 
 /**
- * The branded terms and age-of-majority prompt: the legal documents as links, two tick boxes, and
- * Decline / Accept. Accept stays disabled until both boxes are ticked and while the prompt is busy.
+ * The branded terms prompt: the legal documents as links, a tick box, and
+ * Decline / Accept. Accept stays disabled until the box is ticked and while the prompt is busy.
  * The widget only reports the choice; recording the consent is the host's job.
  */
 class CROWDYSERVICES_API SCrowdyConsentPrompt : public SCompoundWidget
@@ -26,19 +26,22 @@ public:
 
 	void Construct(const FArguments& InArgs);
 
+	/** Replaces the listed documents. Accept waits for a host that said it is fetching them. */
+	void SetDocuments(const TArray<struct FCrowdyLegalDocument>& Documents);
+	void SetLoadingDocuments(bool bInLoading) { bLoadingDocuments = bInLoading; }
+
 	/** While busy the buttons are disabled and any shown error is cleared. */
 	void SetBusy(bool bInBusy);
 
-	/** Shows the text under the tick boxes; empty hides the line. */
+	/** Shows the text under the tick box; empty hides the line. */
 	void SetError(const FText& InError);
 	FText GetError() const { return ErrorText; }
 
 #if WITH_DEV_AUTOMATION_TESTS
 	void SetLegalChecked(bool bChecked) { bLegalChecked = bChecked; }
-	void SetAgeChecked(bool bChecked) { bAgeChecked = bChecked; }
 #endif
 
-	bool CanAccept() const { return bLegalChecked && bAgeChecked && !bBusy; }
+	bool CanAccept() const { return bLegalChecked && !bBusy && !bLoadingDocuments; }
 
 	/** What the Accept button does: fires OnAccept when CanAccept. */
 	void Accept();
@@ -46,7 +49,7 @@ public:
 	/** What the Decline button does: fires OnDecline unless busy. */
 	void Decline();
 
-	/** The first tick box: where keyboard and gamepad focus should start. */
+	/** The tick box: where keyboard and gamepad focus should start. */
 	TSharedRef<SWidget> GetInitialFocus() { return FirstControl.IsValid() ? FirstControl.ToSharedRef() : AsShared(); }
 
 	virtual bool SupportsKeyboardFocus() const override { return true; }
@@ -62,10 +65,11 @@ private:
 	TSharedRef<SWidget> MakeDocumentLink(const FText& Title, const FString& Url);
 
 	TSharedPtr<SWidget> FirstControl;
+	TSharedPtr<class SVerticalBox> DocumentList;
 	FSimpleDelegate OnAcceptDelegate;
 	FSimpleDelegate OnDeclineDelegate;
 	FText ErrorText;
 	bool bLegalChecked = false;
-	bool bAgeChecked = false;
 	bool bBusy = false;
+	bool bLoadingDocuments = false;
 };

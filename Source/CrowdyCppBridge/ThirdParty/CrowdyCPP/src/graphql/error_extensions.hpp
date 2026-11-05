@@ -49,6 +49,19 @@ inline GraphQLErrorDetail readGraphQLError(Json entry, std::string_view fallback
   detail.reason = extensions["reason"].asString();
   detail.requiredMicrousd = extensions["requiredMicrousd"].asString();
   detail.spendableMicrousd = extensions["spendableMicrousd"].asString();
+  detail.country = extensions["country"].asString();
+  const Json missing = extensions["missingDocuments"];
+  if (missing.isArray()) {
+    missing.forEach([&detail](Json document) {
+      MissingLegalDocument item;
+      item.documentId = document["documentId"].asString();
+      item.version = document["version"].asString();
+      if (document["appId"].ok() && !document["appId"].isNull()) {
+        item.appId = document["appId"].asBigIntString();
+      }
+      detail.missingDocuments.push_back(std::move(item));
+    });
+  }
 
   const Json path = entry["path"];
   if (path.isArray()) {

@@ -21,14 +21,53 @@ inline constexpr const TCHAR* CrowdyCppAccessRevokedCode = TEXT("ACCESS_REVOKED"
 inline constexpr const TCHAR* CrowdyCppAccessSuspendedCode = TEXT("ACCESS_SUSPENDED");
 inline constexpr const TCHAR* CrowdyCppAccessNotGrantedCode = TEXT("ACCESS_NOT_GRANTED");
 
+// Refuses a gameplay-token mint or refresh until the player's date of birth and country are recorded.
+inline constexpr const TCHAR* CrowdyCppAgeRequiredCode = TEXT("AGE_REQUIRED");
+
+// Answers a recorded age when the account already has one.
+inline constexpr const TCHAR* CrowdyCppConflictCode = TEXT("CONFLICT");
+
+// The player may not play here, whatever is sent next: their age, their country, or an app not yet set up for players under 18.
+inline constexpr const TCHAR* CrowdyCppAgeRequirementNotMetCode = TEXT("AGE_REQUIREMENT_NOT_MET");
+inline constexpr const TCHAR* CrowdyCppTerritoryNotSupportedCode = TEXT("TERRITORY_NOT_SUPPORTED");
+inline constexpr const TCHAR* CrowdyCppSafetyModeratorRequiredCode = TEXT("SAFETY_MODERATOR_REQUIRED");
+inline constexpr const TCHAR* CrowdyCppSafetyLogRequiredCode = TEXT("SAFETY_LOG_REQUIRED");
+
 // Whether Code refuses the player's access as a whole (a blocked account or one of the app's access refusals), which no retry fixes.
 inline bool CrowdyCppIsAccessRefusalCode(const FString& Code)
 {
 	return Code.Equals(CrowdyCppAccountBlockedCode, ESearchCase::CaseSensitive)
 		|| Code.Equals(CrowdyCppAccessRevokedCode, ESearchCase::CaseSensitive)
 		|| Code.Equals(CrowdyCppAccessSuspendedCode, ESearchCase::CaseSensitive)
-		|| Code.Equals(CrowdyCppAccessNotGrantedCode, ESearchCase::CaseSensitive);
+		|| Code.Equals(CrowdyCppAccessNotGrantedCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppAgeRequirementNotMetCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppTerritoryNotSupportedCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppSafetyModeratorRequiredCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppSafetyLogRequiredCode, ESearchCase::CaseSensitive);
 }
+
+// What to tell the player for a refusal. Names no age and no reason for an age refusal, as the platform requires.
+inline FString CrowdyCppPlayerRefusalText(const FString& Code, const FString& ServerMessage)
+{
+	if (Code.Equals(CrowdyCppAgeRequirementNotMetCode, ESearchCase::CaseSensitive))
+	{
+		return TEXT("You can't play this game.");
+	}
+	if (Code.Equals(CrowdyCppTerritoryNotSupportedCode, ESearchCase::CaseSensitive))
+	{
+		return TEXT("This game is not available where you are.");
+	}
+	if (Code.Equals(CrowdyCppSafetyModeratorRequiredCode, ESearchCase::CaseSensitive)
+		|| Code.Equals(CrowdyCppSafetyLogRequiredCode, ESearchCase::CaseSensitive))
+	{
+		return TEXT("This game can't admit you yet.");
+	}
+	return ServerMessage;
+}
+
+// A random id this install keeps, sent only with sign-up and a recorded age so an age refusal locks a device, not a network.
+CROWDYCPPBRIDGE_API FString CrowdyCppDeviceId();
+CROWDYCPPBRIDGE_API bool CrowdyCppRequestNeedsDeviceId(FUtf8StringView Body);
 
 // Whether busy refusals are retried at all: the crowdy.net.retry.busy console variable. Game thread only.
 CROWDYCPPBRIDGE_API bool CrowdyCppIsBusyRetryEnabled();
@@ -60,6 +99,9 @@ struct FCrowdyCppJsonResult
 	FString Blame;
 	bool bRetryable = false;
 	TOptional<int64> RetryAfterMs;
+
+	// The same error's extensions.reason, on the few codes that carry one.
+	FString ErrorReason;
 };
 
 /**
@@ -149,6 +191,19 @@ struct FCrowdyCppStringListResult
 {
 	bool bOk = false;
 	TArray<FString> Values;
+	FString ErrorMessage;
+};
+
+struct FCrowdyCppLegalDocument
+{
+	FString Title;
+	FString Url;
+};
+
+struct FCrowdyCppLegalDocumentsResult
+{
+	bool bOk = false;
+	TArray<FCrowdyCppLegalDocument> Documents;
 	FString ErrorMessage;
 };
 
@@ -358,6 +413,8 @@ enum class ECrowdyCppApiDomain : uint8
 	Teleport,
 	Platform,
 	Realtime,
+	// A player's own safety controls in one app.
+	Safety,
 	// Server code for an app (build, deploy, versions, logs), as its developer: the session bearer by default.
 	Exec
 };
@@ -551,6 +608,19 @@ public:
 	// Store the signed-in player's acceptance of the legal documents and their age-of-majority attestation. Call it
 	// only from the player's own explicit accept; the server refuses unless both are true. Carries the session token.
 	FCrowdyCppRequestHandle RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority,
+		TFunction<void(FCrowdyCppBoolResult)> OnDone, const FString& AppId = FString());
+
+	// The documents a player must accept: the platform's with an empty AppId, else that app's own. Public, so no bearer.
+	FCrowdyCppRequestHandle ListLegalDocuments(const FString& AppId, TFunction<void(FCrowdyCppLegalDocumentsResult)> OnDone);
+
+	// The documents a developer accepts before creating an organization or administering one. Listing them needs no
+	// bearer; the other two carry the session token, and an account with no age is refused AGE_REQUIRED.
+	FCrowdyCppRequestHandle ListDeveloperDocuments(TFunction<void(FCrowdyCppLegalDocumentsResult)> OnDone);
+	FCrowdyCppRequestHandle HasDeveloperAcceptance(TFunction<void(FCrowdyCppBoolResult)> OnDone);
+	FCrowdyCppRequestHandle RecordDeveloperConsents(TFunction<void(FCrowdyCppBoolResult)> OnDone);
+
+	// Record the signed-in player's birth date (YYYY-MM) and country. Carries the session token.
+	FCrowdyCppRequestHandle RecordPlayerAge(const FString& BirthDate, const FString& Country, bool bParentalConfirmation,
 		TFunction<void(FCrowdyCppBoolResult)> OnDone);
 
 	// Email a password-reset link, or resend the address confirmation. Public, so no bearer; the server answers the
