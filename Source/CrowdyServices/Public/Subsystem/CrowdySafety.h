@@ -310,6 +310,8 @@ public:
 	bool HasWarnedAboutRecording() const { return bWarnedAboutRecording; }
 
 	void SetAppIdForTest(int64 AppId) { AppIdForTest = AppId; }
+
+	int64 GetAppIdForTest() const { return GetAppId(); }
 #endif
 
 private:
