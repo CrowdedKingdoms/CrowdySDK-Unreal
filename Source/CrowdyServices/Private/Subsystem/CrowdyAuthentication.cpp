@@ -458,9 +458,7 @@ void UCrowdyAuthentication::BeginMagicLinkSignIn(const FString& Email, FOnAuthSu
 		FailFlow(Message, EAuthFlow::MagicLink, OnError);
 	});
 
-	// Empty expected state: per the server contract the magic-link one-time token is itself the
-	// single-use credential and the server does not round-trip a state param on this flow. Social
-	// sign-in will pass the server-issued state here instead.
+	// The server does not round-trip a state on this flow, so the listener binds a random path in its place.
 	const FString RedirectUri = LoopbackServer->Start(FString(), MagicLinkTimeoutSeconds,
 		OnTokenCaptured, OnListenerError);
 	if (RedirectUri.IsEmpty())

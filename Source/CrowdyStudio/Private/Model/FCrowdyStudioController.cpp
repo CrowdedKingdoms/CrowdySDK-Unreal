@@ -575,9 +575,9 @@ void FCrowdyStudioController::SignInWithMagicLink(const FString& Email)
 
 	EnsureLoopback();
 
-	// Magic-link passes an EMPTY expected state (the one-time token is itself the single-use credential;
-	// the server does not round-trip a state on this flow), so there is no reserve-then-arm split - arm
-	// the listener directly and use the returned redirectUri for requestLoginLink.
+	// Magic-link passes an EMPTY expected state, because the server does not round-trip one on this flow, and
+	// the listener binds a random path in its place. So there is no reserve-then-arm split: arm the listener
+	// directly and use the returned redirectUri for requestLoginLink.
 	FOnLoopbackToken OnTokenCaptured;
 	OnTokenCaptured.BindLambda([this](const FString& Token)
 	{
