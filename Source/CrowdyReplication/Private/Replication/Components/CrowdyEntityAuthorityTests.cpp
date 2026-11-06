@@ -123,8 +123,8 @@ bool FCrowdyStateAuthorityDefaultsTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("Ownership defaults to Host"),
 		static_cast<uint8>(CDO->GetOwnership()), static_cast<uint8>(ECrowdyOwnership::Host));
-	TestEqual(TEXT("Mode defaults to Static"),
-		static_cast<uint8>(CDO->GetMode()), static_cast<uint8>(ECrowdyEntityMode::Static));
+	TestEqual(TEXT("Replicate Movement defaults to Auto"),
+		static_cast<uint8>(CDO->ReplicateMovement), static_cast<uint8>(ECrowdyReplicateMovement::Auto));
 	TestEqual(TEXT("HostOverride defaults to Allow"),
 		static_cast<uint8>(CDO->GetHostOverridePolicy()), static_cast<uint8>(ECrowdyHostOverride::Allow));
 	return true;

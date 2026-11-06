@@ -64,7 +64,9 @@ namespace CrowdyDefaultMapping
 		FResolution Result;
 		Result.PlacedRole = RoleFor(Component.GetOwnership(), true);
 		Result.SpawnedRole = RoleFor(Component.GetOwnership(), false);
-		Result.bStreamsMovement = Component.GetMode() == ECrowdyEntityMode::Dynamic;
+		// A C++ default that sets Replicate Movement was written with it, so Mode says nothing about that class.
+		Result.bStreamsMovement = Component.ReplicateMovement == ECrowdyReplicateMovement::Auto
+			? Component.Mode == ECrowdyEntityMode::Dynamic : Component.ReplicateMovement == ECrowdyReplicateMovement::On;
 		return Result;
 	}
 
@@ -87,7 +89,7 @@ namespace CrowdyDefaultMapping
 		Result.PlacedRole = RoleFor(UCrowdyEntityComponent::ResolveOwnedBy(Component.OwnedBy, Component.GetOwnership(), true));
 		Result.SpawnedRole = RoleFor(UCrowdyEntityComponent::ResolveOwnedBy(Component.OwnedBy, Component.GetOwnership(), false));
 		Result.bStreamsMovement = UCrowdyEntityComponent::ResolveReplicatesMovement(Component.ReplicateMovement,
-			Component.GetMode(), UCrowdyEntityComponent::IsPawnWithMovement(Entry.ActorClass.Get()));
+			Component.Mode, UCrowdyEntityComponent::IsPawnWithMovement(Entry.ActorClass.Get()));
 		return Result;
 	}
 

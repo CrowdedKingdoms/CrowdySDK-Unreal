@@ -167,8 +167,8 @@ bool FCrowdyStateOwnershipComponentSyncTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	// Keep the Dynamic-mode continuous channel (world-dependent) out of this worldless test.
-	Actor->Entity->Mode = ECrowdyEntityMode::Static;
+	// Keep the continuous channel (world-dependent) out of this worldless test.
+	Actor->Entity->ReplicateMovement = ECrowdyReplicateMovement::Off;
 
 	const FGuid NetID = FGuid::NewGuid();
 	ES->RegisterEntity(MakeOwnerRecord(Actor, NetID, LocalPlayer));

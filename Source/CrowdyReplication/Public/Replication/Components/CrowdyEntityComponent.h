@@ -69,13 +69,12 @@ enum class ECrowdyOwnedBy : uint8
 };
 
 // Whether an entity sends its movement every replication interval.
-UENUM()
+UENUM(BlueprintType)
 enum class ECrowdyReplicateMovement : uint8
 {
-	// On for a pawn with a movement component, otherwise Off.
-	Auto,
-	On,
-	Off,
+	Auto UMETA(DisplayName="Auto", ToolTip="On for a pawn with a movement component, otherwise Off."),
+	On UMETA(DisplayName="On", ToolTip="Sends movement every replication interval."),
+	Off UMETA(DisplayName="Off", ToolTip="Sends no movement. Events and CrowdyState still work."),
 };
 
 UENUM(BlueprintType)
@@ -143,7 +142,6 @@ public:
 	UCrowdyEntityComponent();
 
 	virtual void Serialize(FArchive& Ar) override;
-	virtual void PreSave(FObjectPreSaveContext SaveContext) override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
@@ -300,7 +298,16 @@ public:
 	bool IsLocallyOwned() const;
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
-	ECrowdyEntityMode GetMode() const { return Mode; }
+	bool ReplicatesMovement() const;
+
+	// The same for a component template of ActorClass, which has no owner to ask. It walks the class's templates, so
+	// resolve it once per class rather than per entity.
+	bool ReplicatesMovementFor(const UClass* ActorClass) const;
+
+	UE_DEPRECATED(5.8, "Use ReplicatesMovement instead: Dynamic is true, Static is false.")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component",
+		meta=(DeprecatedFunction, DeprecationMessage="Use Replicates Movement instead: Dynamic is true, Static is false."))
+	ECrowdyEntityMode GetMode() const;
 
 	UE_DEPRECATED(5.8, "Read OwnedBy instead: Local Client is Player, Host is Auto.")
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component",
@@ -377,10 +384,10 @@ public:
 	// no controller at BeginPlay, and reading the account there would mint a random id nobody else can address.
 	static bool ShouldDeferIdentityToPossession(bool bInjected, ECrowdyIdentityPolicy Policy, bool bIsPawn, bool bHasController);
 
-	// Whether a Dynamic entity with Auto Register ticked ends BeginPlay without joining the continuous state
-	// channel because it is host-owned. Auto Register starts the channel only for an entity this client owns
-	// outright, so a host-owned entity leaves BeginPlay sending nothing at all.
-	static bool ShouldReportHostOwnedAutoRegister(ECrowdyEntityMode InMode, bool bInAutoRegister, ECrowdyRole InRole);
+	// Whether an entity that replicates movement, with Auto Register ticked, ends BeginPlay without joining the
+	// continuous state channel because it is host-owned. Auto Register starts the channel only for an entity this
+	// client owns outright, so a host-owned entity leaves BeginPlay sending nothing at all.
+	static bool ShouldReportHostOwnedAutoRegister(bool bInReplicatesMovement, bool bInAutoRegister, ECrowdyRole InRole);
 
 	// How this client currently answers "who is the host", for a diagnostic that must not overstate what it knows.
 	// A client with no host id has not been told yet, which reads the same whether election is still running or
@@ -468,12 +475,19 @@ public:
 	// Component config settable from an owning actor's constructor;
 	// EditAnywhere keeps them tweakable on instances and Blueprint defaults.
 
-	// Which channel this entity feeds. Static (default): event-only, nothing is sent every tick. Dynamic: the
-	// continuous StateExecutor/AutoReplicator snapshot channel, for movement and anything else high-frequency;
-	// it also reveals the StateExecutor and Auto Register settings, which only that channel uses. Unrelated to
-	// ownership and to CrowdyState property replication, both of which work in either mode.
-	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component",
-		meta=(ToolTip="Event-only (Static) vs the continuous StateExecutor/AutoReplicator channel (Dynamic). Unrelated to ownership or CrowdyState property replication."))
+	// Whether this entity sends its movement every replication interval, through the StateExecutor. Auto: on for a pawn
+	// with a movement component. Unrelated to ownership and to CrowdyState property replication, which work either way.
+	// An asset saved before this setting existed has it mapped from Mode on load.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Entity Component",
+		meta=(ToolTip="Whether this entity sends its movement every replication interval. Auto: on for a pawn with a movement component, off for anything else."))
+	ECrowdyReplicateMovement ReplicateMovement = ECrowdyReplicateMovement::Auto;
+
+	// Read only while Replicate Movement is Auto, so a component a C++ constructor configured with it keeps its meaning.
+	UE_DEPRECATED(5.8, "Set ReplicateMovement instead: Dynamic is On, Static is Off.")
+	UPROPERTY(VisibleAnywhere, Category="Crowdy SDK|Entity Component",
+		meta=(DeprecatedProperty, DeprecationMessage="Use Replicate Movement instead: Dynamic is On, Static is Off.",
+			EditCondition="ReplicateMovement == ECrowdyReplicateMovement::Auto && Mode == ECrowdyEntityMode::Dynamic", EditConditionHides,
+			ToolTip="Deprecated. While Replicate Movement is Auto, Dynamic here sends movement. Set Replicate Movement instead."))
 	ECrowdyEntityMode Mode = ECrowdyEntityMode::Static;
 
 	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component")
@@ -503,10 +517,6 @@ public:
 		meta=(EditCondition="OwnedBy == ECrowdyOwnedBy::Player || (OwnedBy == ECrowdyOwnedBy::Auto && Ownership == ECrowdyOwnership::LocalClient)", EditConditionHides))
 	ECrowdyHostOverride HostOverride = ECrowdyHostOverride::Allow;
 
-	// Saved beside Mode, which still decides whether movement is sent; mapped from it on load.
-	UPROPERTY()
-	ECrowdyReplicateMovement ReplicateMovement = ECrowdyReplicateMovement::Auto;
-
 	// Per-entity CrowdyState keyframe-heartbeat control. Inherit (default): this entity's CrowdyHeartbeat-marked
 	// properties ride the periodic heartbeat when the map enables it. Off: this entity never emits a keyframe
 	// heartbeat, a kill switch for always-active entities. On-change replication is unaffected either way; the
@@ -520,14 +530,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy SDK|Entity Component")
 	bool bAutoApproveOwnershipRequests = false;
 
-	// Dynamic mode only produces the snapshot the AutoReplicator sends
+	// Produces the snapshot the AutoReplicator sends, for an entity that replicates movement.
 	UPROPERTY(EditAnywhere, Instanced, Category="Crowdy SDK|Entity Component",
-		meta=(EditCondition="Mode == ECrowdyEntityMode::Dynamic", EditConditionHides))
+		meta=(EditCondition="ReplicateMovement != ECrowdyReplicateMovement::Off", EditConditionHides))
 	TObjectPtr<UActorUpdateExecutor> StateExecutor;
 
-	// Dynamic mode: join the AutoReplicator on BeginPlay (StartReplication otherwise)
+	// Join the AutoReplicator on BeginPlay, for an entity that replicates movement; call StartReplication otherwise.
 	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component",
-		meta=(EditCondition="Mode == ECrowdyEntityMode::Dynamic", EditConditionHides))
+		meta=(EditCondition="ReplicateMovement != ECrowdyReplicateMovement::Off", EditConditionHides))
 	bool bAutoRegister = true;
 
 protected:

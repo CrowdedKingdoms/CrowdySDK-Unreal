@@ -27,11 +27,15 @@ bool FCrowdyUtilitiesLeaderEntityNotPlayerTest::RunTest(const FString& Parameter
 	AActor* Actor = World->SpawnActor<AActor>();
 	UCrowdyEntityComponent* Component = NewObject<UCrowdyEntityComponent>(Actor);
 	Component->RegisterComponent();
-	Component->Mode = ECrowdyEntityMode::Dynamic;
+	Component->ReplicateMovement = ECrowdyReplicateMovement::On;
 	TestTrue(TEXT("a moving entity reads as a player's"), UCrowdyUtilities::IsCrowdyEntityPlayerControlled(Actor, Actor));
 
 	Component->OwnedBy = ECrowdyOwnedBy::Leader;
 	TestFalse(TEXT("one that follows the Leader does not"), UCrowdyUtilities::IsCrowdyEntityPlayerControlled(Actor, Actor));
+
+	Component->OwnedBy = ECrowdyOwnedBy::Auto;
+	Component->InitIdentity(FGuid::NewGuid(), FGuid(), ECrowdyRole::HostOwned, 0);
+	TestFalse(TEXT("nor does one the world owns, such as an NPC placed in the level"), UCrowdyUtilities::IsCrowdyEntityPlayerControlled(Actor, Actor));
 
 	GEngine->DestroyWorldContext(World);
 	World->DestroyWorld(/*bInformEngineOfWorld=*/false);

@@ -441,7 +441,7 @@ bool FCrowdyPooledActorSendsOnceOwnedTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	Pooled->Entity->Mode = ECrowdyEntityMode::Dynamic;
+	Pooled->Entity->ReplicateMovement = ECrowdyReplicateMovement::On;
 	Pooled->Entity->SetCollaboratorsForTest(Entities, nullptr);
 	Pooled->Entity->MarkPooledDormant();
 	Pooled->DispatchBeginPlay();
@@ -484,7 +484,7 @@ bool FCrowdyWriterTakesItsNewIdTest::RunTest(const FString& Parameters)
 	Record.Participant = Actor;
 	Entities->RegisterEntity(Record);
 
-	Actor->Entity->Mode = ECrowdyEntityMode::Dynamic;
+	Actor->Entity->ReplicateMovement = ECrowdyReplicateMovement::On;
 	Actor->Entity->SetAutoReplicatorForTest(AutoReplicator);
 	Actor->Entity->SetCollaboratorsForTest(Entities, nullptr);
 	Actor->Entity->AssignPooledIdentity(Record.NetID, Local, ECrowdyRole::Owner, 0);

@@ -298,14 +298,14 @@ void UCrowdyUtilities::SwitchIsCrowdyEntityPlayerControlled(UObject* WorldContex
 		return;
 	}
 
-	// Dynamic entity component = active participant (local player avatar or bot driving a state channel)
+	// An entity that replicates movement = active participant (local player avatar or bot driving a state channel)
 	const UCrowdyEntityComponent* Component = TargetActor->FindComponentByClass<UCrowdyEntityComponent>();
 	if (Component && Component->OwnedBy == ECrowdyOwnedBy::Leader)
 	{
 		return;
 	}
 
-	if (Component && Component->GetMode() == ECrowdyEntityMode::Dynamic)
+	if (Component && Component->ReplicatesMovement() && Component->GetRole() != ECrowdyRole::HostOwned)
 	{
 		bIsPlayerControlled = true;
 		return;

@@ -21,7 +21,6 @@
 #include "Utils/HelperFunctions.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"
 #include "Utils/UCrowdyClassRegistry.h"
-#include "UObject/ObjectSaveContext.h"
 #include "WorldPartition/ActorInstanceGuids.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -78,21 +77,25 @@ void UCrowdyEntityComponent::Serialize(FArchive& Ar)
 }
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-void UCrowdyEntityComponent::PreSave(FObjectPreSaveContext SaveContext)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+bool UCrowdyEntityComponent::ReplicatesMovementFor(const UClass* ActorClass) const
 {
-	Super::PreSave(SaveContext);
-
-	// Mode is still the setting people edit, so the saved Replicate Movement follows it; Owned By is edited directly.
-	const UCrowdyEntityComponent* Archetype = Cast<UCrowdyEntityComponent>(GetArchetype());
-	if (!Archetype) return;
-
-	ECrowdyOwnedBy UnusedOwnedBy = OwnedBy;
-	ReplicateMovement = Archetype->ReplicateMovement;
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	MapLegacySettings(false, Mode != Archetype->Mode, IsUnmappedArchetype(Archetype), Ownership, Mode, UnusedOwnedBy,
-		ReplicateMovement);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	// Only Auto needs the class, and asking it can build a class default object while classes still compile.
+	const bool bNeedsClass = ReplicateMovement == ECrowdyReplicateMovement::Auto && Mode != ECrowdyEntityMode::Dynamic;
+	return ResolveReplicatesMovement(ReplicateMovement, Mode, bNeedsClass && IsPawnWithMovement(const_cast<UClass*>(ActorClass)));
 }
+
+bool UCrowdyEntityComponent::ReplicatesMovement() const
+{
+	const AActor* Owner = GetOwner();
+	return ReplicatesMovementFor(Owner ? Owner->GetClass() : nullptr);
+}
+
+ECrowdyEntityMode UCrowdyEntityComponent::GetMode() const
+{
+	return ReplicatesMovement() ? ECrowdyEntityMode::Dynamic : ECrowdyEntityMode::Static;
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #if WITH_EDITOR
 void UCrowdyEntityComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
@@ -104,6 +107,14 @@ void UCrowdyEntityComponent::PostEditChangeProperty(FPropertyChangedEvent& Prope
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		Ownership = ECrowdyOwnership::Host;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	// Choosing Replicate Movement retires the deprecated Mode for the same reason.
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UCrowdyEntityComponent, ReplicateMovement))
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Mode = ECrowdyEntityMode::Static;
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 }
@@ -351,16 +362,17 @@ void UCrowdyEntityComponent::CompleteRegistration()
 	// announceable. The announcement itself is queued for the next tick, not sent here.
 	ScheduleInitialOwnershipAnnouncement();
 
-	// Only Dynamic mode runs the continuous snapshot channel, so an executor assigned on a Static entity does
-	// nothing at all. Say so, because Static hides the executor field once the mode is switched back.
-	if (Mode == ECrowdyEntityMode::Static && IsValid(StateExecutor))
+	// Only an entity that replicates movement runs the continuous snapshot channel, so an executor assigned on any
+	// other does nothing at all. Say so, because Off hides the executor field once it is set.
+	const bool bMoves = ReplicatesMovement();
+	if (!bMoves && IsValid(StateExecutor))
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyEntityComponent]: '%s' has a StateExecutor assigned but its Mode is Static — the executor is unused, because a Static entity is event-only. Set Mode to Dynamic to run the continuous state channel."),
+			TEXT("[CrowdyEntityComponent]: '%s' has a StateExecutor assigned but does not replicate movement, so the executor is unused. Set Replicate Movement to On to run the continuous state channel."),
 			*GetNameSafe(CachedOwner));
 	}
 
-	if (Mode == ECrowdyEntityMode::Dynamic)
+	if (bMoves)
 	{
 		AutoReplicator = GetWorld()->GetSubsystem<UCrowdyAutoReplicator>();
 		PrepareStateExecutor();
@@ -369,8 +381,12 @@ void UCrowdyEntityComponent::CompleteRegistration()
 			StartReplication();
 
 		// Auto Register only starts the channel for an entity this client owns outright, so a host-owned entity
-		// leaves BeginPlay sending nothing. Say so rather than letting a configured entity go quiet.
-		if (ShouldReportHostOwnedAutoRegister(Mode, bAutoRegister, Role))
+		// leaves BeginPlay sending nothing. Say so rather than letting a configured entity go quiet; a placed
+		// pawn left at Auto asked for nothing, so it is not reported.
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		const bool bAskedToMove = ReplicateMovement == ECrowdyReplicateMovement::On || Mode == ECrowdyEntityMode::Dynamic;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		if (ShouldReportHostOwnedAutoRegister(bAskedToMove, bAutoRegister, Role))
 			ReportHostOwnedAutoRegisterSkipped();
 	}
 }
@@ -382,19 +398,19 @@ void UCrowdyEntityComponent::PrepareStateExecutor()
 
 	bStateExecutorPrepared = true;
 
-	// No executor is no longer an error. The SDK ships one that snapshots the owner's transform, so a
-	// component set to Dynamic replicates on its own and the minimum setup for a replicated actor is
-	// this component alone. Assigning an executor stays fully supported and overrides this.
+	// No executor is no longer an error. The SDK ships one that snapshots the owner's transform, so the
+	// minimum setup for a replicated actor is this component alone. Assigning an executor stays fully
+	// supported and overrides this.
 	//
 	// Only safe because class identity now travels on every update: while the receiver derived an
-	// entity's class from its state struct, one shared default struct would have made every dynamic
+	// entity's class from its state struct, one shared default struct would have made every moving
 	// entity in a project resolve to a single class.
 	if (!IsValid(StateExecutor))
 	{
 		StateExecutor = NewObject<UCrowdyDefaultActorUpdateExecutor>(this);
 
 		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
-			TEXT("[CrowdyEntityComponent]: Dynamic mode on '%s' with no StateExecutor assigned, using the SDK default, which replicates the actor's transform."),
+			TEXT("[CrowdyEntityComponent]: '%s' has no StateExecutor assigned, so it uses the SDK default, which replicates the actor's transform and aim pitch."),
 			*GetNameSafe(CachedOwner));
 	}
 
@@ -416,7 +432,7 @@ void UCrowdyEntityComponent::PrepareStateExecutor()
 
 void UCrowdyEntityComponent::EnablePresence()
 {
-	if (Mode == ECrowdyEntityMode::Dynamic)
+	if (ReplicatesMovement())
 		return;
 
 	bSendsPresence = true;
@@ -478,9 +494,9 @@ void UCrowdyEntityComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void UCrowdyEntityComponent::StartReplication()
 {
-	if (Mode != ECrowdyEntityMode::Dynamic)
+	if (!ReplicatesMovement())
 	{
-		UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyEntityComponent]: StartReplication on '%s' ignored — component is not in Dynamic mode."),
+		UE_LOG(LogCrowdyReplication, Warning, TEXT("[CrowdyEntityComponent]: StartReplication on '%s' ignored: it does not replicate movement."),
 			*GetNameSafe(GetOwner()));
 		return;
 	}
@@ -626,9 +642,9 @@ void UCrowdyEntityComponent::ApplyOwnershipReassignment(const FGuid& NewOwnerID,
 	if (IsLocallyOwned())
 		CrowdyActorPool::RestoreProxyMovement(GetOwner());
 
-	// The Dynamic-mode continuous StateExecutor channel follows authority: the new owner joins the AutoReplicator,
-	// a client that just lost ownership leaves it. A spawned Static entity's presence sends move the same way.
-	if (Mode == ECrowdyEntityMode::Dynamic)
+	// The continuous StateExecutor channel follows ownership: the new owner joins the AutoReplicator, a client that
+	// just lost ownership leaves it. A spawned entity's presence sends move the same way.
+	if (ReplicatesMovement())
 	{
 		// Stopped either way: a client that stays the writer must still pick up the new id.
 		StopReplication();
@@ -756,7 +772,7 @@ void UCrowdyEntityComponent::MapLegacySettings(const bool bOwnershipAuthored, co
 	}
 
 	// An unmapped Auto would start a Static pawn sending movement, so that one inherited value is written out.
-	if (bArchetypeIsUnmapped && InMode == ECrowdyEntityMode::Static)
+	if (bArchetypeIsUnmapped && InMode == ECrowdyEntityMode::Static && InOutReplicateMovement == ECrowdyReplicateMovement::Auto)
 	{
 		InOutReplicateMovement = ECrowdyReplicateMovement::Off;
 	}
@@ -798,7 +814,7 @@ bool UCrowdyEntityComponent::ResolveReplicatesMovement(const ECrowdyReplicateMov
 
 bool UCrowdyEntityComponent::IsPawnWithMovement(const TSubclassOf<AActor> ActorClass)
 {
-	return ActorClass && ActorClass->IsChildOf<APawn>()
+	return ActorClass && ActorClass->IsChildOf<APawn>() && ActorClass->GetDefaultObject(false)
 		&& AActor::GetActorClassDefaultComponent<UPawnMovementComponent>(ActorClass) != nullptr;
 }
 
@@ -1025,10 +1041,10 @@ const TCHAR* UCrowdyEntityComponent::DescribePlayerDerivedIdentity(const ECrowdy
 	}
 }
 
-bool UCrowdyEntityComponent::ShouldReportHostOwnedAutoRegister(const ECrowdyEntityMode InMode, const bool bInAutoRegister,
+bool UCrowdyEntityComponent::ShouldReportHostOwnedAutoRegister(const bool bInReplicatesMovement, const bool bInAutoRegister,
 	const ECrowdyRole InRole)
 {
-	return InMode == ECrowdyEntityMode::Dynamic && bInAutoRegister && InRole == ECrowdyRole::HostOwned;
+	return bInReplicatesMovement && bInAutoRegister && InRole == ECrowdyRole::HostOwned;
 }
 
 const TCHAR* UCrowdyEntityComponent::DescribeHostElectionState(const bool bHostKnown, const bool bLocalClientIsHost)
@@ -1075,7 +1091,7 @@ void UCrowdyEntityComponent::ReportHostOwnedAutoRegisterSkipped()
 		: TEXT("Leader Source is Server Object, so no client writes World entities");
 
 	const FString Message = FString::Printf(
-		TEXT("[CrowdyEntityComponent]: '%s' is Dynamic with Auto Register on, but it is host-owned, so Auto Register did not start its state channel: Auto Register starts the channel only for an entity this client owns outright, and %s. Nothing goes out on the continuous channel for this entity until ownership is granted to a client or Start Replication is called on it. Set Owned By to Player if the client this actor lives on should simulate it, or call Start Replication on whichever client is the host."),
+		TEXT("[CrowdyEntityComponent]: '%s' replicates movement with Auto Register on, but it is host-owned, so Auto Register did not start its state channel: Auto Register starts the channel only for an entity this client owns outright, and %s. Nothing goes out on the continuous channel for this entity until ownership is granted to a client or Start Replication is called on it. Set Owned By to Player if the client this actor lives on should simulate it, or call Start Replication on whichever client is the host."),
 		*GetNameSafe(GetOwner()), HostState);
 
 #if WITH_DEV_AUTOMATION_TESTS

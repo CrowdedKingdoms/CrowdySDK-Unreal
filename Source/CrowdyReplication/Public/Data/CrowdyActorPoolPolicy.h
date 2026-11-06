@@ -8,6 +8,8 @@
 #include "CrowdyActorPoolPolicy.generated.h"
 
 class AActor;
+class APawn;
+class UCharacterMovementComponent;
 
 namespace CrowdyActorPool
 {
@@ -16,6 +18,31 @@ namespace CrowdyActorPool
 
 	/** Gives pawn movement back to an actor that was a proxy, once this client writes its entity. */
 	CROWDYREPLICATION_API void RestoreProxyMovement(AActor* Actor);
+
+	/** False for a position or rotation no actor can be placed at: not finite, or past the addressable world. */
+	CROWDYREPLICATION_API bool IsPlaceable(const FVector& Location, const FRotator& Rotation);
+
+	/** One proxy slot's motion between frames. */
+	struct FProxyMotion
+	{
+		TWeakObjectPtr<UCharacterMovementComponent> Movement;
+		TWeakObjectPtr<APawn> Pawn;
+		// A different actor in the slot, or this one destroyed, rebinds the movement component.
+		TWeakObjectPtr<const AActor> BoundActor;
+		FVector LastLocation = FVector::ZeroVector;
+		int64 LastRenderMs = 0;
+		double TeleportSpeed = 0.0;
+	};
+
+	/**
+	 * Gives a proxy character's stopped movement component the velocity it is drawn moving at, with the matching
+	 * acceleration, and a proxy pawn its aim pitch, all of which animation blueprints read. Call after placing the
+	 * actor each frame.
+	 */
+	CROWDYREPLICATION_API void ApplyProxyMotion(FProxyMotion& Motion, AActor* Actor, const FVector& Location, float AimPitch, int64 RenderTimeMs);
+
+	/** Stops a proxy's drawn motion; call when its slot is released. */
+	CROWDYREPLICATION_API void ResetProxyMotion(FProxyMotion& Motion);
 }
 
 /**

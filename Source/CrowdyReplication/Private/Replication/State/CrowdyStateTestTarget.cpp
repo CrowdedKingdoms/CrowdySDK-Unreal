@@ -27,21 +27,23 @@ ACrowdyStateOverlapActor::ACrowdyStateOverlapActor()
 	// Entity component and its executor are default subobjects so both are visible on the CDO:
 	// FindComponentByClass sees the constructor-created component (as HasEntityComponent relies on), and
 	// StateExecutor carries the executor whose GetStateStruct the overlap resolver reads. Assigning
-	// StateExecutor in the constructor works regardless of the component's Mode EditCondition, which gates
-	// only editor visibility, not the C++ value. Dynamic mode is required rather than incidental: only a
-	// Dynamic component runs the continuous channel that writes the executor state struct, so the overlap
-	// filter this fixture exercises does nothing at all on a Static component.
+	// StateExecutor in the constructor works regardless of the field's EditCondition, which gates only editor
+	// visibility, not the C++ value. Sending movement is required rather than incidental: only such a component
+	// runs the continuous channel that writes the executor state struct, so the overlap filter this fixture
+	// exercises does nothing without it. It sets the deprecated Mode because the save mapping tests need a
+	// component a C++ constructor configured the old way.
 	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	Entity->Mode = ECrowdyEntityMode::Dynamic;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	Entity->StateExecutor = CreateDefaultSubobject<UCrowdyStateOverlapExecutor>(TEXT("StateExecutor"));
 }
 
 ACrowdyStateHostOverrideActor::ACrowdyStateHostOverrideActor()
 {
-	// Static mode: no continuous channel; the entity component exists only so the HostOverride policy is
-	// readable off the actor via FindComponentByClass on both the send and receive paths.
+	// No continuous channel; the entity component exists only so the HostOverride policy is readable off the
+	// actor via FindComponentByClass on both the send and receive paths.
 	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));
-	Entity->Mode = ECrowdyEntityMode::Static;
 
 	// A root, so the fixture has a place: the spawn cases read where it stands.
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
@@ -54,7 +56,7 @@ ACrowdyLeaderOwnedTestActor::ACrowdyLeaderOwnedTestActor()
 
 ACrowdyLeaderMovingTestActor::ACrowdyLeaderMovingTestActor()
 {
-	Entity->Mode = ECrowdyEntityMode::Dynamic;
+	Entity->ReplicateMovement = ECrowdyReplicateMovement::On;
 }
 
 ACrowdyPlayerDerivedTestPawn::ACrowdyPlayerDerivedTestPawn()
@@ -62,17 +64,15 @@ ACrowdyPlayerDerivedTestPawn::ACrowdyPlayerDerivedTestPawn()
 	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));
 	Entity->IdentityPolicy = ECrowdyIdentityPolicy::PlayerDerived;
 	Entity->OwnedBy = ECrowdyOwnedBy::Player;
-	Entity->Mode = ECrowdyEntityMode::Static;
 	AutoPossessAI = EAutoPossessAI::Disabled;
 	AutoPossessPlayer = EAutoReceiveInput::Disabled;
 }
 
 ACrowdyStateHeartbeatActor::ACrowdyStateHeartbeatActor()
 {
-	// Static mode: the component exists only so a test can set StateHeartbeat, which the replicator reads via
+	// The component exists only so a test can set StateHeartbeat, which the replicator reads via
 	// FindComponentByClass in BuildOwnedState. A test overrides StateHeartbeat on the instance before registering.
 	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));
-	Entity->Mode = ECrowdyEntityMode::Static;
 }
 
 ACrowdyStateApplyTestActor::ACrowdyStateApplyTestActor()

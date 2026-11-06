@@ -644,11 +644,11 @@ const UCrowdyEntityComponent* UCrowdyAutoRegistry::ResolveDefaultEntityComponent
 
 UScriptStruct* UCrowdyAutoRegistry::ResolveExecutorStateStruct(const UClass* ActorClass) const
 {
-	// Only a Dynamic-mode component actually runs the continuous channel that writes the executor state
-	// struct, so a Static component (even one carrying a leftover StateExecutor) resolves to null and never
+	// Only a component that replicates movement actually runs the continuous channel that writes the executor
+	// state struct, so any other (even one carrying a leftover StateExecutor) resolves to null and never
 	// suppresses an otherwise-safe CrowdyState property.
 	const UCrowdyEntityComponent* Component = ResolveDefaultEntityComponent(ActorClass);
-	if (!Component || Component->GetMode() != ECrowdyEntityMode::Dynamic)
+	if (!Component || !Component->ReplicatesMovementFor(ActorClass))
 	{
 		return nullptr;
 	}
