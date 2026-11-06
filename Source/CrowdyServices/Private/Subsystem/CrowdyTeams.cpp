@@ -2,7 +2,6 @@
 #include "CrowdyServiceApiSupport.h"
 #include "CrowdyCppClient.h"
 #include "Dom/JsonObject.h"
-#include "Utils/CrowdySDKDeveloperSettings.h"
 
 using namespace CrowdyServiceApi;
 
@@ -33,7 +32,7 @@ void UCrowdyTeams::Deinitialize()
 
 int64 UCrowdyTeams::GetAppId() const
 {
-	return GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
+	return CrowdyServiceApi::ResolveAppId(GetGameInstance());
 }
 
 FCrowdyCppClient* UCrowdyTeams::ResolveClient() const
