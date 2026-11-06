@@ -81,6 +81,10 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 | Sign-up and a recorded age sent no device id. | Both send `x-ck-device-id`, a random id the install keeps, so an age refusal locks a device and not a network. | Wire. |
 | A game had no way to reach a player's safety controls. | New subsystem `UCrowdySafety`: `Get Communication Settings`, `Set Communication Setting`, `Request Parental Consent`, contacts, blocks and `File Report`, each also a Blueprint node. | Blueprint, C++, added. |
 | Teams, Avatars, Channels and Kit Social named the app from the project setting, even after `Set App ID` changed the session's app. | They name the session's app, as the app token does, and fall back to the setting. | Behaviour. |
+| `Mode` on the `Crowdy Entity Component`: `Static` or `Dynamic`. | `Replicate Movement`: `Auto`, `On` or `Off`. Auto is On for a pawn with a movement component, else Off. Saved assets are mapped. | Property, C++ `Mode` deprecated. |
+| `Get Mode` | `Replicates Movement`, and C++ `ReplicatesMovementFor(ActorClass)` for a class. | Blueprint node, C++ `GetMode()` deprecated. |
+| A remote character on the actor pool slid along in its idle pose unless you wrote a policy. | It animates with no code: its movement component gets a velocity and an acceleration, and the pawn a remote view pitch. No jump or fall animation: its movement mode is None. | Behaviour. |
+| `FCrowdyActorState` was a transform. | It also carries `AimPitch`, filled by the default executor from where a pawn looks. | Wire, appended. |
 | A game could not tell what the app records. | The SDK reads it when the player connects and when their token refreshes. New on `UCrowdySafety`: `On Recording State Changed`, `Get Recording State`, `Refresh Recording State`. A log warning fires once if voice opens in an app that records it with nothing bound. | Blueprint, C++, added. The notice and indicator are required while voice or video is recorded, and the game draws them. |
 | An `Owning Client` event reaching a client that does not write the entity ran there. | It runs only on the writer. | Behaviour. |
 | Under `Elected Host`, an `Owning Client` event on a World entity needed the host's avatar in range. | It goes over the session channel, named for the host. | Behaviour. |
@@ -136,6 +140,14 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 15. If you turned **Show Consent Prompt** off, bind `OnAgeRequired` as well as `OnLegalAcceptanceRequired`, and show
    `RequestLegalDocuments` rather than `GetLegalDocuments`. Remove any age-of-majority box. Your age screen must follow
    the platform's rules: see the Terms section of the authentication page.
+16. In C++, replace `EntityComponent->Mode = ECrowdyEntityMode::Dynamic` with
+   `EntityComponent->ReplicateMovement = ECrowdyReplicateMovement::On`, and `Static` with `Off`. Replace the line
+   rather than deleting it: a Blueprint child saved before this release, under a C++ parent left at Static, stays
+   without movement. Replace `Get Mode` with `Replicates Movement`.
+17. If a pawn with a movement component should not send movement, set `Replicate Movement` to `Off`. Under `Auto` it
+   now sends, unless a saved Blueprint already reads `Off`.
+18. If an aim offset reads `Get Base Aim Rotation` on a remote character, normalize the pitch: looking down at -40
+   reads 320.
 
 **CoreRedirects.** None.
 
@@ -143,7 +155,7 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 must match:
 
 ```
-grep -r -a -l --include=*.uasset -e "IsCrowdyEntityLocallyControlled" -e "CrowdyHasAuthority" -e "GetOwnership" -e "RegisterReplicatedSubsystem" -e "CrowdyRecipient" -e "SendEvent" Content Plugins
+grep -r -a -l --include=*.uasset -e "IsCrowdyEntityLocallyControlled" -e "CrowdyHasAuthority" -e "GetOwnership" -e "GetMode" -e "RegisterReplicatedSubsystem" -e "CrowdyRecipient" -e "SendEvent" Content Plugins
 grep -r -a -l --include=*.uasset "OnCrowdySpawned" Content Plugins
 grep -r -a -l --include=*.uasset "CrowdyEntityComponent" Content Plugins
 ```
@@ -153,7 +165,11 @@ Blueprints that bind `On Crowdy Spawned` on entity classes a Mass map can draw; 
 
 **Behaviour changes.** An override of `GetReplicatedOwnership()` on a replicated subsystem base is no longer
 called: the subsystem is written by its one writer whatever it returned. Returning anything but Host was
-never supported.
+never supported. A native pawn class with a movement component and no asset, left at Static, now sends movement,
+because its `Replicate Movement` is `Auto`. If it is spawned with `Spawn Entity`, it stops repeating its spawn event as
+every moving entity does, so a client that joins later draws it from its updates, with no `On Crowdy Spawned` data. The
+default actor state is 4 bytes longer: an older peer ignores the aim
+pitch, and a newer peer reads an older peer's aim as level.
 
 The default is `Server Object`, so a project that changes nothing loses its elected host: World entities are
 written by nobody, a `CrowdyRecipient="Host"` event on any actor is dropped (the SDK warns once, naming the
@@ -226,6 +242,8 @@ cooked data is read against the component's current properties.
 10. Spawn a Static entity with `Owned By` `Leader` on the Leader and send it an `Owning Client` event from the other
    client: its body runs on the Leader. The Recipient dropdown no longer offers Host, and a Blueprint event still
    set to it warns when compiled.
+11. With two clients, walk and look down on the first: the second shows the character walking and aiming down, with
+   no executor, policy or animation code of yours.
 
 **Removed in the next release.** None. The deprecated items above are planned for removal in a later
 release, which will say so here first.

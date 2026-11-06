@@ -1203,10 +1203,10 @@ bool UCrowdyEntitySubsystem::HandSpawnToCrowdRows(const FCrowdyEntitySpawnEvent&
 	if (!IsValid(Backend) || !Backend->DrawsEntitiesAsCrowdRows())
 		return false;
 
-	// A Static entity sends no updates, so no row is ever drawn for it: its actor is its only body.
+	// An entity that sends no movement sends no updates, so no row is ever drawn for it: its actor is its only body.
 	const UCrowdyEntityComponent* Template = Cast<UCrowdyEntityComponent>(
 		AActor::GetActorClassDefaultComponent(EntityClass, UCrowdyEntityComponent::StaticClass()));
-	if (!Template || Template->Mode != ECrowdyEntityMode::Dynamic)
+	if (!Template || !Template->ReplicatesMovementFor(EntityClass))
 		return false;
 
 	bool bAlreadyReported = true;
@@ -1375,7 +1375,6 @@ UCrowdyEntityComponent* UCrowdyEntitySubsystem::AddStaticEntityComponent(AActor*
 	UCrowdyEntityComponent* Component = NewObject<UCrowdyEntityComponent>(Actor, TEXT("CrowdyEntityComponent"));
 	if (!IsValid(Component)) return nullptr;
 
-	Component->Mode = ECrowdyEntityMode::Static;
 	Component->ReplicateMovement = ECrowdyReplicateMovement::Off;
 	Component->InitIdentity(EntityID, EntityOwnerID, Role, ClassID);
 	Component->RegisterComponent();

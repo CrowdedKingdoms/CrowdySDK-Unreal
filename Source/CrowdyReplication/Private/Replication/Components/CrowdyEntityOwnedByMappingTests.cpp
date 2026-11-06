@@ -14,7 +14,6 @@
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
-#include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
@@ -102,10 +101,15 @@ bool FCrowdyLegacySettingsMapTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("an inherited Ownership keeps the archetype's Owned By"), Untouched.OwnedBy, Inherited.OwnedBy);
 	TestEqual(TEXT("an inherited Mode keeps the archetype's Replicate Movement"), Untouched.ReplicateMovement, Inherited.ReplicateMovement);
 
-	const FMapped UnderDefault = Map(false, false, true, ECrowdyOwnership::Host, ECrowdyEntityMode::Static, Inherited);
-	TestEqual(TEXT("under an unmapped archetype, Ownership stays inherited: Auto still reads it"), UnderDefault.OwnedBy, Inherited.OwnedBy);
+	constexpr FMapped InheritedAuto{ ECrowdyOwnedBy::Leader, ECrowdyReplicateMovement::Auto };
+	const FMapped UnderDefault = Map(false, false, true, ECrowdyOwnership::Host, ECrowdyEntityMode::Static, InheritedAuto);
+	TestEqual(TEXT("under an unmapped archetype, Ownership stays inherited: Auto still reads it"), UnderDefault.OwnedBy, InheritedAuto.OwnedBy);
 	TestEqual(TEXT("under an unmapped archetype, a Static pawn stays without movement rather than turning Auto on"),
 		UnderDefault.ReplicateMovement, ECrowdyReplicateMovement::Off);
+
+	const FMapped NativeOn = Map(false, false, true, ECrowdyOwnership::Host, ECrowdyEntityMode::Static, Inherited);
+	TestEqual(TEXT("but a C++ parent that now says On keeps its Blueprint children moving, saved or not"),
+		NativeOn.ReplicateMovement, ECrowdyReplicateMovement::On);
 
 	const FMapped DynamicUnderDefault = Map(false, false, true, ECrowdyOwnership::Host, ECrowdyEntityMode::Dynamic, Inherited);
 	TestEqual(TEXT("under an unmapped archetype, a Dynamic Mode stays inherited: Auto still reads it"),
@@ -226,11 +230,15 @@ bool FCrowdyOwnedBySaveRoundTripsTest::RunTest(const FString& Parameters)
 	LoadProperties(Target.Get(), SaveProperties(Source.Get()), FCrowdySDKCustomVersion::LatestVersion);
 	TestEqual(TEXT("Owned By loads as it was set, whatever the deprecated Ownership holds"), Target->OwnedBy, ECrowdyOwnedBy::World);
 
-	FObjectSaveContextData SaveData;
+	Source->ReplicateMovement = ECrowdyReplicateMovement::Off;
 	Source->Mode = ECrowdyEntityMode::Dynamic;
-	Source->PreSave(FObjectPreSaveContext(SaveData));
-	TestEqual(TEXT("and a save never rewrites it from the deprecated Ownership"), Source->OwnedBy, ECrowdyOwnedBy::World);
-	TestEqual(TEXT("while Replicate Movement still follows Mode, the setting people edit"), Source->ReplicateMovement, ECrowdyReplicateMovement::On);
+	LoadProperties(Target.Get(), SaveProperties(Source.Get()), FCrowdySDKCustomVersion::LatestVersion);
+	TestEqual(TEXT("Replicate Movement loads as it was set, whatever the deprecated Mode holds"), Target->ReplicateMovement, ECrowdyReplicateMovement::Off);
+	TestFalse(TEXT("and an explicit Off wins over it"), Target->ReplicatesMovementFor(ACharacter::StaticClass()));
+	Source->ReplicateMovement = ECrowdyReplicateMovement::Auto;
+	TestEqual(TEXT("the deprecated Get Mode reads the setting"), Source->GetMode(), ECrowdyEntityMode::Dynamic);
+	Source->ReplicateMovement = ECrowdyReplicateMovement::Off;
+	TestEqual(TEXT("and reads Off as Static"), Source->GetMode(), ECrowdyEntityMode::Static);
 
 	TestEqual(TEXT("the deprecated Get Ownership reads World as Host"), Source->GetOwnership(), ECrowdyOwnership::Host);
 	Source->OwnedBy = ECrowdyOwnedBy::Player;
@@ -255,6 +263,15 @@ bool FCrowdyEditingOwnedByRetiresOwnershipTest::RunTest(const FString& Parameter
 	Component->PostEditChangeProperty(Edit);
 	TestEqual(TEXT("an edit of Owned By retires the deprecated Ownership"),
 		UCrowdyEntityComponent::ResolveOwnedBy(Component->OwnedBy, Component->Ownership, true), ECrowdyOwnedBy::World);
+
+	// One that once saved Dynamic, set back to Auto, means Auto too: on a plain actor that sends nothing.
+	Component->Mode = ECrowdyEntityMode::Dynamic;
+	Component->ReplicateMovement = ECrowdyReplicateMovement::Auto;
+	FProperty* MovementProperty = FindFProperty<FProperty>(UCrowdyEntityComponent::StaticClass(),
+		GET_MEMBER_NAME_CHECKED(UCrowdyEntityComponent, ReplicateMovement));
+	FPropertyChangedEvent MovementEdit(MovementProperty);
+	Component->PostEditChangeProperty(MovementEdit);
+	TestFalse(TEXT("an edit of Replicate Movement retires the deprecated Mode"), Component->ReplicatesMovementFor(AActor::StaticClass()));
 	return true;
 }
 #endif

@@ -509,8 +509,8 @@ bool FCrowdyGoldenVectorPlanCoverageTest::RunTest(const FString& Parameters)
 
 	TestTrue(FString::Printf(TEXT("the SDK's default actor state takes a plan (%s)"), *DefaultStateReason),
 		DefaultStatePlan.IsValid());
-	TestEqual(TEXT("of one span, because a transform is packed"), DefaultStatePlan.Runs.Num(), 1);
-	TestEqual(TEXT("covering both structs and nothing else"), DefaultStatePlan.TotalBytes, 48);
+	TestEqual(TEXT("of one span, because a transform and its aim are packed"), DefaultStatePlan.Runs.Num(), 1);
+	TestEqual(TEXT("covering both structs and the aim pitch, and nothing else"), DefaultStatePlan.TotalBytes, 52);
 
 	return true;
 }

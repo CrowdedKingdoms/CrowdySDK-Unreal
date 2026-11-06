@@ -4,8 +4,35 @@
 #include "Data/CrowdyActorPoolPolicy.h"
 
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PawnMovementComponent.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
+#include "Replication/Subsystems/CrowdyEntitySubsystem.h"
+#include "UObject/UnrealType.h"
+
+namespace
+{
+	// A gap this long between drawn frames is a stall or a hitch, not motion.
+	constexpr double MaxProxyMotionGapSeconds = 0.25;
+
+	// A proxy's movement component never ticks, so nothing else writes its acceleration; the field is protected.
+	FVector* FindProxyAcceleration(UCharacterMovementComponent* Movement)
+	{
+		static const FStructProperty* Property =
+			FindFProperty<FStructProperty>(UCharacterMovementComponent::StaticClass(), TEXT("Acceleration"));
+		return Property ? Property->ContainerPtrToValuePtr<FVector>(Movement) : nullptr;
+	}
+
+	// Only a stopped proxy's component is written: one that runs again belongs to a character simulated here.
+	void SetProxyMotion(UCharacterMovementComponent* Movement, const FVector& Velocity)
+	{
+		if (Movement->MovementMode != MOVE_None) return;
+
+		Movement->Velocity = Velocity;
+		if (FVector* Acceleration = FindProxyAcceleration(Movement))
+			*Acceleration = Velocity.GetSafeNormal();
+	}
+}
 
 /**
  * Remote proxies are positioned entirely by interpolated transforms
@@ -64,6 +91,54 @@ void CrowdyActorPool::RestoreProxyMovement(AActor* Actor)
 		if (UCharacterMovementComponent* CharacterMovement = Cast<UCharacterMovementComponent>(MoveComp))
 			CharacterMovement->SetDefaultMovementMode();
 	}
+}
+
+bool CrowdyActorPool::IsPlaceable(const FVector& Location, const FRotator& Rotation)
+{
+	return !Location.ContainsNaN() && !Rotation.ContainsNaN() && Location.GetAbsMax() <= CrowdyMaxAddressableWorldCoordinate;
+}
+
+void CrowdyActorPool::ApplyProxyMotion(FProxyMotion& Motion, AActor* Actor, const FVector& Location, const float AimPitch, const int64 RenderTimeMs)
+{
+	if (Motion.BoundActor.Get() != Actor)
+	{
+		// The previous actor may already be another slot's, so it is let go without being written to.
+		Motion = FProxyMotion();
+		Motion.BoundActor = Actor;
+		Motion.Pawn = Cast<APawn>(Actor);
+		UCharacterMovementComponent* Movement = Actor ? Actor->FindComponentByClass<UCharacterMovementComponent>() : nullptr;
+		Motion.Movement = Movement;
+		Motion.TeleportSpeed = Movement ? FMath::Max(4.0 * Movement->MaxWalkSpeed, 3000.0) : 0.0;
+	}
+
+	if (APawn* Pawn = Motion.Pawn.Get())
+		Pawn->SetRemoteViewPitch(AimPitch);
+
+	UCharacterMovementComponent* Movement = Motion.Movement.Get();
+	if (!Movement) return;
+
+	if (Motion.LastRenderMs != 0 && RenderTimeMs == Motion.LastRenderMs) return;
+
+	// A render time that went backwards (the wall clock was set back) starts over, like a first frame.
+	const double Seconds = static_cast<double>(RenderTimeMs - Motion.LastRenderMs) / 1000.0;
+	FVector Velocity = FVector::ZeroVector;
+	if (Motion.LastRenderMs != 0 && Seconds > 0.0 && Seconds <= MaxProxyMotionGapSeconds)
+	{
+		Velocity = (Location - Motion.LastLocation) / Seconds;
+		if (Velocity.SizeSquared() > FMath::Square(Motion.TeleportSpeed))
+			Velocity = FVector::ZeroVector;
+	}
+
+	Motion.LastLocation = Location;
+	Motion.LastRenderMs = RenderTimeMs;
+	SetProxyMotion(Movement, Velocity);
+}
+
+void CrowdyActorPool::ResetProxyMotion(FProxyMotion& Motion)
+{
+	if (UCharacterMovementComponent* Movement = Motion.Movement.Get())
+		SetProxyMotion(Movement, FVector::ZeroVector);
+	Motion = FProxyMotion();
 }
 
 void UCrowdyActorPoolPolicy::OnActorPooled_Implementation(AActor* Actor)

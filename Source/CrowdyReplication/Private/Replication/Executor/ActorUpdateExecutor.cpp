@@ -4,6 +4,7 @@
 #include "Replication/Executor/ActorUpdateExecutor.h"
 
 #include "GameFramework/Actor.h"
+#include "GameFramework/Pawn.h"
 
 namespace CrowdyActorUpdateExecutor
 {
@@ -47,6 +48,11 @@ FInstancedStruct UCrowdyDefaultActorUpdateExecutor::GetActorState_Implementation
 	FCrowdyActorState State;
 	State.Location = Owner->GetActorLocation();
 	State.Rotation = Owner->GetActorRotation();
+	if (const APawn* Pawn = Cast<APawn>(Owner))
+	{
+		// A controller's pitch reads 0 to 360, so looking down must not travel as a large positive angle.
+		State.AimPitch = static_cast<float>(FRotator::NormalizeAxis(Pawn->GetBaseAimRotation().Pitch));
+	}
 
 	return FInstancedStruct::Make(State);
 }

@@ -2,6 +2,10 @@
 
 #include "Misc/AutomationTest.h"
 
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "GameFramework/Character.h"
+#include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Executor/ActorUpdateExecutor.h"
 #include "StructUtils/InstancedStruct.h"
 #include "UObject/Package.h"
@@ -66,6 +70,7 @@ bool FCrowdyDefaultActorStateRoundTripsTest::RunTest(const FString& Parameters)
 	FCrowdyActorState State;
 	State.Location = FVector(-1234.5, 6789.0, 42.25);
 	State.Rotation = FRotator(10.0, -20.0, 30.0);
+	State.AimPitch = -37.5f;
 
 	TArray<uint8> Bytes;
 	if (!TestTrue(TEXT("the SDK default state serializes"),
@@ -91,6 +96,7 @@ bool FCrowdyDefaultActorStateRoundTripsTest::RunTest(const FString& Parameters)
 
 	TestEqual(TEXT("location survives"), Result->Location, State.Location);
 	TestEqual(TEXT("rotation survives"), Result->Rotation, State.Rotation);
+	TestEqual(TEXT("aim pitch survives"), Result->AimPitch, State.AimPitch);
 
 	// The reason this struct is safe to share across every entity in a project at all: the class rides
 	// the message, so a shared struct no longer forces a shared class.
@@ -100,13 +106,89 @@ bool FCrowdyDefaultActorStateRoundTripsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// A client on an SDK from before the aim pitch sends the same frame without its last four bytes, and must
+// keep moving on a newer client's screen. Nobody else can test this: the field only exists on one side.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyDefaultActorStateFromAnOlderPeerTest,
+	"CrowdySDK.Entity.DefaultActorStateFromAnOlderPeerStillMoves", CrowdyDefaultExecutorTestFlags)
+bool FCrowdyDefaultActorStateFromAnOlderPeerTest::RunTest(const FString& Parameters)
+{
+	UActorUpdatePayloadRegistry::Get()->RegisterStructAuto(FCrowdyActorState::StaticStruct());
+
+	FCrowdyActorState State;
+	State.Location = FVector(100.0, 200.0, 300.0);
+	State.Rotation = FRotator(0.0, 90.0, 0.0);
+	State.AimPitch = 12.0f;
+
+	TArray<uint8> Bytes;
+	if (!TestTrue(TEXT("the state serializes"),
+		USerializationFunctionLibrary::SerializeActorState(FInstancedStruct::Make(State), DefaultExecutorTestClassID, Bytes)))
+	{
+		return false;
+	}
+	Bytes.SetNum(Bytes.Num() - sizeof(float));
+
+	AddExpectedMessagePlain(TEXT("payload"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 0);
+
+	FInstancedStruct Decoded;
+	FCrowdyTypeID DecodedTypeID = CROWDY_INVALID_TYPE_ID;
+	FCrowdyClassID DecodedClassID = CROWDY_INVALID_CLASS_ID;
+	if (!TestTrue(TEXT("an older peer's shorter frame decodes"),
+		USerializationFunctionLibrary::DeserializeActorState(Bytes, Decoded, DecodedTypeID, DecodedClassID)))
+	{
+		return false;
+	}
+
+	const FCrowdyActorState* Result = Decoded.GetPtr<FCrowdyActorState>();
+	if (!TestNotNull(TEXT("as its own struct type"), Result))
+	{
+		return false;
+	}
+	TestEqual(TEXT("its location is read"), Result->Location, State.Location);
+	TestEqual(TEXT("its rotation is read"), Result->Rotation, State.Rotation);
+	TestEqual(TEXT("and the pitch it never sent reads level"), Result->AimPitch, 0.f);
+	return true;
+}
+
+// A character's own rotation carries no pitch, so the aim has to come from where the pawn is looking.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyDefaultExecutorSendsAimPitchTest,
+	"CrowdySDK.Entity.DefaultExecutorSendsAPawnsAimPitch", CrowdyDefaultExecutorTestFlags)
+bool FCrowdyDefaultExecutorSendsAimPitchTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+	GEngine->CreateNewWorldContext(EWorldType::Editor).SetCurrentWorld(World);
+	ON_SCOPE_EXIT
+	{
+		GEngine->DestroyWorldContext(World);
+		World->DestroyWorld(false);
+	};
+
+	ACharacter* Character = World->SpawnActor<ACharacter>();
+	AActor* Prop = World->SpawnActor<AActor>();
+	if (!TestTrue(TEXT("the actors spawn"), Character && Prop))
+	{
+		return false;
+	}
+	UCrowdyEntityComponent* CharacterEntity = NewObject<UCrowdyEntityComponent>(Character);
+	UCrowdyEntityComponent* PropEntity = NewObject<UCrowdyEntityComponent>(Prop);
+	UCrowdyDefaultActorUpdateExecutor* Executor = NewObject<UCrowdyDefaultActorUpdateExecutor>();
+
+	Character->SetRemoteViewPitch(-40.0);
+	const FInstancedStruct Aiming = Executor->GetActorState_Implementation(CharacterEntity);
+	TestEqual(TEXT("looking down travels as a negative pitch, though the engine reads it as 320"),
+		Aiming.Get<FCrowdyActorState>().AimPitch, -40.f, 0.01f);
+
+	const FInstancedStruct Still = Executor->GetActorState_Implementation(PropEntity);
+	TestEqual(TEXT("an actor that is not a pawn has no aim"), Still.Get<FCrowdyActorState>().AimPitch, 0.f);
+	return true;
+}
+
 // Velocity is deliberately absent, and this pins the decision rather than leaving it to be rediscovered
 // as an oversight. Carrying it raw would cost 24 bytes on every update from every entity to hold
 // something nothing reads yet, and the quantized form it wants is a wire break that the drain
 // measurement has not justified. The framing tolerates appended fields, so adding it later is free.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyDefaultActorStateCarriesOnlyATransformTest,
-	"CrowdySDK.Entity.DefaultActorStateCarriesOnlyATransform", CrowdyDefaultExecutorTestFlags)
-bool FCrowdyDefaultActorStateCarriesOnlyATransformTest::RunTest(const FString& Parameters)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyDefaultActorStateCarriesATransformAndAimTest,
+	"CrowdySDK.Entity.DefaultActorStateCarriesATransformAndAim", CrowdyDefaultExecutorTestFlags)
+bool FCrowdyDefaultActorStateCarriesATransformAndAimTest::RunTest(const FString& Parameters)
 {
 	int32 PropertyCount = 0;
 	for (TFieldIterator<FProperty> It(FCrowdyActorState::StaticStruct()); It; ++It)
@@ -114,7 +196,7 @@ bool FCrowdyDefaultActorStateCarriesOnlyATransformTest::RunTest(const FString& P
 		++PropertyCount;
 	}
 
-	TestEqual(TEXT("FCrowdyActorState carries exactly Location and Rotation"), PropertyCount, 2);
+	TestEqual(TEXT("FCrowdyActorState carries exactly Location, Rotation and AimPitch"), PropertyCount, 3);
 
 	return true;
 }
