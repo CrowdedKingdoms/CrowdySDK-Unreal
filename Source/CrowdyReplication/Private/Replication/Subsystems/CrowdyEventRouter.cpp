@@ -19,6 +19,7 @@
 #include "Replication/Subsystems/CrowdyStateReplicator.h"
 #include "Utils/UCrowdyClassRegistry.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Messages/Actor/CrowdyUpdateExtras.h"
 #include "Messages/GameObjects/FCrowdyEntitySpawnEvent.h"
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
@@ -245,6 +246,25 @@ namespace
 		return !OwnerClass->IsChildOf(AActor::StaticClass())
 			&& !OwnerClass->IsChildOf(UActorComponent::StaticClass());
 	}
+}
+
+// OnRep bindings were validated at discovery, so this only calls parameterless notifies; NumParms guards a baked layout
+// whose function drifted.
+static void FireChangedNotifies(UObject& Container, const FCrowdyRepLayout& Layout, const TArray<int32>& ChangedIndices)
+{
+    for (const int32 Index : ChangedIndices)
+    {
+        if (!Layout.Properties.IsValidIndex(Index) || Layout.Properties[Index].OnRepFunctionName == NAME_None)
+        {
+            continue;
+        }
+
+        UFunction* OnRepFn = Container.FindFunction(Layout.Properties[Index].OnRepFunctionName);
+        if (OnRepFn && OnRepFn->NumParms == 0)
+        {
+            Container.ProcessEvent(OnRepFn, nullptr);
+        }
+    }
 }
 
 void UCrowdyEventRouter::Initialize(FSubsystemCollectionBase& Collection)
@@ -854,7 +874,7 @@ FCrowdyStateDecodeScratch* UCrowdyEventRouter::ResolveDecodeScratch(const FCrowd
 	return Slot.Get();
 }
 
-bool UCrowdyEventRouter::DispatchStateDeltaToSubscriber(const FCrowdyStateDelta& Delta)
+bool UCrowdyEventRouter::DispatchStateDeltaToSubscriber(const FCrowdyStateDelta& Delta, const bool bContinuous)
 {
 	ICrowdyEntitySubscriber* Subscriber = EntitySubscriber.GetInterface();
 	if (!Subscriber || !IsValid(EntitySubscriber.GetObject()))
@@ -909,6 +929,12 @@ bool UCrowdyEventRouter::DispatchStateDeltaToSubscriber(const FCrowdyStateDelta&
 		return true;
 	}
 
+	// Decode warns on a mismatch with no rate limit, and these arrive with every movement update.
+	if (bContinuous && Delta.LayoutHash != Layout->LayoutHash)
+	{
+		return true;
+	}
+
 	// Resolved before the class guard below, deliberately: the buffer is keyed by a class this client itself
 	// decided the entity has, never by anything off the wire, so a peer cannot drive its creation. Doing it in
 	// this order is what lets the guard compare against an id resolved once per class instead of rebuilding a
@@ -923,7 +949,7 @@ bool UCrowdyEventRouter::DispatchStateDeltaToSubscriber(const FCrowdyStateDelta&
 		return true;
 	}
 
-	if (static_cast<uint32>(Delta.ClassID) != Scratch->ClassID)
+	if (!bContinuous && static_cast<uint32>(Delta.ClassID) != Scratch->ClassID)
 	{
 		++StateSubscriberStats.DroppedClassIdMismatch;
 		// Rate-limited rather than per delta: this is the shape a wrong or drifted sender produces for every
@@ -954,7 +980,7 @@ bool UCrowdyEventRouter::DispatchStateDeltaToSubscriber(const FCrowdyStateDelta&
 	TArray<int32>& PresentIndices = bReentrantDispatch ? ReentrantPresentIndices : StateDecodePresentIndices;
 
 	if (!FCrowdyStateCodec::Decode(*Layout, Delta.LayoutHash, Delta.Blob, Scratch->Data,
-		ChangedIndices, &PresentIndices, ResolveDecodeScratch(*Layout)))
+		ChangedIndices, &PresentIndices, ResolveDecodeScratch(*Layout), bContinuous))
 	{
 		// Decode already logged the precise reason (hash mismatch, bad version/selector, truncation, ...). A
 		// partial decode leaves values in the shared buffer, which is exactly why nothing is handed over here:
@@ -1176,30 +1202,7 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
         *Delta.EntityID.ToString(), *Delta.SenderID.ToString(), ChangedIndices.Num(), Delta.Blob.Num(),
         Event.bTargetedDelivery ? TEXT("(targeted)") : TEXT("(broadcast)"));
 
-    // Fire each changed property's parameterless CrowdyOnRep on the container. OnRep bindings were validated
-    // at discovery (invalid ones cleared to NAME_None), so this only ever calls parameterless notifies; the
-    // NumParms guard is defense-in-depth for a baked layout whose function drifted. No "previous value" here.
-    for (int32 Index : ChangedIndices)
-    {
-        if (!Layout->Properties.IsValidIndex(Index))
-        {
-            continue;
-        }
-
-        const FName OnRepName = Layout->Properties[Index].OnRepFunctionName;
-        if (OnRepName == NAME_None)
-        {
-            continue;
-        }
-
-        if (UFunction* OnRepFn = Container->FindFunction(OnRepName))
-        {
-            if (OnRepFn->NumParms == 0)
-            {
-                Container->ProcessEvent(OnRepFn, nullptr);
-            }
-        }
-    }
+    FireChangedNotifies(*Container, *Layout, ChangedIndices);
 
     // A host correction for an entity WE own has now been applied; adopt the applied values into the owner's
     // shadow so the replicator's next diff sees them as already-sent and does not re-emit a revert. Best-effort:
@@ -1211,6 +1214,59 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
         {
             Replicator->AdoptHostValues(Delta.EntityID, *Layout, ChangedIndices, Container);
         }
+    }
+}
+
+void UCrowdyEventRouter::DispatchContinuousExtras(const FGuid& EntityID, const TConstArrayView<uint8> Extras)
+{
+    int64 LayoutHash = 0;
+    TConstArrayView<uint8> Values;
+    if (!CrowdyUpdateExtras::ReadContinuousEntry(CrowdyUpdateExtras::FindEntry(Extras, CrowdyUpdateExtras::ContinuousType),
+        LayoutHash, Values))
+    {
+        return;
+    }
+
+    ContinuousBlob.Reset();
+    ContinuousBlob.Append(Values);
+
+    UObject* Participant = EntitySubsystem ? EntitySubsystem->FindParticipant(EntityID) : nullptr;
+    const FCrowdyRepLayout* Layout = Participant && AutoRegistry ? AutoRegistry->FindRepLayout(Participant->GetClass()) : nullptr;
+    if (!Layout)
+    {
+        // Never deferred: the next keyframe repeats these values, so an entity not here yet misses nothing for good.
+        FCrowdyStateDelta Delta;
+        Delta.EntityID = EntityID;
+        Delta.LayoutHash = LayoutHash;
+        Delta.Blob = MoveTemp(ContinuousBlob);
+        DispatchStateDeltaToSubscriber(Delta, /*bContinuous=*/true);
+        ContinuousBlob = MoveTemp(Delta.Blob);
+        return;
+    }
+
+    // A World entity's values go as deltas, which are fenced by sender. An update names no sender, so it cannot write one.
+    const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntityID);
+    if (!Record || Record->Role == ECrowdyRole::HostOwned || EntitySubsystem->IsRecordLocallyOwned(*Record))
+    {
+        return;
+    }
+
+    // Decode warns on a mismatch with no rate limit, and these arrive with every movement update.
+    UObject* Container = ResolveStateContainer(Participant, Layout->OwnerClass.Get());
+    if (!Container || LayoutHash != Layout->LayoutHash)
+    {
+        return;
+    }
+
+    TArray<int32> ReentrantChangedIndices;
+    const bool bReentrantDispatch = bDispatchingParticipantStateDelta;
+    TGuardValue<bool> DispatchGuard(bDispatchingParticipantStateDelta, true);
+    TArray<int32>& ChangedIndices = bReentrantDispatch ? ReentrantChangedIndices : StateParticipantChangedIndices;
+
+    if (FCrowdyStateCodec::Decode(*Layout, LayoutHash, ContinuousBlob, Container, ChangedIndices,
+        /*OutPresentIndices=*/nullptr, ResolveDecodeScratch(*Layout), /*bContinuousOnly=*/true))
+    {
+        FireChangedNotifies(*Container, *Layout, ChangedIndices);
     }
 }
 

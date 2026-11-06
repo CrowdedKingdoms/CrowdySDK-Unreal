@@ -112,6 +112,9 @@ struct FCrowdyBakedRepProperty
 	bool bHeartbeat = false;
 
 	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
+	bool bContinuous = false;
+
+	UPROPERTY(VisibleAnywhere, Category = "Crowdy SDK")
 	FName OnRepFunctionName = NAME_None;
 
 	// Positional index within the class layout; the assembled layout is ordered by this.

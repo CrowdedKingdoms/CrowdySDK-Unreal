@@ -11,6 +11,7 @@
 #include "Replication/Subsystems/CrowdyActorTracker.h"
 #include "Replication/Subsystems/CrowdyKitActorClasses.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
+#include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/UCrowdyClassRegistry.h"
 
@@ -159,6 +160,7 @@ void UCrowdyActorManager::Deinitialize()
 	if (IsValid(CrowdyActorTracker))
 	{
 		CrowdyActorTracker->OnRemoteEntityAppeared.RemoveAll(this);
+		CrowdyActorTracker->OnRemoteEntityAppearedExtras.RemoveAll(this);
 		CrowdyActorTracker->OnRemoteEntityTimedOut.RemoveAll(this);
 		CrowdyActorTracker->OnRemoteEntityLeft.RemoveAll(this);
 		CrowdyActorTracker->OnTrackedActorUpdates.RemoveAll(this);
@@ -286,7 +288,9 @@ void UCrowdyActorManager::ApplyPendingUpdates()
 	// and the wall clock cannot meaningfully move across one, so the per-update read bought nothing.
 	const int64 ClientNowMs = (FDateTime::UtcNow() - FDateTime(1970, 1, 1)).GetTotalMilliseconds();
 
-	auto Apply = [this, ClientNowMs](const FCrowdyActorUpdate& Update)
+	UCrowdyEventRouter* Router = ResolveEventRouter();
+
+	auto Apply = [this, ClientNowMs, Router](const FCrowdyActorUpdate& Update)
 	{
 		UpdateServerTimeOffset(Update.ServerTimestamp, ClientNowMs);
 
@@ -301,6 +305,10 @@ void UCrowdyActorManager::ApplyPendingUpdates()
 			RetryInactiveSlot(SlotId, Update.UUID, State);
 
 		ActiveBackend->ExtractUpdate(State, Update.ServerTimestamp, SlotId);
+
+		const TConstArrayView<uint8> Extras = Update.ResolveExtras();
+		if (!Extras.IsEmpty())
+			DeliverExtras(Router, Update.UUID, SlotId, Extras);
 	};
 
 	// The queue first: anything in it was handed over from another thread and so was gathered before
@@ -318,6 +326,31 @@ void UCrowdyActorManager::ApplyPendingUpdates()
 		Apply(Update);
 
 	PendingUpdates.Reset();
+}
+
+void UCrowdyActorManager::DeliverExtras(UCrowdyEventRouter* Router, const FGuid& UUID, const int32 SlotId,
+	const TConstArrayView<uint8> Extras)
+{
+	if (Router)
+		Router->DispatchContinuousExtras(UUID, Extras);
+
+	OnUpdateExtras.Broadcast(UUID, SlotId, Extras);
+}
+
+void UCrowdyActorManager::HandleActorAppearedExtras(const FGuid& UUID, const TConstArrayView<uint8> Extras)
+{
+	// No slot means the update found no backend to draw it; the next keyframe brings the same values.
+	if (const int32* SlotPtr = UUIDToSlot.Find(UUID))
+		DeliverExtras(ResolveEventRouter(), UUID, *SlotPtr, Extras);
+}
+
+UCrowdyEventRouter* UCrowdyActorManager::ResolveEventRouter() const
+{
+	if (EventRouterForTest)
+		return EventRouterForTest;
+
+	const UWorld* World = GetWorld();
+	return World ? World->GetSubsystem<UCrowdyEventRouter>() : nullptr;
 }
 
 void UCrowdyActorManager::TickInterpolation()
@@ -346,6 +379,7 @@ void UCrowdyActorManager::BindToTracker(UCrowdyActorTracker* Tracker)
 	// reported by the other and binding only one leaves those actors holding their slots forever.
 	ActorTracker = Tracker;
 	Tracker->OnRemoteEntityAppeared.AddDynamic(this, &UCrowdyActorManager::HandleActorSpawned);
+	Tracker->OnRemoteEntityAppearedExtras.AddUObject(this, &UCrowdyActorManager::HandleActorAppearedExtras);
 	Tracker->OnRemoteEntityTimedOut.AddDynamic(this, &UCrowdyActorManager::HandleActorDestroyed);
 	Tracker->OnRemoteEntityLeft.AddDynamic(this, &UCrowdyActorManager::HandleActorLeft);
 	Tracker->OnTrackedActorUpdates.AddUObject(this, &UCrowdyActorManager::HandleUpdateBatch);

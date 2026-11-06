@@ -55,6 +55,11 @@ const FInstancedStruct& FCrowdyActorUpdate::ResolveState() const
 	return Message.IsValid() ? Message->State : State;
 }
 
+TConstArrayView<uint8> FCrowdyActorUpdate::ResolveExtras() const
+{
+	return Message.IsValid() ? TConstArrayView<uint8>(Message->Extras) : TConstArrayView<uint8>();
+}
+
 void UCrowdyActorTracker::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -512,8 +517,45 @@ void UCrowdyActorTracker::EnqueueUpdate(FCrowdyActorUpdate&& Update)
 	}
 }
 
+void UCrowdyActorTracker::FlushAppearances()
+{
+	if (PendingAppearances.IsEmpty())
+		return;
+
+	const TArray<FCrowdyActorUpdate> Batch = MoveTemp(PendingAppearances);
+	PendingAppearances.Reset();
+
+	// Done here rather than per update: the class an entity claims cannot change while it is tracked, so an appearance
+	// is the only moment it needs writing.
+	RecordAppearances(Batch);
+
+	for (const FCrowdyActorUpdate& Update : Batch)
+	{
+		const int32 Count = ++NumOfTrackedActors;
+
+		// Through ResolveState, because the spawn path carries the retained message like every other path now. The
+		// delegate takes the struct by value and copies it, which is once per entity appearing rather than once per update.
+		OnRemoteEntityAppeared.Broadcast(Update.UUID, Update.ResolveState(), Count + 1);
+
+		const TConstArrayView<uint8> Extras = Update.ResolveExtras();
+		if (!Extras.IsEmpty())
+			OnRemoteEntityAppearedExtras.Broadcast(Update.UUID, Extras);
+	}
+
+	for (const FCrowdyActorUpdate& Update : Batch)
+	{
+		PendingSpawns->Remove(Update.UUID);
+
+		// An actor that was spawned but could not be recorded here reads as new on its very next update, and is spawned
+		// again, and again. Worth saying out loud rather than leaving as a stream of duplicates with no stated cause.
+		if (TrackedUUIDs->Add(Update.UUID) == FCrowdyGuidSet::EAddResult::AtCapacity)
+			ReportTrackingAtCapacity();
+	}
+}
+
 void UCrowdyActorTracker::Tick(float DeltaTime)
 {
+	FlushAppearances();
 	FlushTrackedUpdates();
 
 	KitSweepElapsed += DeltaTime;
@@ -845,35 +887,10 @@ void UCrowdyActorTracker::ProcessQueue(int32 ShardIndex)
         	AsyncTask(ENamedThreads::GameThread,
 				[WeakThis = TWeakObjectPtr<UCrowdyActorTracker>(this), SpawnBatch = MoveTemp(SpawnBatch)]()
 				{
-					// Now truly on the game thread - GC locked, UObjects safe
-					UCrowdyActorTracker* Tracker = WeakThis.Get();
-					if (!Tracker)
-						return;
-
-					// Done here rather than per update: the class an entity claims cannot change while it is
-					// tracked, so an appearance is the only moment it needs writing.
-					Tracker->RecordAppearances(SpawnBatch);
-
-					for (const FCrowdyActorUpdate& Update : SpawnBatch)
-					{
-						const int32 Count = ++Tracker->NumOfTrackedActors;
-
-						// Through ResolveState, because the spawn path carries the retained message like every
-						// other path now. The delegate takes the struct by value and copies it, which is once
-						// per entity appearing rather than once per update.
-						Tracker->OnRemoteEntityAppeared.Broadcast(Update.UUID, Update.ResolveState(), Count + 1);
-					}
-
-					for (const FCrowdyActorUpdate& Update : SpawnBatch)
-					{
-						Tracker->PendingSpawns->Remove(Update.UUID);
-
-						// An actor that was spawned but could not be recorded here reads as new on its very next
-						// update, and is spawned again, and again. Worth saying out loud rather than leaving as a
-						// stream of duplicates with no stated cause.
-						if (Tracker->TrackedUUIDs->Add(Update.UUID) == FCrowdyGuidSet::EAddResult::AtCapacity)
-							Tracker->ReportTrackingAtCapacity();
-					}
+					// Queued for Tick: the engine runs game-thread tasks while it waits on a tick group, which can be
+					// in the middle of Mass processing, where spawning a row is a fatal check.
+					if (UCrowdyActorTracker* Tracker = WeakThis.Get())
+						Tracker->PendingAppearances.Append(SpawnBatch);
 				}
 			);
         }

@@ -508,12 +508,23 @@ void UCrowdyEntityComponent::StartReplication()
 
 	if (IsValid(AutoReplicator))
 		AutoReplicator->RegisterReplicationComponent(this);
+
+	NoteContinuousCarrier();
 }
 
 void UCrowdyEntityComponent::StopReplication()
 {
 	if (IsValid(AutoReplicator))
 		AutoReplicator->UnregisterReplicationComponent(this);
+
+	NoteContinuousCarrier();
+}
+
+void UCrowdyEntityComponent::NoteContinuousCarrier() const
+{
+	UCrowdyStateReplicator* Replicator = GetWorld() ? GetWorld()->GetSubsystem<UCrowdyStateReplicator>() : nullptr;
+	if (Replicator && NetID.IsValid())
+		Replicator->SetContinuousOnMovement(NetID, IsValid(AutoReplicator) && AutoReplicator->CarriesUpdatesOf(this));
 }
 
 void UCrowdyEntityComponent::SendEvent(const FInstancedStruct& Payload, const ECrowdyEventScope Scope)

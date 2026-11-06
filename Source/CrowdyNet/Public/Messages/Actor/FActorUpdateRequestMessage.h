@@ -28,6 +28,7 @@ struct FActorUpdateRequestMessage : FActorUpdateBody
 {
 	/** The request owns the octets it sends, so the shared body's buffer is public on this side. */
 	using FActorUpdateBody::StateBytes;
+	using FActorUpdateBody::ExtrasBytes;
 
 	/** Sends the spatial header and nothing after it, not even a length: how a viewer with no actor state says it is watching. */
 	bool bViewerBeat = false;

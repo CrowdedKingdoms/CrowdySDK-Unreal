@@ -25,10 +25,10 @@ public:
 
 	// The FCrowdyClassID names the entity's class and rides every update, because the transport is lossy
 	// and relevance gated: a receiver can start listening at any instant, so a class announced once is
-	// lost to everyone who was not there for it.
+	// lost to everyone who was not there for it. The last argument is the update's extras entries, usually empty.
 	TFunction<void(int64, int64, int64,
 		ECrowdyDecayRate, ECrowdyReplicationDistance,
-		const FString&, const FInstancedStruct&, FCrowdyClassID, bool)> DispatchActorUpdateFn;
+		const FString&, const FInstancedStruct&, FCrowdyClassID, bool, TConstArrayView<uint8>)> DispatchActorUpdateFn;
 
 	// Says an actor is still where it was without restating its state (CLIENT_ACTOR_HEARTBEAT). Args: the actor's
 	// chunk X/Y/Z and its UUID. Carries no state and no payload, so there is nothing to serialize and nothing to

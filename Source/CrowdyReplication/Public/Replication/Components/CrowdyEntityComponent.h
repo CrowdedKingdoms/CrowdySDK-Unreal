@@ -189,6 +189,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entity Component")
 	void StopReplication();
 
+	// Tells the state replicator whether this entity's updates are going out, so continuous properties have a carrier.
+	void NoteContinuousCarrier() const;
+
 	/**
 	 * Marks an entity spawned with Spawn Entity. One that is not Dynamic then sends its spawn again every few seconds
 	 * while this client owns it, so a player who joins later gets it too. Dynamic entities are found by their updates.

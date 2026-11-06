@@ -315,11 +315,14 @@ public:
 	 * alias for uint32, which is neither resolvable by UHT nor a Blueprint property type. Blueprints
 	 * replicate an actor by putting a UCrowdyEntityComponent on it, which is the supported surface and
 	 * is unaffected. Nothing in this project or its plugins called this node.
+	 *
+	 * Extras are entries built with CrowdyUpdateExtras::AppendEntry, sent after the state; receivers before 2.25
+	 * ignore them. They are left off when they would not fit in one datagram beside the state.
 	 */
 	void DispatchActorUpdate(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
 	                         const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance,
 	                         const FString& InstigatorID, const FInstancedStruct& ActorStatePayload,
-	                         FCrowdyClassID ClassID, bool bAsync = false);
+	                         FCrowdyClassID ClassID, bool bAsync = false, TConstArrayView<uint8> Extras = {});
 
 	/**
 	 * Say an actor is still present without restating its state. Costs the spatial header alone, so an actor that
@@ -455,7 +458,7 @@ private:
 	void BuildAndSendActorUpdate(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
 	                             const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance,
 	                             const FString& InstigatorID, const FInstancedStruct& ActorStatePayload,
-	                             FCrowdyClassID ClassID);
+	                             FCrowdyClassID ClassID, TConstArrayView<uint8> Extras);
 
 	UPROPERTY()
 	UCrowdyWorkerThreadsSubsystem* WorkerThreadsSubsystem;

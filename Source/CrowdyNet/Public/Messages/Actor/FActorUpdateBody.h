@@ -7,7 +7,8 @@
  * The payload an actor update carries, shared by the outbound request and the inbound notification so
  * that one description of the layout serves both directions.
  *
- * The layout is a four-octet declared length followed by that many state octets.
+ * The layout is a four-octet declared length followed by that many state octets, then any extras entries
+ * (CrowdyUpdateExtras.h), which a reader of the state alone never reaches.
  */
 struct FActorUpdateBody : ICrowdyMessage
 {
@@ -27,6 +28,9 @@ protected:
 	 */
 	TArray<uint8> StateBytes;
 
+	/** Extras entries a REQUEST sends after the state octets; empty for an update that carries none. */
+	TArray<uint8> ExtrasBytes;
+
 	/**
 	 * Exactly what AppendBody will write, so the frame can be sized once before anything is appended.
 	 * Measured from StateBytes rather than from the declared StateSize, because it describes what is
@@ -34,12 +38,13 @@ protected:
 	 */
 	int32 BodySize() const
 	{
-		return sizeof(StateSize) + StateBytes.Num();
+		return sizeof(StateSize) + StateBytes.Num() + ExtrasBytes.Num();
 	}
 
 	void AppendBody(TArray<uint8>& Data) const
 	{
 		USerializationFunctionLibrary::AppendValue(Data, StateSize);
 		Data.Append(StateBytes);
+		Data.Append(ExtrasBytes);
 	}
 };

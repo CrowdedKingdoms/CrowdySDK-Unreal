@@ -119,9 +119,9 @@ namespace CrowdyStateHeartbeatAdvisory
 			const FString DeclaringClassPath = DeclaringClass->GetPathName();
 			const int64 SubjectKey = Private::MakeSubjectKey(DeclaringClassPath, *RepProp.Property);
 
-			// A keyframe never carries an owner-only property, whatever it is marked, so advising the
-			// heartbeat flag on one would be advising a remedy that changes nothing.
-			if (RepProp.bHeartbeat || RepProp.bOwnerOnly)
+			// A keyframe never carries an owner-only property, whatever it is marked, and a continuous one goes on every
+			// actor keyframe already, so advising the heartbeat flag on either would be a remedy that changes nothing.
+			if (RepProp.bHeartbeat || RepProp.bOwnerOnly || RepProp.bContinuous)
 			{
 				// Dropping it here is how the remedy is confirmed: a property that gains the heartbeat flag
 				// leaves the advised list on the next resolution of its class.
