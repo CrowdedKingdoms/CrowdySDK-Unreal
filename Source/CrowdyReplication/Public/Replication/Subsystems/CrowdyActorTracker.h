@@ -55,6 +55,9 @@ struct FCrowdyActorUpdate
 	 */
 	CROWDYREPLICATION_API const FInstancedStruct& ResolveState() const;
 
+	/** The extras entries the update carried after its state; empty on the Blueprint path, which has no message. */
+	CROWDYREPLICATION_API TConstArrayView<uint8> ResolveExtras() const;
+
 	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Actor Update")
 	int64 ServerTimestamp = 0;
 
@@ -116,6 +119,7 @@ struct FCrowdyActorLeft
 DECLARE_TS_MULTICAST_DELEGATE_OneParam(FOnTrackedActorUpdateBatch, const TArray<FCrowdyActorUpdate>&);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnActorUpdateGameThreadBatch, const TArray<FCrowdyActorUpdate>&, Updates);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnActorSpawnRequested, FGuid, UUID, FInstancedStruct, IntialState, int32, ActorCount);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnActorAppearedExtras, const FGuid& /*UUID*/, TConstArrayView<uint8> /*Extras*/);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnActorTimeoutRequested,FGuid, UUID, int32, ActorCount);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnActorLeftReported, const FCrowdyActorLeft&, ActorLeft, int32, ActorCount);
 
@@ -155,6 +159,10 @@ public:
 	// Spawn Delegate
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Actor Tracker|Events")
 	FOnActorSpawnRequested OnRemoteEntityAppeared;
+
+	// The extras the appearing update carried, right after OnRemoteEntityAppeared. That update is never applied, so this is
+	// the only time they are seen. The view is valid only during the call.
+	FOnActorAppearedExtras OnRemoteEntityAppearedExtras;
 
 	// Destroy/Despawn delegate
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Actor Tracker|Events")
@@ -237,6 +245,8 @@ public:
 	// What the game thread records for a batch of appearing entities before announcing them.
 	void RecordAppearancesForTest(const TArray<FCrowdyActorUpdate>& Appeared) { RecordAppearances(Appeared); }
 	bool ForgetTrackedActorForTest(const FGuid& UUID) { return ForgetTrackedActor(UUID); }
+	void QueueAppearancesForTest(const TArray<FCrowdyActorUpdate>& Appeared) { PendingAppearances.Append(Appeared); }
+	void FlushAppearancesForTest() { FlushAppearances(); }
 
 	// The shard queues with no worker pool behind them, which is the state in which nothing drains them.
 	void SetupQueuesForTest() { SetupQueues(); }
@@ -399,6 +409,10 @@ private:
 
 	// Written on the game thread before the appearance broadcast, since a listener resolves the class during it.
 	void RecordAppearances(const TArray<FCrowdyActorUpdate>& Appeared);
+
+	// Appearances handed over by the receive path, announced on the next Tick. Game thread only.
+	TArray<FCrowdyActorUpdate> PendingAppearances;
+	void FlushAppearances();
 	
 	//Config
 	int32 MaxTrackedActors = 1024;

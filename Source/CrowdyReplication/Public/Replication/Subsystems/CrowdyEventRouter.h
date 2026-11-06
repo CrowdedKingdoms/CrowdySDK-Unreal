@@ -221,6 +221,10 @@ public:
 	// other member) before this returns. Game thread only.
 	void ReceiveChannelStateDelta(const FCrowdyStateDelta& Delta);
 
+	// Applies the continuous values an actor update carried, to the entity's actor or to the subscriber holding it, and
+	// fires an actor's notifies. Extras is a peer's bytes. Skips an entity this client owns. Game thread only.
+	void DispatchContinuousExtras(const FGuid& EntityID, TConstArrayView<uint8> Extras);
+
 	// UTickableWorldSubsystem. Drives the retry ladder for events that arrived ahead of their target
 	// entity's spawn; inbound routing itself is not tick-driven.
 	virtual void Tick(float DeltaTime) override;
@@ -475,8 +479,9 @@ private:
 	 * the subscriber says it holds the id, the entity is one it holds as data and no amount of waiting can
 	 * make a later attempt succeed. Returns false only when there is no subscriber or the subscriber does
 	 * not hold the id, which is when the caller should go on waiting for the entity as it always has.
+	 * bContinuous reads the delta as values off a movement update, which carry no class id and only continuous slots.
 	 */
-	bool DispatchStateDeltaToSubscriber(const FCrowdyStateDelta& Delta);
+	bool DispatchStateDeltaToSubscriber(const FCrowdyStateDelta& Delta, bool bContinuous = false);
 
 	// Reused across deltas so the receive path allocates nothing per entity once it is warm: the indices the
 	// codec reports as changed, and the indices the delta actually carried. The present set is handed to the
@@ -496,6 +501,9 @@ private:
 	// so making either push the other onto a local would cost an allocation for nothing.
 	bool bDispatchingParticipantStateDelta = false;
 	bool bDispatchingSubscriberStateDelta = false;
+
+	// Reused, so a stream of continuous values allocates nothing here per update.
+	TArray<uint8> ContinuousBlob;
 
 	// Running total of deferred events dropped by an eviction path, and when the last eviction line was
 	// logged. Every eviction is counted and reported: a queue that silently shrinks looks exactly like a

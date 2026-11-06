@@ -10,6 +10,7 @@
 
 
 class ICrowdyReplicationSource;
+class UCrowdyAutoRegistry;
 class UCrowdySDKBridgeSubsystem;
 
 namespace CrowdyAutoReplication
@@ -45,6 +46,12 @@ namespace CrowdyAutoReplication
 	 * stated as a test rather than reasoned about from the loop that calls it.
 	 */
 	CROWDYREPLICATION_API ESendDecision DecideSend(const FSendInputs& Inputs);
+
+	/**
+	 * Whether a full update carries the entry's extras. Continuous values go when they change and on keyframes, so steady
+	 * ones cost a moving entity nothing. A lost change is repaired by the next keyframe.
+	 */
+	CROWDYREPLICATION_API bool ShouldCarryExtras(bool bHasContinuous, bool bContinuousChanged, bool bKeyframeDue, bool bHasSentBefore);
 
 	/**
 	 * Whether an entry's live state differs from what it last put on the wire. ComparableBytes is the run of
@@ -103,6 +110,12 @@ struct FReplicationData
 	// True for a presence entry: no state is sent; every PresenceIntervalSeconds its source's SendPresence runs instead.
 	TArray<bool> bPresenceOnly;
 
+	// Extras entries each full update of the entry carries after its state; empty for almost every entry.
+	TArray<TArray<uint8>> Extras;
+
+	// True when the entry's class has continuous properties, which then fill Extras on their own.
+	TArray<bool> bHasContinuous;
+
 	int32 Count = 0;
 };
 
@@ -126,6 +139,16 @@ public:
 	void RegisterReplicationComponent(UActorComponent* Component, bool bPresenceOnly = false);
 	void UnregisterReplicationComponent(UActorComponent* Component);
 
+	/**
+	 * Extras entries (CrowdyUpdateExtras::AppendEntry) every later full update of this component carries, starting with
+	 * the next tick, until replaced or the component registers again; empty clears them. False when the component is not
+	 * registered here, sends presence only, has continuous properties, or the bytes do not read as entries.
+	 */
+	bool SetExtras(const UActorComponent* Component, TArray<uint8> Extras);
+
+	// True when the component's full updates go out here and peers on this map apply them.
+	bool CarriesUpdatesOf(const UActorComponent* Component) const;
+
 	// How long a player who joins later waits, at most, to see a presence entry's entity.
 	static constexpr float PresenceIntervalSeconds = 4.0f;
 
@@ -142,13 +165,31 @@ public:
 		const int32 Index = Data.Components.IndexOfByKey(Component);
 		return Index != INDEX_NONE ? Data.UUIDs[Index] : FString();
 	}
+
+	void SetAutoRegistryForTest(UCrowdyAutoRegistry* Registry) { AutoRegistry = Registry; }
+
+	bool CaptureContinuousForTest(const UActorComponent* Component, const AActor& Actor)
+	{
+		return CaptureContinuous(Data.Components.IndexOfByKey(Component), Actor);
+	}
+
+	TArray<uint8> GetExtrasForTest(const UActorComponent* Component) const
+	{
+		const int32 Index = Data.Components.IndexOfByKey(Component);
+		return Index != INDEX_NONE ? Data.Extras[Index] : TArray<uint8>();
+	}
 #endif
 
 private:
 	
 	UCrowdySDKBridgeSubsystem* Bridge = nullptr;
+	UCrowdyAutoRegistry* AutoRegistry = nullptr;
 
 	FReplicationData Data;
+
+	// Reused by CaptureContinuous, which runs per tick for every entity with continuous values.
+	TArray<uint8> ContinuousValues;
+	TArray<uint8> ContinuousEntry;
 	
 	float ReplicationInterval = 0.1f;
 	float ReplicationAccumulator = 0.f;
@@ -159,9 +200,13 @@ private:
 	float HeartbeatIntervalSeconds = 1.0f;
 
 	bool bIsTicking = false;
+	bool bPeersTrackUpdates = false;
 
 private:
 	void ReplicationLoop();
+
+	/** Encodes the entry's continuous properties into its extras. True when they differ from what is already there. */
+	bool CaptureContinuous(int32 Index, const AActor& Actor);
 
 	/** Seconds on the world's unpaused clock, which is the same clock the two intervals above are expressed in. */
 	double NowSeconds() const;

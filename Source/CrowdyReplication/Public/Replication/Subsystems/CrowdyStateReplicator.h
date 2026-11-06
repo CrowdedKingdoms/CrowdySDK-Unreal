@@ -99,6 +99,10 @@ struct FCrowdyOwnedEntityState
 	// unaffected. False when the entity has no component (e.g. test fixtures) or set Inherit.
 	bool bHeartbeatSuppressed = false;
 
+	// True when this entity's movement updates carry its continuous properties, so the diff and keyframe skip them.
+	// False leaves them ordinary state, which keeps them moving on an instance that turned movement off.
+	bool bContinuousOnMovement = false;
+
 	// Per-property push flags for bManualDirty properties: set by MarkStateDirty/MarkAllStateDirty, consumed
 	// (and cleared for the sent bits) by the send loop. Sized to the layout in InitShadow and re-Init on a
 	// shadow rebuild. A bManualDirty property is dirty iff its bit here is set; auto-diff never touches it.
@@ -172,6 +176,10 @@ public:
 
 	// Marks every bManualDirty property of an owned entity for a push on the next send.
 	void MarkAllStateDirty(const FGuid& EntityID);
+
+	// Whether this entity's movement updates carry its continuous properties. Follows StartReplication and StopReplication,
+	// because a property nothing carries must go back to being ordinary state. Skipped when the entity is not tracked.
+	void SetContinuousOnMovement(const FGuid& EntityID, bool bOnMovement);
 
 	// Adopts a host correction that was just applied to an entity we own into the owner's shadow, so the
 	// owner's next diff sees the host's values as already-sent and does not re-emit (revert) them. Called by

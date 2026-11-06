@@ -13,6 +13,13 @@
 
 class UCrowdyRenderingBackend;
 class UCrowdyEntitySubsystem;
+class UCrowdyEventRouter;
+
+/**
+ * An applied update's id, its slot and the extras entries it carried after its state. Never fires for an update with none.
+ * The view is valid only during the call, and its bytes are a peer's: check an entry's type, length and layout hash before decoding it.
+ */
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnCrowdyUpdateExtras, const FGuid& /*UUID*/, int32 /*SlotId*/, TConstArrayView<uint8> /*Extras*/);
 
 /**
  *
@@ -41,6 +48,9 @@ public:
 
 	// The live backend, null when none initialized; a backend that refused to initialize is absent here and present in the profile.
 	UCrowdyRenderingBackend* GetActiveBackend() const { return ActiveBackend; }
+
+	// Fires on the game thread right after the backend took the update, whichever backend is active.
+	FOnCrowdyUpdateExtras OnUpdateExtras;
 
 	// A destroy event arrived for UUID. A backend that stopped drawing it leaves the slot waiting for a later update,
 	// which draws it again only once the destroy is past, as an actor pool slot whose actor was destroyed does.
@@ -113,6 +123,8 @@ public:
 	// The real queue and the real drain, so a test sees what the backend is handed rather than what a
 	// caller passed straight to it. ExtractUpdateForTest below deliberately bypasses both, so it cannot
 	// see which of an update's two state carriers the drain reads.
+	void SetEventRouterForTest(UCrowdyEventRouter* Router) { EventRouterForTest = Router; }
+
 	void DrainUpdateBatchForTest(const TArray<FCrowdyActorUpdate>& Updates)
 	{
 		HandleUpdateBatch(Updates);
@@ -265,6 +277,14 @@ private:
 
 	UFUNCTION()
 	void HandleUpdateBatch(const TArray<FCrowdyActorUpdate>& Updates);
+
+	void HandleActorAppearedExtras(const FGuid& UUID, TConstArrayView<uint8> Extras);
+
+	void DeliverExtras(UCrowdyEventRouter* Router, const FGuid& UUID, int32 SlotId, TConstArrayView<uint8> Extras);
+
+	UCrowdyEventRouter* ResolveEventRouter() const;
+
+	UCrowdyEventRouter* EventRouterForTest = nullptr;
 
 	UFUNCTION()
 	void OnEntityRegistered(const FGuid& EntityID);

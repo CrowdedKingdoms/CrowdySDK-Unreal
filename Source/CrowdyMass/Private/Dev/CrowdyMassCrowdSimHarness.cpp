@@ -17,6 +17,7 @@
 #include "Misc/DateTime.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "Messages/Actor/CrowdyUpdateExtras.h"
 #include "Network/CrowdyCpp/CrowdyCppLoopback.h"
 #include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
 #include "ProfilingDebugging/TraceAuxiliary.h"
@@ -104,6 +105,14 @@ namespace CrowdyMassCrowdSim
 	// name and by type, never by metadata: cooked builds strip reflection metadata.
 	const FName PayloadPropertyName(TEXT("Payload"));
 	const FName StancePropertyName(TEXT("Stance"));
+
+	int32 GProbeExtrasNonce = 0;
+	FAutoConsoleVariableRef CVarProbeExtrasNonce(
+		TEXT("crowdy.mass.crowdsim.extras"),
+		GProbeExtrasNonce,
+		TEXT("Non-zero puts one Continuous extras entry carrying this number (layout hash 0) on every bot update, ")
+		TEXT("to check extras arrive through the Mass backend. 0 (default) sends none."),
+		ECVF_Default);
 
 	float PhaseDurationSeconds(FRandomStream& Random, ECrowdyMassCrowdSimPhase Phase)
 	{
@@ -713,13 +722,22 @@ void UCrowdyMassCrowdSimHarness::EmitBot(FCrowdyMassCrowdSimBot& Bot, UCrowdySDK
 	// The class id is what stops an observer resolving these bots as whatever other class last claimed
 	// FCrowdyActorState: a class guard on the receiving end refuses a delta whose claimed class does not
 	// match what the sender is actually spawned as.
+	TArray<uint8> Extras;
+	if (CrowdyMassCrowdSim::GProbeExtrasNonce != 0)
+	{
+		const int64 Nonce = CrowdyMassCrowdSim::GProbeExtrasNonce;
+		CrowdyUpdateExtras::AppendContinuousEntry(Extras, 0,
+			TConstArrayView<uint8>(reinterpret_cast<const uint8*>(&Nonce), sizeof(Nonce)));
+	}
+
 	SDK.DispatchActorUpdate(ChunkX, ChunkY, ChunkZ,
 		ECrowdyDecayRate::No_Decay,
 		ECrowdyReplicationDistance::Eight_Chunks,
 		Bot.ActorId,
 		FInstancedStruct::Make(State),
 		BotClassID,
-		/*bAsync=*/true);
+		/*bAsync=*/true,
+		Extras);
 
 	++UpdatesEmitted;
 

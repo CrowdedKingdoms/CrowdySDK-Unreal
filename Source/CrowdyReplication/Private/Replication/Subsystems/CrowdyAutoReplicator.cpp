@@ -6,13 +6,17 @@
 
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Messages/Actor/CrowdyUpdateExtras.h"
 #include "Messages/Actor/FActorUpdateRequestMessage.h"
 #include "Replication/Interfaces/CrowdyReplicationSource.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
 #include "Internal/FCrowdyServiceRegistry.h"
+#include "Subsystem/CrowdyAutoRegistry.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/HelperFunctions.h"
 #include "Replication/State/CrowdyBitwiseCompare.h"
+#include "Replication/State/CrowdyStateCodec.h"
+#include "Replication/State/FCrowdyRepLayout.h"
 #include "Utils/UCrowdyClassRegistry.h"
 
 namespace CrowdyAutoReplication
@@ -34,6 +38,11 @@ namespace CrowdyAutoReplication
 		// Only reached while the actor is unchanged, which is the only time a heartbeat says anything a full send
 		// would not have said better.
 		return Inputs.bHeartbeatDue ? ESendDecision::Heartbeat : ESendDecision::None;
+	}
+
+	bool ShouldCarryExtras(const bool bHasContinuous, const bool bContinuousChanged, const bool bKeyframeDue, const bool bHasSentBefore)
+	{
+		return !bHasContinuous || bContinuousChanged || bKeyframeDue || !bHasSentBefore;
 	}
 
 	bool HasStateChanged(const FInstancedStruct& LastSent, const FInstancedStruct& Live, const int32 ComparableBytes)
@@ -83,6 +92,7 @@ void UCrowdyAutoReplicator::Initialize(FSubsystemCollectionBase& Collection)
 
 	Bridge = GameInstance->GetSubsystem<UCrowdySDKBridgeSubsystem>();
 	check(Bridge);
+	AutoRegistry = GameInstance->GetSubsystem<UCrowdyAutoRegistry>();
 
 
 	if (!IsValid(Bridge))
@@ -107,6 +117,7 @@ void UCrowdyAutoReplicator::Initialize(FSubsystemCollectionBase& Collection)
 
 	const UCrowdyMapProfile* Profile = UCrowdySDKDeveloperSettings::ResolveProfileForWorld(World);
 	bIsTicking = Profile && Profile->bUseAutoReplicator;
+	bPeersTrackUpdates = Profile && Profile->ActorManagement.bUseCrowdyActorTracker;
 
 	if (bIsTicking)
 	{
@@ -232,6 +243,11 @@ void UCrowdyAutoReplicator::RegisterReplicationComponent(UActorComponent* Compon
 	Data.NextHeartbeatTimes.Add(0.0);
 	Data.bHasSent.Add(false);
 	Data.bPresenceOnly.Add(bPresenceOnly);
+	Data.Extras.AddDefaulted();
+
+	const AActor* LayoutActor = Component->GetOwner();
+	const FCrowdyRepLayout* Layout = AutoRegistry && LayoutActor ? AutoRegistry->FindRepLayout(LayoutActor->GetClass()) : nullptr;
+	Data.bHasContinuous.Add(!bPresenceOnly && Layout && Layout->HasContinuous());
 	Data.Count++;
 
 	ScheduleFirstSends(Data.Count - 1);
@@ -259,9 +275,53 @@ void UCrowdyAutoReplicator::UnregisterReplicationComponent(UActorComponent* Comp
 		Data.NextHeartbeatTimes.RemoveAtSwap(i);
 		Data.bHasSent.RemoveAtSwap(i);
 		Data.bPresenceOnly.RemoveAtSwap(i);
+		Data.Extras.RemoveAtSwap(i);
+		Data.bHasContinuous.RemoveAtSwap(i);
 		Data.Count--;
 		break;
 	}
+}
+
+bool UCrowdyAutoReplicator::SetExtras(const UActorComponent* Component, TArray<uint8> Extras)
+{
+	const int32 Index = Data.Components.IndexOfByKey(Component);
+	if (Index == INDEX_NONE || Data.bPresenceOnly[Index] || Data.bHasContinuous[Index] || !CrowdyUpdateExtras::IsWellFormed(Extras))
+	{
+		return false;
+	}
+	Data.Extras[Index] = MoveTemp(Extras);
+
+	// Sent on the next tick rather than at the next keyframe, which for an entity that is not moving is seconds away.
+	Data.bHasSent[Index] = false;
+	return true;
+}
+
+bool UCrowdyAutoReplicator::CarriesUpdatesOf(const UActorComponent* Component) const
+{
+	const int32 Index = Data.Components.IndexOfByKey(Component);
+	return bIsTicking && bPeersTrackUpdates && Index != INDEX_NONE && !Data.bPresenceOnly[Index];
+}
+
+bool UCrowdyAutoReplicator::CaptureContinuous(const int32 Index, const AActor& Actor)
+{
+	// Looked up each time: the registry frees its layouts on a rescan.
+	const FCrowdyRepLayout* Layout = AutoRegistry ? AutoRegistry->FindRepLayout(Actor.GetClass()) : nullptr;
+	if (!Layout || !Layout->HasContinuous())
+	{
+		return false;
+	}
+
+	FCrowdyStateCodec::Encode(*Layout, &Actor, Layout->ContinuousBits, /*bKeyframe=*/false, ContinuousValues);
+
+	ContinuousEntry.Reset();
+	CrowdyUpdateExtras::AppendContinuousEntry(ContinuousEntry, Layout->LayoutHash, ContinuousValues);
+	if (ContinuousEntry == Data.Extras[Index])
+	{
+		return false;
+	}
+
+	Data.Extras[Index] = ContinuousEntry;
+	return true;
 }
 
 void UCrowdyAutoReplicator::ReplicationLoop()
@@ -307,7 +367,8 @@ void UCrowdyAutoReplicator::ReplicationLoop()
 		Inputs.bHasSentBefore = Data.bHasSent[i];
 		// The chunk is compared as well as the state, because it rides the header rather than the payload, so an
 		// actor can cross a boundary without its state changing.
-		Inputs.bStateOrChunkChanged = Data.LastSentChunks[i] != Data.Chunks[i]
+		const bool bContinuousChanged = Data.bHasContinuous[i] && CaptureContinuous(i, *Actor);
+		Inputs.bStateOrChunkChanged = bContinuousChanged || Data.LastSentChunks[i] != Data.Chunks[i]
 			|| CrowdyAutoReplication::HasStateChanged(Data.LastSentStates[i], State,
 				Data.LastSentCompareBytes[i]);
 		Inputs.bKeyframeDue = KeyframeIntervalSeconds > 0.0f && Now >= Data.NextKeyframeTimes[i];
@@ -317,13 +378,16 @@ void UCrowdyAutoReplicator::ReplicationLoop()
 
 		if (Decision == CrowdyAutoReplication::ESendDecision::FullUpdate)
 		{
+			const bool bCarryExtras = CrowdyAutoReplication::ShouldCarryExtras(Data.bHasContinuous[i], bContinuousChanged,
+				Inputs.bKeyframeDue, Inputs.bHasSentBefore);
 			Bridge->DispatchActorUpdateFn(Data.Chunks[i].X, Data.Chunks[i].Y, Data.Chunks[i].Z,
 				ECrowdyDecayRate::No_Decay,
 				ECrowdyReplicationDistance::Eight_Chunks,
 				Data.UUIDs[i],
 				State,
 				Data.ClassIDs[i],
-				false);
+				false,
+				bCarryExtras ? TConstArrayView<uint8>(Data.Extras[i]) : TConstArrayView<uint8>());
 
 			// A send that fails to serialize is not worth re-sending identically next interval, and the keyframe
 			// below is what repairs anything lost, so an entry records what it offered rather than what left.

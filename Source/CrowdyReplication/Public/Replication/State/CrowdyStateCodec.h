@@ -152,9 +152,10 @@ public:
 	// Scratch, when supplied, is the caller's reusable per-layout value block (see FCrowdyStateDecodeScratch):
 	// it is built for Layout here unless it already describes it, and it removes the allocation each present
 	// field would otherwise cost. It changes no outcome, so a caller off the hot path passes nothing.
+	// bContinuousOnly refuses the whole blob, before writing anything, when it names a property that is not continuous.
 	static bool Decode(const FCrowdyRepLayout& Layout, int64 IncomingLayoutHash, const TArray<uint8>& Blob,
 		void* Container, TArray<int32>& OutChangedIndices, TArray<int32>* OutPresentIndices = nullptr,
-		FCrowdyStateDecodeScratch* Scratch = nullptr);
+		FCrowdyStateDecodeScratch* Scratch = nullptr, bool bContinuousOnly = false);
 
 	// Frames one FCrowdyStateDelta as a reliable-channel payload, a byte-for-byte mirror of
 	// FCrowdyRPC::EncodeChannelRpc: [u8 tag=CrowdyChannelStateDeltaTag][u8 version][ClassID][EntityID]

@@ -100,6 +100,8 @@ namespace
 	static_assert(CrowdyAudioPacket::MaxPayloadBytes
 			== static_cast<int32>(crowdy::media::kVoiceHeaderBytes + crowdy::media::kMaxVoiceFrameBytes),
 		"An audio payload is no longer the voice header plus the largest voice frame.");
+	static_assert(CrowdyUpdateExtras::MaxPayloadOctets == static_cast<int32>(crowdy::wire::kMaxLongSpatialPayload),
+		"Actor update extras are no longer fitted to the octets a signed datagram carries.");
 }
 
 FCrowdyMessageParser::FCrowdyMessageParser(FCrowdyServiceRegistry* InServiceRegistry,

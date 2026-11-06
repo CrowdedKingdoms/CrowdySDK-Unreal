@@ -12,6 +12,7 @@
 #include "Replication/State/CrowdyBitwiseCompare.h"
 #include "Replication/State/CrowdyStateCodec.h"
 #include "Replication/State/FCrowdyRepLayout.h"
+#include "Replication/Subsystems/CrowdyAutoReplicator.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "StructUtils/InstancedStruct.h"
@@ -315,6 +316,7 @@ bool UCrowdyStateReplicator::TryTrackOwned(const FCrowdyEntityRecord& Record)
 	else
 	{
 		State->bHostOwned = bTrackAsHostOwned;
+		State->bContinuousOnMovement &= !bTrackAsHostOwned;
 	}
 
 	OwnedEntities.Add(Record.NetID, MoveTemp(State));
@@ -492,6 +494,10 @@ bool UCrowdyStateReplicator::BuildOwnedState(const FGuid& EntityID, UObject* Par
 		if (const UCrowdyEntityComponent* Comp = Actor->FindComponentByClass<UCrowdyEntityComponent>())
 		{
 			Out->bHeartbeatSuppressed = Comp->GetStateHeartbeat() == ECrowdyStateHeartbeat::Off;
+
+			const UWorld* World = Actor->GetWorld();
+			const UCrowdyAutoReplicator* Movement = World ? World->GetSubsystem<UCrowdyAutoReplicator>() : nullptr;
+			Out->bContinuousOnMovement = Movement && Movement->CarriesUpdatesOf(Comp);
 		}
 	}
 
@@ -566,6 +572,14 @@ void UCrowdyStateReplicator::InitShadow(FCrowdyOwnedEntityState& State, const FC
 	UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Log,
 		TEXT("[CrowdyStateReplicator] shadow built for %s: %d slots, %d bytes."),
 		*State.EntityID.ToString(), Num, Total);
+}
+
+void UCrowdyStateReplicator::SetContinuousOnMovement(const FGuid& EntityID, const bool bOnMovement)
+{
+	if (const TUniquePtr<FCrowdyOwnedEntityState>* State = OwnedEntities.Find(EntityID))
+	{
+		(*State)->bContinuousOnMovement = bOnMovement && !(*State)->bHostOwned;
+	}
 }
 
 bool UCrowdyStateReplicator::RegisterOwnedEntityForTest(const FGuid& EntityID, UObject* Participant)
@@ -1266,6 +1280,23 @@ void UCrowdyStateReplicator::ReplicationLoop()
 				continue;
 			}
 
+			// Movement updates carry the value, which leaves only the owner's own notify to run here.
+			if (RepProp.bContinuous && State.bContinuousOnMovement)
+			{
+				const void* Live =RepProp.Property->ContainerPtrToValuePtr<void>(Participant);
+				void* Shadow = ShadowBase + State.ShadowOffsets[Index];
+				if (RepProp.Property->Identical(Live, Shadow, PPF_None))
+				{
+					continue;
+				}
+				if (RepProp.OnRepFunctionName != NAME_None)
+				{
+					PendingNotifies.Add(FCrowdyPendingLocalNotify{ Participant, RepProp.OnRepFunctionName, State.EntityID, Index });
+				}
+				RepProp.Property->CopyCompleteValue(Shadow, Live);
+				continue;
+			}
+
 			bool bDirty = false;
 			if (RepProp.bManualDirty)
 			{
@@ -1314,7 +1345,10 @@ void UCrowdyStateReplicator::ReplicationLoop()
 			for (int32 Index = 0; Index < Num; ++Index)
 			{
 				const FCrowdyRepProperty& RepProp = Layout.Properties[Index];
-				if (RepProp.Property && !RepProp.bOwnerOnly && RepProp.bHeartbeat)
+				// With no movement update to ride, a continuous value is on the keyframe whatever its heartbeat mark says:
+				// a host's World entity is never diffed, so this is the only way it goes out.
+				const bool bOnKeyframe = RepProp.bContinuous ? !State.bContinuousOnMovement : RepProp.bHeartbeat;
+				if (RepProp.Property && !RepProp.bOwnerOnly && bOnKeyframe)
 				{
 					SpatialDirty[Index] = true;
 					bEmitKeyframe = true;
