@@ -584,6 +584,37 @@ bool FCrowdyAuthLinkStartAnsweringAfterLogoutIsDroppedTest::RunTest(const FStrin
 	return true;
 }
 
+// The server echoes no state on this flow, so the address in the email is the only thing a web page cannot know.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthEmailLinkGetsItsOwnCallbackTest,
+	"CrowdySDK.Auth.EmailLinkGetsItsOwnCallback", ConsentTestFlags)
+
+bool FCrowdyAuthEmailLinkGetsItsOwnCallbackTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-email-link"));
+
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, FString(TEXT("{\"data\":{\"requestLoginLink\":{\"sent\":true}}}")));
+	Rig.Client->SetTestResponseScript(MoveTemp(Script));
+
+	FOnAuthError OnError;
+	OnError.BindDynamic(Rig.Listener.Get(), &UCrowdyAuthTestListener::HandleFlowError);
+	Rig.Auth->BeginMagicLinkSignIn(TEXT("player@example.com"), FOnAuthSuccess(), OnError);
+	Rig.Drain();
+
+	const FString Body = Rig.LastRequestBody();
+	TestTrue(TEXT("the link is requested"), Body.Contains(TEXT("requestLoginLink")));
+	TestTrue(TEXT("with a callback address of its own"), Body.Contains(TEXT("127.0.0.1")) && Body.Contains(TEXT("/callback/")));
+
+	Rig.Auth->ClearSavedSession();
+	return true;
+}
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 namespace
 {

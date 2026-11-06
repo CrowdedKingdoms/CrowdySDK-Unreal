@@ -94,11 +94,16 @@ FString FCrowdyLoopbackAuthServer::Start(const FString& InExpectedState, double 
 	OnError       = InOnError;
 	bConsumed     = false;
 
+	// With no state to check, the random path is what keeps a web page out, so no flow can have neither.
+	const FString CallbackPath = InExpectedState.IsEmpty()
+		? FString::Printf(TEXT("/callback/%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits))
+		: FString(TEXT("/callback"));
+
 	// Keep this a STATIC path. UE 5.8's router never actually unbinds a *parameterized* route
 	// (e.g. "/callback/:provider"), so social must read the provider from a query param, not the
 	// path.
 	RouteHandle = Router->BindRoute(
-		FHttpPath(TEXT("/callback")),
+		FHttpPath(CallbackPath),
 		EHttpServerRequestVerbs::VERB_GET,
 		FHttpRequestHandler::CreateRaw(this, &FCrowdyLoopbackAuthServer::HandleCallback));
 
@@ -119,7 +124,7 @@ FString FCrowdyLoopbackAuthServer::Start(const FString& InExpectedState, double 
 	UE_CLOG(CrowdyNetTrace::Query(), LogCrowdyNet, Log,
 		TEXT("[Loopback] Loopback listener armed on 127.0.0.1:%u/callback."), BoundPort);
 
-	return FString::Printf(TEXT("http://127.0.0.1:%u/callback"), BoundPort);
+	return FString::Printf(TEXT("http://127.0.0.1:%u%s"), BoundPort, *CallbackPath);
 }
 
 void FCrowdyLoopbackAuthServer::Stop()

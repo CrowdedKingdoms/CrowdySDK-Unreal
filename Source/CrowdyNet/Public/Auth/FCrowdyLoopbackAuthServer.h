@@ -43,8 +43,9 @@ public:
 	 * Bind /callback on the sticky loopback port and arm a timeout. Returns the redirect URI
 	 * (http://127.0.0.1:<port>/callback) to pass to requestLoginLink, or empty on failure (in
 	 * which case InOnError has already fired). If ExpectedState is non-empty, the callback's
-	 * `state` query param must match it (CSRF guard for social; the magic-link flow passes empty,
-	 * relying on the loopback-only + single-use-token guarantees).
+	 * `state` query param must match it (CSRF guard for social). With an empty ExpectedState, as in
+	 * the magic-link flow, the callback is bound under a random path instead, which only the emailed
+	 * link knows, so a web page cannot reach it.
 	 */
 	FString Start(const FString& ExpectedState, double TimeoutSeconds,
 	              FOnLoopbackToken InOnToken, FOnLoopbackError InOnError);
