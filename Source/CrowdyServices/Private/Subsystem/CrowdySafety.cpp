@@ -5,8 +5,6 @@
 #include "Engine/GameInstance.h"
 #include "Misc/DateTime.h"
 #include "Subsystem/CrowdyAuthentication.h"
-#include "Subsystem/CrowdyGameSession.h"
-#include "Utils/CrowdySDKDeveloperSettings.h"
 
 using namespace CrowdyServiceApi;
 
@@ -228,9 +226,7 @@ int64 UCrowdySafety::GetAppId() const
 		return AppIdForTest;
 	}
 #endif
-	const UGameInstance* GameInstance = GetGameInstance();
-	const UCrowdyGameSession* GameSession = GameInstance ? GameInstance->GetSubsystem<UCrowdyGameSession>() : nullptr;
-	return GameSession && GameSession->GetAppID() > 0 ? GameSession->GetAppID() : GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
+	return ResolveAppId(GetGameInstance());
 }
 
 FCrowdyCppClient* UCrowdySafety::ResolveClient() const

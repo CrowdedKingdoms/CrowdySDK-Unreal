@@ -14,7 +14,6 @@
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
-#include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
@@ -108,7 +107,7 @@ void UCrowdyChannels::HandleChannelMessageNotification(const FChannelMessageNoti
 
 int64 UCrowdyChannels::GetAppId() const
 {
-	return GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
+	return CrowdyServiceApi::ResolveAppId(GetGameInstance());
 }
 
 void UCrowdyChannels::GetMyChannels(FOnMyChannelsSuccess OnSuccess, FOnChannelError OnError)

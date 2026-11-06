@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "CrowdyCppClient.h"
+#include "CrowdyServiceApiSupport.h"
 #include "Engine/GameInstance.h"
 #include "Misc/AutomationTest.h"
 #include "UObject/Package.h"
@@ -344,6 +345,25 @@ bool FCrowdySafetyRecordingWarningTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("no microphone, no warning"), ReadFirst.Safety->HasWarnedAboutRecording());
 	ReadFirst.Safety->SetVoiceCapturing(true);
 	TestTrue(TEXT("the microphone opens in a recording app"), ReadFirst.Safety->HasWarnedAboutRecording());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyServicesAppIdTest,
+	"CrowdySDK.Services.ACallNamesTheSessionsApp", SafetyTestFlags)
+
+bool FCrowdyServicesAppIdTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<UGameInstance> Instance(NewObject<UGameInstance>(GetTransientPackage(), NAME_None, RF_Transient));
+	const TStrongObjectPtr<UCrowdyGameSession> Session(NewObject<UCrowdyGameSession>(Instance.Get()));
+	const int64 Setting = GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
+	const int64 Other = Setting + 1;
+
+	const UCrowdyGameSession* NoSession = nullptr;
+	TestEqual(TEXT("no session falls back to the setting"), CrowdyServiceApi::ResolveAppId(NoSession), Setting);
+	Session->SetAppID(0);
+	TestEqual(TEXT("a session with no app falls back to the setting"), CrowdyServiceApi::ResolveAppId(Session.Get()), Setting);
+	Session->SetAppID(Other);
+	TestEqual(TEXT("the session's app wins"), CrowdyServiceApi::ResolveAppId(Session.Get()), Other);
 	return true;
 }
 
