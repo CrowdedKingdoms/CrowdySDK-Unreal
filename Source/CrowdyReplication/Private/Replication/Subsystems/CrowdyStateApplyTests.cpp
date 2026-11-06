@@ -25,6 +25,8 @@
 #include "Utils/UCrowdyClassRegistry.h"
 #include "UObject/UnrealType.h"
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyStateApplyTestFlags =
@@ -979,5 +981,7 @@ bool FCrowdyStateReentrantNotifyKeepsChangedSetTest::RunTest(const FString& Para
 	TestEqual(TEXT("the owner does not revert the adopted host values"), EmitCount, 0);
 	return true;
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif // WITH_DEV_AUTOMATION_TESTS

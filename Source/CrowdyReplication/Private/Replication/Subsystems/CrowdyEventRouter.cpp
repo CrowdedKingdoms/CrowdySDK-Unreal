@@ -491,7 +491,7 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
         else
         {
             // A replicated subsystem's Host is the Leader, and its host-only events arrive on the channel.
-            const FGuid HostID = EntitySubsystem ? EntitySubsystem->GetHostID() : FGuid();
+            const FGuid HostID = EntitySubsystem ? EntitySubsystem->GetAppWriterID() : FGuid();
             const bool bIsLocalHost = HostID.IsValid() && HostID == LocalPlayerID;
             if (!bIsLocalHost)
             {
@@ -1115,7 +1115,10 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
         {
             if (const UCrowdyEntityComponent* Comp = AsActor->FindComponentByClass<UCrowdyEntityComponent>())
             {
-                if (Comp->GetHostOverridePolicy() == ECrowdyHostOverride::OwnerOnly)
+                PRAGMA_DISABLE_DEPRECATION_WARNINGS
+                const ECrowdyHostOverride Policy = Comp->GetHostOverridePolicy();
+                PRAGMA_ENABLE_DEPRECATION_WARNINGS
+                if (Policy == ECrowdyHostOverride::OwnerOnly)
                 {
                     ++StateParticipantStats.DroppedHostOverrideRefused;
                     UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,

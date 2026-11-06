@@ -137,7 +137,9 @@ public:
 	/** Fired on the game thread whenever the elected host changes.
 	 *  UCrowdyHostSubsystem (CrowdyServices) writes the host here so that lower
 	 *  modules (CrowdyReplication) can read it without a dependency cycle. */
-	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session")
+	UE_DEPRECATED(5.8, "Bind OnLeaderChanged on UCrowdyLeaderSubsystem, which never fires under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session",
+		meta=(DeprecatedProperty, DeprecationMessage="Bind On Leader Changed on the Crowdy Leader Subsystem, which never fires under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
 	FOnHostIDUpdated OnHostIDUpdated;
 
 	/** Fired on the game thread when the app is paused or comes back, or when the reason changes. */
@@ -311,8 +313,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
 	FGuid GetID() const {return GameSessionInfo.ID;}
 
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
+	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session",
+		meta=(DeprecatedFunction, DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
 	FGuid GetHostID() const {return HostID;}
+
+	// The client that writes replicated subsystems: the Leader, or the elected host under Leader Source Elected Host.
+	FGuid GetAppWriterID() const {return HostID;}
 
 	/** Game thread only. Called by UCrowdyHostSubsystem when a host is elected. */
 	void SetHostID(const FGuid& InHostID)
@@ -320,7 +327,9 @@ public:
 		if (HostID == InHostID) return;
 		const FGuid PreviousHostID = HostID;
 		HostID = InHostID;
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		OnHostIDUpdated.Broadcast(HostID, PreviousHostID);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")

@@ -225,7 +225,9 @@ bool UCrowdyUtilities::DoesCrowdyEntityOwn(UObject* WorldContextObject, const AA
 	if (OwnerRole == ECrowdyRole::HostOwned || (!TargetOwnerID.IsValid() && TargetRole == ECrowdyRole::HostOwned))
 	{
 		bool bHostValid = false;
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		HostID = CrowdyGetHostID(WorldContextObject, bHostValid);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	return UCrowdyEntityComponent::DoesOwnershipMatch(OwnerRole, OwnerNetID, TargetRole, TargetOwnerID, HostID);
@@ -414,7 +416,9 @@ bool UCrowdyUtilities::GetCrowdyHasAuthority(const UObject* WorldContextObject)
 		return false;
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return HostSubsystem->IsHost();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UCrowdyUtilities::CrowdyHasAuthority(UObject* WorldContextObject, bool& bHasAuthority)
@@ -456,7 +460,9 @@ FGuid UCrowdyUtilities::CrowdyGetHostID(UObject* WorldContextObject, bool& bIsVa
 		return {};
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	const FGuid HostID = HostSubsystem->GetHostID();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	bIsValid = HostID.IsValid();
 	return HostID;
 }
@@ -471,7 +477,9 @@ bool UCrowdyUtilities::IsCrowdyEntityHost(UObject* WorldContextObject, const AAc
 		return false;
 
 	bool bHostValid = false;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	const FGuid HostID = CrowdyGetHostID(WorldContextObject, bHostValid);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if (!bHostValid || !HostID.IsValid())
 		return false;
 

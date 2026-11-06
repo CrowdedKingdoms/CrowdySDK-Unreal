@@ -1922,7 +1922,7 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 	const bool bWeOwnEntity = EntityID.IsValid() && EntitySubsystem->IsLocallyOwned(EntityID);
 
 	// A non-spatial participant is a replicated subsystem, whose Host is the Leader.
-	const FGuid HostID = bNonSpatial ? EntitySubsystem->GetHostID() : EntitySubsystem->GetWorldOwnerID();
+	const FGuid HostID = bNonSpatial ? EntitySubsystem->GetAppWriterID() : EntitySubsystem->GetWorldOwnerID();
 	const bool bWeAreHost = HostID.IsValid() && HostID == EntitySubsystem->GetLocalPlayerID();
 
 	// Loopback debug mode (crowdy.rpc.loopback) delivers the call to this client's own receive

@@ -214,9 +214,11 @@ public:
 		      Keywords="Crowdy Is Connected Server"))
 	static bool CrowdyIsConnectedToServer(UObject* WorldContextObject);
 
+	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Session",
 		meta=(WorldContext="WorldContextObject",
-		      Keywords="Crowdy Get Host ID"))
+		      Keywords="Crowdy Get Host ID", DeprecatedFunction,
+		      DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
 	static FGuid CrowdyGetHostID(UObject* WorldContextObject, bool& bIsValid);
 
 	/**
@@ -225,9 +227,11 @@ public:
 	 * across clients. (For "owned by the host" instead, e.g. a prop the host spawned
 	 * compare GetCrowdyEntityOwnerID against CrowdyGetHostID.)
 	 */
+	UE_DEPRECATED(5.8, "Use IsLocalLeader on UCrowdyLeaderSubsystem for a one-machine gate, which is false under Leader Source Elected Host. IsCrowdyEntityLocallyOwned is a different question: it is true on every client for its own avatar. A decision that must be enforced belongs in a Server Object.")
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Session",
 		meta=(WorldContext="WorldContextObject", DefaultToSelf="Entity",
-		      Keywords="Is Host Crowdy Entity Actor"))
+		      Keywords="Is Host Crowdy Entity Actor", DeprecatedFunction,
+		      DeprecationMessage="Use Is Local Leader on the Crowdy Leader Subsystem for a one-machine gate, which is false under Leader Source Elected Host. Is Crowdy Entity Locally Owned is a different question: it is true on every client for its own avatar. A decision that must be enforced belongs in a Server Object."))
 	static bool IsCrowdyEntityHost(UObject* WorldContextObject, const AActor* Entity);
 
 private:

@@ -25,7 +25,7 @@ bool FCrowdySDKLogoutClearsSessionHostTest::RunTest(const FString& Parameters)
 	Sdk->SetGameSessionForTest(Session);
 
 	Sdk->Logout();
-	TestFalse(TEXT("the session holds no host as soon as Logout returns"), Session->GetHostID().IsValid());
+	TestFalse(TEXT("the session holds no host as soon as Logout returns"), Session->GetAppWriterID().IsValid());
 	TestEqual(TEXT("the signed-in user is cleared"), Session->GetUserID(), static_cast<int64>(0));
 	return true;
 }

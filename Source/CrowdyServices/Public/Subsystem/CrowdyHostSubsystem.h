@@ -33,14 +33,20 @@ public:
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	
 	
-	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Host|Events")
+	UE_DEPRECATED(5.8, "Bind OnLeaderChanged on UCrowdyLeaderSubsystem, which never fires under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Host|Events",
+		meta=(DeprecatedProperty, DeprecationMessage="Bind On Leader Changed on the Crowdy Leader Subsystem, which never fires under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
 	FOnCrowdyHostElected OnHostElected;
-	
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Host")
+
+	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Host",
+		meta=(DeprecatedFunction, DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
 	FGuid GetHostID() const;
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Host")
-	bool IsHostSet() const {return IsValid(GameSession) && GameSession->GetHostID().IsValid();}
+	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem; 0 means there is no Leader, which is always so under Leader Source Elected Host.")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Host",
+		meta=(DeprecatedFunction, DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem; 0 means there is no Leader, which is always so under Leader Source Elected Host."))
+	bool IsHostSet() const {return IsValid(GameSession) && GameSession->GetAppWriterID().IsValid();}
 
 	/** Called by the SDK on the game thread when a GameHost response arrives, and with 0 on sign-out.
 	 *  Broadcasts OnHostElected on the game thread whenever the host changes. */
@@ -50,8 +56,10 @@ public:
 	static FGuid HostIDForUser(const int64 UserID);
 
 	/** Returns the user ID of the current game host (0 if not yet known). */
+	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Host",
-		meta=(DisplayName="Get Host User ID"))
+		meta=(DisplayName="Get Host User ID", DeprecatedFunction,
+		      DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
 	int64 GetHostUserID() const
 	{
 		return HostUserID.load(std::memory_order_relaxed);
@@ -61,8 +69,10 @@ public:
 	 * Returns true when the local user IS the current game host.
 	 * Safe to call from any thread and from Blueprint.
 	 */
+	UE_DEPRECATED(5.8, "Use IsLocalLeader on UCrowdyLeaderSubsystem, which is false under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Host",
-		meta=(DisplayName="Is Host"))
+		meta=(DisplayName="Is Host", DeprecatedFunction,
+		      DeprecationMessage="Use Is Local Leader on the Crowdy Leader Subsystem, which is false under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
 	bool IsHost() const
 	{
 		if (!IsValid(GameSession)) return false;
@@ -90,6 +100,7 @@ public:
 	 * This is the server-validated sibling of UCrowdyUtilities::IsCrowdyEntityHost
 	 * (which only compares client-derived deterministic GUIDs). Call from the game thread.
 	 */
+	UE_DEPRECATED(5.8, "Use IsLocalLeader on UCrowdyLeaderSubsystem for a one-machine gate, which is false under Leader Source Elected Host. IsCrowdyEntityLocallyOwned is a different question: it is true on every client for its own avatar. A decision that must be enforced belongs in a Server Object.")
 	void CheckEntityIsHost(const AActor* Entity, TFunction<void(bool bSuccess, bool bIsHost)> Callback);
 
 #if WITH_DEV_AUTOMATION_TESTS

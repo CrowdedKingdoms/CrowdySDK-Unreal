@@ -32,8 +32,9 @@ something was left out.
 **Verdict.** One behaviour change: there is no elected host by default. `Leader Source` now defaults to
 `Server Object`, where the Leader of a Server Object type the SDK deploys writes replicated subsystems, nothing
 writes World entities, and an actor's Host event is dropped. A project that relies on the elected host sets
-`Elected Host (Deprecated)` (step 10). The entity component's Ownership setting, the host check nodes and the ownership-taking subsystem
-registration are deprecated: they keep working and warn when you compile.
+`Elected Host (Deprecated)` (step 10). The entity component's Ownership setting, every host node and the ownership-taking subsystem
+registration are deprecated: they warn when you compile and still run. Under `Server Object` the host nodes report the Leader, and
+`Grant Ownership To Host` leaves an entity with no writer.
 
 **Requires.** Unreal Engine 5.8. Under `Server Object`, deploy the app's server code once (Server Compute) so it
 carries the Leader type, then restart what still runs older code (`-run=CrowdyServerCompute -op=restart -yes`, or
@@ -48,6 +49,12 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 | `Get Ownership` | `Get Owned By` (the property, read-only in Blueprint). | Blueprint node, C++ `GetOwnership()` deprecated. |
 | `Is Crowdy Entity Locally Controlled` (actors only) | `Is Crowdy Entity Locally Owned`, and the exec version `Switch Is Crowdy Entity Locally Owned`. Both take an entity actor or a replicated subsystem. | Blueprint nodes; C++ `UCrowdyUtilities::IsCrowdyEntityLocallyOwned`, `SwitchIsCrowdyEntityLocallyOwned` (new), `IsCrowdyEntityLocallyControlled` deprecated. |
 | `Switch Crowdy Has Authority`, `Crowdy Has Authority` (is this client the elected host) | `Switch Is Crowdy Entity Locally Owned` on the entity or replicated subsystem you are about to write. Logic that only the host should run, with no entity to ask about, belongs in a Server Object. | Blueprint nodes; C++ `CrowdyHasAuthority`, `GetCrowdyHasAuthority` deprecated. |
+| `Get Host User ID`, `Get Host ID` (on the host subsystem, the game session and the entity subsystem), `Is Host Set`, `Crowdy Get Host ID` | `Get Leader User ID` on `Get Crowdy Leader Subsystem`; 0 means there is no Leader. It is a user id: where a graph needs the entity id, pass it through `Get Deterministic ID`, and check it is not 0 first, because 0 gives a valid-looking id where these nodes gave an invalid one. | Blueprint nodes; C++ `UCrowdyHostSubsystem::GetHostUserID`, `GetHostID`, `IsHostSet`, `UCrowdyGameSession::GetHostID`, `UCrowdyEntitySubsystem::GetHostID`, `UCrowdyUtilities::CrowdyGetHostID` deprecated. |
+| `Is Host` | `Is Local Leader` on the Crowdy Leader Subsystem. | Blueprint node; C++ `UCrowdyHostSubsystem::IsHost` deprecated. |
+| `On Host Elected`, `On Host ID Updated` | `On Leader Changed` on the Crowdy Leader Subsystem. It carries user ids, not entity ids. | Blueprint events; C++ `UCrowdyHostSubsystem::OnHostElected`, `UCrowdyGameSession::OnHostIDUpdated` deprecated. |
+| `Is Crowdy Entity Host`, `Is Crowdy Entity Host (Server)` | For a gate that should run on one machine, `Is Local Leader`. To ask whether an actor is the Leader's avatar, compare its entity id with `Get Deterministic ID` of `Get Leader User ID`. `Is Crowdy Entity Locally Owned` is a different question: it is true on every client for its own avatar, so swapping it in runs a host-only branch everywhere. A client-side answer can be changed by a forged message, so a decision that must be enforced belongs in a Server Object. | Blueprint nodes; C++ `UCrowdyUtilities::IsCrowdyEntityHost`, `UCrowdyHostSubsystem::CheckEntityIsHost`, `UCrowdyIsEntityHostServer::IsCrowdyEntityHostServer` deprecated. |
+| `Grant Ownership To Host` | No replacement for handing an entity back at runtime. Keep the entity's truth in a Server Object, or set `Owned By` `Leader` on the class if one client should simulate it; such an entity refuses grants, so it cannot also be handed to a player. | Blueprint node; C++ `UCrowdyOwnershipTransfer::GrantOwnershipToHost` deprecated. |
+| `Host Override` on the `Crowdy Entity Component`, `Get Host Override Policy` | No replacement: host corrections end with the elected host. State that must be protected belongs in a Server Object. The setting stays editable and a saved value keeps working; nothing warns for it until it is removed. | Component property and Blueprint node; C++ `HostOverride`, `GetHostOverridePolicy()` deprecated. |
 | `Register Replicated Subsystem` (Subsystem, Ownership) | `Register Crowdy Replicated Subsystem` (Subsystem). A replicated subsystem is always written by one client for everyone: the app's Leader (the elected host under `Elected Host`). | Blueprint node; C++ `UCrowdyReplicatedSubsystemLibrary::RegisterCrowdyReplicatedSubsystem` and `RegisterReplicatedSubsystemInto(Registry, Subsystem)` (new), the ownership-taking versions deprecated. |
 | Overriding `GetReplicatedOwnership()` on `UCrowdyReplicatedWorldSubsystem` or `UCrowdyReplicatedGameInstanceSubsystem` | Nothing to override: the bases no longer call it. | C++ virtual deprecated. |
 | An elected host always existed. | `Leader Source` in Project Settings > Plugins > Crowdy SDK > Replication: `Server Object`, the default, or `Elected Host (Deprecated)`. Server Object turns the elected host off (no host polling; World entities have no writer, and a Host event sent from any actor, Player-owned ones included, is dropped with a warning naming the setting) and has the app's Leader write replicated subsystems and run their Host events. | Project setting, C++ `UCrowdySDKDeveloperSettings::LeaderSource`, `ECrowdyLeaderSource`, `UsesElectedHost()` (new). |
@@ -105,7 +112,8 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 2. Replace `Is Crowdy Entity Locally Controlled` with `Is Crowdy Entity Locally Owned`.
 3. Replace `Switch Crowdy Has Authority` and `Crowdy Has Authority` with `Switch Is Crowdy Entity Locally Owned`
    or `Is Crowdy Entity Locally Owned` on the entity or replicated subsystem the gated code writes. In a
-   replicated subsystem, pass the subsystem itself.
+   replicated subsystem, pass the subsystem itself. Replace the other host nodes as the table above says. Under
+   `Elected Host` there is no Leader, so a project that keeps it moves its Leader reads when it leaves that setting.
 4. Replace `Register Replicated Subsystem` with `Register Crowdy Replicated Subsystem`, and in C++ drop the
    `Ownership` argument from `RegisterReplicatedSubsystemInto`. Delete any `GetReplicatedOwnership()` override.
 5. Open and re-save the Blueprints the search below finds, so they stop warning.
@@ -159,7 +167,7 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 must match:
 
 ```
-grep -r -a -l --include=*.uasset -e "IsCrowdyEntityLocallyControlled" -e "CrowdyHasAuthority" -e "GetOwnership" -e "GetMode" -e "RegisterReplicatedSubsystem" -e "CrowdyRecipient" -e "SendEvent" Content Plugins
+grep -r -a -l --include=*.uasset -e "IsCrowdyEntityLocallyControlled" -e "CrowdyHasAuthority" -e "GetOwnership" -e "GetMode" -e "RegisterReplicatedSubsystem" -e "CrowdyRecipient" -e "SendEvent" -e "CrowdyHostSubsystem" -e "GetHostID" -e "OnHostIDUpdated" -e "IsCrowdyEntityHost" -e "GrantOwnershipToHost" -e "GetHostOverridePolicy" Content Plugins
 grep -r -a -l --include=*.uasset "OnCrowdySpawned" Content Plugins
 grep -r -a -l --include=*.uasset "CrowdyEntityComponent" Content Plugins
 ```
