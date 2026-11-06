@@ -77,7 +77,7 @@ bool UCrowdyHostSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 
 FGuid UCrowdyHostSubsystem::GetHostID() const
 {
-	const FGuid HostID = IsValid(GameSession) ? GameSession->GetHostID() : FGuid();
+	const FGuid HostID = IsValid(GameSession) ? GameSession->GetAppWriterID() : FGuid();
 
 	if (!HostID.IsValid())
 	{
@@ -111,7 +111,9 @@ void UCrowdyHostSubsystem::SetHostUserID(const int64 InHostUserID)
 		if (IsValid(Self->GameSession))
 			Self->GameSession->SetHostID(HostID);
 
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		Self->OnHostElected.Broadcast(HostID, PreviousHostID);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	});
 }
 
@@ -171,7 +173,7 @@ void UCrowdyHostSubsystem::CheckEntityIsHost(const AActor* Entity, TFunction<voi
 	// Under Leader Source Server Object the server still elects a host of its own, but the host is the Leader.
 	if (EntityNetID == LocalPlayerNetID && !UCrowdySDKDeveloperSettings::UsesElectedHost())
 	{
-		const int64 LeaderUserID = GetHostUserID();
+		const int64 LeaderUserID = HostUserID.load(std::memory_order_relaxed);
 		Callback(LeaderUserID != 0, LeaderUserID != 0 && IsValid(GameSession) && LeaderUserID == GameSession->GetUserID());
 		return;
 	}
@@ -199,7 +201,7 @@ void UCrowdyHostSubsystem::CheckEntityIsHost(const AActor* Entity, TFunction<voi
 		// Neither is the same as "this actor is not the host", and the caller has a separate branch for the
 		// undetermined case precisely so it can wait or retry rather than act on a false negative.
 		UCrowdyHostSubsystem* Self = WeakThis.Get();
-		const int64 HostUid = Self ? Self->GetHostUserID() : 0;
+		const int64 HostUid = Self ? Self->HostUserID.load(std::memory_order_relaxed) : 0;
 		Callback(HostUid != 0, OwnerUserId == HostUid);
 	});
 }

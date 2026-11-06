@@ -661,6 +661,14 @@ FString UCrowdyBlueprintCompilerExtension::DescribeCrowdBodyLimit(const ECrowdyC
 	}
 }
 
+FString UCrowdyBlueprintCompilerExtension::DescribeDeprecatedAsyncNode(const UK2Node_BaseAsyncTask* Node)
+{
+	const UFunction* Factory = Node ? Node->GetFactoryFunction() : nullptr;
+	if (!Factory || !Factory->HasMetaData(FBlueprintMetadata::MD_DeprecatedFunction)) return FString();
+
+	return FString::Printf(TEXT("@@ is deprecated. %s"), *Factory->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage));
+}
+
 void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 	const FKismetCompilerContext& CompilationContext,
 	const FBlueprintCompiledData& Data)
@@ -689,6 +697,20 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 
 	TArray<UEdGraph*> SourceGraphs;
 	Blueprint->GetAllGraphs(SourceGraphs);
+
+	for (const UEdGraph* Graph : SourceGraphs)
+	{
+		if (!Graph) continue;
+
+		TArray<UK2Node_BaseAsyncTask*> AsyncNodes;
+		Graph->GetNodesOfClass(AsyncNodes);
+
+		for (UK2Node_BaseAsyncTask* AsyncNode : AsyncNodes)
+		{
+			const FString Warning = UCrowdyBlueprintCompilerExtension::DescribeDeprecatedAsyncNode(AsyncNode);
+			if (!Warning.IsEmpty()) CompilationContext.MessageLog.Warning(*Warning, AsyncNode);
+		}
+	}
 
 	// Unreal's Has Authority answers a question about Unreal's own network role, which does not
 	// exist for a Crowdy entity - the elected host is a convention, never an enforced server - so a

@@ -9,6 +9,8 @@
 #include "UObject/Package.h"
 #include "Utils/HelperFunctions.h"
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 namespace
 {
 	constexpr EAutomationTestFlags HostTestFlags =
@@ -92,5 +94,7 @@ bool FCrowdyHostAnswerAfterSignOutIgnoredTest::RunTest(const FString& Parameters
 	TestEqual(TEXT("On Host Elected fires once"), Rig.Listener->HostIDs.Num(), 1);
 	return true;
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif

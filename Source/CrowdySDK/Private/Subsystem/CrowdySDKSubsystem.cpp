@@ -1704,7 +1704,7 @@ void UCrowdySDKSubsystem::PollGameHost() const
 				TEXT("GameHost | HostUserID=%lld | LocalUserID=%lld | IsHost=%s | ActorCount=%d | EarliestJoined=%s"),
 				HostUserId,
 				IsValid(Self->GameSession) ? Self->GameSession->GetUserID() : 0,
-				HostSubsystem->IsHost() ? TEXT("YES") : TEXT("no"),
+				IsValid(Self->GameSession) && HostUserId != 0 && Self->GameSession->GetUserID() == HostUserId ? TEXT("YES") : TEXT("no"),
 				ActorCount,
 				*EarliestActorJoinedAt);
 		});

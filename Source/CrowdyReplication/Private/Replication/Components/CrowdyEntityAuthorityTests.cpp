@@ -125,8 +125,10 @@ bool FCrowdyStateAuthorityDefaultsTest::RunTest(const FString& Parameters)
 		static_cast<uint8>(CDO->GetOwnership()), static_cast<uint8>(ECrowdyOwnership::Host));
 	TestEqual(TEXT("Replicate Movement defaults to Auto"),
 		static_cast<uint8>(CDO->ReplicateMovement), static_cast<uint8>(ECrowdyReplicateMovement::Auto));
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	TestEqual(TEXT("HostOverride defaults to Allow"),
 		static_cast<uint8>(CDO->GetHostOverridePolicy()), static_cast<uint8>(ECrowdyHostOverride::Allow));
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 }
 

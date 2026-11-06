@@ -324,8 +324,15 @@ public:
 		return bPlayer ? ECrowdyOwnership::LocalClient : ECrowdyOwnership::Host;
 	}
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
-	ECrowdyHostOverride GetHostOverridePolicy() const { return HostOverride; }
+	UE_DEPRECATED(5.8, "Host corrections end with the elected host, with no replacement; state that must be protected belongs in a Server Object.")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component",
+		meta=(DeprecatedFunction, DeprecationMessage="Host corrections end with the elected host, with no replacement; state that must be protected belongs in a Server Object."))
+	ECrowdyHostOverride GetHostOverridePolicy() const
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return HostOverride;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
 	ECrowdyStateHeartbeat GetStateHeartbeat() const { return StateHeartbeat; }
@@ -516,8 +523,11 @@ public:
 	// Allow (default): host corrections are accepted and adopted. OwnerOnly: only the owner changes it. This is a
 	// coordination convention on the unenforced view plane, NOT a security boundary cheat-sensitive state belongs
 	// in server code (Server Objects).
+	UE_DEPRECATED(5.8, "Host corrections end with the elected host, with no replacement; state that must be protected belongs in a Server Object.")
 	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component",
-		meta=(EditCondition="OwnedBy == ECrowdyOwnedBy::Player || (OwnedBy == ECrowdyOwnedBy::Auto && Ownership == ECrowdyOwnership::LocalClient)", EditConditionHides))
+		meta=(DeprecatedProperty, DeprecationMessage="Host corrections end with the elected host, with no replacement; state that must be protected belongs in a Server Object.",
+			EditCondition="OwnedBy == ECrowdyOwnedBy::Player || (OwnedBy == ECrowdyOwnedBy::Auto && Ownership == ECrowdyOwnership::LocalClient)", EditConditionHides,
+			ToolTip="Deprecated. Host corrections end with the elected host. State that must be protected belongs in a Server Object."))
 	ECrowdyHostOverride HostOverride = ECrowdyHostOverride::Allow;
 
 	// Per-entity CrowdyState keyframe-heartbeat control. Inherit (default): this entity's CrowdyHeartbeat-marked

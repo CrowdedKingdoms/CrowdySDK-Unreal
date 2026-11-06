@@ -46,7 +46,7 @@ bool FCrowdyLeaderSourceWorldOwnerFollowsTheSettingTest::RunTest(const FString& 
 
 	FCrowdyScopedLeaderSource::Set(ECrowdyLeaderSource::ServerObject);
 	TestFalse(TEXT("Server Object: nothing writes World entities"), Entities->GetWorldOwnerID().IsValid());
-	TestEqual(TEXT("the elected host is still known, only no longer used"), Entities->GetHostID(), HostID);
+	TestEqual(TEXT("the elected host is still known, only no longer used"), Entities->GetAppWriterID(), HostID);
 	return true;
 }
 

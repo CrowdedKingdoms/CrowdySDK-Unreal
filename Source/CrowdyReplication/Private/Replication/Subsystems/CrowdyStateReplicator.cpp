@@ -151,7 +151,9 @@ void UCrowdyStateReplicator::Initialize(FSubsystemCollectionBase& Collection)
 		if (UCrowdyGameSession* GS = GameInstance->GetSubsystem<UCrowdyGameSession>())
 		{
 			GameSession = GS;
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			GS->OnHostIDUpdated.AddDynamic(this, &UCrowdyStateReplicator::HandleHostChanged);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 	}
 
@@ -178,7 +180,9 @@ void UCrowdyStateReplicator::Deinitialize()
 
 	if (UCrowdyGameSession* GS = GameSession.Get())
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		GS->OnHostIDUpdated.RemoveDynamic(this, &UCrowdyStateReplicator::HandleHostChanged);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 #if WITH_EDITOR
@@ -334,7 +338,7 @@ FGuid UCrowdyStateReplicator::ResolveHostID(const bool bSubsystem) const
 	{
 		return FGuid();
 	}
-	return bSubsystem ? ES->GetHostID() : ES->GetWorldOwnerID();
+	return bSubsystem ? ES->GetAppWriterID() : ES->GetWorldOwnerID();
 }
 
 bool UCrowdyStateReplicator::IsLocalHost(const bool bSubsystem) const
@@ -630,7 +634,10 @@ void UCrowdyStateReplicator::MarkStateDirty(const FGuid& EntityID, FName Propert
 		// push at the source. A missing entity component is treated as Allow (fall through).
 		if (const UCrowdyEntityComponent* Comp = Actor->FindComponentByClass<UCrowdyEntityComponent>())
 		{
-			if (Comp->GetHostOverridePolicy() == ECrowdyHostOverride::OwnerOnly)
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			const ECrowdyHostOverride Policy = Comp->GetHostOverridePolicy();
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			if (Policy == ECrowdyHostOverride::OwnerOnly)
 			{
 				UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
 					TEXT("[CrowdyStateReplicator] push to %s dropped: entity is OwnerOnly (host may not override it)."),

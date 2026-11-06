@@ -114,7 +114,9 @@ void UCrowdyEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 void UCrowdyEntitySubsystem::BindGameSession()
 {
 	GameSession->OnOwnerUUIDUpdated.AddDynamic(this, &UCrowdyEntitySubsystem::OnOwnerUUIDUpdated);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	GameSession->OnHostIDUpdated.AddDynamic(this, &UCrowdyEntitySubsystem::OnLeaderUpdated);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UCrowdyEntitySubsystem::SubscribeToSpawnDestroy(FCrowdyServiceRegistry& Registry)
@@ -136,7 +138,9 @@ void UCrowdyEntitySubsystem::Deinitialize()
 	if (IsValid(GameSession))
 	{
 		GameSession->OnOwnerUUIDUpdated.RemoveDynamic(this, &UCrowdyEntitySubsystem::OnOwnerUUIDUpdated);
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		GameSession->OnHostIDUpdated.RemoveDynamic(this, &UCrowdyEntitySubsystem::OnLeaderUpdated);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	GameSession = nullptr;
 
@@ -336,17 +340,22 @@ FGuid UCrowdyEntitySubsystem::GetLocalPlayerID() const
 
 FGuid UCrowdyEntitySubsystem::GetHostID() const
 {
-	return IsValid(GameSession) ? GameSession->GetHostID() : FGuid{};
+	return GetAppWriterID();
+}
+
+FGuid UCrowdyEntitySubsystem::GetAppWriterID() const
+{
+	return IsValid(GameSession) ? GameSession->GetAppWriterID() : FGuid{};
 }
 
 FGuid UCrowdyEntitySubsystem::GetWorldOwnerID() const
 {
-	return UCrowdySDKDeveloperSettings::UsesElectedHost() ? GetHostID() : FGuid();
+	return UCrowdySDKDeveloperSettings::UsesElectedHost() ? GetAppWriterID() : FGuid();
 }
 
 FGuid UCrowdyEntitySubsystem::GetWriterID(const FCrowdyEntityRecord& Record) const
 {
-	return Record.IsReplicatedSubsystem() ? GetHostID() : GetWorldOwnerID();
+	return Record.IsReplicatedSubsystem() ? GetAppWriterID() : GetWorldOwnerID();
 }
 
 bool UCrowdyEntitySubsystem::IsRecordLocallyOwned(const FCrowdyEntityRecord& Record) const
@@ -357,7 +366,7 @@ bool UCrowdyEntitySubsystem::IsRecordLocallyOwned(const FCrowdyEntityRecord& Rec
 void UCrowdyEntitySubsystem::MakeLeaderOwned(FCrowdyEntityRecord& Record) const
 {
 	Record.bLeaderOwned = true;
-	Record.OwnerID = GetHostID();
+	Record.OwnerID = GetAppWriterID();
 	Record.Role = DeriveRole(Record, Record.OwnerID);
 }
 
@@ -372,7 +381,7 @@ ECrowdyRole UCrowdyEntitySubsystem::DeriveRole(const FCrowdyEntityRecord& Record
 
 bool UCrowdyEntitySubsystem::IsLocalLeader() const
 {
-	return LocalPlayerID.IsValid() && GetHostID() == LocalPlayerID;
+	return LocalPlayerID.IsValid() && GetAppWriterID() == LocalPlayerID;
 }
 
 void UCrowdyEntitySubsystem::SetLocalPlayerID(const FGuid& InLocalPlayerID)
@@ -424,7 +433,7 @@ void UCrowdyEntitySubsystem::ReassignLeaderOwnedEntities()
 
 	// Read each time: a handler above may sign out, which clears the Leader.
 	for (const FGuid& NetID : LeaderOwned)
-		ReassignOwnership(NetID, GetHostID(), FGuid());
+		ReassignOwnership(NetID, GetAppWriterID(), FGuid());
 }
 
 FGuid UCrowdyEntitySubsystem::RegisterParticipant(UObject* Participant, const ECrowdyOwnership Ownership)

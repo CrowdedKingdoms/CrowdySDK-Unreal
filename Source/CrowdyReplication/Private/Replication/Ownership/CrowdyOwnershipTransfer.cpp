@@ -78,7 +78,7 @@ void UCrowdyOwnershipTransfer::GrantOwnershipTransfer(UObject* WorldContextObjec
 	if (!NewOwnerPlayerID.IsValid())
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyOwnershipTransfer]: GrantOwnershipTransfer — '%s' is not a client-owned entity; use Grant Ownership To Host to make an entity host-owned."),
+			TEXT("[CrowdyOwnershipTransfer]: GrantOwnershipTransfer — '%s' is not a client-owned entity."),
 			*GetNameSafe(NewOwner));
 		return;
 	}
@@ -97,7 +97,7 @@ void UCrowdyOwnershipTransfer::GrantOwnershipTransferToPlayer(UObject* /*WorldCo
 	if (!NewOwnerPlayerID.IsValid())
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyOwnershipTransfer]: GrantOwnershipTransferToPlayer — invalid player id; use Grant Ownership To Host for host ownership."));
+			TEXT("[CrowdyOwnershipTransfer]: GrantOwnershipTransferToPlayer — invalid player id."));
 		return;
 	}
 

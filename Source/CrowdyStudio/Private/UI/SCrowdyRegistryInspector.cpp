@@ -541,7 +541,9 @@ void SCrowdyRegistryInspector::RefreshData()
 						Defaults.Ownership = EnumDisplayText(OwnedBy);
 						if (OwnedBy == ECrowdyOwnedBy::Player)
 						{
+							PRAGMA_DISABLE_DEPRECATION_WARNINGS
 							Defaults.HostOverride = EnumDisplayText(Component->GetHostOverridePolicy());
+							PRAGMA_ENABLE_DEPRECATION_WARNINGS
 						}
 					}
 				}

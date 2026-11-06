@@ -138,8 +138,13 @@ public:
 	FGuid GetLocalPlayerID() const;
 
 	// Reads through to UCrowdyGameSession
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
+	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem",
+		meta=(DeprecatedFunction, DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
 	FGuid GetHostID() const;
+
+	// The client that writes replicated subsystems: the Leader, or the elected host under Leader Source Elected Host.
+	FGuid GetAppWriterID() const;
 
 	// The client that writes World entities: the elected host when Leader Source is Elected Host, otherwise none.
 	FGuid GetWorldOwnerID() const;
