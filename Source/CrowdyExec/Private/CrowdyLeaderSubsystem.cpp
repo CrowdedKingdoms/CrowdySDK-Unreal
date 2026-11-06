@@ -41,6 +41,7 @@ void UCrowdyLeaderSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		Udp->OnUDPTimeout.AddDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionLost);
 		Udp->OnUDPConnectionSuccessful.AddDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionUp);
 	}
+	WatchSession(Collection.InitializeDependency<UCrowdyGameSession>());
 	PostLoadMapHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UCrowdyLeaderSubsystem::HandlePostLoadMap);
 	Acquire();
 }
@@ -61,14 +62,28 @@ void UCrowdyLeaderSubsystem::Deinitialize()
 		Udp->OnUDPTimeout.RemoveDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionLost);
 		Udp->OnUDPConnectionSuccessful.RemoveDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionUp);
 	}
+	if (UCrowdyGameSession* Session = GameSession.Get())
+	{
+		Session->OnOwnerUUIDUpdated.RemoveDynamic(this, &UCrowdyLeaderSubsystem::HandlePlayerIDSet);
+	}
 	Unfollow();
 	Super::Deinitialize();
 }
 
+void UCrowdyLeaderSubsystem::WatchSession(UCrowdyGameSession* Session)
+{
+	GameSession = Session;
+	if (Session)
+	{
+		Session->OnOwnerUUIDUpdated.AddDynamic(this, &UCrowdyLeaderSubsystem::HandlePlayerIDSet);
+	}
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
-void UCrowdyLeaderSubsystem::FollowForTest(UCrowdyServerObject* Object, TFunction<void(int64)> WriteLeader)
+void UCrowdyLeaderSubsystem::FollowForTest(UCrowdyServerObject* Object, UCrowdyGameSession* Session, TFunction<void(int64)> WriteLeader)
 {
 	WriteLeaderOverride = MoveTemp(WriteLeader);
+	WatchSession(Session);
 	Follow(Object);
 }
 #endif
@@ -175,6 +190,17 @@ void UCrowdyLeaderSubsystem::Join()
 	{
 		return;
 	}
+	// With no player id this client could lead but never write, and everyone else would wait on it.
+	if (!HasPlayerID())
+	{
+		const UCrowdyGameSession* Session = GameSession.Get();
+		const bool bHeldByAnotherSignIn = Session && Session->GetID().IsValid();
+		UE_CLOG(bHeldByAnotherSignIn && !bWarnedPlayerID, LogCrowdyExec, Warning,
+			TEXT("[CrowdyLeader] This client's player id came from before this sign-in, so it cannot lead until a Player Derived pawn spawns for this account."));
+		UE_CLOG(!bHeldByAnotherSignIn && CrowdyExecTrace::Exec(), LogCrowdyExec, Log, TEXT("[CrowdyLeader] Waiting for a Player Derived pawn before joining."));
+		bWarnedPlayerID = bWarnedPlayerID || bHeldByAnotherSignIn;
+		return;
+	}
 	LeaderObject->Call(TEXT("Join"), FInstancedStruct(), [WeakThis = TWeakObjectPtr<UCrowdyLeaderSubsystem>(this)](const FCrowdyServerCallResult& Result)
 	{
 		UCrowdyLeaderSubsystem* Self = WeakThis.Get();
@@ -185,6 +211,18 @@ void UCrowdyLeaderSubsystem::Join()
 		UE_LOG(LogCrowdyExec, Warning, TEXT("[CrowdyLeader] Joining the Leader type failed (%s); trying again in %.0f s."), *Result.Reason, CrowdyLeaderDetail::RetrySeconds);
 		Self->ArmRetry();
 	});
+}
+
+bool UCrowdyLeaderSubsystem::HasPlayerID() const
+{
+	const UCrowdyGameSession* Session = GameSession.Get();
+	const FGuid SignedIn = UCrowdyHostSubsystem::HostIDForUser(Session ? Session->GetUserID() : 0);
+	return SignedIn.IsValid() && Session->GetID() == SignedIn;
+}
+
+void UCrowdyLeaderSubsystem::HandlePlayerIDSet(FString PlayerUUID)
+{
+	Join();
 }
 
 void UCrowdyLeaderSubsystem::HandleConnectionLost()

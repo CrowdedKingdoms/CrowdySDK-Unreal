@@ -6,6 +6,7 @@
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "CrowdyLeaderSubsystem.generated.h"
 
+class UCrowdyGameSession;
 class UCrowdyServerObject;
 class UCrowdySDKSubsystem;
 class UCrowdyUDPSubsystem;
@@ -14,7 +15,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyLeaderChanged, int64, NewL
 
 /**
  * The App's Server Object Leader, under Leader Source Server Object: this client joins the Crowdy SDK's Leader type
- * while signed in, and whoever leads writes the replicated subsystems. The Leader goes into the host store, so the
+ * once it is signed in with a Player Derived avatar, because the avatar gives it the player id writing needs, and
+ * whoever leads writes the replicated subsystems. The Leader goes into the host store, so the
  * deprecated host functions report it too. The app's server code must be deployed for there to be a Leader. Under
  * Leader Source Elected Host it does nothing and there is no Leader.
  */
@@ -41,7 +43,7 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Follows Object instead of acquiring the Leader type, and hands each Leader to WriteLeader instead of the host store. */
-	void FollowForTest(UCrowdyServerObject* Object, TFunction<void(int64)> WriteLeader);
+	void FollowForTest(UCrowdyServerObject* Object, UCrowdyGameSession* Session, TFunction<void(int64)> WriteLeader);
 #endif
 
 	/** The realtime connection failed: leave, so the lead passes to a player who can still send. */
@@ -57,6 +59,8 @@ private:
 	void Follow(UCrowdyServerObject* Object);
 	void Unfollow();
 	void Join();
+	bool HasPlayerID() const;
+	void WatchSession(UCrowdyGameSession* Session);
 	void ArmRetry();
 	void HandleStatusChanged(UCrowdyServerObject* Object, ECrowdyServerObjectStatus Status);
 	void HandleValuesChanged(UCrowdyServerObject* Object, TConstArrayView<FString> Fields);
@@ -71,11 +75,15 @@ private:
 	UFUNCTION()
 	void HandleLogout(bool bSuccess);
 
+	UFUNCTION()
+	void HandlePlayerIDSet(FString PlayerUUID);
+
 	UPROPERTY()
 	TObjectPtr<UCrowdyServerObject> LeaderObject;
 
 	TWeakObjectPtr<UCrowdySDKSubsystem> SDKSubsystem;
 	TWeakObjectPtr<UCrowdyUDPSubsystem> UdpSubsystem;
+	TWeakObjectPtr<UCrowdyGameSession> GameSession;
 	TFunction<void(int64)> WriteLeaderOverride;
 	FDelegateHandle ValuesHandle;
 	FTSTicker::FDelegateHandle RetryHandle;
@@ -83,4 +91,5 @@ private:
 	int64 PublishedLeader = 0;
 	bool bRealtimeUp = false;
 	bool bWarnedFailure = false;
+	bool bWarnedPlayerID = false;
 };

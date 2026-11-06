@@ -114,6 +114,7 @@ struct FGameSessionInfo
 		LaunchUrl = "";
 		UserID = 0;
 		UUID = "";
+		ID = FGuid();
 		CurrentPlayerChunkCoordinates = {0, 0, 0};
 		LastMinigameChunkCoordinates = {0, 0, 0};
 		LastMinigameVoxelCoordinates = {0, 0, 0};
