@@ -121,6 +121,10 @@ public:
 	                         const int32& State, bool& bSuccess, FCrowdyAvatarError& OutError);
 	DECLARE_FUNCTION(execSetAvatarAppStateAs);
 
+#if WITH_DEV_AUTOMATION_TESTS
+	int64 GetAppIdForTest() const { return GetAppId(); }
+#endif
+
 private:
 	TArray<FCrowdyAvatar> CachedMyAvatars;
 	bool bCachePopulated = false;

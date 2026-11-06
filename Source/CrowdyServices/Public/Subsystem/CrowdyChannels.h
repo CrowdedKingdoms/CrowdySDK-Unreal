@@ -251,6 +251,10 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Channels|Transport")
 	int64 GetSessionChannelId() const { return SessionChannelId; }
 
+#if WITH_DEV_AUTOMATION_TESTS
+	int64 GetAppIdForTest() const { return GetAppId(); }
+#endif
+
 private:
 	TArray<FCrowdyChannelMembership> CachedMyChannels;
 	bool bCachePopulated = false;
