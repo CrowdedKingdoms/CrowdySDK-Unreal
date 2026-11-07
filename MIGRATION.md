@@ -33,7 +33,8 @@ something was left out.
 `Server Object`, where the Leader of a Server Object type the SDK deploys writes replicated subsystems, nothing
 writes World entities, and an actor's Host event is dropped. A project that relies on the elected host sets
 `Elected Host (Deprecated)` (step 10). The entity component's Ownership setting, every host node and the ownership-taking subsystem
-registration are deprecated: they warn when you compile and still run. Under `Server Object` the host nodes report the Leader, and
+registration are deprecated: they warn when you compile and still run. Every deprecated item and its replacement, in one list:
+https://docs.crowdedkingdoms.com/unreal-sdk/guides/deprecated Under `Server Object` the host nodes report the Leader, and
 `Grant Ownership To Host` leaves an entity with no writer.
 
 **Requires.** Unreal Engine 5.8. Under `Server Object`, deploy the app's server code once (Server Compute) so it
@@ -54,7 +55,7 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 | `On Host Elected`, `On Host ID Updated` | `On Leader Changed` on the Crowdy Leader Subsystem. It carries user ids, not entity ids. | Blueprint events; C++ `UCrowdyHostSubsystem::OnHostElected`, `UCrowdyGameSession::OnHostIDUpdated` deprecated. |
 | `Is Crowdy Entity Host`, `Is Crowdy Entity Host (Server)` | For a gate that should run on one machine, `Is Local Leader`. To ask whether an actor is the Leader's avatar, compare its entity id with `Get Deterministic ID` of `Get Leader User ID`. `Is Crowdy Entity Locally Owned` is a different question: it is true on every client for its own avatar, so swapping it in runs a host-only branch everywhere. A client-side answer can be changed by a forged message, so a decision that must be enforced belongs in a Server Object. | Blueprint nodes; C++ `UCrowdyUtilities::IsCrowdyEntityHost`, `UCrowdyHostSubsystem::CheckEntityIsHost`, `UCrowdyIsEntityHostServer::IsCrowdyEntityHostServer` deprecated. |
 | `Grant Ownership To Host` | No replacement for handing an entity back at runtime. Keep the entity's truth in a Server Object, or set `Owned By` `Leader` on the class if one client should simulate it; such an entity refuses grants, so it cannot also be handed to a player. | Blueprint node; C++ `UCrowdyOwnershipTransfer::GrantOwnershipToHost` deprecated. |
-| `Host Override` on the `Crowdy Entity Component`, `Get Host Override Policy` | No replacement: host corrections end with the elected host. State that must be protected belongs in a Server Object. The setting stays editable and a saved value keeps working; nothing warns for it until it is removed. | Component property and Blueprint node; C++ `HostOverride`, `GetHostOverridePolicy()` deprecated. |
+| `Host Override` on the `Crowdy Entity Component`, `Get Host Override Policy` | No replacement: host corrections end with the elected host. State that must be protected belongs in a Server Object. The setting stays editable and a saved value keeps working under Elected Host. Under Server Object no host-sourced update reaches an owned entity, so it has nothing left to refuse. The Details panel shows no warning for it; a C++ read or write does. | Component property and Blueprint node; C++ `HostOverride`, `GetHostOverridePolicy()` deprecated. |
 | `Register Replicated Subsystem` (Subsystem, Ownership) | `Register Crowdy Replicated Subsystem` (Subsystem). A replicated subsystem is always written by one client for everyone: the app's Leader (the elected host under `Elected Host`). | Blueprint node; C++ `UCrowdyReplicatedSubsystemLibrary::RegisterCrowdyReplicatedSubsystem` and `RegisterReplicatedSubsystemInto(Registry, Subsystem)` (new), the ownership-taking versions deprecated. |
 | Overriding `GetReplicatedOwnership()` on `UCrowdyReplicatedWorldSubsystem` or `UCrowdyReplicatedGameInstanceSubsystem` | Nothing to override: the bases no longer call it. | C++ virtual deprecated. |
 | An elected host always existed. | `Leader Source` in Project Settings > Plugins > Crowdy SDK > Replication: `Server Object`, the default, or `Elected Host (Deprecated)`. Server Object turns the elected host off (no host polling; World entities have no writer, and a Host event sent from any actor, Player-owned ones included, is dropped with a warning naming the setting) and has the app's Leader write replicated subsystems and run their Host events. | Project setting, C++ `UCrowdySDKDeveloperSettings::LeaderSource`, `ECrowdyLeaderSource`, `UsesElectedHost()` (new). |
@@ -86,6 +87,7 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 | A long `FName` in another client's value could stop the receiver with a fatal check. | The read fails and the value is dropped. | Bug fix. |
 | A `Preloaded Entity Classes` entry nothing else referenced was freed by the first level load. | The registry holds the classes it preloaded. | Bug fix. |
 | A remote entity appearing while Mass was processing hit a fatal check. | Appearances wait for `UCrowdyActorTracker`'s tick, so `OnRemoteEntityAppeared` can fire up to one frame later. | Bug fix, behaviour. |
+| An owner adopted a host-sourced Crowdy State update for its own entity under every Leader Source, and the client that writes a World entity or replicated subsystem adopted another client's, so a modified client could set the flag and make the writer keep a forged value. | Under Server Object an owner drops a host-sourced update for an entity it owns, and a writer drops any other client's update for what it writes. Other clients' copies can still show a forged value until the writer's next update. A 2.24 host's correction no longer reaches a 2.25 owner, so upgrade every client together. Elected Host is otherwise unchanged. | Bug fix, behaviour. |
 | A failed HTTP/2 request logged its headers, bearer token included, through the engine's curl report, in any build with logging on. | `LogHttp` is held at `Error` while an SDK request is in flight, and a failure logs one line on `LogCrowdyCpp`. A game's own `LogHttp` warnings in that window are hidden. `VeryVerbose` is left alone. | Bug fix, behaviour. |
 | A value converted for a `const` reference parameter of a `CROWDY_EVENT`, such as a string literal for a `const FString&`, was read after it was freed, so a packaged build could send garbage. | The call holds its own copy of every argument. | Bug fix. |
 | An account with no age failed sign-in with the server's raw text, and a refused token refresh retried for ever. | `AGE_REQUIRED` holds the sign-in or refresh. The built-in age screen asks, or a game binds `OnAgeRequired` and calls `RecordPlayerAge`. New: `OnAgeRequired`, `OnAgeEntryEnded`, `RecordPlayerAge`, `DeclineAgeEntry`, `IsAgeEntryPending`, `IsAgeEntryLocked`, `ClearAgeEntryLock`, node `Record Player Age`. | Behaviour, Blueprint, C++. |
@@ -170,10 +172,13 @@ signed-in client tries to reach the Leader type every 10 seconds and logs one wa
 must match:
 
 ```
-grep -r -a -l --include=*.uasset -e "IsCrowdyEntityLocallyControlled" -e "CrowdyHasAuthority" -e "GetOwnership" -e "GetMode" -e "RegisterReplicatedSubsystem" -e "CrowdyRecipient" -e "SendEvent" -e "CrowdyHostSubsystem" -e "GetHostID" -e "OnHostIDUpdated" -e "IsCrowdyEntityHost" -e "GrantOwnershipToHost" -e "GetHostOverridePolicy" Content Plugins
-grep -r -a -l --include=*.uasset "OnCrowdySpawned" Content Plugins
-grep -r -a -l --include=*.uasset "CrowdyEntityComponent" Content Plugins
+grep -r -a -l --include=*.uasset --include=*.umap -e "IsCrowdyEntityLocallyControlled" -e "CrowdyHasAuthority" -e "GetOwnership" -e "GetMode" -e "RegisterReplicatedSubsystem" -e "CrowdyRecipient" -e "SendEvent" -e "CrowdyHostSubsystem" -e "GetHostID" -e "GetHostUserID" -e "OnHostIDUpdated" -e "OnHostElected" -e "IsHost" -e "IsCrowdyEntityHost" -e "GrantOwnershipToHost" -e "GetHostOverridePolicy" Content Plugins
+grep -r -a -l --include=*.uasset --include=*.umap "OnCrowdySpawned" Content Plugins
+grep -r -a -l --include=*.uasset --include=*.umap "CrowdyEntityComponent" Content Plugins
 ```
+
+`IsHost` also matches `IsHostSet`, and `SendEvent` matches Control Rig assets that never touch the SDK: check each hit
+for a Crowdy name before you change it.
 
 The first finds graphs using a deprecated node: replace it as above and re-save. The second finds
 Blueprints that bind `On Crowdy Spawned` on entity classes a Mass map can draw; they need no re-save.

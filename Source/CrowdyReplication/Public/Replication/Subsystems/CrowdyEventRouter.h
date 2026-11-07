@@ -455,6 +455,12 @@ public:
 		// Host corrections refused because the entity is authored OwnerOnly, which only its owner may write.
 		int64 DroppedHostOverrideRefused = 0;
 
+		// Host-sourced deltas for an entity this client owns while there is no elected host, so none of them is real.
+		int64 DroppedHostSourcedWithNoHost = 0;
+
+		// Deltas from another client for a world entity or replicated subsystem this client writes: stale or forged.
+		int64 DroppedForeignWriteForOwnWorld = 0;
+
 		// Non-host deltas for a locally host-owned world entity. Only the host writes world state, so anything
 		// climbing here is some other peer trying to.
 		int64 DroppedNotHostSourcedForWorld = 0;

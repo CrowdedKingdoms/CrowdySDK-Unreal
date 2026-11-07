@@ -1065,7 +1065,7 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
     // the branch above has just established.
     //
     // Host precedence by convention (NOT enforced): we are the authority for the entities we own. A delta for
-    // an entity we own is applied only when it is HostSourced (a host correction); a foreign non-host delta is
+    // an entity we own is applied only when it is HostSourced (a host correction, so only under Elected Host); a foreign non-host delta is
     // dropped before touching the blob. (Our own echo including a targeted owner-only self-delivery was
     // already dropped above by SenderID.) A HostSourced delta falls through to apply and is then adopted (below)
     // so our own next diff does not revert the host's values.
@@ -1082,6 +1082,16 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
             ++StateParticipantStats.DroppedNotHostSourcedForWorld;
             UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
                 TEXT("[CrowdyState] dropped delta for world entity %s: the sender %s does not write it."),
+                *Delta.EntityID.ToString(), *Delta.SenderID.ToString());
+            return;
+        }
+
+        // This client writes it, so another client's write is a stale writer's or a forgery, and adopting it would keep it.
+        if (bWeOwnTarget)
+        {
+            ++StateParticipantStats.DroppedForeignWriteForOwnWorld;
+            UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
+                TEXT("[CrowdyState] dropped delta for world entity %s: this client writes it (sender=%s)."),
                 *Delta.EntityID.ToString(), *Delta.SenderID.ToString());
             return;
         }
@@ -1102,6 +1112,16 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
             ++StateParticipantStats.DroppedNotHostSourcedForOwned;
             UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
                 TEXT("[CrowdyState] dropped foreign non-host delta for owned entity %s (sender=%s)."),
+                *Delta.EntityID.ToString(), *Delta.SenderID.ToString());
+            return;
+        }
+
+        // With no elected host nobody corrects an owner, so the flag can only be forged.
+        if (!UCrowdySDKDeveloperSettings::UsesElectedHost())
+        {
+            ++StateParticipantStats.DroppedHostSourcedWithNoHost;
+            UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
+                TEXT("[CrowdyState] dropped host-sourced delta for owned entity %s: there is no elected host (sender=%s)."),
                 *Delta.EntityID.ToString(), *Delta.SenderID.ToString());
             return;
         }

@@ -524,6 +524,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnerDropsForeignNonHostDeltaTest,
 	"CrowdySDK.State.OwnerDropsForeignNonHostDelta", CrowdyStateApplyTestFlags)
 bool FCrowdyStateOwnerDropsForeignNonHostDeltaTest::RunTest(const FString& Parameters)
 {
+	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
 	{
@@ -597,6 +598,64 @@ bool FCrowdyStateOwnerDropsForeignNonHostDeltaTest::RunTest(const FString& Param
 	return true;
 }
 
+// With no elected host nobody corrects an owner, so a host-sourced delta for an entity this client owns is forged and
+// dropped, Host Override or not. The same delta under Elected Host is a correction and applies.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnerDropsHostSourcedWithNoHostTest,
+	"CrowdySDK.State.OwnerDropsHostSourcedWithNoHost", CrowdyStateApplyTestFlags)
+bool FCrowdyStateOwnerDropsHostSourcedWithNoHostTest::RunTest(const FString& Parameters)
+{
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	UClass* ActorClass = ACrowdyStateApplyTestActor::StaticClass();
+	const FCrowdyRepLayout* Layout = Registry ? Registry->FindRepLayout(ActorClass) : nullptr;
+	if (!TestNotNull(TEXT("apply actor has a layout"), Layout))
+	{
+		return false;
+	}
+	const int32 RepIntIndex = IndexOfPropertyName(*Layout, TEXT("RepInt"));
+	if (!TestTrue(TEXT("RepInt present"), RepIntIndex != INDEX_NONE))
+	{
+		return false;
+	}
+
+	UCrowdyEntitySubsystem* Entities = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
+	Entities->SetLocalPlayerID(FGuid::NewGuid());
+	UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
+
+	ACrowdyStateApplyTestActor* Source = NewObject<ACrowdyStateApplyTestActor>();
+	Source->RepInt = 41;
+	TBitArray<> Dirty(false, Layout->Properties.Num());
+	Dirty[RepIntIndex] = true;
+
+	const auto SendForgedCorrection = [&](ACrowdyStateApplyTestActor* Target)
+	{
+		FCrowdyStateDelta Delta;
+		Delta.ClassID = static_cast<int64>(UCrowdyClassRegistry::Get()->GetID(ActorClass));
+		Delta.EntityID = FGuid::NewGuid();
+		Delta.SenderID = FGuid::NewGuid();
+		Delta.LayoutHash = Layout->LayoutHash;
+		Delta.Flags = CrowdyStateDeltaFlags::HostSourced;
+		FCrowdyStateCodec::Encode(*Layout, Source, Dirty, /*bKeyframe=*/false, Delta.Blob);
+		RegisterOwnedEntity(Entities, Delta.EntityID, Target);
+		Router->DispatchEvent(MakeInboundStateEvent(Delta));
+	};
+
+	{
+		FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ServerObject);
+		ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
+		SendForgedCorrection(Target);
+		TestEqual(TEXT("under Server Object the owner keeps its value"), Target->RepInt, 0);
+		TestEqual(TEXT("and counts the drop"), Router->GetStateParticipantStats().DroppedHostSourcedWithNoHost, static_cast<int64>(1));
+	}
+	{
+		FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
+		ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
+		SendForgedCorrection(Target);
+		TestEqual(TEXT("under Elected Host the same delta is a correction"), Target->RepInt, 41);
+		TestEqual(TEXT("and is not counted as a drop"), Router->GetStateParticipantStats().DroppedHostSourcedWithNoHost, static_cast<int64>(1));
+	}
+	return true;
+}
+
 // Phase C receive backstop: even a HostSourced correction for an entity WE own is dropped if that entity is
 // authored OwnerOnly (only the owner may change it); an Allow entity applies it. Both targets receive the same
 // HostSourced RepInt=55 blob (one delta per entity id).
@@ -604,6 +663,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateHostOverrideBackstopTest,
 	"CrowdySDK.State.HostOverrideBackstop", CrowdyStateApplyTestFlags)
 bool FCrowdyStateHostOverrideBackstopTest::RunTest(const FString& Parameters)
 {
+	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
 	{
@@ -782,6 +842,26 @@ bool FCrowdyStateWorldEntityHostOnlyTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("host-sourced delta applied for host-owned world entity"), Target->RepInt, 55);
 	}
 
+	// On the host, which writes the world entity, another client's host-sourced delta is stale or forged: dropped.
+	{
+		Entities->SetGameSessionForTest(MakeGameSession(Entities->GetLocalPlayerID()));
+		ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
+		const FGuid EntityId = FGuid::NewGuid();
+		RegisterWorldEntity(EntityId, Target);
+
+		FCrowdyStateDelta Delta;
+		Delta.ClassID = ClassID;
+		Delta.EntityID = EntityId;
+		Delta.SenderID = FGuid::NewGuid();
+		Delta.LayoutHash = Layout->LayoutHash;
+		Delta.Flags = CrowdyStateDeltaFlags::HostSourced;
+		Delta.Blob = Blob;
+
+		Router->DispatchEvent(MakeInboundStateEvent(Delta));
+		TestEqual(TEXT("the writer keeps its own value"), Target->RepInt, 0);
+		TestEqual(TEXT("and counts the drop"), Router->GetStateParticipantStats().DroppedForeignWriteForOwnWorld, static_cast<int64>(1));
+	}
+
 	return true;
 }
 
@@ -869,6 +949,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateReentrantNotifyKeepsChangedSetTest,
 	"CrowdySDK.State.ReentrantNotifyKeepsTheOuterChangedSet", CrowdyStateApplyTestFlags)
 bool FCrowdyStateReentrantNotifyKeepsChangedSetTest::RunTest(const FString& Parameters)
 {
+	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
 	{
