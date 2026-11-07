@@ -153,31 +153,11 @@ public:
 	static constexpr float PresenceIntervalSeconds = 4.0f;
 
 #if WITH_DEV_AUTOMATION_TESTS
-	bool IsRegisteredForTest(const UActorComponent* Component, bool& bOutPresenceOnly) const
-	{
-		const int32 Index = Data.Components.IndexOfByKey(Component);
-		bOutPresenceOnly = Index != INDEX_NONE && Data.bPresenceOnly[Index];
-		return Index != INDEX_NONE;
-	}
-
-	FString GetSendIdForTest(const UActorComponent* Component) const
-	{
-		const int32 Index = Data.Components.IndexOfByKey(Component);
-		return Index != INDEX_NONE ? Data.UUIDs[Index] : FString();
-	}
-
+	bool IsRegisteredForTest(const UActorComponent* Component, bool& bOutPresenceOnly) const;
+	FString GetSendIdForTest(const UActorComponent* Component) const;
 	void SetAutoRegistryForTest(UCrowdyAutoRegistry* Registry) { AutoRegistry = Registry; }
-
-	bool CaptureContinuousForTest(const UActorComponent* Component, const AActor& Actor)
-	{
-		return CaptureContinuous(Data.Components.IndexOfByKey(Component), Actor);
-	}
-
-	TArray<uint8> GetExtrasForTest(const UActorComponent* Component) const
-	{
-		const int32 Index = Data.Components.IndexOfByKey(Component);
-		return Index != INDEX_NONE ? Data.Extras[Index] : TArray<uint8>();
-	}
+	bool CaptureContinuousForTest(const UActorComponent* Component, const AActor& Actor);
+	TArray<uint8> GetExtrasForTest(const UActorComponent* Component) const;
 #endif
 
 private:

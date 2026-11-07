@@ -8,6 +8,7 @@
 #include "Misc/AutomationTest.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
+#include "UObject/Package.h"
 
 // A moving entity spawned on a Mass map has no actor of its class: its spawn data lands in its row through the
 // CrowdyState fragment fields a game registers, whether the row exists when the spawn event arrives or appears later.

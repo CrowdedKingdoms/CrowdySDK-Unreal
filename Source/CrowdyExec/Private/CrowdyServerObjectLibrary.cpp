@@ -16,6 +16,7 @@
 #include "Subsystem/CrowdyGameSession.h"
 #include "UObject/EnumProperty.h"
 #include "UObject/ObjectKey.h"
+#include "UObject/Package.h"
 #include "UObject/PropertyOptional.h"
 #include "UObject/ScriptMacros.h"
 #include "UObject/UnrealType.h"

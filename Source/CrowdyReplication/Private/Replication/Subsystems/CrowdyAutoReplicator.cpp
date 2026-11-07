@@ -4,6 +4,7 @@
 #include "Replication/Subsystems/CrowdyAutoReplicator.h"
 #include "CrowdyReplicationLog.h"
 
+#include "Components/ActorComponent.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Messages/Actor/CrowdyUpdateExtras.h"
@@ -301,6 +302,32 @@ bool UCrowdyAutoReplicator::CarriesUpdatesOf(const UActorComponent* Component) c
 	const int32 Index = Data.Components.IndexOfByKey(Component);
 	return bIsTicking && bPeersTrackUpdates && Index != INDEX_NONE && !Data.bPresenceOnly[Index];
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool UCrowdyAutoReplicator::IsRegisteredForTest(const UActorComponent* Component, bool& bOutPresenceOnly) const
+{
+	const int32 Index = Data.Components.IndexOfByKey(Component);
+	bOutPresenceOnly = Index != INDEX_NONE && Data.bPresenceOnly[Index];
+	return Index != INDEX_NONE;
+}
+
+FString UCrowdyAutoReplicator::GetSendIdForTest(const UActorComponent* Component) const
+{
+	const int32 Index = Data.Components.IndexOfByKey(Component);
+	return Index != INDEX_NONE ? Data.UUIDs[Index] : FString();
+}
+
+bool UCrowdyAutoReplicator::CaptureContinuousForTest(const UActorComponent* Component, const AActor& Actor)
+{
+	return CaptureContinuous(Data.Components.IndexOfByKey(Component), Actor);
+}
+
+TArray<uint8> UCrowdyAutoReplicator::GetExtrasForTest(const UActorComponent* Component) const
+{
+	const int32 Index = Data.Components.IndexOfByKey(Component);
+	return Index != INDEX_NONE ? Data.Extras[Index] : TArray<uint8>();
+}
+#endif
 
 bool UCrowdyAutoReplicator::CaptureContinuous(const int32 Index, const AActor& Actor)
 {
