@@ -33,6 +33,9 @@ struct FCrowdyRepProperty
 	// it just is never part of a keyframe. Orthogonal to the diff, so it never affects on-change replication.
 	bool bHeartbeat = false;
 
+	// Sent on the entity's movement updates, never as a delta. Does not change the layout hash.
+	bool bContinuous = false;
+
 	// Parameterless notify fired on the receiver after this property is written.
 	FName OnRepFunctionName = NAME_None;
 };
@@ -88,7 +91,12 @@ struct CROWDYREPLICATION_API FCrowdyRepLayout
 	// Folds every property's "name:type" in order; guards the positional ordering across builds.
 	int64 LayoutHash = 0;
 
+	// One bit per property, set for those with bContinuous; empty when the layout has none.
+	TBitArray<> ContinuousBits;
+
 	bool IsValid() const { return OwnerClass.IsValid() && Properties.Num() > 0; }
+
+	bool HasContinuous() const { return ContinuousBits.Num() > 0; }
 
 	// Linear scan; layouts are small (a handful of properties), so a map would not pay off.
 	// Returns INDEX_NONE when no property carries InPropertyID.

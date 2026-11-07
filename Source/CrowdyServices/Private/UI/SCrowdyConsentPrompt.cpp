@@ -32,14 +32,8 @@ void SCrowdyConsentPrompt::Construct(const FArguments& InArgs)
 
 	const ISlateStyle& Style = FCrowdyBrandStyle::Get();
 
-	TSharedRef<SVerticalBox> Documents = SNew(SVerticalBox);
-	for (const FCrowdyLegalDocument& Document : UCrowdyAuthentication::GetLegalDocuments())
-	{
-		Documents->AddSlot().AutoHeight().HAlign(HAlign_Left).Padding(0.0f, 3.0f)
-		[
-			MakeDocumentLink(Document.Title, Document.Url)
-		];
-	}
+	TSharedRef<SVerticalBox> Documents = SAssignNew(DocumentList, SVerticalBox);
+	SetDocuments(UCrowdyAuthentication::GetLegalDocuments());
 
 	const FSlateFontInfo WordmarkFont = FCoreStyle::GetDefaultFontStyle("Bold", 22);
 	const TSharedRef<SWidget> LegalRow = MakeCheckRow(LOCTEXT("AgreeLegal", "I agree to the documents listed above."), &bLegalChecked);
@@ -68,7 +62,7 @@ void SCrowdyConsentPrompt::Construct(const FArguments& InArgs)
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 14.0f)
 			[
-				SNew(STextBlock).Text(LOCTEXT("Body", "Review the documents below and confirm both statements to continue."))
+				SNew(STextBlock).Text(LOCTEXT("Body", "Review the documents below and agree to continue."))
 				.TextStyle(&Style, "Crowdy.Text.Body")
 				.AutoWrapText(true)
 			]
@@ -90,15 +84,9 @@ void SCrowdyConsentPrompt::Construct(const FArguments& InArgs)
 					]
 				]
 			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
-			[
-				LegalRow
-			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 16.0f)
 			[
-				MakeCheckRow(LOCTEXT("AgeOfMajority",
-					"I am at least 18, or the age of majority where I live if that is higher."),
-					&bAgeChecked)
+				LegalRow
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
 			[
@@ -192,6 +180,18 @@ TSharedRef<SWidget> SCrowdyConsentPrompt::MakeDocumentLink(const FText& Title, c
 			SNew(STextBlock).Text(Title)
 			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10)).ColorAndOpacity(FSlateColor::UseForeground())
 		];
+}
+
+void SCrowdyConsentPrompt::SetDocuments(const TArray<FCrowdyLegalDocument>& Documents)
+{
+	DocumentList->ClearChildren();
+	for (const FCrowdyLegalDocument& Document : Documents)
+	{
+		DocumentList->AddSlot().AutoHeight().HAlign(HAlign_Left).Padding(0.0f, 3.0f)
+		[
+			MakeDocumentLink(Document.Title, Document.Url)
+		];
+	}
 }
 
 void SCrowdyConsentPrompt::SetBusy(bool bInBusy)

@@ -2197,6 +2197,7 @@ namespace CrowdyStudioCommandletDetail
 		Row->SetBoolField(TEXT("ownerOnly"), Prop.bOwnerOnly);
 		Row->SetBoolField(TEXT("manualDirty"), Prop.bManualDirty);
 		Row->SetBoolField(TEXT("heartbeat"), Prop.bHeartbeat);
+		Row->SetBoolField(TEXT("continuous"), Prop.bContinuous);
 		Row->SetStringField(TEXT("onRep"), Prop.OnRepFunctionName.IsNone() ? FString() : Prop.OnRepFunctionName.ToString());
 		return MakeShared<FJsonValueObject>(Row);
 	}

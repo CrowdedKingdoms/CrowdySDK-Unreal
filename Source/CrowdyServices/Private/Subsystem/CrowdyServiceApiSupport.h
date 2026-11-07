@@ -30,6 +30,17 @@ namespace CrowdyServiceApi
 		return GetDefault<UCrowdySDKDeveloperSettings>()->MakeClientConfig();
 	}
 
+	/** The app a call names: the session's, which its token was minted for, else the project setting. */
+	inline int64 ResolveAppId(const UCrowdyGameSession* GameSession)
+	{
+		return GameSession && GameSession->GetAppID() > 0 ? GameSession->GetAppID() : GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
+	}
+
+	inline int64 ResolveAppId(const UGameInstance* GameInstance)
+	{
+		return ResolveAppId(GameInstance ? GameInstance->GetSubsystem<UCrowdyGameSession>() : nullptr);
+	}
+
 	/** An error that never reached the server, so no server verdict exists to report. */
 	template <typename ErrorType>
 	ErrorType MakeNetworkError(const FString& Message)

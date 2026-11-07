@@ -364,7 +364,7 @@ void FCrowdyCustomEventCustomization::BuildReplicateCategory(
 
 	AddRoutingRow(Category, DetailBuilder,
 		FText::FromString(TEXT("Recipient")),
-		FText::FromString(TEXT("Which clients run the event, and over which transport. Spatial Multicast = everyone in range (chunk-based, decay-thinned); Multicast = every member of the app's session channel regardless of distance (over the channel transport, ignores chunk coordinates); Owning Client = only the target entity's owner (others request it); Host = only the elected host (others request it).")),
+		FText::FromString(TEXT("Which clients run the event, and over which transport. Spatial Multicast = everyone in range (chunk-based, decay-thinned); Multicast = every member of the app's session channel regardless of distance (over the channel transport, ignores chunk coordinates); Owning Client = only the client that writes the target entity (others request it).")),
 		FName(CrowdyRpcMetaKeys::Recipient), StaticEnum<ECrowdyEventRecipient>(),
 		static_cast<int32>(ECrowdyEventRecipient::SpatialMulticast));
 

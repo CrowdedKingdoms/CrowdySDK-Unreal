@@ -33,9 +33,12 @@ inline constexpr uint8 CrowdyRpcParamBlobVersion = 2;
 
 // A reliable RPC rides a channel message whose payload is a small reliability header
 // followed by the serialized FCrowdyRpcCall. The header is a format version plus a flag
-// byte; the flags are reserved for a later guaranteed-delivery layer (per-message id,
+// byte; the other flags are reserved for a later guaranteed-delivery layer (per-message id,
 // dedup, ack) and are zero for coverage-only sending. Bump the version if the layout changes.
 inline constexpr uint8 CrowdyChannelRpcVersion = 1;
+
+// Set on a call meant for one client: the player id follows the call, and every other client ignores it.
+inline constexpr uint8 CrowdyChannelRpcFlagAddressed = 1;
 
 // Channel payloads are capped at 1024 bytes on the wire. A reliable RPC whose encoded
 // payload would exceed this is dropped loudly rather than truncated.
@@ -57,8 +60,12 @@ enum class ECrowdyRpcRoute : uint8
 	None,               // no network announce (the local authority runs it and does not re-announce)
 	SpatialBroadcast,   // announce to everyone in range over the spatial transport (decay-thinned)
 	Channel,            // announce over the reliable session channel
-	SingleActorToOwner, // targeted single-actor send to the entity's owner
+	SpatialToOwner,     // a spatial event around the entity, named for the client that writes it
+	SingleActorToOwner, // a direct message to the entity's writer, for a call that carries text
 	SingleActorToHost,  // targeted single-actor send to the host's avatar entity
+	OwnerOverSession,   // the session channel, named for that client, where there is no region to send to
+	NoOwner,            // nobody writes the entity right now: drop with a warning
+	TextHasNoRoute,     // a call carrying text to a writer no direct message can reach: drop with a warning
 	Reject,             // invalid config (SpatialMulticast on a non-spatial participant): drop with an error
 };
 
@@ -264,8 +271,9 @@ public:
 			Fn->InitializeStruct(Frame);
 		}
 
+		// Held by value: a const reference element would bind a converted argument to a temporary that dies with the tuple's constructor.
 		PlaceAll(Fn, Frame, std::index_sequence_for<TParams...>{},
-		         TTuple<TParams...>(Forward<TArgs>(Args)...));
+		         TTuple<std::decay_t<TParams>...>(Forward<TArgs>(Args)...));
 
 		FCrowdyRpcCall Call = BuildCall(Fn, Info, Frame);
 
@@ -300,7 +308,7 @@ public:
 		}
 
 		PlaceAll(Fn, Frame, std::index_sequence_for<TParams...>{},
-		         TTuple<TParams...>(Forward<TArgs>(Args)...));
+		         TTuple<std::decay_t<TParams>...>(Forward<TArgs>(Args)...));
 
 		const bool bResult = Use(Frame);
 
@@ -417,11 +425,14 @@ public:
 	static int32 EstimateMinChannelPayloadBytes(const UFunction* Fn);
 
 	// Pure ownership-model policy. bNonSpatial is true for a subsystem participant (no world location);
-	// bEntityValid/bWeOwnEntity/bWeAreHost are the local authority facts. No side effects, so every
-	// (recipient x participant-kind x authority) combination is table-testable. The actor rows (bNonSpatial
+	// bEntityValid/bWeOwnEntity/bWeAreHost are the local ownership facts. No side effects, so every
+	// (recipient x participant-kind x ownership) combination is table-testable. The actor rows (bNonSpatial
 	// false) reproduce SerializeAndRoute's shipped behavior exactly; a non-spatial SpatialMulticast is rejected.
 	static FCrowdyRpcRouteDecision DecideRoute(ECrowdyEventRecipient Recipient, bool bNonSpatial,
 		bool bEntityValid, bool bWeOwnEntity, bool bWeAreHost);
+
+	// How a call reaches the client that writes an entity this client does not. No side effects.
+	static ECrowdyRpcRoute DecideOwnerRoute(bool bWorldEntity, bool bWorldOwnerKnown, bool bLeaderWithoutOwner, bool bNoRegionToReach, bool bCarriesText = false);
 
 	// Serializes the input parameters held in Frame into OutBlob (version byte +
 	// each input parameter in declaration order). OutParms, when supplied, is the VM's
@@ -455,13 +466,13 @@ public:
 
 	// Encodes a call into a channel payload: a [version][flags] reliability header followed by the
 	// serialized FCrowdyRpcCall. Flags is reserved for the guaranteed-delivery layer and is zero
-	// for coverage-only sends. Used by the reliable Multicast send path.
-	static void EncodeChannelRpc(const FCrowdyRpcCall& Call, uint8 Flags, TArray<uint8>& OutPayload);
+	// for coverage-only sends; a valid Addressee sets the addressed flag and follows the call.
+	static void EncodeChannelRpc(const FCrowdyRpcCall& Call, uint8 Flags, TArray<uint8>& OutPayload, const FGuid& Addressee = FGuid());
 
 	// Reverses EncodeChannelRpc. Returns false on a version mismatch or truncated bytes the
 	// channel payload is untrusted, so a drifted or malformed peer drops cleanly here instead of
 	// misparsing. Used by the channel receive path.
-	static bool DecodeChannelRpc(const TArray<uint8>& Payload, FCrowdyRpcCall& OutCall, uint8& OutFlags);
+	static bool DecodeChannelRpc(const TArray<uint8>& Payload, FCrowdyRpcCall& OutCall, uint8& OutFlags, FGuid* OutAddressee = nullptr);
 
 	// Packs the routing identity (declaring ClassID + FunctionID) and the serialized
 	// parameter bytes of Frame into a wire-ready call, without sending it. MarshalCall
@@ -511,6 +522,20 @@ public:
 			|| (Prop->HasAnyPropertyFlags(CPF_OutParm) && !Prop->HasAnyPropertyFlags(CPF_ConstParm));
 	}
 
+#if WITH_DEV_AUTOMATION_TESTS
+	static bool RouteFromEventSourceForTest(UObject* Obj, ICrowdyEventSource* Source, UFunction* Fn,
+		const FCrowdyFnInfo& Info, const FCrowdyRpcCall& Call, UCrowdyEntitySubsystem* EntitySubsystem)
+	{
+		return RouteFromEventSource(Obj, Source, Fn, Info, Call, EntitySubsystem, nullptr);
+	}
+
+	static bool RouteToTargetForTest(UCrowdyEntitySubsystem* EntitySubsystem, const FCrowdyRpcTarget& Target, UFunction* Fn,
+		const FCrowdyFnInfo& Info, const FCrowdyRpcCall& Call)
+	{
+		return RouteToTarget(nullptr, EntitySubsystem, Target, nullptr, Fn, Info, Call);
+	}
+#endif
+
 private:
 
 	// Resolves the target entity, applies the client-authoritative ownership model, and
@@ -524,7 +549,7 @@ private:
 	// channel), after checking it fits the channel payload budget (an oversize call is dropped
 	// loudly, not truncated).
 	static void RouteOverChannel(UCrowdyEntitySubsystem* EntitySubsystem, const FCrowdyRpcCall& Call,
-		const UFunction* Fn, const FString& ChannelName);
+		const UFunction* Fn, const FString& ChannelName, const FGuid& Addressee = FGuid());
 
 	/**
 	 * Send path for a sender with no owning actor that implements ICrowdyEventSource: the entity id, the

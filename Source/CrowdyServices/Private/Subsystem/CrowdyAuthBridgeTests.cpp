@@ -585,6 +585,46 @@ bool FCrowdyAuthPayloadReadersRejectBadShapesTest::RunTest(const FString& Parame
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthDeveloperTermsCallsTest,
+	"CrowdySDK.Auth.DeveloperTermsCalls", CrowdyAuthBridgeTestSupport::AuthTestFlags)
+
+bool FCrowdyAuthDeveloperTermsCallsTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyAuthBridgeTestSupport;
+
+	const TSharedPtr<FCrowdyCppClient> Client = MakeAuthTestClient(TEXT("{\"data\":{\"developerLegalAcceptance\":false}}"));
+	if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
+	{
+		return false;
+	}
+	Client->SetManagementToken(TEXT("session-abc"));
+
+	FCrowdyCppBoolResult Accepted;
+	Client->HasDeveloperAcceptance([&Accepted](FCrowdyCppBoolResult Result) { Accepted = MoveTemp(Result); });
+	Client->Poll();
+	TestTrue(TEXT("the answer was read"), Accepted.bOk);
+	TestFalse(TEXT("and says not accepted"), Accepted.bValue);
+
+	FCrowdyCppBoolResult Recorded;
+	Client->SetTestResponseScript({ {403, TEXT("{\"errors\":[{\"message\":\"No age.\",\"extensions\":{\"code\":\"AGE_REQUIRED\"}}],\"data\":null}")} });
+	Client->RecordDeveloperConsents([&Recorded](FCrowdyCppBoolResult Result) { Recorded = MoveTemp(Result); });
+	FString Body;
+	Client->GetLastTestRequestBody(Body);
+	TestTrue(TEXT("the acceptance is sent"), Body.Contains(TEXT("acceptDeveloperTerms")));
+	Client->Poll();
+	TestEqual(TEXT("an account with no age is told so"), Recorded.ErrorCode, FString(CrowdyCppAgeRequiredCode));
+
+	FCrowdyCppLegalDocumentsResult Listed;
+	Client->SetTestResponseScript({ {200, TEXT("{\"data\":{\"developerLegalDocuments\":[{\"documentId\":\"sdk\",\"version\":\"1\",\"title\":\"SDK Developer Terms\",\"url\":\"https://a.test/s\"}]}}")} });
+	Client->ListDeveloperDocuments([&Listed](FCrowdyCppLegalDocumentsResult Result) { Listed = MoveTemp(Result); });
+	Client->Poll();
+	if (TestEqual(TEXT("the list is read"), Listed.Documents.Num(), 1))
+	{
+		TestEqual(TEXT("with its title"), Listed.Documents[0].Title, FString(TEXT("SDK Developer Terms")));
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthRecordPlayerConsentsSendsBothAnswersTest,
 	"CrowdySDK.Auth.RecordPlayerConsentsSendsBothAnswers", CrowdyAuthBridgeTestSupport::AuthTestFlags)
 

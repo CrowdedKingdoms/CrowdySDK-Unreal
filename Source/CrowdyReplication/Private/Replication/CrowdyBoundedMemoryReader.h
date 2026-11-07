@@ -18,4 +18,21 @@ public:
 	{
 		ArMaxSerializeSize = InBytes.Num();
 	}
+
+	using FMemoryReader::operator<<;
+
+	// The engine builds the name without looking at its length, and a name of NAME_SIZE or more is a fatal check.
+	virtual FArchive& operator<<(FName& Name) override
+	{
+		FString Text;
+		*this << Text;
+		if (Text.Len() >= NAME_SIZE)
+		{
+			SetError();
+			Name = NAME_None;
+			return *this;
+		}
+		Name = FName(*Text);
+		return *this;
+	}
 };

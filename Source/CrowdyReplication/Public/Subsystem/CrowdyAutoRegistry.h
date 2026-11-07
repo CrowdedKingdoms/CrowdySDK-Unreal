@@ -141,6 +141,10 @@ private:
 	// it can never resolve from the wire.
 	void PreloadConfiguredEntityClasses();
 
+	// Held so a class nothing else references survives the next garbage collection: resolving an id never loads one.
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UClass>> PreloadedClasses;
+
 	void ScanAndRegisterEntityClasses();
 	void ScanAndRegisterRpcFunctions();
 
@@ -180,6 +184,10 @@ private:
 	// No-op when there is no executor state struct. Called on every built layout before it is cached
 	// (both FindRepLayout's lazy-build path and RegisterClassRepLayout's eager path).
 	void ApplyExecutorOverlapFilter(FCrowdyRepLayout& Layout) const;
+
+	// Settles which marked properties really ride movement updates, clearing the mark with a warning on those that
+	// cannot, and fills ContinuousBits. LayoutHash is unchanged. Called on every built layout before it is cached.
+	void ResolveContinuous(FCrowdyRepLayout& Layout) const;
 
 	// Clears the OnRep binding of any layout property whose CrowdyOnRep names a function that is missing or
 	// not parameterless (a notify cannot receive parameters and has no "previous value" on this plane),

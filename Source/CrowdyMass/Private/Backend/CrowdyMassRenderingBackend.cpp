@@ -8,6 +8,11 @@
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
 
+UClass* UCrowdyMassRenderingBackend::GetBackendConfigClass() const
+{
+	return UCrowdyMassRenderingBackendConfig::StaticClass();
+}
+
 bool UCrowdyMassRenderingBackend::InitializeBackend(UWorld* World, UCrowdyRenderingBackendConfig* Config)
 {
 	if (!ensureMsgf(IsValid(World), TEXT("[CrowdyMassRenderingBackend]: InitializeBackend called with a null world.")))
@@ -48,6 +53,8 @@ void UCrowdyMassRenderingBackend::DeinitializeBackend()
 	}
 
 	SlotToUUID.Empty();
+	PendingSpawnData.Empty();
+	SpawnDataApplied.Empty();
 	MassSubsystem = nullptr;
 	EntitySubsystem = nullptr;
 	MassConfig = nullptr;
@@ -91,12 +98,65 @@ void UCrowdyMassRenderingBackend::ActivateInstance(int32 SlotId, const FGuid& UU
 	// look different; an unlisted class still builds from the single configured default, as before.
 	MassSubsystem->SpawnRemoteEntity(UUID, FTransform(Rotation, Location), InitialState, EntityClass);
 
+	// Taken out before it is applied: an ingestor runs game code, which may reach this map.
+	FHeldSpawnData Held;
+	if (PendingSpawnData.RemoveAndCopyValue(UUID, Held) && MassSubsystem->ApplySpawnState(UUID, Held.State))
+		SpawnDataApplied.Add(UUID);
+
 	UE_LOG(LogCrowdyMass, Verbose, TEXT("[CrowdyMassRenderingBackend]: Activated slot %d for entity %s (resolved class %s, used only for CrowdyState routing; the Mass entity itself renders from the Mass Entity Config)."),
 		SlotId, *UUID.ToString(), *GetNameSafe(EntityClass));
 }
 
+void UCrowdyMassRenderingBackend::TakeSpawnData(const FGuid& UUID, const FInstancedStruct& InitialState)
+{
+	// Once per entity, as On Crowdy Spawned is: a repeated or forged spawn event does not overwrite the row again.
+	if (!IsValid(MassSubsystem) || SpawnDataApplied.Contains(UUID))
+		return;
+
+	if (MassSubsystem->ApplySpawnState(UUID, InitialState))
+	{
+		SpawnDataApplied.Add(UUID);
+		return;
+	}
+
+	// An entity whose first update never comes (out of range, or a forged id) gives its place up after a while.
+	const double Now = FPlatformTime::Seconds();
+	if (PendingSpawnData.Num() >= MaxPendingSpawnData && !PendingSpawnData.Contains(UUID))
+	{
+		for (auto It = PendingSpawnData.CreateIterator(); It; ++It)
+		{
+			if (It.Value().ExpiresAt <= Now)
+				It.RemoveCurrent();
+		}
+	}
+
+	if (PendingSpawnData.Num() >= MaxPendingSpawnData && !PendingSpawnData.Contains(UUID))
+	{
+		UE_CLOG(!bReportedPendingSpawnDataFull, LogCrowdyMass, Warning,
+			TEXT("[CrowdyMassRenderingBackend]: %d spawned entities are waiting for their first update, so spawn data for more is dropped. Reported once."),
+			MaxPendingSpawnData);
+		bReportedPendingSpawnDataFull = true;
+		return;
+	}
+
+	PendingSpawnData.Add(UUID, FHeldSpawnData{InitialState, Now + PendingSpawnDataSeconds});
+}
+
+bool UCrowdyMassRenderingBackend::ReleaseDestroyedInstance(const int32 SlotId, const FGuid& UUID)
+{
+	PendingSpawnData.Remove(UUID);
+	SpawnDataApplied.Remove(UUID);
+	if (!SlotToUUID.IsValidIndex(SlotId) || SlotToUUID[SlotId] != UUID || !IsValid(MassSubsystem))
+		return false;
+
+	MassSubsystem->DestroyRemoteEntity(UUID);
+	return true;
+}
+
 void UCrowdyMassRenderingBackend::DeactivateInstance(int32 SlotId, const FGuid& UUID)
 {
+	PendingSpawnData.Remove(UUID);
+	SpawnDataApplied.Remove(UUID);
 	if (IsValid(MassSubsystem))
 		MassSubsystem->DestroyRemoteEntity(UUID);
 

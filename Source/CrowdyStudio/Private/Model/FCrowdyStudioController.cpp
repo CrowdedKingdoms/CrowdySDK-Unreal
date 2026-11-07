@@ -14,6 +14,7 @@
 #include "Network/CrowdyCpp/CrowdyCppAdminClientHost.h"
 #include "Gql/CrowdyStudioQueries.h"
 #include "HAL/PlatformProcess.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Misc/DateTime.h"
 #include "Modules/ModuleManager.h"
 #include "Settings/CrowdyStudioUserSettings.h"
@@ -128,6 +129,7 @@ void FCrowdyStudioController::SignInWithToken(const FString& OrgToken)
 	// An org token is management-only and can't mint; drop any app token a prior session sign-in left
 	// so a game op can't bear it under this identity.
 	ClearAppToken();
+	CrowdyStudioConsent::CloseAll();
 
 	AuthToken = OrgToken;
 	AuthScope = ECrowdyStudioAuthScope::OrgToken;
@@ -321,6 +323,8 @@ void FCrowdyStudioController::LoginWithEmail(const FString& Email, const FString
 
 void FCrowdyStudioController::FinishSessionSignIn(const FString& Token, int64 InUserId, const FString& StatusMsg)
 {
+	CrowdyStudioConsent::CloseAll();
+	bDeveloperTermsRechecked = false;
 	AuthToken = Token;
 	AuthScope = ECrowdyStudioAuthScope::Session;
 	UserId = InUserId;
@@ -334,6 +338,7 @@ void FCrowdyStudioController::FinishSessionSignIn(const FString& Token, int64 In
 	SetStatus(StatusMsg, false);
 	OnSignInStateChanged.Broadcast();
 	FetchMyOrganizations();
+	CheckDeveloperTerms();
 	FetchAppsForSignedInUser();
 }
 
@@ -570,9 +575,9 @@ void FCrowdyStudioController::SignInWithMagicLink(const FString& Email)
 
 	EnsureLoopback();
 
-	// Magic-link passes an EMPTY expected state (the one-time token is itself the single-use credential;
-	// the server does not round-trip a state on this flow), so there is no reserve-then-arm split - arm
-	// the listener directly and use the returned redirectUri for requestLoginLink.
+	// Magic-link passes an EMPTY expected state, because the server does not round-trip one on this flow, and
+	// the listener binds a random path in its place. So there is no reserve-then-arm split: arm the listener
+	// directly and use the returned redirectUri for requestLoginLink.
 	FOnLoopbackToken OnTokenCaptured;
 	OnTokenCaptured.BindLambda([this](const FString& Token)
 	{
@@ -720,6 +725,8 @@ bool FCrowdyStudioController::IsInteractiveSignInBusy() const
 
 void FCrowdyStudioController::SignOut()
 {
+	CrowdyStudioConsent::CloseAll();
+
 	// End the session on the server while its token is still installed; nothing waits for the answer. An organization
 	// token is not a session, so it is only forgotten.
 	if (AuthScope == ECrowdyStudioAuthScope::Session && !AuthToken.IsEmpty())
@@ -2461,7 +2468,7 @@ void FCrowdyStudioController::IssueOperation(ECrowdyCppApiDomain Domain, const T
 
 	TWeakPtr<FCrowdyStudioController> WeakThis = AsShared();
 	Client->RunOp(Domain, OpName, Variables,
-		[WeakThis, OpName, OnSuccess = MoveTemp(OnSuccess), OnFailure = MoveTemp(OnFailure), bReportErrors]
+		[WeakThis, OpName, Plane, OnSuccess = MoveTemp(OnSuccess), OnFailure = MoveTemp(OnFailure), bReportErrors]
 		(FCrowdyCppJsonResult Result)
 		{
 			TSharedPtr<FCrowdyStudioController> Self = WeakThis.Pin();
@@ -2490,6 +2497,14 @@ void FCrowdyStudioController::IssueOperation(ECrowdyCppApiDomain Domain, const T
 				}
 				Self->bLastFailureWasCanceled = bWasCanceled;
 				Self->bLastFailureWasRejection = IsCredentialRejection(Result.ErrorMessage, Result.ErrorCode);
+
+				// The player's and app's documents go through the mint, so this is the developer's. Asked once a session.
+				if (Plane == ECrowdyCppTokenPlane::Management && !Self->bDeveloperTermsRechecked
+					&& Result.ErrorCode.Equals(CrowdyCppLegalAcceptanceRequiredCode, ESearchCase::CaseSensitive))
+				{
+					Self->bDeveloperTermsRechecked = true;
+					Self->CheckDeveloperTerms();
+				}
 				if (OnFailure)
 				{
 					OnFailure();
@@ -2707,8 +2722,9 @@ void FCrowdyStudioController::StartMint(bool bConsentAsked)
 
 	BeginRequest();
 	TWeakPtr<FCrowdyStudioController> WeakThis = AsShared();
+	const FString MintedBy = AuthToken;
 	Client->MintAppToken(MintForAppId,
-		[WeakThis, MintForAppId, Client, bConsentAsked](FCrowdyCppAppTokenResult Result)
+		[WeakThis, MintForAppId, Client, bConsentAsked, MintedBy](FCrowdyCppAppTokenResult Result)
 		{
 			TSharedPtr<FCrowdyStudioController> Self = WeakThis.Pin();
 			if (!Self.IsValid())
@@ -2716,9 +2732,21 @@ void FCrowdyStudioController::StartMint(bool bConsentAsked)
 				return;
 			}
 			Self->EndRequest();
+
+			// Nobody signed in now is the person the server was answering about.
+			if (Self->AuthToken != MintedBy)
+			{
+				Self->FinishMint(MintForAppId, false);
+				return;
+			}
 			if (CrowdyStudioConsent::ShouldAskConsent(Result, bConsentAsked))
 			{
 				Self->AskConsentThenRemint(MintForAppId, Client.ToSharedRef());
+				return;
+			}
+			if (CrowdyStudioConsent::ShouldAskAge(Result, Self->bAgeAskedForMint))
+			{
+				Self->AskAgeThenRemint(MintForAppId, Client.ToSharedRef());
 				return;
 			}
 			// An empty token is failed closed here rather than trusted: if the bridge's own response mapping ever
@@ -2767,6 +2795,83 @@ void FCrowdyStudioController::AskConsentThenRemint(int64 MintForAppId, const TSh
 			return;
 		}
 		Self->StartMint(true);
+	}, LexToString(MintForAppId));
+}
+
+void FCrowdyStudioController::AskAgeThenRemint(int64 MintForAppId, const TSharedRef<FCrowdyCppClient>& Client)
+{
+	bAgeAskedForMint = true;
+	TWeakPtr<FCrowdyStudioController> WeakThis = AsShared();
+	CrowdyStudioConsent::AskAge(Client, [WeakThis, MintForAppId](bool bRecorded)
+	{
+		TSharedPtr<FCrowdyStudioController> Self = WeakThis.Pin();
+		if (!Self.IsValid())
+		{
+			return;
+		}
+		if (!bRecorded)
+		{
+			Self->SetStatus(CrowdyStudioConsent::AgeDeclinedMessage(), true);
+			Self->FinishMint(MintForAppId, false);
+
+			// An age refusal can erase the account, so its session is not kept.
+			if (CrowdyStudioConsent::IsAgeRefused())
+			{
+				Self->SignOut();
+			}
+			return;
+		}
+		if (!Self->CanMintAppToken())
+		{
+			Self->FinishMint(MintForAppId, false);
+			return;
+		}
+		Self->StartMint(false);
+	});
+}
+
+void FCrowdyStudioController::CheckDeveloperTerms()
+{
+	if (AuthScope != ECrowdyStudioAuthScope::Session || IsRunningCommandlet() || !FSlateApplication::IsInitialized() || CrowdyStudioConsent::IsAgeRefused())
+	{
+		return;
+	}
+	const TSharedPtr<FCrowdyCppClient> Client = ResolveApiClient(TEXT("developerLegalAcceptance"));
+	if (!Client.IsValid())
+	{
+		return;
+	}
+
+	TWeakPtr<FCrowdyStudioController> WeakThis = AsShared();
+	const FString AskedBy = AuthToken;
+	Client->HasDeveloperAcceptance([WeakThis, Client, AskedBy](FCrowdyCppBoolResult Result)
+	{
+		// A failure here says nothing about the terms: the calls they guard will answer for themselves.
+		const TSharedPtr<FCrowdyStudioController> Asker = WeakThis.Pin();
+		if (!Result.bOk || Result.bValue || !Asker.IsValid() || Asker->AuthToken != AskedBy)
+		{
+			return;
+		}
+		CrowdyStudioConsent::AskDeveloperTerms(Client.ToSharedRef(), [WeakThis](bool bRecorded)
+		{
+			TSharedPtr<FCrowdyStudioController> Self = WeakThis.Pin();
+			if (!Self.IsValid())
+			{
+				return;
+			}
+			if (bRecorded)
+			{
+				Self->FetchMyOrganizations();
+				return;
+			}
+			if (CrowdyStudioConsent::IsAgeRefused())
+			{
+				Self->SetStatus(CrowdyStudioConsent::AgeDeclinedMessage(), true);
+				Self->SignOut();
+				return;
+			}
+			Self->SetStatus(CrowdyStudioConsent::DeveloperDeclinedMessage(), true);
+		});
 	});
 }
 
@@ -2798,6 +2903,7 @@ void FCrowdyStudioController::ApplyMintedAppToken(int64 MintForAppId, const FStr
 void FCrowdyStudioController::FinishMint(int64 MintedAppId, bool bReady)
 {
 	bMintInFlight = false;
+	bAgeAskedForMint = false;
 	MintInFlightAppId = 0;
 
 	// The selected app changed while this mint was in flight, so its token is for the wrong app. If a

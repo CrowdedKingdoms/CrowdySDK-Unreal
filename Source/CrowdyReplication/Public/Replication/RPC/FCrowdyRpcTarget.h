@@ -63,9 +63,7 @@ struct FCrowdyRpcTarget
 		return Role == ECrowdyRole::Owner && PlayerID.IsValid() && OwnerID == PlayerID;
 	}
 
-	// True when no client owns this entity, so there is no single client a targeted message could be
-	// delivered to. A world entity belongs to whichever client is host, which the Host recipient
-	// addresses; the owner-only recipient has no destination for it at all.
+	// True when no player owns this entity: a world entity, written by the elected host if there is one.
 	bool BelongsToNoClient() const
 	{
 		return Role == ECrowdyRole::HostOwned;

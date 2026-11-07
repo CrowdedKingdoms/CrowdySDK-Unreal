@@ -30,18 +30,14 @@ class UCrowdyEventSource : public UInterface
  * source that has no owning actor, so an actor or component that also implements it still routes by
  * its actor identity.
  *
- * All four recipients can be sent. Owner-only and host-only reach their single recipient over a
- * transport that addresses a registered id plus a chunk, not an actor, so a source with no actor uses
- * it like any other sender. Two of the four do need a position, and drop with a warning when
- * GetEventLocation reports none: Spatial Multicast, which announces from the region the entity stands
- * in, and owner-only when the entity is owned by another client, which is addressed to the chunk the
- * entity stands in. Multicast never needs one, and neither does host-only, which is addressed from
- * where the HOST stands rather than from where this source is. An owner-only event on a world entity
- * that no client owns is also dropped, since there is no single client to deliver it to; use host-only
- * for a world entity.
+ * All four recipients can be sent, and none of them needs an actor. Spatial Multicast needs a position, and drops with a warning when
+ * GetEventLocation reports none, since it announces from the region the entity stands in. Multicast
+ * never needs one, and neither does host-only, which is addressed from where the HOST stands rather
+ * than from where this source is. An owner-only event on a world entity
+ * goes to the elected host, and is dropped under Leader Source Server Object, where no client writes one.
  *
- * One further limit: a source may only originate an event for an entity this client is the authority
- * for, which means one it owns, or a world entity while this client is the host.
+ * One further limit: a source may only originate an event for an entity this client writes, which
+ * means one it owns, or a world entity while this client is the host.
  */
 class CROWDYREPLICATION_API ICrowdyEventSource
 {

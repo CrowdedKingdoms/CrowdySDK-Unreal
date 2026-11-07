@@ -117,7 +117,7 @@ namespace
 				TEXT("[CrowdySDK] @@ uses Unreal's Has Authority, which does not apply to a Crowdy entity - ")
 				TEXT("the elected host is a convention, not an enforced server, so this reads the wrong value ")
 				TEXT("on non-host clients. Use the Crowdy ownership test instead: ")
-				TEXT("UCrowdyEntityComponent::IsLocallyOwned, or UCrowdyUtilities::IsCrowdyEntityLocallyControlled."),
+				TEXT("Is Locally Owned on the Crowdy Entity Component, or Switch Is Crowdy Entity Locally Owned."),
 				AuthoredNode ? AuthoredNode : static_cast<UEdGraphNode*>(CallNode));
 		}
 
@@ -661,6 +661,14 @@ FString UCrowdyBlueprintCompilerExtension::DescribeCrowdBodyLimit(const ECrowdyC
 	}
 }
 
+FString UCrowdyBlueprintCompilerExtension::DescribeDeprecatedAsyncNode(const UK2Node_BaseAsyncTask* Node)
+{
+	const UFunction* Factory = Node ? Node->GetFactoryFunction() : nullptr;
+	if (!Factory || !Factory->HasMetaData(FBlueprintMetadata::MD_DeprecatedFunction)) return FString();
+
+	return FString::Printf(TEXT("@@ is deprecated. %s"), *Factory->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage));
+}
+
 void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 	const FKismetCompilerContext& CompilationContext,
 	const FBlueprintCompiledData& Data)
@@ -689,6 +697,20 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 
 	TArray<UEdGraph*> SourceGraphs;
 	Blueprint->GetAllGraphs(SourceGraphs);
+
+	for (const UEdGraph* Graph : SourceGraphs)
+	{
+		if (!Graph) continue;
+
+		TArray<UK2Node_BaseAsyncTask*> AsyncNodes;
+		Graph->GetNodesOfClass(AsyncNodes);
+
+		for (UK2Node_BaseAsyncTask* AsyncNode : AsyncNodes)
+		{
+			const FString Warning = UCrowdyBlueprintCompilerExtension::DescribeDeprecatedAsyncNode(AsyncNode);
+			if (!Warning.IsEmpty()) CompilationContext.MessageLog.Warning(*Warning, AsyncNode);
+		}
+	}
 
 	// Unreal's Has Authority answers a question about Unreal's own network role, which does not
 	// exist for a Crowdy entity - the elected host is a convention, never an enforced server - so a
@@ -821,6 +843,12 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 					*FString::Printf(
 						TEXT("[CrowdySDK] Crowdy Replicated event @@ has an unrecognized Recipient '%s', so it uses Spatial Multicast."),
 						*Info.Recipient),
+					CustomEvent);
+			}
+			if (ResolveCrowdyRecipient(Info.Recipient) == CrowdyDeprecatedHostRecipient)
+			{
+				CompilationContext.MessageLog.Warning(
+					TEXT("[CrowdySDK] Crowdy Replicated event @@ uses the deprecated Recipient Host. Use Owning Client, or move logic only one machine should run to a Server Object."),
 					CustomEvent);
 			}
 			if (!IsRecognisedCrowdyRoutingValue<ECrowdyDecayRate>(Info.Decay))

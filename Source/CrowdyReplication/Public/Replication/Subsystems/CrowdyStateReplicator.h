@@ -15,6 +15,13 @@ class UCrowdyGameSession;
 struct FCrowdyRepLayout;
 struct FCrowdyEntityRecord;
 
+/** The most state one delta can carry on each route, after the fixed fields around the blob. */
+namespace CrowdyStateBlobLimit
+{
+	inline constexpr int32 Event = 1029;
+	inline constexpr int32 Channel = 969;
+}
+
 /**
  * Internal per-owned-entity send state for the CrowdyState replicator. Deliberately NOT a USTRUCT: it
  * holds raw FProperty pointers plus a void shadow buffer that have no wire form and are never serialized.
@@ -99,10 +106,17 @@ struct FCrowdyOwnedEntityState
 	// unaffected. False when the entity has no component (e.g. test fixtures) or set Inherit.
 	bool bHeartbeatSuppressed = false;
 
+	// True when this entity's movement updates carry its continuous properties, so the diff and keyframe skip them.
+	// False leaves them ordinary state, which keeps them moving on an instance that turned movement off.
+	bool bContinuousOnMovement = false;
+
 	// Per-property push flags for bManualDirty properties: set by MarkStateDirty/MarkAllStateDirty, consumed
 	// (and cleared for the sent bits) by the send loop. Sized to the layout in InitShadow and re-Init on a
 	// shadow rebuild. A bManualDirty property is dirty iff its bit here is set; auto-diff never touches it.
 	TBitArray<> PendingManualDirty;
+
+	// Properties already warned about as too large to send. Empty until the first one, so most entities pay nothing.
+	TBitArray<> WarnedTooLarge;
 
 	// World-time (seconds) of this entity's next keyframe heartbeat. Seeded in BuildOwnedState to about one
 	// interval out with a small deterministic per-entity stagger so heartbeats do not synchronize into a burst.
@@ -172,6 +186,10 @@ public:
 
 	// Marks every bManualDirty property of an owned entity for a push on the next send.
 	void MarkAllStateDirty(const FGuid& EntityID);
+
+	// Whether this entity's movement updates carry its continuous properties. Follows StartReplication and StopReplication,
+	// because a property nothing carries must go back to being ordinary state. Skipped when the entity is not tracked.
+	void SetContinuousOnMovement(const FGuid& EntityID, bool bOnMovement);
 
 	// Adopts a host correction that was just applied to an entity we own into the owner's shadow, so the
 	// owner's next diff sees the host's values as already-sent and does not re-emit (revert) them. Called by
@@ -245,6 +263,7 @@ public:
 	}
 	int32 NumKnownHostOwnedForTest() const { return KnownHostOwnedIDs.Num(); }
 	bool IsTrackedForTest(const FGuid& Id) const { return OwnedEntities.Contains(Id); }
+	bool HasWarnedWorldEntityHasNoWriterForTest() const { return bWarnedWorldEntityHasNoWriter; }
 
 	// Loopback mirror test seams: exercise the spawn/guard logic directly without ReplicationLoop/Tick.
 	AActor* GetOrCreateLoopbackMirrorForTest(AActor* SourceActor, const FGuid& SourceEntityID)
@@ -300,6 +319,9 @@ private:
 	bool BuildOwnedState(const FGuid& EntityID, UObject* Participant, TUniquePtr<FCrowdyOwnedEntityState>& Out);
 	void InitShadow(FCrowdyOwnedEntityState& State, const FCrowdyRepLayout& Layout);
 
+	// Makes the participant's current values the baseline, so only later writes count as changes.
+	void SeedShadowFromLive(FCrowdyOwnedEntityState& State);
+
 	// Loopback (crowdy.state.loopback): returns the existing mirror for SourceEntityID, or spawns one. The
 	// mirror is a second instance of SourceActor's class, in the same world, registered with its OWN fresh
 	// NetID as ECrowdyRole::RemoteProxy and an INVALID OwnerID (never SourceActor's owner, and never
@@ -324,10 +346,15 @@ private:
 	// entity must have a live actor with a rep layout. Returns true when a new owned entry was added.
 	bool TryTrackOwned(const FCrowdyEntityRecord& Record);
 
-	// Host resolution (test-overridable). ResolveHostID returns the injected id when set, else the session's
-	// host id; IsLocalHost is true when that host id is valid and equals the local player id (read live).
-	FGuid ResolveHostID() const;
-	bool IsLocalHost() const;
+	// Writer resolution (test-overridable). ResolveHostID returns the injected id when set, else the writer of a
+	// World-owned entity of that kind: the Leader for a replicated subsystem, the World owner for anything else (both
+	// the elected host under Leader Source Elected Host); IsLocalHost is true when it is this client.
+	FGuid ResolveHostID(bool bSubsystem) const;
+	bool IsLocalHost(bool bSubsystem) const;
+
+	// Warns once when state is marked dirty on a World entity that nothing writes (Leader Source is Server Object).
+	void WarnIfWorldEntityHasNoWriter(const FGuid& EntityID);
+	bool bWarnedWorldEntityHasNoWriter = false;
 
 	// Loop clock (test-overridable): the injected time when set, else the world time. A headless replicator has
 	// no world, so the override drives keyframe timing deterministically.

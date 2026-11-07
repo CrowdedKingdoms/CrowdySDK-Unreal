@@ -34,8 +34,10 @@ public:
 	UPROPERTY(BlueprintAssignable, meta=(DisplayName="Failed"))
 	FCrowdyHostCheckPin OnFailed;
 
+	UE_DEPRECATED(5.8, "Use IsLocalLeader on UCrowdyLeaderSubsystem for a one-machine gate, which is false under Leader Source Elected Host. IsCrowdyEntityLocallyOwned is a different question: it is true on every client for its own avatar. A decision that must be enforced belongs in a Server Object.")
 	UFUNCTION(BlueprintCallable,
-		meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject", DefaultToSelf="Entity"),
+		meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject", DefaultToSelf="Entity", DeprecatedFunction,
+		      DeprecationMessage="Use Is Local Leader on the Crowdy Leader Subsystem for a one-machine gate, which is false under Leader Source Elected Host. Is Crowdy Entity Locally Owned is a different question: it is true on every client for its own avatar. A decision that must be enforced belongs in a Server Object."),
 		Category="Crowdy SDK|Session", DisplayName="Is Crowdy Entity Host (Server)")
 	static UCrowdyIsEntityHostServer* IsCrowdyEntityHostServer(UObject* WorldContextObject, AActor* Entity);
 

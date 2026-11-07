@@ -21,9 +21,11 @@
 #include "Replication/Subsystems/CrowdyActorTracker.h"
 #include "Replication/Subsystems/CrowdyAutoReplicator.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
+#include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "StructUtils/InstancedStruct.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
+#include "Utils/UCrowdyClassRegistry.h"
 
 // A spawned entity appears once on every client, with its spawn data, whichever of its spawn event and its first
 // update arrives first; a destroyed one is not brought back by a late update; one that does not move keeps sending
@@ -158,6 +160,33 @@ bool FCrowdyPoolAdoptsSpawnEventActorTest::RunTest(const FString& Parameters)
 	Fixture.Activate(1, Other);
 	AActor* PoolActor = Fixture.Backend->GetSlotActorForTest(1);
 	TestTrue(TEXT("the pool actor is still free for the next entity"), IsValid(PoolActor) && PoolActor != Spawned);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPoolProxyOfLeaderEntityTest,
+	"CrowdySDK.CrowdyReplication.PoolProxyOfLeaderEntityNamesTheLeader", CrowdyAppearanceTestFlags)
+bool FCrowdyPoolProxyOfLeaderEntityTest::RunTest(const FString& Parameters)
+{
+	FCrowdyAppearanceTestWorld TestWorld;
+	const FCrowdyAppearanceFixture Fixture(TestWorld.World);
+
+	const FGuid Leader = FGuid::NewGuid();
+	Fixture.Entities->SetLocalPlayerID(FGuid::NewGuid());
+	Fixture.Entities->SetGameSessionForTest(MakeGameSession(Leader));
+
+	const FGuid Entity = FGuid::NewGuid();
+	Fixture.Backend->ActivateInstance(0, Entity, ACrowdyLeaderOwnedTestActor::StaticClass(), FInstancedStruct());
+
+	const FCrowdyEntityRecord* Record = Fixture.Entities->FindRecord(Entity);
+	if (!TestNotNull(TEXT("the pool registered the proxy"), Record))
+	{
+		return false;
+	}
+	TestTrue(TEXT("as a Leader entity"), Record->bLeaderOwned);
+	TestEqual(TEXT("owned by the Leader"), Record->OwnerID, Leader);
+
+	const UCrowdyEntityComponent* Component = Record->GetActor()->FindComponentByClass<UCrowdyEntityComponent>();
+	TestEqual(TEXT("and its component agrees"), Component->GetOwnerID(), Leader);
 	return true;
 }
 
@@ -513,6 +542,214 @@ bool FCrowdySpawnedStaticEntitySendsPresenceTest::RunTest(const FString& Paramet
 	TestFalse(TEXT("a destroyed entity stops sending at once"), AutoReplicator->IsRegisteredForTest(Mirrored, bPresenceOnly));
 	TestTrue(TEXT("and the destroying client remembers it, so a repeat already on its way cannot rebuild it"),
 		Entities->WasRecentlyDestroyed(Mirrored->GetNetID()));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySpawnEventTeachesEarlyProxyItsOwnerTest,
+	"CrowdySDK.CrowdyReplication.SpawnEventTeachesAnEarlyProxyItsOwner", CrowdyAppearanceTestFlags)
+bool FCrowdySpawnEventTeachesEarlyProxyItsOwnerTest::RunTest(const FString& Parameters)
+{
+	FCrowdyAppearanceTestWorld TestWorld;
+	const FCrowdyAppearanceFixture Fixture(TestWorld.World);
+
+	// The update came first, so the pool drew the entity before anything named its owner.
+	const FGuid Entity = FGuid::NewGuid();
+	Fixture.Activate(0, Entity);
+	const AActor* Proxy = Fixture.Backend->GetSlotActorForTest(0);
+	const UCrowdyEntityComponent* Component = Proxy ? Proxy->FindComponentByClass<UCrowdyEntityComponent>() : nullptr;
+	if (!TestNotNull(TEXT("the early update is drawn by a pool actor with an entity component"), Component))
+	{
+		return false;
+	}
+	TestFalse(TEXT("which does not know its owner yet"), Component->GetOwnerID().IsValid());
+
+	FCrowdyEntitySpawnEvent Event;
+	Event.EntityID = Entity;
+	Event.OwnerID = FGuid::NewGuid();
+	Event.InitialState = MakeAppearanceState(3.0);
+	Fixture.Entities->HandleRemoteSpawnForTest(Event);
+
+	TestEqual(TEXT("the spawn event names the owner on the record"), Fixture.Entities->FindRecord(Entity)->OwnerID, Event.OwnerID);
+	TestEqual(TEXT("and on the actor already drawn for it"), Component->GetOwnerID(), Event.OwnerID);
+	TestEqual(TEXT("which keeps its id and role"), Component->GetNetID(), Entity);
+	TestEqual(TEXT("as a remote copy"), Component->GetRole(), ECrowdyRole::RemoteProxy);
+	return true;
+}
+
+namespace
+{
+	/** A world whose actor manager draws through Backend, bound to its entity subsystem as Initialize binds them. */
+	struct FCrowdyCrowdRowFixture
+	{
+		FCrowdyAppearanceTestWorld TestWorld;
+		TStrongObjectPtr<UCrowdyEntitySubsystem> Entities;
+		TStrongObjectPtr<UCrowdyActorTracker> Tracker;
+		TStrongObjectPtr<UCrowdyActorManager> Manager;
+
+		explicit FCrowdyCrowdRowFixture(UCrowdyRecordingBackend* Backend)
+			// Outered to the world, because a spawn event that does spawn an actor spawns it there.
+			: Entities(NewObject<UCrowdyEntitySubsystem>(TestWorld.World))
+			, Tracker(NewObject<UCrowdyActorTracker>(GetTransientPackage()))
+			, Manager(NewObject<UCrowdyActorManager>(GetTransientPackage()))
+		{
+			Manager->SetBackend(Backend);
+			Manager->BindToTrackerForTest(Tracker.Get());
+			Manager->SetEntitySubsystemForTest(Entities.Get());
+			Manager->BindToEntitySubsystemForTest(Entities.Get());
+			Manager->RegisterStateClass(FCrowdyActorState::StaticStruct(), AActor::StaticClass());
+		}
+
+		FGuid ReceiveSpawn(UClass* Class, const double X) const
+		{
+			FCrowdyEntitySpawnEvent Event;
+			Event.EntityID = FGuid::NewGuid();
+			Event.OwnerID = FGuid::NewGuid();
+			Event.ClassID = UCrowdyClassRegistry::Get()->GetID(Class);
+			Event.ClassPath = Class->GetPathName();
+			Event.InitialState = MakeAppearanceState(X);
+			Entities->HandleRemoteSpawnForTest(Event);
+			return Event.EntityID;
+		}
+
+		bool HasActorFor(const FGuid& NetID) const
+		{
+			for (TActorIterator<AActor> It(TestWorld.World); It; ++It)
+			{
+				const UCrowdyEntityComponent* Component = It->FindComponentByClass<UCrowdyEntityComponent>();
+				if (Component && Component->GetNetID() == NetID)
+					return true;
+			}
+			return false;
+		}
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCrowdRowMapSpawnsNoActorTest,
+	"CrowdySDK.CrowdyReplication.CrowdRowMapSpawnsNoActorForAMovingEntity", CrowdyAppearanceTestFlags)
+bool FCrowdyCrowdRowMapSpawnsNoActorTest::RunTest(const FString& Parameters)
+{
+	UCrowdyCrowdRowRecordingBackend* Rows = NewObject<UCrowdyCrowdRowRecordingBackend>(GetTransientPackage());
+	const FCrowdyCrowdRowFixture Fixture(Rows);
+
+	// A moving entity on a map drawn as crowd rows: the row is its only body, and its spawn data goes to the backend.
+	const FGuid Moving = Fixture.ReceiveSpawn(ACrowdyStateOverlapActor::StaticClass(), 5.0);
+	TestFalse(TEXT("a moving entity's spawn event spawns no actor on a crowd-row map"), Fixture.HasActorFor(Moving));
+	if (TestEqual(TEXT("its spawn data is handed to the backend once"), Rows->SpawnDataIDs.Num(), 1))
+	{
+		TestEqual(TEXT("for that entity"), Rows->SpawnDataIDs[0], Moving);
+		TestEqual(TEXT("with the event's state"), AppearanceStateX(Rows->SpawnData[0]), 5.0);
+	}
+
+	// A Static entity sends no updates, so no row is ever drawn for it: it keeps its actor.
+	const FGuid Still = Fixture.ReceiveSpawn(ACrowdyStateHostOverrideActor::StaticClass(), 6.0);
+	TestTrue(TEXT("a Static entity still gets its actor"), Fixture.HasActorFor(Still));
+	TestEqual(TEXT("and its spawn data is not handed to the backend"), Rows->SpawnDataIDs.Num(), 1);
+
+	// The update came first, while the class was unknown, so it waits for the spawn event: no actor will register to
+	// resolve it, so the spawn event activates it.
+	const FGuid Parked = FGuid::NewGuid();
+	Fixture.Tracker->OnRemoteEntityAppeared.Broadcast(Parked, FInstancedStruct::Make(FCrowdyEntityDestroyEvent()), 1);
+	TestEqual(TEXT("an update whose class is unknown is not drawn yet"), Rows->ActivatedSlots.Num(), 0);
+	FCrowdyEntitySpawnEvent Late;
+	Late.EntityID = Parked;
+	Late.ClassID = UCrowdyClassRegistry::Get()->GetID(ACrowdyStateOverlapActor::StaticClass());
+	Late.ClassPath = ACrowdyStateOverlapActor::StaticClass()->GetPathName();
+	Fixture.Entities->HandleRemoteSpawnForTest(Late);
+	TestEqual(TEXT("its spawn event draws it as a row"), Rows->ActivatedSlots.Num(), 1);
+	TestTrue(TEXT("of the class the spawn event named"), Rows->ActivatedClasses.Num() == 1 && Rows->ActivatedClasses[0] == ACrowdyStateOverlapActor::StaticClass());
+	TestFalse(TEXT("with no actor"), Fixture.HasActorFor(Parked));
+
+	// On a map drawn with actors the moving entity gets its actor, as before.
+	Fixture.Manager->SetBackend(NewObject<UCrowdyRecordingBackend>(GetTransientPackage()));
+	const FGuid Pooled = Fixture.ReceiveSpawn(ACrowdyStateOverlapActor::StaticClass(), 7.0);
+	TestTrue(TEXT("a moving entity on an actor map still gets its actor"), Fixture.HasActorFor(Pooled));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyLeaderClassOnRowsWarnsOnceTest,
+	"CrowdySDK.LeaderOwned.ACrowdRowMapSaysALeaderClassCannotBeTakenOver", CrowdyAppearanceTestFlags)
+bool FCrowdyLeaderClassOnRowsWarnsOnceTest::RunTest(const FString& Parameters)
+{
+	UCrowdyCrowdRowRecordingBackend* Rows = NewObject<UCrowdyCrowdRowRecordingBackend>(GetTransientPackage());
+	const FCrowdyCrowdRowFixture Fixture(Rows);
+
+	Fixture.ReceiveSpawn(ACrowdyStateOverlapActor::StaticClass(), 1.0);
+	TestEqual(TEXT("a Player class says nothing"), Fixture.Entities->GetReportedLeaderRowClassCountForTest(), 0);
+
+	Fixture.ReceiveSpawn(ACrowdyLeaderMovingTestActor::StaticClass(), 2.0);
+	Fixture.ReceiveSpawn(ACrowdyLeaderMovingTestActor::StaticClass(), 3.0);
+	TestEqual(TEXT("a Leader class is reported once"), Fixture.Entities->GetReportedLeaderRowClassCountForTest(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyLeadingClientRefusesPoolBodyTest,
+	"CrowdySDK.LeaderOwned.AnUpdateGivesTheLeaderNoBodyItNeverHad", CrowdyAppearanceTestFlags)
+bool FCrowdyLeadingClientRefusesPoolBodyTest::RunTest(const FString& Parameters)
+{
+	FCrowdyAppearanceTestWorld TestWorld;
+	const FCrowdyAppearanceFixture Fixture(TestWorld.World);
+	const FGuid Local = FGuid::NewGuid();
+	Fixture.Entities->SetLocalPlayerID(Local);
+	Fixture.Entities->SetGameSessionForTest(MakeGameSession(Local));
+
+	const FGuid Entity = FGuid::NewGuid();
+	Fixture.Backend->ActivateInstance(0, Entity, ACrowdyLeaderMovingTestActor::StaticClass(), FInstancedStruct());
+	TestNull(TEXT("the client that leads takes no pool actor for it"), Fixture.Entities->FindEntity(Entity));
+	TestFalse(TEXT("and the slot stays open"), Fixture.Backend->IsInstanceActive(0));
+
+	Fixture.Entities->SetGameSessionForTest(MakeGameSession(FGuid::NewGuid()));
+	Fixture.Backend->ActivateInstance(0, Entity, ACrowdyLeaderMovingTestActor::StaticClass(), FInstancedStruct());
+	TestNotNull(TEXT("a client that does not lead draws it"), Fixture.Entities->FindEntity(Entity));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyDestroyEventReleasesCrowdRowTest,
+	"CrowdySDK.ActorManager.DestroyEventReleasesACrowdRow", CrowdyAppearanceTestFlags)
+bool FCrowdyDestroyEventReleasesCrowdRowTest::RunTest(const FString& Parameters)
+{
+	UCrowdyCrowdRowRecordingBackend* Rows = NewObject<UCrowdyCrowdRowRecordingBackend>(GetTransientPackage());
+	const FCrowdyCrowdRowFixture Fixture(Rows);
+
+	auto Update = [&Fixture](const FGuid& UUID)
+	{
+		FCrowdyActorUpdate Update;
+		Update.UUID = UUID;
+		Update.ServerTimestamp = 1000;
+		Update.State = MakeAppearanceState(2.0);
+		TArray<FCrowdyActorUpdate> Batch;
+		Batch.Add(Update);
+		Fixture.Manager->DrainUpdateBatchForTest(Batch);
+	};
+
+	// A row drawn from updates alone has no record here, so the destroy reaches it through the manager.
+	const FGuid Row = FGuid::NewGuid();
+	Fixture.Tracker->OnRemoteEntityAppeared.Broadcast(Row, MakeAppearanceState(1.0), 1);
+	TestEqual(TEXT("the row is drawn"), Rows->ActivatedSlots.Num(), 1);
+
+	FCrowdyEntityDestroyEvent Destroy;
+	Destroy.EntityID = Row;
+	Fixture.Entities->HandleRemoteDestroyForTest(Destroy);
+	if (TestEqual(TEXT("the destroy event reaches the backend once"), Rows->ReleasedOnDestroy.Num(), 1))
+	{
+		TestEqual(TEXT("naming the row's slot"), Rows->ReleasedOnDestroy[0].Key, Rows->ActivatedSlots[0]);
+		TestEqual(TEXT("and its id"), Rows->ReleasedOnDestroy[0].Value, Row);
+	}
+
+	Update(Row);
+	TestEqual(TEXT("an update still in flight does not draw it again"), Rows->ActivatedSlots.Num(), 1);
+
+	// An entity that keeps sending after the window is alive, as after a forged destroy: it is drawn again.
+	FPlatformProcess::Sleep(static_cast<float>(UCrowdyEntitySubsystem::RecentlyDestroyedSeconds) + 0.1f);
+	Update(Row);
+	TestEqual(TEXT("an update after the window draws it again"), Rows->ActivatedSlots.Num(), 2);
+
+	const FGuid Unknown = FGuid::NewGuid();
+	Destroy.EntityID = Unknown;
+	Fixture.Entities->HandleRemoteDestroyForTest(Destroy);
+	if (TestEqual(TEXT("a destroy for an id with no slot still reaches the backend"), Rows->ReleasedOnDestroy.Num(), 2))
+	{
+		TestEqual(TEXT("with no slot"), Rows->ReleasedOnDestroy[1].Key, static_cast<int32>(INDEX_NONE));
+	}
 	return true;
 }
 

@@ -25,6 +25,8 @@
 #include "Utils/UCrowdyClassRegistry.h"
 #include "Utils/UEventPayloadRegistry.h"
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyStateReplicatorTestFlags =
@@ -859,6 +861,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateHostAlreadyElectedTracksOnRegisterT
 	"CrowdySDK.State.HostAlreadyElectedTracksOnRegister", CrowdyStateReplicatorTestFlags)
 bool FCrowdyStateHostAlreadyElectedTracksOnRegisterTest::RunTest(const FString& Parameters)
 {
+	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
 	{
@@ -1696,5 +1699,7 @@ bool FCrowdyStateEmittedClassIDTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif // WITH_DEV_AUTOMATION_TESTS

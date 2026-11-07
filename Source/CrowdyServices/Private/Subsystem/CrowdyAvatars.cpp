@@ -4,7 +4,6 @@
 #include "LatentActions.h"
 #include "Engine/Engine.h"
 #include "Engine/LatentActionManager.h"
-#include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Misc/Base64.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/MemoryReader.h"
@@ -39,7 +38,7 @@ void UCrowdyAvatars::Deinitialize()
 
 int64 UCrowdyAvatars::GetAppId() const
 {
-	return GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
+	return CrowdyServiceApi::ResolveAppId(GetGameInstance());
 }
 
 bool UCrowdyAvatars::GetMyAvatarById(int64 AvatarId, FCrowdyAvatar& OutAvatar) const

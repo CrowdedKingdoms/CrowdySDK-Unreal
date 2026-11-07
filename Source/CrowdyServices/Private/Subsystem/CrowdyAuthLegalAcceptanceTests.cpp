@@ -349,10 +349,10 @@ bool FCrowdyAuthAppliedTokenEndsAHeldRefreshTest::RunTest(const FString& Paramet
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthConsentNeedsBothAnswersTest,
-	"CrowdySDK.Auth.ConsentNeedsBothAnswers", ConsentTestFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthConsentNeedsTheTermsTest,
+	"CrowdySDK.Auth.ConsentNeedsTheTerms", ConsentTestFlags)
 
-bool FCrowdyAuthConsentNeedsBothAnswersTest::RunTest(const FString& Parameters)
+bool FCrowdyAuthConsentNeedsTheTermsTest::RunTest(const FString& Parameters)
 {
 	FConsentRig Rig(0);
 	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
@@ -360,10 +360,9 @@ bool FCrowdyAuthConsentNeedsBothAnswersTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	Rig.Consent(true, false);
 	Rig.Consent(false, true);
 
-	TestEqual(TEXT("each half-answer is refused"), Rig.Listener->ConsentErrors.Num(), 2);
+	TestEqual(TEXT("not accepting the terms is refused"), Rig.Listener->ConsentErrors.Num(), 1);
 	TestEqual(TEXT("nothing is reported recorded"), Rig.Listener->ConsentsRecorded, 0);
 	FString Url;
 	FString Authorization;
@@ -379,7 +378,7 @@ bool FCrowdyAuthLegalDocumentsAreListedTest::RunTest(const FString& Parameters)
 {
 	const TArray<FCrowdyLegalDocument> Documents = UCrowdyAuthentication::GetLegalDocuments();
 
-	TestEqual(TEXT("five documents"), Documents.Num(), 5);
+	TestEqual(TEXT("the player documents"), Documents.Num(), 2);
 	for (const FCrowdyLegalDocument& Document : Documents)
 	{
 		TestFalse(TEXT("each has a title"), Document.Title.IsEmpty());
@@ -582,6 +581,37 @@ bool FCrowdyAuthLinkStartAnsweringAfterLogoutIsDroppedTest::RunTest(const FStrin
 		Rig.Listener->FlowErrors.Num() == 1 && Rig.Listener->FlowErrors[0].Contains(TEXT("Signed out")));
 	TestFalse(TEXT("no browser sign-in is left armed"), Rig.Auth->IsInteractiveSignInBusyForTest());
 
+	return true;
+}
+
+// The server echoes no state on this flow, so the address in the email is the only thing a web page cannot know.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthEmailLinkGetsItsOwnCallbackTest,
+	"CrowdySDK.Auth.EmailLinkGetsItsOwnCallback", ConsentTestFlags)
+
+bool FCrowdyAuthEmailLinkGetsItsOwnCallbackTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-email-link"));
+
+	TArray<TPair<int32, FString>> Script;
+	Script.Emplace(200, FString(TEXT("{\"data\":{\"requestLoginLink\":{\"sent\":true}}}")));
+	Rig.Client->SetTestResponseScript(MoveTemp(Script));
+
+	FOnAuthError OnError;
+	OnError.BindDynamic(Rig.Listener.Get(), &UCrowdyAuthTestListener::HandleFlowError);
+	Rig.Auth->BeginMagicLinkSignIn(TEXT("player@example.com"), FOnAuthSuccess(), OnError);
+	Rig.Drain();
+
+	const FString Body = Rig.LastRequestBody();
+	TestTrue(TEXT("the link is requested"), Body.Contains(TEXT("requestLoginLink")));
+	TestTrue(TEXT("with a callback address of its own"), Body.Contains(TEXT("127.0.0.1")) && Body.Contains(TEXT("/callback/")));
+
+	Rig.Auth->ClearSavedSession();
 	return true;
 }
 

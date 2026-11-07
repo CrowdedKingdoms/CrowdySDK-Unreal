@@ -66,6 +66,8 @@ DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAuthSuccess, FCrowdyAuthResult, Result);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAuthError, FString, Message);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnLoginLinkSent, bool, bSent);
 DECLARE_DYNAMIC_DELEGATE(FOnLegalConsentsRecorded);
+DECLARE_DYNAMIC_DELEGATE(FOnPlayerAgeRecorded);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnLegalDocuments, const TArray<FCrowdyLegalDocument>&, Documents);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAuthLoginEvent, FCrowdyAuthResult, Result);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAuthLoginFailed, FString, Message);
@@ -76,6 +78,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAuthSessionRestoreFailed, FString
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAppTokenRefreshed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLegalAcceptanceRequired);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLegalAcceptanceEnded);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAgeRequired);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAgeEntryEnded);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnLoginProvidersReceived, const TArray<FString>&, Providers);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnIdentitiesReceived, const TArray<FCrowdyUserIdentity>&, Identities);
@@ -162,9 +166,54 @@ public:
 	FOnLegalAcceptanceEnded OnLegalAcceptanceEnded;
 
 	/**
-	 * Record the signed-in player's acceptance of the legal documents and their age-of-majority attestation. Call it
-	 * only from the player's own explicit accept; both must be true or nothing is sent. OnRecorded fires first, then a
-	 * held sign-in resumes and completes through its own delegates. On failure the sign-in stays held.
+	 * Fires when the server refuses a gameplay token until it knows the player's date of birth and country. The sign-in
+	 * or token refresh is held, not failed: ask on a neutral screen, then call RecordPlayerAge, or DeclineAgeEntry on
+	 * decline. The screen shows no age, picks no answer, and shows the parental line only for a date that makes the
+	 * player 13 to 17. The built-in prompt follows these rules unless Show Consent Prompt is off.
+	 */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Authentication")
+	FOnAgeRequired OnAgeRequired;
+
+	/** Fires when the age is no longer being waited for, however that ended: close an age screen here. */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Authentication")
+	FOnAgeEntryEnded OnAgeEntryEnded;
+
+	/**
+	 * Record the player's month and year of birth and their country (ISO 3166-1 alpha-2). OnRecorded fires first, then a
+	 * held sign-in resumes through its own delegates. A refusal ends the sign-in and offers no retry: OnError has text to
+	 * show as it is, and IsAgeEntryLocked stays true for a day. Any other failure leaves the sign-in held.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
+	void RecordPlayerAge(int32 BirthYear, int32 BirthMonth, const FString& CountryCode, bool bParentalConfirmation,
+	                     FOnPlayerAgeRecorded OnRecorded, FOnAuthError OnError);
+
+	/** The player declined to give their age: a held sign-in fails. A held refresh is dropped. */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
+	void DeclineAgeEntry();
+
+	/** True while a sign-in or refresh waits for the player's age. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
+	bool IsAgeEntryPending() const;
+
+	/** True for a day after an age refusal on this install: do not offer the age screen again. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
+	bool IsAgeEntryLocked() const;
+
+	/** Lifts the lock on this install. For testing a refusal, never for a player. */
+	void ClearAgeEntryLock();
+
+	/** The same lock under a name of the caller's, for a screen outside a game instance. */
+	static bool IsAgeEntryLockedFor(const FString& Suffix);
+	static void LockAgeEntryFor(const FString& Suffix);
+
+	/** True once access was refused as a whole: a screen shows the refusal and offers no retry. */
+	bool IsAccessRefused() const { return bAccessRefused; }
+
+	/**
+	 * Record the signed-in player's acceptance of the legal documents. Call it only from the player's own explicit
+	 * accept: bAcceptLegal must be true or nothing is sent. bAttestAgeOfMajority is passed on and the server ignores it,
+	 * now that an age comes from a date of birth. OnRecorded fires first, then a held sign-in resumes and completes through
+	 * its own delegates. On failure the sign-in stays held.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
 	void RecordPlayerConsents(bool bAcceptLegal, bool bAttestAgeOfMajority, FOnLegalConsentsRecorded OnRecorded,
@@ -178,9 +227,17 @@ public:
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
 	bool IsLegalAcceptancePending() const;
 
-	/** The documents a consent prompt must link, in display order. */
+	/** The platform's documents as this SDK release knew them: use RequestLegalDocuments for a consent screen. */
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Authentication")
 	static TArray<FCrowdyLegalDocument> GetLegalDocuments();
+
+	/**
+	 * The documents a consent screen must link, in display order: the platform's current ones, then this app's own.
+	 * Always answers: if the platform's list cannot be read, GetLegalDocuments stands in. RecordPlayerConsents then also
+	 * records the app's documents, so call this before showing the screen.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Authentication")
+	void RequestLegalDocuments(FOnLegalDocuments OnDone);
 
 	/**
 	 * Password sign-in. One option among the passwordless methods; returns the
@@ -408,13 +465,25 @@ private:
 		EAuthFlow Flow = EAuthFlow::Login;
 		FOnAuthSuccess OnSuccess;
 		FOnAuthError OnError;
+		bool bForAge = false;
 	};
 
-	/** At most one flow waits for consent; while it does, every rotation trigger is a no-op. */
+	/** At most one flow waits for consent or an age; while it does, every rotation trigger is a no-op. */
 	TOptional<FHeldConsentFlow> HeldConsentFlow;
 
-	/** Hold Flow until the player answers, announcing it only when nothing was held before. */
-	void HoldForLegalAcceptance(EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError);
+	/** Hold Flow until the player answers, announcing it only when the player is not already being asked this. */
+	void HoldFlow(bool bForAge, EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError);
+	void HoldForLegalAcceptance(EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError) { HoldFlow(false, Flow, OnSuccess, OnError); }
+	void HoldForAge(EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError) { HoldFlow(true, Flow, OnSuccess, OnError); }
+
+	/** Resume a held flow after the player answered: OnAnswered first, then the mint it was waiting for. */
+	void ResumeHeldFlow(TFunctionRef<void()> OnAnswered);
+
+	FString GetAgeLockKey() const;
+	void LockAgeEntry();
+
+	/** Set when the last list of documents included the app's own, so a consent records them too. */
+	bool bShownAppDocuments = false;
 
 	/** Release a held flow with Message on its failure delegates, so its caller is always answered. */
 	void FailHeldConsentFlow(const TCHAR* Message);

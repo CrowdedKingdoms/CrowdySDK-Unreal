@@ -5,12 +5,21 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.24.0** (Unreal Engine 5.8). See the
+**Current version: 2.25.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
 **Upgrading? Read [MIGRATION.md](MIGRATION.md): every release from 2.24.0 lists what changed and the exact steps to migrate.**
+
+**New in 2.25.0:** there is no elected host by default. A Leader chosen by a Server Object writes
+replicated subsystems, and an entity says who writes it with Owned By (Player, World or Leader). A
+pawn with a movement component replicates its movement with no setup, and a remote character
+animates and aims from it; mark a property `CrowdyContinuous` to send it with each movement update.
+Owning Client reaches an entity's writer, and the Host recipient, the host nodes and the entity
+component's Ownership and Mode are deprecated: they warn and still run. Player safety (contacts,
+blocks, reports, the age screen, recording state) and CrowdyCPP 0.76.0 arrive too. MIGRATION.md
+lists every change and the steps to upgrade.
 
 **New in 2.24.0:** no breaking change and nothing deprecated. A spawned entity appears once on
 every client, keeps its spawn data in either arrival order, and reaches players who join later
@@ -18,11 +27,6 @@ every client, keeps its spawn data in either arrival order, and reaches players 
 own entity unless Render Local Owner is set; Destroy Entity stops sending at once; signing out no
 longer leaves a phantom host; packaged plugin zips carry the SDK's Config and build with
 BuildPlugin again; and this release starts MIGRATION.md.
-
-**New in 2.23.0:** nearby text chat: Send Proximity Text reaches the players within a distance of
-your pawn's chunk, and On Proximity Text Received hands you theirs, as plain UTF-8 that CrowdyJS and
-CrowdyCPP players share; Set Voice Chat Distance keeps voice local; voice and text are addressed to
-the chunk your pawn stands in; and `FeedVoicePcm` sends audio that is not the microphone.
 
 Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkingdoms.com/unreal-sdk/intro)**
 

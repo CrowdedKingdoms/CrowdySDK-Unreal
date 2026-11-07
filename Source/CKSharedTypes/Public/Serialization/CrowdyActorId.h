@@ -32,6 +32,8 @@
 struct FCrowdyActorId
 {
 	static constexpr int32 NumOctets = 32;
+	static constexpr uint8 OwnerTaggedMarker = '~';
+	static constexpr int32 OwnerTaggedNetIDChars = 22;
 
 	uint8 Octets[NumOctets] = {};
 
@@ -112,6 +114,71 @@ struct FCrowdyActorId
 		}
 
 		return Result;
+	}
+
+	/**
+	 * The id an entity's owner sends under once the entity has changed hands. The server ties an id to the first
+	 * session that sends it, so each owner needs its own. The NetID stays readable in it, so a client that never
+	 * heard of the move still finds the entity. Laid out as a marker, the NetID in 22 characters, and an owner tag.
+	 */
+	static FCrowdyActorId ForOwner(const FGuid& NetID, const FGuid& OwnerID)
+	{
+		static constexpr ANSICHAR Alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+		FCrowdyActorId Result;
+		Result.Octets[0] = OwnerTaggedMarker;
+
+		const uint32 Words[4] = { NetID.A, NetID.B, NetID.C, NetID.D };
+		for (int32 Index = 0; Index < OwnerTaggedNetIDChars; ++Index)
+		{
+			const int32 Bit = Index * 6;
+			const int32 Word = Bit / 32;
+			const uint64 Pair = (static_cast<uint64>(Words[Word]) << 32) | (Word < 3 ? Words[Word + 1] : 0u);
+			Result.Octets[1 + Index] = static_cast<uint8>(Alphabet[(Pair >> (58 - Bit % 32)) & 63u]);
+		}
+
+		const uint64 Tag = (static_cast<uint64>(FCrc::MemCrc32(&OwnerID, sizeof(FGuid))) << 32) | OwnerID.D;
+		for (int32 Index = 1 + OwnerTaggedNetIDChars; Index < NumOctets; ++Index)
+		{
+			Result.Octets[Index] = static_cast<uint8>(Alphabet[(Tag >> ((Index - 1 - OwnerTaggedNetIDChars) * 6)) & 63u]);
+		}
+
+		return Result;
+	}
+
+	/** Reads the NetID back out of a ForOwner id. False for any other id, including a malformed one. */
+	[[nodiscard]] bool TryReadOwnerTaggedNetID(FGuid& OutNetID) const
+	{
+		if (Octets[0] != OwnerTaggedMarker)
+		{
+			return false;
+		}
+
+		uint32 Words[4] = {};
+		for (int32 Index = 0; Index < OwnerTaggedNetIDChars; ++Index)
+		{
+			const uint8 Char = Octets[1 + Index];
+			const int32 Sextet = (Char >= 'A' && Char <= 'Z') ? Char - 'A'
+				: (Char >= 'a' && Char <= 'z') ? Char - 'a' + 26
+				: (Char >= '0' && Char <= '9') ? Char - '0' + 52
+				: Char == '-' ? 62 : Char == '_' ? 63 : -1;
+			if (Sextet < 0)
+			{
+				return false;
+			}
+
+			const int32 Bit = Index * 6;
+			const int32 Word = Bit / 32;
+			const uint64 Pair = static_cast<uint64>(Sextet) << (58 - Bit % 32);
+			Words[Word] |= static_cast<uint32>(Pair >> 32);
+			if (Word < 3)
+			{
+				Words[Word + 1] |= static_cast<uint32>(Pair);
+			}
+		}
+
+		OutNetID = FGuid(Words[0], Words[1], Words[2], Words[3]);
+		return true;
 	}
 
 	/**

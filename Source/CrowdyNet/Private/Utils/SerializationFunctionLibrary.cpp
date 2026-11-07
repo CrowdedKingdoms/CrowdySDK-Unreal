@@ -250,6 +250,12 @@ FGuid USerializationFunctionLibrary::ToGuid(const FCrowdyActorId& ActorId)
 		return FGuid(A, B, C, D);
 	}
 
+	FGuid OwnerTaggedNetID;
+	if (ActorId.TryReadOwnerTaggedNetID(OwnerTaggedNetID))
+	{
+		return OwnerTaggedNetID;
+	}
+
 	// Any 32 octets may name an actor (a Game Kit hub's mob is the text "M10,-4@3" padded out), so an id outside the
 	// hexadecimal alphabet keys on a hash of all of them rather than on digits it does not have.
 	const FXxHash128 Hash = FXxHash128::HashBuffer(ActorId.Octets, sizeof(ActorId.Octets));

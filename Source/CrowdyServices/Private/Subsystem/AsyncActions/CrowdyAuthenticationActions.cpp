@@ -251,3 +251,44 @@ void UCrowdyAuth_RecordPlayerConsents::HandleError(FString Message)
 	OnError.Broadcast(Message);
 	SetReadyToDestroy();
 }
+
+UCrowdyAuth_RecordPlayerAge* UCrowdyAuth_RecordPlayerAge::RecordPlayerAge(UObject* WorldContextObject, int32 BirthYear,
+	int32 BirthMonth, const FString& CountryCode, bool bParentalConfirmation)
+{
+	UCrowdyAuth_RecordPlayerAge* Action = NewObject<UCrowdyAuth_RecordPlayerAge>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->BirthYear = BirthYear;
+	Action->BirthMonth = BirthMonth;
+	Action->CountryCode = CountryCode;
+	Action->bParentalConfirmation = bParentalConfirmation;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyAuth_RecordPlayerAge::Activate()
+{
+	UCrowdyAuthentication* Auth = GetAuthSubsystem(WorldContextObject);
+	if (!Auth)
+	{
+		HandleError(TEXT("UCrowdyAuthentication subsystem not found"));
+		return;
+	}
+
+	FOnPlayerAgeRecorded S;
+	S.BindDynamic(this, &UCrowdyAuth_RecordPlayerAge::HandleSuccess);
+	FOnAuthError E;
+	E.BindDynamic(this, &UCrowdyAuth_RecordPlayerAge::HandleError);
+	Auth->RecordPlayerAge(BirthYear, BirthMonth, CountryCode, bParentalConfirmation, S, E);
+}
+
+void UCrowdyAuth_RecordPlayerAge::HandleSuccess()
+{
+	OnSuccess.Broadcast(FString());
+	SetReadyToDestroy();
+}
+
+void UCrowdyAuth_RecordPlayerAge::HandleError(FString Message)
+{
+	OnError.Broadcast(Message);
+	SetReadyToDestroy();
+}

@@ -36,6 +36,14 @@ struct FCrowdyClassIDOverride
 class UCrowdyBakedRegistry;
 struct FCrowdyCppClientConfig;
 
+// Where the client that writes shared entities comes from.
+UENUM()
+enum class ECrowdyLeaderSource : uint8
+{
+	ServerObject UMETA(DisplayName="Server Object", ToolTip="No elected host. The Leader of the app's Server Object Leader type writes replicated subsystems; World entities have no writer on any client, so keep their truth in Server Objects. The app's server code must be deployed."),
+	ElectedHost UMETA(DisplayName="Elected Host (Deprecated)", ToolTip="The elected host writes World entities and replicated subsystems, as before. Removed in the next release."),
+};
+
 UENUM()
 enum class ECrowdyEnvironment : uint8
 {
@@ -149,7 +157,7 @@ public:
 		meta=(DisplayName="Auto-Clear Persistent State on Shutdown"))
 	bool bAutoClearPersistentStateOnShutdown = false;
 
-	/** Show the built-in consent prompt when sign-in needs the player's agreement. Turn it off when the game draws its own consent UI by binding OnLegalAcceptanceRequired and calling RecordPlayerConsents. */
+	/** Show the built-in consent prompt when sign-in needs the player's agreement. Turn it off when the game draws its own consent and age UI by binding OnLegalAcceptanceRequired and OnAgeRequired and calling RecordPlayerConsents. */
 	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Developer|Authentication",
 		meta=(DisplayName="Show Consent Prompt"))
 	bool bShowConsentPrompt = true;
@@ -272,6 +280,13 @@ public:
 		meta=(DisplayName="Class ID Collision Overrides",
 			  ToolTip="Leave empty unless the log reports: [CrowdyClassRegistry] ClassID collision"))
 	TArray<FCrowdyClassIDOverride> ClassIDOverrides;
+
+	/** Where the client that writes shared entities comes from. Server Object: the app's Leader writes replicated subsystems, and World entities have no writer. Elected Host keeps the old behaviour and is removed in the next release. */
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Replication", meta=(DisplayName="Leader Source"))
+	ECrowdyLeaderSource LeaderSource = ECrowdyLeaderSource::ServerObject;
+
+	/** True while Leader Source is Elected Host: the elected host is polled and writes World entities. */
+	static bool UsesElectedHost();
 
 	/**
 	 * Entity classes to load before the startup scan, so this client can resolve them off the wire.

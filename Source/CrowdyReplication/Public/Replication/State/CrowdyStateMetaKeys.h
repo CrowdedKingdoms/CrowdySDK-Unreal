@@ -41,6 +41,10 @@ namespace CrowdyStateMetaKeys
 	// belongs in server code, so most transient view properties leave this off.
 	inline const TCHAR* Heartbeat = TEXT("CrowdyHeartbeat");
 
+	// Rides the entity's movement updates instead of a delta: sent on change and on every keyframe, applied on arrival.
+	// On a class that does not replicate movement the property replicates as ordinary CrowdyState.
+	inline const TCHAR* Continuous = TEXT("CrowdyContinuous");
+
 	/**
 	 * True when Property carries the CrowdyState marker. Defined here rather than borrowed from
 	 * CrowdyRpcMetaKeys::HasReplicatesMeta, which takes a UField*: an FProperty is an FField, not a

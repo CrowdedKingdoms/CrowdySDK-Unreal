@@ -61,6 +61,11 @@ namespace CrowdyCppTransport
 	// Writes the current time into the calling thread's marked request, if one is marked.
 	void StampHandOff();
 
+	// Hold LogHttp at Error across overlapping requests. The engine logs a failed HTTP/2 request's headers, bearer
+	// token included, before its completion runs, so a request ends this in that completion. Game thread only.
+	void BeginQuietHttpLog();
+	void EndQuietHttpLog();
+
 	// The engine request the async transport sends for Request, configured but not started; asks for HTTP/2 while
 	// crowdy.net.http2 is on. Game thread only. The caller rejects a body larger than MAX_int32 first.
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> BuildRequest(const crowdy::graphql::HttpRequest& Request);

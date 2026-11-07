@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: 11f7ed4c2f701b945624c6a3f88d15396b173a6cf9a7d898a99443f6e7212b0a
-// operations sha256: 1fa6d94f45f3575f1b85c0968e2d54802372180fe18acce9efb8813daa492c88
+// schema.gql sha256: 9e03a17149193ee7db48c6fc1abb336813bfc06bf878a6327b67c013f7266e1d
+// operations sha256: a6ae158b4aa69a80f588ab751c05ec865ba86ea7883b6c96c69d815422c767c3
 
 #pragma once
 
@@ -215,6 +215,66 @@ inline std::optional<CodeAdmissionSubjectKind> codeAdmissionSubjectKindFromStrin
   if (s == "CODE") return CodeAdmissionSubjectKind::CODE;
   if (s == "AUTHOR") return CodeAdmissionSubjectKind::AUTHOR;
   if (s == "ORG") return CodeAdmissionSubjectKind::ORG;
+  return std::nullopt;
+}
+
+enum class CommScope {
+  OFF,
+  CONTACTS,
+  EVERYONE,
+};
+
+inline constexpr std::string_view toString(CommScope v) {
+  switch (v) {
+    case CommScope::OFF: return "OFF";
+    case CommScope::CONTACTS: return "CONTACTS";
+    case CommScope::EVERYONE: return "EVERYONE";
+  }
+  return "";
+}
+
+inline std::optional<CommScope> commScopeFromString(std::string_view s) {
+  if (s == "OFF") return CommScope::OFF;
+  if (s == "CONTACTS") return CommScope::CONTACTS;
+  if (s == "EVERYONE") return CommScope::EVERYONE;
+  return std::nullopt;
+}
+
+enum class ContactRequestDirection {
+  INCOMING,
+  OUTGOING,
+};
+
+inline constexpr std::string_view toString(ContactRequestDirection v) {
+  switch (v) {
+    case ContactRequestDirection::INCOMING: return "INCOMING";
+    case ContactRequestDirection::OUTGOING: return "OUTGOING";
+  }
+  return "";
+}
+
+inline std::optional<ContactRequestDirection> contactRequestDirectionFromString(std::string_view s) {
+  if (s == "INCOMING") return ContactRequestDirection::INCOMING;
+  if (s == "OUTGOING") return ContactRequestDirection::OUTGOING;
+  return std::nullopt;
+}
+
+enum class ContactState {
+  PENDING,
+  ACCEPTED,
+};
+
+inline constexpr std::string_view toString(ContactState v) {
+  switch (v) {
+    case ContactState::PENDING: return "PENDING";
+    case ContactState::ACCEPTED: return "ACCEPTED";
+  }
+  return "";
+}
+
+inline std::optional<ContactState> contactStateFromString(std::string_view s) {
+  if (s == "PENDING") return ContactState::PENDING;
+  if (s == "ACCEPTED") return ContactState::ACCEPTED;
   return std::nullopt;
 }
 
@@ -741,6 +801,25 @@ inline std::optional<CrowdyStudioGitHubBindInitial> crowdyStudioGitHubBindInitia
   return std::nullopt;
 }
 
+enum class CrowdyStudioGitHubLayoutKind {
+  STUDIO_CRATES,
+  CONSTRUCT_GAME,
+};
+
+inline constexpr std::string_view toString(CrowdyStudioGitHubLayoutKind v) {
+  switch (v) {
+    case CrowdyStudioGitHubLayoutKind::STUDIO_CRATES: return "STUDIO_CRATES";
+    case CrowdyStudioGitHubLayoutKind::CONSTRUCT_GAME: return "CONSTRUCT_GAME";
+  }
+  return "";
+}
+
+inline std::optional<CrowdyStudioGitHubLayoutKind> crowdyStudioGitHubLayoutKindFromString(std::string_view s) {
+  if (s == "STUDIO_CRATES") return CrowdyStudioGitHubLayoutKind::STUDIO_CRATES;
+  if (s == "CONSTRUCT_GAME") return CrowdyStudioGitHubLayoutKind::CONSTRUCT_GAME;
+  return std::nullopt;
+}
+
 enum class CrowdyStudioImportSource {
   LIBRARY,
   COMMON,
@@ -989,6 +1068,66 @@ inline std::optional<HostedGameStatus> hostedGameStatusFromString(std::string_vi
   return std::nullopt;
 }
 
+enum class LegalAcceptanceMethod {
+  CLICKWRAP,
+  IN_GAME,
+};
+
+inline constexpr std::string_view toString(LegalAcceptanceMethod v) {
+  switch (v) {
+    case LegalAcceptanceMethod::CLICKWRAP: return "CLICKWRAP";
+    case LegalAcceptanceMethod::IN_GAME: return "IN_GAME";
+  }
+  return "";
+}
+
+inline std::optional<LegalAcceptanceMethod> legalAcceptanceMethodFromString(std::string_view s) {
+  if (s == "CLICKWRAP") return LegalAcceptanceMethod::CLICKWRAP;
+  if (s == "IN_GAME") return LegalAcceptanceMethod::IN_GAME;
+  return std::nullopt;
+}
+
+enum class ParentalConsentFeature {
+  VOICE,
+  VIDEO,
+};
+
+inline constexpr std::string_view toString(ParentalConsentFeature v) {
+  switch (v) {
+    case ParentalConsentFeature::VOICE: return "VOICE";
+    case ParentalConsentFeature::VIDEO: return "VIDEO";
+  }
+  return "";
+}
+
+inline std::optional<ParentalConsentFeature> parentalConsentFeatureFromString(std::string_view s) {
+  if (s == "VOICE") return ParentalConsentFeature::VOICE;
+  if (s == "VIDEO") return ParentalConsentFeature::VIDEO;
+  return std::nullopt;
+}
+
+enum class ParentalConsentRequestStatus {
+  REQUESTED,
+  ALREADY_GRANTED,
+  NOT_REQUIRED,
+};
+
+inline constexpr std::string_view toString(ParentalConsentRequestStatus v) {
+  switch (v) {
+    case ParentalConsentRequestStatus::REQUESTED: return "REQUESTED";
+    case ParentalConsentRequestStatus::ALREADY_GRANTED: return "ALREADY_GRANTED";
+    case ParentalConsentRequestStatus::NOT_REQUIRED: return "NOT_REQUIRED";
+  }
+  return "";
+}
+
+inline std::optional<ParentalConsentRequestStatus> parentalConsentRequestStatusFromString(std::string_view s) {
+  if (s == "REQUESTED") return ParentalConsentRequestStatus::REQUESTED;
+  if (s == "ALREADY_GRANTED") return ParentalConsentRequestStatus::ALREADY_GRANTED;
+  if (s == "NOT_REQUIRED") return ParentalConsentRequestStatus::NOT_REQUIRED;
+  return std::nullopt;
+}
+
 enum class PaymentProvider {
   STRIPE,
   PAYPAL,
@@ -1134,6 +1273,87 @@ inline constexpr std::string_view toString(RateScope v) {
 inline std::optional<RateScope> rateScopeFromString(std::string_view s) {
   if (s == "SHARED") return RateScope::SHARED;
   if (s == "PLAYER") return RateScope::PLAYER;
+  return std::nullopt;
+}
+
+enum class SafetyCaptureStatus {
+  PENDING,
+  PARTIAL,
+  COMPLETE,
+  DISCARDED,
+};
+
+inline constexpr std::string_view toString(SafetyCaptureStatus v) {
+  switch (v) {
+    case SafetyCaptureStatus::PENDING: return "PENDING";
+    case SafetyCaptureStatus::PARTIAL: return "PARTIAL";
+    case SafetyCaptureStatus::COMPLETE: return "COMPLETE";
+    case SafetyCaptureStatus::DISCARDED: return "DISCARDED";
+  }
+  return "";
+}
+
+inline std::optional<SafetyCaptureStatus> safetyCaptureStatusFromString(std::string_view s) {
+  if (s == "PENDING") return SafetyCaptureStatus::PENDING;
+  if (s == "PARTIAL") return SafetyCaptureStatus::PARTIAL;
+  if (s == "COMPLETE") return SafetyCaptureStatus::COMPLETE;
+  if (s == "DISCARDED") return SafetyCaptureStatus::DISCARDED;
+  return std::nullopt;
+}
+
+enum class SafetyReportReason {
+  CHILD_SAFETY,
+  HARASSMENT,
+  SEXUAL_CONTENT,
+  HATE,
+  SELF_HARM,
+  CHEATING,
+  OTHER,
+};
+
+inline constexpr std::string_view toString(SafetyReportReason v) {
+  switch (v) {
+    case SafetyReportReason::CHILD_SAFETY: return "CHILD_SAFETY";
+    case SafetyReportReason::HARASSMENT: return "HARASSMENT";
+    case SafetyReportReason::SEXUAL_CONTENT: return "SEXUAL_CONTENT";
+    case SafetyReportReason::HATE: return "HATE";
+    case SafetyReportReason::SELF_HARM: return "SELF_HARM";
+    case SafetyReportReason::CHEATING: return "CHEATING";
+    case SafetyReportReason::OTHER: return "OTHER";
+  }
+  return "";
+}
+
+inline std::optional<SafetyReportReason> safetyReportReasonFromString(std::string_view s) {
+  if (s == "CHILD_SAFETY") return SafetyReportReason::CHILD_SAFETY;
+  if (s == "HARASSMENT") return SafetyReportReason::HARASSMENT;
+  if (s == "SEXUAL_CONTENT") return SafetyReportReason::SEXUAL_CONTENT;
+  if (s == "HATE") return SafetyReportReason::HATE;
+  if (s == "SELF_HARM") return SafetyReportReason::SELF_HARM;
+  if (s == "CHEATING") return SafetyReportReason::CHEATING;
+  if (s == "OTHER") return SafetyReportReason::OTHER;
+  return std::nullopt;
+}
+
+enum class SafetyReportStatus {
+  OPEN,
+  RESOLVED,
+  ESCALATED,
+};
+
+inline constexpr std::string_view toString(SafetyReportStatus v) {
+  switch (v) {
+    case SafetyReportStatus::OPEN: return "OPEN";
+    case SafetyReportStatus::RESOLVED: return "RESOLVED";
+    case SafetyReportStatus::ESCALATED: return "ESCALATED";
+  }
+  return "";
+}
+
+inline std::optional<SafetyReportStatus> safetyReportStatusFromString(std::string_view s) {
+  if (s == "OPEN") return SafetyReportStatus::OPEN;
+  if (s == "RESOLVED") return SafetyReportStatus::RESOLVED;
+  if (s == "ESCALATED") return SafetyReportStatus::ESCALATED;
   return std::nullopt;
 }
 

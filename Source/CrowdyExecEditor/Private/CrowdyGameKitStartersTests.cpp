@@ -311,10 +311,28 @@ bool FCrowdyGameKitAssembleTest::RunTest(const FString& Parameters)
 	const CrowdyExecDeploy::FProjectDeploy Project = CrowdyExecDeploy::AssembleProject({World.Get()}, DirectoryFor);
 	TestEqualSensitive(TEXT("a starter's own crate needs no Generate"), FString::Join(Project.Problems, TEXT(" | ")), FString());
 	TestEqualSensitive(TEXT("the project's root is world"), Project.Root, FString(TEXT("world")));
-	if (TestEqual(TEXT("world's crate is the only one: the SDK's root is not sent"), Project.Crates.Num(), 1))
+	if (TestEqual(TEXT("the SDK's root is not sent: the crates are the Leader's and world's"), Project.Crates.Num(), 2))
 	{
-		TestEqualSensitive(TEXT("named after its type"), Project.Crates[0].Name, FString(TEXT("world")));
-		TestEqual(TEXT("with its Cargo.toml and lib.rs"), Project.Crates[0].Files.Num(), 2);
+		TestEqualSensitive(TEXT("the Leader comes first"), Project.Crates[0].Name, FString(CrowdyExecDeploy::LeaderTypeName));
+		TestTrue(TEXT("and asks world about its Leader"), Project.Crates[0].Files.ContainsByPredicate([](const CrowdyExecDeveloper::FBuildFile& File)
+		{
+			return File.Content.Contains(TEXT("ctx.call_with_deadline(\"world\", \"\", \"is_present\""), ESearchCase::CaseSensitive);
+		}));
+		TestEqualSensitive(TEXT("then world's, named after its type"), Project.Crates[1].Name, FString(TEXT("world")));
+		TestEqual(TEXT("with its Cargo.toml and lib.rs"), Project.Crates[1].Files.Num(), 2);
+	}
+	auto WarnsOfPresence = [](const CrowdyExecDeploy::FProjectDeploy& Assembled)
+	{
+		return Assembled.Warnings.ContainsByPredicate([](const FString& Warning) { return Warning.StartsWith(TEXT("world, the app's root, does not answer is_present"), ESearchCase::CaseSensitive); });
+	};
+	TestFalse(TEXT("world as this SDK ships it answers is_present"), WarnsOfPresence(Project));
+	const FString WorldLib = FPaths::Combine(Folder.Path, TEXT("world/src/lib.rs"));
+	FString Shipped;
+	if (TestTrue(TEXT("world's lib.rs is read"), FFileHelper::LoadFileToString(Shipped, *WorldLib)))
+	{
+		FFileHelper::SaveStringToFile(Shipped.Replace(TEXT("\"is_present\""), TEXT("\"older\"")), *WorldLib);
+		TestTrue(TEXT("a copy of world from before is_present is warned about"), WarnsOfPresence(CrowdyExecDeploy::AssembleProject({World.Get()}, DirectoryFor)));
+		FFileHelper::SaveStringToFile(Shipped, *WorldLib);
 	}
 
 	const CrowdyExecDeploy::FProjectDeploy Missing = CrowdyExecDeploy::AssembleProject({World.Get(), Matchmaker.Get()}, DirectoryFor);

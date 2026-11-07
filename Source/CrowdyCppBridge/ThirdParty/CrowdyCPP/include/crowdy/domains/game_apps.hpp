@@ -2,8 +2,10 @@
 
 #include <functional>
 #include <utility>
+#include <vector>
 
 #include "crowdy/domains/domain_base.hpp"
+#include "crowdy/domains/types.hpp"
 #include "crowdy/generated/operations.hpp"
 
 /// client.gameApps() — app grids + grid runtime-permission administration
@@ -228,6 +230,36 @@ class PlatformAPI : public DomainBase {
  public:
   using DomainBase::DomainBase;
   graphql::Json config() const { return execUnwrap(gen::platform::kPlatformConfigDocument); }
+
+  /// The countries Crowded Kingdoms lists (ck-api v2.60.0): those it does not serve ("blocked":
+  /// sign-up and play are refused there with TERRITORY_NOT_SUPPORTED, by the country a player
+  /// gives or connects from), and those with a minimum age above the platform's. A country not
+  /// listed is open at the platform's minimum. Since ck-api v2.61.0 a row may be for one region
+  /// of a country (`regionCode`, ISO 3166-2, such as UA-43; null on a country's own row): a
+  /// country with a region listed is checked by region, so a connection whose region cannot be
+  /// told is refused there, and an organization sends its players' `region`. Public, so a
+  /// sign-up form can use it before an account exists; a sign-up screen names no age.
+  std::vector<TerritoryPolicy> territoryPolicies() const {
+    std::vector<TerritoryPolicy> out;
+    execUnwrap(gen::platform::kTerritoryPoliciesDocument).forEach([&](graphql::Json p) {
+      out.push_back(TerritoryPolicy::fromJson(p));
+    });
+    return out;
+  }
+
+  void territoryPoliciesAsync(
+      std::function<void(graphql::GraphQLOutcome, std::vector<TerritoryPolicy>)> cb) const {
+    execUnwrapAsync(gen::platform::kTerritoryPoliciesDocument, graphql::JVal(), {},
+                    [cb = std::move(cb)](graphql::GraphQLOutcome out) mutable {
+                      std::vector<TerritoryPolicy> value;
+                      if (out.ok()) {
+                        out.data.forEach([&](graphql::Json p) {
+                          value.push_back(TerritoryPolicy::fromJson(p));
+                        });
+                      }
+                      cb(std::move(out), std::move(value));
+                    });
+  }
 
   void configAsync(graphql::GraphQLCallback cb) const {
     execUnwrapAsync(gen::platform::kPlatformConfigDocument, graphql::JVal(), {}, std::move(cb));

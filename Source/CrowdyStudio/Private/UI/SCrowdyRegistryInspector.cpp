@@ -120,7 +120,7 @@ namespace
 			];
 	}
 
-	// A regular-weight chip carrying a tooltip (for the class Ownership / Host Override defaults).
+	// A regular-weight chip carrying a tooltip (for the class Owned By / Host Override defaults).
 	TSharedRef<SWidget> MakeMetaChip(const FText& Text, const FText& Tooltip)
 	{
 		return SNew(SBorder)
@@ -505,7 +505,7 @@ void SCrowdyRegistryInspector::RefreshData()
 			LayoutHashByClass.Add(Hash.ClassPath.ToString(), Hash.LayoutHash);
 		}
 
-		// Class-level Ownership/HostOverride, resolved LIVE (never baked) from each class's default
+		// Class-level Owned By/HostOverride, resolved LIVE (never baked) from each class's default
 		// CrowdyEntityComponent - see UCrowdyAutoRegistry::ResolveDefaultEntityComponent. Cached per
 		// class path here so a class with many properties only pays one class-load/CDO-walk, not one
 		// per property row.
@@ -530,11 +530,20 @@ void SCrowdyRegistryInspector::RefreshData()
 				{
 					if (const UCrowdyEntityComponent* Component = UCrowdyAutoRegistry::ResolveDefaultEntityComponent(OwnerClass))
 					{
+						// A C++ constructor that set the deprecated Ownership to Local Client leaves Owned By at Auto.
+						PRAGMA_DISABLE_DEPRECATION_WARNINGS
+						const bool bCppPlayer = Component->OwnedBy == ECrowdyOwnedBy::Auto
+							&& Component->Ownership == ECrowdyOwnership::LocalClient;
+						PRAGMA_ENABLE_DEPRECATION_WARNINGS
+						const ECrowdyOwnedBy OwnedBy = bCppPlayer ? ECrowdyOwnedBy::Player : Component->OwnedBy;
+
 						Defaults.bFound = true;
-						Defaults.Ownership = EnumDisplayText(Component->GetOwnership());
-						if (Component->GetOwnership() == ECrowdyOwnership::LocalClient)
+						Defaults.Ownership = EnumDisplayText(OwnedBy);
+						if (OwnedBy == ECrowdyOwnedBy::Player)
 						{
+							PRAGMA_DISABLE_DEPRECATION_WARNINGS
 							Defaults.HostOverride = EnumDisplayText(Component->GetHostOverridePolicy());
+							PRAGMA_ENABLE_DEPRECATION_WARNINGS
 						}
 					}
 				}
@@ -841,7 +850,7 @@ TSharedRef<SWidget> SCrowdyRegistryInspector::MakeClassMetaStrip(const FCrowdyCl
 {
 	const FText DefaultsTip = LOCTEXT("EntityDefaultsTip",
 		"Resolved live from this class's default CrowdyEntityComponent (native CDO or Blueprint component "
-		"defaults) when this view was built - never baked, since Ownership / Host Override are "
+		"defaults) when this view was built - never baked, since Owned By / Host Override are "
 		"per-placed-instance settings with no single value for a class. A level-placed instance can "
 		"override either one.");
 
@@ -852,7 +861,7 @@ TSharedRef<SWidget> SCrowdyRegistryInspector::MakeClassMetaStrip(const FCrowdyCl
 	if (Group->bHasEntityDefaults)
 	{
 		Row->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)
-		[ MakeMetaChip(FText::Format(LOCTEXT("OwnershipChip", "Ownership: {0}"), Group->OwnershipText), DefaultsTip) ];
+		[ MakeMetaChip(FText::Format(LOCTEXT("OwnedByChip", "Owned By: {0}"), Group->OwnershipText), DefaultsTip) ];
 
 		if (!Group->HostOverrideText.IsEmpty())
 		{

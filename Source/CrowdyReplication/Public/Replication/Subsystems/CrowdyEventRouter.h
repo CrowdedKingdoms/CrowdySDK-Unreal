@@ -28,6 +28,7 @@ struct FCrowdyRepLayout;
 struct FCrowdyRpcCall;
 struct FCrowdyStateDelta;
 struct FCrowdyDelivery;
+struct FCrowdyEntityRecord;
 
 /**
  * Ceilings and budgets for the queue of events waiting on an entity that has not registered yet. Every
@@ -77,6 +78,9 @@ struct FCrowdyInboundEvent
 	// the target's owner), false for a spatial broadcast. The RPC receive path uses this to skip
 	// the broadcast-only echo-drop and authority check.
 	bool bTargetedDelivery = false;
+
+	// True for a call this client replayed through its own receive path, which runs wherever the sender is.
+	bool bLoopback = false;
 
 	// FPlatformTime::Seconds at which this event reached the router, stamped once at the entry point it
 	// arrived through. Age is measured from here, so an event that waits, retries and waits again is
@@ -207,8 +211,8 @@ public:
 	// Receive entry for a reliable RPC delivered over the session channel. UCrowdyChannels decodes
 	// the channel payload and calls this; the call is dispatched like a spatial Multicast (the sender's
 	// own echo is dropped by SenderID, the body runs once on every other member) before this returns.
-	// Game thread only.
-	void ReceiveChannelRpcCall(const FCrowdyRpcCall& Call);
+	// A valid Addressee names the one client it is for. Game thread only.
+	void ReceiveChannelRpcCall(const FCrowdyRpcCall& Call, const FGuid& Addressee = FGuid());
 
 	// Receive entry for a CrowdyState delta delivered over the session channel (the non-spatial transport for
 	// subsystem participants). UCrowdyChannels discriminates the channel payload by its leading kind tag,
@@ -216,6 +220,10 @@ public:
 	// Multicast through the unchanged DispatchStateDelta (self-echo dropped by SenderID, applied on every
 	// other member) before this returns. Game thread only.
 	void ReceiveChannelStateDelta(const FCrowdyStateDelta& Delta);
+
+	// Applies the continuous values an actor update carried, to the entity's actor or to the subscriber holding it, and
+	// fires an actor's notifies. Extras is a peer's bytes. Skips an entity this client owns. Game thread only.
+	void DispatchContinuousExtras(const FGuid& EntityID, TConstArrayView<uint8> Extras);
 
 	// UTickableWorldSubsystem. Drives the retry ladder for events that arrived ahead of their target
 	// entity's spawn; inbound routing itself is not tick-driven.
@@ -447,9 +455,18 @@ public:
 		// Host corrections refused because the entity is authored OwnerOnly, which only its owner may write.
 		int64 DroppedHostOverrideRefused = 0;
 
+		// Host-sourced deltas for an entity this client owns while there is no elected host, so none of them is real.
+		int64 DroppedHostSourcedWithNoHost = 0;
+
+		// Deltas from another client for a world entity or replicated subsystem this client writes: stale or forged.
+		int64 DroppedForeignWriteForOwnWorld = 0;
+
 		// Non-host deltas for a locally host-owned world entity. Only the host writes world state, so anything
 		// climbing here is some other peer trying to.
 		int64 DroppedNotHostSourcedForWorld = 0;
+
+		// Deltas for a Leader entity from anyone but its owner, such as an old Leader's last ones after a hand-off.
+		int64 DroppedNotFromLeader = 0;
 	};
 
 	const FStateParticipantStats& GetStateParticipantStats() const { return StateParticipantStats; }
@@ -468,8 +485,9 @@ private:
 	 * the subscriber says it holds the id, the entity is one it holds as data and no amount of waiting can
 	 * make a later attempt succeed. Returns false only when there is no subscriber or the subscriber does
 	 * not hold the id, which is when the caller should go on waiting for the entity as it always has.
+	 * bContinuous reads the delta as values off a movement update, which carry no class id and only continuous slots.
 	 */
-	bool DispatchStateDeltaToSubscriber(const FCrowdyStateDelta& Delta);
+	bool DispatchStateDeltaToSubscriber(const FCrowdyStateDelta& Delta, bool bContinuous = false);
 
 	// Reused across deltas so the receive path allocates nothing per entity once it is warm: the indices the
 	// codec reports as changed, and the indices the delta actually carried. The present set is handed to the
@@ -489,6 +507,9 @@ private:
 	// so making either push the other onto a local would cost an allocation for nothing.
 	bool bDispatchingParticipantStateDelta = false;
 	bool bDispatchingSubscriberStateDelta = false;
+
+	// Reused, so a stream of continuous values allocates nothing here per update.
+	TArray<uint8> ContinuousBlob;
 
 	// Running total of deferred events dropped by an eviction path, and when the last eviction line was
 	// logged. Every eviction is counted and reported: a queue that silently shrinks looks exactly like a
@@ -611,6 +632,10 @@ private:
 	// which is what the paths that wait on an ordinary spawn do.
 	void DeferEvent(const FCrowdyInboundEvent& Event, int32 RemainingAttempts, double DeferBudgetSeconds = 0.0);
 	void RetryDeferredEvents();
+
+	// Whether a World-owned entity's delta comes from the client that writes it: the Leader for a replicated
+	// subsystem, the World owner for anything else.
+	bool IsFromWorldOwner(const FCrowdyEntityRecord& Record, bool bHostSourced) const;
 
 	bool LoadConfig() const;
 };

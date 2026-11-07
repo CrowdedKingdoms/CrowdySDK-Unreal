@@ -39,8 +39,7 @@ public:
 	/**
 	 * Grants ownership of TargetEntity to the player who owns NewOwner (pass that player's avatar, or any entity
 	 * they own). Only the entity's current authority may grant; call this from an OnOwnershipRequested handler to
-	 * approve a request. No-op if NewOwner is not a client-owned entity — use GrantOwnershipToHost to make an
-	 * entity host-owned.
+	 * approve a request. No-op if NewOwner is not a client-owned entity.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Ownership",
 		meta = (WorldContext = "WorldContextObject", DisplayName = "Grant Ownership Transfer"))
@@ -59,7 +58,9 @@ public:
 	 * Makes TargetEntity host-owned (a world entity owned by whichever client is host). Only the entity's current
 	 * authority may do this.
 	 */
+	UE_DEPRECATED(5.8, "No replacement for handing an entity back at runtime. Keep its truth in a Server Object, or set OwnedBy to Leader on the class if one client should simulate it; such an entity refuses grants.")
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Ownership",
-		meta = (WorldContext = "WorldContextObject", DisplayName = "Grant Ownership To Host"))
+		meta = (WorldContext = "WorldContextObject", DisplayName = "Grant Ownership To Host", DeprecatedFunction,
+			DeprecationMessage = "No replacement for handing an entity back at runtime. Keep its truth in a Server Object, or set Owned By to Leader on the class if one client should simulate it; such an entity refuses grants."))
 	static void GrantOwnershipToHost(UObject* WorldContextObject, AActor* TargetEntity);
 };

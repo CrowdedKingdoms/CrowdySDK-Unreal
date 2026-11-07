@@ -211,6 +211,23 @@ void CrowdyStudioAuth::FetchAppChannelNames(int64 AppId, TFunction<void(const TA
 	MintHost->GetClient()->MintAppToken(AppId,
 		[MintHost, AppId, OnDone, HandleMint](FCrowdyCppAppTokenResult MintResult)
 		{
+			if (CrowdyStudioConsent::ShouldAskAge(MintResult, false))
+			{
+				CrowdyStudioConsent::AskAge(MintHost->GetClient(), [MintHost, AppId, OnDone, HandleMint](bool bRecorded)
+				{
+					if (!bRecorded)
+					{
+						UE_LOG(LogCrowdyStudio, Warning, TEXT("Channel picker: %s"), *CrowdyStudioConsent::AgeDeclinedMessage());
+						if (OnDone)
+						{
+							OnDone(TArray<FString>());
+						}
+						return;
+					}
+					MintHost->GetClient()->MintAppToken(AppId, HandleMint);
+				});
+				return;
+			}
 			if (!CrowdyStudioConsent::ShouldAskConsent(MintResult, false))
 			{
 				HandleMint(MoveTemp(MintResult));

@@ -188,8 +188,9 @@ void UCrowdyAutoRegistry::PreloadConfiguredEntityClasses()
 			continue;
 		}
 
-		if (SoftClass.LoadSynchronous())
+		if (UClass* Loaded = SoftClass.LoadSynchronous())
 		{
+			PreloadedClasses.Add(Loaded);
 			++LoadedCount;
 			continue;
 		}
@@ -402,6 +403,7 @@ void UCrowdyAutoRegistry::RegisterClassRepLayout(UClass* Class)
 	// Drop any property that also lives in the executor's continuous-channel state struct before caching,
 	// so the eager sweep and the lazy FindRepLayout path cache the same filtered layout.
 	ApplyExecutorOverlapFilter(Layout);
+	ResolveContinuous(Layout);
 
 	// Clear invalid OnRep bindings (missing / not parameterless) on the same built layout, so live == baked.
 	ValidateOnRepSignatures(Layout);
@@ -471,6 +473,7 @@ bool UCrowdyAutoRegistry::BuildLayoutFromBaked(const UClass* Class, const UCrowd
 		Prop.bOwnerOnly = Row.bOwnerOnly;
 		Prop.bManualDirty = Row.bManualDirty;
 		Prop.bHeartbeat = Row.bHeartbeat;
+		Prop.bContinuous = Row.bContinuous;
 		Prop.OnRepFunctionName = Row.OnRepFunctionName;
 	}
 
@@ -510,6 +513,7 @@ const FCrowdyRepLayout* UCrowdyAutoRegistry::FindRepLayout(const UClass* Class, 
 	// Drop executor-overlapping properties before the validity check, so an all-overlapping class caches
 	// nothing rather than an invalid layout. The cache-hit path above is already filtered.
 	ApplyExecutorOverlapFilter(Built);
+	ResolveContinuous(Built);
 
 	// Clear invalid OnRep bindings on the same built layout, so the lazy path matches the eager one.
 	ValidateOnRepSignatures(Built);
@@ -644,11 +648,11 @@ const UCrowdyEntityComponent* UCrowdyAutoRegistry::ResolveDefaultEntityComponent
 
 UScriptStruct* UCrowdyAutoRegistry::ResolveExecutorStateStruct(const UClass* ActorClass) const
 {
-	// Only a Dynamic-mode component actually runs the continuous channel that writes the executor state
-	// struct, so a Static component (even one carrying a leftover StateExecutor) resolves to null and never
+	// Only a component that replicates movement actually runs the continuous channel that writes the executor
+	// state struct, so any other (even one carrying a leftover StateExecutor) resolves to null and never
 	// suppresses an otherwise-safe CrowdyState property.
 	const UCrowdyEntityComponent* Component = ResolveDefaultEntityComponent(ActorClass);
-	if (!Component || Component->GetMode() != ECrowdyEntityMode::Dynamic)
+	if (!Component || !Component->ReplicatesMovementFor(ActorClass))
 	{
 		return nullptr;
 	}
@@ -711,6 +715,46 @@ void UCrowdyAutoRegistry::ApplyExecutorOverlapFilter(FCrowdyRepLayout& Layout) c
 		// Removal shifted positional indices, so recompute the hash: a keep-P build must hash-differ from a
 		// drop-P build so a drifted peer drops cleanly instead of misparsing by position.
 		Layout.LayoutHash = FCrowdyStateLayoutBuilder::ComputeLayoutHash(Layout.Properties);
+	}
+}
+
+void UCrowdyAutoRegistry::ResolveContinuous(FCrowdyRepLayout& Layout) const
+{
+	const UClass* OwnerClass = Layout.OwnerClass.Get();
+	const UCrowdyEntityComponent* Component = OwnerClass ? ResolveDefaultEntityComponent(OwnerClass) : nullptr;
+	const bool bClassSendsMovement = Component && Component->ReplicatesMovementFor(OwnerClass);
+
+	for (FCrowdyRepProperty& RepProp : Layout.Properties)
+	{
+		if (!RepProp.bContinuous)
+		{
+			continue;
+		}
+
+		// Movement updates reach everyone near and go out on their own clock, which neither of these allows.
+		if (RepProp.bOwnerOnly || RepProp.bManualDirty)
+		{
+			UE_LOG(LogCrowdyReplication, Warning,
+				TEXT("CrowdyState: property '%s' on '%s' is marked CrowdyContinuous together with CrowdyOwnerOnly or CrowdyManualDirty; it replicates as ordinary CrowdyState."),
+				*GetNameSafe(RepProp.Property), *GetNameSafe(OwnerClass));
+			RepProp.bContinuous = false;
+			continue;
+		}
+
+		if (!bClassSendsMovement)
+		{
+			UE_LOG(LogCrowdyReplication, Warning,
+				TEXT("CrowdyState: property '%s' on '%s' is marked CrowdyContinuous, but the class does not replicate movement; it replicates as ordinary CrowdyState."),
+				*GetNameSafe(RepProp.Property), *GetNameSafe(OwnerClass));
+			RepProp.bContinuous = false;
+			continue;
+		}
+
+		if (Layout.ContinuousBits.Num() == 0)
+		{
+			Layout.ContinuousBits.Init(false, Layout.Properties.Num());
+		}
+		Layout.ContinuousBits[static_cast<int32>(&RepProp - Layout.Properties.GetData())] = true;
 	}
 }
 

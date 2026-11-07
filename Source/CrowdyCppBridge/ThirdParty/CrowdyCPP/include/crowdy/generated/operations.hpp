@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: 11f7ed4c2f701b945624c6a3f88d15396b173a6cf9a7d898a99443f6e7212b0a
-// operations sha256: 1fa6d94f45f3575f1b85c0968e2d54802372180fe18acce9efb8813daa492c88
+// schema.gql sha256: 9e03a17149193ee7db48c6fc1abb336813bfc06bf878a6327b67c013f7266e1d
+// operations sha256: a6ae158b4aa69a80f588ab751c05ec865ba86ea7883b6c96c69d815422c767c3
 
 #pragma once
 
@@ -956,6 +956,16 @@ inline constexpr std::string_view kAppDocument = R"gql(query App($appId: BigInt!
     metadata
     wildernessWritesOpen
     replayLoggingEnabled
+    replayLoggingRecordsVoice
+    replayLoggingRecordsVideo
+    recording {
+      enabled
+      voice
+      video
+    }
+    minPlayerAge
+    effectiveMinPlayerAge
+    hasSafetyModerator
     claimOwnerKeys
     splitMode
     deploymentTarget
@@ -985,6 +995,16 @@ inline constexpr std::string_view kAppIsolatedDocument = R"gql(query App($appId:
     metadata
     wildernessWritesOpen
     replayLoggingEnabled
+    replayLoggingRecordsVoice
+    replayLoggingRecordsVideo
+    recording {
+      enabled
+      voice
+      video
+    }
+    minPlayerAge
+    effectiveMinPlayerAge
+    hasSafetyModerator
     claimOwnerKeys
     splitMode
     deploymentTarget
@@ -1071,6 +1091,29 @@ inline constexpr std::string_view kAppDiscoveryIsolatedDocument = R"gql(query Ap
   }
 })gql";
 inline constexpr std::string_view kAppDiscoveryOperationName = "AppDiscovery";
+
+/// apps/AppRecording.graphql
+inline constexpr std::string_view kAppRecordingDocument = R"gql(query AppRecording($appId: BigInt!) {
+  app(appId: $appId) {
+    appId
+    recording {
+      enabled
+      voice
+      video
+    }
+  }
+})gql";
+inline constexpr std::string_view kAppRecordingIsolatedDocument = R"gql(query AppRecording($appId: BigInt!) {
+  app(appId: $appId) {
+    appId
+    recording {
+      enabled
+      voice
+      video
+    }
+  }
+})gql";
+inline constexpr std::string_view kAppRecordingOperationName = "AppRecording";
 
 /// apps/AppsForOrg.graphql
 inline constexpr std::string_view kAppsForOrgDocument = R"gql(query AppsForOrg($orgSlug: String!) {
@@ -1448,6 +1491,27 @@ inline constexpr std::string_view kMyAppsIsolatedDocument = R"gql(query MyApps {
 })gql";
 inline constexpr std::string_view kMyAppsOperationName = "MyApps";
 
+/// apps/SetAppRequiredDocuments.graphql
+inline constexpr std::string_view kSetAppRequiredDocumentsDocument = R"gql(mutation SetAppRequiredDocuments($appId: BigInt!, $documents: [AppRequiredDocumentInput!]!) {
+  setAppRequiredDocuments(appId: $appId, documents: $documents) {
+    documentId
+    version
+    title
+    url
+    appId
+  }
+})gql";
+inline constexpr std::string_view kSetAppRequiredDocumentsIsolatedDocument = R"gql(mutation SetAppRequiredDocuments($appId: BigInt!, $documents: [AppRequiredDocumentInput!]!) {
+  setAppRequiredDocuments(appId: $appId, documents: $documents) {
+    documentId
+    version
+    title
+    url
+    appId
+  }
+})gql";
+inline constexpr std::string_view kSetAppRequiredDocumentsOperationName = "SetAppRequiredDocuments";
+
 /// apps/UpdateApp.graphql
 inline constexpr std::string_view kUpdateAppDocument = R"gql(mutation UpdateApp($appId: BigInt!, $input: UpdateAppInput!) {
   updateApp(appId: $appId, input: $input) {
@@ -1461,6 +1525,16 @@ inline constexpr std::string_view kUpdateAppDocument = R"gql(mutation UpdateApp(
     metadata
     wildernessWritesOpen
     replayLoggingEnabled
+    replayLoggingRecordsVoice
+    replayLoggingRecordsVideo
+    recording {
+      enabled
+      voice
+      video
+    }
+    minPlayerAge
+    effectiveMinPlayerAge
+    hasSafetyModerator
     claimOwnerKeys
     updatedAt
   }
@@ -1477,6 +1551,16 @@ inline constexpr std::string_view kUpdateAppIsolatedDocument = R"gql(mutation Up
     metadata
     wildernessWritesOpen
     replayLoggingEnabled
+    replayLoggingRecordsVoice
+    replayLoggingRecordsVideo
+    recording {
+      enabled
+      voice
+      video
+    }
+    minPlayerAge
+    effectiveMinPlayerAge
+    hasSafetyModerator
     claimOwnerKeys
     updatedAt
   }
@@ -1487,6 +1571,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "App") return kAppIsolatedDocument;
   if (operationName == "AppBySlug") return kAppBySlugIsolatedDocument;
   if (operationName == "AppDiscovery") return kAppDiscoveryIsolatedDocument;
+  if (operationName == "AppRecording") return kAppRecordingIsolatedDocument;
   if (operationName == "AppsForOrg") return kAppsForOrgIsolatedDocument;
   if (operationName == "ArchiveApp") return kArchiveAppIsolatedDocument;
   if (operationName == "AppCodeAdmissionMode") return kAppCodeAdmissionModeIsolatedDocument;
@@ -1498,6 +1583,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "MarketplaceApps") return kMarketplaceAppsIsolatedDocument;
   if (operationName == "AppsConnection") return kAppsConnectionIsolatedDocument;
   if (operationName == "MyApps") return kMyAppsIsolatedDocument;
+  if (operationName == "SetAppRequiredDocuments") return kSetAppRequiredDocumentsIsolatedDocument;
   if (operationName == "UpdateApp") return kUpdateAppIsolatedDocument;
   return {};
 }
@@ -1505,6 +1591,91 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 }  // namespace apps
 
 namespace auth {
+
+/// auth/LegalDocuments.graphql
+inline constexpr std::string_view kLegalDocumentsDocument = R"gql(fragment LegalDocumentFields on LegalDocument {
+  documentId
+  version
+  title
+  url
+  appId
+}
+
+query PlayerLegalDocuments {
+  playerLegalDocuments {
+    ...LegalDocumentFields
+  }
+}
+
+query AppRequiredDocuments($appId: BigInt!) {
+  appRequiredDocuments(appId: $appId) {
+    ...LegalDocumentFields
+  }
+}
+
+query DeveloperLegalDocuments {
+  developerLegalDocuments {
+    ...LegalDocumentFields
+  }
+}
+
+query DeveloperLegalAcceptance {
+  developerLegalAcceptance
+}
+
+mutation RecordDeveloperConsents($acceptDeveloperTerms: Boolean!) {
+  recordDeveloperConsents(acceptDeveloperTerms: $acceptDeveloperTerms)
+})gql";
+inline constexpr std::string_view kPlayerLegalDocumentsIsolatedDocument = R"gql(query PlayerLegalDocuments {
+  playerLegalDocuments {
+    ...LegalDocumentFields
+  }
+}
+
+fragment LegalDocumentFields on LegalDocument {
+  documentId
+  version
+  title
+  url
+  appId
+})gql";
+inline constexpr std::string_view kPlayerLegalDocumentsOperationName = "PlayerLegalDocuments";
+inline constexpr std::string_view kAppRequiredDocumentsIsolatedDocument = R"gql(query AppRequiredDocuments($appId: BigInt!) {
+  appRequiredDocuments(appId: $appId) {
+    ...LegalDocumentFields
+  }
+}
+
+fragment LegalDocumentFields on LegalDocument {
+  documentId
+  version
+  title
+  url
+  appId
+})gql";
+inline constexpr std::string_view kAppRequiredDocumentsOperationName = "AppRequiredDocuments";
+inline constexpr std::string_view kDeveloperLegalDocumentsIsolatedDocument = R"gql(query DeveloperLegalDocuments {
+  developerLegalDocuments {
+    ...LegalDocumentFields
+  }
+}
+
+fragment LegalDocumentFields on LegalDocument {
+  documentId
+  version
+  title
+  url
+  appId
+})gql";
+inline constexpr std::string_view kDeveloperLegalDocumentsOperationName = "DeveloperLegalDocuments";
+inline constexpr std::string_view kDeveloperLegalAcceptanceIsolatedDocument = R"gql(query DeveloperLegalAcceptance {
+  developerLegalAcceptance
+})gql";
+inline constexpr std::string_view kDeveloperLegalAcceptanceOperationName = "DeveloperLegalAcceptance";
+inline constexpr std::string_view kRecordDeveloperConsentsIsolatedDocument = R"gql(mutation RecordDeveloperConsents($acceptDeveloperTerms: Boolean!) {
+  recordDeveloperConsents(acceptDeveloperTerms: $acceptDeveloperTerms)
+})gql";
+inline constexpr std::string_view kRecordDeveloperConsentsOperationName = "RecordDeveloperConsents";
 
 /// auth/Logout.graphql
 inline constexpr std::string_view kLogoutDocument = R"gql(mutation Logout {
@@ -1524,9 +1695,67 @@ inline constexpr std::string_view kLogoutAllDevicesIsolatedDocument = R"gql(muta
 })gql";
 inline constexpr std::string_view kLogoutAllDevicesOperationName = "LogoutAllDevices";
 
+/// auth/PlayerLegalAcceptanceFor.graphql
+inline constexpr std::string_view kPlayerLegalAcceptanceForDocument = R"gql(query PlayerLegalAcceptanceFor($appId: BigInt) {
+  playerLegalAcceptance(appId: $appId)
+})gql";
+inline constexpr std::string_view kPlayerLegalAcceptanceForIsolatedDocument = R"gql(query PlayerLegalAcceptanceFor($appId: BigInt) {
+  playerLegalAcceptance(appId: $appId)
+})gql";
+inline constexpr std::string_view kPlayerLegalAcceptanceForOperationName = "PlayerLegalAcceptanceFor";
+
+/// auth/RecordPlayerAge.graphql
+inline constexpr std::string_view kRecordPlayerAgeDocument = R"gql(mutation RecordPlayerAge($input: RecordPlayerAgeInput!) {
+  recordPlayerAge(input: $input) {
+    userId
+    ageBracket
+    country
+  }
+})gql";
+inline constexpr std::string_view kRecordPlayerAgeIsolatedDocument = R"gql(mutation RecordPlayerAge($input: RecordPlayerAgeInput!) {
+  recordPlayerAge(input: $input) {
+    userId
+    ageBracket
+    country
+  }
+})gql";
+inline constexpr std::string_view kRecordPlayerAgeOperationName = "RecordPlayerAge";
+
+/// auth/RecordPlayerConsentsFor.graphql
+inline constexpr std::string_view kRecordPlayerConsentsForDocument = R"gql(mutation RecordPlayerConsentsFor(
+  $acceptLegal: Boolean!
+  $attestAgeOfMajority: Boolean
+  $appId: BigInt
+  $method: LegalAcceptanceMethod
+) {
+  recordPlayerConsents(
+    acceptLegal: $acceptLegal
+    attestAgeOfMajority: $attestAgeOfMajority
+    appId: $appId
+    method: $method
+  )
+})gql";
+inline constexpr std::string_view kRecordPlayerConsentsForIsolatedDocument = R"gql(mutation RecordPlayerConsentsFor($acceptLegal: Boolean!, $attestAgeOfMajority: Boolean, $appId: BigInt, $method: LegalAcceptanceMethod) {
+  recordPlayerConsents(
+    acceptLegal: $acceptLegal
+    attestAgeOfMajority: $attestAgeOfMajority
+    appId: $appId
+    method: $method
+  )
+})gql";
+inline constexpr std::string_view kRecordPlayerConsentsForOperationName = "RecordPlayerConsentsFor";
+
 inline constexpr std::string_view documentFor(std::string_view operationName) {
+  if (operationName == "PlayerLegalDocuments") return kPlayerLegalDocumentsIsolatedDocument;
+  if (operationName == "AppRequiredDocuments") return kAppRequiredDocumentsIsolatedDocument;
+  if (operationName == "DeveloperLegalDocuments") return kDeveloperLegalDocumentsIsolatedDocument;
+  if (operationName == "DeveloperLegalAcceptance") return kDeveloperLegalAcceptanceIsolatedDocument;
+  if (operationName == "RecordDeveloperConsents") return kRecordDeveloperConsentsIsolatedDocument;
   if (operationName == "Logout") return kLogoutIsolatedDocument;
   if (operationName == "LogoutAllDevices") return kLogoutAllDevicesIsolatedDocument;
+  if (operationName == "PlayerLegalAcceptanceFor") return kPlayerLegalAcceptanceForIsolatedDocument;
+  if (operationName == "RecordPlayerAge") return kRecordPlayerAgeIsolatedDocument;
+  if (operationName == "RecordPlayerConsentsFor") return kRecordPlayerConsentsForIsolatedDocument;
   return {};
 }
 
@@ -3719,6 +3948,7 @@ query CrowdyStudioGitHubLayout($input: CrowdyStudioGitHubAtCommitInput!) {
     client
     assets
     fromFile
+    kind
   }
 }
 
@@ -3755,6 +3985,29 @@ mutation CrowdyStudioGitHubPutFile($input: CrowdyStudioGitHubPutFileInput!) {
 mutation CrowdyStudioGitHubDeleteFile($input: CrowdyStudioGitHubDeleteFileInput!) {
   crowdyStudioGitHubDeleteFile(input: $input) {
     ...CrowdyStudioGitHubStatusFields
+  }
+}
+
+query CrowdyStudioGitHubFiles($input: CrowdyStudioGitHubFilesInput!) {
+  crowdyStudioGitHubFiles(input: $input) {
+    commitSha
+    missing
+    files {
+      path
+      sha
+      size
+      binary
+      content
+    }
+  }
+}
+
+mutation CrowdyStudioGitHubCommitFiles($input: CrowdyStudioGitHubCommitFilesInput!) {
+  crowdyStudioGitHubCommitFiles(input: $input) {
+    commitSha
+    parentSha
+    written
+    deleted
   }
 })gql";
 inline constexpr std::string_view kCrowdyStudioGitHubStatusIsolatedDocument = R"gql(query CrowdyStudioGitHubStatus($appId: BigInt, $projectId: String) {
@@ -3852,6 +4105,7 @@ inline constexpr std::string_view kCrowdyStudioGitHubLayoutIsolatedDocument = R"
     client
     assets
     fromFile
+    kind
   }
 })gql";
 inline constexpr std::string_view kCrowdyStudioGitHubLayoutOperationName = "CrowdyStudioGitHubLayout";
@@ -3903,6 +4157,29 @@ fragment CrowdyStudioGitHubStatusFields on CrowdyStudioGitHubStatus {
   installUrl
 })gql";
 inline constexpr std::string_view kCrowdyStudioGitHubDeleteFileOperationName = "CrowdyStudioGitHubDeleteFile";
+inline constexpr std::string_view kCrowdyStudioGitHubFilesIsolatedDocument = R"gql(query CrowdyStudioGitHubFiles($input: CrowdyStudioGitHubFilesInput!) {
+  crowdyStudioGitHubFiles(input: $input) {
+    commitSha
+    missing
+    files {
+      path
+      sha
+      size
+      binary
+      content
+    }
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubFilesOperationName = "CrowdyStudioGitHubFiles";
+inline constexpr std::string_view kCrowdyStudioGitHubCommitFilesIsolatedDocument = R"gql(mutation CrowdyStudioGitHubCommitFiles($input: CrowdyStudioGitHubCommitFilesInput!) {
+  crowdyStudioGitHubCommitFiles(input: $input) {
+    commitSha
+    parentSha
+    written
+    deleted
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioGitHubCommitFilesOperationName = "CrowdyStudioGitHubCommitFiles";
 
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CrowdyStudioProjects") return kCrowdyStudioProjectsIsolatedDocument;
@@ -3929,6 +4206,8 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CrowdyStudioGitHubFile") return kCrowdyStudioGitHubFileIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubPutFile") return kCrowdyStudioGitHubPutFileIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubDeleteFile") return kCrowdyStudioGitHubDeleteFileIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubFiles") return kCrowdyStudioGitHubFilesIsolatedDocument;
+  if (operationName == "CrowdyStudioGitHubCommitFiles") return kCrowdyStudioGitHubCommitFilesIsolatedDocument;
   return {};
 }
 
@@ -7182,6 +7461,166 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 
 }  // namespace marketplace
 
+namespace moderation {
+
+/// moderation/Moderation.graphql
+inline constexpr std::string_view kModerationDocument = R"gql(fragment SafetyReportFields on SafetyReport {
+  appId
+  reportId
+  reporterUserId
+  reportedUserId
+  reportedActorUuid
+  reason
+  details
+  occurredAt
+  filedAt
+  status
+  outcome
+  resolvedBy
+  resolvedAt
+  ncmecReportId
+  ncmecSubmittedAt
+  holdId
+  sessions
+  capture {
+    status
+    objects
+    expected
+    bytes
+    retainUntil
+  }
+}
+
+query SafetyReports($appId: BigInt!, $status: SafetyReportStatus, $first: Int) {
+  safetyReports(appId: $appId, status: $status, first: $first) {
+    ...SafetyReportFields
+  }
+}
+
+mutation ResolveSafetyReport($appId: BigInt!, $reportId: BigInt!, $outcome: String!) {
+  resolveSafetyReport(appId: $appId, reportId: $reportId, outcome: $outcome) {
+    ...SafetyReportFields
+  }
+}
+
+mutation EscalateSafetyReport($appId: BigInt!, $reportId: BigInt!, $ncmecReportId: String!) {
+  escalateSafetyReport(appId: $appId, reportId: $reportId, ncmecReportId: $ncmecReportId) {
+    ...SafetyReportFields
+  }
+})gql";
+inline constexpr std::string_view kSafetyReportsIsolatedDocument = R"gql(query SafetyReports($appId: BigInt!, $status: SafetyReportStatus, $first: Int) {
+  safetyReports(appId: $appId, status: $status, first: $first) {
+    ...SafetyReportFields
+  }
+}
+
+fragment SafetyReportFields on SafetyReport {
+  appId
+  reportId
+  reporterUserId
+  reportedUserId
+  reportedActorUuid
+  reason
+  details
+  occurredAt
+  filedAt
+  status
+  outcome
+  resolvedBy
+  resolvedAt
+  ncmecReportId
+  ncmecSubmittedAt
+  holdId
+  sessions
+  capture {
+    status
+    objects
+    expected
+    bytes
+    retainUntil
+  }
+})gql";
+inline constexpr std::string_view kSafetyReportsOperationName = "SafetyReports";
+inline constexpr std::string_view kResolveSafetyReportIsolatedDocument = R"gql(mutation ResolveSafetyReport($appId: BigInt!, $reportId: BigInt!, $outcome: String!) {
+  resolveSafetyReport(appId: $appId, reportId: $reportId, outcome: $outcome) {
+    ...SafetyReportFields
+  }
+}
+
+fragment SafetyReportFields on SafetyReport {
+  appId
+  reportId
+  reporterUserId
+  reportedUserId
+  reportedActorUuid
+  reason
+  details
+  occurredAt
+  filedAt
+  status
+  outcome
+  resolvedBy
+  resolvedAt
+  ncmecReportId
+  ncmecSubmittedAt
+  holdId
+  sessions
+  capture {
+    status
+    objects
+    expected
+    bytes
+    retainUntil
+  }
+})gql";
+inline constexpr std::string_view kResolveSafetyReportOperationName = "ResolveSafetyReport";
+inline constexpr std::string_view kEscalateSafetyReportIsolatedDocument = R"gql(mutation EscalateSafetyReport($appId: BigInt!, $reportId: BigInt!, $ncmecReportId: String!) {
+  escalateSafetyReport(
+    appId: $appId
+    reportId: $reportId
+    ncmecReportId: $ncmecReportId
+  ) {
+    ...SafetyReportFields
+  }
+}
+
+fragment SafetyReportFields on SafetyReport {
+  appId
+  reportId
+  reporterUserId
+  reportedUserId
+  reportedActorUuid
+  reason
+  details
+  occurredAt
+  filedAt
+  status
+  outcome
+  resolvedBy
+  resolvedAt
+  ncmecReportId
+  ncmecSubmittedAt
+  holdId
+  sessions
+  capture {
+    status
+    objects
+    expected
+    bytes
+    retainUntil
+  }
+})gql";
+inline constexpr std::string_view kEscalateSafetyReportOperationName = "EscalateSafetyReport";
+
+inline constexpr std::string_view documentFor(std::string_view operationName) {
+  if (operationName == "SafetyReports") return kSafetyReportsIsolatedDocument;
+  if (operationName == "ResolveSafetyReport") return kResolveSafetyReportIsolatedDocument;
+  if (operationName == "EscalateSafetyReport") return kEscalateSafetyReportIsolatedDocument;
+  return {};
+}
+
+}  // namespace moderation
+
 namespace organizations {
 
 /// organizations/CreateOrgRole.graphql
@@ -7895,9 +8334,29 @@ inline constexpr std::string_view kPlatformConfigIsolatedDocument = R"gql(query 
 })gql";
 inline constexpr std::string_view kPlatformConfigOperationName = "PlatformConfig";
 
+/// platform/TerritoryPolicies.graphql
+inline constexpr std::string_view kTerritoryPoliciesDocument = R"gql(query TerritoryPolicies {
+  territoryPolicies {
+    countryCode
+    regionCode
+    status
+    minAge
+  }
+})gql";
+inline constexpr std::string_view kTerritoryPoliciesIsolatedDocument = R"gql(query TerritoryPolicies {
+  territoryPolicies {
+    countryCode
+    regionCode
+    status
+    minAge
+  }
+})gql";
+inline constexpr std::string_view kTerritoryPoliciesOperationName = "TerritoryPolicies";
+
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "PlaceableDatacenters") return kPlaceableDatacentersIsolatedDocument;
   if (operationName == "PlatformConfig") return kPlatformConfigIsolatedDocument;
+  if (operationName == "TerritoryPolicies") return kTerritoryPoliciesIsolatedDocument;
   return {};
 }
 
@@ -8271,6 +8730,65 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 
 }  // namespace playerWallet
 
+namespace portal {
+
+/// portal/Minecraft.graphql
+inline constexpr std::string_view kMinecraftDocument = R"gql(mutation MinecraftChallenge($appId: BigInt!) {
+  minecraftChallenge(appId: $appId) {
+    serverId
+    expiresAt
+  }
+}
+
+mutation SignInWithMinecraft($input: SignInWithMinecraftInput!) {
+  signInWithMinecraft(input: $input) {
+    token
+    gameTokenId
+    appId
+    expiresAt
+    gameApiUrl
+    gameApiWsUrl
+    discoveryUrl
+    launchUrl
+    runtimeGate {
+      status
+      reason
+    }
+  }
+})gql";
+inline constexpr std::string_view kMinecraftChallengeIsolatedDocument = R"gql(mutation MinecraftChallenge($appId: BigInt!) {
+  minecraftChallenge(appId: $appId) {
+    serverId
+    expiresAt
+  }
+})gql";
+inline constexpr std::string_view kMinecraftChallengeOperationName = "MinecraftChallenge";
+inline constexpr std::string_view kSignInWithMinecraftIsolatedDocument = R"gql(mutation SignInWithMinecraft($input: SignInWithMinecraftInput!) {
+  signInWithMinecraft(input: $input) {
+    token
+    gameTokenId
+    appId
+    expiresAt
+    gameApiUrl
+    gameApiWsUrl
+    discoveryUrl
+    launchUrl
+    runtimeGate {
+      status
+      reason
+    }
+  }
+})gql";
+inline constexpr std::string_view kSignInWithMinecraftOperationName = "SignInWithMinecraft";
+
+inline constexpr std::string_view documentFor(std::string_view operationName) {
+  if (operationName == "MinecraftChallenge") return kMinecraftChallengeIsolatedDocument;
+  if (operationName == "SignInWithMinecraft") return kSignInWithMinecraftIsolatedDocument;
+  return {};
+}
+
+}  // namespace portal
+
 namespace quotas {
 
 /// quotas/DeleteQuota.graphql
@@ -8471,6 +8989,273 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
 }
 
 }  // namespace realtime
+
+namespace safety {
+
+/// safety/Safety.graphql
+inline constexpr std::string_view kSafetyDocument = R"gql(fragment CommSettingsFields on CommSettings {
+  appId
+  isMinor
+  voiceSend
+  voiceReceive
+  videoSend
+  videoReceive
+  choices {
+    voiceSend
+    voiceReceive
+    videoSend
+    videoReceive
+  }
+  voiceAllowed
+  videoAllowed
+  voiceConsent
+  videoConsent
+  updatedAt
+}
+
+fragment PlayerContactFields on PlayerContact {
+  userId
+  state
+  createdAt
+  acceptedAt
+}
+
+query MyCommSettings($appId: BigInt!) {
+  myCommSettings(appId: $appId) {
+    ...CommSettingsFields
+  }
+}
+
+mutation SetMyCommSettings($appId: BigInt!, $input: SetCommSettingsInput!) {
+  setMyCommSettings(appId: $appId, input: $input) {
+    ...CommSettingsFields
+  }
+}
+
+mutation RequestParentalConsent(
+  $appId: BigInt!
+  $feature: ParentalConsentFeature!
+  $parentEmail: String!
+) {
+  requestParentalConsent(appId: $appId, feature: $feature, parentEmail: $parentEmail) {
+    appId
+    feature
+    status
+  }
+}
+
+query MyContacts($appId: BigInt!) {
+  myContacts(appId: $appId) {
+    ...PlayerContactFields
+  }
+}
+
+query ContactRequests($appId: BigInt!) {
+  contactRequests(appId: $appId) {
+    userId
+    direction
+    createdAt
+  }
+}
+
+mutation RequestContact($appId: BigInt!, $userId: BigInt!) {
+  requestContact(appId: $appId, userId: $userId) {
+    ...PlayerContactFields
+  }
+}
+
+mutation AcceptContact($appId: BigInt!, $userId: BigInt!) {
+  acceptContact(appId: $appId, userId: $userId) {
+    ...PlayerContactFields
+  }
+}
+
+mutation RemoveContact($appId: BigInt!, $userId: BigInt!) {
+  removeContact(appId: $appId, userId: $userId)
+}
+
+query MyBlocks($appId: BigInt!) {
+  myBlocks(appId: $appId) {
+    userId
+    createdAt
+  }
+}
+
+mutation BlockPlayer($appId: BigInt!, $userId: BigInt!) {
+  blockPlayer(appId: $appId, userId: $userId) {
+    userId
+    createdAt
+  }
+}
+
+mutation UnblockPlayer($appId: BigInt!, $userId: BigInt!) {
+  unblockPlayer(appId: $appId, userId: $userId)
+}
+
+mutation FileSafetyReport($input: FileSafetyReportInput!) {
+  fileSafetyReport(input: $input) {
+    reportId
+    filedAt
+  }
+})gql";
+inline constexpr std::string_view kMyCommSettingsIsolatedDocument = R"gql(query MyCommSettings($appId: BigInt!) {
+  myCommSettings(appId: $appId) {
+    ...CommSettingsFields
+  }
+}
+
+fragment CommSettingsFields on CommSettings {
+  appId
+  isMinor
+  voiceSend
+  voiceReceive
+  videoSend
+  videoReceive
+  choices {
+    voiceSend
+    voiceReceive
+    videoSend
+    videoReceive
+  }
+  voiceAllowed
+  videoAllowed
+  voiceConsent
+  videoConsent
+  updatedAt
+})gql";
+inline constexpr std::string_view kMyCommSettingsOperationName = "MyCommSettings";
+inline constexpr std::string_view kSetMyCommSettingsIsolatedDocument = R"gql(mutation SetMyCommSettings($appId: BigInt!, $input: SetCommSettingsInput!) {
+  setMyCommSettings(appId: $appId, input: $input) {
+    ...CommSettingsFields
+  }
+}
+
+fragment CommSettingsFields on CommSettings {
+  appId
+  isMinor
+  voiceSend
+  voiceReceive
+  videoSend
+  videoReceive
+  choices {
+    voiceSend
+    voiceReceive
+    videoSend
+    videoReceive
+  }
+  voiceAllowed
+  videoAllowed
+  voiceConsent
+  videoConsent
+  updatedAt
+})gql";
+inline constexpr std::string_view kSetMyCommSettingsOperationName = "SetMyCommSettings";
+inline constexpr std::string_view kRequestParentalConsentIsolatedDocument = R"gql(mutation RequestParentalConsent($appId: BigInt!, $feature: ParentalConsentFeature!, $parentEmail: String!) {
+  requestParentalConsent(
+    appId: $appId
+    feature: $feature
+    parentEmail: $parentEmail
+  ) {
+    appId
+    feature
+    status
+  }
+})gql";
+inline constexpr std::string_view kRequestParentalConsentOperationName = "RequestParentalConsent";
+inline constexpr std::string_view kMyContactsIsolatedDocument = R"gql(query MyContacts($appId: BigInt!) {
+  myContacts(appId: $appId) {
+    ...PlayerContactFields
+  }
+}
+
+fragment PlayerContactFields on PlayerContact {
+  userId
+  state
+  createdAt
+  acceptedAt
+})gql";
+inline constexpr std::string_view kMyContactsOperationName = "MyContacts";
+inline constexpr std::string_view kContactRequestsIsolatedDocument = R"gql(query ContactRequests($appId: BigInt!) {
+  contactRequests(appId: $appId) {
+    userId
+    direction
+    createdAt
+  }
+})gql";
+inline constexpr std::string_view kContactRequestsOperationName = "ContactRequests";
+inline constexpr std::string_view kRequestContactIsolatedDocument = R"gql(mutation RequestContact($appId: BigInt!, $userId: BigInt!) {
+  requestContact(appId: $appId, userId: $userId) {
+    ...PlayerContactFields
+  }
+}
+
+fragment PlayerContactFields on PlayerContact {
+  userId
+  state
+  createdAt
+  acceptedAt
+})gql";
+inline constexpr std::string_view kRequestContactOperationName = "RequestContact";
+inline constexpr std::string_view kAcceptContactIsolatedDocument = R"gql(mutation AcceptContact($appId: BigInt!, $userId: BigInt!) {
+  acceptContact(appId: $appId, userId: $userId) {
+    ...PlayerContactFields
+  }
+}
+
+fragment PlayerContactFields on PlayerContact {
+  userId
+  state
+  createdAt
+  acceptedAt
+})gql";
+inline constexpr std::string_view kAcceptContactOperationName = "AcceptContact";
+inline constexpr std::string_view kRemoveContactIsolatedDocument = R"gql(mutation RemoveContact($appId: BigInt!, $userId: BigInt!) {
+  removeContact(appId: $appId, userId: $userId)
+})gql";
+inline constexpr std::string_view kRemoveContactOperationName = "RemoveContact";
+inline constexpr std::string_view kMyBlocksIsolatedDocument = R"gql(query MyBlocks($appId: BigInt!) {
+  myBlocks(appId: $appId) {
+    userId
+    createdAt
+  }
+})gql";
+inline constexpr std::string_view kMyBlocksOperationName = "MyBlocks";
+inline constexpr std::string_view kBlockPlayerIsolatedDocument = R"gql(mutation BlockPlayer($appId: BigInt!, $userId: BigInt!) {
+  blockPlayer(appId: $appId, userId: $userId) {
+    userId
+    createdAt
+  }
+})gql";
+inline constexpr std::string_view kBlockPlayerOperationName = "BlockPlayer";
+inline constexpr std::string_view kUnblockPlayerIsolatedDocument = R"gql(mutation UnblockPlayer($appId: BigInt!, $userId: BigInt!) {
+  unblockPlayer(appId: $appId, userId: $userId)
+})gql";
+inline constexpr std::string_view kUnblockPlayerOperationName = "UnblockPlayer";
+inline constexpr std::string_view kFileSafetyReportIsolatedDocument = R"gql(mutation FileSafetyReport($input: FileSafetyReportInput!) {
+  fileSafetyReport(input: $input) {
+    reportId
+    filedAt
+  }
+})gql";
+inline constexpr std::string_view kFileSafetyReportOperationName = "FileSafetyReport";
+
+inline constexpr std::string_view documentFor(std::string_view operationName) {
+  if (operationName == "MyCommSettings") return kMyCommSettingsIsolatedDocument;
+  if (operationName == "SetMyCommSettings") return kSetMyCommSettingsIsolatedDocument;
+  if (operationName == "RequestParentalConsent") return kRequestParentalConsentIsolatedDocument;
+  if (operationName == "MyContacts") return kMyContactsIsolatedDocument;
+  if (operationName == "ContactRequests") return kContactRequestsIsolatedDocument;
+  if (operationName == "RequestContact") return kRequestContactIsolatedDocument;
+  if (operationName == "AcceptContact") return kAcceptContactIsolatedDocument;
+  if (operationName == "RemoveContact") return kRemoveContactIsolatedDocument;
+  if (operationName == "MyBlocks") return kMyBlocksIsolatedDocument;
+  if (operationName == "BlockPlayer") return kBlockPlayerIsolatedDocument;
+  if (operationName == "UnblockPlayer") return kUnblockPlayerIsolatedDocument;
+  if (operationName == "FileSafetyReport") return kFileSafetyReportIsolatedDocument;
+  return {};
+}
+
+}  // namespace safety
 
 namespace serverStatus {
 
@@ -9943,6 +10728,8 @@ inline constexpr std::string_view kMeDocument = R"gql(query Me {
     externalId
     userType
     isSuperAdmin
+    ageBracket
+    country
   }
 })gql";
 inline constexpr std::string_view kMeIsolatedDocument = R"gql(query Me {
@@ -9960,6 +10747,8 @@ inline constexpr std::string_view kMeIsolatedDocument = R"gql(query Me {
     externalId
     userType
     isSuperAdmin
+    ageBracket
+    country
   }
 })gql";
 inline constexpr std::string_view kMeOperationName = "Me";

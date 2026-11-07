@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "CrowdyRepApplicationPolicy.h"
+#include "Data/CrowdyActorPoolPolicy.h"
 #include "Data/TInterpolatedField.h"
 #include "CrowdyTransformRepPolicy.generated.h"
 
@@ -34,6 +35,8 @@ private:
 	// Indexed by the SlotId the pool assigns.
 	TArray<TInterpolatedField<FVector>> Positions;
 	TArray<TInterpolatedField<FRotator>> Rotations;
+	TArray<TInterpolatedField<float>> AimPitches;
+	TArray<CrowdyActorPool::FProxyMotion> Motions;
 
 	void EnsureSlot(int32 SlotId);
 };

@@ -459,7 +459,7 @@ void FCrowdyStateCodec::Encode(const FCrowdyRepLayout& Layout, const void* Conta
 
 bool FCrowdyStateCodec::Decode(const FCrowdyRepLayout& Layout, int64 IncomingLayoutHash, const TArray<uint8>& Blob,
 	void* Container, TArray<int32>& OutChangedIndices, TArray<int32>* OutPresentIndices,
-	FCrowdyStateDecodeScratch* Scratch)
+	FCrowdyStateDecodeScratch* Scratch, const bool bContinuousOnly)
 {
 	// Off unless crowdy.state.scopes is set. It nests inside the enclosing delivery scope, so leaving it on
 	// would add two timestamps per delta there and make two runs that carry it differently incomparable.
@@ -589,6 +589,20 @@ bool FCrowdyStateCodec::Decode(const FCrowdyRepLayout& Layout, int64 IncomingLay
 			}
 			Previous = static_cast<int32>(Raw);
 			Present.Add(Previous);
+		}
+	}
+
+	if (bContinuousOnly)
+	{
+		for (const int32 Index : Present)
+		{
+			if (!Layout.Properties[Index].bContinuous)
+			{
+				// Verbose: a peer can attach this to every movement update.
+				UE_LOG(LogCrowdyReplication, Verbose,
+					TEXT("CrowdyStateCodec::Decode: index %d is not a continuous property; dropping the values."), Index);
+				return false;
+			}
 		}
 	}
 

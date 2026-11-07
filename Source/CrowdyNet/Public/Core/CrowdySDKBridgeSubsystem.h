@@ -3,6 +3,7 @@
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
+#include "Serialization/CrowdyActorId.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Templates/Function.h"
@@ -24,10 +25,10 @@ public:
 
 	// The FCrowdyClassID names the entity's class and rides every update, because the transport is lossy
 	// and relevance gated: a receiver can start listening at any instant, so a class announced once is
-	// lost to everyone who was not there for it.
+	// lost to everyone who was not there for it. The last argument is the update's extras entries, usually empty.
 	TFunction<void(int64, int64, int64,
 		ECrowdyDecayRate, ECrowdyReplicationDistance,
-		const FString&, const FInstancedStruct&, FCrowdyClassID, bool)> DispatchActorUpdateFn;
+		const FString&, const FInstancedStruct&, FCrowdyClassID, bool, TConstArrayView<uint8>)> DispatchActorUpdateFn;
 
 	// Says an actor is still where it was without restating its state (CLIENT_ACTOR_HEARTBEAT). Args: the actor's
 	// chunk X/Y/Z and its UUID. Carries no state and no payload, so there is nothing to serialize and nothing to
@@ -48,10 +49,10 @@ public:
 		const FGuid&, const UScriptStruct*, const void*,
 		ECrowdyTarget, const FGuid&)> DispatchGameEventViewFn;
 
-	// Actor-to-actor send (SINGLE_ACTOR_MESSAGE). Args: target chunk X/Y/Z, the destination
-	// actor's UUID (the server delivers only to its owner), the payload, and bAsync.
+	// Actor-to-actor send (SINGLE_ACTOR_MESSAGE). Args: target chunk X/Y/Z, the id the destination
+	// actor sends under (the server delivers only to that sender), the payload, and bAsync.
 	TFunction<void(int64, int64, int64,
-		const FGuid&, FInstancedStruct, bool)> DispatchSingleActorMessageFn;
+		const FCrowdyActorId&, FInstancedStruct, bool)> DispatchSingleActorMessageFn;
 
 	// Publishes an already-encoded reliable RPC payload over a named channel (CHANNEL_MESSAGE_REQUEST);
 	// an empty name means the app-wide default session channel. Set by UCrowdyChannels; lets the RPC

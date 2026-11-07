@@ -52,7 +52,7 @@ public:
 /**
  * The state struct the SDK ships, so a project gets a replicated actor without authoring one.
  *
- * Deliberately just a transform. Two things a reader might expect are absent on purpose:
+ * Deliberately just a transform and an aim pitch. Two things a reader might expect are absent on purpose:
  *
  * Velocity is NOT here. It is worth carrying only quantized, which is a wire-format break that is not
  * yet justified: the receive drain's two budgets were measured co-binding, and nothing yet says what
@@ -75,13 +75,17 @@ struct FCrowdyActorState
 
 	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Actor State")
 	FRotator Rotation = FRotator::ZeroRotator;
+
+	/** Where a pawn is aiming up or down, in degrees. A character's own rotation carries no pitch. */
+	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Actor State")
+	float AimPitch = 0.f;
 };
 
 /**
- * The executor a Dynamic entity uses when none is assigned. Snapshots the owning actor's transform
- * into FCrowdyActorState.
+ * The executor an entity that replicates movement uses when none is assigned. Snapshots the owning
+ * actor's transform, and a pawn's aim pitch, into FCrowdyActorState.
  *
- * Before this existed, a UCrowdyEntityComponent set to Dynamic with no executor logged an error and
+ * Before this existed, a UCrowdyEntityComponent with no executor logged an error and
  * replicated nothing, so the minimum setup for a replicated actor was a component, an executor class
  * and a state struct. It is now the component alone.
  *

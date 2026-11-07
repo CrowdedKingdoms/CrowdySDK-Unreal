@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Replication/RPC/CrowdyEvent.h"
+#include "Replication/RPC/ICrowdyEventSource.h"
 #include "CrowdyRpcTestTarget.generated.h"
 
 /**
@@ -159,7 +160,7 @@ public:
  * receiver records the value and bumps a call count so a test can assert it ran; a plain UObject fires
  * ProcessEvent without a world, so the channel apply tests need no editor world.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class UCrowdyRpcSubsystemTestTarget : public UObject
 {
 	GENERATED_BODY()
@@ -187,7 +188,7 @@ public:
  * receive gate's actor branch (owner/host-only broadcasts dropped, targeted sends run) can be exercised. An
  * AActor's ProcessEvent no-ops without a world, so that test spawns this into an editor world.
  */
-UCLASS()
+UCLASS(meta = (CrowdyTestFixture))
 class ACrowdyRpcActorTestTarget : public AActor
 {
 	GENERATED_BODY()
@@ -198,6 +199,85 @@ public:
 	void ActorOwnerOnly_Implementation(int32 InValue);
 	CROWDY_EVENT(ActorOwnerOnly)
 
+	UFUNCTION(meta = (CrowdyEvent, CrowdyRecipient = "Host"))
+	void ActorHostOnly_Implementation(int32 InValue);
+	CROWDY_EVENT(ActorHostOnly)
+
 	int32 GotValue = 0;
+	int32 CallCount = 0;
+};
+
+USTRUCT()
+struct FCrowdyRpcTextLeaf
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FString Line;
+};
+
+USTRUCT()
+struct FCrowdyRpcTextBranch
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FCrowdyRpcTextLeaf Leaf;
+};
+
+/** One function per parameter shape, for what counts as typed text. Only reflection reads these. */
+UCLASS(meta = (CrowdyTestFixture))
+class UCrowdyRpcTextTestTarget : public UObject
+{
+	GENERATED_BODY()
+
+public:
+
+	UFUNCTION()
+	void WithNumber(int32 Value) {}
+
+	UFUNCTION()
+	void WithName(FName Value) {}
+
+	UFUNCTION()
+	void WithString(const FString& Value) {}
+
+	UFUNCTION()
+	void WithText(const FText& Value) {}
+
+	UFUNCTION()
+	void WithList(const TArray<FString>& Value) {}
+
+	UFUNCTION()
+	void WithSet(const TSet<FString>& Value) {}
+
+	UFUNCTION()
+	void WithMapValue(const TMap<int32, FString>& Value) {}
+
+	UFUNCTION()
+	void WithNestedStruct(const FCrowdyRpcTextBranch& Value) {}
+};
+
+/** A source with a copy of its identity, as a crowd row has, which can lag the registry. */
+UCLASS()
+class UCrowdyRpcEventSourceTestTarget : public UObject, public ICrowdyEventSource
+{
+	GENERATED_BODY()
+
+public:
+
+	UFUNCTION(meta = (CrowdyEvent, CrowdyRecipient = "Multicast"))
+	void SourceMulticast_Implementation(int32 InValue);
+	CROWDY_EVENT(SourceMulticast)
+
+	virtual FGuid GetEventEntityID() const override { return EntityID; }
+	virtual bool GetEventLocation(FVector& OutLocation) const override { return false; }
+	virtual FGuid GetEventOwnerID() const override { return OwnerID; }
+	virtual ECrowdyRole GetEventRole() const override { return Role; }
+	virtual bool IsEventLocallyOwned() const override { return Role == ECrowdyRole::Owner; }
+
+	FGuid EntityID;
+	FGuid OwnerID;
+	ECrowdyRole Role = ECrowdyRole::None;
 	int32 CallCount = 0;
 };

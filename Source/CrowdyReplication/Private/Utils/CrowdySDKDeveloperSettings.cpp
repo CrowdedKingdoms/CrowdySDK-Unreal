@@ -55,7 +55,8 @@ namespace
 			TEXT("no actor or state replication, no event routing and no host election. %s ")
 			TEXT("Set this in Project Settings -> Plugins -> Crowdy SDK -> Map Profiles: add an entry naming this map, ")
 			TEXT("or set Default Profile to cover maps with no entry. If the map is meant to run without the SDK, give ")
-			TEXT("it a profile with Enable Networking unticked, which records that intent and stops this. Reported once ")
+			TEXT("it a profile with Handle Events and Spawns, Draw Remote Entities, Send Movement and Replicate Crowdy State ")
+			TEXT("unticked, which records that intent and stops this. Reported once ")
 			TEXT("for this world."),
 			*MapName, *Cause);
 	}
@@ -220,6 +221,12 @@ FCrowdyCppClientConfig UCrowdySDKDeveloperSettings::MakeClientConfig() const
 		Config.ApiUrl = Config.DiscoveryUrl;
 	}
 	return Config;
+}
+
+bool UCrowdySDKDeveloperSettings::UsesElectedHost()
+{
+	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
+	return Settings && Settings->LeaderSource == ECrowdyLeaderSource::ElectedHost;
 }
 
 bool UCrowdySDKDeveloperSettings::ProfileDrawsCrowdRows(const UCrowdyMapProfile* Profile)

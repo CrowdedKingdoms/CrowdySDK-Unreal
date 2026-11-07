@@ -340,7 +340,7 @@ namespace CrowdyComputeUI
 		bool bCodeUnknown = false;
 		for (const CrowdyExecRevisions::FLiveType& Type : After)
 		{
-			if (Type.TypeName == CrowdyExecDeploy::RootTypeName)
+			if (CrowdyExecDeploy::IsSdkTypeName(Type.TypeName))
 			{
 				continue;
 			}
@@ -361,7 +361,7 @@ namespace CrowdyComputeUI
 		}
 		for (const CrowdyExecRevisions::FLiveType& Type : Before)
 		{
-			if (Type.TypeName == CrowdyExecDeploy::RootTypeName || After.ContainsByPredicate([&Type](const CrowdyExecRevisions::FLiveType& Other) { return Other.TypeName == Type.TypeName; }))
+			if (CrowdyExecDeploy::IsSdkTypeName(Type.TypeName) || After.ContainsByPredicate([&Type](const CrowdyExecRevisions::FLiveType& Other) { return Other.TypeName == Type.TypeName; }))
 			{
 				continue;
 			}
@@ -1353,7 +1353,7 @@ void SCrowdyServerComputePanel::FillTypeDetail()
 		return;
 	}
 	TypeDetailBox->SetContent(CrowdyStudioWidgets::Card(
-		CrowdyStudioWidgets::EmptyState(TEXT("cube"), LOCTEXT("NoTypes", "No Server Object types yet.\nCreate a Server Object Definition asset to add one. Until then, deploying sends only the Crowdy SDK's root (Players Online).")),
+		CrowdyStudioWidgets::EmptyState(TEXT("cube"), LOCTEXT("NoTypes", "No Server Object types yet.\nCreate a Server Object Definition asset to add one. Until then, deploying sends only the Crowdy SDK's own types: its root (Players Online) and its Leader.")),
 		FMargin(16.f), /*bFlat*/ true));
 }
 
@@ -1362,7 +1362,7 @@ int32 SCrowdyServerComputePanel::CountPendingTypes() const
 	using CrowdyExecRevisions::EChange;
 	return static_cast<int32>(Algo::CountIf(FCrowdyServerComputeService::Get().GetChanges(), [](const CrowdyExecRevisions::FTypeChange& Change)
 	{
-		return Change.TypeName != CrowdyExecDeploy::RootTypeName
+		return !CrowdyExecDeploy::IsSdkTypeName(Change.TypeName)
 			&& (Change.Change == EChange::Changed || Change.Change == EChange::New || Change.Change == EChange::Unknown || Change.Change == EChange::Removed);
 	}));
 }

@@ -11,6 +11,15 @@ namespace CrowdyExecDeploy
 	/** The root every project type sits under on the platform, which needs exactly one root per app. It keeps Players Online. */
 	inline const TCHAR* const RootTypeName = TEXT("root");
 
+	/** The SDK's Leader type, which every deploy carries under the root. */
+	inline const TCHAR* const LeaderTypeName = TEXT("crowdy_leader");
+
+	/** A type every deploy carries for the SDK, which no project definition makes: the root and the Leader. */
+	inline bool IsSdkTypeName(const FString& TypeName)
+	{
+		return TypeName.Equals(RootTypeName, ESearchCase::CaseSensitive) || TypeName.Equals(LeaderTypeName, ESearchCase::CaseSensitive);
+	}
+
 	enum class ECrateState : uint8
 	{
 		UpToDate,
@@ -81,6 +90,9 @@ namespace CrowdyExecDeploy
 
 	/** The crate of the root type, generated from the SDK's Players Online definition and never on disk; no files when that does not load or generate. */
 	CrowdyExecDeveloper::FBuildCrate MakeRootCrate();
+
+	/** The crate of the Leader type, generated from its built-in definition and never on disk; its timer asks Root, the app's root type, about the Leader. No files when it does not generate. */
+	CrowdyExecDeveloper::FBuildCrate MakeLeaderCrate(const FString& Root);
 
 	/** The manifest for Definitions under the root: each a hub (or a spoke for a Server Function Library) named by its type, open to players when they can reach it, with its save interval and idle timeout (a library: its replicas, concurrency and max_replicas), the types it Can Call (["*"] for any), its scopes and the server limits it changes. Deterministic. With a Game Kit root, that starter is the root and the SDK's is left out; a starter runs under its Parent when the project has it and carries its Config as its seed. */
 	FString MakeManifest(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions);

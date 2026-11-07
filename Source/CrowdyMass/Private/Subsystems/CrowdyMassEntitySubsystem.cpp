@@ -693,6 +693,11 @@ void UCrowdyMassEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection
 		return;
 	}
 
+	if (UCrowdyEntitySubsystem* Entities = Collection.InitializeDependency<UCrowdyEntitySubsystem>())
+	{
+		Entities->OnEntityOwnershipChanged.AddDynamic(this, &UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged);
+	}
+
 	// Entities living as rows in a table are in no actor-side registry, so everything addressed to them
 	// resolves through this subsystem or not at all. This registration covers the two planes that arrive
 	// off the wire: the calls and the view state.
@@ -732,6 +737,11 @@ void UCrowdyMassEntitySubsystem::Deinitialize()
 		Router->UnregisterEntitySubscriber(TScriptInterface<ICrowdyEntitySubscriber>(this));
 	}
 	EventRouter.Reset();
+
+	if (UCrowdyEntitySubsystem* Entities = ResolveEntitySubsystem())
+	{
+		Entities->OnEntityOwnershipChanged.RemoveDynamic(this, &UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged);
+	}
 
 	// Before the cache is dropped, so this world leaves no entity record behind naming an avatar it is
 	// about to release. World subsystem teardown order is not fixed, so the registry may already be gone;
@@ -2629,6 +2639,42 @@ void UCrowdyMassEntitySubsystem::ApplyDecodedState(const FGuid& EntityUUID, cons
 	}
 }
 
+bool UCrowdyMassEntitySubsystem::ApplySpawnState(const FGuid& UUID, const FInstancedStruct& State)
+{
+	FMassEntityHandle Entity;
+	FMassEntityManager* EntityManager = GetMassEntityManager();
+	if (!EntityManager || !FindEntityByUUID(UUID, Entity) || !EntityManager->IsEntityValid(Entity))
+	{
+		return false;
+	}
+
+	const UScriptStruct* ScriptStruct = State.GetScriptStruct();
+	const void* StructMemory = State.GetMemory();
+	if (!ScriptStruct || !StructMemory)
+	{
+		return true;
+	}
+
+	// Resolved per call rather than cached per struct: a spawn event is rare. Indexed rather than iterated, because an
+	// ingestor may register a field, which appends to the array.
+	const TWeakObjectPtr<const UClass>* EntityClass = StateEntityClassByUUID.Find(UUID);
+	FCrowdyMassViewStateContext Context{*EntityManager, Entity, EntityClass ? EntityClass->Get() : nullptr};
+	const int32 RegistrationCount = StateFieldRegistrations.Num();
+	for (int32 RegistrationIndex = 0; RegistrationIndex < RegistrationCount; ++RegistrationIndex)
+	{
+		const FCrowdyMassStateFieldRegistration& Registration = *StateFieldRegistrations[RegistrationIndex];
+		const FProperty* Property = Registration.Match == ECrowdyMassStateFieldMatch::ByName
+			? ScriptStruct->FindPropertyByName(Registration.PropertyName) : nullptr;
+		if (!Property || !CrowdyMassPropertyMatchesStateFieldType(*Property, Registration.FieldType))
+		{
+			continue;
+		}
+
+		Registration.Ingestor(Property->ContainerPtrToValuePtr<void>(StructMemory), Context);
+	}
+	return true;
+}
+
 UCrowdyMassEntity* UCrowdyMassEntitySubsystem::GetOrCreateAvatar(const FGuid& UUID, const UClass* RequiredClass)
 {
 	FMassEntityHandle Entity;
@@ -2756,6 +2802,24 @@ void UCrowdyMassEntitySubsystem::SetEntitySubsystemForTest(UCrowdyEntitySubsyste
 	EntitySubsystemForTest = InEntities;
 }
 #endif
+
+void UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& /*NewOwnerID*/, const FGuid& /*PreviousOwnerID*/)
+{
+	const UCrowdyEntitySubsystem* Entities = ResolveEntitySubsystem();
+	const FCrowdyEntityRecord* Record = Entities ? Entities->FindRecord(NetID) : nullptr;
+	FMassEntityManager* EntityManager = GetMassEntityManager();
+	FMassEntityHandle Entity;
+	if (!Record || !EntityManager || !FindEntityByUUID(NetID, Entity))
+	{
+		return;
+	}
+
+	if (FCrowdyRemoteIdentityFragment* Identity = EntityManager->GetFragmentDataPtr<FCrowdyRemoteIdentityFragment>(Entity))
+	{
+		Identity->OwnerID = Record->OwnerID;
+		Identity->Role = Record->Role;
+	}
+}
 
 void UCrowdyMassEntitySubsystem::RegisterAvatarParticipant(const FGuid& UUID, UCrowdyMassEntity* Avatar)
 {

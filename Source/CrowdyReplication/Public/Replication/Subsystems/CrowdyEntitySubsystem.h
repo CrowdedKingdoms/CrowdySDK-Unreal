@@ -7,11 +7,14 @@
 #include "Data/CrowdyEntityTypes.h"
 #include "Engine/StreamableManager.h"
 #include "Messages/GameObjects/FCrowdyEntitySpawnEvent.h"
+#include "Serialization/CrowdyActorId.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "CrowdyEntitySubsystem.generated.h"
 
 class FCrowdyServiceRegistry;
+class UCrowdyActorManager;
+class UCrowdyActorTracker;
 class UCrowdyEntityComponent;
 class UCrowdyGameSession;
 class UCrowdySDKBridgeSubsystem;
@@ -102,6 +105,10 @@ public:
 	// live participant (logged as an error naming both): an id that answers for someone else is worse than none.
 	FGuid RegisterParticipant(UObject* Participant, ECrowdyOwnership Ownership);
 
+	// Enrolls a singleton participant, such as a replicated subsystem, that the Leader writes: its NetID comes
+	// from its class path, the same on every client.
+	FGuid RegisterParticipant(UObject* Participant);
+
 	// Removes a participant previously enrolled via RegisterParticipant.
 	void UnregisterParticipant(UObject* Participant);
 
@@ -110,6 +117,10 @@ public:
 	// True for a short while after a peer's destroy event for NetID, so an update still in flight from before the
 	// destroy cannot bring the entity back as a proxy. Kept short because a forged destroy hides a live entity this long.
 	bool WasRecentlyDestroyed(const FGuid& NetID) const;
+
+	// A Leader would write any body it built, and only its own spawn or a body it already held proves the entity is
+	// real: anything off the network can be forged.
+	bool RefusesLeaderBody(UClass* EntityClass) const;
 	static constexpr double RecentlyDestroyedSeconds = 0.5;
 
 	// How long a spawn event for a destroyed id is refused. Spawn Entity never reuses an id, so such an event is a
@@ -117,10 +128,9 @@ public:
 	// never got the destroy keeps repeating, and its entity comes back after this long.
 	static constexpr double DestroyedSpawnRefusedSeconds = 10.0;
 
-	// True when this client is the entity's owner: the record names the local player AND its role says this client
-	// simulates and sends for it. Both are required because this answer authorizes creating server-side state bound
-	// to the id; a record that names the local player while its role says the entity is only mirrored here
-	// contradicts itself, and the safe reading of a contradiction is "not mine".
+	// True when this client writes the entity: its record names the local player with the Owner role, or it is a World
+	// entity and this client is the World owner. The same answer as Is Crowdy Entity Locally Owned and the component's
+	// Is Locally Owned.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
 	bool IsLocallyOwned(const FGuid& NetID) const;
 
@@ -128,8 +138,26 @@ public:
 	FGuid GetLocalPlayerID() const;
 
 	// Reads through to UCrowdyGameSession
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
+	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem",
+		meta=(DeprecatedFunction, DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
 	FGuid GetHostID() const;
+
+	// The client that writes replicated subsystems: the Leader, or the elected host under Leader Source Elected Host.
+	FGuid GetAppWriterID() const;
+
+	// The client that writes World entities: the elected host when Leader Source is Elected Host, otherwise none.
+	FGuid GetWorldOwnerID() const;
+
+	// The client that writes Record when it is World-owned: the Leader (the host store) for a replicated subsystem,
+	// the World owner for anything else. Under Elected Host both are the host.
+	FGuid GetWriterID(const FCrowdyEntityRecord& Record) const;
+
+	// Whether this client writes the entity: it owns it, or it is the writer of a World-owned one.
+	bool IsRecordLocallyOwned(const FCrowdyEntityRecord& Record) const;
+
+	// Marks Record Owned By Leader and gives it the current Leader as its owner, before it is registered.
+	void MakeLeaderOwned(FCrowdyEntityRecord& Record) const;
 
 	/** Normally seeded from the game session automatically; exposed for Blueprints that managed it manually. */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entity Subsystem")
@@ -140,6 +168,9 @@ public:
 	// Initialize) can exercise the real GetHostID() read-through to UCrowdyGameSession.
 	void SetGameSessionForTest(UCrowdyGameSession* InGameSession) { GameSession = InGameSession; }
 
+	// Listens to the injected session the way Initialize does.
+	void BindGameSessionForTest() { BindGameSession(); }
+
 	// Takes the spawn/destroy subscription against a registry a test owns, using the same call Initialize
 	// makes, so a test drives the production delivery path rather than a copy of it.
 	void SubscribeToSpawnDestroyForTest(FCrowdyServiceRegistry& Registry) { SubscribeToSpawnDestroy(Registry); }
@@ -149,6 +180,12 @@ public:
 	void HandleRemoteSpawnForTest(const FCrowdyEntitySpawnEvent& Event) { HandleRemoteSpawn(Event); }
 	void HandleRemoteDestroyForTest(const FCrowdyEntityDestroyEvent& Event) { HandleRemoteDestroy(Event); }
 
+	// The component given to a spawned actor whose class carries none.
+	UCrowdyEntityComponent* AddStaticEntityComponentForTest(AActor* Actor) const
+	{
+		return AddStaticEntityComponent(Actor, FGuid::NewGuid(), FGuid(), ECrowdyRole::RemoteProxy, 0);
+	}
+
 	// Off unless a test turns it on: then every spawn event this client announces is also kept here, so a test can
 	// read what went out without a transport.
 	bool bCaptureAnnouncedSpawnsForTest = false;
@@ -157,6 +194,12 @@ public:
 	// How many participant-to-id mappings are held. A mapping for a participant that has already been collected
 	// cannot be found by key, so this count is the only way to see one that was left behind.
 	int32 GetParticipantMappingCountForTest() const { return ParticipantToID.Num(); }
+
+	FCrowdyActorId ResolveTargetWireIdForTest(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const { return ResolveTargetWireId(NetID, Tracker); }
+	bool IsWireIdUnheardForTest(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const { return IsWireIdUnheard(NetID, Tracker); }
+	FGuid ResolveEventAddresseeForTest(const FGuid& NetID, const FGuid& OwnerID, const UCrowdyActorTracker* Tracker) const { return ResolveEventAddressee(NetID, OwnerID, Tracker); }
+
+	int32 GetReportedLeaderRowClassCountForTest() const { return ReportedLeaderRowClasses.Num(); }
 #endif
 
 	//Networked entity lifecycle
@@ -224,6 +267,14 @@ public:
 		ECrowdyDecayRate DecayRate = ECrowdyDecayRate::No_Decay,
 		ECrowdyReplicationDistance ReplicationDistance = ECrowdyReplicationDistance::Eight_Chunks);
 
+	// An event for one client, sent to everyone within a chunk of Location and ignored by all but ClientID. The range is
+	// what makes it arrive: the chunk this client can see for a moving entity is always a moment behind.
+	void DispatchGameEventToClientAt(const FVector& Location, const UScriptStruct* PayloadStruct, const void* PayloadMemory, const FGuid& ClientID);
+
+	// Who to name on an event for this entity: OwnerID, unless the entity was heard under another owner's id, which means
+	// this client missed a move. Nobody is named then, and the receive gate lets only the real writer run it.
+	FGuid ResolveEventAddressee(const FGuid& NetID, const FGuid& OwnerID) const;
+
 private:
 
 	/**
@@ -255,6 +306,9 @@ public:
 	 */
 	void DispatchSingleActorMessageTo(const FGuid& TargetNetID, const FVector& Location, FInstancedStruct Payload);
 
+	// True when this client has not heard the entity under its current id, so it does not know what region to reach it in.
+	bool IsWireIdUnheard(const FGuid& NetID) const;
+
 	/**
 	 * Publishes an already-encoded reliable RPC payload over the named channel (empty = the app-wide
 	 * default session channel). It reaches every member of that channel regardless of distance,
@@ -269,7 +323,7 @@ public:
 	// Explicit ownership transfer (view plane). Re-points a registered entity's owner and re-derives its role, then
 	// broadcasts OnEntityOwnershipChanged so the state replicator re-tracks and the entity component syncs its cache
 	// and continuous channel. NewOwnerID: a valid player id makes it client-owned (Owner on that client,
-	// RemoteProxy elsewhere); an invalid (zero) id makes it host-owned (a world entity). ExpectedPreviousOwnerID,
+	// RemoteProxy elsewhere); an invalid (zero) id makes it a World entity. ExpectedPreviousOwnerID,
 	// when valid, is a compare-and-swap guard: the change is dropped when the record's current owner no longer
 	// matches, so a stale or duplicate grant is a no-op. This is the client-authoritative view plane - a
 	// convention, not an enforcement boundary; cheat-sensitive ownership belongs in server code (Server Objects).
@@ -291,6 +345,10 @@ public:
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Entity Subsystem|Events")
 	FOnCrowdyEntityOwnershipChanged OnEntityOwnershipChanged;
 
+	// The actor manager drawing this world's remote entities, set when it binds to this subsystem: spawn and destroy
+	// events consult its backend.
+	void SetActorManager(UCrowdyActorManager* Manager);
+
 private:
 
 	// Remote spawn whose class is still streaming in. A destroy event arriving
@@ -306,6 +364,9 @@ private:
 	TMap<TObjectKey<UObject>, FGuid> ParticipantToID;
 	TMap<FGuid, FPendingRemoteSpawn> PendingRemoteSpawns;
 
+	// So a map drawing a Leader class as crowd rows says so once per class, not once per spawn.
+	TSet<TObjectKey<UClass>> ReportedLeaderRowClasses;
+
 	// Platform seconds at which each remotely destroyed id was destroyed; pruned at most once per short window.
 	TMap<FGuid, double> RecentlyDestroyed;
 	double NextRecentlyDestroyedPrune = 0.0;
@@ -316,6 +377,12 @@ private:
 	// Sends the spawn event for an entity this client owns, from where its actor is now.
 	void AnnounceSpawn(AActor* Actor, const FInstancedStruct& InitialState);
 
+	// The id a targeted message addresses: the server delivers to whoever sends that id.
+	FCrowdyActorId ResolveTargetWireId(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const;
+
+	bool IsWireIdUnheard(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const;
+	FGuid ResolveEventAddressee(const FGuid& NetID, const FGuid& OwnerID, const UCrowdyActorTracker* Tracker) const;
+
 	UPROPERTY()
 	TObjectPtr<UCrowdyGameSession> GameSession;
 
@@ -324,8 +391,12 @@ private:
 
 	UCrowdySDKBridgeSubsystem* Bridge = nullptr;
 
+	TWeakObjectPtr<UCrowdyActorManager> ActorManager;
+
 	// Single handle over both the spawn and destroy payload keys; released on Deinitialize.
 	FCrowdySubscription SpawnDestroySubscription;
+
+	void BindGameSession();
 
 	// Claims the spawn and destroy payload keys on Registry and points them at HandleSpawnDestroyDelivery.
 	void SubscribeToSpawnDestroy(FCrowdyServiceRegistry& Registry);
@@ -337,6 +408,17 @@ private:
 	UFUNCTION()
 	void OnOwnerUUIDUpdated(FString NewUUID);
 
+	UFUNCTION()
+	void OnLeaderUpdated(const FGuid& NewLeaderID, const FGuid& PreviousLeaderID);
+
+	// Moves every Leader-owned entity to the current Leader.
+	void ReassignLeaderOwnedEntities();
+
+	bool IsLocalLeader() const;
+
+	// The role Record has on this client once NewOwnerID owns it.
+	ECrowdyRole DeriveRole(const FCrowdyEntityRecord& Record, const FGuid& NewOwnerID) const;
+
 	// Re-derives a LocalClient participant's owner-salted deterministic identity once the local player id arrives,
 	// re-registering it under the new NetID. Never touches actor entities (their identity is set at spawn).
 	void RestampParticipantIdentity(const FGuid& OldNetID);
@@ -346,6 +428,10 @@ private:
 
 	void OnRemoteSpawnClassLoaded(FGuid EntityID, FSoftClassPath ClassPath);
 	void FinishRemoteSpawn(const FCrowdyEntitySpawnEvent& Event, UClass* EntityClass);
+
+	// True when this world draws remote entities as crowd rows and EntityClass is a moving one: the rows are its only
+	// body here, so its spawn data went to the backend and no actor is spawned for it.
+	bool HandSpawnToCrowdRows(const FCrowdyEntitySpawnEvent& Event, UClass* EntityClass);
 
 	// Drops a non-actor stand-in registered for NetID (a crowd avatar enrolled from position updates before the
 	// spawn event that names the entity's class arrived), so the actor about to be spawned for that id can take

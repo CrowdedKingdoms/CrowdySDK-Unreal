@@ -149,7 +149,7 @@ void UCrowdyKitSocial::InitializeForTest(const TSharedPtr<FCrowdyCppClient>& Cli
 
 int64 UCrowdyKitSocial::GetAppId() const
 {
-	return GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
+	return CrowdyServiceApi::ResolveAppId(GetGameInstance());
 }
 
 FCrowdyCppClient* UCrowdyKitSocial::ResolveClient() const

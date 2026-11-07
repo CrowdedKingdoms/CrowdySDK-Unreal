@@ -94,10 +94,11 @@ namespace CrowdyExecRevisionsTest
 		return Value == 0 ? FString(TEXT("null")) : FString::Printf(TEXT("%lld"), Value);
 	}
 
-	/** A manifest in the platform's shape: the root first, then each row. */
+	/** A manifest in the platform's shape: the root and the Leader first, then each row. */
 	FString MakeLiveManifest(TConstArrayView<FLiveRow> Rows)
 	{
-		FString Json = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"root_digest\",\"parent\":null,\"evict_after_ms\":null,\"persist_every_ms\":null}");
+		FString Json = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"root_digest\",\"parent\":null,\"evict_after_ms\":null,\"persist_every_ms\":null},")
+			TEXT("\"crowdy_leader\":{\"kind\":\"hub\",\"digest\":\"leader_digest\",\"parent\":\"root\",\"client\":true,\"evict_after_ms\":300000,\"persist_every_ms\":30000}");
 		for (const FLiveRow& Row : Rows)
 		{
 			Json += FString::Printf(TEXT(",\"%s\":{\"kind\":\"hub\",\"digest\":\"%s\",\"parent\":\"root\",\"evict_after_ms\":%s,\"persist_every_ms\":%s}"),
@@ -428,6 +429,7 @@ bool FCrowdyExecRevisionsCompareTest::RunTest(const FString& Parameters)
 	TestChange(*this, Case, Changes, TEXT("t_notready"), EChange::NotCompared);
 	TestChange(*this, Case, Changes, TEXT("t_gone"), EChange::Removed);
 	TestNull(TEXT("the platform's root is never listed as removed"), FindChange(Changes, TEXT("root")));
+	TestNull(TEXT("nor is the Leader, which no project definition makes"), FindChange(Changes, TEXT("crowdy_leader")));
 	TestEqual(TEXT("each project type, then each live-only type"), Changes.Num(), 9);
 	if (const FTypeChange* Code = FindChange(Changes, TEXT("t_code")))
 	{
@@ -449,7 +451,8 @@ bool FCrowdyExecRevisionsCompareTest::RunTest(const FString& Parameters)
 	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("t_unknown"), EChange::New);
 	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("t_notready"), EChange::NotCompared);
 	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("root"), EChange::New);
-	TestEqual(TEXT("with nothing live, nothing is removed, and the root is sent"), NothingLive.Num(), 9);
+	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("crowdy_leader"), EChange::New);
+	TestEqual(TEXT("with nothing live, nothing is removed, and the root and the Leader are sent"), NothingLive.Num(), 10);
 
 	const TArray<FTypeChange> NotRead = CrowdyExecRevisions::Compare(Project, Definitions, &Live, false, HistoryFor);
 	TestChange(*this, TEXT("versions not read"), NotRead, TEXT("t_code"), EChange::NotCompared);
@@ -523,6 +526,7 @@ bool FCrowdyExecRevisionsOldRootTest::RunTest(const FString& Parameters)
 		CrowdyExecDeveloper::FVersion Live;
 		Live.Version = 3;
 		Live.ManifestJson = FString::Printf(TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"d_root\",\"parent\":null,\"client\":%s},")
+			TEXT("\"crowdy_leader\":{\"kind\":\"hub\",\"digest\":\"d_leader\",\"parent\":\"root\",\"client\":true},")
 			TEXT("\"t_same\":{\"kind\":\"hub\",\"digest\":\"d_same\",\"parent\":\"root\",\"client\":true,\"evict_after_ms\":300000,\"persist_every_ms\":30000}}}"), RootClient);
 		return CrowdyExecRevisions::Compare(Project, {Definition.Get()}, &Live, true, HistoryFor);
 	};
@@ -546,6 +550,7 @@ bool FCrowdyExecRevisionsEmptyProjectTest::RunTest(const FString& Parameters)
 
 	const TArray<FTypeChange> NothingLive = CrowdyExecRevisions::Compare(Project, {}, nullptr, true, HistoryFor);
 	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("root"), EChange::New);
+	TestChange(*this, TEXT("nothing live"), NothingLive, TEXT("crowdy_leader"), EChange::New);
 	TestTrue(TEXT("so an empty project can deploy its root"), CrowdyExecRevisions::HasChanges(NothingLive));
 
 	CrowdyExecDeveloper::FVersion Live;
@@ -557,8 +562,14 @@ bool FCrowdyExecRevisionsEmptyProjectTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a live version with no root can be replaced"), CrowdyExecRevisions::HasChanges(NoRoot));
 
 	Live.ManifestJson = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"d_root\",\"parent\":null,\"client\":true}}}");
+	const TArray<FTypeChange> NoLeader = CrowdyExecRevisions::Compare(Project, {}, &Live, true, HistoryFor);
+	TestChange(*this, TEXT("a live root without the Leader"), NoLeader, TEXT("crowdy_leader"), EChange::New);
+	TestTrue(TEXT("so a project with nothing else changed can deploy the Leader"), CrowdyExecRevisions::HasChanges(NoLeader));
+
+	Live.ManifestJson = TEXT("{\"root\":\"root\",\"types\":{\"root\":{\"kind\":\"hub\",\"digest\":\"d_root\",\"parent\":null,\"client\":true},")
+		TEXT("\"crowdy_leader\":{\"kind\":\"hub\",\"digest\":\"d_leader\",\"parent\":\"root\",\"client\":true}}}");
 	const TArray<FTypeChange> OnlyRoot = CrowdyExecRevisions::Compare(Project, {}, &Live, true, HistoryFor);
-	TestEqual(TEXT("a live root and no types is nothing to deploy"), OnlyRoot.Num(), 0);
+	TestEqual(TEXT("a live root and Leader and no types is nothing to deploy"), OnlyRoot.Num(), 0);
 	TestFalse(TEXT("and then nothing changed"), CrowdyExecRevisions::HasChanges(OnlyRoot));
 
 	Live.ManifestJson = TEXT("not json");
@@ -575,8 +586,10 @@ bool FCrowdyExecRevisionsRootCodeTest::RunTest(const FString& Parameters)
 	using namespace CrowdyExecRevisionsTest;
 	const FBuildCrate Root = CrowdyExecDeploy::MakeRootCrate();
 	const FBuildCrate OlderRoot = MakeCrate(TEXT("root"), TEXT("fn older_root() {}\n"));
+	const FBuildCrate Leader = CrowdyExecDeploy::MakeLeaderCrate(CrowdyExecDeploy::RootTypeName);
+	const FBuildCrate OlderLeader = MakeCrate(TEXT("crowdy_leader"), TEXT("fn older_leader() {}\n"));
 	CrowdyExecDeploy::FProjectDeploy Project;
-	Project.Crates = {Root};
+	Project.Crates = {Root, Leader};
 	CrowdyExecDeveloper::FVersion Live;
 	Live.Version = 3;
 	Live.ManifestJson = MakeLiveManifest({});
@@ -596,6 +609,8 @@ bool FCrowdyExecRevisionsRootCodeTest::RunTest(const FString& Parameters)
 	const TArray<FTypeChange> Unknown = CompareWith(OlderRoot, TEXT("d_elsewhere"));
 	TestNull(TEXT("a live root this checkout has no record of is not listed"), FindChange(Unknown, TEXT("root")));
 	TestFalse(TEXT("and is no change"), CrowdyExecRevisions::HasChanges(Unknown));
+	TestChange(*this, TEXT("the live Leader ran other code"), CompareWith(OlderLeader, TEXT("leader_digest")), TEXT("crowdy_leader"), EChange::Changed, TEXT("server code"));
+	TestNull(TEXT("the live Leader runs this SDK's code"), FindChange(CompareWith(Leader, TEXT("leader_digest")), TEXT("crowdy_leader")));
 	return true;
 }
 
