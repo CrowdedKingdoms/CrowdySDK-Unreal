@@ -41,16 +41,25 @@ public:
 	// A remote entity is a Mass entity here and no actor of its class is ever spawned for it, which is what
 	// makes a class's own Blueprint bodies run on a shared stand-in on an observer.
 	virtual bool DrawsEntitiesAsCrowdRows() const override { return true; }
+	virtual UClass* GetBackendConfigClass() const override;
 
 	virtual void ActivateInstance(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& InitialState) override;
 	virtual void DeactivateInstance(int32 SlotId, const FGuid& UUID) override;
 	virtual void ExtractUpdate(const FInstancedStruct& State, int64 ServerTimestampMs, int32 SlotId) override;
 	virtual void ApplyInterpolation(int32 SlotId, int64 RenderTimeMs) override;
+	virtual void TakeSpawnData(const FGuid& UUID, const FInstancedStruct& InitialState) override;
+	virtual bool ReleaseDestroyedInstance(int32 SlotId, const FGuid& UUID) override;
+
+	// Spawn data held for a row that does not exist yet. Spawn events are forgeable, so the wait is bounded in count
+	// and, once that is reached, in time: past the tracker's 12-second timeout an entity's first update is not coming.
+	static constexpr int32 MaxPendingSpawnData = 1024;
+	static constexpr double PendingSpawnDataSeconds = 15.0;
 
 #if WITH_DEV_AUTOMATION_TESTS
 	// Test seam: binds a slot to an entity without a live activation, so a case can drive ExtractUpdate and
 	// measure what one received payload costs on the real path rather than on the door below it.
 	void BindSlotForTest(int32 SlotId, const FGuid& UUID, UCrowdyMassEntitySubsystem* Subsystem);
+	int32 GetPendingSpawnDataCountForTest() const { return PendingSpawnData.Num(); }
 #endif
 
 private:
@@ -67,6 +76,18 @@ private:
 
 	/** SlotId -> entity UUID. ExtractUpdate only receives a SlotId, so the mapping lives here. */
 	TArray<FGuid> SlotToUUID;
+
+	// A spawn event usually arrives before the entity's first update, so before its row exists.
+	struct FHeldSpawnData
+	{
+		FInstancedStruct State;
+		double ExpiresAt = 0.0;
+	};
+	TMap<FGuid, FHeldSpawnData> PendingSpawnData;
+
+	// Rows that took their spawn data, so a repeated or forged spawn event is not applied over newer state.
+	TSet<FGuid> SpawnDataApplied;
+	bool bReportedPendingSpawnDataFull = false;
 
 	void EnsureSlotCapacity(int32 SlotId);
 };

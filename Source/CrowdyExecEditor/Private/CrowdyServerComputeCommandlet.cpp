@@ -345,6 +345,7 @@ namespace CrowdyServerComputeCommandletDetail
 			OutCrateDirectories.Add(Definition->TypeName, CrowdyExecCodegen::GetCrateDirectory(*Definition));
 		}
 		OutCrateDirectories.Add(CrowdyExecDeploy::RootTypeName, FPaths::Combine(CrowdyExecCodegen::GetServerDirectory(), CrowdyExecDeploy::RootTypeName));
+		OutCrateDirectories.Add(CrowdyExecDeploy::LeaderTypeName, FPaths::Combine(CrowdyExecCodegen::GetServerDirectory(), CrowdyExecDeploy::LeaderTypeName));
 		return CrowdyExecDeploy::AssembleProject(OutDefinitions, [](const UCrowdyServerObjectDefinition& Definition) { return CrowdyExecCodegen::GetCrateDirectory(Definition); });
 	}
 

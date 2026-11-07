@@ -389,4 +389,32 @@ bool FCrowdyMassWorldGateCallersDegradeQuietlyTest::RunTest(const FString& Param
 	return true;
 }
 
+#if WITH_EDITOR
+#include "Backend/CrowdyMassRenderingBackendConfig.h"
+#include "Data/CrowdyActorPoolBackendConfig.h"
+#include "Misc/DataValidation.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassProfileReportsAnActorPoolConfigTest,
+	"CrowdySDK.Mass.WorldGate.ProfileReportsAnActorPoolConfig",
+	CrowdyMassWorldGateTest::TestFlags)
+
+bool FCrowdyMassProfileReportsAnActorPoolConfigTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<UCrowdyMapProfile> Profile(NewObject<UCrowdyMapProfile>());
+	Profile->ActorManagement.BackendClass = UCrowdyMassRenderingBackend::StaticClass();
+
+	Profile->ActorManagement.BackendConfig = NewObject<UCrowdyActorPoolBackendConfig>(Profile.Get());
+	FDataValidationContext Mismatched;
+	Profile->IsDataValid(Mismatched);
+	TestEqual(TEXT("A Mass profile with an actor-pool config is reported"), static_cast<int32>(Mismatched.GetNumErrors()), 1);
+
+	Profile->ActorManagement.BackendConfig = NewObject<UCrowdyMassRenderingBackendConfig>(Profile.Get());
+	FDataValidationContext Matched;
+	Profile->IsDataValid(Matched);
+	TestEqual(TEXT("A Mass profile with a Mass config is valid"), static_cast<int32>(Matched.GetNumErrors()), 0);
+
+	return true;
+}
+#endif
+
 #endif // WITH_DEV_AUTOMATION_TESTS

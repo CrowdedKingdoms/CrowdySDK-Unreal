@@ -15,7 +15,10 @@ enum class ECrowdyReplicationMode : uint8
 
 	// CrowdyState: the fast, client-authoritative view plane. Writes the CrowdyState marker; reveals the
 	// RepNotify field (CrowdyOnRep) and the Advanced sub-options (CrowdyOwnerOnly, CrowdyManualDirty, heartbeat).
-	Replicated
+	Replicated,
+
+	// CrowdyState that rides the entity's movement updates. Writes both markers; reveals the RepNotify field only.
+	ReplicatedContinuous
 };
 
 /**

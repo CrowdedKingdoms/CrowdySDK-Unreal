@@ -22,7 +22,8 @@ class UCrowdyEntitySubsystem;
  *    Blueprint and world-scoped callers. A null world, or a world with no entity subsystem (an editor/inactive
  *    world; the entity subsystem is PIE/Game only), is a clean no-op that never crashes.
  *
- * Scope is host-owned subsystems (Ownership defaults to Host): a singleton has no per-owner proxy on peers.
+ * A replicated subsystem is always written by one client for everyone: the app's Leader (the elected host under
+ * Leader Source Elected Host), since a singleton has no per-owner proxy on peers.
  * This is the client-authoritative view plane, where host precedence is a convention and not enforced, so
  * authoritative or cheat-sensitive state belongs in server code (Server Objects), never in a replicated subsystem property.
  */
@@ -37,6 +38,9 @@ public:
 	 * network-stable NetID. Null-safe: an invalid Registry or Subsystem is a no-op that returns an invalid FGuid.
 	 * The world-free core used by the ergonomic bases and the headless tests.
 	 */
+	static FGuid RegisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem);
+
+	UE_DEPRECATED(5.8, "Use the overload without Ownership: a replicated subsystem is always written by the app's Leader (or elected host).")
 	static FGuid RegisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem, ECrowdyOwnership Ownership);
 
 	/** Removes a participant previously enrolled via RegisterReplicatedSubsystemInto. Silent no-op if either is missing. */
@@ -49,6 +53,12 @@ public:
 	 * world, so enroll per-world through the *Into core instead.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Subsystem Replication", meta = (DefaultToSelf = "Subsystem"))
+	static FGuid RegisterCrowdyReplicatedSubsystem(UObject* Subsystem);
+
+	UE_DEPRECATED(5.8, "Use RegisterCrowdyReplicatedSubsystem: a replicated subsystem is always written by the app's Leader (or elected host).")
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Subsystem Replication",
+		meta = (DefaultToSelf = "Subsystem", DeprecatedFunction,
+			DeprecationMessage = "Use Register Crowdy Replicated Subsystem: a replicated subsystem is always written by the app's Leader (or elected host)."))
 	static FGuid RegisterReplicatedSubsystem(UObject* Subsystem, ECrowdyOwnership Ownership = ECrowdyOwnership::Host);
 
 	/** Resolves the Crowdy Entity Subsystem from Subsystem's world and unenrolls it. Clean no-op when unresolved. */

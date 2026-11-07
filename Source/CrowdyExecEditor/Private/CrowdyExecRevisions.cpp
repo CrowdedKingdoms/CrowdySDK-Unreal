@@ -265,36 +265,36 @@ namespace CrowdyExecRevisionsDetail
 		return Change.What.IsEmpty() ? EChange::Unchanged : EChange::Changed;
 	}
 
-	/** The SDK's root rides every deploy: a deploy is offered when the live version has none, has an older one closed to players, or runs other root code than this SDK's. */
-	void AddRootChange(const CrowdyExecDeploy::FProjectDeploy& Project, const CrowdyExecRevisions::FLiveType* LiveRoot, int32 LiveVersion,
+	/** A type of the SDK's (the root, the Leader) rides every deploy: a deploy is offered when the live version has none, has an older one closed to players, or runs other code for it than this SDK's. */
+	void AddSdkTypeChange(const CrowdyExecDeploy::FProjectDeploy& Project, const FString& TypeName, const CrowdyExecRevisions::FLiveType* Live, int32 LiveVersion,
 		TFunctionRef<TArray<FRevision>(const FString& TypeName)> HistoryFor, TArray<CrowdyExecRevisions::FTypeChange>& OutChanges)
 	{
 		using CrowdyExecRevisions::EChange;
 		CrowdyExecRevisions::FTypeChange Change;
-		Change.TypeName = CrowdyExecDeploy::RootTypeName;
+		Change.TypeName = TypeName;
 		Change.LiveVersion = LiveVersion;
-		if (!LiveRoot)
+		if (!Live)
 		{
 			Change.Change = EChange::New;
 			OutChanges.Add(MoveTemp(Change));
 			return;
 		}
 		// A root closed to players is an older SDK's, which keeps no Players Online.
-		if (!LiveRoot->bClient)
+		if (!Live->bClient)
 		{
 			Change.Change = EChange::Changed;
 			Change.What.Add(TEXT("players online"));
 			OutChanges.Add(MoveTemp(Change));
 			return;
 		}
-		const CrowdyExecDeveloper::FBuildCrate* Crate = Project.Crates.FindByPredicate([](const CrowdyExecDeveloper::FBuildCrate& Candidate) { return IsSameText(Candidate.Name, CrowdyExecDeploy::RootTypeName); });
+		const CrowdyExecDeveloper::FBuildCrate* Crate = Project.Crates.FindByPredicate([&TypeName](const CrowdyExecDeveloper::FBuildCrate& Candidate) { return IsSameText(Candidate.Name, TypeName); });
 		if (!Crate || Crate->Files.IsEmpty())
 		{
 			return;
 		}
-		// A live root this checkout has no record of is not a difference: a fresh checkout would show noise.
-		const TArray<FRevision> History = HistoryFor(CrowdyExecDeploy::RootTypeName);
-		Change.LiveRevision = FindRevisionWithDigest(History, LiveRoot->Digest);
+		// A live type this checkout has no record of is not a difference: a fresh checkout would show noise.
+		const TArray<FRevision> History = HistoryFor(TypeName);
+		Change.LiveRevision = FindRevisionWithDigest(History, Live->Digest);
 		if (Change.LiveRevision == INDEX_NONE || IsSameText(History[Change.LiveRevision].Fingerprint, CrowdyExecRevisions::Fingerprint(Crate->Files)))
 		{
 			return;
@@ -620,7 +620,11 @@ TArray<CrowdyExecRevisions::FTypeChange> CrowdyExecRevisions::Compare(const Crow
 	const bool bSdkRoot = IsSameText(Project.Root, CrowdyExecDeploy::RootTypeName);
 	if (bLiveKnown && bReadable && bSdkRoot)
 	{
-		AddRootChange(Project, FindLiveType(LiveTypes, CrowdyExecDeploy::RootTypeName), LiveVersion, HistoryFor, Changes);
+		AddSdkTypeChange(Project, CrowdyExecDeploy::RootTypeName, FindLiveType(LiveTypes, CrowdyExecDeploy::RootTypeName), LiveVersion, HistoryFor, Changes);
+	}
+	if (bLiveKnown && bReadable)
+	{
+		AddSdkTypeChange(Project, CrowdyExecDeploy::LeaderTypeName, FindLiveType(LiveTypes, CrowdyExecDeploy::LeaderTypeName), LiveVersion, HistoryFor, Changes);
 	}
 	// An unreadable manifest is never "no changes", even for a project with no types of its own.
 	if (bLiveKnown && !bReadable)
@@ -633,7 +637,7 @@ TArray<CrowdyExecRevisions::FTypeChange> CrowdyExecRevisions::Compare(const Crow
 	for (const FLiveType& LiveType : LiveTypes)
 	{
 		const bool bInProject = Project.Types.ContainsByPredicate([&LiveType](const CrowdyExecDeploy::FTypeState& Type) { return IsSameText(Type.TypeName, LiveType.TypeName); });
-		if (bInProject || (bSdkRoot && IsSameText(LiveType.TypeName, CrowdyExecDeploy::RootTypeName)))
+		if (bInProject || (bSdkRoot && IsSameText(LiveType.TypeName, CrowdyExecDeploy::RootTypeName)) || IsSameText(LiveType.TypeName, CrowdyExecDeploy::LeaderTypeName))
 		{
 			continue;
 		}

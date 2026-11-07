@@ -13,6 +13,13 @@
 
 class UCrowdyRenderingBackend;
 class UCrowdyEntitySubsystem;
+class UCrowdyEventRouter;
+
+/**
+ * An applied update's id, its slot and the extras entries it carried after its state. Never fires for an update with none.
+ * The view is valid only during the call, and its bytes are a peer's: check an entry's type, length and layout hash before decoding it.
+ */
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnCrowdyUpdateExtras, const FGuid& /*UUID*/, int32 /*SlotId*/, TConstArrayView<uint8> /*Extras*/);
 
 /**
  *
@@ -41,6 +48,17 @@ public:
 
 	// The live backend, null when none initialized; a backend that refused to initialize is absent here and present in the profile.
 	UCrowdyRenderingBackend* GetActiveBackend() const { return ActiveBackend; }
+
+	// Fires on the game thread right after the backend took the update, whichever backend is active.
+	FOnCrowdyUpdateExtras OnUpdateExtras;
+
+	// A destroy event arrived for UUID. A backend that stopped drawing it leaves the slot waiting for a later update,
+	// which draws it again only once the destroy is past, as an actor pool slot whose actor was destroyed does.
+	void HandleRemoteDestroyEvent(const FGuid& UUID);
+
+	// A spawn event named EntityClass for an entity the backend draws itself, so no actor registers to resolve an update
+	// parked while the class was unknown: it is activated here instead.
+	void ActivateParked(const FGuid& UUID, UClass* EntityClass);
 
 	void RegisterStateClass(UScriptStruct* Struct, TSubclassOf<AActor> ActorClass);
 
@@ -79,6 +97,7 @@ public:
 	// world subsystem brings up every other game world subsystem in the project, some of which assert
 	// outside a running game.
 	bool LoadConfigForTest() { return LoadConfig(); }
+	int64 GetInterpolationDelayMsForTest() const { return InterpolationDelayMs; }
 
 	// The production binding, so a case about which departure releases a slot exercises the wiring the game gets
 	// rather than a copy of it made in the test. A test that bound the delegates itself would keep passing with
@@ -92,6 +111,10 @@ public:
 	int32 AllocateSlotForTest(const FGuid& UUID) { return AllocateSlot(UUID); }
 	void ReleaseSlotForTest(const FGuid& UUID) { ReleaseSlot(UUID); }
 	void TickPendingActivationsForTest() { TickPendingActivations(); }
+	void TickHeldEntitiesForTest(const double NowSeconds) { TickHeldEntities(NowSeconds); }
+	bool IsEntityHeldForTest(const FGuid& UUID) const { return HeldUntilSeconds.Contains(UUID); }
+	bool HasSlotForTest(const FGuid& UUID) const { return UUIDToSlot.Contains(UUID); }
+	static double GetHoldSecondsForTest();
 
 	// So a test can tick past the eviction bound without naming a number of its own. A test that picks its own
 	// figure passes or fails on how the bound was last tuned rather than on the behaviour it is checking.
@@ -100,6 +123,8 @@ public:
 	// The real queue and the real drain, so a test sees what the backend is handed rather than what a
 	// caller passed straight to it. ExtractUpdateForTest below deliberately bypasses both, so it cannot
 	// see which of an update's two state carriers the drain reads.
+	void SetEventRouterForTest(UCrowdyEventRouter* Router) { EventRouterForTest = Router; }
+
 	void DrainUpdateBatchForTest(const TArray<FCrowdyActorUpdate>& Updates)
 	{
 		HandleUpdateBatch(Updates);
@@ -143,7 +168,6 @@ private:
 	int64 BestOffsetMs = 0;
 	bool bHasInitialOffset = false;
 
-	UPROPERTY(EditDefaultsOnly, Category="Crowdy SDK|Crowdy Actor Manager")
 	int64 InterpolationDelayMs = 100;
 
 	struct FSlotEntry
@@ -168,6 +192,9 @@ private:
 
 	/** Set inside ActivateSlot, whose own registration broadcast must not start another activation. */
 	bool bActivatingSlot = false;
+
+	// Leader entities the tracker let go of: each body stays where it stopped until it is heard again or this time passes.
+	TMap<FGuid, double> HeldUntilSeconds;
 
 	TMap<FGuid, int32> UUIDToSlot;
 	TMap<FGuid, FPendingActivation> PendingActivations;
@@ -200,6 +227,12 @@ private:
 	void EnqueueFromAnotherThread(const FCrowdyActorUpdate& Update);
 	void TickInterpolation();
 	void TickPendingActivations();
+
+	/** A departed writer of a Leader entity may be the Leader itself going, so its body waits for the next one. */
+	bool TryHoldEntity(const FGuid& UUID);
+
+	/** Silence past the wait means this client left the entity's range, or nothing is left to write it. */
+	void TickHeldEntities(double NowSeconds);
 
 	/** Subscribe to everything the tracker reports. The one place those delegates are bound. */
 	void BindToTracker(UCrowdyActorTracker* Tracker);
@@ -244,6 +277,14 @@ private:
 
 	UFUNCTION()
 	void HandleUpdateBatch(const TArray<FCrowdyActorUpdate>& Updates);
+
+	void HandleActorAppearedExtras(const FGuid& UUID, TConstArrayView<uint8> Extras);
+
+	void DeliverExtras(UCrowdyEventRouter* Router, const FGuid& UUID, int32 SlotId, TConstArrayView<uint8> Extras);
+
+	UCrowdyEventRouter* ResolveEventRouter() const;
+
+	UCrowdyEventRouter* EventRouterForTest = nullptr;
 
 	UFUNCTION()
 	void OnEntityRegistered(const FGuid& EntityID);

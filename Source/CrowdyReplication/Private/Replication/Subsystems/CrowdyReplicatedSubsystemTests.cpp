@@ -7,6 +7,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
+#include "Messages/GameObjects/FCrowdyEntitySpawnEvent.h"
 // ECrowdyOwnership is only forward-declared in CrowdyEntitySubsystem.h; the complete enum lives here. Omitting
 // this include causes an incomplete-enum build break, so include it explicitly.
 #include "Replication/Components/CrowdyEntityComponent.h"
@@ -39,7 +40,7 @@ bool FCrowdySubsystemEnrollmentRoundTripsTest::RunTest(const FString& Parameters
 		return false;
 	}
 
-	const FGuid Id = UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(ES, Sub, ECrowdyOwnership::Host);
+	const FGuid Id = UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(ES, Sub);
 	TestTrue(TEXT("enroll returns a valid deterministic NetID"), Id.IsValid());
 	TestEqual(TEXT("FindEntityID round-trips to the enrolled NetID"), ES->FindEntityID(Sub), Id);
 	TestTrue(TEXT("FindParticipant round-trips to the enrolled participant"), ES->FindParticipant(Id) == Sub);
@@ -66,12 +67,12 @@ bool FCrowdySubsystemEnrollmentDeterministicIdentityTest::RunTest(const FString&
 	UObject* Sub1 = NewObject<UCrowdyStateSubsystemTestTarget>();
 	UObject* Sub2 = NewObject<UCrowdyStateSubsystemTestTarget>();
 
-	const FGuid Id1 = UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(ES1, Sub1, ECrowdyOwnership::Host);
-	const FGuid Id2 = UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(ES2, Sub2, ECrowdyOwnership::Host);
+	const FGuid Id1 = UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(ES1, Sub1);
+	const FGuid Id2 = UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(ES2, Sub2);
 
 	TestTrue(TEXT("first mint is valid"), Id1.IsValid());
 	TestTrue(TEXT("second mint is valid"), Id2.IsValid());
-	TestEqual(TEXT("same class + Host ownership -> same deterministic NetID on both clients"), Id1, Id2);
+	TestEqual(TEXT("same class -> same deterministic NetID on both clients"), Id1, Id2);
 	return true;
 }
 
@@ -90,11 +91,11 @@ bool FCrowdySubsystemEnrollmentNullGuardsTest::RunTest(const FString& Parameters
 	UObject* Sub = NewObject<UCrowdyStateSubsystemTestTarget>();
 
 	const FGuid NullRegistryId =
-		UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(nullptr, Sub, ECrowdyOwnership::Host);
+		UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(nullptr, Sub);
 	TestFalse(TEXT("a null registry returns an invalid NetID"), NullRegistryId.IsValid());
 
 	const FGuid NullSubId =
-		UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(ES, nullptr, ECrowdyOwnership::Host);
+		UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(ES, nullptr);
 	TestFalse(TEXT("a null participant returns an invalid NetID"), NullSubId.IsValid());
 
 	// Unenroll with null args must also be a no-op, not a crash.
@@ -103,6 +104,28 @@ bool FCrowdySubsystemEnrollmentNullGuardsTest::RunTest(const FString& Parameters
 
 	// Nothing was ever enrolled, so the registry has no record for this participant.
 	TestFalse(TEXT("an unenrolled participant has no NetID"), ES->FindEntityID(Sub).IsValid());
+	return true;
+}
+
+// A subsystem's NetID comes from its class path, so any peer can name it in a destroy event; only an actor is
+// destroyed, so the subsystem stays enrolled and its client keeps answering as the writer.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySubsystemSurvivesDestroyEventTest,
+	"CrowdySDK.State.SubsystemSurvivesDestroyEvent", CrowdyReplicatedSubsystemTestFlags)
+bool FCrowdySubsystemSurvivesDestroyEventTest::RunTest(const FString& Parameters)
+{
+	UCrowdyEntitySubsystem* ES = MakeEntitySubsystem(FGuid::NewGuid());
+	UObject* Sub = NewObject<UCrowdyStateSubsystemTestTarget>();
+	const FGuid Id = UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(ES, Sub);
+	if (!TestTrue(TEXT("enrolled"), Id.IsValid()))
+	{
+		return false;
+	}
+
+	FCrowdyEntityDestroyEvent Forged;
+	Forged.EntityID = Id;
+	ES->HandleRemoteDestroyForTest(Forged);
+	TestEqual(TEXT("a destroy event naming a subsystem leaves it enrolled"), ES->FindEntityID(Sub), Id);
+	TestFalse(TEXT("and its id is not remembered as destroyed"), ES->WasRecentlyDestroyed(Id));
 	return true;
 }
 

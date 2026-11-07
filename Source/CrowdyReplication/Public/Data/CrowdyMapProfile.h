@@ -19,67 +19,54 @@ class CROWDYREPLICATION_API UCrowdyMapProfile : public UDataAsset
 
 public:
 
-	/** Gates the host subsystem, the event router and the entity subsystem on this map. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile")
+	/** Off: this map ignores spawn and destroy events, takes no part in host election, and drops Crowdy Events and Crowdy State sent over the realtime connection. Movement and sending have their own switches. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Events", meta=(DisplayName="Handle Events and Spawns"))
 	bool bEnableNetworking = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Remote Entities", meta=(ShowOnlyInnerProperties))
 	FCrowdyActorManagementConfigStruct ActorManagement;
 
-	/** Continuous state replication of Dynamic entity components on this map. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile")
+	/** Send each entity's movement, or its executor's state, on the continuous channel. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(DisplayName="Send Movement"))
 	bool bUseAutoReplicator = true;
 
-	/** Replication rate in Hertz for this map's Dynamic-entity state (used only when Use Auto Replicator is on). */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile",
-		meta=(EditCondition="bUseAutoReplicator", ClampMin=1, ClampMax=10, DisplayName="Replication Interval (Hertz)"))
+	/** How many times a second movement is sent. Crowdy State is sent at the same rate. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement",
+		meta=(EditCondition="bUseAutoReplicator || bUseStateReplicator", ClampMin=1, ClampMax=10, Units="Hz", DisplayName="Send Rate"))
 	int32 ReplicationIntervalHz = 10;
 
-	/**
-	 * Only send an actor's state when it has actually changed, instead of restating it every interval. An actor
-	 * that has not moved still says so, with a keyframe or a heartbeat below, so nothing goes quiet; what stops is
-	 * repeating identical state. Turn off to go back to sending unconditionally.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile",
-		meta=(EditCondition="bUseAutoReplicator", DisplayName="Send Actor State Only On Change"))
+	/** Send an unchanged actor as the keyframes and heartbeats below instead of restating it every interval. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement",
+		meta=(EditCondition="bUseAutoReplicator", DisplayName="Send Only On Change"))
 	bool bSendActorStateOnlyOnChange = true;
 
-	/**
-	 * Seconds between full re-sends of an unchanged actor's state, so an observer that arrived late or lost a
-	 * packet converges without waiting for the actor to move. Set to 0 to disable, which leaves an unchanged actor
-	 * represented only by heartbeats.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile",
-		meta=(EditCondition="bUseAutoReplicator && bSendActorStateOnlyOnChange", ClampMin="0.0",
-			DisplayName="Actor Keyframe Interval (Seconds, 0 = off)"))
+	/** Full re-send of an unchanged actor's state: the only way other players keep seeing an idle actor, so keep it below their Actor Timeout. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement",
+		meta=(EditCondition="bUseAutoReplicator && bSendActorStateOnlyOnChange", ClampMin="0.0", Units="s",
+			DisplayName="Keyframe Interval"))
 	float ActorKeyframeIntervalSeconds = 3.0f;
 
-	/**
-	 * Seconds between heartbeats for an actor that has not changed. A heartbeat carries the spatial header and no
-	 * state, so it costs a fraction of a full update and is what keeps an idle actor from being reaped. Set to 0
-	 * to disable, in which case an unchanged actor is represented only by keyframes.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile",
-		meta=(EditCondition="bUseAutoReplicator && bSendActorStateOnlyOnChange", ClampMin="0.0",
-			DisplayName="Actor Heartbeat Interval (Seconds, 0 = off)"))
+	/** A cheap "still here" that keeps an unchanged actor's presence on the server, which goes stale after about 5 s; other players never receive it. 0 turns it off. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement",
+		meta=(EditCondition="bUseAutoReplicator && bSendActorStateOnlyOnChange", ClampMin="0.0", Units="s",
+			DisplayName="Heartbeat Interval"))
 	float ActorHeartbeatIntervalSeconds = 1.0f;
 
-	/** Master switch for the CrowdyState per-property replicator on this map. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile")
+	/** Replicate properties marked Crowdy State on this map. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy State", meta=(DisplayName="Replicate Crowdy State"))
 	bool bUseStateReplicator = true;
 
-	/** Spatial relevance radius for CrowdyState deltas (tighter than the continuous channel). */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile",
-		meta=(EditCondition="bUseStateReplicator", DisplayName="State Relevance Distance"))
+	/** How far a Crowdy State change travels, in chunks. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy State",
+		meta=(EditCondition="bUseStateReplicator", DisplayName="Relevance Distance"))
 	ECrowdyReplicationDistance StateRelevanceDistance = ECrowdyReplicationDistance::Four_Chunks;
 
-	/**
-	 * Seconds between periodic CrowdyState keyframe heartbeats: a redundant full re-send of every
-	 * CrowdyHeartbeat-marked property so a late or packet-loss-desynced observer converges. Set to 0 to
-	 * disable the heartbeat map-wide (on-change replication is unaffected; only the periodic baseline stops).
-	 * Only properties opted in with meta=(CrowdyHeartbeat) ride the heartbeat regardless of this value.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Map Profile",
-		meta=(EditCondition="bUseStateReplicator", ClampMin="0.0", DisplayName="State Keyframe Interval (Seconds, 0 = off)"))
+	/** Full re-send of every property marked CrowdyHeartbeat, so a late observer catches up. 0 turns it off; changes still send. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy State",
+		meta=(EditCondition="bUseStateReplicator", ClampMin="0.0", Units="s", DisplayName="Keyframe Interval"))
 	float StateKeyframeIntervalSeconds = 2.0f;
+
+#if WITH_EDITOR
+	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
+#endif
 };

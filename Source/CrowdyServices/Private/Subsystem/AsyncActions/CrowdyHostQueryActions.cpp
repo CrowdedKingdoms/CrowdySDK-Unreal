@@ -31,11 +31,13 @@ void UCrowdyIsEntityHostServer::Activate()
 	}
 
 	TWeakObjectPtr<UCrowdyIsEntityHostServer> WeakThis(this);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	HostSubsystem->CheckEntityIsHost(Entity.Get(), [WeakThis](bool bSuccess, bool bIsHost)
 	{
 		if (UCrowdyIsEntityHostServer* Self = WeakThis.Get())
 			Self->Finish(bSuccess, bIsHost);
 	});
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UCrowdyIsEntityHostServer::Finish(bool bSuccess, bool bIsHost)

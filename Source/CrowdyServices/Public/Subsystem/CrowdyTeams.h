@@ -88,6 +88,8 @@ public:
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Stands in for Initialize on a subsystem built outside a subsystem collection, sending every call to Client. */
 	void InitializeForTest(const TSharedPtr<FCrowdyCppClient>& Client);
+
+	int64 GetAppIdForTest() const { return GetAppId(); }
 #endif
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Teams|Queries|Request")

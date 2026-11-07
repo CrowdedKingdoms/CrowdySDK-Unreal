@@ -470,6 +470,7 @@ CrowdyClient::CrowdyClient(ClientConfig config) : config_(std::move(config)) {
   playerWallet_ = std::make_unique<domains::PlayerWalletAPI>(gql_);
   marketplace_ = std::make_unique<domains::MarketplaceAPI>(gql_);
   gameApps_ = std::make_unique<domains::GameAppsAPI>(gql_);
+  safety_ = std::make_unique<domains::SafetyAPI>(gql_);
 #ifndef CROWDY_NO_EXCEPTIONS
   crowdyStudio_ = std::make_unique<domains::CrowdyStudioAPI>(gql_);
   crowdyStudioGitHub_ = std::make_unique<domains::CrowdyStudioGitHubAPI>(gql_);
@@ -686,6 +687,8 @@ CrowdyClient& CrowdyClient::operator=(CrowdyClient&& other) noexcept {
   installSelfHandlers();
   return *this;
 }
+
+domains::ModerationAPI& CrowdyClient::moderation() { return admin_->moderation(); }
 
 replication::ReplicationClient& CrowdyClient::replication() {
   if (!replication_) {

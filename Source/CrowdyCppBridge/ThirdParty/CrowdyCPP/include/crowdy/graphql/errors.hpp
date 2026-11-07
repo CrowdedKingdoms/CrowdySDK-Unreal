@@ -47,6 +47,14 @@ inline constexpr std::string_view kWrongDatacenterCode = "WRONG_DATACENTER";
 /// Carries NO endpoint, deliberately: there is nowhere to move to.
 inline constexpr std::string_view kAppUnavailableCode = "APP_UNAVAILABLE";
 
+/// One document a LEGAL_ACCEPTANCE_REQUIRED refusal names (extensions.missingDocuments,
+/// ck-api v2.60.0): the player has not accepted this version yet.
+struct MissingLegalDocument {
+  std::string documentId;
+  std::string version;
+  std::string appId;  ///< the app whose own document it is; empty for a platform document
+};
+
 /// One entry of a GraphQL `errors` array.
 struct GraphQLErrorDetail {
   std::string message;
@@ -102,9 +110,16 @@ struct GraphQLErrorDetail {
   /// extensions.blockedUntil (ISO-8601) on ACCOUNT_BLOCKED for a timed block; empty
   /// elsewhere, and while a block lasts until lifted.
   std::string blockedUntil;
-  /// extensions.reason on APP_PAUSED (why the app's runtime gate is not ACTIVE) and on
-  /// ASSERTION_REJECTED (the check that failed); empty elsewhere.
+  /// extensions.reason on APP_PAUSED (why the app's runtime gate is not ACTIVE), on
+  /// ASSERTION_REJECTED (the check that failed), on MINECRAFT_VERIFICATION_FAILED and on
+  /// PARENTAL_CONSENT_UNAVAILABLE (why a parent cannot be asked); empty elsewhere.
   std::string reason;
+  /// extensions.country on TERRITORY_NOT_SUPPORTED: the country refused (ISO 3166-1
+  /// alpha-2), the one declared or asserted or the network's. Empty elsewhere.
+  std::string country;
+  /// extensions.missingDocuments on LEGAL_ACCEPTANCE_REQUIRED: the documents still to accept.
+  /// Empty elsewhere, and from an API older than v2.60.0.
+  std::vector<MissingLegalDocument> missingDocuments;
   /// extensions.requiredMicrousd / spendableMicrousd on INPUT_LOG_FUNDS_NEEDED:
   /// the balance turning replay logging on needs, and what the org wallet can
   /// spend, as decimal micro-USD strings. Empty elsewhere.
@@ -150,6 +165,42 @@ inline constexpr std::string_view kInputLogRateLimitedCode = "INPUT_LOG_RATE_LIM
 /// extensions.code for turning replay logging on without the balance it needs
 /// (HTTP 402); see inputLogFundsNeededOf().
 inline constexpr std::string_view kInputLogFundsNeededCode = "INPUT_LOG_FUNDS_NEEDED";
+
+// The admission gate (ck-api v2.60.0): every gameplay mint and refresh, sign-up, the
+// org-managed sign-ins and the Minecraft sign-in check territory, then age, then documents.
+/// extensions.code for a player who has not accepted the current documents (HTTP 403), with
+/// what is missing in extensions.missingDocuments; see legalAcceptanceRequiredOf().
+inline constexpr std::string_view kLegalAcceptanceRequiredCode = "LEGAL_ACCEPTANCE_REQUIRED";
+/// extensions.code for an account or managed player with no age on record (HTTP 403); see
+/// ageRequiredOf().
+inline constexpr std::string_view kAgeRequiredCode = "AGE_REQUIRED";
+/// extensions.code for a player below the age the platform, the app or the country requires
+/// (HTTP 403); see ageRequirementNotMetOf().
+inline constexpr std::string_view kAgeRequirementNotMetCode = "AGE_REQUIREMENT_NOT_MET";
+/// extensions.code for a country Crowded Kingdoms does not serve (HTTP 403), with the country
+/// in extensions.country; see territoryNotSupportedOf().
+inline constexpr std::string_view kTerritoryNotSupportedCode = "TERRITORY_NOT_SUPPORTED";
+/// extensions.code for an app that admits players under 18 without its safety log on (HTTP
+/// 403): a minor's mint there, or turning the log off; see safetyLogRequiredOf().
+inline constexpr std::string_view kSafetyLogRequiredCode = "SAFETY_LOG_REQUIRED";
+/// extensions.code for an app that admits players under 18 while its organization has appointed
+/// no safety moderator (HTTP 403, ck-api v2.61.0): a minor's mint there; see
+/// safetyModeratorRequiredOf().
+inline constexpr std::string_view kSafetyModeratorRequiredCode = "SAFETY_MODERATOR_REQUIRED";
+/// extensions.code for a parental-consent request that cannot be sent right now (HTTP 503), with
+/// why in extensions.reason; see parentalConsentUnavailableOf().
+inline constexpr std::string_view kParentalConsentUnavailableCode = "PARENTAL_CONSENT_UNAVAILABLE";
+/// extensions.code for a contact or block over its limit (HTTP 409): 100 waiting requests,
+/// 1,000 contacts or 1,000 blocks per app; see socialLimitReachedOf().
+inline constexpr std::string_view kSocialLimitReachedCode = "SOCIAL_LIMIT_REACHED";
+/// extensions.code for a Minecraft sign-in Mojang did not confirm (HTTP 401), with the failed
+/// check in extensions.reason; see minecraftVerificationFailedOf().
+inline constexpr std::string_view kMinecraftVerificationFailedCode =
+    "MINECRAFT_VERIFICATION_FAILED";
+/// extensions.code for a Minecraft sign-in Mojang did not answer (HTTP 503, retryable); see
+/// minecraftVerificationUnavailableOf().
+inline constexpr std::string_view kMinecraftVerificationUnavailableCode =
+    "MINECRAFT_VERIFICATION_UNAVAILABLE";
 
 /// The first error with `code`, or nullptr.
 inline const GraphQLErrorDetail* errorWithCode(const std::vector<GraphQLErrorDetail>& errors,
@@ -271,6 +322,113 @@ inline std::optional<InputLogFundsNeeded> inputLogFundsNeededOf(
   const GraphQLErrorDetail* e = errorWithCode(errors, kInputLogFundsNeededCode);
   if (!e) return std::nullopt;
   return InputLogFundsNeeded{e->requiredMicrousd, e->spendableMicrousd};
+}
+
+/// A LEGAL_ACCEPTANCE_REQUIRED refusal: the player still has documents to accept. Show them
+/// (AuthAPI::playerLegalDocuments, appRequiredDocuments), record the player's acceptance
+/// (AuthAPI::recordPlayerConsents), then ask again. `missingDocuments` names them on ck-api
+/// v2.60.0 and later; an older API names none.
+struct LegalAcceptanceRequired {
+  std::vector<MissingLegalDocument> missingDocuments;
+};
+inline std::optional<LegalAcceptanceRequired> legalAcceptanceRequiredOf(
+    const std::vector<GraphQLErrorDetail>& errors) {
+  const GraphQLErrorDetail* e = errorWithCode(errors, kLegalAcceptanceRequiredCode);
+  if (!e) return std::nullopt;
+  return LegalAcceptanceRequired{e->missingDocuments};
+}
+
+/// True when the account or managed player has no age on record (AGE_REQUIRED). A
+/// Crowded Kingdoms account gives it with AuthAPI::recordPlayerAge; a managed player's
+/// organization sends ageYears when it signs the player in.
+inline bool ageRequiredOf(const std::vector<GraphQLErrorDetail>& errors) {
+  return errorWithCode(errors, kAgeRequiredCode) != nullptr;
+}
+
+/// True when the player is younger than the platform, the app or the country requires
+/// (AGE_REQUIREMENT_NOT_MET). Not fixed by retrying, and asking for the age again changes
+/// nothing: since ck-api v2.61.0 the same client (address and user agent) is refused at
+/// sign-up and AuthAPI::recordPlayerAge for 24 hours whatever it sends, and an org-managed
+/// player at its sign-ins; an account that answers recordPlayerAge under 13 is deleted.
+/// Deliberately a bool: no refusal names an age. Tell the player they cannot play this,
+/// without naming an age or a minimum, and do not offer to enter the date again.
+inline bool ageRequirementNotMetOf(const std::vector<GraphQLErrorDetail>& errors) {
+  return errorWithCode(errors, kAgeRequirementNotMetCode) != nullptr;
+}
+
+/// A TERRITORY_NOT_SUPPORTED refusal: Crowded Kingdoms does not serve `country`
+/// (extensions.country), the country declared or asserted or the network's. Not fixed by
+/// retrying.
+struct TerritoryNotSupported {
+  std::string country;
+};
+inline std::optional<TerritoryNotSupported> territoryNotSupportedOf(
+    const std::vector<GraphQLErrorDetail>& errors) {
+  const GraphQLErrorDetail* e = errorWithCode(errors, kTerritoryNotSupportedCode);
+  if (!e) return std::nullopt;
+  return TerritoryNotSupported{e->country};
+}
+
+/// True when the app admits players under 18 and its safety log is off (SAFETY_LOG_REQUIRED):
+/// a minor's mint there is refused until the app's organization turns it on, and turning it
+/// off is refused while the app admits them.
+inline bool safetyLogRequiredOf(const std::vector<GraphQLErrorDetail>& errors) {
+  return errorWithCode(errors, kSafetyLogRequiredCode) != nullptr;
+}
+
+/// True when a player under 18 was refused a token (SAFETY_MODERATOR_REQUIRED, ck-api v2.61.0)
+/// in an app that admits players under 18 while the app's organization has appointed no safety
+/// moderator (a member whose own role grants moderate_safety; an admin alone does not count).
+/// The player cannot fix it: tell them the app cannot admit them yet. The organization appoints
+/// one; `hasSafetyModerator` on AppsAPI::get says whether it has, for its members.
+inline bool safetyModeratorRequiredOf(const std::vector<GraphQLErrorDetail>& errors) {
+  return errorWithCode(errors, kSafetyModeratorRequiredCode) != nullptr;
+}
+
+/// extensions.reason values on PARENTAL_CONSENT_UNAVAILABLE, from the Game API release after
+/// v2.61.0. The set is open: the server may add one, so compare against these and treat
+/// anything else as unknown.
+inline constexpr std::string_view kParentalConsentNotConfigured = "not_configured";
+inline constexpr std::string_view kParentalConsentProviderRefused = "provider_refused";
+inline constexpr std::string_view kParentalConsentProviderUnavailable = "provider_unavailable";
+
+/// A PARENTAL_CONSENT_UNAVAILABLE refusal of SafetyAPI::requestParentalConsent: a parent cannot
+/// be asked right now. `reason` is extensions.reason: `not_configured` (the deployment has no
+/// consent service; retrying soon does not help), `provider_refused` or `provider_unavailable`
+/// (the service refused or did not answer); empty from an API that does not say (v2.61.0 and
+/// older). Voice and video stay off for the player meanwhile.
+struct ParentalConsentUnavailable {
+  std::string reason;
+};
+inline std::optional<ParentalConsentUnavailable> parentalConsentUnavailableOf(
+    const std::vector<GraphQLErrorDetail>& errors) {
+  const GraphQLErrorDetail* e = errorWithCode(errors, kParentalConsentUnavailableCode);
+  if (!e) return std::nullopt;
+  return ParentalConsentUnavailable{e->reason};
+}
+
+/// True when a contact request or a block is over its limit (SOCIAL_LIMIT_REACHED).
+inline bool socialLimitReachedOf(const std::vector<GraphQLErrorDetail>& errors) {
+  return errorWithCode(errors, kSocialLimitReachedCode) != nullptr;
+}
+
+/// A MINECRAFT_VERIFICATION_FAILED refusal of PortalAPI::signInWithMinecraft: Mojang did not
+/// confirm the join. `reason` is extensions.reason: `malformed`, `forged`, `expired`,
+/// `not_joined` or `replayed`. Start again from minecraftChallenge.
+struct MinecraftVerificationFailed {
+  std::string reason;
+};
+inline std::optional<MinecraftVerificationFailed> minecraftVerificationFailedOf(
+    const std::vector<GraphQLErrorDetail>& errors) {
+  const GraphQLErrorDetail* e = errorWithCode(errors, kMinecraftVerificationFailedCode);
+  if (!e) return std::nullopt;
+  return MinecraftVerificationFailed{e->reason};
+}
+
+/// True when Mojang did not answer a Minecraft sign-in (MINECRAFT_VERIFICATION_UNAVAILABLE).
+/// The server id is not used up by it: retry shortly with the same one while it is valid.
+inline bool minecraftVerificationUnavailableOf(const std::vector<GraphQLErrorDetail>& errors) {
+  return errorWithCode(errors, kMinecraftVerificationUnavailableCode) != nullptr;
 }
 
 /// The server returned GraphQL errors. Preserves every error including

@@ -233,9 +233,9 @@ namespace
 		}
 		for (const FCrowdyBakedRepProperty& Entry : Registry->RepProperties)
 		{
-			UE_LOG(LogCrowdyReplication, Display, TEXT("[CrowdyBakedRegistry] State class=%s property=%s id=%lld order=%d ownerOnly=%d manualDirty=%d heartbeat=%d onRep=%s"),
+			UE_LOG(LogCrowdyReplication, Display, TEXT("[CrowdyBakedRegistry] State class=%s property=%s id=%lld order=%d ownerOnly=%d manualDirty=%d heartbeat=%d continuous=%d onRep=%s"),
 				*Entry.OwnerClassPath.ToString(), *Entry.PropertyName.ToString(), Entry.PropertyID, Entry.LayoutOrder,
-				Entry.bOwnerOnly, Entry.bManualDirty, Entry.bHeartbeat, *Entry.OnRepFunctionName.ToString());
+				Entry.bOwnerOnly, Entry.bManualDirty, Entry.bHeartbeat, Entry.bContinuous, *Entry.OnRepFunctionName.ToString());
 		}
 		for (const FCrowdyBakedRpcFunction& Entry : Registry->RpcFunctions)
 		{
@@ -268,6 +268,7 @@ void UCrowdyBakedRegistry::MakeBakedRepProperties(
 		Baked.bOwnerOnly         = Prop.bOwnerOnly;
 		Baked.bManualDirty       = Prop.bManualDirty;
 		Baked.bHeartbeat         = Prop.bHeartbeat;
+		Baked.bContinuous        = Prop.bContinuous;
 		Baked.OnRepFunctionName  = Prop.OnRepFunctionName;
 		Baked.LayoutOrder        = Index;
 	}

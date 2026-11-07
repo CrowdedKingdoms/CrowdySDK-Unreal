@@ -15,6 +15,7 @@
 #include "Core/CrowdySDKBridgeSubsystem.h"
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Replication/Subsystems/CrowdyActorUpdateRouting.h"
+#include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyShardScheduling.h"
 #include "Subsystem/CrowdyWorkerThreadsSubsystem.h"
 #include "TimerManager.h"
@@ -52,6 +53,11 @@ const FInstancedStruct& FCrowdyActorUpdate::ResolveState() const
 	// The retained message where the internal chain put it, the copied property where a Blueprint delegate
 	// left one. Never both, and an update that has neither reads as an unset struct rather than a null.
 	return Message.IsValid() ? Message->State : State;
+}
+
+TConstArrayView<uint8> FCrowdyActorUpdate::ResolveExtras() const
+{
+	return Message.IsValid() ? TConstArrayView<uint8>(Message->Extras) : TConstArrayView<uint8>();
 }
 
 void UCrowdyActorTracker::Initialize(FSubsystemCollectionBase& Collection)
@@ -96,7 +102,14 @@ void UCrowdyActorTracker::Initialize(FSubsystemCollectionBase& Collection)
 	}
 		
 	SetupQueues();
-	
+
+	EntitySubsystem = Collection.InitializeDependency<UCrowdyEntitySubsystem>();
+	if (EntitySubsystem.IsValid())
+	{
+		EntitySubsystem->OnEntityOwnershipChanged.AddDynamic(this, &UCrowdyActorTracker::HandleEntityOwnerChanged);
+		EntitySubsystem->OnEntityUnregistered.AddDynamic(this, &UCrowdyActorTracker::HandleEntityUnregistered);
+	}
+
 	if (CrowdyBridge->ServiceRegistry)
 	{
 		ActorUpdateSubscription = CrowdyBridge->ServiceRegistry->SubscribeToAllPayloads(
@@ -130,6 +143,12 @@ void UCrowdyActorTracker::Deinitialize()
 	// this needs no lookup back through the bridge. See FCrowdyDelivery for the threading rules.
 	ActorUpdateSubscription.Release();
 	ActorLeftSubscription.Release();
+
+	if (UCrowdyEntitySubsystem* Entities = EntitySubsystem.Get())
+	{
+		Entities->OnEntityOwnershipChanged.RemoveDynamic(this, &UCrowdyActorTracker::HandleEntityOwnerChanged);
+		Entities->OnEntityUnregistered.RemoveDynamic(this, &UCrowdyActorTracker::HandleEntityUnregistered);
+	}
 
 	if (const UWorld* World = GetWorld())
 	{
@@ -219,9 +238,14 @@ void UCrowdyActorTracker::HandleActorUpdateDelivery(const FCrowdyDelivery& Deliv
 	const auto& AUN = Delivery.GetAs<FActorUpdateNotificationMessage>();
 
 	// A viewer has no avatar, so an avatar still shown under its id (a player who became a viewer) times out as usual.
-	if (AUN.bViewerBeat)
+	if (AUN.bViewerBeat || IsRetiredWireId(AUN.GUID, AUN.UUID))
 	{
 		return;
+	}
+
+	if (FMovedWireId* Moved = CurrentWireIds.IsEmpty() ? nullptr : CurrentWireIds.Find(AUN.GUID))
+	{
+		Moved->bHeard = true;
 	}
 
 	FCrowdyActorUpdate Update;
@@ -313,6 +337,13 @@ void UCrowdyActorTracker::HandleActorLeftDelivery(const FCrowdyDelivery& Deliver
 {
 	// Only the actor left opcode routes here, and only this decoder produces a message under it.
 	const FActorLeftNotification& Left = Delivery.GetAs<FActorLeftNotification>();
+
+	// The server retiring an id the entity does not send under says nothing about the entity.
+	FCrowdyActorId Held;
+	if (FindWireId(Left.GUID, Held) && Held != Left.UUID)
+	{
+		return;
+	}
 
 	const bool bWasTracked = ForgetTrackedActor(Left.GUID);
 
@@ -486,8 +517,45 @@ void UCrowdyActorTracker::EnqueueUpdate(FCrowdyActorUpdate&& Update)
 	}
 }
 
+void UCrowdyActorTracker::FlushAppearances()
+{
+	if (PendingAppearances.IsEmpty())
+		return;
+
+	const TArray<FCrowdyActorUpdate> Batch = MoveTemp(PendingAppearances);
+	PendingAppearances.Reset();
+
+	// Done here rather than per update: the class an entity claims cannot change while it is tracked, so an appearance
+	// is the only moment it needs writing.
+	RecordAppearances(Batch);
+
+	for (const FCrowdyActorUpdate& Update : Batch)
+	{
+		const int32 Count = ++NumOfTrackedActors;
+
+		// Through ResolveState, because the spawn path carries the retained message like every other path now. The
+		// delegate takes the struct by value and copies it, which is once per entity appearing rather than once per update.
+		OnRemoteEntityAppeared.Broadcast(Update.UUID, Update.ResolveState(), Count + 1);
+
+		const TConstArrayView<uint8> Extras = Update.ResolveExtras();
+		if (!Extras.IsEmpty())
+			OnRemoteEntityAppearedExtras.Broadcast(Update.UUID, Extras);
+	}
+
+	for (const FCrowdyActorUpdate& Update : Batch)
+	{
+		PendingSpawns->Remove(Update.UUID);
+
+		// An actor that was spawned but could not be recorded here reads as new on its very next update, and is spawned
+		// again, and again. Worth saying out loud rather than leaving as a stream of duplicates with no stated cause.
+		if (TrackedUUIDs->Add(Update.UUID) == FCrowdyGuidSet::EAddResult::AtCapacity)
+			ReportTrackingAtCapacity();
+	}
+}
+
 void UCrowdyActorTracker::Tick(float DeltaTime)
 {
+	FlushAppearances();
 	FlushTrackedUpdates();
 
 	KitSweepElapsed += DeltaTime;
@@ -819,35 +887,10 @@ void UCrowdyActorTracker::ProcessQueue(int32 ShardIndex)
         	AsyncTask(ENamedThreads::GameThread,
 				[WeakThis = TWeakObjectPtr<UCrowdyActorTracker>(this), SpawnBatch = MoveTemp(SpawnBatch)]()
 				{
-					// Now truly on the game thread - GC locked, UObjects safe
-					UCrowdyActorTracker* Tracker = WeakThis.Get();
-					if (!Tracker)
-						return;
-
-					// Done here rather than per update: the class an entity claims cannot change while it is
-					// tracked, so an appearance is the only moment it needs writing.
-					Tracker->RecordAppearances(SpawnBatch);
-
-					for (const FCrowdyActorUpdate& Update : SpawnBatch)
-					{
-						const int32 Count = ++Tracker->NumOfTrackedActors;
-
-						// Through ResolveState, because the spawn path carries the retained message like every
-						// other path now. The delegate takes the struct by value and copies it, which is once
-						// per entity appearing rather than once per update.
-						Tracker->OnRemoteEntityAppeared.Broadcast(Update.UUID, Update.ResolveState(), Count + 1);
-					}
-
-					for (const FCrowdyActorUpdate& Update : SpawnBatch)
-					{
-						Tracker->PendingSpawns->Remove(Update.UUID);
-
-						// An actor that was spawned but could not be recorded here reads as new on its very next
-						// update, and is spawned again, and again. Worth saying out loud rather than leaving as a
-						// stream of duplicates with no stated cause.
-						if (Tracker->TrackedUUIDs->Add(Update.UUID) == FCrowdyGuidSet::EAddResult::AtCapacity)
-							Tracker->ReportTrackingAtCapacity();
-					}
+					// Queued for Tick: the engine runs game-thread tasks while it waits on a tick group, which can be
+					// in the middle of Mass processing, where spawning a row is a fatal check.
+					if (UCrowdyActorTracker* Tracker = WeakThis.Get())
+						Tracker->PendingAppearances.Append(SpawnBatch);
 				}
 			);
         }
@@ -957,8 +1000,42 @@ void UCrowdyActorTracker::RecordAppearances(const TArray<FCrowdyActorUpdate>& Ap
 	}
 }
 
+bool UCrowdyActorTracker::IsRetiredWireId(const FGuid& NetID, const FCrowdyActorId& WireId) const
+{
+	if (const FMovedWireId* Current = CurrentWireIds.IsEmpty() ? nullptr : CurrentWireIds.Find(NetID))
+	{
+		return Current->WireId != WireId;
+	}
+
+	if (WireId.Octets[0] != FCrowdyActorId::OwnerTaggedMarker)
+	{
+		return false;
+	}
+
+	// A client that truly missed a move hears the new owner once the old id's departure lets go of it.
+	FReadScopeLock R(AppearedIdsLock);
+	const FAppearedIds* Held = AppearedIdsByUUID.Find(NetID);
+	return Held && Held->WireId.IsSet() && Held->WireId != WireId;
+}
+
+void UCrowdyActorTracker::HandleEntityOwnerChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& /*PreviousOwnerID*/)
+{
+	CurrentWireIds.Add(NetID, { FCrowdyActorId::ForOwner(NetID, NewOwnerID) });
+}
+
+void UCrowdyActorTracker::HandleEntityUnregistered(const FGuid& NetID)
+{
+	CurrentWireIds.Remove(NetID);
+}
+
 bool UCrowdyActorTracker::FindWireId(const FGuid& UUID, FCrowdyActorId& OutWireId) const
 {
+	if (const FMovedWireId* Moved = CurrentWireIds.Find(UUID))
+	{
+		OutWireId = Moved->WireId;
+		return true;
+	}
+
 	FReadScopeLock R(AppearedIdsLock);
 	const FAppearedIds* Found = AppearedIdsByUUID.Find(UUID);
 	if (!Found || !Found->WireId.IsSet())
@@ -968,6 +1045,20 @@ bool UCrowdyActorTracker::FindWireId(const FGuid& UUID, FCrowdyActorId& OutWireI
 
 	OutWireId = Found->WireId;
 	return true;
+}
+
+bool UCrowdyActorTracker::HasHeardCurrentWireId(const FGuid& UUID) const
+{
+	if (const FMovedWireId* Moved = CurrentWireIds.Find(UUID))
+	{
+		if (!Moved->bHeard)
+		{
+			return false;
+		}
+	}
+
+	FReadScopeLock R(LastUpdateLock);
+	return LastUpdateTimes.Contains(UUID);
 }
 
 FCrowdyClassID UCrowdyActorTracker::GetClassIDForUUID(const FGuid& UUID) const

@@ -7,7 +7,7 @@ Nothing registers this profile and nothing resolves it on its own. It is a start
 opts into, by pointing Project Settings, Plugins, Crowdy SDK, Map Profiles at it: either as the
 Default Profile, to draw every map through Mass, or as the entry for one map.
 
-It selects the Crowdy Mass Rendering Backend, has Enable Networking on, and leaves Backend Config
+It selects the Crowdy Mass Rendering Backend, has every switch on, and leaves Backend Config
 empty, which means the backend reads Project Settings, Plugins, Crowdy Mass.
 
 A project that configures no profile runs on the profile the SDK registers, which draws actors. Which

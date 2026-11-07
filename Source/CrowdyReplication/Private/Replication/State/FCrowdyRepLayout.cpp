@@ -190,6 +190,7 @@ bool FCrowdyStateLayoutBuilder::BuildLayout(const UClass* Class, FCrowdyRepLayou
 		RepProp.bOwnerOnly = Prop->HasMetaData(CrowdyStateMetaKeys::OwnerOnly);
 		RepProp.bManualDirty = Prop->HasMetaData(CrowdyStateMetaKeys::ManualDirty);
 		RepProp.bHeartbeat = Prop->HasMetaData(CrowdyStateMetaKeys::Heartbeat);
+		RepProp.bContinuous = Prop->HasMetaData(CrowdyStateMetaKeys::Continuous);
 		const FString& OnRepValue = Prop->GetMetaData(CrowdyStateMetaKeys::OnRep);
 		RepProp.OnRepFunctionName = OnRepValue.IsEmpty() ? NAME_None : FName(*OnRepValue);
 #endif

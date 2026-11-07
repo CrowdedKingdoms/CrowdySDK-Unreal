@@ -30,7 +30,7 @@
 // real initialization, which this codebase already documents as leaving Deinitialize asserting.
 //
 // ONE layer is still not reachable, and the tests below stop short of it rather than pretending otherwise:
-// the wire dispatch itself (SingleActorToOwner/Host/Channel actually putting bytes on a transport). That
+// the wire dispatch itself (SpatialToOwner/SingleActorToHost/Channel actually putting bytes on a transport). That
 // needs a live UCrowdyEntitySubsystem, and no test in this codebase exercises it for the ACTOR path either,
 // so it is a standing gap in the harness rather than one this surface introduced. What stands in for it
 // here is the routing DECISION for each recipient, asserted against FCrowdyRPC::DecideRoute.
@@ -411,8 +411,8 @@ bool FCrowdyMassEventRecipientsRouteAsDeclaredTest::RunTest(const FString& Param
 	};
 
 	CheckRoute(TEXT("ParityEvent_Implementation"), ECrowdyEventRecipient::OwningClient,
-		ECrowdyRpcRoute::SingleActorToOwner, /*bExpectedRunLocally=*/false);
-	CheckRoute(TEXT("HostRecipientEvent_Implementation"), ECrowdyEventRecipient::Host,
+		ECrowdyRpcRoute::SpatialToOwner, /*bExpectedRunLocally=*/false);
+	CheckRoute(TEXT("HostRecipientEvent_Implementation"), CrowdyDeprecatedHostRecipient,
 		ECrowdyRpcRoute::SingleActorToHost, /*bExpectedRunLocally=*/false);
 	CheckRoute(TEXT("MulticastRecipientEvent_Implementation"), ECrowdyEventRecipient::Multicast,
 		ECrowdyRpcRoute::Channel, /*bExpectedRunLocally=*/true);

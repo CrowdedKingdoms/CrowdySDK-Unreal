@@ -15,6 +15,9 @@ namespace CrowdyReplicationModeDecision
 			return { CrowdyStateMetaKeys::Replicate, CrowdyStateMetaKeys::OwnerOnly,
 					 CrowdyStateMetaKeys::ManualDirty, CrowdyStateMetaKeys::Heartbeat };
 
+		case ECrowdyReplicationMode::ReplicatedContinuous:
+			return { CrowdyStateMetaKeys::Replicate, CrowdyStateMetaKeys::Continuous };
+
 		case ECrowdyReplicationMode::None:
 		default:
 			return {};
@@ -38,7 +41,7 @@ namespace CrowdyReplicationModeDecision
 			}
 		}
 
-		if (ToMode == ECrowdyReplicationMode::None && FromMode == ECrowdyReplicationMode::Replicated)
+		if (ToMode == ECrowdyReplicationMode::None && FromMode != ECrowdyReplicationMode::None)
 		{
 			Scrub.Add(CrowdyStateMetaKeys::OnRep);
 		}

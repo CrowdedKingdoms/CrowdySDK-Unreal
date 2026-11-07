@@ -132,6 +132,24 @@ struct CROWDYEXEC_API FCrowdyPlayersOnlineState
 	int32 PlayersOnline = 0;
 };
 
+/** The root's answer to whether a player is in the app's world, which the Leader scope asks about its Leader. */
+USTRUCT(BlueprintType)
+struct CROWDYEXEC_API FCrowdyPresenceReply
+{
+	GENERATED_BODY()
+
+	/** 1 present, 0 seen leaving, -1 not known: a root that moved or restarted has not heard everyone, and an unknown player is never treated as gone. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Server Object")
+	int32 Presence = -1;
+};
+
+/** The Leader type's variables: none, since its members and its Leader are kept by the server for it. */
+USTRUCT()
+struct CROWDYEXEC_API FCrowdyLeaderState
+{
+	GENERATED_BODY()
+};
+
 /** Keys a map by record id case-sensitively: two ids that differ only in case are two entities. */
 template <typename ValueType>
 struct TCrowdyRecordIdKeyFuncs : TDefaultMapKeyFuncs<FString, ValueType, false>

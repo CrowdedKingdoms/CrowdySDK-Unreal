@@ -64,8 +64,39 @@ struct CrowdyStudioGitHubLayout {
   std::optional<std::string> client;
   std::string assets;
   bool fromFile = false;
+  /// What the repository is at that commit: a Studio mod's crates (STUDIO_CRATES) or a game
+  /// made from the Construct template (CONSTRUCT_GAME), whose editor is browser-only. Unset
+  /// from an API older than v2.59.0, or for a kind this SDK does not know.
+  std::optional<gen::CrowdyStudioGitHubLayoutKind> kind;
 
   CrowdyStudioGitHubLayoutRoots roots() const { return {server, client}; }
+};
+
+/// One file of a batched read. `content` is unset when the blob is not UTF-8 text or is larger
+/// than the tier reads; `sha` and `size` are always set.
+struct CrowdyStudioGitHubFileContent {
+  std::string path;
+  std::string sha;
+  int size = 0;
+  bool binary = false;
+  std::optional<std::string> content;
+};
+
+/// Up to 100 files of the bound repository at one commit, read in one call.
+struct CrowdyStudioGitHubFiles {
+  std::string commitSha;
+  std::vector<CrowdyStudioGitHubFileContent> files;
+  /// Requested paths that are not files at that commit.
+  std::vector<std::string> missing;
+};
+
+/// The commit a multi-file write created; every change in it landed, or none did.
+struct CrowdyStudioGitHubCommit {
+  std::string commitSha;
+  /// The expectedCommitSha it builds on.
+  std::string parentSha;
+  std::vector<std::string> written;
+  std::vector<std::string> deleted;
 };
 
 struct CrowdyStudioGitHubProjectScope {
@@ -91,6 +122,33 @@ struct CrowdyStudioGitHubPutFileInput {
   std::string message;
   std::string expectedCommitSha;
   std::optional<std::string> sha;
+};
+
+/// Read up to 100 files at one commit (default: the project's githubSha, never the branch
+/// head).
+struct CrowdyStudioGitHubFilesInput {
+  std::string appId;
+  std::string projectId;
+  std::vector<std::string> paths;
+  std::optional<std::string> commitSha;
+};
+
+/// One change of a multi-file commit: `content` writes the path, `remove` deletes it.
+struct CrowdyStudioGitHubCommitChange {
+  std::string path;
+  std::optional<std::string> content;
+  bool remove = false;
+};
+
+/// Write and delete up to 100 files as ONE commit on top of `expectedCommitSha` (the project's
+/// githubSha). A moved project or branch is refused with GITHUB_STALE_SHA and nothing is
+/// written.
+struct CrowdyStudioGitHubCommitFilesInput {
+  std::string appId;
+  std::string projectId;
+  std::string message;
+  std::string expectedCommitSha;
+  std::vector<CrowdyStudioGitHubCommitChange> changes;
 };
 
 struct CrowdyStudioGitHubDeleteFileInput {

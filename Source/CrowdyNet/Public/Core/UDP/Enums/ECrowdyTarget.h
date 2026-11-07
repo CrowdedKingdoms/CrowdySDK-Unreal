@@ -17,11 +17,7 @@ enum class ECrowdyTarget : uint8
 	AllExceptSender = 4 UMETA(DisplayName = "All Except Sender", ToolTip = "Every client in range except the one that sent the event."),
 };
 
-/**
- * User-facing scope for entity-addressed sends (SendCrowdyEvent /
- * UCrowdyEntityComponent::SendEvent): run the target entity's handlers on
- * every client, or only on the client that owns the entity.
- */
+/** Deprecated with UCrowdyEntityComponent::SendEvent: Send Crowdy Event takes an ECrowdyEventRecipient. */
 UENUM(BlueprintType)
 enum class ECrowdyEventScope : uint8
 {

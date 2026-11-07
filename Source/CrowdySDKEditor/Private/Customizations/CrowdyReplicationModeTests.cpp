@@ -38,6 +38,21 @@ bool FCrowdyReplicationModeScrubTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("None scrubs CrowdyOnRep"), Contains(Scrub, CrowdyStateMetaKeys::OnRep));
 	}
 
+	// Replicated (Continuous) owns only its two markers: leaving it for Replicated keeps the marker and the notify.
+	{
+		const TArray<const TCHAR*> ToReplicated = KeysToScrubOnSwitch(EMode::ReplicatedContinuous, EMode::Replicated);
+		TestEqual(TEXT("only the continuous marker goes on the way to Replicated"), ToReplicated.Num(), 1);
+		TestTrue(TEXT("CrowdyContinuous is scrubbed"), Contains(ToReplicated, CrowdyStateMetaKeys::Continuous));
+
+		const TArray<const TCHAR*> FromReplicated = KeysToScrubOnSwitch(EMode::Replicated, EMode::ReplicatedContinuous);
+		TestEqual(TEXT("the sub-options a continuous variable cannot have go"), FromReplicated.Num(), 3);
+		TestFalse(TEXT("the CrowdyState marker stays"), Contains(FromReplicated, CrowdyStateMetaKeys::Replicate));
+
+		const TArray<const TCHAR*> ToNone = KeysToScrubOnSwitch(EMode::ReplicatedContinuous, EMode::None);
+		TestEqual(TEXT("both markers and the notify go on leaving Crowdy"), ToNone.Num(), 3);
+		TestTrue(TEXT("CrowdyOnRep goes on leaving Crowdy"), Contains(ToNone, CrowdyStateMetaKeys::OnRep));
+	}
+
 	// Re-picking the same mode scrubs nothing (no spurious churn / no accidental clear).
 	{
 		TestEqual(TEXT("Replicated -> Replicated scrubs nothing"),

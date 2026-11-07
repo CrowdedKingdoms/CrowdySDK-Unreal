@@ -4,6 +4,7 @@
 #include "Core/UDP/Interfaces/ICrowdyMessage.h"
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Subscription/FCrowdyPayloadKey.h"
+#include "Messages/Actor/CrowdyUpdateExtras.h"
 #include "Messages/Actor/FActorUpdateBody.h"
 #include "Messages/Actor/FCrowdyKitActorState.h"
 #include "Serialization/CrowdyFrame.h"
@@ -51,6 +52,13 @@ struct FActorUpdateNotificationMessage : FActorUpdateBody
 
 	// True for a viewer's keepalive: an actor update with no state, from a client watching without an avatar; receivers draw nothing for it.
 	bool bViewerBeat = false;
+
+	/**
+	 * The extras entries that followed the state block, copied out of the frame so they outlive the delivery.
+	 * Empty when the sender sent none, when they did not read as entries, or with crowdy.net.receive.updateextras 0.
+	 * Inline, so an update with a few continuous values allocates nothing on the receive path.
+	 */
+	TArray<uint8, TInlineAllocator<48>> Extras;
 
 	/**
 	 * Retrieves the specific type of the message.
@@ -172,7 +180,8 @@ struct FActorUpdateNotificationMessage : FActorUpdateBody
 
 		if (!USerializationFunctionLibrary::DeserializeActorState(StateView, State, PayloadTypeID, PayloadClassID))
 			State.Reset();
-		
+
+		ReadExtras(Data.RightChop(Offset + StateSize));
 		return true;
 	}
 
@@ -185,6 +194,21 @@ struct FActorUpdateNotificationMessage : FActorUpdateBody
 	void SetExpectedStateSize(const int32 Size) { ExpectedStateSize = Size; }
 
 private:
+	// Malformed extras are dropped whole and the state still applies, so a bad trailer never costs the movement.
+	void ReadExtras(const TConstArrayView<uint8> Trailing)
+	{
+		if (Trailing.IsEmpty() || !CrowdyUpdateExtras::IsReceiveEnabled())
+		{
+			return;
+		}
+		if (!CrowdyUpdateExtras::IsWellFormed(Trailing))
+		{
+			CrowdyUpdateExtras::ReportMalformed(Trailing.Num());
+			return;
+		}
+		Extras.Append(Trailing.GetData(), Trailing.Num());
+	}
+
 	// A kit actor names no SDK type or class: its class comes from its Kind.
 	bool DecodeKitActor(const TConstArrayView<uint8> Data)
 	{

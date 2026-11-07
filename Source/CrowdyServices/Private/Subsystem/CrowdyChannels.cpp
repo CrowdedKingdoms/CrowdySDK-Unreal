@@ -14,7 +14,6 @@
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyGameSession.h"
-#include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
@@ -108,7 +107,7 @@ void UCrowdyChannels::HandleChannelMessageNotification(const FChannelMessageNoti
 
 int64 UCrowdyChannels::GetAppId() const
 {
-	return GetDefault<UCrowdySDKDeveloperSettings>()->AppID;
+	return CrowdyServiceApi::ResolveAppId(GetGameInstance());
 }
 
 void UCrowdyChannels::GetMyChannels(FOnMyChannelsSuccess OnSuccess, FOnChannelError OnError)
@@ -1289,7 +1288,8 @@ void UCrowdyChannels::ForwardChannelRpc(const TArray<uint8>& Payload)
 
 	FCrowdyRpcCall Call;
 	uint8 Flags = 0;
-	if (!FCrowdyRPC::DecodeChannelRpc(Payload, Call, Flags))
+	FGuid Addressee;
+	if (!FCrowdyRPC::DecodeChannelRpc(Payload, Call, Flags, &Addressee))
 		return; // DecodeChannelRpc already logged why
 
 	if (FCrowdyRPC::IsReliableTraceEnabled())
@@ -1300,7 +1300,7 @@ void UCrowdyChannels::ForwardChannelRpc(const TArray<uint8>& Payload)
 	}
 
 	if (UCrowdyEventRouter* Router = ResolveEventRouter())
-		Router->ReceiveChannelRpcCall(Call);
+		Router->ReceiveChannelRpcCall(Call, Addressee);
 	else
 		UE_LOG(LogCrowdyServices, Warning,
 			TEXT("[CrowdyChannels] Reliable RPC received but no event router in the current world; dropping."));

@@ -56,7 +56,7 @@ public:
  * signature with no object-reference parameter, so the class only needs to exist for reflection.
  */
 // Hidden so a fixture never reaches an author's class or event picker.
-UCLASS(Hidden)
+UCLASS(Hidden, meta = (CrowdyTestFixture))
 class ACrowdyMassEventParityTestTarget : public AActor
 {
 	GENERATED_BODY()

@@ -16,6 +16,9 @@
 #include "UObject/Package.h"
 #include "Utils/HelperFunctions.h"
 
+// These cases also prove the deprecated Ownership keeps its meaning for a component a C++ constructor configured.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyAuthorityTestFlags =
@@ -120,10 +123,12 @@ bool FCrowdyStateAuthorityDefaultsTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("Ownership defaults to Host"),
 		static_cast<uint8>(CDO->GetOwnership()), static_cast<uint8>(ECrowdyOwnership::Host));
-	TestEqual(TEXT("Mode defaults to Static"),
-		static_cast<uint8>(CDO->GetMode()), static_cast<uint8>(ECrowdyEntityMode::Static));
+	TestEqual(TEXT("Replicate Movement defaults to Auto"),
+		static_cast<uint8>(CDO->ReplicateMovement), static_cast<uint8>(ECrowdyReplicateMovement::Auto));
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	TestEqual(TEXT("HostOverride defaults to Allow"),
 		static_cast<uint8>(CDO->GetHostOverridePolicy()), static_cast<uint8>(ECrowdyHostOverride::Allow));
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 }
 
@@ -189,6 +194,46 @@ bool FCrowdyEntityEffectiveOwnershipTest::RunTest(const FString& Parameters)
 	PlacedComponent->ResolveIdentityForTest(PlacedActor);
 	TestEqual(TEXT("authored LocalClient on a level-placed actor stays Owner"),
 		static_cast<uint8>(PlacedComponent->GetRole()), static_cast<uint8>(ECrowdyRole::Owner));
+	return true;
+}
+
+// Owned By decides the owner when it is set, whatever the deprecated Ownership says; World applies only to an actor
+// placed in the level, and a spawned one belongs to its spawner, as Host did.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityOwnedByDecidesOwnerTest,
+	"CrowdySDK.Entity.OwnedByDecidesOwner", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityOwnedByDecidesOwnerTest::RunTest(const FString& Parameters)
+{
+	AActor* PlacedActor = NewObject<AActor>(GetTransientPackage());
+	AActor* SpawnedActor = NewObject<AActor>(GetTransientPackage());
+	UCrowdyEntityComponent* Placed = NewObject<UCrowdyEntityComponent>(PlacedActor);
+	UCrowdyEntityComponent* Spawned = NewObject<UCrowdyEntityComponent>(SpawnedActor);
+	if (!TestNotNull(TEXT("placed fixture"), Placed) || !TestNotNull(TEXT("spawned fixture"), Spawned))
+	{
+		return false;
+	}
+	PlacedActor->bNetStartup = 1;
+
+	Placed->OwnedBy = ECrowdyOwnedBy::World;
+	Placed->ResolveIdentityForTest(PlacedActor);
+	TestEqual(TEXT("World on a placed actor is written by the host"), Placed->GetRole(), ECrowdyRole::HostOwned);
+	TestFalse(TEXT("with no per-client owner id"), Placed->GetOwnerID().IsValid());
+
+	Spawned->OwnedBy = ECrowdyOwnedBy::World;
+	Spawned->ResolveIdentityForTest(SpawnedActor);
+	TestEqual(TEXT("World on a spawned actor belongs to its spawner"), Spawned->GetRole(), ECrowdyRole::Owner);
+
+	Placed->OwnedBy = ECrowdyOwnedBy::Player;
+	Placed->Ownership = ECrowdyOwnership::Host;
+	Placed->ResolveIdentityForTest(PlacedActor);
+	TestEqual(TEXT("Player wins over a deprecated Host"), Placed->GetRole(), ECrowdyRole::Owner);
+
+	Placed->OwnedBy = ECrowdyOwnedBy::Auto;
+	Placed->ResolveIdentityForTest(PlacedActor);
+	TestEqual(TEXT("Auto on a placed actor is the world's"), Placed->GetRole(), ECrowdyRole::HostOwned);
+
+	Placed->Ownership = ECrowdyOwnership::LocalClient;
+	Placed->ResolveIdentityForTest(PlacedActor);
+	TestEqual(TEXT("Auto under a C++ Local Client is this client's"), Placed->GetRole(), ECrowdyRole::Owner);
 	return true;
 }
 
@@ -658,5 +703,7 @@ bool FCrowdyEntityEndPlayLeavesSuccessorRecordTest::RunTest(const FString& Param
 	TestNull(TEXT("an actor's own record goes when it ends play"), Collaborators.Entities->FindRecord(Own));
 	return true;
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif // WITH_DEV_AUTOMATION_TESTS

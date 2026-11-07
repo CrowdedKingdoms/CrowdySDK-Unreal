@@ -4,23 +4,48 @@
 #include "Engine/World.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 
-FGuid UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem, ECrowdyOwnership Ownership)
+static bool CanEnrollReplicatedSubsystem(const UCrowdyEntitySubsystem* Registry, const UObject* Subsystem)
 {
 	if (!IsValid(Registry))
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyReplicatedSubsystemLibrary]: RegisterReplicatedSubsystem skipped: no Crowdy Entity Subsystem available (a PIE/Game world is required). Nothing enrolled."));
-		return FGuid{};
+			TEXT("[CrowdyReplicatedSubsystemLibrary]: RegisterCrowdyReplicatedSubsystem skipped: no Crowdy Entity Subsystem available (a PIE/Game world is required). Nothing enrolled."));
+		return false;
 	}
 
 	if (!IsValid(Subsystem))
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyReplicatedSubsystemLibrary]: RegisterReplicatedSubsystem called with an invalid subsystem. Nothing enrolled."));
-		return FGuid{};
+			TEXT("[CrowdyReplicatedSubsystemLibrary]: RegisterCrowdyReplicatedSubsystem called with an invalid subsystem. Nothing enrolled."));
+		return false;
+	}
+	return true;
+}
+
+static UWorld* ResolveReplicatedSubsystemWorld(const UObject* Subsystem)
+{
+	if (!IsValid(Subsystem))
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyReplicatedSubsystemLibrary]: RegisterCrowdyReplicatedSubsystem called with an invalid subsystem. Nothing enrolled."));
+		return nullptr;
 	}
 
-	return Registry->RegisterParticipant(Subsystem, Ownership);
+	UWorld* World = Subsystem->GetWorld();
+	UE_CLOG(!World, LogCrowdyReplication, Warning,
+		TEXT("[CrowdyReplicatedSubsystemLibrary]: RegisterCrowdyReplicatedSubsystem could not resolve a world from %s. Nothing enrolled."),
+		*Subsystem->GetName());
+	return World;
+}
+
+FGuid UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem)
+{
+	return CanEnrollReplicatedSubsystem(Registry, Subsystem) ? Registry->RegisterParticipant(Subsystem) : FGuid{};
+}
+
+FGuid UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem, ECrowdyOwnership Ownership)
+{
+	return CanEnrollReplicatedSubsystem(Registry, Subsystem) ? Registry->RegisterParticipant(Subsystem, Ownership) : FGuid{};
 }
 
 void UCrowdyReplicatedSubsystemLibrary::UnregisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem)
@@ -35,26 +60,24 @@ void UCrowdyReplicatedSubsystemLibrary::UnregisterReplicatedSubsystemInto(UCrowd
 	Registry->UnregisterParticipant(Subsystem);
 }
 
+FGuid UCrowdyReplicatedSubsystemLibrary::RegisterCrowdyReplicatedSubsystem(UObject* Subsystem)
+{
+	// A world with no entity subsystem (an editor or inactive world) is a clean no-op in the core.
+	const UWorld* World = ResolveReplicatedSubsystemWorld(Subsystem);
+	return World ? RegisterReplicatedSubsystemInto(World->GetSubsystem<UCrowdyEntitySubsystem>(), Subsystem) : FGuid{};
+}
+
 FGuid UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystem(UObject* Subsystem, ECrowdyOwnership Ownership)
 {
-	if (!IsValid(Subsystem))
-	{
-		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyReplicatedSubsystemLibrary]: RegisterReplicatedSubsystem called with an invalid subsystem. Nothing enrolled."));
-		return FGuid{};
-	}
-
-	UWorld* World = Subsystem->GetWorld();
+	const UWorld* World = ResolveReplicatedSubsystemWorld(Subsystem);
 	if (!World)
 	{
-		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyReplicatedSubsystemLibrary]: RegisterReplicatedSubsystem could not resolve a world from %s. Nothing enrolled."),
-			*Subsystem->GetName());
 		return FGuid{};
 	}
 
-	// A null result (editor/inactive world with no entity subsystem) is handled as a clean no-op by the core.
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return RegisterReplicatedSubsystemInto(World->GetSubsystem<UCrowdyEntitySubsystem>(), Subsystem, Ownership);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UCrowdyReplicatedSubsystemLibrary::UnregisterReplicatedSubsystem(UObject* Subsystem)

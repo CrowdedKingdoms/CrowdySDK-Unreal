@@ -388,6 +388,12 @@ private:
 	void StartMint(bool bConsentAsked = false);
 	// A mint refused for missing consent: ask the player, then retry the mint once or fail the queued waiters.
 	void AskConsentThenRemint(int64 MintForAppId, const TSharedRef<FCrowdyCppClient>& Client);
+	void AskAgeThenRemint(int64 MintForAppId, const TSharedRef<FCrowdyCppClient>& Client);
+
+	// After a sign-in: the documents a developer must accept before creating or administering anything.
+	void CheckDeveloperTerms();
+	bool bAgeAskedForMint = false;
+	bool bDeveloperTermsRechecked = false;
 	// Resolve one mint round-trip: clear the in-flight flag, then either re-issue for the now-current
 	// app (if MintedAppId went stale and waiters remain) or flush every queued waiter with bReady.
 	void FinishMint(int64 MintedAppId, bool bReady);

@@ -11,6 +11,7 @@
 
 #include "crowdy/client.hpp"
 #include "crowdy/domains/admin.hpp"
+#include "crowdy/game_session.hpp"
 #include "crowdy/generated/enums.hpp"
 #ifndef CROWDY_NO_EXCEPTIONS
 #include "crowdy/kit/kit.hpp"

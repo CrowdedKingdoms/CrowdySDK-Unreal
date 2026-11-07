@@ -59,14 +59,7 @@ bool FCrowdyConsentAcceptNeedsBothBoxes::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Accept is disabled with nothing ticked"), Prompt->CanAccept());
 
 	Prompt->SetLegalChecked(true);
-	TestFalse(TEXT("Accept is disabled with only the terms ticked"), Prompt->CanAccept());
-
-	Prompt->SetLegalChecked(false);
-	Prompt->SetAgeChecked(true);
-	TestFalse(TEXT("Accept is disabled with only the age box ticked"), Prompt->CanAccept());
-
-	Prompt->SetLegalChecked(true);
-	TestTrue(TEXT("Accept is enabled once both boxes are ticked"), Prompt->CanAccept());
+	TestTrue(TEXT("Accept is enabled once the box is ticked"), Prompt->CanAccept());
 
 	Prompt->SetBusy(true);
 	TestFalse(TEXT("Accept is disabled while busy"), Prompt->CanAccept());
@@ -94,10 +87,9 @@ bool FCrowdyConsentAcceptFiresOnce::RunTest(const FString& Parameters)
 		.OnDecline(FSimpleDelegate::CreateLambda([&Declined]() { ++Declined; }));
 
 	Prompt->Accept();
-	TestEqual(TEXT("Accept does nothing before both boxes are ticked"), Accepted, 0);
+	TestEqual(TEXT("Accept does nothing before the box is ticked"), Accepted, 0);
 
 	Prompt->SetLegalChecked(true);
-	Prompt->SetAgeChecked(true);
 	Prompt->Accept();
 	TestEqual(TEXT("Accept fires OnAccept once"), Accepted, 1);
 	TestEqual(TEXT("Accept does not fire OnDecline"), Declined, 0);

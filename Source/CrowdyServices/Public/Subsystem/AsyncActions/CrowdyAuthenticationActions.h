@@ -186,3 +186,37 @@ private:
 	UFUNCTION() void HandleSuccess();
 	UFUNCTION() void HandleError(FString Message);
 };
+
+/**
+ * Records the signed-in player's month and year of birth and country. Call it only from the player's own answer. A sign-in
+ * waiting on the age then completes through its own delegates. OnError has text to show the player as it is.
+ */
+UCLASS()
+class CROWDYSERVICES_API UCrowdyAuth_RecordPlayerAge : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FRecordPlayerConsentsAsyncResult OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FRecordPlayerConsentsAsyncResult OnError;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
+		Category="Crowdy SDK|Authentication", DisplayName="Record Player Age")
+	static UCrowdyAuth_RecordPlayerAge* RecordPlayerAge(UObject* WorldContextObject, int32 BirthYear, int32 BirthMonth,
+		const FString& CountryCode, bool bParentalConfirmation);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int32 BirthYear = 0;
+	int32 BirthMonth = 0;
+	FString CountryCode;
+	bool bParentalConfirmation = false;
+
+	UFUNCTION() void HandleSuccess();
+	UFUNCTION() void HandleError(FString Message);
+};

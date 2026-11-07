@@ -12,6 +12,7 @@
 #include "CrowdyRustSyntaxMarshaller.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLibrary.h"
+#include "CrowdyServerObjectTypes.h"
 #include "HAL/FileManager.h"
 #include "Dom/JsonObject.h"
 #include "Misc/Base64.h"
@@ -43,16 +44,110 @@ namespace CrowdyExecDeployDetail
 	FString RootLogic(const FString& StateName)
 	{
 		return FString(TEXT("// The root every Server Object type sits under on the platform, written by the Crowdy SDK: it keeps the number of\n")
-			TEXT("// players in the app's world, which players read as Players Online.\n")
+			TEXT("// players in the app's world, which players read as Players Online, and answers whether a player is there.\n")
 			TEXT("use crate::*;\n")
 			TEXT("use ckx_sdk::prelude::*;\n")
+			TEXT("use std::cell::RefCell;\n")
+			TEXT("use std::collections::HashMap;\n")
+			TEXT("\n")
+			TEXT("// Who this root has heard join (true) or leave (false) since it started. Presence events can be lost when the root\n")
+			TEXT("// moves, so a player missing here is not known rather than gone.\n")
+			TEXT("thread_local! {\n")
+			TEXT("    static SEEN: RefCell<HashMap<u64, bool>> = RefCell::new(HashMap::new());\n")
+			TEXT("}\n")
+			TEXT("const MAX_SEEN: usize = 100_000;\n")
 			TEXT("\n"))
 			+ FString::Printf(TEXT("impl Functions for %s {\n"), *StateName)
 			+ TEXT("    fn on_presence(&mut self, _ctx: &Ctx, presence: &Presence) -> Result<()> {\n")
 			TEXT("        self.PlayersOnline = i32::try_from(presence.count).unwrap_or(i32::MAX);\n")
+			TEXT("        SEEN.with(|seen| {\n")
+			TEXT("            let mut seen = seen.borrow_mut();\n")
+			TEXT("            // Joins last: a player who left and came back within one report is present.\n")
+			TEXT("            for left in &presence.left {\n")
+			TEXT("                seen.insert(left.player, false);\n")
+			TEXT("            }\n")
+			TEXT("            for joined in &presence.joined {\n")
+			TEXT("                seen.insert(joined.player, true);\n")
+			TEXT("            }\n")
+			TEXT("            if seen.len() > MAX_SEEN {\n")
+			TEXT("                seen.retain(|_, present| *present);\n")
+			TEXT("            }\n")
+			TEXT("        });\n")
+			TEXT("        Ok(())\n")
+			TEXT("    }\n")
+			TEXT("\n")
+			TEXT("    fn is_present(&mut self, _ctx: &Ctx, _call: &Call<'_>, params: CrowdyServerMemberInputs) -> Result<CrowdyPresenceReply> {\n")
+			TEXT("        let seen = SEEN.with(|seen| seen.borrow().get(&(params.Player as u64)).copied());\n")
+			TEXT("        let presence = match seen {\n")
+			TEXT("            Some(true) => 1,\n")
+			TEXT("            Some(false) => 0,\n")
+			TEXT("            None => -1,\n")
+			TEXT("        };\n")
+			TEXT("        Ok(CrowdyPresenceReply { Presence: presence })\n")
+			TEXT("    }\n")
+			TEXT("}\n");
+	}
+
+	/** The Leader type's own code for its state struct StateName, asking Root, the app's root type, whether the Leader is still in the world. */
+	FString LeaderLogic(const FString& StateName, const FString& Root)
+	{
+		return FString(TEXT("// The Crowdy SDK's Leader type, written by the Crowdy SDK: players Join and Leave, the first to join leads, and the\n")
+			TEXT("// longest member takes over. Every two seconds it asks the root whether the Leader is still in the app's world.\n")
+			TEXT("use crate::*;\n")
+			TEXT("use ckx_sdk::prelude::*;\n")
+			TEXT("use std::cell::Cell;\n")
+			TEXT("\n")
+			TEXT("#[derive(Deserialize)]\n")
+			TEXT("struct PresenceReply {\n")
+			TEXT("    #[serde(rename = \"Presence\")]\n")
+			TEXT("    presence: i32,\n")
+			TEXT("}\n")
+			TEXT("\n")
+			TEXT("// The Leader the last check found gone: only a second check in a row removes them, so a map change does not.\n")
+			TEXT("thread_local! {\n")
+			TEXT("    static GONE_ONCE: Cell<Option<u64>> = const { Cell::new(None) };\n")
+			TEXT("}\n")
+			TEXT("\n"))
+			+ FString::Printf(TEXT("impl Functions for %s {\n"), *StateName)
+			+ TEXT("    // Only a root that saw the Leader leave removes them: a failed call or a root that does not know keeps them.\n")
+			TEXT("    fn check_leader(&mut self, ctx: &Ctx) -> Result<()> {\n")
+			TEXT("        // Every player may join: a Leader who closed joining would keep the lead from everyone who comes after.\n")
+			TEXT("        members::set_open(true);\n")
+			TEXT("        let Some(leader) = members::leader() else {\n")
+			TEXT("            return Ok(());\n")
+			TEXT("        };\n")
+			TEXT("        let payload = encode(&MemberInputs { Player: leader })?;\n")
+			TEXT("        // A short wait, so a slow root cannot hold this handler past its own deadline.\n")
+			+ FString::Printf(TEXT("        let gone = ctx.call_with_deadline(\"%s\", \"\", \"is_present\", &payload, 500)\n"), *Root)
+			+ TEXT("            .ok()\n")
+			TEXT("            .and_then(|reply| decode::<PresenceReply>(&reply).ok())\n")
+			TEXT("            .is_some_and(|reply| reply.presence == 0);\n")
+			TEXT("        let gone_before = GONE_ONCE.with(|once| once.replace(gone.then_some(leader))) == Some(leader);\n")
+			TEXT("        if gone && gone_before {\n")
+			TEXT("            GONE_ONCE.with(|once| once.set(None));\n")
+			TEXT("            members::remove(leader);\n")
+			TEXT("        }\n")
 			TEXT("        Ok(())\n")
 			TEXT("    }\n")
 			TEXT("}\n");
+	}
+
+	/** The SDK's root definition with Is Present added, which only other server code can call; the shipped asset is left as it is. */
+	UCrowdyServerObjectDefinition* MakeRootDefinition()
+	{
+		const UCrowdyServerObjectDefinition* Shipped = UCrowdyServerObjectLibrary::GetPlayersOnlineDefinition();
+		if (!Shipped)
+		{
+			return nullptr;
+		}
+		UCrowdyServerObjectDefinition* Root = DuplicateObject(Shipped, GetTransientPackage());
+		FCrowdyServerFunction& IsPresent = Root->Functions.AddDefaulted_GetRef();
+		IsPresent.Name = TEXT("IsPresent");
+		IsPresent.Params = FCrowdyServerMemberInputs::StaticStruct();
+		IsPresent.Reply = FCrowdyPresenceReply::StaticStruct();
+		IsPresent.WhoCanCall = ECrowdyServerFunctionCaller::ServerOnly;
+		TArray<FString> Errors;
+		return Root->Bake(Errors) ? Root : nullptr;
 	}
 
 	/** Line endings and whitespace at the end of the file do not make a crate stale. */
@@ -357,6 +452,34 @@ namespace CrowdyExecDeployDetail
 		{
 			Json.Appendf(TEXT(",\"scopes\":[\"%s\"]"), *FString::Join(Scopes, TEXT("\",\"")));
 		}
+	}
+
+	/** A Game Kit root whose code does not answer is_present leaves the Leader type unable to see its Leader leave the world. */
+	void AddLeaderPresenceWarning(CrowdyExecDeploy::FProjectDeploy& Project)
+	{
+		const CrowdyExecDeveloper::FBuildCrate* Root = Project.Crates.FindByPredicate([&Project](const CrowdyExecDeveloper::FBuildCrate& Crate) { return Crate.Name == Project.Root; });
+		if (!Root || Project.Root == CrowdyExecDeploy::RootTypeName)
+		{
+			return;
+		}
+		const bool bAnswers = Root->Files.ContainsByPredicate([](const CrowdyExecDeveloper::FBuildFile& File) { return File.Content.Contains(TEXT("\"is_present\""), ESearchCase::CaseSensitive); });
+		if (!bAnswers)
+		{
+			Project.Warnings.Add(FString::Printf(TEXT("%s, the app's root, does not answer is_present, so a Leader who leaves the world keeps the lead until their game closes; make the root the Game Kit's world, as this Crowdy SDK ships it"),
+				*Project.Root));
+		}
+	}
+
+	/** The Leader type's entry: a hub under Root, open to players, whose timer calls Root. Nothing when its definition does not bake. */
+	void AppendLeaderType(FStringBuilderBase& Json, const FString& Root)
+	{
+		const UCrowdyServerObjectDefinition* Leader = UCrowdyServerObjectLibrary::GetLeaderDefinition();
+		if (!Leader)
+		{
+			return;
+		}
+		Json.Appendf(TEXT(",\"%s\":{\"kind\":\"hub\",\"parent\":\"%s\",\"crate\":\"%s\",\"client\":true,\"persist_every_ms\":%lld,\"evict_after_ms\":%lld,\"calls\":[\"%s\"]}"),
+			CrowdyExecDeploy::LeaderTypeName, *Root, CrowdyExecDeploy::LeaderTypeName, static_cast<int64>(Leader->SaveIntervalSeconds) * 1000, static_cast<int64>(Leader->IdleTimeoutSeconds) * 1000, *Root);
 	}
 
 	/** Calls and scopes, a starter's seed, the server limits a type changes, and the end of its entry. */
@@ -873,6 +996,10 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 	{
 		return WithProblem(State, ECrateState::Invalid, TEXT("root is the name of the platform's root Server Object type; choose another Type Name"));
 	}
+	if (Definition.TypeName.Equals(LeaderTypeName, ESearchCase::CaseSensitive))
+	{
+		return WithProblem(State, ECrateState::Invalid, FString::Printf(TEXT("%s is the name of the Crowdy SDK's Leader type, which every deploy carries; choose another Type Name"), LeaderTypeName));
+	}
 	if (Definition.TypeName.StartsWith(StagingTypePrefix, ESearchCase::IgnoreCase))
 	{
 		return WithProblem(State, ECrateState::Invalid, FString::Printf(TEXT("Type Names starting %s are kept for the stand-ins a deploy in parts stores its builds with; choose another Type Name"), StagingTypePrefix));
@@ -936,26 +1063,40 @@ CrowdyExecDeploy::FTypeState CrowdyExecDeploy::InspectType(const UCrowdyServerOb
 	return State;
 }
 
+namespace CrowdyExecDeployDetail
+{
+	/** A crate of the SDK's own, generated from Definition with Logic(state struct name) as its logic.rs; no files when Definition is null or does not generate. */
+	CrowdyExecDeveloper::FBuildCrate MakeSdkCrate(const TCHAR* Name, const UCrowdyServerObjectDefinition* Definition, TFunctionRef<FString(const FString&)> Logic)
+	{
+		CrowdyExecDeveloper::FBuildCrate Crate;
+		Crate.Name = Name;
+		CrowdyExecCodegen::FGeneratedCrate Generated;
+		FString Problem;
+		if (!Definition || !GenerateInMemory(*Definition, Generated, Problem))
+		{
+			return Crate;
+		}
+		for (const CrowdyExecCodegen::FGeneratedFile& File : Generated.Files)
+		{
+			const bool bLogic = File.Path.Equals(LogicPath, ESearchCase::CaseSensitive);
+			const bool bCargo = File.Path.Equals(CargoPath, ESearchCase::CaseSensitive);
+			Crate.Files.Add(CrowdyExecDeveloper::FBuildFile{File.Path,
+				bLogic ? Logic(Generated.StateName) : bCargo ? CrowdyExecCodegen::WithoutCrateDefinition(File.Text) : File.Text});
+		}
+		return Crate;
+	}
+}
+
 CrowdyExecDeveloper::FBuildCrate CrowdyExecDeploy::MakeRootCrate()
 {
 	using namespace CrowdyExecDeployDetail;
-	CrowdyExecDeveloper::FBuildCrate Crate;
-	Crate.Name = RootTypeName;
-	const UCrowdyServerObjectDefinition* Definition = UCrowdyServerObjectLibrary::GetPlayersOnlineDefinition();
-	CrowdyExecCodegen::FGeneratedCrate Generated;
-	FString Problem;
-	if (!Definition || !GenerateInMemory(*Definition, Generated, Problem))
-	{
-		return Crate;
-	}
-	for (const CrowdyExecCodegen::FGeneratedFile& File : Generated.Files)
-	{
-		const bool bLogic = File.Path.Equals(LogicPath, ESearchCase::CaseSensitive);
-		const bool bCargo = File.Path.Equals(CargoPath, ESearchCase::CaseSensitive);
-		Crate.Files.Add(CrowdyExecDeveloper::FBuildFile{File.Path,
-			bLogic ? RootLogic(Generated.StateName) : bCargo ? CrowdyExecCodegen::WithoutCrateDefinition(File.Text) : File.Text});
-	}
-	return Crate;
+	return MakeSdkCrate(RootTypeName, MakeRootDefinition(), [](const FString& StateName) { return RootLogic(StateName); });
+}
+
+CrowdyExecDeveloper::FBuildCrate CrowdyExecDeploy::MakeLeaderCrate(const FString& Root)
+{
+	using namespace CrowdyExecDeployDetail;
+	return MakeSdkCrate(LeaderTypeName, UCrowdyServerObjectLibrary::GetLeaderDefinition(), [&Root](const FString& StateName) { return LeaderLogic(StateName, Root); });
 }
 
 FString CrowdyExecDeploy::MakeManifest(TConstArrayView<const UCrowdyServerObjectDefinition*> Definitions)
@@ -978,6 +1119,7 @@ FString CrowdyExecDeploy::MakeManifest(TConstArrayView<const UCrowdyServerObject
 		// Open to players, who read and follow its Players Online.
 		Json.Appendf(TEXT("{\"root\":\"%s\",\"types\":{\"%s\":{\"kind\":\"hub\",\"crate\":\"%s\",\"client\":true}"), RootTypeName, RootTypeName, RootTypeName);
 	}
+	AppendLeaderType(Json, Root);
 	for (const UCrowdyServerObjectDefinition* Definition : Sorted)
 	{
 		if (Definition == KitRoot)
@@ -1064,6 +1206,10 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 				UCrowdyServerObjectLibrary::PlayersOnlineDefinitionPath));
 		}
 	}
+	if (Project.Crates.Add_GetRef(MakeLeaderCrate(Project.Root)).Files.IsEmpty())
+	{
+		Project.Problems.Add(TEXT("The Crowdy SDK's Leader type does not generate; reinstall the Crowdy SDK"));
+	}
 	for (const UCrowdyServerObjectDefinition* Definition : Definitions)
 	{
 		if (!Definition)
@@ -1089,6 +1235,7 @@ CrowdyExecDeploy::FProjectDeploy CrowdyExecDeploy::AssembleProject(TConstArrayVi
 		Project.Warnings.Append(FindCallerWarnings(*Definition));
 		Project.Crates.Add(MoveTemp(Crate));
 	}
+	AddLeaderPresenceWarning(Project);
 	AddDuplicateProblems(Definitions, Project.Problems);
 	AddSharedLogicFileProblems(Definitions, CrateDirectoryFor, Project.Problems);
 	AddKitParentProblems(Definitions, Project.Problems);

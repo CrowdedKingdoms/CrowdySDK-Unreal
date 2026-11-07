@@ -20,6 +20,7 @@
 
 
 class FEvent;
+class UCrowdyEntitySubsystem;
 class UCrowdyWorkerThreadsSubsystem;
 struct FActorUpdateNotificationMessage;
 struct FCrowdyDelivery;
@@ -53,6 +54,9 @@ struct FCrowdyActorUpdate
 	 * octets, so nothing reached through here may read the message's views.
 	 */
 	CROWDYREPLICATION_API const FInstancedStruct& ResolveState() const;
+
+	/** The extras entries the update carried after its state; empty on the Blueprint path, which has no message. */
+	CROWDYREPLICATION_API TConstArrayView<uint8> ResolveExtras() const;
 
 	UPROPERTY(BlueprintReadWrite, Category="Crowdy SDK|Actor Update")
 	int64 ServerTimestamp = 0;
@@ -115,6 +119,7 @@ struct FCrowdyActorLeft
 DECLARE_TS_MULTICAST_DELEGATE_OneParam(FOnTrackedActorUpdateBatch, const TArray<FCrowdyActorUpdate>&);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnActorUpdateGameThreadBatch, const TArray<FCrowdyActorUpdate>&, Updates);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnActorSpawnRequested, FGuid, UUID, FInstancedStruct, IntialState, int32, ActorCount);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnActorAppearedExtras, const FGuid& /*UUID*/, TConstArrayView<uint8> /*Extras*/);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnActorTimeoutRequested,FGuid, UUID, int32, ActorCount);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnActorLeftReported, const FCrowdyActorLeft&, ActorLeft, int32, ActorCount);
 
@@ -154,6 +159,10 @@ public:
 	// Spawn Delegate
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Actor Tracker|Events")
 	FOnActorSpawnRequested OnRemoteEntityAppeared;
+
+	// The extras the appearing update carried, right after OnRemoteEntityAppeared. That update is never applied, so this is
+	// the only time they are seen. The view is valid only during the call.
+	FOnActorAppearedExtras OnRemoteEntityAppearedExtras;
 
 	// Destroy/Despawn delegate
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Actor Tracker|Events")
@@ -205,8 +214,11 @@ public:
 	// The payload type id a tracked UUID's first update carried, or CROWDY_INVALID_TYPE_ID if it is not tracked.
 	FCrowdyTypeID GetPayloadTypeIDForUUID(const FGuid& UUID) const;
 
-	// The 32 octets a tracked actor's first update was addressed by, as they arrived; false if it is not tracked or none was kept.
+	// The 32 octets a tracked actor sends under: its owner's since it last changed hands, else those of its first update as they arrived. False if it is not tracked or none was kept.
 	bool FindWireId(const FGuid& UUID, FCrowdyActorId& OutWireId) const;
+
+	// Whether an update has arrived under the id the entity sends under now. The server delivers a targeted message to whoever sent that id, so until one has, a message to it may reach nobody.
+	bool HasHeardCurrentWireId(const FGuid& UUID) const;
 
 	// Whether Update is a Game Kit starter's actor rather than one of the SDK's own; the type id is read first, as it costs nothing.
 	static bool IsKitActorUpdate(const FCrowdyActorUpdate& Update);
@@ -233,6 +245,8 @@ public:
 	// What the game thread records for a batch of appearing entities before announcing them.
 	void RecordAppearancesForTest(const TArray<FCrowdyActorUpdate>& Appeared) { RecordAppearances(Appeared); }
 	bool ForgetTrackedActorForTest(const FGuid& UUID) { return ForgetTrackedActor(UUID); }
+	void QueueAppearancesForTest(const TArray<FCrowdyActorUpdate>& Appeared) { PendingAppearances.Append(Appeared); }
+	void FlushAppearancesForTest() { FlushAppearances(); }
 
 	// The shard queues with no worker pool behind them, which is the state in which nothing drains them.
 	void SetupQueuesForTest() { SetupQueues(); }
@@ -257,6 +271,8 @@ public:
 	void DropForgedKitUpdatesForTest() { DropForgedKitUpdates(); }
 	void CheckTimeoutsForTest() { CheckTimeouts(); }
 	void HandleActorUpdateDeliveryForTest(const FCrowdyDelivery& Delivery) { HandleActorUpdateDelivery(Delivery); }
+	void HandleEntityOwnerChangedForTest(const FGuid& NetID, const FGuid& NewOwnerID) { HandleEntityOwnerChanged(nullptr, NetID, NewOwnerID, FGuid()); }
+	void HandleEntityUnregisteredForTest(const FGuid& NetID) { HandleEntityUnregistered(NetID); }
 	void BackdateHeardForTest(const FGuid& UUID, const double SecondsAgo)
 	{
 		FWriteScopeLock W(LastUpdateLock);
@@ -337,7 +353,7 @@ private:
 
 	//Timeout
 	TMap<FGuid, double> LastUpdateTimes;
-	FRWLock LastUpdateLock;
+	mutable FRWLock LastUpdateLock;
 	FTimerHandle TimeoutTimerHandle;
 
 	// Game Kit actors, timed out apart on their own short bound, under LastUpdateLock as well. Swept from Tick after the
@@ -370,8 +386,33 @@ private:
 	TMap<FGuid, FAppearedIds> AppearedIdsByUUID;
 	mutable FRWLock AppearedIdsLock;
 
+	// True when an update under WireId does not speak for NetID: the entity moved to another id, or an owner-tagged id
+	// names an entity this client already hears under a different one. An ordinary id pays one byte read.
+	bool IsRetiredWireId(const FGuid& NetID, const FCrowdyActorId& WireId) const;
+
+	UFUNCTION()
+	void HandleEntityOwnerChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& PreviousOwnerID);
+
+	UFUNCTION()
+	void HandleEntityUnregistered(const FGuid& NetID);
+
+	TWeakObjectPtr<UCrowdyEntitySubsystem> EntitySubsystem;
+
+	struct FMovedWireId
+	{
+		FCrowdyActorId WireId;
+		bool bHeard = false;
+	};
+
+	// Entities that changed hands while this client watched. Never expired by time: a lagging old owner keeps sending.
+	TMap<FGuid, FMovedWireId> CurrentWireIds;
+
 	// Written on the game thread before the appearance broadcast, since a listener resolves the class during it.
 	void RecordAppearances(const TArray<FCrowdyActorUpdate>& Appeared);
+
+	// Appearances handed over by the receive path, announced on the next Tick. Game thread only.
+	TArray<FCrowdyActorUpdate> PendingAppearances;
+	void FlushAppearances();
 	
 	//Config
 	int32 MaxTrackedActors = 1024;

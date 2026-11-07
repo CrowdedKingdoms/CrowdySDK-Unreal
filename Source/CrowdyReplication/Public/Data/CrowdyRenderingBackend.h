@@ -47,6 +47,9 @@ public:
 	 */
 	virtual bool DrawsEntitiesAsCrowdRows() const { return false; }
 
+	/** The Backend Config class this backend reads, so a map profile naming another is reported on save; null skips the check. */
+	virtual UClass* GetBackendConfigClass() const { return nullptr; }
+
 	/**
 	 * A new remote instance has become visible. Acquire whatever rendering resource
 	 * represents it (actor from pool, instanced mesh slot, etc.).
@@ -58,6 +61,20 @@ public:
 
 	/** False when the slot has nothing to draw, so the manager calls ActivateInstance for it again later. */
 	virtual bool IsInstanceActive(int32 SlotId) const { return true; }
+
+	/**
+	 * A spawn event named a moving entity this backend draws as a crowd row, so no actor of its class is spawned for
+	 * it on this client: land its spawn data on the row, now or once the row exists. Called only on a backend whose
+	 * DrawsEntitiesAsCrowdRows is true. The data came off the network and is forgeable.
+	 */
+	virtual void TakeSpawnData(const FGuid& UUID, const FInstancedStruct& InitialState) {}
+
+	/**
+	 * A destroy event named this entity; SlotId is INDEX_NONE when no slot holds it. Return true when that stopped it
+	 * being drawn, so the slot waits for a later update to draw it again. The default returns false and leaves it to
+	 * the entity's actor going away, which is how the actor pool's slots notice.
+	 */
+	virtual bool ReleaseDestroyedInstance(int32 SlotId, const FGuid& UUID) { return false; }
 
 	/**
 	 * The remote instance has left. Release the rendering resource and clean up the per-slot state.

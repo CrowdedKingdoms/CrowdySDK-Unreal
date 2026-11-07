@@ -8,10 +8,10 @@
 #include "Engine/World.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
-#include "Replication/RPC/CrowdyRPC.h" // CrowdyChannelPayloadMaxBytes (channel payload cap parity)
 #include "Replication/State/CrowdyBitwiseCompare.h"
 #include "Replication/State/CrowdyStateCodec.h"
 #include "Replication/State/FCrowdyRepLayout.h"
+#include "Replication/Subsystems/CrowdyAutoReplicator.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Replication/Subsystems/CrowdyEventRouter.h"
 #include "StructUtils/InstancedStruct.h"
@@ -24,9 +24,69 @@
 
 namespace
 {
-	// A single CrowdyState delta above this many blob bytes will fragment across datagrams on the transport.
-	// Advisory only: over-budget deltas still send correctly; the trace line flags a fat layout.
-	constexpr int32 CrowdyStateSingleDatagramBudget = 1180;
+	// Sends Dirty in parts that fit Limit and marks what went in Sent. A property too big to go alone stays
+	// out of Sent, so it stays dirty without holding back the rest.
+	template <typename FSendBlob>
+	void SendWithinLimit(FCrowdyOwnedEntityState& State, const FCrowdyRepLayout& Layout, const UObject* Participant,
+		const TBitArray<>& Dirty, const int32 Limit, TBitArray<>& Sent, FSendBlob&& SendBlob)
+	{
+		TArray<uint8> Blob;
+		FCrowdyStateCodec::Encode(Layout, Participant, Dirty, /*bKeyframe=*/false, Blob);
+		if (Blob.Num() <= Limit)
+		{
+			SendBlob(MoveTemp(Blob));
+			Sent.CombineWithBitwiseOR(Dirty, EBitwiseOperatorFlags::MaintainSize);
+			return;
+		}
+
+		TBitArray<> Part(false, Dirty.Num());
+		TArray<uint8> PartBlob;
+		for (TConstSetBitIterator<> It(Dirty); It; ++It)
+		{
+			const int32 Index = It.GetIndex();
+			Part[Index] = true;
+			FCrowdyStateCodec::Encode(Layout, Participant, Part, /*bKeyframe=*/false, Blob);
+			if (Blob.Num() <= Limit)
+			{
+				Exchange(PartBlob, Blob);
+				continue;
+			}
+
+			Part[Index] = false;
+			if (!PartBlob.IsEmpty())
+			{
+				SendBlob(MoveTemp(PartBlob));
+				PartBlob.Reset();
+				Sent.CombineWithBitwiseOR(Part, EBitwiseOperatorFlags::MaintainSize);
+				Part.Init(false, Dirty.Num());
+
+				Part[Index] = true;
+				FCrowdyStateCodec::Encode(Layout, Participant, Part, /*bKeyframe=*/false, Blob);
+				if (Blob.Num() <= Limit)
+				{
+					Exchange(PartBlob, Blob);
+					continue;
+				}
+				Part[Index] = false;
+			}
+
+			if (!State.WarnedTooLarge.IsValidIndex(Index))
+			{
+				State.WarnedTooLarge.Init(false, Dirty.Num());
+			}
+			UE_CLOG(!State.WarnedTooLarge[Index], LogCrowdyReplication, Warning,
+				TEXT("[CrowdyState] %s on %s (entity %s) is %d bytes, over the %d one update can carry. It is not being sent, and clients keep their old value until it fits."),
+				*Layout.Properties[Index].Property->GetName(), *GetNameSafe(Participant), *State.EntityID.ToString(),
+				Blob.Num(), Limit);
+			State.WarnedTooLarge[Index] = true;
+		}
+
+		if (!PartBlob.IsEmpty())
+		{
+			SendBlob(MoveTemp(PartBlob));
+			Sent.CombineWithBitwiseOR(Part, EBitwiseOperatorFlags::MaintainSize);
+		}
+	}
 
 	// A behavior-gating CVar (not a trace flag), so it lives here beside UCrowdyStateReplicator rather than in
 	// CrowdyReplication.cpp's crowdy.*.trace family exactly where crowdy.rpc.loopback lives relative to
@@ -150,7 +210,9 @@ void UCrowdyStateReplicator::Initialize(FSubsystemCollectionBase& Collection)
 		if (UCrowdyGameSession* GS = GameInstance->GetSubsystem<UCrowdyGameSession>())
 		{
 			GameSession = GS;
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			GS->OnHostIDUpdated.AddDynamic(this, &UCrowdyStateReplicator::HandleHostChanged);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 	}
 
@@ -177,7 +239,9 @@ void UCrowdyStateReplicator::Deinitialize()
 
 	if (UCrowdyGameSession* GS = GameSession.Get())
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		GS->OnHostIDUpdated.RemoveDynamic(this, &UCrowdyStateReplicator::HandleHostChanged);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 #if WITH_EDITOR
@@ -276,7 +340,7 @@ bool UCrowdyStateReplicator::TryTrackOwned(const FCrowdyEntityRecord& Record)
 	{
 		bTrackAsHostOwned = false;
 	}
-	else if (Record.Role == ECrowdyRole::HostOwned && IsLocalHost())
+	else if (Record.Role == ECrowdyRole::HostOwned && IsLocalHost(Record.IsReplicatedSubsystem()))
 	{
 		bTrackAsHostOwned = true;
 	}
@@ -315,25 +379,30 @@ bool UCrowdyStateReplicator::TryTrackOwned(const FCrowdyEntityRecord& Record)
 	else
 	{
 		State->bHostOwned = bTrackAsHostOwned;
+		State->bContinuousOnMovement &= !bTrackAsHostOwned;
 	}
 
 	OwnedEntities.Add(Record.NetID, MoveTemp(State));
 	return true;
 }
 
-FGuid UCrowdyStateReplicator::ResolveHostID() const
+FGuid UCrowdyStateReplicator::ResolveHostID(const bool bSubsystem) const
 {
 	if (bUseHostOverrideForTest)
 	{
 		return HostIDForTest;
 	}
 	UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
-	return ES ? ES->GetHostID() : FGuid();
+	if (!ES)
+	{
+		return FGuid();
+	}
+	return bSubsystem ? ES->GetAppWriterID() : ES->GetWorldOwnerID();
 }
 
-bool UCrowdyStateReplicator::IsLocalHost() const
+bool UCrowdyStateReplicator::IsLocalHost(const bool bSubsystem) const
 {
-	const FGuid Host = ResolveHostID();
+	const FGuid Host = ResolveHostID(bSubsystem);
 	if (!Host.IsValid())
 	{
 		return false;
@@ -432,6 +501,31 @@ void UCrowdyStateReplicator::HandleOwnershipChanged(AActor* /*TargetEntity*/, co
 
 	// Re-track when we are now the authority: an Owner record always, a HostOwned record only while we are host.
 	TryTrackOwned(*Record);
+
+	// A new Leader may hold stale values, so it starts from what it has and sends only what it writes from here on.
+	const TUniquePtr<FCrowdyOwnedEntityState>* Tracked = Record->bLeaderOwned ? OwnedEntities.Find(NetID) : nullptr;
+	if (Tracked && Tracked->IsValid())
+	{
+		SeedShadowFromLive(**Tracked);
+	}
+}
+
+void UCrowdyStateReplicator::SeedShadowFromLive(FCrowdyOwnedEntityState& State)
+{
+	const UObject* Participant = State.Participant.Get();
+	if (!Participant || !State.bShadowInitialized)
+	{
+		return;
+	}
+
+	uint8* const Base = State.ShadowData.GetData();
+	for (int32 Index = 0; Index < State.ShadowProps.Num(); ++Index)
+	{
+		if (const FProperty* Property = State.ShadowProps[Index])
+		{
+			Property->CopyCompleteValue(Base + State.ShadowOffsets[Index], Property->ContainerPtrToValuePtr<void>(Participant));
+		}
+	}
 }
 
 bool UCrowdyStateReplicator::BuildOwnedState(const FGuid& EntityID, UObject* Participant,
@@ -463,6 +557,10 @@ bool UCrowdyStateReplicator::BuildOwnedState(const FGuid& EntityID, UObject* Par
 		if (const UCrowdyEntityComponent* Comp = Actor->FindComponentByClass<UCrowdyEntityComponent>())
 		{
 			Out->bHeartbeatSuppressed = Comp->GetStateHeartbeat() == ECrowdyStateHeartbeat::Off;
+
+			const UWorld* World = Actor->GetWorld();
+			const UCrowdyAutoReplicator* Movement = World ? World->GetSubsystem<UCrowdyAutoReplicator>() : nullptr;
+			Out->bContinuousOnMovement = Movement && Movement->CarriesUpdatesOf(Comp);
 		}
 	}
 
@@ -501,6 +599,7 @@ void UCrowdyStateReplicator::InitShadow(FCrowdyOwnedEntityState& State, const FC
 	// this; on a rebuild (layout drift) re-Init clears it losing any pending marks on a layout change is
 	// acceptable and rare, and it prevents a stale bit from aliasing a different property's new position.
 	State.PendingManualDirty.Init(false, Num);
+	State.WarnedTooLarge.Empty();
 
 	// One aligned slot per property, packed in layout order. Each slot is padded up to the property's own
 	// required alignment before it is placed, so every Base+Offset satisfies the alignment its load/store
@@ -539,6 +638,14 @@ void UCrowdyStateReplicator::InitShadow(FCrowdyOwnedEntityState& State, const FC
 		*State.EntityID.ToString(), Num, Total);
 }
 
+void UCrowdyStateReplicator::SetContinuousOnMovement(const FGuid& EntityID, const bool bOnMovement)
+{
+	if (const TUniquePtr<FCrowdyOwnedEntityState>* State = OwnedEntities.Find(EntityID))
+	{
+		(*State)->bContinuousOnMovement = bOnMovement && !(*State)->bHostOwned;
+	}
+}
+
 bool UCrowdyStateReplicator::RegisterOwnedEntityForTest(const FGuid& EntityID, UObject* Participant)
 {
 	TUniquePtr<FCrowdyOwnedEntityState> State;
@@ -566,6 +673,7 @@ void UCrowdyStateReplicator::MarkStateDirty(const FGuid& EntityID, FName Propert
 		// explicit push path here and no auto-diff for host authority a second implicit mechanism racing this
 		// is what produces "host sets X, client re-sends Y" overwrites. The push encodes the property's CURRENT
 		// live value on the next tick and is stamped HostSourced only if we are host; it holds no shadow.
+		WarnIfWorldEntityHasNoWriter(EntityID);
 		AActor* Actor = EntitySubsystem.IsValid() ? EntitySubsystem->FindEntity(EntityID) : nullptr;
 		UCrowdyAutoRegistry* Registry = AutoRegistry.Get();
 		if (!Actor || !Registry)
@@ -586,7 +694,10 @@ void UCrowdyStateReplicator::MarkStateDirty(const FGuid& EntityID, FName Propert
 		// push at the source. A missing entity component is treated as Allow (fall through).
 		if (const UCrowdyEntityComponent* Comp = Actor->FindComponentByClass<UCrowdyEntityComponent>())
 		{
-			if (Comp->GetHostOverridePolicy() == ECrowdyHostOverride::OwnerOnly)
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			const ECrowdyHostOverride Policy = Comp->GetHostOverridePolicy();
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			if (Policy == ECrowdyHostOverride::OwnerOnly)
 			{
 				UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
 					TEXT("[CrowdyStateReplicator] push to %s dropped: entity is OwnerOnly (host may not override it)."),
@@ -651,6 +762,22 @@ void UCrowdyStateReplicator::MarkStateDirty(const FGuid& EntityID, FName Propert
 	}
 
 	WarnUnknownStateProperty(WarnedUnknownStateProperties, Participant->GetClass(), PropertyName, EntityID);
+}
+
+void UCrowdyStateReplicator::WarnIfWorldEntityHasNoWriter(const FGuid& EntityID)
+{
+	if (bWarnedWorldEntityHasNoWriter || UCrowdySDKDeveloperSettings::UsesElectedHost())
+		return;
+
+	const FCrowdyEntityRecord* Record = EntitySubsystem.IsValid() ? EntitySubsystem->FindRecord(EntityID) : nullptr;
+	if (!Record || Record->Role != ECrowdyRole::HostOwned || Record->IsReplicatedSubsystem())
+		return;
+
+	bWarnedWorldEntityHasNoWriter = true;
+	UE_LOG(LogCrowdyReplication, Warning,
+		TEXT("[CrowdyStateReplicator]: State was marked dirty on World entity %s, but Leader Source is Server Object, so no client writes World entities and every other client ignores the change. ")
+		TEXT("Keep a World entity's truth in a Server Object, or set Project Settings > Plugins > Crowdy SDK > Replication > Leader Source to Elected Host (Deprecated) to keep the elected host writing it."),
+		*EntityID.ToString());
 }
 
 void UCrowdyStateReplicator::MarkAllStateDirty(const FGuid& EntityID)
@@ -833,6 +960,7 @@ AActor* UCrowdyStateReplicator::GetOrCreateLoopbackMirror(AActor* SourceActor, c
 	// to be a tracked owned entity at all); the sole realistic failure this can't protect against is no
 	// UCrowdyEntitySubsystem in this world, which the receive path's own deferred-retry-then-give-up already
 	// handles gracefully for a delta whose target never resolves.
+	Component->OwnedBy = ECrowdyOwnedBy::Player;
 	Mirror->FinishSpawning(MirrorTransform);
 
 	LoopbackMirrors.Add(SourceEntityID, Mirror);
@@ -985,7 +1113,7 @@ void UCrowdyStateReplicator::DrainPendingHostPushes(TArray<FCrowdyPendingLocalNo
 	// sign-in, and only a push emitted while we are host is stamped HostSourced.
 	UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
 	const FGuid SenderID = ES ? ES->GetLocalPlayerID() : LocalPlayerID;
-	const FGuid HostID = ResolveHostID();
+	const FGuid HostID = ResolveHostID(/*bSubsystem=*/false);
 	const bool bLocalIsHost = HostID.IsValid() && SenderID.IsValid() && HostID == SenderID;
 
 	// A push is queued only for an entity this client did not track at the time of the mark, but ownership can
@@ -1030,6 +1158,14 @@ void UCrowdyStateReplicator::DrainPendingHostPushes(TArray<FCrowdyPendingLocalNo
 
 		TArray<uint8> Blob;
 		FCrowdyStateCodec::Encode(*Layout, Actor, Dirty, /*bKeyframe=*/false, Blob);
+		if (Blob.Num() > CrowdyStateBlobLimit::Event)
+		{
+			UE_LOG(LogCrowdyReplication, Warning,
+				TEXT("[CrowdyState] host push of %s on %s (entity %s) dropped: %d bytes, over the %d one update can carry."),
+				*RepProp.Property->GetName(), *GetNameSafe(Actor), *Push.EntityID.ToString(), Blob.Num(),
+				CrowdyStateBlobLimit::Event);
+			continue;
+		}
 
 		FCrowdyStateDelta Delta;
 		Delta.ClassID = static_cast<int64>(UCrowdyClassRegistry::Get()->GetID(Actor->GetClass()));
@@ -1108,9 +1244,11 @@ void UCrowdyStateReplicator::ReplicationLoop()
 
 	// Host status is resolved live too (host id and local id both read live). Every delta we emit while we are
 	// the host is stamped HostSourced a precedence-by-convention hint; the receiver acts on it only for
-	// entities it owns (accept a host correction, drop a foreign non-host delta).
-	const FGuid HostID = ResolveHostID();
+	// entities it owns (accept a host correction, drop a foreign non-host delta). A subsystem's writer is the Leader.
+	const FGuid HostID = ResolveHostID(/*bSubsystem=*/false);
 	const bool bLocalIsHost = HostID.IsValid() && SenderID.IsValid() && HostID == SenderID;
+	const FGuid LeaderID = ResolveHostID(/*bSubsystem=*/true);
+	const bool bLocalIsLeader = LeaderID.IsValid() && SenderID.IsValid() && LeaderID == SenderID;
 	const double Now = GetLoopTimeSeconds();
 
 	// Routes a non-spatial (subsystem) participant's delta over the reliable channel: the test hook when bound,
@@ -1126,18 +1264,6 @@ void UCrowdyStateReplicator::ReplicationLoop()
 		{
 			TArray<uint8> Payload;
 			FCrowdyStateCodec::EncodeChannelStateDelta(D, Payload);
-
-			// The channel caps the payload at CrowdyChannelPayloadMaxBytes. Fail loudly rather than let the
-			// transport silently truncate it (which the receiver would then drop as a short read), mirroring
-			// FCrowdyRPC::RouteOverChannel's guard so the two channel codecs stay at parity.
-			if (Payload.Num() > CrowdyChannelPayloadMaxBytes)
-			{
-				UE_LOG(LogCrowdyReplication, Error,
-					TEXT("[CrowdyState] channel delta dropped: encoded payload is %d bytes for entity %s, over the %d-byte channel limit."),
-					Payload.Num(), *D.EntityID.ToString(), CrowdyChannelPayloadMaxBytes);
-				return;
-			}
-
 			ES->PublishReliableRpc(TEXT(""), Payload);
 		}
 	};
@@ -1217,6 +1343,23 @@ void UCrowdyStateReplicator::ReplicationLoop()
 				continue;
 			}
 
+			// Movement updates carry the value, which leaves only the owner's own notify to run here.
+			if (RepProp.bContinuous && State.bContinuousOnMovement)
+			{
+				const void* Live =RepProp.Property->ContainerPtrToValuePtr<void>(Participant);
+				void* Shadow = ShadowBase + State.ShadowOffsets[Index];
+				if (RepProp.Property->Identical(Live, Shadow, PPF_None))
+				{
+					continue;
+				}
+				if (RepProp.OnRepFunctionName != NAME_None)
+				{
+					PendingNotifies.Add(FCrowdyPendingLocalNotify{ Participant, RepProp.OnRepFunctionName, State.EntityID, Index });
+				}
+				RepProp.Property->CopyCompleteValue(Shadow, Live);
+				continue;
+			}
+
 			bool bDirty = false;
 			if (RepProp.bManualDirty)
 			{
@@ -1265,7 +1408,10 @@ void UCrowdyStateReplicator::ReplicationLoop()
 			for (int32 Index = 0; Index < Num; ++Index)
 			{
 				const FCrowdyRepProperty& RepProp = Layout.Properties[Index];
-				if (RepProp.Property && !RepProp.bOwnerOnly && RepProp.bHeartbeat)
+				// With no movement update to ride, a continuous value is on the keyframe whatever its heartbeat mark says:
+				// a host's World entity is never diffed, so this is the only way it goes out.
+				const bool bOnKeyframe = RepProp.bContinuous ? !State.bContinuousOnMovement : RepProp.bHeartbeat;
+				if (RepProp.Property && !RepProp.bOwnerOnly && bOnKeyframe)
 				{
 					SpatialDirty[Index] = true;
 					bEmitKeyframe = true;
@@ -1302,79 +1448,66 @@ void UCrowdyStateReplicator::ReplicationLoop()
 		}
 
 		const int64 ClassID = static_cast<int64>(State.ClassID);
+		const bool bHostSourced = State.bNonSpatial ? bLocalIsLeader : bLocalIsHost;
 
 		if (bAnySpatial)
 		{
-			TArray<uint8> Blob;
-			FCrowdyStateCodec::Encode(Layout, Participant, SpatialDirty, /*bKeyframe=*/false, Blob);
-
-			FCrowdyStateDelta Delta;
-			Delta.ClassID = ClassID;
-			Delta.EntityID = State.EntityID;
-			Delta.SenderID = SenderID;
-			Delta.LayoutHash = Layout.LayoutHash;
-			Delta.Flags = static_cast<uint8>((bLocalIsHost ? CrowdyStateDeltaFlags::HostSourced : 0)
-				| (bEmitKeyframe ? CrowdyStateDeltaFlags::Keyframe : 0));
-			Delta.Blob = MoveTemp(Blob);
-			SentBytes += Delta.Blob.Num();
-
-			if (Delta.Blob.Num() > CrowdyStateSingleDatagramBudget)
+			const int32 Limit = State.bNonSpatial ? CrowdyStateBlobLimit::Channel : CrowdyStateBlobLimit::Event;
+			SendWithinLimit(State, Layout, Participant, SpatialDirty, Limit, Sent, [&](TArray<uint8>&& Blob)
 			{
+				FCrowdyStateDelta Delta;
+				Delta.ClassID = ClassID;
+				Delta.EntityID = State.EntityID;
+				Delta.SenderID = SenderID;
+				Delta.LayoutHash = Layout.LayoutHash;
+				Delta.Flags = static_cast<uint8>((bHostSourced ? CrowdyStateDeltaFlags::HostSourced : 0)
+					| (bEmitKeyframe ? CrowdyStateDeltaFlags::Keyframe : 0));
+				Delta.Blob = MoveTemp(Blob);
+				SentBytes += Delta.Blob.Num();
+
 				UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Log,
-					TEXT("[CrowdyStateReplicator] delta for %s is %d bytes, over the single-datagram budget; it will fragment."),
-					*State.EntityID.ToString(), Delta.Blob.Num());
-			}
+					TEXT("[CrowdyStateReplicator] emit %s%s entity=%s bytes=%d"),
+					State.bNonSpatial ? TEXT("channel ") : TEXT(""),
+					bEmitKeyframe ? TEXT("keyframe") : TEXT("delta"), *State.EntityID.ToString(), Delta.Blob.Num());
 
-			UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Log,
-				TEXT("[CrowdyStateReplicator] emit %s%s entity=%s bytes=%d"),
-				State.bNonSpatial ? TEXT("channel ") : TEXT(""),
-				bEmitKeyframe ? TEXT("keyframe") : TEXT("delta"), *State.EntityID.ToString(), Delta.Blob.Num());
-
-			// A non-spatial (subsystem) participant rides the reliable channel; a spatial actor broadcasts over
-			// the spatial transport. The two are branched FIRST so a bound spatial hook never captures a channel
-			// delta and vice versa (this is what lets a test distinguish the two dispatch kinds).
-			if (State.bNonSpatial)
-			{
-				RouteNonSpatial(Delta);
-			}
-			else if (DispatchHookForTests)
-			{
-				DispatchHookForTests(Delta, /*bTargeted=*/false);
-			}
-			else if (ES && Actor)
-			{
-				// Sent from a view of Delta rather than a copy of it into an FInstancedStruct: the send is
-				// synchronous, so Delta outlives it, and the blob is not duplicated to put it on the wire.
-				ES->DispatchGameEventView(Actor, FCrowdyStateDelta::StaticStruct(), &Delta,
-					ECrowdyTarget::Everyone, Actor, ECrowdyDecayRate::No_Decay, RelevanceDistance);
-
-				// Debug loopback: also decode this delta onto a local mirror entity, so a single PIE client
-				// can watch decode/OnRep fire without a second client. Off (default) costs one CVar read;
-				// on, it queues the exact same Delta retargeted at the mirror's own NetID (never this entity's
-				// real one, which the ownership gate would drop) for replay through the real receive path
-				// after the walk.
-				if (IsLoopbackEnabled())
+				// A non-spatial (subsystem) participant rides the reliable channel; a spatial actor broadcasts over
+				// the spatial transport. The two are branched FIRST so a bound spatial hook never captures a channel
+				// delta and vice versa (this is what lets a test distinguish the two dispatch kinds).
+				if (State.bNonSpatial)
 				{
-					if (AActor* Mirror = GetOrCreateLoopbackMirror(Actor, State.EntityID))
+					RouteNonSpatial(Delta);
+				}
+				else if (DispatchHookForTests)
+				{
+					DispatchHookForTests(Delta, /*bTargeted=*/false);
+				}
+				else if (ES && Actor)
+				{
+					// Sent from a view of Delta rather than a copy of it into an FInstancedStruct: the send is
+					// synchronous, so Delta outlives it, and the blob is not duplicated to put it on the wire.
+					ES->DispatchGameEventView(Actor, FCrowdyStateDelta::StaticStruct(), &Delta,
+						ECrowdyTarget::Everyone, Actor, ECrowdyDecayRate::No_Decay, RelevanceDistance);
+
+					// Debug loopback: also decode this delta onto a local mirror entity, so a single PIE client
+					// can watch decode/OnRep fire without a second client. Off (default) costs one CVar read;
+					// on, it queues the exact same Delta retargeted at the mirror's own NetID (never this entity's
+					// real one, which the ownership gate would drop) for replay through the real receive path
+					// after the walk.
+					if (IsLoopbackEnabled())
 					{
-						if (const UCrowdyEntityComponent* MirrorComp = Mirror->FindComponentByClass<UCrowdyEntityComponent>())
+						if (AActor* Mirror = GetOrCreateLoopbackMirror(Actor, State.EntityID))
 						{
-							FCrowdyStateDelta MirrorDelta = Delta;
-							MirrorDelta.EntityID = MirrorComp->GetNetID();
-							MirrorDelta.SenderID = FGuid();
-							LoopbackDeltas.Add(MoveTemp(MirrorDelta));
+							if (const UCrowdyEntityComponent* MirrorComp = Mirror->FindComponentByClass<UCrowdyEntityComponent>())
+							{
+								FCrowdyStateDelta MirrorDelta = Delta;
+								MirrorDelta.EntityID = MirrorComp->GetNetID();
+								MirrorDelta.SenderID = FGuid();
+								LoopbackDeltas.Add(MoveTemp(MirrorDelta));
+							}
 						}
 					}
 				}
-			}
-
-			for (int32 Index = 0; Index < Num; ++Index)
-			{
-				if (SpatialDirty[Index])
-				{
-					Sent[Index] = true;
-				}
-			}
+			});
 		}
 
 		if (bAnyOwnerOnly)
@@ -1398,63 +1531,58 @@ void UCrowdyStateReplicator::ReplicationLoop()
 			}
 			else
 			{
-				TArray<uint8> OoBlob;
-				FCrowdyStateCodec::Encode(Layout, Participant, OwnerOnlyDirty, /*bKeyframe=*/false, OoBlob);
-
-				// Same ClassID/EntityID/SenderID/LayoutHash as the spatial delta (the selector is positional over the
-				// full layout, so both share the hash); never the Keyframe flag. Delivered targeted, so the transport
-				// marks it bTargetedDelivery and the receiver's echo-drop leaves it alone.
-				FCrowdyStateDelta Delta;
-				Delta.ClassID = ClassID;
-				Delta.EntityID = State.EntityID;
-				Delta.SenderID = SenderID;
-				Delta.LayoutHash = Layout.LayoutHash;
-				Delta.Flags = static_cast<uint8>(bLocalIsHost ? CrowdyStateDeltaFlags::HostSourced : 0);
-				Delta.Blob = MoveTemp(OoBlob);
-				SentBytes += Delta.Blob.Num();
-
-				UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Log,
-					TEXT("[CrowdyStateReplicator] emit owner-only entity=%s bytes=%d"),
-					*State.EntityID.ToString(), Delta.Blob.Num());
-
-				if (DispatchHookForTests)
+				SendWithinLimit(State, Layout, Participant, OwnerOnlyDirty, CrowdyStateBlobLimit::Event, Sent,
+					[&](TArray<uint8>&& Blob)
 				{
-					DispatchHookForTests(Delta, /*bTargeted=*/true);
-				}
-				else if (ES && Actor)
-				{
-					ES->DispatchSingleActorMessage(Actor, FInstancedStruct::Make(Delta));
+					// Same ClassID/EntityID/SenderID/LayoutHash as the spatial delta (the selector is positional over the
+					// full layout, so both share the hash); never the Keyframe flag. Delivered targeted, so the transport
+					// marks it bTargetedDelivery and the receiver's echo-drop leaves it alone.
+					FCrowdyStateDelta Delta;
+					Delta.ClassID = ClassID;
+					Delta.EntityID = State.EntityID;
+					Delta.SenderID = SenderID;
+					Delta.LayoutHash = Layout.LayoutHash;
+					Delta.Flags = static_cast<uint8>(bHostSourced ? CrowdyStateDeltaFlags::HostSourced : 0);
+					Delta.Blob = MoveTemp(Blob);
+					SentBytes += Delta.Blob.Num();
 
-					// Debug loopback, same as the spatial path above: queue this owner-only delta for the local
-					// mirror so a single client can prove owner-only delivery + OnRep without a second one.
-					if (IsLoopbackEnabled())
+					UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Log,
+						TEXT("[CrowdyStateReplicator] emit owner-only entity=%s bytes=%d"),
+						*State.EntityID.ToString(), Delta.Blob.Num());
+
+					if (DispatchHookForTests)
 					{
-						if (AActor* Mirror = GetOrCreateLoopbackMirror(Actor, State.EntityID))
+						DispatchHookForTests(Delta, /*bTargeted=*/true);
+					}
+					else if (ES && Actor)
+					{
+						ES->DispatchSingleActorMessage(Actor, FInstancedStruct::Make(Delta));
+
+						// Debug loopback, same as the spatial path above: queue this owner-only delta for the local
+						// mirror so a single client can prove owner-only delivery + OnRep without a second one.
+						if (IsLoopbackEnabled())
 						{
-							if (const UCrowdyEntityComponent* MirrorComp = Mirror->FindComponentByClass<UCrowdyEntityComponent>())
+							if (AActor* Mirror = GetOrCreateLoopbackMirror(Actor, State.EntityID))
 							{
-								FCrowdyStateDelta MirrorDelta = Delta;
-								MirrorDelta.EntityID = MirrorComp->GetNetID();
-								MirrorDelta.SenderID = FGuid();
-								LoopbackDeltas.Add(MoveTemp(MirrorDelta));
+								if (const UCrowdyEntityComponent* MirrorComp = Mirror->FindComponentByClass<UCrowdyEntityComponent>())
+								{
+									FCrowdyStateDelta MirrorDelta = Delta;
+									MirrorDelta.EntityID = MirrorComp->GetNetID();
+									MirrorDelta.SenderID = FGuid();
+									LoopbackDeltas.Add(MoveTemp(MirrorDelta));
+								}
 							}
 						}
 					}
-				}
-
-				for (int32 Index = 0; Index < Num; ++Index)
-				{
-					if (OwnerOnlyDirty[Index])
-					{
-						Sent[Index] = true;
-					}
-				}
+				});
 			}
 		}
 
-		// This tick emitted (the no-change/no-heartbeat case continue'd above), so record the total bytes for the
-		// read-only diagnostic. Untouched on a silent tick, so it reflects the last real send.
-		State.LastSentBytes = SentBytes;
+		// Untouched on a tick that sent nothing, so it reflects the last real send.
+		if (SentBytes > 0)
+		{
+			State.LastSentBytes = SentBytes;
+		}
 
 		// Advance the shadow to what peers now hold, and clear any manual-dirty marks we just satisfied but
 		// ONLY for the bits actually sent (spatial + owner-only + keyframe + manual), so an unsent slot's shadow
@@ -1492,6 +1620,10 @@ void UCrowdyStateReplicator::ReplicationLoop()
 			if (RepProp.bManualDirty && State.PendingManualDirty.IsValidIndex(Index))
 			{
 				State.PendingManualDirty[Index] = false;
+			}
+			if (State.WarnedTooLarge.IsValidIndex(Index))
+			{
+				State.WarnedTooLarge[Index] = false;
 			}
 		}
 	}

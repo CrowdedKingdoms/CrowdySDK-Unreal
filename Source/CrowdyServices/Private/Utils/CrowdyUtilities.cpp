@@ -35,7 +35,7 @@ namespace CrowdyUtils
 		switch (Recipient)
 		{
 		case ECrowdyEventRecipient::OwningClient: return ECrowdyTarget::Owner;
-		case ECrowdyEventRecipient::Host:         return ECrowdyTarget::Host;
+		case CrowdyDeprecatedHostRecipient:       return ECrowdyTarget::Host;
 		// This legacy spatial-only send has no channel transport, so a channel Multicast falls back
 		// to everyone-in-range here, same as Spatial Multicast.
 		case ECrowdyEventRecipient::Multicast:
@@ -225,7 +225,9 @@ bool UCrowdyUtilities::DoesCrowdyEntityOwn(UObject* WorldContextObject, const AA
 	if (OwnerRole == ECrowdyRole::HostOwned || (!TargetOwnerID.IsValid() && TargetRole == ECrowdyRole::HostOwned))
 	{
 		bool bHostValid = false;
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		HostID = CrowdyGetHostID(WorldContextObject, bHostValid);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	return UCrowdyEntityComponent::DoesOwnershipMatch(OwnerRole, OwnerNetID, TargetRole, TargetOwnerID, HostID);
@@ -246,15 +248,40 @@ UCrowdyEntityComponent* UCrowdyUtilities::GetCrowdyEntityComponent(AActor* Actor
 	return Actor->FindComponentByClass<UCrowdyEntityComponent>();
 }
 
+bool UCrowdyUtilities::IsCrowdyEntityLocallyOwned(UObject* Entity)
+{
+	// An entity actor's component already answers this, its owning client or the elected host for a world entity,
+	// so the rule lives in one place. Resolving through GetCrowdyEntityComponent keeps the
+	// ICrowdyEntityComponentProvider indirection working here too. A component, animation instance or other object
+	// inside an actor, as Self from its own graph, asks about that actor.
+	AActor* Actor = Cast<AActor>(Entity);
+	if (!Actor && IsValid(Entity)) Actor = Entity->GetTypedOuter<AActor>();
+	if (const UCrowdyEntityComponent* Component = GetCrowdyEntityComponent(Actor))
+	{
+		return Component->GetNetID().IsValid() && Component->IsLocallyOwned();
+	}
+
+	// A replicated subsystem has no component; its registry record answers the same way.
+	const UWorld* World = IsValid(Entity) ? Entity->GetWorld() : nullptr;
+	const UCrowdyEntitySubsystem* Entities = World ? World->GetSubsystem<UCrowdyEntitySubsystem>() : nullptr;
+	const FCrowdyEntityRecord* Record = Entities ? Entities->FindRecord(Entities->FindEntityID(Entity)) : nullptr;
+	return Record && Entities->IsRecordLocallyOwned(*Record);
+}
+
+bool UCrowdyUtilities::IsRecordLocallyOwned(const FCrowdyEntityRecord& Record, const FGuid& LocalPlayerID,
+	const FGuid& HostID)
+{
+	return FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.OwnerID, LocalPlayerID, HostID);
+}
+
+void UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned(UObject* Entity, bool& bIsLocallyOwned)
+{
+	bIsLocallyOwned = IsCrowdyEntityLocallyOwned(Entity);
+}
+
 bool UCrowdyUtilities::IsCrowdyEntityLocallyControlled(AActor* Entity)
 {
-	// The entity component already answers this for both ownership models - its owning client for a client-owned
-	// entity, the elected host for a host-owned world entity - so the rule lives in one place. Resolving through
-	// GetCrowdyEntityComponent keeps the ICrowdyEntityComponentProvider indirection working here too.
-	const UCrowdyEntityComponent* Component = GetCrowdyEntityComponent(Entity);
-
-	// An actor with no component, or one that never got an identity, is not locally controlled.
-	return Component && Component->GetNetID().IsValid() && Component->IsLocallyOwned();
+	return IsCrowdyEntityLocallyOwned(Entity);
 }
 
 // Entity State Checks
@@ -273,9 +300,14 @@ void UCrowdyUtilities::SwitchIsCrowdyEntityPlayerControlled(UObject* WorldContex
 		return;
 	}
 
-	// Dynamic entity component = active participant (local player avatar or bot driving a state channel)
-	if (const UCrowdyEntityComponent* Component = TargetActor->FindComponentByClass<UCrowdyEntityComponent>();
-		Component && Component->GetMode() == ECrowdyEntityMode::Dynamic)
+	// An entity that replicates movement = active participant (local player avatar or bot driving a state channel)
+	const UCrowdyEntityComponent* Component = TargetActor->FindComponentByClass<UCrowdyEntityComponent>();
+	if (Component && Component->OwnedBy == ECrowdyOwnedBy::Leader)
+	{
+		return;
+	}
+
+	if (Component && Component->ReplicatesMovement() && Component->GetRole() != ECrowdyRole::HostOwned)
 	{
 		bIsPlayerControlled = true;
 		return;
@@ -384,12 +416,16 @@ bool UCrowdyUtilities::GetCrowdyHasAuthority(const UObject* WorldContextObject)
 		return false;
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return HostSubsystem->IsHost();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UCrowdyUtilities::CrowdyHasAuthority(UObject* WorldContextObject, bool& bHasAuthority)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bHasAuthority = GetCrowdyHasAuthority(WorldContextObject);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 bool UCrowdyUtilities::CrowdyIsConnectedToServer(UObject* WorldContextObject)
@@ -424,7 +460,9 @@ FGuid UCrowdyUtilities::CrowdyGetHostID(UObject* WorldContextObject, bool& bIsVa
 		return {};
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	const FGuid HostID = HostSubsystem->GetHostID();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	bIsValid = HostID.IsValid();
 	return HostID;
 }
@@ -439,7 +477,9 @@ bool UCrowdyUtilities::IsCrowdyEntityHost(UObject* WorldContextObject, const AAc
 		return false;
 
 	bool bHostValid = false;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	const FGuid HostID = CrowdyGetHostID(WorldContextObject, bHostValid);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if (!bHostValid || !HostID.IsValid())
 		return false;
 

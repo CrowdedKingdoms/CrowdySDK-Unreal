@@ -9,6 +9,7 @@
 class UBlueprint;
 class UEdGraphNode;
 class UEdGraphPin;
+class UK2Node_BaseAsyncTask;
 
 /**
  * Why one node inside a Crowdy multicast body cannot do its work on a client that draws the entity as a
@@ -85,6 +86,10 @@ public:
 	// The one-line reason and remedy for a limit, which is the text the compile warning carries. Split out
 	// so a test can pin that each limit says something, and so the two limits stay worded as one family.
 	static FString DescribeCrowdBodyLimit(ECrowdyCrowdBodyLimit Limit);
+
+	// The compile warning for an async node whose factory function is deprecated, or empty when it is not. The
+	// engine warns for a deprecated call node but not for an async node, which never reaches that check.
+	static FString DescribeDeprecatedAsyncNode(const UK2Node_BaseAsyncTask* Node);
 
 protected:
 	virtual void ProcessBlueprintCompiled(

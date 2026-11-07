@@ -100,7 +100,7 @@ void FCrowdyReplicatedVariableCustomization::CustomizeDetails(IDetailLayoutBuild
 TArray<ECrowdyReplicationMode> FCrowdyReplicatedVariableCustomization::SelectableModes()
 {
 	// The widget code below iterates this list, so a mode's availability is data, not Slate.
-	return { ECrowdyReplicationMode::None, ECrowdyReplicationMode::Replicated };
+	return { ECrowdyReplicationMode::None, ECrowdyReplicationMode::Replicated, ECrowdyReplicationMode::ReplicatedContinuous };
 }
 
 FText FCrowdyReplicatedVariableCustomization::ModeDisplayText(ECrowdyReplicationMode Mode)
@@ -109,6 +109,8 @@ FText FCrowdyReplicatedVariableCustomization::ModeDisplayText(ECrowdyReplication
 	{
 	case ECrowdyReplicationMode::Replicated:
 		return LOCTEXT("ModeReplicated", "Replicated");
+	case ECrowdyReplicationMode::ReplicatedContinuous:
+		return LOCTEXT("ModeReplicatedContinuous", "Replicated (Continuous)");
 	case ECrowdyReplicationMode::None:
 	default:
 		return LOCTEXT("ModeNone", "None");
@@ -126,6 +128,12 @@ FText FCrowdyReplicatedVariableCustomization::ModeTooltipText(ECrowdyReplication
 			"and its RepNotify runs. Use it for movement, animation, and other high-frequency view state, "
 			"NOT for authoritative or cheat-sensitive data, since the owning client controls it. Recompile after "
 			"changing.");
+	case ECrowdyReplicationMode::ReplicatedContinuous:
+		return LOCTEXT("ModeReplicatedContinuousTip",
+			"CrowdyState that rides this entity's movement updates, for a value that changes as often as the "
+			"movement does, such as a lean or a stance. It is sent on change and on every keyframe, so a late "
+			"joiner gets it, and it costs nothing while it is steady. On an entity that does not replicate "
+			"movement it replicates as ordinary CrowdyState. Recompile after changing.");
 	case ECrowdyReplicationMode::None:
 	default:
 		return LOCTEXT("ModeNoneTip", "Not networked by Crowdy.");
@@ -186,7 +194,11 @@ void FCrowdyReplicatedVariableCustomization::BuildReplicationCategory(IDetailLay
 	// switching mode regenerates this category with the right row set. The mode combo and the type-warning
 	// row above stay unconditional (the warning is type-gated, not mode-gated).
 	const ECrowdyReplicationMode CurrentMode = GetCurrentMode();
-	if (CurrentMode == ECrowdyReplicationMode::Replicated)
+	if (CurrentMode == ECrowdyReplicationMode::ReplicatedContinuous)
+	{
+		BuildRepNotifyRow(Category, DetailBuilder);
+	}
+	else if (CurrentMode == ECrowdyReplicationMode::Replicated)
 	{
 		BuildRepNotifyRow(Category, DetailBuilder);
 
@@ -334,7 +346,7 @@ TSharedRef<SWidget> FCrowdyReplicatedVariableCustomization::BuildModeComboConten
 		// plane; None is always available so a mis-set variable can be cleared.
 		bool bEnabled = true;
 		FText Tooltip = ModeTooltipText(Mode);
-		if (Mode == ECrowdyReplicationMode::Replicated && (!bReplicatable || !bClassSupportsState))
+		if (Mode != ECrowdyReplicationMode::None && (!bReplicatable || !bClassSupportsState))
 		{
 			bEnabled = false;
 			Tooltip = !bClassSupportsState
@@ -362,11 +374,13 @@ TSharedRef<SWidget> FCrowdyReplicatedVariableCustomization::BuildModeComboConten
 
 ECrowdyReplicationMode FCrowdyReplicatedVariableCustomization::GetCurrentMode() const
 {
-	if (HasVariableMeta(CrowdyStateMetaKeys::Replicate))
+	if (!HasVariableMeta(CrowdyStateMetaKeys::Replicate))
 	{
-		return ECrowdyReplicationMode::Replicated;
+		return ECrowdyReplicationMode::None;
 	}
-	return ECrowdyReplicationMode::None;
+	return HasVariableMeta(CrowdyStateMetaKeys::Continuous)
+		? ECrowdyReplicationMode::ReplicatedContinuous
+		: ECrowdyReplicationMode::Replicated;
 }
 
 FText FCrowdyReplicatedVariableCustomization::GetCurrentModeText() const
@@ -400,7 +414,17 @@ void FCrowdyReplicatedVariableCustomization::SetMode(ECrowdyReplicationMode NewM
 			LOCTEXT("ScrubModeKey", "Change Crowdy Replication mode"));
 	}
 
-	if (NewMode == ECrowdyReplicationMode::Replicated)
+	if (NewMode == ECrowdyReplicationMode::ReplicatedContinuous)
+	{
+		StampVariableMeta(CrowdyStateMetaKeys::Replicate, FString(),
+			LOCTEXT("SetReplicatedForContinuous", "Set Crowdy Replication: Replicated (Continuous)"));
+		StampVariableMeta(CrowdyStateMetaKeys::Continuous, FString(),
+			LOCTEXT("SetContinuous", "Set Crowdy Replication: Replicated (Continuous)"));
+		EnsureDefaultOnRep();
+		ClearNativeReplication();
+		RecompileForMetaChange(CrowdyStateMetaKeys::Continuous, /*bValueSet*/ true);
+	}
+	else if (NewMode == ECrowdyReplicationMode::Replicated)
 	{
 		// Add the marker; the shared OnRep and (below) the heartbeat default are the only sub-options seeded.
 		StampVariableMeta(CrowdyStateMetaKeys::Replicate, FString(),

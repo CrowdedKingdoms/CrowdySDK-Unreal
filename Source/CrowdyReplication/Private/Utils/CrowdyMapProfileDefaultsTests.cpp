@@ -6,6 +6,7 @@
 #include "CrowdyReplicationLog.h"
 #include "Data/CrowdyActorManagementConfig.h"
 #include "Data/CrowdyActorPoolBackend.h"
+#include "Data/CrowdyActorPoolBackendConfig.h"
 #include "Data/CrowdyMapProfile.h"
 #include "Data/CrowdyRenderingBackend.h"
 #include "Data/CrowdyRenderingBackendConfig.h"
@@ -409,6 +410,30 @@ bool FCrowdyBackendThatCannotInitializeIsRefusedTest::RunTest(const FString& Par
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyInterpolationDelayComesFromTheProfileTest,
+	"CrowdySDK.MapProfile.InterpolationDelayComesFromTheProfile",
+	CrowdyMapProfileDefaultsTestFlags)
+
+bool FCrowdyInterpolationDelayComesFromTheProfileTest::RunTest(const FString& Parameters)
+{
+	FCrowdyMapProfileScopedSettings ScopedSettings;
+	FCrowdyMapProfileScopedWorld Map(EWorldType::Game);
+
+	const TStrongObjectPtr<UCrowdyMapProfile> Profile(NewObject<UCrowdyMapProfile>());
+	Profile->ActorManagement.BackendClass = UCrowdyRecordingBackend::StaticClass();
+	ScopedSettings.Settings->DefaultProfile = Profile.Get();
+
+	TestEqual(TEXT("A profile that sets nothing keeps the 100 ms delay"), Profile->ActorManagement.InterpolationDelayMs, 100);
+
+	Profile->ActorManagement.InterpolationDelayMs = 250;
+	UCrowdyActorManager* Manager = NewObject<UCrowdyActorManager>(Map.World);
+
+	TestTrue(TEXT("The profile loads"), Manager->LoadConfigForTest());
+	TestEqual(TEXT("The actor manager draws with the profile's delay"), Manager->GetInterpolationDelayMsForTest(), int64(250));
+
+	return true;
+}
+
 /**
  * The shipped actor-pool backend is the one a profile that chose nothing now lands on. A missing config runs
  * on the shipped default (CrowdySDKShippedDefaultsTests covers that resolution); a config of another
@@ -437,5 +462,80 @@ bool FCrowdyActorPoolBackendRefusesAnUnusableConfigTest::RunTest(const FString& 
 
 	return true;
 }
+
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+
+namespace
+{
+	int32 CountProfileErrors(const UCrowdyMapProfile& Profile)
+	{
+		FDataValidationContext Context;
+		Profile.IsDataValid(Context);
+		return static_cast<int32>(Context.GetNumErrors());
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMapProfileReportsIdleActorsThatGoSilentTest,
+	"CrowdySDK.MapProfile.ReportsIdleActorsThatGoSilent",
+	CrowdyMapProfileDefaultsTestFlags)
+
+bool FCrowdyMapProfileReportsIdleActorsThatGoSilentTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<UCrowdyMapProfile> Profile(NewObject<UCrowdyMapProfile>());
+	TestEqual(TEXT("The shipped defaults are valid"), CountProfileErrors(*Profile), 0);
+
+	Profile->ActorKeyframeIntervalSeconds = 0.f;
+	Profile->ActorHeartbeatIntervalSeconds = 0.f;
+	TestEqual(TEXT("No keyframe and no heartbeat breaks both observers and the server's presence"), CountProfileErrors(*Profile), 2);
+
+	Profile->bSendActorStateOnlyOnChange = false;
+	TestEqual(TEXT("Sending every interval needs neither"), CountProfileErrors(*Profile), 0);
+
+	// Heartbeats never reach other players, so they cannot stand in for a keyframe.
+	Profile->bSendActorStateOnlyOnChange = true;
+	Profile->ActorHeartbeatIntervalSeconds = 1.f;
+	TestEqual(TEXT("Heartbeats without keyframes are reported"), CountProfileErrors(*Profile), 1);
+
+	Profile->ActorKeyframeIntervalSeconds = 15.f;
+	TestEqual(TEXT("A keyframe slower than the actor timeout is reported"), CountProfileErrors(*Profile), 1);
+
+	Profile->ActorKeyframeIntervalSeconds = 8.f;
+	Profile->ActorHeartbeatIntervalSeconds = 0.f;
+	TestEqual(TEXT("Presence refreshed less often than the server's stale window is reported"), CountProfileErrors(*Profile), 1);
+
+	Profile->ActorKeyframeIntervalSeconds = 3.f;
+	TestEqual(TEXT("A keyframe inside both windows needs no heartbeat"), CountProfileErrors(*Profile), 0);
+
+	Profile->ActorKeyframeIntervalSeconds = 0.f;
+	Profile->ActorHeartbeatIntervalSeconds = 1.f;
+	Profile->ActorManagement.bUseCrowdyActorTracker = false;
+	TestEqual(TEXT("A map that draws no remote entity has no observer to lose"), CountProfileErrors(*Profile), 0);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMapProfileReportsAMismatchedBackendConfigTest,
+	"CrowdySDK.MapProfile.ReportsAMismatchedBackendConfig",
+	CrowdyMapProfileDefaultsTestFlags)
+
+bool FCrowdyMapProfileReportsAMismatchedBackendConfigTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<UCrowdyMapProfile> Profile(NewObject<UCrowdyMapProfile>());
+	Profile->ActorManagement.BackendClass = UCrowdyActorPoolBackend::StaticClass();
+
+	Profile->ActorManagement.BackendConfig = NewObject<UCrowdyUnrelatedBackendConfig>(Profile.Get());
+	TestEqual(TEXT("Another backend's config is reported"), CountProfileErrors(*Profile), 1);
+
+	Profile->ActorManagement.BackendConfig = NewObject<UCrowdyActorPoolBackendConfig>(Profile.Get());
+	TestEqual(TEXT("The backend's own config is valid"), CountProfileErrors(*Profile), 0);
+
+	Profile->ActorManagement.BackendClass = UCrowdyRecordingBackend::StaticClass();
+	Profile->ActorManagement.BackendConfig = NewObject<UCrowdyUnrelatedBackendConfig>(Profile.Get());
+	TestEqual(TEXT("A backend that names no config class is not checked"), CountProfileErrors(*Profile), 0);
+
+	return true;
+}
+#endif
 
 #endif

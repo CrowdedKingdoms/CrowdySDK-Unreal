@@ -14,6 +14,7 @@
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Messages/FPingTestMessage.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Messages/Actor/CrowdyUpdateExtras.h"
 #include "Messages/Actor/FActorHeartbeatRequestMessage.h"
 #include "Messages/Actor/FActorUpdateRequestMessage.h"
 #include "Messages/GameObjects/FGameEventRequest.h"
@@ -37,6 +38,7 @@
 #include "Subsystem/CrowdyTeams.h"
 #include "Subsystem/CrowdyChannels.h"
 #include "Subsystem/CrowdyProximityChat.h"
+#include "Subsystem/CrowdySafety.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
 
 #include <atomic>
@@ -73,9 +75,9 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		{
 			ProximityChat->EnsureSubscription();
 		}
-		BridgeSub->DispatchActorUpdateFn = [this](int64 X, int64 Y, int64 Z, ECrowdyDecayRate D, ECrowdyReplicationDistance R, const FString& ID, const FInstancedStruct& State, FCrowdyClassID ClassID, bool bAsync)
+		BridgeSub->DispatchActorUpdateFn = [this](int64 X, int64 Y, int64 Z, ECrowdyDecayRate D, ECrowdyReplicationDistance R, const FString& ID, const FInstancedStruct& State, FCrowdyClassID ClassID, bool bAsync, TConstArrayView<uint8> Extras)
 		{
-			DispatchActorUpdate(X, Y, Z, D, R, ID, State, ClassID, bAsync);
+			DispatchActorUpdate(X, Y, Z, D, R, ID, State, ClassID, bAsync, Extras);
 		};
 		BridgeSub->DispatchActorHeartbeatFn = [this](int64 X, int64 Y, int64 Z, const FString& ID)
 		{
@@ -89,7 +91,7 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		{
 			DispatchGameEventView_Internal(X, Y, Z, D, R, ID, PayloadStruct, PayloadMemory, Target, TargetID);
 		};
-		BridgeSub->DispatchSingleActorMessageFn = [this](int64 X, int64 Y, int64 Z, const FGuid& TargetActorID, FInstancedStruct Payload, bool bAsync)
+		BridgeSub->DispatchSingleActorMessageFn = [this](int64 X, int64 Y, int64 Z, const FCrowdyActorId& TargetActorID, FInstancedStruct Payload, bool bAsync)
 		{
 			DispatchSingleActorMessage_Internal(X, Y, Z, TargetActorID, MoveTemp(Payload), bAsync);
 		};
@@ -821,7 +823,8 @@ void UCrowdySDKSubsystem::SetExpectedActorUpdateStateSize(const int32 InSize) co
 void UCrowdySDKSubsystem::DispatchActorUpdate(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
                                               const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance,
                                               const FString& InstigatorID, const FInstancedStruct& ActorStatePayload,
-                                              const FCrowdyClassID ClassID, const bool bAsync)
+                                              const FCrowdyClassID ClassID, const bool bAsync,
+                                              const TConstArrayView<uint8> Extras)
 {
 	// The lambda below exists only to own what a deferred send would otherwise read after its caller has
 	// moved on, so the inline caller must not go through it: constructing it copies the id string and deep
@@ -829,17 +832,17 @@ void UCrowdySDKSubsystem::DispatchActorUpdate(const int64 ChunkX, const int64 Ch
 	if (!bAsync)
 	{
 		BuildAndSendActorUpdate(ChunkX, ChunkY, ChunkZ, DecayRate, ReplicationDistance,
-			InstigatorID, ActorStatePayload, ClassID);
+			InstigatorID, ActorStatePayload, ClassID, Extras);
 		return;
 	}
 
 	UE::Tasks::Launch(
 		UE_SOURCE_LOCATION,
 		[this, ChunkX, ChunkY, ChunkZ, DecayRate, ReplicationDistance, InstigatorID, ClassID,
-			State = ActorStatePayload]()
+			State = ActorStatePayload, OwnedExtras = TArray<uint8>(Extras)]()
 		{
 			BuildAndSendActorUpdate(ChunkX, ChunkY, ChunkZ, DecayRate, ReplicationDistance,
-				InstigatorID, State, ClassID);
+				InstigatorID, State, ClassID, OwnedExtras);
 		},
 		LowLevelTasks::ETaskPriority::BackgroundNormal
 		);
@@ -848,7 +851,7 @@ void UCrowdySDKSubsystem::DispatchActorUpdate(const int64 ChunkX, const int64 Ch
 void UCrowdySDKSubsystem::BuildAndSendActorUpdate(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
                                                   const ECrowdyDecayRate DecayRate, const ECrowdyReplicationDistance ReplicationDistance,
                                                   const FString& InstigatorID, const FInstancedStruct& ActorStatePayload,
-                                                  const FCrowdyClassID ClassID)
+                                                  const FCrowdyClassID ClassID, const TConstArrayView<uint8> Extras)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_DispatchActorUpdate);
 
@@ -876,6 +879,20 @@ void UCrowdySDKSubsystem::BuildAndSendActorUpdate(const int64 ChunkX, const int6
 	}
 
 	ActorUpdateRequest.StateSize = ActorUpdateRequest.StateBytes.Num();
+
+	// Extras that would push the update past one datagram are left off, so the movement still goes.
+	if (CrowdyUpdateExtras::FitsBesideState(ActorUpdateRequest.StateSize, Extras.Num()))
+	{
+		ActorUpdateRequest.ExtrasBytes.Append(Extras.GetData(), Extras.Num());
+	}
+	else if (!Extras.IsEmpty())
+	{
+		static std::atomic<int64> NumDropped{0};
+		const int64 Dropped = NumDropped.fetch_add(1, std::memory_order_relaxed) + 1;
+		UE_CLOG(Dropped == 1 || Dropped % 1000 == 0, LogCrowdySDK, Warning,
+			TEXT("An actor update's %d octets of extras do not fit beside its %d state octets; sent without them (%lld so far)."),
+			Extras.Num(), ActorUpdateRequest.StateSize, Dropped);
+	}
 
 	SendMessage(ActorUpdateRequest);
 }
@@ -966,7 +983,7 @@ void UCrowdySDKSubsystem::DispatchGameEventView_Internal(const int64 ChunkX, con
 }
 
 void UCrowdySDKSubsystem::DispatchSingleActorMessage_Internal(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
-                                                              const FGuid& TargetActorID, FInstancedStruct EventPayload, const bool bAsync)
+                                                              const FCrowdyActorId& TargetActorID, FInstancedStruct EventPayload, const bool bAsync)
 {
 	auto BuildAndSend = [this,
 	ChunkX, ChunkY, ChunkZ,
@@ -986,7 +1003,7 @@ void UCrowdySDKSubsystem::DispatchSingleActorMessage_Internal(const int64 ChunkX
 		Request.ReplicationDistance = ECrowdyReplicationDistance::None;
 
 		// UUID is the destination actor; the server delivers only to the client that owns it.
-		Request.UUID = FCrowdyActorId::FromGuid(TargetActorID);
+		Request.UUID = TargetActorID;
 
 		FCrowdyTypeID EventID;
 		if (!UEventPayloadRegistry::Get()->GetID(Payload.GetScriptStruct(), EventID))
@@ -1262,6 +1279,10 @@ void UCrowdySDKSubsystem::HandleVoiceMicStateChanged(const ECrowdyVoiceMicState 
 	}
 	RelayedVoiceMicState = State;
 	OnVoiceMicStateChanged.Broadcast(State);
+	if (UCrowdySafety* Safety = GetGameInstance()->GetSubsystem<UCrowdySafety>())
+	{
+		Safety->SetVoiceCapturing(State == ECrowdyVoiceMicState::Capturing);
+	}
 }
 
 void UCrowdySDKSubsystem::HandleVoiceSpeakerTalking(const FString& SpeakerUuid, const bool bTalking)
@@ -1308,6 +1329,11 @@ void UCrowdySDKSubsystem::OnUDPTimeout()
 void UCrowdySDKSubsystem::OnUDPConnectionSuccessful()
 {
 	OnUDPConnectionSuccess.Broadcast();
+
+	if (UCrowdySafety* Safety = GetGameInstance()->GetSubsystem<UCrowdySafety>())
+	{
+		Safety->RefreshRecordingState();
+	}
 
 	// The connection is up and the player is authenticated, so join the reliable-RPC channels now; any
 	// reliable sends queued before this flush once the joins complete. Idempotent across reconnects.
@@ -1357,9 +1383,9 @@ void UCrowdySDKSubsystem::StartConnectedSessionWork()
 		});
 	}
 
-	// Only once the player is signed in. A connection that comes up before sign-in leaves polling to the sign-in
-	// that follows, since login does not start it.
-	if (IsValid(GameSession) && GameSession->GetUserID() != 0)
+	// Only once the player is signed in, and only while the elected host is the Leader Source. A connection that comes
+	// up before sign-in leaves polling to the sign-in that follows, since login does not start it.
+	if (IsValid(GameSession) && GameSession->GetUserID() != 0 && UCrowdySDKDeveloperSettings::UsesElectedHost())
 		StartHostPolling();
 }
 
@@ -1678,7 +1704,7 @@ void UCrowdySDKSubsystem::PollGameHost() const
 				TEXT("GameHost | HostUserID=%lld | LocalUserID=%lld | IsHost=%s | ActorCount=%d | EarliestJoined=%s"),
 				HostUserId,
 				IsValid(Self->GameSession) ? Self->GameSession->GetUserID() : 0,
-				HostSubsystem->IsHost() ? TEXT("YES") : TEXT("no"),
+				IsValid(Self->GameSession) && HostUserId != 0 && Self->GameSession->GetUserID() == HostUserId ? TEXT("YES") : TEXT("no"),
 				ActorCount,
 				*EarliestActorJoinedAt);
 		});

@@ -16,12 +16,28 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "GameFramework/Actor.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "K2Node_AddDelegate.h"
+#include "K2Node_AsyncAction.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_CustomEvent.h"
 #include "K2Node_Knot.h"
 #include "K2Node_Self.h"
 #include "K2Node_Timeline.h"
 #include "K2Node_VariableGet.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Replication/Components/CrowdyEntityComponent.h"
+#include "Replication/Ownership/CrowdyOwnershipTransfer.h"
+#include "Replication/Subsystems/CrowdyEntitySubsystem.h"
+#include "Subsystem/AsyncActions/CrowdyAccountActions.h"
+#include "Subsystem/AsyncActions/CrowdyHostQueryActions.h"
+#include "Subsystem/CrowdyGameSession.h"
+#include "Subsystem/CrowdyHostSubsystem.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/CrowdyUtilities.h"
 
@@ -164,10 +180,13 @@ bool FCrowdyForbiddenHasAuthorityIgnoresNearMissesTest::RunTest(const FString& P
 {
 	UFunction* GetActorLocationFn = AActor::StaticClass()->FindFunctionByName(
 		GET_FUNCTION_NAME_CHECKED(AActor, K2_GetActorLocation));
+	// The deprecated wrappers are still callable from Blueprints until they are removed, so they stay near misses.
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	UFunction* CrowdyHasAuthorityExecFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
 		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, CrowdyHasAuthority));
 	UFunction* GetCrowdyHasAuthorityFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
 		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, GetCrowdyHasAuthority));
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	if (!TestNotNull(TEXT("AActor::K2_GetActorLocation resolves"), GetActorLocationFn)
 		|| !TestNotNull(TEXT("UCrowdyUtilities::CrowdyHasAuthority resolves"), CrowdyHasAuthorityExecFn)
@@ -337,7 +356,7 @@ bool FCrowdyCrowdRecipientCoversOnlyMulticastsTest::RunTest(const FString& Param
 	TestFalse(TEXT("an owning-client call lands only where the entity is a real actor"),
 		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(ECrowdyEventRecipient::OwningClient));
 	TestFalse(TEXT("a host call lands only where the entity is a real actor"),
-		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(ECrowdyEventRecipient::Host));
+		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(CrowdyDeprecatedHostRecipient));
 
 	// An author who never touched the recipient dropdown wrote a spatial multicast, because that is what
 	// the runtime defaults to. If an unset value read as out of scope here, the commonest event in a
@@ -750,6 +769,151 @@ bool FCrowdyCrowdRepresentationFollowsProfilesTest::RunTest(const FString& Param
 	TestFalse(TEXT("nor does one whose profile never chose a backend at all"),
 		CrowdyAuthoringContributions::IsCrowdRepresentationSelected());
 
+	return true;
+}
+
+// A Blueprint event set to the deprecated Host recipient says so when it compiles, and no other event does.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerHostRecipientWarnsTest,
+	"CrowdySDK.Compiler.HostRecipientWarns", CrowdyCompilerExtensionTestFlags)
+bool FCrowdyCompilerHostRecipientWarnsTest::RunTest(const FString& Parameters)
+{
+	const auto CountWarnings = [](const TCHAR* Recipient)
+	{
+		const FName Name = MakeUniqueObjectName(GetTransientPackage(), UBlueprint::StaticClass(), TEXT("CrowdyHostRecipientFixture"));
+		UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), GetTransientPackage(), Name, BPTYPE_Normal,
+			UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+
+		UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+		UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(Graph);
+		Event->CustomFunctionName = TEXT("Ping");
+		Event->GetUserDefinedMetaData().SetMetaData(FName(CrowdyRpcMetaKeys::Replicates), FString());
+		Event->GetUserDefinedMetaData().SetMetaData(FName(CrowdyRpcMetaKeys::Recipient), FString(Recipient));
+		Graph->AddNode(Event, false, false);
+		Event->CreateNewGuid();
+		Event->PostPlacedNewNode();
+		Event->AllocateDefaultPins();
+
+		FCompilerResultsLog Results;
+		Results.SetSilentMode(true);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection | EBlueprintCompileOptions::SkipSave, &Results);
+		return Results.Messages.FilterByPredicate([](const TSharedRef<FTokenizedMessage>& Message)
+		{
+			return Message->ToText().ToString().Contains(TEXT("deprecated Recipient Host"));
+		}).Num();
+	};
+
+	TestEqual(TEXT("Host warns"), CountWarnings(TEXT("Host")), 1);
+	TestEqual(TEXT("Owning Client does not"), CountWarnings(TEXT("OwningClient")), 0);
+	return true;
+}
+
+// Every piece of the old host surface reaches a Blueprint author with a warning that names what to do instead.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerHostSurfaceIsDeprecatedTest,
+	"CrowdySDK.Compiler.HostSurfaceIsDeprecated", CrowdyCompilerExtensionTestFlags)
+bool FCrowdyCompilerHostSurfaceIsDeprecatedTest::RunTest(const FString& Parameters)
+{
+	const TPair<UClass*, FName> Functions[] = {
+		{UCrowdyHostSubsystem::StaticClass(), TEXT("GetHostID")},
+		{UCrowdyHostSubsystem::StaticClass(), TEXT("IsHostSet")},
+		{UCrowdyHostSubsystem::StaticClass(), TEXT("GetHostUserID")},
+		{UCrowdyHostSubsystem::StaticClass(), TEXT("IsHost")},
+		{UCrowdyGameSession::StaticClass(), TEXT("GetHostID")},
+		{UCrowdyEntitySubsystem::StaticClass(), TEXT("GetHostID")},
+		{UCrowdyUtilities::StaticClass(), TEXT("CrowdyGetHostID")},
+		{UCrowdyUtilities::StaticClass(), TEXT("IsCrowdyEntityHost")},
+		{UCrowdyIsEntityHostServer::StaticClass(), TEXT("IsCrowdyEntityHostServer")},
+		{UCrowdyOwnershipTransfer::StaticClass(), TEXT("GrantOwnershipToHost")},
+		{UCrowdyEntityComponent::StaticClass(), TEXT("GetHostOverridePolicy")},
+	};
+	for (const TPair<UClass*, FName>& Entry : Functions)
+	{
+		const FString Name = FString::Printf(TEXT("%s::%s"), *Entry.Key->GetName(), *Entry.Value.ToString());
+		const UFunction* Function = Entry.Key->FindFunctionByName(Entry.Value);
+		if (!TestNotNull(*Name, Function)) continue;
+
+		TestTrue(*(Name + TEXT(" is deprecated")), Function->HasMetaData(FBlueprintMetadata::MD_DeprecatedFunction));
+		TestFalse(*(Name + TEXT(" says what to do instead")), Function->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage).IsEmpty());
+	}
+
+	const TPair<UClass*, FName> Properties[] = {
+		{UCrowdyHostSubsystem::StaticClass(), TEXT("OnHostElected")},
+		{UCrowdyGameSession::StaticClass(), TEXT("OnHostIDUpdated")},
+		{UCrowdyEntityComponent::StaticClass(), TEXT("HostOverride")},
+	};
+	for (const TPair<UClass*, FName>& Entry : Properties)
+	{
+		const FString Name = FString::Printf(TEXT("%s::%s"), *Entry.Key->GetName(), *Entry.Value.ToString());
+		const FProperty* Property = Entry.Key->FindPropertyByName(Entry.Value);
+		if (!TestNotNull(*Name, Property)) continue;
+
+		TestTrue(*(Name + TEXT(" is deprecated")), Property->HasMetaData(FBlueprintMetadata::MD_DeprecatedProperty));
+		TestFalse(*(Name + TEXT(" says what to do instead")), Property->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage).IsEmpty());
+	}
+	return true;
+}
+
+// The engine has no deprecation check for async nodes, so a placed one warns only through the compiler extension.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerDeprecatedAsyncNodeWarnsTest,
+	"CrowdySDK.Compiler.DeprecatedAsyncNodeWarns", CrowdyCompilerExtensionTestFlags)
+bool FCrowdyCompilerDeprecatedAsyncNodeWarnsTest::RunTest(const FString& Parameters)
+{
+	const auto CountWarnings = [](const UFunction* Factory, const TCHAR* Text)
+	{
+		const FName Name = MakeUniqueObjectName(GetTransientPackage(), UBlueprint::StaticClass(), TEXT("CrowdyAsyncDeprecationFixture"));
+		UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), GetTransientPackage(), Name, BPTYPE_Normal,
+			UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+
+		UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+		UK2Node_AsyncAction* Node = NewObject<UK2Node_AsyncAction>(Graph);
+		Node->InitializeProxyFromFunction(Factory);
+		Graph->AddNode(Node, false, false);
+		Node->CreateNewGuid();
+		Node->PostPlacedNewNode();
+		Node->AllocateDefaultPins();
+
+		FCompilerResultsLog Results;
+		Results.SetSilentMode(true);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection | EBlueprintCompileOptions::SkipSave, &Results);
+		return Results.Messages.FilterByPredicate([Text](const TSharedRef<FTokenizedMessage>& Message)
+		{
+			return Message->ToText().ToString().Contains(Text);
+		}).Num();
+	};
+
+	const UFunction* Deprecated = UCrowdyIsEntityHostServer::StaticClass()->FindFunctionByName(TEXT("IsCrowdyEntityHostServer"));
+	const UFunction* Current = UCrowdyAccount_RequestPasswordReset::StaticClass()->FindFunctionByName(TEXT("RequestPasswordReset"));
+	if (!TestNotNull(TEXT("the deprecated factory resolves"), Deprecated) || !TestNotNull(TEXT("the control factory resolves"), Current))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("the host check node warns once and names the replacement"), CountWarnings(Deprecated, TEXT("is deprecated. Use Is Local Leader")), 1);
+	TestEqual(TEXT("a current async node does not warn"), CountWarnings(Current, TEXT("is deprecated")), 0);
+	return true;
+}
+
+// Unlike an async node, a Bind to a deprecated delegate warns through the engine, so the extension adds nothing here.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerDeprecatedDelegateBindWarnsTest,
+	"CrowdySDK.Compiler.DeprecatedDelegateBindWarns", CrowdyCompilerExtensionTestFlags)
+bool FCrowdyCompilerDeprecatedDelegateBindWarnsTest::RunTest(const FString& Parameters)
+{
+	const FName Name = MakeUniqueObjectName(GetTransientPackage(), UBlueprint::StaticClass(), TEXT("CrowdyBindDeprecationFixture"));
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), GetTransientPackage(), Name, BPTYPE_Normal,
+		UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+
+	const FProperty* Delegate = UCrowdyHostSubsystem::StaticClass()->FindPropertyByName(TEXT("OnHostElected"));
+	if (!TestNotNull(TEXT("the delegate resolves"), Delegate)) return false;
+
+	UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UK2Node_AddDelegate* Node = NewObject<UK2Node_AddDelegate>(Graph);
+	Node->SetFromProperty(Delegate, false, UCrowdyHostSubsystem::StaticClass());
+	Graph->AddNode(Node, false, false);
+	if (!TestNotNull(TEXT("the node resolves the delegate"), Node->GetProperty())) return false;
+
+	TestTrue(TEXT("the node sees a deprecated reference"), Node->HasDeprecatedReference());
+	TestEqual(TEXT("the deprecation response is a warning"),
+		Node->GetDeprecationResponse(EEdGraphNodeDeprecationType::NodeHasDeprecatedReference).MessageType,
+		EEdGraphNodeDeprecationMessageType::Warning);
 	return true;
 }
 

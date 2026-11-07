@@ -27,6 +27,11 @@ struct FCrowdyFnInfo
 	// skip InitializeStruct/DestroyStruct.
 	bool bParamsPOD = false;
 
+	// True when an input parameter can hold typed text, directly or inside a struct or container. An owner-only event
+	// that does stays a direct message, which is what the platform's rules on private messages, and for players under
+	// 18, apply to.
+	bool bCarriesText = false;
+
 	// meta=(CrowdyAction): the author declares that this event's parameters describe a one-shot action.
 	// Read by receivers that hold the entity as data and so have no body to run; it changes nothing about
 	// how the call is routed or how it behaves where a real object receives it.

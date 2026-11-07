@@ -161,6 +161,8 @@ public:
 	void SetUserIdForTest(int64 UserId) { UserIdForTest = UserId; }
 
 	int32 NumKnownGroupsForTest() const { return KnownGroupsByChannel.Num() + JoinedChannelIds.Num(); }
+
+	int64 GetAppIdForTest() const { return GetAppId(); }
 #endif
 
 private:

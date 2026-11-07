@@ -159,7 +159,7 @@ void SCrowdyInspectorView::Rebuild()
 		AddLine(FString::Printf(TEXT("User ID: %lld"), Session->GetUserID()));
 		AddLine(FString::Printf(TEXT("Game Token ID: %lld"), Session->GetGameTokenID()));
 		AddLine(FString::Printf(TEXT("UUID: %s"), *Session->GetUUID()));
-		AddLine(FString::Printf(TEXT("Host ID: %s"), *Session->GetHostID().ToString(EGuidFormats::DigitsWithHyphens)));
+		AddLine(FString::Printf(TEXT("Host ID: %s"), *Session->GetAppWriterID().ToString(EGuidFormats::DigitsWithHyphens)));
 		// The token itself is a secret; only report whether one is held, never its value.
 		AddLine(Session->GetGameToken().IsEmpty() ? TEXT("Game Token: not set") : TEXT("Game Token: set (hidden)"));
 	}
@@ -215,7 +215,7 @@ void SCrowdyInspectorView::Rebuild()
 			const FGuid LocalPlayerId = Entities->GetLocalPlayerID();
 			AddHeader(LOCTEXT("InspectorEntities", "Entities"));
 			AddLine(FString::Printf(TEXT("Local player ID: %s"), *LocalPlayerId.ToString(EGuidFormats::DigitsWithHyphens)));
-			AddLine(FString::Printf(TEXT("Host ID: %s"), *Entities->GetHostID().ToString(EGuidFormats::DigitsWithHyphens)));
+			AddLine(FString::Printf(TEXT("Host ID: %s"), *Entities->GetAppWriterID().ToString(EGuidFormats::DigitsWithHyphens)));
 
 			// There is no "every entity" accessor, so list what this client owns. That is the most
 			// useful slice for confirming spawns and ownership while debugging.

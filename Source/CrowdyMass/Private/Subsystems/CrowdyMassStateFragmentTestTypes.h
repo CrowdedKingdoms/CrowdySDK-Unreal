@@ -237,3 +237,20 @@ public:
 	UPROPERTY(meta = (CrowdyState))
 	ECrowdyMassStateFragmentTestBand Band = ECrowdyMassStateFragmentTestBand::Low;
 };
+
+// Spawn data of the shape a game hands Spawn Entity: one property a registered field reads, one carrying a registered
+// field's name as another type, and one no field claims.
+USTRUCT()
+struct FCrowdyMassSpawnStateTestData
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 SpawnScore = 0;
+
+	UPROPERTY()
+	float SpawnLevel = 0.f;
+
+	UPROPERTY()
+	int32 SpawnUnclaimed = 0;
+};
