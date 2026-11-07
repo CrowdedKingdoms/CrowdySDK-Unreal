@@ -15,6 +15,13 @@ class UCrowdyGameSession;
 struct FCrowdyRepLayout;
 struct FCrowdyEntityRecord;
 
+/** The most state one delta can carry on each route, after the fixed fields around the blob. */
+namespace CrowdyStateBlobLimit
+{
+	inline constexpr int32 Event = 1029;
+	inline constexpr int32 Channel = 969;
+}
+
 /**
  * Internal per-owned-entity send state for the CrowdyState replicator. Deliberately NOT a USTRUCT: it
  * holds raw FProperty pointers plus a void shadow buffer that have no wire form and are never serialized.
@@ -107,6 +114,9 @@ struct FCrowdyOwnedEntityState
 	// (and cleared for the sent bits) by the send loop. Sized to the layout in InitShadow and re-Init on a
 	// shadow rebuild. A bManualDirty property is dirty iff its bit here is set; auto-diff never touches it.
 	TBitArray<> PendingManualDirty;
+
+	// Properties already warned about as too large to send. Empty until the first one, so most entities pay nothing.
+	TBitArray<> WarnedTooLarge;
 
 	// World-time (seconds) of this entity's next keyframe heartbeat. Seeded in BuildOwnedState to about one
 	// interval out with a small deterministic per-entity stagger so heartbeats do not synchronize into a burst.

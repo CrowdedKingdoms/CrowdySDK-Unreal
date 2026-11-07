@@ -467,6 +467,8 @@ public:
 	ACrowdyStateHostOverrideActor();
 	UPROPERTY(meta = (CrowdyState))
 	int32 RepInt = 0;
+	UPROPERTY(meta = (CrowdyState))
+	FString RepText;
 	UPROPERTY()
 	TObjectPtr<UCrowdyEntityComponent> Entity;
 };
@@ -776,4 +778,49 @@ public:
 
 	UFUNCTION()
 	void OnRep_Good();
+};
+
+/**
+ * Text properties that can outgrow what one delta carries, on the broadcast, manual and owner-only paths, beside a
+ * small property that has to keep moving when they do.
+ */
+UCLASS(meta = (CrowdyTestFixture))
+class ACrowdyStateSizeTestActor : public AActor
+{
+	GENERATED_BODY()
+
+public:
+
+	UPROPERTY(meta = (CrowdyState))
+	FString RepFirst;
+
+	UPROPERTY(meta = (CrowdyState))
+	FString RepSecond;
+
+	UPROPERTY(meta = (CrowdyState))
+	int32 RepSmall = 0;
+
+	UPROPERTY(meta = (CrowdyState, CrowdyManualDirty))
+	FString RepMarked;
+
+	UPROPERTY(meta = (CrowdyState, CrowdyOwnerOnly))
+	FString RepOwnerFirst;
+
+	UPROPERTY(meta = (CrowdyState, CrowdyOwnerOnly))
+	FString RepOwnerSecond;
+};
+
+/** The same shape for a participant that rides the session channel, whose limit is lower. */
+UCLASS(meta = (CrowdyTestFixture))
+class UCrowdyStateSizeTestSubsystem : public UObject
+{
+	GENERATED_BODY()
+
+public:
+
+	UPROPERTY(meta = (CrowdyState))
+	FString RepText;
+
+	UPROPERTY(meta = (CrowdyState))
+	int32 RepSmall = 0;
 };
