@@ -27,7 +27,7 @@ Every release has the same subsections, in this order:
 A subsection with nothing to say is written as "None." so you never have to guess whether
 something was left out.
 
-## Unreleased (after 2.24.0)
+## 2.25.0
 
 **Verdict.** One behaviour change: there is no elected host by default. `Leader Source` now defaults to
 `Server Object`, where the Leader of a Server Object type the SDK deploys writes replicated subsystems, nothing
