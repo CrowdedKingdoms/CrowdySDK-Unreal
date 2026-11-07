@@ -4,6 +4,7 @@
 #include "CrowdyCppClient.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
+#include "Http.h"
 #include "HttpConstants.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
@@ -34,8 +35,11 @@ namespace
 
 	TAutoConsoleVariable<int32> CVarHttp2(
 		TEXT("crowdy.net.http2"), 1,
-		TEXT("Asks for HTTP/2 on the SDK's own requests, falling back to HTTP/1.1 when the server does not offer it; 0 leaves the engine's HTTP version. With HTTP/2 the curl diagnostics the engine logs for a failed request can include the request headers, bearer token included, so set 0 if you ship logs from builds with logging enabled."),
+		TEXT("Asks for HTTP/2 on the SDK's own requests, falling back to HTTP/1.1 when the server does not offer it; 0 leaves the engine's HTTP version. LogHttp stays at Error while an SDK request is in flight, because the curl report the engine logs for a failed HTTP/2 request includes its headers, bearer token included."),
 		ECVF_Default);
+
+	int32 QuietHttpRequests = 0;
+	ELogVerbosity::Type HttpVerbosityBeforeQuiet = ELogVerbosity::NoLogging;
 
 	void ApplyRequestOptions(IHttpRequest& Request)
 	{
@@ -94,14 +98,19 @@ namespace
 			const std::shared_ptr<std::atomic<bool>> bLanded = std::make_shared<std::atomic<bool>>(false);
 			auto Land = [SharedCounters = Counters, bLanded]()
 			{
-				if (SharedCounters && !bLanded->exchange(true))
+				if (bLanded->exchange(true))
+				{
+					return;
+				}
+				if (SharedCounters)
 				{
 					SharedCounters->EndFlight();
 				}
+				CrowdyCppTransport::EndQuietHttpLog();
 			};
 
 			HttpRequest->OnProcessRequestComplete().BindLambda(
-				[Callback, SharedCounters = Counters, Land](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnectedSuccessfully)
+				[Callback, SharedCounters = Counters, Land](FHttpRequestPtr Sent, FHttpResponsePtr Response, bool bConnectedSuccessfully)
 				{
 					Land();
 					HttpOutcome Outcome;
@@ -137,6 +146,8 @@ namespace
 						// GraphQL client turns that into a Network-kind outcome.
 						Outcome.status = crowdy::Errc::SocketError;
 						Outcome.errorMessage = "HTTP request failed";
+						UE_LOG(LogCrowdyCpp, Warning, TEXT("HTTP request to %s failed: %s."),
+							*Sent->GetURL(), LexToString(Sent->GetFailureReason()));
 					}
 					(*Callback)(std::move(Outcome));
 				});
@@ -145,6 +156,7 @@ namespace
 			{
 				Counters->BeginFlight();
 			}
+			CrowdyCppTransport::BeginQuietHttpLog();
 
 			// A synchronous start failure does not always fire the completion delegate, so it is completed here too;
 			// the GraphQL client delivers only the first of the two.
@@ -253,6 +265,39 @@ namespace CrowdyCppTransport
 		{
 			*MarkedHandOff = FPlatformTime::Seconds();
 		}
+	}
+
+	void BeginQuietHttpLog()
+	{
+#if !NO_LOGGING
+		if (QuietHttpRequests++ > 0)
+		{
+			return;
+		}
+
+		// VeryVerbose already prints every header of every request, so it is a choice this does not overrule.
+		HttpVerbosityBeforeQuiet = LogHttp.GetVerbosity();
+		if (HttpVerbosityBeforeQuiet > ELogVerbosity::Error && HttpVerbosityBeforeQuiet < ELogVerbosity::VeryVerbose)
+		{
+			LogHttp.SetVerbosity(ELogVerbosity::Error);
+		}
+#endif
+	}
+
+	void EndQuietHttpLog()
+	{
+#if !NO_LOGGING
+		if (--QuietHttpRequests > 0)
+		{
+			return;
+		}
+
+		// Anything but Error was set by someone else while requests were in flight, and stands.
+		if (LogHttp.GetVerbosity() == ELogVerbosity::Error)
+		{
+			LogHttp.SetVerbosity(HttpVerbosityBeforeQuiet);
+		}
+#endif
 	}
 
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> BuildRequest(const crowdy::graphql::HttpRequest& Request)
