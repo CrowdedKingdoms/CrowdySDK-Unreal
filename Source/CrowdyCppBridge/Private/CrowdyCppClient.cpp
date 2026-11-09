@@ -2347,6 +2347,20 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 	const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
 	TOptional<ECrowdyCppTokenPlane> Plane)
 {
+	return RunOpAs(Domain, OperationName, Variables, MoveTemp(OnDone), Plane, false);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::RunOpMsgpack(ECrowdyCppApiDomain Domain, const FString& OperationName,
+	const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
+	TOptional<ECrowdyCppTokenPlane> Plane)
+{
+	return RunOpAs(Domain, OperationName, Variables, MoveTemp(OnDone), Plane, true);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::RunOpAs(ECrowdyCppApiDomain Domain, const FString& OperationName,
+	const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
+	TOptional<ECrowdyCppTokenPlane> Plane, bool bMsgpack)
+{
 	// Deliver exactly once across every path: the async completion, the catch below, each pre-flight rejection, and
 	// a cancellation. The async transport delivers its callback from Poll() on the game thread and every other path
 	// runs synchronously on the same thread, so the fired flag needs no lock and the OnDone can safely touch
@@ -2413,7 +2427,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 	{
 		Client.graphqlClient().requestAsync(Document, JVars, OperationNameStr, std::move(Cb));
 	};
-	Retry->Deliver = [FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
+	Retry->Deliver = [FireOnce, Reason = Issued.FailureReason, bMsgpack](crowdy::graphql::GraphQLOutcome Out)
 	{
 		*Reason = OutcomeFailureReason(Out);
 		// The callback runs from Poll()/drain(), outside any issue-time try, so contain any throw here and deliver a
@@ -2433,6 +2447,31 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 				// code worth branching on, because there is nowhere to move to.
 				Result.ErrorMessage = OutcomeErrorMessage(Out);
 				ReadOutcomeFault(Out, Result);
+				FireOnce(MoveTemp(Result));
+				return;
+			}
+
+			if (bMsgpack)
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_PackResponse);
+				// The packer recurses, so a forged deep value is refused first; the dump and the scan are flat.
+				const std::string Dumped = Out.data.dump();
+				if (Dumped.size() > static_cast<size_t>(MAX_int32)
+					|| !CrowdyJsonSafety::IsNestingWithinLimit(FUtf8StringView(reinterpret_cast<const UTF8CHAR*>(Dumped.data()), static_cast<int32>(Dumped.size()))))
+				{
+					Result.ErrorMessage = TEXT("malformed or over-deep response data");
+					FireOnce(MoveTemp(Result));
+					return;
+				}
+				const std::string Packed = Out.data.toMsgpack();
+				if (Packed.size() > static_cast<size_t>(MAX_int32))
+				{
+					Result.ErrorMessage = TEXT("response data too large to hand over");
+					FireOnce(MoveTemp(Result));
+					return;
+				}
+				Result.Msgpack.Append(reinterpret_cast<const uint8*>(Packed.data()), static_cast<int32>(Packed.size()));
+				Result.bTransportOk = true;
 				FireOnce(MoveTemp(Result));
 				return;
 			}

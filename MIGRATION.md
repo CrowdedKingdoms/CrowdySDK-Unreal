@@ -27,6 +27,43 @@ Every release has the same subsections, in this order:
 A subsection with nothing to say is written as "None." so you never have to guess whether
 something was left out.
 
+## Unreleased (after 2.25.0)
+
+**Verdict.** Nothing breaks and nothing is deprecated. One addition: fetching voxel chunks.
+
+**Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate.
+
+**What changed**
+
+| Old | New | Kind |
+|---|---|---|
+| No way to fetch the platform's voxel chunks from Unreal. | `Fetch Chunks Around` (Chunk X, Y, Z, Range) answers every chunk the platform stores within Range (1 to 8) of a chunk on every axis; `Fetch Chunk` answers one chunk, empty with Stored false when the platform does not store it. Each chunk carries a 4,096-cell Grid (index x + 16y + 256z) with its edits applied where they fit a cell and a byte, and every recorded edit (position, 16-bit type, up to 1,024 bytes of state), the newest per position. `Get Voxel`, `Get Filled Voxels`, `Get Chunk Origin`, `Get Voxel Size`, `World To Voxel` and `Voxel To World` read and place them. Chunk (x, y, z) is the one the SDK places an actor in at that spot, z up. | Blueprint nodes; C++ `UCrowdyVoxels` with `FetchChunksAround`, `FetchChunk` and `PageSize`, `UCrowdyVoxelLibrary`, `UCrowdyFetchChunksAround`, `UCrowdyFetchChunk`, `FCrowdyChunksFetchedAsyncResult`, `FCrowdyChunkFetchedAsyncResult`, `FCrowdyVoxel`, `FCrowdyVoxelChunk`, `FCrowdyChunkFetch`, `ECrowdyVoxelResult` (all new). |
+
+**Do this, in order**
+
+None.
+
+**CoreRedirects**
+
+None.
+
+**Blueprint assets**
+
+None.
+
+**Behaviour changes**
+
+None.
+
+**Verify**
+
+1. The project builds with no new warnings.
+2. In a Blueprint, `Fetch Chunks Around` and `Fetch Chunk` appear under Crowdy SDK > Voxels.
+
+**Removed in the next release**
+
+None.
+
 ## 2.25.0
 
 **Verdict.** One behaviour change: there is no elected host by default. `Leader Source` now defaults to

@@ -102,6 +102,9 @@ struct FCrowdyCppJsonResult
 
 	// The same error's extensions.reason, on the few codes that carry one.
 	FString ErrorReason;
+
+	// The `data` object as MessagePack, filled by RunOpMsgpack instead of Data.
+	TArray<uint8> Msgpack;
 };
 
 /**
@@ -554,6 +557,12 @@ public:
 		const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
 		TOptional<ECrowdyCppTokenPlane> Plane = TOptional<ECrowdyCppTokenPlane>());
 
+	// RunOp for an answer too large to build a JSON tree from: Data stays null and Msgpack holds the `data` object,
+	// encoded in one pass over CrowdyCPP's parse. The caller bounds what it reads from it.
+	FCrowdyCppRequestHandle RunOpMsgpack(ECrowdyCppApiDomain Domain, const FString& OperationName,
+		const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
+		TOptional<ECrowdyCppTokenPlane> Plane = TOptional<ECrowdyCppTokenPlane>());
+
 	// Sign-in and account identity. The five sign-in paths carry no bearer (they are how a caller obtains one) and
 	// the three identity calls carry the session token. Each returns the identity SESSION token, from which an
 	// app-scoped gameplay token must then be minted. Same OnDone contract as the calls above: exactly once, from
@@ -792,6 +801,10 @@ private:
 	FCrowdyCppClient();
 	FCrowdyCppClient(const FCrowdyCppClient&) = delete;
 	FCrowdyCppClient& operator=(const FCrowdyCppClient&) = delete;
+
+	FCrowdyCppRequestHandle RunOpAs(ECrowdyCppApiDomain Domain, const FString& OperationName,
+		const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
+		TOptional<ECrowdyCppTokenPlane> Plane, bool bMsgpack);
 
 	struct FImpl;
 	TUniquePtr<FImpl> Impl;
