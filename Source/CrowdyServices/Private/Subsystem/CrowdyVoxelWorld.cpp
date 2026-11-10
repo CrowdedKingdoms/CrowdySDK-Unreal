@@ -38,9 +38,16 @@ namespace CrowdyVoxelWorldImpl
 		return A.Type == B.Type && A.State == B.State;
 	}
 
+	// Exact for any two int64, which a plain subtraction is not: Abs of an overflowed difference can come out negative.
+	int64 AxisDistance(const int64 A, const int64 B)
+	{
+		const uint64 Distance = A > B ? static_cast<uint64>(A) - static_cast<uint64>(B) : static_cast<uint64>(B) - static_cast<uint64>(A);
+		return Distance > static_cast<uint64>(MAX_int64) ? MAX_int64 : static_cast<int64>(Distance);
+	}
+
 	int64 Chebyshev(const FInt64Vector& A, const FInt64Vector& B)
 	{
-		return FMath::Max3(FMath::Abs(A.X - B.X), FMath::Abs(A.Y - B.Y), FMath::Abs(A.Z - B.Z));
+		return FMath::Max3(AxisDistance(A.X, B.X), AxisDistance(A.Y, B.Y), AxisDistance(A.Z, B.Z));
 	}
 
 	FCrowdyVoxelChunk EmptyChunk(const FInt64Vector& Coord)
@@ -350,6 +357,11 @@ bool UCrowdyVoxelWorld::IsChunkLive(const int64 ChunkX, const int64 ChunkY, cons
 {
 	const FChunkState* State = Chunks.Find(FInt64Vector(ChunkX, ChunkY, ChunkZ));
 	return State && State->bLoaded && State->bInReach && bSettleDone && State->FetchedAt >= SettleAt;
+}
+
+bool UCrowdyVoxelWorld::IsChunkInReach(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ) const
+{
+	return bLocalKnown && Chebyshev(FInt64Vector(ChunkX, ChunkY, ChunkZ), LocalChunk) <= LiveReach;
 }
 
 const UCrowdyVoxelWorld::FPendingEdit* UCrowdyVoxelWorld::NewestPending(const FInt64Vector& Coord, const uint64 Key) const
