@@ -541,6 +541,29 @@ bool FCrowdyVoxelWorldPawnlessFrameTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldInReachTest, "CrowdySDK.Voxels.World.InReachIsEightChunksFromThePlayer", Flags)
+bool FCrowdyVoxelWorldInReachTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	TestFalse(TEXT("before the player's chunk is known nothing is in reach"), Rig.World->IsChunkInReach(0, 0, 0));
+	Rig.Step();
+	TestTrue(TEXT("the player's own chunk is in reach"), Rig.World->IsChunkInReach(0, 0, 0));
+	TestTrue(TEXT("8 chunks away on every axis is in reach"), Rig.World->IsChunkInReach(8, -8, 8));
+	TestFalse(TEXT("9 chunks away on one axis is not"), Rig.World->IsChunkInReach(0, -9, 0));
+	TestFalse(TEXT("a chunk nobody loaded"), Rig.World->IsChunkLoaded(5, 0, 0));
+	TestTrue(TEXT("is in reach all the same"), Rig.World->IsChunkInReach(5, 0, 0));
+	TestFalse(TEXT("the farthest int64 chunk is not in reach"), Rig.World->IsChunkInReach(MIN_int64, 0, 0));
+
+	Rig.World->SetLocalChunkForTest(FInt64Vector(20, 0, 0));
+	Rig.Step();
+	TestFalse(TEXT("reach moves with the player"), Rig.World->IsChunkInReach(0, 0, 0));
+	TestTrue(TEXT("to its new chunk"), Rig.World->IsChunkInReach(28, 0, 0));
+	Rig.World->ClearLocalChunkForTest();
+	Rig.Step();
+	TestTrue(TEXT("a frame without a pawn keeps the last chunk"), Rig.World->IsChunkInReach(28, 0, 0));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldPaceTest, "CrowdySDK.Voxels.World.PacedAt100ASecond", Flags)
 bool FCrowdyVoxelWorldPaceTest::RunTest(const FString& Parameters)
 {

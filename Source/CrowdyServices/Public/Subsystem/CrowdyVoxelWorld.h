@@ -78,6 +78,10 @@ public:
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Voxels")
 	bool IsChunkLive(int64 ChunkX, int64 ChunkY, int64 ChunkZ) const;
 
+	/** Within 8 chunks of this player's own chunk, loaded or not: an edit there reaches the players near it live. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Voxels")
+	bool IsChunkInReach(int64 ChunkX, int64 ChunkY, int64 ChunkZ) const;
+
 	/** What this player sees at the cell: their own edit still waiting, else the confirmed voxel. */
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Voxels")
 	FCrowdyVoxel GetVoxel(int64 ChunkX, int64 ChunkY, int64 ChunkZ, FIntVector Position) const;
