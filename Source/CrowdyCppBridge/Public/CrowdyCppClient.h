@@ -419,7 +419,9 @@ enum class ECrowdyCppApiDomain : uint8
 	// A player's own safety controls in one app.
 	Safety,
 	// Server code for an app (build, deploy, versions, logs), as its developer: the session bearer by default.
-	Exec
+	Exec,
+	// Grid claims and listings. Player and studio operations share it, so each operation names its plane.
+	Marketplace
 };
 
 /**

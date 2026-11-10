@@ -1422,6 +1422,7 @@ namespace
 		case ECrowdyCppApiDomain::Platform:      return platform::documentFor(Op);
 		case ECrowdyCppApiDomain::Realtime:      return realtime::documentFor(Op);
 		case ECrowdyCppApiDomain::Exec:          return crowdy::gen::exec::documentFor(Op);
+		case ECrowdyCppApiDomain::Marketplace:   return marketplace::documentFor(Op);
 		}
 		return std::string_view();
 	}
@@ -1486,6 +1487,12 @@ namespace
 		// The Exec domain defaults to Management for developer operations; a player's connect uses the app token.
 		case ECrowdyCppApiDomain::Exec:
 			if (Op == "ExecConnect") { return ECrowdyCppTokenPlane::Game; }
+			break;
+
+		// A player's own claim and its release use the app token; the studio's listing and policy operations are not
+		// named, so they stay unroutable until a caller states their plane.
+		case ECrowdyCppApiDomain::Marketplace:
+			if (Op == "MarketplaceClaimGridChunk" || Op == "MarketplaceReleaseClaimedGrid") { return ECrowdyCppTokenPlane::Game; }
 			break;
 
 		default:

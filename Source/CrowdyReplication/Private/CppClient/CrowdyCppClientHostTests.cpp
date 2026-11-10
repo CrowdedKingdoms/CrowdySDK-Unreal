@@ -77,6 +77,8 @@ namespace CrowdyCppHostTestSupport
 		{ECrowdyCppApiDomain::Actors, TEXT("Actor"), TEXT("Actors"), false},
 		{ECrowdyCppApiDomain::ServerStatus, TEXT("ServerWithLeastClients"), TEXT("ServerStatus"), false},
 		{ECrowdyCppApiDomain::Platform, TEXT("PlatformConfig"), TEXT("Platform"), true},
+		{ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceClaimGridChunk"), TEXT("Marketplace claim"), false},
+		{ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceReleaseClaimedGrid"), TEXT("Marketplace release"), false},
 	};
 
 	// Issues one operation and drains its completion. The canned transport resolves inline, so the callback has
@@ -175,6 +177,26 @@ bool FCrowdyCppRunOpAmbiguousPlaneTest::RunTest(const FString& Parameters)
 		FString Url;
 		FString Authorization;
 		TestFalse(TEXT("nothing reached the transport"), Client->GetLastTestRequest(Url, Authorization));
+	}
+
+	// The marketplace domain has no plane of its own, so a studio operation nobody has named is refused too.
+	{
+		const TSharedPtr<FCrowdyCppClient> Client = MakeTwoPlaneTestClient();
+		bool bCalled = false;
+		FCrowdyCppJsonResult Captured;
+		Client->RunOp(ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceSetGridClaimPolicy"), MakeShared<FJsonObject>(),
+			[&Captured, &bCalled](FCrowdyCppJsonResult Result)
+			{
+				Captured = MoveTemp(Result);
+				bCalled = true;
+			});
+		Client->Poll();
+
+		TestTrue(TEXT("marketplace: completion fired"), bCalled);
+		TestFalse(TEXT("marketplace: an unnamed studio operation is refused without a plane"), Captured.bTransportOk);
+		FString Url;
+		FString Authorization;
+		TestFalse(TEXT("marketplace: nothing reached the transport"), Client->GetLastTestRequest(Url, Authorization));
 	}
 
 	// Named explicitly, the same operation carries the bearer the caller asked for.
