@@ -86,6 +86,9 @@ public:
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Voxels")
 	bool FindChunk(int64 ChunkX, int64 ChunkY, int64 ChunkZ, FCrowdyVoxelChunk& Chunk) const;
 
+	/** Every chunk loaded now, so a renderer that starts late can draw what is already there; later loads arrive as On Chunk Loaded. */
+	void ForEachLoadedChunk(TFunctionRef<void(int64 ChunkX, int64 ChunkY, int64 ChunkZ)> Visit) const;
+
 	/** Every cell of a loaded chunk with a type of 1 to 255 as this player sees it, in index order, with no copy. */
 	void ForEachFilledVoxel(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFunctionRef<void(FIntVector Position, int32 Type)> Visit) const;
 

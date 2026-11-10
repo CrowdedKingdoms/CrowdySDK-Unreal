@@ -414,6 +414,17 @@ bool UCrowdyVoxelWorld::FindChunk(const int64 ChunkX, const int64 ChunkY, const 
 	return true;
 }
 
+void UCrowdyVoxelWorld::ForEachLoadedChunk(const TFunctionRef<void(int64 ChunkX, int64 ChunkY, int64 ChunkZ)> Visit) const
+{
+	for (const TPair<FInt64Vector, FChunkState>& Entry : Chunks)
+	{
+		if (Entry.Value.bLoaded)
+		{
+			Visit(Entry.Key.X, Entry.Key.Y, Entry.Key.Z);
+		}
+	}
+}
+
 void UCrowdyVoxelWorld::ForEachFilledVoxel(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
 	const TFunctionRef<void(FIntVector Position, int32 Type)> Visit) const
 {

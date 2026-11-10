@@ -217,6 +217,24 @@ bool FCrowdyVoxelWorldFetchesOnlyMissingTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldListsLoadedChunksTest, "CrowdySDK.Voxels.World.ListsLoadedChunks", Flags)
+bool FCrowdyVoxelWorldListsLoadedChunksTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.World->Follow(Rig.Actor.Get(), 1);
+	Rig.Step();
+	int32 WhileLoading = 0;
+	Rig.World->ForEachLoadedChunk([&WhileLoading](int64, int64, int64) { ++WhileLoading; });
+	TestEqual(TEXT("a chunk still loading is not listed"), WhileLoading, 0);
+
+	Rig.AnswerFetches();
+	TSet<FInt64Vector> Listed;
+	Rig.World->ForEachLoadedChunk([&Listed](int64 X, int64 Y, int64 Z) { Listed.Add(FInt64Vector(X, Y, Z)); });
+	TestEqual(TEXT("every loaded chunk is listed once"), Listed.Num(), 27);
+	TestTrue(TEXT("with its coordinates"), Listed.Contains(FInt64Vector(1, -1, 0)));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldSlabAsSmallCubesTest, "CrowdySDK.Voxels.World.WideCrossingReadsSmallCubes", Flags)
 bool FCrowdyVoxelWorldSlabAsSmallCubesTest::RunTest(const FString& Parameters)
 {
