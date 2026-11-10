@@ -29,7 +29,7 @@ something was left out.
 
 ## Unreleased (after 2.25.0)
 
-**Verdict.** Nothing breaks and nothing is deprecated. One addition: fetching voxel chunks.
+**Verdict.** Nothing breaks and nothing is deprecated. Two additions: fetching voxel chunks, and a live voxel world with edits.
 
 **Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate.
 
@@ -38,6 +38,7 @@ something was left out.
 | Old | New | Kind |
 |---|---|---|
 | No way to fetch the platform's voxel chunks from Unreal. | `Fetch Chunks Around` (Chunk X, Y, Z, Range) answers every chunk the platform stores within Range (1 to 8) of a chunk on every axis; `Fetch Chunk` answers one chunk, empty with Stored false when the platform does not store it. Each chunk carries a 4,096-cell Grid (index x + 16y + 256z) with its edits applied where they fit a cell and a byte, and every recorded edit (position, 16-bit type, up to 1,024 bytes of state), the newest per position. `Get Voxel`, `Get Filled Voxels`, `Get Chunk Origin`, `Get Voxel Size`, `World To Voxel` and `Voxel To World` read and place them. Chunk (x, y, z) is the one the SDK places an actor in at that spot, z up. | Blueprint nodes; C++ `UCrowdyVoxels` with `FetchChunksAround`, `FetchChunk` and `PageSize`, `UCrowdyVoxelLibrary`, `UCrowdyFetchChunksAround`, `UCrowdyFetchChunk`, `FCrowdyChunksFetchedAsyncResult`, `FCrowdyChunkFetchedAsyncResult`, `FCrowdyVoxel`, `FCrowdyVoxelChunk`, `FCrowdyChunkFetch`, `ECrowdyVoxelResult` (all new). |
+| No way to edit voxels or see other players' edits from Unreal. | The Crowdy Voxel World (`UCrowdyVoxelWorld`, a World subsystem): `Follow` keeps the chunks around actors loaded (Range 1 to 7), other players' edits merge as they arrive, and `Set Voxel` / `Set Voxels` show an edit at once, send it at most 100 a second, and report it once through `On Edit Done` as Ok, Refused, No Answer, Failed or Not Signed In; a refused or unanswered edit is put back to the newest confirmed value. `On Chunk Loaded`, `On Chunk Changed` (the changed cells) and `On Chunk Unloaded` drive a renderer. | Blueprint nodes and events; C++ `UCrowdyVoxelWorld`, `FCrowdyVoxelWrite` (new); `ECrowdyVoxelResult::NoAnswer` added last; `FCrowdyVoxel`'s fields writable from Blueprint; `UCrowdyCppReplicationSubsystem::TrySendMessage` takes an optional ticket, with `NewSendTicket` and `OnTrackedSend` (additive). |
 
 **Do this, in order**
 
@@ -58,7 +59,7 @@ None.
 **Verify**
 
 1. The project builds with no new warnings.
-2. In a Blueprint, `Fetch Chunks Around` and `Fetch Chunk` appear under Crowdy SDK > Voxels.
+2. In a Blueprint, `Fetch Chunks Around` and `Fetch Chunk` appear under Crowdy SDK > Voxels, and so do `Follow` and `Set Voxel` on the Crowdy Voxel World subsystem.
 
 **Removed in the next release**
 

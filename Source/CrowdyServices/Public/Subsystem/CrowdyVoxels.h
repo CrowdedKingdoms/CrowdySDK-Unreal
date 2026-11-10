@@ -18,7 +18,9 @@ enum class ECrowdyVoxelResult : uint8
 	/** The request did not complete. */
 	Failed,
 	/** The answer was malformed, so nothing from it is returned. */
-	BadReply
+	BadReply,
+	/** A voxel edit got no answer in time, so the chunk was fetched again and its value stands. */
+	NoAnswer
 };
 
 /** One voxel: where it sits in its chunk, its type and its state. */
@@ -28,15 +30,15 @@ struct CROWDYSERVICES_API FCrowdyVoxel
 	GENERATED_BODY()
 
 	/** The chunk's own Unreal X, Y and Z. 0 to 15 is inside the grid; the platform allows any 16-bit value. */
-	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Voxels")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy SDK|Voxels")
 	FIntVector Position = FIntVector::ZeroValue;
 
 	/** The app's own numbering, any 16-bit value; 0 is empty. */
-	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Voxels")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy SDK|Voxels")
 	int32 Type = 0;
 
 	/** Up to 1,024 bytes the app gives meaning to; empty when the voxel has none. */
-	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Voxels")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy SDK|Voxels")
 	TArray<uint8> State;
 };
 

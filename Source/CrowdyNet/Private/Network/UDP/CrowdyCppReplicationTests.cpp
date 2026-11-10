@@ -1435,6 +1435,97 @@ bool FCrowdyServerErrorIsAttributedToItsSendTest::RunTest(const FString& Paramet
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTrackedSendReportsItsFateTest,
+	"CrowdySDK.Transport.TrackedSendReportsItsFate",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+bool FCrowdyTrackedSendReportsItsFateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FConnectedFixture Fixture;
+	if (!TestTrue(TEXT("the fixture connects"), Fixture.Open()))
+	{
+		return false;
+	}
+
+	TArray<FCrowdyCppSendReceipt> Receipts;
+	uint64 ErrorTicket = 0;
+	bool bErrored = false;
+	FCrowdyCppReplicationHandlers Handlers;
+	Handlers.OnSendReceipt = [&Receipts](const FCrowdyCppSendReceipt& Receipt) { Receipts.Add(Receipt); };
+	Handlers.OnError = [&ErrorTicket, &bErrored](const FCrowdyCppSendError& Error)
+	{
+		ErrorTicket = Error.SendTicket;
+		bErrored = true;
+	};
+	Fixture.Connection->SetHandlers(Handlers);
+
+	constexpr uint8 TextOpcode = static_cast<uint8>(ECrowdyMessageType::CLIENT_TEXT_PACKET);
+	constexpr uint64 Ticket = 42;
+	const TArray<uint8> Payload = {0x41};
+	FString SendError;
+	if (!TestTrue(TEXT("a tracked send is accepted"),
+		Fixture.Connection->SendSpatial(TextOpcode, 1, 2, 3, GoldenUuidView(), Payload, 8, 0, SendError, Ticket)))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	const TArray<uint8> OnTheWire = Fixture.Server.Receive();
+	if (!TestTrue(TEXT("the send reached the stand-in server"), OnTheWire.Num() > 0))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	const uint8 Sequence = OnTheWire.Last();
+
+	const bool bSent = WaitUntil([&Fixture, &Receipts]()
+	{
+		Fixture.Connection->Poll();
+		return Receipts.Num() > 0;
+	});
+	if (!TestTrue(TEXT("the tracked send reports a receipt"), bSent))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	TestEqual(TEXT("the receipt names the ticket"), Receipts[0].Ticket, Ticket);
+	TestTrue(TEXT("the receipt says it went on the wire"), Receipts[0].Kind == ECrowdyCppSendReceiptKind::Sent);
+	TestEqual(TEXT("the receipt carries the sequence the wire shows"), static_cast<int32>(Receipts[0].Sequence), static_cast<int32>(Sequence));
+
+	constexpr uint8 Unauthorized = 7;
+	const TArray<uint8> ErrorFrame = {static_cast<uint8>(ECrowdyMessageType::GENERIC_ERROR_MESSAGE), Sequence, Unauthorized};
+	TestTrue(TEXT("an error frame naming that sequence was pushed"), Fixture.Server.SendToClient(ErrorFrame));
+	const bool bDelivered = WaitUntil([&Fixture, &bErrored]()
+	{
+		Fixture.Connection->Poll();
+		return bErrored;
+	});
+	TestTrue(TEXT("the error frame is delivered"), bDelivered);
+	TestEqual(TEXT("the attributed error carries the send's ticket"), ErrorTicket, Ticket);
+
+	// Untracked sends report nothing of their own, and the 256th after the tracked one laps its sequence.
+	for (int32 Index = 0; Index < 256; ++Index)
+	{
+		TestTrue(TEXT("an untracked send is accepted"),
+			Fixture.Connection->SendSpatial(TextOpcode, 1, 2, 3, GoldenUuidView(), Payload, 8, 0, SendError));
+	}
+	const bool bLapped = WaitUntil([&Fixture, &Receipts]()
+	{
+		Fixture.Connection->Poll();
+		return Receipts.Num() > 1;
+	});
+	if (TestTrue(TEXT("lapping the tracked send's sequence is reported"), bLapped))
+	{
+		TestEqual(TEXT("only the lap is reported"), Receipts.Num(), 2);
+		TestEqual(TEXT("the lap names the tracked ticket"), Receipts[1].Ticket, Ticket);
+		TestTrue(TEXT("the lap says so"), Receipts[1].Kind == ECrowdyCppSendReceiptKind::Lapped);
+		TestEqual(TEXT("the lap names the same sequence"), static_cast<int32>(Receipts[1].Sequence), static_cast<int32>(Sequence));
+	}
+
+	Fixture.Shut();
+	return true;
+}
+
 // The other half, and the reason the attribution carries a flag rather than always claiming an answer: a sequence
 // no send has used cannot be traced to one, and saying so is the difference between a diagnostic and a guess. A
 // forged frame can name any sequence it likes, so this is the ordinary case rather than an unlikely one.

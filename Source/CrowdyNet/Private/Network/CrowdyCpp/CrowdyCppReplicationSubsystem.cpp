@@ -803,9 +803,27 @@ void UCrowdyCppReplicationSubsystem::InstallReceiveHandlers(const TSharedPtr<FCr
 			Self->ReportSendError(Error);
 		}
 
+		if (Error.SendTicket != 0)
+		{
+			Self->OnTrackedSend.Broadcast({Error.SendTicket, ECrowdyTrackedSendEvent::Refused, Error.Sequence, Error.ErrorCode});
+		}
+
 		// Held here rather than inside the builder, because the frame borrows these two octets.
 		const uint8 Body[] = { Error.Sequence, Error.ErrorCode };
 		Self->DeliverFrame(CrowdyCppInboundFrame::FromError(Body));
+	};
+
+	Handlers.OnSendReceipt = [WeakThis](const FCrowdyCppSendReceipt& Receipt)
+	{
+		UCrowdyCppReplicationSubsystem* Self = WeakThis.Get();
+		if (!Self)
+		{
+			return;
+		}
+		const ECrowdyTrackedSendEvent Event = Receipt.Kind == ECrowdyCppSendReceiptKind::Sent ? ECrowdyTrackedSendEvent::Sent
+			: Receipt.Kind == ECrowdyCppSendReceiptKind::Lapped ? ECrowdyTrackedSendEvent::Lapped
+			: ECrowdyTrackedSendEvent::Lost;
+		Self->OnTrackedSend.Broadcast({Receipt.Ticket, Event, Receipt.Sequence, 0});
 	};
 
 	// A failure is the one state worth saying unconditionally, because nothing retries it on its own.
@@ -1493,7 +1511,7 @@ bool UCrowdyCppReplicationSubsystem::AdmitSendRefusalLog()
 	return true;
 }
 
-ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrowdyMessage& Message)
+ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrowdyMessage& Message, const uint64 Ticket)
 {
 	// Ahead of the connection check on purpose, so that a locally delivered crowd does not need a
 	// connection to exist. When local delivery is not armed this is one relaxed atomic read and the rest
@@ -1546,7 +1564,7 @@ ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrow
 	const bool bAccepted = Frame.bIsChannel
 		? Pinned->SendChannelMessage(Frame.ChannelId, Frame.Uuid, Frame.Payload, Error)
 		: Pinned->SendSpatial(Frame.Opcode, Frame.ChunkX, Frame.ChunkY, Frame.ChunkZ, Frame.Uuid, Frame.Payload,
-			Frame.Distance, Frame.Decay, Error);
+			Frame.Distance, Frame.Decay, Error, Ticket);
 
 	if (!bAccepted)
 	{
