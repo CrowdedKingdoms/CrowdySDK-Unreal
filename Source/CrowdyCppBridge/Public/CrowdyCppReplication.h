@@ -105,6 +105,35 @@ struct FCrowdyCppSendError
 
 	/** How long before this frame arrived the attributed send went out. Meaningless unless bAttributed. */
 	int64 SendAgeMs = 0;
+
+	/**
+	 * The ticket the attributed send was queued with, or 0. Set only under the same rules as bAttributed, so a sequence
+	 * reused within MinSendAttributionReuseMs names no ticket. The frame is still unsigned: a caller may use the ticket
+	 * to settle its own send by asking the server again, never as proof the send was refused.
+	 */
+	uint64 SendTicket = 0;
+};
+
+enum class ECrowdyCppSendReceiptKind : uint8
+{
+	/** The tracked send went on the wire with this sequence. */
+	Sent,
+
+	/** The counter came round to the tracked send's sequence again within MaxSendAttributionAgeMs. */
+	Lapped,
+
+	/** The tracked send never reached the wire. */
+	Lost
+};
+
+/** What became of a send queued with a ticket. Delivered from Poll, ahead of the messages that poll delivers. */
+struct FCrowdyCppSendReceipt
+{
+	uint64 Ticket = 0;
+	ECrowdyCppSendReceiptKind Kind = ECrowdyCppSendReceiptKind::Sent;
+
+	/** Meaningful for Sent and Lapped. */
+	uint8 Sequence = 0;
 };
 
 /**
@@ -124,6 +153,9 @@ struct FCrowdyCppReplicationHandlers
 	 * duration of the call, like every other delivered message.
 	 */
 	TFunction<void(const FCrowdyCppSendError&)> OnError;
+
+	/** One per change in a tracked send's fate. Untracked sends produce none. */
+	TFunction<void(const FCrowdyCppSendReceipt&)> OnSendReceipt;
 
 	TFunction<void(ECrowdyCppConnState)> OnStateChanged;
 };
@@ -354,7 +386,8 @@ struct FCrowdyCppReplicationStats
  * The facade owns one network thread. It is the only thread that touches the library, which is deliberate: the
  * library's socket is closed and reopened by its own reconnect path, and a send racing that would write into a
  * descriptor that has already been recycled. So a send does not go out on the calling thread. It is validated
- * there, queued, and put on the wire by the network thread, which is why it reports no sequence number back.
+ * there, queued, and put on the wire by the network thread, which is why it reports no sequence number back. A
+ * caller that needs the sequence passes a ticket and hears it later through OnSendReceipt.
  *
  * Sends may therefore be issued from any thread. Everything else on this class, meaning Poll, ConnectAsync,
  * SetHandlers, SetToken, Disconnect, the getters and releasing the last reference, belongs to a single owning
@@ -428,9 +461,12 @@ public:
 	 * Returns false with a reason when the opcode is not one that can be sent, the connection is not open, the
 	 * payload does not fit one datagram or is malformed for its opcode, or the outbound queue is full. Returning
 	 * true means accepted for sending, not delivered.
+	 *
+	 * A non-zero Ticket tracks the send: OnSendReceipt reports its sequence once it is on the wire, or that it never
+	 * got there, and an error frame attributed to it carries the ticket. A refused send produces no receipt.
 	 */
 	bool SendSpatial(uint8 Opcode, int64 ChunkX, int64 ChunkY, int64 ChunkZ, TArrayView<const uint8> Uuid,
-		TArrayView<const uint8> Payload, uint8 Distance, uint8 Decay, FString& OutError);
+		TArrayView<const uint8> Payload, uint8 Distance, uint8 Decay, FString& OutError, uint64 Ticket = 0);
 
 	/** Queue a channel publish. Reaches every member wherever they are, so it carries no chunk, distance or decay. */
 	bool SendChannelMessage(int64 ChannelId, TArrayView<const uint8> Uuid, TArrayView<const uint8> Payload,
