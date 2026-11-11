@@ -41,6 +41,7 @@ namespace
 		case crowdy::replication::ConnState::Reconnecting: return ECrowdyCppConnState::Reconnecting;
 		case crowdy::replication::ConnState::Failed:       return ECrowdyCppConnState::Failed;
 		case crowdy::replication::ConnState::Closed:       return ECrowdyCppConnState::Closed;
+		case crowdy::replication::ConnState::Inactive:     return ECrowdyCppConnState::Inactive;
 		}
 		return ECrowdyCppConnState::Idle;
 	}

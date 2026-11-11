@@ -672,6 +672,10 @@ class AuthAPI : public DomainBase {
         });
   }
 
+  /// Email the confirmation link again: the remedy for EMAIL_CONFIRMATION_REQUIRED
+  /// (graphql::emailConfirmationRequiredOf, ck-api v2.65.0). Public, from a client that sends no
+  /// browser origin; rate-limited. Always true, whether or not the address has an unconfirmed
+  /// account, so a true is not evidence an email was sent.
   bool resendConfirmationEmail(std::string_view email) const {
     graphql::JVal vars;
     vars["email"] = email;

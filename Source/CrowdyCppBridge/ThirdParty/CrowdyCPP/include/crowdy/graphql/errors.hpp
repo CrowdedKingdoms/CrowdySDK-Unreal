@@ -187,6 +187,10 @@ inline constexpr std::string_view kSafetyLogRequiredCode = "SAFETY_LOG_REQUIRED"
 /// no safety moderator (HTTP 403, ck-api v2.61.0): a minor's mint there; see
 /// safetyModeratorRequiredOf().
 inline constexpr std::string_view kSafetyModeratorRequiredCode = "SAFETY_MODERATOR_REQUIRED";
+/// extensions.code for a gameplay token refused because a password account made since
+/// 2026-11-11 has not confirmed its email (HTTP 403, ck-api v2.65.0); see
+/// emailConfirmationRequiredOf().
+inline constexpr std::string_view kEmailConfirmationRequiredCode = "EMAIL_CONFIRMATION_REQUIRED";
 /// extensions.code for a parental-consent request that cannot be sent right now (HTTP 503), with
 /// why in extensions.reason; see parentalConsentUnavailableOf().
 inline constexpr std::string_view kParentalConsentUnavailableCode = "PARENTAL_CONSENT_UNAVAILABLE";
@@ -383,6 +387,16 @@ inline bool safetyLogRequiredOf(const std::vector<GraphQLErrorDetail>& errors) {
 /// one; `hasSafetyModerator` on AppsAPI::get says whether it has, for its members.
 inline bool safetyModeratorRequiredOf(const std::vector<GraphQLErrorDetail>& errors) {
   return errorWithCode(errors, kSafetyModeratorRequiredCode) != nullptr;
+}
+
+/// True when a gameplay token was refused because a password account made since 2026-11-11 has
+/// not confirmed its email (EMAIL_CONFIRMATION_REQUIRED, ck-api v2.65.0): the player gate's last
+/// check, at a mint, a portal code or a refresh. Retrying cannot succeed: ask the player to open
+/// the emailed link, offer AuthAPI::resendConfirmationEmail, then mint again. Accounts made
+/// before then, managed players, staff, and dev or test accounts made with a provisioning token
+/// are not asked.
+inline bool emailConfirmationRequiredOf(const std::vector<GraphQLErrorDetail>& errors) {
+  return errorWithCode(errors, kEmailConfirmationRequiredCode) != nullptr;
 }
 
 /// extensions.reason values on PARENTAL_CONSENT_UNAVAILABLE, from the Game API release after

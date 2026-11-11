@@ -27,6 +27,41 @@ Every release has the same subsections, in this order:
 A subsection with nothing to say is written as "None." so you never have to guess whether
 something was left out.
 
+## Next release (unreleased): a session released for idleness, and CrowdyCPP 0.78.0
+
+**Verdict.** Nothing breaks and nothing is deprecated. One behaviour change: a session the server releases for
+idleness is no longer reconnected (below).
+
+**Requires.** Unreal Engine 5.8. The vendored CrowdyCPP moves from 0.76.0 to 0.78.0 (`dev/v0.78.0`); regenerate it
+with your sync script to confirm the snapshot.
+
+**What changed**
+
+| Old | New | Kind |
+|---|---|---|
+| A session the replication server released for idleness (no gameplay input for the app's idle timeout, 15 minutes unless the app sets its own) was read as a failed connection, and the reconnect ladder put the player back on a server. | The connection reports `Inactive`, `On UDP Session Inactive` fires on the Crowdy SDK subsystem, and nothing reconnects. `Get UDP Connection State` reads `Inactive`. | Behaviour; Blueprint event and enum value (new). |
+| No way to tell an idle release from a timeout. | `EUDPConnectionState::Inactive`, `ECrowdyCppConnState::Inactive`, `UCrowdyUDPSubsystem::OnUDPInactive`. | Blueprint enum value; C++ API (new). |
+| The Leader type kept an idle client until its realtime connection timed out. | An idle release leaves it, as a lost connection does. | Behaviour. |
+
+**Do this, in order**
+
+1. Bind `On UDP Session Inactive` where you bind `On UDP Timed Out`. Show the player that they were disconnected
+   for inactivity, if you want to.
+2. On the player's next input, call `Request UDP Access`. It re-assigns a server on the same app token.
+3. A `switch` on `EUDPConnectionState` that must be exhaustive needs a case for `Inactive`.
+
+**CoreRedirects.** None.
+
+**Blueprint assets.** A Blueprint with a `Switch on EUDPConnectionState` node gains an `Inactive` pin; re-save it.
+
+**Behaviour changes.** See the table: an idle release no longer reconnects, and the Leader type is left.
+
+**Verify.** Set the app's idle timeout to 60 seconds in Crowdy Studio (Idle timeout card), connect, and send nothing
+for a minute. `On UDP Session Inactive` fires, the state reads `Inactive`, and the log says "released the session for
+idleness; not reconnecting". `Request UDP Access` brings the connection back. Put the app's timeout back afterwards.
+
+**Removed in the next release.** None.
+
 ## 2.25.0
 
 **Verdict.** One behaviour change: there is no elected host by default. `Leader Source` now defaults to

@@ -24,11 +24,17 @@ enum class EUDPConnectionState : uint8
 	Reconnecting  UMETA(DisplayName = "Reconnecting"),
 	/** Server is gatekeeping this client (bGateKeep = true in the response). */
 	GateKeep      UMETA(DisplayName = "Gate Kept"),
+	/**
+	 * The server released the session after the app's idle timeout without gameplay input. Nothing reconnects on
+	 * its own: call Request UDP Access on the player's next input.
+	 */
+	Inactive      UMETA(DisplayName = "Inactive"),
 };
 
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FUDPConnectionSuccessful);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FUDPTimeout);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FUDPInactive);
 
 
 USTRUCT(BlueprintType)
@@ -122,6 +128,10 @@ public:
 	
 	UPROPERTY()
 	FUDPTimeout OnUDPTimeout;
+
+	/** The server released the session for idleness. Unlike OnUDPTimeout, nothing should reconnect in answer. */
+	UPROPERTY()
+	FUDPInactive OnUDPInactive;
 	
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Network|UDP|Stats", meta=(DisplayName="Get UDP Network Stats"))
 	FUDPNetworkStatistics GetUDPNetworkStats() const;

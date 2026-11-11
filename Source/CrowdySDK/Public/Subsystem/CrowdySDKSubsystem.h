@@ -46,6 +46,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnUDPAddressNotify, bool, bSuccess
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnVersionInfo, FGameVersion, ServerVersion, FGameVersion, ClientVersion);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPConnectionSuccess);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPTimedOut);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPSessionInactive);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTeleportPermission, bool, bAllowed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCrowdyHUDReady);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnVoiceMicStateChanged, ECrowdyVoiceMicState, State);
@@ -84,6 +85,14 @@ public:
 	
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Connection", meta=(DisplayName="On UDP Timed Out"))
 	FOnUDPTimedOut OnUDPTimedOut;
+
+	/**
+	 * The replication server ended the session because the player sent no gameplay input (movement, edits, messages,
+	 * voice, video) for the app's idle timeout, 15 minutes unless the app sets its own. The SDK does not reconnect:
+	 * call Request UDP Access on the player's next input.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Connection", meta=(DisplayName="On UDP Session Inactive"))
+	FOnUDPSessionInactive OnUDPSessionInactive;
 	
 	UPROPERTY(BlueprintAssignable, Category= "Crowdy SDK|Permissions")
 	FOnTeleportPermission OnTeleportPermission;
@@ -584,6 +593,9 @@ private:
 
 	UFUNCTION()
 	void OnUDPTimeout();
+
+	UFUNCTION()
+	void OnUDPInactive();
 
 	UFUNCTION()
 	void OnUDPConnectionSuccessful();

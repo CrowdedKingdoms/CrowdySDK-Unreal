@@ -171,6 +171,7 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	UdpSubsystem->OnUDPConnectionSuccessful.AddDynamic(this, &UCrowdySDKSubsystem::OnUDPConnectionSuccessful);
 	UdpSubsystem->OnUDPTimeout.AddDynamic(this, &UCrowdySDKSubsystem::OnUDPTimeout);
+	UdpSubsystem->OnUDPInactive.AddDynamic(this, &UCrowdySDKSubsystem::OnUDPInactive);
 
 	if (!TryLoadConfiguration())
 		UE_LOG(LogCrowdySDK, Error, TEXT("Failed to load configuration from Developer Settings."));
@@ -1324,6 +1325,16 @@ void UCrowdySDKSubsystem::OnUDPTimeout()
 	// Open the connection again. Success arrives as a connection state change, which restarts the session timers
 	// and re-announces the connection.
 	RequestUDPAccess();
+}
+
+void UCrowdySDKSubsystem::OnUDPInactive()
+{
+	UE_LOG(LogCrowdySDK, Log, TEXT("The replication server released the session for idleness; not reconnecting."));
+
+	// Nothing is polled for a session that has ended; the polling restarts when the connection next reports itself up.
+	StopHostPolling();
+
+	OnUDPSessionInactive.Broadcast();
 }
 
 void UCrowdySDKSubsystem::OnUDPConnectionSuccessful()

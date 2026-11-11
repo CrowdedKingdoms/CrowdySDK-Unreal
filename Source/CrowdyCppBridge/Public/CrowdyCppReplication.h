@@ -11,7 +11,10 @@
  * Connecting covers both server assignment and the wait before the server accepts traffic on the newly installed
  * session. Reconnecting is a re-assignment in progress, which the connection performs on its own after a server-side
  * reconnect command, an expired token, or the silence watchdog. Failed means the last attempt did not come up and
- * nothing will retry on its own; recovering from it is another ConnectAsync. Closed is terminal.
+ * nothing will retry on its own; recovering from it is another ConnectAsync. Closed is terminal. Inactive means the
+ * replication server released the session because it sent no gameplay input for the app's idle timeout (15 minutes
+ * unless the app sets its own); nothing reconnects on its own, and another ConnectAsync, on the player's next input,
+ * re-assigns a server.
  */
 enum class ECrowdyCppConnState : uint8
 {
@@ -20,7 +23,8 @@ enum class ECrowdyCppConnState : uint8
 	Connected,
 	Reconnecting,
 	Failed,
-	Closed
+	Closed,
+	Inactive
 };
 
 /**

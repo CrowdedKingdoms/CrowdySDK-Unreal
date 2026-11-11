@@ -127,6 +127,11 @@ Status Connection::connect() {
   }
   if (state() == ConnState::Connected || state() == ConnState::Connecting)
     return Errc::Ok;
+  // After Inactive the net thread has left its loop; join it before starting another.
+  if (!config_.manualPump && netThread_.joinable()) {
+    running_.store(false, std::memory_order_release);
+    netThread_.join();
+  }
 
   setState(ConnState::Connecting);
   Status st = doAssign();
@@ -496,6 +501,21 @@ void Connection::handleDatagram(Bytes datagram) {
     return;
   }
 
+  // COMMAND_SESSION_RELEASED for idleness ends the session for good (2026-11-10): the
+  // player stopped playing, and reassigning would hold the session the timeout ended.
+  // Other reasons keep their old handling (the watchdog, or the next reassignment).
+  if (!datagram.empty() &&
+      datagram[0] == static_cast<std::uint8_t>(MessageType::CommandSessionReleased)) {
+    const auto reason = wire::verifySessionReleased(crypto_, datagram, tokenSnapshot());
+    if (!reason.ok()) {
+      std::lock_guard lock(statsMutex_);
+      ++stats_.hmacFailures;
+    } else if (reason.value() == static_cast<std::uint8_t>(wire::ReleaseReason::Idle)) {
+      idleReleased_.store(true, std::memory_order_release);
+    }
+    return;
+  }
+
   // Read once for the whole datagram: a bundle can carry many notifications and
   // each one is verified with the same key.
   const Credentials creds = credentials();
@@ -615,6 +635,12 @@ std::size_t Connection::receiveBatch(int timeoutMs) {
 }
 
 void Connection::housekeeping() {
+  if (state() == ConnState::Inactive) return;
+  if (idleReleased_.exchange(false, std::memory_order_acq_rel)) {
+    socket_.close();
+    setState(ConnState::Inactive);
+    return;
+  }
   const std::int64_t nowMono = clock_.monotonicMillis();
 
   // Flip Connecting -> Connected once the session-ready wait elapses.
@@ -708,7 +734,7 @@ void Connection::netLoop() {
     receiveBatch(receiveWaitMs(20));
     flushExpiredBundle();
     housekeeping();
-    if (state() == ConnState::Failed) break;
+    if (state() == ConnState::Failed || state() == ConnState::Inactive) break;
   }
 }
 
