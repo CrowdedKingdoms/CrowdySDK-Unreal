@@ -86,4 +86,25 @@ bool FCrowdyConnectionMonitorAttachesBehindGameBindingTest::RunTest(const FStrin
 	return true;
 }
 
+// An idle release reads Inactive, not Disconnected, and the resume's success brings the monitor back to Connected.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyConnectionMonitorReportsInactiveTest,
+	"CrowdySDK.SDK.ConnectionMonitorReportsInactive",
+	CrowdyConnectionMonitorTestSupport::MonitorTestFlags)
+
+bool FCrowdyConnectionMonitorReportsInactiveTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyConnectionMonitorTestSupport;
+	FMonitorFixture F;
+	F.Monitor->AttachTo(F.Sdk, F.Udp);
+
+	F.Sdk->OnUDPSessionInactive.Broadcast();
+	TestEqual(TEXT("an idle release takes the monitor to Inactive"),
+		static_cast<int32>(F.Monitor->GetReconnectState()), static_cast<int32>(ECrowdyReconnectState::Inactive));
+
+	F.Sdk->OnUDPConnectionSuccess.Broadcast();
+	TestEqual(TEXT("the resume's success takes it back to Connected"),
+		static_cast<int32>(F.Monitor->GetReconnectState()), static_cast<int32>(ECrowdyReconnectState::Connected));
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

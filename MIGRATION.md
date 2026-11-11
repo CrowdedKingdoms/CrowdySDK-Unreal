@@ -29,9 +29,9 @@ something was left out.
 
 ## Unreleased (after 2.25.0)
 
-**Verdict.** Nothing breaks and nothing is deprecated. Three additions: fetching voxel chunks, a live voxel world with edits, and claiming chunks.
+**Verdict.** Nothing breaks and nothing is deprecated. Three additions: fetching voxel chunks, a live voxel world with edits, and claiming chunks. One behaviour change: a session the server releases for idleness is no longer reconnected.
 
-**Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate.
+**Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate. The vendored CrowdyCPP moves from 0.76.0 to 0.78.0.
 
 **What changed**
 
@@ -40,10 +40,13 @@ something was left out.
 | No way to fetch the platform's voxel chunks from Unreal. | `Fetch Chunks Around` (Chunk X, Y, Z, Range) answers every chunk the platform stores within Range (1 to 8) of a chunk on every axis; `Fetch Chunk` answers one chunk, empty with Stored false when the platform does not store it. Each chunk carries a 4,096-cell Grid (index x + 16y + 256z) with its edits applied where they fit a cell and a byte, and every recorded edit (position, 16-bit type, up to 1,024 bytes of state), the newest per position. `Get Voxel`, `Get Filled Voxels`, `Get Chunk Origin`, `Get Voxel Size`, `World To Voxel` and `Voxel To World` read and place them. Chunk (x, y, z) is the one the SDK places an actor in at that spot, z up. | Blueprint nodes; C++ `UCrowdyVoxels` with `FetchChunksAround`, `FetchChunk` and `PageSize`, `UCrowdyVoxelLibrary`, `UCrowdyFetchChunksAround`, `UCrowdyFetchChunk`, `FCrowdyChunksFetchedAsyncResult`, `FCrowdyChunkFetchedAsyncResult`, `FCrowdyVoxel`, `FCrowdyVoxelChunk`, `FCrowdyChunkFetch`, `ECrowdyVoxelResult` (all new). |
 | No way to edit voxels or see other players' edits from Unreal. | The Crowdy Voxel World (`UCrowdyVoxelWorld`, a World subsystem): `Follow` keeps the chunks around actors loaded (Range 1 to 7), other players' edits merge as they arrive, and `Set Voxel` / `Set Voxels` show an edit at once, send it at most 100 a second, and report it once through `On Edit Done` as Ok, Refused, No Answer, Failed or Not Signed In; a refused or unanswered edit is put back to the newest confirmed value. `On Chunk Loaded`, `On Chunk Changed` (the changed cells) and `On Chunk Unloaded` drive a renderer. An edit reaches other players live only within 8 chunks of its sender; `Is Chunk In Reach` says whether a chunk is that close, for a game that bars farther edits. | Blueprint nodes and events; C++ `UCrowdyVoxelWorld`, `FCrowdyVoxelWrite` (new); `ECrowdyVoxelResult::NoAnswer` added last; `FCrowdyVoxel`'s fields writable from Blueprint; `UCrowdyCppReplicationSubsystem::TrySendMessage` takes an optional ticket, with `NewSendTicket` and `OnTrackedSend` (additive). |
 | No way to claim a chunk from Unreal. | The Crowdy Claims subsystem (`UCrowdyClaims`): `Claim Chunk` claims one wilderness chunk for the signed-in player (only they build in it), `Release Claim` gives it back, and `Find Claims` lists every claim in a box of up to 4,096 chunks with its owner and whether it is the player's. Each answers once, never inside the call, with `ECrowdyClaimResult`: Success, Not Signed In, Not Claimable, Already Claimed, Refused, Failed or Bad Reply. The app's claim policy must be Self Claim. | Blueprint nodes; C++ `UCrowdyClaims`, `UCrowdyClaimChunk`, `UCrowdyReleaseClaim`, `UCrowdyFindClaims`, `FCrowdyClaimAsyncResult`, `FCrowdyClaimSearchAsyncResult`, `FCrowdyChunkClaim`, `FCrowdyClaimRelease`, `FCrowdyClaimSearch`, `FCrowdyChunkClaimInfo`, `ECrowdyClaimResult` (all new); `ECrowdyCppApiDomain::Marketplace` added last (additive). |
+| A session the server released for idleness (no gameplay input for the app's idle timeout, 15 minutes unless the app sets its own) read as a lost connection, and the SDK reconnected the player. | The connection state reads `Inactive`, `On UDP Session Inactive` fires on the Crowdy SDK subsystem, and nothing reconnects until the game calls `Request UDP Access`. The Leader type is left, as on a lost connection. The Crowdy Connection Monitor reports `Inactive` and does not retry, and the stats' Ping reads 0 until the connection is back. | Behaviour; Blueprint event `On UDP Session Inactive`; `EUDPConnectionState::Inactive`, `ECrowdyCppConnState::Inactive`, `ECrowdyReconnectState::Inactive` and `UCrowdyUDPSubsystem::OnUDPInactive` (all added last). |
 
 **Do this, in order**
 
-None.
+1. Bind `On UDP Session Inactive` where you bind `On UDP Timed Out`, and tell the player they were disconnected for inactivity if you want to.
+2. Call `Request UDP Access` when your game decides the player is back, for example on their next input. Until then the player sends and receives nothing.
+3. A `switch` on `EUDPConnectionState` that must be exhaustive needs a case for `Inactive`.
 
 **CoreRedirects**
 
@@ -51,16 +54,19 @@ None.
 
 **Blueprint assets**
 
-None.
+A `Switch on EUDPConnectionState` node gains an `Inactive` pin. Nothing else needs re-saving.
 
 **Behaviour changes**
 
-None.
+An idle player is no longer put back on a server every idle timeout. A project that does nothing with the new event leaves an idle player offline until it calls `Request UDP Access`.
+
+After 30 seconds without keyboard, mouse, touch or gamepad input (counted from the connection coming up, at the earliest), the client stops its CrowdyState keyframe heartbeat and its 5-second ping, which the server would otherwise count as input and so never release the player. Changed values still replicate at once, a host's World entities keep their keyframe, and the heartbeat resumes on its next interval after the first input. `crowdy.net.idlequietseconds` sets the 30 seconds; 0 keeps the heartbeat and the ping going (an idle player is then never released). A player who joins near an idle one sees that player's CrowdyState values once they change or the idle player acts again; their movement still shows.
 
 **Verify**
 
 1. The project builds with no new warnings.
 2. In a Blueprint, `Fetch Chunks Around` and `Fetch Chunk` appear under Crowdy SDK > Voxels, and so do `Follow` and `Set Voxel` on the Crowdy Voxel World subsystem.
+3. With the app's idle timeout set to 60 seconds (Crowdy Studio, Idle timeout), connect and send nothing for a minute: `On UDP Session Inactive` fires, `Get UDP Connection State` reads `Inactive`, and nothing reconnects. `Request UDP Access` brings the connection back to `Connected`.
 
 **Removed in the next release**
 

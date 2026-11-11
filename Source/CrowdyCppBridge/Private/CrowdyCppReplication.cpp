@@ -41,6 +41,7 @@ namespace
 		case crowdy::replication::ConnState::Reconnecting: return ECrowdyCppConnState::Reconnecting;
 		case crowdy::replication::ConnState::Failed:       return ECrowdyCppConnState::Failed;
 		case crowdy::replication::ConnState::Closed:       return ECrowdyCppConnState::Closed;
+		case crowdy::replication::ConnState::Inactive:     return ECrowdyCppConnState::Inactive;
 		}
 		return ECrowdyCppConnState::Idle;
 	}
@@ -934,6 +935,11 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 	Forward.status = [Raw](const crowdy::replication::ConnState State)
 	{
 		const ECrowdyCppConnState Reported = ToUnrealState(State);
+		// The poll's reconcile may already have reported this state; a queued event must not report it twice.
+		if (Reported == Raw->LastReportedState)
+		{
+			return;
+		}
 		Raw->LastReportedState = Reported;
 		if (!Raw->ActiveHandlers.OnStateChanged)
 		{

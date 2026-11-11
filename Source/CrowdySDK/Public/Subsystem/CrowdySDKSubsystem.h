@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceMicState.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceSettings.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
@@ -46,6 +47,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnUDPAddressNotify, bool, bSuccess
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnVersionInfo, FGameVersion, ServerVersion, FGameVersion, ClientVersion);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPConnectionSuccess);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPTimedOut);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPSessionInactive);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTeleportPermission, bool, bAllowed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCrowdyHUDReady);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnVoiceMicStateChanged, ECrowdyVoiceMicState, State);
@@ -84,6 +86,10 @@ public:
 	
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Connection", meta=(DisplayName="On UDP Timed Out"))
 	FOnUDPTimedOut OnUDPTimedOut;
+
+	/** The server released this player's session after the app's idle timeout; nothing reconnects until Request UDP Access. */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Connection", meta=(DisplayName="On UDP Session Inactive"))
+	FOnUDPSessionInactive OnUDPSessionInactive;
 	
 	UPROPERTY(BlueprintAssignable, Category= "Crowdy SDK|Permissions")
 	FOnTeleportPermission OnTeleportPermission;
@@ -480,6 +486,13 @@ private:
 	FCrowdySubscription PingResponseSubscription;
 
 	FTimerHandle PingMessageTimerHandle;
+
+	// No player input for crowdy.net.idlequietseconds: the ping and the keyframe heartbeat stop so the server can release the session.
+	bool bLocalPlayerIdle = false;
+	// A fresh connection counts as activity, so a player who has not touched an input yet is not idle from the first tick.
+	double LastConnectedSeconds = 0.0;
+	FTSTicker::FDelegateHandle IdleWatchHandle;
+	bool UpdateLocalPlayerIdle(float DeltaTime);
 	FTimerHandle HostPollTimerHandle;
 	bool bIsRegistered = false;
 
@@ -584,6 +597,9 @@ private:
 
 	UFUNCTION()
 	void OnUDPTimeout();
+
+	UFUNCTION()
+	void OnUDPInactive();
 
 	UFUNCTION()
 	void OnUDPConnectionSuccessful();

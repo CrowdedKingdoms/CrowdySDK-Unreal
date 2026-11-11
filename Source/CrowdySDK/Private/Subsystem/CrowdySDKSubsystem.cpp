@@ -40,8 +40,15 @@
 #include "Subsystem/CrowdyProximityChat.h"
 #include "Subsystem/CrowdySafety.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/IConsoleManager.h"
+#include "Replication/Subsystems/CrowdyStateReplicator.h"
 
 #include <atomic>
+
+static TAutoConsoleVariable<float> CVarCrowdyIdleQuietSeconds(
+	TEXT("crowdy.net.idlequietseconds"), 30.f,
+	TEXT("Seconds without keyboard, mouse, touch or gamepad input before the client stops its ping and keyframe heartbeat, so the server can release an idle session; 0 keeps them going."));
 
 void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -171,6 +178,7 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	UdpSubsystem->OnUDPConnectionSuccessful.AddDynamic(this, &UCrowdySDKSubsystem::OnUDPConnectionSuccessful);
 	UdpSubsystem->OnUDPTimeout.AddDynamic(this, &UCrowdySDKSubsystem::OnUDPTimeout);
+	UdpSubsystem->OnUDPInactive.AddDynamic(this, &UCrowdySDKSubsystem::OnUDPInactive);
 
 	if (!TryLoadConfiguration())
 		UE_LOG(LogCrowdySDK, Error, TEXT("Failed to load configuration from Developer Settings."));
@@ -181,6 +189,28 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// Inbound channel notifications (type 18) flow through the service registry directly to UCrowdyChannels.
 	CrowdyAuth->InjectDependencies(GameSession);
 	BindAuthentication(CrowdyAuth);
+
+	IdleWatchHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCrowdySDKSubsystem::UpdateLocalPlayerIdle), 1.0f);
+}
+
+bool UCrowdySDKSubsystem::UpdateLocalPlayerIdle(float DeltaTime)
+{
+	const float QuietSeconds = CVarCrowdyIdleQuietSeconds.GetValueOnGameThread();
+	const bool bWasIdle = bLocalPlayerIdle;
+	bLocalPlayerIdle = QuietSeconds > 0.f && FSlateApplication::IsInitialized()
+		&& FPlatformTime::Seconds() - FMath::Max(FSlateApplication::Get().GetLastUserInteractionTime(), LastConnectedSeconds) >= QuietSeconds;
+	if (bLocalPlayerIdle && !bWasIdle && UdpSubsystem)
+	{
+		UdpSubsystem->UpdatePingTime(0);
+	}
+
+	UWorld* World = GetWorld();
+	UCrowdyStateReplicator* Replicator = World ? World->GetSubsystem<UCrowdyStateReplicator>() : nullptr;
+	if (Replicator)
+	{
+		Replicator->SetLocalPlayerIdle(bLocalPlayerIdle);
+	}
+	return true;
 }
 
 void UCrowdySDKSubsystem::BindAuthentication(UCrowdyAuthentication* Auth)
@@ -201,6 +231,7 @@ void UCrowdySDKSubsystem::Deinitialize()
 	// manager (UWorld::GetTimerManager forwards to it for a Game/PIE world), so it survives level travel without a
 	// per-world re-arm; clearing it here on GameInstance teardown is enough.
 	StopHostPolling();
+	FTSTicker::GetCoreTicker().RemoveTicker(IdleWatchHandle);
 
 	FWorldDelegates::OnPostWorldInitialization.Remove(PostWorldInitHandle);
 	BindVoiceChat(nullptr);
@@ -1326,8 +1357,22 @@ void UCrowdySDKSubsystem::OnUDPTimeout()
 	RequestUDPAccess();
 }
 
+void UCrowdySDKSubsystem::OnUDPInactive()
+{
+	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("The server released this idle session; not reconnecting."));
+
+	StopHostPolling();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(PingMessageTimerHandle);
+	}
+
+	OnUDPSessionInactive.Broadcast();
+}
+
 void UCrowdySDKSubsystem::OnUDPConnectionSuccessful()
 {
+	LastConnectedSeconds = FPlatformTime::Seconds();
 	OnUDPConnectionSuccess.Broadcast();
 
 	if (UCrowdySafety* Safety = GetGameInstance()->GetSubsystem<UCrowdySafety>())
@@ -1391,6 +1436,12 @@ void UCrowdySDKSubsystem::StartConnectedSessionWork()
 
 void UCrowdySDKSubsystem::SendPingTestMessage()
 {
+	// Each ping carries a new timestamp, which the server counts as input and which would keep an idle player connected.
+	if (bLocalPlayerIdle)
+	{
+		return;
+	}
+
 	// The ping is a spatial self-echo: the server only relays it back to us when it is addressed to the chunk the
 	// server currently has us in, which is the chunk the local pawn's actor updates name.
 	const FInt64Vector ChunkCoordinate = GameSession->GetLocalPlayerChunk(GetWorld());

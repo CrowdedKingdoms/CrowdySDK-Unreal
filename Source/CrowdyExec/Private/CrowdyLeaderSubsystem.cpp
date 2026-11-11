@@ -39,6 +39,7 @@ void UCrowdyLeaderSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		UdpSubsystem = Udp;
 		bRealtimeUp = Udp->GetConnectionState() == EUDPConnectionState::Connected;
 		Udp->OnUDPTimeout.AddDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionLost);
+		Udp->OnUDPInactive.AddDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionLost);
 		Udp->OnUDPConnectionSuccessful.AddDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionUp);
 	}
 	WatchSession(Collection.InitializeDependency<UCrowdyGameSession>());
@@ -60,6 +61,7 @@ void UCrowdyLeaderSubsystem::Deinitialize()
 	if (UCrowdyUDPSubsystem* Udp = UdpSubsystem.Get())
 	{
 		Udp->OnUDPTimeout.RemoveDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionLost);
+		Udp->OnUDPInactive.RemoveDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionLost);
 		Udp->OnUDPConnectionSuccessful.RemoveDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionUp);
 	}
 	if (UCrowdyGameSession* Session = GameSession.Get())

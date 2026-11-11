@@ -17,6 +17,7 @@
 #include "Messages/Voxel/FVoxelStateUpdateRequest.h"
 #include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
 #include "Network/UDP/CrowdyCppSendAdapter.h"
+#include "Network/UDP/CrowdyUDPSubsystem.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 #include "UObject/Package.h"
@@ -2153,6 +2154,90 @@ bool FCrowdyReplicationBundlingOffTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the library counted one datagram per message"), Stats.DatagramsSent, Stats.MessagesSent);
 	TestEqual(TEXT("and no bundles"), Stats.BundlesSent, static_cast<int64>(0));
 
+	Fixture.Shut();
+	return true;
+}
+
+namespace
+{
+	/** COMMAND_SESSION_RELEASED as the server frames it: type, reason, and an HMAC over those two octets. */
+	TArray<uint8> SessionReleasedFrame(const uint8 Reason, const bool bSigned)
+	{
+		TArray<uint8> Frame = {28, Reason};
+		Frame.SetNumZeroed(34);
+		if (bSigned)
+		{
+			CrowdyWireParity::Crypto().hmacSha256(CrowdyWireParity::ParityToken().bytes(), crowdy::Bytes(Frame.GetData(), 2),
+				Frame.GetData() + 2);
+		}
+		return Frame;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyIdleReleaseIsInactiveTest,
+	"CrowdySDK.Transport.IdleReleaseIsInactiveNotATimeout",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyIdleReleaseIsInactiveTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FConnectedFixture Fixture;
+	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open(7, 123456789, 0)))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	const TStrongObjectPtr<UGameInstance> OuterInstance(NewObject<UGameInstance>(GetTransientPackage()));
+	const TStrongObjectPtr<UCrowdyUDPSubsystem> Udp(NewObject<UCrowdyUDPSubsystem>(OuterInstance.Get()));
+	const TStrongObjectPtr<UCrowdyCppReplicationSubsystem> Routing(
+		NewObject<UCrowdyCppReplicationSubsystem>(OuterInstance.Get()));
+	Routing->SetReceiveTarget(nullptr, nullptr, Udp.Get());
+	Routing->SetConnection(Fixture.Connection);
+
+	if (!TestTrue(TEXT("the stand-in server learned the client's address"), Fixture.Prime()))
+	{
+		Routing->SetConnection(nullptr);
+		Fixture.Shut();
+		return false;
+	}
+
+	auto PollFor = [&Fixture](const ECrowdyCppConnState Wanted)
+	{
+		return WaitUntil([&Fixture, Wanted]()
+		{
+			Fixture.Connection->Poll();
+			return Fixture.Connection->GetState() == Wanted;
+		}, 2.0);
+	};
+
+	TestTrue(TEXT("a forged release was pushed"), Fixture.Server.SendToClient(SessionReleasedFrame(5, false)));
+	TestFalse(TEXT("a release that does not verify ends nothing"), PollFor(ECrowdyCppConnState::Inactive));
+	TestEqual(TEXT("the forged release was refused on its signature"), Fixture.Connection->GetStats().HmacFailures, static_cast<int64>(1));
+
+	Udp->UpdatePingTime(42);
+	TestTrue(TEXT("a signed idle release was pushed"), Fixture.Server.SendToClient(SessionReleasedFrame(5, true)));
+	TestTrue(TEXT("the connection reports Inactive"), PollFor(ECrowdyCppConnState::Inactive));
+	TestEqual(TEXT("the signed release verified"), Fixture.Connection->GetStats().HmacFailures, static_cast<int64>(1));
+	TestEqual(TEXT("the game reads Inactive, not the timeout's Disconnected"),
+		static_cast<int32>(Udp->GetConnectionState()), static_cast<int32>(EUDPConnectionState::Inactive));
+	TestEqual(TEXT("the last ping is not shown for a released session"), Udp->GetUDPNetworkStats().Ping, static_cast<int64>(0));
+
+	FActorUpdateRequestMessage Message;
+	Message.AppID = 7;
+	Message.UUID = CrowdyWireParity::GoldenActorId();
+	Message.StateBytes = {0x10};
+	Message.StateSize = Message.StateBytes.Num();
+	TestEqual(TEXT("a send while released is not routed, quietly"),
+		static_cast<int32>(Routing->TrySendMessage(Message)), static_cast<int32>(ECrowdyCppSendOutcome::NotRouted));
+
+	Fixture.Connection->ConnectAsync();
+	TestTrue(TEXT("connecting again assigns a server"), PollFor(ECrowdyCppConnState::Connected));
+	TestEqual(TEXT("and the game reads Connected"),
+		static_cast<int32>(Udp->GetConnectionState()), static_cast<int32>(EUDPConnectionState::Connected));
+
+	Routing->SetConnection(nullptr);
 	Fixture.Shut();
 	return true;
 }
