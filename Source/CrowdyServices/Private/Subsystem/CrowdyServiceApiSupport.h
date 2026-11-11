@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "CrowdyCppClient.h"
 #include "CrowdyServicesLog.h"
 #include "Dom/JsonObject.h"
@@ -284,6 +285,83 @@ namespace CrowdyServiceApi
 	inline FString BigInt(int64 Value)
 	{
 		return FString::Printf(TEXT("%lld"), Value);
+	}
+
+	/** Runs Work on a later tick unless LiveToken is released first, so a caller never sees an answer inside its own call. */
+	inline void DeferWhileLive(const TSharedPtr<uint8>& LiveToken, TFunction<void()> Work)
+	{
+		TWeakPtr<uint8> Weak = LiveToken;
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak, Work = MoveTemp(Work)](float)
+		{
+			if (Weak.IsValid())
+			{
+				Work();
+			}
+			return false;
+		}));
+	}
+
+	/**
+	 * Sends one operation and hands its answer to Body while LiveToken lives, on a later tick when the client answers
+	 * inside the send, as it does when it cannot send at all.
+	 */
+	inline void RunOpDeferred(FCrowdyCppClient& Client, ECrowdyCppApiDomain Domain, const TCHAR* Operation, const TSharedPtr<FJsonObject>& Variables,
+		const TSharedPtr<uint8>& LiveToken, TFunction<void(FCrowdyCppJsonResult)> Body)
+	{
+		const TSharedRef<bool> bInCall = MakeShared<bool>(true);
+		TWeakPtr<uint8> WeakToken = LiveToken;
+		Client.RunOp(Domain, Operation, Variables, GuardLifetime<FCrowdyCppJsonResult>(LiveToken,
+			[bInCall, WeakToken, Body = MoveTemp(Body)](FCrowdyCppJsonResult Result) mutable
+			{
+				if (!*bInCall)
+				{
+					Body(MoveTemp(Result));
+					return;
+				}
+				DeferWhileLive(WeakToken.Pin(), [Body = MoveTemp(Body), Result = MoveTemp(Result)]() mutable { Body(MoveTemp(Result)); });
+			}));
+		*bInCall = false;
+	}
+
+	/**
+	 * A BigInt field arrives as a decimal string; a whole number is accepted too. Text that is not exactly one int64, such
+	 * as "12abc" or one past the range, is unread.
+	 */
+	inline bool ReadWholeInt64(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, int64& Out)
+	{
+		FString Text;
+		if (Object->TryGetStringField(Field, Text))
+		{
+			return LexTryParseString(Out, *Text) && FString::Printf(TEXT("%lld"), Out) == Text;
+		}
+		double Number = 0.0;
+		if (!Object->TryGetNumberField(Field, Number) || Number != FMath::FloorToDouble(Number) || FMath::Abs(Number) > 9.0e15)
+		{
+			return false;
+		}
+		Out = static_cast<int64>(Number);
+		return true;
+	}
+
+	/**
+	 * Whether a failed call carries Code as its error's code, its reason, or, as the live API does under a broader code,
+	 * at the start of its message ("GRID_ALREADY_CLAIMED: ...").
+	 */
+	inline bool NamesCode(const FCrowdyCppJsonResult& Result, const TCHAR* Code)
+	{
+		return Result.ErrorCode == Code || Result.ErrorReason == Code || Result.ErrorMessage.StartsWith(FString::Printf(TEXT("%s:"), Code), ESearchCase::CaseSensitive);
+	}
+
+	/** The platform's code for a failed call, with its reason when there is one; empty for a request that did not complete. */
+	inline FString FailureCode(const FCrowdyCppJsonResult& Result)
+	{
+		return Result.ErrorReason.IsEmpty() ? Result.ErrorCode : FString::Printf(TEXT("%s %s"), *Result.ErrorCode, *Result.ErrorReason);
+	}
+
+	/** "code: text" as the platform gave it, or the transport's own words for a request that did not complete. */
+	inline FString FailureMessage(const FCrowdyCppJsonResult& Result)
+	{
+		return Result.ErrorCode.IsEmpty() ? Result.ErrorMessage : FString::Printf(TEXT("%s: %s"), *FailureCode(Result), *Result.ErrorMessage);
 	}
 
 	/** Build the variables object for an operation whose single argument is an input wrapper. */

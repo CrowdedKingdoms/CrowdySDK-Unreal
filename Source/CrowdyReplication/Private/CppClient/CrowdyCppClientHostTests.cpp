@@ -79,6 +79,17 @@ namespace CrowdyCppHostTestSupport
 		{ECrowdyCppApiDomain::Platform, TEXT("PlatformConfig"), TEXT("Platform"), true},
 		{ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceClaimGridChunk"), TEXT("Marketplace claim"), false},
 		{ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceReleaseClaimedGrid"), TEXT("Marketplace release"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecBuildStatus"), TEXT("Exec developer build"), true},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecConnect"), TEXT("Exec player connect"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecModStarter"), TEXT("Exec mod starter"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecModBuild"), TEXT("Exec mod build"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecModBuildStatus"), TEXT("Exec mod build status"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecModDeploy"), TEXT("Exec mod deploy"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecModSetEnabled"), TEXT("Exec mod switch"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecMods"), TEXT("Exec grid mods"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecMyMods"), TEXT("Exec my mods"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecModLogs"), TEXT("Exec mod logs"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecModDelete"), TEXT("Exec mod delete"), false},
 	};
 
 	// Issues one operation and drains its completion. The canned transport resolves inline, so the callback has

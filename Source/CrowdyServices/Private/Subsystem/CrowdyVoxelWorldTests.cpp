@@ -173,6 +173,41 @@ namespace CrowdyVoxelWorldTests
 			return Fetches.FilterByPredicate([Range](const FFetchCall& Call) { return Call.Range == Range; }).Num();
 		}
 	};
+
+	struct FReloadAnswer
+	{
+		int32 Count = 0;
+		ECrowdyVoxelResult Result = ECrowdyVoxelResult::Ok;
+		FString Message;
+	};
+
+	/** Asks for a reload whose answer is kept and also logged after the broadcasts, as "reload <result>". */
+	TSharedRef<FReloadAnswer> Reload(FRig& Rig, const FInt64Vector& Coord = FInt64Vector::ZeroValue)
+	{
+		TSharedRef<FReloadAnswer> Answer = MakeShared<FReloadAnswer>();
+		UCrowdyVoxelWorldRecorder* Recorder = Rig.Recorder.Get();
+		Rig.World->ReloadChunk(Coord.X, Coord.Y, Coord.Z, [Answer, Recorder](ECrowdyVoxelResult Result, const FString& Message)
+		{
+			++Answer->Count;
+			Answer->Result = Result;
+			Answer->Message = Message;
+			Recorder->Log.Add(FString::Printf(TEXT("reload %s"), *UEnum::GetValueAsString(Result)));
+		});
+		return Answer;
+	}
+
+	/** Answers every fetch asked so far with Result and no chunks. */
+	void FailFetches(FRig& Rig, ECrowdyVoxelResult Result)
+	{
+		TArray<FFetchCall> Calls = MoveTemp(Rig.Fetches);
+		for (FFetchCall& Call : Calls)
+		{
+			FCrowdyChunkFetch Answer;
+			Answer.Result = Result;
+			Answer.Message = TEXT("FORBIDDEN: no");
+			Call.Done(Answer);
+		}
+	}
 }
 
 using namespace CrowdyVoxelWorldTests;
@@ -673,6 +708,202 @@ bool FCrowdyVoxelWorldOverlayReadsTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the visit sees one filled cell"), Filled.Num(), 1);
 	TestTrue(TEXT("with the newest waiting type"), Filled.Num() == 1 && Filled[0].Key == FIntVector(1, 0, 0) && Filled[0].Value == 6);
 	TestFalse(TEXT("a chunk not loaded is not found"), Rig.World->FindChunk(9, 9, 9, Chunk));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldReloadMergesTest, "CrowdySDK.Voxels.World.ReloadMergesAFreshFetch", Flags)
+bool FCrowdyVoxelWorldReloadMergesTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Store(FInt64Vector::ZeroValue).Grid[1 + 16 * 2 + 256 * 3] = 9;
+	Rig.Load();
+	Rig.Platform[FInt64Vector::ZeroValue].Grid[1 + 16 * 2 + 256 * 3] = 0;
+	Rig.Platform[FInt64Vector::ZeroValue].Grid[4 + 16 * 4 + 256 * 4] = 5;
+	Rig.Recorder->Log.Reset();
+	Rig.Recorder->Loaded.Reset();
+	Rig.Recorder->ChangedPositions.Reset();
+
+	const TSharedRef<FReloadAnswer> Answer = Reload(Rig);
+	TestEqual(TEXT("nothing answers inside the call"), Answer->Count, 0);
+	TestEqual(TEXT("the chunk is fetched once"), Rig.CountFetches(0), 1);
+	Rig.Step();
+	TestEqual(TEXT("nothing answers before the fetch does"), Answer->Count, 0);
+
+	Rig.AnswerFetches();
+	TestEqual(TEXT("nothing answers inside the fetch's answer"), Answer->Count, 0);
+	Rig.Step();
+	TestEqual(TEXT("one answer"), Answer->Count, 1);
+	TestTrue(TEXT("the reload succeeded"), Answer->Result == ECrowdyVoxelResult::Ok);
+	TestEqual(TEXT("a removed cell reads empty"), Rig.TypeAt(1, 2, 3), 0);
+	TestEqual(TEXT("a new cell reads its type"), Rig.TypeAt(4, 4, 4), 5);
+	const int32 Removed = Rig.Recorder->Log.IndexOfByKey(TEXT("changed 1 2 3"));
+	const int32 Added = Rig.Recorder->Log.IndexOfByKey(TEXT("changed 4 4 4"));
+	const int32 Ok = Rig.Recorder->Log.IndexOfByKey(TEXT("reload ECrowdyVoxelResult::Ok"));
+	TestTrue(TEXT("the removal and the new cell are named before the Ok"), Removed != INDEX_NONE && Added != INDEX_NONE && Ok > Removed && Ok > Added);
+	TestEqual(TEXT("only the changed cells are named"), Rig.Recorder->ChangedPositions.Num(), 2);
+	TestFalse(TEXT("an already loaded chunk is not reported loaded again"), Rig.Recorder->Loaded.Contains(FInt64Vector::ZeroValue));
+	Rig.Step();
+	TestEqual(TEXT("still one answer"), Answer->Count, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldReloadUnloadedTest, "CrowdySDK.Voxels.World.ReloadOfAnUnloadedChunkFails", Flags)
+bool FCrowdyVoxelWorldReloadUnloadedTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	const TSharedRef<FReloadAnswer> Answer = Reload(Rig, FInt64Vector(5, 5, 5));
+	TestEqual(TEXT("nothing answers inside the call"), Answer->Count, 0);
+	Rig.Step();
+	TestEqual(TEXT("one answer on the next frame"), Answer->Count, 1);
+	TestTrue(TEXT("a chunk not loaded fails"), Answer->Result == ECrowdyVoxelResult::Failed);
+	TestEqual(TEXT("nothing is fetched"), Rig.Fetches.Num(), 0);
+	TestFalse(TEXT("and the chunk is not loaded by it"), Rig.World->IsChunkLoaded(5, 5, 5));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldReloadIgnoresEarlierFetchTest, "CrowdySDK.Voxels.World.ReloadIgnoresAFetchAlreadyOut", Flags)
+bool FCrowdyVoxelWorldReloadIgnoresEarlierFetchTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	Rig.Step(UCrowdyVoxelWorld::SettleSeconds);
+	TestEqual(TEXT("the settling read is out"), Rig.CountFetches(2), 1);
+
+	const TSharedRef<FReloadAnswer> Answer = Reload(Rig);
+	TestEqual(TEXT("no second fetch while one is out"), Rig.CountFetches(0), 0);
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestEqual(TEXT("the read asked for before the reload does not answer it"), Answer->Count, 0);
+	TestEqual(TEXT("the chunk is asked for again once that read is in"), Rig.CountFetches(0), 1);
+
+	Rig.Store(FInt64Vector::ZeroValue).Grid[2 + 16 * 2 + 256 * 2] = 7;
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestTrue(TEXT("the later fetch answers it"), Answer->Count == 1 && Answer->Result == ECrowdyVoxelResult::Ok);
+	TestEqual(TEXT("with the platform's value"), Rig.TypeAt(2, 2, 2), 7);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldReloadOverlapTest, "CrowdySDK.Voxels.World.OverlappingReloadsShareALaterFetch", Flags)
+bool FCrowdyVoxelWorldReloadOverlapTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	const TSharedRef<FReloadAnswer> First = Reload(Rig);
+	TestEqual(TEXT("the first reload fetches the chunk"), Rig.CountFetches(0), 1);
+	const TSharedRef<FReloadAnswer> Second = Reload(Rig);
+	const TSharedRef<FReloadAnswer> Third = Reload(Rig);
+	TestEqual(TEXT("reloads asked for while that fetch is out ask for nothing yet"), Rig.CountFetches(0), 1);
+
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestTrue(TEXT("the first fetch answers the first reload"), First->Count == 1 && First->Result == ECrowdyVoxelResult::Ok);
+	TestTrue(TEXT("but not those asked for after it began"), Second->Count == 0 && Third->Count == 0);
+	TestEqual(TEXT("which share one later fetch"), Rig.CountFetches(0), 1);
+
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestTrue(TEXT("that fetch answers both"), Second->Count == 1 && Third->Count == 1
+		&& Second->Result == ECrowdyVoxelResult::Ok && Third->Result == ECrowdyVoxelResult::Ok);
+	TestEqual(TEXT("the first answers only once"), First->Count, 1);
+	TestEqual(TEXT("and nothing more is fetched"), Rig.Fetches.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldReloadFailureTest, "CrowdySDK.Voxels.World.ReloadFailsWithItsFetchOrTimesOut", Flags)
+bool FCrowdyVoxelWorldReloadFailureTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	const TSharedRef<FReloadAnswer> Refused = Reload(Rig);
+	FailFetches(Rig, ECrowdyVoxelResult::Refused);
+	Rig.Step();
+	TestTrue(TEXT("a refused fetch ends the reload refused"), Refused->Count == 1 && Refused->Result == ECrowdyVoxelResult::Refused);
+	TestTrue(TEXT("with the platform's words"), Refused->Message.Contains(TEXT("FORBIDDEN")));
+	TestTrue(TEXT("and the chunk stays loaded"), Rig.World->IsChunkLoaded(0, 0, 0));
+
+	const TSharedRef<FReloadAnswer> Late = Reload(Rig);
+	TestEqual(TEXT("the reload's fetch is out"), Rig.CountFetches(0), 1);
+	Rig.Step(UCrowdyVoxelWorld::ReloadTimeoutSeconds - 1.0);
+	TestEqual(TEXT("nothing answers before 30 seconds"), Late->Count, 0);
+	Rig.Step(1.1);
+	TestTrue(TEXT("30 seconds without a fetch fails"), Late->Count == 1 && Late->Result == ECrowdyVoxelResult::Failed);
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestEqual(TEXT("a fetch that comes in later answers nothing more"), Late->Count, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldReloadSessionTest, "CrowdySDK.Voxels.World.ReloadEndsWhenTheSessionDrops", Flags)
+bool FCrowdyVoxelWorldReloadSessionTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	const TSharedRef<FReloadAnswer> Waiting = Reload(Rig);
+	Rig.World->SetConnectedForTest(false);
+	Rig.Step();
+	TestTrue(TEXT("a reload waiting when the connection drops ends not signed in"), Waiting->Count == 1 && Waiting->Result == ECrowdyVoxelResult::NotSignedIn);
+
+	Rig.Fetches.Reset();
+	const TSharedRef<FReloadAnswer> Offline = Reload(Rig);
+	Rig.Step();
+	TestTrue(TEXT("a reload asked for without a connection ends not signed in"), Offline->Count == 1 && Offline->Result == ECrowdyVoxelResult::NotSignedIn);
+	TestEqual(TEXT("without a fetch"), Rig.Fetches.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldReloadChunkGoneTest, "CrowdySDK.Voxels.World.ReloadEndsWhenItsChunkUnloads", Flags)
+bool FCrowdyVoxelWorldReloadChunkGoneTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	const TSharedRef<FReloadAnswer> Waiting = Reload(Rig);
+	Rig.World->StopFollowing(Rig.Actor.Get());
+	Rig.Step();
+	TestEqual(TEXT("a reload whose chunk unloads answers once"), Waiting->Count, 1);
+	TestTrue(TEXT("not Ok"), Waiting->Result != ECrowdyVoxelResult::Ok);
+	TestEqual(TEXT("saying the chunk was unloaded"), Waiting->Message, FString(TEXT("the chunk was unloaded")));
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestEqual(TEXT("and a fetch landing after does not answer it again"), Waiting->Count, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldReloadOverlayTest, "CrowdySDK.Voxels.World.ReloadKeepsWaitingEditsOnTop", Flags)
+bool FCrowdyVoxelWorldReloadOverlayTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Store(FInt64Vector::ZeroValue).Grid[3 + 16 * 3 + 256 * 3] = 2;
+	Rig.Load();
+	Rig.World->SetVoxel(FRig::Write(3, 3, 3, 6));
+	Rig.Step();
+	Rig.Platform[FInt64Vector::ZeroValue].Grid[3 + 16 * 3 + 256 * 3] = 4;
+	Rig.Platform[FInt64Vector::ZeroValue].Grid[5 + 16 * 5 + 256 * 5] = 1;
+	Rig.Recorder->ChangedPositions.Reset();
+
+	const TSharedRef<FReloadAnswer> Answer = Reload(Rig);
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestTrue(TEXT("the reload succeeded"), Answer->Count == 1 && Answer->Result == ECrowdyVoxelResult::Ok);
+	TestEqual(TEXT("this player's waiting edit still shows over the fetched value"), Rig.TypeAt(3, 3, 3), 6);
+	TestFalse(TEXT("so its cell is not named as changed"), Rig.Recorder->ChangedPositions.Contains(FIntVector(3, 3, 3)));
+	TestTrue(TEXT("while another changed cell is"), Rig.Recorder->ChangedPositions.Contains(FIntVector(5, 5, 5)));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldReloadWorldEndTest, "CrowdySDK.Voxels.World.ReloadDroppedWhenTheWorldEnds", Flags)
+bool FCrowdyVoxelWorldReloadWorldEndTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	const TSharedRef<FReloadAnswer> Answer = Reload(Rig);
+	const TSharedRef<FReloadAnswer> Unloaded = Reload(Rig, FInt64Vector(9, 9, 9));
+	Rig.World->EndWorldForTest();
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestEqual(TEXT("a reload waiting on its fetch runs nothing once the world ends"), Answer->Count, 0);
+	TestEqual(TEXT("nor does one that had already failed"), Unloaded->Count, 0);
 	return true;
 }
 

@@ -58,6 +58,9 @@ public:
 	/** The platform's reach for live edits, in chunks on every axis. */
 	static constexpr int32 LiveReach = 8;
 
+	/** How long Reload Chunk waits for its fetch before it ends Failed. */
+	static constexpr double ReloadTimeoutSeconds = 30.0;
+
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
@@ -103,6 +106,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Voxels")
 	TArray<int64> SetVoxels(const TArray<FCrowdyVoxelWrite>& Writes);
 
+	/**
+	 * Fetches a loaded chunk again and merges it as any fetch is, under this player's waiting edits. OnDone runs once, on
+	 * a later frame: Ok once a fetch begun after this call has merged and On Chunk Changed has named every cell it changed.
+	 * A chunk not loaded, a lost connection, a failed fetch or 30 seconds without one ends it otherwise, and a chunk not
+	 * loaded is not loaded by this. Dropped without running if the world ends first.
+	 */
+	void ReloadChunk(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFunction<void(ECrowdyVoxelResult Result, const FString& Message)> OnDone);
+
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Voxels")
 	FOnCrowdyVoxelChunk OnChunkLoaded;
 
@@ -143,6 +154,9 @@ public:
 
 	/** One frame's work, as Tick runs it, for a subsystem built outside a world. */
 	void TickForTest() { Step(); }
+
+	/** What the world's end does to this subsystem's state, for one built outside a world. */
+	void EndWorldForTest() { ReleaseWorld(); }
 #endif
 
 private:
@@ -191,6 +205,18 @@ private:
 		bool bHasChunk = false;
 	};
 
+	struct FReload
+	{
+		TFunction<void(ECrowdyVoxelResult, const FString&)> OnDone;
+		FString Message;
+		FInt64Vector Chunk = FInt64Vector::ZeroValue;
+		double Deadline = 0.0;
+		/** Only a fetch of this request number or later, so begun after the reload was asked for, satisfies it. */
+		int32 FirstRequest = 0;
+		ECrowdyVoxelResult Result = ECrowdyVoxelResult::Ok;
+		bool bDone = false;
+	};
+
 	double Now() const;
 	bool IsConnected() const;
 	bool HasActorId() const;
@@ -220,11 +246,15 @@ private:
 	const FPendingEdit* NewestPending(const FInt64Vector& Coord, uint64 Key) const;
 	void MarkChanged(const FInt64Vector& Coord, FChunkState& State, const FIntVector& Position);
 	void TakeOff(const TArray<int64>& EditIds);
+	void EndReloads(const FInt64Vector& Coord, int32 SatisfyingRequest, ECrowdyVoxelResult Result, const FString& Message);
+	TArray<FReload> TakeEndedReloads();
+	void ReleaseWorld();
 
 	TMap<FInt64Vector, FChunkState> Chunks;
 	TArray<FPendingEdit> Pending;
 	TArray<FPendingEdit> EarlyDone;
 	TArray<FFollower> Followers;
+	TArray<FReload> Reloads;
 	TArray<FInt64Vector> DirtyChunks;
 	TArray<FInt64Vector> LoadedEvents;
 	TArray<FInt64Vector> UnloadedEvents;

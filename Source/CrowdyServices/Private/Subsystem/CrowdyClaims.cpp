@@ -1,5 +1,4 @@
 #include "Subsystem/CrowdyClaims.h"
-#include "Containers/Ticker.h"
 #include "CrowdyCppClient.h"
 #include "CrowdyServiceApiSupport.h"
 #include "CrowdyServicesLog.h"
@@ -34,20 +33,6 @@ namespace
 		return TEXT("Unknown");
 	}
 
-	// An answer known before any request still arrives on a later tick, so a caller never sees it inside its own call.
-	void ClaimsDefer(const TSharedPtr<uint8>& LiveToken, TFunction<void()> Work)
-	{
-		TWeakPtr<uint8> Weak = LiveToken;
-		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak, Work = MoveTemp(Work)](float)
-		{
-			if (Weak.IsValid())
-			{
-				Work();
-			}
-			return false;
-		}));
-	}
-
 	// Only the result and the platform's code are logged: the platform's text may name a player.
 	void ClaimsWarn(const TCHAR* Call, ECrowdyClaimResult Result, const FString& Code)
 	{
@@ -55,40 +40,15 @@ namespace
 			Code.IsEmpty() ? TEXT("") : TEXT(": "), *Code);
 	}
 
-	// Sends one operation and hands its answer to Body on a later tick if the client answers inside the send, as it does
-	// when it cannot send at all.
-	void ClaimsSend(FCrowdyCppClient& Client, ECrowdyCppApiDomain Domain, const TCHAR* Operation, const TSharedPtr<FJsonObject>& Variables,
-		const TSharedPtr<uint8>& LiveToken, TFunction<void(FCrowdyCppJsonResult)> Body)
-	{
-		const TSharedRef<bool> bInCall = MakeShared<bool>(true);
-		TWeakPtr<uint8> WeakToken = LiveToken;
-		Client.RunOp(Domain, Operation, Variables, GuardLifetime<FCrowdyCppJsonResult>(LiveToken,
-			[bInCall, WeakToken, Body = MoveTemp(Body)](FCrowdyCppJsonResult Result) mutable
-			{
-				if (!*bInCall)
-				{
-					Body(MoveTemp(Result));
-					return;
-				}
-				ClaimsDefer(WeakToken.Pin(), [Body = MoveTemp(Body), Result = MoveTemp(Result)]() mutable { Body(MoveTemp(Result)); });
-			}));
-		*bInCall = false;
-	}
-
 	// The platform names a grid refusal in the error's code, its reason, or, as the live API does under a CONFLICT code, at the
-	// start of its message ("GRID_ALREADY_CLAIMED: ..."), so all three are read.
-	bool ClaimsNames(const FCrowdyCppJsonResult& Result, const TCHAR* Code)
-	{
-		return Result.ErrorCode == Code || Result.ErrorReason == Code || Result.ErrorMessage.StartsWith(FString::Printf(TEXT("%s:"), Code), ESearchCase::CaseSensitive);
-	}
-
+	// start of its message, so all three are read.
 	ECrowdyClaimResult ClaimsFailureResult(const FCrowdyCppJsonResult& Result)
 	{
-		if (ClaimsNames(Result, TEXT("GRID_NOT_CLAIMABLE")))
+		if (NamesCode(Result, TEXT("GRID_NOT_CLAIMABLE")))
 		{
 			return ECrowdyClaimResult::NotClaimable;
 		}
-		if (ClaimsNames(Result, TEXT("GRID_ALREADY_CLAIMED")))
+		if (NamesCode(Result, TEXT("GRID_ALREADY_CLAIMED")))
 		{
 			return ECrowdyClaimResult::AlreadyClaimed;
 		}
@@ -96,40 +56,11 @@ namespace
 		return Result.ErrorCode.IsEmpty() || bCanceled ? ECrowdyClaimResult::Failed : ECrowdyClaimResult::Refused;
 	}
 
-	// The platform's code, with its reason when there is one; empty for a request that did not complete.
-	FString ClaimsFailureCode(const FCrowdyCppJsonResult& Result)
-	{
-		return Result.ErrorReason.IsEmpty() ? Result.ErrorCode : FString::Printf(TEXT("%s %s"), *Result.ErrorCode, *Result.ErrorReason);
-	}
-
-	FString ClaimsFailureMessage(const FCrowdyCppJsonResult& Result)
-	{
-		return Result.ErrorCode.IsEmpty() ? Result.ErrorMessage : FString::Printf(TEXT("%s: %s"), *ClaimsFailureCode(Result), *Result.ErrorMessage);
-	}
-
-	// A BigInt field arrives as a decimal string; a number is accepted too. Text that is not exactly one int64, such as
-	// "12abc" or one past the range, is unread.
-	bool ClaimsReadInt64(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, int64& Out)
-	{
-		FString Text;
-		if (Object->TryGetStringField(Field, Text))
-		{
-			return LexTryParseString(Out, *Text) && FString::Printf(TEXT("%lld"), Out) == Text;
-		}
-		double Number = 0.0;
-		if (!Object->TryGetNumberField(Field, Number) || Number != FMath::FloorToDouble(Number) || FMath::Abs(Number) > 9.0e15)
-		{
-			return false;
-		}
-		Out = static_cast<int64>(Number);
-		return true;
-	}
-
 	bool ClaimsReadChunk(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, FInt64Vector& Out)
 	{
 		const TSharedPtr<FJsonObject>* Point = nullptr;
-		return Object->TryGetObjectField(Field, Point) && ClaimsReadInt64(*Point, TEXT("x"), Out.X)
-			&& ClaimsReadInt64(*Point, TEXT("y"), Out.Y) && ClaimsReadInt64(*Point, TEXT("z"), Out.Z);
+		return Object->TryGetObjectField(Field, Point) && ReadWholeInt64(*Point, TEXT("x"), Out.X)
+			&& ReadWholeInt64(*Point, TEXT("y"), Out.Y) && ReadWholeInt64(*Point, TEXT("z"), Out.Z);
 	}
 
 	TSharedPtr<FJsonObject> ClaimsChunkJson(const FInt64Vector& Chunk)
@@ -303,7 +234,7 @@ void UCrowdyClaims::ClaimChunk(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFuncti
 	if (!Client)
 	{
 		const bool bSignedIn = HasAppToken();
-		ClaimsDefer(LiveSessionToken, [OnDone = MoveTemp(OnDone), Asked, bSignedIn]()
+		DeferWhileLive(LiveSessionToken, [OnDone = MoveTemp(OnDone), Asked, bSignedIn]()
 		{
 			FinishClaim(OnDone, Asked, bSignedIn ? ECrowdyClaimResult::Failed : ECrowdyClaimResult::NotSignedIn, bSignedIn ? ClaimsNoClient : ClaimsNotSignedIn);
 		});
@@ -315,7 +246,7 @@ void UCrowdyClaims::ClaimChunk(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFuncti
 	Variables->SetObjectField(TEXT("chunk"), ClaimsChunkJson(Chunk));
 
 	TWeakObjectPtr<UCrowdyClaims> WeakThis(this);
-	ClaimsSend(*Client, ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceClaimGridChunk"), Variables, LiveSessionToken,
+	RunOpDeferred(*Client, ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceClaimGridChunk"), Variables, LiveSessionToken,
 		[WeakThis, AppId, Asked, Chunk, OnDone = MoveTemp(OnDone)](FCrowdyCppJsonResult Result)
 		{
 			const UCrowdyClaims* Self = WeakThis.Get();
@@ -326,14 +257,14 @@ void UCrowdyClaims::ClaimChunk(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFuncti
 			}
 			if (!Result.bTransportOk)
 			{
-				FinishClaim(OnDone, Asked, ClaimsFailureResult(Result), ClaimsFailureMessage(Result), ClaimsFailureCode(Result));
+				FinishClaim(OnDone, Asked, ClaimsFailureResult(Result), FailureMessage(Result), FailureCode(Result));
 				return;
 			}
 			const TSharedPtr<FJsonObject> Answer = ClaimsAnswerObject(Result, TEXT("claimGridChunk"));
 			FCrowdyChunkClaim Claim = Asked;
 			FInt64Vector Low;
 			FInt64Vector High;
-			if (!Answer || !ClaimsReadInt64(Answer, TEXT("gridId"), Claim.GridId) || Claim.GridId <= 0
+			if (!Answer || !ReadWholeInt64(Answer, TEXT("gridId"), Claim.GridId) || Claim.GridId <= 0
 				|| !ClaimsReadChunk(Answer, TEXT("lowChunk"), Low) || !ClaimsReadChunk(Answer, TEXT("highChunk"), High))
 			{
 				FinishClaim(OnDone, Asked, ECrowdyClaimResult::BadReply, TEXT("The answer holds no well-formed claim."));
@@ -354,7 +285,7 @@ void UCrowdyClaims::ReleaseClaim(int64 GridId, TFunction<void(const FCrowdyClaim
 	if (!Client)
 	{
 		const bool bSignedIn = HasAppToken();
-		ClaimsDefer(LiveSessionToken, [OnDone = MoveTemp(OnDone), GridId, bSignedIn]()
+		DeferWhileLive(LiveSessionToken, [OnDone = MoveTemp(OnDone), GridId, bSignedIn]()
 		{
 			FinishRelease(OnDone, GridId, bSignedIn ? ECrowdyClaimResult::Failed : ECrowdyClaimResult::NotSignedIn, bSignedIn ? ClaimsNoClient : ClaimsNotSignedIn);
 		});
@@ -366,7 +297,7 @@ void UCrowdyClaims::ReleaseClaim(int64 GridId, TFunction<void(const FCrowdyClaim
 	Variables->SetStringField(TEXT("gridId"), BigInt(GridId));
 
 	TWeakObjectPtr<UCrowdyClaims> WeakThis(this);
-	ClaimsSend(*Client, ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceReleaseClaimedGrid"), Variables, LiveSessionToken,
+	RunOpDeferred(*Client, ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceReleaseClaimedGrid"), Variables, LiveSessionToken,
 		[WeakThis, AppId, GridId, OnDone = MoveTemp(OnDone)](FCrowdyCppJsonResult Result)
 		{
 			const UCrowdyClaims* Self = WeakThis.Get();
@@ -377,13 +308,13 @@ void UCrowdyClaims::ReleaseClaim(int64 GridId, TFunction<void(const FCrowdyClaim
 			}
 			if (!Result.bTransportOk)
 			{
-				FinishRelease(OnDone, GridId, ClaimsFailureResult(Result), ClaimsFailureMessage(Result), ClaimsFailureCode(Result));
+				FinishRelease(OnDone, GridId, ClaimsFailureResult(Result), FailureMessage(Result), FailureCode(Result));
 				return;
 			}
 			const TSharedPtr<FJsonObject> Answer = ClaimsAnswerObject(Result, TEXT("releaseClaimedGrid"));
 			int64 Echoed = 0;
 			bool bReleased = false;
-			if (!Answer || !ClaimsReadInt64(Answer, TEXT("gridId"), Echoed) || Echoed != GridId || !Answer->TryGetBoolField(TEXT("released"), bReleased))
+			if (!Answer || !ReadWholeInt64(Answer, TEXT("gridId"), Echoed) || Echoed != GridId || !Answer->TryGetBoolField(TEXT("released"), bReleased))
 			{
 				FinishRelease(OnDone, GridId, ECrowdyClaimResult::BadReply, TEXT("The answer holds no well-formed release of that grid."));
 				return;
@@ -414,7 +345,7 @@ void UCrowdyClaims::FindClaims(int64 LowX, int64 LowY, int64 LowZ, int64 HighX, 
 		const ECrowdyClaimResult Result = bBoxFits && !HasAppToken() ? ECrowdyClaimResult::NotSignedIn : ECrowdyClaimResult::Failed;
 		const FString Message = !bBoxFits ? FString::Printf(TEXT("The box must be ordered low to high and hold at most %lld chunks."), MaxSearchChunks)
 			: Result == ECrowdyClaimResult::NotSignedIn ? FString(ClaimsNotSignedIn) : FString(ClaimsNoClient);
-		ClaimsDefer(LiveSessionToken, [OnDone = MoveTemp(OnDone), Result, Message]()
+		DeferWhileLive(LiveSessionToken, [OnDone = MoveTemp(OnDone), Result, Message]()
 		{
 			FinishSearch(OnDone, Result, Message, {});
 		});
@@ -431,7 +362,7 @@ void UCrowdyClaims::FindClaims(int64 LowX, int64 LowY, int64 LowZ, int64 HighX, 
 	Input->SetObjectField(TEXT("highChunk"), ClaimsChunkJson(High));
 
 	TWeakObjectPtr<UCrowdyClaims> WeakThis(this);
-	ClaimsSend(*Client, ECrowdyCppApiDomain::GameApps, TEXT("NearbyGrids"), WrapInput(Input), LiveSessionToken,
+	RunOpDeferred(*Client, ECrowdyCppApiDomain::GameApps, TEXT("NearbyGrids"), WrapInput(Input), LiveSessionToken,
 		[WeakThis, Search, Low, High](FCrowdyCppJsonResult Result)
 		{
 			UCrowdyClaims* Self = WeakThis.Get();
@@ -442,7 +373,7 @@ void UCrowdyClaims::FindClaims(int64 LowX, int64 LowY, int64 LowZ, int64 HighX, 
 			}
 			if (!Result.bTransportOk)
 			{
-				Search->Finish(ClaimsFailureResult(Result), ClaimsFailureMessage(Result), ClaimsFailureCode(Result));
+				Search->Finish(ClaimsFailureResult(Result), FailureMessage(Result), FailureCode(Result));
 				return;
 			}
 			const TArray<TSharedPtr<FJsonValue>>* Grids = nullptr;
@@ -458,7 +389,7 @@ void UCrowdyClaims::FindClaims(int64 LowX, int64 LowY, int64 LowZ, int64 HighX, 
 				FCrowdyChunkClaimInfo Info;
 				FInt64Vector GridLow;
 				FInt64Vector GridHigh;
-				if (!Value.IsValid() || !Value->TryGetObject(Grid) || !ClaimsReadInt64(*Grid, TEXT("gridId"), Info.GridId)
+				if (!Value.IsValid() || !Value->TryGetObject(Grid) || !ReadWholeInt64(*Grid, TEXT("gridId"), Info.GridId)
 					|| !ClaimsReadChunk(*Grid, TEXT("lowChunk"), GridLow) || !ClaimsReadChunk(*Grid, TEXT("highChunk"), GridHigh))
 				{
 					Search->Finish(ECrowdyClaimResult::BadReply, TEXT("The answer holds a malformed grid."));
@@ -520,7 +451,7 @@ void UCrowdyClaims::ReadOwners(const TSharedRef<FSearch>& Search)
 		TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 		Variables->SetStringField(TEXT("appId"), BigInt(Search->AppId));
 		Variables->SetStringField(TEXT("gridId"), BigInt(GridId));
-		ClaimsSend(*Client, ECrowdyCppApiDomain::GameApps, TEXT("GridOwnership"), Variables, LiveSessionToken,
+		RunOpDeferred(*Client, ECrowdyCppApiDomain::GameApps, TEXT("GridOwnership"), Variables, LiveSessionToken,
 			[WeakThis, Search, Index, GridId](FCrowdyCppJsonResult Result)
 			{
 				UCrowdyClaims* Self = WeakThis.Get();
@@ -537,7 +468,7 @@ void UCrowdyClaims::ReadOwners(const TSharedRef<FSearch>& Search)
 				FString Problem;
 				if (!Self->ReadOwner(*Search, Index, GridId, Result, Problem))
 				{
-					Search->Finish(Result.bTransportOk ? ECrowdyClaimResult::BadReply : ClaimsFailureResult(Result), Problem, ClaimsFailureCode(Result));
+					Search->Finish(Result.bTransportOk ? ECrowdyClaimResult::BadReply : ClaimsFailureResult(Result), Problem, FailureCode(Result));
 					return;
 				}
 				++Search->Answered;
@@ -550,7 +481,7 @@ bool UCrowdyClaims::ReadOwner(FSearch& Search, int32 Index, int64 GridId, const 
 {
 	if (!Result.bTransportOk)
 	{
-		OutProblem = ClaimsFailureMessage(Result);
+		OutProblem = FailureMessage(Result);
 		return false;
 	}
 	if (!Result.Data.IsValid() || !Result.Data->HasField(TEXT("gridOwnership")))
@@ -561,7 +492,7 @@ bool UCrowdyClaims::ReadOwner(FSearch& Search, int32 Index, int64 GridId, const 
 	// A null ownership is a grid nobody owns, so it is not a claim.
 	const TSharedPtr<FJsonObject> Ownership = ClaimsAnswerObject(Result, TEXT("gridOwnership"));
 	int64 Echoed = GridId;
-	if (Ownership && Ownership->HasField(TEXT("gridId")) && (!ClaimsReadInt64(Ownership, TEXT("gridId"), Echoed) || Echoed != GridId))
+	if (Ownership && Ownership->HasField(TEXT("gridId")) && (!ReadWholeInt64(Ownership, TEXT("gridId"), Echoed) || Echoed != GridId))
 	{
 		OutProblem = TEXT("The platform answered the owner of a different grid.");
 		return false;
@@ -571,7 +502,7 @@ bool UCrowdyClaims::ReadOwner(FSearch& Search, int32 Index, int64 GridId, const 
 	int64 Owner = 0;
 	const bool bClaim = Ownership && Ownership->TryGetStringField(TEXT("ownerKind"), Kind) && Kind == TEXT("USER")
 		&& Ownership->TryGetStringField(TEXT("acquiredVia"), Via) && Via == TEXT("self_claim_chunk")
-		&& ClaimsReadInt64(Ownership, TEXT("ownerRef"), Owner) && Owner > 0;
+		&& ReadWholeInt64(Ownership, TEXT("ownerRef"), Owner) && Owner > 0;
 	if (bClaim)
 	{
 		FCrowdyChunkClaimInfo& Info = Search.Candidates[Index];
