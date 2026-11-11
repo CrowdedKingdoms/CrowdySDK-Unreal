@@ -646,6 +646,11 @@ void UCrowdyStateReplicator::SetContinuousOnMovement(const FGuid& EntityID, cons
 	}
 }
 
+void UCrowdyStateReplicator::SetLocalPlayerIdle(const bool bIdle)
+{
+	bLocalPlayerIdle = bIdle;
+}
+
 bool UCrowdyStateReplicator::RegisterOwnedEntityForTest(const FGuid& EntityID, UObject* Participant)
 {
 	TUniquePtr<FCrowdyOwnedEntityState> State;
@@ -1402,7 +1407,15 @@ void UCrowdyStateReplicator::ReplicationLoop()
 		// empty keyframe nor mislabels a same-tick on-change delta as a keyframe (the timer still advances, so the
 		// empty check runs once per interval rather than every tick).
 		bool bEmitKeyframe = false;
-		if (KeyframeInterval > 0.0f && !State.bHeartbeatSuppressed && Now >= State.NextKeyframeTime)
+		const bool bKeyframeDue = KeyframeInterval > 0.0f && !State.bHeartbeatSuppressed && Now >= State.NextKeyframeTime;
+		// A host's World entity is exempt: its keyframe is the only way its values go out.
+		const bool bQuiet = bLocalPlayerIdle && !State.bHostOwned;
+		if (bKeyframeDue && bQuiet)
+		{
+			// Skipped in whole intervals, so the entity keeps its place in the stagger.
+			State.NextKeyframeTime += KeyframeInterval * FMath::FloorToDouble((Now - State.NextKeyframeTime) / KeyframeInterval + 1.0);
+		}
+		if (bKeyframeDue && !bQuiet)
 		{
 			State.NextKeyframeTime = Now + static_cast<double>(KeyframeInterval);
 			for (int32 Index = 0; Index < Num; ++Index)

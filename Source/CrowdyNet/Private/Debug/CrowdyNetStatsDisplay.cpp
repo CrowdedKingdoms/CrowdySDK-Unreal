@@ -65,6 +65,7 @@ namespace
 		case EUDPConnectionState::Connected:    return TEXT("Connected");
 		case EUDPConnectionState::Reconnecting: return TEXT("Reconnecting");
 		case EUDPConnectionState::GateKeep:     return TEXT("Gate Kept");
+		case EUDPConnectionState::Inactive:     return TEXT("Inactive");
 		default:                                return TEXT("Unknown");
 		}
 	}
@@ -78,6 +79,7 @@ namespace
 		case EUDPConnectionState::Reconnecting: return FColor::Yellow;
 		case EUDPConnectionState::Disconnected:
 		case EUDPConnectionState::GateKeep:     return FColor::Red;
+		case EUDPConnectionState::Inactive:
 		default:                                return FColor::Silver;
 		}
 	}

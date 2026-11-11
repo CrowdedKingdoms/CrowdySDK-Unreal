@@ -8,6 +8,7 @@
 #include "Data/CrowdyEntityTypes.h"
 #include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
+#include "Replication/State/FCrowdyStateDelta.h"
 #include "Replication/Subsystems/CrowdyStateReplicator.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "UObject/Package.h"
@@ -361,6 +362,47 @@ bool FCrowdyStateOwnershipTransferHostToClientTest::RunTest(const FString& Param
 	Rep->HandleOwnershipChangedForTest(Actor, NetID, LocalPlayer, FGuid());
 	TestTrue(TEXT("entity still tracked (now as owner)"), Rep->IsTrackedForTest(NetID));
 	TestEqual(TEXT("no longer remembered as host-owned"), Rep->NumKnownHostOwnedForTest(), 0);
+	return true;
+}
+
+// An idle host still keyframes its World entities: nothing else carries their values.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateIdleHostKeepsWorldKeyframeTest,
+	"CrowdySDK.State.IdleHostKeepsWorldKeyframe", CrowdyStateOwnershipTestFlags)
+bool FCrowdyStateIdleHostKeepsWorldKeyframeTest::RunTest(const FString& Parameters)
+{
+	UCrowdyAutoRegistry* Registry = MakeOwnershipRegistry();
+	const FGuid LocalPlayer = FGuid::NewGuid();
+	UCrowdyStateReplicator* Rep = MakeOwnershipReplicator(Registry, LocalPlayer);
+	UCrowdyEntitySubsystem* ES = MakeOwnershipEntitySubsystem(LocalPlayer);
+	Rep->SetEntitySubsystemForTest(ES);
+	Rep->SetHostIDForTest(LocalPlayer);
+	Rep->SetKeyframeIntervalForTest(1.0f);
+	double Now = 100.0;
+	Rep->SetTimeForTest(Now);
+	TArray<FCrowdyStateDelta> Sent;
+	Rep->DispatchHookForTests = [&Sent](const FCrowdyStateDelta& Delta, bool) { Sent.Add(Delta); };
+
+	ACrowdyStateSendTestActor* Actor = NewObject<ACrowdyStateSendTestActor>();
+	const FGuid NetID = FGuid::NewGuid();
+	ES->RegisterEntity(MakeOwnerRecord(Actor, NetID, LocalPlayer));
+	Rep->HandleEntityRegisteredForTest(NetID);
+	ES->ReassignOwnership(NetID, FGuid(), LocalPlayer);
+	Rep->HandleOwnershipChangedForTest(Actor, NetID, FGuid(), LocalPlayer);
+	if (!TestEqual(TEXT("the entity is the host's World entity"), Rep->NumKnownHostOwnedForTest(), 1))
+	{
+		return false;
+	}
+	Rep->RunReplicationLoopForTest();
+	Sent.Reset();
+
+	Rep->SetLocalPlayerIdle(true);
+	Now += 5.0;
+	Rep->SetTimeForTest(Now);
+	Rep->RunReplicationLoopForTest();
+	if (TestEqual(TEXT("an idle host still sends its World entity's keyframe"), Sent.Num(), 1))
+	{
+		TestTrue(TEXT("marked as a keyframe"), (Sent[0].Flags & CrowdyStateDeltaFlags::Keyframe) != 0);
+	}
 	return true;
 }
 

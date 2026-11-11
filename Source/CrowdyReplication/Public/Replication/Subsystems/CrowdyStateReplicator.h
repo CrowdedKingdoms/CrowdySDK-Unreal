@@ -191,6 +191,10 @@ public:
 	// because a property nothing carries must go back to being ordinary state. Skipped when the entity is not tracked.
 	void SetContinuousOnMovement(const FGuid& EntityID, bool bOnMovement);
 
+	// While the local player is idle the keyframe heartbeat stops, so an idle session can be released; on-change deltas and a
+	// host's World entities still go.
+	void SetLocalPlayerIdle(bool bIdle);
+
 	// Adopts a host correction that was just applied to an entity we own into the owner's shadow, so the
 	// owner's next diff sees the host's values as already-sent and does not re-emit (revert) them. Called by
 	// the router after it decodes a HostSourced delta for a locally-owned entity. Best-effort: a null / not-
@@ -436,6 +440,8 @@ private:
 	// Seconds between per-entity keyframe heartbeats; set from the profile in Initialize (clamped >= 0.1).
 	// Defaults to 2.0 so the hook test path (which never runs Initialize) still has a sane interval.
 	float KeyframeInterval = 2.0f;
+
+	bool bLocalPlayerIdle = false;
 
 	// Host / time overrides for headless tests (see the Set*ForTest seams). Off in production.
 	FGuid HostIDForTest;

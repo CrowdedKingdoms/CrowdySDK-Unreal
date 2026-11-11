@@ -39,6 +39,10 @@ enum class ConnState : std::uint8_t {
   Reconnecting,  ///< re-assigning after COMMAND_RECONNECT / TOKEN_EXPIRED / watchdog
   Failed,
   Closed,
+  /// The server released the session because the player sent no gameplay input for
+  /// the app's idle timeout (15 minutes unless the app sets its own). Final: nothing
+  /// reassigns until connect() is called, which the game does on the next input.
+  Inactive,
 };
 
 inline const char* connStateName(ConnState s) {
@@ -49,6 +53,7 @@ inline const char* connStateName(ConnState s) {
     case ConnState::Reconnecting: return "Reconnecting";
     case ConnState::Failed: return "Failed";
     case ConnState::Closed: return "Closed";
+    case ConnState::Inactive: return "Inactive";
   }
   return "?";
 }

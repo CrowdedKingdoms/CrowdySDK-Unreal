@@ -523,4 +523,52 @@ bool FCrowdyContinuousRidesTheAppliedUpdateTest::RunTest(const FString&)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyIdlePlayerSendsNoKeyframeTest,
+	"CrowdySDK.State.IdlePlayerSendsNoKeyframe", CrowdyContinuousTestFlags)
+bool FCrowdyIdlePlayerSendsNoKeyframeTest::RunTest(const FString&)
+{
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	UCrowdyStateReplicator* Replicator = NewObject<UCrowdyStateReplicator>(GetTransientPackage());
+	Replicator->SetRegistryForTest(Registry);
+	Replicator->SetLocalPlayerIDForTest(FGuid::NewGuid());
+	Replicator->SetKeyframeIntervalForTest(1.0f);
+	double Now = 100.0;
+	Replicator->SetTimeForTest(Now);
+
+	TArray<FCrowdyStateDelta> Sent;
+	Replicator->DispatchHookForTests = [&Sent](const FCrowdyStateDelta& Delta, bool) { Sent.Add(Delta); };
+
+	FCrowdyStateTestWorld TestWorld;
+	ACrowdyContinuousTestActor* Actor = TestWorld.Spawn<ACrowdyContinuousTestActor>();
+	if (!TestTrue(TEXT("tracked"), Replicator->RegisterOwnedEntityForTest(FGuid::NewGuid(), Actor)))
+	{
+		return false;
+	}
+	Replicator->RunReplicationLoopForTest();
+	Sent.Reset();
+
+	Replicator->SetLocalPlayerIdle(true);
+	Now += 5.0;
+	Replicator->SetTimeForTest(Now);
+	Replicator->RunReplicationLoopForTest();
+	TestEqual(TEXT("an idle player sends no keyframe"), Sent.Num(), 0);
+
+	Actor->RepPlain = 9;
+	Replicator->RunReplicationLoopForTest();
+	TestEqual(TEXT("but a change still goes"), Sent.Num(), 1);
+	Sent.Reset();
+
+	Replicator->SetLocalPlayerIdle(false);
+	Replicator->RunReplicationLoopForTest();
+	TestEqual(TEXT("the skipped keyframe is not sent late"), Sent.Num(), 0);
+	Now += 1.0;
+	Replicator->SetTimeForTest(Now);
+	Replicator->RunReplicationLoopForTest();
+	if (TestEqual(TEXT("the heartbeat resumes on its next interval"), Sent.Num(), 1))
+	{
+		TestTrue(TEXT("marked as a keyframe"), (Sent[0].Flags & CrowdyStateDeltaFlags::Keyframe) != 0);
+	}
+	return true;
+}
+
 #endif

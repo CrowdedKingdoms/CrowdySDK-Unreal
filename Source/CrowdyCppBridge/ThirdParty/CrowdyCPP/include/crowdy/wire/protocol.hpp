@@ -42,6 +42,9 @@ enum class MessageType : std::uint8_t {
   /// Server -> client: reconnect to a different server (load shedding).
   /// [type][32B HMAC over the type byte]. Always sent un-bundled.
   CommandReconnect = 22,
+  /// Server -> client: this server released the session.
+  /// [type][1B ReleaseReason][32B HMAC over the two leading bytes]. Always un-bundled.
+  CommandSessionReleased = 28,
   /// Client -> server: keep-alive for the client's own actor. Reuses the long
   /// spatial layout; no fan-out.
   ClientActorHeartbeat = 26,
@@ -190,6 +193,19 @@ constexpr std::size_t kGenericErrorSize = 3;
 // ---- CommandReconnect frame -------------------------------------------------
 // [1B type=22][32B HMAC-SHA256 over the type byte, keyed on the game token]
 constexpr std::size_t kCommandReconnectSize = 1 + kHmacTagSize;
+constexpr std::size_t kCommandSessionReleasedSize = 2 + kHmacTagSize;
+
+/// The reason byte of CommandSessionReleased. Treat a value not listed as Stale.
+enum class ReleaseReason : std::uint8_t {
+  Deauthorized = 0,
+  Stale = 1,
+  TokenExpired = 2,
+  Overload = 3,
+  Rebalance = 4,
+  /// No gameplay input for the app's idle timeout (Buddy v0.44.0). Final: the
+  /// connection goes Inactive and does not reassign until connect() is called.
+  Idle = 5,
+};
 
 // ---- Channel message layouts ------------------------------------------------
 // Request (client -> server):

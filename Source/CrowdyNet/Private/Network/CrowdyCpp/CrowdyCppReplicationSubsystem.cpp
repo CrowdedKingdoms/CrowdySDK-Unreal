@@ -438,6 +438,7 @@ namespace
 		case ECrowdyCppConnState::Reconnecting: return TEXT("reconnecting");
 		case ECrowdyCppConnState::Failed: return TEXT("failed");
 		case ECrowdyCppConnState::Closed: return TEXT("closed");
+		case ECrowdyCppConnState::Inactive: return TEXT("inactive");
 		}
 		return TEXT("unknown");
 	}
@@ -572,6 +573,15 @@ bool UCrowdyCppReplicationSubsystem::OpenConnection(const FCrowdyCppConnectionRe
 	if (Installed.IsValid() && Installed->GetState() != ECrowdyCppConnState::Closed
 		&& OpenedWithToken == Request.Token && OpenedWithAppId == Request.AppId)
 	{
+		// A connection that is already up reports no change, so the Connecting the request just set is undone here.
+		if (Installed->GetState() == ECrowdyCppConnState::Connected)
+		{
+			if (UCrowdyUDPSubsystem* Udp = ReceiveStats.Get())
+			{
+				Udp->SetConnectionState(EUDPConnectionState::Connected);
+			}
+			return true;
+		}
 		Installed->ConnectAsync();
 		return true;
 	}
@@ -723,6 +733,13 @@ void UCrowdyCppReplicationSubsystem::ApplyConnectionState(const ECrowdyCppConnSt
 
 	case ECrowdyCppConnState::Closed:
 		Udp->SetConnectionState(EUDPConnectionState::Disconnected);
+		break;
+
+	case ECrowdyCppConnState::Inactive:
+		// Not the timeout signal: that starts the reconnect ladder and would put an absent player back on a server.
+		Udp->SetConnectionState(EUDPConnectionState::Inactive);
+		Udp->UpdatePingTime(0);
+		Udp->OnUDPInactive.Broadcast();
 		break;
 
 	case ECrowdyCppConnState::Idle:
@@ -1551,6 +1568,12 @@ ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrow
 		return ECrowdyCppSendOutcome::NotRouted;
 	}
 
+	// An idle release was announced once through On UDP Session Inactive; each send after it is not news.
+	if (Pinned->GetState() == ECrowdyCppConnState::Inactive)
+	{
+		return ECrowdyCppSendOutcome::NotRouted;
+	}
+
 	// Held for the whole send, because the frame's actor id and payload are views into it rather than copies.
 	TArray<uint8> Serialized;
 	FCrowdyCppOutboundFrame Frame;
@@ -1572,6 +1595,10 @@ ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrow
 			*Message.GetTypeName().ToString(), *Error);
 		return ECrowdyCppSendOutcome::Refused;
 	}
+
+	UE_CLOG(CrowdyNetTrace::Net(), LogCrowdyNet, Log, TEXT("Sent %s opcode=%u channel=%d bytes=%d crc=%08x"),
+		*Message.GetTypeName().ToString(), Frame.Opcode, Frame.bIsChannel ? 1 : 0, Frame.Payload.Num(),
+		FCrc::MemCrc32(Frame.Payload.GetData(), Frame.Payload.Num()));
 
 	// Counted once the connection has accepted it, so a refused message is not reported as sent. Sends run on
 	// whichever thread built the message, so this accumulates into an atomic here and the game thread publishes it

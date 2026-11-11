@@ -407,6 +407,8 @@ class Connection {
   std::int64_t lastRecvMs_ = 0;
   std::int64_t lastCapsMs_ = 0;  ///< monotonic ms of the last CLIENT_CAPABILITIES; 0 = none yet
   std::int64_t lastSendMs_ = 0;
+  /// Set by the receive path on a verified idle release; housekeeping goes Inactive.
+  std::atomic<bool> idleReleased_{false};
   std::atomic<bool> reconnectRequested_{false};
   /// Set when onEventsReady fired; poll() clears it before draining, so an
   /// event queued during or after a drain signals again.
