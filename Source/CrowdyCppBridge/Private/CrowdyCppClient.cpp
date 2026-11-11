@@ -1484,9 +1484,13 @@ namespace
 			if (Op == "ServerWithLeastClients" || Op == "GameClientBootstrap") { return ECrowdyCppTokenPlane::Game; }
 			break;
 
-		// The Exec domain defaults to Management for developer operations; a player's connect uses the app token.
+		// The Exec domain defaults to Management for developer operations; a player's connect and mod calls use the app token.
 		case ECrowdyCppApiDomain::Exec:
-			if (Op == "ExecConnect") { return ECrowdyCppTokenPlane::Game; }
+			if (Op == "ExecConnect" || Op == "ExecModStarter" || Op == "ExecModBuild" || Op == "ExecModBuildStatus" || Op == "ExecModDeploy"
+				|| Op == "ExecModSetEnabled" || Op == "ExecMods" || Op == "ExecMyMods" || Op == "ExecModLogs" || Op == "ExecModDelete")
+			{
+				return ECrowdyCppTokenPlane::Game;
+			}
 			break;
 
 		// A player's own claim and its release use the app token; the studio's listing and policy operations are not

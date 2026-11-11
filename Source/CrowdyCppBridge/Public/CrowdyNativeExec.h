@@ -55,6 +55,38 @@ struct FCrowdyNativeExecPush
 	TArray<uint8> Payload;
 };
 
+namespace CrowdyNativeExec
+{
+	inline const TCHAR* StatusName(ECrowdyNativeExecStatus Status)
+	{
+		switch (Status)
+		{
+		case ECrowdyNativeExecStatus::Ok: return TEXT("Ok");
+		case ECrowdyNativeExecStatus::AppError: return TEXT("AppError");
+		case ECrowdyNativeExecStatus::Busy: return TEXT("Busy");
+		case ECrowdyNativeExecStatus::Moved: return TEXT("Moved");
+		case ECrowdyNativeExecStatus::NotFound: return TEXT("NotFound");
+		case ECrowdyNativeExecStatus::DeadlineExceeded: return TEXT("DeadlineExceeded");
+		case ECrowdyNativeExecStatus::Denied: return TEXT("Denied");
+		case ECrowdyNativeExecStatus::RateLimited: return TEXT("RateLimited");
+		case ECrowdyNativeExecStatus::Unavailable: return TEXT("Unavailable");
+		case ECrowdyNativeExecStatus::Internal: return TEXT("Internal");
+		case ECrowdyNativeExecStatus::Trapped: return TEXT("Trapped");
+		case ECrowdyNativeExecStatus::BadRequest: return TEXT("BadRequest");
+		case ECrowdyNativeExecStatus::AppPaused: return TEXT("AppPaused");
+		case ECrowdyNativeExecStatus::AppDisabled: return TEXT("AppDisabled");
+		case ECrowdyNativeExecStatus::TypeDisabled: return TEXT("TypeDisabled");
+		default: return TEXT("Unknown");
+		}
+	}
+
+	// Json as the MessagePack value a call carries, through CrowdyCPP's own codec; false when it is not one JSON value. Any thread.
+	CROWDYCPPBRIDGE_API bool JsonToMsgpack(const FString& Json, TArray<uint8>& OutBytes);
+
+	// One MessagePack value as compact JSON, binary as base64 and no bytes as null; false for malformed, truncated or trailing bytes. Any thread.
+	CROWDYCPPBRIDGE_API bool MsgpackToJson(TConstArrayView<uint8> Bytes, FString& OutJson);
+}
+
 struct FCrowdyNativeExecOptions
 {
 	// Places the connection on the host running this instance. Calls may still name any node type and key.

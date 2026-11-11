@@ -166,7 +166,13 @@ void UCrowdyVoxelWorld::Initialize(FSubsystemCollectionBase& Collection)
 
 void UCrowdyVoxelWorld::Deinitialize()
 {
-	// Waiting edits end with the world and report nothing: their listeners leave with the level.
+	ReleaseWorld();
+	Super::Deinitialize();
+}
+
+void UCrowdyVoxelWorld::ReleaseWorld()
+{
+	// Waiting edits and reloads end with the world and report nothing: their listeners leave with the level.
 	NotificationSubscription.Release();
 	if (Replication.IsValid())
 	{
@@ -176,7 +182,7 @@ void UCrowdyVoxelWorld::Deinitialize()
 	Pending.Reset();
 	EarlyDone.Reset();
 	Followers.Reset();
-	Super::Deinitialize();
+	Reloads.Reset();
 }
 
 TStatId UCrowdyVoxelWorld::GetStatId() const
@@ -199,7 +205,16 @@ void UCrowdyVoxelWorld::Step()
 	SendDue();
 	ResolveAnswers();
 	IssueSettles();
+	// Taken before the broadcast, so a reload's Ok always follows the On Chunk Changed that names its cells.
+	const TArray<FReload> Ended = TakeEndedReloads();
 	BroadcastChanges();
+	for (const FReload& Asked : Ended)
+	{
+		if (Asked.OnDone)
+		{
+			Asked.OnDone(Asked.Result, Asked.Message);
+		}
+	}
 }
 
 double UCrowdyVoxelWorld::Now() const
@@ -521,6 +536,78 @@ TArray<int64> UCrowdyVoxelWorld::SetVoxels(const TArray<FCrowdyVoxelWrite>& Writ
 		Ids.Add(SetVoxel(Write));
 	}
 	return Ids;
+}
+
+void UCrowdyVoxelWorld::ReloadChunk(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ, TFunction<void(ECrowdyVoxelResult Result, const FString& Message)> OnDone)
+{
+	const FInt64Vector Coord(ChunkX, ChunkY, ChunkZ);
+	const bool bLoaded = IsChunkLoaded(ChunkX, ChunkY, ChunkZ);
+	const bool bConnected = IsConnected();
+	FReload& Asked = Reloads.AddDefaulted_GetRef();
+	Asked.OnDone = MoveTemp(OnDone);
+	Asked.Chunk = Coord;
+	Asked.Deadline = Now() + ReloadTimeoutSeconds;
+	Asked.FirstRequest = NextFetchRequest;
+	if (!bLoaded || !bConnected)
+	{
+		Asked.bDone = true;
+		Asked.Result = bLoaded ? ECrowdyVoxelResult::NotSignedIn : ECrowdyVoxelResult::Failed;
+		Asked.Message = bLoaded ? TEXT("there is no realtime connection") : TEXT("the chunk is not loaded");
+		return;
+	}
+	// A fetch already out was asked for before this call, so it is let finish and the chunk is asked for again after it.
+	RequestChunks({Coord}, true);
+}
+
+void UCrowdyVoxelWorld::EndReloads(const FInt64Vector& Coord, const int32 SatisfyingRequest, const ECrowdyVoxelResult Result, const FString& Message)
+{
+	const bool bOk = Result == ECrowdyVoxelResult::Ok;
+	for (FReload& Asked : Reloads)
+	{
+		if (Asked.bDone || Asked.Chunk != Coord || (bOk && Asked.FirstRequest > SatisfyingRequest))
+		{
+			continue;
+		}
+		Asked.bDone = true;
+		Asked.Result = Result;
+		Asked.Message = Message;
+	}
+}
+
+TArray<UCrowdyVoxelWorld::FReload> UCrowdyVoxelWorld::TakeEndedReloads()
+{
+	TArray<FReload> Ended;
+	if (Reloads.Num() == 0)
+	{
+		return Ended;
+	}
+	const bool bConnected = IsConnected();
+	const double Time = Now();
+	for (FReload& Asked : Reloads)
+	{
+		if (Asked.bDone)
+		{
+			continue;
+		}
+		const bool bLoaded = IsChunkLoaded(Asked.Chunk.X, Asked.Chunk.Y, Asked.Chunk.Z);
+		const bool bLate = Time >= Asked.Deadline;
+		if (bLoaded && bConnected && !bLate)
+		{
+			continue;
+		}
+		Asked.bDone = true;
+		Asked.Result = !bLoaded || bLate ? ECrowdyVoxelResult::Failed : ECrowdyVoxelResult::NotSignedIn;
+		Asked.Message = !bLoaded ? TEXT("the chunk was unloaded") : bLate ? TEXT("no fetch completed within 30 seconds") : TEXT("the realtime connection dropped");
+	}
+	for (FReload& Asked : Reloads)
+	{
+		if (Asked.bDone)
+		{
+			Ended.Add(MoveTemp(Asked));
+		}
+	}
+	Reloads.RemoveAll([](const FReload& Asked) { return Asked.bDone; });
+	return Ended;
 }
 
 void UCrowdyVoxelWorld::MarkChanged(const FInt64Vector& Coord, FChunkState& State, const FIntVector& Position)
@@ -965,6 +1052,9 @@ void UCrowdyVoxelWorld::OnFetched(const FInt64Vector& Coord, const int32 Request
 	}
 	UE_LOG(LogCrowdyServices, Warning, TEXT("Voxel world: fetching chunk %lld %lld %lld ended %s."), Coord.X, Coord.Y, Coord.Z,
 		*UEnum::GetValueAsString(Fetch.Result));
+	// A reload waiting on an earlier fetch would otherwise wait out its timeout, as nothing asks for the chunk again.
+	EndReloads(Coord, INDEX_NONE, Fetch.Result == ECrowdyVoxelResult::Ok ? ECrowdyVoxelResult::BadReply : Fetch.Result,
+		FString::Printf(TEXT("fetching the chunk failed: %s"), *Fetch.Message));
 	State->FetchRequest = 0;
 	RetryAt = Now() + RetrySeconds;
 	if (!State->bLoaded)
@@ -1010,6 +1100,7 @@ void UCrowdyVoxelWorld::OnCubeFetched(const FInt64Vector& Centre, const int32 Ra
 					Adopt(Coord, ByCoord.FindRef(Coord));
 					continue;
 				}
+				EndReloads(Coord, INDEX_NONE, Fetch.Result, FString::Printf(TEXT("fetching the chunk failed: %s"), *Fetch.Message));
 				State->FetchRequest = 0;
 				RetryAt = Now() + RetrySeconds;
 				if (!State->bLoaded)
@@ -1038,8 +1129,10 @@ void UCrowdyVoxelWorld::Adopt(const FInt64Vector& Coord, const FCrowdyVoxelChunk
 
 	const FCrowdyVoxelChunk Empty = Fetched ? FCrowdyVoxelChunk() : EmptyChunk(Coord);
 	const FCrowdyVoxelChunk& Source = Fetched ? *Fetched : Empty;
+	const int32 Request = State->FetchRequest;
+	const bool bWhole = !State->bLoaded || State->bFetchFull;
 
-	if (!State->bLoaded || State->bFetchFull)
+	if (bWhole)
 	{
 		const bool bWasLoaded = State->bLoaded;
 		FCrowdyVoxelChunk Old = MoveTemp(State->Confirmed);
@@ -1111,6 +1204,10 @@ void UCrowdyVoxelWorld::Adopt(const FInt64Vector& Coord, const FCrowdyVoxelChunk
 	for (const FLiveEdit& Edit : Held)
 	{
 		ApplyLive(Coord, *State, Edit);
+	}
+	if (bWhole)
+	{
+		EndReloads(Coord, Request, ECrowdyVoxelResult::Ok, FString());
 	}
 
 	const bool bAgain = State->bFetchAgain || State->bHeldOverflow;
