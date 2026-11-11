@@ -24,6 +24,9 @@ inline constexpr const TCHAR* CrowdyCppAccessNotGrantedCode = TEXT("ACCESS_NOT_G
 // Refuses a gameplay-token mint or refresh until the player's date of birth and country are recorded.
 inline constexpr const TCHAR* CrowdyCppAgeRequiredCode = TEXT("AGE_REQUIRED");
 
+// Refuses a gameplay-token mint or refresh for a password account that has not confirmed its email yet.
+inline constexpr const TCHAR* CrowdyCppEmailConfirmationRequiredCode = TEXT("EMAIL_CONFIRMATION_REQUIRED");
+
 // Answers a recorded age when the account already has one.
 inline constexpr const TCHAR* CrowdyCppConflictCode = TEXT("CONFLICT");
 

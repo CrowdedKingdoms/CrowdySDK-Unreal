@@ -1578,6 +1578,11 @@ void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSucces
 				Self->HoldForAge(Flow, OnSuccess, OnError);
 				return;
 			}
+			if (Self->NoteEmailConfirmationRequired(Result.ErrorCode))
+			{
+				Self->FailFlow(TEXT("Confirm your email address to play: open the link we sent you, then sign in again."), Flow, OnError);
+				return;
+			}
 
 			const FString RefusalText = CrowdyCppPlayerRefusalText(Result.ErrorCode, Result.ErrorMessage);
 			if (Self->NoteAccessRefused(Result.ErrorCode, RefusalText, Result.BlockedUntil))
@@ -1667,6 +1672,10 @@ void UCrowdyAuthentication::DispatchRefresh()
 			if (Result.ErrorCode.Equals(CrowdyCppAgeRequiredCode, ESearchCase::CaseSensitive))
 			{
 				Self->HoldForAge(EAuthFlow::Refresh, FOnAuthSuccess(), FOnAuthError());
+				return;
+			}
+			if (Self->NoteEmailConfirmationRequired(Result.ErrorCode))
+			{
 				return;
 			}
 
@@ -1804,6 +1813,7 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& 
 	if (Flow != EAuthFlow::Refresh)
 	{
 		bAccessRefused = false;
+		bEmailConfirmationRequired = false;
 		if (GameSession)
 		{
 			GameSession->ClearAccessEnded();
@@ -1932,9 +1942,22 @@ bool UCrowdyAuthentication::NoteAccessRefused(const FString& ErrorCode, const FS
 	return true;
 }
 
+bool UCrowdyAuthentication::NoteEmailConfirmationRequired(const FString& ErrorCode)
+{
+	if (!ErrorCode.Equals(CrowdyCppEmailConfirmationRequiredCode, ESearchCase::CaseSensitive))
+	{
+		return false;
+	}
+	bEmailConfirmationRequired = true;
+	CancelProactiveRefresh();
+	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] The player's email is not confirmed yet; sign-in and token rotation stop."));
+	OnEmailConfirmationRequired.Broadcast();
+	return true;
+}
+
 void UCrowdyAuthentication::RefreshAppToken()
 {
-	if (!GameSession || bAccessRefused)
+	if (!GameSession || bAccessRefused || bEmailConfirmationRequired)
 		return;
 
 	if (GameSession->GetGameToken().IsEmpty() && GameSession->GetSessionToken().IsEmpty())
@@ -1961,7 +1984,7 @@ void UCrowdyAuthentication::RecoverExpiredAppToken()
 		return;
 	}
 
-	if (bAccessRefused)
+	if (bAccessRefused || bEmailConfirmationRequired)
 	{
 		return;
 	}

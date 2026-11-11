@@ -80,6 +80,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLegalAcceptanceRequired);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLegalAcceptanceEnded);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAgeRequired);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAgeEntryEnded);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnEmailConfirmationRequired);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnLoginProvidersReceived, const TArray<FString>&, Providers);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnIdentitiesReceived, const TArray<FCrowdyUserIdentity>&, Identities);
@@ -177,6 +178,10 @@ public:
 	/** Fires when the age is no longer being waited for, however that ended: close an age screen here. */
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Authentication")
 	FOnAgeEntryEnded OnAgeEntryEnded;
+
+	/** Fires when a new password account must confirm its email before playing: a sign-in fails, and during play nothing re-mints until the next sign-in. */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Authentication")
+	FOnEmailConfirmationRequired OnEmailConfirmationRequired;
 
 	/**
 	 * Record the player's month and year of birth and their country (ISO 3166-1 alpha-2). OnRecorded fires first, then a
@@ -665,11 +670,17 @@ private:
 	 */
 	bool NoteAccessRefused(const FString& ErrorCode, const FString& Message, const FString& Until);
 
+	/** When ErrorCode asks for the email to be confirmed, stops rotation, broadcasts OnEmailConfirmationRequired and returns true. */
+	bool NoteEmailConfirmationRequired(const FString& ErrorCode);
+
 	/** Forgets a session the server has already ended, then broadcasts OnServerSessionEnded. */
 	void ForgetEndedSession();
 
 	/** Set by NoteAccessRefused until a sign-in succeeds; stops token rotation and recovery from re-minting. */
 	bool bAccessRefused = false;
+
+	/** Set by NoteEmailConfirmationRequired until a sign-in succeeds; stops token rotation and recovery from re-minting. */
+	bool bEmailConfirmationRequired = false;
 
 	/** Rotation attempts spent since the last app token was applied. */
 	int32 RotationRetriesUsed = 0;
