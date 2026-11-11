@@ -453,6 +453,24 @@ inline Status verifyCommandReconnect(const core::ICrypto& crypto, Bytes datagram
   return Errc::Ok;
 }
 
+/// Verify a COMMAND_SESSION_RELEASED frame: HMAC-SHA256 keyed on this client's game
+/// token over the two leading bytes (type and reason), so the reason cannot be rewritten
+/// in flight. Returns the reason byte; an unverified frame must be ignored.
+inline Result<std::uint8_t> verifySessionReleased(const core::ICrypto& crypto, Bytes datagram,
+                                                  const Token64& token) {
+  if (datagram.size() != kCommandSessionReleasedSize ||
+      datagram[0] != static_cast<std::uint8_t>(MessageType::CommandSessionReleased))
+    return Errc::Malformed;
+  const Status cryptoStatus = crypto.availability();
+  if (!cryptoStatus.ok()) return cryptoStatus.code;
+  std::uint8_t expected[kHmacTagSize];
+  if (!crypto.hmacSha256(token.bytes(), Bytes(datagram.data(), 2), expected))
+    return Errc::Malformed;
+  if (!crypto.constantTimeEquals(expected, datagram.data() + 2, kHmacTagSize))
+    return Errc::HmacMismatch;
+  return datagram[1];
+}
+
 // ---------------------------------------------------------------------------
 // Bundle framing: [1B type=2]{[2B len LE][full message]}...
 //

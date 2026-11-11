@@ -438,6 +438,7 @@ namespace
 		case ECrowdyCppConnState::Reconnecting: return TEXT("reconnecting");
 		case ECrowdyCppConnState::Failed: return TEXT("failed");
 		case ECrowdyCppConnState::Closed: return TEXT("closed");
+		case ECrowdyCppConnState::Inactive: return TEXT("inactive");
 		}
 		return TEXT("unknown");
 	}
@@ -723,6 +724,13 @@ void UCrowdyCppReplicationSubsystem::ApplyConnectionState(const ECrowdyCppConnSt
 
 	case ECrowdyCppConnState::Closed:
 		Udp->SetConnectionState(EUDPConnectionState::Disconnected);
+		break;
+
+	case ECrowdyCppConnState::Inactive:
+		// The server ended the session because the player sent no gameplay input for the app's idle timeout. Not a
+		// failure: the timeout signal would start the reconnect ladder and put an absent player back on a server.
+		Udp->SetConnectionState(EUDPConnectionState::Inactive);
+		Udp->OnUDPInactive.Broadcast();
 		break;
 
 	case ECrowdyCppConnState::Idle:
