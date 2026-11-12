@@ -135,8 +135,8 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session")
 	FOnOwnerUUIDUpdated OnOwnerUUIDUpdated;
 
-	/** Fired on the game thread whenever the elected host changes.
-	 *  UCrowdyHostSubsystem (CrowdyServices) writes the host here so that lower
+	/** Fired on the game thread whenever the host id changes.
+	 *  UCrowdyLeaderSubsystem (CrowdyExec) writes the Leader here so that lower
 	 *  modules (CrowdyReplication) can read it without a dependency cycle. */
 	UE_DEPRECATED(5.8, "Bind OnLeaderChanged on UCrowdyLeaderSubsystem, which never fires under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session",
@@ -322,7 +322,7 @@ public:
 	// The client that writes replicated subsystems: the Leader, or the elected host under Leader Source Elected Host.
 	FGuid GetAppWriterID() const {return HostID;}
 
-	/** Game thread only. Called by UCrowdyHostSubsystem when a host is elected. */
+	/** Game thread only. Called by UCrowdyLeaderSubsystem when the Leader changes, and cleared on sign-out. */
 	void SetHostID(const FGuid& InHostID)
 	{
 		if (HostID == InHostID) return;

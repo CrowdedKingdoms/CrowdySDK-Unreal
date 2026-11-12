@@ -35,9 +35,7 @@
 #include "Replication/Ownership/CrowdyOwnershipTransfer.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Subsystem/AsyncActions/CrowdyAccountActions.h"
-#include "Subsystem/AsyncActions/CrowdyHostQueryActions.h"
 #include "Subsystem/CrowdyGameSession.h"
-#include "Subsystem/CrowdyHostSubsystem.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/CrowdyUtilities.h"
@@ -171,9 +169,8 @@ bool FCrowdyForbiddenHasAuthorityIgnoresSameNameOtherOwnerTest::RunTest(const FS
 	return true;
 }
 
-// Near miss: other AActor functions, and the plugin's own Crowdy-aware wrapper
-// (UCrowdyUtilities::CrowdyHasAuthority / GetCrowdyHasAuthority, which queries the elected host
-// through UCrowdyHostSubsystem rather than passing through to Unreal's network role), must NOT be
+// Near miss: other AActor functions, and the Crowdy ownership test the error points authors to
+// (UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned / IsCrowdyEntityLocallyOwned), must NOT be
 // flagged - only the exact AActor::HasAuthority function is forbidden.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyForbiddenHasAuthorityIgnoresNearMissesTest,
 	"CrowdySDK.Compiler.ForbiddenHasAuthorityIgnoresNearMisses", CrowdyCompilerExtensionTestFlags)
@@ -181,27 +178,24 @@ bool FCrowdyForbiddenHasAuthorityIgnoresNearMissesTest::RunTest(const FString& P
 {
 	UFunction* GetActorLocationFn = AActor::StaticClass()->FindFunctionByName(
 		GET_FUNCTION_NAME_CHECKED(AActor, K2_GetActorLocation));
-	// The deprecated wrappers are still callable from Blueprints until they are removed, so they stay near misses.
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	UFunction* CrowdyHasAuthorityExecFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
-		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, CrowdyHasAuthority));
-	UFunction* GetCrowdyHasAuthorityFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
-		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, GetCrowdyHasAuthority));
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	UFunction* SwitchLocallyOwnedFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, SwitchIsCrowdyEntityLocallyOwned));
+	UFunction* IsLocallyOwnedFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, IsCrowdyEntityLocallyOwned));
 
 	if (!TestNotNull(TEXT("AActor::K2_GetActorLocation resolves"), GetActorLocationFn)
-		|| !TestNotNull(TEXT("UCrowdyUtilities::CrowdyHasAuthority resolves"), CrowdyHasAuthorityExecFn)
-		|| !TestNotNull(TEXT("UCrowdyUtilities::GetCrowdyHasAuthority resolves"), GetCrowdyHasAuthorityFn))
+		|| !TestNotNull(TEXT("UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned resolves"), SwitchLocallyOwnedFn)
+		|| !TestNotNull(TEXT("UCrowdyUtilities::IsCrowdyEntityLocallyOwned resolves"), IsLocallyOwnedFn))
 	{
 		return false;
 	}
 
 	TestFalse(TEXT("a different AActor function of the same owner is not the forbidden call"),
 		UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(GetActorLocationFn));
-	TestFalse(TEXT("the exec-flow Crowdy Has Authority wrapper is not the forbidden call"),
-		UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(CrowdyHasAuthorityExecFn));
-	TestFalse(TEXT("the pure Crowdy Has Authority wrapper is not the forbidden call"),
-		UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(GetCrowdyHasAuthorityFn));
+	TestFalse(TEXT("the exec-flow Crowdy ownership test is not the forbidden call"),
+		UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(SwitchLocallyOwnedFn));
+	TestFalse(TEXT("the pure Crowdy ownership test is not the forbidden call"),
+		UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(IsLocallyOwnedFn));
 
 	return true;
 }
@@ -814,15 +808,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerHostSurfaceIsDeprecatedTest,
 bool FCrowdyCompilerHostSurfaceIsDeprecatedTest::RunTest(const FString& Parameters)
 {
 	const TPair<UClass*, FName> Functions[] = {
-		{UCrowdyHostSubsystem::StaticClass(), TEXT("GetHostID")},
-		{UCrowdyHostSubsystem::StaticClass(), TEXT("IsHostSet")},
-		{UCrowdyHostSubsystem::StaticClass(), TEXT("GetHostUserID")},
-		{UCrowdyHostSubsystem::StaticClass(), TEXT("IsHost")},
 		{UCrowdyGameSession::StaticClass(), TEXT("GetHostID")},
 		{UCrowdyEntitySubsystem::StaticClass(), TEXT("GetHostID")},
-		{UCrowdyUtilities::StaticClass(), TEXT("CrowdyGetHostID")},
-		{UCrowdyUtilities::StaticClass(), TEXT("IsCrowdyEntityHost")},
-		{UCrowdyIsEntityHostServer::StaticClass(), TEXT("IsCrowdyEntityHostServer")},
 		{UCrowdyOwnershipTransfer::StaticClass(), TEXT("GrantOwnershipToHost")},
 		{UCrowdyEntityComponent::StaticClass(), TEXT("GetHostOverridePolicy")},
 	};
@@ -837,7 +824,6 @@ bool FCrowdyCompilerHostSurfaceIsDeprecatedTest::RunTest(const FString& Paramete
 	}
 
 	const TPair<UClass*, FName> Properties[] = {
-		{UCrowdyHostSubsystem::StaticClass(), TEXT("OnHostElected")},
 		{UCrowdyGameSession::StaticClass(), TEXT("OnHostIDUpdated")},
 		{UCrowdyEntityComponent::StaticClass(), TEXT("HostOverride")},
 	};

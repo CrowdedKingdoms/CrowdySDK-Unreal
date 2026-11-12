@@ -373,49 +373,6 @@ namespace CrowdyServiceApi
 	}
 
 	/**
-	 * Read the boolean amIGameHost answers with. False for anything that is not a definite yes or no, so a caller
-	 * cannot mistake an unread answer for "not the host".
-	 */
-	inline bool ReadAmIGameHost(const FCrowdyCppJsonResult& Result, bool& bOutAmHost)
-	{
-		bOutAmHost = false;
-		return Result.bTransportOk && Result.Data.IsValid()
-			&& Result.Data->TryGetBoolField(TEXT("amIGameHost"), bOutAmHost);
-	}
-
-	/**
-	 * Read the owning user of the actor this call asked about.
-	 *
-	 * The answer echoes the uuid it is about, and a row for a different actor is refused rather than reported as
-	 * the owner of the one that was asked for. userId is a BigInt, so it arrives as a decimal string.
-	 */
-	inline bool ReadActorOwner(const FCrowdyCppJsonResult& Result, const FString& ExpectedUuid, int64& OutUserId)
-	{
-		OutUserId = 0;
-
-		const TSharedPtr<FJsonObject>* Actor = nullptr;
-		if (!Result.bTransportOk || !Result.Data.IsValid() || !Result.Data->TryGetObjectField(TEXT("actor"), Actor))
-		{
-			return false;
-		}
-
-		FString EchoedUuid;
-		if (!(*Actor)->TryGetStringField(TEXT("uuid"), EchoedUuid) || EchoedUuid != ExpectedUuid)
-		{
-			return false;
-		}
-
-		FString UserIdText;
-		if (!(*Actor)->TryGetStringField(TEXT("userId"), UserIdText))
-		{
-			return false;
-		}
-
-		OutUserId = FCString::Atoi64(*UserIdText);
-		return true;
-	}
-
-	/**
 	 * What one getVoxelList answer says about a chunk. bRead separates "the chunk was read and holds nothing"
 	 * from "the chunk could not be read at all": the first is a normal empty slot, the second is a failure every
 	 * waiting caller has to be told about.

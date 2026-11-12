@@ -103,7 +103,7 @@ namespace
 
 		UE_CLOG(ShouldLogRpcDrop(FunctionID), LogCrowdyRPC, Warning,
 			TEXT("[CrowdyRPC] '%s' dropped - it is a Host event, but Leader Source is Server Object: a World actor has no host, and a replicated subsystem's Host is the Leader, not known yet (the app's server code must be deployed). ")
-			TEXT("Move host-only logic to a Server Object, or set Project Settings > Plugins > Crowdy SDK > Replication > Leader Source to Elected Host (Deprecated)."),
+			TEXT("Move host-only logic to a Server Object."),
 			*GetNameSafe(Fn));
 		return true;
 	}

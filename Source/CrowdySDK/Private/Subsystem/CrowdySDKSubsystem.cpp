@@ -28,7 +28,6 @@
 #include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h"
 #include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
-#include "Subsystem/CrowdyHostSubsystem.h"
 #include "Subsystem/CrowdyPersistenceSubsystem.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"
@@ -227,10 +226,6 @@ void UCrowdySDKSubsystem::BindAuthentication(UCrowdyAuthentication* Auth)
 
 void UCrowdySDKSubsystem::Deinitialize()
 {
-	// Stop all repeating timers before anything else is torn down. The GameHost poll rides the GameInstance timer
-	// manager (UWorld::GetTimerManager forwards to it for a Game/PIE world), so it survives level travel without a
-	// per-world re-arm; clearing it here on GameInstance teardown is enough.
-	StopHostPolling();
 	FTSTicker::GetCoreTicker().RemoveTicker(IdleWatchHandle);
 
 	FWorldDelegates::OnPostWorldInitialization.Remove(PostWorldInitHandle);
@@ -329,7 +324,7 @@ void UCrowdySDKSubsystem::Logout() const
 	GameSession->ClearCurrentSessionData();
 	GameSession->SetAppPaused(false, FString());
 
-	// Cleared here at once: the per-world host subsystem may never have seen this host, and its own clear is queued.
+	// Cleared here at once: the Leader subsystem hears of the sign-out only from the broadcast at the end.
 	GameSession->SetHostID(FGuid());
 
 	// Scrub the bearers the shared API client still holds. It reinstalls them from here on every resolve, so a call
@@ -353,20 +348,6 @@ void UCrowdySDKSubsystem::Logout() const
 	{
 		Teams->ClearMyTeamsCache();
 	}
-
-	// The host subsystem only exists in a Game or PIE world, so signing out from anywhere else finds nothing to
-	// clear rather than crashing.
-	UWorld* World = GetWorld();
-	if (UCrowdyHostSubsystem* HostSubsystem = World ? World->GetSubsystem<UCrowdyHostSubsystem>() : nullptr)
-	{
-		HostSubsystem->SetHostUserID(0);
-	}
-	
-	// Stop host polling user is no longer authenticated.
-	// Cast away const: Logout() is declared const but timer management is
-	// inherently mutable state. The alternative is making Logout() non-const
-	// which would break existing Blueprint call sites.
-	const_cast<UCrowdySDKSubsystem*>(this)->StopHostPolling();
 
 	OnLogout.Broadcast(true);
 }
@@ -1344,9 +1325,6 @@ void UCrowdySDKSubsystem::OnUDPTimeout()
 {
 	UE_LOG(LogCrowdySDK, Warning, TEXT("The UDP connection failed — reconnecting."));
 
-	// Stop polling while the connection is down; it restarts on its own once the connection reports itself up.
-	StopHostPolling();
-
 	// Transition state before broadcasting so UI can react instantly.
 	UdpSubsystem->SetConnectionState(EUDPConnectionState::Reconnecting);
 
@@ -1361,7 +1339,6 @@ void UCrowdySDKSubsystem::OnUDPInactive()
 {
 	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("The server released this idle session; not reconnecting."));
 
-	StopHostPolling();
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(PingMessageTimerHandle);
@@ -1427,11 +1404,6 @@ void UCrowdySDKSubsystem::StartConnectedSessionWork()
 			RegisterPingTimer(WeakThis.Get());
 		});
 	}
-
-	// Only once the player is signed in, and only while the elected host is the Leader Source. A connection that comes
-	// up before sign-in leaves polling to the sign-in that follows, since login does not start it.
-	if (IsValid(GameSession) && GameSession->GetUserID() != 0 && UCrowdySDKDeveloperSettings::UsesElectedHost())
-		StartHostPolling();
 }
 
 void UCrowdySDKSubsystem::SendPingTestMessage()
@@ -1626,137 +1598,4 @@ void UCrowdySDKSubsystem::SendMessage(const ICrowdyMessage& Message) const
 		UE_LOG(LogCrowdySDK, Warning, TEXT("Dropped a '%s': there is no replication subsystem to send it through."),
 			*Message.GetTypeName().ToString());
 	}
-}
-
-void UCrowdySDKSubsystem::StartHostPolling() const
-{
-	// SetTimer must run on the game thread. Every caller in the SDK is already on it, so the registration
-	// usually happens right here; the dispatch stays because this is callable from anywhere.
-	auto RegisterPollTimer = [](UCrowdySDKSubsystem* Self)
-	{
-		if (!IsValid(Self))
-			return;
-
-		// Don't double-start if already running.
-		if (Self->HostPollTimerHandle.IsValid())
-			return;
-
-		const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
-		const float Interval = (Settings && Settings->HostPollIntervalSeconds > 0.f)
-			? Settings->HostPollIntervalSeconds
-			: 5.f;
-
-		if (UWorld* World = Self->GetWorld())
-		{
-			World->GetTimerManager().SetTimer(
-				Self->HostPollTimerHandle,
-				Self,
-				&UCrowdySDKSubsystem::PollGameHost,
-				Interval, /*bLoop=*/true, /*FirstDelay=*/0.f); // fire immediately, then loop
-		}
-
-		UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("GameHost polling started (interval=%.1fs)"), Interval);
-	};
-
-	if (IsInGameThread())
-	{
-		RegisterPollTimer(const_cast<UCrowdySDKSubsystem*>(this));
-	}
-	else
-	{
-		TWeakObjectPtr<UCrowdySDKSubsystem> WeakThis(const_cast<UCrowdySDKSubsystem*>(this));
-		AsyncTask(ENamedThreads::GameThread, [WeakThis, RegisterPollTimer]()
-		{
-			RegisterPollTimer(WeakThis.Get());
-		});
-	}
-}
-
-void UCrowdySDKSubsystem::StopHostPolling()
-{
-	if (HostPollTimerHandle.IsValid())
-	{
-		if (UWorld* World = GetWorld())
-			World->GetTimerManager().ClearTimer(HostPollTimerHandle);
-
-		UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("GameHost polling stopped."));
-	}
-}
-
-void UCrowdySDKSubsystem::PollGameHost() const
-{
-	if (!IsValid(GameSession))
-		return;
-
-	// The bearer is refreshed from the live session on every poll rather than trusting whatever the shared client
-	// still holds, so a poll issued after a sign-out fails instead of answering as the account that just left.
-	UCrowdyCppClientSubsystem* ClientHost = GetGameInstance()
-		? GetGameInstance()->GetSubsystem<UCrowdyCppClientSubsystem>()
-		: nullptr;
-	if (!ClientHost)
-	{
-		UE_LOG(LogCrowdySDK, Warning, TEXT("No API client host on this game instance; the host poll cannot run."));
-		return;
-	}
-
-	ClientHost->SetGameToken(GameSession->GetGameToken());
-
-	FCrowdyCppClient* Client = ClientHost->GetClient(GetDefault<UCrowdySDKDeveloperSettings>()->MakeClientConfig());
-	if (!Client)
-	{
-		UE_LOG(LogCrowdySDK, Warning, TEXT("Could not construct the API client; the host poll cannot run."));
-		return;
-	}
-
-	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
-	Variables->SetStringField(TEXT("appId"), FString::Printf(TEXT("%lld"), GameSession->GetAppID()));
-
-	TWeakObjectPtr<const UCrowdySDKSubsystem> WeakThis(this);
-	Client->RunOp(ECrowdyCppApiDomain::Host, TEXT("GameHost"), Variables,
-		[WeakThis](FCrowdyCppJsonResult Result)
-		{
-			const TSharedPtr<FJsonObject>* GameHost = nullptr;
-			if (!Result.bTransportOk || !Result.Data.IsValid()
-				|| !Result.Data->TryGetObjectField(TEXT("gameHost"), GameHost))
-			{
-				return;
-			}
-
-			// hostUserId is a BigInt, so it arrives as a decimal string. An answer that does not carry one has not
-			// named a host, so it leaves the current host in place rather than clearing it.
-			FString HostUserIdText;
-			if (!(*GameHost)->TryGetStringField(TEXT("hostUserId"), HostUserIdText))
-			{
-				UE_LOG(LogCrowdySDK, Warning, TEXT("GameHost answered without a hostUserId; leaving the host as it was."));
-				return;
-			}
-			const int64 HostUserId = FCString::Atoi64(*HostUserIdText);
-
-			// Saturating rather than cast: a non-finite or out-of-range number converts to garbage, not to a bound.
-			double ActorCountValue = 0.0;
-			(*GameHost)->TryGetNumberField(TEXT("actorCount"), ActorCountValue);
-			const int32 ActorCount = FMath::IsFinite(ActorCountValue)
-				? static_cast<int32>(FMath::Clamp(ActorCountValue,
-					static_cast<double>(MIN_int32), static_cast<double>(MAX_int32)))
-				: 0;
-
-			FString EarliestActorJoinedAt;
-			(*GameHost)->TryGetStringField(TEXT("earliestActorJoinedAt"), EarliestActorJoinedAt);
-
-			const UCrowdySDKSubsystem* Self = WeakThis.Get();
-			UWorld* World = Self ? Self->GetWorld() : nullptr;
-			UCrowdyHostSubsystem* HostSubsystem = World ? World->GetSubsystem<UCrowdyHostSubsystem>() : nullptr;
-			if (!IsValid(HostSubsystem) || !HostSubsystem->IsReady())
-				return;
-
-			HostSubsystem->SetHostUserID(HostUserId);
-
-			UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log,
-				TEXT("GameHost | HostUserID=%lld | LocalUserID=%lld | IsHost=%s | ActorCount=%d | EarliestJoined=%s"),
-				HostUserId,
-				IsValid(Self->GameSession) ? Self->GameSession->GetUserID() : 0,
-				IsValid(Self->GameSession) && HostUserId != 0 && Self->GameSession->GetUserID() == HostUserId ? TEXT("YES") : TEXT("no"),
-				ActorCount,
-				*EarliestActorJoinedAt);
-		});
 }

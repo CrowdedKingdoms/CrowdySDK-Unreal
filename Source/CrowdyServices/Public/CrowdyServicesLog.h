@@ -12,8 +12,8 @@ CROWDYSERVICES_API DECLARE_LOG_CATEGORY_EXTERN(LogCrowdyServices, Log, All);
 // matching console variable to surface that area's chatty trace lines. Warnings/errors are not gated.
 namespace CrowdyServicesTrace
 {
-	// crowdy.services.trace — authentication, teams, avatars, persistence, host subsystem,
-	// utilities, Blueprint reception layer.
+	// crowdy.services.trace: authentication, teams, avatars, persistence, utilities,
+	// Blueprint reception layer.
 	CROWDYSERVICES_API bool Services();
 
 	// crowdy.hud.trace — HUD base and HUD widgets.

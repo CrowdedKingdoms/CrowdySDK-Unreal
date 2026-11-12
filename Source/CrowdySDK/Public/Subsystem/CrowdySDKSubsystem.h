@@ -493,7 +493,6 @@ private:
 	double LastConnectedSeconds = 0.0;
 	FTSTicker::FDelegateHandle IdleWatchHandle;
 	bool UpdateLocalPlayerIdle(float DeltaTime);
-	FTimerHandle HostPollTimerHandle;
 	bool bIsRegistered = false;
 
 	UFUNCTION()
@@ -580,20 +579,6 @@ private:
 	bool bWarnedNoVoiceChat = false;
 
 	bool TryLoadConfiguration();
-
-	/** Starts the repeating GameHost poll. Safe to call from any thread: the timer registration runs
-	 *  inline when the caller is already on the game thread and is dispatched to it otherwise. Calling
-	 *  again while the poll is running does nothing. */
-	void StartHostPolling() const;
-
-	/** Cancels the GameHost poll timer. Must be called on the game thread. The poll rides the GameInstance timer
-	 *  manager (UWorld::GetTimerManager forwards to it for a Game/PIE world), so it survives level travel and needs
-	 *  no per-world re-arm; this teardown on GameInstance shutdown is sufficient. */
-	void StopHostPolling();
-
-	/** Fires the GameHost query (called by HostPollTimerHandle). */
-	UFUNCTION()
-	void PollGameHost() const;
 
 	UFUNCTION()
 	void OnUDPTimeout();

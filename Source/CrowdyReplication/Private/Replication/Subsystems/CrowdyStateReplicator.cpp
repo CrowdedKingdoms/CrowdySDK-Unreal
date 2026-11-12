@@ -781,7 +781,7 @@ void UCrowdyStateReplicator::WarnIfWorldEntityHasNoWriter(const FGuid& EntityID)
 	bWarnedWorldEntityHasNoWriter = true;
 	UE_LOG(LogCrowdyReplication, Warning,
 		TEXT("[CrowdyStateReplicator]: State was marked dirty on World entity %s, but Leader Source is Server Object, so no client writes World entities and every other client ignores the change. ")
-		TEXT("Keep a World entity's truth in a Server Object, or set Project Settings > Plugins > Crowdy SDK > Replication > Leader Source to Elected Host (Deprecated) to keep the elected host writing it."),
+		TEXT("Keep a World entity's truth in a Server Object."),
 		*EntityID.ToString());
 }
 
