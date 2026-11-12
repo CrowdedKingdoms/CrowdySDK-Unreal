@@ -106,6 +106,9 @@ struct FCrowdyCppJsonResult
 	// The same error's extensions.reason, on the few codes that carry one.
 	FString ErrorReason;
 
+	// On ACTOR_EXISTS: true when the taken uuid is already the caller's actor, false when another player holds it.
+	TOptional<bool> OwnedByCaller;
+
 	// The `data` object as MessagePack, filled by RunOpMsgpack instead of Data.
 	TArray<uint8> Msgpack;
 };

@@ -1707,6 +1707,13 @@ bool FCrowdySendRefusalSaysWhatAndWhyTest::RunTest(const FString& Parameters)
 	UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Text, Refusal);
 	TestTrue(TEXT("proximity text needs use_text_chat"), Refusal.What == TEXT("proximity text") && Refusal.Remedy.Contains(TEXT("use_text_chat")));
 
+	FCrowdyCppSendError Video = Direct;
+	Video.SendOpcode = static_cast<uint8>(ECrowdyMessageType::CLIENT_VIDEO_PACKET);
+	UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Video, Refusal);
+	TestEqual(TEXT("a video frame says so"), Refusal.What, FString(TEXT("a video frame")));
+	TestEqual(TEXT("under its opcode"), Refusal.MessageType, static_cast<int32>(ECrowdyMessageType::CLIENT_VIDEO_PACKET));
+	TestTrue(TEXT("and needs use_video_chat"), Refusal.Remedy.Contains(TEXT("use_video_chat")));
+
 	FCrowdyCppSendError Other = Channel;
 	Other.ErrorCode = InvalidRequest;
 	UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Other, Refusal);

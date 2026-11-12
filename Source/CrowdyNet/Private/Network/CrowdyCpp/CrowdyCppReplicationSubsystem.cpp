@@ -1036,6 +1036,10 @@ bool UCrowdyCppReplicationSubsystem::DescribeSendRefusal(const FCrowdyCppSendErr
 	{
 		OutRefusal.What = TEXT("proximity text");
 	}
+	else if (Type == ECrowdyMessageType::CLIENT_VIDEO_PACKET)
+	{
+		OutRefusal.What = TEXT("a video frame");
+	}
 	else
 	{
 		OutRefusal.What = FString::Printf(TEXT("message type %d (%s)"), Error.SendOpcode,
@@ -1068,8 +1072,8 @@ bool UCrowdyCppReplicationSubsystem::DescribeSendRefusal(const FCrowdyCppSendErr
 	}
 	else if (Type == ECrowdyMessageType::CLIENT_VIDEO_PACKET)
 	{
-		OutRefusal.Remedy = TEXT("Video is a per-app capability the server grants, so this app does not carry it and no video frame will"
-			" reach anyone until it does.");
+		OutRefusal.Remedy = TEXT("The player's access tier does not grant use_video_chat, for the app or for the grid covering the chunk this"
+			" frame was sent to, so the server refuses video frames.");
 	}
 	return true;
 }
