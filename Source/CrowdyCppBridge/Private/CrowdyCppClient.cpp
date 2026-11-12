@@ -869,6 +869,10 @@ namespace
 		{
 			OutResult.RetryAfterMs = static_cast<int64>(*Error->retryAfterMs);
 		}
+		if (Error->ownedByCaller.has_value())
+		{
+			OutResult.OwnedByCaller = *Error->ownedByCaller;
+		}
 	}
 
 	// The server's stable extensions.code for a failed outcome, or empty when the failure carried no GraphQL errors

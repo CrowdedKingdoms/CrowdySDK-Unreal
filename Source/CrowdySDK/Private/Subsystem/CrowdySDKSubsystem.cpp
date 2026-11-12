@@ -33,6 +33,7 @@
 #include "Utils/UActorUpdatePayloadRegistry.h"
 #include "Utils/UEventPayloadRegistry.h"
 #include "StructUtils/InstancedStruct.h"
+#include "Subsystem/CrowdyActorOwners.h"
 #include "Subsystem/CrowdyAvatars.h"
 #include "Subsystem/CrowdyTeams.h"
 #include "Subsystem/CrowdyChannels.h"
@@ -347,6 +348,11 @@ void UCrowdySDKSubsystem::Logout() const
 	if (UCrowdyTeams* Teams = GetGameInstance()->GetSubsystem<UCrowdyTeams>())
 	{
 		Teams->ClearMyTeamsCache();
+	}
+
+	if (UCrowdyActorOwners* ActorOwners = GetGameInstance()->GetSubsystem<UCrowdyActorOwners>())
+	{
+		ActorOwners->HandleSignedOut();
 	}
 
 	OnLogout.Broadcast(true);
