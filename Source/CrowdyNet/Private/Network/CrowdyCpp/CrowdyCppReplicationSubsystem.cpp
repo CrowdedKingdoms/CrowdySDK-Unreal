@@ -93,8 +93,9 @@ namespace
 	TAutoConsoleVariable<int32> CVarAdvertiseCapabilities(
 		TEXT("crowdy.net.recv.signedbundles"), 1,
 		TEXT("Tell the replication server this client reads MESSAGE_BUNDLE_SIGNED, so downlink bundles arrive with one "
-			"signature per datagram instead of one per member. A server older than v0.30.0 ignores it. 0 stops "
-			"advertising and keeps the per-member form; a diagnostic switch, not a setting."),
+			"signature per datagram instead of one per member, and send the control nonce that binds reconnect and "
+			"release frames to this assignment. A server older than v0.30.0 ignores it. 0 stops advertising, which "
+			"also makes those frames replayable again; a diagnostic switch, not a setting."),
 		ECVF_Default);
 
 	/** Inbound pressure is reported at most this often, since it arrives at packet rate when it arrives at all. */
@@ -1251,8 +1252,9 @@ void UCrowdyCppReplicationSubsystem::ReportNetworkStats(const FCrowdyCppReplicat
 	const FCrowdyCppReplicationStats RawStats = Polled.GetStats();
 
 	UE_CLOG(CrowdyNetTrace::Net(), LogCrowdyNet, Log,
-		TEXT("Transport totals: %lld datagrams received, %lld failed verification, %lld dropped from the ring, %lld sends dropped."),
-		RawStats.DatagramsReceived, RawStats.HmacFailures, RawStats.RingDropped, RawStats.MessagesDropped);
+		TEXT("Transport totals: %lld datagrams received, %lld failed verification, %lld replayed control frames, %lld idle releases after input, %lld dropped from the ring, %lld sends dropped."),
+		RawStats.DatagramsReceived, RawStats.HmacFailures, RawStats.StaleBoundControl, RawStats.IdleReleasesAfterInput,
+		RawStats.RingDropped, RawStats.MessagesDropped);
 
 	FCounterSnapshot Current;
 	Current.BytesSent = RawStats.BytesSent;

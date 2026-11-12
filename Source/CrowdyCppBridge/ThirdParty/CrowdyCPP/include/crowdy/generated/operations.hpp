@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: 0e6d2907035f4b52f9b9856079c91709eaab5fb1c74b79f11cb3dfdd4ac47835
-// operations sha256: 0e01b49eaba7d97c6be7f8bc496bf35e8d6cf62cd59f9e7532ac6a54797ad621
+// schema.gql sha256: 13094c2757b41d50c8aee996009a00d0995ef597bd792c778c25585576a45f33
+// operations sha256: 004cb5807f8f859a8c07e2cf75930521350d242fdca088393b463aa5c300c05f
 
 #pragma once
 
@@ -2978,6 +2978,106 @@ inline constexpr std::string_view kGetChunksByDistanceIsolatedDocument = R"gql(q
 })gql";
 inline constexpr std::string_view kGetChunksByDistanceOperationName = "GetChunksByDistance";
 
+/// chunks/GetChunksByDistanceVoxelTypes.graphql
+inline constexpr std::string_view kGetChunksByDistanceVoxelTypesDocument = R"gql(query GetChunksByDistanceVoxelTypes($input: GetChunksByDistanceInput!) {
+  getChunksByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels
+      voxelStates {
+        voxelCoord {
+          x
+          y
+          z
+        }
+        voxelType
+      }
+      voxelStatesTruncated
+    }
+  }
+})gql";
+inline constexpr std::string_view kGetChunksByDistanceVoxelTypesIsolatedDocument = R"gql(query GetChunksByDistanceVoxelTypes($input: GetChunksByDistanceInput!) {
+  getChunksByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels
+      voxelStates {
+        voxelCoord {
+          x
+          y
+          z
+        }
+        voxelType
+      }
+      voxelStatesTruncated
+    }
+  }
+})gql";
+inline constexpr std::string_view kGetChunksByDistanceVoxelTypesOperationName = "GetChunksByDistanceVoxelTypes";
+
+/// chunks/GetChunksByDistanceVoxels.graphql
+inline constexpr std::string_view kGetChunksByDistanceVoxelsDocument = R"gql(query GetChunksByDistanceVoxels($input: GetChunksByDistanceInput!) {
+  getChunksByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels
+      voxelStates {
+        voxelCoord {
+          x
+          y
+          z
+        }
+        voxelType
+        state
+      }
+      voxelStatesTruncated
+    }
+  }
+})gql";
+inline constexpr std::string_view kGetChunksByDistanceVoxelsIsolatedDocument = R"gql(query GetChunksByDistanceVoxels($input: GetChunksByDistanceInput!) {
+  getChunksByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels
+      voxelStates {
+        voxelCoord {
+          x
+          y
+          z
+        }
+        voxelType
+        state
+      }
+      voxelStatesTruncated
+    }
+  }
+})gql";
+inline constexpr std::string_view kGetChunksByDistanceVoxelsOperationName = "GetChunksByDistanceVoxels";
+
 /// chunks/GetVoxelList.graphql
 inline constexpr std::string_view kGetVoxelListDocument = R"gql(query GetVoxelList($input: GetVoxelListInput!) {
   getVoxelList(input: $input) {
@@ -3134,6 +3234,8 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "GetChunk") return kGetChunkIsolatedDocument;
   if (operationName == "GetChunkLods") return kGetChunkLodsIsolatedDocument;
   if (operationName == "GetChunksByDistance") return kGetChunksByDistanceIsolatedDocument;
+  if (operationName == "GetChunksByDistanceVoxelTypes") return kGetChunksByDistanceVoxelTypesIsolatedDocument;
+  if (operationName == "GetChunksByDistanceVoxels") return kGetChunksByDistanceVoxelsIsolatedDocument;
   if (operationName == "GetVoxelList") return kGetVoxelListIsolatedDocument;
   if (operationName == "UpdateChunk") return kUpdateChunkIsolatedDocument;
   if (operationName == "UpdateChunkLods") return kUpdateChunkLodsIsolatedDocument;
@@ -6055,6 +6157,7 @@ query NearbyGrids($input: NearbyGridsInput!) {
       y
       z
     }
+    permissionKeys
   }
 }
 
@@ -6263,6 +6366,7 @@ inline constexpr std::string_view kNearbyGridsIsolatedDocument = R"gql(query Nea
       y
       z
     }
+    permissionKeys
   }
 })gql";
 inline constexpr std::string_view kNearbyGridsOperationName = "NearbyGrids";

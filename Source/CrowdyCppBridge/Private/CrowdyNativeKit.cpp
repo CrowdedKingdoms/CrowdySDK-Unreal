@@ -1,4 +1,5 @@
 #include "CrowdyNativeKitInternal.h"
+#include "CrowdyNativeMsgpack.h"
 
 #include "CrowdyCppBridge.h"
 #include "Containers/StringConv.h"
@@ -355,6 +356,10 @@ namespace CrowdyNativeKit
 
 	bool DecodeActorState(TConstArrayView<uint8> Bytes, FCrowdyNativeKitActorState& Out)
 	{
+		if (!CrowdyNativeMsgpack::KeysSafe(Bytes))
+		{
+			return false;
+		}
 		try
 		{
 			// Read here rather than by CrowdyCPP's decoder, whose cast of a float id, hp or owner outside int64 is undefined.

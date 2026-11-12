@@ -5,6 +5,8 @@
 #include "Components/SceneComponent.h"
 #include "CrowdyVoxelWorldTestTypes.h"
 #include "GameFramework/Actor.h"
+#include "Internal/FCrowdyServiceRegistry.h"
+#include "Messages/Voxel/FChunkChangedNotification.h"
 #include "Misc/AutomationTest.h"
 #include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
 #include "UObject/Package.h"
@@ -17,9 +19,11 @@ namespace CrowdyVoxelWorldTests
 
 	struct FFetchCall
 	{
-		FInt64Vector Centre;
-		int32 Range = 0;
+		FInt64Vector Low;
+		FInt64Vector High;
 		TFunction<void(const FCrowdyChunkFetch&)> Done;
+
+		FInt64Vector Size() const { return High - Low + FInt64Vector(1, 1, 1); }
 	};
 
 	struct FSent
@@ -37,6 +41,7 @@ namespace CrowdyVoxelWorldTests
 		TMap<FInt64Vector, FCrowdyVoxelChunk> Platform;
 		TArray<FFetchCall> Fetches;
 		TArray<FSent> Sent;
+		TSharedPtr<const bool> LastCancelled;
 		uint64 NextTicket = 1;
 		bool bTakeSends = true;
 		double Time = 100.0;
@@ -56,9 +61,10 @@ namespace CrowdyVoxelWorldTests
 					Sent.Add({NextTicket, Write});
 					return NextTicket++;
 				},
-				[this](int64 X, int64 Y, int64 Z, int32 Range, TFunction<void(const FCrowdyChunkFetch&)> Done)
+				[this](const FInt64Vector& Low, const FInt64Vector& High, const TSharedRef<const bool>& Cancelled, TFunction<void(const FCrowdyChunkFetch&)> Done)
 				{
-					Fetches.Add({FInt64Vector(X, Y, Z), Range, MoveTemp(Done)});
+					LastCancelled = Cancelled;
+					Fetches.Add({Low, High, MoveTemp(Done)});
 				});
 			World->OnChunkLoaded.AddDynamic(Recorder.Get(), &UCrowdyVoxelWorldRecorder::HandleLoaded);
 			World->OnChunkUnloaded.AddDynamic(Recorder.Get(), &UCrowdyVoxelWorldRecorder::HandleUnloaded);
@@ -102,7 +108,18 @@ namespace CrowdyVoxelWorldTests
 			return Chunk;
 		}
 
-		/** Answers every fetch asked so far from Platform, as the real fetches would. */
+		/** A chunk the platform never stored but holds edits for, as a box fetch answers it. */
+		FCrowdyVoxelChunk& EditOnly(const FInt64Vector& Coord, const FIntVector& Position, int32 Type)
+		{
+			FCrowdyVoxelChunk& Chunk = Platform.Add(Coord, Empty(Coord));
+			Chunk.Grid[Position.X + 16 * Position.Y + 256 * Position.Z] = static_cast<uint8>(Type);
+			FCrowdyVoxel& Edit = Chunk.Edits.AddDefaulted_GetRef();
+			Edit.Position = Position;
+			Edit.Type = Type;
+			return Chunk;
+		}
+
+		/** Answers every fetch asked so far from Platform, as a box fetch would: a chunk it holds nothing for is left out. */
 		void AnswerFetches()
 		{
 			TArray<FFetchCall> Calls = MoveTemp(Fetches);
@@ -110,15 +127,12 @@ namespace CrowdyVoxelWorldTests
 			{
 				FCrowdyChunkFetch Answer;
 				Answer.Result = ECrowdyVoxelResult::Ok;
-				if (Call.Range == 0)
-				{
-					const FCrowdyVoxelChunk* Found = Platform.Find(Call.Centre);
-					Answer.Chunks.Add(Found ? *Found : Empty(Call.Centre));
-				}
 				for (const TPair<FInt64Vector, FCrowdyVoxelChunk>& Entry : Platform)
 				{
-					const FInt64Vector D = Entry.Key - Call.Centre;
-					if (Call.Range > 0 && FMath::Max3(FMath::Abs(D.X), FMath::Abs(D.Y), FMath::Abs(D.Z)) <= Call.Range)
+					const FInt64Vector& C = Entry.Key;
+					const bool bInside = C.X >= Call.Low.X && C.X <= Call.High.X && C.Y >= Call.Low.Y && C.Y <= Call.High.Y
+						&& C.Z >= Call.Low.Z && C.Z <= Call.High.Z;
+					if (bInside)
 					{
 						Answer.Chunks.Add(Entry.Value);
 					}
@@ -168,9 +182,39 @@ namespace CrowdyVoxelWorldTests
 			return World->GetVoxel(Chunk.X, Chunk.Y, Chunk.Z, FIntVector(X, Y, Z)).Type;
 		}
 
+		/** Fetches of a cube of that range on every axis; range 0 is one chunk. */
 		int32 CountFetches(int32 Range) const
 		{
-			return Fetches.FilterByPredicate([Range](const FFetchCall& Call) { return Call.Range == Range; }).Num();
+			const int64 Side = 2 * Range + 1;
+			return CountBoxes(FInt64Vector(Side, Side, Side));
+		}
+
+		int32 CountBoxes(const FInt64Vector& Size) const
+		{
+			return Fetches.FilterByPredicate([&Size](const FFetchCall& Call) { return Call.Size() == Size; }).Num();
+		}
+
+		/** Chunks the fetches asked so far span together, and the most any one spans. */
+		int64 CoveredChunks(int64& OutLargest) const
+		{
+			int64 Covered = 0;
+			OutLargest = 0;
+			for (const FFetchCall& Call : Fetches)
+			{
+				const FInt64Vector Size = Call.Size();
+				Covered += Size.X * Size.Y * Size.Z;
+				OutLargest = FMath::Max(OutLargest, Size.X * Size.Y * Size.Z);
+			}
+			return Covered;
+		}
+
+		bool AnyFetchHolds(const FInt64Vector& Coord) const
+		{
+			return Fetches.ContainsByPredicate([&Coord](const FFetchCall& Call)
+			{
+				return Coord.X >= Call.Low.X && Coord.X <= Call.High.X && Coord.Y >= Call.Low.Y && Coord.Y <= Call.High.Y
+					&& Coord.Z >= Call.Low.Z && Coord.Z <= Call.High.Z;
+			});
 		}
 	};
 
@@ -240,8 +284,9 @@ bool FCrowdyVoxelWorldFetchesOnlyMissingTest::RunTest(const FString& Parameters)
 	Rig.Load();
 	Rig.MoveActor(FVector(1600.0 + 50.0, 50.0, 50.0));
 	Rig.Step();
-	TestEqual(TEXT("crossing into chunk 1 fetches only the new slab of 9"), Rig.CountFetches(0), 9);
-	TestEqual(TEXT("no cube is read again"), Rig.CountFetches(1), 0);
+	TestEqual(TEXT("crossing into chunk 1 fetches one box"), Rig.Fetches.Num(), 1);
+	TestTrue(TEXT("holding only the new slab of 9"), Rig.Fetches.Num() == 1 && Rig.Fetches[0].Low == FInt64Vector(2, -1, -1)
+		&& Rig.Fetches[0].High == FInt64Vector(2, 1, 1));
 	TestTrue(TEXT("the slab two behind stays within the unload band"), Rig.World->IsChunkLoaded(-1, 0, 0));
 
 	Rig.AnswerFetches();
@@ -270,20 +315,63 @@ bool FCrowdyVoxelWorldListsLoadedChunksTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldSlabAsSmallCubesTest, "CrowdySDK.Voxels.World.WideCrossingReadsSmallCubes", Flags)
-bool FCrowdyVoxelWorldSlabAsSmallCubesTest::RunTest(const FString& Parameters)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldSlabAsBoxesTest, "CrowdySDK.Voxels.World.CrossingReadsSlabsInOnePageBoxes", Flags)
+bool FCrowdyVoxelWorldSlabAsBoxesTest::RunTest(const FString& Parameters)
 {
 	FRig Rig;
 	Rig.World->Follow(Rig.Actor.Get(), 3);
 	Rig.Step();
+	int64 Largest = 0;
+	TestEqual(TEXT("a follower with nothing loaded asks for its whole cube of 343"), Rig.CoveredChunks(Largest), 343ll);
+	TestTrue(TEXT("in boxes of one page each"), Largest <= UCrowdyVoxels::PageSize);
+	TestTrue(TEXT("about one box a page"), Rig.Fetches.Num() >= 11 && Rig.Fetches.Num() <= 14);
 	Rig.AnswerFetches();
 	Rig.MoveActor(FVector(1600.0 + 50.0, 50.0, 50.0));
 	Rig.Step();
-	TestEqual(TEXT("a slab of 49 is not read by re-reading the whole cube"), Rig.CountFetches(3), 0);
-	TestTrue(TEXT("it is read as small cubes"), Rig.CountFetches(1) > 0 && Rig.CountFetches(1) <= 9);
+	TestEqual(TEXT("a step along x reads its slab of 49"), Rig.CoveredChunks(Largest), 49ll);
+	TestEqual(TEXT("as two one-page boxes"), Rig.Fetches.Num(), 2);
+	TestTrue(TEXT("one chunk deep"), Rig.Fetches.Num() == 2 && Rig.Fetches[0].Low.X == 4 && Rig.Fetches[0].High.X == 4 && Rig.Fetches[1].Low.X == 4);
 	Rig.AnswerFetches();
 	TestTrue(TEXT("the slab loads"), Rig.World->IsChunkLoaded(4, 3, -3));
 	TestFalse(TEXT("nothing past the follower's range is loaded"), Rig.World->IsChunkLoaded(5, 0, 0));
+
+	// A diagonal step uncovers an L of two slabs: boxes holding exactly the 91 chunks not loaded.
+	Rig.MoveActor(FVector(2 * 1600.0 + 50.0, 1600.0 + 50.0, 50.0));
+	Rig.Step();
+	bool bAnyLoaded = false;
+	for (const FFetchCall& Call : Rig.Fetches)
+	{
+		const FInt64Vector Size = Call.Size();
+		for (int64 Cell = 0; Cell < Size.X * Size.Y * Size.Z; ++Cell)
+		{
+			const FInt64Vector At = Call.Low + FInt64Vector(Cell % Size.X, (Cell / Size.X) % Size.Y, Cell / (Size.X * Size.Y));
+			bAnyLoaded |= Rig.World->IsChunkLoaded(At.X, At.Y, At.Z);
+		}
+	}
+	TestEqual(TEXT("the boxes together hold the 91 new chunks"), Rig.CoveredChunks(Largest), 91ll);
+	TestTrue(TEXT("each one page"), Largest <= UCrowdyVoxels::PageSize);
+	TestTrue(TEXT("in few boxes"), Rig.Fetches.Num() <= 5);
+	TestFalse(TEXT("and no chunk already loaded"), bAnyLoaded);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldWideRangeBoxesTest, "CrowdySDK.Voxels.World.RangeSevenReadsInOnePageBoxes", Flags)
+bool FCrowdyVoxelWorldWideRangeBoxesTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.World->Follow(Rig.Actor.Get(), 7);
+	Rig.Step();
+	int64 Largest = 0;
+	TestEqual(TEXT("the first load at range 7 asks for 3,375 chunks"), Rig.CoveredChunks(Largest), 3375ll);
+	TestTrue(TEXT("in one-page boxes"), Largest <= UCrowdyVoxels::PageSize);
+	AddInfo(FString::Printf(TEXT("range 7 first load: %d boxes"), Rig.Fetches.Num()));
+	TestTrue(TEXT("close to one box per 32 chunks"), Rig.Fetches.Num() <= 120);
+	Rig.AnswerFetches();
+	Rig.MoveActor(FVector(1600.0 + 50.0, 50.0, 50.0));
+	Rig.Step();
+	TestEqual(TEXT("a step at range 7 reads its slab of 225"), Rig.CoveredChunks(Largest), 225ll);
+	TestTrue(TEXT("in one-page boxes"), Largest <= UCrowdyVoxels::PageSize);
+	TestEqual(TEXT("eight of them, read side by side"), Rig.Fetches.Num(), 8);
 	return true;
 }
 
@@ -507,7 +595,7 @@ bool FCrowdyVoxelWorldSettleWhileFetchingTest::RunTest(const FString& Parameters
 	FRig Rig;
 	Rig.Load();
 	Rig.Step(UCrowdyVoxelWorld::SettleSeconds);
-	TestEqual(TEXT("the settling read is out"), Rig.CountFetches(2), 1);
+	TestEqual(TEXT("the settling read of the 27 held chunks is out"), Rig.CountFetches(1), 1);
 
 	const int64 EditId = Rig.World->SetVoxel(FRig::Write(9, 9, 9, 4));
 	Rig.Step();
@@ -544,7 +632,7 @@ bool FCrowdyVoxelWorldReconnectTest::RunTest(const FString& Parameters)
 	Rig.Step();
 	TestFalse(TEXT("not live again until the new connection settles"), Rig.World->IsChunkLive(0, 0, 0));
 	Rig.Step(UCrowdyVoxelWorld::SettleSeconds);
-	TestEqual(TEXT("the new connection settles with one more read"), Rig.CountFetches(2), 1);
+	TestEqual(TEXT("the new connection settles with one more read"), Rig.CountFetches(1), 1);
 	Rig.AnswerFetches();
 	TestTrue(TEXT("live again after it"), Rig.World->IsChunkLive(0, 0, 0));
 	return true;
@@ -673,7 +761,7 @@ bool FCrowdyVoxelWorldLiveAfterSettleTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a chunk is not live before the connection settles"), Rig.World->IsChunkLive(0, 0, 0));
 
 	Rig.Step(UCrowdyVoxelWorld::SettleSeconds);
-	TestEqual(TEXT("settling reads each follower's cube and its unload band once more"), Rig.CountFetches(2), 1);
+	TestEqual(TEXT("settling reads the chunks held in each follower's cube and unload band once more"), Rig.CountFetches(1), 1);
 	Rig.Live(FRig::Write(6, 6, 6, 3), 50);
 	Rig.AnswerFetches();
 	TestTrue(TEXT("after the settling read the chunk is live"), Rig.World->IsChunkLive(0, 0, 0));
@@ -684,7 +772,8 @@ bool FCrowdyVoxelWorldLiveAfterSettleTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a chunk past 8 of this player's actor is not live"), Rig.World->IsChunkLive(0, 0, 0));
 	Rig.World->SetLocalChunkForTest(FInt64Vector::ZeroValue);
 	Rig.Step();
-	TestEqual(TEXT("coming back within reach fetches the chunks again"), Rig.CountFetches(0), 27);
+	TestEqual(TEXT("coming back within reach fetches the 27 chunks again, in one box"), Rig.CountFetches(1), 1);
+	TestEqual(TEXT("and nothing else"), Rig.Fetches.Num(), 1);
 	return true;
 }
 
@@ -768,7 +857,7 @@ bool FCrowdyVoxelWorldReloadIgnoresEarlierFetchTest::RunTest(const FString& Para
 	FRig Rig;
 	Rig.Load();
 	Rig.Step(UCrowdyVoxelWorld::SettleSeconds);
-	TestEqual(TEXT("the settling read is out"), Rig.CountFetches(2), 1);
+	TestEqual(TEXT("the settling read is out"), Rig.CountFetches(1), 1);
 
 	const TSharedRef<FReloadAnswer> Answer = Reload(Rig);
 	TestEqual(TEXT("no second fetch while one is out"), Rig.CountFetches(0), 0);
@@ -904,6 +993,258 @@ bool FCrowdyVoxelWorldReloadWorldEndTest::RunTest(const FString& Parameters)
 	Rig.Step();
 	TestEqual(TEXT("a reload waiting on its fetch runs nothing once the world ends"), Answer->Count, 0);
 	TestEqual(TEXT("nor does one that had already failed"), Unloaded->Count, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldNeverStoredEditsTest, "CrowdySDK.Voxels.World.NeverStoredChunkLoadsWithItsEdits", Flags)
+bool FCrowdyVoxelWorldNeverStoredEditsTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.EditOnly(FInt64Vector(1, 0, 0), FIntVector(2, 3, 4), 6);
+	Rig.Load();
+	TestEqual(TEXT("a first edit in a chunk the platform never stored shows on load"), Rig.TypeAt(2, 3, 4, FInt64Vector(1, 0, 0)), 6);
+	FCrowdyVoxelChunk Chunk;
+	TestTrue(TEXT("the chunk is found"), Rig.World->FindChunk(1, 0, 0, Chunk));
+	TestFalse(TEXT("and says it is not stored"), Chunk.bStored);
+
+	const TSharedRef<FReloadAnswer> Answer = Reload(Rig, FInt64Vector(1, 0, 0));
+	TestEqual(TEXT("a reload reads that one chunk as a box"), Rig.CountFetches(0), 1);
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestTrue(TEXT("the reload succeeds"), Answer->Count == 1 && Answer->Result == ECrowdyVoxelResult::Ok);
+	TestEqual(TEXT("and the edit survives it"), Rig.TypeAt(2, 3, 4, FInt64Vector(1, 0, 0)), 6);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldChunkChangedReloadsTest, "CrowdySDK.Voxels.World.ChunkChangedReloadsALoadedChunk", Flags)
+bool FCrowdyVoxelWorldChunkChangedReloadsTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Store(FInt64Vector::ZeroValue).Grid[1 + 16 * 2 + 256 * 3] = 9;
+	Rig.Load();
+	Rig.World->SetVoxel(FRig::Write(3, 3, 3, 6));
+	Rig.Step();
+	FCrowdyVoxelChunk& Replaced = Rig.Store(FInt64Vector::ZeroValue);
+	Replaced.Grid[4 + 16 * 4 + 256 * 4] = 5;
+	Replaced.Grid[3 + 16 * 3 + 256 * 3] = 2;
+	Rig.Recorder->Log.Reset();
+	Rig.Recorder->Loaded.Reset();
+	Rig.Recorder->ChangedPositions.Reset();
+
+	Rig.World->HandleChunkChanged(FInt64Vector::ZeroValue);
+	TestEqual(TEXT("nothing is fetched inside the call"), Rig.Fetches.Num(), 0);
+	Rig.Step();
+	TestEqual(TEXT("the next frame fetches the chunk once"), Rig.CountFetches(0), 1);
+	TestTrue(TEXT("that chunk"), Rig.Fetches.Num() == 1 && Rig.Fetches[0].Low == FInt64Vector::ZeroValue);
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestEqual(TEXT("a removed cell reads empty"), Rig.TypeAt(1, 2, 3), 0);
+	TestEqual(TEXT("a new cell reads its type"), Rig.TypeAt(4, 4, 4), 5);
+	TestEqual(TEXT("this player's waiting edit stays on top"), Rig.TypeAt(3, 3, 3), 6);
+	TestTrue(TEXT("On Chunk Changed names the changed cells"), Rig.Recorder->ChangedPositions.Contains(FIntVector(1, 2, 3))
+		&& Rig.Recorder->ChangedPositions.Contains(FIntVector(4, 4, 4)));
+	TestFalse(TEXT("but not the cell a waiting edit covers"), Rig.Recorder->ChangedPositions.Contains(FIntVector(3, 3, 3)));
+	TestEqual(TEXT("no second On Chunk Loaded"), Rig.Recorder->Loaded.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldChunkChangedUnloadedTest, "CrowdySDK.Voxels.World.ChunkChangedIgnoresAnUnloadedChunk", Flags)
+bool FCrowdyVoxelWorldChunkChangedUnloadedTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	Rig.World->HandleChunkChanged(FInt64Vector(9, 9, 9));
+	Rig.World->HandleChunkChanged(FInt64Vector(MIN_int64, 0, MAX_int64));
+	Rig.Step();
+	Rig.Step();
+	TestEqual(TEXT("a change to a chunk not loaded fetches nothing"), Rig.Fetches.Num(), 0);
+	TestFalse(TEXT("and does not load it"), Rig.World->IsChunkLoaded(9, 9, 9));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldChunkChangedBurstTest, "CrowdySDK.Voxels.World.ChunkChangedBurstCoalesces", Flags)
+bool FCrowdyVoxelWorldChunkChangedBurstTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	for (int32 Index = 0; Index < 1000; ++Index)
+	{
+		Rig.World->HandleChunkChanged(FInt64Vector::ZeroValue);
+	}
+	Rig.Step();
+	TestEqual(TEXT("a burst in one frame costs one fetch"), Rig.Fetches.Num(), 1);
+
+	// Frames that take no time, so the settling read stays out of this count.
+	for (int32 Index = 0; Index < 1000; ++Index)
+	{
+		Rig.World->HandleChunkChanged(FInt64Vector::ZeroValue);
+		Rig.Step(0.0);
+	}
+	TestEqual(TEXT("a burst while it is out asks for nothing yet"), Rig.Fetches.Num(), 1);
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestEqual(TEXT("and costs one follow-up once it is in"), Rig.Fetches.Num(), 1);
+	Rig.AnswerFetches();
+	Rig.Step();
+	Rig.Step();
+	TestEqual(TEXT("then nothing more"), Rig.Fetches.Num(), 0);
+	TestEqual(TEXT("no second On Chunk Loaded for it"), Rig.Recorder->Loaded.FilterByPredicate(
+		[](const FInt64Vector& Coord) { return Coord == FInt64Vector::ZeroValue; }).Num(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldChunkChangedRetryTest, "CrowdySDK.Voxels.World.ChunkChangedRetriesAFailedFetch", Flags)
+bool FCrowdyVoxelWorldChunkChangedRetryTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	Rig.World->HandleChunkChanged(FInt64Vector::ZeroValue);
+	Rig.Step();
+	TestEqual(TEXT("the change fetches the chunk"), Rig.CountFetches(0), 1);
+	FailFetches(Rig, ECrowdyVoxelResult::Failed);
+	Rig.Step();
+	TestEqual(TEXT("a failed fetch is not retried before the back-off"), Rig.Fetches.Num(), 0);
+	Rig.Step(2.1);
+	TestEqual(TEXT("after it the chunk is fetched exactly once more"), Rig.Fetches.Num(), 1);
+	TestTrue(TEXT("that chunk"), Rig.CountFetches(0) == 1 && Rig.Fetches[0].Low == FInt64Vector::ZeroValue);
+	Rig.Step();
+	TestEqual(TEXT("and once only"), Rig.Fetches.Num(), 1);
+
+	// A change folded into a fetch already out is not lost when that fetch fails.
+	FRig Folded;
+	Folded.Load();
+	const TSharedRef<FReloadAnswer> Answer = Reload(Folded);
+	Folded.World->HandleChunkChanged(FInt64Vector::ZeroValue);
+	Folded.Step();
+	TestEqual(TEXT("the change waits behind the fetch already out"), Folded.Fetches.Num(), 1);
+	FailFetches(Folded, ECrowdyVoxelResult::Failed);
+	Folded.Step();
+	TestTrue(TEXT("the reload that fetch served fails with it"), Answer->Count == 1 && Answer->Result == ECrowdyVoxelResult::Failed);
+	Folded.Step(2.1);
+	TestEqual(TEXT("and is fetched once the back-off has passed"), Folded.CountFetches(0), 1);
+	Folded.Fetches.Reset();
+	Folded.Step();
+	TestEqual(TEXT("with nothing more asked for"), Folded.Fetches.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldChunkChangedManyTest, "CrowdySDK.Voxels.World.ChunkChangedOverManyChunksIsReadInBoxes", Flags)
+bool FCrowdyVoxelWorldChunkChangedManyTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.World->Follow(Rig.Actor.Get(), 3);
+	Rig.Step();
+	Rig.AnswerFetches();
+	Rig.Step();
+	int32 Changed = 0;
+	for (int64 Z = -3; Z <= 3 && Changed < 300; ++Z)
+	{
+		for (int64 Y = -3; Y <= 3 && Changed < 300; ++Y)
+		{
+			for (int64 X = -3; X <= 3 && Changed < 300; ++X, ++Changed)
+			{
+				Rig.World->HandleChunkChanged(FInt64Vector(X, Y, Z));
+			}
+		}
+	}
+	Rig.Step();
+	int64 Largest = 0;
+	TestEqual(TEXT("300 changed chunks are all asked for"), Rig.CoveredChunks(Largest), 300ll);
+	TestTrue(TEXT("in one-page boxes"), Largest <= UCrowdyVoxels::PageSize);
+	AddInfo(FString::Printf(TEXT("300 changed chunks: %d box reads"), Rig.Fetches.Num()));
+	TestTrue(TEXT("about one read per 32 chunks, not one per chunk"), Rig.Fetches.Num() >= 10 && Rig.Fetches.Num() <= 13);
+
+	// The same burst again while those reads are out costs one box read each once they are in, not one per chunk.
+	for (int64 X = -3; X <= 3; ++X)
+	{
+		Rig.World->HandleChunkChanged(FInt64Vector(X, -3, -3));
+	}
+	Rig.Step();
+	const int32 Out = Rig.Fetches.Num();
+	Rig.AnswerFetches();
+	TestEqual(TEXT("the 7 asked for again ride one follow-up box"), Rig.Fetches.Num(), 1);
+	TestTrue(TEXT("nothing was asked while the reads were out"), Out >= 10 && Out <= 13);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldSettleRetryTest, "CrowdySDK.Voxels.World.FailedSettleIsRetried", Flags)
+bool FCrowdyVoxelWorldSettleRetryTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	Rig.MoveActor(FVector(1600.0 + 50.0, 50.0, 50.0));
+	Rig.Step();
+	Rig.AnswerFetches();
+	TestTrue(TEXT("the chunks one behind are held in the unload band"), Rig.World->IsChunkLoaded(-1, 0, 0));
+
+	Rig.Step(UCrowdyVoxelWorld::SettleSeconds);
+	int64 Largest = 0;
+	TestEqual(TEXT("the settle reads the 36 chunks held in the cube and its band"), Rig.CoveredChunks(Largest), 36ll);
+	TestTrue(TEXT("in one-page boxes"), Largest <= UCrowdyVoxels::PageSize);
+	TestTrue(TEXT("the band is among them"), Rig.AnyFetchHolds(FInt64Vector(-1, 0, 0)));
+	FailFetches(Rig, ECrowdyVoxelResult::Failed);
+	Rig.Step();
+	TestFalse(TEXT("a failed settle leaves the chunks not live"), Rig.World->IsChunkLive(0, 0, 0));
+
+	Rig.Step(2.1);
+	TestEqual(TEXT("after the back-off the settle is read again"), Rig.CoveredChunks(Largest), 36ll);
+	Rig.AnswerFetches();
+	Rig.Step();
+	TestTrue(TEXT("and the chunks are live"), Rig.World->IsChunkLive(0, 0, 0) && Rig.World->IsChunkLive(-1, 0, 0));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldEndCancelsReadsTest, "CrowdySDK.Voxels.World.WorldEndCancelsItsReads", Flags)
+bool FCrowdyVoxelWorldEndCancelsReadsTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.World->Follow(Rig.Actor.Get(), 1);
+	Rig.Step();
+	const TSharedPtr<const bool> Cancelled = Rig.LastCancelled;
+	if (!TestTrue(TEXT("the read was handed a cancel flag"), Cancelled.IsValid()))
+	{
+		return false;
+	}
+	TestFalse(TEXT("which is clear while the world lives"), *Cancelled);
+	Rig.World->EndWorldForTest();
+	TestTrue(TEXT("and set when it ends, so the read asks for no further page"), *Cancelled);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelWorldChunkChangedRoutedTest, "CrowdySDK.Voxels.World.ChunkChangedArrivesThroughTheRegistry", Flags)
+bool FCrowdyVoxelWorldChunkChangedRoutedTest::RunTest(const FString& Parameters)
+{
+	FRig Rig;
+	Rig.Load();
+	FCrowdyServiceRegistry Registry;
+	Rig.World->SubscribeForTest(Registry);
+
+	// The frame a 146 decodes from: the envelope names the chunk, the body is the update time.
+	const TArray<uint8> Uuid = TArray<uint8>(reinterpret_cast<const uint8*>("00000000000000000000000000000000"), 32);
+	const TArray<uint8> Body = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+	FCrowdyFrame ChangedFrame;
+	ChangedFrame.Opcode = static_cast<uint8>(ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION);
+	ChangedFrame.Body = Body;
+	ChangedFrame.bHasEnvelope = true;
+	ChangedFrame.Envelope.Uuid = Uuid;
+	ChangedFrame.Envelope.ChunkX = 1;
+	TSharedRef<FChunkChangedNotification, ESPMode::ThreadSafe> Message = MakeShared<FChunkChangedNotification, ESPMode::ThreadSafe>();
+	const bool bDecoded = Message->DecodePayload(ChangedFrame);
+	TestTrue(TEXT("the frame decodes"), bDecoded);
+	if (bDecoded)
+	{
+		Registry.DispatchMessage(Message);
+	}
+	Rig.Step();
+	TestEqual(TEXT("a dispatched 146 for a held chunk fetches it"), Rig.CountFetches(0), 1);
+	TestTrue(TEXT("that chunk"), Rig.Fetches.Num() == 1 && Rig.Fetches[0].Low == FInt64Vector(1, 0, 0));
+
+	// Released before the registry it subscribed to goes out of scope.
+	Rig.World->EndWorldForTest();
+	Rig.Fetches.Reset();
+	Registry.DispatchMessage(Message);
+	Rig.Step();
+	TestEqual(TEXT("and after the world ends nothing is subscribed"), Rig.Fetches.Num(), 0);
 	return true;
 }
 

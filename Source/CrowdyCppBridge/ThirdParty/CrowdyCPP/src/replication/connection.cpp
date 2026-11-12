@@ -117,6 +117,18 @@ Status Connection::doAssign() {
   lastRecvMs_ = 0;
   lastSendMs_ = 0;
   lastCapsMs_ = 0;  // a new server knows nothing about us
+  {
+    // A new nonce per assignment, so a control frame bound to an earlier one is refused.
+    std::uint64_t nonce = 0;
+    if (!crypto_.randomBytes(reinterpret_cast<std::uint8_t*>(&nonce), sizeof(nonce))) nonce = 0;
+    controlNonce_.store(nonce, std::memory_order_release);
+  }
+  {
+    // The new session's first update of each actor is a change, as it is to the server.
+    std::lock_guard lock(actorStateMutex_);
+    actorStateHashes_ = {};
+    actorStateNext_ = 0;
+  }
   return Errc::Ok;
 }
 
@@ -132,6 +144,11 @@ Status Connection::connect() {
     running_.store(false, std::memory_order_release);
     netThread_.join();
   }
+  // A reassignment asked for in the session that ended (a COMMAND_RECONNECT, the
+  // watchdog, TOKEN_EXPIRED in the same pass as an idle release) must not reassign
+  // the session this call is about to assign.
+  reconnectRequested_.store(false, std::memory_order_release);
+  idleReleased_.store(false, std::memory_order_release);
 
   setState(ConnState::Connecting);
   Status st = doAssign();
@@ -326,7 +343,53 @@ Result<std::uint8_t> Connection::sendLongSpatial(MessageType type, const Spatial
   if (!n.ok()) return n.error();
   Status st = transmit(buf, n.value());
   if (!st.ok()) return st.code;
+  noteGameplaySend(type, p);
   return params.sequence;
+}
+
+void Connection::noteGameplaySend(MessageType type, const SpatialSend& p) {
+  switch (type) {
+    case MessageType::ActorUpdateRequest:
+      if (!actorStateChanged(p)) return;
+      break;
+    case MessageType::VoxelUpdateRequest:
+    case MessageType::ClientAudioPacket:
+    case MessageType::ClientTextPacket:
+    case MessageType::ClientEventNotification:
+    case MessageType::GenericSpatial1:
+    case MessageType::SingleActorMessage:
+    case MessageType::ClientVideoPacket:
+    case MessageType::ChannelMessageRequest:
+    case MessageType::ChannelMessageRangedRequest:
+    case MessageType::ChannelAudioRequest:
+      break;
+    default:
+      return;  // heartbeats and capability notices are not input
+  }
+  lastGameplayMs_.store(clock_.monotonicMillis(), std::memory_order_release);
+}
+
+bool Connection::actorStateChanged(const SpatialSend& p) {
+  std::uint64_t hash = 1469598103934665603ULL;  // FNV-1a over the payload
+  for (std::uint8_t byte : p.payload) hash = (hash ^ byte) * 1099511628211ULL;
+  std::lock_guard lock(actorStateMutex_);
+  for (ActorStateHash& entry : actorStateHashes_) {
+    if (entry.used && entry.uuid == p.uuid) {
+      const bool changed = entry.hash != hash;
+      entry.hash = hash;
+      return changed;
+    }
+  }
+  ActorStateHash& slot = actorStateHashes_[actorStateNext_];
+  actorStateNext_ = (actorStateNext_ + 1) % actorStateHashes_.size();
+  slot = ActorStateHash{p.uuid, hash, true};
+  return true;
+}
+
+bool Connection::idleReleaseFollowsInput() const {
+  if (config_.idleReleaseGuardMs <= 0) return false;
+  const std::int64_t last = lastGameplayMs_.load(std::memory_order_acquire);
+  return last > 0 && clock_.monotonicMillis() - last < config_.idleReleaseGuardMs;
 }
 
 Result<std::uint8_t> Connection::sendVoxelUpdate(const wire::ChunkCoord& chunk,
@@ -424,6 +487,7 @@ Result<std::uint8_t> Connection::sendChannelRequest(MessageType type, std::int64
   if (!n.ok()) return n.error();
   Status st = transmit(buf, n.value());
   if (!st.ok()) return st.code;
+  noteGameplaySend(type, SpatialSend{});
   return params.sequence;
 }
 
@@ -452,17 +516,24 @@ Result<std::uint8_t> Connection::sendRangedChannelMessage(std::int64_t channelId
   if (!n.ok()) return n.error();
   Status st = transmit(buf, n.value());
   if (!st.ok()) return st.code;
+  noteGameplaySend(MessageType::ChannelMessageRangedRequest, SpatialSend{});
   return params.sequence;
 }
 
 Result<std::uint8_t> Connection::sendCapabilities() {
-  std::uint8_t flags[4];
-  le::writeU32(flags, wire::ClientCapability::kAll);
+  // [u32 flags][8B nonce]: the nonce follows the flags whenever kBoundControl is set.
+  std::uint8_t payload[4 + wire::kControlNonceSize];
+  const std::uint64_t nonce = controlNonce_.load(std::memory_order_acquire);
+  const std::uint32_t flags =
+      nonce != 0 ? wire::ClientCapability::kAll
+                 : (wire::ClientCapability::kAll & ~wire::ClientCapability::kBoundControl);
+  le::writeU32(payload, flags);
+  std::memcpy(payload + 4, &nonce, wire::kControlNonceSize);
   SpatialSend p;
   p.chunk = wire::ChunkCoord{};
   p.distance = 0;
   p.decay = wire::DecayRate::None;
-  p.payload = Bytes(flags, sizeof(flags));
+  p.payload = Bytes(payload, nonce != 0 ? sizeof(payload) : 4);
   return sendLongSpatial(MessageType::ClientCapabilities, p);
 }
 
@@ -488,6 +559,41 @@ void Connection::handleDatagram(Bytes datagram) {
   }
   lastRecvMs_ = clock_.monotonicMillis();
 
+  // The bound forms (Buddy v0.45.0) carry this assignment's nonce inside their signature, so
+  // a verified one cannot be a frame captured earlier: it is final, without the idle guard.
+  if (!datagram.empty() &&
+      (datagram[0] == static_cast<std::uint8_t>(MessageType::CommandReconnectBound) ||
+       datagram[0] == static_cast<std::uint8_t>(MessageType::CommandSessionReleasedBound))) {
+    std::uint8_t nonce[wire::kControlNonceSize];
+    const std::uint64_t n = controlNonce_.load(std::memory_order_acquire);
+    std::memcpy(nonce, &n, sizeof(nonce));
+    const wire::Token64 token = tokenSnapshot();
+    const bool reconnect =
+        datagram[0] == static_cast<std::uint8_t>(MessageType::CommandReconnectBound);
+    Errc verdict = Errc::Ok;
+    std::uint8_t reason = 0;
+    if (reconnect) {
+      verdict = wire::verifyCommandReconnectBound(crypto_, datagram, token, nonce).code;
+    } else {
+      const auto r = wire::verifySessionReleasedBound(crypto_, datagram, token, nonce);
+      if (r.ok()) reason = r.value();
+      else verdict = r.error();
+    }
+    if (n == 0) verdict = Errc::Rejected;  // we never asked for bound frames
+    if (verdict == Errc::Ok) {
+      if (reconnect) {
+        reconnectRequested_.store(true, std::memory_order_release);
+      } else if (reason == static_cast<std::uint8_t>(wire::ReleaseReason::Idle)) {
+        idleReleased_.store(true, std::memory_order_release);
+      }
+    } else {
+      std::lock_guard lock(statsMutex_);
+      if (verdict == Errc::Rejected) ++stats_.staleBoundControl;
+      else ++stats_.hmacFailures;
+    }
+    return;
+  }
+
   // COMMAND_RECONNECT is always its own datagram; verify before acting.
   if (!datagram.empty() &&
       datagram[0] == static_cast<std::uint8_t>(MessageType::CommandReconnect)) {
@@ -511,7 +617,22 @@ void Connection::handleDatagram(Bytes datagram) {
       std::lock_guard lock(statsMutex_);
       ++stats_.hmacFailures;
     } else if (reason.value() == static_cast<std::uint8_t>(wire::ReleaseReason::Idle)) {
-      idleReleased_.store(true, std::memory_order_release);
+      if (idleReleaseFollowsInput()) {
+        // Unless that input was lost or refused, only a captured release sent again
+        // can follow it. A reassignment costs a reconnect; ending the session would
+        // stop a player who is playing.
+        {
+          std::lock_guard lock(statsMutex_);
+          ++stats_.idleReleasesAfterInput;
+        }
+        if (logger_.enabled(core::LogLevel::Warn)) {
+          logger_.log(core::LogLevel::Warn,
+                      "idle release right after this client's own input; reassigning instead");
+        }
+        reconnectRequested_.store(true, std::memory_order_release);
+      } else {
+        idleReleased_.store(true, std::memory_order_release);
+      }
     }
     return;
   }
@@ -637,6 +758,8 @@ std::size_t Connection::receiveBatch(int timeoutMs) {
 void Connection::housekeeping() {
   if (state() == ConnState::Inactive) return;
   if (idleReleased_.exchange(false, std::memory_order_acq_rel)) {
+    // The session is over, so a reassignment asked for in it is moot.
+    reconnectRequested_.store(false, std::memory_order_release);
     socket_.close();
     setState(ConnState::Inactive);
     return;
@@ -923,6 +1046,10 @@ std::size_t Connection::poll(std::size_t maxEvents) {
           case MessageType::ActorLeftNotification:
             if (handlers.actorLeft)
               handlers.actorLeft(n, wire::actorLeftReason(v->payload.data(), v->payload.size()));
+            break;
+          case MessageType::ChunkChangedNotification:
+            if (handlers.chunkChanged)
+              handlers.chunkChanged(n, wire::chunkChangedUpdatedAtMs(v->payload));
             break;
           case MessageType::ClientTextNotification:
             if (handlers.text) handlers.text(n);

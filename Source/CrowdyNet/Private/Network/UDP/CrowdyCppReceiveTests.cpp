@@ -19,6 +19,7 @@
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Messages/GameObjects/FServerEventNotification.h"
 #include "Messages/GameObjects/FSingleActorMessage.h"
+#include "Messages/Voxel/FChunkChangedNotification.h"
 #include "Messages/Voxel/FVoxelUpdateNotificationMessage.h"
 #include "Network/CrowdyCpp/CrowdyCppInboundFrame.h"
 #include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
@@ -314,6 +315,18 @@ namespace CrowdyReceiveTestSupport
 				const auto& Left = static_cast<const FActorLeftNotification&>(Message);
 				return FString::Printf(TEXT("%s reason=%u raw=%u guid=%s"), *DescribeBase(Message),
 					static_cast<uint8>(Left.Reason), Left.RawReason, *Left.GUID.ToString());
+			};
+		}
+
+		{
+			FInboundCase& Case = Cases.AddDefaulted_GetRef();
+			Case.Type = ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION;
+			Case.Name = TEXT("chunk changed");
+			AppendInt64(Case.Payload, 1700000123456);
+			Case.Describe = [](const ICrowdyMessage& Message)
+			{
+				const auto& Changed = static_cast<const FChunkChangedNotification&>(Message);
+				return FString::Printf(TEXT("%s updatedAt=%lld"), *DescribeBase(Message), Changed.UpdatedAtMs);
 			};
 		}
 
@@ -1650,6 +1663,68 @@ bool FCrowdyActorLeftIsRoutableTest::RunTest(const FString& Parameters)
 		ExpectedSpatial(ECrowdyMessageType::GENERIC_SPATIAL_1, 7, 1, 2, 3, PingPayload, 8, 1, 1700000000457, 6)));
 
 	TestEqual(TEXT("and nothing else reaches it"), Received, 1);
+
+	Subscription.Release();
+	return true;
+}
+
+// Opcode 146 passes the same three gates opcode 145 does; its payload is a little-endian update time, or 0 when short.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyChunkChangedIsRoutableTest,
+	"CrowdySDK.Transport.ChunkChangedIsDeliverableAndRoutable",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyChunkChangedIsRoutableTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+	using namespace CrowdyReceiveTestSupport;
+
+	constexpr uint8 ChunkChangedOpcode = static_cast<uint8>(ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION);
+	TestEqual(TEXT("the chunk changed opcode is the one the protocol assigns"), static_cast<int32>(ChunkChangedOpcode), 146);
+	TestTrue(TEXT("a chunk changed notification is deliverable"), FCrowdyCppReplication::IsDeliverableSpatialOpcode(ChunkChangedOpcode));
+	TestFalse(TEXT("but it is not something a client may send"), FCrowdyCppReplication::IsSendableSpatialOpcode(ChunkChangedOpcode));
+
+	FParserFixture Parsing;
+	if (!TestTrue(TEXT("a parser and the session it reads were created"), Parsing.Open()))
+	{
+		return false;
+	}
+
+	TArray<int64> Seen;
+	TArray<FInt64Vector> Chunks;
+	FCrowdySubscription Subscription = Parsing.Registry.SubscribeToOpcode(
+		ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION,
+		{ ECrowdySubscriptionRole::Observe, false, TEXT("ChunkChangedRoutingTest") },
+		[&Seen, &Chunks](const FCrowdyDelivery& Delivery)
+		{
+			const FChunkChangedNotification& Changed = Delivery.GetAs<FChunkChangedNotification>();
+			Seen.Add(Changed.UpdatedAtMs);
+			Chunks.Add(FInt64Vector(Changed.ChunkX, Changed.ChunkY, Changed.ChunkZ));
+		});
+
+	const TArray<uint8> Ordered = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+	const TArray<uint8> Short = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07};
+	Parsing.Registry.DispatchMessage(Parsing.Parser->ParseMessage(
+		ExpectedSpatial(ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION, 7, 41, -60, 1, Ordered, 8, 1, 1700000000456, 5)));
+	Parsing.Registry.DispatchMessage(Parsing.Parser->ParseMessage(
+		ExpectedSpatial(ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION, 7, 1, 2, 3, Short, 8, 1, 1700000000457, 6)));
+	Parsing.Registry.DispatchMessage(Parsing.Parser->ParseMessage(
+		ExpectedSpatial(ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION, 7, 1, 2, 3, TArray<uint8>(), 8, 1, 1700000000458, 7)));
+
+	if (!TestEqual(TEXT("a subscriber on the chunk changed opcode is reached by each"), Seen.Num(), 3))
+	{
+		Subscription.Release();
+		return false;
+	}
+	TestEqual(TEXT("the update time is read little-endian"), Seen[0], static_cast<int64>(0x0807060504030201ll));
+	TestTrue(TEXT("with the chunk the envelope names"), Chunks[0] == FInt64Vector(41, -60, 1));
+	TestEqual(TEXT("a payload shorter than 8 octets reads 0"), Seen[1], 0ll);
+	TestEqual(TEXT("and so does none"), Seen[2], 0ll);
+
+	TArray<uint8> PingPayload;
+	AppendInt64(PingPayload, 1699999999999);
+	Parsing.Registry.DispatchMessage(Parsing.Parser->ParseMessage(
+		ExpectedSpatial(ECrowdyMessageType::GENERIC_SPATIAL_1, 7, 1, 2, 3, PingPayload, 8, 1, 1700000000459, 8)));
+	TestEqual(TEXT("and nothing else reaches it"), Seen.Num(), 3);
 
 	Subscription.Release();
 	return true;

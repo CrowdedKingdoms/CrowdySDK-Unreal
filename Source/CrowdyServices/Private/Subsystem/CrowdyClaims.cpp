@@ -79,6 +79,80 @@ namespace
 		return Result.Data.IsValid() && Result.Data->TryGetObjectField(Field, Object) ? *Object : nullptr;
 	}
 
+	// A box's chunk count as a double: exact far past any real grid, and only ever compared with other boxes.
+	double ClaimsGridVolume(const FCrowdyGridPermissionRow& Row)
+	{
+		const auto Span = [](int64 Low, int64 High) { return static_cast<double>(static_cast<uint64>(High) - static_cast<uint64>(Low)) + 1.0; };
+		return Span(Row.LowChunkX, Row.HighChunkX) * Span(Row.LowChunkY, Row.HighChunkY) * Span(Row.LowChunkZ, Row.HighChunkZ);
+	}
+
+	// A grid's row, or false when its id, bounds or keys are malformed. Covers is false for a grid not holding the chunk.
+	bool ClaimsReadGridRow(const TSharedPtr<FJsonObject>& Grid, const FInt64Vector& Chunk, FCrowdyGridPermissionRow& Row, bool& bCovers)
+	{
+		FInt64Vector Low;
+		FInt64Vector High;
+		const TArray<TSharedPtr<FJsonValue>>* Keys = nullptr;
+		if (!ReadWholeInt64(Grid, TEXT("gridId"), Row.GridId) || !ClaimsReadChunk(Grid, TEXT("lowChunk"), Low) || !ClaimsReadChunk(Grid, TEXT("highChunk"), High)
+			|| !Grid->TryGetArrayField(TEXT("permissionKeys"), Keys) || Low.X > High.X || Low.Y > High.Y || Low.Z > High.Z)
+		{
+			return false;
+		}
+		for (const TSharedPtr<FJsonValue>& Key : *Keys)
+		{
+			// TryGetString also reads a number or a boolean as text.
+			if (!Key.IsValid() || Key->Type != EJson::String)
+			{
+				return false;
+			}
+			Row.PermissionKeys.Add(Key->AsString());
+		}
+		Row.LowChunkX = Low.X;
+		Row.LowChunkY = Low.Y;
+		Row.LowChunkZ = Low.Z;
+		Row.HighChunkX = High.X;
+		Row.HighChunkY = High.Y;
+		Row.HighChunkZ = High.Z;
+		bCovers = Chunk.X >= Low.X && Chunk.X <= High.X && Chunk.Y >= Low.Y && Chunk.Y <= High.Y && Chunk.Z >= Low.Z && Chunk.Z <= High.Z;
+		return true;
+	}
+
+	// The grids covering Chunk, most specific first so that the first decides edits; false when the answer is malformed.
+	bool ClaimsReadCoveringGrids(const FCrowdyCppJsonResult& Result, const FInt64Vector& Chunk, TArray<FCrowdyGridPermissionRow>& OutRows)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Grids = nullptr;
+		if (!Result.Data.IsValid() || !Result.Data->TryGetArrayField(TEXT("nearbyGrids"), Grids) || Grids->Num() > ClaimsMaxGridsListed)
+		{
+			return false;
+		}
+		TSet<int64> Seen;
+		for (const TSharedPtr<FJsonValue>& Value : *Grids)
+		{
+			const TSharedPtr<FJsonObject>* Grid = nullptr;
+			FCrowdyGridPermissionRow Row;
+			bool bCovers = false;
+			if (!Value.IsValid() || !Value->TryGetObject(Grid) || !ClaimsReadGridRow(*Grid, Chunk, Row, bCovers))
+			{
+				return false;
+			}
+			if (bCovers && Row.GridId > 0 && !Seen.Contains(Row.GridId))
+			{
+				Seen.Add(Row.GridId);
+				OutRows.Add(MoveTemp(Row));
+			}
+		}
+		OutRows.Sort([](const FCrowdyGridPermissionRow& A, const FCrowdyGridPermissionRow& B)
+		{
+			const double VolumeA = ClaimsGridVolume(A);
+			const double VolumeB = ClaimsGridVolume(B);
+			return VolumeA != VolumeB ? VolumeA < VolumeB : A.GridId < B.GridId;
+		});
+		if (!OutRows.IsEmpty())
+		{
+			OutRows[0].bDecidesEdits = true;
+		}
+		return true;
+	}
+
 	void FinishClaim(const TFunction<void(const FCrowdyChunkClaim&)>& OnDone, FCrowdyChunkClaim Claim, ECrowdyClaimResult Result, const FString& Message,
 		const FString& Code = FString())
 	{
@@ -511,4 +585,86 @@ bool UCrowdyClaims::ReadOwner(FSearch& Search, int32 Index, int64 GridId, const 
 		Search.bIsClaim[Index] = true;
 	}
 	return true;
+}
+
+void UCrowdyClaims::ReadCoveringGrids(const FInt64Vector& Chunk, FCoveringRead OnRead)
+{
+	FCrowdyCppClient* Client = HasAppToken() ? ResolveClient() : nullptr;
+	if (!Client)
+	{
+		const bool bSignedIn = HasAppToken();
+		DeferWhileLive(LiveSessionToken, [OnRead = MoveTemp(OnRead), bSignedIn]()
+		{
+			OnRead(bSignedIn ? ECrowdyClaimResult::Failed : ECrowdyClaimResult::NotSignedIn, bSignedIn ? ClaimsNoClient : ClaimsNotSignedIn, FString(), {});
+		});
+		return;
+	}
+	const int64 AppId = GetAppId();
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("appId"), BigInt(AppId));
+	Input->SetObjectField(TEXT("lowChunk"), ClaimsChunkJson(Chunk));
+	Input->SetObjectField(TEXT("highChunk"), ClaimsChunkJson(Chunk));
+
+	TWeakObjectPtr<UCrowdyClaims> WeakThis(this);
+	RunOpDeferred(*Client, ECrowdyCppApiDomain::GameApps, TEXT("NearbyGrids"), WrapInput(Input), LiveSessionToken,
+		[WeakThis, AppId, Chunk, OnRead = MoveTemp(OnRead)](FCrowdyCppJsonResult Result)
+		{
+			const UCrowdyClaims* Self = WeakThis.Get();
+			if (!Self || Self->GetAppId() != AppId)
+			{
+				OnRead(ECrowdyClaimResult::Failed, ClaimsAppChanged, FString(), {});
+				return;
+			}
+			if (!Result.bTransportOk)
+			{
+				OnRead(ClaimsFailureResult(Result), FailureMessage(Result), FailureCode(Result), {});
+				return;
+			}
+			TArray<FCrowdyGridPermissionRow> Rows;
+			if (!ClaimsReadCoveringGrids(Result, Chunk, Rows))
+			{
+				OnRead(ECrowdyClaimResult::BadReply, TEXT("The answer holds no well-formed grid list."), FString(), {});
+				return;
+			}
+			OnRead(ECrowdyClaimResult::Success, FString(), FString(), MoveTemp(Rows));
+		});
+}
+
+void UCrowdyClaims::CanEditChunk(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFunction<void(const FCrowdyChunkEditCheck&)> OnDone)
+{
+	ReadCoveringGrids(FInt64Vector(ChunkX, ChunkY, ChunkZ), [OnDone = MoveTemp(OnDone)](ECrowdyClaimResult Result, const FString& Message, const FString& Code, TArray<FCrowdyGridPermissionRow> Grids)
+	{
+		FCrowdyChunkEditCheck Check;
+		Check.Result = Result;
+		Check.Message = Message;
+		if (Result == ECrowdyClaimResult::Success && Grids.IsEmpty())
+		{
+			Check.Message = TEXT("No grid covers this chunk, so the platform refuses every edit there.");
+		}
+		else if (Result == ECrowdyClaimResult::Success)
+		{
+			const FCrowdyGridPermissionRow& Deciding = Grids[0];
+			Check.GridId = Deciding.GridId;
+			Check.bCanEdit = Deciding.PermissionKeys.ContainsByPredicate([](const FString& Key) { return Key.Equals(TEXT("update_voxel_data"), ESearchCase::CaseSensitive); });
+			Check.Message = Check.bCanEdit ? FString() : FString::Printf(TEXT("Grid %lld decides edits in this chunk and the player holds no update_voxel_data on it."), Deciding.GridId);
+		}
+		ClaimsWarn(TEXT("Can Edit Chunk"), Result, Code);
+		OnDone(Check);
+	});
+}
+
+void UCrowdyClaims::GetGridPermissions(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFunction<void(const FCrowdyGridPermissions&)> OnDone)
+{
+	ReadCoveringGrids(FInt64Vector(ChunkX, ChunkY, ChunkZ), [OnDone = MoveTemp(OnDone)](ECrowdyClaimResult Result, const FString& Message, const FString& Code, TArray<FCrowdyGridPermissionRow> Grids)
+	{
+		FCrowdyGridPermissions Answer;
+		Answer.Result = Result;
+		Answer.Message = Message;
+		if (Result == ECrowdyClaimResult::Success)
+		{
+			Answer.Grids = MoveTemp(Grids);
+		}
+		ClaimsWarn(TEXT("Get Grid Permissions"), Result, Code);
+		OnDone(Answer);
+	});
 }

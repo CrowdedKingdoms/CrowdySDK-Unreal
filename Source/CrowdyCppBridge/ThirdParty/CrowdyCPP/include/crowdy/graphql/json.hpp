@@ -127,7 +127,9 @@ class Json {
 
   /// This value as MessagePack, the payload format of ck-exec calls: integers
   /// keep their exact width and sign, objects become maps with string keys. A
-  /// null Json encodes as nil.
+  /// null Json encodes as nil. Linear in the document's size at any depth, and
+  /// it uses no stack per level, so a deeply nested document cannot overflow
+  /// the calling thread's stack.
   std::string toMsgpack() const;
   /// Parse one MessagePack value into a document. Binary becomes a base64
   /// string and extension types null; nesting deeper than 64 is refused.
@@ -135,23 +137,35 @@ class Json {
   /// input.
   static Json fromMsgpack(std::string_view bytes);
 
-  /// Iterate object members / array elements.
+  /// Iterate object members / array elements, in order, one step each: linear in
+  /// the container's length. (at(i) on an array of objects or arrays walks from
+  /// the first element, so a loop over at(i) is quadratic; use forEach.)
   template <typename Fn>
   void forEachMember(Fn&& fn) const {
-    for (std::size_t i = 0, n = memberCount(); i < n; ++i) {
-      auto [k, v] = memberAt(i);
-      fn(k, v);
+    for (Cursor c = firstMember(); c.remaining > 0; c = nextMember(c)) {
+      fn(memberKey(c), Json(doc_, memberValue(c)));
     }
   }
   template <typename Fn>
   void forEach(Fn&& fn) const {
-    for (std::size_t i = 0, n = size(); i < n; ++i) fn(at(i));
+    for (Cursor c = firstElement(); c.remaining > 0; c = nextElement(c)) fn(Json(doc_, c.at));
   }
 
  private:
   Json(std::shared_ptr<void> doc, void* val) : doc_(std::move(doc)), val_(val) {}
-  std::size_t memberCount() const;
-  std::pair<std::string_view, Json> memberAt(std::size_t i) const;
+
+  /// A position in an array (at an element) or an object (at a member's key), and
+  /// how many elements or members are left from it, this one included.
+  struct Cursor {
+    void* at = nullptr;
+    std::size_t remaining = 0;
+  };
+  Cursor firstElement() const;
+  Cursor firstMember() const;
+  static Cursor nextElement(Cursor c);
+  static Cursor nextMember(Cursor c);
+  static std::string_view memberKey(Cursor c);
+  static void* memberValue(Cursor c);
 
   std::shared_ptr<void> doc_;  // yyjson_doc, type-erased to keep yyjson private
   void* val_ = nullptr;        // yyjson_val

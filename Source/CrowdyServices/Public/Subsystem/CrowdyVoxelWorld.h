@@ -7,6 +7,7 @@
 #include "Subsystem/CrowdyVoxels.h"
 #include "CrowdyVoxelWorld.generated.h"
 
+class FCrowdyServiceRegistry;
 class UCrowdyCppReplicationSubsystem;
 class UCrowdyGameSession;
 class UCrowdyUDPSubsystem;
@@ -141,12 +142,18 @@ public:
 	void HandleLiveEdit(const FLiveEdit& Edit);
 	void HandleTrackedSend(const FCrowdyTrackedSend& Event);
 
+	/** The platform replaced a chunk as a whole; a loaded or loading one is fetched again, at most once a frame. */
+	void HandleChunkChanged(const FInt64Vector& Chunk);
+
 #if WITH_DEV_AUTOMATION_TESTS
 	using FSendFn = TFunction<uint64(const FCrowdyVoxelWrite& Write, FString& OutError)>;
-	using FFetchFn = TFunction<void(int64 X, int64 Y, int64 Z, int32 Range, TFunction<void(const FCrowdyChunkFetch&)> OnDone)>;
+	using FFetchFn = TFunction<void(const FInt64Vector& Low, const FInt64Vector& High, const TSharedRef<const bool>& Cancelled, TFunction<void(const FCrowdyChunkFetch&)> OnDone)>;
 
-	/** Replaces the platform: Range 0 asks for one chunk. Connection, clock and local chunk come from the setters below. */
+	/** Replaces the platform: every fetch is a box, Low equal to High for one chunk. Connection, clock and local chunk come from the setters below. */
 	void InitializeForTest(FSendFn Send, FFetchFn Fetch);
+
+	/** Subscribes to the notifications this world reads, as Initialize does with the session's registry. */
+	void SubscribeForTest(FCrowdyServiceRegistry& Registry) { Subscribe(Registry); }
 	void SetConnectedForTest(bool bConnected) { bConnectedForTest = bConnected; }
 	void SetNowForTest(double Now) { NowForTest = Now; }
 	void SetLocalChunkForTest(const FInt64Vector& Chunk) { LocalChunkForTest = Chunk; bHasLocalChunkForTest = true; }
@@ -178,6 +185,7 @@ private:
 		bool bFetchAgainFull = false;
 		bool bHeldOverflow = false;
 		bool bInReach = false;
+		bool bReplaceQueued = false;
 	};
 
 	struct FPendingEdit
@@ -217,29 +225,40 @@ private:
 		bool bDone = false;
 	};
 
+	/** What a merged fetch leaves to ask for again: nothing, the cells waiting to settle, or the whole chunk. */
+	enum class EFetchAgain : uint8
+	{
+		None,
+		Cells,
+		Whole
+	};
+
+	void Subscribe(FCrowdyServiceRegistry& Registry);
 	double Now() const;
 	bool IsConnected() const;
 	bool HasActorId() const;
 	bool HasLocalChunk(FInt64Vector& OutChunk) const;
 	uint64 Send(const FCrowdyVoxelWrite& Write, FString& OutError);
-	void Fetch(int64 X, int64 Y, int64 Z, int32 Range, TFunction<void(const FCrowdyChunkFetch&)> OnDone);
+	void Fetch(const FInt64Vector& Low, const FInt64Vector& High, TFunction<void(const FCrowdyChunkFetch&)> OnDone);
 
 	void Step();
 	void UpdateConnection();
 	void UpdateActorId();
 	void UpdateFollowers();
 	void UpdateReach();
-	void Reload(bool bWholeBand);
+	void Reload();
 	void IssueSettles();
+	void IssueReplaced();
 	void SendDue();
 	void ResolveAnswers();
 	void BroadcastChanges();
 
 	void RequestChunks(const TArray<FInt64Vector>& Coords, bool bFull);
-	void RequestCube(const FInt64Vector& Centre, int32 Range, bool bReload, const TSet<FInt64Vector>* Only = nullptr);
-	void OnFetched(const FInt64Vector& Coord, int32 Request, const FCrowdyChunkFetch& Fetch);
-	void OnCubeFetched(const FInt64Vector& Centre, int32 Range, int32 Request, const FCrowdyChunkFetch& Fetch);
-	void Adopt(const FInt64Vector& Coord, const FCrowdyVoxelChunk* Fetched);
+	void RequestBoxes(TSet<FInt64Vector>& Coords, bool bReload, bool bFull);
+	void RequestBox(const FInt64Vector& Low, const FInt64Vector& High, bool bReload, bool bFull);
+	void OnBoxFetched(const FInt64Vector& Low, const FInt64Vector& High, int32 Request, const FCrowdyChunkFetch& Fetch);
+	EFetchAgain Adopt(const FInt64Vector& Coord, const FCrowdyVoxelChunk* Fetched);
+	void QueueReplaced(const FInt64Vector& Coord, FChunkState& State);
 	bool ApplyLive(const FInt64Vector& Coord, FChunkState& State, const FLiveEdit& Edit);
 	void RequestSettle(const FInt64Vector& Coord, const FIntVector& Position);
 	FCrowdyVoxel SeenVoxel(const FInt64Vector& Coord, const FChunkState& State, const FIntVector& Position) const;
@@ -260,8 +279,12 @@ private:
 	TArray<FInt64Vector> UnloadedEvents;
 	TMap<FInt64Vector, int32> PendingPerChunk;
 	TArray<FInt64Vector> SettleQueue;
+	TArray<FInt64Vector> ReplacedQueue;
 
 	FCrowdySubscription NotificationSubscription;
+	FCrowdySubscription ChunkChangedSubscription;
+	/** Set when the world ends, so the paged reads it started ask for nothing more. */
+	TSharedRef<bool> FetchCancelled = MakeShared<bool>(false);
 	FDelegateHandle TrackedSendHandle;
 	TWeakObjectPtr<UCrowdyGameSession> Session;
 	TWeakObjectPtr<UCrowdyUDPSubsystem> Udp;

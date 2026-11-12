@@ -117,3 +117,79 @@ void UCrowdyFindClaims::Finish(const FCrowdyClaimSearch& Search)
 	Pin.Broadcast(Search.Claims, Search.Result, Search.Message);
 	SetReadyToDestroy();
 }
+
+UCrowdyCanEditChunk* UCrowdyCanEditChunk::CanEditChunk(UObject* WorldContextObject, int64 ChunkX, int64 ChunkY, int64 ChunkZ)
+{
+	UCrowdyCanEditChunk* Action = NewObject<UCrowdyCanEditChunk>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->ChunkX = ChunkX;
+	Action->ChunkY = ChunkY;
+	Action->ChunkZ = ChunkZ;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyCanEditChunk::Activate()
+{
+	UCrowdyClaims* Claims = GetServiceSubsystem<UCrowdyClaims>(WorldContextObject);
+	if (!Claims)
+	{
+		FCrowdyChunkEditCheck Missing;
+		Missing.Message = ClaimsMissingSubsystem;
+		Finish(Missing);
+		return;
+	}
+	TWeakObjectPtr<UCrowdyCanEditChunk> WeakThis(this);
+	Claims->CanEditChunk(ChunkX, ChunkY, ChunkZ, [WeakThis](const FCrowdyChunkEditCheck& Check)
+	{
+		if (UCrowdyCanEditChunk* Self = WeakThis.Get())
+		{
+			Self->Finish(Check);
+		}
+	});
+}
+
+void UCrowdyCanEditChunk::Finish(const FCrowdyChunkEditCheck& Check)
+{
+	FCrowdyChunkEditAsyncResult& Pin = Check.Result == ECrowdyClaimResult::Success ? OnDone : OnFailed;
+	Pin.Broadcast(Check.bCanEdit, Check.GridId, Check.Result, Check.Message);
+	SetReadyToDestroy();
+}
+
+UCrowdyGetGridPermissions* UCrowdyGetGridPermissions::GetGridPermissions(UObject* WorldContextObject, int64 ChunkX, int64 ChunkY, int64 ChunkZ)
+{
+	UCrowdyGetGridPermissions* Action = NewObject<UCrowdyGetGridPermissions>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->ChunkX = ChunkX;
+	Action->ChunkY = ChunkY;
+	Action->ChunkZ = ChunkZ;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyGetGridPermissions::Activate()
+{
+	UCrowdyClaims* Claims = GetServiceSubsystem<UCrowdyClaims>(WorldContextObject);
+	if (!Claims)
+	{
+		FCrowdyGridPermissions Missing;
+		Missing.Message = ClaimsMissingSubsystem;
+		Finish(Missing);
+		return;
+	}
+	TWeakObjectPtr<UCrowdyGetGridPermissions> WeakThis(this);
+	Claims->GetGridPermissions(ChunkX, ChunkY, ChunkZ, [WeakThis](const FCrowdyGridPermissions& Permissions)
+	{
+		if (UCrowdyGetGridPermissions* Self = WeakThis.Get())
+		{
+			Self->Finish(Permissions);
+		}
+	});
+}
+
+void UCrowdyGetGridPermissions::Finish(const FCrowdyGridPermissions& Permissions)
+{
+	FCrowdyGridPermissionsAsyncResult& Pin = Permissions.Result == ECrowdyClaimResult::Success ? OnDone : OnFailed;
+	Pin.Broadcast(Permissions.Grids, Permissions.Result, Permissions.Message);
+	SetReadyToDestroy();
+}

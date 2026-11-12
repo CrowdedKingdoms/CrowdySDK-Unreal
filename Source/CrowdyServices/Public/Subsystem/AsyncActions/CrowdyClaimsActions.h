@@ -8,6 +8,8 @@
 // One signature serves each node's success and failure pins, because a Blueprint async node builds its pins from its delegates.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyClaimAsyncResult, int64, GridId, ECrowdyClaimResult, Result, const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyClaimSearchAsyncResult, const TArray<FCrowdyChunkClaimInfo>&, Claims, ECrowdyClaimResult, Result, const FString&, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FCrowdyChunkEditAsyncResult, bool, bCanEdit, int64, GridId, ECrowdyClaimResult, Result, const FString&, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyGridPermissionsAsyncResult, const TArray<FCrowdyGridPermissionRow>&, Grids, ECrowdyClaimResult, Result, const FString&, Message);
 
 /** Claims one wilderness chunk for the signed-in player. C++ callers use UCrowdyClaims::ClaimChunk. */
 UCLASS()
@@ -92,4 +94,62 @@ private:
 	FInt64Vector High = FInt64Vector::ZeroValue;
 
 	void Finish(const FCrowdyClaimSearch& Search);
+};
+
+/** Asks whether the signed-in player may edit voxels in one chunk. C++ callers use UCrowdyClaims::CanEditChunk. */
+UCLASS()
+class CROWDYSERVICES_API UCrowdyCanEditChunk : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	/** The platform answered. Can Edit says whether the player may build there; Grid Id is the grid that decides, 0 when none covers the chunk. Advice only: the platform still decides each edit. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyChunkEditAsyncResult OnDone;
+
+	/** The question was not answered; Result says why. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyChunkEditAsyncResult OnFailed;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject", DisplayName="Can Edit Chunk"), Category="Crowdy SDK|Claims")
+	static UCrowdyCanEditChunk* CanEditChunk(UObject* WorldContextObject, int64 ChunkX, int64 ChunkY, int64 ChunkZ);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int64 ChunkX = 0;
+	int64 ChunkY = 0;
+	int64 ChunkZ = 0;
+
+	void Finish(const FCrowdyChunkEditCheck& Check);
+};
+
+/** Lists the grids covering one chunk with the signed-in player's own permission keys on each. C++ callers use UCrowdyClaims::GetGridPermissions. */
+UCLASS()
+class CROWDYSERVICES_API UCrowdyGetGridPermissions : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	/** Every grid covering the chunk, the one that decides edits first; empty when none covers it. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyGridPermissionsAsyncResult OnDone;
+
+	/** The grids were not read; Result says why. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyGridPermissionsAsyncResult OnFailed;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject", DisplayName="Get Grid Permissions"), Category="Crowdy SDK|Claims")
+	static UCrowdyGetGridPermissions* GetGridPermissions(UObject* WorldContextObject, int64 ChunkX, int64 ChunkY, int64 ChunkZ);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int64 ChunkX = 0;
+	int64 ChunkY = 0;
+	int64 ChunkZ = 0;
+
+	void Finish(const FCrowdyGridPermissions& Permissions);
 };

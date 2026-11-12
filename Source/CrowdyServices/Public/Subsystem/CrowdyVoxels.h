@@ -65,7 +65,7 @@ struct CROWDYSERVICES_API FCrowdyVoxelChunk
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Voxels")
 	TArray<FCrowdyVoxel> Edits;
 
-	/** A chunk write has stored this chunk. Voxel edits alone do not, and until one does the platform returns neither the chunk nor its edits. */
+	/** A chunk write has stored this chunk. Voxel edits alone do not: until one does, Fetch Chunk and Fetch Chunks Around return neither the chunk nor its edits. */
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Voxels")
 	bool bStored = false;
 
@@ -100,7 +100,7 @@ class CROWDYSERVICES_API UCrowdyVoxels : public UGameInstanceSubsystem
 	GENERATED_BODY()
 
 public:
-	/** Chunks one request asks for; a fetch pages until an answer comes back short. */
+	/** Chunks one request asks for; a fetch pages until an answer comes back short or the region is covered. */
 	static constexpr int32 PageSize = 32;
 
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
@@ -115,6 +115,15 @@ public:
 	/** One chunk, answered whether or not the platform stores it. OnDone runs as for FetchChunksAround. */
 	void FetchChunk(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFunction<void(const FCrowdyChunkFetch&)> OnDone);
 
+	/**
+	 * Every chunk in the box between two corner chunks, both included, at most 4,913 chunks. A chunk the platform never
+	 * stored but holds edits for comes back with bStored false and those edits over an empty grid; a chunk with neither
+	 * is left out. OnDone runs as for FetchChunksAround, except that once *Cancelled is true nothing more is asked for and
+	 * OnDone never runs.
+	 */
+	void FetchChunksInBox(const FInt64Vector& Corner, const FInt64Vector& OppositeCorner, TFunction<void(const FCrowdyChunkFetch&)> OnDone,
+		TSharedPtr<const bool> Cancelled = nullptr);
+
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Stands in for Initialize on a subsystem built outside a collection, sending every call to Client. */
 	void InitializeForTest(const TSharedPtr<FCrowdyCppClient>& Client, int64 AppId);
@@ -124,6 +133,7 @@ private:
 	struct FRead;
 
 	void RequestPage(const TSharedRef<FRead>& Read);
+	void RequestEditsPage(const TSharedRef<FRead>& Read, int32 Box);
 	FCrowdyCppClient* ResolveClient() const;
 	int64 GetAppId() const;
 	bool HasAppToken() const;

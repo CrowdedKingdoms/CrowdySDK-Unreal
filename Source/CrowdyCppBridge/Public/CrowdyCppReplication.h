@@ -331,6 +331,12 @@ struct FCrowdyCppReplicationStats
 	int64 HmacFailures = 0;
 	int64 Malformed = 0;
 
+	/** Signed reconnect or release frames dropped because they carried an earlier assignment's nonce: replays. */
+	int64 StaleBoundControl = 0;
+
+	/** Unbound idle releases that arrived within a minute of this client's input and reassigned instead of ending. */
+	int64 IdleReleasesAfterInput = 0;
+
 	/**
 	 * Received datagrams that were MESSAGE_BUNDLE_SIGNED: one signature over the whole datagram, verified once,
 	 * members unsigned. Counted before verification, so a forged one shows up here and in HmacFailures both.

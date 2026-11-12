@@ -112,6 +112,85 @@ struct CROWDYSERVICES_API FCrowdyClaimSearch
 };
 
 /**
+ * The answer to Can Edit Chunk. It is advice: the platform still decides each edit. It does not see the player's access
+ * tier, which must also grant update_voxel_data, or a closed wilderness, which refuses a chunk only the world grid covers.
+ */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyChunkEditCheck
+{
+	GENERATED_BODY()
+
+	/** Success means the platform answered; bCanEdit is only meaningful then. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	ECrowdyClaimResult Result = ECrowdyClaimResult::Failed;
+
+	/** The signed-in player holds update_voxel_data on the deciding grid. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	bool bCanEdit = false;
+
+	/** The grid that decides edits in the chunk, 0 when no grid covers it. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	int64 GridId = 0;
+
+	/** Why the player cannot edit, or what went wrong. Empty when bCanEdit is true. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	FString Message;
+};
+
+/** One grid covering a chunk, with the signed-in player's own permission keys on it. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyGridPermissionRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	int64 GridId = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	int64 LowChunkX = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	int64 LowChunkY = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	int64 LowChunkZ = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	int64 HighChunkX = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	int64 HighChunkY = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	int64 HighChunkZ = 0;
+
+	/** The player's own unexpired keys on this grid; nobody else's are ever returned. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	TArray<FString> PermissionKeys;
+
+	/** This is the grid whose keys decide an edit in the chunk. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	bool bDecidesEdits = false;
+};
+
+/** The answer to Get Grid Permissions. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyGridPermissions
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	ECrowdyClaimResult Result = ECrowdyClaimResult::Failed;
+
+	/** Every grid covering the chunk, the deciding grid first, then by smallest box and lowest id; empty unless Result is Success. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	TArray<FCrowdyGridPermissionRow> Grids;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	FString Message;
+};
+
+/**
  * Claims chunks for the signed-in player in the current app, gives them back, and finds who has claimed what. A claim is
  * a grid over exactly one wilderness chunk that only its owner builds in; the app's claim policy must be Self Claim.
  * Nothing is cached: each call asks the platform.
@@ -143,6 +222,19 @@ public:
 	 */
 	void FindClaims(int64 LowX, int64 LowY, int64 LowZ, int64 HighX, int64 HighY, int64 HighZ, TFunction<void(const FCrowdyClaimSearch&)> OnDone);
 
+	/**
+	 * Whether the player may edit voxels in one chunk: they must hold update_voxel_data on the smallest grid covering it
+	 * (the lower grid id on a tie). When no grid covers the chunk the platform refuses every edit there, so the answer
+	 * is Success with bCanEdit false and GridId 0. OnDone runs as for ClaimChunk.
+	 */
+	void CanEditChunk(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFunction<void(const FCrowdyChunkEditCheck&)> OnDone);
+
+	/**
+	 * Every grid covering one chunk with the player's own permission keys on each, the deciding grid first. For callers
+	 * that want more than Can Edit Chunk's yes or no. OnDone runs as for ClaimChunk.
+	 */
+	void GetGridPermissions(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFunction<void(const FCrowdyGridPermissions&)> OnDone);
+
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Stands in for Initialize on a subsystem built outside a collection, sending every call to Client. */
 	void InitializeForTest(const TSharedPtr<FCrowdyCppClient>& Client, int64 AppId, int64 UserId);
@@ -150,7 +242,9 @@ public:
 
 private:
 	struct FSearch;
+	using FCoveringRead = TFunction<void(ECrowdyClaimResult Result, const FString& Message, const FString& Code, TArray<FCrowdyGridPermissionRow> Grids)>;
 
+	void ReadCoveringGrids(const FInt64Vector& Chunk, FCoveringRead OnRead);
 	void ReadOwners(const TSharedRef<FSearch>& Search);
 	bool ReadOwner(FSearch& Search, int32 Index, int64 GridId, const FCrowdyCppJsonResult& Result, FString& OutProblem) const;
 	FCrowdyCppClient* ResolveClient() const;

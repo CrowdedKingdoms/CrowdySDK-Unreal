@@ -432,8 +432,10 @@ inline Result<GenericErrorView> parseGenericError(Bytes datagram) {
   return GenericErrorView{datagram[1], static_cast<ErrorCode>(datagram[2])};
 }
 
-/// Verify a COMMAND_RECONNECT frame: HMAC-SHA256 over the single type byte,
-/// keyed on this client's game token. Unverified commands must be ignored.
+/// Verify a COMMAND_RECONNECT frame: HMAC-SHA256 over the single type byte, keyed on this
+/// client's game token, as the server and the game API's UDP proxy compute it (before 0.81.0
+/// this appended the token to the message, so no server's frame ever verified). Unverified
+/// commands must be ignored.
 inline Status verifyCommandReconnect(const core::ICrypto& crypto, Bytes datagram,
                                      const Token64& token) {
   if (datagram.size() != kCommandReconnectSize ||
@@ -441,16 +443,58 @@ inline Status verifyCommandReconnect(const core::ICrypto& crypto, Bytes datagram
     return Errc::Malformed;
   const Status cryptoStatus = crypto.availability();
   if (!cryptoStatus.ok()) return cryptoStatus;
-  std::uint8_t typeByte = datagram[0];
-  std::uint8_t msg[1 + kTokenOctets];
-  msg[0] = typeByte;
-  std::memcpy(msg + 1, token.octets, kTokenOctets);
   std::uint8_t expected[kHmacTagSize];
-  if (!crypto.hmacSha256(token.bytes(), Bytes(msg, sizeof(msg)), expected))
+  if (!crypto.hmacSha256(token.bytes(), Bytes(datagram.data(), 1), expected))
     return Errc::Malformed;
   if (!crypto.constantTimeEquals(expected, datagram.data() + 1, kHmacTagSize))
     return Errc::HmacMismatch;
   return Errc::Ok;
+}
+
+/// Verify a bound control frame (Buddy v0.45.0): `type`, a `signedLen`-byte prefix that ends
+/// with the 8-byte nonce, and the HMAC over that prefix. A nonce other than `nonce` (the one
+/// this assignment sent) is Rejected: a frame from an earlier assignment.
+inline Status verifyBoundControl(const core::ICrypto& crypto, Bytes datagram, MessageType type,
+                                 std::size_t signedLen, const Token64& token,
+                                 const std::uint8_t (&nonce)[kControlNonceSize]) {
+  if (datagram.size() != signedLen + kHmacTagSize ||
+      datagram[0] != static_cast<std::uint8_t>(type))
+    return Errc::Malformed;
+  const Status cryptoStatus = crypto.availability();
+  if (!cryptoStatus.ok()) return cryptoStatus;
+  std::uint8_t expected[kHmacTagSize];
+  if (!crypto.hmacSha256(token.bytes(), Bytes(datagram.data(), signedLen), expected))
+    return Errc::Malformed;
+  if (!crypto.constantTimeEquals(expected, datagram.data() + signedLen, kHmacTagSize))
+    return Errc::HmacMismatch;
+  if (!crypto.constantTimeEquals(nonce, datagram.data() + signedLen - kControlNonceSize,
+                                 kControlNonceSize))
+    return Errc::Rejected;
+  return Errc::Ok;
+}
+
+/// COMMAND_RECONNECT_BOUND (44): [type][nonce][HMAC over the first 9 bytes].
+inline Status verifyCommandReconnectBound(const core::ICrypto& crypto, Bytes datagram,
+                                          const Token64& token,
+                                          const std::uint8_t (&nonce)[kControlNonceSize]) {
+  return verifyBoundControl(crypto, datagram, MessageType::CommandReconnectBound,
+                            1 + kControlNonceSize, token, nonce);
+}
+
+/// COMMAND_SESSION_RELEASED_BOUND (45): [type][reason][nonce][HMAC over the first 10 bytes].
+/// Returns the reason byte.
+inline Result<std::uint8_t> verifySessionReleasedBound(
+    const core::ICrypto& crypto, Bytes datagram, const Token64& token,
+    const std::uint8_t (&nonce)[kControlNonceSize]) {
+  const Status st = verifyBoundControl(crypto, datagram, MessageType::CommandSessionReleasedBound,
+                                       2 + kControlNonceSize, token, nonce);
+  if (!st.ok()) return st.code;
+  return datagram[1];
+}
+
+/// The updatedAt (epoch ms) a ChunkChangedNotification carries, or 0 when its payload is short.
+inline std::int64_t chunkChangedUpdatedAtMs(Bytes payload) noexcept {
+  return payload.size() >= 8 ? le::readI64(payload.data()) : 0;
 }
 
 /// Verify a COMMAND_SESSION_RELEASED frame: HMAC-SHA256 keyed on this client's game

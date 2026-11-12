@@ -14,6 +14,7 @@
 #include "Messages/GameObjects/FServerEventNotification.h"
 #include "Messages/GameObjects/FGameObjectActivationNotification.h"
 #include "Messages/GameObjects/FSingleActorMessage.h"
+#include "Messages/Voxel/FChunkChangedNotification.h"
 #include "Messages/Voxel/FVoxelUpdateNotificationMessage.h"
 #include "Network/UDP/CrowdyUDPSubsystem.h"
 #include "Serialization/CrowdyFrameSplit.h"
@@ -287,6 +288,15 @@ TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::DecodeFram
 	case ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION:
 		{
 			TSharedRef<FActorLeftNotification> Message = MakeShared<FActorLeftNotification>();
+			if (!Message->DecodePayload(Frame))
+			{
+				return MakeShared<FDefaultMessage>();
+			}
+			return Message;
+		}
+	case ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION:
+		{
+			TSharedRef<FChunkChangedNotification> Message = MakeShared<FChunkChangedNotification>();
 			if (!Message->DecodePayload(Frame))
 			{
 				return MakeShared<FDefaultMessage>();

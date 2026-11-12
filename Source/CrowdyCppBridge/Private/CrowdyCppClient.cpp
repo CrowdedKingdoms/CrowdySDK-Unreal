@@ -2465,15 +2465,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOpAs(ECrowdyCppApiDomain Domain, co
 			if (bMsgpack)
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_PackResponse);
-				// The packer recurses, so a forged deep value is refused first; the dump and the scan are flat.
-				const std::string Dumped = Out.data.dump();
-				if (Dumped.size() > static_cast<size_t>(MAX_int32)
-					|| !CrowdyJsonSafety::IsNestingWithinLimit(FUtf8StringView(reinterpret_cast<const UTF8CHAR*>(Dumped.data()), static_cast<int32>(Dumped.size()))))
-				{
-					Result.ErrorMessage = TEXT("malformed or over-deep response data");
-					FireOnce(MoveTemp(Result));
-					return;
-				}
+				// The packer is flat at any depth; the reader of the packed value bounds its own depth.
 				const std::string Packed = Out.data.toMsgpack();
 				if (Packed.size() > static_cast<size_t>(MAX_int32))
 				{

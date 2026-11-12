@@ -1488,9 +1488,11 @@ bool FCrowdyNativeExecJsonMsgpackTest::RunTest(const FString& Parameters)
 	Deep.Add(0xc0);
 	TestFalse(TEXT("nor 65 nested arrays"), CrowdyNativeExec::MsgpackToJson(Deep, Json));
 	TestFalse(TEXT("a declared count past the bytes does not"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0xdd, 0xff, 0xff, 0xff, 0xff, 0x01}), Json));
-	TestFalse(TEXT("params nested past 64 do not convert"), CrowdyNativeExec::JsonToMsgpack(FString::ChrN(65, TEXT('[')) + FString::ChrN(65, TEXT(']')), Bytes));
-	TestTrue(TEXT("64 deep do"), CrowdyNativeExec::JsonToMsgpack(FString::ChrN(64, TEXT('[')) + FString::ChrN(64, TEXT(']')), Bytes));
-	TestTrue(TEXT("brackets inside a string are text"), CrowdyNativeExec::JsonToMsgpack(TEXT("{\"s\":\"\\\"") + FString::ChrN(100, TEXT('[')) + TEXT("\"}"), Bytes));
+	TestFalse(TEXT("a NaN has no JSON form, so the reply is refused rather than read as null"),
+		CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x81, 0xa1, 'v', 0xcb, 0x7f, 0xf8, 0, 0, 0, 0, 0, 0}), Json));
+	TestTrue(TEXT("a real null still reads as null"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0xc0}), Json) && Json == TEXT("null"));
+	TestTrue(TEXT("params 100,000 deep convert without exhausting the stack"),
+		CrowdyNativeExec::JsonToMsgpack(FString::ChrN(100000, TEXT('[')) + FString::ChrN(100000, TEXT(']')), Bytes));
 	return true;
 }
 

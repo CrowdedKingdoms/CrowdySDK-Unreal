@@ -40,6 +40,18 @@ namespace
 			GridId, *ClaimsPoint(LowX, 0, 0), *ClaimsPoint(HighX, 0, 0));
 	}
 
+	// A grid as NearbyGrids lists it for the caller: bounds along x only, and the caller's own keys.
+	FString ClaimsKeyedGrid(int64 GridId, int64 LowX, int64 HighX, const TCHAR* Keys)
+	{
+		return FString::Printf(TEXT("{\"appId\":\"31337\",\"gridId\":\"%lld\",\"lowChunk\":%s,\"highChunk\":%s,\"permissionKeys\":[%s]}"),
+			GridId, *ClaimsPoint(LowX, 0, 0), *ClaimsPoint(HighX, 0, 0), Keys);
+	}
+
+	FString ClaimsGridsAnswer(const TArray<FString>& Grids)
+	{
+		return FString::Printf(TEXT("{\"data\":{\"nearbyGrids\":[%s]}}"), *FString::Join(Grids, TEXT(",")));
+	}
+
 	FString ClaimsOwner(int64 GridId, const TCHAR* Via, int64 Owner)
 	{
 		return FString::Printf(
@@ -57,6 +69,8 @@ namespace
 		FCrowdyChunkClaim Claim;
 		FCrowdyClaimRelease Release;
 		FCrowdyClaimSearch Search;
+		FCrowdyChunkEditCheck Edit;
+		FCrowdyGridPermissions Permissions;
 
 		explicit FClaimsRig(const FString& Body, int32 Status = 200, bool bSignedIn = true)
 			: Instance(NewObject<UGameInstance>(GetTransientPackage(), NAME_None, RF_Transient))
@@ -89,6 +103,16 @@ namespace
 		void FindClaims(int64 LowX, int64 HighX, int64 Side = 0)
 		{
 			Claims->FindClaims(LowX, 0, 0, HighX, Side, Side, [this](const FCrowdyClaimSearch& Answer) { Search = Answer; ++Answers; });
+		}
+
+		void CanEditChunk(int64 X)
+		{
+			Claims->CanEditChunk(X, 0, 0, [this](const FCrowdyChunkEditCheck& Answer) { Edit = Answer; ++Answers; });
+		}
+
+		void GetGridPermissions(int64 X)
+		{
+			Claims->GetGridPermissions(X, 0, 0, [this](const FCrowdyGridPermissions& Answer) { Permissions = Answer; ++Answers; });
 		}
 
 		void Pump()
@@ -360,6 +384,262 @@ bool FCrowdyClaimsAfterEndTest::RunTest(const FString& Parameters)
 	Rig.Claims->Deinitialize();
 	Rig.Pump();
 	TestEqual(TEXT("an answer arriving after the subsystem ended runs nothing"), Rig.Answers, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyClaimsDecidingGridTest, "CrowdySDK.Claims.TheSmallestCoveringGridDecidesEdits", ClaimsTestFlags)
+bool FCrowdyClaimsDecidingGridTest::RunTest(const FString& Parameters)
+{
+	const FString Update = TEXT("\"access\",\"update_voxel_data\"");
+	const FString World = ClaimsKeyedGrid(1, -1000, 1000, *Update);
+	const FString Plot = ClaimsKeyedGrid(5, 0, 10, *Update);
+	{
+		FClaimsRig Rig(ClaimsGridsAnswer({World, Plot, ClaimsKeyedGrid(9, 5, 5, *Update)}));
+		Rig.CanEditChunk(5);
+		Rig.Pump();
+		TestTrue(TEXT("the answer is Success"), Rig.Edit.Result == ECrowdyClaimResult::Success);
+		TestEqual(TEXT("the one-chunk grid decides, not the broader ones"), Rig.Edit.GridId, static_cast<int64>(9));
+		TestTrue(TEXT("its key lets the player edit"), Rig.Edit.bCanEdit);
+		TestTrue(TEXT("with nothing to explain"), Rig.Edit.Message.IsEmpty());
+		const FString Body = Rig.SentBody();
+		TestTrue(TEXT("the request is NearbyGrids"), Body.Contains(TEXT("nearbyGrids")));
+		TestTrue(TEXT("over exactly the chunk, as BigInt strings"), Body.Contains(TEXT("\"lowChunk\":{\"x\":\"5\"")) && Body.Contains(TEXT("\"highChunk\":{\"x\":\"5\"")));
+		TestTrue(TEXT("the app travels as a BigInt string"), Body.Contains(TEXT("\"appId\":\"31337\"")));
+	}
+	{
+		FClaimsRig Rig(ClaimsGridsAnswer({World, ClaimsKeyedGrid(9, 5, 5, TEXT("\"access\"")), Plot}));
+		Rig.CanEditChunk(5);
+		Rig.Pump();
+		TestEqual(TEXT("a visitor's grant on the broader grids does not reach into the claim"), Rig.Edit.GridId, static_cast<int64>(9));
+		TestFalse(TEXT("so the player cannot edit"), Rig.Edit.bCanEdit);
+		TestTrue(TEXT("and is told which grid decides"), Rig.Edit.Message.Contains(TEXT("Grid 9")));
+	}
+	{
+		FClaimsRig Rig(ClaimsGridsAnswer({World, ClaimsKeyedGrid(9, 5, 5, *Update), Plot}));
+		Rig.GetGridPermissions(5);
+		Rig.Pump();
+		if (!TestEqual(TEXT("every covering grid is listed once"), Rig.Permissions.Grids.Num(), 3))
+		{
+			return true;
+		}
+		TestEqual(TEXT("the deciding grid first"), Rig.Permissions.Grids[0].GridId, static_cast<int64>(9));
+		TestEqual(TEXT("then by smallest box"), Rig.Permissions.Grids[1].GridId, static_cast<int64>(5));
+		TestEqual(TEXT("the world grid last"), Rig.Permissions.Grids[2].GridId, static_cast<int64>(1));
+		TestTrue(TEXT("the first decides edits"), Rig.Permissions.Grids[0].bDecidesEdits);
+		TestFalse(TEXT("the others do not"), Rig.Permissions.Grids[1].bDecidesEdits || Rig.Permissions.Grids[2].bDecidesEdits);
+		TestEqual(TEXT("bounds are kept"), Rig.Permissions.Grids[1].HighChunkX, static_cast<int64>(10));
+		TestEqual(TEXT("keys are kept"), Rig.Permissions.Grids[2].PermissionKeys.Num(), 2);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyClaimsDecidingGridTieTest, "CrowdySDK.Claims.EqualGridsTieOnTheLowerId", ClaimsTestFlags)
+bool FCrowdyClaimsDecidingGridTieTest::RunTest(const FString& Parameters)
+{
+	const FString Grids = ClaimsGridsAnswer({ClaimsKeyedGrid(20, 4, 6, TEXT("\"update_voxel_data\"")), ClaimsKeyedGrid(12, 4, 6, TEXT("\"access\""))});
+	{
+		FClaimsRig Rig(Grids);
+		Rig.CanEditChunk(5);
+		Rig.Pump();
+		TestEqual(TEXT("the lower id decides, wherever it is listed"), Rig.Edit.GridId, static_cast<int64>(12));
+		TestFalse(TEXT("and the higher grid's key does not count"), Rig.Edit.bCanEdit);
+	}
+	{
+		FClaimsRig Rig(Grids);
+		Rig.GetGridPermissions(5);
+		Rig.Pump();
+		if (TestEqual(TEXT("both grids are listed"), Rig.Permissions.Grids.Num(), 2))
+		{
+			TestTrue(TEXT("the lower id is first and decides"), Rig.Permissions.Grids[0].GridId == 12 && Rig.Permissions.Grids[0].bDecidesEdits);
+			TestFalse(TEXT("the other does not"), Rig.Permissions.Grids[1].bDecidesEdits);
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyClaimsGridKeysTest, "CrowdySDK.Claims.EditNeedsTheExactKeyOnTheDecidingGrid", ClaimsTestFlags)
+bool FCrowdyClaimsGridKeysTest::RunTest(const FString& Parameters)
+{
+	struct FCase
+	{
+		const TCHAR* Keys;
+		bool bExpected;
+		const TCHAR* What;
+	};
+	const FCase Cases[] = {
+		{TEXT("\"access\",\"update_voxel_data\",\"teleport\""), true, TEXT("the key among others")},
+		{TEXT("\"update_voxel_data\""), true, TEXT("the key alone")},
+		{TEXT(""), false, TEXT("no keys at all")},
+		{TEXT("\"access\",\"teleport\""), false, TEXT("keys but not that one")},
+		{TEXT("\"UPDATE_VOXEL_DATA\""), false, TEXT("the key in another case")},
+		{TEXT("\"update_voxel_data_x\""), false, TEXT("a longer key")},
+	};
+	for (const FCase& Case : Cases)
+	{
+		FClaimsRig Rig(ClaimsGridsAnswer({ClaimsKeyedGrid(3, 0, 9, Case.Keys)}));
+		Rig.CanEditChunk(5);
+		Rig.Pump();
+		TestTrue(FString::Printf(TEXT("%s answers"), Case.What), Rig.Edit.Result == ECrowdyClaimResult::Success);
+		TestEqual(FString::Printf(TEXT("%s: can edit"), Case.What), Rig.Edit.bCanEdit, Case.bExpected);
+		TestEqual(FString::Printf(TEXT("%s: the grid"), Case.What), Rig.Edit.GridId, static_cast<int64>(3));
+		TestEqual(FString::Printf(TEXT("%s: a refusal explains itself"), Case.What), Rig.Edit.Message.IsEmpty(), Case.bExpected);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyClaimsNoCoveringGridTest, "CrowdySDK.Claims.AChunkNoGridCoversCannotBeEdited", ClaimsTestFlags)
+bool FCrowdyClaimsNoCoveringGridTest::RunTest(const FString& Parameters)
+{
+	const FString Elsewhere = ClaimsGridsAnswer({ClaimsKeyedGrid(2, 6, 9, TEXT("\"update_voxel_data\""))});
+	for (const FString& Body : {ClaimsGridsAnswer({}), Elsewhere})
+	{
+		FClaimsRig Edit(Body);
+		Edit.CanEditChunk(5);
+		Edit.Pump();
+		TestTrue(TEXT("the platform answered"), Edit.Edit.Result == ECrowdyClaimResult::Success);
+		TestFalse(TEXT("an uncovered chunk cannot be edited"), Edit.Edit.bCanEdit);
+		TestEqual(TEXT("with no deciding grid"), Edit.Edit.GridId, static_cast<int64>(0));
+		TestTrue(TEXT("and says why"), Edit.Edit.Message.Contains(TEXT("No grid covers")));
+
+		FClaimsRig Listed(Body);
+		Listed.GetGridPermissions(5);
+		Listed.Pump();
+		TestTrue(TEXT("the list answers"), Listed.Permissions.Result == ECrowdyClaimResult::Success);
+		TestEqual(TEXT("an empty list, a grid not holding the chunk left out"), Listed.Permissions.Grids.Num(), 0);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyClaimsEditCheckFailuresTest, "CrowdySDK.Claims.EditChecksEndPlainlyWhenTheRequestFails", ClaimsTestFlags)
+bool FCrowdyClaimsEditCheckFailuresTest::RunTest(const FString& Parameters)
+{
+	struct FCase
+	{
+		FString Body;
+		int32 Status;
+		ECrowdyClaimResult Expected;
+		const TCHAR* What;
+	};
+	const FString Good = ClaimsKeyedGrid(3, 0, 9, TEXT("\"update_voxel_data\""));
+	const FCase Cases[] = {
+		{ClaimsError(TEXT("FORBIDDEN")), 200, ECrowdyClaimResult::Refused, TEXT("a refused request")},
+		{FString(), 503, ECrowdyClaimResult::Failed, TEXT("a request that did not complete")},
+		{TEXT("{\"data\":{}}"), 200, ECrowdyClaimResult::BadReply, TEXT("no grid list")},
+		{TEXT("{\"data\":{\"nearbyGrids\":{}}}"), 200, ECrowdyClaimResult::BadReply, TEXT("a grid list that is not a list")},
+		{ClaimsGridsAnswer({Good, TEXT("5")}), 200, ECrowdyClaimResult::BadReply, TEXT("a grid that is not an object")},
+		{ClaimsGridsAnswer({Good.Replace(TEXT("\"3\""), TEXT("\"x\""))}), 200, ECrowdyClaimResult::BadReply, TEXT("a grid id that is no number")},
+		{ClaimsGridsAnswer({Good.Replace(TEXT("\"3\""), TEXT("\"3abc\""))}), 200, ECrowdyClaimResult::BadReply, TEXT("a grid id with trailing text")},
+		{ClaimsGridsAnswer({Good.Replace(TEXT("\"3\""), TEXT("\"9223372036854775808\""))}), 200, ECrowdyClaimResult::BadReply, TEXT("a grid id past int64")},
+		{ClaimsGridsAnswer({Good.Replace(TEXT("\"permissionKeys\""), TEXT("\"keys\""))}), 200, ECrowdyClaimResult::BadReply, TEXT("a grid without permissionKeys")},
+		{ClaimsGridsAnswer({Good.Replace(TEXT("[\"update_voxel_data\"]"), TEXT("[7]"))}), 200, ECrowdyClaimResult::BadReply, TEXT("a key that is not text")},
+		{ClaimsGridsAnswer({ClaimsKeyedGrid(3, 9, 0, TEXT("\"update_voxel_data\""))}), 200, ECrowdyClaimResult::BadReply, TEXT("bounds with the low corner above the high one")},
+		{ClaimsGridsAnswer({Good, TEXT("{\"gridId\":\"4\"}")}), 200, ECrowdyClaimResult::BadReply, TEXT("one good grid beside a malformed one")},
+	};
+	for (const FCase& Case : Cases)
+	{
+		FClaimsRig Edit(Case.Body, Case.Status);
+		Edit.CanEditChunk(5);
+		Edit.Pump();
+		TestTrue(FString::Printf(TEXT("%s ends %d in Can Edit Chunk"), Case.What, static_cast<int32>(Case.Expected)), Edit.Edit.Result == Case.Expected);
+		TestFalse(FString::Printf(TEXT("%s never says the player can edit"), Case.What), Edit.Edit.bCanEdit);
+		TestEqual(FString::Printf(TEXT("%s names no grid"), Case.What), Edit.Edit.GridId, static_cast<int64>(0));
+		if (Case.Expected != ECrowdyClaimResult::Failed)
+		{
+			TestFalse(FString::Printf(TEXT("%s explains itself"), Case.What), Edit.Edit.Message.IsEmpty());
+		}
+
+		FClaimsRig Listed(Case.Body, Case.Status);
+		Listed.GetGridPermissions(5);
+		Listed.Pump();
+		TestTrue(FString::Printf(TEXT("%s ends %d in Get Grid Permissions"), Case.What, static_cast<int32>(Case.Expected)), Listed.Permissions.Result == Case.Expected);
+		TestEqual(FString::Printf(TEXT("%s lists nothing, never a partial list"), Case.What), Listed.Permissions.Grids.Num(), 0);
+	}
+	FClaimsRig SignedOut(ClaimsGridsAnswer({Good}), 200, false);
+	SignedOut.CanEditChunk(5);
+	SignedOut.GetGridPermissions(5);
+	TestEqual(TEXT("nothing answers inside the call"), SignedOut.Answers, 0);
+	for (int32 Step = 0; Step < 4; ++Step)
+	{
+		FTSTicker::GetCoreTicker().Tick(0.0f);
+	}
+	TestEqual(TEXT("both signed-out calls answer"), SignedOut.Answers, 2);
+	TestTrue(TEXT("a signed-out edit check is not signed in"), SignedOut.Edit.Result == ECrowdyClaimResult::NotSignedIn);
+	TestTrue(TEXT("and so is the list"), SignedOut.Permissions.Result == ECrowdyClaimResult::NotSignedIn);
+	FString Url;
+	FString Authorization;
+	TestFalse(TEXT("nothing was sent"), SignedOut.Client->GetLastTestRequest(Url, Authorization));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyClaimsWholeInt64GridTest, "CrowdySDK.Claims.GridPermissionsKeepWholeInt64Ids", ClaimsTestFlags)
+bool FCrowdyClaimsWholeInt64GridTest::RunTest(const FString& Parameters)
+{
+	// Past 2^53 a double cannot tell these ids, chunks or box sizes apart.
+	constexpr int64 Chunk = 9007199254740993;
+	const FString Keys = TEXT("\"update_voxel_data\"");
+	const FString Grids = ClaimsGridsAnswer({ClaimsKeyedGrid(9007199254740993, Chunk - 1, Chunk + 1, TEXT("\"access\"")), ClaimsKeyedGrid(9007199254740992, Chunk - 1, Chunk + 1, *Keys)});
+	FClaimsRig Rig(Grids);
+	Rig.CanEditChunk(Chunk);
+	Rig.Pump();
+	TestEqual(TEXT("the lower of two huge ids decides"), Rig.Edit.GridId, static_cast<int64>(9007199254740992));
+	TestTrue(TEXT("and its key counts"), Rig.Edit.bCanEdit);
+	TestTrue(TEXT("the chunk travels whole as a BigInt string"), Rig.SentBody().Contains(TEXT("\"x\":\"9007199254740993\"")));
+
+	FClaimsRig Listed(Grids);
+	Listed.GetGridPermissions(Chunk);
+	Listed.Pump();
+	if (TestEqual(TEXT("both grids are listed"), Listed.Permissions.Grids.Num(), 2))
+	{
+		TestEqual(TEXT("whole ids"), Listed.Permissions.Grids[1].GridId, static_cast<int64>(9007199254740993));
+		TestEqual(TEXT("whole bounds"), Listed.Permissions.Grids[0].HighChunkX, Chunk + 1);
+	}
+
+	const FString Wide = ClaimsGridsAnswer({ClaimsKeyedGrid(1, MIN_int64 + 1, MAX_int64 - 1, TEXT("\"update_voxel_data\"")), ClaimsKeyedGrid(2, 0, 9, TEXT("\"access\""))});
+	FClaimsRig Extreme(Wide);
+	Extreme.CanEditChunk(5);
+	Extreme.Pump();
+	TestEqual(TEXT("a grid spanning nearly every chunk loses to a small one, without overflow"), Extreme.Edit.GridId, static_cast<int64>(2));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyClaimsEditCheckDeferredTest, "CrowdySDK.Claims.EditChecksAnswerLaterAndOnce", ClaimsTestFlags)
+bool FCrowdyClaimsEditCheckDeferredTest::RunTest(const FString& Parameters)
+{
+	const FString Grids = ClaimsGridsAnswer({ClaimsKeyedGrid(3, 0, 9, TEXT("\"update_voxel_data\""))});
+	{
+		FClaimsRig Rig(TEXT("{}"));
+		Rig.Script({{200, Grids}, {200, Grids}});
+		Rig.CanEditChunk(5);
+		Rig.GetGridPermissions(5);
+		TestEqual(TEXT("nothing answers inside the call"), Rig.Answers, 0);
+		for (int32 Step = 0; Step < 400 && Rig.Answers < 2; ++Step)
+		{
+			Rig.Client->Poll();
+			FTSTicker::GetCoreTicker().Tick(0.0f);
+		}
+		for (int32 Step = 0; Step < 20; ++Step)
+		{
+			Rig.Client->Poll();
+			FTSTicker::GetCoreTicker().Tick(0.0f);
+		}
+		TestEqual(TEXT("each call answers exactly once"), Rig.Answers, 2);
+	}
+	{
+		FClaimsRig Rig(Grids);
+		Rig.Client->Close();
+		Rig.CanEditChunk(5);
+		TestEqual(TEXT("a closed client does not answer inside the call"), Rig.Answers, 0);
+		Rig.Pump();
+		TestEqual(TEXT("it answers once, later"), Rig.Answers, 1);
+		TestTrue(TEXT("as a failure"), Rig.Edit.Result == ECrowdyClaimResult::Failed);
+	}
+	{
+		FClaimsRig Rig(Grids);
+		Rig.CanEditChunk(5);
+		Rig.Claims->Deinitialize();
+		Rig.Pump();
+		TestEqual(TEXT("an answer arriving after the subsystem ended runs nothing"), Rig.Answers, 0);
+	}
 	return true;
 }
 
