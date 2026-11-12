@@ -56,6 +56,13 @@ enum class MessageType : std::uint8_t {
   /// the MessageBundle framing, members with containsAuth = 0, and ONE trailing
   /// 32-byte HMAC(token, everything-before || token). See wire::verifySignedBundle.
   MessageBundleSigned = 30,
+  /// Server -> client (Buddy v0.45.0), only after we advertised BoundControl:
+  /// CommandReconnect bound to this assignment's nonce.
+  /// [type][8B nonce][32B HMAC over the first 9 bytes]. Always un-bundled.
+  CommandReconnectBound = 44,
+  /// Server -> client (Buddy v0.45.0), only after BoundControl: CommandSessionReleased
+  /// bound the same way. [type][1B ReleaseReason][8B nonce][32B HMAC over the first 10].
+  CommandSessionReleasedBound = 45,
 
   ActorUpdateRequest = 128,
   ActorUpdateNotification = 130,
@@ -84,6 +91,10 @@ enum class MessageType : std::uint8_t {
   /// its last chunk ~5 s after its last update, never for a mere migration.
   /// Payload [1B reason]: 0 STALE, 1 reserved; treat others as STALE.
   ActorLeftNotification = 145,
+  /// Server -> client only (Buddy v0.45.0): a chunk was replaced as a whole (a hub's
+  /// or mod's world.set_chunk); read it again. Long spatial layout over the chunk;
+  /// payload [8B i64 LE updatedAt ms], the stored chunk's new updatedAt.
+  ChunkChangedNotification = 146,
 };
 
 /// Error codes carried by GenericError frames.
@@ -124,22 +135,26 @@ inline constexpr bool isSpatialType(std::uint8_t t) noexcept {
 
 namespace ClientCapability {
 inline constexpr std::uint32_t kBundleSigned = 1u << 0;
+/// Buddy v0.45.0: 8 nonce bytes follow the flags, and this assignment is sent only the
+/// bound control frames (CommandReconnectBound, CommandSessionReleasedBound).
+inline constexpr std::uint32_t kBoundControl = 1u << 1;
 /// Everything this SDK build can read.
-inline constexpr std::uint32_t kAll = kBundleSigned;
+inline constexpr std::uint32_t kAll = kBundleSigned | kBoundControl;
 }  // namespace ClientCapability
 
 /// True for the long HMAC spatial layout: types 128-140, SingleActorMessage
 /// (142), the video pair and actor-left (143-145), plus the non-spatial
 /// ClientActorHeartbeat (26) and ClientCapabilities (29), which reuse it.
 inline constexpr bool isLongSpatialLayout(std::uint8_t t) noexcept {
-  return (t >= 128 && t <= 140) || (t >= 142 && t <= 145) ||
+  return (t >= 128 && t <= 140) || (t >= 142 && t <= 146) ||
          t == static_cast<std::uint8_t>(MessageType::ClientActorHeartbeat) ||
          t == static_cast<std::uint8_t>(MessageType::ClientCapabilities);
 }
 
 /// Server-only downlink opcodes a client never originates (Buddy drops them).
 inline constexpr bool isServerOnlySpatialType(std::uint8_t t) noexcept {
-  return t == 130 || t == 133 || t == 135 || t == 137 || t == 139 || t == 144 || t == 145;
+  return t == 130 || t == 133 || t == 135 || t == 137 || t == 139 || t == 144 || t == 145 ||
+         t == 146;
 }
 
 /// The reason byte of an ActorLeftNotification payload; anything unknown is STALE (0).
@@ -194,6 +209,12 @@ constexpr std::size_t kGenericErrorSize = 3;
 // [1B type=22][32B HMAC-SHA256 over the type byte, keyed on the game token]
 constexpr std::size_t kCommandReconnectSize = 1 + kHmacTagSize;
 constexpr std::size_t kCommandSessionReleasedSize = 2 + kHmacTagSize;
+/// The nonce a client sends with ClientCapability::kBoundControl, new for every assignment.
+constexpr std::size_t kControlNonceSize = 8;
+// [1B type=44][8B nonce][32B HMAC over the first 9 bytes]
+constexpr std::size_t kCommandReconnectBoundSize = 1 + kControlNonceSize + kHmacTagSize;
+// [1B type=45][1B reason][8B nonce][32B HMAC over the first 10 bytes]
+constexpr std::size_t kCommandSessionReleasedBoundSize = 2 + kControlNonceSize + kHmacTagSize;
 
 /// The reason byte of CommandSessionReleased. Treat a value not listed as Stale.
 enum class ReleaseReason : std::uint8_t {

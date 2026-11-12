@@ -1206,6 +1206,7 @@ bool FCrowdyCppReplication::IsDeliverableSpatialOpcode(const uint8 Opcode)
 	case MessageType::GenericSpatial1:
 	case MessageType::SingleActorMessage:
 	case MessageType::ActorLeftNotification:
+	case MessageType::ChunkChangedNotification:
 		return true;
 	default:
 		return false;
@@ -1466,6 +1467,8 @@ FCrowdyCppReplicationStats FCrowdyCppReplication::GetStats() const
 		Out.HmacFailures = static_cast<int64>(Stats.hmacFailures);
 		Out.SignedBundlesReceived = static_cast<int64>(Stats.signedBundlesReceived);
 		Out.Malformed = static_cast<int64>(Stats.malformed);
+		Out.StaleBoundControl = static_cast<int64>(Stats.staleBoundControl);
+		Out.IdleReleasesAfterInput = static_cast<int64>(Stats.idleReleasesAfterInput);
 		Out.RingDropped = static_cast<int64>(Stats.ringDropped);
 		Out.SendsDeferred = static_cast<int64>(Stats.sendsDeferred);
 		Out.SendsFailed = static_cast<int64>(Stats.sendsFailed);

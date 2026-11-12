@@ -1,4 +1,5 @@
 #include "Subsystem/CrowdyVoxels.h"
+#include "Algo/Reverse.h"
 #include "Algo/Sort.h"
 #include "CrowdyCppClient.h"
 #include "CrowdyServiceApiSupport.h"
@@ -16,7 +17,6 @@ namespace
 {
 	constexpr const TCHAR* VoxelsLogName = TEXT("CrowdyVoxels");
 	constexpr int32 GridChars = 5464;
-	constexpr int32 MaxStateBytes = 1024;
 	constexpr int32 MaxStateChars = 1368;
 	constexpr int32 MaxSkipDepth = 64;
 	constexpr uint32 MostEditsReserved = 4096;
@@ -371,9 +371,16 @@ namespace
 		Edits = MoveTemp(Kept);
 	}
 
-	// Keeps every edit, applies those that fit a cell and a byte to the grid in the platform's order, then orders the
-	// edits by position keeping the last of each, since the platform may list a position more than once.
-	bool ReadEdits(FMsgpackReader& Reader, FCrowdyVoxelChunk& Out, FEditScratch& Scratch)
+	// How one answer lists a chunk's edits: a chunk's voxelStates oldest first, an edit-log group newest first.
+	struct FEditRows
+	{
+		FAnsiStringView PositionKey;
+		bool bNewestFirst = false;
+	};
+
+	// Keeps every edit, applies those that fit a cell and a byte to the grid oldest first, then orders the edits by
+	// position keeping the newest of each, since the platform may list a position more than once.
+	bool ReadEdits(FMsgpackReader& Reader, FCrowdyVoxelChunk& Out, FEditScratch& Scratch, const FEditRows& Rows)
 	{
 		uint32 Count = 0;
 		if (!Reader.Array(Count))
@@ -384,6 +391,16 @@ namespace
 		Out.Edits.Reserve(FMath::Min(Count, MostEditsReserved));
 		for (uint32 Item = 0; Item < Count; ++Item)
 		{
+			// Newest first, so past the cap only the oldest are dropped.
+			if (Rows.bNewestFirst && Out.Edits.Num() >= MaxEditsPerChunk)
+			{
+				Out.bEditsTruncated = true;
+				if (!Reader.Skip())
+				{
+					return false;
+				}
+				continue;
+			}
 			uint32 Fields = 0;
 			if (!Reader.Map(Fields))
 			{
@@ -401,7 +418,7 @@ namespace
 				{
 					return false;
 				}
-				if (Key == "voxelCoord")
+				if (Key == Rows.PositionKey)
 				{
 					bCell = ReadPoint(Reader, Cell);
 				}
@@ -428,6 +445,14 @@ namespace
 			Edit.Position = FIntVector(static_cast<int32>(Cell[0]), static_cast<int32>(Cell[1]), static_cast<int32>(Cell[2]));
 			Edit.Type = static_cast<int32>(Type);
 			Edit.State = MoveTemp(State);
+		}
+
+		if (Rows.bNewestFirst)
+		{
+			Algo::Reverse(Out.Edits);
+		}
+		for (const FCrowdyVoxel& Edit : Out.Edits)
+		{
 			const int32 Index = GridIndex(Edit.Position);
 			if (Index != INDEX_NONE)
 			{
@@ -516,9 +541,76 @@ namespace
 		}
 		const uint8* Resume = Reader.Position();
 		Reader.Seek(Edits);
-		const bool bRead = ReadEdits(Reader, Out, Scratch);
+		const bool bRead = ReadEdits(Reader, Out, Scratch, FEditRows{"voxelCoord", false});
 		Reader.Seek(Resume);
 		return bRead;
+	}
+
+	// One listVoxelUpdatesByDistance chunk group, kept unless its coordinates are already in Seen. Its edits are read in
+	// place when the coordinates come first, else found again once they are known. bOutKept says whether Out holds it.
+	bool DecodeEditGroup(FMsgpackReader& Reader, FCrowdyVoxelChunk& Out, FEditScratch& Scratch, TSet<FInt64Vector>& Seen, bool& bOutKept)
+	{
+		bOutKept = false;
+		uint32 Fields = 0;
+		if (!Reader.Map(Fields))
+		{
+			return false;
+		}
+		const FEditRows Rows{"location", true};
+		bool bPoint = false;
+		bool bKeep = false;
+		bool bEditsRead = false;
+		const uint8* Edits = nullptr;
+		for (uint32 Field = 0; Field < Fields && Reader.Ok(); ++Field)
+		{
+			FAnsiStringView Key;
+			if (!Reader.Str(Key))
+			{
+				return false;
+			}
+			if (Key == "coordinates")
+			{
+				int64 Point[3] = {0, 0, 0};
+				if (bPoint || !ReadPoint(Reader, Point))
+				{
+					return Reader.Invalidate();
+				}
+				bPoint = true;
+				bool bSeen = false;
+				Seen.Add(FInt64Vector(Point[0], Point[1], Point[2]), &bSeen);
+				bKeep = !bSeen;
+				Out.X = Point[0];
+				Out.Y = Point[1];
+				Out.Z = Point[2];
+				Out.Grid.SetNumZeroed(VoxelCount);
+				continue;
+			}
+			if (Key != "voxels" || Reader.IsNil() || bEditsRead)
+			{
+				Reader.Skip();
+				continue;
+			}
+			if (bKeep)
+			{
+				bEditsRead = ReadEdits(Reader, Out, Scratch, Rows);
+				continue;
+			}
+			Edits = bPoint ? nullptr : Reader.Position();
+			Reader.Skip();
+		}
+		if (!Reader.Ok() || !bPoint)
+		{
+			return false;
+		}
+		if (bKeep && Edits && !bEditsRead)
+		{
+			const uint8* Resume = Reader.Position();
+			Reader.Seek(Edits);
+			bEditsRead = ReadEdits(Reader, Out, Scratch, Rows);
+			Reader.Seek(Resume);
+		}
+		bOutKept = bKeep && bEditsRead && Out.Edits.Num() > 0;
+		return Reader.Ok();
 	}
 
 	// Steps into the value of Key in the map the reader is on, skipping every other member.
@@ -594,61 +686,142 @@ namespace
 		Input->SetObjectField(CoordinatesKey, Point);
 		return Input;
 	}
+
+	TSharedPtr<FJsonObject> PointInput(const FInt64Vector& Coord)
+	{
+		TSharedPtr<FJsonObject> Point = MakeShared<FJsonObject>();
+		Point->SetStringField(TEXT("x"), BigInt(Coord.X));
+		Point->SetStringField(TEXT("y"), BigInt(Coord.Y));
+		Point->SetStringField(TEXT("z"), BigInt(Coord.Z));
+		return Point;
+	}
+
+	TSharedPtr<FJsonObject> BoxInput(int64 AppId, const FInt64Vector& Low, const FInt64Vector& High, int32 Skip)
+	{
+		TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+		Input->SetStringField(TEXT("appId"), BigInt(AppId));
+		Input->SetObjectField(TEXT("lowChunk"), PointInput(Low));
+		Input->SetObjectField(TEXT("highChunk"), PointInput(High));
+		Input->SetNumberField(TEXT("limit"), UCrowdyVoxels::PageSize);
+		Input->SetNumberField(TEXT("skip"), Skip);
+		return Input;
+	}
+
+	// One edit-log read over a box of chunks the chunk read did not return.
+	struct FEditsBox
+	{
+		FInt64Vector Low;
+		FInt64Vector High;
+		int32 MostChunks = 0;
+		int32 Skip = 0;
+	};
+
+	// The chunks of Low to High not in Seen, split into boxes of one page that hold only those chunks.
+	void FindAbsentBoxes(const FInt64Vector& Low, const FInt64Vector& High, const TSet<FInt64Vector>& Seen, TArray<FEditsBox>& Out)
+	{
+		const FIntVector Size = BoxSize(Low, High);
+		const int32 Count = BoxCount(Size);
+		TSet<FInt64Vector> Absent;
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const FInt64Vector Coord = BoxCell(Low, Size, Index);
+			if (!Seen.Contains(Coord))
+			{
+				Absent.Add(Coord);
+			}
+		}
+		SplitIntoBoxes(Absent, UCrowdyVoxels::PageSize, [&Out](const FInt64Vector& BoxLow, const FInt64Vector& BoxHigh)
+		{
+			Out.Add({BoxLow, BoxHigh, BoxCount(BoxSize(BoxLow, BoxHigh)), 0});
+		});
+	}
+
+	// Walks one paged region answer under Root: its echoed limit and its single chunk list, each item read by Item.
+	int32 DecodeRegionPage(TConstArrayView<uint8> Msgpack, FAnsiStringView Root, int32 MaxChunks, int32& OutLimit,
+		TFunctionRef<bool(FMsgpackReader&, FEditScratch&)> Item)
+	{
+		FMsgpackReader Reader(Msgpack);
+		uint32 Fields = 0;
+		if (!EnterMember(Reader, Root) || !Reader.Map(Fields))
+		{
+			return INDEX_NONE;
+		}
+		OutLimit = MaxChunks;
+		int32 Count = INDEX_NONE;
+		for (uint32 Field = 0; Field < Fields && Reader.Ok(); ++Field)
+		{
+			FAnsiStringView Key;
+			if (!Reader.Str(Key))
+			{
+				return INDEX_NONE;
+			}
+			if (Key == "limit" && !Reader.IsNil())
+			{
+				int64 Limit = 0;
+				OutLimit = ReadInteger(Reader, Limit) && Limit > 0 && Limit < MaxChunks ? static_cast<int32>(Limit) : MaxChunks;
+				continue;
+			}
+			if (Key != "chunks")
+			{
+				Reader.Skip();
+				continue;
+			}
+			uint32 Items = 0;
+			// More chunks than were asked for is not an answer to this request, and each one costs 4 KiB; a second chunk
+			// list would be a way past that bound.
+			if (Count != INDEX_NONE || !Reader.Array(Items) || Items > static_cast<uint32>(MaxChunks))
+			{
+				return INDEX_NONE;
+			}
+			FEditScratch Scratch;
+			for (uint32 Index = 0; Index < Items; ++Index)
+			{
+				if (!Item(Reader, Scratch))
+				{
+					return INDEX_NONE;
+				}
+			}
+			Count = static_cast<int32>(Items);
+		}
+		return Reader.Ok() ? Count : INDEX_NONE;
+	}
 }
 
 int32 CrowdyVoxelDecode::DecodePage(TConstArrayView<uint8> Msgpack, int32 MaxChunks, TArray<FCrowdyVoxelChunk>& Out, TSet<FInt64Vector>& Seen, int32& OutLimit)
 {
-	FMsgpackReader Reader(Msgpack);
-	uint32 Fields = 0;
-	if (!EnterMember(Reader, "getChunksByDistance") || !Reader.Map(Fields))
+	return DecodeRegionPage(Msgpack, "getChunksByDistance", MaxChunks, OutLimit, [&Out, &Seen](FMsgpackReader& Reader, FEditScratch& Scratch)
 	{
-		return INDEX_NONE;
-	}
-	OutLimit = MaxChunks;
-	int32 Count = INDEX_NONE;
-	for (uint32 Field = 0; Field < Fields && Reader.Ok(); ++Field)
+		FCrowdyVoxelChunk& Chunk = Out.AddDefaulted_GetRef();
+		if (!DecodeChunk(Reader, Chunk, Scratch))
+		{
+			return false;
+		}
+		bool bSeen = false;
+		Seen.Add(FInt64Vector(Chunk.X, Chunk.Y, Chunk.Z), &bSeen);
+		if (bSeen)
+		{
+			Out.Pop(EAllowShrinking::No);
+		}
+		return true;
+	});
+}
+
+int32 CrowdyVoxelDecode::DecodeEditsPage(TConstArrayView<uint8> Msgpack, int32 MaxChunks, TArray<FCrowdyVoxelChunk>& Out, TSet<FInt64Vector>& Seen, int32& OutLimit)
+{
+	return DecodeRegionPage(Msgpack, "listVoxelUpdatesByDistance", MaxChunks, OutLimit, [&Out, &Seen](FMsgpackReader& Reader, FEditScratch& Scratch)
 	{
-		FAnsiStringView Key;
-		if (!Reader.Str(Key))
+		FCrowdyVoxelChunk& Chunk = Out.AddDefaulted_GetRef();
+		bool bKept = false;
+		if (!DecodeEditGroup(Reader, Chunk, Scratch, Seen, bKept))
 		{
-			return INDEX_NONE;
+			return false;
 		}
-		if (Key == "limit" && !Reader.IsNil())
+		if (!bKept)
 		{
-			int64 Limit = 0;
-			OutLimit = ReadInteger(Reader, Limit) && Limit > 0 && Limit < MaxChunks ? static_cast<int32>(Limit) : MaxChunks;
-			continue;
+			Out.Pop(EAllowShrinking::No);
 		}
-		if (Key != "chunks")
-		{
-			Reader.Skip();
-			continue;
-		}
-		uint32 Items = 0;
-		// More chunks than were asked for is not an answer to this request, and each one costs 4 KiB; a second chunk list
-		// would be a way past that bound.
-		if (Count != INDEX_NONE || !Reader.Array(Items) || Items > static_cast<uint32>(MaxChunks))
-		{
-			return INDEX_NONE;
-		}
-		FEditScratch Scratch;
-		for (uint32 Item = 0; Item < Items; ++Item)
-		{
-			FCrowdyVoxelChunk& Chunk = Out.AddDefaulted_GetRef();
-			if (!DecodeChunk(Reader, Chunk, Scratch))
-			{
-				return INDEX_NONE;
-			}
-			bool bSeen = false;
-			Seen.Add(FInt64Vector(Chunk.X, Chunk.Y, Chunk.Z), &bSeen);
-			if (bSeen)
-			{
-				Out.Pop(EAllowShrinking::No);
-			}
-		}
-		Count = static_cast<int32>(Items);
-	}
-	return Reader.Ok() ? Count : INDEX_NONE;
+		return true;
+	});
 }
 
 int32 CrowdyVoxelDecode::DecodeOne(TConstArrayView<uint8> Msgpack, FCrowdyVoxelChunk& Out)
@@ -670,17 +843,44 @@ struct UCrowdyVoxels::FRead
 {
 	int64 AppId = 0;
 	FInt64Vector Centre;
+	FInt64Vector Low;
+	FInt64Vector High;
 	int32 Range = 1;
 	int32 MostChunks = 0;
 	int32 Skip = 0;
-	bool bRestarted = false;
+	int32 EditsLeft = 0;
+	bool bBox = false;
+	bool bDone = false;
+	TArray<FEditsBox> EditsBoxes;
 	TArray<FCrowdyVoxelChunk> Chunks;
 	TSet<FInt64Vector> Seen;
+	TSharedPtr<const bool> Cancelled;
 	TFunction<void(const FCrowdyChunkFetch&)> OnDone;
+
+	/** Done or cancelled: an answer still arriving changes nothing and asks for nothing more. */
+	bool IsOver() const
+	{
+		return bDone || (Cancelled.IsValid() && *Cancelled);
+	}
 
 	void Finish(ECrowdyVoxelResult Result, const FString& Message)
 	{
+		if (bDone)
+		{
+			return;
+		}
+		bDone = true;
 		FinishFetch(OnDone, Result, Message, MoveTemp(Chunks));
+	}
+
+	void FinishFailure(const FCrowdyCppJsonResult& Result)
+	{
+		if (bDone)
+		{
+			return;
+		}
+		bDone = true;
+		FinishFetchFailure(OnDone, Result);
 	}
 };
 
@@ -767,16 +967,28 @@ void UCrowdyVoxels::RequestPage(const TSharedRef<FRead>& Read)
 		Read->Finish(ECrowdyVoxelResult::Failed, TEXT("The Crowdy API client is unavailable, so the request was not sent."));
 		return;
 	}
-	TSharedPtr<FJsonObject> Input = ChunkInput(Read->AppId, Read->Centre.X, Read->Centre.Y, Read->Centre.Z, TEXT("centerCoordinate"));
-	Input->SetNumberField(TEXT("maxDistance"), Read->Range);
-	Input->SetNumberField(TEXT("limit"), PageSize);
-	Input->SetNumberField(TEXT("skip"), Read->Skip);
+	TSharedPtr<FJsonObject> Input;
+	if (Read->bBox)
+	{
+		Input = BoxInput(Read->AppId, Read->Low, Read->High, Read->Skip);
+	}
+	else
+	{
+		Input = ChunkInput(Read->AppId, Read->Centre.X, Read->Centre.Y, Read->Centre.Z, TEXT("centerCoordinate"));
+		Input->SetNumberField(TEXT("maxDistance"), Read->Range);
+		Input->SetNumberField(TEXT("limit"), PageSize);
+		Input->SetNumberField(TEXT("skip"), Read->Skip);
+	}
 
 	TWeakObjectPtr<UCrowdyVoxels> WeakThis(this);
-	Client->RunOpMsgpack(ECrowdyCppApiDomain::Chunks, TEXT("GetChunksByDistance"), WrapInput(Input),
+	Client->RunOpMsgpack(ECrowdyCppApiDomain::Chunks, TEXT("GetChunksByDistanceVoxels"), WrapInput(Input),
 		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Read](FCrowdyCppJsonResult Result)
 		{
 			UCrowdyVoxels* Self = WeakThis.Get();
+			if (Read->IsOver())
+			{
+				return;
+			}
 			if (!Self || Self->GetAppId() != Read->AppId)
 			{
 				Read->Finish(ECrowdyVoxelResult::Failed, TEXT("The app changed while the fetch was in flight."));
@@ -784,7 +996,7 @@ void UCrowdyVoxels::RequestPage(const TSharedRef<FRead>& Read)
 			}
 			if (!Result.bTransportOk)
 			{
-				FinishFetchFailure(Read->OnDone, Result);
+				Read->FinishFailure(Result);
 				return;
 			}
 
@@ -801,29 +1013,123 @@ void UCrowdyVoxels::RequestPage(const TSharedRef<FRead>& Read)
 				Read->Finish(ECrowdyVoxelResult::BadReply, TEXT("The platform answered more chunks than the range holds."));
 				return;
 			}
-			// A chunk on two pages means the platform's order moved under the fetch, so another chunk was skipped.
-			if (Read->Chunks.Num() - Before < PageChunks)
+			for (int32 Index = Before; Read->bBox && Index < Read->Chunks.Num(); ++Index)
 			{
-				if (Read->bRestarted)
+				const FCrowdyVoxelChunk& Chunk = Read->Chunks[Index];
+				if (!InBox(FInt64Vector(Chunk.X, Chunk.Y, Chunk.Z), Read->Low, Read->High))
 				{
-					Read->Finish(ECrowdyVoxelResult::Failed, TEXT("The chunks changed while they were fetched twice; fetch again."));
+					Read->Finish(ECrowdyVoxelResult::BadReply, TEXT("The platform answered a chunk outside the box."));
 					return;
 				}
-				Read->bRestarted = true;
-				Read->Skip = 0;
-				Read->Chunks.Reset();
-				Read->Seen.Reset();
+			}
+			// Pages are stable, so a chunk on two pages is kept once; the region's size bounds how many pages are read.
+			Read->Skip += Limit;
+			if (PageChunks == Limit && Read->Skip < Read->MostChunks)
+			{
 				Self->RequestPage(Read);
 				return;
 			}
-			if (PageChunks < Limit)
+			if (Read->bBox)
+			{
+				FindAbsentBoxes(Read->Low, Read->High, Read->Seen, Read->EditsBoxes);
+			}
+			// Only the chunks a box read left out have their edits read, in boxes of one page read side by side.
+			Read->EditsLeft = Read->EditsBoxes.Num();
+			if (Read->EditsLeft == 0)
 			{
 				Read->Finish(ECrowdyVoxelResult::Ok, FString());
 				return;
 			}
-			// Each full page adds at least one new chunk, so the range's own size bounds how many pages a fetch takes.
-			Read->Skip += Limit;
-			Self->RequestPage(Read);
+			for (int32 Box = 0; Box < Read->EditsBoxes.Num() && !Read->IsOver(); ++Box)
+			{
+				Self->RequestEditsPage(Read, Box);
+			}
+		}));
+}
+
+void UCrowdyVoxels::FetchChunksInBox(const FInt64Vector& Corner, const FInt64Vector& OppositeCorner, TFunction<void(const FCrowdyChunkFetch&)> OnDone,
+	TSharedPtr<const bool> Cancelled)
+{
+	const TSharedRef<FRead> Read = MakeShared<FRead>();
+	Read->AppId = GetAppId();
+	Read->Cancelled = MoveTemp(Cancelled);
+	Read->bBox = true;
+	Read->Low = FInt64Vector(FMath::Min(Corner.X, OppositeCorner.X), FMath::Min(Corner.Y, OppositeCorner.Y), FMath::Min(Corner.Z, OppositeCorner.Z));
+	Read->High = FInt64Vector(FMath::Max(Corner.X, OppositeCorner.X), FMath::Max(Corner.Y, OppositeCorner.Y), FMath::Max(Corner.Z, OppositeCorner.Z));
+	Read->MostChunks = BoxCount(BoxSize(Read->Low, Read->High));
+	Read->OnDone = MoveTemp(OnDone);
+
+	if (Read->MostChunks == 0)
+	{
+		Read->Finish(ECrowdyVoxelResult::Failed, TEXT("The box holds more than 4,913 chunks."));
+		return;
+	}
+	if (!HasAppToken())
+	{
+		Read->Finish(ECrowdyVoxelResult::NotSignedIn, TEXT("The player has no app token yet."));
+		return;
+	}
+	RequestPage(Read);
+}
+
+void UCrowdyVoxels::RequestEditsPage(const TSharedRef<FRead>& Read, const int32 Box)
+{
+	FCrowdyCppClient* Client = ResolveClient();
+	if (!Client)
+	{
+		Read->Finish(ECrowdyVoxelResult::Failed, TEXT("The Crowdy API client is unavailable, so the request was not sent."));
+		return;
+	}
+
+	const FEditsBox& Edits = Read->EditsBoxes[Box];
+	TWeakObjectPtr<UCrowdyVoxels> WeakThis(this);
+	Client->RunOpMsgpack(ECrowdyCppApiDomain::Voxels, TEXT("ListVoxelUpdatesByDistance"), WrapInput(BoxInput(Read->AppId, Edits.Low, Edits.High, Edits.Skip)),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Read, Box](FCrowdyCppJsonResult Result)
+		{
+			UCrowdyVoxels* Self = WeakThis.Get();
+			if (Read->IsOver())
+			{
+				return;
+			}
+			if (!Self || Self->GetAppId() != Read->AppId)
+			{
+				Read->Finish(ECrowdyVoxelResult::Failed, TEXT("The app changed while the fetch was in flight."));
+				return;
+			}
+			if (!Result.bTransportOk)
+			{
+				Read->FinishFailure(Result);
+				return;
+			}
+
+			FEditsBox& Asked = Read->EditsBoxes[Box];
+			const int32 Before = Read->Chunks.Num();
+			int32 Limit = PageSize;
+			const int32 PageChunks = DecodeEditsPage(Result.Msgpack, PageSize, Read->Chunks, Read->Seen, Limit);
+			if (PageChunks == INDEX_NONE)
+			{
+				Read->Finish(ECrowdyVoxelResult::BadReply, TEXT("The answer holds no well-formed list of edits."));
+				return;
+			}
+			for (int32 Index = Before; Index < Read->Chunks.Num(); ++Index)
+			{
+				const FCrowdyVoxelChunk& Chunk = Read->Chunks[Index];
+				if (!InBox(FInt64Vector(Chunk.X, Chunk.Y, Chunk.Z), Asked.Low, Asked.High))
+				{
+					Read->Finish(ECrowdyVoxelResult::BadReply, TEXT("The platform answered edits outside the box."));
+					return;
+				}
+			}
+			Asked.Skip += Limit;
+			if (PageChunks == Limit && Asked.Skip < Asked.MostChunks)
+			{
+				Self->RequestEditsPage(Read, Box);
+				return;
+			}
+			if (--Read->EditsLeft == 0)
+			{
+				Read->Finish(ECrowdyVoxelResult::Ok, FString());
+			}
 		}));
 }
 

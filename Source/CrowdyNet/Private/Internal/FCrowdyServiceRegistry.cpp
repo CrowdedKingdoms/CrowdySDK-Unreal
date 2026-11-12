@@ -633,6 +633,7 @@ bool FCrowdyServiceRegistry::IsOpcodeEverParsed(const ECrowdyMessageType Message
 	case ECrowdyMessageType::GENERIC_SPATIAL_1:
 	case ECrowdyMessageType::SINGLE_ACTOR_MESSAGE:
 	case ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION:
+	case ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION:
 		return true;
 
 	default:

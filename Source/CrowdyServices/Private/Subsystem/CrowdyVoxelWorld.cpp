@@ -9,6 +9,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Internal/FCrowdyServiceRegistry.h"
+#include "Messages/Voxel/FChunkChangedNotification.h"
 #include "Messages/Voxel/FVoxelStateUpdateRequest.h"
 #include "Messages/Voxel/FVoxelUpdateNotificationMessage.h"
 #include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
@@ -18,10 +19,7 @@
 
 namespace CrowdyVoxelWorldImpl
 {
-	constexpr int32 MaxStateBytes = 1024;
 	constexpr int32 MaxHeldEdits = 4096;
-	constexpr int32 MaxEditsPerChunk = 65536;
-	constexpr int32 MaxSingleFetches = 32;
 	constexpr double MaxSendBurst = 20.0;
 	constexpr double RetrySeconds = 2.0;
 
@@ -75,7 +73,7 @@ namespace CrowdyVoxelWorldImpl
 			Chunk.Edits[At] = Voxel;
 			return true;
 		}
-		if (Chunk.Edits.Num() >= MaxEditsPerChunk)
+		if (Chunk.Edits.Num() >= CrowdyVoxelDecode::MaxEditsPerChunk)
 		{
 			return false;
 		}
@@ -128,16 +126,19 @@ void UCrowdyVoxelWorld::Initialize(FSubsystemCollectionBase& Collection)
 	}
 
 	const UCrowdySDKBridgeSubsystem* Bridge = Instance->GetSubsystem<UCrowdySDKBridgeSubsystem>();
-	if (!Bridge || !Bridge->ServiceRegistry)
+	if (Bridge && Bridge->ServiceRegistry)
 	{
-		return;
+		Subscribe(*Bridge->ServiceRegistry);
 	}
+}
 
+void UCrowdyVoxelWorld::Subscribe(FCrowdyServiceRegistry& Registry)
+{
 	FCrowdySubscriptionOptions Options;
 	Options.Role = ECrowdySubscriptionRole::Observe;
 	Options.SubscriberName = TEXT("CrowdyVoxelWorld");
 	TWeakObjectPtr<UCrowdyVoxelWorld> WeakThis(this);
-	NotificationSubscription = Bridge->ServiceRegistry->SubscribeToOpcode<FVoxelUpdateNotificationMessage>(
+	NotificationSubscription = Registry.SubscribeToOpcode<FVoxelUpdateNotificationMessage>(
 		ECrowdyMessageType::VOXEL_UPDATE_NOTIFICATION, Options,
 		[WeakThis](const FVoxelUpdateNotificationMessage& Notification, const FCrowdyDelivery&)
 		{
@@ -162,6 +163,15 @@ void UCrowdyVoxelWorld::Initialize(FSubsystemCollectionBase& Collection)
 			Edit.bOwnActor = Self->OwnActorId.IsSet() && Notification.UUID == Self->OwnActorId;
 			Self->HandleLiveEdit(Edit);
 		});
+	ChunkChangedSubscription = Registry.SubscribeToOpcode<FChunkChangedNotification>(
+		ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION, Options,
+		[WeakThis](const FChunkChangedNotification& Notification, const FCrowdyDelivery&)
+		{
+			if (UCrowdyVoxelWorld* Self = WeakThis.Get())
+			{
+				Self->HandleChunkChanged(FInt64Vector(Notification.ChunkX, Notification.ChunkY, Notification.ChunkZ));
+			}
+		});
 }
 
 void UCrowdyVoxelWorld::Deinitialize()
@@ -174,11 +184,15 @@ void UCrowdyVoxelWorld::ReleaseWorld()
 {
 	// Waiting edits and reloads end with the world and report nothing: their listeners leave with the level.
 	NotificationSubscription.Release();
+	ChunkChangedSubscription.Release();
 	if (Replication.IsValid())
 	{
 		Replication->OnTrackedSend.Remove(TrackedSendHandle);
 	}
+	*FetchCancelled = true;
+	FetchCancelled = MakeShared<bool>(false);
 	Chunks.Reset();
+	ReplacedQueue.Reset();
 	Pending.Reset();
 	EarlyDone.Reset();
 	Followers.Reset();
@@ -205,6 +219,7 @@ void UCrowdyVoxelWorld::Step()
 	SendDue();
 	ResolveAnswers();
 	IssueSettles();
+	IssueReplaced();
 	// Taken before the broadcast, so a reload's Ok always follows the On Chunk Changed that names its cells.
 	const TArray<FReload> Ended = TakeEndedReloads();
 	BroadcastChanges();
@@ -308,14 +323,14 @@ uint64 UCrowdyVoxelWorld::Send(const FCrowdyVoxelWrite& Write, FString& OutError
 	}
 }
 
-void UCrowdyVoxelWorld::Fetch(const int64 X, const int64 Y, const int64 Z, const int32 Range, TFunction<void(const FCrowdyChunkFetch&)> OnDone)
+void UCrowdyVoxelWorld::Fetch(const FInt64Vector& Low, const FInt64Vector& High, TFunction<void(const FCrowdyChunkFetch&)> OnDone)
 {
 #if WITH_DEV_AUTOMATION_TESTS
 	if (bUseTestSeams)
 	{
 		if (FetchForTest)
 		{
-			FetchForTest(X, Y, Z, Range, MoveTemp(OnDone));
+			FetchForTest(Low, High, FetchCancelled, MoveTemp(OnDone));
 		}
 		return;
 	}
@@ -327,12 +342,7 @@ void UCrowdyVoxelWorld::Fetch(const int64 X, const int64 Y, const int64 Z, const
 		OnDone(Failed);
 		return;
 	}
-	if (Range == 0)
-	{
-		Voxels->FetchChunk(X, Y, Z, MoveTemp(OnDone));
-		return;
-	}
-	Voxels->FetchChunksAround(X, Y, Z, Range, MoveTemp(OnDone));
+	Voxels->FetchChunksInBox(Low, High, MoveTemp(OnDone), FetchCancelled);
 }
 
 void UCrowdyVoxelWorld::Follow(AActor* Actor, const int32 Range)
@@ -503,7 +513,7 @@ int64 UCrowdyVoxelWorld::SetVoxel(const FCrowdyVoxelWrite& Write)
 	Edit.Key = CrowdyVoxelDecode::PositionKey(Position);
 
 	const bool bFits = FitsInt16(Position.X) && FitsInt16(Position.Y) && FitsInt16(Position.Z) && FitsInt16(Write.Voxel.Type);
-	if (!State || !State->bLoaded || !bFits || Write.Voxel.State.Num() > MaxStateBytes)
+	if (!State || !State->bLoaded || !bFits || Write.Voxel.State.Num() > CrowdyVoxelDecode::MaxStateBytes)
 	{
 		Edit.Result = ECrowdyVoxelResult::Failed;
 		Edit.Message = !State || !State->bLoaded ? TEXT("the chunk is not loaded")
@@ -627,7 +637,7 @@ void UCrowdyVoxelWorld::MarkChanged(const FInt64Vector& Coord, FChunkState& Stat
 
 void UCrowdyVoxelWorld::HandleLiveEdit(const FLiveEdit& Edit)
 {
-	if (Edit.Voxel.State.Num() > MaxStateBytes)
+	if (Edit.Voxel.State.Num() > CrowdyVoxelDecode::MaxStateBytes)
 	{
 		return;
 	}
@@ -700,6 +710,45 @@ bool UCrowdyVoxelWorld::ApplyLive(const FInt64Vector& Coord, FChunkState& State,
 	return true;
 }
 
+void UCrowdyVoxelWorld::HandleChunkChanged(const FInt64Vector& Chunk)
+{
+	// Queued once per chunk, so a burst in one frame costs one fetch, and one while a fetch is out costs one more after it.
+	if (FChunkState* State = Chunks.Find(Chunk))
+	{
+		QueueReplaced(Chunk, *State);
+	}
+}
+
+void UCrowdyVoxelWorld::QueueReplaced(const FInt64Vector& Coord, FChunkState& State)
+{
+	if (State.bReplaceQueued)
+	{
+		return;
+	}
+	State.bReplaceQueued = true;
+	ReplacedQueue.Add(Coord);
+}
+
+void UCrowdyVoxelWorld::IssueReplaced()
+{
+	if (ReplacedQueue.Num() == 0 || Now() < RetryAt)
+	{
+		return;
+	}
+	TArray<FInt64Vector> Ready = MoveTemp(ReplacedQueue);
+	Ready.RemoveAll([this](const FInt64Vector& Coord)
+	{
+		FChunkState* State = Chunks.Find(Coord);
+		if (State)
+		{
+			State->bReplaceQueued = false;
+		}
+		return State == nullptr;
+	});
+	// A chunk still loading is asked for again after its load, which may have been read before the change.
+	RequestChunks(Ready, true);
+}
+
 void UCrowdyVoxelWorld::HandleTrackedSend(const FCrowdyTrackedSend& Event)
 {
 	FPendingEdit* Edit = Pending.FindByPredicate([&Event](const FPendingEdit& Waiting) { return Waiting.Ticket == Event.Ticket; });
@@ -737,7 +786,7 @@ void UCrowdyVoxelWorld::UpdateConnection()
 	if (bConnected && !bSettleDone && SettleAt >= 0.0 && Now() >= SettleAt)
 	{
 		bSettleDone = true;
-		Reload(true);
+		Reload();
 	}
 	if (bConnected == bWasConnected)
 	{
@@ -848,59 +897,23 @@ void UCrowdyVoxelWorld::UpdateFollowers()
 		Chunks.Remove(Coord);
 	}
 
-	TArray<FInt64Vector> Missing;
-	TSet<FInt64Vector> Seen;
+	TSet<FInt64Vector> Missing;
 	for (const FFollower& Follower : Followers)
 	{
-		const int32 R = Follower.Range;
-		int32 MissingHere = 0;
-		for (int32 DZ = -R; DZ <= R; ++DZ)
+		const FInt64Vector Reach(Follower.Range, Follower.Range, Follower.Range);
+		const FInt64Vector Lowest = Follower.Chunk - Reach;
+		const FIntVector Size = CrowdyVoxelDecode::BoxSize(Lowest, Follower.Chunk + Reach);
+		const int32 Count = CrowdyVoxelDecode::BoxCount(Size);
+		for (int32 Index = 0; Index < Count; ++Index)
 		{
-			for (int32 DY = -R; DY <= R; ++DY)
+			const FInt64Vector Coord = CrowdyVoxelDecode::BoxCell(Lowest, Size, Index);
+			if (!Chunks.Contains(Coord))
 			{
-				for (int32 DX = -R; DX <= R; ++DX)
-				{
-					const FInt64Vector Coord = Follower.Chunk + FInt64Vector(DX, DY, DZ);
-					if (Chunks.Contains(Coord))
-					{
-						continue;
-					}
-					++MissingHere;
-					bool bAlready = false;
-					Seen.Add(Coord, &bAlready);
-					if (!bAlready)
-					{
-						Missing.Add(Coord);
-					}
-				}
+				Missing.Add(Coord);
 			}
 		}
-		// A follower with nothing loaded yet reads its whole cube in one request chain.
-		const int32 Side = 2 * R + 1;
-		if (MissingHere == Side * Side * Side)
-		{
-			RequestCube(Follower.Chunk, R, false);
-		}
 	}
-	Missing.RemoveAll([this](const FInt64Vector& Coord) { return Chunks.Contains(Coord); });
-	if (Missing.Num() <= MaxSingleFetches)
-	{
-		RequestChunks(Missing, true);
-		return;
-	}
-	// A slab of new chunks is covered by range-1 cubes on a fixed grid of 3, each one page, never by re-reading a
-	// follower's whole cube; only the missing chunks in each are loaded.
-	const TSet<FInt64Vector> Wanted(Missing);
-	TSet<FInt64Vector> Centres;
-	const auto Snap = [](const int64 Axis) { return 3 * FMath::FloorToInt64(Axis / 3.0) + 1; };
-	for (const FInt64Vector& Coord : Missing)
-	{
-		Centres.Add(FInt64Vector(Snap(Coord.X), Snap(Coord.Y), Snap(Coord.Z)));
-	}
-	for (const FInt64Vector& Centre : Centres)
-	{
-		RequestCube(Centre, 1, false, &Wanted);
-	}
+	RequestBoxes(Missing, false, true);
 }
 
 void UCrowdyVoxelWorld::UpdateReach()
@@ -926,205 +939,181 @@ void UCrowdyVoxelWorld::UpdateReach()
 		}
 		Entry.Value.bInReach = bInReach;
 	}
-	if (Returned.Num() == 0)
-	{
-		return;
-	}
-	if (Returned.Num() <= MaxSingleFetches)
-	{
-		RequestChunks(Returned, true);
-		return;
-	}
-	Reload(false);
+	RequestChunks(Returned, true);
 }
 
-void UCrowdyVoxelWorld::Reload(const bool bWholeBand)
+void UCrowdyVoxelWorld::Reload()
 {
 	// The band past each follower's range holds loaded chunks too, so a settle reaches one chunk further.
+	TSet<FInt64Vector> Held;
 	for (const FFollower& Follower : Followers)
 	{
-		if (Follower.bHasChunk)
+		if (!Follower.bHasChunk)
 		{
-			RequestCube(Follower.Chunk, bWholeBand ? Follower.Range + 1 : Follower.Range, true);
+			continue;
+		}
+		const FInt64Vector Reach(Follower.Range + 1, Follower.Range + 1, Follower.Range + 1);
+		const FInt64Vector Lowest = Follower.Chunk - Reach;
+		const FIntVector Size = CrowdyVoxelDecode::BoxSize(Lowest, Follower.Chunk + Reach);
+		const int32 Count = CrowdyVoxelDecode::BoxCount(Size);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const FInt64Vector Coord = CrowdyVoxelDecode::BoxCell(Lowest, Size, Index);
+			if (Chunks.Contains(Coord))
+			{
+				Held.Add(Coord);
+			}
 		}
 	}
+	RequestBoxes(Held, true, true);
 }
 
 void UCrowdyVoxelWorld::RequestChunks(const TArray<FInt64Vector>& Coords, const bool bFull)
 {
+	// A chunk with a fetch out is asked for again once that answer is in; the rest are read together in boxes.
+	TSet<FInt64Vector> Ready;
 	for (const FInt64Vector& Coord : Coords)
 	{
-		FChunkState& State = Chunks.FindOrAdd(Coord);
-		if (State.FetchRequest != 0)
+		FChunkState* State = Chunks.Find(Coord);
+		if (!State)
 		{
-			State.bFetchAgain = true;
-			State.bFetchAgainFull |= bFull;
 			continue;
 		}
-		const int32 Request = NextFetchRequest++;
-		State.FetchRequest = Request;
-		State.FetchIssuedAt = Now();
-		State.bFetchFull = bFull || !State.bLoaded;
-		State.SettleInFlight = MoveTemp(State.SettlePositions);
-		State.HeldDuringFetch.Reset();
-		State.bHeldOverflow = false;
-		// The answer can come back before Fetch returns, so nothing touches State after this call.
-		TWeakObjectPtr<UCrowdyVoxelWorld> WeakThis(this);
-		Fetch(Coord.X, Coord.Y, Coord.Z, 0, [WeakThis, Coord, Request](const FCrowdyChunkFetch& Result)
+		if (State->FetchRequest != 0)
 		{
-			if (UCrowdyVoxelWorld* Self = WeakThis.Get())
-			{
-				Self->OnFetched(Coord, Request, Result);
-			}
-		});
+			State->bFetchAgain = true;
+			State->bFetchAgainFull |= bFull;
+			continue;
+		}
+		Ready.Add(Coord);
 	}
+	RequestBoxes(Ready, true, bFull);
 }
 
-void UCrowdyVoxelWorld::RequestCube(const FInt64Vector& Centre, const int32 Range, const bool bReload, const TSet<FInt64Vector>* Only)
+void UCrowdyVoxelWorld::RequestBoxes(TSet<FInt64Vector>& Coords, const bool bReload, const bool bFull)
 {
+	// One page a box, so boxes are read side by side and no platform reorder between pages can skip a chunk.
+	CrowdyVoxelDecode::SplitIntoBoxes(Coords, UCrowdyVoxels::PageSize, [this, bReload, bFull](const FInt64Vector& Low, const FInt64Vector& High)
+	{
+		RequestBox(Low, High, bReload, bFull);
+	});
+}
+
+void UCrowdyVoxelWorld::RequestBox(const FInt64Vector& Low, const FInt64Vector& High, const bool bReload, const bool bFull)
+{
+	const FIntVector Size = CrowdyVoxelDecode::BoxSize(Low, High);
+	const int32 Count = CrowdyVoxelDecode::BoxCount(Size);
 	const int32 Request = NextFetchRequest++;
 	int32 Marked = 0;
-	for (int32 DZ = -Range; DZ <= Range; ++DZ)
+	for (int32 Index = 0; Index < Count; ++Index)
 	{
-		for (int32 DY = -Range; DY <= Range; ++DY)
+		const FInt64Vector Coord = CrowdyVoxelDecode::BoxCell(Low, Size, Index);
+		FChunkState* State = Chunks.Find(Coord);
+		if ((!State && bReload) || (State && State->bLoaded && !bReload))
 		{
-			for (int32 DX = -Range; DX <= Range; ++DX)
-			{
-				const FInt64Vector Coord = Centre + FInt64Vector(DX, DY, DZ);
-				if (Only && !Only->Contains(Coord))
-				{
-					continue;
-				}
-				FChunkState* State = Chunks.Find(Coord);
-				if (!State && bReload)
-				{
-					continue;
-				}
-				if (State && State->bLoaded && !bReload)
-				{
-					continue;
-				}
-				if (!State)
-				{
-					State = &Chunks.Add(Coord);
-				}
-				if (State->FetchRequest != 0)
-				{
-					State->bFetchAgain |= bReload;
-					State->bFetchAgainFull |= bReload;
-					continue;
-				}
-				State->FetchRequest = Request;
-				State->FetchIssuedAt = Now();
-				State->bFetchFull = true;
-				State->SettleInFlight = MoveTemp(State->SettlePositions);
-				State->HeldDuringFetch.Reset();
-				State->bHeldOverflow = false;
-				++Marked;
-			}
+			continue;
 		}
+		if (!State)
+		{
+			State = &Chunks.Add(Coord);
+		}
+		if (State->FetchRequest != 0)
+		{
+			State->bFetchAgain |= bReload;
+			State->bFetchAgainFull |= bReload && bFull;
+			continue;
+		}
+		State->FetchRequest = Request;
+		State->FetchIssuedAt = Now();
+		State->bFetchFull = bFull || !State->bLoaded;
+		State->SettleInFlight = MoveTemp(State->SettlePositions);
+		State->HeldDuringFetch.Reset();
+		State->bHeldOverflow = false;
+		++Marked;
 	}
 	if (Marked == 0)
 	{
 		return;
 	}
 	TWeakObjectPtr<UCrowdyVoxelWorld> WeakThis(this);
-	Fetch(Centre.X, Centre.Y, Centre.Z, Range, [WeakThis, Centre, Range, Request](const FCrowdyChunkFetch& Result)
+	Fetch(Low, High, [WeakThis, Low, High, Request](const FCrowdyChunkFetch& Result)
 	{
 		if (UCrowdyVoxelWorld* Self = WeakThis.Get())
 		{
-			Self->OnCubeFetched(Centre, Range, Request, Result);
+			Self->OnBoxFetched(Low, High, Request, Result);
 		}
 	});
 }
 
-void UCrowdyVoxelWorld::OnFetched(const FInt64Vector& Coord, const int32 Request, const FCrowdyChunkFetch& Fetch)
-{
-	FChunkState* State = Chunks.Find(Coord);
-	if (!State || State->FetchRequest != Request)
-	{
-		return;
-	}
-	if (Fetch.Result == ECrowdyVoxelResult::Ok && Fetch.Chunks.Num() == 1)
-	{
-		Adopt(Coord, &Fetch.Chunks[0]);
-		return;
-	}
-	UE_LOG(LogCrowdyServices, Warning, TEXT("Voxel world: fetching chunk %lld %lld %lld ended %s."), Coord.X, Coord.Y, Coord.Z,
-		*UEnum::GetValueAsString(Fetch.Result));
-	// A reload waiting on an earlier fetch would otherwise wait out its timeout, as nothing asks for the chunk again.
-	EndReloads(Coord, INDEX_NONE, Fetch.Result == ECrowdyVoxelResult::Ok ? ECrowdyVoxelResult::BadReply : Fetch.Result,
-		FString::Printf(TEXT("fetching the chunk failed: %s"), *Fetch.Message));
-	State->FetchRequest = 0;
-	RetryAt = Now() + RetrySeconds;
-	if (!State->bLoaded)
-	{
-		Chunks.Remove(Coord);
-		bFollowDirty = true;
-		return;
-	}
-	// The cells it was to settle wait for the next settle round.
-	State->SettlePositions.Append(MoveTemp(State->SettleInFlight));
-	if (State->SettlePositions.Num() > 0)
-	{
-		SettleQueue.AddUnique(Coord);
-	}
-}
-
-void UCrowdyVoxelWorld::OnCubeFetched(const FInt64Vector& Centre, const int32 Range, const int32 Request, const FCrowdyChunkFetch& Fetch)
+void UCrowdyVoxelWorld::OnBoxFetched(const FInt64Vector& Low, const FInt64Vector& High, const int32 Request, const FCrowdyChunkFetch& Fetch)
 {
 	const bool bOk = Fetch.Result == ECrowdyVoxelResult::Ok;
-	UE_CLOG(!bOk, LogCrowdyServices, Warning, TEXT("Voxel world: fetching the chunks around %lld %lld %lld ended %s."),
-		Centre.X, Centre.Y, Centre.Z, *UEnum::GetValueAsString(Fetch.Result));
+	UE_CLOG(!bOk, LogCrowdyServices, Warning, TEXT("Voxel world: fetching chunks %lld %lld %lld to %lld %lld %lld ended %s."),
+		Low.X, Low.Y, Low.Z, High.X, High.Y, High.Z, *UEnum::GetValueAsString(Fetch.Result));
 
 	TMap<FInt64Vector, const FCrowdyVoxelChunk*> ByCoord;
+	ByCoord.Reserve(Fetch.Chunks.Num());
 	for (const FCrowdyVoxelChunk& Chunk : Fetch.Chunks)
 	{
 		ByCoord.Add(FInt64Vector(Chunk.X, Chunk.Y, Chunk.Z), &Chunk);
 	}
-	for (int32 DZ = -Range; DZ <= Range; ++DZ)
+	TArray<FInt64Vector> AgainWhole;
+	TArray<FInt64Vector> AgainCells;
+	const FIntVector Size = CrowdyVoxelDecode::BoxSize(Low, High);
+	const int32 Count = CrowdyVoxelDecode::BoxCount(Size);
+	for (int32 Index = 0; Index < Count; ++Index)
 	{
-		for (int32 DY = -Range; DY <= Range; ++DY)
+		const FInt64Vector Coord = CrowdyVoxelDecode::BoxCell(Low, Size, Index);
+		FChunkState* State = Chunks.Find(Coord);
+		if (!State || State->FetchRequest != Request)
 		{
-			for (int32 DX = -Range; DX <= Range; ++DX)
+			continue;
+		}
+		if (bOk)
+		{
+			// A chunk with neither a stored grid nor a recorded edit is absent from the answer and loads as empty.
+			const EFetchAgain Again = Adopt(Coord, ByCoord.FindRef(Coord));
+			if (Again != EFetchAgain::None)
 			{
-				const FInt64Vector Coord = Centre + FInt64Vector(DX, DY, DZ);
-				FChunkState* State = Chunks.Find(Coord);
-				if (!State || State->FetchRequest != Request)
-				{
-					continue;
-				}
-				if (bOk)
-				{
-					// A chunk the platform does not store is absent from the answer and loads as empty.
-					Adopt(Coord, ByCoord.FindRef(Coord));
-					continue;
-				}
-				EndReloads(Coord, INDEX_NONE, Fetch.Result, FString::Printf(TEXT("fetching the chunk failed: %s"), *Fetch.Message));
-				State->FetchRequest = 0;
-				RetryAt = Now() + RetrySeconds;
-				if (!State->bLoaded)
-				{
-					Chunks.Remove(Coord);
-					bFollowDirty = true;
-					continue;
-				}
-				State->SettlePositions.Append(MoveTemp(State->SettleInFlight));
-				if (State->SettlePositions.Num() > 0)
-				{
-					SettleQueue.AddUnique(Coord);
-				}
+				(Again == EFetchAgain::Whole ? AgainWhole : AgainCells).Add(Coord);
 			}
+			continue;
+		}
+		// A reload waiting on an earlier fetch would otherwise wait out its timeout, as nothing asks for the chunk again.
+		EndReloads(Coord, INDEX_NONE, Fetch.Result, FString::Printf(TEXT("fetching the chunk failed: %s"), *Fetch.Message));
+		State->FetchRequest = 0;
+		RetryAt = Now() + RetrySeconds;
+		if (!State->bLoaded)
+		{
+			Chunks.Remove(Coord);
+			bFollowDirty = true;
+			continue;
+		}
+		// A whole read that failed (a settle, a replaced chunk) or one asked for again is retried after RetryAt.
+		if (State->bFetchFull || State->bFetchAgain)
+		{
+			QueueReplaced(Coord, *State);
+		}
+		State->bFetchFull = false;
+		State->bFetchAgain = false;
+		State->bFetchAgainFull = false;
+		// The cells it was to settle wait for the next settle round.
+		State->SettlePositions.Append(MoveTemp(State->SettleInFlight));
+		if (State->SettlePositions.Num() > 0)
+		{
+			SettleQueue.AddUnique(Coord);
 		}
 	}
+	RequestChunks(AgainWhole, true);
+	RequestChunks(AgainCells, false);
 }
 
-void UCrowdyVoxelWorld::Adopt(const FInt64Vector& Coord, const FCrowdyVoxelChunk* Fetched)
+UCrowdyVoxelWorld::EFetchAgain UCrowdyVoxelWorld::Adopt(const FInt64Vector& Coord, const FCrowdyVoxelChunk* Fetched)
 {
 	FChunkState* State = Chunks.Find(Coord);
 	if (!State)
 	{
-		return;
+		return EFetchAgain::None;
 	}
 
 	const FCrowdyVoxelChunk Empty = Fetched ? FCrowdyVoxelChunk() : EmptyChunk(Coord);
@@ -1215,10 +1204,7 @@ void UCrowdyVoxelWorld::Adopt(const FInt64Vector& Coord, const FCrowdyVoxelChunk
 	State->bFetchAgain = false;
 	State->bFetchAgainFull = false;
 	State->bHeldOverflow = false;
-	if (bAgain)
-	{
-		RequestChunks({Coord}, bAgainFull);
-	}
+	return !bAgain ? EFetchAgain::None : bAgainFull ? EFetchAgain::Whole : EFetchAgain::Cells;
 }
 
 void UCrowdyVoxelWorld::RequestSettle(const FInt64Vector& Coord, const FIntVector& Position)

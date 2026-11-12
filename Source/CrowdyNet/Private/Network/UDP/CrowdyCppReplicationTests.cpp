@@ -643,11 +643,13 @@ bool FCrowdyReplicationAdvertisesCapabilitiesTest::RunTest(const FString& Parame
 	// Long-spatial layout: a 68-byte header, the payload, then the 32-byte signature, the token id and the sequence.
 	constexpr int32 HeaderSize = 68;
 	constexpr int32 SignedTailSize = 32 + 8 + 1;
-	TestEqual(TEXT("the capability flags are one little-endian u32"), Capabilities.Num(), HeaderSize + 4 + SignedTailSize);
-	if (Capabilities.Num() == HeaderSize + 4 + SignedTailSize)
+	TestEqual(TEXT("the capability flags are one little-endian u32 and an 8-byte control nonce"), Capabilities.Num(),
+		HeaderSize + 12 + SignedTailSize);
+	if (Capabilities.Num() == HeaderSize + 12 + SignedTailSize)
 	{
 		TestEqual(TEXT("the message is signed like every client frame"), Capabilities[35], static_cast<uint8>(1));
-		TestEqual(TEXT("bit 0 asks for signed bundles"), Capabilities[HeaderSize], static_cast<uint8>(1));
+		TestEqual(TEXT("bit 0 asks for signed bundles and bit 1 for bound control frames"), Capabilities[HeaderSize],
+			static_cast<uint8>(3));
 		TestEqual(TEXT("and no other bit is set"),
 			Capabilities[HeaderSize + 1] | Capabilities[HeaderSize + 2] | Capabilities[HeaderSize + 3], 0);
 	}
@@ -2172,6 +2174,41 @@ namespace
 		}
 		return Frame;
 	}
+
+	/** COMMAND_SESSION_RELEASED_BOUND: type, reason, the assignment's control nonce, and an HMAC over those ten octets. */
+	TArray<uint8> BoundReleaseFrame(const uint8 Reason, const TArray<uint8>& Nonce, const bool bSigned)
+	{
+		TArray<uint8> Frame = {45, Reason};
+		Frame.Append(Nonce);
+		Frame.SetNumZeroed(42);
+		if (bSigned)
+		{
+			CrowdyWireParity::Crypto().hmacSha256(CrowdyWireParity::ParityToken().bytes(), crowdy::Bytes(Frame.GetData(), 10),
+				Frame.GetData() + 10);
+		}
+		return Frame;
+	}
+
+	/** The control nonce of the next CLIENT_CAPABILITIES the client sends; reading it also teaches the server the address. */
+	TArray<uint8> ReadControlNonce(CrowdyReplicationTestSupport::FConnectedFixture& Fixture)
+	{
+		constexpr int32 FlagsAt = 68;
+		TArray<uint8> Nonce;
+		CrowdyReplicationTestSupport::WaitUntil([&Fixture, &Nonce]()
+		{
+			Fixture.Connection->Poll();
+			for (const TArray<uint8>& Message : CrowdyReplicationTestSupport::SplitBundle(Fixture.Server.Receive(0.1)))
+			{
+				if (Message.Num() >= FlagsAt + 12 && Message[0] == static_cast<uint8>(ECrowdyMessageType::CLIENT_CAPABILITIES))
+				{
+					Nonce = TArray<uint8>(Message.GetData() + FlagsAt + 4, 8);
+					return true;
+				}
+			}
+			return false;
+		});
+		return Nonce;
+	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyIdleReleaseIsInactiveTest,
@@ -2183,6 +2220,7 @@ bool FCrowdyIdleReleaseIsInactiveTest::RunTest(const FString& Parameters)
 	using namespace CrowdyReplicationTestSupport;
 
 	FConnectedFixture Fixture;
+	Fixture.bAdvertiseCapabilities = true;
 	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open(7, 123456789, 0)))
 	{
 		Fixture.Shut();
@@ -2196,7 +2234,8 @@ bool FCrowdyIdleReleaseIsInactiveTest::RunTest(const FString& Parameters)
 	Routing->SetReceiveTarget(nullptr, nullptr, Udp.Get());
 	Routing->SetConnection(Fixture.Connection);
 
-	if (!TestTrue(TEXT("the stand-in server learned the client's address"), Fixture.Prime()))
+	const TArray<uint8> FirstNonce = ReadControlNonce(Fixture);
+	if (!TestEqual(TEXT("the client sent its control nonce, and the server learned its address"), FirstNonce.Num(), 8))
 	{
 		Routing->SetConnection(nullptr);
 		Fixture.Shut();
@@ -2212,12 +2251,26 @@ bool FCrowdyIdleReleaseIsInactiveTest::RunTest(const FString& Parameters)
 		}, 2.0);
 	};
 
-	TestTrue(TEXT("a forged release was pushed"), Fixture.Server.SendToClient(SessionReleasedFrame(5, false)));
+	// An older server's unbound release, right after this client's own input, cannot be a genuine idle release.
+	TestTrue(TEXT("the stand-in server heard gameplay input"), Fixture.Prime());
+	TestTrue(TEXT("an unbound release was pushed"), Fixture.Server.SendToClient(SessionReleasedFrame(5, true)));
+	const TArray<uint8> SecondNonce = ReadControlNonce(Fixture);
+	TestEqual(TEXT("an unbound release right after input reassigns instead of ending the session"),
+		Fixture.Connection->GetStats().IdleReleasesAfterInput, static_cast<int64>(1));
+	TestTrue(TEXT("the new assignment draws a new control nonce"), SecondNonce.Num() == 8 && SecondNonce != FirstNonce);
+	TestTrue(TEXT("and the connection comes back"), PollFor(ECrowdyCppConnState::Connected));
+
+	TestTrue(TEXT("a release bound to the earlier assignment was pushed"),
+		Fixture.Server.SendToClient(BoundReleaseFrame(5, FirstNonce, true)));
+	TestFalse(TEXT("a replayed release ends nothing"), PollFor(ECrowdyCppConnState::Inactive));
+	TestEqual(TEXT("and is counted as a replay"), Fixture.Connection->GetStats().StaleBoundControl, static_cast<int64>(1));
+
+	TestTrue(TEXT("a forged release was pushed"), Fixture.Server.SendToClient(BoundReleaseFrame(5, SecondNonce, false)));
 	TestFalse(TEXT("a release that does not verify ends nothing"), PollFor(ECrowdyCppConnState::Inactive));
 	TestEqual(TEXT("the forged release was refused on its signature"), Fixture.Connection->GetStats().HmacFailures, static_cast<int64>(1));
 
 	Udp->UpdatePingTime(42);
-	TestTrue(TEXT("a signed idle release was pushed"), Fixture.Server.SendToClient(SessionReleasedFrame(5, true)));
+	TestTrue(TEXT("a release bound to this assignment was pushed"), Fixture.Server.SendToClient(BoundReleaseFrame(5, SecondNonce, true)));
 	TestTrue(TEXT("the connection reports Inactive"), PollFor(ECrowdyCppConnState::Inactive));
 	TestEqual(TEXT("the signed release verified"), Fixture.Connection->GetStats().HmacFailures, static_cast<int64>(1));
 	TestEqual(TEXT("the game reads Inactive, not the timeout's Disconnected"),

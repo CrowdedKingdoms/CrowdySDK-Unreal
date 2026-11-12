@@ -52,6 +52,26 @@ namespace
 		return FString::Printf(TEXT("{\"data\":{\"getChunk\":%s}}"), *Chunk);
 	}
 
+	/** One row of the edit log, with every member the vendored document selects. */
+	FString RowJson(int32 X, int32 Y, int32 Z, int32 Type, const FString& State = TEXT("null"))
+	{
+		return FString::Printf(
+			TEXT("{\"voxelUpdateId\":\"1\",\"appId\":\"31337\",\"location\":{\"x\":%d,\"y\":%d,\"z\":%d},\"voxelType\":%d,\"state\":%s,")
+			TEXT("\"createdBy\":\"5\",\"createdAt\":\"2026-11-12T00:00:00.000Z\"}"),
+			X, Y, Z, Type, *State);
+	}
+
+	FString GroupJson(int64 X, int64 Y, int64 Z, const TArray<FString>& Rows)
+	{
+		return FString::Printf(TEXT("{\"coordinates\":{\"x\":\"%lld\",\"y\":\"%lld\",\"z\":\"%lld\"},\"voxels\":[%s]}"), X, Y, Z, *FString::Join(Rows, TEXT(",")));
+	}
+
+	FString EditsPageJson(const TArray<FString>& Groups, int32 Limit = 32)
+	{
+		return FString::Printf(TEXT("{\"data\":{\"listVoxelUpdatesByDistance\":{\"centerCoordinate\":{\"x\":\"0\",\"y\":\"0\",\"z\":\"0\"},\"limit\":%d,\"skip\":0,\"chunks\":[%s]}}}"),
+			Limit, *FString::Join(Groups, TEXT(",")));
+	}
+
 	TArray<uint8> EmptyGrid()
 	{
 		TArray<uint8> Grid;
@@ -123,6 +143,26 @@ namespace
 		{
 			Voxels->FetchChunk(X, Y, Z, [this](const FCrowdyChunkFetch& Fetched) { Take(Fetched); });
 			Pump();
+		}
+
+		void FetchBox(const FInt64Vector& Corner, const FInt64Vector& Opposite)
+		{
+			Voxels->FetchChunksInBox(Corner, Opposite, [this](const FCrowdyChunkFetch& Fetched) { Take(Fetched); });
+			Pump();
+		}
+
+		/** Starts a box read, sets its cancel flag while the first request is out, then lets the answers arrive. */
+		void FetchBoxCancelled(const FInt64Vector& Corner, const FInt64Vector& Opposite)
+		{
+			const TSharedRef<bool> Cancelled = MakeShared<bool>(false);
+			Voxels->FetchChunksInBox(Corner, Opposite, [this](const FCrowdyChunkFetch& Fetched) { Take(Fetched); }, Cancelled);
+			*Cancelled = true;
+			Pump();
+		}
+
+		const FCrowdyVoxelChunk* Find(int64 X, int64 Y, int64 Z) const
+		{
+			return Answer.Chunks.FindByPredicate([X, Y, Z](const FCrowdyVoxelChunk& Chunk) { return Chunk.X == X && Chunk.Y == Y && Chunk.Z == Z; });
 		}
 
 		FString SentBody() const
@@ -491,37 +531,32 @@ bool FCrowdyVoxelsPagesTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelsRepeatTest, "CrowdySDK.Voxels.ARepeatedChunkRestartsTheFetchOnce", VoxelTestFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelsRepeatTest, "CrowdySDK.Voxels.AChunkOnTwoPagesIsKeptOnce", VoxelTestFlags)
 
 bool FCrowdyVoxelsRepeatTest::RunTest(const FString& Parameters)
 {
-	// The platform's order moved: chunk 31 comes back on the second page, so some other chunk was never sent.
-	TArray<FString> Moved = EmptyChunks(3, 100);
-	Moved.Add(EmptyChunks(1, 31)[0]);
-	const FString First = PageJson(EmptyChunks(32, 0));
+	// Pages are stable, so a chunk that comes back on a second page is the same chunk and is kept once.
+	TArray<FString> Second = EmptyChunks(3, 100);
+	Second.Add(EmptyChunks(1, 31)[0]);
 
-	FVoxelsRig Restarted(PageJson({}));
-	if (!TestTrue(TEXT("client built"), Restarted.Client.IsValid()))
+	FVoxelsRig Rig(PageJson(EmptyChunks(1, 900)));
+	if (!TestTrue(TEXT("client built"), Rig.Client.IsValid()))
 	{
 		return false;
 	}
-	Restarted.Client->SetTestResponseScript({
-		TPair<int32, FString>(200, First), TPair<int32, FString>(200, PageJson(Moved)),
-		TPair<int32, FString>(200, First), TPair<int32, FString>(200, PageJson(EmptyChunks(4, 100)))});
-	Restarted.Fetch(0, 0, 0, 2);
-	TestEqual(TEXT("one answer"), Restarted.Answers, 1);
-	TestEqual(TEXT("the fetch restarted and finished"), Restarted.Answer.Result, ECrowdyVoxelResult::Ok);
-	TestEqual(TEXT("with every chunk of the second pass"), Restarted.Answer.Chunks.Num(), 36);
+	Rig.Client->SetTestResponseScript({TPair<int32, FString>(200, PageJson(EmptyChunks(32, 0))), TPair<int32, FString>(200, PageJson(Second))});
+	Rig.Fetch(0, 0, 0, 2);
+	TestEqual(TEXT("one answer"), Rig.Answers, 1);
+	TestEqual(TEXT("ok"), Rig.Answer.Result, ECrowdyVoxelResult::Ok);
+	TestEqual(TEXT("the repeat kept once, with no read again"), Rig.Answer.Chunks.Num(), 35);
+	TestFalse(TEXT("nothing past the short page was asked for"), Rig.Answer.Chunks.ContainsByPredicate(
+		[](const FCrowdyVoxelChunk& Chunk) { return Chunk.X == 900; }));
 
-	FVoxelsRig Again(PageJson({}));
-	Again.Client->SetTestResponseScript({
-		TPair<int32, FString>(200, First), TPair<int32, FString>(200, PageJson(Moved)),
-		TPair<int32, FString>(200, First), TPair<int32, FString>(200, PageJson(Moved))});
-	AddExpectedMessagePlain(TEXT("The chunk fetch ended Failed"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
-	Again.Fetch(0, 0, 0, 2);
-	TestEqual(TEXT("one answer"), Again.Answers, 1);
-	TestEqual(TEXT("a second repeat fails instead of answering with a hole"), Again.Answer.Result, ECrowdyVoxelResult::Failed);
-	TestEqual(TEXT("nothing returned"), Again.Answer.Chunks.Num(), 0);
+	// A platform that repeats the same full page for ever is cut off once the pages span the region.
+	FVoxelsRig Endless(PageJson(EmptyChunks(32, 0)));
+	Endless.Fetch(0, 0, 0, 2);
+	TestEqual(TEXT("an endless repeat still answers once"), Endless.Answers, 1);
+	TestEqual(TEXT("with the chunks it did send"), Endless.Answer.Chunks.Num(), 32);
 	return true;
 }
 
@@ -568,10 +603,12 @@ bool FCrowdyVoxelsDeepAnswerTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	AddExpectedMessagePlain(TEXT("The chunk fetch ended Failed"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	// The bridge packs any depth, so the decoder's own nesting bound is what refuses it.
+	AddExpectedMessagePlain(TEXT("The chunk fetch ended BadReply"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
 	Rig.Fetch(0, 0, 0, 2);
-	TestEqual(TEXT("refused before it is packed"), Rig.Answer.Result, ECrowdyVoxelResult::Failed);
-	TestTrue(TEXT("as over-deep"), Rig.Answer.Message.Contains(TEXT("over-deep")));
+	TestEqual(TEXT("one answer"), Rig.Answers, 1);
+	TestEqual(TEXT("refused by the decoder"), Rig.Answer.Result, ECrowdyVoxelResult::BadReply);
+	TestEqual(TEXT("with nothing half-decoded returned"), Rig.Answer.Chunks.Num(), 0);
 	return true;
 }
 
@@ -763,6 +800,257 @@ bool FCrowdyVoxelsFetchChunkTest::RunTest(const FString& Parameters)
 	AddExpectedMessagePlain(TEXT("The chunk fetch ended BadReply"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
 	Other.FetchOne(37, -52, 1);
 	TestEqual(TEXT("a different chunk than the one asked for is a bad reply"), Other.Answer.Result, ECrowdyVoxelResult::BadReply);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelsLeanDocumentTest, "CrowdySDK.Voxels.ReadsSelectOnlyWhatTheDecodeReads", VoxelTestFlags)
+
+bool FCrowdyVoxelsLeanDocumentTest::RunTest(const FString& Parameters)
+{
+	FVoxelsRig Around(PageJson({}));
+	FVoxelsRig Box(PageJson({ChunkJson(4, 0, 0, GridJson(EmptyGrid()))}));
+	if (!TestTrue(TEXT("clients built"), Around.Client.IsValid() && Box.Client.IsValid()))
+	{
+		return false;
+	}
+	Around.Fetch(0, 0, 0, 1);
+	const FString AroundBody = Around.SentBody();
+	TestTrue(TEXT("Fetch Chunks Around sends the lean document"), AroundBody.Contains(TEXT("GetChunksByDistanceVoxels")));
+	TestFalse(TEXT("which selects no chunk state"), AroundBody.Contains(TEXT("chunkState")));
+	TestFalse(TEXT("no LODs"), AroundBody.Contains(TEXT("lods")));
+	TestFalse(TEXT("and no upload time"), AroundBody.Contains(TEXT("cdnUploadedAt")));
+
+	Box.FetchBox(FInt64Vector(4, 0, 0), FInt64Vector(4, 0, 0));
+	TestEqual(TEXT("a box read is ok"), Box.Answer.Result, ECrowdyVoxelResult::Ok);
+	const FString BoxBody = Box.SentBody();
+	TestTrue(TEXT("a box read sends the lean document too"), BoxBody.Contains(TEXT("GetChunksByDistanceVoxels")) && !BoxBody.Contains(TEXT("chunkState")));
+	TestTrue(TEXT("with both corners"), BoxBody.Contains(TEXT("\"lowChunk\"")) && BoxBody.Contains(TEXT("\"highChunk\"")));
+	TestFalse(TEXT("and no cube"), BoxBody.Contains(TEXT("maxDistance")));
+	TestTrue(TEXT("corners as BigInt strings"), BoxBody.Contains(TEXT("\"x\":\"4\"")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelsBoxPagesTest, "CrowdySDK.Voxels.BoxPagesByTheEchoedLimit", VoxelTestFlags)
+
+bool FCrowdyVoxelsBoxPagesTest::RunTest(const FString& Parameters)
+{
+	// Anything asked for past the script gets an answer no read accepts, so an extra request shows as a failure.
+	FVoxelsRig Rig(TEXT("{\"data\":null}"));
+	if (!TestTrue(TEXT("client built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	const FString Grid = GridJson(EmptyGrid());
+	Rig.Client->SetTestResponseScript({
+		TPair<int32, FString>(200, PageJson({ChunkJson(0, 0, 0, Grid), ChunkJson(1, 0, 0, Grid)}, 2)),
+		TPair<int32, FString>(200, PageJson({ChunkJson(1, 0, 0, Grid), ChunkJson(2, 0, 0, Grid)}, 2)),
+		TPair<int32, FString>(200, EditsPageJson({}))});
+	Rig.FetchBox(FInt64Vector(0, 0, 0), FInt64Vector(3, 0, 0));
+
+	TestEqual(TEXT("one answer"), Rig.Answers, 1);
+	TestEqual(TEXT("ok"), Rig.Answer.Result, ECrowdyVoxelResult::Ok);
+	TestEqual(TEXT("a chunk on two pages is kept once"), Rig.Answer.Chunks.Num(), 3);
+	TestTrue(TEXT("each stored chunk once"), Rig.Find(0, 0, 0) && Rig.Find(1, 0, 0) && Rig.Find(2, 0, 0));
+	const FString Body = Rig.SentBody();
+	TestTrue(TEXT("two full pages of 2 span the box of 4, so the edits are read next"), Body.Contains(TEXT("ListVoxelUpdatesByDistance")));
+	TestTrue(TEXT("for the one chunk the read did not return"), Body.Contains(TEXT("\"x\":\"3\"")) && !Body.Contains(TEXT("\"x\":\"0\"")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelsNeverStoredEditsTest, "CrowdySDK.Voxels.BoxReadsEditsOfChunksNeverStored", VoxelTestFlags)
+
+bool FCrowdyVoxelsNeverStoredEditsTest::RunTest(const FString& Parameters)
+{
+	TArray<uint8> Grid = EmptyGrid();
+	Grid[Index(1, 1, 1)] = 4;
+	FVoxelsRig Rig(TEXT("{\"data\":null}"));
+	if (!TestTrue(TEXT("client built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	// The edit log lists each chunk's rows newest first.
+	Rig.Client->SetTestResponseScript({
+		TPair<int32, FString>(200, PageJson({ChunkJson(0, 0, 0, GridJson(Grid))})),
+		TPair<int32, FString>(200, EditsPageJson({
+			GroupJson(0, 0, 0, {RowJson(1, 1, 1, 9)}),
+			GroupJson(1, 0, 0, {RowJson(1, 1, 1, 5, TEXT("\"Ag==\"")), RowJson(2, 2, 2, 9), RowJson(1, 1, 1, 3, TEXT("\"AQ==\"")), RowJson(20, 0, 0, 300)}),
+			GroupJson(2, 0, 0, {})}))});
+	Rig.FetchBox(FInt64Vector(0, 0, 0), FInt64Vector(2, 0, 0));
+
+	TestEqual(TEXT("ok"), Rig.Answer.Result, ECrowdyVoxelResult::Ok);
+	TestEqual(TEXT("the stored chunk and the one with edits"), Rig.Answer.Chunks.Num(), 2);
+	const FCrowdyVoxelChunk* Stored = Rig.Find(0, 0, 0);
+	const FCrowdyVoxelChunk* Edited = Rig.Find(1, 0, 0);
+	if (!TestTrue(TEXT("both found"), Stored && Edited))
+	{
+		return false;
+	}
+	TestTrue(TEXT("the stored chunk is stored"), Stored->bStored);
+	TestEqual(TEXT("and keeps its own read, not the edit log's second copy"), Stored->Grid[Index(1, 1, 1)], static_cast<uint8>(4));
+	TestFalse(TEXT("a chunk never stored says so"), Edited->bStored);
+	TestEqual(TEXT("its newest edit wins over an older one at the same cell"), Edited->Grid[Index(1, 1, 1)], static_cast<uint8>(5));
+	TestTrue(TEXT("with the newest edit's state"), UCrowdyVoxelLibrary::GetVoxel(*Edited, FIntVector(1, 1, 1)).State == TArray<uint8>({2}));
+	TestEqual(TEXT("its other edit applies over an empty grid"), Edited->Grid[Index(2, 2, 2)], static_cast<uint8>(9));
+	TestEqual(TEXT("a wide edit is kept"), UCrowdyVoxelLibrary::GetVoxel(*Edited, FIntVector(20, 0, 0)).Type, 300);
+	TestEqual(TEXT("one edit per position"), Edited->Edits.Num(), 3);
+	TestFalse(TEXT("not truncated"), Edited->bEditsTruncated);
+	TestFalse(TEXT("a group with no edits is left out"), Rig.Find(2, 0, 0) != nullptr);
+	const FString Body = Rig.SentBody();
+	TestTrue(TEXT("the edits are read only over the chunks the read did not return"), Body.Contains(TEXT("ListVoxelUpdatesByDistance"))
+		&& Body.Contains(TEXT("\"x\":\"1\"")) && Body.Contains(TEXT("\"x\":\"2\"")) && !Body.Contains(TEXT("\"x\":\"0\"")));
+
+	FVoxelsRig Whole(TEXT("{\"data\":null}"));
+	Whole.Client->SetTestResponseScript({TPair<int32, FString>(200, PageJson({ChunkJson(0, 0, 0, GridJson(Grid))}))});
+	Whole.FetchBox(FInt64Vector(0, 0, 0), FInt64Vector(0, 0, 0));
+	TestEqual(TEXT("a box the read returned whole is ok"), Whole.Answer.Result, ECrowdyVoxelResult::Ok);
+	TestTrue(TEXT("without reading its edits again"), Whole.SentBody().Contains(TEXT("GetChunksByDistanceVoxels")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelsAbsentBoxesTest, "CrowdySDK.Voxels.EditsAreReadOnlyOverAbsentChunks", VoxelTestFlags)
+
+bool FCrowdyVoxelsAbsentBoxesTest::RunTest(const FString& Parameters)
+{
+	// Two absent chunks at opposite ends of a box, the stored one between them: two small edit reads, side by side.
+	FVoxelsRig Rig(TEXT("{\"data\":null}"));
+	if (!TestTrue(TEXT("client built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	Rig.Client->SetTestResponseScript({
+		TPair<int32, FString>(200, PageJson({ChunkJson(1, 0, 0, GridJson(EmptyGrid()))})),
+		TPair<int32, FString>(200, EditsPageJson({GroupJson(0, 0, 0, {RowJson(1, 1, 1, 3)})})),
+		TPair<int32, FString>(200, EditsPageJson({GroupJson(2, 0, 0, {RowJson(2, 2, 2, 4)})}))});
+	Rig.FetchBox(FInt64Vector(0, 0, 0), FInt64Vector(2, 0, 0));
+
+	TestEqual(TEXT("ok"), Rig.Answer.Result, ECrowdyVoxelResult::Ok);
+	TestEqual(TEXT("the stored chunk and both edited ones"), Rig.Answer.Chunks.Num(), 3);
+	const FCrowdyVoxelChunk* First = Rig.Find(0, 0, 0);
+	const FCrowdyVoxelChunk* Last = Rig.Find(2, 0, 0);
+	TestTrue(TEXT("each edited chunk from its own read"), First && Last && First->Grid[Index(1, 1, 1)] == 3 && Last->Grid[Index(2, 2, 2)] == 4);
+	const FString Body = Rig.SentBody();
+	TestTrue(TEXT("the last edit read covers only the far chunk"), Body.Contains(TEXT("ListVoxelUpdatesByDistance"))
+		&& Body.Contains(TEXT("\"x\":\"2\"")) && !Body.Contains(TEXT("\"x\":\"1\"")) && !Body.Contains(TEXT("\"x\":\"0\"")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelsCancelTest, "CrowdySDK.Voxels.ACancelledBoxReadAsksForNothingMore", VoxelTestFlags)
+
+bool FCrowdyVoxelsCancelTest::RunTest(const FString& Parameters)
+{
+	// A full first page of a box of 64 would ask for a second; cancelled while the first is out, it asks for nothing.
+	FVoxelsRig Paging(PageJson(EmptyChunks(32, 0)));
+	if (!TestTrue(TEXT("client built"), Paging.Client.IsValid()))
+	{
+		return false;
+	}
+	Paging.FetchBoxCancelled(FInt64Vector(0, 0, 0), FInt64Vector(63, 0, 0));
+	TestEqual(TEXT("a cancelled read never answers"), Paging.Answers, 0);
+	TestFalse(TEXT("and asks for no second page"), Paging.SentBody().Contains(TEXT("\"skip\":32")));
+
+	// Nor does it go on to read the edits of the chunks its page left out.
+	FVoxelsRig Edits(PageJson({ChunkJson(0, 0, 0, GridJson(EmptyGrid()))}));
+	Edits.FetchBoxCancelled(FInt64Vector(0, 0, 0), FInt64Vector(1, 0, 0));
+	TestEqual(TEXT("no answer"), Edits.Answers, 0);
+	TestFalse(TEXT("and no edit read"), Edits.SentBody().Contains(TEXT("ListVoxelUpdatesByDistance")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelsEditsBoundsTest, "CrowdySDK.Voxels.ForgedEditsAreABadReply", VoxelTestFlags)
+
+bool FCrowdyVoxelsEditsBoundsTest::RunTest(const FString& Parameters)
+{
+	TArray<FString> TooMany;
+	for (int32 Group = 0; Group < 33; ++Group)
+	{
+		TooMany.Add(GroupJson(Group % 2, 0, 0, {RowJson(0, 0, 0, 1)}));
+	}
+	const TArray<TPair<FString, FString>> Cases = {
+		{TEXT("edits for a chunk outside the box"), EditsPageJson({GroupJson(5, 0, 0, {RowJson(0, 0, 0, 1)})})},
+		{TEXT("a row with no position"), EditsPageJson({GroupJson(0, 0, 0, {TEXT("{\"voxelType\":1}")})})},
+		{TEXT("a row with no type"), EditsPageJson({GroupJson(0, 0, 0, {TEXT("{\"location\":{\"x\":1,\"y\":1,\"z\":1}}")})})},
+		{TEXT("a group with no coordinates"), EditsPageJson({TEXT("{\"voxels\":[]}")})},
+		{TEXT("more groups than were asked for"), EditsPageJson(TooMany)},
+		{TEXT("an answer that is not an edit list"), PageJson({})}};
+
+	AddExpectedMessagePlain(TEXT("The chunk fetch ended BadReply"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, Cases.Num());
+	for (const TPair<FString, FString>& Case : Cases)
+	{
+		FVoxelsRig Rig(TEXT("{\"data\":null}"));
+		if (!TestTrue(TEXT("client built"), Rig.Client.IsValid()))
+		{
+			return false;
+		}
+		Rig.Client->SetTestResponseScript({TPair<int32, FString>(200, PageJson({})), TPair<int32, FString>(200, Case.Value)});
+		Rig.FetchBox(FInt64Vector(0, 0, 0), FInt64Vector(1, 0, 0));
+		TestEqual(Case.Key, Rig.Answer.Result, ECrowdyVoxelResult::BadReply);
+		TestEqual(Case.Key + TEXT(": nothing half-decoded is returned"), Rig.Answer.Chunks.Num(), 0);
+	}
+
+	FVoxelsRig Large(PageJson({}));
+	AddExpectedMessagePlain(TEXT("The chunk fetch ended Failed"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	Large.FetchBox(FInt64Vector(0, 0, 0), FInt64Vector(17, 16, 16));
+	TestEqual(TEXT("a box past 4,913 chunks fails before asking"), Large.Answer.Result, ECrowdyVoxelResult::Failed);
+	FString Unsent;
+	TestFalse(TEXT("so nothing was sent"), Large.Client->GetLastTestRequestBody(Unsent));
+
+	FVoxelsRig Reversed(PageJson(EmptyChunks(4, 0)));
+	Reversed.FetchBox(FInt64Vector(3, 0, 0), FInt64Vector(0, 0, 0));
+	TestEqual(TEXT("corners in either order read the same box"), Reversed.Answer.Chunks.Num(), 4);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoxelsEditsPageTest, "CrowdySDK.Voxels.EditsPageDecodesWithinItsBounds", VoxelTestFlags)
+
+bool FCrowdyVoxelsEditsPageTest::RunTest(const FString& Parameters)
+{
+	// One group of 65,537 rows, newest first: the oldest, at a position no other row uses, is the one past the cap.
+	constexpr uint32 Rows = 65537;
+	FPack P;
+	P.Map(1).Str("listVoxelUpdatesByDistance").Map(2).Str("limit").Raw({0x20});
+	P.Str("chunks").Array(1).Map(2).Str("coordinates").Map(3).Str("x").Raw({7}).Str("y").Raw({0}).Str("z").Raw({0});
+	P.Str("voxels").Raw({0xdd, static_cast<uint8>(Rows >> 24), static_cast<uint8>(Rows >> 16), static_cast<uint8>(Rows >> 8), static_cast<uint8>(Rows)});
+	for (uint32 Row = 0; Row + 1 < Rows; ++Row)
+	{
+		P.Map(2).Str("location").Map(3).Str("x").Raw({static_cast<uint8>(Row % 16)}).Str("y").Raw({static_cast<uint8>((Row / 16) % 16)});
+		P.Str("z").Raw({0xcc, static_cast<uint8>(Row / 256)}).Str("voxelType").Raw({1});
+	}
+	P.Map(2).Str("location").Map(3).Str("x").Raw({0}).Str("y").Raw({0}).Str("z").Raw({0xcd, 0x01, 0x2c}).Str("voxelType").Raw({7});
+
+	TArray<FCrowdyVoxelChunk> Out;
+	TSet<FInt64Vector> Seen;
+	int32 Limit = 0;
+	if (!TestEqual(TEXT("the page decodes"), CrowdyVoxelDecode::DecodeEditsPage(P.Bytes, 32, Out, Seen, Limit), 1) || !TestEqual(TEXT("one chunk"), Out.Num(), 1))
+	{
+		return false;
+	}
+	TestEqual(TEXT("the newest 65,536 edits are kept"), Out[0].Edits.Num(), 65536);
+	TestTrue(TEXT("and the chunk is marked truncated"), Out[0].bEditsTruncated);
+	TestEqual(TEXT("the oldest is the one dropped"), UCrowdyVoxelLibrary::GetVoxel(Out[0], FIntVector(0, 0, 300)).Type, 0);
+	TestFalse(TEXT("a chunk read from the edit log alone is not stored"), Out[0].bStored);
+
+	Out.Reset();
+	Seen.Reset();
+	Seen.Add(FInt64Vector(7, 0, 0));
+	TestEqual(TEXT("a group for a chunk already read is counted"), CrowdyVoxelDecode::DecodeEditsPage(P.Bytes, 32, Out, Seen, Limit), 1);
+	TestEqual(TEXT("but not kept"), Out.Num(), 0);
+
+	const TArray<uint8> Page = Packed(EditsPageJson({GroupJson(1, 2, 3, {RowJson(4, 5, 6, 7), RowJson(1, 1, 1, 2, TEXT("\"AAAA\""))})}));
+	Out.Reset();
+	Seen.Reset();
+	if (!TestEqual(TEXT("a packed page decodes"), CrowdyVoxelDecode::DecodeEditsPage(Page, 32, Out, Seen, Limit), 1))
+	{
+		return false;
+	}
+	int32 Accepted = 0;
+	for (int32 Length = 0; Length < Page.Num(); ++Length)
+	{
+		const TArray<uint8> Cut(Page.GetData(), Length);
+		Out.Reset();
+		Seen.Reset();
+		Accepted += CrowdyVoxelDecode::DecodeEditsPage(Cut, 32, Out, Seen, Limit) != INDEX_NONE;
+	}
+	TestEqual(TEXT("no cut of the page is taken as whole"), Accepted, 0);
 	return true;
 }
 

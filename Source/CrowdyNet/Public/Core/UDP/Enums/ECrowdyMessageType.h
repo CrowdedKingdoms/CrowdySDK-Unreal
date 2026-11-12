@@ -94,6 +94,10 @@ enum class ECrowdyMessageType : uint8
     // Server->client only: the server stopped considering an actor present. Sent once over the actor's
     // last chunk, and never for a move between chunks. A later update for the same actor is a rejoin.
     ACTOR_LEFT_NOTIFICATION = 145 UMETA(DisplayName = "Actor Left Notification"),
+
+    // Server->client only: a hub or mod replaced the chunk as a whole, so a copy held before it is out of date. No
+    // voxel update follows for that change. The payload is the stored chunk's new update time in epoch milliseconds.
+    CHUNK_CHANGED_NOTIFICATION = 146 UMETA(DisplayName = "Chunk Changed Notification"),
 };
 
 /**
