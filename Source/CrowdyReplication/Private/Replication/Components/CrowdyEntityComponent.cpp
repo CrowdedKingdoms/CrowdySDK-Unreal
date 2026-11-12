@@ -595,8 +595,9 @@ void UCrowdyEntityComponent::RequestOwnership_Implementation(FGuid RequesterID)
 
 void UCrowdyEntityComponent::GrantOwnership_Implementation(FGuid NewOwnerID, FGuid PreviousOwnerID)
 {
-	// A player's avatar never changes hands: its NetID is that player's id everywhere.
-	if (!IsValid(EntitySubsystem) || !NetID.IsValid() || OwnedBy == ECrowdyOwnedBy::Leader || NetID == PreviousOwnerID)
+	// A player's avatar never changes hands: its owner is its own NetID, as this client knows it or as the grant says.
+	if (!IsValid(EntitySubsystem) || !NetID.IsValid() || OwnedBy == ECrowdyOwnedBy::Leader || NetID == OwnerID ||
+	    NetID == PreviousOwnerID)
 		return;
 
 	// ReassignOwnership compare-and-swaps on PreviousOwnerID, so a stale or duplicate grant is dropped.

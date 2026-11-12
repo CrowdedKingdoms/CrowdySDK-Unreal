@@ -603,6 +603,42 @@ bool FCrowdyAvatarNeverChangesHandsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyForgedGrantLeavesAvatarTest,
+	"CrowdySDK.Entity.AForgedGrantLeavesAnAvatar", CrowdyLeaderOwnedTestFlags)
+bool FCrowdyForgedGrantLeavesAvatarTest::RunTest(const FString& Parameters)
+{
+	FCrowdyLeaderEntityTestWorld TestWorld;
+	const FGuid Local = FGuid::NewGuid();
+	const FGuid Other = FGuid::NewGuid();
+	const FGuid Attacker = FGuid::NewGuid();
+	UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(Local);
+
+	ACrowdyStateHostOverrideActor* Mine = TestWorld.World->SpawnActor<ACrowdyStateHostOverrideActor>();
+	ACrowdyStateHostOverrideActor* Theirs = TestWorld.World->SpawnActor<ACrowdyStateHostOverrideActor>();
+	if (!TestNotNull(TEXT("this player's avatar spawned"), Mine) || !TestNotNull(TEXT("the other avatar spawned"), Theirs))
+	{
+		return false;
+	}
+	Mine->Entity->SetCollaboratorsForTest(Entities, nullptr);
+	Mine->Entity->AssignPooledIdentity(Local, Local, ECrowdyRole::Owner, CROWDY_INVALID_CLASS_ID);
+	Mine->DispatchBeginPlay();
+	// An observer's proxy of another player's avatar does not know its owner: avatars send no spawn event.
+	Theirs->Entity->SetCollaboratorsForTest(Entities, nullptr);
+	Theirs->Entity->AssignPooledIdentity(Other, FGuid(), ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+	Theirs->DispatchBeginPlay();
+
+	// A forged grant names no previous owner, which skips the compare-and-swap.
+	Mine->Entity->GrantOwnership_Implementation(Attacker, FGuid());
+	TestEqual(TEXT("this player keeps their avatar"), Entities->FindRecord(Local)->OwnerID, Local);
+	TestEqual(TEXT("this player still writes it"), Mine->Entity->GetRole(), ECrowdyRole::Owner);
+
+	// An honest grant of an avatar names the avatar's own player, and an observer refuses it too.
+	Theirs->Entity->GrantOwnership_Implementation(Attacker, Other);
+	TestFalse(TEXT("an observer does not move another player's avatar"), Entities->FindRecord(Other)->OwnerID.IsValid());
+	TestEqual(TEXT("it stays a proxy here"), Theirs->Entity->GetRole(), ECrowdyRole::RemoteProxy);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyLeaderOwnedDestroyTest,
 	"CrowdySDK.LeaderOwned.OnlyTheLeaderDestroysOne", CrowdyLeaderOwnedTestFlags)
 bool FCrowdyLeaderOwnedDestroyTest::RunTest(const FString& Parameters)
