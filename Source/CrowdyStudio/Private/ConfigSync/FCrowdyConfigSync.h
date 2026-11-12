@@ -55,13 +55,11 @@ public:
 	// The realtime UDP connection knobs, stored on UCrowdySDKDeveloperSettings and consumed by the
 	// runtime at connect time. Surfaced on the Project page so they are edited from the console like
 	// every other network setting. Setters persist to DefaultGame.ini and clamp to the same ranges
-	// the settings used to enforce (timeout 6-120 s, host poll 1-60 s).
+	// the settings used to enforce (timeout 6-120 s).
 	static ECrowdyUDPProtocol GetUdpProtocol();
 	static void SetUdpProtocol(ECrowdyUDPProtocol Protocol);
 	static float GetUdpTimeoutSeconds();
 	static void SetUdpTimeoutSeconds(float Seconds);
-	static float GetHostPollIntervalSeconds();
-	static void SetHostPollIntervalSeconds(float Seconds);
 
 	// The Server Object connection's timeouts, applied from the next Play. Setters clamp to the settings'
 	// ranges (call 11-120 s, open 1-60 s) and persist like the knobs above.

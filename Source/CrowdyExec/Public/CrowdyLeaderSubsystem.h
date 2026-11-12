@@ -16,7 +16,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyLeaderChanged, int64, NewL
 /**
  * The App's Server Object Leader, under Leader Source Server Object: this client joins the Crowdy SDK's Leader type
  * once it is signed in with a Player Derived avatar, because the avatar gives it the player id writing needs, and
- * whoever leads writes the replicated subsystems. The Leader goes into the host store, so the
+ * whoever leads writes the replicated subsystems. The Leader goes into the game session's host id, so the
  * deprecated host functions report it too. The app's server code must be deployed for there to be a Leader. Under
  * Leader Source Elected Host it does nothing and there is no Leader.
  */
@@ -42,7 +42,7 @@ public:
 	FOnCrowdyLeaderChanged OnLeaderChanged;
 
 #if WITH_DEV_AUTOMATION_TESTS
-	/** Follows Object instead of acquiring the Leader type, and hands each Leader to WriteLeader instead of the host store. */
+	/** Follows Object instead of acquiring the Leader type, and hands each Leader to WriteLeader instead of the game session. */
 	void FollowForTest(UCrowdyServerObject* Object, UCrowdyGameSession* Session, TFunction<void(int64)> WriteLeader);
 #endif
 
@@ -66,7 +66,6 @@ private:
 	void HandleValuesChanged(UCrowdyServerObject* Object, TConstArrayView<FString> Fields);
 	void Publish(int64 NewLeader);
 	void WriteHostStore() const;
-	void HandlePostLoadMap(UWorld* World);
 	bool Retry(float DeltaTime);
 
 	UFUNCTION()
@@ -87,7 +86,6 @@ private:
 	TFunction<void(int64)> WriteLeaderOverride;
 	FDelegateHandle ValuesHandle;
 	FTSTicker::FDelegateHandle RetryHandle;
-	FDelegateHandle PostLoadMapHandle;
 	int64 PublishedLeader = 0;
 	bool bRealtimeUp = false;
 	bool bWarnedFailure = false;

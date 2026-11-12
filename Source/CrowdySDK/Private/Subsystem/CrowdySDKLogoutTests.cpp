@@ -8,8 +8,7 @@
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/HelperFunctions.h"
 
-// A bare subsystem with no world stands in for signing out on a map whose host subsystem never saw the host: after a
-// level travel, or on a map without networking. Logout must clear the session's host itself, at once.
+// A bare subsystem with no Leader subsystem listening: Logout must clear the session's host id itself, at once.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySDKLogoutClearsSessionHostTest,
 	"CrowdySDK.SDK.LogoutClearsSessionHost",
 	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)

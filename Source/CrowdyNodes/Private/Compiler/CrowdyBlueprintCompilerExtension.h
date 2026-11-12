@@ -47,7 +47,7 @@ public:
 	// Unreal's own network role, which a Crowdy entity does not use (the elected host is a
 	// convention, not an enforced server), so calling it on a Crowdy entity's graph reads the wrong
 	// thing on every non-host client. A pure name/owner check so it can be exercised directly against
-	// near-miss UFunctions (an unrelated class's identically named function, Crowdy's own wrapper)
+	// near-miss UFunctions (an unrelated class's identically named function, Crowdy's ownership test)
 	// without compiling a Blueprint.
 	static bool IsForbiddenActorHasAuthorityCall(const UFunction* Function);
 

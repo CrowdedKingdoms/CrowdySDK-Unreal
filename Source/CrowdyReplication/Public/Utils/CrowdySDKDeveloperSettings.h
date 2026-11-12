@@ -41,7 +41,7 @@ UENUM()
 enum class ECrowdyLeaderSource : uint8
 {
 	ServerObject UMETA(DisplayName="Server Object", ToolTip="No elected host. The Leader of the app's Server Object Leader type writes replicated subsystems; World entities have no writer on any client, so keep their truth in Server Objects. The app's server code must be deployed."),
-	ElectedHost UMETA(DisplayName="Elected Host (Deprecated)", ToolTip="The elected host writes World entities and replicated subsystems, as before. Removed in the next release."),
+	ElectedHost UMETA(DisplayName="Elected Host (Deprecated)", ToolTip="Nothing elects a host any more, so World entities and replicated subsystems have no writer and Host events have nowhere to run. Removed in the next release: use Server Object."),
 };
 
 UENUM()
@@ -137,13 +137,6 @@ public:
 	UPROPERTY(Config, VisibleAnywhere, Category="Crowdy SDK|Developer|Network",
 		meta=(DisplayName="UDP Timeout (seconds)", ClampMin="6.0", ClampMax="120.0"))
 	float UDPTimeoutSeconds = 15.0f;
-
-	/** How often (in seconds) the SDK polls the server for the current game host. Polling begins
-	 *  automatically after a successful login. Managed by the CrowdyStudio console (Project page);
-	 *  shown read-only here. */
-	UPROPERTY(Config, VisibleAnywhere, Category="Crowdy SDK|Developer|Network",
-		meta=(DisplayName="Host Poll Interval (seconds)", ClampMin="1.0", ClampMax="60.0"))
-	float HostPollIntervalSeconds = 5.0f;
 
 	/**
 	 * If true, UCrowdyPersistenceSubsystem will zero-out every voxel slot it
@@ -281,11 +274,11 @@ public:
 			  ToolTip="Leave empty unless the log reports: [CrowdyClassRegistry] ClassID collision"))
 	TArray<FCrowdyClassIDOverride> ClassIDOverrides;
 
-	/** Where the client that writes shared entities comes from. Server Object: the app's Leader writes replicated subsystems, and World entities have no writer. Elected Host keeps the old behaviour and is removed in the next release. */
+	/** Where the client that writes shared entities comes from. Server Object: the app's Leader writes replicated subsystems, and World entities have no writer. Elected Host elects nobody any more and is removed in the next release. */
 	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Replication", meta=(DisplayName="Leader Source"))
 	ECrowdyLeaderSource LeaderSource = ECrowdyLeaderSource::ServerObject;
 
-	/** True while Leader Source is Elected Host: the elected host is polled and writes World entities. */
+	/** True while Leader Source is Elected Host: the elected host writes World entities. */
 	static bool UsesElectedHost();
 
 	/**

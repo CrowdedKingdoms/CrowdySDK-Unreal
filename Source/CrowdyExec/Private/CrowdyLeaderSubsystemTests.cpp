@@ -154,4 +154,34 @@ bool FCrowdyLeaderSubsystemJoinsOnlyWithAPlayerIdTest::RunTest(const FString& Pa
 	return true;
 }
 
+// Every client reads who writes replicated subsystems from the game session, so the Leader must land there.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyLeaderSubsystemWritesTheSessionTest,
+	"CrowdySDK.CrowdyExec.Leader.WritesTheLeaderIntoTheSession", CrowdyServerObjectTests::TestFlags)
+bool FCrowdyLeaderSubsystemWritesTheSessionTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyServerObjectTests;
+	using namespace CrowdyLeaderSubsystemTests;
+	FRig Rig(*this, ECrowdyServerObjectVisibility::Public, ECrowdyServerMembersSource::ThisObject);
+	if (!Rig.IsValid())
+	{
+		return false;
+	}
+	Rig.Session->SetUserID(LocalUser);
+	TStrongObjectPtr<UCrowdyServerObjectTestOwner> Owner = MakeOwner();
+	FMembersKeys Keys;
+	Keys.MemberCount = 1;
+	Keys.Leader = 5;
+	UCrowdyServerObject* Object = Rig.AcquireReady(Owner.Get(), Boss(3000, false, ECrowdyExecTestPhase::Calm), 5, Keys);
+	if (!Object)
+	{
+		return false;
+	}
+
+	TStrongObjectPtr<UCrowdyLeaderSubsystem> Leader(NewObject<UCrowdyLeaderSubsystem>(Rig.Instance.Get()));
+	Leader->FollowForTest(Object, Rig.Session.Get(), nullptr);
+	TestEqual(TEXT("the Leader's entity id is the session's app writer"), Rig.Session->GetAppWriterID(),
+		UHelperFunctions::GetDeterministicID(5));
+	return true;
+}
+
 #endif

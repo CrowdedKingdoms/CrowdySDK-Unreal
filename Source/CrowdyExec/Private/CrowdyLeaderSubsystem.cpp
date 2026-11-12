@@ -5,17 +5,21 @@
 #include "CrowdyServerObjectLibrary.h"
 #include "CrowdyServerObjectSubsystem.h"
 #include "Engine/GameInstance.h"
-#include "Engine/World.h"
 #include "Network/UDP/CrowdyUDPSubsystem.h"
 #include "Subsystem/CrowdyGameSession.h"
-#include "Subsystem/CrowdyHostSubsystem.h"
 #include "Subsystem/CrowdySDKSubsystem.h"
-#include "UObject/UObjectGlobals.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
+#include "Utils/HelperFunctions.h"
 
 namespace CrowdyLeaderDetail
 {
 	constexpr float RetrySeconds = 10.f;
+
+	// User id 0 is nobody, which is the empty id rather than a hash of zero.
+	FGuid EntityIDForUser(const int64 UserID)
+	{
+		return UserID == 0 ? FGuid() : UHelperFunctions::GetDeterministicID(UserID);
+	}
 }
 
 void UCrowdyLeaderSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -23,6 +27,7 @@ void UCrowdyLeaderSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 	if (UCrowdySDKDeveloperSettings::UsesElectedHost())
 	{
+		UE_LOG(LogCrowdyExec, Warning, TEXT("[CrowdyLeader] Leader Source is Elected Host (Deprecated), which nothing elects any more: World entities and replicated subsystems have no writer and Host events have nowhere to run. Set Project Settings > Plugins > Crowdy SDK > Replication > Leader Source to Server Object."));
 		return;
 	}
 
@@ -43,7 +48,6 @@ void UCrowdyLeaderSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		Udp->OnUDPConnectionSuccessful.AddDynamic(this, &UCrowdyLeaderSubsystem::HandleConnectionUp);
 	}
 	WatchSession(Collection.InitializeDependency<UCrowdyGameSession>());
-	PostLoadMapHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UCrowdyLeaderSubsystem::HandlePostLoadMap);
 	Acquire();
 }
 
@@ -51,7 +55,6 @@ void UCrowdyLeaderSubsystem::Deinitialize()
 {
 	FTSTicker::RemoveTicker(RetryHandle);
 	RetryHandle.Reset();
-	FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(PostLoadMapHandle);
 	if (UCrowdySDKSubsystem* SDK = SDKSubsystem.Get())
 	{
 		SDK->OnLogin.RemoveDynamic(this, &UCrowdyLeaderSubsystem::HandleLogin);
@@ -218,7 +221,7 @@ void UCrowdyLeaderSubsystem::Join()
 bool UCrowdyLeaderSubsystem::HasPlayerID() const
 {
 	const UCrowdyGameSession* Session = GameSession.Get();
-	const FGuid SignedIn = UCrowdyHostSubsystem::HostIDForUser(Session ? Session->GetUserID() : 0);
+	const FGuid SignedIn = CrowdyLeaderDetail::EntityIDForUser(Session ? Session->GetUserID() : 0);
 	return SignedIn.IsValid() && Session->GetID() == SignedIn;
 }
 
@@ -274,31 +277,12 @@ void UCrowdyLeaderSubsystem::Publish(int64 NewLeader)
 
 void UCrowdyLeaderSubsystem::WriteHostStore() const
 {
-	const UGameInstance* GameInstance = GetGameInstance();
-	if (!GameInstance)
+	UCrowdyGameSession* Session = GameSession.Get();
+	if (!Session)
 	{
 		return;
 	}
-	// The session holds the id replication reads, written here at once: the world's host front writes it a frame
-	// later, and a front torn down by travel in between never does.
-	if (UCrowdyGameSession* Session = GameInstance->GetSubsystem<UCrowdyGameSession>())
-	{
-		Session->SetHostID(UCrowdyHostSubsystem::HostIDForUser(PublishedLeader));
-	}
-	UWorld* World = GameInstance->GetWorld();
-	if (UCrowdyHostSubsystem* Hosts = World ? World->GetSubsystem<UCrowdyHostSubsystem>() : nullptr)
-	{
-		Hosts->SetHostUserID(PublishedLeader);
-	}
-}
-
-void UCrowdyLeaderSubsystem::HandlePostLoadMap(UWorld* World)
-{
-	// The host store's front is rebuilt with each world and starts empty.
-	if (World && World->GetGameInstance() == GetGameInstance())
-	{
-		WriteHostStore();
-	}
+	Session->SetHostID(CrowdyLeaderDetail::EntityIDForUser(PublishedLeader));
 }
 
 bool UCrowdyLeaderSubsystem::Retry(float DeltaTime)

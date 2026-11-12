@@ -947,7 +947,7 @@ void UCrowdyEntityComponent::ResolveIdentity()
 			NetID = UHelperFunctions::GetDeterministicID(GameSession->GetUserID());
 
 			// Establishes the session UUID other systems key on (ActorTracker,
-			// HostSubsystem, EntitySubsystem all listen to OnOwnerUUIDUpdated).
+			// EntitySubsystem and the Leader subsystem listen to OnOwnerUUIDUpdated).
 			GameSession->SetUUID(NetID.ToString(EGuidFormats::Digits));
 			break;
 		}
