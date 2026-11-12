@@ -120,7 +120,7 @@ namespace
 			];
 	}
 
-	// A regular-weight chip carrying a tooltip (for the class Owned By / Host Override defaults).
+	// A regular-weight chip carrying a tooltip (for the class Owned By default).
 	TSharedRef<SWidget> MakeMetaChip(const FText& Text, const FText& Tooltip)
 	{
 		return SNew(SBorder)
@@ -505,7 +505,7 @@ void SCrowdyRegistryInspector::RefreshData()
 			LayoutHashByClass.Add(Hash.ClassPath.ToString(), Hash.LayoutHash);
 		}
 
-		// Class-level Owned By/HostOverride, resolved LIVE (never baked) from each class's default
+		// Class-level Owned By, resolved LIVE (never baked) from each class's default
 		// CrowdyEntityComponent - see UCrowdyAutoRegistry::ResolveDefaultEntityComponent. Cached per
 		// class path here so a class with many properties only pays one class-load/CDO-walk, not one
 		// per property row.
@@ -514,7 +514,6 @@ void SCrowdyRegistryInspector::RefreshData()
 			bool  bChecked = false;
 			bool  bFound = false;
 			FText Ownership;
-			FText HostOverride;
 		};
 		TMap<FString, FClassEntityDefaults> EntityDefaultsByClass;
 
@@ -539,12 +538,6 @@ void SCrowdyRegistryInspector::RefreshData()
 
 						Defaults.bFound = true;
 						Defaults.Ownership = EnumDisplayText(OwnedBy);
-						if (OwnedBy == ECrowdyOwnedBy::Player)
-						{
-							PRAGMA_DISABLE_DEPRECATION_WARNINGS
-							Defaults.HostOverride = EnumDisplayText(Component->GetHostOverridePolicy());
-							PRAGMA_ENABLE_DEPRECATION_WARNINGS
-						}
 					}
 				}
 			}
@@ -561,8 +554,7 @@ void SCrowdyRegistryInspector::RefreshData()
 			Row->LayoutOrder  = Prop.LayoutOrder;
 			Row->bHasEntityDefaults = Defaults.bFound;
 			Row->OwnershipText       = Defaults.Ownership;
-			Row->HostOverrideText    = Defaults.HostOverride;
-			AllRepRows.Add(Row);
+				AllRepRows.Add(Row);
 		}
 
 		// Tidy grouped order: declaring class, then positional layout order (matches wire order).
@@ -643,7 +635,6 @@ TArray<FCrowdyClassGroupPtr> SCrowdyRegistryInspector::BuildFilteredGroups() con
 		Group->LayoutHash = Row->LayoutHash;
 		Group->bHasEntityDefaults = Row->bHasEntityDefaults;
 		Group->OwnershipText = Row->OwnershipText;
-		Group->HostOverrideText = Row->HostOverrideText;
 	}
 
 	TArray<FCrowdyClassGroupPtr> Groups;
@@ -850,9 +841,9 @@ TSharedRef<SWidget> SCrowdyRegistryInspector::MakeClassMetaStrip(const FCrowdyCl
 {
 	const FText DefaultsTip = LOCTEXT("EntityDefaultsTip",
 		"Resolved live from this class's default CrowdyEntityComponent (native CDO or Blueprint component "
-		"defaults) when this view was built - never baked, since Owned By / Host Override are "
-		"per-placed-instance settings with no single value for a class. A level-placed instance can "
-		"override either one.");
+		"defaults) when this view was built - never baked, since Owned By is a "
+		"per-placed-instance setting with no single value for a class. A level-placed instance can "
+		"override it.");
 
 	TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
 	Row->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)
@@ -860,14 +851,8 @@ TSharedRef<SWidget> SCrowdyRegistryInspector::MakeClassMetaStrip(const FCrowdyCl
 
 	if (Group->bHasEntityDefaults)
 	{
-		Row->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+		Row->AddSlot().AutoWidth().VAlign(VAlign_Center)
 		[ MakeMetaChip(FText::Format(LOCTEXT("OwnedByChip", "Owned By: {0}"), Group->OwnershipText), DefaultsTip) ];
-
-		if (!Group->HostOverrideText.IsEmpty())
-		{
-			Row->AddSlot().AutoWidth().VAlign(VAlign_Center)
-			[ MakeMetaChip(FText::Format(LOCTEXT("HostOverrideChip", "Host Override: {0}"), Group->HostOverrideText), DefaultsTip) ];
-		}
 	}
 
 	return Row;

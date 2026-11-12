@@ -1,4 +1,5 @@
 #include "CrowdyBlueprintCompilerExtension.h"
+#include "CrowdyCompilerTestTypes.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -880,14 +881,14 @@ bool FCrowdyCompilerDeprecatedAsyncNodeWarnsTest::RunTest(const FString& Paramet
 		}).Num();
 	};
 
-	const UFunction* Deprecated = UCrowdyIsEntityHostServer::StaticClass()->FindFunctionByName(TEXT("IsCrowdyEntityHostServer"));
+	const UFunction* Deprecated = UCrowdyCompilerTestDeprecatedAsyncAction::StaticClass()->FindFunctionByName(TEXT("DeprecatedTestNode"));
 	const UFunction* Current = UCrowdyAccount_RequestPasswordReset::StaticClass()->FindFunctionByName(TEXT("RequestPasswordReset"));
 	if (!TestNotNull(TEXT("the deprecated factory resolves"), Deprecated) || !TestNotNull(TEXT("the control factory resolves"), Current))
 	{
 		return false;
 	}
 
-	TestEqual(TEXT("the host check node warns once and names the replacement"), CountWarnings(Deprecated, TEXT("is deprecated. Use Is Local Leader")), 1);
+	TestEqual(TEXT("the deprecated node warns once and names the replacement"), CountWarnings(Deprecated, TEXT("is deprecated. Use Test Replacement Node.")), 1);
 	TestEqual(TEXT("a current async node does not warn"), CountWarnings(Current, TEXT("is deprecated")), 0);
 	return true;
 }
@@ -901,12 +902,12 @@ bool FCrowdyCompilerDeprecatedDelegateBindWarnsTest::RunTest(const FString& Para
 	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), GetTransientPackage(), Name, BPTYPE_Normal,
 		UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
 
-	const FProperty* Delegate = UCrowdyHostSubsystem::StaticClass()->FindPropertyByName(TEXT("OnHostElected"));
+	const FProperty* Delegate = UCrowdyCompilerTestDeprecatedDelegateOwner::StaticClass()->FindPropertyByName(TEXT("OnDeprecatedTest"));
 	if (!TestNotNull(TEXT("the delegate resolves"), Delegate)) return false;
 
 	UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
 	UK2Node_AddDelegate* Node = NewObject<UK2Node_AddDelegate>(Graph);
-	Node->SetFromProperty(Delegate, false, UCrowdyHostSubsystem::StaticClass());
+	Node->SetFromProperty(Delegate, false, UCrowdyCompilerTestDeprecatedDelegateOwner::StaticClass());
 	Graph->AddNode(Node, false, false);
 	if (!TestNotNull(TEXT("the node resolves the delegate"), Node->GetProperty())) return false;
 
