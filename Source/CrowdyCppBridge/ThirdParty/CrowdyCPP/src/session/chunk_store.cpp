@@ -1,6 +1,7 @@
 #include "crowdy/session/chunk_store.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <string_view>
 
@@ -47,7 +48,7 @@ std::string isoUtc(std::int64_t epochMs) {
   const std::int64_t d = doy - (153 * mp + 2) / 5 + 1;
   const std::int64_t m = mp < 10 ? mp + 3 : mp - 9;
   const std::int64_t y = yoe + era * 400 + (m <= 2 ? 1 : 0);
-  char out[32];
+  char out[64];
   std::snprintf(out, sizeof(out), "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld.%03lldZ",
                 static_cast<long long>(y), static_cast<long long>(m), static_cast<long long>(d),
                 static_cast<long long>(rem / 3600), static_cast<long long>((rem % 3600) / 60),
@@ -65,13 +66,20 @@ std::int64_t volumeOf(const ChunkCoord& lo, const ChunkCoord& hi) {
   return (hi.x - lo.x + 1) * (hi.y - lo.y + 1) * (hi.z - lo.z + 1);
 }
 
+/// The widest box one read covers along an axis: ck-api reads at most 17^3 chunks.
+constexpr std::int64_t kBoxSide = 17;
+
+std::int64_t floorDiv(std::int64_t a, std::int64_t b) {
+  return a / b - ((a % b != 0) && ((a < 0) != (b < 0)) ? 1 : 0);
+}
+
 /// Boxes covering `coords`, each at most twice as large as the chunks it holds, found by
 /// cutting where the two halves' boxes are smallest: a step uncovers one slab per axis
 /// moved, so it is one box per slab. A set too scattered for 8 boxes is read as its
 /// bounding box (an area is at most 17^3). Mirrors CrowdyJS's coverWithBoxes.
 std::vector<std::pair<ChunkCoord, ChunkCoord>> coverWithBoxes(const std::vector<ChunkCoord>& coords) {
   constexpr std::size_t kMaxBoxes = 8;
-  constexpr std::int64_t kMaxBox = 17 * 17 * 17;
+  constexpr std::int64_t kMaxBox = kBoxSide * kBoxSide * kBoxSide;
   using BoxPair = std::pair<ChunkCoord, ChunkCoord>;
   auto bounds = [](const std::vector<ChunkCoord>& set) {
     ChunkCoord lo = set.front(), hi = set.front();
@@ -124,6 +132,30 @@ std::vector<std::pair<ChunkCoord, ChunkCoord>> coverWithBoxes(const std::vector<
   return {bounds(coords)};
 }
 
+/// `coords` read in boxes of at most 17^3: the bounds of the coords in each cell of a
+/// 17-chunk lattice.
+std::vector<std::pair<ChunkCoord, ChunkCoord>> tileBoxes(const std::vector<ChunkCoord>& coords) {
+  std::unordered_map<ChunkCoord, std::pair<ChunkCoord, ChunkCoord>, ChunkCoordHash> tiles;
+  for (const ChunkCoord& c : coords) {
+    const ChunkCoord tile{floorDiv(c.x, kBoxSide), floorDiv(c.y, kBoxSide), floorDiv(c.z, kBoxSide)};
+    auto [it, fresh] = tiles.try_emplace(tile, c, c);
+    if (fresh) continue;
+    ChunkCoord& lo = it->second.first;
+    ChunkCoord& hi = it->second.second;
+    lo = {std::min(lo.x, c.x), std::min(lo.y, c.y), std::min(lo.z, c.z)};
+    hi = {std::max(hi.x, c.x), std::max(hi.y, c.y), std::max(hi.z, c.z)};
+  }
+  std::vector<std::pair<ChunkCoord, ChunkCoord>> out;
+  out.reserve(tiles.size());
+  for (const auto& [tile, box] : tiles) out.push_back(box);
+  return out;
+}
+
+std::int64_t isoMillis(const graphql::Json& value) {
+  const std::string_view iso = value.asStringView();
+  return iso.empty() ? 0 : core::parseIso8601Millis(iso.data(), iso.size());
+}
+
 StoredChunk storedChunkOf(const graphql::Json& chunkJson) {
   StoredChunk chunk;
   chunk.coord = {chunkJson["coordinates"]["x"].asBigInt(), chunkJson["coordinates"]["y"].asBigInt(),
@@ -140,12 +172,80 @@ StoredChunk storedChunkOf(const graphql::Json& chunkJson) {
     if (auto state = core::base64Decode(entry["state"].asStringView())) {
       voxel.state.assign(state->begin(), state->end());
     }
+    voxel.updatedAtMs = isoMillis(entry["updatedAt"]);
     chunk.voxelStates.push_back(std::move(voxel));
   });
   chunk.voxelStatesTruncated = chunkJson["voxelStatesTruncated"].asBool();
-  const std::string_view updatedAt = chunkJson["updatedAt"].asStringView();
-  if (!updatedAt.empty()) chunk.updatedAtMs = core::parseIso8601Millis(updatedAt.data(), updatedAt.size());
+  chunk.updatedAtMs = isoMillis(chunkJson["updatedAt"]);
   return chunk;
+}
+
+/// The page size the store asks for; the server may apply a smaller one.
+constexpr std::int64_t kPage = 1000;
+
+/// Where a page of a paged read leaves it: whether another follows, and its skip.
+struct PageEnd {
+  bool more = false;
+  std::int64_t nextSkip = 0;
+};
+
+PageEnd pageEnd(const graphql::Json& page, std::int64_t rows, std::int64_t skip) {
+  const std::int64_t applied = page["limit"].asInt64(kPage);
+  if (rows == 0 || applied <= 0 || rows < applied) return {};
+  return {true, page["skip"].asInt64(skip) + applied};
+}
+
+/// One page of getChunksByDistance: its chunks appended to `out`.
+PageEnd chunkPage(const graphql::Json& page, std::int64_t skip, std::vector<StoredChunk>& out) {
+  std::int64_t rows = 0;
+  page["chunks"].forEach([&](graphql::Json chunkJson) {
+    ++rows;
+    out.push_back(storedChunkOf(chunkJson));
+  });
+  return pageEnd(page, rows, skip);
+}
+
+/// One page of listVoxelUpdatesByDistance (with createdAt): its groups appended to `out`.
+PageEnd editsPage(const graphql::Json& page, std::int64_t skip, std::vector<StoredChunkEdits>& out) {
+  std::int64_t rows = 0;
+  page["chunks"].forEach([&](graphql::Json group) {
+    ++rows;
+    StoredChunkEdits edits;
+    edits.coord = {group["coordinates"]["x"].asBigInt(), group["coordinates"]["y"].asBigInt(),
+                   group["coordinates"]["z"].asBigInt()};
+    group["voxels"].forEach([&](graphql::Json v) {
+      StoredVoxelState edit;
+      edit.x = static_cast<int>(v["location"]["x"].asInt64(-1));
+      edit.y = static_cast<int>(v["location"]["y"].asInt64(-1));
+      edit.z = static_cast<int>(v["location"]["z"].asInt64(-1));
+      edit.voxelType = static_cast<std::int16_t>(v["voxelType"].asInt64());
+      if (auto state = core::base64Decode(v["state"].asStringView())) {
+        edit.state.assign(state->begin(), state->end());
+      }
+      edit.updatedAtMs = isoMillis(v["createdAt"]);
+      edits.edits.push_back(std::move(edit));
+    });
+    out.push_back(std::move(edits));
+  });
+  return pageEnd(page, rows, skip);
+}
+
+domains::ChunkRegion boxRegion(const ChunkCoord& low, const ChunkCoord& high, std::int64_t skip,
+                               const std::string& sinceIso) {
+  domains::ChunkRegion area = domains::ChunkRegion::box(domains::ChunkRef{low.x, low.y, low.z},
+                                                        domains::ChunkRef{high.x, high.y, high.z});
+  area.limit(kPage).skip(skip);
+  if (!sinceIso.empty()) area.since(sinceIso);
+  return area;
+}
+
+/// The value of a response's one root field (`data.getChunk`, ...).
+graphql::Json rootField(const graphql::Json& data) {
+  graphql::Json single;
+  if (data.isObject() && data.size() == 1) {
+    data.forEachMember([&](std::string_view, graphql::Json v) { single = v; });
+  }
+  return single;
 }
 
 /// IChunkSource over the Game API's chunks (and voxels) surface.
@@ -166,20 +266,9 @@ class GameApiChunkSource final : public IChunkSource {
   std::vector<StoredChunk> chunksInBox(const std::string& appId, const ChunkCoord& low,
                                        const ChunkCoord& high, const std::string& sinceIso) override {
     std::vector<StoredChunk> out;
-    for (std::int64_t skip = 0;;) {
-      domains::ChunkRegion area = domains::ChunkRegion::box(domains::ChunkRef{low.x, low.y, low.z},
-                                                            domains::ChunkRef{high.x, high.y, high.z});
-      area.limit(kPage).skip(skip);
-      if (!sinceIso.empty()) area.since(sinceIso);
-      graphql::Json page = chunks_.region(appId, area);
-      std::int64_t rows = 0;
-      page["chunks"].forEach([&](graphql::Json chunkJson) {
-        ++rows;
-        out.push_back(storedChunkOf(chunkJson));
-      });
-      const std::int64_t applied = page["limit"].asInt64(kPage);
-      if (rows == 0 || applied <= 0 || rows < applied) break;
-      skip = page["skip"].asInt64(skip) + applied;
+    for (PageEnd at{true, 0}; at.more;) {
+      at = chunkPage(chunks_.region(appId, boxRegion(low, high, at.nextSkip, sinceIso)),
+                     at.nextSkip, out);
     }
     return out;
   }
@@ -189,33 +278,10 @@ class GameApiChunkSource final : public IChunkSource {
                                            const std::string& sinceIso) override {
     std::vector<StoredChunkEdits> out;
     if (!voxels_) return out;
-    for (std::int64_t skip = 0;;) {
-      domains::ChunkRegion area = domains::ChunkRegion::box(domains::ChunkRef{low.x, low.y, low.z},
-                                                            domains::ChunkRef{high.x, high.y, high.z});
-      area.limit(kPage).skip(skip).since(sinceIso);
-      graphql::Json page = voxels_->listInRegion(appId, area);
-      std::int64_t rows = 0;
-      page["chunks"].forEach([&](graphql::Json group) {
-        ++rows;
-        StoredChunkEdits edits;
-        edits.coord = {group["coordinates"]["x"].asBigInt(), group["coordinates"]["y"].asBigInt(),
-                       group["coordinates"]["z"].asBigInt()};
-        group["voxels"].forEach([&](graphql::Json v) {
-          StoredVoxelState edit;
-          edit.x = static_cast<int>(v["location"]["x"].asInt64(-1));
-          edit.y = static_cast<int>(v["location"]["y"].asInt64(-1));
-          edit.z = static_cast<int>(v["location"]["z"].asInt64(-1));
-          edit.voxelType = static_cast<std::int16_t>(v["voxelType"].asInt64());
-          if (auto state = core::base64Decode(v["state"].asStringView())) {
-            edit.state.assign(state->begin(), state->end());
-          }
-          edits.edits.push_back(std::move(edit));
-        });
-        out.push_back(std::move(edits));
-      });
-      const std::int64_t applied = page["limit"].asInt64(kPage);
-      if (rows == 0 || applied <= 0 || rows < applied) break;
-      skip = page["skip"].asInt64(skip) + applied;
+    for (PageEnd at{true, 0}; at.more;) {
+      at = editsPage(
+          voxels_->listInRegionCellsTimed(appId, boxRegion(low, high, at.nextSkip, sinceIso)),
+          at.nextSkip, out);
     }
     return out;
   }
@@ -236,7 +302,6 @@ class GameApiChunkSource final : public IChunkSource {
   }
 
  private:
-  static constexpr std::int64_t kPage = 1000;
   domains::ChunksAPI& chunks_;
   domains::VoxelsAPI* voxels_;
 };
@@ -283,6 +348,10 @@ bool writeBackRetryable(const graphql::GraphQLOutcome& out) {
     if (error.httpStatus && isWriteBackRefusalStatus(*error.httpStatus)) return false;
   }
   return true;
+}
+
+bool sameBytes(Bytes a, const std::vector<std::uint8_t>& b) {
+  return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size()) == 0);
 }
 
 }  // namespace
@@ -349,6 +418,8 @@ void ChunkData::reset() {
   states_.clear();
   overlay_.clear();
   bytes_.clear();
+  times_.clear();
+  arrivals_.clear();
   garbage_ = 0;
   changes_ = 0;
   ++version_;
@@ -475,32 +546,95 @@ bool ChunkData::eraseWide(std::uint64_t key) {
   return true;
 }
 
+std::int64_t ChunkData::timeOf(std::uint64_t key) const {
+  auto it = std::lower_bound(times_.begin(), times_.end(), key,
+                             [](const CellTime& t, std::uint64_t k) { return t.key < k; });
+  return it != times_.end() && it->key == key ? it->timeMs : storedAtMs;
+}
+
+std::uint64_t ChunkData::arrivalOf(std::uint64_t key) const {
+  auto it = std::lower_bound(arrivals_.begin(), arrivals_.end(), key,
+                             [](const CellArrival& a, std::uint64_t k) { return a.key < k; });
+  return it != arrivals_.end() && it->key == key ? it->seq : 0;
+}
+
+void ChunkData::setTime(std::uint64_t key, std::int64_t timeMs, std::uint64_t arrival) {
+  auto t = std::lower_bound(times_.begin(), times_.end(), key,
+                            [](const CellTime& c, std::uint64_t k) { return c.key < k; });
+  if (t != times_.end() && t->key == key) {
+    t->timeMs = timeMs;
+  } else if (timeMs > storedAtMs) {
+    times_.insert(t, CellTime{key, timeMs});
+  }
+  auto a = std::lower_bound(arrivals_.begin(), arrivals_.end(), key,
+                            [](const CellArrival& c, std::uint64_t k) { return c.key < k; });
+  const bool found = a != arrivals_.end() && a->key == key;
+  if (arrival == 0) {
+    if (found) arrivals_.erase(a);
+  } else if (found) {
+    a->seq = arrival;
+  } else {
+    arrivals_.insert(a, CellArrival{key, arrival});
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ChunkStore: construction, slots, reads
 // ---------------------------------------------------------------------------
 
 ChunkStore::ChunkStore(replication::Connection& conn, domains::ChunksAPI* chunksApi,
                        std::string appId, Options options)
-    : conn_(conn), appId_(std::move(appId)), options_(std::move(options)) {
+    : conn_(&conn), appId_(std::move(appId)), options_(std::move(options)) {
   if (chunksApi) {
     ownedSource_ = makeGameApiChunkSource(*chunksApi);
     source_ = ownedSource_.get();
   }
-  if (source_ && options_.ioThread) io_ = std::thread([this] { ioLoop(); });
+  init();
 }
 
 ChunkStore::ChunkStore(replication::Connection& conn, IChunkSource* source, std::string appId,
                        Options options)
-    : conn_(conn), source_(source), appId_(std::move(appId)), options_(std::move(options)) {
-  if (source_ && options_.ioThread) io_ = std::thread([this] { ioLoop(); });
+    : conn_(&conn), source_(source), appId_(std::move(appId)), options_(std::move(options)) {
+  init();
+}
+
+ChunkStore::ChunkStore(replication::Connection& conn, IAsyncChunkSource* source,
+                       std::string appId, Options options)
+    : conn_(&conn), asyncSource_(source), appId_(std::move(appId)), options_(std::move(options)) {
+  init();
+}
+
+ChunkStore::ChunkStore(SendFn send, IChunkSource* source, std::string appId, Options options)
+    : source_(source), appId_(std::move(appId)), options_(std::move(options)) {
+  options_.send = std::move(send);
+  init();
+}
+
+ChunkStore::ChunkStore(SendFn send, IAsyncChunkSource* source, std::string appId, Options options)
+    : asyncSource_(source), appId_(std::move(appId)), options_(std::move(options)) {
+  options_.send = std::move(send);
+  init();
+}
+
+void ChunkStore::init() {
+  if (asyncSource_) {
+    sink_ = std::make_shared<ReplySink>();
+    sink_->store = this;
+  }
+  if (durable() && options_.ioThread) io_ = std::thread([this] { ioLoop(); });
 }
 
 ChunkStore::~ChunkStore() {
+  if (sink_) {
+    std::lock_guard lock(sink_->mutex);
+    sink_->store = nullptr;
+  }
   {
     std::lock_guard lock(ioMutex_);
     stopping_ = true;
   }
   ioWake_.notify_all();
+  ioDone_.notify_all();
   if (io_.joinable()) io_.join();
 }
 
@@ -522,7 +656,7 @@ ChunkData& ChunkStore::slotFor(const ChunkCoord& coord) {
   return c;
 }
 
-void ChunkStore::evict(const ChunkCoord& coord) {
+void ChunkStore::dropSlot(const ChunkCoord& coord) {
   auto it = slotOf_.find(coord);
   if (it == slotOf_.end()) return;
   const std::uint32_t index = it->second;
@@ -530,6 +664,10 @@ void ChunkStore::evict(const ChunkCoord& coord) {
   if (c.dirty) setDirty(c, false);
   writeBackAttempts_.erase(coord);
   writeBackDueAt_.erase(coord);
+  // A read on the way would bring it back.
+  loading_.erase(coord);
+  auto reload = reloading_.find(coord);
+  if (reload != reloading_.end()) reload->second.evicted = true;
   slotOf_.erase(it);
   c.reset();
   freeSlots_.push_back(index);
@@ -562,6 +700,15 @@ std::optional<VoxelStateView> ChunkStore::voxelStateAt(const ChunkCoord& coord, 
   }
   if (!inGrid(x, y, z)) return std::nullopt;
   return c->stateAt(voxelIndex(x, y, z));
+}
+
+std::int64_t ChunkStore::confirmedAtMs(const ChunkCoord& coord, int x, int y, int z) const {
+  if (!fitsInt16(x) || !fitsInt16(y) || !fitsInt16(z)) return 0;
+  const std::uint64_t key = voxelKey(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y),
+                                     static_cast<std::int16_t>(z));
+  if (const PendingCell* cell = cellOf(coord, key)) return cell->baseTimeMs;
+  const ChunkData* c = find(coord);
+  return c ? c->timeOf(key) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -611,17 +758,53 @@ void ChunkStore::borderNeighbours(const ChunkCoord& coord, int x, int y, int z) 
   if (z == kChunkSize - 1) flag(0, 0, 1, kChunkFaceNegZ);
 }
 
-void ChunkStore::applyLocal(const ChunkCoord& coord, int x, int y, int z, std::int16_t voxelType,
-                            Bytes state) {
-  ChunkData& c = slotFor(coord);
-  const std::int16_t before = voxelTypeAt(coord, x, y, z);
-  const bool hadState = voxelStateAt(coord, x, y, z).has_value();
+bool ChunkStore::show(ChunkData& c, int x, int y, int z, std::int16_t voxelType, Bytes state) {
+  const std::int16_t before = voxelTypeAt(c.coord, x, y, z);
+  const std::optional<VoxelStateView> had = voxelStateAt(c.coord, x, y, z);
+  const bool sameState =
+      had ? (had->state.size() == state.size() &&
+             (state.empty() || std::memcmp(had->state.data(), state.data(), state.size()) == 0))
+          : state.empty();
+  if (before == voxelType && sameState) return false;
   putVoxel(c, x, y, z, voxelType, state);
   std::uint32_t flags = 0;
   if (before != voxelType) flags |= kChunkVoxels;
-  if (hadState || !state.empty() || !fitsDenseGrid(x, y, z, voxelType)) flags |= kChunkStates;
+  if (!sameState || !fitsDenseGrid(x, y, z, voxelType)) flags |= kChunkStates;
   changed(c, flags);
-  if (before != voxelType) borderNeighbours(coord, x, y, z);
+  if (before != voxelType) borderNeighbours(c.coord, x, y, z);
+  return true;
+}
+
+std::int64_t ChunkStore::clampTime(std::int64_t timeMs) const {
+  if (timeMs <= 0) return 0;
+  return std::min(timeMs, wallNowMs() + std::max<std::int64_t>(0, options_.maxFutureSkewMs));
+}
+
+bool ChunkStore::confirm(const ChunkCoord& coord, int x, int y, int z, std::int16_t voxelType,
+                         Bytes state, std::int64_t timeMs, bool create, std::uint64_t readSeq) {
+  if (!fitsInt16(x) || !fitsInt16(y) || !fitsInt16(z)) return false;
+  const std::uint64_t key = voxelKey(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y),
+                                     static_cast<std::int16_t>(z));
+  const std::int64_t t = clampTime(timeMs);
+  // Without a time, a value a read returned loses to one merged after that read was asked for.
+  auto older = [&](std::int64_t heldMs, std::uint64_t heldArrival) {
+    return t > 0 ? t < heldMs : (readSeq > 0 && heldArrival > readSeq);
+  };
+  if (PendingCell* cell = cellOf(coord, key)) {
+    if (older(cell->baseTimeMs, cell->baseArrival)) return false;
+    cell->baseType = voxelType;
+    cell->baseState.assign(state.begin(), state.end());
+    if (t > 0) cell->baseTimeMs = t;
+    cell->baseArrival = ++mergeSeq_;
+    if (create) slotFor(coord);
+    return showPending(coord, key, *cell);
+  }
+  ChunkData* c = create ? &slotFor(coord) : slot(coord);
+  if (!c) return false;
+  const std::int64_t heldMs = c->timeOf(key);
+  if (older(heldMs, c->arrivalOf(key))) return false;
+  c->setTime(key, t > 0 ? t : heldMs, ++mergeSeq_);
+  return show(*c, x, y, z, voxelType, state);
 }
 
 void ChunkStore::setDirty(ChunkData& chunk, bool dirty) {
@@ -636,51 +819,143 @@ void ChunkStore::setDirty(ChunkData& chunk, bool dirty) {
   }
 }
 
-void ChunkStore::applyStored(const StoredChunk& stored, std::int64_t nowMs) {
+void ChunkStore::applyStored(const StoredChunk& stored, std::int64_t nowMs,
+                             std::uint64_t requestedSeq) {
   ++appliedCount_;
   ChunkData& c = slotFor(stored.coord);
+  auto pendingChunk = pending_.find(stored.coord);
+  PendingByVoxel* pending = pendingChunk == pending_.end() ? nullptr : &pendingChunk->second;
+  // Every server time is held to Options::maxFutureSkewMs past this machine's clock.
+  const std::int64_t rowMs = clampTime(stored.updatedAtMs);
+  auto keyOf = [](const StoredVoxelState& e) {
+    return voxelKey(static_cast<std::int16_t>(e.x), static_cast<std::int16_t>(e.y),
+                    static_cast<std::int16_t>(e.z));
+  };
+  auto fits = [](const StoredVoxelState& e) {
+    return fitsInt16(e.x) && fitsInt16(e.y) && fitsInt16(e.z);
+  };
+
+  // The copy's time for each voxel: its entry's, else the row's (0: the copy has none).
+  std::vector<std::pair<std::uint64_t, std::int64_t>> entryTimes;
+  const bool merging = !c.arrivals_.empty() || pending != nullptr;
+  if (merging) {
+    entryTimes.reserve(stored.voxelStates.size());
+    for (const StoredVoxelState& e : stored.voxelStates) {
+      if (fits(e)) {
+        const std::int64_t entryMs = clampTime(e.updatedAtMs);
+        entryTimes.emplace_back(keyOf(e), entryMs > 0 ? entryMs : rowMs);
+      }
+    }
+    std::sort(entryTimes.begin(), entryTimes.end());
+  }
+  // A voxel the copy lists twice counts at its latest time.
+  auto copyTime = [&](std::uint64_t key) {
+    auto it = std::upper_bound(entryTimes.begin(), entryTimes.end(), key,
+                               [](std::uint64_t k, const std::pair<std::uint64_t, std::int64_t>& e) {
+                                 return k < e.first;
+                               });
+    if (it != entryTimes.begin() && std::prev(it)->first == key) return std::prev(it)->second;
+    return rowMs;
+  };
+  // Whether the value held at a voxel is newer than the copy's.
+  auto heldIsNewer = [&](std::uint64_t key, std::int64_t heldMs, std::uint64_t heldArrival) {
+    const std::int64_t copyMs = copyTime(key);
+    return copyMs > 0 ? heldMs > copyMs : heldArrival > requestedSeq;
+  };
+
+  // Values merged since the copy before that are newer than this copy stay.
+  struct Kept {
+    std::uint64_t key = 0;
+    std::int64_t timeMs = 0;
+    std::uint64_t arrival = 0;
+    std::int16_t voxelType = 0;
+    std::vector<std::uint8_t> state;
+  };
+  std::vector<Kept> kept;
+  for (const ChunkData::CellArrival& a : c.arrivals_) {
+    if (pending && pending->count(a.key)) continue;
+    const std::int64_t heldMs = c.timeOf(a.key);
+    if (!heldIsNewer(a.key, heldMs, a.seq)) continue;
+    const auto x = static_cast<std::int16_t>(static_cast<std::uint16_t>(a.key >> 32));
+    const auto y = static_cast<std::int16_t>(static_cast<std::uint16_t>(a.key >> 16));
+    const auto z = static_cast<std::int16_t>(static_cast<std::uint16_t>(a.key));
+    Kept k;
+    k.key = a.key;
+    k.timeMs = heldMs;
+    k.arrival = a.seq;
+    k.voxelType = voxelTypeAt(c.coord, x, y, z);
+    if (auto s = voxelStateAt(c.coord, x, y, z)) k.state.assign(s->state.begin(), s->state.end());
+    kept.push_back(std::move(k));
+  }
+
   c.storedOnServer = true;
   c.hydratedAtMs = nowMs > 0 ? nowMs : 1;
   c.voxelStatesTruncated = stored.voxelStatesTruncated;
-  if (stored.updatedAtMs > 0) c.storedAtMs = stored.updatedAtMs;
+  if (rowMs > 0) c.storedAtMs = rowMs;
   // The stored copy replaces the chunk's states and overlay (a world.set_chunk drops the
   // older edits); a copy without a grid keeps the one cached.
   c.states_.clear();
   c.overlay_.clear();
   c.bytes_.clear();
   c.garbage_ = 0;
+  c.times_.clear();
+  c.arrivals_.clear();
   if (stored.voxels.size() == static_cast<std::size_t>(kChunkVolume)) c.setGrid(stored.voxels.data());
   for (const StoredVoxelState& entry : stored.voxelStates) {
-    if (!fitsInt16(entry.x) || !fitsInt16(entry.y) || !fitsInt16(entry.z)) continue;
+    if (!fits(entry)) continue;
     putVoxel(c, entry.x, entry.y, entry.z, entry.voxelType,
              Bytes(entry.state.data(), entry.state.size()));
+    const std::int64_t entryMs = clampTime(entry.updatedAtMs);
+    if (entryMs > c.storedAtMs) c.times_.push_back({keyOf(entry), entryMs});
   }
-  reapplyPending(c);
-  changed(c, kChunkLoaded | kChunkVoxels | kChunkStates);
-}
+  std::sort(c.times_.begin(), c.times_.end(),
+            [](const ChunkData::CellTime& a, const ChunkData::CellTime& b) {
+              return a.key != b.key ? a.key < b.key : a.timeMs < b.timeMs;
+            });
+  // A voxel the copy lists twice keeps its latest time.
+  std::size_t unique = 0;
+  for (std::size_t i = 0; i < c.times_.size(); ++i) {
+    if (i + 1 < c.times_.size() && c.times_[i + 1].key == c.times_[i].key) continue;
+    c.times_[unique++] = c.times_[i];
+  }
+  c.times_.resize(unique);
+  for (const Kept& k : kept) {
+    const auto x = static_cast<std::int16_t>(static_cast<std::uint16_t>(k.key >> 32));
+    const auto y = static_cast<std::int16_t>(static_cast<std::uint16_t>(k.key >> 16));
+    const auto z = static_cast<std::int16_t>(static_cast<std::uint16_t>(k.key));
+    putVoxel(c, x, y, z, k.voxelType, Bytes(k.state.data(), k.state.size()));
+    c.setTime(k.key, k.timeMs, k.arrival);
+  }
 
-void ChunkStore::reapplyPending(ChunkData& c) {
-  auto chunk = pending_.find(c.coord);
-  if (chunk == pending_.end()) return;
-  for (auto& [key, edits] : chunk->second) {
-    const auto x = static_cast<std::int16_t>(static_cast<std::uint16_t>(key >> 32));
-    const auto y = static_cast<std::int16_t>(static_cast<std::uint16_t>(key >> 16));
-    const auto z = static_cast<std::int16_t>(static_cast<std::uint16_t>(key));
-    PendingEdit* first = nullptr;
-    PendingEdit* newest = nullptr;
-    for (PendingEdit& e : edits) {
-      if (e.stale) continue;
-      if (!first) first = &e;
-      newest = &e;
+  // This client's unanswered edits show over the copy; what the copy holds under them is
+  // their confirmed value, unless the one held is newer.
+  if (pending) {
+    for (auto& [key, cell] : *pending) {
+      const auto x = static_cast<std::int16_t>(static_cast<std::uint16_t>(key >> 32));
+      const auto y = static_cast<std::int16_t>(static_cast<std::uint16_t>(key >> 16));
+      const auto z = static_cast<std::int16_t>(static_cast<std::uint16_t>(key));
+      if (!heldIsNewer(key, cell.baseTimeMs, cell.baseArrival)) {
+        cell.baseType = voxelTypeAt(c.coord, x, y, z);
+        cell.baseState.clear();
+        if (auto s = voxelStateAt(c.coord, x, y, z)) cell.baseState.assign(s->state.begin(), s->state.end());
+        if (const std::int64_t copyMs = copyTime(key); copyMs > 0) cell.baseTimeMs = copyMs;
+        cell.baseArrival = 0;
+      }
+      const PendingEdit* shown = nullptr;
+      for (auto it = cell.edits.rbegin(); it != cell.edits.rend(); ++it) {
+        if (it->optimistic) {
+          shown = &*it;
+          break;
+        }
+      }
+      if (shown) {
+        putVoxel(c, x, y, z, shown->voxelType, Bytes(shown->state.data(), shown->state.size()));
+      } else {
+        putVoxel(c, x, y, z, cell.baseType, Bytes(cell.baseState.data(), cell.baseState.size()));
+      }
     }
-    if (!first) continue;
-    // What the stored copy holds for the voxel is what an undo restores.
-    first->prevType = voxelTypeAt(c.coord, x, y, z);
-    first->prevState.clear();
-    if (auto s = voxelStateAt(c.coord, x, y, z)) first->prevState.assign(s->state.begin(), s->state.end());
-    if (!newest->optimistic) continue;
-    putVoxel(c, x, y, z, newest->voxelType, Bytes(newest->state.data(), newest->state.size()));
   }
+  changed(c, kChunkLoaded | kChunkVoxels | kChunkStates);
 }
 
 const ChunkData& ChunkStore::insertGenerated(const ChunkCoord& coord,
@@ -688,7 +963,7 @@ const ChunkData& ChunkStore::insertGenerated(const ChunkCoord& coord,
   ChunkData& c = slotFor(coord);
   c.setGrid(voxels.data());
   c.storedOnServer = false;
-  setDirty(c, options_.writeBackIntervalMs > 0 && source_ != nullptr);
+  setDirty(c, options_.writeBackIntervalMs > 0 && durable());
   changed(c, kChunkLoaded | kChunkVoxels);
   return c;
 }
@@ -701,23 +976,34 @@ void ChunkStore::markDirty(const ChunkCoord& coord) {
   }
 }
 
-std::size_t ChunkStore::pruneBeyond(const ChunkCoord& center, int distance) {
-  std::vector<ChunkCoord> distant;
+bool ChunkStore::evict(const ChunkCoord& coord) {
+  missing_.erase(coord);
+  ChunkData* c = slot(coord);
+  if (!c) return false;
+  if (c->dirty && durable()) {
+    // It stays until its write-back ends; a later eviction takes it.
+    if (!writing_.count(coord)) queueWriteBack(*c);
+    return false;
+  }
+  dropSlot(coord);
+  return true;
+}
+
+std::size_t ChunkStore::pruneIf(const std::function<bool(const ChunkData&)>& drop) {
+  std::vector<ChunkCoord> chosen;
   for (const auto& [coord, index] : slotOf_) {
-    if (chebyshev(coord, center) > distance) distant.push_back(coord);
+    if (drop(slots_[index])) chosen.push_back(coord);
   }
   std::size_t pruned = 0;
-  for (const ChunkCoord& coord : distant) {
-    ChunkData* c = slot(coord);
-    if (!c) continue;
-    if (c->dirty && source_) {
-      // It stays until its write-back ends; a later prune evicts it.
-      if (!writing_.count(coord)) queueWriteBack(*c);
-      continue;
-    }
-    evict(coord);
-    ++pruned;
+  for (const ChunkCoord& coord : chosen) {
+    if (evict(coord)) ++pruned;
   }
+  return pruned;
+}
+
+std::size_t ChunkStore::pruneBeyond(const ChunkCoord& center, int distance) {
+  const std::size_t pruned =
+      pruneIf([&](const ChunkData& c) { return chebyshev(c.coord, center) > distance; });
   for (auto it = missing_.begin(); it != missing_.end();) {
     it = chebyshev(*it, center) > distance ? missing_.erase(it) : std::next(it);
   }
@@ -745,25 +1031,49 @@ void ChunkStore::report() {
 // Realtime edits: pacing, echoes, refusals, timeouts
 // ---------------------------------------------------------------------------
 
-std::vector<ChunkStore::PendingEdit>* ChunkStore::pendingOf(const ChunkCoord& coord,
-                                                            std::uint64_t key) {
+ChunkStore::PendingCell* ChunkStore::cellOf(const ChunkCoord& coord, std::uint64_t key) {
   auto chunk = pending_.find(coord);
   if (chunk == pending_.end()) return nullptr;
   auto voxel = chunk->second.find(key);
   return voxel == chunk->second.end() ? nullptr : &voxel->second;
 }
 
-ChunkStore::PendingEdit* ChunkStore::pendingById(const EditRef& ref,
-                                                 std::vector<PendingEdit>** list) {
-  std::vector<PendingEdit>* edits = pendingOf(ref.coord, ref.key);
-  if (!edits) return nullptr;
-  for (PendingEdit& e : *edits) {
+const ChunkStore::PendingCell* ChunkStore::cellOf(const ChunkCoord& coord,
+                                                  std::uint64_t key) const {
+  auto chunk = pending_.find(coord);
+  if (chunk == pending_.end()) return nullptr;
+  auto voxel = chunk->second.find(key);
+  return voxel == chunk->second.end() ? nullptr : &voxel->second;
+}
+
+ChunkStore::PendingEdit* ChunkStore::pendingById(const EditRef& ref, PendingCell** cell) {
+  PendingCell* found = cellOf(ref.coord, ref.key);
+  if (!found) return nullptr;
+  for (PendingEdit& e : found->edits) {
     if (e.id == ref.id) {
-      if (list) *list = edits;
+      if (cell) *cell = found;
       return &e;
     }
   }
   return nullptr;
+}
+
+bool ChunkStore::showPending(const ChunkCoord& coord, std::uint64_t key, PendingCell& cell) {
+  ChunkData* c = slot(coord);
+  if (!c) return false;
+  const auto x = static_cast<std::int16_t>(static_cast<std::uint16_t>(key >> 32));
+  const auto y = static_cast<std::int16_t>(static_cast<std::uint16_t>(key >> 16));
+  const auto z = static_cast<std::int16_t>(static_cast<std::uint16_t>(key));
+  for (auto it = cell.edits.rbegin(); it != cell.edits.rend(); ++it) {
+    if (!it->optimistic) continue;
+    // Copied: a callback of show() may edit the voxel again.
+    const std::int16_t type = it->voxelType;
+    const std::vector<std::uint8_t> state = it->state;
+    return show(*c, x, y, z, type, Bytes(state.data(), state.size()));
+  }
+  const std::int16_t type = cell.baseType;
+  const std::vector<std::uint8_t> state = cell.baseState;
+  return show(*c, x, y, z, type, Bytes(state.data(), state.size()));
 }
 
 Result<std::uint64_t> ChunkStore::setVoxel(const ChunkCoord& coord, int x, int y, int z,
@@ -774,20 +1084,31 @@ Result<std::uint64_t> ChunkStore::setVoxel(const ChunkCoord& coord, int x, int y
   if (voxelState.size() > wire::voxel::kMaxStateSize) return Errc::InvalidArgument;
   const std::uint64_t key = voxelKey(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y),
                                      static_cast<std::int16_t>(z));
+  PendingCell& cell = pending_[coord][key];
+  if (cell.edits.empty()) {
+    // The value under the edits: what the cache holds now, as the server confirmed it.
+    cell.baseType = voxelTypeAt(coord, x, y, z);
+    cell.baseState.clear();
+    if (auto s = voxelStateAt(coord, x, y, z)) cell.baseState.assign(s->state.begin(), s->state.end());
+    cell.baseTimeMs = 0;
+    cell.baseArrival = 0;
+    if (const ChunkData* c = find(coord)) {
+      cell.baseTimeMs = c->timeOf(key);
+      cell.baseArrival = c->arrivalOf(key);
+    }
+  }
   PendingEdit edit;
   edit.id = nextEditId_++;
   edit.uuid = uuid;
-  edit.stale = !optimistic;
   edit.optimistic = optimistic;
   edit.voxelType = voxelType;
   edit.state.assign(voxelState.begin(), voxelState.end());
-  edit.prevType = voxelTypeAt(coord, x, y, z);
-  if (auto s = voxelStateAt(coord, x, y, z)) edit.prevState.assign(s->state.begin(), s->state.end());
   edit.done = std::move(done);
   const std::uint64_t id = edit.id;
-  if (optimistic) applyLocal(coord, x, y, z, voxelType, voxelState);
-  pending_[coord][key].push_back(std::move(edit));
+  cell.edits.push_back(std::move(edit));
+  // Queued before it shows: an edit a callback makes goes out after this one.
   sendQueue_.push_back(EditRef{coord, key, id});
+  if (optimistic) show(slotFor(coord), x, y, z, voxelType, voxelState);
   sendQueued();
   return id;
 }
@@ -817,10 +1138,14 @@ void ChunkStore::sendQueued() {
     const auto y = static_cast<std::int16_t>(static_cast<std::uint16_t>(ref.key >> 16));
     const auto z = static_cast<std::int16_t>(static_cast<std::uint16_t>(ref.key));
     const Bytes state(edit->state.data(), edit->state.size());
-    auto seq = options_.send ? options_.send(ref.coord, edit->uuid, x, y, z, edit->voxelType, state,
-                                             options_.voxelSendDistance)
-                             : conn_.sendVoxelUpdate(ref.coord, edit->uuid, x, y, z, edit->voxelType,
-                                                     state, options_.voxelSendDistance);
+    Result<std::uint8_t> seq = Errc::NotConnected;
+    if (options_.send) {
+      seq = options_.send(ref.coord, edit->uuid, x, y, z, edit->voxelType, state,
+                          options_.voxelSendDistance);
+    } else if (conn_) {
+      seq = conn_->sendVoxelUpdate(ref.coord, edit->uuid, x, y, z, edit->voxelType, state,
+                                   options_.voxelSendDistance);
+    }
     if (!seq.ok()) {
       finishEdit(ref, EditResult::NotSent, wire::ErrorCode::NoError);
       continue;
@@ -850,16 +1175,34 @@ std::optional<std::uint8_t> ChunkStore::sequenceOf(std::uint64_t editId) const {
   return std::nullopt;
 }
 
-void ChunkStore::finishEdit(const EditRef& ref, EditResult result, wire::ErrorCode code) {
-  std::vector<PendingEdit>* list = nullptr;
-  PendingEdit* found = pendingById(ref, &list);
-  if (!found) return;
-  const auto index = static_cast<std::size_t>(found - list->data());
+bool ChunkStore::finishEdit(const EditRef& ref, EditResult result, wire::ErrorCode code,
+                            std::int64_t echoTimeMs) {
+  PendingCell* cell = nullptr;
+  PendingEdit* found = pendingById(ref, &cell);
+  if (!found) return false;
+  // Whether the voxel shows this edit: the newest optimistic one is what it shows.
+  bool wasShown = false;
+  for (auto it = cell->edits.rbegin(); it != cell->edits.rend(); ++it) {
+    if (!it->optimistic) continue;
+    wasShown = &*it == found;
+    break;
+  }
+  const auto index = static_cast<std::size_t>(found - cell->edits.data());
   PendingEdit edit = std::move(*found);
-  list->erase(list->begin() + static_cast<std::ptrdiff_t>(index));
+  cell->edits.erase(cell->edits.begin() + static_cast<std::ptrdiff_t>(index));
   if (edit.sequence >= 0) {
     auto it = inFlight_.find(static_cast<std::uint8_t>(edit.sequence));
     if (it != inFlight_.end() && it->second.id == ref.id) inFlight_.erase(it);
+  }
+  if (result == EditResult::Echoed) {
+    // The server applied it: it is the confirmed value, unless the one held is newer.
+    const std::int64_t t = clampTime(echoTimeMs);
+    if (t <= 0 || t >= cell->baseTimeMs) {
+      cell->baseType = edit.voxelType;
+      cell->baseState = edit.state;
+      if (t > 0) cell->baseTimeMs = t;
+      cell->baseArrival = ++mergeSeq_;
+    }
   }
   EditOutcome out;
   out.editId = ref.id;
@@ -870,67 +1213,51 @@ void ChunkStore::finishEdit(const EditRef& ref, EditResult result, wire::ErrorCo
   out.voxelType = edit.voxelType;
   out.result = result;
   out.errorCode = code;
-  bool restore = false;
-  if (result != EditResult::Echoed && edit.optimistic && !edit.stale && find(ref.coord)) {
-    if (index < list->size()) {
-      // A newer edit of the voxel shows; it now undoes to what this one replaced.
-      PendingEdit& next = (*list)[index];
-      if (!next.stale) {
-        next.prevType = edit.prevType;
-        next.prevState = edit.prevState;
-      }
-    } else {
-      restore = true;
-    }
-  }
-  // Done with the lists before any callback, which may edit again.
-  if (list->empty()) {
+  ChunkData* c = slot(ref.coord);
+  out.restored = result != EditResult::Echoed && wasShown && c != nullptr;
+  bool changedShown = false;
+  if (cell->edits.empty()) {
+    // Settled: the voxel holds its confirmed value. Done with the lists before any
+    // callback, which may edit again.
+    PendingCell settled = std::move(*cell);
     auto chunk = pending_.find(ref.coord);
     chunk->second.erase(ref.key);
     if (chunk->second.empty()) pending_.erase(chunk);
-  }
-  if (restore) {
-    ChunkData& c = *slot(ref.coord);
-    const std::int16_t before = voxelTypeAt(ref.coord, out.x, out.y, out.z);
-    putVoxel(c, out.x, out.y, out.z, edit.prevType,
-             Bytes(edit.prevState.data(), edit.prevState.size()));
-    changed(c, (before != edit.prevType ? static_cast<std::uint32_t>(kChunkVoxels) : 0u) |
-                   kChunkStates);
-    if (before != edit.prevType) borderNeighbours(ref.coord, out.x, out.y, out.z);
-    out.restored = true;
+    if (c) {
+      c->setTime(ref.key, std::max(settled.baseTimeMs, c->timeOf(ref.key)), settled.baseArrival);
+      changedShown = show(*c, out.x, out.y, out.z, settled.baseType,
+                          Bytes(settled.baseState.data(), settled.baseState.size()));
+    }
+  } else if (c) {
+    changedShown = showPending(ref.coord, ref.key, *cell);
   }
   const bool reload = result == EditResult::TimedOut && find(ref.coord) != nullptr;
   if (edit.done) edit.done(out);
   if (result != EditResult::Echoed && onEditRefused_) onEditRefused_(out);
   // The edit may have been applied with its echo lost: the server's copy settles it.
   if (reload) hydrateAsync(ref.coord);
-}
-
-bool ChunkStore::takeEcho(const replication::SpatialNotification& n,
-                          const wire::VoxelPayloadView& voxel) {
-  const std::uint64_t key = voxelKey(voxel.x, voxel.y, voxel.z);
-  std::vector<PendingEdit>* edits = pendingOf(n.chunk, key);
-  if (!edits || edits->empty()) return true;
-  const core::ActorUuid sender = n.uuidArray();
-  auto echoed = std::find_if(edits->begin(), edits->end(), [&](const PendingEdit& e) {
-    return e.sequence == static_cast<int>(n.sequence) && e.uuid == sender;
-  });
-  if (echoed == edits->end()) {
-    for (PendingEdit& e : *edits) e.stale = true;
-    return true;
-  }
-  const bool stale = echoed->stale;
-  const bool newerLocalEdit = std::next(echoed) != edits->end();
-  finishEdit(EditRef{n.chunk, key, echoed->id}, EditResult::Echoed, wire::ErrorCode::NoError);
-  sendQueued();
-  return stale && !newerLocalEdit;
+  return changedShown;
 }
 
 bool ChunkStore::ingest(const replication::SpatialNotification& n,
                         const wire::VoxelPayloadView& voxel) {
-  if (!takeEcho(n, voxel)) return false;
-  applyLocal(n.chunk, voxel.x, voxel.y, voxel.z, voxel.voxelType, voxel.state);
-  return true;
+  const std::uint64_t key = voxelKey(voxel.x, voxel.y, voxel.z);
+  if (PendingCell* cell = cellOf(n.chunk, key)) {
+    // This client's own edit comes back with its sender, sequence number and value.
+    const core::ActorUuid sender = n.uuidArray();
+    for (const PendingEdit& e : cell->edits) {
+      if (e.sequence != static_cast<int>(n.sequence) || e.uuid != sender ||
+          e.voxelType != voxel.voxelType || !sameBytes(voxel.state, e.state)) {
+        continue;
+      }
+      const bool changed = finishEdit(EditRef{n.chunk, key, e.id}, EditResult::Echoed,
+                                      wire::ErrorCode::NoError, n.epochMillis);
+      sendQueued();
+      return changed;
+    }
+  }
+  return confirm(n.chunk, voxel.x, voxel.y, voxel.z, voxel.voxelType, voxel.state, n.epochMillis,
+                 /*create=*/true);
 }
 
 bool ChunkStore::ingestError(const replication::GenericError& error) {
@@ -967,7 +1294,8 @@ void ChunkStore::ingestChunkChanged(const ChunkCoord& coord, std::int64_t update
   if (!options_.reloadReplacedChunks) return;
   ChunkData* c = slot(coord);
   if (!c) return;
-  if (c->storedAtMs > 0 && updatedAtMs > 0 && c->storedAtMs >= updatedAtMs) return;
+  const std::int64_t at = clampTime(updatedAtMs);
+  if (c->storedAtMs > 0 && at > 0 && c->storedAtMs >= at) return;
   if (c->dirty) {
     // The server's copy is newer than a seed waiting to be written back over it.
     setDirty(*c, false);
@@ -1018,8 +1346,14 @@ ChunkStore::IoResult ChunkStore::runJob(const IoJob& job) {
         r.outcome = source_->writeChunk(appId_, job.coord, Bytes(job.voxels.data(), job.voxels.size()));
         break;
       case IoJob::Kind::CatchUp:
-        r.chunks = source_->chunksInBox(appId_, job.box.lo, job.box.hi, job.since);
-        r.edits = source_->editsInBox(appId_, job.box.lo, job.box.hi, job.since);
+        for (const Box& box : job.boxes) {
+          for (StoredChunk& chunk : source_->chunksInBox(appId_, box.lo, box.hi, job.since)) {
+            r.chunks.push_back(std::move(chunk));
+          }
+          for (StoredChunkEdits& edits : source_->editsInBox(appId_, box.lo, box.hi, job.since)) {
+            r.edits.push_back(std::move(edits));
+          }
+        }
         break;
     }
 #ifndef CROWDY_NO_EXCEPTIONS
@@ -1033,35 +1367,47 @@ ChunkStore::IoResult ChunkStore::runJob(const IoJob& job) {
 
 void ChunkStore::ioLoop() {
   for (;;) {
-    IoJob job;
     {
       std::unique_lock lock(ioMutex_);
-      ioWake_.wait(lock, [this] { return stopping_ || !jobs_.empty(); });
+      ioWake_.wait(lock, [this] { return stopping_ || !jobs_.empty() || !replies_.empty(); });
       if (stopping_) return;
-      job = std::move(jobs_.front());
-      jobs_.pop_front();
-      ++jobsRunning_;
     }
-    IoResult result = runJob(job);
-    {
-      std::lock_guard lock(ioMutex_);
-      results_.push_back(std::move(result));
-      --jobsRunning_;
-    }
-    ioDone_.notify_all();
+    serviceIo(SIZE_MAX);
   }
 }
 
-std::size_t ChunkStore::runIo(std::size_t maxJobs) {
+std::size_t ChunkStore::runIo(std::size_t maxJobs) { return serviceIo(maxJobs); }
+
+std::size_t ChunkStore::serviceIo(std::size_t maxJobs) {
   std::size_t ran = 0;
   while (ran < maxJobs) {
+    std::optional<std::pair<std::uint64_t, ChunkSourceReply>> reply;
     IoJob job;
     {
       std::lock_guard lock(ioMutex_);
-      if (jobs_.empty()) break;
-      job = std::move(jobs_.front());
-      jobs_.pop_front();
-      ++jobsRunning_;
+      if (stopping_) break;
+      // Answers first: they finish work already under way.
+      if (!replies_.empty()) {
+        reply.emplace(std::move(replies_.front()));
+        replies_.pop_front();
+      } else if (!jobs_.empty()) {
+        job = std::move(jobs_.front());
+        jobs_.pop_front();
+        ++jobsRunning_;
+      } else {
+        break;
+      }
+    }
+    ++ran;
+    if (reply) {
+      onAsyncReply(reply->first, std::move(reply->second));
+      continue;
+    }
+    if (asyncSource_) {
+      startAsync(std::move(job));
+      std::lock_guard lock(ioMutex_);
+      --jobsRunning_;
+      continue;
     }
     IoResult result = runJob(job);
     {
@@ -1070,9 +1416,146 @@ std::size_t ChunkStore::runIo(std::size_t maxJobs) {
       --jobsRunning_;
     }
     ioDone_.notify_all();
-    ++ran;
   }
   return ran;
+}
+
+void ChunkStore::startAsync(IoJob job) {
+  const std::uint64_t id = nextCallId_++;
+  AsyncCall& call = calls_[id];
+  call.result.job = std::move(job);
+  sendAsync(id, call);
+}
+
+void ChunkStore::sendAsync(std::uint64_t id, AsyncCall& call) {
+  const IoJob& job = call.result.job;
+  graphql::JVal vars;
+  std::string_view document;
+  ChunkSourceRequest request;
+  switch (job.kind) {
+    case IoJob::Kind::LoadBox:
+      vars["input"] = boxRegion(job.box.lo, job.box.hi, call.skip, job.since).toInput(appId_);
+      document = gen::chunks::kGetChunksByDistanceDocument;
+      request.operationName = "GetChunksByDistance";
+      break;
+    case IoJob::Kind::LoadChunk:
+      vars["input"]["appId"] = appId_;
+      vars["input"]["coordinates"] = domains::ChunkRef{job.coord.x, job.coord.y, job.coord.z}.toInput();
+      document = gen::chunks::kGetChunkDocument;
+      request.operationName = "GetChunk";
+      break;
+    case IoJob::Kind::Write:
+      vars["input"]["appId"] = appId_;
+      vars["input"]["coordinates"] = domains::ChunkRef{job.coord.x, job.coord.y, job.coord.z}.toInput();
+      vars["input"]["voxels"] = core::base64Encode(Bytes(job.voxels.data(), job.voxels.size()));
+      document = gen::chunks::kUpdateChunkDocument;
+      request.operationName = "UpdateChunk";
+      break;
+    case IoJob::Kind::CatchUp: {
+      const Box& box = job.boxes[call.box];
+      vars["input"] = boxRegion(box.lo, box.hi, call.skip, job.since).toInput(appId_);
+      if (call.edits) {
+        document = gen::voxels::kListVoxelUpdatesByDistanceCellsTimedDocument;
+        request.operationName = "ListVoxelUpdatesByDistanceCellsTimed";
+      } else {
+        document = gen::chunks::kGetChunksByDistanceDocument;
+        request.operationName = "GetChunksByDistance";
+      }
+      break;
+    }
+  }
+  request.body = graphql::requestBody(document, vars, request.operationName);
+  std::shared_ptr<ReplySink> sink = sink_;
+  asyncSource_->request(std::move(request), [sink, id](ChunkSourceReply reply) {
+    std::lock_guard lock(sink->mutex);
+    if (sink->store) sink->store->postReply(id, std::move(reply));
+  });
+}
+
+void ChunkStore::postReply(std::uint64_t id, ChunkSourceReply reply) {
+  {
+    std::lock_guard lock(ioMutex_);
+    replies_.emplace_back(id, std::move(reply));
+  }
+  ioWake_.notify_one();
+  ioDone_.notify_all();
+}
+
+void ChunkStore::onAsyncReply(std::uint64_t id, ChunkSourceReply reply) {
+  auto it = calls_.find(id);
+  if (it == calls_.end()) return;
+  AsyncCall& call = it->second;
+  IoResult& r = call.result;
+  graphql::GraphQLOutcome out;
+  if (reply.httpStatus == 0) {
+    out.status = Errc::SocketError;
+    out.kind = graphql::GraphQLErrorKind::Network;
+    out.errorMessage = std::move(reply.body);
+  } else {
+    out = graphql::interpretResponse(reply.httpStatus, reply.body);
+  }
+  if (r.job.kind == IoJob::Kind::Write) {
+    r.outcome = std::move(out);
+    finishAsync(id);
+    return;
+  }
+  if (!out.ok()) {
+    r.failed = true;
+    r.outcome = std::move(out);
+    finishAsync(id);
+    return;
+  }
+  const graphql::Json root = rootField(out.data);
+  switch (r.job.kind) {
+    case IoJob::Kind::LoadBox: {
+      const PageEnd end = chunkPage(root, call.skip, r.chunks);
+      if (end.more) {
+        call.skip = end.nextSkip;
+        sendAsync(id, call);
+        return;
+      }
+      break;
+    }
+    case IoJob::Kind::LoadChunk:
+      if (root.isObject()) r.chunk = storedChunkOf(root);
+      break;
+    case IoJob::Kind::CatchUp: {
+      const PageEnd end =
+          call.edits ? editsPage(root, call.skip, r.edits) : chunkPage(root, call.skip, r.chunks);
+      if (end.more) {
+        call.skip = end.nextSkip;
+        sendAsync(id, call);
+        return;
+      }
+      // A box's chunks, then its edits, then the next box.
+      call.skip = 0;
+      if (!call.edits) {
+        call.edits = true;
+        sendAsync(id, call);
+        return;
+      }
+      call.edits = false;
+      if (++call.box < r.job.boxes.size()) {
+        sendAsync(id, call);
+        return;
+      }
+      break;
+    }
+    case IoJob::Kind::Write:
+      break;
+  }
+  finishAsync(id);
+}
+
+void ChunkStore::finishAsync(std::uint64_t id) {
+  auto it = calls_.find(id);
+  if (it == calls_.end()) return;
+  {
+    std::lock_guard lock(ioMutex_);
+    results_.push_back(std::move(it->second.result));
+  }
+  calls_.erase(it);
+  ioDone_.notify_all();
 }
 
 void ChunkStore::finishLoad(const IoResult& result) {
@@ -1094,8 +1577,10 @@ bool ChunkStore::adopt(IoResult& result, std::int64_t nowMs,
   switch (result.job.kind) {
     case IoJob::Kind::LoadBox: {
       std::size_t& at = adoptAt_;
+      const std::size_t first = at;
       for (; at < result.chunks.size(); ++at) {
-        if ((at & 15) == 15 && std::chrono::steady_clock::now() >= deadline) return false;
+        // At least one chunk a tick, however small the budget.
+        if (at > first && std::chrono::steady_clock::now() >= deadline) return false;
         const StoredChunk& stored = result.chunks[at];
         if (!adoptSeen_.insert(stored.coord).second) {
           ++duplicatePageChunks_;
@@ -1106,19 +1591,45 @@ bool ChunkStore::adopt(IoResult& result, std::int64_t nowMs,
         // A chunk the store holds from the durable store, or a grid not written back
         // yet, keeps what it has.
         if (cached && (cached->hydratedAtMs > 0 || cached->dirty)) continue;
-        applyStored(stored, nowMs);
+        applyStored(stored, nowMs, result.job.requestedSeq);
       }
       finishLoad(result);
       return true;
     }
     case IoJob::Kind::LoadChunk: {
       const ChunkCoord coord = result.job.coord;
-      reloading_.erase(coord);
-      if (!result.failed && result.chunk) {
-        const ChunkData* cached = find(coord);
-        if (!(cached && cached->dirty)) applyStored(*result.chunk, nowMs);
+      Reload reload;
+      if (auto r = reloading_.find(coord); r != reloading_.end()) {
+        reload = std::move(r->second);
+        reloading_.erase(r);
       }
-      if (reloadAgain_.erase(coord)) hydrateAsync(coord);
+      bool applied = false;
+      if (!result.failed && result.chunk && !reload.evicted) {
+        const ChunkData* cached = find(coord);
+        const std::int64_t rowMs = clampTime(result.chunk->updatedAtMs);
+        if (cached && cached->hydratedAtMs > 0 && rowMs > 0 && cached->storedAtMs > rowMs) {
+          // A newer copy came first (a catch-up's): the store already holds this one's news.
+          applied = !cached->dirty;
+        } else if (!(cached && cached->dirty)) {
+          applyStored(*result.chunk, nowMs, result.job.requestedSeq);
+          applied = true;
+        }
+      }
+      if (reload.again) {
+        // Asked for while this read was out: a read of its own.
+        const ChunkData* cached = find(coord);
+        if (cached && cached->dirty) {
+          for (HydrateDone& done : reload.next) {
+            if (done) done(false);
+          }
+        } else {
+          reloading_[coord].waiting = std::move(reload.next);
+          startReload(coord);
+        }
+      }
+      for (HydrateDone& done : reload.waiting) {
+        if (done) done(applied);
+      }
       return true;
     }
     case IoJob::Kind::Write: {
@@ -1159,23 +1670,27 @@ bool ChunkStore::adopt(IoResult& result, std::int64_t nowMs,
     }
     case IoJob::Kind::CatchUp: {
       if (result.failed) return true;
+      const std::uint64_t readSeq = result.job.requestedSeq;
       for (const StoredChunkEdits& group : result.edits) {
-        ChunkData* c = slot(group.coord);
-        if (!c || c->hydratedAtMs == 0) continue;
+        // A chunk the store does not hold gets a slot only when it was never stored: one
+        // that was is read whole when it is asked for.
+        const bool create = !find(group.coord) && missing_.count(group.coord) > 0;
+        if (!create && !find(group.coord)) continue;
         for (const StoredVoxelState& e : group.edits) {
-          if (!fitsInt16(e.x) || !fitsInt16(e.y) || !fitsInt16(e.z)) continue;
-          // This client's own unanswered edit of the voxel settles with its echo.
-          const std::uint64_t key = voxelKey(static_cast<std::int16_t>(e.x), static_cast<std::int16_t>(e.y),
-                                             static_cast<std::int16_t>(e.z));
-          if (pendingOf(group.coord, key)) continue;
-          applyLocal(group.coord, e.x, e.y, e.z, e.voxelType, Bytes(e.state.data(), e.state.size()));
+          confirm(group.coord, e.x, e.y, e.z, e.voxelType, Bytes(e.state.data(), e.state.size()),
+                  e.updatedAtMs, create, readSeq);
+        }
+        if (create) {
+          missing_.erase(group.coord);
+          if (ChunkData* made = slot(group.coord)) made->hydratedAtMs = nowMs > 0 ? nowMs : 1;
         }
       }
       for (const StoredChunk& stored : result.chunks) {
         const ChunkData* c = find(stored.coord);
-        if (!c || c->dirty || c->hydratedAtMs == 0) continue;
-        if (stored.updatedAtMs > 0 && c->storedAtMs >= stored.updatedAtMs) continue;
-        applyStored(stored, nowMs);
+        if (!c || c->dirty) continue;
+        const std::int64_t rowMs = clampTime(stored.updatedAtMs);
+        if (c->hydratedAtMs > 0 && rowMs > 0 && c->storedAtMs >= rowMs) continue;
+        applyStored(stored, nowMs, readSeq);
       }
       return true;
     }
@@ -1223,8 +1738,9 @@ void ChunkStore::waitForIo(const std::function<bool()>& done, std::int64_t timeo
     adoptResults(nowMs(), 0);
     if (done() || std::chrono::steady_clock::now() >= until) break;
     std::unique_lock lock(ioMutex_);
-    ioDone_.wait_for(lock, std::chrono::milliseconds(10),
-                     [this] { return !results_.empty() || stopping_; });
+    ioDone_.wait_for(lock, std::chrono::milliseconds(10), [this] {
+      return !results_.empty() || (!options_.ioThread && !replies_.empty()) || stopping_;
+    });
   }
   report();
 }
@@ -1234,9 +1750,8 @@ void ChunkStore::waitForIo(const std::function<bool()>& done, std::int64_t timeo
 // ---------------------------------------------------------------------------
 
 std::size_t ChunkStore::ensureAroundAsync(const ChunkCoord& center, int distance) {
-  if (!source_) return 0;
+  if (!durable()) return 0;
   const int d = std::clamp(distance, 0, 8);
-  lastArea_ = Box{{center.x - d, center.y - d, center.z - d}, {center.x + d, center.y + d, center.z + d}};
   std::vector<ChunkCoord> wanted;
   for (std::int64_t dx = -d; dx <= d; ++dx) {
     for (std::int64_t dy = -d; dy <= d; ++dy) {
@@ -1255,13 +1770,14 @@ std::size_t ChunkStore::ensureAroundAsync(const ChunkCoord& center, int distance
     IoJob job;
     job.kind = IoJob::Kind::LoadBox;
     job.box = Box{lo, hi};
+    job.requestedSeq = mergeSeq_;
     enqueue(std::move(job));
   }
   return wanted.size();
 }
 
 std::size_t ChunkStore::ensureAround(const ChunkCoord& center, int distance) {
-  if (!source_) return 0;
+  if (!durable()) return 0;
   const std::uint64_t before = appliedCount_;
   ensureAroundAsync(center, distance);
   const int d = std::clamp(distance, 0, 8);
@@ -1277,47 +1793,102 @@ std::size_t ChunkStore::ensureAround(const ChunkCoord& center, int distance) {
   return static_cast<std::size_t>(appliedCount_ - before);
 }
 
-bool ChunkStore::hydrateAsync(const ChunkCoord& coord) {
-  if (!source_) return false;
-  const ChunkData* cached = find(coord);
-  if (cached && cached->dirty) return false;
-  if (reloading_.count(coord)) {
-    reloadAgain_.insert(coord);
-    return true;
-  }
-  reloading_.insert(coord);
-  missing_.erase(coord);
+void ChunkStore::startReload(const ChunkCoord& coord) {
   IoJob job;
   job.kind = IoJob::Kind::LoadChunk;
   job.coord = coord;
+  job.requestedSeq = mergeSeq_;
   enqueue(std::move(job));
+}
+
+bool ChunkStore::hydrateAsync(const ChunkCoord& coord, HydrateDone done) {
+  if (!durable()) return false;
+  const ChunkData* cached = find(coord);
+  if (cached && cached->dirty) return false;
+  auto it = reloading_.find(coord);
+  if (it != reloading_.end()) {
+    // The read on the way was asked for before this call: the next one answers it.
+    it->second.again = true;
+    if (done) it->second.next.push_back(std::move(done));
+    return true;
+  }
+  Reload& reload = reloading_[coord];
+  if (done) reload.waiting.push_back(std::move(done));
+  missing_.erase(coord);
+  startReload(coord);
   return true;
 }
 
 std::size_t ChunkStore::hydrate(const ChunkCoord& coord) {
-  const ChunkData* before = find(coord);
-  const std::uint64_t version = before ? before->version_ : 0;
-  const std::int64_t hydratedAt = before ? before->hydratedAtMs : 0;
-  if (!hydrateAsync(coord)) return 0;
-  waitForIo([&] { return !reloading_.count(coord) && !adopting_.has_value(); }, 600000);
-  const ChunkData* after = find(coord);
-  if (!after || after->hydratedAtMs == 0) return 0;
-  return (after->version_ != version || after->hydratedAtMs != hydratedAt || !before) ? 1 : 0;
+  // Shared: the callback outlives a wait that times out.
+  auto state = std::make_shared<std::pair<bool, bool>>(false, false);
+  if (!hydrateAsync(coord, [state](bool applied) { *state = {true, applied}; })) return 0;
+  waitForIo([&] { return state->first; }, 600000);
+  return state->second ? 1 : 0;
 }
 
-bool ChunkStore::catchUp(const std::string& sinceIso) {
-  if (!source_ || !lastArea_) return false;
+bool ChunkStore::queueCatchUp(const std::string& sinceIso, std::vector<Box> boxes) {
+  if (!durable() || boxes.empty()) return false;
   IoJob job;
   job.kind = IoJob::Kind::CatchUp;
-  job.box = *lastArea_;
+  job.boxes = std::move(boxes);
   job.since = sinceIso;
+  job.requestedSeq = mergeSeq_;
   enqueue(std::move(job));
   return true;
 }
 
+bool ChunkStore::catchUp(const std::string& sinceIso) {
+  if (!durable()) return false;
+  std::vector<ChunkCoord> coords;
+  coords.reserve(slotOf_.size() + missing_.size());
+  for (const auto& [coord, index] : slotOf_) coords.push_back(coord);
+  for (const ChunkCoord& coord : missing_) {
+    if (!slotOf_.count(coord)) coords.push_back(coord);
+  }
+  if (coords.empty()) return false;
+  std::vector<Box> boxes;
+  for (const auto& [lo, hi] : tileBoxes(coords)) boxes.push_back(Box{lo, hi});
+  return queueCatchUp(sinceIso, std::move(boxes));
+}
+
+bool ChunkStore::catchUp(const std::string& sinceIso, const std::vector<ChunkBox>& boxes) {
+  // More than this many boxes of 17^3 is not a view: refused rather than read.
+  constexpr std::size_t kMaxBoxes = 64;
+  std::vector<Box> cut;
+  for (const ChunkBox& b : boxes) {
+    const ChunkCoord lo{std::min(b.low.x, b.high.x), std::min(b.low.y, b.high.y),
+                        std::min(b.low.z, b.high.z)};
+    const ChunkCoord hi{std::max(b.low.x, b.high.x), std::max(b.low.y, b.high.y),
+                        std::max(b.low.z, b.high.z)};
+    const std::int64_t pieces = ((hi.x - lo.x) / kBoxSide + 1) * ((hi.y - lo.y) / kBoxSide + 1) *
+                                ((hi.z - lo.z) / kBoxSide + 1);
+    if (pieces < 0 || cut.size() + static_cast<std::size_t>(pieces) > kMaxBoxes) return false;
+    for (std::int64_t x = lo.x; x <= hi.x; x += kBoxSide) {
+      for (std::int64_t y = lo.y; y <= hi.y; y += kBoxSide) {
+        for (std::int64_t z = lo.z; z <= hi.z; z += kBoxSide) {
+          cut.push_back(Box{{x, y, z},
+                            {std::min(hi.x, x + kBoxSide - 1), std::min(hi.y, y + kBoxSide - 1),
+                             std::min(hi.z, z + kBoxSide - 1)}});
+        }
+      }
+    }
+  }
+  return queueCatchUp(sinceIso, std::move(cut));
+}
+
+bool ChunkStore::mergeEdits(const StoredChunkEdits& edits) {
+  bool changed = false;
+  for (const StoredVoxelState& e : edits.edits) {
+    changed |= confirm(edits.coord, e.x, e.y, e.z, e.voxelType,
+                       Bytes(e.state.data(), e.state.size()), e.updatedAtMs, /*create=*/true);
+  }
+  return changed;
+}
+
 ChunkFlushResult ChunkStore::flush() {
   ChunkFlushResult result;
-  if (!source_) return result;
+  if (!durable()) return result;
   for (const ChunkCoord& coord : std::vector<ChunkCoord>(dirty_.begin(), dirty_.end())) {
     ChunkData* chunk = slot(coord);
     if (!chunk || writing_.count(coord)) continue;
@@ -1329,7 +1900,7 @@ ChunkFlushResult ChunkStore::flush() {
 
 ChunkFlushResult ChunkStore::flushAndWait(std::int64_t timeoutMs) {
   ChunkFlushResult result;
-  if (!source_) return result;
+  if (!durable()) return result;
   collectDropped_ = &result.dropped;
   collectPersisted_ = &result.persisted;
   const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
@@ -1346,8 +1917,9 @@ ChunkFlushResult ChunkStore::flushAndWait(std::int64_t timeoutMs) {
       if (ChunkData* chunk = slot(coord)) queueWriteBack(*chunk);
     }
     std::unique_lock lock(ioMutex_);
-    ioDone_.wait_for(lock, std::chrono::milliseconds(10),
-                     [this] { return !results_.empty() || stopping_; });
+    ioDone_.wait_for(lock, std::chrono::milliseconds(10), [this] {
+      return !results_.empty() || (!options_.ioThread && !replies_.empty()) || stopping_;
+    });
   }
   collectDropped_ = nullptr;
   collectPersisted_ = nullptr;
@@ -1360,7 +1932,7 @@ void ChunkStore::tick(std::int64_t nowMs) {
   adoptResults(this->nowMs(), options_.adoptBudgetUs);
   expireEdits();
   sendQueued();
-  if (source_ && options_.writeBackIntervalMs > 0 &&
+  if (durable() && options_.writeBackIntervalMs > 0 &&
       nowMs - lastWriteBackMs_ >= options_.writeBackIntervalMs) {
     // The first dirty chunk that is due: one waiting out a backoff does not hold up the
     // others.

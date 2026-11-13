@@ -1256,9 +1256,10 @@ void UCrowdyCppReplicationSubsystem::ReportNetworkStats(const FCrowdyCppReplicat
 	const FCrowdyCppReplicationStats RawStats = Polled.GetStats();
 
 	UE_CLOG(CrowdyNetTrace::Net(), LogCrowdyNet, Log,
-		TEXT("Transport totals: %lld datagrams received, %lld failed verification, %lld replayed control frames, %lld idle releases after input, %lld dropped from the ring, %lld sends dropped."),
+		TEXT("Transport totals: %lld datagrams received, %lld failed verification, %lld replayed control frames, %lld idle releases after input, %lld bound-control acknowledgements, %lld unbound control frames dropped after one, %lld unbound reconnects held back, %lld dropped from the ring, %lld sends dropped."),
 		RawStats.DatagramsReceived, RawStats.HmacFailures, RawStats.StaleBoundControl, RawStats.IdleReleasesAfterInput,
-		RawStats.RingDropped, RawStats.MessagesDropped);
+		RawStats.BoundControlAcks, RawStats.LegacyControlDropped, RawStats.LegacyReconnectsSuppressed,
+		RawStats.RingDropped, RawStats.SendsDropped);
 
 	FCounterSnapshot Current;
 	Current.BytesSent = RawStats.BytesSent;

@@ -406,6 +406,11 @@ struct FCrowdyCppReplication::FImpl
 	std::atomic<bool> bConnectRequested{false};
 	std::atomic<bool> bStopping{false};
 
+	// A new token resets the server's record of what this client reads, so until it hears again it sends unbound
+	// control frames, which the library drops once the bound forms were acknowledged.
+	std::atomic<bool> bCapabilitiesDue{false};
+	bool bAdvertiseCapabilities = true;
+
 	// Read by a blocking session callback so teardown does not have to wait out a network round trip.
 	std::atomic<bool> bAborting{false};
 
@@ -722,6 +727,12 @@ struct FCrowdyCppReplication::FImpl
 
 					if (IsLiveState(Owner.Connection->state()))
 					{
+						// A connection still coming up advertises on its own once it is ready.
+						if (Owner.bCapabilitiesDue.exchange(false, std::memory_order_acq_rel)
+							&& Owner.Connection->state() == crowdy::replication::ConnState::Connected)
+						{
+							Owner.Connection->sendCapabilities();
+						}
 						Owner.DrainSendQueue();
 						Owner.Connection->pump(PumpWaitMs);
 						continue;
@@ -808,6 +819,7 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 		Library.bundleSends = Config.bBundleSends;
 		Library.bundleWindowMs = FMath::Max(Config.BundleWindowMs, 0);
 		Library.advertiseCapabilities = Config.bAdvertiseCapabilities;
+		Owned.bAdvertiseCapabilities = Config.bAdvertiseCapabilities;
 
 		Owned.Connection = MakeUnique<crowdy::replication::Connection>(
 			std::move(Library), Owned.Provider, crowdy::core::defaultCrypto());
@@ -997,6 +1009,10 @@ void FCrowdyCppReplication::SetToken(const FCrowdyCppReplicationToken& Token)
 	try
 	{
 		Impl->Connection->setToken(ToLibraryToken(Token));
+		if (Impl->bAdvertiseCapabilities)
+		{
+			Impl->bCapabilitiesDue.store(true, std::memory_order_release);
+		}
 	}
 	catch (...)
 	{
@@ -1469,6 +1485,9 @@ FCrowdyCppReplicationStats FCrowdyCppReplication::GetStats() const
 		Out.Malformed = static_cast<int64>(Stats.malformed);
 		Out.StaleBoundControl = static_cast<int64>(Stats.staleBoundControl);
 		Out.IdleReleasesAfterInput = static_cast<int64>(Stats.idleReleasesAfterInput);
+		Out.BoundControlAcks = static_cast<int64>(Stats.boundControlAcks);
+		Out.LegacyControlDropped = static_cast<int64>(Stats.legacyControlDropped);
+		Out.LegacyReconnectsSuppressed = static_cast<int64>(Stats.legacyReconnectsSuppressed);
 		Out.RingDropped = static_cast<int64>(Stats.ringDropped);
 		Out.SendsDeferred = static_cast<int64>(Stats.sendsDeferred);
 		Out.SendsFailed = static_cast<int64>(Stats.sendsFailed);

@@ -105,6 +105,16 @@ struct Config {
   /// release final.
   std::int64_t idleReleaseGuardMs = 60 * 1000;
 
+  /// A verified legacy COMMAND_RECONNECT (22) reassigns at most once per assignment, and
+  /// only this long after the last one it honoured; the window doubles with each honoured
+  /// one up to 10 minutes, and goes back to this after 10 minutes without one. A 22 signs
+  /// fixed bytes, so one captured earlier verifies again for the game token's life; the
+  /// rest are dropped and count in Stats::legacyReconnectsSuppressed. The bound form (44)
+  /// is not limited. 0 honours every verified 22, as before 0.83.0. Once a server
+  /// acknowledges the bound forms on an assignment (CONTROL_BOUND_ACK, Buddy v0.46.0), every
+  /// legacy 22 and 28 on it is dropped (Stats::legacyControlDropped).
+  std::int64_t legacyReconnectWindowMs = 30 * 1000;
+
   /// Capacity (events) of the net->game notification ring.
   std::size_t ringCapacity = 4096;
 

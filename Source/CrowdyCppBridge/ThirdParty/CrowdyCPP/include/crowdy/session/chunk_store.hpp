@@ -42,11 +42,20 @@ class VoxelsAPI;
 /// Threads (0.82.0). Everything but the durable store's calls runs on the thread
 /// that calls tick(), the game thread: reads, setVoxel(), and every callback
 /// (onChanges, onChunkChanged, onEditRefused, an edit's own callback,
-/// onWriteBackFailed, onEditSent). The IChunkSource is called on the store's I/O
-/// thread (Options::ioThread), or on the thread that calls runIo() when that is
-/// off, never on the game thread: loads, hydrations, catch-ups and write-backs are
-/// queued there and their results adopted in tick(), within Options::adoptBudgetUs.
+/// onWriteBackFailed, onEditSent, a hydration's callback). The chunk source is called
+/// on the store's I/O thread (Options::ioThread), or on the thread that calls runIo()
+/// when that is off, never on the game thread: loads, hydrations, catch-ups and
+/// write-backs are queued there and their results adopted in tick(), within
+/// Options::adoptBudgetUs. An IAsyncChunkSource's answers are parsed there too.
 /// ensureAround(), hydrate() and flushAndWait() wait for that work and so block.
+///
+/// Merging (0.84.0). Each voxel holds the last value the server confirmed and the
+/// server's time for it: a stored copy's write (or its entry's `updatedAt`), a
+/// notification's time, a recorded edit's time. A change older than the value held is
+/// dropped, whatever order the changes arrive in, and a stored copy that arrives after
+/// a newer realtime change keeps that change. This client's unanswered edits show over
+/// the confirmed value; when one is refused or times out, the voxel shows the next
+/// unanswered edit, or the confirmed value.
 namespace crowdy::session {
 
 /// A voxel's type and state as the store holds them. `state` points into the
@@ -124,10 +133,11 @@ class ChunkData {
       f(OverlayVoxel{w.x, w.y, w.z, w.voxelType, bytesOf(w.offset, w.length)});
     }
   }
-  /// The bytes this chunk's grid, states and overlay take.
+  /// The bytes this chunk's grid, states, overlay and voxel times take.
   std::size_t memoryBytes() const {
     return grid_.capacity() + bytes_.capacity() + states_.capacity() * sizeof(StateRef) +
-           overlay_.capacity() * sizeof(WideRef);
+           overlay_.capacity() * sizeof(WideRef) + times_.capacity() * sizeof(CellTime) +
+           arrivals_.capacity() * sizeof(CellArrival);
   }
 
  private:
@@ -147,6 +157,16 @@ class ChunkData {
     std::uint32_t offset = 0;
     std::uint32_t length = 0;
   };
+  /// A voxel whose value is newer than the stored row: the server's time for it.
+  struct CellTime {
+    std::uint64_t key = 0;
+    std::int64_t timeMs = 0;
+  };
+  /// A voxel merged since the stored copy, and the merge it arrived in.
+  struct CellArrival {
+    std::uint64_t key = 0;
+    std::uint64_t seq = 0;
+  };
 
   Bytes bytesOf(std::uint32_t offset, std::uint32_t length) const {
     return length == 0 ? Bytes() : Bytes(bytes_.data() + offset, length);
@@ -162,12 +182,20 @@ class ChunkData {
   bool eraseWide(std::uint64_t key);
   std::uint32_t append(Bytes state);
   void dropBytes(std::uint32_t length);
+  /// The server's time for the voxel's value: its own, or the stored row's.
+  std::int64_t timeOf(std::uint64_t key) const;
+  /// The merge the voxel's value arrived in (0: the stored copy).
+  std::uint64_t arrivalOf(std::uint64_t key) const;
+  /// `arrival` 0: the value is the stored copy's.
+  void setTime(std::uint64_t key, std::int64_t timeMs, std::uint64_t arrival);
 
   std::vector<std::uint8_t> grid_;   ///< empty: every voxel has uniform_
   std::uint8_t uniform_ = 0;
   std::vector<StateRef> states_;     ///< ascending index
   std::vector<WideRef> overlay_;     ///< ascending key
   std::vector<std::uint8_t> bytes_;  ///< every state's bytes, back to back
+  std::vector<CellTime> times_;      ///< ascending key
+  std::vector<CellArrival> arrivals_;  ///< ascending key
   std::uint32_t garbage_ = 0;        ///< bytes_ no entry points at
   std::uint32_t changes_ = 0;        ///< ChunkChangeFlag bits since the last report
   std::uint64_t version_ = 0;        ///< bumped on every content change
@@ -178,7 +206,8 @@ enum ChunkChangeFlag : std::uint32_t {
   kChunkLoaded = 1u << 0,        ///< a stored copy, or a seed, was applied
   kChunkVoxels = 1u << 1,        ///< voxel types changed
   kChunkStates = 1u << 2,        ///< voxel states or the overlay changed
-  kChunkUnloaded = 1u << 3,      ///< evicted by pruneBeyond(): drop what you built from it
+  /// Evicted by pruneBeyond(), pruneIf() or evict(): drop what you built from it.
+  kChunkUnloaded = 1u << 3,
   /// A neighbour changed a voxel on the face the two share: rebuild this chunk's border
   /// there (the face bits below say which).
   kChunkNeighborEdge = 1u << 4,
@@ -232,6 +261,11 @@ struct StoredVoxelState {
   std::int16_t voxelType = 0;
   /// Empty when the voxel has no state.
   std::vector<std::uint8_t> state;
+  /// When the server recorded this value (epoch ms; ck-api v2.69.0's `updatedAt`): the
+  /// edit's time, or for a state in the chunk's own row, that row's write. 0 when
+  /// unknown (an older server, or a source that does not say): the entry is then as old
+  /// as the stored row.
+  std::int64_t updatedAtMs = 0;
 };
 
 /// One stored chunk, as a chunk source reports it.
@@ -311,6 +345,44 @@ class IChunkSource {
 std::unique_ptr<IChunkSource> makeGameApiChunkSource(domains::ChunksAPI& chunks,
                                                      domains::VoxelsAPI* voxels = nullptr);
 
+/// A box of chunks, both corners inclusive.
+struct ChunkBox {
+  ChunkCoord low{};
+  ChunkCoord high{};
+};
+
+/// One GraphQL request an IAsyncChunkSource carries for the store: a POST of `body`
+/// (JSON with `query`, `variables` and `operationName`) to the Game API's `/graphql`,
+/// sent with the player's token as `Authorization: Bearer`, `Content-Type:
+/// application/json`.
+struct ChunkSourceRequest {
+  /// The operation's name, for logs and metrics.
+  std::string operationName;
+  std::string body;
+};
+
+/// The answer to a ChunkSourceRequest, unparsed: the store reads it on its I/O thread.
+struct ChunkSourceReply {
+  /// The HTTP status; 0 when no response came (network failure, timeout, cancelled).
+  int httpStatus = 0;
+  /// The raw response body.
+  std::string body;
+};
+
+/// A chunk source with no blocking call (0.84.0), for an engine whose HTTP client is
+/// asynchronous. The store builds every request itself (box reads paged by the limit the
+/// server applies, one-chunk reads, edits since a time, write-back) and parses every
+/// answer on its I/O thread; the source only carries bytes.
+class IAsyncChunkSource {
+ public:
+  virtual ~IAsyncChunkSource() = default;
+  /// Send `request` and call `done` once with its answer, from any thread, at any time
+  /// (inline included). Called on the store's I/O thread (or the thread that calls
+  /// runIo()). An answer that arrives after the store is gone is dropped.
+  virtual void request(ChunkSourceRequest request,
+                       std::function<void(ChunkSourceReply)> done) = 0;
+};
+
 /// What ChunkStore::flush() queued, or flushAndWait() did.
 struct ChunkFlushResult {
   /// Chunks queued for write-back (flush()), or persisted (flushAndWait()).
@@ -344,8 +416,9 @@ struct EditOutcome {
   EditResult result = EditResult::Echoed;
   /// The server's code for Refused.
   wire::ErrorCode errorCode = wire::ErrorCode::NoError;
-  /// Whether the store put the voxel back as it was before the edit (not when a newer
-  /// edit of the voxel is what it shows, or the edit was not optimistic).
+  /// Whether the voxel stopped showing this edit: it shows the next unanswered edit of
+  /// the voxel, or the confirmed value (not when a newer edit of the voxel is what it
+  /// shows, or the edit was not optimistic).
   bool restored = false;
 };
 
@@ -389,9 +462,12 @@ class ChunkStore {
     /// Read a held chunk again when the server reports it was replaced as a whole
     /// (chunkChanged: a hub's or mod's world.set_chunk).
     bool reloadReplacedChunks = true;
-    /// When the connection comes back, catch up on the last area (catchUp()) from 30 s
-    /// before it dropped.
+    /// When the connection comes back, catch up (catchUp()) from 30 s before it dropped.
     bool catchUpOnReconnect = true;
+    /// A server time more than this far past this machine's clock counts as this
+    /// machine's clock plus this much, so that one wrong clock cannot hold a voxel
+    /// against every later change.
+    std::int64_t maxFutureSkewMs = 5 * 60 * 1000;
     /// Sends one edit and returns its sequence number; defaults to the connection's
     /// sendVoxelUpdate. A custom transport (or a test) replaces it.
     std::function<Result<std::uint8_t>(const ChunkCoord& chunk, const core::ActorUuid& uuid,
@@ -403,6 +479,12 @@ class ChunkStore {
 
   /// An edit's own callback, on the game thread.
   using EditDone = std::function<void(const EditOutcome&)>;
+  /// A hydration's callback, on the game thread: whether a stored copy was applied.
+  using HydrateDone = std::function<void(bool applied)>;
+  /// Sends one edit and returns its sequence number (Options::send).
+  using SendFn = std::function<Result<std::uint8_t>(
+      const ChunkCoord& chunk, const core::ActorUuid& uuid, std::int16_t x, std::int16_t y,
+      std::int16_t z, std::int16_t voxelType, Bytes state, std::uint8_t distance)>;
 
   /// Load and write back through the Game API. `chunksApi` may be null (offline /
   /// tests): then there is no durable store.
@@ -412,9 +494,20 @@ class ChunkStore {
   /// outlive the store.
   ChunkStore(replication::Connection& conn, IChunkSource* source, std::string appId,
              Options options);
-  /// No durable store; keeps a literal `nullptr` unambiguous between the two above.
+  /// Load and write back through an asynchronous source (0.84.0).
+  ChunkStore(replication::Connection& conn, IAsyncChunkSource* source, std::string appId,
+             Options options);
+  /// No durable store; keeps a literal `nullptr` unambiguous between the ones above.
   ChunkStore(replication::Connection& conn, std::nullptr_t, std::string appId, Options options)
       : ChunkStore(conn, static_cast<IChunkSource*>(nullptr), std::move(appId),
+                   std::move(options)) {}
+  /// Without a replication::Connection (0.84.0): every edit goes out through `send`, for
+  /// an app with its own realtime transport. Feed it notifications, errors and the
+  /// connection's state with ingest(), ingestError() and connectionState().
+  ChunkStore(SendFn send, IChunkSource* source, std::string appId, Options options);
+  ChunkStore(SendFn send, IAsyncChunkSource* source, std::string appId, Options options);
+  ChunkStore(SendFn send, std::nullptr_t, std::string appId, Options options)
+      : ChunkStore(std::move(send), static_cast<IChunkSource*>(nullptr), std::move(appId),
                    std::move(options)) {}
   ~ChunkStore();
   ChunkStore(const ChunkStore&) = delete;
@@ -438,18 +531,36 @@ class ChunkStore {
   std::uint64_t duplicatePageChunks() const { return duplicatePageChunks_; }
 
   /// Read one chunk again from the durable store (the Game API's source reads it
-  /// alone, with getChunk). A dirty chunk is left alone. hydrateAsync() returns at
-  /// once (false without a durable store or for a dirty chunk); hydrate() waits and
-  /// returns 1 when a stored copy was applied, 0 otherwise.
-  bool hydrateAsync(const ChunkCoord& coord);
+  /// alone, with getChunk), merged as a load is. A dirty chunk is left alone.
+  /// hydrateAsync() returns at once (false without a durable store or for a dirty
+  /// chunk: `done` is then never called). `done` fires on the game thread once a read
+  /// asked for after this call has ended: true when its stored copy was applied, false
+  /// when it failed, the chunk was never stored, or the chunk was evicted or became
+  /// dirty meanwhile. A call while a read of the chunk is out waits for the next read.
+  /// hydrate() waits and returns 1 when a stored copy was applied, 0 otherwise.
+  bool hydrateAsync(const ChunkCoord& coord, HydrateDone done = {});
   std::size_t hydrate(const ChunkCoord& coord);
 
-  /// Read what changed since `sinceIso` in the last area ensureAround*() covered:
-  /// its recorded edits (IChunkSource::editsInBox), applied to the chunks the store
-  /// holds, and the chunks whose stored row was written since then, read again. The
-  /// session calls it when the connection comes back, from 30 s before it dropped.
-  /// Returns whether it was queued.
+  /// Read what changed since `sinceIso` in every chunk the store holds or knows was
+  /// never stored (0.84.0; the last area before): the recorded edits
+  /// (IChunkSource::editsInBox), merged by their times, and the chunks whose stored row
+  /// was written since then, merged again. A chunk never stored that has edits now
+  /// gets a slot. The area is read in boxes of at most 17^3 chunks. The store calls it
+  /// when the connection comes back, from 30 s before it dropped. Returns whether it
+  /// was queued.
   bool catchUp(const std::string& sinceIso);
+  /// catchUp() over `boxes` (each at most 17^3 chunks; a larger one is cut). Edits in a
+  /// chunk the store does not hold give it a slot only when the chunk was never stored.
+  bool catchUp(const std::string& sinceIso, const std::vector<ChunkBox>& boxes);
+  /// Merge recorded edits a caller read itself (a catch-up it runs over its own transport),
+  /// each at its `updatedAtMs` as a catch-up merges them; a chunk the store does not hold
+  /// gets a slot. Returns whether what the cache shows changed.
+  bool mergeEdits(const StoredChunkEdits& edits);
+
+  /// When the server confirmed the value the store holds for a voxel (epoch ms): the last
+  /// change it merged there, or the stored row's write. 0 when unknown. An unanswered
+  /// local edit shows over that value and does not change it.
+  std::int64_t confirmedAtMs(const ChunkCoord& coord, int x, int y, int z) const;
 
   /// Look up a cached chunk (nullptr when absent). Stable until the chunk is pruned.
   const ChunkData* find(const ChunkCoord& coord) const {
@@ -488,6 +599,13 @@ class ChunkStore {
   /// reported with kChunkUnloaded. A dirty chunk stays until its write-back ends
   /// (queued now); returns the chunks evicted.
   std::size_t pruneBeyond(const ChunkCoord& center, int distance);
+  /// Evict one chunk (0.84.0), as pruneBeyond() does, and forget that it was never
+  /// stored. Returns whether it was evicted: false when the store does not hold it, or
+  /// it is dirty (its write-back is queued and it stays until that ends).
+  bool evict(const ChunkCoord& coord);
+  /// Evict every chunk `drop` returns true for (0.84.0), for a view that is not a cube
+  /// (a sphere, a column, several players). Returns the chunks evicted.
+  std::size_t pruneIf(const std::function<bool(const ChunkData&)>& drop);
 
   /// Queue every dirty chunk's write-back now, ignoring the throttle; returns at
   /// once (`persisted` is the number queued). Outcomes arrive in tick().
@@ -514,11 +632,11 @@ class ChunkStore {
                                  EditDone done = {});
 
   /// Merge an inbound VOXEL_UPDATE_NOTIFICATION (into the overlay when the grid
-  /// cannot hold it). Returns whether it changed the cache. The echo of this
-  /// client's own setVoxel is not applied again, and never over a newer local edit
-  /// of the same voxel. Another client's edit is applied and marks the pending local
-  /// edits of that voxel stale: their echoes then restore them, because the server
-  /// ordered them last.
+  /// cannot hold it) at the notification's time; one older than the value the store
+  /// holds is dropped. Returns whether it changed what the cache shows. The echo of
+  /// this client's own setVoxel (its sender, sequence number, voxel, type and state)
+  /// confirms that edit; a change under one of this client's unanswered edits is kept
+  /// as the confirmed value, which the voxel shows if the edit is refused.
   bool ingest(const replication::SpatialNotification& n, const wire::VoxelPayloadView& voxel);
   /// A GENERIC_ERROR: when its sequence number is an unanswered edit's, that edit is
   /// refused (undone, reported). Returns whether it was. Sequence numbers are one
@@ -592,28 +710,39 @@ class ChunkStore {
     core::ActorUuid uuid{};
     int sequence = -1;  ///< -1 while queued
     std::int64_t sentAtMs = 0;
-    bool stale = false;
     bool optimistic = true;
     std::int16_t voxelType = 0;
     std::vector<std::uint8_t> state;
-    std::int16_t prevType = 0;
-    std::vector<std::uint8_t> prevState;
     EditDone done;
+  };
+  /// A voxel with unanswered local edits: the edits, oldest first, over the value the
+  /// server last confirmed there and its time.
+  struct PendingCell {
+    std::vector<PendingEdit> edits;
+    std::int16_t baseType = 0;
+    std::vector<std::uint8_t> baseState;
+    std::int64_t baseTimeMs = 0;
+    std::uint64_t baseArrival = 0;
   };
   struct EditRef {
     ChunkCoord coord{};
     std::uint64_t key = 0;
     std::uint64_t id = 0;
   };
-  using PendingByVoxel = std::unordered_map<std::uint64_t, std::vector<PendingEdit>>;
+  using PendingByVoxel = std::unordered_map<std::uint64_t, PendingCell>;
 
   struct IoJob {
     enum class Kind : std::uint8_t { LoadBox, LoadChunk, Write, CatchUp } kind = Kind::LoadBox;
     Box box{};
+    /// CatchUp: the boxes it reads.
+    std::vector<Box> boxes;
     ChunkCoord coord{};
     std::vector<std::uint8_t> voxels;
     std::uint64_t version = 0;
     std::string since;
+    /// The merge count when the read was asked for: without server times, a change merged
+    /// after it is newer than what the read returns.
+    std::uint64_t requestedSeq = 0;
   };
   struct IoResult {
     IoJob job;
@@ -622,6 +751,26 @@ class ChunkStore {
     std::optional<StoredChunk> chunk;
     std::vector<StoredChunkEdits> edits;
     graphql::GraphQLOutcome outcome;
+  };
+  /// A chunk's read in flight (hydrateAsync): the callbacks it settles, and those waiting
+  /// for the read after it.
+  struct Reload {
+    bool again = false;
+    bool evicted = false;
+    std::vector<HydrateDone> waiting;
+    std::vector<HydrateDone> next;
+  };
+  /// An IAsyncChunkSource job in flight: where its paging got to.
+  struct AsyncCall {
+    IoResult result;
+    std::size_t box = 0;
+    bool edits = false;  ///< CatchUp: reading the box's edits (after its chunks)
+    std::int64_t skip = 0;
+  };
+  /// Where an IAsyncChunkSource's answers go; outlives the store, which detaches it.
+  struct ReplySink {
+    std::mutex mutex;
+    ChunkStore* store = nullptr;
   };
 
   static constexpr bool fitsInt16(int v) { return v >= -32768 && v <= 32767; }
@@ -639,28 +788,51 @@ class ChunkStore {
     auto it = slotOf_.find(coord);
     return it == slotOf_.end() ? nullptr : &slots_[it->second];
   }
+  bool durable() const { return source_ != nullptr || asyncSource_ != nullptr; }
   ChunkData& slotFor(const ChunkCoord& coord);
-  void evict(const ChunkCoord& coord);
+  void dropSlot(const ChunkCoord& coord);
+  void init();
 
   void putVoxel(ChunkData& c, int x, int y, int z, std::int16_t voxelType, Bytes state);
-  void applyLocal(const ChunkCoord& coord, int x, int y, int z, std::int16_t voxelType,
-                  Bytes state);
-  void applyStored(const StoredChunk& stored, std::int64_t nowMs);
-  void reapplyPending(ChunkData& c);
+  /// Show a value at a voxel, reporting what changed; returns whether anything did.
+  bool show(ChunkData& c, int x, int y, int z, std::int16_t voxelType, Bytes state);
+  /// Merge a confirmed value with the server's time for it. Without one (0), it is new
+  /// unless it came from a read (`readSeq`) and the voxel changed after that read was
+  /// asked for. Creates the chunk's slot when `create`. Returns whether what the cache
+  /// shows changed.
+  bool confirm(const ChunkCoord& coord, int x, int y, int z, std::int16_t voxelType,
+               Bytes state, std::int64_t timeMs, bool create, std::uint64_t readSeq = 0);
+  std::int64_t clampTime(std::int64_t timeMs) const;
+  void applyStored(const StoredChunk& stored, std::int64_t nowMs, std::uint64_t requestedSeq);
+  bool queueCatchUp(const std::string& sinceIso, std::vector<Box> boxes);
   void changed(ChunkData& c, std::uint32_t flags);
   void borderNeighbours(const ChunkCoord& coord, int x, int y, int z);
   void setDirty(ChunkData& chunk, bool dirty);
 
-  std::vector<PendingEdit>* pendingOf(const ChunkCoord& coord, std::uint64_t key);
-  PendingEdit* pendingById(const EditRef& ref, std::vector<PendingEdit>** list = nullptr);
-  bool takeEcho(const replication::SpatialNotification& n, const wire::VoxelPayloadView& voxel);
-  void finishEdit(const EditRef& ref, EditResult result, wire::ErrorCode code);
+  PendingCell* cellOf(const ChunkCoord& coord, std::uint64_t key);
+  const PendingCell* cellOf(const ChunkCoord& coord, std::uint64_t key) const;
+  PendingEdit* pendingById(const EditRef& ref, PendingCell** cell = nullptr);
+  /// Show what a pending voxel holds: its newest optimistic edit, else its confirmed
+  /// value. Returns whether what the cache shows changed.
+  bool showPending(const ChunkCoord& coord, std::uint64_t key, PendingCell& cell);
+  /// End an edit; an echo's time makes it the confirmed value unless that is newer.
+  /// Returns whether what the cache shows changed.
+  bool finishEdit(const EditRef& ref, EditResult result, wire::ErrorCode code,
+                  std::int64_t echoTimeMs = 0);
   void sendQueued();
   void expireEdits();
 
   void enqueue(IoJob job);
   IoResult runJob(const IoJob& job);
   void ioLoop();
+  /// Run queued jobs and answers on this thread; returns how many.
+  std::size_t serviceIo(std::size_t maxJobs);
+  void startAsync(IoJob job);
+  void sendAsync(std::uint64_t id, AsyncCall& call);
+  void onAsyncReply(std::uint64_t id, ChunkSourceReply reply);
+  void finishAsync(std::uint64_t id);
+  void postReply(std::uint64_t id, ChunkSourceReply reply);
+  void startReload(const ChunkCoord& coord);
   /// Apply a result; a load stops when `deadline` passes and resumes next time.
   /// Returns whether it finished.
   bool adopt(IoResult& result, std::int64_t nowMs,
@@ -671,9 +843,10 @@ class ChunkStore {
   void waitForIo(const std::function<bool()>& done, std::int64_t timeoutMs);
   void report();
 
-  replication::Connection& conn_;
+  replication::Connection* conn_ = nullptr;  ///< null: Options::send carries every edit
   std::unique_ptr<IChunkSource> ownedSource_;
   IChunkSource* source_ = nullptr;  // null (offline / tests): no load/write-back
+  IAsyncChunkSource* asyncSource_ = nullptr;
   std::string appId_;
   Options options_;
 
@@ -686,13 +859,11 @@ class ChunkStore {
   std::unordered_set<ChunkCoord, ChunkCoordHash> dirty_;
   std::unordered_set<ChunkCoord, ChunkCoordHash> loading_;
   std::unordered_set<ChunkCoord, ChunkCoordHash> missing_;
-  std::unordered_set<ChunkCoord, ChunkCoordHash> reloading_;
-  std::unordered_set<ChunkCoord, ChunkCoordHash> reloadAgain_;
+  std::unordered_map<ChunkCoord, Reload, ChunkCoordHash> reloading_;
   /// A load result being applied across ticks (adoptBudgetUs), and how far it got.
   std::optional<IoResult> adopting_;
   std::size_t adoptAt_ = 0;
   std::unordered_set<ChunkCoord, ChunkCoordHash> adoptSeen_;
-  std::optional<Box> lastArea_;
   std::int64_t disconnectedAtMs_ = -1;
   bool wasConnected_ = false;
   std::uint64_t duplicatePageChunks_ = 0;
@@ -711,6 +882,8 @@ class ChunkStore {
   std::deque<EditRef> sendQueue_;
   std::unordered_map<std::uint8_t, EditRef> inFlight_;
   std::uint64_t nextEditId_ = 1;
+  /// Confirmed values merged so far (CellTime::arrival, IoJob::requestedSeq).
+  std::uint64_t mergeSeq_ = 0;
   double sendTokens_ = 0;
   std::int64_t tokensAtMs_ = -1;
   bool sending_ = false;
@@ -731,9 +904,15 @@ class ChunkStore {
   std::condition_variable ioDone_;
   std::deque<IoJob> jobs_;
   std::deque<IoResult> results_;
+  /// IAsyncChunkSource answers waiting to be parsed.
+  std::deque<std::pair<std::uint64_t, ChunkSourceReply>> replies_;
   std::size_t jobsRunning_ = 0;
   bool stopping_ = false;
   std::thread io_;
+  /// IAsyncChunkSource jobs in flight; only the thread that services I/O touches it.
+  std::unordered_map<std::uint64_t, AsyncCall> calls_;
+  std::uint64_t nextCallId_ = 1;
+  std::shared_ptr<ReplySink> sink_;
 };
 
 }  // namespace crowdy::session
