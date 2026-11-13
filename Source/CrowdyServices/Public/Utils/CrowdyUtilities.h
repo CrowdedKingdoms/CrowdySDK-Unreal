@@ -108,9 +108,9 @@ public:
 	static UCrowdyEntityComponent* GetCrowdyEntityComponent(AActor* Actor);
 
 	/**
-	 * True when this client writes Entity's view state: it owns the entity, or the entity is Owned By World and this
-	 * client is the elected host. Entity is an entity actor or a replicated subsystem, so this is also a subsystem's
-	 * write gate. Use it to gate input, AI and any other logic that must run on exactly one client. False for anything
+	 * True when this client writes Entity's view state: it owns the entity, or the entity is a replicated subsystem and
+	 * this client is the Leader. A World entity has no writer. Entity is an entity actor or a replicated subsystem, so
+	 * this is also a subsystem's write gate. Use it to gate input, AI and any other logic that must run on exactly one client. False for anything
 	 * not registered.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entities",
@@ -118,7 +118,7 @@ public:
 	static bool IsCrowdyEntityLocallyOwned(UObject* Entity);
 
 	// The registry half of IsCrowdyEntityLocallyOwned: whether LocalPlayerID writes the entity Record describes.
-	static bool IsRecordLocallyOwned(const FCrowdyEntityRecord& Record, const FGuid& LocalPlayerID, const FGuid& HostID);
+	static bool IsRecordLocallyOwned(const FCrowdyEntityRecord& Record, const FGuid& LocalPlayerID, const FGuid& WriterID);
 
 	/** Exec-flow version: routes to True when this client writes Entity's view state, False otherwise. */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entities",

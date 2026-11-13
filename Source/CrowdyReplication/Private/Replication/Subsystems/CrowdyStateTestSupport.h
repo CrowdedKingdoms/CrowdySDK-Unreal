@@ -21,25 +21,6 @@
 #include "Subsystem/CrowdyGameSession.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
-// Sets the project's Leader Source for one test and puts the previous one back.
-struct FCrowdyScopedLeaderSource
-{
-	ECrowdyLeaderSource Previous;
-
-	explicit FCrowdyScopedLeaderSource(const ECrowdyLeaderSource Source)
-		: Previous(GetDefault<UCrowdySDKDeveloperSettings>()->LeaderSource)
-	{
-		Set(Source);
-	}
-
-	~FCrowdyScopedLeaderSource() { Set(Previous); }
-
-	static void Set(const ECrowdyLeaderSource Source)
-	{
-		GetMutableDefault<UCrowdySDKDeveloperSettings>()->LeaderSource = Source;
-	}
-};
-
 // UCrowdyAutoRegistry is a UGameInstanceSubsystem (ClassWithin=UGameInstance); a transient-package
 // NewObject trips a ClassWithin ensure, so outer it to a bare GameInstance.
 inline UCrowdyAutoRegistry* MakeStateRegistry()
@@ -78,13 +59,13 @@ inline UCrowdyStateReplicator* MakeReplicator(UCrowdyAutoRegistry* Registry, con
 	return Rep;
 }
 
-// A real game session carrying an elected host, mirroring the persisted host that survives level travel.
+// A real game session carrying a Leader, mirroring the persisted Leader that survives level travel.
 // UCrowdyGameSession is a UGameInstanceSubsystem (ClassWithin=UGameInstance), so it needs a GameInstance outer.
-inline UCrowdyGameSession* MakeGameSession(const FGuid& HostID)
+inline UCrowdyGameSession* MakeGameSession(const FGuid& LeaderID)
 {
 	UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
 	UCrowdyGameSession* Session = NewObject<UCrowdyGameSession>(GameInstance);
-	Session->SetHostID(HostID);
+	Session->SetHostID(LeaderID);
 	return Session;
 }
 

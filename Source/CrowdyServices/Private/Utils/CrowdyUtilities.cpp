@@ -34,7 +34,6 @@ namespace CrowdyUtils
 		switch (Recipient)
 		{
 		case ECrowdyEventRecipient::OwningClient: return ECrowdyTarget::Owner;
-		case CrowdyDeprecatedHostRecipient:       return ECrowdyTarget::Host;
 		// This legacy spatial-only send has no channel transport, so a channel Multicast falls back
 		// to everyone-in-range here, same as Spatial Multicast.
 		case ECrowdyEventRecipient::Multicast:
@@ -200,33 +199,19 @@ ECrowdyRole UCrowdyUtilities::GetCrowdyEntityRole(UObject* WorldContextObject, c
 
 bool UCrowdyUtilities::DoesCrowdyEntityOwn(UObject* WorldContextObject, const AActor* OwnerActor, const AActor* TargetActor)
 {
-	// OwnerActor's own identity (its NetID) is what gets stamped as OwnerID on entities it owns; a player avatar's
-	// NetID == its OwnerID == its player UUID. So the base case of "OwnerActor owns TargetActor" is OwnerActor.NetID
-	// == TargetActor.OwnerID. Both IDs are network-stable, so the result is identical on every client. A host-owned
-	// entity is the exception: it carries no per-player owner id (Guid::Zero), so the pure matcher resolves a
-	// host-owned side to the app writer's id: the app writer owns host-owned entities, and a host-owned entity owns
-	// what the app writer owns.
+	// OwnerActor's NetID is what gets stamped as OwnerID on the entities it owns (a player avatar's NetID is its
+	// player id), and both ids are network-stable, so the answer is the same on every client.
 	bool bOwnerValid = false;
 	const FGuid OwnerNetID = GetCrowdyEntityID(WorldContextObject, OwnerActor, bOwnerValid);
 	if (!bOwnerValid || !OwnerNetID.IsValid())
 		return false;
 
-	// May be Guid::Zero for a host-owned target; that is not a failure here, the role resolves it below.
 	bool bTargetOwnerValid = false;
 	const FGuid TargetOwnerID = GetCrowdyEntityOwnerID(WorldContextObject, TargetActor, bTargetOwnerValid);
 
 	const ECrowdyRole OwnerRole  = GetCrowdyEntityRole(WorldContextObject, OwnerActor);
 	const ECrowdyRole TargetRole = GetCrowdyEntityRole(WorldContextObject, TargetActor);
-
-	FGuid HostID;
-	if (OwnerRole == ECrowdyRole::HostOwned || (!TargetOwnerID.IsValid() && TargetRole == ECrowdyRole::HostOwned))
-	{
-		const UWorld* World = WorldContextObject->GetWorld();
-		const UCrowdyEntitySubsystem* Entities = World ? World->GetSubsystem<UCrowdyEntitySubsystem>() : nullptr;
-		HostID = Entities ? Entities->GetAppWriterID() : FGuid();
-	}
-
-	return UCrowdyEntityComponent::DoesOwnershipMatch(OwnerRole, OwnerNetID, TargetRole, TargetOwnerID, HostID);
+	return UCrowdyEntityComponent::DoesOwnershipMatch(OwnerRole, OwnerNetID, TargetRole, TargetOwnerID);
 }
 
 UCrowdyEntityComponent* UCrowdyUtilities::GetCrowdyEntityComponent(AActor* Actor)
@@ -246,8 +231,7 @@ UCrowdyEntityComponent* UCrowdyUtilities::GetCrowdyEntityComponent(AActor* Actor
 
 bool UCrowdyUtilities::IsCrowdyEntityLocallyOwned(UObject* Entity)
 {
-	// An entity actor's component already answers this, its owning client or the elected host for a world entity,
-	// so the rule lives in one place. Resolving through GetCrowdyEntityComponent keeps the
+	// An entity actor's component already answers this, so the rule lives in one place. Resolving through GetCrowdyEntityComponent keeps the
 	// ICrowdyEntityComponentProvider indirection working here too. A component, animation instance or other object
 	// inside an actor, as Self from its own graph, asks about that actor.
 	AActor* Actor = Cast<AActor>(Entity);
@@ -265,9 +249,9 @@ bool UCrowdyUtilities::IsCrowdyEntityLocallyOwned(UObject* Entity)
 }
 
 bool UCrowdyUtilities::IsRecordLocallyOwned(const FCrowdyEntityRecord& Record, const FGuid& LocalPlayerID,
-	const FGuid& HostID)
+	const FGuid& WriterID)
 {
-	return FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.OwnerID, LocalPlayerID, HostID);
+	return FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.OwnerID, LocalPlayerID, WriterID);
 }
 
 void UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned(UObject* Entity, bool& bIsLocallyOwned)

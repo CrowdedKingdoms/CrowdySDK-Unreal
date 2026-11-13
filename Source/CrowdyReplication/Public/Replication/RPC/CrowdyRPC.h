@@ -62,7 +62,6 @@ enum class ECrowdyRpcRoute : uint8
 	Channel,            // announce over the reliable session channel
 	SpatialToOwner,     // a spatial event around the entity, named for the client that writes it
 	SingleActorToOwner, // a direct message to the entity's writer, for a call that carries text
-	SingleActorToHost,  // targeted single-actor send to the host's avatar entity
 	OwnerOverSession,   // the session channel, named for that client, where there is no region to send to
 	NoOwner,            // nobody writes the entity right now: drop with a warning
 	TextHasNoRoute,     // a call carrying text to a writer no direct message can reach: drop with a warning
@@ -425,14 +424,14 @@ public:
 	static int32 EstimateMinChannelPayloadBytes(const UFunction* Fn);
 
 	// Pure ownership-model policy. bNonSpatial is true for a subsystem participant (no world location);
-	// bEntityValid/bWeOwnEntity/bWeAreHost are the local ownership facts. No side effects, so every
+	// bEntityValid/bWeOwnEntity are the local ownership facts. No side effects, so every
 	// (recipient x participant-kind x ownership) combination is table-testable. The actor rows (bNonSpatial
 	// false) reproduce SerializeAndRoute's shipped behavior exactly; a non-spatial SpatialMulticast is rejected.
 	static FCrowdyRpcRouteDecision DecideRoute(ECrowdyEventRecipient Recipient, bool bNonSpatial,
-		bool bEntityValid, bool bWeOwnEntity, bool bWeAreHost);
+		bool bEntityValid, bool bWeOwnEntity);
 
-	// How a call reaches the client that writes an entity this client does not. No side effects.
-	static ECrowdyRpcRoute DecideOwnerRoute(bool bWorldEntity, bool bWorldOwnerKnown, bool bLeaderWithoutOwner, bool bNoRegionToReach, bool bCarriesText = false);
+	// How a call reaches the client that writes an entity this client does not. A World entity has no writer. No side effects.
+	static ECrowdyRpcRoute DecideOwnerRoute(bool bWorldEntity, bool bLeaderWithoutOwner, bool bNoRegionToReach, bool bCarriesText = false);
 
 	// Serializes the input parameters held in Frame into OutBlob (version byte +
 	// each input parameter in declaration order). OutParms, when supplied, is the VM's
@@ -554,7 +553,7 @@ private:
 	/**
 	 * Send path for a sender with no owning actor that implements ICrowdyEventSource: the entity id, the
 	 * sending identity and the world position all come from the interface rather than from an actor.
-	 * All four recipients route. Owner-only and host-only travel by the single-actor transport, which
+	 * All three recipients route. Owner-only travels by the single-actor transport, which
 	 * addresses a registered id plus a chunk rather than an actor, so a source with no actor can use it.
 	 * A position is read from the source where it has one, and only the routes that address a region
 	 * need it; one of those with no position to announce from drops, logged with its reason.
@@ -570,7 +569,7 @@ private:
 	/**
 	 * Applies the ownership model to a call already addressed to Target and dispatches it: runs the body
 	 * on this client where the model says this client also runs it, and sends over whichever transport
-	 * the recipient names. Every address comes from the target or from the host's own registration, so a
+	 * the recipient names. Every address comes from the target's own registration, so a
 	 * caller cannot aim a message at a chunk its destination is not standing in. Where this client holds
 	 * a record for the target, that record's owner, role and actor position are preferred over Target's.
 	 *

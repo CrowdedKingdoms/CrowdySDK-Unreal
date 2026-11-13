@@ -49,8 +49,6 @@ namespace
 		{
 		case ECrowdyEventRecipient::OwningClient:
 			return FText::FromString(TEXT("\nCrowdy Owning Client\nExecutes Locally Only"));
-		case CrowdyDeprecatedHostRecipient:
-			return FText::FromString(TEXT("\nCrowdy Host\nExecutes on Host"));
 		case ECrowdyEventRecipient::Multicast:
 			// Channel transport every session-channel member, any distance, no decay.
 			return FText::FromString(TEXT("\nCrowdy Multicast\nEveryone on the Channel"));

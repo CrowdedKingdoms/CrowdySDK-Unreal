@@ -380,7 +380,7 @@ void UCrowdyEntityComponent::CompleteRegistration()
 		if (bAutoRegister && Role == ECrowdyRole::Owner)
 			StartReplication();
 
-		// Auto Register only starts the channel for an entity this client owns outright, so a host-owned entity
+		// Auto Register only starts the channel for an entity this client owns, so a World entity
 		// leaves BeginPlay sending nothing. Say so rather than letting a configured entity go quiet; a placed
 		// pawn left at Auto asked for nothing, so it is not reported.
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -527,17 +527,6 @@ void UCrowdyEntityComponent::NoteContinuousCarrier() const
 		Replicator->SetContinuousOnMovement(NetID, IsValid(AutoReplicator) && AutoReplicator->CarriesUpdatesOf(this));
 }
 
-void UCrowdyEntityComponent::SendEvent(const FInstancedStruct& Payload, const ECrowdyEventScope Scope)
-{
-	if (!IsValid(EntitySubsystem))
-		return;
-
-	const ECrowdyTarget Target = Scope == ECrowdyEventScope::OwnerOnly
-		? ECrowdyTarget::Owner
-		: ECrowdyTarget::Entity;
-	EntitySubsystem->DispatchGameEvent(GetOwner(), FInstancedStruct(Payload), Target, GetOwner());
-}
-
 void UCrowdyEntityComponent::MarkStateDirty(FName PropertyName)
 {
 	if (!NetID.IsValid() || !GetWorld())
@@ -578,9 +567,7 @@ void UCrowdyEntityComponent::RequestOwnership_Implementation(FGuid RequesterID)
 		return;
 
 	// A malformed request, or one where the requester is already this entity's authority, is ignored. Only the
-	// authority runs past the gate above, so its own player id is the one to compare against. This also covers the
-	// host requesting a host-owned entity it already controls (whose OwnerID is invalid, so an OwnerID compare would
-	// miss it).
+	// authority runs past the gate above, so its own player id is the one to compare against.
 	if (!RequesterID.IsValid() || RequesterID == EntitySubsystem->GetLocalPlayerID())
 		return;
 
@@ -746,7 +733,7 @@ void UCrowdyEntityComponent::DeriveAuthority(const ECrowdyOwnership InOwnership,
 {
 	if (InOwnership == ECrowdyOwnership::Host)
 	{
-		// World/AI entity: owned by whoever is host, no per-client owner id (Guid::Zero, matching
+		// World entity: no per-client owner id (Guid::Zero, matching
 		// FCrowdyEntityRecord's "OwnerID is Guid::Zero for world-static entities").
 		OutRole = ECrowdyRole::HostOwned;
 		OutOwnerID = FGuid();
@@ -831,22 +818,14 @@ bool UCrowdyEntityComponent::IsPawnWithMovement(const TSubclassOf<AActor> ActorC
 }
 
 bool UCrowdyEntityComponent::DoesOwnershipMatch(const ECrowdyRole OwnerRole, const FGuid& OwnerNetID,
-	const ECrowdyRole TargetRole, const FGuid& TargetOwnerID, const FGuid& HostID)
+	const ECrowdyRole TargetRole, const FGuid& TargetOwnerID)
 {
-	// The owner acts under the id it owns things as: the host id if it is itself a host-owned world entity,
-	// otherwise its own NetID (a player avatar's NetID is its player id, which is what gets stamped as OwnerID
-	// on the entities it spawns).
-	const FGuid ActingID = (OwnerRole == ECrowdyRole::HostOwned) ? HostID : OwnerNetID;
-
-	// The target is owned by its stamped OwnerID, or by the host if it is a host-owned world entity (those carry
-	// Guid::Zero, so resolve the missing id to the host rather than treating it as unowned).
-	FGuid OwnedByID = TargetOwnerID;
-	if (!OwnedByID.IsValid() && TargetRole == ECrowdyRole::HostOwned)
+	// A World entity has no writer, so it neither owns nor is owned.
+	if (OwnerRole == ECrowdyRole::HostOwned || TargetRole == ECrowdyRole::HostOwned)
 	{
-		OwnedByID = HostID;
+		return false;
 	}
-
-	return ActingID.IsValid() && OwnedByID.IsValid() && ActingID == OwnedByID;
+	return OwnerNetID.IsValid() && OwnerNetID == TargetOwnerID;
 }
 
 bool UCrowdyEntityComponent::IsLocallyOwned() const
@@ -855,8 +834,8 @@ bool UCrowdyEntityComponent::IsLocallyOwned() const
 	if (!IsValid(EntitySubsystem))
 		return Role == ECrowdyRole::Owner;
 
-	return FCrowdyEntityRecord::IsWrittenBy(Role, OwnerID, EntitySubsystem->GetLocalPlayerID(),
-		EntitySubsystem->GetWorldOwnerID());
+	// An actor is never a replicated subsystem, so an entity with no owner has no writer.
+	return FCrowdyEntityRecord::IsWrittenBy(Role, OwnerID, EntitySubsystem->GetLocalPlayerID(), FGuid());
 }
 
 UCrowdyEntitySubsystem* UCrowdyEntityComponent::ResolveEntitySubsystem() const
@@ -904,7 +883,7 @@ void UCrowdyEntityComponent::ResolveIdentity()
 
 	// A binding key does not apply to a player: a player's identity is its account (PlayerDerived), and that branch
 	// also establishes the session UUID other systems key on. Ignore a key on a PlayerDerived pawn and warn, so a
-	// stray key never silently derails session identity / host election.
+	// stray key never silently derails session identity.
 	const bool bUseKey = !BindingKey.IsEmpty() && IdentityPolicy != ECrowdyIdentityPolicy::PlayerDerived;
 	if (!BindingKey.IsEmpty() && IdentityPolicy == ECrowdyIdentityPolicy::PlayerDerived)
 	{
@@ -1059,16 +1038,6 @@ bool UCrowdyEntityComponent::ShouldReportHostOwnedAutoRegister(const bool bInRep
 	return bInReplicatesMovement && bInAutoRegister && InRole == ECrowdyRole::HostOwned;
 }
 
-const TCHAR* UCrowdyEntityComponent::DescribeHostElectionState(const bool bHostKnown, const bool bLocalClientIsHost)
-{
-	if (!bHostKnown)
-		return TEXT("this client does not know yet which client is the host");
-
-	return bLocalClientIsHost
-		? TEXT("this client is the elected host")
-		: TEXT("another client is the elected host");
-}
-
 void UCrowdyEntityComponent::ReportPlayerDerivedFallback(const ECrowdyPlayerDerivedIdentity Verdict)
 {
 	if (bPlayerDerivedFallbackReported)
@@ -1095,16 +1064,9 @@ void UCrowdyEntityComponent::ReportHostOwnedAutoRegisterSkipped()
 
 	bHostOwnedAutoRegisterReported = true;
 
-	const FGuid HostID = IsValid(EntitySubsystem) ? EntitySubsystem->GetWorldOwnerID() : FGuid();
-	const bool bHostKnown = HostID.IsValid();
-	const bool bLocalClientIsHost = bHostKnown && EntitySubsystem->GetLocalPlayerID() == HostID;
-	const TCHAR* HostState = UCrowdySDKDeveloperSettings::UsesElectedHost()
-		? DescribeHostElectionState(bHostKnown, bLocalClientIsHost)
-		: TEXT("Leader Source is Server Object, so no client writes World entities");
-
 	const FString Message = FString::Printf(
-		TEXT("[CrowdyEntityComponent]: '%s' replicates movement with Auto Register on, but it is host-owned, so Auto Register did not start its state channel: Auto Register starts the channel only for an entity this client owns outright, and %s. Nothing goes out on the continuous channel for this entity until ownership is granted to a client or Start Replication is called on it. Set Owned By to Player if the client this actor lives on should simulate it, or call Start Replication on whichever client is the host."),
-		*GetNameSafe(GetOwner()), HostState);
+		TEXT("[CrowdyEntityComponent]: '%s' replicates movement with Auto Register on, but it is a World entity, so Auto Register did not start its state channel: Auto Register starts the channel only for an entity this client owns, and no client writes a World entity. Nothing goes out on the continuous channel for this entity until ownership is granted to a client. Set Owned By to Player if the client this actor lives on should simulate it, or to Leader if one client should simulate it for everyone, and keep a World entity's truth in a Server Object."),
+		*GetNameSafe(GetOwner()));
 
 #if WITH_DEV_AUTOMATION_TESTS
 	++HostOwnedAutoRegisterReportCount;

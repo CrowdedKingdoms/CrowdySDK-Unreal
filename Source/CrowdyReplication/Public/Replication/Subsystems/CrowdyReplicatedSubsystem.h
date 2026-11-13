@@ -5,7 +5,6 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "CrowdyReplicatedSubsystem.generated.h"
 
-enum class ECrowdyOwnership : uint8;
 class UWorld;
 
 /**
@@ -15,8 +14,8 @@ class UWorld;
  * world subsystem's lifetime equals its world's, so it enrolls once in Initialize and unenrolls in
  * Deinitialize; there is no per-world re-enrollment (unlike the game-instance base).
  *
- * Scope: host-owned only (the default ownership). This is the client-authoritative VIEW plane. Host
- * precedence is a convention, not enforced. Authoritative or cheat-sensitive state belongs in server code
+ * The app's Leader writes it for everyone. This is the client-authoritative VIEW plane: the Leader's writes
+ * are a convention, not enforced. Authoritative or cheat-sensitive state belongs in server code
  * (Server Objects), never here.
  */
 UCLASS(Abstract)
@@ -29,12 +28,6 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
-
-protected:
-
-	// No longer called: a replicated subsystem is always written by the app's Leader (or elected host).
-	UE_DEPRECATED(5.8, "Remove the override: a replicated subsystem is always written by the app's Leader (or elected host).")
-	virtual ECrowdyOwnership GetReplicatedOwnership() const;
 };
 
 /**
@@ -45,8 +38,8 @@ protected:
  * world is cleaned up. FWorldDelegates are process-global, so both handlers ignore worlds owned by a
  * different game instance.
  *
- * Same VIEW-plane guardrail as the world base: host-owned only, host precedence is convention, cheat-sensitive
- * state belongs in server code (Server Objects).
+ * Same VIEW-plane guardrail as the world base: the Leader writes it by convention, cheat-sensitive state belongs
+ * in server code (Server Objects).
  */
 UCLASS(Abstract)
 class CROWDYREPLICATION_API UCrowdyReplicatedGameInstanceSubsystem : public UGameInstanceSubsystem
@@ -57,12 +50,6 @@ public:
 
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
-
-protected:
-
-	// No longer called: a replicated subsystem is always written by the app's Leader (or elected host).
-	UE_DEPRECATED(5.8, "Remove the override: a replicated subsystem is always written by the app's Leader (or elected host).")
-	virtual ECrowdyOwnership GetReplicatedOwnership() const;
 
 private:
 

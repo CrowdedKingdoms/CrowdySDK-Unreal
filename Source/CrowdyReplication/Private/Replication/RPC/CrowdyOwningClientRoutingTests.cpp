@@ -80,7 +80,6 @@ bool FCrowdyOwnerRouteTableTest::RunTest(const FString& Parameters)
 	{
 		const TCHAR* What;
 		bool bWorldEntity;
-		bool bWorldOwnerKnown;
 		bool bLeaderWithoutOwner;
 		bool bNoRegionToReach;
 		bool bCarriesText;
@@ -88,22 +87,20 @@ bool FCrowdyOwnerRouteTableTest::RunTest(const FString& Parameters)
 	};
 	const FCase Cases[] =
 	{
-		{ TEXT("a player's entity, heard"), false, false, false, false, false, ECrowdyRpcRoute::SpatialToOwner },
-		{ TEXT("a player's entity, heard, with a host about"), false, true, false, false, false, ECrowdyRpcRoute::SpatialToOwner },
-		{ TEXT("no region to reach the owner in"), false, false, false, true, false, ECrowdyRpcRoute::OwnerOverSession },
-		{ TEXT("a World entity with an elected host"), true, true, false, false, false, ECrowdyRpcRoute::OwnerOverSession },
-		{ TEXT("a World entity with none"), true, false, false, false, false, ECrowdyRpcRoute::NoOwner },
-		{ TEXT("a Leader entity between Leaders"), false, false, true, true, false, ECrowdyRpcRoute::NoOwner },
-		{ TEXT("text to a heard writer stays a direct message"), false, false, false, false, true, ECrowdyRpcRoute::SingleActorToOwner },
-		{ TEXT("text never falls back to the session channel"), false, false, false, true, true, ECrowdyRpcRoute::TextHasNoRoute },
-		{ TEXT("text to the elected host stays a direct message"), true, true, false, false, true, ECrowdyRpcRoute::SingleActorToHost },
-		{ TEXT("text with no writer is dropped as any call is"), true, false, false, false, true, ECrowdyRpcRoute::NoOwner },
+		{ TEXT("a player's entity, heard"), false, false, false, false, ECrowdyRpcRoute::SpatialToOwner },
+		{ TEXT("no region to reach the owner in"), false, false, true, false, ECrowdyRpcRoute::OwnerOverSession },
+		{ TEXT("a World entity has no writer"), true, false, false, false, ECrowdyRpcRoute::NoOwner },
+		{ TEXT("nor does it with no region to reach"), true, false, true, false, ECrowdyRpcRoute::NoOwner },
+		{ TEXT("a Leader entity between Leaders"), false, true, true, false, ECrowdyRpcRoute::NoOwner },
+		{ TEXT("text to a heard writer stays a direct message"), false, false, false, true, ECrowdyRpcRoute::SingleActorToOwner },
+		{ TEXT("text never falls back to the session channel"), false, false, true, true, ECrowdyRpcRoute::TextHasNoRoute },
+		{ TEXT("text with no writer is dropped as any call is"), true, false, false, true, ECrowdyRpcRoute::NoOwner },
 	};
 
 	for (const FCase& Case : Cases)
 	{
-		TestTrue(Case.What, FCrowdyRPC::DecideOwnerRoute(Case.bWorldEntity, Case.bWorldOwnerKnown,
-			Case.bLeaderWithoutOwner, Case.bNoRegionToReach, Case.bCarriesText) == Case.Route);
+		TestTrue(Case.What, FCrowdyRPC::DecideOwnerRoute(Case.bWorldEntity, Case.bLeaderWithoutOwner,
+			Case.bNoRegionToReach, Case.bCarriesText) == Case.Route);
 	}
 	return true;
 }
@@ -205,6 +202,10 @@ bool FCrowdyUnnamedCallRunsOnTheWriterTest::RunTest(const FString& Parameters)
 
 	Deliver(WrittenID);
 	TestEqual(TEXT("the writer runs it"), Written->CallCount, 1);
+
+	// A sender names nobody while a Leader entity changes hands, so this client may be the new Leader, not told yet.
+	Deliver(RegisterRemote(Entities, /*bLeaderOwned=*/true, FGuid::NewGuid()));
+	TestEqual(TEXT("one for a Leader entity waits to see whether it lands here"), Router->NumDeferredForTest(), 1);
 	return true;
 }
 
@@ -369,7 +370,6 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTargetSendFindsNoWriterTest,
 	"CrowdySDK.RPC.TargetSendFindsNoWriter", CrowdyOwningClientTestFlags)
 bool FCrowdyTargetSendFindsNoWriterTest::RunTest(const FString& Parameters)
 {
-	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ServerObject);
 	UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(FGuid::NewGuid());
 	UFunction* Fn = FCrowdyRPC::ResolveFunction(UCrowdyRpcSubsystemTestTarget::StaticClass(), TEXT("SubOwnerOnly_Implementation"));
 	if (!TestNotNull(TEXT("the event resolved"), Fn))
@@ -494,18 +494,14 @@ bool FCrowdyTextWithNoRouteIsDroppedTest::RunTest(const FString& Parameters)
 }
 
 #if WITH_METADATA
-// Host leaves the pickers, and everything that names it keeps working until it goes.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyHostRecipientDeprecatedTest,
-	"CrowdySDK.RPC.HostRecipientDeprecated", CrowdyOwningClientTestFlags)
-bool FCrowdyHostRecipientDeprecatedTest::RunTest(const FString& Parameters)
+// The Host recipient is retired, and a saved CrowdyRecipient="Host" keeps working as Owning Client: the meta is a
+// string a Blueprint keeps, which no enum redirect reaches.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyHostRecipientReadsAsOwningClientTest,
+	"CrowdySDK.RPC.HostRecipientReadsAsOwningClient", CrowdyOwningClientTestFlags)
+bool FCrowdyHostRecipientReadsAsOwningClientTest::RunTest(const FString& Parameters)
 {
 	const UEnum* Enum = StaticEnum<ECrowdyEventRecipient>();
-	const int32 Index = Enum->GetIndexByValue(static_cast<int64>(CrowdyDeprecatedHostRecipient));
-	TestTrue(TEXT("Host is hidden from pickers"), Enum->HasMetaData(TEXT("Hidden"), Index));
-	TestEqual(TEXT("a saved value still reads"), Enum->GetValueByNameString(TEXT("Host")), static_cast<int64>(CrowdyDeprecatedHostRecipient));
-
-	const int32 Owning = Enum->GetIndexByValue(static_cast<int64>(ECrowdyEventRecipient::OwningClient));
-	TestFalse(TEXT("Owning Client stays"), Enum->HasMetaData(TEXT("Hidden"), Owning));
+	TestEqual(TEXT("three recipients are left"), Enum->NumEnums() - 1, 3);
 
 	UFunction* Fixture = UCrowdyRpcSubsystemTestTarget::StaticClass()->FindFunctionByName(TEXT("SubHostOnly_Implementation"));
 	UFunction* Authored = UCrowdyRpcEventSourceTestTarget::StaticClass()->FindFunctionByName(TEXT("SourceMulticast_Implementation"));
@@ -514,12 +510,17 @@ bool FCrowdyHostRecipientDeprecatedTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	TestTrue(TEXT("the SDK's own fixture routes as Host"), FCrowdyRPC::BuildFnInfo(Fixture).Recipient == CrowdyDeprecatedHostRecipient);
+	TestTrue(TEXT("the SDK's own fixture marked Host routes as Owning Client"),
+		FCrowdyRPC::BuildFnInfo(Fixture).Recipient == ECrowdyEventRecipient::OwningClient);
 
 	const FString Saved = Authored->GetMetaData(CrowdyRpcMetaKeys::Recipient);
+	AddExpectedMessage(TEXT("now reaches the entity's owning client"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 2);
 	Authored->SetMetaData(CrowdyRpcMetaKeys::Recipient, TEXT("Host"));
-	AddExpectedMessage(TEXT("which is deprecated"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
-	TestTrue(TEXT("and so does an author's, with one warning"), FCrowdyRPC::BuildFnInfo(Authored).Recipient == CrowdyDeprecatedHostRecipient);
+	TestTrue(TEXT("and so does an author's, with a warning naming the change"),
+		FCrowdyRPC::BuildFnInfo(Authored).Recipient == ECrowdyEventRecipient::OwningClient);
+	Authored->SetMetaData(CrowdyRpcMetaKeys::Recipient, TEXT("ECrowdyEventRecipient::Host"));
+	TestTrue(TEXT("the namespaced spelling too"),
+		FCrowdyRPC::BuildFnInfo(Authored).Recipient == ECrowdyEventRecipient::OwningClient);
 	Authored->SetMetaData(CrowdyRpcMetaKeys::Recipient, *Saved);
 	return true;
 }

@@ -9,10 +9,10 @@ class UCrowdyEntitySubsystem;
 
 /**
  * Enrollment helpers that let a UE Subsystem participate in the CrowdySDK replication planes without
- * hand-wiring UCrowdyEntitySubsystem::RegisterParticipant. A host-owned subsystem enrolled here auto-diffs its
+ * hand-wiring UCrowdyEntitySubsystem::RegisterParticipant. A subsystem enrolled here auto-diffs its
  * meta=(CrowdyState) properties and its meta=(CrowdyEvent) functions ride the reliable channel, exactly as an
- * actor entity does through its Crowdy Entity Component. Enrollment mints a network-stable NetID (a Host
- * participant's is the deterministic hash of its class path, identical on every client, no handshake).
+ * actor entity does through its Crowdy Entity Component. Enrollment mints a network-stable NetID (the
+ * deterministic hash of its class path, identical on every client, no handshake).
  *
  * Two layers:
  *  - The injectable *Into core takes an explicit UCrowdyEntitySubsystem, so headless tests and the
@@ -22,9 +22,9 @@ class UCrowdyEntitySubsystem;
  *    Blueprint and world-scoped callers. A null world, or a world with no entity subsystem (an editor/inactive
  *    world; the entity subsystem is PIE/Game only), is a clean no-op that never crashes.
  *
- * A replicated subsystem is always written by one client for everyone: the app's Leader (the elected host under
- * Leader Source Elected Host), since a singleton has no per-owner proxy on peers.
- * This is the client-authoritative view plane, where host precedence is a convention and not enforced, so
+ * A replicated subsystem is always written by one client for everyone, the app's Leader, since a singleton has no
+ * per-owner proxy on peers.
+ * This is the client-authoritative view plane, where the Leader's writes are a convention and not enforced, so
  * authoritative or cheat-sensitive state belongs in server code (Server Objects), never in a replicated subsystem property.
  */
 UCLASS()
@@ -40,9 +40,6 @@ public:
 	 */
 	static FGuid RegisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem);
 
-	UE_DEPRECATED(5.8, "Use the overload without Ownership: a replicated subsystem is always written by the app's Leader (or elected host).")
-	static FGuid RegisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem, ECrowdyOwnership Ownership);
-
 	/** Removes a participant previously enrolled via RegisterReplicatedSubsystemInto. Silent no-op if either is missing. */
 	static void UnregisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem);
 
@@ -54,12 +51,6 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Subsystem Replication", meta = (DefaultToSelf = "Subsystem"))
 	static FGuid RegisterCrowdyReplicatedSubsystem(UObject* Subsystem);
-
-	UE_DEPRECATED(5.8, "Use RegisterCrowdyReplicatedSubsystem: a replicated subsystem is always written by the app's Leader (or elected host).")
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Subsystem Replication",
-		meta = (DefaultToSelf = "Subsystem", DeprecatedFunction,
-			DeprecationMessage = "Use Register Crowdy Replicated Subsystem: a replicated subsystem is always written by the app's Leader (or elected host)."))
-	static FGuid RegisterReplicatedSubsystem(UObject* Subsystem, ECrowdyOwnership Ownership = ECrowdyOwnership::Host);
 
 	/** Resolves the Crowdy Entity Subsystem from Subsystem's world and unenrolls it. Clean no-op when unresolved. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Subsystem Replication", meta = (DefaultToSelf = "Subsystem"))

@@ -984,8 +984,7 @@ bool FCrowdyStateFragmentLayoutlessParticipantWithNoClaimDropsTest::RunTest(cons
 }
 
 // The same rule for the entities this client owns rather than the world's: we are the authority for what we
-// own, so a foreign delta that is not a host correction is refused whether the state would have landed on the
-// participant or in a fragment. Registered with the local player as owner, which is what makes this the
+// own, so a foreign delta is refused whether the state would have landed on the participant or in a fragment. Registered with the local player as owner, which is what makes this the
 // owned-entity gate's case rather than the world entity's.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateFragmentOwnedGateAppliesOnFallThroughTest,
 	"CrowdySDK.StateFragment.OwnedGateAppliesOnFallThrough", CrowdyStateFragmentTestFlags)
@@ -1037,12 +1036,12 @@ bool FCrowdyStateFragmentOwnedGateAppliesOnFallThroughTest::RunTest(const FStrin
 
 	Router->DispatchEvent(MakeInboundStateEvent(Delta));
 
-	TestEqual(TEXT("a foreign non-host delta for an entity we own never reaches the subscriber"),
+	TestEqual(TEXT("a foreign delta for an entity we own never reaches the subscriber"),
 		Subscriber->ApplyDecodedStateCallCount, 0);
 	TestEqual(TEXT("the subscriber path counted nothing"),
 		Router->GetStateSubscriberStats().Applied, static_cast<int64>(0));
 	TestEqual(TEXT("and the refusal is counted, which is the only account of it at default verbosity"),
-		Router->GetStateParticipantStats().DroppedNotHostSourcedForOwned, static_cast<int64>(1));
+		Router->GetStateParticipantStats().DroppedForeignWriteForOwned, static_cast<int64>(1));
 
 	return true;
 }

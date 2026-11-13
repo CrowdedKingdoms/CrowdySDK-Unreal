@@ -64,9 +64,9 @@ bool FCrowdyStateSubsystemDeterministicIdentityTest::RunTest(const FString& Para
 	return true;
 }
 
-// Enroll a host-owned subsystem: with local == host it is tracked (non-spatial), and changing a CrowdyState
-// property then running the loop emits exactly one CHANNEL delta (auto-diff runs, unlike a spatial host-owned
-// world actor) and zero spatial deltas. With local != host it is not tracked and emits nothing.
+// Enroll a replicated subsystem: with local == Leader it is tracked (non-spatial), and changing a CrowdyState
+// property then running the loop emits exactly one CHANNEL delta and zero spatial deltas. With local != Leader it
+// is not tracked and emits nothing.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateSubsystemEnrollTracksOnHostAutoDiffsTest,
 	"CrowdySDK.State.SubsystemEnrollTracksOnHostAutoDiffs", CrowdyStateSubsystemTestFlags)
 bool FCrowdyStateSubsystemEnrollTracksOnHostAutoDiffsTest::RunTest(const FString& Parameters)
@@ -89,7 +89,7 @@ bool FCrowdyStateSubsystemEnrollTracksOnHostAutoDiffsTest::RunTest(const FString
 		const FGuid LocalPlayer = FGuid::NewGuid();
 		UCrowdyStateReplicator* Rep = MakeReplicator(Registry, LocalPlayer);
 		Rep->SetTimeForTest(0.0);
-		Rep->SetHostIDForTest(LocalPlayer);
+		Rep->SetLeaderIDForTest(LocalPlayer);
 		UCrowdyEntitySubsystem* ES = MakeEntitySubsystem(LocalPlayer);
 		Rep->SetEntitySubsystemForTest(ES);
 
@@ -105,14 +105,14 @@ bool FCrowdyStateSubsystemEnrollTracksOnHostAutoDiffsTest::RunTest(const FString
 		Rep->HandleEntityRegisteredForTest(NetID);
 		TestTrue(TEXT("host-owned subsystem tracked when local is host"), Rep->IsTrackedForTest(NetID));
 		TestEqual(TEXT("exactly one owned entry"), Rep->NumOwnedForTest(), 1);
-		TestEqual(TEXT("the host-owned id is remembered"), Rep->NumKnownHostOwnedForTest(), 1);
+		TestEqual(TEXT("the host-owned id is remembered"), Rep->NumKnownSubsystemsForTest(), 1);
 
 		// Drain the first tick (everything default -> nothing changes, no keyframe due at t=0).
 		Rep->RunReplicationLoopForTest();
 		ChannelCaptured.Reset();
 		SpatialCount = 0;
 
-		// Change a spatial (auto-diff) property: for a subsystem this DOES emit (bHostOwned is false), over the channel.
+		// Change a spatial (auto-diff) property: for a subsystem this emits over the channel.
 		Sub->RepInt = 5;
 		Rep->RunReplicationLoopForTest();
 		TestEqual(TEXT("subsystem change emits exactly one channel delta"), ChannelCaptured.Num(), 1);
@@ -124,7 +124,7 @@ bool FCrowdyStateSubsystemEnrollTracksOnHostAutoDiffsTest::RunTest(const FString
 		const FGuid LocalPlayer = FGuid::NewGuid();
 		UCrowdyStateReplicator* Rep = MakeReplicator(Registry, LocalPlayer);
 		Rep->SetTimeForTest(0.0);
-		Rep->SetHostIDForTest(FGuid::NewGuid()); // someone else is host
+		Rep->SetLeaderIDForTest(FGuid::NewGuid()); // someone else is host
 		UCrowdyEntitySubsystem* ES = MakeEntitySubsystem(LocalPlayer);
 		Rep->SetEntitySubsystemForTest(ES);
 
@@ -161,7 +161,7 @@ bool FCrowdyStateSubsystemDeltaRoutesToChannelNotSpatialTest::RunTest(const FStr
 	const FGuid LocalPlayer = FGuid::NewGuid();
 	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, LocalPlayer);
 	Rep->SetTimeForTest(0.0);
-	Rep->SetHostIDForTest(LocalPlayer);
+	Rep->SetLeaderIDForTest(LocalPlayer);
 	UCrowdyEntitySubsystem* ES = MakeEntitySubsystem(LocalPlayer);
 	Rep->SetEntitySubsystemForTest(ES);
 
@@ -467,8 +467,8 @@ bool FCrowdyStateSubsystemHostOwnedApplyRespectsHostSourcedTest::RunTest(const F
 	return true;
 }
 
-// A non-host does not track an enrolled host-owned subsystem, but HandleHostChanged(newHost=local) promotes it
-// to tracked (and it then diffs over the channel).
+// A client that does not lead does not track an enrolled replicated subsystem, but HandleLeaderChanged
+// (new Leader = local) promotes it to tracked (and it then diffs over the channel).
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateSubsystemNonHostRejectsThenPromotesTest,
 	"CrowdySDK.State.SubsystemNonHostRejectsThenPromotes", CrowdyStateSubsystemTestFlags)
 bool FCrowdyStateSubsystemNonHostRejectsThenPromotesTest::RunTest(const FString& Parameters)
@@ -483,7 +483,7 @@ bool FCrowdyStateSubsystemNonHostRejectsThenPromotesTest::RunTest(const FString&
 	const FGuid OtherHost = FGuid::NewGuid();
 	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, LocalPlayer);
 	Rep->SetTimeForTest(0.0);
-	Rep->SetHostIDForTest(OtherHost); // someone else holds the host
+	Rep->SetLeaderIDForTest(OtherHost); // someone else holds the host
 	UCrowdyEntitySubsystem* ES = MakeEntitySubsystem(LocalPlayer);
 	Rep->SetEntitySubsystemForTest(ES);
 
@@ -496,11 +496,11 @@ bool FCrowdyStateSubsystemNonHostRejectsThenPromotesTest::RunTest(const FString&
 
 	// Non-host: remembered but not tracked.
 	TestEqual(TEXT("non-host tracks nothing"), Rep->NumOwnedForTest(), 0);
-	TestEqual(TEXT("non-host still remembers the host-owned subsystem id"), Rep->NumKnownHostOwnedForTest(), 1);
+	TestEqual(TEXT("non-host still remembers the host-owned subsystem id"), Rep->NumKnownSubsystemsForTest(), 1);
 
 	// Become host: the change event promotes the known host-owned subsystem to tracked.
-	Rep->SetHostIDForTest(LocalPlayer);
-	Rep->HandleHostChangedForTest(LocalPlayer, OtherHost);
+	Rep->SetLeaderIDForTest(LocalPlayer);
+	Rep->HandleLeaderChangedForTest(LocalPlayer, OtherHost);
 	TestTrue(TEXT("subsystem tracked after promotion"), Rep->IsTrackedForTest(NetID));
 	TestEqual(TEXT("exactly one owned entry after promotion"), Rep->NumOwnedForTest(), 1);
 

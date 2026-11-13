@@ -445,12 +445,11 @@ bool FCrowdyStateLocalNotifyOwnerOnlyPushTest::RunTest(const FString& Parameters
 	return true;
 }
 
-// The one-shot push over an entity this client does not track encodes the property's CURRENT LIVE value, so by
-// the time the push is drained the local member already holds it: the notify fires locally too, exactly once per
-// mark, and the mark does not keep firing on later ticks.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateLocalNotifyHostPushTest,
-	"CrowdySDK.State.LocalNotifyHostPush", CrowdyStateLocalNotifyTestFlags)
-bool FCrowdyStateLocalNotifyHostPushTest::RunTest(const FString& Parameters)
+// Marking an entity another client writes sends nothing, so nothing may fire locally for it either: the notify runs
+// where the value goes out and where it arrives, and here it does neither.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateLocalNotifyUntrackedMarkFiresNothingTest,
+	"CrowdySDK.State.LocalNotifyUntrackedMarkFiresNothing", CrowdyStateLocalNotifyTestFlags)
+bool FCrowdyStateLocalNotifyUntrackedMarkFiresNothingTest::RunTest(const FString& Parameters)
 {
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
@@ -468,7 +467,7 @@ bool FCrowdyStateLocalNotifyHostPushTest::RunTest(const FString& Parameters)
 	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, LocalPlayer);
 	UCrowdyEntitySubsystem* ES = MakeEntitySubsystem(LocalPlayer);
 	Rep->SetEntitySubsystemForTest(ES);
-	Rep->SetHostIDForTest(LocalPlayer);
+	Rep->SetLeaderIDForTest(LocalPlayer);
 
 	TArray<FCrowdyStateDelta> Captured;
 	Rep->DispatchHookForTests = [&Captured](const FCrowdyStateDelta& Delta, bool /*bTargeted*/)
@@ -487,25 +486,12 @@ bool FCrowdyStateLocalNotifyHostPushTest::RunTest(const FString& Parameters)
 	RegisterProxyParticipant(ES, Id, Target);
 	TestEqual(TEXT("the replicator tracks nothing"), Rep->NumOwnedForTest(), 0);
 
-	// The push path reads the live member, so the write happens before the mark, as a caller would do it.
 	Target->RepHealth = 33.f;
 	Rep->MarkStateDirty(Id, TEXT("RepHealth"));
 	Rep->RunReplicationLoopForTest();
 
-	if (!TestEqual(TEXT("the push emitted exactly one delta"), Captured.Num(), 1))
-	{
-		return false;
-	}
-	TestTrue(TEXT("the push is HostSourced"),
-		(Captured[0].Flags & CrowdyStateDeltaFlags::HostSourced) != 0);
-	TestEqual(TEXT("the push fired the notify locally"), Target->HealthOnRepCount, 1);
-	TestEqual(TEXT("a property the push did not carry fires nothing"), Target->ScoreOnRepCount, 0);
-
-	// The queue is one-shot: a later tick neither re-emits nor refires.
-	Captured.Reset();
-	Rep->RunReplicationLoopForTest();
-	TestEqual(TEXT("a later tick re-emits nothing"), Captured.Num(), 0);
-	TestEqual(TEXT("a later tick refires nothing"), Target->HealthOnRepCount, 1);
+	TestEqual(TEXT("the mark sent nothing"), Captured.Num(), 0);
+	TestEqual(TEXT("and fired no notify"), Target->HealthOnRepCount, 0);
 	return true;
 }
 
@@ -622,13 +608,12 @@ bool FCrowdyStateLocalNotifyDeferredPastDispatchTest::RunTest(const FString& Par
 	return true;
 }
 
-// Ownership can transfer between the mark that queues a one-shot push and the tick that drains it. The entity is
-// then tracked with a shadow at the property defaults, so the pushed value reads as a change to the diff as well
-// and the same write reaches the wire from both paths. Both deltas are deliberate (a push is the only route for a
-// property the diff never covers), but one write must run the notify body exactly once.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateLocalNotifyPushAndDiffFireOnceTest,
-	"CrowdySDK.State.LocalNotifyPushAndDiffFireOnce", CrowdyStateLocalNotifyTestFlags)
-bool FCrowdyStateLocalNotifyPushAndDiffFireOnceTest::RunTest(const FString& Parameters)
+// A value written while another client owned the entity goes out once ownership arrives here: the entity is then
+// tracked with a shadow at the property defaults, so the diff sends it, and the one write runs the notify body
+// exactly once.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateLocalNotifyHandoverFiresOnceTest,
+	"CrowdySDK.State.LocalNotifyHandoverFiresOnce", CrowdyStateLocalNotifyTestFlags)
+bool FCrowdyStateLocalNotifyHandoverFiresOnceTest::RunTest(const FString& Parameters)
 {
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
@@ -646,7 +631,6 @@ bool FCrowdyStateLocalNotifyPushAndDiffFireOnceTest::RunTest(const FString& Para
 	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, LocalPlayer);
 	UCrowdyEntitySubsystem* ES = MakeEntitySubsystem(LocalPlayer);
 	Rep->SetEntitySubsystemForTest(ES);
-	Rep->SetHostIDForTest(LocalPlayer);
 	Rep->SetTimeForTest(0.0);
 
 	TArray<FCrowdyStateDelta> Captured;
@@ -662,15 +646,14 @@ bool FCrowdyStateLocalNotifyPushAndDiffFireOnceTest::RunTest(const FString& Para
 		return false;
 	}
 
-	// The host writes a property on an entity another client owns and marks it. The entity is untracked here, so
-	// the mark queues a one-shot push rather than setting a dirty bit.
+	// This client writes a property on an entity another client owns and marks it, which sends nothing.
 	const FGuid Id = FGuid::NewGuid();
 	RegisterProxyParticipant(ES, Id, Target);
 	Target->RepHealth = 33.f;
 	Rep->MarkStateDirty(Id, TEXT("RepHealth"));
-	TestEqual(TEXT("nothing is tracked when the push is queued"), Rep->NumOwnedForTest(), 0);
+	TestEqual(TEXT("nothing is tracked when it is marked"), Rep->NumOwnedForTest(), 0);
 
-	// The owner hands the entity over before the queued push is drained.
+	// The owner hands the entity over before the next tick.
 	FCrowdyEntityRecord Handover;
 	Handover.NetID = Id;
 	Handover.OwnerID = LocalPlayer;
@@ -685,11 +668,11 @@ bool FCrowdyStateLocalNotifyPushAndDiffFireOnceTest::RunTest(const FString& Para
 
 	Rep->RunReplicationLoopForTest();
 
-	TestEqual(TEXT("the push and the diff both emitted"), Captured.Num(), 2);
-	TestEqual(TEXT("the pushed property fired its notify exactly once"), Target->HealthOnRepCount, 1);
-	TestEqual(TEXT("a property neither path carried fires nothing"), Target->ScoreOnRepCount, 0);
+	TestEqual(TEXT("the diff emitted the written value once"), Captured.Num(), 1);
+	TestEqual(TEXT("the written property fired its notify exactly once"), Target->HealthOnRepCount, 1);
+	TestEqual(TEXT("a property the diff did not carry fires nothing"), Target->ScoreOnRepCount, 0);
 
-	// The queue is one-shot and the diff is now caught up, so the tick after is silent on both counts.
+	// The diff is now caught up, so the tick after is silent on both counts.
 	Captured.Reset();
 	Rep->RunReplicationLoopForTest();
 	TestEqual(TEXT("a later tick re-emits nothing"), Captured.Num(), 0);

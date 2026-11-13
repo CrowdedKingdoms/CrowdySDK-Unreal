@@ -338,19 +338,20 @@ enum class ECrowdyReplicationDistance : uint8
  * in range over the chunk-based path (decay-thinned, position-dependent). Multicast runs it on every
  * member of the session channel regardless of distance, over the channel transport: it ignores the
  * sender's chunk coordinates. OwningClient runs it only on the client that writes the target entity
- * (a non-owner routes a request to that client): the player who owns it, the Leader for an entity Owned
- * By Leader, and the elected host for a World entity. Host is deprecated.
+ * (a non-owner routes a request to that client): the player who owns it, or the Leader for an entity Owned
+ * By Leader and for a replicated subsystem. A World entity has no such client.
  */
 UENUM(BlueprintType)
 enum class ECrowdyEventRecipient : uint8
 {
     SpatialMulticast UMETA(DisplayName = "Spatial Multicast", ToolTip = "Everyone in range runs it, over the chunk-based spatial path (decay-thinned). The default."),
     Multicast        UMETA(DisplayName = "Multicast", ToolTip = "Every member of the session channel runs it, over the channel transport: any distance, no decay."),
-    OwningClient     UMETA(DisplayName = "Owning Client", ToolTip = "Only the client that writes the target entity runs it: its owner, the Leader for an entity Owned By Leader, the elected host for a World entity."),
-    Host UE_DEPRECATED(5.8, "Use OwningClient, or move logic only one machine should run to a Server Object.") UMETA(Hidden, DisplayName = "Host (Deprecated)", ToolTip = "Deprecated: use Owning Client, or move logic only one machine should run to a Server Object."),
+    OwningClient     UMETA(DisplayName = "Owning Client", ToolTip = "Only the client that writes the target entity runs it: its owner, or the Leader for an entity Owned By Leader and for a replicated subsystem. A World entity has none."),
 };
 
-// The one suppressed reference to the deprecated value, for the code that still has to route it.
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-inline constexpr ECrowdyEventRecipient CrowdyDeprecatedHostRecipient = ECrowdyEventRecipient::Host;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+// A CrowdyRecipient meta string that names the retired Host recipient, which now means OwningClient.
+inline bool CrowdyIsRetiredHostRecipient(const FString& MetaValue)
+{
+    return MetaValue.Equals(TEXT("Host"), ESearchCase::IgnoreCase)
+        || MetaValue.Equals(TEXT("ECrowdyEventRecipient::Host"), ESearchCase::IgnoreCase);
+}

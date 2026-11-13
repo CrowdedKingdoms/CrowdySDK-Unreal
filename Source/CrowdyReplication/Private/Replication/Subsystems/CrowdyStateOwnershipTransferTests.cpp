@@ -15,9 +15,9 @@
 
 // Ownership-transfer coverage: the entity subsystem's ReassignOwnership (record re-point, role derivation,
 // compare-and-swap, entity-component cache sync) and the state replicator's HandleOwnershipChanged retrack
-// (untrack the old owner, track the new one, maintain KnownHostOwnedIDs across a transfer). The RPC transport
-// (RequestOwnership / GrantOwnership) rides the existing, separately-tested RPC channel stack, so these tests
-// drive the two substantive halves directly through the same test seams the host-migration tests use.
+// (untrack the old owner, track the new one). The RPC transport (RequestOwnership / GrantOwnership) rides the
+// existing, separately-tested RPC channel stack, so these tests drive the two substantive halves directly through
+// the same test seams the Leader-change tests use.
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyStateOwnershipTestFlags =
@@ -62,7 +62,7 @@ namespace
 }
 
 // ReassignOwnership re-points the record's owner and re-derives its role across all three transitions:
-// client -> other client (Owner -> RemoteProxy), back to us (RemoteProxy -> Owner), and to host (-> HostOwned
+// client -> other client (Owner -> RemoteProxy), back to us (RemoteProxy -> Owner), and to the world (-> HostOwned
 // with an invalid owner id).
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnershipReassignRecordTest,
 	"CrowdySDK.State.OwnershipReassignRecord", CrowdyStateOwnershipTestFlags)
@@ -188,7 +188,7 @@ bool FCrowdyStateOwnershipComponentSyncTest::RunTest(const FString& Parameters)
 
 // The replicator retrack: an entity we own is tracked; transferring it away (HandleOwnershipChanged from the
 // re-pointed record) drops its tracking; transferring it back re-tracks it. This is the per-entity analogue of
-// the host promote/demote path, so a change that broke re-derivation would fail here.
+// the Leader promote/demote path, so a change that broke re-derivation would fail here.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnershipTransferRetrackTest,
 	"CrowdySDK.State.OwnershipTransferRetrack", CrowdyStateOwnershipTestFlags)
 bool FCrowdyStateOwnershipTransferRetrackTest::RunTest(const FString& Parameters)
@@ -232,93 +232,11 @@ bool FCrowdyStateOwnershipTransferRetrackTest::RunTest(const FString& Parameters
 	return true;
 }
 
-// Host-scope retrack: transferring an entity to host-owned maintains KnownHostOwnedIDs so a later host
-// migration still works. Part 1 (local IS host): the entity stays tracked and is remembered as host-owned; a
-// subsequent demotion drops it. Part 2 (local is NOT host): the entity is remembered but not tracked, and a
-// later promotion tracks it. A regression that skipped the KnownHostOwnedIDs bookkeeping on transfer would
-// break the migration and fail here.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnershipTransferHostScopeTest,
-	"CrowdySDK.State.OwnershipTransferHostScope", CrowdyStateOwnershipTestFlags)
-bool FCrowdyStateOwnershipTransferHostScopeTest::RunTest(const FString& Parameters)
-{
-	UCrowdyAutoRegistry* Registry = MakeOwnershipRegistry();
-	if (!TestNotNull(TEXT("registry created"), Registry))
-	{
-		return false;
-	}
-
-	const FGuid LocalPlayer = FGuid::NewGuid();
-	const FGuid OtherHost = FGuid::NewGuid();
-
-	// Part 1: local IS host. An entity we own is transferred to host-owned; it stays tracked (we are host) and is
-	// now remembered as host-owned, so losing host demotes it.
-	{
-		UCrowdyStateReplicator* Rep = MakeOwnershipReplicator(Registry, LocalPlayer);
-		UCrowdyEntitySubsystem* ES = MakeOwnershipEntitySubsystem(LocalPlayer);
-		Rep->SetEntitySubsystemForTest(ES);
-		Rep->SetHostIDForTest(LocalPlayer); // local IS host
-
-		ACrowdyStateSendTestActor* Actor = NewObject<ACrowdyStateSendTestActor>();
-		const FGuid NetID = FGuid::NewGuid();
-		ES->RegisterEntity(MakeOwnerRecord(Actor, NetID, LocalPlayer));
-		Rep->HandleEntityRegisteredForTest(NetID);
-		TestTrue(TEXT("owned entity tracked"), Rep->IsTrackedForTest(NetID));
-		TestEqual(TEXT("not yet remembered as host-owned"), Rep->NumKnownHostOwnedForTest(), 0);
-
-		// Transfer to host-owned.
-		ES->ReassignOwnership(NetID, FGuid(), LocalPlayer);
-		Rep->HandleOwnershipChangedForTest(Actor, NetID, FGuid(), LocalPlayer);
-		TestTrue(TEXT("host-owned entity still tracked while we are host"), Rep->IsTrackedForTest(NetID));
-		TestEqual(TEXT("now remembered as host-owned"), Rep->NumKnownHostOwnedForTest(), 1);
-
-		// Lose host: the (now host-owned) entity is demoted.
-		Rep->SetHostIDForTest(OtherHost);
-		Rep->HandleHostChangedForTest(OtherHost, LocalPlayer);
-		TestFalse(TEXT("demoted host drops the transferred world entity"), Rep->IsTrackedForTest(NetID));
-		TestEqual(TEXT("nothing tracked after demotion"), Rep->NumOwnedForTest(), 0);
-	}
-
-	// Part 2: local is NOT host. A proxy entity is transferred to host-owned; it is remembered but not tracked,
-	// and becoming host promotes it.
-	{
-		UCrowdyStateReplicator* Rep = MakeOwnershipReplicator(Registry, LocalPlayer);
-		UCrowdyEntitySubsystem* ES = MakeOwnershipEntitySubsystem(LocalPlayer);
-		Rep->SetEntitySubsystemForTest(ES);
-		Rep->SetHostIDForTest(OtherHost); // someone else is host
-
-		ACrowdyStateSendTestActor* Actor = NewObject<ACrowdyStateSendTestActor>();
-		const FGuid NetID = FGuid::NewGuid();
-		// Owned by another client (a proxy on this client), so it is not tracked to begin with.
-		FCrowdyEntityRecord ProxyRecord;
-		ProxyRecord.NetID = NetID;
-		ProxyRecord.OwnerID = FGuid::NewGuid();
-		ProxyRecord.Role = ECrowdyRole::RemoteProxy;
-		ProxyRecord.Participant = Actor;
-		ES->RegisterEntity(ProxyRecord);
-		Rep->HandleEntityRegisteredForTest(NetID);
-		TestEqual(TEXT("proxy is not tracked"), Rep->NumOwnedForTest(), 0);
-
-		// Transfer to host-owned: a non-host remembers it but does not track it.
-		ES->ReassignOwnership(NetID, FGuid(), ProxyRecord.OwnerID);
-		Rep->HandleOwnershipChangedForTest(Actor, NetID, FGuid(), ProxyRecord.OwnerID);
-		TestFalse(TEXT("non-host does not track a host-owned entity"), Rep->IsTrackedForTest(NetID));
-		TestEqual(TEXT("non-host remembers the host-owned id"), Rep->NumKnownHostOwnedForTest(), 1);
-
-		// Become host: the remembered host-owned entity is promoted to tracked.
-		Rep->SetHostIDForTest(LocalPlayer);
-		Rep->HandleHostChangedForTest(LocalPlayer, OtherHost);
-		TestTrue(TEXT("promotion tracks the transferred world entity"), Rep->IsTrackedForTest(NetID));
-		TestEqual(TEXT("exactly one owned entry after promotion"), Rep->NumOwnedForTest(), 1);
-	}
-	return true;
-}
-
-// Host-owned -> client transfer: granting a host-owned (world) entity to a client exercises the compare-and-swap
-// SKIP path (a host-owned source has no owner id, so the expected-previous is invalid) and the HostOwned -> Owner
-// retrack (KnownHostOwnedIDs must drop the id and the entity re-tracks as a normal owned entity). Local is host.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnershipTransferHostToClientTest,
-	"CrowdySDK.State.OwnershipTransferHostToClient", CrowdyStateOwnershipTestFlags)
-bool FCrowdyStateOwnershipTransferHostToClientTest::RunTest(const FString& Parameters)
+// Handing an entity to the world stops this client writing it, even on the Leader: a World actor has no writer,
+// and it is not a replicated subsystem, so no Leader change brings it back.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnershipTransferToWorldStopsWritingTest,
+	"CrowdySDK.State.OwnershipTransferToWorldStopsWriting", CrowdyStateOwnershipTestFlags)
+bool FCrowdyStateOwnershipTransferToWorldStopsWritingTest::RunTest(const FString& Parameters)
 {
 	UCrowdyAutoRegistry* Registry = MakeOwnershipRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
@@ -330,7 +248,41 @@ bool FCrowdyStateOwnershipTransferHostToClientTest::RunTest(const FString& Param
 	UCrowdyStateReplicator* Rep = MakeOwnershipReplicator(Registry, LocalPlayer);
 	UCrowdyEntitySubsystem* ES = MakeOwnershipEntitySubsystem(LocalPlayer);
 	Rep->SetEntitySubsystemForTest(ES);
-	Rep->SetHostIDForTest(LocalPlayer); // local IS host
+	Rep->SetLeaderIDForTest(LocalPlayer);
+
+	ACrowdyStateSendTestActor* Actor = NewObject<ACrowdyStateSendTestActor>();
+	const FGuid NetID = FGuid::NewGuid();
+	ES->RegisterEntity(MakeOwnerRecord(Actor, NetID, LocalPlayer));
+	Rep->HandleEntityRegisteredForTest(NetID);
+	TestTrue(TEXT("owned entity tracked"), Rep->IsTrackedForTest(NetID));
+
+	ES->ReassignOwnership(NetID, FGuid(), LocalPlayer);
+	Rep->HandleOwnershipChangedForTest(Actor, NetID, FGuid(), LocalPlayer);
+	TestFalse(TEXT("a World entity is not tracked, even on the Leader"), Rep->IsTrackedForTest(NetID));
+	TestEqual(TEXT("nor remembered for a Leader change"), Rep->NumKnownSubsystemsForTest(), 0);
+
+	Rep->HandleLeaderChangedForTest(LocalPlayer, FGuid());
+	TestFalse(TEXT("and a Leader change does not bring it back"), Rep->IsTrackedForTest(NetID));
+	return true;
+}
+
+// World -> client transfer: granting a World entity to a client exercises the compare-and-swap SKIP path (a World
+// source has no owner id, so the expected-previous is invalid) and the HostOwned -> Owner retrack: the entity
+// becomes tracked as a normal owned entity.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnershipTransferWorldToClientTest,
+	"CrowdySDK.State.OwnershipTransferWorldToClient", CrowdyStateOwnershipTestFlags)
+bool FCrowdyStateOwnershipTransferWorldToClientTest::RunTest(const FString& Parameters)
+{
+	UCrowdyAutoRegistry* Registry = MakeOwnershipRegistry();
+	if (!TestNotNull(TEXT("registry created"), Registry))
+	{
+		return false;
+	}
+
+	const FGuid LocalPlayer = FGuid::NewGuid();
+	UCrowdyStateReplicator* Rep = MakeOwnershipReplicator(Registry, LocalPlayer);
+	UCrowdyEntitySubsystem* ES = MakeOwnershipEntitySubsystem(LocalPlayer);
+	Rep->SetEntitySubsystemForTest(ES);
 
 	ACrowdyStateSendTestActor* Actor = NewObject<ACrowdyStateSendTestActor>();
 	if (!TestNotNull(TEXT("actor created"), Actor))
@@ -339,70 +291,27 @@ bool FCrowdyStateOwnershipTransferHostToClientTest::RunTest(const FString& Param
 	}
 	const FGuid NetID = FGuid::NewGuid();
 
-	// A host-owned world entity (no per-client owner), tracked because we are host.
-	FCrowdyEntityRecord HostOwnedRecord;
-	HostOwnedRecord.NetID = NetID;
-	HostOwnedRecord.Role = ECrowdyRole::HostOwned;
-	HostOwnedRecord.Participant = Actor;
-	ES->RegisterEntity(HostOwnedRecord);
+	// A World entity (no per-client owner), which no client writes.
+	FCrowdyEntityRecord WorldRecord;
+	WorldRecord.NetID = NetID;
+	WorldRecord.Role = ECrowdyRole::HostOwned;
+	WorldRecord.Participant = Actor;
+	ES->RegisterEntity(WorldRecord);
 	Rep->HandleEntityRegisteredForTest(NetID);
-	TestTrue(TEXT("host-owned entity tracked while host"), Rep->IsTrackedForTest(NetID));
-	TestEqual(TEXT("remembered as host-owned"), Rep->NumKnownHostOwnedForTest(), 1);
+	TestFalse(TEXT("a World entity is not tracked"), Rep->IsTrackedForTest(NetID));
 
-	// Grant it to a client (us). A host-owned source has an invalid owner id, so the expected-previous is invalid
-	// and the compare-and-swap is skipped; the entity becomes client-owned.
+	// Grant it to a client (us). A World source has an invalid owner id, so the expected-previous is invalid and
+	// the compare-and-swap is skipped; the entity becomes client-owned.
 	ES->ReassignOwnership(NetID, LocalPlayer, FGuid());
 	if (const FCrowdyEntityRecord* R = ES->FindRecord(NetID))
 	{
 		TestEqual(TEXT("owner is now the client"), R->OwnerID, LocalPlayer);
-		TestTrue(TEXT("role is Owner after the host-to-client transfer"), R->Role == ECrowdyRole::Owner);
+		TestTrue(TEXT("role is Owner after the world-to-client transfer"), R->Role == ECrowdyRole::Owner);
 	}
 
-	// The retrack drops it from the host-owned set and tracks it as a normal owned entity.
 	Rep->HandleOwnershipChangedForTest(Actor, NetID, LocalPlayer, FGuid());
-	TestTrue(TEXT("entity still tracked (now as owner)"), Rep->IsTrackedForTest(NetID));
-	TestEqual(TEXT("no longer remembered as host-owned"), Rep->NumKnownHostOwnedForTest(), 0);
-	return true;
-}
-
-// An idle host still keyframes its World entities: nothing else carries their values.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateIdleHostKeepsWorldKeyframeTest,
-	"CrowdySDK.State.IdleHostKeepsWorldKeyframe", CrowdyStateOwnershipTestFlags)
-bool FCrowdyStateIdleHostKeepsWorldKeyframeTest::RunTest(const FString& Parameters)
-{
-	UCrowdyAutoRegistry* Registry = MakeOwnershipRegistry();
-	const FGuid LocalPlayer = FGuid::NewGuid();
-	UCrowdyStateReplicator* Rep = MakeOwnershipReplicator(Registry, LocalPlayer);
-	UCrowdyEntitySubsystem* ES = MakeOwnershipEntitySubsystem(LocalPlayer);
-	Rep->SetEntitySubsystemForTest(ES);
-	Rep->SetHostIDForTest(LocalPlayer);
-	Rep->SetKeyframeIntervalForTest(1.0f);
-	double Now = 100.0;
-	Rep->SetTimeForTest(Now);
-	TArray<FCrowdyStateDelta> Sent;
-	Rep->DispatchHookForTests = [&Sent](const FCrowdyStateDelta& Delta, bool) { Sent.Add(Delta); };
-
-	ACrowdyStateSendTestActor* Actor = NewObject<ACrowdyStateSendTestActor>();
-	const FGuid NetID = FGuid::NewGuid();
-	ES->RegisterEntity(MakeOwnerRecord(Actor, NetID, LocalPlayer));
-	Rep->HandleEntityRegisteredForTest(NetID);
-	ES->ReassignOwnership(NetID, FGuid(), LocalPlayer);
-	Rep->HandleOwnershipChangedForTest(Actor, NetID, FGuid(), LocalPlayer);
-	if (!TestEqual(TEXT("the entity is the host's World entity"), Rep->NumKnownHostOwnedForTest(), 1))
-	{
-		return false;
-	}
-	Rep->RunReplicationLoopForTest();
-	Sent.Reset();
-
-	Rep->SetLocalPlayerIdle(true);
-	Now += 5.0;
-	Rep->SetTimeForTest(Now);
-	Rep->RunReplicationLoopForTest();
-	if (TestEqual(TEXT("an idle host still sends its World entity's keyframe"), Sent.Num(), 1))
-	{
-		TestTrue(TEXT("marked as a keyframe"), (Sent[0].Flags & CrowdyStateDeltaFlags::Keyframe) != 0);
-	}
+	TestTrue(TEXT("entity tracked as owner"), Rep->IsTrackedForTest(NetID));
+	TestEqual(TEXT("and never remembered as a subsystem"), Rep->NumKnownSubsystemsForTest(), 0);
 	return true;
 }
 

@@ -127,7 +127,7 @@ public:
 	 * Resolves an actor class's default UCrowdyEntityComponent instance (native CDO or BP SCS component
 	 * template), mirroring HasEntityComponent's chain walk. Read-only, live reflection only never baked
 	 * or cached; intended for editor tooling (e.g. the CrowdyStudio registry inspector) that wants to
-	 * show a class's configured Ownership/HostOverride defaults. Returns null for non-actor classes or
+	 * show a class's configured Owned By defaults. Returns null for non-actor classes or
 	 * actors with no entity component. Never forces CDO creation (GetDefaultObject(false)).
 	 */
 	static const class UCrowdyEntityComponent* ResolveDefaultEntityComponent(const UClass* ActorClass);

@@ -622,7 +622,7 @@ const UCrowdyEntityComponent* UCrowdyAutoRegistry::ResolveDefaultEntityComponent
 			{
 				if (Node && Node->ComponentClass && Node->ComponentClass->IsChildOf<UCrowdyEntityComponent>())
 				{
-					// The SCS template carries the component's Instanced defaults (Ownership, HostOverride,
+					// The SCS template carries the component's Instanced defaults (Owned By,
 					// StateExecutor, ...), so the Blueprint's configured defaults are visible here without
 					// spawning. A matched node with no live template (Component still null) falls through to
 					// walk the superclass chain rather than stopping, matching the pre-refactor behavior.

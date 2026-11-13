@@ -42,9 +42,7 @@ void UCrowdyOwnershipTransfer::RequestOwnershipTransfer(UObject* /*WorldContextO
 		return;
 	}
 
-	// Nothing to request when we are already this entity's authority. For a host-owned world entity that means we
-	// are the host, which ES->IsLocallyOwned (owner-id based) would miss — so ask the component, whose
-	// IsLocallyOwned covers both Owner and the host of a HostOwned entity.
+	// Nothing to request when we are already this entity's authority.
 	if (Component->IsLocallyOwned())
 		return;
 
@@ -52,6 +50,15 @@ void UCrowdyOwnershipTransfer::RequestOwnershipTransfer(UObject* /*WorldContextO
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
 			TEXT("[CrowdyOwnershipTransfer]: RequestOwnershipTransfer ignored: '%s' is Owned By Leader, so its owner follows the Leader."),
+			*GetNameSafe(TargetEntity));
+		return;
+	}
+
+	const FCrowdyEntityRecord* Record = ES->FindRecord(NetID);
+	if (Record && Record->Role == ECrowdyRole::HostOwned)
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyOwnershipTransfer]: RequestOwnershipTransfer ignored: '%s' is a World entity, so no client writes it to grant it."),
 			*GetNameSafe(TargetEntity));
 		return;
 	}
@@ -102,15 +109,4 @@ void UCrowdyOwnershipTransfer::GrantOwnershipTransferToPlayer(UObject* /*WorldCo
 	}
 
 	Component->GrantOwnershipTo(NewOwnerPlayerID);
-}
-
-void UCrowdyOwnershipTransfer::GrantOwnershipToHost(UObject* /*WorldContextObject*/, AActor* TargetEntity)
-{
-	UCrowdyEntitySubsystem* ES = nullptr;
-	UCrowdyEntityComponent* Component = ResolveTarget(TargetEntity, ES);
-	if (!ES || !Component)
-		return;
-
-	// An invalid new-owner id makes the entity host-owned (a world entity owned by whichever client is host).
-	Component->GrantOwnershipTo(FGuid());
 }

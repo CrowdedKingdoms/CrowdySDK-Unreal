@@ -52,7 +52,7 @@ namespace
 
 		UE_LOG(LogCrowdyReplication, Warning,
 			TEXT("[Crowdy SDK]: map '%s' resolved no map profile, so the SDK is inactive on it: no entity registration, ")
-			TEXT("no actor or state replication, no event routing and no host election. %s ")
+			TEXT("no actor or state replication and no event routing. %s ")
 			TEXT("Set this in Project Settings -> Plugins -> Crowdy SDK -> Map Profiles: add an entry naming this map, ")
 			TEXT("or set Default Profile to cover maps with no entry. If the map is meant to run without the SDK, give ")
 			TEXT("it a profile with Handle Events and Spawns, Draw Remote Entities, Send Movement and Replicate Crowdy State ")
@@ -221,12 +221,6 @@ FCrowdyCppClientConfig UCrowdySDKDeveloperSettings::MakeClientConfig() const
 		Config.ApiUrl = Config.DiscoveryUrl;
 	}
 	return Config;
-}
-
-bool UCrowdySDKDeveloperSettings::UsesElectedHost()
-{
-	const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
-	return Settings && Settings->LeaderSource == ECrowdyLeaderSource::ElectedHost;
 }
 
 bool UCrowdySDKDeveloperSettings::ProfileDrawsCrowdRows(const UCrowdyMapProfile* Profile)

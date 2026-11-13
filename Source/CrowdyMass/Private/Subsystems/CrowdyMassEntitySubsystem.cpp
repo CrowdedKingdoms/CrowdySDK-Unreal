@@ -2871,10 +2871,7 @@ void UCrowdyMassEntitySubsystem::RegisterAvatarParticipant(const FGuid& UUID, UC
 		// An identity something else supplied outranks the one assumed above for who the entity is, so the
 		// owner and the class are taken from it. The ROLE is not, and that exception is the point rather
 		// than an oversight. Role decides whether this participant is authoritative for the entity, and an
-		// avatar must never be: adopting HostOwned here would undo the RemoteProxy default set above. On a
-		// host client a HostOwned participant is also one the state replicator will try to make a
-		// CrowdyState SENDER under the crowd entity's own id; nothing but the shipped avatar class having
-		// no replicated properties stops that today.
+		// avatar must never be: adopting HostOwned here would undo the RemoteProxy default set above.
 		Record.OwnerID = Existing->OwnerID;
 		Record.ClassID = Existing->ClassID;
 	}

@@ -10,7 +10,7 @@
 class UWorld;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnOwnerUUIDUpdated, FString, NewOwnerUUID);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnHostIDUpdated, const FGuid&, NewHostID, const FGuid&, PreviousHostID);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnHostIDUpdated, const FGuid& /*NewWriterID*/, const FGuid& /*PreviousWriterID*/);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyAppPausedChanged, bool, bPaused, const FString&, Reason);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyAccessEnded, const FString&, Reason, const FString&, BlockedUntil);
 
@@ -135,12 +135,7 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session")
 	FOnOwnerUUIDUpdated OnOwnerUUIDUpdated;
 
-	/** Fired on the game thread whenever the host id changes.
-	 *  UCrowdyLeaderSubsystem (CrowdyExec) writes the Leader here so that lower
-	 *  modules (CrowdyReplication) can read it without a dependency cycle. */
-	UE_DEPRECATED(5.8, "Bind OnLeaderChanged on UCrowdyLeaderSubsystem, which never fires under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
-	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session",
-		meta=(DeprecatedProperty, DeprecationMessage="Bind On Leader Changed on the Crowdy Leader Subsystem, which never fires under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
+	/** Game thread. Fired when the app writer (the Leader) changes, so modules below UCrowdyLeaderSubsystem can follow it; game code binds OnLeaderChanged there instead. */
 	FOnHostIDUpdated OnHostIDUpdated;
 
 	/** Fired on the game thread when the app is paused or comes back, or when the reason changes. */
@@ -314,12 +309,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
 	FGuid GetID() const {return GameSessionInfo.ID;}
 
-	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session",
-		meta=(DeprecatedFunction, DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
-	FGuid GetHostID() const {return HostID;}
-
-	// The client that writes replicated subsystems: the Leader, or the elected host under Leader Source Elected Host.
+	// The client that writes replicated subsystems: the Leader.
 	FGuid GetAppWriterID() const {return HostID;}
 
 	/** Game thread only. Called by UCrowdyLeaderSubsystem when the Leader changes, and cleared on sign-out. */
@@ -328,9 +318,7 @@ public:
 		if (HostID == InHostID) return;
 		const FGuid PreviousHostID = HostID;
 		HostID = InHostID;
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		OnHostIDUpdated.Broadcast(HostID, PreviousHostID);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
@@ -383,8 +371,4 @@ private:
 	FString AccessEndedReason;
 
 	FString AccessBlockedUntil;
-
-	/** Atomic so it can be written from a background response thread and read
-	 *  from the game thread (or any other thread) without a lock. */
-	std::atomic<int64> HostUserID { 0 };
 };

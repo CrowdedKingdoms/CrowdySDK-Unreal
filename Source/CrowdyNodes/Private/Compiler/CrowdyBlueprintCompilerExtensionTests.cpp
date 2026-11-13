@@ -337,9 +337,9 @@ bool FCrowdyHasAuthorityOtherActorTargetIsNotSelfTest::RunTest(const FString& Pa
 	return true;
 }
 
-// Only a multicast reaches clients that may be drawing the entity as a crowd row. An owning-client or
-// host call lands on one named machine, which holds the entity as a real actor, so its body carries none
-// of the crowd-row limits and must never be warned about.
+// Only a multicast reaches clients that may be drawing the entity as a crowd row. An owning-client call
+// lands on one named machine, which holds the entity as a real actor, so its body carries none of the
+// crowd-row limits and must never be warned about.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCrowdRecipientCoversOnlyMulticastsTest,
 	"CrowdySDK.Compiler.CrowdRecipientCoversOnlyMulticasts", CrowdyCompilerExtensionTestFlags)
 bool FCrowdyCrowdRecipientCoversOnlyMulticastsTest::RunTest(const FString& Parameters)
@@ -350,8 +350,8 @@ bool FCrowdyCrowdRecipientCoversOnlyMulticastsTest::RunTest(const FString& Param
 		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(ECrowdyEventRecipient::Multicast));
 	TestFalse(TEXT("an owning-client call lands only where the entity is a real actor"),
 		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(ECrowdyEventRecipient::OwningClient));
-	TestFalse(TEXT("a host call lands only where the entity is a real actor"),
-		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(CrowdyDeprecatedHostRecipient));
+	TestFalse(TEXT("the retired Host spelling reads as owning client"),
+		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(ResolveCrowdyRecipient(TEXT("Host"))));
 
 	// An author who never touched the recipient dropdown wrote a spatial multicast, because that is what
 	// the runtime defaults to. If an unset value read as out of scope here, the commonest event in a
@@ -767,7 +767,8 @@ bool FCrowdyCrowdRepresentationFollowsProfilesTest::RunTest(const FString& Param
 	return true;
 }
 
-// A Blueprint event set to the deprecated Host recipient says so when it compiles, and no other event does.
+// A Blueprint event still set to the retired Host recipient says it now reaches the owning client when it compiles,
+// and no other event does.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerHostRecipientWarnsTest,
 	"CrowdySDK.Compiler.HostRecipientWarns", CrowdyCompilerExtensionTestFlags)
 bool FCrowdyCompilerHostRecipientWarnsTest::RunTest(const FString& Parameters)
@@ -793,7 +794,7 @@ bool FCrowdyCompilerHostRecipientWarnsTest::RunTest(const FString& Parameters)
 		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection | EBlueprintCompileOptions::SkipSave, &Results);
 		return Results.Messages.FilterByPredicate([](const TSharedRef<FTokenizedMessage>& Message)
 		{
-			return Message->ToText().ToString().Contains(TEXT("deprecated Recipient Host"));
+			return Message->ToText().ToString().Contains(TEXT("Recipient Host, which now reaches"));
 		}).Num();
 	};
 
@@ -802,25 +803,22 @@ bool FCrowdyCompilerHostRecipientWarnsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// Every piece of the old host surface reaches a Blueprint author with a warning that names what to do instead.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerHostSurfaceIsDeprecatedTest,
-	"CrowdySDK.Compiler.HostSurfaceIsDeprecated", CrowdyCompilerExtensionTestFlags)
-bool FCrowdyCompilerHostSurfaceIsDeprecatedTest::RunTest(const FString& Parameters)
+// The old host surface is gone from Blueprint: none of it can still be placed or bound.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerHostSurfaceIsGoneTest,
+	"CrowdySDK.Compiler.HostSurfaceIsGone", CrowdyCompilerExtensionTestFlags)
+bool FCrowdyCompilerHostSurfaceIsGoneTest::RunTest(const FString& Parameters)
 {
 	const TPair<UClass*, FName> Functions[] = {
 		{UCrowdyGameSession::StaticClass(), TEXT("GetHostID")},
 		{UCrowdyEntitySubsystem::StaticClass(), TEXT("GetHostID")},
 		{UCrowdyOwnershipTransfer::StaticClass(), TEXT("GrantOwnershipToHost")},
 		{UCrowdyEntityComponent::StaticClass(), TEXT("GetHostOverridePolicy")},
+		{UCrowdyEntityComponent::StaticClass(), TEXT("SendEvent")},
 	};
 	for (const TPair<UClass*, FName>& Entry : Functions)
 	{
 		const FString Name = FString::Printf(TEXT("%s::%s"), *Entry.Key->GetName(), *Entry.Value.ToString());
-		const UFunction* Function = Entry.Key->FindFunctionByName(Entry.Value);
-		if (!TestNotNull(*Name, Function)) continue;
-
-		TestTrue(*(Name + TEXT(" is deprecated")), Function->HasMetaData(FBlueprintMetadata::MD_DeprecatedFunction));
-		TestFalse(*(Name + TEXT(" says what to do instead")), Function->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage).IsEmpty());
+		TestNull(*(Name + TEXT(" is gone")), Entry.Key->FindFunctionByName(Entry.Value));
 	}
 
 	const TPair<UClass*, FName> Properties[] = {
@@ -830,11 +828,7 @@ bool FCrowdyCompilerHostSurfaceIsDeprecatedTest::RunTest(const FString& Paramete
 	for (const TPair<UClass*, FName>& Entry : Properties)
 	{
 		const FString Name = FString::Printf(TEXT("%s::%s"), *Entry.Key->GetName(), *Entry.Value.ToString());
-		const FProperty* Property = Entry.Key->FindPropertyByName(Entry.Value);
-		if (!TestNotNull(*Name, Property)) continue;
-
-		TestTrue(*(Name + TEXT(" is deprecated")), Property->HasMetaData(FBlueprintMetadata::MD_DeprecatedProperty));
-		TestFalse(*(Name + TEXT(" says what to do instead")), Property->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage).IsEmpty());
+		TestNull(*(Name + TEXT(" is no longer a Blueprint property")), Entry.Key->FindPropertyByName(Entry.Value));
 	}
 	return true;
 }

@@ -12,7 +12,7 @@
  * sees the spawn-time owner).
  *
  * Flow: a client calls RequestOwnershipTransfer for an entity it does not own; the entity's current authority
- * (its owning client, or the host for a host-owned world entity) receives the request and either auto-grants
+ * (its owning client; a World entity has none) receives the request and either auto-grants
  * (the component's bAutoApproveOwnershipRequests) or surfaces UCrowdyEntitySubsystem::OnOwnershipRequested for
  * game code to approve (by calling a Grant node) or ignore (rejection by silence). A grant is announced reliably
  * to every client, surfacing as UCrowdyEntitySubsystem::OnEntityOwnershipChanged.
@@ -53,14 +53,4 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Ownership",
 		meta = (WorldContext = "WorldContextObject", DisplayName = "Grant Ownership Transfer To Player"))
 	static void GrantOwnershipTransferToPlayer(UObject* WorldContextObject, AActor* TargetEntity, FGuid NewOwnerPlayerID);
-
-	/**
-	 * Makes TargetEntity host-owned (a world entity owned by whichever client is host). Only the entity's current
-	 * authority may do this.
-	 */
-	UE_DEPRECATED(5.8, "No replacement for handing an entity back at runtime. Keep its truth in a Server Object, or set OwnedBy to Leader on the class if one client should simulate it; such an entity refuses grants.")
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Ownership",
-		meta = (WorldContext = "WorldContextObject", DisplayName = "Grant Ownership To Host", DeprecatedFunction,
-			DeprecationMessage = "No replacement for handing an entity back at runtime. Keep its truth in a Server Object, or set Owned By to Leader on the class if one client should simulate it; such an entity refuses grants."))
-	static void GrantOwnershipToHost(UObject* WorldContextObject, AActor* TargetEntity);
 };

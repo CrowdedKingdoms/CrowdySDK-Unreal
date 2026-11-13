@@ -114,9 +114,7 @@ void UCrowdyEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 void UCrowdyEntitySubsystem::BindGameSession()
 {
 	GameSession->OnOwnerUUIDUpdated.AddDynamic(this, &UCrowdyEntitySubsystem::OnOwnerUUIDUpdated);
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	GameSession->OnHostIDUpdated.AddDynamic(this, &UCrowdyEntitySubsystem::OnLeaderUpdated);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	GameSession->OnHostIDUpdated.AddUObject(this, &UCrowdyEntitySubsystem::OnLeaderUpdated);
 }
 
 void UCrowdyEntitySubsystem::SubscribeToSpawnDestroy(FCrowdyServiceRegistry& Registry)
@@ -138,9 +136,7 @@ void UCrowdyEntitySubsystem::Deinitialize()
 	if (IsValid(GameSession))
 	{
 		GameSession->OnOwnerUUIDUpdated.RemoveDynamic(this, &UCrowdyEntitySubsystem::OnOwnerUUIDUpdated);
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		GameSession->OnHostIDUpdated.RemoveDynamic(this, &UCrowdyEntitySubsystem::OnLeaderUpdated);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		GameSession->OnHostIDUpdated.RemoveAll(this);
 	}
 	GameSession = nullptr;
 
@@ -338,24 +334,14 @@ FGuid UCrowdyEntitySubsystem::GetLocalPlayerID() const
 	return LocalPlayerID;
 }
 
-FGuid UCrowdyEntitySubsystem::GetHostID() const
-{
-	return GetAppWriterID();
-}
-
 FGuid UCrowdyEntitySubsystem::GetAppWriterID() const
 {
 	return IsValid(GameSession) ? GameSession->GetAppWriterID() : FGuid{};
 }
 
-FGuid UCrowdyEntitySubsystem::GetWorldOwnerID() const
-{
-	return UCrowdySDKDeveloperSettings::UsesElectedHost() ? GetAppWriterID() : FGuid();
-}
-
 FGuid UCrowdyEntitySubsystem::GetWriterID(const FCrowdyEntityRecord& Record) const
 {
-	return Record.IsReplicatedSubsystem() ? GetAppWriterID() : GetWorldOwnerID();
+	return Record.IsReplicatedSubsystem() ? GetAppWriterID() : FGuid();
 }
 
 bool UCrowdyEntitySubsystem::IsRecordLocallyOwned(const FCrowdyEntityRecord& Record) const
@@ -980,7 +966,7 @@ void UCrowdyEntitySubsystem::ReassignOwnership(const FGuid& NetID, const FGuid& 
 	const FGuid PreviousOwnerID = Record->OwnerID;
 
 	// Compare-and-swap: a stale or duplicate grant whose expected previous owner no longer matches is dropped.
-	// Skipped when the caller passes an invalid expectation (a host-owned source has no per-client owner id), and
+	// Skipped when the caller passes an invalid expectation (a World entity has no per-client owner id), and
 	// for a proxy whose owner this client never learned (it missed the spawn event), so it has nothing to compare.
 	const bool bOwnerUnknown = Record->Role == ECrowdyRole::RemoteProxy && !PreviousOwnerID.IsValid();
 	if (ExpectedPreviousOwnerID.IsValid() && !bOwnerUnknown && PreviousOwnerID != ExpectedPreviousOwnerID)
@@ -1314,13 +1300,13 @@ void UCrowdyEntitySubsystem::RememberDestroyed(const FGuid& NetID)
 
 void UCrowdyEntitySubsystem::HandleRemoteDestroy(const FCrowdyEntityDestroyEvent& Event)
 {
-	// A host-written singleton such as a replicated subsystem has a public id (its class path) and cannot be
+	// A Leader-written singleton such as a replicated subsystem has a public id (its class path) and cannot be
 	// destroyed; a crowd row's stand-in is not an actor either, but it is a remote copy and is released as usual.
 	const FCrowdyEntityRecord* Existing = Records.Find(Event.EntityID);
 	if (Existing && Existing->Role == ECrowdyRole::HostOwned && Existing->GetParticipant() && !Existing->GetActor())
 	{
 		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
-			TEXT("[CrowdyEntitySubsystem]: Destroy event for %s ignored: it names a host-written participant that is not an actor."),
+			TEXT("[CrowdyEntitySubsystem]: Destroy event for %s ignored: it names a replicated subsystem, which is not an actor."),
 			*Event.EntityID.ToString());
 		return;
 	}

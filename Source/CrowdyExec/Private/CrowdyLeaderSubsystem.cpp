@@ -8,7 +8,6 @@
 #include "Network/UDP/CrowdyUDPSubsystem.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Subsystem/CrowdySDKSubsystem.h"
-#include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/HelperFunctions.h"
 
 namespace CrowdyLeaderDetail
@@ -25,12 +24,6 @@ namespace CrowdyLeaderDetail
 void UCrowdyLeaderSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	if (UCrowdySDKDeveloperSettings::UsesElectedHost())
-	{
-		UE_LOG(LogCrowdyExec, Warning, TEXT("[CrowdyLeader] Leader Source is Elected Host (Deprecated), which nothing elects any more: World entities and replicated subsystems have no writer and Host events have nowhere to run. Set Project Settings > Plugins > Crowdy SDK > Replication > Leader Source to Server Object."));
-		return;
-	}
-
 	Collection.InitializeDependency<UCrowdyServerObjectSubsystem>();
 	if (UCrowdySDKSubsystem* SDK = Collection.InitializeDependency<UCrowdySDKSubsystem>())
 	{

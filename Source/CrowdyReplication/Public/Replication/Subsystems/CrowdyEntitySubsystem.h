@@ -128,29 +128,20 @@ public:
 	// never got the destroy keeps repeating, and its entity comes back after this long.
 	static constexpr double DestroyedSpawnRefusedSeconds = 10.0;
 
-	// True when this client writes the entity: its record names the local player with the Owner role, or it is a World
-	// entity and this client is the World owner. The same answer as Is Crowdy Entity Locally Owned and the component's
-	// Is Locally Owned.
+	// True when this client writes the entity: its record names the local player with the Owner role, or it is a
+	// replicated subsystem and this client is the Leader. The same answer as Is Crowdy Entity Locally Owned and the
+	// component's Is Locally Owned.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
 	bool IsLocallyOwned(const FGuid& NetID) const;
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
 	FGuid GetLocalPlayerID() const;
 
-	// Reads through to UCrowdyGameSession
-	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem",
-		meta=(DeprecatedFunction, DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
-	FGuid GetHostID() const;
-
-	// The client that writes replicated subsystems: the Leader, or the elected host under Leader Source Elected Host.
+	// The client that writes replicated subsystems: the Leader.
 	FGuid GetAppWriterID() const;
 
-	// The client that writes World entities: the elected host when Leader Source is Elected Host, otherwise none.
-	FGuid GetWorldOwnerID() const;
-
-	// The client that writes Record when it is World-owned: the Leader (the host store) for a replicated subsystem,
-	// the World owner for anything else. Under Elected Host both are the host.
+	// The client that writes Record when it has no owner id: the Leader for a replicated subsystem, nobody for a
+	// World entity.
 	FGuid GetWriterID(const FCrowdyEntityRecord& Record) const;
 
 	// Whether this client writes the entity: it owns it, or it is the writer of a World-owned one.
@@ -165,7 +156,7 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	// Injects the game session that Initialize() would normally bind, so a headless test (which never runs
-	// Initialize) can exercise the real GetHostID() read-through to UCrowdyGameSession.
+	// Initialize) can exercise the real GetAppWriterID() read-through to UCrowdyGameSession.
 	void SetGameSessionForTest(UCrowdyGameSession* InGameSession) { GameSession = InGameSession; }
 
 	// Listens to the injected session the way Initialize does.
@@ -408,7 +399,6 @@ private:
 	UFUNCTION()
 	void OnOwnerUUIDUpdated(FString NewUUID);
 
-	UFUNCTION()
 	void OnLeaderUpdated(const FGuid& NewLeaderID, const FGuid& PreviousLeaderID);
 
 	// Moves every Leader-owned entity to the current Leader.

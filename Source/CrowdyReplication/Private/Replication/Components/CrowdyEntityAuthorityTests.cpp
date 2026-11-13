@@ -110,8 +110,7 @@ bool FCrowdyStateAuthorityDerivationTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// The authoring defaults an unedited component ships with: a level-placed actor is host-owned and event-only, and
-// the host may override a client-owned entity's view state.
+// The authoring defaults an unedited component ships with: a level-placed actor is World-owned and event-only.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateAuthorityDefaultsTest,
 	"CrowdySDK.State.AuthorityDefaults", CrowdyAuthorityTestFlags)
 bool FCrowdyStateAuthorityDefaultsTest::RunTest(const FString& Parameters)
@@ -125,10 +124,6 @@ bool FCrowdyStateAuthorityDefaultsTest::RunTest(const FString& Parameters)
 		static_cast<uint8>(CDO->GetOwnership()), static_cast<uint8>(ECrowdyOwnership::Host));
 	TestEqual(TEXT("Replicate Movement defaults to Auto"),
 		static_cast<uint8>(CDO->ReplicateMovement), static_cast<uint8>(ECrowdyReplicateMovement::Auto));
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	TestEqual(TEXT("HostOverride defaults to Allow"),
-		static_cast<uint8>(CDO->GetHostOverridePolicy()), static_cast<uint8>(ECrowdyHostOverride::Allow));
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 }
 
@@ -237,9 +232,8 @@ bool FCrowdyEntityOwnedByDecidesOwnerTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// IsLocallyOwned is the single rule the Blueprint "is locally controlled" helper delegates to: an entity we own,
-// or a host-owned world entity on the elected host. With no entity subsystem to name a host, the host-owned case
-// fails closed, and an entity with no role is never locally owned.
+// IsLocallyOwned is the single rule the Blueprint "is locally controlled" helper delegates to: an entity we own.
+// A World entity has no writer, and an entity with no role is never locally owned.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityLocallyOwnedTest,
 	"CrowdySDK.Entity.LocallyOwned", CrowdyAuthorityTestFlags)
 bool FCrowdyEntityLocallyOwnedTest::RunTest(const FString& Parameters)
@@ -260,7 +254,7 @@ bool FCrowdyEntityLocallyOwnedTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a remote proxy is not locally owned"), Component->IsLocallyOwned());
 
 	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), ECrowdyRole::HostOwned, 0);
-	TestFalse(TEXT("a host-owned entity with no known host fails closed"), Component->IsLocallyOwned());
+	TestFalse(TEXT("a World entity is not locally owned"), Component->IsLocallyOwned());
 	return true;
 }
 
@@ -378,59 +372,37 @@ bool FCrowdyEntityOwnershipAssignedOnReassignTest::RunTest(const FString& Parame
 	return true;
 }
 
-// DoesOwnershipMatch is the pure core of UCrowdyUtilities::DoesCrowdyEntityOwn. It must answer "does the owner own
-// the target" for BOTH player owners and host owners, resolving a HostOwned side (whose OwnerID is Guid::Zero) to
-// the concrete host id. World-free, mirroring the derivation test above.
+// DoesOwnershipMatch is the pure core of UCrowdyUtilities::DoesCrowdyEntityOwn.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyOwnershipMatchTest,
 	"CrowdySDK.State.OwnershipMatch", CrowdyAuthorityTestFlags)
 bool FCrowdyOwnershipMatchTest::RunTest(const FString& Parameters)
 {
 	using UEC = UCrowdyEntityComponent;
 
-	const FGuid HostPlayer   = FGuid::NewGuid(); // the host player's id (== host avatar NetID == GetHostID())
+	const FGuid LeaderPlayer = FGuid::NewGuid();
 	const FGuid OtherPlayer  = FGuid::NewGuid();
-	const FGuid WorldEntity  = FGuid::NewGuid(); // a host-owned world entity's stable NetID (not a player id)
+	const FGuid WorldEntity  = FGuid::NewGuid(); // a World entity's stable NetID (not a player id)
 	const FGuid ChildNetID   = FGuid::NewGuid(); // a player-spawned entity's own NetID
-	const FGuid Zero;                            // host-owned entities carry Guid::Zero as their OwnerID
+	const FGuid Zero;                            // World entities carry Guid::Zero as their OwnerID
 
-	// A player owns an entity it spawned (target stamped with the player's id): the unchanged base case.
 	TestTrue(TEXT("player owns its own spawned entity"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, OtherPlayer, ECrowdyRole::Owner, OtherPlayer, Zero));
-
-	// A player does not own another player's entity.
+		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, OtherPlayer, ECrowdyRole::Owner, OtherPlayer));
 	TestFalse(TEXT("player does not own another player's entity"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, OtherPlayer, ECrowdyRole::Owner, HostPlayer, Zero));
-
-	// Sibling entities of the same player do not own each other (the owner acts under its own NetID, not OwnerID).
+		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, OtherPlayer, ECrowdyRole::Owner, LeaderPlayer));
+	// The owner acts under its own NetID, not its OwnerID.
 	TestFalse(TEXT("siblings of the same player do not own each other"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, ChildNetID, ECrowdyRole::Owner, OtherPlayer, Zero));
+		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, ChildNetID, ECrowdyRole::Owner, OtherPlayer));
 
-	// The host PLAYER owns a host-owned world entity (previously impossible: the target's OwnerID was Guid::Zero).
-	TestTrue(TEXT("host player owns a host-owned world entity"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, HostPlayer, ECrowdyRole::HostOwned, Zero, HostPlayer));
+	// Nothing writes a World entity, the Leader included, so it is owned by no one and owns nothing.
+	TestFalse(TEXT("no player owns a World entity"),
+		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, LeaderPlayer, ECrowdyRole::HostOwned, Zero));
+	TestFalse(TEXT("a World entity owns nothing, even an entity stamped with its id"),
+		UEC::DoesOwnershipMatch(ECrowdyRole::HostOwned, WorldEntity, ECrowdyRole::Owner, WorldEntity));
+	TestFalse(TEXT("World entities do not own each other"),
+		UEC::DoesOwnershipMatch(ECrowdyRole::HostOwned, WorldEntity, ECrowdyRole::HostOwned, Zero));
 
-	// A non-host player does not own a host-owned world entity.
-	TestFalse(TEXT("non-host player does not own a host-owned world entity"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, OtherPlayer, ECrowdyRole::HostOwned, Zero, HostPlayer));
-
-	// A host-owned entity, as the owner, acts as the host, so it owns what the host owns (e.g. host-spawned actors).
-	TestTrue(TEXT("host-owned entity owns a host-spawned entity"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::HostOwned, WorldEntity, ECrowdyRole::Owner, HostPlayer, HostPlayer));
-
-	// Host-owned entities all resolve to the same host id, so they mutually "own" each other. Broad by design (the
-	// model has no per-world-entity owner id) and documented as such.
-	TestTrue(TEXT("host-owned entities share the host as owner"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::HostOwned, WorldEntity, ECrowdyRole::HostOwned, Zero, HostPlayer));
-
-	// Fail closed: with no host elected (invalid host id), a host-owned side never matches.
-	TestFalse(TEXT("host-owned target with no host id fails closed"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, HostPlayer, ECrowdyRole::HostOwned, Zero, Zero));
-	TestFalse(TEXT("host-owned owner with no host id fails closed"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::HostOwned, WorldEntity, ECrowdyRole::Owner, HostPlayer, Zero));
-
-	// An unregistered target (role None, no owner id) is never owned.
 	TestFalse(TEXT("unregistered target is never owned"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, HostPlayer, ECrowdyRole::None, Zero, HostPlayer));
+		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, LeaderPlayer, ECrowdyRole::None, Zero));
 
 	return true;
 }
