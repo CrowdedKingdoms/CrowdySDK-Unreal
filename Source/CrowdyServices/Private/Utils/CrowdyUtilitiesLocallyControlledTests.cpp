@@ -93,9 +93,9 @@ bool FCrowdyUtilitiesLocallyOwnedTest::RunTest(const FString& Parameters)
 	UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned(EntityActor, bSwitched);
 	TestFalse(TEXT("and the switch takes the other branch"), bSwitched);
 
-	// A world entity with no elected host fails closed, so no client claims it before a host is known.
+	// No client writes a world entity, so none claims it.
 	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), ECrowdyRole::HostOwned, 0);
-	TestFalse(TEXT("a world entity with no known host fails closed"),
+	TestFalse(TEXT("a world entity is not locally owned"),
 		UCrowdyUtilities::IsCrowdyEntityLocallyOwned(EntityActor));
 
 	// Back to an owned identity, then pooled: clearing the identity takes ownership away again.
@@ -106,8 +106,8 @@ bool FCrowdyUtilitiesLocallyOwnedTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// A replicated subsystem has no component, so the answer comes from its registry record: the elected host writes a
-// world-owned record, and a client writes a record it owns.
+// A replicated subsystem has no component, so the answer comes from its registry record: its writer (the Leader)
+// writes a record with no owner, and a client writes a record it owns.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyUtilitiesRecordLocallyOwnedTest,
 	"CrowdySDK.CrowdyServices.RecordLocallyOwned", CrowdyUtilitiesTestFlags)
 bool FCrowdyUtilitiesRecordLocallyOwnedTest::RunTest(const FString& Parameters)
@@ -118,9 +118,9 @@ bool FCrowdyUtilitiesRecordLocallyOwnedTest::RunTest(const FString& Parameters)
 	FCrowdyEntityRecord World;
 	World.NetID = FGuid::NewGuid();
 	World.Role = ECrowdyRole::HostOwned;
-	TestTrue(TEXT("the elected host writes a world-owned record"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, Local));
+	TestTrue(TEXT("its writer writes a record with no owner"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, Local));
 	TestFalse(TEXT("another client does not"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, Other));
-	TestFalse(TEXT("nobody does before a host is known"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, FGuid()));
+	TestFalse(TEXT("nobody does when it has no writer"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, FGuid()));
 	TestFalse(TEXT("not even a client that has no player id yet"), UCrowdyUtilities::IsRecordLocallyOwned(World, FGuid(), FGuid()));
 
 	FCrowdyEntityRecord Owned = World;

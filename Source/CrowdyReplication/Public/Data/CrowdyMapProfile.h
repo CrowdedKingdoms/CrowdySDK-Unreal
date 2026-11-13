@@ -19,7 +19,7 @@ class CROWDYREPLICATION_API UCrowdyMapProfile : public UDataAsset
 
 public:
 
-	/** Off: this map ignores spawn and destroy events, takes no part in host election, and drops Crowdy Events and Crowdy State sent over the realtime connection. Movement and sending have their own switches. */
+	/** Off: this map ignores spawn and destroy events and drops Crowdy Events and Crowdy State sent over the realtime connection. Movement and sending have their own switches. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Events", meta=(DisplayName="Handle Events and Spawns"))
 	bool bEnableNetworking = true;
 

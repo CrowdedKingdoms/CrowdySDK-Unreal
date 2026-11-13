@@ -43,11 +43,6 @@ FGuid UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(UCrowdy
 	return CanEnrollReplicatedSubsystem(Registry, Subsystem) ? Registry->RegisterParticipant(Subsystem) : FGuid{};
 }
 
-FGuid UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem, ECrowdyOwnership Ownership)
-{
-	return CanEnrollReplicatedSubsystem(Registry, Subsystem) ? Registry->RegisterParticipant(Subsystem, Ownership) : FGuid{};
-}
-
 void UCrowdyReplicatedSubsystemLibrary::UnregisterReplicatedSubsystemInto(UCrowdyEntitySubsystem* Registry, UObject* Subsystem)
 {
 	// Silent no-op on a missing registry (the per-world entity subsystem may already be gone during world
@@ -65,19 +60,6 @@ FGuid UCrowdyReplicatedSubsystemLibrary::RegisterCrowdyReplicatedSubsystem(UObje
 	// A world with no entity subsystem (an editor or inactive world) is a clean no-op in the core.
 	const UWorld* World = ResolveReplicatedSubsystemWorld(Subsystem);
 	return World ? RegisterReplicatedSubsystemInto(World->GetSubsystem<UCrowdyEntitySubsystem>(), Subsystem) : FGuid{};
-}
-
-FGuid UCrowdyReplicatedSubsystemLibrary::RegisterReplicatedSubsystem(UObject* Subsystem, ECrowdyOwnership Ownership)
-{
-	const UWorld* World = ResolveReplicatedSubsystemWorld(Subsystem);
-	if (!World)
-	{
-		return FGuid{};
-	}
-
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return RegisterReplicatedSubsystemInto(World->GetSubsystem<UCrowdyEntitySubsystem>(), Subsystem, Ownership);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UCrowdyReplicatedSubsystemLibrary::UnregisterReplicatedSubsystem(UObject* Subsystem)

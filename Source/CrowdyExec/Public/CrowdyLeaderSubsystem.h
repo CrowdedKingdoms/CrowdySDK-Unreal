@@ -14,11 +14,9 @@ class UCrowdyUDPSubsystem;
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyLeaderChanged, int64, NewLeaderUserID, int64, PreviousLeaderUserID);
 
 /**
- * The App's Server Object Leader, under Leader Source Server Object: this client joins the Crowdy SDK's Leader type
- * once it is signed in with a Player Derived avatar, because the avatar gives it the player id writing needs, and
- * whoever leads writes the replicated subsystems. The Leader goes into the game session's host id, so the
- * deprecated host functions report it too. The app's server code must be deployed for there to be a Leader. Under
- * Leader Source Elected Host it does nothing and there is no Leader.
+ * The App's Server Object Leader: this client joins the Crowdy SDK's Leader type once it is signed in with a Player
+ * Derived avatar, because the avatar gives it the player id writing needs, and whoever leads writes the replicated
+ * subsystems and the Leader-owned entities. The app's server code must be deployed for there to be a Leader.
  */
 UCLASS(meta = (DisplayName = "Crowdy Leader Subsystem"))
 class CROWDYEXEC_API UCrowdyLeaderSubsystem : public UGameInstanceSubsystem

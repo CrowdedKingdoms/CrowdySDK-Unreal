@@ -12,8 +12,8 @@ namespace CrowdyStateDeltaFlags
 	// when bKeyframe is true; a receiver that has no prior state for the entity requires one of these.
 	inline constexpr uint8 Keyframe = 1u << 0;
 
-	// The originator was acting as the elected host, so a host-precedence receiver may prefer this over
-	// a same-tick non-host delta. Advisory only at the codec layer; the codec never sets or reads it.
+	// The originator is the Leader writing a replicated subsystem, so a receiver applies it to that subsystem.
+	// A receiver ignores it on anything else. Advisory only at the codec layer; the codec never sets or reads it.
 	inline constexpr uint8 HostSourced = 1u << 1;
 }
 
@@ -43,7 +43,7 @@ struct CROWDYREPLICATION_API FCrowdyStateDelta
 	UPROPERTY()
 	FGuid EntityID;
 
-	// Originating player's GUID, for echo-drop and host precedence on receipt. Carried in the payload
+	// Originating player's GUID, for echo-drop and the writer checks on receipt. Carried in the payload
 	// because the single-actor transport has no wire sender.
 	UPROPERTY()
 	FGuid SenderID;

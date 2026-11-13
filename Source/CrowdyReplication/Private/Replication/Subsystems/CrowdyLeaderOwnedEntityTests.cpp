@@ -460,44 +460,6 @@ bool FCrowdyPooledActorSendsOnceOwnedTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyWriterTakesItsNewIdTest,
-	"CrowdySDK.Entity.AClientThatStaysTheWriterSendsUnderTheNewId", CrowdyLeaderOwnedTestFlags)
-bool FCrowdyWriterTakesItsNewIdTest::RunTest(const FString& Parameters)
-{
-	FCrowdyLeaderEntityTestWorld TestWorld;
-	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
-	const FGuid Local = FGuid::NewGuid();
-	UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(Local);
-	Entities->SetGameSessionForTest(MakeGameSession(Local));
-	UCrowdyAutoReplicator* AutoReplicator = NewObject<UCrowdyAutoReplicator>(TestWorld.World);
-
-	ACrowdyStateHostOverrideActor* Actor = TestWorld.World->SpawnActor<ACrowdyStateHostOverrideActor>();
-	if (!TestNotNull(TEXT("the entity spawned"), Actor))
-	{
-		return false;
-	}
-
-	FCrowdyEntityRecord Record;
-	Record.NetID = FGuid::NewGuid();
-	Record.OwnerID = Local;
-	Record.Role = ECrowdyRole::Owner;
-	Record.Participant = Actor;
-	Entities->RegisterEntity(Record);
-
-	Actor->Entity->ReplicateMovement = ECrowdyReplicateMovement::On;
-	Actor->Entity->SetAutoReplicatorForTest(AutoReplicator);
-	Actor->Entity->SetCollaboratorsForTest(Entities, nullptr);
-	Actor->Entity->AssignPooledIdentity(Record.NetID, Local, ECrowdyRole::Owner, 0);
-	Actor->Entity->StartReplication();
-
-	// Handed to the world on the client that leads it, so the same client keeps writing.
-	Entities->ReassignOwnership(Record.NetID, FGuid(), Local);
-	TestTrue(TEXT("it stayed the writer"), Actor->Entity->IsLocallyOwned());
-	TestEqual(TEXT("and sends under the new id"), AutoReplicator->GetSendIdForTest(Actor->Entity),
-		FCrowdyActorId::ForOwner(Record.NetID, FGuid()).ToString());
-	return true;
-}
-
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTakenProxyMovesAgainTest,
 	"CrowdySDK.Entity.AProxyTakenOverGetsItsMovementBack", CrowdyLeaderOwnedTestFlags)
 bool FCrowdyTakenProxyMovesAgainTest::RunTest(const FString& Parameters)

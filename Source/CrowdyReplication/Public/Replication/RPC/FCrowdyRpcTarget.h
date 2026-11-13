@@ -54,16 +54,7 @@ struct FCrowdyRpcTarget
 		return Location.IsSet();
 	}
 
-	// True when PlayerID is this entity's owner. The id and the role both have to agree, mirroring
-	// UCrowdyEntitySubsystem::IsLocallyOwned: an owner id can arrive from a decoded message, while the
-	// role is only ever set by whatever registered the entity on this client, so either one alone is
-	// not an answer.
-	bool IsOwnedBy(const FGuid& PlayerID) const
-	{
-		return Role == ECrowdyRole::Owner && PlayerID.IsValid() && OwnerID == PlayerID;
-	}
-
-	// True when no player owns this entity: a world entity, written by the elected host if there is one.
+	// True when no player owns this entity: a world entity, which no client writes.
 	bool BelongsToNoClient() const
 	{
 		return Role == ECrowdyRole::HostOwned;

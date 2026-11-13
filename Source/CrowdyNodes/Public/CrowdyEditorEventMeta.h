@@ -46,11 +46,12 @@ inline FName GetFunctionEntryName(const UK2Node_FunctionEntry* Entry)
 // is stored as. An unset or unrecognised value is SpatialMulticast, which is what the runtime defaults
 // to (FCrowdyFnInfo::Recipient), so a node that was never given a recipient reads the same here as it
 // behaves at runtime. "OwningPlayer" is the older spelling of OwningClient and still appears on assets
-// authored before the rename.
+// authored before the rename; "Host" is the retired Host recipient, which now reaches the owning client.
 inline ECrowdyEventRecipient ResolveCrowdyRecipient(const FString& RecipientMetaValue)
 {
 	if (RecipientMetaValue.Equals(TEXT("OwningPlayer"), ESearchCase::IgnoreCase)
-		|| RecipientMetaValue.Equals(TEXT("Owning Player"), ESearchCase::IgnoreCase))
+		|| RecipientMetaValue.Equals(TEXT("Owning Player"), ESearchCase::IgnoreCase)
+		|| CrowdyIsRetiredHostRecipient(RecipientMetaValue))
 	{
 		return ECrowdyEventRecipient::OwningClient;
 	}
@@ -75,6 +76,7 @@ inline bool IsRecognisedCrowdyRecipient(const FString& RecipientMetaValue)
 {
 	return RecipientMetaValue.Equals(TEXT("OwningPlayer"), ESearchCase::IgnoreCase)
 		|| RecipientMetaValue.Equals(TEXT("Owning Player"), ESearchCase::IgnoreCase)
+		|| CrowdyIsRetiredHostRecipient(RecipientMetaValue)
 		|| IsRecognisedCrowdyRoutingValue<ECrowdyEventRecipient>(RecipientMetaValue);
 }
 

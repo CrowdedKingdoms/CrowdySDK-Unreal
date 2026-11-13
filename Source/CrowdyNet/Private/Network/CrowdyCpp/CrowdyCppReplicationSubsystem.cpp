@@ -1063,7 +1063,7 @@ bool UCrowdyCppReplicationSubsystem::DescribeSendRefusal(const FCrowdyCppSendErr
 	else if (Type == ECrowdyMessageType::SINGLE_ACTOR_MESSAGE)
 	{
 		OutRefusal.Remedy = TEXT("The player's access tier does not grant use_direct_messages, so the server refuses messages to one actor:"
-			" Owning Client events that carry text, Host events, and owner-only CrowdyState. Players under 18 never hold it.");
+			" Owning Client events that carry text, and owner-only CrowdyState. Players under 18 never hold it.");
 	}
 	else if (Type == ECrowdyMessageType::CLIENT_EVENT_NOTIFICATION)
 	{

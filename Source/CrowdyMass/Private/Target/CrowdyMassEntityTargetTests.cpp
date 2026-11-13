@@ -30,7 +30,7 @@
 // real initialization, which this codebase already documents as leaving Deinitialize asserting.
 //
 // ONE layer is still not reachable, and the tests below stop short of it rather than pretending otherwise:
-// the wire dispatch itself (SpatialToOwner/SingleActorToHost/Channel actually putting bytes on a transport). That
+// the wire dispatch itself (SpatialToOwner/Channel actually putting bytes on a transport). That
 // needs a live UCrowdyEntitySubsystem, and no test in this codebase exercises it for the ACTOR path either,
 // so it is a standing gap in the harness rather than one this surface introduced. What stands in for it
 // here is the routing DECISION for each recipient, asserted against FCrowdyRPC::DecideRoute.
@@ -377,8 +377,8 @@ bool FCrowdyMassSendRefusesNonCrowdyEventFunctionTest::RunTest(const FString& Pa
 // recipient this file declares resolves (via BuildFnInfo, off the UFUNCTION's own metadata) to the
 // ECrowdyEventRecipient its meta names, and DecideRoute maps that recipient to the transport a Mass
 // entity (spatial, so bNonSpatial=false) actually uses. OwningClient's row is what carries opcode 142
-// (ECrowdyMessageType::SINGLE_ACTOR_MESSAGE) to the entity's owner; Host's carries the same opcode to the
-// host. This covers the routing DECISION the send path makes; it does not exercise the wire dispatch
+// (ECrowdyMessageType::SINGLE_ACTOR_MESSAGE) to the entity's owner, and the retired Host spelling now routes the
+// same way. This covers the routing DECISION the send path makes; it does not exercise the wire dispatch
 // itself, which needs a live World-resolved entity subsystem this harness cannot supply (see the file
 // header).
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassEventRecipientsRouteAsDeclaredTest,
@@ -400,10 +400,10 @@ bool FCrowdyMassEventRecipientsRouteAsDeclaredTest::RunTest(const FString& Param
 			Info.Recipient == ExpectedRecipient);
 #endif
 
-		// A target this client does not own and is not the host for: the case every one of these events
-		// hits when it addresses a Mass-rendered remote player belonging to somebody else.
+		// A target this client does not own: the case every one of these events hits when it addresses a
+		// Mass-rendered remote player belonging to somebody else.
 		const FCrowdyRpcRouteDecision Decision = FCrowdyRPC::DecideRoute(Info.Recipient, /*bNonSpatial=*/false,
-			/*bEntityValid=*/true, /*bWeOwnEntity=*/false, /*bWeAreHost=*/false);
+			/*bEntityValid=*/true, /*bWeOwnEntity=*/false);
 
 		TestTrue(FString::Printf(TEXT("%s routes as declared"), FuncName), Decision.Route == ExpectedRoute);
 		TestEqual(FString::Printf(TEXT("%s local-run flag matches"), FuncName),
@@ -412,8 +412,9 @@ bool FCrowdyMassEventRecipientsRouteAsDeclaredTest::RunTest(const FString& Param
 
 	CheckRoute(TEXT("ParityEvent_Implementation"), ECrowdyEventRecipient::OwningClient,
 		ECrowdyRpcRoute::SpatialToOwner, /*bExpectedRunLocally=*/false);
-	CheckRoute(TEXT("HostRecipientEvent_Implementation"), CrowdyDeprecatedHostRecipient,
-		ECrowdyRpcRoute::SingleActorToHost, /*bExpectedRunLocally=*/false);
+	// The retired "Host" spelling reads as Owning Client.
+	CheckRoute(TEXT("HostRecipientEvent_Implementation"), ECrowdyEventRecipient::OwningClient,
+		ECrowdyRpcRoute::SpatialToOwner, /*bExpectedRunLocally=*/false);
 	CheckRoute(TEXT("MulticastRecipientEvent_Implementation"), ECrowdyEventRecipient::Multicast,
 		ECrowdyRpcRoute::Channel, /*bExpectedRunLocally=*/true);
 	CheckRoute(TEXT("SpatialRecipientEvent_Implementation"), ECrowdyEventRecipient::SpatialMulticast,

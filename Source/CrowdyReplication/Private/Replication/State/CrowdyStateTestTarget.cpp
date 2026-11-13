@@ -41,8 +41,7 @@ ACrowdyStateOverlapActor::ACrowdyStateOverlapActor()
 
 ACrowdyStateHostOverrideActor::ACrowdyStateHostOverrideActor()
 {
-	// No continuous channel; the entity component exists only so the HostOverride policy is readable off the
-	// actor via FindComponentByClass on both the send and receive paths.
+	// No continuous channel; the entity component makes the actor resolvable as an entity on both paths.
 	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));
 
 	// A root, so the fixture has a place: the spawn cases read where it stands.

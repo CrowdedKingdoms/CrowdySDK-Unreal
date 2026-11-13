@@ -27,7 +27,7 @@ enum class ECrowdyEntityMode : uint8
 	// Continuous state channel the AutoReplicator sends the StateExecutor's
 	// snapshot every replication interval (movement, anything high-frequency).
 	Dynamic UMETA(DisplayName="Dynamic"),
-	// Event-only state travels through SendEvent and CrowdyEvent handlers.
+	// Event-only state travels through CrowdyEvent handlers.
 	Static UMETA(DisplayName="Static"),
 };
 
@@ -49,12 +49,9 @@ enum class ECrowdyIdentityPolicy : uint8
 UENUM(BlueprintType)
 enum class ECrowdyOwnership : uint8
 {
-	// This client owns and simulates the entity (Role=Owner). The authority axis; orthogonal to Mode and
-	// IdentityPolicy. A runtime host-spawned entity via SpawnEntity is already Owner-on-host (de-facto
-	// host-authoritative), so this axis is for level-placed world entities.
+	// This client owns and simulates the entity (Role=Owner).
 	LocalClient UMETA(DisplayName="Local Client"),
-	// Owned by whichever client is currently host (Role=HostOwned, no per-client owner). For level-placed
-	// world/AI entities that must share one authority across every client.
+	// No client owns it (Role=HostOwned): a World entity, or a replicated subsystem, which the Leader writes.
 	Host UMETA(DisplayName="Host"),
 };
 
@@ -64,7 +61,7 @@ enum class ECrowdyOwnedBy : uint8
 {
 	Auto UMETA(DisplayName="Auto", ToolTip="World when placed in the level, Player when spawned during play."),
 	Player UMETA(DisplayName="Player", ToolTip="The player whose client placed or spawned it."),
-	World UMETA(DisplayName="World", ToolTip="Placed in the level; no client writes it (the elected host does under Leader Source Elected Host), so its truth belongs in Server Objects. An entity spawned during play belongs to its spawner instead."),
+	World UMETA(DisplayName="World", ToolTip="Placed in the level; no client writes it, so its truth belongs in Server Objects. An entity spawned during play belongs to its spawner instead."),
 	Leader UMETA(DisplayName="Leader", ToolTip="Whichever client currently leads. For players who share a map, and NPCs that need navmesh or physics; only the Leader spawns or destroys one."),
 };
 
@@ -75,15 +72,6 @@ enum class ECrowdyReplicateMovement : uint8
 	Auto UMETA(DisplayName="Auto", ToolTip="On for a pawn with a movement component, otherwise Off."),
 	On UMETA(DisplayName="On", ToolTip="Sends movement every replication interval."),
 	Off UMETA(DisplayName="Off", ToolTip="Sends no movement. Events and CrowdyState still work."),
-};
-
-UENUM(BlueprintType)
-enum class ECrowdyHostOverride : uint8
-{
-	// The elected host may override this client-owned entity's CrowdyState as a super-user; the owner adopts it.
-	Allow UMETA(DisplayName="Allow"),
-	// Only the owning client may change this entity; even a HostSourced correction is dropped.
-	OwnerOnly UMETA(DisplayName="Owner Only"),
 };
 
 UENUM(BlueprintType)
@@ -213,19 +201,6 @@ public:
 	}
 #endif
 
-	// Event channel
-
-	/**
-	 * Sends a game event addressed at this entity. Everyone: the entity's
-	 * handlers run on every client; OwnerOnly: only on the owning client.
-	 * State changes are plain events now handle them with meta=(CrowdyEvent)
-	 * functions on the owner.
-	 */
-	UE_DEPRECATED(5.8, "Use UCrowdyUtilities::SendCrowdyEvent, which takes a recipient.")
-	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entity Component",
-		meta=(DeprecatedFunction, DeprecationMessage="Use Send Crowdy Event, which takes a Recipient."))
-	void SendEvent(const FInstancedStruct& Payload, ECrowdyEventScope Scope = ECrowdyEventScope::Everyone);
-
 	// CrowdyState manual-dirty push. A property marked meta=(CrowdyState, CrowdyManualDirty) is never
 	// auto-diffed; call these to schedule it (or all of this entity's manual-dirty properties) to ship on the
 	// next replication tick. No-op if this entity is not driven by the state replicator (e.g. a proxy, or
@@ -245,7 +220,7 @@ public:
 	// UCrowdyOwnershipTransfer nodes over calling these directly.
 
 	// RPC receiver (Multicast over the reliable session channel): runs on every client. On the entity's current
-	// authority (its owning client, or the host for a host-owned world entity) it either auto-grants when
+	// authority (its owning client; a World entity has none) it either auto-grants when
 	// bAutoApproveOwnershipRequests is set, or broadcasts UCrowdyEntitySubsystem::OnOwnershipRequested for game
 	// code to decide; on every other client it is a no-op. RequesterID is the player asking to own the entity.
 	UFUNCTION(meta = (CrowdyEvent, CrowdyRecipient = "Multicast"))
@@ -255,12 +230,12 @@ public:
 	// RPC receiver (Multicast over the reliable session channel): runs on every client and re-points this
 	// entity's owner via UCrowdyEntitySubsystem::ReassignOwnership, which compare-and-swaps on PreviousOwnerID so
 	// a stale or duplicate grant is dropped. NewOwnerID is the player to own it, or an invalid guid to make it
-	// host-owned (a world entity).
+	// a World entity, which no client writes.
 	UFUNCTION(meta = (CrowdyEvent, CrowdyRecipient = "Multicast"))
 	void GrantOwnership_Implementation(FGuid NewOwnerID, FGuid PreviousOwnerID);
 	CROWDY_EVENT(GrantOwnership)
 
-	// Grants this entity to NewOwnerID (an invalid guid makes it host-owned), announcing the change to every
+	// Grants this entity to NewOwnerID (an invalid guid makes it a World entity), announcing the change to every
 	// client. No-op unless this client is the entity's current authority. Because GrantOwnership is a Multicast,
 	// its body also runs locally here, so the granting authority relinquishes/adopts without a second call.
 	// Called by the static grant nodes and by the auto-approve path.
@@ -295,8 +270,7 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
 	ECrowdyRole GetRole() const { return Role; }
 
-	// True when this client is the authority for the entity: for LocalClient ownership, when we are its owner
-	// (Role==Owner); for Host ownership, when we are the elected host (Role==HostOwned and local id == host id).
+	// True when this client writes the entity: it is its owner (Role==Owner). A World entity has no writer.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
 	bool IsLocallyOwned() const;
 
@@ -324,16 +298,6 @@ public:
 		return bPlayer ? ECrowdyOwnership::LocalClient : ECrowdyOwnership::Host;
 	}
 
-	UE_DEPRECATED(5.8, "Host corrections end with the elected host, with no replacement; state that must be protected belongs in a Server Object.")
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component",
-		meta=(DeprecatedFunction, DeprecationMessage="Host corrections end with the elected host, with no replacement; state that must be protected belongs in a Server Object."))
-	ECrowdyHostOverride GetHostOverridePolicy() const
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return HostOverride;
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
 	ECrowdyStateHeartbeat GetStateHeartbeat() const { return StateHeartbeat; }
 
@@ -358,7 +322,8 @@ public:
 	// is there on every client from the start, so one spawned during play belongs to its spawner.
 	static ECrowdyOwnedBy ResolveOwnedBy(ECrowdyOwnedBy InOwnedBy, ECrowdyOwnership InOwnership, bool bIsLevelPlaced);
 
-	// The role and owner id for a resolved owner: Player is this client's; World and Leader are HostOwned, written by the World writer.
+	// The role and owner id for a resolved owner: Player is this client's; World is HostOwned, written by no client; Leader
+	// waits for the current Leader as its owner.
 	static void DeriveOwner(ECrowdyOwnedBy InResolvedOwnedBy, const FGuid& InLocalPlayerID, ECrowdyRole& OutRole, FGuid& OutOwnerID);
 
 	// Whether an entity with these settings sends its movement; bIsPawnWithMovement is IsPawnWithMovement of its class.
@@ -374,13 +339,10 @@ public:
 	// in the editor a runtime-spawned actor is given one too. AActor::IsNetStartupActor answers that question.
 	static FGuid ResolveActorInstanceGuid(const AActor* Actor);
 
-	// Pure ownership test behind UCrowdyUtilities::DoesCrowdyEntityOwn, shared with the unit tests. A HostOwned
-	// entity carries no per-player owner id (OwnerID is Guid::Zero by DeriveAuthority), so it is resolved to the
-	// concrete host id on BOTH sides: as the owner it acts as the host; as the target it is owned by the host.
-	// Player entities are unchanged: an owner acts under its own NetID (a player avatar's NetID is its player
-	// id), a target is owned by its stamped OwnerID. Fails closed: if a HostOwned side has no host id, no match.
+	// Pure ownership test behind UCrowdyUtilities::DoesCrowdyEntityOwn: the target's OwnerID is the owner's NetID.
+	// A World entity (HostOwned) on either side never matches.
 	static bool DoesOwnershipMatch(ECrowdyRole OwnerRole, const FGuid& OwnerNetID,
-		ECrowdyRole TargetRole, const FGuid& TargetOwnerID, const FGuid& HostID);
+		ECrowdyRole TargetRole, const FGuid& TargetOwnerID);
 
 	// Which PlayerDerived condition decided this entity's identity, from the facts read at the decision point.
 	// Reports the FIRST unmet condition, so a bare actor is answered "not a Pawn" and never "no game session":
@@ -395,14 +357,9 @@ public:
 	static bool ShouldDeferIdentityToPossession(bool bInjected, ECrowdyIdentityPolicy Policy, bool bIsPawn, bool bHasController);
 
 	// Whether an entity that replicates movement, with Auto Register ticked, ends BeginPlay without joining the
-	// continuous state channel because it is host-owned. Auto Register starts the channel only for an entity this
-	// client owns outright, so a host-owned entity leaves BeginPlay sending nothing at all.
+	// continuous state channel because it is a World entity. Auto Register starts the channel only for an entity this
+	// client owns, and no client writes a World entity, so it leaves BeginPlay sending nothing at all.
 	static bool ShouldReportHostOwnedAutoRegister(bool bInReplicatesMovement, bool bInAutoRegister, ECrowdyRole InRole);
-
-	// How this client currently answers "who is the host", for a diagnostic that must not overstate what it knows.
-	// A client with no host id has not been told yet, which reads the same whether election is still running or
-	// there is no entity subsystem to ask.
-	static const TCHAR* DescribeHostElectionState(bool bHostKnown, bool bLocalClientIsHost);
 
 	uint32 GetClassID() const { return ClassID; }
 
@@ -519,17 +476,6 @@ public:
 			ToolTip="Deprecated. While Owned By is Auto, Local Client here makes the entity the player's. Set Owned By instead."))
 	ECrowdyOwnership Ownership = ECrowdyOwnership::Host;
 
-	// For a Player-owned entity only: whether the elected host may override its CrowdyState as a super-user.
-	// Allow (default): host corrections are accepted and adopted. OwnerOnly: only the owner changes it. This is a
-	// coordination convention on the unenforced view plane, NOT a security boundary cheat-sensitive state belongs
-	// in server code (Server Objects).
-	UE_DEPRECATED(5.8, "Host corrections end with the elected host, with no replacement; state that must be protected belongs in a Server Object.")
-	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component",
-		meta=(DeprecatedProperty, DeprecationMessage="Host corrections end with the elected host, with no replacement; state that must be protected belongs in a Server Object.",
-			EditCondition="OwnedBy == ECrowdyOwnedBy::Player || (OwnedBy == ECrowdyOwnedBy::Auto && Ownership == ECrowdyOwnership::LocalClient)", EditConditionHides,
-			ToolTip="Deprecated. Host corrections end with the elected host. State that must be protected belongs in a Server Object."))
-	ECrowdyHostOverride HostOverride = ECrowdyHostOverride::Allow;
-
 	// Per-entity CrowdyState keyframe-heartbeat control. Inherit (default): this entity's CrowdyHeartbeat-marked
 	// properties ride the periodic heartbeat when the map enables it. Off: this entity never emits a keyframe
 	// heartbeat, a kill switch for always-active entities. On-change replication is unaffected either way; the
@@ -537,7 +483,7 @@ public:
 	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component")
 	ECrowdyStateHeartbeat StateHeartbeat = ECrowdyStateHeartbeat::Inherit;
 
-	// When true, this entity's current authority (its owning client, or the host for a host-owned entity) grants
+	// When true, this entity's current authority (its owning client) grants
 	// any ownership-transfer request immediately, instead of surfacing UCrowdyEntitySubsystem::OnOwnershipRequested
 	// for game code to decide. Authored config, read on whichever client is the authority when a request arrives.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy SDK|Entity Component")
@@ -667,9 +613,8 @@ private:
 	// instead. Speaks once per component instance.
 	void ReportPlayerDerivedFallback(ECrowdyPlayerDerivedIdentity Verdict);
 
-	// Says that a host-owned entity finished BeginPlay without joining the continuous state channel despite Auto
-	// Register being ticked, what this client currently knows about host election, and what to set or call
-	// instead. Speaks once per component instance.
+	// Says that a World entity finished BeginPlay without joining the continuous state channel despite Auto
+	// Register being ticked, and what to set instead. Speaks once per component instance.
 	void ReportHostOwnedAutoRegisterSkipped();
 
 	// Announces the entity's current owner and role on OnCrowdyOwnershipAssigned. A listener is free to destroy

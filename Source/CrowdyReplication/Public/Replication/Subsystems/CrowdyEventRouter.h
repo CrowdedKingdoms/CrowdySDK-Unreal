@@ -201,7 +201,7 @@ public:
 	// sent onto a distinct local "mirror" entity (a second instance of the same class, RemoteProxy role,
 	// a different NetID), so a single PIE client can exercise decode + OnRep + the receive-side gates
 	// without a second client. Unlike ReceiveLoopbackCall this cannot replay onto the sending entity
-	// itself: DispatchStateDelta's ownership gate drops a non-host-sourced delta for an entity we own, and
+	// itself: DispatchStateDelta's ownership gate drops every foreign delta for an entity we own, and
 	// decoding onto the same live actor that produced the delta would report zero changed properties. The
 	// caller (UCrowdyStateReplicator) is responsible for cloning the outgoing delta, overwriting EntityID
 	// with the mirror's NetID, and clearing SenderID before calling this; DispatchStateDelta itself is
@@ -309,10 +309,6 @@ public:
 	// ever logged under the RPC trace, so on a quiet build this counter is the whole account of it.
 	int32 NumBudgetRefusedCallsForTest() const { return BudgetRefusedCallCount; }
 
-	// Injects the replicator the apply path adopts host corrections into (see AdoptHostValues). In production
-	// the router resolves it from the world; a headless apply test has no world, so it injects one directly.
-	void SetStateReplicatorForTest(UCrowdyStateReplicator* In) { StateReplicatorForTest = In; }
-
 #if WITH_DEV_AUTOMATION_TESTS
 	// Takes the event fallback subscription against a registry a test owns, using the same call Initialize
 	// makes, so a test drives the production delivery path rather than a copy of it.
@@ -324,7 +320,6 @@ private:
 	UCrowdySDKBridgeSubsystem* Bridge = nullptr;
 	UCrowdyEntitySubsystem* EntitySubsystem = nullptr;
 	UCrowdyAutoRegistry* AutoRegistry = nullptr;
-	UCrowdyStateReplicator* StateReplicatorForTest = nullptr;
 
 	// The router is the Fallback for every event type no other subscriber Handles; released on Deinitialize.
 	FCrowdySubscription EventFallbackSubscription;
@@ -448,21 +443,15 @@ public:
 		// steadily names one class rather than a transient fault.
 		int64 DroppedNoLayoutNoSubscriber = 0;
 
-		// Foreign non-host deltas for an entity this client owns. We are the authority for what we own, so this
-		// is ordinary traffic being refused, not a fault by itself.
-		int64 DroppedNotHostSourcedForOwned = 0;
+		// Deltas from another client for an entity this client owns, HostSourced or not. Only the owner writes
+		// what it owns, so this is ordinary traffic being refused, not a fault by itself.
+		int64 DroppedForeignWriteForOwned = 0;
 
-		// Host corrections refused because the entity is authored OwnerOnly, which only its owner may write.
-		int64 DroppedHostOverrideRefused = 0;
-
-		// Host-sourced deltas for an entity this client owns while there is no elected host, so none of them is real.
-		int64 DroppedHostSourcedWithNoHost = 0;
-
-		// Deltas from another client for a world entity or replicated subsystem this client writes: stale or forged.
+		// Deltas from another client for a replicated subsystem this client writes as the Leader: stale or forged.
 		int64 DroppedForeignWriteForOwnWorld = 0;
 
-		// Non-host deltas for a locally host-owned world entity. Only the host writes world state, so anything
-		// climbing here is some other peer trying to.
+		// Deltas for an entity with no owner that its writer did not send: any delta for a World entity, which no
+		// client writes, and one for a replicated subsystem that does not carry the Leader's HostSourced flag.
 		int64 DroppedNotHostSourcedForWorld = 0;
 
 		// Deltas for a Leader entity from anyone but its owner, such as an old Leader's last ones after a hand-off.
@@ -496,10 +485,9 @@ private:
 	TArray<int32> StateDecodeChangedIndices;
 	TArray<int32> StateDecodePresentIndices;
 
-	// The same, for the participant path. That path reads its changed set twice, once to fire each notify and
-	// again to adopt a host correction into the owner's shadow, and a notify may dispatch another delta on
-	// this router in between. So the member is claimed by the outermost call only: a call that finds the flag
-	// already set takes a local instead of writing into the set its caller is still using.
+	// The same, for the participant path. A notify may dispatch another delta on this router while that path is
+	// still walking its changed set, so the member is claimed by the outermost call only: a call that finds the
+	// flag already set takes a local instead of writing into the set its caller is still using.
 	TArray<int32> StateParticipantChangedIndices;
 
 	// One flag per path, not one shared flag, because the two paths claim disjoint arrays: a subscriber
@@ -602,10 +590,8 @@ private:
 
 	// CrowdyState receive path (FCrowdyStateDelta payloads): resolve the target entity and apply
 	// container, decode the changed values onto the live container via FCrowdyStateCodec, and fire each
-	// changed property's parameterless CrowdyOnRep notify. For an entity WE own, applies host-precedence by
-	// convention: a foreign non-host delta is dropped before decode, and a HostSourced correction is applied
-	// and then adopted into the owner's shadow (AdoptHostValues) so the owner does not revert it. Defers to
-	// the shared spawn-wait retry when the entity has not registered yet.
+	// changed property's parameterless CrowdyOnRep notify. For an entity WE own, every foreign delta is
+	// dropped before decode. Defers to the shared spawn-wait retry when the entity has not registered yet.
 	void DispatchStateDelta(const FCrowdyInboundEvent& Event, int32 RemainingAttempts);
 
 	/**
@@ -623,18 +609,14 @@ private:
 	static bool ReadStateDeltaPresentIndices(const FCrowdyRepLayout& Layout, const TArray<uint8>& Blob,
 		TArray<int32>& OutPresent);
 
-	// Resolves the replicator the apply path adopts host corrections into: the injected one in tests, else the
-	// world's UCrowdyStateReplicator. Null when there is no world (headless) and none was injected.
-	UCrowdyStateReplicator* ResolveStateReplicator() const;
-
 	// Queues Event for another attempt once its entity registers. DeferBudgetSeconds is a wall-clock
 	// deadline measured from the event's arrival; pass zero to leave the retry count as the only limit,
 	// which is what the paths that wait on an ordinary spawn do.
 	void DeferEvent(const FCrowdyInboundEvent& Event, int32 RemainingAttempts, double DeferBudgetSeconds = 0.0);
 	void RetryDeferredEvents();
 
-	// Whether a World-owned entity's delta comes from the client that writes it: the Leader for a replicated
-	// subsystem, the World owner for anything else.
+	// Whether a delta for an entity with no owner comes from its writer: the Leader, stamping HostSourced, for a
+	// replicated subsystem. A World entity has no writer.
 	bool IsFromWorldOwner(const FCrowdyEntityRecord& Record, bool bHostSourced) const;
 
 	bool LoadConfig() const;
