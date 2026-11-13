@@ -331,6 +331,40 @@ class VoxelsAPI : public DomainBase {
     listByDistanceAsync(area.toInput(appId), std::move(cb));
   }
 
+  /// listInRegion() selecting only what rebuilds a cell: each chunk's `coordinates`, and each
+  /// edit's `location`, `voxelType` and `state` (operation ListVoxelUpdatesByDistanceCells).
+  /// The log keeps one row per position, the latest write, so a chunk's answer is bounded by
+  /// the positions ever edited in it, not by its history.
+  graphql::Json listInRegionCells(std::string_view appId, const ChunkRegion& area) const {
+    graphql::JVal vars;
+    vars["input"] = area.toInput(appId);
+    return execUnwrap(gen::voxels::kListVoxelUpdatesByDistanceCellsDocument, vars);
+  }
+
+  void listInRegionCellsAsync(std::string_view appId, const ChunkRegion& area,
+                              graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["input"] = area.toInput(appId);
+    execUnwrapAsync(gen::voxels::kListVoxelUpdatesByDistanceCellsDocument, vars, {},
+                    std::move(cb));
+  }
+
+  /// listInRegionCells() with each edit's `createdAt`, the server time of its latest write,
+  /// for a reader that orders edits by time (operation ListVoxelUpdatesByDistanceCellsTimed).
+  graphql::Json listInRegionCellsTimed(std::string_view appId, const ChunkRegion& area) const {
+    graphql::JVal vars;
+    vars["input"] = area.toInput(appId);
+    return execUnwrap(gen::voxels::kListVoxelUpdatesByDistanceCellsTimedDocument, vars);
+  }
+
+  void listInRegionCellsTimedAsync(std::string_view appId, const ChunkRegion& area,
+                                   graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["input"] = area.toInput(appId);
+    execUnwrapAsync(gen::voxels::kListVoxelUpdatesByDistanceCellsTimedDocument, vars, {},
+                    std::move(cb));
+  }
+
   /// Durable single-voxel update (requires update_voxel_data permission).
   graphql::Json update(const graphql::JVal& input) const {
     graphql::JVal vars;

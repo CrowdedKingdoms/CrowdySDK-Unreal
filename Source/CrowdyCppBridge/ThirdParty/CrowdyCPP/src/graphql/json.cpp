@@ -94,6 +94,10 @@ void JVal::dumpTo(std::string& out) const {
     void operator()(bool b) { out += b ? "true" : "false"; }
     void operator()(std::int64_t i) { out += std::to_string(i); }
     void operator()(double d) {
+      if (!std::isfinite(d)) {
+        out += "null";  // as JSON.stringify writes NaN and infinity
+        return;
+      }
       char buf[32];
       std::snprintf(buf, sizeof(buf), "%.17g", d);
       out += buf;
@@ -243,9 +247,14 @@ std::string Json::asBigIntString(std::string_view fallback) const {
 }
 
 std::string Json::dump() const {
-  if (!val_) return "null";
-  char* s = yyjson_val_write(val(val_), 0, nullptr);
-  if (!s) return "null";
+  auto out = tryDump();
+  return out.ok() ? std::move(out.value()) : std::string("null");
+}
+
+Result<std::string> Json::tryDump() const {
+  if (!val_) return std::string("null");
+  char* s = yyjson_val_write(val(val_), YYJSON_WRITE_INF_AND_NAN_AS_NULL, nullptr);
+  if (!s) return Errc::Malformed;
   std::string out(s);
   free(s);
   return out;
@@ -438,15 +447,34 @@ struct Unpacker {
     }
     return a;
   }
+  // A map key must be a scalar. A container key written as text is escaped again at every
+  // level it is nested in another key, so 130 bytes nested 60 deep asked for gigabytes.
+  static bool scalarKey(std::uint8_t t) {
+    if ((t & 0xf0) == 0x80 || (t & 0xf0) == 0x90) return false;  // fixmap, fixarray
+    switch (t) {
+      case 0xc4: case 0xc5: case 0xc6:                                // bin
+      case 0xc7: case 0xc8: case 0xc9:                                // ext
+      case 0xd4: case 0xd5: case 0xd6: case 0xd7: case 0xd8:          // fixext
+      case 0xdc: case 0xdd: case 0xde: case 0xdf:                     // array, map
+        return false;
+      default:
+        return true;
+    }
+  }
   yyjson_mut_val* map(std::size_t n, int depth) {
     yyjson_mut_val* o = yyjson_mut_obj(doc);
     for (std::size_t i = 0; i < n && ok; ++i) {
+      if (!need(1)) break;
+      if (!scalarKey(*p)) {
+        ok = false;
+        break;
+      }
       yyjson_mut_val* k = value(depth + 1);
       yyjson_mut_val* v = value(depth + 1);
       if (!ok || !k || !v) break;
       if (!yyjson_mut_is_str(k)) {
-        // A non-string key keeps its value as text, as JSON has only string keys.
-        char* text = yyjson_mut_val_write(k, 0, nullptr);
+        // A number, boolean or nil key keeps its value as text, as JSON has only string keys.
+        char* text = yyjson_mut_val_write(k, YYJSON_WRITE_INF_AND_NAN_AS_NULL, nullptr);
         k = yyjson_mut_strcpy(doc, text ? text : "null");
         free(text);
       }

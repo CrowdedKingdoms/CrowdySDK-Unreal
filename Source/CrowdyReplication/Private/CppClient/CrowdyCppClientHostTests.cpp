@@ -74,6 +74,7 @@ namespace CrowdyCppHostTestSupport
 		{ECrowdyCppApiDomain::Host, TEXT("GameHost"), TEXT("Host"), false},
 		{ECrowdyCppApiDomain::Chunks, TEXT("GetChunk"), TEXT("Chunks"), false},
 		{ECrowdyCppApiDomain::Voxels, TEXT("ListVoxelUpdatesByDistance"), TEXT("Voxels"), false},
+		{ECrowdyCppApiDomain::Voxels, TEXT("ListVoxelUpdatesByDistanceCells"), TEXT("Voxels"), false},
 		{ECrowdyCppApiDomain::Actors, TEXT("Actor"), TEXT("Actors"), false},
 		{ECrowdyCppApiDomain::ServerStatus, TEXT("ServerWithLeastClients"), TEXT("ServerStatus"), false},
 		{ECrowdyCppApiDomain::Platform, TEXT("PlatformConfig"), TEXT("Platform"), true},

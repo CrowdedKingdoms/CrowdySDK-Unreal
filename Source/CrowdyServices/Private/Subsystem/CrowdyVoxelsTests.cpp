@@ -854,6 +854,8 @@ bool FCrowdyVoxelsBoxPagesTest::RunTest(const FString& Parameters)
 	const FString Body = Rig.SentBody();
 	TestTrue(TEXT("two full pages of 2 span the box of 4, so the edits are read next"), Body.Contains(TEXT("ListVoxelUpdatesByDistance")));
 	TestTrue(TEXT("for the one chunk the read did not return"), Body.Contains(TEXT("\"x\":\"3\"")) && !Body.Contains(TEXT("\"x\":\"0\"")));
+	TestTrue(TEXT("through the lean document, which selects only what rebuilds a cell"),
+		Body.Contains(TEXT("ListVoxelUpdatesByDistanceCells")) && !Body.Contains(TEXT("voxelUpdateId")));
 	return true;
 }
 

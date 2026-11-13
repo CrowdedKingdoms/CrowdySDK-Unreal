@@ -1,5 +1,4 @@
 #include "CrowdyNativeExecInternal.h"
-#include "CrowdyNativeMsgpack.h"
 
 #include "Containers/StringConv.h"
 
@@ -178,10 +177,6 @@ namespace CrowdyNativeExec
 			OutJson = TEXT("null");
 			return true;
 		}
-		if (!CrowdyNativeMsgpack::KeysSafe(Bytes))
-		{
-			return false;
-		}
 		try
 		{
 			const crowdy::graphql::Json Parsed = crowdy::graphql::Json::fromMsgpack(
@@ -190,13 +185,13 @@ namespace CrowdyNativeExec
 			{
 				return false;
 			}
-			// A NaN, an infinity or invalid UTF-8 has no JSON form, and dump() then writes the whole value as null.
-			const std::string Dumped = Parsed.dump();
-			if (Dumped == "null" && !Parsed.isNull())
+			// NaN and infinity are written as null in place; a string that is not valid UTF-8 has no JSON form.
+			const crowdy::Result<std::string> Dumped = Parsed.tryDump();
+			if (!Dumped.ok())
 			{
 				return false;
 			}
-			OutJson = CrowdyNativeExecFromUtf8(Dumped);
+			OutJson = CrowdyNativeExecFromUtf8(Dumped.value());
 			return true;
 		}
 		catch (...)

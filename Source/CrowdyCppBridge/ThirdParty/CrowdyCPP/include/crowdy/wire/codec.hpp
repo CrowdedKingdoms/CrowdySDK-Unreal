@@ -481,6 +481,14 @@ inline Status verifyCommandReconnectBound(const core::ICrypto& crypto, Bytes dat
                             1 + kControlNonceSize, token, nonce);
 }
 
+/// CONTROL_BOUND_ACK (46): [type][nonce][HMAC over the first 9 bytes].
+inline Status verifyControlBoundAck(const core::ICrypto& crypto, Bytes datagram,
+                                    const Token64& token,
+                                    const std::uint8_t (&nonce)[kControlNonceSize]) {
+  return verifyBoundControl(crypto, datagram, MessageType::ControlBoundAck,
+                            1 + kControlNonceSize, token, nonce);
+}
+
 /// COMMAND_SESSION_RELEASED_BOUND (45): [type][reason][nonce][HMAC over the first 10 bytes].
 /// Returns the reason byte.
 inline Result<std::uint8_t> verifySessionReleasedBound(

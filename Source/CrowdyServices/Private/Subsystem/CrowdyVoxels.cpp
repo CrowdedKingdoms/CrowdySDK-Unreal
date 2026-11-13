@@ -1083,7 +1083,7 @@ void UCrowdyVoxels::RequestEditsPage(const TSharedRef<FRead>& Read, const int32 
 
 	const FEditsBox& Edits = Read->EditsBoxes[Box];
 	TWeakObjectPtr<UCrowdyVoxels> WeakThis(this);
-	Client->RunOpMsgpack(ECrowdyCppApiDomain::Voxels, TEXT("ListVoxelUpdatesByDistance"), WrapInput(BoxInput(Read->AppId, Edits.Low, Edits.High, Edits.Skip)),
+	Client->RunOpMsgpack(ECrowdyCppApiDomain::Voxels, TEXT("ListVoxelUpdatesByDistanceCells"), WrapInput(BoxInput(Read->AppId, Edits.Low, Edits.High, Edits.Skip)),
 		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Read, Box](FCrowdyCppJsonResult Result)
 		{
 			UCrowdyVoxels* Self = WeakThis.Get();

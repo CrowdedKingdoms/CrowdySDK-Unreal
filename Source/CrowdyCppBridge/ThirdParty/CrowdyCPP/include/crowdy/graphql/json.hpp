@@ -10,6 +10,8 @@
 #include <variant>
 #include <vector>
 
+#include "crowdy/core/result.hpp"
+
 /// JSON support for the GraphQL layer (never used on the UDP path).
 ///
 /// Two shapes:
@@ -66,7 +68,8 @@ class JVal {
   /// JVal::array(...).
   JVal& operator[](std::nullptr_t) = delete;
 
-  /// Serialize to a compact JSON string (RFC 8259 escaping).
+  /// Serialize to a compact JSON string (RFC 8259 escaping). NaN and infinity are written
+  /// as `null`, as JSON.stringify writes them.
   std::string dump() const;
 
  private:
@@ -122,8 +125,13 @@ class Json {
   /// int64. Integer JSON numbers are converted losslessly.
   std::string asBigIntString(std::string_view fallback = {}) const;
 
-  /// Serialize this value back to a JSON string.
+  /// Serialize this value back to a JSON string. NaN and infinity are written as `null` in
+  /// place, so the rest of the value survives. A value that still cannot be written (a
+  /// string that is not valid UTF-8, which fromMsgpack can produce) comes back as "null":
+  /// use tryDump() to tell that apart from a null value.
   std::string dump() const;
+  /// dump(), reporting a value it cannot write as Errc::Malformed instead of "null".
+  Result<std::string> tryDump() const;
 
   /// This value as MessagePack, the payload format of ck-exec calls: integers
   /// keep their exact width and sign, objects become maps with string keys. A
@@ -132,9 +140,11 @@ class Json {
   /// the calling thread's stack.
   std::string toMsgpack() const;
   /// Parse one MessagePack value into a document. Binary becomes a base64
-  /// string and extension types null; nesting deeper than 64 is refused.
+  /// string and extension types null; nesting deeper than 64 is refused. A map
+  /// key must be a string, a number, a boolean or nil (the last three become
+  /// their JSON text); an array, map, binary or extension key is refused.
   /// Returns a null Json (ok() == false) on malformed, truncated or trailing
-  /// input.
+  /// input, or on a refused key.
   static Json fromMsgpack(std::string_view bytes);
 
   /// Iterate object members / array elements, in order, one step each: linear in

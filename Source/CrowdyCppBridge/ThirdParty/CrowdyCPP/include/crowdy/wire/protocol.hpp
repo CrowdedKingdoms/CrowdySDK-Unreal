@@ -63,6 +63,10 @@ enum class MessageType : std::uint8_t {
   /// Server -> client (Buddy v0.45.0), only after BoundControl: CommandSessionReleased
   /// bound the same way. [type][1B ReleaseReason][8B nonce][32B HMAC over the first 10].
   CommandSessionReleasedBound = 45,
+  /// Server -> client (Buddy v0.46.0), each time it accepts CLIENT_CAPABILITIES with
+  /// BoundControl and its nonce: the server will send this assignment's control frames
+  /// only in the bound forms. [type][8B nonce][32B HMAC over the first 9 bytes].
+  ControlBoundAck = 46,
 
   ActorUpdateRequest = 128,
   ActorUpdateNotification = 130,
@@ -215,6 +219,8 @@ constexpr std::size_t kControlNonceSize = 8;
 constexpr std::size_t kCommandReconnectBoundSize = 1 + kControlNonceSize + kHmacTagSize;
 // [1B type=45][1B reason][8B nonce][32B HMAC over the first 10 bytes]
 constexpr std::size_t kCommandSessionReleasedBoundSize = 2 + kControlNonceSize + kHmacTagSize;
+// [1B type=46][8B nonce][32B HMAC over the first 9 bytes]
+constexpr std::size_t kControlBoundAckSize = 1 + kControlNonceSize + kHmacTagSize;
 
 /// The reason byte of CommandSessionReleased. Treat a value not listed as Stale.
 enum class ReleaseReason : std::uint8_t {

@@ -57,6 +57,15 @@ struct GraphQLOutcome {
 
 using GraphQLCallback = std::function<void(GraphQLOutcome)>;
 
+/// A response another transport received, as GraphQLClient reads its own: the `data`
+/// value, the GraphQL errors with their extensions, or an HTTP or malformed answer.
+GraphQLOutcome interpretResponse(int httpStatus, const std::string& body);
+
+/// The JSON POST body GraphQLClient sends: `query`, then `variables` and `operationName`
+/// when given.
+std::string requestBody(std::string_view document, const JVal& variables,
+                        std::string_view operationName = {});
+
 class GraphQLClient {
  public:
   GraphQLClient(GraphQLClientConfig config, std::shared_ptr<IHttpTransport> transport,

@@ -2196,6 +2196,20 @@ namespace
 		return Frame;
 	}
 
+	/** CONTROL_BOUND_ACK: type, the assignment's control nonce, and an HMAC over those nine octets. */
+	TArray<uint8> BoundAckFrame(const TArray<uint8>& Nonce, const bool bSigned)
+	{
+		TArray<uint8> Frame = {46};
+		Frame.Append(Nonce);
+		Frame.SetNumZeroed(41);
+		if (bSigned)
+		{
+			CrowdyWireParity::Crypto().hmacSha256(CrowdyWireParity::ParityToken().bytes(), crowdy::Bytes(Frame.GetData(), 9),
+				Frame.GetData() + 9);
+		}
+		return Frame;
+	}
+
 	/** The control nonce of the next CLIENT_CAPABILITIES the client sends; reading it also teaches the server the address. */
 	TArray<uint8> ReadControlNonce(CrowdyReplicationTestSupport::FConnectedFixture& Fixture)
 	{
@@ -2298,6 +2312,71 @@ bool FCrowdyIdleReleaseIsInactiveTest::RunTest(const FString& Parameters)
 		static_cast<int32>(Udp->GetConnectionState()), static_cast<int32>(EUDPConnectionState::Connected));
 
 	Routing->SetConnection(nullptr);
+	Fixture.Shut();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBoundAckDropsUnboundControlTest,
+	"CrowdySDK.Transport.BoundAckDropsUnboundControl", CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+bool FCrowdyBoundAckDropsUnboundControlTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	const TArray<uint8> PublishedNonce = {1, 2, 3, 4, 5, 6, 7, 8};
+	TestEqual(TEXT("the acknowledgement is framed as the platform's published test vector"),
+		BytesToHex(BoundAckFrame(PublishedNonce, true).GetData(), 41),
+		FString(TEXT("2E0102030405060708A2587A4B9F7B7A617387DF74F45B78ACE492B99E376DEDFF75F88956DBF62F85")));
+
+	FConnectedFixture Fixture;
+	Fixture.bAdvertiseCapabilities = true;
+	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open(7, 123456789, 0)))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	const TArray<uint8> FirstNonce = ReadControlNonce(Fixture);
+	if (!TestEqual(TEXT("the client sent its control nonce, and the server learned its address"), FirstNonce.Num(), 8))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	auto Settle = [&Fixture]() { WaitUntil([&Fixture]() { Fixture.Connection->Poll(); return false; }, 0.5); };
+
+	// Before any acknowledgement a signed unbound reconnect still moves the player, but only once in its window.
+	TestTrue(TEXT("a signed unbound reconnect was pushed"), Fixture.Server.SendToClient(CrowdyWireParity::GoldenReconnectFrame()));
+	const TArray<uint8> Nonce = ReadControlNonce(Fixture);
+	TestTrue(TEXT("it reassigns, with a new control nonce"), Nonce.Num() == 8 && Nonce != FirstNonce);
+	TestTrue(TEXT("the same reconnect was pushed again at once"), Fixture.Server.SendToClient(CrowdyWireParity::GoldenReconnectFrame()));
+	Settle();
+	TestEqual(TEXT("which is held back"), Fixture.Connection->GetStats().LegacyReconnectsSuppressed, static_cast<int64>(1));
+
+	const int64 FailuresBefore = Fixture.Connection->GetStats().HmacFailures;
+	TestTrue(TEXT("a forged acknowledgement was pushed"), Fixture.Server.SendToClient(BoundAckFrame(Nonce, false)));
+	Settle();
+	TestEqual(TEXT("it arrived and failed verification"), Fixture.Connection->GetStats().HmacFailures, FailuresBefore + 1);
+	TestEqual(TEXT("so it is not counted"), Fixture.Connection->GetStats().BoundControlAcks, static_cast<int64>(0));
+
+	TestTrue(TEXT("the server's acknowledgement was pushed"), Fixture.Server.SendToClient(BoundAckFrame(Nonce, true)));
+	Settle();
+	TestEqual(TEXT("it is counted"), Fixture.Connection->GetStats().BoundControlAcks, static_cast<int64>(1));
+
+	TestTrue(TEXT("a signed unbound release was pushed"), Fixture.Server.SendToClient(SessionReleasedFrame(5, true)));
+	Settle();
+	TestEqual(TEXT("after the acknowledgement it ends nothing"), static_cast<int32>(Fixture.Connection->GetState()),
+		static_cast<int32>(ECrowdyCppConnState::Connected));
+	const int64 ReconnectsBefore = Fixture.Connection->GetStats().Reconnects;
+	TestTrue(TEXT("a signed unbound reconnect was pushed"), Fixture.Server.SendToClient(CrowdyWireParity::GoldenReconnectFrame()));
+	Settle();
+	TestEqual(TEXT("and moves nothing"), Fixture.Connection->GetStats().Reconnects, ReconnectsBefore);
+	TestEqual(TEXT("both are counted as dropped"), Fixture.Connection->GetStats().LegacyControlDropped, static_cast<int64>(2));
+
+	// A new token resets the server's record, so the client tells it again at once rather than on its 15 s cadence.
+	const double TokenAt = FPlatformTime::Seconds();
+	Fixture.Connection->SetToken(GoodToken());
+	const TArray<uint8> Advertised = ReadControlNonce(Fixture);
+	TestTrue(TEXT("a new token sends the capabilities again within 2 s, for the same assignment"),
+		Advertised == Nonce && FPlatformTime::Seconds() - TokenAt < 2.0);
+
 	Fixture.Shut();
 	return true;
 }

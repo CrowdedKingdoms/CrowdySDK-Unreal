@@ -331,11 +331,20 @@ struct FCrowdyCppReplicationStats
 	int64 HmacFailures = 0;
 	int64 Malformed = 0;
 
-	/** Signed reconnect or release frames dropped because they carried an earlier assignment's nonce: replays. */
+	/** Bound control frames (reconnect, release, acknowledgement) dropped for carrying another assignment's nonce: replays. */
 	int64 StaleBoundControl = 0;
 
 	/** Unbound idle releases that arrived within a minute of this client's input and reassigned instead of ending. */
 	int64 IdleReleasesAfterInput = 0;
+
+	/** Server acknowledgements that it sends this assignment's control frames only in their signed, bound forms. */
+	int64 BoundControlAcks = 0;
+
+	/** Unbound reconnect or release frames dropped unverified after that acknowledgement: replays or forgeries. */
+	int64 LegacyControlDropped = 0;
+
+	/** Unbound reconnect commands dropped because one was honoured too recently, each of which would move the player. */
+	int64 LegacyReconnectsSuppressed = 0;
 
 	/**
 	 * Received datagrams that were MESSAGE_BUNDLE_SIGNED: one signature over the whole datagram, verified once,

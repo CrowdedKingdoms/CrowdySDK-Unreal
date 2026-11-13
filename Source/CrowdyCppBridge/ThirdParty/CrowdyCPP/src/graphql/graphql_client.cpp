@@ -192,17 +192,25 @@ bool GraphQLClient::applyDatacenterRedirect(const GraphQLOutcome& outcome,
   return endpoint() != requestUrl;
 }
 
-HttpRequest GraphQLClient::buildHttpRequest(std::string_view document, const JVal& variables,
-                                            std::string_view operationName,
-                                            const RequestOptions& options) const {
+GraphQLOutcome interpretResponse(int httpStatus, const std::string& body) {
+  return interpret(httpStatus, body);
+}
+
+std::string requestBody(std::string_view document, const JVal& variables,
+                        std::string_view operationName) {
   JVal body;
   body["query"] = JVal(document);
   if (!variables.isNull()) body["variables"] = variables;
   if (!operationName.empty()) body["operationName"] = JVal(operationName);
+  return body.dump();
+}
 
+HttpRequest GraphQLClient::buildHttpRequest(std::string_view document, const JVal& variables,
+                                            std::string_view operationName,
+                                            const RequestOptions& options) const {
   HttpRequest req;
   req.url = endpoint();
-  req.body = body.dump();
+  req.body = requestBody(document, variables, operationName);
   req.timeoutMs = config_.timeoutMs;
   req.cancel = options.cancel;
   req.headers.emplace_back("Content-Type", "application/json");

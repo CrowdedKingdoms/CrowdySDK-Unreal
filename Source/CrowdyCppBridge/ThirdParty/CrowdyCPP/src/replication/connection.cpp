@@ -126,9 +126,9 @@ Status Connection::doAssign() {
   {
     // The new session's first update of each actor is a change, as it is to the server.
     std::lock_guard lock(actorStateMutex_);
-    actorStateHashes_ = {};
-    actorStateNext_ = 0;
+    actorStateHashes_.clear();
   }
+  legacyReconnectHonoured_ = false;
   return Errc::Ok;
 }
 
@@ -373,16 +373,31 @@ bool Connection::actorStateChanged(const SpatialSend& p) {
   std::uint64_t hash = 1469598103934665603ULL;  // FNV-1a over the payload
   for (std::uint8_t byte : p.payload) hash = (hash ^ byte) * 1099511628211ULL;
   std::lock_guard lock(actorStateMutex_);
-  for (ActorStateHash& entry : actorStateHashes_) {
-    if (entry.used && entry.uuid == p.uuid) {
-      const bool changed = entry.hash != hash;
-      entry.hash = hash;
-      return changed;
-    }
+  if (auto it = actorStateHashes_.find(p.uuid); it != actorStateHashes_.end()) {
+    const bool changed = it->second != hash;
+    it->second = hash;
+    return changed;
   }
-  ActorStateHash& slot = actorStateHashes_[actorStateNext_];
-  actorStateNext_ = (actorStateNext_ + 1) % actorStateHashes_.size();
-  slot = ActorStateHash{p.uuid, hash, true};
+  if (actorStateHashes_.size() >= kMaxTrackedActors) return false;
+  actorStateHashes_.emplace(p.uuid, hash);
+  return true;
+}
+
+bool Connection::honourLegacyReconnect() {
+  const std::int64_t first = config_.legacyReconnectWindowMs;
+  if (first <= 0) return true;
+  if (legacyReconnectHonoured_) return false;
+  const std::int64_t now = clock_.monotonicMillis();
+  const std::int64_t most = std::max(first, kLegacyReconnectWindowMaxMs);
+  if (lastLegacyReconnectMs_ > 0) {
+    const std::int64_t since = now - lastLegacyReconnectMs_;
+    if (since < legacyReconnectWindowMs_) return false;
+    legacyReconnectWindowMs_ = since >= most ? first : std::min(legacyReconnectWindowMs_ * 2, most);
+  } else {
+    legacyReconnectWindowMs_ = first;
+  }
+  lastLegacyReconnectMs_ = now;
+  legacyReconnectHonoured_ = true;
   return true;
 }
 
@@ -563,16 +578,20 @@ void Connection::handleDatagram(Bytes datagram) {
   // a verified one cannot be a frame captured earlier: it is final, without the idle guard.
   if (!datagram.empty() &&
       (datagram[0] == static_cast<std::uint8_t>(MessageType::CommandReconnectBound) ||
-       datagram[0] == static_cast<std::uint8_t>(MessageType::CommandSessionReleasedBound))) {
+       datagram[0] == static_cast<std::uint8_t>(MessageType::CommandSessionReleasedBound) ||
+       datagram[0] == static_cast<std::uint8_t>(MessageType::ControlBoundAck))) {
     std::uint8_t nonce[wire::kControlNonceSize];
     const std::uint64_t n = controlNonce_.load(std::memory_order_acquire);
     std::memcpy(nonce, &n, sizeof(nonce));
     const wire::Token64 token = tokenSnapshot();
     const bool reconnect =
         datagram[0] == static_cast<std::uint8_t>(MessageType::CommandReconnectBound);
+    const bool ack = datagram[0] == static_cast<std::uint8_t>(MessageType::ControlBoundAck);
     Errc verdict = Errc::Ok;
     std::uint8_t reason = 0;
-    if (reconnect) {
+    if (ack) {
+      verdict = wire::verifyControlBoundAck(crypto_, datagram, token, nonce).code;
+    } else if (reconnect) {
       verdict = wire::verifyCommandReconnectBound(crypto_, datagram, token, nonce).code;
     } else {
       const auto r = wire::verifySessionReleasedBound(crypto_, datagram, token, nonce);
@@ -581,7 +600,12 @@ void Connection::handleDatagram(Bytes datagram) {
     }
     if (n == 0) verdict = Errc::Rejected;  // we never asked for bound frames
     if (verdict == Errc::Ok) {
-      if (reconnect) {
+      if (ack) {
+        // Bound to the nonce it verified: after a reassignment it matches nothing.
+        boundNonce_.store(n, std::memory_order_release);
+        std::lock_guard lock(statsMutex_);
+        ++stats_.boundControlAcks;
+      } else if (reconnect) {
         reconnectRequested_.store(true, std::memory_order_release);
       } else if (reason == static_cast<std::uint8_t>(wire::ReleaseReason::Idle)) {
         idleReleased_.store(true, std::memory_order_release);
@@ -594,12 +618,30 @@ void Connection::handleDatagram(Bytes datagram) {
     return;
   }
 
+  // Once the server acknowledged the bound forms on this assignment, it sends no legacy 22
+  // or 28 on it: one that arrives was captured earlier and sent again.
+  if (!datagram.empty() &&
+      (datagram[0] == static_cast<std::uint8_t>(MessageType::CommandReconnect) ||
+       datagram[0] == static_cast<std::uint8_t>(MessageType::CommandSessionReleased))) {
+    const std::uint64_t current = controlNonce_.load(std::memory_order_acquire);
+    if (current != 0 && boundNonce_.load(std::memory_order_acquire) == current) {
+      std::lock_guard lock(statsMutex_);
+      ++stats_.legacyControlDropped;
+      return;
+    }
+  }
+
   // COMMAND_RECONNECT is always its own datagram; verify before acting.
   if (!datagram.empty() &&
       datagram[0] == static_cast<std::uint8_t>(MessageType::CommandReconnect)) {
     const wire::Token64 token = tokenSnapshot();
     if (wire::verifyCommandReconnect(crypto_, datagram, token).ok()) {
-      reconnectRequested_.store(true, std::memory_order_release);
+      if (honourLegacyReconnect()) {
+        reconnectRequested_.store(true, std::memory_order_release);
+      } else {
+        std::lock_guard lock(statsMutex_);
+        ++stats_.legacyReconnectsSuppressed;
+      }
     } else {
       std::lock_guard lock(statsMutex_);
       ++stats_.hmacFailures;
