@@ -1,0 +1,15 @@
+Third-party notices for the Mod Scripts runtime (Wasmtime {{#each crates}}{{#if (eq package.name "wasmtime")}}{{package.version}}{{/if}}{{/each}} with its Pulley interpreter)
+
+The CrowdySDK is MIT licensed. The runtime it links keeps the licences below.
+
+{{#each licenses}}
+================================================================================
+{{name}}
+
+Used by:
+{{#each used_by}}  {{crate.name}} {{crate.version}}
+{{/each}}
+--------------------------------------------------------------------------------
+{{text}}
+
+{{/each}}

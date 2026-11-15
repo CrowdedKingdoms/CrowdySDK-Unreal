@@ -306,11 +306,11 @@ namespace CrowdyServiceApi
 	 * inside the send, as it does when it cannot send at all.
 	 */
 	inline void RunOpDeferred(FCrowdyCppClient& Client, ECrowdyCppApiDomain Domain, const TCHAR* Operation, const TSharedPtr<FJsonObject>& Variables,
-		const TSharedPtr<uint8>& LiveToken, TFunction<void(FCrowdyCppJsonResult)> Body)
+		const TSharedPtr<uint8>& LiveToken, TFunction<void(FCrowdyCppJsonResult)> Body, bool bMsgpack = false)
 	{
 		const TSharedRef<bool> bInCall = MakeShared<bool>(true);
 		TWeakPtr<uint8> WeakToken = LiveToken;
-		Client.RunOp(Domain, Operation, Variables, GuardLifetime<FCrowdyCppJsonResult>(LiveToken,
+		TFunction<void(FCrowdyCppJsonResult)> Done = GuardLifetime<FCrowdyCppJsonResult>(LiveToken,
 			[bInCall, WeakToken, Body = MoveTemp(Body)](FCrowdyCppJsonResult Result) mutable
 			{
 				if (!*bInCall)
@@ -319,7 +319,15 @@ namespace CrowdyServiceApi
 					return;
 				}
 				DeferWhileLive(WeakToken.Pin(), [Body = MoveTemp(Body), Result = MoveTemp(Result)]() mutable { Body(MoveTemp(Result)); });
-			}));
+			});
+		if (bMsgpack)
+		{
+			Client.RunOpMsgpack(Domain, Operation, Variables, MoveTemp(Done));
+		}
+		else
+		{
+			Client.RunOp(Domain, Operation, Variables, MoveTemp(Done));
+		}
 		*bInCall = false;
 	}
 

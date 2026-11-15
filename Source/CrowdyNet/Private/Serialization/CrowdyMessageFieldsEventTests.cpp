@@ -5,6 +5,7 @@
 #include "Messages/GameObjects/FGameEventNotification.h"
 #include "Messages/GameObjects/FGameObjectActivationNotification.h"
 #include "Messages/GameObjects/FServerEventNotification.h"
+#include "Messages/GameObjects/FSingleActorMessage.h"
 #include "Utils/SerializationFunctionLibrary.h"
 #include "CrowdyWireParitySupport.h"
 
@@ -230,10 +231,10 @@ bool FCrowdyMessageFieldsGameEventNotificationTest::RunTest(const FString& Param
 		TestEqual(TEXT("D: EventType stays at its default"), static_cast<int32>(Message.EventType), 0);
 	}
 
-	// Vector E (reject): the header, EventType and StateSize all read successfully, but the declared
-	// StateSize claims more bytes than the body holds. This is a genuine partial-mutation case: AppID
-	// and the rest are already written from the envelope before the state-size check fails, and only
-	// StateBytes is explicitly cleared.
+	// Vector E: the header, EventType and StateSize all read, but the declared StateSize claims more bytes than the body
+	// holds. A single-actor message refuses it: a genuine partial-mutation case, where AppID and the rest are already
+	// written from the envelope before the state-size check fails, and only StateBytes is explicitly cleared. A client
+	// event reads the same bytes as another library writes one, its type then its bare state.
 	{
 		TArray<uint8> Data;
 		EventFieldsTestAppendMetadataHeader(Data, 55, 6, 7, 8, 1, 1, 0, Uuid);
@@ -245,12 +246,21 @@ bool FCrowdyMessageFieldsGameEventNotificationTest::RunTest(const FString& Param
 		}
 		TestEqual(TEXT("vector E length"), Data.Num(), 83);
 
+		FSingleActorNotification Targeted;
+		TestFalse(TEXT("E: an overrunning StateSize is rejected on a single-actor message"),
+			CrowdyWireParity::DecodeStrippedPayload(Targeted, Data));
+		TestEqual(TEXT("E: AppID was already written by the metadata block"), Targeted.AppID, static_cast<int64>(55));
+		TestEqual(TEXT("E: StateSize was already written"), Targeted.StateSize, 10);
+		TestEqual(TEXT("E: StateBytes is explicitly cleared on this reject path"), Targeted.StateView.Num(), 0);
+
 		FGameEventNotification Message;
-		TestFalse(TEXT("E: an overrunning StateSize is rejected"),
-			CrowdyWireParity::DecodeStrippedPayload(Message, Data));
-		TestEqual(TEXT("E: AppID was already written by the metadata block"), Message.AppID, static_cast<int64>(55));
-		TestEqual(TEXT("E: StateSize was already written"), Message.StateSize, 10);
-		TestEqual(TEXT("E: StateBytes is explicitly cleared on this reject path"), Message.StateView.Num(), 0);
+		if (TestTrue(TEXT("E: a client event reads it as a bare state"), CrowdyWireParity::DecodeStrippedPayload(Message, Data)))
+		{
+			TestEqual(TEXT("E: EventType"), static_cast<int32>(Message.EventType), 0x2222);
+			TestEqual(TEXT("E: the state is every octet after the type"), Message.StateView.Num(), 5);
+			TestEqual(TEXT("E: and its size"), Message.StateSize, 5);
+			TestFalse(TEXT("E: not read as a CrowdyEvent struct"), Message.State.IsValid());
+		}
 	}
 
 	return true;

@@ -107,6 +107,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Voxels")
 	TArray<int64> SetVoxels(const TArray<FCrowdyVoxelWrite>& Writes);
 
+	/** This player's edits queued and not yet sent; the queue drains at Edits Per Second. */
+	int32 GetUnsentEditCount() const;
+
 	/**
 	 * Fetches a loaded chunk again and merges it as any fetch is, under this player's waiting edits. OnDone runs once, on
 	 * a later frame: Ok once a fetch begun after this call has merged and On Chunk Changed has named every cell it changed.

@@ -548,6 +548,16 @@ TArray<int64> UCrowdyVoxelWorld::SetVoxels(const TArray<FCrowdyVoxelWrite>& Writ
 	return Ids;
 }
 
+int32 UCrowdyVoxelWorld::GetUnsentEditCount() const
+{
+	int32 Unsent = 0;
+	for (const FPendingEdit& Edit : Pending)
+	{
+		Unsent += Edit.bSent || Edit.bAnswered ? 0 : 1;
+	}
+	return Unsent;
+}
+
 void UCrowdyVoxelWorld::ReloadChunk(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ, TFunction<void(ECrowdyVoxelResult Result, const FString& Message)> OnDone)
 {
 	const FInt64Vector Coord(ChunkX, ChunkY, ChunkZ);

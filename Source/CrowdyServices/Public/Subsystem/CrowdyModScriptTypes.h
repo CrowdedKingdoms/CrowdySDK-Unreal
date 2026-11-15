@@ -53,8 +53,8 @@ enum class ECrowdyModScriptStop : uint8
 	Unconsented UMETA(ToolTip="The player's agreement to it was taken back elsewhere."),
 	Revoked UMETA(ToolTip="The player took their agreement back here."),
 	LeftGrid UMETA(DisplayName="Left Grid", ToolTip="The player left its grid."),
-	Stopped UMETA(ToolTip="Sign-out, travel, the world ending, or Mod Scripts switched off."),
-	CircuitOpen UMETA(DisplayName="Circuit Open", ToolTip="Five calls in a row failed; it is started again after 60 seconds."),
+	Stopped UMETA(ToolTip="Sign-out, a change of player, travel or the world ending."),
+	CircuitOpen UMETA(DisplayName="Circuit Open", ToolTip="Five runs in a row failed, or over 1,000 host calls in a second; it is started again after 60 seconds."),
 	Failed UMETA(ToolTip="Fetching, checking or starting it failed."),
 };
 

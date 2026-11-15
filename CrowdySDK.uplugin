@@ -23,6 +23,7 @@
 		{ "Name": "CrowdySDK",          "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyExec",         "Type": "Runtime", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyMass",         "Type": "Runtime", "LoadingPhase": "Default" },
+		{ "Name": "CrowdyModScriptRuntime", "Type": "Runtime", "LoadingPhase": "Default", "PlatformAllowList": ["Win64"] },
 		{ "Name": "CrowdyNodes",        "Type": "UncookedOnly", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyExecNodes",    "Type": "UncookedOnly", "LoadingPhase": "Default" },
 		{ "Name": "CrowdyMassNodes",    "Type": "UncookedOnly", "LoadingPhase": "Default" },
