@@ -80,6 +80,7 @@ namespace CrowdyCppHostTestSupport
 		{ECrowdyCppApiDomain::Platform, TEXT("PlatformConfig"), TEXT("Platform"), true},
 		{ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceClaimGridChunk"), TEXT("Marketplace claim"), false},
 		{ECrowdyCppApiDomain::Marketplace, TEXT("MarketplaceReleaseClaimedGrid"), TEXT("Marketplace release"), false},
+		{ECrowdyCppApiDomain::Grids, TEXT("GridChannels"), TEXT("Grid channels"), false},
 		{ECrowdyCppApiDomain::Exec, TEXT("ExecBuildStatus"), TEXT("Exec developer build"), true},
 		{ECrowdyCppApiDomain::Exec, TEXT("ExecConnect"), TEXT("Exec player connect"), false},
 		{ECrowdyCppApiDomain::Exec, TEXT("ExecModStarter"), TEXT("Exec mod starter"), false},
@@ -91,6 +92,12 @@ namespace CrowdyCppHostTestSupport
 		{ECrowdyCppApiDomain::Exec, TEXT("ExecMyMods"), TEXT("Exec my mods"), false},
 		{ECrowdyCppApiDomain::Exec, TEXT("ExecModLogs"), TEXT("Exec mod logs"), false},
 		{ECrowdyCppApiDomain::Exec, TEXT("ExecModDelete"), TEXT("Exec mod delete"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecGridClientMods"), TEXT("Exec grid Mod Scripts"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecConsentClientMod"), TEXT("Exec Mod Script consent"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecTrustAuthor"), TEXT("Exec author trust"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecRevokeClientModConsent"), TEXT("Exec Mod Script consent revoke"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecRevokeAuthorTrust"), TEXT("Exec author trust revoke"), false},
+		{ECrowdyCppApiDomain::Exec, TEXT("ExecModClientArtifact"), TEXT("Exec Mod Script artifact"), false},
 	};
 
 	// Issues one operation and drains its completion. The canned transport resolves inline, so the callback has
@@ -369,6 +376,46 @@ bool FCrowdyCppAdminHostLifecycleTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a call on the outlived client still completes"), bCalled);
 	TestFalse(TEXT("the host disposed its client on the way out"), bOk);
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppModClientArtifactBearerTest,
+	"CrowdySDK.CrowdyCpp.ModClientArtifactCarriesGameBearer", CrowdyCppHostTestSupport::HostTestFlags)
+
+bool FCrowdyCppModClientArtifactBearerTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyCppHostTestSupport;
+
+	const TSharedPtr<FCrowdyCppClient> Client = MakeTwoPlaneTestClient();
+	if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
+	{
+		return false;
+	}
+
+	// A management call first, so the fetch cannot pass by inheriting the bearer left installed.
+	bool bCalled = false;
+	RunOpAndDrain(Client, ECrowdyCppApiDomain::Apps, TEXT("App"), bCalled);
+
+	bCalled = false;
+	FCrowdyCppModClientArtifact Fetched;
+	Client->FetchModClientArtifact(42, TEXT("mod-1"), [&Fetched, &bCalled](FCrowdyCppModClientArtifact Result)
+	{
+		Fetched = MoveTemp(Result);
+		bCalled = true;
+	});
+	Client->Poll();
+	TestTrue(TEXT("the fetch completes"), bCalled);
+	TestFalse(TEXT("an answer holding no module is not a module"), Fetched.bOk);
+
+	FString Url;
+	FString Authorization;
+	FString Body;
+	if (!TestTrue(TEXT("the fetch reached the transport"), Client->GetLastTestRequest(Url, Authorization) && Client->GetLastTestRequestBody(Body)))
+	{
+		return false;
+	}
+	TestTrue(TEXT("as execModClientArtifact"), Body.Contains(TEXT("ExecModClientArtifact")));
+	TestEqual(TEXT("under the game bearer"), Authorization, TEXT("Bearer ") + GameToken);
 	return true;
 }
 

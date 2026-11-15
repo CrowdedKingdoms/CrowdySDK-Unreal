@@ -195,6 +195,29 @@ struct FCrowdyCppBoolResult
 	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
 };
 
+/** A Mod Script's module as its grid serves it, its bytes already checked against the digest, ABI 0 and its summary. */
+struct FCrowdyCppModClientArtifact
+{
+	bool bOk = false;
+	FString ErrorMessage;
+	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
+	FString ErrorReason;    // the same error's extensions.reason, as on FCrowdyCppJsonResult
+
+	// The platform answered, but the module failed the digest, ABI or summary check.
+	bool bCheckRefused = false;
+
+	FString ModId;
+	FString Name;
+	int64 GridId = 0;
+	int32 ClientVersion = 0;
+	TArray<uint8> Bytes;
+	FString Digest;         // SHA-256 of Bytes, lowercase hex
+	int64 FuelPerDispatch = 0;
+	int32 TickIntervalMs = 0;
+	FString CapabilityHash;
+	TArray<FString> HostFunctions;
+};
+
 /** The outcome of an operation that answers with a list of strings. */
 struct FCrowdyCppStringListResult
 {
@@ -428,7 +451,9 @@ enum class ECrowdyCppApiDomain : uint8
 	// own mod operations carry the app token.
 	Exec,
 	// Grid claims and listings. Player and studio operations share it, so each operation names its plane.
-	Marketplace
+	Marketplace,
+	// A grid's own channels and tokens. Each operation names its plane.
+	Grids
 };
 
 /**
@@ -669,6 +694,10 @@ public:
 	// token is NOT installed on this client: an owner decides which plane it belongs to. The result also carries
 	// the app's own datacenter endpoint and the shared DiscoveryUrl, which together are what let a client relocate.
 	FCrowdyCppRequestHandle MintAppToken(int64 AppId, TFunction<void(FCrowdyCppAppTokenResult)> OnDone);
+
+	// Fetch a Mod Script's module (execModClientArtifact) under the game bearer. Every platform refusal is NOT_FOUND;
+	// too many fetches are RATE_LIMITED.
+	FCrowdyCppRequestHandle FetchModClientArtifact(int64 AppId, const FString& ModId, TFunction<void(FCrowdyCppModClientArtifact)> OnDone);
 
 	// Rotate the current app-scoped token for a fresh one before it expires. It carries the GAME bearer rather than
 	// the session one, because the token being rotated is what authorizes its own rotation. The replacement is not

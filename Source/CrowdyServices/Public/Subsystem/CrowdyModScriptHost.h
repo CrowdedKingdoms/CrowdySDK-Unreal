@@ -22,15 +22,18 @@ class CROWDYSERVICES_API ICrowdyModScriptHost
 	GENERATED_BODY()
 
 public:
-	/** pointer_clicks: the clicks since the last drain. */
+	/** pointer_clicks: the clicks since the last drain, called once a frame while a host is set. */
 	UFUNCTION(BlueprintNativeEvent, Category="Crowdy SDK|Mod Scripts")
 	void DrainClicks(FCrowdyModScriptClicks& Clicks);
 
-	/** chunk_get and voxels_list: false when the chunk is not loaded. */
+	/**
+	 * chunk_get and voxels_list: false when the chunk is not loaded. Types must hold all 4,096 cells. Answer with a plain copy
+	 * of what the voxel world holds: the SDK cannot stop a single slow answer mid-frame.
+	 */
 	UFUNCTION(BlueprintNativeEvent, Category="Crowdy SDK|Mod Scripts")
 	bool ReadChunk(int64 ChunkX, int64 ChunkY, int64 ChunkZ, FCrowdyModScriptChunk& Chunk);
 
-	/** actors_list and actors_list_radius: the players in the box, the local one included, at most 64. */
+	/** actors_list and actors_list_radius: the players in the box, the local one included, at most 64. Answer with a plain copy. */
 	UFUNCTION(BlueprintNativeEvent, Category="Crowdy SDK|Mod Scripts")
 	void ListPlayers(const FCrowdyModScriptGrid& Box, TArray<FCrowdyModScriptPlayer>& Players);
 

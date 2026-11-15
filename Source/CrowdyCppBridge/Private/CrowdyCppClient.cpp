@@ -1366,6 +1366,42 @@ namespace
 		return Result;
 	}
 
+	FCrowdyCppModClientArtifact MapModClientArtifact(const crowdy::graphql::GraphQLOutcome& Out,
+		const crowdy::domains::ExecModClientArtifactBytes& Value)
+	{
+		FCrowdyCppModClientArtifact Result;
+		if (!Out.ok())
+		{
+			Result.ErrorMessage = OutcomeErrorMessage(Out);
+			Result.ErrorCode = OutcomeErrorCode(Out);
+			const crowdy::graphql::GraphQLErrorDetail* Error = LeadingError(Out);
+			Result.ErrorReason = Error ? Utf8ToFString(Error->reason) : FString();
+			// The vendor reports a failed digest, ABI or summary check as a protocol fault with no server code.
+			Result.bCheckRefused = Out.kind == crowdy::graphql::GraphQLErrorKind::Protocol && Result.ErrorCode.IsEmpty();
+			return Result;
+		}
+		if (Value.bytes.size() > static_cast<size_t>(MAX_int32)
+			|| !LexTryParseString(Result.FuelPerDispatch, *Utf8ToFString(Value.fuelPerDispatch)) || Result.FuelPerDispatch <= 0
+			|| !LexTryParseString(Result.GridId, *Utf8ToFString(Value.gridId)))
+		{
+			Result.ErrorMessage = TEXT("malformed response: the module's size, fuel or grid did not read");
+			return Result;
+		}
+		Result.ModId = Utf8ToFString(Value.modId);
+		Result.Name = Utf8ToFString(Value.name);
+		Result.ClientVersion = Value.clientVersion;
+		Result.Bytes.Append(Value.bytes.data(), static_cast<int32>(Value.bytes.size()));
+		Result.Digest = Utf8ToFString(Value.digest);
+		Result.TickIntervalMs = Value.tickIntervalMs;
+		Result.CapabilityHash = Utf8ToFString(Value.capabilityHash);
+		for (const std::string& Call : Value.capabilitySummary.hostFunctions)
+		{
+			Result.HostFunctions.Add(Utf8ToFString(Call));
+		}
+		Result.bOk = true;
+		return Result;
+	}
+
 	// The three callback shapes the auth twins hand their payload back in.
 	using FAuthPayloadCallback =
 		std::function<void(crowdy::graphql::GraphQLOutcome, crowdy::domains::AuthResponse)>;
@@ -1427,6 +1463,7 @@ namespace
 		case ECrowdyCppApiDomain::Realtime:      return realtime::documentFor(Op);
 		case ECrowdyCppApiDomain::Exec:          return crowdy::gen::exec::documentFor(Op);
 		case ECrowdyCppApiDomain::Marketplace:   return marketplace::documentFor(Op);
+		case ECrowdyCppApiDomain::Grids:         return crowdy::gen::grids::documentFor(Op);
 		}
 		return std::string_view();
 	}
@@ -1488,10 +1525,13 @@ namespace
 			if (Op == "ServerWithLeastClients" || Op == "GameClientBootstrap") { return ECrowdyCppTokenPlane::Game; }
 			break;
 
-		// The Exec domain defaults to Management for developer operations; a player's connect and mod calls use the app token.
+		// The Exec domain defaults to Management for developer operations; a player's connect, mod and Mod Script calls
+		// use the app token.
 		case ECrowdyCppApiDomain::Exec:
 			if (Op == "ExecConnect" || Op == "ExecModStarter" || Op == "ExecModBuild" || Op == "ExecModBuildStatus" || Op == "ExecModDeploy"
-				|| Op == "ExecModSetEnabled" || Op == "ExecMods" || Op == "ExecMyMods" || Op == "ExecModLogs" || Op == "ExecModDelete")
+				|| Op == "ExecModSetEnabled" || Op == "ExecMods" || Op == "ExecMyMods" || Op == "ExecModLogs" || Op == "ExecModDelete"
+				|| Op == "ExecGridClientMods" || Op == "ExecConsentClientMod" || Op == "ExecTrustAuthor" || Op == "ExecRevokeClientModConsent"
+				|| Op == "ExecRevokeAuthorTrust" || Op == "ExecModClientArtifact")
 			{
 				return ECrowdyCppTokenPlane::Game;
 			}
@@ -1501,6 +1541,11 @@ namespace
 		// named, so they stay unroutable until a caller states their plane.
 		case ECrowdyCppApiDomain::Marketplace:
 			if (Op == "MarketplaceClaimGridChunk" || Op == "MarketplaceReleaseClaimedGrid") { return ECrowdyCppTokenPlane::Game; }
+			break;
+
+		// A player reads the channels of the grid they stand in with the app token.
+		case ECrowdyCppApiDomain::Grids:
+			if (Op == "GridChannels") { return ECrowdyCppTokenPlane::Game; }
 			break;
 
 		default:
@@ -2925,6 +2970,21 @@ FCrowdyCppRequestHandle FCrowdyCppClient::MintAppToken(int64 AppId,
 			Client.portal().mintAppTokenAsync(AppIdStr, std::move(Cb));
 		},
 		&MapAppTokenResponse, MakeAuthRetry(Impl.Get(), ECrowdyCppTokenPlane::Management));
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::FetchModClientArtifact(int64 AppId, const FString& ModId,
+	TFunction<void(FCrowdyCppModClientArtifact)> OnDone)
+{
+	const std::string AppIdStr = std::string(TCHAR_TO_UTF8(*LexToString(AppId)));
+	const std::string ModIdStr = std::string(TCHAR_TO_UTF8(*ModId));
+	return RunAuthOp<FCrowdyCppModClientArtifact, crowdy::domains::ExecModClientArtifactBytes>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Game) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("execModClientArtifact"), MoveTemp(OnDone),
+		[AppIdStr, ModIdStr](crowdy::CrowdyClient& Client, crowdy::domains::ExecModClientArtifactBytesCallback Cb)
+		{
+			Client.exec().modClientArtifactBytesAsync(AppIdStr, ModIdStr, std::move(Cb));
+		},
+		&MapModClientArtifact);
 }
 
 FString FCrowdyCppClient::GetApiEndpoint() const
