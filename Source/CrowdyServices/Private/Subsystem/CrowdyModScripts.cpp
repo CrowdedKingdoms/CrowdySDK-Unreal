@@ -2477,6 +2477,7 @@ void UCrowdyModScripts::StartRun(const TSharedRef<FScript>& Script, const TShare
 	Script->Info.Version = Script->Row.Version;
 	Script->Info.Generation = Generation;
 	Script->Info.Calls = Script->Row.Calls;
+	Script->Info.Digest = Script->Row.Digest.ToLower();
 	Script->Clicks.Reset();
 	Script->bRunning = true;
 	Script->bEnded = false;

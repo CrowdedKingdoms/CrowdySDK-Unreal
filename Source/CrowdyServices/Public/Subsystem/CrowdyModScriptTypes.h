@@ -85,6 +85,10 @@ struct CROWDYSERVICES_API FCrowdyModScript
 	/** The host calls it may make. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy SDK|Mod Scripts")
 	TArray<FString> Calls;
+
+	/** The SHA-256 of the module it runs, 64 lowercase hex digits; the SDK runs no bytes that hash to anything else. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy SDK|Mod Scripts")
+	FString Digest;
 };
 
 /** The question to ask the player before an author's Mod Scripts run on this grid. */
