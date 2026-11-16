@@ -1342,6 +1342,11 @@ bool FCrowdyModScriptsListingStopsTest::RunTest(const FString& Parameters)
 		Generations.Add(Script.Generation);
 	}
 	TestEqual(TEXT("each run has its own generation"), Generations.Num(), 4);
+	for (const FCrowdyModScript& Script : Harness.Recorder->Started)
+	{
+		TestEqualSensitive(TEXT("each start names the SHA-256 of the module it runs"), Script.Digest, Hello.Digest.ToLower());
+	}
+	TestEqual(TEXT("in 64 hex digits"), Harness.Recorder->Started.IsEmpty() ? 0 : Harness.Recorder->Started[0].Digest.Len(), 64);
 
 	Harness.Scripts->TickForTest(10.0);
 	Rows.RemoveAt(0);
