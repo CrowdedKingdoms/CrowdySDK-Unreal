@@ -58,6 +58,26 @@ enum class ECrowdyModScriptStop : uint8
 	Failed UMETA(ToolTip="Fetching, checking or starting it failed."),
 };
 
+/** Where one of the grid's Mod Scripts is on this player's machine. */
+UENUM(BlueprintType)
+enum class ECrowdyModScriptState : uint8
+{
+	Running,
+	Stopped UMETA(ToolTip="It is not running; the stop reason says why."),
+	Erred UMETA(ToolTip="Its last run failed; the message says how."),
+	CircuitOpen UMETA(DisplayName="Circuit Open", ToolTip="Held after repeated failures or too many host calls; it is started again after 60 seconds."),
+};
+
+/** How a Mod Script read ended. Values are only ever added at the end. */
+UENUM(BlueprintType)
+enum class ECrowdyModScriptReadResult : uint8
+{
+	Success,
+	NotInGrid UMETA(DisplayName="Not In Grid", ToolTip="The player is not standing in that grid, so none of its Mod Scripts run here."),
+	Failed UMETA(ToolTip="The read could not be made, such as with no Mod Scripts in this world."),
+	NotBuilt UMETA(DisplayName="Not Built", ToolTip="This SDK version does not carry the call yet."),
+};
+
 /** A running Mod Script. Generation changes each time it starts, so an answer meant for an earlier run is told apart. */
 USTRUCT(BlueprintType)
 struct CROWDYSERVICES_API FCrowdyModScript
@@ -89,6 +109,99 @@ struct CROWDYSERVICES_API FCrowdyModScript
 	/** The SHA-256 of the module it runs, 64 lowercase hex digits; the SDK runs no bytes that hash to anything else. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy SDK|Mod Scripts")
 	FString Digest;
+};
+
+/** One of the grid's Mod Scripts and where it is. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyModScriptStatus
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	FCrowdyModScript Script;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	ECrowdyModScriptState State = ECrowdyModScriptState::Stopped;
+
+	/** Why it stopped; only meaningful when State is Stopped, so never CircuitOpen or Failed, which are the States CircuitOpen and Erred. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	ECrowdyModScriptStop StopReason = ECrowdyModScriptStop::Stopped;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	FString Message;
+};
+
+/** The answer to Get Script Status. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyModScriptStatusList
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	ECrowdyModScriptReadResult Result = ECrowdyModScriptReadResult::Failed;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	int64 GridId = 0;
+
+	/** Every Mod Script the grid lists, by mod id; empty unless Result is Success. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	TArray<FCrowdyModScriptStatus> Scripts;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	FString Message;
+};
+
+/** One line a Mod Script logged. This copy is kept in memory only and is never saved. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyModScriptLogLine
+{
+	GENERATED_BODY()
+
+	/** Unix time in milliseconds. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	int64 AtMs = 0;
+
+	/** 0 error, 1 warning, 2 info, 3 debug. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	int32 Level = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	FString Text;
+};
+
+/** The answer to Get Script Log. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyModScriptLog
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	ECrowdyModScriptReadResult Result = ECrowdyModScriptReadResult::Failed;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	FString ModId;
+
+	/** The script's name, as the grid lists it. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	FString Name;
+
+	/**
+	 * Who wrote the script. A script's lines are its author's text, so a reader that passes them on, such as to a model,
+	 * should read only the logs of authors it trusts.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	int64 AuthorId = 0;
+
+	/** Oldest first, at most the last 200; empty unless Result is Success. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	TArray<FCrowdyModScriptLogLine> Lines;
+
+	/** Lines lost before this read: those the script logged too fast to keep and those that fell out of the ring. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	int32 DroppedLines = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mod Scripts")
+	FString Message;
 };
 
 /** The question to ask the player before an author's Mod Scripts run on this grid. */

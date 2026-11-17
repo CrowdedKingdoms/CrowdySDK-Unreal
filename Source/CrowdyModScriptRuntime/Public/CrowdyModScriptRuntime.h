@@ -187,9 +187,45 @@ private:
 	TUniquePtr<FCrowdyModScriptWorkerPoolState> State;
 };
 
+struct FCrowdyModScriptLogEntry
+{
+	int64 AtMs = 0;
+	int32 Level = 0;
+	FString Text;
+};
+
+// The last Capacity lines a script logged, in memory only. Every call is safe from any thread: a worker appends and the game
+// thread copies.
+class CROWDYMODSCRIPTRUNTIME_API FCrowdyModScriptLogRing
+{
+public:
+	static constexpr int32 Capacity = 200;
+
+	FCrowdyModScriptLogRing();
+
+	// Keeps Text, evicting the oldest line once Capacity lines are held.
+	void Add(int32 Level, FString&& Text);
+
+	// Counts a line that was never kept because the script logged too fast.
+	void CountRateDropped();
+
+	// Oldest line first. The counts are the lines evicted by Add and the lines refused by the rate limit, ever.
+	void Read(TArray<FCrowdyModScriptLogEntry>& OutLines, int32& OutEvicted, int32& OutRateDropped) const;
+
+private:
+	mutable FCriticalSection Lock;
+	TArray<FCrowdyModScriptLogEntry> Slots;
+	int32 Head = 0;
+	int32 Held = 0;
+	int32 Evicted = 0;
+	int32 RateDropped = 0;
+};
+
 // Every callback but OnHostCallWorker runs on the game thread, and none runs once the run has stopped.
 struct FCrowdyModScriptRunHost
 {
+	// Optional. Every line the script logs is kept here, from the worker, and the run keeps it across a fresh instance.
+	TSharedPtr<FCrowdyModScriptLogRing, ESPMode::ThreadSafe> Log;
 	// Answers the guest's JSON request with JSON.
 	TFunction<TArray<uint8>(TConstArrayView<uint8> RequestUtf8)> OnHostCall;
 	// Optional, on the worker before the request reaches the game thread: false answers the guest at once with InOutRequest,

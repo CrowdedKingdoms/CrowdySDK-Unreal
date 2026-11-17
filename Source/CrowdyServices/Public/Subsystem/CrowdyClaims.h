@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
+#include "Queries/Data/Channels/Types/FCrowdyChannel.h"
 #include "CrowdyClaims.generated.h"
 
 class FCrowdyCppClient;
@@ -23,7 +24,9 @@ enum class ECrowdyClaimResult : uint8
 	/** The request did not complete. */
 	Failed,
 	/** The answer was malformed, so nothing from it is returned. */
-	BadReply
+	BadReply,
+	/** This SDK version does not carry the call yet, so nothing was sent. */
+	NotBuilt
 };
 
 /** The answer to Claim Chunk. */
@@ -190,6 +193,26 @@ struct CROWDYSERVICES_API FCrowdyGridPermissions
 	FString Message;
 };
 
+/** The answer to List Grid Channels. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyGridChannels
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	ECrowdyClaimResult Result = ECrowdyClaimResult::Failed;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	int64 GridId = 0;
+
+	/** The grid's own channels, in the platform's order; empty unless Result is Success. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	TArray<FCrowdyChannel> Channels;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Claims")
+	FString Message;
+};
+
 /**
  * Claims chunks for the signed-in player in the current app, gives them back, and finds who has claimed what. A claim is
  * a grid over exactly one wilderness chunk that only its owner builds in; the app's claim policy must be Self Claim.
@@ -234,6 +257,12 @@ public:
 	 * that want more than Can Edit Chunk's yes or no. OnDone runs as for ClaimChunk.
 	 */
 	void GetGridPermissions(int64 ChunkX, int64 ChunkY, int64 ChunkZ, TFunction<void(const FCrowdyGridPermissions&)> OnDone);
+
+	/**
+	 * The channels a grid owns, oldest first. A grid id of 0 or less is Refused without sending, and a row that is not one
+	 * of this grid's fails the whole list as BadReply. OnDone runs as for ClaimChunk.
+	 */
+	void ListGridChannels(int64 GridId, TFunction<void(const FCrowdyGridChannels&)> OnDone);
 
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Stands in for Initialize on a subsystem built outside a collection, sending every call to Client. */

@@ -340,3 +340,159 @@ void UCrowdyCallMod::Finish(const FCrowdyModCall& Call)
 	Pin.Broadcast(Call.ReplyJson, Call.Result, Call.Message);
 	SetReadyToDestroy();
 }
+
+UCrowdyBuildClientMod* UCrowdyBuildClientMod::BuildClientMod(UObject* WorldContextObject, const FString& CrateName, const TArray<FCrowdyModFile>& Files)
+{
+	UCrowdyBuildClientMod* Action = NewObject<UCrowdyBuildClientMod>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->CrateName = CrateName;
+	Action->Files = Files;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyBuildClientMod::Activate()
+{
+	UCrowdyMods* Mods = GetServiceSubsystem<UCrowdyMods>(WorldContextObject);
+	if (!Mods)
+	{
+		Finish(ModsMissing<FCrowdyModBuild>());
+		return;
+	}
+	TWeakObjectPtr<UCrowdyBuildClientMod> WeakThis(this);
+	Mods->BuildClientMod(CrateName, Files,
+		[WeakThis](const FCrowdyModBuild& Build)
+		{
+			if (UCrowdyBuildClientMod* Self = WeakThis.Get())
+			{
+				Self->Broadcast(Self->OnProgress, Build);
+			}
+		},
+		[WeakThis](const FCrowdyModBuild& Build)
+		{
+			if (UCrowdyBuildClientMod* Self = WeakThis.Get())
+			{
+				Self->Finish(Build);
+			}
+		});
+}
+
+void UCrowdyBuildClientMod::Broadcast(FCrowdyModBuildAsyncResult& Pin, const FCrowdyModBuild& Build)
+{
+	Pin.Broadcast(Build.BuildId, Build.Status, Build.Log, Build.SdkVersion, Build.Result, Build.Message);
+}
+
+void UCrowdyBuildClientMod::Finish(const FCrowdyModBuild& Build)
+{
+	Broadcast(Build.Result == ECrowdyModResult::Success ? OnDone : OnFailed, Build);
+	SetReadyToDestroy();
+}
+
+UCrowdyDeployClientMod* UCrowdyDeployClientMod::DeployClientMod(UObject* WorldContextObject, int64 GridId, const FString& Name, const FString& BuildId)
+{
+	UCrowdyDeployClientMod* Action = NewObject<UCrowdyDeployClientMod>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->GridId = GridId;
+	Action->Name = Name;
+	Action->BuildId = BuildId;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyDeployClientMod::Activate()
+{
+	UCrowdyMods* Mods = GetServiceSubsystem<UCrowdyMods>(WorldContextObject);
+	if (!Mods)
+	{
+		Finish(ModsMissing<FCrowdyModClientInfo>());
+		return;
+	}
+	TWeakObjectPtr<UCrowdyDeployClientMod> WeakThis(this);
+	Mods->DeployClientMod(GridId, Name, BuildId, [WeakThis](const FCrowdyModClientInfo& Info)
+	{
+		if (UCrowdyDeployClientMod* Self = WeakThis.Get())
+		{
+			Self->Finish(Info);
+		}
+	});
+}
+
+void UCrowdyDeployClientMod::Finish(const FCrowdyModClientInfo& Info)
+{
+	FCrowdyModClientInfoAsyncResult& Pin = Info.Result == ECrowdyModResult::Success ? OnDone : OnFailed;
+	Pin.Broadcast(Info.Client, Info.Result, Info.Message);
+	SetReadyToDestroy();
+}
+
+UCrowdyRunProject* UCrowdyRunProject::RunProject(UObject* WorldContextObject, int64 GridId, const FString& ProjectId, const FString& ExpectedRevision,
+	ECrowdyStudioRunMode Mode)
+{
+	UCrowdyRunProject* Action = NewObject<UCrowdyRunProject>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->GridId = GridId;
+	Action->ProjectId = ProjectId;
+	Action->ExpectedRevision = ExpectedRevision;
+	Action->Mode = Mode;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyRunProject::Activate()
+{
+	UCrowdyMods* Mods = GetServiceSubsystem<UCrowdyMods>(WorldContextObject);
+	if (!Mods)
+	{
+		Finish(ModsMissing<FCrowdyModRun>());
+		return;
+	}
+	TWeakObjectPtr<UCrowdyRunProject> WeakThis(this);
+	Mods->RunProject(GridId, ProjectId, ExpectedRevision, Mode, [WeakThis](const FCrowdyModRun& Run)
+	{
+		if (UCrowdyRunProject* Self = WeakThis.Get())
+		{
+			Self->Finish(Run);
+		}
+	});
+}
+
+void UCrowdyRunProject::Finish(const FCrowdyModRun& Run)
+{
+	FCrowdyModRunAsyncResult& Pin = Run.Result == ECrowdyModResult::Success ? OnDone : OnFailed;
+	Pin.Broadcast(Run, Run.Result, Run.Message);
+	SetReadyToDestroy();
+}
+
+UCrowdyGetProjectStatus* UCrowdyGetProjectStatus::GetProjectStatus(UObject* WorldContextObject, int64 GridId, const FString& ProjectId)
+{
+	UCrowdyGetProjectStatus* Action = NewObject<UCrowdyGetProjectStatus>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->GridId = GridId;
+	Action->ProjectId = ProjectId;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyGetProjectStatus::Activate()
+{
+	UCrowdyMods* Mods = GetServiceSubsystem<UCrowdyMods>(WorldContextObject);
+	if (!Mods)
+	{
+		Finish(ModsMissing<FCrowdyModProjectStatus>());
+		return;
+	}
+	TWeakObjectPtr<UCrowdyGetProjectStatus> WeakThis(this);
+	Mods->GetProjectStatus(GridId, ProjectId, [WeakThis](const FCrowdyModProjectStatus& Status)
+	{
+		if (UCrowdyGetProjectStatus* Self = WeakThis.Get())
+		{
+			Self->Finish(Status);
+		}
+	});
+}
+
+void UCrowdyGetProjectStatus::Finish(const FCrowdyModProjectStatus& Status)
+{
+	FCrowdyModProjectStatusAsyncResult& Pin = Status.Result == ECrowdyModResult::Success ? OnDone : OnFailed;
+	Pin.Broadcast(Status, Status.Result, Status.Message);
+	SetReadyToDestroy();
+}

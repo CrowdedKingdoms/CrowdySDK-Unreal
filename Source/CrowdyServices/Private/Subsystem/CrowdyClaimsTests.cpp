@@ -4,10 +4,12 @@
 
 #include "Containers/Ticker.h"
 #include "CrowdyCppClient.h"
+#include "CrowdyServiceApiTestSupport.h"
 #include "Engine/GameInstance.h"
 #include "Misc/AutomationTest.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
+#include <type_traits>
 
 namespace
 {
@@ -71,6 +73,7 @@ namespace
 		FCrowdyClaimSearch Search;
 		FCrowdyChunkEditCheck Edit;
 		FCrowdyGridPermissions Permissions;
+		FCrowdyGridChannels Channels;
 
 		explicit FClaimsRig(const FString& Body, int32 Status = 200, bool bSignedIn = true)
 			: Instance(NewObject<UGameInstance>(GetTransientPackage(), NAME_None, RF_Transient))
@@ -113,6 +116,11 @@ namespace
 		void GetGridPermissions(int64 X)
 		{
 			Claims->GetGridPermissions(X, 0, 0, [this](const FCrowdyGridPermissions& Answer) { Permissions = Answer; ++Answers; });
+		}
+
+		void ListGridChannels(int64 GridId)
+		{
+			Claims->ListGridChannels(GridId, [this](const FCrowdyGridChannels& Answer) { Channels = Answer; ++Answers; });
 		}
 
 		void Pump()
@@ -640,6 +648,92 @@ bool FCrowdyClaimsEditCheckDeferredTest::RunTest(const FString& Parameters)
 		Rig.Pump();
 		TestEqual(TEXT("an answer arriving after the subsystem ended runs nothing"), Rig.Answers, 0);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyClaimsGridChannelsTest, "CrowdySDK.Claims.GridChannelsListTheGridsOwn", ClaimsTestFlags)
+bool FCrowdyClaimsGridChannelsTest::RunTest(const FString& Parameters)
+{
+	static_assert(std::is_same_v<decltype(FCrowdyGridChannels::GridId), int64>, "a grid id is a BigInt");
+	const FCrowdyGridChannels Default;
+	TestTrue(TEXT("a default answer is not a success and is empty"), Default.Result != ECrowdyClaimResult::Success && Default.GridId == 0 && Default.Channels.IsEmpty());
+
+	constexpr int64 Grid = 9007199254740993;
+	const auto Row = [](int64 GroupId, int64 GridId)
+	{
+		return FString::Printf(TEXT("{\"groupId\":\"%lld\",\"appId\":\"31337\",\"groupType\":\"channel\",\"name\":\"n%lld\",\"description\":\"\",\"ownerUserId\":\"42\",")
+			TEXT("\"membershipPolicy\":\"open\",\"status\":\"active\",\"defaultRoleId\":null,\"gridId\":\"%lld\",\"createdAt\":\"2026-01-01T00:00:00Z\"}"), GroupId, GroupId, GridId);
+	};
+	const auto Answer = [](const FString& Rows) { return FString::Printf(TEXT("{\"data\":{\"gridChannels\":[%s]}}"), *Rows); };
+	{
+		FClaimsRig Rig(Answer(Row(9007199254740995, Grid) + TEXT(",") + Row(7, Grid)));
+		Rig.ListGridChannels(Grid);
+		TestEqual(TEXT("nothing answers inside the call"), Rig.Answers, 0);
+		Rig.Pump();
+		const FString Body = Rig.SentBody();
+		TestTrue(TEXT("the operation was sent"), Body.Contains(TEXT("GridChannels")));
+		TestTrue(TEXT("the app travels as a string"), Body.Contains(TEXT("\"appId\":\"31337\"")));
+		TestTrue(TEXT("the grid travels whole as a string"), Body.Contains(TEXT("\"gridId\":\"9007199254740993\"")));
+		TestTrue(TEXT("the list succeeds"), Rig.Channels.Result == ECrowdyClaimResult::Success);
+		TestEqual(TEXT("the answer names its grid, whole"), Rig.Channels.GridId, Grid);
+		if (TestEqual(TEXT("both rows parse"), Rig.Channels.Channels.Num(), 2))
+		{
+			TestEqual(TEXT("in the platform's order, ids whole"), Rig.Channels.Channels[0].ChannelId, static_cast<int64>(9007199254740995));
+			TestEqual(TEXT("the second row"), Rig.Channels.Channels[1].Name, FString(TEXT("n7")));
+		}
+	}
+	{
+		FClaimsRig Rig(Answer(FString()));
+		Rig.ListGridChannels(Grid);
+		Rig.Pump();
+		TestTrue(TEXT("a grid with no channels succeeds"), Rig.Channels.Result == ECrowdyClaimResult::Success && Rig.Channels.Channels.IsEmpty());
+	}
+	struct FCase
+	{
+		FString Body;
+		int32 Status;
+		ECrowdyClaimResult Expected;
+		const TCHAR* What;
+	};
+	const FCase Cases[] = {
+		{Answer(Row(0, Grid)), 200, ECrowdyClaimResult::BadReply, TEXT("a row with group id 0")},
+		{Answer(Row(7, Grid) + TEXT(",") + Row(8, Grid + 1)), 200, ECrowdyClaimResult::BadReply, TEXT("a row of another grid")},
+		{Answer(TEXT("5")), 200, ECrowdyClaimResult::BadReply, TEXT("a row that is not an object")},
+		{TEXT("{\"data\":{\"gridChannels\":null}}"), 200, ECrowdyClaimResult::BadReply, TEXT("no list")},
+		{ClaimsError(TEXT("FORBIDDEN")), 200, ECrowdyClaimResult::Refused, TEXT("a refusal")},
+		{FString(), 503, ECrowdyClaimResult::Failed, TEXT("a request that did not complete")},
+	};
+	for (const FCase& Case : Cases)
+	{
+		FClaimsRig Rig(Case.Body, Case.Status);
+		Rig.ListGridChannels(Grid);
+		Rig.Pump();
+		TestTrue(FString::Printf(TEXT("%s ends %d"), Case.What, static_cast<int32>(Case.Expected)), Rig.Channels.Result == Case.Expected);
+		TestTrue(FString::Printf(TEXT("%s carries no channels"), Case.What), Rig.Channels.Channels.IsEmpty());
+	}
+	TArray<FString> Many;
+	for (int32 Index = 1; Index <= 1025; ++Index)
+	{
+		Many.Add(Row(Index, Grid));
+	}
+	FClaimsRig Over(Answer(FString::Join(Many, TEXT(","))));
+	Over.ListGridChannels(Grid);
+	Over.Pump();
+	TestTrue(TEXT("more rows than the bound fail the list"), Over.Channels.Result == ECrowdyClaimResult::BadReply);
+
+	FClaimsRig Bad(Answer(Row(7, 0)));
+	Bad.ListGridChannels(0);
+	TestEqual(TEXT("nothing answers inside the call"), Bad.Answers, 0);
+	Bad.Pump();
+	TestTrue(TEXT("grid 0 is refused"), Bad.Channels.Result == ECrowdyClaimResult::Refused);
+	FString Url;
+	FString Authorization;
+	TestFalse(TEXT("and nothing was sent"), Bad.Client->GetLastTestRequest(Url, Authorization));
+
+	FClaimsRig SignedOut(Answer(FString()), 200, false);
+	SignedOut.ListGridChannels(Grid);
+	SignedOut.Pump();
+	TestTrue(TEXT("a signed-out list is not signed in"), SignedOut.Channels.Result == ECrowdyClaimResult::NotSignedIn);
 	return true;
 }
 

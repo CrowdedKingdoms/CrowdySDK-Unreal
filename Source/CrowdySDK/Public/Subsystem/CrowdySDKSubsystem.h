@@ -34,6 +34,7 @@ class FCrowdyMessageParser;
 // Unreal Subsystems
 class UCrowdyWorkerThreadsSubsystem;
 class UCrowdyGameSession;
+class UCrowdyStudioAgent;
 class UVoiceChatSubsystem;
 class UWorld;
 
@@ -447,9 +448,16 @@ public:
 	void BindAuthenticationForTest(UCrowdyAuthentication* Auth) { BindAuthentication(Auth); }
 
 	void SetGameSessionForTest(UCrowdyGameSession* InGameSession) { GameSession = InGameSession; }
+
+	/** The Studio agent Logout hands the sign-out to, for one built outside a subsystem collection. */
+	void SetStudioAgentForTest(UCrowdyStudioAgent* Agent);
 #endif
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	TWeakObjectPtr<UCrowdyStudioAgent> StudioAgentForTest;
+#endif
+
 
 	void BindAuthentication(UCrowdyAuthentication* Auth);
 

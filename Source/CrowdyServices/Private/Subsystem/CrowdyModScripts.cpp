@@ -1490,6 +1490,17 @@ struct UCrowdyModScripts::FScript
 	int32 Attempt = 0;
 	int32 HostCalls = 0;
 	ECrowdyModScriptStop EndReason = ECrowdyModScriptStop::Failed;
+
+	/** What the run said when it ended itself; moved to LastMessage when the stop is recorded. */
+	FString EndMessage;
+
+	/** How the script last stopped or failed, for a status read. */
+	ECrowdyModScriptStop LastStop = ECrowdyModScriptStop::Stopped;
+	FString LastMessage;
+#if WITH_CROWDY_MOD_SCRIPT_RUNTIME
+	/** Outlives each run so a redeploy or a circuit-open keeps the lines; dropped with the script. */
+	TSharedPtr<FCrowdyModScriptLogRing, ESPMode::ThreadSafe> Log = MakeShared<FCrowdyModScriptLogRing, ESPMode::ThreadSafe>();
+#endif
 	bool bRunning = false;
 	bool bFetching = false;
 
@@ -2031,6 +2042,7 @@ void UCrowdyModScripts::TickAt(double NowSeconds)
 				CrowdyModScriptsHostCalls::MaxCallsPerSecond);
 			Script.bEnded = true;
 			Script.EndReason = ECrowdyModScriptStop::CircuitOpen;
+			Script.EndMessage = FString::Printf(TEXT("Made more than %d host calls in a second."), CrowdyModScriptsHostCalls::MaxCallsPerSecond);
 		}
 		if (Script.bRunning && Script.bEnded)
 		{
@@ -2419,7 +2431,8 @@ void UCrowdyModScripts::ReadArtifact(const TSharedRef<FScript>& Script, const FP
 		return;
 	}
 	const bool bLong = Reply.bOk || Reply.bCheckRefused || ScriptsNamesCode(Reply, TEXT("RATE_LIMITED"));
-	Fail(Script, bLong ? LongHoldSeconds : NotFoundHoldSeconds);
+	const FString Why = Reply.bOk ? FString(TEXT("The module served is not the one the listing agreed to.")) : Reply.Message;
+	Fail(Script, bLong ? LongHoldSeconds : NotFoundHoldSeconds, Why);
 }
 
 void UCrowdyModScripts::Start(const TSharedRef<FScript>& Script, const FPlatformReply& Artifact)
@@ -2429,7 +2442,7 @@ void UCrowdyModScripts::Start(const TSharedRef<FScript>& Script, const FPlatform
 	if (!Runtime.IsValid())
 	{
 		Script->bFetching = false;
-		Fail(Script, LongHoldSeconds);
+		Fail(Script, LongHoldSeconds, TEXT("The Mod Script runtime is not running."));
 		return;
 	}
 	const TWeakObjectPtr<UCrowdyModScripts> WeakThis(this);
@@ -2454,14 +2467,14 @@ void UCrowdyModScripts::Start(const TSharedRef<FScript>& Script, const FPlatform
 			Pinned->bFetching = false;
 			if (!Module.IsValid())
 			{
-				Self->Fail(Pinned.ToSharedRef(), LongHoldSeconds);
+				Self->Fail(Pinned.ToSharedRef(), LongHoldSeconds, Error.IsEmpty() ? FString(TEXT("The module could not be compiled.")) : Error);
 				return;
 			}
 			Self->StartRun(Pinned.ToSharedRef(), Module.ToSharedRef(), FuelPerDispatch, TickIntervalMs);
 		});
 #else
 	Script->bFetching = false;
-	Fail(Script, LongHoldSeconds);
+	Fail(Script, LongHoldSeconds, TEXT("Mod Scripts are not supported on this platform."));
 #endif
 }
 
@@ -2506,6 +2519,7 @@ void UCrowdyModScripts::StartRun(const TSharedRef<FScript>& Script, const TShare
 		const TSharedPtr<FScript> Pinned = Weak.Pin();
 		return Self && Pinned ? Self->AnswerHostCall(*Pinned, Generation, Call) : CrowdyModScriptsHostCalls::Denied(TEXT("the script stopped"));
 	};
+	Host.Log = Script->Log;
 	Host.OnStopped = [Weak, Generation](ECrowdyModScriptRunEnd End, const FString& Message)
 	{
 		const TSharedPtr<FScript> Pinned = Weak.Pin();
@@ -2514,6 +2528,7 @@ void UCrowdyModScripts::StartRun(const TSharedRef<FScript>& Script, const TShare
 			return;
 		}
 		Pinned->bEnded = true;
+		Pinned->EndMessage = Message;
 		Pinned->EndReason = End == ECrowdyModScriptRunEnd::CircuitOpen ? ECrowdyModScriptStop::CircuitOpen : ECrowdyModScriptStop::Failed;
 	};
 	FString Error;
@@ -2521,7 +2536,7 @@ void UCrowdyModScripts::StartRun(const TSharedRef<FScript>& Script, const TShare
 	if (!Run.IsValid())
 	{
 		Script->bRunning = false;
-		Fail(Script, LongHoldSeconds);
+		Fail(Script, LongHoldSeconds, Error);
 		return;
 	}
 	Script->Run = Run;
@@ -2862,9 +2877,11 @@ void UCrowdyModScripts::DrainClicks()
 	}
 }
 
-void UCrowdyModScripts::Fail(const TSharedRef<FScript>& Script, double HoldSeconds)
+void UCrowdyModScripts::Fail(const TSharedRef<FScript>& Script, double HoldSeconds, const FString& Message)
 {
 	Script->HoldUntil = Now() + HoldSeconds;
+	Script->LastStop = ECrowdyModScriptStop::Failed;
+	Script->LastMessage = Message;
 	FCrowdyModScript Failed = Script->Info;
 	Failed.ModId = Script->Row.ModId;
 	Failed.Name = Script->Row.Name;
@@ -2882,6 +2899,9 @@ void UCrowdyModScripts::StopRun(const TSharedRef<FScript>& Script, ECrowdyModScr
 	const bool bWasRunning = Script->bRunning;
 	Script->bRunning = false;
 	Script->bEnded = false;
+	Script->LastStop = Reason;
+	Script->LastMessage = MoveTemp(Script->EndMessage);
+	Script->EndMessage.Reset();
 	Script->Clicks.Reset();
 #if WITH_CROWDY_MOD_SCRIPT_RUNTIME
 	if (Run.IsValid())
@@ -3099,4 +3119,115 @@ void UCrowdyModScripts::RefuseAuthor(int64 AuthorId, const FPlatformReply& Reply
 		Error.Message = Reply.Message;
 		OnModScriptError.Broadcast(Error);
 	}
+}
+
+namespace
+{
+	// Runs even after the world ends, so a Blueprint node waiting on it is never stranded.
+	template <typename AnswerType>
+	void ScriptsAnswerLater(TFunction<void(const AnswerType&)> OnDone, AnswerType Answer)
+	{
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([OnDone = MoveTemp(OnDone), Answer = MoveTemp(Answer)](float)
+		{
+			OnDone(Answer);
+			return false;
+		}));
+	}
+}
+
+#if WITH_CROWDY_MOD_SCRIPT_RUNTIME
+static_assert(UCrowdyModScripts::MaxLogLines == FCrowdyModScriptLogRing::Capacity, "the ring holds the lines the read promises");
+#endif
+
+FCrowdyModScriptStatus UCrowdyModScripts::StatusOf(const FScript& Script, int64 GridId)
+{
+	FCrowdyModScriptStatus Status;
+	if (Script.bRunning)
+	{
+		Status.Script = Script.Info;
+		Status.State = ECrowdyModScriptState::Running;
+		return Status;
+	}
+	FCrowdyModScript& Info = Status.Script;
+	Info.ModId = Script.Row.ModId;
+	Info.Name = Script.Row.Name;
+	Info.AuthorId = Script.Row.AuthorId;
+	Info.Version = Script.Row.Version;
+	Info.Calls = Script.Row.Calls;
+	Info.Digest = Script.Row.Digest.ToLower();
+	Info.Generation = Script.Info.Generation;
+	Status.Message = Script.LastMessage;
+	const bool bCircuit = Script.LastStop == ECrowdyModScriptStop::CircuitOpen;
+	const bool bErred = Script.LastStop == ECrowdyModScriptStop::Failed;
+	Status.State = bCircuit ? ECrowdyModScriptState::CircuitOpen : bErred ? ECrowdyModScriptState::Erred : ECrowdyModScriptState::Stopped;
+	Status.StopReason = bCircuit || bErred ? ECrowdyModScriptStop::Stopped : Script.LastStop;
+	Status.Script.GridId = GridId;
+	return Status;
+}
+
+void UCrowdyModScripts::GetScriptStatus(int64 GridId, TFunction<void(const FCrowdyModScriptStatusList&)> OnDone)
+{
+	FCrowdyModScriptStatusList Answer;
+	Answer.GridId = GridId;
+	if (GridId == 0 || GridId != Grid.GridId)
+	{
+		Answer.Result = ECrowdyModScriptReadResult::NotInGrid;
+		Answer.Message = TEXT("The player is not standing in that grid.");
+		ScriptsAnswerLater<FCrowdyModScriptStatusList>(MoveTemp(OnDone), MoveTemp(Answer));
+		return;
+	}
+	if (!IsAvailable())
+	{
+		Answer.Result = ECrowdyModScriptReadResult::Failed;
+		Answer.Message = TEXT("The Mod Script runtime is not running.");
+		ScriptsAnswerLater<FCrowdyModScriptStatusList>(MoveTemp(OnDone), MoveTemp(Answer));
+		return;
+	}
+	Answer.Result = ECrowdyModScriptReadResult::Success;
+	for (const TPair<FString, TSharedRef<FScript>>& Pair : Scripts)
+	{
+		Answer.Scripts.Add(StatusOf(*Pair.Value, GridId));
+	}
+	Answer.Scripts.Sort([](const FCrowdyModScriptStatus& A, const FCrowdyModScriptStatus& B) { return A.Script.ModId < B.Script.ModId; });
+	ScriptsAnswerLater<FCrowdyModScriptStatusList>(MoveTemp(OnDone), MoveTemp(Answer));
+}
+
+void UCrowdyModScripts::GetScriptLog(int64 GridId, const FString& ModId, TFunction<void(const FCrowdyModScriptLog&)> OnDone)
+{
+	FCrowdyModScriptLog Answer;
+	Answer.ModId = ModId;
+	const TSharedRef<FScript>* Listed = GridId != 0 && GridId == Grid.GridId ? Scripts.Find(ModId) : nullptr;
+	if (!Listed)
+	{
+		Answer.Result = ECrowdyModScriptReadResult::NotInGrid;
+		Answer.Message = TEXT("The player is not standing in a grid that lists that Mod Script.");
+		ScriptsAnswerLater<FCrowdyModScriptLog>(MoveTemp(OnDone), MoveTemp(Answer));
+		return;
+	}
+	Answer.Name = (*Listed)->Row.Name;
+	Answer.AuthorId = (*Listed)->Row.AuthorId;
+#if WITH_CROWDY_MOD_SCRIPT_RUNTIME
+	if (IsAvailable())
+	{
+		TArray<FCrowdyModScriptLogEntry> Entries;
+		int32 Evicted = 0;
+		int32 RateDropped = 0;
+		(*Listed)->Log->Read(Entries, Evicted, RateDropped);
+		Answer.Result = ECrowdyModScriptReadResult::Success;
+		Answer.DroppedLines = Evicted + RateDropped;
+		Answer.Lines.Reserve(Entries.Num());
+		for (FCrowdyModScriptLogEntry& Entry : Entries)
+		{
+			FCrowdyModScriptLogLine& Line = Answer.Lines.AddDefaulted_GetRef();
+			Line.AtMs = Entry.AtMs;
+			Line.Level = Entry.Level;
+			Line.Text = MoveTemp(Entry.Text);
+		}
+		ScriptsAnswerLater<FCrowdyModScriptLog>(MoveTemp(OnDone), MoveTemp(Answer));
+		return;
+	}
+#endif
+	Answer.Result = ECrowdyModScriptReadResult::Failed;
+	Answer.Message = TEXT("The Mod Script runtime is not running.");
+	ScriptsAnswerLater<FCrowdyModScriptLog>(MoveTemp(OnDone), MoveTemp(Answer));
 }

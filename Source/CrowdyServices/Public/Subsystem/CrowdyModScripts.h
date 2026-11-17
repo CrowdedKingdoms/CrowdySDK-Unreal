@@ -34,6 +34,9 @@ public:
 	/** How often the grid's Mod Scripts are listed again while the player stands in it. */
 	static constexpr double ListSeconds = 10.0;
 
+	/** The most log lines kept in memory per Mod Script. */
+	static constexpr int32 MaxLogLines = 200;
+
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
@@ -76,6 +79,20 @@ public:
 	/** Stops all of the author's scripts on this grid and takes back the player's trust in the author. */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Mod Scripts")
 	void ForgetAuthor(int64 AuthorId);
+
+	/**
+	 * Where each of a grid's Mod Scripts is. OnDone runs once on the game thread, never inside the call. OnDone runs even
+	 * after this world ends; capture weakly. Every script the grid lists is answered, agreed to or not. NotInGrid unless
+	 * GridId is the grid the player stands in; Failed when the Mod Script runtime is not running.
+	 */
+	void GetScriptStatus(int64 GridId, TFunction<void(const FCrowdyModScriptStatusList&)> OnDone);
+
+	/**
+	 * A Mod Script's last log lines, oldest first, from memory. OnDone runs as for GetScriptStatus. OnDone runs even after
+	 * this world ends; capture weakly. The lines outlive each run of the script, so a crash's last lines stay readable.
+	 * NotInGrid unless GridId is the grid the player stands in and it lists ModId.
+	 */
+	void GetScriptLog(int64 GridId, const FString& ModId, TFunction<void(const FCrowdyModScriptLog&)> OnDone);
 
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Mod Scripts")
 	FOnCrowdyModScriptPrompt OnModScriptPrompt;
@@ -161,7 +178,8 @@ private:
 	int32 UnsentEdits() const;
 	void DrainClicks();
 	void ClearFromHost();
-	void Fail(const TSharedRef<FScript>& Script, double HoldSeconds);
+	void Fail(const TSharedRef<FScript>& Script, double HoldSeconds, const FString& Message);
+	static FCrowdyModScriptStatus StatusOf(const FScript& Script, int64 GridId);
 	void StopRun(const TSharedRef<FScript>& Script, ECrowdyModScriptStop Reason);
 	void RefuseScript(const FString& ModId, const FPlatformReply& Reply, bool bSameGrid);
 	void RefuseAuthor(int64 AuthorId, const FPlatformReply& Reply);
