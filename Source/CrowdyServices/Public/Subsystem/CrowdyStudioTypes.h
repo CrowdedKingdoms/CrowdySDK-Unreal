@@ -21,7 +21,9 @@ enum class ECrowdyStudioResult : uint8
 	/** The answer was malformed, so nothing from it is returned. */
 	BadReply,
 	/** This SDK version does not carry the call yet, so nothing was sent. */
-	NotBuilt
+	NotBuilt,
+	/** Get Agent Boot only: no model is available to the app (its agent policy and the platform's together), so the agent cannot start. */
+	NoModel
 };
 
 /** Whether a run is a draft test on the grid or a live deploy. Both deploy for real. */

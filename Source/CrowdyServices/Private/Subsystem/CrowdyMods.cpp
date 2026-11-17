@@ -364,6 +364,7 @@ namespace
 		case ECrowdyStudioResult::Refused:     return ECrowdyModResult::Refused;
 		case ECrowdyStudioResult::BadReply:    return ECrowdyModResult::BadReply;
 		case ECrowdyStudioResult::NotBuilt:    return ECrowdyModResult::NotBuilt;
+		case ECrowdyStudioResult::NoModel:     return ECrowdyModResult::Refused;
 		default:                               return ECrowdyModResult::Failed;
 		}
 	}

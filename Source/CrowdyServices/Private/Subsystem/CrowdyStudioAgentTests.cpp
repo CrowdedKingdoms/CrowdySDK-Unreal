@@ -324,6 +324,8 @@ bool FCrowdyStudioAgentModelFailureTest::RunTest(const FString& Parameters)
 	FAgentRig Rig(AgentModelList);
 	Rig.Script({
 		TPair<int32, FString>(403, AgentModelError(TEXT("AGENT_PERMISSION_DENIED"))),
+		TPair<int32, FString>(403, AgentModelError(TEXT("AGENT_MODEL_NOT_ALLOWED"))),
+		TPair<int32, FString>(404, AgentModelError(TEXT("NOT_FOUND"))),
 		TPair<int32, FString>(402, AgentModelError(TEXT("AGENT_FUNDS_NEEDED"))),
 		TPair<int32, FString>(429, AgentModelError(TEXT("RATE_LIMITED"))),
 		TPair<int32, FString>(503, AgentModelError(TEXT("AGENT_PROVIDER_UNAVAILABLE"))),
@@ -334,6 +336,10 @@ bool FCrowdyStudioAgentModelFailureTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("a 403 is denied"), Rig.Boot.Result, ECrowdyStudioResult::Denied);
 	TestTrue(TEXT("and carries no models"), Rig.Boot.Models.IsEmpty() && Rig.Boot.GraphQLUrl.IsEmpty());
 	Rig.GetBoot();
+	TestEqual(TEXT("a policy that allows no model is NoModel, not Denied"), Rig.Boot.Result, ECrowdyStudioResult::NoModel);
+	Rig.GetBoot();
+	TestEqual(TEXT("a 404 stays NotFound"), Rig.Boot.Result, ECrowdyStudioResult::NotFound);
+	Rig.GetBoot();
 	TestEqual(TEXT("a 402 is refused"), Rig.Boot.Result, ECrowdyStudioResult::Refused);
 	Rig.GetBoot();
 	TestEqual(TEXT("a 429 is refused"), Rig.Boot.Result, ECrowdyStudioResult::Refused);
@@ -342,7 +348,7 @@ bool FCrowdyStudioAgentModelFailureTest::RunTest(const FString& Parameters)
 	Rig.GetBoot();
 	TestEqual(TEXT("a body with no list is a bad reply"), Rig.Boot.Result, ECrowdyStudioResult::BadReply);
 	Rig.GetBoot();
-	TestEqual(TEXT("an empty list is refused"), Rig.Boot.Result, ECrowdyStudioResult::Refused);
+	TestEqual(TEXT("an empty list is NoModel"), Rig.Boot.Result, ECrowdyStudioResult::NoModel);
 	TestFalse(TEXT("with a message that says why"), Rig.Boot.Message.IsEmpty());
 	return true;
 }

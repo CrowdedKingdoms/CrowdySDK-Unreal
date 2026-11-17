@@ -168,7 +168,7 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	/** The boot material: app id, API addresses, the origins the page may reach, and the app's model list. */
+	/** The boot material: app id, API addresses, the origins the page may reach, and the app's model list; NoModel when no model is available to the app. */
 	void GetAgentBoot(TFunction<void(const FCrowdyStudioAgentBoot&)> OnDone);
 
 	/** The app token for the agent, never the session token; C++ only, so no Blueprint graph can read it. Empty while signed out. */
