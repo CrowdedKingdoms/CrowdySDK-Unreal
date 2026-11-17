@@ -2,9 +2,11 @@
 
 #if WITH_DEV_AUTOMATION_TESTS && WITH_CROWDY_MOD_SCRIPT_RUNTIME
 
+#include "Algo/AllOf.h"
 #include "Async/Async.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "HAL/Event.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "Interfaces/IPluginManager.h"
@@ -12,6 +14,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Misc/ScopeLock.h"
 
 namespace CrowdyModScriptRuntimeTests
@@ -252,6 +255,33 @@ namespace CrowdyModScriptRuntimeTests
 		FCriticalSection Mutex;
 		TArray<FString> Lines;
 	};
+
+	// Sets crowdy.modscripts.trace for one test and puts the old value back.
+	class FScopedTrace final
+	{
+	public:
+		explicit FScopedTrace(const bool bOn)
+			: Var(IConsoleManager::Get().FindConsoleVariable(TEXT("crowdy.modscripts.trace")))
+			, Old(Var ? Var->GetInt() : 0)
+		{
+			if (Var)
+			{
+				Var->Set(bOn ? 1 : 0, ECVF_SetByCode);
+			}
+		}
+
+		~FScopedTrace()
+		{
+			if (Var)
+			{
+				Var->Set(Old, ECVF_SetByCode);
+			}
+		}
+
+	private:
+		IConsoleVariable* Var;
+		int32 Old;
+	};
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModScriptHelloTest, "CrowdySDK.ModScriptRuntime.HelloRunsAndCallsTheHost", CrowdyModScriptRuntimeTests::TestFlags)
@@ -467,6 +497,8 @@ bool FCrowdyModScriptBadPointerTest::RunTest(const FString& Parameters)
 	const FCrowdyModScriptResult First = Instance->Dispatch(ECrowdyModScriptExport::Tick, Fuel, 16);
 	TestEqual(TEXT("a log past guest memory traps"), First.Outcome, ECrowdyModScriptOutcome::Trap);
 	TestTrue(FString::Printf(TEXT("the trap names ck.log (%s)"), *First.Message), First.Message.Contains(TEXT("ck.log")));
+	TestTrue(FString::Printf(TEXT("a trap's message is one short line with no backtrace (%s)"), *First.Message),
+		!First.Message.Contains(TEXT("\n")) && !First.Message.Contains(TEXT("backtrace")) && First.Message.Len() <= 200);
 
 	const FCrowdyModScriptResult Second = Instance->Dispatch(ECrowdyModScriptExport::Tick, Fuel, 16);
 	TestEqual(TEXT("the instance still answers after the trap"), Second.Outcome, ECrowdyModScriptOutcome::Trap);
@@ -548,6 +580,7 @@ bool FCrowdyModScriptRunHostCallTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyModScriptRuntimeTests;
 
+	FScopedTrace Trace(true);
 	FLogCapture Capture(TEXT("HostCallTest: "));
 	TArray<FString> Requests;
 	bool bOffGameThread = false;
@@ -671,6 +704,7 @@ bool FCrowdyModScriptRunDeferredAnswerTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyModScriptRuntimeTests;
 
+	FScopedTrace Trace(true);
 	FLogCapture Capture(TEXT("DeferTest: "));
 	FCrowdyModScriptRun* Running = nullptr;
 	TArray<FCrowdyModScriptAnswer> Held;
@@ -720,6 +754,7 @@ bool FCrowdyModScriptRunWaitFreesWorkerTest::RunTest(const FString& Parameters)
 	using namespace CrowdyModScriptRuntimeTests;
 
 	// As many scripts as there are running slots each wait on an answer that has not come; a third must still run.
+	FScopedTrace Trace(true);
 	FLogCapture Capture(TEXT("WaitFreeC: "));
 	TArray<TSharedPtr<FCrowdyModScriptRun>> Waiting;
 	Waiting.Reserve(FCrowdyModScriptWorkerPool::MaxWorkers);
@@ -889,6 +924,7 @@ bool FCrowdyModScriptRunLogLimitTest::RunTest(const FString& Parameters)
 	const FString Prefix = TEXT("Chatty: ");
 	const FString ShortLine = Prefix + TEXT("line");
 	const FString Notice = Prefix + TEXT("10 log lines dropped");
+	FScopedTrace Trace(true);
 	FLogCapture Capture(Prefix);
 	TSharedPtr<FCrowdyModScriptRun> Run = StartRun(*this, TEXT("chatty.wasm"), FCrowdyModScriptRunHost(), TEXT("Chatty"));
 	if (!Run)
@@ -1092,6 +1128,7 @@ bool FCrowdyModScriptRunLogControlTest::RunTest(const FString& Parameters)
 	using namespace CrowdyModScriptRuntimeTests;
 
 	const FString Expected = TEXT("Ctl Name: one two three four");
+	FScopedTrace Trace(true);
 	FLogCapture Capture(TEXT("Ctl Name: "));
 	TSharedPtr<FCrowdyModScriptRun> Run = StartRun(*this, TEXT("logctl.wasm"), FCrowdyModScriptRunHost(), TEXT("Ctl\nName"));
 	if (!Run)
@@ -1110,7 +1147,182 @@ bool FCrowdyModScriptRunLogControlTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModScriptCacheAsyncTest, "CrowdySDK.ModScriptRuntime.GetAsyncAnswersOnTheGameThread", CrowdyModScriptRuntimeTests::TestFlags)
+// A script's text is its author's, so it stays out of every player's log file unless they turn tracing on.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModScriptRunLogTraceTest, "CrowdySDK.ModScriptRuntime.LogLinesNeedTracing", CrowdyModScriptRuntimeTests::TestFlags)
+bool FCrowdyModScriptRunLogTraceTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyModScriptRuntimeTests;
+
+	const FString Prefix = TEXT("Quiet: ");
+	FScopedTrace Trace(false);
+	FLogCapture Capture(Prefix);
+	TSharedPtr<FCrowdyModScriptRun> Run = StartRun(*this, TEXT("chatty.wasm"), FCrowdyModScriptRunHost(), TEXT("Quiet"));
+	if (!Run)
+	{
+		return false;
+	}
+
+	// Long enough for the chatty guest's 30 lines and the dropped-lines notice after its first second.
+	Pump(*Run, 1.5, true, []()
+	{
+		return false;
+	});
+	TestEqual(TEXT("with tracing off nothing the script logs, nor the dropped-lines notice, reaches the log"), Capture.GetLines().Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModScriptLogRingWrapTest, "CrowdySDK.ModScriptRuntime.LogRingKeepsTheLast200", CrowdyModScriptRuntimeTests::TestFlags)
+bool FCrowdyModScriptLogRingWrapTest::RunTest(const FString& Parameters)
+{
+	FCrowdyModScriptLogRing Ring;
+	for (int32 Index = 0; Index < 3; ++Index)
+	{
+		Ring.Add(Index, FString::Printf(TEXT("early %d"), Index));
+	}
+	TArray<FCrowdyModScriptLogEntry> Lines;
+	int32 Evicted = -1;
+	int32 RateDropped = -1;
+	Ring.Read(Lines, Evicted, RateDropped);
+	TestEqual(TEXT("a ring under capacity holds what it was given"), Lines.Num(), 3);
+	TestTrue(TEXT("oldest first, with each level"), Lines.Num() == 3 && Lines[0].Text == TEXT("early 0") && Lines[2].Text == TEXT("early 2") && Lines[2].Level == 2);
+	TestTrue(TEXT("nothing wrapped or was dropped"), Evicted == 0 && RateDropped == 0);
+
+	FCrowdyModScriptLogRing Full;
+	for (int32 Index = 0; Index < 250; ++Index)
+	{
+		Full.Add(Index % 4, FString::Printf(TEXT("line %d"), Index));
+	}
+	Full.CountRateDropped();
+	Full.CountRateDropped();
+	Full.Read(Lines, Evicted, RateDropped);
+	TestEqual(TEXT("the ring keeps 200 lines"), Lines.Num(), FCrowdyModScriptLogRing::Capacity);
+	TestEqual(TEXT("the 50 oldest fell out"), Evicted, 50);
+	TestEqual(TEXT("and the rate-limited lines are counted apart"), RateDropped, 2);
+	if (TestEqual(TEXT("the ring held 200 entries"), Lines.Num(), 200))
+	{
+		TestEqual(TEXT("it starts at the oldest line kept"), Lines[0].Text, FString(TEXT("line 50")));
+		TestEqual(TEXT("it ends at the newest"), Lines[199].Text, FString(TEXT("line 249")));
+		TestEqual(TEXT("each line keeps its own level"), Lines[1].Level, 51 % 4);
+		TestTrue(TEXT("and a time"), Lines[0].AtMs > 0);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModScriptLogRingFeedTest, "CrowdySDK.ModScriptRuntime.LogLinesReachTheRingWithTracingOff", CrowdyModScriptRuntimeTests::TestFlags)
+bool FCrowdyModScriptLogRingFeedTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyModScriptRuntimeTests;
+
+	const FString Prefix = TEXT("RingFeed: ");
+	FScopedTrace Trace(false);
+	FLogCapture Capture(Prefix);
+	const TSharedRef<FCrowdyModScriptLogRing, ESPMode::ThreadSafe> Ring = MakeShared<FCrowdyModScriptLogRing, ESPMode::ThreadSafe>();
+	FCrowdyModScriptRunHost Host;
+	Host.Log = Ring;
+	TSharedPtr<FCrowdyModScriptRun> Run = StartRun(*this, TEXT("chatty.wasm"), MoveTemp(Host), TEXT("RingFeed"));
+	if (!Run)
+	{
+		return false;
+	}
+
+	TArray<FCrowdyModScriptLogEntry> Lines;
+	int32 Evicted = 0;
+	int32 RateDropped = 0;
+	const bool bLogged = Pump(*Run, 3.0, true, [&Ring, &Lines, &Evicted, &RateDropped]()
+	{
+		Ring->Read(Lines, Evicted, RateDropped);
+		return RateDropped >= 10;
+	});
+	TestTrue(TEXT("the guest's 30 lines reached the ring"), bLogged);
+	TestEqual(TEXT("20 lines fit the rate limit"), Lines.Num(), FCrowdyModScriptRun::MaxLogLinesPerSecond);
+	TestEqual(TEXT("the 10 over it are counted as dropped"), RateDropped, 10);
+	TestEqual(TEXT("and nothing wrapped"), Evicted, 0);
+	if (Lines.Num() > 0)
+	{
+		TestEqual(TEXT("the 1,500-byte line was cut to 1,000 characters"), Lines[0].Text.Len(), FCrowdyModScriptRun::MaxLogLineChars);
+	}
+	TestTrue(TEXT("every line carries the level the guest logged"), Algo::AllOf(Lines, [](const FCrowdyModScriptLogEntry& Entry) { return Entry.Level == 1; }));
+	TestTrue(TEXT("and a time"), Algo::AllOf(Lines, [](const FCrowdyModScriptLogEntry& Entry) { return Entry.AtMs > 0; }));
+	TestEqual(TEXT("with tracing off none of it reached the log"), Capture.GetLines().Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModScriptLogRingRecycleTest, "CrowdySDK.ModScriptRuntime.LogRingSurvivesAFreshInstance", CrowdyModScriptRuntimeTests::TestFlags)
+bool FCrowdyModScriptLogRingRecycleTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyModScriptRuntimeTests;
+
+	const TSharedRef<FCrowdyModScriptLogRing, ESPMode::ThreadSafe> Ring = MakeShared<FCrowdyModScriptLogRing, ESPMode::ThreadSafe>();
+	FCrowdyModScriptRunHost Host;
+	Host.Log = Ring;
+	TSharedPtr<FCrowdyModScriptRun> Run = StartRun(*this, TEXT("recyclelog.wasm"), MoveTemp(Host), TEXT("RingRecycle"));
+	if (!Run)
+	{
+		return false;
+	}
+
+	// Each init logs one line and every tick ends on the watchdog, so a second line means a fresh instance ran init.
+	TArray<FCrowdyModScriptLogEntry> Lines;
+	int32 Evicted = 0;
+	int32 RateDropped = 0;
+	const bool bRecycled = Pump(*Run, 3.0, true, [&Ring, &Lines, &Evicted, &RateDropped]()
+	{
+		Ring->Read(Lines, Evicted, RateDropped);
+		return Lines.Num() >= 2;
+	});
+	TestTrue(TEXT("the line from the first instance is still there beside the fresh instance's"), bRecycled);
+	TestTrue(TEXT("both at the level the guest logged"), Algo::AllOf(Lines, [](const FCrowdyModScriptLogEntry& Entry) { return Entry.Text == TEXT("boot") && Entry.Level == 2; }));
+	TestTrue(TEXT("the run kept running"), Run->IsRunning());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModScriptLogRingStopTest, "CrowdySDK.ModScriptRuntime.LogLinesAfterStopStayOutOfTheRing", CrowdyModScriptRuntimeTests::TestFlags)
+bool FCrowdyModScriptLogRingStopTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyModScriptRuntimeTests;
+
+	const TSharedRef<FCrowdyModScriptLogRing, ESPMode::ThreadSafe> Ring = MakeShared<FCrowdyModScriptLogRing, ESPMode::ThreadSafe>();
+	FEvent* Entered = FPlatformProcess::GetSynchEventFromPool(true);
+	FEvent* Release = FPlatformProcess::GetSynchEventFromPool(true);
+	ON_SCOPE_EXIT
+	{
+		Release->Trigger();
+		FPlatformProcess::ReturnSynchEventToPool(Entered);
+		FPlatformProcess::ReturnSynchEventToPool(Release);
+	};
+	FCrowdyModScriptRunHost Host;
+	Host.Log = Ring;
+	Host.OnHostCall = [](TConstArrayView<uint8>) { return TArray<uint8>(); };
+	// Holds the guest on the worker until the run is stopped, then lets it carry on to its log call.
+	Host.OnHostCallWorker = [Entered, Release](TArray<uint8>&)
+	{
+		Entered->Trigger();
+		Release->Wait(3000);
+		return false;
+	};
+	TSharedPtr<FCrowdyModScriptRun> Run = StartRun(*this, TEXT("logafter.wasm"), MoveTemp(Host), TEXT("RingStop"));
+	if (!Run)
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("the guest reached its host call"), Entered->Wait(3000)))
+	{
+		return false;
+	}
+	Run->Stop();
+	Release->Trigger();
+	const bool bEnded = Pump(*Run, 3.0, false, [&Run]() { return !Run->IsDispatching(); });
+	TestTrue(TEXT("the dispatch ended"), bEnded);
+
+	TArray<FCrowdyModScriptLogEntry> Lines;
+	int32 Evicted = 0;
+	int32 RateDropped = 0;
+	Ring->Read(Lines, Evicted, RateDropped);
+	TestEqual(TEXT("a line logged after Stop never reaches the ring"), Lines.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModScriptCacheAsyncTest,"CrowdySDK.ModScriptRuntime.GetAsyncAnswersOnTheGameThread", CrowdyModScriptRuntimeTests::TestFlags)
 bool FCrowdyModScriptCacheAsyncTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyModScriptRuntimeTests;

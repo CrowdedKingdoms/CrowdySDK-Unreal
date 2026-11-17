@@ -6,6 +6,7 @@
 #include "CrowdyModScriptsTestTypes.h"
 #include "Dom/JsonObject.h"
 #include "Async/TaskGraphInterfaces.h"
+#include "Containers/Ticker.h"
 #include "Engine/GameInstance.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/AutomationTest.h"
@@ -1721,6 +1722,38 @@ bool FCrowdyModScriptsCompileOffThreadTest::RunTest(const FString& Parameters)
 
 namespace CrowdyModScriptsTests
 {
+	FCrowdyModScriptStatusList ReadStatus(FHarness& Harness, int64 GridId)
+	{
+		FCrowdyModScriptStatusList Answer;
+		bool bAnswered = false;
+		Harness.Scripts->GetScriptStatus(GridId, [&Answer, &bAnswered](const FCrowdyModScriptStatusList& Read)
+		{
+			Answer = Read;
+			bAnswered = true;
+		});
+		for (int32 Tick = 0; Tick < 4 && !bAnswered; ++Tick)
+		{
+			FTSTicker::GetCoreTicker().Tick(0.f);
+		}
+		return Answer;
+	}
+
+	FCrowdyModScriptLog ReadLog(FHarness& Harness, int64 GridId, const FString& ModId)
+	{
+		FCrowdyModScriptLog Answer;
+		bool bAnswered = false;
+		Harness.Scripts->GetScriptLog(GridId, ModId, [&Answer, &bAnswered](const FCrowdyModScriptLog& Read)
+		{
+			Answer = Read;
+			bAnswered = true;
+		});
+		for (int32 Tick = 0; Tick < 4 && !bAnswered; ++Tick)
+		{
+			FTSTicker::GetCoreTicker().Tick(0.f);
+		}
+		return Answer;
+	}
+
 	/** Ticks one simulated frame of 10 ms at a time until Done or Frames pass. */
 	void RunFrames(FHarness& Harness, double& NowSeconds, int32 Frames, const TFunctionRef<bool()> Done)
 	{
@@ -1772,6 +1805,9 @@ bool FCrowdyModScriptsFloodOpensCircuitTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("and only the group's cap reached the host"), Harness.Recorder->Hud.Num(), 120);
 	TestEqual(TEXT("refused calls never reach the game thread"), Harness.Scripts->GetHostCallsForTest(TEXT("a")), 120);
 	TestTrue(TEXT("which is cleared"), Harness.Recorder->Cleared.Contains(TEXT("a")));
+	const FCrowdyModScriptStatusList Held = ReadStatus(Harness, PlotId);
+	TestTrue(TEXT("and its status is Circuit Open, with the reason in words"),
+		Held.Scripts.Num() == 1 && Held.Scripts[0].State == ECrowdyModScriptState::CircuitOpen && Held.Scripts[0].Message.Contains(TEXT("host calls")));
 	return true;
 }
 
@@ -2000,6 +2036,85 @@ bool FCrowdyModScriptsPlatformCallsWaitTest::RunTest(const FString& Parameters)
 	RunFrames(Harness, NowSeconds, 50, []() { return false; });
 	TestEqual(TEXT("and a player with no state reads no row, so nothing more is sent"), Sent.Num(), 4);
 	TestTrue(TEXT("and the script still runs"), Harness.IsRunning(TEXT("a")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModScriptsStatusRowsTest, "CrowdySDK.ModScripts.StatusListsEveryScriptWithItsStopReason", Flags)
+bool FCrowdyModScriptsStatusRowsTest::RunTest(const FString& Parameters)
+{
+	FFakeReply Hello;
+	FHarness Harness;
+	if (!HelloArtifact(*this, Hello) || !TestTrue(TEXT("entered"), Harness.Enter()))
+	{
+		return false;
+	}
+	FRowSpec Running = Agreed(TEXT("a"));
+	Running.Digest = Hello.Digest;
+	const TArray<FRowSpec> Rows = {Running, Agreed(TEXT("b")), Unagreed(TEXT("c"))};
+	if (!TestTrue(TEXT("listed and a runs"), Harness.List(Rows) && FetchAndRun(Harness, TEXT("a"), Hello)))
+	{
+		return false;
+	}
+	Harness.Fake->Answer(ECrowdyModScriptsCall::FetchArtifact, Refused(TEXT("NOT_FOUND")), TEXT("b"));
+
+	const FCrowdyModScriptStatusList Status = ReadStatus(Harness, PlotId);
+	TestTrue(TEXT("the grid's status is a success"), Status.Result == ECrowdyModScriptReadResult::Success);
+	TestEqual(TEXT("naming the grid"), Status.GridId, PlotId);
+	if (!TestEqual(TEXT("every listed script has a row, by mod id"), Status.Scripts.Num(), 3))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a runs"), Status.Scripts[0].Script.ModId == TEXT("a") && Status.Scripts[0].State == ECrowdyModScriptState::Running);
+	TestTrue(TEXT("with its name and generation"), Status.Scripts[0].Script.Name == TEXT("a-name") && Status.Scripts[0].Script.Generation > 0);
+	TestTrue(TEXT("a failed fetch is Erred"), Status.Scripts[1].Script.ModId == TEXT("b") && Status.Scripts[1].State == ECrowdyModScriptState::Erred);
+	TestTrue(TEXT("and says how"), Status.Scripts[1].Message.Contains(TEXT("NOT_FOUND")));
+	TestTrue(TEXT("an unagreed script is Stopped"), Status.Scripts[2].State == ECrowdyModScriptState::Stopped && Status.Scripts[2].Message.IsEmpty());
+
+	TestTrue(TEXT("another grid is not in grid"), ReadStatus(Harness, PlotId + 1).Result == ECrowdyModScriptReadResult::NotInGrid);
+
+	// The listing now serves a different module for a, so its run is replaced.
+	Harness.Scripts->TickForTest(10.0);
+	TestTrue(TEXT("a is listed again with other code"), Harness.List({Agreed(TEXT("a")), Agreed(TEXT("b")), Unagreed(TEXT("c"))}));
+	const FCrowdyModScriptStatusList Changed = ReadStatus(Harness, PlotId);
+	if (TestEqual(TEXT("the rows stay"), Changed.Scripts.Num(), 3))
+	{
+		TestTrue(TEXT("a stopped because its code changed"),
+			Changed.Scripts[0].State == ECrowdyModScriptState::Stopped && Changed.Scripts[0].StopReason == ECrowdyModScriptStop::Changed);
+	}
+	Harness.Scripts->LeaveGrid();
+	TestTrue(TEXT("a grid left has no status"), ReadStatus(Harness, PlotId).Result == ECrowdyModScriptReadResult::NotInGrid);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModScriptsLogReadTest, "CrowdySDK.ModScripts.LogReadsTheScriptsRing", Flags)
+bool FCrowdyModScriptsLogReadTest::RunTest(const FString& Parameters)
+{
+	FFakeReply Hello;
+	FHarness Harness;
+	if (!HelloArtifact(*this, Hello)
+		|| !TestTrue(TEXT("entered and running"), Harness.Enter() && ListAndRun(Harness, {Agreed(TEXT("a"))}, Hello) && Harness.IsRunning(TEXT("a"))))
+	{
+		return false;
+	}
+	double NowSeconds = 0.0;
+	FCrowdyModScriptLog Log;
+	RunFrames(Harness, NowSeconds, 300, [&Harness, &Log]()
+	{
+		Log = ReadLog(Harness, PlotId, TEXT("a"));
+		return Log.Lines.Num() > 0;
+	});
+	TestTrue(TEXT("the log read succeeds"), Log.Result == ECrowdyModScriptReadResult::Success);
+	TestEqualSensitive(TEXT("and names its script"), Log.ModId, FString(TEXT("a")));
+	TestTrue(TEXT("with its name and author, so a reader can pick the logs it trusts"), Log.Name == TEXT("a-name") && Log.AuthorId == AuthorA);
+	if (TestTrue(TEXT("the script's line is there"), Log.Lines.Num() > 0))
+	{
+		TestEqualSensitive(TEXT("with its text"), Log.Lines[0].Text, FString(TEXT("hello init")));
+		TestTrue(TEXT("its level and time"), Log.Lines[0].Level == 1 && Log.Lines[0].AtMs > 0);
+	}
+	TestTrue(TEXT("a mod the grid does not list is not in grid"), ReadLog(Harness, PlotId, TEXT("zz")).Result == ECrowdyModScriptReadResult::NotInGrid);
+	TestTrue(TEXT("another grid is not in grid"), ReadLog(Harness, PlotId + 1, TEXT("a")).Result == ECrowdyModScriptReadResult::NotInGrid);
+	Harness.Scripts->LeaveGrid();
+	TestTrue(TEXT("leaving the grid drops the lines"), ReadLog(Harness, PlotId, TEXT("a")).Result == ECrowdyModScriptReadResult::NotInGrid);
 	return true;
 }
 

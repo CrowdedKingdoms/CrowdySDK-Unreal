@@ -18,6 +18,43 @@ namespace
 	}
 }
 
+FCrowdyModScriptLogRing::FCrowdyModScriptLogRing()
+{
+	Slots.SetNum(Capacity);
+}
+
+void FCrowdyModScriptLogRing::Add(int32 Level, FString&& Text)
+{
+	const int64 AtMs = FCrowdyModScriptRuntime::UnixNowMs();
+	FScopeLock Guard(&Lock);
+	const bool bFull = Held == Capacity;
+	FCrowdyModScriptLogEntry& Slot = Slots[bFull ? Head : (Head + Held) % Capacity];
+	Slot.AtMs = AtMs;
+	Slot.Level = Level;
+	Slot.Text = MoveTemp(Text);
+	Head = bFull ? (Head + 1) % Capacity : Head;
+	Held += bFull ? 0 : 1;
+	Evicted += bFull ? 1 : 0;
+}
+
+void FCrowdyModScriptLogRing::CountRateDropped()
+{
+	FScopeLock Guard(&Lock);
+	++RateDropped;
+}
+
+void FCrowdyModScriptLogRing::Read(TArray<FCrowdyModScriptLogEntry>& OutLines, int32& OutEvicted, int32& OutRateDropped) const
+{
+	FScopeLock Guard(&Lock);
+	OutLines.Reset(Held);
+	for (int32 Index = 0; Index < Held; ++Index)
+	{
+		OutLines.Add(Slots[(Head + Index) % Capacity]);
+	}
+	OutEvicted = Evicted;
+	OutRateDropped = RateDropped;
+}
+
 // The part of a run that workers touch. The game thread's FCrowdyModScriptRun never reaches a worker.
 struct FCrowdyModScriptRunCore
 {
@@ -36,18 +73,19 @@ struct FCrowdyModScriptRunCore
 		Answered
 	};
 
-	explicit FCrowdyModScriptRunCore(const FString& InName)
+	FCrowdyModScriptRunCore(const FString& InName, TSharedPtr<FCrowdyModScriptLogRing, ESPMode::ThreadSafe> InRing)
 		: Name(CrowdyModScriptTrace::Printable(InName))
 		, CallDone(FPlatformProcess::GetSynchEventFromPool(false))
+		, Ring(MoveTemp(InRing))
 	{
 	}
 
 	static FCrowdyModScriptHost MakeInstanceHost(const TSharedRef<FCrowdyModScriptRunCore>& RunCore, const FCrowdyModScriptRunHost& Callbacks)
 	{
 		FCrowdyModScriptHost InstanceHost;
-		InstanceHost.OnLog = [RunCore](int32, const FString& Line)
+		InstanceHost.OnLog = [RunCore](int32 Level, const FString& Line)
 		{
-			RunCore->AddLogLine(Line);
+			RunCore->AddLogLine(Level, Line);
 		};
 		if (!Callbacks.OnHostCall)
 		{
@@ -88,6 +126,7 @@ struct FCrowdyModScriptRunCore
 
 	const FString Name;
 	FEvent* const CallDone;
+	const TSharedPtr<FCrowdyModScriptLogRing, ESPMode::ThreadSafe> Ring;
 	std::atomic<int32> InFlight{0};
 
 	// Guarded by Lock. CallBytes holds the request until it is taken, then the answer.
@@ -218,22 +257,47 @@ struct FCrowdyModScriptRunCore
 
 	void ReportDropped(int32 Dropped) const
 	{
-		UE_CLOG(Dropped > 0, LogCrowdyModScripts, Log, TEXT("%s: %d log lines dropped"), *Name, Dropped);
+		UE_CLOG(Dropped > 0 && CrowdyModScriptTrace::Enabled(), LogCrowdyModScripts, Log, TEXT("%s: %d log lines dropped"), *Name, Dropped);
 	}
 
-	void AddLogLine(const FString& Line)
+	// Worker thread.
+	void AddLogLine(int32 Level, const FString& Line)
 	{
 		int32 Dropped = 0;
 		bool bKeep = false;
 		{
 			FScopeLock Guard(&Lock);
+			// A replaced run's last dispatch must not write into the ring its successor shares.
+			if (bStopped)
+			{
+				return;
+			}
 			Dropped = RollLogWindow(FPlatformTime::Seconds());
 			bKeep = LogLines < FCrowdyModScriptRun::MaxLogLinesPerSecond;
 			LogLines += bKeep ? 1 : 0;
 			LogDropped += bKeep ? 0 : 1;
 		}
 		ReportDropped(Dropped);
-		UE_CLOG(bKeep, LogCrowdyModScripts, Log, TEXT("%s: %s"), *Name, *Line.Left(FCrowdyModScriptRun::MaxLogLineChars));
+		if (!bKeep)
+		{
+			if (Ring)
+			{
+				Ring->CountRateDropped();
+			}
+			return;
+		}
+		const bool bTrace = CrowdyModScriptTrace::Enabled();
+		if (!Ring && !bTrace)
+		{
+			return;
+		}
+		FString Text = Line.Left(FCrowdyModScriptRun::MaxLogLineChars);
+		// A script's own text reaches the game's log only while tracing is on.
+		UE_CLOG(bTrace, LogCrowdyModScripts, Log, TEXT("%s: %s"), *Name, *Text);
+		if (Ring)
+		{
+			Ring->Add(Level, MoveTemp(Text));
+		}
 	}
 
 	void FlushLog()
@@ -269,7 +333,7 @@ TSharedPtr<FCrowdyModScriptRun> FCrowdyModScriptRun::Start(const TSharedRef<FCro
 		return nullptr;
 	}
 
-	TSharedRef<FCrowdyModScriptRunCore> RunCore = MakeShared<FCrowdyModScriptRunCore>(Name);
+	TSharedRef<FCrowdyModScriptRunCore> RunCore = MakeShared<FCrowdyModScriptRunCore>(Name, Host.Log);
 	TSharedPtr<FCrowdyModScriptInstance> NewInstance = FCrowdyModScriptInstance::Create(Module, FCrowdyModScriptRunCore::MakeInstanceHost(RunCore, Host), OutError);
 	if (!NewInstance)
 	{
@@ -539,8 +603,9 @@ void FCrowdyModScriptRun::EndRun(ECrowdyModScriptRunEnd Reason, const FString& M
 {
 	TFunction<void(ECrowdyModScriptRunEnd, const FString&)> OnStopped = MoveTemp(Callbacks.OnStopped);
 	Stop();
-	UE_LOG(LogCrowdyModScripts, Log, TEXT("%s: stopped (%s), %s"), *Core->Name,
-		Reason == ECrowdyModScriptRunEnd::InitFailed ? TEXT("init failed") : TEXT("circuit open"), *Message);
+	const TCHAR* ReasonName = Reason == ECrowdyModScriptRunEnd::InitFailed ? TEXT("init failed") : TEXT("circuit open");
+	UE_LOG(LogCrowdyModScripts, Log, TEXT("%s: stopped (%s)"), *Core->Name, ReasonName);
+	UE_CLOG(CrowdyModScriptTrace::Enabled(), LogCrowdyModScripts, Log, TEXT("%s: stop detail: %s"), *Core->Name, *Message);
 	if (OnStopped)
 	{
 		OnStopped(Reason, Message);

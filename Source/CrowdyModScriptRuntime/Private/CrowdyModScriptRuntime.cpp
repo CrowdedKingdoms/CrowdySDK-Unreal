@@ -259,6 +259,42 @@ namespace
 		return Result;
 	}
 
+	// A numbered line ("3: ...") is a backtrace frame before "Caused by:" and one link of the cause chain after it.
+	FString WithoutNumber(const FString& Line)
+	{
+		int32 Digits = 0;
+		while (Digits < Line.Len() && FChar::IsDigit(Line[Digits]))
+		{
+			++Digits;
+		}
+		return Digits > 0 && Line.Mid(Digits).StartsWith(TEXT(":")) ? Line.Mid(Digits + 1).TrimStart() : FString();
+	}
+
+	// One short line naming why the guest stopped: the root of the cause chain after "Caused by:" when there is one, else
+	// the first line that is neither the backtrace's header nor one of its frames, whose function names the guest chose.
+	FString GuestSummary(const FString& Text)
+	{
+		constexpr int32 MaxSummaryChars = 200;
+		TArray<FString> Lines;
+		Text.ParseIntoArrayLines(Lines, true);
+		FString Summary;
+		const int32 CausedBy = Lines.IndexOfByPredicate([](const FString& Line) { return Line.TrimStartAndEnd().StartsWith(TEXT("Caused by:")); });
+		for (int32 Index = CausedBy + 1; CausedBy != INDEX_NONE && Index < Lines.Num(); ++Index)
+		{
+			const FString Line = Lines[Index].TrimStartAndEnd();
+			const FString Link = WithoutNumber(Line);
+			const FString Cause = Link.IsEmpty() ? Line : Link;
+			Summary = Cause.IsEmpty() || Cause.Contains(TEXT("backtrace")) ? Summary : Cause;
+		}
+		for (int32 Index = 0; CausedBy == INDEX_NONE && Index < Lines.Num() && Summary.IsEmpty(); ++Index)
+		{
+			const FString Line = Lines[Index].TrimStartAndEnd();
+			const bool bFrame = !WithoutNumber(Line).IsEmpty() || Line.StartsWith(TEXT("at "));
+			Summary = bFrame || Line.Contains(TEXT("backtrace")) ? FString() : Line;
+		}
+		return CrowdyModScriptTrace::Printable((Summary.IsEmpty() ? FString(TEXT("the guest trapped")) : Summary).Left(MaxSummaryChars));
+	}
+
 	FString TrapMessage(const wasm_trap_t* Trap)
 	{
 		wasm_message_t Message;
@@ -1149,12 +1185,12 @@ FCrowdyModScriptResult FCrowdyModScriptInstance::Dispatch(ECrowdyModScriptExport
 	if (Error)
 	{
 		Result.Outcome = ECrowdyModScriptOutcome::Trap;
-		Result.Message = TakeErrorMessage(Error);
+		Result.Message = GuestSummary(TakeErrorMessage(Error));
 	}
 	else if (Trap)
 	{
 		Result.Outcome = ReadFuel(Context, S) <= 0 ? ECrowdyModScriptOutcome::Fuel : ECrowdyModScriptOutcome::Trap;
-		Result.Message = TrapMessage(Trap);
+		Result.Message = GuestSummary(TrapMessage(Trap));
 		wasm_trap_delete(Trap);
 	}
 	if (Result.Outcome != ECrowdyModScriptOutcome::Ok && S.ForcedOutcome != ECrowdyModScriptOutcome::Ok)

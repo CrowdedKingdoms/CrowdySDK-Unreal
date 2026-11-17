@@ -239,6 +239,26 @@ struct FCrowdyCppLegalDocumentsResult
 	FString ErrorMessage;
 };
 
+/** One model the Studio agent may use in an app. ContextWindow is 0 when the platform does not state one. */
+struct FCrowdyCppStudioModel
+{
+	FString Id;
+	FString Name;
+	int32 ContextWindow = 0;
+	TArray<FString> InputModalities;
+};
+
+/** The outcome of FetchStudioModels. HttpStatus is 0 when no answer arrived; the error fields come from the error body. */
+struct FCrowdyCppStudioModelsResult
+{
+	bool bOk = false;
+	int32 HttpStatus = 0;
+	FString ErrorMessage;
+	FString ErrorCode;
+	bool bRetryable = false;
+	TArray<FCrowdyCppStudioModel> Models;
+};
+
 /**
  * Which bearer a call carries. There is one API origin and two tokens: Game is the app-scoped gameplay credential
  * (or a manage_apps token for authoring ops), Management is the user's identity session token. A call never
@@ -453,7 +473,9 @@ enum class ECrowdyCppApiDomain : uint8
 	// Grid claims and listings. Player and studio operations share it, so each operation names its plane.
 	Marketplace,
 	// A grid's own channels and tokens. Each operation names its plane.
-	Grids
+	Grids,
+	// The Studio agent's consent, metered usage and live-modding gate, under the app token.
+	CrowdyStudioAgent
 };
 
 /**
@@ -698,6 +720,12 @@ public:
 	// Fetch a Mod Script's module (execModClientArtifact) under the game bearer. Every platform refusal is NOT_FOUND;
 	// too many fetches are RATE_LIMITED.
 	FCrowdyCppRequestHandle FetchModClientArtifact(int64 AppId, const FString& ModId, TFunction<void(FCrowdyCppModClientArtifact)> OnDone);
+
+	// The models the Studio agent may use in AppId (GET /v1/model/models on the API origin) under the game bearer,
+	// which must be AppId's app token. Same OnDone contract as RunOp. The answer is read as untrusted: an oversized
+	// or malformed body fails, and at most MaxStudioModels models are kept.
+	static constexpr int32 MaxStudioModels = 256;
+	FCrowdyCppRequestHandle FetchStudioModels(int64 AppId, TFunction<void(FCrowdyCppStudioModelsResult)> OnDone);
 
 	// Rotate the current app-scoped token for a fresh one before it expires. It carries the GAME bearer rather than
 	// the session one, because the token being rotated is what authorizes its own rotation. The replacement is not

@@ -37,6 +37,7 @@
 #include "Subsystem/CrowdyAvatars.h"
 #include "Subsystem/CrowdyTeams.h"
 #include "Subsystem/CrowdyChannels.h"
+#include "Subsystem/CrowdyStudioAgent.h"
 #include "Subsystem/CrowdyProximityChat.h"
 #include "Subsystem/CrowdySafety.h"
 #include "Core/CrowdySDKBridgeSubsystem.h"
@@ -312,6 +313,13 @@ void UCrowdySDKSubsystem::CancelSignIn() const
 		Auth->CancelSignIn();
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdySDKSubsystem::SetStudioAgentForTest(UCrowdyStudioAgent* Agent)
+{
+	StudioAgentForTest = Agent;
+}
+#endif
+
 void UCrowdySDKSubsystem::Logout() const
 {
 	// End the session on the server first, while its token is still installed, then forget the durable credential:
@@ -353,6 +361,15 @@ void UCrowdySDKSubsystem::Logout() const
 	if (UCrowdyActorOwners* ActorOwners = GetGameInstance()->GetSubsystem<UCrowdyActorOwners>())
 	{
 		ActorOwners->HandleSignedOut();
+	}
+
+	UCrowdyStudioAgent* StudioAgent = GetGameInstance() ? GetGameInstance()->GetSubsystem<UCrowdyStudioAgent>() : nullptr;
+#if WITH_DEV_AUTOMATION_TESTS
+	StudioAgent = StudioAgent ? StudioAgent : StudioAgentForTest.Get();
+#endif
+	if (StudioAgent)
+	{
+		StudioAgent->HandleSignedOut();
 	}
 
 	OnLogout.Broadcast(true);

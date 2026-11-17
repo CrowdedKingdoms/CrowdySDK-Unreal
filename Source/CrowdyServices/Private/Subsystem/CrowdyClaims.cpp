@@ -17,6 +17,7 @@ namespace
 
 	// More grids than this over one box is not an answer to it; the box itself holds at most MaxSearchChunks claims.
 	constexpr int32 ClaimsMaxGridsListed = 8192;
+	constexpr int32 ClaimsMaxChannelsListed = 1024;
 
 	const TCHAR* ClaimsResultName(ECrowdyClaimResult Result)
 	{
@@ -29,6 +30,7 @@ namespace
 		case ECrowdyClaimResult::Refused:        return TEXT("Refused");
 		case ECrowdyClaimResult::Failed:         return TEXT("Failed");
 		case ECrowdyClaimResult::BadReply:       return TEXT("BadReply");
+		case ECrowdyClaimResult::NotBuilt:       return TEXT("NotBuilt");
 		}
 		return TEXT("Unknown");
 	}
@@ -189,6 +191,36 @@ namespace
 		}
 		ClaimsWarn(TEXT("Find Claims"), Result, Code);
 		OnDone(Search);
+	}
+
+	// A channel row of the asked grid, or false when its id is not a positive whole number or it belongs to another grid.
+	bool ClaimsReadChannel(const TSharedPtr<FJsonValue>& Row, int64 GridId, FCrowdyChannel& Out)
+	{
+		const TSharedPtr<FJsonObject> Object = Row.IsValid() && Row->Type == EJson::Object ? Row->AsObject() : nullptr;
+		int64 ChannelId = 0;
+		int64 RowGrid = 0;
+		if (!Object.IsValid() || !ReadWholeInt64(Object, TEXT("groupId"), ChannelId) || ChannelId <= 0
+			|| !ReadWholeInt64(Object, TEXT("gridId"), RowGrid) || RowGrid != GridId || !FCrowdyChannel::ParseFromJson(Object, Out))
+		{
+			return false;
+		}
+		Out.ChannelId = ChannelId;
+		return true;
+	}
+
+	void FinishChannels(const TFunction<void(const FCrowdyGridChannels&)>& OnDone, int64 GridId, ECrowdyClaimResult Result, const FString& Message,
+		TArray<FCrowdyChannel> Channels, const FString& Code = FString())
+	{
+		FCrowdyGridChannels Answer;
+		Answer.Result = Result;
+		Answer.GridId = GridId;
+		Answer.Message = Message;
+		if (Result == ECrowdyClaimResult::Success)
+		{
+			Answer.Channels = MoveTemp(Channels);
+		}
+		ClaimsWarn(TEXT("List Grid Channels"), Result, Code);
+		OnDone(Answer);
 	}
 
 	// Ownership reads a search keeps in flight at once: well under the 16 connections the engine's HTTP pool allows.
@@ -667,4 +699,60 @@ void UCrowdyClaims::GetGridPermissions(int64 ChunkX, int64 ChunkY, int64 ChunkZ,
 		ClaimsWarn(TEXT("Get Grid Permissions"), Result, Code);
 		OnDone(Answer);
 	});
+}
+
+void UCrowdyClaims::ListGridChannels(int64 GridId, TFunction<void(const FCrowdyGridChannels&)> OnDone)
+{
+	FCrowdyCppClient* Client = GridId > 0 && HasAppToken() ? ResolveClient() : nullptr;
+	if (!Client)
+	{
+		const bool bSignedIn = HasAppToken();
+		const bool bBadGrid = GridId <= 0;
+		DeferWhileLive(LiveSessionToken, [OnDone = MoveTemp(OnDone), GridId, bSignedIn, bBadGrid]()
+		{
+			const ECrowdyClaimResult Result = bBadGrid ? ECrowdyClaimResult::Refused : bSignedIn ? ECrowdyClaimResult::Failed : ECrowdyClaimResult::NotSignedIn;
+			const TCHAR* Message = bBadGrid ? TEXT("A grid id is a positive number.") : bSignedIn ? ClaimsNoClient : ClaimsNotSignedIn;
+			FinishChannels(OnDone, GridId, Result, Message, TArray<FCrowdyChannel>());
+		});
+		return;
+	}
+	const int64 AppId = GetAppId();
+	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), BigInt(AppId));
+	Variables->SetStringField(TEXT("gridId"), BigInt(GridId));
+
+	TWeakObjectPtr<UCrowdyClaims> WeakThis(this);
+	RunOpDeferred(*Client, ECrowdyCppApiDomain::Grids, TEXT("GridChannels"), Variables, LiveSessionToken,
+		[WeakThis, AppId, GridId, OnDone = MoveTemp(OnDone)](FCrowdyCppJsonResult Result)
+		{
+			const UCrowdyClaims* Self = WeakThis.Get();
+			if (!Self || Self->GetAppId() != AppId)
+			{
+				FinishChannels(OnDone, GridId, ECrowdyClaimResult::Failed, ClaimsAppChanged, TArray<FCrowdyChannel>());
+				return;
+			}
+			if (!Result.bTransportOk)
+			{
+				FinishChannels(OnDone, GridId, ClaimsFailureResult(Result), FailureMessage(Result), TArray<FCrowdyChannel>(), FailureCode(Result));
+				return;
+			}
+			const TSharedPtr<FJsonValue> Rows = Result.Data.IsValid() ? Result.Data->TryGetField(TEXT("gridChannels")) : nullptr;
+			if (!Rows.IsValid() || Rows->Type != EJson::Array || Rows->AsArray().Num() > ClaimsMaxChannelsListed)
+			{
+				FinishChannels(OnDone, GridId, ECrowdyClaimResult::BadReply, TEXT("The answer holds no well-formed list of channels."), TArray<FCrowdyChannel>());
+				return;
+			}
+			TArray<FCrowdyChannel> Channels;
+			for (const TSharedPtr<FJsonValue>& Row : Rows->AsArray())
+			{
+				FCrowdyChannel Channel;
+				if (!ClaimsReadChannel(Row, GridId, Channel))
+				{
+					FinishChannels(OnDone, GridId, ECrowdyClaimResult::BadReply, TEXT("The answer holds a channel that is not one of this grid's."), TArray<FCrowdyChannel>());
+					return;
+				}
+				Channels.Add(MoveTemp(Channel));
+			}
+			FinishChannels(OnDone, GridId, ECrowdyClaimResult::Success, FString(), MoveTemp(Channels));
+		});
 }

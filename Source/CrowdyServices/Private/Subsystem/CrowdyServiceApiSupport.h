@@ -5,6 +5,7 @@
 #include "CrowdyCppClient.h"
 #include "CrowdyServicesLog.h"
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Engine/GameInstance.h"
 #include "Misc/Base64.h"
 #include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h"
@@ -301,6 +302,15 @@ namespace CrowdyServiceApi
 		}));
 	}
 
+	/** Answers OnDone once on a later tick, unless LiveToken is released first, refusing a call this SDK version does not carry yet; Answer carries the request's ids. */
+	template <typename AnswerType, typename ResultType>
+	void AnswerNotBuilt(const TSharedPtr<uint8>& LiveToken, const TCHAR* Call, ResultType NotBuilt, TFunction<void(const AnswerType&)> OnDone, AnswerType Answer = AnswerType())
+	{
+		Answer.Result = NotBuilt;
+		Answer.Message = FString::Printf(TEXT("%s is not built in this SDK version yet, so nothing was sent."), Call);
+		DeferWhileLive(LiveToken, [OnDone = MoveTemp(OnDone), Answer = MoveTemp(Answer)]() { OnDone(Answer); });
+	}
+
 	/**
 	 * Sends one operation and hands its answer to Body while LiveToken lives, on a later tick when the client answers
 	 * inside the send, as it does when it cannot send at all.
@@ -348,6 +358,18 @@ namespace CrowdyServiceApi
 			return false;
 		}
 		Out = static_cast<int64>(Number);
+		return true;
+	}
+
+	/** A JSON boolean and nothing else: a number, or a string such as "yes", is unread, where TryGetBoolField would coerce it. */
+	inline bool ReadStrictBool(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, bool& bOut)
+	{
+		const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+		if (!Value.IsValid() || Value->Type != EJson::Boolean)
+		{
+			return false;
+		}
+		bOut = Value->AsBool();
 		return true;
 	}
 

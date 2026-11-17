@@ -3,6 +3,7 @@
 #include "CrowdyCppBridge.h"
 #include "CrowdyNativeExecInternal.h"
 #include "CrowdyNativeKitInternal.h"
+#include "CrowdyCppStudioStopgaps.h"
 #include "Async/Async.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
@@ -390,6 +391,9 @@ struct FCrowdyCppClient::FImpl
 	// Shared with the HTTP transport, whose completions may land off the game thread.
 	std::shared_ptr<CrowdyCppTransport::FTransportCounters> TransportCounters =
 		std::make_shared<CrowdyCppTransport::FTransportCounters>();
+
+	// The transport the GraphQL client sends on, kept for the few REST routes the API origin also serves.
+	std::shared_ptr<crowdy::graphql::IAsyncHttpTransport> HttpTransport;
 
 	// One bearer per endpoint. The underlying client holds a single auth state shared by both of its GraphQL
 	// clients, so the right token is installed immediately before each request is built rather than being seeded
@@ -1436,7 +1440,7 @@ namespace
 	// The generated set no longer names an endpoint alongside the document: there is one API origin, so an operation
 	// has nowhere else to be sent. What used to be read off that assignment is the BEARER, and that is now stated by
 	// DomainDefaultPlane and OperationPlaneException below.
-	std::string_view ResolveDocument(ECrowdyCppApiDomain Domain, const std::string& Op)
+	std::string_view GeneratedDocument(ECrowdyCppApiDomain Domain, const std::string& Op)
 	{
 		using namespace crowdy::gen;
 		switch (Domain)
@@ -1464,8 +1468,16 @@ namespace
 		case ECrowdyCppApiDomain::Exec:          return crowdy::gen::exec::documentFor(Op);
 		case ECrowdyCppApiDomain::Marketplace:   return marketplace::documentFor(Op);
 		case ECrowdyCppApiDomain::Grids:         return crowdy::gen::grids::documentFor(Op);
+		case ECrowdyCppApiDomain::CrowdyStudioAgent: return crowdy::gen::crowdyStudioAgent::documentFor(Op);
 		}
 		return std::string_view();
+	}
+
+	// The generated document when there is one, so a hand-written stopgap stops mattering once the generated set gains it.
+	std::string_view ResolveDocument(ECrowdyCppApiDomain Domain, const std::string& Op)
+	{
+		const std::string_view Generated = GeneratedDocument(Domain, Op);
+		return Generated.empty() ? CrowdyCppStudioStopgaps::Document(Domain, Op) : Generated;
 	}
 
 	// The token plane a domain's operations are issued under. The generated operation set names no endpoint and the
@@ -1488,6 +1500,7 @@ namespace
 		case ECrowdyCppApiDomain::Voxels:
 		case ECrowdyCppApiDomain::Actors:
 		case ECrowdyCppApiDomain::Teleport:
+		case ECrowdyCppApiDomain::CrowdyStudioAgent:
 			return ECrowdyCppTokenPlane::Game;
 
 		case ECrowdyCppApiDomain::Apps:
@@ -1531,7 +1544,8 @@ namespace
 			if (Op == "ExecConnect" || Op == "ExecModStarter" || Op == "ExecModBuild" || Op == "ExecModBuildStatus" || Op == "ExecModDeploy"
 				|| Op == "ExecModSetEnabled" || Op == "ExecMods" || Op == "ExecMyMods" || Op == "ExecModLogs" || Op == "ExecModDelete"
 				|| Op == "ExecGridClientMods" || Op == "ExecConsentClientMod" || Op == "ExecTrustAuthor" || Op == "ExecRevokeClientModConsent"
-				|| Op == "ExecRevokeAuthorTrust" || Op == "ExecModClientArtifact")
+				|| Op == "ExecRevokeAuthorTrust" || Op == "ExecModClientArtifact" || Op == "ExecModClientBuild"
+				|| Op == "ExecModClientDeploy" || Op == "ExecModClientDelete")
 			{
 				return ECrowdyCppTokenPlane::Game;
 			}
@@ -2104,6 +2118,7 @@ TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::Make(const FCrowdyCppClientConfig
 	Config.discoveryUrl = std::string(TCHAR_TO_UTF8(*InConfig.DiscoveryUrl));
 	Config.rediscover = FImpl::MakeRediscoverCallback(Wrapper->Impl->Rediscover);
 	Config.asyncTransport = CrowdyCppTransport::MakeFHttpTransport(Wrapper->Impl->TransportCounters);
+	Wrapper->Impl->HttpTransport = Config.asyncTransport;
 	// config.transport (the sync path) stays null; the async path never derefs it.
 	// Name the provider rather than relying on the client's build-flag fallback,
 	// which resolves to the always-failing provider if the flag is ever lost.
@@ -2138,6 +2153,7 @@ TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::MakeForTest(const FString& Canned
 	Config.rediscover = FImpl::MakeRediscoverCallback(Wrapper->Impl->Rediscover);
 	Config.asyncTransport = CrowdyCppTransport::MakeCannedTransport(std::string(TCHAR_TO_UTF8(*CannedResponseBody)),
 		static_cast<int>(HttpStatus), Capture, Wrapper->Impl->TransportCounters);
+	Wrapper->Impl->HttpTransport = Config.asyncTransport;
 	Config.crypto = &crowdy::core::opensslCrypto();
 
 	TUniquePtr<crowdy::CrowdyClient> Client = TryConstructClient(std::move(Config));
@@ -2985,6 +3001,72 @@ FCrowdyCppRequestHandle FCrowdyCppClient::FetchModClientArtifact(int64 AppId, co
 			Client.exec().modClientArtifactBytesAsync(AppIdStr, ModIdStr, std::move(Cb));
 		},
 		&MapModClientArtifact);
+}
+
+// The generated client does not provide the model list route yet, so its request and parse are written by hand.
+FCrowdyCppRequestHandle FCrowdyCppClient::FetchStudioModels(int64 AppId, TFunction<void(FCrowdyCppStudioModelsResult)> OnDone)
+{
+	FCrowdyCppStudioModelsResult Canceled;
+	Canceled.ErrorMessage = CanceledErrorMessage();
+	const TIssuedRequest<FCrowdyCppStudioModelsResult> Issued = BeginRequest<FCrowdyCppStudioModelsResult>(
+		Impl ? Impl->Requests : nullptr, TEXT("StudioModels"), MoveTemp(OnDone), MoveTemp(Canceled));
+	const TFunction<void(FCrowdyCppStudioModelsResult)>& FireOnce = Issued.Fire;
+
+	FCrowdyCppStudioModelsResult Refused;
+	const std::shared_ptr<crowdy::graphql::Dispatcher> Dispatcher =
+		Impl && Impl->IsUsable() ? Impl->Client->graphqlClient().dispatcher() : nullptr;
+	if (!Dispatcher || !Impl->HttpTransport)
+	{
+		Refused.ErrorMessage = TEXT("CrowdyCPP client is not available");
+		FireOnce(MoveTemp(Refused));
+		return Issued.Handle;
+	}
+	crowdy::graphql::HttpRequest Request;
+	if (!CrowdyCppStudioStopgaps::BuildModelsRequest(GetApiEndpoint(), AppId, Impl->GameToken, Request, Refused.ErrorMessage))
+	{
+		FireOnce(MoveTemp(Refused));
+		return Issued.Handle;
+	}
+
+	auto Deliver = [FireOnce, Reason = Issued.FailureReason](const crowdy::graphql::HttpOutcome& Out)
+	{
+		// Runs from Poll(), outside the try below, so a throw is contained here too.
+		try
+		{
+			FCrowdyCppStudioModelsResult Result = CrowdyCppStudioStopgaps::MapModels(Out);
+			*Reason = CrowdyCppStudioStopgaps::ModelsFailureReason(Result);
+			FireOnce(MoveTemp(Result));
+		}
+		catch (...)
+		{
+			FCrowdyCppStudioModelsResult Failed;
+			Failed.ErrorMessage = TEXT("the model list callback threw");
+			FireOnce(MoveTemp(Failed));
+		}
+	};
+
+	const CrowdyCppTransport::FHandOffScope HandOff(*Issued.HandOffSeconds);
+	try
+	{
+		// Posted rather than run, so the answer lands from Poll() like every GraphQL one and a closed client drops it.
+		Impl->HttpTransport->sendAsync(Request, [Dispatcher, Deliver](crowdy::graphql::HttpOutcome Out)
+		{
+			Dispatcher->post([Deliver, Out = std::move(Out)]() { Deliver(Out); });
+		});
+	}
+	catch (const std::exception& Ex)
+	{
+		FCrowdyCppStudioModelsResult Failed;
+		Failed.ErrorMessage = FString(UTF8_TO_TCHAR(Ex.what()));
+		FireOnce(MoveTemp(Failed));
+	}
+	catch (...)
+	{
+		FCrowdyCppStudioModelsResult Failed;
+		Failed.ErrorMessage = TEXT("the model list request threw a non-standard exception");
+		FireOnce(MoveTemp(Failed));
+	}
+	return Issued.Handle;
 }
 
 FString FCrowdyCppClient::GetApiEndpoint() const

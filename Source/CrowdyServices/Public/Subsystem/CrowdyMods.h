@@ -2,11 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
+#include "Subsystem/CrowdyStudioTypes.h"
 #include "CrowdyMods.generated.h"
 
 class FCrowdyCppClient;
 class FCrowdyNativeExecConnection;
 class FJsonObject;
+class UCrowdyStudioProjects;
 struct FCrowdyCppJsonResult;
 
 /** How a mod call ended. Values are only ever added at the end. */
@@ -16,7 +18,7 @@ enum class ECrowdyModResult : uint8
 	Success,
 	/** The player has no app token yet. */
 	NotSignedIn,
-	/** A missing permission, a grid that is not the player's, or a billing switch; the message names which. */
+	/** A missing permission, a grid that is not the player's, a billing switch or the app's Allow Live Modding switch; the message names which. */
 	Denied,
 	/** No such mod, build or grid. */
 	NotFound,
@@ -25,7 +27,13 @@ enum class ECrowdyModResult : uint8
 	/** The request did not complete. */
 	Failed,
 	/** The answer was malformed, so nothing from it is returned. */
-	BadReply
+	BadReply,
+	/** Another run for this app is still going, or the platform is already building one for this player; try again once it ends. */
+	Busy,
+	/** The project's saved revision or module names are not the ones asked for, so nothing was built. */
+	RevisionChanged,
+	/** This SDK version does not carry the call yet, so nothing was sent. */
+	NotBuilt
 };
 
 /** Where a mod build is. */
@@ -253,6 +261,251 @@ struct CROWDYSERVICES_API FCrowdyModCall
 	FString Message;
 };
 
+/** A mod's CLIENT half on one grid: the Mod Script its grid serves to the players standing in it. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyModClient
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString ModId;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int64 GridId = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Name;
+
+	/** The author, who owns the grid. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int64 OwnerUserId = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int64 ClientVersion = 0;
+
+	/** SHA-256 of its module, hex. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Digest;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int64 SizeBytes = 0;
+
+	/** The host calls it may make, as JSON. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString CapabilitySummaryJson;
+
+	/** What a player's consent to it names; it changes with its host calls. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString CapabilityHash;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int32 TickIntervalMs = 0;
+
+	/** Unix time in milliseconds. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int64 UpdatedAtMs = 0;
+};
+
+/** The answer to Deploy Client Mod. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyModClientInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	ECrowdyModResult Result = ECrowdyModResult::Failed;
+
+	/** The CLIENT half as it now is; empty unless Result is Success. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FCrowdyModClient Client;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Message;
+};
+
+/** Where one half of a project's run is, as read back from the platform and the running Mod Scripts. */
+UENUM(BlueprintType)
+enum class ECrowdyModRunPhase : uint8
+{
+	NotStarted UMETA(DisplayName="Not Started"),
+	Building,
+	BuildFailed UMETA(DisplayName="Build Failed"),
+	Deploying,
+	DeployFailed UMETA(DisplayName="Deploy Failed"),
+	/** Deployed, but not running now; the message says why. */
+	Deployed,
+	Running
+};
+
+/** One half of a project on one grid. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyModRunTarget
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	ECrowdyStudioTarget Target = ECrowdyStudioTarget::Server;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	ECrowdyModRunPhase Phase = ECrowdyModRunPhase::NotStarted;
+
+	/** The module's name in the project. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Module;
+
+	/** The mod it runs as; empty until deployed. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString ModId;
+
+	/** SHA-256 of the module the platform serves for this half, hex; empty when it serves none. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Digest;
+
+	/** The platform's version of what it serves for this half: the mod's version, or the CLIENT half's; 0 when it serves none. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int64 Version = 0;
+
+	/**
+	 * The project revision this SDK deployed under Digest, reported only while the platform still serves that digest,
+	 * else empty; the platform keeps no Studio revision of its own.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString RunningRevision;
+
+	/** The project's saved revision when this was read. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString SavedRevision;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Message;
+};
+
+UENUM(BlueprintType)
+enum class ECrowdyModDiagnosticSeverity : uint8
+{
+	Error,
+	Warning,
+	Info,
+	Hint
+};
+
+/** What reported a diagnostic. Values are only ever added at the end. */
+UENUM(BlueprintType)
+enum class ECrowdyModDiagnosticSource : uint8
+{
+	/** The Rust compiler, from the platform's build log. */
+	Rustc UMETA(DisplayName="rustc"),
+	/** An advisory check made on this machine, not by the compiler. */
+	Local,
+	/** The module as it ran. */
+	Runtime
+};
+
+/** One message about a project file, such as a compiler error parsed from a build log. Lines and columns count from 1. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyModDiagnostic
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	ECrowdyStudioTarget Target = ECrowdyStudioTarget::Server;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	ECrowdyModDiagnosticSource Source = ECrowdyModDiagnosticSource::Rustc;
+
+	/** The project file, with forward slashes. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Path;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int32 Line = 1;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int32 Column = 1;
+
+	/** 0 when the compiler gave no end. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int32 EndLine = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int32 EndColumn = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	ECrowdyModDiagnosticSeverity Severity = ECrowdyModDiagnosticSeverity::Error;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Message;
+
+	/** The compiler's code, such as E0425; empty when it gave none. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Code;
+};
+
+/** The answer to Run Project. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyModRun
+{
+	GENERATED_BODY()
+
+	/** Success when the run went to its end; a build that does not compile is Success with that target's Phase Build Failed. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	ECrowdyModResult Result = ECrowdyModResult::Failed;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	ECrowdyStudioRunMode Mode = ECrowdyStudioRunMode::DraftTest;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int64 GridId = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString ProjectId;
+
+	/** The revision built, which is always the one asked for. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Revision;
+
+	/** Each half the project has, SERVER first. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	TArray<FCrowdyModRunTarget> Targets;
+
+	/** The compiler's output for every half built, at most 64 KB each with the end kept. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString BuildLog;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	TArray<FCrowdyModDiagnostic> Diagnostics;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Message;
+};
+
+/** The answer to Get Project Status. */
+USTRUCT(BlueprintType)
+struct CROWDYSERVICES_API FCrowdyModProjectStatus
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	ECrowdyModResult Result = ECrowdyModResult::Failed;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	int64 GridId = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString ProjectId;
+
+	/** A run of this project is still going; Targets show where it is. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	bool bRunInFlight = false;
+
+	/** Each half the project has, SERVER first; empty unless Result is Success. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	TArray<FCrowdyModRunTarget> Targets;
+
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString Message;
+};
+
 /**
  * Players' own server code on grids they own: builds a mod from source, deploys it, switches it on and off, reads its
  * state and logs, deletes it and calls it. Every call is the signed-in player's, on the app token, and nothing is cached.
@@ -318,17 +571,72 @@ public:
 	 */
 	void CallMod(int64 GridId, const FString& Name, const FString& Method, const FString& ParamsJson, TFunction<void(const FCrowdyModCall&)> OnDone);
 
+	/**
+	 * Builds one CLIENT crate on the platform and waits for it, as Build Mod does, with the same limits and status reads.
+	 * A primitive with neither the one-run lock nor a pinned revision, and no Allow Live Modding check; the Studio dock uses RunProject.
+	 */
+	void BuildClientMod(const FString& CrateName, const TArray<FCrowdyModFile>& Files, TFunction<void(const FCrowdyModBuild&)> OnProgress,
+		TFunction<void(const FCrowdyModBuild&)> OnDone);
+
+	/**
+	 * Attaches a successful CLIENT build as the named mod's CLIENT half on one of the player's grids; the mod must exist.
+	 * A primitive with neither the one-run lock nor a pinned revision, and no Allow Live Modding check; the Studio dock uses RunProject.
+	 */
+	void DeployClientMod(int64 GridId, const FString& Name, const FString& BuildId, TFunction<void(const FCrowdyModClientInfo&)> OnDone);
+
+	/**
+	 * Builds and deploys exactly ExpectedRevision of a Studio project on a grid. The CLIENT half is built first, so a failed
+	 * build publishes nothing; the SERVER half is then built, deployed and switched on (a CLIENT-only project rides the
+	 * player's mod named for its CLIENT module, deployed from the platform's starter when the grid has none, and refused
+	 * when it is there but switched off); last the CLIENT half is attached and consented to as its author. Neither this
+	 * nor the platform's calls check the app's Allow Live Modding switch: ask UCrowdyStudioAgent::AuthorizeLiveModding
+	 * first. An empty ExpectedRevision, a GridId below 1 and a signed-out player are refused before sending, and
+	 * RevisionChanged answers a saved revision that is another. One run per app in this process at a time: a second
+	 * answers Busy. The run keeps to its grid and to the player and app it started for: if either changes it answers
+	 * Failed and sends nothing more. If the game instance ends first it sends nothing more, OnDone does not run, and a
+	 * step already sent may still complete. The module names are not checked; the overload below checks them.
+	 */
+	void RunProject(int64 GridId, const FString& ProjectId, const FString& ExpectedRevision, ECrowdyStudioRunMode Mode,
+		TFunction<void(const FCrowdyModRun&)> OnDone);
+
+	/**
+	 * As above, and answers RevisionChanged before building when the project's SERVER or CLIENT module name is not the one
+	 * given, since those names pick the mods the run overwrites. An empty name is not checked.
+	 */
+	void RunProject(int64 GridId, const FString& ProjectId, const FString& ExpectedRevision, ECrowdyStudioRunMode Mode,
+		const FString& ExpectedServerModule, const FString& ExpectedClientModule, TFunction<void(const FCrowdyModRun&)> OnDone);
+
+	/**
+	 * Where each half of a project is on a grid, read back from the platform every time: the project's saved revision, its
+	 * SERVER mod and its served CLIENT half. RunningRevision is the revision a run in this process deployed, given only
+	 * while the platform still serves that run's digest. A GridId below 1 is refused before sending.
+	 */
+	void GetProjectStatus(int64 GridId, const FString& ProjectId, TFunction<void(const FCrowdyModProjectStatus&)> OnDone);
+
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Stands in for Initialize on a subsystem built outside a collection, sending every call to Client. */
 	void InitializeForTest(const TSharedPtr<FCrowdyCppClient>& Client, int64 AppId, const FString& GatewayDomain = FString());
 
 	/** Replaces the clock a build's time limit is measured with; a negative value restores the real one. */
 	void SetNowForTest(double Seconds) { NowForTest = Seconds; }
+
+	/** Reads Studio projects through Projects instead of the game instance's. */
+	void SetStudioProjectsForTest(UCrowdyStudioProjects* Projects);
+
+	/** Stands in for the signed-in player's id on a subsystem given a test client. */
+	void SetUserIdForTest(int64 UserId) { UserIdForTest = UserId; }
+
+	/** Moves the subsystem to another app, as a session for another app would. */
+	void SetAppIdForTest(int64 AppId) { AppIdForTest = AppId; }
 #endif
 
 private:
 	struct FBuild;
+	struct FRun;
+	struct FStatusRead;
 
+	void StartBuild(const TCHAR* Call, const TCHAR* Operation, const TCHAR* Field, const FString& CrateName, const TArray<FCrowdyModFile>& Files,
+		TFunction<void(const FCrowdyModBuild&)> OnProgress, TFunction<void(const FCrowdyModBuild&)> OnDone);
 	void PollBuild(const TSharedRef<FBuild>& Build);
 	void SchedulePoll(const TSharedRef<FBuild>& Build);
 	void ReadBuild(const TSharedRef<FBuild>& Build, const FCrowdyCppJsonResult& Result, const TCHAR* Field);
@@ -337,7 +645,11 @@ private:
 		TFunction<void(ECrowdyModResult Result, const FString& Message, const FString& Code)> OnFailed);
 	void ReleaseCallConnection(const TSharedPtr<FCrowdyNativeExecConnection>& Connection);
 	FCrowdyCppClient* ResolveClient() const;
+	UCrowdyStudioProjects* ResolveStudioProjects() const;
 	int64 GetAppId() const;
+	int64 GetUserId() const;
+	/** Whether the signed-in player and app are still the ones a multi-step call started for. */
+	bool IsCaller(int64 AppId, int64 UserId) const { return GetAppId() == AppId && GetUserId() == UserId; }
 	bool HasAppToken() const;
 	FString GetAppToken() const;
 	double Now() const;
@@ -347,9 +659,14 @@ private:
 	/** One gateway connection per Call Mod, closed once it answers. */
 	TArray<TSharedPtr<FCrowdyNativeExecConnection>> CallConnections;
 
+	/** This game instance's Run Projects still going; Deinitialize ends them and frees their apps. */
+	TArray<TSharedPtr<FRun>> Runs;
+
 #if WITH_DEV_AUTOMATION_TESTS
 	TWeakPtr<FCrowdyCppClient> ClientForTest;
+	TWeakObjectPtr<UCrowdyStudioProjects> ProjectsForTest;
 	int64 AppIdForTest = 0;
+	int64 UserIdForTest = 0;
 	FString GatewayDomainForTest;
 	double NowForTest = -1.0;
 #endif

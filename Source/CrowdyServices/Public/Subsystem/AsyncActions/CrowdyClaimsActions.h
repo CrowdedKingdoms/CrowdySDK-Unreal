@@ -10,6 +10,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyClaimAsyncResult, int64, G
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyClaimSearchAsyncResult, const TArray<FCrowdyChunkClaimInfo>&, Claims, ECrowdyClaimResult, Result, const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FCrowdyChunkEditAsyncResult, bool, bCanEdit, int64, GridId, ECrowdyClaimResult, Result, const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyGridPermissionsAsyncResult, const TArray<FCrowdyGridPermissionRow>&, Grids, ECrowdyClaimResult, Result, const FString&, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyGridChannelsAsyncResult, const TArray<FCrowdyChannel>&, Channels, ECrowdyClaimResult, Result, const FString&, Message);
 
 /** Claims one wilderness chunk for the signed-in player. C++ callers use UCrowdyClaims::ClaimChunk. */
 UCLASS()
@@ -152,4 +153,31 @@ private:
 	int64 ChunkZ = 0;
 
 	void Finish(const FCrowdyGridPermissions& Permissions);
+};
+
+/** Lists the channels a grid owns. C++ callers use UCrowdyClaims::ListGridChannels. */
+UCLASS()
+class CROWDYSERVICES_API UCrowdyListGridChannels : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	/** The grid's own channels; empty when it has none. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyGridChannelsAsyncResult OnDone;
+
+	/** The channels were not read; Result says why. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyGridChannelsAsyncResult OnFailed;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject", DisplayName="List Grid Channels"), Category="Crowdy SDK|Claims")
+	static UCrowdyListGridChannels* ListGridChannels(UObject* WorldContextObject, int64 GridId);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int64 GridId = 0;
+
+	void Finish(const FCrowdyGridChannels& Channels);
 };

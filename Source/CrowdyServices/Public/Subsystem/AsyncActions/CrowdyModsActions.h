@@ -15,6 +15,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyModDeleteAsyncResult, bool
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FCrowdyModStarterAsyncResult, const FString&, Name, const TArray<FCrowdyModFile>&, Files, ECrowdyModResult, Result,
 	const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyModCallAsyncResult, const FString&, ReplyJson, ECrowdyModResult, Result, const FString&, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyModClientInfoAsyncResult, const FCrowdyModClient&, Client, ECrowdyModResult, Result, const FString&, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyModRunAsyncResult, const FCrowdyModRun&, Run, ECrowdyModResult, Result, const FString&, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyModProjectStatusAsyncResult, const FCrowdyModProjectStatus&, Status, ECrowdyModResult, Result,
+	const FString&, Message);
 
 /** Builds one crate on the platform and waits for it. C++ callers use UCrowdyMods::BuildMod. */
 UCLASS()
@@ -264,4 +268,121 @@ private:
 	FString ParamsJson;
 
 	void Finish(const FCrowdyModCall& Call);
+};
+
+/** Builds one CLIENT crate on the platform and waits for it, with no run lock, pinned revision or Allow Live Modding check; use Run Project for a Studio run. C++ callers use UCrowdyMods::BuildClientMod. */
+UCLASS()
+class CROWDYSERVICES_API UCrowdyBuildClientMod : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	/** The build's status changed; fires once per change. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyModBuildAsyncResult OnProgress;
+
+	/** The build ended: Status Succeeded, or Failed with the compiler's log saying why. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyModBuildAsyncResult OnDone;
+
+	/** The build could not be run or waited for; Result says why. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyModBuildAsyncResult OnFailed;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject", DisplayName="Build Client Mod"), Category="Crowdy SDK|Mods")
+	static UCrowdyBuildClientMod* BuildClientMod(UObject* WorldContextObject, const FString& CrateName, const TArray<FCrowdyModFile>& Files);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	FString CrateName;
+	TArray<FCrowdyModFile> Files;
+
+	void Broadcast(FCrowdyModBuildAsyncResult& Pin, const FCrowdyModBuild& Build);
+	void Finish(const FCrowdyModBuild& Build);
+};
+
+/** Attaches a successful CLIENT build as a mod's CLIENT half, with no run lock, pinned revision or Allow Live Modding check; use Run Project for a Studio run. C++ callers use UCrowdyMods::DeployClientMod. */
+UCLASS()
+class CROWDYSERVICES_API UCrowdyDeployClientMod : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyModClientInfoAsyncResult OnDone;
+
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyModClientInfoAsyncResult OnFailed;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject", DisplayName="Deploy Client Mod"), Category="Crowdy SDK|Mods")
+	static UCrowdyDeployClientMod* DeployClientMod(UObject* WorldContextObject, int64 GridId, const FString& Name, const FString& BuildId);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int64 GridId = 0;
+	FString Name;
+	FString BuildId;
+
+	void Finish(const FCrowdyModClientInfo& Info);
+};
+
+/** Builds and deploys one revision of a Studio project on a grid. C++ callers use UCrowdyMods::RunProject. */
+UCLASS()
+class CROWDYSERVICES_API UCrowdyRunProject : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	/** The run went to its end; each target's Phase says where it ended. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyModRunAsyncResult OnDone;
+
+	/** The run did not go ahead or did not finish; Result says why. */
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyModRunAsyncResult OnFailed;
+
+	/** Does not check the app's Allow Live Modding switch: run Authorize Live Modding first. Fails with Refused for an empty Expected Revision. One run per app at a time: a second fails with Busy. A saved revision other than Expected Revision fails with Revision Changed. */
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject", DisplayName="Run Project"), Category="Crowdy SDK|Mods")
+	static UCrowdyRunProject* RunProject(UObject* WorldContextObject, int64 GridId, const FString& ProjectId, const FString& ExpectedRevision, ECrowdyStudioRunMode Mode);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int64 GridId = 0;
+	FString ProjectId;
+	FString ExpectedRevision;
+	ECrowdyStudioRunMode Mode = ECrowdyStudioRunMode::DraftTest;
+
+	void Finish(const FCrowdyModRun& Run);
+};
+
+/** Where each half of a Studio project is on a grid, read back from the platform. C++ callers use UCrowdyMods::GetProjectStatus. */
+UCLASS()
+class CROWDYSERVICES_API UCrowdyGetProjectStatus : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyModProjectStatusAsyncResult OnDone;
+
+	UPROPERTY(BlueprintAssignable)
+	FCrowdyModProjectStatusAsyncResult OnFailed;
+
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject", DisplayName="Get Project Status"), Category="Crowdy SDK|Mods")
+	static UCrowdyGetProjectStatus* GetProjectStatus(UObject* WorldContextObject, int64 GridId, const FString& ProjectId);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	int64 GridId = 0;
+	FString ProjectId;
+
+	void Finish(const FCrowdyModProjectStatus& Status);
 };

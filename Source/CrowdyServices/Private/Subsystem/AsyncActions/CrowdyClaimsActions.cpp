@@ -193,3 +193,40 @@ void UCrowdyGetGridPermissions::Finish(const FCrowdyGridPermissions& Permissions
 	Pin.Broadcast(Permissions.Grids, Permissions.Result, Permissions.Message);
 	SetReadyToDestroy();
 }
+
+UCrowdyListGridChannels* UCrowdyListGridChannels::ListGridChannels(UObject* WorldContextObject, int64 GridId)
+{
+	UCrowdyListGridChannels* Action = NewObject<UCrowdyListGridChannels>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->GridId = GridId;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyListGridChannels::Activate()
+{
+	UCrowdyClaims* Claims = GetServiceSubsystem<UCrowdyClaims>(WorldContextObject);
+	if (!Claims)
+	{
+		FCrowdyGridChannels Missing;
+		Missing.GridId = GridId;
+		Missing.Message = ClaimsMissingSubsystem;
+		Finish(Missing);
+		return;
+	}
+	TWeakObjectPtr<UCrowdyListGridChannels> WeakThis(this);
+	Claims->ListGridChannels(GridId, [WeakThis](const FCrowdyGridChannels& Channels)
+	{
+		if (UCrowdyListGridChannels* Self = WeakThis.Get())
+		{
+			Self->Finish(Channels);
+		}
+	});
+}
+
+void UCrowdyListGridChannels::Finish(const FCrowdyGridChannels& Channels)
+{
+	FCrowdyGridChannelsAsyncResult& Pin = Channels.Result == ECrowdyClaimResult::Success ? OnDone : OnFailed;
+	Pin.Broadcast(Channels.Channels, Channels.Result, Channels.Message);
+	SetReadyToDestroy();
+}
