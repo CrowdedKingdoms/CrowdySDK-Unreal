@@ -43,6 +43,7 @@ namespace
 		case ECrowdyStudioResult::Failed:      return TEXT("Failed");
 		case ECrowdyStudioResult::BadReply:    return TEXT("BadReply");
 		case ECrowdyStudioResult::NotBuilt:    return TEXT("NotBuilt");
+		case ECrowdyStudioResult::NoModel:     return TEXT("NoModel");
 		}
 		return TEXT("Unknown");
 	}

@@ -19,7 +19,7 @@ namespace
 	const TCHAR* const StudioAgentChanged = TEXT("The app or the player changed while the call was in flight.");
 	const TCHAR* const StudioAgentNoAnswer = TEXT("The answer holds nothing.");
 	const TCHAR* const StudioAgentInsecureApi = TEXT("The API address is not https, so the agent was not started.");
-	const TCHAR* const StudioAgentNoModels = TEXT("The app allows the Studio agent no model, so it cannot start.");
+	const TCHAR* const StudioAgentNoModels = TEXT("No agent model is available for this app yet, so the Studio agent cannot start.");
 
 	const TCHAR* StudioAgentResultName(ECrowdyStudioResult Result)
 	{
@@ -33,6 +33,7 @@ namespace
 		case ECrowdyStudioResult::Failed:      return TEXT("Failed");
 		case ECrowdyStudioResult::BadReply:    return TEXT("BadReply");
 		case ECrowdyStudioResult::NotBuilt:    return TEXT("NotBuilt");
+		case ECrowdyStudioResult::NoModel:     return TEXT("NoModel");
 		}
 		return TEXT("Unknown");
 	}
@@ -96,6 +97,11 @@ namespace
 		if (Result.HttpStatus >= 200 && Result.HttpStatus < 300)
 		{
 			return ECrowdyStudioResult::BadReply;
+		}
+		// The platform's answer when no model is available to the app, from its own policy or the platform's.
+		if (Result.ErrorCode.Equals(TEXT("AGENT_MODEL_NOT_ALLOWED"), ESearchCase::CaseSensitive))
+		{
+			return ECrowdyStudioResult::NoModel;
 		}
 		if (Result.HttpStatus == 401 || Result.HttpStatus == 403)
 		{
@@ -506,7 +512,7 @@ void UCrowdyStudioAgent::GetAgentBoot(TFunction<void(const FCrowdyStudioAgentBoo
 		}
 		if (Models.Models.IsEmpty())
 		{
-			StudioAgentFinish(TEXT("Get Agent Boot"), OnDone, FCrowdyStudioAgentBoot(), ECrowdyStudioResult::Refused, StudioAgentNoModels);
+			StudioAgentFinish(TEXT("Get Agent Boot"), OnDone, FCrowdyStudioAgentBoot(), ECrowdyStudioResult::NoModel, StudioAgentNoModels);
 			return;
 		}
 		const FCrowdyCppClient* Now = Self->ResolveClient();
