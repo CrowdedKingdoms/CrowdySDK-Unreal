@@ -61,6 +61,34 @@ struct FGameEventNotification : FGameEventBody
 		return TArray<uint8>();
 	}
 
+	/** The largest state a CrowdyEvent's length may declare. */
+	static constexpr int32 MaxStateBytes = 1024 * 1024;
+
+	/** The target byte and the 32-octet target id this SDK writes after a CrowdyEvent's state. */
+	static constexpr int32 TargetBlockBytes = sizeof(uint8) + FCrowdyActorId::NumOctets;
+
+	/**
+	 * True when Data from Offset is laid out as this SDK writes a CrowdyEvent: a length within MaxStateBytes, that state, then
+	 * nothing (older senders) or at least the target block. Other client libraries write the state bare, with no length.
+	 */
+	static bool HasLengthedState(const TConstArrayView<uint8> Data, const int32 Offset)
+	{
+		int32 Declared = 0;
+		const int32 Left = Data.Num() - Offset - static_cast<int32>(sizeof(Declared));
+		if (Left < 0)
+		{
+			return false;
+		}
+		FMemory::Memcpy(&Declared, Data.GetData() + Offset, sizeof(Declared));
+		if (Declared < 0 || Declared > MaxStateBytes)
+		{
+			return false;
+		}
+		// Negative when the length runs past the body.
+		const int32 After = Left - Declared;
+		return After == 0 || After >= TargetBlockBytes;
+	}
+
 	[[nodiscard]] virtual bool DecodePayload(const FCrowdyFrame& Frame) override
 	{
 		const TConstArrayView<uint8> Data = Frame.Body;
@@ -82,9 +110,10 @@ struct FGameEventNotification : FGameEventBody
 		Offset += sizeof(EventType);
 
 		// A kit event is not a CrowdyEvent struct: its state is the rest of the message, with no length in front
-		// of it, so it is handed on as bytes and never offered to the struct decoder.
+		// of it, so it is handed on as bytes and never offered to the struct decoder. So is a client event not laid
+		// out as this SDK writes one, as other client libraries and Mod Scripts write every event.
 		if (Frame.Opcode == static_cast<uint8>(ECrowdyMessageType::CLIENT_EVENT_NOTIFICATION)
-			&& CrowdyKitEvent::HasBareState(EventType))
+			&& (CrowdyKitEvent::HasBareState(EventType) || !HasLengthedState(Data, Offset)))
 		{
 			StateView = Data.Slice(Offset, Data.Num() - Offset);
 			StateSize = StateView.Num();
@@ -100,7 +129,7 @@ struct FGameEventNotification : FGameEventBody
 		Offset += sizeof(StateSize);
 
 		// Safety check to prevent crashes
-		constexpr int32 MAX_STATE_SIZE = 1024 * 1024; // 1 MB, adjust based on your system
+		constexpr int32 MAX_STATE_SIZE = MaxStateBytes;
 
 		if (StateSize < 0 || StateSize > MAX_STATE_SIZE || Offset + StateSize > Data.Num())
 		{

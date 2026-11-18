@@ -51,6 +51,9 @@ public:
 	// client that does not exist has nothing to cancel.
 	FCrowdyCppClient* GetExistingClient() const { return Client.Get(); }
 
+	// False once torn down: a call made after that would build a client nothing polls or disposes.
+	bool IsLive() const { return !bTornDown; }
+
 	// The bearer for gameplay calls (an app-scoped token). Safe to set before the client exists.
 	void SetGameToken(const FString& Token);
 
@@ -84,4 +87,6 @@ private:
 	FString ManagementToken;
 
 	FTSTicker::FDelegateHandle PollTickerHandle;
+
+	bool bTornDown = false;
 };

@@ -71,6 +71,11 @@ namespace
 		return Payload;
 	}
 
+	FString KitEventWireText(TConstArrayView<uint8> Bytes)
+	{
+		return FString::ConstructFromPtrSize(reinterpret_cast<const ANSICHAR*>(Bytes.GetData()), Bytes.Num());
+	}
+
 	class FKitEventWireWarningCapture : public FOutputDevice
 	{
 	public:
@@ -214,20 +219,80 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitEmotesWireOtherEventsKeepTheirLengthT
 	"CrowdySDK.Wire.KitEmotes.OtherEventsKeepTheirLengthPrefix", KitEventWireTestFlags)
 bool FCrowdyKitEmotesWireOtherEventsKeepTheirLengthTest::RunTest(const FString& Parameters)
 {
-	// An event number that is not a kit event reads its length first, as every game event has: the same bytes under
-	// type 0x1234 carry a state size that runs past the message, so they are refused.
-	AddExpectedMessagePlain(TEXT("Invalid StateSize"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 2);
+	// A targeted message carrying 101 is not a kit emote: only the client event opcode is read bare, so these bytes, whose
+	// first four would be a state size running past the message, are refused.
+	AddExpectedMessagePlain(TEXT("Invalid StateSize"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
 
 	const TArray<uint8> Json = KitEventWireAscii(KitEventWireJsonNoTarget);
-
-	FGameEventNotification OtherType;
-	TestFalse(TEXT("another event number reads a length prefix and refuses these bytes"),
-		CrowdyWireParity::DecodeStrippedPayload(OtherType, KitEventWireStrippedFrame(KitEventWireCrowdyCppPayload(0x1234, Json))));
-
-	// A targeted message carrying 101 is not a kit emote either: only the client event opcode is read bare.
 	FSingleActorNotification Targeted;
 	TestFalse(TEXT("a single-actor message with type 101 still reads a length prefix"),
 		CrowdyWireParity::DecodeStrippedPayload(Targeted, KitEventWireStrippedFrame(KitEventWireCrowdyCppPayload(101, Json))));
+
+	// A client event of another number that carries its length reads it, and the target block after the state.
+	TArray<uint8> Lengthed = {0x34, 0x12, 3, 0, 0, 0};
+	Lengthed.Append(KitEventWireAscii("abc"));
+	Lengthed.Add(static_cast<uint8>(ECrowdyTarget::Owner));
+	Lengthed.Append(KitEventWireAscii("fedcba9876543210fedcba9876543210"));
+	FGameEventNotification Event;
+	// The decoded state is a view into these bytes, so they outlive the checks below.
+	const TArray<uint8> LengthedFrame = KitEventWireStrippedFrame(Lengthed);
+	if (TestTrue(TEXT("a client event with its length decodes"), CrowdyWireParity::DecodeStrippedPayload(Event, LengthedFrame)))
+	{
+		TestEqual(TEXT("its state is what the length says"), KitEventWireText(Event.StateView), FString(TEXT("abc")));
+		TestEqual(TEXT("the declared size is read"), Event.StateSize, 3);
+		TestEqual(TEXT("and the target block after it"), static_cast<int32>(Event.Target), static_cast<int32>(ECrowdyTarget::Owner));
+		TestTrue(TEXT("with its target id"), Event.TargetID.IsValid());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitEmotesWireBareClientEventsTest,
+	"CrowdySDK.Wire.KitEmotes.BareClientEventsFromOtherLibraries", KitEventWireTestFlags)
+bool FCrowdyKitEmotesWireBareClientEventsTest::RunTest(const FString& Parameters)
+{
+	// Other client libraries and Mod Scripts write every event as its type and then its state, no length: CrowdyCPP's own
+	// encoder. Where those bytes cannot be a length and its state, the event is read that way instead of refused.
+	struct FCase
+	{
+		const TCHAR* Label;
+		TArray<uint8> State;
+	};
+	const FCase Cases[] = {
+		{TEXT("JSON"), KitEventWireAscii(KitEventWireJsonNoTarget)},
+		{TEXT("two octets, too short for a length"), KitEventWireAscii("hi")},
+		{TEXT("no state at all"), TArray<uint8>()},
+		{TEXT("a negative length"), TArray<uint8>({0xff, 0xff, 0xff, 0xff, 1})},
+		{TEXT("a small length that runs past the body"), TArray<uint8>({5, 0, 0, 0, 0xaa})},
+		{TEXT("binary that reads as a length of 0 with octets after"), TArray<uint8>({0, 0, 0, 0, 1, 2, 3, 4})},
+		{TEXT("binary that reads as a length that fits, with fewer octets after than a target block"), TArray<uint8>({2, 0, 0, 0, 0xaa, 0xbb, 0xcc, 0xdd})},
+	};
+	// A negative length followed by as many octets as a target block, so only the length's sign tells it apart.
+	TArray<uint8> NegativeThenBlock = {0xff, 0xff, 0xff, 0xff};
+	NegativeThenBlock.AddZeroed(FGameEventNotification::TargetBlockBytes - 1);
+	const FCase Negative = {TEXT("a negative length with a target block's worth after it"), NegativeThenBlock};
+	TArray<FCase> All(Cases, UE_ARRAY_COUNT(Cases));
+	All.Add(Negative);
+	for (const FCase& Case : All)
+	{
+		FKitEventWireWarningCapture Capture;
+		GLog->AddOutputDevice(&Capture);
+		FGameEventNotification Event;
+		// The decoded state is a view into these bytes, so they outlive the checks below.
+		const TArray<uint8> Stripped = KitEventWireStrippedFrame(KitEventWireCrowdyCppPayload(7, Case.State));
+		const bool bDecoded = CrowdyWireParity::DecodeStrippedPayload(Event, Stripped);
+		GLog->Flush();
+		GLog->RemoveOutputDevice(&Capture);
+		if (!TestTrue(FString::Printf(TEXT("%s: a bare client event decodes"), Case.Label), bDecoded))
+		{
+			continue;
+		}
+		TestEqual(FString::Printf(TEXT("%s: its type"), Case.Label), static_cast<int32>(Event.EventType), 7);
+		TestTrue(FString::Printf(TEXT("%s: its state is every octet after the type"), Case.Label),
+			Event.StateView.Num() == Case.State.Num() && FMemory::Memcmp(Event.StateView.GetData(), Case.State.GetData(), Case.State.Num()) == 0);
+		TestFalse(FString::Printf(TEXT("%s: it is not read as a CrowdyEvent struct"), Case.Label), Event.State.IsValid());
+		TestEqual(FString::Printf(TEXT("%s: it is for everyone nearby"), Case.Label), static_cast<int32>(Event.Target), static_cast<int32>(ECrowdyTarget::Everyone));
+		TestEqual(FString::Printf(TEXT("%s: with no warning"), Case.Label), Capture.Read(), 0);
+	}
 	return true;
 }
 

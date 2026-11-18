@@ -9,7 +9,7 @@
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "UObject/Package.h"
 
-// GetDeterministicID mints the NetID that addresses damage, so a collision guard sits at the point that id
+// GetDeterministicID mints the path and binding NetIDs that address damage, so a collision guard sits at the point that id
 // enters the registry (UCrowdyEntitySubsystem::RegisterEntity), since the hash itself cannot be widened without
 // changing every id already issued (see the header comment on the function).
 // These tests cover the derivation's one load-bearing property (determinism), the guard refusing a forced
@@ -38,23 +38,23 @@ namespace
 		return NewObject<ACrowdyStateSendTestActor>(GetTransientPackage(), NAME_None, RF_Transient);
 	}
 
-	void RegisterRegistryTestRecord(UCrowdyEntitySubsystem* Entities, const FGuid& NetID, const FGuid& OwnerID,
+	void RegisterRegistryTestRecord(UCrowdyEntitySubsystem* Entities, const FGuid& NetID, const FGuid& WriterID,
 		const ECrowdyRole Role, UObject* Participant, const uint32 ClassID = 0)
 	{
 		FCrowdyEntityRecord Record;
 		Record.NetID = NetID;
-		Record.OwnerID = OwnerID;
+		Record.WriterID = WriterID;
 		Record.Role = Role;
 		Record.ClassID = ClassID;
 		Record.Participant = Participant;
 		Entities->RegisterEntity(Record);
 	}
 
-	FCrowdyEntitySpawnEvent MakeRegistryTestSpawnEvent(const FGuid& EntityID, const FGuid& OwnerID, const uint32 ClassID)
+	FCrowdyEntitySpawnEvent MakeRegistryTestSpawnEvent(const FGuid& EntityID, const FGuid& WriterID, const uint32 ClassID)
 	{
 		FCrowdyEntitySpawnEvent Event;
 		Event.EntityID = EntityID;
-		Event.OwnerID = OwnerID;
+		Event.WriterID = WriterID;
 		Event.ClassID = ClassID;
 		return Event;
 	}
@@ -97,7 +97,7 @@ bool FCrowdyEntityRegisterCollisionRefusedTest::RunTest(const FString& Parameter
 
 	FCrowdyEntityRecord RecordA;
 	RecordA.NetID = CollidingNetID;
-	RecordA.OwnerID = FGuid::NewGuid();
+	RecordA.WriterID = FGuid::NewGuid();
 	RecordA.Role = ECrowdyRole::Owner;
 	RecordA.Participant = ParticipantA;
 	Entities->RegisterEntity(RecordA);
@@ -105,7 +105,7 @@ bool FCrowdyEntityRegisterCollisionRefusedTest::RunTest(const FString& Parameter
 
 	FCrowdyEntityRecord RecordB;
 	RecordB.NetID = CollidingNetID;
-	RecordB.OwnerID = FGuid::NewGuid();
+	RecordB.WriterID = FGuid::NewGuid();
 	RecordB.Role = ECrowdyRole::Owner;
 	RecordB.Participant = ParticipantB;
 
@@ -141,20 +141,20 @@ bool FCrowdyEntityLegitimateReRegistrationTest::RunTest(const FString& Parameter
 
 	FCrowdyEntityRecord Record;
 	Record.NetID = NetID;
-	Record.OwnerID = OriginalOwner;
+	Record.WriterID = OriginalOwner;
 	Record.Role = ECrowdyRole::Owner;
 	Record.Participant = Participant;
 	Entities->RegisterEntity(Record);
 
 	// Case 1: the same object re-registers (e.g. ownership metadata changed in place). Not a collision.
 	const FGuid ReassignedOwner = FGuid::NewGuid();
-	Record.OwnerID = ReassignedOwner;
+	Record.WriterID = ReassignedOwner;
 	Entities->RegisterEntity(Record);
 	TestTrue(TEXT("re-registering the same object still resolves to it"),
 		Entities->FindParticipant(NetID) == Participant);
 	if (const FCrowdyEntityRecord* Updated = Entities->FindRecord(NetID))
 	{
-		TestEqual(TEXT("the in-place re-registration applied the new owner"), Updated->OwnerID, ReassignedOwner);
+		TestEqual(TEXT("the in-place re-registration applied the new owner"), Updated->WriterID, ReassignedOwner);
 	}
 
 	// Case 2: respawn / pooled reclaim shape - the old record is torn down first (mirroring EndPlay's
@@ -166,7 +166,7 @@ bool FCrowdyEntityLegitimateReRegistrationTest::RunTest(const FString& Parameter
 	UObject* ReplacementParticipant = NewObject<UCrowdyStateTestTarget>(GetTransientPackage(), NAME_None, RF_Transient);
 	FCrowdyEntityRecord ReplacementRecord;
 	ReplacementRecord.NetID = NetID;
-	ReplacementRecord.OwnerID = OriginalOwner;
+	ReplacementRecord.WriterID = OriginalOwner;
 	ReplacementRecord.Role = ECrowdyRole::Owner;
 	ReplacementRecord.Participant = ReplacementParticipant;
 	Entities->RegisterEntity(ReplacementRecord);
@@ -235,20 +235,20 @@ bool FCrowdyEntityRegisterReportsRefusalTest::RunTest(const FString& Parameters)
 	const FGuid NetID = FGuid::NewGuid();
 	FCrowdyEntityRecord First;
 	First.NetID = NetID;
-	First.OwnerID = FGuid::NewGuid();
+	First.WriterID = FGuid::NewGuid();
 	First.Role = ECrowdyRole::RemoteProxy;
 	First.Participant = MakeRegistryTestParticipant();
 	TestTrue(TEXT("the first registration is reported as registered"),
 		Entities->TryRegisterEntity(First) == ECrowdyEntityRegistration::Registered);
 
 	// Re-announcing the same object is an update, not a second claimant.
-	First.OwnerID = FGuid::NewGuid();
+	First.WriterID = FGuid::NewGuid();
 	TestTrue(TEXT("the same participant re-registering is reported as registered"),
 		Entities->TryRegisterEntity(First) == ECrowdyEntityRegistration::Registered);
 
 	FCrowdyEntityRecord Colliding;
 	Colliding.NetID = NetID;
-	Colliding.OwnerID = FGuid::NewGuid();
+	Colliding.WriterID = FGuid::NewGuid();
 	Colliding.Role = ECrowdyRole::RemoteProxy;
 	Colliding.Participant = MakeRegistryTestParticipant();
 
@@ -292,7 +292,7 @@ bool FCrowdyEntityRemoteSpawnBackfillsUnsetMetadataTest::RunTest(const FString& 
 		return false;
 	}
 
-	TestEqual(TEXT("an owner the record did not have is filled in"), Record->OwnerID, TheirOwner);
+	TestEqual(TEXT("an owner the record did not have is filled in"), Record->WriterID, TheirOwner);
 	TestEqual(TEXT("a class the record did not have is filled in"),
 		static_cast<int64>(Record->ClassID), static_cast<int64>(4242));
 	TestEqual(TEXT("the role is not something a spawn event sets"),
@@ -332,7 +332,7 @@ bool FCrowdyEntityRemoteSpawnCannotRewriteOwnershipTest::RunTest(const FString& 
 	{
 		return false;
 	}
-	TestEqual(TEXT("the owner this client had recorded is unchanged"), Proxy->OwnerID, Victim);
+	TestEqual(TEXT("the owner this client had recorded is unchanged"), Proxy->WriterID, Victim);
 	TestFalse(TEXT("a peer's event cannot make another player's entity read as locally owned"),
 		Entities->IsLocallyOwned(TheirEntity));
 
@@ -343,7 +343,7 @@ bool FCrowdyEntityRemoteSpawnCannotRewriteOwnershipTest::RunTest(const FString& 
 	{
 		return false;
 	}
-	TestEqual(TEXT("the owner is not re-pointed at a third party either"), AfterThirdParty->OwnerID, Victim);
+	TestEqual(TEXT("the owner is not re-pointed at a third party either"), AfterThirdParty->WriterID, Victim);
 
 	// And in the other direction: an entity this client owns is not given away by a peer's event.
 	const FGuid OwnEntity = FGuid::NewGuid();
@@ -355,7 +355,7 @@ bool FCrowdyEntityRemoteSpawnCannotRewriteOwnershipTest::RunTest(const FString& 
 	{
 		return false;
 	}
-	TestEqual(TEXT("a peer's event cannot take an entity this client owns"), Own->OwnerID, LocalPlayer);
+	TestEqual(TEXT("a peer's event cannot take an entity this client owns"), Own->WriterID, LocalPlayer);
 	TestTrue(TEXT("it is still locally owned"), Entities->IsLocallyOwned(OwnEntity));
 
 	return true;

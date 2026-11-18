@@ -42,9 +42,7 @@ void UCrowdyOwnershipTransfer::RequestOwnershipTransfer(UObject* /*WorldContextO
 		return;
 	}
 
-	// Nothing to request when we are already this entity's authority. For a host-owned world entity that means we
-	// are the host, which ES->IsLocallyOwned (owner-id based) would miss — so ask the component, whose
-	// IsLocallyOwned covers both Owner and the host of a HostOwned entity.
+	// Nothing to request when we are already this entity's authority.
 	if (Component->IsLocallyOwned())
 		return;
 
@@ -56,7 +54,16 @@ void UCrowdyOwnershipTransfer::RequestOwnershipTransfer(UObject* /*WorldContextO
 		return;
 	}
 
-	Component->RequestOwnership(ES->GetLocalPlayerID());
+	const FCrowdyEntityRecord* Record = ES->FindRecord(NetID);
+	if (Record && Record->Role == ECrowdyRole::WorldOwned)
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[CrowdyOwnershipTransfer]: RequestOwnershipTransfer ignored: '%s' is a World entity, so no client writes it to grant it."),
+			*GetNameSafe(TargetEntity));
+		return;
+	}
+
+	Component->RequestOwnership(ES->GetLocalPlayerID(), ES->GetLocalUserID());
 }
 
 void UCrowdyOwnershipTransfer::GrantOwnershipTransfer(UObject* WorldContextObject, AActor* TargetEntity, AActor* NewOwner)
@@ -69,11 +76,10 @@ void UCrowdyOwnershipTransfer::GrantOwnershipTransfer(UObject* WorldContextObjec
 	if (!IsValid(NewOwner))
 		return;
 
-	// Resolve the player that owns NewOwner. A player avatar owns itself (NetID == OwnerID) and an entity a player
-	// spawned carries that player's id in OwnerID, so either one names the intended player.
+	// Resolve the player that owns NewOwner: its avatar, or any entity that player writes.
 	const FGuid NewOwnerNetID = ES->FindEntityID(NewOwner);
 	const FCrowdyEntityRecord* NewOwnerRecord = NewOwnerNetID.IsValid() ? ES->FindRecord(NewOwnerNetID) : nullptr;
-	const FGuid NewOwnerPlayerID = NewOwnerRecord ? NewOwnerRecord->OwnerID : FGuid();
+	const FGuid NewOwnerPlayerID = NewOwnerRecord ? ResolveGrantedWriterID(*NewOwnerRecord) : FGuid();
 
 	if (!NewOwnerPlayerID.IsValid())
 	{
@@ -83,11 +89,18 @@ void UCrowdyOwnershipTransfer::GrantOwnershipTransfer(UObject* WorldContextObjec
 		return;
 	}
 
-	GrantOwnershipTransferToPlayer(WorldContextObject, TargetEntity, NewOwnerPlayerID);
+	GrantOwnershipTransferToPlayer(WorldContextObject, TargetEntity, NewOwnerPlayerID, ES->GetOwnerUserID(*NewOwnerRecord));
+}
+
+FGuid UCrowdyOwnershipTransfer::ResolveGrantedWriterID(const FCrowdyEntityRecord& NewOwnerRecord)
+{
+	if (NewOwnerRecord.WriterID.IsValid())
+		return NewOwnerRecord.WriterID;
+	return NewOwnerRecord.bAvatar ? NewOwnerRecord.NetID : FGuid();
 }
 
 void UCrowdyOwnershipTransfer::GrantOwnershipTransferToPlayer(UObject* /*WorldContextObject*/, AActor* TargetEntity,
-	FGuid NewOwnerPlayerID)
+	FGuid NewOwnerPlayerID, int64 NewOwnerUserID)
 {
 	UCrowdyEntitySubsystem* ES = nullptr;
 	UCrowdyEntityComponent* Component = ResolveTarget(TargetEntity, ES);
@@ -101,16 +114,5 @@ void UCrowdyOwnershipTransfer::GrantOwnershipTransferToPlayer(UObject* /*WorldCo
 		return;
 	}
 
-	Component->GrantOwnershipTo(NewOwnerPlayerID);
-}
-
-void UCrowdyOwnershipTransfer::GrantOwnershipToHost(UObject* /*WorldContextObject*/, AActor* TargetEntity)
-{
-	UCrowdyEntitySubsystem* ES = nullptr;
-	UCrowdyEntityComponent* Component = ResolveTarget(TargetEntity, ES);
-	if (!ES || !Component)
-		return;
-
-	// An invalid new-owner id makes the entity host-owned (a world entity owned by whichever client is host).
-	Component->GrantOwnershipTo(FGuid());
+	Component->GrantOwnershipTo(NewOwnerPlayerID, NewOwnerUserID);
 }

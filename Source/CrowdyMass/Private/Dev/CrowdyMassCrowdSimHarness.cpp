@@ -579,7 +579,7 @@ void UCrowdyMassCrowdSimHarness::SpawnStateEntities()
 
 		if (UCrowdyEntityComponent* Component = Entity->FindComponentByClass<UCrowdyEntityComponent>())
 		{
-			Component->InitIdentity(Bot.StateEntityID, LocalPlayerID, ECrowdyRole::Owner, CROWDY_INVALID_CLASS_ID);
+			Component->InitIdentity(Bot.StateEntityID, LocalPlayerID, 0, ECrowdyRole::Owner, CROWDY_INVALID_CLASS_ID);
 		}
 
 		Entity->FinishSpawning(SpawnTransform);

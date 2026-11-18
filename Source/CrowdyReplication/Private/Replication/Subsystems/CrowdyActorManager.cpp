@@ -833,17 +833,17 @@ void UCrowdyActorManager::OnEntityUnregistered(const FGuid& EntityID)
 	InactiveSlots[*SlotPtr] = !ActiveBackend->IsInstanceActive(*SlotPtr);
 }
 
-void UCrowdyActorManager::OnEntityOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& PreviousOwnerID)
+void UCrowdyActorManager::OnEntityOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewWriterID, const FGuid& PreviousWriterID)
 {
 	if (!IsValid(EntitySubsystem) || !IsValid(ActiveBackend)) return;
 
 	const FGuid LocalID = EntitySubsystem->GetLocalPlayerID();
-	const bool bNowLocal = LocalID.IsValid() && NewOwnerID == LocalID;
+	const bool bNowLocal = LocalID.IsValid() && NewWriterID == LocalID;
 	if (bNowLocal)
 		HeldUntilSeconds.Remove(NetID);
 
 	// A hand-over between two other clients changes nothing about how this client draws the entity.
-	if (!LocalID.IsValid() || (!bNowLocal && PreviousOwnerID != LocalID)) return;
+	if (!LocalID.IsValid() || (!bNowLocal && PreviousWriterID != LocalID)) return;
 
 	const int32* SlotPtr = UUIDToSlot.Find(NetID);
 	if (!SlotPtr) return;

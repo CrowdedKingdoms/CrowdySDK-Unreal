@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "CrowdyRenderingBackend.h"
+#include "UObject/ObjectKey.h"
 #include "CrowdyActorPoolBackend.generated.h"
 
 class UCrowdyActorPoolSubsystem;
@@ -53,6 +54,9 @@ public:
 	}
 
 	AActor* GetSlotActorForTest(int32 SlotId) const { return SlotActors.IsValidIndex(SlotId) ? SlotActors[SlotId].Get() : nullptr; }
+
+	// How many classes have been asked whether they draw a player's avatar.
+	int32 AvatarClassResolutionCount = 0;
 #endif
 
 private:
@@ -82,7 +86,13 @@ private:
 	/** Parallel to SlotActors: set where the slot is a locally owned entity left undrawn, which counts as active. */
 	TBitArray<> SkippedOwnerSlots;
 
+	/** Per entity class: whether its entity component default takes the Player Derived identity policy. */
+	TMap<TObjectKey<UClass>, bool> AvatarClasses;
+
 	void EnsureSlotCapacity(int32 SlotId);
+
+	/** Whether EntityClass draws a player's avatar, resolved once per class. */
+	bool IsAvatarClass(UClass* EntityClass);
 
 	/** Whether the slot's actor is still this slot's to release: an owner proxy, or an actor with a record. */
 	bool IsSlotActorClaimed(int32 SlotId) const;

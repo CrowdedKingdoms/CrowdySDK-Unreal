@@ -85,11 +85,11 @@ namespace
 
 	// An entity already known to the registry, so a later spawn event for the same id takes the
 	// update-in-place branch and needs no world to spawn into.
-	void RegisterKnownEntity(UCrowdyEntitySubsystem* Entities, const FGuid& NetID, const FGuid& OwnerID)
+	void RegisterKnownEntity(UCrowdyEntitySubsystem* Entities, const FGuid& NetID, const FGuid& WriterID)
 	{
 		FCrowdyEntityRecord Record;
 		Record.NetID = NetID;
-		Record.OwnerID = OwnerID;
+		Record.WriterID = WriterID;
 		Record.Role = ECrowdyRole::RemoteProxy;
 		Entities->RegisterEntity(Record);
 	}
@@ -114,7 +114,7 @@ bool FCrowdyInboundRemoteSpawnAppliesDuringDispatchTest::RunTest(const FString& 
 
 	FCrowdyEntitySpawnEvent Spawn;
 	Spawn.EntityID = EntityID;
-	Spawn.OwnerID = FGuid::NewGuid();
+	Spawn.WriterID = FGuid::NewGuid();
 	Spawn.ClassID = 4242;
 
 	Registry.DispatchMessage(MakeInboundTestMessage(Spawn));
@@ -125,7 +125,7 @@ bool FCrowdyInboundRemoteSpawnAppliesDuringDispatchTest::RunTest(const FString& 
 		return false;
 	}
 
-	TestEqual(TEXT("the spawn event's owner was applied before the dispatch returned"), Record->OwnerID, Spawn.OwnerID);
+	TestEqual(TEXT("the spawn event's owner was applied before the dispatch returned"), Record->WriterID, Spawn.WriterID);
 	TestEqual(TEXT("the spawn event's class id was applied before the dispatch returned"),
 		static_cast<int64>(Record->ClassID), static_cast<int64>(Spawn.ClassID));
 	return true;

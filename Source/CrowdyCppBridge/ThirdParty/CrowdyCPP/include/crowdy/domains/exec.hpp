@@ -279,6 +279,16 @@ struct ExecCrate {
   std::vector<std::pair<std::string, std::string>> files;
 };
 
+/// The Crowdy Studio project and saved revision a mod build is made from (`execModBuild` /
+/// `execModClientBuild` `studio`, Game API v2.73.0): a project of yours in the app, at a revision
+/// it has reached (`revision` is the project's, a decimal string). The build reports it back
+/// (`studioProjectId`, `studioRevision`), and so do the mod version and the CLIENT half deployed
+/// from it.
+struct ExecStudioSource {
+  std::string projectId;
+  std::string revision;
+};
+
 /// The CLIENT ABI a served CLIENT half must be built for (crowdy-client-sdk `ABI_VERSION`);
 /// `ExecAPI::modClientArtifactBytes` refuses any other. CrowdyJS `EXEC_CLIENT_ABI_VERSION`.
 inline constexpr int kExecClientAbiVersion = 0;
@@ -400,9 +410,14 @@ class ExecAPI : public DomainBase {
   graphql::Json modStarter(std::string appId) const;
   void modStarterAsync(std::string appId, graphql::GraphQLCallback done) const;
   /// Build a mod from one crate (`execModBuild`); one build at a time per player. Needs
-  /// `write_server_code` in the app.
-  graphql::Json modBuild(std::string appId, const ExecCrate& crate) const;
+  /// `write_server_code` in the app. `studio` names the Studio project and saved revision the
+  /// crate is: another player's project is `NOT_FOUND`, a revision past the project's
+  /// `BAD_REQUEST`.
+  graphql::Json modBuild(std::string appId, const ExecCrate& crate,
+                         const std::optional<ExecStudioSource>& studio = std::nullopt) const;
   void modBuildAsync(std::string appId, const ExecCrate& crate, graphql::GraphQLCallback done) const;
+  void modBuildAsync(std::string appId, const ExecCrate& crate, const ExecStudioSource& studio,
+                     graphql::GraphQLCallback done) const;
   /// A mod build of yours (`execModBuildStatus`): a mod's (`kind` `exec`) or a CLIENT half's
   /// (`kind` `client`).
   graphql::Json modBuildStatus(std::string appId, std::string buildId) const;
@@ -478,8 +493,20 @@ class ExecAPI : public DomainBase {
   /// `crowdy-client-sdk`, `serde` and `serde_json`, and `[package.metadata.crowdy]
   /// tick_interval_ms`. Returns the build queued (`kind` `client`); wait with `waitForModBuild`,
   /// then attach it with `modClientDeploy`. One build, server or CLIENT, at a time per player.
-  graphql::Json modClientBuild(std::string appId, const ExecCrate& crate) const;
+  /// `studio` names the Studio project and saved revision the crate is, as for `modBuild`; the
+  /// CLIENT half attached from the build reports it.
+  graphql::Json modClientBuild(std::string appId, const ExecCrate& crate,
+                               const std::optional<ExecStudioSource>& studio = std::nullopt) const;
   void modClientBuildAsync(std::string appId, const ExecCrate& crate, graphql::GraphQLCallback done) const;
+  void modClientBuildAsync(std::string appId, const ExecCrate& crate, const ExecStudioSource& studio,
+                           graphql::GraphQLCallback done) const;
+  /// The CLIENT half starter (`execModClientStarter`, Game API v2.73.0): `{ crate, nodeType,
+  /// description, files }`, the `client-half` crowdy-client-sdk crate that
+  /// `studio::crowdyStudioClientStarterFiles` holds, to build once its package is renamed to the
+  /// CLIENT module. Requires access to the app. An API host whose build toolchain predates it
+  /// answers `INTERNAL_SERVER_ERROR` with `httpStatus` 503.
+  graphql::Json modClientStarter(std::string appId) const;
+  void modClientStarterAsync(std::string appId, graphql::GraphQLCallback done) const;
   /// Attach a succeeded CLIENT build of yours to your mod `name` on a grid you own, replacing the
   /// CLIENT half it had (`execModClientDeploy`): `{ modId, gridId, name, ownerId, clientVersion,
   /// digest, sizeBytes, capabilitySummaryJson, capabilityHash, tickIntervalMs, updatedAt }`, its

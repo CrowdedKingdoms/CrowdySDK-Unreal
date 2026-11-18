@@ -35,10 +35,10 @@ struct FCrowdyRpcTarget
 	TOptional<FVector> Location;
 
 	// The client that owns the entity, as its player id. Invalid for a world entity no client owns.
-	FGuid OwnerID;
+	FGuid WriterID;
 
 	// This client's relationship to the entity: Owner when this client simulates and sends for it,
-	// RemoteProxy when it only mirrors or renders it, HostOwned for a world entity.
+	// RemoteProxy when it only mirrors or renders it, WorldOwned for a world entity.
 	ECrowdyRole Role = ECrowdyRole::None;
 
 	// True when the target names an entity a receiver could resolve. Without one there is nothing to
@@ -54,18 +54,9 @@ struct FCrowdyRpcTarget
 		return Location.IsSet();
 	}
 
-	// True when PlayerID is this entity's owner. The id and the role both have to agree, mirroring
-	// UCrowdyEntitySubsystem::IsLocallyOwned: an owner id can arrive from a decoded message, while the
-	// role is only ever set by whatever registered the entity on this client, so either one alone is
-	// not an answer.
-	bool IsOwnedBy(const FGuid& PlayerID) const
-	{
-		return Role == ECrowdyRole::Owner && PlayerID.IsValid() && OwnerID == PlayerID;
-	}
-
-	// True when no player owns this entity: a world entity, written by the elected host if there is one.
+	// True when no player owns this entity: a world entity, which no client writes.
 	bool BelongsToNoClient() const
 	{
-		return Role == ECrowdyRole::HostOwned;
+		return Role == ECrowdyRole::WorldOwned;
 	}
 };

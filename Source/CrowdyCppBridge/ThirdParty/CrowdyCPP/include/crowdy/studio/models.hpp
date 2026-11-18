@@ -337,7 +337,9 @@ struct CreateCrowdyStudioProjectInput {
   CrowdyStudioProjectKind kind = CrowdyStudioProjectKind::Server;
   CrowdyStudioProjectMetadata metadata;
   std::vector<CrowdyStudioProjectFile> files;
-  std::string sdkVersion = "0.1.5";
+  /// The retired crowdy-compute-sdk pin a project still records; no build reads it.
+  /// "0.1.8" is the schema's default and what CrowdyJS sends.
+  std::string sdkVersion = "0.1.8";
   int abiVersion = 0;
   std::optional<std::string> idempotencyKey;
 };
@@ -384,7 +386,7 @@ struct SaveCrowdyStudioProjectInput {
   std::string expectedRevisionId;
   CrowdyStudioProjectMetadata metadata;
   std::vector<CrowdyStudioProjectFile> files;
-  std::string sdkVersion = "0.1.5";
+  std::string sdkVersion = "0.1.8";
   int abiVersion = 0;
   std::optional<std::string> idempotencyKey;
 };

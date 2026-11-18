@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/TimerHandle.h"
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
 #include "Core/UDP/Subscription/FCrowdySubscription.h"
@@ -18,16 +19,37 @@ class UCrowdyActorTracker;
 class UCrowdyEntityComponent;
 class UCrowdyGameSession;
 class UCrowdySDKBridgeSubsystem;
+class UCrowdyUDPSubsystem;
 enum class ECrowdyOwnership : uint8;
 struct FCrowdyDelivery;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCrowdyEntityRegistered, const FGuid&, NetID);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCrowdyEntityUnregistered, const FGuid&, NetID);
 // Fired on the entity's current authority when another client requests ownership of it. RequesterActor is the
-// requester's avatar when present on this client (else null); RequesterID is always the requesting player's id.
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCrowdyOwnershipRequested, AActor*, TargetEntity, AActor*, RequesterActor, const FGuid&, RequesterID);
-// Fired on every client once an entity's ownership actually changes. NewOwnerID is invalid for a host-owned entity.
+// requester's avatar when present on this client (else null); RequesterID is always the requesting player's id, and
+// RequesterUserID the user that session claims, 0 when it was signed out.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnCrowdyOwnershipRequested, AActor*, TargetEntity, AActor*, RequesterActor, const FGuid&, RequesterID, int64, RequesterUserID);
+// Fired on every client once an entity's ownership actually changes. NewWriterID is invalid for a host-owned entity.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnCrowdyEntityOwnershipChanged, AActor*, TargetEntity, const FGuid&, NetID, const FGuid&, NewOwnerID, const FGuid&, PreviousOwnerID);
+// Whether an ownership grant may re-point an entity: never a Leader entity, whose owner follows the Leader, nor a
+// player's avatar, flagged as one or whose id is its owner's as this client knows it or as the grant names it.
+inline bool CrowdyGrantMayRepoint(const FGuid& NetID, const FGuid& WriterID, const FGuid& PreviousWriterID, const bool bLeaderOwned,
+	const bool bAvatar)
+{
+	return NetID.IsValid() && !bLeaderOwned && !bAvatar && NetID != WriterID && NetID != PreviousWriterID;
+}
+
+// One registry id a re-key replaced: the id its holder knew, and the id it answers to now.
+struct FCrowdyRekeyedID
+{
+	FGuid PreviousID;
+	FGuid NewID;
+};
+
+// Fired once the local player's actor id has changed from one valid id to another and the registry has re-keyed.
+// Participants holds each owner-salted participant whose id changed with it, so whoever kept the old id can update.
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnCrowdyLocalPlayerRekeyed, const FGuid& /*PreviousID*/, const FGuid& /*NewID*/,
+	TConstArrayView<FCrowdyRekeyedID> /*Participants*/);
 
 // What a registration attempt did. A Refused result means the registry is unchanged and the caller's participant
 // answers to no id at all, so a caller that needs its participant reachable by that id has to react rather than
@@ -128,33 +150,38 @@ public:
 	// never got the destroy keeps repeating, and its entity comes back after this long.
 	static constexpr double DestroyedSpawnRefusedSeconds = 10.0;
 
-	// True when this client writes the entity: its record names the local player with the Owner role, or it is a World
-	// entity and this client is the World owner. The same answer as Is Crowdy Entity Locally Owned and the component's
-	// Is Locally Owned.
+	// True when this client writes the entity: its record names the local player with the Owner role, or it is a
+	// replicated subsystem and this client is the Leader. The same answer as Is Crowdy Entity Locally Owned and the
+	// component's Is Locally Owned.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
 	bool IsLocallyOwned(const FGuid& NetID) const;
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem")
 	FGuid GetLocalPlayerID() const;
 
-	// Reads through to UCrowdyGameSession
-	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Subsystem",
-		meta=(DeprecatedFunction, DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
-	FGuid GetHostID() const;
+	// True for this client's actor id and for the ones it held earlier in this world, so an echo of what it sent before
+	// a sign-in changed its id is still its own.
+	bool IsLocalSender(const FGuid& SenderID) const;
 
-	// The client that writes replicated subsystems: the Leader, or the elected host under Leader Source Elected Host.
+	// Systems keyed on the local player's id (crowd rows) re-stamp from here, after every record has.
+	FOnCrowdyLocalPlayerRekeyed OnLocalPlayerRekeyed;
+
+	// The client that writes replicated subsystems: the Leader.
 	FGuid GetAppWriterID() const;
 
-	// The client that writes World entities: the elected host when Leader Source is Elected Host, otherwise none.
-	FGuid GetWorldOwnerID() const;
-
-	// The client that writes Record when it is World-owned: the Leader (the host store) for a replicated subsystem,
-	// the World owner for anything else. Under Elected Host both are the host.
+	// The client that writes Record when it has no owner id: the Leader for a replicated subsystem, nobody for a
+	// World entity.
 	FGuid GetWriterID(const FCrowdyEntityRecord& Record) const;
 
 	// Whether this client writes the entity: it owns it, or it is the writer of a World-owned one.
 	bool IsRecordLocallyOwned(const FCrowdyEntityRecord& Record) const;
+
+	// The signed-in user's id, 0 while signed out.
+	int64 GetLocalUserID() const;
+
+	// The user that owns Record: this session's user when it writes the entity, else the user its writer claimed, and
+	// 0 when unknown or for a Leader or World entity. A label for display, never a write decision.
+	int64 GetOwnerUserID(const FCrowdyEntityRecord& Record) const;
 
 	// Marks Record Owned By Leader and gives it the current Leader as its owner, before it is registered.
 	void MakeLeaderOwned(FCrowdyEntityRecord& Record) const;
@@ -165,7 +192,7 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	// Injects the game session that Initialize() would normally bind, so a headless test (which never runs
-	// Initialize) can exercise the real GetHostID() read-through to UCrowdyGameSession.
+	// Initialize) can exercise the real GetAppWriterID() read-through to UCrowdyGameSession.
 	void SetGameSessionForTest(UCrowdyGameSession* InGameSession) { GameSession = InGameSession; }
 
 	// Listens to the injected session the way Initialize does.
@@ -183,7 +210,7 @@ public:
 	// The component given to a spawned actor whose class carries none.
 	UCrowdyEntityComponent* AddStaticEntityComponentForTest(AActor* Actor) const
 	{
-		return AddStaticEntityComponent(Actor, FGuid::NewGuid(), FGuid(), ECrowdyRole::RemoteProxy, 0);
+		return AddStaticEntityComponent(Actor, FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::RemoteProxy, 0);
 	}
 
 	// Off unless a test turns it on: then every spawn event this client announces is also kept here, so a test can
@@ -197,9 +224,26 @@ public:
 
 	FCrowdyActorId ResolveTargetWireIdForTest(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const { return ResolveTargetWireId(NetID, Tracker); }
 	bool IsWireIdUnheardForTest(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const { return IsWireIdUnheard(NetID, Tracker); }
-	FGuid ResolveEventAddresseeForTest(const FGuid& NetID, const FGuid& OwnerID, const UCrowdyActorTracker* Tracker) const { return ResolveEventAddressee(NetID, OwnerID, Tracker); }
+	FGuid ResolveEventAddresseeForTest(const FGuid& NetID, const FGuid& WriterID, const UCrowdyActorTracker* Tracker) const { return ResolveEventAddressee(NetID, WriterID, Tracker); }
 
 	int32 GetReportedLeaderRowClassCountForTest() const { return ReportedLeaderRowClasses.Num(); }
+
+	// What the realtime connection coming up does here.
+	void HandleRealtimeUpForTest() { HandleRealtimeUp(); }
+	int32 GetRekeyedAwaitingConnectionCountForTest() const { return RekeyedAwaitingConnection.Num(); }
+
+	// Runs the repeat a re-key's announcement schedules now instead of after RekeyRepeatSeconds. False when none waits.
+	bool RunRekeyRepeatForTest();
+
+	// While bCaptureAnnouncedSpawnsForTest is on, each ownership grant a re-key would send goes here instead: the
+	// owner peers hold, and the owner the grant names.
+	TArray<FCrowdyRekeyedID> RekeyGrantsForTest;
+
+	// The owner user each of those grants names, in the same order.
+	TArray<int64> RekeyGrantUsersForTest;
+
+	// The tracker a re-key re-points wire ids in, where a test world has none of its own.
+	TWeakObjectPtr<UCrowdyActorTracker> ActorTrackerForTest;
 #endif
 
 	//Networked entity lifecycle
@@ -271,9 +315,9 @@ public:
 	// what makes it arrive: the chunk this client can see for a moving entity is always a moment behind.
 	void DispatchGameEventToClientAt(const FVector& Location, const UScriptStruct* PayloadStruct, const void* PayloadMemory, const FGuid& ClientID);
 
-	// Who to name on an event for this entity: OwnerID, unless the entity was heard under another owner's id, which means
+	// Who to name on an event for this entity: WriterID, unless the entity was heard under another owner's id, which means
 	// this client missed a move. Nobody is named then, and the receive gate lets only the real writer run it.
-	FGuid ResolveEventAddressee(const FGuid& NetID, const FGuid& OwnerID) const;
+	FGuid ResolveEventAddressee(const FGuid& NetID, const FGuid& WriterID) const;
 
 private:
 
@@ -309,6 +353,9 @@ public:
 	// True when this client has not heard the entity under its current id, so it does not know what region to reach it in.
 	bool IsWireIdUnheard(const FGuid& NetID) const;
 
+	// True when this client heard the entity under an owner-tagged id, which a player's avatar never sends under.
+	bool IsHeardUnderOwnerTag(const FGuid& NetID) const;
+
 	/**
 	 * Publishes an already-encoded reliable RPC payload over the named channel (empty = the app-wide
 	 * default session channel). It reaches every member of that channel regardless of distance,
@@ -318,20 +365,24 @@ public:
 	void PublishReliableRpc(const FString& ChannelName, const TArray<uint8>& ChannelPayload);
 
 	/** Returns all actors whose entity record matches the given owner UUID. */
-	TArray<AActor*> GetEntitiesByOwner(const FGuid& OwnerID) const;
+	TArray<AActor*> GetEntitiesByOwner(const FGuid& WriterID) const;
+
+	// Every actor whose owner user is OwnerUserID, any session of that user included; nothing for 0, which is unknown.
+	TArray<AActor*> GetEntitiesByOwnerUser(int64 OwnerUserID) const;
 
 	// Explicit ownership transfer (view plane). Re-points a registered entity's owner and re-derives its role, then
 	// broadcasts OnEntityOwnershipChanged so the state replicator re-tracks and the entity component syncs its cache
-	// and continuous channel. NewOwnerID: a valid player id makes it client-owned (Owner on that client,
-	// RemoteProxy elsewhere); an invalid (zero) id makes it a World entity. ExpectedPreviousOwnerID,
+	// and continuous channel. NewWriterID: a valid player id makes it client-owned (Owner on that client,
+	// RemoteProxy elsewhere); an invalid (zero) id makes it a World entity. ExpectedPreviousWriterID,
 	// when valid, is a compare-and-swap guard: the change is dropped when the record's current owner no longer
 	// matches, so a stale or duplicate grant is a no-op. This is the client-authoritative view plane - a
 	// convention, not an enforcement boundary; cheat-sensitive ownership belongs in server code (Server Objects).
-	void ReassignOwnership(const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& ExpectedPreviousOwnerID);
+	// NewOwnerUserID is stored on a writer change (0 leaves the user unknown) and never takes part in the swap.
+	void ReassignOwnership(const FGuid& NetID, const FGuid& NewWriterID, const FGuid& ExpectedPreviousWriterID, int64 NewOwnerUserID);
 
 	// Broadcasts OnOwnershipRequested for TargetEntity, resolving the requester's representative actor (its avatar,
 	// when present on this client) from RequesterID. Called by the entity's authority when a transfer is requested.
-	void NotifyOwnershipRequested(AActor* TargetEntity, const FGuid& RequesterID);
+	void NotifyOwnershipRequested(AActor* TargetEntity, const FGuid& RequesterID, int64 RequesterUserID);
 
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Entity Subsystem|Events")
 	FOnCrowdyEntityRegistered OnEntityRegistered;
@@ -381,7 +432,7 @@ private:
 	FCrowdyActorId ResolveTargetWireId(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const;
 
 	bool IsWireIdUnheard(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const;
-	FGuid ResolveEventAddressee(const FGuid& NetID, const FGuid& OwnerID, const UCrowdyActorTracker* Tracker) const;
+	FGuid ResolveEventAddressee(const FGuid& NetID, const FGuid& WriterID, const UCrowdyActorTracker* Tracker) const;
 
 	UPROPERTY()
 	TObjectPtr<UCrowdyGameSession> GameSession;
@@ -408,7 +459,51 @@ private:
 	UFUNCTION()
 	void OnOwnerUUIDUpdated(FString NewUUID);
 
+	// Moves every record PreviousID owned to the local player's new id: the Player Derived pawn re-registers under it,
+	// an owned entity is re-pointed to it, and an owner-salted participant re-derives its id.
+	void RekeyLocalPlayer(const FGuid& PreviousID);
+	void RekeyPlayerAvatar(const FGuid& PreviousID);
+
+	// Re-points an entity the player still owns to the new id without announcing a change of owner, since none happened.
+	void RepointRekeyed(const FGuid& NetID, const FGuid& PreviousID, UCrowdyActorTracker* Tracker);
+	UCrowdyActorTracker* ResolveActorTracker() const;
+
+	// An entity the re-key registered under a new id: its state replication starts from the values it holds.
+	void TrackRekeyedAnew(const FGuid& NetID);
+
+	// An entity re-keyed while the connection was down, and the owner peers still hold for it (invalid when its id
+	// changed with the re-key, which peers see as a new entity).
+	struct FRekeyedEntity
+	{
+		FGuid NetID;
+		FGuid PreviousWriterID;
+	};
+	void AwaitConnection(const FGuid& NetID, const FGuid& PreviousWriterID);
+
+	// The realtime connection is up: each entity re-keyed while it was down tells peers its new owner, announces its
+	// spawn again and sends its full state, as a new entity would; once more after RekeyRepeatSeconds.
 	UFUNCTION()
+	void HandleRealtimeUp();
+	void AnnounceRekeyedEntities();
+	void AnnounceRekeyed(TConstArrayView<FRekeyedEntity> Rekeyed);
+	void MergeRekeyRepeat(TConstArrayView<FRekeyedEntity> Rekeyed);
+	void SendRekeyGrant(UCrowdyEntityComponent& Component, const FGuid& PreviousWriterID);
+	void CancelRekeyRepeat();
+
+	// Past the realtime servers' staleness window, after which a peer that missed the first announcement has let the
+	// entity's old id go and takes it under the new one.
+	static constexpr float RekeyRepeatSeconds = 6.0f;
+
+	TArray<FRekeyedEntity> RekeyedAwaitingConnection;
+	TArray<FRekeyedEntity> RekeyedToRepeat;
+	FTimerHandle RekeyRepeatTimer;
+
+	// The ids this client held before its current one, newest last; a sign-in changes it, so this stays a handful.
+	static constexpr int32 MaxRetiredLocalPlayerIDs = 4;
+	TArray<FGuid, TInlineAllocator<MaxRetiredLocalPlayerIDs>> RetiredLocalPlayerIDs;
+
+	TWeakObjectPtr<UCrowdyUDPSubsystem> UdpSubsystem;
+
 	void OnLeaderUpdated(const FGuid& NewLeaderID, const FGuid& PreviousLeaderID);
 
 	// Moves every Leader-owned entity to the current Leader.
@@ -416,12 +511,13 @@ private:
 
 	bool IsLocalLeader() const;
 
-	// The role Record has on this client once NewOwnerID owns it.
-	ECrowdyRole DeriveRole(const FCrowdyEntityRecord& Record, const FGuid& NewOwnerID) const;
+	// The role Record has on this client once NewWriterID owns it.
+	ECrowdyRole DeriveRole(const FCrowdyEntityRecord& Record, const FGuid& NewWriterID) const;
 
 	// Re-derives a LocalClient participant's owner-salted deterministic identity once the local player id arrives,
-	// re-registering it under the new NetID. Never touches actor entities (their identity is set at spawn).
-	void RestampParticipantIdentity(const FGuid& OldNetID);
+	// re-registering it under the new NetID, which it returns (invalid when the participant is gone). Never touches
+	// actor entities (their identity is set at spawn).
+	FGuid RestampParticipantIdentity(const FGuid& OldNetID);
 
 	void HandleRemoteSpawn(const FCrowdyEntitySpawnEvent& Event);
 	void HandleRemoteDestroy(const FCrowdyEntityDestroyEvent& Event);
@@ -443,7 +539,7 @@ private:
 	// component. Identity is injected before RegisterComponent so the component's
 	// BeginPlay registers the record instead of minting its own ID.
 	UCrowdyEntityComponent* AddStaticEntityComponent(AActor* Actor, const FGuid& EntityID,
-		const FGuid& EntityOwnerID, ECrowdyRole Role, uint32 ClassID) const;
+		const FGuid& EntityWriterID, int64 EntityOwnerUserID, ECrowdyRole Role, uint32 ClassID) const;
 
 	void DestroyAfterDelay(AActor* Actor, float Delay) const;
 };

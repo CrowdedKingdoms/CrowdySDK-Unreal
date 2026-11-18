@@ -44,10 +44,9 @@ class UCrowdyBlueprintCompilerExtension : public UBlueprintCompilerExtension
 
 public:
 	// True when Function is Unreal's AActor::HasAuthority. That function answers a question about
-	// Unreal's own network role, which a Crowdy entity does not use (the elected host is a
-	// convention, not an enforced server), so calling it on a Crowdy entity's graph reads the wrong
-	// thing on every non-host client. A pure name/owner check so it can be exercised directly against
-	// near-miss UFunctions (an unrelated class's identically named function, Crowdy's own wrapper)
+	// Unreal's own network role, which a Crowdy entity does not use (no client is an enforced
+	// server), so calling it on a Crowdy entity's graph reads the wrong thing on every client. A pure name/owner check so it can be exercised directly against
+	// near-miss UFunctions (an unrelated class's identically named function, Crowdy's ownership test)
 	// without compiling a Blueprint.
 	static bool IsForbiddenActorHasAuthorityCall(const UFunction* Function);
 
@@ -58,7 +57,7 @@ public:
 	static bool IsSelfTargetedCallPin(const UEdGraphPin* SelfPin);
 
 	// True when an event routed to this recipient is delivered to clients that may be drawing the entity
-	// as a crowd row. Owning-client and host calls land on one named machine, which holds the entity as a
+	// as a crowd row. Owning-client calls land on one named machine, which holds the entity as a
 	// real actor, so a body of theirs never runs on a stand-in and carries none of the limits below.
 	static bool IsCrowdDeliveredRecipient(ECrowdyEventRecipient Recipient);
 

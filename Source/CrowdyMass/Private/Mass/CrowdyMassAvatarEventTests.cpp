@@ -74,7 +74,7 @@ namespace
 		}
 
 		// The same, but carrying the identity fragment, for the tests that read who owns an entity.
-		FMassEntityHandle MakeIdentifiedEntity(const FGuid& UUID, ECrowdyRole Role, const FGuid& OwnerID)
+		FMassEntityHandle MakeIdentifiedEntity(const FGuid& UUID, ECrowdyRole Role, const FGuid& WriterID)
 		{
 			const UScriptStruct* Fragments[] = { FCrowdyRemoteIdentityFragment::StaticStruct() };
 			const FMassArchetypeHandle Archetype = EntityManager->CreateArchetype(MakeArrayView(Fragments, 1));
@@ -86,7 +86,7 @@ namespace
 			{
 				Identity->UUID = UUID;
 				Identity->Role = Role;
-				Identity->OwnerID = OwnerID;
+				Identity->WriterID = WriterID;
 			}
 
 			return Entity;
@@ -355,7 +355,7 @@ bool FCrowdyMassAvatarLocalOwnershipTest::RunTest(const FString& Parameters)
 	const FGuid SomebodyElse(0x0BADC0DE, 1, 2, 3);
 
 	Fixture.MakeIdentifiedEntity(RemoteUUID, ECrowdyRole::RemoteProxy, SomebodyElse);
-	Fixture.MakeIdentifiedEntity(HostUUID, ECrowdyRole::HostOwned, FGuid());
+	Fixture.MakeIdentifiedEntity(HostUUID, ECrowdyRole::WorldOwned, FGuid());
 	Fixture.MakeIdentifiedEntity(UnownedUUID, ECrowdyRole::Owner, FGuid());
 	Fixture.MakeIdentifiedEntity(ForeignOwnedUUID, ECrowdyRole::Owner, SomebodyElse);
 
@@ -375,7 +375,7 @@ bool FCrowdyMassAvatarLocalOwnershipTest::RunTest(const FString& Parameters)
 	const UCrowdyMassEntity* HostOwned = Fixture.Subsystem->GetOrCreateAvatar(HostUUID, AvatarClass);
 	if (TestNotNull(TEXT("the host-owned entity resolved an avatar"), HostOwned))
 	{
-		TestFalse(TEXT("a HostOwned entity is not locally owned"), HostOwned->IsEventLocallyOwned());
+		TestFalse(TEXT("a WorldOwned entity is not locally owned"), HostOwned->IsEventLocallyOwned());
 	}
 
 	// Owner with no owner id recorded: the send path substitutes the local player as the sender in
@@ -401,7 +401,7 @@ bool FCrowdyMassAvatarLocalOwnershipTest::RunTest(const FString& Parameters)
 
 // The rule itself, asserted directly rather than through an avatar, because reaching it through one
 // needs a resolved world and a fixture without one refuses before the comparison runs. Mutating
-// `return OwnerID == LocalPlayerID` to `return true` turns the last case red and nothing else.
+// `return WriterID == LocalPlayerID` to `return true` turns the last case red and nothing else.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassIdentityOwnershipRuleTest,
 	"CrowdySDK.Mass.IdentityOwnershipRule", CrowdyMassAvatarTestFlags)
 bool FCrowdyMassIdentityOwnershipRuleTest::RunTest(const FString& Parameters)
@@ -413,8 +413,8 @@ bool FCrowdyMassIdentityOwnershipRuleTest::RunTest(const FString& Parameters)
 		IsCrowdyMassIdentityLocallyOwned(ECrowdyRole::RemoteProxy, SomebodyElse, LocalPlayer));
 	TestFalse(TEXT("RemoteProxy is not locally owned even when the owner id is this client"),
 		IsCrowdyMassIdentityLocallyOwned(ECrowdyRole::RemoteProxy, LocalPlayer, LocalPlayer));
-	TestFalse(TEXT("HostOwned is nobody's to claim through this question"),
-		IsCrowdyMassIdentityLocallyOwned(ECrowdyRole::HostOwned, FGuid(), LocalPlayer));
+	TestFalse(TEXT("WorldOwned is nobody's to claim through this question"),
+		IsCrowdyMassIdentityLocallyOwned(ECrowdyRole::WorldOwned, FGuid(), LocalPlayer));
 	TestFalse(TEXT("None is not locally owned"),
 		IsCrowdyMassIdentityLocallyOwned(ECrowdyRole::None, FGuid(), LocalPlayer));
 

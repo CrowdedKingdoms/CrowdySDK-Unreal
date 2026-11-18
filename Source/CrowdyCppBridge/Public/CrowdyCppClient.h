@@ -24,6 +24,9 @@ inline constexpr const TCHAR* CrowdyCppAccessNotGrantedCode = TEXT("ACCESS_NOT_G
 // Refuses a gameplay-token mint or refresh until the player's date of birth and country are recorded.
 inline constexpr const TCHAR* CrowdyCppAgeRequiredCode = TEXT("AGE_REQUIRED");
 
+// Refuses a gameplay-token mint or refresh for a password account that has not confirmed its email yet.
+inline constexpr const TCHAR* CrowdyCppEmailConfirmationRequiredCode = TEXT("EMAIL_CONFIRMATION_REQUIRED");
+
 // Answers a recorded age when the account already has one.
 inline constexpr const TCHAR* CrowdyCppConflictCode = TEXT("CONFLICT");
 
@@ -102,6 +105,12 @@ struct FCrowdyCppJsonResult
 
 	// The same error's extensions.reason, on the few codes that carry one.
 	FString ErrorReason;
+
+	// On ACTOR_EXISTS: true when the taken uuid is already the caller's actor, false when another player holds it.
+	TOptional<bool> OwnedByCaller;
+
+	// The `data` object as MessagePack, filled by RunOpMsgpack instead of Data.
+	TArray<uint8> Msgpack;
 };
 
 /**
@@ -186,6 +195,29 @@ struct FCrowdyCppBoolResult
 	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
 };
 
+/** A Mod Script's module as its grid serves it, its bytes already checked against the digest, ABI 0 and its summary. */
+struct FCrowdyCppModClientArtifact
+{
+	bool bOk = false;
+	FString ErrorMessage;
+	FString ErrorCode;      // the server's extensions.code, as on FCrowdyCppJsonResult
+	FString ErrorReason;    // the same error's extensions.reason, as on FCrowdyCppJsonResult
+
+	// The platform answered, but the module failed the digest, ABI or summary check.
+	bool bCheckRefused = false;
+
+	FString ModId;
+	FString Name;
+	int64 GridId = 0;
+	int32 ClientVersion = 0;
+	TArray<uint8> Bytes;
+	FString Digest;         // SHA-256 of Bytes, lowercase hex
+	int64 FuelPerDispatch = 0;
+	int32 TickIntervalMs = 0;
+	FString CapabilityHash;
+	TArray<FString> HostFunctions;
+};
+
 /** The outcome of an operation that answers with a list of strings. */
 struct FCrowdyCppStringListResult
 {
@@ -205,6 +237,31 @@ struct FCrowdyCppLegalDocumentsResult
 	bool bOk = false;
 	TArray<FCrowdyCppLegalDocument> Documents;
 	FString ErrorMessage;
+};
+
+/** One model the Studio agent may use in an app. ContextWindow is 0 when the platform does not state one. */
+struct FCrowdyCppStudioModel
+{
+	FString Id;
+	FString Name;
+	int32 ContextWindow = 0;
+	TArray<FString> InputModalities;
+	/** The rate card, in millionths of a US dollar per million tokens; 0 when not given. */
+	int64 InputMicroUsdPerMillion = 0;
+	int64 OutputMicroUsdPerMillion = 0;
+	int64 ReasoningMicroUsdPerMillion = 0;
+	int64 CachedInputMicroUsdPerMillion = 0;
+};
+
+/** The outcome of FetchStudioModels. HttpStatus is 0 when no answer arrived; the error fields come from the error body. */
+struct FCrowdyCppStudioModelsResult
+{
+	bool bOk = false;
+	int32 HttpStatus = 0;
+	FString ErrorMessage;
+	FString ErrorCode;
+	bool bRetryable = false;
+	TArray<FCrowdyCppStudioModel> Models;
 };
 
 /**
@@ -415,8 +472,15 @@ enum class ECrowdyCppApiDomain : uint8
 	Realtime,
 	// A player's own safety controls in one app.
 	Safety,
-	// Server code for an app (build, deploy, versions, logs), as its developer: the session bearer by default.
-	Exec
+	// Server code for an app (build, deploy, versions, logs), as its developer: the session bearer by default. A player's connect and
+	// own mod operations carry the app token.
+	Exec,
+	// Grid claims and listings. Player and studio operations share it, so each operation names its plane.
+	Marketplace,
+	// A grid's own channels and tokens. Each operation names its plane.
+	Grids,
+	// The Studio agent's consent, metered usage and live-modding gate, under the app token.
+	CrowdyStudioAgent
 };
 
 /**
@@ -554,6 +618,17 @@ public:
 		const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
 		TOptional<ECrowdyCppTokenPlane> Plane = TOptional<ECrowdyCppTokenPlane>());
 
+	// RunOp for an answer too large to build a JSON tree from: Data stays null and Msgpack holds the `data` object,
+	// encoded in one pass over CrowdyCPP's parse. The caller bounds what it reads from it.
+	FCrowdyCppRequestHandle RunOpMsgpack(ECrowdyCppApiDomain Domain, const FString& OperationName,
+		const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
+		TOptional<ECrowdyCppTokenPlane> Plane = TOptional<ECrowdyCppTokenPlane>());
+
+	// RunOp under Bearer for this one request, a retry of it included. The installed tokens and the subscription
+	// socket stay as they are, so a call made for an account that has since signed out reconnects nothing.
+	FCrowdyCppRequestHandle RunOpWithBearer(ECrowdyCppApiDomain Domain, const FString& OperationName,
+		const TSharedPtr<FJsonObject>& Variables, const FString& Bearer, TFunction<void(FCrowdyCppJsonResult)> OnDone);
+
 	// Sign-in and account identity. The five sign-in paths carry no bearer (they are how a caller obtains one) and
 	// the three identity calls carry the session token. Each returns the identity SESSION token, from which an
 	// app-scoped gameplay token must then be minted. Same OnDone contract as the calls above: exactly once, from
@@ -651,6 +726,16 @@ public:
 	// token is NOT installed on this client: an owner decides which plane it belongs to. The result also carries
 	// the app's own datacenter endpoint and the shared DiscoveryUrl, which together are what let a client relocate.
 	FCrowdyCppRequestHandle MintAppToken(int64 AppId, TFunction<void(FCrowdyCppAppTokenResult)> OnDone);
+
+	// Fetch a Mod Script's module (execModClientArtifact) under the game bearer. Every platform refusal is NOT_FOUND;
+	// too many fetches are RATE_LIMITED.
+	FCrowdyCppRequestHandle FetchModClientArtifact(int64 AppId, const FString& ModId, TFunction<void(FCrowdyCppModClientArtifact)> OnDone);
+
+	// The models the Studio agent may use in AppId (GET /v1/model/models on the API origin) under the game bearer,
+	// which must be AppId's app token, read by CrowdyCPP. Same OnDone contract as RunOp. The answer is read as
+	// untrusted: an oversized or malformed body fails, and at most MaxStudioModels models are kept.
+	static constexpr int32 MaxStudioModels = 256;
+	FCrowdyCppRequestHandle FetchStudioModels(int64 AppId, TFunction<void(FCrowdyCppStudioModelsResult)> OnDone);
 
 	// Rotate the current app-scoped token for a fresh one before it expires. It carries the GAME bearer rather than
 	// the session one, because the token being rotated is what authorizes its own rotation. The replacement is not
@@ -792,6 +877,10 @@ private:
 	FCrowdyCppClient();
 	FCrowdyCppClient(const FCrowdyCppClient&) = delete;
 	FCrowdyCppClient& operator=(const FCrowdyCppClient&) = delete;
+
+	FCrowdyCppRequestHandle RunOpAs(ECrowdyCppApiDomain Domain, const FString& OperationName,
+		const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
+		TOptional<ECrowdyCppTokenPlane> Plane, bool bMsgpack, TOptional<FString> Bearer = TOptional<FString>());
 
 	struct FImpl;
 	TUniquePtr<FImpl> Impl;

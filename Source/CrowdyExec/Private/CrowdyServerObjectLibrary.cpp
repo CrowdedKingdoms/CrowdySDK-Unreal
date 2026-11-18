@@ -595,6 +595,17 @@ UCrowdyServerObjectDefinition* UCrowdyServerObjectLibrary::GetLeaderDefinition()
 		Definition->MembersFrom = ECrowdyServerMembersSource::ThisObject;
 		Definition->MaxMembers = 0;
 		Definition->bShowMembers = false;
+		// On Player Left removes the member itself, so a departing Leader and the new Leader's actor id change in one push.
+		Definition->bRemoveMembersWhoLeave = false;
+		Definition->bOnPlayerLeft = true;
+		Definition->WatchedFields = {GET_MEMBER_NAME_CHECKED(FCrowdyLeaderState, LeaderActorUser), GET_MEMBER_NAME_CHECKED(FCrowdyLeaderState, LeaderActorID)};
+		FCrowdyServerFunction& Enter = Definition->Functions.AddDefaulted_GetRef();
+		Enter.Name = TEXT("Enter");
+		Enter.Params = FCrowdyLeaderEnterInputs::StaticStruct();
+		Enter.CooldownSeconds = 1.f;
+		FCrowdyServerFunction& Exit = Definition->Functions.AddDefaulted_GetRef();
+		Exit.Name = TEXT("Exit");
+		Exit.Params = FCrowdyLeaderEnterInputs::StaticStruct();
 		FCrowdyServerTimer& Check = Definition->Timers.AddDefaulted_GetRef();
 		Check.Name = TEXT("CheckLeader");
 		Check.Seconds = 2.f;

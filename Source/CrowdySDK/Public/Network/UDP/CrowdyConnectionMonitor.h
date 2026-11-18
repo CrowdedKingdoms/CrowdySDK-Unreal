@@ -19,6 +19,8 @@ enum class ECrowdyReconnectState  : uint8
 	Connecting UMETA(DisplayName="Connecting"),
 	Connected UMETA(DisplayName="Connected"),
 	Failed UMETA(DisplayName="Failed"),
+	/** The server released an idle session; nothing retries until the game calls Request UDP Access. */
+	Inactive UMETA(DisplayName="Inactive"),
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnConnectionStatusChange, ECrowdyReconnectState, NewState);
@@ -51,6 +53,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Connection|Status")
 	ECrowdyReconnectState GetReconnectState() const { return ReconnectState; }
 
+	// Stops a reconnect ladder still running, as a sign-in or sign-out does: it would reconnect as the player who left.
+	void StopReconnecting();
+
 private:
 	
 	UPROPERTY()
@@ -72,5 +77,8 @@ private:
 	
 	UFUNCTION()
 	void OnUdpConnectionSuccess();
+
+	UFUNCTION()
+	void OnUdpSessionInactive();
 };
 

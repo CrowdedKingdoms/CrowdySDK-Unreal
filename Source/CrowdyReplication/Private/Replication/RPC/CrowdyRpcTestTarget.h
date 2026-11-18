@@ -156,7 +156,8 @@ public:
 
 /**
  * Subsystem RPC fixture: a plain UObject (NOT an actor), standing in for a
- * host-owned subsystem participant that sends and receives RPC CrowdyEvents over the reliable channel. Each
+ * replicated subsystem participant that sends and receives RPC CrowdyEvents over the reliable channel. The "Host"
+ * recipient is the retired spelling, kept to prove it still reads as Owning Client. Each
  * receiver records the value and bumps a call count so a test can assert it ran; a plain UObject fires
  * ProcessEvent without a world, so the channel apply tests need no editor world.
  */
@@ -185,7 +186,8 @@ public:
 
 /**
  * Actor RPC fixture used only by the actor-path regression test: an owner-only CrowdyEvent on an AActor, so the
- * receive gate's actor branch (owner/host-only broadcasts dropped, targeted sends run) can be exercised. An
+ * receive gate's actor branch (an owner-only call runs only on the owner) can be exercised, under both the
+ * OwningClient and the retired Host spelling. An
  * AActor's ProcessEvent no-ops without a world, so that test spawns this into an editor world.
  */
 UCLASS(meta = (CrowdyTestFixture))
@@ -272,12 +274,12 @@ public:
 
 	virtual FGuid GetEventEntityID() const override { return EntityID; }
 	virtual bool GetEventLocation(FVector& OutLocation) const override { return false; }
-	virtual FGuid GetEventOwnerID() const override { return OwnerID; }
+	virtual FGuid GetEventWriterID() const override { return WriterID; }
 	virtual ECrowdyRole GetEventRole() const override { return Role; }
 	virtual bool IsEventLocallyOwned() const override { return Role == ECrowdyRole::Owner; }
 
 	FGuid EntityID;
-	FGuid OwnerID;
+	FGuid WriterID;
 	ECrowdyRole Role = ECrowdyRole::None;
 	int32 CallCount = 0;
 };

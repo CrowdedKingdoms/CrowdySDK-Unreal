@@ -16,29 +16,6 @@
 
 namespace CrowdyExecDeveloperCallDetail
 {
-	const TCHAR* StatusName(ECrowdyNativeExecStatus Status)
-	{
-		switch (Status)
-		{
-		case ECrowdyNativeExecStatus::Ok: return TEXT("Ok");
-		case ECrowdyNativeExecStatus::AppError: return TEXT("AppError");
-		case ECrowdyNativeExecStatus::Busy: return TEXT("Busy");
-		case ECrowdyNativeExecStatus::Moved: return TEXT("Moved");
-		case ECrowdyNativeExecStatus::NotFound: return TEXT("NotFound");
-		case ECrowdyNativeExecStatus::DeadlineExceeded: return TEXT("DeadlineExceeded");
-		case ECrowdyNativeExecStatus::Denied: return TEXT("Denied");
-		case ECrowdyNativeExecStatus::RateLimited: return TEXT("RateLimited");
-		case ECrowdyNativeExecStatus::Unavailable: return TEXT("Unavailable");
-		case ECrowdyNativeExecStatus::Internal: return TEXT("Internal");
-		case ECrowdyNativeExecStatus::Trapped: return TEXT("Trapped");
-		case ECrowdyNativeExecStatus::BadRequest: return TEXT("BadRequest");
-		case ECrowdyNativeExecStatus::AppPaused: return TEXT("AppPaused");
-		case ECrowdyNativeExecStatus::AppDisabled: return TEXT("AppDisabled");
-		case ECrowdyNativeExecStatus::TypeDisabled: return TEXT("TypeDisabled");
-		default: return TEXT("Unknown");
-		}
-	}
-
 	const FProperty* FindField(const UStruct& Struct, const FString& Name)
 	{
 		for (TFieldIterator<FProperty> It(&Struct); It; ++It)
@@ -297,7 +274,7 @@ void CrowdyExecDeveloperCall::Call(const CrowdyExecDeveloper::FClient& Client, c
 		Connection->Call(NodeType, Key, Method, MoveTemp(Payload), [Connection, Held, ReplyStruct, OnDone = MoveTemp(OnDone)](const FCrowdyNativeExecReply& Reply)
 		{
 			FResult Result;
-			Result.Status = StatusName(Reply.Status);
+			Result.Status = CrowdyNativeExec::StatusName(Reply.Status);
 			Result.Message = Reply.Message;
 			Result.bOk = Reply.Status == ECrowdyNativeExecStatus::Ok;
 			if (Result.bOk && ReplyStruct && Held.IsValid())

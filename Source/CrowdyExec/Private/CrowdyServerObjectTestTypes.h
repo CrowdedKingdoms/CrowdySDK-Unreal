@@ -96,6 +96,43 @@ struct FCrowdyServerObjectTestDeepRecord
 	FCrowdyExecTestDepth7 Deep;
 };
 
+/** A state carrying the Leader type's published actor id by name, as the Leader subsystem reads it from any struct. */
+USTRUCT()
+struct FCrowdyServerObjectTestLeaderState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 Round = 0;
+
+	UPROPERTY()
+	int64 LeaderActorUser = 0;
+
+	UPROPERTY()
+	FString LeaderActorID;
+};
+
+/** Records each Leader change the Leader subsystem announces, and runs OnChanged at that moment. */
+UCLASS(Transient)
+class UCrowdyLeaderTestListener : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	TArray<TPair<int64, int64>> Changes;
+	TFunction<void()> OnChanged;
+
+	UFUNCTION()
+	void HandleLeaderChanged(int64 NewLeaderUserID, int64 PreviousLeaderUserID)
+	{
+		Changes.Emplace(NewLeaderUserID, PreviousLeaderUserID);
+		if (OnChanged)
+		{
+			OnChanged();
+		}
+	}
+};
+
 /** Stands in for an actor or widget that holds a Server Object. */
 UCLASS(Transient)
 class UCrowdyServerObjectTestOwner : public UObject

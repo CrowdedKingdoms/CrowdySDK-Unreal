@@ -266,31 +266,36 @@ bool FCrowdyTargetedMessageFindsItsSenderTest::RunTest(const FString& Parameters
 	const TStrongObjectPtr<UCrowdyEntitySubsystem> Entities(NewObject<UCrowdyEntitySubsystem>(GetTransientPackage()));
 	const UCrowdyActorTracker* Tracker = Fixture.Tracker.Get();
 
-	const auto Register = [&Entities, &Fixture](const FGuid& NetID, const FGuid& OwnerID, const bool bLeaderOwned)
+	const auto Register = [&Entities, &Fixture](const FGuid& NetID, const FGuid& WriterID, const bool bLeaderOwned, const bool bAvatar)
 	{
 		FCrowdyEntityRecord Record;
 		Record.NetID = NetID;
-		Record.OwnerID = OwnerID;
+		Record.WriterID = WriterID;
 		Record.Role = ECrowdyRole::RemoteProxy;
 		Record.bLeaderOwned = bLeaderOwned;
+		Record.bAvatar = bAvatar;
 		Record.Participant = NewObject<UCrowdyRecordingBackend>(GetTransientPackage());
 		Entities->RegisterEntity(Record);
 		Fixture.Tracker->HandleEntityOwnerChangedForTest(NetID, FGuid::NewGuid());
 	};
 
 	const FGuid Moved = FGuid::NewGuid();
-	Register(Moved, FGuid::NewGuid(), false);
+	Register(Moved, FGuid::NewGuid(), false, false);
 	FCrowdyActorId Heard;
 	Tracker->FindWireId(Moved, Heard);
 	TestTrue(TEXT("an entity that changed hands is addressed by the id last heard"), Entities->ResolveTargetWireIdForTest(Moved, Tracker) == Heard);
 
 	const FGuid Avatar = FGuid::NewGuid();
-	Register(Avatar, Avatar, false);
+	Register(Avatar, Avatar, false, true);
 	TestTrue(TEXT("an avatar always by its NetID"), Entities->ResolveTargetWireIdForTest(Avatar, Tracker) == FCrowdyActorId::FromGuid(Avatar));
+
+	const FGuid Unnamed = FGuid::NewGuid();
+	Register(Unnamed, FGuid(), false, true);
+	TestTrue(TEXT("even one whose record names no writer yet"), Entities->ResolveTargetWireIdForTest(Unnamed, Tracker) == FCrowdyActorId::FromGuid(Unnamed));
 
 	const FGuid Leader = FGuid::NewGuid();
 	const FGuid LeaderOwner = FGuid::NewGuid();
-	Register(Leader, LeaderOwner, true);
+	Register(Leader, LeaderOwner, true, false);
 	TestTrue(TEXT("a Leader entity by its owner's id"), Entities->ResolveTargetWireIdForTest(Leader, Tracker) == FCrowdyActorId::ForOwner(Leader, LeaderOwner));
 
 	const FGuid Unknown = FGuid::NewGuid();

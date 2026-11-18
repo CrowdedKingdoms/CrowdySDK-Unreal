@@ -549,6 +549,12 @@ int64 UCrowdyServerObject::GetSignedInUserId() const
 	return Owner ? Owner->GetSignedInUserId() : 0;
 }
 
+int64 UCrowdyServerObject::GetConnectedUserId() const
+{
+	const UCrowdyServerObjectSubsystem* Owner = Subsystem.Get();
+	return Owner ? Owner->GetConnectedUserId() : 0;
+}
+
 bool UCrowdyServerObject::HoldsRecords() const
 {
 	return Definition && !Definition->IsFunctionLibrary() && (Definition->Holds == ECrowdyServerObjectHolds::RecordPerEntity || Definition->HasKitCollection());

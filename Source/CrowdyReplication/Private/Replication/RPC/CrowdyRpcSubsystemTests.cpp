@@ -144,43 +144,35 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcSubsystemDecideRouteTableTest,
 bool FCrowdyRpcSubsystemDecideRouteTableTest::RunTest(const FString& Parameters)
 {
 	auto Check = [this](const TCHAR* Label, ECrowdyEventRecipient Recipient, bool bNonSpatial, bool bValid,
-		bool bOwn, bool bHost, bool bExpRun, ECrowdyRpcRoute ExpRoute)
+		bool bOwn, bool bExpRun, ECrowdyRpcRoute ExpRoute)
 	{
-		const FCrowdyRpcRouteDecision D = FCrowdyRPC::DecideRoute(Recipient, bNonSpatial, bValid, bOwn, bHost);
+		const FCrowdyRpcRouteDecision D = FCrowdyRPC::DecideRoute(Recipient, bNonSpatial, bValid, bOwn);
 		TestEqual(*FString::Printf(TEXT("%s run"), Label), D.bRunLocally, bExpRun);
 		TestEqual(*FString::Printf(TEXT("%s route"), Label), static_cast<int32>(D.Route), static_cast<int32>(ExpRoute));
 	};
 
 	// Actor rows (bNonSpatial == false) reproduce today's switch exactly.
-	Check(TEXT("actor OwningClient owner"), ECrowdyEventRecipient::OwningClient, false, /*valid*/true, /*own*/true, /*host*/false,
+	Check(TEXT("actor OwningClient owner"), ECrowdyEventRecipient::OwningClient, false, /*valid*/true, /*own*/true,
 		true, ECrowdyRpcRoute::None);
-	Check(TEXT("actor OwningClient untracked"), ECrowdyEventRecipient::OwningClient, false, /*valid*/false, /*own*/false, /*host*/false,
+	Check(TEXT("actor OwningClient untracked"), ECrowdyEventRecipient::OwningClient, false, /*valid*/false, /*own*/false,
 		true, ECrowdyRpcRoute::None);
-	Check(TEXT("actor OwningClient non-owner"), ECrowdyEventRecipient::OwningClient, false, /*valid*/true, /*own*/false, /*host*/false,
+	Check(TEXT("actor OwningClient non-owner"), ECrowdyEventRecipient::OwningClient, false, /*valid*/true, /*own*/false,
 		false, ECrowdyRpcRoute::SpatialToOwner);
-	Check(TEXT("actor Host host"), CrowdyDeprecatedHostRecipient, false, /*valid*/true, /*own*/false, /*host*/true,
-		true, ECrowdyRpcRoute::None);
-	Check(TEXT("actor Host non-host"), CrowdyDeprecatedHostRecipient, false, /*valid*/true, /*own*/false, /*host*/false,
-		false, ECrowdyRpcRoute::SingleActorToHost);
-	Check(TEXT("actor Multicast"), ECrowdyEventRecipient::Multicast, false, /*valid*/true, /*own*/false, /*host*/false,
+	Check(TEXT("actor Multicast"), ECrowdyEventRecipient::Multicast, false, /*valid*/true, /*own*/false,
 		true, ECrowdyRpcRoute::Channel);
-	Check(TEXT("actor SpatialMulticast"), ECrowdyEventRecipient::SpatialMulticast, false, /*valid*/true, /*own*/false, /*host*/false,
+	Check(TEXT("actor SpatialMulticast"), ECrowdyEventRecipient::SpatialMulticast, false, /*valid*/true, /*own*/false,
 		true, ECrowdyRpcRoute::SpatialBroadcast);
 
 	// Non-spatial rows (bNonSpatial == true).
-	Check(TEXT("nonspatial SpatialMulticast"), ECrowdyEventRecipient::SpatialMulticast, true, /*valid*/true, /*own*/false, /*host*/false,
+	Check(TEXT("nonspatial SpatialMulticast"), ECrowdyEventRecipient::SpatialMulticast, true, /*valid*/true, /*own*/false,
 		false, ECrowdyRpcRoute::Reject);
-	Check(TEXT("nonspatial Multicast"), ECrowdyEventRecipient::Multicast, true, /*valid*/true, /*own*/false, /*host*/false,
+	Check(TEXT("nonspatial Multicast"), ECrowdyEventRecipient::Multicast, true, /*valid*/true, /*own*/false,
 		true, ECrowdyRpcRoute::Channel);
-	Check(TEXT("nonspatial OwningClient owner"), ECrowdyEventRecipient::OwningClient, true, /*valid*/true, /*own*/true, /*host*/false,
+	Check(TEXT("nonspatial OwningClient owner"), ECrowdyEventRecipient::OwningClient, true, /*valid*/true, /*own*/true,
 		true, ECrowdyRpcRoute::Channel);
-	Check(TEXT("nonspatial OwningClient untracked"), ECrowdyEventRecipient::OwningClient, true, /*valid*/false, /*own*/false, /*host*/false,
+	Check(TEXT("nonspatial OwningClient untracked"), ECrowdyEventRecipient::OwningClient, true, /*valid*/false, /*own*/false,
 		true, ECrowdyRpcRoute::Channel);
-	Check(TEXT("nonspatial OwningClient non-owner"), ECrowdyEventRecipient::OwningClient, true, /*valid*/true, /*own*/false, /*host*/false,
-		false, ECrowdyRpcRoute::Channel);
-	Check(TEXT("nonspatial Host host"), CrowdyDeprecatedHostRecipient, true, /*valid*/true, /*own*/false, /*host*/true,
-		true, ECrowdyRpcRoute::Channel);
-	Check(TEXT("nonspatial Host non-host"), CrowdyDeprecatedHostRecipient, true, /*valid*/true, /*own*/false, /*host*/false,
+	Check(TEXT("nonspatial OwningClient non-owner"), ECrowdyEventRecipient::OwningClient, true, /*valid*/true, /*own*/false,
 		false, ECrowdyRpcRoute::Channel);
 
 	return true;
@@ -210,68 +202,48 @@ bool FCrowdyRpcSubsystemMulticastRoundTripTest::RunTest(const FString& Parameter
 	return true;
 }
 
-// A host-only subsystem RPC arrives over the channel as a broadcast (no single-actor transport for a non-actor):
-// it runs ONLY where local is the host, and drops quietly elsewhere.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcSubsystemHostOnlyGatedByHostTest,
-	"CrowdySDK.RPC.SubsystemHostOnlyGatedByHost", CrowdyRpcSubsystemTestFlags)
-bool FCrowdyRpcSubsystemHostOnlyGatedByHostTest::RunTest(const FString& Parameters)
+// A subsystem event still marked with the retired Host spelling is an owner-only event, and a replicated
+// subsystem's owner is the Leader: arriving over the channel as a broadcast, it runs ONLY on the Leader and drops
+// quietly elsewhere.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcSubsystemHostSpellingGatedByLeaderTest,
+	"CrowdySDK.RPC.SubsystemHostSpellingGatedByLeader", CrowdyRpcSubsystemTestFlags)
+bool FCrowdyRpcSubsystemHostSpellingGatedByLeaderTest::RunTest(const FString& Parameters)
 {
 	UCrowdyAutoRegistry* Registry = MakeRpcRegistry();
 
-	// (a) local is NOT the host: the host-only event drops.
+	// (a) local is NOT the Leader: the event drops.
 	{
 		const FGuid LocalPlayer = FGuid::NewGuid();
 		UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(LocalPlayer);
-		Entities->SetGameSessionForTest(MakeGameSession(FGuid::NewGuid())); // someone else is host
+		Entities->SetGameSessionForTest(MakeGameSession(FGuid::NewGuid())); // someone else leads
 		UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
 
 		UCrowdyRpcSubsystemTestTarget* Target = NewObject<UCrowdyRpcSubsystemTestTarget>();
-		const FGuid EntityID = Entities->RegisterParticipant(Target, ECrowdyOwnership::Host);
+		const FGuid EntityID = Entities->RegisterParticipant(Target);
 
 		const FCrowdyRpcCall Call = MakeRpcCall(TEXT("SubHostOnly_Implementation"),
 			&UCrowdyRpcSubsystemTestTarget::SubHostOnly_Implementation, 11, EntityID, FGuid::NewGuid());
 		Router->DispatchEvent(MakeInboundRpcEvent(Call, /*bTargeted=*/false));
 
-		TestEqual(TEXT("non-host does NOT run the host-only subsystem RPC"), Target->CallCount, 0);
+		TestEqual(TEXT("a client that does not lead does NOT run it"), Target->CallCount, 0);
 	}
 
-	// (b) local IS the host: the host-only event runs once.
+	// (b) local IS the Leader: the event runs once.
 	{
 		const FGuid LocalPlayer = FGuid::NewGuid();
 		UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(LocalPlayer);
-		Entities->SetGameSessionForTest(MakeGameSession(LocalPlayer)); // local is host
+		Entities->SetGameSessionForTest(MakeGameSession(LocalPlayer)); // local leads
 		UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
 
 		UCrowdyRpcSubsystemTestTarget* Target = NewObject<UCrowdyRpcSubsystemTestTarget>();
-		const FGuid EntityID = Entities->RegisterParticipant(Target, ECrowdyOwnership::Host);
+		const FGuid EntityID = Entities->RegisterParticipant(Target);
 
 		const FCrowdyRpcCall Call = MakeRpcCall(TEXT("SubHostOnly_Implementation"),
 			&UCrowdyRpcSubsystemTestTarget::SubHostOnly_Implementation, 11, EntityID, FGuid::NewGuid());
 		Router->DispatchEvent(MakeInboundRpcEvent(Call, /*bTargeted=*/false));
 
-		TestEqual(TEXT("host runs the host-only subsystem RPC once"), Target->CallCount, 1);
-		TestEqual(TEXT("host applied the value"), Target->GotValue, 11);
-	}
-
-	// (c) Leader Source Server Object: the host store holds the Leader, and a subsystem's Host is the Leader.
-	{
-		UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
-		const ECrowdyLeaderSource Previous = Settings->LeaderSource;
-		Settings->LeaderSource = ECrowdyLeaderSource::ServerObject;
-		const FGuid LocalPlayer = FGuid::NewGuid();
-		UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(LocalPlayer);
-		Entities->SetGameSessionForTest(MakeGameSession(LocalPlayer));
-		UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
-
-		UCrowdyRpcSubsystemTestTarget* Target = NewObject<UCrowdyRpcSubsystemTestTarget>();
-		const FGuid EntityID = Entities->RegisterParticipant(Target, ECrowdyOwnership::Host);
-
-		const FCrowdyRpcCall Call = MakeRpcCall(TEXT("SubHostOnly_Implementation"),
-			&UCrowdyRpcSubsystemTestTarget::SubHostOnly_Implementation, 11, EntityID, FGuid::NewGuid());
-		Router->DispatchEvent(MakeInboundRpcEvent(Call, /*bTargeted=*/false));
-		Settings->LeaderSource = Previous;
-
-		TestEqual(TEXT("Server Object: the Leader runs the host-only subsystem RPC"), Target->CallCount, 1);
+		TestEqual(TEXT("the Leader runs it once"), Target->CallCount, 1);
+		TestEqual(TEXT("the Leader applied the value"), Target->GotValue, 11);
 	}
 
 	return true;
@@ -324,14 +296,15 @@ bool FCrowdyRpcOwnerCallRunsOnlyOnTheOwnerTest::RunTest(const FString& Parameter
 	return true;
 }
 
-// The deprecated Host recipient keeps its rule on an actor: the server delivers it as a targeted send, so a broadcast
-// of one is misuse or forgery.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcActorHostBroadcastStillDroppedTest,
-	"CrowdySDK.RPC.ActorHostBroadcastStillDropped", CrowdyRpcSubsystemTestFlags)
-bool FCrowdyRpcActorHostBroadcastStillDroppedTest::RunTest(const FString& Parameters)
+// An actor event still marked with the retired Host spelling is an owner-only event: it runs on the entity's owner
+// however it arrived, and on no other client.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyRpcActorHostSpellingRunsOnlyOnTheOwnerTest,
+	"CrowdySDK.RPC.ActorHostSpellingRunsOnlyOnTheOwner", CrowdyRpcSubsystemTestFlags)
+bool FCrowdyRpcActorHostSpellingRunsOnlyOnTheOwnerTest::RunTest(const FString& Parameters)
 {
+	const FGuid Local = FGuid::NewGuid();
 	UCrowdyAutoRegistry* Registry = MakeRpcRegistry();
-	UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(FGuid::NewGuid());
+	UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(Local);
 	UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
 
 	FCrowdyRpcTestWorld TestWorld;
@@ -341,17 +314,26 @@ bool FCrowdyRpcActorHostBroadcastStillDroppedTest::RunTest(const FString& Parame
 		return false;
 	}
 
-	const FGuid EntityID = FGuid::NewGuid();
-	RegisterProxyParticipant(Entities, EntityID, Actor);
-	const FCrowdyRpcCall Call = MakeRpcCall(TEXT("ActorHostOnly_Implementation"),
-		&ACrowdyRpcActorTestTarget::ActorHostOnly_Implementation, 7, EntityID, FGuid::NewGuid());
+	const FGuid ProxyID = FGuid::NewGuid();
+	const FGuid OwnedID = FGuid::NewGuid();
+	RegisterProxyParticipant(Entities, ProxyID, Actor);
+	RegisterParticipantAs(Entities, OwnedID, Actor, ECrowdyRole::Owner, Local);
 
-	Router->DispatchEvent(MakeInboundRpcEvent(Call, /*bTargeted=*/false));
-	TestEqual(TEXT("a broadcast host-only call is dropped"), Actor->CallCount, 0);
+	const auto Deliver = [&](const FGuid& EntityID, const bool bTargeted)
+	{
+		const FCrowdyRpcCall Call = MakeRpcCall(TEXT("ActorHostOnly_Implementation"),
+			&ACrowdyRpcActorTestTarget::ActorHostOnly_Implementation, 7, EntityID, FGuid::NewGuid());
+		Router->DispatchEvent(MakeInboundRpcEvent(Call, bTargeted));
+	};
 
-	Router->DispatchEvent(MakeInboundRpcEvent(Call, /*bTargeted=*/true));
-	TestEqual(TEXT("the same call as a targeted send runs"), Actor->CallCount, 1);
+	Deliver(ProxyID, /*bTargeted=*/false);
+	TestEqual(TEXT("a broadcast does not run on a client that only draws the entity"), Actor->CallCount, 0);
 
+	Deliver(ProxyID, /*bTargeted=*/true);
+	TestEqual(TEXT("nor does a targeted send that reached one"), Actor->CallCount, 0);
+
+	Deliver(OwnedID, /*bTargeted=*/false);
+	TestEqual(TEXT("the owner runs it"), Actor->CallCount, 1);
 	return true;
 }
 

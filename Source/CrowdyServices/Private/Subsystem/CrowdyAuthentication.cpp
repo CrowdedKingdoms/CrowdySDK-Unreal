@@ -18,6 +18,8 @@
 #include "Engine/GameInstance.h"
 #include "Engine/EngineTypes.h"
 #include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h"
+#include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
+#include "Subsystem/CrowdyActorOwners.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Subsystem/CrowdyTeams.h"
 #include "CrowdyServiceApiSupport.h"
@@ -1055,7 +1057,12 @@ void UCrowdyAuthentication::ForgetEndedSession()
 
 void UCrowdyAuthentication::EndServerSession()
 {
-	if (!GameSession || GameSession->GetSessionToken().IsEmpty())
+	EndServerSession(GameSession ? GameSession->GetSessionToken() : FString());
+}
+
+void UCrowdyAuthentication::EndServerSession(const FString& SessionToken)
+{
+	if (SessionToken.IsEmpty())
 	{
 		return;
 	}
@@ -1064,12 +1071,19 @@ void UCrowdyAuthentication::EndServerSession()
 	{
 		return;
 	}
+
+	// Installed after the resolve, which installs the session's own bearer: by now that may be none, or a later sign-in's.
+	Client->SetManagementToken(SessionToken);
+
 	// Sign-out never waits on this: the caller forgets the token whatever the server answers.
 	Client->Logout([](FCrowdyCppBoolResult Result)
 	{
 		UE_CLOG(!Result.bOk, LogCrowdyServices, Warning,
 			TEXT("[CrowdyAuth] The server did not end the session (%s); it stays valid until it expires."), *Result.ErrorMessage);
 	});
+
+	// The request carries the bearer it was sent with, so the session's own goes back at once.
+	Client->SetManagementToken(GameSession ? GameSession->GetSessionToken() : FString());
 }
 
 void UCrowdyAuthentication::GetMyAccess(FOnAppAccessRead OnResult, FOnAccountError OnError)
@@ -1497,6 +1511,13 @@ bool UCrowdyAuthentication::IsInteractiveSignInBusy() const
 void UCrowdyAuthentication::BeginMintPipeline(const FString& SessionToken, int64 SessionGameTokenID, int64 UserID,
                                               EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
 {
+	// The mint needs this sign-in's session token installed, so over a live sign-in the live player's identity is kept
+	// to put back if the mint fails, and this one is saved only once it lands.
+	if (GameSession && IsSignedIn() && !LiveSignIn.IsSet())
+	{
+		LiveSignIn = FHeldSignIn{GameSession->GetUserID(), GameSession->GetSessionToken(), GameSession->GetSessionGameTokenID()};
+	}
+
 	// Store the SESSION token on the management plane only. It is never handed to
 	// the Game API / UDP path: that is what an app-scoped token (minted below) is for.
 	if (GameSession)
@@ -1509,6 +1530,12 @@ void UCrowdyAuthentication::BeginMintPipeline(const FString& SessionToken, int64
 
 	// Persist the SESSION token only (durable, mint-capable). The app token is
 	// short-lived and stays in memory.
+	if (LiveSignIn.IsSet())
+	{
+		PendingSave = FHeldSignIn{UserID, SessionToken, SessionGameTokenID};
+		DispatchMint(Flow, OnSuccess, OnError);
+		return;
+	}
 	SaveSession(SessionToken, SessionGameTokenID, UserID);
 	if (Flow != EAuthFlow::Restore)
 	{
@@ -1516,6 +1543,53 @@ void UCrowdyAuthentication::BeginMintPipeline(const FString& SessionToken, int64
 	}
 
 	DispatchMint(Flow, OnSuccess, OnError);
+}
+
+void UCrowdyAuthentication::AdoptPendingSignIn()
+{
+	if (PendingSave.IsSet())
+	{
+		SaveSession(PendingSave->SessionToken, PendingSave->SessionGameTokenID, PendingSave->UserID);
+	}
+	PendingSave.Reset();
+	LiveSignIn.Reset();
+}
+
+void UCrowdyAuthentication::RestoreLiveSignIn()
+{
+	PendingSave.Reset();
+	if (!LiveSignIn.IsSet() || !GameSession)
+	{
+		LiveSignIn.Reset();
+		return;
+	}
+	GameSession->SetUserID(LiveSignIn->UserID);
+	GameSession->SetSessionGameTokenID(LiveSignIn->SessionGameTokenID);
+	GameSession->SetSessionToken(LiveSignIn->SessionToken);
+	LiveSignIn.Reset();
+	PublishTokensToCppClient();
+}
+
+void UCrowdyAuthentication::EndPreviousSignIn()
+{
+	if (!GameSession || !GameSession->IsSignedIn())
+	{
+		return;
+	}
+
+	// The connection signs as the previous sign-in and sends under its actor id, which this sign-in replaces.
+	UGameInstance* GameInstance = GetGameInstance();
+	if (UCrowdyCppReplicationSubsystem* Replication = GameInstance ? GameInstance->GetSubsystem<UCrowdyCppReplicationSubsystem>() : nullptr)
+	{
+		Replication->CloseConnection();
+	}
+
+	// While the previous app token is still installed, since deleting its actor record needs it.
+	if (UCrowdyActorOwners* ActorOwners = GameInstance ? GameInstance->GetSubsystem<UCrowdyActorOwners>() : nullptr)
+	{
+		ActorOwners->HandleSignedOut(nullptr);
+	}
+	GameSession->EndSignIn();
 }
 
 void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSuccess, FOnAuthError OnError)
@@ -1576,6 +1650,11 @@ void UCrowdyAuthentication::DispatchMint(EAuthFlow Flow, FOnAuthSuccess OnSucces
 			if (Result.ErrorCode.Equals(CrowdyCppAgeRequiredCode, ESearchCase::CaseSensitive))
 			{
 				Self->HoldForAge(Flow, OnSuccess, OnError);
+				return;
+			}
+			if (Self->NoteEmailConfirmationRequired(Result.ErrorCode))
+			{
+				Self->FailFlow(TEXT("Confirm your email address to play: open the link we sent you, then sign in again."), Flow, OnError);
 				return;
 			}
 
@@ -1667,6 +1746,10 @@ void UCrowdyAuthentication::DispatchRefresh()
 			if (Result.ErrorCode.Equals(CrowdyCppAgeRequiredCode, ESearchCase::CaseSensitive))
 			{
 				Self->HoldForAge(EAuthFlow::Refresh, FOnAuthSuccess(), FOnAuthError());
+				return;
+			}
+			if (Self->NoteEmailConfirmationRequired(Result.ErrorCode))
+			{
 				return;
 			}
 
@@ -1773,6 +1856,11 @@ void UCrowdyAuthentication::CancelSignIn()
 void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& Token, EAuthFlow Flow, FOnAuthSuccess OnSuccess)
 {
 	EndPendingSignIn(Flow);
+	if (Flow != EAuthFlow::Refresh)
+	{
+		EndPreviousSignIn();
+		AdoptPendingSignIn();
+	}
 
 	// The mint returns gameApiUrl as a bare host; the Game API GraphQL lives at /graphql, so
 	// normalize once and adopt that as the per-app Game endpoint (else every Game-API POST 404s).
@@ -1804,9 +1892,13 @@ void UCrowdyAuthentication::ApplyAppTokenAndFinish(const FCrowdyAppTokenFields& 
 	if (Flow != EAuthFlow::Refresh)
 	{
 		bAccessRefused = false;
+		bEmailConfirmationRequired = false;
 		if (GameSession)
 		{
 			GameSession->ClearAccessEnded();
+
+			// Before anything below opens the realtime connection, so every listener re-keys while it is closed.
+			GameSession->BeginSignIn();
 		}
 	}
 
@@ -1875,6 +1967,12 @@ void UCrowdyAuthentication::ApplyAppTokenForTest(const FCrowdyAppTokenFields& To
 	ApplyAppTokenAndFinish(Token, bRefresh ? EAuthFlow::Refresh : EAuthFlow::Login, FOnAuthSuccess());
 	TeamsOverride.Reset();
 }
+
+FString UCrowdyAuthentication::GetSavedSessionTokenForTest() const
+{
+	const UCrowdyAuthSaveGame* Save = LoadVaultSave();
+	return Save ? Save->SessionToken : FString();
+}
 #endif
 
 void UCrowdyAuthentication::FailFlow(const FString& Message, EAuthFlow Flow, FOnAuthError OnError)
@@ -1882,6 +1980,10 @@ void UCrowdyAuthentication::FailFlow(const FString& Message, EAuthFlow Flow, FOn
 	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] sign-in/mint failed: %s"), *Message);
 
 	EndPendingSignIn(Flow);
+	if (Flow != EAuthFlow::Refresh)
+	{
+		RestoreLiveSignIn();
+	}
 	OnError.ExecuteIfBound(Message);
 	if (bCancellingSignIn)
 	{
@@ -1932,9 +2034,22 @@ bool UCrowdyAuthentication::NoteAccessRefused(const FString& ErrorCode, const FS
 	return true;
 }
 
+bool UCrowdyAuthentication::NoteEmailConfirmationRequired(const FString& ErrorCode)
+{
+	if (!ErrorCode.Equals(CrowdyCppEmailConfirmationRequiredCode, ESearchCase::CaseSensitive))
+	{
+		return false;
+	}
+	bEmailConfirmationRequired = true;
+	CancelProactiveRefresh();
+	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyAuth] The player's email is not confirmed yet; sign-in and token rotation stop."));
+	OnEmailConfirmationRequired.Broadcast();
+	return true;
+}
+
 void UCrowdyAuthentication::RefreshAppToken()
 {
-	if (!GameSession || bAccessRefused)
+	if (!GameSession || bAccessRefused || bEmailConfirmationRequired)
 		return;
 
 	if (GameSession->GetGameToken().IsEmpty() && GameSession->GetSessionToken().IsEmpty())
@@ -1961,7 +2076,7 @@ void UCrowdyAuthentication::RecoverExpiredAppToken()
 		return;
 	}
 
-	if (bAccessRefused)
+	if (bAccessRefused || bEmailConfirmationRequired)
 	{
 		return;
 	}
@@ -2201,6 +2316,8 @@ void UCrowdyAuthentication::ClearSavedSession()
 	StaleSignInMessage = SignedOutMessage;
 	PendingSignIns = 0;
 	bPendingSignInSavedSession = false;
+	LiveSignIn.Reset();
+	PendingSave.Reset();
 	CancelProactiveRefresh();
 
 	// A browser sign-in armed for the account that signed out must not complete into the next one.

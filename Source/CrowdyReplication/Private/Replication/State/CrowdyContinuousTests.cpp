@@ -47,7 +47,7 @@ namespace
 	{
 		FCrowdyEntityRecord Record;
 		Record.NetID = EntityId;
-		Record.OwnerID = bOwned ? Entities->GetLocalPlayerID() : FGuid::NewGuid();
+		Record.WriterID = bOwned ? Entities->GetLocalPlayerID() : FGuid::NewGuid();
 		Record.Role = bOwned ? ECrowdyRole::Owner : ECrowdyRole::RemoteProxy;
 		Record.Participant = Actor;
 		Entities->RegisterEntity(Record);
@@ -407,7 +407,7 @@ bool FCrowdyContinuousReachesTheActorTest::RunTest(const FString&)
 	const FGuid WorldId = FGuid::NewGuid();
 	FCrowdyEntityRecord WorldRecord;
 	WorldRecord.NetID = WorldId;
-	WorldRecord.Role = ECrowdyRole::HostOwned;
+	WorldRecord.Role = ECrowdyRole::WorldOwned;
 	WorldRecord.Participant = World;
 	Entities->RegisterEntity(WorldRecord);
 	Router->DispatchContinuousExtras(WorldId, Extras);
@@ -520,6 +520,54 @@ bool FCrowdyContinuousRidesTheAppliedUpdateTest::RunTest(const FString&)
 	Manager->OnUpdateExtras.AddLambda([&Announced](const FGuid&, int32, TConstArrayView<uint8>) { ++Announced; });
 	Tracker->OnRemoteEntityAppearedExtras.Broadcast(FGuid::NewGuid(), Extras);
 	TestEqual(TEXT("an entity with no slot has nothing to apply them to"), Announced, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyIdlePlayerSendsNoKeyframeTest,
+	"CrowdySDK.State.IdlePlayerSendsNoKeyframe", CrowdyContinuousTestFlags)
+bool FCrowdyIdlePlayerSendsNoKeyframeTest::RunTest(const FString&)
+{
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	UCrowdyStateReplicator* Replicator = NewObject<UCrowdyStateReplicator>(GetTransientPackage());
+	Replicator->SetRegistryForTest(Registry);
+	Replicator->SetLocalPlayerIDForTest(FGuid::NewGuid());
+	Replicator->SetKeyframeIntervalForTest(1.0f);
+	double Now = 100.0;
+	Replicator->SetTimeForTest(Now);
+
+	TArray<FCrowdyStateDelta> Sent;
+	Replicator->DispatchHookForTests = [&Sent](const FCrowdyStateDelta& Delta, bool) { Sent.Add(Delta); };
+
+	FCrowdyStateTestWorld TestWorld;
+	ACrowdyContinuousTestActor* Actor = TestWorld.Spawn<ACrowdyContinuousTestActor>();
+	if (!TestTrue(TEXT("tracked"), Replicator->RegisterOwnedEntityForTest(FGuid::NewGuid(), Actor)))
+	{
+		return false;
+	}
+	Replicator->RunReplicationLoopForTest();
+	Sent.Reset();
+
+	Replicator->SetLocalPlayerIdle(true);
+	Now += 5.0;
+	Replicator->SetTimeForTest(Now);
+	Replicator->RunReplicationLoopForTest();
+	TestEqual(TEXT("an idle player sends no keyframe"), Sent.Num(), 0);
+
+	Actor->RepPlain = 9;
+	Replicator->RunReplicationLoopForTest();
+	TestEqual(TEXT("but a change still goes"), Sent.Num(), 1);
+	Sent.Reset();
+
+	Replicator->SetLocalPlayerIdle(false);
+	Replicator->RunReplicationLoopForTest();
+	TestEqual(TEXT("the skipped keyframe is not sent late"), Sent.Num(), 0);
+	Now += 1.0;
+	Replicator->SetTimeForTest(Now);
+	Replicator->RunReplicationLoopForTest();
+	if (TestEqual(TEXT("the heartbeat resumes on its next interval"), Sent.Num(), 1))
+	{
+		TestTrue(TEXT("marked as a keyframe"), (Sent[0].Flags & CrowdyStateDeltaFlags::Keyframe) != 0);
+	}
 	return true;
 }
 

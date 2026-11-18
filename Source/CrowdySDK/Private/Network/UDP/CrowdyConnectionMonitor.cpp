@@ -40,6 +40,32 @@ void UCrowdyConnectionMonitor::AttachTo(UCrowdySDKSubsystem* Sdk, UCrowdyUDPSubs
 	// The SDK subsystem and game code bind these delegates too; only this monitor's own binding must be unique.
 	CrowdySDK->OnUDPTimedOut.AddUniqueDynamic(this, &UCrowdyConnectionMonitor::OnUdpTimeoutDetected);
 	CrowdySDK->OnUDPConnectionSuccess.AddUniqueDynamic(this, &UCrowdyConnectionMonitor::OnUdpConnectionSuccess);
+	CrowdySDK->OnUDPSessionInactive.AddUniqueDynamic(this, &UCrowdyConnectionMonitor::OnUdpSessionInactive);
+}
+
+void UCrowdyConnectionMonitor::StopReconnecting()
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->GetTimerManager().IsTimerActive(RetryTimer))
+	{
+		return;
+	}
+	World->GetTimerManager().ClearTimer(RetryTimer);
+	AttemptIndex = 0;
+	ReconnectState = ECrowdyReconnectState::Disconnected;
+	OnConnectionStateChanged.Broadcast(ReconnectState);
+}
+
+void UCrowdyConnectionMonitor::OnUdpSessionInactive()
+{
+	// An idle release is not a drop: a retry ladder still running from an earlier timeout must not bring the player back.
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(RetryTimer);
+	}
+	AttemptIndex = 0;
+	ReconnectState = ECrowdyReconnectState::Inactive;
+	OnConnectionStateChanged.Broadcast(ReconnectState);
 }
 
 void UCrowdyConnectionMonitor::OnUdpTimeoutDetected()

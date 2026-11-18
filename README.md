@@ -5,12 +5,23 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.25.0** (Unreal Engine 5.8). See the
+**Current version: 2.26.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
 **Upgrading? Read [MIGRATION.md](MIGRATION.md): every release from 2.24.0 lists what changed and the exact steps to migrate.**
+
+**New in 2.26.0:** this release breaks. The elected host and everything the SDK had deprecated
+are deleted, and the role Host Owned is World Owned. A player's actor id is random and new at each
+sign-in, the live pawn re-keys to it, and `Resolve Actor Owner` finds the user behind an actor id.
+An entity's owner id is now its writer id, and entities name their owner's user id; a client on
+this release cannot play with an older one. The Leader type changed, so deploy the app's server
+code again. New: fetching voxel chunks, a live voxel world with edits, chunk claims and edit
+checks, mods, Mod Scripts (Win64 only), and sending video frames. A session the server releases
+for idleness reads Inactive instead of reconnecting. The mod calls and the server code deploy need
+Game API v2.73.0 on every tier you ship to. Follow MIGRATION.md step by step, including the steps
+to take on 2.25.x before you upgrade.
 
 **New in 2.25.0:** there is no elected host by default. A Leader chosen by a Server Object writes
 replicated subsystems, and an entity says who writes it with Owned By (Player, World or Leader). A
@@ -20,13 +31,6 @@ Owning Client reaches an entity's writer, and the Host recipient, the host nodes
 component's Ownership and Mode are deprecated: they warn and still run. Player safety (contacts,
 blocks, reports, the age screen, recording state) and CrowdyCPP 0.76.0 arrive too. MIGRATION.md
 lists every change and the steps to upgrade.
-
-**New in 2.24.0:** no breaking change and nothing deprecated. A spawned entity appears once on
-every client, keeps its spawn data in either arrival order, and reaches players who join later
-(Static ones repeat their spawn every 4 seconds); the owner no longer sees a pooled copy of its
-own entity unless Render Local Owner is set; Destroy Entity stops sending at once; signing out no
-longer leaves a phantom host; packaged plugin zips carry the SDK's Config and build with
-BuildPlugin again; and this release starts MIGRATION.md.
 
 Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkingdoms.com/unreal-sdk/intro)**
 

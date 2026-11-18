@@ -388,12 +388,12 @@ void UCrowdyActorTracker::Configure(const int32 InMaxTrackedActors, const int32 
 	if (!UpdateQueues.IsEmpty())
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[Crowdy Actor Tracker]: Configure was ignored because the tracker is already running. Set these values in the map profile or the developer settings instead."));
+			TEXT("[Crowdy Actor Tracker]: Configure was ignored because the tracker is already running. Set these values on the map profile's Remote Entities instead."));
 		return;
 	}
 
-	// Clamped here because this is the only way these are set, from Blueprint and from the map profile alike, and
-	// the ranges declared on the config struct are a details panel hint that ini text and Blueprint both bypass.
+	// Clamped here because this is the only way these are set, and the ranges declared on the config struct are a
+	// details panel hint that ini text bypasses.
 	// None of these have a meaningful value at or below zero: a tracked actor capacity of zero divides by zero on
 	// the first update, and a batch limit of zero gathers nothing while looking full, so a consumer would hand its
 	// shard to a successor that gathers nothing either and no update would ever be delivered again.
@@ -447,7 +447,8 @@ void UCrowdyActorTracker::EnqueueUpdate(const FCrowdyActorUpdate& Update)
 
 void UCrowdyActorTracker::EnqueueUpdate(FCrowdyActorUpdate&& Update)
 {
-	if (Update.UUID == LocalUUID && !bOwnerTrackingEnabled)
+	// Every id this client sent under counts, so an update sent before a sign-in replaced its id is still its own.
+	if (!bOwnerTrackingEnabled && (Update.UUID == LocalUUID || RetiredLocalUUIDs.Contains(Update.UUID)))
 		return;
 
 	// Nothing was set up, so there is nowhere to put this. Reachable when the map profile turned the tracker off.
@@ -1018,9 +1019,17 @@ bool UCrowdyActorTracker::IsRetiredWireId(const FGuid& NetID, const FCrowdyActor
 	return Held && Held->WireId.IsSet() && Held->WireId != WireId;
 }
 
-void UCrowdyActorTracker::HandleEntityOwnerChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& /*PreviousOwnerID*/)
+void UCrowdyActorTracker::HandleEntityOwnerChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& NewWriterID, const FGuid& /*PreviousWriterID*/)
 {
-	CurrentWireIds.Add(NetID, { FCrowdyActorId::ForOwner(NetID, NewOwnerID) });
+	CurrentWireIds.Add(NetID, { FCrowdyActorId::ForOwner(NetID, NewWriterID) });
+}
+
+void UCrowdyActorTracker::RepointWireId(const FGuid& NetID, const FGuid& NewWriterID)
+{
+	if (FMovedWireId* Moved = CurrentWireIds.Find(NetID))
+	{
+		*Moved = { FCrowdyActorId::ForOwner(NetID, NewWriterID) };
+	}
 }
 
 void UCrowdyActorTracker::HandleEntityUnregistered(const FGuid& NetID)
@@ -1133,7 +1142,16 @@ void UCrowdyActorTracker::ProcessTimedOutActors(TArray<FGuid> TimedOut, const fl
 
 void UCrowdyActorTracker::SetLocalUUID(FString NewUUID)
 {
+	const FGuid PreviousUUID = LocalUUID;
 	LocalUUID = USerializationFunctionLibrary::ToGuid(NewUUID);
+	if (PreviousUUID.IsValid() && PreviousUUID != LocalUUID)
+	{
+		if (RetiredLocalUUIDs.Num() >= MaxRetiredLocalUUIDs)
+		{
+			RetiredLocalUUIDs.RemoveAt(0);
+		}
+		RetiredLocalUUIDs.Add(PreviousUUID);
+	}
 	
 	if (!LocalUUID.IsValid())
 		UE_LOG(LogCrowdyReplication, Error, TEXT("[Crowdy Actor Tracker]: Invalid local UUID: %s"), *NewUUID);

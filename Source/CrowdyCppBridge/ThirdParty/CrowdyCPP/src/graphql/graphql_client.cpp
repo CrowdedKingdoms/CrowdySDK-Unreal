@@ -15,7 +15,21 @@ namespace {
 /// the single source of truth for the GraphQL response contract; both the
 /// blocking request() and the async path run through it, so their behavior
 /// can never drift. The decision order matches the historical request().
-GraphQLOutcome interpret(int httpStatus, const std::string& body) {
+GraphQLOutcome tooLarge(std::size_t maxBytes) {
+  GraphQLOutcome out;
+  out.status = Errc::ResponseTooLarge;
+  out.kind = GraphQLErrorKind::Protocol;
+  out.errorMessage = "GraphQL response larger than " + std::to_string(maxBytes) + " bytes";
+  return out;
+}
+
+GraphQLOutcome interpret(int httpStatus, const std::string& body, std::size_t maxBytes) {
+  // A transport that ignores HttpRequest::maxResponseBytes is held to it here.
+  if (body.size() > maxBytes) {
+    GraphQLOutcome out = tooLarge(maxBytes);
+    out.httpStatus = httpStatus;
+    return out;
+  }
   GraphQLOutcome out;
   out.httpStatus = httpStatus;
 
@@ -90,9 +104,10 @@ GraphQLOutcome cancelledOutcome(std::string message) {
   return out;
 }
 
-GraphQLOutcome outcomeFromHttp(HttpOutcome http) {
+GraphQLOutcome outcomeFromHttp(HttpOutcome http, std::size_t maxBytes) {
   if (!http.status.ok()) {
     if (http.status.code == Errc::Cancelled) return cancelledOutcome(std::move(http.errorMessage));
+    if (http.status.code == Errc::ResponseTooLarge) return tooLarge(maxBytes);
     GraphQLOutcome out;
     out.status = http.status;
     out.kind =
@@ -100,7 +115,7 @@ GraphQLOutcome outcomeFromHttp(HttpOutcome http) {
     out.errorMessage = std::move(http.errorMessage);
     return out;
   }
-  return interpret(http.response.status, http.response.body);
+  return interpret(http.response.status, http.response.body, maxBytes);
 }
 
 bool cancelled(const std::optional<CancelToken>& cancel) {
@@ -120,6 +135,29 @@ GraphQLOutcome settle(GraphQLOutcome out, const std::optional<CancelToken>& canc
 
 GraphQLOutcome settle(GraphQLOutcome out, const HttpRequest& request) {
   return settle(std::move(out), request.cancel, request.url);
+}
+
+HttpOutcome httpFailure(Errc code, std::string message) {
+  HttpOutcome out;
+  out.status = code;
+  out.errorMessage = std::move(message);
+  return out;
+}
+
+/// A REST answer, held to the caller's token and to the response limit the way a
+/// GraphQL answer is (settle(), interpret()).
+HttpOutcome settleHttp(HttpOutcome http, const std::optional<CancelToken>& cancel,
+                       const std::string& url, std::size_t maxBytes) {
+  if (cancelled(cancel) && http.status.code != Errc::Cancelled) {
+    return httpFailure(Errc::Cancelled, "HTTP request cancelled: " + url);
+  }
+  if (http.status.ok() && http.response.body.size() > maxBytes) {
+    HttpOutcome out = httpFailure(
+        Errc::ResponseTooLarge, "HTTP response larger than " + std::to_string(maxBytes) + " bytes");
+    out.response.status = http.response.status;
+    return out;
+  }
+  return http;
 }
 
 #ifndef CROWDY_NO_EXCEPTIONS
@@ -192,18 +230,28 @@ bool GraphQLClient::applyDatacenterRedirect(const GraphQLOutcome& outcome,
   return endpoint() != requestUrl;
 }
 
-HttpRequest GraphQLClient::buildHttpRequest(std::string_view document, const JVal& variables,
-                                            std::string_view operationName,
-                                            const RequestOptions& options) const {
+GraphQLOutcome interpretResponse(int httpStatus, const std::string& body,
+                                 std::size_t maxBodyBytes) {
+  return interpret(httpStatus, body, maxBodyBytes);
+}
+
+std::string requestBody(std::string_view document, const JVal& variables,
+                        std::string_view operationName) {
   JVal body;
   body["query"] = JVal(document);
   if (!variables.isNull()) body["variables"] = variables;
   if (!operationName.empty()) body["operationName"] = JVal(operationName);
+  return body.dump();
+}
 
+HttpRequest GraphQLClient::buildHttpRequest(std::string_view document, const JVal& variables,
+                                            std::string_view operationName,
+                                            const RequestOptions& options) const {
   HttpRequest req;
   req.url = endpoint();
-  req.body = body.dump();
+  req.body = requestBody(document, variables, operationName);
   req.timeoutMs = config_.timeoutMs;
+  req.maxResponseBytes = config_.maxResponseBytes;
   req.cancel = options.cancel;
   req.headers.emplace_back("Content-Type", "application/json");
   req.headers.emplace_back("Accept", "application/json");
@@ -233,7 +281,7 @@ GraphQLOutcome GraphQLClient::requestOutcome(std::string_view document, const JV
                                              const RequestOptions& options) {
   if (cancelled(options.cancel)) return cancelledOutcome("GraphQL request cancelled before it was sent");
   HttpRequest req = buildHttpRequest(document, variables, operationName, options);
-  GraphQLOutcome out = settle(outcomeFromHttp(sendInline(req)), req);
+  GraphQLOutcome out = settle(outcomeFromHttp(sendInline(req), config_.maxResponseBytes), req);
   // Exactly one retry, and only after the endpoint actually moved - whether
   // this redirect moved it or a concurrent request's already had. Retrying a
   // second WRONG_DATACENTER is how two datacenters that disagree about an app
@@ -245,7 +293,7 @@ GraphQLOutcome GraphQLClient::requestOutcome(std::string_view document, const JV
     const std::string sentAuthorization = authorizationOf(req);
     req = buildHttpRequest(document, variables, operationName, options);
     setAuthorization(req, sentAuthorization);
-    out = settle(outcomeFromHttp(sendInline(req)), req);
+    out = settle(outcomeFromHttp(sendInline(req), config_.maxResponseBytes), req);
   }
   return out;
 }
@@ -341,8 +389,9 @@ void GraphQLClient::requestAsyncAttempt(std::string document,
   }
 
   if (asyncTransport_) {
-    auto complete = [deliver, cancel = req.cancel, url = req.url](HttpOutcome http) mutable {
-      deliver(settle(outcomeFromHttp(std::move(http)), cancel, url));
+    auto complete = [deliver, cancel = req.cancel, url = req.url,
+                     maxBytes = req.maxResponseBytes](HttpOutcome http) mutable {
+      deliver(settle(outcomeFromHttp(std::move(http), maxBytes), cancel, url));
     };
 #ifndef CROWDY_NO_EXCEPTIONS
     try {
@@ -365,8 +414,92 @@ void GraphQLClient::requestAsyncAttempt(std::string document,
     asyncTransport_->sendAsync(req, std::move(complete));
 #endif
   } else {
-    deliver(settle(outcomeFromHttp(sendInline(req)), req));
+    deliver(settle(outcomeFromHttp(sendInline(req), config_.maxResponseBytes), req));
   }
+}
+
+std::string GraphQLClient::origin() const {
+  const std::string url = endpoint();
+  const std::size_t scheme = url.find("://");
+  const std::size_t authority = scheme == std::string::npos ? 0 : scheme + 3;
+  const std::size_t path = url.find_first_of("/?#", authority);
+  std::string_view host = std::string_view(url).substr(
+      authority, path == std::string::npos ? std::string::npos : path - authority);
+  // Userinfo is not part of an origin, and a parser would take what follows it as the host.
+  const std::size_t at = host.rfind('@');
+  if (at != std::string_view::npos) host.remove_prefix(at + 1);
+  return url.substr(0, authority) + std::string(host);
+}
+
+HttpRequest GraphQLClient::buildGetRequest(std::string_view pathAndQuery,
+                                           const RequestOptions& options) const {
+  HttpRequest req;
+  req.method = "GET";
+  req.url = origin();
+  if (pathAndQuery.empty() || pathAndQuery.front() != '/') req.url += '/';
+  req.url += pathAndQuery;
+  req.timeoutMs = config_.timeoutMs;
+  req.maxResponseBytes = config_.maxResponseBytes;
+  req.cancel = options.cancel;
+  req.headers.emplace_back("Accept", "application/json");
+  const std::string token = auth_->token();
+  if (!token.empty()) req.headers.emplace_back("Authorization", "Bearer " + token);
+  return req;
+}
+
+HttpOutcome GraphQLClient::getOutcome(std::string_view pathAndQuery, const RequestOptions& options) {
+  const HttpRequest req = buildGetRequest(pathAndQuery, options);
+  if (cancelled(req.cancel)) {
+    return httpFailure(Errc::Cancelled, "HTTP request cancelled before it was sent");
+  }
+  return settleHttp(sendInline(req), req.cancel, req.url, req.maxResponseBytes);
+}
+
+void GraphQLClient::getAsync(std::string_view pathAndQuery, const RequestOptions& options,
+                             HttpCallback cb) {
+  const HttpRequest req = buildGetRequest(pathAndQuery, options);
+  auto dispatcher = dispatcher_;
+  auto scope = asyncScope_;
+  auto completed = std::make_shared<std::atomic_bool>(false);
+  auto deliver = [dispatcher, scope, completed, cb = std::move(cb)](HttpOutcome out) mutable {
+    if (completed->exchange(true, std::memory_order_acq_rel)) return;
+    auto invoke = [scope, cb, out = std::move(out)]() mutable {
+      scope->run([&] { cb(std::move(out)); });
+    };
+    if (dispatcher) {
+      dispatcher->post(std::move(invoke));
+    } else {
+      invoke();
+    }
+  };
+
+  if (cancelled(req.cancel)) {
+    deliver(httpFailure(Errc::Cancelled, "HTTP request cancelled before it was sent"));
+    return;
+  }
+  if (!asyncTransport_) {
+    deliver(settleHttp(sendInline(req), req.cancel, req.url, req.maxResponseBytes));
+    return;
+  }
+  auto complete = [deliver, cancel = req.cancel, url = req.url,
+                   maxBytes = req.maxResponseBytes](HttpOutcome http) mutable {
+    deliver(settleHttp(std::move(http), cancel, url, maxBytes));
+  };
+#ifndef CROWDY_NO_EXCEPTIONS
+  try {
+    asyncTransport_->sendAsync(req, std::move(complete));
+  } catch (const CrowdyTimeoutError& error) {
+    deliver(httpFailure(Errc::Timeout, error.what()));
+  } catch (const CrowdyCancelledError& error) {
+    deliver(httpFailure(Errc::Cancelled, error.what()));
+  } catch (const std::exception& error) {
+    deliver(httpFailure(Errc::SocketError, error.what()));
+  } catch (...) {
+    deliver(httpFailure(Errc::SocketError, "Async HTTP transport failed with an unknown exception"));
+  }
+#else
+  asyncTransport_->sendAsync(req, std::move(complete));
+#endif
 }
 
 }  // namespace crowdy::graphql

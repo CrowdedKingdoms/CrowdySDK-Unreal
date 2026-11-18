@@ -6,7 +6,7 @@
 #include "CrowdyActorPoolBackend.h"
 #include "CrowdyRenderingBackend.h"
 #include "CrowdyRenderingBackendConfig.h"
-#include "Engine/DataAsset.h"
+#include "Templates/SubclassOf.h"
 #include "CrowdyActorManagementConfig.generated.h"
 
 
@@ -77,18 +77,4 @@ struct FCrowdyActorManagementConfigStruct
 	/** How far behind the server's clock remote entities are drawn: longer hides late updates, and below one send interval (100 ms at 10 Hz) they overshoot and snap back. Mass-drawn rows ignore it. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Remote Entities", meta = (EditCondition = "bUseCrowdyActorTracker", ClampMin = 0, UIMax = 500, ForceUnits = "ms", DisplayName = "Interpolation Delay"))
 	int32 InterpolationDelayMs = 100;
-};
-
-
-/** Deprecated: nothing reads this asset at runtime. Set these values on a Crowdy Map Profile's Remote Entities. */
-UCLASS(BlueprintType, HideDropdown, Category = "Crowdy SDK|Data", meta = (DisplayName = "Crowdy Actor Management Config (Deprecated)"))
-class CROWDYREPLICATION_API UCrowdyActorManagementConfig : public UDataAsset
-{
-	GENERATED_BODY()
-	
-public:
-	
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Remote Entities")
-	FCrowdyActorManagementConfigStruct Config;
-	
 };

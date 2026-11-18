@@ -37,19 +37,19 @@ namespace
 	{
 		FCrowdyEntityRecord Rec;
 		Rec.NetID = EntityId;
-		Rec.OwnerID = FGuid::NewGuid();
+		Rec.WriterID = FGuid::NewGuid();
 		Rec.Role = ECrowdyRole::RemoteProxy;
 		Rec.Participant = Actor;
 		Entities->RegisterEntity(Rec);
 	}
 
-	// Registers an actor as an entity the LOCAL client owns, so IsLocallyOwned(EntityId) is true (its OwnerID
+	// Registers an actor as an entity the LOCAL client owns, so IsLocallyOwned(EntityId) is true (its WriterID
 	// is the entity subsystem's local player id). Used by the host-precedence apply test.
 	void RegisterOwnedEntity(UCrowdyEntitySubsystem* Entities, const FGuid& EntityId, AActor* Actor)
 	{
 		FCrowdyEntityRecord Rec;
 		Rec.NetID = EntityId;
-		Rec.OwnerID = Entities->GetLocalPlayerID();
+		Rec.WriterID = Entities->GetLocalPlayerID();
 		Rec.Role = ECrowdyRole::Owner;
 		Rec.Participant = Actor;
 		Entities->RegisterEntity(Rec);
@@ -518,13 +518,75 @@ bool FCrowdyStateDeferredApplyTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// Host precedence on receive: for an entity WE own, a foreign non-host delta is dropped before it can write,
-// while a HostSourced correction is applied (and adopted into the owner's shadow so the owner does not revert).
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnerDropsForeignNonHostDeltaTest,
-	"CrowdySDK.State.OwnerDropsForeignNonHostDelta", CrowdyStateApplyTestFlags)
-bool FCrowdyStateOwnerDropsForeignNonHostDeltaTest::RunTest(const FString& Parameters)
+// After a sign-in replaces this client's actor id, what it sent under the old id can still come back: that echo is its
+// own and is dropped, never applied as a peer's, and nothing it sent waits in the queue.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOldIdEchoDroppedTest,
+	"CrowdySDK.State.AnOldIdEchoAfterARekeyIsDropped", CrowdyStateApplyTestFlags)
+bool FCrowdyStateOldIdEchoDroppedTest::RunTest(const FString& Parameters)
 {
-	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	const FCrowdyRepLayout* Layout = Registry ? Registry->FindRepLayout(ACrowdyStateApplyTestActor::StaticClass()) : nullptr;
+	const int32 RepIntIndex = Layout ? IndexOfPropertyName(*Layout, TEXT("RepInt")) : INDEX_NONE;
+	if (!TestTrue(TEXT("the apply actor has RepInt in its layout"), RepIntIndex != INDEX_NONE))
+	{
+		return false;
+	}
+
+	UCrowdyGameSession* Session = MakeGameSession(FGuid());
+	UCrowdyEntitySubsystem* Entities = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
+	Entities->SetGameSessionForTest(Session);
+	Entities->BindGameSessionForTest();
+	UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
+	const FGuid Old = FGuid::NewGuid();
+	Session->SetUUID(Old.ToString(EGuidFormats::Digits));
+	Session->SetUUID(FGuid::NewGuid().ToString(EGuidFormats::Digits));
+
+	ACrowdyStateApplyTestActor* Source = NewObject<ACrowdyStateApplyTestActor>();
+	Source->RepInt = 123;
+	TBitArray<> Dirty;
+	Dirty.Init(false, Layout->Properties.Num());
+	Dirty[RepIntIndex] = true;
+	TArray<uint8> Blob;
+	FCrowdyStateCodec::Encode(*Layout, Source, Dirty, /*bKeyframe=*/false, Blob);
+
+	auto DeltaFrom = [&](const FGuid& Sender, const FGuid& EntityId)
+	{
+		FCrowdyStateDelta Delta;
+		Delta.ClassID = static_cast<int64>(UCrowdyClassRegistry::Get()->GetID(ACrowdyStateApplyTestActor::StaticClass()));
+		Delta.EntityID = EntityId;
+		Delta.SenderID = Sender;
+		Delta.LayoutHash = Layout->LayoutHash;
+		Delta.Blob = Blob;
+		return Delta;
+	};
+
+	const FGuid EntityId = FGuid::NewGuid();
+	ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
+	RegisterProxyEntity(Entities, EntityId, Target);
+	Router->DispatchEvent(MakeInboundStateEvent(DeltaFrom(Old, EntityId)));
+	TestEqual(TEXT("an echo under the old id is dropped"), Target->RepInt, 0);
+	Router->DispatchEvent(MakeInboundStateEvent(DeltaFrom(FGuid::NewGuid(), EntityId)));
+	TestEqual(TEXT("a peer's delta still applies"), Target->RepInt, 123);
+
+	Router->DispatchEvent(MakeInboundStateEvent(DeltaFrom(Old, FGuid::NewGuid())));
+	TestEqual(TEXT("an old-id echo for an entity not here yet is not queued"), Router->NumDeferredForTest(), 0);
+
+	// What a sender left waiting goes once that sender is forgotten; another sender's stays.
+	const FGuid Forgotten = FGuid::NewGuid();
+	Router->DispatchEvent(MakeInboundStateEvent(DeltaFrom(Forgotten, FGuid::NewGuid())));
+	Router->DispatchEvent(MakeInboundStateEvent(DeltaFrom(FGuid::NewGuid(), FGuid::NewGuid())));
+	TestEqual(TEXT("two wait for their entities"), Router->NumDeferredForTest(), 2);
+	Router->ForgetSender(Forgotten);
+	TestEqual(TEXT("the forgotten sender's goes"), Router->NumDeferredForTest(), 1);
+	return true;
+}
+
+// For an entity WE own, every foreign delta is dropped before it can write, a HostSourced one included: only the
+// owner writes what it owns.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnerDropsEveryForeignDeltaTest,
+	"CrowdySDK.State.OwnerDropsEveryForeignDelta", CrowdyStateApplyTestFlags)
+bool FCrowdyStateOwnerDropsEveryForeignDeltaTest::RunTest(const FString& Parameters)
+{
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
 	{
@@ -573,197 +635,25 @@ bool FCrowdyStateOwnerDropsForeignNonHostDeltaTest::RunTest(const FString& Param
 	ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
 	RegisterOwnedEntity(Entities, EntityId, Target);
 
-	// Foreign non-host delta for our own entity: dropped before decode, target untouched.
+	// Foreign delta for our own entity: dropped before decode, target untouched.
 	Router->DispatchEvent(MakeInboundStateEvent(Delta));
-	TestEqual(TEXT("foreign non-host delta dropped for owned entity"), Target->RepInt, 0);
+	TestEqual(TEXT("foreign delta dropped for owned entity"), Target->RepInt, 0);
 
-	// Now flag it HostSourced and inject a replicator tracking this entity so adoption is reachable.
-	UCrowdyStateReplicator* Rep = NewObject<UCrowdyStateReplicator>(GetTransientPackage());
-	Rep->SetRegistryForTest(Registry);
-	Rep->SetLocalPlayerIDForTest(LocalPlayer);
-	Rep->SetTimeForTest(0.0);
-	TestTrue(TEXT("replicator tracks the owned entity"), Rep->RegisterOwnedEntityForTest(EntityId, Target));
-	Router->SetStateReplicatorForTest(Rep);
-
+	// Flagged HostSourced it is dropped all the same: no client may correct an owner.
 	Delta.Flags |= CrowdyStateDeltaFlags::HostSourced;
 	Router->DispatchEvent(MakeInboundStateEvent(Delta));
-	TestEqual(TEXT("host correction applied to owned entity"), Target->RepInt, 77);
-
-	// Adopted: the owner's next diff sees the host value as already-sent, so it emits nothing (no revert).
-	int32 EmitCount = 0;
-	Rep->DispatchHookForTests = [&EmitCount](const FCrowdyStateDelta& /*D*/, bool /*bT*/) { ++EmitCount; };
-	Rep->RunReplicationLoopForTest();
-	TestEqual(TEXT("owner does not revert the adopted host value"), EmitCount, 0);
-
+	TestEqual(TEXT("a flagged foreign delta is dropped too"), Target->RepInt, 0);
+	TestEqual(TEXT("and both are counted"), Router->GetStateParticipantStats().DroppedForeignWriteForOwned,
+		static_cast<int64>(2));
 	return true;
 }
 
-// With no elected host nobody corrects an owner, so a host-sourced delta for an entity this client owns is forged and
-// dropped, Host Override or not. The same delta under Elected Host is a correction and applies.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnerDropsHostSourcedWithNoHostTest,
-	"CrowdySDK.State.OwnerDropsHostSourcedWithNoHost", CrowdyStateApplyTestFlags)
-bool FCrowdyStateOwnerDropsHostSourcedWithNoHostTest::RunTest(const FString& Parameters)
+// A World entity has no owner and no writer, so every delta for it is dropped, flagged or not. A replicated
+// subsystem takes only its Leader's flagged delta, and the Leader itself takes nobody else's.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateWorldEntityTakesNoWritesTest,
+	"CrowdySDK.State.WorldEntityTakesNoWrites", CrowdyStateApplyTestFlags)
+bool FCrowdyStateWorldEntityTakesNoWritesTest::RunTest(const FString& Parameters)
 {
-	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
-	UClass* ActorClass = ACrowdyStateApplyTestActor::StaticClass();
-	const FCrowdyRepLayout* Layout = Registry ? Registry->FindRepLayout(ActorClass) : nullptr;
-	if (!TestNotNull(TEXT("apply actor has a layout"), Layout))
-	{
-		return false;
-	}
-	const int32 RepIntIndex = IndexOfPropertyName(*Layout, TEXT("RepInt"));
-	if (!TestTrue(TEXT("RepInt present"), RepIntIndex != INDEX_NONE))
-	{
-		return false;
-	}
-
-	UCrowdyEntitySubsystem* Entities = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
-	Entities->SetLocalPlayerID(FGuid::NewGuid());
-	UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
-
-	ACrowdyStateApplyTestActor* Source = NewObject<ACrowdyStateApplyTestActor>();
-	Source->RepInt = 41;
-	TBitArray<> Dirty(false, Layout->Properties.Num());
-	Dirty[RepIntIndex] = true;
-
-	const auto SendForgedCorrection = [&](ACrowdyStateApplyTestActor* Target)
-	{
-		FCrowdyStateDelta Delta;
-		Delta.ClassID = static_cast<int64>(UCrowdyClassRegistry::Get()->GetID(ActorClass));
-		Delta.EntityID = FGuid::NewGuid();
-		Delta.SenderID = FGuid::NewGuid();
-		Delta.LayoutHash = Layout->LayoutHash;
-		Delta.Flags = CrowdyStateDeltaFlags::HostSourced;
-		FCrowdyStateCodec::Encode(*Layout, Source, Dirty, /*bKeyframe=*/false, Delta.Blob);
-		RegisterOwnedEntity(Entities, Delta.EntityID, Target);
-		Router->DispatchEvent(MakeInboundStateEvent(Delta));
-	};
-
-	{
-		FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ServerObject);
-		ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
-		SendForgedCorrection(Target);
-		TestEqual(TEXT("under Server Object the owner keeps its value"), Target->RepInt, 0);
-		TestEqual(TEXT("and counts the drop"), Router->GetStateParticipantStats().DroppedHostSourcedWithNoHost, static_cast<int64>(1));
-	}
-	{
-		FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
-		ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
-		SendForgedCorrection(Target);
-		TestEqual(TEXT("under Elected Host the same delta is a correction"), Target->RepInt, 41);
-		TestEqual(TEXT("and is not counted as a drop"), Router->GetStateParticipantStats().DroppedHostSourcedWithNoHost, static_cast<int64>(1));
-	}
-	return true;
-}
-
-// Phase C receive backstop: even a HostSourced correction for an entity WE own is dropped if that entity is
-// authored OwnerOnly (only the owner may change it); an Allow entity applies it. Both targets receive the same
-// HostSourced RepInt=55 blob (one delta per entity id).
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateHostOverrideBackstopTest,
-	"CrowdySDK.State.HostOverrideBackstop", CrowdyStateApplyTestFlags)
-bool FCrowdyStateHostOverrideBackstopTest::RunTest(const FString& Parameters)
-{
-	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
-	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
-	if (!TestNotNull(TEXT("registry created"), Registry))
-	{
-		return false;
-	}
-
-	UClass* ActorClass = ACrowdyStateHostOverrideActor::StaticClass();
-	const FCrowdyRepLayout* Layout = Registry->FindRepLayout(ActorClass);
-	if (!TestNotNull(TEXT("host-override actor has a layout"), Layout))
-	{
-		return false;
-	}
-
-	const FGuid LocalPlayer = FGuid::NewGuid();
-	UCrowdyEntitySubsystem* Entities = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
-	Entities->SetLocalPlayerID(LocalPlayer);
-	UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
-
-	const int64 ClassID = static_cast<int64>(UCrowdyClassRegistry::Get()->GetID(ActorClass));
-
-	// Build a HostSourced RepInt=55 blob from a foreign sender.
-	ACrowdyStateHostOverrideActor* Source = NewObject<ACrowdyStateHostOverrideActor>();
-	Source->RepInt = 55;
-
-	TBitArray<> Dirty;
-	Dirty.Init(false, Layout->Properties.Num());
-	const int32 RepIntIndex = IndexOfPropertyName(*Layout, TEXT("RepInt"));
-	if (!TestTrue(TEXT("RepInt present"), RepIntIndex != INDEX_NONE))
-	{
-		return false;
-	}
-	Dirty[RepIntIndex] = true;
-
-	TArray<uint8> Blob;
-	FCrowdyStateCodec::Encode(*Layout, Source, Dirty, /*bKeyframe=*/false, Blob);
-
-	const FGuid ForeignSender = FGuid::NewGuid(); // not the local player, so the self-echo drop never fires
-
-	// (i) OwnerOnly target: the backstop drops even the HostSourced delta.
-	{
-		ACrowdyStateHostOverrideActor* Target = NewObject<ACrowdyStateHostOverrideActor>();
-		if (!TestNotNull(TEXT("owner-only target created"), Target)
-			|| !TestNotNull(TEXT("owner-only target entity component present"), Target->Entity.Get()))
-		{
-			return false;
-		}
-		Target->Entity->HostOverride = ECrowdyHostOverride::OwnerOnly;
-
-		const FGuid EntityId = FGuid::NewGuid();
-		RegisterOwnedEntity(Entities, EntityId, Target); // IsLocallyOwned == true
-
-		FCrowdyStateDelta Delta;
-		Delta.ClassID = ClassID;
-		Delta.EntityID = EntityId;
-		Delta.SenderID = ForeignSender;
-		Delta.LayoutHash = Layout->LayoutHash;
-		Delta.Flags = CrowdyStateDeltaFlags::HostSourced;
-		Delta.Blob = Blob;
-
-		Router->DispatchEvent(MakeInboundStateEvent(Delta));
-		TestEqual(TEXT("HostSourced delta dropped for OwnerOnly owned entity"), Target->RepInt, 0);
-	}
-
-	// (ii) Allow target: the HostSourced correction applies.
-	{
-		ACrowdyStateHostOverrideActor* Target = NewObject<ACrowdyStateHostOverrideActor>();
-		if (!TestNotNull(TEXT("allow target created"), Target)
-			|| !TestNotNull(TEXT("allow target entity component present"), Target->Entity.Get()))
-		{
-			return false;
-		}
-		Target->Entity->HostOverride = ECrowdyHostOverride::Allow;
-
-		const FGuid EntityId = FGuid::NewGuid();
-		RegisterOwnedEntity(Entities, EntityId, Target);
-
-		FCrowdyStateDelta Delta;
-		Delta.ClassID = ClassID;
-		Delta.EntityID = EntityId;
-		Delta.SenderID = ForeignSender;
-		Delta.LayoutHash = Layout->LayoutHash;
-		Delta.Flags = CrowdyStateDeltaFlags::HostSourced;
-		Delta.Blob = Blob;
-
-		Router->DispatchEvent(MakeInboundStateEvent(Delta));
-		TestEqual(TEXT("HostSourced delta applied for Allow owned entity"), Target->RepInt, 55);
-	}
-
-	return true;
-}
-
-// Phase C world-entity gate: a HostOwned (world) entity has no owner, so the bWeOwnTarget host-precedence gate never
-// covers it. A non-host (non-HostSourced) delta for it is dropped; a HostSourced delta applies only the host may
-// write world state. This locks in the closure of the vector the untracked one-shot push opened (any client could
-// otherwise write a shared world entity on every peer).
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateWorldEntityHostOnlyTest,
-	"CrowdySDK.State.WorldEntityHostOnly", CrowdyStateApplyTestFlags)
-bool FCrowdyStateWorldEntityHostOnlyTest::RunTest(const FString& Parameters)
-{
-	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
 	{
@@ -797,54 +687,19 @@ bool FCrowdyStateWorldEntityHostOnlyTest::RunTest(const FString& Parameters)
 	TArray<uint8> Blob;
 	FCrowdyStateCodec::Encode(*Layout, Source, Dirty, /*bKeyframe=*/false, Blob);
 
-	// Registers a HostOwned (world) entity: Role=HostOwned with no owner id, so IsLocallyOwned is false everywhere.
+	// Registers a WorldOwned (world) entity: Role=WorldOwned with no owner id, so IsLocallyOwned is false everywhere.
 	auto RegisterWorldEntity = [Entities](const FGuid& Id, AActor* Actor)
 	{
 		FCrowdyEntityRecord Record;
 		Record.NetID = Id;
-		Record.Role = ECrowdyRole::HostOwned;
+		Record.Role = ECrowdyRole::WorldOwned;
 		Record.Participant = Actor;
 		Entities->RegisterEntity(Record);
 	};
 
-	// A non-host (non-HostSourced) delta for a world entity is dropped before decode.
+	// Any delta for a World entity is dropped before decode, with or without the flag a Leader stamps.
+	for (const uint8 Flags : { uint8(0), CrowdyStateDeltaFlags::HostSourced })
 	{
-		ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
-		const FGuid EntityId = FGuid::NewGuid();
-		RegisterWorldEntity(EntityId, Target);
-
-		FCrowdyStateDelta Delta;
-		Delta.ClassID = ClassID;
-		Delta.EntityID = EntityId;
-		Delta.SenderID = FGuid::NewGuid(); // foreign, non-host, non-HostSourced
-		Delta.LayoutHash = Layout->LayoutHash;
-		Delta.Blob = Blob;
-
-		Router->DispatchEvent(MakeInboundStateEvent(Delta));
-		TestEqual(TEXT("non-host delta dropped for host-owned world entity"), Target->RepInt, 0);
-	}
-
-	// A HostSourced delta for a world entity applies.
-	{
-		ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
-		const FGuid EntityId = FGuid::NewGuid();
-		RegisterWorldEntity(EntityId, Target);
-
-		FCrowdyStateDelta Delta;
-		Delta.ClassID = ClassID;
-		Delta.EntityID = EntityId;
-		Delta.SenderID = FGuid::NewGuid(); // foreign sender but HostSourced -> the host is the authority for world state
-		Delta.LayoutHash = Layout->LayoutHash;
-		Delta.Flags = CrowdyStateDeltaFlags::HostSourced;
-		Delta.Blob = Blob;
-
-		Router->DispatchEvent(MakeInboundStateEvent(Delta));
-		TestEqual(TEXT("host-sourced delta applied for host-owned world entity"), Target->RepInt, 55);
-	}
-
-	// On the host, which writes the world entity, another client's host-sourced delta is stale or forged: dropped.
-	{
-		Entities->SetGameSessionForTest(MakeGameSession(Entities->GetLocalPlayerID()));
 		ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
 		const FGuid EntityId = FGuid::NewGuid();
 		RegisterWorldEntity(EntityId, Target);
@@ -854,14 +709,42 @@ bool FCrowdyStateWorldEntityHostOnlyTest::RunTest(const FString& Parameters)
 		Delta.EntityID = EntityId;
 		Delta.SenderID = FGuid::NewGuid();
 		Delta.LayoutHash = Layout->LayoutHash;
-		Delta.Flags = CrowdyStateDeltaFlags::HostSourced;
+		Delta.Flags = Flags;
 		Delta.Blob = Blob;
 
 		Router->DispatchEvent(MakeInboundStateEvent(Delta));
-		TestEqual(TEXT("the writer keeps its own value"), Target->RepInt, 0);
-		TestEqual(TEXT("and counts the drop"), Router->GetStateParticipantStats().DroppedForeignWriteForOwnWorld, static_cast<int64>(1));
+		TestEqual(FString::Printf(TEXT("a World entity takes no delta (flags %d)"), static_cast<int32>(Flags)), Target->RepInt, 0);
 	}
+	TestEqual(TEXT("and both drops are counted"), Router->GetStateParticipantStats().DroppedNotHostSourcedForWorld,
+		static_cast<int64>(2));
 
+	// On the Leader, which writes a replicated subsystem, another client's flagged delta is stale or forged: dropped.
+	UClass* SubsystemClass = UCrowdyStateSubsystemTestTarget::StaticClass();
+	const FCrowdyRepLayout* SubsystemLayout = Registry->FindRepLayout(SubsystemClass);
+	const int32 SubsystemRepIntIndex = SubsystemLayout ? IndexOfPropertyName(*SubsystemLayout, TEXT("RepInt")) : INDEX_NONE;
+	if (!TestTrue(TEXT("the subsystem fixture has RepInt in its layout"), SubsystemRepIntIndex != INDEX_NONE))
+	{
+		return false;
+	}
+	UCrowdyStateSubsystemTestTarget* SubsystemSource = NewObject<UCrowdyStateSubsystemTestTarget>();
+	SubsystemSource->RepInt = 55;
+	TBitArray<> SubsystemDirty;
+	SubsystemDirty.Init(false, SubsystemLayout->Properties.Num());
+	SubsystemDirty[SubsystemRepIntIndex] = true;
+
+	Entities->SetGameSessionForTest(MakeGameSession(Entities->GetLocalPlayerID()));
+	UCrowdyStateSubsystemTestTarget* Subsystem = NewObject<UCrowdyStateSubsystemTestTarget>();
+	FCrowdyStateDelta Delta;
+	Delta.ClassID = static_cast<int64>(UCrowdyClassRegistry::Get()->GetID(SubsystemClass));
+	Delta.EntityID = Entities->RegisterParticipant(Subsystem);
+	Delta.SenderID = FGuid::NewGuid();
+	Delta.LayoutHash = SubsystemLayout->LayoutHash;
+	Delta.Flags = CrowdyStateDeltaFlags::HostSourced;
+	FCrowdyStateCodec::Encode(*SubsystemLayout, SubsystemSource, SubsystemDirty, /*bKeyframe=*/false, Delta.Blob);
+
+	Router->DispatchEvent(MakeInboundStateEvent(Delta));
+	TestEqual(TEXT("the Leader keeps its own value"), Subsystem->RepInt, 0);
+	TestEqual(TEXT("and counts the drop"), Router->GetStateParticipantStats().DroppedForeignWriteForOwnWorld, static_cast<int64>(1));
 	return true;
 }
 
@@ -938,18 +821,16 @@ bool FCrowdyStateKeyframeNoChangeNoOnRepTest::RunTest(const FString& Parameters)
 }
 
 // A CrowdyOnRep is a call into game code, and game code may dispatch another state delta from inside it. The
-// outer dispatch reads its changed set twice, once to fire the notifies and again to adopt the host's values
-// into the owner's shadow, so the inner dispatch must not be able to write into it.
+// outer dispatch is still walking its changed set to fire the notifies, so the inner dispatch must not be able
+// to write into it.
 //
-// What this asserts is the OUTPUT of the second read: after a host correction moves RepFirst and RepThird, the
-// owner's shadow must hold both, which shows up as the owner's next diff emitting nothing. If the inner
-// dispatch had taken the outer call's array, adoption would have run over the INNER delta's changed set (the
-// middle slot, which the outer delta never carried) and the owner would emit a revert for the two it lost.
+// What this asserts is that the outer walk still reaches its trailing notify after the inner delta, which moves
+// only the middle slot, has run. If the inner dispatch had taken the outer call's array, the walk would continue
+// over the INNER delta's changed set and RepThird's notify would never fire.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateReentrantNotifyKeepsChangedSetTest,
 	"CrowdySDK.State.ReentrantNotifyKeepsTheOuterChangedSet", CrowdyStateApplyTestFlags)
 bool FCrowdyStateReentrantNotifyKeepsChangedSetTest::RunTest(const FString& Parameters)
 {
-	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
 	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
 	if (!TestNotNull(TEXT("registry created"), Registry))
 	{
@@ -1000,26 +881,13 @@ bool FCrowdyStateReentrantNotifyKeepsChangedSetTest::RunTest(const FString& Para
 	TArray<uint8> InnerBlob;
 	FCrowdyStateCodec::Encode(*Layout, InnerSource, InnerDirty, /*bKeyframe=*/false, InnerBlob);
 
-	// The outer entity is one this client owns, so the correction must be HostSourced and is adopted after the
-	// notifies. The inner entity is an ordinary proxy.
-	ACrowdyStateReentrantNotifyActor* Owned = TestWorld.Spawn<ACrowdyStateReentrantNotifyActor>();
+	// Both entities are ordinary proxies, each written by another client.
+	ACrowdyStateReentrantNotifyActor* Outer = TestWorld.Spawn<ACrowdyStateReentrantNotifyActor>();
 	ACrowdyStateReentrantNotifyActor* Proxy = TestWorld.Spawn<ACrowdyStateReentrantNotifyActor>();
-	const FGuid OwnedId = FGuid::NewGuid();
+	const FGuid OuterId = FGuid::NewGuid();
 	const FGuid ProxyId = FGuid::NewGuid();
-	RegisterParticipantAs(Entities, OwnedId, Owned, ECrowdyRole::Owner, LocalPlayer);
+	RegisterProxyParticipant(Entities, OuterId, Outer);
 	RegisterProxyParticipant(Entities, ProxyId, Proxy);
-
-	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, LocalPlayer);
-	Rep->SetTimeForTest(0.0);
-	TestTrue(TEXT("replicator tracks the owned entity"), Rep->RegisterOwnedEntityForTest(OwnedId, Owned));
-	Router->SetStateReplicatorForTest(Rep);
-
-	int32 EmitCount = 0;
-	Rep->DispatchHookForTests = [&EmitCount](const FCrowdyStateDelta& /*D*/, bool /*bT*/) { ++EmitCount; };
-
-	// One pass to establish the shadow from the entity's current (default) values.
-	Rep->RunReplicationLoopForTest();
-	EmitCount = 0;
 
 	FCrowdyStateDelta InnerDelta;
 	InnerDelta.ClassID = ClassID;
@@ -1029,7 +897,7 @@ bool FCrowdyStateReentrantNotifyKeepsChangedSetTest::RunTest(const FString& Para
 	InnerDelta.Blob = InnerBlob;
 
 	int32 ReentryCount = 0;
-	Owned->NotifyHook = [&]()
+	Outer->NotifyHook = [&]()
 	{
 		// Once only: the inner delta's own notify must not start the chain again.
 		if (ReentryCount++ == 0)
@@ -1040,26 +908,20 @@ bool FCrowdyStateReentrantNotifyKeepsChangedSetTest::RunTest(const FString& Para
 
 	FCrowdyStateDelta OuterDelta;
 	OuterDelta.ClassID = ClassID;
-	OuterDelta.EntityID = OwnedId;
+	OuterDelta.EntityID = OuterId;
 	OuterDelta.SenderID = FGuid::NewGuid();
 	OuterDelta.LayoutHash = Layout->LayoutHash;
-	OuterDelta.Flags = CrowdyStateDeltaFlags::HostSourced;
 	OuterDelta.Blob = OuterBlob;
 
 	Router->DispatchEvent(MakeInboundStateEvent(OuterDelta));
+	Outer->NotifyHook = nullptr;
 
 	TestEqual(TEXT("the notify re-entered the receive path exactly once"), ReentryCount, 1);
 	TestEqual(TEXT("the inner delta applied to its own entity"), Proxy->RepSecond, 22);
-	TestEqual(TEXT("the outer delta applied RepFirst"), Owned->RepFirst, 11);
-	TestEqual(TEXT("the outer delta applied RepThird"), Owned->RepThird, 33);
-	TestEqual(TEXT("the outer delta left the middle slot alone"), Owned->RepSecond, 0);
-	TestEqual(TEXT("the outer dispatch still reached the trailing notify"), Owned->ThirdOnRepCount, 1);
-
-	// The load-bearing assertion: adoption ran over the OUTER delta's changed set, so the owner's next diff
-	// sees both corrected values as already sent and emits nothing.
-	Owned->NotifyHook = nullptr;
-	Rep->RunReplicationLoopForTest();
-	TestEqual(TEXT("the owner does not revert the adopted host values"), EmitCount, 0);
+	TestEqual(TEXT("the outer delta applied RepFirst"), Outer->RepFirst, 11);
+	TestEqual(TEXT("the outer delta applied RepThird"), Outer->RepThird, 33);
+	TestEqual(TEXT("the outer delta left the middle slot alone"), Outer->RepSecond, 0);
+	TestEqual(TEXT("the outer dispatch still reached the trailing notify"), Outer->ThirdOnRepCount, 1);
 	return true;
 }
 

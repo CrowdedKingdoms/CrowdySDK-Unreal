@@ -94,6 +94,10 @@ enum class ECrowdyMessageType : uint8
     // Server->client only: the server stopped considering an actor present. Sent once over the actor's
     // last chunk, and never for a move between chunks. A later update for the same actor is a rejoin.
     ACTOR_LEFT_NOTIFICATION = 145 UMETA(DisplayName = "Actor Left Notification"),
+
+    // Server->client only: a hub or mod replaced the chunk as a whole, so a copy held before it is out of date. No
+    // voxel update follows for that change. The payload is the stored chunk's new update time in epoch milliseconds.
+    CHUNK_CHANGED_NOTIFICATION = 146 UMETA(DisplayName = "Chunk Changed Notification"),
 };
 
 /**
@@ -334,19 +338,20 @@ enum class ECrowdyReplicationDistance : uint8
  * in range over the chunk-based path (decay-thinned, position-dependent). Multicast runs it on every
  * member of the session channel regardless of distance, over the channel transport: it ignores the
  * sender's chunk coordinates. OwningClient runs it only on the client that writes the target entity
- * (a non-owner routes a request to that client): the player who owns it, the Leader for an entity Owned
- * By Leader, and the elected host for a World entity. Host is deprecated.
+ * (a non-owner routes a request to that client): the player who owns it, or the Leader for an entity Owned
+ * By Leader and for a replicated subsystem. A World entity has no such client.
  */
 UENUM(BlueprintType)
 enum class ECrowdyEventRecipient : uint8
 {
     SpatialMulticast UMETA(DisplayName = "Spatial Multicast", ToolTip = "Everyone in range runs it, over the chunk-based spatial path (decay-thinned). The default."),
     Multicast        UMETA(DisplayName = "Multicast", ToolTip = "Every member of the session channel runs it, over the channel transport: any distance, no decay."),
-    OwningClient     UMETA(DisplayName = "Owning Client", ToolTip = "Only the client that writes the target entity runs it: its owner, the Leader for an entity Owned By Leader, the elected host for a World entity."),
-    Host UE_DEPRECATED(5.8, "Use OwningClient, or move logic only one machine should run to a Server Object.") UMETA(Hidden, DisplayName = "Host (Deprecated)", ToolTip = "Deprecated: use Owning Client, or move logic only one machine should run to a Server Object."),
+    OwningClient     UMETA(DisplayName = "Owning Client", ToolTip = "Only the client that writes the target entity runs it: its owner, or the Leader for an entity Owned By Leader and for a replicated subsystem. A World entity has none."),
 };
 
-// The one suppressed reference to the deprecated value, for the code that still has to route it.
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-inline constexpr ECrowdyEventRecipient CrowdyDeprecatedHostRecipient = ECrowdyEventRecipient::Host;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+// A CrowdyRecipient meta string that names the retired Host recipient, which now means OwningClient.
+inline bool CrowdyIsRetiredHostRecipient(const FString& MetaValue)
+{
+    return MetaValue.Equals(TEXT("Host"), ESearchCase::IgnoreCase)
+        || MetaValue.Equals(TEXT("ECrowdyEventRecipient::Host"), ESearchCase::IgnoreCase);
+}

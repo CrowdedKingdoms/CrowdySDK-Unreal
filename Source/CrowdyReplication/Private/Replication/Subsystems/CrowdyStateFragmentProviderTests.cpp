@@ -766,7 +766,7 @@ bool FCrowdyStateFragmentParticipantWithLayoutBeatsProviderTest::RunTest(const F
 }
 
 // Who may write an entity does not change because its state happens to live in a fragment rather than on the
-// participant. A world entity (HostOwned, no owner) whose participant carries no rep layout still refuses a
+// participant. A world entity (WorldOwned, no owner) whose participant carries no rep layout still refuses a
 // delta that did not come from the host, even though a subscriber holds the entity and would otherwise take
 // it. The pair below is what makes this meaningful: the identical setup with the HostSourced flag set DOES
 // reach the subscriber, so this proves the gate discriminates rather than that the path is dead.
@@ -791,13 +791,13 @@ bool FCrowdyStateFragmentHostOwnedGateAppliesOnFallThroughTest::RunTest(const FS
 	UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(FGuid::NewGuid());
 	UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
 
-	// A world NPC: registered HostOwned with no owner, its view state held by a subscriber, and a participant
+	// A world NPC: registered WorldOwned with no owner, its view state held by a subscriber, and a participant
 	// enrolled for some other plane whose class declares no CrowdyState property.
 	UObject* LayoutlessParticipant = NewObject<UCrowdyStateLayoutlessParticipant>();
 	const FGuid EntityID = FGuid::NewGuid();
-	RegisterParticipantAs(Entities, EntityID, LayoutlessParticipant, ECrowdyRole::HostOwned, FGuid());
+	RegisterParticipantAs(Entities, EntityID, LayoutlessParticipant, ECrowdyRole::WorldOwned, FGuid());
 
-	TestFalse(TEXT("a HostOwned record with no owner is not locally owned, so the world-entity gate is the one that answers"),
+	TestFalse(TEXT("a WorldOwned record with no owner is not locally owned, so the world-entity gate is the one that answers"),
 		Entities->IsLocallyOwned(EntityID));
 	TestNull(TEXT("and the participant's class carries no CrowdyState rep layout"),
 		Registry->FindRepLayout(LayoutlessParticipant->GetClass()));
@@ -867,7 +867,7 @@ bool FCrowdyStateFragmentHostSourcedDeltaReachesProviderTest::RunTest(const FStr
 
 	UObject* LayoutlessParticipant = NewObject<UCrowdyStateLayoutlessParticipant>();
 	const FGuid EntityID = FGuid::NewGuid();
-	RegisterParticipantAs(Entities, EntityID, LayoutlessParticipant, ECrowdyRole::HostOwned, FGuid());
+	RegisterParticipantAs(Entities, EntityID, LayoutlessParticipant, ECrowdyRole::WorldOwned, FGuid());
 
 	UCrowdyStateFragmentSpySubscriber* Subscriber = NewObject<UCrowdyStateFragmentSpySubscriber>();
 	Subscriber->SetOwnedClass(EntityID, TargetClass);
@@ -984,8 +984,7 @@ bool FCrowdyStateFragmentLayoutlessParticipantWithNoClaimDropsTest::RunTest(cons
 }
 
 // The same rule for the entities this client owns rather than the world's: we are the authority for what we
-// own, so a foreign delta that is not a host correction is refused whether the state would have landed on the
-// participant or in a fragment. Registered with the local player as owner, which is what makes this the
+// own, so a foreign delta is refused whether the state would have landed on the participant or in a fragment. Registered with the local player as owner, which is what makes this the
 // owned-entity gate's case rather than the world entity's.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateFragmentOwnedGateAppliesOnFallThroughTest,
 	"CrowdySDK.StateFragment.OwnedGateAppliesOnFallThrough", CrowdyStateFragmentTestFlags)
@@ -1037,12 +1036,12 @@ bool FCrowdyStateFragmentOwnedGateAppliesOnFallThroughTest::RunTest(const FStrin
 
 	Router->DispatchEvent(MakeInboundStateEvent(Delta));
 
-	TestEqual(TEXT("a foreign non-host delta for an entity we own never reaches the subscriber"),
+	TestEqual(TEXT("a foreign delta for an entity we own never reaches the subscriber"),
 		Subscriber->ApplyDecodedStateCallCount, 0);
 	TestEqual(TEXT("the subscriber path counted nothing"),
 		Router->GetStateSubscriberStats().Applied, static_cast<int64>(0));
 	TestEqual(TEXT("and the refusal is counted, which is the only account of it at default verbosity"),
-		Router->GetStateParticipantStats().DroppedNotHostSourcedForOwned, static_cast<int64>(1));
+		Router->GetStateParticipantStats().DroppedForeignWriteForOwned, static_cast<int64>(1));
 
 	return true;
 }

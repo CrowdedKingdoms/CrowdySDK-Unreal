@@ -258,44 +258,6 @@ bool FCrowdyStateOversizedPropertyLeavesThePartTest::RunTest(const FString& Para
 	return true;
 }
 
-// A one-shot host push has nothing to retry with, so it is refused out loud and runs no notify.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOversizedHostPushIsRefusedTest,
-	"CrowdySDK.State.OversizedHostPushIsRefused", CrowdyStateDeltaSizeTestFlags)
-bool FCrowdyStateOversizedHostPushIsRefusedTest::RunTest(const FString& Parameters)
-{
-	FSizeRig Rig;
-	const FGuid LocalPlayer = FGuid::NewGuid();
-	UCrowdyEntitySubsystem* ES = MakeEntitySubsystem(LocalPlayer);
-	Rig.Rep->SetLocalPlayerIDForTest(LocalPlayer);
-	Rig.Rep->SetEntitySubsystemForTest(ES);
-	Rig.Rep->SetHostIDForTest(LocalPlayer);
-
-	ACrowdyStateHostOverrideActor* Target = NewObject<ACrowdyStateHostOverrideActor>();
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	Target->Entity->HostOverride = ECrowdyHostOverride::Allow;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	FCrowdyEntityRecord Record;
-	Record.NetID = FGuid::NewGuid();
-	Record.Role = ECrowdyRole::RemoteProxy;
-	Record.OwnerID = FGuid::NewGuid();
-	Record.Participant = Target;
-	ES->RegisterEntity(Record);
-
-	Target->RepText = TEXT("fits");
-	Rig.Rep->MarkStateDirty(Record.NetID, TEXT("RepText"));
-	Rig.Rep->RunReplicationLoopForTest();
-	TestEqual(TEXT("a push that fits goes"), Rig.Broadcast.Num(), 1);
-
-	AddExpectedMessagePlain(TEXT("host push of RepText"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
-	Target->RepText = Text(2000);
-	Rig.Rep->MarkStateDirty(Record.NetID, TEXT("RepText"));
-	Rig.Rep->RunReplicationLoopForTest();
-	TestEqual(TEXT("a push too big to go does not"), Rig.Broadcast.Num(), 1);
-
-	return true;
-}
-
 // A marked property keeps its mark until it really goes.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOversizedMarkSurvivesTest,
 	"CrowdySDK.State.OversizedMarkSurvives", CrowdyStateDeltaSizeTestFlags)

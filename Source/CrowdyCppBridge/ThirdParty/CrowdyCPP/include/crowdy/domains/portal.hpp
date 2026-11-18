@@ -104,8 +104,10 @@ class PortalAPI : public DomainBase {
   /// A player under 18 is also refused SAFETY_LOG_REQUIRED (graphql::safetyLogRequiredOf) in an
   /// app without the safety log, then SAFETY_MODERATOR_REQUIRED
   /// (graphql::safetyModeratorRequiredOf, ck-api v2.61.0) in one whose organization has
-  /// appointed no safety moderator. None of them is fixed by retrying, and no refusal names an
-  /// age.
+  /// appointed no safety moderator. Last, since ck-api v2.65.0, a password account made since
+  /// 2026-11-11 that has not confirmed its email is refused EMAIL_CONFIRMATION_REQUIRED
+  /// (graphql::emailConfirmationRequiredOf; AuthAPI::resendConfirmationEmail sends the link
+  /// again). None of them is fixed by retrying, and no refusal names an age.
   AppTokenResponse mintAppToken(std::string_view appId) const {
     graphql::JVal vars;
     vars["input"]["appId"] = appId;

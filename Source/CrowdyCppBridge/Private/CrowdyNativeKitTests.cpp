@@ -58,6 +58,23 @@ namespace
 	}
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeKitActorMapKeyRefusedTest,
+	"CrowdySDK.CrowdyCppBridge.GameKit.ActorStateWithAMapKeyIsRefused", CrowdyNativeKitStateTestFlags)
+bool FCrowdyNativeKitActorMapKeyRefusedTest::RunTest(const FString& Parameters)
+{
+	auto WriteId = [](TArray<uint8>& Out) { Out.Add(0x07); };
+	auto WriteOne = [](TArray<uint8>& Out) { Out.Add(0x01); };
+	FCrowdyNativeKitActorState State;
+	TestTrue(TEXT("a mob with plain keys decodes"), CrowdyNativeKit::DecodeActorState(CrowdyNativeKitStateTestMob(WriteId, "hp", WriteOne), State));
+
+	// A key that is itself a map is written out as escaped text, which doubles at every level a peer nests it.
+	TArray<uint8> Forged = CrowdyNativeKitStateTestMob(WriteId, "hp", WriteOne);
+	Forged[0] = 0x86;
+	Forged.Append({0x81, 0xa1, 'a', 0x01, 0x01});
+	TestFalse(TEXT("the same mob with one more member keyed by a map is refused"), CrowdyNativeKit::DecodeActorState(Forged, State));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeKitActorWordsAreCappedTest,
 	"CrowdySDK.CrowdyCppBridge.GameKit.ActorNameAndModeAreCapped", CrowdyNativeKitStateTestFlags)
 bool FCrowdyNativeKitActorWordsAreCappedTest::RunTest(const FString& Parameters)

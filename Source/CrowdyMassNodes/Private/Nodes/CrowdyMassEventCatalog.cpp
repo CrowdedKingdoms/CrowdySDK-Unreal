@@ -5,7 +5,6 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Backend/CrowdyMassRenderingBackendConfig.h"
 #include "CrowdyMassNodesLog.h"
-#include "Data/CrowdyActorManagementConfig.h"
 #include "Data/CrowdyMapProfile.h"
 #include "Engine/Blueprint.h"
 #include "GameFramework/Actor.h"
@@ -158,12 +157,6 @@ namespace CrowdyMassEventCatalogPrivate
 		if (const UCrowdyMapProfile* Profile = Cast<UCrowdyMapProfile>(ProfileObject))
 		{
 			AppendBoundClasses(AsMassBackendConfig(Profile->ActorManagement.BackendConfig), OutClasses);
-			return;
-		}
-
-		if (const UCrowdyActorManagementConfig* Config = Cast<UCrowdyActorManagementConfig>(ProfileObject))
-		{
-			AppendBoundClasses(AsMassBackendConfig(Config->Config.BackendConfig), OutClasses);
 		}
 	}
 
@@ -195,7 +188,6 @@ namespace CrowdyMassEventCatalogPrivate
 		FARFilter Filter;
 		Filter.bRecursiveClasses = true;
 		Filter.ClassPaths.Add(UCrowdyMapProfile::StaticClass()->GetClassPathName());
-		Filter.ClassPaths.Add(UCrowdyActorManagementConfig::StaticClass()->GetClassPathName());
 
 		TArray<FAssetData> Assets;
 		Registry->GetAssets(Filter, Assets);

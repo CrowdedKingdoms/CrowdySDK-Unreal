@@ -34,7 +34,7 @@ bool FCrowdyUtilitiesLeaderEntityNotPlayerTest::RunTest(const FString& Parameter
 	TestFalse(TEXT("one that follows the Leader does not"), UCrowdyUtilities::IsCrowdyEntityPlayerControlled(Actor, Actor));
 
 	Component->OwnedBy = ECrowdyOwnedBy::Auto;
-	Component->InitIdentity(FGuid::NewGuid(), FGuid(), ECrowdyRole::HostOwned, 0);
+	Component->InitIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::WorldOwned, 0);
 	TestFalse(TEXT("nor does one the world owns, such as an NPC placed in the level"), UCrowdyUtilities::IsCrowdyEntityPlayerControlled(Actor, Actor));
 
 	GEngine->DestroyWorldContext(World);
@@ -75,11 +75,11 @@ bool FCrowdyUtilitiesLocallyOwnedTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("an entity with no identity yet is not locally owned"),
 		UCrowdyUtilities::IsCrowdyEntityLocallyOwned(EntityActor));
 
-	Component->AssignPooledIdentity(FGuid(), FGuid::NewGuid(), ECrowdyRole::Owner, 0);
+	Component->AssignPooledIdentity(FGuid(), FGuid::NewGuid(), 0, ECrowdyRole::Owner, 0);
 	TestFalse(TEXT("an owner role without an entity id is not locally owned"),
 		UCrowdyUtilities::IsCrowdyEntityLocallyOwned(EntityActor));
 
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), ECrowdyRole::Owner, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), 0, ECrowdyRole::Owner, 0);
 	TestTrue(TEXT("an entity this client owns is locally owned"), UCrowdyUtilities::IsCrowdyEntityLocallyOwned(EntityActor));
 
 	bool bSwitched = false;
@@ -88,26 +88,26 @@ bool FCrowdyUtilitiesLocallyOwnedTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("an object inside the actor, such as its component as Self, asks about the actor"),
 		UCrowdyUtilities::IsCrowdyEntityLocallyOwned(Component));
 
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), ECrowdyRole::RemoteProxy, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), 0, ECrowdyRole::RemoteProxy, 0);
 	TestFalse(TEXT("a remote proxy is not locally owned"), UCrowdyUtilities::IsCrowdyEntityLocallyOwned(EntityActor));
 	UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned(EntityActor, bSwitched);
 	TestFalse(TEXT("and the switch takes the other branch"), bSwitched);
 
-	// A world entity with no elected host fails closed, so no client claims it before a host is known.
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), ECrowdyRole::HostOwned, 0);
-	TestFalse(TEXT("a world entity with no known host fails closed"),
+	// No client writes a world entity, so none claims it.
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::WorldOwned, 0);
+	TestFalse(TEXT("a world entity is not locally owned"),
 		UCrowdyUtilities::IsCrowdyEntityLocallyOwned(EntityActor));
 
 	// Back to an owned identity, then pooled: clearing the identity takes ownership away again.
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), ECrowdyRole::Owner, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), 0, ECrowdyRole::Owner, 0);
 	Component->ClearIdentity();
 	TestFalse(TEXT("an entity returned to the pool is not locally owned"),
 		UCrowdyUtilities::IsCrowdyEntityLocallyOwned(EntityActor));
 	return true;
 }
 
-// A replicated subsystem has no component, so the answer comes from its registry record: the elected host writes a
-// world-owned record, and a client writes a record it owns.
+// A replicated subsystem has no component, so the answer comes from its registry record: its writer (the Leader)
+// writes a record with no owner, and a client writes a record it owns.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyUtilitiesRecordLocallyOwnedTest,
 	"CrowdySDK.CrowdyServices.RecordLocallyOwned", CrowdyUtilitiesTestFlags)
 bool FCrowdyUtilitiesRecordLocallyOwnedTest::RunTest(const FString& Parameters)
@@ -117,22 +117,22 @@ bool FCrowdyUtilitiesRecordLocallyOwnedTest::RunTest(const FString& Parameters)
 
 	FCrowdyEntityRecord World;
 	World.NetID = FGuid::NewGuid();
-	World.Role = ECrowdyRole::HostOwned;
-	TestTrue(TEXT("the elected host writes a world-owned record"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, Local));
+	World.Role = ECrowdyRole::WorldOwned;
+	TestTrue(TEXT("its writer writes a record with no owner"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, Local));
 	TestFalse(TEXT("another client does not"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, Other));
-	TestFalse(TEXT("nobody does before a host is known"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, FGuid()));
+	TestFalse(TEXT("nobody does when it has no writer"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, FGuid()));
 	TestFalse(TEXT("not even a client that has no player id yet"), UCrowdyUtilities::IsRecordLocallyOwned(World, FGuid(), FGuid()));
 
 	FCrowdyEntityRecord Owned = World;
 	Owned.Role = ECrowdyRole::Owner;
-	Owned.OwnerID = Local;
+	Owned.WriterID = Local;
 	TestTrue(TEXT("a client writes a record it owns"), UCrowdyUtilities::IsRecordLocallyOwned(Owned, Local, Other));
-	Owned.OwnerID = Other;
+	Owned.WriterID = Other;
 	TestFalse(TEXT("but not one another client owns"), UCrowdyUtilities::IsRecordLocallyOwned(Owned, Local, Local));
 
 	FCrowdyEntityRecord Mirrored = World;
 	Mirrored.Role = ECrowdyRole::RemoteProxy;
-	Mirrored.OwnerID = Local;
+	Mirrored.WriterID = Local;
 	TestFalse(TEXT("a record that only mirrors the entity here is not written here, whatever owner id it carries"),
 		UCrowdyUtilities::IsRecordLocallyOwned(Mirrored, Local, Local));
 	return true;

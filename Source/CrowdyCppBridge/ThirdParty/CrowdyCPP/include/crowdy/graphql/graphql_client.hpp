@@ -25,6 +25,9 @@ namespace crowdy::graphql {
 struct GraphQLClientConfig {
   std::string endpoint;  ///< full URL of the /graphql endpoint
   long timeoutMs = 60000;
+  /// The largest response body accepted, decompressed (0.85.0); a larger one fails with
+  /// Errc::ResponseTooLarge (GraphQLErrorKind::Protocol) before it is parsed.
+  std::size_t maxResponseBytes = kDefaultMaxResponseBytes;
 };
 
 /// Which failure a GraphQLOutcome represents (None when it succeeded). The
@@ -56,6 +59,22 @@ struct GraphQLOutcome {
 };
 
 using GraphQLCallback = std::function<void(GraphQLOutcome)>;
+
+/// The answer to a REST call on the API origin (`getAsync`): the HTTP status and body
+/// whatever the status, or a transport failure (`Errc::Timeout`, `Cancelled`,
+/// `ResponseTooLarge`, `SocketError`) with `errorMessage`.
+using HttpCallback = std::function<void(HttpOutcome)>;
+
+/// A response another transport received, as GraphQLClient reads its own: the `data`
+/// value, the GraphQL errors with their extensions, or an HTTP or malformed answer. A
+/// body over `maxBodyBytes` is refused unparsed (Errc::ResponseTooLarge, 0.85.0).
+GraphQLOutcome interpretResponse(int httpStatus, const std::string& body,
+                                 std::size_t maxBodyBytes = kDefaultMaxResponseBytes);
+
+/// The JSON POST body GraphQLClient sends: `query`, then `variables` and `operationName`
+/// when given.
+std::string requestBody(std::string_view document, const JVal& variables,
+                        std::string_view operationName = {});
 
 class GraphQLClient {
  public:
@@ -109,6 +128,19 @@ class GraphQLClient {
                     std::string_view operationName, const RequestOptions& options,
                     GraphQLCallback cb);
 
+  /// GET `{origin()}{pathAndQuery}` (`/v1/model/models?appId=1`; a path the SDK builds,
+  /// starting with `/`), one of the REST routes beside the GraphQL endpoint, over this
+  /// client's transports: the bearer the shared AuthState holds when it is sent,
+  /// `Accept: application/json`, the client's timeout and response limit, the caller's
+  /// CancelToken. Blocking and never throws; a body over the limit is
+  /// `Errc::ResponseTooLarge` from any transport.
+  HttpOutcome getOutcome(std::string_view pathAndQuery,
+                         const RequestOptions& options = {});
+  /// getOutcome() without blocking: `cb` runs once, from Dispatcher::drain() when a
+  /// Dispatcher is set, and never after close().
+  void getAsync(std::string_view pathAndQuery, const RequestOptions& options,
+                HttpCallback cb);
+
   /// Handle a WRONG_DATACENTER redirect. The handler MOVES the client (this
   /// endpoint, and typically the WebSocket and UDP session with it) and returns
   /// whether it did. Declining is safe: the caller then sees the server's
@@ -148,6 +180,11 @@ class GraphQLClient {
     return endpoint_;
   }
 
+  /// The scheme, host and port of endpoint(), where the REST routes are:
+  /// `https://ck.dev.crowdedkingdoms.com` for `https://ck.dev.crowdedkingdoms.com/graphql`.
+  /// Userinfo is dropped. It moves with the endpoint.
+  std::string origin() const;
+
   /// Point this client at a different origin. Requests already in flight keep
   /// the URL they were built with; everything after this call uses the new one.
   ///
@@ -172,6 +209,8 @@ class GraphQLClient {
                                std::string_view operationName,
                                const RequestOptions& options = {}) const;
   HttpOutcome sendInline(const HttpRequest& request);
+  HttpRequest buildGetRequest(std::string_view pathAndQuery,
+                              const RequestOptions& options) const;
   /// Offer a failed outcome to the wrong-datacenter handler. True when the
   /// request is worth re-issuing: either this outcome's redirect moved the
   /// endpoint, or another request's redirect had already moved it away from

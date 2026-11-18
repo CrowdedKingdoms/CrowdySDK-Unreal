@@ -103,6 +103,7 @@ void UCrowdyActorPoolBackend::DeinitializeBackend()
 	UnpooledSlots.Empty();
 	OwnerProxySlots.Empty();
 	SkippedOwnerSlots.Empty();
+	AvatarClasses.Empty();
 }
 
 void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, UClass* EntityClass, const FInstancedStruct& InitialState)
@@ -163,6 +164,9 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 	const bool bHasOrphanRecord = OrphanRecord != nullptr;
 	AActor* Orphan = OrphanRecord ? OrphanRecord->GetActor() : nullptr;
 
+	// Copied now: the orphan's record is dropped below, and what its spawn event said still describes the entity.
+	const FCrowdyEntityRecord OrphanCopy = bHasOrphanRecord ? *OrphanRecord : FCrowdyEntityRecord();
+
 	if (!Actor && !IsValid(Orphan))
 	{
 		UE_CLOG(CrowdyReplicationTrace::Pool(), LogCrowdyReplication, Log,
@@ -188,18 +192,17 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 
 	if (!bOwnerEntity && !bAdopted)
 	{
-		// Build the entity record. Inherit OwnerID/ClassID if the spawn event already
-		// populated a record (spawn event arrived before pool activation).
 		FCrowdyEntityRecord Record;
 		Record.NetID = UUID;
 		Record.Role  = ECrowdyRole::RemoteProxy;
 		Record.Participant = Actor;
+		Record.WriterID = OrphanCopy.WriterID;
+		Record.OwnerUserID = OrphanCopy.OwnerUserID;
+		Record.ClassID = OrphanCopy.ClassID;
 
-		if (const FCrowdyEntityRecord* SpawnRecord = EntitySubsystem->FindRecord(UUID))
-		{
-			Record.OwnerID = SpawnRecord->OwnerID;
-			Record.ClassID = SpawnRecord->ClassID;
-		}
+		// With no spawn event first, a pawn of a Player Derived class is a player's avatar unless it sends under an
+		// owner's id, which every other pawn of such a class does.
+		Record.bAvatar = bHasOrphanRecord ? OrphanCopy.bAvatar : (IsAvatarClass(EntityClass) && !EntitySubsystem->IsHeardUnderOwnerTag(UUID));
 
 		UCrowdyEntityComponent* Component = Actor->FindComponentByClass<UCrowdyEntityComponent>();
 		if (Component && Component->OwnedBy == ECrowdyOwnedBy::Leader)
@@ -210,7 +213,7 @@ void UCrowdyActorPoolBackend::ActivateInstance(int32 SlotId, const FGuid& UUID, 
 		// AssignPooledIdentity (not InitIdentity) because pre-warmed pool actors have
 		// already begun play; the RegisterEntity above is the backend-owned record.
 		if (Component)
-			Component->AssignPooledIdentity(UUID, Record.OwnerID, Record.Role, Record.ClassID);
+			Component->AssignPooledIdentity(UUID, Record.WriterID, Record.OwnerUserID, Record.Role, Record.ClassID);
 	}
 
 	SlotActors[SlotId] = Actor;
@@ -313,6 +316,20 @@ void UCrowdyActorPoolBackend::EnsureSlotCapacity(int32 SlotId)
 	UnpooledSlots.SetNum(SlotId + 1, false);
 	OwnerProxySlots.SetNum(SlotId + 1, false);
 	SkippedOwnerSlots.SetNum(SlotId + 1, false);
+}
+
+bool UCrowdyActorPoolBackend::IsAvatarClass(UClass* EntityClass)
+{
+	if (const bool* Known = AvatarClasses.Find(EntityClass))
+		return *Known;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	++AvatarClassResolutionCount;
+#endif
+	const UCrowdyEntityComponent* Default = AActor::GetActorClassDefaultComponent<UCrowdyEntityComponent>(EntityClass);
+	const bool bAvatar = Default && Default->IdentityPolicy == ECrowdyIdentityPolicy::PlayerDerived;
+	AvatarClasses.Add(EntityClass, bAvatar);
+	return bAvatar;
 }
 
 void UCrowdyActorPoolBackend::EnsurePoolForClass(UClass* ActorClass)

@@ -730,7 +730,7 @@ TSharedRef<SWidget> SCrowdyProjectView::BuildConnectionTab()
 					}),
 				LOCTEXT("UdpProtoHint", "Auto tries IPv6 then falls back to IPv4. Force one only if your network needs it."))
 		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 14.0f)
+		+ SVerticalBox::Slot().AutoHeight()
 		[
 			CrowdyStudioWidgets::Field(LOCTEXT("UdpTimeoutLabel", "UDP Timeout (seconds)"),
 				SNew(SBox).WidthOverride(160.0f).HAlign(HAlign_Left)
@@ -746,23 +746,6 @@ TSharedRef<SWidget> SCrowdyProjectView::BuildConnectionTab()
 					})
 				],
 				LOCTEXT("UdpTimeoutHint", "Silence before the connection is treated as dead and reconnects (6-120)."))
-		]
-		+ SVerticalBox::Slot().AutoHeight()
-		[
-			CrowdyStudioWidgets::Field(LOCTEXT("HostPollLabel", "Host Poll Interval (seconds)"),
-				SNew(SBox).WidthOverride(160.0f).HAlign(HAlign_Left)
-				[
-					SNew(SSpinBox<float>)
-					.MinValue(1.0f).MaxValue(60.0f).MinSliderValue(1.0f).MaxSliderValue(60.0f)
-					.Delta(1.0f)
-					.Value_Lambda([]() { return FCrowdyConfigSync::GetHostPollIntervalSeconds(); })
-					.OnValueCommitted_Lambda([](float V, ETextCommit::Type)
-					{
-						FCrowdyConfigSync::SetHostPollIntervalSeconds(V);
-						FCrowdyConfigSync::ApplyToRunningSessions();
-					})
-				],
-				LOCTEXT("HostPollHint", "How often the SDK checks the server for the current game host (1-60)."))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 10.0f)
 		[ SNew(STextBlock).TextStyle(&Style, "Crowdy.Text.BodyStrong").Text(LOCTEXT("ServerObjectsHeading", "Server Objects")) ]

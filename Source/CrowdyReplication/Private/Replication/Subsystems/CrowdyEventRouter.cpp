@@ -370,22 +370,30 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
     ensure(IsInGameThread());
 
     const FCrowdyRpcCall& Call = Event.Payload->Get<FCrowdyRpcCall>();
-    const FGuid LocalPlayerID = EntitySubsystem ? EntitySubsystem->GetLocalPlayerID() : FGuid();
 
     // A broadcast echoes back to its sender; drop our own echo so the body which already ran
     // locally when we sent it does not run a second time. A targeted (single-actor) message is
     // delivered only to the recipient and never echoes, so there is nothing to drop.
-    if (!Event.bTargetedDelivery && LocalPlayerID.IsValid() && Call.SenderID == LocalPlayerID)
+    if (!Event.bTargetedDelivery && EntitySubsystem && EntitySubsystem->IsLocalSender(Call.SenderID))
         return;
 
-    // A call named for one client reaches every client in its region, or on its channel.
+    // A call named for one client reaches every client in its region, or on its channel. One named for an id this
+    // client held before a sign-in replaced it was sent by a peer that has not heard of the new one yet.
     const bool bAddressed = Event.Target == ECrowdyTarget::Owner && Event.TargetID.IsValid();
-    if (bAddressed && Event.TargetID != LocalPlayerID)
+    if (bAddressed && (!EntitySubsystem || !EntitySubsystem->IsLocalSender(Event.TargetID)))
         return;
 
     // Named for nobody, because the sender does not know who owns it: only the writer has anything to do.
     if (Event.Target == ECrowdyTarget::Owner && !bAddressed && EntitySubsystem && !EntitySubsystem->IsLocallyOwned(Call.EntityID))
+    {
+        // A sender names nobody while a Leader entity changes hands, so this client may be the new Leader that has not heard yet.
+        const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(Call.EntityID);
+        if (Record && Record->bLeaderOwned)
+        {
+            DeferEvent(Event, RemainingAttempts, CrowdyDeferQueue::ActionBudgetSeconds);
+        }
         return;
+    }
 
     // Resolve the target as a PARTICIPANT, not strictly an actor: a non-actor participant (a subsystem enrolled
     // via RegisterParticipant) receives RPCs over the channel the same as an actor receives them over the wire.
@@ -475,34 +483,6 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
         return;
     }
 
-    if (Info.Recipient == CrowdyDeprecatedHostRecipient)
-    {
-        if (Cast<AActor>(TargetParticipant))
-        {
-            // The server delivers a host-only event as a targeted send, so a broadcast of one is misuse or forgery.
-            if (!Event.bTargetedDelivery)
-            {
-                UE_LOG(LogCrowdyRPC, Warning,
-                    TEXT("[CrowdyEventRouter] RPC dropped — '%s' is host-only but arrived as a broadcast, not a targeted send."),
-                    *Function->GetName());
-                return;
-            }
-        }
-        else
-        {
-            // A replicated subsystem's Host is the Leader, and its host-only events arrive on the channel.
-            const FGuid HostID = EntitySubsystem ? EntitySubsystem->GetAppWriterID() : FGuid();
-            const bool bIsLocalHost = HostID.IsValid() && HostID == LocalPlayerID;
-            if (!bIsLocalHost)
-            {
-                UE_CLOG(FCrowdyRPC::IsRpcTraceEnabled(), LogCrowdyRPC, Verbose,
-                    TEXT("[CrowdyRPC] host-only subsystem event '%s' ignored — this client is not the host."),
-                    *Function->GetName());
-                return;
-            }
-        }
-    }
-
     UObject* Receiver = ResolveRpcReceiver(TargetParticipant, Function);
     if (!Receiver)
     {
@@ -512,9 +492,9 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
         // there before dropping, because presence is not capability, and a participant that cannot run the
         // call must not displace one that can.
         //
-        // Deliberately BELOW the owner/host guards above rather than beside the participant lookup. Those
-        // guards settle who may run this call, from the entity's own record and the function's recipient,
-        // and a fall-through placed over them would hand a subscriber exactly the calls they refuse.
+        // Deliberately BELOW the owner guard above rather than beside the participant lookup. That
+        // guard settles who may run this call, from the entity's own record and the function's recipient,
+        // and a fall-through placed over it would hand a subscriber exactly the calls it refuses.
         //
         // Not deferred either way: the entity is already registered, so waiting cannot give this
         // participant a function it does not declare.
@@ -577,19 +557,18 @@ bool UCrowdyEventRouter::DispatchCallToSubscriber(const FCrowdyRpcCall& Call, UF
 
     const FCrowdyFnInfo Info = FCrowdyRPC::GetFnInfo(Function);
 
-    // Owner-only and host-only calls are for the client that writes the entity, which holds it as an actor.
+    // Owner-only calls are for the client that writes the entity, which holds it as an actor.
     // The subscriber has just claimed this entity, meaning it holds it as data with no actor of its own, so
     // this client is not that one, and running the call on every client that received it is the one outcome
     // that must not happen. Checked before
     // anything is resolved or decoded, because it depends only on the function and on that claim, both of
     // which are already settled. The caller that arrives here with a participant has applied its own
-    // owner/host guards first, so this never reopens a decision that path already made.
-    if (Info.Recipient == ECrowdyEventRecipient::OwningClient
-        || Info.Recipient == CrowdyDeprecatedHostRecipient)
+    // owner guard first, so this never reopens a decision that path already made.
+    if (Info.Recipient == ECrowdyEventRecipient::OwningClient)
     {
         const bool bReportDrop = CountUndeliverableCall();
         UE_CLOG(bReportDrop, LogCrowdyRPC, Warning,
-            TEXT("[CrowdyEventRouter] RPC dropped - '%s' is owner/host-only, which an entity with no actor cannot be sent. Further drops on this path are reported at most once a second."),
+            TEXT("[CrowdyEventRouter] RPC dropped - '%s' is owner-only, which an entity with no actor cannot be sent. Further drops on this path are reported at most once a second."),
             *Function->GetName());
         return true;
     }
@@ -1019,16 +998,14 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
     ensure(IsInGameThread());
 
     const FCrowdyStateDelta& Delta = Event.Payload->Get<FCrowdyStateDelta>();
-    const FGuid LocalPlayerID = EntitySubsystem ? EntitySubsystem->GetLocalPlayerID() : FGuid();
 
     // Our own delta echoing back to us drop it (we already hold these values, we sent them). This covers a
-    // spatial multicast echo AND a targeted owner-only delivery a host-owner addressed to its own entity, which
+    // spatial multicast echo AND a targeted owner-only delivery an owner addressed to its own entity, which
     // comes back with bTargetedDelivery set: the payload sender id is our own, so re-applying an identical value
     // would be redundant, and the originator already fired the notify for it on the send side
-    // (UCrowdyStateReplicator). A legitimate host->owner correction carries the HOST's id (never the receiving
-    // owner's), so it is never caught here. Unlike DispatchRpcCall (whose owner/host-only body may intentionally
-    // re-run on its target), a state self-echo is always a no-op, so the drop is not restricted to broadcasts.
-    if (LocalPlayerID.IsValid() && Delta.SenderID == LocalPlayerID)
+    // (UCrowdyStateReplicator). Unlike DispatchRpcCall (whose owner-only body may intentionally re-run on its
+    // target), a state self-echo is always a no-op, so the drop is not restricted to broadcasts.
+    if (EntitySubsystem && EntitySubsystem->IsLocalSender(Delta.SenderID))
     {
         return;
     }
@@ -1064,19 +1041,17 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
     // subscriber a participant with no layout falls through to. All three checks need a registered entity, which
     // the branch above has just established.
     //
-    // Host precedence by convention (NOT enforced): we are the authority for the entities we own. A delta for
-    // an entity we own is applied only when it is HostSourced (a host correction, so only under Elected Host); a foreign non-host delta is
-    // dropped before touching the blob. (Our own echo including a targeted owner-only self-delivery was
-    // already dropped above by SenderID.) A HostSourced delta falls through to apply and is then adopted (below)
-    // so our own next diff does not revert the host's values.
+    // By convention (NOT enforced): the client that owns an entity is the only one that writes it, so every
+    // foreign delta for an entity we own is dropped before touching the blob, HostSourced or not. (Our own echo,
+    // including a targeted owner-only self-delivery, was already dropped above by SenderID.)
     const FCrowdyEntityRecord* WriterRecord = EntitySubsystem ? EntitySubsystem->FindRecord(Delta.EntityID) : nullptr;
     const bool bWeOwnTarget = WriterRecord && EntitySubsystem->IsRecordLocallyOwned(*WriterRecord);
     const bool bHostSourced = (Delta.Flags & CrowdyStateDeltaFlags::HostSourced) != 0;
-    if (WriterRecord && WriterRecord->Role == ECrowdyRole::HostOwned)
+    if (WriterRecord && WriterRecord->Role == ECrowdyRole::WorldOwned)
     {
-        // A World entity takes only its writer's delta: the Leader's for a replicated subsystem, else the elected
-        // host's, and with no elected host nothing writes it. Still precedence
-        // by convention: cheat-sensitive state belongs in Server Objects, not on this unenforced view plane.
+        // An entity with no owner takes only its writer's delta: the Leader's for a replicated subsystem, and
+        // nobody's for a World entity. Still by convention: cheat-sensitive state belongs in Server Objects, not
+        // on this unenforced view plane.
         if (!IsFromWorldOwner(*WriterRecord, bHostSourced))
         {
             ++StateParticipantStats.DroppedNotHostSourcedForWorld;
@@ -1096,58 +1071,22 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
             return;
         }
     }
-    else if (WriterRecord && WriterRecord->bLeaderOwned && WriterRecord->OwnerID.IsValid() && Delta.SenderID != WriterRecord->OwnerID)
+    else if (WriterRecord && WriterRecord->bLeaderOwned && WriterRecord->WriterID.IsValid() && Delta.SenderID != WriterRecord->WriterID)
     {
-        // Checked before ownership: an old Leader's delta is still stamped host-sourced, which an owner would adopt.
+        // Such as an old Leader's last deltas after a hand-off, on the new Leader and on everyone else alike.
         ++StateParticipantStats.DroppedNotFromLeader;
         UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
             TEXT("[CrowdyState] dropped delta for Leader entity %s: the sender %s is not its owner %s."),
-            *Delta.EntityID.ToString(), *Delta.SenderID.ToString(), *WriterRecord->OwnerID.ToString());
+            *Delta.EntityID.ToString(), *Delta.SenderID.ToString(), *WriterRecord->WriterID.ToString());
         return;
     }
     else if (bWeOwnTarget)
     {
-        if (!bHostSourced)
-        {
-            ++StateParticipantStats.DroppedNotHostSourcedForOwned;
-            UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
-                TEXT("[CrowdyState] dropped foreign non-host delta for owned entity %s (sender=%s)."),
-                *Delta.EntityID.ToString(), *Delta.SenderID.ToString());
-            return;
-        }
-
-        // With no elected host nobody corrects an owner, so the flag can only be forged.
-        if (!UCrowdySDKDeveloperSettings::UsesElectedHost())
-        {
-            ++StateParticipantStats.DroppedHostSourcedWithNoHost;
-            UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
-                TEXT("[CrowdyState] dropped host-sourced delta for owned entity %s: there is no elected host (sender=%s)."),
-                *Delta.EntityID.ToString(), *Delta.SenderID.ToString());
-            return;
-        }
-
-        // HostOverride backstop: even a HostSourced correction is dropped if THIS entity is authored OwnerOnly (only
-        // the owner may change it). The owner self-heals on its next diff/keyframe. Policy is authored config identical
-        // on every client, so this matches the sender's own send-side check; a missing component -> Allow (apply). The
-        // backstop only applies to actor participants; a non-actor participant carries no entity component and defaults
-        // to Allow, matching the sender's missing-component send-side default.
-        if (AActor* AsActor = Cast<AActor>(TargetParticipant))
-        {
-            if (const UCrowdyEntityComponent* Comp = AsActor->FindComponentByClass<UCrowdyEntityComponent>())
-            {
-                PRAGMA_DISABLE_DEPRECATION_WARNINGS
-                const ECrowdyHostOverride Policy = Comp->GetHostOverridePolicy();
-                PRAGMA_ENABLE_DEPRECATION_WARNINGS
-                if (Policy == ECrowdyHostOverride::OwnerOnly)
-                {
-                    ++StateParticipantStats.DroppedHostOverrideRefused;
-                    UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
-                        TEXT("[CrowdyState] dropped HostSourced delta for OwnerOnly entity %s (host override disallowed)."),
-                        *Delta.EntityID.ToString());
-                    return;
-                }
-            }
-        }
+        ++StateParticipantStats.DroppedForeignWriteForOwned;
+        UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
+            TEXT("[CrowdyState] dropped foreign delta for owned entity %s (sender=%s)."),
+            *Delta.EntityID.ToString(), *Delta.SenderID.ToString());
+        return;
     }
 
     // The lookup already resolves the participant's wire class id to key its cache, so the coarse guard
@@ -1202,10 +1141,9 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
         return;
     }
 
-    // The changed set is read twice below, once to fire the notifies and again to adopt a host correction, and
-    // a notify can dispatch another delta on this router in between. The router's own array is therefore
-    // claimed by the outermost dispatch only; a re-entrant one takes this local so it cannot write into the
-    // set its caller is still using.
+    // A notify can dispatch another delta on this router while the changed set is still being walked. The
+    // router's own array is therefore claimed by the outermost dispatch only; a re-entrant one takes this local
+    // so it cannot write into the set its caller is still using.
     TArray<int32> ReentrantChangedIndices;
     const bool bReentrantDispatch = bDispatchingParticipantStateDelta;
     TGuardValue<bool> DispatchGuard(bDispatchingParticipantStateDelta, true);
@@ -1226,18 +1164,6 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
         Event.bTargetedDelivery ? TEXT("(targeted)") : TEXT("(broadcast)"));
 
     FireChangedNotifies(*Container, *Layout, ChangedIndices);
-
-    // A host correction for an entity WE own has now been applied; adopt the applied values into the owner's
-    // shadow so the replicator's next diff sees them as already-sent and does not re-emit a revert. Best-effort:
-    // a null / not-tracked replicator simply skips. bWeOwnTarget here already implies HostSourced (the gate
-    // above dropped a non-host delta for an owned entity).
-    if (bWeOwnTarget)
-    {
-        if (UCrowdyStateReplicator* Replicator = ResolveStateReplicator())
-        {
-            Replicator->AdoptHostValues(Delta.EntityID, *Layout, ChangedIndices, Container);
-        }
-    }
 }
 
 void UCrowdyEventRouter::DispatchContinuousExtras(const FGuid& EntityID, const TConstArrayView<uint8> Extras)
@@ -1269,7 +1195,7 @@ void UCrowdyEventRouter::DispatchContinuousExtras(const FGuid& EntityID, const T
 
     // A World entity's values go as deltas, which are fenced by sender. An update names no sender, so it cannot write one.
     const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntityID);
-    if (!Record || Record->Role == ECrowdyRole::HostOwned || EntitySubsystem->IsRecordLocallyOwned(*Record))
+    if (!Record || Record->Role == ECrowdyRole::WorldOwned || EntitySubsystem->IsRecordLocallyOwned(*Record))
     {
         return;
     }
@@ -1291,16 +1217,6 @@ void UCrowdyEventRouter::DispatchContinuousExtras(const FGuid& EntityID, const T
     {
         FireChangedNotifies(*Container, *Layout, ChangedIndices);
     }
-}
-
-UCrowdyStateReplicator* UCrowdyEventRouter::ResolveStateReplicator() const
-{
-    if (StateReplicatorForTest)
-    {
-        return StateReplicatorForTest;
-    }
-    const UWorld* World = GetWorld();
-    return World ? World->GetSubsystem<UCrowdyStateReplicator>() : nullptr;
 }
 
 void UCrowdyEventRouter::ReceiveLoopbackCall(const FCrowdyRpcCall& Call)
@@ -1353,7 +1269,7 @@ void UCrowdyEventRouter::ReceiveLoopbackStateDelta(const FCrowdyStateDelta& Delt
 void UCrowdyEventRouter::ReceiveChannelRpcCall(const FCrowdyRpcCall& Call, const FGuid& Addressee)
 {
     // A channel delivery is a multicast equivalent not a targeted single-actor send so the
-    // broadcast echo-drop (by SenderID) and the owner/host-only guard both apply, exactly as for a
+    // broadcast echo-drop (by SenderID) and the owner-only guard both apply, exactly as for a
     // spatial Multicast. The originating client's id rides the payload, so the channel's wire UUID
     // is not needed here.
     // Owned here rather than on the event, which only ever borrows: this local outlives the dispatch below.
@@ -1538,6 +1454,20 @@ int32 UCrowdyEventRouter::NumDeferredEntitiesForTest() const
     return Waiting.Num();
 }
 
+void UCrowdyEventRouter::ForgetSender(const FGuid& SenderID)
+{
+    if (!SenderID.IsValid())
+    {
+        return;
+    }
+    DeferredEvents.RemoveAll([&SenderID](const FCrowdyDeferredEvent& Deferred)
+    {
+        const FCrowdyRpcCall* Call = Deferred.OwnedPayload.GetPtr<FCrowdyRpcCall>();
+        const FCrowdyStateDelta* Delta = Deferred.OwnedPayload.GetPtr<FCrowdyStateDelta>();
+        return Deferred.Event.SenderID == SenderID || (Call && Call->SenderID == SenderID) || (Delta && Delta->SenderID == SenderID);
+    });
+}
+
 void UCrowdyEventRouter::RetryDeferredEvents()
 {
     if (DeferredEvents.IsEmpty())
@@ -1645,9 +1575,9 @@ void UCrowdyEventRouter::HandleDelivery(const FCrowdyDelivery& Delivery)
 
 bool UCrowdyEventRouter::IsFromWorldOwner(const FCrowdyEntityRecord& Record, const bool bHostSourced) const
 {
-    // Clients learn of a new host or Leader at different times, so the flag rather than the sender is what they can
-    // agree on while it changes. A replicated subsystem always has the Leader; anything else only an elected host.
-    return bHostSourced && (Record.IsReplicatedSubsystem() || UCrowdySDKDeveloperSettings::UsesElectedHost());
+    // Clients learn of a new Leader at different times, so the flag rather than the sender is what they can agree on
+    // while it changes. Only a replicated subsystem has a writer; a World entity has none.
+    return bHostSourced && Record.IsReplicatedSubsystem();
 }
 
 bool UCrowdyEventRouter::LoadConfig() const

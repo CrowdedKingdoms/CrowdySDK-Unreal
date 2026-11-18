@@ -89,6 +89,11 @@ struct WorldSessionConfig {
   /// player belongs to, which the session has no store for (0.60.0). Feed the payload to
   /// a media::VoiceJitterBuffer keyed by channel id and sender uuid.
   std::function<void(const replication::ChannelNotification&)> onChannelAudio;
+  /// A chunk near this player was replaced as a whole (a hub's or mod's world.set_chunk,
+  /// Buddy v0.45.0), with the stored chunk's new updatedAt (ms). chunks() reads a chunk it
+  /// holds again by itself (ChunkStore::Options::reloadReplacedChunks, 0.82.0); this is for
+  /// games that keep their own world (0.81.0).
+  std::function<void(const wire::ChunkCoord&, std::int64_t updatedAtMs)> onChunkChanged;
   /// The server announced a departure (Buddy v0.25.0). The session already
   /// removed the actor from `actors()` and fired its onLeave; this is for state
   /// the game keeps outside the store (voice/video textures, name tags).

@@ -80,6 +80,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLegalAcceptanceRequired);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLegalAcceptanceEnded);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAgeRequired);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAgeEntryEnded);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnEmailConfirmationRequired);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnLoginProvidersReceived, const TArray<FString>&, Providers);
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnIdentitiesReceived, const TArray<FCrowdyUserIdentity>&, Identities);
@@ -177,6 +178,10 @@ public:
 	/** Fires when the age is no longer being waited for, however that ended: close an age screen here. */
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Authentication")
 	FOnAgeEntryEnded OnAgeEntryEnded;
+
+	/** Fires when a new password account must confirm its email before playing: a sign-in fails, and during play nothing re-mints until the next sign-in. */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Authentication")
+	FOnEmailConfirmationRequired OnEmailConfirmationRequired;
 
 	/**
 	 * Record the player's month and year of birth and their country (ISO 3166-1 alpha-2). OnRecorded fires first, then a
@@ -360,6 +365,15 @@ public:
 	/** Ends this session on the server without waiting for the answer. Sign-out calls it before forgetting the token. */
 	void EndServerSession();
 
+	/** Ends the server session SessionToken names, installing that token for this one call. */
+	void EndServerSession(const FString& SessionToken);
+
+	/**
+	 * Ends the live sign-in, if any, before another replaces it: closes its realtime connection and deletes its actor
+	 * records. Call it while that sign-in's app token is still installed.
+	 */
+	void EndPreviousSignIn();
+
 	/** Broadcast after Delete Account or Sign Out Everywhere ended this session on the server, so the SDK signs out here. */
 	FSimpleMulticastDelegate OnServerSessionEnded;
 
@@ -437,6 +451,9 @@ public:
 	/** Keeps the session vault and the legacy slot a test touches apart from the real ones. */
 	void SetInstanceSuffixForTest(const FString& Suffix) { InstanceSuffixForTest = Suffix; }
 
+	// The session token the saved session holds, empty when none is saved.
+	FString GetSavedSessionTokenForTest() const;
+
 	bool IsRotationTimerArmedForTest() const { return RefreshTickerHandle.IsValid(); }
 	int32 GetRotationRetriesUsedForTest() const { return RotationRetriesUsed; }
 	int32 GetServerNamedRefusalsForTest() const { return ServerNamedRefusals; }
@@ -513,6 +530,22 @@ private:
 
 	/** A pending sign-in other than a restore saved its new session, replacing whatever was saved before. */
 	bool bPendingSignInSavedSession = false;
+
+	struct FHeldSignIn
+	{
+		int64 UserID = 0;
+		FString SessionToken;
+		int64 SessionGameTokenID = 0;
+	};
+
+	/** The live player's identity while a sign-in over it mints, put back if that mint fails. */
+	TOptional<FHeldSignIn> LiveSignIn;
+
+	/** That sign-in's session, saved only once its mint lands. */
+	TOptional<FHeldSignIn> PendingSave;
+
+	void AdoptPendingSignIn();
+	void RestoreLiveSignIn();
 
 	/** Set while CancelSignIn answers its callers, so a cancel fires no failure event, as a sign-out fires none. */
 	bool bCancellingSignIn = false;
@@ -665,11 +698,17 @@ private:
 	 */
 	bool NoteAccessRefused(const FString& ErrorCode, const FString& Message, const FString& Until);
 
+	/** When ErrorCode asks for the email to be confirmed, stops rotation, broadcasts OnEmailConfirmationRequired and returns true. */
+	bool NoteEmailConfirmationRequired(const FString& ErrorCode);
+
 	/** Forgets a session the server has already ended, then broadcasts OnServerSessionEnded. */
 	void ForgetEndedSession();
 
 	/** Set by NoteAccessRefused until a sign-in succeeds; stops token rotation and recovery from re-minting. */
 	bool bAccessRefused = false;
+
+	/** Set by NoteEmailConfirmationRequired until a sign-in succeeds; stops token rotation and recovery from re-minting. */
+	bool bEmailConfirmationRequired = false;
 
 	/** Rotation attempts spent since the last app token was applied. */
 	int32 RotationRetriesUsed = 0;

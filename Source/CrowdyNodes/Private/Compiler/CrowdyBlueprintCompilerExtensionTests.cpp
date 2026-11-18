@@ -1,4 +1,5 @@
 #include "CrowdyBlueprintCompilerExtension.h"
+#include "CrowdyCompilerTestTypes.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -34,9 +35,7 @@
 #include "Replication/Ownership/CrowdyOwnershipTransfer.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Subsystem/AsyncActions/CrowdyAccountActions.h"
-#include "Subsystem/AsyncActions/CrowdyHostQueryActions.h"
 #include "Subsystem/CrowdyGameSession.h"
-#include "Subsystem/CrowdyHostSubsystem.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/CrowdyUtilities.h"
@@ -170,9 +169,8 @@ bool FCrowdyForbiddenHasAuthorityIgnoresSameNameOtherOwnerTest::RunTest(const FS
 	return true;
 }
 
-// Near miss: other AActor functions, and the plugin's own Crowdy-aware wrapper
-// (UCrowdyUtilities::CrowdyHasAuthority / GetCrowdyHasAuthority, which queries the elected host
-// through UCrowdyHostSubsystem rather than passing through to Unreal's network role), must NOT be
+// Near miss: other AActor functions, and the Crowdy ownership test the error points authors to
+// (UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned / IsCrowdyEntityLocallyOwned), must NOT be
 // flagged - only the exact AActor::HasAuthority function is forbidden.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyForbiddenHasAuthorityIgnoresNearMissesTest,
 	"CrowdySDK.Compiler.ForbiddenHasAuthorityIgnoresNearMisses", CrowdyCompilerExtensionTestFlags)
@@ -180,27 +178,24 @@ bool FCrowdyForbiddenHasAuthorityIgnoresNearMissesTest::RunTest(const FString& P
 {
 	UFunction* GetActorLocationFn = AActor::StaticClass()->FindFunctionByName(
 		GET_FUNCTION_NAME_CHECKED(AActor, K2_GetActorLocation));
-	// The deprecated wrappers are still callable from Blueprints until they are removed, so they stay near misses.
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	UFunction* CrowdyHasAuthorityExecFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
-		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, CrowdyHasAuthority));
-	UFunction* GetCrowdyHasAuthorityFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
-		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, GetCrowdyHasAuthority));
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	UFunction* SwitchLocallyOwnedFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, SwitchIsCrowdyEntityLocallyOwned));
+	UFunction* IsLocallyOwnedFn = UCrowdyUtilities::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UCrowdyUtilities, IsCrowdyEntityLocallyOwned));
 
 	if (!TestNotNull(TEXT("AActor::K2_GetActorLocation resolves"), GetActorLocationFn)
-		|| !TestNotNull(TEXT("UCrowdyUtilities::CrowdyHasAuthority resolves"), CrowdyHasAuthorityExecFn)
-		|| !TestNotNull(TEXT("UCrowdyUtilities::GetCrowdyHasAuthority resolves"), GetCrowdyHasAuthorityFn))
+		|| !TestNotNull(TEXT("UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned resolves"), SwitchLocallyOwnedFn)
+		|| !TestNotNull(TEXT("UCrowdyUtilities::IsCrowdyEntityLocallyOwned resolves"), IsLocallyOwnedFn))
 	{
 		return false;
 	}
 
 	TestFalse(TEXT("a different AActor function of the same owner is not the forbidden call"),
 		UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(GetActorLocationFn));
-	TestFalse(TEXT("the exec-flow Crowdy Has Authority wrapper is not the forbidden call"),
-		UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(CrowdyHasAuthorityExecFn));
-	TestFalse(TEXT("the pure Crowdy Has Authority wrapper is not the forbidden call"),
-		UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(GetCrowdyHasAuthorityFn));
+	TestFalse(TEXT("the exec-flow Crowdy ownership test is not the forbidden call"),
+		UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(SwitchLocallyOwnedFn));
+	TestFalse(TEXT("the pure Crowdy ownership test is not the forbidden call"),
+		UCrowdyBlueprintCompilerExtension::IsForbiddenActorHasAuthorityCall(IsLocallyOwnedFn));
 
 	return true;
 }
@@ -342,9 +337,9 @@ bool FCrowdyHasAuthorityOtherActorTargetIsNotSelfTest::RunTest(const FString& Pa
 	return true;
 }
 
-// Only a multicast reaches clients that may be drawing the entity as a crowd row. An owning-client or
-// host call lands on one named machine, which holds the entity as a real actor, so its body carries none
-// of the crowd-row limits and must never be warned about.
+// Only a multicast reaches clients that may be drawing the entity as a crowd row. An owning-client call
+// lands on one named machine, which holds the entity as a real actor, so its body carries none of the
+// crowd-row limits and must never be warned about.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCrowdRecipientCoversOnlyMulticastsTest,
 	"CrowdySDK.Compiler.CrowdRecipientCoversOnlyMulticasts", CrowdyCompilerExtensionTestFlags)
 bool FCrowdyCrowdRecipientCoversOnlyMulticastsTest::RunTest(const FString& Parameters)
@@ -355,8 +350,8 @@ bool FCrowdyCrowdRecipientCoversOnlyMulticastsTest::RunTest(const FString& Param
 		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(ECrowdyEventRecipient::Multicast));
 	TestFalse(TEXT("an owning-client call lands only where the entity is a real actor"),
 		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(ECrowdyEventRecipient::OwningClient));
-	TestFalse(TEXT("a host call lands only where the entity is a real actor"),
-		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(CrowdyDeprecatedHostRecipient));
+	TestFalse(TEXT("the retired Host spelling reads as owning client"),
+		UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(ResolveCrowdyRecipient(TEXT("Host"))));
 
 	// An author who never touched the recipient dropdown wrote a spatial multicast, because that is what
 	// the runtime defaults to. If an unset value read as out of scope here, the commonest event in a
@@ -772,7 +767,8 @@ bool FCrowdyCrowdRepresentationFollowsProfilesTest::RunTest(const FString& Param
 	return true;
 }
 
-// A Blueprint event set to the deprecated Host recipient says so when it compiles, and no other event does.
+// A Blueprint event still set to the retired Host recipient says it now reaches the owning client when it compiles,
+// and no other event does.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerHostRecipientWarnsTest,
 	"CrowdySDK.Compiler.HostRecipientWarns", CrowdyCompilerExtensionTestFlags)
 bool FCrowdyCompilerHostRecipientWarnsTest::RunTest(const FString& Parameters)
@@ -798,7 +794,7 @@ bool FCrowdyCompilerHostRecipientWarnsTest::RunTest(const FString& Parameters)
 		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection | EBlueprintCompileOptions::SkipSave, &Results);
 		return Results.Messages.FilterByPredicate([](const TSharedRef<FTokenizedMessage>& Message)
 		{
-			return Message->ToText().ToString().Contains(TEXT("deprecated Recipient Host"));
+			return Message->ToText().ToString().Contains(TEXT("Recipient Host, which now reaches"));
 		}).Num();
 	};
 
@@ -807,47 +803,32 @@ bool FCrowdyCompilerHostRecipientWarnsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// Every piece of the old host surface reaches a Blueprint author with a warning that names what to do instead.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerHostSurfaceIsDeprecatedTest,
-	"CrowdySDK.Compiler.HostSurfaceIsDeprecated", CrowdyCompilerExtensionTestFlags)
-bool FCrowdyCompilerHostSurfaceIsDeprecatedTest::RunTest(const FString& Parameters)
+// The old host surface is gone from Blueprint: none of it can still be placed or bound.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCompilerHostSurfaceIsGoneTest,
+	"CrowdySDK.Compiler.HostSurfaceIsGone", CrowdyCompilerExtensionTestFlags)
+bool FCrowdyCompilerHostSurfaceIsGoneTest::RunTest(const FString& Parameters)
 {
 	const TPair<UClass*, FName> Functions[] = {
-		{UCrowdyHostSubsystem::StaticClass(), TEXT("GetHostID")},
-		{UCrowdyHostSubsystem::StaticClass(), TEXT("IsHostSet")},
-		{UCrowdyHostSubsystem::StaticClass(), TEXT("GetHostUserID")},
-		{UCrowdyHostSubsystem::StaticClass(), TEXT("IsHost")},
 		{UCrowdyGameSession::StaticClass(), TEXT("GetHostID")},
 		{UCrowdyEntitySubsystem::StaticClass(), TEXT("GetHostID")},
-		{UCrowdyUtilities::StaticClass(), TEXT("CrowdyGetHostID")},
-		{UCrowdyUtilities::StaticClass(), TEXT("IsCrowdyEntityHost")},
-		{UCrowdyIsEntityHostServer::StaticClass(), TEXT("IsCrowdyEntityHostServer")},
 		{UCrowdyOwnershipTransfer::StaticClass(), TEXT("GrantOwnershipToHost")},
 		{UCrowdyEntityComponent::StaticClass(), TEXT("GetHostOverridePolicy")},
+		{UCrowdyEntityComponent::StaticClass(), TEXT("SendEvent")},
 	};
 	for (const TPair<UClass*, FName>& Entry : Functions)
 	{
 		const FString Name = FString::Printf(TEXT("%s::%s"), *Entry.Key->GetName(), *Entry.Value.ToString());
-		const UFunction* Function = Entry.Key->FindFunctionByName(Entry.Value);
-		if (!TestNotNull(*Name, Function)) continue;
-
-		TestTrue(*(Name + TEXT(" is deprecated")), Function->HasMetaData(FBlueprintMetadata::MD_DeprecatedFunction));
-		TestFalse(*(Name + TEXT(" says what to do instead")), Function->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage).IsEmpty());
+		TestNull(*(Name + TEXT(" is gone")), Entry.Key->FindFunctionByName(Entry.Value));
 	}
 
 	const TPair<UClass*, FName> Properties[] = {
-		{UCrowdyHostSubsystem::StaticClass(), TEXT("OnHostElected")},
 		{UCrowdyGameSession::StaticClass(), TEXT("OnHostIDUpdated")},
 		{UCrowdyEntityComponent::StaticClass(), TEXT("HostOverride")},
 	};
 	for (const TPair<UClass*, FName>& Entry : Properties)
 	{
 		const FString Name = FString::Printf(TEXT("%s::%s"), *Entry.Key->GetName(), *Entry.Value.ToString());
-		const FProperty* Property = Entry.Key->FindPropertyByName(Entry.Value);
-		if (!TestNotNull(*Name, Property)) continue;
-
-		TestTrue(*(Name + TEXT(" is deprecated")), Property->HasMetaData(FBlueprintMetadata::MD_DeprecatedProperty));
-		TestFalse(*(Name + TEXT(" says what to do instead")), Property->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage).IsEmpty());
+		TestNull(*(Name + TEXT(" is no longer a Blueprint property")), Entry.Key->FindPropertyByName(Entry.Value));
 	}
 	return true;
 }
@@ -880,14 +861,14 @@ bool FCrowdyCompilerDeprecatedAsyncNodeWarnsTest::RunTest(const FString& Paramet
 		}).Num();
 	};
 
-	const UFunction* Deprecated = UCrowdyIsEntityHostServer::StaticClass()->FindFunctionByName(TEXT("IsCrowdyEntityHostServer"));
+	const UFunction* Deprecated = UCrowdyCompilerTestDeprecatedAsyncAction::StaticClass()->FindFunctionByName(TEXT("DeprecatedTestNode"));
 	const UFunction* Current = UCrowdyAccount_RequestPasswordReset::StaticClass()->FindFunctionByName(TEXT("RequestPasswordReset"));
 	if (!TestNotNull(TEXT("the deprecated factory resolves"), Deprecated) || !TestNotNull(TEXT("the control factory resolves"), Current))
 	{
 		return false;
 	}
 
-	TestEqual(TEXT("the host check node warns once and names the replacement"), CountWarnings(Deprecated, TEXT("is deprecated. Use Is Local Leader")), 1);
+	TestEqual(TEXT("the deprecated node warns once and names the replacement"), CountWarnings(Deprecated, TEXT("is deprecated. Use Test Replacement Node.")), 1);
 	TestEqual(TEXT("a current async node does not warn"), CountWarnings(Current, TEXT("is deprecated")), 0);
 	return true;
 }
@@ -901,12 +882,12 @@ bool FCrowdyCompilerDeprecatedDelegateBindWarnsTest::RunTest(const FString& Para
 	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), GetTransientPackage(), Name, BPTYPE_Normal,
 		UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
 
-	const FProperty* Delegate = UCrowdyHostSubsystem::StaticClass()->FindPropertyByName(TEXT("OnHostElected"));
+	const FProperty* Delegate = UCrowdyCompilerTestDeprecatedDelegateOwner::StaticClass()->FindPropertyByName(TEXT("OnDeprecatedTest"));
 	if (!TestNotNull(TEXT("the delegate resolves"), Delegate)) return false;
 
 	UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
 	UK2Node_AddDelegate* Node = NewObject<UK2Node_AddDelegate>(Graph);
-	Node->SetFromProperty(Delegate, false, UCrowdyHostSubsystem::StaticClass());
+	Node->SetFromProperty(Delegate, false, UCrowdyCompilerTestDeprecatedDelegateOwner::StaticClass());
 	Graph->AddNode(Node, false, false);
 	if (!TestNotNull(TEXT("the node resolves the delegate"), Node->GetProperty())) return false;
 

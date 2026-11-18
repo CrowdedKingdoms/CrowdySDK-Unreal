@@ -46,8 +46,6 @@ struct FCrowdyRepPropRowItem
 	// loaded; a placed level instance can still override these per-instance.
 	bool  bHasEntityDefaults = false;
 	FText OwnershipText;        // e.g. "Local Client" or "Host"
-	FText HostOverrideText;     // e.g. "Allow" / "Owner Only"; empty when Ownership==Host (mirrors the
-	                            // component's own EditConditionHides) or when not resolved
 };
 
 using FCrowdyRepPropRowItemPtr = TSharedPtr<FCrowdyRepPropRowItem>;
@@ -64,9 +62,8 @@ struct FCrowdyClassGroup
 	FString ClassPath;
 	int64   LayoutHash = 0;             // 0 when the class declares no replicated properties
 	bool    bHasRepProps = false;
-	bool    bHasEntityDefaults = false; // class-level Ownership/HostOverride were resolvable (see above)
+	bool    bHasEntityDefaults = false; // class-level Ownership was resolvable (see above)
 	FText   OwnershipText;
-	FText   HostOverrideText;
 	TArray<FCrowdyRpcRowItemPtr>     Functions;   // class-then-name sorted
 	TArray<FCrowdyRepPropRowItemPtr> Props;       // class-then-layout-order sorted
 };
@@ -88,8 +85,8 @@ enum class ECrowdyRegistryViewMode : uint8
  * and its CrowdyState replicated properties together (a class no longer appears in two separate lists).
  * A Cards/Table toggle switches between rich expandable cards - one per class, each member a row whose
  * details expand vertically - and a dense table where every member is one column-aligned row for quick
- * scanning. A class card/subheader also surfaces that class's default Ownership / Host Override
- * (host-authority settings on UCrowdyEntityComponent), resolved LIVE from the class's default component
+ * scanning. A class card/subheader also surfaces that class's default Ownership
+ * (a setting on UCrowdyEntityComponent), resolved LIVE from the class's default component
  * when the view is built - display-only, never written into the baked asset, since those settings are
  * per-placed-instance and have no single "the" value for a class.
  *

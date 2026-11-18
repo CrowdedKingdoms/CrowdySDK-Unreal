@@ -41,6 +41,7 @@ namespace
 		case crowdy::replication::ConnState::Reconnecting: return ECrowdyCppConnState::Reconnecting;
 		case crowdy::replication::ConnState::Failed:       return ECrowdyCppConnState::Failed;
 		case crowdy::replication::ConnState::Closed:       return ECrowdyCppConnState::Closed;
+		case crowdy::replication::ConnState::Inactive:     return ECrowdyCppConnState::Inactive;
 		}
 		return ECrowdyCppConnState::Idle;
 	}
@@ -281,6 +282,7 @@ namespace
 		int64 ChunkZ = 0;
 		crowdy::core::ActorUuid Uuid{};
 		TArray<uint8> Payload;
+		uint64 Ticket = 0;
 		uint8 Distance = 0;
 		uint8 Decay = 0;
 	};
@@ -292,6 +294,7 @@ namespace
 		/** When the send before this one used the slot; 0 when none did. */
 		int64 PreviousSentAtMs = 0;
 		int64 ChannelId = 0;
+		uint64 Ticket = 0;
 		crowdy::core::ActorUuid Uuid{};
 		uint8 Opcode = 0;
 		bool bIsChannel = false;
@@ -307,17 +310,22 @@ namespace
 	class FCrowdySendLedger
 	{
 	public:
-		void Record(uint8 Sequence, const FCrowdyCppQueuedSend& Send, int64 NowMs)
+		/** Returns the ticket of a tracked send this one laps while it could still be answered, or 0. */
+		uint64 Record(uint8 Sequence, const FCrowdyCppQueuedSend& Send, int64 NowMs)
 		{
 			FScopeLock Lock(&Mutex);
 			FCrowdySendRecord& Slot = Slots[Sequence];
+			const uint64 Lapped = Slot.bUsed && NowMs - Slot.SentAtMs <= FCrowdyCppReplication::MaxSendAttributionAgeMs
+				? Slot.Ticket : 0;
 			Slot.PreviousSentAtMs = Slot.bUsed ? Slot.SentAtMs : 0;
 			Slot.SentAtMs = NowMs;
 			Slot.Uuid = Send.Uuid;
 			Slot.Opcode = Send.Opcode;
 			Slot.bIsChannel = Send.bIsChannel;
 			Slot.ChannelId = Send.ChannelId;
+			Slot.Ticket = Send.Ticket;
 			Slot.bUsed = true;
+			return Lapped;
 		}
 
 		/** The send this sequence was last used for, or an unused record when there is none worth believing. */
@@ -378,10 +386,30 @@ struct FCrowdyCppReplication::FImpl
 
 	FCrowdySendLedger SendLedger;
 
+	// Written by the pump thread, drained by Poll ahead of the messages, so a receipt always precedes the echo of its send.
+	FCriticalSection ReceiptMutex;
+	TArray<FCrowdyCppSendReceipt> Receipts;
+	TArray<FCrowdyCppSendReceipt> ReceiptDrain;
+
+	void AddReceipt(const uint64 Ticket, const ECrowdyCppSendReceiptKind Kind, const uint8 Sequence)
+	{
+		if (Ticket == 0)
+		{
+			return;
+		}
+		FScopeLock Lock(&ReceiptMutex);
+		Receipts.Add({Ticket, Kind, Sequence});
+	}
+
 	FCriticalSection TeardownMutex;
 
 	std::atomic<bool> bConnectRequested{false};
 	std::atomic<bool> bStopping{false};
+
+	// A new token resets the server's record of what this client reads, so until it hears again it sends unbound
+	// control frames, which the library drops once the bound forms were acknowledged.
+	std::atomic<bool> bCapabilitiesDue{false};
+	bool bAdvertiseCapabilities = true;
 
 	// Read by a blocking session callback so teardown does not have to wait out a network round trip.
 	std::atomic<bool> bAborting{false};
@@ -513,12 +541,14 @@ struct FCrowdyCppReplication::FImpl
 		{
 			UE_LOG(LogCrowdyCpp, Error, TEXT("Replication: a send threw: %hs"), Ex.what());
 			SendsDropped.fetch_add(1, std::memory_order_relaxed);
+			AddReceipt(Send.Ticket, ECrowdyCppSendReceiptKind::Lost, 0);
 			return;
 		}
 		catch (...)
 		{
 			UE_LOG(LogCrowdyCpp, Error, TEXT("Replication: a send threw a non-standard exception."));
 			SendsDropped.fetch_add(1, std::memory_order_relaxed);
+			AddReceipt(Send.Ticket, ECrowdyCppSendReceiptKind::Lost, 0);
 			return;
 		}
 
@@ -530,6 +560,7 @@ struct FCrowdyCppReplication::FImpl
 		// bundling an accepted message has joined the pending bundle, and flushing that is the library's.
 		if (!Sent.ok() && Sent.error() == crowdy::Errc::WouldBlock)
 		{
+			AddReceipt(Send.Ticket, ECrowdyCppSendReceiptKind::Lost, 0);
 			return;
 		}
 
@@ -538,13 +569,17 @@ struct FCrowdyCppReplication::FImpl
 			SendsDropped.fetch_add(1, std::memory_order_relaxed);
 			UE_CLOG(Sent.error() != crowdy::Errc::NotConnected, LogCrowdyCpp, Warning,
 				TEXT("Replication: a queued send was rejected (%s)."), *DescribeErrc(Sent.error()));
+			AddReceipt(Send.Ticket, ECrowdyCppSendReceiptKind::Lost, 0);
 			return;
 		}
 
 		// The sequence the library minted for this datagram exists nowhere else: the caller was told only that the
 		// send was queued. Noting it here is what lets a later error frame naming that sequence say which send it
 		// is about, and this is the only point in the process where both halves are in hand.
-		SendLedger.Record(Sent.value(), Send, crowdy::core::systemClock().monotonicMillis());
+		const uint8 Sequence = Sent.value();
+		const uint64 Lapped = SendLedger.Record(Sequence, Send, crowdy::core::systemClock().monotonicMillis());
+		AddReceipt(Lapped, ECrowdyCppSendReceiptKind::Lapped, Sequence);
+		AddReceipt(Send.Ticket, ECrowdyCppSendReceiptKind::Sent, Sequence);
 	}
 
 	void DrainSendQueue()
@@ -692,6 +727,12 @@ struct FCrowdyCppReplication::FImpl
 
 					if (IsLiveState(Owner.Connection->state()))
 					{
+						// A connection still coming up advertises on its own once it is ready.
+						if (Owner.bCapabilitiesDue.exchange(false, std::memory_order_acq_rel)
+							&& Owner.Connection->state() == crowdy::replication::ConnState::Connected)
+						{
+							Owner.Connection->sendCapabilities();
+						}
 						Owner.DrainSendQueue();
 						Owner.Connection->pump(PumpWaitMs);
 						continue;
@@ -778,6 +819,7 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 		Library.bundleSends = Config.bBundleSends;
 		Library.bundleWindowMs = FMath::Max(Config.BundleWindowMs, 0);
 		Library.advertiseCapabilities = Config.bAdvertiseCapabilities;
+		Owned.bAdvertiseCapabilities = Config.bAdvertiseCapabilities;
 
 		Owned.Connection = MakeUnique<crowdy::replication::Connection>(
 			std::move(Library), Owned.Provider, crowdy::core::defaultCrypto());
@@ -885,6 +927,7 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 			Reported.SendUuid = TArrayView<const uint8>(
 				reinterpret_cast<const uint8*>(Attributed.Uuid.data()), Attributed.Uuid.size());
 			Reported.SendAgeMs = NowMs - Attributed.SentAtMs;
+			Reported.SendTicket = Attributed.Ticket;
 		}
 
 		try
@@ -904,6 +947,11 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 	Forward.status = [Raw](const crowdy::replication::ConnState State)
 	{
 		const ECrowdyCppConnState Reported = ToUnrealState(State);
+		// The poll's reconcile may already have reported this state; a queued event must not report it twice.
+		if (Reported == Raw->LastReportedState)
+		{
+			return;
+		}
 		Raw->LastReportedState = Reported;
 		if (!Raw->ActiveHandlers.OnStateChanged)
 		{
@@ -961,6 +1009,10 @@ void FCrowdyCppReplication::SetToken(const FCrowdyCppReplicationToken& Token)
 	try
 	{
 		Impl->Connection->setToken(ToLibraryToken(Token));
+		if (Impl->bAdvertiseCapabilities)
+		{
+			Impl->bCapabilitiesDue.store(true, std::memory_order_release);
+		}
 	}
 	catch (...)
 	{
@@ -1082,6 +1134,19 @@ int32 FCrowdyCppReplication::Poll(const int32 MaxEvents)
 
 	Impl->ActiveHandlers = Impl->SnapshotHandlers();
 
+	{
+		FScopeLock Lock(&Impl->ReceiptMutex);
+		Swap(Impl->Receipts, Impl->ReceiptDrain);
+	}
+	for (const FCrowdyCppSendReceipt& Receipt : Impl->ReceiptDrain)
+	{
+		if (Impl->ActiveHandlers.OnSendReceipt)
+		{
+			Impl->ActiveHandlers.OnSendReceipt(Receipt);
+		}
+	}
+	Impl->ReceiptDrain.Reset();
+
 	int32 Delivered = 0;
 	try
 	{
@@ -1157,6 +1222,7 @@ bool FCrowdyCppReplication::IsDeliverableSpatialOpcode(const uint8 Opcode)
 	case MessageType::GenericSpatial1:
 	case MessageType::SingleActorMessage:
 	case MessageType::ActorLeftNotification:
+	case MessageType::ChunkChangedNotification:
 		return true;
 	default:
 		return false;
@@ -1194,7 +1260,7 @@ bool FCrowdyCppReplication::IsAppPausedErrorCode(const uint8 ErrorCode)
 
 bool FCrowdyCppReplication::SendSpatial(const uint8 Opcode, const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,
 	const TArrayView<const uint8> Uuid, const TArrayView<const uint8> Payload, const uint8 Distance, const uint8 Decay,
-	FString& OutError)
+	FString& OutError, const uint64 Ticket)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_SendSpatial);
 
@@ -1282,6 +1348,7 @@ bool FCrowdyCppReplication::SendSpatial(const uint8 Opcode, const int64 ChunkX, 
 	Queued.ChunkZ = ChunkZ;
 	FMemory::Memcpy(Queued.Uuid.data(), Uuid.GetData(), crowdy::wire::kUuidSize);
 	Queued.Payload.Append(Payload.GetData(), PayloadSize);
+	Queued.Ticket = Ticket;
 	Queued.Distance = Distance;
 	Queued.Decay = Decay;
 
@@ -1416,6 +1483,11 @@ FCrowdyCppReplicationStats FCrowdyCppReplication::GetStats() const
 		Out.HmacFailures = static_cast<int64>(Stats.hmacFailures);
 		Out.SignedBundlesReceived = static_cast<int64>(Stats.signedBundlesReceived);
 		Out.Malformed = static_cast<int64>(Stats.malformed);
+		Out.StaleBoundControl = static_cast<int64>(Stats.staleBoundControl);
+		Out.IdleReleasesAfterInput = static_cast<int64>(Stats.idleReleasesAfterInput);
+		Out.BoundControlAcks = static_cast<int64>(Stats.boundControlAcks);
+		Out.LegacyControlDropped = static_cast<int64>(Stats.legacyControlDropped);
+		Out.LegacyReconnectsSuppressed = static_cast<int64>(Stats.legacyReconnectsSuppressed);
 		Out.RingDropped = static_cast<int64>(Stats.ringDropped);
 		Out.SendsDeferred = static_cast<int64>(Stats.sendsDeferred);
 		Out.SendsFailed = static_cast<int64>(Stats.sendsFailed);

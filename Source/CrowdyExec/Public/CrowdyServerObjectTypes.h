@@ -143,11 +143,34 @@ struct CROWDYEXEC_API FCrowdyPresenceReply
 	int32 Presence = -1;
 };
 
-/** The Leader type's variables: none, since its members and its Leader are kept by the server for it. */
+/** The Leader type's variables: the Leader and the actor id it entered with. Its members and its Leader are kept by the server for it. */
 USTRUCT()
 struct CROWDYEXEC_API FCrowdyLeaderState
 {
 	GENERATED_BODY()
+
+	/** The Leader's user id while it has an actor id here; 0 for none. Changes in the same push as the Leader. */
+	UPROPERTY()
+	int64 LeaderActorUser = 0;
+
+	/** The actor id LeaderActorUser entered with, as 32 hex digits; empty for none. */
+	UPROPERTY()
+	FString LeaderActorID;
+
+	/** Each member's actor id by user id, as its last Enter gave it. Never sent to players. */
+	UPROPERTY()
+	TMap<int64, FString> MemberActorIDs;
+};
+
+/** What a player sends to enter or exit the Leader type: the actor id it writes under. */
+USTRUCT()
+struct CROWDYEXEC_API FCrowdyLeaderEnterInputs
+{
+	GENERATED_BODY()
+
+	/** 32 hex digits, not all zero. */
+	UPROPERTY()
+	FString ActorID;
 };
 
 /** Keys a map by record id case-sensitively: two ids that differ only in case are two entities. */

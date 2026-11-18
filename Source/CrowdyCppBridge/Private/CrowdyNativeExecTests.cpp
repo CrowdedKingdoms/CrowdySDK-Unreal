@@ -1457,4 +1457,46 @@ bool FCrowdyNativeKitClientCloseClosesTheKitTest::RunTest(const FString& Paramet
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyNativeExecJsonMsgpackTest,
+	"CrowdySDK.CrowdyCppBridge.ExecJsonAndMsgpackConvert", CrowdyNativeExecTestFlags)
+bool FCrowdyNativeExecJsonMsgpackTest::RunTest(const FString& Parameters)
+{
+	TArray<uint8> Bytes;
+	TestTrue(TEXT("one JSON object converts"), CrowdyNativeExec::JsonToMsgpack(TEXT("{\"n\":1}"), Bytes));
+	TestTrue(TEXT("to a MessagePack map"), Bytes == TArray<uint8>({0x81, 0xa1, 'n', 0x01}));
+	TestTrue(TEXT("an empty object is an empty map"), CrowdyNativeExec::JsonToMsgpack(TEXT("{}"), Bytes) && Bytes == TArray<uint8>({0x80}));
+	TestTrue(TEXT("null converts"), CrowdyNativeExec::JsonToMsgpack(TEXT("null"), Bytes) && Bytes == TArray<uint8>({0xc0}));
+	TestFalse(TEXT("text that is not JSON does not"), CrowdyNativeExec::JsonToMsgpack(TEXT("{not json"), Bytes));
+	TestFalse(TEXT("nor does nothing"), CrowdyNativeExec::JsonToMsgpack(FString(), Bytes));
+	FString Json;
+	TestTrue(TEXT("an int64 past a double's precision"), CrowdyNativeExec::JsonToMsgpack(TEXT("{\"id\":9007199254740993}"), Bytes)
+		&& CrowdyNativeExec::MsgpackToJson(Bytes, Json));
+	TestEqual(TEXT("comes back whole"), Json, FString(TEXT("{\"id\":9007199254740993}")));
+	TestTrue(TEXT("a MessagePack map converts"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x81, 0xa2, 'o', 'k', 0xc3}), Json));
+	TestEqual(TEXT("to compact JSON"), Json, FString(TEXT("{\"ok\":true}")));
+	TestTrue(TEXT("no bytes are null"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>(), Json) && Json == TEXT("null"));
+	TestFalse(TEXT("a truncated map does not"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x81, 0xa1, 0x61}), Json));
+	TestFalse(TEXT("nor do trailing bytes"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x01, 0x02}), Json));
+	TestTrue(TEXT("a number key converts"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x81, 0x07, 0xc3}), Json));
+	TestTrue(TEXT("nested maps under string keys convert"),
+		CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x81, 0xa1, 'a', 0x81, 0xa1, 'b', 0x91, 0x80}), Json));
+	TestFalse(TEXT("a map key that is a map does not"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x81, 0x81, 0xa1, 'a', 0x01, 0x01}), Json));
+	TestFalse(TEXT("nor one that is an array"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x81, 0x91, 0x01, 0x01}), Json));
+	TestFalse(TEXT("nor one that is binary"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x81, 0xc4, 0x01, 0x00, 0x01}), Json));
+	TArray<uint8> Deep;
+	Deep.Init(0x91, 65);
+	Deep.Add(0xc0);
+	TestFalse(TEXT("nor 65 nested arrays"), CrowdyNativeExec::MsgpackToJson(Deep, Json));
+	TestFalse(TEXT("a declared count past the bytes does not"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0xdd, 0xff, 0xff, 0xff, 0xff, 0x01}), Json));
+	TestTrue(TEXT("a NaN converts"),
+		CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x82, 0xa1, 'v', 0xcb, 0x7f, 0xf8, 0, 0, 0, 0, 0, 0, 0xa1, 'w', 0x01}), Json));
+	TestEqual(TEXT("as null in its own place, leaving the rest of the reply"), Json, FString(TEXT("{\"v\":null,\"w\":1}")));
+	TestFalse(TEXT("a string that is not UTF-8 has no JSON form, so the reply is refused"),
+		CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0x81, 0xa1, 'v', 0xa1, 0xff}), Json));
+	TestTrue(TEXT("a real null still reads as null"), CrowdyNativeExec::MsgpackToJson(TArray<uint8>({0xc0}), Json) && Json == TEXT("null"));
+	TestTrue(TEXT("params 100,000 deep convert without exhausting the stack"),
+		CrowdyNativeExec::JsonToMsgpack(FString::ChrN(100000, TEXT('[')) + FString::ChrN(100000, TEXT(']')), Bytes));
+	return true;
+}
+
 #endif  // WITH_DEV_AUTOMATION_TESTS

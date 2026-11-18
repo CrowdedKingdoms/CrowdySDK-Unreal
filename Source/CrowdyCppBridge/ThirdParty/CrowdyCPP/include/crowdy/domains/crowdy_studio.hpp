@@ -16,6 +16,7 @@
 #include "crowdy/generated/operations.hpp"
 #include "crowdy/studio/github_layout.hpp"
 #include "crowdy/studio/models.hpp"
+#include "crowdy/studio_origin.hpp"
 
 namespace crowdy::domains {
 
@@ -48,6 +49,24 @@ class CrowdyStudioAPI final : public DomainBase,
       std::vector<studio::CrowdyStudioReferenceFile>)>;
   using ReferenceCallback = std::function<void(
       graphql::GraphQLOutcome, studio::CrowdyStudioReferenceFile)>;
+  using LinksCallback =
+      std::function<void(graphql::GraphQLOutcome, CrowdyStudioLinks)>;
+
+  /// This tier's Studio origin and wallet page (`crowdyStudioLinks`, public; Game API
+  /// v2.73.0). An older API answers `GRAPHQL_VALIDATION_FAILED`; fall back to
+  /// `CrowdyClient::studioOrigin()` there.
+  CrowdyStudioLinks links() {
+    return request<CrowdyStudioLinks>(
+        "CrowdyStudioLinks", graphql::JVal::object({}),
+        [](const graphql::Json& value) { return mapLinks(value); });
+  }
+
+  void linksAsync(LinksCallback callback) {
+    requestAsync<CrowdyStudioLinks>(
+        "CrowdyStudioLinks", graphql::JVal::object({}),
+        [](const graphql::Json& value) { return mapLinks(value); },
+        std::move(callback));
+  }
 
   std::vector<studio::CrowdyStudioProjectSummary> listProjects(
       const studio::CrowdyStudioProjectScope& scope) override {
@@ -1051,6 +1070,16 @@ class CrowdyStudioAPI final : public DomainBase,
       summary.githubSha = optionalString(value["githubSha"]);
     }
     return summary;
+  }
+
+  static CrowdyStudioLinks mapLinks(const graphql::Json& value) {
+    CrowdyStudioLinks links;
+    links.origin = value["origin"].asString();
+    links.walletUrl = value["walletUrl"].asString();
+    if (links.origin.empty() || links.walletUrl.empty()) {
+      throw std::runtime_error("crowdyStudioLinks answered without an origin or wallet page");
+    }
+    return links;
   }
 
   static std::vector<studio::CrowdyStudioProjectSummary> mapProjects(

@@ -3,8 +3,10 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "CrowdyCppClient.h"
 #include "Dom/JsonObject.h"
+#include "Misc/AutomationTest.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -54,6 +56,32 @@ namespace CrowdyServiceApiTest
 		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(DataJson);
 		FJsonSerializer::Deserialize(Reader, Result.Data);
 		return Result;
+	}
+
+	/** Starts one call and checks it answers exactly once, on a later tick, refused as NotBuilt with a reason. */
+	template <typename AnswerType, typename ResultType>
+	AnswerType ExpectNotBuiltOnce(FAutomationTestBase& Test, const TCHAR* Call, ResultType NotBuilt, TFunctionRef<void(TFunction<void(const AnswerType&)>)> Start)
+	{
+		struct FSeen
+		{
+			int32 Answers = 0;
+			AnswerType Answer;
+		};
+		const TSharedRef<FSeen> Seen = MakeShared<FSeen>();
+		Start([Seen](const AnswerType& Answer)
+		{
+			Seen->Answer = Answer;
+			++Seen->Answers;
+		});
+		Test.TestEqual(FString::Printf(TEXT("%s does not answer inside the call"), Call), Seen->Answers, 0);
+		for (int32 Tick = 0; Tick < 4; ++Tick)
+		{
+			FTSTicker::GetCoreTicker().Tick(0.f);
+		}
+		Test.TestEqual(FString::Printf(TEXT("%s answers exactly once"), Call), Seen->Answers, 1);
+		Test.TestTrue(FString::Printf(TEXT("%s refuses as not built"), Call), Seen->Answer.Result == NotBuilt);
+		Test.TestTrue(FString::Printf(TEXT("%s says why in words"), Call), Seen->Answer.Message.Contains(TEXT("is not built in this SDK version yet")));
+		return Seen->Answer;
 	}
 
 	/** A result for a call that never reached a verdict, carrying the message a cancellation delivers. */
