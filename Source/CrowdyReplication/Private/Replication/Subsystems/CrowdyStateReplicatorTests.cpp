@@ -32,12 +32,12 @@ namespace
 	constexpr EAutomationTestFlags CrowdyStateReplicatorTestFlags =
 		EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter;
 
-	// A HostOwned record for the given actor with a fresh NetID.
+	// A WorldOwned record for the given actor with a fresh NetID.
 	FCrowdyEntityRecord MakeHostOwnedRecord(AActor* Actor, const FGuid& NetID)
 	{
 		FCrowdyEntityRecord Record;
 		Record.NetID = NetID;
-		Record.Role = ECrowdyRole::HostOwned;
+		Record.Role = ECrowdyRole::WorldOwned;
 		Record.Participant = Actor;
 		return Record;
 	}

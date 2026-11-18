@@ -1894,7 +1894,7 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 	if (Decision.Route == ECrowdyRpcRoute::SpatialToOwner)
 	{
 		const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntityID);
-		const bool bWorldEntity = Record && Record->Role == ECrowdyRole::HostOwned;
+		const bool bWorldEntity = Record && Record->Role == ECrowdyRole::WorldOwned;
 		Decision.Route = DecideOwnerRoute(bWorldEntity, Record && Record->bLeaderOwned && !Record->WriterID.IsValid(),
 			EntitySubsystem->IsWireIdUnheard(EntityID), Info.bCarriesText);
 		Writer = Record ? EntitySubsystem->ResolveEventAddressee(EntityID, Record->WriterID) : FGuid();

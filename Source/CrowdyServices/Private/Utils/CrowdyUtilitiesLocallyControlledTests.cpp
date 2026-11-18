@@ -34,7 +34,7 @@ bool FCrowdyUtilitiesLeaderEntityNotPlayerTest::RunTest(const FString& Parameter
 	TestFalse(TEXT("one that follows the Leader does not"), UCrowdyUtilities::IsCrowdyEntityPlayerControlled(Actor, Actor));
 
 	Component->OwnedBy = ECrowdyOwnedBy::Auto;
-	Component->InitIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::HostOwned, 0);
+	Component->InitIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::WorldOwned, 0);
 	TestFalse(TEXT("nor does one the world owns, such as an NPC placed in the level"), UCrowdyUtilities::IsCrowdyEntityPlayerControlled(Actor, Actor));
 
 	GEngine->DestroyWorldContext(World);
@@ -94,7 +94,7 @@ bool FCrowdyUtilitiesLocallyOwnedTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("and the switch takes the other branch"), bSwitched);
 
 	// No client writes a world entity, so none claims it.
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::HostOwned, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::WorldOwned, 0);
 	TestFalse(TEXT("a world entity is not locally owned"),
 		UCrowdyUtilities::IsCrowdyEntityLocallyOwned(EntityActor));
 
@@ -117,7 +117,7 @@ bool FCrowdyUtilitiesRecordLocallyOwnedTest::RunTest(const FString& Parameters)
 
 	FCrowdyEntityRecord World;
 	World.NetID = FGuid::NewGuid();
-	World.Role = ECrowdyRole::HostOwned;
+	World.Role = ECrowdyRole::WorldOwned;
 	TestTrue(TEXT("its writer writes a record with no owner"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, Local));
 	TestFalse(TEXT("another client does not"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, Other));
 	TestFalse(TEXT("nobody does when it has no writer"), UCrowdyUtilities::IsRecordLocallyOwned(World, Local, FGuid()));

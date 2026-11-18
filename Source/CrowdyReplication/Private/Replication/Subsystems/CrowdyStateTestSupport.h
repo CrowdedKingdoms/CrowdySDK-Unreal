@@ -145,7 +145,7 @@ inline void RegisterProxyParticipant(UCrowdyEntitySubsystem* Entities, const FGu
 
 // Registers any UObject as a participant under a CHOSEN role and owner id, which the helper above cannot
 // express: it always stamps RemoteProxy with a foreign owner, the one combination none of the receive path's
-// authority gates apply to. Pass ECrowdyRole::HostOwned with an invalid WriterID for a world entity (the
+// authority gates apply to. Pass ECrowdyRole::WorldOwned with an invalid WriterID for a world entity (the
 // world-static convention: no owner), or ECrowdyRole::Owner with the subsystem's local player id for an entity
 // this client owns. Those two fields are exactly what the gates read, so a test that needs one of them to fire
 // registers through here.

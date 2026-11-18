@@ -376,8 +376,8 @@ bool FCrowdyStateSubsystemApplyFiresOnRepTest::RunTest(const FString& Parameters
 }
 
 // A non-host RECEIVES a host-owned subsystem's state through the real deployment path: it enrolls its OWN
-// singleton via RegisterParticipant(Host) -> Role=HostOwned, WriterID=FGuid() (unlike the RemoteProxy fixture used
-// above, whose fresh non-local owner bypasses both authority gates). So the receive path runs the HostOwned
+// singleton via RegisterParticipant(Host) -> Role=WorldOwned, WriterID=FGuid() (unlike the RemoteProxy fixture used
+// above, whose fresh non-local owner bypasses both authority gates). So the receive path runs the WorldOwned
 // else-if gate (CrowdyEventRouter DispatchStateDelta): a non-HostSourced delta MUST drop (values unchanged, no
 // OnRep), a HostSourced host correction MUST apply and fire OnRep. This is the core authority behavior a
 // RemoteProxy target cannot exercise.
@@ -400,7 +400,7 @@ bool FCrowdyStateSubsystemHostOwnedApplyRespectsHostSourcedTest::RunTest(const F
 
 	// A NON-host receiver: local player is valid and is NOT the host, so a locally-enrolled host-owned singleton
 	// has WriterID=FGuid() (never equal to the local player), making bWeOwnTarget false and routing through the
-	// HostOwned else-if gate rather than the owned-entity gate.
+	// WorldOwned else-if gate rather than the owned-entity gate.
 	const FGuid LocalPlayer = FGuid::NewGuid();
 	const FGuid HostID = FGuid::NewGuid();
 	UCrowdyEntitySubsystem* Entities = MakeEntitySubsystem(LocalPlayer);
@@ -427,7 +427,7 @@ bool FCrowdyStateSubsystemHostOwnedApplyRespectsHostSourcedTest::RunTest(const F
 	TArray<uint8> Blob;
 	FCrowdyStateCodec::Encode(*Layout, Source, Dirty, /*bKeyframe=*/false, Blob);
 
-	// Enroll the RECEIVING singleton the real way: RegisterParticipant(Host) -> HostOwned record, WriterID invalid.
+	// Enroll the RECEIVING singleton the real way: RegisterParticipant(Host) -> WorldOwned record, WriterID invalid.
 	UCrowdyStateSubsystemTestTarget* Target = NewObject<UCrowdyStateSubsystemTestTarget>();
 	const FGuid EntityID = Entities->RegisterParticipant(Target, ECrowdyOwnership::Host);
 	if (!TestTrue(TEXT("host-owned participant enrolled"), EntityID.IsValid()))
@@ -436,8 +436,8 @@ bool FCrowdyStateSubsystemHostOwnedApplyRespectsHostSourcedTest::RunTest(const F
 	}
 	if (const FCrowdyEntityRecord* Record = Entities->FindRecord(EntityID))
 	{
-		TestEqual(TEXT("enrolled participant is HostOwned"), static_cast<int32>(Record->Role),
-			static_cast<int32>(ECrowdyRole::HostOwned));
+		TestEqual(TEXT("enrolled participant is WorldOwned"), static_cast<int32>(Record->Role),
+			static_cast<int32>(ECrowdyRole::WorldOwned));
 		TestFalse(TEXT("host-owned record has no local owner"), Entities->IsLocallyOwned(EntityID));
 	}
 

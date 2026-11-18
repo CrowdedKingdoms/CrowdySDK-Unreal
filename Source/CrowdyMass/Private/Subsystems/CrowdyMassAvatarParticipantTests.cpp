@@ -86,7 +86,7 @@ namespace
 			{
 				Identity->UUID = UUID;
 				Identity->WriterID = WriterID;
-				Identity->Role = ECrowdyRole::HostOwned;
+				Identity->Role = ECrowdyRole::WorldOwned;
 			}
 
 			return Entity;
@@ -365,12 +365,12 @@ bool FCrowdyMassAvatarCacheCapacityFollowsTrackerTest::RunTest(const FString& Pa
 /**
  * An avatar adopts who an existing record says the entity is, but never its ROLE.
  *
- * Role decides whether the participant is authoritative for the entity. Adopting HostOwned would undo the
+ * Role decides whether the participant is authoritative for the entity. Adopting WorldOwned would undo the
  * RemoteProxy the avatar is registered with on purpose; on a host client it would also make the state
  * replicator treat the avatar as a CrowdyState sender under the crowd entity's own id.
  *
  * Two independent mutations turn this red: restoring `Record.Role = Existing->Role` (the role reads
- * HostOwned) and dropping either of the WriterID/ClassID adoptions (the identity is lost).
+ * WorldOwned) and dropping either of the WriterID/ClassID adoptions (the identity is lost).
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassAvatarKeepsRemoteProxyRoleTest,
 	"CrowdySDK.Mass.AvatarKeepsRemoteProxyRole", CrowdyMassParticipantTestFlags)
@@ -386,7 +386,7 @@ bool FCrowdyMassAvatarKeepsRemoteProxyRoleTest::RunTest(const FString& Parameter
 
 	// A host-owned record whose participant has gone: the slot is free, so the avatar takes it and adopts
 	// what the record knows.
-	Fixture.ArriveRecord(UUID, ECrowdyRole::HostOwned, WorldOwner, nullptr, ArrivedClassID);
+	Fixture.ArriveRecord(UUID, ECrowdyRole::WorldOwned, WorldOwner, nullptr, ArrivedClassID);
 
 	UCrowdyMassEntity* Avatar = Fixture.Subsystem->GetOrCreateAvatar(UUID, nullptr);
 	if (!TestNotNull(TEXT("the entity minted an avatar"), Avatar))

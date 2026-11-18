@@ -266,12 +266,6 @@ void UCrowdySDKSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
-void UCrowdySDKSubsystem::ReloadEndpointsFromSettings()
-{
-	// Nothing to push. The shared API client re-reads both endpoints from the developer settings every time it is
-	// resolved and rebuilds itself when they differ, so a settings change already reaches the next call on its own.
-}
-
 void UCrowdySDKSubsystem::Login(const FString Email, const FString Password) const
 {
 	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
@@ -667,13 +661,6 @@ void UCrowdySDKSubsystem::RequestVersionInfo() const
 		}, ECrowdyCppTokenPlane::Game);
 }
 
-void UCrowdySDKSubsystem::SetQueryEndpoint(const FString InEndpoint) const
-{
-	// Deprecated: use SetGameApiUrl or SetDiscoveryUrl instead. Routes to the game endpoint to preserve
-	// old call-site behaviour.
-	SetGameApiUrl(InEndpoint);
-}
-
 void UCrowdySDKSubsystem::SetDiscoveryUrl(const FString InUrl) const
 {
 	// Writing the setting is the mechanism: the shared API client re-reads both URLs every time it is resolved and
@@ -707,43 +694,11 @@ void UCrowdySDKSubsystem::SetGameApiUrl(const FString InHttpUrl) const
 	}
 }
 
-void UCrowdySDKSubsystem::StartUDPTimeoutMonitoring(const float ThresholdSeconds)
-{
-	UE_LOG(LogCrowdySDK, Warning,
-		TEXT("StartUDPTimeoutMonitoring is deprecated — the connection watches its own liveness and the threshold "
-		     "comes from 'UDP Timeout (seconds)' in Project Settings > Plugins > Crowdy SDK. The value passed here "
-		     "is ignored; only the round-trip ping is started."));
-
-	if (!bIsRegistered)
-	{
-		EnsurePingResponseSubscription();
-		bIsRegistered = true;
-	}
-
-	if (!PingMessageTimerHandle.IsValid())
-	{
-		if (UWorld* World = GetWorld())
-		{
-			World->GetTimerManager().SetTimer(
-				PingMessageTimerHandle,
-				this,
-				&UCrowdySDKSubsystem::SendPingTestMessage,
-				5.0f, true, 5.0f);
-		}
-	}
-}
-
 EUDPConnectionState UCrowdySDKSubsystem::GetUDPConnectionState() const
 {
 	if (!IsValid(UdpSubsystem))
 		return EUDPConnectionState::Disconnected;
 	return UdpSubsystem->GetConnectionState();
-}
-
-void UCrowdySDKSubsystem::StopUDPTimeoutMonitoring()
-{
-	if (PingMessageTimerHandle.IsValid())
-		GetWorld()->GetTimerManager().ClearTimer(PingMessageTimerHandle);
 }
 
 void UCrowdySDKSubsystem::StopNetworkOperations() const
@@ -754,12 +709,6 @@ void UCrowdySDKSubsystem::StopNetworkOperations() const
 void UCrowdySDKSubsystem::ToggleNetworkMessageProcessing() const
 {
 	UdpSubsystem->ToggleUDPMessageProcessing();
-}
-
-void UCrowdySDKSubsystem::TriggerUdpHeartbeat() const
-{
-	// Does nothing. The connection tracks its own liveness from the traffic it carries, so there is no clock here
-	// left for a caller to refresh.
 }
 
 void UCrowdySDKSubsystem::StartVoiceChat()
@@ -945,18 +894,6 @@ void UCrowdySDKSubsystem::RequestTeleportPermission(const int64 ChunkX, const in
 				}
 			}, LowLevelTasks::ETaskPriority::Normal, UE::Tasks::EExtendedTaskPriority::GameThreadNormalPri);
 		});
-}
-
-void UCrowdySDKSubsystem::DeregisterAllReceptionLayers()
-{
-	// No-op: delivery now stops automatically when a subscriber's handle is destroyed, so there is
-	// nothing left to release in bulk.
-}
-
-void UCrowdySDKSubsystem::SetExpectedActorUpdateStateSize(const int32 InSize) const
-{
-	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Expected Actor Update State Size: %d"), InSize);
-	Parser->SetExpectedActorStateSize(InSize);
 }
 
 void UCrowdySDKSubsystem::DispatchActorUpdate(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ,

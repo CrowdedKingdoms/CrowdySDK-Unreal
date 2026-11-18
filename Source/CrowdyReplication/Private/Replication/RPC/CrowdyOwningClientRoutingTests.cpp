@@ -448,7 +448,7 @@ bool FCrowdyTargetSendFindsNoWriterTest::RunTest(const FString& Parameters)
 
 	FCrowdyRpcTarget Target;
 	Target.NetID = FGuid::NewGuid();
-	Target.Role = ECrowdyRole::HostOwned;
+	Target.Role = ECrowdyRole::WorldOwned;
 
 	AddExpectedMessage(TEXT("and nobody does"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
 	FCrowdyRPC::RouteToTargetForTest(Entities, Target, Fn, FCrowdyRPC::GetFnInfo(Fn), MakeOwnerCall(Target.NetID));

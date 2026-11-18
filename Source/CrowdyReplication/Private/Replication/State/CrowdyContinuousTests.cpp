@@ -407,7 +407,7 @@ bool FCrowdyContinuousReachesTheActorTest::RunTest(const FString&)
 	const FGuid WorldId = FGuid::NewGuid();
 	FCrowdyEntityRecord WorldRecord;
 	WorldRecord.NetID = WorldId;
-	WorldRecord.Role = ECrowdyRole::HostOwned;
+	WorldRecord.Role = ECrowdyRole::WorldOwned;
 	WorldRecord.Participant = World;
 	Entities->RegisterEntity(WorldRecord);
 	Router->DispatchContinuousExtras(WorldId, Extras);

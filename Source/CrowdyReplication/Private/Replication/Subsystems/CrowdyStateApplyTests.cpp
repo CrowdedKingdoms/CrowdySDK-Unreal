@@ -687,12 +687,12 @@ bool FCrowdyStateWorldEntityTakesNoWritesTest::RunTest(const FString& Parameters
 	TArray<uint8> Blob;
 	FCrowdyStateCodec::Encode(*Layout, Source, Dirty, /*bKeyframe=*/false, Blob);
 
-	// Registers a HostOwned (world) entity: Role=HostOwned with no owner id, so IsLocallyOwned is false everywhere.
+	// Registers a WorldOwned (world) entity: Role=WorldOwned with no owner id, so IsLocallyOwned is false everywhere.
 	auto RegisterWorldEntity = [Entities](const FGuid& Id, AActor* Actor)
 	{
 		FCrowdyEntityRecord Record;
 		Record.NetID = Id;
-		Record.Role = ECrowdyRole::HostOwned;
+		Record.Role = ECrowdyRole::WorldOwned;
 		Record.Participant = Actor;
 		Entities->RegisterEntity(Record);
 	};

@@ -102,7 +102,7 @@ public:
 	/**
 	 * This client's relationship to the entity, as the entity itself records it.
 	 *
-	 * It answers HostOwned both for a genuine world entity and for an entity nothing has identified yet,
+	 * It answers WorldOwned both for a genuine world entity and for an entity nothing has identified yet,
 	 * because that is the safe assumption for the send path it exists to serve. Do NOT gate anything that
 	 * writes server state on it: the entity registry is where "not identified" and "identified as
 	 * host-owned" are different facts.

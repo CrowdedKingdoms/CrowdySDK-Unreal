@@ -19,10 +19,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Coordinates", meta = (DisplayName = "Get Chunk Coordinate At Location", WorldContext="WorldContextObject"))
 	static void GetChunkCoordinateAtLocation(UObject* WorldContextObject, const FVector& WorldLocation, int64& ChunkX, int64& ChunkY, int64& ChunkZ);
 	
-	UE_DEPRECATED(5.8, TEXT("Use Get Chunk Coordinate At Location instead"))
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Coordinates", meta = (DeprecatedFunction, DeprecationMessage = "Use Get Chunk Coordinate At Location instead"))
-	static void GetChunkCoordinatesAtWorldLocation(const FVector& WorldLocation, int64& ChunkX, int64& ChunkY, int64& ChunkZ);
-	
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Coordinates")
 	static void GetVoxelCoordinatesAtWorldLocation(const FVector& WorldLocation, int32& VoxelX, int32& VoxelY, int32& VoxelZ, const int32 ChunkSize = 1600);
 

@@ -9,7 +9,7 @@ struct CROWDYREPLICATION_API FCrowdySDKCustomVersion
 	{
 		BeforeCustomVersionWasAdded = 0,
 
-		// Crowdy Entity components save Owned By and Replicate Movement, mapped on load from Ownership and Mode.
+		// Crowdy Entity components save Owned By and Replicate Movement.
 		OwnedByAxis,
 
 		VersionPlusOne,

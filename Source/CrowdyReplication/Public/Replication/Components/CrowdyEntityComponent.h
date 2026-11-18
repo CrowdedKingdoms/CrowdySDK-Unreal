@@ -22,16 +22,6 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCrowdyEntityDestroyed, bool, bIsL
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCrowdyOwnershipAssigned, const FGuid&, NewOwnerID, ECrowdyRole, NewRole, bool, bIsLocallyOwned);
 
 UENUM(BlueprintType)
-enum class ECrowdyEntityMode : uint8
-{
-	// Continuous state channel the AutoReplicator sends the StateExecutor's
-	// snapshot every replication interval (movement, anything high-frequency).
-	Dynamic UMETA(DisplayName="Dynamic"),
-	// Event-only state travels through CrowdyEvent handlers.
-	Static UMETA(DisplayName="Static"),
-};
-
-UENUM(BlueprintType)
 enum class ECrowdyIdentityPolicy : uint8
 {
 	// The session's random actor id, new at each sign-in (a live pawn re-keys to it) and kept across respawns. Only valid on the locally
@@ -51,7 +41,7 @@ enum class ECrowdyOwnership : uint8
 {
 	// This client owns and simulates the entity (Role=Owner).
 	LocalClient UMETA(DisplayName="Local Client"),
-	// No client owns it (Role=HostOwned): a World entity, or a replicated subsystem, which the Leader writes.
+	// No client owns it (Role=WorldOwned): a World entity, or a replicated subsystem, which the Leader writes.
 	Host UMETA(DisplayName="Host"),
 };
 
@@ -115,14 +105,14 @@ struct FCrowdyPlayerDerivedIdentityFacts
 /**
  * The single replication component for everything the SDK tracks as an entity.
  * Registers the owner in UCrowdyEntitySubsystem, optionally feeds the continuous
- * state channel (Dynamic mode), and receives the entity lifecycle callbacks.
+ * state channel (when it replicates movement), and receives the entity lifecycle callbacks.
  */
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent, DisplayName="Crowdy Entity Component"))
 class CROWDYREPLICATION_API UCrowdyEntityComponent : public UActorComponent, public ICrowdyReplicationSource
 {
 	GENERATED_BODY()
 
-	// Configures Mode when adding the component dynamically to remote spawns
+	// Configures Replicate Movement when adding the component dynamically to remote spawns
 	friend class UCrowdyEntitySubsystem;
 
 public:
@@ -130,9 +120,6 @@ public:
 	UCrowdyEntityComponent();
 
 	virtual void Serialize(FArchive& Ar) override;
-#if WITH_EDITOR
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-#endif
 
 	/**
 	 * Injects identity before BeginPlay so the component skips ID minting.
@@ -169,7 +156,7 @@ public:
 	// the pool marked its actors before finishing their spawn, which is the ordering the defect turned on.
 	bool IsPooledDormant() const { return bPooledDormant; }
 
-	// Continuous channel (Dynamic mode)
+	// Continuous channel, for an entity that replicates movement
 
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entity Component")
 	void StartReplication();
@@ -181,8 +168,8 @@ public:
 	void NoteContinuousCarrier() const;
 
 	/**
-	 * Marks an entity spawned with Spawn Entity. One that is not Dynamic then sends its spawn again every few seconds
-	 * while this client owns it, so a player who joins later gets it too. Dynamic entities are found by their updates.
+	 * Marks an entity spawned with Spawn Entity. One that does not replicate movement then sends its spawn again every few
+	 * seconds while this client owns it, so a player who joins later gets it too. One that does is found by its updates.
 	 */
 	void EnablePresence();
 
@@ -290,54 +277,27 @@ public:
 	// resolve it once per class rather than per entity.
 	bool ReplicatesMovementFor(const UClass* ActorClass) const;
 
-	UE_DEPRECATED(5.8, "Use ReplicatesMovement instead: Dynamic is true, Static is false.")
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component",
-		meta=(DeprecatedFunction, DeprecationMessage="Use Replicates Movement instead: Dynamic is true, Static is false."))
-	ECrowdyEntityMode GetMode() const;
-
-	UE_DEPRECATED(5.8, "Read OwnedBy instead: Local Client is Player, Host is Auto.")
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component",
-		meta=(DeprecatedFunction, DeprecationMessage="Use Get Owned By instead: Local Client is Player, Host is Auto."))
-	ECrowdyOwnership GetOwnership() const
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		const bool bPlayer = OwnedBy == ECrowdyOwnedBy::Player
-			|| (OwnedBy == ECrowdyOwnedBy::Auto && Ownership == ECrowdyOwnership::LocalClient);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-		return bPlayer ? ECrowdyOwnership::LocalClient : ECrowdyOwnership::Host;
-	}
-
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
 	ECrowdyStateHeartbeat GetStateHeartbeat() const { return StateHeartbeat; }
 
-	// Pure authority derivation from the Ownership axis, shared by ResolveIdentity and the unit tests. Host ->
-	// HostOwned with no owner id (world entity); LocalClient -> Owner with the local player id.
+	// The role and owner id for a participant registered with an ownership: Host -> WorldOwned with no owner id
+	// (world entity); LocalClient -> Owner with the local player id.
 	static void DeriveAuthority(ECrowdyOwnership InOwnership, const FGuid& InLocalPlayerID, ECrowdyRole& OutRole, FGuid& OutWriterID);
 
-	// The ownership actually applied when an entity resolves its own identity. A level-placed world actor follows
-	// the ownership it was authored with; an actor spawned at runtime is owned by the client that spawned it, no
-	// matter what the asset says, because there is no other client that could claim it. Pure, so it is shared by
-	// ResolveIdentity and the unit tests.
+	// The ownership that applies to a participant: a level-placed world actor follows the ownership it was authored
+	// with; an actor spawned at runtime is owned by the client that spawned it, because no other client could claim it.
 	static ECrowdyOwnership ResolveEffectiveOwnership(ECrowdyOwnership InAuthoredOwnership, bool bIsLevelPlaced);
-
-	// Owned By and Replicate Movement for settings authored as Ownership and Mode. InOut values start as the
-	// archetype's and stay inherited unless this object authored the field; an unmapped archetype is a class default
-	// or a C++ default subobject, whose Auto still reads Ownership and Mode except for a Static pawn.
-	static void MapLegacySettings(bool bOwnershipAuthored, bool bModeAuthored, bool bArchetypeIsUnmapped,
-		ECrowdyOwnership InOwnership, ECrowdyEntityMode InMode, ECrowdyOwnedBy& InOutOwnedBy,
-		ECrowdyReplicateMovement& InOutReplicateMovement);
 
 	// Who owns an entity with these settings: Player, World or Leader, never Auto. Only an entity placed in the level
 	// is there on every client from the start, so one spawned during play belongs to its spawner.
-	static ECrowdyOwnedBy ResolveOwnedBy(ECrowdyOwnedBy InOwnedBy, ECrowdyOwnership InOwnership, bool bIsLevelPlaced);
+	static ECrowdyOwnedBy ResolveOwnedBy(ECrowdyOwnedBy InOwnedBy, bool bIsLevelPlaced);
 
-	// The role and owner id for a resolved owner: Player is this client's; World is HostOwned, written by no client; Leader
+	// The role and owner id for a resolved owner: Player is this client's; World is WorldOwned, written by no client; Leader
 	// waits for the current Leader as its owner.
 	static void DeriveOwner(ECrowdyOwnedBy InResolvedOwnedBy, const FGuid& InLocalPlayerID, ECrowdyRole& OutRole, FGuid& OutWriterID);
 
 	// Whether an entity with these settings sends its movement; bIsPawnWithMovement is IsPawnWithMovement of its class.
-	static bool ResolveReplicatesMovement(ECrowdyReplicateMovement InReplicateMovement, ECrowdyEntityMode InMode,
-		bool bIsPawnWithMovement);
+	static bool ResolveReplicatesMovement(ECrowdyReplicateMovement InReplicateMovement, bool bIsPawnWithMovement);
 
 	// Whether ActorClass is a pawn with a movement component, Blueprint-added ones included. It walks the class's
 	// component templates, so resolve it once per class rather than per entity.
@@ -349,7 +309,7 @@ public:
 	static FGuid ResolveActorInstanceGuid(const AActor* Actor);
 
 	// Pure ownership test behind UCrowdyUtilities::DoesCrowdyEntityOwn: the target's WriterID is the owner's NetID.
-	// A World entity (HostOwned) on either side never matches.
+	// A World entity (WorldOwned) on either side never matches.
 	static bool DoesOwnershipMatch(ECrowdyRole OwnerRole, const FGuid& OwnerNetID,
 		ECrowdyRole TargetRole, const FGuid& TargetWriterID);
 
@@ -453,37 +413,18 @@ public:
 
 	// Whether this entity sends its movement every replication interval, through the StateExecutor. Auto: on for a pawn
 	// with a movement component. Unrelated to ownership and to CrowdyState property replication, which work either way.
-	// An asset saved before this setting existed has it mapped from Mode on load.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Entity Component",
 		meta=(ToolTip="Whether this entity sends its movement every replication interval. Auto: on for a pawn with a movement component, off for anything else."))
 	ECrowdyReplicateMovement ReplicateMovement = ECrowdyReplicateMovement::Auto;
-
-	// Read only while Replicate Movement is Auto, so a component a C++ constructor configured with it keeps its meaning.
-	UE_DEPRECATED(5.8, "Set ReplicateMovement instead: Dynamic is On, Static is Off.")
-	UPROPERTY(VisibleAnywhere, Category="Crowdy SDK|Entity Component",
-		meta=(DeprecatedProperty, DeprecationMessage="Use Replicate Movement instead: Dynamic is On, Static is Off.",
-			EditCondition="ReplicateMovement == ECrowdyReplicateMovement::Auto && Mode == ECrowdyEntityMode::Dynamic", EditConditionHides,
-			ToolTip="Deprecated. While Replicate Movement is Auto, Dynamic here sends movement. Set Replicate Movement instead."))
-	ECrowdyEntityMode Mode = ECrowdyEntityMode::Static;
 
 	UPROPERTY(EditAnywhere, Category="Crowdy SDK|Entity Component")
 	ECrowdyIdentityPolicy IdentityPolicy = ECrowdyIdentityPolicy::Stable;
 
 	// Who owns this entity: the client that writes its view state. Consumed only on the self-resolving identity path;
-	// injected-identity spawns pass an explicit role and ignore it. An asset saved before this setting existed has it
-	// mapped from Ownership on load.
+	// injected-identity spawns pass an explicit role and ignore it.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy SDK|Entity Component",
 		meta=(ToolTip="Who owns this entity: the client that writes its view state. Auto: World when placed in the level, Player when spawned during play."))
 	ECrowdyOwnedBy OwnedBy = ECrowdyOwnedBy::Auto;
-
-	// Read only while OwnedBy is Auto, so a component a C++ constructor configured with it keeps its meaning. Shown
-	// read-only exactly then, and visible so a construction-script rerun carries a placed instance's value.
-	UE_DEPRECATED(5.8, "Set OwnedBy instead: Local Client is Player, Host is Auto.")
-	UPROPERTY(VisibleAnywhere, Category="Crowdy SDK|Entity Component",
-		meta=(DeprecatedProperty, DeprecationMessage="Use Owned By instead: Local Client is Player, Host is Auto.",
-			EditCondition="OwnedBy == ECrowdyOwnedBy::Auto && Ownership == ECrowdyOwnership::LocalClient", EditConditionHides,
-			ToolTip="Deprecated. While Owned By is Auto, Local Client here makes the entity the player's. Set Owned By instead."))
-	ECrowdyOwnership Ownership = ECrowdyOwnership::Host;
 
 	// Per-entity CrowdyState keyframe-heartbeat control. Inherit (default): this entity's CrowdyHeartbeat-marked
 	// properties ride the periodic heartbeat when the map enables it. Off: this entity never emits a keyframe
@@ -649,9 +590,9 @@ private:
 	void AnnounceInitialOwnership();
 
 	// Applied by UCrowdyEntitySubsystem::ReassignOwnership (a friend) after the entity record is re-pointed: syncs
-	// this component's cached WriterID/Role and, for a Dynamic-mode entity, moves the continuous StateExecutor
-	// channel to follow authority (the new owner joins the AutoReplicator; a client that lost ownership leaves it).
-	// A spawned Static entity's presence sends follow authority the same way.
+	// this component's cached WriterID/Role and, for an entity that replicates movement, moves the continuous
+	// StateExecutor channel to follow authority (the new owner joins the AutoReplicator; a client that lost ownership
+	// leaves it). A spawned entity's presence sends follow authority the same way.
 	// It does not announce; the subsystem does that afterwards, via BroadcastOwnershipAssigned.
 	void ApplyOwnershipReassignment(const FGuid& NewWriterID, ECrowdyRole NewRole);
 

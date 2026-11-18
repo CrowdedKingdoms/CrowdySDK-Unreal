@@ -57,11 +57,11 @@ struct CROWDYMASS_API FCrowdyRemoteIdentityFragment : public FMassFragment
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy Mass")
 	FGuid WriterID;
 
-	// This client's relationship to the entity. HostOwned is the default because an entity that arrives
+	// This client's relationship to the entity. WorldOwned is the default because an entity that arrives
 	// with no registry record is a world entity until something says otherwise, and the alternative
 	// default (Owner) would let this client originate events on somebody else's character.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy Mass")
-	ECrowdyRole Role = ECrowdyRole::HostOwned;
+	ECrowdyRole Role = ECrowdyRole::WorldOwned;
 };
 
 // Two guids and one byte rounded up to the struct's four-byte alignment. Written in terms of the

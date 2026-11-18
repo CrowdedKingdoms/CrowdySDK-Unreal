@@ -27,62 +27,23 @@
 int32 UCrowdyEntityComponent::OwnershipStepCounter = 0;
 #endif
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 UCrowdyEntityComponent::UCrowdyEntityComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-// A class default or a C++ actor's default subobject: never loaded, so its Owned By and Replicate Movement are the
-// initializers, not values mapped from its own Ownership and Mode.
-static bool IsUnmappedArchetype(const UObject* Archetype)
-{
-	if (!Archetype || Archetype->HasAnyFlags(RF_ClassDefaultObject)) return true;
-
-	const UObject* Outer = Archetype->GetOuter();
-	return Archetype->HasAnyFlags(RF_DefaultSubObject) && Outer && Outer->HasAnyFlags(RF_ClassDefaultObject)
-		&& Outer->GetClass()->HasAnyClassFlags(CLASS_Native);
-}
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void UCrowdyEntityComponent::Serialize(FArchive& Ar)
 {
+	// Stamps the save format, so an older SDK that maps unstamped saves from Ownership and Mode leaves this one alone.
 	Ar.UsingCustomVersion(FCrowdySDKCustomVersion::GUID);
-
-	if (!Ar.IsLoading() || Ar.CustomVer(FCrowdySDKCustomVersion::GUID) >= FCrowdySDKCustomVersion::OwnedByAxis)
-	{
-		Super::Serialize(Ar);
-		return;
-	}
-
-	// An impossible value tells a field the saved data wrote apart from one it left to the archetype.
-	constexpr uint8 Unwritten = 0xFF;
-	const ECrowdyOwnership InheritedOwnership = Ownership;
-	const ECrowdyEntityMode InheritedMode = Mode;
-	Ownership = static_cast<ECrowdyOwnership>(Unwritten);
-	Mode = static_cast<ECrowdyEntityMode>(Unwritten);
-
 	Super::Serialize(Ar);
-
-	const bool bOwnershipAuthored = static_cast<uint8>(Ownership) != Unwritten;
-	const bool bModeAuthored = static_cast<uint8>(Mode) != Unwritten;
-	if (!bOwnershipAuthored) Ownership = InheritedOwnership;
-	if (!bModeAuthored) Mode = InheritedMode;
-
-	const UObject* Archetype = Ar.GetArchetypeFromLoader(this);
-	if (!Archetype) Archetype = GetArchetype();
-	MapLegacySettings(bOwnershipAuthored, bModeAuthored, IsUnmappedArchetype(Archetype), Ownership, Mode, OwnedBy,
-		ReplicateMovement);
 }
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 bool UCrowdyEntityComponent::ReplicatesMovementFor(const UClass* ActorClass) const
 {
 	// Only Auto needs the class, and asking it can build a class default object while classes still compile.
-	const bool bNeedsClass = ReplicateMovement == ECrowdyReplicateMovement::Auto && Mode != ECrowdyEntityMode::Dynamic;
-	return ResolveReplicatesMovement(ReplicateMovement, Mode, bNeedsClass && IsPawnWithMovement(const_cast<UClass*>(ActorClass)));
+	const bool bNeedsClass = ReplicateMovement == ECrowdyReplicateMovement::Auto;
+	return ResolveReplicatesMovement(ReplicateMovement, bNeedsClass && IsPawnWithMovement(const_cast<UClass*>(ActorClass)));
 }
 
 bool UCrowdyEntityComponent::ReplicatesMovement() const
@@ -90,35 +51,6 @@ bool UCrowdyEntityComponent::ReplicatesMovement() const
 	const AActor* Owner = GetOwner();
 	return ReplicatesMovementFor(Owner ? Owner->GetClass() : nullptr);
 }
-
-ECrowdyEntityMode UCrowdyEntityComponent::GetMode() const
-{
-	return ReplicatesMovement() ? ECrowdyEntityMode::Dynamic : ECrowdyEntityMode::Static;
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-#if WITH_EDITOR
-void UCrowdyEntityComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
-{
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-
-	// Choosing Owned By retires the deprecated Ownership, so Auto means what its tooltip says.
-	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UCrowdyEntityComponent, OwnedBy))
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		Ownership = ECrowdyOwnership::Host;
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
-	// Choosing Replicate Movement retires the deprecated Mode for the same reason.
-	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UCrowdyEntityComponent, ReplicateMovement))
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		Mode = ECrowdyEntityMode::Static;
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-}
-#endif
 
 void UCrowdyEntityComponent::InitIdentity(const FGuid& InNetID, const FGuid& InWriterID, const int64 InOwnerUserID,
 	const ECrowdyRole InRole, const uint32 InClassID)
@@ -393,9 +325,7 @@ void UCrowdyEntityComponent::CompleteRegistration()
 		// Auto Register only starts the channel for an entity this client owns, so a World entity
 		// leaves BeginPlay sending nothing. Say so rather than letting a configured entity go quiet; a placed
 		// pawn left at Auto asked for nothing, so it is not reported.
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		const bool bAskedToMove = ReplicateMovement == ECrowdyReplicateMovement::On || Mode == ECrowdyEntityMode::Dynamic;
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		const bool bAskedToMove = ReplicateMovement == ECrowdyReplicateMovement::On;
 		if (ShouldReportHostOwnedAutoRegister(bAskedToMove, bAutoRegister, Role))
 			ReportHostOwnedAutoRegisterSkipped();
 	}
@@ -784,7 +714,7 @@ void UCrowdyEntityComponent::DeriveAuthority(const ECrowdyOwnership InOwnership,
 	{
 		// World entity: no per-client owner id (Guid::Zero, matching
 		// FCrowdyEntityRecord's "WriterID is Guid::Zero for world-static entities").
-		OutRole = ECrowdyRole::HostOwned;
+		OutRole = ECrowdyRole::WorldOwned;
 		OutWriterID = FGuid();
 	}
 	else
@@ -803,38 +733,11 @@ ECrowdyOwnership UCrowdyEntityComponent::ResolveEffectiveOwnership(const ECrowdy
 	return bIsLevelPlaced ? InAuthoredOwnership : ECrowdyOwnership::LocalClient;
 }
 
-void UCrowdyEntityComponent::MapLegacySettings(const bool bOwnershipAuthored, const bool bModeAuthored,
-	const bool bArchetypeIsUnmapped, const ECrowdyOwnership InOwnership, const ECrowdyEntityMode InMode,
-	ECrowdyOwnedBy& InOutOwnedBy, ECrowdyReplicateMovement& InOutReplicateMovement)
-{
-	// An authored Host is written as World rather than Auto, so it never depends on what the archetype later says.
-	if (bOwnershipAuthored)
-	{
-		InOutOwnedBy = InOwnership == ECrowdyOwnership::LocalClient ? ECrowdyOwnedBy::Player : ECrowdyOwnedBy::World;
-	}
-	if (bModeAuthored)
-	{
-		InOutReplicateMovement = InMode == ECrowdyEntityMode::Dynamic
-			? ECrowdyReplicateMovement::On : ECrowdyReplicateMovement::Off;
-		return;
-	}
-
-	// An unmapped Auto would start a Static pawn sending movement, so that one inherited value is written out.
-	if (bArchetypeIsUnmapped && InMode == ECrowdyEntityMode::Static && InOutReplicateMovement == ECrowdyReplicateMovement::Auto)
-	{
-		InOutReplicateMovement = ECrowdyReplicateMovement::Off;
-	}
-}
-
-ECrowdyOwnedBy UCrowdyEntityComponent::ResolveOwnedBy(const ECrowdyOwnedBy InOwnedBy, const ECrowdyOwnership InOwnership,
-	const bool bIsLevelPlaced)
+ECrowdyOwnedBy UCrowdyEntityComponent::ResolveOwnedBy(const ECrowdyOwnedBy InOwnedBy, const bool bIsLevelPlaced)
 {
 	if (InOwnedBy == ECrowdyOwnedBy::Leader) return InOwnedBy;
 	if (!bIsLevelPlaced) return ECrowdyOwnedBy::Player;
-	if (InOwnedBy != ECrowdyOwnedBy::Auto) return InOwnedBy;
-
-	// A component configured in a C++ constructor has no saved data to map, so its Ownership still speaks for it.
-	return InOwnership == ECrowdyOwnership::LocalClient ? ECrowdyOwnedBy::Player : ECrowdyOwnedBy::World;
+	return InOwnedBy == ECrowdyOwnedBy::Auto ? ECrowdyOwnedBy::World : InOwnedBy;
 }
 
 void UCrowdyEntityComponent::DeriveOwner(const ECrowdyOwnedBy InResolvedOwnedBy, const FGuid& InLocalPlayerID,
@@ -848,15 +751,14 @@ void UCrowdyEntityComponent::DeriveOwner(const ECrowdyOwnedBy InResolvedOwnedBy,
 	}
 
 	// A World entity carries no per-client owner id; a Leader entity gets one when it registers.
-	OutRole = InResolvedOwnedBy == ECrowdyOwnedBy::Leader ? ECrowdyRole::RemoteProxy : ECrowdyRole::HostOwned;
+	OutRole = InResolvedOwnedBy == ECrowdyOwnedBy::Leader ? ECrowdyRole::RemoteProxy : ECrowdyRole::WorldOwned;
 	OutWriterID = FGuid();
 }
 
 bool UCrowdyEntityComponent::ResolveReplicatesMovement(const ECrowdyReplicateMovement InReplicateMovement,
-	const ECrowdyEntityMode InMode, const bool bIsPawnWithMovement)
+	const bool bIsPawnWithMovement)
 {
 	if (InReplicateMovement != ECrowdyReplicateMovement::Auto) return InReplicateMovement == ECrowdyReplicateMovement::On;
-	if (InMode == ECrowdyEntityMode::Dynamic) return true;
 	return bIsPawnWithMovement;
 }
 
@@ -870,7 +772,7 @@ bool UCrowdyEntityComponent::DoesOwnershipMatch(const ECrowdyRole OwnerRole, con
 	const ECrowdyRole TargetRole, const FGuid& TargetWriterID)
 {
 	// A World entity has no writer, so it neither owns nor is owned.
-	if (OwnerRole == ECrowdyRole::HostOwned || TargetRole == ECrowdyRole::HostOwned)
+	if (OwnerRole == ECrowdyRole::WorldOwned || TargetRole == ECrowdyRole::WorldOwned)
 	{
 		return false;
 	}
@@ -1029,9 +931,7 @@ void UCrowdyEntityComponent::ResolveIdentity()
 	// level-placed actor, in the editor and in a packaged build alike, before play begins, so the same asset
 	// resolves to the same owner everywhere. One edge to know about: an actor that turns off Net Load On Client
 	// is not flagged, so it is classified as runtime-spawned and owned by the client it exists on.
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	const ECrowdyOwnedBy Resolved = ResolveOwnedBy(OwnedBy, Ownership, bLevelPlaced);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	const ECrowdyOwnedBy Resolved = ResolveOwnedBy(OwnedBy, bLevelPlaced);
 
 	UE_CLOG(OwnedBy == ECrowdyOwnedBy::World && !bLevelPlaced, LogCrowdyReplication, Verbose,
 		TEXT("[CrowdyEntityComponent]: '%s' is owned by this client - it was spawned at runtime, so Owned By World does not apply (that setting is for actors placed in the level)."),
@@ -1100,7 +1000,7 @@ const TCHAR* UCrowdyEntityComponent::DescribePlayerDerivedIdentity(const ECrowdy
 bool UCrowdyEntityComponent::ShouldReportHostOwnedAutoRegister(const bool bInReplicatesMovement, const bool bInAutoRegister,
 	const ECrowdyRole InRole)
 {
-	return bInReplicatesMovement && bInAutoRegister && InRole == ECrowdyRole::HostOwned;
+	return bInReplicatesMovement && bInAutoRegister && InRole == ECrowdyRole::WorldOwned;
 }
 
 void UCrowdyEntityComponent::ReportPlayerDerivedFallback(const ECrowdyPlayerDerivedIdentity Verdict)

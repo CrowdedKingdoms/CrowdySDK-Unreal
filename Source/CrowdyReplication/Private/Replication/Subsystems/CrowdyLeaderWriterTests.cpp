@@ -104,13 +104,13 @@ bool FCrowdyLeaderWriterOneOwnershipAnswerTest::RunTest(const FString& Parameter
 	TestFalse(TEXT("a remote proxy is not, whatever it names"),
 		FCrowdyEntityRecord::IsWrittenBy(ECrowdyRole::RemoteProxy, Local, Local, Local));
 	TestTrue(TEXT("a record with no owner is written by its writer"),
-		FCrowdyEntityRecord::IsWrittenBy(ECrowdyRole::HostOwned, FGuid(), Local, Local));
+		FCrowdyEntityRecord::IsWrittenBy(ECrowdyRole::WorldOwned, FGuid(), Local, Local));
 	TestFalse(TEXT("and by nobody when there is none"),
-		FCrowdyEntityRecord::IsWrittenBy(ECrowdyRole::HostOwned, FGuid(), Local, FGuid()));
+		FCrowdyEntityRecord::IsWrittenBy(ECrowdyRole::WorldOwned, FGuid(), Local, FGuid()));
 	TestTrue(TEXT("an Owner record registered before the local player id arrived is still this client's"),
 		FCrowdyEntityRecord::IsWrittenBy(ECrowdyRole::Owner, FGuid(), Local, FGuid()));
 	TestFalse(TEXT("a client with no player id writes nothing without an owner"),
-		FCrowdyEntityRecord::IsWrittenBy(ECrowdyRole::HostOwned, FGuid(), FGuid(), FGuid()));
+		FCrowdyEntityRecord::IsWrittenBy(ECrowdyRole::WorldOwned, FGuid(), FGuid(), FGuid()));
 
 	// This client leads, and a replicated subsystem and a World actor are registered here.
 	UCrowdyEntitySubsystem* Entities = MakeEntitiesWithLeader(Local, Local);
@@ -119,7 +119,7 @@ bool FCrowdyLeaderWriterOneOwnershipAnswerTest::RunTest(const FString& Parameter
 	AActor* Actor = NewObject<AActor>(GetTransientPackage());
 	UCrowdyEntityComponent* Component = NewObject<UCrowdyEntityComponent>(Actor);
 	Component->SetCollaboratorsForTest(Entities, nullptr);
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::HostOwned, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::WorldOwned, 0);
 
 	TestTrue(TEXT("the Leader writes a replicated subsystem"), Entities->IsLocallyOwned(SubsystemID));
 	TestFalse(TEXT("but nobody writes a World actor, the Leader included"), Component->IsLocallyOwned());

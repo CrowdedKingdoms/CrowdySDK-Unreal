@@ -45,8 +45,6 @@ public:
 	 */
 	[[nodiscard]] TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> DecodeFrame(const FCrowdyFrame& Frame);
 
-	void SetExpectedActorStateSize(const int32 NewSize);
-
 	/** The pool behind the actor update, so a caller can read what it did rather than infer it from timing. */
 	const TCrowdyMessagePool<FActorUpdateNotificationMessage>& GetActorUpdatePool() const { return ActorUpdatePool; }
 
