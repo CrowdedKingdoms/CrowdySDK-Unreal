@@ -186,12 +186,26 @@ namespace
 		return true;
 	}
 
+	// The Studio source a build named, which an install or a build that named none reports as null; both stay empty unless both read.
+	void ModsReadStudioSource(const TSharedPtr<FJsonObject>& Object, FString& OutProjectId, FString& OutRevision)
+	{
+		int64 Revision = 0;
+		FString ProjectId;
+		if (!ModsReadText(Object, TEXT("studioProjectId"), ProjectId) || ProjectId.IsEmpty() || !ReadWholeInt64(Object, TEXT("studioRevision"), Revision))
+		{
+			return;
+		}
+		OutProjectId = ProjectId;
+		OutRevision = BigInt(Revision);
+	}
+
 	bool ModsReadMod(const TSharedPtr<FJsonObject>& Object, FCrowdyMod& Out)
 	{
 		if (!Object.IsValid())
 		{
 			return false;
 		}
+		ModsReadStudioSource(Object, Out.StudioProjectId, Out.StudioRevision);
 		// Null while the mod may run, else the reason it may not.
 		const TSharedPtr<FJsonValue> Blocked = Object->TryGetField(TEXT("blocked"));
 		if (!Blocked.IsValid() || (!Blocked->IsNull() && Blocked->Type != EJson::String))
@@ -336,6 +350,7 @@ namespace
 			return false;
 		}
 		Out.TickIntervalMs = static_cast<int32>(Tick);
+		ModsReadStudioSource(Object, Out.StudioProjectId, Out.StudioRevision);
 		return ModsReadText(Object, TEXT("modId"), Out.ModId) && !Out.ModId.IsEmpty() && ReadWholeInt64(Object, TEXT("gridId"), Out.GridId)
 			&& ModsReadText(Object, TEXT("name"), Out.Name) && ReadWholeInt64(Object, TEXT("ownerId"), Out.OwnerUserId)
 			&& ReadWholeInt64(Object, TEXT("clientVersion"), Out.ClientVersion) && ModsReadText(Object, TEXT("digest"), Out.Digest)
@@ -572,6 +587,23 @@ namespace
 		return Record && !ServedDigest.IsEmpty() && Record->Digest.Equals(ServedDigest, ESearchCase::CaseSensitive) ? Record->Revision : FString();
 	}
 
+	// The platform's decimal revision; a GitHub project's revision also names its commit after an @.
+	FString ModsPlatformRevision(const FString& Revision)
+	{
+		int32 At = INDEX_NONE;
+		return Revision.FindChar(TEXT('@'), At) ? Revision.Left(At) : Revision;
+	}
+
+	// The revision the platform says a half was built from: SavedRevision when it is that one, else the platform's number alone, as it reports no commit; empty when it names another project or none.
+	FString ModsReportedRevision(const FString& StudioProjectId, const FString& StudioRevision, const FString& ProjectId, const FString& SavedRevision)
+	{
+		if (StudioRevision.IsEmpty() || !StudioProjectId.Equals(ProjectId, ESearchCase::IgnoreCase))
+		{
+			return FString();
+		}
+		return ModsPlatformRevision(SavedRevision).Equals(StudioRevision, ESearchCase::CaseSensitive) ? SavedRevision : StudioRevision;
+	}
+
 	// A status read while a run goes shows the step the run is on.
 	void ModsOverlayInFlight(TArray<FCrowdyModRunTarget>& Targets, const TArray<FCrowdyModRunTarget>& InFlight)
 	{
@@ -637,7 +669,7 @@ struct UCrowdyMods::FRun : public TSharedFromThis<UCrowdyMods::FRun>
 	void SetPhase(ECrowdyStudioTarget Target, ECrowdyModRunPhase Phase, const FString& Message);
 	void Publish();
 	void AddLog(ECrowdyStudioTarget Target, const FString& Log);
-	void Record(ECrowdyStudioTarget Target, const FString& Module, const FString& Digest);
+	void Record(ECrowdyStudioTarget Target, const FString& Module, const FString& Digest, const FString& StudioProjectId, const FString& StudioRevision);
 
 	void ReadProject(const FCrowdyStudioProjectInfo& Info);
 	void BuildClient();
@@ -856,7 +888,7 @@ void UCrowdyMods::BuildClientMod(const FString& CrateName, const TArray<FCrowdyM
 }
 
 void UCrowdyMods::StartBuild(const TCHAR* Call, const TCHAR* Operation, const TCHAR* Field, const FString& CrateName, const TArray<FCrowdyModFile>& Files,
-	TFunction<void(const FCrowdyModBuild&)> OnProgress, TFunction<void(const FCrowdyModBuild&)> OnDone)
+	TFunction<void(const FCrowdyModBuild&)> OnProgress, TFunction<void(const FCrowdyModBuild&)> OnDone, const FString& StudioProjectId, const FString& StudioRevision)
 {
 	const TSharedRef<FBuild> Build = MakeShared<FBuild>();
 	Build->Call = Call;
@@ -882,6 +914,13 @@ void UCrowdyMods::StartBuild(const TCHAR* Call, const TCHAR* Operation, const TC
 	Crate->SetArrayField(TEXT("files"), FileValues);
 	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetObjectField(TEXT("crate"), Crate);
+	if (!StudioProjectId.IsEmpty())
+	{
+		TSharedPtr<FJsonObject> Studio = MakeShared<FJsonObject>();
+		Studio->SetStringField(TEXT("projectId"), StudioProjectId);
+		Studio->SetStringField(TEXT("revision"), StudioRevision);
+		Variables->SetObjectField(TEXT("studio"), Studio);
+	}
 
 	Build->StartedAt = Now();
 	Build->AppId = GetAppId();
@@ -1112,10 +1151,20 @@ void UCrowdyMods::DeleteMod(int64 GridId, const FString& Name, TFunction<void(co
 
 void UCrowdyMods::GetStarter(TFunction<void(const FCrowdyModStarter&)> OnDone)
 {
-	SendModOp(TEXT("ExecModStarter"), MakeShared<FJsonObject>(),
-		[OnDone](const FCrowdyCppJsonResult& Result)
+	ReadStarter(TEXT("Get Starter"), TEXT("ExecModStarter"), TEXT("execModStarter"), MoveTemp(OnDone));
+}
+
+void UCrowdyMods::GetClientStarter(TFunction<void(const FCrowdyModStarter&)> OnDone)
+{
+	ReadStarter(TEXT("Get Client Starter"), TEXT("ExecModClientStarter"), TEXT("execModClientStarter"), MoveTemp(OnDone));
+}
+
+void UCrowdyMods::ReadStarter(const TCHAR* Call, const TCHAR* Operation, const TCHAR* Field, TFunction<void(const FCrowdyModStarter&)> OnDone)
+{
+	SendModOp(Operation, MakeShared<FJsonObject>(),
+		[Call, Field, OnDone](const FCrowdyCppJsonResult& Result)
 		{
-			const TSharedPtr<FJsonObject> Answer = ModsAnswerObject(Result, TEXT("execModStarter"));
+			const TSharedPtr<FJsonObject> Answer = ModsAnswerObject(Result, Field);
 			const TArray<TSharedPtr<FJsonValue>>* Files = nullptr;
 			FCrowdyModStarter Starter;
 			bool bRead = Answer.IsValid() && ModsReadText(Answer, TEXT("crate"), Starter.Name) && !Starter.Name.IsEmpty()
@@ -1126,19 +1175,26 @@ void UCrowdyMods::GetStarter(TFunction<void(const FCrowdyModStarter&)> OnDone)
 			}
 			if (!bRead)
 			{
-				ModsFinish(TEXT("Get Starter"), OnDone, FCrowdyModStarter(), ECrowdyModResult::BadReply, TEXT("The answer holds no well-formed starter crate."));
+				ModsFinish(Call, OnDone, FCrowdyModStarter(), ECrowdyModResult::BadReply, TEXT("The answer holds no well-formed starter crate."));
 				return;
 			}
 			// Callers write these paths to disk, so the starter must pass the same check as a build.
 			const FString Problem = ModsCheckFiles(Starter.Files);
 			if (!Problem.IsEmpty())
 			{
-				ModsFinish(TEXT("Get Starter"), OnDone, FCrowdyModStarter(), ECrowdyModResult::BadReply, FString::Printf(TEXT("The starter crate is not buildable: %s"), *Problem));
+				ModsFinish(Call, OnDone, FCrowdyModStarter(), ECrowdyModResult::BadReply, FString::Printf(TEXT("The starter crate is not buildable: %s"), *Problem));
 				return;
 			}
-			ModsFinish(TEXT("Get Starter"), OnDone, MoveTemp(Starter), ECrowdyModResult::Success, FString());
+			ModsFinish(Call, OnDone, MoveTemp(Starter), ECrowdyModResult::Success, FString());
 		},
-		ModsFailWith(TEXT("Get Starter"), OnDone));
+		[Call, OnDone](ECrowdyModResult Result, const FString& Message, const FString& Code)
+		{
+			// A host whose toolchain predates the starter answers INTERNAL_SERVER_ERROR with HTTP 503; an older Game API does not know the operation.
+			FCrowdyModStarter Starter;
+			Starter.bNotServed = Code.StartsWith(TEXT("INTERNAL_SERVER_ERROR"), ESearchCase::CaseSensitive)
+				|| Code.StartsWith(TEXT("GRAPHQL_VALIDATION_FAILED"), ESearchCase::CaseSensitive);
+			ModsFinish(Call, OnDone, MoveTemp(Starter), Result, Message, Code);
+		});
 }
 
 void UCrowdyMods::CallMod(int64 GridId, const FString& Name, const FString& Method, const FString& ParamsJson, TFunction<void(const FCrowdyModCall&)> OnDone)
@@ -1369,17 +1425,21 @@ void UCrowdyMods::FRun::AddLog(ECrowdyStudioTarget Target, const FString& Log)
 	}
 }
 
-// The platform keeps no Studio revision, so the run remembers which revision it deployed under which digest.
-void UCrowdyMods::FRun::Record(ECrowdyStudioTarget Target, const FString& Module, const FString& Digest)
+// The deploy answer's revision when it names one, else the one built; a CLIENT digest is remembered, as the grid's served list names no revision.
+void UCrowdyMods::FRun::Record(ECrowdyStudioTarget Target, const FString& Module, const FString& Digest, const FString& StudioProjectId, const FString& StudioRevision)
 {
-	FModsDeployRecord& Deployed = ModsRuns().Deployed.FindOrAdd(ModsDeployKey(AppId, Answer.GridId, Answer.ProjectId, Target, Module));
-	Deployed.Revision = ExpectedRevision;
-	Deployed.Digest = Digest;
+	const FString Revision = StudioRevision.IsEmpty() ? ExpectedRevision : ModsReportedRevision(StudioProjectId, StudioRevision, Answer.ProjectId, ExpectedRevision);
+	if (Target == ECrowdyStudioTarget::Client)
+	{
+		FModsDeployRecord& Deployed = ModsRuns().Deployed.FindOrAdd(ModsDeployKey(AppId, Answer.GridId, Answer.ProjectId, Target, Module));
+		Deployed.Revision = Revision;
+		Deployed.Digest = Digest;
+	}
 	FCrowdyModRunTarget* Found = Half(Target);
 	if (Found)
 	{
 		Found->Digest = Digest;
-		Found->RunningRevision = ExpectedRevision;
+		Found->RunningRevision = Revision;
 	}
 }
 
@@ -1439,7 +1499,8 @@ void UCrowdyMods::FRun::BuildClient()
 		return;
 	}
 	SetPhase(ECrowdyStudioTarget::Client, ECrowdyModRunPhase::Building, FString());
-	Self->BuildClientMod(ModsCrateName(ClientModule), ClientFiles, nullptr, [This = AsShared()](const FCrowdyModBuild& Build) { This->ClientBuilt(Build); });
+	Self->StartBuild(TEXT("Build Client Mod"), TEXT("ExecModClientBuild"), TEXT("execModClientBuild"), ModsCrateName(ClientModule), ClientFiles, nullptr,
+		[This = AsShared()](const FCrowdyModBuild& Build) { This->ClientBuilt(Build); }, Answer.ProjectId, ModsPlatformRevision(ExpectedRevision));
 }
 
 void UCrowdyMods::FRun::ClientBuilt(const FCrowdyModBuild& Build)
@@ -1478,7 +1539,8 @@ void UCrowdyMods::FRun::BuildServer()
 		return;
 	}
 	SetPhase(ECrowdyStudioTarget::Server, ECrowdyModRunPhase::Building, FString());
-	Self->BuildMod(ModsCrateName(ServerModule), ServerFiles, nullptr, [This = AsShared()](const FCrowdyModBuild& Build) { This->ServerBuilt(Build); });
+	Self->StartBuild(TEXT("Build Mod"), TEXT("ExecModBuild"), TEXT("execModBuild"), ModsCrateName(ServerModule), ServerFiles, nullptr,
+		[This = AsShared()](const FCrowdyModBuild& Build) { This->ServerBuilt(Build); }, Answer.ProjectId, ModsPlatformRevision(ExpectedRevision));
 }
 
 void UCrowdyMods::FRun::ServerBuilt(const FCrowdyModBuild& Build)
@@ -1516,7 +1578,7 @@ void UCrowdyMods::FRun::ServerDeployed(const FCrowdyModInfo& Info)
 		Fail(ECrowdyStudioTarget::Server, ECrowdyModRunPhase::DeployFailed, Info.Result, Info.Message);
 		return;
 	}
-	Record(ECrowdyStudioTarget::Server, ServerModule, Info.Mod.Digest);
+	Record(ECrowdyStudioTarget::Server, ServerModule, Info.Mod.Digest, Info.Mod.StudioProjectId, Info.Mod.StudioRevision);
 	Self->SetModEnabled(Answer.GridId, ServerModule, true, [This = AsShared()](const FCrowdyModInfo& Switched) { This->ServerSwitched(Switched); });
 }
 
@@ -1691,7 +1753,7 @@ void UCrowdyMods::FRun::ClientAttached(const FCrowdyModClientInfo& Info)
 		Client->ModId = Info.Client.ModId;
 		Client->Version = Info.Client.ClientVersion;
 	}
-	Record(ECrowdyStudioTarget::Client, ClientModule, Info.Client.Digest);
+	Record(ECrowdyStudioTarget::Client, ClientModule, Info.Client.Digest, Info.Client.StudioProjectId, Info.Client.StudioRevision);
 	TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
 	Variables->SetStringField(TEXT("modId"), Info.Client.ModId);
 	Variables->SetStringField(TEXT("capabilityHash"), Info.Client.CapabilityHash);
@@ -1845,7 +1907,7 @@ void UCrowdyMods::FStatusRead::ReadServer(const FCrowdyModList& List)
 	if (Server && Row)
 	{
 		ModsApplyServerRow(*Server, *Row);
-		Server->RunningRevision = ModsRunningRevision(ModsDeployKey(AppId, Answer.GridId, Answer.ProjectId, ECrowdyStudioTarget::Server, ServerModule), Row->Digest);
+		Server->RunningRevision = ModsReportedRevision(Row->StudioProjectId, Row->StudioRevision, Answer.ProjectId, Server->SavedRevision);
 	}
 	if (Server && !Row)
 	{

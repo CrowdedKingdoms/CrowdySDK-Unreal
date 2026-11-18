@@ -43,6 +43,7 @@ namespace studio {
 #ifndef CROWDY_NO_EXCEPTIONS
 struct CrowdyStudioIntegrationOptions;
 class CrowdyStudioIntegration;
+class CrowdyStudioModRunner;
 #endif
 }  // namespace studio
 namespace graphql {
@@ -93,6 +94,9 @@ struct ClientConfig {
   /// endpoint URL. Base URLs already ending in /graphql are not duplicated.
   std::string graphqlEndpoint = "/graphql";
   long timeoutMs = 60000;
+  /// The largest GraphQL response accepted, counted decompressed (0.85.0, 128 MiB by
+  /// default); a larger one fails as a protocol error (Errc::ResponseTooLarge).
+  std::size_t maxResponseBytes = graphql::kDefaultMaxResponseBytes;
   /// Token persistence; in-memory when null.
   std::shared_ptr<graphql::ITokenStore> tokenStore;
   /// HTTP transport; the default libcurl transport when null. Engine
@@ -246,13 +250,18 @@ class CrowdyClient {
   }
 #endif
   domains::PlatformAPI& platform() { return *platform_; }
-  /// Agentic Crowdy Studio policy, sanitized usage and provider-data consent.
-  /// The agent itself runs in the player's browser
-  /// (CrowdyJS `dsh`) against the metered `/v1/model` endpoint; this SDK does
-  /// not drive it.
+  /// Agentic Crowdy Studio policy, sanitized usage, provider-data consent,
+  /// the live-modding check and the model list: what a Studio dock asks. The
+  /// agent itself runs in the dock (CrowdyJS `dsh` in a browser, or a game's)
+  /// against the metered `/v1/model` endpoint; this SDK does not drive it.
   domains::CrowdyStudioAgentAPI& crowdyStudioAgent() {
     return *crowdyStudioAgent_;
   }
+  /// This tier's Crowdy Studio, from the endpoint in use (`ck.<root>` and
+  /// `ck-<label>.<root>` are served by `studio.<root>`; see
+  /// crowdy/studio_origin.hpp); empty when the endpoint follows no such
+  /// convention.
+  std::string studioOrigin() const;
 #ifndef CROWDY_NO_EXCEPTIONS
   /**
    * Builds an independent, lifetime-safe native Studio assembly from cloned
@@ -263,6 +272,10 @@ class CrowdyClient {
   std::unique_ptr<studio::CrowdyStudioIntegration>
   createCrowdyStudioIntegration(
       studio::CrowdyStudioIntegrationOptions options);
+  /// A Crowdy Studio draft test / live deploy runner that does not block
+  /// (crowdy/studio/mod_runner.hpp), on cloned domain adapters sharing this
+  /// client's session; its callbacks are delivered from poll().
+  std::unique_ptr<studio::CrowdyStudioModRunner> createCrowdyStudioModRunner();
 #endif
 
   // ----- Gameplay-token lifecycle ----------------------------------------------

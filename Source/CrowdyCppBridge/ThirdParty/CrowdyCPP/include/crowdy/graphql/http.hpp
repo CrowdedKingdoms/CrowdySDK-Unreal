@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -17,12 +18,20 @@
 /// Transports must be safe to call from multiple threads.
 namespace crowdy::graphql {
 
+/// The largest response body a client accepts by default (0.85.0): 128 MiB, well above
+/// the largest page the Game API answers (1,000 chunks with 262,144 voxel states).
+inline constexpr std::size_t kDefaultMaxResponseBytes = std::size_t{128} * 1024 * 1024;
+
 struct HttpRequest {
   std::string url;
   std::string method = "POST";
   std::vector<std::pair<std::string, std::string>> headers;
   std::string body;
   long timeoutMs = 60000;
+  /// The largest body to accept, counted after decompression. A transport that honors
+  /// it stops reading past it and reports Errc::ResponseTooLarge; GraphQLClient refuses
+  /// a larger body from any transport before parsing it.
+  std::size_t maxResponseBytes = kDefaultMaxResponseBytes;
   /// Set when the caller can cancel this request (GraphQLClient's RequestOptions).
   /// A transport that honors it ends the request once `cancel->cancelled()` and
   /// reports Errc::Cancelled; one that ignores it lets the request run, and

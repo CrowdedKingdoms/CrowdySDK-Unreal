@@ -4,8 +4,8 @@
 #include <charconv>
 #include <cmath>
 #include <cctype>
-#include <regex>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 
@@ -167,6 +167,218 @@ std::optional<std::string> boundedCode(std::string_view value) {
   return truncateUtf8(value, kCrowdyStudioDiagnosticMaxCodeBytes);
 }
 
+// CrowdyJS reads these lines with regular expressions. They are read here with
+// linear scanners, each giving exactly the match of the pattern above it: MSVC's
+// std::regex recurses per character and throws error_stack on long lines.
+
+bool isSpace(char c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
+
+bool isDigit(char c) { return c >= '0' && c <= '9'; }
+
+std::size_t skipSpaces(std::string_view line, std::size_t at) {
+  while (at < line.size() && isSpace(line[at])) ++at;
+  return at;
+}
+
+std::size_t skipDigits(std::string_view line, std::size_t at) {
+  while (at < line.size() && isDigit(line[at])) ++at;
+  return at;
+}
+
+/// One line, with what every scan of it shares: where its trailing spaces start and
+/// where the next `]` is (asked for at rising positions only, so found once).
+class LineScan {
+ public:
+  explicit LineScan(std::string_view line) : line_(line), end_(line.size()) {
+    while (end_ > 0 && isSpace(line_[end_ - 1])) --end_;
+  }
+
+  std::string_view line() const { return line_; }
+  /// One past the last character that is not a space.
+  std::size_t contentEnd() const { return end_; }
+
+  std::size_t nextBracket(std::size_t from) {
+    // The last search, from `searchedFrom_`, found the first `]` there is at or after
+    // it; that is also the first at or after `from` unless it lies before `from`.
+    const bool known = searched_ && from >= searchedFrom_ &&
+                       (bracket_ == std::string_view::npos || bracket_ >= from);
+    if (!known) {
+      bracket_ = line_.find(']', from);
+      searchedFrom_ = from;
+      searched_ = true;
+    }
+    return bracket_;
+  }
+
+ private:
+  std::string_view line_;
+  std::size_t end_;
+  bool searched_ = false;
+  std::size_t searchedFrom_ = 0;
+  std::size_t bracket_ = std::string_view::npos;
+};
+
+struct SeverityText {
+  std::string_view keyword;
+  std::optional<std::string_view> code;
+  std::string_view message;
+};
+
+/// `(error|warning|info|note)(?:\[([^\]]+)\])?:\s*(.+?)\s*$` from `at`.
+std::optional<SeverityText> severityAt(LineScan& scan, std::size_t at) {
+  const std::string_view line = scan.line();
+  SeverityText text;
+  for (const std::string_view keyword : {"error", "warning", "info", "note"}) {
+    if (line.substr(at, keyword.size()) == keyword) {
+      text.keyword = keyword;
+      break;
+    }
+  }
+  if (text.keyword.empty()) return std::nullopt;
+  at += text.keyword.size();
+  if (at < line.size() && line[at] == '[') {
+    const std::size_t close = scan.nextBracket(at + 1);
+    if (close == std::string_view::npos || close == at + 1) return std::nullopt;
+    text.code = line.substr(at + 1, close - at - 1);
+    at = close + 1;
+  }
+  if (at >= line.size() || line[at] != ':') return std::nullopt;
+  ++at;
+  if (at == line.size()) return std::nullopt;
+  const std::size_t begin = skipSpaces(line, at);
+  // Nothing but spaces: the lazy `.+?` still takes one, the last.
+  text.message = begin >= scan.contentEnd() ? line.substr(line.size() - 1)
+                                            : line.substr(begin, scan.contentEnd() - begin);
+  return text;
+}
+
+/// `^\s*(error|warning|info|note)(?:\[([^\]]+)\])?:\s*(.+?)\s*$`
+std::optional<SeverityText> headerOf(LineScan& scan) {
+  return severityAt(scan, skipSpaces(scan.line(), 0));
+}
+
+struct ArrowLocation {
+  std::string_view path;
+  std::string_view line;
+  std::string_view column;
+  std::optional<std::string_view> endColumn;
+};
+
+/// `^\s*-->\s+(.+?):([0-9]+):([0-9]+)(?:-([0-9]+))?\s*$`
+std::optional<ArrowLocation> arrowOf(const LineScan& scan) {
+  const std::string_view line = scan.line();
+  const std::size_t arrow = skipSpaces(line, 0);
+  if (line.substr(arrow, 3) != "-->") return std::nullopt;
+  const std::size_t afterArrow = arrow + 3;
+  const std::size_t pathStart = skipSpaces(line, afterArrow);
+  if (pathStart == afterArrow) return std::nullopt;
+  // The tail is anchored at the end, so it starts at one place at most; read it backwards.
+  const auto digitsBefore = [&](std::size_t end) {
+    std::size_t begin = end;
+    while (begin > pathStart && isDigit(line[begin - 1])) --begin;
+    return begin;
+  };
+  ArrowLocation location;
+  const std::size_t end = scan.contentEnd();
+  std::size_t at = digitsBefore(end);
+  if (at == end || at == pathStart) return std::nullopt;
+  if (line[at - 1] == '-') {
+    location.endColumn = line.substr(at, end - at);
+    const std::size_t columnEnd = at - 1;
+    at = digitsBefore(columnEnd);
+    if (at == columnEnd) return std::nullopt;
+    location.column = line.substr(at, columnEnd - at);
+  } else {
+    location.column = line.substr(at, end - at);
+  }
+  if (at == pathStart || line[at - 1] != ':') return std::nullopt;
+  const std::size_t lineEnd = at - 1;
+  at = digitsBefore(lineEnd);
+  if (at == lineEnd || at == pathStart || line[at - 1] != ':') return std::nullopt;
+  location.line = line.substr(at, lineEnd - at);
+  const std::size_t colon = at - 1;
+  if (colon > pathStart) {
+    location.path = line.substr(pathStart, colon - pathStart);
+  } else if (pathStart - afterArrow >= 2) {
+    // `\s+` gives its last space to the path, which may not be empty.
+    location.path = line.substr(pathStart - 1, 1);
+  } else {
+    return std::nullopt;
+  }
+  return location;
+}
+
+struct CompactDiagnostic {
+  std::string_view path;
+  std::string_view line;
+  std::string_view column;
+  SeverityText text;
+};
+
+/// `:([0-9]+):([0-9]+):\s*` and a severity, from the colon at `colon`.
+std::optional<CompactDiagnostic> compactTail(LineScan& scan, std::size_t colon) {
+  const std::string_view line = scan.line();
+  CompactDiagnostic found;
+  const std::size_t lineEnd = skipDigits(line, colon + 1);
+  if (lineEnd == colon + 1 || lineEnd >= line.size() || line[lineEnd] != ':') return std::nullopt;
+  found.line = line.substr(colon + 1, lineEnd - colon - 1);
+  const std::size_t columnEnd = skipDigits(line, lineEnd + 1);
+  if (columnEnd == lineEnd + 1 || columnEnd >= line.size() || line[columnEnd] != ':') {
+    return std::nullopt;
+  }
+  found.column = line.substr(lineEnd + 1, columnEnd - lineEnd - 1);
+  const auto text = severityAt(scan, skipSpaces(line, columnEnd + 1));
+  if (!text) return std::nullopt;
+  found.text = *text;
+  return found;
+}
+
+/// `^\s*(.+?):([0-9]+):([0-9]+):\s*(error|warning|info|note)(?:\[([^\]]+)\])?:\s*(.+?)\s*$`
+std::optional<CompactDiagnostic> compactOf(LineScan& scan) {
+  const std::string_view line = scan.line();
+  const std::size_t start = skipSpaces(line, 0);
+  for (std::size_t colon = line.find(':', start + 1); colon != std::string_view::npos;
+       colon = line.find(':', colon + 1)) {
+    if (auto found = compactTail(scan, colon)) {
+      found->path = line.substr(start, colon - start);
+      return found;
+    }
+  }
+  // `\s*` gives its last space to the path, which may not be empty.
+  if (start > 0 && start < line.size() && line[start] == ':') {
+    if (auto found = compactTail(scan, start)) {
+      found->path = line.substr(start - 1, 1);
+      return found;
+    }
+  }
+  return std::nullopt;
+}
+
+struct TargetPath {
+  CrowdyStudioTarget target = CrowdyStudioTarget::Server;
+  std::string_view rest;
+};
+
+/// The leftmost match of `(?:^|/)(server|client)/(.+)$`, ignoring case.
+std::optional<TargetPath> targetPathOf(std::string_view path) {
+  const auto at = [&](std::size_t name) -> std::optional<TargetPath> {
+    if (path.size() < name + 8 || path[name + 6] != '/') return std::nullopt;
+    std::string word(path.substr(name, 6));
+    for (char& c : word) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    if (word != "server" && word != "client") return std::nullopt;
+    return TargetPath{word == "server" ? CrowdyStudioTarget::Server : CrowdyStudioTarget::Client,
+                      path.substr(name + 7)};
+  };
+  if (auto found = at(0)) return found;
+  for (std::size_t slash = path.find('/'); slash != std::string_view::npos;
+       slash = path.find('/', slash + 1)) {
+    if (auto found = at(slash + 1)) return found;
+  }
+  return std::nullopt;
+}
+
 struct DiagnosticLocation {
   CrowdyStudioTarget target = CrowdyStudioTarget::Server;
   std::string path;
@@ -178,20 +390,9 @@ std::optional<DiagnosticLocation> normalizeLocation(
   std::replace(path.begin(), path.end(), '\\', '/');
   CrowdyStudioTarget target = defaultTarget;
 
-  static const std::regex targetPath(
-      R"((?:^|/)(server|client)/(.+)$)",
-      std::regex::ECMAScript | std::regex::icase);
-  std::smatch targetMatch;
-  if (std::regex_search(path, targetMatch, targetPath)) {
-    std::string selected = targetMatch[1].str();
-    std::transform(
-        selected.begin(), selected.end(), selected.begin(),
-        [](unsigned char character) {
-          return static_cast<char>(std::tolower(character));
-        });
-    target = selected == "server" ? CrowdyStudioTarget::Server
-                                  : CrowdyStudioTarget::Client;
-    path = targetMatch[2].str();
+  if (const auto targetMatch = targetPathOf(path)) {
+    target = targetMatch->target;
+    path = std::string(targetMatch->rest);
   } else {
     const std::size_t sourceIndex = path.rfind("/src/");
     if (sourceIndex != std::string::npos) {
@@ -297,16 +498,6 @@ std::vector<CrowdyStudioDiagnostic> parseRustcDiagnostics(
     std::string_view output, CrowdyStudioTarget defaultTarget) {
   if (output.empty()) return {};
 
-  static const std::regex header(
-      R"(^\s*(error|warning|info|note)(?:\[([^\]]+)\])?:\s*(.+?)\s*$)",
-      std::regex::ECMAScript);
-  static const std::regex arrow(
-      R"(^\s*-->\s+(.+?):([0-9]+):([0-9]+)(?:-([0-9]+))?\s*$)",
-      std::regex::ECMAScript);
-  static const std::regex compact(
-      R"(^\s*(.+?):([0-9]+):([0-9]+):\s*(error|warning|info|note)(?:\[([^\]]+)\])?:\s*(.+?)\s*$)",
-      std::regex::ECMAScript);
-
   struct PendingDiagnostic {
     CrowdyStudioDiagnosticSeverity severity =
         CrowdyStudioDiagnosticSeverity::Error;
@@ -339,54 +530,58 @@ std::vector<CrowdyStudioDiagnostic> parseRustcDiagnostics(
       continue;
     }
 
-    std::smatch match;
-    if (std::regex_match(line, match, header)) {
+    LineScan scan(line);
+    if (const auto header = headerOf(scan)) {
       PendingDiagnostic value;
-      value.severity = normalizeSeverity(match[1].str());
+      value.severity = normalizeSeverity(header->keyword);
       value.message = truncateUtf8(
-          match[3].str(), kCrowdyStudioDiagnosticMaxMessageBytes);
-      if (match[2].matched) value.code = boundedCode(match[2].str());
+          header->message, kCrowdyStudioDiagnosticMaxMessageBytes);
+      if (header->code) value.code = boundedCode(*header->code);
       pending = std::move(value);
       continue;
     }
 
-    if (pending && std::regex_match(line, match, arrow)) {
-      const auto location = normalizeLocation(match[1].str(), defaultTarget);
-      const auto lineStart = coordinate(match[2].str());
-      const auto columnStart = coordinate(match[3].str());
-      if (location && lineStart && columnStart) {
-        CrowdyStudioDiagnostic diagnostic;
-        diagnostic.target = location->target;
-        diagnostic.path = location->path;
-        diagnostic.line = *lineStart;
-        diagnostic.column = *columnStart;
-        if (match[4].matched) {
-          diagnostic.endColumn = coordinate(match[4].str());
+    if (pending) {
+      if (const auto arrow = arrowOf(scan)) {
+        const auto location = normalizeLocation(arrow->path, defaultTarget);
+        const auto lineStart = coordinate(arrow->line);
+        const auto columnStart = coordinate(arrow->column);
+        if (location && lineStart && columnStart) {
+          CrowdyStudioDiagnostic diagnostic;
+          diagnostic.target = location->target;
+          diagnostic.path = location->path;
+          diagnostic.line = *lineStart;
+          diagnostic.column = *columnStart;
+          if (arrow->endColumn) {
+            diagnostic.endColumn = coordinate(*arrow->endColumn);
+          }
+          diagnostic.severity = pending->severity;
+          diagnostic.message = pending->message;
+          diagnostic.code = pending->code;
+          diagnostic.source = CrowdyStudioDiagnosticSource::Rustc;
+          append(std::move(diagnostic));
         }
-        diagnostic.severity = pending->severity;
-        diagnostic.message = pending->message;
-        diagnostic.code = pending->code;
-        diagnostic.source = CrowdyStudioDiagnosticSource::Rustc;
-        append(std::move(diagnostic));
+        pending.reset();
+        continue;
       }
-      pending.reset();
-      continue;
     }
 
-    if (std::regex_match(line, match, compact)) {
-      const auto location = normalizeLocation(match[1].str(), defaultTarget);
-      const auto lineStart = coordinate(match[2].str());
-      const auto columnStart = coordinate(match[3].str());
+    if (const auto compact = compactOf(scan)) {
+      const auto location = normalizeLocation(compact->path, defaultTarget);
+      const auto lineStart = coordinate(compact->line);
+      const auto columnStart = coordinate(compact->column);
       if (!location || !lineStart || !columnStart) continue;
       CrowdyStudioDiagnostic diagnostic;
       diagnostic.target = location->target;
       diagnostic.path = location->path;
       diagnostic.line = *lineStart;
       diagnostic.column = *columnStart;
-      diagnostic.severity = normalizeSeverity(match[4].str());
+      diagnostic.severity = normalizeSeverity(compact->text.keyword);
       diagnostic.message = truncateUtf8(
-          match[6].str(), kCrowdyStudioDiagnosticMaxMessageBytes);
-      if (match[5].matched) diagnostic.code = boundedCode(match[5].str());
+          compact->text.message, kCrowdyStudioDiagnosticMaxMessageBytes);
+      if (compact->text.code) {
+        diagnostic.code = boundedCode(*compact->text.code);
+      }
       diagnostic.source = CrowdyStudioDiagnosticSource::Rustc;
       append(std::move(diagnostic));
     }

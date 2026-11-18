@@ -47,4 +47,13 @@ namespace CrowdyCppStudio
 	 */
 	CROWDYCPPBRIDGE_API TArray<FCrowdyCppStudioDiagnostic> ParseRustcDiagnostics(const FString& Output,
 		ECrowdyCppStudioTarget DefaultTarget);
+
+	/** CrowdyCPP's own copy of the platform's CLIENT half starter, Cargo.toml then src/lib.rs, its package named ModuleName, as (path, content). */
+	CROWDYCPPBRIDGE_API TArray<TPair<FString, FString>> ClientStarterFiles(const FString& ModuleName);
+
+	/** The Studio origin of the tier ApiUrl belongs to, by the platform's host-name convention; empty when ApiUrl follows none. */
+	CROWDYCPPBRIDGE_API FString OfflineStudioOrigin(const FString& ApiUrl);
+
+	/** The wallet page of the Studio at StudioOrigin. */
+	CROWDYCPPBRIDGE_API FString StudioWalletUrl(const FString& StudioOrigin);
 }

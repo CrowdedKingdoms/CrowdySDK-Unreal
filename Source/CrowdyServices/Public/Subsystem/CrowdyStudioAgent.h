@@ -48,6 +48,22 @@ struct CROWDYSERVICES_API FCrowdyStudioModel
 	/** Such as "text" and "image". */
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Studio")
 	TArray<FString> InputModalities;
+
+	/** The rate card, in millionths of a US dollar per million input tokens; 0 when not given. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Studio")
+	int64 InputMicroUsdPerMillion = 0;
+
+	/** Per million output tokens. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Studio")
+	int64 OutputMicroUsdPerMillion = 0;
+
+	/** Per million reasoning tokens. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Studio")
+	int64 ReasoningMicroUsdPerMillion = 0;
+
+	/** Per million cached input tokens. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Studio")
+	int64 CachedInputMicroUsdPerMillion = 0;
 };
 
 /** What a page hosting the Studio agent needs to boot it. It holds no token. */
@@ -168,7 +184,11 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	/** The boot material: app id, API addresses, the origins the page may reach, and the app's model list; NoModel when no model is available to the app. */
+	/**
+	 * The boot material: app id, API addresses, the origins the page may reach, the Studio links and the app's model list; NoModel
+	 * when no model is available to the app. The Studio links are the platform's, else the ones the API address implies (a local
+	 * API's Studio is on port 3001); only https links, or http to this machine outside Shipping, are handed out.
+	 */
 	void GetAgentBoot(TFunction<void(const FCrowdyStudioAgentBoot&)> OnDone);
 
 	/** The app token for the agent, never the session token; C++ only, so no Blueprint graph can read it. Empty while signed out. */
@@ -226,6 +246,7 @@ private:
 	void NoteApiOrigin(const FString& Origin);
 	void SendAgentOp(const TCHAR* Operation, const TSharedPtr<FJsonObject>& Variables, TFunction<void(const FCrowdyCppJsonResult&)> OnAnswer,
 		TFunction<void(ECrowdyStudioResult Result, const FString& Message, const FString& Code)> OnFailed);
+	void ReadStudioLinks(FCrowdyStudioAgentBoot Boot, TFunction<void(const FCrowdyStudioAgentBoot&)> OnDone);
 	void SendConsent(const TCHAR* Operation, const TSharedPtr<FJsonObject>& Variables, const TCHAR* Field, const TCHAR* Call, TOptional<bool> Expected,
 		TFunction<void(const FCrowdyStudioConsent&)> OnDone);
 	UCrowdyGameSession* ResolveSession() const;

@@ -440,6 +440,36 @@ namespace CrowdyModsTests
 		const TArray<FString> Names = Rig.Operations();
 		return Test.TestTrue(FString::Printf(TEXT("%s (sent: %s)"), What, *FString::Join(Names, TEXT(", "))), Names == Expected);
 	}
+
+	// A mod or CLIENT half row as a build that named its Studio source reports it.
+	FString ModsFromStudio(const FString& Row, const TCHAR* ProjectId, const TCHAR* Revision)
+	{
+		return FString::Printf(TEXT("%s,\"studioProjectId\":\"%s\",\"studioRevision\":\"%s\"}"), *Row.LeftChop(1), ProjectId, Revision);
+	}
+
+	// A status read of the PAIRED project saved at revision 8.
+	TArray<TPair<int32, FString>> ModsStatusScript(const FString& ServerRows, const TCHAR* ServedDigest)
+	{
+		return {
+			{200, ModsRunProject(TEXT("PAIRED"), TEXT("spinner"), TEXT("spinner-client"), TEXT("8"), ModsRunPairedFiles)},
+			{200, FString::Printf(TEXT("{\"data\":{\"execMods\":[%s]}}"), *ServerRows)},
+			{200, ModsRunList(TEXT("execGridClientMods"), {ModsRunServed(TEXT("spinner"), ServedDigest)})},
+		};
+	}
+
+	// The studio input a sent build names, or false when it names none.
+	bool ModsSentStudio(const FString& Body, FString& OutProjectId, FString& OutRevision)
+	{
+		TSharedPtr<FJsonObject> Request;
+		const TSharedPtr<FJsonObject>* Variables = nullptr;
+		const TSharedPtr<FJsonObject>* Studio = nullptr;
+		if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Body), Request) || !Request.IsValid()
+			|| !Request->TryGetObjectField(TEXT("variables"), Variables) || !(*Variables)->TryGetObjectField(TEXT("studio"), Studio))
+		{
+			return false;
+		}
+		return (*Studio)->TryGetStringField(TEXT("projectId"), OutProjectId) && (*Studio)->TryGetStringField(TEXT("revision"), OutRevision);
+	}
 }
 
 using namespace CrowdyModsTests;
@@ -1377,18 +1407,10 @@ bool FCrowdyModsStatusTest::RunTest(const FString& Parameters)
 	{
 		return true;
 	}
-	const auto StatusScript = [](const FString& ServerRows, const TCHAR* ServedDigest)
-	{
-		return TArray<TPair<int32, FString>>{
-			{200, ModsRunProject(TEXT("PAIRED"), TEXT("spinner"), TEXT("spinner-client"), TEXT("8"), ModsRunPairedFiles)},
-			{200, FString::Printf(TEXT("{\"data\":{\"execMods\":[%s]}}"), *ServerRows)},
-			{200, ModsRunList(TEXT("execGridClientMods"), {ModsRunServed(TEXT("spinner"), ServedDigest)})},
-		};
-	};
-	const FString Running = ModJson(TEXT("901"), TEXT("spinner"), true, true);
+	const FString Running = ModsFromStudio(ModJson(TEXT("901"), TEXT("spinner"), true, true), ModsRunProjectId, TEXT("7"));
 
 	Rig.Sent.Reset();
-	Rig.Script(StatusScript(Running, TEXT("d-other")));
+	Rig.Script(ModsStatusScript(Running, TEXT("d-other")));
 	Rig.ReadStatus();
 	TestTrue(TEXT("the status is read"), Rig.Status.Result == ECrowdyModResult::Success && !Rig.Status.bRunInFlight);
 	ModsRunExpectOps(*this, TEXT("from the platform every time"), Rig, {TEXT("CrowdyStudioProject"), TEXT("ExecMods"), TEXT("ExecGridClientMods")});
@@ -1396,23 +1418,23 @@ bool FCrowdyModsStatusTest::RunTest(const FString& Parameters)
 	{
 		const FCrowdyModRunTarget& Server = Rig.Status.Targets[0];
 		TestTrue(TEXT("the SERVER mod runs"), Server.Phase == ECrowdyModRunPhase::Running && Server.Version == 3 && Server.Digest == TEXT("f46465af3d3f"));
-		TestEqual(TEXT("with the revision deployed under its digest"), Server.RunningRevision, FString(TEXT("7")));
+		TestEqual(TEXT("with the revision the platform says it was built from"), Server.RunningRevision, FString(TEXT("7")));
 		TestEqual(TEXT("and the project's saved revision"), Server.SavedRevision, FString(TEXT("8")));
 		const FCrowdyModRunTarget& Client = Rig.Status.Targets[1];
 		TestTrue(TEXT("the CLIENT half served is another"), Client.Phase == ECrowdyModRunPhase::Deployed && Client.Digest == TEXT("d-other"));
 		TestTrue(TEXT("so no revision is claimed for it"), Client.RunningRevision.IsEmpty());
 	}
 
-	Rig.Script(StatusScript(Running, TEXT("d-client-1")));
+	Rig.Script(ModsStatusScript(Running, TEXT("d-client-1")));
 	Rig.ReadStatus();
 	TestTrue(TEXT("a served CLIENT digest that matches gives its revision"), Rig.Status.Targets.Num() == 2 && Rig.Status.Targets[1].RunningRevision == TEXT("7"));
 
-	Rig.Script(StatusScript(Running.Replace(TEXT("f46465af3d3f"), TEXT("0123abcd")), TEXT("d-client-1")));
+	Rig.Script(ModsStatusScript(ModJson(TEXT("901"), TEXT("spinner"), true, true), TEXT("d-client-1")));
 	Rig.ReadStatus();
-	TestTrue(TEXT("a SERVER mod redeployed elsewhere claims no revision"), Rig.Status.Targets.Num() == 2 && Rig.Status.Targets[0].RunningRevision.IsEmpty()
-		&& Rig.Status.Targets[0].Digest == TEXT("0123abcd"));
+	TestTrue(TEXT("a SERVER mod whose build named no Studio source claims no revision, whatever this process deployed"), Rig.Status.Targets.Num() == 2
+		&& Rig.Status.Targets[0].RunningRevision.IsEmpty() && Rig.Status.Targets[0].Digest == TEXT("f46465af3d3f"));
 
-	Rig.Script(StatusScript(FString(), TEXT("d-client-1")));
+	Rig.Script(ModsStatusScript(FString(), TEXT("d-client-1")));
 	Rig.ReadStatus();
 	TestTrue(TEXT("a SERVER mod gone from the grid has not started and claims nothing"), Rig.Status.Targets.Num() == 2
 		&& Rig.Status.Targets[0].Phase == ECrowdyModRunPhase::NotStarted && Rig.Status.Targets[0].RunningRevision.IsEmpty() && Rig.Status.Targets[0].Digest.IsEmpty());
@@ -1421,6 +1443,93 @@ bool FCrowdyModsStatusTest::RunTest(const FString& Parameters)
 	Refused.Mods->GetProjectStatus(0, ModsRunProjectId, [&Refused](const FCrowdyModProjectStatus& Answer) { Refused.Status = Answer; ++Refused.Statuses; });
 	Refused.PumpUntil([&Refused]() { return Refused.Statuses > 0; });
 	TestTrue(TEXT("a status of grid 0 is refused without a request"), Refused.Status.Result == ECrowdyModResult::Refused && Refused.Sent.Num() == 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModsStatusStudioRevisionTest, "CrowdySDK.Mods.StatusReadsTheServerRevisionFromThePlatform", Flags)
+bool FCrowdyModsStatusStudioRevisionTest::RunTest(const FString& Parameters)
+{
+	const FString Row = ModJson(TEXT("901"), TEXT("spinner"), true, true);
+	FRunRig Rig(41093);
+	Rig.Script(ModsStatusScript(ModsFromStudio(Row, ModsRunProjectId, TEXT("7")), TEXT("d-client-1")));
+	Rig.ReadStatus();
+	TestTrue(TEXT("with no run in this process, the SERVER half's matching studioRevision is its running revision"), Rig.Status.Targets.Num() == 2
+		&& Rig.Status.Targets[0].RunningRevision == TEXT("7") && Rig.Status.Targets[0].SavedRevision == TEXT("8"));
+	TestTrue(TEXT("while the CLIENT half, which the platform lists without a revision, claims none"), Rig.Status.Targets.Num() == 2 && Rig.Status.Targets[1].RunningRevision.IsEmpty());
+
+	Rig.Script(ModsStatusScript(ModsFromStudio(Row, TEXT("p-other"), TEXT("7")), TEXT("d-client-1")));
+	Rig.ReadStatus();
+	TestTrue(TEXT("a SERVER mod built from another project claims no revision"), Rig.Status.Targets.Num() == 2 && Rig.Status.Targets[0].RunningRevision.IsEmpty());
+
+	Rig.Script(ModsStatusScript(ModsFromStudio(Row, TEXT("P-1"), TEXT("8")), TEXT("d-client-1")));
+	Rig.ReadStatus();
+	TestTrue(TEXT("the project id is matched without case, and the saved revision is running"), Rig.Status.Targets.Num() == 2 && Rig.Status.Targets[0].RunningRevision == TEXT("8"));
+
+	// A GitHub project's saved revision names its commit; the platform reports the number alone.
+	const auto GitHub = [](TArray<TPair<int32, FString>> Script)
+	{
+		Script[0].Value = Script[0].Value.Replace(TEXT("\"source\":\"STUDIO\""), TEXT("\"source\":\"GITHUB\"")).Replace(TEXT("\"githubSha\":null"), TEXT("\"githubSha\":\"abc123\""));
+		return Script;
+	};
+	Rig.Script(GitHub(ModsStatusScript(ModsFromStudio(Row, ModsRunProjectId, TEXT("8")), TEXT("d-client-1"))));
+	Rig.ReadStatus();
+	TestTrue(TEXT("a GitHub project's saved revision running reads in the project's form"), Rig.Status.Targets.Num() == 2
+		&& Rig.Status.Targets[0].RunningRevision == TEXT("8@abc123") && Rig.Status.Targets[0].SavedRevision == TEXT("8@abc123"));
+	Rig.Script(GitHub(ModsStatusScript(ModsFromStudio(Row, ModsRunProjectId, TEXT("7")), TEXT("d-client-1"))));
+	Rig.ReadStatus();
+	TestTrue(TEXT("an older revision of it reads as the platform's number, with no commit made up"), Rig.Status.Targets.Num() == 2
+		&& Rig.Status.Targets[0].RunningRevision == TEXT("7"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyModsRunStudioSourceTest, "CrowdySDK.Mods.RunBuildsNameTheirStudioSource", Flags)
+bool FCrowdyModsRunStudioSourceTest::RunTest(const FString& Parameters)
+{
+	{
+		FRunRig Rig(41094);
+		Rig.Script(ModsRunPairedScript());
+		Rig.Start(TEXT("7"));
+		Rig.PumpRun();
+		FString ProjectId;
+		FString Revision;
+		TestTrue(TEXT("the CLIENT build names the project and the revision read"), ModsSentStudio(Rig.SentFor(TEXT("ExecModClientBuild")), ProjectId, Revision)
+			&& ProjectId == TEXT("p-1") && Revision == TEXT("7"));
+		ProjectId.Reset();
+		Revision.Reset();
+		TestTrue(TEXT("and so does the SERVER build"), ModsSentStudio(Rig.SentFor(TEXT("ExecModBuild")), ProjectId, Revision) && ProjectId == TEXT("p-1") && Revision == TEXT("7"));
+	}
+	{
+		// A GitHub project's revision names its commit; the platform's is the number before it.
+		FRunRig Rig(41095);
+		TArray<TPair<int32, FString>> Script = ModsRunServerScript();
+		Script[0].Value = Script[0].Value.Replace(TEXT("\"source\":\"STUDIO\""), TEXT("\"source\":\"GITHUB\"")).Replace(TEXT("\"githubSha\":null"), TEXT("\"githubSha\":\"abc123\""));
+		Script[2].Value = DataAnswer(TEXT("execModDeploy"), ModsFromStudio(ModJson(TEXT("901"), TEXT("spinner"), false, false), ModsRunProjectId, TEXT("7")));
+		Rig.Script(MoveTemp(Script));
+		Rig.Start(TEXT("7@abc123"));
+		Rig.PumpRun();
+		FString ProjectId;
+		FString Revision;
+		TestTrue(FString::Printf(TEXT("the GitHub run went to its end (%s)"), *Rig.Run.Message), Rig.Run.Result == ECrowdyModResult::Success);
+		TestTrue(TEXT("its build names the platform's revision"), ModsSentStudio(Rig.SentFor(TEXT("ExecModBuild")), ProjectId, Revision) && Revision == TEXT("7"));
+		TestTrue(TEXT("and the deploy answer's revision reads in the project's form"), Rig.Run.Targets.Num() == 1 && Rig.Run.Targets[0].RunningRevision == TEXT("7@abc123"));
+	}
+	{
+		FRunRig Rig(41096);
+		TArray<TPair<int32, FString>> Script = ModsRunServerScript();
+		Script[2].Value = DataAnswer(TEXT("execModDeploy"), ModsFromStudio(ModJson(TEXT("901"), TEXT("spinner"), false, false), TEXT("p-other"), TEXT("7")));
+		Rig.Script(MoveTemp(Script));
+		Rig.Start(TEXT("7"));
+		Rig.PumpRun();
+		TestTrue(TEXT("a deploy answer naming another project claims no revision"), Rig.Run.Targets.Num() == 1 && Rig.Run.Targets[0].RunningRevision.IsEmpty());
+	}
+	{
+		FRig Rig(BuildAnswer(TEXT("execModBuild"), TEXT("succeeded")));
+		Rig.BuildMod(Crate());
+		Rig.Pump();
+		FString ProjectId;
+		FString Revision;
+		TestFalse(TEXT("a Build Mod of the caller's own files names no Studio source"), ModsSentStudio(Rig.SentBody(), ProjectId, Revision));
+	}
 	return true;
 }
 

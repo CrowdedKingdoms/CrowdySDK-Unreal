@@ -47,7 +47,8 @@ WorldSession::WorldSession(std::shared_ptr<replication::Connection> conn, Crowdy
                            WorldSessionConfig config)
     : conn_(std::move(conn)), config_(std::move(config)) {
   if (client) {
-    ownedChunkSource_ = makeGameApiChunkSource(client->chunks(), &client->voxels());
+    ownedChunkSource_ =
+        makeGameApiChunkSource(client->chunks(), &client->voxels(), config_.chunks.readLimits);
     ownedHost_ = std::make_unique<HostApiElection>(*client);
     host_ = ownedHost_.get();
   }

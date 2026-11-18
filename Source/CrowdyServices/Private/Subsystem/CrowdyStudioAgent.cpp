@@ -1,5 +1,6 @@
 #include "Subsystem/CrowdyStudioAgent.h"
 #include "CrowdyCppClient.h"
+#include "CrowdyCppStudio.h"
 #include "CrowdyServiceApiSupport.h"
 #include "CrowdyServicesLog.h"
 #include "Dom/JsonObject.h"
@@ -7,7 +8,6 @@
 #include "Engine/GameInstance.h"
 #include "Misc/DateTime.h"
 #include "Subsystem/CrowdyGameSession.h"
-#include "Utils/CrowdySDKDeveloperSettings.h"
 
 using namespace CrowdyServiceApi;
 
@@ -75,8 +75,13 @@ namespace
 		{
 			return ECrowdyStudioResult::NotFound;
 		}
+		// The platform could not confirm the provider's policy (HTTP 503): worth trying again, not a refusal.
+		if (NamesCode(Result, TEXT("AGENT_PROVIDER_POLICY_UNSATISFIED")))
+		{
+			return ECrowdyStudioResult::Failed;
+		}
 		static const TCHAR* const DeniedCodes[] = {TEXT("FORBIDDEN"), TEXT("UNAUTHORIZED"), TEXT("UNAUTHENTICATED"), TEXT("NOT_ALLOWED"), TEXT("SCOPE_MISSING"),
-			TEXT("AGENT_PERMISSION_DENIED"), TEXT("AGENT_DISABLED"), TEXT("AGENT_APP_KILLED"), TEXT("AGENT_OPERATOR_KILLED")};
+			TEXT("AGENT_SCOPE_DENIED"), TEXT("AGENT_PERMISSION_DENIED"), TEXT("AGENT_DISABLED"), TEXT("AGENT_APP_KILLED"), TEXT("AGENT_OPERATOR_KILLED")};
 		for (const TCHAR* Code : DeniedCodes)
 		{
 			if (NamesCode(Result, Code))
@@ -244,24 +249,44 @@ namespace
 		return FString();
 	}
 
-	// The settings' Studio origin and wallet URL once checked, or why they cannot be handed out.
-	bool StudioAgentCheckSettings(FString& OutStudioOrigin, FString& OutWalletUrl, FString& OutProblem)
+	// Text as a secure origin with no path, or empty when it is not one.
+	FString StudioAgentStudioOrigin(const FString& Text)
 	{
-		const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
-		const FString StudioText = Settings->StudioOrigin.TrimStartAndEnd();
-		OutStudioOrigin = StudioAgentUrlOrigin(StudioText, true);
-		if (OutStudioOrigin.IsEmpty() || (StudioText.Len() > OutStudioOrigin.Len() && StudioText.Mid(OutStudioOrigin.Len()) != TEXT("/")))
+		const FString Trimmed = Text.TrimStartAndEnd();
+		const FString Origin = StudioAgentSecureApiOrigin(Trimmed);
+		const bool bBare = Trimmed.Len() == Origin.Len() || Trimmed.Mid(Origin.Len()) == TEXT("/");
+		return !Origin.IsEmpty() && bBare ? Origin : FString();
+	}
+
+	// Text as an absolute address on a secure origin, or empty when it is not one.
+	FString StudioAgentWalletUrl(const FString& Text)
+	{
+		const FString Trimmed = Text.TrimStartAndEnd();
+		return StudioAgentSecureApiOrigin(Trimmed).IsEmpty() ? FString() : Trimmed;
+	}
+
+	// The platform's links when both are secure, else the ones the API address implies.
+	void StudioAgentFinishLinks(FCrowdyStudioAgentBoot Boot, const FString& PlatformOrigin, const FString& PlatformWallet,
+		const TFunction<void(const FCrowdyStudioAgentBoot&)>& OnDone)
+	{
+		FString Origin = StudioAgentStudioOrigin(PlatformOrigin);
+		FString Wallet = StudioAgentWalletUrl(PlatformWallet);
+		if (Origin.IsEmpty() || Wallet.IsEmpty())
 		{
-			OutProblem = TEXT("The Studio Origin setting is not an https origin, so the agent was not started.");
-			return false;
+			UE_CLOG(!PlatformOrigin.IsEmpty() || !PlatformWallet.IsEmpty(), LogCrowdyServices, Warning,
+				TEXT("[%s] The platform's Studio links are not https, so the API address's are used"), StudioAgentLogName);
+			Origin = StudioAgentStudioOrigin(CrowdyCppStudio::OfflineStudioOrigin(Boot.GraphQLUrl));
+			Wallet = Origin.IsEmpty() ? FString() : CrowdyCppStudio::StudioWalletUrl(Origin);
 		}
-		OutWalletUrl = Settings->StudioWalletUrl.TrimStartAndEnd();
-		if (StudioAgentUrlOrigin(OutWalletUrl, true).IsEmpty())
+		if (Origin.IsEmpty())
 		{
-			OutProblem = TEXT("The Wallet URL setting is not an https address, so the agent was not started.");
-			return false;
+			StudioAgentFinish(TEXT("Get Agent Boot"), OnDone, FCrowdyStudioAgentBoot(), ECrowdyStudioResult::Refused,
+				TEXT("No https Studio address is known for this API, so the agent was not started."));
+			return;
 		}
-		return true;
+		Boot.StudioOrigin = Origin;
+		Boot.WalletUrl = Wallet;
+		StudioAgentFinish(TEXT("Get Agent Boot"), OnDone, MoveTemp(Boot), ECrowdyStudioResult::Success, FString());
 	}
 
 	void StudioAgentFillModels(const TArray<FCrowdyCppStudioModel>& Models, TArray<FCrowdyStudioModel>& Out)
@@ -273,6 +298,10 @@ namespace
 			Read.Name = Model.Name;
 			Read.ContextWindow = Model.ContextWindow;
 			Read.InputModalities = Model.InputModalities;
+			Read.InputMicroUsdPerMillion = Model.InputMicroUsdPerMillion;
+			Read.OutputMicroUsdPerMillion = Model.OutputMicroUsdPerMillion;
+			Read.ReasoningMicroUsdPerMillion = Model.ReasoningMicroUsdPerMillion;
+			Read.CachedInputMicroUsdPerMillion = Model.CachedInputMicroUsdPerMillion;
 		}
 	}
 
@@ -468,21 +497,12 @@ void UCrowdyStudioAgent::SendAgentOp(const TCHAR* Operation, const TSharedPtr<FJ
 void UCrowdyStudioAgent::GetAgentBoot(TFunction<void(const FCrowdyStudioAgentBoot&)> OnDone)
 {
 	const bool bSignedIn = !GetAgentToken().IsEmpty();
-	FString StudioOrigin;
-	FString WalletUrl;
-	FString Problem;
-	const bool bSettings = bSignedIn && StudioAgentCheckSettings(StudioOrigin, WalletUrl, Problem);
-	FCrowdyCppClient* Client = bSettings ? ResolveClient() : nullptr;
+	FCrowdyCppClient* Client = bSignedIn ? ResolveClient() : nullptr;
 	const bool bSecure = Client && !StudioAgentSecureApiOrigin(CurrentApiEndpoint(*Client)).IsEmpty();
 	if (!Client || !bSecure)
 	{
-		if (Client)
-		{
-			Problem = StudioAgentInsecureApi;
-		}
-		const bool bRefused = !bSettings || Client;
-		const ECrowdyStudioResult Result = !bSignedIn ? ECrowdyStudioResult::NotSignedIn : (bRefused ? ECrowdyStudioResult::Refused : ECrowdyStudioResult::Failed);
-		const FString Message = !bSignedIn ? FString(StudioAgentNotSignedIn) : (bRefused ? Problem : FString(StudioAgentNoClient));
+		const ECrowdyStudioResult Result = !bSignedIn ? ECrowdyStudioResult::NotSignedIn : (Client ? ECrowdyStudioResult::Refused : ECrowdyStudioResult::Failed);
+		const FString Message = !bSignedIn ? FString(StudioAgentNotSignedIn) : FString(Client ? StudioAgentInsecureApi : StudioAgentNoClient);
 		DeferWhileLive(LiveSessionToken, [OnDone = MoveTemp(OnDone), Result, Message]()
 		{
 			StudioAgentFinish(TEXT("Get Agent Boot"), OnDone, FCrowdyStudioAgentBoot(), Result, Message);
@@ -495,7 +515,7 @@ void UCrowdyStudioAgent::GetAgentBoot(TFunction<void(const FCrowdyStudioAgentBoo
 	TWeakObjectPtr<UCrowdyStudioAgent> WeakThis(this);
 	const TSharedRef<bool> bInCall = MakeShared<bool>(true);
 	TWeakPtr<uint8> WeakToken = LiveSessionToken;
-	TFunction<void(FCrowdyCppStudioModelsResult)> Answer = [WeakThis, AppId, UserId, StudioOrigin, WalletUrl, OnDone](FCrowdyCppStudioModelsResult Models)
+	TFunction<void(FCrowdyCppStudioModelsResult)> Answer = [WeakThis, AppId, UserId, OnDone](FCrowdyCppStudioModelsResult Models)
 	{
 		UCrowdyStudioAgent* Self = WeakThis.Get();
 		const UCrowdyGameSession* Session = Self ? Self->ResolveSession() : nullptr;
@@ -529,10 +549,8 @@ void UCrowdyStudioAgent::GetAgentBoot(TFunction<void(const FCrowdyStudioAgentBoo
 		Boot.GraphQLUrl = GraphQLUrl;
 		Boot.ModelBaseUrl = ApiOrigin;
 		Boot.ConnectOrigins.Add(ApiOrigin);
-		Boot.StudioOrigin = StudioOrigin;
-		Boot.WalletUrl = WalletUrl;
 		StudioAgentFillModels(Models.Models, Boot.Models);
-		StudioAgentFinish(TEXT("Get Agent Boot"), OnDone, MoveTemp(Boot), ECrowdyStudioResult::Success, FString());
+		Self->ReadStudioLinks(MoveTemp(Boot), OnDone);
 	};
 	Client->FetchStudioModels(AppId, GuardLifetime<FCrowdyCppStudioModelsResult>(LiveSessionToken,
 		[bInCall, WeakToken, Answer = MoveTemp(Answer)](FCrowdyCppStudioModelsResult Result) mutable
@@ -545,6 +563,41 @@ void UCrowdyStudioAgent::GetAgentBoot(TFunction<void(const FCrowdyStudioAgentBoo
 			DeferWhileLive(WeakToken.Pin(), [Answer = MoveTemp(Answer), Result = MoveTemp(Result)]() mutable { Answer(MoveTemp(Result)); });
 		}));
 	*bInCall = false;
+}
+
+// A failed or refused read leaves the links to the API address.
+void UCrowdyStudioAgent::ReadStudioLinks(FCrowdyStudioAgentBoot Boot, TFunction<void(const FCrowdyStudioAgentBoot&)> OnDone)
+{
+	FCrowdyCppClient* Client = ResolveClient();
+	const UCrowdyGameSession* Session = ResolveSession();
+	if (!Client || !Session)
+	{
+		StudioAgentFinishLinks(MoveTemp(Boot), FString(), FString(), OnDone);
+		return;
+	}
+	const int64 AppId = Boot.AppId;
+	const int64 UserId = Session->GetUserID();
+	TWeakObjectPtr<UCrowdyStudioAgent> WeakThis(this);
+	RunOpDeferred(*Client, ECrowdyCppApiDomain::CrowdyStudio, TEXT("CrowdyStudioLinks"), MakeShared<FJsonObject>(), LiveSessionToken,
+		[WeakThis, AppId, UserId, Boot = MoveTemp(Boot), OnDone = MoveTemp(OnDone)](FCrowdyCppJsonResult Result) mutable
+		{
+			const UCrowdyStudioAgent* Self = WeakThis.Get();
+			const UCrowdyGameSession* Now = Self ? Self->ResolveSession() : nullptr;
+			if (!Now || Self->GetAppId() != AppId || Now->GetUserID() != UserId)
+			{
+				StudioAgentFinish(TEXT("Get Agent Boot"), OnDone, FCrowdyStudioAgentBoot(), ECrowdyStudioResult::Failed, StudioAgentChanged);
+				return;
+			}
+			const TSharedPtr<FJsonObject> Links = StudioAgentAnswerObject(Result, TEXT("crowdyStudioLinks"));
+			FString Origin;
+			FString Wallet;
+			if (Links.IsValid())
+			{
+				Links->TryGetStringField(TEXT("origin"), Origin);
+				Links->TryGetStringField(TEXT("walletUrl"), Wallet);
+			}
+			StudioAgentFinishLinks(MoveTemp(Boot), Origin, Wallet, OnDone);
+		});
 }
 
 void UCrowdyStudioAgent::GetProviderConsent(TFunction<void(const FCrowdyStudioConsent&)> OnDone)
