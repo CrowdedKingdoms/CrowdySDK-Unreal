@@ -18,7 +18,7 @@ sign-in, the live pawn re-keys to it, and `Resolve Actor Owner` finds the user b
 An entity's owner id is now its writer id, and entities name their owner's user id; a client on
 this release cannot play with an older one. The Leader type changed, so deploy the app's server
 code again. New: fetching voxel chunks, a live voxel world with edits, chunk claims and edit
-checks, mods, and Mod Scripts (Win64 only), and sending video frames. A session the server releases
+checks, mods, Mod Scripts (Win64 only), and sending video frames. A session the server releases
 for idleness reads Inactive instead of reconnecting. The mod calls and the server code deploy need
 Game API v2.73.0 on every tier you ship to. Follow MIGRATION.md step by step, including the steps
 to take on 2.25.x before you upgrade.
