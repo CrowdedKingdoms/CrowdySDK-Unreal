@@ -373,10 +373,10 @@ int64 UCrowdyEntitySubsystem::GetLocalUserID() const
 
 int64 UCrowdyEntitySubsystem::GetOwnerUserID(const FCrowdyEntityRecord& Record) const
 {
-	if (Record.bLeaderOwned || Record.Role == ECrowdyRole::HostOwned)
+	if (Record.bLeaderOwned || Record.Role == ECrowdyRole::WorldOwned)
 		return 0;
 
-	// With HostOwned gone, no replicated subsystem's writer can decide it.
+	// With WorldOwned gone, no replicated subsystem's writer can decide it.
 	return FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.WriterID, LocalPlayerID, FGuid()) ? GetLocalUserID() : Record.OwnerUserID;
 }
 
@@ -393,7 +393,7 @@ ECrowdyRole UCrowdyEntitySubsystem::DeriveRole(const FCrowdyEntityRecord& Record
 	// else belongs to the world.
 	if (NewWriterID.IsValid())
 		return NewWriterID == LocalPlayerID ? ECrowdyRole::Owner : ECrowdyRole::RemoteProxy;
-	return Record.bLeaderOwned ? ECrowdyRole::RemoteProxy : ECrowdyRole::HostOwned;
+	return Record.bLeaderOwned ? ECrowdyRole::RemoteProxy : ECrowdyRole::WorldOwned;
 }
 
 bool UCrowdyEntitySubsystem::IsLocalLeader() const
@@ -1261,7 +1261,7 @@ TArray<AActor*> UCrowdyEntitySubsystem::GetEntitiesByOwnerUser(const int64 Owner
 	for (const TPair<FGuid, FCrowdyEntityRecord>& Pair : Records)
 	{
 		const FCrowdyEntityRecord& Record = Pair.Value;
-		if (Record.bLeaderOwned || Record.Role == ECrowdyRole::HostOwned)
+		if (Record.bLeaderOwned || Record.Role == ECrowdyRole::WorldOwned)
 			continue;
 
 		const bool bWrittenHere = FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.WriterID, LocalPlayerID, FGuid());
@@ -1648,7 +1648,7 @@ void UCrowdyEntitySubsystem::HandleRemoteDestroy(const FCrowdyEntityDestroyEvent
 	// A Leader-written singleton such as a replicated subsystem has a public id (its class path) and cannot be
 	// destroyed; a crowd row's stand-in is not an actor either, but it is a remote copy and is released as usual.
 	const FCrowdyEntityRecord* Existing = Records.Find(Event.EntityID);
-	if (Existing && Existing->Role == ECrowdyRole::HostOwned && Existing->GetParticipant() && !Existing->GetActor())
+	if (Existing && Existing->Role == ECrowdyRole::WorldOwned && Existing->GetParticipant() && !Existing->GetActor())
 	{
 		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log,
 			TEXT("[CrowdyEntitySubsystem]: Destroy event for %s ignored: it names a replicated subsystem, which is not an actor."),

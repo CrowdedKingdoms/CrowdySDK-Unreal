@@ -1047,7 +1047,7 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
     const FCrowdyEntityRecord* WriterRecord = EntitySubsystem ? EntitySubsystem->FindRecord(Delta.EntityID) : nullptr;
     const bool bWeOwnTarget = WriterRecord && EntitySubsystem->IsRecordLocallyOwned(*WriterRecord);
     const bool bHostSourced = (Delta.Flags & CrowdyStateDeltaFlags::HostSourced) != 0;
-    if (WriterRecord && WriterRecord->Role == ECrowdyRole::HostOwned)
+    if (WriterRecord && WriterRecord->Role == ECrowdyRole::WorldOwned)
     {
         // An entity with no owner takes only its writer's delta: the Leader's for a replicated subsystem, and
         // nobody's for a World entity. Still by convention: cheat-sensitive state belongs in Server Objects, not
@@ -1195,7 +1195,7 @@ void UCrowdyEventRouter::DispatchContinuousExtras(const FGuid& EntityID, const T
 
     // A World entity's values go as deltas, which are fenced by sender. An update names no sender, so it cannot write one.
     const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntityID);
-    if (!Record || Record->Role == ECrowdyRole::HostOwned || EntitySubsystem->IsRecordLocallyOwned(*Record))
+    if (!Record || Record->Role == ECrowdyRole::WorldOwned || EntitySubsystem->IsRecordLocallyOwned(*Record))
     {
         return;
     }

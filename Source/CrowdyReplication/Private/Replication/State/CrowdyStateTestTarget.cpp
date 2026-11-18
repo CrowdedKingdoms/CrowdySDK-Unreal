@@ -30,12 +30,9 @@ ACrowdyStateOverlapActor::ACrowdyStateOverlapActor()
 	// StateExecutor in the constructor works regardless of the field's EditCondition, which gates only editor
 	// visibility, not the C++ value. Sending movement is required rather than incidental: only such a component
 	// runs the continuous channel that writes the executor state struct, so the overlap filter this fixture
-	// exercises does nothing without it. It sets the deprecated Mode because the save mapping tests need a
-	// component a C++ constructor configured the old way.
+	// exercises does nothing without it.
 	Entity = CreateDefaultSubobject<UCrowdyEntityComponent>(TEXT("Entity"));
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	Entity->Mode = ECrowdyEntityMode::Dynamic;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	Entity->ReplicateMovement = ECrowdyReplicateMovement::On;
 	Entity->StateExecutor = CreateDefaultSubobject<UCrowdyStateOverlapExecutor>(TEXT("StateExecutor"));
 }
 

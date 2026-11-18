@@ -135,15 +135,15 @@ bool FCrowdyEntityHostOwnedAutoRegisterReportTest::RunTest(const FString& Parame
 	using UEC = UCrowdyEntityComponent;
 
 	TestTrue(TEXT("Replicating movement, Auto Register, World-owned is the case that goes quiet"),
-		UEC::ShouldReportHostOwnedAutoRegister(true, true, ECrowdyRole::HostOwned));
+		UEC::ShouldReportHostOwnedAutoRegister(true, true, ECrowdyRole::WorldOwned));
 	TestFalse(TEXT("an entity this client owns outright starts, so there is nothing to say"),
 		UEC::ShouldReportHostOwnedAutoRegister(true, true, ECrowdyRole::Owner));
 	TestFalse(TEXT("a remote proxy was never going to auto-register"),
 		UEC::ShouldReportHostOwnedAutoRegister(true, true, ECrowdyRole::RemoteProxy));
 	TestFalse(TEXT("Auto Register off asked for nothing, so nothing is withheld"),
-		UEC::ShouldReportHostOwnedAutoRegister(true, false, ECrowdyRole::HostOwned));
+		UEC::ShouldReportHostOwnedAutoRegister(true, false, ECrowdyRole::WorldOwned));
 	TestFalse(TEXT("an entity that sends no movement has no continuous channel to join"),
-		UEC::ShouldReportHostOwnedAutoRegister(false, true, ECrowdyRole::HostOwned));
+		UEC::ShouldReportHostOwnedAutoRegister(false, true, ECrowdyRole::WorldOwned));
 
 	AActor* Actor = NewObject<AActor>(GetTransientPackage());
 	UCrowdyEntityComponent* Component = NewObject<UCrowdyEntityComponent>(Actor);

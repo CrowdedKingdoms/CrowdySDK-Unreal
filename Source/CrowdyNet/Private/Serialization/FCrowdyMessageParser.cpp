@@ -349,11 +349,6 @@ TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::DecodeFram
 	
 }
 
-void FCrowdyMessageParser::SetExpectedActorStateSize(const int32 NewSize)
-{
-	ExpectedActorStateSize = NewSize;
-}
-
 void FCrowdyMessageParser::HandleGenericErrorMessage(const uint8 ErrorType, const uint8 SequenceNumber) const
 {
 	// Server-side gameplay error code (not the legacy ECrowdyErrorCode set): the app

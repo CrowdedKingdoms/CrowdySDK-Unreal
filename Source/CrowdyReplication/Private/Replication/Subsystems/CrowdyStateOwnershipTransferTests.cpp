@@ -74,7 +74,7 @@ namespace
 }
 
 // ReassignOwnership re-points the record's owner and re-derives its role across all three transitions:
-// client -> other client (Owner -> RemoteProxy), back to us (RemoteProxy -> Owner), and to the world (-> HostOwned
+// client -> other client (Owner -> RemoteProxy), back to us (RemoteProxy -> Owner), and to the world (-> WorldOwned
 // with an invalid owner id).
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnershipReassignRecordTest,
 	"CrowdySDK.State.OwnershipReassignRecord", CrowdyStateOwnershipTestFlags)
@@ -114,7 +114,7 @@ bool FCrowdyStateOwnershipReassignRecordTest::RunTest(const FString& Parameters)
 	if (const FCrowdyEntityRecord* R = ES->FindRecord(NetID))
 	{
 		TestFalse(TEXT("host-owned entity has an invalid owner id"), R->WriterID.IsValid());
-		TestTrue(TEXT("role is HostOwned after transferring to host"), R->Role == ECrowdyRole::HostOwned);
+		TestTrue(TEXT("role is WorldOwned after transferring to host"), R->Role == ECrowdyRole::WorldOwned);
 	}
 	return true;
 }
@@ -279,7 +279,7 @@ bool FCrowdyStateOwnershipTransferToWorldStopsWritingTest::RunTest(const FString
 }
 
 // World -> client transfer: granting a World entity to a client exercises the compare-and-swap SKIP path (a World
-// source has no owner id, so the expected-previous is invalid) and the HostOwned -> Owner retrack: the entity
+// source has no owner id, so the expected-previous is invalid) and the WorldOwned -> Owner retrack: the entity
 // becomes tracked as a normal owned entity.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOwnershipTransferWorldToClientTest,
 	"CrowdySDK.State.OwnershipTransferWorldToClient", CrowdyStateOwnershipTestFlags)
@@ -306,7 +306,7 @@ bool FCrowdyStateOwnershipTransferWorldToClientTest::RunTest(const FString& Para
 	// A World entity (no per-client owner), which no client writes.
 	FCrowdyEntityRecord WorldRecord;
 	WorldRecord.NetID = NetID;
-	WorldRecord.Role = ECrowdyRole::HostOwned;
+	WorldRecord.Role = ECrowdyRole::WorldOwned;
 	WorldRecord.Participant = Actor;
 	ES->RegisterEntity(WorldRecord);
 	Rep->HandleEntityRegisteredForTest(NetID);

@@ -2938,7 +2938,7 @@ void UCrowdyMassEntitySubsystem::RegisterAvatarParticipant(const FGuid& UUID, UC
 		// An identity something else supplied outranks the one assumed above for who the entity is, so the
 		// owner and the class are taken from it. The ROLE is not, and that exception is the point rather
 		// than an oversight. Role decides whether this participant is authoritative for the entity, and an
-		// avatar must never be: adopting HostOwned here would undo the RemoteProxy default set above.
+		// avatar must never be: adopting WorldOwned here would undo the RemoteProxy default set above.
 		Record.WriterID = Existing->WriterID;
 		Record.OwnerUserID = Existing->OwnerUserID;
 		Record.bAvatar = Existing->bAvatar;
@@ -3708,7 +3708,7 @@ bool UCrowdyMassEntitySubsystem::InitializeCrowdyFragments(FMassEntityManager& E
 	TransformFragment->SetTransform(InitialTransform);
 	IdentityFragment->UUID = UUID;
 	IdentityFragment->WriterID = Record ? Record->WriterID : FGuid();
-	IdentityFragment->Role = Record ? Record->Role : ECrowdyRole::HostOwned;
+	IdentityFragment->Role = Record ? Record->Role : ECrowdyRole::WorldOwned;
 	InterpolationFragment->StartLocation = InitialLocation;
 	InterpolationFragment->StartRotation = InitialRotation;
 	InterpolationFragment->TargetLocation = InitialLocation;

@@ -61,7 +61,7 @@ public:
 	virtual FGuid GetEventWriterID() const = 0;
 
 	// This client's relationship to the entity: Owner when this client simulates and sends for it,
-	// RemoteProxy when it only receives, HostOwned for a world entity, None when it is not registered.
+	// RemoteProxy when it only receives, WorldOwned for a world entity, None when it is not registered.
 	virtual ECrowdyRole GetEventRole() const = 0;
 
 	// True when this client is the entity's owner. A source that is not locally owned may still receive

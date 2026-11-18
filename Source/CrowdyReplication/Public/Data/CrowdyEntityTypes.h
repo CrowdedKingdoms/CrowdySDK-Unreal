@@ -10,7 +10,7 @@ enum class ECrowdyRole : uint8
 	None UMETA(DisplayName="None"),        // not registered
 	Owner UMETA(DisplayName="Owner"),       // this client simulates and sends (like ROLE_Authority for this entity)
 	RemoteProxy UMETA(DisplayName="Remote Proxy"), // receives state/events from the network
-	HostOwned UMETA(DisplayName="Host Owned")   // no owner: a World entity, which no client writes, or a replicated subsystem, which the Leader writes
+	WorldOwned UMETA(DisplayName="World Owned")   // no owner: a World entity, which no client writes, or a replicated subsystem, which the Leader writes
 };
 
 USTRUCT(BlueprintType)
@@ -65,7 +65,7 @@ struct FCrowdyEntityRecord
 	{
 		if (InRole == ECrowdyRole::Owner)
 			return !InRecordWriterID.IsValid() || InRecordWriterID == PlayerID;
-		return InRole == ECrowdyRole::HostOwned && PlayerID.IsValid() && AppWriterID == PlayerID;
+		return InRole == ECrowdyRole::WorldOwned && PlayerID.IsValid() && AppWriterID == PlayerID;
 	}
 
 	// A label, never a write decision: an unknown user (0) matches nobody, a signed-out local user included.

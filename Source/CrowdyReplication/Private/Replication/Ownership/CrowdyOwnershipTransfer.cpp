@@ -55,7 +55,7 @@ void UCrowdyOwnershipTransfer::RequestOwnershipTransfer(UObject* /*WorldContextO
 	}
 
 	const FCrowdyEntityRecord* Record = ES->FindRecord(NetID);
-	if (Record && Record->Role == ECrowdyRole::HostOwned)
+	if (Record && Record->Role == ECrowdyRole::WorldOwned)
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
 			TEXT("[CrowdyOwnershipTransfer]: RequestOwnershipTransfer ignored: '%s' is a World entity, so no client writes it to grant it."),

@@ -302,7 +302,7 @@ void UCrowdyUtilities::SwitchIsCrowdyEntityPlayerControlled(UObject* WorldContex
 		return;
 	}
 
-	if (Component && Component->ReplicatesMovement() && Component->GetRole() != ECrowdyRole::HostOwned)
+	if (Component && Component->ReplicatesMovement() && Component->GetRole() != ECrowdyRole::WorldOwned)
 	{
 		bIsPlayerControlled = true;
 		return;

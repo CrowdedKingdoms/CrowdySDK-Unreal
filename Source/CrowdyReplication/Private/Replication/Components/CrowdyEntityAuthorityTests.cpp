@@ -17,9 +17,6 @@
 #include "Subsystem/CrowdyGameSession.h"
 #include "UObject/Package.h"
 
-// These cases also prove the deprecated Ownership keeps its meaning for a component a C++ constructor configured.
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-
 namespace
 {
 	constexpr EAutomationTestFlags CrowdyAuthorityTestFlags =
@@ -88,7 +85,7 @@ namespace
 	}
 }
 
-// Ownership=Host derives a HostOwned role with no owner id (world entity); Ownership=LocalClient derives Owner with
+// Ownership=Host derives a WorldOwned role with no owner id (world entity); Ownership=LocalClient derives Owner with
 // the local player id. This is the world-free equivalent of ResolveIdentity's authority tail. Enums are compared as
 // their underlying int (the codebase's TestEqual idiom for enum/flags).
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateAuthorityDerivationTest,
@@ -100,7 +97,7 @@ bool FCrowdyStateAuthorityDerivationTest::RunTest(const FString& Parameters)
 	ECrowdyRole Role = ECrowdyRole::None;
 	FGuid WriterID = FGuid::NewGuid(); // deliberately non-empty first, to prove Host zeroes it
 	UCrowdyEntityComponent::DeriveAuthority(ECrowdyOwnership::Host, LocalPlayer, Role, WriterID);
-	TestEqual(TEXT("Host -> HostOwned role"), static_cast<uint8>(Role), static_cast<uint8>(ECrowdyRole::HostOwned));
+	TestEqual(TEXT("Host -> WorldOwned role"), static_cast<uint8>(Role), static_cast<uint8>(ECrowdyRole::WorldOwned));
 	TestFalse(TEXT("Host -> no owner id"), WriterID.IsValid());
 
 	UCrowdyEntityComponent::DeriveAuthority(ECrowdyOwnership::LocalClient, LocalPlayer, Role, WriterID);
@@ -119,8 +116,8 @@ bool FCrowdyStateAuthorityDefaultsTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	TestEqual(TEXT("Ownership defaults to Host"),
-		static_cast<uint8>(CDO->GetOwnership()), static_cast<uint8>(ECrowdyOwnership::Host));
+	TestEqual(TEXT("Owned By defaults to Auto"),
+		static_cast<uint8>(CDO->OwnedBy), static_cast<uint8>(ECrowdyOwnedBy::Auto));
 	TestEqual(TEXT("Replicate Movement defaults to Auto"),
 		static_cast<uint8>(CDO->ReplicateMovement), static_cast<uint8>(ECrowdyReplicateMovement::Auto));
 	return true;
@@ -151,7 +148,7 @@ bool FCrowdyEntityEffectiveOwnershipTest::RunTest(const FString& Parameters)
 
 	TestFalse(TEXT("a null actor has no placement guid"), UEC::ResolveActorInstanceGuid(nullptr).IsValid());
 
-	// A runtime spawn: the flag is clear, so authored Host does not apply and this client owns what it spawned.
+	// A runtime spawn: the flag is clear, so authored World does not apply and this client owns what it spawned.
 	AActor* SpawnedActor = NewObject<AActor>(GetTransientPackage());
 	UCrowdyEntityComponent* SpawnedComponent = NewObject<UCrowdyEntityComponent>(SpawnedActor);
 	if (!TestNotNull(TEXT("runtime-spawn fixture created"), SpawnedComponent))
@@ -162,13 +159,13 @@ bool FCrowdyEntityEffectiveOwnershipTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	SpawnedComponent->Ownership = ECrowdyOwnership::Host;
+	SpawnedComponent->OwnedBy = ECrowdyOwnedBy::World;
 	SpawnedComponent->ResolveIdentityForTest(SpawnedActor);
-	TestEqual(TEXT("authored Host on a runtime-spawned actor resolves to Owner"),
+	TestEqual(TEXT("authored World on a runtime-spawned actor resolves to Owner"),
 		static_cast<uint8>(SpawnedComponent->GetRole()), static_cast<uint8>(ECrowdyRole::Owner));
 
-	// The same asset placed in the level: the flag is set, so the authored Host ownership stands and the entity is
-	// host-owned with no per-client owner id. This is the pair that must not disagree between editor and packaged
+	// The same asset placed in the level: the flag is set, so the authored World ownership stands and the entity is
+	// world-owned with no per-client owner id. This is the pair that must not disagree between editor and packaged
 	// builds, which is why the flag - and not the editor-only placement guid - decides it.
 	AActor* PlacedActor = NewObject<AActor>(GetTransientPackage());
 	UCrowdyEntityComponent* PlacedComponent = NewObject<UCrowdyEntityComponent>(PlacedActor);
@@ -177,22 +174,22 @@ bool FCrowdyEntityEffectiveOwnershipTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	PlacedActor->bNetStartup = 1;
-	PlacedComponent->Ownership = ECrowdyOwnership::Host;
+	PlacedComponent->OwnedBy = ECrowdyOwnedBy::World;
 	PlacedComponent->ResolveIdentityForTest(PlacedActor);
-	TestEqual(TEXT("authored Host on a level-placed actor resolves to HostOwned"),
-		static_cast<uint8>(PlacedComponent->GetRole()), static_cast<uint8>(ECrowdyRole::HostOwned));
-	TestFalse(TEXT("a host-owned entity carries no per-client owner id"), PlacedComponent->GetWriterID().IsValid());
+	TestEqual(TEXT("authored World on a level-placed actor resolves to WorldOwned"),
+		static_cast<uint8>(PlacedComponent->GetRole()), static_cast<uint8>(ECrowdyRole::WorldOwned));
+	TestFalse(TEXT("a world-owned entity carries no per-client owner id"), PlacedComponent->GetWriterID().IsValid());
 
-	// Authored LocalClient is unaffected by placement: it is this client's either way.
-	PlacedComponent->Ownership = ECrowdyOwnership::LocalClient;
+	// Authored Player is unaffected by placement: it is this client's either way.
+	PlacedComponent->OwnedBy = ECrowdyOwnedBy::Player;
 	PlacedComponent->ResolveIdentityForTest(PlacedActor);
-	TestEqual(TEXT("authored LocalClient on a level-placed actor stays Owner"),
+	TestEqual(TEXT("authored Player on a level-placed actor stays Owner"),
 		static_cast<uint8>(PlacedComponent->GetRole()), static_cast<uint8>(ECrowdyRole::Owner));
 	return true;
 }
 
-// Owned By decides the owner when it is set, whatever the deprecated Ownership says; World applies only to an actor
-// placed in the level, and a spawned one belongs to its spawner, as Host did.
+// Owned By decides the owner; World applies only to an actor placed in the level, and a spawned one belongs to its
+// spawner. Auto follows placement alone.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityOwnedByDecidesOwnerTest,
 	"CrowdySDK.Entity.OwnedByDecidesOwner", CrowdyAuthorityTestFlags)
 bool FCrowdyEntityOwnedByDecidesOwnerTest::RunTest(const FString& Parameters)
@@ -209,7 +206,7 @@ bool FCrowdyEntityOwnedByDecidesOwnerTest::RunTest(const FString& Parameters)
 
 	Placed->OwnedBy = ECrowdyOwnedBy::World;
 	Placed->ResolveIdentityForTest(PlacedActor);
-	TestEqual(TEXT("World on a placed actor is written by the host"), Placed->GetRole(), ECrowdyRole::HostOwned);
+	TestEqual(TEXT("World on a placed actor is written by the host"), Placed->GetRole(), ECrowdyRole::WorldOwned);
 	TestFalse(TEXT("with no per-client owner id"), Placed->GetWriterID().IsValid());
 
 	Spawned->OwnedBy = ECrowdyOwnedBy::World;
@@ -217,17 +214,16 @@ bool FCrowdyEntityOwnedByDecidesOwnerTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("World on a spawned actor belongs to its spawner"), Spawned->GetRole(), ECrowdyRole::Owner);
 
 	Placed->OwnedBy = ECrowdyOwnedBy::Player;
-	Placed->Ownership = ECrowdyOwnership::Host;
 	Placed->ResolveIdentityForTest(PlacedActor);
-	TestEqual(TEXT("Player wins over a deprecated Host"), Placed->GetRole(), ECrowdyRole::Owner);
+	TestEqual(TEXT("Player on a placed actor is this client's"), Placed->GetRole(), ECrowdyRole::Owner);
 
 	Placed->OwnedBy = ECrowdyOwnedBy::Auto;
 	Placed->ResolveIdentityForTest(PlacedActor);
-	TestEqual(TEXT("Auto on a placed actor is the world's"), Placed->GetRole(), ECrowdyRole::HostOwned);
+	TestEqual(TEXT("Auto on a placed actor is the world's"), Placed->GetRole(), ECrowdyRole::WorldOwned);
 
-	Placed->Ownership = ECrowdyOwnership::LocalClient;
-	Placed->ResolveIdentityForTest(PlacedActor);
-	TestEqual(TEXT("Auto under a C++ Local Client is this client's"), Placed->GetRole(), ECrowdyRole::Owner);
+	Spawned->OwnedBy = ECrowdyOwnedBy::Auto;
+	Spawned->ResolveIdentityForTest(SpawnedActor);
+	TestEqual(TEXT("Auto on a spawned actor is its spawner's"), Spawned->GetRole(), ECrowdyRole::Owner);
 	return true;
 }
 
@@ -252,7 +248,7 @@ bool FCrowdyEntityLocallyOwnedTest::RunTest(const FString& Parameters)
 	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), 0, ECrowdyRole::RemoteProxy, 0);
 	TestFalse(TEXT("a remote proxy is not locally owned"), Component->IsLocallyOwned());
 
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::HostOwned, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::WorldOwned, 0);
 	TestFalse(TEXT("a World entity is not locally owned"), Component->IsLocallyOwned());
 	return true;
 }
@@ -296,11 +292,11 @@ bool FCrowdyEntityOwnershipAssignedInitialTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("a pooled actor with no identity announces nothing"), Component->OwnershipAnnouncementCount, 1);
 
 	// Checked back out under a new identity: announced again.
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::HostOwned, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::WorldOwned, 0);
 	Component->AnnounceInitialOwnershipForTest();
 	TestEqual(TEXT("a re-assigned identity announces again"), Component->OwnershipAnnouncementCount, 2);
 	TestEqual(TEXT("announced the new role"),
-		static_cast<uint8>(Component->LastAnnouncedRole), static_cast<uint8>(ECrowdyRole::HostOwned));
+		static_cast<uint8>(Component->LastAnnouncedRole), static_cast<uint8>(ECrowdyRole::WorldOwned));
 	TestFalse(TEXT("host-owned with no known host is not locally owned"), Component->bLastAnnouncedLocallyOwned);
 	return true;
 }
@@ -363,7 +359,7 @@ bool FCrowdyEntityOwnershipAssignedOnReassignTest::RunTest(const FString& Parame
 	TestEqual(TEXT("handing to the host announces"), Actor->Entity->OwnershipAnnouncementCount, 3);
 	TestFalse(TEXT("a host-owned entity announces no per-client owner"), Actor->Entity->LastAnnouncedWriterID.IsValid());
 	TestEqual(TEXT("announced the host-owned role"),
-		static_cast<uint8>(Actor->Entity->LastAnnouncedRole), static_cast<uint8>(ECrowdyRole::HostOwned));
+		static_cast<uint8>(Actor->Entity->LastAnnouncedRole), static_cast<uint8>(ECrowdyRole::WorldOwned));
 
 	// A stale grant is dropped, so nothing changed and nothing is announced.
 	ES->ReassignOwnership(NetID, OtherPlayer, WrongExpectation, 0);
@@ -394,11 +390,11 @@ bool FCrowdyOwnershipMatchTest::RunTest(const FString& Parameters)
 
 	// Nothing writes a World entity, the Leader included, so it is owned by no one and owns nothing.
 	TestFalse(TEXT("no player owns a World entity"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, LeaderPlayer, ECrowdyRole::HostOwned, Zero));
+		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, LeaderPlayer, ECrowdyRole::WorldOwned, Zero));
 	TestFalse(TEXT("a World entity owns nothing, even an entity stamped with its id"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::HostOwned, WorldEntity, ECrowdyRole::Owner, WorldEntity));
+		UEC::DoesOwnershipMatch(ECrowdyRole::WorldOwned, WorldEntity, ECrowdyRole::Owner, WorldEntity));
 	TestFalse(TEXT("World entities do not own each other"),
-		UEC::DoesOwnershipMatch(ECrowdyRole::HostOwned, WorldEntity, ECrowdyRole::HostOwned, Zero));
+		UEC::DoesOwnershipMatch(ECrowdyRole::WorldOwned, WorldEntity, ECrowdyRole::WorldOwned, Zero));
 
 	TestFalse(TEXT("unregistered target is never owned"),
 		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, LeaderPlayer, ECrowdyRole::None, Zero));
@@ -906,7 +902,7 @@ bool FCrowdyEntityLocalRecordReadsSessionUserTest::RunTest(const FString& Parame
 
 	FCrowdyEntityRecord World = Theirs;
 	World.WriterID = FGuid();
-	World.Role = ECrowdyRole::HostOwned;
+	World.Role = ECrowdyRole::WorldOwned;
 	TestEqual(TEXT("nor has a World entity"), Collaborators.Entities->GetOwnerUserID(World), static_cast<int64>(0));
 
 	AActor* Actor = NewObject<AActor>(GetTransientPackage());
@@ -977,7 +973,5 @@ bool FCrowdyEntitySecondSessionIsAViewerTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("which writes it"), Entities->IsLocallyOwned(Record.NetID));
 	return true;
 }
-
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif // WITH_DEV_AUTOMATION_TESTS

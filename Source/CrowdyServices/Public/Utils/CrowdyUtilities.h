@@ -86,7 +86,7 @@ public:
 		      Keywords="Is Crowdy Entity Registered Valid"))
 	static bool CrowdyIsEntityRegistered(UObject* WorldContextObject, const FGuid& EntityID);
 
-	/** Returns the replication role of this entity (Owner, RemoteProxy, HostOwned, or None). */
+	/** Returns the replication role of this entity (Owner, RemoteProxy, WorldOwned, or None). */
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Entities",
 		meta=(WorldContext="WorldContextObject", DefaultToSelf="Entity",
 		      Keywords="Get Crowdy Entity Role Owner Proxy"))

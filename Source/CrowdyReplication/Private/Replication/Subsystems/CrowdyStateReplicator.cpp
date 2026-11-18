@@ -328,7 +328,7 @@ void UCrowdyStateReplicator::HandleEntityRegistered(const FGuid& NetID)
 
 bool UCrowdyStateReplicator::IsLeaderWritten(const FCrowdyEntityRecord& Record)
 {
-	return Record.Role == ECrowdyRole::HostOwned && Record.IsReplicatedSubsystem();
+	return Record.Role == ECrowdyRole::WorldOwned && Record.IsReplicatedSubsystem();
 }
 
 bool UCrowdyStateReplicator::TryTrackOwned(const FCrowdyEntityRecord& Record)
@@ -693,7 +693,7 @@ void UCrowdyStateReplicator::WarnIfWorldEntityHasNoWriter(const FGuid& EntityID)
 		return;
 
 	const FCrowdyEntityRecord* Record = EntitySubsystem.IsValid() ? EntitySubsystem->FindRecord(EntityID) : nullptr;
-	if (!Record || Record->Role != ECrowdyRole::HostOwned || Record->IsReplicatedSubsystem())
+	if (!Record || Record->Role != ECrowdyRole::WorldOwned || Record->IsReplicatedSubsystem())
 		return;
 
 	bWarnedWorldEntityHasNoWriter = true;

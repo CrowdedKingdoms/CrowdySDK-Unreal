@@ -529,15 +529,8 @@ void SCrowdyRegistryInspector::RefreshData()
 				{
 					if (const UCrowdyEntityComponent* Component = UCrowdyAutoRegistry::ResolveDefaultEntityComponent(OwnerClass))
 					{
-						// A C++ constructor that set the deprecated Ownership to Local Client leaves Owned By at Auto.
-						PRAGMA_DISABLE_DEPRECATION_WARNINGS
-						const bool bCppPlayer = Component->OwnedBy == ECrowdyOwnedBy::Auto
-							&& Component->Ownership == ECrowdyOwnership::LocalClient;
-						PRAGMA_ENABLE_DEPRECATION_WARNINGS
-						const ECrowdyOwnedBy OwnedBy = bCppPlayer ? ECrowdyOwnedBy::Player : Component->OwnedBy;
-
 						Defaults.bFound = true;
-						Defaults.Ownership = EnumDisplayText(OwnedBy);
+						Defaults.Ownership = EnumDisplayText(Component->OwnedBy);
 					}
 				}
 			}
