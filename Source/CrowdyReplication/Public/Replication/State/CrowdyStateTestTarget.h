@@ -455,9 +455,8 @@ public:
 };
 
 /**
- * HostOverride fixture: a CrowdyState actor that ALSO carries a UCrowdyEntityComponent (default
- * subobject) so both the send-side check (MarkStateDirty) and the receive-side backstop can read
- * GetHostOverridePolicy() off it. A test sets Entity->HostOverride to Allow or OwnerOnly before the push.
+ * Entity fixture: a CrowdyState actor that ALSO carries a UCrowdyEntityComponent (default subobject) and a
+ * root, so the send and receive paths can resolve it as an entity with a place in the world.
  */
 UCLASS(meta = (CrowdyTestFixture))
 class ACrowdyStateHostOverrideActor : public AActor

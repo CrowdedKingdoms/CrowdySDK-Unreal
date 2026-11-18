@@ -63,7 +63,7 @@ EResolveResult ResolveRpcTargetIn(FMassEntityManager& InEntityManager, const FCr
 	}
 
 	OutRpcTarget.NetID = Identity->UUID;
-	OutRpcTarget.OwnerID = Identity->OwnerID;
+	OutRpcTarget.WriterID = Identity->WriterID;
 	OutRpcTarget.Role = Identity->Role;
 
 	if (const FTransformFragment* Transform = EntityManager->GetFragmentDataPtr<FTransformFragment>(Target.Entity))

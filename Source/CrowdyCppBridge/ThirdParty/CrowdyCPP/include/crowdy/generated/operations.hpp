@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: 9e03a17149193ee7db48c6fc1abb336813bfc06bf878a6327b67c013f7266e1d
-// operations sha256: a6ae158b4aa69a80f588ab751c05ec865ba86ea7883b6c96c69d815422c767c3
+// schema.gql sha256: 0ea63bf028c7260315fddfec1f8d895bdaf98846aa69eac141ee6c80d8629c36
+// operations sha256: 93e1f0e678c63bcbf238a619f7fde25bd4c8f9d31ebc397b4b94d5d5235666b6
 
 #pragma once
 
@@ -965,6 +965,8 @@ inline constexpr std::string_view kAppDocument = R"gql(query App($appId: BigInt!
     }
     minPlayerAge
     effectiveMinPlayerAge
+    idleTimeoutSeconds
+    effectiveIdleTimeoutSeconds
     hasSafetyModerator
     claimOwnerKeys
     splitMode
@@ -1004,6 +1006,8 @@ inline constexpr std::string_view kAppIsolatedDocument = R"gql(query App($appId:
     }
     minPlayerAge
     effectiveMinPlayerAge
+    idleTimeoutSeconds
+    effectiveIdleTimeoutSeconds
     hasSafetyModerator
     claimOwnerKeys
     splitMode
@@ -1534,6 +1538,8 @@ inline constexpr std::string_view kUpdateAppDocument = R"gql(mutation UpdateApp(
     }
     minPlayerAge
     effectiveMinPlayerAge
+    idleTimeoutSeconds
+    effectiveIdleTimeoutSeconds
     hasSafetyModerator
     claimOwnerKeys
     updatedAt
@@ -1560,6 +1566,8 @@ inline constexpr std::string_view kUpdateAppIsolatedDocument = R"gql(mutation Up
     }
     minPlayerAge
     effectiveMinPlayerAge
+    idleTimeoutSeconds
+    effectiveIdleTimeoutSeconds
     hasSafetyModerator
     claimOwnerKeys
     updatedAt
@@ -2816,11 +2824,13 @@ inline constexpr std::string_view kGetChunkDocument = R"gql(query GetChunk($inpu
       }
       voxelType
       state
+      updatedAt
     }
     voxelStatesTruncated
     owner
     createdAt
     updatedAt
+    voxelsUpdatedAt
     chunkState
     cdnUploadedAt
     lods {
@@ -2847,11 +2857,13 @@ inline constexpr std::string_view kGetChunkIsolatedDocument = R"gql(query GetChu
       }
       voxelType
       state
+      updatedAt
     }
     voxelStatesTruncated
     owner
     createdAt
     updatedAt
+    voxelsUpdatedAt
     chunkState
     cdnUploadedAt
     lods {
@@ -2919,11 +2931,13 @@ inline constexpr std::string_view kGetChunksByDistanceDocument = R"gql(query Get
         }
         voxelType
         state
+        updatedAt
       }
       voxelStatesTruncated
       owner
       createdAt
       updatedAt
+      voxelsUpdatedAt
       chunkState
       cdnUploadedAt
       lods {
@@ -2954,11 +2968,13 @@ inline constexpr std::string_view kGetChunksByDistanceIsolatedDocument = R"gql(q
         }
         voxelType
         state
+        updatedAt
       }
       voxelStatesTruncated
       owner
       createdAt
       updatedAt
+      voxelsUpdatedAt
       chunkState
       cdnUploadedAt
       lods {
@@ -2969,6 +2985,106 @@ inline constexpr std::string_view kGetChunksByDistanceIsolatedDocument = R"gql(q
   }
 })gql";
 inline constexpr std::string_view kGetChunksByDistanceOperationName = "GetChunksByDistance";
+
+/// chunks/GetChunksByDistanceVoxelTypes.graphql
+inline constexpr std::string_view kGetChunksByDistanceVoxelTypesDocument = R"gql(query GetChunksByDistanceVoxelTypes($input: GetChunksByDistanceInput!) {
+  getChunksByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels
+      voxelStates {
+        voxelCoord {
+          x
+          y
+          z
+        }
+        voxelType
+      }
+      voxelStatesTruncated
+    }
+  }
+})gql";
+inline constexpr std::string_view kGetChunksByDistanceVoxelTypesIsolatedDocument = R"gql(query GetChunksByDistanceVoxelTypes($input: GetChunksByDistanceInput!) {
+  getChunksByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels
+      voxelStates {
+        voxelCoord {
+          x
+          y
+          z
+        }
+        voxelType
+      }
+      voxelStatesTruncated
+    }
+  }
+})gql";
+inline constexpr std::string_view kGetChunksByDistanceVoxelTypesOperationName = "GetChunksByDistanceVoxelTypes";
+
+/// chunks/GetChunksByDistanceVoxels.graphql
+inline constexpr std::string_view kGetChunksByDistanceVoxelsDocument = R"gql(query GetChunksByDistanceVoxels($input: GetChunksByDistanceInput!) {
+  getChunksByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels
+      voxelStates {
+        voxelCoord {
+          x
+          y
+          z
+        }
+        voxelType
+        state
+      }
+      voxelStatesTruncated
+    }
+  }
+})gql";
+inline constexpr std::string_view kGetChunksByDistanceVoxelsIsolatedDocument = R"gql(query GetChunksByDistanceVoxels($input: GetChunksByDistanceInput!) {
+  getChunksByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels
+      voxelStates {
+        voxelCoord {
+          x
+          y
+          z
+        }
+        voxelType
+        state
+      }
+      voxelStatesTruncated
+    }
+  }
+})gql";
+inline constexpr std::string_view kGetChunksByDistanceVoxelsOperationName = "GetChunksByDistanceVoxels";
 
 /// chunks/GetVoxelList.graphql
 inline constexpr std::string_view kGetVoxelListDocument = R"gql(query GetVoxelList($input: GetVoxelListInput!) {
@@ -3126,6 +3242,8 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "GetChunk") return kGetChunkIsolatedDocument;
   if (operationName == "GetChunkLods") return kGetChunkLodsIsolatedDocument;
   if (operationName == "GetChunksByDistance") return kGetChunksByDistanceIsolatedDocument;
+  if (operationName == "GetChunksByDistanceVoxelTypes") return kGetChunksByDistanceVoxelTypesIsolatedDocument;
+  if (operationName == "GetChunksByDistanceVoxels") return kGetChunksByDistanceVoxelsIsolatedDocument;
   if (operationName == "GetVoxelList") return kGetVoxelListIsolatedDocument;
   if (operationName == "UpdateChunk") return kUpdateChunkIsolatedDocument;
   if (operationName == "UpdateChunkLods") return kUpdateChunkLodsIsolatedDocument;
@@ -3425,6 +3543,13 @@ mutation CrowdyStudioCommonPublish(
 ) {
   crowdyStudioCommonPublish(input: $input) {
     ...CrowdyStudioCommonFileFields
+  }
+}
+
+query CrowdyStudioLinks {
+  crowdyStudioLinks {
+    origin
+    walletUrl
   }
 })gql";
 inline constexpr std::string_view kCrowdyStudioProjectsIsolatedDocument = R"gql(query CrowdyStudioProjects($appId: BigInt!, $includeArchived: Boolean, $limit: Int, $offset: Int) {
@@ -3887,6 +4012,13 @@ fragment CrowdyStudioCommonFileFields on CrowdyStudioCommonFile {
   updatedAt
 })gql";
 inline constexpr std::string_view kCrowdyStudioCommonPublishOperationName = "CrowdyStudioCommonPublish";
+inline constexpr std::string_view kCrowdyStudioLinksIsolatedDocument = R"gql(query CrowdyStudioLinks {
+  crowdyStudioLinks {
+    origin
+    walletUrl
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioLinksOperationName = "CrowdyStudioLinks";
 
 /// crowdyStudio/CrowdyStudioGitHub.graphql
 inline constexpr std::string_view kCrowdyStudioGitHubDocument = R"gql(fragment CrowdyStudioGitHubStatusFields on CrowdyStudioGitHubStatus {
@@ -4195,6 +4327,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CrowdyStudioCommonFiles") return kCrowdyStudioCommonFilesIsolatedDocument;
   if (operationName == "CrowdyStudioProjectImportFile") return kCrowdyStudioProjectImportFileIsolatedDocument;
   if (operationName == "CrowdyStudioCommonPublish") return kCrowdyStudioCommonPublishIsolatedDocument;
+  if (operationName == "CrowdyStudioLinks") return kCrowdyStudioLinksIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubStatus") return kCrowdyStudioGitHubStatusIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubConnectUrl") return kCrowdyStudioGitHubConnectUrlIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubRepos") return kCrowdyStudioGitHubReposIsolatedDocument;
@@ -4708,8 +4841,14 @@ inline constexpr std::string_view kCrowdyStudioAgentSetPolicyOperationName = "Cr
 /// crowdyStudioAgent/CrowdyStudioModel.graphql
 inline constexpr std::string_view kCrowdyStudioModelDocument = R"gql(# The metered model endpoint's GraphQL companions. The endpoint itself is
 # REST (`GET /v1/model/models`, `POST /v1/model/chat/completions`, bearer =
-# app token) and is what the in-browser Studio agent spends tokens through;
-# these operations read what it recorded and gate whether it may run.
+# app token) and is what the Studio agent spends tokens through; these
+# operations read what it recorded and gate whether it may run.
+
+# A Studio dock asks this before the agent's draft_test or deploy_live: the mod
+# build, deploy and switch-on calls do not check the app's Allow Live Modding.
+query CrowdyStudioLiveModding($appId: BigInt!, $action: String!) {
+  crowdyStudioLiveModding(appId: $appId, action: $action)
+}
 
 query CrowdyStudioProviderConsent($appId: BigInt!) {
   crowdyStudioProviderConsent(appId: $appId) {
@@ -4749,6 +4888,10 @@ query CrowdyStudioModelUsage($appId: BigInt!, $limit: Int) {
     }
   }
 })gql";
+inline constexpr std::string_view kCrowdyStudioLiveModdingIsolatedDocument = R"gql(query CrowdyStudioLiveModding($appId: BigInt!, $action: String!) {
+  crowdyStudioLiveModding(appId: $appId, action: $action)
+})gql";
+inline constexpr std::string_view kCrowdyStudioLiveModdingOperationName = "CrowdyStudioLiveModding";
 inline constexpr std::string_view kCrowdyStudioProviderConsentIsolatedDocument = R"gql(query CrowdyStudioProviderConsent($appId: BigInt!) {
   crowdyStudioProviderConsent(appId: $appId) {
     appId
@@ -4794,6 +4937,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CrowdyStudioAgentEffectivePolicy") return kCrowdyStudioAgentEffectivePolicyIsolatedDocument;
   if (operationName == "CrowdyStudioAgentUsage") return kCrowdyStudioAgentUsageIsolatedDocument;
   if (operationName == "CrowdyStudioAgentSetPolicy") return kCrowdyStudioAgentSetPolicyIsolatedDocument;
+  if (operationName == "CrowdyStudioLiveModding") return kCrowdyStudioLiveModdingIsolatedDocument;
   if (operationName == "CrowdyStudioProviderConsent") return kCrowdyStudioProviderConsentIsolatedDocument;
   if (operationName == "CrowdyStudioSetProviderConsent") return kCrowdyStudioSetProviderConsentIsolatedDocument;
   if (operationName == "CrowdyStudioModelUsage") return kCrowdyStudioModelUsageIsolatedDocument;
@@ -4972,6 +5116,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 }
 
 mutation ExecBuild($input: ExecBuildInput!) {
@@ -4998,6 +5144,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 }
 
 fragment ExecModListingFields on ExecModListing {
@@ -5037,8 +5185,8 @@ query ExecModStarter($appId: BigInt!) {
   }
 }
 
-mutation ExecModBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
-  execModBuild(appId: $appId, crate: $crate) {
+mutation ExecModBuild($appId: BigInt!, $crate: ExecBuildCrateInput!, $studio: ExecStudioSourceInput) {
+  execModBuild(appId: $appId, crate: $crate, studio: $studio) {
     ...ExecBuildFields
   }
 }
@@ -5189,6 +5337,8 @@ fragment ExecModClientFields on ExecModClient {
   capabilityHash
   tickIntervalMs
   updatedAt
+  studioProjectId
+  studioRevision
 }
 
 fragment ExecGridClientModFields on ExecGridClientMod {
@@ -5209,8 +5359,20 @@ fragment ExecGridClientModFields on ExecGridClientMod {
   updatedAt
 }
 
-mutation ExecModClientBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
-  execModClientBuild(appId: $appId, crate: $crate) {
+query ExecModClientStarter($appId: BigInt!) {
+  execModClientStarter(appId: $appId) {
+    crate
+    nodeType
+    description
+    files {
+      path
+      content
+    }
+  }
+}
+
+mutation ExecModClientBuild($appId: BigInt!, $crate: ExecBuildCrateInput!, $studio: ExecStudioSourceInput) {
+  execModClientBuild(appId: $appId, crate: $crate, studio: $studio) {
     ...ExecBuildFields
   }
 }
@@ -5473,6 +5635,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecBuildOperationName = "ExecBuild";
 inline constexpr std::string_view kExecBuildStatusIsolatedDocument = R"gql(query ExecBuildStatus($appId: BigInt!, $buildId: String!) {
@@ -5498,6 +5662,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecBuildStatusOperationName = "ExecBuildStatus";
 inline constexpr std::string_view kExecModStarterIsolatedDocument = R"gql(query ExecModStarter($appId: BigInt!) {
@@ -5512,8 +5678,8 @@ inline constexpr std::string_view kExecModStarterIsolatedDocument = R"gql(query 
   }
 })gql";
 inline constexpr std::string_view kExecModStarterOperationName = "ExecModStarter";
-inline constexpr std::string_view kExecModBuildIsolatedDocument = R"gql(mutation ExecModBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
-  execModBuild(appId: $appId, crate: $crate) {
+inline constexpr std::string_view kExecModBuildIsolatedDocument = R"gql(mutation ExecModBuild($appId: BigInt!, $crate: ExecBuildCrateInput!, $studio: ExecStudioSourceInput) {
+  execModBuild(appId: $appId, crate: $crate, studio: $studio) {
     ...ExecBuildFields
   }
 }
@@ -5535,6 +5701,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModBuildOperationName = "ExecModBuild";
 inline constexpr std::string_view kExecModBuildStatusIsolatedDocument = R"gql(query ExecModBuildStatus($appId: BigInt!, $buildId: String!) {
@@ -5560,6 +5728,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModBuildStatusOperationName = "ExecModBuildStatus";
 inline constexpr std::string_view kExecModDeployIsolatedDocument = R"gql(mutation ExecModDeploy($appId: BigInt!, $gridId: BigInt!, $name: String!, $buildId: String!) {
@@ -5580,6 +5750,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModDeployOperationName = "ExecModDeploy";
 inline constexpr std::string_view kExecModSetEnabledIsolatedDocument = R"gql(mutation ExecModSetEnabled($appId: BigInt!, $gridId: BigInt!, $name: String!, $enabled: Boolean!) {
@@ -5605,6 +5777,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModSetEnabledOperationName = "ExecModSetEnabled";
 inline constexpr std::string_view kExecModDeleteIsolatedDocument = R"gql(mutation ExecModDelete($appId: BigInt!, $gridId: BigInt!, $name: String!) {
@@ -5629,6 +5803,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModsOperationName = "ExecMods";
 inline constexpr std::string_view kExecMyModsIsolatedDocument = R"gql(query ExecMyMods($appId: BigInt!) {
@@ -5649,6 +5825,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecMyModsOperationName = "ExecMyMods";
 inline constexpr std::string_view kExecModLogsIsolatedDocument = R"gql(query ExecModLogs($appId: BigInt!, $gridId: BigInt!, $name: String!, $maxLevel: Int, $before: String, $limit: Int) {
@@ -5750,6 +5928,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModInstallOperationName = "ExecModInstall";
 inline constexpr std::string_view kExecAppModsIsolatedDocument = R"gql(query ExecAppMods($appId: BigInt!, $gridId: BigInt, $ownerId: BigInt) {
@@ -5770,6 +5950,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecAppModsOperationName = "ExecAppMods";
 inline constexpr std::string_view kExecModSwitchesIsolatedDocument = R"gql(query ExecModSwitches($appId: BigInt!) {
@@ -5806,8 +5988,20 @@ fragment ExecModSwitchFields on ExecModSwitch {
   createdAt
 })gql";
 inline constexpr std::string_view kExecModSetSwitchOperationName = "ExecModSetSwitch";
-inline constexpr std::string_view kExecModClientBuildIsolatedDocument = R"gql(mutation ExecModClientBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
-  execModClientBuild(appId: $appId, crate: $crate) {
+inline constexpr std::string_view kExecModClientStarterIsolatedDocument = R"gql(query ExecModClientStarter($appId: BigInt!) {
+  execModClientStarter(appId: $appId) {
+    crate
+    nodeType
+    description
+    files {
+      path
+      content
+    }
+  }
+})gql";
+inline constexpr std::string_view kExecModClientStarterOperationName = "ExecModClientStarter";
+inline constexpr std::string_view kExecModClientBuildIsolatedDocument = R"gql(mutation ExecModClientBuild($appId: BigInt!, $crate: ExecBuildCrateInput!, $studio: ExecStudioSourceInput) {
+  execModClientBuild(appId: $appId, crate: $crate, studio: $studio) {
     ...ExecBuildFields
   }
 }
@@ -5829,6 +6023,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModClientBuildOperationName = "ExecModClientBuild";
 inline constexpr std::string_view kExecModClientDeployIsolatedDocument = R"gql(mutation ExecModClientDeploy($appId: BigInt!, $gridId: BigInt!, $name: String!, $buildId: String!) {
@@ -5854,6 +6050,8 @@ fragment ExecModClientFields on ExecModClient {
   capabilityHash
   tickIntervalMs
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModClientDeployOperationName = "ExecModClientDeploy";
 inline constexpr std::string_view kExecModClientDeleteIsolatedDocument = R"gql(mutation ExecModClientDelete($appId: BigInt!, $gridId: BigInt!, $name: String!) {
@@ -5958,6 +6156,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "ExecAppMods") return kExecAppModsIsolatedDocument;
   if (operationName == "ExecModSwitches") return kExecModSwitchesIsolatedDocument;
   if (operationName == "ExecModSetSwitch") return kExecModSetSwitchIsolatedDocument;
+  if (operationName == "ExecModClientStarter") return kExecModClientStarterIsolatedDocument;
   if (operationName == "ExecModClientBuild") return kExecModClientBuildIsolatedDocument;
   if (operationName == "ExecModClientDeploy") return kExecModClientDeployIsolatedDocument;
   if (operationName == "ExecModClientDelete") return kExecModClientDeleteIsolatedDocument;
@@ -6047,6 +6246,7 @@ query NearbyGrids($input: NearbyGridsInput!) {
       y
       z
     }
+    permissionKeys
   }
 }
 
@@ -6255,6 +6455,7 @@ inline constexpr std::string_view kNearbyGridsIsolatedDocument = R"gql(query Nea
       y
       z
     }
+    permissionKeys
   }
 })gql";
 inline constexpr std::string_view kNearbyGridsOperationName = "NearbyGrids";
@@ -10941,6 +11142,102 @@ inline constexpr std::string_view kListVoxelUpdatesByDistanceIsolatedDocument = 
 })gql";
 inline constexpr std::string_view kListVoxelUpdatesByDistanceOperationName = "ListVoxelUpdatesByDistance";
 
+/// voxels/ListVoxelUpdatesByDistanceCells.graphql
+inline constexpr std::string_view kListVoxelUpdatesByDistanceCellsDocument = R"gql(query ListVoxelUpdatesByDistanceCells($input: ListVoxelUpdatesByDistanceInput!) {
+  listVoxelUpdatesByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels {
+        location {
+          x
+          y
+          z
+        }
+        voxelType
+        state
+      }
+    }
+  }
+})gql";
+inline constexpr std::string_view kListVoxelUpdatesByDistanceCellsIsolatedDocument = R"gql(query ListVoxelUpdatesByDistanceCells($input: ListVoxelUpdatesByDistanceInput!) {
+  listVoxelUpdatesByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels {
+        location {
+          x
+          y
+          z
+        }
+        voxelType
+        state
+      }
+    }
+  }
+})gql";
+inline constexpr std::string_view kListVoxelUpdatesByDistanceCellsOperationName = "ListVoxelUpdatesByDistanceCells";
+
+/// voxels/ListVoxelUpdatesByDistanceCellsTimed.graphql
+inline constexpr std::string_view kListVoxelUpdatesByDistanceCellsTimedDocument = R"gql(query ListVoxelUpdatesByDistanceCellsTimed($input: ListVoxelUpdatesByDistanceInput!) {
+  listVoxelUpdatesByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels {
+        location {
+          x
+          y
+          z
+        }
+        voxelType
+        state
+        createdAt
+      }
+    }
+  }
+})gql";
+inline constexpr std::string_view kListVoxelUpdatesByDistanceCellsTimedIsolatedDocument = R"gql(query ListVoxelUpdatesByDistanceCellsTimed($input: ListVoxelUpdatesByDistanceInput!) {
+  listVoxelUpdatesByDistance(input: $input) {
+    limit
+    skip
+    chunks {
+      coordinates {
+        x
+        y
+        z
+      }
+      voxels {
+        location {
+          x
+          y
+          z
+        }
+        voxelType
+        state
+        createdAt
+      }
+    }
+  }
+})gql";
+inline constexpr std::string_view kListVoxelUpdatesByDistanceCellsTimedOperationName = "ListVoxelUpdatesByDistanceCellsTimed";
+
 /// voxels/ListVoxels.graphql
 inline constexpr std::string_view kListVoxelsDocument = R"gql(query ListVoxels($input: ListVoxelsInput!) {
   listVoxels(input: $input) {
@@ -11223,6 +11520,8 @@ inline constexpr std::string_view kVoxelUpdateHistoryConnectionOperationName = "
 
 inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "ListVoxelUpdatesByDistance") return kListVoxelUpdatesByDistanceIsolatedDocument;
+  if (operationName == "ListVoxelUpdatesByDistanceCells") return kListVoxelUpdatesByDistanceCellsIsolatedDocument;
+  if (operationName == "ListVoxelUpdatesByDistanceCellsTimed") return kListVoxelUpdatesByDistanceCellsTimedIsolatedDocument;
   if (operationName == "ListVoxels") return kListVoxelsIsolatedDocument;
   if (operationName == "RollbackVoxelUpdates") return kRollbackVoxelUpdatesIsolatedDocument;
   if (operationName == "UpdateVoxel") return kUpdateVoxelIsolatedDocument;

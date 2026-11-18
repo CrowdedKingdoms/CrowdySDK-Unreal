@@ -2,6 +2,10 @@
 
 #include "Containers/StringConv.h"
 
+THIRD_PARTY_INCLUDES_START
+#include "crowdy/graphql/json.hpp"
+THIRD_PARTY_INCLUDES_END
+
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -24,6 +28,7 @@ namespace
 	{
 		return TArray<uint8>(reinterpret_cast<const uint8*>(Value.data()), static_cast<int32>(Value.size()));
 	}
+
 
 	FCrowdyNativeExecReply CrowdyNativeExecRefusal(ECrowdyNativeExecStatus Status, const FString& Message)
 	{
@@ -145,6 +150,54 @@ namespace CrowdyNativeExec
 			}
 		});
 		return MakeShared<FCrowdyNativeExecConnection>(Impl);
+	}
+
+	bool JsonToMsgpack(const FString& Json, TArray<uint8>& OutBytes)
+	{
+		try
+		{
+			const crowdy::graphql::Json Parsed = crowdy::graphql::Json::parse(CrowdyNativeExecToUtf8(Json));
+			if (!Parsed.ok())
+			{
+				return false;
+			}
+			OutBytes = CrowdyNativeExecBytes(Parsed.toMsgpack());
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	bool MsgpackToJson(TConstArrayView<uint8> Bytes, FString& OutJson)
+	{
+		if (Bytes.IsEmpty())
+		{
+			OutJson = TEXT("null");
+			return true;
+		}
+		try
+		{
+			const crowdy::graphql::Json Parsed = crowdy::graphql::Json::fromMsgpack(
+				std::string_view(reinterpret_cast<const char*>(Bytes.GetData()), static_cast<size_t>(Bytes.Num())));
+			if (!Parsed.ok())
+			{
+				return false;
+			}
+			// NaN and infinity are written as null in place; a string that is not valid UTF-8 has no JSON form.
+			const crowdy::Result<std::string> Dumped = Parsed.tryDump();
+			if (!Dumped.ok())
+			{
+				return false;
+			}
+			OutJson = CrowdyNativeExecFromUtf8(Dumped.value());
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
 	}
 
 	FCrowdyNativeExecReply ReplyFrom(const crowdy::domains::ExecReply& Reply)

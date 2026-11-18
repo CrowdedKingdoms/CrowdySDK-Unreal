@@ -1393,12 +1393,6 @@ class SharedEnvironmentAPI : public detail::AdminDomain {
   /// metered usage and carries no data allowance. Reserving 5 MB/s does not make
   /// the first 5 MB/s free.
   ///
-  /// It is NOT how the free-tier cap is lifted. Unfunded free apps are shaped at
-  /// roughly 1 MB/s; funding the org wallet or enabling auto-billing lifts that.
-  /// Before 2026-09-01 a reservation did double duty as the bypass, which is why
-  /// this comment said "clears back to the free tier" -- clearing a reservation
-  /// changes what is provisioned, not what is shaped.
-  ///
   /// Sold in two independent dimensions since 2026-09-01: realtime throughput
   /// (this mutation) and GraphQL operations/sec. Reserving one does not reserve
   /// the other. Read both back from App.reservedUdpBytesPerSec and

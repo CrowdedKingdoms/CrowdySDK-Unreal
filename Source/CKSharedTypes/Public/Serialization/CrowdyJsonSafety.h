@@ -23,13 +23,15 @@ namespace CrowdyJsonSafety
 	// True when the JSON string's object/array nesting never exceeds MaxDepth. A single pass over the raw text
 	// tracking brace/bracket balance, ignoring nesting characters inside string literals (a stringified bracket
 	// never becomes a nested DOM node, so it cannot be a teardown-overflow vector). This is a depth filter, not a
-	// validator: a well-formed shallow payload always passes and is then fully validated by the parser.
-	inline bool IsNestingWithinLimit(const FString& Json, int32 MaxDepth = MaxNestingDepth)
+	// validator: a well-formed shallow payload always passes and is then fully validated by the parser. Takes an
+	// FString or a UTF-8 view alike: every character it looks at is ASCII.
+	template <typename CharRangeType>
+	bool IsNestingWithinLimit(const CharRangeType& Json, int32 MaxDepth = MaxNestingDepth)
 	{
 		int32 Depth = 0;
 		bool bInString = false;
 		bool bEscaped = false;
-		for (const TCHAR Char : Json)
+		for (const auto Char : Json)
 		{
 			if (bInString)
 			{
@@ -37,29 +39,29 @@ namespace CrowdyJsonSafety
 				{
 					bEscaped = false;
 				}
-				else if (Char == TEXT('\\'))
+				else if (Char == '\\')
 				{
 					bEscaped = true;
 				}
-				else if (Char == TEXT('"'))
+				else if (Char == '"')
 				{
 					bInString = false;
 				}
 				continue;
 			}
 
-			if (Char == TEXT('"'))
+			if (Char == '"')
 			{
 				bInString = true;
 			}
-			else if (Char == TEXT('{') || Char == TEXT('['))
+			else if (Char == '{' || Char == '[')
 			{
 				if (++Depth > MaxDepth)
 				{
 					return false;
 				}
 			}
-			else if (Char == TEXT('}') || Char == TEXT(']'))
+			else if (Char == '}' || Char == ']')
 			{
 				--Depth;
 			}

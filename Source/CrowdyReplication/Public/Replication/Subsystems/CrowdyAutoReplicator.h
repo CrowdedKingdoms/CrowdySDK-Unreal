@@ -146,8 +146,14 @@ public:
 	 */
 	bool SetExtras(const UActorComponent* Component, TArray<uint8> Extras);
 
+	// The extras the component's updates carry; empty when it is not registered here.
+	TArray<uint8> GetExtras(const UActorComponent* Component) const;
+
 	// True when the component's full updates go out here and peers on this map apply them.
 	bool CarriesUpdatesOf(const UActorComponent* Component) const;
+
+	// True when the component is registered here, for movement or for presence.
+	bool HoldsComponent(const UActorComponent* Component) const;
 
 	// How long a player who joins later waits, at most, to see a presence entry's entity.
 	static constexpr float PresenceIntervalSeconds = 4.0f;

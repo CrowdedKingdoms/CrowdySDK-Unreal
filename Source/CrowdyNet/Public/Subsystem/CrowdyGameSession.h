@@ -10,7 +10,7 @@
 class UWorld;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnOwnerUUIDUpdated, FString, NewOwnerUUID);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnHostIDUpdated, const FGuid&, NewHostID, const FGuid&, PreviousHostID);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnHostIDUpdated, const FGuid& /*NewWriterID*/, const FGuid& /*PreviousWriterID*/);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyAppPausedChanged, bool, bPaused, const FString&, Reason);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCrowdyAccessEnded, const FString&, Reason, const FString&, BlockedUntil);
 
@@ -135,12 +135,7 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session")
 	FOnOwnerUUIDUpdated OnOwnerUUIDUpdated;
 
-	/** Fired on the game thread whenever the elected host changes.
-	 *  UCrowdyHostSubsystem (CrowdyServices) writes the host here so that lower
-	 *  modules (CrowdyReplication) can read it without a dependency cycle. */
-	UE_DEPRECATED(5.8, "Bind OnLeaderChanged on UCrowdyLeaderSubsystem, which never fires under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
-	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Game Session",
-		meta=(DeprecatedProperty, DeprecationMessage="Bind On Leader Changed on the Crowdy Leader Subsystem, which never fires under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
+	/** Game thread. Fired when the app writer (the Leader) changes, so modules below UCrowdyLeaderSubsystem can follow it; game code binds OnLeaderChanged there instead. */
 	FOnHostIDUpdated OnHostIDUpdated;
 
 	/** Fired on the game thread when the app is paused or comes back, or when the reason changes. */
@@ -185,6 +180,18 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetUserID(const int64 InUserID){GameSessionInfo.UserID = InUserID;}
+
+	/**
+	 * Completes a sign-in, before its realtime connection opens. An actor id minted while signed out has sent nothing,
+	 * so it becomes this sign-in's; otherwise a fresh id replaces the held one through SetUUID.
+	 */
+	void BeginSignIn();
+
+	/** Ends the current sign-in without forgetting its id, so the next sign-in replaces it rather than adopting it. */
+	void EndSignIn() { bSignedIn = false; }
+
+	/** True between a completed sign-in and its sign-out. */
+	bool IsSignedIn() const { return bSignedIn; }
 	
 	/**
 	 * Install the app-scoped gameplay token.
@@ -267,13 +274,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
 	FString GetLaunchUrl() const {return GameSessionInfo.LaunchUrl;}
 	
+	/**
+	 * Sets the actor id this client sends under while no player is signed in; a sign-in never adopts it. While signed
+	 * in the SDK mints the id itself, so a different one is refused with a warning.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
-	void SetUUID(FString InUUID)
-	{
-		GameSessionInfo.UUID = InUUID;
-		GameSessionInfo.ID = USerializationFunctionLibrary::ToGuid(InUUID);
-		OnOwnerUUIDUpdated.Broadcast(InUUID);
-	}
+	void SetUUID(FString InUUID);
+
+	/** The actor id this client sends under, minted at random and set through SetUUID when none is held. */
+	FGuid EnsureActorID();
+
+	/** Mints a fresh actor id and sets it through SetUUID, so every listener re-keys from the held one. */
+	FGuid ReplaceActorID();
 	
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetGameTokenID(const int64 InGameTokenID) {GameSessionInfo.GameTokenID = InGameTokenID;}
@@ -314,23 +326,16 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
 	FGuid GetID() const {return GameSessionInfo.ID;}
 
-	UE_DEPRECATED(5.8, "Use GetLeaderUserID on UCrowdyLeaderSubsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object.")
-	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session",
-		meta=(DeprecatedFunction, DeprecationMessage="Use Get Leader User ID on the Crowdy Leader Subsystem, which is 0 under Leader Source Elected Host; logic only one machine should run belongs in a Server Object."))
-	FGuid GetHostID() const {return HostID;}
-
-	// The client that writes replicated subsystems: the Leader, or the elected host under Leader Source Elected Host.
+	// The client that writes replicated subsystems: the Leader.
 	FGuid GetAppWriterID() const {return HostID;}
 
-	/** Game thread only. Called by UCrowdyHostSubsystem when a host is elected. */
+	/** Game thread only. Called by UCrowdyLeaderSubsystem when the Leader changes, and cleared on sign-out. */
 	void SetHostID(const FGuid& InHostID)
 	{
 		if (HostID == InHostID) return;
 		const FGuid PreviousHostID = HostID;
 		HostID = InHostID;
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		OnHostIDUpdated.Broadcast(HostID, PreviousHostID);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
@@ -339,6 +344,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
 	int64 GetGameTokenID() const {return GameSessionInfo.GameTokenID;}
 
+	/** Forgets the session's values, its actor id included; the sign-in itself ends only through a sign-out. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void ClearCurrentSessionData() {GameSessionInfo.Reset();}
 	
@@ -374,6 +380,20 @@ private:
 	UPROPERTY()
 	FGuid HostID;
 
+	bool bSignedIn = false;
+
+	/** Whether the held actor id was set during a sign-in, as opposed to before one, which the next sign-in adopts. */
+	bool bActorIDOfSignIn = false;
+
+	/** Whether the SDK minted the held actor id, as opposed to a game setting it; only a minted one is adopted. */
+	bool bActorIDMinted = false;
+
+	bool bWarnedSetUUIDWhileSignedIn = false;
+
+	/** Takes InUUID as the actor id; a change of a signed-in player's id closes the realtime connection first. */
+	void SetActorID(const FString& InUUID, bool bMinted);
+	void CloseConnectionBeforeRekey() const;
+
 	bool bAppPaused = false;
 
 	FString AppPausedReason;
@@ -383,8 +403,4 @@ private:
 	FString AccessEndedReason;
 
 	FString AccessBlockedUntil;
-
-	/** Atomic so it can be written from a background response thread and read
-	 *  from the game thread (or any other thread) without a lock. */
-	std::atomic<int64> HostUserID { 0 };
 };

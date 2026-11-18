@@ -95,9 +95,9 @@ namespace
 		TEXT("crowdy.state.loopback"), 0,
 		TEXT("When non-zero, a sent CrowdyState delta for an owned entity is also decoded onto a local ")
 		TEXT("'mirror' entity (a lazily-spawned second instance of the same class, RemoteProxy role, a ")
-		TEXT("distinct NetID) so decode/OnRep/host-authority checks can be exercised from one PIE client. ")
+		TEXT("distinct NetID) so decode/OnRep/ownership checks can be exercised from one PIE client. ")
 		TEXT("Unlike crowdy.rpc.loopback this cannot replay onto the same actor (an owner's own entity ")
-		TEXT("silently drops a non-host-sourced delta, and decode's changed-detection would report no ")
+		TEXT("drops every foreign delta, and decode's changed-detection would report no ")
 		TEXT("change against identical values); the mirror is a genuinely distinct receive target instead."),
 		ECVF_Default);
 
@@ -203,16 +203,12 @@ void UCrowdyStateReplicator::Initialize(FSubsystemCollectionBase& Collection)
 	{
 		AutoRegistry = GameInstance->GetSubsystem<UCrowdyAutoRegistry>();
 
-		// The game session is game-instance-scoped, so it survives level travel; bind its host-change delegate to
-		// promote/demote host-owned tracking mid-session. On a fresh world where the host is already elected,
-		// OnHostIDUpdated does not fire (equal-value writes are suppressed) TryTrackOwned reads GetHostID() live
-		// at re-registration on the new world, so that init-seeding path needs no explicit event.
+		// The game session survives level travel, and a Leader already in place when this world starts is read live
+		// at registration, so only a change mid-session needs the event.
 		if (UCrowdyGameSession* GS = GameInstance->GetSubsystem<UCrowdyGameSession>())
 		{
 			GameSession = GS;
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			GS->OnHostIDUpdated.AddDynamic(this, &UCrowdyStateReplicator::HandleHostChanged);
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			GS->OnHostIDUpdated.AddUObject(this, &UCrowdyStateReplicator::HandleLeaderChanged);
 		}
 	}
 
@@ -239,9 +235,7 @@ void UCrowdyStateReplicator::Deinitialize()
 
 	if (UCrowdyGameSession* GS = GameSession.Get())
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		GS->OnHostIDUpdated.RemoveDynamic(this, &UCrowdyStateReplicator::HandleHostChanged);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		GS->OnHostIDUpdated.RemoveAll(this);
 	}
 
 #if WITH_EDITOR
@@ -317,34 +311,32 @@ void UCrowdyStateReplicator::HandleEntityRegistered(const FGuid& NetID)
 		return;
 	}
 
-	if (const FCrowdyEntityRecord* Record = ES->FindRecord(NetID))
+	const FCrowdyEntityRecord* Record = ES->FindRecord(NetID);
+	if (!Record)
 	{
-		TryTrackOwned(*Record);
-
-		// Remember every host-owned id independent of whether TryTrackOwned tracked it: a non-host does not track
-		// it now but must still be able to promote it once we become host (HandleHostChanged reads this set).
-		if (Record->Role == ECrowdyRole::HostOwned)
-		{
-			KnownHostOwnedIDs.Add(NetID);
-		}
+		return;
 	}
+
+	TryTrackOwned(*Record);
+
+	// Every replicated subsystem is remembered, tracked or not, so a later Leader change can promote or demote it.
+	if (IsLeaderWritten(*Record))
+	{
+		KnownSubsystemIDs.Add(NetID);
+	}
+}
+
+bool UCrowdyStateReplicator::IsLeaderWritten(const FCrowdyEntityRecord& Record)
+{
+	return Record.Role == ECrowdyRole::WorldOwned && Record.IsReplicatedSubsystem();
 }
 
 bool UCrowdyStateReplicator::TryTrackOwned(const FCrowdyEntityRecord& Record)
 {
-	// This client drives an entity it owns; it also drives HostOwned (world/AI) entities, but only while it is
-	// the host. A non-host rejects HostOwned records it receives world-entity state as a proxy, never
-	// simulates it. Anything else (RemoteProxy, None) is not tracked here.
-	bool bTrackAsHostOwned = false;
-	if (Record.Role == ECrowdyRole::Owner)
-	{
-		bTrackAsHostOwned = false;
-	}
-	else if (Record.Role == ECrowdyRole::HostOwned && IsLocalHost(Record.IsReplicatedSubsystem()))
-	{
-		bTrackAsHostOwned = true;
-	}
-	else
+	// This client drives what it owns, and the replicated subsystems while it is the Leader. A World entity has no
+	// writer, and anything else (RemoteProxy, None) is not tracked here.
+	const bool bOwned = Record.Role == ECrowdyRole::Owner || (IsLeaderWritten(Record) && IsLocalLeader());
+	if (!bOwned)
 	{
 		return false;
 	}
@@ -368,48 +360,33 @@ bool UCrowdyStateReplicator::TryTrackOwned(const FCrowdyEntityRecord& Record)
 	}
 
 	// A non-actor participant (a subsystem) is non-spatial: its deltas ride the reliable channel, and it never
-	// emits owner-only targeted deltas. Crucially it also has bHostOwned FALSE even for a HostOwned record, so
-	// the auto-diff loop RUNS for it a host-owned subsystem replicates on CHANGE (unlike a spatial host-owned
-	// world actor, which stays manual-only). An actor participant keeps today's bHostOwned semantics exactly.
-	if (Cast<AActor>(Participant) == nullptr)
-	{
-		State->bNonSpatial = true;
-		State->bHostOwned = false;
-	}
-	else
-	{
-		State->bHostOwned = bTrackAsHostOwned;
-		State->bContinuousOnMovement &= !bTrackAsHostOwned;
-	}
+	// emits owner-only targeted deltas.
+	State->bNonSpatial = Cast<AActor>(Participant) == nullptr;
 
 	OwnedEntities.Add(Record.NetID, MoveTemp(State));
 	return true;
 }
 
-FGuid UCrowdyStateReplicator::ResolveHostID(const bool bSubsystem) const
+FGuid UCrowdyStateReplicator::ResolveLeaderID() const
 {
-	if (bUseHostOverrideForTest)
+	if (bUseLeaderOverrideForTest)
 	{
-		return HostIDForTest;
+		return LeaderIDForTest;
 	}
-	UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
-	if (!ES)
-	{
-		return FGuid();
-	}
-	return bSubsystem ? ES->GetAppWriterID() : ES->GetWorldOwnerID();
+	const UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
+	return ES ? ES->GetAppWriterID() : FGuid();
 }
 
-bool UCrowdyStateReplicator::IsLocalHost(const bool bSubsystem) const
+bool UCrowdyStateReplicator::IsLocalLeader() const
 {
-	const FGuid Host = ResolveHostID(bSubsystem);
-	if (!Host.IsValid())
+	const FGuid Leader = ResolveLeaderID();
+	if (!Leader.IsValid())
 	{
 		return false;
 	}
-	UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
+	const UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
 	const FGuid Local = ES ? ES->GetLocalPlayerID() : LocalPlayerID;
-	return Host == Local;
+	return Leader == Local;
 }
 
 double UCrowdyStateReplicator::GetLoopTimeSeconds() const
@@ -425,51 +402,40 @@ double UCrowdyStateReplicator::GetLoopTimeSeconds() const
 void UCrowdyStateReplicator::HandleEntityUnregistered(const FGuid& NetID)
 {
 	OwnedEntities.Remove(NetID);
-	KnownHostOwnedIDs.Remove(NetID);
+	KnownSubsystemIDs.Remove(NetID);
 	DestroyLoopbackMirror(NetID);
 }
 
-void UCrowdyStateReplicator::HandleHostChanged(const FGuid& NewHostID, const FGuid& PreviousHostID)
+void UCrowdyStateReplicator::HandleLeaderChanged(const FGuid& NewLeaderID, const FGuid& /*PreviousLeaderID*/)
 {
-	// Closes two live bugs in the host-lifecycle: (1) a client PROMOTED to host that never starts driving the
-	// world/AI entities it is now responsible for (because OnEntityRegistered fired while it was a non-host and
-	// TryTrackOwned rejected the HostOwned records back then), and (2) a client DEMOTED from host that keeps
-	// broadcasting world state including keyframe heartbeats for those entities forever.
-	UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
+	// A client that stops leading stops sending the subsystems; one that starts leading starts.
+	const UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
 	const FGuid LocalID = ES ? ES->GetLocalPlayerID() : LocalPlayerID;
-	const bool bNowHost = NewHostID.IsValid() && NewHostID == LocalID;
-	if (bNowHost)
+	if (!NewLeaderID.IsValid() || NewLeaderID != LocalID)
 	{
-		// Promote: start tracking every known host-owned entity we are not already tracking. TryTrackOwned
-		// re-checks IsLocalHost() live (now true) and its OwnedEntities.Contains guard prevents a double-track.
-		for (const FGuid& Id : KnownHostOwnedIDs)
-		{
-			if (OwnedEntities.Contains(Id))
-			{
-				continue;
-			}
-			if (ES)
-			{
-				if (const FCrowdyEntityRecord* R = ES->FindRecord(Id))
-				{
-					TryTrackOwned(*R);
-				}
-			}
-		}
-	}
-	else
-	{
-		// Demote: we are no longer host, so stop broadcasting world state (keyframes included) for entities we no
-		// longer author. Only host-owned ids are removed; Owner entities we still own are left untouched.
-		for (const FGuid& Id : KnownHostOwnedIDs)
+		for (const FGuid& Id : KnownSubsystemIDs)
 		{
 			OwnedEntities.Remove(Id);
+		}
+		return;
+	}
+
+	if (!ES)
+	{
+		return;
+	}
+	for (const FGuid& Id : KnownSubsystemIDs)
+	{
+		const FCrowdyEntityRecord* Record = ES->FindRecord(Id);
+		if (Record && !OwnedEntities.Contains(Id) && TryTrackOwned(*Record))
+		{
+			OwnedEntities[Id]->bQuietResend = true;
 		}
 	}
 }
 
 void UCrowdyStateReplicator::HandleOwnershipChanged(AActor* /*TargetEntity*/, const FGuid& NetID,
-	const FGuid& /*NewOwnerID*/, const FGuid& /*PreviousOwnerID*/)
+	const FGuid& /*NewWriterID*/, const FGuid& /*PreviousWriterID*/)
 {
 	// Drop any tracking/shadow this client held for the entity under its previous owner; ReassignOwnership has
 	// already re-pointed the record, so re-derive everything from it. Remove is a no-op when we did not track it.
@@ -484,22 +450,19 @@ void UCrowdyStateReplicator::HandleOwnershipChanged(AActor* /*TargetEntity*/, co
 	const FCrowdyEntityRecord* Record = ES->FindRecord(NetID);
 	if (!Record)
 	{
-		KnownHostOwnedIDs.Remove(NetID);
+		KnownSubsystemIDs.Remove(NetID);
 		return;
 	}
 
-	// Maintain the known-host-owned set exactly as HandleEntityRegistered does, so a later host migration still
-	// promotes (on becoming host) or demotes (on losing host) this entity correctly after the transfer.
-	if (Record->Role == ECrowdyRole::HostOwned)
+	if (IsLeaderWritten(*Record))
 	{
-		KnownHostOwnedIDs.Add(NetID);
+		KnownSubsystemIDs.Add(NetID);
 	}
 	else
 	{
-		KnownHostOwnedIDs.Remove(NetID);
+		KnownSubsystemIDs.Remove(NetID);
 	}
 
-	// Re-track when we are now the authority: an Owner record always, a HostOwned record only while we are host.
 	TryTrackOwned(*Record);
 
 	// A new Leader may hold stale values, so it starts from what it has and sends only what it writes from here on.
@@ -642,8 +605,13 @@ void UCrowdyStateReplicator::SetContinuousOnMovement(const FGuid& EntityID, cons
 {
 	if (const TUniquePtr<FCrowdyOwnedEntityState>* State = OwnedEntities.Find(EntityID))
 	{
-		(*State)->bContinuousOnMovement = bOnMovement && !(*State)->bHostOwned;
+		(*State)->bContinuousOnMovement = bOnMovement;
 	}
+}
+
+void UCrowdyStateReplicator::SetLocalPlayerIdle(const bool bIdle)
+{
+	bLocalPlayerIdle = bIdle;
 }
 
 bool UCrowdyStateReplicator::RegisterOwnedEntityForTest(const FGuid& EntityID, UObject* Participant)
@@ -668,56 +636,11 @@ void UCrowdyStateReplicator::MarkStateDirty(const FGuid& EntityID, FName Propert
 	TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(EntityID);
 	if (!Found || !Found->IsValid())
 	{
-		// Untracked target: the host acts as a super-user over an entity another client owns. Its writes are
-		// deliberate one-shot authoritative pushes (never a background diff), which is why there is exactly one
-		// explicit push path here and no auto-diff for host authority a second implicit mechanism racing this
-		// is what produces "host sets X, client re-sends Y" overwrites. The push encodes the property's CURRENT
-		// live value on the next tick and is stamped HostSourced only if we are host; it holds no shadow.
+		// Only the writer sends an entity's state, and every other client would drop the change anyway.
 		WarnIfWorldEntityHasNoWriter(EntityID);
-		AActor* Actor = EntitySubsystem.IsValid() ? EntitySubsystem->FindEntity(EntityID) : nullptr;
-		UCrowdyAutoRegistry* Registry = AutoRegistry.Get();
-		if (!Actor || !Registry)
-		{
-			UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
-				TEXT("[CrowdyStateReplicator] MarkStateDirty on '%s' (entity %s) ignored: not tracked and could not be resolved."),
-				*PropertyName.ToString(), *EntityID.ToString());
-			return;
-		}
-
-		const FCrowdyRepLayout* Layout = Registry->FindRepLayout(Actor->GetClass());
-		if (!Layout || !Layout->IsValid())
-		{
-			return;
-		}
-
-		// HostOverride SEND check (PRIMARY enforcement): a host may not override an OwnerOnly entity, so drop the
-		// push at the source. A missing entity component is treated as Allow (fall through).
-		if (const UCrowdyEntityComponent* Comp = Actor->FindComponentByClass<UCrowdyEntityComponent>())
-		{
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			const ECrowdyHostOverride Policy = Comp->GetHostOverridePolicy();
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
-			if (Policy == ECrowdyHostOverride::OwnerOnly)
-			{
-				UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
-					TEXT("[CrowdyStateReplicator] push to %s dropped: entity is OwnerOnly (host may not override it)."),
-					*EntityID.ToString());
-				return;
-			}
-		}
-
-		// A host override may target ANY CrowdyState property (no bManualDirty requirement here).
-		for (int32 Index = 0; Index < Layout->Properties.Num(); ++Index)
-		{
-			const FCrowdyRepProperty& RepProp = Layout->Properties[Index];
-			if (RepProp.Property && RepProp.Property->GetFName() == PropertyName)
-			{
-				PendingHostPushes.AddUnique(FCrowdyPendingHostPush{ EntityID, Index });
-				return;
-			}
-		}
-
-		WarnUnknownStateProperty(WarnedUnknownStateProperties, Actor->GetClass(), PropertyName, EntityID);
+		UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
+			TEXT("[CrowdyStateReplicator] MarkStateDirty on '%s' (entity %s) ignored: this client does not write it."),
+			*PropertyName.ToString(), *EntityID.ToString());
 		return;
 	}
 	FCrowdyOwnedEntityState& State = **Found;
@@ -766,19 +689,47 @@ void UCrowdyStateReplicator::MarkStateDirty(const FGuid& EntityID, FName Propert
 
 void UCrowdyStateReplicator::WarnIfWorldEntityHasNoWriter(const FGuid& EntityID)
 {
-	if (bWarnedWorldEntityHasNoWriter || UCrowdySDKDeveloperSettings::UsesElectedHost())
+	if (bWarnedWorldEntityHasNoWriter)
 		return;
 
 	const FCrowdyEntityRecord* Record = EntitySubsystem.IsValid() ? EntitySubsystem->FindRecord(EntityID) : nullptr;
-	if (!Record || Record->Role != ECrowdyRole::HostOwned || Record->IsReplicatedSubsystem())
+	if (!Record || Record->Role != ECrowdyRole::WorldOwned || Record->IsReplicatedSubsystem())
 		return;
 
 	bWarnedWorldEntityHasNoWriter = true;
 	UE_LOG(LogCrowdyReplication, Warning,
-		TEXT("[CrowdyStateReplicator]: State was marked dirty on World entity %s, but Leader Source is Server Object, so no client writes World entities and every other client ignores the change. ")
-		TEXT("Keep a World entity's truth in a Server Object, or set Project Settings > Plugins > Crowdy SDK > Replication > Leader Source to Elected Host (Deprecated) to keep the elected host writing it."),
+		TEXT("[CrowdyStateReplicator]: State was marked dirty on World entity %s, which no client writes, so every other client ignores the change. ")
+		TEXT("Keep a World entity's truth in a Server Object."),
 		*EntityID.ToString());
 }
+
+void UCrowdyStateReplicator::ForceFullState(const FGuid& EntityID)
+{
+	const TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(EntityID);
+	if (!Found || !Found->IsValid())
+	{
+		return;
+	}
+	(*Found)->bSendAllOnce = true;
+	(*Found)->bQuietResend = true;
+}
+
+void UCrowdyStateReplicator::SeedFromLive(const FGuid& EntityID)
+{
+	const TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(EntityID);
+	if (Found && Found->IsValid())
+	{
+		SeedShadowFromLive(**Found);
+	}
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool UCrowdyStateReplicator::IsFullStateForcedForTest(const FGuid& EntityID) const
+{
+	const TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(EntityID);
+	return Found && Found->IsValid() && (*Found)->bSendAllOnce;
+}
+#endif
 
 void UCrowdyStateReplicator::MarkAllStateDirty(const FGuid& EntityID)
 {
@@ -811,48 +762,6 @@ void UCrowdyStateReplicator::MarkAllStateDirty(const FGuid& EntityID)
 		{
 			State.PendingManualDirty[Index] = true;
 		}
-	}
-}
-
-void UCrowdyStateReplicator::AdoptHostValues(const FGuid& EntityID, const FCrowdyRepLayout& Layout,
-	const TArray<int32>& ChangedIndices, const void* AppliedContainer)
-{
-	TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(EntityID);
-	if (!Found || !Found->IsValid())
-	{
-		// We do not track it (e.g. it is a proxy on this client) nothing to adopt.
-		return;
-	}
-	FCrowdyOwnedEntityState& State = **Found;
-
-	// The shadow must be aligned to exactly this layout; a drift means the positional slots would not line up,
-	// so skip and let the next tick rebuild.
-	if (!State.bShadowInitialized || State.ShadowLayoutHash != Layout.LayoutHash)
-	{
-		return;
-	}
-
-	uint8* const ShadowBase = State.ShadowData.GetData();
-	if (!ShadowBase || !AppliedContainer)
-	{
-		return;
-	}
-
-	for (int32 Index : ChangedIndices)
-	{
-		if (!Layout.Properties.IsValidIndex(Index) || !State.ShadowOffsets.IsValidIndex(Index))
-		{
-			continue;
-		}
-		const FProperty* Prop = Layout.Properties[Index].Property;
-		if (!Prop)
-		{
-			continue;
-		}
-		// Copy the host's just-applied value into the owner's shadow so the next diff sees it as already-sent
-		// (Identical == true) and does not re-emit a revert. AppliedContainer is only read.
-		Prop->CopyCompleteValue(ShadowBase + State.ShadowOffsets[Index],
-			Prop->ContainerPtrToValuePtr<void>(const_cast<void*>(AppliedContainer)));
 	}
 }
 
@@ -923,7 +832,7 @@ AActor* UCrowdyStateReplicator::GetOrCreateLoopbackMirror(AActor* SourceActor, c
 
 	// A bespoke, purely local spawn: SpawnActorDeferred lets us inject an identity before BeginPlay, exactly
 	// like UCrowdyEntitySubsystem::SpawnEntity, but deliberately NOT that helper it hardcodes Role::Owner and
-	// OwnerID=LocalPlayerID (wrong for a mirror: see GetOrCreateLoopbackMirror's header comment) and also
+	// WriterID=LocalPlayerID (wrong for a mirror: see GetOrCreateLoopbackMirror's header comment) and also
 	// broadcasts a spawn announcement over the real transport, which a purely-local debug mirror must not do.
 	AActor* Mirror = World->SpawnActorDeferred<AActor>(SourceActor->GetClass(), MirrorTransform,
 		nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
@@ -946,12 +855,10 @@ AActor* UCrowdyStateReplicator::GetOrCreateLoopbackMirror(AActor* SourceActor, c
 	const FGuid MirrorNetID = FGuid::NewGuid();
 	const uint32 ClassID = UCrowdyClassRegistry::Get()->GetID(SourceActor->GetClass());
 
-	// OwnerID is left INVALID, never LocalPlayerID. IsLocallyOwned() (UCrowdyEntitySubsystem) checks OwnerID,
+	// WriterID is left INVALID, never LocalPlayerID. IsLocallyOwned() (UCrowdyEntitySubsystem) checks WriterID,
 	// not Role, so an owner-stamped mirror would still trip DispatchStateDelta's owned-entity gate; and
 	// TryTrackOwned tracks any Owner record, which would make this replicator try to mirror the mirror.
-	// Role=RemoteProxy (not HostOwned) additionally sidesteps DispatchStateDelta's host-owned-world-entity
-	// branch, which has its own HostOwned-specific check.
-	Component->InitIdentity(MirrorNetID, /*InOwnerID=*/FGuid(), ECrowdyRole::RemoteProxy, ClassID);
+	Component->InitIdentity(MirrorNetID, /*InWriterID=*/FGuid(), /*InOwnerUserID=*/0, ECrowdyRole::RemoteProxy, ClassID);
 
 	// Trusted the same way UCrowdyEntitySubsystem::SpawnEntity trusts its own FinishSpawning: BeginPlay's tail
 	// registers the mirror into whatever UCrowdyEntitySubsystem the world resolves, with no post-hoc check
@@ -1019,21 +926,6 @@ void UCrowdyStateReplicator::FlushLocalNotifies(const TArray<FCrowdyPendingLocal
 	}
 }
 
-bool UCrowdyStateReplicator::HasPendingNotify(const TArray<FCrowdyPendingLocalNotify>& Notifies, int32 Count,
-	const FGuid& EntityID, int32 PropertyIndex)
-{
-	const int32 Limit = FMath::Min(Count, Notifies.Num());
-	for (int32 Index = 0; Index < Limit; ++Index)
-	{
-		const FCrowdyPendingLocalNotify& Notify = Notifies[Index];
-		if (Notify.PropertyIndex == PropertyIndex && Notify.EntityID == EntityID)
-		{
-			return true;
-		}
-	}
-	return false;
-}
-
 void UCrowdyStateReplicator::ResyncShadowsAfterLocalNotifies(const TArray<FCrowdyPendingLocalNotify>& Notifies)
 {
 	if (Notifies.Num() == 0)
@@ -1054,8 +946,7 @@ void UCrowdyStateReplicator::ResyncShadowsAfterLocalNotifies(const TArray<FCrowd
 			continue;
 		}
 
-		// An entity a notify body unregistered, or one this client never tracked (a one-shot push over another
-		// client's entity holds no shadow at all), simply has nothing to fold.
+		// An entity a notify body unregistered simply has nothing to fold.
 		TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(Notify.EntityID);
 		if (!Found || !Found->IsValid())
 		{
@@ -1094,147 +985,25 @@ void UCrowdyStateReplicator::ResyncShadowsAfterLocalNotifies(const TArray<FCrowd
 	}
 }
 
-void UCrowdyStateReplicator::DrainPendingHostPushes(TArray<FCrowdyPendingLocalNotify>& OutNotifies)
-{
-	if (PendingHostPushes.Num() == 0)
-	{
-		return;
-	}
-
-	UCrowdyAutoRegistry* Registry = AutoRegistry.Get();
-	if (!Registry)
-	{
-		// No registry means no layout to encode against; drop the queue rather than retry a hopeless push forever.
-		PendingHostPushes.Reset();
-		return;
-	}
-
-	// Sender and host status are read live, like the main loop: the local id is assigned asynchronously after
-	// sign-in, and only a push emitted while we are host is stamped HostSourced.
-	UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
-	const FGuid SenderID = ES ? ES->GetLocalPlayerID() : LocalPlayerID;
-	const FGuid HostID = ResolveHostID(/*bSubsystem=*/false);
-	const bool bLocalIsHost = HostID.IsValid() && SenderID.IsValid() && HostID == SenderID;
-
-	// A push is queued only for an entity this client did not track at the time of the mark, but ownership can
-	// transfer in between, so by now the entity may well be tracked. The push still emits: it is a deliberate
-	// one-shot authoritative write, and the diff would not cover it for a manual-dirty property (never
-	// auto-diffed) or for a host-owned entity (auto-diff off), so dropping it would silently lose the override.
-	// The redundant delta a plain auto-diffed property then also sends is idempotent on every receiver; only the
-	// notify is de-duplicated, which is what a notify body would otherwise observe twice.
-	for (const FCrowdyPendingHostPush& Push : PendingHostPushes)
-	{
-		// The one-shot host push targets a per-owner entity by location, so it is actor-only. A non-actor
-		// (subsystem) push id is skipped safely with a verbose log a host-owned subsystem is already tracked
-		// and auto-diffs on the host, so it never needs this path (subsystem host-push is out of scope here).
-		UObject* Participant = ES ? ES->FindParticipant(Push.EntityID) : nullptr;
-		AActor* Actor = Cast<AActor>(Participant);
-		if (!Actor)
-		{
-			if (Participant)
-			{
-				UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
-					TEXT("[CrowdyStateReplicator] host push for non-actor participant %s skipped (subsystem host-push is out of scope)."),
-					*Push.EntityID.ToString());
-			}
-			continue;
-		}
-
-		const FCrowdyRepLayout* Layout = Registry->FindRepLayout(Actor->GetClass());
-		if (!Layout || !Layout->IsValid() || !Layout->Properties.IsValidIndex(Push.PropertyIndex))
-		{
-			continue;
-		}
-
-		const FCrowdyRepProperty& RepProp = Layout->Properties[Push.PropertyIndex];
-		if (!RepProp.Property)
-		{
-			continue;
-		}
-
-		TBitArray<> Dirty;
-		Dirty.Init(false, Layout->Properties.Num());
-		Dirty[Push.PropertyIndex] = true;
-
-		TArray<uint8> Blob;
-		FCrowdyStateCodec::Encode(*Layout, Actor, Dirty, /*bKeyframe=*/false, Blob);
-		if (Blob.Num() > CrowdyStateBlobLimit::Event)
-		{
-			UE_LOG(LogCrowdyReplication, Warning,
-				TEXT("[CrowdyState] host push of %s on %s (entity %s) dropped: %d bytes, over the %d one update can carry."),
-				*RepProp.Property->GetName(), *GetNameSafe(Actor), *Push.EntityID.ToString(), Blob.Num(),
-				CrowdyStateBlobLimit::Event);
-			continue;
-		}
-
-		FCrowdyStateDelta Delta;
-		Delta.ClassID = static_cast<int64>(UCrowdyClassRegistry::Get()->GetID(Actor->GetClass()));
-		Delta.EntityID = Push.EntityID;
-		Delta.SenderID = SenderID;
-		Delta.LayoutHash = Layout->LayoutHash;
-		Delta.Flags = static_cast<uint8>(bLocalIsHost ? CrowdyStateDeltaFlags::HostSourced : 0);
-		Delta.Blob = MoveTemp(Blob);
-
-		UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Log,
-			TEXT("[CrowdyStateReplicator] host push entity=%s bytes=%d host=%d"),
-			*Push.EntityID.ToString(), Delta.Blob.Num(), bLocalIsHost ? 1 : 0);
-
-		if (DispatchHookForTests)
-		{
-			DispatchHookForTests(Delta, /*bTargeted=*/false);
-		}
-		else if (ES)
-		{
-			ES->DispatchGameEvent(Actor, FInstancedStruct::Make(Delta), ECrowdyTarget::Everyone, Actor,
-				ECrowdyDecayRate::No_Decay, RelevanceDistance);
-		}
-
-		// The push encodes the property straight off the live local member, so by the time it is drained the local
-		// value has already moved; the notify therefore fires locally too, exactly as it will on every receiver.
-		// It is handed to the send loop rather than fired here so the diff can recognise the same slot and not
-		// queue it a second time, and so a notify body cannot append to the queue this loop is walking.
-		if (RepProp.OnRepFunctionName != NAME_None)
-		{
-			OutNotifies.Add(FCrowdyPendingLocalNotify{ Actor, RepProp.OnRepFunctionName, Push.EntityID,
-				Push.PropertyIndex });
-		}
-	}
-
-	// Cleared before the send loop fires the notifies, so a notify body that queues another push targets an empty
-	// queue and its push rides the next tick instead of being dropped by this reset.
-	PendingHostPushes.Reset();
-}
-
 void UCrowdyStateReplicator::ReplicationLoop()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_StateReplicationLoop);
 
-	// Local notifies for the slots that changed on THIS client this tick, fired once the walk below is finished.
-	// Deferred because a notify body may register or unregister an entity, which would rehash the map being
-	// iterated. The one-shot host pushes contribute to the same list so a slot both paths cover fires once.
-	TArray<FCrowdyPendingLocalNotify> PendingNotifies;
-
-	// One-shot host super-user pushes drain first: a push can exist for an entity this client does not track, so
-	// it must run even when OwnedEntities is empty (the early-outs below would otherwise skip it).
-	DrainPendingHostPushes(PendingNotifies);
-
-	// Every notify the drain queued sits at the front of the list, so the walk only has to look that far to spot
-	// a slot it would otherwise queue twice.
-	const int32 NumHostPushNotifies = PendingNotifies.Num();
-
 	if (OwnedEntities.Num() == 0)
 	{
-		FlushLocalNotifies(PendingNotifies);
-		ResyncShadowsAfterLocalNotifies(PendingNotifies);
 		return;
 	}
 
 	UCrowdyAutoRegistry* Registry = AutoRegistry.Get();
 	if (!Registry)
 	{
-		FlushLocalNotifies(PendingNotifies);
 		return;
 	}
+
+	// Local notifies for the slots that changed on THIS client this tick, fired once the walk below is finished.
+	// Deferred because a notify body may register or unregister an entity, which would rehash the map being
+	// iterated.
+	TArray<FCrowdyPendingLocalNotify> PendingNotifies;
 
 	// Resolve the sender live each loop: the local player's authoritative GUID is assigned asynchronously
 	// after sign-in, so a value cached at Initialize would be stale/empty for the whole session. Fall back to
@@ -1242,12 +1011,9 @@ void UCrowdyStateReplicator::ReplicationLoop()
 	UCrowdyEntitySubsystem* ES = EntitySubsystem.Get();
 	const FGuid SenderID = ES ? ES->GetLocalPlayerID() : LocalPlayerID;
 
-	// Host status is resolved live too (host id and local id both read live). Every delta we emit while we are
-	// the host is stamped HostSourced a precedence-by-convention hint; the receiver acts on it only for
-	// entities it owns (accept a host correction, drop a foreign non-host delta). A subsystem's writer is the Leader.
-	const FGuid HostID = ResolveHostID(/*bSubsystem=*/false);
-	const bool bLocalIsHost = HostID.IsValid() && SenderID.IsValid() && HostID == SenderID;
-	const FGuid LeaderID = ResolveHostID(/*bSubsystem=*/true);
+	// The Leader stamps its replicated subsystems' deltas HostSourced, which is how a receiver knows the subsystem's
+	// writer sent them. Read live, like the sender.
+	const FGuid LeaderID = ResolveLeaderID();
 	const bool bLocalIsLeader = LeaderID.IsValid() && SenderID.IsValid() && LeaderID == SenderID;
 	const double Now = GetLoopTimeSeconds();
 
@@ -1325,11 +1091,14 @@ void UCrowdyStateReplicator::ReplicationLoop()
 		const FCrowdyRepLayout& Layout = *LayoutPtr;
 		const int32 Num = Layout.Properties.Num();
 		uint8* const ShadowBase = State.ShadowData.GetData();
+		const bool bQuietResend = State.bQuietResend;
+		State.bQuietResend = false;
+		const bool bSendAll = State.bSendAllOnce;
+		State.bSendAllOnce = false;
 
 		// Classify each property into two dirty sets over the FULL layout: SpatialDirty broadcasts, OwnerOnlyDirty
 		// ships as a targeted (single-actor) delta. Auto-diff properties diff against the shadow; manual-dirty
-		// properties consult PendingManualDirty; owner-only routing is by the property's own bOwnerOnly flag. A
-		// host-owned entity is never auto-diffed (only its explicit marks + heartbeat emit).
+		// properties consult PendingManualDirty; owner-only routing is by the property's own bOwnerOnly flag.
 		TBitArray<> SpatialDirty;
 		SpatialDirty.Init(false, Num);
 		TBitArray<> OwnerOnlyDirty;
@@ -1360,14 +1129,12 @@ void UCrowdyStateReplicator::ReplicationLoop()
 				continue;
 			}
 
-			bool bDirty = false;
-			if (RepProp.bManualDirty)
+			bool bDirty = bSendAll;
+			if (!bDirty && RepProp.bManualDirty)
 			{
 				bDirty = State.PendingManualDirty.IsValidIndex(Index) && State.PendingManualDirty[Index];
 			}
-			// Host-owned auto-diff stays OFF: host writes are explicit one-shot pushes (see MarkStateDirty), never a
-			// background diff, so a host-owned entity emits only its marked bits plus the keyframe heartbeat.
-			else if (!State.bHostOwned)
+			else if (!bDirty)
 			{
 				const void* Live = RepProp.Property->ContainerPtrToValuePtr<void>(Participant);
 				const void* Shadow = ShadowBase + State.ShadowOffsets[Index];
@@ -1402,14 +1169,19 @@ void UCrowdyStateReplicator::ReplicationLoop()
 		// empty keyframe nor mislabels a same-tick on-change delta as a keyframe (the timer still advances, so the
 		// empty check runs once per interval rather than every tick).
 		bool bEmitKeyframe = false;
-		if (KeyframeInterval > 0.0f && !State.bHeartbeatSuppressed && Now >= State.NextKeyframeTime)
+		const bool bKeyframeDue = KeyframeInterval > 0.0f && !State.bHeartbeatSuppressed && Now >= State.NextKeyframeTime;
+		if (bKeyframeDue && bLocalPlayerIdle)
+		{
+			// Skipped in whole intervals, so the entity keeps its place in the stagger.
+			State.NextKeyframeTime += KeyframeInterval * FMath::FloorToDouble((Now - State.NextKeyframeTime) / KeyframeInterval + 1.0);
+		}
+		if (bKeyframeDue && !bLocalPlayerIdle)
 		{
 			State.NextKeyframeTime = Now + static_cast<double>(KeyframeInterval);
 			for (int32 Index = 0; Index < Num; ++Index)
 			{
 				const FCrowdyRepProperty& RepProp = Layout.Properties[Index];
-				// With no movement update to ride, a continuous value is on the keyframe whatever its heartbeat mark says:
-				// a host's World entity is never diffed, so this is the only way it goes out.
+				// With no movement update to ride, a continuous value is on the keyframe whatever its heartbeat mark says.
 				const bool bOnKeyframe = RepProp.bContinuous ? !State.bContinuousOnMovement : RepProp.bHeartbeat;
 				if (RepProp.Property && !RepProp.bOwnerOnly && bOnKeyframe)
 				{
@@ -1448,7 +1220,7 @@ void UCrowdyStateReplicator::ReplicationLoop()
 		}
 
 		const int64 ClassID = static_cast<int64>(State.ClassID);
-		const bool bHostSourced = State.bNonSpatial ? bLocalIsLeader : bLocalIsHost;
+		const bool bHostSourced = State.bNonSpatial && bLocalIsLeader;
 
 		if (bAnySpatial)
 		{
@@ -1603,13 +1375,9 @@ void UCrowdyStateReplicator::ReplicationLoop()
 				// Fire the notify only where the value genuinely MOVED since the last send, which is exactly
 				// what a receiver reports as changed. A keyframe re-sending an unchanged property, and a dirty
 				// mark on a value that did not move, both still go on the wire but change nothing anywhere, so
-				// neither may fire a notify here either. A slot a one-shot push already queued this tick is
-				// skipped: ownership can transfer between the mark and the drain, leaving the entity tracked
-				// with a fresh shadow that reports the pushed value as a change, and one write must not run the
-				// notify body twice.
-				if (RepProp.OnRepFunctionName != NAME_None
-					&& !RepProp.Property->Identical(LiveValue, ShadowSlot, PPF_None)
-					&& !HasPendingNotify(PendingNotifies, NumHostPushNotifies, State.EntityID, Index))
+				// neither may fire a notify here either.
+				if (RepProp.OnRepFunctionName != NAME_None && !bQuietResend
+					&& !RepProp.Property->Identical(LiveValue, ShadowSlot, PPF_None))
 				{
 					PendingNotifies.Add(FCrowdyPendingLocalNotify{ Participant, RepProp.OnRepFunctionName,
 						State.EntityID, Index });

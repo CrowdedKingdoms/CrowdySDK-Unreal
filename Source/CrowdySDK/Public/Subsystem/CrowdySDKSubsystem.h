@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceMicState.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceSettings.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
@@ -32,7 +33,9 @@ class FCrowdyMessageParser;
 
 // Unreal Subsystems
 class UCrowdyWorkerThreadsSubsystem;
+class UCrowdyActorOwners;
 class UCrowdyGameSession;
+class UCrowdyStudioAgent;
 class UVoiceChatSubsystem;
 class UWorld;
 
@@ -46,6 +49,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnUDPAddressNotify, bool, bSuccess
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnVersionInfo, FGameVersion, ServerVersion, FGameVersion, ClientVersion);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPConnectionSuccess);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPTimedOut);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUDPSessionInactive);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTeleportPermission, bool, bAllowed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCrowdyHUDReady);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnVoiceMicStateChanged, ECrowdyVoiceMicState, State);
@@ -84,6 +88,10 @@ public:
 	
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Connection", meta=(DisplayName="On UDP Timed Out"))
 	FOnUDPTimedOut OnUDPTimedOut;
+
+	/** The server released this player's session after the app's idle timeout; nothing reconnects until Request UDP Access. */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Connection", meta=(DisplayName="On UDP Session Inactive"))
+	FOnUDPSessionInactive OnUDPSessionInactive;
 	
 	UPROPERTY(BlueprintAssignable, Category= "Crowdy SDK|Permissions")
 	FOnTeleportPermission OnTeleportPermission;
@@ -123,41 +131,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication")
 	void CancelSignIn() const;
 
-	/**
-	 * @deprecated Remove the call. Nothing replaces it.
-	 *
-	 * Does nothing. The shared API client re-reads both endpoints from the developer settings every time it is
-	 * resolved and rebuilds itself when they change, so a settings change already reaches a running session.
-	 */
-	UE_DEPRECATED(5.8, "Remove the call. The API client re-reads the endpoints from the developer settings on its own, so this does nothing.")
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Configuration",
-		meta=(DisplayName="Reload Endpoints From Settings (Deprecated)",
-		      DeprecatedFunction,
-		      DeprecationMessage="Remove this node. The API client re-reads the endpoints from the developer settings on its own, so this does nothing."))
-	void ReloadEndpointsFromSettings();
-
+	/** Installs the session's ids and tokens. One that carries an app token completes a sign-in, which opens the connection once the player's actor record answers; the same user and token again change nothing. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Configuration")
 	void SetGameSessionInfo(const FGameSessionInfo GameSessionInfo);
 
+	/** Opens the realtime connection. Ignored while no player is signed in; while a sign-in waits for its actor record, that sign-in opens it instead. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection", meta=(DisplayName="Request UDP Access"))
 	void RequestUDPAccess() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection")
 	void RequestVersionInfo() const;
 	
-	/**
-	 * @deprecated Use SetGameApiUrl for the gameplay endpoint, or SetDiscoveryUrl for the shared origin.
-	 *
-	 * One setter cannot serve both: they are not two planes of one API but a specific datacenter's instance and
-	 * the name every datacenter answers to.
-	 */
-	UE_DEPRECATED(5.8, "Use SetGameApiUrl for the gameplay endpoint, or SetDiscoveryUrl for the shared origin.")
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Authentication",
-		meta=(DisplayName="Set Query Endpoint (Deprecated)",
-		      DeprecatedFunction,
-		      DeprecationMessage="Use Set Game Api Url for the gameplay endpoint, or Set Discovery Url for the shared origin."))
-	void SetQueryEndpoint(const FString InEndpoint) const;
-
 	/** Stores the shared origin for this session: the name every datacenter answers, used to resolve where an app
 	 *  lives and to sign in. Only the Custom backend reads it; Dev and Production resolve to their own built-in
 	 *  hosts, and the call warns when it cannot take effect. */
@@ -178,33 +162,6 @@ public:
 	EUDPConnectionState GetUDPConnectionState() const;
 
 	/**
-	 * @deprecated Remove the call. Nothing replaces it.
-	 *
-	 * The threshold passed here is ignored: the connection watches its own silence, using the interval set by
-	 * 'UDP Timeout (seconds)' in Project Settings, Plugins, Crowdy SDK. The round-trip ping this used to start
-	 * is now started automatically when the connection comes up, so calling this has no effect at all.
-	 */
-	UE_DEPRECATED(5.8, "Remove the call. The round-trip ping starts automatically when the connection comes up, and the connection tracks its own liveness.")
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection",
-		meta=(DisplayName="Start UDP Timeout Monitoring (Deprecated)",
-		      DeprecatedFunction,
-		      DeprecationMessage="Remove this node. The round-trip ping now starts automatically when the connection comes up, and the connection tracks its own liveness using 'UDP Timeout (seconds)' in Project Settings."))
-	void StartUDPTimeoutMonitoring(const float ThresholdSeconds = 30.0f);
-
-	/**
-	 * @deprecated Remove the call unless you specifically want to stop measuring latency.
-	 *
-	 * This stops the round-trip ping, which is all it ever did. It does not affect whether the connection is
-	 * watched for silence, which is not something a caller starts or stops.
-	 */
-	UE_DEPRECATED(5.8, "Remove the call unless you specifically want to stop the latency ping; it has never affected connection liveness.")
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection",
-		meta=(DisplayName="Stop UDP Timeout Monitoring (Deprecated)",
-		      DeprecatedFunction,
-		      DeprecationMessage="Remove this node unless you specifically want to stop the latency ping. It has never affected connection liveness."))
-	void StopUDPTimeoutMonitoring();
-
-	/**
 	 * Reports the session as disconnected, which is what connection UI reads. It does not close the connection or
 	 * stop traffic: the connection is owned by the transport and recovers on its own, and interrupting a recovery
 	 * already under way is not something a caller should be able to do by asking the UI to show a disconnect.
@@ -214,21 +171,6 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection")
 	void ToggleNetworkMessageProcessing() const;
-	
-	/**
-	 * @deprecated Remove the call. Nothing replaces it.
-	 *
-	 * Does nothing. Connection liveness used to be inferred from traffic arriving here, so a system that received
-	 * a message by another route could refresh the clock by calling this. The connection now tracks its own
-	 * liveness, so there is nothing left to refresh. Kept only so an existing graph that calls it keeps working
-	 * unchanged.
-	 */
-	UE_DEPRECATED(5.8, "Remove the call. The connection tracks its own liveness, so this does nothing.")
-	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection",
-		meta=(DisplayName="Trigger UDP Heartbeat (Deprecated)",
-		      DeprecatedFunction,
-		      DeprecationMessage="Remove this node. The connection tracks its own liveness, so this does nothing."))
-	void TriggerUdpHeartbeat() const;
 	
 	/** Opens your microphone and sends your voice to nearby players while you speak. Stays on across map changes until Stop Voice Chat. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
@@ -277,33 +219,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Permissions")
 	void RequestTeleportPermission(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ, const int32 VoxelX,
 	                               const int32 VoxelY, const int32 VoxelZ) const;
-	
-	/**
-	 * Does nothing. Inbound messages used to be received through registered layers that had to be
-	 * released together on teardown; a system now keeps a subscription handle for as long as it wants
-	 * to receive messages, and delivery stops automatically when that handle is destroyed along with
-	 * its owner. There is nothing left to release in bulk, so this call has no effect. Kept only so an
-	 * existing Blueprint graph that calls it keeps working unchanged.
-	 */
-	UE_DEPRECATED(5.8, "Remove the call. A system keeps a subscription handle for as long as it wants messages, and delivery stops when that handle is destroyed with its owner.")
-	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Reception Layer",
-		meta=(DisplayName="Deregister All Reception Layers (Deprecated)",
-		      DeprecatedFunction,
-		      DeprecationMessage="Remove this node. A system now keeps a subscription handle for as long as it wants to receive messages, and delivery stops automatically when that handle is destroyed along with its owner. There is nothing left to release in bulk, so this does nothing."))
-	void DeregisterAllReceptionLayers();
-	
-	/**
-	 * @deprecated Remove the call. Nothing replaces it.
-	 *
-	 * The size is only quoted in the warning logged when an actor update fails to decode; it does not change how
-	 * updates are decoded.
-	 */
-	UE_DEPRECATED(5.8, "Remove the call. The size only appears in a decode-failure warning and does not change how updates are decoded.")
-	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Subsystem",
-		meta=(DisplayName="Set Expected Actor Update State Size (Deprecated)",
-		      DeprecatedFunction,
-		      DeprecationMessage="Remove this node. The size only appears in a decode-failure warning and does not change how updates are decoded."))
-	void SetExpectedActorUpdateStateSize(const int32 InSize) const;
 	
 	/**
 	 * Puts one actor update on the wire. C++ only, where it used to be BlueprintCallable.
@@ -362,7 +277,7 @@ public:
 			FInstancedStruct::Make<T>(EventPayload), Target, TargetID, bAsync);
 	}
 
-	/** Shared implementation called by the template overload, the custom thunk, and the deprecated wrapper. */
+	/** Shared implementation called by the template overload and the custom thunk. */
 	void DispatchGameEvent_Internal(int64 ChunkX, int64 ChunkY, int64 ChunkZ,
 	                                ECrowdyDecayRate DecayRate, ECrowdyReplicationDistance ReplicationDistance,
 	                                const FGuid& InstigatorID, FInstancedStruct EventPayload,
@@ -441,11 +356,39 @@ public:
 	void BindAuthenticationForTest(UCrowdyAuthentication* Auth) { BindAuthentication(Auth); }
 
 	void SetGameSessionForTest(UCrowdyGameSession* InGameSession) { GameSession = InGameSession; }
+
+	/** Stands in for the game instance's subsystems on an SDK subsystem built outside a collection. */
+	void SetSignInCollaboratorsForTest(UCrowdyAuthentication* Auth, UCrowdyActorOwners* ActorOwners, UCrowdyUDPSubsystem* Udp);
+
+	/** The Studio agent Logout hands the sign-out to, for one built outside a subsystem collection. */
+	void SetStudioAgentForTest(UCrowdyStudioAgent* Agent);
 #endif
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	TWeakObjectPtr<UCrowdyStudioAgent> StudioAgentForTest;
+#endif
 
 	void BindAuthentication(UCrowdyAuthentication* Auth);
+
+	UCrowdyAuthentication* ResolveAuthentication() const;
+	UCrowdyActorOwners* ResolveActorOwners() const;
+
+	/** Whether the realtime connection may open now: signed in, with the sign-in's actor record answered. */
+	bool CanOpenConnection() const;
+
+	/** Request UDP Access past its sign-in gate, for a sign-in whose actor record has just answered. */
+	void OpenUDPAccess() const;
+
+	/** Stops the connection monitor's reconnect attempts, which would close and reopen a new sign-in's connection. */
+	void StopReconnecting() const;
+
+	bool bWarnedUnrecordedSignIn = false;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	TWeakObjectPtr<UCrowdyAuthentication> AuthForTest;
+	TWeakObjectPtr<UCrowdyActorOwners> ActorOwnersForTest;
+#endif
 
 	/** Kept out of line so the templated overload above does not pull the log category into every consumer. */
 	static void WarnNoRegistry(FName SubscriberName);
@@ -480,7 +423,13 @@ private:
 	FCrowdySubscription PingResponseSubscription;
 
 	FTimerHandle PingMessageTimerHandle;
-	FTimerHandle HostPollTimerHandle;
+
+	// No player input for crowdy.net.idlequietseconds: the ping and the keyframe heartbeat stop so the server can release the session.
+	bool bLocalPlayerIdle = false;
+	// A fresh connection counts as activity, so a player who has not touched an input yet is not idle from the first tick.
+	double LastConnectedSeconds = 0.0;
+	FTSTicker::FDelegateHandle IdleWatchHandle;
+	bool UpdateLocalPlayerIdle(float DeltaTime);
 	bool bIsRegistered = false;
 
 	UFUNCTION()
@@ -488,6 +437,9 @@ private:
 
 	UFUNCTION()
 	void HandleAuthRegister(FCrowdyAuthResult Result);
+
+	/** Opens the realtime connection once this sign-in's actor record has answered. */
+	void ConnectOnceRecorded() const;
 
 	/** Called by UCrowdyAuthentication::OnLoginFailed to forward failure on OnLogin. */
 	UFUNCTION()
@@ -568,22 +520,11 @@ private:
 
 	bool TryLoadConfiguration();
 
-	/** Starts the repeating GameHost poll. Safe to call from any thread: the timer registration runs
-	 *  inline when the caller is already on the game thread and is dispatched to it otherwise. Calling
-	 *  again while the poll is running does nothing. */
-	void StartHostPolling() const;
-
-	/** Cancels the GameHost poll timer. Must be called on the game thread. The poll rides the GameInstance timer
-	 *  manager (UWorld::GetTimerManager forwards to it for a Game/PIE world), so it survives level travel and needs
-	 *  no per-world re-arm; this teardown on GameInstance shutdown is sufficient. */
-	void StopHostPolling();
-
-	/** Fires the GameHost query (called by HostPollTimerHandle). */
-	UFUNCTION()
-	void PollGameHost() const;
-
 	UFUNCTION()
 	void OnUDPTimeout();
+
+	UFUNCTION()
+	void OnUDPInactive();
 
 	UFUNCTION()
 	void OnUDPConnectionSuccessful();

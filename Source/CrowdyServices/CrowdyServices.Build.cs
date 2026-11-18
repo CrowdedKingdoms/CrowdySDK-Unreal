@@ -39,5 +39,14 @@ public class CrowdyServices : ModuleRules
 				"CrowdyCppBridge",
 			}
 		);
+
+		if (Target.Platform == UnrealTargetPlatform.Win64 && Target.Architecture == UnrealArch.X64)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[] { "CrowdyModScriptRuntime", "Projects" });
+		}
+		else
+		{
+			PrivateDefinitions.Add("WITH_CROWDY_MOD_SCRIPT_RUNTIME=0");
+		}
 	}
 }

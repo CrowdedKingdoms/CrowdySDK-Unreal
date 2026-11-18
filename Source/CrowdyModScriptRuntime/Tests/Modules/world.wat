@@ -1,0 +1,51 @@
+(module
+  (import "ck" "log" (func $log (param i32 i32 i32)))
+  (import "ck" "host_call" (func $host_call (param i32 i32) (result i64)))
+  (memory (export "memory") 1)
+  (global $fuel (export "ck_fuel") (mut i64) (i64.const 0))
+  (global $heap (mut i32) (i32.const 1024))
+  (data (i32.const 16) "wld init")
+  (data $r0 "{\"fn\":\"chunk_get\",\"args\":{\"x\":5,\"y\":5,\"z\":0}}")
+  (data $r1 "{\"fn\":\"voxels_list\",\"args\":{\"x\":5,\"y\":5,\"z\":0}}")
+  (data $r2 "{\"fn\":\"actors_list_radius\",\"args\":{\"x\":5,\"y\":5,\"z\":0,\"radiusXz\":9,\"radiusY\":1}}")
+  (data $r3 "{\"fn\":\"pointer_clicks\",\"args\":{}}")
+  (data $r4 "{\"fn\":\"voxel_set\",\"args\":{\"chunkX\":5,\"chunkY\":5,\"chunkZ\":0,\"voxelX\":1,\"voxelY\":2,\"voxelZ\":3,\"voxelType\":7}}")
+
+  (func (export "ck_alloc") (param $size i32) (result i32)
+    (local $ptr i32)
+    (local $end i32)
+    (local.set $ptr (global.get $heap))
+    (local.set $end (i32.and (i32.add (i32.add (local.get $ptr) (local.get $size)) (i32.const 7)) (i32.const -8)))
+    (block $fits
+      (br_if $fits (i32.le_u (local.get $end) (i32.shl (memory.size) (i32.const 16))))
+      (br_if $fits (i32.ne (memory.grow (i32.add (i32.shr_u (i32.sub (local.get $end) (i32.shl (memory.size) (i32.const 16))) (i32.const 16)) (i32.const 1))) (i32.const -1)))
+      (unreachable))
+    (global.set $heap (local.get $end))
+    (local.get $ptr))
+
+  (func (export "ck_free") (param i32 i32))
+
+  (func (export "init")
+    (call $log (i32.const 1) (i32.const 16) (i32.const 8)))
+
+  (func (export "tick") (param $dt i32)
+    (local $i i32)
+    (local $answer i64)
+    (memory.init $r0 (i32.const 64) (i32.const 0) (i32.const 45))
+    (memory.init $r1 (i32.const 117) (i32.const 0) (i32.const 47))
+    (memory.init $r2 (i32.const 172) (i32.const 0) (i32.const 79))
+    (memory.init $r3 (i32.const 259) (i32.const 0) (i32.const 33))
+    (memory.init $r4 (i32.const 300) (i32.const 0) (i32.const 107))
+    (loop $again
+      (local.set $answer (call $host_call (i32.const 64) (i32.const 45)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $again (i32.lt_u (local.get $i) (i32.const 10))))
+    (drop (call $host_call (i32.const 117) (i32.const 47)))
+    (drop (call $host_call (i32.const 172) (i32.const 79)))
+    (drop (call $host_call (i32.const 259) (i32.const 33)))
+    ;; Writes only when chunk_get answered with the chunk itself, not a refusal or a placeholder.
+    (if (i64.gt_u (i64.and (local.get $answer) (i64.const 0xffffffff)) (i64.const 1000))
+      (then (drop (call $host_call (i32.const 300) (i32.const 107))))))
+
+  (func (export "handle_invoke") (param i32 i32) (result i64)
+    (i64.const 0)))

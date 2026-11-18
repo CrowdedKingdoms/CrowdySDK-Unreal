@@ -17,6 +17,7 @@
 #include "Messages/Voxel/FVoxelStateUpdateRequest.h"
 #include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
 #include "Network/UDP/CrowdyCppSendAdapter.h"
+#include "Network/UDP/CrowdyUDPSubsystem.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 #include "UObject/Package.h"
@@ -642,11 +643,13 @@ bool FCrowdyReplicationAdvertisesCapabilitiesTest::RunTest(const FString& Parame
 	// Long-spatial layout: a 68-byte header, the payload, then the 32-byte signature, the token id and the sequence.
 	constexpr int32 HeaderSize = 68;
 	constexpr int32 SignedTailSize = 32 + 8 + 1;
-	TestEqual(TEXT("the capability flags are one little-endian u32"), Capabilities.Num(), HeaderSize + 4 + SignedTailSize);
-	if (Capabilities.Num() == HeaderSize + 4 + SignedTailSize)
+	TestEqual(TEXT("the capability flags are one little-endian u32 and an 8-byte control nonce"), Capabilities.Num(),
+		HeaderSize + 12 + SignedTailSize);
+	if (Capabilities.Num() == HeaderSize + 12 + SignedTailSize)
 	{
 		TestEqual(TEXT("the message is signed like every client frame"), Capabilities[35], static_cast<uint8>(1));
-		TestEqual(TEXT("bit 0 asks for signed bundles"), Capabilities[HeaderSize], static_cast<uint8>(1));
+		TestEqual(TEXT("bit 0 asks for signed bundles and bit 1 for bound control frames"), Capabilities[HeaderSize],
+			static_cast<uint8>(3));
 		TestEqual(TEXT("and no other bit is set"),
 			Capabilities[HeaderSize + 1] | Capabilities[HeaderSize + 2] | Capabilities[HeaderSize + 3], 0);
 	}
@@ -1435,6 +1438,97 @@ bool FCrowdyServerErrorIsAttributedToItsSendTest::RunTest(const FString& Paramet
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTrackedSendReportsItsFateTest,
+	"CrowdySDK.Transport.TrackedSendReportsItsFate",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+bool FCrowdyTrackedSendReportsItsFateTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FConnectedFixture Fixture;
+	if (!TestTrue(TEXT("the fixture connects"), Fixture.Open()))
+	{
+		return false;
+	}
+
+	TArray<FCrowdyCppSendReceipt> Receipts;
+	uint64 ErrorTicket = 0;
+	bool bErrored = false;
+	FCrowdyCppReplicationHandlers Handlers;
+	Handlers.OnSendReceipt = [&Receipts](const FCrowdyCppSendReceipt& Receipt) { Receipts.Add(Receipt); };
+	Handlers.OnError = [&ErrorTicket, &bErrored](const FCrowdyCppSendError& Error)
+	{
+		ErrorTicket = Error.SendTicket;
+		bErrored = true;
+	};
+	Fixture.Connection->SetHandlers(Handlers);
+
+	constexpr uint8 TextOpcode = static_cast<uint8>(ECrowdyMessageType::CLIENT_TEXT_PACKET);
+	constexpr uint64 Ticket = 42;
+	const TArray<uint8> Payload = {0x41};
+	FString SendError;
+	if (!TestTrue(TEXT("a tracked send is accepted"),
+		Fixture.Connection->SendSpatial(TextOpcode, 1, 2, 3, GoldenUuidView(), Payload, 8, 0, SendError, Ticket)))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	const TArray<uint8> OnTheWire = Fixture.Server.Receive();
+	if (!TestTrue(TEXT("the send reached the stand-in server"), OnTheWire.Num() > 0))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	const uint8 Sequence = OnTheWire.Last();
+
+	const bool bSent = WaitUntil([&Fixture, &Receipts]()
+	{
+		Fixture.Connection->Poll();
+		return Receipts.Num() > 0;
+	});
+	if (!TestTrue(TEXT("the tracked send reports a receipt"), bSent))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	TestEqual(TEXT("the receipt names the ticket"), Receipts[0].Ticket, Ticket);
+	TestTrue(TEXT("the receipt says it went on the wire"), Receipts[0].Kind == ECrowdyCppSendReceiptKind::Sent);
+	TestEqual(TEXT("the receipt carries the sequence the wire shows"), static_cast<int32>(Receipts[0].Sequence), static_cast<int32>(Sequence));
+
+	constexpr uint8 Unauthorized = 7;
+	const TArray<uint8> ErrorFrame = {static_cast<uint8>(ECrowdyMessageType::GENERIC_ERROR_MESSAGE), Sequence, Unauthorized};
+	TestTrue(TEXT("an error frame naming that sequence was pushed"), Fixture.Server.SendToClient(ErrorFrame));
+	const bool bDelivered = WaitUntil([&Fixture, &bErrored]()
+	{
+		Fixture.Connection->Poll();
+		return bErrored;
+	});
+	TestTrue(TEXT("the error frame is delivered"), bDelivered);
+	TestEqual(TEXT("the attributed error carries the send's ticket"), ErrorTicket, Ticket);
+
+	// Untracked sends report nothing of their own, and the 256th after the tracked one laps its sequence.
+	for (int32 Index = 0; Index < 256; ++Index)
+	{
+		TestTrue(TEXT("an untracked send is accepted"),
+			Fixture.Connection->SendSpatial(TextOpcode, 1, 2, 3, GoldenUuidView(), Payload, 8, 0, SendError));
+	}
+	const bool bLapped = WaitUntil([&Fixture, &Receipts]()
+	{
+		Fixture.Connection->Poll();
+		return Receipts.Num() > 1;
+	});
+	if (TestTrue(TEXT("lapping the tracked send's sequence is reported"), bLapped))
+	{
+		TestEqual(TEXT("only the lap is reported"), Receipts.Num(), 2);
+		TestEqual(TEXT("the lap names the tracked ticket"), Receipts[1].Ticket, Ticket);
+		TestTrue(TEXT("the lap says so"), Receipts[1].Kind == ECrowdyCppSendReceiptKind::Lapped);
+		TestEqual(TEXT("the lap names the same sequence"), static_cast<int32>(Receipts[1].Sequence), static_cast<int32>(Sequence));
+	}
+
+	Fixture.Shut();
+	return true;
+}
+
 // The other half, and the reason the attribution carries a flag rather than always claiming an answer: a sequence
 // no send has used cannot be traced to one, and saying so is the difference between a diagnostic and a guess. A
 // forged frame can name any sequence it likes, so this is the ordinary case rather than an unlikely one.
@@ -1612,6 +1706,13 @@ bool FCrowdySendRefusalSaysWhatAndWhyTest::RunTest(const FString& Parameters)
 	Text.SendOpcode = static_cast<uint8>(ECrowdyMessageType::CLIENT_TEXT_PACKET);
 	UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Text, Refusal);
 	TestTrue(TEXT("proximity text needs use_text_chat"), Refusal.What == TEXT("proximity text") && Refusal.Remedy.Contains(TEXT("use_text_chat")));
+
+	FCrowdyCppSendError Video = Direct;
+	Video.SendOpcode = static_cast<uint8>(ECrowdyMessageType::CLIENT_VIDEO_PACKET);
+	UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Video, Refusal);
+	TestEqual(TEXT("a video frame says so"), Refusal.What, FString(TEXT("a video frame")));
+	TestEqual(TEXT("under its opcode"), Refusal.MessageType, static_cast<int32>(ECrowdyMessageType::CLIENT_VIDEO_PACKET));
+	TestTrue(TEXT("and needs use_video_chat"), Refusal.Remedy.Contains(TEXT("use_video_chat")));
 
 	FCrowdyCppSendError Other = Channel;
 	Other.ErrorCode = InvalidRequest;
@@ -2061,6 +2162,220 @@ bool FCrowdyReplicationBundlingOffTest::RunTest(const FString& Parameters)
 	const FCrowdyCppReplicationStats Stats = Fixture.Connection->GetStats();
 	TestEqual(TEXT("the library counted one datagram per message"), Stats.DatagramsSent, Stats.MessagesSent);
 	TestEqual(TEXT("and no bundles"), Stats.BundlesSent, static_cast<int64>(0));
+
+	Fixture.Shut();
+	return true;
+}
+
+namespace
+{
+	/** COMMAND_SESSION_RELEASED as the server frames it: type, reason, and an HMAC over those two octets. */
+	TArray<uint8> SessionReleasedFrame(const uint8 Reason, const bool bSigned)
+	{
+		TArray<uint8> Frame = {28, Reason};
+		Frame.SetNumZeroed(34);
+		if (bSigned)
+		{
+			CrowdyWireParity::Crypto().hmacSha256(CrowdyWireParity::ParityToken().bytes(), crowdy::Bytes(Frame.GetData(), 2),
+				Frame.GetData() + 2);
+		}
+		return Frame;
+	}
+
+	/** COMMAND_SESSION_RELEASED_BOUND: type, reason, the assignment's control nonce, and an HMAC over those ten octets. */
+	TArray<uint8> BoundReleaseFrame(const uint8 Reason, const TArray<uint8>& Nonce, const bool bSigned)
+	{
+		TArray<uint8> Frame = {45, Reason};
+		Frame.Append(Nonce);
+		Frame.SetNumZeroed(42);
+		if (bSigned)
+		{
+			CrowdyWireParity::Crypto().hmacSha256(CrowdyWireParity::ParityToken().bytes(), crowdy::Bytes(Frame.GetData(), 10),
+				Frame.GetData() + 10);
+		}
+		return Frame;
+	}
+
+	/** CONTROL_BOUND_ACK: type, the assignment's control nonce, and an HMAC over those nine octets. */
+	TArray<uint8> BoundAckFrame(const TArray<uint8>& Nonce, const bool bSigned)
+	{
+		TArray<uint8> Frame = {46};
+		Frame.Append(Nonce);
+		Frame.SetNumZeroed(41);
+		if (bSigned)
+		{
+			CrowdyWireParity::Crypto().hmacSha256(CrowdyWireParity::ParityToken().bytes(), crowdy::Bytes(Frame.GetData(), 9),
+				Frame.GetData() + 9);
+		}
+		return Frame;
+	}
+
+	/** The control nonce of the next CLIENT_CAPABILITIES the client sends; reading it also teaches the server the address. */
+	TArray<uint8> ReadControlNonce(CrowdyReplicationTestSupport::FConnectedFixture& Fixture)
+	{
+		constexpr int32 FlagsAt = 68;
+		TArray<uint8> Nonce;
+		CrowdyReplicationTestSupport::WaitUntil([&Fixture, &Nonce]()
+		{
+			Fixture.Connection->Poll();
+			for (const TArray<uint8>& Message : CrowdyReplicationTestSupport::SplitBundle(Fixture.Server.Receive(0.1)))
+			{
+				if (Message.Num() >= FlagsAt + 12 && Message[0] == static_cast<uint8>(ECrowdyMessageType::CLIENT_CAPABILITIES))
+				{
+					Nonce = TArray<uint8>(Message.GetData() + FlagsAt + 4, 8);
+					return true;
+				}
+			}
+			return false;
+		});
+		return Nonce;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyIdleReleaseIsInactiveTest,
+	"CrowdySDK.Transport.IdleReleaseIsInactiveNotATimeout",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyIdleReleaseIsInactiveTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FConnectedFixture Fixture;
+	Fixture.bAdvertiseCapabilities = true;
+	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open(7, 123456789, 0)))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	const TStrongObjectPtr<UGameInstance> OuterInstance(NewObject<UGameInstance>(GetTransientPackage()));
+	const TStrongObjectPtr<UCrowdyUDPSubsystem> Udp(NewObject<UCrowdyUDPSubsystem>(OuterInstance.Get()));
+	const TStrongObjectPtr<UCrowdyCppReplicationSubsystem> Routing(
+		NewObject<UCrowdyCppReplicationSubsystem>(OuterInstance.Get()));
+	Routing->SetReceiveTarget(nullptr, nullptr, Udp.Get());
+	Routing->SetConnection(Fixture.Connection);
+
+	const TArray<uint8> FirstNonce = ReadControlNonce(Fixture);
+	if (!TestEqual(TEXT("the client sent its control nonce, and the server learned its address"), FirstNonce.Num(), 8))
+	{
+		Routing->SetConnection(nullptr);
+		Fixture.Shut();
+		return false;
+	}
+
+	auto PollFor = [&Fixture](const ECrowdyCppConnState Wanted)
+	{
+		return WaitUntil([&Fixture, Wanted]()
+		{
+			Fixture.Connection->Poll();
+			return Fixture.Connection->GetState() == Wanted;
+		}, 2.0);
+	};
+
+	// An older server's unbound release, right after this client's own input, cannot be a genuine idle release.
+	TestTrue(TEXT("the stand-in server heard gameplay input"), Fixture.Prime());
+	TestTrue(TEXT("an unbound release was pushed"), Fixture.Server.SendToClient(SessionReleasedFrame(5, true)));
+	const TArray<uint8> SecondNonce = ReadControlNonce(Fixture);
+	TestEqual(TEXT("an unbound release right after input reassigns instead of ending the session"),
+		Fixture.Connection->GetStats().IdleReleasesAfterInput, static_cast<int64>(1));
+	TestTrue(TEXT("the new assignment draws a new control nonce"), SecondNonce.Num() == 8 && SecondNonce != FirstNonce);
+	TestTrue(TEXT("and the connection comes back"), PollFor(ECrowdyCppConnState::Connected));
+
+	TestTrue(TEXT("a release bound to the earlier assignment was pushed"),
+		Fixture.Server.SendToClient(BoundReleaseFrame(5, FirstNonce, true)));
+	TestFalse(TEXT("a replayed release ends nothing"), PollFor(ECrowdyCppConnState::Inactive));
+	TestEqual(TEXT("and is counted as a replay"), Fixture.Connection->GetStats().StaleBoundControl, static_cast<int64>(1));
+
+	TestTrue(TEXT("a forged release was pushed"), Fixture.Server.SendToClient(BoundReleaseFrame(5, SecondNonce, false)));
+	TestFalse(TEXT("a release that does not verify ends nothing"), PollFor(ECrowdyCppConnState::Inactive));
+	TestEqual(TEXT("the forged release was refused on its signature"), Fixture.Connection->GetStats().HmacFailures, static_cast<int64>(1));
+
+	Udp->UpdatePingTime(42);
+	TestTrue(TEXT("a release bound to this assignment was pushed"), Fixture.Server.SendToClient(BoundReleaseFrame(5, SecondNonce, true)));
+	TestTrue(TEXT("the connection reports Inactive"), PollFor(ECrowdyCppConnState::Inactive));
+	TestEqual(TEXT("the signed release verified"), Fixture.Connection->GetStats().HmacFailures, static_cast<int64>(1));
+	TestEqual(TEXT("the game reads Inactive, not the timeout's Disconnected"),
+		static_cast<int32>(Udp->GetConnectionState()), static_cast<int32>(EUDPConnectionState::Inactive));
+	TestEqual(TEXT("the last ping is not shown for a released session"), Udp->GetUDPNetworkStats().Ping, static_cast<int64>(0));
+
+	FActorUpdateRequestMessage Message;
+	Message.AppID = 7;
+	Message.UUID = CrowdyWireParity::GoldenActorId();
+	Message.StateBytes = {0x10};
+	Message.StateSize = Message.StateBytes.Num();
+	TestEqual(TEXT("a send while released is not routed, quietly"),
+		static_cast<int32>(Routing->TrySendMessage(Message)), static_cast<int32>(ECrowdyCppSendOutcome::NotRouted));
+
+	Fixture.Connection->ConnectAsync();
+	TestTrue(TEXT("connecting again assigns a server"), PollFor(ECrowdyCppConnState::Connected));
+	TestEqual(TEXT("and the game reads Connected"),
+		static_cast<int32>(Udp->GetConnectionState()), static_cast<int32>(EUDPConnectionState::Connected));
+
+	Routing->SetConnection(nullptr);
+	Fixture.Shut();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyBoundAckDropsUnboundControlTest,
+	"CrowdySDK.Transport.BoundAckDropsUnboundControl", CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+bool FCrowdyBoundAckDropsUnboundControlTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	const TArray<uint8> PublishedNonce = {1, 2, 3, 4, 5, 6, 7, 8};
+	TestEqual(TEXT("the acknowledgement is framed as the platform's published test vector"),
+		BytesToHex(BoundAckFrame(PublishedNonce, true).GetData(), 41),
+		FString(TEXT("2E0102030405060708A2587A4B9F7B7A617387DF74F45B78ACE492B99E376DEDFF75F88956DBF62F85")));
+
+	FConnectedFixture Fixture;
+	Fixture.bAdvertiseCapabilities = true;
+	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open(7, 123456789, 0)))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	const TArray<uint8> FirstNonce = ReadControlNonce(Fixture);
+	if (!TestEqual(TEXT("the client sent its control nonce, and the server learned its address"), FirstNonce.Num(), 8))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	auto Settle = [&Fixture]() { WaitUntil([&Fixture]() { Fixture.Connection->Poll(); return false; }, 0.5); };
+
+	// Before any acknowledgement a signed unbound reconnect still moves the player, but only once in its window.
+	TestTrue(TEXT("a signed unbound reconnect was pushed"), Fixture.Server.SendToClient(CrowdyWireParity::GoldenReconnectFrame()));
+	const TArray<uint8> Nonce = ReadControlNonce(Fixture);
+	TestTrue(TEXT("it reassigns, with a new control nonce"), Nonce.Num() == 8 && Nonce != FirstNonce);
+	TestTrue(TEXT("the same reconnect was pushed again at once"), Fixture.Server.SendToClient(CrowdyWireParity::GoldenReconnectFrame()));
+	Settle();
+	TestEqual(TEXT("which is held back"), Fixture.Connection->GetStats().LegacyReconnectsSuppressed, static_cast<int64>(1));
+
+	const int64 FailuresBefore = Fixture.Connection->GetStats().HmacFailures;
+	TestTrue(TEXT("a forged acknowledgement was pushed"), Fixture.Server.SendToClient(BoundAckFrame(Nonce, false)));
+	Settle();
+	TestEqual(TEXT("it arrived and failed verification"), Fixture.Connection->GetStats().HmacFailures, FailuresBefore + 1);
+	TestEqual(TEXT("so it is not counted"), Fixture.Connection->GetStats().BoundControlAcks, static_cast<int64>(0));
+
+	TestTrue(TEXT("the server's acknowledgement was pushed"), Fixture.Server.SendToClient(BoundAckFrame(Nonce, true)));
+	Settle();
+	TestEqual(TEXT("it is counted"), Fixture.Connection->GetStats().BoundControlAcks, static_cast<int64>(1));
+
+	TestTrue(TEXT("a signed unbound release was pushed"), Fixture.Server.SendToClient(SessionReleasedFrame(5, true)));
+	Settle();
+	TestEqual(TEXT("after the acknowledgement it ends nothing"), static_cast<int32>(Fixture.Connection->GetState()),
+		static_cast<int32>(ECrowdyCppConnState::Connected));
+	const int64 ReconnectsBefore = Fixture.Connection->GetStats().Reconnects;
+	TestTrue(TEXT("a signed unbound reconnect was pushed"), Fixture.Server.SendToClient(CrowdyWireParity::GoldenReconnectFrame()));
+	Settle();
+	TestEqual(TEXT("and moves nothing"), Fixture.Connection->GetStats().Reconnects, ReconnectsBefore);
+	TestEqual(TEXT("both are counted as dropped"), Fixture.Connection->GetStats().LegacyControlDropped, static_cast<int64>(2));
+
+	// A new token resets the server's record, so the client tells it again at once rather than on its 15 s cadence.
+	const double TokenAt = FPlatformTime::Seconds();
+	Fixture.Connection->SetToken(GoodToken());
+	const TArray<uint8> Advertised = ReadControlNonce(Fixture);
+	TestTrue(TEXT("a new token sends the capabilities again within 2 s, for the same assignment"),
+		Advertised == Nonce && FPlatformTime::Seconds() - TokenAt < 2.0);
 
 	Fixture.Shut();
 	return true;

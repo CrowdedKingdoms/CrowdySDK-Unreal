@@ -93,8 +93,9 @@ namespace
 	TAutoConsoleVariable<int32> CVarAdvertiseCapabilities(
 		TEXT("crowdy.net.recv.signedbundles"), 1,
 		TEXT("Tell the replication server this client reads MESSAGE_BUNDLE_SIGNED, so downlink bundles arrive with one "
-			"signature per datagram instead of one per member. A server older than v0.30.0 ignores it. 0 stops "
-			"advertising and keeps the per-member form; a diagnostic switch, not a setting."),
+			"signature per datagram instead of one per member, and send the control nonce that binds reconnect and "
+			"release frames to this assignment. A server older than v0.30.0 ignores it. 0 stops advertising, which "
+			"also makes those frames replayable again; a diagnostic switch, not a setting."),
 		ECVF_Default);
 
 	/** Inbound pressure is reported at most this often, since it arrives at packet rate when it arrives at all. */
@@ -438,6 +439,7 @@ namespace
 		case ECrowdyCppConnState::Reconnecting: return TEXT("reconnecting");
 		case ECrowdyCppConnState::Failed: return TEXT("failed");
 		case ECrowdyCppConnState::Closed: return TEXT("closed");
+		case ECrowdyCppConnState::Inactive: return TEXT("inactive");
 		}
 		return TEXT("unknown");
 	}
@@ -572,6 +574,15 @@ bool UCrowdyCppReplicationSubsystem::OpenConnection(const FCrowdyCppConnectionRe
 	if (Installed.IsValid() && Installed->GetState() != ECrowdyCppConnState::Closed
 		&& OpenedWithToken == Request.Token && OpenedWithAppId == Request.AppId)
 	{
+		// A connection that is already up reports no change, so the Connecting the request just set is undone here.
+		if (Installed->GetState() == ECrowdyCppConnState::Connected)
+		{
+			if (UCrowdyUDPSubsystem* Udp = ReceiveStats.Get())
+			{
+				Udp->SetConnectionState(EUDPConnectionState::Connected);
+			}
+			return true;
+		}
 		Installed->ConnectAsync();
 		return true;
 	}
@@ -653,6 +664,12 @@ void UCrowdyCppReplicationSubsystem::CloseConnection()
 	bLastAssignmentReportedAppFull = false;
 
 	SetConnection(nullptr);
+
+	// Nothing reports a deliberate close otherwise, and a state left at Connected reads as a live connection.
+	if (UCrowdyUDPSubsystem* Udp = ReceiveStats.Get())
+	{
+		Udp->SetConnectionState(EUDPConnectionState::Disconnected);
+	}
 }
 
 bool UCrowdyCppReplicationSubsystem::InstallToken(const FString& Token, const int64 GameTokenId,
@@ -723,6 +740,13 @@ void UCrowdyCppReplicationSubsystem::ApplyConnectionState(const ECrowdyCppConnSt
 
 	case ECrowdyCppConnState::Closed:
 		Udp->SetConnectionState(EUDPConnectionState::Disconnected);
+		break;
+
+	case ECrowdyCppConnState::Inactive:
+		// Not the timeout signal: that starts the reconnect ladder and would put an absent player back on a server.
+		Udp->SetConnectionState(EUDPConnectionState::Inactive);
+		Udp->UpdatePingTime(0);
+		Udp->OnUDPInactive.Broadcast();
 		break;
 
 	case ECrowdyCppConnState::Idle:
@@ -803,9 +827,27 @@ void UCrowdyCppReplicationSubsystem::InstallReceiveHandlers(const TSharedPtr<FCr
 			Self->ReportSendError(Error);
 		}
 
+		if (Error.SendTicket != 0)
+		{
+			Self->OnTrackedSend.Broadcast({Error.SendTicket, ECrowdyTrackedSendEvent::Refused, Error.Sequence, Error.ErrorCode});
+		}
+
 		// Held here rather than inside the builder, because the frame borrows these two octets.
 		const uint8 Body[] = { Error.Sequence, Error.ErrorCode };
 		Self->DeliverFrame(CrowdyCppInboundFrame::FromError(Body));
+	};
+
+	Handlers.OnSendReceipt = [WeakThis](const FCrowdyCppSendReceipt& Receipt)
+	{
+		UCrowdyCppReplicationSubsystem* Self = WeakThis.Get();
+		if (!Self)
+		{
+			return;
+		}
+		const ECrowdyTrackedSendEvent Event = Receipt.Kind == ECrowdyCppSendReceiptKind::Sent ? ECrowdyTrackedSendEvent::Sent
+			: Receipt.Kind == ECrowdyCppSendReceiptKind::Lapped ? ECrowdyTrackedSendEvent::Lapped
+			: ECrowdyTrackedSendEvent::Lost;
+		Self->OnTrackedSend.Broadcast({Receipt.Ticket, Event, Receipt.Sequence, 0});
 	};
 
 	// A failure is the one state worth saying unconditionally, because nothing retries it on its own.
@@ -1000,6 +1042,10 @@ bool UCrowdyCppReplicationSubsystem::DescribeSendRefusal(const FCrowdyCppSendErr
 	{
 		OutRefusal.What = TEXT("proximity text");
 	}
+	else if (Type == ECrowdyMessageType::CLIENT_VIDEO_PACKET)
+	{
+		OutRefusal.What = TEXT("a video frame");
+	}
 	else
 	{
 		OutRefusal.What = FString::Printf(TEXT("message type %d (%s)"), Error.SendOpcode,
@@ -1023,7 +1069,7 @@ bool UCrowdyCppReplicationSubsystem::DescribeSendRefusal(const FCrowdyCppSendErr
 	else if (Type == ECrowdyMessageType::SINGLE_ACTOR_MESSAGE)
 	{
 		OutRefusal.Remedy = TEXT("The player's access tier does not grant use_direct_messages, so the server refuses messages to one actor:"
-			" Owning Client events that carry text, Host events, and owner-only CrowdyState. Players under 18 never hold it.");
+			" Owning Client events that carry text, and owner-only CrowdyState. Players under 18 never hold it.");
 	}
 	else if (Type == ECrowdyMessageType::CLIENT_EVENT_NOTIFICATION)
 	{
@@ -1032,8 +1078,8 @@ bool UCrowdyCppReplicationSubsystem::DescribeSendRefusal(const FCrowdyCppSendErr
 	}
 	else if (Type == ECrowdyMessageType::CLIENT_VIDEO_PACKET)
 	{
-		OutRefusal.Remedy = TEXT("Video is a per-app capability the server grants, so this app does not carry it and no video frame will"
-			" reach anyone until it does.");
+		OutRefusal.Remedy = TEXT("The player's access tier does not grant use_video_chat, for the app or for the grid covering the chunk this"
+			" frame was sent to, so the server refuses video frames.");
 	}
 	return true;
 }
@@ -1216,8 +1262,10 @@ void UCrowdyCppReplicationSubsystem::ReportNetworkStats(const FCrowdyCppReplicat
 	const FCrowdyCppReplicationStats RawStats = Polled.GetStats();
 
 	UE_CLOG(CrowdyNetTrace::Net(), LogCrowdyNet, Log,
-		TEXT("Transport totals: %lld datagrams received, %lld failed verification, %lld dropped from the ring, %lld sends dropped."),
-		RawStats.DatagramsReceived, RawStats.HmacFailures, RawStats.RingDropped, RawStats.MessagesDropped);
+		TEXT("Transport totals: %lld datagrams received, %lld failed verification, %lld replayed control frames, %lld idle releases after input, %lld bound-control acknowledgements, %lld unbound control frames dropped after one, %lld unbound reconnects held back, %lld dropped from the ring, %lld sends dropped."),
+		RawStats.DatagramsReceived, RawStats.HmacFailures, RawStats.StaleBoundControl, RawStats.IdleReleasesAfterInput,
+		RawStats.BoundControlAcks, RawStats.LegacyControlDropped, RawStats.LegacyReconnectsSuppressed,
+		RawStats.RingDropped, RawStats.SendsDropped);
 
 	FCounterSnapshot Current;
 	Current.BytesSent = RawStats.BytesSent;
@@ -1493,7 +1541,7 @@ bool UCrowdyCppReplicationSubsystem::AdmitSendRefusalLog()
 	return true;
 }
 
-ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrowdyMessage& Message)
+ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrowdyMessage& Message, const uint64 Ticket)
 {
 	// Ahead of the connection check on purpose, so that a locally delivered crowd does not need a
 	// connection to exist. When local delivery is not armed this is one relaxed atomic read and the rest
@@ -1533,6 +1581,12 @@ ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrow
 		return ECrowdyCppSendOutcome::NotRouted;
 	}
 
+	// An idle release was announced once through On UDP Session Inactive; each send after it is not news.
+	if (Pinned->GetState() == ECrowdyCppConnState::Inactive)
+	{
+		return ECrowdyCppSendOutcome::NotRouted;
+	}
+
 	// Held for the whole send, because the frame's actor id and payload are views into it rather than copies.
 	TArray<uint8> Serialized;
 	FCrowdyCppOutboundFrame Frame;
@@ -1546,7 +1600,7 @@ ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrow
 	const bool bAccepted = Frame.bIsChannel
 		? Pinned->SendChannelMessage(Frame.ChannelId, Frame.Uuid, Frame.Payload, Error)
 		: Pinned->SendSpatial(Frame.Opcode, Frame.ChunkX, Frame.ChunkY, Frame.ChunkZ, Frame.Uuid, Frame.Payload,
-			Frame.Distance, Frame.Decay, Error);
+			Frame.Distance, Frame.Decay, Error, Ticket);
 
 	if (!bAccepted)
 	{
@@ -1554,6 +1608,10 @@ ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrow
 			*Message.GetTypeName().ToString(), *Error);
 		return ECrowdyCppSendOutcome::Refused;
 	}
+
+	UE_CLOG(CrowdyNetTrace::Net(), LogCrowdyNet, Log, TEXT("Sent %s opcode=%u channel=%d bytes=%d crc=%08x"),
+		*Message.GetTypeName().ToString(), Frame.Opcode, Frame.bIsChannel ? 1 : 0, Frame.Payload.Num(),
+		FCrc::MemCrc32(Frame.Payload.GetData(), Frame.Payload.Num()));
 
 	// Counted once the connection has accepted it, so a refused message is not reported as sent. Sends run on
 	// whichever thread built the message, so this accumulates into an atomic here and the game thread publishes it

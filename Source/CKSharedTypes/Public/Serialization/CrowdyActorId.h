@@ -121,7 +121,7 @@ struct FCrowdyActorId
 	 * session that sends it, so each owner needs its own. The NetID stays readable in it, so a client that never
 	 * heard of the move still finds the entity. Laid out as a marker, the NetID in 22 characters, and an owner tag.
 	 */
-	static FCrowdyActorId ForOwner(const FGuid& NetID, const FGuid& OwnerID)
+	static FCrowdyActorId ForOwner(const FGuid& NetID, const FGuid& WriterID)
 	{
 		static constexpr ANSICHAR Alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
@@ -137,7 +137,7 @@ struct FCrowdyActorId
 			Result.Octets[1 + Index] = static_cast<uint8>(Alphabet[(Pair >> (58 - Bit % 32)) & 63u]);
 		}
 
-		const uint64 Tag = (static_cast<uint64>(FCrc::MemCrc32(&OwnerID, sizeof(FGuid))) << 32) | OwnerID.D;
+		const uint64 Tag = (static_cast<uint64>(FCrc::MemCrc32(&WriterID, sizeof(FGuid))) << 32) | WriterID.D;
 		for (int32 Index = 1 + OwnerTaggedNetIDChars; Index < NumOctets; ++Index)
 		{
 			Result.Octets[Index] = static_cast<uint8>(Alphabet[(Tag >> ((Index - 1 - OwnerTaggedNetIDChars) * 6)) & 63u]);

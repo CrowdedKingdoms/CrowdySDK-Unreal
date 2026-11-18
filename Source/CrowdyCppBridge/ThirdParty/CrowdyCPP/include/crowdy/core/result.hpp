@@ -29,6 +29,9 @@ enum class Errc {
   /// The caller cancelled the request (graphql::CancelToken). Not a fault and
   /// not a timeout: nothing went wrong, nobody wanted the answer any more.
   Cancelled,
+  /// A response was larger than the client accepts (0.85.0): its body, decompressed,
+  /// passed HttpRequest::maxResponseBytes. Nothing of it was parsed.
+  ResponseTooLarge,
 };
 
 inline const char* errcName(Errc e) {
@@ -47,6 +50,7 @@ inline const char* errcName(Errc e) {
     case Errc::CryptoUnavailable: return "CryptoUnavailable";
     case Errc::WouldBlock: return "WouldBlock";
     case Errc::Cancelled: return "Cancelled";
+    case Errc::ResponseTooLarge: return "ResponseTooLarge";
   }
   return "Unknown";
 }

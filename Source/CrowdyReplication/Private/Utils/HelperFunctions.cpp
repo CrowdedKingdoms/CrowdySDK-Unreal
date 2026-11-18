@@ -47,17 +47,6 @@ void UHelperFunctions::GetChunkCoordinateAtLocation(UObject* WorldContextObject,
 	
 }
 
-void UHelperFunctions::GetChunkCoordinatesAtWorldLocation(const FVector& WorldLocation, int64& ChunkX, int64& ChunkY,
-                                                          int64& ChunkZ)
-{
-	
-	constexpr double ChunkSize = 1600.0f;
-	
-	ChunkX = static_cast<int64>(FMath::FloorToDouble(WorldLocation.X / ChunkSize));
-	ChunkY = static_cast<int64>(FMath::FloorToDouble(WorldLocation.Y / ChunkSize));
-	ChunkZ = static_cast<int64>(FMath::FloorToDouble(WorldLocation.Z / ChunkSize));
-}
-
 void UHelperFunctions::GetVoxelCoordinatesAtWorldLocation(const FVector& WorldLocation, int32& VoxelX, int32& VoxelY,
 	int32& VoxelZ, const int32 ChunkSize)
 {

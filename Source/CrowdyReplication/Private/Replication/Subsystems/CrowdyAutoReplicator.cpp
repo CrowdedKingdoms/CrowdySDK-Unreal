@@ -297,10 +297,21 @@ bool UCrowdyAutoReplicator::SetExtras(const UActorComponent* Component, TArray<u
 	return true;
 }
 
+TArray<uint8> UCrowdyAutoReplicator::GetExtras(const UActorComponent* Component) const
+{
+	const int32 Index = Data.Components.IndexOfByKey(Component);
+	return Index != INDEX_NONE ? Data.Extras[Index] : TArray<uint8>();
+}
+
 bool UCrowdyAutoReplicator::CarriesUpdatesOf(const UActorComponent* Component) const
 {
 	const int32 Index = Data.Components.IndexOfByKey(Component);
 	return bIsTicking && bPeersTrackUpdates && Index != INDEX_NONE && !Data.bPresenceOnly[Index];
+}
+
+bool UCrowdyAutoReplicator::HoldsComponent(const UActorComponent* Component) const
+{
+	return Data.Components.IndexOfByKey(Component) != INDEX_NONE;
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

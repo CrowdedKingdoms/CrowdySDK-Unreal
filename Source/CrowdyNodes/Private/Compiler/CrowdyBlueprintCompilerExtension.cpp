@@ -115,8 +115,8 @@ namespace
 
 			MessageLog.Error(
 				TEXT("[CrowdySDK] @@ uses Unreal's Has Authority, which does not apply to a Crowdy entity - ")
-				TEXT("the elected host is a convention, not an enforced server, so this reads the wrong value ")
-				TEXT("on non-host clients. Use the Crowdy ownership test instead: ")
+				TEXT("no client is an enforced server, so this reads the wrong value ")
+				TEXT("on every client. Use the Crowdy ownership test instead: ")
 				TEXT("Is Locally Owned on the Crowdy Entity Component, or Switch Is Crowdy Entity Locally Owned."),
 				AuthoredNode ? AuthoredNode : static_cast<UEdGraphNode*>(CallNode));
 		}
@@ -713,8 +713,8 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 	}
 
 	// Unreal's Has Authority answers a question about Unreal's own network role, which does not
-	// exist for a Crowdy entity - the elected host is a convention, never an enforced server - so a
-	// call to it reads a value that is meaningless (and usually wrong) on every non-host client. Hard
+	// exist for a Crowdy entity - no client is an enforced server - so a
+	// call to it reads a value that is meaningless (and usually wrong) on every client. Hard
 	// error rather than a warning, the same severity as the other silently-wrong-at-runtime checks
 	// in this function.
 	//
@@ -845,10 +845,10 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 						*Info.Recipient),
 					CustomEvent);
 			}
-			if (ResolveCrowdyRecipient(Info.Recipient) == CrowdyDeprecatedHostRecipient)
+			if (CrowdyIsRetiredHostRecipient(Info.Recipient))
 			{
 				CompilationContext.MessageLog.Warning(
-					TEXT("[CrowdySDK] Crowdy Replicated event @@ uses the deprecated Recipient Host. Use Owning Client, or move logic only one machine should run to a Server Object."),
+					TEXT("[CrowdySDK] Crowdy Replicated event @@ uses the Recipient Host, which now reaches the entity's Owning Client because nothing elects a host any more. Set it to Owning Client, or move logic only one machine should run to a Server Object."),
 					CustomEvent);
 			}
 			if (!IsRecognisedCrowdyRoutingValue<ECrowdyDecayRate>(Info.Decay))
@@ -931,7 +931,7 @@ void UCrowdyBlueprintCompilerExtension::ProcessBlueprintCompiled(
 						{
 							// The routing is asked about first, because a signature verdict on an event no
 							// crowd observer ever receives would be answering the wrong question. Owning
-							// Client and Host land on one named machine, which holds the entity as a real
+							// Client lands on one named machine, which holds the entity as a real
 							// actor and runs the body; the declaration buys nothing there and the author is
 							// otherwise given a clean compile for an action that can never start.
 							if (!UCrowdyBlueprintCompilerExtension::IsCrowdDeliveredRecipient(

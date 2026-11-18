@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 #include "crowdy/core/clock.hpp"
 #include "crowdy/core/crypto.hpp"
@@ -295,6 +296,23 @@ class Connection {
     std::uint64_t malformed = 0;
     std::uint64_t ringDropped = 0;
     std::uint64_t reconnects = 0;
+    /// Verified idle releases that arrived within Config::idleReleaseGuardMs of this
+    /// client's own gameplay input; each reassigned instead of going Inactive.
+    std::uint64_t idleReleasesAfterInput = 0;
+    /// Bound control frames (44, 45, 46) carrying another assignment's nonce, dropped: a
+    /// frame captured earlier and sent again.
+    std::uint64_t staleBoundControl = 0;
+    /// Verified CONTROL_BOUND_ACKs (46, 0.84.0): the server confirmed it sends this
+    /// assignment's control frames only in the bound forms.
+    std::uint64_t boundControlAcks = 0;
+    /// Legacy COMMAND_RECONNECTs (22) and COMMAND_SESSION_RELEASEDs (28) dropped
+    /// because the server acknowledged the bound forms on this assignment (0.84.0).
+    /// Such a frame can only be one captured earlier and sent again.
+    std::uint64_t legacyControlDropped = 0;
+    /// Verified legacy COMMAND_RECONNECTs (22) dropped because one was honoured too
+    /// recently (0.83.0): a 22 signs fixed bytes, so a captured one verifies for the
+    /// game token's life, and each honoured one moves the player to another server.
+    std::uint64_t legacyReconnectsSuppressed = 0;
     std::int64_t lastServerEpochMs = 0;
     /// Messages sent, by wire opcode (actor/voxel/audio/text/event/channel/
     /// heartbeat requests).
@@ -407,7 +425,45 @@ class Connection {
   std::int64_t lastRecvMs_ = 0;
   std::int64_t lastCapsMs_ = 0;  ///< monotonic ms of the last CLIENT_CAPABILITIES; 0 = none yet
   std::int64_t lastSendMs_ = 0;
+  /// Set by the receive path on a verified idle release; housekeeping goes Inactive.
+  std::atomic<bool> idleReleased_{false};
   std::atomic<bool> reconnectRequested_{false};
+  /// This assignment's BOUND_CONTROL nonce, drawn in doAssign() and sent with
+  /// CLIENT_CAPABILITIES; 0 when no random bytes were available (the bit is not sent).
+  std::atomic<std::uint64_t> controlNonce_{0};
+  /// The nonce the last verified CONTROL_BOUND_ACK carried (0: none). While it is
+  /// controlNonce_, legacy 22 and 28 are dropped unverified; a new assignment's nonce
+  /// no longer matches it, whatever order the two threads ran in.
+  std::atomic<std::uint64_t> boundNonce_{0};
+
+  /// Monotonic ms of the last send that counts as gameplay input (0: none yet).
+  std::atomic<std::int64_t> lastGameplayMs_{0};
+  /// The last actor-update payload hash per actor this assignment, so a keyframe that
+  /// repeats an unchanged state is not input. An actor's first update is a change. Past
+  /// kMaxTrackedActors actors, an untracked actor's keyframe counts as unchanged, so a host
+  /// keeping a large world's keyframes going still looks idle when it is.
+  struct ActorUuidHasher {
+    std::size_t operator()(const core::ActorUuid& u) const noexcept {
+      std::uint64_t h = 1469598103934665603ULL;
+      for (char c : u) h = (h ^ static_cast<std::uint8_t>(c)) * 1099511628211ULL;
+      return static_cast<std::size_t>(h);
+    }
+  };
+  static constexpr std::size_t kMaxTrackedActors = 4096;
+  std::unordered_map<core::ActorUuid, std::uint64_t, ActorUuidHasher> actorStateHashes_;
+  std::mutex actorStateMutex_;
+
+  /// Config::legacyReconnectWindowMs: a legacy COMMAND_RECONNECT (22) is honoured once per
+  /// assignment, and each honoured one must follow the last by the current window. Touched
+  /// only on the receive path and in doAssign().
+  static constexpr std::int64_t kLegacyReconnectWindowMaxMs = 600'000;
+  std::int64_t lastLegacyReconnectMs_ = 0;
+  std::int64_t legacyReconnectWindowMs_ = 0;
+  bool legacyReconnectHonoured_ = false;
+  bool honourLegacyReconnect();
+  void noteGameplaySend(wire::MessageType type, const SpatialSend& p);
+  bool actorStateChanged(const SpatialSend& p);
+  bool idleReleaseFollowsInput() const;
   /// Set when onEventsReady fired; poll() clears it before draining, so an
   /// event queued during or after a drain signals again.
   std::atomic<bool> eventsSignalled_{false};

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <vector>
 
 #include "crowdy/core/base64.hpp"
 
@@ -93,6 +94,10 @@ void JVal::dumpTo(std::string& out) const {
     void operator()(bool b) { out += b ? "true" : "false"; }
     void operator()(std::int64_t i) { out += std::to_string(i); }
     void operator()(double d) {
+      if (!std::isfinite(d)) {
+        out += "null";  // as JSON.stringify writes NaN and infinity
+        return;
+      }
       char buf[32];
       std::snprintf(buf, sizeof(buf), "%.17g", d);
       out += buf;
@@ -242,9 +247,14 @@ std::string Json::asBigIntString(std::string_view fallback) const {
 }
 
 std::string Json::dump() const {
-  if (!val_) return "null";
-  char* s = yyjson_val_write(val(val_), 0, nullptr);
-  if (!s) return "null";
+  auto out = tryDump();
+  return out.ok() ? std::move(out.value()) : std::string("null");
+}
+
+Result<std::string> Json::tryDump() const {
+  if (!val_) return std::string("null");
+  char* s = yyjson_val_write(val(val_), YYJSON_WRITE_INF_AND_NAN_AS_NULL, nullptr);
+  if (!s) return Errc::Malformed;
   std::string out(s);
   free(s);
   return out;
@@ -325,43 +335,73 @@ void packStr(std::string& out, const char* s, std::size_t len) {
   out.append(s, len);
 }
 
-void packVal(std::string& out, yyjson_val* v) {
+/// Write one value; a container writes only its header and is returned, with its
+/// length, for the caller to walk.
+struct OpenContainer {
+  yyjson_val* next;  ///< the next element, or the next member's key
+  std::size_t remaining;
+  bool object;
+};
+
+bool packOne(std::string& out, yyjson_val* v, OpenContainer& opened) {
   switch (yyjson_get_type(v)) {
     case YYJSON_TYPE_BOOL:
       out.push_back(static_cast<char>(yyjson_get_bool(v) ? 0xc3 : 0xc2));
-      return;
+      return false;
     case YYJSON_TYPE_NUM:
-      if (yyjson_is_uint(v)) return packUint(out, yyjson_get_uint(v));
-      if (yyjson_is_sint(v)) return packSint(out, yyjson_get_sint(v));
-      {
+      if (yyjson_is_uint(v)) {
+        packUint(out, yyjson_get_uint(v));
+      } else if (yyjson_is_sint(v)) {
+        packSint(out, yyjson_get_sint(v));
+      } else {
         const double d = yyjson_get_real(v);
         std::uint64_t bits = 0;
         std::memcpy(&bits, &d, sizeof bits);
         out.push_back(static_cast<char>(0xcb));
         packBe(out, bits, 8);
       }
-      return;
+      return false;
     case YYJSON_TYPE_STR:
-      return packStr(out, yyjson_get_str(v), yyjson_get_len(v));
+      packStr(out, yyjson_get_str(v), yyjson_get_len(v));
+      return false;
     case YYJSON_TYPE_ARR: {
-      packHeader(out, yyjson_arr_size(v), 0x90, 15, 0xdc, 0xdd);
-      yyjson_arr_iter it;
-      yyjson_arr_iter_init(v, &it);
-      while (yyjson_val* e = yyjson_arr_iter_next(&it)) packVal(out, e);
-      return;
+      const std::size_t n = yyjson_arr_size(v);
+      packHeader(out, n, 0x90, 15, 0xdc, 0xdd);
+      opened = {n > 0 ? unsafe_yyjson_get_first(v) : nullptr, n, false};
+      return n > 0;
     }
     case YYJSON_TYPE_OBJ: {
-      packHeader(out, yyjson_obj_size(v), 0x80, 15, 0xde, 0xdf);
-      yyjson_obj_iter it;
-      yyjson_obj_iter_init(v, &it);
-      while (yyjson_val* k = yyjson_obj_iter_next(&it)) {
-        packStr(out, yyjson_get_str(k), yyjson_get_len(k));
-        packVal(out, yyjson_obj_iter_get_val(k));
-      }
-      return;
+      const std::size_t n = yyjson_obj_size(v);
+      packHeader(out, n, 0x80, 15, 0xde, 0xdf);
+      opened = {n > 0 ? unsafe_yyjson_get_first(v) : nullptr, n, true};
+      return n > 0;
     }
     default:
       out.push_back(static_cast<char>(0xc0));
+      return false;
+  }
+}
+
+/// Depth costs this vector, not the call stack: a forged answer nested hundreds of
+/// thousands of levels deep (a few hundred KB of `[[[[`) is packed like any other.
+void packVal(std::string& out, yyjson_val* root) {
+  std::vector<OpenContainer> open;
+  yyjson_val* v = root;
+  for (;;) {
+    OpenContainer opened{};
+    if (packOne(out, v, opened)) open.push_back(opened);
+    while (!open.empty() && open.back().remaining == 0) open.pop_back();
+    if (open.empty()) return;
+    OpenContainer& top = open.back();
+    if (top.object) {
+      yyjson_val* key = top.next;
+      packStr(out, yyjson_get_str(key), yyjson_get_len(key));
+      v = key + 1;  // a member's value follows its key
+    } else {
+      v = top.next;
+    }
+    top.next = unsafe_yyjson_get_next(v);
+    --top.remaining;
   }
 }
 
@@ -407,15 +447,34 @@ struct Unpacker {
     }
     return a;
   }
+  // A map key must be a scalar. A container key written as text is escaped again at every
+  // level it is nested in another key, so 130 bytes nested 60 deep asked for gigabytes.
+  static bool scalarKey(std::uint8_t t) {
+    if ((t & 0xf0) == 0x80 || (t & 0xf0) == 0x90) return false;  // fixmap, fixarray
+    switch (t) {
+      case 0xc4: case 0xc5: case 0xc6:                                // bin
+      case 0xc7: case 0xc8: case 0xc9:                                // ext
+      case 0xd4: case 0xd5: case 0xd6: case 0xd7: case 0xd8:          // fixext
+      case 0xdc: case 0xdd: case 0xde: case 0xdf:                     // array, map
+        return false;
+      default:
+        return true;
+    }
+  }
   yyjson_mut_val* map(std::size_t n, int depth) {
     yyjson_mut_val* o = yyjson_mut_obj(doc);
     for (std::size_t i = 0; i < n && ok; ++i) {
+      if (!need(1)) break;
+      if (!scalarKey(*p)) {
+        ok = false;
+        break;
+      }
       yyjson_mut_val* k = value(depth + 1);
       yyjson_mut_val* v = value(depth + 1);
       if (!ok || !k || !v) break;
       if (!yyjson_mut_is_str(k)) {
-        // A non-string key keeps its value as text, as JSON has only string keys.
-        char* text = yyjson_mut_val_write(k, 0, nullptr);
+        // A number, boolean or nil key keeps its value as text, as JSON has only string keys.
+        char* text = yyjson_mut_val_write(k, YYJSON_WRITE_INF_AND_NAN_AS_NULL, nullptr);
         k = yyjson_mut_strcpy(doc, text ? text : "null");
         free(text);
       }
@@ -514,22 +573,36 @@ Json Json::fromMsgpack(std::string_view bytes) {
   return Json(holder, yyjson_doc_get_root(doc));
 }
 
-std::size_t Json::memberCount() const { return isObject() ? yyjson_obj_size(val(val_)) : 0; }
+// The cursors walk yyjson's value pool the way its own iterators do: an element's
+// next sibling is unsafe_yyjson_get_next(element), a member's value is the slot after
+// its key, and the next key follows that value.
 
-std::pair<std::string_view, Json> Json::memberAt(std::size_t i) const {
-  yyjson_val* key = nullptr;
-  yyjson_val* v = nullptr;
-  std::size_t idx = 0;
-  yyjson_obj_iter iter;
-  yyjson_obj_iter_init(val(val_), &iter);
-  while ((key = yyjson_obj_iter_next(&iter)) != nullptr) {
-    v = yyjson_obj_iter_get_val(key);
-    if (idx == i) {
-      return {std::string_view(yyjson_get_str(key), yyjson_get_len(key)), Json(doc_, v)};
-    }
-    ++idx;
-  }
-  return {std::string_view(), Json()};
+Json::Cursor Json::firstElement() const {
+  if (!isArray()) return {};
+  const std::size_t n = yyjson_arr_size(val(val_));
+  return n > 0 ? Cursor{unsafe_yyjson_get_first(val(val_)), n} : Cursor{};
 }
+
+Json::Cursor Json::nextElement(Cursor c) {
+  if (c.remaining <= 1) return {};
+  return {unsafe_yyjson_get_next(val(c.at)), c.remaining - 1};
+}
+
+Json::Cursor Json::firstMember() const {
+  if (!isObject()) return {};
+  const std::size_t n = yyjson_obj_size(val(val_));
+  return n > 0 ? Cursor{unsafe_yyjson_get_first(val(val_)), n} : Cursor{};
+}
+
+Json::Cursor Json::nextMember(Cursor c) {
+  if (c.remaining <= 1) return {};
+  return {unsafe_yyjson_get_next(val(c.at) + 1), c.remaining - 1};
+}
+
+std::string_view Json::memberKey(Cursor c) {
+  return std::string_view(yyjson_get_str(val(c.at)), yyjson_get_len(val(c.at)));
+}
+
+void* Json::memberValue(Cursor c) { return val(c.at) + 1; }
 
 }  // namespace crowdy::graphql

@@ -13,11 +13,10 @@
 #include "UObject/ObjectRedirector.h"
 #include "UObject/Package.h"
 
-// Avatars, the two host checks and the persistence pull no longer carry their own GraphQL text: they name an
-// operation and let FCrowdyCppClient::RunOp resolve it against the vendored CrowdyCPP generated tables. This file
-// pins what that swap made load-bearing: that every operation name still resolves, that the answers are read the way
-// the generated documents actually shape them, and that the two correlation guards the old per-type response queue
-// used to provide are now in the readers themselves.
+// Avatars and the persistence pull no longer carry their own GraphQL text: they name an operation and let
+// FCrowdyCppClient::RunOp resolve it against the vendored CrowdyCPP generated tables. This file pins what that swap
+// made load-bearing: that every operation name still resolves, and that the answers are read the way the generated
+// documents actually shape them.
 namespace
 {
 	constexpr EAutomationTestFlags ServiceTestFlags =
@@ -33,7 +32,7 @@ namespace
 		const TCHAR* OperationName;
 	};
 
-	// Every operation UCrowdyAvatars, UCrowdyHostSubsystem, the game host poll and the persistence pull issue.
+	// Every operation UCrowdyAvatars and the persistence pull issue.
 	const FRoutedOperation kRoutedOperations[] =
 	{
 		{ ECrowdyCppApiDomain::Avatars, TEXT("MyAvatars") },
@@ -46,10 +45,6 @@ namespace
 		{ ECrowdyCppApiDomain::Avatars, TEXT("DeleteAvatar") },
 		{ ECrowdyCppApiDomain::Avatars, TEXT("UpdateAvatarState") },
 		{ ECrowdyCppApiDomain::Avatars, TEXT("UpdateAvatarAppState") },
-
-		{ ECrowdyCppApiDomain::Host,    TEXT("GameHost") },
-		{ ECrowdyCppApiDomain::Host,    TEXT("AmIGameHost") },
-		{ ECrowdyCppApiDomain::Actors,  TEXT("Actor") },
 
 		{ ECrowdyCppApiDomain::Chunks,  TEXT("GetVoxelList") },
 	};
@@ -81,7 +76,7 @@ bool FCrowdyAvatarHostPersistenceOperationsResolveTest::RunTest(const FString& P
 	return true;
 }
 
-// The proof the resolves-check above can fail, in each of the three domains this slice newly reaches.
+// The proof the resolves-check above can fail, in each domain it covers.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAvatarHostPersistenceUnknownOperationFailsTest,
 	"CrowdySDK.CrowdyServices.AvatarHostPersistenceUnknownOperationFails", ServiceTestFlags)
 bool FCrowdyAvatarHostPersistenceUnknownOperationFailsTest::RunTest(const FString& Parameters)
@@ -89,7 +84,6 @@ bool FCrowdyAvatarHostPersistenceUnknownOperationFailsTest::RunTest(const FStrin
 	const FRoutedOperation Bogus[] =
 	{
 		{ ECrowdyCppApiDomain::Avatars, TEXT("ThisAvatarOperationDoesNotExist") },
-		{ ECrowdyCppApiDomain::Host,    TEXT("ThisHostOperationDoesNotExist") },
 		{ ECrowdyCppApiDomain::Chunks,  TEXT("ThisChunkOperationDoesNotExist") },
 	};
 
@@ -170,106 +164,6 @@ bool FCrowdyAvatarResponseReadersTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a cancelled call does not read"),
 		CrowdyServiceApi::ReadObject(MakeCanceledResult(), TEXT("avatar"), Unreached, Error));
 	TestEqual(TEXT("a cancellation is a network failure"), Error.Code, ECrowdyAvatarErrorCode::NetworkError);
-
-	return true;
-}
-
-// The host answers carry no typed row, and one of them used to be correlated by arrival order across a shared queue.
-// The uuid echo is what replaces that, so it is the guard worth pinning.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyHostAnswerReadersTest,
-	"CrowdySDK.CrowdyServices.HostAnswerReaders", ServiceTestFlags)
-bool FCrowdyHostAnswerReadersTest::RunTest(const FString& Parameters)
-{
-	bool bAmHost = false;
-
-	TestTrue(TEXT("a true answer reads"),
-		CrowdyServiceApi::ReadAmIGameHost(MakeResult(TEXT(R"({ "amIGameHost": true })")), bAmHost));
-	TestTrue(TEXT("and says yes"), bAmHost);
-
-	TestTrue(TEXT("a false answer reads"),
-		CrowdyServiceApi::ReadAmIGameHost(MakeResult(TEXT(R"({ "amIGameHost": false })")), bAmHost));
-	TestFalse(TEXT("and says no"), bAmHost);
-
-	// An answer that cannot be read must not look like "not the host": the caller branches on the success flag.
-	TestFalse(TEXT("a missing field does not read"),
-		CrowdyServiceApi::ReadAmIGameHost(MakeResult(TEXT(R"({ })")), bAmHost));
-	TestFalse(TEXT("a cancelled check does not read"),
-		CrowdyServiceApi::ReadAmIGameHost(MakeCanceledResult(), bAmHost));
-
-	const FString Asked = TEXT("0123456789abcdef0123456789abcdef");
-	const FString Other = TEXT("ffffffffffffffffffffffffffffffff");
-
-	int64 OwnerUserId = 0;
-	const FCrowdyCppJsonResult Owner = MakeResult(
-		FString::Printf(TEXT(R"({ "actor": { "uuid": "%s", "userId": "1234567890123" } })"), *Asked));
-
-	if (TestTrue(TEXT("the actor's owner reads"), CrowdyServiceApi::ReadActorOwner(Owner, Asked, OwnerUserId)))
-	{
-		TestEqual(TEXT("the BigInt owner id survives its string form"), OwnerUserId, static_cast<int64>(1234567890123));
-	}
-
-	// The whole point of the echo: an answer about a different actor must never be reported as this actor's owner,
-	// because the caller compares that id to the elected host and would otherwise get the wrong verdict.
-	TestFalse(TEXT("an answer about another actor is refused"),
-		CrowdyServiceApi::ReadActorOwner(Owner, Other, OwnerUserId));
-	TestEqual(TEXT("and reports no owner"), OwnerUserId, static_cast<int64>(0));
-
-	TestFalse(TEXT("an actor with no owner does not read"),
-		CrowdyServiceApi::ReadActorOwner(
-			MakeResult(FString::Printf(TEXT(R"({ "actor": { "uuid": "%s" } })"), *Asked)), Asked, OwnerUserId));
-
-	TestFalse(TEXT("a null actor does not read"),
-		CrowdyServiceApi::ReadActorOwner(MakeResult(TEXT(R"({ "actor": null })")), Asked, OwnerUserId));
-
-	return true;
-}
-
-// The game host poll parses its own answer inline rather than through a shared reader, and it is the one operation
-// here whose failure is silent by design (a repeating timer just tries again). What must not happen is an answer
-// with no host in it electing user 0: that id still hashes to a valid-looking host GUID, so every client would see
-// a host set and none would claim authority.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyGameHostAnswerTest,
-	"CrowdySDK.CrowdyServices.GameHostAnswer", ServiceTestFlags)
-bool FCrowdyGameHostAnswerTest::RunTest(const FString& Parameters)
-{
-	auto ReadHostUserId = [](const FCrowdyCppJsonResult& Result, int64& OutHostUserId) -> bool
-	{
-		OutHostUserId = 0;
-
-		const TSharedPtr<FJsonObject>* GameHost = nullptr;
-		if (!Result.bTransportOk || !Result.Data.IsValid()
-			|| !Result.Data->TryGetObjectField(TEXT("gameHost"), GameHost))
-		{
-			return false;
-		}
-
-		FString HostUserIdText;
-		if (!(*GameHost)->TryGetStringField(TEXT("hostUserId"), HostUserIdText))
-		{
-			return false;
-		}
-
-		OutHostUserId = FCString::Atoi64(*HostUserIdText);
-		return true;
-	};
-
-	int64 HostUserId = 0;
-
-	if (TestTrue(TEXT("a named host reads"), ReadHostUserId(MakeResult(TEXT(
-		R"({ "gameHost": { "hostUserId": "142", "actorCount": 3, "earliestActorJoinedAt": "t" } })")), HostUserId)))
-	{
-		TestEqual(TEXT("the BigInt host id survives its string form"), HostUserId, static_cast<int64>(142));
-	}
-
-	TestFalse(TEXT("an answer with no host does not elect one"),
-		ReadHostUserId(MakeResult(TEXT(R"({ "gameHost": { "actorCount": 0 } })")), HostUserId));
-	TestEqual(TEXT("and names nobody"), HostUserId, static_cast<int64>(0));
-
-	TestFalse(TEXT("a null gameHost does not elect one"),
-		ReadHostUserId(MakeResult(TEXT(R"({ "gameHost": null })")), HostUserId));
-
-	TestFalse(TEXT("a poll that never landed does not elect one"),
-		ReadHostUserId(MakeCanceledResult(), HostUserId));
 
 	return true;
 }

@@ -3,6 +3,7 @@
 #include "CrowdyCppBridge.h"
 #include "CrowdyNativeExecInternal.h"
 #include "CrowdyNativeKitInternal.h"
+#include "CrowdyCppStudioModels.h"
 #include "Async/Async.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
@@ -80,6 +81,9 @@ namespace
 
 		// A sign-in carries no bearer, so each send of it installs none instead of the plane's token.
 		bool bAnonymous = false;
+
+		// A call made under its own bearer sends that one, not the plane's, without installing it as the plane's.
+		TOptional<FString> Bearer;
 
 		// The bearer a token call was issued under. A later send under a different bearer would act for another
 		// account, so it delivers Refusal, the answer that parked the call, instead.
@@ -391,6 +395,9 @@ struct FCrowdyCppClient::FImpl
 	std::shared_ptr<CrowdyCppTransport::FTransportCounters> TransportCounters =
 		std::make_shared<CrowdyCppTransport::FTransportCounters>();
 
+	// The transport the GraphQL client sends on, kept for the few REST routes the API origin also serves.
+	std::shared_ptr<crowdy::graphql::IAsyncHttpTransport> HttpTransport;
+
 	// One bearer per endpoint. The underlying client holds a single auth state shared by both of its GraphQL
 	// clients, so the right token is installed immediately before each request is built rather than being seeded
 	// once and left for whichever caller comes next. The request builder reads the bearer synchronously while
@@ -661,6 +668,26 @@ struct FCrowdyCppClient::FImpl
 			? EBearerChoice::Management : EBearerChoice::Game);
 	}
 
+	// The client to send Retry on with its bearer installed. One carried by the call is set on the client for this send
+	// only, since the next request installs its own, and the stored tokens and the subscription socket are untouched.
+	crowdy::CrowdyClient* UseFor(const FBusyRetry& Retry)
+	{
+		if (Retry.bAnonymous)
+		{
+			return UseBearer(EBearerChoice::None);
+		}
+		if (!Retry.Bearer.IsSet())
+		{
+			return Use(Retry.Plane);
+		}
+		if (!IsUsable())
+		{
+			return nullptr;
+		}
+		Client->setToken(std::string(TCHAR_TO_UTF8(*Retry.Bearer.GetValue())));
+		return Client.Get();
+	}
+
 	// Keep the subscription bearer in step with the game token. Installing an unchanged token is a no-op upstream,
 	// so the owner reinstalling it on every resolve costs nothing and a genuine rotation reconnects the socket.
 	void ApplySubscriptionToken()
@@ -868,6 +895,10 @@ namespace
 		if (Error->retryAfterMs.has_value())
 		{
 			OutResult.RetryAfterMs = static_cast<int64>(*Error->retryAfterMs);
+		}
+		if (Error->ownedByCaller.has_value())
+		{
+			OutResult.OwnedByCaller = *Error->ownedByCaller;
 		}
 	}
 
@@ -1362,6 +1393,42 @@ namespace
 		return Result;
 	}
 
+	FCrowdyCppModClientArtifact MapModClientArtifact(const crowdy::graphql::GraphQLOutcome& Out,
+		const crowdy::domains::ExecModClientArtifactBytes& Value)
+	{
+		FCrowdyCppModClientArtifact Result;
+		if (!Out.ok())
+		{
+			Result.ErrorMessage = OutcomeErrorMessage(Out);
+			Result.ErrorCode = OutcomeErrorCode(Out);
+			const crowdy::graphql::GraphQLErrorDetail* Error = LeadingError(Out);
+			Result.ErrorReason = Error ? Utf8ToFString(Error->reason) : FString();
+			// The vendor reports a failed digest, ABI or summary check as a protocol fault with no server code.
+			Result.bCheckRefused = Out.kind == crowdy::graphql::GraphQLErrorKind::Protocol && Result.ErrorCode.IsEmpty();
+			return Result;
+		}
+		if (Value.bytes.size() > static_cast<size_t>(MAX_int32)
+			|| !LexTryParseString(Result.FuelPerDispatch, *Utf8ToFString(Value.fuelPerDispatch)) || Result.FuelPerDispatch <= 0
+			|| !LexTryParseString(Result.GridId, *Utf8ToFString(Value.gridId)))
+		{
+			Result.ErrorMessage = TEXT("malformed response: the module's size, fuel or grid did not read");
+			return Result;
+		}
+		Result.ModId = Utf8ToFString(Value.modId);
+		Result.Name = Utf8ToFString(Value.name);
+		Result.ClientVersion = Value.clientVersion;
+		Result.Bytes.Append(Value.bytes.data(), static_cast<int32>(Value.bytes.size()));
+		Result.Digest = Utf8ToFString(Value.digest);
+		Result.TickIntervalMs = Value.tickIntervalMs;
+		Result.CapabilityHash = Utf8ToFString(Value.capabilityHash);
+		for (const std::string& Call : Value.capabilitySummary.hostFunctions)
+		{
+			Result.HostFunctions.Add(Utf8ToFString(Call));
+		}
+		Result.bOk = true;
+		return Result;
+	}
+
 	// The three callback shapes the auth twins hand their payload back in.
 	using FAuthPayloadCallback =
 		std::function<void(crowdy::graphql::GraphQLOutcome, crowdy::domains::AuthResponse)>;
@@ -1396,7 +1463,7 @@ namespace
 	// The generated set no longer names an endpoint alongside the document: there is one API origin, so an operation
 	// has nowhere else to be sent. What used to be read off that assignment is the BEARER, and that is now stated by
 	// DomainDefaultPlane and OperationPlaneException below.
-	std::string_view ResolveDocument(ECrowdyCppApiDomain Domain, const std::string& Op)
+	std::string_view GeneratedDocument(ECrowdyCppApiDomain Domain, const std::string& Op)
 	{
 		using namespace crowdy::gen;
 		switch (Domain)
@@ -1422,6 +1489,9 @@ namespace
 		case ECrowdyCppApiDomain::Platform:      return platform::documentFor(Op);
 		case ECrowdyCppApiDomain::Realtime:      return realtime::documentFor(Op);
 		case ECrowdyCppApiDomain::Exec:          return crowdy::gen::exec::documentFor(Op);
+		case ECrowdyCppApiDomain::Marketplace:   return marketplace::documentFor(Op);
+		case ECrowdyCppApiDomain::Grids:         return crowdy::gen::grids::documentFor(Op);
+		case ECrowdyCppApiDomain::CrowdyStudioAgent: return crowdy::gen::crowdyStudioAgent::documentFor(Op);
 		}
 		return std::string_view();
 	}
@@ -1446,6 +1516,7 @@ namespace
 		case ECrowdyCppApiDomain::Voxels:
 		case ECrowdyCppApiDomain::Actors:
 		case ECrowdyCppApiDomain::Teleport:
+		case ECrowdyCppApiDomain::CrowdyStudioAgent:
 			return ECrowdyCppTokenPlane::Game;
 
 		case ECrowdyCppApiDomain::Apps:
@@ -1483,9 +1554,28 @@ namespace
 			if (Op == "ServerWithLeastClients" || Op == "GameClientBootstrap") { return ECrowdyCppTokenPlane::Game; }
 			break;
 
-		// The Exec domain defaults to Management for developer operations; a player's connect uses the app token.
+		// The Exec domain defaults to Management for developer operations; a player's connect, mod and Mod Script calls
+		// use the app token.
 		case ECrowdyCppApiDomain::Exec:
-			if (Op == "ExecConnect") { return ECrowdyCppTokenPlane::Game; }
+			if (Op == "ExecConnect" || Op == "ExecModStarter" || Op == "ExecModBuild" || Op == "ExecModBuildStatus" || Op == "ExecModDeploy"
+				|| Op == "ExecModSetEnabled" || Op == "ExecMods" || Op == "ExecMyMods" || Op == "ExecModLogs" || Op == "ExecModDelete"
+				|| Op == "ExecGridClientMods" || Op == "ExecConsentClientMod" || Op == "ExecTrustAuthor" || Op == "ExecRevokeClientModConsent"
+				|| Op == "ExecRevokeAuthorTrust" || Op == "ExecModClientArtifact" || Op == "ExecModClientBuild"
+				|| Op == "ExecModClientDeploy" || Op == "ExecModClientDelete" || Op == "ExecModClientStarter")
+			{
+				return ECrowdyCppTokenPlane::Game;
+			}
+			break;
+
+		// A player's own claim and its release use the app token; the studio's listing and policy operations are not
+		// named, so they stay unroutable until a caller states their plane.
+		case ECrowdyCppApiDomain::Marketplace:
+			if (Op == "MarketplaceClaimGridChunk" || Op == "MarketplaceReleaseClaimedGrid") { return ECrowdyCppTokenPlane::Game; }
+			break;
+
+		// A player reads the channels of the grid they stand in with the app token.
+		case ECrowdyCppApiDomain::Grids:
+			if (Op == "GridChannels") { return ECrowdyCppTokenPlane::Game; }
 			break;
 
 		default:
@@ -1679,7 +1769,7 @@ bool FCrowdyCppClient::FImpl::SendRetryable(const TSharedRef<FBusyRetry>& Retry)
 		return false;
 	}
 
-	crowdy::CrowdyClient* Raw = Retry->bAnonymous ? UseBearer(EBearerChoice::None) : Use(Retry->Plane);
+	crowdy::CrowdyClient* Raw = UseFor(*Retry);
 	if (!Raw)
 	{
 		Retry->Deliver(UnsentOutcome("CrowdyCPP client is not available"));
@@ -2044,6 +2134,7 @@ TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::Make(const FCrowdyCppClientConfig
 	Config.discoveryUrl = std::string(TCHAR_TO_UTF8(*InConfig.DiscoveryUrl));
 	Config.rediscover = FImpl::MakeRediscoverCallback(Wrapper->Impl->Rediscover);
 	Config.asyncTransport = CrowdyCppTransport::MakeFHttpTransport(Wrapper->Impl->TransportCounters);
+	Wrapper->Impl->HttpTransport = Config.asyncTransport;
 	// config.transport (the sync path) stays null; the async path never derefs it.
 	// Name the provider rather than relying on the client's build-flag fallback,
 	// which resolves to the always-failing provider if the flag is ever lost.
@@ -2078,6 +2169,7 @@ TSharedPtr<FCrowdyCppClient> FCrowdyCppClient::MakeForTest(const FString& Canned
 	Config.rediscover = FImpl::MakeRediscoverCallback(Wrapper->Impl->Rediscover);
 	Config.asyncTransport = CrowdyCppTransport::MakeCannedTransport(std::string(TCHAR_TO_UTF8(*CannedResponseBody)),
 		static_cast<int>(HttpStatus), Capture, Wrapper->Impl->TransportCounters);
+	Wrapper->Impl->HttpTransport = Config.asyncTransport;
 	Config.crypto = &crowdy::core::opensslCrypto();
 
 	TUniquePtr<crowdy::CrowdyClient> Client = TryConstructClient(std::move(Config));
@@ -2347,6 +2439,26 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 	const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
 	TOptional<ECrowdyCppTokenPlane> Plane)
 {
+	return RunOpAs(Domain, OperationName, Variables, MoveTemp(OnDone), Plane, false);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::RunOpMsgpack(ECrowdyCppApiDomain Domain, const FString& OperationName,
+	const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
+	TOptional<ECrowdyCppTokenPlane> Plane)
+{
+	return RunOpAs(Domain, OperationName, Variables, MoveTemp(OnDone), Plane, true);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::RunOpWithBearer(ECrowdyCppApiDomain Domain, const FString& OperationName,
+	const TSharedPtr<FJsonObject>& Variables, const FString& Bearer, TFunction<void(FCrowdyCppJsonResult)> OnDone)
+{
+	return RunOpAs(Domain, OperationName, Variables, MoveTemp(OnDone), TOptional<ECrowdyCppTokenPlane>(), false, Bearer);
+}
+
+FCrowdyCppRequestHandle FCrowdyCppClient::RunOpAs(ECrowdyCppApiDomain Domain, const FString& OperationName,
+	const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
+	TOptional<ECrowdyCppTokenPlane> Plane, bool bMsgpack, TOptional<FString> Bearer)
+{
 	// Deliver exactly once across every path: the async completion, the catch below, each pre-flight rejection, and
 	// a cancellation. The async transport delivers its callback from Poll() on the game thread and every other path
 	// runs synchronously on the same thread, so the fired flag needs no lock and the OnDone can safely touch
@@ -2374,7 +2486,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 	// the server before one is selected, so a single field the deployed server does not implement would fail every
 	// call at once rather than just the one that needs it. An operation the domain does not define yields an empty
 	// document, which fails closed here rather than as a confusing server-side syntax error.
-	const std::string_view Document = ResolveDocument(Domain, OperationNameStr);
+	const std::string_view Document = GeneratedDocument(Domain, OperationNameStr);
 	if (Document.empty())
 	{
 		FCrowdyCppJsonResult Result;
@@ -2409,11 +2521,12 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 
 	const TSharedRef<FBusyRetry> Retry =
 		MakeBusyRetry(Issued, Chosen.GetValue(), RetryKindFor(Document));
+	Retry->Bearer = MoveTemp(Bearer);
 	Retry->Send = [Document, JVars, OperationNameStr](crowdy::CrowdyClient& Client, crowdy::graphql::GraphQLCallback Cb)
 	{
 		Client.graphqlClient().requestAsync(Document, JVars, OperationNameStr, std::move(Cb));
 	};
-	Retry->Deliver = [FireOnce, Reason = Issued.FailureReason](crowdy::graphql::GraphQLOutcome Out)
+	Retry->Deliver = [FireOnce, Reason = Issued.FailureReason, bMsgpack](crowdy::graphql::GraphQLOutcome Out)
 	{
 		*Reason = OutcomeFailureReason(Out);
 		// The callback runs from Poll()/drain(), outside any issue-time try, so contain any throw here and deliver a
@@ -2433,6 +2546,23 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOp(ECrowdyCppApiDomain Domain, cons
 				// code worth branching on, because there is nowhere to move to.
 				Result.ErrorMessage = OutcomeErrorMessage(Out);
 				ReadOutcomeFault(Out, Result);
+				FireOnce(MoveTemp(Result));
+				return;
+			}
+
+			if (bMsgpack)
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(Crowdy_GM_PackResponse);
+				// The packer is flat at any depth; the reader of the packed value bounds its own depth.
+				const std::string Packed = Out.data.toMsgpack();
+				if (Packed.size() > static_cast<size_t>(MAX_int32))
+				{
+					Result.ErrorMessage = TEXT("response data too large to hand over");
+					FireOnce(MoveTemp(Result));
+					return;
+				}
+				Result.Msgpack.Append(reinterpret_cast<const uint8*>(Packed.data()), static_cast<int32>(Packed.size()));
+				Result.bTransportOk = true;
 				FireOnce(MoveTemp(Result));
 				return;
 			}
@@ -2881,6 +3011,82 @@ FCrowdyCppRequestHandle FCrowdyCppClient::MintAppToken(int64 AppId,
 		&MapAppTokenResponse, MakeAuthRetry(Impl.Get(), ECrowdyCppTokenPlane::Management));
 }
 
+FCrowdyCppRequestHandle FCrowdyCppClient::FetchModClientArtifact(int64 AppId, const FString& ModId,
+	TFunction<void(FCrowdyCppModClientArtifact)> OnDone)
+{
+	const std::string AppIdStr = std::string(TCHAR_TO_UTF8(*LexToString(AppId)));
+	const std::string ModIdStr = std::string(TCHAR_TO_UTF8(*ModId));
+	return RunAuthOp<FCrowdyCppModClientArtifact, crowdy::domains::ExecModClientArtifactBytes>(
+		Impl ? Impl->UseBearer(FImpl::EBearerChoice::Game) : nullptr, Impl ? Impl->Requests : nullptr,
+		TEXT("execModClientArtifact"), MoveTemp(OnDone),
+		[AppIdStr, ModIdStr](crowdy::CrowdyClient& Client, crowdy::domains::ExecModClientArtifactBytesCallback Cb)
+		{
+			Client.exec().modClientArtifactBytesAsync(AppIdStr, ModIdStr, std::move(Cb));
+		},
+		&MapModClientArtifact);
+}
+
+// CrowdyCPP's model list reader under the SDK's own bounds; modelsAsync hands back no body to bound, so getAsync's is read.
+FCrowdyCppRequestHandle FCrowdyCppClient::FetchStudioModels(int64 AppId, TFunction<void(FCrowdyCppStudioModelsResult)> OnDone)
+{
+	FCrowdyCppStudioModelsResult Canceled;
+	Canceled.ErrorMessage = CanceledErrorMessage();
+	const TIssuedRequest<FCrowdyCppStudioModelsResult> Issued = BeginRequest<FCrowdyCppStudioModelsResult>(
+		Impl ? Impl->Requests : nullptr, TEXT("StudioModels"), MoveTemp(OnDone), MoveTemp(Canceled));
+	const TFunction<void(FCrowdyCppStudioModelsResult)>& FireOnce = Issued.Fire;
+
+	FCrowdyCppStudioModelsResult Refused;
+	if (!Impl || !Impl->IsUsable())
+	{
+		Refused.ErrorMessage = TEXT("CrowdyCPP client is not available");
+		FireOnce(MoveTemp(Refused));
+		return Issued.Handle;
+	}
+	Refused.ErrorMessage = CrowdyCppStudioModels::ModelsRefusal(GetApiEndpoint(), AppId, Impl->GameToken);
+	if (!Refused.ErrorMessage.IsEmpty())
+	{
+		FireOnce(MoveTemp(Refused));
+		return Issued.Handle;
+	}
+
+	auto Deliver = [FireOnce, Reason = Issued.FailureReason](crowdy::graphql::HttpOutcome Out)
+	{
+		// Runs from Poll(), outside the try below, so a throw is contained here too.
+		try
+		{
+			FCrowdyCppStudioModelsResult Result = CrowdyCppStudioModels::MapModels(Out);
+			*Reason = CrowdyCppStudioModels::ModelsFailureReason(Result);
+			FireOnce(MoveTemp(Result));
+		}
+		catch (...)
+		{
+			FCrowdyCppStudioModelsResult Failed;
+			Failed.ErrorMessage = TEXT("the model list callback threw");
+			FireOnce(MoveTemp(Failed));
+		}
+	};
+
+	const CrowdyCppTransport::FHandOffScope HandOff(*Issued.HandOffSeconds);
+	try
+	{
+		crowdy::CrowdyClient* Client = Impl->UseBearer(FImpl::EBearerChoice::Game);
+		Client->graphqlClient().getAsync(CrowdyCppStudioModels::ModelsPath(AppId), crowdy::graphql::RequestOptions{}, std::move(Deliver));
+	}
+	catch (const std::exception& Ex)
+	{
+		FCrowdyCppStudioModelsResult Failed;
+		Failed.ErrorMessage = FString(UTF8_TO_TCHAR(Ex.what()));
+		FireOnce(MoveTemp(Failed));
+	}
+	catch (...)
+	{
+		FCrowdyCppStudioModelsResult Failed;
+		Failed.ErrorMessage = TEXT("the model list request threw a non-standard exception");
+		FireOnce(MoveTemp(Failed));
+	}
+	return Issued.Handle;
+}
+
 FString FCrowdyCppClient::GetApiEndpoint() const
 {
 	if (!Impl || !Impl->Client)
@@ -3316,7 +3522,7 @@ FCrowdyCppSubscriptionHandle FCrowdyCppClient::SubscribeOperation(ECrowdyCppApiD
 	const FString& OperationName, const TSharedPtr<FJsonObject>& Variables,
 	FCrowdyCppSubscriptionCallbacks Callbacks)
 {
-	const std::string_view Document = ResolveDocument(Domain, std::string(TCHAR_TO_UTF8(*OperationName)));
+	const std::string_view Document = GeneratedDocument(Domain, std::string(TCHAR_TO_UTF8(*OperationName)));
 
 	FString Refusal;
 	if (Document.empty())

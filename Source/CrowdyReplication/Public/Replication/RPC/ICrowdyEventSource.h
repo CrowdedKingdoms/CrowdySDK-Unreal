@@ -30,14 +30,12 @@ class UCrowdyEventSource : public UInterface
  * source that has no owning actor, so an actor or component that also implements it still routes by
  * its actor identity.
  *
- * All four recipients can be sent, and none of them needs an actor. Spatial Multicast needs a position, and drops with a warning when
+ * All three recipients can be sent, and none of them needs an actor. Spatial Multicast needs a position, and drops with a warning when
  * GetEventLocation reports none, since it announces from the region the entity stands in. Multicast
- * never needs one, and neither does host-only, which is addressed from where the HOST stands rather
- * than from where this source is. An owner-only event on a world entity
- * goes to the elected host, and is dropped under Leader Source Server Object, where no client writes one.
+ * never needs one. An owner-only event on a world entity is dropped with a warning, since no client writes one.
  *
  * One further limit: a source may only originate an event for an entity this client writes, which
- * means one it owns, or a world entity while this client is the host.
+ * means one it owns.
  */
 class CROWDYREPLICATION_API ICrowdyEventSource
 {
@@ -59,18 +57,15 @@ public:
 	virtual bool GetEventLocation(FVector& OutLocation) const = 0;
 
 	// The client that owns the entity, as its player id. This is the identity stamped on the event as its
-	// sender. An invalid guid means no client owns it: it is a world entity belonging to whichever client
-	// is currently the host, and the send path then stamps the local player instead.
-	virtual FGuid GetEventOwnerID() const = 0;
+	// sender. An invalid guid means no client owns it: it is a world entity, which no client writes.
+	virtual FGuid GetEventWriterID() const = 0;
 
 	// This client's relationship to the entity: Owner when this client simulates and sends for it,
-	// RemoteProxy when it only receives, HostOwned for a world entity, None when it is not registered.
+	// RemoteProxy when it only receives, WorldOwned for a world entity, None when it is not registered.
 	virtual ECrowdyRole GetEventRole() const = 0;
 
 	// True when this client is the entity's owner. A source that is not locally owned may still receive
 	// events; it just may not originate them, because an event sent for an entity this client does not own
-	// would carry this client's identity on another client's entity. The one exception is a world entity,
-	// which no client owns and which the host may therefore send for; the send path reads GetEventRole to
-	// recognise that case.
+	// would carry this client's identity on another client's entity.
 	virtual bool IsEventLocallyOwned() const = 0;
 };

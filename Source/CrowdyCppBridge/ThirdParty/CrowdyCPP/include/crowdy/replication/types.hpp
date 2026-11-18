@@ -39,6 +39,10 @@ enum class ConnState : std::uint8_t {
   Reconnecting,  ///< re-assigning after COMMAND_RECONNECT / TOKEN_EXPIRED / watchdog
   Failed,
   Closed,
+  /// The server released the session because the player sent no gameplay input for
+  /// the app's idle timeout (15 minutes unless the app sets its own). Final: nothing
+  /// reassigns until connect() is called, which the game does on the next input.
+  Inactive,
 };
 
 inline const char* connStateName(ConnState s) {
@@ -49,6 +53,7 @@ inline const char* connStateName(ConnState s) {
     case ConnState::Reconnecting: return "Reconnecting";
     case ConnState::Failed: return "Failed";
     case ConnState::Closed: return "Closed";
+    case ConnState::Inactive: return "Inactive";
   }
   return "?";
 }
@@ -88,6 +93,27 @@ struct Config {
   /// this long with sends flowing but nothing received triggers reassignment.
   /// Disabled by default (a lone player legitimately receives nothing).
   std::int64_t watchdogSilenceMs = 0;
+
+  /// An idle release (COMMAND_SESSION_RELEASED, reason Idle) that arrives within this
+  /// long of this client's own gameplay input reassigns instead of ending the session,
+  /// and counts in Stats::idleReleasesAfterInput. A genuine idle release cannot follow
+  /// input the server counted, because the platform's shortest idle timeout is 60 s;
+  /// a frame captured from an earlier release and sent again can. Gameplay input is
+  /// what the server counts: actor updates whose payload changed, voxel edits, text,
+  /// events, generic spatial and single-actor messages, audio, video, and channel
+  /// publishes; never heartbeats or capability notices. 0 makes every verified idle
+  /// release final.
+  std::int64_t idleReleaseGuardMs = 60 * 1000;
+
+  /// A verified legacy COMMAND_RECONNECT (22) reassigns at most once per assignment, and
+  /// only this long after the last one it honoured; the window doubles with each honoured
+  /// one up to 10 minutes, and goes back to this after 10 minutes without one. A 22 signs
+  /// fixed bytes, so one captured earlier verifies again for the game token's life; the
+  /// rest are dropped and count in Stats::legacyReconnectsSuppressed. The bound form (44)
+  /// is not limited. 0 honours every verified 22, as before 0.83.0. Once a server
+  /// acknowledges the bound forms on an assignment (CONTROL_BOUND_ACK, Buddy v0.46.0), every
+  /// legacy 22 and 28 on it is dropped (Stats::legacyControlDropped).
+  std::int64_t legacyReconnectWindowMs = 30 * 1000;
 
   /// Capacity (events) of the net->game notification ring.
   std::size_t ringCapacity = 4096;
@@ -186,6 +212,10 @@ struct Handlers {
   /// its last chunk). Emitted once; a later actorUpdate for the uuid is a rejoin.
   /// `reason`: 0 STALE (1 reserved).
   std::function<void(const SpatialNotification&, std::uint8_t reason)> actorLeft;
+  /// A chunk near you was replaced as a whole (a hub's or mod's world.set_chunk, Buddy
+  /// v0.45.0): read it again. `chunk` is the chunk; `updatedAtMs` its new updatedAt, so a
+  /// copy at least that new is current.
+  std::function<void(const SpatialNotification&, std::int64_t updatedAtMs)> chunkChanged;
   std::function<void(const SpatialNotification&)> text;
   std::function<void(const SpatialNotification&, const wire::EventPayloadView&)> clientEvent;
   std::function<void(const SpatialNotification&, const wire::EventPayloadView&)> serverEvent;

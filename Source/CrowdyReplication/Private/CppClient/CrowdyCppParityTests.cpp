@@ -62,6 +62,43 @@ bool FCrowdyCppUnknownOperationTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ACTOR_EXISTS says whose the taken uuid is, and a refusal that does not say leaves it unset rather than false.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppRunOpCarriesOwnedByCallerTest,
+	"CrowdySDK.CrowdyCpp.RunOpCarriesOwnedByCaller", CrowdyCppParityTestFlags)
+bool FCrowdyCppRunOpCarriesOwnedByCallerTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FCrowdyCppClient> Client = FCrowdyCppClient::MakeForTest(TEXT("{\"data\":{}}"), 200);
+	if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
+	{
+		return false;
+	}
+
+	const auto Refusal = [](const TCHAR* Owned)
+	{
+		return TPair<int32, FString>(200, FString::Printf(
+			TEXT("{\"errors\":[{\"message\":\"Taken.\",\"extensions\":{\"code\":\"ACTOR_EXISTS\"%s}}],\"data\":null}"), Owned));
+	};
+	Client->SetTestResponseScript({Refusal(TEXT(",\"ownedByCaller\":true")), Refusal(TEXT(",\"ownedByCaller\":false")), Refusal(TEXT(""))});
+
+	TArray<FCrowdyCppJsonResult> Results;
+	for (int32 Index = 0; Index < 3; ++Index)
+	{
+		Client->RunOp(ECrowdyCppApiDomain::Actors, TEXT("CreateActor"), MakeShared<FJsonObject>(),
+			[&Results](FCrowdyCppJsonResult Result) { Results.Add(MoveTemp(Result)); });
+		Client->Poll();
+	}
+
+	if (!TestEqual(TEXT("three answers"), Results.Num(), 3))
+	{
+		return false;
+	}
+	TestEqual(TEXT("the code"), Results[0].ErrorCode, FString(TEXT("ACTOR_EXISTS")));
+	TestTrue(TEXT("the caller's own actor"), Results[0].OwnedByCaller.IsSet() && Results[0].OwnedByCaller.GetValue());
+	TestTrue(TEXT("another player's actor"), Results[1].OwnedByCaller.IsSet() && !Results[1].OwnedByCaller.GetValue());
+	TestFalse(TEXT("unsaid stays unset"), Results[2].OwnedByCaller.IsSet());
+	return true;
+}
+
 // The vendored CrowdyCPP library is compiled from source, so its behaviour is whatever that snapshot does, pinned to
 // the version recorded in VENDOR.txt. A version bump must be a deliberate, reviewed edit to the constant below rather
 // than something that rides along silently in a sync script's output.
@@ -69,7 +106,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppVendoredVersionTest,
 	"CrowdySDK.CrowdyCpp.VendoredVersion", CrowdyCppParityTestFlags)
 bool FCrowdyCppVendoredVersionTest::RunTest(const FString& Parameters)
 {
-	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.76.0");
+	static const FString ExpectedVendoredCrowdyCppVersion = TEXT("0.87.0");
 
 	// Each SDK branch vendors its own tier, so the tier VENDOR.txt records must be the one actually compiled in.
 	const FString CompiledCrowdyCppTier = UTF8_TO_TCHAR(crowdy::kDefaultTier);

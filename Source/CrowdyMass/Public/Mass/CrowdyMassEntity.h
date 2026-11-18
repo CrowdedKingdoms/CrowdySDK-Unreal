@@ -26,7 +26,7 @@ class UCrowdyMassEntitySubsystem;
  * not refuse, it would send an event under another player's name. An unset owner id is not a
  * disagreement: the send path substitutes the local player as the sender in exactly that case.
  */
-CROWDYMASS_API bool IsCrowdyMassIdentityLocallyOwned(ECrowdyRole Role, const FGuid& OwnerID, const FGuid& LocalPlayerID);
+CROWDYMASS_API bool IsCrowdyMassIdentityLocallyOwned(ECrowdyRole Role, const FGuid& WriterID, const FGuid& LocalPlayerID);
 
 /**
  * Stands in for one Mass entity so ordinary object-shaped code can address it.
@@ -97,12 +97,12 @@ public:
 	// number, so letting a caller name it would let one entity announce itself anywhere in the world.
 	virtual bool GetEventLocation(FVector& OutLocation) const override;
 
-	virtual FGuid GetEventOwnerID() const override;
+	virtual FGuid GetEventWriterID() const override;
 
 	/**
 	 * This client's relationship to the entity, as the entity itself records it.
 	 *
-	 * It answers HostOwned both for a genuine world entity and for an entity nothing has identified yet,
+	 * It answers WorldOwned both for a genuine world entity and for an entity nothing has identified yet,
 	 * because that is the safe assumption for the send path it exists to serve. Do NOT gate anything that
 	 * writes server state on it: the entity registry is where "not identified" and "identified as
 	 * host-owned" are different facts.

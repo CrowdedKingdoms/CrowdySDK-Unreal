@@ -88,6 +88,34 @@ bool FCrowdyTrackerQueueDropsPastItsCeilingTest::RunTest(const FString&)
 	return true;
 }
 
+// With owner tracking off, an update under an id this client sent under before a sign-in replaced it is its own and
+// is not taken in, the same as one under its current id; a peer's is.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTrackerDropsItsOwnRetiredIdTest,
+	"CrowdySDK.Replication.TrackerSkipsItsOwnUpdatesUnderARetiredId",
+	CrowdyActorUpdateQueueBoundTestFlags)
+
+bool FCrowdyTrackerDropsItsOwnRetiredIdTest::RunTest(const FString&)
+{
+	AddExpectedMessagePlain(TEXT("worker pool is not accepting work"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	const TStrongObjectPtr<UCrowdyActorTracker> Tracker(NewObject<UCrowdyActorTracker>(GetTransientPackage()));
+	Tracker->SetupQueuesForTest();
+	Tracker->ToggleOwnerTracking(false);
+	const FGuid Old = FGuid::NewGuid();
+	const FGuid New = FGuid::NewGuid();
+	Tracker->SetLocalUUIDForTest(Old.ToString(EGuidFormats::Digits));
+	Tracker->SetLocalUUIDForTest(New.ToString(EGuidFormats::Digits));
+
+	Tracker->EnqueueUpdateForTest(MakeUpdate(Old));
+	Tracker->EnqueueUpdateForTest(MakeUpdate(New));
+	TestEqual(TEXT("its own updates, under either id, are not taken in"), Tracker->NumQueuedUpdatesForTest(), 0);
+	Tracker->EnqueueUpdateForTest(MakeUpdate(FGuid::NewGuid()));
+	TestEqual(TEXT("a peer's is"), Tracker->NumQueuedUpdatesForTest(), 1);
+
+	Tracker->ReleaseQueuesForTest();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTrackerConfigureAfterSetupKeepsItsSetsTest,
 	"CrowdySDK.Replication.TrackerConfigureAfterSetupKeepsItsSets",
 	CrowdyActorUpdateQueueBoundTestFlags)

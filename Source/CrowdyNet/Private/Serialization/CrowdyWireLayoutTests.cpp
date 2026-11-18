@@ -77,6 +77,8 @@ bool FCrowdyWireOpcodeAgreementTest::RunTest(const FString& Parameters)
 	CheckOpcode(TEXT("SINGLE_ACTOR_MESSAGE"), ECrowdyMessageType::SINGLE_ACTOR_MESSAGE, MessageType::SingleActorMessage);
 	CheckOpcode(TEXT("ACTOR_LEFT_NOTIFICATION"), ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION,
 		MessageType::ActorLeftNotification);
+	CheckOpcode(TEXT("CHUNK_CHANGED_NOTIFICATION"), ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION,
+		MessageType::ChunkChangedNotification);
 	CheckOpcode(TEXT("CLIENT_CAPABILITIES"), ECrowdyMessageType::CLIENT_CAPABILITIES, MessageType::ClientCapabilities);
 	CheckOpcode(TEXT("MESSAGE_BUNDLE_SIGNED"), ECrowdyMessageType::MESSAGE_BUNDLE_SIGNED, MessageType::MessageBundleSigned);
 
@@ -92,6 +94,7 @@ bool FCrowdyWireOpcodeAgreementTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("143 uses the long spatial layout"), isLongSpatialLayout(143));
 	TestTrue(TEXT("144 uses the long spatial layout"), isLongSpatialLayout(144));
 	TestTrue(TEXT("145 uses the long spatial layout"), isLongSpatialLayout(145));
+	TestTrue(TEXT("146 uses the long spatial layout"), isLongSpatialLayout(146));
 	TestFalse(TEXT("141 is reserved and unimplemented"), isLongSpatialLayout(141));
 
 	return true;

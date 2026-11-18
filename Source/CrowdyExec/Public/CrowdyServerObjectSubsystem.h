@@ -76,6 +76,9 @@ public:
 	/** The signed-in player's user id, or 0 when nobody is signed in. */
 	int64 GetSignedInUserId() const;
 
+	/** The player whose token the open connection carries, which can lag a sign-in as another player; 0 while none is open. */
+	int64 GetConnectedUserId() const { return DialedUserId; }
+
 	/** The session's chunk size in world units, which actor updates place a location in a chunk by; 0 without a session. */
 	double GetChunkSize() const;
 

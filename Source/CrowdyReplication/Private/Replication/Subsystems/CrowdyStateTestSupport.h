@@ -21,25 +21,6 @@
 #include "Subsystem/CrowdyGameSession.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 
-// Sets the project's Leader Source for one test and puts the previous one back.
-struct FCrowdyScopedLeaderSource
-{
-	ECrowdyLeaderSource Previous;
-
-	explicit FCrowdyScopedLeaderSource(const ECrowdyLeaderSource Source)
-		: Previous(GetDefault<UCrowdySDKDeveloperSettings>()->LeaderSource)
-	{
-		Set(Source);
-	}
-
-	~FCrowdyScopedLeaderSource() { Set(Previous); }
-
-	static void Set(const ECrowdyLeaderSource Source)
-	{
-		GetMutableDefault<UCrowdySDKDeveloperSettings>()->LeaderSource = Source;
-	}
-};
-
 // UCrowdyAutoRegistry is a UGameInstanceSubsystem (ClassWithin=UGameInstance); a transient-package
 // NewObject trips a ClassWithin ensure, so outer it to a bare GameInstance.
 inline UCrowdyAutoRegistry* MakeStateRegistry()
@@ -78,13 +59,13 @@ inline UCrowdyStateReplicator* MakeReplicator(UCrowdyAutoRegistry* Registry, con
 	return Rep;
 }
 
-// A real game session carrying an elected host, mirroring the persisted host that survives level travel.
+// A real game session carrying a Leader, mirroring the persisted Leader that survives level travel.
 // UCrowdyGameSession is a UGameInstanceSubsystem (ClassWithin=UGameInstance), so it needs a GameInstance outer.
-inline UCrowdyGameSession* MakeGameSession(const FGuid& HostID)
+inline UCrowdyGameSession* MakeGameSession(const FGuid& LeaderID)
 {
 	UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
 	UCrowdyGameSession* Session = NewObject<UCrowdyGameSession>(GameInstance);
-	Session->SetHostID(HostID);
+	Session->SetHostID(LeaderID);
 	return Session;
 }
 
@@ -151,12 +132,12 @@ inline const FCrowdyRepProperty* FindByName(const FCrowdyRepLayout& Layout, cons
 }
 
 // Registers any UObject as a resolvable RemoteProxy participant so FindParticipant(EntityId) returns it
-// (its OwnerID is a fresh non-local guid, so IsLocallyOwned is false and the owned-entity gate is bypassed).
+// (its WriterID is a fresh non-local guid, so IsLocallyOwned is false and the owned-entity gate is bypassed).
 inline void RegisterProxyParticipant(UCrowdyEntitySubsystem* Entities, const FGuid& EntityId, UObject* Participant)
 {
 	FCrowdyEntityRecord Rec;
 	Rec.NetID = EntityId;
-	Rec.OwnerID = FGuid::NewGuid();
+	Rec.WriterID = FGuid::NewGuid();
 	Rec.Role = ECrowdyRole::RemoteProxy;
 	Rec.Participant = Participant;
 	Entities->RegisterEntity(Rec);
@@ -164,7 +145,7 @@ inline void RegisterProxyParticipant(UCrowdyEntitySubsystem* Entities, const FGu
 
 // Registers any UObject as a participant under a CHOSEN role and owner id, which the helper above cannot
 // express: it always stamps RemoteProxy with a foreign owner, the one combination none of the receive path's
-// authority gates apply to. Pass ECrowdyRole::HostOwned with an invalid OwnerID for a world entity (the
+// authority gates apply to. Pass ECrowdyRole::WorldOwned with an invalid WriterID for a world entity (the
 // world-static convention: no owner), or ECrowdyRole::Owner with the subsystem's local player id for an entity
 // this client owns. Those two fields are exactly what the gates read, so a test that needs one of them to fire
 // registers through here.
@@ -173,7 +154,7 @@ inline void RegisterParticipantAs(UCrowdyEntitySubsystem* Entities, const FGuid&
 {
 	FCrowdyEntityRecord Rec;
 	Rec.NetID = EntityId;
-	Rec.OwnerID = OwnerId;
+	Rec.WriterID = OwnerId;
 	Rec.Role = Role;
 	Rec.Participant = Participant;
 	Entities->RegisterEntity(Rec);

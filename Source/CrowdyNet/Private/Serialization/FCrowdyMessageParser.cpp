@@ -14,6 +14,7 @@
 #include "Messages/GameObjects/FServerEventNotification.h"
 #include "Messages/GameObjects/FGameObjectActivationNotification.h"
 #include "Messages/GameObjects/FSingleActorMessage.h"
+#include "Messages/Voxel/FChunkChangedNotification.h"
 #include "Messages/Voxel/FVoxelUpdateNotificationMessage.h"
 #include "Network/UDP/CrowdyUDPSubsystem.h"
 #include "Serialization/CrowdyFrameSplit.h"
@@ -293,6 +294,15 @@ TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::DecodeFram
 			}
 			return Message;
 		}
+	case ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION:
+		{
+			TSharedRef<FChunkChangedNotification> Message = MakeShared<FChunkChangedNotification>();
+			if (!Message->DecodePayload(Frame))
+			{
+				return MakeShared<FDefaultMessage>();
+			}
+			return Message;
+		}
 	case ECrowdyMessageType::GENERIC_ERROR_MESSAGE:
 		{
 			if (Frame.Body.Num() >= 2)
@@ -337,11 +347,6 @@ TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::DecodeFram
 		return MakeShared<FDefaultMessage>();
 	}
 	
-}
-
-void FCrowdyMessageParser::SetExpectedActorStateSize(const int32 NewSize)
-{
-	ExpectedActorStateSize = NewSize;
 }
 
 void FCrowdyMessageParser::HandleGenericErrorMessage(const uint8 ErrorType, const uint8 SequenceNumber) const

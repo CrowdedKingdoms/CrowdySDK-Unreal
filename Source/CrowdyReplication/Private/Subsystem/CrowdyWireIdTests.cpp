@@ -486,6 +486,49 @@ bool FCrowdyWireIdSpawnFramingFollowsTypeOnReceiveTest::RunTest(const FString& P
 	return true;
 }
 
+// The spawn event carries its owner's user id right after the writer's actor id, and a receiver reads it from there.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyWireIdSpawnFramingCarriesOwnerUserTest,
+	"CrowdySDK.Replication.WireIdSpawnFramingCarriesOwnerUser", CrowdyWireIdTestFlags)
+bool FCrowdyWireIdSpawnFramingCarriesOwnerUserTest::RunTest(const FString& Parameters)
+{
+	UEventPayloadRegistry* Registry = UEventPayloadRegistry::Get();
+	Registry->Reset();
+	ON_SCOPE_EXIT { Registry->Reset(); };
+	Registry->RegisterStruct(FCrowdyEntitySpawnEvent::StaticStruct(),
+		FCrowdyTypeIDGenerator::GenerateFromStruct(FCrowdyEntitySpawnEvent::StaticStruct()));
+
+	FCrowdyEntitySpawnEvent Event;
+	Event.EntityID = FGuid::NewGuid();
+	Event.WriterID = FGuid::NewGuid();
+	Event.OwnerUserID = 0x0123456789ABCDEFll;
+	Event.ClassID = 77;
+	Event.ClassPath = TEXT("/Script/Engine.Actor");
+
+	TArray<uint8> Encoded;
+	if (!TestTrue(TEXT("The spawn event serializes"),
+		USerializationFunctionLibrary::SerializeEventState(FInstancedStruct::Make(Event), Encoded)))
+		return false;
+
+	const int32 UserOffset = sizeof(FCrowdyTypeID) + 2 * sizeof(FGuid);
+	if (!TestTrue(TEXT("The frame is long enough to hold the user id"), Encoded.Num() >= UserOffset + static_cast<int32>(sizeof(int64))))
+		return false;
+	int64 Written = 0;
+	FMemory::Memcpy(&Written, Encoded.GetData() + UserOffset, sizeof(int64));
+	TestEqual(TEXT("The user id goes out right after the writer's actor id"), Written, Event.OwnerUserID);
+
+	FInstancedStruct Decoded;
+	if (!TestTrue(TEXT("The frame decodes"), USerializationFunctionLibrary::DeserializeEventState(Encoded, Decoded))
+		|| !TestTrue(TEXT("as a spawn event"), Decoded.GetScriptStruct() == FCrowdyEntitySpawnEvent::StaticStruct()))
+		return false;
+
+	const FCrowdyEntitySpawnEvent& Result = Decoded.Get<FCrowdyEntitySpawnEvent>();
+	TestEqual(TEXT("with its writer"), Result.WriterID, Event.WriterID);
+	TestEqual(TEXT("with its owner user"), Result.OwnerUserID, Event.OwnerUserID);
+	TestEqual(TEXT("and the fields after it where they were"), Result.ClassID, Event.ClassID);
+	TestEqual(TEXT("including the class path"), Result.ClassPath, Event.ClassPath);
+	return true;
+}
+
 // GetID remembers its answer per class once the registry is sealed, so the send loop stops rebuilding a class
 // path string per call. What that memo owes is that it still separates classes: an answer remembered under a
 // key that does not tell two classes apart hands the first class's ID to the second, and every receiver then

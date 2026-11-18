@@ -126,6 +126,34 @@ struct CROWDYNET_API FCrowdySendRefusal
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCrowdySendRefused, const FCrowdySendRefusal&, Refusal);
 
+enum class ECrowdyTrackedSendEvent : uint8
+{
+	/** On the wire with Sequence. */
+	Sent,
+
+	/** The sequence counter came round to this send's number while it could still be answered. */
+	Lapped,
+
+	/** Never reached the wire. */
+	Lost,
+
+	/** An error frame was attributed to it. Error frames are unsigned, so this is a claim to settle, not a fact. */
+	Refused
+};
+
+/** What became of a send made with TrySendMessage and a ticket. */
+struct FCrowdyTrackedSend
+{
+	uint64 Ticket = 0;
+	ECrowdyTrackedSendEvent Event = ECrowdyTrackedSendEvent::Sent;
+	uint8 Sequence = 0;
+
+	/** Meaningful for Refused. */
+	uint8 ErrorCode = 0;
+};
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnCrowdyTrackedSend, const FCrowdyTrackedSend&);
+
 /**
  * Owns the replication connection the running game sends its UDP traffic through, in both directions.
  *
@@ -255,7 +283,13 @@ public:
 	 * A Refused outcome is a malformed or unsendable message rather than a transport hiccup, so it is logged as a
 	 * warning and dropped.
 	 */
-	ECrowdyCppSendOutcome TrySendMessage(const ICrowdyMessage& Message);
+	ECrowdyCppSendOutcome TrySendMessage(const ICrowdyMessage& Message, uint64 Ticket = 0);
+
+	/** A ticket for TrySendMessage, unique for this game instance and never 0. Any thread. */
+	uint64 NewSendTicket() { return NextSendTicket.fetch_add(1, std::memory_order_relaxed); }
+
+	/** Fires on the game thread for every change in a ticketed send's fate. A refused or unrouted send fires nothing. */
+	FOnCrowdyTrackedSend OnTrackedSend;
 
 	/**
 	 * Stop sending actor updates for these ids and hand them back into this process after a delay
@@ -394,6 +428,8 @@ private:
 	 * the poll.
 	 */
 	std::atomic<int64> PendingClientNotifiesSent { 0 };
+
+	std::atomic<uint64> NextSendTicket { 1 };
 
 	/** As above, said once rather than once per delivered message. */
 	bool bWarnedAboutMissingReceiveTarget = false;

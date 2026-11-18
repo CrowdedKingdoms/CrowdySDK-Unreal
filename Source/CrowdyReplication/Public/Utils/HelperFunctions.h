@@ -19,10 +19,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Coordinates", meta = (DisplayName = "Get Chunk Coordinate At Location", WorldContext="WorldContextObject"))
 	static void GetChunkCoordinateAtLocation(UObject* WorldContextObject, const FVector& WorldLocation, int64& ChunkX, int64& ChunkY, int64& ChunkZ);
 	
-	UE_DEPRECATED(5.8, TEXT("Use Get Chunk Coordinate At Location instead"))
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Coordinates", meta = (DeprecatedFunction, DeprecationMessage = "Use Get Chunk Coordinate At Location instead"))
-	static void GetChunkCoordinatesAtWorldLocation(const FVector& WorldLocation, int64& ChunkX, int64& ChunkY, int64& ChunkZ);
-	
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Coordinates")
 	static void GetVoxelCoordinatesAtWorldLocation(const FVector& WorldLocation, int32& VoxelX, int32& VoxelY, int32& VoxelZ, const int32 ChunkSize = 1600);
 
@@ -33,7 +29,7 @@ public:
 	// random per call). All four words are derived from one 32-bit hash of Seed, so the real entropy is
 	// only 32 bits, not 128: birthday odds hit roughly a 1% collision chance around 77,000 ids. Do not
 	// "improve" this by widening the hash. The output is wire-visible and cross-client-stable, and
-	// a player's entity id is derived from their user id this way, so changing the derivation changes every id
+	// path and binding ids are derived this way, so changing the derivation changes every id
 	// already issued. Collisions are handled at the point ids enter the registry
 	// (UCrowdyEntitySubsystem::RegisterEntity), not by widening this hash.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Identifiers")

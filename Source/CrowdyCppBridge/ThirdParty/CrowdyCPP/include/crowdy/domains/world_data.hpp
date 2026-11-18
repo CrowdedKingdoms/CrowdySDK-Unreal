@@ -14,6 +14,76 @@
 /// travel over the replication client instead.
 namespace crowdy::domains {
 
+/// The chunks a region read covers, and which page of them: a cube of Chebyshev radius 1-8
+/// around a center, or a box between two corners (both inclusive, in either order, at most
+/// 4,913 chunks: the cube a radius of 8 reads). A cube comes nearest first, a box by x, then y,
+/// then z, and either way each chunk is on exactly one page. Boxes, `since` on chunk reads and
+/// stable pages need ck-api v2.67.0.
+class ChunkRegion {
+ public:
+  static ChunkRegion cube(const ChunkRef& center, int maxDistance) {
+    ChunkRegion region;
+    region.low_ = center;
+    region.maxDistance_ = maxDistance;
+    return region;
+  }
+
+  /// For streaming the world in as a player walks: one step reads only the slab it uncovers.
+  static ChunkRegion box(const ChunkRef& low, const ChunkRef& high) {
+    ChunkRegion region;
+    region.low_ = low;
+    region.high_ = high;
+    region.box_ = true;
+    return region;
+  }
+
+  /// At most this many chunks; 0 for the server's default, 1,000.
+  ChunkRegion& limit(std::int64_t chunks) {
+    limit_ = chunks;
+    return *this;
+  }
+
+  /// The next page starts where the last one ended: its `skip` plus its `limit`.
+  ChunkRegion& skip(std::int64_t chunks) {
+    skip_ = chunks;
+    return *this;
+  }
+
+  /// Only what changed at or after this ISO-8601 time. For chunk reads that is a chunk whose
+  /// stored row was written then (updateChunk, updateChunkState, updateChunkLods; a voxel edit
+  /// does not move it); for edit reads, the edits.
+  ChunkRegion& since(std::string isoTime) {
+    since_ = std::move(isoTime);
+    return *this;
+  }
+
+  /// The by-distance input of both region reads, for `appId`.
+  graphql::JVal toInput(std::string_view appId) const {
+    graphql::JVal input;
+    input["appId"] = appId;
+    if (box_) {
+      input["lowChunk"] = low_.toInput();
+      input["highChunk"] = high_.toInput();
+    } else {
+      input["centerCoordinate"] = low_.toInput();
+      input["maxDistance"] = std::int64_t{maxDistance_};
+    }
+    if (limit_ > 0) input["limit"] = limit_;
+    if (skip_ > 0) input["skip"] = skip_;
+    if (!since_.empty()) input["since"] = since_;
+    return input;
+  }
+
+ private:
+  ChunkRef low_;
+  ChunkRef high_;
+  int maxDistance_ = 0;
+  bool box_ = false;
+  std::int64_t limit_ = 0;
+  std::int64_t skip_ = 0;
+  std::string since_;
+};
+
 /// client.chunks() — durable chunk storage. `voxels` blobs are base64 4096-
 /// byte dense grids (index x + y*16 + z*256). `get` and `byDistance` also
 /// select each chunk's `voxelStates`: the states stored with it and every voxel
@@ -38,12 +108,14 @@ class ChunksAPI : public DomainBase {
     execUnwrapAsync(gen::chunks::kGetChunkDocument, vars, {}, std::move(cb));
   }
 
+  /// The chunk's level-of-detail meshes at `lodLevels`, which the schema requires
+  /// (`[Int!]!`): pass the levels to read, e.g. `graphql::JVal::array({0, 1})`.
   graphql::Json getLods(std::string_view appId, const ChunkRef& chunk,
-                        const graphql::JVal& lodLevels = graphql::JVal()) const {
+                        const graphql::JVal& lodLevels) const {
     graphql::JVal vars;
     vars["input"]["appId"] = appId;
     vars["input"]["coordinates"] = chunk.toInput();
-    if (!lodLevels.isNull()) vars["input"]["lodLevels"] = lodLevels;
+    vars["input"]["lodLevels"] = lodLevels;
     return execUnwrap(gen::chunks::kGetChunkLodsDocument, vars);
   }
 
@@ -52,27 +124,97 @@ class ChunksAPI : public DomainBase {
     graphql::JVal vars;
     vars["input"]["appId"] = appId;
     vars["input"]["coordinates"] = chunk.toInput();
-    if (!lodLevels.isNull()) vars["input"]["lodLevels"] = lodLevels;
+    vars["input"]["lodLevels"] = lodLevels;
     execUnwrapAsync(gen::chunks::kGetChunkLodsDocument, vars, {}, std::move(cb));
   }
 
-  /// Bulk-load every stored chunk within `maxDistance` of `center`
-  /// (Chebyshev, 1-8), with their `voxelStates`.
-  graphql::Json byDistance(std::string_view appId, const ChunkRef& center, int maxDistance) const {
-    graphql::JVal vars;
-    vars["input"]["appId"] = appId;
-    vars["input"]["centerCoordinate"] = center.toInput();
-    vars["input"]["maxDistance"] = std::int64_t{maxDistance};
-    return execUnwrap(gen::chunks::kGetChunksByDistanceDocument, vars);
+  /// Bulk-load the stored chunks within `maxDistance` of `center` (Chebyshev, 1-8),
+  /// with their `voxelStates`: at most `limit` of them, from `skip` (0 for either:
+  /// the server's default, 1,000 chunks from the first). Range 8 holds up to 4,913
+  /// chunks, so a caller that needs all of them asks for that many, or pages on by
+  /// the `limit` and `skip` the answer echoes.
+  graphql::Json byDistance(std::string_view appId, const ChunkRef& center, int maxDistance,
+                           std::int64_t limit = 0, std::int64_t skip = 0) const {
+    return execUnwrap(gen::chunks::kGetChunksByDistanceDocument,
+                      byDistanceVars(appId, center, maxDistance, limit, skip));
   }
 
   void byDistanceAsync(std::string_view appId, const ChunkRef& center, int maxDistance,
                        graphql::GraphQLCallback cb) const {
-    graphql::JVal vars;
-    vars["input"]["appId"] = appId;
-    vars["input"]["centerCoordinate"] = center.toInput();
-    vars["input"]["maxDistance"] = std::int64_t{maxDistance};
-    execUnwrapAsync(gen::chunks::kGetChunksByDistanceDocument, vars, {}, std::move(cb));
+    byDistanceAsync(appId, center, maxDistance, 0, 0, std::move(cb));
+  }
+
+  void byDistanceAsync(std::string_view appId, const ChunkRef& center, int maxDistance,
+                       std::int64_t limit, std::int64_t skip, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::chunks::kGetChunksByDistanceDocument,
+                    byDistanceVars(appId, center, maxDistance, limit, skip), {}, std::move(cb));
+  }
+
+  /// byDistance for readers that draw blocks: each chunk's `coordinates`, `voxels`,
+  /// `voxelStates` (`voxelCoord`, `voxelType`, `state`) and `voxelStatesTruncated`,
+  /// without its chunk state, LODs, owner or timestamps.
+  graphql::Json byDistanceVoxels(std::string_view appId, const ChunkRef& center, int maxDistance,
+                                 std::int64_t limit = 0, std::int64_t skip = 0) const {
+    return execUnwrap(gen::chunks::kGetChunksByDistanceVoxelsDocument,
+                      byDistanceVars(appId, center, maxDistance, limit, skip));
+  }
+
+  void byDistanceVoxelsAsync(std::string_view appId, const ChunkRef& center, int maxDistance,
+                             std::int64_t limit, std::int64_t skip,
+                             graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::chunks::kGetChunksByDistanceVoxelsDocument,
+                    byDistanceVars(appId, center, maxDistance, limit, skip), {}, std::move(cb));
+  }
+
+  /// byDistanceVoxels without the edits' `state` bytes, for a reader that only draws.
+  graphql::Json byDistanceVoxelTypes(std::string_view appId, const ChunkRef& center,
+                                     int maxDistance, std::int64_t limit = 0,
+                                     std::int64_t skip = 0) const {
+    return execUnwrap(gen::chunks::kGetChunksByDistanceVoxelTypesDocument,
+                      byDistanceVars(appId, center, maxDistance, limit, skip));
+  }
+
+  void byDistanceVoxelTypesAsync(std::string_view appId, const ChunkRef& center, int maxDistance,
+                                 std::int64_t limit, std::int64_t skip,
+                                 graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::chunks::kGetChunksByDistanceVoxelTypesDocument,
+                    byDistanceVars(appId, center, maxDistance, limit, skip), {}, std::move(cb));
+  }
+
+  /// The stored chunks of `area` (a cube or a box, a page of them, optionally only those
+  /// written since a time), with their `voxelStates` as byDistance reads them. The answer's
+  /// `limit` and `skip` are the ones applied.
+  graphql::Json region(std::string_view appId, const ChunkRegion& area) const {
+    return execUnwrap(gen::chunks::kGetChunksByDistanceDocument, regionVars(appId, area));
+  }
+
+  void regionAsync(std::string_view appId, const ChunkRegion& area,
+                   graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::chunks::kGetChunksByDistanceDocument, regionVars(appId, area), {},
+                    std::move(cb));
+  }
+
+  /// region() with byDistanceVoxels' selection, for readers that draw blocks.
+  graphql::Json regionVoxels(std::string_view appId, const ChunkRegion& area) const {
+    return execUnwrap(gen::chunks::kGetChunksByDistanceVoxelsDocument, regionVars(appId, area));
+  }
+
+  void regionVoxelsAsync(std::string_view appId, const ChunkRegion& area,
+                         graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::chunks::kGetChunksByDistanceVoxelsDocument, regionVars(appId, area),
+                    {}, std::move(cb));
+  }
+
+  /// region() with byDistanceVoxelTypes' selection: no edit `state` bytes.
+  graphql::Json regionVoxelTypes(std::string_view appId, const ChunkRegion& area) const {
+    return execUnwrap(gen::chunks::kGetChunksByDistanceVoxelTypesDocument,
+                      regionVars(appId, area));
+  }
+
+  void regionVoxelTypesAsync(std::string_view appId, const ChunkRegion& area,
+                             graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::chunks::kGetChunksByDistanceVoxelTypesDocument,
+                    regionVars(appId, area), {}, std::move(cb));
   }
 
   graphql::Json voxelList(std::string_view appId, const ChunkRef& chunk) const {
@@ -134,6 +276,18 @@ class ChunksAPI : public DomainBase {
     vars["input"] = input;
     execUnwrapAsync(gen::chunks::kUpdateChunkLodsDocument, vars, {}, std::move(cb));
   }
+
+ private:
+  static graphql::JVal byDistanceVars(std::string_view appId, const ChunkRef& center,
+                                      int maxDistance, std::int64_t limit, std::int64_t skip) {
+    return regionVars(appId, ChunkRegion::cube(center, maxDistance).limit(limit).skip(skip));
+  }
+
+  static graphql::JVal regionVars(std::string_view appId, const ChunkRegion& area) {
+    graphql::JVal vars;
+    vars["input"] = area.toInput(appId);
+    return vars;
+  }
 };
 
 /// client.voxels() — voxel reads, durable updates, history + moderation.
@@ -165,6 +319,52 @@ class VoxelsAPI : public DomainBase {
     execUnwrapAsync(gen::voxels::kListVoxelUpdatesByDistanceDocument, vars, {}, std::move(cb));
   }
 
+  /// listByDistance over a ChunkRegion: the recorded edits of its chunks, grouped per chunk and
+  /// paged over chunks. It reads the edit log alone, so it returns edits in chunks whose grid was
+  /// never stored. For a box the answer's `centerCoordinate` is its middle chunk.
+  graphql::Json listInRegion(std::string_view appId, const ChunkRegion& area) const {
+    return listByDistance(area.toInput(appId));
+  }
+
+  void listInRegionAsync(std::string_view appId, const ChunkRegion& area,
+                         graphql::GraphQLCallback cb) const {
+    listByDistanceAsync(area.toInput(appId), std::move(cb));
+  }
+
+  /// listInRegion() selecting only what rebuilds a cell: each chunk's `coordinates`, and each
+  /// edit's `location`, `voxelType` and `state` (operation ListVoxelUpdatesByDistanceCells).
+  /// The log keeps one row per position, the latest write, so a chunk's answer is bounded by
+  /// the positions ever edited in it, not by its history.
+  graphql::Json listInRegionCells(std::string_view appId, const ChunkRegion& area) const {
+    graphql::JVal vars;
+    vars["input"] = area.toInput(appId);
+    return execUnwrap(gen::voxels::kListVoxelUpdatesByDistanceCellsDocument, vars);
+  }
+
+  void listInRegionCellsAsync(std::string_view appId, const ChunkRegion& area,
+                              graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["input"] = area.toInput(appId);
+    execUnwrapAsync(gen::voxels::kListVoxelUpdatesByDistanceCellsDocument, vars, {},
+                    std::move(cb));
+  }
+
+  /// listInRegionCells() with each edit's `createdAt`, the server time of its latest write,
+  /// for a reader that orders edits by time (operation ListVoxelUpdatesByDistanceCellsTimed).
+  graphql::Json listInRegionCellsTimed(std::string_view appId, const ChunkRegion& area) const {
+    graphql::JVal vars;
+    vars["input"] = area.toInput(appId);
+    return execUnwrap(gen::voxels::kListVoxelUpdatesByDistanceCellsTimedDocument, vars);
+  }
+
+  void listInRegionCellsTimedAsync(std::string_view appId, const ChunkRegion& area,
+                                   graphql::GraphQLCallback cb) const {
+    graphql::JVal vars;
+    vars["input"] = area.toInput(appId);
+    execUnwrapAsync(gen::voxels::kListVoxelUpdatesByDistanceCellsTimedDocument, vars, {},
+                    std::move(cb));
+  }
+
   /// Durable single-voxel update (requires update_voxel_data permission).
   graphql::Json update(const graphql::JVal& input) const {
     graphql::JVal vars;
@@ -178,17 +378,16 @@ class VoxelsAPI : public DomainBase {
     execUnwrapAsync(gen::voxels::kUpdateVoxelDocument, vars, {}, std::move(cb));
   }
 
-  graphql::Json history(const graphql::JVal& input) const {
-    graphql::JVal vars;
-    vars["input"] = input;
-    return execUnwrap(gen::voxels::documentFor("VoxelUpdateHistory"), vars,
+  /// Entries of the immutable edit history (`voxelUpdateHistory`). `args` are the
+  /// operation's own variables, sent as they are: `appId`, and optionally `userId`,
+  /// `from`, `to`, `limit` and `offset`.
+  graphql::Json history(const graphql::JVal& args) const {
+    return execUnwrap(gen::voxels::documentFor("VoxelUpdateHistory"), args,
                       "VoxelUpdateHistory");
   }
 
-  void historyAsync(const graphql::JVal& input, graphql::GraphQLCallback cb) const {
-    graphql::JVal vars;
-    vars["input"] = input;
-    execUnwrapAsync(gen::voxels::documentFor("VoxelUpdateHistory"), vars, "VoxelUpdateHistory",
+  void historyAsync(const graphql::JVal& args, graphql::GraphQLCallback cb) const {
+    execUnwrapAsync(gen::voxels::documentFor("VoxelUpdateHistory"), args, "VoxelUpdateHistory",
                     std::move(cb));
   }
 

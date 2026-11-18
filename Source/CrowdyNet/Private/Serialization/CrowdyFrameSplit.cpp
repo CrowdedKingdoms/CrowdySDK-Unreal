@@ -140,6 +140,7 @@ bool CrowdyFrameSplit::ReadEnvelopeForOpcode(FCrowdyFrame& Frame)
 	case ECrowdyMessageType::GENERIC_SPATIAL_1:
 	case ECrowdyMessageType::SINGLE_ACTOR_MESSAGE:
 	case ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION:
+	case ECrowdyMessageType::CHUNK_CHANGED_NOTIFICATION:
 		return ReadSpatialEnvelope(Frame);
 
 	case ECrowdyMessageType::CHANNEL_MESSAGE_NOTIFICATION:

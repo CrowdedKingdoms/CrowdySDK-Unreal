@@ -723,7 +723,7 @@ bool FCrowdyServerObjectRecordsComponentTest::RunTest(const FString& Parameters)
 	TStrongObjectPtr<AActor> Actor(NewObject<AActor>(GetTransientPackage()));
 	TStrongObjectPtr<UCrowdyEntityComponent> Entity(NewObject<UCrowdyEntityComponent>(Actor.Get()));
 	const FGuid NetId(0x0A0B0C0D, 0x11223344, 0x55667788, 0x99AABBCC);
-	Entity->AssignPooledIdentity(NetId, FGuid(1, 2, 3, 4), ECrowdyRole::Owner, 0);
+	Entity->AssignPooledIdentity(NetId, FGuid(1, 2, 3, 4), 0, ECrowdyRole::Owner, 0);
 	const FString Id = NetId.ToString(EGuidFormats::Digits);
 	TStrongObjectPtr<UCrowdyServerObjectComponent> Component(NewObject<UCrowdyServerObjectComponent>(Actor.Get()));
 	Component->Definition = Rig.Definition.Get();
@@ -1073,7 +1073,7 @@ bool FCrowdyServerObjectRecordsFollowIsGuardedTest::RunTest(const FString& Param
 	TStrongObjectPtr<UCrowdyEntityComponent> Entity(NewObject<UCrowdyEntityComponent>(Actor.Get()));
 	const FGuid FirstId(1, 1, 1, 1);
 	const FGuid SecondId(2, 2, 2, 2);
-	Entity->AssignPooledIdentity(FirstId, FGuid(9, 9, 9, 9), ECrowdyRole::Owner, 0);
+	Entity->AssignPooledIdentity(FirstId, FGuid(9, 9, 9, 9), 0, ECrowdyRole::Owner, 0);
 	TStrongObjectPtr<UCrowdyServerObjectComponent> Component(NewObject<UCrowdyServerObjectComponent>(Actor.Get()));
 	Component->Definition = Rig.Definition.Get();
 	Component->InstanceId = Rig.InstanceId;
@@ -1100,7 +1100,7 @@ bool FCrowdyServerObjectRecordsFollowIsGuardedTest::RunTest(const FString& Param
 			FCrowdyServerObjectRecordsTestAccess::Join(*Held);
 		}
 	};
-	Entity->AssignPooledIdentity(SecondId, FGuid(9, 9, 9, 9), ECrowdyRole::Owner, 0);
+	Entity->AssignPooledIdentity(SecondId, FGuid(9, 9, 9, 9), 0, ECrowdyRole::Owner, 0);
 	FCrowdyServerObjectRecordsTestAccess::TickFollow(*Component);
 	TestEqualSensitive(TEXT("the component follows its entity's new id"), Component->GetRecordId(), Second);
 	const int32 Before = Listener->VariableEvents.Num();
@@ -1290,7 +1290,7 @@ bool FCrowdyServerObjectRecordsAreaHandoverTest::RunTest(const FString& Paramete
 	MoveTo(FVector(100.0, 100.0, 0.0));
 	TStrongObjectPtr<UCrowdyEntityComponent> Entity(NewObject<UCrowdyEntityComponent>(Actor.Get()));
 	const FGuid NetId(0x0A0B0C0D, 0x11223344, 0x55667788, 0x99AABBCC);
-	Entity->AssignPooledIdentity(NetId, FGuid(1, 2, 3, 4), ECrowdyRole::Owner, 0);
+	Entity->AssignPooledIdentity(NetId, FGuid(1, 2, 3, 4), 0, ECrowdyRole::Owner, 0);
 	const FString Id = NetId.ToString(EGuidFormats::Digits);
 	TStrongObjectPtr<UCrowdyServerObjectComponent> Component(NewObject<UCrowdyServerObjectComponent>(Actor.Get()));
 	Component->Definition = Rig.Definition.Get();

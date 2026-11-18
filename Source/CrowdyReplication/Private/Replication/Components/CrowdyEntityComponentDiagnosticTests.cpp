@@ -124,32 +124,26 @@ bool FCrowdyEntityPlayerDerivedFallbackReportTest::RunTest(const FString& Parame
 	return true;
 }
 
-// The other silent degradation: a Dynamic host-owned entity with Auto Register ticked finishes BeginPlay without
-// joining the continuous channel, because Auto Register starts it only for an entity this client owns outright.
-// The predicate is the whole condition, so each input that would make it fire is checked one at a time.
+// The other silent degradation: a Dynamic World entity with Auto Register ticked finishes BeginPlay without
+// joining the continuous channel, because Auto Register starts it only for an entity this client owns, and no
+// client writes a World entity. The predicate is the whole condition, so each input that would make it fire is
+// checked one at a time.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityHostOwnedAutoRegisterReportTest,
 	"CrowdySDK.Entity.HostOwnedAutoRegisterReport", CrowdyEntityDiagnosticTestFlags)
 bool FCrowdyEntityHostOwnedAutoRegisterReportTest::RunTest(const FString& Parameters)
 {
-	FCrowdyScopedLeaderSource Scope(ECrowdyLeaderSource::ElectedHost);
 	using UEC = UCrowdyEntityComponent;
 
-	TestTrue(TEXT("Replicating movement, Auto Register, host-owned is the case that goes quiet"),
-		UEC::ShouldReportHostOwnedAutoRegister(true, true, ECrowdyRole::HostOwned));
+	TestTrue(TEXT("Replicating movement, Auto Register, World-owned is the case that goes quiet"),
+		UEC::ShouldReportHostOwnedAutoRegister(true, true, ECrowdyRole::WorldOwned));
 	TestFalse(TEXT("an entity this client owns outright starts, so there is nothing to say"),
 		UEC::ShouldReportHostOwnedAutoRegister(true, true, ECrowdyRole::Owner));
 	TestFalse(TEXT("a remote proxy was never going to auto-register"),
 		UEC::ShouldReportHostOwnedAutoRegister(true, true, ECrowdyRole::RemoteProxy));
 	TestFalse(TEXT("Auto Register off asked for nothing, so nothing is withheld"),
-		UEC::ShouldReportHostOwnedAutoRegister(true, false, ECrowdyRole::HostOwned));
+		UEC::ShouldReportHostOwnedAutoRegister(true, false, ECrowdyRole::WorldOwned));
 	TestFalse(TEXT("an entity that sends no movement has no continuous channel to join"),
-		UEC::ShouldReportHostOwnedAutoRegister(false, true, ECrowdyRole::HostOwned));
-
-	// The host clause must not overstate what the client knows: an unelected host and an unknown one read alike.
-	TestEqual(TEXT("no host id means the host is not known yet"),
-		FString(UEC::DescribeHostElectionState(false, false)), FString(UEC::DescribeHostElectionState(false, true)));
-	TestNotEqual(TEXT("being the host reads differently from another client being it"),
-		FString(UEC::DescribeHostElectionState(true, true)), FString(UEC::DescribeHostElectionState(true, false)));
+		UEC::ShouldReportHostOwnedAutoRegister(false, true, ECrowdyRole::WorldOwned));
 
 	AActor* Actor = NewObject<AActor>(GetTransientPackage());
 	UCrowdyEntityComponent* Component = NewObject<UCrowdyEntityComponent>(Actor);
@@ -163,11 +157,10 @@ bool FCrowdyEntityHostOwnedAutoRegisterReportTest::RunTest(const FString& Parame
 
 	const FString& Message = Component->LastHostOwnedAutoRegisterMessage;
 	TestTrue(TEXT("the message names the actor"), Message.Contains(Actor->GetName()));
-	TestTrue(TEXT("the message names what this client knows about the host"),
-		Message.Contains(UCrowdyEntityComponent::DescribeHostElectionState(false, false)));
+	TestTrue(TEXT("the message says why"), Message.Contains(TEXT("no client writes a World entity")));
 	TestTrue(TEXT("the message names the consequence"), Message.Contains(TEXT("Nothing goes out on the continuous channel")));
 	TestTrue(TEXT("the message names what to set"), Message.Contains(TEXT("Set Owned By to Player")));
-	TestTrue(TEXT("the message names the other way out"), Message.Contains(TEXT("call Start Replication")));
+	TestTrue(TEXT("the message names the other way out"), Message.Contains(TEXT("or to Leader")));
 	return true;
 }
 

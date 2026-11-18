@@ -58,6 +58,11 @@ public:
 		}
 	}
 
+	int32 EmailConfirmationRequests = 0;
+
+	UFUNCTION()
+	void HandleEmailConfirmationRequired() { ++EmailConfirmationRequests; }
+
 	UFUNCTION()
 	void HandleAgeRequired() { ++AgeRequests; }
 

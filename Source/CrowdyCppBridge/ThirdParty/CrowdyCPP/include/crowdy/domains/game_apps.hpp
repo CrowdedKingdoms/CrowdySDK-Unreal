@@ -84,8 +84,11 @@ class GameAppsAPI : public DomainBase {
     runAsync("NearbyGridPermissions", vars, std::move(cb));
   }
 
-  /// Player-safe overlapping grids (id + bounds). No permission keys and no
-  /// impersonation userId. Requires an app-scoped token (ck-api v1.93.0).
+  /// Player-safe overlapping grids: id, bounds and the caller's own unexpired
+  /// `permissionKeys` on each (ck-api v2.67.0; bounds only before). No userId, so no
+  /// impersonation. The grid that decides a voxel edit in a chunk is the smallest box
+  /// covering it (the lower gridId on a tie), and the edit needs `update_voxel_data`
+  /// there. Requires an app-scoped token (ck-api v1.93.0).
   graphql::Json nearbyGrids(const graphql::JVal& input) const {
     graphql::JVal vars;
     vars["input"] = input;

@@ -975,6 +975,50 @@ bool FCrowdyAuthCancelSignInLeavesASignedInPlayerTest::RunTest(const FString& Pa
 	Rig.Drain();
 	return true;
 }
+
+// A sign-in over a live one installs its own session token for its mint, and a mint that fails leaves the live player
+// as they were: their user, their session token and their saved session, so a later Logout ends their session.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAuthFailedMintKeepsTheLiveSignInTest,
+	"CrowdySDK.Auth.AFailedMintOverALiveSignInLeavesThatSignInUntouched", ConsentTestFlags)
+
+bool FCrowdyAuthFailedMintKeepsTheLiveSignInTest::RunTest(const FString& Parameters)
+{
+	FConsentRig Rig(0, false);
+	if (!TestTrue(TEXT("the scripted client was built"), Rig.Client.IsValid()))
+	{
+		return false;
+	}
+	const FAppIdSettingScope NoDiscovery(0);
+	Rig.Auth->SetInstanceSuffixForTest(TEXT(".autotest-failed-mint-keeps-live"));
+
+	TArray<TPair<int32, FString>> First;
+	First.Emplace(200, FString(PasswordSignInAnswer));
+	SignInWithPassword(Rig, MoveTemp(First));
+	Rig.Drain();
+	if (!TestTrue(TEXT("the first player is signed in"), Rig.Auth->IsSignedIn()))
+	{
+		Rig.Auth->ClearSavedSession();
+		return false;
+	}
+	const int64 LiveUser = Rig.Session->GetUserID();
+	const int64 LiveTokenID = Rig.Session->GetSessionGameTokenID();
+
+	TArray<TPair<int32, FString>> Second;
+	Second.Emplace(200, FString(TEXT("{\"data\":{\"login\":{\"token\":\"session-other\",\"gameTokenId\":\"904\",\"user\":{\"userId\":\"9003\"}}}}")));
+	Second.Emplace(200, FString(TEXT("{\"errors\":[{\"message\":\"The mint failed.\",\"extensions\":{\"code\":\"INTERNAL_ERROR\"}}],\"data\":null}")));
+	Rig.Client->SetTestResponseScript(MoveTemp(Second));
+	Rig.Auth->Login(TEXT("b@example.test"), TEXT("hunter2-test"), FOnAuthSuccess(), FOnAuthError());
+	Rig.Drain();
+
+	TestEqual(TEXT("the live player's user stays"), Rig.Session->GetUserID(), LiveUser);
+	TestTrue(TEXT("and their session token"), Rig.Session->GetSessionToken().Equals(TEXT("session-new"), ESearchCase::CaseSensitive));
+	TestEqual(TEXT("and its token id"), Rig.Session->GetSessionGameTokenID(), LiveTokenID);
+	TestTrue(TEXT("and their saved session"), Rig.Auth->GetSavedSessionTokenForTest().Equals(TEXT("session-new"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("still signed in"), Rig.Auth->IsSignedIn());
+
+	Rig.Auth->ClearSavedSession();
+	return true;
+}
 #endif
 
 #endif // WITH_DEV_AUTOMATION_TESTS

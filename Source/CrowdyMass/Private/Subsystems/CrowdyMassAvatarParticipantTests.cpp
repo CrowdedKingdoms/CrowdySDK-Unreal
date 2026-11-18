@@ -9,6 +9,7 @@
 #include "Mass/CrowdyMassEntity.h"
 #include "Mass/CrowdyMassEntityTestTypes.h"
 #include "MassEntityManager.h"
+#include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
 #include "UObject/Package.h"
@@ -73,7 +74,7 @@ namespace
 		 * world entity is the safe assumption for the send path, and it is also what a genuinely host-owned
 		 * world entity carries, so the fragment answers identically for two different cases.
 		 */
-		FMassEntityHandle MakeUnsettledEntity(const FGuid& UUID, const FGuid& OwnerID = FGuid())
+		FMassEntityHandle MakeUnsettledEntity(const FGuid& UUID, const FGuid& WriterID = FGuid())
 		{
 			const UScriptStruct* Fragments[] = { FCrowdyRemoteIdentityFragment::StaticStruct() };
 			const FMassArchetypeHandle Archetype = EntityManager->CreateArchetype(MakeArrayView(Fragments, 1));
@@ -84,8 +85,8 @@ namespace
 				EntityManager->GetFragmentDataPtr<FCrowdyRemoteIdentityFragment>(Entity))
 			{
 				Identity->UUID = UUID;
-				Identity->OwnerID = OwnerID;
-				Identity->Role = ECrowdyRole::HostOwned;
+				Identity->WriterID = WriterID;
+				Identity->Role = ECrowdyRole::WorldOwned;
 			}
 
 			return Entity;
@@ -93,12 +94,12 @@ namespace
 
 		// An identity arriving from somewhere other than the avatar layer: what an authority registering the
 		// entity would have put in the registry.
-		void ArriveRecord(const FGuid& UUID, ECrowdyRole Role, const FGuid& OwnerID, UObject* Participant, uint32 ClassID = 0)
+		void ArriveRecord(const FGuid& UUID, ECrowdyRole Role, const FGuid& WriterID, UObject* Participant, uint32 ClassID = 0)
 		{
 			FCrowdyEntityRecord Record;
 			Record.NetID = UUID;
 			Record.Role = Role;
-			Record.OwnerID = OwnerID;
+			Record.WriterID = WriterID;
 			Record.ClassID = ClassID;
 			Record.Participant = Participant;
 			Entities->RegisterEntity(Record);
@@ -147,7 +148,7 @@ bool FCrowdyMassAvatarParticipantCarriesEntityUUIDTest::RunTest(const FString& P
 		FirstRecord->GetParticipant(), static_cast<UObject*>(FirstAvatar));
 	TestEqual(TEXT("a crowd entity enrols read-only, so it is never authoritative for the entity"),
 		static_cast<uint8>(FirstRecord->Role), static_cast<uint8>(ECrowdyRole::RemoteProxy));
-	TestEqual(TEXT("the owner is the one the entity itself records"), FirstRecord->OwnerID, TheirOwner);
+	TestEqual(TEXT("the owner is the one the entity itself records"), FirstRecord->WriterID, TheirOwner);
 
 	// The claim that a class-derived id would break: two entities, one avatar class, two distinct ids, each
 	// resolving back to its own entity.
@@ -364,12 +365,12 @@ bool FCrowdyMassAvatarCacheCapacityFollowsTrackerTest::RunTest(const FString& Pa
 /**
  * An avatar adopts who an existing record says the entity is, but never its ROLE.
  *
- * Role decides whether the participant is authoritative for the entity. Adopting HostOwned would undo the
+ * Role decides whether the participant is authoritative for the entity. Adopting WorldOwned would undo the
  * RemoteProxy the avatar is registered with on purpose; on a host client it would also make the state
  * replicator treat the avatar as a CrowdyState sender under the crowd entity's own id.
  *
  * Two independent mutations turn this red: restoring `Record.Role = Existing->Role` (the role reads
- * HostOwned) and dropping either of the OwnerID/ClassID adoptions (the identity is lost).
+ * WorldOwned) and dropping either of the WriterID/ClassID adoptions (the identity is lost).
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassAvatarKeepsRemoteProxyRoleTest,
 	"CrowdySDK.Mass.AvatarKeepsRemoteProxyRole", CrowdyMassParticipantTestFlags)
@@ -385,7 +386,7 @@ bool FCrowdyMassAvatarKeepsRemoteProxyRoleTest::RunTest(const FString& Parameter
 
 	// A host-owned record whose participant has gone: the slot is free, so the avatar takes it and adopts
 	// what the record knows.
-	Fixture.ArriveRecord(UUID, ECrowdyRole::HostOwned, WorldOwner, nullptr, ArrivedClassID);
+	Fixture.ArriveRecord(UUID, ECrowdyRole::WorldOwned, WorldOwner, nullptr, ArrivedClassID);
 
 	UCrowdyMassEntity* Avatar = Fixture.Subsystem->GetOrCreateAvatar(UUID, nullptr);
 	if (!TestNotNull(TEXT("the entity minted an avatar"), Avatar))
@@ -403,7 +404,7 @@ bool FCrowdyMassAvatarKeepsRemoteProxyRoleTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("the role stays read-only, so the avatar is never authoritative for the entity"),
 		static_cast<uint8>(Record->Role), static_cast<uint8>(ECrowdyRole::RemoteProxy));
 	TestEqual(TEXT("but who the entity is is adopted: the owner the record already named"),
-		Record->OwnerID, WorldOwner);
+		Record->WriterID, WorldOwner);
 	TestEqual(TEXT("and the class the record already named"),
 		static_cast<int64>(Record->ClassID), static_cast<int64>(ArrivedClassID));
 
@@ -734,12 +735,198 @@ bool FCrowdyMassRowFollowsItsOwnerTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	TestFalse(TEXT("another entity's move leaves it alone"), Identity->OwnerID == NewOwner);
+	TestFalse(TEXT("another entity's move leaves it alone"), Identity->WriterID == NewOwner);
 
 	Fixture.Subsystem->HandleEntityOwnershipChangedForTest(UUID);
-	TestEqual(TEXT("its own move updates the owner"), Identity->OwnerID, NewOwner);
+	TestEqual(TEXT("its own move updates the owner"), Identity->WriterID, NewOwner);
 	TestTrue(TEXT("and the role"), Identity->Role == ECrowdyRole::RemoteProxy);
 
+	return true;
+}
+
+// A sign-in gives the local player a new actor id: every row the old id owned names the new one, so the player's own
+// rows are locally owned again, and another player's rows are left alone.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassRowsFollowARekeyTest,
+	"CrowdySDK.Mass.OwnedRowsFollowTheLocalPlayersNewId", CrowdyMassParticipantTestFlags)
+bool FCrowdyMassRowsFollowARekeyTest::RunTest(const FString& Parameters)
+{
+	FCrowdyMassParticipantTestFixture Fixture;
+
+	const FGuid Old = FGuid::NewGuid();
+	const FGuid New = FGuid::NewGuid();
+	const FGuid Peer = FGuid::NewGuid();
+	const FMassEntityHandle First = Fixture.MakeUnsettledEntity(FGuid::NewGuid(), Old);
+	const FMassEntityHandle Second = Fixture.MakeUnsettledEntity(FGuid::NewGuid(), Old);
+	const FMassEntityHandle Theirs = Fixture.MakeUnsettledEntity(FGuid::NewGuid(), Peer);
+	for (const FMassEntityHandle Row : {First, Second})
+	{
+		Fixture.EntityManager->GetFragmentDataPtr<FCrowdyRemoteIdentityFragment>(Row)->Role = ECrowdyRole::Owner;
+	}
+
+	Fixture.Subsystem->HandleLocalPlayerRekeyedForTest(Old, New);
+	for (const FMassEntityHandle Row : {First, Second})
+	{
+		const FCrowdyRemoteIdentityFragment* Identity = Fixture.EntityManager->GetFragmentDataPtr<FCrowdyRemoteIdentityFragment>(Row);
+		if (!TestNotNull(TEXT("the row has an identity"), Identity))
+		{
+			return false;
+		}
+		TestEqual(TEXT("a row the old id owned names the new one"), Identity->WriterID, New);
+		TestTrue(TEXT("and is locally owned under it"), IsCrowdyMassIdentityLocallyOwned(Identity->Role, Identity->WriterID, New));
+		TestFalse(TEXT("not under the old one"), IsCrowdyMassIdentityLocallyOwned(Identity->Role, Identity->WriterID, Old));
+	}
+	TestEqual(TEXT("another player's row keeps its owner"),
+		Fixture.EntityManager->GetFragmentDataPtr<FCrowdyRemoteIdentityFragment>(Theirs)->WriterID, Peer);
+	return true;
+}
+
+// A grant for an entity held here as a row re-points its owner the way the grant's body does on a client holding it as
+// an actor, so a row whose owner signed in again names the new id; a grant from an owner the row does not hold, or one
+// naming this client, moves nothing.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassGrantRepointsARowTest,
+	"CrowdySDK.Mass.AnOwnershipGrantForARowRepointsItsOwner", CrowdyMassParticipantTestFlags)
+bool FCrowdyMassGrantRepointsARowTest::RunTest(const FString& Parameters)
+{
+	FCrowdyMassParticipantTestFixture Fixture;
+	const UFunction* Grant = UCrowdyEntityComponent::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UCrowdyEntityComponent, GrantOwnership_Implementation));
+	if (!TestNotNull(TEXT("the grant event"), Grant))
+	{
+		return false;
+	}
+
+	const FGuid UUID = FGuid::NewGuid();
+	const FGuid Old = FGuid::NewGuid();
+	const FGuid New = FGuid::NewGuid();
+	const FMassEntityHandle Row = Fixture.MakeUnsettledEntity(UUID, Old);
+	Fixture.ArriveRecord(UUID, ECrowdyRole::RemoteProxy, Old, nullptr);
+
+	auto ApplyGrant = [&](const FGuid& NewWriterID, const FGuid& PreviousWriterID)
+	{
+		TArray<uint8> Frame;
+		Frame.SetNumZeroed(Grant->ParmsSize);
+		*CastField<FStructProperty>(Grant->FindPropertyByName(TEXT("NewWriterID")))->ContainerPtrToValuePtr<FGuid>(Frame.GetData()) = NewWriterID;
+		*CastField<FStructProperty>(Grant->FindPropertyByName(TEXT("PreviousWriterID")))->ContainerPtrToValuePtr<FGuid>(Frame.GetData()) = PreviousWriterID;
+		FCrowdyEventParams Params;
+		Params.Function = Grant;
+		Params.Frame = Frame.GetData();
+		const FCrowdyMassViewStateContext Context{*Fixture.EntityManager, Row};
+		Fixture.Subsystem->ApplyOwnershipGrantForTest(Params, Context);
+	};
+
+	ApplyGrant(New, FGuid::NewGuid());
+	TestEqual(TEXT("a grant from an owner the row does not hold moves nothing"), Fixture.Entities->FindRecord(UUID)->WriterID, Old);
+
+	Fixture.Entities->SetLocalPlayerID(New);
+	ApplyGrant(New, Old);
+	TestEqual(TEXT("nor does one naming this client"), Fixture.Entities->FindRecord(UUID)->WriterID, Old);
+
+	Fixture.Entities->SetLocalPlayerID(FGuid::NewGuid());
+	ApplyGrant(New, Old);
+	TestEqual(TEXT("one from the owner it holds re-points it"), Fixture.Entities->FindRecord(UUID)->WriterID, New);
+	return true;
+}
+
+// The refusals an actor's grant makes, made for a row too: a forged grant must not move a player's avatar, which would
+// freeze it for every client holding it as a row, nor a Leader entity, whose owner follows the Leader.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassGrantRefusalsTest,
+	"CrowdySDK.Mass.AnOwnershipGrantForARowMakesTheActorPathsRefusals", CrowdyMassParticipantTestFlags)
+bool FCrowdyMassGrantRefusalsTest::RunTest(const FString& Parameters)
+{
+	FCrowdyMassParticipantTestFixture Fixture;
+	const UFunction* Grant = UCrowdyEntityComponent::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UCrowdyEntityComponent, GrantOwnership_Implementation));
+	if (!TestNotNull(TEXT("the grant event"), Grant))
+	{
+		return false;
+	}
+
+	auto ApplyGrant = [&](const FMassEntityHandle Row, const FGuid& NewWriterID, const FGuid& PreviousWriterID)
+	{
+		TArray<uint8> Frame;
+		Frame.SetNumZeroed(Grant->ParmsSize);
+		*CastField<FStructProperty>(Grant->FindPropertyByName(TEXT("NewWriterID")))->ContainerPtrToValuePtr<FGuid>(Frame.GetData()) = NewWriterID;
+		*CastField<FStructProperty>(Grant->FindPropertyByName(TEXT("PreviousWriterID")))->ContainerPtrToValuePtr<FGuid>(Frame.GetData()) = PreviousWriterID;
+		FCrowdyEventParams Params;
+		Params.Function = Grant;
+		Params.Frame = Frame.GetData();
+		const FCrowdyMassViewStateContext Context{*Fixture.EntityManager, Row};
+		Fixture.Subsystem->ApplyOwnershipGrantForTest(Params, Context);
+	};
+	const FGuid Forger = FGuid::NewGuid();
+
+	const FGuid Avatar = FGuid::NewGuid();
+	const FMassEntityHandle AvatarRow = Fixture.MakeUnsettledEntity(Avatar, Avatar);
+	Fixture.ArriveRecord(Avatar, ECrowdyRole::RemoteProxy, Avatar, nullptr);
+	ApplyGrant(AvatarRow, Forger, Avatar);
+	TestEqual(TEXT("a player's avatar, owned by its own id, keeps its owner"), Fixture.Entities->FindRecord(Avatar)->WriterID, Avatar);
+
+	const FGuid Unknown = FGuid::NewGuid();
+	const FMassEntityHandle UnknownRow = Fixture.MakeUnsettledEntity(Unknown);
+	Fixture.ArriveRecord(Unknown, ECrowdyRole::RemoteProxy, FGuid(), nullptr);
+	ApplyGrant(UnknownRow, Forger, Unknown);
+	TestFalse(TEXT("a grant naming the row's own id as its previous owner is an avatar's, and moves nothing"),
+		Fixture.Entities->FindRecord(Unknown)->WriterID.IsValid());
+
+	const FGuid Leader = FGuid::NewGuid();
+	const FGuid LeaderOwner = FGuid::NewGuid();
+	const FMassEntityHandle LeaderRow = Fixture.MakeUnsettledEntity(Leader, LeaderOwner);
+	FCrowdyEntityRecord LeaderRecord;
+	LeaderRecord.NetID = Leader;
+	LeaderRecord.Role = ECrowdyRole::RemoteProxy;
+	LeaderRecord.WriterID = LeaderOwner;
+	LeaderRecord.bLeaderOwned = true;
+	Fixture.Entities->RegisterEntity(LeaderRecord);
+	const FGuid LeaderHeld = Fixture.Entities->FindRecord(Leader)->WriterID;
+	ApplyGrant(LeaderRow, Forger, LeaderHeld);
+	TestEqual(TEXT("a Leader entity follows the Leader, not a grant"), Fixture.Entities->FindRecord(Leader)->WriterID, LeaderHeld);
+	return true;
+}
+
+// A row's grant is read by the grant event's own parameter names, so a renamed parameter shows here rather than as a
+// grant every row silently ignores; the new owner's user rides along with the writer.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassGrantReadsTheGrantParamsTest,
+	"CrowdySDK.Mass.OwnershipGrantReadsTheGrantParams", CrowdyMassParticipantTestFlags)
+bool FCrowdyMassGrantReadsTheGrantParamsTest::RunTest(const FString& Parameters)
+{
+	constexpr int64 NewUser = 6060;
+	FCrowdyMassParticipantTestFixture Fixture;
+	const UFunction* Grant = UCrowdyEntityComponent::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UCrowdyEntityComponent, GrantOwnership_Implementation));
+	if (!TestNotNull(TEXT("the grant event"), Grant))
+	{
+		return false;
+	}
+	const FStructProperty* NewWriterParam = CastField<FStructProperty>(Grant->FindPropertyByName(TEXT("NewWriterID")));
+	const FStructProperty* PreviousWriterParam = CastField<FStructProperty>(Grant->FindPropertyByName(TEXT("PreviousWriterID")));
+	const FInt64Property* NewUserParam = CastField<FInt64Property>(Grant->FindPropertyByName(TEXT("NewOwnerUserID")));
+	if (!TestNotNull(TEXT("the grant names its new writer NewWriterID"), NewWriterParam)
+		|| !TestNotNull(TEXT("its previous writer PreviousWriterID"), PreviousWriterParam)
+		|| !TestNotNull(TEXT("and the new owner's user NewOwnerUserID"), NewUserParam))
+	{
+		return false;
+	}
+
+	const FGuid UUID = FGuid::NewGuid();
+	const FGuid Old = FGuid::NewGuid();
+	const FGuid New = FGuid::NewGuid();
+	const FMassEntityHandle Row = Fixture.MakeUnsettledEntity(UUID, Old);
+	Fixture.ArriveRecord(UUID, ECrowdyRole::RemoteProxy, Old, nullptr);
+	Fixture.Entities->SetLocalPlayerID(FGuid::NewGuid());
+
+	TArray<uint8> Frame;
+	Frame.SetNumZeroed(Grant->ParmsSize);
+	*NewWriterParam->ContainerPtrToValuePtr<FGuid>(Frame.GetData()) = New;
+	*PreviousWriterParam->ContainerPtrToValuePtr<FGuid>(Frame.GetData()) = Old;
+	NewUserParam->SetPropertyValue_InContainer(Frame.GetData(), NewUser);
+	FCrowdyEventParams Params;
+	Params.Function = Grant;
+	Params.Frame = Frame.GetData();
+	const FCrowdyMassViewStateContext Context{*Fixture.EntityManager, Row};
+	Fixture.Subsystem->ApplyOwnershipGrantForTest(Params, Context);
+
+	TestEqual(TEXT("the grant re-points the row's entity"), Fixture.Entities->FindRecord(UUID)->WriterID, New);
+	TestEqual(TEXT("and names its new owner's user"), Fixture.Entities->FindRecord(UUID)->OwnerUserID, NewUser);
 	return true;
 }
 
