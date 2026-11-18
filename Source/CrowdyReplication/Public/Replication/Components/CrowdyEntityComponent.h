@@ -34,10 +34,10 @@ enum class ECrowdyEntityMode : uint8
 UENUM(BlueprintType)
 enum class ECrowdyIdentityPolicy : uint8
 {
-	// Deterministic from the logged-in UserID. Only valid on the locally
+	// The session's random actor id, new at each sign-in (a live pawn re-keys to it) and kept across respawns. Only valid on the locally
 	// controlled player pawn; anything else falls back to Random with a warning.
 	// A pawn spawned during play registers inside its first possession, after the pawn's Possessed and
-	// Controller Changed events, and supersedes any earlier pawn still holding the account id: read the id
+	// Controller Changed events, and supersedes any earlier pawn still holding the session's id: read the id
 	// from OnCrowdyOwnershipAssigned or the entity subsystem's OnEntityRegistered, not from BeginPlay or Possessed.
 	PlayerDerived UMETA(DisplayName="Player Derived"),
 	// Hashed from the owner's level path every client computes the same NetID
@@ -85,9 +85,9 @@ enum class ECrowdyStateHeartbeat : uint8
 	Off UMETA(DisplayName="Off"),
 };
 
-// Why PlayerDerived identity did or did not resolve from the signed-in account. PlayerDerived hashes the local
-// player's account id, so exactly one actor per client can use it: the locally controlled primary player pawn.
-// Every other answer falls back to a random id, which no other client can compute or address.
+// Why PlayerDerived identity did or did not resolve from the signed-in session. PlayerDerived takes the session's
+// actor id, so exactly one actor per client can use it: the locally controlled primary player pawn.
+// Every other answer falls back to a random id that is not the session's.
 enum class ECrowdyPlayerDerivedIdentity : uint8
 {
 	Resolved,
@@ -139,7 +139,7 @@ public:
 	 * Used by UCrowdyEntitySubsystem for deferred spawn, the original class is
 	 * spawned on every client, with role/ownership decided by the spawn event.
 	 */
-	void InitIdentity(const FGuid& InNetID, const FGuid& InOwnerID, ECrowdyRole InRole, uint32 InClassID);
+	void InitIdentity(const FGuid& InNetID, const FGuid& InWriterID, int64 InOwnerUserID, ECrowdyRole InRole, uint32 InClassID);
 
 	/**
 	 * Assigns identity to an actor that has already begun play for pooled proxies.
@@ -148,7 +148,7 @@ public:
 	 * backend owns the EntitySubsystem record for pooled proxies. Pair with
 	 * ClearIdentity() when the actor returns to the pool.
 	 */
-	void AssignPooledIdentity(const FGuid& InNetID, const FGuid& InOwnerID, ECrowdyRole InRole, uint32 InClassID);
+	void AssignPooledIdentity(const FGuid& InNetID, const FGuid& InWriterID, int64 InOwnerUserID, ECrowdyRole InRole, uint32 InClassID);
 
 	/**
 	 * Clears identity and unregisters this component's record, returning a pooled actor
@@ -222,24 +222,25 @@ public:
 	// RPC receiver (Multicast over the reliable session channel): runs on every client. On the entity's current
 	// authority (its owning client; a World entity has none) it either auto-grants when
 	// bAutoApproveOwnershipRequests is set, or broadcasts UCrowdyEntitySubsystem::OnOwnershipRequested for game
-	// code to decide; on every other client it is a no-op. RequesterID is the player asking to own the entity.
+	// code to decide; on every other client it is a no-op. RequesterID is the player asking to own the entity, and
+	// RequesterUserID the user that player's session claims (0 when unknown).
 	UFUNCTION(meta = (CrowdyEvent, CrowdyRecipient = "Multicast"))
-	void RequestOwnership_Implementation(FGuid RequesterID);
+	void RequestOwnership_Implementation(FGuid RequesterID, int64 RequesterUserID);
 	CROWDY_EVENT(RequestOwnership)
 
 	// RPC receiver (Multicast over the reliable session channel): runs on every client and re-points this
-	// entity's owner via UCrowdyEntitySubsystem::ReassignOwnership, which compare-and-swaps on PreviousOwnerID so
-	// a stale or duplicate grant is dropped. NewOwnerID is the player to own it, or an invalid guid to make it
-	// a World entity, which no client writes.
+	// entity's owner via UCrowdyEntitySubsystem::ReassignOwnership, which compare-and-swaps on PreviousWriterID so
+	// a stale or duplicate grant is dropped. NewWriterID is the player to own it, or an invalid guid to make it
+	// a World entity, which no client writes. NewOwnerUserID is that player's user as the granter knows it, or 0.
 	UFUNCTION(meta = (CrowdyEvent, CrowdyRecipient = "Multicast"))
-	void GrantOwnership_Implementation(FGuid NewOwnerID, FGuid PreviousOwnerID);
+	void GrantOwnership_Implementation(FGuid NewWriterID, FGuid PreviousWriterID, int64 NewOwnerUserID);
 	CROWDY_EVENT(GrantOwnership)
 
-	// Grants this entity to NewOwnerID (an invalid guid makes it a World entity), announcing the change to every
+	// Grants this entity to NewWriterID (an invalid guid makes it a World entity), announcing the change to every
 	// client. No-op unless this client is the entity's current authority. Because GrantOwnership is a Multicast,
 	// its body also runs locally here, so the granting authority relinquishes/adopts without a second call.
-	// Called by the static grant nodes and by the auto-approve path.
-	void GrantOwnershipTo(const FGuid& NewOwnerID);
+	// Called by the static grant nodes and by the auto-approve path. NewOwnerUserID is 0 when the granter does not know it.
+	void GrantOwnershipTo(const FGuid& NewWriterID, int64 NewOwnerUserID);
 
 	// Lifecycle events
 
@@ -251,7 +252,7 @@ public:
 
 	// Fires on every client once this entity knows who owns it, and again every time ownership moves. The first
 	// announcement lands on the tick after the entity is registered, so a Blueprint that binds in its owner's
-	// BeginPlay still receives it. NewOwnerID is invalid for a host-owned world entity; bIsLocallyOwned is the
+	// BeginPlay still receives it. NewWriterID is invalid for a host-owned world entity; bIsLocallyOwned is the
 	// answer this client should act on (see IsLocallyOwned).
 	UPROPERTY(BlueprintAssignable, Category="Crowdy SDK|Entity Component")
 	FOnCrowdyOwnershipAssigned OnCrowdyOwnershipAssigned;
@@ -265,7 +266,15 @@ public:
 	FGuid GetNetID() const { return NetID; }
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
-	FGuid GetOwnerID() const { return OwnerID; }
+	FGuid GetWriterID() const { return WriterID; }
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component",
+		meta=(ToolTip="The user id of the player who owns this entity, 0 when unknown. A label for display, not a check that this client writes it."))
+	int64 GetOwnerUserID() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component",
+		meta=(ToolTip="True when the signed-in user owns this entity, from this session or another. Use Is Locally Owned to decide whether to write it."))
+	bool IsOwnedByLocalUser() const;
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy SDK|Entity Component")
 	ECrowdyRole GetRole() const { return Role; }
@@ -303,7 +312,7 @@ public:
 
 	// Pure authority derivation from the Ownership axis, shared by ResolveIdentity and the unit tests. Host ->
 	// HostOwned with no owner id (world entity); LocalClient -> Owner with the local player id.
-	static void DeriveAuthority(ECrowdyOwnership InOwnership, const FGuid& InLocalPlayerID, ECrowdyRole& OutRole, FGuid& OutOwnerID);
+	static void DeriveAuthority(ECrowdyOwnership InOwnership, const FGuid& InLocalPlayerID, ECrowdyRole& OutRole, FGuid& OutWriterID);
 
 	// The ownership actually applied when an entity resolves its own identity. A level-placed world actor follows
 	// the ownership it was authored with; an actor spawned at runtime is owned by the client that spawned it, no
@@ -324,7 +333,7 @@ public:
 
 	// The role and owner id for a resolved owner: Player is this client's; World is HostOwned, written by no client; Leader
 	// waits for the current Leader as its owner.
-	static void DeriveOwner(ECrowdyOwnedBy InResolvedOwnedBy, const FGuid& InLocalPlayerID, ECrowdyRole& OutRole, FGuid& OutOwnerID);
+	static void DeriveOwner(ECrowdyOwnedBy InResolvedOwnedBy, const FGuid& InLocalPlayerID, ECrowdyRole& OutRole, FGuid& OutWriterID);
 
 	// Whether an entity with these settings sends its movement; bIsPawnWithMovement is IsPawnWithMovement of its class.
 	static bool ResolveReplicatesMovement(ECrowdyReplicateMovement InReplicateMovement, ECrowdyEntityMode InMode,
@@ -339,10 +348,10 @@ public:
 	// in the editor a runtime-spawned actor is given one too. AActor::IsNetStartupActor answers that question.
 	static FGuid ResolveActorInstanceGuid(const AActor* Actor);
 
-	// Pure ownership test behind UCrowdyUtilities::DoesCrowdyEntityOwn: the target's OwnerID is the owner's NetID.
+	// Pure ownership test behind UCrowdyUtilities::DoesCrowdyEntityOwn: the target's WriterID is the owner's NetID.
 	// A World entity (HostOwned) on either side never matches.
 	static bool DoesOwnershipMatch(ECrowdyRole OwnerRole, const FGuid& OwnerNetID,
-		ECrowdyRole TargetRole, const FGuid& TargetOwnerID);
+		ECrowdyRole TargetRole, const FGuid& TargetWriterID);
 
 	// Which PlayerDerived condition decided this entity's identity, from the facts read at the decision point.
 	// Reports the FIRST unmet condition, so a bare actor is answered "not a Pawn" and never "no game session":
@@ -353,7 +362,7 @@ public:
 	static const TCHAR* DescribePlayerDerivedIdentity(ECrowdyPlayerDerivedIdentity Verdict);
 
 	// Whether a self-resolving Player Derived pawn waits for its first possession: a pawn spawned during play has
-	// no controller at BeginPlay, and reading the account there would mint a random id nobody else can address.
+	// no controller at BeginPlay, and reading the session there would mint a random id that is not the session's.
 	static bool ShouldDeferIdentityToPossession(bool bInjected, ECrowdyIdentityPolicy Policy, bool bIsPawn, bool bHasController);
 
 	// Whether an entity that replicates movement, with Auto Register ticked, ends BeginPlay without joining the
@@ -421,7 +430,7 @@ public:
 
 	// How many times OnCrowdyOwnershipAssigned has been announced, and the values carried by the last one.
 	int32 OwnershipAnnouncementCount = 0;
-	FGuid LastAnnouncedOwnerID;
+	FGuid LastAnnouncedWriterID;
 	ECrowdyRole LastAnnouncedRole = ECrowdyRole::None;
 	bool bLastAnnouncedLocallyOwned = false;
 
@@ -515,7 +524,11 @@ private:
 	FGuid PlacementGuidAtRegister;
 
 	UPROPERTY()
-	FGuid OwnerID;
+	FGuid WriterID;
+
+	// The injected owner user, carried into the record at registration; the record holds the current value after that.
+	UPROPERTY()
+	int64 OwnerUserID = 0;
 
 	UPROPERTY()
 	ECrowdyRole Role = ECrowdyRole::None;
@@ -548,6 +561,9 @@ private:
 	TObjectPtr<UCrowdyEntitySubsystem> EntitySubsystem;
 
 	bool bIdentityInjected = false;
+
+	// Set when Player Derived identity resolved to the session's id, so the record names this pawn as the player's avatar.
+	bool bResolvedAsAvatar = false;
 
 	// Set by MarkPooledDormant before BeginPlay and cleared when the pool assigns a real identity. While it is
 	// set the component registers nothing, so no listener can act on an actor that stands for no entity.
@@ -600,7 +616,7 @@ private:
 	// Joins the auto replicator as a presence entry, which calls SendPresence on a slow fixed interval.
 	void StartPresence();
 
-	// One client has one account, so a newer Player Derived pawn takes the id from an earlier pawn still alive
+	// One client has one session id, so a newer Player Derived pawn takes the id from an earlier pawn still alive
 	// after unpossession (a respawn that lets the old pawn expire); the collision guard would refuse it otherwise.
 	void SupersedePreviousPlayerPawn();
 
@@ -633,9 +649,20 @@ private:
 	void AnnounceInitialOwnership();
 
 	// Applied by UCrowdyEntitySubsystem::ReassignOwnership (a friend) after the entity record is re-pointed: syncs
-	// this component's cached OwnerID/Role and, for a Dynamic-mode entity, moves the continuous StateExecutor
+	// this component's cached WriterID/Role and, for a Dynamic-mode entity, moves the continuous StateExecutor
 	// channel to follow authority (the new owner joins the AutoReplicator; a client that lost ownership leaves it).
 	// A spawned Static entity's presence sends follow authority the same way.
 	// It does not announce; the subsystem does that afterwards, via BroadcastOwnershipAssigned.
-	void ApplyOwnershipReassignment(const FGuid& NewOwnerID, ECrowdyRole NewRole);
+	void ApplyOwnershipReassignment(const FGuid& NewWriterID, ECrowdyRole NewRole);
+
+	// The local player's actor id changed, and a Player Derived pawn's id is that actor id: stops sending under the old
+	// one and takes NewID. True when it was sending, so ResumeAfterRekey starts it again, with OutExtras, once it is
+	// registered anew.
+	bool StopForRekey(const FGuid& NewID, TArray<uint8>& OutExtras);
+	void ResumeAfterRekey(bool bWasSending, TArray<uint8> Extras);
+
+	// The local player's actor id changed and this entity is still theirs: it sends under NewWriterID's wire id from
+	// here, keeping its update extras, and announces nothing.
+	void RepointForRekey(const FGuid& NewWriterID);
+	void RestoreExtras(TArray<uint8> Extras);
 };

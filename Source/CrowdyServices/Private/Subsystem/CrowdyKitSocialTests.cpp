@@ -11,6 +11,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Subsystem/CrowdyChannels.h"
+#include "Subsystem/CrowdyGameSession.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/HelperFunctions.h"
@@ -862,19 +863,31 @@ bool FCrowdyKitSocialAccountChangeTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyKitSocialSenderTest,
-	"CrowdySDK.Services.KitSocial.ChatSenderFallsBackToTheAccountId", KitSocialTestFlags)
+	"CrowdySDK.Services.KitSocial.ChatSenderIsTheSessionsActorId", KitSocialTestFlags)
 bool FCrowdyKitSocialSenderTest::RunTest(const FString& Parameters)
 {
-	const FString Session(TEXT("0123456789abcdef0123456789abcdef"));
-	KitSocialSame(*this, TEXT("a resolved session uuid is the sender"), UCrowdyKitSocial::SenderUuidFor(Session, 5), *Session);
+	const TStrongObjectPtr<UGameInstance> Instance(NewObject<UGameInstance>(GetTransientPackage(), NAME_None, RF_Transient));
+	const TStrongObjectPtr<UCrowdyGameSession> Session(NewObject<UCrowdyGameSession>(Instance.Get()));
+	TestTrue(TEXT("signed out with no session id there is no sender"), UCrowdyKitSocial::SenderUuidFor(*Session).IsEmpty());
+	TestFalse(TEXT("and none is minted"), Session->GetID().IsValid());
 
-	const FString Derived = UCrowdyKitSocial::SenderUuidFor(FString(), 5);
-	KitSocialSame(*this, TEXT("before the entity resolves the sender comes from the account"), Derived,
-		*UHelperFunctions::GetDeterministicID(5).ToString(EGuidFormats::Digits));
-	TestFalse(TEXT("so it is never empty or all zero"), Derived.IsEmpty() || Derived.Equals(TEXT("00000000000000000000000000000000")));
-	KitSocialSame(*this, TEXT("an all-zero session uuid is not trusted either"),
-		UCrowdyKitSocial::SenderUuidFor(TEXT("00000000000000000000000000000000"), 5), *Derived);
-	TestTrue(TEXT("without an account there is no sender"), UCrowdyKitSocial::SenderUuidFor(FString(), 0).IsEmpty());
+	Session->SetUUID(TEXT("00000000000000000000000000000000"));
+	TestTrue(TEXT("an all-zero session uuid is not trusted"), UCrowdyKitSocial::SenderUuidFor(*Session).IsEmpty());
+	Session->SetUUID(TEXT("short"));
+	TestTrue(TEXT("a session id of another length is no id"), UCrowdyKitSocial::SenderUuidFor(*Session).IsEmpty());
+
+	const FString Held = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	Session->SetUUID(Held);
+	KitSocialSame(*this, TEXT("a held session uuid is the sender"), UCrowdyKitSocial::SenderUuidFor(*Session), *Held);
+
+	Session->SetUserID(5);
+	KitSocialSame(*this, TEXT("signing in keeps a held id"), UCrowdyKitSocial::SenderUuidFor(*Session), *Held);
+
+	Session->ClearCurrentSessionData();
+	Session->SetUserID(6);
+	const FString Minted = UCrowdyKitSocial::SenderUuidFor(*Session);
+	TestTrue(TEXT("a signed-in lobby player with no id mints one"), !Minted.IsEmpty() && Minted != Held);
+	KitSocialSame(*this, TEXT("which the session holds, for a later pawn"), Session->EnsureActorID().ToString(EGuidFormats::Digits), *Minted);
 	return true;
 }
 

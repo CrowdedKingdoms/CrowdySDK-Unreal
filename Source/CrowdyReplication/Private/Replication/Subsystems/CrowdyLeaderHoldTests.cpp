@@ -67,14 +67,14 @@ namespace
 
 			FCrowdyEntityRecord Record;
 			Record.NetID = FGuid::NewGuid();
-			Record.OwnerID = Leader;
+			Record.WriterID = Leader;
 			Record.Role = ECrowdyRole::RemoteProxy;
 			Record.bLeaderOwned = bLeaderOwned;
 			Record.Participant = Actor;
 			Entities->RegisterEntity(Record);
 			if (!bPlaced)
 			{
-				Actor->Entity->AssignPooledIdentity(Record.NetID, Leader, ECrowdyRole::RemoteProxy, 0);
+				Actor->Entity->AssignPooledIdentity(Record.NetID, Leader, 0, ECrowdyRole::RemoteProxy, 0);
 			}
 			Hear(Record.NetID);
 			return Record.NetID;
@@ -173,7 +173,7 @@ bool FCrowdyTakingOverLetsGoOfTheSlotTest::RunTest(const FString& Parameters)
 	Fixture.Depart(NetID);
 	const int32 ActivationsBefore = Fixture.Backend->ActivatedSlots.Num();
 
-	Fixture.Entities->ReassignOwnership(NetID, Fixture.Local, FGuid());
+	Fixture.Entities->ReassignOwnership(NetID, Fixture.Local, FGuid(), 0);
 	TestFalse(TEXT("the hold ends with this client writing"), Fixture.Manager->IsEntityHeldForTest(NetID));
 	TestEqual(TEXT("the backend is told with no update to prompt it"), Fixture.Backend->ActivatedSlots.Num(), ActivationsBefore + 1);
 
@@ -194,7 +194,7 @@ bool FCrowdyTakingOverOnRowsTest::RunTest(const FString& Parameters)
 	const FGuid NetID = Fixture.AddEntity();
 	const int32 ActivationsBefore = Rows->ActivatedSlots.Num();
 
-	Fixture.Entities->ReassignOwnership(NetID, Fixture.Local, FGuid());
+	Fixture.Entities->ReassignOwnership(NetID, Fixture.Local, FGuid(), 0);
 	TestEqual(TEXT("a row needs the state only an update carries"), Rows->ActivatedSlots.Num(), ActivationsBefore);
 	return true;
 }

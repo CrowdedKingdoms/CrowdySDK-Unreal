@@ -43,6 +43,19 @@ void UCrowdyConnectionMonitor::AttachTo(UCrowdySDKSubsystem* Sdk, UCrowdyUDPSubs
 	CrowdySDK->OnUDPSessionInactive.AddUniqueDynamic(this, &UCrowdyConnectionMonitor::OnUdpSessionInactive);
 }
 
+void UCrowdyConnectionMonitor::StopReconnecting()
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->GetTimerManager().IsTimerActive(RetryTimer))
+	{
+		return;
+	}
+	World->GetTimerManager().ClearTimer(RetryTimer);
+	AttemptIndex = 0;
+	ReconnectState = ECrowdyReconnectState::Disconnected;
+	OnConnectionStateChanged.Broadcast(ReconnectState);
+}
+
 void UCrowdyConnectionMonitor::OnUdpSessionInactive()
 {
 	// An idle release is not a drop: a retry ladder still running from an earlier timeout must not bring the player back.

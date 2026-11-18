@@ -435,7 +435,7 @@ void UCrowdyStateReplicator::HandleLeaderChanged(const FGuid& NewLeaderID, const
 }
 
 void UCrowdyStateReplicator::HandleOwnershipChanged(AActor* /*TargetEntity*/, const FGuid& NetID,
-	const FGuid& /*NewOwnerID*/, const FGuid& /*PreviousOwnerID*/)
+	const FGuid& /*NewWriterID*/, const FGuid& /*PreviousWriterID*/)
 {
 	// Drop any tracking/shadow this client held for the entity under its previous owner; ReassignOwnership has
 	// already re-pointed the record, so re-derive everything from it. Remove is a no-op when we did not track it.
@@ -703,6 +703,34 @@ void UCrowdyStateReplicator::WarnIfWorldEntityHasNoWriter(const FGuid& EntityID)
 		*EntityID.ToString());
 }
 
+void UCrowdyStateReplicator::ForceFullState(const FGuid& EntityID)
+{
+	const TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(EntityID);
+	if (!Found || !Found->IsValid())
+	{
+		return;
+	}
+	(*Found)->bSendAllOnce = true;
+	(*Found)->bQuietResend = true;
+}
+
+void UCrowdyStateReplicator::SeedFromLive(const FGuid& EntityID)
+{
+	const TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(EntityID);
+	if (Found && Found->IsValid())
+	{
+		SeedShadowFromLive(**Found);
+	}
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool UCrowdyStateReplicator::IsFullStateForcedForTest(const FGuid& EntityID) const
+{
+	const TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(EntityID);
+	return Found && Found->IsValid() && (*Found)->bSendAllOnce;
+}
+#endif
+
 void UCrowdyStateReplicator::MarkAllStateDirty(const FGuid& EntityID)
 {
 	TUniquePtr<FCrowdyOwnedEntityState>* Found = OwnedEntities.Find(EntityID);
@@ -804,7 +832,7 @@ AActor* UCrowdyStateReplicator::GetOrCreateLoopbackMirror(AActor* SourceActor, c
 
 	// A bespoke, purely local spawn: SpawnActorDeferred lets us inject an identity before BeginPlay, exactly
 	// like UCrowdyEntitySubsystem::SpawnEntity, but deliberately NOT that helper it hardcodes Role::Owner and
-	// OwnerID=LocalPlayerID (wrong for a mirror: see GetOrCreateLoopbackMirror's header comment) and also
+	// WriterID=LocalPlayerID (wrong for a mirror: see GetOrCreateLoopbackMirror's header comment) and also
 	// broadcasts a spawn announcement over the real transport, which a purely-local debug mirror must not do.
 	AActor* Mirror = World->SpawnActorDeferred<AActor>(SourceActor->GetClass(), MirrorTransform,
 		nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
@@ -827,10 +855,10 @@ AActor* UCrowdyStateReplicator::GetOrCreateLoopbackMirror(AActor* SourceActor, c
 	const FGuid MirrorNetID = FGuid::NewGuid();
 	const uint32 ClassID = UCrowdyClassRegistry::Get()->GetID(SourceActor->GetClass());
 
-	// OwnerID is left INVALID, never LocalPlayerID. IsLocallyOwned() (UCrowdyEntitySubsystem) checks OwnerID,
+	// WriterID is left INVALID, never LocalPlayerID. IsLocallyOwned() (UCrowdyEntitySubsystem) checks WriterID,
 	// not Role, so an owner-stamped mirror would still trip DispatchStateDelta's owned-entity gate; and
 	// TryTrackOwned tracks any Owner record, which would make this replicator try to mirror the mirror.
-	Component->InitIdentity(MirrorNetID, /*InOwnerID=*/FGuid(), ECrowdyRole::RemoteProxy, ClassID);
+	Component->InitIdentity(MirrorNetID, /*InWriterID=*/FGuid(), /*InOwnerUserID=*/0, ECrowdyRole::RemoteProxy, ClassID);
 
 	// Trusted the same way UCrowdyEntitySubsystem::SpawnEntity trusts its own FinishSpawning: BeginPlay's tail
 	// registers the mirror into whatever UCrowdyEntitySubsystem the world resolves, with no post-hoc check
@@ -1065,6 +1093,8 @@ void UCrowdyStateReplicator::ReplicationLoop()
 		uint8* const ShadowBase = State.ShadowData.GetData();
 		const bool bQuietResend = State.bQuietResend;
 		State.bQuietResend = false;
+		const bool bSendAll = State.bSendAllOnce;
+		State.bSendAllOnce = false;
 
 		// Classify each property into two dirty sets over the FULL layout: SpatialDirty broadcasts, OwnerOnlyDirty
 		// ships as a targeted (single-actor) delta. Auto-diff properties diff against the shadow; manual-dirty
@@ -1099,12 +1129,12 @@ void UCrowdyStateReplicator::ReplicationLoop()
 				continue;
 			}
 
-			bool bDirty = false;
-			if (RepProp.bManualDirty)
+			bool bDirty = bSendAll;
+			if (!bDirty && RepProp.bManualDirty)
 			{
 				bDirty = State.PendingManualDirty.IsValidIndex(Index) && State.PendingManualDirty[Index];
 			}
-			else
+			else if (!bDirty)
 			{
 				const void* Live = RepProp.Property->ContainerPtrToValuePtr<void>(Participant);
 				const void* Shadow = ShadowBase + State.ShadowOffsets[Index];

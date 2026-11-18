@@ -33,7 +33,9 @@
 #include "MassCommandBuffer.h"
 #include "MassEntityConfigAsset.h"
 #include "MassEntityManager.h"
+#include "MassEntityQuery.h"
 #include "MassEntityTraitBase.h"
+#include "MassExecutionContext.h"
 #include "MassEntitySubsystem.h"
 #include "MassEntityTemplate.h"
 #include "MassEntityTemplateRegistry.h"
@@ -48,6 +50,7 @@
 #include "Reflection/CrowdyMassByteProperty.h"
 #include "Reflection/CrowdyMassStateFieldTypeTable.h"
 #include "Representation/CrowdyMassRepresentationActorManagement.h"
+#include "Replication/Components/CrowdyEntityComponent.h"
 #include "Replication/RPC/CrowdyRPC.h"
 #include "Target/CrowdyMassEntityTarget.h"
 #include "Target/CrowdyMassFieldAccess.h"
@@ -696,7 +699,20 @@ void UCrowdyMassEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection
 	if (UCrowdyEntitySubsystem* Entities = Collection.InitializeDependency<UCrowdyEntitySubsystem>())
 	{
 		Entities->OnEntityOwnershipChanged.AddDynamic(this, &UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged);
+		LocalPlayerRekeyedHandle = Entities->OnLocalPlayerRekeyed.AddWeakLambda(this,
+			[this](const FGuid& PreviousID, const FGuid& NewID, TConstArrayView<FCrowdyRekeyedID>)
+			{
+				HandleLocalPlayerRekeyed(PreviousID, NewID);
+			});
 	}
+
+	// A grant re-points an entity's owner; held here as a row, it has no entity component to run the grant's body on.
+	RegisterEventHandler(UCrowdyEntityComponent::StaticClass()->FindFunctionByName(
+		GET_FUNCTION_NAME_CHECKED(UCrowdyEntityComponent, GrantOwnership_Implementation)),
+		[this](const FCrowdyEventParams& Params, const FCrowdyMassViewStateContext& Context)
+		{
+			ApplyOwnershipGrant(Params, Context);
+		});
 
 	// Entities living as rows in a table are in no actor-side registry, so everything addressed to them
 	// resolves through this subsystem or not at all. This registration covers the two planes that arrive
@@ -741,7 +757,9 @@ void UCrowdyMassEntitySubsystem::Deinitialize()
 	if (UCrowdyEntitySubsystem* Entities = ResolveEntitySubsystem())
 	{
 		Entities->OnEntityOwnershipChanged.RemoveDynamic(this, &UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged);
+		Entities->OnLocalPlayerRekeyed.Remove(LocalPlayerRekeyedHandle);
 	}
+	LocalPlayerRekeyedHandle.Reset();
 
 	// Before the cache is dropped, so this world leaves no entity record behind naming an avatar it is
 	// about to release. World subsystem teardown order is not fixed, so the registry may already be gone;
@@ -1936,6 +1954,35 @@ namespace
 		const UClass* DeclaringClass = Function ? Function->GetOwnerClass() : nullptr;
 		return StandInClass && DeclaringClass && StandInClass->IsChildOf(DeclaringClass);
 	}
+
+	const FGuid* FindGrantGuidParam(const FCrowdyEventParams& Params, const FName Name)
+	{
+		const void* Value = nullptr;
+		const FStructProperty* Property = Params.FindTypedParam<FStructProperty>(Name, Value);
+		return Property && Property->Struct == TBaseStructure<FGuid>::Get() ? static_cast<const FGuid*>(Value) : nullptr;
+	}
+}
+
+void UCrowdyMassEntitySubsystem::ApplyOwnershipGrant(const FCrowdyEventParams& Params, const FCrowdyMassViewStateContext& Context)
+{
+	UCrowdyEntitySubsystem* Entities = ResolveEntitySubsystem();
+	const FCrowdyRemoteIdentityFragment* Identity = Context.GetFragment<FCrowdyRemoteIdentityFragment>();
+	const FGuid* NewWriterID = FindGrantGuidParam(Params, TEXT("NewWriterID"));
+	const FGuid* PreviousWriterID = FindGrantGuidParam(Params, TEXT("PreviousWriterID"));
+	int64 NewOwnerUserID = 0;
+	const bool bHasOwnerUser = Params.GetInt64(TEXT("NewOwnerUserID"), NewOwnerUserID);
+
+	const FCrowdyEntityRecord* Record = Entities && Identity ? Entities->FindRecord(Identity->UUID) : nullptr;
+
+	// A row stands for another client's entity, so a grant to this client is left to the client that holds it as an actor.
+	if (!Record || !NewWriterID || !PreviousWriterID || !bHasOwnerUser || *NewWriterID == Entities->GetLocalPlayerID()
+		|| !CrowdyGrantMayRepoint(Identity->UUID, Record->WriterID, *PreviousWriterID, Record->bLeaderOwned, Record->bAvatar))
+	{
+		return;
+	}
+
+	// The compare-and-swap an actor's grant runs; the row's identity follows through HandleEntityOwnershipChanged.
+	Entities->ReassignOwnership(Identity->UUID, *NewWriterID, *PreviousWriterID, NewOwnerUserID);
 }
 
 bool UCrowdyMassEntitySubsystem::HasEntityEventHandler(const UFunction* Function) const
@@ -2803,7 +2850,7 @@ void UCrowdyMassEntitySubsystem::SetEntitySubsystemForTest(UCrowdyEntitySubsyste
 }
 #endif
 
-void UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& /*NewOwnerID*/, const FGuid& /*PreviousOwnerID*/)
+void UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& /*NewWriterID*/, const FGuid& /*PreviousWriterID*/)
 {
 	const UCrowdyEntitySubsystem* Entities = ResolveEntitySubsystem();
 	const FCrowdyEntityRecord* Record = Entities ? Entities->FindRecord(NetID) : nullptr;
@@ -2816,9 +2863,29 @@ void UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged(AActor* /*TargetEn
 
 	if (FCrowdyRemoteIdentityFragment* Identity = EntityManager->GetFragmentDataPtr<FCrowdyRemoteIdentityFragment>(Entity))
 	{
-		Identity->OwnerID = Record->OwnerID;
+		Identity->WriterID = Record->WriterID;
 		Identity->Role = Record->Role;
 	}
+}
+
+void UCrowdyMassEntitySubsystem::HandleLocalPlayerRekeyed(const FGuid& PreviousID, const FGuid& NewID)
+{
+	FMassEntityManager* EntityManager = GetMassEntityManager();
+	if (!EntityManager)
+	{
+		return;
+	}
+
+	FMassEntityQuery Query(EntityManager->AsShared());
+	Query.AddRequirement<FCrowdyRemoteIdentityFragment>(EMassFragmentAccess::ReadWrite);
+	FMassExecutionContext Context(*EntityManager);
+	Query.ForEachEntityChunk(Context, [&PreviousID, &NewID](FMassExecutionContext& Chunk)
+	{
+		for (FCrowdyRemoteIdentityFragment& Identity : Chunk.GetMutableFragmentView<FCrowdyRemoteIdentityFragment>())
+		{
+			Identity.WriterID = Identity.WriterID == PreviousID ? NewID : Identity.WriterID;
+		}
+	});
 }
 
 void UCrowdyMassEntitySubsystem::RegisterAvatarParticipant(const FGuid& UUID, UCrowdyMassEntity* Avatar)
@@ -2872,7 +2939,9 @@ void UCrowdyMassEntitySubsystem::RegisterAvatarParticipant(const FGuid& UUID, UC
 		// owner and the class are taken from it. The ROLE is not, and that exception is the point rather
 		// than an oversight. Role decides whether this participant is authoritative for the entity, and an
 		// avatar must never be: adopting HostOwned here would undo the RemoteProxy default set above.
-		Record.OwnerID = Existing->OwnerID;
+		Record.WriterID = Existing->WriterID;
+		Record.OwnerUserID = Existing->OwnerUserID;
+		Record.bAvatar = Existing->bAvatar;
 		Record.ClassID = Existing->ClassID;
 	}
 	else
@@ -2880,8 +2949,8 @@ void UCrowdyMassEntitySubsystem::RegisterAvatarParticipant(const FGuid& UUID, UC
 		// Who the entity says owns it. Invalid when nothing has told this client, which is honest rather
 		// than a guess: a RemoteProxy record with no owner id claims only "another client simulates this",
 		// which is all that is known.
-		const FGuid OwnerID = Avatar->GetEventOwnerID();
-		if (OwnerID.IsValid() && OwnerID == Entities->GetLocalPlayerID())
+		const FGuid WriterID = Avatar->GetEventWriterID();
+		if (WriterID.IsValid() && WriterID == Entities->GetLocalPlayerID())
 		{
 			// A proxy of the local player contradicts itself, and the contradiction is not harmless: a
 			// record naming this client as owner is authoritative, so the avatar would claim what the local
@@ -2892,7 +2961,7 @@ void UCrowdyMassEntitySubsystem::RegisterAvatarParticipant(const FGuid& UUID, UC
 			return;
 		}
 
-		Record.OwnerID = OwnerID;
+		Record.WriterID = WriterID;
 
 		// The class this entity's replicated state is decoded as, which is the same fact a spawn event's
 		// ClassID carries. Zero when nothing has named one, matching a record that arrived without it.
@@ -3638,7 +3707,7 @@ bool UCrowdyMassEntitySubsystem::InitializeCrowdyFragments(FMassEntityManager& E
 
 	TransformFragment->SetTransform(InitialTransform);
 	IdentityFragment->UUID = UUID;
-	IdentityFragment->OwnerID = Record ? Record->OwnerID : FGuid();
+	IdentityFragment->WriterID = Record ? Record->WriterID : FGuid();
 	IdentityFragment->Role = Record ? Record->Role : ECrowdyRole::HostOwned;
 	InterpolationFragment->StartLocation = InitialLocation;
 	InterpolationFragment->StartRotation = InitialRotation;

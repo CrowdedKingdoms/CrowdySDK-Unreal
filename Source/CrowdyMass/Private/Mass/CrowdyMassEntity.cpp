@@ -49,10 +49,10 @@ bool UCrowdyMassEntity::GetEventLocation(FVector& OutLocation) const
 	return true;
 }
 
-FGuid UCrowdyMassEntity::GetEventOwnerID() const
+FGuid UCrowdyMassEntity::GetEventWriterID() const
 {
 	const FCrowdyRemoteIdentityFragment* Identity = Frag<FCrowdyRemoteIdentityFragment>();
-	return Identity ? Identity->OwnerID : FGuid();
+	return Identity ? Identity->WriterID : FGuid();
 }
 
 ECrowdyRole UCrowdyMassEntity::GetEventRole() const
@@ -84,7 +84,7 @@ void UCrowdyMassEntity::PlayCrowdyAction_Implementation(const int32 ActionId, co
 	CrowdyMassWriteAction(*Action, ActionId, Variant, PlayRate);
 }
 
-bool IsCrowdyMassIdentityLocallyOwned(const ECrowdyRole Role, const FGuid& OwnerID, const FGuid& LocalPlayerID)
+bool IsCrowdyMassIdentityLocallyOwned(const ECrowdyRole Role, const FGuid& WriterID, const FGuid& LocalPlayerID)
 {
 	// Owner and nothing else. A host-owned entity is not owned by any client, and the send path
 	// recognises that case on its own by reading the role; folding it in here would also let a client
@@ -96,12 +96,12 @@ bool IsCrowdyMassIdentityLocallyOwned(const ECrowdyRole Role, const FGuid& Owner
 
 	// No owner recorded is not a disagreement. The send path substitutes the local player as the sender
 	// in exactly this case, so the entity does speak as this client and the role's claim stands.
-	if (!OwnerID.IsValid())
+	if (!WriterID.IsValid())
 	{
 		return true;
 	}
 
-	return OwnerID == LocalPlayerID;
+	return WriterID == LocalPlayerID;
 }
 
 bool UCrowdyMassEntity::IsEventLocallyOwned() const
@@ -115,7 +115,7 @@ bool UCrowdyMassEntity::IsEventLocallyOwned() const
 	// Who this client is only matters when an owner id is actually claimed, so the world is resolved for
 	// that case alone and an entity whose role settles the question needs none.
 	FGuid LocalPlayerID;
-	if (Identity->Role == ECrowdyRole::Owner && Identity->OwnerID.IsValid())
+	if (Identity->Role == ECrowdyRole::Owner && Identity->WriterID.IsValid())
 	{
 		const UCrowdyMassEntitySubsystem* Subsystem = Owner.Get();
 		const UWorld* World = Subsystem ? Subsystem->GetWorld() : nullptr;
@@ -130,7 +130,7 @@ bool UCrowdyMassEntity::IsEventLocallyOwned() const
 		LocalPlayerID = Entities->GetLocalPlayerID();
 	}
 
-	return IsCrowdyMassIdentityLocallyOwned(Identity->Role, Identity->OwnerID, LocalPlayerID);
+	return IsCrowdyMassIdentityLocallyOwned(Identity->Role, Identity->WriterID, LocalPlayerID);
 }
 
 FMassEntityManager* UCrowdyMassEntity::GetEntityManager() const

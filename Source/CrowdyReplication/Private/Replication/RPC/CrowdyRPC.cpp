@@ -1652,7 +1652,7 @@ bool FCrowdyRPC::RouteFromEventSource(UObject* Obj, ICrowdyEventSource* Source, 
 	// another client's entity. A source's own identity is a copy that can lag a change of owner, so the registry
 	// answers wherever it holds the entity.
 	const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntityID);
-	const FGuid OwnerID = Record ? Record->OwnerID : Source->GetEventOwnerID();
+	const FGuid WriterID = Record ? Record->WriterID : Source->GetEventWriterID();
 	const ECrowdyRole Role = Record ? Record->Role : Source->GetEventRole();
 	const bool bMaySpeakForEntity = Record ? EntitySubsystem->IsLocallyOwned(EntityID) : Source->IsEventLocallyOwned();
 	if (!bMaySpeakForEntity)
@@ -1667,14 +1667,14 @@ bool FCrowdyRPC::RouteFromEventSource(UObject* Obj, ICrowdyEventSource* Source, 
 	// The owner is who the event speaks as. A world entity has no owner, so the local player stands in:
 	// the receive path drops a broadcast that echoes back to its sender by comparing this id, and an
 	// invalid one matches nobody, which would run the body a second time here.
-	Call.SenderID = OwnerID.IsValid() ? OwnerID : LocalPlayerID;
+	Call.SenderID = WriterID.IsValid() ? WriterID : LocalPlayerID;
 
 	// Owner-only reaches one client and needs no actor: it addresses a place and an id.
 	if (Info.Recipient == ECrowdyEventRecipient::OwningClient)
 	{
 		FCrowdyRpcTarget Target;
 		Target.NetID = EntityID;
-		Target.OwnerID = OwnerID;
+		Target.WriterID = WriterID;
 		Target.Role = Role;
 
 		// The source's own position is carried when it has one. Only a send addressed to the region the
@@ -1895,9 +1895,9 @@ bool FCrowdyRPC::SerializeAndRoute(UObject* Obj, UFunction* Fn, const FCrowdyFnI
 	{
 		const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntityID);
 		const bool bWorldEntity = Record && Record->Role == ECrowdyRole::HostOwned;
-		Decision.Route = DecideOwnerRoute(bWorldEntity, Record && Record->bLeaderOwned && !Record->OwnerID.IsValid(),
+		Decision.Route = DecideOwnerRoute(bWorldEntity, Record && Record->bLeaderOwned && !Record->WriterID.IsValid(),
 			EntitySubsystem->IsWireIdUnheard(EntityID), Info.bCarriesText);
-		Writer = Record ? EntitySubsystem->ResolveEventAddressee(EntityID, Record->OwnerID) : FGuid();
+		Writer = Record ? EntitySubsystem->ResolveEventAddressee(EntityID, Record->WriterID) : FGuid();
 	}
 
 	if (Decision.Route == ECrowdyRpcRoute::Reject)
@@ -2038,7 +2038,7 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 	const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(Target.NetID);
 	if (Record)
 	{
-		Resolved.OwnerID = Record->OwnerID;
+		Resolved.WriterID = Record->WriterID;
 		Resolved.Role = Record->Role;
 		if (const AActor* RecordActor = Record->GetActor())
 		{
@@ -2047,7 +2047,7 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 	}
 
 	// A target stands in the world, so it is never a replicated subsystem and nothing writes it without an owner.
-	const bool bWeOwnTarget = FCrowdyEntityRecord::IsWrittenBy(Resolved.Role, Resolved.OwnerID, LocalPlayerID, FGuid());
+	const bool bWeOwnTarget = FCrowdyEntityRecord::IsWrittenBy(Resolved.Role, Resolved.WriterID, LocalPlayerID, FGuid());
 
 	// A target names a place in the world, so every recipient is available to it and the policy is the
 	// same table the actor path reads.
@@ -2057,7 +2057,7 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 	if (Decision.Route == ECrowdyRpcRoute::SpatialToOwner)
 	{
 		Decision.Route = DecideOwnerRoute(Resolved.BelongsToNoClient(),
-			Record && Record->bLeaderOwned && !Record->OwnerID.IsValid(), EntitySubsystem->IsWireIdUnheard(Resolved.NetID) || !Resolved.HasLocation(),
+			Record && Record->bLeaderOwned && !Record->WriterID.IsValid(), EntitySubsystem->IsWireIdUnheard(Resolved.NetID) || !Resolved.HasLocation(),
 			Info.bCarriesText);
 	}
 
@@ -2123,7 +2123,7 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 		break;
 
 	case ECrowdyRpcRoute::OwnerOverSession:
-		RouteOverChannel(EntitySubsystem, Call, Fn, FString(), Resolved.OwnerID);
+		RouteOverChannel(EntitySubsystem, Call, Fn, FString(), Resolved.WriterID);
 		break;
 
 	case ECrowdyRpcRoute::NoOwner:
@@ -2132,7 +2132,7 @@ bool FCrowdyRPC::RouteToTarget(UWorld* World, UCrowdyEntitySubsystem* EntitySubs
 
 	case ECrowdyRpcRoute::SpatialToOwner:
 		EntitySubsystem->DispatchGameEventToClientAt(Resolved.Location.GetValue(), FCrowdyRpcCall::StaticStruct(), &Call,
-			EntitySubsystem->ResolveEventAddressee(Resolved.NetID, Resolved.OwnerID));
+			EntitySubsystem->ResolveEventAddressee(Resolved.NetID, Resolved.WriterID));
 		break;
 
 	case ECrowdyRpcRoute::SingleActorToOwner:

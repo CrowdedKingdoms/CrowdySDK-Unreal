@@ -26,20 +26,15 @@ bool CrowdySpectator::CountsAsSent(const ECrowdyCppSendOutcome Outcome)
 	return Outcome == ECrowdyCppSendOutcome::Sent;
 }
 
-FString CrowdySpectator::ViewerUuid(const FString& SessionUuid, const int64 UserId)
+FString CrowdySpectator::ViewerUuid(UCrowdyGameSession& Session)
 {
+	if (Session.GetUserID() > 0)
+	{
+		Session.EnsureActorID();
+	}
 	FCrowdyActorId Id;
-	if (FCrowdyActorId::TryFromString(SessionUuid, Id))
-	{
-		return SessionUuid;
-	}
-
-	if (UserId <= 0)
-	{
-		return FString();
-	}
-
-	return UHelperFunctions::GetDeterministicID(UserId).ToString(EGuidFormats::Digits);
+	const FString SessionUuid = Session.GetUUID();
+	return FCrowdyActorId::TryFromString(SessionUuid, Id) ? SessionUuid : FString();
 }
 
 void CrowdySpectator::FillBeatMessage(const FBeat& Beat, const int64 AppId, FActorUpdateRequestMessage& Message)
@@ -216,13 +211,13 @@ FString UCrowdySpectatorComponent::ResolveBeatUuid() const
 {
 	const UWorld* World = GetWorld();
 	const UGameInstance* Instance = World ? World->GetGameInstance() : nullptr;
-	const UCrowdyGameSession* Session = Instance ? Instance->GetSubsystem<UCrowdyGameSession>() : nullptr;
+	UCrowdyGameSession* Session = Instance ? Instance->GetSubsystem<UCrowdyGameSession>() : nullptr;
 	if (!Session)
 	{
 		return FString();
 	}
 
-	FString Uuid = CrowdySpectator::ViewerUuid(Session->GetUUID(), Session->GetUserID());
+	FString Uuid = CrowdySpectator::ViewerUuid(*Session);
 	if (Uuid.IsEmpty())
 	{
 		return Uuid;

@@ -497,7 +497,7 @@ bool FCrowdyMassTargetResolvesFromFragmentsTest::RunTest(const FString& Paramete
 		return false;
 	}
 	Identity->UUID = ExpectedUUID;
-	Identity->OwnerID = ExpectedOwner;
+	Identity->WriterID = ExpectedOwner;
 	Identity->Role = ECrowdyRole::RemoteProxy;
 
 	FTransformFragment* Transform = Fixture.EntityManager->GetFragmentDataPtr<FTransformFragment>(Entity);
@@ -514,7 +514,7 @@ bool FCrowdyMassTargetResolvesFromFragmentsTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("an entity with an identity and a valid id resolves"),
 		Result == CrowdyMassTarget::EResolveResult::Resolved);
 	TestEqual(TEXT("NetID comes from the identity fragment"), Resolved.NetID, ExpectedUUID);
-	TestEqual(TEXT("OwnerID comes from the identity fragment"), Resolved.OwnerID, ExpectedOwner);
+	TestEqual(TEXT("WriterID comes from the identity fragment"), Resolved.WriterID, ExpectedOwner);
 	TestTrue(TEXT("Role comes from the identity fragment"), Resolved.Role == ECrowdyRole::RemoteProxy);
 	TestTrue(TEXT("a routable target reports itself routable"), Resolved.IsRoutable());
 

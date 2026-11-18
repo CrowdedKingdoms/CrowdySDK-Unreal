@@ -33,7 +33,7 @@ public:
 	// random per call). All four words are derived from one 32-bit hash of Seed, so the real entropy is
 	// only 32 bits, not 128: birthday odds hit roughly a 1% collision chance around 77,000 ids. Do not
 	// "improve" this by widening the hash. The output is wire-visible and cross-client-stable, and
-	// a player's entity id is derived from their user id this way, so changing the derivation changes every id
+	// path and binding ids are derived this way, so changing the derivation changes every id
 	// already issued. Collisions are handled at the point ids enter the registry
 	// (UCrowdyEntitySubsystem::RegisterEntity), not by widening this hash.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Crowdy SDK|Identifiers")

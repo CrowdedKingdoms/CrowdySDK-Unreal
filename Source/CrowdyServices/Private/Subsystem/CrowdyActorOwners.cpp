@@ -8,7 +8,6 @@
 #include "HAL/PlatformTime.h"
 #include "Network/CrowdyCpp/CrowdyCppClientSubsystem.h"
 #include "Subsystem/CrowdyGameSession.h"
-#include "Utils/HelperFunctions.h"
 
 using namespace CrowdyServiceApi;
 
@@ -30,7 +29,13 @@ namespace
 		return MakeActorOwner(ECrowdyActorOwnerResult::Unknown, TEXT("No record ties this actor id to a user."));
 	}
 
-	// Every record whose id is the one derived from its user id; false when the answer cannot be read at all.
+	bool IsRecordableId(const int64 UserId, const FString& Uuid)
+	{
+		FGuid Parsed;
+		return UserId > 0 && FGuid::ParseExact(Uuid, EGuidFormats::Digits, Parsed) && Parsed.IsValid();
+	}
+
+	// Every record that names its owner by a positive userId; false when the answer cannot be read at all.
 	bool ReadRegisteredOwners(const FCrowdyCppJsonResult& Result, TMap<FGuid, int64>& OutOwners)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Records = nullptr;
@@ -50,7 +55,7 @@ namespace
 			{
 				continue;
 			}
-			if (ReadWholeInt64(*Record, TEXT("userId"), UserId) && UserId > 0 && UHelperFunctions::GetDeterministicID(UserId) == RecordId)
+			if (ReadWholeInt64(*Record, TEXT("userId"), UserId) && UserId > 0)
 			{
 				OutOwners.Add(RecordId, UserId);
 			}
@@ -73,6 +78,14 @@ void UCrowdyActorOwners::Deinitialize()
 	LiveSessionToken.Reset();
 	CancelFlush();
 	CancelRecordRetry();
+	// A sign-out still waiting on its deletes ends its server session now, unless the API client host has already gone,
+	// which a call would only rebuild; the session then expires on its own.
+	if (!CanStillSend())
+	{
+		OnSignOutDeleted = nullptr;
+	}
+	FinishSignOut();
+	OnRecordSettled = nullptr;
 	if (UCrowdyGameSession* Session = GameSession.Get())
 	{
 		Session->OnOwnerUUIDUpdated.RemoveDynamic(this, &UCrowdyActorOwners::HandleOwnerUuidUpdated);
@@ -155,6 +168,16 @@ bool UCrowdyActorOwners::RunRecordRetryForTest()
 	}
 	CancelRecordRetry();
 	SendRecord();
+	return true;
+}
+
+bool UCrowdyActorOwners::RunSignOutDeadlineForTest()
+{
+	if (!SignOutDeadlineHandle.IsValid())
+	{
+		return false;
+	}
+	FinishSignOut();
 	return true;
 }
 #endif
@@ -328,16 +351,135 @@ void UCrowdyActorOwners::AnswerWaiters(const FGuid& ActorId, const FCrowdyActorO
 	}
 }
 
-void UCrowdyActorOwners::HandleSignedOut()
+void UCrowdyActorOwners::HandleSignedIn(TFunction<void()> OnSettled)
 {
-	// Queued lookups stay: what a record says is the same for every player in the app.
+	bSignedIn = true;
+	OnRecordSettled = MoveTemp(OnSettled);
+	bSettled = false;
+	Remints = 0;
+	CancelRecordRetry();
+
+	// Made afresh whatever was recorded before: a create sent before this sign-in's token existed proves nothing.
+	const UCrowdyGameSession* Session = GameSession.Get();
+	RecordUserId = Session ? Session->GetUserID() : 0;
+	RecordUuid = Session ? Session->GetUUID() : FString();
+	bRecordIsOthers = false;
+	RecordTries = 0;
+	if (!IsRecordableId(RecordUserId, RecordUuid))
+	{
+		RecordUserId = 0;
+		Settle();
+		return;
+	}
+	SendRecord();
+}
+
+void UCrowdyActorOwners::HandleSignedOut(TFunction<void()> OnDeleted)
+{
+	// Every delete of this sign-in goes under its own app token, which the caller is about to forget.
+	const UCrowdyGameSession* Session = GameSession.Get();
+	const FString Token = Session ? Session->GetGameToken() : FString();
+
+	// A sign-out still waiting folds into this one, so neither ends its server session before its deletes answer.
+	const bool bWaiting = SignOutDeadlineHandle.IsValid();
+	const int32 Generation = bWaiting ? SignOutGeneration : ++SignOutGeneration;
+
+	// Only records this sign-in made; queued lookups stay, as a record reads the same for everyone.
+	TArray<FString, TInlineAllocator<2>> Ours;
+	if (!PreviousUuid.IsEmpty())
+	{
+		Ours.Add(PreviousUuid);
+	}
+	const bool bOwnRecord = RecordUserId > 0 && !bRecordIsOthers;
+	const bool bCreateInFlight = bOwnRecord && CreateInFlightAttempt != 0 && CreateInFlightAttempt == RecordAttempt;
+	if (bOwnRecord && !bCreateInFlight)
+	{
+		Ours.Add(RecordUuid);
+	}
+
+	// A delete sent now could reach the server before the create it is meant to undo, so it waits for the create.
+	if (bCreateInFlight)
+	{
+		LateCreates.Add({CreateInFlightAttempt, Generation, RecordUuid, Token});
+	}
+
+	bSignedIn = false;
+	OnRecordSettled = nullptr;
+	bSettled = false;
+	Remints = 0;
 	CancelRecordRetry();
 	++RecordAttempt;
 	RecordUserId = 0;
 	RecordUuid.Reset();
+	PreviousUuid.Reset();
+	bRecordIsOthers = false;
 	RecordTries = 0;
 	ConfirmedOwners.Reset();
 	UnknownUntil.Reset();
+
+	if (OnDeleted)
+	{
+		OnSignOutDeleted = OnSignOutDeleted
+			? TFunction<void()>([First = MoveTemp(OnSignOutDeleted), Second = MoveTemp(OnDeleted)]() { First(); Second(); })
+			: MoveTemp(OnDeleted);
+	}
+	SignOutDeletesLeft += Ours.Num() + (bCreateInFlight ? 1 : 0);
+	TWeakObjectPtr<UCrowdyActorOwners> WeakThis(this);
+	for (const FString& Uuid : Ours)
+	{
+		const bool bSent = DeleteRecord(Uuid, [WeakThis, Generation]()
+		{
+			if (UCrowdyActorOwners* Self = WeakThis.Get())
+			{
+				Self->HandleSignOutDelete(Generation);
+			}
+		}, Token);
+		SignOutDeletesLeft -= bSent ? 0 : 1;
+	}
+	if (SignOutDeletesLeft <= 0)
+	{
+		FinishSignOut();
+		return;
+	}
+	if (bWaiting)
+	{
+		return;
+	}
+	SignOutDeadlineHandle =FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this](float)
+	{
+		SignOutDeadlineHandle.Reset();
+		FinishSignOut();
+		return false;
+	}), SignOutDeleteSeconds);
+}
+
+void UCrowdyActorOwners::HandleSignOutDelete(const int32 Generation)
+{
+	if (Generation != SignOutGeneration || SignOutDeletesLeft <= 0)
+	{
+		return;
+	}
+	if (--SignOutDeletesLeft == 0)
+	{
+		FinishSignOut();
+	}
+}
+
+void UCrowdyActorOwners::FinishSignOut()
+{
+	if (SignOutDeadlineHandle.IsValid())
+	{
+		FTSTicker::RemoveTicker(SignOutDeadlineHandle);
+		SignOutDeadlineHandle.Reset();
+	}
+	SignOutDeletesLeft = 0;
+	if (!OnSignOutDeleted)
+	{
+		return;
+	}
+	const TFunction<void()> Done = MoveTemp(OnSignOutDeleted);
+	OnSignOutDeleted = nullptr;
+	Done();
 }
 
 void UCrowdyActorOwners::WatchSession(UCrowdyGameSession* Session)
@@ -355,21 +497,60 @@ void UCrowdyActorOwners::HandleOwnerUuidUpdated(FString Uuid)
 {
 	const UCrowdyGameSession* Session = GameSession.Get();
 	const int64 UserId = Session ? Session->GetUserID() : 0;
-	if (UserId <= 0 || UserId == RecordUserId)
+	if (!bSignedIn || !IsRecordableId(UserId, Uuid))
 	{
 		return;
 	}
-	// Only an id derived from the user id can be resolved by other players, so any other is not recorded.
-	if (!Uuid.Equals(UHelperFunctions::GetDeterministicID(UserId).ToString(EGuidFormats::Digits), ESearchCase::CaseSensitive))
+	if (UserId == RecordUserId && Uuid.Equals(RecordUuid, ESearchCase::CaseSensitive))
 	{
 		return;
 	}
 
+	// The previous record goes only once this one is made, so the player always holds one; another player's is not ours.
+	if (UserId == RecordUserId && !bRecordIsOthers)
+	{
+		DeleteRecord(PreviousUuid);
+		PreviousUuid = RecordUuid;
+	}
+	// The session closed the connection for the new id, so the new record's answer is what opens it again.
 	CancelRecordRetry();
+	bSettled = false;
 	RecordUserId = UserId;
 	RecordUuid = Uuid;
+	bRecordIsOthers = false;
 	RecordTries = 0;
 	SendRecord();
+}
+
+bool UCrowdyActorOwners::DeleteRecord(const FString& Uuid, TFunction<void()> OnAnswered, const FString& GameToken)
+{
+	FCrowdyCppClient* Client = LiveSessionToken.IsValid() && !Uuid.IsEmpty() ? ResolveClient() : nullptr;
+	if (!Client)
+	{
+		return false;
+	}
+
+	// A fresh key per delete: the same id is recorded again at the next sign-in, and a replayed key would not delete it again.
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("uuid"), Uuid);
+	Variables->SetStringField(TEXT("idempotencyKey"), FString::Printf(TEXT("delete-actor-%s-%s"), *Uuid, *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+
+	TFunction<void(FCrowdyCppJsonResult)> OnDone = GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [Uuid, OnAnswered](FCrowdyCppJsonResult Result)
+	{
+		UE_CLOG(!Result.bTransportOk, LogCrowdyServices, Warning, TEXT("[%s] Could not delete this player's actor record %s, so it stays: %s."),
+			ActorOwnersLogName, *Uuid, *FailureMessage(Result));
+		if (OnAnswered)
+		{
+			OnAnswered();
+		}
+	});
+	if (GameToken.IsEmpty())
+	{
+		Client->RunOp(ECrowdyCppApiDomain::Actors, TEXT("DeleteActor"), Variables, MoveTemp(OnDone));
+		return true;
+	}
+	Client->RunOpWithBearer(ECrowdyCppApiDomain::Actors, TEXT("DeleteActor"), Variables, GameToken, MoveTemp(OnDone));
+	return true;
 }
 
 void UCrowdyActorOwners::SendRecord()
@@ -394,29 +575,80 @@ void UCrowdyActorOwners::SendRecord()
 	Input->SetObjectField(TEXT("chunk"), Chunk);
 
 	TWeakObjectPtr<UCrowdyActorOwners> WeakThis(this);
+	CreateInFlightAttempt = Attempt;
 	Client->RunOp(ECrowdyCppApiDomain::Actors, TEXT("CreateActor"), WrapInput(Input),
 		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [WeakThis, Attempt](FCrowdyCppJsonResult Result)
 		{
 			UCrowdyActorOwners* Self = WeakThis.Get();
-			if (Self && Self->RecordAttempt == Attempt)
+			if (!Self)
+			{
+				return;
+			}
+			Self->CreateInFlightAttempt = Self->CreateInFlightAttempt == Attempt ? 0 : Self->CreateInFlightAttempt;
+			const int32 Late = Self->LateCreates.IndexOfByPredicate([Attempt](const FLateCreate& Create) { return Create.Attempt == Attempt; });
+			if (Late != INDEX_NONE)
+			{
+				const FLateCreate Create = Self->LateCreates[Late];
+				Self->LateCreates.RemoveAtSwap(Late);
+				Self->HandleCreateAfterSignOut(Create, Result);
+				return;
+			}
+			if (Self->RecordAttempt == Attempt)
 			{
 				Self->HandleRecord(Result);
 			}
 		}));
 }
 
+void UCrowdyActorOwners::HandleCreateAfterSignOut(const FLateCreate& Create, const FCrowdyCppJsonResult& Result)
+{
+	// Only a record the answer says this player made is deleted.
+	const bool bMade = Result.bTransportOk || (NamesCode(Result, TEXT("ACTOR_EXISTS")) && Result.OwnedByCaller.Get(false));
+	TWeakObjectPtr<UCrowdyActorOwners> WeakThis(this);
+	const int32 Generation = Create.Generation;
+	const bool bSent = bMade && DeleteRecord(Create.Uuid, [WeakThis, Generation]()
+	{
+		if (UCrowdyActorOwners* Self = WeakThis.Get())
+		{
+			Self->HandleSignOutDelete(Generation);
+		}
+	}, Create.Token);
+	if (!bSent)
+	{
+		HandleSignOutDelete(Generation);
+	}
+}
+
+bool UCrowdyActorOwners::CanStillSend() const
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (ClientForTest.IsValid())
+	{
+		return true;
+	}
+#endif
+	const UGameInstance* GameInstance = GetGameInstance();
+	const UCrowdyCppClientSubsystem* Host = GameInstance ? GameInstance->GetSubsystem<UCrowdyCppClientSubsystem>() : nullptr;
+	return Host && Host->IsLive();
+}
+
 void UCrowdyActorOwners::HandleRecord(const FCrowdyCppJsonResult& Result)
 {
 	if (Result.bTransportOk)
 	{
+		KeepRecord();
 		return;
 	}
 	if (NamesCode(Result, TEXT("ACTOR_EXISTS")))
 	{
 		if (Result.OwnedByCaller.IsSet() && !Result.OwnedByCaller.GetValue())
 		{
-			WarnRecord(TEXT("Another player's actor record holds this player's actor id, so other players cannot resolve it to this player."));
+			ReplaceSquattedId();
+			return;
 		}
+		// Used as the player's, but never deleted unless the answer said it is the player's.
+		bRecordIsOthers = !Result.OwnedByCaller.IsSet();
+		KeepRecord();
 		return;
 	}
 	// Any failure is tried again: a create that had landed answers ACTOR_EXISTS owned by the caller, which is done.
@@ -435,6 +667,45 @@ void UCrowdyActorOwners::HandleRecord(const FCrowdyCppJsonResult& Result)
 	RecordUserId = 0;
 	const FString Reason = Result.ErrorCode.IsEmpty() ? FString(TEXT("the request did not complete")) : FailureCode(Result);
 	WarnRecord(FString::Printf(TEXT("Could not record this player's actor, so other players cannot resolve it to this player: %s."), *Reason));
+	Settle();
+}
+
+void UCrowdyActorOwners::KeepRecord()
+{
+	DeleteRecord(PreviousUuid);
+	PreviousUuid.Reset();
+	Settle();
+}
+
+void UCrowdyActorOwners::ReplaceSquattedId()
+{
+	bRecordIsOthers = true;
+	UCrowdyGameSession* Session = GameSession.Get();
+	if (!Session || Remints >= MaxRemints)
+	{
+		WarnRecord(TEXT("Another player's actor record holds this player's actor id, so the realtime servers refuse this player's sends under it and other players cannot resolve it to this player."));
+		Settle();
+		return;
+	}
+
+	// The realtime servers refuse a send under an id another player's record holds, so the session takes a fresh one,
+	// closing the connection first; the new record's answer opens it again.
+	++Remints;
+	Session->ReplaceActorID();
+}
+
+void UCrowdyActorOwners::Settle()
+{
+	if (bSettled || !bSignedIn)
+	{
+		return;
+	}
+	bSettled = true;
+	if (OnRecordSettled)
+	{
+		const TFunction<void()> Open = OnRecordSettled;
+		Open();
+	}
 }
 
 void UCrowdyActorOwners::WarnRecord(const FString& Message)

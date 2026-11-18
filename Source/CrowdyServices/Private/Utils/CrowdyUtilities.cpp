@@ -148,11 +148,11 @@ FGuid UCrowdyUtilities::GetLocalPlayerEntityID(UObject* WorldContextObject)
 	return IsValid(EntitySubsystem) ? EntitySubsystem->GetLocalPlayerID() : FGuid{};
 }
 
-FGuid UCrowdyUtilities::GetCrowdyEntityOwnerID(UObject* WorldContextObject, const AActor* Entity, bool& bIsValid)
+FGuid UCrowdyUtilities::GetCrowdyEntityWriterID(UObject* WorldContextObject, const AActor* Entity, bool& bIsValid)
 {
 	bIsValid = false;
 
-	UWorld* World = CrowdyUtils::GetWorldChecked(WorldContextObject, TEXT("GetCrowdyEntityOwnerID"));
+	UWorld* World = CrowdyUtils::GetWorldChecked(WorldContextObject, TEXT("GetCrowdyEntityWriterID"));
 	if (!World || !IsValid(Entity)) return {};
 
 	const UCrowdyEntitySubsystem* EntitySubsystem = World->GetSubsystem<UCrowdyEntitySubsystem>();
@@ -162,8 +162,20 @@ FGuid UCrowdyUtilities::GetCrowdyEntityOwnerID(UObject* WorldContextObject, cons
 	const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntityID);
 	if (!Record) return {};
 
-	bIsValid = Record->OwnerID.IsValid();
-	return Record->OwnerID;
+	bIsValid = Record->WriterID.IsValid();
+	return Record->WriterID;
+}
+
+int64 UCrowdyUtilities::GetCrowdyEntityOwnerUserID(UObject* WorldContextObject, const AActor* Entity)
+{
+	UWorld* World = CrowdyUtils::GetWorldChecked(WorldContextObject, TEXT("GetCrowdyEntityOwnerUserID"));
+	if (!World || !IsValid(Entity)) return 0;
+
+	const UCrowdyEntitySubsystem* EntitySubsystem = World->GetSubsystem<UCrowdyEntitySubsystem>();
+	if (!IsValid(EntitySubsystem)) return 0;
+
+	const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(EntitySubsystem->FindEntityID(Entity));
+	return Record ? EntitySubsystem->GetOwnerUserID(*Record) : 0;
 }
 
 TArray<AActor*> UCrowdyUtilities::GetAllCrowdyEntitiesByOwner(UObject* WorldContextObject, const FGuid& OwnerID)
@@ -199,7 +211,7 @@ ECrowdyRole UCrowdyUtilities::GetCrowdyEntityRole(UObject* WorldContextObject, c
 
 bool UCrowdyUtilities::DoesCrowdyEntityOwn(UObject* WorldContextObject, const AActor* OwnerActor, const AActor* TargetActor)
 {
-	// OwnerActor's NetID is what gets stamped as OwnerID on the entities it owns (a player avatar's NetID is its
+	// OwnerActor's NetID is what gets stamped as WriterID on the entities it owns (a player avatar's NetID is its
 	// player id), and both ids are network-stable, so the answer is the same on every client.
 	bool bOwnerValid = false;
 	const FGuid OwnerNetID = GetCrowdyEntityID(WorldContextObject, OwnerActor, bOwnerValid);
@@ -207,11 +219,11 @@ bool UCrowdyUtilities::DoesCrowdyEntityOwn(UObject* WorldContextObject, const AA
 		return false;
 
 	bool bTargetOwnerValid = false;
-	const FGuid TargetOwnerID = GetCrowdyEntityOwnerID(WorldContextObject, TargetActor, bTargetOwnerValid);
+	const FGuid TargetWriterID = GetCrowdyEntityWriterID(WorldContextObject, TargetActor, bTargetOwnerValid);
 
 	const ECrowdyRole OwnerRole  = GetCrowdyEntityRole(WorldContextObject, OwnerActor);
 	const ECrowdyRole TargetRole = GetCrowdyEntityRole(WorldContextObject, TargetActor);
-	return UCrowdyEntityComponent::DoesOwnershipMatch(OwnerRole, OwnerNetID, TargetRole, TargetOwnerID);
+	return UCrowdyEntityComponent::DoesOwnershipMatch(OwnerRole, OwnerNetID, TargetRole, TargetWriterID);
 }
 
 UCrowdyEntityComponent* UCrowdyUtilities::GetCrowdyEntityComponent(AActor* Actor)
@@ -251,12 +263,20 @@ bool UCrowdyUtilities::IsCrowdyEntityLocallyOwned(UObject* Entity)
 bool UCrowdyUtilities::IsRecordLocallyOwned(const FCrowdyEntityRecord& Record, const FGuid& LocalPlayerID,
 	const FGuid& WriterID)
 {
-	return FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.OwnerID, LocalPlayerID, WriterID);
+	return FCrowdyEntityRecord::IsWrittenBy(Record.Role, Record.WriterID,LocalPlayerID, WriterID);
 }
 
 void UCrowdyUtilities::SwitchIsCrowdyEntityLocallyOwned(UObject* Entity, bool& bIsLocallyOwned)
 {
 	bIsLocallyOwned = IsCrowdyEntityLocallyOwned(Entity);
+}
+
+bool UCrowdyUtilities::IsCrowdyEntityOwnedByLocalUser(UObject* Entity)
+{
+	AActor* Actor = Cast<AActor>(Entity);
+	if (!Actor && IsValid(Entity)) Actor = Entity->GetTypedOuter<AActor>();
+	const UCrowdyEntityComponent* Component = GetCrowdyEntityComponent(Actor);
+	return Component && Component->IsOwnedByLocalUser();
 }
 
 // Entity State Checks

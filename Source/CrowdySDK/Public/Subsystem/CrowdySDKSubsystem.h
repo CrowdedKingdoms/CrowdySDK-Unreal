@@ -33,6 +33,7 @@ class FCrowdyMessageParser;
 
 // Unreal Subsystems
 class UCrowdyWorkerThreadsSubsystem;
+class UCrowdyActorOwners;
 class UCrowdyGameSession;
 class UCrowdyStudioAgent;
 class UVoiceChatSubsystem;
@@ -143,9 +144,11 @@ public:
 		      DeprecationMessage="Remove this node. The API client re-reads the endpoints from the developer settings on its own, so this does nothing."))
 	void ReloadEndpointsFromSettings();
 
+	/** Installs the session's ids and tokens. One that carries an app token completes a sign-in, which opens the connection once the player's actor record answers; the same user and token again change nothing. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Configuration")
 	void SetGameSessionInfo(const FGameSessionInfo GameSessionInfo);
 
+	/** Opens the realtime connection. Ignored while no player is signed in; while a sign-in waits for its actor record, that sign-in opens it instead. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Connection", meta=(DisplayName="Request UDP Access"))
 	void RequestUDPAccess() const;
 
@@ -449,6 +452,9 @@ public:
 
 	void SetGameSessionForTest(UCrowdyGameSession* InGameSession) { GameSession = InGameSession; }
 
+	/** Stands in for the game instance's subsystems on an SDK subsystem built outside a collection. */
+	void SetSignInCollaboratorsForTest(UCrowdyAuthentication* Auth, UCrowdyActorOwners* ActorOwners, UCrowdyUDPSubsystem* Udp);
+
 	/** The Studio agent Logout hands the sign-out to, for one built outside a subsystem collection. */
 	void SetStudioAgentForTest(UCrowdyStudioAgent* Agent);
 #endif
@@ -458,8 +464,26 @@ private:
 	TWeakObjectPtr<UCrowdyStudioAgent> StudioAgentForTest;
 #endif
 
-
 	void BindAuthentication(UCrowdyAuthentication* Auth);
+
+	UCrowdyAuthentication* ResolveAuthentication() const;
+	UCrowdyActorOwners* ResolveActorOwners() const;
+
+	/** Whether the realtime connection may open now: signed in, with the sign-in's actor record answered. */
+	bool CanOpenConnection() const;
+
+	/** Request UDP Access past its sign-in gate, for a sign-in whose actor record has just answered. */
+	void OpenUDPAccess() const;
+
+	/** Stops the connection monitor's reconnect attempts, which would close and reopen a new sign-in's connection. */
+	void StopReconnecting() const;
+
+	bool bWarnedUnrecordedSignIn = false;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	TWeakObjectPtr<UCrowdyAuthentication> AuthForTest;
+	TWeakObjectPtr<UCrowdyActorOwners> ActorOwnersForTest;
+#endif
 
 	/** Kept out of line so the templated overload above does not pull the log category into every consumer. */
 	static void WarnNoRegistry(FName SubscriberName);
@@ -508,6 +532,9 @@ private:
 
 	UFUNCTION()
 	void HandleAuthRegister(FCrowdyAuthResult Result);
+
+	/** Opens the realtime connection once this sign-in's actor record has answered. */
+	void ConnectOnceRecorded() const;
 
 	/** Called by UCrowdyAuthentication::OnLoginFailed to forward failure on OnLogin. */
 	UFUNCTION()

@@ -10,6 +10,7 @@
 
 struct FActorUpdateRequestMessage;
 enum class ECrowdyCppSendOutcome : uint8;
+class UCrowdyGameSession;
 
 namespace CrowdySpectator
 {
@@ -26,10 +27,10 @@ namespace CrowdySpectator
 	CROWDYREPLICATION_API bool CountsAsSent(ECrowdyCppSendOutcome Outcome);
 
 	/**
-	 * The id a viewer beats under: the session's id when it has one, else the one the local player's pawn would take
-	 * from the account. Empty while the account is not known. 32 characters, the same text the pawn sends under.
+	 * The id a viewer beats under: the session's actor id, minted when a signed-in session has none so a pawn spawned
+	 * later reuses it. Empty while signed out with none. 32 characters, the same text the pawn sends under.
 	 */
-	CROWDYREPLICATION_API FString ViewerUuid(const FString& SessionUuid, int64 UserId);
+	CROWDYREPLICATION_API FString ViewerUuid(UCrowdyGameSession& Session);
 
 	/** One viewer beat as it goes out. */
 	struct FBeat

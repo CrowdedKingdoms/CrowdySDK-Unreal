@@ -58,7 +58,7 @@ public:
 
 	// The client that owns the entity, as its player id. This is the identity stamped on the event as its
 	// sender. An invalid guid means no client owns it: it is a world entity, which no client writes.
-	virtual FGuid GetEventOwnerID() const = 0;
+	virtual FGuid GetEventWriterID() const = 0;
 
 	// This client's relationship to the entity: Owner when this client simulates and sends for it,
 	// RemoteProxy when it only receives, HostOwned for a world entity, None when it is not registered.

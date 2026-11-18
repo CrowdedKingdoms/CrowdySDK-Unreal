@@ -4,6 +4,8 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "CrowdyOwnershipTransfer.generated.h"
 
+struct FCrowdyEntityRecord;
+
 /**
  * Static Blueprint entry points for explicit ownership transfer, so a request or grant can be issued from
  * anywhere without first getting the target actor's Crowdy Entity Component by hand. Ownership lives on the
@@ -48,9 +50,14 @@ public:
 	/**
 	 * Grants ownership of TargetEntity to a specific player by id. The approval flow hands you the requester's id
 	 * directly (OnOwnershipRequested), so this avoids resolving it back to an actor that may not exist on this
-	 * client. Only the entity's current authority may grant.
+	 * client. Only the entity's current authority may grant. NewOwnerUserID is that player's user id when known
+	 * (the request's Requester User ID); 0 leaves it unknown and never changes who writes the entity.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Ownership",
 		meta = (WorldContext = "WorldContextObject", DisplayName = "Grant Ownership Transfer To Player"))
-	static void GrantOwnershipTransferToPlayer(UObject* WorldContextObject, AActor* TargetEntity, FGuid NewOwnerPlayerID);
+	static void GrantOwnershipTransferToPlayer(UObject* WorldContextObject, AActor* TargetEntity, FGuid NewOwnerPlayerID,
+		int64 NewOwnerUserID = 0);
+
+	// The session a grant to NewOwnerRecord's player names: its writer, or an avatar's own id when a peer's record of it names none.
+	static FGuid ResolveGrantedWriterID(const FCrowdyEntityRecord& NewOwnerRecord);
 };

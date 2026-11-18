@@ -7,6 +7,8 @@
 
 void UCrowdyCppClientSubsystem::Deinitialize()
 {
+	bTornDown = true;
+
 	// Detach and pin before disposing, for the same reason GetClient does. Disposal delivers every pending
 	// cancellation synchronously, and a completion is free to reissue from inside its own delivery: without a local
 	// reference the member would be the only owner, so that reissue could rebuild the client here and release the

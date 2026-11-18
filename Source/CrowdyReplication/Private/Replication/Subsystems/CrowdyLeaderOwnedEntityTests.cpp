@@ -95,7 +95,7 @@ bool FCrowdyLeaderOwnedRegistrationTest::RunTest(const FString& Parameters)
 		}
 		const FGuid NetID = FGuid::NewGuid();
 		Actor->Entity->SetCollaboratorsForTest(Entities, nullptr);
-		Actor->Entity->AssignPooledIdentity(NetID, FGuid(), ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+		Actor->Entity->AssignPooledIdentity(NetID, FGuid(), 0, ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
 		Actor->DispatchBeginPlay();
 
 		const FCrowdyEntityRecord* Record = Entities->FindRecord(NetID);
@@ -104,9 +104,9 @@ bool FCrowdyLeaderOwnedRegistrationTest::RunTest(const FString& Parameters)
 			return false;
 		}
 		TestTrue(FString::Printf(TEXT("%s: the record is Leader-owned"), Case.What), Record->bLeaderOwned);
-		TestEqual(FString::Printf(TEXT("%s: the record names the Leader"), Case.What), Record->OwnerID, Case.Leader);
+		TestEqual(FString::Printf(TEXT("%s: the record names the Leader"), Case.What), Record->WriterID, Case.Leader);
 		TestTrue(FString::Printf(TEXT("%s: the record has the role"), Case.What), Record->Role == Case.Role);
-		TestEqual(FString::Printf(TEXT("%s: the component agrees on the owner"), Case.What), Actor->Entity->GetOwnerID(), Case.Leader);
+		TestEqual(FString::Printf(TEXT("%s: the component agrees on the owner"), Case.What), Actor->Entity->GetWriterID(), Case.Leader);
 		TestTrue(FString::Printf(TEXT("%s: and on the role"), Case.What), Actor->Entity->GetRole() == Case.Role);
 	}
 
@@ -132,27 +132,27 @@ bool FCrowdyLeaderOwnedFollowsTheLeaderTest::RunTest(const FString& Parameters)
 
 	FCrowdyEntityRecord Plain;
 	Plain.NetID = FGuid::NewGuid();
-	Plain.OwnerID = PlayerOwner;
+	Plain.WriterID = PlayerOwner;
 	Plain.Role = ECrowdyRole::RemoteProxy;
 	Plain.Participant = NewObject<ACrowdyStateSendTestActor>();
 	Entities->RegisterEntity(Plain);
 
 	Session->SetHostID(Local);
 	const FCrowdyEntityRecord* Record = Entities->FindRecord(LeaderOwned);
-	TestEqual(TEXT("this client took the lead, so it owns the entity"), Record->OwnerID, Local);
+	TestEqual(TEXT("this client took the lead, so it owns the entity"), Record->WriterID, Local);
 	TestTrue(TEXT("and writes it"), Entities->IsLocallyOwned(LeaderOwned));
 
 	Session->SetHostID(FGuid());
 	Record = Entities->FindRecord(LeaderOwned);
-	TestFalse(TEXT("no Leader: no owner"), Record->OwnerID.IsValid());
+	TestFalse(TEXT("no Leader: no owner"), Record->WriterID.IsValid());
 	TestTrue(TEXT("and it does not turn into a World entity"), Record->Role == ECrowdyRole::RemoteProxy);
 
 	Session->SetHostID(Other);
 	Record = Entities->FindRecord(LeaderOwned);
-	TestEqual(TEXT("the next Leader owns it"), Record->OwnerID, Other);
+	TestEqual(TEXT("the next Leader owns it"), Record->WriterID, Other);
 	TestFalse(TEXT("and this client no longer writes it"), Entities->IsLocallyOwned(LeaderOwned));
 
-	TestEqual(TEXT("a Player entity keeps its owner through all of it"), Entities->FindRecord(Plain.NetID)->OwnerID, PlayerOwner);
+	TestEqual(TEXT("a Player entity keeps its owner through all of it"), Entities->FindRecord(Plain.NetID)->WriterID, PlayerOwner);
 	return true;
 }
 
@@ -199,17 +199,17 @@ bool FCrowdyLeaderOwnedRefusesGrantsTest::RunTest(const FString& Parameters)
 	}
 	const FGuid NetID = FGuid::NewGuid();
 	Actor->Entity->SetCollaboratorsForTest(Entities, nullptr);
-	Actor->Entity->AssignPooledIdentity(NetID, FGuid(), ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+	Actor->Entity->AssignPooledIdentity(NetID, FGuid(), 0, ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
 	Actor->DispatchBeginPlay();
 
 	AddExpectedMessage(TEXT("it is Owned By Leader"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
-	Actor->Entity->GrantOwnershipTo(Other);
-	TestEqual(TEXT("a grant from this client does not move it"), Entities->FindRecord(NetID)->OwnerID, Local);
+	Actor->Entity->GrantOwnershipTo(Other, 0);
+	TestEqual(TEXT("a grant from this client does not move it"), Entities->FindRecord(NetID)->WriterID, Local);
 
-	Actor->Entity->GrantOwnership_Implementation(Other, Local);
-	TestEqual(TEXT("nor does one arriving from the network"), Entities->FindRecord(NetID)->OwnerID, Local);
+	Actor->Entity->GrantOwnership_Implementation(Other, Local, 0);
+	TestEqual(TEXT("nor does one arriving from the network"), Entities->FindRecord(NetID)->WriterID, Local);
 
-	Actor->Entity->GrantOwnership_Implementation(FGuid(), Local);
+	Actor->Entity->GrantOwnership_Implementation(FGuid(), Local, 0);
 	TestTrue(TEXT("and it cannot be turned into a World entity"), Entities->FindRecord(NetID)->Role == ECrowdyRole::Owner);
 	return true;
 }
@@ -308,11 +308,11 @@ bool FCrowdyLeaderOwnedQuietTakeoverTest::RunTest(const FString& Parameters)
 	Transferred->RepInt = 7;
 	FCrowdyEntityRecord Plain;
 	Plain.NetID = FGuid::NewGuid();
-	Plain.OwnerID = Other;
+	Plain.WriterID = Other;
 	Plain.Role = ECrowdyRole::RemoteProxy;
 	Plain.Participant = Transferred;
 	Entities->RegisterEntity(Plain);
-	Entities->ReassignOwnership(Plain.NetID, Local, Other);
+	Entities->ReassignOwnership(Plain.NetID, Local, Other, 0);
 	Replicator->HandleOwnershipChangedForTest(nullptr, Plain.NetID, Local, Other);
 
 	auto SentFor = [&Sent](const FGuid& ID)
@@ -387,19 +387,19 @@ bool FCrowdyOwnerSendsUnderItsOwnIdTest::RunTest(const FString& Parameters)
 
 	const FGuid LeaderEntity = FGuid::NewGuid();
 	LeaderActor->Entity->SetCollaboratorsForTest(Entities, nullptr);
-	LeaderActor->Entity->AssignPooledIdentity(LeaderEntity, FGuid(), ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+	LeaderActor->Entity->AssignPooledIdentity(LeaderEntity, FGuid(), 0, ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
 	LeaderActor->DispatchBeginPlay();
 	TestEqual(TEXT("a Leader sends under its own id from the start"), LeaderActor->Entity->GetReplicationUUID(),
 		FCrowdyActorId::ForOwner(LeaderEntity, Local).ToString());
 
 	const FGuid PlayerEntity = FGuid::NewGuid();
 	PlayerActor->Entity->SetCollaboratorsForTest(Entities, nullptr);
-	PlayerActor->Entity->AssignPooledIdentity(PlayerEntity, Local, ECrowdyRole::Owner, CROWDY_INVALID_CLASS_ID);
+	PlayerActor->Entity->AssignPooledIdentity(PlayerEntity, Local, 0, ECrowdyRole::Owner, CROWDY_INVALID_CLASS_ID);
 	PlayerActor->DispatchBeginPlay();
 	TestEqual(TEXT("a Player entity starts under its NetID"), PlayerActor->Entity->GetReplicationUUID(), PlayerEntity.ToString(EGuidFormats::Digits));
 
-	Entities->ReassignOwnership(PlayerEntity, Other, Local);
-	Entities->ReassignOwnership(PlayerEntity, Local, Other);
+	Entities->ReassignOwnership(PlayerEntity, Other, Local, 0);
+	Entities->ReassignOwnership(PlayerEntity, Local, Other, 0);
 	TestEqual(TEXT("and moves to its owner's once it changes hands"), PlayerActor->Entity->GetReplicationUUID(),
 		FCrowdyActorId::ForOwner(PlayerEntity, Local).ToString());
 	return true;
@@ -419,11 +419,11 @@ bool FCrowdyGrantReachesAClientThatMissedTheSpawnTest::RunTest(const FString& Pa
 	Unknown.Participant = NewObject<ACrowdyStateSendTestActor>();
 	Entities->RegisterEntity(Unknown);
 
-	Entities->ReassignOwnership(Unknown.NetID, Local, Other);
+	Entities->ReassignOwnership(Unknown.NetID, Local, Other, 0);
 	TestTrue(TEXT("a client that never learned the owner still takes the grant"), Entities->IsLocallyOwned(Unknown.NetID));
 
-	Entities->ReassignOwnership(Unknown.NetID, Other, FGuid::NewGuid());
-	TestEqual(TEXT("a client that knows the owner still refuses a stale one"), Entities->FindRecord(Unknown.NetID)->OwnerID, Local);
+	Entities->ReassignOwnership(Unknown.NetID, Other, FGuid::NewGuid(), 0);
+	TestEqual(TEXT("a client that knows the owner still refuses a stale one"), Entities->FindRecord(Unknown.NetID)->WriterID, Local);
 	return true;
 }
 
@@ -448,13 +448,13 @@ bool FCrowdyPooledActorSendsOnceOwnedTest::RunTest(const FString& Parameters)
 
 	FCrowdyEntityRecord Record;
 	Record.NetID = FGuid::NewGuid();
-	Record.OwnerID = Other;
+	Record.WriterID = Other;
 	Record.Role = ECrowdyRole::RemoteProxy;
 	Record.Participant = Pooled;
 	Entities->RegisterEntity(Record);
-	Pooled->Entity->AssignPooledIdentity(Record.NetID, Other, ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+	Pooled->Entity->AssignPooledIdentity(Record.NetID, Other, 0, ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
 
-	Entities->ReassignOwnership(Record.NetID, Local, Other);
+	Entities->ReassignOwnership(Record.NetID, Local, Other, 0);
 	TestTrue(TEXT("it took ownership"), Pooled->Entity->IsLocallyOwned());
 	TestTrue(TEXT("and has a state to send"), Pooled->Entity->GetReplicatedState().IsValid());
 	return true;
@@ -481,16 +481,16 @@ bool FCrowdyTakenProxyMovesAgainTest::RunTest(const FString& Parameters)
 
 	FCrowdyEntityRecord Record;
 	Record.NetID = FGuid::NewGuid();
-	Record.OwnerID = Other;
+	Record.WriterID = Other;
 	Record.Role = ECrowdyRole::RemoteProxy;
 	Record.Participant = Character;
 	Entities->RegisterEntity(Record);
-	Entity->AssignPooledIdentity(Record.NetID, Other, ECrowdyRole::RemoteProxy, 0);
+	Entity->AssignPooledIdentity(Record.NetID, Other, 0, ECrowdyRole::RemoteProxy, 0);
 
 	CrowdyActorPool::DisableProxyMovement(Character);
 	TestFalse(TEXT("a proxy has no movement"), Movement->IsActive());
 
-	Entities->ReassignOwnership(Record.NetID, Local, Other);
+	Entities->ReassignOwnership(Record.NetID, Local, Other, 0);
 	TestTrue(TEXT("the new owner's is active"), Movement->IsActive());
 	TestTrue(TEXT("and ticking"), Movement->IsComponentTickEnabled());
 	TestTrue(TEXT("with a movement mode"), Movement->MovementMode != MOVE_None);
@@ -531,9 +531,9 @@ bool FCrowdyLeaderTakeoverHonoursAutoRegisterTest::RunTest(const FString& Parame
 		Record.Participant = Actor;
 		Entities->MakeLeaderOwned(Record);
 		Entities->RegisterEntity(Record);
-		Actor->Entity->AssignPooledIdentity(Record.NetID, Record.OwnerID, Record.Role, 0);
+		Actor->Entity->AssignPooledIdentity(Record.NetID, Record.WriterID, 0, Record.Role, 0);
 
-		Entities->ReassignOwnership(Record.NetID, Local, FGuid());
+		Entities->ReassignOwnership(Record.NetID, Local, FGuid(), 0);
 		bool bPresenceOnly = false;
 		return AutoReplicator->IsRegisteredForTest(Actor->Entity, bPresenceOnly);
 	};
@@ -557,11 +557,11 @@ bool FCrowdyAvatarNeverChangesHandsTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	Avatar->Entity->SetCollaboratorsForTest(Entities, nullptr);
-	Avatar->Entity->AssignPooledIdentity(Local, Local, ECrowdyRole::Owner, CROWDY_INVALID_CLASS_ID);
+	Avatar->Entity->AssignPooledIdentity(Local, Local, 0, ECrowdyRole::Owner, CROWDY_INVALID_CLASS_ID);
 	Avatar->DispatchBeginPlay();
 
-	Avatar->Entity->GrantOwnership_Implementation(FGuid::NewGuid(), Local);
-	TestEqual(TEXT("a grant does not move it"), Entities->FindRecord(Local)->OwnerID, Local);
+	Avatar->Entity->GrantOwnership_Implementation(FGuid::NewGuid(), Local, 0);
+	TestEqual(TEXT("a grant does not move it"), Entities->FindRecord(Local)->WriterID, Local);
 	return true;
 }
 
@@ -582,22 +582,42 @@ bool FCrowdyForgedGrantLeavesAvatarTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	Mine->Entity->SetCollaboratorsForTest(Entities, nullptr);
-	Mine->Entity->AssignPooledIdentity(Local, Local, ECrowdyRole::Owner, CROWDY_INVALID_CLASS_ID);
+	Mine->Entity->AssignPooledIdentity(Local, Local, 0, ECrowdyRole::Owner, CROWDY_INVALID_CLASS_ID);
 	Mine->DispatchBeginPlay();
 	// An observer's proxy of another player's avatar does not know its owner: avatars send no spawn event.
 	Theirs->Entity->SetCollaboratorsForTest(Entities, nullptr);
-	Theirs->Entity->AssignPooledIdentity(Other, FGuid(), ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+	Theirs->Entity->AssignPooledIdentity(Other, FGuid(), 0, ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
 	Theirs->DispatchBeginPlay();
 
 	// A forged grant names no previous owner, which skips the compare-and-swap.
-	Mine->Entity->GrantOwnership_Implementation(Attacker, FGuid());
-	TestEqual(TEXT("this player keeps their avatar"), Entities->FindRecord(Local)->OwnerID, Local);
+	Mine->Entity->GrantOwnership_Implementation(Attacker, FGuid(), 0);
+	TestEqual(TEXT("this player keeps their avatar"), Entities->FindRecord(Local)->WriterID, Local);
 	TestEqual(TEXT("this player still writes it"), Mine->Entity->GetRole(), ECrowdyRole::Owner);
 
 	// An honest grant of an avatar names the avatar's own player, and an observer refuses it too.
-	Theirs->Entity->GrantOwnership_Implementation(Attacker, Other);
-	TestFalse(TEXT("an observer does not move another player's avatar"), Entities->FindRecord(Other)->OwnerID.IsValid());
+	Theirs->Entity->GrantOwnership_Implementation(Attacker, Other, 0);
+	TestFalse(TEXT("an observer does not move another player's avatar"), Entities->FindRecord(Other)->WriterID.IsValid());
 	TestEqual(TEXT("it stays a proxy here"), Theirs->Entity->GetRole(), ECrowdyRole::RemoteProxy);
+
+	// The pool flags a peer's avatar from its class, so a forged grant naming no previous owner leaves it too.
+	ACrowdyStateHostOverrideActor* Pooled = TestWorld.World->SpawnActor<ACrowdyStateHostOverrideActor>();
+	if (!TestNotNull(TEXT("a pooled avatar spawned"), Pooled))
+	{
+		return false;
+	}
+	const FGuid PooledID = FGuid::NewGuid();
+	FCrowdyEntityRecord PooledRecord;
+	PooledRecord.NetID = PooledID;
+	PooledRecord.Role = ECrowdyRole::RemoteProxy;
+	PooledRecord.bAvatar = true;
+	PooledRecord.Participant = Pooled;
+	Entities->RegisterEntity(PooledRecord);
+	Pooled->Entity->SetCollaboratorsForTest(Entities, nullptr);
+	Pooled->Entity->AssignPooledIdentity(PooledID, FGuid(), 0, ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+
+	Pooled->Entity->GrantOwnership_Implementation(Attacker, FGuid(), 0);
+	TestFalse(TEXT("an observer does not move a pooled avatar"), Entities->FindRecord(PooledID)->WriterID.IsValid());
+	TestEqual(TEXT("which stays a proxy here"), Pooled->Entity->GetRole(), ECrowdyRole::RemoteProxy);
 	return true;
 }
 
@@ -646,7 +666,7 @@ bool FCrowdyLeaderOwnedSpawnClaimsTest::RunTest(const FString& Parameters)
 
 	FCrowdyEntitySpawnEvent Event;
 	Event.EntityID = FGuid::NewGuid();
-	Event.OwnerID = Peer;
+	Event.WriterID = Peer;
 	Event.ClassID = UCrowdyClassRegistry::Get()->GetID(ACrowdyLeaderOwnedTestActor::StaticClass());
 	Event.ClassPath = ACrowdyLeaderOwnedTestActor::StaticClass()->GetPathName();
 
@@ -677,7 +697,7 @@ bool FCrowdyLeaderOwnedSpawnClaimsTest::RunTest(const FString& Parameters)
 	Waiting->SetGameSessionForTest(MakeGameSession(FGuid()));
 	Event.EntityID = RegisterLeaderOwned(Waiting, NewObject<ACrowdyStateSendTestActor>());
 	Waiting->HandleRemoteSpawnForTest(Event);
-	TestFalse(TEXT("a Leader entity with no Leader stays without an owner"), Waiting->FindRecord(Event.EntityID)->OwnerID.IsValid());
+	TestFalse(TEXT("a Leader entity with no Leader stays without an owner"), Waiting->FindRecord(Event.EntityID)->WriterID.IsValid());
 	return true;
 }
 

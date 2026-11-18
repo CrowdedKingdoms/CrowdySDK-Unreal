@@ -619,6 +619,11 @@ public:
 		const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
 		TOptional<ECrowdyCppTokenPlane> Plane = TOptional<ECrowdyCppTokenPlane>());
 
+	// RunOp under Bearer for this one request, a retry of it included. The installed tokens and the subscription
+	// socket stay as they are, so a call made for an account that has since signed out reconnects nothing.
+	FCrowdyCppRequestHandle RunOpWithBearer(ECrowdyCppApiDomain Domain, const FString& OperationName,
+		const TSharedPtr<FJsonObject>& Variables, const FString& Bearer, TFunction<void(FCrowdyCppJsonResult)> OnDone);
+
 	// Sign-in and account identity. The five sign-in paths carry no bearer (they are how a caller obtains one) and
 	// the three identity calls carry the session token. Each returns the identity SESSION token, from which an
 	// app-scoped gameplay token must then be minted. Same OnDone contract as the calls above: exactly once, from
@@ -870,7 +875,7 @@ private:
 
 	FCrowdyCppRequestHandle RunOpAs(ECrowdyCppApiDomain Domain, const FString& OperationName,
 		const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
-		TOptional<ECrowdyCppTokenPlane> Plane, bool bMsgpack);
+		TOptional<ECrowdyCppTokenPlane> Plane, bool bMsgpack, TOptional<FString> Bearer = TOptional<FString>());
 
 	struct FImpl;
 	TUniquePtr<FImpl> Impl;

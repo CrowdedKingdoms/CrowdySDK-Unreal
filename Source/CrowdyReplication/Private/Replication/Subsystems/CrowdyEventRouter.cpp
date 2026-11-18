@@ -370,17 +370,17 @@ void UCrowdyEventRouter::DispatchRpcCall(const FCrowdyInboundEvent& Event, int32
     ensure(IsInGameThread());
 
     const FCrowdyRpcCall& Call = Event.Payload->Get<FCrowdyRpcCall>();
-    const FGuid LocalPlayerID = EntitySubsystem ? EntitySubsystem->GetLocalPlayerID() : FGuid();
 
     // A broadcast echoes back to its sender; drop our own echo so the body which already ran
     // locally when we sent it does not run a second time. A targeted (single-actor) message is
     // delivered only to the recipient and never echoes, so there is nothing to drop.
-    if (!Event.bTargetedDelivery && LocalPlayerID.IsValid() && Call.SenderID == LocalPlayerID)
+    if (!Event.bTargetedDelivery && EntitySubsystem && EntitySubsystem->IsLocalSender(Call.SenderID))
         return;
 
-    // A call named for one client reaches every client in its region, or on its channel.
+    // A call named for one client reaches every client in its region, or on its channel. One named for an id this
+    // client held before a sign-in replaced it was sent by a peer that has not heard of the new one yet.
     const bool bAddressed = Event.Target == ECrowdyTarget::Owner && Event.TargetID.IsValid();
-    if (bAddressed && Event.TargetID != LocalPlayerID)
+    if (bAddressed && (!EntitySubsystem || !EntitySubsystem->IsLocalSender(Event.TargetID)))
         return;
 
     // Named for nobody, because the sender does not know who owns it: only the writer has anything to do.
@@ -998,7 +998,6 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
     ensure(IsInGameThread());
 
     const FCrowdyStateDelta& Delta = Event.Payload->Get<FCrowdyStateDelta>();
-    const FGuid LocalPlayerID = EntitySubsystem ? EntitySubsystem->GetLocalPlayerID() : FGuid();
 
     // Our own delta echoing back to us drop it (we already hold these values, we sent them). This covers a
     // spatial multicast echo AND a targeted owner-only delivery an owner addressed to its own entity, which
@@ -1006,7 +1005,7 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
     // would be redundant, and the originator already fired the notify for it on the send side
     // (UCrowdyStateReplicator). Unlike DispatchRpcCall (whose owner-only body may intentionally re-run on its
     // target), a state self-echo is always a no-op, so the drop is not restricted to broadcasts.
-    if (LocalPlayerID.IsValid() && Delta.SenderID == LocalPlayerID)
+    if (EntitySubsystem && EntitySubsystem->IsLocalSender(Delta.SenderID))
     {
         return;
     }
@@ -1072,13 +1071,13 @@ void UCrowdyEventRouter::DispatchStateDelta(const FCrowdyInboundEvent& Event, in
             return;
         }
     }
-    else if (WriterRecord && WriterRecord->bLeaderOwned && WriterRecord->OwnerID.IsValid() && Delta.SenderID != WriterRecord->OwnerID)
+    else if (WriterRecord && WriterRecord->bLeaderOwned && WriterRecord->WriterID.IsValid() && Delta.SenderID != WriterRecord->WriterID)
     {
         // Such as an old Leader's last deltas after a hand-off, on the new Leader and on everyone else alike.
         ++StateParticipantStats.DroppedNotFromLeader;
         UE_CLOG(CrowdyReplicationTrace::State(), LogCrowdyReplication, Verbose,
             TEXT("[CrowdyState] dropped delta for Leader entity %s: the sender %s is not its owner %s."),
-            *Delta.EntityID.ToString(), *Delta.SenderID.ToString(), *WriterRecord->OwnerID.ToString());
+            *Delta.EntityID.ToString(), *Delta.SenderID.ToString(), *WriterRecord->WriterID.ToString());
         return;
     }
     else if (bWeOwnTarget)
@@ -1453,6 +1452,20 @@ int32 UCrowdyEventRouter::NumDeferredEntitiesForTest() const
         Waiting.Add(ResolveDeferredEntityID(Deferred.OwnedPayload));
     }
     return Waiting.Num();
+}
+
+void UCrowdyEventRouter::ForgetSender(const FGuid& SenderID)
+{
+    if (!SenderID.IsValid())
+    {
+        return;
+    }
+    DeferredEvents.RemoveAll([&SenderID](const FCrowdyDeferredEvent& Deferred)
+    {
+        const FCrowdyRpcCall* Call = Deferred.OwnedPayload.GetPtr<FCrowdyRpcCall>();
+        const FCrowdyStateDelta* Delta = Deferred.OwnedPayload.GetPtr<FCrowdyStateDelta>();
+        return Deferred.Event.SenderID == SenderID || (Call && Call->SenderID == SenderID) || (Delta && Delta->SenderID == SenderID);
+    });
 }
 
 void UCrowdyEventRouter::RetryDeferredEvents()

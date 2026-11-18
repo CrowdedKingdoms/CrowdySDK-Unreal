@@ -35,7 +35,7 @@ struct FCrowdyRpcTarget
 	TOptional<FVector> Location;
 
 	// The client that owns the entity, as its player id. Invalid for a world entity no client owns.
-	FGuid OwnerID;
+	FGuid WriterID;
 
 	// This client's relationship to the entity: Owner when this client simulates and sends for it,
 	// RemoteProxy when it only mirrors or renders it, HostOwned for a world entity.

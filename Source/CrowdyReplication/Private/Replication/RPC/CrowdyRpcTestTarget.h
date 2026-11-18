@@ -274,12 +274,12 @@ public:
 
 	virtual FGuid GetEventEntityID() const override { return EntityID; }
 	virtual bool GetEventLocation(FVector& OutLocation) const override { return false; }
-	virtual FGuid GetEventOwnerID() const override { return OwnerID; }
+	virtual FGuid GetEventWriterID() const override { return WriterID; }
 	virtual ECrowdyRole GetEventRole() const override { return Role; }
 	virtual bool IsEventLocallyOwned() const override { return Role == ECrowdyRole::Owner; }
 
 	FGuid EntityID;
-	FGuid OwnerID;
+	FGuid WriterID;
 	ECrowdyRole Role = ECrowdyRole::None;
 	int32 CallCount = 0;
 };

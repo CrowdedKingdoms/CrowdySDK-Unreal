@@ -4,6 +4,7 @@
 #include "CrowdyNetLog.h"
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Subscription/FCrowdyDelivery.h"
+#include "Engine/GameInstance.h"
 #include "Messages/Actor/FActorUpdateNotificationMessage.h"
 #include "Messages/Actor/FActorUpdateRequestMessage.h"
 #include "Misc/AutomationTest.h"
@@ -12,6 +13,7 @@
 #include "Network/UDP/CrowdyCppSendAdapter.h"
 #include "Replication/Components/CrowdySpectatorComponent.h"
 #include "Replication/Subsystems/CrowdyActorTracker.h"
+#include "Subsystem/CrowdyGameSession.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Utils/HelperFunctions.h"
@@ -326,18 +328,31 @@ bool FCrowdySpectatorBeatIsAnEmptyActorUpdateTest::RunTest(const FString& Parame
 	return true;
 }
 
-// The id: the session's when it is a whole id, else the account's, else none.
+// The id: the session's when it is a whole id, minted only for a signed-in session that has none.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySpectatorViewerUuidTest,
 	"CrowdySDK.Replication.Spectator.ViewerUuid", SpectatorTestFlags)
 bool FCrowdySpectatorViewerUuidTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("the session's id wins"), CrowdySpectator::ViewerUuid(SpectatorTestUuid, 42), SpectatorTestUuid);
+	const TStrongObjectPtr<UGameInstance> Instance(NewObject<UGameInstance>(GetTransientPackage()));
+	const TStrongObjectPtr<UCrowdyGameSession> Session(NewObject<UCrowdyGameSession>(Instance.Get()));
+	TestTrue(TEXT("signed out with no session id there is no viewer"), CrowdySpectator::ViewerUuid(*Session).IsEmpty());
+	TestFalse(TEXT("and none is minted"), Session->GetID().IsValid());
 
-	const FString FromAccount = UHelperFunctions::GetDeterministicID(42).ToString(EGuidFormats::Digits);
-	TestEqual(TEXT("with no session id the account's is the pawn's"), CrowdySpectator::ViewerUuid(FString(), 42), FromAccount);
-	TestEqual(TEXT("a session id of another length is no id"), CrowdySpectator::ViewerUuid(TEXT("short"), 42), FromAccount);
-	TestEqual(TEXT("it is 32 characters"), FromAccount.Len(), 32);
-	TestTrue(TEXT("with neither there is none"), CrowdySpectator::ViewerUuid(FString(), 0).IsEmpty());
+	Session->SetUUID(TEXT("short"));
+	TestTrue(TEXT("a session id of another length is no id"), CrowdySpectator::ViewerUuid(*Session).IsEmpty());
+
+	Session->SetUUID(SpectatorTestUuid);
+	TestEqual(TEXT("the session's id is the viewer's"), CrowdySpectator::ViewerUuid(*Session), SpectatorTestUuid);
+	TestEqual(TEXT("it is 32 characters"), CrowdySpectator::ViewerUuid(*Session).Len(), 32);
+
+	Session->SetUserID(7);
+	TestEqual(TEXT("signing in keeps a held id"), CrowdySpectator::ViewerUuid(*Session), SpectatorTestUuid);
+
+	Session->ClearCurrentSessionData();
+	Session->SetUserID(8);
+	const FString Minted = CrowdySpectator::ViewerUuid(*Session);
+	TestTrue(TEXT("after a sign-out, a signed-in session with no id mints a new one"), !Minted.IsEmpty() && Minted != SpectatorTestUuid);
+	TestEqual(TEXT("which the session holds, for a later pawn"), Session->EnsureActorID().ToString(EGuidFormats::Digits), Minted);
 	return true;
 }
 

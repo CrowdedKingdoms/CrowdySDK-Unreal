@@ -74,7 +74,7 @@ namespace
 		}
 
 		// The same, but carrying the identity fragment, for the tests that read who owns an entity.
-		FMassEntityHandle MakeIdentifiedEntity(const FGuid& UUID, ECrowdyRole Role, const FGuid& OwnerID)
+		FMassEntityHandle MakeIdentifiedEntity(const FGuid& UUID, ECrowdyRole Role, const FGuid& WriterID)
 		{
 			const UScriptStruct* Fragments[] = { FCrowdyRemoteIdentityFragment::StaticStruct() };
 			const FMassArchetypeHandle Archetype = EntityManager->CreateArchetype(MakeArrayView(Fragments, 1));
@@ -86,7 +86,7 @@ namespace
 			{
 				Identity->UUID = UUID;
 				Identity->Role = Role;
-				Identity->OwnerID = OwnerID;
+				Identity->WriterID = WriterID;
 			}
 
 			return Entity;
@@ -401,7 +401,7 @@ bool FCrowdyMassAvatarLocalOwnershipTest::RunTest(const FString& Parameters)
 
 // The rule itself, asserted directly rather than through an avatar, because reaching it through one
 // needs a resolved world and a fixture without one refuses before the comparison runs. Mutating
-// `return OwnerID == LocalPlayerID` to `return true` turns the last case red and nothing else.
+// `return WriterID == LocalPlayerID` to `return true` turns the last case red and nothing else.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassIdentityOwnershipRuleTest,
 	"CrowdySDK.Mass.IdentityOwnershipRule", CrowdyMassAvatarTestFlags)
 bool FCrowdyMassIdentityOwnershipRuleTest::RunTest(const FString& Parameters)

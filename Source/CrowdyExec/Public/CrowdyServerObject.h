@@ -162,6 +162,8 @@ public:
 
 	/** The user id of the player signed in on this object's game instance, as a starter's player lists hold it; 0 when nobody is signed in. */
 	int64 GetSignedInUserId() const;
+	/** The player whose token this object's calls go out with; 0 while its connection is closed. */
+	int64 GetConnectedUserId() const;
 	/** Why it Failed, or, while Connecting or Ready, why the connection or the last read or subscribe failed; it is retried. */
 	const FString& GetFailureReason() const { return FailureReason; }
 

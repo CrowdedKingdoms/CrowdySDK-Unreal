@@ -221,6 +221,9 @@ public:
 	// other member) before this returns. Game thread only.
 	void ReceiveChannelStateDelta(const FCrowdyStateDelta& Delta);
 
+	// Drops every waiting event SenderID sent, once that id is no longer this client's: its echo must never run as a peer's.
+	void ForgetSender(const FGuid& SenderID);
+
 	// Applies the continuous values an actor update carried, to the entity's actor or to the subscriber holding it, and
 	// fires an actor's notifies. Extras is a peer's bytes. Skips an entity this client owns. Game thread only.
 	void DispatchContinuousExtras(const FGuid& EntityID, TConstArrayView<uint8> Extras);

@@ -234,7 +234,9 @@ bool FCrowdyKitEmotesWireOtherEventsKeepTheirLengthTest::RunTest(const FString& 
 	Lengthed.Add(static_cast<uint8>(ECrowdyTarget::Owner));
 	Lengthed.Append(KitEventWireAscii("fedcba9876543210fedcba9876543210"));
 	FGameEventNotification Event;
-	if (TestTrue(TEXT("a client event with its length decodes"), CrowdyWireParity::DecodeStrippedPayload(Event, KitEventWireStrippedFrame(Lengthed))))
+	// The decoded state is a view into these bytes, so they outlive the checks below.
+	const TArray<uint8> LengthedFrame = KitEventWireStrippedFrame(Lengthed);
+	if (TestTrue(TEXT("a client event with its length decodes"), CrowdyWireParity::DecodeStrippedPayload(Event, LengthedFrame)))
 	{
 		TestEqual(TEXT("its state is what the length says"), KitEventWireText(Event.StateView), FString(TEXT("abc")));
 		TestEqual(TEXT("the declared size is read"), Event.StateSize, 3);
@@ -275,7 +277,9 @@ bool FCrowdyKitEmotesWireBareClientEventsTest::RunTest(const FString& Parameters
 		FKitEventWireWarningCapture Capture;
 		GLog->AddOutputDevice(&Capture);
 		FGameEventNotification Event;
-		const bool bDecoded = CrowdyWireParity::DecodeStrippedPayload(Event, KitEventWireStrippedFrame(KitEventWireCrowdyCppPayload(7, Case.State)));
+		// The decoded state is a view into these bytes, so they outlive the checks below.
+		const TArray<uint8> Stripped = KitEventWireStrippedFrame(KitEventWireCrowdyCppPayload(7, Case.State));
+		const bool bDecoded = CrowdyWireParity::DecodeStrippedPayload(Event, Stripped);
 		GLog->Flush();
 		GLog->RemoveOutputDevice(&Capture);
 		if (!TestTrue(FString::Printf(TEXT("%s: a bare client event decodes"), Case.Label), bDecoded))
