@@ -6,6 +6,7 @@
 #include "CrowdyActorPoolBackend.h"
 #include "CrowdyRenderingBackend.h"
 #include "CrowdyRenderingBackendConfig.h"
+#include "Templates/SubclassOf.h"
 #include "CrowdyActorManagementConfig.generated.h"
 
 
