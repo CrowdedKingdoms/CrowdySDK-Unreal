@@ -63,6 +63,16 @@ namespace CrowdyStudioProjectsTests
 		TEXT("\"files\":[{\"path\":\"Cargo.toml\",\"content\":\"[package]\\nname = \\\"grid-mod\\\"\\n\"},{\"path\":\"src/lib.rs\",\"content\":\"// visit\\n\"},")
 		TEXT("{\"path\":\"README.md\",\"content\":\"hi\"}]}}}");
 
+	// The platform's CLIENT half starter, marked so its files show apart from this SDK's copy.
+	const TCHAR* const StudioClientStarterAnswer =
+		TEXT("{\"data\":{\"execModClientStarter\":{\"crate\":\"client-half\",\"nodeType\":\"client\",\"description\":\"A CLIENT half.\",")
+		TEXT("\"files\":[{\"path\":\"Cargo.toml\",\"content\":\"[package]\\nname = \\\"client-half\\\"\\n[lib]\\ncrate-type = [\\\"cdylib\\\"]\\n[dependencies]\\ncrowdy-client-sdk = \\\"0.1.0\\\"\\n\"},")
+		TEXT("{\"path\":\"src/lib.rs\",\"content\":\"// from the platform\\ncrowdy::register_module!(init: init);\\n\"}]}}}");
+
+	// An API host whose build toolchain predates the CLIENT half starter.
+	const TCHAR* const StudioClientStarterUnavailable =
+		TEXT("{\"errors\":[{\"message\":\"The CLIENT starter is unavailable.\",\"extensions\":{\"code\":\"INTERNAL_SERVER_ERROR\",\"httpStatus\":503}}],\"data\":null}");
+
 	int32 StudioCountOf(const FString& Text, const TCHAR* Needle)
 	{
 		int32 Count = 0;
@@ -413,10 +423,17 @@ bool FCrowdyStudioProjectsCreateTest::RunTest(const FString& Parameters)
 		const bool bClient = Case.Kind != ECrowdyStudioProjectKind::Server;
 		const FString Created = StudioDataAnswer(TEXT("crowdyStudioProjectCreate"), StudioProjectJson(TEXT("p-new"), Case.Pairing, false, StudioTwoFiles));
 		FStudioRig Rig(Created);
+		TArray<TPair<int32, FString>> Script;
 		if (bServer)
 		{
-			Rig.Script({{200, StudioStarterAnswer}, {200, Created}});
+			Script.Add({200, StudioStarterAnswer});
 		}
+		if (bClient)
+		{
+			Script.Add({200, StudioClientStarterAnswer});
+		}
+		Script.Add({200, Created});
+		Rig.Script(MoveTemp(Script));
 		Rig.CreateProject(TEXT("My Spinner"), Case.Kind);
 		TestEqual(FString::Printf(TEXT("%s: nothing answers inside the call"), Case.Pairing), Rig.Answers, 0);
 		Rig.Pump();
@@ -425,14 +442,92 @@ bool FCrowdyStudioProjectsCreateTest::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("%s: the pairing is sent explicitly"), Case.Pairing), Body.Contains(FString::Printf(TEXT("\"pairingPreference\":\"%s\""), Case.Pairing)));
 		TestTrue(FString::Printf(TEXT("%s: the create names the app"), Case.Pairing), Body.Contains(TEXT("\"appId\":\"31337\"")));
 		TestEqual(FString::Printf(TEXT("%s: the SERVER half carries the platform's starter files"), Case.Pairing), StudioCountOf(Body, TEXT("\"target\":\"SERVER\"")), bServer ? 2 : 0);
-		TestEqual(FString::Printf(TEXT("%s: the CLIENT half carries this SDK's starter files"), Case.Pairing), StudioCountOf(Body, TEXT("\"target\":\"CLIENT\"")), bClient ? 2 : 0);
+		TestEqual(FString::Printf(TEXT("%s: the CLIENT half carries the platform's CLIENT starter files"), Case.Pairing), StudioCountOf(Body, TEXT("\"target\":\"CLIENT\"")), bClient ? 2 : 0);
 		TestTrue(FString::Printf(TEXT("%s: the SERVER starter's source travels exactly for a SERVER half"), Case.Pairing), Body.Contains(TEXT("// visit")) == bServer);
+		TestTrue(FString::Printf(TEXT("%s: the CLIENT starter's source travels exactly for a CLIENT half"), Case.Pairing), Body.Contains(TEXT("// from the platform")) == bClient);
 		TestTrue(FString::Printf(TEXT("%s: the CLIENT starter is a crowdy-client-sdk cdylib, exactly for a CLIENT half"), Case.Pairing),
 			(Body.Contains(TEXT("crowdy-client-sdk")) && Body.Contains(TEXT("cdylib")) && Body.Contains(TEXT("register_module!"))) == bClient);
 		TestFalse(FString::Printf(TEXT("%s: a README the platform's project would refuse is dropped"), Case.Pairing), Body.Contains(TEXT("README.md")));
 		TestTrue(FString::Printf(TEXT("%s: the SERVER module is the name's slug, exactly for a SERVER half"), Case.Pairing), Body.Contains(TEXT("\"serverModuleName\":\"my-spinner\"")) == bServer);
 		TestTrue(FString::Printf(TEXT("%s: the CLIENT module is the slug plus -client, never a bare mod name, exactly for a CLIENT half"), Case.Pairing),
 			Body.Contains(TEXT("\"clientModuleName\":\"my-spinner-client\"")) == bClient);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioProjectsClientStarterTest, "CrowdySDK.CrowdyServices.StudioProjects.CreateTakesTheClientStarterFromThePlatform", StudioFlags)
+bool FCrowdyStudioProjectsClientStarterTest::RunTest(const FString& Parameters)
+{
+	const FString Created = StudioDataAnswer(TEXT("crowdyStudioProjectCreate"), StudioProjectJson(TEXT("p-new"), TEXT("CLIENT_ONLY"), false, StudioTwoFiles));
+	{
+		FStudioRig Rig(Created);
+		TArray<FString> Sent;
+		FCrowdyCppClient* Raw = Rig.Client.Get();
+		Rig.Client->SetTestOnRequest([&Sent, Raw](const FString&)
+		{
+			FString Body;
+			Raw->GetLastTestRequestBody(Body);
+			Sent.Add(Body);
+		});
+		Rig.Script({{200, StudioClientStarterAnswer}, {200, Created}});
+		Rig.CreateProject(TEXT("My Spinner"), ECrowdyStudioProjectKind::Client);
+		Rig.Pump();
+		Rig.Client->SetTestOnRequest(nullptr);
+		const FString Body = Rig.SentBody();
+		TestTrue(TEXT("the project is created"), Rig.Info.Result == ECrowdyStudioResult::Success);
+		TestTrue(TEXT("the CLIENT starter is read, then the project created"), Sent.Num() == 2 && Sent[0].Contains(TEXT("ExecModClientStarter"))
+			&& Sent[1].Contains(TEXT("CrowdyStudioProjectCreate")));
+		TestTrue(TEXT("with the platform's CLIENT starter"), Body.Contains(TEXT("// from the platform")));
+		TestFalse(TEXT("and not this SDK's copy"), Body.Contains(TEXT("tick_interval_ms")));
+		TestTrue(TEXT("its package renamed for the CLIENT module, whichever host answered"), Body.Contains(TEXT("name = \\\"my-spinner-client\\\""))
+			&& !Body.Contains(TEXT("client-half")));
+		TestTrue(TEXT("and the rest of its manifest kept"), Body.Contains(TEXT("crate-type = [\\\"cdylib\\\"]")) && Body.Contains(TEXT("crowdy-client-sdk")));
+	}
+	{
+		FStudioRig Rig(Created);
+		Rig.Script({{200, StudioErrorAnswer(TEXT("GRAPHQL_VALIDATION_FAILED"))}, {200, Created}});
+		Rig.CreateProject(TEXT("My Spinner"), ECrowdyStudioProjectKind::Client);
+		Rig.Pump();
+		TestTrue(TEXT("a Game API that does not know the CLIENT starter still creates the project"), Rig.Info.Result == ECrowdyStudioResult::Success);
+		TestTrue(TEXT("from this SDK's copy"), Rig.SentBody().Contains(TEXT("tick_interval_ms")));
+	}
+	{
+		FStudioRig Rig(Created);
+		TArray<FString> Sent;
+		FCrowdyCppClient* Raw = Rig.Client.Get();
+		Rig.Client->SetTestOnRequest([&Sent, Raw](const FString&)
+		{
+			FString Body;
+			Raw->GetLastTestRequestBody(Body);
+			Sent.Add(Body);
+		});
+		Rig.Script({{200, StudioErrorAnswer(TEXT("FORBIDDEN"))}, {200, Created}});
+		Rig.CreateProject(TEXT("My Spinner"), ECrowdyStudioProjectKind::Client);
+		Rig.Pump();
+		Rig.Client->SetTestOnRequest(nullptr);
+		TestTrue(TEXT("a refused CLIENT starter fails the create as denied"), Rig.Info.Result == ECrowdyStudioResult::Denied && Rig.Info.Project.ProjectId.IsEmpty());
+		TestEqual(TEXT("and no project is created"), Sent.Num(), 1);
+	}
+	{
+		FStudioRig Rig(Created);
+		Rig.Script({{502, TEXT("<html>gateway</html>")}, {200, Created}});
+		Rig.CreateProject(TEXT("My Spinner"), ECrowdyStudioProjectKind::Client);
+		Rig.Pump();
+		TestTrue(TEXT("a CLIENT starter that did not arrive fails the create, not the offline copy"), Rig.Info.Result != ECrowdyStudioResult::Success
+			&& !Rig.SentBody().Contains(TEXT("pairingPreference")));
+	}
+	{
+		FStudioRig Rig(Created);
+		Rig.Script({{503, StudioClientStarterUnavailable}, {200, Created}});
+		Rig.CreateProject(TEXT("My Spinner"), ECrowdyStudioProjectKind::Client);
+		Rig.Pump();
+		const FString Body = Rig.SentBody();
+		TestTrue(TEXT("a host that answers the CLIENT starter with 503 still creates the project"), Rig.Info.Result == ECrowdyStudioResult::Success);
+		TestEqual(TEXT("from this SDK's copy of the CLIENT starter, both its files"), StudioCountOf(Body, TEXT("\"target\":\"CLIENT\"")), 2);
+		TestTrue(TEXT("which is CrowdyCPP's, with its tick interval, serde_json and tick example"), Body.Contains(TEXT("tick_interval_ms")) && Body.Contains(TEXT("serde_json"))
+			&& Body.Contains(TEXT("hud_set")));
+		TestTrue(TEXT("its package named for the CLIENT module"), Body.Contains(TEXT("name = \\\"my-spinner-client\\\"")));
+		TestFalse(TEXT("and none of the platform's"), Body.Contains(TEXT("// from the platform")));
 	}
 	return true;
 }

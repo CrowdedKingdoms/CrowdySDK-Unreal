@@ -9,6 +9,7 @@ class FCrowdyCppClient;
 class FJsonObject;
 class UCrowdyMods;
 struct FCrowdyCppJsonResult;
+struct FCrowdyModStarter;
 
 /** Which halves a Studio project has: the platform's pairingPreference SERVER_ONLY, CLIENT_ONLY, PAIRED and INDEPENDENT, in that order. */
 UENUM(BlueprintType)
@@ -164,9 +165,11 @@ public:
 	void GetProject(const FString& ProjectId, TFunction<void(const FCrowdyStudioProjectInfo&)> OnDone);
 
 	/**
-	 * A new project of Kind from the starters: the platform's mod starter for a SERVER half, this SDK's own for a CLIENT half.
-	 * The module names come from Name: the SERVER one is its lowercase slug and the CLIENT one is the slug plus "-client", so a
-	 * CLIENT module never shares a name with a SERVER mod. A name with no ASCII letters or digits is refused.
+	 * A new project of Kind from the platform's starters: its mod starter for a SERVER half, its CLIENT half starter for a
+	 * CLIENT half, with its package named for the CLIENT module, or this SDK's copy of that starter when the platform does
+	 * not serve it; a starter the platform refuses or that does not arrive fails the create. The module names come from
+	 * Name: the SERVER one is its lowercase slug and the CLIENT one is the slug plus "-client", so a CLIENT module never
+	 * shares a name with a SERVER mod. A name with no ASCII letters or digits is refused.
 	 */
 	void CreateProject(const FString& Name, ECrowdyStudioProjectKind Kind, TFunction<void(const FCrowdyStudioProjectInfo&)> OnDone);
 
@@ -178,7 +181,7 @@ public:
 		TFunction<void(const FCrowdyStudioProjectInfo&)> OnDone);
 
 #if WITH_DEV_AUTOMATION_TESTS
-	/** Stands in for Initialize on a subsystem built outside a collection, sending every call to Client and reading the server starter through Mods. */
+	/** Stands in for Initialize on a subsystem built outside a collection, sending every call to Client and reading the starters through Mods. */
 	void InitializeForTest(const TSharedPtr<FCrowdyCppClient>& Client = nullptr, int64 AppId = 0, UCrowdyMods* Mods = nullptr);
 #endif
 
@@ -187,6 +190,7 @@ private:
 	void SendStudioOp(const TCHAR* Operation, const TSharedPtr<FJsonObject>& Variables, TFunction<void(const FCrowdyCppJsonResult&)> OnAnswer,
 		TFunction<void(ECrowdyStudioResult Result, const FString& Message, const FString& Code)> OnFailed);
 	void SendCreate(const TSharedPtr<FJsonObject>& Input, TFunction<void(const FCrowdyStudioProjectInfo&)> OnDone);
+	void ReadClientStarter(const FString& ClientModule, TFunction<void(const FCrowdyModStarter&)> OnRead);
 	/** Asks whether a project exists past a full page, then answers List with bMore set. */
 	void ProbeMore(FCrowdyStudioProjectList List, int32 Offset, TFunction<void(const FCrowdyStudioProjectList&)> OnDone);
 	UCrowdyMods* ResolveMods() const;

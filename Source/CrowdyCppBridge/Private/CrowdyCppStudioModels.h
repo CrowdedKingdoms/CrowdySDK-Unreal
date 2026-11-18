@@ -3,23 +3,21 @@
 #include "CoreMinimal.h"
 #include "CrowdyCppClient.h"
 
-#include <string_view>
+#include <string>
 
 namespace crowdy::graphql
 {
-	struct HttpRequest;
 	struct HttpOutcome;
 }
 
-// Studio agent pieces the generated client does not provide yet, each written by hand until it does.
-namespace CrowdyCppStudioStopgaps
+// The SDK's own bounds around CrowdyCPP's Studio model list.
+namespace CrowdyCppStudioModels
 {
-	// The hand-written document for Operation in Domain, or empty when there is none.
-	std::string_view Document(ECrowdyCppApiDomain Domain, std::string_view Operation);
+	// Why the model list for AppId may not be asked on ApiEndpoint's origin under AppToken, or empty when it may.
+	FString ModelsRefusal(const FString& ApiEndpoint, int64 AppId, const FString& AppToken);
 
-	// The model list request for AppId on ApiEndpoint's origin under AppToken; false with OutRefusal set when it cannot be built.
-	bool BuildModelsRequest(const FString& ApiEndpoint, int64 AppId, const FString& AppToken,
-		crowdy::graphql::HttpRequest& OutRequest, FString& OutRefusal);
+	// The model list's route on the API origin, for AppId.
+	std::string ModelsPath(int64 AppId);
 
 	// The model list read from an answer as untrusted input.
 	FCrowdyCppStudioModelsResult MapModels(const crowdy::graphql::HttpOutcome& Out);

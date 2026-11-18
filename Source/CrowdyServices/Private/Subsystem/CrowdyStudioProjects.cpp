@@ -1,8 +1,8 @@
 #include "Subsystem/CrowdyStudioProjects.h"
 #include "CrowdyCppClient.h"
+#include "CrowdyCppStudio.h"
 #include "CrowdyServiceApiSupport.h"
 #include "CrowdyServicesLog.h"
-#include "CrowdyStudioClientStarter.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/GameInstance.h"
@@ -516,25 +516,81 @@ namespace
 		return FString();
 	}
 
+	// The starter's files a project may hold, as Target's.
+	void StudioProjAddStarter(TArray<FCrowdyStudioProjectFile>& Files, ECrowdyStudioTarget Target, const TArray<FCrowdyModFile>& Starter)
+	{
+		for (const FCrowdyModFile& File : Starter)
+		{
+			if (StudioProjPathAllowed(File.Path))
+			{
+				Files.Add(StudioProjFile(Target, File.Path, File.Content));
+			}
+		}
+	}
+
+	// The first name in Manifest's [package] set to Name, every other line as it was, as CrowdyCPP renames a starter's package.
+	FString StudioProjRenamePackage(const FString& Manifest, const FString& Name)
+	{
+		TArray<FString> Lines;
+		Manifest.ParseIntoArray(Lines, TEXT("\n"), false);
+		FString Section;
+		for (FString& Line : Lines)
+		{
+			const FString Trimmed = Line.TrimStartAndEnd();
+			FString Key;
+			if (Trimmed.StartsWith(TEXT("[")) && Trimmed.EndsWith(TEXT("]")))
+			{
+				Section = Trimmed.Mid(1, Trimmed.Len() - 2).TrimStartAndEnd();
+				continue;
+			}
+			if (Section.Equals(TEXT("package"), ESearchCase::CaseSensitive) && Trimmed.Split(TEXT("="), &Key, nullptr)
+				&& Key.TrimEnd().Equals(TEXT("name"), ESearchCase::CaseSensitive))
+			{
+				Line = FString::Printf(TEXT("name = \"%s\""), *Name);
+				break;
+			}
+		}
+		return FString::Join(Lines, TEXT("\n"));
+	}
+
+	// The platform's CLIENT starter with its package named for the CLIENT module, as this SDK's copy is.
+	TArray<FCrowdyModFile> StudioProjNamedClientStarter(TArray<FCrowdyModFile> Files, const FString& ClientModule)
+	{
+		for (FCrowdyModFile& File : Files)
+		{
+			if (File.Path.Equals(TEXT("Cargo.toml"), ESearchCase::CaseSensitive))
+			{
+				File.Content = StudioProjRenamePackage(File.Content, ClientModule);
+			}
+		}
+		return Files;
+	}
+
+	// This SDK's copy of the platform's CLIENT starter, for an API host that serves none.
+	TArray<FCrowdyModFile> StudioProjOfflineClientStarter(const FString& ClientModule)
+	{
+		TArray<FCrowdyModFile> Files;
+		for (const TPair<FString, FString>& File : CrowdyCppStudio::ClientStarterFiles(ClientModule))
+		{
+			FCrowdyModFile& Added = Files.AddDefaulted_GetRef();
+			Added.Path = File.Key;
+			Added.Content = File.Value;
+		}
+		return Files;
+	}
+
 	// The create input without its appId: the pairing is always sent, never left to the platform's default.
 	TSharedPtr<FJsonObject> StudioProjCreateInput(const FString& Name, ECrowdyStudioProjectKind Kind, const FString& ServerModule, const FString& ClientModule,
-		const TArray<FCrowdyModFile>& ServerStarter, FString& OutProblem)
+		const TArray<FCrowdyModFile>& ServerStarter, const TArray<FCrowdyModFile>& ClientStarter, FString& OutProblem)
 	{
 		TArray<FCrowdyStudioProjectFile> Files;
 		if (StudioProjHasServer(Kind))
 		{
-			for (const FCrowdyModFile& File : ServerStarter)
-			{
-				if (StudioProjPathAllowed(File.Path))
-				{
-					Files.Add(StudioProjFile(ECrowdyStudioTarget::Server, File.Path, File.Content));
-				}
-			}
+			StudioProjAddStarter(Files, ECrowdyStudioTarget::Server, ServerStarter);
 		}
 		if (StudioProjHasClient(Kind))
 		{
-			Files.Add(StudioProjFile(ECrowdyStudioTarget::Client, CrowdyStudioClientStarter::CargoPath, CrowdyStudioClientStarter::CargoToml));
-			Files.Add(StudioProjFile(ECrowdyStudioTarget::Client, CrowdyStudioClientStarter::LibPath, CrowdyStudioClientStarter::LibRs));
+			StudioProjAddStarter(Files, ECrowdyStudioTarget::Client, ClientStarter);
 		}
 		OutProblem = StudioProjCheckFiles(Files);
 		if (!OutProblem.IsEmpty())
@@ -757,7 +813,8 @@ void UCrowdyStudioProjects::CreateProject(const FString& Name, ECrowdyStudioProj
 	}
 
 	TWeakObjectPtr<UCrowdyStudioProjects> WeakThis(this);
-	const TFunction<void(const TArray<FCrowdyModFile>&)> Proceed = [WeakThis, Name, Kind, ServerModule, ClientModule, OnDone](const TArray<FCrowdyModFile>& ServerStarter)
+	const TFunction<void(const TArray<FCrowdyModFile>&, const TArray<FCrowdyModFile>&)> Proceed = [WeakThis, Name, Kind, ServerModule, ClientModule, OnDone](
+		const TArray<FCrowdyModFile>& ServerStarter, const TArray<FCrowdyModFile>& ClientStarter)
 	{
 		UCrowdyStudioProjects* Self = WeakThis.Get();
 		if (!Self || !Self->LiveSessionToken.IsValid())
@@ -765,7 +822,7 @@ void UCrowdyStudioProjects::CreateProject(const FString& Name, ECrowdyStudioProj
 			return;
 		}
 		FString StarterProblem;
-		const TSharedPtr<FJsonObject> Input = StudioProjCreateInput(Name, Kind, ServerModule, ClientModule, ServerStarter, StarterProblem);
+		const TSharedPtr<FJsonObject> Input = StudioProjCreateInput(Name, Kind, ServerModule, ClientModule, ServerStarter, ClientStarter, StarterProblem);
 		if (!Input.IsValid())
 		{
 			DeferWhileLive(Self->LiveSessionToken, [OnDone, StarterProblem]()
@@ -776,10 +833,32 @@ void UCrowdyStudioProjects::CreateProject(const FString& Name, ECrowdyStudioProj
 		}
 		Self->SendCreate(Input, OnDone);
 	};
+	const TFunction<void(const TArray<FCrowdyModFile>&)> ReadClient = [WeakThis, Kind, ClientModule, Proceed, OnDone](const TArray<FCrowdyModFile>& ServerStarter)
+	{
+		UCrowdyStudioProjects* Self = WeakThis.Get();
+		if (!Self || !Self->LiveSessionToken.IsValid())
+		{
+			return;
+		}
+		if (!StudioProjHasClient(Kind))
+		{
+			Proceed(ServerStarter, TArray<FCrowdyModFile>());
+			return;
+		}
+		Self->ReadClientStarter(ClientModule, [Proceed, ServerStarter, OnDone](const FCrowdyModStarter& ClientStarter)
+		{
+			if (ClientStarter.Result != ECrowdyModResult::Success)
+			{
+				StudioProjFinish(TEXT("Create Studio Project"), OnDone, FCrowdyStudioProjectInfo(), StudioProjFromModResult(ClientStarter.Result), ClientStarter.Message);
+				return;
+			}
+			Proceed(ServerStarter, ClientStarter.Files);
+		});
+	};
 
 	if (!StudioProjHasServer(Kind))
 	{
-		Proceed(TArray<FCrowdyModFile>());
+		ReadClient(TArray<FCrowdyModFile>());
 		return;
 	}
 	UCrowdyMods* Mods = ResolveMods();
@@ -791,7 +870,7 @@ void UCrowdyStudioProjects::CreateProject(const FString& Name, ECrowdyStudioProj
 		});
 		return;
 	}
-	Mods->GetStarter([WeakThis, Proceed, OnDone](const FCrowdyModStarter& Starter)
+	Mods->GetStarter([WeakThis, ReadClient, OnDone](const FCrowdyModStarter& Starter)
 	{
 		const UCrowdyStudioProjects* Self = WeakThis.Get();
 		if (!Self || !Self->LiveSessionToken.IsValid())
@@ -803,7 +882,38 @@ void UCrowdyStudioProjects::CreateProject(const FString& Name, ECrowdyStudioProj
 			StudioProjFinish(TEXT("Create Studio Project"), OnDone, FCrowdyStudioProjectInfo(), StudioProjFromModResult(Starter.Result), Starter.Message);
 			return;
 		}
-		Proceed(Starter.Files);
+		ReadClient(Starter.Files);
+	});
+}
+
+// The platform's CLIENT starter named for ClientModule, or this SDK's copy when the platform serves none; any other failure is the platform's answer.
+void UCrowdyStudioProjects::ReadClientStarter(const FString& ClientModule, TFunction<void(const FCrowdyModStarter&)> OnRead)
+{
+	FCrowdyModStarter Offline;
+	Offline.Result = ECrowdyModResult::Success;
+	Offline.Files = StudioProjOfflineClientStarter(ClientModule);
+	UCrowdyMods* Mods = ResolveMods();
+	if (!Mods)
+	{
+		OnRead(Offline);
+		return;
+	}
+	TWeakObjectPtr<UCrowdyStudioProjects> WeakThis(this);
+	Mods->GetClientStarter([WeakThis, ClientModule, Offline = MoveTemp(Offline), OnRead = MoveTemp(OnRead)](const FCrowdyModStarter& Starter)
+	{
+		const UCrowdyStudioProjects* Self = WeakThis.Get();
+		if (!Self || !Self->LiveSessionToken.IsValid())
+		{
+			return;
+		}
+		if (Starter.Result != ECrowdyModResult::Success)
+		{
+			OnRead(Starter.bNotServed ? Offline : Starter);
+			return;
+		}
+		FCrowdyModStarter Named = Starter;
+		Named.Files = StudioProjNamedClientStarter(Starter.Files, ClientModule);
+		OnRead(Named);
 	});
 }
 

@@ -1,7 +1,6 @@
 #include "crowdy/kit/topology.hpp"
 
 #include <algorithm>
-#include <regex>
 #include <set>
 
 namespace crowdy::kit {

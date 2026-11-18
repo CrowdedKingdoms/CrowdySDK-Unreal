@@ -97,9 +97,14 @@ class ChunkData {
   /// The server cut this chunk's recorded edits short (65,536 for one chunk, 262,144
   /// across a page): the rest are not in the cache. Read them with voxels().list().
   bool voxelStatesTruncated = false;
-  /// When the server last wrote the chunk's stored row (epoch ms), from the last read
-  /// of it or a chunkChanged; 0 when unknown.
+  /// When the server last wrote the chunk's voxels whole (epoch ms; StoredChunk's
+  /// voxelsUpdatedAtMs, or its updatedAtMs from a source that does not say), from the
+  /// last read: the time of every voxel without one of its own. 0 when unknown or not
+  /// written whole since ck-api v2.70.0; then merges are ordered by arrival.
   std::int64_t storedAtMs = 0;
+  /// When the server last wrote the chunk's row (epoch ms; any write, a chunk-state or
+  /// LOD write included), from the last read; 0 when unknown. Orders copies (0.85.0).
+  std::int64_t rowAtMs = 0;
 
   /// Whether every voxel of the grid has one type (uniformType()).
   bool uniform() const { return grid_.empty(); }
@@ -278,8 +283,15 @@ struct StoredChunk {
   std::vector<StoredVoxelState> voxelStates;
   /// The server cut `voxelStates` short; see ChunkData::voxelStatesTruncated.
   bool voxelStatesTruncated = false;
-  /// When the server last wrote the stored row (epoch ms; 0 when unknown).
+  /// When the server last wrote the stored row (epoch ms; 0 when unknown): any write,
+  /// a chunk-state or LOD write included. Orders copies of the chunk.
   std::int64_t updatedAtMs = 0;
+  /// When the chunk's voxels were last written whole (epoch ms; ck-api v2.70.0's
+  /// `voxelsUpdatedAt`, an updateChunk or world.set_chunk): the time of every voxel the
+  /// copy has no entry for. 0 when the server says the chunk was not written whole since
+  /// v2.70.0 (then the copy and later changes are ordered by arrival). Unset for a source
+  /// that does not say, whose copy is dated by `updatedAtMs` as before 0.85.0.
+  std::optional<std::int64_t> voxelsUpdatedAtMs;
 };
 
 /// The voxel edits recorded in one chunk, as IChunkSource::editsInBox reports them.
@@ -338,12 +350,28 @@ class IChunkSource {
                                              Bytes voxels) = 0;
 };
 
+/// What one stored-chunk reply may hold (0.85.0). The defaults are the Game API's own
+/// limits, so only a broken or hostile server's reply passes them; what passes is
+/// dropped before it is decoded.
+struct ChunkReadLimits {
+  /// The most voxel states kept for one chunk (the Game API applies 65,536); the rest
+  /// are dropped and the chunk is marked voxelStatesTruncated.
+  std::size_t maxStatesPerChunk = 65536;
+  /// The most voxel states or recorded edits kept across one reply (the Game API
+  /// applies 262,144 to one getChunksByDistance).
+  std::size_t maxStatesPerReply = 262144;
+  /// The largest voxel state kept, decoded; a larger one is dropped and its type kept.
+  std::size_t maxStateBytes = std::size_t{64} * 1024;
+};
+
 /// The Game API's chunk source: box reads paged by the limit the server applies (a
 /// chunk two pages return is kept once), one-chunk reads with getChunk, edits since a
 /// time with listVoxelUpdatesByDistance (when `voxels` is given), write-back with
-/// updateChunk. `chunks` (and `voxels`) must outlive it.
+/// updateChunk. `chunks` (and `voxels`) must outlive it. A grid is kept only when it
+/// decodes to kChunkVolume bytes, and `limits` bounds the rest of a reply.
 std::unique_ptr<IChunkSource> makeGameApiChunkSource(domains::ChunksAPI& chunks,
-                                                     domains::VoxelsAPI* voxels = nullptr);
+                                                     domains::VoxelsAPI* voxels = nullptr,
+                                                     ChunkReadLimits limits = {});
 
 /// A box of chunks, both corners inclusive.
 struct ChunkBox {
@@ -468,6 +496,12 @@ class ChunkStore {
     /// machine's clock plus this much, so that one wrong clock cannot hold a voxel
     /// against every later change.
     std::int64_t maxFutureSkewMs = 5 * 60 * 1000;
+    /// What one reply may hold, for the Game API's source the ChunksAPI constructor
+    /// makes and for IAsyncChunkSource replies (0.85.0).
+    ChunkReadLimits readLimits;
+    /// The largest IAsyncChunkSource reply body accepted (0.85.0); a larger one fails
+    /// its read unparsed, as GraphQLClient refuses one past maxResponseBytes.
+    std::size_t maxReplyBytes = graphql::kDefaultMaxResponseBytes;
     /// Sends one edit and returns its sequence number; defaults to the connection's
     /// sendVoxelUpdate. A custom transport (or a test) replaces it.
     std::function<Result<std::uint8_t>(const ChunkCoord& chunk, const core::ActorUuid& uuid,

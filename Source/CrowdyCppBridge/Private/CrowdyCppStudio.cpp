@@ -4,10 +4,14 @@
 
 THIRD_PARTY_INCLUDES_START
 #include "crowdy/studio/diagnostics.hpp"
+#include "crowdy/studio/starter_projects.hpp"
+#include "crowdy/studio_origin.hpp"
 THIRD_PARTY_INCLUDES_END
 
 #include <exception>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -59,6 +63,25 @@ namespace
 		Out.Source = ToBridgeSource(Diagnostic.source);
 		return Out;
 	}
+
+	// Call's answer, or Fallback when the library throws, so no exception leaves the bridge.
+	template <typename ResultType, typename CallType>
+	ResultType StudioCallContained(const TCHAR* What, ResultType Fallback, CallType&& Call)
+	{
+		try
+		{
+			return Call();
+		}
+		catch (const std::exception& Ex)
+		{
+			UE_LOG(LogCrowdyCpp, Warning, TEXT("%s failed: %hs"), What, Ex.what());
+		}
+		catch (...)
+		{
+			UE_LOG(LogCrowdyCpp, Warning, TEXT("%s threw a non-standard exception"), What);
+		}
+		return Fallback;
+	}
 }
 
 namespace CrowdyCppStudio
@@ -95,5 +118,40 @@ namespace CrowdyCppStudio
 			Diagnostics.Add(ToBridgeDiagnostic(Diagnostic));
 		}
 		return Diagnostics;
+	}
+
+	TArray<TPair<FString, FString>> ClientStarterFiles(const FString& ModuleName)
+	{
+		return StudioCallContained(TEXT("Writing the CLIENT starter"), TArray<TPair<FString, FString>>(), [&ModuleName]()
+		{
+			const FTCHARToUTF8 Name(*ModuleName, ModuleName.Len());
+			const std::vector<crowdy::studio::CrowdyStudioProjectFile> Starter =
+				crowdy::studio::crowdyStudioClientStarterFiles(std::string_view(Name.Get(), static_cast<size_t>(Name.Length())));
+			TArray<TPair<FString, FString>> Files;
+			for (const crowdy::studio::CrowdyStudioProjectFile& File : Starter)
+			{
+				Files.Emplace(Utf8Text(File.path), Utf8Text(File.content));
+			}
+			return Files;
+		});
+	}
+
+	FString OfflineStudioOrigin(const FString& ApiUrl)
+	{
+		return StudioCallContained(TEXT("Deriving the Studio origin"), FString(), [&ApiUrl]()
+		{
+			const FTCHARToUTF8 Url(*ApiUrl, ApiUrl.Len());
+			const std::optional<std::string> Origin = crowdy::studioOriginFor(std::string_view(Url.Get(), static_cast<size_t>(Url.Length())));
+			return Origin ? Utf8Text(*Origin) : FString();
+		});
+	}
+
+	FString StudioWalletUrl(const FString& StudioOrigin)
+	{
+		return StudioCallContained(TEXT("Deriving the wallet URL"), FString(), [&StudioOrigin]()
+		{
+			const FTCHARToUTF8 Origin(*StudioOrigin, StudioOrigin.Len());
+			return Utf8Text(crowdy::studioWalletUrl(std::string_view(Origin.Get(), static_cast<size_t>(Origin.Length()))));
+		});
 	}
 }

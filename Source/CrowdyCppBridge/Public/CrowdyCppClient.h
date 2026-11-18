@@ -246,6 +246,11 @@ struct FCrowdyCppStudioModel
 	FString Name;
 	int32 ContextWindow = 0;
 	TArray<FString> InputModalities;
+	/** The rate card, in millionths of a US dollar per million tokens; 0 when not given. */
+	int64 InputMicroUsdPerMillion = 0;
+	int64 OutputMicroUsdPerMillion = 0;
+	int64 ReasoningMicroUsdPerMillion = 0;
+	int64 CachedInputMicroUsdPerMillion = 0;
 };
 
 /** The outcome of FetchStudioModels. HttpStatus is 0 when no answer arrived; the error fields come from the error body. */
@@ -727,8 +732,8 @@ public:
 	FCrowdyCppRequestHandle FetchModClientArtifact(int64 AppId, const FString& ModId, TFunction<void(FCrowdyCppModClientArtifact)> OnDone);
 
 	// The models the Studio agent may use in AppId (GET /v1/model/models on the API origin) under the game bearer,
-	// which must be AppId's app token. Same OnDone contract as RunOp. The answer is read as untrusted: an oversized
-	// or malformed body fails, and at most MaxStudioModels models are kept.
+	// which must be AppId's app token, read by CrowdyCPP. Same OnDone contract as RunOp. The answer is read as
+	// untrusted: an oversized or malformed body fails, and at most MaxStudioModels models are kept.
 	static constexpr int32 MaxStudioModels = 256;
 	FCrowdyCppRequestHandle FetchStudioModels(int64 AppId, TFunction<void(FCrowdyCppStudioModelsResult)> OnDone);
 

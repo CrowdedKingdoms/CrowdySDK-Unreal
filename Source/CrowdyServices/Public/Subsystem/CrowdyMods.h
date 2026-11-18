@@ -135,6 +135,14 @@ struct CROWDYSERVICES_API FCrowdyMod
 	/** Unix time in milliseconds. */
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
 	int64 UpdatedAtMs = 0;
+
+	/** The Studio project this version was built from; empty when its build named none, as an install's does. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString StudioProjectId;
+
+	/** That project's platform revision, a decimal number; empty when StudioProjectId is. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString StudioRevision;
 };
 
 /** The answer to Deploy Mod and Set Mod Enabled. */
@@ -241,6 +249,9 @@ struct CROWDYSERVICES_API FCrowdyModStarter
 
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
 	FString Message;
+
+	/** The platform serves no such starter: a host whose build toolchain predates it, or a Game API that does not know it. */
+	bool bNotServed = false;
 };
 
 /** The answer to Call Mod. */
@@ -304,6 +315,14 @@ struct CROWDYSERVICES_API FCrowdyModClient
 	/** Unix time in milliseconds. */
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
 	int64 UpdatedAtMs = 0;
+
+	/** The Studio project this CLIENT half was built from; empty when its build named none, and on a grid's served list, which carries none. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString StudioProjectId;
+
+	/** That project's platform revision, a decimal number; empty when StudioProjectId is. */
+	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
+	FString StudioRevision;
 };
 
 /** The answer to Deploy Client Mod. */
@@ -366,8 +385,13 @@ struct CROWDYSERVICES_API FCrowdyModRunTarget
 	int64 Version = 0;
 
 	/**
-	 * The project revision this SDK deployed under Digest, reported only while the platform still serves that digest,
-	 * else empty; the platform keeps no Studio revision of its own.
+	 * The project revision this half runs, in the project's own form when it is the saved one; the platform reports no
+	 * commit, so a GitHub project's older revision reads as the platform's number alone, without its @commit. In a Run
+	 * Project answer, the revision deployed, as the platform's deploy answer names it when it names one. In a status, the
+	 * SERVER half's is the revision the platform says its mod was built from, empty when it names another project or none;
+	 * the CLIENT half's is the revision a run in
+	 * this process deployed under Digest, given only while the platform still serves that digest, since the grid's list
+	 * of served CLIENT halves names no revision.
 	 */
 	UPROPERTY(BlueprintReadOnly, Category="Crowdy SDK|Mods")
 	FString RunningRevision;
@@ -565,6 +589,9 @@ public:
 	/** The platform's starter crate, ready for Build Mod. */
 	void GetStarter(TFunction<void(const FCrowdyModStarter&)> OnDone);
 
+	/** The platform's CLIENT half starter crate, ready for Build Client Mod. A host that does not serve it answers with bNotServed set. */
+	void GetClientStarter(TFunction<void(const FCrowdyModStarter&)> OnDone);
+
 	/**
 	 * Calls Method on the named mod of a grid, with ParamsJson as its argument (empty sends {}), over the platform's
 	 * gateway. The first call to a switched-on mod starts it.
@@ -608,8 +635,9 @@ public:
 
 	/**
 	 * Where each half of a project is on a grid, read back from the platform every time: the project's saved revision, its
-	 * SERVER mod and its served CLIENT half. RunningRevision is the revision a run in this process deployed, given only
-	 * while the platform still serves that run's digest. A GridId below 1 is refused before sending.
+	 * SERVER mod and its served CLIENT half. RunningRevision is the platform's for the SERVER half; for the CLIENT half it
+	 * is the revision a run in this process deployed, given only while the platform still serves that run's digest. A
+	 * GridId below 1 is refused before sending.
 	 */
 	void GetProjectStatus(int64 GridId, const FString& ProjectId, TFunction<void(const FCrowdyModProjectStatus&)> OnDone);
 
@@ -635,8 +663,11 @@ private:
 	struct FRun;
 	struct FStatusRead;
 
+	/** An empty StudioProjectId names no Studio source. */
 	void StartBuild(const TCHAR* Call, const TCHAR* Operation, const TCHAR* Field, const FString& CrateName, const TArray<FCrowdyModFile>& Files,
-		TFunction<void(const FCrowdyModBuild&)> OnProgress, TFunction<void(const FCrowdyModBuild&)> OnDone);
+		TFunction<void(const FCrowdyModBuild&)> OnProgress, TFunction<void(const FCrowdyModBuild&)> OnDone, const FString& StudioProjectId = FString(),
+		const FString& StudioRevision = FString());
+	void ReadStarter(const TCHAR* Call, const TCHAR* Operation, const TCHAR* Field, TFunction<void(const FCrowdyModStarter&)> OnDone);
 	void PollBuild(const TSharedRef<FBuild>& Build);
 	void SchedulePoll(const TSharedRef<FBuild>& Build);
 	void ReadBuild(const TSharedRef<FBuild>& Build, const FCrowdyCppJsonResult& Result, const TCHAR* Field);

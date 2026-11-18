@@ -15,7 +15,6 @@
 #include "Subsystem/CrowdyGameSession.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
-#include "Utils/CrowdySDKDeveloperSettings.h"
 #include <type_traits>
 
 namespace CrowdyStudioAgentTests
@@ -73,28 +72,10 @@ namespace CrowdyStudioAgentTests
 		FString Token;
 	};
 
-	// Points the Studio origin and wallet URL at known values for one test and puts the project's own back.
-	struct FAgentSettingsScope
+	FString AgentLinksBody(const TCHAR* Origin, const TCHAR* Wallet)
 	{
-		FString SavedOrigin;
-		FString SavedWallet;
-
-		explicit FAgentSettingsScope(const TCHAR* Origin = TEXT("https://studio.test"), const TCHAR* Wallet = TEXT("https://studio.test/wallet"))
-		{
-			UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
-			SavedOrigin = Settings->StudioOrigin;
-			SavedWallet = Settings->StudioWalletUrl;
-			Settings->StudioOrigin = Origin;
-			Settings->StudioWalletUrl = Wallet;
-		}
-
-		~FAgentSettingsScope()
-		{
-			UCrowdySDKDeveloperSettings* Settings = GetMutableDefault<UCrowdySDKDeveloperSettings>();
-			Settings->StudioOrigin = SavedOrigin;
-			Settings->StudioWalletUrl = SavedWallet;
-		}
-	};
+		return FString::Printf(TEXT("{\"data\":{\"crowdyStudioLinks\":{\"origin\":\"%s\",\"walletUrl\":\"%s\"}}}"), Origin, Wallet);
+	}
 
 	struct FAgentRig
 	{
@@ -109,6 +90,8 @@ namespace CrowdyStudioAgentTests
 		FCrowdyStudioModelUsage Usage;
 		FCrowdyStudioLiveModding Live;
 		TArray<FAgentTokenEvent> TokenEvents;
+		/** Every request's URL, in the order sent. */
+		TArray<FString> Urls;
 
 		explicit FAgentRig(const FString& Body, int32 Status = 200, bool bSignedIn = true, const TCHAR* ApiUrl = TEXT("https://game.test"))
 			: Instance(NewObject<UGameInstance>(GetTransientPackage(), NAME_None, RF_Transient))
@@ -133,6 +116,12 @@ namespace CrowdyStudioAgentTests
 				Event.UserId = UserId;
 				Event.Token = Token;
 			});
+			Client->SetTestOnRequest([this](const FString& Url) { Urls.Add(Url); });
+		}
+
+		~FAgentRig()
+		{
+			Client->SetTestOnRequest(nullptr);
 		}
 
 		void Script(TArray<TPair<int32, FString>> Responses)
@@ -266,8 +255,8 @@ using namespace CrowdyStudioAgentTests;
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentBootTest, "CrowdySDK.CrowdyServices.StudioAgent.BootFillsEveryFieldAndTheModels", Flags)
 bool FCrowdyStudioAgentBootTest::RunTest(const FString& Parameters)
 {
-	const FAgentSettingsScope Settings;
 	FAgentRig Rig(AgentModelList);
+	Rig.Script({{200, AgentModelList}, {200, AgentLinksBody(TEXT("https://studio.test"), TEXT("https://studio.test/account/wallet"))}});
 	Rig.GetBoot();
 	if (!TestEqual(TEXT("the boot is answered once"), Rig.Answers, 1))
 	{
@@ -280,8 +269,8 @@ bool FCrowdyStudioAgentBootTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("and it is a GraphQL path"), Boot.GraphQLUrl.EndsWith(TEXT("/graphql")));
 	TestEqual(TEXT("the model base URL is that URL's origin"), Boot.ModelBaseUrl, FString(TEXT("https://game.test")));
 	TestTrue(TEXT("the page may reach the API origin and nothing else"), Boot.ConnectOrigins == TArray<FString>({TEXT("https://game.test")}));
-	TestEqual(TEXT("the Studio origin comes from the setting"), Boot.StudioOrigin, FString(TEXT("https://studio.test")));
-	TestEqual(TEXT("the wallet URL comes from the setting"), Boot.WalletUrl, FString(TEXT("https://studio.test/wallet")));
+	TestEqual(TEXT("the Studio origin comes from the platform"), Boot.StudioOrigin, FString(TEXT("https://studio.test")));
+	TestEqual(TEXT("the wallet URL comes from the platform"), Boot.WalletUrl, FString(TEXT("https://studio.test/account/wallet")));
 	if (TestEqual(TEXT("both models are listed"), Boot.Models.Num(), 2))
 	{
 		TestEqual(TEXT("first id"), Boot.Models[0].ModelId, FString(TEXT("openai/gpt-oss-120b")));
@@ -290,7 +279,8 @@ bool FCrowdyStudioAgentBootTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("a stated window is kept"), Boot.Models[1].ContextWindow, static_cast<int64>(131072));
 		TestTrue(TEXT("modalities are kept"), Boot.Models[1].InputModalities == TArray<FString>({TEXT("text"), TEXT("image")}));
 	}
-	TestEqual(TEXT("the list is asked for this app"), Rig.SentUrl(), FString(TEXT("https://game.test/v1/model/models?appId=31337")));
+	TestTrue(TEXT("the list is asked for this app first"), Rig.Urls.Num() == 2 && Rig.Urls[0] == TEXT("https://game.test/v1/model/models?appId=31337"));
+	TestEqual(TEXT("then the Studio links"), Rig.SentOperation(), FString(TEXT("CrowdyStudioLinks")));
 	TestEqual(TEXT("under the app token, not the session token"), Rig.SentAuthorization(), FString(TEXT("Bearer app-token")));
 	return true;
 }
@@ -298,7 +288,6 @@ bool FCrowdyStudioAgentBootTest::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentSignedOutTest, "CrowdySDK.CrowdyServices.StudioAgent.EveryCallRefusesWhenSignedOut", Flags)
 bool FCrowdyStudioAgentSignedOutTest::RunTest(const FString& Parameters)
 {
-	const FAgentSettingsScope Settings;
 	FAgentRig Rig(AgentModelList, 200, false);
 	Rig.GetBoot();
 	TestEqual(TEXT("the boot refuses"), Rig.Boot.Result, ECrowdyStudioResult::NotSignedIn);
@@ -320,7 +309,6 @@ bool FCrowdyStudioAgentSignedOutTest::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentModelFailureTest, "CrowdySDK.CrowdyServices.StudioAgent.ModelListFailuresMapToTypedResults", Flags)
 bool FCrowdyStudioAgentModelFailureTest::RunTest(const FString& Parameters)
 {
-	const FAgentSettingsScope Settings;
 	FAgentRig Rig(AgentModelList);
 	Rig.Script({
 		TPair<int32, FString>(403, AgentModelError(TEXT("AGENT_PERMISSION_DENIED"))),
@@ -353,45 +341,78 @@ bool FCrowdyStudioAgentModelFailureTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentSettingsTest, "CrowdySDK.CrowdyServices.StudioAgent.BootRefusesASettingThatIsNotHttps", Flags)
-bool FCrowdyStudioAgentSettingsTest::RunTest(const FString& Parameters)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentLinksTest, "CrowdySDK.CrowdyServices.StudioAgent.BootTakesTheStudioLinksFromThePlatform", Flags)
+bool FCrowdyStudioAgentLinksTest::RunTest(const FString& Parameters)
 {
+	const TCHAR* const TierApi = TEXT("https://ck.dev.example.test");
+	const auto Boot = [](const TCHAR* ApiUrl, const TCHAR* Origin, const TCHAR* Wallet, FCrowdyStudioAgentBoot& Out)
 	{
-		const FAgentSettingsScope Settings(TEXT("http://studio.test"));
-		FAgentRig Rig(AgentModelList);
+		FAgentRig Rig(AgentModelList, 200, true, ApiUrl);
+		Rig.Script({{200, AgentModelList}, {200, AgentLinksBody(Origin, Wallet)}});
 		Rig.GetBoot();
-		TestEqual(TEXT("an http Studio origin is refused"), Rig.Boot.Result, ECrowdyStudioResult::Refused);
-		TestFalse(TEXT("and nothing was sent"), Rig.SentAnything());
+		Out = Rig.Boot;
+	};
+	FCrowdyStudioAgentBoot Read;
+	Boot(TEXT("https://game.test"), TEXT("https://studio.platform.test/"), TEXT("https://studio.platform.test/account/wallet"), Read);
+	TestTrue(TEXT("the boot hands out the platform's links, a trailing slash dropped"), Read.Result == ECrowdyStudioResult::Success
+		&& Read.StudioOrigin == TEXT("https://studio.platform.test") && Read.WalletUrl == TEXT("https://studio.platform.test/account/wallet"));
+	{
+		FAgentRig Rig(AgentModelList, 200, true, TierApi);
+		Rig.Script({{200, AgentModelList}, {200, AgentErrorBody(TEXT("GRAPHQL_VALIDATION_FAILED"))}});
+		Rig.GetBoot();
+		TestEqual(TEXT("an API that cannot answer the links still boots"), Rig.Boot.Result, ECrowdyStudioResult::Success);
+		TestEqual(TEXT("with the Studio its address implies"), Rig.Boot.StudioOrigin, FString(TEXT("https://studio.dev.example.test")));
+		TestEqual(TEXT("and that Studio's wallet page"), Rig.Boot.WalletUrl, FString(TEXT("https://studio.dev.example.test/account/wallet")));
 	}
+	const TCHAR* const NotHanded[] = {TEXT("http://studio.platform.test"), TEXT("https://studio.platform.test/path"), TEXT("https://user@studio.platform.test")};
+	for (const TCHAR* Origin : NotHanded)
 	{
-		const FAgentSettingsScope Settings(TEXT("https://studio.test/path"));
-		FAgentRig Rig(AgentModelList);
-		Rig.GetBoot();
-		TestEqual(TEXT("a Studio origin with a path is refused"), Rig.Boot.Result, ECrowdyStudioResult::Refused);
+		Boot(TierApi, Origin, TEXT("https://studio.platform.test/account/wallet"), Read);
+		TestEqual(*FString::Printf(TEXT("a platform origin %s is not handed out; the API address's Studio is"), Origin), Read.StudioOrigin,
+			FString(TEXT("https://studio.dev.example.test")));
 	}
+	Boot(TierApi, TEXT("https://studio.platform.test"), TEXT("ftp://studio.platform.test/account/wallet"), Read);
+	TestEqual(TEXT("a platform wallet that is not https is not handed out"), Read.WalletUrl, FString(TEXT("https://studio.dev.example.test/account/wallet")));
+	Boot(TEXT("https://game.test"), TEXT("https://studio.platform.test"), TEXT("http://studio.platform.test/account/wallet"), Read);
+	TestEqual(TEXT("an http wallet with no Studio implied by the API address refuses the boot"), Read.Result, ECrowdyStudioResult::Refused);
+	TestTrue(TEXT("and hands out no link"), Read.StudioOrigin.IsEmpty() && Read.WalletUrl.IsEmpty());
+#if !UE_BUILD_SHIPPING
 	{
-		const FAgentSettingsScope Settings(TEXT("https://studio.test"), TEXT("ftp://studio.test/wallet"));
-		FAgentRig Rig(AgentModelList);
+		FAgentRig Rig(AgentModelList, 200, true, TEXT("http://localhost:8080"));
+		Rig.Script({{200, AgentModelList}, {200, AgentErrorBody(TEXT("GRAPHQL_VALIDATION_FAILED"))}});
 		Rig.GetBoot();
-		TestEqual(TEXT("a wallet URL that is not https is refused"), Rig.Boot.Result, ECrowdyStudioResult::Refused);
+		TestEqual(TEXT("a local API's Studio is on port 3001"), Rig.Boot.StudioOrigin, FString(TEXT("http://localhost:3001")));
 	}
+#endif
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentLiveModdingCodesTest, "CrowdySDK.CrowdyServices.StudioAgent.LiveModdingRefusalsMapByCode", Flags)
+bool FCrowdyStudioAgentLiveModdingCodesTest::RunTest(const FString& Parameters)
+{
+	struct FCase
 	{
-		const FAgentSettingsScope Settings(TEXT("https://user@studio.test"));
-		FAgentRig Rig(AgentModelList);
-		Rig.GetBoot();
-		TestEqual(TEXT("an origin with credentials is refused"), Rig.Boot.Result, ECrowdyStudioResult::Refused);
-	}
+		const TCHAR* Code;
+		ECrowdyStudioResult Expected;
+	};
+	const FCase Cases[] = {
+		{TEXT("AGENT_SCOPE_DENIED"), ECrowdyStudioResult::Denied},
+		{TEXT("AGENT_PERMISSION_DENIED"), ECrowdyStudioResult::Denied},
+		{TEXT("AGENT_DISABLED"), ECrowdyStudioResult::Denied},
+		{TEXT("AGENT_OPERATOR_KILLED"), ECrowdyStudioResult::Denied},
+		{TEXT("AGENT_PROVIDER_POLICY_UNSATISFIED"), ECrowdyStudioResult::Failed},
+	};
+	for (const FCase& Case : Cases)
 	{
-		const FAgentSettingsScope Settings(TEXT("https://studio.test/"));
-		FAgentRig Rig(AgentModelList);
-		Rig.GetBoot();
-		TestEqual(TEXT("a trailing slash is accepted"), Rig.Boot.Result, ECrowdyStudioResult::Success);
-		TestEqual(TEXT("and handed out as the origin"), Rig.Boot.StudioOrigin, FString(TEXT("https://studio.test")));
+		FAgentRig Rig(AgentErrorBody(Case.Code));
+		Rig.Authorize(ECrowdyStudioRunMode::Live);
+		TestTrue(*FString::Printf(TEXT("%s ends %d and allows nothing"), Case.Code, static_cast<int32>(Case.Expected)),
+			Rig.Live.Result == Case.Expected && !Rig.Live.bAllowed);
 	}
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentTokenTest, "CrowdySDK.CrowdyServices.StudioAgent.TokenIsTheAppTokenNeverTheSessionToken", Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentTokenTest,"CrowdySDK.CrowdyServices.StudioAgent.TokenIsTheAppTokenNeverTheSessionToken", Flags)
 bool FCrowdyStudioAgentTokenTest::RunTest(const FString& Parameters)
 {
 	FAgentRig Rig(AgentModelList);
@@ -460,7 +481,6 @@ bool FCrowdyStudioAgentTokenIsNativeOnlyTest::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentMovedEndpointTest, "CrowdySDK.CrowdyServices.StudioAgent.BootChangedFiresWhenTheApiOriginMoves", Flags)
 bool FCrowdyStudioAgentMovedEndpointTest::RunTest(const FString& Parameters)
 {
-	const FAgentSettingsScope Settings;
 	FAgentRig Rig(AgentModelList);
 	const TStrongObjectPtr<UCrowdyStudioAgentTestListener> Listener(NewObject<UCrowdyStudioAgentTestListener>(GetTransientPackage()));
 	Rig.Agent->OnAgentBootChanged.AddDynamic(Listener.Get(), &UCrowdyStudioAgentTestListener::HandleBootChanged);
@@ -473,9 +493,10 @@ bool FCrowdyStudioAgentMovedEndpointTest::RunTest(const FString& Parameters)
 	Rig.ApplyToken(TEXT("app-token-4"), true);
 	TestEqual(TEXT("and not again while it stays put"), Listener->BootChanges, 1);
 
-	Rig.Agent->SetApiEndpointForTest(TEXT("https://third.game.test/graphql"));
+	Rig.Agent->SetApiEndpointForTest(TEXT("https://ck.third.game.test/graphql"));
 	Rig.GetBoot();
-	TestEqual(TEXT("the boot reads the moved endpoint"), Rig.Boot.GraphQLUrl, FString(TEXT("https://third.game.test/graphql")));
+	TestEqual(TEXT("the boot reads the moved endpoint"), Rig.Boot.GraphQLUrl, FString(TEXT("https://ck.third.game.test/graphql")));
+	TestEqual(TEXT("and the Studio that endpoint implies"), Rig.Boot.StudioOrigin, FString(TEXT("https://studio.third.game.test")));
 	TestEqual(TEXT("and a move seen on a boot read fires too"), Listener->BootChanges, 2);
 	return true;
 }
@@ -685,7 +706,6 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentHttpsOnlyTest, "CrowdySDK.Cro
 bool FCrowdyStudioAgentHttpsOnlyTest::RunTest(const FString& Parameters)
 {
 	AddExpectedErrorPlain(TEXT("The Game API endpoint is not encrypted"), EAutomationExpectedErrorFlags::Contains, 0);
-	const FAgentSettingsScope Settings;
 	FAgentRig Plain(AgentModelList, 200, true, TEXT("http://game.test"));
 	Plain.GetBoot();
 	TestEqual(TEXT("an http API is refused"), Plain.Boot.Result, ECrowdyStudioResult::Refused);
@@ -716,7 +736,6 @@ bool FCrowdyStudioAgentHttpsOnlyTest::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioAgentAfterEndTest, "CrowdySDK.CrowdyServices.StudioAgent.AnswerAfterTheEndIsDropped", Flags)
 bool FCrowdyStudioAgentAfterEndTest::RunTest(const FString& Parameters)
 {
-	const FAgentSettingsScope Settings;
 	const auto Script = [](FAgentRig& Rig)
 	{
 		Rig.Script({

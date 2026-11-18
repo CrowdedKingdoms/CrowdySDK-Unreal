@@ -147,14 +147,6 @@ public:
 		meta=(DisplayName="Show Consent Prompt"))
 	bool bShowConsentPrompt = true;
 
-	/** The platform does not publish the Studio web origin yet, so it is set here. https only. */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Developer|Studio Agent", meta=(DisplayName="Studio Origin"))
-	FString StudioOrigin = TEXT("https://studio.crowdedkingdoms.com");
-
-	/** The platform does not publish its wallet page yet, so it is set here; the default is the Studio origin. https only. */
-	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Developer|Studio Agent", meta=(DisplayName="Wallet URL"))
-	FString StudioWalletUrl = TEXT("https://studio.crowdedkingdoms.com");
-
 	/** Domains, besides the Game API's own, that a Server Object connection may use as its gateway. */
 	UPROPERTY(Config, EditAnywhere, Category="Crowdy SDK|Developer|Server Objects",
 		meta=(DisplayName="Allowed Exec Gateway Domains",

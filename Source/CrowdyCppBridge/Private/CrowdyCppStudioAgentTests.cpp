@@ -4,12 +4,18 @@
 
 #include "CrowdyCppClient.h"
 #include "CrowdyCppStudio.h"
-#include "CrowdyCppStudioStopgaps.h"
+#include "CrowdyCppStudioModels.h"
 #include "Dom/JsonObject.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+
+THIRD_PARTY_INCLUDES_START
+#include "crowdy/generated/operations.hpp"
+THIRD_PARTY_INCLUDES_END
+
+#include <string>
 
 // The Studio agent surface: its operations resolve and carry the app token, the model list is read as untrusted, and
 // compiler output becomes diagnostics.
@@ -171,6 +177,7 @@ bool FCrowdyCppStudioAgentExecClientModTest::RunTest(const FString& Parameters)
 	ExpectAppToken(*this, ECrowdyCppApiDomain::Exec, TEXT("ExecModClientBuild"));
 	ExpectAppToken(*this, ECrowdyCppApiDomain::Exec, TEXT("ExecModClientDeploy"));
 	ExpectAppToken(*this, ECrowdyCppApiDomain::Exec, TEXT("ExecModClientDelete"));
+	ExpectAppToken(*this, ECrowdyCppApiDomain::Exec, TEXT("ExecModClientStarter"));
 	return true;
 }
 
@@ -216,8 +223,8 @@ bool FCrowdyCppStudioAgentLiveModdingTest::RunTest(const FString& Parameters)
 	}
 	FString Query;
 	Request->TryGetStringField(TEXT("query"), Query);
-	TestTrue(TEXT("the document selects crowdyStudioLiveModding"),
-		Query.Contains(TEXT("crowdyStudioLiveModding(appId: $appId, action: $action)")));
+	const std::string Generated(crowdy::gen::crowdyStudioAgent::kCrowdyStudioLiveModdingIsolatedDocument);
+	TestEqual(TEXT("the document is CrowdyCPP's generated one"), Query, FString(UTF8_TO_TCHAR(Generated.c_str())));
 	TestEqual(TEXT("it is sent under its own name"), LastOperationName(*Client), FString(TEXT("CrowdyStudioLiveModding")));
 
 	const TSharedPtr<FJsonValue> SentAppId = (*Sent)->TryGetField(TEXT("appId"));
@@ -228,7 +235,7 @@ bool FCrowdyCppStudioAgentLiveModdingTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// A busy refusal of the hand-written query is sent again, which a mutation's would not be.
+// A busy refusal of the query is sent again, which a mutation's would not be.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyCppStudioAgentLiveModdingBusyTest,
 	"CrowdySDK.CrowdyCppBridge.StudioAgent.LiveModdingIsRetriedAsAQuery", CrowdyCppStudioAgentTests::TestFlags)
 bool FCrowdyCppStudioAgentLiveModdingBusyTest::RunTest(const FString& Parameters)
@@ -267,10 +274,10 @@ bool FCrowdyCppStudioModelsRequestTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyCppStudioAgentTests;
 	TestEqual(TEXT("the path, query and fragment are stripped"),
-		CrowdyCppStudioStopgaps::UrlOrigin(TEXT("https://game.test:8443/api/graphql?x=1#y")), FString(TEXT("https://game.test:8443")));
-	TestEqual(TEXT("a bare origin is kept"), CrowdyCppStudioStopgaps::UrlOrigin(TEXT("https://game.test")), FString(TEXT("https://game.test")));
-	TestTrue(TEXT("a URL with no scheme has no origin"), CrowdyCppStudioStopgaps::UrlOrigin(TEXT("game.test/graphql")).IsEmpty());
-	TestTrue(TEXT("a URL with no host has no origin"), CrowdyCppStudioStopgaps::UrlOrigin(TEXT("https:///graphql")).IsEmpty());
+		CrowdyCppStudioModels::UrlOrigin(TEXT("https://game.test:8443/api/graphql?x=1#y")), FString(TEXT("https://game.test:8443")));
+	TestEqual(TEXT("a bare origin is kept"), CrowdyCppStudioModels::UrlOrigin(TEXT("https://game.test")), FString(TEXT("https://game.test")));
+	TestTrue(TEXT("a URL with no scheme has no origin"), CrowdyCppStudioModels::UrlOrigin(TEXT("game.test/graphql")).IsEmpty());
+	TestTrue(TEXT("a URL with no host has no origin"), CrowdyCppStudioModels::UrlOrigin(TEXT("https:///graphql")).IsEmpty());
 
 	const TSharedPtr<FCrowdyCppClient> Client = MakeClient(TEXT("{\"object\":\"list\",\"data\":[]}"));
 	if (!TestTrue(TEXT("a test client is made"), Client.IsValid()))
@@ -330,6 +337,9 @@ bool FCrowdyCppStudioModelsParseTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("first name"), Result.Models[0].Name, FString(TEXT("GPT OSS 120B")));
 	TestEqual(TEXT("a null context window reads as 0"), Result.Models[0].ContextWindow, 0);
 	TestTrue(TEXT("first modalities"), Result.Models[0].InputModalities == TArray<FString>({ TEXT("text") }));
+	TestTrue(TEXT("the rate card is read"), Result.Models[0].InputMicroUsdPerMillion == 195000 && Result.Models[0].OutputMicroUsdPerMillion == 780000
+		&& Result.Models[0].ReasoningMicroUsdPerMillion == 0);
+	TestEqual(TEXT("a model with no rate card reads 0"), Result.Models[1].InputMicroUsdPerMillion, static_cast<int64>(0));
 	TestEqual(TEXT("a stated context window is kept"), Result.Models[1].ContextWindow, 131072);
 	TestTrue(TEXT("a modality that is not a string is skipped"),
 		Result.Models[1].InputModalities == TArray<FString>({ TEXT("text"), TEXT("image") }));
@@ -382,7 +392,7 @@ bool FCrowdyCppStudioModelsForgedTest::RunTest(const FString& Parameters)
 {
 	using namespace CrowdyCppStudioAgentTests;
 	const FString Oversized = TEXT("{\"object\":\"list\",\"data\":[],\"pad\":\"")
-		+ FString::ChrN(CrowdyCppStudioStopgaps::MaxModelsBodyBytes, TEXT('x')) + TEXT("\"}");
+		+ FString::ChrN(CrowdyCppStudioModels::MaxModelsBodyBytes, TEXT('x')) + TEXT("\"}");
 	const FString Deep = TEXT("{\"data\":") + FString::ChrN(512, TEXT('[')) + FString::ChrN(512, TEXT(']')) + TEXT("}");
 	const TArray<FString> Bodies = { Oversized, TEXT("not json"), TEXT("{\"data\":{}}"), TEXT("[]"), Deep };
 
@@ -418,6 +428,35 @@ bool FCrowdyCppStudioModelsForgedTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the long list reads"), Out.Result.bOk);
 	TestEqual(TEXT("at most MaxStudioModels are kept"), Out.Result.Models.Num(), FCrowdyCppClient::MaxStudioModels);
 	TestTrue(TEXT("an over-long id is skipped"), Out.Result.Models.Num() > 0 && Out.Result.Models[0].Id == TEXT("m0"));
+
+	FString Modalities = TEXT("\"") + FString::ChrN(33, TEXT('t')) + TEXT("\"");
+	for (int32 Index = 0; Index < 20; ++Index)
+	{
+		Modalities += FString::Printf(TEXT(",\"m%d\""), Index);
+	}
+	const TSharedPtr<FCrowdyCppClient> Wide = MakeClient(FString::Printf(
+		TEXT("{\"data\":[{\"id\":\"w\",\"context_window\":4294967296,\"input_modalities\":[%s]}]}"), *Modalities));
+	TOutcome<FCrowdyCppStudioModelsResult> WideOut;
+	if (Wide.IsValid())
+	{
+		IssueModels(*Wide, 42, WideOut);
+		PollUntilDone(*Wide, WideOut);
+	}
+	const bool bWide = WideOut.Result.bOk && WideOut.Result.Models.Num() == 1;
+	TestTrue(TEXT("an over-long modality is skipped and at most 16 are kept"), bWide && WideOut.Result.Models[0].InputModalities.Num() == 16
+		&& WideOut.Result.Models[0].InputModalities[0] == TEXT("m0"));
+	TestTrue(TEXT("a context window past int32 reads as 0"), bWide && WideOut.Result.Models[0].ContextWindow == 0);
+
+	const TSharedPtr<FCrowdyCppClient> Loud = MakeClient(FString::Printf(TEXT("{\"error\":{\"message\":\"%s\",\"code\":\"%s\"}}"),
+		*FString::ChrN(2000, TEXT('m')), *FString::ChrN(65, TEXT('C'))), 403);
+	TOutcome<FCrowdyCppStudioModelsResult> LoudOut;
+	if (Loud.IsValid())
+	{
+		IssueModels(*Loud, 42, LoudOut);
+		PollUntilDone(*Loud, LoudOut);
+	}
+	TestEqual(TEXT("a refusal's message is cut to 1 KiB"), LoudOut.Result.ErrorMessage.Len(), 1024);
+	TestTrue(TEXT("and an over-long code is dropped"), LoudOut.Result.ErrorCode.IsEmpty() && LoudOut.Result.HttpStatus == 403);
 	return true;
 }
 
@@ -570,7 +609,13 @@ bool FCrowdyCppStudioModelsHttpsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("loopback http is allowed outside Shipping"), Loopback.bOk && bSent);
 	const FCrowdyCppStudioModelsResult Lookalike = Ask(TEXT("http://localhost.evil.test"), bSent);
 	TestFalse(TEXT("a host that only starts with localhost is refused"), Lookalike.bOk);
+	const FCrowdyCppStudioModelsResult Smuggled = Ask(TEXT("http://localhost:1@evil.test/graphql"), bSent);
+	TestFalse(TEXT("a loopback name in the userinfo is refused, as the host is the one after @"), Smuggled.bOk);
+	TestFalse(TEXT("and nothing was sent to that host"), bSent);
 #endif
+	const FCrowdyCppStudioModelsResult Credentials = Ask(TEXT("https://user@game.test"), bSent);
+	TestFalse(TEXT("an https endpoint that names credentials is refused"), Credentials.bOk);
+	TestFalse(TEXT("and nothing was sent"), bSent);
 	return true;
 }
 

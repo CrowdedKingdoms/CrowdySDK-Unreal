@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: ea5570ea1dca0a4b96788387e3330ce34b468f7fcb79d8dc5afc736f7ad2ffc5
-// operations sha256: 546b64bcb9d2778124fb77328abfa546a6e6b22d28444f8ee73c7e3a40a7aa3b
+// schema.gql sha256: 0ea63bf028c7260315fddfec1f8d895bdaf98846aa69eac141ee6c80d8629c36
+// operations sha256: 93e1f0e678c63bcbf238a619f7fde25bd4c8f9d31ebc397b4b94d5d5235666b6
 
 #pragma once
 
@@ -2830,6 +2830,7 @@ inline constexpr std::string_view kGetChunkDocument = R"gql(query GetChunk($inpu
     owner
     createdAt
     updatedAt
+    voxelsUpdatedAt
     chunkState
     cdnUploadedAt
     lods {
@@ -2862,6 +2863,7 @@ inline constexpr std::string_view kGetChunkIsolatedDocument = R"gql(query GetChu
     owner
     createdAt
     updatedAt
+    voxelsUpdatedAt
     chunkState
     cdnUploadedAt
     lods {
@@ -2935,6 +2937,7 @@ inline constexpr std::string_view kGetChunksByDistanceDocument = R"gql(query Get
       owner
       createdAt
       updatedAt
+      voxelsUpdatedAt
       chunkState
       cdnUploadedAt
       lods {
@@ -2971,6 +2974,7 @@ inline constexpr std::string_view kGetChunksByDistanceIsolatedDocument = R"gql(q
       owner
       createdAt
       updatedAt
+      voxelsUpdatedAt
       chunkState
       cdnUploadedAt
       lods {
@@ -3540,6 +3544,13 @@ mutation CrowdyStudioCommonPublish(
   crowdyStudioCommonPublish(input: $input) {
     ...CrowdyStudioCommonFileFields
   }
+}
+
+query CrowdyStudioLinks {
+  crowdyStudioLinks {
+    origin
+    walletUrl
+  }
 })gql";
 inline constexpr std::string_view kCrowdyStudioProjectsIsolatedDocument = R"gql(query CrowdyStudioProjects($appId: BigInt!, $includeArchived: Boolean, $limit: Int, $offset: Int) {
   crowdyStudioProjects(
@@ -4001,6 +4012,13 @@ fragment CrowdyStudioCommonFileFields on CrowdyStudioCommonFile {
   updatedAt
 })gql";
 inline constexpr std::string_view kCrowdyStudioCommonPublishOperationName = "CrowdyStudioCommonPublish";
+inline constexpr std::string_view kCrowdyStudioLinksIsolatedDocument = R"gql(query CrowdyStudioLinks {
+  crowdyStudioLinks {
+    origin
+    walletUrl
+  }
+})gql";
+inline constexpr std::string_view kCrowdyStudioLinksOperationName = "CrowdyStudioLinks";
 
 /// crowdyStudio/CrowdyStudioGitHub.graphql
 inline constexpr std::string_view kCrowdyStudioGitHubDocument = R"gql(fragment CrowdyStudioGitHubStatusFields on CrowdyStudioGitHubStatus {
@@ -4309,6 +4327,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CrowdyStudioCommonFiles") return kCrowdyStudioCommonFilesIsolatedDocument;
   if (operationName == "CrowdyStudioProjectImportFile") return kCrowdyStudioProjectImportFileIsolatedDocument;
   if (operationName == "CrowdyStudioCommonPublish") return kCrowdyStudioCommonPublishIsolatedDocument;
+  if (operationName == "CrowdyStudioLinks") return kCrowdyStudioLinksIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubStatus") return kCrowdyStudioGitHubStatusIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubConnectUrl") return kCrowdyStudioGitHubConnectUrlIsolatedDocument;
   if (operationName == "CrowdyStudioGitHubRepos") return kCrowdyStudioGitHubReposIsolatedDocument;
@@ -4822,8 +4841,14 @@ inline constexpr std::string_view kCrowdyStudioAgentSetPolicyOperationName = "Cr
 /// crowdyStudioAgent/CrowdyStudioModel.graphql
 inline constexpr std::string_view kCrowdyStudioModelDocument = R"gql(# The metered model endpoint's GraphQL companions. The endpoint itself is
 # REST (`GET /v1/model/models`, `POST /v1/model/chat/completions`, bearer =
-# app token) and is what the in-browser Studio agent spends tokens through;
-# these operations read what it recorded and gate whether it may run.
+# app token) and is what the Studio agent spends tokens through; these
+# operations read what it recorded and gate whether it may run.
+
+# A Studio dock asks this before the agent's draft_test or deploy_live: the mod
+# build, deploy and switch-on calls do not check the app's Allow Live Modding.
+query CrowdyStudioLiveModding($appId: BigInt!, $action: String!) {
+  crowdyStudioLiveModding(appId: $appId, action: $action)
+}
 
 query CrowdyStudioProviderConsent($appId: BigInt!) {
   crowdyStudioProviderConsent(appId: $appId) {
@@ -4863,6 +4888,10 @@ query CrowdyStudioModelUsage($appId: BigInt!, $limit: Int) {
     }
   }
 })gql";
+inline constexpr std::string_view kCrowdyStudioLiveModdingIsolatedDocument = R"gql(query CrowdyStudioLiveModding($appId: BigInt!, $action: String!) {
+  crowdyStudioLiveModding(appId: $appId, action: $action)
+})gql";
+inline constexpr std::string_view kCrowdyStudioLiveModdingOperationName = "CrowdyStudioLiveModding";
 inline constexpr std::string_view kCrowdyStudioProviderConsentIsolatedDocument = R"gql(query CrowdyStudioProviderConsent($appId: BigInt!) {
   crowdyStudioProviderConsent(appId: $appId) {
     appId
@@ -4908,6 +4937,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "CrowdyStudioAgentEffectivePolicy") return kCrowdyStudioAgentEffectivePolicyIsolatedDocument;
   if (operationName == "CrowdyStudioAgentUsage") return kCrowdyStudioAgentUsageIsolatedDocument;
   if (operationName == "CrowdyStudioAgentSetPolicy") return kCrowdyStudioAgentSetPolicyIsolatedDocument;
+  if (operationName == "CrowdyStudioLiveModding") return kCrowdyStudioLiveModdingIsolatedDocument;
   if (operationName == "CrowdyStudioProviderConsent") return kCrowdyStudioProviderConsentIsolatedDocument;
   if (operationName == "CrowdyStudioSetProviderConsent") return kCrowdyStudioSetProviderConsentIsolatedDocument;
   if (operationName == "CrowdyStudioModelUsage") return kCrowdyStudioModelUsageIsolatedDocument;
@@ -5086,6 +5116,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 }
 
 mutation ExecBuild($input: ExecBuildInput!) {
@@ -5112,6 +5144,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 }
 
 fragment ExecModListingFields on ExecModListing {
@@ -5151,8 +5185,8 @@ query ExecModStarter($appId: BigInt!) {
   }
 }
 
-mutation ExecModBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
-  execModBuild(appId: $appId, crate: $crate) {
+mutation ExecModBuild($appId: BigInt!, $crate: ExecBuildCrateInput!, $studio: ExecStudioSourceInput) {
+  execModBuild(appId: $appId, crate: $crate, studio: $studio) {
     ...ExecBuildFields
   }
 }
@@ -5303,6 +5337,8 @@ fragment ExecModClientFields on ExecModClient {
   capabilityHash
   tickIntervalMs
   updatedAt
+  studioProjectId
+  studioRevision
 }
 
 fragment ExecGridClientModFields on ExecGridClientMod {
@@ -5323,8 +5359,20 @@ fragment ExecGridClientModFields on ExecGridClientMod {
   updatedAt
 }
 
-mutation ExecModClientBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
-  execModClientBuild(appId: $appId, crate: $crate) {
+query ExecModClientStarter($appId: BigInt!) {
+  execModClientStarter(appId: $appId) {
+    crate
+    nodeType
+    description
+    files {
+      path
+      content
+    }
+  }
+}
+
+mutation ExecModClientBuild($appId: BigInt!, $crate: ExecBuildCrateInput!, $studio: ExecStudioSourceInput) {
+  execModClientBuild(appId: $appId, crate: $crate, studio: $studio) {
     ...ExecBuildFields
   }
 }
@@ -5587,6 +5635,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecBuildOperationName = "ExecBuild";
 inline constexpr std::string_view kExecBuildStatusIsolatedDocument = R"gql(query ExecBuildStatus($appId: BigInt!, $buildId: String!) {
@@ -5612,6 +5662,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecBuildStatusOperationName = "ExecBuildStatus";
 inline constexpr std::string_view kExecModStarterIsolatedDocument = R"gql(query ExecModStarter($appId: BigInt!) {
@@ -5626,8 +5678,8 @@ inline constexpr std::string_view kExecModStarterIsolatedDocument = R"gql(query 
   }
 })gql";
 inline constexpr std::string_view kExecModStarterOperationName = "ExecModStarter";
-inline constexpr std::string_view kExecModBuildIsolatedDocument = R"gql(mutation ExecModBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
-  execModBuild(appId: $appId, crate: $crate) {
+inline constexpr std::string_view kExecModBuildIsolatedDocument = R"gql(mutation ExecModBuild($appId: BigInt!, $crate: ExecBuildCrateInput!, $studio: ExecStudioSourceInput) {
+  execModBuild(appId: $appId, crate: $crate, studio: $studio) {
     ...ExecBuildFields
   }
 }
@@ -5649,6 +5701,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModBuildOperationName = "ExecModBuild";
 inline constexpr std::string_view kExecModBuildStatusIsolatedDocument = R"gql(query ExecModBuildStatus($appId: BigInt!, $buildId: String!) {
@@ -5674,6 +5728,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModBuildStatusOperationName = "ExecModBuildStatus";
 inline constexpr std::string_view kExecModDeployIsolatedDocument = R"gql(mutation ExecModDeploy($appId: BigInt!, $gridId: BigInt!, $name: String!, $buildId: String!) {
@@ -5694,6 +5750,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModDeployOperationName = "ExecModDeploy";
 inline constexpr std::string_view kExecModSetEnabledIsolatedDocument = R"gql(mutation ExecModSetEnabled($appId: BigInt!, $gridId: BigInt!, $name: String!, $enabled: Boolean!) {
@@ -5719,6 +5777,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModSetEnabledOperationName = "ExecModSetEnabled";
 inline constexpr std::string_view kExecModDeleteIsolatedDocument = R"gql(mutation ExecModDelete($appId: BigInt!, $gridId: BigInt!, $name: String!) {
@@ -5743,6 +5803,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModsOperationName = "ExecMods";
 inline constexpr std::string_view kExecMyModsIsolatedDocument = R"gql(query ExecMyMods($appId: BigInt!) {
@@ -5763,6 +5825,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecMyModsOperationName = "ExecMyMods";
 inline constexpr std::string_view kExecModLogsIsolatedDocument = R"gql(query ExecModLogs($appId: BigInt!, $gridId: BigInt!, $name: String!, $maxLevel: Int, $before: String, $limit: Int) {
@@ -5864,6 +5928,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModInstallOperationName = "ExecModInstall";
 inline constexpr std::string_view kExecAppModsIsolatedDocument = R"gql(query ExecAppMods($appId: BigInt!, $gridId: BigInt, $ownerId: BigInt) {
@@ -5884,6 +5950,8 @@ fragment ExecModFields on ExecMod {
   blocked
   running
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecAppModsOperationName = "ExecAppMods";
 inline constexpr std::string_view kExecModSwitchesIsolatedDocument = R"gql(query ExecModSwitches($appId: BigInt!) {
@@ -5920,8 +5988,20 @@ fragment ExecModSwitchFields on ExecModSwitch {
   createdAt
 })gql";
 inline constexpr std::string_view kExecModSetSwitchOperationName = "ExecModSetSwitch";
-inline constexpr std::string_view kExecModClientBuildIsolatedDocument = R"gql(mutation ExecModClientBuild($appId: BigInt!, $crate: ExecBuildCrateInput!) {
-  execModClientBuild(appId: $appId, crate: $crate) {
+inline constexpr std::string_view kExecModClientStarterIsolatedDocument = R"gql(query ExecModClientStarter($appId: BigInt!) {
+  execModClientStarter(appId: $appId) {
+    crate
+    nodeType
+    description
+    files {
+      path
+      content
+    }
+  }
+})gql";
+inline constexpr std::string_view kExecModClientStarterOperationName = "ExecModClientStarter";
+inline constexpr std::string_view kExecModClientBuildIsolatedDocument = R"gql(mutation ExecModClientBuild($appId: BigInt!, $crate: ExecBuildCrateInput!, $studio: ExecStudioSourceInput) {
+  execModClientBuild(appId: $appId, crate: $crate, studio: $studio) {
     ...ExecBuildFields
   }
 }
@@ -5943,6 +6023,8 @@ fragment ExecBuildFields on ExecBuild {
     capabilityHash
     tickIntervalMs
   }
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModClientBuildOperationName = "ExecModClientBuild";
 inline constexpr std::string_view kExecModClientDeployIsolatedDocument = R"gql(mutation ExecModClientDeploy($appId: BigInt!, $gridId: BigInt!, $name: String!, $buildId: String!) {
@@ -5968,6 +6050,8 @@ fragment ExecModClientFields on ExecModClient {
   capabilityHash
   tickIntervalMs
   updatedAt
+  studioProjectId
+  studioRevision
 })gql";
 inline constexpr std::string_view kExecModClientDeployOperationName = "ExecModClientDeploy";
 inline constexpr std::string_view kExecModClientDeleteIsolatedDocument = R"gql(mutation ExecModClientDelete($appId: BigInt!, $gridId: BigInt!, $name: String!) {
@@ -6072,6 +6156,7 @@ inline constexpr std::string_view documentFor(std::string_view operationName) {
   if (operationName == "ExecAppMods") return kExecAppModsIsolatedDocument;
   if (operationName == "ExecModSwitches") return kExecModSwitchesIsolatedDocument;
   if (operationName == "ExecModSetSwitch") return kExecModSetSwitchIsolatedDocument;
+  if (operationName == "ExecModClientStarter") return kExecModClientStarterIsolatedDocument;
   if (operationName == "ExecModClientBuild") return kExecModClientBuildIsolatedDocument;
   if (operationName == "ExecModClientDeploy") return kExecModClientDeployIsolatedDocument;
   if (operationName == "ExecModClientDelete") return kExecModClientDeleteIsolatedDocument;

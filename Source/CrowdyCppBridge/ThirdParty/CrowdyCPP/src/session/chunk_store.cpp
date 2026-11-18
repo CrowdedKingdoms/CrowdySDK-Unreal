@@ -156,27 +156,57 @@ std::int64_t isoMillis(const graphql::Json& value) {
   return iso.empty() ? 0 : core::parseIso8601Millis(iso.data(), iso.size());
 }
 
-StoredChunk storedChunkOf(const graphql::Json& chunkJson) {
+/// What remains of one reply's ChunkReadLimits as its chunks are read.
+struct ReadBudget {
+  explicit ReadBudget(const ChunkReadLimits& l) : limits(l), statesLeft(l.maxStatesPerReply) {}
+  const ChunkReadLimits& limits;
+  std::size_t statesLeft;
+};
+
+/// The longest base64 text that decodes to at most `bytes` bytes.
+constexpr std::size_t base64Length(std::size_t bytes) { return (bytes + 2) / 3 * 4; }
+
+/// A voxel state's bytes, unless it is not base64 or is larger than `maxBytes` (empty
+/// then: the type still applies). A longer text is not decoded at all.
+void readState(std::string_view text, std::size_t maxBytes, std::vector<std::uint8_t>& out) {
+  if (text.size() > base64Length(maxBytes)) return;
+  if (auto state = core::base64Decode(text)) {
+    if (state->size() <= maxBytes) out.assign(state->begin(), state->end());
+  }
+}
+
+StoredChunk storedChunkOf(const graphql::Json& chunkJson, ReadBudget& budget) {
   StoredChunk chunk;
   chunk.coord = {chunkJson["coordinates"]["x"].asBigInt(), chunkJson["coordinates"]["y"].asBigInt(),
                  chunkJson["coordinates"]["z"].asBigInt()};
-  auto voxels = core::base64Decode(chunkJson["voxels"].asStringView());
-  if (voxels) chunk.voxels.assign(voxels->begin(), voxels->end());
+  // A grid is kChunkVolume bytes; a longer text is not decoded, another size not kept.
+  const std::string_view grid = chunkJson["voxels"].asStringView();
+  if (grid.size() <= base64Length(static_cast<std::size_t>(kChunkVolume))) {
+    auto voxels = core::base64Decode(grid);
+    if (voxels && voxels->size() == static_cast<std::size_t>(kChunkVolume)) {
+      chunk.voxels.assign(voxels->begin(), voxels->end());
+    }
+  }
+  std::size_t kept = 0;
   chunkJson["voxelStates"].forEach([&](graphql::Json entry) {
+    if (kept >= budget.limits.maxStatesPerChunk || budget.statesLeft == 0) {
+      chunk.voxelStatesTruncated = true;
+      return;
+    }
+    ++kept;
+    --budget.statesLeft;
     StoredVoxelState voxel;
     voxel.x = static_cast<int>(entry["voxelCoord"]["x"].asInt64(-1));
     voxel.y = static_cast<int>(entry["voxelCoord"]["y"].asInt64(-1));
     voxel.z = static_cast<int>(entry["voxelCoord"]["z"].asInt64(-1));
     voxel.voxelType = static_cast<std::int16_t>(entry["voxelType"].asInt64());
-    // A state that is not base64 is dropped; the type still applies.
-    if (auto state = core::base64Decode(entry["state"].asStringView())) {
-      voxel.state.assign(state->begin(), state->end());
-    }
+    readState(entry["state"].asStringView(), budget.limits.maxStateBytes, voxel.state);
     voxel.updatedAtMs = isoMillis(entry["updatedAt"]);
     chunk.voxelStates.push_back(std::move(voxel));
   });
-  chunk.voxelStatesTruncated = chunkJson["voxelStatesTruncated"].asBool();
+  if (chunkJson["voxelStatesTruncated"].asBool()) chunk.voxelStatesTruncated = true;
   chunk.updatedAtMs = isoMillis(chunkJson["updatedAt"]);
+  chunk.voxelsUpdatedAtMs = isoMillis(chunkJson["voxelsUpdatedAt"]);
   return chunk;
 }
 
@@ -196,32 +226,36 @@ PageEnd pageEnd(const graphql::Json& page, std::int64_t rows, std::int64_t skip)
 }
 
 /// One page of getChunksByDistance: its chunks appended to `out`.
-PageEnd chunkPage(const graphql::Json& page, std::int64_t skip, std::vector<StoredChunk>& out) {
+PageEnd chunkPage(const graphql::Json& page, std::int64_t skip, std::vector<StoredChunk>& out,
+                  ReadBudget& budget) {
   std::int64_t rows = 0;
   page["chunks"].forEach([&](graphql::Json chunkJson) {
     ++rows;
-    out.push_back(storedChunkOf(chunkJson));
+    out.push_back(storedChunkOf(chunkJson, budget));
   });
   return pageEnd(page, rows, skip);
 }
 
 /// One page of listVoxelUpdatesByDistance (with createdAt): its groups appended to `out`.
-PageEnd editsPage(const graphql::Json& page, std::int64_t skip, std::vector<StoredChunkEdits>& out) {
+PageEnd editsPage(const graphql::Json& page, std::int64_t skip, std::vector<StoredChunkEdits>& out,
+                  ReadBudget& budget) {
   std::int64_t rows = 0;
   page["chunks"].forEach([&](graphql::Json group) {
     ++rows;
     StoredChunkEdits edits;
     edits.coord = {group["coordinates"]["x"].asBigInt(), group["coordinates"]["y"].asBigInt(),
                    group["coordinates"]["z"].asBigInt()};
+    std::size_t kept = 0;
     group["voxels"].forEach([&](graphql::Json v) {
+      if (kept >= budget.limits.maxStatesPerChunk || budget.statesLeft == 0) return;
+      ++kept;
+      --budget.statesLeft;
       StoredVoxelState edit;
       edit.x = static_cast<int>(v["location"]["x"].asInt64(-1));
       edit.y = static_cast<int>(v["location"]["y"].asInt64(-1));
       edit.z = static_cast<int>(v["location"]["z"].asInt64(-1));
       edit.voxelType = static_cast<std::int16_t>(v["voxelType"].asInt64());
-      if (auto state = core::base64Decode(v["state"].asStringView())) {
-        edit.state.assign(state->begin(), state->end());
-      }
+      readState(v["state"].asStringView(), budget.limits.maxStateBytes, edit.state);
       edit.updatedAtMs = isoMillis(v["createdAt"]);
       edits.edits.push_back(std::move(edit));
     });
@@ -251,8 +285,9 @@ graphql::Json rootField(const graphql::Json& data) {
 /// IChunkSource over the Game API's chunks (and voxels) surface.
 class GameApiChunkSource final : public IChunkSource {
  public:
-  GameApiChunkSource(domains::ChunksAPI& chunks, domains::VoxelsAPI* voxels)
-      : chunks_(chunks), voxels_(voxels) {}
+  GameApiChunkSource(domains::ChunksAPI& chunks, domains::VoxelsAPI* voxels,
+                     ChunkReadLimits limits)
+      : chunks_(chunks), voxels_(voxels), limits_(limits) {}
 
   std::vector<StoredChunk> chunksAround(const std::string& appId, const ChunkCoord& center,
                                         int distance) override {
@@ -267,8 +302,9 @@ class GameApiChunkSource final : public IChunkSource {
                                        const ChunkCoord& high, const std::string& sinceIso) override {
     std::vector<StoredChunk> out;
     for (PageEnd at{true, 0}; at.more;) {
+      ReadBudget budget(limits_);
       at = chunkPage(chunks_.region(appId, boxRegion(low, high, at.nextSkip, sinceIso)),
-                     at.nextSkip, out);
+                     at.nextSkip, out, budget);
     }
     return out;
   }
@@ -279,9 +315,10 @@ class GameApiChunkSource final : public IChunkSource {
     std::vector<StoredChunkEdits> out;
     if (!voxels_) return out;
     for (PageEnd at{true, 0}; at.more;) {
+      ReadBudget budget(limits_);
       at = editsPage(
           voxels_->listInRegionCellsTimed(appId, boxRegion(low, high, at.nextSkip, sinceIso)),
-          at.nextSkip, out);
+          at.nextSkip, out, budget);
     }
     return out;
   }
@@ -289,7 +326,8 @@ class GameApiChunkSource final : public IChunkSource {
   std::optional<StoredChunk> chunkAt(const std::string& appId, const ChunkCoord& coord) override {
     graphql::Json chunk = chunks_.get(appId, domains::ChunkRef{coord.x, coord.y, coord.z});
     if (!chunk.isObject()) return std::nullopt;
-    return storedChunkOf(chunk);
+    ReadBudget budget(limits_);
+    return storedChunkOf(chunk, budget);
   }
 
   graphql::GraphQLOutcome writeChunk(const std::string& appId, const ChunkCoord& coord,
@@ -304,6 +342,7 @@ class GameApiChunkSource final : public IChunkSource {
  private:
   domains::ChunksAPI& chunks_;
   domains::VoxelsAPI* voxels_;
+  ChunkReadLimits limits_;
 };
 
 bool isWriteBackRefusalCode(std::string_view code) {
@@ -357,8 +396,9 @@ bool sameBytes(Bytes a, const std::vector<std::uint8_t>& b) {
 }  // namespace
 
 std::unique_ptr<IChunkSource> makeGameApiChunkSource(domains::ChunksAPI& chunks,
-                                                     domains::VoxelsAPI* voxels) {
-  return std::make_unique<GameApiChunkSource>(chunks, voxels);
+                                                     domains::VoxelsAPI* voxels,
+                                                     ChunkReadLimits limits) {
+  return std::make_unique<GameApiChunkSource>(chunks, voxels, limits);
 }
 
 std::vector<StoredChunk> IChunkSource::chunksInBox(const std::string& appId, const ChunkCoord& low,
@@ -413,6 +453,7 @@ void ChunkData::reset() {
   hydratedAtMs = 0;
   voxelStatesTruncated = false;
   storedAtMs = 0;
+  rowAtMs = 0;
   std::vector<std::uint8_t>().swap(grid_);
   uniform_ = 0;
   states_.clear();
@@ -586,7 +627,7 @@ ChunkStore::ChunkStore(replication::Connection& conn, domains::ChunksAPI* chunks
                        std::string appId, Options options)
     : conn_(&conn), appId_(std::move(appId)), options_(std::move(options)) {
   if (chunksApi) {
-    ownedSource_ = makeGameApiChunkSource(*chunksApi);
+    ownedSource_ = makeGameApiChunkSource(*chunksApi, nullptr, options_.readLimits);
     source_ = ownedSource_.get();
   }
   init();
@@ -827,6 +868,10 @@ void ChunkStore::applyStored(const StoredChunk& stored, std::int64_t nowMs,
   PendingByVoxel* pending = pendingChunk == pending_.end() ? nullptr : &pendingChunk->second;
   // Every server time is held to Options::maxFutureSkewMs past this machine's clock.
   const std::int64_t rowMs = clampTime(stored.updatedAtMs);
+  // The time of every voxel the copy has no entry for: its voxels write (ck-api v2.70.0),
+  // or for a source that does not say, its row's.
+  const std::int64_t voxelsMs =
+      stored.voxelsUpdatedAtMs ? clampTime(*stored.voxelsUpdatedAtMs) : rowMs;
   auto keyOf = [](const StoredVoxelState& e) {
     return voxelKey(static_cast<std::int16_t>(e.x), static_cast<std::int16_t>(e.y),
                     static_cast<std::int16_t>(e.z));
@@ -835,7 +880,7 @@ void ChunkStore::applyStored(const StoredChunk& stored, std::int64_t nowMs,
     return fitsInt16(e.x) && fitsInt16(e.y) && fitsInt16(e.z);
   };
 
-  // The copy's time for each voxel: its entry's, else the row's (0: the copy has none).
+  // The copy's time for each voxel: its entry's, else the voxels write (0: the copy has none).
   std::vector<std::pair<std::uint64_t, std::int64_t>> entryTimes;
   const bool merging = !c.arrivals_.empty() || pending != nullptr;
   if (merging) {
@@ -843,7 +888,7 @@ void ChunkStore::applyStored(const StoredChunk& stored, std::int64_t nowMs,
     for (const StoredVoxelState& e : stored.voxelStates) {
       if (fits(e)) {
         const std::int64_t entryMs = clampTime(e.updatedAtMs);
-        entryTimes.emplace_back(keyOf(e), entryMs > 0 ? entryMs : rowMs);
+        entryTimes.emplace_back(keyOf(e), entryMs > 0 ? entryMs : voxelsMs);
       }
     }
     std::sort(entryTimes.begin(), entryTimes.end());
@@ -855,7 +900,7 @@ void ChunkStore::applyStored(const StoredChunk& stored, std::int64_t nowMs,
                                  return k < e.first;
                                });
     if (it != entryTimes.begin() && std::prev(it)->first == key) return std::prev(it)->second;
-    return rowMs;
+    return voxelsMs;
   };
   // Whether the value held at a voxel is newer than the copy's.
   auto heldIsNewer = [&](std::uint64_t key, std::int64_t heldMs, std::uint64_t heldArrival) {
@@ -891,7 +936,12 @@ void ChunkStore::applyStored(const StoredChunk& stored, std::int64_t nowMs,
   c.storedOnServer = true;
   c.hydratedAtMs = nowMs > 0 ? nowMs : 1;
   c.voxelStatesTruncated = stored.voxelStatesTruncated;
-  if (rowMs > 0) c.storedAtMs = rowMs;
+  if (stored.voxelsUpdatedAtMs) {
+    c.storedAtMs = voxelsMs;
+  } else if (rowMs > 0) {
+    c.storedAtMs = rowMs;
+  }
+  if (rowMs > 0) c.rowAtMs = rowMs;
   // The stored copy replaces the chunk's states and overlay (a world.set_chunk drops the
   // older edits); a copy without a grid keeps the one cached.
   c.states_.clear();
@@ -1492,7 +1542,7 @@ void ChunkStore::onAsyncReply(std::uint64_t id, ChunkSourceReply reply) {
     out.kind = graphql::GraphQLErrorKind::Network;
     out.errorMessage = std::move(reply.body);
   } else {
-    out = graphql::interpretResponse(reply.httpStatus, reply.body);
+    out = graphql::interpretResponse(reply.httpStatus, reply.body, options_.maxReplyBytes);
   }
   if (r.job.kind == IoJob::Kind::Write) {
     r.outcome = std::move(out);
@@ -1506,9 +1556,10 @@ void ChunkStore::onAsyncReply(std::uint64_t id, ChunkSourceReply reply) {
     return;
   }
   const graphql::Json root = rootField(out.data);
+  ReadBudget budget(options_.readLimits);
   switch (r.job.kind) {
     case IoJob::Kind::LoadBox: {
-      const PageEnd end = chunkPage(root, call.skip, r.chunks);
+      const PageEnd end = chunkPage(root, call.skip, r.chunks, budget);
       if (end.more) {
         call.skip = end.nextSkip;
         sendAsync(id, call);
@@ -1517,11 +1568,12 @@ void ChunkStore::onAsyncReply(std::uint64_t id, ChunkSourceReply reply) {
       break;
     }
     case IoJob::Kind::LoadChunk:
-      if (root.isObject()) r.chunk = storedChunkOf(root);
+      if (root.isObject()) r.chunk = storedChunkOf(root, budget);
       break;
     case IoJob::Kind::CatchUp: {
       const PageEnd end =
-          call.edits ? editsPage(root, call.skip, r.edits) : chunkPage(root, call.skip, r.chunks);
+          call.edits ? editsPage(root, call.skip, r.edits, budget)
+                     : chunkPage(root, call.skip, r.chunks, budget);
       if (end.more) {
         call.skip = end.nextSkip;
         sendAsync(id, call);
@@ -1607,7 +1659,7 @@ bool ChunkStore::adopt(IoResult& result, std::int64_t nowMs,
       if (!result.failed && result.chunk && !reload.evicted) {
         const ChunkData* cached = find(coord);
         const std::int64_t rowMs = clampTime(result.chunk->updatedAtMs);
-        if (cached && cached->hydratedAtMs > 0 && rowMs > 0 && cached->storedAtMs > rowMs) {
+        if (cached && cached->hydratedAtMs > 0 && rowMs > 0 && cached->rowAtMs > rowMs) {
           // A newer copy came first (a catch-up's): the store already holds this one's news.
           applied = !cached->dirty;
         } else if (!(cached && cached->dirty)) {
@@ -1689,7 +1741,7 @@ bool ChunkStore::adopt(IoResult& result, std::int64_t nowMs,
         const ChunkData* c = find(stored.coord);
         if (!c || c->dirty) continue;
         const std::int64_t rowMs = clampTime(stored.updatedAtMs);
-        if (c->hydratedAtMs > 0 && rowMs > 0 && c->storedAtMs >= rowMs) continue;
+        if (c->hydratedAtMs > 0 && rowMs > 0 && c->rowAtMs >= rowMs) continue;
         applyStored(stored, nowMs, readSeq);
       }
       return true;
