@@ -55,7 +55,7 @@ public:
 	/** Where Get Players Online Definition loads it from. */
 	static const TCHAR* const PlayersOnlineDefinitionPath;
 
-	/** The Leader type's definition, built in code: one instance, members who join and leave, and a timer that removes a Leader who left the world. Null only if it fails to bake. */
+	/** The Leader type's definition, built in code: one instance, members who Enter with their actor id and Exit, and a timer that removes a Leader who left the world. Null only if it fails to bake. */
 	static UCrowdyServerObjectDefinition* GetLeaderDefinition();
 
 	/** The signed-in player's user id, the Instance Id of their own Owner Only Server Object. Empty when nobody is signed in. */

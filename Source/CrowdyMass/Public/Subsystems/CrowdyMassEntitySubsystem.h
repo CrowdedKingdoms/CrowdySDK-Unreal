@@ -1338,6 +1338,8 @@ public:
 	// Defined in the .cpp so this header keeps its forward declaration of the subsystem rather than including it.
 	void SetEntitySubsystemForTest(UCrowdyEntitySubsystem* InEntities);
 	void HandleEntityOwnershipChangedForTest(const FGuid& NetID) { HandleEntityOwnershipChanged(nullptr, NetID, FGuid(), FGuid()); }
+	void HandleLocalPlayerRekeyedForTest(const FGuid& PreviousID, const FGuid& NewID) { HandleLocalPlayerRekeyed(PreviousID, NewID); }
+	void ApplyOwnershipGrantForTest(const FCrowdyEventParams& Params, const FCrowdyMassViewStateContext& Context) { ApplyOwnershipGrant(Params, Context); }
 
 	// Test seam: forces the avatar cache capacity, so the reclaim path stays exercised. In a real world
 	// the capacity follows the tracker and the cache cannot reach it, which is the point of the change
@@ -2062,7 +2064,15 @@ private:
 
 	// A row keeps a copy of its entity's owner and role, for processors that read it without the registry.
 	UFUNCTION()
-	void HandleEntityOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& PreviousOwnerID);
+	void HandleEntityOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewWriterID, const FGuid& PreviousWriterID);
+
+	// The local player's actor id changed: every row it owned names the new one, re-stamped chunk by chunk.
+	void HandleLocalPlayerRekeyed(const FGuid& PreviousID, const FGuid& NewID);
+	FDelegateHandle LocalPlayerRekeyedHandle;
+
+	// An entity component's GrantOwnership arriving for an entity held here as a row: re-points the registry record,
+	// as the grant's own body does on a client holding the entity as an actor.
+	void ApplyOwnershipGrant(const FCrowdyEventParams& Params, const FCrowdyMassViewStateContext& Context);
 
 	// Enrolls Avatar as this entity's participant in the SDK entity registry. Called when an avatar is
 	// minted, and only then.

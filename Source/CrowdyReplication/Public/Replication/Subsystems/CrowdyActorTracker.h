@@ -220,6 +220,10 @@ public:
 	// Whether an update has arrived under the id the entity sends under now. The server delivers a targeted message to whoever sent that id, so until one has, a message to it may reach nobody.
 	bool HasHeardCurrentWireId(const FGuid& UUID) const;
 
+	// A re-key moved an entity this client still owns to its new id: a wire id kept for it since it changed hands
+	// follows the new owner, with no change of owner announced.
+	void RepointWireId(const FGuid& NetID, const FGuid& NewWriterID);
+
 	// Whether Update is a Game Kit starter's actor rather than one of the SDK's own; the type id is read first, as it costs nothing.
 	static bool IsKitActorUpdate(const FCrowdyActorUpdate& Update);
 
@@ -271,7 +275,8 @@ public:
 	void DropForgedKitUpdatesForTest() { DropForgedKitUpdates(); }
 	void CheckTimeoutsForTest() { CheckTimeouts(); }
 	void HandleActorUpdateDeliveryForTest(const FCrowdyDelivery& Delivery) { HandleActorUpdateDelivery(Delivery); }
-	void HandleEntityOwnerChangedForTest(const FGuid& NetID, const FGuid& NewOwnerID) { HandleEntityOwnerChanged(nullptr, NetID, NewOwnerID, FGuid()); }
+	void HandleEntityOwnerChangedForTest(const FGuid& NetID, const FGuid& NewWriterID) { HandleEntityOwnerChanged(nullptr, NetID, NewWriterID, FGuid()); }
+	void SetLocalUUIDForTest(const FString& UUID) { SetLocalUUID(UUID); }
 	void HandleEntityUnregisteredForTest(const FGuid& NetID) { HandleEntityUnregistered(NetID); }
 	void BackdateHeardForTest(const FGuid& UUID, const double SecondsAgo)
 	{
@@ -391,7 +396,7 @@ private:
 	bool IsRetiredWireId(const FGuid& NetID, const FCrowdyActorId& WireId) const;
 
 	UFUNCTION()
-	void HandleEntityOwnerChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& PreviousOwnerID);
+	void HandleEntityOwnerChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewWriterID, const FGuid& PreviousWriterID);
 
 	UFUNCTION()
 	void HandleEntityUnregistered(const FGuid& NetID);
@@ -423,6 +428,10 @@ private:
 
 	//State
 	FGuid LocalUUID;
+
+	// The ids this client sent under before LocalUUID, newest last, which its own updates may still carry.
+	static constexpr int32 MaxRetiredLocalUUIDs = 4;
+	TArray<FGuid, TInlineAllocator<MaxRetiredLocalUUIDs>> RetiredLocalUUIDs;
 	bool bOwnerTrackingEnabled = true;
 	bool bBroadcastUpdatesToGameThread = false;
 	

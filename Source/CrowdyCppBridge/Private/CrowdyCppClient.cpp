@@ -82,6 +82,9 @@ namespace
 		// A sign-in carries no bearer, so each send of it installs none instead of the plane's token.
 		bool bAnonymous = false;
 
+		// A call made under its own bearer sends that one, not the plane's, without installing it as the plane's.
+		TOptional<FString> Bearer;
+
 		// The bearer a token call was issued under. A later send under a different bearer would act for another
 		// account, so it delivers Refusal, the answer that parked the call, instead.
 		TOptional<FString> IssuedBearer;
@@ -663,6 +666,26 @@ struct FCrowdyCppClient::FImpl
 	{
 		return UseBearer(Plane == ECrowdyCppTokenPlane::Management
 			? EBearerChoice::Management : EBearerChoice::Game);
+	}
+
+	// The client to send Retry on with its bearer installed. One carried by the call is set on the client for this send
+	// only, since the next request installs its own, and the stored tokens and the subscription socket are untouched.
+	crowdy::CrowdyClient* UseFor(const FBusyRetry& Retry)
+	{
+		if (Retry.bAnonymous)
+		{
+			return UseBearer(EBearerChoice::None);
+		}
+		if (!Retry.Bearer.IsSet())
+		{
+			return Use(Retry.Plane);
+		}
+		if (!IsUsable())
+		{
+			return nullptr;
+		}
+		Client->setToken(std::string(TCHAR_TO_UTF8(*Retry.Bearer.GetValue())));
+		return Client.Get();
 	}
 
 	// Keep the subscription bearer in step with the game token. Installing an unchanged token is a no-op upstream,
@@ -1753,7 +1776,7 @@ bool FCrowdyCppClient::FImpl::SendRetryable(const TSharedRef<FBusyRetry>& Retry)
 		return false;
 	}
 
-	crowdy::CrowdyClient* Raw = Retry->bAnonymous ? UseBearer(EBearerChoice::None) : Use(Retry->Plane);
+	crowdy::CrowdyClient* Raw = UseFor(*Retry);
 	if (!Raw)
 	{
 		Retry->Deliver(UnsentOutcome("CrowdyCPP client is not available"));
@@ -2433,9 +2456,15 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOpMsgpack(ECrowdyCppApiDomain Domai
 	return RunOpAs(Domain, OperationName, Variables, MoveTemp(OnDone), Plane, true);
 }
 
+FCrowdyCppRequestHandle FCrowdyCppClient::RunOpWithBearer(ECrowdyCppApiDomain Domain, const FString& OperationName,
+	const TSharedPtr<FJsonObject>& Variables, const FString& Bearer, TFunction<void(FCrowdyCppJsonResult)> OnDone)
+{
+	return RunOpAs(Domain, OperationName, Variables, MoveTemp(OnDone), TOptional<ECrowdyCppTokenPlane>(), false, Bearer);
+}
+
 FCrowdyCppRequestHandle FCrowdyCppClient::RunOpAs(ECrowdyCppApiDomain Domain, const FString& OperationName,
 	const TSharedPtr<FJsonObject>& Variables, TFunction<void(FCrowdyCppJsonResult)> OnDone,
-	TOptional<ECrowdyCppTokenPlane> Plane, bool bMsgpack)
+	TOptional<ECrowdyCppTokenPlane> Plane, bool bMsgpack, TOptional<FString> Bearer)
 {
 	// Deliver exactly once across every path: the async completion, the catch below, each pre-flight rejection, and
 	// a cancellation. The async transport delivers its callback from Poll() on the game thread and every other path
@@ -2499,6 +2528,7 @@ FCrowdyCppRequestHandle FCrowdyCppClient::RunOpAs(ECrowdyCppApiDomain Domain, co
 
 	const TSharedRef<FBusyRetry> Retry =
 		MakeBusyRetry(Issued, Chosen.GetValue(), RetryKindFor(Document));
+	Retry->Bearer = MoveTemp(Bearer);
 	Retry->Send = [Document, JVars, OperationNameStr](crowdy::CrowdyClient& Client, crowdy::graphql::GraphQLCallback Cb)
 	{
 		Client.graphqlClient().requestAsync(Document, JVars, OperationNameStr, std::move(Cb));

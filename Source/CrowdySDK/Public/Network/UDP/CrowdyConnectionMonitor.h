@@ -53,6 +53,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Connection|Status")
 	ECrowdyReconnectState GetReconnectState() const { return ReconnectState; }
 
+	// Stops a reconnect ladder still running, as a sign-in or sign-out does: it would reconnect as the player who left.
+	void StopReconnecting();
+
 private:
 	
 	UPROPERTY()

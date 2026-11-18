@@ -37,19 +37,19 @@ namespace
 	{
 		FCrowdyEntityRecord Rec;
 		Rec.NetID = EntityId;
-		Rec.OwnerID = FGuid::NewGuid();
+		Rec.WriterID = FGuid::NewGuid();
 		Rec.Role = ECrowdyRole::RemoteProxy;
 		Rec.Participant = Actor;
 		Entities->RegisterEntity(Rec);
 	}
 
-	// Registers an actor as an entity the LOCAL client owns, so IsLocallyOwned(EntityId) is true (its OwnerID
+	// Registers an actor as an entity the LOCAL client owns, so IsLocallyOwned(EntityId) is true (its WriterID
 	// is the entity subsystem's local player id). Used by the host-precedence apply test.
 	void RegisterOwnedEntity(UCrowdyEntitySubsystem* Entities, const FGuid& EntityId, AActor* Actor)
 	{
 		FCrowdyEntityRecord Rec;
 		Rec.NetID = EntityId;
-		Rec.OwnerID = Entities->GetLocalPlayerID();
+		Rec.WriterID = Entities->GetLocalPlayerID();
 		Rec.Role = ECrowdyRole::Owner;
 		Rec.Participant = Actor;
 		Entities->RegisterEntity(Rec);
@@ -515,6 +515,69 @@ bool FCrowdyStateDeferredApplyTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("state delta applied after registration"), Target->RepInt, 123);
 	TestEqual(TEXT("rpc still pending (its entity stays unregistered)"), Router->NumDeferredForTest(), 1);
 
+	return true;
+}
+
+// After a sign-in replaces this client's actor id, what it sent under the old id can still come back: that echo is its
+// own and is dropped, never applied as a peer's, and nothing it sent waits in the queue.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateOldIdEchoDroppedTest,
+	"CrowdySDK.State.AnOldIdEchoAfterARekeyIsDropped", CrowdyStateApplyTestFlags)
+bool FCrowdyStateOldIdEchoDroppedTest::RunTest(const FString& Parameters)
+{
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	const FCrowdyRepLayout* Layout = Registry ? Registry->FindRepLayout(ACrowdyStateApplyTestActor::StaticClass()) : nullptr;
+	const int32 RepIntIndex = Layout ? IndexOfPropertyName(*Layout, TEXT("RepInt")) : INDEX_NONE;
+	if (!TestTrue(TEXT("the apply actor has RepInt in its layout"), RepIntIndex != INDEX_NONE))
+	{
+		return false;
+	}
+
+	UCrowdyGameSession* Session = MakeGameSession(FGuid());
+	UCrowdyEntitySubsystem* Entities = NewObject<UCrowdyEntitySubsystem>(GetTransientPackage());
+	Entities->SetGameSessionForTest(Session);
+	Entities->BindGameSessionForTest();
+	UCrowdyEventRouter* Router = MakeRouter(Registry, Entities);
+	const FGuid Old = FGuid::NewGuid();
+	Session->SetUUID(Old.ToString(EGuidFormats::Digits));
+	Session->SetUUID(FGuid::NewGuid().ToString(EGuidFormats::Digits));
+
+	ACrowdyStateApplyTestActor* Source = NewObject<ACrowdyStateApplyTestActor>();
+	Source->RepInt = 123;
+	TBitArray<> Dirty;
+	Dirty.Init(false, Layout->Properties.Num());
+	Dirty[RepIntIndex] = true;
+	TArray<uint8> Blob;
+	FCrowdyStateCodec::Encode(*Layout, Source, Dirty, /*bKeyframe=*/false, Blob);
+
+	auto DeltaFrom = [&](const FGuid& Sender, const FGuid& EntityId)
+	{
+		FCrowdyStateDelta Delta;
+		Delta.ClassID = static_cast<int64>(UCrowdyClassRegistry::Get()->GetID(ACrowdyStateApplyTestActor::StaticClass()));
+		Delta.EntityID = EntityId;
+		Delta.SenderID = Sender;
+		Delta.LayoutHash = Layout->LayoutHash;
+		Delta.Blob = Blob;
+		return Delta;
+	};
+
+	const FGuid EntityId = FGuid::NewGuid();
+	ACrowdyStateApplyTestActor* Target = NewObject<ACrowdyStateApplyTestActor>();
+	RegisterProxyEntity(Entities, EntityId, Target);
+	Router->DispatchEvent(MakeInboundStateEvent(DeltaFrom(Old, EntityId)));
+	TestEqual(TEXT("an echo under the old id is dropped"), Target->RepInt, 0);
+	Router->DispatchEvent(MakeInboundStateEvent(DeltaFrom(FGuid::NewGuid(), EntityId)));
+	TestEqual(TEXT("a peer's delta still applies"), Target->RepInt, 123);
+
+	Router->DispatchEvent(MakeInboundStateEvent(DeltaFrom(Old, FGuid::NewGuid())));
+	TestEqual(TEXT("an old-id echo for an entity not here yet is not queued"), Router->NumDeferredForTest(), 0);
+
+	// What a sender left waiting goes once that sender is forgotten; another sender's stays.
+	const FGuid Forgotten = FGuid::NewGuid();
+	Router->DispatchEvent(MakeInboundStateEvent(DeltaFrom(Forgotten, FGuid::NewGuid())));
+	Router->DispatchEvent(MakeInboundStateEvent(DeltaFrom(FGuid::NewGuid(), FGuid::NewGuid())));
+	TestEqual(TEXT("two wait for their entities"), Router->NumDeferredForTest(), 2);
+	Router->ForgetSender(Forgotten);
+	TestEqual(TEXT("the forgotten sender's goes"), Router->NumDeferredForTest(), 1);
 	return true;
 }
 

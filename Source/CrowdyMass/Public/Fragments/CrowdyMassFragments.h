@@ -55,7 +55,7 @@ struct CROWDYMASS_API FCrowdyRemoteIdentityFragment : public FMassFragment
 	// The client that owns this entity, as its player id. Invalid means no client owns it: it is a world
 	// entity belonging to whichever client is currently the host.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy Mass")
-	FGuid OwnerID;
+	FGuid WriterID;
 
 	// This client's relationship to the entity. HostOwned is the default because an entity that arrives
 	// with no registry record is a world entity until something says otherwise, and the alternative

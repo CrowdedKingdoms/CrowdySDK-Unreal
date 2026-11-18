@@ -49,7 +49,7 @@ namespace
 		FCrowdyEntityRecord Rec;
 		Rec.NetID = Id;
 		Rec.Role = ECrowdyRole::RemoteProxy;
-		Rec.OwnerID = FGuid::NewGuid();
+		Rec.WriterID = FGuid::NewGuid();
 		Rec.Participant = Actor;
 		ES->RegisterEntity(Rec);
 	}
@@ -109,7 +109,7 @@ bool FCrowdyStateSendOwnerGateTest::RunTest(const FString& Parameters)
 	// regression that dropped the Role check would fail here.
 	FCrowdyEntityRecord OwnerRecord;
 	OwnerRecord.NetID = FGuid::NewGuid();
-	OwnerRecord.OwnerID = LocalPlayer;
+	OwnerRecord.WriterID = LocalPlayer;
 	OwnerRecord.Role = ECrowdyRole::Owner;
 	OwnerRecord.Participant = OwnedActor;
 
@@ -878,7 +878,7 @@ bool FCrowdyStateDemotionKeepsOwnerEntitiesTest::RunTest(const FString& Paramete
 	ACrowdyStateSendTestActor* OwnedActor = NewObject<ACrowdyStateSendTestActor>();
 	FCrowdyEntityRecord OwnerRecord;
 	OwnerRecord.NetID = FGuid::NewGuid();
-	OwnerRecord.OwnerID = LocalPlayer;
+	OwnerRecord.WriterID = LocalPlayer;
 	OwnerRecord.Role = ECrowdyRole::Owner;
 	OwnerRecord.Participant = OwnedActor;
 	TestTrue(TEXT("owner entity tracked"), Rep->TryTrackOwnedForTest(OwnerRecord));
@@ -1166,7 +1166,7 @@ bool FCrowdyStateHeartbeatPerEntityOffTest::RunTest(const FString& Parameters)
 }
 
 // GetOrCreateLoopbackMirror (crowdy.state.loopback): spawns a distinct RemoteProxy mirror with an INVALID
-// OwnerID (never the source's owner) under its own NetID, is idempotent on repeat calls, and returns null
+// WriterID (never the source's owner) under its own NetID, is idempotent on repeat calls, and returns null
 // without leaving a half-registered entry when the source class carries no UCrowdyEntityComponent.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateLoopbackMirrorSpawnTest,
 	"CrowdySDK.State.LoopbackMirrorSpawn", CrowdyStateReplicatorTestFlags)
@@ -1188,7 +1188,7 @@ bool FCrowdyStateLoopbackMirrorSpawnTest::RunTest(const FString& Parameters)
 	// component) so the mirror spawned from it also gets one, exactly like a real CrowdyState-tracked class.
 	// GetOrCreateLoopbackMirror never touches an entity subsystem itself (only BeginPlay's own registration
 	// tail does, resolved from the WORLD, not injectable), and this test's editor-type world never creates one
-	// (UCrowdyEntitySubsystem::ShouldCreateSubsystem gates to PIE/Game) so Role/OwnerID are read straight off
+	// (UCrowdyEntitySubsystem::ShouldCreateSubsystem gates to PIE/Game) so Role/WriterID are read straight off
 	// the mirror's component instead of round-tripping through a registry lookup.
 	ACrowdyStateHostOverrideActor* Source = TestWorld.Spawn<ACrowdyStateHostOverrideActor>();
 	if (!TestNotNull(TEXT("source actor spawned"), Source))
@@ -1208,7 +1208,7 @@ bool FCrowdyStateLoopbackMirrorSpawnTest::RunTest(const FString& Parameters)
 	if (TestNotNull(TEXT("mirror has an entity component"), MirrorComp))
 	{
 		TestTrue(TEXT("mirror role is RemoteProxy"), MirrorComp->GetRole() == ECrowdyRole::RemoteProxy);
-		TestFalse(TEXT("mirror OwnerID is invalid (never the source's owner)"), MirrorComp->GetOwnerID().IsValid());
+		TestFalse(TEXT("mirror WriterID is invalid (never the source's owner)"), MirrorComp->GetWriterID().IsValid());
 		TestNotEqual(TEXT("mirror NetID differs from the source's"), MirrorComp->GetNetID(), SourceID);
 	}
 
@@ -1425,6 +1425,102 @@ bool FCrowdyStateEmittedClassIDTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("which carries the same id, not a value that drifted after the first"),
 		Captured[0].ClassID, static_cast<int64>(Expected));
 
+	return true;
+}
+
+// An entity re-keyed under a new id is new to every other client, so its next send carries every property, changed or
+// not, and the one after carries only what changed again.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateForcedFullStateTest,
+	"CrowdySDK.State.ARekeyedEntitysNextSendCarriesItsFullState", CrowdyStateReplicatorTestFlags)
+bool FCrowdyStateForcedFullStateTest::RunTest(const FString& Parameters)
+{
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	const FCrowdyRepLayout* Layout = Registry ? Registry->FindRepLayout(ACrowdyStateSendTestActor::StaticClass()) : nullptr;
+	if (!TestNotNull(TEXT("send actor has a layout"), Layout))
+	{
+		return false;
+	}
+
+	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, FGuid::NewGuid());
+	Rep->SetTimeForTest(0.0);
+	TArray<FCrowdyStateDelta> Captured;
+	TArray<bool> CapturedTargeted;
+	Rep->DispatchHookForTests = [&Captured, &CapturedTargeted](const FCrowdyStateDelta& Delta, bool bTargeted)
+	{
+		Captured.Add(Delta);
+		CapturedTargeted.Add(bTargeted);
+	};
+
+	ACrowdyStateSendTestActor* Actor = NewObject<ACrowdyStateSendTestActor>();
+	const FGuid Id = FGuid::NewGuid();
+	TestTrue(TEXT("owned actor registered"), Rep->RegisterOwnedEntityForTest(Id, Actor));
+	Actor->RepInt = 5;
+	Rep->RunReplicationLoopForTest();
+	Captured.Reset();
+	CapturedTargeted.Reset();
+	Rep->RunReplicationLoopForTest();
+	TestEqual(TEXT("with nothing changed, nothing goes out"), Captured.Num(), 0);
+
+	Rep->ForceFullState(Id);
+	TestTrue(TEXT("the next send is marked full"), Rep->IsFullStateForcedForTest(Id));
+	Rep->RunReplicationLoopForTest();
+
+	int32 Spatial = 0;
+	int32 OwnerOnly = 0;
+	for (const FCrowdyRepProperty& Property : Layout->Properties)
+	{
+		Spatial += Property.Property && !Property.bOwnerOnly ? 1 : 0;
+		OwnerOnly += Property.Property && Property.bOwnerOnly ? 1 : 0;
+	}
+	if (!TestEqual(TEXT("a broadcast, and a targeted delta for the owner-only values"), Captured.Num(), OwnerOnly > 0 ? 2 : 1))
+	{
+		return false;
+	}
+	for (int32 Index = 0; Index < Captured.Num(); ++Index)
+	{
+		ACrowdyStateSendTestActor* Probe = NewObject<ACrowdyStateSendTestActor>();
+		TArray<int32> Changed;
+		TArray<int32> Present;
+		TestTrue(TEXT("it decodes"), FCrowdyStateCodec::Decode(*Layout, Captured[Index].LayoutHash, Captured[Index].Blob, Probe, Changed, &Present));
+		TestEqual(TEXT("carrying every property of its kind, unchanged or not"), Present.Num(), CapturedTargeted[Index] ? OwnerOnly : Spatial);
+	}
+	TestFalse(TEXT("only the next send"), Rep->IsFullStateForcedForTest(Id));
+
+	Captured.Reset();
+	Rep->RunReplicationLoopForTest();
+	TestEqual(TEXT("the one after carries nothing unchanged"), Captured.Num(), 0);
+	return true;
+}
+
+// A re-key tracks the player's entity anew under its new id, and the values it already holds are not changes: seeded
+// from them, its next send carries nothing until something changes, so its own notifies do not fire for them.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateSeededFromLiveTest,
+	"CrowdySDK.State.AnEntityTrackedAnewSendsNothingForTheValuesItAlreadyHeld", CrowdyStateReplicatorTestFlags)
+bool FCrowdyStateSeededFromLiveTest::RunTest(const FString& Parameters)
+{
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	const FCrowdyRepLayout* Layout = Registry ? Registry->FindRepLayout(ACrowdyStateSendTestActor::StaticClass()) : nullptr;
+	if (!TestNotNull(TEXT("send actor has a layout"), Layout))
+	{
+		return false;
+	}
+
+	UCrowdyStateReplicator* Rep = MakeReplicator(Registry, FGuid::NewGuid());
+	Rep->SetTimeForTest(0.0);
+	int32 Sends = 0;
+	Rep->DispatchHookForTests = [&Sends](const FCrowdyStateDelta&, bool) { ++Sends; };
+
+	ACrowdyStateSendTestActor* Actor = NewObject<ACrowdyStateSendTestActor>();
+	Actor->RepInt = 5;
+	const FGuid Id = FGuid::NewGuid();
+	TestTrue(TEXT("owned actor registered"), Rep->RegisterOwnedEntityForTest(Id, Actor));
+	Rep->SeedFromLive(Id);
+	Rep->RunReplicationLoopForTest();
+	TestEqual(TEXT("what it held when tracked sends nothing"), Sends, 0);
+
+	Actor->RepInt = 6;
+	Rep->RunReplicationLoopForTest();
+	TestTrue(TEXT("a change after the seed still goes out"), Sends > 0);
 	return true;
 }
 

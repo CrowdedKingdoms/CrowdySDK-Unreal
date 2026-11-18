@@ -735,7 +735,7 @@ bool UCrowdyMassGateHarness::SpawnGateEntity(const int32 Index, const FGuid& UUI
 		return false;
 	}
 
-	Identity->OwnerID = Entities->GetLocalPlayerID();
+	Identity->WriterID = Entities->GetLocalPlayerID();
 	Identity->Role = ECrowdyRole::Owner;
 	return true;
 }
@@ -1924,11 +1924,11 @@ bool UCrowdyMassGateHarness::Tick(float DeltaSeconds)
 		// RemoteProxy with a foreign owner: an entity somebody else simulates and sends for, which is what
 		// every crowd member is from this client's point of view, and the case the send path must refuse.
 		//
-		// Role is what carries that meaning, not OwnerID. The enum defines Owner as "this client simulates
+		// Role is what carries that meaning, not WriterID. The enum defines Owner as "this client simulates
 		// and sends" and RemoteProxy as "receives state and events from the network", so stamping Owner
 		// with another player's id would be a self-contradictory state rather than a hostile one, and a
 		// gate built on it would be testing something production cannot produce.
-		Identity->OwnerID = FGuid(0x0BADC0DE, 1, 2, 3);
+		Identity->WriterID = FGuid(0x0BADC0DE, 1, 2, 3);
 		Identity->Role = ECrowdyRole::RemoteProxy;
 
 		int32 BeforeAction = 0;

@@ -775,6 +775,10 @@ void UCrowdyChannels::PublishChannelMessage(int64 ChannelId, const TArray<uint8>
 	if (!IsValid(GameSession))
 		return;
 
+	// A lobby player with no pawn yet still sends under the session's id, which a pawn spawned later reuses.
+	if (GameSession->GetUserID() > 0)
+		GameSession->EnsureActorID();
+
 	PublishChannelMessageAs(ChannelId, GameSession->GetUUID(), Payload);
 }
 

@@ -65,8 +65,14 @@ public:
 	/** Returns the UUID of the player that owns this entity. Invalid for world-static entities. */
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Entities",
 		meta=(WorldContext="WorldContextObject", DefaultToSelf="Entity",
-		      Keywords="Get Crowdy Entity Owner ID UUID"))
-	static FGuid GetCrowdyEntityOwnerID(UObject* WorldContextObject, const AActor* Entity, bool& bIsValid);
+		      Keywords="Get Crowdy Entity Writer Owner ID UUID"))
+	static FGuid GetCrowdyEntityWriterID(UObject* WorldContextObject, const AActor* Entity, bool& bIsValid);
+
+	/** The user id of the player who owns this entity, 0 when unknown. A label for display, not a check that this client writes it. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Entities",
+		meta=(WorldContext="WorldContextObject", DefaultToSelf="Entity",
+		      Keywords="Get Crowdy Entity Owner User ID Account"))
+	static int64 GetCrowdyEntityOwnerUserID(UObject* WorldContextObject, const AActor* Entity);
 
 	/** Returns all entity actors whose owner UUID matches the given player ID. */
 	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Entities",
@@ -125,6 +131,11 @@ public:
 		meta=(DefaultToSelf="Entity", ExpandBoolAsExecs="bIsLocallyOwned",
 		      Keywords="Switch Is Locally Owned Owner Write Crowdy Entity Subsystem"))
 	static void SwitchIsCrowdyEntityLocallyOwned(UObject* Entity, bool& bIsLocallyOwned);
+
+	/** True when the signed-in user owns Entity, from this session or another. Use Is Crowdy Entity Locally Owned to decide whether to write it. */
+	UFUNCTION(BlueprintPure, Category="Crowdy SDK|Entities",
+		meta=(DefaultToSelf="Entity", Keywords="Is Owned By Local User Account Crowdy Entity"))
+	static bool IsCrowdyEntityOwnedByLocalUser(UObject* Entity);
 
 
 	//Entity State Checks

@@ -7,6 +7,7 @@
 #include "CrowdyExecDeploy.h"
 #include "CrowdyServerObjectDefinition.h"
 #include "CrowdyServerObjectLibrary.h"
+#include "CrowdyServerObjectTypes.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
@@ -265,25 +266,98 @@ bool FCrowdyExecDeployLeaderCrateTest::RunTest(const FString& Parameters)
 	}
 	TestEqualSensitive(TEXT("its Type Name is the deploy's Leader type"), Definition->TypeName, FString(CrowdyExecDeploy::LeaderTypeName));
 	TestTrue(TEXT("it has Only One Instance, readable by every player"), Definition->bOnlyOneInstance && Definition->Visibility == ECrowdyServerObjectVisibility::Public);
-	TestTrue(TEXT("players join it and leave it, without limit, and one who leaves the game stops being a member"),
-		Definition->MembersFrom == ECrowdyServerMembersSource::ThisObject && Definition->MaxMembers == 0 && !Definition->bShowMembers && Definition->bRemoveMembersWhoLeave);
+	TestTrue(TEXT("players enter it and exit it, without limit"),
+		Definition->MembersFrom == ECrowdyServerMembersSource::ThisObject && Definition->MaxMembers == 0 && !Definition->bShowMembers);
+	TestTrue(TEXT("a player who leaves the game is removed by its own On Player Left, not before it"), Definition->bOnPlayerLeft && !Definition->bRemoveMembersWhoLeave);
 	TestTrue(TEXT("one timer runs every 2 s"), Definition->Timers.Num() == 1 && Definition->Timers[0].Repeat == ECrowdyServerTimerRepeat::Every
 		&& Definition->Timers[0].Seconds == 2.f && Definition->Timers[0].bStartAutomatically);
 	TestTrue(TEXT("players can reach it"), Definition->IsReachableByPlayers());
 	TestFalse(TEXT("it is not one of the project's types"), CrowdyExecDeploy::FindProjectDefinitions().Contains(Definition));
+	TestTrue(TEXT("players see the Leader's actor id and whose it is, and not the members' map"), Definition->WatchedFields.Num() == 2
+		&& Definition->WatchedFields.Contains(TEXT("LeaderActorUser")) && Definition->WatchedFields.Contains(TEXT("LeaderActorID")));
+	const FCrowdyServerFunction* Enter = Definition->FindFunction(TEXT("Enter"));
+	const FCrowdyServerFunction* Exit = Definition->FindFunction(TEXT("Exit"));
+	TestTrue(TEXT("its functions are Enter and Exit"), Definition->Functions.Num() == 2 && Enter && Exit);
+	TestNull(TEXT("Claim Lead is gone"), Definition->FindFunction(TEXT("ClaimLead")));
+	TestTrue(TEXT("players call Enter with an actor id, at most once a second, and it replies nothing"), Enter && Enter->WhoCanCall == ECrowdyServerFunctionCaller::Players
+		&& Enter->GetParamsStruct() == FCrowdyLeaderEnterInputs::StaticStruct() && !Enter->GetReplyStruct() && Enter->CooldownSeconds == 1.f);
+	TestTrue(TEXT("and Exit with the same actor id"), Exit && Exit->WhoCanCall == ECrowdyServerFunctionCaller::Players
+		&& Exit->GetParamsStruct() == FCrowdyLeaderEnterInputs::StaticStruct() && !Exit->GetReplyStruct());
 
 	const FBuildCrate Leader = CrowdyExecDeploy::MakeLeaderCrate(CrowdyExecDeploy::RootTypeName);
 	TestEqualSensitive(TEXT("the Leader crate is named after its type"), Leader.Name, FString(CrowdyExecDeploy::LeaderTypeName));
 	const FBuildFile* Lib = FindBuildFile(Leader, TEXT("src/lib.rs"));
+	const FBuildFile* Types = FindBuildFile(Leader, TypesPath);
 	const FBuildFile* Logic = FindBuildFile(Leader, LogicPath);
 	const FBuildFile* Cargo = FindBuildFile(Leader, TEXT("Cargo.toml"));
 	if (!TestEqual(FString::Printf(TEXT("the Leader crate is a generated crate (%s)"), *FilePaths(Leader)), Leader.Files.Num(), 4)
-		|| !TestTrue(TEXT("with a lib.rs, logic.rs and Cargo.toml"), Lib && Logic && Cargo))
+		|| !TestTrue(TEXT("with a lib.rs, types.rs, logic.rs and Cargo.toml"), Lib && Types && Logic && Cargo))
 	{
 		return false;
 	}
+	TestTrue(TEXT("its types.rs holds the published actor id and its player"), Types->Content.Contains(TEXT("pub LeaderActorUser: i64"), ESearchCase::CaseSensitive)
+		&& Types->Content.Contains(TEXT("pub LeaderActorID: String"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and each member's actor id keyed by user id"), Types->Content.Contains(TEXT("pub MemberActorIDs: BTreeMap<i64, String>"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("which is never pushed to players"), Lib->Content.Contains(TEXT("\"MemberActorIDs\""), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("Claim Lead is gone from lib.rs"), Lib->Content.Contains(TEXT("claim_lead"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("and from logic.rs"), Logic->Content.Contains(TEXT("claim_lead"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("its lib.rs answers enter and exit"), Lib->Content.Contains(TEXT("            \"enter\" => {\n"), ESearchCase::CaseSensitive)
+		&& Lib->Content.Contains(TEXT("            \"exit\" => {\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("Enter waits a second between one player's calls"), Lib->Content.Contains(
+		TEXT("                check_cooldown(&self.cooldowns, ctx, &call, \"Enter\", 1000)?;\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("both are functions of logic.rs that reply nothing"), Lib->Content.Contains(
+		TEXT("    fn enter(&mut self, ctx: &Ctx, call: &Call<'_>, params: CrowdyLeaderEnterInputs) -> Result<()>;"), ESearchCase::CaseSensitive)
+		&& Lib->Content.Contains(TEXT("    fn exit(&mut self, ctx: &Ctx, call: &Call<'_>, params: CrowdyLeaderEnterInputs) -> Result<()>;"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("a player leaving the game runs on_player_left"), Lib->Content.Contains(
+		TEXT("        let result = Functions::on_player_left(&mut self.state, ctx, player);\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("its logic.rs implements enter"), Logic->Content.Contains(
+		TEXT("    fn enter(&mut self, _ctx: &Ctx, call: &Call<'_>, params: CrowdyLeaderEnterInputs) -> Result<()> {\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("an actor id is refused unless it is 32 hex digits"), Logic->Content.Contains(
+		TEXT("fn checked_actor_id(id: String) -> Result<String> {\n")
+		TEXT("    if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {\n")
+		TEXT("        return Err(Error::new(\"bad_params: ActorID must be 32 hex digits\"));\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("or is all zeros, and is kept uppercased"), Logic->Content.Contains(
+		TEXT("    if id.bytes().all(|byte| byte == b'0') {\n        return Err(Error::new(\"bad_params: ActorID must not be all zeros\"));\n    }\n")
+		TEXT("    Ok(id.to_ascii_uppercase())\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("enter checks its id, adds the caller, keeps the id, and publishes in the same handler"), Logic->Content.Contains(
+		TEXT("        let id = checked_actor_id(params.ActorID)?;\n")
+		TEXT("        let Ok(player) = call.player() else {\n            return Err(Error::new(\"denied: only a player can enter\"));\n        };\n")
+		TEXT("        // Every player may enter: a Leader who closed joining would keep the lead from everyone who comes after.\n")
+		TEXT("        members::set_open(true);\n        if !members::is_member(player) {\n            members::add(player)?;\n        }\n")
+		TEXT("        // A user has one entry, so of two sessions of one user the last to enter is the one that writes.\n")
+		TEXT("        self.MemberActorIDs.insert(player as i64, id);\n        sync_pair(self);\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("exit checks its id too, and takes the user out only for the actor id it entered with"), Logic->Content.Contains(
+		TEXT("    fn exit(&mut self, _ctx: &Ctx, call: &Call<'_>, params: CrowdyLeaderEnterInputs) -> Result<()> {\n")
+		TEXT("        let id = checked_actor_id(params.ActorID)?;\n")
+		TEXT("        let Ok(player) = call.player() else {\n            return Err(Error::new(\"denied: only a player can exit\"));\n        };\n")
+		TEXT("        // Of two sessions of one user, only the one whose actor id is entered can take the user out.\n")
+		TEXT("        if self.MemberActorIDs.get(&(player as i64)) != Some(&id) {\n            return Ok(());\n        }\n")
+		TEXT("        members::remove(player);\n        self.MemberActorIDs.remove(&(player as i64));\n        sync_pair(self);\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("on_player_left removes the member itself, so the new Leader's actor id rides the same push"), Logic->Content.Contains(
+		TEXT("    fn on_player_left(&mut self, _ctx: &Ctx, player: u64) -> Result<()> {\n")
+		TEXT("        members::remove(player);\n        self.MemberActorIDs.remove(&(player as i64));\n        sync_pair(self);\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("check_leader publishes when there is no Leader"), Logic->Content.Contains(
+		TEXT("        let Some(leader) = members::leader() else {\n            sync_pair(self);\n            return Ok(());\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and after removing a Leader who left, with its actor id, then handing a lead with no actor id on"), Logic->Content.Contains(
+		TEXT("            members::remove(leader);\n            self.MemberActorIDs.remove(&(leader as i64));\n        }\n")
+		TEXT("        // A Leader with no actor id here (it came in through the built-in Join or Make Leader) hands the lead to the longest member that has one.\n")
+		TEXT("        if members::leader().is_some_and(|leader| !self.MemberActorIDs.contains_key(&(leader as i64))) {\n")
+		TEXT("            if let Some(next) = members::list().into_iter().find(|member| self.MemberActorIDs.contains_key(&(*member as i64))) {\n")
+		TEXT("                members::make_leader(next)?;\n")
+		TEXT("            }\n")
+		TEXT("        }\n")
+		TEXT("        // Also settles a change made by the built-in member functions, which run none of this code.\n")
+		TEXT("        sync_pair(self);\n        Ok(())\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("sync_pair publishes the Leader with its entry, or nobody when it has none"), Logic->Content.Contains(
+		TEXT("    let leader = members::leader().map(|leader| leader as i64);\n")
+		TEXT("    let id = leader.and_then(|leader| state.MemberActorIDs.get(&leader)).cloned().unwrap_or_default();\n")
+		TEXT("    let user = if id.is_empty() { 0 } else { leader.unwrap_or(0) };\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and writes only when the pair changed"), Logic->Content.Contains(
+		TEXT("    if state.LeaderActorUser == user && state.LeaderActorID == id {\n        return;\n    }\n")
+		TEXT("    state.LeaderActorUser = user;\n    state.LeaderActorID = id;\n"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("drop_stale_claim is gone"), Logic->Content.Contains(TEXT("drop_stale_claim"), ESearchCase::CaseSensitive));
 	TestTrue(TEXT("its lib.rs keeps members"), Lib->Content.Contains(TEXT("pub mod members {\n"), ESearchCase::CaseSensitive));
-	TestTrue(TEXT("players join it"), Lib->Content.Contains(TEXT("            \"join\" => {\n"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("players can still join it with the built-in Join"), Lib->Content.Contains(TEXT("            \"join\" => {\n"), ESearchCase::CaseSensitive));
 	TestTrue(TEXT("its timer is a function of logic.rs"), Lib->Content.Contains(TEXT("    fn check_leader(&mut self, ctx: &Ctx) -> Result<()>;"), ESearchCase::CaseSensitive));
 	TestTrue(TEXT("its logic.rs asks the root about the Leader, waiting at most 500 ms"), Logic->Content.Contains(
 		TEXT("        let gone = ctx.call_with_deadline(\"root\", \"\", \"is_present\", &payload, 500)\n"), ESearchCase::CaseSensitive));

@@ -22,6 +22,7 @@
 #include "Serialization/FCrowdyMessageParser.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Subsystem/CrowdyWorkerThreadsSubsystem.h"
+#include "Network/UDP/CrowdyConnectionMonitor.h"
 #include "Network/UDP/CrowdyUDPSubsystem.h"
 #include "Network/UDP/FCrowdyUDPEndpoint.h"
 #include "CrowdyCppClient.h"
@@ -322,14 +323,33 @@ void UCrowdySDKSubsystem::SetStudioAgentForTest(UCrowdyStudioAgent* Agent)
 
 void UCrowdySDKSubsystem::Logout() const
 {
-	// End the session on the server first, while its token is still installed, then forget the durable credential:
-	// cancel the refresh timer and delete the persisted SESSION token so the next launch does not restore the user.
-	if (UCrowdyAuthentication* Auth = GetGameInstance()->GetSubsystem<UCrowdyAuthentication>())
+	// The server session ends only once this player's actor records are deleted, since its end revokes the app token
+	// the deletes are sent under. Its token is captured here because it is cleared below.
+	UCrowdyAuthentication* Auth = ResolveAuthentication();
+	TFunction<void()> EndServerSession = [WeakAuth = TWeakObjectPtr<UCrowdyAuthentication>(Auth), SessionToken = GameSession->GetSessionToken()]()
 	{
-		Auth->EndServerSession();
+		if (UCrowdyAuthentication* Authentication = WeakAuth.Get())
+		{
+			Authentication->EndServerSession(SessionToken);
+		}
+	};
+	if (UCrowdyActorOwners* ActorOwners = ResolveActorOwners())
+	{
+		ActorOwners->HandleSignedOut(MoveTemp(EndServerSession));
+	}
+	else
+	{
+		EndServerSession();
+	}
+
+	// Forget the durable credential: cancel the refresh timer and delete the persisted SESSION token so the next launch
+	// does not restore the user.
+	if (Auth)
+	{
 		Auth->ClearSavedSession();
 	}
 
+	GameSession->EndSignIn();
 	GameSession->ClearCurrentSessionData();
 	GameSession->SetAppPaused(false, FString());
 
@@ -347,6 +367,7 @@ void UCrowdySDKSubsystem::Logout() const
 	// Close the routed connection for the same reason. It signs with the token it was given when it opened rather
 	// than reading the session, so clearing the session above does not reach it and it would go on sending validly
 	// signed traffic as the account that just left.
+	StopReconnecting();
 	if (UCrowdyCppReplicationSubsystem* Replication = GetGameInstance()->GetSubsystem<UCrowdyCppReplicationSubsystem>())
 	{
 		Replication->CloseConnection();
@@ -356,11 +377,6 @@ void UCrowdySDKSubsystem::Logout() const
 	if (UCrowdyTeams* Teams = GetGameInstance()->GetSubsystem<UCrowdyTeams>())
 	{
 		Teams->ClearMyTeamsCache();
-	}
-
-	if (UCrowdyActorOwners* ActorOwners = GetGameInstance()->GetSubsystem<UCrowdyActorOwners>())
-	{
-		ActorOwners->HandleSignedOut();
 	}
 
 	UCrowdyStudioAgent* StudioAgent = GetGameInstance() ? GetGameInstance()->GetSubsystem<UCrowdyStudioAgent>() : nullptr;
@@ -377,6 +393,18 @@ void UCrowdySDKSubsystem::Logout() const
 
 void UCrowdySDKSubsystem::SetGameSessionInfo(const FGameSessionInfo GameSessionInfo)
 {
+	// The same player installed again, as a menu does each time it opens, is the sign-in already running.
+	const bool bSameSignIn = GameSession->IsSignedIn() && GameSession->GetUserID() == GameSessionInfo.UserID
+		&& GameSession->GetGameToken().Equals(GameSessionInfo.GameToken, ESearchCase::CaseSensitive);
+	const bool bSignsIn = !GameSessionInfo.GameToken.IsEmpty() && !bSameSignIn;
+
+	// A live sign-in's records are deleted under its own token, so before the tokens below replace it.
+	UCrowdyAuthentication* Auth = bSignsIn ? ResolveAuthentication() : nullptr;
+	if (Auth)
+	{
+		Auth->EndPreviousSignIn();
+	}
+
 	GameSession->SetUserID(GameSessionInfo.UserID);
 
 	// Management plane: the identity SESSION token.
@@ -394,9 +422,85 @@ void UCrowdySDKSubsystem::SetGameSessionInfo(const FGameSessionInfo GameSessionI
 		ClientHost->SetManagementToken(GameSessionInfo.SessionToken);
 		ClientHost->SetGameToken(GameSessionInfo.GameToken);
 	}
+
+	if (!bSignsIn)
+	{
+		return;
+	}
+
+	// An actor record names a user, so with none the connection opens with the player's id unrecorded.
+	UE_CLOG(GameSessionInfo.UserID <= 0 && !bWarnedUnrecordedSignIn, LogCrowdySDK, Warning,
+		TEXT("Set Game Session Info carries no user id, so this player's actor id is not recorded and other players cannot resolve it to them."));
+	bWarnedUnrecordedSignIn |= GameSessionInfo.UserID <= 0;
+
+	// What a sign-in through Crowdy Authentication completes with: a fresh actor id, recorded before the connection opens.
+	GameSession->BeginSignIn();
+	ConnectOnceRecorded();
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void UCrowdySDKSubsystem::SetSignInCollaboratorsForTest(UCrowdyAuthentication* Auth, UCrowdyActorOwners* ActorOwners, UCrowdyUDPSubsystem* Udp)
+{
+	AuthForTest = Auth;
+	ActorOwnersForTest = ActorOwners;
+	UdpSubsystem = Udp;
+}
+#endif
+
+UCrowdyAuthentication* UCrowdySDKSubsystem::ResolveAuthentication() const
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (UCrowdyAuthentication* Override = AuthForTest.Get())
+	{
+		return Override;
+	}
+#endif
+	const UGameInstance* GameInstance = GetGameInstance();
+	return GameInstance ? GameInstance->GetSubsystem<UCrowdyAuthentication>() : nullptr;
+}
+
+UCrowdyActorOwners* UCrowdySDKSubsystem::ResolveActorOwners() const
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (UCrowdyActorOwners* Override = ActorOwnersForTest.Get())
+	{
+		return Override;
+	}
+#endif
+	const UGameInstance* GameInstance = GetGameInstance();
+	return GameInstance ? GameInstance->GetSubsystem<UCrowdyActorOwners>() : nullptr;
+}
+
+bool UCrowdySDKSubsystem::CanOpenConnection() const
+{
+	const UCrowdyActorOwners* ActorOwners = ResolveActorOwners();
+	return GameSession->IsSignedIn() && (!ActorOwners || ActorOwners->HasSettledSignIn());
+}
+
+void UCrowdySDKSubsystem::StopReconnecting() const
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	if (UCrowdyConnectionMonitor* Monitor = GameInstance ? GameInstance->GetSubsystem<UCrowdyConnectionMonitor>() : nullptr)
+	{
+		Monitor->StopReconnecting();
+	}
 }
 
 void UCrowdySDKSubsystem::RequestUDPAccess() const
+{
+	// The realtime servers refuse sends under an id another player's record holds, so a sign-in opens the connection
+	// itself once its record has answered, and nothing opens one with no player signed in.
+	if (IsValid(GameSession) && !CanOpenConnection())
+	{
+		UE_CLOG(!GameSession->IsSignedIn(), LogCrowdySDK, Warning, TEXT("Request UDP Access ignored: no player is signed in."));
+		UE_CLOG(GameSession->IsSignedIn() && CrowdySDKTrace::Sdk(), LogCrowdySDK, Log,
+			TEXT("Request UDP Access deferred: the sign-in opens the connection once its actor record answers."));
+		return;
+	}
+	OpenUDPAccess();
+}
+
+void UCrowdySDKSubsystem::OpenUDPAccess() const
 {
 	UdpSubsystem->SetConnectionState(EUDPConnectionState::Connecting);
 
@@ -1117,9 +1221,29 @@ void UCrowdySDKSubsystem::HandleAuthLogin(FCrowdyAuthResult Result)
 	// the app token by the time this fires, so RequestUDPAccess authorizes with it.
 	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Sign-in successful. UserID=%lld"), Result.UserID);
 
-	RequestUDPAccess();
+	ConnectOnceRecorded();
 
 	OnLogin.Broadcast(true, FString());
+}
+
+void UCrowdySDKSubsystem::ConnectOnceRecorded() const
+{
+	StopReconnecting();
+	UCrowdyActorOwners* ActorOwners = ResolveActorOwners();
+	if (!ActorOwners)
+	{
+		RequestUDPAccess();
+		return;
+	}
+
+	// The realtime servers refuse sends under an id another player's record holds, so the record comes first.
+	ActorOwners->HandleSignedIn([WeakThis = TWeakObjectPtr<const UCrowdySDKSubsystem>(this)]()
+	{
+		if (const UCrowdySDKSubsystem* Self = WeakThis.Get())
+		{
+			Self->OpenUDPAccess();
+		}
+	});
 }
 
 void UCrowdySDKSubsystem::HandleAuthLoginFailed(FString Message)
@@ -1131,7 +1255,7 @@ void UCrowdySDKSubsystem::HandleAuthRegister(FCrowdyAuthResult Result)
 {
 	// Registration signs the player in and mints an app token, so it proceeds to
 	// UDP access exactly like a login.
-	RequestUDPAccess();
+	ConnectOnceRecorded();
 
 	OnRegister.Broadcast(true, FString());
 }
@@ -1145,7 +1269,7 @@ void UCrowdySDKSubsystem::HandleAuthSessionRestored(FCrowdyAuthResult Result)
 {
 	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Session restored. UserID=%lld"), Result.UserID);
 
-	RequestUDPAccess();
+	ConnectOnceRecorded();
 
 	// A restored session is a signed-in player; surface it on the same delegate.
 	OnLogin.Broadcast(true, FString());
@@ -1158,6 +1282,12 @@ void UCrowdySDKSubsystem::HandleAuthSessionRestoreFailed(FString Message)
 
 void UCrowdySDKSubsystem::HandleAppTokenRefreshed()
 {
+	// A rotation still landing after its sign-in ended must not reconnect as that player.
+	if (!IsValid(GameSession) || !GameSession->IsSignedIn())
+	{
+		return;
+	}
+
 	// The app token rotated (proactive timer or expiry recovery). Re-assign the UDP
 	// session so the server installs the new token/gameTokenId.
 	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("App token refreshed - re-assigning UDP session."));
@@ -1169,13 +1299,13 @@ void UCrowdySDKSubsystem::HandleAppTokenRefreshed()
 		? GetGameInstance()->GetSubsystem<UCrowdyCppReplicationSubsystem>()
 		: nullptr;
 
-	if (Replication && IsValid(GameSession)
-		&& Replication->InstallToken(GameSession->GetGameToken(), GameSession->GetGameTokenID(),
+	if (Replication && Replication->InstallToken(GameSession->GetGameToken(), GameSession->GetGameTokenID(),
 			GameSession->GetAppTokenExpiresAt()))
 	{
 		return;
 	}
 
+	// A sign-in still waiting for its actor record opens the connection itself, under whichever token is current then.
 	RequestUDPAccess();
 }
 

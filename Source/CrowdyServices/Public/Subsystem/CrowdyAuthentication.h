@@ -365,6 +365,15 @@ public:
 	/** Ends this session on the server without waiting for the answer. Sign-out calls it before forgetting the token. */
 	void EndServerSession();
 
+	/** Ends the server session SessionToken names, installing that token for this one call. */
+	void EndServerSession(const FString& SessionToken);
+
+	/**
+	 * Ends the live sign-in, if any, before another replaces it: closes its realtime connection and deletes its actor
+	 * records. Call it while that sign-in's app token is still installed.
+	 */
+	void EndPreviousSignIn();
+
 	/** Broadcast after Delete Account or Sign Out Everywhere ended this session on the server, so the SDK signs out here. */
 	FSimpleMulticastDelegate OnServerSessionEnded;
 
@@ -442,6 +451,9 @@ public:
 	/** Keeps the session vault and the legacy slot a test touches apart from the real ones. */
 	void SetInstanceSuffixForTest(const FString& Suffix) { InstanceSuffixForTest = Suffix; }
 
+	// The session token the saved session holds, empty when none is saved.
+	FString GetSavedSessionTokenForTest() const;
+
 	bool IsRotationTimerArmedForTest() const { return RefreshTickerHandle.IsValid(); }
 	int32 GetRotationRetriesUsedForTest() const { return RotationRetriesUsed; }
 	int32 GetServerNamedRefusalsForTest() const { return ServerNamedRefusals; }
@@ -518,6 +530,22 @@ private:
 
 	/** A pending sign-in other than a restore saved its new session, replacing whatever was saved before. */
 	bool bPendingSignInSavedSession = false;
+
+	struct FHeldSignIn
+	{
+		int64 UserID = 0;
+		FString SessionToken;
+		int64 SessionGameTokenID = 0;
+	};
+
+	/** The live player's identity while a sign-in over it mints, put back if that mint fails. */
+	TOptional<FHeldSignIn> LiveSignIn;
+
+	/** That sign-in's session, saved only once its mint lands. */
+	TOptional<FHeldSignIn> PendingSave;
+
+	void AdoptPendingSignIn();
+	void RestoreLiveSignIn();
 
 	/** Set while CancelSignIn answers its callers, so a cancel fires no failure event, as a sign-out fires none. */
 	bool bCancellingSignIn = false;

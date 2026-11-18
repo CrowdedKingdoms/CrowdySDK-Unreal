@@ -36,7 +36,7 @@ namespace CrowdyMassTarget
 
 	/**
 	 * Resolves Target against its own world's Mass entity manager: IsEntityValid, one
-	 * FCrowdyRemoteIdentityFragment read (UUID, OwnerID and Role together), and one FTransformFragment
+	 * FCrowdyRemoteIdentityFragment read (UUID, WriterID and Role together), and one FTransformFragment
 	 * read for Location. Nothing more: no FindEntityByUUID, no hash keyed on the UUID, no subsystem
 	 * search beyond getting the entity manager itself, since the entity handle already is the key.
 	 *

@@ -11,6 +11,7 @@
 
 class FCrowdyCppClient;
 class FJsonObject;
+class UCrowdyGameSession;
 struct FCrowdyCppJsonResult;
 
 /** A party, a guild or a chat room: its team (0 for a chat room) and its chat channel (0 when it has none). */
@@ -144,8 +145,8 @@ public:
 	/** The verdict on a send before it goes out; pure so every refusal can be checked without a connection. */
 	static ECrowdyKitChatResult CheckChat(const FString& Text, int64 ChannelId, bool bConnected);
 
-	/** The sender id a chat message carries: the session uuid, or before the player's entity resolves one derived from the account. */
-	static FString SenderUuidFor(const FString& SessionUuid, int64 UserId);
+	/** The sender id a chat message carries: the session's actor id, minted when a signed-in session has none so a pawn spawned later reuses it. */
+	static FString SenderUuidFor(UCrowdyGameSession& Session);
 
 	/** The group a channel belongs to, as far as this player knows it. */
 	FCrowdyKitGroup ResolveChannelGroup(int64 ChannelId) const;

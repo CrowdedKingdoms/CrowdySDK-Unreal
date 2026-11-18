@@ -203,23 +203,25 @@ int64 UCrowdyKitSocial::ResolveUserId() const
 FString UCrowdyKitSocial::ResolveSenderUuid() const
 {
 	const UGameInstance* GameInstance = GetGameInstance();
-	const UCrowdyGameSession* Session = GameInstance ? GameInstance->GetSubsystem<UCrowdyGameSession>() : nullptr;
+	UCrowdyGameSession* Session = GameInstance ? GameInstance->GetSubsystem<UCrowdyGameSession>() : nullptr;
 	if (!Session)
 	{
 		return FString();
 	}
 
-	return SenderUuidFor(Session->GetUUID(), Session->GetUserID());
+	return SenderUuidFor(*Session);
 }
 
-FString UCrowdyKitSocial::SenderUuidFor(const FString& SessionUuid, int64 UserId)
+FString UCrowdyKitSocial::SenderUuidFor(UCrowdyGameSession& Session)
 {
-	FCrowdyActorId Id;
-	if (FCrowdyActorId::TryFromString(SessionUuid, Id) && !SessionUuid.Equals(FGuid().ToString(EGuidFormats::Digits)))
+	if (Session.GetUserID() > 0)
 	{
-		return SessionUuid;
+		Session.EnsureActorID();
 	}
-	return UserId > 0 ? UHelperFunctions::GetDeterministicID(UserId).ToString(EGuidFormats::Digits) : FString();
+	const FString SessionUuid = Session.GetUUID();
+	FCrowdyActorId Id;
+	const bool bResolved = FCrowdyActorId::TryFromString(SessionUuid, Id) && !SessionUuid.Equals(FGuid().ToString(EGuidFormats::Digits));
+	return bResolved ? SessionUuid : FString();
 }
 
 void UCrowdyKitSocial::SyncAccount()

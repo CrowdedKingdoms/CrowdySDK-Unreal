@@ -119,7 +119,7 @@ bool FCrowdyLeaderWriterOneOwnershipAnswerTest::RunTest(const FString& Parameter
 	AActor* Actor = NewObject<AActor>(GetTransientPackage());
 	UCrowdyEntityComponent* Component = NewObject<UCrowdyEntityComponent>(Actor);
 	Component->SetCollaboratorsForTest(Entities, nullptr);
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), ECrowdyRole::HostOwned, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::HostOwned, 0);
 
 	TestTrue(TEXT("the Leader writes a replicated subsystem"), Entities->IsLocallyOwned(SubsystemID));
 	TestFalse(TEXT("but nobody writes a World actor, the Leader included"), Component->IsLocallyOwned());

@@ -177,6 +177,29 @@ public:
 	}
 };
 
+/** Keeps the last ownership request an entity subsystem announced, so a test sees what reached game code. */
+UCLASS()
+class UCrowdyOwnershipRequestListener : public UObject
+{
+	GENERATED_BODY()
+
+public:
+
+	int32 Calls = 0;
+	TWeakObjectPtr<AActor> LastTarget;
+	FGuid LastRequesterID;
+	int64 LastRequesterUserID = 0;
+
+	UFUNCTION()
+	void OnRequested(AActor* TargetEntity, AActor* RequesterActor, const FGuid& RequesterID, int64 RequesterUserID)
+	{
+		++Calls;
+		LastTarget = TargetEntity;
+		LastRequesterID = RequesterID;
+		LastRequesterUserID = RequesterUserID;
+	}
+};
+
 /** A backend that reports it cannot draw anything with what it was given. */
 UCLASS()
 class UCrowdyRefusingBackend : public UCrowdyRenderingBackend

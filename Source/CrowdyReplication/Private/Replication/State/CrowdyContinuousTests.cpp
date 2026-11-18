@@ -47,7 +47,7 @@ namespace
 	{
 		FCrowdyEntityRecord Record;
 		Record.NetID = EntityId;
-		Record.OwnerID = bOwned ? Entities->GetLocalPlayerID() : FGuid::NewGuid();
+		Record.WriterID = bOwned ? Entities->GetLocalPlayerID() : FGuid::NewGuid();
 		Record.Role = bOwned ? ECrowdyRole::Owner : ECrowdyRole::RemoteProxy;
 		Record.Participant = Actor;
 		Entities->RegisterEntity(Record);

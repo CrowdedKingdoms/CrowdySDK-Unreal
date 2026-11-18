@@ -120,7 +120,8 @@ void UCrowdyEntityComponent::PostEditChangeProperty(FPropertyChangedEvent& Prope
 }
 #endif
 
-void UCrowdyEntityComponent::InitIdentity(const FGuid& InNetID, const FGuid& InOwnerID, const ECrowdyRole InRole, const uint32 InClassID)
+void UCrowdyEntityComponent::InitIdentity(const FGuid& InNetID, const FGuid& InWriterID, const int64 InOwnerUserID,
+	const ECrowdyRole InRole, const uint32 InClassID)
 {
 	if (HasBegunPlay())
 	{
@@ -130,16 +131,19 @@ void UCrowdyEntityComponent::InitIdentity(const FGuid& InNetID, const FGuid& InO
 	}
 
 	NetID   = InNetID;
-	OwnerID = InOwnerID;
+	WriterID = InWriterID;
+	OwnerUserID = InOwnerUserID;
 	Role    = InRole;
 	ClassID = InClassID;
 	bIdentityInjected = true;
 }
 
-void UCrowdyEntityComponent::AssignPooledIdentity(const FGuid& InNetID, const FGuid& InOwnerID, const ECrowdyRole InRole, const uint32 InClassID)
+void UCrowdyEntityComponent::AssignPooledIdentity(const FGuid& InNetID, const FGuid& InWriterID, const int64 InOwnerUserID,
+	const ECrowdyRole InRole, const uint32 InClassID)
 {
 	NetID      = InNetID;
-	OwnerID    = InOwnerID;
+	WriterID    = InWriterID;
+	OwnerUserID = InOwnerUserID;
 	Role       = InRole;
 	ClassID    = InClassID;
 	UUIDString = InNetID.IsValid() ? InNetID.ToString(EGuidFormats::Digits) : FString();
@@ -168,11 +172,13 @@ void UCrowdyEntityComponent::ClearIdentity()
 		EntitySubsystem->UnregisterEntity(NetID);
 
 	NetID      = FGuid();
-	OwnerID    = FGuid();
+	WriterID    = FGuid();
+	OwnerUserID = 0;
 	Role       = ECrowdyRole::None;
 	ClassID    = CROWDY_INVALID_CLASS_ID;
 	UUIDString.Reset();
 	bIdentityInjected = false;
+	bResolvedAsAvatar = false;
 	bSendsPresence = false;
 	bSpawnDataDelivered = false;
 	SpawnData.Reset();
@@ -256,7 +262,7 @@ void UCrowdyEntityComponent::BeginPlay()
 		return;
 	}
 
-	// A pawn spawned during play is possessed after its BeginPlay, so its account is read on that possession.
+	// A pawn spawned during play is possessed after its BeginPlay, so the session id is read on that possession.
 	APawn* Pawn = Cast<APawn>(CachedOwner);
 	if (ShouldDeferIdentityToPossession(bIdentityInjected, IdentityPolicy, Pawn != nullptr, Pawn && Pawn->GetController()))
 	{
@@ -330,7 +336,9 @@ void UCrowdyEntityComponent::CompleteRegistration()
 		return;
 	}
 
-	UUIDString = NetID.ToString(EGuidFormats::Digits);
+	// Only a player's avatar sends under its bare NetID, so other clients can tell it from another pawn of its class.
+	const bool bOwnerTagged = IdentityPolicy == ECrowdyIdentityPolicy::PlayerDerived && !bResolvedAsAvatar && WriterID.IsValid();
+	UUIDString = bOwnerTagged ? FCrowdyActorId::ForOwner(NetID, WriterID).ToString() : NetID.ToString(EGuidFormats::Digits);
 
 	if (IsValid(EntitySubsystem))
 	{
@@ -342,18 +350,20 @@ void UCrowdyEntityComponent::CompleteRegistration()
 
 		FCrowdyEntityRecord Record;
 		Record.NetID   = NetID;
-		Record.OwnerID = OwnerID;
+		Record.WriterID = WriterID;
+		Record.OwnerUserID = OwnerUserID;
 		Record.Role    = Role;
 		Record.ClassID = ClassID;
 		Record.Participant = CachedOwner;
+		Record.bAvatar = bResolvedAsAvatar;
 		if (OwnedBy == ECrowdyOwnedBy::Leader)
 		{
 			EntitySubsystem->MakeLeaderOwned(Record);
-			OwnerID = Record.OwnerID;
+			WriterID = Record.WriterID;
 			Role    = Record.Role;
 
 			// Clients that learned the Leader after registering expect its own id from the start.
-			UUIDString = FCrowdyActorId::ForOwner(NetID, OwnerID).ToString();
+			UUIDString = FCrowdyActorId::ForOwner(NetID, WriterID).ToString();
 		}
 		EntitySubsystem->RegisterEntity(Record);
 	}
@@ -557,7 +567,7 @@ void UCrowdyEntityComponent::DestroyEntity()
 		EntitySubsystem->DestroyEntity(GetOwner());
 }
 
-void UCrowdyEntityComponent::RequestOwnership_Implementation(FGuid RequesterID)
+void UCrowdyEntityComponent::RequestOwnership_Implementation(FGuid RequesterID, int64 RequesterUserID)
 {
 	if (!IsValid(EntitySubsystem) || !NetID.IsValid())
 		return;
@@ -573,25 +583,24 @@ void UCrowdyEntityComponent::RequestOwnership_Implementation(FGuid RequesterID)
 
 	if (bAutoApproveOwnershipRequests)
 	{
-		GrantOwnershipTo(RequesterID);
+		GrantOwnershipTo(RequesterID, RequesterUserID);
 		return;
 	}
 
-	EntitySubsystem->NotifyOwnershipRequested(GetOwner(), RequesterID);
+	EntitySubsystem->NotifyOwnershipRequested(GetOwner(), RequesterID, RequesterUserID);
 }
 
-void UCrowdyEntityComponent::GrantOwnership_Implementation(FGuid NewOwnerID, FGuid PreviousOwnerID)
+void UCrowdyEntityComponent::GrantOwnership_Implementation(FGuid NewWriterID, FGuid PreviousWriterID, int64 NewOwnerUserID)
 {
-	// A player's avatar never changes hands: its owner is its own NetID, as this client knows it or as the grant says.
-	if (!IsValid(EntitySubsystem) || !NetID.IsValid() || OwnedBy == ECrowdyOwnedBy::Leader || NetID == OwnerID ||
-	    NetID == PreviousOwnerID)
+	const FCrowdyEntityRecord* Record = IsValid(EntitySubsystem) ? EntitySubsystem->FindRecord(NetID) : nullptr;
+	if (!Record || !CrowdyGrantMayRepoint(NetID, WriterID, PreviousWriterID, OwnedBy == ECrowdyOwnedBy::Leader, Record->bAvatar))
 		return;
 
-	// ReassignOwnership compare-and-swaps on PreviousOwnerID, so a stale or duplicate grant is dropped.
-	EntitySubsystem->ReassignOwnership(NetID, NewOwnerID, PreviousOwnerID);
+	// ReassignOwnership compare-and-swaps on PreviousWriterID, so a stale or duplicate grant is dropped.
+	EntitySubsystem->ReassignOwnership(NetID, NewWriterID, PreviousWriterID, NewOwnerUserID);
 }
 
-void UCrowdyEntityComponent::GrantOwnershipTo(const FGuid& NewOwnerID)
+void UCrowdyEntityComponent::GrantOwnershipTo(const FGuid& NewWriterID, const int64 NewOwnerUserID)
 {
 	if (!IsValid(EntitySubsystem))
 		return;
@@ -622,21 +631,21 @@ void UCrowdyEntityComponent::GrantOwnershipTo(const FGuid& NewOwnerID)
 
 	// Read the previous owner from the authoritative record so every receiver's compare-and-swap matches.
 	const FCrowdyEntityRecord* Record = EntitySubsystem->FindRecord(NetID);
-	const FGuid PreviousOwnerID = Record ? Record->OwnerID : OwnerID;
-	if (NewOwnerID == PreviousOwnerID)
+	const FGuid PreviousWriterID = Record ? Record->WriterID : WriterID;
+	if (NewWriterID == PreviousWriterID)
 		return;
 
 	// Multicast: the body runs locally here (this authority relinquishes/adopts) and announces to every client.
-	GrantOwnership(NewOwnerID, PreviousOwnerID);
+	GrantOwnership(NewWriterID, PreviousWriterID, NewOwnerUserID);
 }
 
-void UCrowdyEntityComponent::ApplyOwnershipReassignment(const FGuid& NewOwnerID, const ECrowdyRole NewRole)
+void UCrowdyEntityComponent::ApplyOwnershipReassignment(const FGuid& NewWriterID, const ECrowdyRole NewRole)
 {
-	OwnerID = NewOwnerID;
+	WriterID = NewWriterID;
 	Role    = NewRole;
 
 	// The server keeps an id for its first sender, so a new owner cannot send under the old one.
-	UUIDString = FCrowdyActorId::ForOwner(NetID, NewOwnerID).ToString();
+	UUIDString = FCrowdyActorId::ForOwner(NetID, NewWriterID).ToString();
 
 	if (IsLocallyOwned())
 		CrowdyActorPool::RestoreProxyMovement(GetOwner());
@@ -663,23 +672,63 @@ void UCrowdyEntityComponent::ApplyOwnershipReassignment(const FGuid& NewOwnerID,
 		StopReplication();
 }
 
+bool UCrowdyEntityComponent::StopForRekey(const FGuid& NewID, TArray<uint8>& OutExtras)
+{
+	const bool bWasSending = IsValid(AutoReplicator) && AutoReplicator->HoldsComponent(this);
+	OutExtras = bWasSending ? AutoReplicator->GetExtras(this) : TArray<uint8>();
+	StopReplication();
+	NetID = NewID;
+	WriterID = NewID;
+	UUIDString = NewID.ToString(EGuidFormats::Digits);
+	return bWasSending;
+}
+
+void UCrowdyEntityComponent::ResumeAfterRekey(const bool bWasSending, TArray<uint8> Extras)
+{
+	if (!bWasSending)
+		return;
+
+	if (ReplicatesMovement())
+		StartReplication();
+	else
+		StartPresence();
+	RestoreExtras(MoveTemp(Extras));
+}
+
+void UCrowdyEntityComponent::RepointForRekey(const FGuid& NewWriterID)
+{
+	TArray<uint8> Extras = IsValid(AutoReplicator) ? AutoReplicator->GetExtras(this) : TArray<uint8>();
+
+	// A presence entry still registered keeps the wire id it registered with, so it registers again under the new one.
+	StopReplication();
+	ApplyOwnershipReassignment(NewWriterID, ECrowdyRole::Owner);
+	RestoreExtras(MoveTemp(Extras));
+}
+
+void UCrowdyEntityComponent::RestoreExtras(TArray<uint8> Extras)
+{
+	// Registering anew clears what the game set; a re-key is the same entity, so it keeps them.
+	if (!Extras.IsEmpty() && IsValid(AutoReplicator))
+		AutoReplicator->SetExtras(this, MoveTemp(Extras));
+}
+
 void UCrowdyEntityComponent::BroadcastOwnershipAssigned()
 {
 	bOwnershipAnnounced = true;
 
-	const FGuid AnnouncedOwnerID = OwnerID;
+	const FGuid AnnouncedWriterID = WriterID;
 	const ECrowdyRole AnnouncedRole = Role;
 	const bool bAnnouncedLocallyOwned = IsLocallyOwned();
 
 #if WITH_DEV_AUTOMATION_TESTS
 	++OwnershipAnnouncementCount;
-	LastAnnouncedOwnerID = AnnouncedOwnerID;
+	LastAnnouncedWriterID = AnnouncedWriterID;
 	LastAnnouncedRole = AnnouncedRole;
 	bLastAnnouncedLocallyOwned = bAnnouncedLocallyOwned;
 	LastAnnouncementStep = ++OwnershipStepCounter;
 #endif
 
-	OnCrowdyOwnershipAssigned.Broadcast(AnnouncedOwnerID, AnnouncedRole, bAnnouncedLocallyOwned);
+	OnCrowdyOwnershipAssigned.Broadcast(AnnouncedWriterID, AnnouncedRole, bAnnouncedLocallyOwned);
 }
 
 void UCrowdyEntityComponent::ScheduleInitialOwnershipAnnouncement()
@@ -729,19 +778,19 @@ const FInstancedStruct& UCrowdyEntityComponent::GetReplicatedState() const
 }
 
 void UCrowdyEntityComponent::DeriveAuthority(const ECrowdyOwnership InOwnership, const FGuid& InLocalPlayerID,
-	ECrowdyRole& OutRole, FGuid& OutOwnerID)
+	ECrowdyRole& OutRole, FGuid& OutWriterID)
 {
 	if (InOwnership == ECrowdyOwnership::Host)
 	{
 		// World entity: no per-client owner id (Guid::Zero, matching
-		// FCrowdyEntityRecord's "OwnerID is Guid::Zero for world-static entities").
+		// FCrowdyEntityRecord's "WriterID is Guid::Zero for world-static entities").
 		OutRole = ECrowdyRole::HostOwned;
-		OutOwnerID = FGuid();
+		OutWriterID = FGuid();
 	}
 	else
 	{
 		OutRole = ECrowdyRole::Owner;
-		OutOwnerID = InLocalPlayerID;
+		OutWriterID = InLocalPlayerID;
 	}
 }
 
@@ -789,18 +838,18 @@ ECrowdyOwnedBy UCrowdyEntityComponent::ResolveOwnedBy(const ECrowdyOwnedBy InOwn
 }
 
 void UCrowdyEntityComponent::DeriveOwner(const ECrowdyOwnedBy InResolvedOwnedBy, const FGuid& InLocalPlayerID,
-	ECrowdyRole& OutRole, FGuid& OutOwnerID)
+	ECrowdyRole& OutRole, FGuid& OutWriterID)
 {
 	if (InResolvedOwnedBy == ECrowdyOwnedBy::Player)
 	{
 		OutRole = ECrowdyRole::Owner;
-		OutOwnerID = InLocalPlayerID;
+		OutWriterID = InLocalPlayerID;
 		return;
 	}
 
 	// A World entity carries no per-client owner id; a Leader entity gets one when it registers.
 	OutRole = InResolvedOwnedBy == ECrowdyOwnedBy::Leader ? ECrowdyRole::RemoteProxy : ECrowdyRole::HostOwned;
-	OutOwnerID = FGuid();
+	OutWriterID = FGuid();
 }
 
 bool UCrowdyEntityComponent::ResolveReplicatesMovement(const ECrowdyReplicateMovement InReplicateMovement,
@@ -818,14 +867,14 @@ bool UCrowdyEntityComponent::IsPawnWithMovement(const TSubclassOf<AActor> ActorC
 }
 
 bool UCrowdyEntityComponent::DoesOwnershipMatch(const ECrowdyRole OwnerRole, const FGuid& OwnerNetID,
-	const ECrowdyRole TargetRole, const FGuid& TargetOwnerID)
+	const ECrowdyRole TargetRole, const FGuid& TargetWriterID)
 {
 	// A World entity has no writer, so it neither owns nor is owned.
 	if (OwnerRole == ECrowdyRole::HostOwned || TargetRole == ECrowdyRole::HostOwned)
 	{
 		return false;
 	}
-	return OwnerNetID.IsValid() && OwnerNetID == TargetOwnerID;
+	return OwnerNetID.IsValid() && OwnerNetID == TargetWriterID;
 }
 
 bool UCrowdyEntityComponent::IsLocallyOwned() const
@@ -835,7 +884,18 @@ bool UCrowdyEntityComponent::IsLocallyOwned() const
 		return Role == ECrowdyRole::Owner;
 
 	// An actor is never a replicated subsystem, so an entity with no owner has no writer.
-	return FCrowdyEntityRecord::IsWrittenBy(Role, OwnerID, EntitySubsystem->GetLocalPlayerID(), FGuid());
+	return FCrowdyEntityRecord::IsWrittenBy(Role, WriterID, EntitySubsystem->GetLocalPlayerID(), FGuid());
+}
+
+int64 UCrowdyEntityComponent::GetOwnerUserID() const
+{
+	const FCrowdyEntityRecord* Record = IsValid(EntitySubsystem) ? EntitySubsystem->FindRecord(NetID) : nullptr;
+	return Record ? EntitySubsystem->GetOwnerUserID(*Record) : OwnerUserID;
+}
+
+bool UCrowdyEntityComponent::IsOwnedByLocalUser() const
+{
+	return IsValid(EntitySubsystem) && FCrowdyEntityRecord::IsOwnedByUser(GetOwnerUserID(), EntitySubsystem->GetLocalUserID());
 }
 
 UCrowdyEntitySubsystem* UCrowdyEntityComponent::ResolveEntitySubsystem() const
@@ -881,14 +941,14 @@ void UCrowdyEntityComponent::ResolveIdentity()
 		BindingKey = ICrowdyBindingKeyProvider::Execute_GetCrowdyBindingKey(CachedOwner);
 	}
 
-	// A binding key does not apply to a player: a player's identity is its account (PlayerDerived), and that branch
-	// also establishes the session UUID other systems key on. Ignore a key on a PlayerDerived pawn and warn, so a
-	// stray key never silently derails session identity.
+	// A binding key does not apply to a player: a player's identity is its sign-in's actor id (PlayerDerived), and that
+	// branch also establishes the session UUID other systems key on. Ignore a key on a PlayerDerived pawn and warn, so
+	// a stray key never silently derails session identity.
 	const bool bUseKey = !BindingKey.IsEmpty() && IdentityPolicy != ECrowdyIdentityPolicy::PlayerDerived;
 	if (!BindingKey.IsEmpty() && IdentityPolicy == ECrowdyIdentityPolicy::PlayerDerived)
 	{
 		UE_LOG(LogCrowdyReplication, Warning,
-			TEXT("[CrowdyEntityComponent]: '%s' supplies a Crowdy binding key but its IdentityPolicy is PlayerDerived - the key is ignored (a player's identity is its account). Use a non-PlayerDerived policy for a keyed world object."),
+			TEXT("[CrowdyEntityComponent]: '%s' supplies a Crowdy binding key but its IdentityPolicy is PlayerDerived - the key is ignored (a player's identity is its sign-in's actor id). Use a non-PlayerDerived policy for a keyed world object."),
 			*GetNameSafe(CachedOwner));
 	}
 
@@ -923,11 +983,16 @@ void UCrowdyEntityComponent::ResolveIdentity()
 		const ECrowdyPlayerDerivedIdentity Verdict = ClassifyPlayerDerivedIdentity(Facts);
 		if (Verdict == ECrowdyPlayerDerivedIdentity::Resolved)
 		{
-			NetID = UHelperFunctions::GetDeterministicID(GameSession->GetUserID());
+			// The session's id, so a respawn, a spectator and chat all send under the one id.
+			const bool bHeld = GameSession->GetID().IsValid();
+			NetID = GameSession->EnsureActorID();
+			bResolvedAsAvatar = true;
 
-			// Establishes the session UUID other systems key on (ActorTracker,
-			// EntitySubsystem and the Leader subsystem listen to OnOwnerUUIDUpdated).
-			GameSession->SetUUID(NetID.ToString(EGuidFormats::Digits));
+			// A held id is announced again for the world subsystems created since it was set (they listen to OnOwnerUUIDUpdated).
+			if (bHeld)
+			{
+				GameSession->SetUUID(NetID.ToString(EGuidFormats::Digits));
+			}
 			break;
 		}
 
@@ -972,7 +1037,7 @@ void UCrowdyEntityComponent::ResolveIdentity()
 		TEXT("[CrowdyEntityComponent]: '%s' is owned by this client - it was spawned at runtime, so Owned By World does not apply (that setting is for actors placed in the level)."),
 		*GetNameSafe(CachedOwner));
 
-	DeriveOwner(Resolved, LocalID, Role, OwnerID);
+	DeriveOwner(Resolved, LocalID, Role, WriterID);
 
 	// A world entity needs a deterministic NetID that every client computes identically (Stable policy, or a
 	// binding key); with any other policy it would get a different id per client and never converge. The test is
@@ -1026,9 +1091,9 @@ const TCHAR* UCrowdyEntityComponent::DescribePlayerDerivedIdentity(const ECrowdy
 	case ECrowdyPlayerDerivedIdentity::NotThePrimaryPlayer:
 		return TEXT("the pawn belongs to a secondary local player, not the primary one");
 	case ECrowdyPlayerDerivedIdentity::NoGameSession:
-		return TEXT("this client has no Crowdy game session to read a signed-in account from");
+		return TEXT("this client has no Crowdy game session to read a session id from");
 	default:
-		return TEXT("it resolved from the signed-in account");
+		return TEXT("it resolved to the session id");
 	}
 }
 
@@ -1046,7 +1111,7 @@ void UCrowdyEntityComponent::ReportPlayerDerivedFallback(const ECrowdyPlayerDeri
 	bPlayerDerivedFallbackReported = true;
 
 	const FString Message = FString::Printf(
-		TEXT("[CrowdyEntityComponent]: Identity Policy is Player Derived on '%s' but %s, so it fell back to a random id. A random id is different on every client, so nothing can address this entity across the network. Player Derived reads the signed-in account and fits only the locally controlled primary player pawn: set Identity Policy to Stable for an actor placed in the level, give the actor a Crowdy binding key, or set it to Random deliberately if no other client needs to address it."),
+		TEXT("[CrowdyEntityComponent]: Identity Policy is Player Derived on '%s' but %s, so it fell back to a random id. A random id is different on every client, so nothing can address this entity across the network. Player Derived uses the signed-in session id and fits only the locally controlled primary player pawn: set Identity Policy to Stable for an actor placed in the level, give the actor a Crowdy binding key, or set it to Random deliberately if no other client needs to address it."),
 		*GetNameSafe(CachedOwner), DescribePlayerDerivedIdentity(Verdict));
 
 #if WITH_DEV_AUTOMATION_TESTS

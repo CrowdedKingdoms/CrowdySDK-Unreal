@@ -10,11 +10,12 @@
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/PlayerController.h"
+#include "Replication/Components/CrowdySpectatorComponent.h"
 #include "Replication/State/CrowdyStateTestTarget.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
+#include "Serialization/CrowdyActorId.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "UObject/Package.h"
-#include "Utils/HelperFunctions.h"
 
 // These cases also prove the deprecated Ownership keeps its meaning for a component a C++ constructor configured.
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -61,8 +62,6 @@ namespace
 			Session = NewObject<UCrowdyGameSession>(GameInstance);
 			Session->SetUserID(PossessionTestUserID);
 		}
-
-		FGuid ExpectedNetID() const { return UHelperFunctions::GetDeterministicID(PossessionTestUserID); }
 	};
 
 	ACrowdyPlayerDerivedTestPawn* SpawnPlayerDerivedPawn(UWorld* World, const FCrowdyPossessionCollaborators& Collaborators)
@@ -99,14 +98,14 @@ bool FCrowdyStateAuthorityDerivationTest::RunTest(const FString& Parameters)
 	const FGuid LocalPlayer = FGuid::NewGuid();
 
 	ECrowdyRole Role = ECrowdyRole::None;
-	FGuid OwnerID = FGuid::NewGuid(); // deliberately non-empty first, to prove Host zeroes it
-	UCrowdyEntityComponent::DeriveAuthority(ECrowdyOwnership::Host, LocalPlayer, Role, OwnerID);
+	FGuid WriterID = FGuid::NewGuid(); // deliberately non-empty first, to prove Host zeroes it
+	UCrowdyEntityComponent::DeriveAuthority(ECrowdyOwnership::Host, LocalPlayer, Role, WriterID);
 	TestEqual(TEXT("Host -> HostOwned role"), static_cast<uint8>(Role), static_cast<uint8>(ECrowdyRole::HostOwned));
-	TestFalse(TEXT("Host -> no owner id"), OwnerID.IsValid());
+	TestFalse(TEXT("Host -> no owner id"), WriterID.IsValid());
 
-	UCrowdyEntityComponent::DeriveAuthority(ECrowdyOwnership::LocalClient, LocalPlayer, Role, OwnerID);
+	UCrowdyEntityComponent::DeriveAuthority(ECrowdyOwnership::LocalClient, LocalPlayer, Role, WriterID);
 	TestEqual(TEXT("LocalClient -> Owner role"), static_cast<uint8>(Role), static_cast<uint8>(ECrowdyRole::Owner));
-	TestEqual(TEXT("LocalClient -> owner id is the local player"), OwnerID, LocalPlayer);
+	TestEqual(TEXT("LocalClient -> owner id is the local player"), WriterID, LocalPlayer);
 	return true;
 }
 
@@ -182,7 +181,7 @@ bool FCrowdyEntityEffectiveOwnershipTest::RunTest(const FString& Parameters)
 	PlacedComponent->ResolveIdentityForTest(PlacedActor);
 	TestEqual(TEXT("authored Host on a level-placed actor resolves to HostOwned"),
 		static_cast<uint8>(PlacedComponent->GetRole()), static_cast<uint8>(ECrowdyRole::HostOwned));
-	TestFalse(TEXT("a host-owned entity carries no per-client owner id"), PlacedComponent->GetOwnerID().IsValid());
+	TestFalse(TEXT("a host-owned entity carries no per-client owner id"), PlacedComponent->GetWriterID().IsValid());
 
 	// Authored LocalClient is unaffected by placement: it is this client's either way.
 	PlacedComponent->Ownership = ECrowdyOwnership::LocalClient;
@@ -211,7 +210,7 @@ bool FCrowdyEntityOwnedByDecidesOwnerTest::RunTest(const FString& Parameters)
 	Placed->OwnedBy = ECrowdyOwnedBy::World;
 	Placed->ResolveIdentityForTest(PlacedActor);
 	TestEqual(TEXT("World on a placed actor is written by the host"), Placed->GetRole(), ECrowdyRole::HostOwned);
-	TestFalse(TEXT("with no per-client owner id"), Placed->GetOwnerID().IsValid());
+	TestFalse(TEXT("with no per-client owner id"), Placed->GetWriterID().IsValid());
 
 	Spawned->OwnedBy = ECrowdyOwnedBy::World;
 	Spawned->ResolveIdentityForTest(SpawnedActor);
@@ -247,13 +246,13 @@ bool FCrowdyEntityLocallyOwnedTest::RunTest(const FString& Parameters)
 
 	TestFalse(TEXT("an entity with no role is not locally owned"), Component->IsLocallyOwned());
 
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), ECrowdyRole::Owner, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), 0, ECrowdyRole::Owner, 0);
 	TestTrue(TEXT("an entity we own is locally owned"), Component->IsLocallyOwned());
 
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), ECrowdyRole::RemoteProxy, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid::NewGuid(), 0, ECrowdyRole::RemoteProxy, 0);
 	TestFalse(TEXT("a remote proxy is not locally owned"), Component->IsLocallyOwned());
 
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), ECrowdyRole::HostOwned, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::HostOwned, 0);
 	TestFalse(TEXT("a World entity is not locally owned"), Component->IsLocallyOwned());
 	return true;
 }
@@ -277,12 +276,12 @@ bool FCrowdyEntityOwnershipAssignedInitialTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("no announcement without an identity"), Component->OwnershipAnnouncementCount, 0);
 
 	const FGuid NetID = FGuid::NewGuid();
-	const FGuid OwnerID = FGuid::NewGuid();
-	Component->AssignPooledIdentity(NetID, OwnerID, ECrowdyRole::Owner, 0);
+	const FGuid WriterID = FGuid::NewGuid();
+	Component->AssignPooledIdentity(NetID, WriterID, 0, ECrowdyRole::Owner, 0);
 
 	Component->AnnounceInitialOwnershipForTest();
 	TestEqual(TEXT("announced once identity is settled"), Component->OwnershipAnnouncementCount, 1);
-	TestEqual(TEXT("announced the entity's owner"), Component->LastAnnouncedOwnerID, OwnerID);
+	TestEqual(TEXT("announced the entity's owner"), Component->LastAnnouncedWriterID, WriterID);
 	TestEqual(TEXT("announced the entity's role"),
 		static_cast<uint8>(Component->LastAnnouncedRole), static_cast<uint8>(ECrowdyRole::Owner));
 	TestTrue(TEXT("announced that we own it"), Component->bLastAnnouncedLocallyOwned);
@@ -297,7 +296,7 @@ bool FCrowdyEntityOwnershipAssignedInitialTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("a pooled actor with no identity announces nothing"), Component->OwnershipAnnouncementCount, 1);
 
 	// Checked back out under a new identity: announced again.
-	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), ECrowdyRole::HostOwned, 0);
+	Component->AssignPooledIdentity(FGuid::NewGuid(), FGuid(), 0, ECrowdyRole::HostOwned, 0);
 	Component->AnnounceInitialOwnershipForTest();
 	TestEqual(TEXT("a re-assigned identity announces again"), Component->OwnershipAnnouncementCount, 2);
 	TestEqual(TEXT("announced the new role"),
@@ -333,7 +332,7 @@ bool FCrowdyEntityOwnershipAssignedOnReassignTest::RunTest(const FString& Parame
 	const FGuid NetID = FGuid::NewGuid();
 	FCrowdyEntityRecord Record;
 	Record.NetID = NetID;
-	Record.OwnerID = LocalPlayer;
+	Record.WriterID = LocalPlayer;
 	Record.Role = ECrowdyRole::Owner;
 	Record.Participant = Actor;
 	ES->RegisterEntity(Record);
@@ -342,9 +341,9 @@ bool FCrowdyEntityOwnershipAssignedOnReassignTest::RunTest(const FString& Parame
 		Actor->Entity->OwnershipAnnouncementCount, 0);
 
 	// Transferred away.
-	ES->ReassignOwnership(NetID, OtherPlayer, LocalPlayer);
+	ES->ReassignOwnership(NetID, OtherPlayer, LocalPlayer, 0);
 	TestEqual(TEXT("transferring away announces"), Actor->Entity->OwnershipAnnouncementCount, 1);
-	TestEqual(TEXT("announced the new owner"), Actor->Entity->LastAnnouncedOwnerID, OtherPlayer);
+	TestEqual(TEXT("announced the new owner"), Actor->Entity->LastAnnouncedWriterID, OtherPlayer);
 	TestEqual(TEXT("announced the proxy role"),
 		static_cast<uint8>(Actor->Entity->LastAnnouncedRole), static_cast<uint8>(ECrowdyRole::RemoteProxy));
 	TestFalse(TEXT("announced that we no longer own it"), Actor->Entity->bLastAnnouncedLocallyOwned);
@@ -352,22 +351,22 @@ bool FCrowdyEntityOwnershipAssignedOnReassignTest::RunTest(const FString& Parame
 		Actor->Entity->LastAnnouncementStep > Actor->Entity->TrackersRepointedStep);
 
 	// Transferred back.
-	ES->ReassignOwnership(NetID, LocalPlayer, OtherPlayer);
+	ES->ReassignOwnership(NetID, LocalPlayer, OtherPlayer, 0);
 	TestEqual(TEXT("transferring back announces"), Actor->Entity->OwnershipAnnouncementCount, 2);
-	TestEqual(TEXT("announced us as the owner"), Actor->Entity->LastAnnouncedOwnerID, LocalPlayer);
+	TestEqual(TEXT("announced us as the owner"), Actor->Entity->LastAnnouncedWriterID, LocalPlayer);
 	TestTrue(TEXT("announced that we own it again"), Actor->Entity->bLastAnnouncedLocallyOwned);
 	TestTrue(TEXT("the adopt direction also announces after the re-point"),
 		Actor->Entity->LastAnnouncementStep > Actor->Entity->TrackersRepointedStep);
 
 	// Handed to the host.
-	ES->ReassignOwnership(NetID, FGuid(), LocalPlayer);
+	ES->ReassignOwnership(NetID, FGuid(), LocalPlayer, 0);
 	TestEqual(TEXT("handing to the host announces"), Actor->Entity->OwnershipAnnouncementCount, 3);
-	TestFalse(TEXT("a host-owned entity announces no per-client owner"), Actor->Entity->LastAnnouncedOwnerID.IsValid());
+	TestFalse(TEXT("a host-owned entity announces no per-client owner"), Actor->Entity->LastAnnouncedWriterID.IsValid());
 	TestEqual(TEXT("announced the host-owned role"),
 		static_cast<uint8>(Actor->Entity->LastAnnouncedRole), static_cast<uint8>(ECrowdyRole::HostOwned));
 
 	// A stale grant is dropped, so nothing changed and nothing is announced.
-	ES->ReassignOwnership(NetID, OtherPlayer, WrongExpectation);
+	ES->ReassignOwnership(NetID, OtherPlayer, WrongExpectation, 0);
 	TestEqual(TEXT("a dropped grant announces nothing"), Actor->Entity->OwnershipAnnouncementCount, 3);
 	return true;
 }
@@ -383,13 +382,13 @@ bool FCrowdyOwnershipMatchTest::RunTest(const FString& Parameters)
 	const FGuid OtherPlayer  = FGuid::NewGuid();
 	const FGuid WorldEntity  = FGuid::NewGuid(); // a World entity's stable NetID (not a player id)
 	const FGuid ChildNetID   = FGuid::NewGuid(); // a player-spawned entity's own NetID
-	const FGuid Zero;                            // World entities carry Guid::Zero as their OwnerID
+	const FGuid Zero;                            // World entities carry Guid::Zero as their WriterID
 
 	TestTrue(TEXT("player owns its own spawned entity"),
 		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, OtherPlayer, ECrowdyRole::Owner, OtherPlayer));
 	TestFalse(TEXT("player does not own another player's entity"),
 		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, OtherPlayer, ECrowdyRole::Owner, LeaderPlayer));
-	// The owner acts under its own NetID, not its OwnerID.
+	// The owner acts under its own NetID, not its WriterID.
 	TestFalse(TEXT("siblings of the same player do not own each other"),
 		UEC::DoesOwnershipMatch(ECrowdyRole::Owner, ChildNetID, ECrowdyRole::Owner, OtherPlayer));
 
@@ -434,7 +433,7 @@ bool FCrowdyEntityDeferIdentityToPossessionTest::RunTest(const FString& Paramete
 // The defect: the engine possesses a pawn spawned during play only after that spawn has dispatched BeginPlay, so a
 // Player Derived pawn that resolved at BeginPlay found no controller and registered under a random id, and the
 // session UUID every local-player reader keys on was never set. Now the pawn holds no identity and registers
-// nothing until its first possession, at which point it registers under the account-derived id and sets the UUID.
+// nothing until its first possession, at which point it registers under the session's id and sets the UUID.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedRegistersOnPossessionTest,
 	"CrowdySDK.Entity.PlayerDerivedRegistersOnPossession", CrowdyAuthorityTestFlags)
 bool FCrowdyEntityPlayerDerivedRegistersOnPossessionTest::RunTest(const FString& Parameters)
@@ -463,8 +462,9 @@ bool FCrowdyEntityPlayerDerivedRegistersOnPossessionTest::RunTest(const FString&
 	}
 	Pawn->PossessedBy(Controller);
 
-	const FGuid Expected = Collaborators.ExpectedNetID();
-	TestEqual(TEXT("after possession: registered under the account-derived id"),
+	const FGuid Expected = Collaborators.Session->GetID();
+	TestTrue(TEXT("after possession: the session holds a valid id"), Expected.IsValid());
+	TestEqual(TEXT("after possession: registered under the session's id"),
 		Collaborators.Entities->FindEntityID(Pawn), Expected);
 	TestEqual(TEXT("after possession: the component holds that id"), Pawn->Entity->GetNetID(), Expected);
 	TestEqual(TEXT("after possession: this client owns its own pawn"),
@@ -495,15 +495,16 @@ bool FCrowdyEntityPlayerDerivedPossessedBeforeBeginPlayTest::RunTest(const FStri
 
 	Pawn->DispatchBeginPlay();
 
-	const FGuid Expected = Collaborators.ExpectedNetID();
-	TestEqual(TEXT("BeginPlay registers under the account-derived id"), Collaborators.Entities->FindEntityID(Pawn), Expected);
-	TestEqual(TEXT("BeginPlay sets the session UUID"), Collaborators.Session->GetID(), Expected);
+	const FGuid Expected = Pawn->Entity->GetNetID();
+	TestTrue(TEXT("BeginPlay resolves a valid id"), Expected.IsValid());
+	TestEqual(TEXT("BeginPlay registers under it"), Collaborators.Entities->FindEntityID(Pawn), Expected);
+	TestEqual(TEXT("BeginPlay sets the session UUID to the same id"), Collaborators.Session->GetID(), Expected);
 	TestEqual(TEXT("resolved exactly once, at BeginPlay"), Pawn->Entity->IdentityResolutionCount, 1);
 	TestFalse(TEXT("nothing was bound to the controller change"), Pawn->ReceiveControllerChangedDelegate.IsBound());
 	return true;
 }
 
-// The identity is the account, not the controller: once resolved, an unpossess and a possession by another player
+// The identity is the sign-in's id, not the controller: once resolved, an unpossess and a possession by another player
 // controller re-register nothing and change nothing.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedSecondPossessionTest,
 	"CrowdySDK.Entity.PlayerDerivedSecondPossession", CrowdyAuthorityTestFlags)
@@ -524,20 +525,212 @@ bool FCrowdyEntityPlayerDerivedSecondPossessionTest::RunTest(const FString& Para
 	Pawn->PossessedBy(First);
 	const FGuid Resolved = Pawn->Entity->GetNetID();
 	TestTrue(TEXT("the first possession resolved"), Resolved.IsValid());
-
+	TestEqual(TEXT("to the id the session holds"), Collaborators.Session->GetID(), Resolved);
 	Pawn->UnPossessed();
 	TestEqual(TEXT("an unpossess changes nothing"), Pawn->Entity->GetNetID(), Resolved);
 
 	Pawn->PossessedBy(Second);
 	TestEqual(TEXT("a second possession keeps the id"), Pawn->Entity->GetNetID(), Resolved);
+	TestEqual(TEXT("and the session's"), Collaborators.Session->GetID(), Resolved);
 	TestEqual(TEXT("a second possession is still registered under it"), Collaborators.Entities->FindEntityID(Pawn), Resolved);
 	TestEqual(TEXT("a second possession does not resolve again"), Pawn->Entity->IdentityResolutionCount, 1);
 	TestFalse(TEXT("nothing is listening any more"), Pawn->ReceiveControllerChangedDelegate.IsBound());
 	return true;
 }
 
+// Each sign-in gives the session a new id, and the live Player Derived pawn re-keys to it: it stops answering to the old
+// id, registers under the new one as the same actor, and writes again. A sign-in as another user over a live one does
+// the same.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedRekeysAtSignInTest,
+	"CrowdySDK.Entity.PlayerDerivedPawnRekeysAtEachSignIn", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityPlayerDerivedRekeysAtSignInTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	Collaborators.Entities->SetGameSessionForTest(Collaborators.Session);
+	Collaborators.Entities->BindGameSessionForTest();
+	ACrowdyPlayerDerivedTestPawn* Pawn = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	APlayerController* Controller = SpawnLocalPlayerController(TestWorld.World);
+	if (!TestNotNull(TEXT("the pawn spawned"), Pawn) || !TestNotNull(TEXT("the controller spawned"), Controller))
+	{
+		return false;
+	}
+
+	Collaborators.Session->BeginSignIn();
+	Pawn->DispatchBeginPlay();
+	Pawn->PossessedBy(Controller);
+	const FGuid First = Pawn->Entity->GetNetID();
+	TestTrue(TEXT("the pawn takes the sign-in's id"), First.IsValid() && First == Collaborators.Session->GetID());
+	TestTrue(TEXT("and writes"), Pawn->Entity->IsLocallyOwned());
+
+	// A sign-out drops the id with the connection closed, and re-keys nothing until the next sign-in.
+	Collaborators.Session->ClearCurrentSessionData();
+	TestEqual(TEXT("signed out, the pawn still holds its id"), Pawn->Entity->GetNetID(), First);
+
+	Collaborators.Session->SetUserID(PossessionTestUserID);
+	Collaborators.Session->BeginSignIn();
+	const FGuid Second = Collaborators.Session->GetID();
+	TestTrue(TEXT("the same user signing back in gets a new id"), Second.IsValid() && Second != First);
+	TestEqual(TEXT("the pawn re-keys to it"), Pawn->Entity->GetNetID(), Second);
+	TestEqual(TEXT("and its owner"), Pawn->Entity->GetWriterID(), Second);
+	TestEqual(TEXT("and sends under it"), Pawn->Entity->GetReplicationUUID(), Second.ToString(EGuidFormats::Digits));
+	TestEqual(TEXT("registered under the new id"), Collaborators.Entities->FindEntityID(Pawn), Second);
+	TestEqual(TEXT("as the same actor"), Collaborators.Entities->FindParticipant(Second), static_cast<UObject*>(Pawn));
+	TestNull(TEXT("the old id answers for nothing"), Collaborators.Entities->FindParticipant(First));
+	TestTrue(TEXT("the pawn writes again"), Pawn->Entity->IsLocallyOwned() && Collaborators.Entities->IsLocallyOwned(Second));
+	TestTrue(TEXT("and the old id is still known as this client's"), Collaborators.Entities->IsLocalSender(First));
+	TestEqual(TEXT("its full state waits for the connection"), Collaborators.Entities->GetRekeyedAwaitingConnectionCountForTest(), 1);
+	Collaborators.Entities->HandleRealtimeUpForTest();
+	TestEqual(TEXT("and goes once it is up"), Collaborators.Entities->GetRekeyedAwaitingConnectionCountForTest(), 0);
+
+	// Another user signing in over the live sign-in.
+	Collaborators.Session->EndSignIn();
+	Collaborators.Session->SetUserID(PossessionTestUserID + 1);
+	Collaborators.Session->BeginSignIn();
+	const FGuid Third = Collaborators.Session->GetID();
+	TestTrue(TEXT("another user's sign-in gets another id"), Third.IsValid() && Third != Second);
+	TestEqual(TEXT("and the pawn re-keys to it too"), Collaborators.Entities->FindEntityID(Pawn), Third);
+	TestTrue(TEXT("writing under it"), Pawn->Entity->IsLocallyOwned());
+	TestNull(TEXT("leaving the previous id free"), Collaborators.Entities->FindParticipant(Second));
+	return true;
+}
+
+// A pawn whose Player Derived identity resolved to the session's id registers as the player's avatar and stays one
+// through a re-key; a Player Derived pawn that fell back to a random id is not one.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityAvatarFlagFollowsPlayerDerivedIdentityTest,
+	"CrowdySDK.Entity.AvatarFlagFollowsPlayerDerivedIdentity", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityAvatarFlagFollowsPlayerDerivedIdentityTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	Collaborators.Entities->SetGameSessionForTest(Collaborators.Session);
+	Collaborators.Entities->BindGameSessionForTest();
+	ACrowdyPlayerDerivedTestPawn* Pawn = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	ACrowdyPlayerDerivedTestPawn* Fallback = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	APlayerController* Controller = SpawnLocalPlayerController(TestWorld.World);
+	if (!TestNotNull(TEXT("the pawn spawned"), Pawn) || !TestNotNull(TEXT("the fallback pawn spawned"), Fallback)
+		|| !TestNotNull(TEXT("the controller spawned"), Controller))
+	{
+		return false;
+	}
+
+	// With no game session to read an id from, Player Derived falls back to a random one.
+	Fallback->Entity->SetCollaboratorsForTest(Collaborators.Entities, nullptr);
+
+	Collaborators.Session->BeginSignIn();
+	Pawn->DispatchBeginPlay();
+	Pawn->PossessedBy(Controller);
+	const FCrowdyEntityRecord* Record = Collaborators.Entities->FindRecord(Pawn->Entity->GetNetID());
+	if (!TestNotNull(TEXT("the pawn registered"), Record))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a pawn under the session's id is the player's avatar"), Record->bAvatar);
+	TestEqual(TEXT("sending under its bare id"), Pawn->Entity->GetReplicationUUID(), Record->NetID.ToString(EGuidFormats::Digits));
+
+	Collaborators.Session->ClearCurrentSessionData();
+	Collaborators.Session->SetUserID(PossessionTestUserID);
+	Collaborators.Session->BeginSignIn();
+	const FCrowdyEntityRecord* Rekeyed = Collaborators.Entities->FindRecord(Collaborators.Session->GetID());
+	if (!TestNotNull(TEXT("the pawn re-keyed to the next sign-in's id"), Rekeyed))
+	{
+		return false;
+	}
+	TestTrue(TEXT("as the same actor"), Rekeyed->GetActor() == Pawn);
+	TestTrue(TEXT("and still the player's avatar"), Rekeyed->bAvatar);
+
+	AddExpectedMessagePlain(TEXT("so it fell back to a random id"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	Fallback->DispatchBeginPlay();
+	Fallback->PossessedBy(Controller);
+	const FCrowdyEntityRecord* Random = Collaborators.Entities->FindRecord(Fallback->Entity->GetNetID());
+	if (!TestNotNull(TEXT("the fallback pawn registered"), Random))
+	{
+		return false;
+	}
+	TestTrue(TEXT("under an id that is not the session's"), Random->NetID != Collaborators.Session->GetID());
+	TestFalse(TEXT("so it is not the player's avatar"), Random->bAvatar);
+	TestTrue(TEXT("and it sends under its writer's id, so other clients do not draw it as one"), Random->WriterID.IsValid()
+		&& Fallback->Entity->GetReplicationUUID() == FCrowdyActorId::ForOwner(Random->NetID, Random->WriterID).ToString());
+	return true;
+}
+
+// A pawn possessed before anyone signs in mints the session's id, and the first sign-in adopts it, so the pawn keeps
+// its registration and nothing re-keys; the sign-in after that replaces it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedIdAdoptedAtSignInTest,
+	"CrowdySDK.Entity.PlayerDerivedIdMintedBeforeSignInIsAdopted", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityPlayerDerivedIdAdoptedAtSignInTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	Collaborators.Session->ClearCurrentSessionData();
+	Collaborators.Entities->SetGameSessionForTest(Collaborators.Session);
+	Collaborators.Entities->BindGameSessionForTest();
+	ACrowdyPlayerDerivedTestPawn* First = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	ACrowdyPlayerDerivedTestPawn* Second = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	APlayerController* Controller = SpawnLocalPlayerController(TestWorld.World);
+	if (!TestNotNull(TEXT("the first pawn spawned"), First) || !TestNotNull(TEXT("the second pawn spawned"), Second)
+		|| !TestNotNull(TEXT("the controller spawned"), Controller))
+	{
+		return false;
+	}
+
+	First->DispatchBeginPlay();
+	First->PossessedBy(Controller);
+	const FGuid Minted = First->Entity->GetNetID();
+	TestTrue(TEXT("a pawn resolves an id before sign-in"), Minted.IsValid());
+	TestEqual(TEXT("and the session holds it"), Collaborators.Session->GetID(), Minted);
+
+	Collaborators.Session->SetUserID(PossessionTestUserID);
+	Collaborators.Session->BeginSignIn();
+	TestEqual(TEXT("the first sign-in adopts it"), Collaborators.Session->GetID(), Minted);
+	TestEqual(TEXT("so the pawn keeps it"), Collaborators.Entities->FindEntityID(First), Minted);
+	TestEqual(TEXT("with nothing re-keyed"), Collaborators.Entities->GetRekeyedAwaitingConnectionCountForTest(), 0);
+
+	First->UnPossessed();
+	Second->DispatchBeginPlay();
+	Second->PossessedBy(Controller);
+	TestEqual(TEXT("a respawn reuses it"), Second->Entity->GetNetID(), Minted);
+
+	Collaborators.Session->ClearCurrentSessionData();
+	Collaborators.Session->SetUserID(PossessionTestUserID);
+	Collaborators.Session->BeginSignIn();
+	TestTrue(TEXT("the next sign-in replaces it"), Collaborators.Session->GetID().IsValid() && Collaborators.Session->GetID() != Minted);
+	TestEqual(TEXT("and the live pawn follows"), Collaborators.Entities->FindEntityID(Second), Collaborators.Session->GetID());
+	return true;
+}
+
+// A spectator with no pawn yet mints the session's id only while signed in, and the pawn spawned later sends under
+// that same id instead of a second one.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedReusesTheSpectatorsIdTest,
+	"CrowdySDK.Entity.PlayerDerivedReusesTheIdASpectatorMinted", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityPlayerDerivedReusesTheSpectatorsIdTest::RunTest(const FString& Parameters)
+{
+	FCrowdyPossessionTestWorld TestWorld;
+	FCrowdyPossessionCollaborators Collaborators;
+	Collaborators.Session->ClearCurrentSessionData();
+	TestTrue(TEXT("signed out, a spectator has no id"), CrowdySpectator::ViewerUuid(*Collaborators.Session).IsEmpty());
+	TestFalse(TEXT("and mints none"), Collaborators.Session->GetID().IsValid());
+
+	Collaborators.Session->SetUserID(PossessionTestUserID);
+	const FString Viewer = CrowdySpectator::ViewerUuid(*Collaborators.Session);
+	TestEqual(TEXT("signed in, a spectator mints the session's id"), Viewer, Collaborators.Session->GetUUID());
+	TestTrue(TEXT("a valid one"), Collaborators.Session->GetID().IsValid());
+
+	ACrowdyPlayerDerivedTestPawn* Pawn = SpawnPlayerDerivedPawn(TestWorld.World, Collaborators);
+	APlayerController* Controller = SpawnLocalPlayerController(TestWorld.World);
+	if (!TestNotNull(TEXT("the pawn spawned"), Pawn) || !TestNotNull(TEXT("the controller spawned"), Controller))
+	{
+		return false;
+	}
+	Pawn->DispatchBeginPlay();
+	Pawn->PossessedBy(Controller);
+	TestEqual(TEXT("the pawn reuses the spectator's id"), Pawn->Entity->GetNetID().ToString(EGuidFormats::Digits), Viewer);
+	TestEqual(TEXT("and registers under it"), Collaborators.Entities->FindEntityID(Pawn), Collaborators.Session->GetID());
+	return true;
+}
+
 // A respawn that keeps the previous pawn alive after unpossession (DetachFromControllerPendingDestroy plus a
-// lifespan): the new pawn derives the same account id, takes it from the corpse, and keeps it once the corpse ends play.
+// lifespan): the new pawn reuses the session's id, takes it from the corpse, and keeps it once the corpse ends play.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityPlayerDerivedRespawnSupersedesCorpseTest,
 	"CrowdySDK.Entity.PlayerDerivedRespawnSupersedesCorpse", CrowdyAuthorityTestFlags)
 bool FCrowdyEntityPlayerDerivedRespawnSupersedesCorpseTest::RunTest(const FString& Parameters)
@@ -552,18 +745,20 @@ bool FCrowdyEntityPlayerDerivedRespawnSupersedesCorpseTest::RunTest(const FStrin
 	{
 		return false;
 	}
-	const FGuid Expected = Collaborators.ExpectedNetID();
 
 	First->DispatchBeginPlay();
 	First->PossessedBy(Controller);
-	TestEqual(TEXT("the first pawn is registered under the account id"), Collaborators.Entities->FindEntityID(First), Expected);
+	const FGuid Expected = Collaborators.Session->GetID();
+	TestTrue(TEXT("the session holds a valid id"), Expected.IsValid());
+	TestEqual(TEXT("the first pawn is registered under the session's id"), Collaborators.Entities->FindEntityID(First), Expected);
 
 	First->UnPossessed();
 	Second->DispatchBeginPlay();
 	Second->PossessedBy(Controller);
 
-	TestEqual(TEXT("the second pawn is registered under the account id"), Collaborators.Entities->FindEntityID(Second), Expected);
-	TestEqual(TEXT("the registry's participant for the account id is the second pawn"),
+	TestEqual(TEXT("the second pawn reuses the session's id"), Collaborators.Entities->FindEntityID(Second), Expected);
+	TestEqual(TEXT("and the session keeps it"), Collaborators.Session->GetID(), Expected);
+	TestEqual(TEXT("the registry's participant for the id is the second pawn"),
 		Collaborators.Entities->FindParticipant(Expected), static_cast<UObject*>(Second));
 	TestFalse(TEXT("the corpse no longer holds an id"), Collaborators.Entities->FindEntityID(First).IsValid());
 	TestFalse(TEXT("the corpse's component forgot its id"), First->Entity->GetNetID().IsValid());
@@ -649,7 +844,7 @@ bool FCrowdyEntityEndPlayLeavesSuccessorRecordTest::RunTest(const FString& Param
 
 	const FGuid Reused = FGuid::NewGuid();
 	Departed->Entity->SetCollaboratorsForTest(Collaborators.Entities, Collaborators.Session);
-	Departed->Entity->AssignPooledIdentity(Reused, FGuid(), ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+	Departed->Entity->AssignPooledIdentity(Reused, FGuid(), 0, ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
 	Departed->DispatchBeginPlay();
 	if (!TestTrue(TEXT("the departed actor registered under its id"), Collaborators.Entities->FindEntity(Reused) == Departed))
 	{
@@ -669,10 +864,117 @@ bool FCrowdyEntityEndPlayLeavesSuccessorRecordTest::RunTest(const FString& Param
 	// The control: an actor still named by its record removes it when it ends play.
 	const FGuid Own = FGuid::NewGuid();
 	Registered->Entity->SetCollaboratorsForTest(Collaborators.Entities, Collaborators.Session);
-	Registered->Entity->AssignPooledIdentity(Own, FGuid(), ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
+	Registered->Entity->AssignPooledIdentity(Own, FGuid(), 0, ECrowdyRole::RemoteProxy, CROWDY_INVALID_CLASS_ID);
 	Registered->DispatchBeginPlay();
 	Registered->Entity->DestroyComponent();
 	TestNull(TEXT("an actor's own record goes when it ends play"), Collaborators.Entities->FindRecord(Own));
+	return true;
+}
+
+// A record this session writes reads its owner user live from the session, whatever the record holds; a peer's record
+// reads the user that peer claimed; a Leader or World entity has no owner user.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntityLocalRecordReadsSessionUserTest,
+	"CrowdySDK.Entity.LocalRecordReadsTheSessionsUser", CrowdyAuthorityTestFlags)
+bool FCrowdyEntityLocalRecordReadsSessionUserTest::RunTest(const FString& Parameters)
+{
+	constexpr int64 StaleClaim = 999;
+	constexpr int64 PeerUser = 321;
+	constexpr int64 NextUser = 4343;
+	const FCrowdyPossessionCollaborators Collaborators;
+	const FGuid Local = FGuid::NewGuid();
+	Collaborators.Entities->SetLocalPlayerID(Local);
+	Collaborators.Entities->SetGameSessionForTest(Collaborators.Session);
+	TestEqual(TEXT("the local user is the session's"), Collaborators.Entities->GetLocalUserID(), PossessionTestUserID);
+
+	FCrowdyEntityRecord Mine;
+	Mine.NetID = FGuid::NewGuid();
+	Mine.WriterID = Local;
+	Mine.Role = ECrowdyRole::Owner;
+	Mine.OwnerUserID = StaleClaim;
+	TestEqual(TEXT("a record written here reads the signed-in user, not what it holds"),
+		Collaborators.Entities->GetOwnerUserID(Mine), PossessionTestUserID);
+
+	FCrowdyEntityRecord Theirs = Mine;
+	Theirs.WriterID = FGuid::NewGuid();
+	Theirs.Role = ECrowdyRole::RemoteProxy;
+	Theirs.OwnerUserID = PeerUser;
+	TestEqual(TEXT("a peer's record reads the user its writer claimed"), Collaborators.Entities->GetOwnerUserID(Theirs), PeerUser);
+
+	FCrowdyEntityRecord Leader = Mine;
+	Leader.bLeaderOwned = true;
+	TestEqual(TEXT("a Leader entity has no owner user, even on the Leader"), Collaborators.Entities->GetOwnerUserID(Leader), static_cast<int64>(0));
+
+	FCrowdyEntityRecord World = Theirs;
+	World.WriterID = FGuid();
+	World.Role = ECrowdyRole::HostOwned;
+	TestEqual(TEXT("nor has a World entity"), Collaborators.Entities->GetOwnerUserID(World), static_cast<int64>(0));
+
+	AActor* Actor = NewObject<AActor>(GetTransientPackage());
+	UCrowdyEntityComponent* Component = NewObject<UCrowdyEntityComponent>(Actor);
+	Mine.Participant = Actor;
+	Collaborators.Entities->RegisterEntity(Mine);
+	Component->SetCollaboratorsForTest(Collaborators.Entities, Collaborators.Session);
+	Component->AssignPooledIdentity(Mine.NetID, Local, 0, ECrowdyRole::Owner, 0);
+	TestEqual(TEXT("the entity's component reads the same user"), Component->GetOwnerUserID(), PossessionTestUserID);
+	TestTrue(TEXT("and is owned by the local user"), Component->IsOwnedByLocalUser());
+
+	const TArray<AActor*> MineFound = Collaborators.Entities->GetEntitiesByOwnerUser(PossessionTestUserID);
+	TestTrue(TEXT("the signed-in user finds the entity this session writes"), MineFound.Num() == 1 && MineFound[0] == Actor);
+	TestEqual(TEXT("and the stale claim its record holds finds nothing"), Collaborators.Entities->GetEntitiesByOwnerUser(StaleClaim).Num(), 0);
+
+	Collaborators.Session->SetUserID(NextUser);
+	TestEqual(TEXT("another user's sign-in is read at once"), Component->GetOwnerUserID(), NextUser);
+
+	Collaborators.Session->SetUserID(0);
+	TestEqual(TEXT("signed out, the owner user is unknown"), Component->GetOwnerUserID(), static_cast<int64>(0));
+	TestFalse(TEXT("and an unknown user owns nothing"), Component->IsOwnedByLocalUser());
+	TestTrue(TEXT("while this session still writes it"), Component->IsLocallyOwned());
+	return true;
+}
+
+// Two sessions of one account: the one that does not write an entity is a viewer of it, though its user owns it. Only
+// a grant naming this session's actor id makes it the writer.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyEntitySecondSessionIsAViewerTest,
+	"CrowdySDK.Entity.SecondSessionOfTheSameUserIsAViewer", CrowdyAuthorityTestFlags)
+bool FCrowdyEntitySecondSessionIsAViewerTest::RunTest(const FString& Parameters)
+{
+	const FCrowdyPossessionCollaborators Collaborators;
+	UCrowdyEntitySubsystem* Entities = Collaborators.Entities;
+	const FGuid Viewer = FGuid::NewGuid();
+	const FGuid Writer = FGuid::NewGuid();
+	Entities->SetLocalPlayerID(Viewer);
+	Entities->SetGameSessionForTest(Collaborators.Session);
+
+	ACrowdyStateHostOverrideActor* Actor = NewObject<ACrowdyStateHostOverrideActor>();
+	if (!TestNotNull(TEXT("actor created"), Actor) || !TestNotNull(TEXT("entity component present"), Actor->Entity.Get()))
+	{
+		return false;
+	}
+	Actor->Entity->ReplicateMovement = ECrowdyReplicateMovement::Off;
+
+	FCrowdyEntityRecord Record;
+	Record.NetID = FGuid::NewGuid();
+	Record.WriterID = Writer;
+	Record.Role = ECrowdyRole::RemoteProxy;
+	Record.OwnerUserID = PossessionTestUserID;
+	Record.Participant = Actor;
+	Entities->RegisterEntity(Record);
+	Actor->Entity->SetCollaboratorsForTest(Entities, Collaborators.Session);
+	Actor->Entity->AssignPooledIdentity(Record.NetID, Writer, PossessionTestUserID, ECrowdyRole::RemoteProxy, 0);
+
+	TestTrue(TEXT("the signed-in user owns the entity"), Actor->Entity->IsOwnedByLocalUser());
+	TestFalse(TEXT("but this session does not write it"), Entities->IsLocallyOwned(Record.NetID));
+	TestFalse(TEXT("nor does its component say so"), Actor->Entity->IsLocallyOwned());
+
+	const FGuid ThirdSession = FGuid::NewGuid();
+	Entities->ReassignOwnership(Record.NetID, ThirdSession, Writer, PossessionTestUserID);
+	TestTrue(TEXT("a grant to another session of the same user leaves this one a viewer"),
+		Entities->FindRecord(Record.NetID)->Role == ECrowdyRole::RemoteProxy);
+	TestFalse(TEXT("that does not write it"), Entities->IsLocallyOwned(Record.NetID));
+
+	Entities->ReassignOwnership(Record.NetID, Viewer, ThirdSession, PossessionTestUserID);
+	TestTrue(TEXT("a grant naming this session makes it the writer"), Entities->FindRecord(Record.NetID)->Role == ECrowdyRole::Owner);
+	TestTrue(TEXT("which writes it"), Entities->IsLocallyOwned(Record.NetID));
 	return true;
 }
 

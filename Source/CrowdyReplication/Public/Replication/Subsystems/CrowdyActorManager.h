@@ -295,7 +295,7 @@ private:
 	// A slot is set up for who owned the entity at the time: drawn as a proxy, or left undrawn as this client's own.
 	// When ownership moves to or from this client, the slot's next update sets it up again.
 	UFUNCTION()
-	void OnEntityOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& PreviousOwnerID);
+	void OnEntityOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewWriterID, const FGuid& PreviousWriterID);
 
 	/** Activates an inactive slot again with the class it was first activated with. */
 	void RetryInactiveSlot(int32 SlotId, const FGuid& UUID, const FInstancedStruct& State);

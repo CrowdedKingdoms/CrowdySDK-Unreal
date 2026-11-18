@@ -52,9 +52,9 @@ namespace CrowdyDefaultMapping
 	ECrowdyRole RoleFor(const ECrowdyOwnership Ownership, const bool bPlaced)
 	{
 		ECrowdyRole Role = ECrowdyRole::None;
-		FGuid OwnerID;
+		FGuid WriterID;
 		UCrowdyEntityComponent::DeriveAuthority(UCrowdyEntityComponent::ResolveEffectiveOwnership(Ownership, bPlaced),
-			FGuid(1, 0, 0, 0), Role, OwnerID);
+			FGuid(1, 0, 0, 0), Role, WriterID);
 		return Role;
 	}
 

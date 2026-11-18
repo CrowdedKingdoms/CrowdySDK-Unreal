@@ -726,13 +726,15 @@ bool USerializationFunctionLibrary::AppendEventState(const UScriptStruct* Struct
 			static_cast<const FCrowdyEntitySpawnEvent*>(StructMemory);
 
 		FGuid ObjectID = Event->EntityID;
-		FGuid OwnerID = Event->OwnerID;
+		FGuid WriterID = Event->WriterID;
+		int64 OwnerUserID = Event->OwnerUserID;
 		uint32 ClassID = Event->ClassID;
 		FString ClassPath = Event->ClassPath;
 		FTransform SpawnTransform = Event->SpawnTransform;
 
 		Writer << ObjectID;
-		Writer << OwnerID;
+		Writer << WriterID;
+		Writer << OwnerUserID;
 		Writer << ClassID;
 		Writer << ClassPath;
 		Writer << SpawnTransform;
@@ -831,7 +833,8 @@ bool USerializationFunctionLibrary::DeserializeEventState(const TConstArrayView<
 			static_cast<FCrowdyEntitySpawnEvent*>(StructMemory);
 
 		Reader << Event->EntityID;
-		Reader << Event->OwnerID;
+		Reader << Event->WriterID;
+		Reader << Event->OwnerUserID;
 		Reader << Event->ClassID;
 		Reader << Event->ClassPath;
 		Reader << Event->SpawnTransform;

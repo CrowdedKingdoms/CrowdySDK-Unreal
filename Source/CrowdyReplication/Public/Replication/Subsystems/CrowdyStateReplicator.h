@@ -108,6 +108,9 @@ struct FCrowdyOwnedEntityState
 	// which changed nothing here, so it fires no local notify.
 	bool bQuietResend = false;
 
+	// Set when the entity is re-keyed under a new id: its next send carries every property, as a new entity's would.
+	bool bSendAllOnce = false;
+
 	// Per-property push flags for bManualDirty properties: set by MarkStateDirty/MarkAllStateDirty, consumed
 	// (and cleared for the sent bits) by the send loop. Sized to the layout in InitShadow and re-Init on a
 	// shadow rebuild. A bManualDirty property is dirty iff its bit here is set; auto-diff never touches it.
@@ -183,6 +186,17 @@ public:
 	// Marks every bManualDirty property of an owned entity for a push on the next send.
 	void MarkAllStateDirty(const FGuid& EntityID);
 
+	// Makes the next send of an owned entity carry every property, changed or not, without firing a local notify.
+	void ForceFullState(const FGuid& EntityID);
+
+	// Takes an owned entity's live values as already sent, so tracking it anew fires no local notify for what it held.
+	void SeedFromLive(const FGuid& EntityID);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	// Whether the next send of an owned entity carries every property.
+	bool IsFullStateForcedForTest(const FGuid& EntityID) const;
+#endif
+
 	// Whether this entity's movement updates carry its continuous properties. Follows StartReplication and StopReplication,
 	// because a property nothing carries must go back to being ordinary state. Skipped when the entity is not tracked.
 	void SetContinuousOnMovement(const FGuid& EntityID, bool bOnMovement);
@@ -250,9 +264,9 @@ public:
 	void SetEntitySubsystemForTest(UCrowdyEntitySubsystem* InES);
 	void HandleEntityRegisteredForTest(const FGuid& NetID) { HandleEntityRegistered(NetID); }
 	void HandleLeaderChangedForTest(const FGuid& NewLeaderID, const FGuid& PreviousLeaderID) { HandleLeaderChanged(NewLeaderID, PreviousLeaderID); }
-	void HandleOwnershipChangedForTest(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& PreviousOwnerID)
+	void HandleOwnershipChangedForTest(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewWriterID, const FGuid& PreviousWriterID)
 	{
-		HandleOwnershipChanged(TargetEntity, NetID, NewOwnerID, PreviousOwnerID);
+		HandleOwnershipChanged(TargetEntity, NetID, NewWriterID, PreviousWriterID);
 	}
 	int32 NumKnownSubsystemsForTest() const { return KnownSubsystemIDs.Num(); }
 	bool IsTrackedForTest(const FGuid& Id) const { return OwnedEntities.Contains(Id); }
@@ -305,12 +319,12 @@ private:
 
 	// Loopback (crowdy.state.loopback): returns the existing mirror for SourceEntityID, or spawns one. The
 	// mirror is a second instance of SourceActor's class, in the same world, registered with its OWN fresh
-	// NetID as ECrowdyRole::RemoteProxy and an INVALID OwnerID (never SourceActor's owner, and never
-	// LocalPlayerID: UCrowdyEntitySubsystem::IsLocallyOwned checks OwnerID, not Role, so an owner-stamped
+	// NetID as ECrowdyRole::RemoteProxy and an INVALID WriterID (never SourceActor's owner, and never
+	// LocalPlayerID: UCrowdyEntitySubsystem::IsLocallyOwned checks WriterID, not Role, so an owner-stamped
 	// mirror would still trip DispatchStateDelta's owned-entity gate and TryTrackOwned would track it as a
 	// second owned entity, mirroring the mirror). Built with a bespoke, purely local SpawnActorDeferred ->
 	// InitIdentity -> FinishSpawning sequence never UCrowdyEntitySubsystem::SpawnEntity, which hardcodes
-	// Role::Owner + OwnerID=LocalPlayerID and also broadcasts a spawn announcement over the real transport.
+	// Role::Owner + WriterID=LocalPlayerID and also broadcasts a spawn announcement over the real transport.
 	// Returns null (and destroys the half-spawned actor) if SourceActor's class carries no
 	// UCrowdyEntityComponent, or if the component failed to self-register after FinishSpawning: either way
 	// DispatchStateDelta could never resolve a delta targeted at it, which would otherwise silently burn the
@@ -357,7 +371,7 @@ private:
 	// stale tracking/shadow for the entity, re-maintains KnownSubsystemIDs from the updated record, and re-tracks the
 	// entity when this client now writes it. The record is already re-pointed by ReassignOwnership when this runs.
 	UFUNCTION()
-	void HandleOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& PreviousOwnerID);
+	void HandleOwnershipChanged(AActor* TargetEntity, const FGuid& NetID, const FGuid& NewWriterID, const FGuid& PreviousWriterID);
 
 #if WITH_EDITOR
 	// A Live Coding reload rebuilds the registry's layouts and may reinstance replicated actor classes. Any

@@ -180,6 +180,18 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetUserID(const int64 InUserID){GameSessionInfo.UserID = InUserID;}
+
+	/**
+	 * Completes a sign-in, before its realtime connection opens. An actor id minted while signed out has sent nothing,
+	 * so it becomes this sign-in's; otherwise a fresh id replaces the held one through SetUUID.
+	 */
+	void BeginSignIn();
+
+	/** Ends the current sign-in without forgetting its id, so the next sign-in replaces it rather than adopting it. */
+	void EndSignIn() { bSignedIn = false; }
+
+	/** True between a completed sign-in and its sign-out. */
+	bool IsSignedIn() const { return bSignedIn; }
 	
 	/**
 	 * Install the app-scoped gameplay token.
@@ -262,13 +274,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
 	FString GetLaunchUrl() const {return GameSessionInfo.LaunchUrl;}
 	
+	/**
+	 * Sets the actor id this client sends under while no player is signed in; a sign-in never adopts it. While signed
+	 * in the SDK mints the id itself, so a different one is refused with a warning.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
-	void SetUUID(FString InUUID)
-	{
-		GameSessionInfo.UUID = InUUID;
-		GameSessionInfo.ID = USerializationFunctionLibrary::ToGuid(InUUID);
-		OnOwnerUUIDUpdated.Broadcast(InUUID);
-	}
+	void SetUUID(FString InUUID);
+
+	/** The actor id this client sends under, minted at random and set through SetUUID when none is held. */
+	FGuid EnsureActorID();
+
+	/** Mints a fresh actor id and sets it through SetUUID, so every listener re-keys from the held one. */
+	FGuid ReplaceActorID();
 	
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void SetGameTokenID(const int64 InGameTokenID) {GameSessionInfo.GameTokenID = InGameTokenID;}
@@ -327,6 +344,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Game Session")
 	int64 GetGameTokenID() const {return GameSessionInfo.GameTokenID;}
 
+	/** Forgets the session's values, its actor id included; the sign-in itself ends only through a sign-out. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Game Session")
 	void ClearCurrentSessionData() {GameSessionInfo.Reset();}
 	
@@ -361,6 +379,20 @@ private:
 
 	UPROPERTY()
 	FGuid HostID;
+
+	bool bSignedIn = false;
+
+	/** Whether the held actor id was set during a sign-in, as opposed to before one, which the next sign-in adopts. */
+	bool bActorIDOfSignIn = false;
+
+	/** Whether the SDK minted the held actor id, as opposed to a game setting it; only a minted one is adopted. */
+	bool bActorIDMinted = false;
+
+	bool bWarnedSetUUIDWhileSignedIn = false;
+
+	/** Takes InUUID as the actor id; a change of a signed-in player's id closes the realtime connection first. */
+	void SetActorID(const FString& InUUID, bool bMinted);
+	void CloseConnectionBeforeRekey() const;
 
 	bool bAppPaused = false;
 

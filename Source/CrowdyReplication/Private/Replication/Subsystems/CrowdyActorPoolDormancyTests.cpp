@@ -121,7 +121,7 @@ bool FCrowdyPooledIdentityEndsDormancyTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("marking makes it dormant"), Component->IsPooledDormant());
 
 	const FGuid ProxyID = FGuid::NewGuid();
-	Component->AssignPooledIdentity(ProxyID, FGuid::NewGuid(), ECrowdyRole::RemoteProxy, 0);
+	Component->AssignPooledIdentity(ProxyID, FGuid::NewGuid(), 0, ECrowdyRole::RemoteProxy, 0);
 
 	TestFalse(TEXT("being handed a real proxy identity ends dormancy"), Component->IsPooledDormant());
 	TestEqual(TEXT("and the component carries that identity"), Component->GetNetID(), ProxyID);

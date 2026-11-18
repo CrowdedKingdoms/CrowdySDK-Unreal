@@ -4,8 +4,10 @@
 #include "Subsystem/CrowdyGameSession.h"
 #include "CrowdyNetLog.h"
 #include "Async/TaskGraphInterfaces.h"
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
+#include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
 #include "GameFramework/PlayerController.h"
 
 void UCrowdyGameSession::Initialize(FSubsystemCollectionBase& Collection)
@@ -17,6 +19,76 @@ void UCrowdyGameSession::Initialize(FSubsystemCollectionBase& Collection)
 void UCrowdyGameSession::Deinitialize()
 {
 	Super::Deinitialize();
+}
+
+void UCrowdyGameSession::BeginSignIn()
+{
+	bSignedIn = true;
+	bWarnedSetUUIDWhileSignedIn = false;
+
+	// Only an id the SDK minted while signed out has sent nothing; one a game set may be an earlier sign-in's.
+	if (GameSessionInfo.ID.IsValid() && !bActorIDOfSignIn && bActorIDMinted)
+	{
+		bActorIDOfSignIn = true;
+		return;
+	}
+	ReplaceActorID();
+}
+
+FGuid UCrowdyGameSession::EnsureActorID()
+{
+	if (GameSessionInfo.ID.IsValid())
+	{
+		return GameSessionInfo.ID;
+	}
+	return ReplaceActorID();
+}
+
+FGuid UCrowdyGameSession::ReplaceActorID()
+{
+	SetActorID(FGuid::NewGuid().ToString(EGuidFormats::Digits), true);
+	return GameSessionInfo.ID;
+}
+
+void UCrowdyGameSession::SetUUID(FString InUUID)
+{
+	// A change mid-sign-in would re-key the player under an id nothing recorded.
+	if (bSignedIn && USerializationFunctionLibrary::ToGuid(InUUID) != GameSessionInfo.ID)
+	{
+		UE_CLOG(!bWarnedSetUUIDWhileSignedIn, LogCrowdyNet, Warning,
+			TEXT("Set UUID ignored: the SDK mints a signed-in player's actor id itself, and keeps %s for this sign-in."), *GameSessionInfo.UUID);
+		bWarnedSetUUIDWhileSignedIn = true;
+		return;
+	}
+	SetActorID(InUUID, false);
+}
+
+void UCrowdyGameSession::SetActorID(const FString& InUUID, const bool bMinted)
+{
+	const FGuid NewID = USerializationFunctionLibrary::ToGuid(InUUID);
+	if (NewID != GameSessionInfo.ID)
+	{
+		bActorIDOfSignIn = bSignedIn;
+		bActorIDMinted = bMinted;
+		CloseConnectionBeforeRekey();
+	}
+	GameSessionInfo.UUID = InUUID;
+	GameSessionInfo.ID = NewID;
+	OnOwnerUUIDUpdated.Broadcast(InUUID);
+}
+
+void UCrowdyGameSession::CloseConnectionBeforeRekey() const
+{
+	// Every listener re-keys on the broadcast, and nothing may go out under the new id before its actor record answers.
+	if (!bSignedIn)
+	{
+		return;
+	}
+	const UGameInstance* GameInstance = GetGameInstance();
+	if (UCrowdyCppReplicationSubsystem* Replication = GameInstance ? GameInstance->GetSubsystem<UCrowdyCppReplicationSubsystem>() : nullptr)
+	{
+		Replication->CloseConnection();
+	}
 }
 
 FInt64Vector UCrowdyGameSession::GetLocalPlayerChunk(const UWorld* World) const

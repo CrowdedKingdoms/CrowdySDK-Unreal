@@ -376,7 +376,7 @@ bool FCrowdyStateSubsystemApplyFiresOnRepTest::RunTest(const FString& Parameters
 }
 
 // A non-host RECEIVES a host-owned subsystem's state through the real deployment path: it enrolls its OWN
-// singleton via RegisterParticipant(Host) -> Role=HostOwned, OwnerID=FGuid() (unlike the RemoteProxy fixture used
+// singleton via RegisterParticipant(Host) -> Role=HostOwned, WriterID=FGuid() (unlike the RemoteProxy fixture used
 // above, whose fresh non-local owner bypasses both authority gates). So the receive path runs the HostOwned
 // else-if gate (CrowdyEventRouter DispatchStateDelta): a non-HostSourced delta MUST drop (values unchanged, no
 // OnRep), a HostSourced host correction MUST apply and fire OnRep. This is the core authority behavior a
@@ -399,7 +399,7 @@ bool FCrowdyStateSubsystemHostOwnedApplyRespectsHostSourcedTest::RunTest(const F
 	}
 
 	// A NON-host receiver: local player is valid and is NOT the host, so a locally-enrolled host-owned singleton
-	// has OwnerID=FGuid() (never equal to the local player), making bWeOwnTarget false and routing through the
+	// has WriterID=FGuid() (never equal to the local player), making bWeOwnTarget false and routing through the
 	// HostOwned else-if gate rather than the owned-entity gate.
 	const FGuid LocalPlayer = FGuid::NewGuid();
 	const FGuid HostID = FGuid::NewGuid();
@@ -427,7 +427,7 @@ bool FCrowdyStateSubsystemHostOwnedApplyRespectsHostSourcedTest::RunTest(const F
 	TArray<uint8> Blob;
 	FCrowdyStateCodec::Encode(*Layout, Source, Dirty, /*bKeyframe=*/false, Blob);
 
-	// Enroll the RECEIVING singleton the real way: RegisterParticipant(Host) -> HostOwned record, OwnerID invalid.
+	// Enroll the RECEIVING singleton the real way: RegisterParticipant(Host) -> HostOwned record, WriterID invalid.
 	UCrowdyStateSubsystemTestTarget* Target = NewObject<UCrowdyStateSubsystemTestTarget>();
 	const FGuid EntityID = Entities->RegisterParticipant(Target, ECrowdyOwnership::Host);
 	if (!TestTrue(TEXT("host-owned participant enrolled"), EntityID.IsValid()))

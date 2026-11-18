@@ -664,6 +664,12 @@ void UCrowdyCppReplicationSubsystem::CloseConnection()
 	bLastAssignmentReportedAppFull = false;
 
 	SetConnection(nullptr);
+
+	// Nothing reports a deliberate close otherwise, and a state left at Connected reads as a live connection.
+	if (UCrowdyUDPSubsystem* Udp = ReceiveStats.Get())
+	{
+		Udp->SetConnectionState(EUDPConnectionState::Disconnected);
+	}
 }
 
 bool UCrowdyCppReplicationSubsystem::InstallToken(const FString& Token, const int64 GameTokenId,

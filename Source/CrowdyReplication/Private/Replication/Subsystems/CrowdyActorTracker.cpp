@@ -447,7 +447,8 @@ void UCrowdyActorTracker::EnqueueUpdate(const FCrowdyActorUpdate& Update)
 
 void UCrowdyActorTracker::EnqueueUpdate(FCrowdyActorUpdate&& Update)
 {
-	if (Update.UUID == LocalUUID && !bOwnerTrackingEnabled)
+	// Every id this client sent under counts, so an update sent before a sign-in replaced its id is still its own.
+	if (!bOwnerTrackingEnabled && (Update.UUID == LocalUUID || RetiredLocalUUIDs.Contains(Update.UUID)))
 		return;
 
 	// Nothing was set up, so there is nowhere to put this. Reachable when the map profile turned the tracker off.
@@ -1018,9 +1019,17 @@ bool UCrowdyActorTracker::IsRetiredWireId(const FGuid& NetID, const FCrowdyActor
 	return Held && Held->WireId.IsSet() && Held->WireId != WireId;
 }
 
-void UCrowdyActorTracker::HandleEntityOwnerChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& NewOwnerID, const FGuid& /*PreviousOwnerID*/)
+void UCrowdyActorTracker::HandleEntityOwnerChanged(AActor* /*TargetEntity*/, const FGuid& NetID, const FGuid& NewWriterID, const FGuid& /*PreviousWriterID*/)
 {
-	CurrentWireIds.Add(NetID, { FCrowdyActorId::ForOwner(NetID, NewOwnerID) });
+	CurrentWireIds.Add(NetID, { FCrowdyActorId::ForOwner(NetID, NewWriterID) });
+}
+
+void UCrowdyActorTracker::RepointWireId(const FGuid& NetID, const FGuid& NewWriterID)
+{
+	if (FMovedWireId* Moved = CurrentWireIds.Find(NetID))
+	{
+		*Moved = { FCrowdyActorId::ForOwner(NetID, NewWriterID) };
+	}
 }
 
 void UCrowdyActorTracker::HandleEntityUnregistered(const FGuid& NetID)
@@ -1133,7 +1142,16 @@ void UCrowdyActorTracker::ProcessTimedOutActors(TArray<FGuid> TimedOut, const fl
 
 void UCrowdyActorTracker::SetLocalUUID(FString NewUUID)
 {
+	const FGuid PreviousUUID = LocalUUID;
 	LocalUUID = USerializationFunctionLibrary::ToGuid(NewUUID);
+	if (PreviousUUID.IsValid() && PreviousUUID != LocalUUID)
+	{
+		if (RetiredLocalUUIDs.Num() >= MaxRetiredLocalUUIDs)
+		{
+			RetiredLocalUUIDs.RemoveAt(0);
+		}
+		RetiredLocalUUIDs.Add(PreviousUUID);
+	}
 	
 	if (!LocalUUID.IsValid())
 		UE_LOG(LogCrowdyReplication, Error, TEXT("[Crowdy Actor Tracker]: Invalid local UUID: %s"), *NewUUID);

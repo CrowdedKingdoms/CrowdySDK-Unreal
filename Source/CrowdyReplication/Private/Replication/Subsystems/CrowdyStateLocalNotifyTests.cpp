@@ -214,13 +214,13 @@ bool FCrowdyStateLocalNotifyOnlyForOwnedEntitiesTest::RunTest(const FString& Par
 
 	FCrowdyEntityRecord OwnerRecord;
 	OwnerRecord.NetID = FGuid::NewGuid();
-	OwnerRecord.OwnerID = LocalPlayer;
+	OwnerRecord.WriterID = LocalPlayer;
 	OwnerRecord.Role = ECrowdyRole::Owner;
 	OwnerRecord.Participant = Owned;
 
 	FCrowdyEntityRecord ProxyRecord;
 	ProxyRecord.NetID = FGuid::NewGuid();
-	ProxyRecord.OwnerID = FGuid::NewGuid();
+	ProxyRecord.WriterID = FGuid::NewGuid();
 	ProxyRecord.Role = ECrowdyRole::RemoteProxy;
 	ProxyRecord.Participant = Proxy;
 
@@ -529,7 +529,7 @@ bool FCrowdyStateLocalNotifyNonSpatialParticipantTest::RunTest(const FString& Pa
 	// non-actor participant as non-spatial that decides which transport this delta takes.
 	FCrowdyEntityRecord Record;
 	Record.NetID = FGuid::NewGuid();
-	Record.OwnerID = LocalPlayer;
+	Record.WriterID = LocalPlayer;
 	Record.Role = ECrowdyRole::Owner;
 	Record.Participant = Sub;
 	TestTrue(TEXT("subsystem participant tracked"), Rep->TryTrackOwnedForTest(Record));
@@ -656,7 +656,7 @@ bool FCrowdyStateLocalNotifyHandoverFiresOnceTest::RunTest(const FString& Parame
 	// The owner hands the entity over before the next tick.
 	FCrowdyEntityRecord Handover;
 	Handover.NetID = Id;
-	Handover.OwnerID = LocalPlayer;
+	Handover.WriterID = LocalPlayer;
 	Handover.Role = ECrowdyRole::Owner;
 	Handover.Participant = Target;
 	ES->RegisterEntity(Handover);
