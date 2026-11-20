@@ -94,6 +94,33 @@ bool FCrowdySDKShippedProfileSelectsTheActorPoolTest::RunTest(const FString& Par
 	return true;
 }
 
+/**
+ * Movement and Crowdy State reach as far as the CrowdyJS and CrowdyCPP libraries do by default, and movement is not
+ * thinned, so a project that configures nothing sees the same players the other clients do.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySDKShippedProfileReachesEightChunksTest,
+	"CrowdySDK.MapProfile.SDKShippedProfileReachesEightChunks",
+	CrowdySDKShippedDefaultsTestFlags)
+
+bool FCrowdySDKShippedProfileReachesEightChunksTest::RunTest(const FString& Parameters)
+{
+	FString UnavailableReason;
+	const UCrowdyMapProfile* const Shipped =
+		UCrowdySDKDeveloperSettings::ResolveShippedDefaultProfile(UnavailableReason);
+
+	if (!Shipped)
+	{
+		AddError(FString::Printf(TEXT("The shipped default profile did not resolve: %s"), *UnavailableReason));
+		return false;
+	}
+
+	TestTrue(TEXT("Movement reaches 8 chunks"), Shipped->MovementDistance == ECrowdyReplicationDistance::Eight_Chunks);
+	TestTrue(TEXT("Crowdy State reaches 8 chunks"), Shipped->StateRelevanceDistance == ECrowdyReplicationDistance::Eight_Chunks);
+	TestTrue(TEXT("Movement is not thinned with distance"), Shipped->MovementDecay == ECrowdyDecayRate::No_Decay);
+	TestTrue(TEXT("Voice still reaches 1 chunk"), Shipped->VoiceDistance == ECrowdyReplicationDistance::One_Chunk);
+	return true;
+}
+
 #if WITH_EDITOR
 
 /**

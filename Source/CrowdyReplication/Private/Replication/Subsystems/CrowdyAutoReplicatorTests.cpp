@@ -232,4 +232,45 @@ bool FCrowdyAutoReplicatorRepeatsAChunkChangeTest::RunTest(const FString& Parame
 	return true;
 }
 
+// Heartbeats never reach observers, so an observer at the edge ring only ever sees the decayed share of the sender's
+// slowest sends; when that gap reaches the actor timeout the copy is dropped.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAutoReplicatorEdgeObserverGapTest,
+	"CrowdySDK.AutoReplicator.EdgeObserverGap", AutoReplicatorTestFlags)
+bool FCrowdyAutoReplicatorEdgeObserverGapTest::RunTest(const FString& Parameters)
+{
+	constexpr float Timeout = 12.0f;
+	constexpr float Tolerance = 0.001f;
+
+	const float NoDecay = EdgeObserverGapSeconds(ECrowdyDecayRate::No_Decay, ECrowdyReplicationDistance::Eight_Chunks, true, 3.0f, 10);
+	TestEqual(TEXT("no decay leaves the keyframe interval"), NoDecay, 3.0f, Tolerance);
+	TestTrue(TEXT("and never reaches the timeout"), NoDecay < Timeout);
+
+	// The server's rules (the realtime wire format's decay algorithms): Exponential gives ring d every 2^(d-1)th
+	// message; Linear gives each ring one contiguous block of a 20-message cycle, the outermost the shortest.
+	const float Exponential = EdgeObserverGapSeconds(ECrowdyDecayRate::Exponential_Decay, ECrowdyReplicationDistance::Eight_Chunks, true, 3.0f, 10);
+	TestEqual(TEXT("exponential at 8 chunks gets 1 in 128 of the keyframes"), Exponential, 384.0f, Tolerance);
+	TestTrue(TEXT("which reaches the timeout"), Exponential >= Timeout);
+	const float Exponential2 = EdgeObserverGapSeconds(ECrowdyDecayRate::Exponential_Decay, ECrowdyReplicationDistance::Two_Chunks, true, 3.0f, 10);
+	TestEqual(TEXT("exponential at 2 chunks gets every other keyframe"), Exponential2, 6.0f, Tolerance);
+	TestTrue(TEXT("which stays inside the timeout"), Exponential2 < Timeout);
+
+	const float Linear50 = EdgeObserverGapSeconds(ECrowdyDecayRate::Linear_50, ECrowdyReplicationDistance::Eight_Chunks, true, 3.0f, 10);
+	TestEqual(TEXT("linear 50 skips 10 in a row, so the longest wait is 11 keyframes"), Linear50, 33.0f, Tolerance);
+	TestTrue(TEXT("which reaches the timeout"), Linear50 >= Timeout);
+	TestEqual(TEXT("linear 5 skips 19 in a row"),
+		EdgeObserverGapSeconds(ECrowdyDecayRate::Linear_5, ECrowdyReplicationDistance::Eight_Chunks, true, 3.0f, 10), 60.0f, Tolerance);
+
+	for (const ECrowdyDecayRate Decay : { ECrowdyDecayRate::Exponential_Decay, ECrowdyDecayRate::Linear_5 })
+	{
+		TestEqual(TEXT("with no rings beyond the sender's chunk nothing is thinned"),
+			EdgeObserverGapSeconds(Decay, ECrowdyReplicationDistance::None, true, 3.0f, 10), 3.0f, Tolerance);
+	}
+
+	TestEqual(TEXT("sending every interval makes the send rate the slowest period, not the keyframe"),
+		EdgeObserverGapSeconds(ECrowdyDecayRate::Linear_10, ECrowdyReplicationDistance::Eight_Chunks, false, 3.0f, 10), 1.9f, Tolerance);
+	TestTrue(TEXT("an idle actor with keyframes off never updates a far copy"),
+		EdgeObserverGapSeconds(ECrowdyDecayRate::Linear_50, ECrowdyReplicationDistance::Eight_Chunks, true, 0.0f, 10) >= Timeout);
+	return true;
+}
+
 #endif  // WITH_DEV_AUTOMATION_TESTS
