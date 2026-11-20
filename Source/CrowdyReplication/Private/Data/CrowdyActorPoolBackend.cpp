@@ -271,6 +271,16 @@ bool UCrowdyActorPoolBackend::IsInstanceActive(const int32 SlotId) const
 	return SkippedOwnerSlots[SlotId] || (SlotActors[SlotId].IsValid() && IsSlotActorClaimed(SlotId));
 }
 
+bool UCrowdyActorPoolBackend::TryGetDrawnLocation(const int32 SlotId, FVector& OutLocation) const
+{
+	const AActor* Actor = SlotActors.IsValidIndex(SlotId) ? SlotActors[SlotId].Get() : nullptr;
+	if (!Actor)
+		return false;
+
+	OutLocation = Actor->GetActorLocation();
+	return true;
+}
+
 bool UCrowdyActorPoolBackend::IsSlotActorClaimed(const int32 SlotId) const
 {
 	return OwnerProxySlots[SlotId] || (IsValid(EntitySubsystem) && EntitySubsystem->FindEntityID(SlotActors[SlotId].Get()).IsValid());

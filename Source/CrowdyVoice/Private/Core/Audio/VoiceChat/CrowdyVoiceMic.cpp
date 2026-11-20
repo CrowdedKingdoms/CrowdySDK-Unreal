@@ -39,14 +39,14 @@ namespace
 		}
 	}
 
-	bool CrowdyVoiceMicIsSilent(const TConstArrayView<int16> Samples)
+	bool CrowdyVoiceMicIsSilent(const TConstArrayView<int16> Samples, const int32 SilenceRms)
 	{
 		int64 SumOfSquares = 0;
 		for (const int16 Sample : Samples)
 		{
 			SumOfSquares += static_cast<int64>(Sample) * Sample;
 		}
-		const int64 Threshold = static_cast<int64>(FCrowdyVoiceSpurtGate::SilenceRms) * FCrowdyVoiceSpurtGate::SilenceRms;
+		const int64 Threshold = static_cast<int64>(SilenceRms) * SilenceRms;
 		return SumOfSquares < Threshold * Samples.Num();
 	}
 
@@ -284,15 +284,15 @@ void FCrowdyVoiceCaptureSink::PushPcm(const float* Samples, const int32 NumSampl
 
 void FCrowdyVoiceSpurtGate::Process(const TConstArrayView<int16> Frame, ICrowdyVoiceFrameSink& Out)
 {
-	const bool bSilent = CrowdyVoiceMicIsSilent(Frame);
-	SilentFrames = bSilent ? FMath::Min(SilentFrames + 1, SilenceHangFrames) : 0;
+	const bool bSilent = CrowdyVoiceMicIsSilent(Frame, SilenceRms);
+	SilentFrames = bSilent ? FMath::Min(SilentFrames + 1, HangFrames) : 0;
 	if (!bInSpurt && bSilent)
 	{
 		Out.SkipFrames(1);
 		return;
 	}
 
-	const bool bEndsSpurt = SilentFrames >= SilenceHangFrames;
+	const bool bEndsSpurt = SilentFrames >= HangFrames;
 	Out.SendFrame(Frame, bEndsSpurt);
 	bInSpurt = !bEndsSpurt;
 }
@@ -306,6 +306,14 @@ void FCrowdyVoiceSpurtGate::End(const TArrayView<int16> Frame, const int32 Fill,
 		Out.SendFrame(Frame, true);
 	}
 	Reset();
+}
+
+void FCrowdyVoiceSpurtGate::Configure(const float GateDb, const int32 HoldMs)
+{
+	// The same ranges as the settings page, which an edited ini does not go through.
+	const float Db = FMath::IsFinite(GateDb) ? FMath::Clamp(GateDb, -90.0f, -10.0f) : -50.0f;
+	SilenceRms = FMath::Max(1, FMath::RoundToInt32(32768.0f * FMath::Pow(10.0f, Db / 20.0f)));
+	HangFrames = FMath::DivideAndRoundUp(FMath::Clamp(HoldMs, 20, 2000), FrameMs);
 }
 
 void FCrowdyVoiceSpurtGate::Reset()

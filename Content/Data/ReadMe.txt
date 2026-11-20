@@ -1,5 +1,12 @@
 This folder holds the map profile CrowdySDK ships, alongside the SDK's other shipped data assets.
 
+Voice/SA_CrowdyVoice is the sound attenuation spatial voice chat uses unless Project Settings, Plugins,
+Crowdy Voice, Attenuation names another. It follows real hearing: full volume within 2 m, then 6 dB quieter
+each time the distance doubles (a custom 1/r curve), eased to silence between 30 m and 40 m; a low-pass from
+20 kHz at 3 m to 5 kHz at 40 m; a little quieter behind the listener; muffled to 1.5 kHz and half volume behind
+geometry that blocks Visibility; a binaural spatializer where the project has one. Like everything in this
+folder it is always cooked, because only Project Settings name it.
+
 Expected asset: DA_CrowdySDKDefaultProfile (a Crowdy Map Profile data asset).
 Full path: /CrowdySDK/Data/DA_CrowdySDKDefaultProfile
 

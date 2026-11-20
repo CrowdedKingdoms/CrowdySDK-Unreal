@@ -10,7 +10,7 @@ public class CrowdyVoice : ModuleRules
         PublicDependencyModuleNames.AddRange(new string[]
         {
             "Core", "CoreUObject", "Engine",
-            "CKSharedTypes", "CrowdyNet",
+            "CKSharedTypes", "CrowdyNet", "DeveloperSettings",
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]

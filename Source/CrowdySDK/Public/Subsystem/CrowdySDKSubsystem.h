@@ -220,6 +220,26 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Voice")
 	FOnVoiceSpeakerTalking OnVoiceSpeakerTalking;
 
+	/** Stops playing a user's voice on every map, through their next sign-in too; their voice takes no speaker place. Pass a user id from Get Voice Speaker User Id. Holds for any player whose actor id the platform records against their user, which every SDK player's is. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void SetVoiceSpeakerMuted(int64 UserId, bool bMuted);
+
+	/** Whether Set Voice Speaker Muted muted this user. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
+	bool IsVoiceSpeakerMuted(int64 UserId) const;
+
+	/** How loud a user's voice plays on every map: 1 is as received, 0 silent, up to 4. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void SetVoiceSpeakerVolume(int64 UserId, float Volume);
+
+	/** The volume Set Voice Speaker Volume gave this user; 1 when none was set. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
+	float GetVoiceSpeakerVolume(int64 UserId) const;
+
+	/** The user a speaker belongs to, from the Speaker Uuid On Voice Speaker Talking gives; 0 until it is known, usually a moment after they first speak, and 0 for a speaker not heard on this map in the last minute. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
+	int64 GetVoiceSpeakerUserId(const FString& SpeakerUuid) const;
+
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Permissions")
 	void RequestTeleportPermission(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ, const int32 VoxelX,
 	                               const int32 VoxelY, const int32 VoxelZ) const;

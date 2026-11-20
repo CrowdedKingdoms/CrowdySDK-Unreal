@@ -23,8 +23,17 @@ struct FCrowdyVoiceStats
 	/** Decoded frames dropped because that speaker's playback queue was full. */
 	int64 FramesDroppedQueueFull = 0;
 
-	/** Received packets that could not be read, or came from a speaker past the limit. */
+	/** Received packets that could not be read. */
 	int64 PacketsMalformed = 0;
+
+	/** Packets from a speaker not heard because Max Speakers nearer ones were. */
+	int64 PacketsOverCap = 0;
+
+	/** Heard speakers that gave their place to a nearer one. */
+	int64 SpeakersDisplaced = 0;
+
+	/** Packets not played because their speaker's user is muted, or while that user was still being looked up. */
+	int64 PacketsMuted = 0;
 
 	/** Speakers heard now. */
 	int32 Speakers = 0;

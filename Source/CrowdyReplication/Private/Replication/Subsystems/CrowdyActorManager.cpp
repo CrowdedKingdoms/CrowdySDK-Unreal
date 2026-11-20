@@ -499,6 +499,12 @@ void UCrowdyActorManager::FreeSlot(const FGuid& UUID)
 	UUIDToSlot.Remove(UUID);
 }
 
+bool UCrowdyActorManager::TryGetRemoteLocation(const FGuid& UUID, FVector& OutLocation) const
+{
+	const int32* SlotId = UUIDToSlot.Find(UUID);
+	return SlotId && ActiveBackend && ActiveBackend->TryGetDrawnLocation(*SlotId, OutLocation);
+}
+
 bool UCrowdyActorManager::LoadConfig()
 {
 	// ResolveProfileForWorld reports a map that resolves nothing, once for the whole world. Repeating it

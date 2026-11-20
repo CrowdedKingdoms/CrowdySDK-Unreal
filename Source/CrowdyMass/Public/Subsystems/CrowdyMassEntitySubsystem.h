@@ -751,6 +751,9 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy Mass")
 	bool FindEntityByUUID(const FGuid& UUID, FMassEntityHandle& OutEntity) const;
 
+	/** Where the row for UUID is drawn now; false when there is none. */
+	bool TryGetEntityLocation(const FGuid& UUID, FVector& OutLocation) const;
+
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy Mass")
 	bool FindUUIDByEntity(FMassEntityHandle Entity, FGuid& OutUUID) const;
 

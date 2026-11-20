@@ -110,11 +110,16 @@ public:
 class FCrowdyVoiceSpurtGate
 {
 public:
-	/** Frames below the gate before a spurt ends: 300 ms. */
+	static constexpr int32 FrameMs = 20;
+
+	/** Frames below the gate before a spurt ends, unless configured: 300 ms. */
 	static constexpr int32 SilenceHangFrames = 15;
 
-	/** The gate as an RMS sample value: about -50 dBFS. */
-	static constexpr int32 SilenceRms = 104;
+	/** The gate as an RMS sample value, unless configured: about -50 dBFS. */
+	static constexpr int32 DefaultSilenceRms = 104;
+
+	/** The gate level in dBFS and how long a spurt holds below it before ending. */
+	void Configure(float GateDb, int32 HoldMs);
 
 	/** Sends or skips one whole frame. */
 	void Process(TConstArrayView<int16> Frame, ICrowdyVoiceFrameSink& Out);
@@ -125,7 +130,12 @@ public:
 	void Reset();
 	bool IsInSpurt() const { return bInSpurt; }
 
+	int32 GetSilenceRms() const { return SilenceRms; }
+	int32 GetHangFrames() const { return HangFrames; }
+
 private:
+	int32 SilenceRms = DefaultSilenceRms;
+	int32 HangFrames = SilenceHangFrames;
 	int32 SilentFrames = 0;
 	bool bInSpurt = false;
 };
@@ -143,6 +153,8 @@ public:
 	void End();
 
 	bool IsInSpurt() const { return Gate.IsInSpurt(); }
+
+	void ConfigureGate(const float GateDb, const int32 HoldMs) { Gate.Configure(GateDb, HoldMs); }
 
 private:
 	ICrowdyVoiceFrameSink& Out;
@@ -166,7 +178,7 @@ public:
 	static constexpr int64 NoDeviceRetryMs = 2000;
 
 	static constexpr int32 SilenceHangFrames = FCrowdyVoiceSpurtGate::SilenceHangFrames;
-	static constexpr int32 SilenceRms = FCrowdyVoiceSpurtGate::SilenceRms;
+	static constexpr int32 SilenceRms = FCrowdyVoiceSpurtGate::DefaultSilenceRms;
 
 	/** Queued frames beyond this after a hitch are discarded down to BacklogKeepFrames. */
 	static constexpr int32 MaxBacklogFrames = 10;
@@ -197,6 +209,8 @@ public:
 
 	/** Closes the microphone and reports Reason as an error. */
 	void Fail(const TCHAR* Reason);
+
+	void ConfigureGate(const float GateDb, const int32 HoldMs) { Gate.Configure(GateDb, HoldMs); }
 
 private:
 	FCrowdyVoiceMic(const FCrowdyVoiceMic&) = delete;
