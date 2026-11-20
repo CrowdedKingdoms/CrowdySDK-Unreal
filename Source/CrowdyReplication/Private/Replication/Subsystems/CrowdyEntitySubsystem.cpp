@@ -106,6 +106,7 @@ void UCrowdyEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		UE_CLOG(CrowdyReplicationTrace::Entity(), LogCrowdyReplication, Log, TEXT("[CrowdyEntitySubsystem]: Networking disabled for this map — entity events inactive."));
 		return;
 	}
+	SpawnDistance = Profile->MovementDistance;
 
 	Bridge = GameInstance->GetSubsystem<UCrowdySDKBridgeSubsystem>();
 	if (!IsValid(Bridge))
@@ -874,7 +875,7 @@ void UCrowdyEntitySubsystem::AnnounceSpawn(AActor* Actor, const FInstancedStruct
 
 	FInstancedStruct Payload;
 	Payload.InitializeAs<FCrowdyEntitySpawnEvent>(SpawnEvent);
-	DispatchGameEvent(Actor, MoveTemp(Payload));
+	DispatchGameEvent(Actor, MoveTemp(Payload), ECrowdyTarget::Everyone, nullptr, ECrowdyDecayRate::No_Decay, SpawnDistance);
 }
 
 void UCrowdyEntitySubsystem::DestroyEntity(AActor* TargetEntity)

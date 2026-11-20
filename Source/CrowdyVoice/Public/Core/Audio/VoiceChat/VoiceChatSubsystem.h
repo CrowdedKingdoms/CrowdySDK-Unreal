@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceMicState.h"
+#include "Core/Audio/VoiceChat/CrowdyVoiceSettings.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceStats.h"
 #include "Core/UDP/Subscription/FCrowdySubscription.h"
 #include "Serialization/CrowdyActorId.h"
@@ -74,7 +75,7 @@ public:
 	/** Plays your own voice back to you, as the server returns it. */
 	void SetOwnerEcho(bool bEnable);
 
-	/** How far your voice reaches, in chunks around the chunk your pawn stands in: 0 is that chunk only, 8 (the default) the farthest the server relays. */
+	/** How far your voice reaches, in chunks around the chunk your pawn stands in: 0 is that chunk only, 8 the farthest the server relays. */
 	void SetDistance(int32 Chunks);
 	int32 GetDistance() const { return DistanceChunks; }
 
@@ -134,7 +135,7 @@ private:
 	FInt64Vector LastPawnChunk = FInt64Vector::ZeroValue;
 	int64 StreamTimeoutMs = 2000;
 	int64 RestartAtMs = 0;
-	int32 DistanceChunks = 8;
+	int32 DistanceChunks = FCrowdyVoiceSettings::DefaultDistanceChunks;
 	ECrowdyVoiceMicState BroadcastMicState = ECrowdyVoiceMicState::Off;
 	bool bOwnerEcho = false;
 	bool bHasPawnChunk = false;

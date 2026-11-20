@@ -30,6 +30,7 @@
 #include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyPersistenceSubsystem.h"
+#include "Data/CrowdyMapProfile.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"
 #include "Utils/UEventPayloadRegistry.h"
@@ -788,9 +789,30 @@ void UCrowdySDKSubsystem::SetVoiceChatDistance(const int32 Chunks)
 	}
 }
 
+void UCrowdySDKSubsystem::ResetVoiceChatDistance()
+{
+	VoiceSettings.DistanceChunks.Reset();
+	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
+	{
+		VoiceChat->SetDistance(MapVoiceDistance(VoiceChat->GetWorld()));
+	}
+}
+
 int32 UCrowdySDKSubsystem::GetVoiceChatDistance() const
 {
-	return VoiceSettings.DistanceChunks;
+	const UWorld* World = GetWorld();
+	const UVoiceChatSubsystem* VoiceChat = World ? World->GetSubsystem<UVoiceChatSubsystem>() : nullptr;
+	if (VoiceChat && VoiceChat == BoundVoiceChat.Get())
+	{
+		return VoiceChat->GetDistance();
+	}
+	return VoiceSettings.DistanceChunks.Get(MapVoiceDistance(World));
+}
+
+int32 UCrowdySDKSubsystem::MapVoiceDistance(const UWorld* World)
+{
+	const UCrowdyMapProfile* Profile = World ? UCrowdySDKDeveloperSettings::ResolveProfileForWorld(World) : nullptr;
+	return Profile ? static_cast<int32>(Profile->VoiceDistance) : FCrowdyVoiceSettings::DefaultDistanceChunks;
 }
 
 ECrowdyVoiceMicState UCrowdySDKSubsystem::GetVoiceMicState() const
@@ -1356,7 +1378,7 @@ void UCrowdySDKSubsystem::BindVoiceChat(UVoiceChatSubsystem* VoiceChat)
 	bWarnedNoVoiceChat = false;
 	VoiceMicStateHandle = VoiceChat->OnMicStateChanged.AddUObject(this, &UCrowdySDKSubsystem::HandleVoiceMicStateChanged);
 	VoiceTalkingHandle = VoiceChat->OnSpeakerTalking.AddUObject(this, &UCrowdySDKSubsystem::HandleVoiceSpeakerTalking);
-	VoiceSettings.ApplyTo(*VoiceChat);
+	VoiceSettings.ApplyTo(*VoiceChat, MapVoiceDistance(VoiceChat->GetWorld()));
 	HandleVoiceMicStateChanged(VoiceChat->GetMicState());
 }
 

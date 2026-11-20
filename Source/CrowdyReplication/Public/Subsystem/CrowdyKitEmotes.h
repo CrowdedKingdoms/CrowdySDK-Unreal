@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Subscription/FCrowdySubscription.h"
 #include "Serialization/CrowdyActorId.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -44,7 +45,7 @@ public:
 	static UCrowdyKitEmotes* GetKitEmotes(const UObject* WorldContextObject);
 
 	/**
-	 * Sends Emote from the local player pawn's position to the players within two chunks. Target is the actor it is aimed at, or None.
+	 * Sends Emote from the local player pawn's position to the players within the map profile's Emote Distance (two chunks unless it says otherwise). Target is the actor it is aimed at, or None.
 	 * False, with Reason saying why in plain words, when nothing was sent: the emote is empty, the emote and its target do not
 	 * fit in 1024 bytes (the limit is the whole message, not the emote alone), the player is not signed in or not connected,
 	 * there is no local pawn, or Target is not a replicated actor this client has heard from. True means the connection
@@ -62,9 +63,9 @@ public:
 	/** Reads a body from any client library. False for anything that is not a JSON object with a text emote, or that is over the size limit; a missing, null or non-text targetUuid reads as empty. */
 	static bool DecodeEmoteBody(TConstArrayView<uint8> Body, FString& OutEmote, FString& OutTargetUuid);
 
-	/** Fills Request as the event the kit sends: type 101, two chunks of reach, no decay, from Sender at the given chunk. */
+	/** Fills Request as the event the kit sends: type 101, no decay, from Sender at the given chunk, reaching Distance. */
 	static void FillEmoteRequest(FKitEventRequest& Request, int64 AppId, const FCrowdyActorId& Sender,
-		int64 ChunkX, int64 ChunkY, int64 ChunkZ, TArray<uint8>&& Body);
+		int64 ChunkX, int64 ChunkY, int64 ChunkZ, ECrowdyReplicationDistance Distance, TArray<uint8>&& Body);
 
 	/** Reads an inbound emote body and fires OnEmote, or drops it. */
 	void ReceiveEmote(const FCrowdyActorId& Sender, TConstArrayView<uint8> Body);
@@ -107,6 +108,7 @@ private:
 
 	TMap<FCrowdyActorId, FEmoteSenderBucket> SenderBuckets;
 
+	ECrowdyReplicationDistance EmoteDistance = ECrowdyReplicationDistance::Two_Chunks;
 	double EmoteTokens = 0.0;
 	double EmoteTokensAt = 0.0;
 	int32 EmotesDropped = 0;

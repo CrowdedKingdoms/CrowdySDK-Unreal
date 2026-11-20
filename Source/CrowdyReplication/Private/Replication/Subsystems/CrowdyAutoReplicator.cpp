@@ -126,6 +126,7 @@ void UCrowdyAutoReplicator::Initialize(FSubsystemCollectionBase& Collection)
 		bSendOnlyOnChange = Profile->bSendActorStateOnlyOnChange;
 		KeyframeIntervalSeconds = FMath::Max(0.0f, Profile->ActorKeyframeIntervalSeconds);
 		HeartbeatIntervalSeconds = FMath::Max(0.0f, Profile->ActorHeartbeatIntervalSeconds);
+		MovementDistance = Profile->MovementDistance;
 	}
 }
 
@@ -420,7 +421,7 @@ void UCrowdyAutoReplicator::ReplicationLoop()
 				Inputs.bKeyframeDue, Inputs.bHasSentBefore);
 			Bridge->DispatchActorUpdateFn(Data.Chunks[i].X, Data.Chunks[i].Y, Data.Chunks[i].Z,
 				ECrowdyDecayRate::No_Decay,
-				ECrowdyReplicationDistance::Eight_Chunks,
+				MovementDistance,
 				Data.UUIDs[i],
 				State,
 				Data.ClassIDs[i],
