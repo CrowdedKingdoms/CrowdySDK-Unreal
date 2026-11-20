@@ -60,6 +60,8 @@ bool FCrowdyWireOpcodeAgreementTest::RunTest(const FString& Parameters)
 	CheckOpcode(TEXT("GENERIC_ERROR_MESSAGE"), ECrowdyMessageType::GENERIC_ERROR_MESSAGE, MessageType::GenericError);
 	CheckOpcode(TEXT("CHANNEL_MESSAGE_REQUEST"), ECrowdyMessageType::CHANNEL_MESSAGE_REQUEST, MessageType::ChannelMessageRequest);
 	CheckOpcode(TEXT("CHANNEL_MESSAGE_NOTIFICATION"), ECrowdyMessageType::CHANNEL_MESSAGE_NOTIFICATION, MessageType::ChannelMessageNotification);
+	CheckOpcode(TEXT("CHANNEL_AUDIO_REQUEST"), ECrowdyMessageType::CHANNEL_AUDIO_REQUEST, MessageType::ChannelAudioRequest);
+	CheckOpcode(TEXT("CHANNEL_AUDIO_NOTIFICATION"), ECrowdyMessageType::CHANNEL_AUDIO_NOTIFICATION, MessageType::ChannelAudioNotification);
 	CheckOpcode(TEXT("ACTOR_UPDATE_REQUEST"), ECrowdyMessageType::ACTOR_UPDATE_REQUEST, MessageType::ActorUpdateRequest);
 	CheckOpcode(TEXT("ACTOR_UPDATE_NOTIFICATION"), ECrowdyMessageType::ACTOR_UPDATE_NOTIFICATION, MessageType::ActorUpdateNotification);
 	CheckOpcode(TEXT("VOXEL_UPDATE_REQUEST"), ECrowdyMessageType::VOXEL_UPDATE_REQUEST, MessageType::VoxelUpdateRequest);

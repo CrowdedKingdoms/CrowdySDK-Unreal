@@ -113,3 +113,31 @@ struct FChannelMessageNotification : ICrowdyMessage
 	}
 
 };
+
+/** One voice packet to a channel: the channel message layout under type 35. */
+struct FChannelAudioRequest : FChannelMessageRequest
+{
+	virtual ECrowdyMessageType GetType() const override
+	{
+		return ECrowdyMessageType::CHANNEL_AUDIO_REQUEST;
+	}
+
+	virtual FName GetTypeName() const override
+	{
+		return "Channel Audio Request";
+	}
+};
+
+/** One voice packet from another channel member: the channel message layout under type 36. */
+struct FChannelAudioNotification : FChannelMessageNotification
+{
+	virtual ECrowdyMessageType GetType() const override
+	{
+		return ECrowdyMessageType::CHANNEL_AUDIO_NOTIFICATION;
+	}
+
+	virtual FName GetTypeName() const override
+	{
+		return "Channel Audio Notification";
+	}
+};

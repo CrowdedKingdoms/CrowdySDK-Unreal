@@ -45,7 +45,7 @@ namespace CrowdyCppInboundFrame
 	inline FCrowdyFrame FromChannel(const FCrowdyCppChannelMessage& Message)
 	{
 		FCrowdyFrame Frame;
-		Frame.Opcode = static_cast<uint8>(ECrowdyMessageType::CHANNEL_MESSAGE_NOTIFICATION);
+		Frame.Opcode = Message.Opcode;
 		Frame.Body = Message.Payload;
 		Frame.Envelope.ChannelId = Message.ChannelId;
 		Frame.Envelope.Uuid = Message.SenderUuid;

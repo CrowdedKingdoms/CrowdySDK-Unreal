@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Core/Audio/VoiceChat/CrowdyChannelVoiceMode.h"
 
 /** Voice chat requests that outlive one map, applied to the voice chat of each map that loads. */
 struct FCrowdyVoiceSettings
@@ -31,6 +32,12 @@ struct FCrowdyVoiceSettings
 	TOptional<int32> DistanceChunks;
 	TSet<int64> MutedUsers;
 	TMap<int64, float> UserVolumes;
+	TMap<int64, ECrowdyChannelVoiceMode> VoiceChannels;
+	// The user who joined VoiceChannels; channel voice is that account's, not the next one's on this game instance.
+	int64 ChannelsUserId = 0;
+	TSet<int64> MutedChannels;
+	TMap<int64, float> ChannelVolumes;
+	bool bSpatialVoice = true;
 	bool bPlaying = false;
 	bool bOwnerEcho = false;
 	bool bMicWanted = false;
@@ -48,6 +55,19 @@ struct FCrowdyVoiceSettings
 		{
 			VoiceChat.SetUserVolume(Volume.Key, Volume.Value);
 		}
+		for (const TPair<int64, ECrowdyChannelVoiceMode>& Channel : VoiceChannels)
+		{
+			VoiceChat.SetChannelVoice(Channel.Key, true, Channel.Value);
+		}
+		for (const int64 ChannelId : MutedChannels)
+		{
+			VoiceChat.SetChannelMuted(ChannelId, true);
+		}
+		for (const TPair<int64, float>& Volume : ChannelVolumes)
+		{
+			VoiceChat.SetChannelVolume(Volume.Key, Volume.Value);
+		}
+		VoiceChat.SetSpatialVoiceEnabled(bSpatialVoice);
 		VoiceChat.SetOwnerEcho(bOwnerEcho);
 		if (bPlaying)
 		{

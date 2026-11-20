@@ -71,8 +71,7 @@ void UCrowdySDKSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	UCrowdyAuthentication* CrowdyAuth = Collection.InitializeDependency<UCrowdyAuthentication>();
 	UCrowdyCppReplicationSubsystem* ReplicationRouting =
 		Collection.InitializeDependency<UCrowdyCppReplicationSubsystem>();
-	
-	
+
 	
 	// Pure allocations (no world required)
 	ServiceRegistry = new FCrowdyServiceRegistry();
@@ -402,6 +401,7 @@ void UCrowdySDKSubsystem::SetGameSessionInfo(const FGameSessionInfo GameSessionI
 	}
 
 	GameSession->SetUserID(GameSessionInfo.UserID);
+	LeaveChannelVoiceOfAnotherUser();
 
 	// Management plane: the identity SESSION token.
 	GameSession->SetSessionToken(GameSessionInfo.SessionToken);
@@ -872,6 +872,155 @@ int64 UCrowdySDKSubsystem::GetVoiceSpeakerUserId(const FString& SpeakerUuid) con
 	return VoiceChat ? VoiceChat->GetSpeakerUserId(SpeakerUuid) : 0;
 }
 
+void UCrowdySDKSubsystem::StartChannelVoice(const int64 ChannelId, const ECrowdyChannelVoiceMode Mode)
+{
+	if (ChannelId == 0)
+	{
+		UE_LOG(LogCrowdySDK, Warning, TEXT("Start Channel Voice needs a channel id; 0 is no channel."));
+		return;
+	}
+	LeaveChannelVoiceOfAnotherUser();
+	VoiceSettings.ChannelsUserId = GameSession ? GameSession->GetUserID() : 0;
+	VoiceSettings.VoiceChannels.Add(ChannelId, Mode);
+	if (UVoiceChatSubsystem* VoiceChat = BoundVoiceChat.Get())
+	{
+		VoiceChat->SetChannelVoice(ChannelId, true, Mode);
+	}
+}
+
+void UCrowdySDKSubsystem::StopChannelVoice(const int64 ChannelId)
+{
+	VoiceSettings.VoiceChannels.Remove(ChannelId);
+	if (UVoiceChatSubsystem* VoiceChat = BoundVoiceChat.Get())
+	{
+		VoiceChat->SetChannelVoice(ChannelId, false);
+	}
+}
+
+bool UCrowdySDKSubsystem::IsChannelVoiceOn(const int64 ChannelId) const
+{
+	return VoiceSettings.VoiceChannels.Contains(ChannelId);
+}
+
+void UCrowdySDKSubsystem::LeaveChannelVoiceOfAnotherUser()
+{
+	const int64 UserId = GameSession ? GameSession->GetUserID() : 0;
+	if (VoiceSettings.VoiceChannels.IsEmpty() || UserId == VoiceSettings.ChannelsUserId)
+	{
+		return;
+	}
+	// Joined before anyone signed in: the account that signs in is the one that asked.
+	if (VoiceSettings.ChannelsUserId == 0)
+	{
+		VoiceSettings.ChannelsUserId = UserId;
+		return;
+	}
+
+	TArray<int64> Joined;
+	VoiceSettings.VoiceChannels.GenerateKeyArray(Joined);
+	VoiceSettings.VoiceChannels.Reset();
+	UVoiceChatSubsystem* VoiceChat = BoundVoiceChat.Get();
+	if (!VoiceChat)
+	{
+		return;
+	}
+	for (const int64 ChannelId : Joined)
+	{
+		VoiceChat->SetChannelVoice(ChannelId, false);
+	}
+}
+
+void UCrowdySDKSubsystem::SetChannelVoiceMode(const int64 ChannelId, const ECrowdyChannelVoiceMode Mode)
+{
+	ECrowdyChannelVoiceMode* Joined = VoiceSettings.VoiceChannels.Find(ChannelId);
+	if (!Joined)
+	{
+		UE_LOG(LogCrowdySDK, Warning, TEXT("Set Channel Voice Mode: channel %lld's voice is not joined; Start Channel Voice joins it in a mode."), ChannelId);
+		return;
+	}
+	*Joined = Mode;
+	if (UVoiceChatSubsystem* VoiceChat = BoundVoiceChat.Get())
+	{
+		VoiceChat->SetChannelVoice(ChannelId, true, Mode);
+	}
+}
+
+ECrowdyChannelVoiceMode UCrowdySDKSubsystem::GetChannelVoiceMode(const int64 ChannelId) const
+{
+	const ECrowdyChannelVoiceMode* Joined = VoiceSettings.VoiceChannels.Find(ChannelId);
+	return Joined ? *Joined : ECrowdyChannelVoiceMode::Listen;
+}
+
+void UCrowdySDKSubsystem::SetSpatialVoiceEnabled(const bool bEnabled)
+{
+	VoiceSettings.bSpatialVoice = bEnabled;
+	if (UVoiceChatSubsystem* VoiceChat = BoundVoiceChat.Get())
+	{
+		VoiceChat->SetSpatialVoiceEnabled(bEnabled);
+	}
+}
+
+bool UCrowdySDKSubsystem::IsSpatialVoiceEnabled() const
+{
+	return VoiceSettings.bSpatialVoice;
+}
+
+void UCrowdySDKSubsystem::SetVoiceChannelMuted(const int64 ChannelId, const bool bMuted)
+{
+	if (ChannelId == 0)
+	{
+		UE_LOG(LogCrowdySDK, Warning, TEXT("Set Voice Channel Muted needs a channel id; 0 is no channel."));
+		return;
+	}
+	if (bMuted)
+	{
+		VoiceSettings.MutedChannels.Add(ChannelId);
+	}
+	else
+	{
+		VoiceSettings.MutedChannels.Remove(ChannelId);
+	}
+	if (UVoiceChatSubsystem* VoiceChat = BoundVoiceChat.Get())
+	{
+		VoiceChat->SetChannelMuted(ChannelId, bMuted);
+	}
+}
+
+bool UCrowdySDKSubsystem::IsVoiceChannelMuted(const int64 ChannelId) const
+{
+	return VoiceSettings.MutedChannels.Contains(ChannelId);
+}
+
+void UCrowdySDKSubsystem::SetVoiceChannelVolume(const int64 ChannelId, const float Volume)
+{
+	if (ChannelId == 0)
+	{
+		UE_LOG(LogCrowdySDK, Warning, TEXT("Set Voice Channel Volume needs a channel id; 0 is no channel."));
+		return;
+	}
+	const float Clamped = FMath::IsFinite(Volume) ? FMath::Clamp(Volume, 0.0f, UVoiceChatSubsystem::MaxUserVolume) : 1.0f;
+	UE_CLOG(Clamped != Volume, LogCrowdySDK, Warning, TEXT("Voice channel volume %f is outside 0 to %.0f; using %.2f."),
+		Volume, UVoiceChatSubsystem::MaxUserVolume, Clamped);
+	if (Clamped == 1.0f)
+	{
+		VoiceSettings.ChannelVolumes.Remove(ChannelId);
+	}
+	else
+	{
+		VoiceSettings.ChannelVolumes.Add(ChannelId, Clamped);
+	}
+	if (UVoiceChatSubsystem* VoiceChat = BoundVoiceChat.Get())
+	{
+		VoiceChat->SetChannelVolume(ChannelId, Clamped);
+	}
+}
+
+float UCrowdySDKSubsystem::GetVoiceChannelVolume(const int64 ChannelId) const
+{
+	const float* Volume = VoiceSettings.ChannelVolumes.Find(ChannelId);
+	return Volume ? *Volume : 1.0f;
+}
+
 int32 UCrowdySDKSubsystem::MapVoiceDistance(const UWorld* World)
 {
 	const UCrowdyMapProfile* Profile = World ? UCrowdySDKDeveloperSettings::ResolveProfileForWorld(World) : nullptr;
@@ -1243,6 +1392,7 @@ void UCrowdySDKSubsystem::HandleAuthLogin(FCrowdyAuthResult Result)
 	// the app token by the time this fires, so RequestUDPAccess authorizes with it.
 	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Sign-in successful. UserID=%lld"), Result.UserID);
 
+	LeaveChannelVoiceOfAnotherUser();
 	ConnectOnceRecorded();
 
 	OnLogin.Broadcast(true, FString());
@@ -1277,6 +1427,7 @@ void UCrowdySDKSubsystem::HandleAuthRegister(FCrowdyAuthResult Result)
 {
 	// Registration signs the player in and mints an app token, so it proceeds to
 	// UDP access exactly like a login.
+	LeaveChannelVoiceOfAnotherUser();
 	ConnectOnceRecorded();
 
 	OnRegister.Broadcast(true, FString());
@@ -1291,6 +1442,7 @@ void UCrowdySDKSubsystem::HandleAuthSessionRestored(FCrowdyAuthResult Result)
 {
 	UE_CLOG(CrowdySDKTrace::Sdk(), LogCrowdySDK, Log, TEXT("Session restored. UserID=%lld"), Result.UserID);
 
+	LeaveChannelVoiceOfAnotherUser();
 	ConnectOnceRecorded();
 
 	// A restored session is a signed-in player; surface it on the same delegate.
@@ -1429,10 +1581,12 @@ void UCrowdySDKSubsystem::BindVoiceChat(UVoiceChatSubsystem* VoiceChat)
 	{
 		Previous->OnMicStateChanged.Remove(VoiceMicStateHandle);
 		Previous->OnSpeakerTalking.Remove(VoiceTalkingHandle);
+		Previous->OnChannelSpeakerTalking.Remove(VoiceChannelTalkingHandle);
 	}
 	BoundVoiceChat = VoiceChat;
 	VoiceMicStateHandle.Reset();
 	VoiceTalkingHandle.Reset();
+	VoiceChannelTalkingHandle.Reset();
 	if (!VoiceChat)
 	{
 		return;
@@ -1441,6 +1595,7 @@ void UCrowdySDKSubsystem::BindVoiceChat(UVoiceChatSubsystem* VoiceChat)
 	bWarnedNoVoiceChat = false;
 	VoiceMicStateHandle = VoiceChat->OnMicStateChanged.AddUObject(this, &UCrowdySDKSubsystem::HandleVoiceMicStateChanged);
 	VoiceTalkingHandle = VoiceChat->OnSpeakerTalking.AddUObject(this, &UCrowdySDKSubsystem::HandleVoiceSpeakerTalking);
+	VoiceChannelTalkingHandle = VoiceChat->OnChannelSpeakerTalking.AddUObject(this, &UCrowdySDKSubsystem::HandleVoiceChannelSpeakerTalking);
 
 	// Voice chat sits below replication and services, so it asks through these for where a speaker is and who they are.
 	const TWeakObjectPtr<UWorld> WeakWorld = VoiceChat->GetWorld();
@@ -1465,6 +1620,7 @@ void UCrowdySDKSubsystem::BindVoiceChat(UVoiceChatSubsystem* VoiceChat)
 			OnResolved(Owner.Result == ECrowdyActorOwnerResult::Confirmed ? Owner.UserId : 0);
 		});
 	};
+	LeaveChannelVoiceOfAnotherUser();
 	VoiceSettings.ApplyTo(*VoiceChat, MapVoiceDistance(VoiceChat->GetWorld()));
 	HandleVoiceMicStateChanged(VoiceChat->GetMicState());
 }
@@ -1499,6 +1655,11 @@ void UCrowdySDKSubsystem::HandleVoiceMicStateChanged(const ECrowdyVoiceMicState 
 void UCrowdySDKSubsystem::HandleVoiceSpeakerTalking(const FString& SpeakerUuid, const bool bTalking)
 {
 	OnVoiceSpeakerTalking.Broadcast(SpeakerUuid, bTalking);
+}
+
+void UCrowdySDKSubsystem::HandleVoiceChannelSpeakerTalking(const int64 ChannelId, const FString& SpeakerUuid, const bool bTalking)
+{
+	OnVoiceChannelSpeakerTalking.Broadcast(ChannelId, SpeakerUuid, bTalking);
 }
 
 bool UCrowdySDKSubsystem::TryLoadConfiguration()

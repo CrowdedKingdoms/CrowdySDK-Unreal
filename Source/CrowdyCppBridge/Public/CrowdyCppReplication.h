@@ -66,6 +66,9 @@ struct FCrowdyCppSpatialMessage
  */
 struct FCrowdyCppChannelMessage
 {
+	/** 18 for a channel message, 36 for channel audio; the two share this layout. */
+	uint8 Opcode = 18;
+
 	int64 ChannelId = 0;
 
 	/** 32 ASCII octets, not null-terminated. */
@@ -489,6 +492,10 @@ public:
 	bool SendChannelMessage(int64 ChannelId, TArrayView<const uint8> Uuid, TArrayView<const uint8> Payload,
 		FString& OutError);
 
+	/** Queue one voice packet to a channel. The server refuses it unless the sender's role there has send_voice. */
+	bool SendChannelAudio(int64 ChannelId, TArrayView<const uint8> Uuid, TArrayView<const uint8> Payload,
+		FString& OutError);
+
 	/**
 	 * Split one encoded video frame into fragments and queue every one of them.
 	 *
@@ -559,6 +566,9 @@ private:
 	FCrowdyCppReplication();
 	FCrowdyCppReplication(const FCrowdyCppReplication&) = delete;
 	FCrowdyCppReplication& operator=(const FCrowdyCppReplication&) = delete;
+
+	bool SendChannel(uint8 Opcode, int64 ChannelId, TArrayView<const uint8> Uuid, TArrayView<const uint8> Payload,
+		FString& OutError);
 
 	struct FImpl;
 	TUniquePtr<FImpl> Impl;

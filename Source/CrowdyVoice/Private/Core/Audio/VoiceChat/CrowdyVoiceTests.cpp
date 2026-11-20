@@ -163,6 +163,13 @@ namespace
 		void StartVoiceChat() { Calls.Add(TEXT("start")); }
 		void SetUserMuted(const int64 UserId, const bool bMuted) { Calls.Add(FString::Printf(TEXT("mute user %lld %d"), UserId, bMuted ? 1 : 0)); }
 		void SetUserVolume(const int64 UserId, const float Volume) { Calls.Add(FString::Printf(TEXT("volume user %lld %.2f"), UserId, Volume)); }
+		void SetChannelVoice(const int64 ChannelId, const bool bOn, const ECrowdyChannelVoiceMode Mode)
+		{
+			Calls.Add(FString::Printf(TEXT("channel voice %lld %d %s"), ChannelId, bOn ? 1 : 0, Mode == ECrowdyChannelVoiceMode::Talk ? TEXT("talk") : TEXT("listen")));
+		}
+		void SetChannelMuted(const int64 ChannelId, const bool bMuted) { Calls.Add(FString::Printf(TEXT("mute channel %lld %d"), ChannelId, bMuted ? 1 : 0)); }
+		void SetChannelVolume(const int64 ChannelId, const float Volume) { Calls.Add(FString::Printf(TEXT("volume channel %lld %.2f"), ChannelId, Volume)); }
+		void SetSpatialVoiceEnabled(const bool bEnabled) { Calls.Add(FString::Printf(TEXT("spatial %d"), bEnabled ? 1 : 0)); }
 
 		TArray<FString> Calls;
 	};
@@ -534,7 +541,7 @@ bool FCrowdyVoiceSettingsTest::RunTest(const FString& Parameters)
 
 	FCrowdyVoiceTestVoiceChat NextMap;
 	Settings.ApplyTo(NextMap, 4);
-	const TArray<FString> Wanted = { TEXT("timeout 3.0"), TEXT("distance 6"), TEXT("echo 1"), TEXT("play"), TEXT("start") };
+	const TArray<FString> Wanted = { TEXT("timeout 3.0"), TEXT("distance 6"), TEXT("spatial 1"), TEXT("echo 1"), TEXT("play"), TEXT("start") };
 	TestEqual(TEXT("a mic that was on is started on the next map, at the distance the game set over the map's"), NextMap.Calls, Wanted);
 
 	Settings.bMicWanted = false;
@@ -542,7 +549,7 @@ bool FCrowdyVoiceSettingsTest::RunTest(const FString& Parameters)
 	Settings.DistanceChunks.Reset();
 	FCrowdyVoiceTestVoiceChat AfterStop;
 	Settings.ApplyTo(AfterStop, 2);
-	const TArray<FString> Stopped = { TEXT("timeout 3.0"), TEXT("distance 2"), TEXT("echo 1"), TEXT("mute") };
+	const TArray<FString> Stopped = { TEXT("timeout 3.0"), TEXT("distance 2"), TEXT("spatial 1"), TEXT("echo 1"), TEXT("mute") };
 	TestEqual(TEXT("a stopped mic stays closed, and a reset distance follows the map again"), AfterStop.Calls, Stopped);
 	return true;
 }
@@ -745,6 +752,96 @@ bool FCrowdyVoiceMutedUsersTest::RunTest(const FString& Parameters)
 	Settings.ApplyTo(NextMap, 1);
 	TestTrue(TEXT("a mute carries to the next map"), NextMap.Calls.Contains(TEXT("mute user 7 1")));
 	TestTrue(TEXT("and so does a volume"), NextMap.Calls.Contains(TEXT("volume user 8 0.50")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceChannelVoiceTest,
+	"CrowdySDK.CrowdyVoice.ChannelVoice", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceChannelVoiceTest::RunTest(const FString& Parameters)
+{
+	const FString Uuid = FString::Printf(TEXT("%032X"), 42);
+	const FString Key = UVoiceChatSubsystem::ChannelStreamKey(812, Uuid);
+	TestEqual(TEXT("a channel stream is keyed as CrowdyJS keys it"), Key, FString(TEXT("812:")) + Uuid);
+
+	UVoiceChatSubsystem* VoiceChat = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	TestTrue(TEXT("a channel stream is tracked"), VoiceChat->TrackSpeakerForTest(Key, 1000, 812));
+	FGuid Expected;
+	FGuid::Parse(Uuid, Expected);
+	TestEqual(TEXT("and looks its user up by the speaker's actor id, not the whole key"), VoiceChat->TrackedSpeakerIdForTest(Key), Expected);
+	TestTrue(TEXT("a spatial stream of the same speaker is its own"), VoiceChat->TrackSpeakerForTest(Uuid, 1000));
+	TestTrue(TEXT("and both are kept"), VoiceChat->IsSpeakerTrackedForTest(Key) && VoiceChat->IsSpeakerTrackedForTest(Uuid));
+
+	TestTrue(TEXT("spatial voice is on by default"), VoiceChat->IsSpatialVoiceEnabled());
+	VoiceChat->SetChannelVoice(812, true);
+	VoiceChat->SetChannelVoice(0, true);
+	TestTrue(TEXT("channel voice turns on"), VoiceChat->IsChannelVoiceOn(812));
+	TestFalse(TEXT("but never for no channel"), VoiceChat->IsChannelVoiceOn(0));
+	TestEqual(TEXT("talking by default"), VoiceChat->GetChannelVoiceMode(812), ECrowdyChannelVoiceMode::Talk);
+	VoiceChat->SetChannelVoice(812, true, ECrowdyChannelVoiceMode::Listen);
+	TestTrue(TEXT("a listener has joined the channel's voice"), VoiceChat->IsChannelVoiceOn(812));
+	TestEqual(TEXT("and only listens"), VoiceChat->GetChannelVoiceMode(812), ECrowdyChannelVoiceMode::Listen);
+	VoiceChat->SetChannelVoice(812, false);
+	TestFalse(TEXT("and off"), VoiceChat->IsChannelVoiceOn(812));
+	TestEqual(TEXT("a channel not joined reads as listening"), VoiceChat->GetChannelVoiceMode(812), ECrowdyChannelVoiceMode::Listen);
+
+	VoiceChat->SetChannelMuted(9, true);
+	TestTrue(TEXT("a channel mutes"), VoiceChat->IsChannelMuted(9));
+	VoiceChat->SetChannelMuted(9, false);
+	TestFalse(TEXT("and unmutes"), VoiceChat->IsChannelMuted(9));
+	VoiceChat->SetChannelVolume(9, 9.0f);
+	TestEqual(TEXT("a channel volume is held to 4"), VoiceChat->GetChannelVolume(9), UVoiceChatSubsystem::MaxUserVolume);
+	VoiceChat->SetChannelVolume(9, 1.0f);
+	TestEqual(TEXT("and 1 forgets it"), VoiceChat->GetChannelVolume(9), 1.0f);
+
+	FCrowdyVoiceSettings Settings;
+	Settings.VoiceChannels.Add(812, ECrowdyChannelVoiceMode::Talk);
+	Settings.VoiceChannels.Add(813, ECrowdyChannelVoiceMode::Listen);
+	Settings.MutedChannels.Add(9);
+	Settings.ChannelVolumes.Add(10, 0.5f);
+	Settings.bSpatialVoice = false;
+	FCrowdyVoiceTestVoiceChat NextMap;
+	Settings.ApplyTo(NextMap, 1);
+	TestTrue(TEXT("channel voice carries to the next map"), NextMap.Calls.Contains(TEXT("channel voice 812 1 talk")));
+	TestTrue(TEXT("with its mode"), NextMap.Calls.Contains(TEXT("channel voice 813 1 listen")));
+	TestTrue(TEXT("and a channel mute"), NextMap.Calls.Contains(TEXT("mute channel 9 1")));
+	TestTrue(TEXT("and a channel volume"), NextMap.Calls.Contains(TEXT("volume channel 10 0.50")));
+	TestTrue(TEXT("and spatial voice being off"), NextMap.Calls.Contains(TEXT("spatial 0")));
+
+	// Ids with no user, made up by a channel member, cannot hold places against known players or nearby speakers.
+	const TArray<uint8> Packet = CrowdyVoiceTestPacket(*this);
+	FCrowdyVoiceTestOutput Output;
+	FCrowdyVoicePlayback Places(Output, FCrowdyVoicePlayback::ReceiveDelayMs, 1);
+	Places.Push(TEXT("812:made-up"), Packet, 0, UVoiceChatSubsystem::ChannelStreamRank(0));
+	Places.Push(TEXT("Nearby"), Packet, 0, 500.0f * 500.0f);
+	TestTrue(TEXT("a nearby speaker takes the place of a channel id with no user"), Places.IsHeard(TEXT("Nearby")) && !Places.IsHeard(TEXT("812:made-up")));
+	Places.Push(TEXT("812:known"), Packet, 0, UVoiceChatSubsystem::ChannelStreamRank(77));
+	TestTrue(TEXT("and a known player on the channel takes the nearby speaker's"), Places.IsHeard(TEXT("812:known")) && !Places.IsHeard(TEXT("Nearby")));
+
+	// A speaker already known on one stream is known on the next, so a muted user's channel voice is held from its first packet.
+	UVoiceChatSubsystem* Known = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	int32 Lookups = 0;
+	Known->ResolveSpeakerUser = [&Lookups](const FGuid&, TFunction<void(int64)> OnResolved) { ++Lookups; OnResolved(77); };
+	Known->SetUserMuted(77, true);
+	TestFalse(TEXT("CONTROL: the muted user's spatial voice is held"), Known->AdmitSpeakerForTest(Uuid, 1000));
+	TestEqual(TEXT("once their user is known"), Known->TrackedUserIdForTest(Uuid), static_cast<int64>(77));
+	TestFalse(TEXT("their channel voice is held on its first packet"), Known->AdmitSpeakerForTest(Key, 1000, 812));
+	TestEqual(TEXT("knowing the user without asking again"), Lookups, 1);
+	Known->ResolveSpeakerUser = nullptr;
+
+	// Both streams can start before either lookup answers; the first answer is the user on both.
+	UVoiceChatSubsystem* Pending = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	TArray<TFunction<void(int64)>> Answers;
+	Pending->ResolveSpeakerUser = [&Answers](const FGuid&, TFunction<void(int64)> OnResolved) { Answers.Add(MoveTemp(OnResolved)); };
+	Pending->AdmitSpeakerForTest(Uuid, 1000);
+	Pending->AdmitSpeakerForTest(Key, 1000, 812);
+	if (TestEqual(TEXT("both streams asked"), Answers.Num(), 2))
+	{
+		Answers[0](77);
+		TestEqual(TEXT("the spatial answer reaches the channel stream"), Pending->TrackedUserIdForTest(Key), static_cast<int64>(77));
+		Answers[1](0);
+		TestEqual(TEXT("and the channel stream's own late failed lookup does not undo it"), Pending->TrackedUserIdForTest(Key), static_cast<int64>(77));
+	}
+	Pending->ResolveSpeakerUser = nullptr;
 	return true;
 }
 

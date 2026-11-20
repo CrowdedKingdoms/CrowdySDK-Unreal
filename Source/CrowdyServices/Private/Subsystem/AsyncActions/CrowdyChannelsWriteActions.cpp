@@ -14,7 +14,7 @@ static UCrowdyChannels* GetChannelsSubsystemW(const TWeakObjectPtr<UObject>& Ctx
 
 UCrowdyChannels_CreateChannel* UCrowdyChannels_CreateChannel::CreateChannel(
 	UObject* WorldContextObject, const FString& Name, const FString& Description,
-	ECrowdyChannelMembershipPolicy MembershipPolicy, bool bMembersCanSend)
+	ECrowdyChannelMembershipPolicy MembershipPolicy, bool bMembersCanSend, bool bMembersCanSpeak)
 {
 	UCrowdyChannels_CreateChannel* Action = NewObject<UCrowdyChannels_CreateChannel>();
 	Action->WorldContextObject = WorldContextObject;
@@ -22,6 +22,7 @@ UCrowdyChannels_CreateChannel* UCrowdyChannels_CreateChannel::CreateChannel(
 	Action->Description = Description;
 	Action->MembershipPolicy = MembershipPolicy;
 	Action->bMembersCanSend = bMembersCanSend;
+	Action->bMembersCanSpeak = bMembersCanSpeak;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -39,7 +40,7 @@ void UCrowdyChannels_CreateChannel::Activate()
 	S.BindDynamic(this, &UCrowdyChannels_CreateChannel::HandleSuccess);
 	FOnChannelError E;
 	E.BindDynamic(this, &UCrowdyChannels_CreateChannel::HandleError);
-	Channels->CreateChannel(Name, Description, MembershipPolicy, bMembersCanSend, S, E);
+	Channels->CreateChannel(Name, Description, MembershipPolicy, bMembersCanSend, bMembersCanSpeak, S, E);
 }
 
 void UCrowdyChannels_CreateChannel::HandleSuccess(FCrowdyChannel Channel)

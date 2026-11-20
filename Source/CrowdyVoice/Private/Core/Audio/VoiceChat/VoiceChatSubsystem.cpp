@@ -15,6 +15,7 @@
 #include "Internal/FCrowdyServiceRegistry.h"
 #include "Kismet/GameplayStatics.h"
 #include "Messages/Actor/FActorLeftNotification.h"
+#include "Messages/Channels/FChannelMessages.h"
 #include "Messages/Communication/FClientAudioNotification.h"
 #include "Messages/Communication/FClientAudioPacketMessageRequest.h"
 #include "Sound/SoundWaveProcedural.h"
@@ -74,7 +75,8 @@ struct FCrowdyVoiceRuntime final : ICrowdyVoiceSpeakerOutput, ICrowdyVoiceFrameS
 	// Collected and broadcast once the update is over, so a listener never runs mid-update.
 	virtual void SpeakerTalking(const FString& SpeakerKey, const bool bTalking) override
 	{
-		TalkingChanges.Emplace(SpeakerKey, bTalking);
+		const UVoiceChatSubsystem::FSpeakerInfo* Info = Owner.SpeakerInfos.Find(SpeakerKey);
+		TalkingChanges.Add({ SpeakerKey, Info ? Info->ChannelId : 0, bTalking });
 	}
 
 	UVoiceChatSubsystem& Owner;
@@ -84,7 +86,15 @@ struct FCrowdyVoiceRuntime final : ICrowdyVoiceSpeakerOutput, ICrowdyVoiceFrameS
 	FCrowdyCppVoiceEncoder Encoder;
 	FCrowdyVoiceDeviceMonitor Monitor;
 	FClientAudioPacketMessageRequest OutPacket;
-	TArray<TPair<FString, bool>> TalkingChanges;
+	FChannelAudioRequest OutChannelPacket;
+
+	struct FTalkingChange
+	{
+		FString SpeakerKey;
+		int64 ChannelId = 0;
+		bool bTalking = false;
+	};
+	TArray<FTalkingChange> TalkingChanges;
 };
 
 bool UVoiceChatSubsystem::ShouldCreateSubsystem(UObject* Outer) const
@@ -145,6 +155,7 @@ void UVoiceChatSubsystem::ReadSettings()
 void UVoiceChatSubsystem::Deinitialize()
 {
 	AudioSubscription.Release();
+	ChannelAudioSubscription.Release();
 	ActorLeftSubscription.Release();
 
 	if (UCrowdyGameSession* GameSession = Session.Get())
@@ -165,6 +176,7 @@ void UVoiceChatSubsystem::Deinitialize()
 	Runtime.Reset();
 	OnMicStateChanged.Clear();
 	OnSpeakerTalking.Clear();
+	OnChannelSpeakerTalking.Clear();
 	LocateSpeaker = nullptr;
 	ResolveSpeakerUser = nullptr;
 
@@ -257,7 +269,7 @@ void UVoiceChatSubsystem::UpdateListenerAndStreams(const int64 NowMs)
 	{
 		const FSpeakerInfo* Info = SpeakerInfos.Find(Pair.Key);
 		FVector Location;
-		if (Info && IsValid(Pair.Value.Component) && LocateSpeakerNow(*Info, Location))
+		if (Info && Info->ChannelId == 0 && IsValid(Pair.Value.Component) && LocateSpeakerNow(*Info, Location))
 		{
 			Pair.Value.Component->SetWorldLocation(Location);
 		}
@@ -330,17 +342,136 @@ float UVoiceChatSubsystem::GetUserVolume(const int64 UserId) const
 int64 UVoiceChatSubsystem::GetSpeakerUserId(const FString& SpeakerUuid) const
 {
 	const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerUuid);
-	return Info ? Info->UserId : 0;
+	if (Info && Info->UserId != 0)
+	{
+		return Info->UserId;
+	}
+
+	// Heard only on a channel: its stream is keyed by channel as well.
+	FGuid Id;
+	return FGuid::Parse(SpeakerUuid, Id) ? KnownUserOf(Id) : 0;
+}
+
+int64 UVoiceChatSubsystem::KnownUserOf(const FGuid& SpeakerId) const
+{
+	for (const TPair<FString, FSpeakerInfo>& Pair : SpeakerInfos)
+	{
+		if (Pair.Value.Id == SpeakerId && Pair.Value.UserId != 0)
+		{
+			return Pair.Value.UserId;
+		}
+	}
+	return 0;
 }
 
 void UVoiceChatSubsystem::ApplySpeakerVolume(const FString& SpeakerKey)
 {
 	const FCrowdyVoiceSpeakerStream* Stream = SpeakerStreams.Find(SpeakerKey);
 	const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerKey);
-	if (Stream && Info && IsValid(Stream->Component))
+	if (!Stream || !Info || !IsValid(Stream->Component))
 	{
-		Stream->Component->SetVolumeMultiplier(GetUserVolume(Info->UserId));
+		return;
 	}
+	const float ChannelVolume = Info->ChannelId != 0 ? GetChannelVolume(Info->ChannelId) : 1.0f;
+	Stream->Component->SetVolumeMultiplier(GetUserVolume(Info->UserId) * ChannelVolume);
+}
+
+FString UVoiceChatSubsystem::ChannelStreamKey(const int64 ChannelId, const FString& SpeakerUuid)
+{
+	return FString::Printf(TEXT("%lld:%s"), ChannelId, *SpeakerUuid);
+}
+
+ECrowdyChannelVoiceMode UVoiceChatSubsystem::GetChannelVoiceMode(const int64 ChannelId) const
+{
+	const ECrowdyChannelVoiceMode* Mode = VoiceChannels.Find(ChannelId);
+	return Mode ? *Mode : ECrowdyChannelVoiceMode::Listen;
+}
+
+bool UVoiceChatSubsystem::TalksOnAnyChannel() const
+{
+	for (const TPair<int64, ECrowdyChannelVoiceMode>& Pair : VoiceChannels)
+	{
+		if (Pair.Value == ECrowdyChannelVoiceMode::Talk)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void UVoiceChatSubsystem::SetChannelVoice(const int64 ChannelId, const bool bOn, const ECrowdyChannelVoiceMode Mode)
+{
+	if (ChannelId == 0)
+	{
+		return;
+	}
+	if (bOn)
+	{
+		VoiceChannels.Add(ChannelId, Mode);
+		return;
+	}
+
+	VoiceChannels.Remove(ChannelId);
+	for (const TPair<FString, FSpeakerInfo>& Pair : SpeakerInfos)
+	{
+		if (Pair.Value.ChannelId == ChannelId && Runtime)
+		{
+			Runtime->Playback.Forget(Pair.Key);
+		}
+	}
+}
+
+void UVoiceChatSubsystem::SetChannelMuted(const int64 ChannelId, const bool bMuted)
+{
+	if (ChannelId == 0)
+	{
+		return;
+	}
+	if (!bMuted)
+	{
+		MutedChannels.Remove(ChannelId);
+		return;
+	}
+
+	MutedChannels.Add(ChannelId);
+	for (const TPair<FString, FSpeakerInfo>& Pair : SpeakerInfos)
+	{
+		if (Pair.Value.ChannelId == ChannelId && Runtime)
+		{
+			Runtime->Playback.Forget(Pair.Key);
+		}
+	}
+}
+
+void UVoiceChatSubsystem::SetChannelVolume(const int64 ChannelId, const float Volume)
+{
+	if (ChannelId == 0)
+	{
+		return;
+	}
+	const float Clamped = FMath::IsFinite(Volume) ? FMath::Clamp(Volume, 0.0f, MaxUserVolume) : 1.0f;
+	if (Clamped == 1.0f)
+	{
+		ChannelVolumes.Remove(ChannelId);
+	}
+	else
+	{
+		ChannelVolumes.Add(ChannelId, Clamped);
+	}
+
+	for (const TPair<FString, FSpeakerInfo>& Pair : SpeakerInfos)
+	{
+		if (Pair.Value.ChannelId == ChannelId)
+		{
+			ApplySpeakerVolume(Pair.Key);
+		}
+	}
+}
+
+float UVoiceChatSubsystem::GetChannelVolume(const int64 ChannelId) const
+{
+	const float* Volume = ChannelVolumes.Find(ChannelId);
+	return Volume ? *Volume : 1.0f;
 }
 
 bool UVoiceChatSubsystem::AdmitSpeaker(const FString& SpeakerKey, FSpeakerInfo& Info, const int64 NowMs)
@@ -375,6 +506,11 @@ bool UVoiceChatSubsystem::AdmitsSpeaker(const int64 UserId, const TSet<int64>& M
 	return Muted.IsEmpty() || bAnswered || SinceFirstSeenMs >= UserLookupHoldMs;
 }
 
+float UVoiceChatSubsystem::ChannelStreamRank(const int64 UserId)
+{
+	return UserId != 0 ? 0.0f : TNumericLimits<float>::Max();
+}
+
 bool UVoiceChatSubsystem::TakeLookup(const int64 NowMs)
 {
 	LookupTokens = FMath::Min(LookupBurst, LookupTokens + static_cast<double>(NowMs - LookupTokensAtMs) * LookupsPerSecond / 1000.0);
@@ -387,7 +523,7 @@ bool UVoiceChatSubsystem::TakeLookup(const int64 NowMs)
 	return true;
 }
 
-UVoiceChatSubsystem::FSpeakerInfo* UVoiceChatSubsystem::TrackSpeaker(const FString& SpeakerKey, const int64 NowMs)
+UVoiceChatSubsystem::FSpeakerInfo* UVoiceChatSubsystem::TrackSpeaker(const FString& SpeakerKey, const int64 NowMs, const int64 ChannelId)
 {
 	if (FSpeakerInfo* Known = SpeakerInfos.Find(SpeakerKey))
 	{
@@ -402,8 +538,14 @@ UVoiceChatSubsystem::FSpeakerInfo* UVoiceChatSubsystem::TrackSpeaker(const FStri
 
 	FSpeakerInfo& Info = SpeakerInfos.Add(SpeakerKey);
 	Info.FirstSeenMs = NowMs;
+	Info.ChannelId = ChannelId;
 	// Every SDK player sends under a guid's digits; an id that is not one has no user to look up.
-	Info.bAnswered = !FGuid::Parse(SpeakerKey, Info.Id) || !Info.Id.IsValid() || !ResolveSpeakerUser;
+	int32 Colon = INDEX_NONE;
+	const FString Uuid = ChannelId != 0 && SpeakerKey.FindChar(TEXT(':'), Colon) ? SpeakerKey.RightChop(Colon + 1) : SpeakerKey;
+	Info.bAnswered = !FGuid::Parse(Uuid, Info.Id) || !Info.Id.IsValid() || !ResolveSpeakerUser;
+	// The same speaker on another stream already answered who they are, so this one neither waits nor spends a lookup.
+	Info.UserId = Info.Id.IsValid() ? KnownUserOf(Info.Id) : 0;
+	Info.bAnswered = Info.bAnswered || Info.UserId != 0;
 	return &Info;
 }
 
@@ -439,18 +581,33 @@ void UVoiceChatSubsystem::HandleSpeakerUser(const FString& SpeakerKey, const int
 	{
 		return;
 	}
-	Info->UserId = UserId;
 	Info->bAnswered = true;
 	Info->bAsking = false;
 	if (UserId == 0)
 	{
-		Info->RetryAtMs = CrowdyVoiceNowMs() + LookupRetryMs;
+		// Another stream of the same speaker may already know them; a failed lookup does not undo that.
+		Info->UserId = KnownUserOf(Info->Id);
+		Info->RetryAtMs = Info->UserId == 0 ? CrowdyVoiceNowMs() + LookupRetryMs : 0;
+		ApplySpeakerVolume(SpeakerKey);
+		return;
 	}
-	if (UserId != 0 && MutedUsers.Contains(UserId) && Runtime)
+
+	// One answer is the speaker's on every stream: their spatial voice and each channel they are heard on.
+	const FGuid SpeakerId = Info->Id;
+	for (TPair<FString, FSpeakerInfo>& Pair : SpeakerInfos)
 	{
-		Runtime->Playback.Forget(SpeakerKey);
+		if (Pair.Value.Id != SpeakerId)
+		{
+			continue;
+		}
+		Pair.Value.UserId = UserId;
+		Pair.Value.bAnswered = true;
+		if (MutedUsers.Contains(UserId) && Runtime)
+		{
+			Runtime->Playback.Forget(Pair.Key);
+		}
+		ApplySpeakerVolume(Pair.Key);
 	}
-	ApplySpeakerVolume(SpeakerKey);
 }
 
 void UVoiceChatSubsystem::StartVoiceChat()
@@ -590,6 +747,10 @@ void UVoiceChatSubsystem::ConnectToSession()
 		ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION,
 		{ ECrowdySubscriptionRole::Observe, false, TEXT("CrowdyVoice") },
 		[this](const FClientAudioNotification& Notification, const FCrowdyDelivery&) { HandleAudio(Notification); });
+	ChannelAudioSubscription = SdkBridge->ServiceRegistry->SubscribeToOpcode<FChannelAudioNotification>(
+		ECrowdyMessageType::CHANNEL_AUDIO_NOTIFICATION,
+		{ ECrowdySubscriptionRole::Observe, false, TEXT("CrowdyVoice") },
+		[this](const FChannelAudioNotification& Notification, const FCrowdyDelivery&) { HandleChannelAudio(Notification); });
 	ActorLeftSubscription = SdkBridge->ServiceRegistry->SubscribeToOpcode<FActorLeftNotification>(
 		ECrowdyMessageType::ACTOR_LEFT_NOTIFICATION,
 		{ ECrowdySubscriptionRole::Observe, false, TEXT("CrowdyVoice") },
@@ -639,6 +800,45 @@ void UVoiceChatSubsystem::HandleAudio(const FClientAudioNotification& Notificati
 	Runtime->Playback.Push(SpeakerKey, Notification.Payload, NowMs, DistanceSquared);
 }
 
+void UVoiceChatSubsystem::HandleChannelAudio(const FChannelAudioNotification& Notification)
+{
+	if (!Runtime || Notification.ChannelId == 0 || !Notification.UUID.IsSet())
+	{
+		return;
+	}
+
+	// Membership is not consent: every player sits in the SDK's own channels, and any channel's leader may speak in it.
+	if (!VoiceChannels.Contains(Notification.ChannelId))
+	{
+		++Stats.ChannelPacketsIgnored;
+		return;
+	}
+	++Stats.PacketsReceived;
+	++Stats.ChannelPacketsReceived;
+
+	if (MutedChannels.Contains(Notification.ChannelId))
+	{
+		++Stats.PacketsMuted;
+		return;
+	}
+
+	const FString SpeakerKey = ChannelStreamKey(Notification.ChannelId, Notification.UUID.ToString());
+	const int64 NowMs = CrowdyVoiceNowMs();
+	FSpeakerInfo* Info = TrackSpeaker(SpeakerKey, NowMs, Notification.ChannelId);
+	if (!Info)
+	{
+		++PacketsUntracked;
+		return;
+	}
+	if (!AdmitSpeaker(SpeakerKey, *Info, NowMs))
+	{
+		++Stats.PacketsMuted;
+		return;
+	}
+
+	Runtime->Playback.Push(SpeakerKey, Notification.Payload, NowMs, ChannelStreamRank(Info->UserId));
+}
+
 void UVoiceChatSubsystem::HandleActorLeft(const FActorLeftNotification& Notification)
 {
 	if (Runtime)
@@ -656,6 +856,13 @@ void UVoiceChatSubsystem::HandleOwnerUUIDUpdated(const FString NewUUID)
 void UVoiceChatSubsystem::SendFrame(const TConstArrayView<int16> Frame, const bool bLast)
 {
 	FCrowdyVoiceRuntime& Voice = *Runtime;
+	const bool bTalksOnChannel = TalksOnAnyChannel();
+	if (!bSpatialVoice && !bTalksOnChannel)
+	{
+		Voice.Encoder.Skip(1);
+		return;
+	}
+
 	UCrowdyGameSession* GameSession = Session.Get();
 	const UCrowdySDKBridgeSubsystem* SdkBridge = Bridge.Get();
 	if (!GameSession || !SdkBridge || !SdkBridge->SendMessageFn || !LocalSenderId.IsSet())
@@ -672,6 +879,28 @@ void UVoiceChatSubsystem::SendFrame(const TConstArrayView<int16> Frame, const bo
 	{
 		UE_CLOG(!bWarnedEncode, LogCrowdyVoice, Warning, TEXT("Voice chat could not encode a microphone frame and dropped it."));
 		bWarnedEncode = true;
+		return;
+	}
+
+	// Each channel gets the same packet, so a listener on two of them hears two streams with one sequence.
+	FChannelAudioRequest& ChannelPacket = Voice.OutChannelPacket;
+	if (bTalksOnChannel)
+	{
+		ChannelPacket.Payload = Voice.OutPacket.Payload;
+		ChannelPacket.UUID = LocalSenderId;
+	}
+	for (const TPair<int64, ECrowdyChannelVoiceMode>& Channel : VoiceChannels)
+	{
+		if (Channel.Value != ECrowdyChannelVoiceMode::Talk)
+		{
+			continue;
+		}
+		ChannelPacket.ChannelId = Channel.Key;
+		SdkBridge->SendMessageFn(ChannelPacket);
+		++Stats.ChannelPacketsSent;
+	}
+	if (!bSpatialVoice)
+	{
 		return;
 	}
 
@@ -711,11 +940,19 @@ void UVoiceChatSubsystem::BroadcastChanges()
 	}
 
 	// Moved out first: a listener may stop or mute voice chat, which can queue more changes.
-	TArray<TPair<FString, bool>> Changes = MoveTemp(Runtime->TalkingChanges);
+	TArray<FCrowdyVoiceRuntime::FTalkingChange> Changes = MoveTemp(Runtime->TalkingChanges);
 	Runtime->TalkingChanges.Reset();
-	for (const TPair<FString, bool>& Change : Changes)
+	for (const FCrowdyVoiceRuntime::FTalkingChange& Change : Changes)
 	{
-		OnSpeakerTalking.Broadcast(Change.Key, Change.Value);
+		if (Change.ChannelId == 0)
+		{
+			OnSpeakerTalking.Broadcast(Change.SpeakerKey, Change.bTalking);
+			continue;
+		}
+		// The key is built here as "<ChannelId>:<Uuid>", and a channel id has no colon, so the first one ends it.
+		int32 Colon = INDEX_NONE;
+		Change.SpeakerKey.FindChar(TEXT(':'), Colon);
+		OnChannelSpeakerTalking.Broadcast(Change.ChannelId, Change.SpeakerKey.RightChop(Colon + 1), Change.bTalking);
 	}
 }
 
@@ -740,7 +977,8 @@ void UVoiceChatSubsystem::OpenSpeakerStream(const FString& SpeakerKey, const int
 
 	const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerKey);
 	FVector Location;
-	if (Component && PlaybackMode == ECrowdyVoicePlaybackMode::Spatial)
+	const bool bChannel = Info && Info->ChannelId != 0;
+	if (Component && PlaybackMode == ECrowdyVoicePlaybackMode::Spatial && !bChannel)
 	{
 		Component->bAllowSpatialization = true;
 		Component->bIsUISound = false;

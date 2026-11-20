@@ -10,4 +10,5 @@ enum class ECrowdyChannelPermission : uint8
 	ManageMembers  UMETA(DisplayName = "Manage Members"),
 	ManageRoles    UMETA(DisplayName = "Manage Roles"),
 	InviteMembers  UMETA(DisplayName = "Invite Members"),
+	SendVoice      UMETA(DisplayName = "Send Voice"),
 };

@@ -22,6 +22,9 @@ struct CROWDYNET_API FCrowdyChannelPermissions
 	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Channels") bool bManageRoles   = false;
 	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Channels") bool bInviteMembers = false;
 
+	/** Talk on the channel's voice. The player also needs voice chat allowed for their account. */
+	UPROPERTY(BlueprintReadWrite, Category = "Crowdy SDK|Channels") bool bSendVoice = false;
+
 	bool Has(ECrowdyChannelPermission Permission) const
 	{
 		switch (Permission)
@@ -31,6 +34,7 @@ struct CROWDYNET_API FCrowdyChannelPermissions
 		case ECrowdyChannelPermission::ManageMembers: return bManageMembers;
 		case ECrowdyChannelPermission::ManageRoles:   return bManageRoles;
 		case ECrowdyChannelPermission::InviteMembers: return bInviteMembers;
+		case ECrowdyChannelPermission::SendVoice:     return bSendVoice;
 		}
 		return false;
 	}
@@ -43,6 +47,7 @@ struct CROWDYNET_API FCrowdyChannelPermissions
 		if (bManageMembers) Out.Add(TEXT("manage_members"));
 		if (bManageRoles)   Out.Add(TEXT("manage_roles"));
 		if (bInviteMembers) Out.Add(TEXT("invite_members"));
+		if (bSendVoice)     Out.Add(TEXT("send_voice"));
 		return Out;
 	}
 
@@ -54,6 +59,7 @@ struct CROWDYNET_API FCrowdyChannelPermissions
 		Out.bManageMembers = Permissions.Contains(TEXT("manage_members"));
 		Out.bManageRoles   = Permissions.Contains(TEXT("manage_roles"));
 		Out.bInviteMembers = Permissions.Contains(TEXT("invite_members"));
+		Out.bSendVoice     = Permissions.Contains(TEXT("send_voice"));
 		return Out;
 	}
 
@@ -68,6 +74,7 @@ struct CROWDYNET_API FCrowdyChannelPermissions
 		case ECrowdyChannelPermission::ManageMembers: return TEXT("manage_members");
 		case ECrowdyChannelPermission::ManageRoles:   return TEXT("manage_roles");
 		case ECrowdyChannelPermission::InviteMembers: return TEXT("invite_members");
+		case ECrowdyChannelPermission::SendVoice:     return TEXT("send_voice");
 		}
 		return FString();
 	}
