@@ -158,13 +158,19 @@ struct Config {
   std::function<void()> onEventsReady;
 };
 
+/// SpatialSend::distance left unset: the send uses its message type's default, 1 chunk for
+/// voice (sendAudio) and video (sendVideo) and 8 for the rest, as CrowdyJS and CrowdyPy do.
+inline constexpr std::uint8_t kTypeDefaultDistance = 0xFF;
+
 /// Parameters for a spatial send. Payload bytes are copied into the send
 /// buffer during the call and need not outlive it.
 struct SpatialSend {
   wire::ChunkCoord chunk;
   core::ActorUuid uuid{};
   Bytes payload;
-  std::uint8_t distance = 8;
+  /// Fan-out radius in chunks, 0 to 8 (the server clamps larger values). Unset, it is the
+  /// message type's default (kTypeDefaultDistance); before 0.88.0 it was 8 for every type.
+  std::uint8_t distance = kTypeDefaultDistance;
   wire::DecayRate decay = wire::DecayRate::None;
 };
 

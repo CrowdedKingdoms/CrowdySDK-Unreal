@@ -1,7 +1,7 @@
-﻿CrowdyCPP vendored snapshot
-version: 0.87.0
-commit:  57cf413816c9b1c5d4d2024e40c5c48b0582df4d
-tag:     dev/v0.87.0
+CrowdyCPP vendored snapshot
+version: 0.88.0
+commit:  90cf6aa897f7c49c42ee54bab81f90379dfbf1eb
+tag:     dev/v0.88.0
 tier:    dev (https://ck.dev.crowdedkingdoms.com)
 source:  C:\Users\DANY\Documents\Unreal Projects\CrowdyCPP
 Regenerate with scripts/sync-crowdycpp.ps1. Do not hand-edit vendored files.

@@ -50,6 +50,9 @@ inline GraphQLErrorDetail readGraphQLError(Json entry, std::string_view fallback
   detail.requiredMicrousd = extensions["requiredMicrousd"].asString();
   detail.spendableMicrousd = extensions["spendableMicrousd"].asString();
   detail.country = extensions["country"].asString();
+  detail.limit = extensions["limit"].asString();
+  const Json limitValue = extensions["max"];
+  if (limitValue.isNumber()) detail.limitValue = limitValue.asInt64();
   const Json missing = extensions["missingDocuments"];
   if (missing.isArray()) {
     missing.forEach([&detail](Json document) {
