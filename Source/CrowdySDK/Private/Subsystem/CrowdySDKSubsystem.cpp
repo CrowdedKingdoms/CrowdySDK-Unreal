@@ -31,6 +31,7 @@
 #include "Subsystem/CrowdyAutoRegistry.h"
 #include "Subsystem/CrowdyPersistenceSubsystem.h"
 #include "Data/CrowdyMapProfile.h"
+#include "Replication/Subsystems/CrowdyActorManager.h"
 #include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Utils/UActorUpdatePayloadRegistry.h"
 #include "Utils/UEventPayloadRegistry.h"
@@ -809,6 +810,68 @@ int32 UCrowdySDKSubsystem::GetVoiceChatDistance() const
 	return VoiceSettings.DistanceChunks.Get(MapVoiceDistance(World));
 }
 
+void UCrowdySDKSubsystem::SetVoiceSpeakerMuted(const int64 UserId, const bool bMuted)
+{
+	if (UserId == 0)
+	{
+		UE_LOG(LogCrowdySDK, Warning, TEXT("Set Voice Speaker Muted needs a user id; 0 is no user. Get Voice Speaker User Id answers 0 until the speaker's user is known."));
+		return;
+	}
+	if (bMuted)
+	{
+		VoiceSettings.MutedUsers.Add(UserId);
+	}
+	else
+	{
+		VoiceSettings.MutedUsers.Remove(UserId);
+	}
+	if (UVoiceChatSubsystem* VoiceChat = BoundVoiceChat.Get())
+	{
+		VoiceChat->SetUserMuted(UserId, bMuted);
+	}
+}
+
+bool UCrowdySDKSubsystem::IsVoiceSpeakerMuted(const int64 UserId) const
+{
+	return VoiceSettings.MutedUsers.Contains(UserId);
+}
+
+void UCrowdySDKSubsystem::SetVoiceSpeakerVolume(const int64 UserId, const float Volume)
+{
+	if (UserId == 0)
+	{
+		UE_LOG(LogCrowdySDK, Warning, TEXT("Set Voice Speaker Volume needs a user id; 0 is no user."));
+		return;
+	}
+	const float Clamped = FMath::IsFinite(Volume) ? FMath::Clamp(Volume, 0.0f, UVoiceChatSubsystem::MaxUserVolume) : 1.0f;
+	UE_CLOG(Clamped != Volume, LogCrowdySDK, Warning, TEXT("Voice speaker volume %f is outside 0 to %.0f; using %.2f."),
+		Volume, UVoiceChatSubsystem::MaxUserVolume, Clamped);
+	if (Clamped == 1.0f)
+	{
+		VoiceSettings.UserVolumes.Remove(UserId);
+	}
+	else
+	{
+		VoiceSettings.UserVolumes.Add(UserId, Clamped);
+	}
+	if (UVoiceChatSubsystem* VoiceChat = BoundVoiceChat.Get())
+	{
+		VoiceChat->SetUserVolume(UserId, Clamped);
+	}
+}
+
+float UCrowdySDKSubsystem::GetVoiceSpeakerVolume(const int64 UserId) const
+{
+	const float* Volume = VoiceSettings.UserVolumes.Find(UserId);
+	return Volume ? *Volume : 1.0f;
+}
+
+int64 UCrowdySDKSubsystem::GetVoiceSpeakerUserId(const FString& SpeakerUuid) const
+{
+	const UVoiceChatSubsystem* VoiceChat = BoundVoiceChat.Get();
+	return VoiceChat ? VoiceChat->GetSpeakerUserId(SpeakerUuid) : 0;
+}
+
 int32 UCrowdySDKSubsystem::MapVoiceDistance(const UWorld* World)
 {
 	const UCrowdyMapProfile* Profile = World ? UCrowdySDKDeveloperSettings::ResolveProfileForWorld(World) : nullptr;
@@ -1378,6 +1441,30 @@ void UCrowdySDKSubsystem::BindVoiceChat(UVoiceChatSubsystem* VoiceChat)
 	bWarnedNoVoiceChat = false;
 	VoiceMicStateHandle = VoiceChat->OnMicStateChanged.AddUObject(this, &UCrowdySDKSubsystem::HandleVoiceMicStateChanged);
 	VoiceTalkingHandle = VoiceChat->OnSpeakerTalking.AddUObject(this, &UCrowdySDKSubsystem::HandleVoiceSpeakerTalking);
+
+	// Voice chat sits below replication and services, so it asks through these for where a speaker is and who they are.
+	const TWeakObjectPtr<UWorld> WeakWorld = VoiceChat->GetWorld();
+	VoiceChat->LocateSpeaker = [WeakWorld](const FGuid& SpeakerId, FVector& OutLocation)
+	{
+		const UWorld* World = WeakWorld.Get();
+		const UCrowdyActorManager* Actors = World ? World->GetSubsystem<UCrowdyActorManager>() : nullptr;
+		return Actors && Actors->TryGetRemoteLocation(SpeakerId, OutLocation);
+	};
+	const TWeakObjectPtr<UGameInstance> WeakGameInstance = GetGameInstance();
+	VoiceChat->ResolveSpeakerUser = [WeakGameInstance](const FGuid& SpeakerId, TFunction<void(int64)> OnResolved)
+	{
+		const UGameInstance* GameInstance = WeakGameInstance.Get();
+		UCrowdyActorOwners* Owners = GameInstance ? GameInstance->GetSubsystem<UCrowdyActorOwners>() : nullptr;
+		if (!Owners)
+		{
+			OnResolved(0);
+			return;
+		}
+		Owners->ResolveActorOwner(SpeakerId, [OnResolved](const FCrowdyActorOwner& Owner)
+		{
+			OnResolved(Owner.Result == ECrowdyActorOwnerResult::Confirmed ? Owner.UserId : 0);
+		});
+	};
 	VoiceSettings.ApplyTo(*VoiceChat, MapVoiceDistance(VoiceChat->GetWorld()));
 	HandleVoiceMicStateChanged(VoiceChat->GetMicState());
 }

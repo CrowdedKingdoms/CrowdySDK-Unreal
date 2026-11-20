@@ -29,6 +29,8 @@ struct FCrowdyVoiceSettings
 	float StreamTimeoutSeconds = 2.0f;
 	// Set by the game; unset follows each map's own voice distance.
 	TOptional<int32> DistanceChunks;
+	TSet<int64> MutedUsers;
+	TMap<int64, float> UserVolumes;
 	bool bPlaying = false;
 	bool bOwnerEcho = false;
 	bool bMicWanted = false;
@@ -38,6 +40,14 @@ struct FCrowdyVoiceSettings
 	{
 		VoiceChat.SetStreamTimeoutThreshold(StreamTimeoutSeconds);
 		VoiceChat.SetDistance(DistanceChunks.Get(MapDistanceChunks));
+		for (const int64 UserId : MutedUsers)
+		{
+			VoiceChat.SetUserMuted(UserId, true);
+		}
+		for (const TPair<int64, float>& Volume : UserVolumes)
+		{
+			VoiceChat.SetUserVolume(Volume.Key, Volume.Value);
+		}
 		VoiceChat.SetOwnerEcho(bOwnerEcho);
 		if (bPlaying)
 		{

@@ -772,6 +772,16 @@ bool FCrowdyMassRowSnapsAcrossALargeMoveTest::RunTest(const FString& Parameters)
 
 	Fixture.Subsystem->SetSnapDistanceForTest(0.0f);
 	TestTrue(TEXT("with Snap Distance 0, a 15 m jump glides"), Move(9190.0) > 0.0f);
+
+	FTransformFragment* Transform = Fixture.EntityManager->GetFragmentDataPtr<FTransformFragment>(Entity);
+	if (TestNotNull(TEXT("transform fragment present"), Transform))
+	{
+		Transform->GetMutableTransform().SetLocation(FVector(1.0, 2.0, 3.0));
+	}
+	FVector Drawn;
+	TestTrue(TEXT("a row's drawn location can be read by its id"), Fixture.Subsystem->TryGetEntityLocation(UUID, Drawn));
+	TestEqual(TEXT("and it is where the row is drawn"), Drawn, FVector(1.0, 2.0, 3.0));
+	TestFalse(TEXT("an id with no row has none"), Fixture.Subsystem->TryGetEntityLocation(FGuid::NewGuid(), Drawn));
 	return true;
 }
 

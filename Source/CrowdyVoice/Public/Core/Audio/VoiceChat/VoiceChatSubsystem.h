@@ -1,8 +1,10 @@
 ﻿#pragma once
 
 #include "CoreMinimal.h"
+#include "Core/Audio/VoiceChat/CrowdyVoiceDeveloperSettings.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceMicState.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceSettings.h"
+#include "Sound/SoundAttenuation.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceStats.h"
 #include "Core/UDP/Subscription/FCrowdySubscription.h"
 #include "Serialization/CrowdyActorId.h"
@@ -21,7 +23,7 @@ struct FCrowdyVoiceRuntime;
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnCrowdyVoiceMicStateChanged, ECrowdyVoiceMicState /*State*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCrowdyVoiceSpeakerTalking, const FString& /*SpeakerUuid*/, bool /*bTalking*/);
 
-/** One remote speaker's playback: a procedural wave fed with decoded voice, played by a 2D audio component. */
+/** One remote speaker's playback: a procedural wave fed with decoded voice, played by an audio component that is 2D or follows the speaker. */
 USTRUCT()
 struct FCrowdyVoiceSpeakerStream
 {
@@ -102,8 +104,70 @@ public:
 	/** Game thread. A speaker is the sender's actor id as text. */
 	FOnCrowdyVoiceSpeakerTalking OnSpeakerTalking;
 
+	/** Where a speaker's character is drawn on this client, for spatial playback and for hearing the nearest speakers; false when it is not drawn. Set by the Crowdy SDK subsystem. */
+	TFunction<bool(const FGuid& SpeakerId, FVector& OutLocation)> LocateSpeaker;
+
+	/** Looks up the user a speaker's actor id belongs to and answers once, with 0 when it is not known. Set by the Crowdy SDK subsystem. */
+	TFunction<void(const FGuid& SpeakerId, TFunction<void(int64 UserId)> OnResolved)> ResolveSpeakerUser;
+
+	/** A muted user's voice is not played or decoded and takes no speaker place. While any user is muted, a new speaker waits up to UserLookupHoldMs for their user to be known. */
+	void SetUserMuted(int64 UserId, bool bMuted);
+	bool IsUserMuted(int64 UserId) const { return MutedUsers.Contains(UserId); }
+
+	/** 1 is as received, 0 silent, up to 4. */
+	void SetUserVolume(int64 UserId, float Volume);
+	float GetUserVolume(int64 UserId) const;
+
+	/** The user a speaker's actor id belongs to; 0 until it is known. */
+	int64 GetSpeakerUserId(const FString& SpeakerUuid) const;
+
+	static constexpr int64 UserLookupHoldMs = 1500;
+	static constexpr float MaxUserVolume = 4.0f;
+
+	/** Whether a speaker's packets play: never a muted user's, and with anyone muted, not an unknown speaker's until the lookup answers or UserLookupHoldMs passes from when they were first heard. */
+	static bool AdmitsSpeaker(int64 UserId, const TSet<int64>& Muted, bool bAnswered, int64 SinceFirstSeenMs);
+
 private:
 	friend struct FCrowdyVoiceRuntime;
+
+	/** What is known about a remote speaker, heard or not. */
+	struct FSpeakerInfo
+	{
+		FGuid Id;
+		FVector FallbackLocation = FVector::ZeroVector;
+		int64 UserId = 0;
+		int64 FirstSeenMs = 0;
+		int64 LastSeenMs = 0;
+		int64 RetryAtMs = 0;
+		bool bAsking = false;
+		bool bAnswered = false;
+	};
+
+	// A peer can send under any number of fresh actor ids, so lookups and tracked speakers are both bounded.
+	static constexpr double LookupsPerSecond = 10.0;
+	static constexpr double LookupBurst = 20.0;
+	static constexpr int64 LookupRetryMs = 10000;
+	static constexpr int32 MaxSpeakerInfos = 256;
+
+	bool TakeLookup(int64 NowMs);
+	FSpeakerInfo* TrackSpeaker(const FString& SpeakerKey, int64 NowMs);
+	bool IsSpeakerHeard(const FString& SpeakerKey) const;
+	bool EvictOldestUnheardInfo();
+
+#if WITH_DEV_AUTOMATION_TESTS
+public:
+	/** Tracks SpeakerKey as a packet from it would, for a test with no world; false when the table could not take it. */
+	bool TrackSpeakerForTest(const FString& SpeakerKey, const int64 NowMs) { return TrackSpeaker(SpeakerKey, NowMs) != nullptr; }
+	bool IsSpeakerTrackedForTest(const FString& SpeakerKey) const { return SpeakerInfos.Contains(SpeakerKey); }
+private:
+#endif
+
+	bool AdmitSpeaker(const FString& SpeakerKey, FSpeakerInfo& Info, int64 NowMs);
+	void HandleSpeakerUser(const FString& SpeakerKey, int64 UserId);
+	bool LocateSpeakerNow(const FSpeakerInfo& Info, FVector& OutLocation) const;
+	void ApplySpeakerVolume(const FString& SpeakerKey);
+	void UpdateListenerAndStreams(int64 NowMs);
+	void ReadSettings();
 
 	void ConnectToSession();
 	void HandleAudio(const FClientAudioNotification& Notification);
@@ -120,6 +184,22 @@ private:
 
 	UPROPERTY(Transient)
 	TMap<FString, FCrowdyVoiceSpeakerStream> SpeakerStreams;
+
+	UPROPERTY(Transient)
+	TObjectPtr<USoundAttenuation> AttenuationAsset;
+
+	TMap<FString, FSpeakerInfo> SpeakerInfos;
+	TSet<int64> MutedUsers;
+	TMap<int64, float> UserVolumes;
+	FSoundAttenuationSettings SpatialAttenuation;
+	FVector ListenerLocation = FVector::ZeroVector;
+	float OcclusionCheckSeconds = 0.1f;
+	double LookupTokens = LookupBurst;
+	int64 LookupTokensAtMs = 0;
+	int64 PacketsUntracked = 0;
+	int64 NextInfoPruneMs = 0;
+	ECrowdyVoicePlaybackMode PlaybackMode = ECrowdyVoicePlaybackMode::Flat;
+	bool bHasListener = false;
 
 	TWeakObjectPtr<UCrowdySDKBridgeSubsystem> Bridge;
 	TWeakObjectPtr<UCrowdyGameSession> Session;

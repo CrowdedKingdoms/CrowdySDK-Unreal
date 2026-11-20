@@ -47,6 +47,7 @@ public:
 	virtual void DeactivateInstance(int32 SlotId, const FGuid& UUID) override;
 	virtual void ExtractUpdate(const FInstancedStruct& State, int64 ServerTimestampMs, int32 SlotId) override;
 	virtual void ApplyInterpolation(int32 SlotId, int64 RenderTimeMs) override;
+	virtual bool TryGetDrawnLocation(int32 SlotId, FVector& OutLocation) const override;
 	virtual void TakeSpawnData(const FGuid& UUID, const FInstancedStruct& InitialState) override;
 	virtual bool ReleaseDestroyedInstance(int32 SlotId, const FGuid& UUID) override;
 

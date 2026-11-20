@@ -1007,6 +1007,19 @@ bool UCrowdyMassEntitySubsystem::UpdateRemoteEntityTransform(const FGuid& UUID, 
 	return ApplyRemoteEntityTransform(UUID, Location, Rotation.Quaternion(), ServerTimestampMs, SmoothingDuration);
 }
 
+bool UCrowdyMassEntitySubsystem::TryGetEntityLocation(const FGuid& UUID, FVector& OutLocation) const
+{
+	FMassEntityHandle Entity;
+	const FMassEntityManager* EntityManager = FindEntityByUUID(UUID, Entity) ? GetMassEntityManager() : nullptr;
+	const FTransformFragment* Transform = EntityManager ? EntityManager->GetFragmentDataPtr<FTransformFragment>(Entity) : nullptr;
+	if (!Transform)
+	{
+		return false;
+	}
+	OutLocation = Transform->GetTransform().GetLocation();
+	return true;
+}
+
 bool UCrowdyMassEntitySubsystem::FindEntityByUUID(const FGuid& UUID, FMassEntityHandle& OutEntity) const
 {
 #if WITH_DEV_AUTOMATION_TESTS
