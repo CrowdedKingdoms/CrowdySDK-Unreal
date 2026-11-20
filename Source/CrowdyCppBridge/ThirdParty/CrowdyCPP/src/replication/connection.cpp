@@ -330,7 +330,10 @@ Result<std::uint8_t> Connection::sendLongSpatial(MessageType type, const Spatial
   params.type = type;
   params.appId = config_.appId;
   params.chunk = p.chunk;
-  params.distance = p.distance;
+  params.distance = p.distance != kTypeDefaultDistance ? p.distance
+                    : type == MessageType::ClientAudioPacket || type == MessageType::ClientVideoPacket
+                        ? std::uint8_t{1}
+                        : std::uint8_t{8};
   params.decay = p.decay;
   params.uuid = p.uuid;
   params.payload = p.payload;
