@@ -216,4 +216,20 @@ bool FCrowdyAutoReplicatorCompareWidthResolutionTest::RunTest(const FString& Par
 	return true;
 }
 
+// The server can drop an actor's first update into a chunk. An actor that teleports and then stands still sends nothing
+// more until its keyframe, so other players kept it where it left for the whole interval: the send that changed chunk is
+// repeated after half a second instead.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAutoReplicatorRepeatsAChunkChangeTest,
+	"CrowdySDK.AutoReplicator.ChunkChangeIsRepeatedSoon", AutoReplicatorTestFlags)
+bool FCrowdyAutoReplicatorRepeatsAChunkChangeTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyAutoReplication;
+
+	TestEqual(TEXT("CONTROL: a send in the same chunk waits the whole keyframe interval"), NextKeyframeDelay(3.0f, false), 3.0f);
+	TestEqual(TEXT("a send into another chunk is repeated after half a second"), NextKeyframeDelay(3.0f, true), 0.5f);
+	TestEqual(TEXT("never later than the keyframe interval itself"), NextKeyframeDelay(0.25f, true), 0.25f);
+	TestEqual(TEXT("and nothing when keyframes are off"), NextKeyframeDelay(0.0f, true), 0.0f);
+	return true;
+}
+
 #endif  // WITH_DEV_AUTOMATION_TESTS

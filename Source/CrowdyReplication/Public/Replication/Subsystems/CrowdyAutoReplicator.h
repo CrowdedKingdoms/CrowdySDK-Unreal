@@ -54,6 +54,10 @@ namespace CrowdyAutoReplication
 	 */
 	CROWDYREPLICATION_API bool ShouldCarryExtras(bool bHasContinuous, bool bContinuousChanged, bool bKeyframeDue, bool bHasSentBefore);
 
+	/** Seconds from a full send to the next keyframe: sooner after a send into another chunk, whose first update the server can drop; 0 when keyframes are off. */
+	CROWDYREPLICATION_API float NextKeyframeDelay(float KeyframeIntervalSeconds, bool bEnteredChunk);
+	inline constexpr float RepeatAfterChunkChangeSeconds = 0.5f;
+
 	/**
 	 * Whether an entry's live state differs from what it last put on the wire. ComparableBytes is the run of
 	 * bytes that stands in for the last-sent type's properties, which is what lets the loop answer with a

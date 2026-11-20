@@ -205,7 +205,7 @@ bool FCrowdySDKActorPoolRunsWithoutAConfigTest::RunTest(const FString& Parameter
 /**
  * The shipped policy has to move the actor the way the sample says, or the default draws entities that stand
  * still while their state changes. Two samples 100 ms apart, read halfway: the midpoint, not either end; past
- * the newest, extrapolation stops at 0.2 s; with three samples the bracketing pair is the one read.
+ * the newest, extrapolation stops one interval (and at most 0.2 s) past it; with three samples the bracketing pair is the one read.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySDKTransformPolicyInterpolatesTest,
 	"CrowdySDK.MapProfile.TransformPolicyInterpolatesActorState",
@@ -248,12 +248,12 @@ bool FCrowdySDKTransformPolicyInterpolatesTest::RunTest(const FString& Parameter
 	Policy->ApplyToActor(Actor, 3, 1300);
 	const FVector At1300 = Actor->GetActorLocation();
 	Policy->ApplyToActor(Actor, 3, 5000);
-	TestEqual(TEXT("Extrapolation is capped at 0.2 s past the newest sample, so 5000 ms reads as 1300 ms"),
+	TestEqual(TEXT("Extrapolation is capped past the newest sample, so 5000 ms reads as 1300 ms"),
 		Actor->GetActorLocation(), At1300);
 	TestNotEqual(TEXT("and the capped value is extrapolated, not the newest sample held"),
 		At1300, FVector(100.0, 0.0, 0.0));
-	TestEqual(TEXT("and the capped value is the pair's slope carried 0.2 s past the newest sample"),
-		At1300, FVector(300.0, 0.0, 0.0));
+	TestEqual(TEXT("and the capped value is the pair's slope carried one interval past the newest sample"),
+		At1300, FVector(200.0, 0.0, 0.0));
 
 	TestFalse(TEXT("A state struct this policy cannot read is refused, so the backend skips the update"),
 		Policy->ExtractFields(FInstancedStruct::Make(FVector::ZeroVector), 1200, 3));

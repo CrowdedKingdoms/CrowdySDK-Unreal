@@ -27,6 +27,12 @@ struct TInterpolatedField
 	{
 		return (Head - Count + LogicalIndex + Capacity) % Capacity;
 	}
+
+	// Only meaningful while Count > 0.
+	FORCEINLINE const T& Newest() const
+	{
+		return Values[PhysicalIndex(Count - 1)];
+	}
 	
 	template<typename TLerpFn>
 	T Sample(int64 RenderTimeMs, TLerpFn LerpFn, const T& Default = T{}) const
@@ -83,7 +89,8 @@ private:
 			0.2f 
 		);
 		
-		const float Alpha = DeltaTime > 0.f ? TimePast / DeltaTime : 0.f;
+		// At most one interval past the newest sample: a sender that stopped is drawn no more than one step beyond where it stopped.
+		const float Alpha = DeltaTime > 0.f ? FMath::Min(TimePast / DeltaTime, 1.f) : 0.f;
 		return LerpFn(Values[PrevIndex], Values[LastIndex], 1.f + Alpha);
 	}
 };

@@ -14,8 +14,9 @@ class UCrowdyKitActorSubsystem;
  * The policy the actor pool backend uses when a profile names none: applies the SDK's FCrowdyActorState
  * (location and rotation) to a pooled actor. Each slot keeps a ring of timestamped samples and renders the
  * pair that brackets the render time, lerping the location and slerping the rotation, with extrapolation
- * past the newest sample capped at 0.2 s. Subclass UCrowdyRepApplicationPolicy instead when your executor
- * sends a state struct of your own.
+ * past the newest sample capped at 0.2 s and at one sample interval. A sample farther than the map's Snap
+ * Distance from the previous one starts the slot again, so the actor is placed there. Subclass
+ * UCrowdyRepApplicationPolicy instead when your executor sends a state struct of your own.
  */
 UCLASS(meta=(DisplayName="Crowdy Transform Replication Policy"))
 class CROWDYREPLICATION_API UCrowdyTransformRepPolicy : public UCrowdyRepApplicationPolicy
@@ -28,7 +29,12 @@ public:
 	virtual void ApplyToActor(AActor* Actor, int32 SlotId, int64 RenderTimeMs) override;
 	virtual void OnInstanceDeactivated(int32 SlotId) override;
 
+	/** The map profile's Snap Distance, in cm; 0 never snaps. */
+	void SetSnapDistance(float Distance);
+
 private:
+	float SnapDistanceSquared = 1000.0f * 1000.0f;
+
 	// Where this world's kit actors are placed; empty where no Game Kit starter is listed.
 	TWeakObjectPtr<const UCrowdyKitActorSubsystem> KitActors;
 
@@ -39,4 +45,5 @@ private:
 	TArray<CrowdyActorPool::FProxyMotion> Motions;
 
 	void EnsureSlot(int32 SlotId);
+	void ResetSlot(int32 SlotId);
 };

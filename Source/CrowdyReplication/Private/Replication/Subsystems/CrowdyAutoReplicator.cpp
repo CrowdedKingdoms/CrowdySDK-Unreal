@@ -46,6 +46,15 @@ namespace CrowdyAutoReplication
 		return !bHasContinuous || bContinuousChanged || bKeyframeDue || !bHasSentBefore;
 	}
 
+	float NextKeyframeDelay(const float KeyframeIntervalSeconds, const bool bEnteredChunk)
+	{
+		if (KeyframeIntervalSeconds <= 0.0f)
+		{
+			return 0.0f;
+		}
+		return bEnteredChunk ? FMath::Min(KeyframeIntervalSeconds, RepeatAfterChunkChangeSeconds) : KeyframeIntervalSeconds;
+	}
+
 	bool HasStateChanged(const FInstancedStruct& LastSent, const FInstancedStruct& Live, const int32 ComparableBytes)
 	{
 		// The engine's own compare, which additionally forces a change while its struct is being reinstanced.
@@ -430,6 +439,7 @@ void UCrowdyAutoReplicator::ReplicationLoop()
 
 			// A send that fails to serialize is not worth re-sending identically next interval, and the keyframe
 			// below is what repairs anything lost, so an entry records what it offered rather than what left.
+			const bool bEnteredChunk = Data.bHasSent[i] && Data.LastSentChunks[i] != Data.Chunks[i];
 			const UScriptStruct* const PreviousStruct = Data.LastSentStates[i].GetScriptStruct();
 			Data.LastSentStates[i] = State;
 			Data.LastSentCompareBytes[i] = CrowdyAutoReplication::ResolveCompareBytes(PreviousStruct,
@@ -439,7 +449,7 @@ void UCrowdyAutoReplicator::ReplicationLoop()
 
 			// A full send makes both clocks moot: it is itself a keyframe, and it is proof of presence.
 			if (KeyframeIntervalSeconds > 0.0f)
-				Data.NextKeyframeTimes[i] = Now + KeyframeIntervalSeconds;
+				Data.NextKeyframeTimes[i] = Now + CrowdyAutoReplication::NextKeyframeDelay(KeyframeIntervalSeconds, bEnteredChunk);
 			if (HeartbeatIntervalSeconds > 0.0f)
 				Data.NextHeartbeatTimes[i] = Now + HeartbeatIntervalSeconds;
 
