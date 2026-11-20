@@ -32,7 +32,11 @@ public:
 
 	/** How far each entity's movement and its spawn event travel, in chunks around it: other players see it only within this range. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(DisplayName="Movement Distance"))
-	ECrowdyReplicationDistance MovementDistance = ECrowdyReplicationDistance::Four_Chunks;
+	ECrowdyReplicationDistance MovementDistance = ECrowdyReplicationDistance::Eight_Chunks;
+
+	/** How movement updates thin out with distance. No Decay sends every update to everyone in range; a decay gives far players fewer, so keep their gap between updates under Actor Timeout or their copy of the entity is dropped. Spawn events are never thinned. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(DisplayName="Movement Decay"))
+	ECrowdyDecayRate MovementDecay = ECrowdyDecayRate::No_Decay;
 
 	/** Other players' copies jump straight to an update that lands farther than this from the one before it, as a teleport does, instead of gliding there. Keep it above the farthest anything on this map moves between two updates a player receives (its top speed divided by Send Rate, or by less where a decay thins far updates). 0 never snaps. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(ClampMin="0.0", Units="cm", DisplayName="Snap Distance"))
@@ -67,7 +71,7 @@ public:
 	/** How far a Crowdy State change travels, in chunks. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy State",
 		meta=(EditCondition="bUseStateReplicator", DisplayName="Relevance Distance"))
-	ECrowdyReplicationDistance StateRelevanceDistance = ECrowdyReplicationDistance::Four_Chunks;
+	ECrowdyReplicationDistance StateRelevanceDistance = ECrowdyReplicationDistance::Eight_Chunks;
 
 	/** Full re-send of every property marked CrowdyHeartbeat, so a late observer catches up. 0 turns it off; changes still send. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy State",

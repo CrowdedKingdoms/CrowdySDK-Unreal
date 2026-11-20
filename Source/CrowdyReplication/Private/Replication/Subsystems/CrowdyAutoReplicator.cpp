@@ -55,6 +55,47 @@ namespace CrowdyAutoReplication
 		return bEnteredChunk ? FMath::Min(KeyframeIntervalSeconds, RepeatAfterChunkChangeSeconds) : KeyframeIntervalSeconds;
 	}
 
+	float EdgeObserverGapSeconds(const ECrowdyDecayRate Decay, const ECrowdyReplicationDistance Distance,
+		const bool bSendOnlyOnChange, const float KeyframeIntervalSeconds, const int32 ReplicationIntervalHz)
+	{
+		if (bSendOnlyOnChange && KeyframeIntervalSeconds <= 0.0f)
+		{
+			return TNumericLimits<float>::Max();
+		}
+		const float SlowestPeriod = bSendOnlyOnChange ? KeyframeIntervalSeconds : 1.0f / FMath::Max(1, ReplicationIntervalHz);
+
+		// The sender's own chunk is never thinned, so with no rings beyond it nothing decays.
+		const int32 Rings = FMath::Min(static_cast<int32>(Distance), 8);
+		if (Rings == 0)
+		{
+			return SlowestPeriod;
+		}
+
+		// Exponential gives ring d every 2^(d-1)th message; Linear gives the outermost ring one block of a 20-message cycle.
+		int32 FloorPercent = 0;
+		switch (Decay)
+		{
+		case ECrowdyDecayRate::Exponential_Decay:
+			return SlowestPeriod * static_cast<float>(1 << (Rings - 1));
+		case ECrowdyDecayRate::Linear_50:
+			FloorPercent = 50;
+			break;
+		case ECrowdyDecayRate::Linear_25:
+			FloorPercent = 25;
+			break;
+		case ECrowdyDecayRate::Linear_10:
+			FloorPercent = 10;
+			break;
+		case ECrowdyDecayRate::Linear_5:
+			FloorPercent = 5;
+			break;
+		default:
+			return SlowestPeriod;
+		}
+		const int32 BlockLength = FMath::Max(1, FloorPercent * 20 / 100);
+		return SlowestPeriod * static_cast<float>(20 - BlockLength + 1);
+	}
+
 	bool HasStateChanged(const FInstancedStruct& LastSent, const FInstancedStruct& Live, const int32 ComparableBytes)
 	{
 		// The engine's own compare, which additionally forces a change while its struct is being reinstanced.
@@ -136,7 +177,40 @@ void UCrowdyAutoReplicator::Initialize(FSubsystemCollectionBase& Collection)
 		KeyframeIntervalSeconds = FMath::Max(0.0f, Profile->ActorKeyframeIntervalSeconds);
 		HeartbeatIntervalSeconds = FMath::Max(0.0f, Profile->ActorHeartbeatIntervalSeconds);
 		MovementDistance = Profile->MovementDistance;
+		MovementDecay = Profile->MovementDecay;
+		WarnIfDecayStarvesFarObservers(*Profile);
 	}
+}
+
+void UCrowdyAutoReplicator::WarnIfDecayStarvesFarObservers(const UCrowdyMapProfile& Profile) const
+{
+	if (MovementDecay == ECrowdyDecayRate::No_Decay || !Profile.ActorManagement.bUseCrowdyActorTracker)
+	{
+		return;
+	}
+
+	const float Gap = CrowdyAutoReplication::EdgeObserverGapSeconds(MovementDecay, MovementDistance,
+		bSendOnlyOnChange, KeyframeIntervalSeconds, Profile.ReplicationIntervalHz);
+	const float Timeout = Profile.ActorManagement.ActorTimeoutThreshold;
+	if (Gap < Timeout)
+	{
+		return;
+	}
+
+	const FString DecayName = StaticEnum<ECrowdyDecayRate>()->GetNameStringByValue(static_cast<int64>(MovementDecay));
+	if (Gap >= TNumericLimits<float>::Max())
+	{
+		UE_LOG(LogCrowdyReplication, Warning,
+			TEXT("[Crowdy SDK][AutoReplicator]: Keyframe Interval is 0 with Send Actor State Only On Change, so a player standing still never sends again and every other player drops their copy after the %.1f s Actor Timeout, whatever the Movement Decay (%s). Set a Keyframe Interval."),
+			Timeout, *DecayName);
+		return;
+	}
+
+	// A Linear decay gives the outermost ring the same share at any distance, so only Exponential shortens with it.
+	const TCHAR* DistanceRemedy = MovementDecay == ECrowdyDecayRate::Exponential_Decay ? TEXT(", or a shorter Movement Distance") : TEXT("");
+	UE_LOG(LogCrowdyReplication, Warning,
+		TEXT("[Crowdy SDK][AutoReplicator]: Movement Decay %s at %d chunks leaves a player at the edge up to %.1f s between updates, which is not under the %.1f s Actor Timeout, so their copy of this entity will be dropped. Use a gentler decay, a shorter Keyframe Interval, a longer Actor Timeout%s."),
+		*DecayName, static_cast<int32>(MovementDistance), Gap, Timeout, DistanceRemedy);
 }
 
 double UCrowdyAutoReplicator::NowSeconds() const
@@ -429,7 +503,7 @@ void UCrowdyAutoReplicator::ReplicationLoop()
 			const bool bCarryExtras = CrowdyAutoReplication::ShouldCarryExtras(Data.bHasContinuous[i], bContinuousChanged,
 				Inputs.bKeyframeDue, Inputs.bHasSentBefore);
 			Bridge->DispatchActorUpdateFn(Data.Chunks[i].X, Data.Chunks[i].Y, Data.Chunks[i].Z,
-				ECrowdyDecayRate::No_Decay,
+				MovementDecay,
 				MovementDistance,
 				Data.UUIDs[i],
 				State,
