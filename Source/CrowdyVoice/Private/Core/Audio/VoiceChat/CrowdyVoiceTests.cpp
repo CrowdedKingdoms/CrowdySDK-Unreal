@@ -516,24 +516,30 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceSettingsTest,
 bool FCrowdyVoiceSettingsTest::RunTest(const FString& Parameters)
 {
 	FCrowdyVoiceSettings Settings;
-	TestEqual(TEXT("voice reaches the farthest the server relays by default"), Settings.DistanceChunks, FCrowdyVoiceSettings::MaxDistanceChunks);
+	TestEqual(TEXT("a map whose profile does not say reaches one chunk"), FCrowdyVoiceSettings::DefaultDistanceChunks, 1);
+
+	FCrowdyVoiceTestVoiceChat UnsetMap;
+	Settings.ApplyTo(UnsetMap, 4);
+	TestTrue(TEXT("with no distance set, a map uses its own"), UnsetMap.Calls.Contains(TEXT("distance 4")));
+
 	Settings.StreamTimeoutSeconds = 3.0f;
-	Settings.DistanceChunks = 1;
+	Settings.DistanceChunks = 6;
 	Settings.bOwnerEcho = true;
 	Settings.bPlaying = true;
 	Settings.bMicWanted = true;
 
 	FCrowdyVoiceTestVoiceChat NextMap;
-	Settings.ApplyTo(NextMap);
-	const TArray<FString> Wanted = { TEXT("timeout 3.0"), TEXT("distance 1"), TEXT("echo 1"), TEXT("play"), TEXT("start") };
-	TestEqual(TEXT("a mic that was on is started on the next map, at the distance set"), NextMap.Calls, Wanted);
+	Settings.ApplyTo(NextMap, 4);
+	const TArray<FString> Wanted = { TEXT("timeout 3.0"), TEXT("distance 6"), TEXT("echo 1"), TEXT("play"), TEXT("start") };
+	TestEqual(TEXT("a mic that was on is started on the next map, at the distance the game set over the map's"), NextMap.Calls, Wanted);
 
 	Settings.bMicWanted = false;
 	Settings.bPlaying = false;
+	Settings.DistanceChunks.Reset();
 	FCrowdyVoiceTestVoiceChat AfterStop;
-	Settings.ApplyTo(AfterStop);
-	const TArray<FString> Stopped = { TEXT("timeout 3.0"), TEXT("distance 1"), TEXT("echo 1"), TEXT("mute") };
-	TestEqual(TEXT("a mic that was stopped stays closed"), AfterStop.Calls, Stopped);
+	Settings.ApplyTo(AfterStop, 2);
+	const TArray<FString> Stopped = { TEXT("timeout 3.0"), TEXT("distance 2"), TEXT("echo 1"), TEXT("mute") };
+	TestEqual(TEXT("a stopped mic stays closed, and a reset distance follows the map again"), AfterStop.Calls, Stopped);
 	return true;
 }
 

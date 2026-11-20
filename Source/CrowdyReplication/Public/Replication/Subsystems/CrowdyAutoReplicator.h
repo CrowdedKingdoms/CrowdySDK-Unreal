@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Core/FCrowdyTypeID.h"
+#include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "CrowdyAutoReplicator.generated.h"
@@ -184,6 +185,7 @@ private:
 	bool bSendOnlyOnChange = true;
 	float KeyframeIntervalSeconds = 3.0f;
 	float HeartbeatIntervalSeconds = 1.0f;
+	ECrowdyReplicationDistance MovementDistance = ECrowdyReplicationDistance::Four_Chunks;
 
 	bool bIsTicking = false;
 	bool bPeersTrackUpdates = false;

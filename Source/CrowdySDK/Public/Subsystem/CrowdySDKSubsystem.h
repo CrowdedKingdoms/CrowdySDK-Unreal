@@ -196,9 +196,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void ToggleOwnerEcho(bool bEnable);
 
-	/** How far your voice reaches, in chunks around the chunk your pawn stands in: 0 is that chunk only, 8 (the default) the farthest the server relays. Kept across map changes. */
+	/** How far your voice reaches, in chunks around the chunk your pawn stands in: 0 is that chunk only, 8 the farthest the server relays. Replaces each map's own Voice Distance (1 unless its profile says otherwise) until Reset Voice Chat Distance, across map changes. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void SetVoiceChatDistance(int32 Chunks);
+
+	/** Goes back to the current map's own Voice Distance, from its map profile. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void ResetVoiceChatDistance();
 
 	/** How far your voice reaches, in chunks. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
@@ -498,6 +502,7 @@ private:
 
 	/** The current map's voice chat, bound to this subsystem; warns once and answers null when there is none. */
 	UVoiceChatSubsystem* ResolveVoiceChat();
+	static int32 MapVoiceDistance(const UWorld* World);
 
 	/** Moves the voice events and settings onto the given map's voice chat. */
 	void BindVoiceChat(UVoiceChatSubsystem* VoiceChat);

@@ -18,22 +18,26 @@ struct FCrowdyVoiceSettings
 	/** The farthest the server relays a voice packet, in chunks around the sender's. */
 	static constexpr int32 MaxDistanceChunks = 8;
 
+	/** How far voice reaches on a map whose profile does not say. */
+	static constexpr int32 DefaultDistanceChunks = 1;
+
 	static int32 ClampDistance(const int32 Chunks)
 	{
 		return FMath::Clamp(Chunks, 0, MaxDistanceChunks);
 	}
 
 	float StreamTimeoutSeconds = 2.0f;
-	int32 DistanceChunks = MaxDistanceChunks;
+	// Set by the game; unset follows each map's own voice distance.
+	TOptional<int32> DistanceChunks;
 	bool bPlaying = false;
 	bool bOwnerEcho = false;
 	bool bMicWanted = false;
 
 	template <typename TVoiceChat>
-	void ApplyTo(TVoiceChat& VoiceChat) const
+	void ApplyTo(TVoiceChat& VoiceChat, const int32 MapDistanceChunks) const
 	{
 		VoiceChat.SetStreamTimeoutThreshold(StreamTimeoutSeconds);
-		VoiceChat.SetDistance(DistanceChunks);
+		VoiceChat.SetDistance(DistanceChunks.Get(MapDistanceChunks));
 		VoiceChat.SetOwnerEcho(bOwnerEcho);
 		if (bPlaying)
 		{

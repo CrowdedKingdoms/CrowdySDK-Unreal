@@ -30,6 +30,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(DisplayName="Send Movement"))
 	bool bUseAutoReplicator = true;
 
+	/** How far each entity's movement and its spawn event travel, in chunks around it: other players see it only within this range. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(DisplayName="Movement Distance"))
+	ECrowdyReplicationDistance MovementDistance = ECrowdyReplicationDistance::Four_Chunks;
+
 	/** How many times a second movement is sent. Crowdy State is sent at the same rate. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement",
 		meta=(EditCondition="bUseAutoReplicator || bUseStateReplicator", ClampMin=1, ClampMax=10, Units="Hz", DisplayName="Send Rate"))
@@ -65,6 +69,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy State",
 		meta=(EditCondition="bUseStateReplicator", ClampMin="0.0", Units="s", DisplayName="Keyframe Interval"))
 	float StateKeyframeIntervalSeconds = 2.0f;
+
+	/** How far a player's voice reaches on this map, in chunks around their pawn's, unless the game calls Set Voice Chat Distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Voice", meta=(DisplayName="Voice Distance"))
+	ECrowdyReplicationDistance VoiceDistance = ECrowdyReplicationDistance::One_Chunk;
+
+	/** How far an emote travels, in chunks around the sender's. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Emotes", meta=(DisplayName="Emote Distance"))
+	ECrowdyReplicationDistance EmoteDistance = ECrowdyReplicationDistance::Two_Chunks;
 
 #if WITH_EDITOR
 	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
