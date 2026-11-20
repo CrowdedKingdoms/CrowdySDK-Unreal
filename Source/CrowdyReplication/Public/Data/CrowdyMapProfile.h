@@ -34,6 +34,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(DisplayName="Movement Distance"))
 	ECrowdyReplicationDistance MovementDistance = ECrowdyReplicationDistance::Four_Chunks;
 
+	/** Other players' copies jump straight to an update that lands farther than this from the one before it, as a teleport does, instead of gliding there. Keep it above the farthest anything on this map moves between two updates a player receives (its top speed divided by Send Rate, or by less where a decay thins far updates). 0 never snaps. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(ClampMin="0.0", Units="cm", DisplayName="Snap Distance"))
+	float SnapDistance = 1000.0f;
+
 	/** How many times a second movement is sent. Crowdy State is sent at the same rate. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement",
 		meta=(EditCondition="bUseAutoReplicator || bUseStateReplicator", ClampMin=1, ClampMax=10, Units="Hz", DisplayName="Send Rate"))

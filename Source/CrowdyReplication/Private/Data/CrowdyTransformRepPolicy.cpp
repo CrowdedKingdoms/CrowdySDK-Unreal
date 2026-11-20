@@ -78,6 +78,11 @@ bool UCrowdyTransformRepPolicy::ExtractFields(const FInstancedStruct& State, int
 	}
 
 	EnsureSlot(SlotId);
+	if (SnapDistanceSquared > 0.f && Positions[SlotId].Count > 0
+		&& FVector::DistSquared(Positions[SlotId].Newest(), Location) > SnapDistanceSquared)
+	{
+		ResetSlot(SlotId);
+	}
 	Positions[SlotId].Push(Location, ServerTimestampMs);
 	Rotations[SlotId].Push(Rotation, ServerTimestampMs);
 	AimPitches[SlotId].Push(AimPitch, ServerTimestampMs);
@@ -110,15 +115,24 @@ void UCrowdyTransformRepPolicy::ApplyToActor(AActor* Actor, int32 SlotId, int64 
 
 void UCrowdyTransformRepPolicy::OnInstanceDeactivated(int32 SlotId)
 {
-	if (!Positions.IsValidIndex(SlotId))
+	if (Positions.IsValidIndex(SlotId))
 	{
-		return;
+		ResetSlot(SlotId);
 	}
+}
 
+void UCrowdyTransformRepPolicy::ResetSlot(const int32 SlotId)
+{
 	Positions[SlotId] = {};
 	Rotations[SlotId] = {};
 	AimPitches[SlotId] = {};
 	CrowdyActorPool::ResetProxyMotion(Motions[SlotId]);
+}
+
+void UCrowdyTransformRepPolicy::SetSnapDistance(const float Distance)
+{
+	const float Clamped = FMath::IsFinite(Distance) ? FMath::Max(Distance, 0.f) : 0.f;
+	SnapDistanceSquared = Clamped * Clamped;
 }
 
 void UCrowdyTransformRepPolicy::EnsureSlot(int32 SlotId)

@@ -29,7 +29,7 @@ something was left out.
 
 ## 2.27.0
 
-**Verdict.** Nothing breaks in Blueprint, and nothing is deprecated. In C++, a call to `UCrowdyKitEmotes::FillEmoteRequest` (which takes the distance before the body), code that reads `FCrowdyVoiceSettings::DistanceChunks` as an `int32` (it is a `TOptional<int32>`), and a call to `FCrowdyVoiceSettings::ApplyTo` without the map's distance fail to compile until they change. Two defaults change what players see and hear: other players' movement reaches 4 chunks instead of 8, and voice reaches 1 chunk instead of 8. A map that wants the old reach sets it on its map profile. Additions: per-map Movement Distance, Voice Distance and Emote Distance, and `Reset Voice Chat Distance`.
+**Verdict.** Nothing breaks in Blueprint, and nothing is deprecated. In C++, a call to `UCrowdyKitEmotes::FillEmoteRequest` (which takes the distance before the body), code that reads `FCrowdyVoiceSettings::DistanceChunks` as an `int32` (it is a `TOptional<int32>`), and a call to `FCrowdyVoiceSettings::ApplyTo` without the map's distance fail to compile until they change. Two defaults change what players see and hear: other players' movement reaches 4 chunks instead of 8, and voice reaches 1 chunk instead of 8. A map that wants the old reach sets it on its map profile. Additions: per-map Movement Distance, Voice Distance, Emote Distance and Snap Distance, and `Reset Voice Chat Distance`. Behaviour changes: a remote copy snaps across a teleport instead of gliding, and the actor pool draws a copy at most one update interval past its newest update.
 
 **Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate.
 
@@ -39,6 +39,9 @@ something was left out.
 |---|---|---|
 | Every entity's movement travelled 8 chunks, fixed in code, and so did its spawn event and the spawn event's repeats. | The map profile's `Movement Distance` (Movement), 4 chunks unless a profile says otherwise, for movement, spawn events and their repeats alike. Other players see an entity only within it. A destroy event still reaches 8 chunks. | Behaviour; map profile setting `UCrowdyMapProfile::MovementDistance` (new). |
 | Voice reached 8 chunks until the game called `Set Voice Chat Distance`. | The map profile's `Voice Distance` (Voice), 1 chunk unless a profile says otherwise. `Set Voice Chat Distance` replaces it on every map until `Reset Voice Chat Distance`, which goes back to the current map's. `Get Voice Chat Distance` reads what is in use. | Behaviour; map profile setting `UCrowdyMapProfile::VoiceDistance`, Blueprint node `Reset Voice Chat Distance` (new); C++ `FCrowdyVoiceSettings::DistanceChunks` is a `TOptional<int32>`, `ApplyTo` takes the map's distance, `FCrowdyVoiceSettings::DefaultDistanceChunks` (new). |
+| A remote copy glided across a teleport from where the player left to where they arrived, then the actor pool drew it past the destination (up to twice the jump for a player who stood still on arrival) until their next keyframe. | Each receiving client places a copy at once when an update lands farther than the map profile's `Snap Distance` (Movement, 1000 cm, 0 never snaps) from the previous one, on the actor pool and on Mass crowd rows alike. It is decided from positions alone, so it works for every sender. Anything that moves farther than that between two updates (over 100 m/s at the default Send Rate) snaps on every update. | Behaviour; map profile setting `UCrowdyMapProfile::SnapDistance`, C++ `UCrowdyTransformRepPolicy::SetSnapDistance` (new). |
+| An actor that moved into another chunk and then stood still sent nothing more until its keyframe (3 s by default), so if that one update was lost, other players saw it where it was for the whole interval. | The update that changes chunk is sent again after 0.5 s (never later than the keyframe interval). An update sent before then makes it moot, so only an actor whose next change comes more than 0.5 s after crossing sends one more. | Behaviour; C++ `CrowdyAutoReplication::NextKeyframeDelay`, `RepeatAfterChunkChangeSeconds` (new). |
+| The actor pool drew a copy up to 0.2 s past its newest update, two update intervals at 10 Hz, so a player who stopped was drawn two steps past where they stopped. | At most one interval past it, and still at most 0.2 s. A policy of your own built on `TInterpolatedField` gets the same cap. | Behaviour; C++ `TInterpolatedField::Extrapolate`, `TInterpolatedField::Newest` (new). |
 | Emotes travelled 2 chunks, fixed in code. | The map profile's `Emote Distance` (Emotes), 2 chunks unless a profile says otherwise. | Map profile setting `UCrowdyMapProfile::EmoteDistance` (new); C++ `UCrowdyKitEmotes::FillEmoteRequest` takes `Distance` before `Body` (signature change). |
 
 **Do this, in order**
@@ -46,13 +49,14 @@ something was left out.
 1. Open each map profile your project uses (Project Settings, Plugins, Crowdy SDK, Map Profiles and Default Profile) and check Movement Distance, Voice Distance and Emote Distance. Set Movement Distance to Eight Chunks on a map where players must see each other farther than 4 chunks (64 m at the default chunk size), and Voice Distance where voice should reach farther than 1 chunk.
 2. Keep Movement Distance at least as large as Voice Distance and the Crowdy State Relevance Distance: otherwise players hear someone they cannot see (`On Voice Speaker Talking` names a player with no actor on screen), and a state change arrives for a player who has no copy.
 3. If your game calls `Set Voice Chat Distance` only to choose a fixed range, set the map profile's Voice Distance instead, and use `Reset Voice Chat Distance` where you used to restore a range by hand (a soapbox, a stage).
-4. C++ only: pass a distance to `UCrowdyKitEmotes::FillEmoteRequest`; pass the map's distance to `FCrowdyVoiceSettings::ApplyTo`, and read `DistanceChunks` as a `TOptional` (unset means the map's).
+4. On a map with very fast movers (over 100 m/s at the default Send Rate), raise Snap Distance above the farthest they travel between two updates, or their copies snap on every update.
+5. C++ only: pass a distance to `UCrowdyKitEmotes::FillEmoteRequest`; pass the map's distance to `FCrowdyVoiceSettings::ApplyTo`, and read `DistanceChunks` as a `TOptional` (unset means the map's).
 
 **CoreRedirects.** None.
 
 **Blueprint assets.** None to re-save. A map profile asset saved before this release loads the new settings at their defaults.
 
-**Behaviour changes.** Movement reaches 4 chunks and voice 1 chunk unless a map profile says otherwise, as above. Nothing else.
+**Behaviour changes.** Movement reaches 4 chunks and voice 1 chunk unless a map profile says otherwise, as above. A copy snaps across a move longer than Snap Distance, and the actor pool extrapolates at most one interval. Nothing else.
 
 **Verify.** On a map whose profile you did not change, two players 5 chunks apart do not see each other, and 3 chunks apart do; `Get Voice Chat Distance` reads 1 before any call to `Set Voice Chat Distance`.
 

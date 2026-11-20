@@ -8,6 +8,7 @@
 #include "Fragments/CrowdyMassFragments.h"
 #include "MassCommonFragments.h"
 #include "MassEntityManager.h"
+#include "Replication/Executor/ActorUpdateExecutor.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "StructUtils/InstancedStruct.h"
@@ -729,6 +730,48 @@ bool FCrowdyMassViewStateUpdateResolvesOnceTest::RunTest(const FString& Paramete
 	TestEqual(TEXT("and cost one lookup, not two"),
 		Fixture.Subsystem->GetEntityLookupCountForTest(), 1);
 
+	return true;
+}
+
+// A crowd row whose player teleports is placed at the new spot on the next frame instead of gliding across the gap: an
+// update farther than the Snap Distance (10 m by default) from the previous one opens a segment of no length. A move
+// under it, the very first update, and a Snap Distance of 0 all keep their glide.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassRowSnapsAcrossALargeMoveTest,
+	"CrowdySDK.Mass.RowSnapsAcrossALargeMove", CrowdyMassViewStateTestFlags)
+bool FCrowdyMassRowSnapsAcrossALargeMoveTest::RunTest(const FString& Parameters)
+{
+	FCrowdyMassViewStateTestFixture Fixture;
+	const FGuid UUID = FGuid::NewGuid();
+	const FMassEntityHandle Entity = Fixture.MakeTransformTrackedEntity(UUID);
+	if (!TestNotNull(TEXT("interpolation fragment present"),
+		Fixture.EntityManager->GetFragmentDataPtr<FCrowdyRemoteInterpolationFragment>(Entity)))
+	{
+		return false;
+	}
+
+	int64 ServerTimeMs = 1000;
+	const auto Move = [&](const double X)
+	{
+		FCrowdyActorState State;
+		State.Location = FVector(X, 0.0, 0.0);
+		ServerTimeMs += 100;
+		Fixture.Subsystem->ApplyRemoteEntityUpdate(UUID, FInstancedStruct::Make(State), ServerTimeMs);
+		// Looked up after each update: one that starts a glide tags the row, which moves it to another archetype.
+		const FCrowdyRemoteInterpolationFragment* Interpolation =
+			Fixture.EntityManager->GetFragmentDataPtr<FCrowdyRemoteInterpolationFragment>(Entity);
+		// Without this, a path that never reached the transform would leave the fragment's default duration and pass every glide below.
+		TestEqual(FString::Printf(TEXT("the update to %.0f reached the row"), X), Interpolation->TargetLocation.X, X, 0.01);
+		return Interpolation->SmoothingDuration;
+	};
+
+	TestTrue(TEXT("the first update, far from the origin it starts at, glides"), Move(5000.0) > 0.0f);
+	TestTrue(TEXT("CONTROL: a 1 m step glides"), Move(5100.0) > 0.0f);
+	TestTrue(TEXT("a step just under 10 m glides"), Move(6090.0) > 0.0f);
+	TestEqual(TEXT("a 15 m jump opens a segment of no length"), Move(7590.0), 0.0f);
+	TestTrue(TEXT("and the next step glides again"), Move(7690.0) > 0.0f);
+
+	Fixture.Subsystem->SetSnapDistanceForTest(0.0f);
+	TestTrue(TEXT("with Snap Distance 0, a 15 m jump glides"), Move(9190.0) > 0.0f);
 	return true;
 }
 
