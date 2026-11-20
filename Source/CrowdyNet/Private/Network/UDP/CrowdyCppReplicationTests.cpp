@@ -1692,6 +1692,13 @@ bool FCrowdySendRefusalSaysWhatAndWhyTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("on its channel"), Refusal.ChannelId, static_cast<int64>(812));
 	TestTrue(TEXT("naming the permission it needs"), Refusal.Remedy.Contains(TEXT("use_text_chat")));
 
+	FCrowdyCppSendError Voice = Channel;
+	Voice.SendOpcode = static_cast<uint8>(ECrowdyMessageType::CHANNEL_AUDIO_REQUEST);
+	UCrowdyCppReplicationSubsystem::DescribeSendRefusal(Voice, Refusal);
+	TestEqual(TEXT("refused channel voice says so"), Refusal.What, FString(TEXT("channel voice")));
+	TestTrue(TEXT("and names Send Voice and use_voice_chat, not the chat permissions"),
+		Refusal.Remedy.Contains(TEXT("Send Voice")) && Refusal.Remedy.Contains(TEXT("use_voice_chat")) && !Refusal.Remedy.Contains(TEXT("use_text_chat")));
+
 	FCrowdyCppSendError Direct;
 	Direct.ErrorCode = Unauthorized;
 	Direct.bAttributed = true;

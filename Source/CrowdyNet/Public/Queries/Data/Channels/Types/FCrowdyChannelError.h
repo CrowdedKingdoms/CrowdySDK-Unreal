@@ -14,6 +14,8 @@ enum class ECrowdyChannelErrorCode : uint8
 	NetworkError,
 	ServerError,
 	Banned,
+	/** The channel is full, or you are in as many channels as the app allows. Retrying does not help until someone leaves. */
+	LimitReached,
 };
 
 /**
@@ -55,6 +57,8 @@ struct CROWDYNET_API FCrowdyChannelError
 		FCrowdyChannelError Error = FromMessage(Msg);
 		if (ServerCode == TEXT("GROUP_MEMBER_BANNED"))
 			Error.Code = ECrowdyChannelErrorCode::Banned;
+		else if (ServerCode == TEXT("GROUP_LIMIT_REACHED"))
+			Error.Code = ECrowdyChannelErrorCode::LimitReached;
 
 		return Error;
 	}

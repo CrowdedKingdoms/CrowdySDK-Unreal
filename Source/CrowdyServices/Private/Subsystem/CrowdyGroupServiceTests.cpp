@@ -433,6 +433,21 @@ bool FCrowdyGroupServiceBannedCodeTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("and keeps the server's message to show"),
 		CrowdyServiceApi::DescribeFailure<FCrowdyTeamError>(Banned).Message, FString(TEXT("Team not found")));
 
+	FCrowdyCppJsonResult Full;
+	Full.bTransportOk = false;
+	Full.ErrorMessage = TEXT("Channel not found");
+	Full.ErrorCode = TEXT("GROUP_LIMIT_REACHED");
+	TestEqual(TEXT("a full channel maps to Limit Reached"),
+		CrowdyServiceApi::DescribeFailure<FCrowdyChannelError>(Full).Code, ECrowdyChannelErrorCode::LimitReached);
+	TestEqual(TEXT("and so does a full team"),
+		CrowdyServiceApi::DescribeFailure<FCrowdyTeamError>(Full).Code, ECrowdyTeamErrorCode::LimitReached);
+
+	FCrowdyChannelPermissions Speak;
+	Speak.bSendVoice = true;
+	TestEqual(TEXT("Send Voice is the server's send_voice"), Speak.ToStringArray(), TArray<FString>({ TEXT("send_voice") }));
+	TestTrue(TEXT("and reads back"), FCrowdyChannelPermissions::FromStringArray({ TEXT("send_voice") }).Has(ECrowdyChannelPermission::SendVoice));
+	TestEqual(TEXT("and is its key"), FCrowdyChannelPermissions::ToKey(ECrowdyChannelPermission::SendVoice), FString(TEXT("send_voice")));
+
 	FCrowdyCppJsonResult WordOnly;
 	WordOnly.bTransportOk = false;
 	WordOnly.ErrorMessage = TEXT("You are banned from this team");
