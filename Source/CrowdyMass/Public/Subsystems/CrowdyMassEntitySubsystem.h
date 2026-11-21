@@ -751,6 +751,9 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy Mass")
 	bool FindEntityByUUID(const FGuid& UUID, FMassEntityHandle& OutEntity) const;
 
+	/** Where the row for UUID is drawn now; false when there is none. */
+	bool TryGetEntityLocation(const FGuid& UUID, FVector& OutLocation) const;
+
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Crowdy Mass")
 	bool FindUUIDByEntity(FMassEntityHandle Entity, FGuid& OutUUID) const;
 
@@ -1302,6 +1305,8 @@ public:
 	// register entities against a standalone manager it owns directly, with no World, MassEntitySubsystem,
 	// spawner, or config asset in play.
 	void SetMassEntityManagerForTest(FMassEntityManager* InManager) { MassEntityManagerForTest = InManager; }
+
+	void SetSnapDistanceForTest(const float Distance) { SnapDistanceSquared = Distance * Distance; }
 
 	// Test seam: makes an id resolvable exactly as SpawnRemoteEntity's bookkeeping would, without going
 	// through the Mass spawner or a config asset. The entity itself must already exist in whichever
@@ -1857,6 +1862,9 @@ private:
 	// next spawn either, so without this the warning arrives once per entity for as long as the crowd
 	// lasts, which buries the one line that says what to fix.
 	TSet<TObjectPtr<const UClass>> ReportedUnderivableClasses;
+
+	// The map profile's Snap Distance, squared: an update landing farther than this from the previous one is placed, not glided to.
+	float SnapDistanceSquared = 1000.0f * 1000.0f;
 
 #if WITH_DEV_AUTOMATION_TESTS
 	// Set only by SetMassEntityManagerForTest; GetMassEntityManager() prefers this over the real

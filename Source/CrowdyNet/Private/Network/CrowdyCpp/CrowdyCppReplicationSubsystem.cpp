@@ -1030,7 +1030,12 @@ bool UCrowdyCppReplicationSubsystem::DescribeSendRefusal(const FCrowdyCppSendErr
 	OutRefusal.MessageType = Error.SendOpcode;
 
 	const ECrowdyMessageType Type = static_cast<ECrowdyMessageType>(Error.SendOpcode);
-	if (Error.bSendWasChannel)
+	const bool bChannelAudio = Error.bSendWasChannel && Type == ECrowdyMessageType::CHANNEL_AUDIO_REQUEST;
+	if (bChannelAudio)
+	{
+		OutRefusal.What = TEXT("channel voice");
+	}
+	else if (Error.bSendWasChannel)
 	{
 		OutRefusal.What = TEXT("a channel message");
 	}
@@ -1056,7 +1061,12 @@ bool UCrowdyCppReplicationSubsystem::DescribeSendRefusal(const FCrowdyCppSendErr
 	{
 		return true;
 	}
-	if (Error.bSendWasChannel)
+	if (bChannelAudio)
+	{
+		OutRefusal.Remedy = TEXT("Either the player's role in the channel lacks the Send Voice permission (Create Channel's Members Can Speak"
+			" gives it to members), or the player's access tier does not grant use_voice_chat.");
+	}
+	else if (Error.bSendWasChannel)
 	{
 		OutRefusal.Remedy = TEXT("Either the player is not a member of the channel with the send messages permission, or the player's access tier"
 			" does not grant use_text_chat, without which the server refuses every channel message: chat, and the SDK's reliable CrowdyEvents and"
@@ -1151,8 +1161,9 @@ void UCrowdyCppReplicationSubsystem::ReportSendError(const FCrowdyCppSendError& 
 		return;
 	}
 
+	const bool bChannelAudio = Error.SendOpcode == static_cast<uint8>(ECrowdyMessageType::CHANNEL_AUDIO_REQUEST);
 	const FString OpcodeName = Error.bSendWasChannel
-		? FString(TEXT("a channel message"))
+		? FString(bChannelAudio ? TEXT("channel voice") : TEXT("a channel message"))
 		: FString::Printf(TEXT("opcode %d (%s)"), Error.SendOpcode,
 			*StaticEnum<ECrowdyMessageType>()->GetNameStringByValue(static_cast<int64>(Error.SendOpcode)));
 
@@ -1597,8 +1608,10 @@ ECrowdyCppSendOutcome UCrowdyCppReplicationSubsystem::TrySendMessage(const ICrow
 		return ECrowdyCppSendOutcome::Refused;
 	}
 
+	const bool bChannelAudio = Frame.Opcode == static_cast<uint8>(ECrowdyMessageType::CHANNEL_AUDIO_REQUEST);
 	const bool bAccepted = Frame.bIsChannel
-		? Pinned->SendChannelMessage(Frame.ChannelId, Frame.Uuid, Frame.Payload, Error)
+		? (bChannelAudio ? Pinned->SendChannelAudio(Frame.ChannelId, Frame.Uuid, Frame.Payload, Error)
+			: Pinned->SendChannelMessage(Frame.ChannelId, Frame.Uuid, Frame.Payload, Error))
 		: Pinned->SendSpatial(Frame.Opcode, Frame.ChunkX, Frame.ChunkY, Frame.ChunkZ, Frame.Uuid, Frame.Payload,
 			Frame.Distance, Frame.Decay, Error, Ticket);
 

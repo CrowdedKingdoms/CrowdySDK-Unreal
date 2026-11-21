@@ -931,6 +931,22 @@ bool FCrowdyRoutedChannelShortSenderTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("and the payload it carried"), DescribeBytes(Channel.Payload), DescribeBytes(Payload));
 	}
 
+	// Channel audio shares the layout, and only its type tells voice from a message.
+	{
+		FCrowdyCppChannelMessage Audio = BuildMessage(GoldenUuidView());
+		Audio.Opcode = static_cast<uint8>(ECrowdyMessageType::CHANNEL_AUDIO_NOTIFICATION);
+		const TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> Decoded =
+			Parsing.Parser->DecodeFrame(CrowdyCppInboundFrame::FromChannel(Audio));
+		TestEqual(TEXT("channel audio decodes as channel audio, not as a message"),
+			static_cast<int32>(Decoded->GetType()),
+			static_cast<int32>(ECrowdyMessageType::CHANNEL_AUDIO_NOTIFICATION));
+
+		const auto& Voice = static_cast<const FChannelAudioNotification&>(*Decoded);
+		TestEqual(TEXT("from its channel"), Voice.ChannelId, static_cast<int64>(9200));
+		TestEqual(TEXT("and its sender"), Voice.UUID, CrowdyWireParity::GoldenActorId());
+		TestEqual(TEXT("with the voice packet"), DescribeBytes(Voice.Payload), DescribeBytes(Payload));
+	}
+
 	return true;
 }
 

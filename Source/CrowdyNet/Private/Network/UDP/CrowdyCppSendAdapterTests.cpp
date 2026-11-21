@@ -133,6 +133,36 @@ bool FCrowdySendAdapterChannelSplitTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySendAdapterChannelAudioSplitTest,
+	"CrowdySDK.Transport.SendAdapterSplitsChannelAudio",
+	CrowdySendAdapterTestSupport::SendAdapterTestFlags)
+
+bool FCrowdySendAdapterChannelAudioSplitTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdySendAdapterTestSupport;
+
+	FChannelAudioRequest Message;
+	Message.ChannelId = 4243;
+	Message.UUID = CrowdyWireParity::GoldenActorId();
+	Message.Payload = {0x0A, 0x0B};
+
+	TArray<uint8> Storage;
+	FCrowdyCppOutboundFrame Frame;
+	FString Error;
+	const bool bSplit = CrowdyCppSend::SplitMessage(Message, Storage, Frame, Error);
+	if (!TestTrue(FString::Printf(TEXT("channel audio split (%s)"), *Error), bSplit))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("channel audio takes the channel send"), Frame.bIsChannel);
+	TestEqual(TEXT("under its own type, so the connection sends it as audio"), static_cast<int32>(Frame.Opcode),
+		static_cast<int32>(ECrowdyMessageType::CHANNEL_AUDIO_REQUEST));
+	TestEqual(TEXT("to its channel"), Frame.ChannelId, static_cast<int64>(4243));
+	TestEqual(TEXT("with the voice packet as the payload"), HexOf(Frame.Payload), HexOf(TArray<uint8>({0x0A, 0x0B})));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySendAdapterRefusalsTest,
 	"CrowdySDK.Transport.SendAdapterRefusesFramesItCannotRoute",
 	CrowdySendAdapterTestSupport::SendAdapterTestFlags)

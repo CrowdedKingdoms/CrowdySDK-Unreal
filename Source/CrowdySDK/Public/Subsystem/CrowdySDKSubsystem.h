@@ -54,6 +54,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTeleportPermission, bool, bAllowe
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCrowdyHUDReady);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnVoiceMicStateChanged, ECrowdyVoiceMicState, State);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnVoiceSpeakerTalking, FString, SpeakerUuid, bool, bTalking);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnVoiceChannelSpeakerTalking, int64, ChannelId, FString, SpeakerUuid, bool, bTalking);
 
 /**
  *
@@ -196,9 +197,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void ToggleOwnerEcho(bool bEnable);
 
-	/** How far your voice reaches, in chunks around the chunk your pawn stands in: 0 is that chunk only, 8 (the default) the farthest the server relays. Kept across map changes. */
+	/** How far your voice reaches, in chunks around the chunk your pawn stands in: 0 is that chunk only, 8 the farthest the server relays. Replaces each map's own Voice Distance (1 unless its profile says otherwise) until Reset Voice Chat Distance, across map changes. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void SetVoiceChatDistance(int32 Chunks);
+
+	/** Goes back to the current map's own Voice Distance, from its map profile. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void ResetVoiceChatDistance();
 
 	/** How far your voice reaches, in chunks. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
@@ -215,6 +220,70 @@ public:
 	/** Fires when a player starts or stops talking: their voice rose above the silence gate, or stayed below it for about 0.3 s. Speaker Uuid is that player's actor id. */
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Voice")
 	FOnVoiceSpeakerTalking OnVoiceSpeakerTalking;
+
+	/** Stops playing a user's voice on every map, through their next sign-in too; their voice takes no speaker place. Pass a user id from Get Voice Speaker User Id. Holds for any player whose actor id the platform records against their user, which every SDK player's is. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void SetVoiceSpeakerMuted(int64 UserId, bool bMuted);
+
+	/** Whether Set Voice Speaker Muted muted this user. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
+	bool IsVoiceSpeakerMuted(int64 UserId) const;
+
+	/** How loud a user's voice plays on every map: 1 is as received, 0 silent, up to 4. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void SetVoiceSpeakerVolume(int64 UserId, float Volume);
+
+	/** The volume Set Voice Speaker Volume gave this user; 1 when none was set. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
+	float GetVoiceSpeakerVolume(int64 UserId) const;
+
+	/** The user a speaker belongs to, from the Speaker Uuid On Voice Speaker Talking gives; 0 until it is known, usually a moment after they first speak, and 0 for a speaker not heard on this map in the last minute. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
+	int64 GetVoiceSpeakerUserId(const FString& SpeakerUuid) const;
+
+	/** Joins a channel's voice: you hear its members wherever they are, and in Talk mode they hear you while Start Voice Chat has the microphone open, if your role there has Send Voice (Create Channel's Members Can Speak gives it). An audience joins in Listen mode, which sends nothing. A channel whose voice you have not joined is never played, though you are a member. Stays on across map changes; another account signing in leaves it. Stop it when the player leaves the channel. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice|Channels")
+	void StartChannelVoice(int64 ChannelId, ECrowdyChannelVoiceMode Mode = ECrowdyChannelVoiceMode::Talk);
+
+	/** Switches a joined channel's voice between Listen and Talk, as when a listener is given the floor. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice|Channels")
+	void SetChannelVoiceMode(int64 ChannelId, ECrowdyChannelVoiceMode Mode);
+
+	/** Listen for a channel whose voice you have not joined; Is Channel Voice On says whether you have. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice|Channels")
+	ECrowdyChannelVoiceMode GetChannelVoiceMode(int64 ChannelId) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice|Channels")
+	void StopChannelVoice(int64 ChannelId);
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice|Channels")
+	bool IsChannelVoiceOn(int64 ChannelId) const;
+
+	/** Whether your voice also reaches the players near you; on by default. Off, it goes only to the channels you joined in Talk mode. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice|Channels")
+	void SetSpatialVoiceEnabled(bool bEnabled);
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice|Channels")
+	bool IsSpatialVoiceEnabled() const;
+
+	/** Stops playing a channel's voice; it takes no speaker place. Across map changes. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice|Channels")
+	void SetVoiceChannelMuted(int64 ChannelId, bool bMuted);
+
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice|Channels")
+	bool IsVoiceChannelMuted(int64 ChannelId) const;
+
+	/** 1 plays a channel's voice as received, 0 silences it, up to 4; multiplies each speaker's own volume. Across map changes. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice|Channels")
+	void SetVoiceChannelVolume(int64 ChannelId, float Volume);
+
+	/** The volume Set Voice Channel Volume gave this channel; 1 when none was set. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice|Channels")
+	float GetVoiceChannelVolume(int64 ChannelId) const;
+
+	/** A speaker started or stopped talking on a channel whose voice you joined. Channel voice plays flat, and someone near you on a shared channel is heard on both. */
+	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Voice|Channels")
+	FOnVoiceChannelSpeakerTalking OnVoiceChannelSpeakerTalking;
 
 	UFUNCTION(BlueprintCallable, Category="Crowdy SDK|Permissions")
 	void RequestTeleportPermission(const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ, const int32 VoxelX,
@@ -441,6 +510,9 @@ private:
 	/** Opens the realtime connection once this sign-in's actor record has answered. */
 	void ConnectOnceRecorded() const;
 
+	/** The channels whose voice a player joined are theirs, so another account signed in on this game instance starts with none. */
+	void LeaveChannelVoiceOfAnotherUser();
+
 	/** Called by UCrowdyAuthentication::OnLoginFailed to forward failure on OnLogin. */
 	UFUNCTION()
 	void HandleAuthLoginFailed(FString Message);
@@ -498,6 +570,7 @@ private:
 
 	/** The current map's voice chat, bound to this subsystem; warns once and answers null when there is none. */
 	UVoiceChatSubsystem* ResolveVoiceChat();
+	static int32 MapVoiceDistance(const UWorld* World);
 
 	/** Moves the voice events and settings onto the given map's voice chat. */
 	void BindVoiceChat(UVoiceChatSubsystem* VoiceChat);
@@ -505,11 +578,13 @@ private:
 	void HandlePostWorldInitialization(UWorld* World, FWorldInitializationValues Values);
 	void HandleVoiceMicStateChanged(ECrowdyVoiceMicState State);
 	void HandleVoiceSpeakerTalking(const FString& SpeakerUuid, bool bTalking);
+	void HandleVoiceChannelSpeakerTalking(int64 ChannelId, const FString& SpeakerUuid, bool bTalking);
 
 	// Voice chat lives in each map; its settings live here so they carry over to the next one.
 	TWeakObjectPtr<UVoiceChatSubsystem> BoundVoiceChat;
 	FDelegateHandle VoiceMicStateHandle;
 	FDelegateHandle VoiceTalkingHandle;
+	FDelegateHandle VoiceChannelTalkingHandle;
 	FDelegateHandle PostWorldInitHandle;
 	FCrowdyVoiceSettings VoiceSettings;
 

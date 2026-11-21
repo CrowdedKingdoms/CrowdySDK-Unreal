@@ -428,6 +428,9 @@ private:
 	// Sends the spawn event for an entity this client owns, from where its actor is now.
 	void AnnounceSpawn(AActor* Actor, const FInstancedStruct& InitialState);
 
+	// The map's Movement Distance: a spawn reaching farther would draw an entity whose movement never arrives.
+	ECrowdyReplicationDistance SpawnDistance = ECrowdyReplicationDistance::Four_Chunks;
+
 	// The id a targeted message addresses: the server delivers to whoever sends that id.
 	FCrowdyActorId ResolveTargetWireId(const FGuid& NetID, const UCrowdyActorTracker* Tracker) const;
 

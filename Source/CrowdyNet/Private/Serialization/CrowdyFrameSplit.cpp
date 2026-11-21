@@ -144,6 +144,7 @@ bool CrowdyFrameSplit::ReadEnvelopeForOpcode(FCrowdyFrame& Frame)
 		return ReadSpatialEnvelope(Frame);
 
 	case ECrowdyMessageType::CHANNEL_MESSAGE_NOTIFICATION:
+	case ECrowdyMessageType::CHANNEL_AUDIO_NOTIFICATION:
 		return ReadChannelEnvelope(Frame);
 
 	default:

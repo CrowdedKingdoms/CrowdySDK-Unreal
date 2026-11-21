@@ -108,9 +108,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Queries|Policy")
 	void GetChannelPolicy(FOnChannelPolicySuccess OnSuccess, FOnChannelError OnError);
 
+	/** Members Can Speak gives the default member role Send Voice, so members may use channel voice. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Channel")
 	void CreateChannel(const FString& Name, const FString& Description,
-	                   ECrowdyChannelMembershipPolicy MembershipPolicy, bool bMembersCanSend,
+	                   ECrowdyChannelMembershipPolicy MembershipPolicy, bool bMembersCanSend, bool bMembersCanSpeak,
 	                   FOnChannelSuccess OnSuccess, FOnChannelError OnError);
 
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Channels|Mutations|Channel")

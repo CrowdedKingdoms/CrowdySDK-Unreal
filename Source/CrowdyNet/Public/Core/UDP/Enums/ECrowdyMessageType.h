@@ -45,6 +45,11 @@ enum class ECrowdyMessageType : uint8
     CHANNEL_MESSAGE_REQUEST = 17 UMETA(DisplayName = "Channel Message Request", Hidden),
     CHANNEL_MESSAGE_NOTIFICATION = 18 UMETA(DisplayName = "Channel Message Notification", Hidden),
 
+    // Channel voice: the channel message layout with these type bytes and a voice packet as the payload. Sending
+    // needs the channel's send_voice permission; the server does not echo it to the sender.
+    CHANNEL_AUDIO_REQUEST = 35 UMETA(DisplayName = "Channel Audio Request", Hidden),
+    CHANNEL_AUDIO_NOTIFICATION = 36 UMETA(DisplayName = "Channel Audio Notification", Hidden),
+
     // Says an actor is still present without restating its state. Carries the spatial header and nothing else, so
     // it costs a fraction of an actor update and is what an idle actor sends between full ones.
     CLIENT_ACTOR_HEARTBEAT = 26 UMETA(DisplayName = "Client Actor Heartbeat", Hidden),

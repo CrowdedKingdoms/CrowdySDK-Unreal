@@ -83,6 +83,8 @@ bool FCrowdyProxyMotionVelocityTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a released slot leaves the pooled character still"), Movement->Velocity.IsNearlyZero());
 	TestTrue(TEXT("and not accelerating"), Movement->GetCurrentAcceleration().IsNearlyZero());
 
+	// Snapping off, so the slot keeps the jump and the motion guard alone has to read it as a teleport.
+	Policy->SetSnapDistance(0.f);
 	Push(Policy, FVector(0.0, 0.0, 0.0), 1000, 2);
 	Push(Policy, FVector(50.0, 0.0, 0.0), 1100, 2);
 	Push(Policy, FVector(100000.0, 0.0, 0.0), 1200, 2);
@@ -116,6 +118,53 @@ bool FCrowdyProxyMotionVelocityTest::RunTest(const FString& Parameters)
 	Policy->ApplyToActor(Prop, 1, 1020);
 	Policy->ApplyToActor(Prop, 1, 1036);
 	TestEqual(TEXT("an actor with no character movement is still placed as before"), Prop->GetActorLocation().X, 18.0, 0.01);
+
+	return true;
+}
+
+/**
+ * A teleport seen by another player: an update farther than the Snap Distance (10 m by default) from the previous one
+ * places the copy there at once, with no glide from the old spot and nothing drawn past the new one. A move under the
+ * distance still glides, and a Snap Distance of 0 never snaps.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTransformSnapTest,
+	"CrowdySDK.ActorPool.CopySnapsAcrossALargeMove", CrowdyProxyMotionTest::Flags)
+bool FCrowdyTransformSnapTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyProxyMotionTest;
+
+	FWorld Test;
+	AActor* const Prop = Test.World->SpawnActor<AActor>();
+	if (!TestNotNull(TEXT("an actor spawns in the test world"), Prop)) return false;
+	USceneComponent* const Root = NewObject<USceneComponent>(Prop);
+	Prop->SetRootComponent(Root);
+	Root->RegisterComponent();
+	const auto DrawnX = [&](UCrowdyTransformRepPolicy* Policy, const int32 Slot, const int64 RenderTimeMs)
+	{
+		Policy->ApplyToActor(Prop, Slot, RenderTimeMs);
+		return Prop->GetActorLocation().X;
+	};
+
+	UCrowdyTransformRepPolicy* const Policy = NewObject<UCrowdyTransformRepPolicy>(GetTransientPackage());
+	Push(Policy, FVector(0.0, 0.0, 0.0), 1000, 0);
+	Push(Policy, FVector(100.0, 0.0, 0.0), 1100, 0);
+	TestEqual(TEXT("CONTROL: a 1 m step glides"), DrawnX(Policy, 0, 1050), 50.0, 0.01);
+
+	Push(Policy, FVector(1600.0, 0.0, 0.0), 1200, 0);
+	TestEqual(TEXT("a 15 m jump is drawn at its end straight away, not halfway across"), DrawnX(Policy, 0, 1150), 1600.0, 0.01);
+	TestEqual(TEXT("and nothing is drawn past it while no update follows"), DrawnX(Policy, 0, 1500), 1600.0, 0.01);
+
+	Push(Policy, FVector(1650.0, 0.0, 0.0), 1300, 0);
+	TestEqual(TEXT("the next step after it glides again"), DrawnX(Policy, 0, 1250), 1625.0, 0.01);
+
+	Push(Policy, FVector(0.0, 0.0, 0.0), 1000, 1);
+	Push(Policy, FVector(990.0, 0.0, 0.0), 1100, 1);
+	TestEqual(TEXT("a jump just under 10 m glides"), DrawnX(Policy, 1, 1050), 495.0, 0.01);
+
+	Policy->SetSnapDistance(0.f);
+	Push(Policy, FVector(0.0, 0.0, 0.0), 1000, 2);
+	Push(Policy, FVector(1500.0, 0.0, 0.0), 1100, 2);
+	TestEqual(TEXT("with Snap Distance 0, a 15 m jump glides"), DrawnX(Policy, 2, 1050), 750.0, 0.01);
 
 	return true;
 }

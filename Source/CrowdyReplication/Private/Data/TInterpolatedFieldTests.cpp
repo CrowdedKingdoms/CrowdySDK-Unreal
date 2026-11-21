@@ -34,6 +34,21 @@ bool FCrowdyInterpolatedFieldHoldsOldestSampleTest::RunTest(const FString& Param
 	return true;
 }
 
+// A sender that stops sends nothing more until its keyframe, so the newest pair is extrapolated for as long as the time
+// cap allows. At 10 Hz that cap is two intervals, which drew a stopped player two steps past where it stopped.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyInterpolatedFieldOneStepPastTest,
+	"CrowdySDK.CrowdyReplication.InterpolatedFieldExtrapolatesAtMostOneStep", CrowdyInterpolatedFieldTestFlags)
+bool FCrowdyInterpolatedFieldOneStepPastTest::RunTest(const FString& Parameters)
+{
+	TInterpolatedField<float, 4> Field;
+	Field.Push(0.f, 1000);
+	Field.Push(10.f, 1100);
+
+	TestEqual(TEXT("CONTROL: half an interval past the newest sample is half a step past it"), Field.Sample(1150, LerpFloat), 15.f);
+	TestEqual(TEXT("two intervals past it is still one step past it"), Field.Sample(1300, LerpFloat), 20.f);
+	return true;
+}
+
 // A sender that hitches can deliver its next two updates almost together. Extrapolating from that bunched pair at its
 // own 1 ms spacing projected its step up to 200 times, so a remote copy flicked far away for a frame.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyInterpolatedFieldBunchedPairTest,

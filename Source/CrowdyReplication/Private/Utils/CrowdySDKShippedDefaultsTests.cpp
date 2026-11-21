@@ -94,6 +94,33 @@ bool FCrowdySDKShippedProfileSelectsTheActorPoolTest::RunTest(const FString& Par
 	return true;
 }
 
+/**
+ * Movement and Crowdy State reach as far as the CrowdyJS and CrowdyCPP libraries do by default, and movement is not
+ * thinned, so a project that configures nothing sees the same players the other clients do.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySDKShippedProfileReachesEightChunksTest,
+	"CrowdySDK.MapProfile.SDKShippedProfileReachesEightChunks",
+	CrowdySDKShippedDefaultsTestFlags)
+
+bool FCrowdySDKShippedProfileReachesEightChunksTest::RunTest(const FString& Parameters)
+{
+	FString UnavailableReason;
+	const UCrowdyMapProfile* const Shipped =
+		UCrowdySDKDeveloperSettings::ResolveShippedDefaultProfile(UnavailableReason);
+
+	if (!Shipped)
+	{
+		AddError(FString::Printf(TEXT("The shipped default profile did not resolve: %s"), *UnavailableReason));
+		return false;
+	}
+
+	TestTrue(TEXT("Movement reaches 8 chunks"), Shipped->MovementDistance == ECrowdyReplicationDistance::Eight_Chunks);
+	TestTrue(TEXT("Crowdy State reaches 8 chunks"), Shipped->StateRelevanceDistance == ECrowdyReplicationDistance::Eight_Chunks);
+	TestTrue(TEXT("Movement is not thinned with distance"), Shipped->MovementDecay == ECrowdyDecayRate::No_Decay);
+	TestTrue(TEXT("Voice still reaches 1 chunk"), Shipped->VoiceDistance == ECrowdyReplicationDistance::One_Chunk);
+	return true;
+}
+
 #if WITH_EDITOR
 
 /**
@@ -205,7 +232,7 @@ bool FCrowdySDKActorPoolRunsWithoutAConfigTest::RunTest(const FString& Parameter
 /**
  * The shipped policy has to move the actor the way the sample says, or the default draws entities that stand
  * still while their state changes. Two samples 100 ms apart, read halfway: the midpoint, not either end; past
- * the newest, extrapolation stops at 0.2 s; with three samples the bracketing pair is the one read.
+ * the newest, extrapolation stops one interval (and at most 0.2 s) past it; with three samples the bracketing pair is the one read.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySDKTransformPolicyInterpolatesTest,
 	"CrowdySDK.MapProfile.TransformPolicyInterpolatesActorState",
@@ -248,12 +275,12 @@ bool FCrowdySDKTransformPolicyInterpolatesTest::RunTest(const FString& Parameter
 	Policy->ApplyToActor(Actor, 3, 1300);
 	const FVector At1300 = Actor->GetActorLocation();
 	Policy->ApplyToActor(Actor, 3, 5000);
-	TestEqual(TEXT("Extrapolation is capped at 0.2 s past the newest sample, so 5000 ms reads as 1300 ms"),
+	TestEqual(TEXT("Extrapolation is capped past the newest sample, so 5000 ms reads as 1300 ms"),
 		Actor->GetActorLocation(), At1300);
 	TestNotEqual(TEXT("and the capped value is extrapolated, not the newest sample held"),
 		At1300, FVector(100.0, 0.0, 0.0));
-	TestEqual(TEXT("and the capped value is the pair's slope carried 0.2 s past the newest sample"),
-		At1300, FVector(300.0, 0.0, 0.0));
+	TestEqual(TEXT("and the capped value is the pair's slope carried one interval past the newest sample"),
+		At1300, FVector(200.0, 0.0, 0.0));
 
 	TestFalse(TEXT("A state struct this policy cannot read is refused, so the backend skips the update"),
 		Policy->ExtractFields(FInstancedStruct::Make(FVector::ZeroVector), 1200, 3));

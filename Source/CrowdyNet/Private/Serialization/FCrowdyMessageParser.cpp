@@ -342,6 +342,15 @@ TSharedRef<ICrowdyMessage, ESPMode::ThreadSafe> FCrowdyMessageParser::DecodeFram
 			}
 			return Message;
 		}
+	case ECrowdyMessageType::CHANNEL_AUDIO_NOTIFICATION:
+		{
+			TSharedRef<FChannelAudioNotification> Message = MakeShared<FChannelAudioNotification>();
+			if (!Message->DecodePayload(Frame))
+			{
+				return MakeShared<FDefaultMessage>();
+			}
+			return Message;
+		}
 
 	default:
 		return MakeShared<FDefaultMessage>();

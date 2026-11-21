@@ -5,7 +5,9 @@
 #include "Core/Audio/VoiceChat/CrowdyVoiceMic.h"
 #include "Core/Audio/VoiceChat/CrowdyVoicePlayback.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceSettings.h"
+#include "Core/Audio/VoiceChat/VoiceChatSubsystem.h"
 #include "CrowdyCppVoice.h"
+#include "UObject/Package.h"
 
 #include <limits>
 
@@ -159,6 +161,15 @@ namespace
 		void PlayVoiceChat() { Calls.Add(TEXT("play")); }
 		void MuteVoiceChat() { Calls.Add(TEXT("mute")); }
 		void StartVoiceChat() { Calls.Add(TEXT("start")); }
+		void SetUserMuted(const int64 UserId, const bool bMuted) { Calls.Add(FString::Printf(TEXT("mute user %lld %d"), UserId, bMuted ? 1 : 0)); }
+		void SetUserVolume(const int64 UserId, const float Volume) { Calls.Add(FString::Printf(TEXT("volume user %lld %.2f"), UserId, Volume)); }
+		void SetChannelVoice(const int64 ChannelId, const bool bOn, const ECrowdyChannelVoiceMode Mode)
+		{
+			Calls.Add(FString::Printf(TEXT("channel voice %lld %d %s"), ChannelId, bOn ? 1 : 0, Mode == ECrowdyChannelVoiceMode::Talk ? TEXT("talk") : TEXT("listen")));
+		}
+		void SetChannelMuted(const int64 ChannelId, const bool bMuted) { Calls.Add(FString::Printf(TEXT("mute channel %lld %d"), ChannelId, bMuted ? 1 : 0)); }
+		void SetChannelVolume(const int64 ChannelId, const float Volume) { Calls.Add(FString::Printf(TEXT("volume channel %lld %.2f"), ChannelId, Volume)); }
+		void SetSpatialVoiceEnabled(const bool bEnabled) { Calls.Add(FString::Printf(TEXT("spatial %d"), bEnabled ? 1 : 0)); }
 
 		TArray<FString> Calls;
 	};
@@ -516,24 +527,30 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceSettingsTest,
 bool FCrowdyVoiceSettingsTest::RunTest(const FString& Parameters)
 {
 	FCrowdyVoiceSettings Settings;
-	TestEqual(TEXT("voice reaches the farthest the server relays by default"), Settings.DistanceChunks, FCrowdyVoiceSettings::MaxDistanceChunks);
+	TestEqual(TEXT("a map whose profile does not say reaches one chunk"), FCrowdyVoiceSettings::DefaultDistanceChunks, 1);
+
+	FCrowdyVoiceTestVoiceChat UnsetMap;
+	Settings.ApplyTo(UnsetMap, 4);
+	TestTrue(TEXT("with no distance set, a map uses its own"), UnsetMap.Calls.Contains(TEXT("distance 4")));
+
 	Settings.StreamTimeoutSeconds = 3.0f;
-	Settings.DistanceChunks = 1;
+	Settings.DistanceChunks = 6;
 	Settings.bOwnerEcho = true;
 	Settings.bPlaying = true;
 	Settings.bMicWanted = true;
 
 	FCrowdyVoiceTestVoiceChat NextMap;
-	Settings.ApplyTo(NextMap);
-	const TArray<FString> Wanted = { TEXT("timeout 3.0"), TEXT("distance 1"), TEXT("echo 1"), TEXT("play"), TEXT("start") };
-	TestEqual(TEXT("a mic that was on is started on the next map, at the distance set"), NextMap.Calls, Wanted);
+	Settings.ApplyTo(NextMap, 4);
+	const TArray<FString> Wanted = { TEXT("timeout 3.0"), TEXT("distance 6"), TEXT("spatial 1"), TEXT("echo 1"), TEXT("play"), TEXT("start") };
+	TestEqual(TEXT("a mic that was on is started on the next map, at the distance the game set over the map's"), NextMap.Calls, Wanted);
 
 	Settings.bMicWanted = false;
 	Settings.bPlaying = false;
+	Settings.DistanceChunks.Reset();
 	FCrowdyVoiceTestVoiceChat AfterStop;
-	Settings.ApplyTo(AfterStop);
-	const TArray<FString> Stopped = { TEXT("timeout 3.0"), TEXT("distance 1"), TEXT("echo 1"), TEXT("mute") };
-	TestEqual(TEXT("a mic that was stopped stays closed"), AfterStop.Calls, Stopped);
+	Settings.ApplyTo(AfterStop, 2);
+	const TArray<FString> Stopped = { TEXT("timeout 3.0"), TEXT("distance 2"), TEXT("spatial 1"), TEXT("echo 1"), TEXT("mute") };
+	TestEqual(TEXT("a stopped mic stays closed, and a reset distance follows the map again"), AfterStop.Calls, Stopped);
 	return true;
 }
 
@@ -618,6 +635,213 @@ bool FCrowdyVoiceFeedGateTest::RunTest(const FString& Parameters)
 
 	Feed.End();
 	TestEqual(TEXT("ending a silent feed sends nothing"), Out.Trace, FString(TEXT("SS")));
+	return true;
+}
+
+// With every place taken, a new speaker is heard only when clearly nearer than the farthest one heard, who gives way.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceNearestSpeakersTest,
+	"CrowdySDK.CrowdyVoice.NearestSpeakersAreHeard", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceNearestSpeakersTest::RunTest(const FString& Parameters)
+{
+	const TArray<uint8> Packet = CrowdyVoiceTestPacket(*this);
+	FCrowdyVoiceTestOutput Output;
+	FCrowdyVoicePlayback Playback(Output, FCrowdyVoicePlayback::ReceiveDelayMs, 2);
+
+	Playback.Push(TEXT("A"), Packet, 0, 100.0f * 100.0f);
+	Playback.Push(TEXT("B"), Packet, 0, 300.0f * 300.0f);
+	TestTrue(TEXT("CONTROL: under the cap every speaker is heard"), Playback.IsHeard(TEXT("A")) && Playback.IsHeard(TEXT("B")));
+
+	Playback.Push(TEXT("B"), Packet, 0, 300.0f * 300.0f);
+	Playback.Push(TEXT("C"), Packet, 0, 280.0f * 280.0f);
+	TestFalse(TEXT("a speaker barely nearer than the farthest heard waits"), Playback.IsHeard(TEXT("C")));
+	TestEqual(TEXT("and its packet is counted as over the cap"), Playback.GetPacketsOverCap(), static_cast<int64>(1));
+
+	Playback.Push(TEXT("D"), Packet, 0, 200.0f * 200.0f);
+	TestTrue(TEXT("a clearly nearer speaker is heard"), Playback.IsHeard(TEXT("D")));
+	TestFalse(TEXT("in place of the farthest"), Playback.IsHeard(TEXT("B")));
+	TestTrue(TEXT("and the nearest stays"), Playback.IsHeard(TEXT("A")));
+	TestEqual(TEXT("still two at once"), Playback.NumSpeakers(), 2);
+	TestEqual(TEXT("one gave way"), Playback.GetSpeakersDisplaced(), static_cast<int64>(1));
+
+	FCrowdyVoiceTestOutput Other;
+	TestEqual(TEXT("at least one speaker is heard"), FCrowdyVoicePlayback(Other, 120, 0).GetMaxSpeakers(), 1);
+	TestEqual(TEXT("and no more than the ceiling"), FCrowdyVoicePlayback(Other, 120, 1000).GetMaxSpeakers(), 64);
+
+	// A packet that does not play must not cost a heard speaker their place.
+	FCrowdyVoiceTestOutput Bad;
+	FCrowdyVoicePlayback Full(Bad, FCrowdyVoicePlayback::ReceiveDelayMs, 1);
+	Full.Push(TEXT("A"), Packet, 0, 300.0f * 300.0f);
+	const TArray<uint8> Garbage = { 0xFF, 0xFF, 0xFF };
+	Full.Push(TEXT("B"), Garbage, 0, 10.0f * 10.0f);
+	TestTrue(TEXT("an unreadable packet from a nearer speaker leaves the heard one heard"), Full.IsHeard(TEXT("A")));
+	TestFalse(TEXT("and is not heard itself"), Full.IsHeard(TEXT("B")));
+	TestEqual(TEXT("so nobody gave way"), Full.GetSpeakersDisplaced(), static_cast<int64>(0));
+
+	// A speaker the listener does not draw is pushed as farthest: it never takes a drawn speaker's place, and gives its own to one.
+	const float NotDrawn = TNumericLimits<float>::Max();
+	FCrowdyVoiceTestOutput Unseen;
+	FCrowdyVoicePlayback Ranked(Unseen, FCrowdyVoicePlayback::ReceiveDelayMs, 1);
+	Ranked.Push(TEXT("Seen"), Packet, 0, 500.0f * 500.0f);
+	Ranked.Push(TEXT("Unseen"), Packet, 0, NotDrawn);
+	TestTrue(TEXT("an undrawn speaker does not take a drawn one's place"), Ranked.IsHeard(TEXT("Seen")) && !Ranked.IsHeard(TEXT("Unseen")));
+	FCrowdyVoicePlayback Taken(Unseen, FCrowdyVoicePlayback::ReceiveDelayMs, 1);
+	Taken.Push(TEXT("Unseen"), Packet, 0, NotDrawn);
+	Taken.Push(TEXT("Seen"), Packet, 0, 500.0f * 500.0f);
+	TestTrue(TEXT("and a drawn speaker takes an undrawn one's"), Taken.IsHeard(TEXT("Seen")) && !Taken.IsHeard(TEXT("Unseen")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceGateSettingsTest,
+	"CrowdySDK.CrowdyVoice.SilenceGateFollowsItsSettings", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceGateSettingsTest::RunTest(const FString& Parameters)
+{
+	FCrowdyVoiceSpurtGate Gate;
+	TestEqual(TEXT("CONTROL: unconfigured, the gate is about -50 dBFS"), Gate.GetSilenceRms(), FCrowdyVoiceSpurtGate::DefaultSilenceRms);
+
+	Gate.Configure(-50.0f, 300);
+	TestEqual(TEXT("-50 dB is the default level"), Gate.GetSilenceRms(), 104);
+	TestEqual(TEXT("and 300 ms holds 15 frames"), Gate.GetHangFrames(), 15);
+
+	Gate.Configure(-40.0f, 100);
+	TestEqual(TEXT("-40 dB is about 3.2 times the level"), Gate.GetSilenceRms(), 328);
+	TestEqual(TEXT("100 ms holds 5 frames"), Gate.GetHangFrames(), 5);
+
+	Gate.Configure(std::numeric_limits<float>::quiet_NaN(), 0);
+	TestEqual(TEXT("a level that is not a number reads as -50 dB"), Gate.GetSilenceRms(), 104);
+	TestEqual(TEXT("and a hold under 20 ms still holds one frame"), Gate.GetHangFrames(), 1);
+
+	Gate.Configure(0.0f, 600000);
+	TestEqual(TEXT("an edited ini cannot set the gate above -10 dB"), Gate.GetSilenceRms(), 10362);
+	TestEqual(TEXT("or a hold beyond 2 s"), Gate.GetHangFrames(), 100);
+	return true;
+}
+
+// A muted user's voice never plays. With anyone muted, an unknown speaker waits until the lookup answers or the hold
+// passes, since a muted user's next sign-in arrives under a new actor id.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceMutedUsersTest,
+	"CrowdySDK.CrowdyVoice.MutedUsersAreNotHeard", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceMutedUsersTest::RunTest(const FString& Parameters)
+{
+	const TSet<int64> NoneMuted;
+	const TSet<int64> Muted = { 7 };
+	const int64 Hold = UVoiceChatSubsystem::UserLookupHoldMs;
+
+	TestTrue(TEXT("CONTROL: with no one muted, an unknown speaker plays at once"), UVoiceChatSubsystem::AdmitsSpeaker(0, NoneMuted, false, 0));
+	TestFalse(TEXT("a muted user never plays"), UVoiceChatSubsystem::AdmitsSpeaker(7, Muted, true, Hold * 10));
+	TestTrue(TEXT("another user does"), UVoiceChatSubsystem::AdmitsSpeaker(8, Muted, true, 0));
+	TestFalse(TEXT("with someone muted, an unknown speaker waits for the lookup"), UVoiceChatSubsystem::AdmitsSpeaker(0, Muted, false, Hold - 1));
+	TestTrue(TEXT("plays once the lookup answers without a user"), UVoiceChatSubsystem::AdmitsSpeaker(0, Muted, true, 0));
+	TestTrue(TEXT("or once the hold passes"), UVoiceChatSubsystem::AdmitsSpeaker(0, Muted, false, Hold));
+
+	// Ids that keep themselves fresh must not lock out newcomers: a full table gives the oldest unheard entry's place away.
+	UVoiceChatSubsystem* VoiceChat = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	for (int32 Index = 0; Index < 256; ++Index)
+	{
+		VoiceChat->TrackSpeakerForTest(FString::Printf(TEXT("%032X"), Index + 1), 1000 + Index);
+	}
+	const FString Newcomer = FString::Printf(TEXT("%032X"), 9999);
+	TestTrue(TEXT("a newcomer is tracked though the table is full"), VoiceChat->TrackSpeakerForTest(Newcomer, 5000));
+	TestTrue(TEXT("and kept"), VoiceChat->IsSpeakerTrackedForTest(Newcomer));
+	TestFalse(TEXT("in place of the oldest"), VoiceChat->IsSpeakerTrackedForTest(FString::Printf(TEXT("%032X"), 1)));
+	TestTrue(TEXT("and only the oldest"), VoiceChat->IsSpeakerTrackedForTest(FString::Printf(TEXT("%032X"), 2)));
+
+	FCrowdyVoiceSettings Settings;
+	Settings.MutedUsers.Add(7);
+	Settings.UserVolumes.Add(8, 0.5f);
+	FCrowdyVoiceTestVoiceChat NextMap;
+	Settings.ApplyTo(NextMap, 1);
+	TestTrue(TEXT("a mute carries to the next map"), NextMap.Calls.Contains(TEXT("mute user 7 1")));
+	TestTrue(TEXT("and so does a volume"), NextMap.Calls.Contains(TEXT("volume user 8 0.50")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceChannelVoiceTest,
+	"CrowdySDK.CrowdyVoice.ChannelVoice", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceChannelVoiceTest::RunTest(const FString& Parameters)
+{
+	const FString Uuid = FString::Printf(TEXT("%032X"), 42);
+	const FString Key = UVoiceChatSubsystem::ChannelStreamKey(812, Uuid);
+	TestEqual(TEXT("a channel stream is keyed as CrowdyJS keys it"), Key, FString(TEXT("812:")) + Uuid);
+
+	UVoiceChatSubsystem* VoiceChat = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	TestTrue(TEXT("a channel stream is tracked"), VoiceChat->TrackSpeakerForTest(Key, 1000, 812));
+	FGuid Expected;
+	FGuid::Parse(Uuid, Expected);
+	TestEqual(TEXT("and looks its user up by the speaker's actor id, not the whole key"), VoiceChat->TrackedSpeakerIdForTest(Key), Expected);
+	TestTrue(TEXT("a spatial stream of the same speaker is its own"), VoiceChat->TrackSpeakerForTest(Uuid, 1000));
+	TestTrue(TEXT("and both are kept"), VoiceChat->IsSpeakerTrackedForTest(Key) && VoiceChat->IsSpeakerTrackedForTest(Uuid));
+
+	TestTrue(TEXT("spatial voice is on by default"), VoiceChat->IsSpatialVoiceEnabled());
+	VoiceChat->SetChannelVoice(812, true);
+	VoiceChat->SetChannelVoice(0, true);
+	TestTrue(TEXT("channel voice turns on"), VoiceChat->IsChannelVoiceOn(812));
+	TestFalse(TEXT("but never for no channel"), VoiceChat->IsChannelVoiceOn(0));
+	TestEqual(TEXT("talking by default"), VoiceChat->GetChannelVoiceMode(812), ECrowdyChannelVoiceMode::Talk);
+	VoiceChat->SetChannelVoice(812, true, ECrowdyChannelVoiceMode::Listen);
+	TestTrue(TEXT("a listener has joined the channel's voice"), VoiceChat->IsChannelVoiceOn(812));
+	TestEqual(TEXT("and only listens"), VoiceChat->GetChannelVoiceMode(812), ECrowdyChannelVoiceMode::Listen);
+	VoiceChat->SetChannelVoice(812, false);
+	TestFalse(TEXT("and off"), VoiceChat->IsChannelVoiceOn(812));
+	TestEqual(TEXT("a channel not joined reads as listening"), VoiceChat->GetChannelVoiceMode(812), ECrowdyChannelVoiceMode::Listen);
+
+	VoiceChat->SetChannelMuted(9, true);
+	TestTrue(TEXT("a channel mutes"), VoiceChat->IsChannelMuted(9));
+	VoiceChat->SetChannelMuted(9, false);
+	TestFalse(TEXT("and unmutes"), VoiceChat->IsChannelMuted(9));
+	VoiceChat->SetChannelVolume(9, 9.0f);
+	TestEqual(TEXT("a channel volume is held to 4"), VoiceChat->GetChannelVolume(9), UVoiceChatSubsystem::MaxUserVolume);
+	VoiceChat->SetChannelVolume(9, 1.0f);
+	TestEqual(TEXT("and 1 forgets it"), VoiceChat->GetChannelVolume(9), 1.0f);
+
+	FCrowdyVoiceSettings Settings;
+	Settings.VoiceChannels.Add(812, ECrowdyChannelVoiceMode::Talk);
+	Settings.VoiceChannels.Add(813, ECrowdyChannelVoiceMode::Listen);
+	Settings.MutedChannels.Add(9);
+	Settings.ChannelVolumes.Add(10, 0.5f);
+	Settings.bSpatialVoice = false;
+	FCrowdyVoiceTestVoiceChat NextMap;
+	Settings.ApplyTo(NextMap, 1);
+	TestTrue(TEXT("channel voice carries to the next map"), NextMap.Calls.Contains(TEXT("channel voice 812 1 talk")));
+	TestTrue(TEXT("with its mode"), NextMap.Calls.Contains(TEXT("channel voice 813 1 listen")));
+	TestTrue(TEXT("and a channel mute"), NextMap.Calls.Contains(TEXT("mute channel 9 1")));
+	TestTrue(TEXT("and a channel volume"), NextMap.Calls.Contains(TEXT("volume channel 10 0.50")));
+	TestTrue(TEXT("and spatial voice being off"), NextMap.Calls.Contains(TEXT("spatial 0")));
+
+	// Ids with no user, made up by a channel member, cannot hold places against known players or nearby speakers.
+	const TArray<uint8> Packet = CrowdyVoiceTestPacket(*this);
+	FCrowdyVoiceTestOutput Output;
+	FCrowdyVoicePlayback Places(Output, FCrowdyVoicePlayback::ReceiveDelayMs, 1);
+	Places.Push(TEXT("812:made-up"), Packet, 0, UVoiceChatSubsystem::ChannelStreamRank(0));
+	Places.Push(TEXT("Nearby"), Packet, 0, 500.0f * 500.0f);
+	TestTrue(TEXT("a nearby speaker takes the place of a channel id with no user"), Places.IsHeard(TEXT("Nearby")) && !Places.IsHeard(TEXT("812:made-up")));
+	Places.Push(TEXT("812:known"), Packet, 0, UVoiceChatSubsystem::ChannelStreamRank(77));
+	TestTrue(TEXT("and a known player on the channel takes the nearby speaker's"), Places.IsHeard(TEXT("812:known")) && !Places.IsHeard(TEXT("Nearby")));
+
+	// A speaker already known on one stream is known on the next, so a muted user's channel voice is held from its first packet.
+	UVoiceChatSubsystem* Known = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	int32 Lookups = 0;
+	Known->ResolveSpeakerUser = [&Lookups](const FGuid&, TFunction<void(int64)> OnResolved) { ++Lookups; OnResolved(77); };
+	Known->SetUserMuted(77, true);
+	TestFalse(TEXT("CONTROL: the muted user's spatial voice is held"), Known->AdmitSpeakerForTest(Uuid, 1000));
+	TestEqual(TEXT("once their user is known"), Known->TrackedUserIdForTest(Uuid), static_cast<int64>(77));
+	TestFalse(TEXT("their channel voice is held on its first packet"), Known->AdmitSpeakerForTest(Key, 1000, 812));
+	TestEqual(TEXT("knowing the user without asking again"), Lookups, 1);
+	Known->ResolveSpeakerUser = nullptr;
+
+	// Both streams can start before either lookup answers; the first answer is the user on both.
+	UVoiceChatSubsystem* Pending = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	TArray<TFunction<void(int64)>> Answers;
+	Pending->ResolveSpeakerUser = [&Answers](const FGuid&, TFunction<void(int64)> OnResolved) { Answers.Add(MoveTemp(OnResolved)); };
+	Pending->AdmitSpeakerForTest(Uuid, 1000);
+	Pending->AdmitSpeakerForTest(Key, 1000, 812);
+	if (TestEqual(TEXT("both streams asked"), Answers.Num(), 2))
+	{
+		Answers[0](77);
+		TestEqual(TEXT("the spatial answer reaches the channel stream"), Pending->TrackedUserIdForTest(Key), static_cast<int64>(77));
+		Answers[1](0);
+		TestEqual(TEXT("and the channel stream's own late failed lookup does not undo it"), Pending->TrackedUserIdForTest(Key), static_cast<int64>(77));
+	}
+	Pending->ResolveSpeakerUser = nullptr;
 	return true;
 }
 

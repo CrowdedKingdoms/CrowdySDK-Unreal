@@ -203,7 +203,8 @@ bool FCrowdyKitEmotesRequestTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the body encodes"), UCrowdyKitEmotes::EncodeEmoteBody(TEXT("wave"), FString(), Body, Reason));
 
 	FKitEventRequest Request;
-	UCrowdyKitEmotes::FillEmoteRequest(Request, 7, KitEmotesTestSender(), 1, -2, 3, CopyTemp(Body));
+	UCrowdyKitEmotes::FillEmoteRequest(Request, 7, KitEmotesTestSender(), 1, -2, 3,
+		ECrowdyReplicationDistance::Five_Chunks, CopyTemp(Body));
 
 	TArray<uint8> Storage;
 	FCrowdyCppOutboundFrame Frame;
@@ -219,7 +220,7 @@ bool FCrowdyKitEmotesRequestTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("chunk x"), Frame.ChunkX, static_cast<int64>(1));
 	TestEqual(TEXT("chunk y"), Frame.ChunkY, static_cast<int64>(-2));
 	TestEqual(TEXT("chunk z"), Frame.ChunkZ, static_cast<int64>(3));
-	TestEqual(TEXT("it reaches two chunks"), static_cast<int32>(Frame.Distance), 2);
+	TestEqual(TEXT("it reaches the map's emote distance"), static_cast<int32>(Frame.Distance), 5);
 	TestEqual(TEXT("it does not decay"), static_cast<int32>(Frame.Decay), 0);
 	TestTrue(TEXT("it is sent from the player's actor id"),
 		FCrowdyActorId::FromOctets(Frame.Uuid) == KitEmotesTestSender());
