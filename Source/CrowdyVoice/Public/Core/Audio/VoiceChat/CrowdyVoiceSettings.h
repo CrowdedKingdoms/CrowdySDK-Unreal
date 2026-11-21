@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Core/Audio/VoiceChat/CrowdyChannelVoiceMode.h"
 
 /** Voice chat requests that outlive one map, applied to the voice chat of each map that loads. */
 struct FCrowdyVoiceSettings
@@ -18,22 +19,55 @@ struct FCrowdyVoiceSettings
 	/** The farthest the server relays a voice packet, in chunks around the sender's. */
 	static constexpr int32 MaxDistanceChunks = 8;
 
+	/** How far voice reaches on a map whose profile does not say. */
+	static constexpr int32 DefaultDistanceChunks = 1;
+
 	static int32 ClampDistance(const int32 Chunks)
 	{
 		return FMath::Clamp(Chunks, 0, MaxDistanceChunks);
 	}
 
 	float StreamTimeoutSeconds = 2.0f;
-	int32 DistanceChunks = MaxDistanceChunks;
+	// Set by the game; unset follows each map's own voice distance.
+	TOptional<int32> DistanceChunks;
+	TSet<int64> MutedUsers;
+	TMap<int64, float> UserVolumes;
+	TMap<int64, ECrowdyChannelVoiceMode> VoiceChannels;
+	// The user who joined VoiceChannels; channel voice is that account's, not the next one's on this game instance.
+	int64 ChannelsUserId = 0;
+	TSet<int64> MutedChannels;
+	TMap<int64, float> ChannelVolumes;
+	bool bSpatialVoice = true;
 	bool bPlaying = false;
 	bool bOwnerEcho = false;
 	bool bMicWanted = false;
 
 	template <typename TVoiceChat>
-	void ApplyTo(TVoiceChat& VoiceChat) const
+	void ApplyTo(TVoiceChat& VoiceChat, const int32 MapDistanceChunks) const
 	{
 		VoiceChat.SetStreamTimeoutThreshold(StreamTimeoutSeconds);
-		VoiceChat.SetDistance(DistanceChunks);
+		VoiceChat.SetDistance(DistanceChunks.Get(MapDistanceChunks));
+		for (const int64 UserId : MutedUsers)
+		{
+			VoiceChat.SetUserMuted(UserId, true);
+		}
+		for (const TPair<int64, float>& Volume : UserVolumes)
+		{
+			VoiceChat.SetUserVolume(Volume.Key, Volume.Value);
+		}
+		for (const TPair<int64, ECrowdyChannelVoiceMode>& Channel : VoiceChannels)
+		{
+			VoiceChat.SetChannelVoice(Channel.Key, true, Channel.Value);
+		}
+		for (const int64 ChannelId : MutedChannels)
+		{
+			VoiceChat.SetChannelMuted(ChannelId, true);
+		}
+		for (const TPair<int64, float>& Volume : ChannelVolumes)
+		{
+			VoiceChat.SetChannelVolume(Volume.Key, Volume.Value);
+		}
+		VoiceChat.SetSpatialVoiceEnabled(bSpatialVoice);
 		VoiceChat.SetOwnerEcho(bOwnerEcho);
 		if (bPlaying)
 		{

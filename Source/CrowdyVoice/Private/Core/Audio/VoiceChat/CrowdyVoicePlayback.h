@@ -42,16 +42,25 @@ struct FCrowdyVoiceQueuePolicy
 class FCrowdyVoicePlayback
 {
 public:
-	/** Playout delay: absorbs the game thread delivering packets in bursts at 20 to 30 frames a second. */
+	/** Playout delay unless configured: absorbs the game thread delivering packets in bursts at 20 to 30 frames a second. */
 	static constexpr int64 ReceiveDelayMs = 120;
 
 	/** A talking speaker with no real frame for this long is reported as stopped, even without a spurt end. */
 	static constexpr int64 TalkingHoldMs = 200;
 
-	explicit FCrowdyVoicePlayback(ICrowdyVoiceSpeakerOutput& InOutput);
+	static constexpr int32 DefaultMaxSpeakers = 16;
+
+	/** The most Max Speakers may be: one under the receiver's ceiling, so a newcomer's packet is buffered before the farthest gives way. */
+	static constexpr int32 MaxSpeakersCeiling = FCrowdyCppVoiceReceiver::MaxSpeakers - 1;
+
+	/** With every place taken, a new speaker displaces the farthest only from at most this fraction of its distance, so near-equals do not trade places. */
+	static constexpr float DisplaceRatio = 0.9f;
+
+	explicit FCrowdyVoicePlayback(ICrowdyVoiceSpeakerOutput& InOutput, int64 PlayoutDelayMs = ReceiveDelayMs, int32 InMaxSpeakers = DefaultMaxSpeakers);
 	~FCrowdyVoicePlayback();
 
-	void Push(const FString& SpeakerKey, TConstArrayView<uint8> Packet, int64 NowMs);
+	/** DistanceSquared is the speaker's from the listener, which decides who is heard once MaxSpeakers are. */
+	void Push(const FString& SpeakerKey, TConstArrayView<uint8> Packet, int64 NowMs, float DistanceSquared = 0.0f);
 
 	/** Plays every frame now due, then ends quiet talkers and forgets speakers silent past TimeoutMs. */
 	void Update(int64 NowMs, int64 TimeoutMs);
@@ -66,7 +75,15 @@ public:
 	bool IsPlaying() const { return bPlaying; }
 
 	int32 NumSpeakers() const { return Speakers.Num(); }
+	bool IsHeard(const FString& SpeakerKey) const { return Speakers.Contains(SpeakerKey); }
+	int32 GetMaxSpeakers() const { return MaxSpeakers; }
 	const FCrowdyCppVoiceReceiver& GetReceiver() const { return Receiver; }
+
+	/** Packets from a speaker left unheard because every place was taken by someone nearer. */
+	int64 GetPacketsOverCap() const { return PacketsOverCap; }
+
+	/** Heard speakers that gave their place to a nearer one. */
+	int64 GetSpeakersDisplaced() const { return SpeakersDisplaced; }
 
 private:
 	FCrowdyVoicePlayback(const FCrowdyVoicePlayback&) = delete;
@@ -77,6 +94,8 @@ private:
 		int64 LastHeardMs = 0;
 		int64 LastVoicedMs = 0;
 
+		float DistanceSquared = 0.0f;
+
 		/** The rate the stream was opened at; zero while closed. */
 		int32 OpenRate = 0;
 
@@ -85,12 +104,16 @@ private:
 
 	void PlayFrame(const FCrowdyCppVoicePlayout& Playout, FSpeaker& Speaker);
 	void Release(const FString& SpeakerKey, const FSpeaker& Speaker);
+	bool FindFarthestToDisplace(float DistanceSquared, FString& OutFarthest) const;
 
 	ICrowdyVoiceSpeakerOutput& Output;
 	FCrowdyCppVoiceReceiver Receiver;
 	TMap<FString, FSpeaker> Speakers;
 	TArray<FCrowdyCppVoicePlayout> Playouts;
 	TArray<FString> Expired;
+	int64 PacketsOverCap = 0;
+	int64 SpeakersDisplaced = 0;
+	int32 MaxSpeakers = DefaultMaxSpeakers;
 	bool bPlaying = false;
 	bool bWarnedRefused = false;
 };

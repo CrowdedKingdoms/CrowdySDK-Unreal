@@ -315,7 +315,7 @@ void UCrowdyChannels::GetChannelPolicy(FOnChannelPolicySuccess OnSuccess, FOnCha
 
 void UCrowdyChannels::CreateChannel(const FString& Name, const FString& Description,
                                     ECrowdyChannelMembershipPolicy MembershipPolicy, bool bMembersCanSend,
-                                    FOnChannelSuccess OnSuccess, FOnChannelError OnError)
+                                    bool bMembersCanSpeak, FOnChannelSuccess OnSuccess, FOnChannelError OnError)
 {
 	FCrowdyCppClient* Client = ResolveApiClient(GetGameInstance(), ChannelsLogName);
 	if (!Client)
@@ -331,6 +331,10 @@ void UCrowdyChannels::CreateChannel(const FString& Name, const FString& Descript
 	Input->SetStringField(TEXT("description"), Description);
 	Input->SetStringField(TEXT("membershipPolicy"), FCrowdyChannel::MembershipPolicyToString(MembershipPolicy));
 	Input->SetBoolField(TEXT("membersCanSend"), bMembersCanSend);
+	if (bMembersCanSpeak)
+	{
+		Input->SetBoolField(TEXT("membersCanSpeak"), true);
+	}
 
 	Client->RunOp(ChannelsDomain, TEXT("CreateChannel"), WrapInput(Input),
 		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)

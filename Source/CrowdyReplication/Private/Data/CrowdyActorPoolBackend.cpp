@@ -5,6 +5,7 @@
 
 #include "Data/CrowdyActorPoolBackendConfig.h"
 #include "Data/CrowdyActorPoolPolicy.h"
+#include "Data/CrowdyMapProfile.h"
 #include "Data/CrowdyRepApplicationPolicy.h"
 #include "Data/CrowdyTransformRepPolicy.h"
 #include "Data/FCrowdyPoolConfig.h"
@@ -14,6 +15,7 @@
 #include "Replication/Executor/ActorUpdateExecutor.h"
 #include "Replication/Subsystems/CrowdyActorPoolSubsystem.h"
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 
 UClass* UCrowdyActorPoolBackend::GetBackendConfigClass() const
 {
@@ -70,6 +72,11 @@ bool UCrowdyActorPoolBackend::InitializeBackend(UWorld* World, UCrowdyRenderingB
 		return false;
 
 	Policy = NewObject<UCrowdyRepApplicationPolicy>(this, ResolvePolicyClass(PoolConfig));
+	if (UCrowdyTransformRepPolicy* TransformPolicy = Cast<UCrowdyTransformRepPolicy>(Policy))
+	{
+		const UCrowdyMapProfile* Profile = UCrowdySDKDeveloperSettings::ResolveProfileForWorld(World);
+		TransformPolicy->SetSnapDistance(Profile ? Profile->SnapDistance : GetDefault<UCrowdyMapProfile>()->SnapDistance);
+	}
 
 	// Pre-warm pools for classes listed in PerClassPoolOverrides so their actors are
 	// ready before the first entity of that class arrives, avoiding a frame spike.
@@ -262,6 +269,16 @@ bool UCrowdyActorPoolBackend::IsInstanceActive(const int32 SlotId) const
 		return false;
 
 	return SkippedOwnerSlots[SlotId] || (SlotActors[SlotId].IsValid() && IsSlotActorClaimed(SlotId));
+}
+
+bool UCrowdyActorPoolBackend::TryGetDrawnLocation(const int32 SlotId, FVector& OutLocation) const
+{
+	const AActor* Actor = SlotActors.IsValidIndex(SlotId) ? SlotActors[SlotId].Get() : nullptr;
+	if (!Actor)
+		return false;
+
+	OutLocation = Actor->GetActorLocation();
+	return true;
 }
 
 bool UCrowdyActorPoolBackend::IsSlotActorClaimed(const int32 SlotId) const

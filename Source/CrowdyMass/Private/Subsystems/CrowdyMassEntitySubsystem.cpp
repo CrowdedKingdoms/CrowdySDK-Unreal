@@ -696,6 +696,11 @@ void UCrowdyMassEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection
 		return;
 	}
 
+	const UCrowdyMapProfile* Profile = UCrowdySDKDeveloperSettings::ResolveProfileForWorld(World);
+	const float SnapDistance = (Profile ? Profile : GetDefault<UCrowdyMapProfile>())->SnapDistance;
+	const float Snap = FMath::IsFinite(SnapDistance) ? FMath::Max(SnapDistance, 0.f) : 0.f;
+	SnapDistanceSquared = Snap * Snap;
+
 	if (UCrowdyEntitySubsystem* Entities = Collection.InitializeDependency<UCrowdyEntitySubsystem>())
 	{
 		Entities->OnEntityOwnershipChanged.AddDynamic(this, &UCrowdyMassEntitySubsystem::HandleEntityOwnershipChanged);
@@ -1000,6 +1005,19 @@ void UCrowdyMassEntitySubsystem::DestroyRemoteEntity(const FGuid& UUID)
 bool UCrowdyMassEntitySubsystem::UpdateRemoteEntityTransform(const FGuid& UUID, const FVector& Location, const FRotator& Rotation, const int64 ServerTimestampMs, const float SmoothingDuration)
 {
 	return ApplyRemoteEntityTransform(UUID, Location, Rotation.Quaternion(), ServerTimestampMs, SmoothingDuration);
+}
+
+bool UCrowdyMassEntitySubsystem::TryGetEntityLocation(const FGuid& UUID, FVector& OutLocation) const
+{
+	FMassEntityHandle Entity;
+	const FMassEntityManager* EntityManager = FindEntityByUUID(UUID, Entity) ? GetMassEntityManager() : nullptr;
+	const FTransformFragment* Transform = EntityManager ? EntityManager->GetFragmentDataPtr<FTransformFragment>(Entity) : nullptr;
+	if (!Transform)
+	{
+		return false;
+	}
+	OutLocation = Transform->GetTransform().GetLocation();
+	return true;
 }
 
 bool UCrowdyMassEntitySubsystem::FindEntityByUUID(const FGuid& UUID, FMassEntityHandle& OutEntity) const
@@ -3628,6 +3646,10 @@ bool UCrowdyMassEntitySubsystem::ApplyRemoteEntityTransformToEntity(FMassEntityM
 		return false;
 	}
 
+	// From the previous update, not the drawn row, which trails it; LastArrivalSeconds is 0 until the first update.
+	const bool bSnap = SnapDistanceSquared > 0.f && InterpolationFragment->LastArrivalSeconds > 0.0
+		&& FVector::DistSquared(InterpolationFragment->TargetLocation, Location) > SnapDistanceSquared;
+
 	const FTransform& CurrentTransform = TransformFragment->GetTransform();
 	InterpolationFragment->StartLocation = CurrentTransform.GetLocation();
 	InterpolationFragment->StartRotation = CurrentTransform.GetRotation().GetNormalized();
@@ -3643,7 +3665,7 @@ bool UCrowdyMassEntitySubsystem::ApplyRemoteEntityTransformToEntity(FMassEntityM
 		InterpolationFragment->ArrivalIntervals,
 		InterpolationFragment->LastArrivalSeconds,
 		FPlatformTime::Seconds(),
-		SmoothingDuration,
+		bSnap ? 0.0f : SmoothingDuration,
 		GetInterpolationTuning());
 
 	InterpolationFragment->SmoothingDuration = SegmentTiming.Duration;

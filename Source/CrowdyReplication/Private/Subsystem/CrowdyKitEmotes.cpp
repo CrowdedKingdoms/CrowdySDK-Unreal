@@ -7,6 +7,7 @@
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "Core/UDP/Subscription/FCrowdyDelivery.h"
 #include "Core/UDP/Subscription/FCrowdySubscriptionOptions.h"
+#include "Data/CrowdyMapProfile.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/Engine.h"
@@ -22,6 +23,7 @@
 #include "Replication/Subsystems/CrowdyEntitySubsystem.h"
 #include "Serialization/CrowdyJsonSafety.h"
 #include "Serialization/JsonReader.h"
+#include "Utils/CrowdySDKDeveloperSettings.h"
 #include "Serialization/JsonSerializer.h"
 #include "Subsystem/CrowdyGameSession.h"
 #include "Utils/HelperFunctions.h"
@@ -130,6 +132,11 @@ void UCrowdyKitEmotes::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 
 	const UWorld* World = GetWorld();
+	if (const UCrowdyMapProfile* Profile = UCrowdySDKDeveloperSettings::ResolveProfileForWorld(World))
+	{
+		EmoteDistance = Profile->EmoteDistance;
+	}
+
 	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
 	if (!GameInstance)
 	{
@@ -231,7 +238,7 @@ bool UCrowdyKitEmotes::SendEmote(const FString& Emote, AActor* Target, FString& 
 	UHelperFunctions::GetChunkCoordinateAtLocation(this, Location, ChunkX, ChunkY, ChunkZ);
 
 	FKitEventRequest Request;
-	FillEmoteRequest(Request, Session->GetAppID(), Sender, ChunkX, ChunkY, ChunkZ, MoveTemp(Body));
+	FillEmoteRequest(Request, Session->GetAppID(), Sender, ChunkX, ChunkY, ChunkZ, EmoteDistance, MoveTemp(Body));
 
 	switch (Replication->TrySendMessage(Request))
 	{
@@ -366,14 +373,14 @@ bool UCrowdyKitEmotes::DecodeEmoteBody(const TConstArrayView<uint8> Body, FStrin
 }
 
 void UCrowdyKitEmotes::FillEmoteRequest(FKitEventRequest& Request, const int64 AppId, const FCrowdyActorId& Sender,
-	const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ, TArray<uint8>&& Body)
+	const int64 ChunkX, const int64 ChunkY, const int64 ChunkZ, const ECrowdyReplicationDistance Distance, TArray<uint8>&& Body)
 {
 	Request.AppID = AppId;
 	Request.UUID = Sender;
 	Request.ChunkX = ChunkX;
 	Request.ChunkY = ChunkY;
 	Request.ChunkZ = ChunkZ;
-	Request.ReplicationDistance = ECrowdyReplicationDistance::Two_Chunks;
+	Request.ReplicationDistance = Distance;
 	Request.DecayRate = ECrowdyDecayRate::No_Decay;
 	Request.EventType = CrowdyKitEvent::Emote;
 	Request.State = MoveTemp(Body);

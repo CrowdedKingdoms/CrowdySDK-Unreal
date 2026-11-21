@@ -25,7 +25,7 @@ public:
 	static UCrowdyChannels_CreateChannel* CreateChannel(UObject* WorldContextObject, const FString& Name,
 	                                                    const FString& Description,
 	                                                    ECrowdyChannelMembershipPolicy MembershipPolicy,
-	                                                    bool bMembersCanSend);
+	                                                    bool bMembersCanSend, bool bMembersCanSpeak = false);
 
 	virtual void Activate() override;
 
@@ -34,6 +34,7 @@ private:
 	FString Name, Description;
 	ECrowdyChannelMembershipPolicy MembershipPolicy = ECrowdyChannelMembershipPolicy::Open;
 	bool bMembersCanSend = true;
+	bool bMembersCanSpeak = false;
 	UFUNCTION()
 	void HandleSuccess(FCrowdyChannel Channel);
 	UFUNCTION()

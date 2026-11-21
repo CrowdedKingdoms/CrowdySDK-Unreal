@@ -5,12 +5,25 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.26.0** (Unreal Engine 5.8). See the
+**Current version: 2.27.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
 **Upgrading? Read [MIGRATION.md](MIGRATION.md): every release from 2.24.0 lists what changed and the exact steps to migrate.**
+
+**New in 2.27.0:** reach is set per map. Map profiles gain Movement Distance (8 chunks), Voice
+Distance (1 chunk, was 8), Emote Distance, Snap Distance and Movement Decay, and the Crowdy State
+Relevance Distance defaults to 8 chunks (was 4). Other players' copies snap across a teleport
+instead of gliding. A Crowdy Voice settings page adds flat or spatial playback, with a shipped
+attenuation you can replace; the nearest speakers are heard instead of the first 16; and each
+player's voice can be muted or turned down by user id. Channel voice lets you hear a channel's
+members wherever they are and, in Talk mode, be heard by them (Listen mode sends nothing), with a
+new Send Voice permission and Create Channel's Members Can Speak (off by default). The server does
+not yet check who sent channel voice, so a member who may talk can speak as another player.
+CrowdyCPP 0.88.0. Blueprint needs nothing but a new Limit Reached pin to wire; in C++,
+`FillEmoteRequest`, `FCrowdyVoiceSettings::ApplyTo` and `CreateChannel` take one more argument and
+`FCrowdyVoiceSettings::DistanceChunks` is a `TOptional`. Follow MIGRATION.md.
 
 **New in 2.26.0:** this release breaks. The elected host and everything the SDK had deprecated
 are deleted, and the role Host Owned is World Owned. A player's actor id is random and new at each
@@ -22,15 +35,6 @@ checks, mods, Mod Scripts (Win64 only), and sending video frames. A session the 
 for idleness reads Inactive instead of reconnecting. The mod calls and the server code deploy need
 Game API v2.73.0 on every tier you ship to. Follow MIGRATION.md step by step, including the steps
 to take on 2.25.x before you upgrade.
-
-**New in 2.25.0:** there is no elected host by default. A Leader chosen by a Server Object writes
-replicated subsystems, and an entity says who writes it with Owned By (Player, World or Leader). A
-pawn with a movement component replicates its movement with no setup, and a remote character
-animates and aims from it; mark a property `CrowdyContinuous` to send it with each movement update.
-Owning Client reaches an entity's writer, and the Host recipient, the host nodes and the entity
-component's Ownership and Mode are deprecated: they warn and still run. Player safety (contacts,
-blocks, reports, the age screen, recording state) and CrowdyCPP 0.76.0 arrive too. MIGRATION.md
-lists every change and the steps to upgrade.
 
 Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkingdoms.com/unreal-sdk/intro)**
 

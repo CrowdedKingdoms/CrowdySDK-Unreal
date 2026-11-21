@@ -30,6 +30,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(DisplayName="Send Movement"))
 	bool bUseAutoReplicator = true;
 
+	/** How far each entity's movement and its spawn event travel, in chunks around it: other players see it only within this range. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(DisplayName="Movement Distance"))
+	ECrowdyReplicationDistance MovementDistance = ECrowdyReplicationDistance::Eight_Chunks;
+
+	/** How movement updates thin out with distance. No Decay sends every update to everyone in range; a decay gives far players fewer, so keep their gap between updates under Actor Timeout or their copy of the entity is dropped. Spawn events are never thinned. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(DisplayName="Movement Decay"))
+	ECrowdyDecayRate MovementDecay = ECrowdyDecayRate::No_Decay;
+
+	/** Other players' copies jump straight to an update that lands farther than this from the one before it, as a teleport does, instead of gliding there. Keep it above the farthest anything on this map moves between two updates a player receives (its top speed divided by Send Rate, or by less where a decay thins far updates). 0 never snaps. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement", meta=(ClampMin="0.0", Units="cm", DisplayName="Snap Distance"))
+	float SnapDistance = 1000.0f;
+
 	/** How many times a second movement is sent. Crowdy State is sent at the same rate. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement",
 		meta=(EditCondition="bUseAutoReplicator || bUseStateReplicator", ClampMin=1, ClampMax=10, Units="Hz", DisplayName="Send Rate"))
@@ -59,12 +71,20 @@ public:
 	/** How far a Crowdy State change travels, in chunks. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy State",
 		meta=(EditCondition="bUseStateReplicator", DisplayName="Relevance Distance"))
-	ECrowdyReplicationDistance StateRelevanceDistance = ECrowdyReplicationDistance::Four_Chunks;
+	ECrowdyReplicationDistance StateRelevanceDistance = ECrowdyReplicationDistance::Eight_Chunks;
 
 	/** Full re-send of every property marked CrowdyHeartbeat, so a late observer catches up. 0 turns it off; changes still send. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Crowdy State",
 		meta=(EditCondition="bUseStateReplicator", ClampMin="0.0", Units="s", DisplayName="Keyframe Interval"))
 	float StateKeyframeIntervalSeconds = 2.0f;
+
+	/** How far a player's voice reaches on this map, in chunks around their pawn's, unless the game calls Set Voice Chat Distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Voice", meta=(DisplayName="Voice Distance"))
+	ECrowdyReplicationDistance VoiceDistance = ECrowdyReplicationDistance::One_Chunk;
+
+	/** How far an emote travels, in chunks around the sender's. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Emotes", meta=(DisplayName="Emote Distance"))
+	ECrowdyReplicationDistance EmoteDistance = ECrowdyReplicationDistance::Two_Chunks;
 
 #if WITH_EDITOR
 	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;

@@ -125,6 +125,10 @@ struct GraphQLErrorDetail {
   /// spend, as decimal micro-USD strings. Empty elsewhere.
   std::string requiredMicrousd;
   std::string spendableMicrousd;
+  /// extensions.limit and extensions.max on GROUP_LIMIT_REACHED: the cap that refused
+  /// ("maxMembers" or "maxGroupsPerUser") and its value. Empty and absent elsewhere.
+  std::string limit;
+  std::optional<std::int64_t> limitValue;
 };
 
 /// extensions.code for creating an actor whose uuid is taken (see actorExistsOf()).
@@ -143,6 +147,9 @@ inline constexpr std::string_view kAccountBlockedCode = "ACCOUNT_BLOCKED";
 /// extensions.code for a user a channel or team has banned (HTTP 403), on a join, a
 /// request, an add or an invite; see groupMemberBannedOf().
 inline constexpr std::string_view kGroupMemberBannedCode = "GROUP_MEMBER_BANNED";
+/// extensions.code for a channel or team cap that refused a join, an add or a creation
+/// (HTTP 409, ck-api v2.77.0); see groupLimitReachedOf().
+inline constexpr std::string_view kGroupLimitReachedCode = "GROUP_LIMIT_REACHED";
 /// extensions.code for something an org-managed player cannot do (HTTP 403): it has no
 /// wallet, and its mods are refused where its organization has not switched them on for the
 /// app; see managedPlayerNotAllowedOf().
@@ -243,8 +250,12 @@ inline std::optional<AccessRefusal> accessRefusalOf(const std::vector<GraphQLErr
   return std::nullopt;
 }
 
-/// An APP_PAUSED refusal; `reason` is extensions.reason (empty when none). Show the
-/// player that the world is paused instead of retrying in a loop.
+/// An APP_PAUSED refusal; `reason` is extensions.reason (empty when none):
+/// insufficient_funds, spend_cap, subscription_lapsed or payment_method_required (ck-api
+/// v2.76.0: the environment asks an organization for a saved card before its apps run, and the
+/// app's organization has none and no exemption; from v2.77.0 wallet funds do not count), an
+/// open set. Show the player that the
+/// world is paused instead of retrying in a loop.
 struct AppPaused {
   std::string reason;
 };
@@ -270,6 +281,22 @@ inline std::optional<AccountBlocked> accountBlockedOf(const std::vector<GraphQLE
 /// lifts it.
 inline bool groupMemberBannedOf(const std::vector<GraphQLErrorDetail>& errors) {
   return errorWithCode(errors, kGroupMemberBannedCode) != nullptr;
+}
+
+/// A GROUP_LIMIT_REACHED refusal: the app's policy for the group type (channelPolicy /
+/// teamPolicy) caps it. `limit` is "maxMembers" (the group is full) or "maxGroupsPerUser" (the
+/// user is in as many groups of the type as the app allows), empty when the server did not
+/// say; `cap` is the cap's value. Not fixed by retrying: wait for a member to leave, leave a
+/// group, or raise the cap.
+struct GroupLimitReached {
+  std::string limit;
+  std::optional<std::int64_t> cap;
+};
+inline std::optional<GroupLimitReached> groupLimitReachedOf(
+    const std::vector<GraphQLErrorDetail>& errors) {
+  const GraphQLErrorDetail* e = errorWithCode(errors, kGroupLimitReachedCode);
+  if (!e) return std::nullopt;
+  return GroupLimitReached{e->limit, e->limitValue};
 }
 
 /// True when an org-managed player was refused with MANAGED_PLAYER_NOT_ALLOWED: a wallet, or a

@@ -14,6 +14,8 @@ enum class ECrowdyTeamErrorCode : uint8
 	NetworkError,
 	ServerError,
 	Banned,
+	/** The team is full, or you are in as many teams as the app allows. Retrying does not help until someone leaves. */
+	LimitReached,
 };
 
 USTRUCT(BlueprintType)
@@ -50,6 +52,8 @@ struct CROWDYNET_API FCrowdyTeamError
 		FCrowdyTeamError Err = FromMessage(Msg);
 		if (ServerCode == TEXT("GROUP_MEMBER_BANNED"))
 			Err.Code = ECrowdyTeamErrorCode::Banned;
+		else if (ServerCode == TEXT("GROUP_LIMIT_REACHED"))
+			Err.Code = ECrowdyTeamErrorCode::LimitReached;
 
 		return Err;
 	}

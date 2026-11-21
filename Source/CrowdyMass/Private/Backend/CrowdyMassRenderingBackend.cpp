@@ -187,6 +187,11 @@ void UCrowdyMassRenderingBackend::BindSlotForTest(const int32 SlotId, const FGui
 }
 #endif
 
+bool UCrowdyMassRenderingBackend::TryGetDrawnLocation(const int32 SlotId, FVector& OutLocation) const
+{
+	return MassSubsystem && SlotToUUID.IsValidIndex(SlotId) && MassSubsystem->TryGetEntityLocation(SlotToUUID[SlotId], OutLocation);
+}
+
 void UCrowdyMassRenderingBackend::ApplyInterpolation(int32 /*SlotId*/, int64 /*RenderTimeMs*/)
 {
 	// Intentionally empty: UCrowdyRemoteTransformProcessor advances interpolation every frame

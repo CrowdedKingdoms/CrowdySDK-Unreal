@@ -49,6 +49,9 @@ public:
 	// The live backend, null when none initialized; a backend that refused to initialize is absent here and present in the profile.
 	UCrowdyRenderingBackend* GetActiveBackend() const { return ActiveBackend; }
 
+	/** Where another player's entity is drawn on this client now, on whichever backend draws it; false when it is not drawn. */
+	bool TryGetRemoteLocation(const FGuid& UUID, FVector& OutLocation) const;
+
 	// Fires on the game thread right after the backend took the update, whichever backend is active.
 	FOnCrowdyUpdateExtras OnUpdateExtras;
 

@@ -81,8 +81,8 @@ public:
 
 	static constexpr int64 DefaultTargetDelayMs = 60;
 
-	/** A new speaker beyond this many is refused as Malformed until one is forgotten. */
-	static constexpr int32 MaxSpeakers = 16;
+	/** A new speaker beyond this many is refused as Malformed until one is forgotten; voice chat admits fewer, by its own setting. */
+	static constexpr int32 MaxSpeakers = 65;
 
 	explicit FCrowdyCppVoiceReceiver(int64 TargetDelayMs = DefaultTargetDelayMs);
 	~FCrowdyCppVoiceReceiver();

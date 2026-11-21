@@ -43,6 +43,7 @@ public:
 	virtual void ExtractUpdate(const FInstancedStruct& State, int64 ServerTimestampMs, int32 SlotId) override;
 	virtual void ApplyInterpolation(int32 SlotId, int64 RenderTimeMs) override;
 	virtual bool IsInstanceActive(int32 SlotId) const override;
+	virtual bool TryGetDrawnLocation(int32 SlotId, FVector& OutLocation) const override;
 
 #if WITH_DEV_AUTOMATION_TESTS
 	// The collaborators InitializeBackend finds on a game world, handed in directly so a test can run on an editor world.

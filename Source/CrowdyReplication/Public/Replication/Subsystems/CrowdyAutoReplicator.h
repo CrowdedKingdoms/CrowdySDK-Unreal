@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Core/FCrowdyTypeID.h"
+#include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "StructUtils/InstancedStruct.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "CrowdyAutoReplicator.generated.h"
@@ -11,6 +12,7 @@
 
 class ICrowdyReplicationSource;
 class UCrowdyAutoRegistry;
+class UCrowdyMapProfile;
 class UCrowdySDKBridgeSubsystem;
 
 namespace CrowdyAutoReplication
@@ -52,6 +54,14 @@ namespace CrowdyAutoReplication
 	 * ones cost a moving entity nothing. A lost change is repaired by the next keyframe.
 	 */
 	CROWDYREPLICATION_API bool ShouldCarryExtras(bool bHasContinuous, bool bContinuousChanged, bool bKeyframeDue, bool bHasSentBefore);
+
+	/** Seconds from a full send to the next keyframe: sooner after a send into another chunk, whose first update the server can drop; 0 when keyframes are off. */
+	CROWDYREPLICATION_API float NextKeyframeDelay(float KeyframeIntervalSeconds, bool bEnteredChunk);
+	inline constexpr float RepeatAfterChunkChangeSeconds = 0.5f;
+
+	/** Longest seconds an observer in the outermost ring waits between updates, by the server's decay rules; the max float when an idle actor never sends. */
+	CROWDYREPLICATION_API float EdgeObserverGapSeconds(ECrowdyDecayRate Decay, ECrowdyReplicationDistance Distance,
+		bool bSendOnlyOnChange, float KeyframeIntervalSeconds, int32 ReplicationIntervalHz);
 
 	/**
 	 * Whether an entry's live state differs from what it last put on the wire. ComparableBytes is the run of
@@ -184,12 +194,16 @@ private:
 	bool bSendOnlyOnChange = true;
 	float KeyframeIntervalSeconds = 3.0f;
 	float HeartbeatIntervalSeconds = 1.0f;
+	ECrowdyReplicationDistance MovementDistance = ECrowdyReplicationDistance::Eight_Chunks;
+	ECrowdyDecayRate MovementDecay = ECrowdyDecayRate::No_Decay;
 
 	bool bIsTicking = false;
 	bool bPeersTrackUpdates = false;
 
 private:
 	void ReplicationLoop();
+
+	void WarnIfDecayStarvesFarObservers(const UCrowdyMapProfile& Profile) const;
 
 	/** Encodes the entry's continuous properties into its extras. True when they differ from what is already there. */
 	bool CaptureContinuous(int32 Index, const AActor& Actor);

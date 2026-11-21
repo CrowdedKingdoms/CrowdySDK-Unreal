@@ -31,32 +31,72 @@ bool FCrowdyVoiceQueuePolicy::ShouldStart(const int32 QueuedBytes, const int32 S
 	return QueuedBytes >= CrowdyVoicePlaybackBytesFor(PrebufferMs, SampleRate);
 }
 
-FCrowdyVoicePlayback::FCrowdyVoicePlayback(ICrowdyVoiceSpeakerOutput& InOutput)
+FCrowdyVoicePlayback::FCrowdyVoicePlayback(ICrowdyVoiceSpeakerOutput& InOutput, const int64 PlayoutDelayMs, const int32 InMaxSpeakers)
 	: Output(InOutput)
-	, Receiver(ReceiveDelayMs)
+	, Receiver(PlayoutDelayMs)
+	, MaxSpeakers(FMath::Clamp(InMaxSpeakers, 1, MaxSpeakersCeiling))
 {
 }
 
 FCrowdyVoicePlayback::~FCrowdyVoicePlayback() = default;
 
-void FCrowdyVoicePlayback::Push(const FString& SpeakerKey, const TConstArrayView<uint8> Packet, const int64 NowMs)
+void FCrowdyVoicePlayback::Push(const FString& SpeakerKey, const TConstArrayView<uint8> Packet, const int64 NowMs, const float DistanceSquared)
 {
+	FString GivesWay;
+	if (FSpeaker* Heard = Speakers.Find(SpeakerKey))
+	{
+		Heard->DistanceSquared = DistanceSquared;
+	}
+	else if (Speakers.Num() >= MaxSpeakers && !FindFarthestToDisplace(DistanceSquared, GivesWay))
+	{
+		++PacketsOverCap;
+		return;
+	}
+
 	const FCrowdyCppVoiceReceiver::EPushResult Result = Receiver.Push(SpeakerKey, Packet, NowMs);
 
 	// Only a packet that will play keeps a speaker alive; a stale or repeated one says nothing about now.
 	if (Result == FCrowdyCppVoiceReceiver::EPushResult::Buffered)
 	{
-		Speakers.FindOrAdd(SpeakerKey).LastHeardMs = NowMs;
+		// Only now: a packet that does not play must not cost anyone their place.
+		if (!GivesWay.IsEmpty())
+		{
+			UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Voice chat gave %s's place to a nearer speaker."), *GivesWay);
+			Forget(GivesWay);
+			++SpeakersDisplaced;
+		}
+		FSpeaker& Speaker = Speakers.FindOrAdd(SpeakerKey);
+		Speaker.LastHeardMs = NowMs;
+		Speaker.DistanceSquared = DistanceSquared;
 		return;
 	}
 
 	if (Result == FCrowdyCppVoiceReceiver::EPushResult::Malformed)
 	{
 		UE_CLOG(!bWarnedRefused, LogCrowdyVoice, Warning,
-			TEXT("Voice chat ignored a voice packet it could not read. Every player needs the same SDK version for voice, and at most %d players are heard at once."),
-			FCrowdyCppVoiceReceiver::MaxSpeakers);
+			TEXT("Voice chat ignored a voice packet it could not read. Every player needs the same SDK version for voice."));
 		bWarnedRefused = true;
 	}
+}
+
+bool FCrowdyVoicePlayback::FindFarthestToDisplace(const float DistanceSquared, FString& OutFarthest) const
+{
+	const FString* Farthest = nullptr;
+	float FarthestSquared = -1.0f;
+	for (const TPair<FString, FSpeaker>& Pair : Speakers)
+	{
+		if (Pair.Value.DistanceSquared > FarthestSquared)
+		{
+			FarthestSquared = Pair.Value.DistanceSquared;
+			Farthest = &Pair.Key;
+		}
+	}
+	if (!Farthest || DistanceSquared >= FarthestSquared * DisplaceRatio * DisplaceRatio)
+	{
+		return false;
+	}
+	OutFarthest = *Farthest;
+	return true;
 }
 
 void FCrowdyVoicePlayback::Update(const int64 NowMs, const int64 TimeoutMs)

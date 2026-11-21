@@ -62,6 +62,9 @@ public:
 	/** False when the slot has nothing to draw, so the manager calls ActivateInstance for it again later. */
 	virtual bool IsInstanceActive(int32 SlotId) const { return true; }
 
+	/** Where the slot's entity is drawn now; false when this backend cannot say. */
+	virtual bool TryGetDrawnLocation(int32 SlotId, FVector& OutLocation) const { return false; }
+
 	/**
 	 * A spawn event named a moving entity this backend draws as a crowd row, so no actor of its class is spawned for
 	 * it on this client: land its spawn data on the row, now or once the row exists. Called only on a backend whose

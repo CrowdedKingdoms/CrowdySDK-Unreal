@@ -623,6 +623,7 @@ bool FCrowdyServiceRegistry::IsOpcodeEverParsed(const ECrowdyMessageType Message
 	{
 	case ECrowdyMessageType::BAD_MESSAGE:                  // the parser's stand-in for anything it drops
 	case ECrowdyMessageType::CHANNEL_MESSAGE_NOTIFICATION:
+	case ECrowdyMessageType::CHANNEL_AUDIO_NOTIFICATION:
 	case ECrowdyMessageType::ACTOR_UPDATE_NOTIFICATION:
 	case ECrowdyMessageType::VOXEL_UPDATE_NOTIFICATION:
 	case ECrowdyMessageType::CLIENT_AUDIO_NOTIFICATION:

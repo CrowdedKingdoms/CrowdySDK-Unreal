@@ -462,7 +462,9 @@ struct FCrowdyCppReplication::FImpl
 		{
 			if (Send.bIsChannel)
 			{
-				Sent = Connection->sendChannelMessage(Send.ChannelId, Send.Uuid, Payload);
+				Sent = Send.Opcode == static_cast<uint8>(MessageType::ChannelAudioRequest)
+					? Connection->sendChannelAudio(Send.ChannelId, Send.Uuid, Payload)
+					: Connection->sendChannelMessage(Send.ChannelId, Send.Uuid, Payload);
 			}
 			else
 			{
@@ -874,7 +876,7 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 		}
 	};
 
-	Forward.channelMessage = [Raw](const crowdy::replication::ChannelNotification& Notification)
+	const auto ForwardChannel = [Raw](const MessageType Opcode, const crowdy::replication::ChannelNotification& Notification)
 	{
 		if (!Raw->ActiveHandlers.OnChannel)
 		{
@@ -882,6 +884,7 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 		}
 
 		FCrowdyCppChannelMessage Message;
+		Message.Opcode = static_cast<uint8>(Opcode);
 		Message.ChannelId = Notification.channelId;
 		Message.SenderUuid = TArrayView<const uint8>(
 			reinterpret_cast<const uint8*>(Notification.senderUuid), static_cast<int32>(crowdy::wire::kUuidSize));
@@ -901,6 +904,14 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 		{
 			UE_LOG(LogCrowdyCpp, Error, TEXT("Replication: a channel handler threw a non-standard exception."));
 		}
+	};
+	Forward.channelMessage = [ForwardChannel](const crowdy::replication::ChannelNotification& Notification)
+	{
+		ForwardChannel(MessageType::ChannelMessageNotification, Notification);
+	};
+	Forward.channelAudio = [ForwardChannel](const crowdy::replication::ChannelNotification& Notification)
+	{
+		ForwardChannel(MessageType::ChannelAudioNotification, Notification);
 	};
 
 	Forward.genericError = [Raw](const crowdy::replication::GenericError& Error)
@@ -1358,6 +1369,18 @@ bool FCrowdyCppReplication::SendSpatial(const uint8 Opcode, const int64 ChunkX, 
 bool FCrowdyCppReplication::SendChannelMessage(const int64 ChannelId, const TArrayView<const uint8> Uuid,
 	const TArrayView<const uint8> Payload, FString& OutError)
 {
+	return SendChannel(static_cast<uint8>(MessageType::ChannelMessageRequest), ChannelId, Uuid, Payload, OutError);
+}
+
+bool FCrowdyCppReplication::SendChannelAudio(const int64 ChannelId, const TArrayView<const uint8> Uuid,
+	const TArrayView<const uint8> Payload, FString& OutError)
+{
+	return SendChannel(static_cast<uint8>(MessageType::ChannelAudioRequest), ChannelId, Uuid, Payload, OutError);
+}
+
+bool FCrowdyCppReplication::SendChannel(const uint8 Opcode, const int64 ChannelId, const TArrayView<const uint8> Uuid,
+	const TArrayView<const uint8> Payload, FString& OutError)
+{
 	if (Impl->bClosed.load(std::memory_order_acquire) || !Impl->Connection)
 	{
 		OutError = TEXT("the connection is closed");
@@ -1381,7 +1404,7 @@ bool FCrowdyCppReplication::SendChannelMessage(const int64 ChannelId, const TArr
 
 	FCrowdyCppQueuedSend Queued;
 	Queued.bIsChannel = true;
-	Queued.Opcode = static_cast<uint8>(crowdy::wire::MessageType::ChannelMessageRequest);
+	Queued.Opcode = Opcode;
 	Queued.ChannelId = ChannelId;
 	FMemory::Memcpy(Queued.Uuid.data(), Uuid.GetData(), crowdy::wire::kUuidSize);
 	Queued.Payload.Append(Payload.GetData(), PayloadSize);

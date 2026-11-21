@@ -191,7 +191,8 @@ bool CrowdyCppSend::SplitSerializedFrame(const TArrayView<const uint8> Frame, FC
 		return false;
 	}
 
-	if (static_cast<ECrowdyMessageType>(Frame[0]) == ECrowdyMessageType::CHANNEL_MESSAGE_REQUEST)
+	const ECrowdyMessageType Type = static_cast<ECrowdyMessageType>(Frame[0]);
+	if (Type == ECrowdyMessageType::CHANNEL_MESSAGE_REQUEST || Type == ECrowdyMessageType::CHANNEL_AUDIO_REQUEST)
 	{
 		return SplitChannelFrame(Frame, OutFrame, OutError);
 	}
