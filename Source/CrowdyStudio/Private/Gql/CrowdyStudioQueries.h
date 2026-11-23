@@ -30,6 +30,22 @@ namespace CrowdyStudioGql
 		return Envelope;
 	}
 
+	// Reads an Application API endpoint (formerly the Game API): the new key when present and non-empty, else the old
+	// key an older server or fixture still sends. Out is cleared when neither carries a value.
+	inline void ReadApplicationApiField(const TSharedPtr<FJsonObject>& Node, const TCHAR* NewKey, const TCHAR* OldKey, FString& Out)
+	{
+		Out.Reset();
+		if (!Node.IsValid())
+		{
+			return;
+		}
+		Node->TryGetStringField(NewKey, Out);
+		if (Out.IsEmpty())
+		{
+			Node->TryGetStringField(OldKey, Out);
+		}
+	}
+
 	// Each parser takes the full response envelope ({ data, errors }) and digs into
 	// `data` itself, returning false when the expected node is missing.
 

@@ -411,6 +411,89 @@ struct FCrowdyCppReplication::FImpl
 	std::atomic<bool> bCapabilitiesDue{false};
 	bool bAdvertiseCapabilities = true;
 
+	// The library sends these at once from the calling thread, so they wait here for the network thread.
+	FCriticalSection MediaMutex;
+	TOptional<bool> PendingOwnMediaEcho;
+	crowdy::replication::SpeakerList PendingVoiceSpeakers;
+	crowdy::replication::SpeakerList PendingVideoSpeakers;
+	std::atomic<bool> bMediaDue{false};
+
+	// The library sends a return to everyone once and never resends it, so a lost datagram would leave the old list in
+	// force; it is repeated this many times, this far apart. Network thread only.
+	static constexpr int32 EveryoneRepeats = 2;
+	static constexpr double EveryoneRepeatSeconds = 1.0;
+	int32 VoiceEveryoneRepeatsLeft = 0;
+	int32 VideoEveryoneRepeatsLeft = 0;
+	double NextEveryoneRepeatAt = 0.0;
+
+	/** Starts the repeats for a kind sent as everyone, ends them for a kind sent a list, and turns a due repeat into a send. */
+	void PlanEveryoneRepeat(crowdy::replication::SpeakerList& List, int32& RepeatsLeft, const bool bRepeatDue, const double Now)
+	{
+		using crowdy::wire::SpeakerMode;
+		if (List.mode == SpeakerMode::Everyone)
+		{
+			RepeatsLeft = EveryoneRepeats;
+			NextEveryoneRepeatAt = Now + EveryoneRepeatSeconds;
+			return;
+		}
+		if (List.mode == SpeakerMode::Only)
+		{
+			RepeatsLeft = 0;
+			return;
+		}
+		if (bRepeatDue && RepeatsLeft > 0)
+		{
+			List = crowdy::replication::SpeakerList::everyone();
+			--RepeatsLeft;
+		}
+	}
+
+	/** Network thread only. */
+	void ApplyPendingMedia()
+	{
+		const bool bDue = bMediaDue.exchange(false, std::memory_order_acq_rel);
+		const double Now = FPlatformTime::Seconds();
+		const bool bRepeatDue = (VoiceEveryoneRepeatsLeft > 0 || VideoEveryoneRepeatsLeft > 0) && Now >= NextEveryoneRepeatAt;
+		if (!bDue && !bRepeatDue)
+		{
+			return;
+		}
+
+		TOptional<bool> Echo;
+		crowdy::replication::SpeakerList Voice;
+		crowdy::replication::SpeakerList Video;
+		if (bDue)
+		{
+			FScopeLock Lock(&MediaMutex);
+			Echo = PendingOwnMediaEcho;
+			PendingOwnMediaEcho.Reset();
+			Voice = std::move(PendingVoiceSpeakers);
+			Video = std::move(PendingVideoSpeakers);
+			PendingVoiceSpeakers = crowdy::replication::SpeakerList::keep();
+			PendingVideoSpeakers = crowdy::replication::SpeakerList::keep();
+		}
+		if (bRepeatDue)
+		{
+			NextEveryoneRepeatAt = Now + EveryoneRepeatSeconds;
+		}
+		PlanEveryoneRepeat(Voice, VoiceEveryoneRepeatsLeft, bRepeatDue, Now);
+		PlanEveryoneRepeat(Video, VideoEveryoneRepeatsLeft, bRepeatDue, Now);
+
+		try
+		{
+			if (Echo.IsSet())
+			{
+				Connection->setOwnMediaEcho(Echo.GetValue());
+			}
+			const crowdy::Status Sent = Connection->setSpeakers(std::move(Voice), std::move(Video));
+			UE_CLOG(!Sent.ok(), LogCrowdyCpp, Warning, TEXT("Replication: the speaker lists could not be sent."));
+		}
+		catch (...)
+		{
+			UE_LOG(LogCrowdyCpp, Error, TEXT("Replication: changing the media this session receives threw."));
+		}
+	}
+
 	// Read by a blocking session callback so teardown does not have to wait out a network round trip.
 	std::atomic<bool> bAborting{false};
 
@@ -735,6 +818,7 @@ struct FCrowdyCppReplication::FImpl
 						{
 							Owner.Connection->sendCapabilities();
 						}
+						Owner.ApplyPendingMedia();
 						Owner.DrainSendQueue();
 						Owner.Connection->pump(PumpWaitMs);
 						continue;
@@ -822,6 +906,7 @@ TSharedPtr<FCrowdyCppReplication> FCrowdyCppReplication::Make(const FCrowdyCppRe
 		Library.bundleWindowMs = FMath::Max(Config.BundleWindowMs, 0);
 		Library.advertiseCapabilities = Config.bAdvertiseCapabilities;
 		Owned.bAdvertiseCapabilities = Config.bAdvertiseCapabilities;
+		Library.ownMediaEcho = Config.bOwnMediaEcho;
 
 		Owned.Connection = MakeUnique<crowdy::replication::Connection>(
 			std::move(Library), Owned.Provider, crowdy::core::defaultCrypto());
@@ -1376,6 +1461,91 @@ bool FCrowdyCppReplication::SendChannelAudio(const int64 ChannelId, const TArray
 	const TArrayView<const uint8> Payload, FString& OutError)
 {
 	return SendChannel(static_cast<uint8>(MessageType::ChannelAudioRequest), ChannelId, Uuid, Payload, OutError);
+}
+
+static bool ToLibrarySpeakers(const FCrowdyCppSpeakerList& In, crowdy::replication::SpeakerList& Out, FString& OutError);
+
+void FCrowdyCppReplication::SetOwnMediaEcho(const bool bOn)
+{
+	FScopeLock Lock(&Impl->MediaMutex);
+	Impl->PendingOwnMediaEcho = bOn;
+	Impl->bMediaDue.store(true, std::memory_order_release);
+}
+
+bool FCrowdyCppReplication::SetMediaSpeakers(const FCrowdyCppSpeakerList& Voice, const FCrowdyCppSpeakerList& Video,
+	FString& OutError)
+{
+	crowdy::replication::SpeakerList VoiceList;
+	crowdy::replication::SpeakerList VideoList;
+	if (!ToLibrarySpeakers(Voice, VoiceList, OutError) || !ToLibrarySpeakers(Video, VideoList, OutError))
+	{
+		return false;
+	}
+
+	FScopeLock Lock(&Impl->MediaMutex);
+	// A kind left as Keep must not undo a list set since the network thread last looked.
+	if (VoiceList.mode != crowdy::wire::SpeakerMode::Keep)
+	{
+		Impl->PendingVoiceSpeakers = std::move(VoiceList);
+	}
+	if (VideoList.mode != crowdy::wire::SpeakerMode::Keep)
+	{
+		Impl->PendingVideoSpeakers = std::move(VideoList);
+	}
+	Impl->bMediaDue.store(true, std::memory_order_release);
+	return true;
+}
+
+bool FCrowdyCppReplication::ValidateSpeakerUuids(const TConstArrayView<FString> Uuids, FString& OutError)
+{
+	static_assert(MaxMediaSpeakers == crowdy::wire::kMaxSpeakers);
+	if (Uuids.Num() > MaxMediaSpeakers)
+	{
+		OutError = FString::Printf(TEXT("a speaker list names %d actors, over the %d the server takes"), Uuids.Num(),
+			MaxMediaSpeakers);
+		return false;
+	}
+
+	for (const FString& Uuid : Uuids)
+	{
+		if (Uuid.Len() != static_cast<int32>(crowdy::wire::kUuidSize))
+		{
+			OutError = FString::Printf(TEXT("'%s' is not a %d-character actor id"), *Uuid, static_cast<int32>(crowdy::wire::kUuidSize));
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool ToLibrarySpeakers(const FCrowdyCppSpeakerList& In, crowdy::replication::SpeakerList& Out, FString& OutError)
+{
+	if (In.Mode == FCrowdyCppSpeakerList::EMode::Keep)
+	{
+		Out = crowdy::replication::SpeakerList::keep();
+		return true;
+	}
+	if (In.Mode == FCrowdyCppSpeakerList::EMode::Everyone)
+	{
+		Out = crowdy::replication::SpeakerList::everyone();
+		return true;
+	}
+	if (!FCrowdyCppReplication::ValidateSpeakerUuids(In.Uuids, OutError))
+	{
+		return false;
+	}
+
+	std::vector<crowdy::core::ActorUuid> Names;
+	Names.reserve(In.Uuids.Num());
+	for (const FString& Uuid : In.Uuids)
+	{
+		crowdy::core::ActorUuid& Name = Names.emplace_back();
+		for (int32 Index = 0; Index < Uuid.Len(); ++Index)
+		{
+			Name[Index] = static_cast<char>(Uuid[Index]);
+		}
+	}
+	Out = crowdy::replication::SpeakerList::only(std::move(Names));
+	return true;
 }
 
 bool FCrowdyCppReplication::SendChannel(const uint8 Opcode, const int64 ChannelId, const TArrayView<const uint8> Uuid,

@@ -55,7 +55,7 @@ namespace
 		Node->TryGetStringField(TEXT("slug"), Out.Slug);
 		Node->TryGetStringField(TEXT("status"), Out.Status);
 		Node->TryGetStringField(TEXT("visibility"), Out.Visibility);
-		Node->TryGetStringField(TEXT("gameApiUrl"), Out.GameApiUrl);
+		CrowdyStudioGql::ReadApplicationApiField(Node, TEXT("applicationApiUrl"), TEXT("gameApiUrl"), Out.GameApiUrl);
 		Node->TryGetStringField(TEXT("deploymentTarget"), Out.DeploymentTarget);
 		Node->TryGetStringField(TEXT("description"), Out.Description);
 		Node->TryGetStringField(TEXT("createdAt"), Out.CreatedAt);
@@ -346,9 +346,8 @@ namespace CrowdyStudioGql
 			// The HTTP endpoint is deliberately NOT taken from here; the app record's own gameApiUrl is the one
 			// routing source the config sync writes, and two sources for one field would race on every refresh.
 			InOutApp.DatacenterCode.Reset();
-			InOutApp.GameApiWsUrl.Reset();
 			(*Node)->TryGetStringField(TEXT("datacenterCode"), InOutApp.DatacenterCode);
-			(*Node)->TryGetStringField(TEXT("gameApiWsUrl"), InOutApp.GameApiWsUrl);
+			CrowdyStudioGql::ReadApplicationApiField(*Node, TEXT("applicationApiWsUrl"), TEXT("gameApiWsUrl"), InOutApp.GameApiWsUrl);
 			return true;
 		}
 		return false;
@@ -387,8 +386,8 @@ namespace CrowdyStudioGql
 			}
 			FStudioDatacenter& Dc = OutDatacenters.AddDefaulted_GetRef();
 			(*Node)->TryGetStringField(TEXT("code"), Dc.Code);
-			(*Node)->TryGetStringField(TEXT("gameApiUrl"), Dc.GameApiUrl);
-			(*Node)->TryGetStringField(TEXT("gameApiWsUrl"), Dc.GameApiWsUrl);
+			CrowdyStudioGql::ReadApplicationApiField(*Node, TEXT("applicationApiUrl"), TEXT("gameApiUrl"), Dc.GameApiUrl);
+			CrowdyStudioGql::ReadApplicationApiField(*Node, TEXT("applicationApiWsUrl"), TEXT("gameApiWsUrl"), Dc.GameApiWsUrl);
 			(*Node)->TryGetBoolField(TEXT("placeable"), Dc.bPlaceable);
 			(*Node)->TryGetNumberField(TEXT("appShardCount"), Dc.AppShardCount);
 			(*Node)->TryGetStringField(TEXT("serving"), Dc.Serving);

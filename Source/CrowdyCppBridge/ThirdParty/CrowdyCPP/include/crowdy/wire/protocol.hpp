@@ -52,6 +52,11 @@ enum class MessageType : std::uint8_t {
   /// layout like the heartbeat; the app payload is a LE u32 of ClientCapability
   /// flags. Bound to the router serving our flow; re-sent periodically.
   ClientCapabilities = 29,
+  /// Client -> server (Buddy v0.49.0): the speakers whose spatial voice and video this
+  /// session receives. The capabilities' long-spatial layout; the app payload is
+  /// [voiceMode][voiceCount][videoMode][videoCount] and the names (SpeakerMode,
+  /// 32-byte actor ids). Bound to the router serving our flow; re-sent periodically.
+  ClientMediaSpeakers = 47,
   /// Server -> client (Buddy v0.30.0), only after we advertised BundleSigned:
   /// the MessageBundle framing, members with containsAuth = 0, and ONE trailing
   /// 32-byte HMAC(token, everything-before || token). See wire::verifySignedBundle.
@@ -142,18 +147,33 @@ inline constexpr std::uint32_t kBundleSigned = 1u << 0;
 /// Buddy v0.45.0: 8 nonce bytes follow the flags, and this assignment is sent only the
 /// bound control frames (CommandReconnectBound, CommandSessionReleasedBound).
 inline constexpr std::uint32_t kBoundControl = 1u << 1;
+/// Buddy v0.48.0: send this session its own ClientAudioPacket2 and ClientVideoPacket2, which it
+/// is otherwise not sent. A request rather than something this build reads, so it is not in
+/// kAll; Config::ownMediaEcho adds it.
+inline constexpr std::uint32_t kOwnMediaEcho = 1u << 2;
 /// Everything this SDK build can read.
 inline constexpr std::uint32_t kAll = kBundleSigned | kBoundControl;
 }  // namespace ClientCapability
 
 /// True for the long HMAC spatial layout: types 128-140, SingleActorMessage
 /// (142), the video pair and actor-left (143-145), plus the non-spatial
-/// ClientActorHeartbeat (26) and ClientCapabilities (29), which reuse it.
+/// ClientActorHeartbeat (26), ClientCapabilities (29) and ClientMediaSpeakers (47),
+/// which reuse it.
 inline constexpr bool isLongSpatialLayout(std::uint8_t t) noexcept {
   return (t >= 128 && t <= 140) || (t >= 142 && t <= 146) ||
          t == static_cast<std::uint8_t>(MessageType::ClientActorHeartbeat) ||
-         t == static_cast<std::uint8_t>(MessageType::ClientCapabilities);
+         t == static_cast<std::uint8_t>(MessageType::ClientCapabilities) ||
+         t == static_cast<std::uint8_t>(MessageType::ClientMediaSpeakers);
 }
+
+/// How a ClientMediaSpeakers changes one kind's list (Buddy v0.49.0).
+enum class SpeakerMode : std::uint8_t {
+  Keep = 0,      ///< leave this kind's list as it is
+  Only = 1,      ///< receive only the names that follow (none when there are none)
+  Everyone = 2,  ///< receive everyone in range again
+};
+/// The most names one list carries, and an app's number when it sets none.
+inline constexpr std::size_t kMaxSpeakers = 32;
 
 /// Server-only downlink opcodes a client never originates (Buddy drops them).
 inline constexpr bool isServerOnlySpatialType(std::uint8_t t) noexcept {

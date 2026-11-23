@@ -1582,6 +1582,7 @@ void UCrowdyAuthentication::EndPreviousSignIn()
 	if (UCrowdyCppReplicationSubsystem* Replication = GameInstance ? GameInstance->GetSubsystem<UCrowdyCppReplicationSubsystem>() : nullptr)
 	{
 		Replication->CloseConnection();
+		Replication->ForgetSpeakers();
 	}
 
 	// While the previous app token is still installed, since deleting its actor record needs it.

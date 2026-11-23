@@ -254,6 +254,33 @@ public:
 	 */
 	bool InstallToken(const FString& Token, int64 GameTokenId, const FString& ExpiresAtIso8601);
 
+	/** Asks the server for this session's own spatial voice and video, now and on every later connection. Game thread only. */
+	void SetOwnMediaEcho(bool bOn);
+
+	/** Receives spatial voice only from these actor ids (none when empty) until sign-out; false with a reason for a bad list. Game thread only. */
+	bool SetVoiceSpeakers(const TArray<FString>& Uuids, FString& OutError);
+
+	/** Receives spatial voice from everyone in range again. Game thread only. */
+	void HearAllVoiceSpeakers();
+
+	/** Receives webcam video only from these actor ids (none when empty) until sign-out; false with a reason for a bad list. Game thread only. */
+	bool SetVideoSpeakers(const TArray<FString>& Uuids, FString& OutError);
+
+	/** Receives webcam video from everyone in range again. Game thread only. */
+	void SeeAllVideoSpeakers();
+
+	/** Drops both speaker lists, for a sign-out or another account signing in; a re-key of the same player keeps them. Game thread only. */
+	void ForgetSpeakers();
+
+	/** Whether Wanted names the same actor ids as Stored, in any order; both unset is the same. */
+	static bool IsSameSpeakerList(const TOptional<TArray<FString>>& Stored, const TOptional<TArray<FString>>& Wanted);
+
+	/** The voice speaker list in force, or unset when everyone in range is heard. */
+	const TOptional<TArray<FString>>& GetVoiceSpeakers() const { return VoiceSpeakers; }
+
+	/** The video speaker list in force, or unset when everyone in range is seen. */
+	const TOptional<TArray<FString>>& GetVideoSpeakers() const { return VideoSpeakers; }
+
 	/**
 	 * Where an inbound message goes: the parser that turns a frame into a typed message, the registry that hands it
 	 * to the reception layers, and the UDP subsystem that owns the received-message counter the network stats read.
@@ -399,6 +426,16 @@ private:
 	 * from. Game thread only.
 	 */
 	bool bLastAssignmentReportedAppFull = false;
+
+	/** Sends the stored speaker lists to Target; a list left unset is not sent, so the server's everyone stands. */
+	void ApplySpeakers(FCrowdyCppReplication& Target, bool bVoice, bool bVideo) const;
+
+	/** Stores one kind's list (unset for everyone) and sends it to the live connection unless it is the list already in force. */
+	void ChangeSpeakers(bool bVoice, const TOptional<TArray<FString>>& Wanted);
+
+	bool bOwnMediaEcho = false;
+	TOptional<TArray<FString>> VoiceSpeakers;
+	TOptional<TArray<FString>> VideoSpeakers;
 
 	mutable FCriticalSection ConnectionMutex;
 

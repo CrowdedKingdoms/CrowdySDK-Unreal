@@ -107,10 +107,12 @@ struct AppTokenResponse {
   std::string gameTokenId;  ///< decimal String scalar; never silently narrowed
   std::string appId;
   std::string expiresAt;    ///< ISO-8601; empty when non-expiring
-  NullableString gameApiUrl;   ///< null when no route has been assigned
-  NullableString gameApiWsUrl;
+  NullableString applicationApiUrl;    ///< null when no route has been assigned
+  NullableString applicationApiWsUrl;
+  NullableString gameApiUrl;    ///< Deprecated: use applicationApiUrl (the Game API is now the Application API); removed on January 1, 2027.
+  NullableString gameApiWsUrl;  ///< Deprecated: use applicationApiWsUrl (the Game API is now the Application API); removed on January 1, 2027.
   /// The SHARED origin (multivalue DNS over every datacenter's balancer), which
-  /// is why it survives the loss of the single instance gameApiUrl names. Feed
+  /// is why it survives the loss of the single instance applicationApiUrl names. Feed
   /// it to ClientConfig::discoveryUrl so a dead endpoint can be re-discovered
   /// rather than retried. Null only when the server has no public URL.
   NullableString discoveryUrl;
@@ -140,8 +142,13 @@ struct AppTokenResponse {
     r.gameTokenId = j["gameTokenId"].asBigIntString();
     r.appId = j["appId"].asString();
     r.expiresAt = j["expiresAt"].asString();
-    r.gameApiUrl = NullableString::fromJson(j["gameApiUrl"]);
-    r.gameApiWsUrl = NullableString::fromJson(j["gameApiWsUrl"]);
+    // Selected as applicationApi*; an Application API older than v2.85.0 answers gameApi* only.
+    r.applicationApiUrl = NullableString::fromJson(
+        j["applicationApiUrl"].isString() ? j["applicationApiUrl"] : j["gameApiUrl"]);
+    r.applicationApiWsUrl = NullableString::fromJson(
+        j["applicationApiWsUrl"].isString() ? j["applicationApiWsUrl"] : j["gameApiWsUrl"]);
+    r.gameApiUrl = r.applicationApiUrl;
+    r.gameApiWsUrl = r.applicationApiWsUrl;
     r.discoveryUrl = NullableString::fromJson(j["discoveryUrl"]);
     r.launchUrl = NullableString::fromJson(j["launchUrl"]);
     if (j["runtimeGate"].isObject()) r.runtimeGate = AppRuntimeGate::fromJson(j["runtimeGate"]);

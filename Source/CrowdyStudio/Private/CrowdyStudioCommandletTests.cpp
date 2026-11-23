@@ -703,7 +703,20 @@ bool FCrowdyStudioControllerClassifiesCredentialRejectionTest::RunTest(const FSt
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioCommandletFindsAnAppTest, "CrowdySDK.CrowdyStudio.Commandlet.FindsAnApp", CrowdyStudioCommandletTestFlags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioControllerDescribesAppLimitTest, "CrowdySDK.CrowdyStudio.Controller.DescribesAppLimit", CrowdyStudioCommandletTestFlags)
+
+bool FCrowdyStudioControllerDescribesAppLimitTest::RunTest(const FString& /*Parameters*/)
+{
+	using Access = FCrowdyStudioControllerTestAccess;
+	TestTrue(TEXT("The server's cap is named"), Access::DescribeAppLimit(TOptional<int64>(10)).Contains(TEXT("limit of 10 apps")));
+	TestTrue(TEXT("Another cap is named as sent"), Access::DescribeAppLimit(TOptional<int64>(25)).Contains(TEXT("limit of 25 apps")));
+	const FString NoCap = Access::DescribeAppLimit(TOptional<int64>());
+	TestFalse(TEXT("No cap in the error means no invented number"), NoCap.Contains(TEXT("10")));
+	TestTrue(TEXT("The remedy is stated"), NoCap.Contains(TEXT("Archive an app")) && NoCap.Contains(TEXT("auto-billing")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioCommandletFindsAnAppTest,"CrowdySDK.CrowdyStudio.Commandlet.FindsAnApp", CrowdyStudioCommandletTestFlags)
 
 bool FCrowdyStudioCommandletFindsAnAppTest::RunTest(const FString& /*Parameters*/)
 {
