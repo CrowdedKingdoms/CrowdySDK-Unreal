@@ -527,6 +527,9 @@ private:
 	 */
 	static FString DescribeApiFailure(const FString& ErrorMessage, bool& bOutWasCanceled);
 
+	// The message for an APP_LIMIT_REACHED refusal, using the server's cap when it sent one.
+	static FString DescribeAppLimit(const TOptional<int64>& Cap);
+
 	// True when the server answered and refused the credential (HTTP 401 or 403, or UNAUTHENTICATED), as opposed to
 	// a network error, a timeout or a 5xx, which say nothing about whether the stored token is still good.
 	static bool IsCredentialRejection(const FString& ErrorMessage, const FString& ErrorCode);

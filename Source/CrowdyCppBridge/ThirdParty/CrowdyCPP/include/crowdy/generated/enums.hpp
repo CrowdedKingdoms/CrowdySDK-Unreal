@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: b2db813bfcafa7c9fae0d96558cc990e9e9a33a4ea442c37b66eda379bae8936
-// operations sha256: 93e1f0e678c63bcbf238a619f7fde25bd4c8f9d31ebc397b4b94d5d5235666b6
+// schema.gql sha256: f20601bed52d58acd1331708b824fcd1b61669f220b173a16e3952e09f84ee02
+// operations sha256: 2b4233c7ee65ea2ab6b163cb036808d8b516bb2a2e33c3f4df2b337c4ff13549
 
 #pragma once
 
@@ -275,6 +275,28 @@ inline constexpr std::string_view toString(ContactState v) {
 inline std::optional<ContactState> contactStateFromString(std::string_view s) {
   if (s == "PENDING") return ContactState::PENDING;
   if (s == "ACCEPTED") return ContactState::ACCEPTED;
+  return std::nullopt;
+}
+
+enum class CrmSyncMode {
+  OFF,
+  SHADOW,
+  LIVE,
+};
+
+inline constexpr std::string_view toString(CrmSyncMode v) {
+  switch (v) {
+    case CrmSyncMode::OFF: return "OFF";
+    case CrmSyncMode::SHADOW: return "SHADOW";
+    case CrmSyncMode::LIVE: return "LIVE";
+  }
+  return "";
+}
+
+inline std::optional<CrmSyncMode> crmSyncModeFromString(std::string_view s) {
+  if (s == "OFF") return CrmSyncMode::OFF;
+  if (s == "SHADOW") return CrmSyncMode::SHADOW;
+  if (s == "LIVE") return CrmSyncMode::LIVE;
   return std::nullopt;
 }
 
@@ -952,6 +974,34 @@ inline std::optional<ExecModScope> execModScopeFromString(std::string_view s) {
   return std::nullopt;
 }
 
+enum class FreeTierLevel {
+  BASE,
+  DOMAIN_,
+  PROFILE,
+  MEASURED,
+  AGREEMENT,
+};
+
+inline constexpr std::string_view toString(FreeTierLevel v) {
+  switch (v) {
+    case FreeTierLevel::BASE: return "BASE";
+    case FreeTierLevel::DOMAIN_: return "DOMAIN";
+    case FreeTierLevel::PROFILE: return "PROFILE";
+    case FreeTierLevel::MEASURED: return "MEASURED";
+    case FreeTierLevel::AGREEMENT: return "AGREEMENT";
+  }
+  return "";
+}
+
+inline std::optional<FreeTierLevel> freeTierLevelFromString(std::string_view s) {
+  if (s == "BASE") return FreeTierLevel::BASE;
+  if (s == "DOMAIN") return FreeTierLevel::DOMAIN_;
+  if (s == "PROFILE") return FreeTierLevel::PROFILE;
+  if (s == "MEASURED") return FreeTierLevel::MEASURED;
+  if (s == "AGREEMENT") return FreeTierLevel::AGREEMENT;
+  return std::nullopt;
+}
+
 enum class GridClaimPolicy {
   SELF_CLAIM,
   APPROVAL,
@@ -1273,6 +1323,78 @@ inline constexpr std::string_view toString(PriceBandBasis v) {
 inline std::optional<PriceBandBasis> priceBandBasisFromString(std::string_view s) {
   if (s == "VOLUME") return PriceBandBasis::VOLUME;
   if (s == "RATE") return PriceBandBasis::RATE;
+  return std::nullopt;
+}
+
+enum class ProjectLogicLocation {
+  CLIENTS,
+  LIGHT_SERVER_CODE,
+  FULL_SERVER_SIMULATION,
+};
+
+inline constexpr std::string_view toString(ProjectLogicLocation v) {
+  switch (v) {
+    case ProjectLogicLocation::CLIENTS: return "CLIENTS";
+    case ProjectLogicLocation::LIGHT_SERVER_CODE: return "LIGHT_SERVER_CODE";
+    case ProjectLogicLocation::FULL_SERVER_SIMULATION: return "FULL_SERVER_SIMULATION";
+  }
+  return "";
+}
+
+inline std::optional<ProjectLogicLocation> projectLogicLocationFromString(std::string_view s) {
+  if (s == "CLIENTS") return ProjectLogicLocation::CLIENTS;
+  if (s == "LIGHT_SERVER_CODE") return ProjectLogicLocation::LIGHT_SERVER_CODE;
+  if (s == "FULL_SERVER_SIMULATION") return ProjectLogicLocation::FULL_SERVER_SIMULATION;
+  return std::nullopt;
+}
+
+enum class ProjectStage {
+  PROTOTYPE,
+  PRE_PRODUCTION,
+  PRODUCTION,
+  BETA,
+  LIVE,
+};
+
+inline constexpr std::string_view toString(ProjectStage v) {
+  switch (v) {
+    case ProjectStage::PROTOTYPE: return "PROTOTYPE";
+    case ProjectStage::PRE_PRODUCTION: return "PRE_PRODUCTION";
+    case ProjectStage::PRODUCTION: return "PRODUCTION";
+    case ProjectStage::BETA: return "BETA";
+    case ProjectStage::LIVE: return "LIVE";
+  }
+  return "";
+}
+
+inline std::optional<ProjectStage> projectStageFromString(std::string_view s) {
+  if (s == "PROTOTYPE") return ProjectStage::PROTOTYPE;
+  if (s == "PRE_PRODUCTION") return ProjectStage::PRE_PRODUCTION;
+  if (s == "PRODUCTION") return ProjectStage::PRODUCTION;
+  if (s == "BETA") return ProjectStage::BETA;
+  if (s == "LIVE") return ProjectStage::LIVE;
+  return std::nullopt;
+}
+
+enum class ProjectWorldShape {
+  ONE_WORLD,
+  MANY_COPIES,
+  UNSURE,
+};
+
+inline constexpr std::string_view toString(ProjectWorldShape v) {
+  switch (v) {
+    case ProjectWorldShape::ONE_WORLD: return "ONE_WORLD";
+    case ProjectWorldShape::MANY_COPIES: return "MANY_COPIES";
+    case ProjectWorldShape::UNSURE: return "UNSURE";
+  }
+  return "";
+}
+
+inline std::optional<ProjectWorldShape> projectWorldShapeFromString(std::string_view s) {
+  if (s == "ONE_WORLD") return ProjectWorldShape::ONE_WORLD;
+  if (s == "MANY_COPIES") return ProjectWorldShape::MANY_COPIES;
+  if (s == "UNSURE") return ProjectWorldShape::UNSURE;
   return std::nullopt;
 }
 

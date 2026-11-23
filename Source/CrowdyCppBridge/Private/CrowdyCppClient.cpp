@@ -900,6 +900,10 @@ namespace
 		{
 			OutResult.OwnedByCaller = *Error->ownedByCaller;
 		}
+		if (Error->limitValue.has_value())
+		{
+			OutResult.LimitValue = static_cast<int64>(*Error->limitValue);
+		}
 	}
 
 	// The server's stable extensions.code for a failed outcome, or empty when the failure carried no GraphQL errors
@@ -1171,8 +1175,8 @@ namespace
 		Result.AppGameTokenID = FCString::Atoi64(*Utf8ToFString(Value.gameTokenId));
 		Result.AppID = Utf8ToFString(Value.appId);
 		Result.ExpiresAt = Utf8ToFString(Value.expiresAt);
-		Result.GameApiUrl = Utf8ToFString(Value.gameApiUrl.valueOrEmpty());
-		Result.GameApiWsUrl = Utf8ToFString(Value.gameApiWsUrl.valueOrEmpty());
+		Result.GameApiUrl = Utf8ToFString(Value.applicationApiUrl.valueOrEmpty());
+		Result.GameApiWsUrl = Utf8ToFString(Value.applicationApiWsUrl.valueOrEmpty());
 		Result.DiscoveryUrl = Utf8ToFString(Value.discoveryUrl.valueOrEmpty());
 		Result.LaunchUrl = Utf8ToFString(Value.launchUrl.valueOrEmpty());
 		if (Value.runtimeGate)
@@ -3202,8 +3206,8 @@ FCrowdyCppRequestHandle FCrowdyCppClient::ResolveAppEndpoints(const TArray<FStri
 						FCrowdyCppAppEndpoint Mapped;
 						Mapped.AppID = Utf8ToFString(Endpoint.appId);
 						Mapped.DatacenterCode = Utf8ToFString(Endpoint.datacenterCode);
-						Mapped.GameApiUrl = Utf8ToFString(Endpoint.gameApiUrl);
-						Mapped.GameApiWsUrl = Utf8ToFString(Endpoint.gameApiWsUrl);
+						Mapped.GameApiUrl = Utf8ToFString(Endpoint.applicationApiUrl);
+						Mapped.GameApiWsUrl = Utf8ToFString(Endpoint.applicationApiWsUrl);
 						Result.Endpoints.Add(MoveTemp(Mapped));
 					}
 					// An app with no placement is still a successful answer, so bOk is set from the query rather

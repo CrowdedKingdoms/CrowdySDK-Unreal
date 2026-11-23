@@ -44,6 +44,9 @@ struct FCrowdyVoiceStats
 	/** Packets not played because their speaker's user or channel is muted, or while that user was still being looked up. */
 	int64 PacketsMuted = 0;
 
+	/** Your own voice packets the server sent back while owner echo is off on this map, so not played. */
+	int64 OwnPacketsIgnored = 0;
+
 	/** Speakers heard now. */
 	int32 Speakers = 0;
 };

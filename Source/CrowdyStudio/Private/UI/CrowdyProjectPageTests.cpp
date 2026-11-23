@@ -242,4 +242,58 @@ bool FCrowdyStudioGqlUnlimitedCapTest::RunTest(const FString& /*Parameters*/)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStudioGqlApplicationApiKeysTest,
+	"CrowdySDK.CrowdyStudio.Gql.ApplicationApiKeysWinOverGameApiKeys", CrowdyProjectPageTestFlags)
+
+bool FCrowdyStudioGqlApplicationApiKeysTest::RunTest(const FString& /*Parameters*/)
+{
+	auto Datacenter = [](const TCHAR* Code, const TCHAR* NewUrl, const TCHAR* OldUrl)
+	{
+		const TSharedPtr<FJsonObject> Dc = MakeShared<FJsonObject>();
+		Dc->SetStringField(TEXT("code"), Code);
+		if (NewUrl)
+		{
+			Dc->SetStringField(TEXT("applicationApiUrl"), NewUrl);
+			Dc->SetStringField(TEXT("applicationApiWsUrl"), FString(NewUrl).Replace(TEXT("https"), TEXT("wss")));
+		}
+		if (OldUrl)
+		{
+			Dc->SetStringField(TEXT("gameApiUrl"), OldUrl);
+			Dc->SetStringField(TEXT("gameApiWsUrl"), FString(OldUrl).Replace(TEXT("https"), TEXT("wss")));
+		}
+		return MakeShared<FJsonValueObject>(Dc);
+	};
+
+	TArray<TSharedPtr<FJsonValue>> Datacenters;
+	Datacenters.Add(Datacenter(TEXT("new"), TEXT("https://new.example.com"), nullptr));
+	Datacenters.Add(Datacenter(TEXT("old"), nullptr, TEXT("https://old.example.com")));
+	Datacenters.Add(Datacenter(TEXT("both"), TEXT("https://new.example.com"), TEXT("https://old.example.com")));
+	const TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetArrayField(TEXT("datacenters"), Datacenters);
+	const TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetObjectField(TEXT("placeableDatacenters"), Root);
+
+	TArray<FStudioDatacenter> Parsed;
+	bool bEnforced = false;
+	CrowdyStudioGql::ParsePlaceableDatacenters(CrowdyStudioGql::WrapDataEnvelope(Data), Parsed, bEnforced);
+	if (!TestEqual(TEXT("All three datacenters are read"), Parsed.Num(), 3))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Only the new keys are read"), Parsed[0].GameApiUrl, FString(TEXT("https://new.example.com")));
+	TestEqual(TEXT("Only the new WS key is read"), Parsed[0].GameApiWsUrl, FString(TEXT("wss://new.example.com")));
+	TestEqual(TEXT("Only the old keys still read"), Parsed[1].GameApiUrl, FString(TEXT("https://old.example.com")));
+	TestEqual(TEXT("Only the old WS key still reads"), Parsed[1].GameApiWsUrl, FString(TEXT("wss://old.example.com")));
+	TestEqual(TEXT("With both, the new key wins"), Parsed[2].GameApiUrl, FString(TEXT("https://new.example.com")));
+	TestEqual(TEXT("With both, the new WS key wins"), Parsed[2].GameApiWsUrl, FString(TEXT("wss://new.example.com")));
+
+	const TSharedPtr<FJsonObject> Empty = MakeShared<FJsonObject>();
+	Empty->SetStringField(TEXT("applicationApiUrl"), TEXT(""));
+	Empty->SetStringField(TEXT("gameApiUrl"), TEXT("https://old.example.com"));
+	FString Url;
+	CrowdyStudioGql::ReadApplicationApiField(Empty, TEXT("applicationApiUrl"), TEXT("gameApiUrl"), Url);
+	TestEqual(TEXT("An empty new key falls back to the old one"), Url, FString(TEXT("https://old.example.com")));
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

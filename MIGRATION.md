@@ -27,6 +27,38 @@ Every release has the same subsections, in this order:
 A subsection with nothing to say is written as "None." so you never have to guess whether
 something was left out.
 
+## 2.28.0
+
+**Verdict.** Nothing breaks and nothing is deprecated. Additions: `Set Voice Speakers` and `Hear All Voice Speakers`, `Set Video Speakers` and `See All Video Speakers`, which choose whose spatial voice and webcam video the server sends this player. Behaviour changes: `Toggle Owner Echo` works again on realtime servers from v0.48.0, which stopped sending a player their own voice unless asked, and while it is on the server also sends the player's own webcam video, which the SDK discards; Studio says plainly when an organization has reached its app limit; the API addresses are read under the Application API's new names.
+
+**Requires.** Unreal Engine 5.8. Application API v2.85.0 on every tier this release ships to: the vendored CrowdyCPP asks for the app's API address under its new name, and an older Application API refuses the request that finds the app's datacenter. Speaker lists need realtime server v0.49.0. Nothing to deploy or regenerate.
+
+**What changed**
+
+| Old | New | Kind |
+|---|---|---|
+| `Toggle Owner Echo` played your own voice back to you, until realtime server v0.48.0 stopped sending a session its own voice and video. | `Toggle Owner Echo` also asks the server for them, so your own voice plays back again; your own webcam video comes back too and is discarded on arrival, as before. It holds across map changes and reconnects, and a map's voice settings restating echo off do not undo a request made directly on the replication subsystem. `FCrowdyVoiceStats::OwnPacketsIgnored` counts your own voice the server sent back while echo is off on that map. | Behaviour; C++ `FCrowdyVoiceStats::OwnPacketsIgnored`, `UCrowdyCppReplicationSubsystem::SetOwnMediaEcho`, `FCrowdyCppReplication::SetOwnMediaEcho`, `FCrowdyCppReplicationConfig::bOwnMediaEcho` (new). |
+| Every player in range was heard and seen, and the server sent all of it. | `Set Voice Speakers (Speaker Uuids)` has the server send this player spatial voice only from those actor ids (at most 32; nobody when the list is empty), and `Hear All Voice Speakers` goes back to everyone in range. `Set Video Speakers` and `See All Video Speakers` do the same for webcam video. A stream left out is never sent, so it costs nothing. The lists hold across map changes and reconnects until sign-out. Which players to name is the game's choice: the speaker ids from `On Voice Speaker Talking`, a party, or the nearest few by `TryGetRemoteLocation`. A refused list (over 32, or an id that is not 32 characters) returns false, logs a warning and changes nothing; the server also refuses a list longer than the app's own `maxVoiceSpeakers` or `maxVideoSpeakers`, which the node cannot check. The same players again, in any order, send nothing, so a list refreshed every frame costs nothing until it changes. A return to everyone is sent three times, a second apart, since the message is not acknowledged. Channel voice is not affected. | Blueprint nodes on the Crowdy SDK subsystem; C++ `UCrowdyCppReplicationSubsystem::SetVoiceSpeakers`, `HearAllVoiceSpeakers`, `SetVideoSpeakers`, `SeeAllVideoSpeakers`, `GetVoiceSpeakers`, `GetVideoSpeakers`, `FCrowdyCppReplication::SetMediaSpeakers`, `ValidateSpeakerUuids`, `MaxMediaSpeakers`, `FCrowdyCppSpeakerList`, `UCrowdyCppReplicationSubsystem::ForgetSpeakers`, `IsSameSpeakerList` (new). |
+| Creating an app past an unfunded organization's limit failed with the server's message. | Studio says the organization has reached its limit of N apps, and to archive one or fund the organization's wallet. | Behaviour (Studio). |
+| The app's API addresses were read as `gameApiUrl` and `gameApiWsUrl`. | They are read as `applicationApiUrl` and `applicationApiWsUrl`, falling back to the old names where a reply carries only those. | Behaviour; C++ `FCrowdyCppJsonResult::LimitValue` (new). |
+| The vendored CrowdyCPP was 0.88.0. | CrowdyCPP 0.92.0: the Application API names, owner echo and speaker lists, and the app limit error. | Dependency. |
+
+**Do this, in order**
+
+1. Check that every tier you ship to runs Application API v2.85.0 or later before you move to this release.
+2. If your game turns Owner Echo on to test microphones, nothing to do: it works again. Turn it off after the test, since while it is on the server also sends the player's own webcam video.
+3. To limit who a player hears or sees, call `Set Voice Speakers` or `Set Video Speakers` with up to 32 actor ids, and `Hear All Voice Speakers` or `See All Video Speakers` to undo it.
+
+**CoreRedirects.** None.
+
+**Blueprint assets.** None to re-save.
+
+**Behaviour changes.** Owner Echo asks the server for your own voice and video; Studio's app limit message; the API addresses' new names. The server now checks that channel voice comes from the player whose actor id it carries, so the 2.27.0 known limit no longer applies, with no change on your side.
+
+**Verify.** With Owner Echo on, you hear yourself; a player who calls `Set Voice Speakers` with an empty list hears nobody nearby, and hears them again after `Hear All Voice Speakers`.
+
+**Removed in the next release.** None.
+
 ## 2.27.0
 
 **Verdict.** Nothing is deprecated, and no Blueprint fails to compile; a Blueprint that switches on a channel or team error code gets a new Limit Reached pin, which stays unwired (and so does nothing for a full channel or team) until you wire it. In C++, a call to `UCrowdyKitEmotes::FillEmoteRequest` (which takes the distance before the body), code that reads `FCrowdyVoiceSettings::DistanceChunks` as an `int32` (it is a `TOptional<int32>`), a call to `FCrowdyVoiceSettings::ApplyTo` without the map's distance, and a call to `UCrowdyChannels::CreateChannel` without `bMembersCanSpeak` fail to compile until they change. Two defaults change what players hear and see: voice reaches 1 chunk instead of 8, and a Crowdy State change reaches 8 chunks instead of 4 (movement stays at 8). A map that wants the old reach sets it on its map profile. Additions: per-map Movement Distance, Movement Decay, Voice Distance, Emote Distance and Snap Distance, and `Reset Voice Chat Distance`; a Crowdy Voice settings page with flat or spatial playback (spatial fades through a shipped attenuation asset you can replace), the nearest speakers heard instead of the first 16, per-player voice mute and volume by user id, channel voice (your voice to a channel's members wherever they are, with per-channel mute and volume), a Send Voice channel permission and Create Channel's Members Can Speak, and a Limit Reached channel and team error. Behaviour changes: a remote copy snaps across a teleport instead of gliding, and the actor pool draws a copy at most one update interval past its newest update.

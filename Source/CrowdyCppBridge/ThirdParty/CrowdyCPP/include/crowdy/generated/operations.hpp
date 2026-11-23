@@ -2,8 +2,8 @@
 // Regenerate with: node scripts/codegen.mjs
 // Inputs: operations/**/*.graphql and schema.gql (synced from the published
 // SDL at https://docs.crowdedkingdoms.com/schema/game-api.graphql).
-// schema.gql sha256: b2db813bfcafa7c9fae0d96558cc990e9e9a33a4ea442c37b66eda379bae8936
-// operations sha256: 93e1f0e678c63bcbf238a619f7fde25bd4c8f9d31ebc397b4b94d5d5235666b6
+// schema.gql sha256: f20601bed52d58acd1331708b824fcd1b61669f220b173a16e3952e09f84ee02
+// operations sha256: 2b4233c7ee65ea2ab6b163cb036808d8b516bb2a2e33c3f4df2b337c4ff13549
 
 #pragma once
 
@@ -975,7 +975,8 @@ inline constexpr std::string_view kAppDocument = R"gql(query App($appId: BigInt!
     reservedGraphqlOpsPerSec
     runtimeStatus
     runtimeDenialReason
-    gameApiUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
     createdAt
     updatedAt
     org {
@@ -1016,7 +1017,8 @@ inline constexpr std::string_view kAppIsolatedDocument = R"gql(query App($appId:
     reservedGraphqlOpsPerSec
     runtimeStatus
     runtimeDenialReason
-    gameApiUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
     createdAt
     updatedAt
     org {
@@ -1042,7 +1044,8 @@ inline constexpr std::string_view kAppBySlugDocument = R"gql(query AppBySlug($or
     wildernessWritesOpen
     replayLoggingEnabled
     splitMode
-    gameApiUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
     createdAt
     updatedAt
     org {
@@ -1065,7 +1068,8 @@ inline constexpr std::string_view kAppBySlugIsolatedDocument = R"gql(query AppBy
     wildernessWritesOpen
     replayLoggingEnabled
     splitMode
-    gameApiUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
     createdAt
     updatedAt
     org {
@@ -1082,16 +1086,20 @@ inline constexpr std::string_view kAppDiscoveryDocument = R"gql(query AppDiscove
   appDiscovery(appIds: $appIds) {
     appId
     datacenterCode
-    gameApiUrl
-    gameApiWsUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
+    applicationApiWsUrl
+    gameApiWsUrl: applicationApiWsUrl
   }
 })gql";
 inline constexpr std::string_view kAppDiscoveryIsolatedDocument = R"gql(query AppDiscovery($appIds: [BigInt!]!) {
   appDiscovery(appIds: $appIds) {
     appId
     datacenterCode
-    gameApiUrl
-    gameApiWsUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
+    applicationApiWsUrl
+    gameApiWsUrl: applicationApiWsUrl
   }
 })gql";
 inline constexpr std::string_view kAppDiscoveryOperationName = "AppDiscovery";
@@ -1133,7 +1141,8 @@ inline constexpr std::string_view kAppsForOrgDocument = R"gql(query AppsForOrg($
     wildernessWritesOpen
     replayLoggingEnabled
     splitMode
-    gameApiUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
     createdAt
     updatedAt
   }
@@ -1151,7 +1160,8 @@ inline constexpr std::string_view kAppsForOrgIsolatedDocument = R"gql(query Apps
     wildernessWritesOpen
     replayLoggingEnabled
     splitMode
-    gameApiUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
     createdAt
     updatedAt
   }
@@ -1328,7 +1338,8 @@ inline constexpr std::string_view kMarketplaceAppsDocument = R"gql(query Marketp
       status
       metadata
       splitMode
-      gameApiUrl
+      applicationApiUrl
+      gameApiUrl: applicationApiUrl
       createdAt
       updatedAt
       org {
@@ -1363,7 +1374,8 @@ query AppsConnection(
         status
         metadata
         splitMode
-        gameApiUrl
+        applicationApiUrl
+        gameApiUrl: applicationApiUrl
         createdAt
         updatedAt
         org {
@@ -1394,7 +1406,8 @@ inline constexpr std::string_view kMarketplaceAppsIsolatedDocument = R"gql(query
       status
       metadata
       splitMode
-      gameApiUrl
+      applicationApiUrl
+      gameApiUrl: applicationApiUrl
       createdAt
       updatedAt
       org {
@@ -1425,7 +1438,8 @@ inline constexpr std::string_view kAppsConnectionIsolatedDocument = R"gql(query 
         status
         metadata
         splitMode
-        gameApiUrl
+        applicationApiUrl
+        gameApiUrl: applicationApiUrl
         createdAt
         updatedAt
         org {
@@ -1460,7 +1474,8 @@ inline constexpr std::string_view kMyAppsDocument = R"gql(query MyApps {
     wildernessWritesOpen
     replayLoggingEnabled
     splitMode
-    gameApiUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
     createdAt
     updatedAt
     org {
@@ -1483,7 +1498,8 @@ inline constexpr std::string_view kMyAppsIsolatedDocument = R"gql(query MyApps {
     wildernessWritesOpen
     replayLoggingEnabled
     splitMode
-    gameApiUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
     createdAt
     updatedAt
     org {
@@ -8494,8 +8510,10 @@ inline constexpr std::string_view kPlaceableDatacentersDocument = R"gql(query Pl
     servedBy
     datacenters {
       code
-      gameApiUrl
-      gameApiWsUrl
+      applicationApiUrl
+      gameApiUrl: applicationApiUrl
+      applicationApiWsUrl
+      gameApiWsUrl: applicationApiWsUrl
       placeable
       appShardCount
       serving
@@ -8508,8 +8526,10 @@ inline constexpr std::string_view kPlaceableDatacentersIsolatedDocument = R"gql(
     servedBy
     datacenters {
       code
-      gameApiUrl
-      gameApiWsUrl
+      applicationApiUrl
+      gameApiUrl: applicationApiUrl
+      applicationApiWsUrl
+      gameApiWsUrl: applicationApiWsUrl
       placeable
       appShardCount
       serving
@@ -8521,15 +8541,19 @@ inline constexpr std::string_view kPlaceableDatacentersOperationName = "Placeabl
 /// platform/PlatformConfig.graphql
 inline constexpr std::string_view kPlatformConfigDocument = R"gql(query PlatformConfig {
   platformConfig {
-    sharedGameApiUrl
-    sharedGameApiWsUrl
+    sharedApplicationApiUrl
+    sharedGameApiUrl: sharedApplicationApiUrl
+    sharedApplicationApiWsUrl
+    sharedGameApiWsUrl: sharedApplicationApiWsUrl
     freeAppsPerOrg
   }
 })gql";
 inline constexpr std::string_view kPlatformConfigIsolatedDocument = R"gql(query PlatformConfig {
   platformConfig {
-    sharedGameApiUrl
-    sharedGameApiWsUrl
+    sharedApplicationApiUrl
+    sharedGameApiUrl: sharedApplicationApiUrl
+    sharedApplicationApiWsUrl
+    sharedGameApiWsUrl: sharedApplicationApiWsUrl
     freeAppsPerOrg
   }
 })gql";
@@ -8947,8 +8971,10 @@ mutation SignInWithMinecraft($input: SignInWithMinecraftInput!) {
     gameTokenId
     appId
     expiresAt
-    gameApiUrl
-    gameApiWsUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
+    applicationApiWsUrl
+    gameApiWsUrl: applicationApiWsUrl
     discoveryUrl
     launchUrl
     runtimeGate {
@@ -8970,8 +8996,10 @@ inline constexpr std::string_view kSignInWithMinecraftIsolatedDocument = R"gql(m
     gameTokenId
     appId
     expiresAt
-    gameApiUrl
-    gameApiWsUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
+    applicationApiWsUrl
+    gameApiWsUrl: applicationApiWsUrl
     discoveryUrl
     launchUrl
     runtimeGate {
@@ -9487,8 +9515,10 @@ inline constexpr std::string_view kActiveGraphQLServersOperationName = "ActiveGr
 inline constexpr std::string_view kGameClientBootstrapDocument = R"gql(query GameClientBootstrap($appId: BigInt!) {
   gameClientBootstrap(appId: $appId) {
     appId
-    gameApiUrl
-    gameApiWsUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
+    applicationApiWsUrl
+    gameApiWsUrl: applicationApiWsUrl
     discoveryUrl
     realtimeProtocol
     subscriptionName
@@ -9540,8 +9570,10 @@ inline constexpr std::string_view kGameClientBootstrapDocument = R"gql(query Gam
 inline constexpr std::string_view kGameClientBootstrapIsolatedDocument = R"gql(query GameClientBootstrap($appId: BigInt!) {
   gameClientBootstrap(appId: $appId) {
     appId
-    gameApiUrl
-    gameApiWsUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
+    applicationApiWsUrl
+    gameApiWsUrl: applicationApiWsUrl
     discoveryUrl
     realtimeProtocol
     subscriptionName
@@ -9600,15 +9632,19 @@ inline constexpr std::string_view kGameClientRediscoverDocument = R"gql(# Delibe
 # have nothing to do with the question being asked here.
 query GameClientRediscover($appId: BigInt!) {
   gameClientBootstrap(appId: $appId) {
-    gameApiUrl
-    gameApiWsUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
+    applicationApiWsUrl
+    gameApiWsUrl: applicationApiWsUrl
     discoveryUrl
   }
 })gql";
 inline constexpr std::string_view kGameClientRediscoverIsolatedDocument = R"gql(query GameClientRediscover($appId: BigInt!) {
   gameClientBootstrap(appId: $appId) {
-    gameApiUrl
-    gameApiWsUrl
+    applicationApiUrl
+    gameApiUrl: applicationApiUrl
+    applicationApiWsUrl
+    gameApiWsUrl: applicationApiWsUrl
     discoveryUrl
   }
 })gql";
