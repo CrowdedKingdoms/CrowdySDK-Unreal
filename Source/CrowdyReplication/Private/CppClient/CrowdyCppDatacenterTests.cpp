@@ -49,9 +49,12 @@ bool FCrowdyCppAppDiscoveryTest::RunTest(const FString& Parameters)
 	const TSharedPtr<FCrowdyCppClient> Client = MakeClient(TEXT(
 		"{\"data\":{\"appDiscovery\":["
 		"{\"appId\":\"78473868461312\",\"datacenterCode\":\"or\","
+		"\"applicationApiUrl\":\"https://ck-api-4.prod.cp.cks-env.com\","
 		"\"gameApiUrl\":\"https://ck-api-4.prod.cp.cks-env.com\","
+		"\"applicationApiWsUrl\":\"wss://ck-api-4.prod.cp.cks-env.com\","
 		"\"gameApiWsUrl\":\"wss://ck-api-4.prod.cp.cks-env.com\"},"
-		"{\"appId\":\"99\",\"datacenterCode\":\"\",\"gameApiUrl\":\"\",\"gameApiWsUrl\":\"\"}]}}"));
+		"{\"appId\":\"99\",\"datacenterCode\":\"\",\"applicationApiUrl\":\"\",\"gameApiUrl\":\"\","
+		"\"applicationApiWsUrl\":\"\",\"gameApiWsUrl\":\"\"}]}}"));
 	if (!TestTrue(TEXT("test client constructed"), Client.IsValid()))
 	{
 		return false;

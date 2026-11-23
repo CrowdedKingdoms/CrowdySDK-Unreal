@@ -40,9 +40,14 @@ ClientConfig gameClientConfig(const domains::AppTokenResponse& token, ClientConf
     if (!fallbackOrigin.empty()) return std::string(fallbackOrigin);
     return own;
   };
-  base.httpUrl = pick(token.gameApiUrl, base.httpUrl);
+  // A token built by hand may still set only the deprecated gameApi* members.
+  const domains::NullableString& httpOrigin =
+      !token.applicationApiUrl.empty() ? token.applicationApiUrl : token.gameApiUrl;
+  const domains::NullableString& wsOrigin =
+      !token.applicationApiWsUrl.empty() ? token.applicationApiWsUrl : token.gameApiWsUrl;
+  base.httpUrl = pick(httpOrigin, base.httpUrl);
   base.discoveryUrl = pick(token.discoveryUrl, base.discoveryUrl);
-  base.wsUrl = token.gameApiWsUrl.valueOrEmpty();
+  base.wsUrl = wsOrigin.valueOrEmpty();
   base.wsEndpoint.clear();
   return base;
 }

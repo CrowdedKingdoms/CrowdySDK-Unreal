@@ -197,6 +197,22 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void ToggleOwnerEcho(bool bEnable);
 
+	/** Hears spatial voice only from these players' actor ids (nobody when empty) until Hear All Voice Speakers or sign-out. False, with nothing changed, for over 32 ids or a malformed one; the server also refuses a list longer than the app's Max Voice Speakers. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice", meta = (AutoCreateRefTerm = "SpeakerUuids"))
+	bool SetVoiceSpeakers(const TArray<FString>& SpeakerUuids);
+
+	/** Hears spatial voice from every player in range again. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void HearAllVoiceSpeakers();
+
+	/** Receives webcam video only from these players' actor ids (nobody when empty) until See All Video Speakers or sign-out. False, with nothing changed, for over 32 ids or a malformed one; the server also refuses a list longer than the app's Max Video Speakers. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Video", meta = (AutoCreateRefTerm = "SpeakerUuids"))
+	bool SetVideoSpeakers(const TArray<FString>& SpeakerUuids);
+
+	/** Receives webcam video from every player in range again. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Video")
+	void SeeAllVideoSpeakers();
+
 	/** How far your voice reaches, in chunks around the chunk your pawn stands in: 0 is that chunk only, 8 the farthest the server relays. Replaces each map's own Voice Distance (1 unless its profile says otherwise) until Reset Voice Chat Distance, across map changes. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
 	void SetVoiceChatDistance(int32 Chunks);
