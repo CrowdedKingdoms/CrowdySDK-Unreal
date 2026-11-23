@@ -5,12 +5,21 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.27.0** (Unreal Engine 5.8). See the
+**Current version: 2.28.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
 **Upgrading? Read [MIGRATION.md](MIGRATION.md): every release from 2.24.0 lists what changed and the exact steps to migrate.**
+
+**New in 2.28.0:** Toggle Owner Echo plays your own voice back again on realtime servers from
+v0.48.0, which send it only when asked. Set Voice Speakers and Set Video Speakers have the server
+send a player spatial voice or webcam video only from the actor ids named (at most 32, or the app's
+own lower cap; nobody for an empty list), and Hear All Voice Speakers and See All Video Speakers go
+back to everyone in range; channel voice is not affected, and which players to name is the game's
+choice. Speaker lists need realtime server v0.49.0. Studio says plainly when an organization has reached its app
+limit. CrowdyCPP 0.92.0 reads the Application API's new address names, so every tier you ship to
+needs Application API v2.85.0. Nothing breaks; follow MIGRATION.md.
 
 **New in 2.27.0:** reach is set per map. Map profiles gain Movement Distance (8 chunks), Voice
 Distance (1 chunk, was 8), Emote Distance, Snap Distance and Movement Decay, and the Crowdy State
@@ -19,22 +28,9 @@ instead of gliding. A Crowdy Voice settings page adds flat or spatial playback, 
 attenuation you can replace; the nearest speakers are heard instead of the first 16; and each
 player's voice can be muted or turned down by user id. Channel voice lets you hear a channel's
 members wherever they are and, in Talk mode, be heard by them (Listen mode sends nothing), with a
-new Send Voice permission and Create Channel's Members Can Speak (off by default). The server does
-not yet check who sent channel voice, so a member who may talk can speak as another player.
-CrowdyCPP 0.88.0. Blueprint needs nothing but a new Limit Reached pin to wire; in C++,
+new Send Voice permission and Create Channel's Members Can Speak (off by default). CrowdyCPP 0.88.0. Blueprint needs nothing but a new Limit Reached pin to wire; in C++,
 `FillEmoteRequest`, `FCrowdyVoiceSettings::ApplyTo` and `CreateChannel` take one more argument and
 `FCrowdyVoiceSettings::DistanceChunks` is a `TOptional`. Follow MIGRATION.md.
-
-**New in 2.26.0:** this release breaks. The elected host and everything the SDK had deprecated
-are deleted, and the role Host Owned is World Owned. A player's actor id is random and new at each
-sign-in, the live pawn re-keys to it, and `Resolve Actor Owner` finds the user behind an actor id.
-An entity's owner id is now its writer id, and entities name their owner's user id; a client on
-this release cannot play with an older one. The Leader type changed, so deploy the app's server
-code again. New: fetching voxel chunks, a live voxel world with edits, chunk claims and edit
-checks, mods, Mod Scripts (Win64 only), and sending video frames. A session the server releases
-for idleness reads Inactive instead of reconnecting. The mod calls and the server code deploy need
-Game API v2.73.0 on every tier you ship to. Follow MIGRATION.md step by step, including the steps
-to take on 2.25.x before you upgrade.
 
 Full usage docs: **[docs.crowdedkingdoms.com/unreal-sdk](https://docs.crowdedkingdoms.com/unreal-sdk/intro)**
 
@@ -72,12 +68,13 @@ The SDK replicates state on two planes, and everything else follows from the spl
   identity on every client, one owner, and a remote proxy everywhere else.
 - **RPC events (`CrowdyEvent`).** Call a function across the network with typed parameters,
   including arrays, sets, maps and object references, aimed at everyone nearby, everyone on a
-  channel, the entity's owner, or the host. C++ and Blueprint.
-- **Host authority.** One client is elected host by convention to run shared world logic, with
-  per-entity ownership and an explicit ownership-transfer flow. The host is a helper, not a rule
-  enforcer; rules live in your server code.
-- **Replicated subsystems.** A host-owned UE subsystem can join the view plane without being an
-  actor.
+  channel, or the entity's owner. C++ and Blueprint.
+- **Ownership.** An entity has at most one writer, with an explicit ownership-transfer flow; a
+  World entity placed in the level has none. Entities Owned By Leader are written by the app's
+  Leader, one signed-in client, which exists once the app's server code is deployed. Neither is a
+  rule enforcer; rules live in your server code.
+- **Replicated subsystems.** A UE subsystem the Leader writes can join the view plane without
+  being an actor.
 - **Channels, voice, teams, avatars.** Named delivery groups for chat and lobby state; spatial and
   channel voice; teams and roles; per-app avatars and profiles.
 - **Authentication.** Passwordless sign-in (email and password, magic link, social sign-in) with
@@ -122,11 +119,14 @@ The plugin is split into focused modules under `Source/`:
 | `CrowdySDK` | Foundation interfaces, the game-instance subsystem, and shared utilities. |
 | `CrowdyNet` | Networking: the realtime transport, GraphQL client, messaging, and token storage. |
 | `CrowdyReplication` | Entity subsystem, RPC event routing, Crowdy State replication, and the rendering backends. |
-| `CrowdyExec` | Server Objects: the definition asset, the subsystem, the component, and the Blueprint library. |
+| `CrowdyExec` | Server Objects: the definition asset, the subsystem, the component, the Blueprint library, and the Leader. |
 | `CrowdyExecNodes` | The typed Server Object Blueprint nodes: Get, On Changed and Call, with a pin for every value. |
 | `CrowdyExecEditor` | Generate Server Code, the definition asset editor, and the Server Compute page and command line. |
-| `CrowdyServices` | Authentication, teams, avatars, channels, and host election. |
+| `CrowdyServices` | Authentication, teams, avatars, and channels. |
 | `CrowdyVoice` | Voice capture and playback. |
+| `CrowdyMass` | The Mass crowd rendering backend: crowd rows, their animation and events, and spawners. |
+| `CrowdyMassNodes` | The Blueprint nodes that call and receive Crowdy events and server values on a Mass crowd entity. |
+| `CrowdyModScriptRuntime` | Runs Mod Scripts, sandboxed WebAssembly, on worker threads. Win64 only. |
 | `CrowdyCppBridge` | The vendored native client the transport is built on. You never include it directly. |
 | `CKSharedTypes` | Shared data structures (entity state, enums). |
 | `CrowdyNodes` | The compiler checks for replicated variables. |
