@@ -102,6 +102,11 @@ struct FCrowdyStudioControllerTestAccess
 		return Controller.AccessListsAppId;
 	}
 
+	static FString DescribeAppLimit(const TOptional<int64>& Cap)
+	{
+		return FCrowdyStudioController::DescribeAppLimit(Cap);
+	}
+
 	static bool IsCredentialRejection(const FString& ErrorMessage, const FString& ErrorCode)
 	{
 		return FCrowdyStudioController::IsCredentialRejection(ErrorMessage, ErrorCode);

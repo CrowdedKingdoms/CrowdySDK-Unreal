@@ -619,8 +619,10 @@ class ExecAPI : public DomainBase {
   void endpointStatsAsync(std::string appId, std::string nodeType, int sinceMinutes,
                           graphql::GraphQLCallback done) const;
   /// `{ activeVersion, disabled, disabledTypes, budgetPaused, budgetPauseReason,
-  /// maxInstances, maxReservedMb, instanceLimit, instances, reservedMb }`
-  /// (`execAppStatus`). Requires `view_compute_diagnostics`.
+  /// maxInstances, maxReservedMb, instanceLimit, instances, reservedMb, orgMaxInstances,
+  /// orgMaxReservedMb, orgInstances, orgReservedMb }` (`execAppStatus`; the org fields are the
+  /// ceiling an unfunded organization's apps share, null without one, ck-api v2.80.0). Requires
+  /// `view_compute_diagnostics`.
   graphql::Json status(std::string appId) const;
   void statusAsync(std::string appId, graphql::GraphQLCallback done) const;
   /// Make an earlier version active again, a rollback (`execActivateVersion`). As after

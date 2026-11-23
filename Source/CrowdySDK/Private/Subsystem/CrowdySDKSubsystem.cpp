@@ -366,6 +366,7 @@ void UCrowdySDKSubsystem::Logout() const
 	if (UCrowdyCppReplicationSubsystem* Replication = GetGameInstance()->GetSubsystem<UCrowdyCppReplicationSubsystem>())
 	{
 		Replication->CloseConnection();
+		Replication->ForgetSpeakers();
 	}
 
 	// The cached teams belong to the account that just left.
@@ -774,6 +775,56 @@ void UCrowdySDKSubsystem::ToggleOwnerEcho(const bool bEnable)
 	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
 	{
 		VoiceChat->SetOwnerEcho(bEnable);
+	}
+
+	// Reached directly too, so the echo is asked for in a map that has no voice chat.
+	if (UCrowdyCppReplicationSubsystem* Replication = GetGameInstance()->GetSubsystem<UCrowdyCppReplicationSubsystem>())
+	{
+		Replication->SetOwnMediaEcho(bEnable);
+	}
+}
+
+bool UCrowdySDKSubsystem::SetVoiceSpeakers(const TArray<FString>& SpeakerUuids)
+{
+	UCrowdyCppReplicationSubsystem* Replication = GetGameInstance()->GetSubsystem<UCrowdyCppReplicationSubsystem>();
+	if (!Replication)
+	{
+		return false;
+	}
+
+	FString Error;
+	const bool bSet = Replication->SetVoiceSpeakers(SpeakerUuids, Error);
+	UE_CLOG(!bSet, LogCrowdySDK, Warning, TEXT("Set Voice Speakers refused the list: %s."), *Error);
+	return bSet;
+}
+
+void UCrowdySDKSubsystem::HearAllVoiceSpeakers()
+{
+	if (UCrowdyCppReplicationSubsystem* Replication = GetGameInstance()->GetSubsystem<UCrowdyCppReplicationSubsystem>())
+	{
+		Replication->HearAllVoiceSpeakers();
+	}
+}
+
+bool UCrowdySDKSubsystem::SetVideoSpeakers(const TArray<FString>& SpeakerUuids)
+{
+	UCrowdyCppReplicationSubsystem* Replication = GetGameInstance()->GetSubsystem<UCrowdyCppReplicationSubsystem>();
+	if (!Replication)
+	{
+		return false;
+	}
+
+	FString Error;
+	const bool bSet = Replication->SetVideoSpeakers(SpeakerUuids, Error);
+	UE_CLOG(!bSet, LogCrowdySDK, Warning, TEXT("Set Video Speakers refused the list: %s."), *Error);
+	return bSet;
+}
+
+void UCrowdySDKSubsystem::SeeAllVideoSpeakers()
+{
+	if (UCrowdyCppReplicationSubsystem* Replication = GetGameInstance()->GetSubsystem<UCrowdyCppReplicationSubsystem>())
+	{
+		Replication->SeeAllVideoSpeakers();
 	}
 }
 

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 
@@ -163,6 +164,21 @@ class Connection {
   /// CLIENT_CAPABILITIES with wire::ClientCapability::kAll (Buddy v0.30.0). Sent
   /// automatically when Config::advertiseCapabilities is on; public for tests.
   Result<std::uint8_t> sendCapabilities();
+  /// Start or stop asking for this session's own spatial voice and video
+  /// (wire::ClientCapability::kOwnMediaEcho), for example around a microphone
+  /// check. Advertised at once when connected and it changed; the starting
+  /// value is Config::ownMediaEcho. Any thread.
+  void setOwnMediaEcho(bool on);
+  bool ownMediaEcho() const noexcept { return ownMediaEcho_.load(std::memory_order_acquire); }
+  /// The speakers whose spatial voice and video this session receives (Buddy v0.49.0;
+  /// ClientMediaSpeakers). Per kind: SpeakerList::only(names) receives only those (none when
+  /// empty), SpeakerList::everyone() everyone in range again, SpeakerList::keep() leaves the
+  /// kind as it is. A changed kind is sent at once when connected, and every list again with
+  /// each capabilities advertisement, since the server forgets them with the session.
+  /// InvalidArgument over wire::kMaxSpeakers names; the app's own numbers are
+  /// gameClientBootstrap.maxVoiceSpeakers / maxVideoSpeakers, and the server refuses a longer
+  /// list INVALID_REQUEST. Any thread.
+  Status setSpeakers(SpeakerList voice, SpeakerList video);
 
   /// Put the pending outbound bundle on the wire now instead of at the end of
   /// Config::bundleWindowMs. Call it at the end of a frame when you want that
@@ -435,6 +451,15 @@ class Connection {
   /// controlNonce_, legacy 22 and 28 are dropped unverified; a new assignment's nonce
   /// no longer matches it, whatever order the two threads ran in.
   std::atomic<std::uint64_t> boundNonce_{0};
+  /// Whether CLIENT_CAPABILITIES carries kOwnMediaEcho; Config::ownMediaEcho, then setOwnMediaEcho.
+  std::atomic<bool> ownMediaEcho_{false};
+  /// The speaker lists setSpeakers last set (nullopt: everyone in range), re-sent with the
+  /// capabilities.
+  mutable std::mutex speakersMutex_;
+  std::optional<std::vector<core::ActorUuid>> voiceSpeakers_;
+  std::optional<std::vector<core::ActorUuid>> videoSpeakers_;
+  Result<std::uint8_t> sendSpeakerLists(const SpeakerList& voice, const SpeakerList& video);
+  void resendSpeakerLists();
 
   /// Monotonic ms of the last send that counts as gameplay input (0: none yet).
   std::atomic<std::int64_t> lastGameplayMs_{0};

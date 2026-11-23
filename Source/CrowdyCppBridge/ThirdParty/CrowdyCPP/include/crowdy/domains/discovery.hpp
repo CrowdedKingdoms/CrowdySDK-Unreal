@@ -33,11 +33,13 @@ namespace crowdy::domains {
 struct AppEndpoint {
   std::string appId;          ///< decimal string
   std::string datacenterCode; ///< e.g. "or" / "va"; empty when unplaced
-  std::string gameApiUrl;     ///< empty when unplaced
-  std::string gameApiWsUrl;
+  std::string applicationApiUrl;    ///< empty when unplaced
+  std::string applicationApiWsUrl;
+  std::string gameApiUrl;     ///< Deprecated: use applicationApiUrl (the Game API is now the Application API); removed on January 1, 2027.
+  std::string gameApiWsUrl;   ///< Deprecated: use applicationApiWsUrl (the Game API is now the Application API); removed on January 1, 2027.
 
   /// True when this entry names somewhere to go.
-  bool placed() const { return !gameApiUrl.empty(); }
+  bool placed() const { return !applicationApiUrl.empty(); }
 };
 
 class DiscoveryAPI : public DomainBase {
@@ -92,8 +94,10 @@ class DiscoveryAPI : public DomainBase {
       AppEndpoint endpoint;
       endpoint.appId = entry["appId"].asString();
       endpoint.datacenterCode = entry["datacenterCode"].asString();
-      endpoint.gameApiUrl = entry["gameApiUrl"].asString();
-      endpoint.gameApiWsUrl = entry["gameApiWsUrl"].asString();
+      endpoint.applicationApiUrl = entry["applicationApiUrl"].asString();
+      endpoint.applicationApiWsUrl = entry["applicationApiWsUrl"].asString();
+      endpoint.gameApiUrl = endpoint.applicationApiUrl;
+      endpoint.gameApiWsUrl = endpoint.applicationApiWsUrl;
       endpoints.push_back(std::move(endpoint));
     });
     return endpoints;

@@ -608,6 +608,7 @@ bool UCrowdyCppReplicationSubsystem::OpenConnection(const FCrowdyCppConnectionRe
 
 	Config.bBundleSends = CVarSendBundle.GetValueOnGameThread() != 0;
 	Config.bAdvertiseCapabilities = CVarAdvertiseCapabilities.GetValueOnGameThread() != 0;
+	Config.bOwnMediaEcho = bOwnMediaEcho;
 
 	// The game is told the app is full, and so is this subsystem, because the two act on it differently: the game
 	// surfaces it to the player, and this has to stop treating the failure that follows as something to recover from.
@@ -648,6 +649,7 @@ bool UCrowdyCppReplicationSubsystem::OpenConnection(const FCrowdyCppConnectionRe
 
 	OpenedWithToken = Request.Token;
 	OpenedWithAppId = Request.AppId;
+	ApplySpeakers(*Built, VoiceSpeakers.IsSet(), VideoSpeakers.IsSet());
 
 	// Installed before it is opened, so the first state change has handlers to reach.
 	SetConnection(Built);
@@ -693,6 +695,115 @@ bool UCrowdyCppReplicationSubsystem::InstallToken(const FString& Token, const in
 	// recognised as a reconnect rather than rebuilding a connection that is already using it.
 	OpenedWithToken = Token;
 	return true;
+}
+
+void UCrowdyCppReplicationSubsystem::SetOwnMediaEcho(const bool bOn)
+{
+	bOwnMediaEcho = bOn;
+	if (const TSharedPtr<FCrowdyCppReplication> Installed = GetConnection())
+	{
+		Installed->SetOwnMediaEcho(bOn);
+	}
+}
+
+bool UCrowdyCppReplicationSubsystem::SetVoiceSpeakers(const TArray<FString>& Uuids, FString& OutError)
+{
+	if (!FCrowdyCppReplication::ValidateSpeakerUuids(Uuids, OutError))
+	{
+		return false;
+	}
+
+	ChangeSpeakers(true, Uuids);
+	return true;
+}
+
+void UCrowdyCppReplicationSubsystem::HearAllVoiceSpeakers()
+{
+	ChangeSpeakers(true, TOptional<TArray<FString>>());
+}
+
+bool UCrowdyCppReplicationSubsystem::SetVideoSpeakers(const TArray<FString>& Uuids, FString& OutError)
+{
+	if (!FCrowdyCppReplication::ValidateSpeakerUuids(Uuids, OutError))
+	{
+		return false;
+	}
+
+	ChangeSpeakers(false, Uuids);
+	return true;
+}
+
+void UCrowdyCppReplicationSubsystem::SeeAllVideoSpeakers()
+{
+	ChangeSpeakers(false, TOptional<TArray<FString>>());
+}
+
+void UCrowdyCppReplicationSubsystem::ForgetSpeakers()
+{
+	ChangeSpeakers(true, TOptional<TArray<FString>>());
+	ChangeSpeakers(false, TOptional<TArray<FString>>());
+}
+
+bool UCrowdyCppReplicationSubsystem::IsSameSpeakerList(const TOptional<TArray<FString>>& Stored, const TOptional<TArray<FString>>& Wanted)
+{
+	if (Stored.IsSet() != Wanted.IsSet())
+	{
+		return false;
+	}
+	if (!Stored.IsSet())
+	{
+		return true;
+	}
+
+	// Order does not matter, as a nearest-N list reshuffles; case does, as actor ids are not case-folded.
+	const auto Covers = [](const TArray<FString>& Outer, const TArray<FString>& Inner)
+	{
+		for (const FString& Uuid : Inner)
+		{
+			if (!Outer.ContainsByPredicate([&Uuid](const FString& Other) { return Other.Equals(Uuid, ESearchCase::CaseSensitive); }))
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+	return Stored->Num() == Wanted->Num() && Covers(*Stored, *Wanted) && Covers(*Wanted, *Stored);
+}
+
+void UCrowdyCppReplicationSubsystem::ChangeSpeakers(const bool bVoice, const TOptional<TArray<FString>>& Wanted)
+{
+	TOptional<TArray<FString>>& Stored = bVoice ? VoiceSpeakers : VideoSpeakers;
+
+	// A game may refresh its list every frame; only a change goes to the server.
+	if (IsSameSpeakerList(Stored, Wanted))
+	{
+		return;
+	}
+
+	Stored = Wanted;
+	if (const TSharedPtr<FCrowdyCppReplication> Installed = GetConnection())
+	{
+		ApplySpeakers(*Installed, bVoice, !bVoice);
+	}
+}
+
+void UCrowdyCppReplicationSubsystem::ApplySpeakers(FCrowdyCppReplication& Target, const bool bVoice, const bool bVideo) const
+{
+	const auto ToList = [](const bool bChanged, const TOptional<TArray<FString>>& Stored)
+	{
+		FCrowdyCppSpeakerList List;
+		if (!bChanged)
+		{
+			return List;
+		}
+		List.Mode = Stored.IsSet() ? FCrowdyCppSpeakerList::EMode::Only : FCrowdyCppSpeakerList::EMode::Everyone;
+		List.Uuids = Stored.Get(TArray<FString>());
+		return List;
+	};
+
+	FString Error;
+	UE_CLOG(!Target.SetMediaSpeakers(ToList(bVoice, VoiceSpeakers), ToList(bVideo, VideoSpeakers), Error),
+		LogCrowdyNet, Warning, TEXT("The speaker lists could not be applied: %s"), *Error);
 }
 
 void UCrowdyCppReplicationSubsystem::ApplyConnectionState(const ECrowdyCppConnState State)

@@ -30,8 +30,15 @@ inline GraphQLErrorDetail readGraphQLError(Json entry, std::string_view fallback
   detail.appId = extensions["appId"].asString();
   detail.appDatacenter = extensions["appDatacenter"].asString();
   detail.servedBy = extensions["servedBy"].asString();
-  detail.gameApiUrl = extensions["gameApiUrl"].asString();
-  detail.gameApiWsUrl = extensions["gameApiWsUrl"].asString();
+  // An Application API older than v2.85.0 names only the gameApi* keys.
+  detail.applicationApiUrl = extensions["applicationApiUrl"].isString()
+                                 ? extensions["applicationApiUrl"].asString()
+                                 : extensions["gameApiUrl"].asString();
+  detail.applicationApiWsUrl = extensions["applicationApiWsUrl"].isString()
+                                   ? extensions["applicationApiWsUrl"].asString()
+                                   : extensions["gameApiWsUrl"].asString();
+  detail.gameApiUrl = detail.applicationApiUrl;
+  detail.gameApiWsUrl = detail.applicationApiWsUrl;
   detail.retryable = !extensions["retryable"].isBool() || extensions["retryable"].asBool();
   detail.blame = extensions["blame"].asString();
   // Guarded by isNumber() rather than taking asInt64's fallback: the fallback

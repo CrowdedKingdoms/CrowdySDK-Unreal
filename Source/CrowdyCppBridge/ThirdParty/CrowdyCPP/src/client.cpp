@@ -508,7 +508,7 @@ void CrowdyClient::installSelfHandlers() {
   if (gql_) {
     gql_->setWrongDatacenterHandler(
         [this](const graphql::DatacenterMove& move) {
-          return moveToDatacenter(move.gameApiUrl, move.gameApiWsUrl);
+          return moveToDatacenter(move.applicationApiUrl, move.applicationApiWsUrl);
         });
   }
   if (rediscover_ && !config_.rediscover && !config_.discoveryUrl.empty()) {
@@ -560,8 +560,8 @@ graphql::RediscoveredEndpoint CrowdyClient::bootstrapRediscover(
       data.isObject() && data["gameClientBootstrap"].isObject()
           ? data["gameClientBootstrap"]
           : data;
-  result.httpUrl = bootstrap["gameApiUrl"].asString();
-  result.wsUrl = bootstrap["gameApiWsUrl"].asString();
+  result.httpUrl = bootstrap["applicationApiUrl"].asString();
+  result.wsUrl = bootstrap["applicationApiWsUrl"].asString();
   return result;
 }
 

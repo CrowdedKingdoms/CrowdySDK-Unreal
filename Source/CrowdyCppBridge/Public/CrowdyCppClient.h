@@ -109,6 +109,9 @@ struct FCrowdyCppJsonResult
 	// On ACTOR_EXISTS: true when the taken uuid is already the caller's actor, false when another player holds it.
 	TOptional<bool> OwnedByCaller;
 
+	// On a limit refusal such as APP_LIMIT_REACHED: the cap that refused (extensions.max), unset when the server did not say.
+	TOptional<int64> LimitValue;
+
 	// The `data` object as MessagePack, filled by RunOpMsgpack instead of Data.
 	TArray<uint8> Msgpack;
 };

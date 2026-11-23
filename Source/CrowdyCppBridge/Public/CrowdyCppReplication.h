@@ -320,6 +320,28 @@ struct FCrowdyCppReplicationConfig
 	 * the 0.41 behaviour and is a diagnostic switch, not a setting a shipping build needs.
 	 */
 	bool bAdvertiseCapabilities = true;
+
+	/** Whether the server sends this session its own spatial voice and video; from realtime server v0.48.0 it does not unless asked. */
+	bool bOwnMediaEcho = false;
+};
+
+/** One kind's change to whose spatial voice or webcam video a session receives. */
+struct FCrowdyCppSpeakerList
+{
+	enum class EMode : uint8
+	{
+		/** Leave this kind as it is. */
+		Keep,
+		/** Everyone in range again. */
+		Everyone,
+		/** Only the actors in Uuids; none when it is empty. */
+		Only
+	};
+
+	EMode Mode = EMode::Keep;
+
+	/** 32-character actor ids. */
+	TArray<FString> Uuids;
 };
 
 /** Cumulative counters since the connection opened. They only grow, so a rate is a difference between snapshots. */
@@ -495,6 +517,18 @@ public:
 	/** Queue one voice packet to a channel. The server refuses it unless the sender's role there has send_voice. */
 	bool SendChannelAudio(int64 ChannelId, TArrayView<const uint8> Uuid, TArrayView<const uint8> Payload,
 		FString& OutError);
+
+	/** Starts or stops asking for this session's own spatial voice and video, advertised at once. Any thread. */
+	void SetOwnMediaEcho(bool bOn);
+
+	/** Picks whose spatial voice and video this session receives; false with a reason for a bad id or an overlong list. */
+	bool SetMediaSpeakers(const FCrowdyCppSpeakerList& Voice, const FCrowdyCppSpeakerList& Video, FString& OutError);
+
+	/** The most actors one speaker list may name; an app may set fewer, and the server refuses a longer list. */
+	static constexpr int32 MaxMediaSpeakers = 32;
+
+	/** Whether Uuids can be a speaker list: at most MaxMediaSpeakers ids of 32 characters each. */
+	static bool ValidateSpeakerUuids(TConstArrayView<FString> Uuids, FString& OutError);
 
 	/**
 	 * Split one encoded video frame into fragments and queue every one of them.

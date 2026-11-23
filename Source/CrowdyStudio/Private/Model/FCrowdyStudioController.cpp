@@ -185,6 +185,14 @@ FString FCrowdyStudioController::DescribeApiFailure(const FString& ErrorMessage,
 	return ErrorMessage;
 }
 
+FString FCrowdyStudioController::DescribeAppLimit(const TOptional<int64>& Cap)
+{
+	const FString Limit = Cap.IsSet() && Cap.GetValue() > 0
+		? FString::Printf(TEXT("its limit of %lld apps"), Cap.GetValue())
+		: FString(TEXT("its limit on apps"));
+	return FString::Printf(TEXT("Your organization has reached %s. Archive an app you no longer use, or fund the organization's wallet (or turn on auto-billing) to create more."), *Limit);
+}
+
 bool FCrowdyStudioController::IsCredentialRejection(const FString& ErrorMessage, const FString& ErrorCode)
 {
 	return ErrorCode.Equals(TEXT("UNAUTHENTICATED"), ESearchCase::CaseSensitive)
@@ -2487,7 +2495,11 @@ void FCrowdyStudioController::IssueOperation(ECrowdyCppApiDomain Domain, const T
 			if (!Result.bTransportOk)
 			{
 				bool bWasCanceled = false;
-				const FString Error = DescribeApiFailure(Result.ErrorMessage, bWasCanceled);
+				FString Error = DescribeApiFailure(Result.ErrorMessage, bWasCanceled);
+				if (Result.ErrorCode.Equals(TEXT("APP_LIMIT_REACHED"), ESearchCase::CaseSensitive))
+				{
+					Error = DescribeAppLimit(Result.LimitValue);
+				}
 				// A cancellation is the console retiring its own client, not the server answering, so it is not
 				// shown as something the user did wrong. The caller is still told, because whatever it was
 				// counting still has to be unwound.

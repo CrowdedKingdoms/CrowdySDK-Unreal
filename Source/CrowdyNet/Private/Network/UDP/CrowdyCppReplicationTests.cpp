@@ -1210,6 +1210,161 @@ bool FCrowdyRoutingSeamOutcomesTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMediaSelectionReachesTheServerTest,
+	"CrowdySDK.Transport.OwnEchoAndSpeakerListsReachTheServer",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdyMediaSelectionReachesTheServerTest::RunTest(const FString& Parameters)
+{
+	using namespace CrowdyReplicationTestSupport;
+
+	FConnectedFixture Fixture;
+	Fixture.bAdvertiseCapabilities = true;
+	if (!TestTrue(TEXT("a connection to a local stand-in server came up"), Fixture.Open()))
+	{
+		Fixture.Shut();
+		return false;
+	}
+
+	const TStrongObjectPtr<UGameInstance> OuterInstance(NewObject<UGameInstance>(GetTransientPackage()));
+	const TStrongObjectPtr<UCrowdyCppReplicationSubsystem> Routing(
+		NewObject<UCrowdyCppReplicationSubsystem>(OuterInstance.Get()));
+	Routing->SetConnection(Fixture.Connection);
+
+	const auto AwaitOpcode = [&Fixture](const uint8 Opcode, TArray<uint8>& Out)
+	{
+		return WaitUntil([&Fixture, &Out, Opcode]()
+		{
+			for (const TArray<uint8>& Message : SplitBundle(Fixture.Server.Receive(0.1)))
+			{
+				if (Message.Num() > 0 && Message[0] == Opcode)
+				{
+					Out = Message;
+					return true;
+				}
+			}
+			return false;
+		});
+	};
+
+	constexpr int32 HeaderSize = 68;
+	constexpr uint8 CapabilitiesOpcode = static_cast<uint8>(ECrowdyMessageType::CLIENT_CAPABILITIES);
+	constexpr uint8 MediaSpeakersOpcode = 47;
+
+	TArray<uint8> First;
+	if (!TestTrue(TEXT("the connection advertised its capabilities"), AwaitOpcode(CapabilitiesOpcode, First)))
+	{
+		Fixture.Shut();
+		return false;
+	}
+	TestEqual(TEXT("own media is not asked for by default"), First[HeaderSize] & 4, 0);
+
+	Routing->SetOwnMediaEcho(true);
+	TArray<uint8> Echo;
+	if (TestTrue(TEXT("turning the echo on advertises again"), AwaitOpcode(CapabilitiesOpcode, Echo)))
+	{
+		TestEqual(TEXT("bit 2 asks for this session's own voice and video"), Echo[HeaderSize] & 4, 4);
+	}
+
+	FString Error;
+	TArray<FString> TooMany;
+	TooMany.Init(FString::ChrN(32, TEXT('a')), FCrowdyCppReplication::MaxMediaSpeakers + 1);
+	TestFalse(TEXT("a list over the limit is refused"), Routing->SetVoiceSpeakers(TooMany, Error));
+	TestFalse(TEXT("an id that is not 32 characters is refused"), Routing->SetVoiceSpeakers({TEXT("short")}, Error));
+	TestFalse(TEXT("a refused list changes nothing"), Routing->GetVoiceSpeakers().IsSet());
+
+	const FString Speaker = TEXT("0123456789abcdef0123456789abcdef");
+	TestTrue(TEXT("a list of one is taken"), Routing->SetVoiceSpeakers({Speaker}, Error));
+	TArray<uint8> Only;
+	if (TestTrue(TEXT("the voice list reached the server"), AwaitOpcode(MediaSpeakersOpcode, Only))
+		&& TestTrue(TEXT("the message carries the four mode bytes and one name"), Only.Num() >= HeaderSize + 4 + 32))
+	{
+		TestEqual(TEXT("voice is limited to the list"), Only[HeaderSize], static_cast<uint8>(1));
+		TestEqual(TEXT("of one name"), Only[HeaderSize + 1], static_cast<uint8>(1));
+		TestEqual(TEXT("video is left as it is"), Only[HeaderSize + 2], static_cast<uint8>(0));
+		TestEqual(TEXT("with no names"), Only[HeaderSize + 3], static_cast<uint8>(0));
+		TestEqual(TEXT("the name is the actor id"),
+			FString(32, reinterpret_cast<const ANSICHAR*>(Only.GetData() + HeaderSize + 4)), Speaker);
+	}
+
+	// The same list again, as a game refreshing it every frame would send, goes nowhere.
+	TestTrue(TEXT("the same list is taken again"), Routing->SetVoiceSpeakers({Speaker}, Error));
+	TArray<uint8> Unchanged;
+	TestFalse(TEXT("an unchanged list is not sent"), WaitUntil([&]()
+	{
+		for (const TArray<uint8>& Message : SplitBundle(Fixture.Server.Receive(0.1)))
+		{
+			if (Message.Num() > 0 && Message[0] == MediaSpeakersOpcode)
+			{
+				Unchanged = Message;
+				return true;
+			}
+		}
+		return false;
+	}, 0.5));
+
+	Routing->HearAllVoiceSpeakers();
+	TArray<uint8> All;
+	if (TestTrue(TEXT("hearing everyone reached the server"), AwaitOpcode(MediaSpeakersOpcode, All)))
+	{
+		TestEqual(TEXT("voice is everyone in range again"), All[HeaderSize], static_cast<uint8>(2));
+	}
+	TestFalse(TEXT("hearing everyone clears the stored list"), Routing->GetVoiceSpeakers().IsSet());
+	TArray<uint8> Again;
+	if (TestTrue(TEXT("a return to everyone is sent again, as it is not acknowledged"), AwaitOpcode(MediaSpeakersOpcode, Again)))
+	{
+		TestEqual(TEXT("the repeat is everyone too"), Again[HeaderSize], static_cast<uint8>(2));
+	}
+
+	TestTrue(TEXT("a video list is taken"), Routing->SetVideoSpeakers({Speaker}, Error));
+	TArray<uint8> Video;
+	const bool bVideoSent = WaitUntil([&]()
+	{
+		for (const TArray<uint8>& Message : SplitBundle(Fixture.Server.Receive(0.1)))
+		{
+			if (Message.Num() > HeaderSize + 3 && Message[0] == MediaSpeakersOpcode && Message[HeaderSize + 2] != 0)
+			{
+				Video = Message;
+				return true;
+			}
+		}
+		return false;
+	});
+	if (TestTrue(TEXT("the video list reached the server"), bVideoSent))
+	{
+		TestEqual(TEXT("voice is left as it is"), Video[HeaderSize], static_cast<uint8>(0));
+		TestEqual(TEXT("video is limited to the list"), Video[HeaderSize + 2], static_cast<uint8>(1));
+		TestEqual(TEXT("of one name"), Video[HeaderSize + 3], static_cast<uint8>(1));
+	}
+
+	// A re-key of the same player closes the connection too, and keeps what the player chose.
+	Routing->CloseConnection();
+	TestTrue(TEXT("closing the connection keeps the video list"), Routing->GetVideoSpeakers().IsSet());
+	Routing->ForgetSpeakers();
+	TestFalse(TEXT("signing out forgets the video list"), Routing->GetVideoSpeakers().IsSet());
+
+	Fixture.Shut();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySpeakerListComparisonTest,
+	"CrowdySDK.Transport.SpeakerListComparisonIgnoresOrderOnly",
+	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)
+
+bool FCrowdySpeakerListComparisonTest::RunTest(const FString& Parameters)
+{
+	using FList = TOptional<TArray<FString>>;
+	const FString A = TEXT("0123456789abcdef0123456789abcdef");
+	const FString B = TEXT("fedcba9876543210fedcba9876543210");
+	TestTrue(TEXT("everyone is everyone"), UCrowdyCppReplicationSubsystem::IsSameSpeakerList(FList(), FList()));
+	TestFalse(TEXT("everyone is not nobody"), UCrowdyCppReplicationSubsystem::IsSameSpeakerList(FList(), FList(TArray<FString>())));
+	TestTrue(TEXT("order does not matter"), UCrowdyCppReplicationSubsystem::IsSameSpeakerList(FList({A, B}), FList({B, A})));
+	TestFalse(TEXT("a repeated id is not another id"), UCrowdyCppReplicationSubsystem::IsSameSpeakerList(FList({A, A}), FList({A, B})));
+	TestFalse(TEXT("nor the other way round"), UCrowdyCppReplicationSubsystem::IsSameSpeakerList(FList({A, B}), FList({A, A})));
+	TestFalse(TEXT("case matters"), UCrowdyCppReplicationSubsystem::IsSameSpeakerList(FList({A}), FList({A.ToUpper()})));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdySendWithoutConnectionTest,
 	"CrowdySDK.Transport.SendWithoutAConnectionIsNotRouted",
 	CrowdyReplicationTestSupport::CrowdyReplicationTestFlags)

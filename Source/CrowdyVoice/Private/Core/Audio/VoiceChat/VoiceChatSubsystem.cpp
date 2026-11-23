@@ -18,6 +18,7 @@
 #include "Messages/Channels/FChannelMessages.h"
 #include "Messages/Communication/FClientAudioNotification.h"
 #include "Messages/Communication/FClientAudioPacketMessageRequest.h"
+#include "Network/CrowdyCpp/CrowdyCppReplicationSubsystem.h"
 #include "Sound/SoundWaveProcedural.h"
 #include "Subsystem/CrowdyGameSession.h"
 
@@ -670,7 +671,20 @@ void UVoiceChatSubsystem::SetStreamTimeoutThreshold(const float InSeconds)
 
 void UVoiceChatSubsystem::SetOwnerEcho(const bool bEnable)
 {
+	const bool bChanged = bOwnerEcho != bEnable;
 	bOwnerEcho = bEnable;
+
+	// The server only sends a session its own voice when asked; a new map restating the setting must not undo a request made elsewhere.
+	if (!bChanged)
+	{
+		return;
+	}
+	const UWorld* World = GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	if (UCrowdyCppReplicationSubsystem* Replication = GameInstance ? GameInstance->GetSubsystem<UCrowdyCppReplicationSubsystem>() : nullptr)
+	{
+		Replication->SetOwnMediaEcho(bEnable);
+	}
 }
 
 void UVoiceChatSubsystem::SetDistance(const int32 Chunks)
@@ -769,6 +783,7 @@ void UVoiceChatSubsystem::HandleAudio(const FClientAudioNotification& Notificati
 	// The server returns a sender's own voice to it, which plays only as owner echo.
 	if (!bOwnerEcho && LocalSenderId.IsSet() && Notification.UUID == LocalSenderId)
 	{
+		++Stats.OwnPacketsIgnored;
 		return;
 	}
 	++Stats.PacketsReceived;
