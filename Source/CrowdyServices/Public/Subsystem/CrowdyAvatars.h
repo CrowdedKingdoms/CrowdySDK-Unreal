@@ -54,7 +54,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Avatars|Queries|Avatar")
 	void GetUserAvatars(int64 UserId, FOnAvatarsSuccess OnSuccess, FOnAvatarError OnError);
 
-	/** AppId is resolved from project settings. */
+	/** AppId is resolved from project settings. An avatar with no state for this app yet succeeds with an empty RawState. */
 	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Avatars|Queries|State")
 	void GetAvatarAppState(int64 AvatarId, FOnAppStateSuccess OnSuccess, FOnAvatarError OnError);
 
@@ -98,14 +98,14 @@ public:
 	static FString SerializeToAvatarState(const int32& State);
 	DECLARE_FUNCTION(execSerializeToAvatarState);
 
-	/** Deserializes a base64 avatar state string back into a USTRUCT. Returns false if decoding fails. */
+	/** Deserializes a base64 avatar state string back into a USTRUCT. Returns false, leaving OutStruct unchanged, if the state does not decode into exactly this type. */
 	UFUNCTION(BlueprintCallable, CustomThunk,
 		meta=(CustomStructureParam="OutStruct"),
 		Category="Crowdy SDK|Avatars|State", DisplayName="Deserialize Avatar State to Struct")
 	static bool DeserializeFromAvatarState(const FString& State, int32& OutStruct);
 	DECLARE_FUNCTION(execDeserializeFromAvatarState);
 
-	/** Fetches this app's per-avatar state and deserializes it into OutState (any USTRUCT). Branch on bSuccess. */
+	/** Fetches this app's per-avatar state and deserializes it into OutState (any USTRUCT). Branch on bSuccess; with no state yet it is true and OutState is the type's default; a state that does not decode is a failure. */
 	UFUNCTION(BlueprintCallable, CustomThunk,
 		meta=(Latent, LatentInfo="LatentInfo", CustomStructureParam="OutState", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|State", DisplayName="Get Avatar App State As")

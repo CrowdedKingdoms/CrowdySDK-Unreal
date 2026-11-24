@@ -1,11 +1,21 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "CrowdyAvatarAppStateRead.h"
 #include "CrowdyCppClient.h"
 #include "CrowdyServiceApiSupport.h"
 #include "CrowdyServiceApiTestSupport.h"
 #include "Dom/JsonObject.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Base64.h"
+#include "Serialization/MemoryWriter.h"
+#include "StructUtils/UserDefinedStruct.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UnrealType.h"
+#if WITH_EDITOR
+#include "EdGraphSchema_K2.h"
+#include "Kismet2/StructureEditorUtils.h"
+#include "UserDefinedStructure/UserDefinedStructEditorData.h"
+#endif
 #include "Queries/Data/Avatar/Types/FCrowdyAppAvatarState.h"
 #include "Queries/Data/Avatar/Types/FCrowdyAvatar.h"
 #include "Queries/Data/Avatar/Types/FCrowdyAvatarError.h"
@@ -167,6 +177,142 @@ bool FCrowdyAvatarResponseReadersTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+// The Application API answers avatarAppState null for an avatar with no row in this app, which Get Avatar App State and
+// Get Avatar App State As must report as success with no state, while a refusal or an unreadable answer stays an error.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAvatarAppStateNullIsNoStateTest,
+	"CrowdySDK.CrowdyServices.AvatarAppStateNullIsNoState", ServiceTestFlags)
+bool FCrowdyAvatarAppStateNullIsNoStateTest::RunTest(const FString& Parameters)
+{
+	constexpr int64 AppId = 9;
+	constexpr int64 AvatarId = 42;
+
+	FCrowdyAppAvatarState NoRow;
+	FCrowdyAvatarError Error;
+	if (TestTrue(TEXT("a null answer is a success"), CrowdyAvatarAppState::ReadAnswer(
+		MakeResult(TEXT(R"({ "avatarAppState": null })")), AppId, AvatarId, NoRow, Error)))
+	{
+		TestTrue(TEXT("with no state"), NoRow.RawState.IsEmpty());
+		TestEqual(TEXT("for the app asked about"), NoRow.AppId, AppId);
+		TestEqual(TEXT("and the avatar asked about"), NoRow.AvatarId, AvatarId);
+	}
+
+	FCrowdyAppAvatarState Row;
+	if (TestTrue(TEXT("a real row reads"), CrowdyAvatarAppState::ReadAnswer(MakeResult(TEXT(
+		R"({ "avatarAppState": { "appId": "9", "avatarId": "42", "state": "QUJD", "createdAt": "c", "updatedAt": "u" } })")),
+		AppId, AvatarId, Row, Error)))
+	{
+		TestEqual(TEXT("the row's state is handed back"), Row.RawState, FString(TEXT("QUJD")));
+		TestEqual(TEXT("the row's update time survives"), Row.UpdatedAt, FString(TEXT("u")));
+	}
+
+	FCrowdyCppJsonResult Refused;
+	Refused.ErrorMessage = TEXT("Forbidden: not your avatar");
+	Refused.ErrorCode = TEXT("FORBIDDEN");
+	FCrowdyAppAvatarState Unread;
+	TestFalse(TEXT("a refusal is still an error"),
+		CrowdyAvatarAppState::ReadAnswer(Refused, AppId, AvatarId, Unread, Error));
+	TestFalse(TEXT("a refusal says why"), Error.Message.IsEmpty());
+
+	TestFalse(TEXT("an answer without the field is unreadable"), CrowdyAvatarAppState::ReadAnswer(
+		MakeResult(TEXT(R"({ "avatar": null })")), AppId, AvatarId, Unread, Error));
+	TestEqual(TEXT("an unreadable answer is a server error"), Error.Code, ECrowdyAvatarErrorCode::ServerError);
+
+	Error = FCrowdyAvatarError();
+	TestFalse(TEXT("a row that does not parse is unreadable"), CrowdyAvatarAppState::ReadAnswer(
+		MakeResult(TEXT(R"({ "avatarAppState": { "state": "QUJD" } })")), AppId, AvatarId, Unread, Error));
+	TestEqual(TEXT("a row that does not parse is a server error"), Error.Code, ECrowdyAvatarErrorCode::ServerError);
+
+	// Get Avatar App State As writes through WriteState; a string output stands in for the connected struct.
+	FProperty* OutProp = FCrowdyAppAvatarState::StaticStruct()->FindPropertyByName(TEXT("RawState"));
+	if (!TestNotNull(TEXT("a string output to write into"), OutProp))
+	{
+		return false;
+	}
+
+	FCrowdyAppAvatarState Output;
+	Output.RawState = TEXT("left from an earlier run");
+	void* OutData = OutProp->ContainerPtrToValuePtr<void>(&Output);
+	TestTrue(TEXT("no state is a success"), CrowdyAvatarAppState::WriteState(FString(), OutProp, OutData));
+	TestTrue(TEXT("no state resets the output to its default"), Output.RawState.IsEmpty());
+
+	TArray<uint8> Bytes;
+	FMemoryWriter Writer(Bytes);
+	FString Saved = TEXT("saved");
+	Writer << Saved;
+	TestTrue(TEXT("a saved state decodes"), CrowdyAvatarAppState::WriteState(FBase64::Encode(Bytes), OutProp, OutData));
+	TestEqual(TEXT("into the output"), Output.RawState, Saved);
+
+	TestFalse(TEXT("a state that does not decode is a failure"),
+		CrowdyAvatarAppState::WriteState(TEXT("%%% not base64"), OutProp, OutData));
+
+	// A string of five characters that carries only one, and a saved string with a byte too many.
+	const TArray<uint8> Short = { 5, 0, 0, 0, 'A' };
+	TestFalse(TEXT("a blob that runs short is a failure"),
+		CrowdyAvatarAppState::WriteState(FBase64::Encode(Short), OutProp, OutData));
+	TArray<uint8> Long;
+	FMemoryWriter LongWriter(Long);
+	FString Other = TEXT("other");
+	LongWriter << Other;
+	Long.Add(0);
+	TestFalse(TEXT("a blob longer than its type is a failure"),
+		CrowdyAvatarAppState::WriteState(FBase64::Encode(Long), OutProp, OutData));
+	TestEqual(TEXT("a failed read leaves the output as it was"), Output.RawState, Saved);
+
+	// A length past the blob's own size: the archive refuses it with an error, though the read ends at the blob's end.
+	AddExpectedErrorPlain(TEXT("String is too large"), EAutomationExpectedErrorFlags::Contains, 1);
+	const TArray<uint8> Oversized = { 16, 0, 0, 0 };
+	TestFalse(TEXT("a length the blob cannot hold is a failure"),
+		CrowdyAvatarAppState::WriteState(FBase64::Encode(Oversized), OutProp, OutData));
+
+	return true;
+}
+
+#if WITH_EDITOR
+// A Blueprint struct keeps its defaults outside C++, so "no state" must apply them rather than zero the output.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyAvatarAppStateNoStateGivesBlueprintDefaultsTest,
+	"CrowdySDK.CrowdyServices.AvatarAppStateNoStateGivesBlueprintDefaults", ServiceTestFlags)
+bool FCrowdyAvatarAppStateNoStateGivesBlueprintDefaultsTest::RunTest(const FString& Parameters)
+{
+	TStrongObjectPtr<UUserDefinedStruct> Progress(FStructureEditorUtils::CreateUserDefinedStruct(GetTransientPackage(),
+		MakeUniqueObjectName(GetTransientPackage(), UUserDefinedStruct::StaticClass(), TEXT("S_CrowdyAvatarTest")), RF_Transient));
+	if (!TestNotNull(TEXT("the Blueprint struct is created"), Progress.Get()))
+	{
+		return false;
+	}
+	const FGuid Field = FStructureEditorUtils::GetVarDesc(Progress.Get())[0].VarGuid;
+	FStructureEditorUtils::ChangeVariableType(Progress.Get(), Field,
+		FEdGraphPinType(UEdGraphSchema_K2::PC_Int, NAME_None, nullptr, EPinContainerType::None, false, FEdGraphTerminalType()));
+	FStructureEditorUtils::ChangeVariableDefaultValue(Progress.Get(), Field, TEXT("250"));
+
+	// A latent node's output is a struct-typed slot; a host struct holding one stands in for the Blueprint frame.
+	TStrongObjectPtr<UScriptStruct> Host(NewObject<UScriptStruct>(GetTransientPackage()));
+	FStructProperty* Slot = new FStructProperty(Host.Get(), TEXT("Out"), RF_NoFlags);
+	Slot->Struct = Progress.Get();
+	Host->AddCppProperty(Slot);
+	Host->Bind();
+	Host->StaticLink(true);
+
+	const FIntProperty* Gold = CastField<FIntProperty>(Progress->ChildProperties);
+	if (!TestNotNull(TEXT("the struct holds an integer"), Gold))
+	{
+		return false;
+	}
+
+	void* Frame = FMemory::Malloc(Host->GetStructureSize(), Host->GetMinAlignment());
+	Host->InitializeStruct(Frame);
+	void* Out = Slot->ContainerPtrToValuePtr<void>(Frame);
+	TestEqual(TEXT("the slot starts at the struct's default"), Gold->GetPropertyValue_InContainer(Out), 250);
+
+	Gold->SetPropertyValue_InContainer(Out, 7);
+	TestTrue(TEXT("no state is a success"), CrowdyAvatarAppState::WriteState(FString(), Slot, Out));
+	TestEqual(TEXT("no state gives the Blueprint struct's own default"), Gold->GetPropertyValue_InContainer(Out), 250);
+
+	Host->DestroyStruct(Frame);
+	FMemory::Free(Frame);
+	return true;
+}
+#endif
 
 // The persistence pull reads one chunk per struct type and one voxel per instance. Telling "read and empty" apart
 // from "not read at all" is what decides whether a waiting Pull State node reports an empty slot or a failure.
