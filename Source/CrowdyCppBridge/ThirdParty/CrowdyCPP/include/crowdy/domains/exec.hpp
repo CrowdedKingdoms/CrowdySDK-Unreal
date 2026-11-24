@@ -422,7 +422,10 @@ class ExecAPI : public DomainBase {
   /// (`kind` `client`).
   graphql::Json modBuildStatus(std::string appId, std::string buildId) const;
   void modBuildStatusAsync(std::string appId, std::string buildId, graphql::GraphQLCallback done) const;
-  /// Polls `modBuildStatus`, server or CLIENT, blocking, like `waitForBuild`.
+  /// Polls `modBuildStatus`, server or CLIENT, blocking, like `waitForBuild`. A dropped
+  /// status read (no answer, an HTTP 5xx or 429 that is not the API's answer, or
+  /// `PLATFORM_BUSY`) is read again until `timeoutMs`, then thrown; a refusal is thrown at
+  /// once. Built without exceptions, any failed read returns the invalid Json at once.
   graphql::Json waitForModBuild(std::string appId, std::string buildId, int intervalMs = 2000,
                                 int timeoutMs = 600000) const;
   /// Deploy a mod build of yours to a grid you own (`execModDeploy`): a new mod starts off.

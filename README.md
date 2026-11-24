@@ -5,12 +5,18 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.28.0** (Unreal Engine 5.8). See the
+**Current version: 2.28.1** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
 **Upgrading? Read [MIGRATION.md](MIGRATION.md): every release from 2.24.0 lists what changed and the exact steps to migrate.**
+
+**New in 2.28.1:** a patch release. Get Avatar App State answers an avatar with no state for your app
+as success with an empty RawState, and Get Avatar App State As gives its output the type's defaults;
+a saved state whose size does not match the struct it is read into now fails instead of half-filling it. A
+PIE session no longer logs the plugin's own test errors. CrowdyCPP 0.93.0, with no change to the
+plugin. Nothing breaks; follow MIGRATION.md.
 
 **New in 2.28.0:** Toggle Owner Echo plays your own voice back again on realtime servers from
 v0.48.0, which send it only when asked. Set Voice Speakers and Set Video Speakers have the server

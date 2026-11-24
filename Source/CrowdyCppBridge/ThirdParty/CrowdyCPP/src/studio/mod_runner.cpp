@@ -14,6 +14,7 @@
 #include "crowdy/domains/crowdy_studio.hpp"
 #include "crowdy/domains/crowdy_studio_agent.hpp"
 #include "crowdy/domains/exec.hpp"
+#include "crowdy/graphql/dropped_read.hpp"
 
 namespace crowdy::studio {
 
@@ -41,6 +42,21 @@ std::string_view toString(CrowdyStudioRunOutcome outcome) {
     case CrowdyStudioRunOutcome::Refused: return "Refused";
     case CrowdyStudioRunOutcome::Cancelled: return "Cancelled";
     case CrowdyStudioRunOutcome::Failed: return "Failed";
+    case CrowdyStudioRunOutcome::Blocked: return "Blocked";
+  }
+  return "";
+}
+
+std::string_view toString(CrowdyStudioRunTargetState state) {
+  switch (state) {
+    case CrowdyStudioRunTargetState::NotStarted: return "NotStarted";
+    case CrowdyStudioRunTargetState::Building: return "Building";
+    case CrowdyStudioRunTargetState::BuildFailed: return "BuildFailed";
+    case CrowdyStudioRunTargetState::Built: return "Built";
+    case CrowdyStudioRunTargetState::Deployed: return "Deployed";
+    case CrowdyStudioRunTargetState::SwitchedOn: return "SwitchedOn";
+    case CrowdyStudioRunTargetState::Attached: return "Attached";
+    case CrowdyStudioRunTargetState::Consented: return "Consented";
   }
   return "";
 }
@@ -134,6 +150,8 @@ struct CrowdyStudioModRunner::Impl {
   std::shared_ptr<domains::CrowdyStudioAPI> projects;
   std::shared_ptr<domains::CrowdyStudioAgentAPI> agent;
   std::shared_ptr<graphql::Dispatcher> dispatcher;
+  /// Set on a runner whose requests carry their own token (setAppToken writes it).
+  std::shared_ptr<graphql::AuthState> appTokenAuth;
   std::shared_ptr<mod_runner_detail::Timer> timer;
   std::mutex mutex;
   std::map<std::uint64_t, std::shared_ptr<mod_runner_detail::Run>> runs;
@@ -149,6 +167,7 @@ namespace mod_runner_detail {
 
 using Outcome = CrowdyStudioRunOutcome;
 using Step = CrowdyStudioRunStep;
+using TargetState = CrowdyStudioRunTargetState;
 
 /// The last kCrowdyStudioRunLogBytes of a build's log, cut at a character.
 std::string logTail(std::string log) {
@@ -167,8 +186,24 @@ std::vector<CrowdyStudioDiagnostic> diagnosticsOf(const std::string& log,
   }
 }
 
+/// The mod facts an ExecMod answer (or a listing's entry) carries, onto `entry`: its id, its
+/// switch, whether it runs, and why it is blocked. A `blocked` of null clears the reason; an
+/// answer that does not carry `blocked` leaves it.
+void recordModState(CrowdyStudioRunTarget& entry, const graphql::Json& mod) {
+  if (mod["modId"].isString() || mod["modId"].isNumber()) entry.modId = mod["modId"].asBigIntString();
+  if (mod["enabled"].isBool()) entry.enabled = mod["enabled"].asBool();
+  if (mod["running"].isBool()) entry.running = mod["running"].asBool();
+  const graphql::Json blocked = mod["blocked"];
+  if (blocked.isString()) {
+    entry.blocked = blocked.asString();
+  } else if (blocked.ok() && blocked.isNull()) {
+    entry.blocked.reset();
+  }
+}
+
 class Run : public std::enable_shared_from_this<Run> {
-  /// A callback that reaches this run only while it is unfinished and not cancelled.
+  /// A callback that reaches this run only while it is unfinished and not cancelled. What
+  /// it throws ends the run Failed rather than leaving CrowdyClient::poll().
   /// (First in the class: the members below deduce its type.)
   template <typename Fn>
   auto guard(Fn fn) {
@@ -179,7 +214,11 @@ class Run : public std::enable_shared_from_this<Run> {
         self->finish(Outcome::Cancelled, "The run was cancelled");
         return;
       }
-      fn(*self, std::forward<decltype(args)>(args)...);
+      try {
+        fn(*self, std::forward<decltype(args)>(args)...);
+      } catch (...) {
+        self->failOnException();
+      }
     };
   }
 
@@ -199,14 +238,12 @@ class Run : public std::enable_shared_from_this<Run> {
   }
 
   void start() {
-    auto impl = impl_.lock();
-    if (!impl) return;
-    step(Step::ReadingProject, std::nullopt, "Reading project " + request_.projectId);
-    impl->projects->getProjectAsync(
-        request_.scope, request_.projectId,
-        guard([](Run& run, graphql::GraphQLOutcome outcome, CrowdyStudioProject project) {
-          run.onProject(std::move(outcome), std::move(project));
-        }));
+    try {
+      step(Step::ReadingProject, std::nullopt, "Reading project " + request_.projectId);
+      readProject(false);
+    } catch (...) {
+      failOnException();
+    }
   }
 
   /// The runner is going away: end without calling back.
@@ -218,6 +255,42 @@ class Run : public std::enable_shared_from_this<Run> {
   }
 
  private:
+  /// End the run Failed on the exception being handled; call it only inside a catch block.
+  void failOnException() {
+    try {
+      throw;
+    } catch (const std::exception& error) {
+      finish(Outcome::Failed, std::string("The run stopped: ") + error.what());
+    } catch (...) {
+      finish(Outcome::Failed, "The run stopped on an exception");
+    }
+  }
+
+  /// Run `then` on this run after `delayMs`, from the dispatcher.
+  void later(std::int64_t delayMs, std::function<void(Run&)> then) {
+    auto impl = impl_.lock();
+    if (!impl) return;
+    impl->timer->after(delayMs, guard([then = std::move(then)](Run& run) { then(run); }));
+  }
+
+  /// The wait before a dropped read is read once more.
+  std::int64_t readAgainDelay(const graphql::GraphQLOutcome& outcome) const {
+    return std::max(request_.pollIntervalMs, graphql::detail::retryAfterMsOf(outcome));
+  }
+
+  void readProject(bool again) {
+    auto impl = impl_.lock();
+    if (!impl) return;
+    impl->projects->getProjectAsync(
+        request_.scope, request_.projectId,
+        guard([again](Run& run, graphql::GraphQLOutcome outcome, CrowdyStudioProject project) {
+          if (!again && !outcome.ok() && graphql::detail::isDroppedRead(outcome)) {
+            return run.later(run.readAgainDelay(outcome), [](Run& next) { next.readProject(true); });
+          }
+          run.onProject(std::move(outcome), std::move(project));
+        }));
+  }
+
   void onProject(graphql::GraphQLOutcome outcome, CrowdyStudioProject project) {
     if (!outcome.ok()) return fail(outcome, "Reading the project failed", false);
     project_ = std::move(project);
@@ -244,6 +317,18 @@ class Run : public std::enable_shared_from_this<Run> {
     modName_ = hasServer_ ? serverName_ : clientName_;
     if ((hasServer_ && serverName_.empty()) || (hasClient_ && clientName_.empty())) {
       return finish(Outcome::Failed, "Crowdy Studio target module name is required");
+    }
+    const auto pinned = [](const std::optional<std::string>& expected, bool has, const std::string& name,
+                           const char* kind) -> std::optional<std::string> {
+      if (!expected || (has && name == *expected)) return std::nullopt;
+      return has ? "The project's " + std::string(kind) + " module is '" + name + "', not '" + *expected + "'"
+                 : "The project has no " + std::string(kind) + " module, not '" + *expected + "'";
+    };
+    if (auto conflict = pinned(request_.expectedServerModuleName, hasServer_, serverName_, "SERVER")) {
+      return finish(Outcome::RevisionConflict, std::move(*conflict));
+    }
+    if (auto conflict = pinned(request_.expectedClientModuleName, hasClient_, clientName_, "CLIENT")) {
+      return finish(Outcome::RevisionConflict, std::move(*conflict));
     }
     if (!crowdyStudioIsModName(modName_)) {
       return finish(Outcome::Failed,
@@ -276,11 +361,11 @@ class Run : public std::enable_shared_from_this<Run> {
         return finish(Outcome::CompileFailed, client.message);
       }
     }
-    if (request_.checkLiveModding) return checkLiveModding();
+    if (request_.checkLiveModding) return checkLiveModding(false);
     buildFirst();
   }
 
-  void checkLiveModding() {
+  void checkLiveModding(bool again) {
     auto impl = impl_.lock();
     if (!impl) return;
     if (!impl->agent) {
@@ -290,11 +375,18 @@ class Run : public std::enable_shared_from_this<Run> {
         request_.deployment == CrowdyStudioDeployment::Draft
             ? domains::CrowdyStudioLiveModdingAction::DraftTest
             : domains::CrowdyStudioLiveModdingAction::DeployLive;
-    step(Step::CheckingLiveModding, std::nullopt,
-         "Asking whether this player may " + std::string(domains::toString(action)));
+    if (!again) {
+      step(Step::CheckingLiveModding, std::nullopt,
+           "Asking whether this player may " + std::string(domains::toString(action)));
+    }
     impl->agent->liveModdingAsync(
-        request_.scope.appId, action, guard([action](Run& run, graphql::GraphQLOutcome outcome) {
-          if (!outcome.ok()) return run.fail(outcome, "The live-modding check refused", false);
+        request_.scope.appId, action, guard([action, again](Run& run, graphql::GraphQLOutcome outcome) {
+          if (!outcome.ok()) {
+            if (!again && graphql::detail::isDroppedRead(outcome)) {
+              return run.later(run.readAgainDelay(outcome), [](Run& next) { next.checkLiveModding(true); });
+            }
+            return run.fail(outcome, "The live-modding check refused", false);
+          }
           if (!outcome.data.asBool()) {
             return run.finish(Outcome::Refused, "The app's Allow Live Modding refused " +
                                                     std::string(domains::toString(action)));
@@ -309,7 +401,7 @@ class Run : public std::enable_shared_from_this<Run> {
         if (run.hasServer_) {
           run.build(CrowdyStudioTarget::Server, [](Run& next) { next.deployServer(); });
         } else {
-          run.findRider();
+          run.findRider(false);
         }
       });
     } else {
@@ -335,11 +427,16 @@ class Run : public std::enable_shared_from_this<Run> {
       if (built.buildId.empty()) {
         return run.finish(Outcome::Failed, built.moduleName + "'s build returned no build id");
       }
-      run.poll(built.buildId, 0,
+      built.state = TargetState::Building;
+      run.poll(built.buildId, 0, run.request_.pollIntervalMs, {},
                [which](Run& done, const graphql::Json& status) { done.recordBuild(which, status); },
-               [which, then = std::move(then)](Run& done) { then(done); },
+               [which, then = std::move(then)](Run& done) {
+                 done.target(which).state = TargetState::Built;
+                 then(done);
+               },
                [which](Run& done) {
                  CrowdyStudioRunTarget& failed = done.target(which);
+                 failed.state = TargetState::BuildFailed;
                  failed.message = failed.moduleName + " failed to compile";
                  done.finish(Outcome::CompileFailed, failed.message);
                });
@@ -353,32 +450,47 @@ class Run : public std::enable_shared_from_this<Run> {
     }
   }
 
-  /// Poll a build until it succeeds or fails, `record`ing each answer.
-  void poll(std::string buildId, int attempt, std::function<void(Run&, const graphql::Json&)> record,
-            std::function<void(Run&)> succeeded, std::function<void(Run&)> failed) {
+  /// Poll a build until it succeeds or fails, `record`ing each answer. A dropped status read
+  /// is a missed poll: it counts toward the limit, the next poll waits at least what a busy
+  /// refusal asked for, and a limit reached after one names the last.
+  void poll(std::string buildId, int attempt, std::int64_t delayMs, std::string lastMiss,
+            std::function<void(Run&, const graphql::Json&)> record, std::function<void(Run&)> succeeded,
+            std::function<void(Run&)> failed) {
     auto impl = impl_.lock();
     if (!impl) return;
-    auto wait = guard([buildId, attempt, record = std::move(record), succeeded = std::move(succeeded),
-                       failed = std::move(failed)](Run& run) mutable {
+    auto wait = guard([buildId, attempt, lastMiss = std::move(lastMiss), record = std::move(record),
+                       succeeded = std::move(succeeded), failed = std::move(failed)](Run& run) mutable {
       auto owner = run.impl_.lock();
       if (!owner) return;
       owner->exec->modBuildStatusAsync(
           run.request_.scope.appId, buildId,
-          run.guard([buildId, attempt, record = std::move(record), succeeded = std::move(succeeded),
+          run.guard([buildId, attempt, lastMiss = std::move(lastMiss), record = std::move(record),
+                     succeeded = std::move(succeeded),
                      failed = std::move(failed)](Run& next, graphql::GraphQLOutcome outcome) mutable {
-            if (!outcome.ok()) return next.fail(outcome, "Reading build " + buildId + " failed", false);
-            record(next, outcome.data);
-            const std::string status = outcome.data["status"].asString();
-            if (status == "succeeded") return succeeded(next);
-            if (status == "failed") return failed(next);
-            if (attempt + 1 >= next.request_.pollLimit) {
-              return next.finish(Outcome::Failed, "Build " + buildId + " did not finish within " +
-                                                      std::to_string(next.request_.pollLimit) + " polls");
+            std::int64_t delay = next.request_.pollIntervalMs;
+            if (!outcome.ok()) {
+              if (!graphql::detail::isDroppedRead(outcome)) {
+                return next.fail(outcome, "Reading build " + buildId + " failed", false);
+              }
+              lastMiss = graphql::detail::failureOf(outcome);
+              delay = next.readAgainDelay(outcome);
+            } else {
+              record(next, outcome.data);
+              const std::string status = outcome.data["status"].asString();
+              if (status == "succeeded") return succeeded(next);
+              if (status == "failed") return failed(next);
             }
-            next.poll(buildId, attempt + 1, std::move(record), std::move(succeeded), std::move(failed));
+            if (attempt + 1 >= next.request_.pollLimit) {
+              std::string message = "Build " + buildId + " did not finish within " +
+                                    std::to_string(next.request_.pollLimit) + " polls";
+              if (!lastMiss.empty()) message += "; the last status read that failed: " + lastMiss;
+              return next.finish(Outcome::Failed, std::move(message));
+            }
+            next.poll(buildId, attempt + 1, delay, std::move(lastMiss), std::move(record), std::move(succeeded),
+                      std::move(failed));
           }));
     });
-    impl->timer->after(request_.pollIntervalMs, std::move(wait));
+    impl->timer->after(delayMs, std::move(wait));
   }
 
   void recordBuild(CrowdyStudioTarget which, const graphql::Json& status) {
@@ -400,7 +512,8 @@ class Run : public std::enable_shared_from_this<Run> {
         request_.scope.appId, request_.scope.gridId, serverName_, server.buildId,
         guard([](Run& run, graphql::GraphQLOutcome outcome) {
           if (!outcome.ok()) return run.fail(outcome, "Deploying " + run.serverName_ + " failed", false);
-          run.recordMod(outcome.data);
+          run.target(CrowdyStudioTarget::Server).state = TargetState::Deployed;
+          run.recordServerMod(outcome.data);
           run.enableServer();
         }));
   }
@@ -414,48 +527,65 @@ class Run : public std::enable_shared_from_this<Run> {
         request_.scope.appId, request_.scope.gridId, serverName_, true,
         guard([](Run& run, graphql::GraphQLOutcome outcome) {
           if (!outcome.ok()) return run.fail(outcome, "Enabling " + run.serverName_ + " failed", false);
-          run.recordMod(outcome.data);
-          if (run.hasClient_) return run.attachClient();
-          run.succeed();
+          run.target(CrowdyStudioTarget::Server).state = TargetState::SwitchedOn;
+          run.recordServerMod(outcome.data);
+          if (!run.hasClient_) return run.succeed();
+          // The CLIENT half rides this mod.
+          recordModState(run.target(CrowdyStudioTarget::Client), outcome.data);
+          run.attachClient();
         }));
   }
 
-  void recordMod(const graphql::Json& mod) {
+  void recordServerMod(const graphql::Json& mod) {
     CrowdyStudioRunTarget& server = target(CrowdyStudioTarget::Server);
     if (mod["digest"].isString()) server.digest = mod["digest"].asString();
     if (mod["version"].isNumber()) server.version = mod["version"].asInt64();
+    recordModState(server, mod);
   }
 
   /// A CLIENT-only project's CLIENT half rides the mod named for its CLIENT module: with
   /// none of the player's on the grid, the mod starter is deployed under it first, and the
   /// mod is switched on, since only a running mod's CLIENT half is served.
-  void findRider() {
+  void findRider(bool again) {
     auto impl = impl_.lock();
     if (!impl) return;
-    step(Step::Deploying, CrowdyStudioTarget::Client, "Looking for mod '" + modName_ + "' on the grid");
+    if (!again) {
+      step(Step::Deploying, CrowdyStudioTarget::Client, "Looking for mod '" + modName_ + "' on the grid");
+    }
     impl->exec->myModsAsync(
-        request_.scope.appId, guard([](Run& run, graphql::GraphQLOutcome outcome) {
-          if (!outcome.ok()) return run.fail(outcome, "Listing the player's mods failed", false);
-          std::optional<bool> enabled;
+        request_.scope.appId, guard([again](Run& run, graphql::GraphQLOutcome outcome) {
+          if (!outcome.ok()) {
+            if (!again && graphql::detail::isDroppedRead(outcome)) {
+              return run.later(run.readAgainDelay(outcome), [](Run& next) { next.findRider(true); });
+            }
+            return run.fail(outcome, "Listing the player's mods failed", false);
+          }
+          std::optional<graphql::Json> rider;
           outcome.data.forEach([&](const graphql::Json& mod) {
             if (mod["gridId"].asBigIntString() == run.request_.scope.gridId &&
                 mod["name"].asString() == run.modName_) {
-              enabled = mod["enabled"].asBool();
+              rider = mod;
             }
           });
-          if (!enabled) return run.deployStarter();
-          if (!*enabled) return run.enableRider();
+          if (!rider) return run.deployStarter(false);
+          recordModState(run.target(CrowdyStudioTarget::Client), *rider);
+          if (!(*rider)["enabled"].asBool()) return run.enableRider();
           run.attachClient();
         }));
   }
 
-  void deployStarter() {
+  void deployStarter(bool again) {
     auto impl = impl_.lock();
     if (!impl) return;
-    step(Step::Deploying, CrowdyStudioTarget::Client, "Deploying the mod starter as " + modName_);
+    if (!again) step(Step::Deploying, CrowdyStudioTarget::Client, "Deploying the mod starter as " + modName_);
     impl->exec->modStarterAsync(
-        request_.scope.appId, guard([](Run& run, graphql::GraphQLOutcome outcome) {
-          if (!outcome.ok()) return run.fail(outcome, "Reading the mod starter failed", false);
+        request_.scope.appId, guard([again](Run& run, graphql::GraphQLOutcome outcome) {
+          if (!outcome.ok()) {
+            if (!again && graphql::detail::isDroppedRead(outcome)) {
+              return run.later(run.readAgainDelay(outcome), [](Run& next) { next.deployStarter(true); });
+            }
+            return run.fail(outcome, "Reading the mod starter failed", false);
+          }
           std::vector<CrowdyStudioProjectFile> files;
           for (const auto& file : crowdyStudioModStarterOf(outcome.data).files) {
             CrowdyStudioProjectFile project;
@@ -477,7 +607,7 @@ class Run : public std::enable_shared_from_this<Run> {
           const std::string buildId = outcome.data["buildId"].asString();
           if (buildId.empty()) return run.finish(Outcome::Failed, "The mod starter's build returned no build id");
           run.poll(
-              buildId, 0, [](Run&, const graphql::Json&) {},
+              buildId, 0, run.request_.pollIntervalMs, {}, [](Run&, const graphql::Json&) {},
               [buildId](Run& built) { built.deployRider(buildId); },
               [](Run& failed) {
                 failed.finish(Outcome::Failed, "The mod starter did not build, so the CLIENT half has no mod '" +
@@ -494,6 +624,7 @@ class Run : public std::enable_shared_from_this<Run> {
                                  if (!outcome.ok()) {
                                    return run.fail(outcome, "Deploying the mod starter failed", false);
                                  }
+                                 recordModState(run.target(CrowdyStudioTarget::Client), outcome.data);
                                  run.enableRider();
                                }));
   }
@@ -507,6 +638,7 @@ class Run : public std::enable_shared_from_this<Run> {
                                      if (!outcome.ok()) {
                                        return run.fail(outcome, "Enabling " + run.modName_ + " failed", false);
                                      }
+                                     recordModState(run.target(CrowdyStudioTarget::Client), outcome.data);
                                      run.attachClient();
                                    }));
   }
@@ -522,10 +654,14 @@ class Run : public std::enable_shared_from_this<Run> {
         guard([](Run& run, graphql::GraphQLOutcome outcome) {
           if (!outcome.ok()) return run.fail(outcome, "Attaching " + run.clientName_ + " failed", false);
           CrowdyStudioRunTarget& attached = run.target(CrowdyStudioTarget::Client);
+          attached.state = TargetState::Attached;
           attached.digest = outcome.data["digest"].asString();
           attached.version = outcome.data["clientVersion"].asInt64();
           attached.capabilityHash = outcome.data["capabilityHash"].asString();
-          run.consent(outcome.data["modId"].asString());
+          if (outcome.data["modId"].isString() || outcome.data["modId"].isNumber()) {
+            attached.modId = outcome.data["modId"].asBigIntString();
+          }
+          run.consent(attached.modId);
         }));
   }
 
@@ -543,12 +679,21 @@ class Run : public std::enable_shared_from_this<Run> {
                                           return run.fail(outcome, "Consenting to " + run.clientName_ + " failed",
                                                           false);
                                         }
+                                        run.target(CrowdyStudioTarget::Client).state = TargetState::Consented;
                                         run.succeed();
                                       }));
   }
 
+  /// Every step went through: Running, or Blocked when the switch-on answer said the mod
+  /// will not run.
   void succeed() {
     for (auto& entry : result_.targets) entry.phase = Step::Done;
+    CrowdyStudioRunTarget& mod = target(hasServer_ ? CrowdyStudioTarget::Server : CrowdyStudioTarget::Client);
+    if (mod.blocked) {
+      mod.message = "Mod '" + modName_ + "' is switched on but blocked: " + *mod.blocked;
+      step(Step::Done, std::nullopt, mod.message);
+      return finish(Outcome::Blocked, mod.message);
+    }
     const std::string message = request_.deployment == CrowdyStudioDeployment::Draft
                                     ? "Draft test is running"
                                     : "Project is live";
@@ -572,8 +717,7 @@ class Run : public std::enable_shared_from_this<Run> {
       }
       return finish(kind, what + ": " + error.message, error);
     }
-    finish(Outcome::Failed,
-           what + ": " + (outcome.errorMessage.empty() ? std::string("the request failed") : outcome.errorMessage));
+    finish(Outcome::Failed, what + ": " + graphql::detail::failureOf(outcome));
   }
 
   void finish(Outcome outcome, std::string message,
@@ -587,7 +731,12 @@ class Run : public std::enable_shared_from_this<Run> {
     auto done = std::move(done_);
     progress_ = nullptr;
     if (auto impl = impl_.lock()) impl->forget(id_);
-    if (done) done(std::move(result_));
+    if (!done) return;
+    try {
+      done(std::move(result_));
+    } catch (...) {
+      // onDone has run once; what it throws must not reach CrowdyClient::poll().
+    }
   }
 
   void step(Step at, std::optional<CrowdyStudioTarget> which, std::string message) {
@@ -650,6 +799,18 @@ CrowdyStudioModRunner::CrowdyStudioModRunner(std::shared_ptr<domains::ExecAPI> e
   impl_->timer = std::make_shared<mod_runner_detail::Timer>(std::move(dispatcher));
 }
 
+CrowdyStudioModRunner::CrowdyStudioModRunner(std::shared_ptr<domains::ExecAPI> exec,
+                                             std::shared_ptr<domains::CrowdyStudioAPI> projects,
+                                             std::shared_ptr<domains::CrowdyStudioAgentAPI> agent,
+                                             std::shared_ptr<graphql::Dispatcher> dispatcher,
+                                             std::shared_ptr<graphql::AuthState> appTokenAuth)
+    : CrowdyStudioModRunner(std::move(exec), std::move(projects), std::move(agent), std::move(dispatcher)) {
+  if (!appTokenAuth) {
+    throw std::invalid_argument("A CrowdyStudioModRunner with its own app token needs that token's AuthState");
+  }
+  impl_->appTokenAuth = std::move(appTokenAuth);
+}
+
 CrowdyStudioModRunner::~CrowdyStudioModRunner() {
   impl_->timer->stop();
   std::map<std::uint64_t, std::shared_ptr<mod_runner_detail::Run>> runs;
@@ -680,6 +841,16 @@ CrowdyStudioRunHandle CrowdyStudioModRunner::run(CrowdyStudioRunRequest request,
   }
   run->start();
   return CrowdyStudioRunHandle(std::move(state));
+}
+
+void CrowdyStudioModRunner::setAppToken(std::string token) {
+  if (!impl_->appTokenAuth) {
+    throw std::logic_error(
+        "This CrowdyStudioModRunner shares its client's session: set the token on the client, or make the "
+        "runner with CrowdyClient::createCrowdyStudioModRunner(appToken)");
+  }
+  if (token.empty()) throw std::invalid_argument("setAppToken needs an app token");
+  impl_->appTokenAuth->setToken(token);
 }
 
 }  // namespace crowdy::studio

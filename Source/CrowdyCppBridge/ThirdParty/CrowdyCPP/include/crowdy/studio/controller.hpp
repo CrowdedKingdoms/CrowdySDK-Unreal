@@ -1375,6 +1375,9 @@ class CrowdyStudioController {
     const CrowdyStudioDeploySubmission submitted =
         runtime_.deploy(submission);
     checkOperation(operation);
+    // A poll whose status read dropped (readFailure) is a missed poll; the
+    // limit's message names the last one.
+    std::optional<std::string> lastReadFailure;
     for (int attempt = 0; attempt < options_.compilePollLimit; ++attempt) {
       const auto versions = runtime_.versions(scope(), name);
       checkOperation(operation);
@@ -1383,7 +1386,9 @@ class CrowdyStudioController {
           [&](const CrowdyStudioRuntimeVersion& candidate) {
             return candidate.versionId == submitted.versionId;
           });
-      if (version != versions.end()) {
+      if (version != versions.end() && version->readFailure) {
+        lastReadFailure = version->readFailure;
+      } else if (version != versions.end()) {
         std::string status = version->compileStatus;
         std::transform(status.begin(), status.end(), status.begin(),
                        [](unsigned char value) {
@@ -1405,9 +1410,12 @@ class CrowdyStudioController {
       sleep(options_.compilePollMs);
       checkOperation(operation);
     }
-    const std::string message =
+    std::string message =
         "Compilation timed out after " +
         std::to_string(options_.compilePollLimit) + " polls";
+    if (lastReadFailure) {
+      message += "; the last status read that failed: " + *lastReadFailure;
+    }
     recordBuild(target, message);
     state_.runtime = {
         CrowdyStudioPhase::CompileFailed, target, message};

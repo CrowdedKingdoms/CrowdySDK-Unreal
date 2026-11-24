@@ -1,4 +1,5 @@
 #include "Subsystem/CrowdyAvatars.h"
+#include "CrowdyAvatarAppStateRead.h"
 #include "CrowdyServiceApiSupport.h"
 #include "CrowdyCppClient.h"
 #include "LatentActions.h"
@@ -18,6 +19,27 @@ namespace
 	constexpr ECrowdyCppApiDomain AvatarsDomain = ECrowdyCppApiDomain::Avatars;
 
 	constexpr const TCHAR* AvatarsLogName = TEXT("CrowdyAvatars");
+}
+
+bool CrowdyAvatarAppState::ReadAnswer(const FCrowdyCppJsonResult& Result, int64 AppId, int64 AvatarId,
+	FCrowdyAppAvatarState& Out, FCrowdyAvatarError& OutError)
+{
+	const TSharedPtr<FJsonObject>* Payload = ReadPayload(Result, OutError);
+	if (!Payload)
+	{
+		return false;
+	}
+
+	// The Application API answers null when the avatar has no row for this app yet, which is not a failure.
+	if ((*Payload)->HasTypedField<EJson::Null>(TEXT("avatarAppState")))
+	{
+		Out = FCrowdyAppAvatarState();
+		Out.AppId = AppId;
+		Out.AvatarId = AvatarId;
+		return true;
+	}
+
+	return ReadObject(Result, TEXT("avatarAppState"), Out, OutError);
 }
 
 void UCrowdyAvatars::Initialize(FSubsystemCollectionBase& Collection)
@@ -151,12 +173,13 @@ void UCrowdyAvatars::GetAvatarAppState(int64 AvatarId, FOnAppStateSuccess OnSucc
 		return;
 	}
 
-	Client->RunOp(AvatarsDomain, TEXT("AvatarAppState"), BuildAppStateVariables(GetAppId(), AvatarId),
-		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError](FCrowdyCppJsonResult Result)
+	const int64 AppId = GetAppId();
+	Client->RunOp(AvatarsDomain, TEXT("AvatarAppState"), BuildAppStateVariables(AppId, AvatarId),
+		GuardLifetime<FCrowdyCppJsonResult>(LiveSessionToken, [OnSuccess, OnError, AppId, AvatarId](FCrowdyCppJsonResult Result)
 		{
 			FCrowdyAppAvatarState AppState;
 			FCrowdyAvatarError Error;
-			if (!ReadObject(Result, TEXT("avatarAppState"), AppState, Error))
+			if (!CrowdyAvatarAppState::ReadAnswer(Result, AppId, AvatarId, AppState, Error))
 			{
 				OnError.ExecuteIfBound(Error, Error.Message);
 				return;
@@ -418,14 +441,27 @@ namespace AvatarStateSerialization
 			Reader << *reinterpret_cast<FString*>(Data);
 		else
 			Reader.Serialize(Data, Prop->GetSize());
-		return true;
+		// A blob that runs short, or is longer than this type, was written for another type or layout.
+		return !Reader.IsError() && Reader.AtEnd();
 	}
 
 	static bool FromBase64(const FString& Base64, FProperty* Prop, void* Data)
 	{
-		if (Base64.IsEmpty()) return false;
+		if (Base64.IsEmpty() || !Prop || !Data) return false;
 		TArray<uint8> Bytes;
-		return FBase64::Decode(Base64, Bytes) && Bytes.Num() > 0 && FromBytes(Bytes, Prop, Data);
+		if (!FBase64::Decode(Base64, Bytes) || Bytes.Num() == 0) return false;
+
+		// Read into a scratch value, so a state that does not read leaves the destination as it was.
+		void* Scratch = FMemory::Malloc(Prop->GetSize(), Prop->GetMinAlignment());
+		Prop->InitializeValue(Scratch);
+		const bool bRead = FromBytes(Bytes, Prop, Scratch);
+		if (bRead)
+		{
+			Prop->CopyCompleteValue(Data, Scratch);
+		}
+		Prop->DestroyValue(Scratch);
+		FMemory::Free(Scratch);
+		return bRead;
 	}
 }
 
@@ -453,6 +489,24 @@ DEFINE_FUNCTION(UCrowdyAvatars::execDeserializeFromAvatarState)
 	P_NATIVE_BEGIN;
 		*static_cast<bool*>(RESULT_PARAM) = AvatarStateSerialization::FromBase64(State, Prop, Data);
 	P_NATIVE_END;
+}
+
+bool CrowdyAvatarAppState::WriteState(const FString& RawState, FProperty* Prop, void* Data)
+{
+	if (!Prop || !Data)
+	{
+		return false;
+	}
+
+	// No state yet: the output takes its type's defaults (a Blueprint struct's own too), so an earlier run leaves nothing behind.
+	if (RawState.IsEmpty())
+	{
+		Prop->DestroyValue(Data);
+		Prop->InitializeValue(Data);
+		return true;
+	}
+
+	return AvatarStateSerialization::FromBase64(RawState, Prop, Data);
 }
 
 namespace
@@ -491,11 +545,17 @@ namespace
 		virtual void UpdateOperation(FLatentResponse& Response) override
 		{
 			if (!Result->bCompleted) return;
-			if (OutbSuccess) *OutbSuccess = Result->bSuccess;
-			if (Result->bSuccess && OutStateProp && OutStateData)
-				AvatarStateSerialization::FromBase64(Result->RawState, OutStateProp, OutStateData);
-			else if (!Result->bSuccess && OutError)
-				*OutError = Result->Error;
+			bool bSuccess = Result->bSuccess;
+			FCrowdyAvatarError Error = Result->Error;
+			if (bSuccess && OutStateProp && OutStateData
+				&& !CrowdyAvatarAppState::WriteState(Result->RawState, OutStateProp, OutStateData))
+			{
+				bSuccess = false;
+				Error.Code = ECrowdyAvatarErrorCode::ServerError;
+				Error.Message = TEXT("The avatar's saved state could not be read into the connected struct.");
+			}
+			if (OutbSuccess) *OutbSuccess = bSuccess;
+			if (!bSuccess && OutError) *OutError = Error;
 			Response.FinishAndTriggerIf(true, ExecutionFunction, OutputLink, CallbackTarget);
 		}
 	};
@@ -597,13 +657,15 @@ DEFINE_FUNCTION(UCrowdyAvatars::execGetAvatarAppStateAs)
 			return;
 		}
 
+		const int64 AppId = P_THIS->GetAppId();
+		const int64 AvatarId = Z_Param_AvatarId;
 		Client->RunOp(AvatarsDomain, TEXT("AvatarAppState"),
-			UCrowdyAvatars::BuildAppStateVariables(P_THIS->GetAppId(), Z_Param_AvatarId),
-			[Result](FCrowdyCppJsonResult Response)
+			UCrowdyAvatars::BuildAppStateVariables(AppId, AvatarId),
+			[Result, AppId, AvatarId](FCrowdyCppJsonResult Response)
 			{
 				FCrowdyAppAvatarState AppState;
 				FCrowdyAvatarError Error;
-				if (!ReadObject(Response, TEXT("avatarAppState"), AppState, Error))
+				if (!CrowdyAvatarAppState::ReadAnswer(Response, AppId, AvatarId, AppState, Error))
 				{
 					FailLatentResult(Result, Error);
 					return;

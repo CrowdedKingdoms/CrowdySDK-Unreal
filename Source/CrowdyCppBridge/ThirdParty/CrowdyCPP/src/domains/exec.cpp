@@ -16,6 +16,7 @@
 #include "crowdy/core/base64.hpp"
 #include "crowdy/default_origin.hpp"
 #include "crowdy/generated/operations.hpp"
+#include "crowdy/graphql/dropped_read.hpp"
 #include "crowdy/graphql/errors.hpp"
 #include "crowdy/graphql/estate.hpp"
 
@@ -1481,7 +1482,21 @@ void ExecAPI::modBuildStatusAsync(std::string appId, std::string buildId, graphq
 graphql::Json ExecAPI::waitForModBuild(std::string appId, std::string buildId, int intervalMs, int timeoutMs) const {
   const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   for (;;) {
-    auto b = modBuildStatus(appId, buildId);
+    graphql::Json b;
+#ifndef CROWDY_NO_EXCEPTIONS
+    try {
+      b = modBuildStatus(appId, buildId);
+    } catch (...) {
+      std::int64_t retryAfterMs = 0;
+      if (!graphql::detail::isDroppedReadException(&retryAfterMs) || std::chrono::steady_clock::now() >= until) {
+        throw;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(std::max<std::int64_t>(intervalMs, retryAfterMs)));
+      continue;
+    }
+#else
+    b = modBuildStatus(appId, buildId);
+#endif
     if (!b.isObject()) return b;
     const auto status = b["status"].asString();
     if (status == "succeeded" || status == "failed" || std::chrono::steady_clock::now() >= until) return b;

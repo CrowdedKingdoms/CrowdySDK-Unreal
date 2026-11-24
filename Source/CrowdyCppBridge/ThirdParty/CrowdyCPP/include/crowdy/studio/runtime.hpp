@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <future>
 #include <map>
@@ -10,11 +12,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "crowdy/domains/exec.hpp"
 #include "crowdy/domains/player_wallet.hpp"
+#include "crowdy/graphql/dropped_read.hpp"
 #include "crowdy/graphql/errors.hpp"
 #include "crowdy/graphql/json.hpp"
 #include "crowdy/studio/models.hpp"
@@ -65,6 +69,11 @@ struct CrowdyStudioRuntimeVersion {
   std::string versionId;
   std::string compileStatus;
   std::optional<std::string> compileLog;
+  /// Set when this poll's status read dropped (no answer, an HTTP 5xx or 429 that is not
+  /// the API's answer, or `PLATFORM_BUSY`): the status is unknown, and the controller
+  /// polls again, counting the miss toward its poll limit. (Initialized here, so a runtime's
+  /// `{versionId, compileStatus, compileLog}` stays warning-free.)
+  std::optional<std::string> readFailure = std::nullopt;
 };
 
 /// The project's CLIENT half as the API served it for this player, attached to
@@ -560,10 +569,19 @@ class CrowdyStudioModRuntime final : public ICrowdyStudioRuntime {
     return buildId;
   }
 
+  /// A dropped status read comes back as `readFailure`, with no status; the deploy that
+  /// follows a success (modBuildStatus) is never repeated by it.
   CrowdyStudioRuntimeVersion buildStatus(const CrowdyStudioProjectScope& scope, const std::string& buildId) {
-    const graphql::Json status = exec_.modBuildStatus(scope.appId, buildId);
     CrowdyStudioRuntimeVersion version;
     version.versionId = buildId;
+    graphql::Json status;
+    try {
+      status = exec_.modBuildStatus(scope.appId, buildId);
+    } catch (const std::exception& error) {
+      if (!graphql::detail::isDroppedReadException()) throw;
+      version.readFailure = error.what();
+      return version;
+    }
     version.compileStatus = status["status"].asString();
     if (status["log"].ok() && !status["log"].isNull()) version.compileLog = status["log"].asString();
     return version;
@@ -585,11 +603,11 @@ class CrowdyStudioModRuntime final : public ICrowdyStudioRuntime {
   /// since only a running mod's CLIENT half is served.
   void ensureClientOnlyMod(const CrowdyStudioProjectScope& scope, const std::string& name) {
     graphql::Json mine;
-    exec_.myMods(scope.appId).forEach([&](const graphql::Json& mod) {
+    readAgainOnce([&] { return exec_.myMods(scope.appId); }).forEach([&](const graphql::Json& mod) {
       if (mod["gridId"].asBigIntString() == scope.gridId && mod["name"].asString() == name) mine = mod;
     });
     if (!mine.isObject()) {
-      const graphql::Json starter = exec_.modStarter(scope.appId);
+      const graphql::Json starter = readAgainOnce([&] { return exec_.modStarter(scope.appId); });
       domains::ExecCrate crate;
       crate.name = crateName(name);
       starter["files"].forEach([&](const graphql::Json& file) {
@@ -607,6 +625,22 @@ class CrowdyStudioModRuntime final : public ICrowdyStudioRuntime {
       (void)exec_.modSetEnabled(scope.appId, scope.gridId, name, true);
     }
   }
+
+  /// `read`, and once more after kReadAgainMs (or a busy refusal's wait) when it drops.
+  template <typename Read>
+  static graphql::Json readAgainOnce(Read read) {
+    std::int64_t retryAfterMs = 0;
+    try {
+      return read();
+    } catch (...) {
+      if (!graphql::detail::isDroppedReadException(&retryAfterMs)) throw;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::max<std::int64_t>(kReadAgainMs, retryAfterMs)));
+    return read();
+  }
+
+  /// The wait before a dropped read is read once more, as waitForModBuild's interval here.
+  static constexpr std::int64_t kReadAgainMs = 1'500;
 
   std::shared_ptr<domains::ExecConnection> modConnection(const CrowdyStudioProjectScope& scope,
                                                          std::string_view moduleName) {
