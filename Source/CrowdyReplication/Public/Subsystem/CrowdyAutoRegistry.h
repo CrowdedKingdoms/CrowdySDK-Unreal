@@ -132,7 +132,28 @@ public:
 	 */
 	static const class UCrowdyEntityComponent* ResolveDefaultEntityComponent(const UClass* ActorClass);
 
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Whether a CrowdyState layout for Class is already cached, without building one. */
+	bool HasCachedRepLayoutForTest(const UClass* Class) const;
+
+	/** Lets RescanRepLayouts register SDK test fixtures too, which a game's sweep never does. */
+	void SetSweepIncludesTestFixturesForTest(bool bInclude) { bSweepIncludesTestFixturesForTest = bInclude; }
+#endif
+
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	bool bSweepIncludesTestFixturesForTest = false;
+#endif
+
+	bool SweepIncludesTestFixtures() const
+	{
+#if WITH_DEV_AUTOMATION_TESTS
+		return bSweepIncludesTestFixturesForTest;
+#else
+		return false;
+#endif
+	}
+
 	void InstallIDOverrideResolvers();
 	void ScanAndRegisterExecutorStateStructs();
 
