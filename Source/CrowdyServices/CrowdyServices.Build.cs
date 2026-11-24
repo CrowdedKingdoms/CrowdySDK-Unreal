@@ -40,6 +40,12 @@ public class CrowdyServices : ModuleRules
 			}
 		);
 
+		if (Target.bBuildEditor)
+		{
+			// Editor-only: the avatar state tests build a Blueprint struct.
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "BlueprintGraph" });
+		}
+
 		if (Target.Platform == UnrealTargetPlatform.Win64 && Target.Architecture == UnrealArch.X64)
 		{
 			PrivateDependencyModuleNames.AddRange(new string[] { "CrowdyModScriptRuntime", "Projects" });
