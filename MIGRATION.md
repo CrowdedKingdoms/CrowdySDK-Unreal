@@ -27,6 +27,37 @@ Every release has the same subsections, in this order:
 A subsection with nothing to say is written as "None." so you never have to guess whether
 something was left out.
 
+## 2.28.1
+
+**Verdict.** Nothing breaks and nothing is deprecated. Two fixes: an avatar with no state for your app is no longer reported as an error, and a PIE session no longer logs the plugin's own test errors. Avatar states whose size does not match the struct they are read into now fail instead of half-filling it. The vendored CrowdyCPP moves to 0.93.0, with no change to the plugin.
+
+**Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate.
+
+**What changed**
+
+| Old | New | Kind |
+|---|---|---|
+| `GetAvatarAppState` and the **Get Avatar App State** node called `On Error` with "The server's answer could not be read." for an avatar with no state for this app, and **Get Avatar App State As** returned `bSuccess` false. | They succeed: `GetAvatarAppState` and **Get Avatar App State** with an empty `RawState` and that avatar's `AvatarId` and `AppId`, **Get Avatar App State As** with its state output set to the type's defaults (a Blueprint struct's own defaults included). A refusal or a failed request is still an error. | Behaviour. |
+| **Get Avatar App State As** returned `bSuccess` true, and **Deserialize Avatar State to Struct** returned true, when a saved state's size did not match the connected struct (too short or too long), with the struct partly written; **Get Avatar App State As** also returned `bSuccess` true for a state that was not base64. | **Get Avatar App State As** returns `bSuccess` false with a `ServerError`, and **Deserialize Avatar State to Struct** returns false; the struct is left as it was. A state saved before you changed the struct now fails when its size no longer matches. A change that keeps the size (a field retyped to one of the same size, two fields swapped) still reads, with wrong values. | Behaviour. |
+| Every PIE session logged errors and warnings for the plugin's deliberately invalid CrowdyState test classes, so an automation test that starts PIE failed. | They are not logged outside the plugin's own tests. | Behaviour (uncooked builds only: the editor, PIE and uncooked `-game`). |
+| The vendored CrowdyCPP was 0.92.0. | CrowdyCPP 0.93.0: Studio mod runner changes the plugin does not use. | Dependency. |
+
+**Do this, in order**
+
+1. If your game treats `On Error` from **Get Avatar App State** (or `bSuccess` false from **Get Avatar App State As**) as "this player has no saved state yet", move that handling to the success path: an empty `RawState`, or the default value on the state output.
+2. If you changed the fields of a struct you save as avatar state, decide what a player whose saved state no longer fits should get, since **Get Avatar App State As** now fails when the size no longer matches. Do not rely on this to catch every layout change: one that keeps the size still reads, with wrong values.
+3. If you added expected-error or expected-warning lines to your automation tests for the plugin's CrowdyState test classes (`/Script/CrowdyReplication.CrowdyState...` and `CrowdyContinuous...TestActor` classes, with messages such as "is an object/interface/delegate reference" or "is not a valid CrowdyOnRep notify"), remove them.
+
+**CoreRedirects.** None.
+
+**Blueprint assets.** None to re-save. To find graphs that use the changed nodes, run `grep -a -l -r "GetAvatarAppState" Content/` (it also matches **Get Avatar App State As**, and **Get Avatar App States**, which this release does not change) and `grep -a -l -r "DeserializeFromAvatarState" Content/`. Check the search reads binary assets with `grep -a -l -r "K2Node_" Content/`, which finds every Blueprint graph.
+
+**Behaviour changes.** The avatar app state and decode changes above; no plugin test errors in PIE.
+
+**Verify.** For an avatar that never saved state in this app, **Get Avatar App State** reaches `On Success` with an empty `RawState`. A PIE session of any map logs no `CrowdyState: property ... on '/Script/CrowdyReplication.CrowdyState...'` error.
+
+**Removed in the next release.** None.
+
 ## 2.28.0
 
 **Verdict.** Nothing breaks and nothing is deprecated. Additions: `Set Voice Speakers` and `Hear All Voice Speakers`, `Set Video Speakers` and `See All Video Speakers`, which choose whose spatial voice and webcam video the server sends this player. Behaviour changes: `Toggle Owner Echo` works again on realtime servers from v0.48.0, which stopped sending a player their own voice unless asked, and while it is on the server also sends the player's own webcam video, which the SDK discards; Studio says plainly when an organization has reached its app limit; the API addresses are read under the Application API's new names.
