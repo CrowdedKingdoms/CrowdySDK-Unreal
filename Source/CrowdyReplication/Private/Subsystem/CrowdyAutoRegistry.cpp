@@ -380,6 +380,8 @@ void UCrowdyAutoRegistry::ScanAndRegisterRepLayouts()
 
 	for (TObjectIterator<UClass> It; It; ++It)
 	{
+		// SDK test fixtures are invalid on purpose and would log errors in every game's PIE; FindRepLayout still builds them on demand.
+		if (!SweepIncludesTestFixtures() && CrowdyTestFixture::IsTestFixture(*It)) continue;
 		RegisterClassRepLayout(*It);
 	}
 
@@ -414,7 +416,7 @@ void UCrowdyAutoRegistry::RegisterClassRepLayout(UClass* Class)
 
 	// Judged on the finished layout, so the advisory sees exactly the properties that will replicate and
 	// reads the same flags the send path reads. Once per class per sweep, never on the per-entity path.
-	// An SDK test fixture class is registered normally but skipped here, so it never produces advisory noise.
+	// An SDK test fixture reaching here (a single-class update or a test's sweep) gets no advisory, so it never adds noise.
 	if (!CrowdyTestFixture::IsTestFixture(Class))
 	{
 		CrowdyStateHeartbeatAdvisory::ReportLayout(Layout);
@@ -481,6 +483,13 @@ bool UCrowdyAutoRegistry::BuildLayoutFromBaked(const UClass* Class, const UCrowd
 	return Out.IsValid();
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+bool UCrowdyAutoRegistry::HasCachedRepLayoutForTest(const UClass* Class) const
+{
+	return Class && RepLayouts.Contains(UCrowdyClassRegistry::Get()->GetID(Class));
+}
+#endif
+
 const FCrowdyRepLayout* UCrowdyAutoRegistry::FindRepLayout(const UClass* Class) const
 {
 	FCrowdyClassID DiscardedID = CROWDY_INVALID_CLASS_ID;
@@ -524,7 +533,7 @@ const FCrowdyRepLayout* UCrowdyAutoRegistry::FindRepLayout(const UClass* Class, 
 
 	// The cooked path reaches a layout only through here (metadata is gone, so the eager sweep builds
 	// nothing), and the flags come from the baked table, so the advisory reads the same either way.
-	// An SDK test fixture class is registered normally but skipped here, so it never produces advisory noise.
+	// An SDK test fixture is cached here on demand but gets no advisory, so it never adds noise.
 	if (!CrowdyTestFixture::IsTestFixture(Class))
 	{
 		CrowdyStateHeartbeatAdvisory::ReportLayout(Built);

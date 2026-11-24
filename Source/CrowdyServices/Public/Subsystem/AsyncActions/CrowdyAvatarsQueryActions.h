@@ -124,6 +124,7 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FAppStateAsyncResult OnError;
 
+	/** Reads this app's state for one avatar. An avatar with no state for this app yet is On Success with an empty RawState. */
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
 		Category="Crowdy SDK|Avatars|Queries", DisplayName="Get Avatar App State")
 	static UCrowdyAvatars_GetAvatarAppState* GetAvatarAppState(UObject* WorldContextObject, int64 AvatarId);

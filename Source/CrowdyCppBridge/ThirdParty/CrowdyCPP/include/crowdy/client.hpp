@@ -276,6 +276,15 @@ class CrowdyClient {
   /// (crowdy/studio/mod_runner.hpp), on cloned domain adapters sharing this
   /// client's session; its callbacks are delivered from poll().
   std::unique_ptr<studio::CrowdyStudioModRunner> createCrowdyStudioModRunner();
+  /// The same runner over an API client of its own, whose requests carry
+  /// `appToken` whatever this client's session holds when a run's later steps
+  /// go out: for an engine that installs a management or an app token on this
+  /// client before each call. It starts at this client's endpoint, shares its
+  /// transports and dispatcher (callbacks still come from poll()), follows a
+  /// WRONG_DATACENTER move within this client's estate on its own (this
+  /// client's requests follow theirs), and holds the token in memory only.
+  /// Call setAppToken on the runner when the app token rotates.
+  std::unique_ptr<studio::CrowdyStudioModRunner> createCrowdyStudioModRunner(std::string appToken);
 #endif
 
   // ----- Gameplay-token lifecycle ----------------------------------------------

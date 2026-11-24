@@ -4,6 +4,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "Engine/GameInstance.h"
+#include "Replication/State/CrowdyTestFixture.h"
 #include "Replication/State/FCrowdyRepLayout.h"
 #include "Replication/Subsystems/CrowdyStateTestSupport.h"
 #include "Subsystem/CrowdyAutoRegistry.h"
@@ -37,22 +38,18 @@ bool FCrowdyStateDiscoveryFindsAnnotatedTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	// RescanRepLayouts() sweeps every loaded UClass, which includes the sibling reject fixtures
-	// (UCrowdyStateObjectRejectTarget's object-ref, UCrowdyStateContainerRejectTarget's container). The
-	// builder logs an error for each rejected property, and an error logged during a running automation
-	// test fails it unless whitelisted so declare both as expected (Occurrences 0 means one or more).
+	// Every CrowdyState class in the SDK is a fixture, so this sweep includes them, and with them the reject
+	// fixtures' errors (Occurrences 0 means one or more).
+	Registry->SetSweepIncludesTestFixturesForTest(true);
 	AddExpectedError(TEXT("object/interface/delegate reference"), EAutomationExpectedErrorFlags::Contains, 0);
 	AddExpectedError(TEXT("CrowdyState does not replicate containers"), EAutomationExpectedErrorFlags::Contains, 0);
 	AddExpectedError(TEXT("transitively contains a container"), EAutomationExpectedErrorFlags::Contains, 0);
 	AddExpectedError(TEXT("is a fixed-size array"), EAutomationExpectedErrorFlags::Contains, 0);
-	// The sweep also covers ACrowdyStateOverlapActor, whose executor-overlap filter drops Health with an
-	// error; whitelist it here too.
 	AddExpectedError(TEXT("also lives in its executor state struct"), EAutomationExpectedErrorFlags::Contains, 0);
-	// The sweep also covers UCrowdyStateBadOnRepTarget, whose parameter-taking OnRep is cleared with an
-	// error by ValidateOnRepSignatures; whitelist it (one line covers both the missing and non-parameterless cases).
 	AddExpectedError(TEXT("is not a valid CrowdyOnRep notify"), EAutomationExpectedErrorFlags::Contains, 0);
 
 	Registry->RescanRepLayouts();
+	TestTrue(TEXT("the sweep cached the annotated layout"), Registry->HasCachedRepLayoutForTest(Class));
 
 	const FCrowdyRepLayout* Layout = Registry->FindRepLayout(Class);
 	TestNotNull(TEXT("annotated class has a discovered layout"), Layout);
@@ -111,6 +108,41 @@ bool FCrowdyStateDiscoveryFindsAnnotatedTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+#if WITH_METADATA
+// The startup sweep, which runs in every game's PIE, caches and logs nothing for the SDK's fixtures, while a fixture
+// asked for by name still builds and reaches its rejection error. Needs metadata, which marks the fixtures.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyStateSweepSkipsTestFixturesTest,
+	"CrowdySDK.State.SweepSkipsTestFixtures", CrowdyStateDiscoveryTestFlags)
+bool FCrowdyStateSweepSkipsTestFixturesTest::RunTest(const FString& Parameters)
+{
+	UClass* RejectClass = UCrowdyStateObjectRejectTarget::StaticClass();
+	TestTrue(TEXT("the reject class is marked as a fixture"), CrowdyTestFixture::IsTestFixture(RejectClass));
+
+	UCrowdyAutoRegistry* Registry = MakeStateRegistry();
+	if (!TestNotNull(TEXT("registry created"), Registry))
+	{
+		return false;
+	}
+
+	AddExpectedErrorPlain(TEXT("is an object/interface/delegate reference"), EAutomationExpectedErrorFlags::Contains, 1);
+
+	Registry->RescanRepLayouts();
+	TestFalse(TEXT("the sweep cached no reject fixture"), Registry->HasCachedRepLayoutForTest(RejectClass));
+	TestFalse(TEXT("the sweep cached no valid fixture"),
+		Registry->HasCachedRepLayoutForTest(UCrowdyStateTestTarget::StaticClass()));
+
+	const FCrowdyRepLayout* Layout = Registry->FindRepLayout(RejectClass);
+	if (!TestNotNull(TEXT("a fixture still builds on demand"), Layout))
+	{
+		return false;
+	}
+	TestNotNull(TEXT("the accepted property is kept"), FindByName(*Layout, TEXT("RepGood")));
+	TestNull(TEXT("the object reference is omitted"), FindByName(*Layout, TEXT("RepBadObject")));
+
+	return true;
+}
+#endif
 
 // Bake round-trip: a live layout, baked to FCrowdyBakedRepProperty rows via the shared factory and read
 // back through BuildLayoutFromBaked, reproduces the same layout the runtime computes live same count,

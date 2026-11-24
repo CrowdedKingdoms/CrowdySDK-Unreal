@@ -763,6 +763,39 @@ CrowdyClient::createCrowdyStudioModRunner() {
       std::make_shared<domains::CrowdyStudioAgentAPI>(gql_, dispatcher_),
       dispatcher_);
 }
+
+std::unique_ptr<studio::CrowdyStudioModRunner>
+CrowdyClient::createCrowdyStudioModRunner(std::string appToken) {
+  if (appToken.empty()) {
+    throw std::invalid_argument("createCrowdyStudioModRunner(appToken) needs an app token");
+  }
+  auto auth = std::make_shared<graphql::AuthState>();
+  auth->setToken(appToken);
+  auto gql = std::make_shared<graphql::GraphQLClient>(
+      graphql::GraphQLClientConfig{gql_->endpoint(), config_.timeoutMs, config_.maxResponseBytes},
+      transport_, auth);
+  gql->setDispatcher(dispatcher_);
+  if (config_.asyncTransport) {
+    gql->setAsyncTransport(config_.asyncTransport);
+  } else if (fallbackAsyncTransport_) {
+    gql->setAsyncTransport(fallbackAsyncTransport_);
+  }
+  // Weak, since the client owns its handler; and never `this`, which a move of
+  // this CrowdyClient would leave dangling.
+  gql->setWrongDatacenterHandler(
+      [weak = std::weak_ptr<graphql::GraphQLClient>(gql),
+       path = config_.graphqlEndpoint](const graphql::DatacenterMove& move) {
+        auto client = weak.lock();
+        if (!client || move.applicationApiUrl.empty()) return false;
+        if (!graphql::isSameEstate(client->endpoint(), move.applicationApiUrl)) return false;
+        return client->setEndpoint(resolveGraphqlEndpoint(move.applicationApiUrl, path));
+      });
+  return std::make_unique<studio::CrowdyStudioModRunner>(
+      std::make_shared<domains::ExecAPI>(gql, webSocketTransport_),
+      std::make_shared<domains::CrowdyStudioAPI>(gql),
+      std::make_shared<domains::CrowdyStudioAgentAPI>(gql, dispatcher_), dispatcher_,
+      std::move(auth));
+}
 #endif
 
 std::string CrowdyClient::studioOrigin() const {
