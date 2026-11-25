@@ -5,12 +5,19 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.28.1** (Unreal Engine 5.8). See the
+**Current version: 2.28.2** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
 **Upgrading? Read [MIGRATION.md](MIGRATION.md): every release from 2.24.0 lists what changed and the exact steps to migrate.**
+
+**New in 2.28.2:** a patch release. A class with a near tier shell and no authored Mass entity config
+now promotes: its derived config's level-of-detail settings carry the crowd tag the crowd's
+level-of-detail pass reads, so close rows become actors. When the plugin patches an authored config for
+a class with a shell, the copy gets the same tag if the authored trait has none, and for a class with a
+shell an untagged authored config that promotes on its own is reported. Classes with no shell are
+unchanged. Nothing breaks; follow MIGRATION.md.
 
 **New in 2.28.1:** a patch release. Get Avatar App State answers an avatar with no state for your app
 as success with an empty RawState, and Get Avatar App State As gives its output the type's defaults;

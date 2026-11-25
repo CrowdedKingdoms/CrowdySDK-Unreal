@@ -1,6 +1,8 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Actors/CrowdyMassNearTierActor.h"
 #include "Animation/AnimSequenceTransformProviderData.h"
+#include "Components/CrowdyMassNearTierShellComponent.h"
 #include "Assets/CrowdyMassAnimSet.h"
 #include "Components/ActorComponent.h"
 #include "Components/CrowdyMassAnimSetComponent.h"
@@ -12,6 +14,7 @@
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Actor.h"
+#include "MassCrowdFragments.h"
 #include "MassEntityConfigAsset.h"
 #include "MassEntityTraitBase.h"
 #include "MassSkinnedMeshRepresentationTypes.h"
@@ -444,6 +447,46 @@ bool FCrowdyMassDerivedConfigPlacesTheMeshTest::RunTest(const FString& Parameter
 	TestTrue(TEXT("whose local transform is the placement the class gives its mesh"),
 		Visualization->SkinnedMeshInstanceDesc.Meshes[0].LocalTransform.Equals(Placement));
 
+	return true;
+}
+
+/** MassCrowd's LOD processor gives viewers only to LOD settings with its tag, so a shell class's derived config needs it to promote. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassDerivedShellConfigTagsItsLODTest,
+	"CrowdySDK.Mass.DerivedConfigLODCarriesTheCrowdFilterTagOnlyWithAShell", CrowdyMassEntityTraitsAppendTestFlags)
+bool FCrowdyMassDerivedShellConfigTagsItsLODTest::RunTest(const FString& Parameters)
+{
+	using Fixture = FCrowdyMassEntityTraitsAppendTestFixture;
+
+	const TStrongObjectPtr<UCrowdyMassEntitySubsystem> Subsystem(Fixture::MakeSubsystem());
+
+	const TStrongObjectPtr<UBlueprintGeneratedClass> ShellClass(Fixture::MakeCompiledActorClass());
+	USCS_Node* ShellRoot = Fixture::AddComponentNode(ShellClass.Get(), NewObject<USceneComponent>(ShellClass.Get(), NAME_None, RF_Transient));
+	Fixture::AddMesh(ShellClass.Get(), ShellRoot);
+	UCrowdyMassNearTierShellComponent* Shell = NewObject<UCrowdyMassNearTierShellComponent>(ShellClass.Get(), NAME_None, RF_Transient);
+	Shell->NearTierActorClass = ACrowdyMassNearTierActor::StaticClass();
+	Fixture::AddComponentNode(ShellClass.Get(), Shell);
+
+	const UMassEntityConfigAsset* ShellConfig = Subsystem->GetOrBuildDerivedEntityConfigForTest(ShellClass.Get());
+	const UMassVisualizationTrait* ShellVisualization = ShellConfig ? Fixture::FindVisualizationTrait(*ShellConfig) : nullptr;
+	if (!TestNotNull(TEXT("a class with a mesh and a shell gets a visualization trait"), ShellVisualization)
+		|| !TestTrue(TEXT("that promotes to its shell"), ShellVisualization->HighResTemplateActor != nullptr))
+	{
+		return false;
+	}
+	TestTrue(TEXT("whose LOD settings carry the crowd tag MassCrowd's LOD processor filters on"),
+		ShellVisualization->LODParams.FilterTag == FMassCrowdTag::StaticStruct());
+
+	// Left untagged, a plain crowd draws the same at every level and keeps its rows out of the near tier's count.
+	const TStrongObjectPtr<UBlueprintGeneratedClass> PlainClass(Fixture::MakeCompiledActorClass());
+	USCS_Node* PlainRoot = Fixture::AddComponentNode(PlainClass.Get(), NewObject<USceneComponent>(PlainClass.Get(), NAME_None, RF_Transient));
+	Fixture::AddMesh(PlainClass.Get(), PlainRoot);
+	const UMassEntityConfigAsset* PlainConfig = Subsystem->GetOrBuildDerivedEntityConfigForTest(PlainClass.Get());
+	const UMassVisualizationTrait* PlainVisualization = PlainConfig ? Fixture::FindVisualizationTrait(*PlainConfig) : nullptr;
+	if (!TestNotNull(TEXT("a class with a mesh and no shell gets a visualization trait"), PlainVisualization))
+	{
+		return false;
+	}
+	TestNull(TEXT("whose LOD settings carry no filter tag"), PlainVisualization->LODParams.FilterTag.Get());
 	return true;
 }
 
