@@ -4,6 +4,7 @@
 #include "Derivation/CrowdyMassNearTierDerivation.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "MassCrowdFragments.h"
 #include "MassEntityConfigAsset.h"
 #include "MassEntityTraitBase.h"
 #include "MassEntityUtils.h"
@@ -166,6 +167,13 @@ bool FCrowdyMassNearTierAuthoredConfig::PromotesUsably(const UMassVisualizationT
 		return false;
 	}
 
+	// MassCrowd's LOD pass only measures LOD settings that carry a filter tag it runs for.
+	if (!Trait.LODParams.FilterTag)
+	{
+		OutProblem = TEXT("has no filter tag in its level of detail settings, so its entities stay at the farthest level and are never promoted. Use the crowd visualization trait, or set its LOD Filter Tag to the crowd tag");
+		return false;
+	}
+
 	return true;
 }
 
@@ -210,6 +218,11 @@ UMassEntityConfigAsset* FCrowdyMassNearTierAuthoredConfig::BuildPatchedConfig(UO
 
 	PatchedTrait->HighResTemplateActor = ShellClass;
 	PatchedTrait->Params.LODRepresentation[EMassLOD::High] = EMassRepresentationType::HighResSpawnedActor;
+	// An untagged trait's entities are never measured against the camera; a tag the author chose is kept.
+	if (!PatchedTrait->LODParams.FilterTag)
+	{
+		PatchedTrait->LODParams.FilterTag = FMassCrowdTag::StaticStruct();
+	}
 
 	// A promoted entity is hidden, shown, made ready and placed by its management class, and the stock one
 	// does none of those things the way a crowd row handover needs. A game that subclassed ours keeps its
