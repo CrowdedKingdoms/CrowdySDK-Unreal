@@ -27,6 +27,36 @@ Every release has the same subsections, in this order:
 A subsection with nothing to say is written as "None." so you never have to guess whether
 something was left out.
 
+## 2.28.2
+
+**Verdict.** Nothing breaks and nothing is deprecated. A class that declares a near tier shell is now promoted to it when its Mass entity config is built from the class itself, and when the per-class copy the plugin makes of an authored config would otherwise have no filter tag. Two log lines change wording.
+
+**Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate.
+
+**What changed**
+
+| Old | New | Kind |
+|---|---|---|
+| A class with a **Crowdy Mass Near Tier Shell** component and no authored Mass entity config was never promoted: the config built from the class left its level-of-detail settings without a filter tag, so the crowd's level-of-detail pass never measured those entities against the camera and every row stayed at the farthest level. The rows still drew and animated. | That config's level-of-detail settings carry `FMassCrowdTag`, so rows get their level by distance and the nearest are promoted to the shell, up to **Max Near Tier Actors**, which is counted across every class built this way. | Behaviour. |
+| A class with a shell whose authored config does not promote on its own was patched through a per-class copy of that config, and when the authored visualization trait had no filter tag the copy had none either, so it never promoted. | The copy carries `FMassCrowdTag` when the authored trait has no tag. A tag you set is kept, and the crowd's level-of-detail pass measures only `FMassCrowdTag`, so another tag still does not promote. The authored asset is not written to. | Behaviour. |
+| For a class that declares a near tier shell, an authored config that promotes on its own with no filter tag on its visualization trait was reported as working. | It is reported as a promotion that cannot work, naming the missing filter tag. An authored config for a class with no shell is not checked. | Log. |
+| The log said each class built from itself was promoted "at most N at once", and that an authored config's promotion was "at most N at once". | Both say the cap is shared: across every class built from itself (Max Near Tier Actors), or across every class promoted through that authored config. | Log. |
+
+**Do this, in order**
+
+1. If you authored a Mass entity config for a class only to make its near tier shell promote, you can remove it and let the plugin build the config from the class. The class then follows the Near Tier project settings and shares the Max Near Tier Actors cap with every class built that way.
+2. If the log now says an authored config "has no filter tag in its level of detail settings", build that config on the crowd visualization trait, or set its visualization trait's LOD Filter Tag to the crowd tag.
+
+**CoreRedirects.** None.
+
+**Blueprint assets.** None to re-save.
+
+**Behaviour changes.** Rows of a class with a shell whose config is built from the class, or patched through a per-class copy, now have a level of detail by distance, and the nearest are promoted to their shell. Classes with no shell are unchanged.
+
+**Verify.** In a development build, with `crowdy.mass.neartier.trace 1`, a row of a class with a shell and no authored config that comes within **Near Tier Distance** (or **Near Tier Visible Distance** on screen) logs "bound to entity", and "released to the actor pool" when it moves away. A class with an authored config uses that config's own distances.
+
+**Removed in the next release.** None.
+
 ## 2.28.1
 
 **Verdict.** Nothing breaks and nothing is deprecated. Two fixes: an avatar with no state for your app is no longer reported as an error, and a PIE session no longer logs the plugin's own test errors. Avatar states whose size does not match the struct they are read into now fail instead of half-filling it. The vendored CrowdyCPP moves to 0.93.0, with no change to the plugin.
