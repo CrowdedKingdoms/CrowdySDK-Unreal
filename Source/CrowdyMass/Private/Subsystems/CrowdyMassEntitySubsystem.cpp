@@ -31,6 +31,7 @@
 #include "Mass/CrowdyMassEntity.h"
 #include "Mass/EntityFragments.h"
 #include "MassCommandBuffer.h"
+#include "MassCrowdFragments.h"
 #include "MassEntityConfigAsset.h"
 #include "MassEntityManager.h"
 #include "MassEntityQuery.h"
@@ -4163,6 +4164,8 @@ UMassEntityConfigAsset* UCrowdyMassEntitySubsystem::GetOrBuildDerivedEntityConfi
 	{
 		VisualizationTrait->HighResTemplateActor = NearTierActorClass;
 		VisualizationTrait->Params.LODRepresentation[EMassLOD::High] = EMassRepresentationType::HighResSpawnedActor;
+		// MassCrowd's LOD processor gives viewers only to LOD settings with its tag; without it these entities stay at Off and never promote.
+		VisualizationTrait->LODParams.FilterTag = FMassCrowdTag::StaticStruct();
 		VisualizationTrait->Params.RepresentationActorManagementClass = UCrowdyMassRepresentationActorManagement::StaticClass();
 
 		// The three levels below the nearest keep drawing as skinned instances, and the engine reads the
@@ -4202,7 +4205,7 @@ UMassEntityConfigAsset* UCrowdyMassEntitySubsystem::GetOrBuildDerivedEntityConfi
 			Settings ? FMath::Max(Settings->MaxNearTierActors, 0) : VisualizationTrait->LODParams.LODMaxCount[EMassLOD::High];
 
 		UE_LOG(LogCrowdyMass, Log,
-			TEXT("[CrowdyMassEntitySubsystem]: '%s' declares near tier actor '%s' on %s, so its entities are promoted to actors within %.0f cm (%.0f cm visible), at most %d at once."),
+			TEXT("[CrowdyMassEntitySubsystem]: '%s' declares near tier actor '%s' on %s, so its entities are promoted to actors within %.0f cm (%.0f cm visible). At most %d entities hold a near tier actor at once, counted across every class whose entity config is built from the class itself (Max Near Tier Actors)."),
 			*EntityClass->GetPathName(), *NearTierActorClass->GetPathName(), LexToString(DerivedShell.Route),
 			NearTierDistance, NearTierVisibleDistance, VisualizationTrait->LODParams.LODMaxCount[EMassLOD::High]);
 	}
@@ -4570,7 +4573,7 @@ const UMassEntityConfigAsset* UCrowdyMassEntitySubsystem::GetOrBuildNearTierPatc
 	// the project settings decide both, and a silent difference is the kind nobody finds. The engine also
 	// logs "Overriding <trait> with another instance" as this config builds; that line is this working.
 	UE_LOG(LogCrowdyMass, Log,
-		TEXT("[CrowdyMassEntitySubsystem]: '%s' declares near tier actor '%s' on %s, and Mass entity config '%s' authored for it does not promote on its own, so its entities are promoted through a per-class copy of that config. Its own level distances decide when (%.0f cm, %.0f cm visible), at most %d at once; the near tier project settings do not apply to an authored config."),
+		TEXT("[CrowdyMassEntitySubsystem]: '%s' declares near tier actor '%s' on %s, and Mass entity config '%s' authored for it does not promote on its own, so its entities are promoted through a per-class copy of that config. Its own level distances decide when (%.0f cm, %.0f cm visible), at most %d at once across every class promoted through that config; the near tier project settings do not apply to an authored config."),
 		*EntityClass->GetPathName(), *NearTierActorClass->GetPathName(), LexToString(DerivedShell.Route),
 		*GetNameSafe(AuthoredConfig),
 		AuthoredTrait->LODParams.BaseLODDistance[EMassLOD::Medium],

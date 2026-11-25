@@ -6,6 +6,7 @@
 #include "Derivation/CrowdyMassNearTierAuthoredConfigTestTypes.h"
 #include "Derivation/CrowdyMassNearTierDerivation.h"
 #include "GameFramework/Actor.h"
+#include "MassCrowdFragments.h"
 #include "MassEntityConfigAsset.h"
 #include "MassEntityTraitBase.h"
 #include "MassMovableVisualizationTrait.h"
@@ -167,9 +168,16 @@ bool FCrowdyMassNearTierAuthoredPromotionIsCheckedForUsabilityTest::RunTest(cons
 		Problem.Contains(TEXT("drawn twice")));
 
 	Trait->Params.RepresentationActorManagementClass = UCrowdyMassNearTierAuthoredTestManagement::StaticClass();
-	TestTrue(TEXT("with a management class deriving from this plugin's, the same promotion is usable"),
+	Trait->LODParams.FilterTag = FMassCrowdTag::StaticStruct();
+	TestTrue(TEXT("with a management class deriving from this plugin's and the crowd tag, the same promotion is usable"),
 		FCrowdyMassNearTierAuthoredConfig::PromotesUsably(*Trait, Problem));
 	TestTrue(TEXT("and an answer that succeeded has nothing to explain"), Problem.IsEmpty());
+
+	Trait->LODParams.FilterTag = nullptr;
+	TestFalse(TEXT("a promotion whose LOD settings carry no filter tag is refused, since its entities never reach the nearest level"),
+		FCrowdyMassNearTierAuthoredConfig::PromotesUsably(*Trait, Problem));
+	TestTrue(TEXT("and says the filter tag is what is missing"), Problem.Contains(TEXT("no filter tag")));
+	Trait->LODParams.FilterTag = FMassCrowdTag::StaticStruct();
 
 	// The other half: a management class that CAN hide, promoting to an actor nothing drives. An ordinary
 	// Actor is what an author reaches for, and it passes every class check there is.
@@ -183,6 +191,33 @@ bool FCrowdyMassNearTierAuthoredPromotionIsCheckedForUsabilityTest::RunTest(cons
 	TestFalse(TEXT("and a trait naming no actor at all is not a usable promotion either"),
 		FCrowdyMassNearTierAuthoredConfig::PromotesUsably(*Trait, Problem));
 
+	return true;
+}
+
+/** The per-class copy of an untagged authored trait gets the crowd tag, so its entities are measured and promoted; an author's own tag is kept. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassNearTierAuthoredPatchTagsItsLODTest,
+	"CrowdySDK.Mass.NearTierAuthoredPatchTagsAnUntaggedLOD", CrowdyMassNearTierAuthoredTestFlags)
+bool FCrowdyMassNearTierAuthoredPatchTagsItsLODTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<UMassEntityConfigAsset> Authored(FCrowdyMassNearTierAuthoredConfigTestFixture::MakeConfig());
+	UMassMovableVisualizationTrait* Trait = FCrowdyMassNearTierAuthoredConfigTestFixture::AddVisualizationTrait(
+		Authored.Get(), nullptr, EMassRepresentationType::SkinnedMeshInstance);
+
+	const TStrongObjectPtr<UMassEntityConfigAsset> Patched(FCrowdyMassNearTierAuthoredConfigTestFixture::Patch(*Authored, *Trait));
+	const UMassVisualizationTrait* PatchedTrait = FCrowdyMassNearTierAuthoredConfigTestFixture::GetOwnVisualizationTrait(Patched.Get());
+	if (!TestNotNull(TEXT("an untagged authored trait is patched"), PatchedTrait))
+	{
+		return false;
+	}
+	TestTrue(TEXT("and the copy carries the crowd tag MassCrowd's LOD pass measures"),
+		PatchedTrait->LODParams.FilterTag == FMassCrowdTag::StaticStruct());
+	TestNull(TEXT("while the authored trait itself is left untagged"), Trait->LODParams.FilterTag.Get());
+
+	UScriptStruct* AuthorsTag = TBaseStructure<FVector>::Get();
+	Trait->LODParams.FilterTag = AuthorsTag;
+	const TStrongObjectPtr<UMassEntityConfigAsset> Kept(FCrowdyMassNearTierAuthoredConfigTestFixture::Patch(*Authored, *Trait));
+	const UMassVisualizationTrait* KeptTrait = FCrowdyMassNearTierAuthoredConfigTestFixture::GetOwnVisualizationTrait(Kept.Get());
+	TestTrue(TEXT("a tag the author chose is kept in the copy"), KeptTrait && KeptTrait->LODParams.FilterTag == AuthorsTag);
 	return true;
 }
 
