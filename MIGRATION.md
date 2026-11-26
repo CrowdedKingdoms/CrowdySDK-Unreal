@@ -27,6 +27,39 @@ Every release has the same subsections, in this order:
 A subsection with nothing to say is written as "None." so you never have to guess whether
 something was left out.
 
+## 2.29.0
+
+**Verdict.** Nothing breaks and nothing is deprecated. New: choosing the voice microphone, one overall voice playback volume, a list of the remote entities the actor tracker holds, an event for when a near tier actor starts or stops standing for an entity, and the signed-in player's private per-app state.
+
+**Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate.
+
+**What changed**
+
+| Old | New | Kind |
+|---|---|---|
+| Voice chat always captured from the OS default microphone. | **Get Voice Input Devices** lists the microphones (`FCrowdyVoiceInputDevice`: **Id**, **Name**, **Is Default**), **Set Voice Input Device** captures from the one with that **Id** (empty follows the OS default), **Get Voice Input Device** reads the choice. The choice is kept across map changes, and an open microphone moves at once. On Windows an **Id** stays the same across sessions; elsewhere it can change when devices are added or removed. | Addition. |
+| Only per-speaker and per-channel voice volumes. | **Set Voice Playback Volume** / **Get Voice Playback Volume**, 0 to 1, multiplied into every voice with the speaker's and the channel's own volume; applies to voices already playing and is kept across map changes. | Addition. |
+| No way to learn which remote entities the actor tracker already holds. | `UCrowdyActorTracker::GetTrackedRemoteEntities()` (**Get Tracked Remote Entities**), for a listener that starts late. | Addition. |
+| A near tier actor did not report binding or releasing an entity. | **On Entity Binding Changed** on the **Crowdy Mass Near Tier** component, and **On Near Tier Binding Changed** on the **Crowdy Mass Entity Subsystem** for every near tier actor in the world, delivered when the crowd's frame has finished. | Addition. |
+| The player's private per-app state had no SDK call. | The async nodes **Get My App State** and **Set My App State** (`UCrowdyPlayers::GetMyAppState`, `SetMyAppState` in C++): base64 text, readable only by that player, kept per account. | Addition. |
+
+**Do this, in order**
+
+1. Nothing is required.
+2. For a microphone picker: call **Get Voice Input Devices** when the menu opens (it asks the OS each call; do not bind it to a widget), save the chosen **Id**, and pass it to **Set Voice Input Device** at startup.
+3. For a voice volume slider: call **Set Voice Playback Volume**.
+4. To save settings that follow a player to any machine: **Set My App State** with **Serialize Struct to Avatar State**, read back with **Get My App State**. It is one value for your whole app, so if several features share it, keep each part under its own key and version.
+
+**CoreRedirects.** None.
+
+**Blueprint assets.** None to re-save.
+
+**Behaviour changes.** With no call to **Set Voice Input Device**, nothing changes. A microphone you chose does not follow a change of the OS default, and when it is missing the mic state reads **No Device** until it is connected again: voice chat never opens a different one in its place. Choosing the same microphone again retries opening it, and a microphone that is plugged in is retried for a few seconds.
+
+**Verify.** In a development build, **Get Voice Input Devices** lists your microphones; after **Set Voice Input Device** with one of their **Id**s and **Start Voice Chat**, `crowdy.voice.trace 1` logs "Voice chat opened the microphone." and **Get Voice Mic State** reads **Capturing**. **Get My App State** after **Set My App State** answers what was written.
+
+**Removed in the next release.** None.
+
 ## 2.28.2
 
 **Verdict.** Nothing breaks and nothing is deprecated. A class that declares a near tier shell is now promoted to it when its Mass entity config is built from the class itself, and when the per-class copy the plugin makes of an authored config would otherwise have no filter tag. Two log lines change wording.
