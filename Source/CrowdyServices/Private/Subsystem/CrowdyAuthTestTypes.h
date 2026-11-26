@@ -119,4 +119,13 @@ public:
 
 	UFUNCTION()
 	void HandleProfiles(const TArray<FCrowdyPlayerProfile>& List) { ProfileLists.Add(List); }
+
+	TArray<FString> AppStates;
+	int32 AppStatesWritten = 0;
+
+	UFUNCTION()
+	void HandleAppState(const FString& State) { AppStates.Add(State); }
+
+	UFUNCTION()
+	void HandleAppStateWritten() { ++AppStatesWritten; }
 };

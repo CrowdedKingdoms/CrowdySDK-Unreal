@@ -117,3 +117,76 @@ void UCrowdyPlayers_SetPlayerName::HandleError(FCrowdyAccountError Error, FStrin
 	OnError.Broadcast(FCrowdyPlayerProfile(), Error, Message);
 	SetReadyToDestroy();
 }
+
+UCrowdyPlayers_GetMyAppState* UCrowdyPlayers_GetMyAppState::GetMyAppState(UObject* WorldContextObject)
+{
+	UCrowdyPlayers_GetMyAppState* Action = NewObject<UCrowdyPlayers_GetMyAppState>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyPlayers_GetMyAppState::Activate()
+{
+	UCrowdyPlayers* Players = GetServiceSubsystem<UCrowdyPlayers>(WorldContextObject);
+	if (!Players)
+	{
+		HandleError(FCrowdyAccountError::Make(ECrowdyAccountErrorCode::Unknown, PlayersMissingMessage), PlayersMissingMessage);
+		return;
+	}
+	FOnPlayerAppStateRead Read;
+	Read.BindDynamic(this, &UCrowdyPlayers_GetMyAppState::HandleRead);
+	FOnPlayersError Failed;
+	Failed.BindDynamic(this, &UCrowdyPlayers_GetMyAppState::HandleError);
+	Players->GetMyAppState(Read, Failed);
+}
+
+void UCrowdyPlayers_GetMyAppState::HandleRead(const FString& State)
+{
+	OnSuccess.Broadcast(State, FCrowdyAccountError(), FString());
+	SetReadyToDestroy();
+}
+
+void UCrowdyPlayers_GetMyAppState::HandleError(FCrowdyAccountError Error, FString Message)
+{
+	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyPlayers] Get My App State failed: %s"), *Message);
+	OnError.Broadcast(FString(), Error, Message);
+	SetReadyToDestroy();
+}
+
+UCrowdyPlayers_SetMyAppState* UCrowdyPlayers_SetMyAppState::SetMyAppState(UObject* WorldContextObject, const FString& State)
+{
+	UCrowdyPlayers_SetMyAppState* Action = NewObject<UCrowdyPlayers_SetMyAppState>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->State = State;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UCrowdyPlayers_SetMyAppState::Activate()
+{
+	UCrowdyPlayers* Players = GetServiceSubsystem<UCrowdyPlayers>(WorldContextObject);
+	if (!Players)
+	{
+		HandleError(FCrowdyAccountError::Make(ECrowdyAccountErrorCode::Unknown, PlayersMissingMessage), PlayersMissingMessage);
+		return;
+	}
+	FOnPlayerAppStateWritten Written;
+	Written.BindDynamic(this, &UCrowdyPlayers_SetMyAppState::HandleWritten);
+	FOnPlayersError Failed;
+	Failed.BindDynamic(this, &UCrowdyPlayers_SetMyAppState::HandleError);
+	Players->SetMyAppState(State, Written, Failed);
+}
+
+void UCrowdyPlayers_SetMyAppState::HandleWritten()
+{
+	OnSuccess.Broadcast(FCrowdyAccountError(), FString());
+	SetReadyToDestroy();
+}
+
+void UCrowdyPlayers_SetMyAppState::HandleError(FCrowdyAccountError Error, FString Message)
+{
+	UE_LOG(LogCrowdyServices, Warning, TEXT("[CrowdyPlayers] Set My App State failed: %s"), *Message);
+	OnError.Broadcast(Error, Message);
+	SetReadyToDestroy();
+}

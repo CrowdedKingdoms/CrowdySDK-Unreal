@@ -30,7 +30,9 @@
 #include "Mass/CrowdyMassCharacterAvatar.h"
 #include "Mass/CrowdyMassEntity.h"
 #include "Mass/EntityFragments.h"
+#include "Components/CrowdyMassNearTierComponent.h"
 #include "MassCommandBuffer.h"
+#include "MassSimulationSubsystem.h"
 #include "MassCrowdFragments.h"
 #include "MassEntityConfigAsset.h"
 #include "MassEntityManager.h"
@@ -697,6 +699,22 @@ void UCrowdyMassEntitySubsystem::Initialize(FSubsystemCollectionBase& Collection
 		return;
 	}
 
+	// The end of FrameEnd is after Mass released its processing scope and flushed its commands, on the game thread. The
+	// next world tick's start catches what is left while Mass is paused or stopped, before any tick group runs.
+	if (UMassSimulationSubsystem* Simulation = Collection.InitializeDependency<UMassSimulationSubsystem>())
+	{
+		FrameEndHandle = Simulation->GetOnProcessingPhaseFinished(EMassProcessingPhase::FrameEnd).AddUObject(
+			this, &UCrowdyMassEntitySubsystem::DeliverNearTierBindingChanges);
+	}
+	WorldTickStartHandle = FWorldDelegates::OnWorldTickStart.AddWeakLambda(this,
+		[this](UWorld* TickedWorld, ELevelTick, float DeltaSeconds)
+		{
+			if (TickedWorld == GetWorld())
+			{
+				DeliverNearTierBindingChanges(DeltaSeconds);
+			}
+		});
+
 	const UCrowdyMapProfile* Profile = UCrowdySDKDeveloperSettings::ResolveProfileForWorld(World);
 	const float SnapDistance = (Profile ? Profile : GetDefault<UCrowdyMapProfile>())->SnapDistance;
 	const float Snap = FMath::IsFinite(SnapDistance) ? FMath::Max(SnapDistance, 0.f) : 0.f;
@@ -750,6 +768,18 @@ void UCrowdyMassEntitySubsystem::Deinitialize()
 		ObjectPropertyChangedHandle.Reset();
 	}
 #endif
+
+	if (FrameEndHandle.IsValid())
+	{
+		if (UMassSimulationSubsystem* Simulation = UWorld::GetSubsystem<UMassSimulationSubsystem>(GetWorld()))
+		{
+			Simulation->GetOnProcessingPhaseFinished(EMassProcessingPhase::FrameEnd).Remove(FrameEndHandle);
+		}
+		FrameEndHandle.Reset();
+	}
+	FWorldDelegates::OnWorldTickStart.Remove(WorldTickStartHandle);
+	WorldTickStartHandle.Reset();
+	PendingNearTierBindings.Reset();
 
 	// Releases only this subsystem's own claim. Two worlds exist at once while travelling between levels
 	// and the one being left tears down after the one being entered has registered, so a release that did
@@ -846,6 +876,42 @@ bool UCrowdyMassEntitySubsystem::ShouldCreateSubsystem(UObject* Outer) const
 
 	// Exactly the worlds where the actor manager builds the Mass backend, which asks for this subsystem while the world's subsystems are still being created.
 	return BackendClass && BackendClass->IsChildOf(UCrowdyMassRenderingBackend::StaticClass());
+}
+
+bool UCrowdyMassEntitySubsystem::QueueNearTierBindingChange(UCrowdyMassNearTierComponent& Component, const FGuid& UUID, const bool bBound)
+{
+	if (!WorldTickStartHandle.IsValid())
+	{
+		return false;
+	}
+	PendingNearTierBindings.Add({ &Component, UUID, bBound });
+	return true;
+}
+
+void UCrowdyMassEntitySubsystem::DeliverNearTierBindingChanges(float /*DeltaSeconds*/)
+{
+	if (PendingNearTierBindings.IsEmpty())
+	{
+		return;
+	}
+	// Moved out first: a listener that binds or unbinds queues a change for the next delivery.
+	const TArray<FPendingNearTierBinding> Changes = MoveTemp(PendingNearTierBindings);
+	PendingNearTierBindings.Reset();
+	for (const FPendingNearTierBinding& Change : Changes)
+	{
+		// A destroyed actor's stop still reaches the world event, with no actor, so a record kept by entity can be dropped.
+		UCrowdyMassNearTierComponent* Component = Change.Component.Get();
+		if (!Component)
+		{
+			if (!Change.bBound)
+			{
+				OnNearTierBindingChanged.Broadcast(nullptr, Change.UUID, false);
+			}
+			continue;
+		}
+		Component->OnEntityBindingChanged.Broadcast(Change.UUID, Change.bBound);
+		OnNearTierBindingChanged.Broadcast(Component->GetOwner(), Change.UUID, Change.bBound);
+	}
 }
 
 bool UCrowdyMassEntitySubsystem::DrawsCrowdRows(const UWorld* World)

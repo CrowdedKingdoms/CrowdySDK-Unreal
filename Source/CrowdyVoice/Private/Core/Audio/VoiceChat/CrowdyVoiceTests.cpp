@@ -20,6 +20,10 @@ namespace
 	{
 		int32 Opens = 0;
 		int32 Closes = 0;
+		/** The device each open asked for, empty for the default. */
+		TArray<FString> OpenedIds;
+		/** The named microphones that are plugged in; the default always is. */
+		TSet<FString> Present;
 	};
 
 	/** Opens at 48 kHz without hardware; the test feeds the sink itself. */
@@ -31,9 +35,14 @@ namespace
 		{
 		}
 
-		virtual ECrowdyVoiceMicOpen Open(const FCrowdyVoiceCaptureSinkRef& Sink) override
+		virtual ECrowdyVoiceMicOpen Open(const FCrowdyVoiceCaptureSinkRef& Sink, const FString& DeviceId) override
 		{
 			++Counts.Opens;
+			Counts.OpenedIds.Add(DeviceId);
+			if (!DeviceId.IsEmpty() && !Counts.Present.Contains(DeviceId))
+			{
+				return ECrowdyVoiceMicOpen::NoDevice;
+			}
 			return Sink->Configure(FCrowdyVoiceCaptureSink::OutputSampleRate)
 				? ECrowdyVoiceMicOpen::Opened
 				: ECrowdyVoiceMicOpen::Failed;
@@ -170,6 +179,8 @@ namespace
 		void SetChannelMuted(const int64 ChannelId, const bool bMuted) { Calls.Add(FString::Printf(TEXT("mute channel %lld %d"), ChannelId, bMuted ? 1 : 0)); }
 		void SetChannelVolume(const int64 ChannelId, const float Volume) { Calls.Add(FString::Printf(TEXT("volume channel %lld %.2f"), ChannelId, Volume)); }
 		void SetSpatialVoiceEnabled(const bool bEnabled) { Calls.Add(FString::Printf(TEXT("spatial %d"), bEnabled ? 1 : 0)); }
+		void SetPlaybackVolume(const float Volume) { Calls.Add(FString::Printf(TEXT("playback volume %.2f"), Volume)); }
+		void SetInputDevice(const FString& DeviceId) { Calls.Add(FString::Printf(TEXT("input device %s"), *DeviceId)); }
 
 		TArray<FString> Calls;
 	};
@@ -842,6 +853,161 @@ bool FCrowdyVoiceChannelVoiceTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("and the channel stream's own late failed lookup does not undo it"), Pending->TrackedUserIdForTest(Key), static_cast<int64>(77));
 	}
 	Pending->ResolveSpeakerUser = nullptr;
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceMicChosenDeviceTest,
+	"CrowdySDK.CrowdyVoice.MicOpensTheChosenDevice", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceMicChosenDeviceTest::RunTest(const FString& Parameters)
+{
+	FCrowdyVoiceTestDeviceCounts Counts;
+	Counts.Present = { TEXT("headset"), TEXT("webcam") };
+	FCrowdyVoiceTestFrameSink Out;
+	FCrowdyVoiceMic Mic(MakeUnique<FCrowdyVoiceTestMicDevice>(Counts), Out);
+
+	Mic.SetDevice(TEXT("headset"), 0);
+	TestEqual(TEXT("choosing a microphone while off opens nothing"), Counts.Opens, 0);
+	Mic.Start(0);
+	TestEqual(TEXT("the next start opens the chosen microphone"), Counts.OpenedIds, TArray<FString>{ TEXT("headset") });
+
+	CrowdyVoiceTestWriteRamp(Mic, 0, FCrowdyVoiceMic::FrameSamples);
+	Mic.Pump(20);
+	Mic.SetDevice(TEXT("webcam"), 40);
+	TestEqual(TEXT("choosing another while capturing reopens on it at once"),
+		Counts.OpenedIds, (TArray<FString>{ TEXT("headset"), TEXT("webcam") }));
+	TestEqual(TEXT("after closing the first"), Counts.Closes, 1);
+	TestEqual(TEXT("and the spurt that was open ends"), Out.Trace.Right(1), FString(TEXT("L")));
+
+	Mic.SetDevice(TEXT("webcam"), 60);
+	TestEqual(TEXT("choosing the same microphone again reopens nothing"), Counts.Opens, 2);
+
+	Mic.SetDevice(FString(), 80);
+	TestEqual(TEXT("an empty choice goes back to the OS default"), Counts.OpenedIds.Last(), FString());
+	TestEqual(TEXT("which opens"), Mic.GetState(), ECrowdyVoiceMicState::Starting);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceCaptureIndexTest,
+	"CrowdySDK.CrowdyVoice.ChosenDeviceIsFoundByIdNeverStoodInFor", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceCaptureIndexTest::RunTest(const FString& Parameters)
+{
+	using EIndexing = ECrowdyVoiceCaptureIndexing;
+	const auto ProbeFrom = [](const TArray<FString>& Ids)
+	{
+		return [&Ids](const int32 Index, FString& OutId)
+		{
+			if (!Ids.IsValidIndex(Index) || Ids[Index].IsEmpty())
+			{
+				return false;
+			}
+			OutId = Ids[Index];
+			return true;
+		};
+	};
+
+	// WASAPI: the endpoint at position 1 cannot be read, so the list leaves it out and the chosen device moves up one.
+	const TArray<FString> Endpoints = { TEXT("desk"), TEXT(""), TEXT("headset") };
+	const TArray<FString> WasapiList = { TEXT("desk"), TEXT("headset") };
+	TestEqual(TEXT("WASAPI opens at the endpoint position, past one its list leaves out"),
+		ResolveCrowdyVoiceCaptureIndex(EIndexing::AllEndpoints, TEXT("headset"), WasapiList, ProbeFrom(Endpoints)), 2);
+
+	// RtAudio: GetCaptureDeviceInfo counts output devices too, while Open counts the list.
+	const TArray<FString> AllDevices = { TEXT("speakers"), TEXT("mic-a"), TEXT("mic-b") };
+	const TArray<FString> InputList = { TEXT("mic-a"), TEXT("mic-b") };
+	TestEqual(TEXT("RtAudio opens at the list position, not the probed one"),
+		ResolveCrowdyVoiceCaptureIndex(EIndexing::ListPosition, TEXT("mic-a"), InputList, ProbeFrom(AllDevices)), 0);
+
+	TestEqual(TEXT("an unknown backend refuses a position the two counts disagree on"),
+		ResolveCrowdyVoiceCaptureIndex(EIndexing::Agreeing, TEXT("mic-a"), InputList, ProbeFrom(AllDevices)), static_cast<int32>(INDEX_NONE));
+	TestEqual(TEXT("and takes one they agree on"),
+		ResolveCrowdyVoiceCaptureIndex(EIndexing::Agreeing, TEXT("mic-a"), InputList, ProbeFrom(InputList)), 0);
+
+	for (const EIndexing Indexing : { EIndexing::AllEndpoints, EIndexing::ListPosition, EIndexing::Agreeing })
+	{
+		TestEqual(TEXT("a missing device is at no position, so nothing opens in its place"),
+			ResolveCrowdyVoiceCaptureIndex(Indexing, TEXT("webcam"), InputList, ProbeFrom(InputList)), static_cast<int32>(INDEX_NONE));
+		TestEqual(TEXT("ids are matched exactly, case included"),
+			ResolveCrowdyVoiceCaptureIndex(Indexing, TEXT("MIC-A"), InputList, ProbeFrom(InputList)), static_cast<int32>(INDEX_NONE));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceMicMissingChosenDeviceTest,
+	"CrowdySDK.CrowdyVoice.MissingChosenMicReadsNoDevice", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceMicMissingChosenDeviceTest::RunTest(const FString& Parameters)
+{
+	FCrowdyVoiceTestDeviceCounts Counts;
+	FCrowdyVoiceTestFrameSink Out;
+	FCrowdyVoiceMic Mic(MakeUnique<FCrowdyVoiceTestMicDevice>(Counts), Out);
+
+	AddExpectedErrorPlain(TEXT("could not find the chosen microphone"), EAutomationExpectedErrorFlags::Contains, 1);
+	Mic.SetDevice(TEXT("headset"), 0);
+	Mic.Start(0);
+	TestEqual(TEXT("a chosen microphone that is not plugged in reads No Device"), Mic.GetState(), ECrowdyVoiceMicState::NoDevice);
+	TestEqual(TEXT("and only it was tried, never the default in its place"), Counts.OpenedIds, TArray<FString>{ TEXT("headset") });
+
+	Mic.RetryIfNoDevice(FCrowdyVoiceMic::NoDeviceRetryMs - 1);
+	TestEqual(TEXT("it is not retried before the retry interval"), Counts.Opens, 1);
+
+	TestFalse(TEXT("choosing it again at once does not reopen, so re-applying a choice every frame costs nothing"),
+		Mic.SetDevice(TEXT("headset"), FCrowdyVoiceMic::SameDeviceRetryMs - 1));
+	const int64 RepickMs = FCrowdyVoiceMic::SameDeviceRetryMs;
+	TestTrue(TEXT("choosing the same missing microphone again later tries it again"), Mic.SetDevice(TEXT("headset"), RepickMs));
+	TestEqual(TEXT("with one more open"), Counts.Opens, 2);
+	TestEqual(TEXT("and still reads No Device while it is missing"), Mic.GetState(), ECrowdyVoiceMicState::NoDevice);
+
+	Counts.Present.Add(TEXT("headset"));
+	Mic.RetryIfNoDevice(RepickMs + FCrowdyVoiceMic::NoDeviceRetryMs);
+	TestEqual(TEXT("once plugged in, the retry opens it"), Mic.GetState(), ECrowdyVoiceMicState::Starting);
+	TestEqual(TEXT("still by its own id"), Counts.OpenedIds.Last(), FString(TEXT("headset")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceDeviceAndVolumeSettingsTest,
+	"CrowdySDK.CrowdyVoice.SettingsCarryInputDeviceAndPlaybackVolume", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceDeviceAndVolumeSettingsTest::RunTest(const FString& Parameters)
+{
+	FCrowdyVoiceSettings Settings;
+	FCrowdyVoiceTestVoiceChat Untouched;
+	Settings.ApplyTo(Untouched, 1);
+	TestFalse(TEXT("an unset playback volume is not applied"), Untouched.Calls.ContainsByPredicate([](const FString& Call) { return Call.StartsWith(TEXT("playback volume")); }));
+	TestFalse(TEXT("nor an unset input device"), Untouched.Calls.ContainsByPredicate([](const FString& Call) { return Call.StartsWith(TEXT("input device")); }));
+
+	Settings.PlaybackVolume = 0.25f;
+	Settings.InputDeviceId = TEXT("headset");
+	Settings.bMicWanted = true;
+	FCrowdyVoiceTestVoiceChat NextMap;
+	Settings.ApplyTo(NextMap, 1);
+	TestTrue(TEXT("the next map plays at the volume the game set"), NextMap.Calls.Contains(TEXT("playback volume 0.25")));
+	const int32 Device = NextMap.Calls.IndexOfByKey(TEXT("input device headset"));
+	const int32 Start = NextMap.Calls.IndexOfByKey(TEXT("start"));
+	TestTrue(TEXT("and captures from the chosen microphone"), Device != INDEX_NONE);
+	TestTrue(TEXT("chosen before the microphone starts, so it opens there"), Device != INDEX_NONE && Start != INDEX_NONE && Device < Start);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoicePlaybackVolumeTest,
+	"CrowdySDK.CrowdyVoice.PlaybackVolumeMultipliesEveryStream", CrowdyVoiceTestFlags)
+bool FCrowdyVoicePlaybackVolumeTest::RunTest(const FString& Parameters)
+{
+	TestEqual(TEXT("below 0 reads 0"), FCrowdyVoiceSettings::ClampPlaybackVolume(-1.0f), 0.0f);
+	TestEqual(TEXT("above 1 reads 1"), FCrowdyVoiceSettings::ClampPlaybackVolume(3.0f), 1.0f);
+	TestEqual(TEXT("not a number reads 1"), FCrowdyVoiceSettings::ClampPlaybackVolume(std::numeric_limits<float>::quiet_NaN()), 1.0f);
+
+	const FString Uuid = TEXT("0123456789ABCDEF0123456789ABCDEF");
+	const FString ChannelKey = UVoiceChatSubsystem::ChannelStreamKey(812, Uuid);
+	UVoiceChatSubsystem* VoiceChat = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	VoiceChat->TrackSpeakerForTest(Uuid, 1000);
+	VoiceChat->TrackSpeakerForTest(ChannelKey, 1000, 812);
+	VoiceChat->SetChannelVolume(812, 0.5f);
+	TestEqual(TEXT("CONTROL: a spatial stream plays as received"), VoiceChat->SpeakerVolumeForTest(Uuid), 1.0f);
+
+	VoiceChat->SetPlaybackVolume(0.5f);
+	TestEqual(TEXT("the playback volume scales a spatial stream"), VoiceChat->SpeakerVolumeForTest(Uuid), 0.5f);
+	TestEqual(TEXT("and multiplies a channel stream's own volume"), VoiceChat->SpeakerVolumeForTest(ChannelKey), 0.25f);
+
+	VoiceChat->SetPlaybackVolume(2.0f);
+	TestEqual(TEXT("a volume above 1 plays as received"), VoiceChat->GetPlaybackVolume(), 1.0f);
 	return true;
 }
 

@@ -25,6 +25,9 @@ public:
 	/** True once for each burst of default capture device changes since the last call. */
 	bool ConsumeCaptureDeviceChange();
 
+	/** True once for each burst of devices being added or changing state since the last call, so a chosen microphone that comes back can be opened. */
+	bool ConsumeDeviceArrival();
+
 	/** False where device changes cannot be seen, so a missing microphone must be polled for instead. */
 	bool IsWatching() const;
 
@@ -34,6 +37,7 @@ private:
 
 	// Shared with the OS callback object, which can outlive this monitor by a call already in flight.
 	TSharedRef<std::atomic<bool>, ESPMode::ThreadSafe> bChanged;
+	TSharedRef<std::atomic<bool>, ESPMode::ThreadSafe> bArrived;
 
 #if PLATFORM_WINDOWS
 	IMMDeviceEnumerator* Enumerator = nullptr;

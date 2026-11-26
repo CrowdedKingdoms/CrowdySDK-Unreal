@@ -210,6 +210,10 @@ public:
 	 */
 	FCrowdyClassID GetClassIDForUUID(const FGuid& UUID) const;
 
+	/** The remote entities this tracker holds now, so a listener that starts late can catch up. An entity can leave the list just before its timeout or left event reaches you, and one appearing in the same batch can be here and in On Remote Entity Appeared too, so handle both kinds of event as idempotent. */
+	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "Crowdy SDK|Actor Tracker")
+	TArray<FGuid> GetTrackedRemoteEntities() const;
+
 	// The payload type id a tracked UUID's first update carried, or CROWDY_INVALID_TYPE_ID if it is not tracked.
 	FCrowdyTypeID GetPayloadTypeIDForUUID(const FGuid& UUID) const;
 

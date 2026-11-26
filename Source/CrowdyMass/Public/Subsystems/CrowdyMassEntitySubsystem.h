@@ -33,6 +33,7 @@ class UMassRepresentationSubsystem;
 class UMassSpawnerSubsystem;
 class UInstancedSkinnedMeshComponent;
 class UCrowdyMassHitZoneTable;
+class UCrowdyMassNearTierComponent;
 class UPhysicsAsset;
 class USkinnedAsset;
 class FProperty;
@@ -535,6 +536,7 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCrowdyMassRowClassRecorded, const FGuid&
 
 /** The row of UUID left the tracker. */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnCrowdyMassRowRemoved, const FGuid& /*UUID*/);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCrowdyMassNearTierActorBindingChanged, AActor*, Actor, FGuid, EntityUUID, bool, bBound);
 
 /** Which Mass template a remote entity is spawned from. */
 UENUM()
@@ -730,6 +732,13 @@ public:
 
 	/** Whether World draws Crowdy crowd rows: it is a play world whose map profile selects the Mass backend. */
 	static bool DrawsCrowdRows(const UWorld* World);
+
+	/** After any near tier actor in this world starts (bBound true) or stops standing for an entity, with that entity's UUID. Delivered once the crowd's frame has finished, in order; by then the actor may stand for another entity, so trust the UUID passed. A destroyed actor's stop arrives with no Actor, so drop a record kept by entity only if the actor recorded for it is no longer valid; while the game is paused, changes wait for the next tick; nothing is delivered once the world is shutting down. */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy Mass|Near Tier")
+	FCrowdyMassNearTierActorBindingChanged OnNearTierBindingChanged;
+
+	/** Holds a near tier actor's binding change until the crowd's frame ends; false where no crowd simulation runs, so the caller can deliver it at once. */
+	bool QueueNearTierBindingChange(UCrowdyMassNearTierComponent& Component, const FGuid& UUID, bool bBound);
 
 	UFUNCTION(BlueprintCallable, Category="Crowdy Mass")
 	FMassEntityHandle SpawnRemoteEntity(const FGuid& UUID, const FTransform& InitialTransform);
@@ -2077,6 +2086,18 @@ private:
 	// The local player's actor id changed: every row it owned names the new one, re-stamped chunk by chunk.
 	void HandleLocalPlayerRekeyed(const FGuid& PreviousID, const FGuid& NewID);
 	FDelegateHandle LocalPlayerRekeyedHandle;
+
+	// Near tier binding changes happen inside Mass's own entity and actor-pool loops, so they wait for the frame's end.
+	struct FPendingNearTierBinding
+	{
+		TWeakObjectPtr<UCrowdyMassNearTierComponent> Component;
+		FGuid UUID;
+		bool bBound = false;
+	};
+	TArray<FPendingNearTierBinding> PendingNearTierBindings;
+	FDelegateHandle FrameEndHandle;
+	FDelegateHandle WorldTickStartHandle;
+	void DeliverNearTierBindingChanges(float DeltaSeconds);
 
 	// An entity component's GrantOwnership arriving for an entity held here as a row: re-points the registry record,
 	// as the grant's own body does on a client holding the entity as an actor.
