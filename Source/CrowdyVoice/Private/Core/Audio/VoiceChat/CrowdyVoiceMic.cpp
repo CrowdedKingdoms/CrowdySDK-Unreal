@@ -66,6 +66,61 @@ namespace
 		return Factories.IsEmpty() ? nullptr : Factories[0];
 	}
 
+	// Endpoints past the listed count that a WASAPI position may still reach: the list leaves out any whose properties fail.
+	constexpr int32 CrowdyVoiceMicUnlistedEndpointSlack = 4;
+
+	int32 CrowdyVoiceMicFirstMatch(const FString& DeviceId, const int32 Count, const TFunctionRef<bool(int32, FString&)> IdAt)
+	{
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			FString Id;
+			if (IdAt(Index, Id) && Id.Equals(DeviceId, ESearchCase::CaseSensitive))
+			{
+				return Index;
+			}
+		}
+		return INDEX_NONE;
+	}
+
+	// The engine opens a capture device by a position that changes as devices come and go, counted per backend.
+	bool CrowdyVoiceMicFindDevice(Audio::IAudioCaptureStream& Stream, const FString& DeviceId, int32& OutIndex,
+		Audio::FCaptureDeviceInfo& OutInfo)
+	{
+		TArray<Audio::FCaptureDeviceInfo> Devices;
+		if (!Stream.GetInputDevicesAvailable(Devices))
+		{
+			return false;
+		}
+		TArray<FString> ListedIds;
+		ListedIds.Reserve(Devices.Num());
+		for (const Audio::FCaptureDeviceInfo& Device : Devices)
+		{
+			ListedIds.Add(Device.DeviceId);
+		}
+
+		const ECrowdyVoiceCaptureIndexing Indexing = GetCrowdyVoiceCaptureIndexing();
+		OutIndex = ResolveCrowdyVoiceCaptureIndex(Indexing, DeviceId, ListedIds, [&Stream](const int32 Index, FString& OutId)
+		{
+			Audio::FCaptureDeviceInfo Probed;
+			if (!Stream.GetCaptureDeviceInfo(Probed, Index))
+			{
+				return false;
+			}
+			OutId = Probed.DeviceId;
+			return true;
+		});
+		if (OutIndex == INDEX_NONE)
+		{
+			return false;
+		}
+		if (Indexing == ECrowdyVoiceCaptureIndexing::AllEndpoints)
+		{
+			return Stream.GetCaptureDeviceInfo(OutInfo, OutIndex);
+		}
+		OutInfo = Devices[OutIndex];
+		return true;
+	}
+
 	// Stopping a stream whose capture thread has not delivered yet can hang the engine's own shutdown of that
 	// thread, so the first delivery is awaited, bounded by the starting timeout.
 	void CrowdyVoiceMicRetireStream(Audio::IAudioCaptureStream& Stream, const FCrowdyVoiceCaptureSink* Sink)
@@ -87,7 +142,7 @@ namespace
 			Close();
 		}
 
-		virtual ECrowdyVoiceMicOpen Open(const FCrowdyVoiceCaptureSinkRef& Sink) override
+		virtual ECrowdyVoiceMicOpen Open(const FCrowdyVoiceCaptureSinkRef& Sink, const FString& DeviceId) override
 		{
 			Close();
 			Audio::IAudioCaptureFactory* Factory = CrowdyVoiceMicFindFactory();
@@ -97,8 +152,12 @@ namespace
 			}
 
 			Stream = Factory->CreateNewAudioCaptureStream();
+			int32 DeviceIndex = Audio::DefaultDeviceIndex;
 			Audio::FCaptureDeviceInfo Info;
-			if (!Stream || !Stream->GetCaptureDeviceInfo(Info, Audio::DefaultDeviceIndex))
+			const bool bFound = Stream && (DeviceId.IsEmpty()
+				? Stream->GetCaptureDeviceInfo(Info, DeviceIndex)
+				: CrowdyVoiceMicFindDevice(*Stream, DeviceId, DeviceIndex, Info));
+			if (!bFound)
 			{
 				Stream.Reset();
 				return ECrowdyVoiceMicOpen::NoDevice;
@@ -121,6 +180,7 @@ namespace
 
 			StreamSink = Sink;
 			Audio::FAudioCaptureDeviceParams Params;
+			Params.DeviceIndex = DeviceIndex;
 			if (!Stream->OpenAudioCaptureStream(Params, MoveTemp(OnCapture), CrowdyVoiceMicDeviceFramesDesired)
 				|| !Stream->StartStream())
 			{
@@ -162,6 +222,69 @@ namespace
 TUniquePtr<ICrowdyVoiceMicDevice> MakeCrowdyVoiceEngineMicDevice()
 {
 	return MakeUnique<FCrowdyVoiceEngineMicDevice>();
+}
+
+ECrowdyVoiceCaptureIndexing GetCrowdyVoiceCaptureIndexing()
+{
+	// The same setting the engine's AudioCapture module loads its one backend by.
+	FString Module;
+	if (GConfig)
+	{
+		GConfig->GetString(TEXT("Audio"), TEXT("AudioCaptureModuleName"), Module, GEngineIni);
+	}
+	if (Module.Equals(TEXT("AudioCaptureWasapi"), ESearchCase::IgnoreCase))
+	{
+		return ECrowdyVoiceCaptureIndexing::AllEndpoints;
+	}
+	if (Module.Equals(TEXT("AudioCaptureRtAudio"), ESearchCase::IgnoreCase))
+	{
+		return ECrowdyVoiceCaptureIndexing::ListPosition;
+	}
+	return ECrowdyVoiceCaptureIndexing::Agreeing;
+}
+
+int32 ResolveCrowdyVoiceCaptureIndex(const ECrowdyVoiceCaptureIndexing Indexing, const FString& DeviceId,
+	const TConstArrayView<FString> ListedIds, const TFunctionRef<bool(int32, FString&)> ProbeIdAt)
+{
+	if (Indexing == ECrowdyVoiceCaptureIndexing::AllEndpoints)
+	{
+		return CrowdyVoiceMicFirstMatch(DeviceId, ListedIds.Num() + CrowdyVoiceMicUnlistedEndpointSlack, ProbeIdAt);
+	}
+	const int32 Listed = CrowdyVoiceMicFirstMatch(DeviceId, ListedIds.Num(), [ListedIds](const int32 Index, FString& OutId)
+	{
+		OutId = ListedIds[Index];
+		return true;
+	});
+	if (Listed == INDEX_NONE || Indexing == ECrowdyVoiceCaptureIndexing::ListPosition)
+	{
+		return Listed;
+	}
+	FString Probed;
+	return ProbeIdAt(Listed, Probed) && Probed.Equals(DeviceId, ESearchCase::CaseSensitive) ? Listed : INDEX_NONE;
+}
+
+TArray<FCrowdyVoiceInputDevice> ListCrowdyVoiceInputDevices()
+{
+	TArray<FCrowdyVoiceInputDevice> Result;
+	Audio::IAudioCaptureFactory* Factory = CrowdyVoiceMicFindFactory();
+	const TUniquePtr<Audio::IAudioCaptureStream> Stream = Factory ? Factory->CreateNewAudioCaptureStream() : nullptr;
+	TArray<Audio::FCaptureDeviceInfo> Devices;
+	if (!Stream || !Stream->GetInputDevicesAvailable(Devices))
+	{
+		return Result;
+	}
+
+	Audio::FCaptureDeviceInfo Default;
+	const bool bHasDefault = Stream->GetCaptureDeviceInfo(Default, Audio::DefaultDeviceIndex);
+	Result.Reserve(Devices.Num());
+	for (const Audio::FCaptureDeviceInfo& Device : Devices)
+	{
+		FCrowdyVoiceInputDevice& Entry = Result.AddDefaulted_GetRef();
+		Entry.Id = Device.DeviceId;
+		Entry.Name = Device.DeviceName;
+		Entry.bIsDefault = bHasDefault && Device.DeviceId.Equals(Default.DeviceId, ESearchCase::CaseSensitive);
+	}
+	return Result;
 }
 
 int32 WaitForCrowdyVoiceMicCloses(const double TimeoutSeconds)
@@ -395,12 +518,37 @@ void FCrowdyVoiceMic::Restart(const int64 NowMs)
 	Open(NowMs);
 }
 
-void FCrowdyVoiceMic::RetryIfNoDevice(const int64 NowMs)
+void FCrowdyVoiceMic::RetryIfNoDevice(const int64 NowMs, const bool bAlsoFailed)
 {
-	if (State == ECrowdyVoiceMicState::NoDevice && NowMs - OpenedAtMs >= NoDeviceRetryMs)
+	const bool bMissing = State == ECrowdyVoiceMicState::NoDevice || (bAlsoFailed && State == ECrowdyVoiceMicState::Error);
+	if (bMissing && NowMs - OpenedAtMs >= NoDeviceRetryMs)
 	{
 		Open(NowMs);
 	}
+}
+
+bool FCrowdyVoiceMic::SetDevice(const FString& InDeviceId, const int64 NowMs)
+{
+	// Choosing the same microphone again retries one that is missing or failed, as picking it from a menu would be expected
+	// to, but not faster than SameDeviceRetryMs, so a caller re-applying its choice every frame does not reopen every frame.
+	if (InDeviceId.Equals(DeviceId, ESearchCase::CaseSensitive))
+	{
+		const bool bRetry = State == ECrowdyVoiceMicState::Error || State == ECrowdyVoiceMicState::NoDevice;
+		if (!bRetry || NowMs - OpenedAtMs < SameDeviceRetryMs)
+		{
+			return false;
+		}
+	}
+	DeviceId = InDeviceId;
+	if (State == ECrowdyVoiceMicState::Off)
+	{
+		return false;
+	}
+	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Voice chat is moving the microphone to %s."),
+		DeviceId.IsEmpty() ? TEXT("the OS default") : *DeviceId);
+	CloseAndEndSpurt();
+	Open(NowMs);
+	return true;
 }
 
 void FCrowdyVoiceMic::Pump(const int64 NowMs)
@@ -462,7 +610,7 @@ void FCrowdyVoiceMic::Open(const int64 NowMs)
 	LastAudioMs = NowMs;
 
 	Sink = MakeShared<FCrowdyVoiceCaptureSink, ESPMode::ThreadSafe>();
-	const ECrowdyVoiceMicOpen Result = Device->Open(Sink.ToSharedRef());
+	const ECrowdyVoiceMicOpen Result = Device->Open(Sink.ToSharedRef(), DeviceId);
 	if (Result == ECrowdyVoiceMicOpen::Opened)
 	{
 		State = ECrowdyVoiceMicState::Starting;
@@ -475,13 +623,16 @@ void FCrowdyVoiceMic::Open(const int64 NowMs)
 	if (Result == ECrowdyVoiceMicOpen::NoDevice)
 	{
 		State = ECrowdyVoiceMicState::NoDevice;
-		UE_CLOG(Previous != ECrowdyVoiceMicState::NoDevice, LogCrowdyVoice, Warning,
+		UE_CLOG(Previous != ECrowdyVoiceMicState::NoDevice && DeviceId.IsEmpty(), LogCrowdyVoice, Warning,
 			TEXT("Voice chat found no microphone. Connect one or enable it in the OS sound settings; voice chat opens it as soon as it is available."));
+		UE_CLOG(Previous != ECrowdyVoiceMicState::NoDevice && !DeviceId.IsEmpty(), LogCrowdyVoice, Warning,
+			TEXT("Voice chat could not find the chosen microphone %s, so it stays closed until that microphone is connected again. Choose another, or the OS default, with Set Voice Input Device."),
+			*DeviceId);
 		return;
 	}
 
 	State = ECrowdyVoiceMicState::Error;
-	UE_LOG(LogCrowdyVoice, Warning, TEXT("%s"), Result == ECrowdyVoiceMicOpen::Unsupported
+	UE_CLOG(Previous != ECrowdyVoiceMicState::Error, LogCrowdyVoice, Warning, TEXT("%s"), Result == ECrowdyVoiceMicOpen::Unsupported
 		? TEXT("Voice capture is not supported on this platform, or audio is disabled, so the microphone stays closed.")
 		: TEXT("Voice chat could not open the microphone. Check that it is connected and not held by another app, and that the OS microphone permission allows this app, then start voice chat again."));
 }

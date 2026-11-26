@@ -1077,6 +1077,14 @@ FCrowdyClassID UCrowdyActorTracker::GetClassIDForUUID(const FGuid& UUID) const
 	return Found ? Found->ClassID : CROWDY_INVALID_CLASS_ID;
 }
 
+TArray<FGuid> UCrowdyActorTracker::GetTrackedRemoteEntities() const
+{
+	TArray<FGuid> Result;
+	FReadScopeLock R(AppearedIdsLock);
+	AppearedIdsByUUID.GetKeys(Result);
+	return Result;
+}
+
 FCrowdyTypeID UCrowdyActorTracker::GetPayloadTypeIDForUUID(const FGuid& UUID) const
 {
 	FReadScopeLock R(AppearedIdsLock);

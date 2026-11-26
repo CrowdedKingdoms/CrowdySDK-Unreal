@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Containers/CircularQueue.h"
+#include "Core/Audio/VoiceChat/CrowdyVoiceInputDevice.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceMicState.h"
 #include "Templates/SharedPointer.h"
 #include "Templates/UniquePtr.h"
@@ -77,15 +78,36 @@ class ICrowdyVoiceMicDevice
 public:
 	virtual ~ICrowdyVoiceMicDevice() = default;
 
-	/** Opens the default microphone into Sink, kept alive for as long as the device may write to it. */
-	virtual ECrowdyVoiceMicOpen Open(const FCrowdyVoiceCaptureSinkRef& Sink) = 0;
+	/** Opens the microphone DeviceId names, or the OS default when it is empty, into Sink, kept alive for as long as the device may write to it. A named microphone that is missing is NoDevice, never another one. */
+	virtual ECrowdyVoiceMicOpen Open(const FCrowdyVoiceCaptureSinkRef& Sink, const FString& DeviceId) = 0;
 
 	/** Stops the device without blocking; it may finish in the background. Safe when nothing is open. */
 	virtual void Close() = 0;
 };
 
-/** The engine's default capture device. */
+/** The engine's capture devices. */
 TUniquePtr<ICrowdyVoiceMicDevice> MakeCrowdyVoiceEngineMicDevice();
+
+/** The microphones the engine can capture from now; empty where audio capture is not available. Game thread: the engine's enumerator needs its COM setup. */
+TArray<FCrowdyVoiceInputDevice> ListCrowdyVoiceInputDevices();
+
+/** How the loaded capture backend counts the position it opens a device by. */
+enum class ECrowdyVoiceCaptureIndexing : uint8
+{
+	/** WASAPI: every active capture endpoint, as GetCaptureDeviceInfo counts; the device list leaves some out. */
+	AllEndpoints,
+	/** RtAudio: the position in the device list itself. */
+	ListPosition,
+	/** Not known, so a position is taken only where the list and GetCaptureDeviceInfo agree on it. */
+	Agreeing
+};
+
+/** The indexing of the capture backend the engine loaded, from its AudioCaptureModuleName setting. */
+ECrowdyVoiceCaptureIndexing GetCrowdyVoiceCaptureIndexing();
+
+/** The position to open DeviceId at, given the listed ids and ProbeIdAt (GetCaptureDeviceInfo's id at a position, false where it cannot read one); INDEX_NONE when it is at none, so a missing device is never stood in for. */
+int32 ResolveCrowdyVoiceCaptureIndex(ECrowdyVoiceCaptureIndexing Indexing, const FString& DeviceId, TConstArrayView<FString> ListedIds,
+	TFunctionRef<bool(int32, FString&)> ProbeIdAt);
 
 /** Waits up to TimeoutSeconds for engine capture devices still closing in the background; answers how many remain. */
 int32 WaitForCrowdyVoiceMicCloses(double TimeoutSeconds);
@@ -177,6 +199,9 @@ public:
 
 	static constexpr int64 NoDeviceRetryMs = 2000;
 
+	/** The least time between retries of the same chosen microphone through SetDevice. */
+	static constexpr int64 SameDeviceRetryMs = 500;
+
 	static constexpr int32 SilenceHangFrames = FCrowdyVoiceSpurtGate::SilenceHangFrames;
 	static constexpr int32 SilenceRms = FCrowdyVoiceSpurtGate::DefaultSilenceRms;
 
@@ -201,8 +226,12 @@ public:
 	/** Reopens the microphone after a device change; does nothing while Off. */
 	void Restart(int64 NowMs);
 
-	/** Tries again to open a microphone that was not found, at most every NoDeviceRetryMs. */
-	void RetryIfNoDevice(int64 NowMs);
+	/** Tries again to open a microphone that was not found, or with bAlsoFailed one that failed, at most every NoDeviceRetryMs. */
+	void RetryIfNoDevice(int64 NowMs, bool bAlsoFailed = false);
+
+	/** Captures from InDeviceId from now on, the OS default when empty; a microphone that is not Off reopens on it at once, and choosing the same one again retries it from No Device or Error, at most every SameDeviceRetryMs. True when it reopened. */
+	bool SetDevice(const FString& InDeviceId, int64 NowMs);
+	const FString& GetDeviceId() const { return DeviceId; }
 
 	/** Sends every whole frame captured so far through the silence gate. */
 	void Pump(int64 NowMs);
@@ -225,6 +254,7 @@ private:
 	TUniquePtr<ICrowdyVoiceMicDevice> Device;
 	ICrowdyVoiceFrameSink& Out;
 	TArray<int16> Frame;
+	FString DeviceId;
 	int64 OpenedAtMs = 0;
 	int64 LastAudioMs = 0;
 	int32 FrameFill = 0;

@@ -608,4 +608,98 @@ bool FCrowdyPlayersNamesBoundsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace
+{
+	FOnPlayerAppStateRead CrowdyPlayersAppStateRead(UCrowdyAccountTestListener& Listener)
+	{
+		FOnPlayerAppStateRead Delegate;
+		Delegate.BindDynamic(&Listener, &UCrowdyAccountTestListener::HandleAppState);
+		return Delegate;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPlayersAppStateReadTest, "CrowdySDK.Players.AppStateReadsTheSavedState", AccountTestFlags)
+
+bool FCrowdyPlayersAppStateReadTest::RunTest(const FString& Parameters)
+{
+	FPlayersRig Saved(TEXT("{\"data\":{\"userAppState\":{\"userId\":\"7781\",\"appId\":\"31337\",\"state\":\"AAE=\"}}}"));
+	FPlayersRig Never(TEXT("{\"data\":{\"userAppState\":null}}"));
+	FPlayersRig Cleared(TEXT("{\"data\":{\"userAppState\":{\"userId\":\"7781\",\"appId\":\"31337\",\"state\":null}}}"));
+	if (!TestTrue(TEXT("the test clients were built"), Saved.Client.IsValid() && Never.Client.IsValid() && Cleared.Client.IsValid()))
+	{
+		return false;
+	}
+
+	for (FPlayersRig* Rig : { &Saved, &Never, &Cleared })
+	{
+		Rig->Players->GetMyAppState(CrowdyPlayersAppStateRead(*Rig->Listener), Rig->Failed());
+		Rig->Drain();
+	}
+
+	FPlayersRig Numeric(TEXT("{\"data\":{\"userAppState\":{\"userId\":\"7781\",\"appId\":\"31337\",\"state\":123}}}"));
+	if (TestTrue(TEXT("the numeric-state client was built"), Numeric.Client.IsValid()))
+	{
+		Numeric.Players->GetMyAppState(CrowdyPlayersAppStateRead(*Numeric.Listener), Numeric.Failed());
+		Numeric.Drain();
+		TestEqual(TEXT("a state that is not text fails rather than being read as text"), Numeric.Listener->Errors.Num(), 1);
+	}
+
+	FPlayersRig Missing(TEXT("{\"data\":{}}"));
+	if (TestTrue(TEXT("the missing-field client was built"), Missing.Client.IsValid()))
+	{
+		Missing.Players->GetMyAppState(CrowdyPlayersAppStateRead(*Missing.Listener), Missing.Failed());
+		Missing.Drain();
+		TestEqual(TEXT("an answer without the field fails rather than reading as never saved"), Missing.Listener->Errors.Num(), 1);
+		TestEqual(TEXT("and reads nothing"), Missing.Listener->AppStates.Num(), 0);
+	}
+
+	FString Body;
+	Saved.Client->GetLastTestRequestBody(Body);
+	TestTrue(TEXT("it asks for this player's app state"), Body.Contains(TEXT("userAppState")));
+	TestTrue(TEXT("with the app id as a string, which is a BigInt on the wire"), Body.Contains(TEXT("\"appId\":\"")));
+	FString Url;
+	FString Authorization;
+	Saved.Client->GetLastTestRequest(Url, Authorization);
+	TestEqual(TEXT("under the game token"), Authorization, TEXT("Bearer app-old"));
+	TestEqual(TEXT("a saved state is read as saved"), Saved.Listener->AppStates, TArray<FString>{ TEXT("AAE=") });
+	TestEqual(TEXT("a player who never saved reads empty, not an error"), Never.Listener->AppStates, TArray<FString>{ FString() });
+	TestEqual(TEXT("so does a cleared state"), Cleared.Listener->AppStates, TArray<FString>{ FString() });
+	TestEqual(TEXT("none of them failed"), Saved.Listener->Errors.Num() + Never.Listener->Errors.Num() + Cleared.Listener->Errors.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyPlayersAppStateWriteTest, "CrowdySDK.Players.AppStateWriteSendsOrClears", AccountTestFlags)
+
+bool FCrowdyPlayersAppStateWriteTest::RunTest(const FString& Parameters)
+{
+	FPlayersRig Rig(TEXT("{\"data\":{\"updateUserAppState\":{\"userId\":\"7781\",\"appId\":\"31337\",\"state\":\"AAE=\"}}}"));
+	FPlayersRig Refused(TEXT("{\"errors\":[{\"message\":\"Too large.\",\"extensions\":{\"code\":\"BAD_USER_INPUT\"}}],\"data\":null}"));
+	if (!TestTrue(TEXT("the test clients were built"), Rig.Client.IsValid() && Refused.Client.IsValid()))
+	{
+		return false;
+	}
+
+	FOnPlayerAppStateWritten Done;
+	Done.BindDynamic(Rig.Listener.Get(), &UCrowdyAccountTestListener::HandleAppStateWritten);
+	Rig.Players->SetMyAppState(TEXT("AAE="), Done, Rig.Failed());
+	Rig.Drain();
+	FString Body;
+	Rig.Client->GetLastTestRequestBody(Body);
+	TestTrue(TEXT("the state is sent"), Body.Contains(TEXT("\"state\":\"AAE=\"")));
+	TestEqual(TEXT("and the write answers done"), Rig.Listener->AppStatesWritten, 1);
+
+	Rig.Players->SetMyAppState(FString(), Done, Rig.Failed());
+	Rig.Drain();
+	Rig.Client->GetLastTestRequestBody(Body);
+	TestTrue(TEXT("an empty state clears it with null"), Body.Contains(TEXT("\"state\":null")));
+
+	FOnPlayerAppStateWritten RefusedDone;
+	RefusedDone.BindDynamic(Refused.Listener.Get(), &UCrowdyAccountTestListener::HandleAppStateWritten);
+	Refused.Players->SetMyAppState(TEXT("AAE="), RefusedDone, Refused.Failed());
+	Refused.Drain();
+	TestEqual(TEXT("a refused write fails"), Refused.Listener->Errors.Num(), 1);
+	TestEqual(TEXT("and never answers done"), Refused.Listener->AppStatesWritten, 0);
+	return true;
+}
+
 #endif

@@ -27,6 +27,12 @@ struct FCrowdyVoiceSettings
 		return FMath::Clamp(Chunks, 0, MaxDistanceChunks);
 	}
 
+	/** The overall playback volume voice chat uses for Volume, 0 to 1; a value that is not a number reads as 1. */
+	static float ClampPlaybackVolume(const float Volume)
+	{
+		return FMath::IsFinite(Volume) ? FMath::Clamp(Volume, 0.0f, 1.0f) : 1.0f;
+	}
+
 	float StreamTimeoutSeconds = 2.0f;
 	// Set by the game; unset follows each map's own voice distance.
 	TOptional<int32> DistanceChunks;
@@ -37,6 +43,9 @@ struct FCrowdyVoiceSettings
 	int64 ChannelsUserId = 0;
 	TSet<int64> MutedChannels;
 	TMap<int64, float> ChannelVolumes;
+	// Empty follows the OS default microphone.
+	FString InputDeviceId;
+	float PlaybackVolume = 1.0f;
 	bool bSpatialVoice = true;
 	bool bPlaying = false;
 	bool bOwnerEcho = false;
@@ -66,6 +75,15 @@ struct FCrowdyVoiceSettings
 		for (const TPair<int64, float>& Volume : ChannelVolumes)
 		{
 			VoiceChat.SetChannelVolume(Volume.Key, Volume.Value);
+		}
+		if (PlaybackVolume != 1.0f)
+		{
+			VoiceChat.SetPlaybackVolume(PlaybackVolume);
+		}
+		// Before the microphone starts, so it opens on the chosen device rather than moving to it.
+		if (!InputDeviceId.IsEmpty())
+		{
+			VoiceChat.SetInputDevice(InputDeviceId);
 		}
 		VoiceChat.SetSpatialVoiceEnabled(bSpatialVoice);
 		VoiceChat.SetOwnerEcho(bOwnerEcho);

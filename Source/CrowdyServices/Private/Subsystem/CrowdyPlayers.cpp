@@ -149,3 +149,97 @@ void UCrowdyPlayers::SetPlayerName(const FString& Gamertag, const FString& Disam
 			OnResult.ExecuteIfBound(Profile);
 		}));
 }
+
+void UCrowdyPlayers::GetMyAppState(FOnPlayerAppStateRead OnResult, FOnPlayersError OnError)
+{
+	FCrowdyCppClient* Client = ResolveClient();
+	if (!Client)
+	{
+		const FCrowdyAccountError Error = CrowdyServiceApi::ClientUnavailableError<FCrowdyAccountError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+
+	const TSharedPtr<FJsonObject> Variables = MakeShared<FJsonObject>();
+	Variables->SetStringField(TEXT("appId"), CrowdyServiceApi::BigInt(CrowdyServiceApi::ResolveAppId(GetGameInstance())));
+	Client->RunOp(ECrowdyCppApiDomain::State, TEXT("UserAppState"), Variables,
+		CrowdyServiceApi::GuardLifetime<FCrowdyCppJsonResult>(LiveToken, [OnResult, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyAccountError Error;
+			const TSharedPtr<FJsonObject>* Payload = CrowdyServiceApi::ReadPayload(Result, Error);
+			if (!Payload)
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			// Null means never saved and a null state means cleared; a missing field is an answer that cannot be read, never empty.
+			const TSharedPtr<FJsonValue> Row = (*Payload)->TryGetField(TEXT("userAppState"));
+			if (Row.IsValid() && Row->IsNull())
+			{
+				OnResult.ExecuteIfBound(FString());
+				return;
+			}
+			const TSharedPtr<FJsonObject>* Object = nullptr;
+			if (!Row.IsValid() || !Row->TryGetObject(Object))
+			{
+				Error = CrowdyServiceApi::UnreadableResponseError<FCrowdyAccountError>();
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			const TSharedPtr<FJsonValue> StateValue = (*Object)->TryGetField(TEXT("state"));
+			FString State;
+			if (!StateValue.IsValid() || (!StateValue->IsNull() && StateValue->Type != EJson::String))
+			{
+				Error = CrowdyServiceApi::UnreadableResponseError<FCrowdyAccountError>();
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			if (!StateValue->IsNull())
+			{
+				State = StateValue->AsString();
+			}
+			OnResult.ExecuteIfBound(State);
+		}),
+		ECrowdyCppTokenPlane::Game);
+}
+
+void UCrowdyPlayers::SetMyAppState(const FString& State, FOnPlayerAppStateWritten OnDone, FOnPlayersError OnError)
+{
+	FCrowdyCppClient* Client = ResolveClient();
+	if (!Client)
+	{
+		const FCrowdyAccountError Error = CrowdyServiceApi::ClientUnavailableError<FCrowdyAccountError>();
+		OnError.ExecuteIfBound(Error, Error.Message);
+		return;
+	}
+
+	const TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("appId"), CrowdyServiceApi::BigInt(CrowdyServiceApi::ResolveAppId(GetGameInstance())));
+	if (State.IsEmpty())
+	{
+		Input->SetField(TEXT("state"), MakeShared<FJsonValueNull>());
+	}
+	else
+	{
+		Input->SetStringField(TEXT("state"), State);
+	}
+	Client->RunOp(ECrowdyCppApiDomain::State, TEXT("UpdateUserAppState"), CrowdyServiceApi::WrapInput(Input),
+		CrowdyServiceApi::GuardLifetime<FCrowdyCppJsonResult>(LiveToken, [OnDone, OnError](FCrowdyCppJsonResult Result)
+		{
+			FCrowdyAccountError Error;
+			const TSharedPtr<FJsonObject>* Payload = CrowdyServiceApi::ReadPayload(Result, Error);
+			if (!Payload)
+			{
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			if (!(*Payload)->HasTypedField<EJson::Object>(TEXT("updateUserAppState")))
+			{
+				Error = CrowdyServiceApi::UnreadableResponseError<FCrowdyAccountError>();
+				OnError.ExecuteIfBound(Error, Error.Message);
+				return;
+			}
+			OnDone.ExecuteIfBound();
+		}),
+		ECrowdyCppTokenPlane::Game);
+}
