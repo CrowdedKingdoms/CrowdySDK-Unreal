@@ -8,6 +8,61 @@
 // One signature serves On Success and On Error, because a Blueprint async node builds its data pins from the first delegate only.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FPlayerProfileAsyncResult, FCrowdyPlayerProfile, Profile, FCrowdyAccountError, Error, FString, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FPlayerProfilesAsyncResult, const TArray<FCrowdyPlayerProfile>&, Profiles, FCrowdyAccountError, Error, FString, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FPlayerAppStateAsyncResult, const FString&, State, FCrowdyAccountError, Error, FString, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FPlayerAppStateWriteAsyncResult, FCrowdyAccountError, Error, FString, Message);
+
+UCLASS()
+class CROWDYSERVICES_API UCrowdyPlayers_GetMyAppState : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FPlayerAppStateAsyncResult OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FPlayerAppStateAsyncResult OnError;
+
+	/** Reads the signed-in player's private state for this app, base64; empty when none was saved. Only that player can read it, from any machine. Deserialize Avatar State to Struct turns it back into a struct. */
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
+		Category="Crowdy SDK|Players|State", DisplayName="Get My App State")
+	static UCrowdyPlayers_GetMyAppState* GetMyAppState(UObject* WorldContextObject);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+
+	UFUNCTION() void HandleRead(const FString& State);
+	UFUNCTION() void HandleError(FCrowdyAccountError Error, FString Message);
+};
+
+UCLASS()
+class CROWDYSERVICES_API UCrowdyPlayers_SetMyAppState : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FPlayerAppStateWriteAsyncResult OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FPlayerAppStateWriteAsyncResult OnError;
+
+	/** Replaces the signed-in player's private state for this app with State, base64 (Serialize Struct to Avatar State makes it from a struct); empty clears it. Kept per account, not per avatar or machine. */
+	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true", WorldContext="WorldContextObject"),
+		Category="Crowdy SDK|Players|State", DisplayName="Set My App State")
+	static UCrowdyPlayers_SetMyAppState* SetMyAppState(UObject* WorldContextObject, const FString& State);
+
+	virtual void Activate() override;
+
+private:
+	TWeakObjectPtr<UObject> WorldContextObject;
+	FString State;
+
+	UFUNCTION() void HandleWritten();
+	UFUNCTION() void HandleError(FCrowdyAccountError Error, FString Message);
+};
 
 UCLASS()
 class CROWDYSERVICES_API UCrowdyPlayers_GetPlayerName : public UBlueprintAsyncActionBase

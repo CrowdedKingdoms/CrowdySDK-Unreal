@@ -306,6 +306,8 @@ bool UCrowdyMassNearTierComponent::BindToEntity(const FMassEntityHandle Entity, 
 		return true;
 	}
 
+	const bool bHandedOver = bBound;
+	const FGuid PreviousUUID = EntityUUID;
 	SetBoundEntity(Entity, UUID);
 	ResolveAnimSetForBoundEntity();
 
@@ -337,12 +339,33 @@ bool UCrowdyMassNearTierComponent::BindToEntity(const FMassEntityHandle Entity, 
 		*GetNameSafe(GetOwner()), Entity.Index, *UUID.ToString(),
 		*GetPathNameSafe(ResolvedAnimSet.Get()));
 
+	if (bHandedOver)
+	{
+		QueueBindingChange(PreviousUUID, false);
+	}
+	QueueBindingChange(UUID, true);
 	return true;
+}
+
+void UCrowdyMassNearTierComponent::QueueBindingChange(const FGuid& UUID, const bool bNowBound)
+{
+	UCrowdyMassEntitySubsystem* Subsystem = GetEntitySubsystem();
+	if (Subsystem && Subsystem->QueueNearTierBindingChange(*this, UUID, bNowBound))
+	{
+		return;
+	}
+	// No game world to deliver later in, so no crowd loop can be running either.
+	OnEntityBindingChanged.Broadcast(UUID, bNowBound);
+	if (Subsystem)
+	{
+		Subsystem->OnNearTierBindingChanged.Broadcast(GetOwner(), UUID, bNowBound);
+	}
 }
 
 void UCrowdyMassNearTierComponent::UnbindFromEntity()
 {
 	const bool bWasBound = bBound;
+	const FGuid PreviousUUID = EntityUUID;
 	UnwatchServerValues();
 
 	// The montage goes first and goes without a blend. This runs as the actor is being taken back, so
@@ -369,6 +392,11 @@ void UCrowdyMassNearTierComponent::UnbindFromEntity()
 
 	UE_CLOG(bWasBound && CrowdyMassNearTier::IsTraceEnabled(), LogCrowdyMass, Log,
 		TEXT("[CrowdyMassNearTier]: '%s' unbound."), *GetNameSafe(GetOwner()));
+
+	if (bWasBound)
+	{
+		QueueBindingChange(PreviousUUID, false);
+	}
 }
 
 bool UCrowdyMassNearTierComponent::ResolveEntityFromOwner()

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Core/Audio/VoiceChat/CrowdyChannelVoiceMode.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceDeveloperSettings.h"
+#include "Core/Audio/VoiceChat/CrowdyVoiceInputDevice.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceMicState.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceSettings.h"
 #include "Sound/SoundAttenuation.h"
@@ -96,6 +97,17 @@ public:
 
 	ECrowdyVoiceMicState GetMicState() const;
 	bool IsCapturing() const { return GetMicState() == ECrowdyVoiceMicState::Capturing; }
+
+	/** The microphones this machine has now; empty where audio capture is not available. Game thread only; asks the OS each call. */
+	static TArray<FCrowdyVoiceInputDevice> GetInputDevices();
+
+	/** Captures from the microphone with this Id, or the OS default when empty; one that is open moves at once. A chosen microphone that is missing reads No Device until it is back, never replaced by another. */
+	void SetInputDevice(const FString& DeviceId);
+	FString GetInputDevice() const;
+
+	/** Multiplies every voice this world plays, spatial and channel, with each user's and channel's own volume: 1 as received, 0 silent. */
+	void SetPlaybackVolume(float Volume);
+	float GetPlaybackVolume() const { return PlaybackVolume; }
 	bool IsPlaying() const;
 
 	/** What this world's voice chat has sent, received and played; the concealed, malformed and speaker counts refresh each tick. */
@@ -198,12 +210,16 @@ public:
 	FGuid TrackedSpeakerIdForTest(const FString& SpeakerKey) const { const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerKey); return Info ? Info->Id : FGuid(); }
 	/** Tracks and admits SpeakerKey as a packet from it would, asking Resolve Speaker User; whether it would play. */
 	bool AdmitSpeakerForTest(const FString& SpeakerKey, const int64 NowMs, const int64 ChannelId = 0) { FSpeakerInfo* Info = TrackSpeaker(SpeakerKey, NowMs, ChannelId); return Info && AdmitSpeaker(SpeakerKey, *Info, NowMs); }
-	int64 TrackedUserIdForTest(const FString& SpeakerKey) const { const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerKey); return Info ? Info->UserId : 0; }private:
+	int64 TrackedUserIdForTest(const FString& SpeakerKey) const { const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerKey); return Info ? Info->UserId : 0; }
+	/** The volume a tracked stream would play at; 0 when it is not tracked. */
+	float SpeakerVolumeForTest(const FString& SpeakerKey) const { const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerKey); return Info ? SpeakerVolume(*Info) : 0.0f; }
+private:
 #endif
 
 	bool AdmitSpeaker(const FString& SpeakerKey, FSpeakerInfo& Info, int64 NowMs);
 	void HandleSpeakerUser(const FString& SpeakerKey, int64 UserId);
 	bool LocateSpeakerNow(const FSpeakerInfo& Info, FVector& OutLocation) const;
+	float SpeakerVolume(const FSpeakerInfo& Info) const;
 	void ApplySpeakerVolume(const FString& SpeakerKey);
 	void UpdateListenerAndStreams(int64 NowMs);
 	void ReadSettings();
@@ -234,6 +250,7 @@ public:
 	TMap<int64, ECrowdyChannelVoiceMode> VoiceChannels;
 	TSet<int64> MutedChannels;
 	TMap<int64, float> ChannelVolumes;
+	float PlaybackVolume = 1.0f;
 	FSoundAttenuationSettings SpatialAttenuation;
 	FVector ListenerLocation = FVector::ZeroVector;
 	float OcclusionCheckSeconds = 0.1f;
@@ -259,6 +276,7 @@ public:
 	FInt64Vector LastPawnChunk = FInt64Vector::ZeroValue;
 	int64 StreamTimeoutMs = 2000;
 	int64 RestartAtMs = 0;
+	int64 ArrivalRetryUntilMs = 0;
 	int32 DistanceChunks = FCrowdyVoiceSettings::DefaultDistanceChunks;
 	ECrowdyVoiceMicState BroadcastMicState = ECrowdyVoiceMicState::Off;
 	bool bOwnerEcho = false;

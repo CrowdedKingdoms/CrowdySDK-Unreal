@@ -367,4 +367,42 @@ bool FCrowdyInventedIdCannotSpeakForAnEntityTest::RunTest(const FString& Paramet
 	return true;
 }
 
+// A listener that binds after entities appeared catches up from this list, so it must hold what was announced and drop what left.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyTrackedRemoteEntitiesListTest,
+	"CrowdySDK.Replication.TrackedRemoteEntitiesListsWhatAppearedAndNotWhatLeft", CrowdyActorLeftReleaseTestFlags)
+
+bool FCrowdyTrackedRemoteEntitiesListTest::RunTest(const FString& Parameters)
+{
+	const FCrowdyActorLeftFixture Fixture;
+	if (!TestTrue(TEXT("a tracker, a manager and a backend were created"), Fixture.IsValid()))
+	{
+		return false;
+	}
+	Fixture.Tracker->SetupQueuesForTest();
+	TestEqual(TEXT("CONTROL: nothing is tracked before anything appears"), Fixture.Tracker->GetTrackedRemoteEntities().Num(), 0);
+
+	const FGuid Staying = FGuid::NewGuid();
+	const FGuid Leaving = FGuid::NewGuid();
+	TArray<FCrowdyActorUpdate> Appeared;
+	Appeared.AddDefaulted_GetRef().UUID = Staying;
+	Appeared.AddDefaulted_GetRef().UUID = Leaving;
+	Fixture.Tracker->RecordAppearancesForTest(Appeared);
+
+	TArray<FGuid> Tracked = Fixture.Tracker->GetTrackedRemoteEntities();
+	TestTrue(TEXT("both appeared entities are listed"), Tracked.Num() == 2 && Tracked.Contains(Staying) && Tracked.Contains(Leaving));
+
+	Fixture.Tracker->ForgetTrackedActorForTest(Leaving);
+	Tracked = Fixture.Tracker->GetTrackedRemoteEntities();
+	TestEqual(TEXT("one that left is no longer listed"), Tracked, TArray<FGuid>{ Staying });
+
+	FCrowdyActorUpdate Silent;
+	Silent.UUID = Staying;
+	Fixture.Tracker->NoteHeardForTest({ Silent }, 3600.0);
+	Fixture.Tracker->CheckTimeoutsForTest();
+	TestEqual(TEXT("one that timed out is no longer listed either"), Fixture.Tracker->GetTrackedRemoteEntities().Num(), 0);
+
+	Fixture.Tracker->ReleaseQueuesForTest();
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
