@@ -1078,6 +1078,41 @@ int32 UCrowdySDKSubsystem::MapVoiceDistance(const UWorld* World)
 	return Profile ? static_cast<int32>(Profile->VoiceDistance) : FCrowdyVoiceSettings::DefaultDistanceChunks;
 }
 
+TArray<FCrowdyVoiceInputDevice> UCrowdySDKSubsystem::GetVoiceInputDevices() const
+{
+	return UVoiceChatSubsystem::GetInputDevices();
+}
+
+void UCrowdySDKSubsystem::SetVoiceInputDevice(const FString& DeviceId)
+{
+	VoiceSettings.InputDeviceId = DeviceId;
+	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
+	{
+		VoiceChat->SetInputDevice(DeviceId);
+	}
+}
+
+FString UCrowdySDKSubsystem::GetVoiceInputDevice() const
+{
+	return VoiceSettings.InputDeviceId;
+}
+
+void UCrowdySDKSubsystem::SetVoicePlaybackVolume(const float Volume)
+{
+	const float Clamped = FCrowdyVoiceSettings::ClampPlaybackVolume(Volume);
+	UE_CLOG(Clamped != Volume, LogCrowdySDK, Warning, TEXT("Voice playback volume %f is outside 0 to 1; using %.2f."), Volume, Clamped);
+	VoiceSettings.PlaybackVolume = Clamped;
+	if (UVoiceChatSubsystem* VoiceChat = ResolveVoiceChat())
+	{
+		VoiceChat->SetPlaybackVolume(Clamped);
+	}
+}
+
+float UCrowdySDKSubsystem::GetVoicePlaybackVolume() const
+{
+	return VoiceSettings.PlaybackVolume;
+}
+
 ECrowdyVoiceMicState UCrowdySDKSubsystem::GetVoiceMicState() const
 {
 	const UWorld* World = GetWorld();

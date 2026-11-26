@@ -20,6 +20,7 @@ struct FMassEntityManager;
 struct FSkinnedMeshInstanceVisualizationDesc;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCrowdyMassNearTierServerValuesChanged, const TArray<FString>&, Changed);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCrowdyMassNearTierBindingChanged, FGuid, EntityUUID, bool, bBound);
 
 namespace CrowdyMassNearTier
 {
@@ -297,6 +298,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crowdy Mass|Near Tier")
 	bool bApplyTraceCollision = true;
 
+	/** After this actor starts standing for an entity (bBound true) or stops (false), with that entity's UUID, invalid for an entity that has none. Delivered once the crowd's frame has finished, in order, never inside its update; the entity subsystem's On Near Tier Binding Changed reports every actor's changes in one place; a pooled actor handed straight to another entity reports the old one stopping first. By delivery the actor may already stand for another entity, so trust the UUID passed, not Get Entity UUID; a destroyed actor delivers nothing more, and nothing is delivered once the world is shutting down. */
+	UPROPERTY(BlueprintAssignable, Category="Crowdy Mass|Near Tier")
+	FCrowdyMassNearTierBindingChanged OnEntityBindingChanged;
+
 	/** After each change of the bound entity's server values, naming the variables; empty when its record was removed. */
 	UPROPERTY(BlueprintAssignable, Category="Crowdy Mass|Server Values")
 	FCrowdyMassNearTierServerValuesChanged OnServerValuesChanged;
@@ -385,6 +390,9 @@ private:
 	FMassEntityHandle BoundEntity;
 	FGuid EntityUUID;
 	bool bBound = false;
+
+	// Hands a binding change to the entity subsystem, which delivers it once the crowd's frame has finished.
+	void QueueBindingChange(const FGuid& UUID, bool bNowBound);
 
 	// True once the owner's class and the entity's class were found to name different animation sets, so
 	// no action id can be resolved with confidence. Motion and pose inputs keep working.

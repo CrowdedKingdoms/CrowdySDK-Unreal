@@ -12,8 +12,10 @@
 class FCrowdyVoiceNotificationClient final : public IMMNotificationClient
 {
 public:
-	explicit FCrowdyVoiceNotificationClient(const TSharedRef<std::atomic<bool>, ESPMode::ThreadSafe>& InChanged)
+	FCrowdyVoiceNotificationClient(const TSharedRef<std::atomic<bool>, ESPMode::ThreadSafe>& InChanged,
+		const TSharedRef<std::atomic<bool>, ESPMode::ThreadSafe>& InArrived)
 		: Changed(InChanged)
+		, Arrived(InArrived)
 	{
 	}
 
@@ -54,18 +56,29 @@ public:
 		return S_OK;
 	}
 
-	virtual HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR, DWORD) override { return S_OK; }
-	virtual HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR) override { return S_OK; }
+	virtual HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR, DWORD) override
+	{
+		Arrived->store(true);
+		return S_OK;
+	}
+
+	virtual HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR) override
+	{
+		Arrived->store(true);
+		return S_OK;
+	}
 	virtual HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR) override { return S_OK; }
 	virtual HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR, const PROPERTYKEY) override { return S_OK; }
 
 private:
 	std::atomic<ULONG> RefCount{1};
 	TSharedRef<std::atomic<bool>, ESPMode::ThreadSafe> Changed;
+	TSharedRef<std::atomic<bool>, ESPMode::ThreadSafe> Arrived;
 };
 
 FCrowdyVoiceDeviceMonitor::FCrowdyVoiceDeviceMonitor()
 	: bChanged(MakeShared<std::atomic<bool>, ESPMode::ThreadSafe>(false))
+	, bArrived(MakeShared<std::atomic<bool>, ESPMode::ThreadSafe>(false))
 {
 	bComInitialized = FWindowsPlatformMisc::CoInitialize();
 
@@ -79,7 +92,7 @@ FCrowdyVoiceDeviceMonitor::FCrowdyVoiceDeviceMonitor()
 		return;
 	}
 
-	Client = new FCrowdyVoiceNotificationClient(bChanged);
+	Client = new FCrowdyVoiceNotificationClient(bChanged, bArrived);
 	Result = Enumerator->RegisterEndpointNotificationCallback(Client);
 	if (SUCCEEDED(Result))
 	{
@@ -123,6 +136,7 @@ bool FCrowdyVoiceDeviceMonitor::IsWatching() const
 
 FCrowdyVoiceDeviceMonitor::FCrowdyVoiceDeviceMonitor()
 	: bChanged(MakeShared<std::atomic<bool>, ESPMode::ThreadSafe>(false))
+	, bArrived(MakeShared<std::atomic<bool>, ESPMode::ThreadSafe>(false))
 {
 	static bool bLogged = false;
 	UE_CLOG(!bLogged && CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log,
@@ -142,4 +156,9 @@ bool FCrowdyVoiceDeviceMonitor::IsWatching() const
 bool FCrowdyVoiceDeviceMonitor::ConsumeCaptureDeviceChange()
 {
 	return bChanged->exchange(false);
+}
+
+bool FCrowdyVoiceDeviceMonitor::ConsumeDeviceArrival()
+{
+	return bArrived->exchange(false);
 }

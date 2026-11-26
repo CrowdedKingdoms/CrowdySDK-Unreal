@@ -31,6 +31,7 @@ public class CrowdyMass : ModuleRules
 			"CrowdyNet",
 			"CrowdySDK",
 			"CrowdyCppBridge",
+			"MassSimulation",
 			// FCrowdyMassClassDerivationReport::ResolveActorClass answers for a Blueprint class before
 			// anything has spawned one, which is exactly when it is not loaded and no search of loaded
 			// classes can find it. The registry knows the asset without it being loaded.

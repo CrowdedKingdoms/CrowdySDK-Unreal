@@ -27,6 +27,9 @@ namespace
 	// Coalesces the burst of notifications one device change produces, and gives the new device time to settle.
 	constexpr int64 CrowdyVoiceRestartDelayMs = 500;
 
+	// How long a missing microphone keeps being retried after a device arrives.
+	constexpr int64 CrowdyVoiceArrivalRetryMs = 10000;
+
 	int64 CrowdyVoiceNowMs()
 	{
 		return static_cast<int64>(FPlatformTime::Seconds() * 1000.0);
@@ -203,9 +206,19 @@ void UVoiceChatSubsystem::Tick(const float DeltaTime)
 	}
 
 	const int64 NowMs = CrowdyVoiceNowMs();
-	if (Runtime->Monitor.ConsumeCaptureDeviceChange() && Runtime->Mic.GetState() != ECrowdyVoiceMicState::Off)
+	const bool bDefaultChanged = Runtime->Monitor.ConsumeCaptureDeviceChange();
+	const bool bArrived = Runtime->Monitor.ConsumeDeviceArrival();
+	const bool bFollowsDefault = Runtime->Mic.GetDeviceId().IsEmpty();
+	const ECrowdyVoiceMicState Before = Runtime->Mic.GetState();
+	// A chosen microphone raises no default change when it comes back, only an arrival.
+	const bool bChosenMayBeBack = bArrived && !bFollowsDefault && Before == ECrowdyVoiceMicState::NoDevice;
+	if (((bDefaultChanged && bFollowsDefault) || bChosenMayBeBack) && Before != ECrowdyVoiceMicState::Off)
 	{
 		RestartAtMs = NowMs + CrowdyVoiceRestartDelayMs;
+	}
+	if (bArrived)
+	{
+		ArrivalRetryUntilMs = NowMs + CrowdyVoiceArrivalRetryMs;
 	}
 
 	if (RestartAtMs != 0 && NowMs >= RestartAtMs)
@@ -214,9 +227,12 @@ void UVoiceChatSubsystem::Tick(const float DeltaTime)
 		Runtime->Mic.Restart(NowMs);
 	}
 
-	if (!Runtime->Monitor.IsWatching())
+	// Polled where changes cannot be seen, and briefly after an arrival, since a device can take a moment to become usable:
+	// one just plugged in can fail to open or deliver at first, so a failure is retried in that window too.
+	const bool bAfterArrival = NowMs < ArrivalRetryUntilMs;
+	if (!Runtime->Monitor.IsWatching() || bAfterArrival)
 	{
-		Runtime->Mic.RetryIfNoDevice(NowMs);
+		Runtime->Mic.RetryIfNoDevice(NowMs, bAfterArrival);
 	}
 
 	// A microphone that reopened by itself takes the stream over, so a fed spurt still open ends first.
@@ -365,6 +381,12 @@ int64 UVoiceChatSubsystem::KnownUserOf(const FGuid& SpeakerId) const
 	return 0;
 }
 
+float UVoiceChatSubsystem::SpeakerVolume(const FSpeakerInfo& Info) const
+{
+	const float ChannelVolume = Info.ChannelId != 0 ? GetChannelVolume(Info.ChannelId) : 1.0f;
+	return PlaybackVolume * GetUserVolume(Info.UserId) * ChannelVolume;
+}
+
 void UVoiceChatSubsystem::ApplySpeakerVolume(const FString& SpeakerKey)
 {
 	const FCrowdyVoiceSpeakerStream* Stream = SpeakerStreams.Find(SpeakerKey);
@@ -373,8 +395,43 @@ void UVoiceChatSubsystem::ApplySpeakerVolume(const FString& SpeakerKey)
 	{
 		return;
 	}
-	const float ChannelVolume = Info->ChannelId != 0 ? GetChannelVolume(Info->ChannelId) : 1.0f;
-	Stream->Component->SetVolumeMultiplier(GetUserVolume(Info->UserId) * ChannelVolume);
+	Stream->Component->SetVolumeMultiplier(SpeakerVolume(*Info));
+}
+
+void UVoiceChatSubsystem::SetPlaybackVolume(const float Volume)
+{
+	PlaybackVolume = FCrowdyVoiceSettings::ClampPlaybackVolume(Volume);
+	for (const TPair<FString, FCrowdyVoiceSpeakerStream>& Pair : SpeakerStreams)
+	{
+		ApplySpeakerVolume(Pair.Key);
+	}
+}
+
+TArray<FCrowdyVoiceInputDevice> UVoiceChatSubsystem::GetInputDevices()
+{
+	if (!ensureMsgf(IsInGameThread(), TEXT("Voice input devices are listed on the game thread only.")))
+	{
+		return {};
+	}
+	return ListCrowdyVoiceInputDevices();
+}
+
+void UVoiceChatSubsystem::SetInputDevice(const FString& DeviceId)
+{
+	if (!Runtime)
+	{
+		return;
+	}
+	// A reopen already done makes a scheduled restart a second, needless one; without one, the restart must still run.
+	if (Runtime->Mic.SetDevice(DeviceId, CrowdyVoiceNowMs()))
+	{
+		RestartAtMs = 0;
+	}
+}
+
+FString UVoiceChatSubsystem::GetInputDevice() const
+{
+	return Runtime ? Runtime->Mic.GetDeviceId() : FString();
 }
 
 FString UVoiceChatSubsystem::ChannelStreamKey(const int64 ChannelId, const FString& SpeakerUuid)

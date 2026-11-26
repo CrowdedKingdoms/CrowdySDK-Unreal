@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
+#include "Core/Audio/VoiceChat/CrowdyVoiceInputDevice.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceMicState.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceSettings.h"
 #include "Core/UDP/Enums/ECrowdyTarget.h"
@@ -228,6 +229,26 @@ public:
 	/** What your microphone is doing for voice chat in the current map. Capturing means it is live, not that you are speaking: silence is not sent. */
 	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
 	ECrowdyVoiceMicState GetVoiceMicState() const;
+
+	/** The microphones this machine has now, for a settings menu; asks the OS each call, so call it once and keep the result. On Windows each Id stays the same across sessions, so it can be saved and passed to Set Voice Input Device; elsewhere an Id can change when devices are added or removed. Empty where this platform cannot capture audio. */
+	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "Crowdy SDK|Voice")
+	TArray<FCrowdyVoiceInputDevice> GetVoiceInputDevices() const;
+
+	/** Captures your voice from the microphone with this Id from Get Voice Input Devices; empty follows the OS default. An open microphone moves to it at once, and the choice is kept across map changes. A chosen microphone that is missing reads No Device until it is connected again: voice chat never opens a different one in its place. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void SetVoiceInputDevice(const FString& DeviceId);
+
+	/** The Id Set Voice Input Device chose; empty while following the OS default. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
+	FString GetVoiceInputDevice() const;
+
+	/** How loud every other player's voice plays, spatial and channel alike: 1 as received, 0 silent. Multiplies each speaker's and channel's own volume, so their levels relative to each other are kept. Applies at once, to voices already playing too, and is kept across map changes. */
+	UFUNCTION(BlueprintCallable, Category = "Crowdy SDK|Voice")
+	void SetVoicePlaybackVolume(float Volume);
+
+	/** The volume Set Voice Playback Volume set; 1 when none was set. */
+	UFUNCTION(BlueprintPure, Category = "Crowdy SDK|Voice")
+	float GetVoicePlaybackVolume() const;
 
 	/** Fires when your microphone state changes, including Off and back to Starting as a map change reopens it. */
 	UPROPERTY(BlueprintAssignable, Category = "Crowdy SDK|Voice")
