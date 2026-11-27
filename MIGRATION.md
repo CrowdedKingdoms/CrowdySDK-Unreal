@@ -27,6 +27,38 @@ Every release has the same subsections, in this order:
 A subsection with nothing to say is written as "None." so you never have to guess whether
 something was left out.
 
+## 2.30.0
+
+**Verdict.** Nothing breaks and nothing is deprecated. One default changes: crowd rows the plugin builds from an actor class now cast a shadow when the class's mesh does. New: a project setting to turn that off, Crowdy Studio channels whose members can speak, a channel name picker for your own properties, and directional channel voice with an optional attenuation.
+
+**Requires.** Unreal Engine 5.8. Nothing to deploy or regenerate.
+
+**What changed**
+
+| Old | New | Kind |
+|---|---|---|
+| A crowd row built from an actor class (no Remote Entity Config authored) never cast a shadow, so rows looked as if they floated and gained a shadow when promoted to a near tier actor. | It casts one when the class's skinned mesh component has **Cast Shadow** and **Dynamic Shadow** on. **Derived Rows Cast Shadows** (Project Settings, Plugins, Crowdy Mass, Remote Entities, default on) turns it off for every derived row. An authored entity config keeps its own **Cast Shadows**. | Behaviour, and an addition. |
+| Crowdy Studio's **Create channel** card and `-op=createchannel` could only make a channel whose members may send messages; voice needed a role edit afterwards. | A **Members can speak** checkbox and `-memberscanspeak=true` give the member role `send_voice`. A bare or empty `-memberscanspeak` or `-memberscansend` is refused, and on a channel that already exists either switch is refused with the role edit to use. | Addition, and a commandlet behaviour change. |
+| The channel **Pick** menu existed only on a Crowdy event's **Channel** field. | An `FString` property with `meta = (CrowdyChannelPicker)` shows the same **Pick** button in the Details panel. Editor only; the property stays a plain string. | Addition. |
+| Channel voice always played centred. | With **Playback Mode** Spatial and **Directional Channel Voice** on (Project Settings, Plugins, Crowdy Voice, default off), a channel speaker is heard from where their character is drawn, at full volume however far away, or through **Channel Attenuation** when you pick one. A speaker who is not drawn plays centred, and each switch between the two restarts their voice: a gap of a few tens of milliseconds, at most once a second per speaker. | Addition. |
+
+**Do this, in order**
+
+1. Nothing is required.
+2. If a dense derived crowd cannot afford the row shadows, turn off **Derived Rows Cast Shadows**. As a guide, 300 rows at 1920x1080 cost about 0.8 ms more GPU time on the test PC.
+3. For room voice with direction: set **Playback Mode** to Spatial and turn on **Directional Channel Voice**; pick a **Channel Attenuation** only if channel voice should fade with distance.
+4. For a channel whose members talk, tick **Members can speak** when creating it, or pass `-memberscanspeak=true`; an existing channel needs its member role edited.
+
+**CoreRedirects.** None.
+
+**Blueprint assets.** None to re-save.
+
+**Behaviour changes.** Derived crowd rows cast shadows where the class's mesh does. A script that ran `-op=createchannel` with `-memberscansend` on a channel that already exists now fails instead of reporting it already exists. Nothing else changes unless you turn the new settings on.
+
+**Verify.** Derived rows stand on their shadows in a lit map; with **Derived Rows Cast Shadows** off they do not. A channel created with **Members can speak** shows `send_voice` on its member role (`-op=groupdetail`). With directional channel voice on, `crowdy.voice.trace 1` logs "Voice chat plays channel speaker ... from where they stand." when a channel speaker is drawn.
+
+**Removed in the next release.** None.
+
 ## 2.29.0
 
 **Verdict.** Nothing breaks and nothing is deprecated. New: choosing the voice microphone, one overall voice playback volume, a list of the remote entities the actor tracker holds, an event for when a near tier actor starts or stops standing for an entity, and the signed-in player's private per-app state.

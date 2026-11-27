@@ -40,6 +40,12 @@ struct FCrowdyVoiceSpeakerStream
 	TObjectPtr<USoundWaveProcedural> Wave;
 
 	int32 SampleRate = 0;
+
+	/** Directional channel voice only: whether the speaker was last placed in the world, so it plays panned rather than centred. */
+	bool bPlaced = false;
+
+	/** Directional channel voice only: switching between panned and centred restarts the sound, so it happens at most once a second. */
+	int64 NextSwitchMs = 0;
 };
 
 /**
@@ -213,12 +219,20 @@ public:
 	int64 TrackedUserIdForTest(const FString& SpeakerKey) const { const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerKey); return Info ? Info->UserId : 0; }
 	/** The volume a tracked stream would play at; 0 when it is not tracked. */
 	float SpeakerVolumeForTest(const FString& SpeakerKey) const { const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerKey); return Info ? SpeakerVolume(*Info) : 0.0f; }
+	/** Where a tracked channel stream would be placed; false when it would play centred. */
+	bool LocateChannelSpeakerForTest(const FString& SpeakerKey, FVector& OutLocation) const { const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerKey); return Info && LocateChannelSpeaker(*Info, OutLocation); }
+	/** Places a tracked channel stream as a frame at NowMs would, with the directional settings; whether its component now plays panned. */
+	bool PlaceChannelStreamForTest(const FString& SpeakerKey, FCrowdyVoiceSpeakerStream& Stream, int64 NowMs, bool bForce);
+	/** Reads the Crowdy Voice settings as a map's voice chat does, and returns the attenuation a drawn channel speaker plays with. */
+	const FSoundAttenuationSettings& ReadChannelAttenuationForTest() { ReadSettings(); return ChannelAttenuation; }
 private:
 #endif
 
 	bool AdmitSpeaker(const FString& SpeakerKey, FSpeakerInfo& Info, int64 NowMs);
 	void HandleSpeakerUser(const FString& SpeakerKey, int64 UserId);
 	bool LocateSpeakerNow(const FSpeakerInfo& Info, FVector& OutLocation) const;
+	bool LocateChannelSpeaker(const FSpeakerInfo& Info, FVector& OutLocation) const;
+	void PlaceChannelStream(FCrowdyVoiceSpeakerStream& Stream, const FSpeakerInfo& Info, int64 NowMs, bool bForce);
 	float SpeakerVolume(const FSpeakerInfo& Info) const;
 	void ApplySpeakerVolume(const FString& SpeakerKey);
 	void UpdateListenerAndStreams(int64 NowMs);
@@ -244,6 +258,10 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<USoundAttenuation> AttenuationAsset;
 
+	/** Held so the objects its settings name stay loaded while ChannelAttenuation copies them. */
+	UPROPERTY(Transient)
+	TObjectPtr<USoundAttenuation> ChannelAttenuationAsset;
+
 	TMap<FString, FSpeakerInfo> SpeakerInfos;
 	TSet<int64> MutedUsers;
 	TMap<int64, float> UserVolumes;
@@ -252,6 +270,8 @@ private:
 	TMap<int64, float> ChannelVolumes;
 	float PlaybackVolume = 1.0f;
 	FSoundAttenuationSettings SpatialAttenuation;
+	FSoundAttenuationSettings ChannelAttenuation;
+	FSoundAttenuationSettings ChannelFlatAttenuation;
 	FVector ListenerLocation = FVector::ZeroVector;
 	float OcclusionCheckSeconds = 0.1f;
 	double LookupTokens = LookupBurst;
@@ -259,6 +279,7 @@ private:
 	int64 PacketsUntracked = 0;
 	int64 NextInfoPruneMs = 0;
 	ECrowdyVoicePlaybackMode PlaybackMode = ECrowdyVoicePlaybackMode::Flat;
+	bool bDirectionalChannelVoice = false;
 	bool bHasListener = false;
 
 	TWeakObjectPtr<UCrowdySDKBridgeSubsystem> Bridge;

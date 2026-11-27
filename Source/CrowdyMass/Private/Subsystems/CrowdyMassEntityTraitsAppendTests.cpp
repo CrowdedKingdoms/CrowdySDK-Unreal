@@ -20,6 +20,8 @@
 #include "MassSkinnedMeshRepresentationTypes.h"
 #include "MassVisualizationTrait.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
+#include "Settings/CrowdyMassDeveloperSettings.h"
 #include "Subsystems/CrowdyMassEntitySubsystem.h"
 #include "Traits/CrowdyMassAnimationTrait.h"
 #include "UObject/Package.h"
@@ -447,6 +449,50 @@ bool FCrowdyMassDerivedConfigPlacesTheMeshTest::RunTest(const FString& Parameter
 	TestTrue(TEXT("whose local transform is the placement the class gives its mesh"),
 		Visualization->SkinnedMeshInstanceDesc.Meshes[0].LocalTransform.Equals(Placement));
 
+	return true;
+}
+
+/** A derived row casts a shadow when the class's mesh does, unless the project turns derived row shadows off. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassDerivedConfigCastsShadowTest,
+	"CrowdySDK.Mass.DerivedConfigRowCastsTheMeshShadow", CrowdyMassEntityTraitsAppendTestFlags)
+bool FCrowdyMassDerivedConfigCastsShadowTest::RunTest(const FString& Parameters)
+{
+	using Fixture = FCrowdyMassEntityTraitsAppendTestFixture;
+
+	UCrowdyMassDeveloperSettings* Settings = GetMutableDefault<UCrowdyMassDeveloperSettings>();
+	const bool bPrevious = Settings->bDerivedRowsCastShadows;
+	ON_SCOPE_EXIT { Settings->bDerivedRowsCastShadows = bPrevious; };
+
+	auto RowCastsShadow = [this](const bool bMeshCasts, const bool bSettingOn, bool& bOutCasts)
+	{
+		GetMutableDefault<UCrowdyMassDeveloperSettings>()->bDerivedRowsCastShadows = bSettingOn;
+		const TStrongObjectPtr<UCrowdyMassEntitySubsystem> Subsystem(Fixture::MakeSubsystem());
+		const TStrongObjectPtr<UBlueprintGeneratedClass> Class(Fixture::MakeCompiledActorClass());
+		USCS_Node* Root = Fixture::AddComponentNode(Class.Get(), NewObject<USceneComponent>(Class.Get(), NAME_None, RF_Transient));
+		Fixture::AddMesh(Class.Get(), Root)->CastShadow = bMeshCasts;
+		const UMassEntityConfigAsset* Config = Subsystem->GetOrBuildDerivedEntityConfigForTest(Class.Get());
+		const UMassVisualizationTrait* Visualization = Config ? Fixture::FindVisualizationTrait(*Config) : nullptr;
+		if (!TestTrue(TEXT("a class with a mesh gets one derived row"), Visualization && Visualization->SkinnedMeshInstanceDesc.Meshes.Num() == 1))
+		{
+			return false;
+		}
+		bOutCasts = Visualization->SkinnedMeshInstanceDesc.Meshes[0].bCastShadows;
+		return true;
+	};
+
+	bool bCasts = false;
+	if (RowCastsShadow(true, true, bCasts))
+	{
+		TestTrue(TEXT("a mesh that casts a shadow gives a row that casts one"), bCasts);
+	}
+	if (RowCastsShadow(false, true, bCasts))
+	{
+		TestFalse(TEXT("a mesh with shadows off gives a row with none"), bCasts);
+	}
+	if (RowCastsShadow(true, false, bCasts))
+	{
+		TestFalse(TEXT("Derived Rows Cast Shadows off keeps the row shadowless"), bCasts);
+	}
 	return true;
 }
 

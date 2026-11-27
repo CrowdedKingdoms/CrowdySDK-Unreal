@@ -15,6 +15,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
@@ -109,8 +110,18 @@ void SCrowdyChannelsView::Construct(const FArguments& InArgs)
 						SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 						[
-							SAssignNew(MembersCanSendCheck, SCheckBox).IsChecked(ECheckBoxState::Checked)
-							[ SNew(STextBlock).Text(LOCTEXT("MembersCanSend", "Members can send")).TextStyle(&Style, "Crowdy.Text.Body") ]
+							SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(16.0f, 4.0f))
+							+ SWrapBox::Slot()
+							[
+								SAssignNew(MembersCanSendCheck, SCheckBox).IsChecked(ECheckBoxState::Checked)
+								[ SNew(STextBlock).Text(LOCTEXT("MembersCanSend", "Members can send")).TextStyle(&Style, "Crowdy.Text.Body") ]
+							]
+							+ SWrapBox::Slot()
+							[
+								SAssignNew(MembersCanSpeakCheck, SCheckBox).IsChecked(ECheckBoxState::Unchecked)
+								.ToolTipText(LOCTEXT("MembersCanSpeakTip", "Members may talk on the channel's voice, for example a room."))
+								[ SNew(STextBlock).Text(LOCTEXT("MembersCanSpeak", "Members can speak")).TextStyle(&Style, "Crowdy.Text.Body") ]
+							]
 						]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 						[
@@ -243,7 +254,9 @@ FReply SCrowdyChannelsView::OnCreateChannelClicked()
 		Controller->CreateChannel(
 			NameBox->GetText().ToString(),
 			DescriptionBox.IsValid() ? DescriptionBox->GetText().ToString() : FString(),
-			MembersCanSendCheck.IsValid() && MembersCanSendCheck->GetCheckedState() == ECheckBoxState::Checked);
+			MembersCanSendCheck.IsValid() && MembersCanSendCheck->GetCheckedState() == ECheckBoxState::Checked,
+			FString(),
+			MembersCanSpeakCheck.IsValid() && MembersCanSpeakCheck->GetCheckedState() == ECheckBoxState::Checked);
 	}
 	return FReply::Handled();
 }

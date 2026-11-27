@@ -55,6 +55,9 @@ struct FCrowdyMassDerivedMesh
 	/** Where the class places the mesh under the actor's root, composed up its attach chain: for a character, the drop to its feet and its turn. */
 	FTransform Transform = FTransform::Identity;
 
+	/** Whether the mesh component the asset was read off casts a moving shadow, as a crowd row must. */
+	bool bCastShadow = false;
+
 	ECrowdyMassMeshRoute Route = ECrowdyMassMeshRoute::None;
 
 	/** The mesh component the asset was read off, for a class carrying more than one. */

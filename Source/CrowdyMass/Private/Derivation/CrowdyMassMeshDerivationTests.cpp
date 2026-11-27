@@ -190,6 +190,40 @@ bool FCrowdyMassMeshDerivationCharacterPlacementTest::RunTest(const FString& Par
 	return true;
 }
 
+// A row casts a shadow exactly when the actor's own mesh does, so a character does not lose its shadow as a row.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassMeshDerivationCastShadowTest,
+	"CrowdySDK.Mass.MeshDerivationKeepsTheMeshCastShadow", CrowdyMassMeshDerivationTestFlags)
+bool FCrowdyMassMeshDerivationCastShadowTest::RunTest(const FString& Parameters)
+{
+	const TStrongObjectPtr<USkeletalMesh> Mesh(FCrowdyMassMeshDerivationTestFixture::MakeMesh());
+	const FCrowdyMassMeshDerivationTestCharacterMeshScope Scope(Mesh.Get());
+	if (!TestNotNull(TEXT("A Character carries a mesh component to put the mesh on"), Scope.Component))
+	{
+		return false;
+	}
+
+	const bool bPrevious = Scope.Component->CastShadow;
+	const bool bPreviousDynamic = Scope.Component->bCastDynamicShadow;
+	ON_SCOPE_EXIT
+	{
+		Scope.Component->CastShadow = bPrevious;
+		Scope.Component->bCastDynamicShadow = bPreviousDynamic;
+	};
+
+	Scope.Component->CastShadow = true;
+	Scope.Component->bCastDynamicShadow = true;
+	TestTrue(TEXT("A mesh that casts a shadow derives a row that casts one"), FCrowdyMassMeshDerivation::FromClass(ACharacter::StaticClass()).bCastShadow);
+
+	Scope.Component->bCastDynamicShadow = false;
+	TestFalse(TEXT("A mesh that casts only baked shadows derives a row with none, since a row always moves"), FCrowdyMassMeshDerivation::FromClass(ACharacter::StaticClass()).bCastShadow);
+
+	Scope.Component->bCastDynamicShadow = true;
+	Scope.Component->CastShadow = false;
+	TestFalse(TEXT("A mesh with shadows off derives a row with none"), FCrowdyMassMeshDerivation::FromClass(ACharacter::StaticClass()).bCastShadow);
+
+	return true;
+}
+
 // A mesh that is the actor's root has no placement of its own: the engine folds a root's transform into the actor's.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyMassMeshDerivationRootMeshTest,
 	"CrowdySDK.Mass.MeshDerivationGivesARootMeshNoPlacement", CrowdyMassMeshDerivationTestFlags)

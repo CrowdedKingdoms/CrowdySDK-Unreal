@@ -21,6 +21,7 @@
 #include "Baking/CrowdyRegistryBaker.h"
 #include "CrowdyStudioModule.h"
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
+#include "Customizations/CrowdyChannelNameCustomization.h"
 #include "Customizations/CrowdyCustomEventCustomization.h"
 #include "Customizations/CrowdyReplicatedVariableCustomization.h"
 #include "Customizations/CrowdyReplicationMode.h"
@@ -471,6 +472,7 @@ namespace
 namespace
 {
 	FDelegateHandle GObjectRenamedHandle;
+	TSharedPtr<FCrowdyChannelNameTypeIdentifier> GChannelNameIdentifier;
 
 	// Move every Crowdy RepNotify binding that named a just-renamed function graph onto its new name. Unreal's own
 	// graph rename repoints every reference it owns; CrowdyOnRep names its notify in metadata instead, so without
@@ -575,7 +577,9 @@ void FCrowdySDKEditorModule::ShutdownModule()
 		FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor"))
 	{
 		PM->UnregisterCustomClassLayout("K2Node_CustomEvent");
+		PM->UnregisterCustomPropertyTypeLayout(NAME_StrProperty, GChannelNameIdentifier);
 	}
+	GChannelNameIdentifier.Reset();
 
 	if (BlueprintVariableCustomizationHandle.IsValid())
 	{
@@ -634,6 +638,12 @@ void FCrowdySDKEditorModule::RegisterFunctionEntryCustomization()
 		"K2Node_CustomEvent",
 		FOnGetDetailCustomizationInstance::CreateStatic(
 			&FCrowdyCustomEventCustomization::MakeInstance));
+
+	// Any FString marked meta = (CrowdyChannelPicker) gets the same Pick menu as a Crowdy event's channel.
+	GChannelNameIdentifier = MakeShared<FCrowdyChannelNameTypeIdentifier>();
+	PM.RegisterCustomPropertyTypeLayout(NAME_StrProperty,
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCrowdyChannelNameCustomization::MakeInstance),
+		GChannelNameIdentifier);
 }
 
 void FCrowdySDKEditorModule::RegisterVariableCustomization()

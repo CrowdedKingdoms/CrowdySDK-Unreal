@@ -60,6 +60,10 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Remote Entities", meta=(DisplayName="Max Smoothing Duration", ClampMin="0.0", UIMin="0.0", Units="s", ToolTip="Longest span any segment may be replayed over, including a duration a sender declared."))
 	float MaxSmoothingDuration = 0.5f;
 
+	/** Off turns shadows off for crowd rows worked out from a class, whatever its mesh does; an authored entity config keeps its own. */
+	UPROPERTY(Config, EditAnywhere, Category="Crowdy Mass|Remote Entities", meta=(DisplayName="Derived Rows Cast Shadows", ToolTip="A crowd row worked out from a class casts a shadow when the class's mesh does. Turn this off to keep every derived row shadowless, for example to save shadow cost in a dense crowd. Read when a class's crowd is first drawn in a map."))
+	bool bDerivedRowsCastShadows = true;
+
 	/**
 	 * How close a remote entity has to be, while off screen or behind the camera, before it is promoted
 	 * from one row of the crowd to a real actor.
