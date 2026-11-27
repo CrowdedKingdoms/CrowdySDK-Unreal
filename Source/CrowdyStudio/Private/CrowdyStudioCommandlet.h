@@ -26,6 +26,9 @@ struct FCrowdyStudioCommandRequest
 	/** -policy: a team or channel membership policy; empty when not given. */
 	FString Policy;
 	bool bMembersCanSend = true;
+	bool bMembersCanSpeak = false;
+	/** -memberscansend or -memberscanspeak was given, so an existing channel cannot satisfy the request. */
+	bool bMemberRoleGiven = false;
 	int64 GridId = 0;
 	/** -user: the grid scan's user or the user a grid grant targets; 0 when not given. */
 	int64 UserId = 0;

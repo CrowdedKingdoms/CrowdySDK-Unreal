@@ -46,6 +46,7 @@ private:
 	TSharedPtr<SEditableTextBox> NameBox;
 	TSharedPtr<SEditableTextBox> DescriptionBox;
 	TSharedPtr<SCheckBox> MembersCanSendCheck;
+	TSharedPtr<SCheckBox> MembersCanSpeakCheck;
 
 	// Policy. The max boxes hold a number, or are blank for "unlimited".
 	TSharedPtr<SEditableTextBox> MaxMembersBox;

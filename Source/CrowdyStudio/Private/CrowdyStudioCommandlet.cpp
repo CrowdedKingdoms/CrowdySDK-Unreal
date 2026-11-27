@@ -32,7 +32,7 @@ namespace CrowdyStudioCommandletDetail
 		TEXT(" | definefeature [-app=<id>] -key=<key> [-description=<text>] -yes")
 		TEXT(" | grantfeature [-app=<id>] -tier=<id from features> -key=<key> -yes | revokefeature [-app=<id>] -tier=<id> -key=<key> -yes")
 		TEXT(" | teams [-app=<id>] (the app's teams and team policy) | createteam [-app=<id>] -name=<text> [-description=<text>] [-policy=open|request|invite|admin, default open] -yes")
-		TEXT(" | channels [-app=<id>] (the app's channels and channel policy) | createchannel [-app=<id>] -name=<text> [-description=<text>] [-policy=open|request|invite|admin, default the app's] [-memberscansend=true|false, default true] -yes")
+		TEXT(" | channels [-app=<id>] (the app's channels and channel policy) | createchannel [-app=<id>] -name=<text> [-description=<text>] [-policy=open|request|invite|admin, default the app's] [-memberscansend=true|false, default true] [-memberscanspeak=true|false, default false] -yes")
 		TEXT(" | grids [-app=<id>] -low=x,y,z -high=x,y,z [-user=<id>, default the signed-in user] (the grids in that chunk region and the permission keys a grid can grant)")
 		TEXT(" | creategrid [-app=<id>] -corner1=x,y,z -corner2=x,y,z -yes")
 		TEXT(" | grantgrid | revokegrid [-app=<id>] -grid=<id> -user=<id> or -group=<id> [-role=<id>] -keys=a,b (revokegrid also takes -all in place of -keys) -yes")
@@ -108,6 +108,35 @@ namespace CrowdyStudioCommandletDetail
 		FParse::Value(*Params, *FString::Printf(TEXT("-%s="), Name), OutValue, false, OutEnd);
 		OutValue.TrimStartAndEndInline();
 		return !OutValue.IsEmpty();
+	}
+
+	// Whether -Name= appears outside quoted text, as FParse::Value reads it.
+	bool HasValueSwitch(const FString& Params, const TCHAR* Name)
+	{
+		return FCString::Strifind(*Params, *FString::Printf(TEXT("-%s="), Name), /*bSkipQuotedChars=*/true) != nullptr;
+	}
+
+	// Leaves OutValue alone when the switch is absent; true, false, 1 or 0 otherwise.
+	bool ReadBoolSwitch(const FString& Params, const TCHAR* Name, bool& OutValue, FString& OutError)
+	{
+		FString Text;
+		if (!ReadSwitch(Params, Name, Text))
+		{
+			if (FParse::Param(*Params, Name) || HasValueSwitch(Params, Name))
+			{
+				OutError = FString::Printf(TEXT("-%s needs =true or =false"), Name);
+				return false;
+			}
+			return true;
+		}
+		const bool bTrue = Text.Equals(TEXT("true"), ESearchCase::IgnoreCase) || Text == TEXT("1");
+		if (!bTrue && !Text.Equals(TEXT("false"), ESearchCase::IgnoreCase) && Text != TEXT("0"))
+		{
+			OutError = FString::Printf(TEXT("-%s=%s is not true or false"), Name, *Text);
+			return false;
+		}
+		OutValue = bTrue;
+		return true;
 	}
 
 	bool IsDigits(const FString& Text)
@@ -495,19 +524,9 @@ namespace CrowdyStudioCommandletDetail
 			}
 			return true;
 		}
-		FString CanSend;
-		if (!ReadSwitch(Params, TEXT("memberscansend"), CanSend))
-		{
-			return true;
-		}
-		const bool bTrue = CanSend.Equals(TEXT("true"), ESearchCase::IgnoreCase) || CanSend == TEXT("1");
-		if (!bTrue && !CanSend.Equals(TEXT("false"), ESearchCase::IgnoreCase) && CanSend != TEXT("0"))
-		{
-			OutError = FString::Printf(TEXT("-memberscansend=%s is not true or false"), *CanSend);
-			return false;
-		}
-		Out.bMembersCanSend = bTrue;
-		return true;
+		Out.bMemberRoleGiven = HasValueSwitch(Params, TEXT("memberscansend")) || HasValueSwitch(Params, TEXT("memberscanspeak"));
+		return ReadBoolSwitch(Params, TEXT("memberscansend"), Out.bMembersCanSend, OutError)
+			&& ReadBoolSwitch(Params, TEXT("memberscanspeak"), Out.bMembersCanSpeak, OutError);
 	}
 
 	bool ParseGridGrant(const FString& Params, FCrowdyStudioCommandRequest& Out, FString& OutError)
@@ -1299,6 +1318,13 @@ namespace CrowdyStudioCommandletDetail
 				Run.Error = Difference;
 				return false;
 			}
+			// The member role is set only when the channel is made, so asking for it again must not read as done.
+			if (Request.bMemberRoleGiven)
+			{
+				Run.Error = FString::Printf(TEXT("%s %lld \"%s\" already exists, and -memberscansend and -memberscanspeak apply only when it is created; change its member role: -op=groupdetail -kind=channel -group=%lld names the role id, then -op=updaterole -kind=channel -group=%lld -role=<id> with the full permission list the role should have (for example \"-perms=send_messages,send_voice\") -yes"),
+					Noun, Existing->GroupId, *Request.Name, Existing->GroupId, Existing->GroupId);
+				return false;
+			}
 			Step(FString::Printf(TEXT("%s %lld \"%s\" already exists; nothing to create"), Noun, Existing->GroupId, *Request.Name));
 			return true;
 		}
@@ -1317,7 +1343,7 @@ namespace CrowdyStudioCommandletDetail
 		}
 		else
 		{
-			Run.Controller->CreateChannel(Request.Name, Request.Description, Request.bMembersCanSend, Request.Policy);
+			Run.Controller->CreateChannel(Request.Name, Request.Description, Request.bMembersCanSend, Request.Policy, Request.bMembersCanSpeak);
 		}
 		if (!Settle(Run))
 		{
