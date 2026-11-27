@@ -5,12 +5,18 @@ games with large numbers of concurrent players. It connects your project to the 
 platform and gives you a small C++ and Blueprint surface for real-time replication, server-owned
 gameplay state, voice, teams, channels, and avatars.
 
-**Current version: 2.29.0** (Unreal Engine 5.8). See the
+**Current version: 2.30.0** (Unreal Engine 5.8). See the
 [changelog](https://docs.crowdedkingdoms.com/releases/intro) and
 [What's Changed](https://docs.crowdedkingdoms.com/unreal-sdk/guides/whats-changed) for a project
 that integrated an earlier release.
 
 **Upgrading? Read [MIGRATION.md](MIGRATION.md): every release from 2.24.0 lists what changed and the exact steps to migrate.**
+
+**New in 2.30.0:** crowd rows built from an actor class cast a shadow when the class's mesh does (turn it off
+with Derived Rows Cast Shadows), Crowdy Studio creates channels whose members can speak, any FString marked
+CrowdyChannelPicker gets a Pick menu of your app's channels, and voice on a channel can come from where each
+speaker stands (Directional Channel Voice, with an optional Channel Attenuation). Nothing breaks; derived rows
+now cost some GPU time for their shadows, so read MIGRATION.md.
 
 **New in 2.29.0:** choose the voice microphone (Get Voice Input Devices, Set Voice Input Device), turn
 every voice down at once (Set Voice Playback Volume), list the remote entities the actor tracker holds
