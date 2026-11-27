@@ -4195,6 +4195,8 @@ UMassEntityConfigAsset* UCrowdyMassEntitySubsystem::GetOrBuildDerivedEntityConfi
 	// The crowd draws at LocalTransform * the entity's transform, so this keeps a row standing where the actor's mesh stands.
 	MeshDesc.LocalTransform = DerivedMesh.Transform;
 	MeshDesc.TransformProvider = CrowdyMassLoadDerivedBank(EntityClass, DerivedAnimSet, DerivedMesh.Asset);
+	// Without it a row stands shadowless while the same character as an actor casts one.
+	MeshDesc.bCastShadows = DerivedMesh.bCastShadow && GetDefault<UCrowdyMassDeveloperSettings>()->bDerivedRowsCastShadows;
 	VisualizationTrait->SkinnedMeshInstanceDesc.Meshes.Add(MeshDesc);
 
 	// Every level draws as a skinned instance, and none of this is the default. Left alone, the two nearest

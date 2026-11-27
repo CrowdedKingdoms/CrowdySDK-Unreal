@@ -83,12 +83,7 @@ private:
 	void OnChannelTextCommitted(const FText& NewText, ETextCommit::Type CommitType);
 	void SetChannelValueAction(FString ChannelName);
 	void WriteChannelMeta(const FString& ChannelName);
-	// The combo menu wraps the content in a box and, because the channel list is fetched async, drives
-	// an active timer that rebuilds that content in place as the fetch settles. Otherwise the open menu
-	// would stay on "Loading channels…" until the user closed and reopened it. BuildChannelPickerMenuContent
-	// is the actual entry list, regenerated on each refresh.
 	TSharedRef<SWidget> BuildChannelPickerMenu();
-	TSharedRef<SWidget> BuildChannelPickerMenuContent();
 
 	// Mirrors the compiler's RPC parameter check so a bad signature shows in the panel
 	// before a compile.

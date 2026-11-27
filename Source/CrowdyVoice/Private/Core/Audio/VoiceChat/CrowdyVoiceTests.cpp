@@ -2,7 +2,11 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Components/AudioComponent.h"
+#include "Core/Audio/VoiceChat/CrowdyVoiceDeveloperSettings.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceMic.h"
+#include "Misc/ScopeExit.h"
+#include "Sound/SoundAttenuation.h"
 #include "Core/Audio/VoiceChat/CrowdyVoicePlayback.h"
 #include "Core/Audio/VoiceChat/CrowdyVoiceSettings.h"
 #include "Core/Audio/VoiceChat/VoiceChatSubsystem.h"
@@ -763,6 +767,106 @@ bool FCrowdyVoiceMutedUsersTest::RunTest(const FString& Parameters)
 	Settings.ApplyTo(NextMap, 1);
 	TestTrue(TEXT("a mute carries to the next map"), NextMap.Calls.Contains(TEXT("mute user 7 1")));
 	TestTrue(TEXT("and so does a volume"), NextMap.Calls.Contains(TEXT("volume user 8 0.50")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceDirectionalChannelPlacementTest,
+	"CrowdySDK.CrowdyVoice.DirectionalChannelPlacement", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceDirectionalChannelPlacementTest::RunTest(const FString& Parameters)
+{
+	const FString Uuid = FString::Printf(TEXT("%032X"), 43);
+	const FString Key = UVoiceChatSubsystem::ChannelStreamKey(812, Uuid);
+	FGuid SpeakerId;
+	FGuid::Parse(Uuid, SpeakerId);
+	const FVector Drawn(4800.0, 0.0, 90.0);
+
+	UVoiceChatSubsystem* VoiceChat = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	VoiceChat->TrackSpeakerForTest(Key, 1000, 812);
+	FVector Location = FVector::ZeroVector;
+	TestFalse(TEXT("with no way to locate speakers a channel voice is not placed, so it plays centred"),
+		VoiceChat->LocateChannelSpeakerForTest(Key, Location));
+
+	VoiceChat->LocateSpeaker = [SpeakerId, Drawn](const FGuid& Id, FVector& OutLocation)
+	{
+		OutLocation = Drawn;
+		return Id == SpeakerId;
+	};
+	TestTrue(TEXT("a speaker drawn in the world is placed"), VoiceChat->LocateChannelSpeakerForTest(Key, Location));
+	TestEqual(TEXT("where they stand"), Location, Drawn);
+
+	VoiceChat->LocateSpeaker = [](const FGuid&, FVector& OutLocation)
+	{
+		OutLocation = FVector(1.0, 2.0, 3.0);
+		return false;
+	};
+	TestFalse(TEXT("a speaker the world cannot place is not placed, so it never plays from a stale or origin position"),
+		VoiceChat->LocateChannelSpeakerForTest(Key, Location));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceChannelAttenuationTest,
+	"CrowdySDK.CrowdyVoice.ChannelAttenuationSetting", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceChannelAttenuationTest::RunTest(const FString& Parameters)
+{
+	UCrowdyVoiceDeveloperSettings* Settings = GetMutableDefault<UCrowdyVoiceDeveloperSettings>();
+	const ECrowdyVoicePlaybackMode PreviousMode = Settings->PlaybackMode;
+	const bool bPreviousDirectional = Settings->bDirectionalChannelVoice;
+	const TSoftObjectPtr<USoundAttenuation> PreviousAsset = Settings->ChannelAttenuation;
+	ON_SCOPE_EXIT
+	{
+		Settings->PlaybackMode = PreviousMode;
+		Settings->bDirectionalChannelVoice = bPreviousDirectional;
+		Settings->ChannelAttenuation = PreviousAsset;
+	};
+	Settings->PlaybackMode = ECrowdyVoicePlaybackMode::Spatial;
+	Settings->bDirectionalChannelVoice = true;
+	Settings->ChannelAttenuation.Reset();
+
+	UVoiceChatSubsystem* VoiceChat = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	const FSoundAttenuationSettings& Default = VoiceChat->ReadChannelAttenuationForTest();
+	TestTrue(TEXT("with no Channel Attenuation a drawn speaker is panned"), Default.bSpatialize);
+	TestFalse(TEXT("and never quieter with distance"), Default.bAttenuate);
+	TestFalse(TEXT("with no reverb send"), Default.bEnableReverbSend);
+
+	USoundAttenuation* Asset = NewObject<USoundAttenuation>(GetTransientPackage());
+	Asset->Attenuation.bAttenuate = true;
+	Asset->Attenuation.bSpatialize = true;
+	Asset->Attenuation.FalloffDistance = 1234.0f;
+	Settings->ChannelAttenuation = Asset;
+	const FSoundAttenuationSettings& Chosen = VoiceChat->ReadChannelAttenuationForTest();
+	TestTrue(TEXT("a Channel Attenuation the project picked is what a drawn speaker plays with"), Chosen.bAttenuate && FMath::IsNearlyEqual(Chosen.FalloffDistance, 1234.0f));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCrowdyVoiceDirectionalChannelSwitchTest,
+	"CrowdySDK.CrowdyVoice.DirectionalChannelSwitch", CrowdyVoiceTestFlags)
+bool FCrowdyVoiceDirectionalChannelSwitchTest::RunTest(const FString& Parameters)
+{
+	const FString Uuid = FString::Printf(TEXT("%032X"), 44);
+	const FString Key = UVoiceChatSubsystem::ChannelStreamKey(812, Uuid);
+	FGuid SpeakerId;
+	FGuid::Parse(Uuid, SpeakerId);
+	bool bDrawn = false;
+
+	UVoiceChatSubsystem* VoiceChat = NewObject<UVoiceChatSubsystem>(GetTransientPackage());
+	VoiceChat->TrackSpeakerForTest(Key, 1000, 812);
+	VoiceChat->LocateSpeaker = [SpeakerId, &bDrawn](const FGuid& Id, FVector& OutLocation)
+	{
+		OutLocation = FVector(4800.0, 0.0, 90.0);
+		return bDrawn && Id == SpeakerId;
+	};
+	FCrowdyVoiceSpeakerStream Stream;
+	Stream.Component = NewObject<UAudioComponent>(GetTransientPackage());
+
+	TestFalse(TEXT("a stream that opens before its speaker is drawn plays centred"), VoiceChat->PlaceChannelStreamForTest(Key, Stream, 0, true));
+	bDrawn = true;
+	TestTrue(TEXT("and pans once they are drawn"), VoiceChat->PlaceChannelStreamForTest(Key, Stream, 5000, false));
+	TestEqual(TEXT("from where they stand"), Stream.Component->GetComponentLocation(), FVector(4800.0, 0.0, 90.0));
+	bDrawn = false;
+	TestTrue(TEXT("leaving range within a second of the last switch keeps it panned for now"), VoiceChat->PlaceChannelStreamForTest(Key, Stream, 5500, false));
+	TestFalse(TEXT("and it goes back to centred once a second has passed"), VoiceChat->PlaceChannelStreamForTest(Key, Stream, 6100, false));
+	bDrawn = true;
+	TestTrue(TEXT("and pans again when they return"), VoiceChat->PlaceChannelStreamForTest(Key, Stream, 7200, false));
 	return true;
 }
 

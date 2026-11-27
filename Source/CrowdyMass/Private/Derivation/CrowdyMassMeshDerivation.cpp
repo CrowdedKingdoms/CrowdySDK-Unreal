@@ -204,6 +204,7 @@ FCrowdyMassDerivedMesh FCrowdyMassMeshDerivation::FromClass(const UClass* ActorC
 
 			Result.Asset = Asset;
 			Result.ComponentName = MeshComponent->GetName();
+			Result.bCastShadow = MeshComponent->CastShadow && MeshComponent->bCastDynamicShadow;
 
 			const UObject* Owner = MeshComponent->GetOuter();
 			Result.RouteOwnerName = Owner ? Owner->GetName() : FString();
