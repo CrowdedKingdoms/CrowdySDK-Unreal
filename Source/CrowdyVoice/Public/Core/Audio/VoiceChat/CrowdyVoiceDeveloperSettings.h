@@ -44,6 +44,16 @@ public:
 		EditCondition="PlaybackMode == ECrowdyVoicePlaybackMode::Spatial"))
 	int32 OcclusionChecksPerSecond = 10;
 
+	/** Spatial only: voice on a channel, such as a room, comes from where each speaker stands, at full volume however far away unless a Channel Attenuation says otherwise. Off plays it centred. A speaker who is not drawn near you plays centred until they are; each switch restarts their voice, a gap too short to notice in most speech. */
+	UPROPERTY(Config, EditAnywhere, Category="Playback", meta=(DisplayName="Directional Channel Voice",
+		EditCondition="PlaybackMode == ECrowdyVoicePlaybackMode::Spatial"))
+	bool bDirectionalChannelVoice = false;
+
+	/** Directional Channel Voice only: how a drawn speaker's channel voice fades and pans. Empty keeps it at full volume however far away, panned only. A speaker who is not drawn always plays centred at full volume, whatever this fades. */
+	UPROPERTY(Config, EditAnywhere, Category="Playback", meta=(DisplayName="Channel Attenuation",
+		EditCondition="PlaybackMode == ECrowdyVoicePlaybackMode::Spatial && bDirectionalChannelVoice"))
+	TSoftObjectPtr<USoundAttenuation> ChannelAttenuation;
+
 	/** How long received voice waits before it plays, to smooth out uneven arrival. Lower is quicker but breaks up on a poor connection. */
 	UPROPERTY(Config, EditAnywhere, Category="Playback", meta=(DisplayName="Playout Delay", ClampMin=40, ClampMax=400, Units="ms"))
 	int32 PlayoutDelayMs = 120;

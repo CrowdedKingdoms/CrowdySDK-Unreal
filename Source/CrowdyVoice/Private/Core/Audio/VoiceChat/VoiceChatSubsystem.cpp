@@ -139,6 +139,23 @@ void UVoiceChatSubsystem::ReadSettings()
 	}
 	OcclusionCheckSeconds = 1.0f / static_cast<float>(FMath::Clamp(Settings->OcclusionChecksPerSecond, 1, 30));
 
+	// Without a Channel Attenuation, panned but never quieter with distance; a speaker the world cannot place plays centred.
+	bDirectionalChannelVoice = Settings->bDirectionalChannelVoice;
+	ChannelAttenuation.bAttenuate = false;
+	ChannelAttenuation.bSpatialize = true;
+	ChannelAttenuation.bEnableReverbSend = false;
+	ChannelFlatAttenuation.bAttenuate = false;
+	ChannelFlatAttenuation.bSpatialize = false;
+	ChannelFlatAttenuation.bEnableReverbSend = false;
+	const bool bChannelAssetNamed = bDirectionalChannelVoice && !Settings->ChannelAttenuation.IsNull();
+	ChannelAttenuationAsset = bChannelAssetNamed ? Settings->ChannelAttenuation.LoadSynchronous() : nullptr;
+	UE_CLOG(bChannelAssetNamed && !ChannelAttenuationAsset, LogCrowdyVoice, Warning, TEXT("Voice chat could not load its Channel Attenuation %s, so channel voice keeps full volume at any distance."),
+		*Settings->ChannelAttenuation.ToString());
+	if (ChannelAttenuationAsset)
+	{
+		ChannelAttenuation = ChannelAttenuationAsset->Attenuation;
+	}
+
 	AttenuationAsset = Settings->Attenuation.LoadSynchronous();
 	if (AttenuationAsset)
 	{
@@ -282,15 +299,67 @@ void UVoiceChatSubsystem::UpdateListenerAndStreams(const int64 NowMs)
 	{
 		return;
 	}
-	for (const TPair<FString, FCrowdyVoiceSpeakerStream>& Pair : SpeakerStreams)
+	for (TPair<FString, FCrowdyVoiceSpeakerStream>& Pair : SpeakerStreams)
 	{
 		const FSpeakerInfo* Info = SpeakerInfos.Find(Pair.Key);
+		if (!Info || !IsValid(Pair.Value.Component))
+		{
+			continue;
+		}
 		FVector Location;
-		if (Info && Info->ChannelId == 0 && IsValid(Pair.Value.Component) && LocateSpeakerNow(*Info, Location))
+		if (Info->ChannelId == 0 && LocateSpeakerNow(*Info, Location))
 		{
 			Pair.Value.Component->SetWorldLocation(Location);
 		}
+		else if (Info->ChannelId != 0 && bDirectionalChannelVoice)
+		{
+			PlaceChannelStream(Pair.Value, *Info, NowMs, false);
+		}
 	}
+}
+
+bool UVoiceChatSubsystem::LocateChannelSpeaker(const FSpeakerInfo& Info, FVector& OutLocation) const
+{
+	// A channel packet carries no position, so only a speaker the world draws can be placed.
+	return LocateSpeaker && Info.Id.IsValid() && LocateSpeaker(Info.Id, OutLocation);
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool UVoiceChatSubsystem::PlaceChannelStreamForTest(const FString& SpeakerKey, FCrowdyVoiceSpeakerStream& Stream, const int64 NowMs, const bool bForce)
+{
+	ChannelAttenuation.bSpatialize = true;
+	ChannelFlatAttenuation.bSpatialize = false;
+	const FSpeakerInfo* Info = SpeakerInfos.Find(SpeakerKey);
+	if (Info && IsValid(Stream.Component))
+	{
+		PlaceChannelStream(Stream, *Info, NowMs, bForce);
+	}
+	return IsValid(Stream.Component) && Stream.Component->bOverrideAttenuation && Stream.Component->AttenuationOverrides.bSpatialize;
+}
+#endif
+
+void UVoiceChatSubsystem::PlaceChannelStream(FCrowdyVoiceSpeakerStream& Stream, const FSpeakerInfo& Info, const int64 NowMs, const bool bForce)
+{
+	FVector Location;
+	const bool bPlaced = LocateChannelSpeaker(Info, Location);
+	if (bPlaced)
+	{
+		Stream.Component->SetWorldLocation(Location);
+	}
+	if (!bForce && (bPlaced == Stream.bPlaced || NowMs < Stream.NextSwitchMs))
+	{
+		return;
+	}
+	Stream.bPlaced = bPlaced;
+	Stream.NextSwitchMs = NowMs + 1000;
+	UE_CLOG(CrowdyVoiceTrace::Voice(), LogCrowdyVoice, Log, TEXT("Voice chat plays channel speaker %s %s."),
+		*Info.Id.ToString(), bPlaced ? TEXT("from where they stand") : TEXT("centred, as they are not drawn here"));
+	// A playing sound keeps its last left and right mix when spatialization changes, so it stops and the next voice frame plays it fresh.
+	if (!bForce && Stream.Component->IsPlaying())
+	{
+		Stream.Component->Stop();
+	}
+	Stream.Component->AdjustAttenuation(bPlaced ? ChannelAttenuation : ChannelFlatAttenuation);
 }
 
 bool UVoiceChatSubsystem::LocateSpeakerNow(const FSpeakerInfo& Info, FVector& OutLocation) const
@@ -1063,11 +1132,23 @@ void UVoiceChatSubsystem::OpenSpeakerStream(const FString& SpeakerKey, const int
 			Component->SetWorldLocation(Location);
 		}
 	}
+	const bool bDirectionalChannel = Component && PlaybackMode == ECrowdyVoicePlaybackMode::Spatial && bChannel && bDirectionalChannelVoice;
+	if (bDirectionalChannel)
+	{
+		// Left a UI sound, as flat channel voice is, so a pause does not silence the room.
+		Component->bAllowSpatialization = true;
+		Component->AttenuationSettings = nullptr;
+		Component->OcclusionCheckInterval = OcclusionCheckSeconds;
+	}
 
 	FCrowdyVoiceSpeakerStream& Stream = SpeakerStreams.Add(SpeakerKey);
 	Stream.Wave = Wave;
 	Stream.Component = Component;
 	Stream.SampleRate = SampleRate;
+	if (bDirectionalChannel)
+	{
+		PlaceChannelStream(Stream, *Info, 0, true);
+	}
 	ApplySpeakerVolume(SpeakerKey);
 }
 

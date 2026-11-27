@@ -135,8 +135,8 @@ public:
 	void FetchChannels();
 	void FetchChannelPolicy();
 	void SetChannelPolicy(const FString& CreationPolicy, const FString& DefaultMembershipPolicy, int32 MaxMembers, int32 MaxGroupsPerUser);
-	// MembershipPolicy is optional (empty = the app's default channel membership policy).
-	void CreateChannel(const FString& Name, const FString& Description, bool bMembersCanSend, const FString& MembershipPolicy = FString());
+	// MembershipPolicy is optional (empty = the app's default channel membership policy). bMembersCanSpeak adds send_voice to the member role.
+	void CreateChannel(const FString& Name, const FString& Description, bool bMembersCanSend, const FString& MembershipPolicy = FString(), bool bMembersCanSpeak = false);
 	// One-click create of the well-known Reliable-RPC session channel (__crowdy_session_<appId>), with
 	// members-can-send on and open membership, so a project can pre-seed it from the editor.
 	void CreateSessionChannel();

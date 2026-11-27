@@ -1415,7 +1415,7 @@ void FCrowdyStudioController::SetChannelPolicy(const FString& CreationPolicy, co
 		});
 }
 
-void FCrowdyStudioController::CreateChannel(const FString& Name, const FString& Description, bool bMembersCanSend, const FString& MembershipPolicy)
+void FCrowdyStudioController::CreateChannel(const FString& Name, const FString& Description, bool bMembersCanSend, const FString& MembershipPolicy, bool bMembersCanSpeak)
 {
 	if (SelectedAppId == 0 || Name.IsEmpty())
 	{
@@ -1428,6 +1428,11 @@ void FCrowdyStudioController::CreateChannel(const FString& Name, const FString& 
 	Input->SetStringField(TEXT("name"), Name);
 	Input->SetStringField(TEXT("description"), Description);
 	Input->SetBoolField(TEXT("membersCanSend"), bMembersCanSend);
+	// Sent only when asked, as the runtime Create Channel does, so the server's default stands otherwise.
+	if (bMembersCanSpeak)
+	{
+		Input->SetBoolField(TEXT("membersCanSpeak"), true);
+	}
 	// Empty membership policy lets the server fall back to the app's default channel policy.
 	if (MembershipPolicy.IsEmpty())
 	{

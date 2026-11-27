@@ -308,11 +308,23 @@ bool FCrowdyStudioCommandletParsesGroupsTest::RunTest(const FString& /*Parameter
 	TestFalse(TEXT("members cannot send when told so"), Request.bMembersCanSend);
 	TestTrue(TEXT("createchannel reads -memberscansend=1"), Accepts(TEXT("-op=createchannel -name=Chat -memberscansend=1"), Request));
 	TestTrue(TEXT("1 means true"), Request.bMembersCanSend);
+	TestTrue(TEXT("createchannel without -memberscanspeak parses"), Accepts(TEXT("-op=createchannel -name=Chat"), Request));
+	TestFalse(TEXT("members cannot speak by default, as the runtime CreateChannel"), Request.bMembersCanSpeak);
+	TestTrue(TEXT("createchannel reads -memberscanspeak=true"), Accepts(TEXT("-op=createchannel -name=Room -memberscanspeak=true"), Request));
+	TestTrue(TEXT("members can speak when told so"), Request.bMembersCanSpeak);
+	TestTrue(TEXT("send stays on when only speak is given"), Request.bMembersCanSend);
 
 	TestTrue(TEXT("createteam without -name names -name"), RefusesWith(TEXT("-op=createteam -policy=open"), TEXT("-name"), TEXT("required")));
 	TestTrue(TEXT("createchannel without -name names -name"), RefusesWith(TEXT("-op=createchannel"), TEXT("-name"), TEXT("required")));
 	TestTrue(TEXT("an unknown policy names -policy and the choices"), RefusesWith(TEXT("-op=createteam -name=Red -policy=closed"), TEXT("-policy"), TEXT("open, request, invite or admin")));
 	TestTrue(TEXT("a -memberscansend that is not a boolean names -memberscansend"), RefusesWith(TEXT("-op=createchannel -name=Chat -memberscansend=maybe"), TEXT("-memberscansend"), TEXT("true or false")));
+	TestTrue(TEXT("a -memberscanspeak that is not a boolean names -memberscanspeak"), RefusesWith(TEXT("-op=createchannel -name=Room -memberscanspeak=yes"), TEXT("-memberscanspeak"), TEXT("true or false")));
+	TestTrue(TEXT("a bare -memberscanspeak is refused rather than read as false"), RefusesWith(TEXT("-op=createchannel -name=Room -memberscanspeak"), TEXT("-memberscanspeak"), TEXT("=true or =false")));
+	TestTrue(TEXT("an empty -memberscanspeak= at the end is refused too"), RefusesWith(TEXT("-op=createchannel -name=Room -memberscanspeak="), TEXT("-memberscanspeak"), TEXT("=true or =false")));
+	TestTrue(TEXT("a channel asked for with a member role setting remembers it was asked"), Accepts(TEXT("-op=createchannel -name=Room -memberscanspeak=true"), Request) && Request.bMemberRoleGiven);
+	TestTrue(TEXT("and one asked for without it does not"), Accepts(TEXT("-op=createchannel -name=Room"), Request) && !Request.bMemberRoleGiven);
+	TestTrue(TEXT("a description quoting the switch is not the switch"),
+		Accepts(TEXT("-op=createchannel -name=Room \"-description=use -memberscanspeak=true for rooms\""), Request) && !Request.bMemberRoleGiven && !Request.bMembersCanSpeak);
 	return true;
 }
 

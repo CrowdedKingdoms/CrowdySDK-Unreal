@@ -2,6 +2,7 @@
 
 #include "Core/UDP/Enums/ECrowdyMessageType.h"
 #include "CrowdySDKEditor.h"
+#include "Customizations/CrowdyChannelPicker.h"
 #include "CrowdyEditorEventMeta.h"
 #include "CrowdyStudioModule.h"
 #include "DetailCategoryBuilder.h"
@@ -29,33 +30,6 @@
 
 namespace
 {
-	// App channel names for the picker dropdown, fetched live at edit time and shared across the
-	// (transient) detail-customization instances. Edit-time only, game thread only.
-	TArray<FString> GCachedChannelNames;
-	bool GChannelsFetchInFlight = false;
-
-	// Pulls the signed-in app's channel names for the dropdown. Channels live on the Game API, which
-	// only accepts an app-scoped token so this defers to CrowdyStudio, which mints one from the
-	// session token and queries channels. (Posting the raw session token straight at the Game API, as
-	// this used to, is rejected under the two-token model and left the dropdown empty.) No-op when the
-	// app id is unset or no one is signed into Crowdy Studio (the field stays free-text).
-	void FetchChannelListIfStale()
-	{
-		if (GChannelsFetchInFlight) return;
-
-		const UCrowdySDKDeveloperSettings* Settings = GetDefault<UCrowdySDKDeveloperSettings>();
-		if (!Settings || Settings->AppID <= 0) return;
-
-		if (CrowdyStudioAuth::GetSignedInToken().IsEmpty()) return; // not signed in leave the dropdown empty
-
-		GChannelsFetchInFlight = true;
-		CrowdyStudioAuth::FetchAppChannelNames(Settings->AppID, [](const TArray<FString>& Names)
-		{
-			GChannelsFetchInFlight = false;
-			GCachedChannelNames = Names;
-		});
-	}
-
 	// The value (non-object) categories the RPC serializer can carry: primitives, byte/enum,
 	// name/string/text, and structs.
 	bool IsReplicatableLeafCategory(const FName Category)
@@ -246,7 +220,7 @@ void FCrowdyCustomEventCustomization::CustomizeDetails(
 		HideUnrealReplicationRow(DetailBuilder, EditedNode);
 
 		// Warm the channel-picker dropdown so it's ready by the time the author opens it.
-		FetchChannelListIfStale();
+		CrowdyChannelPicker::FetchChannelNamesIfStale();
 	}
 
 	BuildReplicateCategory(DetailBuilder);
@@ -776,89 +750,18 @@ void FCrowdyCustomEventCustomization::WriteChannelMeta(const FString& ChannelNam
 
 TSharedRef<SWidget> FCrowdyCustomEventCustomization::BuildChannelPickerMenu()
 {
-	// The channel list is fetched async; kick it now (no-op if already in flight or unavailable).
-	FetchChannelListIfStale();
-
-	TSharedRef<SBox> MenuBox = SNew(SBox);
-	MenuBox->SetContent(BuildChannelPickerMenuContent());
-
-	// OnGetMenuContent builds the popup once, so a fetch that lands while it's open would never show
-	// and the user would have to close and reopen. Poll the shared fetch state and rebuild the content in
-	// place only when it changes, then stop once the fetch settles (or the menu/customization is gone).
-	TWeakPtr<SBox> WeakMenuBox = MenuBox;
-	TWeakPtr<FCrowdyCustomEventCustomization> WeakSelf =
+	const TWeakPtr<FCrowdyCustomEventCustomization> WeakSelf =
 		StaticCastSharedRef<FCrowdyCustomEventCustomization>(AsShared());
-
-	MenuBox->RegisterActiveTimer(0.15f, FWidgetActiveTimerDelegate::CreateLambda(
-		[WeakSelf, WeakMenuBox, LastCount = GCachedChannelNames.Num(), LastInFlight = GChannelsFetchInFlight]
-		(double, float) mutable -> EActiveTimerReturnType
+	return CrowdyChannelPicker::MakeMenu(
+		[WeakSelf](const FString& ChannelName)
 		{
-			TSharedPtr<SBox> Box = WeakMenuBox.Pin();
-			TSharedPtr<FCrowdyCustomEventCustomization> Self = WeakSelf.Pin();
-			if (!Box.IsValid() || !Self.IsValid())
+			if (const TSharedPtr<FCrowdyCustomEventCustomization> Self = WeakSelf.Pin())
 			{
-				return EActiveTimerReturnType::Stop;
+				Self->SetChannelValueAction(ChannelName);
 			}
-
-			const int32 Count = GCachedChannelNames.Num();
-			const bool bInFlight = GChannelsFetchInFlight;
-			if (Count != LastCount || bInFlight != LastInFlight)
-			{
-				Box->SetContent(Self->BuildChannelPickerMenuContent());
-				LastCount = Count;
-				LastInFlight = bInFlight;
-			}
-
-			return bInFlight ? EActiveTimerReturnType::Continue : EActiveTimerReturnType::Stop;
-		}));
-
-	return MenuBox;
-}
-
-TSharedRef<SWidget> FCrowdyCustomEventCustomization::BuildChannelPickerMenuContent()
-{
-	FMenuBuilder MenuBuilder(/*bCloseAfterSelection*/ true, nullptr);
-
-	MenuBuilder.AddMenuEntry(
+		},
 		FText::FromString(TEXT("(Default session channel)")),
-		FText::FromString(TEXT("Route over the app-wide default session channel.")),
-		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateSP(this, &FCrowdyCustomEventCustomization::SetChannelValueAction, FString())));
-
-	if (CrowdyStudioAuth::GetSignedInToken().IsEmpty())
-	{
-		MenuBuilder.AddMenuEntry(
-			FText::FromString(TEXT("Sign in to Crowdy Studio to load channels")),
-			FText::GetEmpty(), FSlateIcon(),
-			FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([] { return false; })));
-		return MenuBuilder.MakeWidget();
-	}
-
-	if (GCachedChannelNames.Num() == 0)
-	{
-		MenuBuilder.AddMenuEntry(
-			FText::FromString(GChannelsFetchInFlight ? TEXT("Loading channels…") : TEXT("No channels found")),
-			FText::GetEmpty(), FSlateIcon(),
-			FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([] { return false; })));
-	}
-	else
-	{
-		MenuBuilder.BeginSection(NAME_None, FText::FromString(TEXT("Channels")));
-		for (const FString& Name : GCachedChannelNames)
-		{
-			MenuBuilder.AddMenuEntry(
-				FText::FromString(Name), FText::GetEmpty(), FSlateIcon(),
-				FUIAction(FExecuteAction::CreateSP(this, &FCrowdyCustomEventCustomization::SetChannelValueAction, Name)));
-		}
-		MenuBuilder.EndSection();
-	}
-
-	MenuBuilder.AddSeparator();
-	MenuBuilder.AddMenuEntry(
-		FText::FromString(TEXT("Refresh")), FText::GetEmpty(), FSlateIcon(),
-		FUIAction(FExecuteAction::CreateLambda([] { FetchChannelListIfStale(); })));
-
-	return MenuBuilder.MakeWidget();
+		FText::FromString(TEXT("Route over the app-wide default session channel.")));
 }
 
 FText FCrowdyCustomEventCustomization::GetReplicateStatusText() const
